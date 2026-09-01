@@ -1272,8 +1272,72 @@ def test_cli_db_backup_restore_plan_reports_a_healthy_backup(capsys) -> None:
         assert main(["db-backup", "restore-plan", "geo"]) == 0
 
     output = capsys.readouterr().out
-    # 복원 명령이 아직 없다는 사실을 계획이 스스로 말한다.
-    assert "복원 명령은 아직 없습니다" in output
+    # 파괴적 복원 명령은 아직 없지만, scratch DB 리허설 경로는 안내한다.
+    assert "rehearse-restore" in output
+
+
+def test_cli_db_backup_rehearse_restore_reports_a_verified_backup(capsys) -> None:
+    from types import SimpleNamespace
+
+    outcome = SimpleNamespace(
+        role="geo",
+        backup_filename="geo-1.dump",
+        plan=SimpleNamespace(to_json=lambda: {}),
+        attempted=True,
+        restore_succeeded=True,
+        scratch_database="ktdm_rehearsal_1000",
+        restored_alembic_head="0001_head",
+        restored_db_size_bytes=12345,
+        duration_sec=1.23,
+        findings=(SimpleNamespace(code="OK", text="검증 성공", blocking=False),),
+        verified=True,
+        to_json=lambda: {"verified": True},
+    )
+
+    with patch(
+        "kor_travel_docker_manager.cli.rehearse_standalone_restore", return_value=outcome
+    ) as rehearser:
+        exit_code = main(["db-backup", "rehearse-restore", "geo"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "검증됐습니다" in output
+    assert "ktdm_rehearsal_1000" in output
+    rehearser.assert_called_once_with("geo", backup_filename=None, timeout=14_400)
+
+
+def test_cli_db_backup_rehearse_restore_fails_closed_when_restore_is_unverified(
+    capsys,
+) -> None:
+    from types import SimpleNamespace
+
+    outcome = SimpleNamespace(
+        role="geo",
+        backup_filename="geo-1.dump",
+        plan=SimpleNamespace(to_json=lambda: {}),
+        attempted=True,
+        restore_succeeded=False,
+        scratch_database="ktdm_rehearsal_1000",
+        restored_alembic_head=None,
+        restored_db_size_bytes=None,
+        duration_sec=1.23,
+        findings=(
+            SimpleNamespace(
+                code="REHEARSAL_RESTORE_FAILED", text="pg_restore가 실패했습니다", blocking=True
+            ),
+        ),
+        verified=False,
+        to_json=lambda: {"verified": False},
+    )
+
+    with patch(
+        "kor_travel_docker_manager.cli.rehearse_standalone_restore", return_value=outcome
+    ):
+        exit_code = main(["db-backup", "rehearse-restore", "geo", "--json"])
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["verified"] is False
 
 
 # --- ktdctl pin apply-pending (KUM-M5) ---------------------------------------

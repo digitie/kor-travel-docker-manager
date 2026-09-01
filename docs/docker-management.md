@@ -1039,14 +1039,17 @@ migration을 태운다. 빈 PGDATA에서 시작할 때 superuser 확장이 먼�
 ktdctl db-backup create concierge
 ktdctl db-backup list concierge
 ktdctl db-backup gc concierge --keep 7
-ktdctl db-backup restore-plan concierge [--file <name>] [--json]   # 읽기 전용
+ktdctl db-backup restore-plan concierge [--file <name>] [--json]      # 읽기 전용
+ktdctl db-backup rehearse-restore concierge [--file <name>] [--timeout <초>] [--json]
 ```
 
 #### `restore-plan` — 복원하기 전에 "복원할 수 있는가"를 먼저 묻는다
 
-**복원 명령 자체는 아직 없다.** `restore-plan`을 먼저 만든 이유는, 목록에 백업이 보이는
-것과 그 백업으로 실제 복원할 수 있는 것이 다르기 때문이다 — dump가 잘려 있어도, digest가
-manifest와 어긋나도, live schema revision이 백업 시점과 달라도 목록은 똑같이 보인다.
+**실제 role DB로 덮어쓰는 파괴적 복원 명령은 아직 없다** — 그 결정은 오너가 이미
+로드맵 뒤로 미뤄 두었다(`docs/general-mgmt-audit.md` GM-07 검증 노트, 2026-08-28
+journal). `restore-plan`을 먼저 만든 이유는, 목록에 백업이 보이는 것과 그 백업으로
+실제 복원할 수 있는 것이 다르기 때문이다 — dump가 잘려 있어도, digest가 manifest와
+어긋나도, live schema revision이 백업 시점과 달라도 목록은 똑같이 보인다.
 
 계획은 아무것도 바꾸지 않고 다음을 답한다:
 
@@ -1062,6 +1065,26 @@ manifest와 어긋나도, live schema revision이 백업 시점과 달라도 목
 불일치는 **차단이 아니다** — 복원 자체는 가능하고, 코드가 기대하는 schema보다 과거로
 간다는 사실을 알고 결정하는 것이 사람의 몫이다. 차단 요인이 있으면 exit 1이라 스크립트
 게이트로 쓸 수 있다.
+
+#### `rehearse-restore` — 이 백업이 실제로 복원되는지 scratch DB에서 증명한다
+
+`restore-plan`이 통과(차단 없음)한 백업만 시도한다. 같은 인스턴스 안에 이름이 겹치지
+않는 scratch 데이터베이스(`ktdm_rehearsal_<epoch>`)를 만들어 그 안에만 `pg_restore`하고,
+검증이 끝나면 **성공이든 실패든 항상** scratch DB와 컨테이너 안의 dump 사본을 지운다 —
+운영 DB(`concierge`/`geo` 등 실제 role 데이터베이스)는 어떤 경로로도 건드리지 않는다.
+
+검증 항목:
+
+- `pg_restore` exit code(경고성 stderr는 실패로 치지 않는다 — 성공한 복원도 notice를
+  낼 수 있다).
+- 복원된 scratch DB의 schema revision이 manifest의 `alembic_head`와 같은가
+  (`REHEARSAL_HEAD_MISMATCH`, 차단).
+- 복원된 scratch DB 크기가 0바이트가 아닌가(`REHEARSAL_EMPTY_DATABASE`, 차단).
+
+모두 통과해야 `verified: true`이고 exit 0이다. 실제 role DB로 덮어쓰는 경로(운영자가
+직접 압박받는 장애 대응 시나리오)는 writer 정지/재기동 절차 설계가 별도로 필요해
+의도적으로 범위 밖에 남아 있다 — 장애 시에는 여전히 각 프로젝트의 수동 `pg_restore`
+절차를 따른다.
 
 geo application DB는 위 앱 레벨 백업이 정본이다. 운영자가 장애 대응을 위해 한 번만 수동 dump가 필요할 때는
 `ktdctl db-backup create geo --timeout <초>`처럼 명시적으로 실행하고, cron/systemd timer에는 넣지 않는다.
@@ -1153,13 +1176,17 @@ keep 4/7/7). geo application은 앱 레벨
 
 읽기 전용 `GET /api/v1/backups?role=<role>`도 있다 — Dashboard "백업 이력" 패널이
 쓴다. 생성·GC는 CLI 전용이며 API에 노출하지 않는다(이 저장소의 표준 mutation
-경계). **복원 CLI는 아직 없다** — 아래 "아직 안 된 것" 참고.
+경계). **실제 role DB로 덮어쓰는 복원 CLI는 아직 없다** — scratch DB 리허설
+(`rehearse-restore`)은 있다. 아래 "아직 안 된 것" 참고.
 
 ### 아직 안 된 것
 
-- **복원 CLI가 없다.** map은 여전히 kor-travel-map `docs/backup-restore.md` §8.1
-  수동 절차가 정본이고, geo·concierge·pinvi는 각 프로젝트 alembic migration을
-  타야 한다(§ "복원" 참고). `ktdctl db-backup restore`는 별도 범위다.
+- **실제 role DB로 덮어쓰는 파괴적 복원 CLI가 없다.** `rehearse-restore`가 백업이
+  scratch DB에 실제로 복원됨을 증명하지만, 운영 DB 자체를 되돌리는 경로는 writer
+  정지/재기동 절차 설계가 필요해 오너가 의도적으로 로드맵 뒤로 미뤘다
+  (`docs/general-mgmt-audit.md` GM-07 검증 노트). map은 여전히 kor-travel-map
+  `docs/backup-restore.md` §8.1 수동 절차가 정본이고, geo·concierge·pinvi는 각
+  프로젝트 alembic migration을 타야 한다(§ "복원" 참고).
 - **외부(오프박스) 사본 자동화가 없다.** 지금은 `KTDM_BACKUP_ROOT/<role>/` 로컬 경로뿐이다.
   n150에서 외부 목적지·자격증명·전송 자동화가 확인되지 않았으므로 same-host 경로를
   off-box로 간주하지 않았다. rsync/scp 대상·주기·sha256 대조 검증은 별도 결선이 필요하다.

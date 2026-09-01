@@ -16,6 +16,7 @@ from kor_travel_docker_manager.services.standalone_backup import (
     gc_standalone_backups,
     list_standalone_backups,
     plan_standalone_restore,
+    rehearse_standalone_restore,
 )
 
 _CMD_JSON = json.dumps(["postgres", "-p", "12500", "-c", "listen_addresses=127.0.0.1"]).encode(
@@ -845,3 +846,168 @@ def test_restore_plan_turns_a_vanishing_dump_into_a_finding(
 
     assert plan.restorable is False
     assert "DUMP_UNREADABLE" in [f.code for f in plan.findings]
+
+
+# --- 복원 리허설(GM-07, scratch DB만 건드림) -----------------------------------
+#
+# 이 블록의 요점: 운영 DB로 덮어쓰는 파괴적 복원은 여전히 없다(오너가 로드맵 뒤로
+# 미룸). 여기서 증명하는 것은 "이 백업이 scratch DB에 실제로 복원된다"는 사실뿐이고,
+# scratch DB는 성공/실패와 무관하게 항상 지워야 한다.
+
+
+def _rehearsal_probes(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pg_restore_returncode: int = 0,
+    pg_restore_stderr: bytes = b"",
+    restored_head: str | None = "0001_head",
+    restored_size: int = 12345,
+) -> list[list[str]]:
+    """createdb/pg_restore/cleanup을 가짜로 응답하고, cleanup 호출을 기록한다."""
+
+    monkeypatch.setattr(standalone_backup, "_discover_port", lambda name: 12500)
+    monkeypatch.setattr(standalone_backup, "_discover_admin_role", lambda name: "addr")
+    monkeypatch.setattr(standalone_backup, "_query_db_size", lambda *a, **k: restored_size)
+    monkeypatch.setattr(
+        standalone_backup, "_discover_alembic_head", lambda *a, **k: restored_head
+    )
+
+    def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
+        if arguments[:2] == ["docker", "cp"]:
+            return b""
+        if "createdb" in arguments:
+            return b""
+        raise AssertionError(f"unexpected _run_checked command in rehearsal: {arguments}")
+
+    monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
+
+    def run_pg_restore(arguments: list[str], *, label: str, timeout: int) -> tuple[int, bytes]:
+        assert "pg_restore" in arguments
+        return pg_restore_returncode, pg_restore_stderr
+
+    monkeypatch.setattr(standalone_backup, "_run_pg_restore", run_pg_restore)
+
+    cleanup_calls: list[list[str]] = []
+
+    def fake_subprocess_run(arguments: list[str], **kwargs: object) -> Mock:
+        cleanup_calls.append(arguments)
+        return Mock(returncode=0, stderr=b"", stdout=b"")
+
+    monkeypatch.setattr(standalone_backup.subprocess, "run", fake_subprocess_run)
+    return cleanup_calls
+
+
+def test_rehearse_standalone_restore_confirms_a_healthy_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    cleanup_calls = _rehearsal_probes(monkeypatch, restored_head="0001_head")
+
+    outcome = rehearse_standalone_restore("geo", backup_root=root)
+
+    assert outcome.attempted is True
+    assert outcome.restore_succeeded is True
+    assert outcome.verified is True
+    assert outcome.restored_alembic_head == "0001_head"
+    assert outcome.restored_db_size_bytes == 12345
+    assert outcome.scratch_database is not None
+    # scratch DB는 항상 지운다 — dropdb가 실제로 호출됐는지 확인한다.
+    assert any("dropdb" in call for call in cleanup_calls)
+    assert any("rm" in call for call in cleanup_calls)
+
+
+def test_rehearse_standalone_restore_skips_the_attempt_when_the_plan_is_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """무결성이 깨진 dump를 scratch DB에라도 복원 시도하는 것은 낭비다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    # dump 파일 자체가 없다 — plan이 DUMP_MISSING으로 차단한다. 이 probe는
+    # plan_standalone_restore 자신의 정당한 live-schema 조회만 허용한다.
+    payload = _manifest_payload("geo", 1000, "geo-1000.dump")
+    (root / "geo-1000.manifest").write_text(json.dumps(payload), encoding="utf-8")
+    _plan_probes(monkeypatch, live_head="0001_head")
+
+    def fail_if_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("복원 계획이 차단됐으면 pg_restore를 시도하면 안 된다")
+
+    monkeypatch.setattr(standalone_backup, "_run_pg_restore", fail_if_called)
+
+    outcome = rehearse_standalone_restore("geo", backup_root=root)
+
+    assert outcome.attempted is False
+    assert outcome.verified is False
+    assert outcome.plan.restorable is False
+
+
+def test_rehearse_standalone_restore_reports_a_failed_pg_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    cleanup_calls = _rehearsal_probes(
+        monkeypatch, pg_restore_returncode=1, pg_restore_stderr=b"boom"
+    )
+
+    outcome = rehearse_standalone_restore("geo", backup_root=root)
+
+    assert outcome.attempted is True
+    assert outcome.restore_succeeded is False
+    assert outcome.verified is False
+    assert "REHEARSAL_RESTORE_FAILED" in [f.code for f in outcome.findings]
+    assert any(f.blocking for f in outcome.findings)
+    # 실패해도 scratch DB 정리는 여전히 시도한다.
+    assert any("dropdb" in call for call in cleanup_calls)
+
+
+def test_rehearse_standalone_restore_flags_a_schema_mismatch_after_a_successful_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pg_restore가 exit 0으로 끝나도 복원된 내용이 manifest와 다르면 검증 실패다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    _rehearsal_probes(monkeypatch, restored_head="9999_other_head")
+
+    outcome = rehearse_standalone_restore("geo", backup_root=root)
+
+    assert outcome.restore_succeeded is True
+    assert outcome.verified is False
+    assert "REHEARSAL_HEAD_MISMATCH" in [f.code for f in outcome.findings]
+
+
+def test_rehearse_standalone_restore_always_drops_the_scratch_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cleanup은 try 블록의 예외 여부와 무관하게 실행돼야 한다(finally)."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    monkeypatch.setattr(standalone_backup, "_discover_port", lambda name: 12500)
+    monkeypatch.setattr(standalone_backup, "_discover_admin_role", lambda name: "addr")
+
+    def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
+        if arguments[:2] == ["docker", "cp"]:
+            return b""
+        raise StandaloneBackupError("createdb exploded")
+
+    monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
+
+    cleanup_calls: list[list[str]] = []
+
+    def fake_subprocess_run(arguments: list[str], **kwargs: object) -> Mock:
+        cleanup_calls.append(arguments)
+        return Mock(returncode=0, stderr=b"", stdout=b"")
+
+    monkeypatch.setattr(standalone_backup.subprocess, "run", fake_subprocess_run)
+
+    with pytest.raises(StandaloneBackupError):
+        rehearse_standalone_restore("geo", backup_root=root)
+
+    assert any("dropdb" in call for call in cleanup_calls)

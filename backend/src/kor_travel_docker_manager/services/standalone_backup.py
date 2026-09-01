@@ -663,6 +663,256 @@ def plan_standalone_restore(
     )
 
 
+_REHEARSAL_DB_PREFIX = "ktdm_rehearsal_"
+_REHEARSAL_CONTAINER_DIR = "/tmp"
+
+
+@dataclass(frozen=True)
+class RehearsalOutcome:
+    """백업을 scratch DB에 실제로 복원해 검증한 결과. 운영 DB는 전혀 건드리지 않는다.
+
+    scratch DB는 대상과 같은 인스턴스 안에 이름이 겹치지 않게 새로 만들었다가,
+    검증이 끝나면 성공이든 실패든 항상 지운다. 실제 role DB로 덮어쓰는 파괴적
+    복원은 이 함수의 범위 밖이다 — 그 결정은 오너가 이미 로드맵 뒤로 미뤄 두었다
+    (docs/general-mgmt-audit.md GM-07 검증 노트, journal 2026-08-28).
+    """
+
+    role: BackupRole
+    backup_filename: str
+    plan: RestorePlan
+    attempted: bool
+    restore_succeeded: bool | None
+    scratch_database: str | None
+    restored_alembic_head: str | None
+    restored_db_size_bytes: int | None
+    duration_sec: float | None
+    findings: tuple[RestorePlanFinding, ...]
+
+    @property
+    def verified(self) -> bool:
+        return (
+            self.attempted
+            and self.restore_succeeded is True
+            and not any(finding.blocking for finding in self.findings)
+        )
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "role": self.role,
+            "backup_filename": self.backup_filename,
+            "plan": self.plan.to_json(),
+            "attempted": self.attempted,
+            "restore_succeeded": self.restore_succeeded,
+            "scratch_database": self.scratch_database,
+            "restored_alembic_head": self.restored_alembic_head,
+            "restored_db_size_bytes": self.restored_db_size_bytes,
+            "duration_sec": self.duration_sec,
+            "findings": [finding.to_json() for finding in self.findings],
+            "verified": self.verified,
+        }
+
+
+def rehearse_standalone_restore(
+    role: BackupRole,
+    *,
+    backup_filename: str | None = None,
+    backup_root: Path | None = None,
+    timeout: int = 14_400,
+) -> RehearsalOutcome:
+    """백업이 실제로 복원 가능한지 scratch DB에서 증명한다. 운영 DB는 건드리지 않는다.
+
+    `plan_standalone_restore`가 차단(blocking) 사유를 찾으면 시도조차 하지 않는다 —
+    무결성이 깨진 파일을 scratch DB에라도 복원 시도하는 것은 낭비다. 통과하면 같은
+    인스턴스 안에 이름이 겹치지 않는 scratch DB를 만들어 그 안에만 `pg_restore`하고,
+    TOC 적용이 실제로 끝까지 갔는지(exit code)와 schema revision·DB 크기가 말이 되는지
+    확인한 뒤, 결과와 무관하게 scratch DB와 그 안의 dump 사본을 지운다.
+    """
+
+    plan = plan_standalone_restore(role, backup_filename=backup_filename, backup_root=backup_root)
+    if not plan.restorable:
+        return RehearsalOutcome(
+            role=role,
+            backup_filename=plan.backup_filename,
+            plan=plan,
+            attempted=False,
+            restore_succeeded=None,
+            scratch_database=None,
+            restored_alembic_head=None,
+            restored_db_size_bytes=None,
+            duration_sec=None,
+            findings=(
+                RestorePlanFinding(
+                    "PLAN_BLOCKED",
+                    "복원 계획에 차단 사유가 있어 리허설을 시도하지 않았습니다. "
+                    "'db-backup restore-plan'으로 원인을 먼저 확인하세요.",
+                    True,
+                ),
+            ),
+        )
+
+    container_name, _database_name = _role_config(role)
+    root = _resolve_backup_root(role, backup_root)
+    port = _discover_port(container_name)
+    admin_name = _discover_admin_role(container_name)
+    scratch_database = f"{_REHEARSAL_DB_PREFIX}{int(time.time())}"
+    if not _DATABASE_IDENTIFIER.fullmatch(scratch_database):
+        raise StandaloneBackupError(
+            f"generated scratch database name is invalid: {scratch_database}"
+        )
+    container_dump_path = f"{_REHEARSAL_CONTAINER_DIR}/rehearsal-{scratch_database}.dump"
+
+    findings: list[RestorePlanFinding] = []
+    restore_succeeded: bool | None = None
+    restored_alembic_head: str | None = None
+    restored_db_size_bytes: int | None = None
+    started = time.monotonic()
+
+    with _role_lock(root):
+        try:
+            _run_checked(
+                ["docker", "cp", plan.dump_path, f"{container_name}:{container_dump_path}"],
+                label=f"{role} rehearsal dump copy-in",
+                timeout=timeout,
+            )
+            _run_checked(
+                [
+                    "docker",
+                    "exec",
+                    "--user",
+                    "postgres",
+                    container_name,
+                    "createdb",
+                    "--username",
+                    admin_name,
+                    "--port",
+                    str(port),
+                    "--owner",
+                    admin_name,
+                    scratch_database,
+                ],
+                label=f"{role} rehearsal scratch database create",
+                timeout=60,
+            )
+            returncode, stderr = _run_pg_restore(
+                [
+                    "docker",
+                    "exec",
+                    "--user",
+                    "postgres",
+                    container_name,
+                    "pg_restore",
+                    "--username",
+                    admin_name,
+                    "--port",
+                    str(port),
+                    "--dbname",
+                    scratch_database,
+                    "--no-owner",
+                    "--no-privileges",
+                    "--exit-on-error",
+                    container_dump_path,
+                ],
+                label=f"{role} rehearsal pg_restore",
+                timeout=timeout,
+            )
+            restore_succeeded = returncode == 0
+            if not restore_succeeded:
+                findings.append(
+                    RestorePlanFinding(
+                        "REHEARSAL_RESTORE_FAILED",
+                        f"scratch DB로의 pg_restore가 실패했습니다(exit {returncode}): "
+                        f"{stderr.decode('utf-8', 'replace')[:2000]}",
+                        True,
+                    )
+                )
+            else:
+                restored_db_size_bytes = _query_db_size(
+                    container_name, port, admin_name, scratch_database
+                )
+                restored_alembic_head = _discover_alembic_head(
+                    container_name, port, admin_name, scratch_database
+                )
+                if restored_alembic_head is None:
+                    findings.append(
+                        RestorePlanFinding(
+                            "REHEARSAL_HEAD_UNKNOWN",
+                            "복원된 scratch DB의 schema revision을 읽지 못했습니다.",
+                            False,
+                        )
+                    )
+                elif (
+                    plan.manifest.alembic_head is not None
+                    and restored_alembic_head != plan.manifest.alembic_head
+                ):
+                    findings.append(
+                        RestorePlanFinding(
+                            "REHEARSAL_HEAD_MISMATCH",
+                            f"복원된 schema revision({restored_alembic_head})이 manifest"
+                            f"({plan.manifest.alembic_head})과 다릅니다 — pg_restore는 "
+                            "끝났지만 내용이 기대와 다를 수 있습니다.",
+                            True,
+                        )
+                    )
+                if restored_db_size_bytes == 0:
+                    findings.append(
+                        RestorePlanFinding(
+                            "REHEARSAL_EMPTY_DATABASE",
+                            "복원된 scratch DB의 크기가 0바이트입니다 — 실제로 데이터가 "
+                            "들어가지 않았을 수 있습니다.",
+                            True,
+                        )
+                    )
+        finally:
+            subprocess.run(
+                ["docker", "exec", container_name, "rm", "-f", container_dump_path],
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "--user",
+                    "postgres",
+                    container_name,
+                    "dropdb",
+                    "--username",
+                    admin_name,
+                    "--port",
+                    str(port),
+                    "--if-exists",
+                    scratch_database,
+                ],
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+
+    duration_sec = round(time.monotonic() - started, 3)
+    if not findings:
+        findings.append(
+            RestorePlanFinding(
+                "OK",
+                "scratch DB 복원 리허설이 성공했고 schema revision·크기도 말이 됩니다.",
+                False,
+            )
+        )
+
+    return RehearsalOutcome(
+        role=role,
+        backup_filename=plan.backup_filename,
+        plan=plan,
+        attempted=True,
+        restore_succeeded=restore_succeeded,
+        scratch_database=scratch_database,
+        restored_alembic_head=restored_alembic_head,
+        restored_db_size_bytes=restored_db_size_bytes,
+        duration_sec=duration_sec,
+        findings=tuple(findings),
+    )
+
+
 def _role_config(role: BackupRole) -> tuple[str, str]:
     if role not in _ROLE_CONFIG:
         raise StandaloneBackupError(f"unknown backup role: {role}")
@@ -972,3 +1222,16 @@ def _run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
     if not isinstance(completed.stdout, bytes):
         raise StandaloneBackupError(f"{label} produced invalid output")
     return completed.stdout
+
+
+def _run_pg_restore(arguments: list[str], *, label: str, timeout: int) -> tuple[int, bytes]:
+    """`pg_restore`는 성공해도 stderr에 경고를 낼 수 있어 `_run_checked`의 엄격한
+    "stderr가 있으면 실패" 판정을 쓰면 안 된다 — 실제 성패는 exit code로만 가른다.
+    실행 자체가 안 됐거나 timeout이면(OSError/SubprocessError) 여전히 fail-close다.
+    """
+
+    try:
+        completed = subprocess.run(arguments, capture_output=True, check=False, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise StandaloneBackupError(f"{label} could not run") from exc
+    return completed.returncode, completed.stderr

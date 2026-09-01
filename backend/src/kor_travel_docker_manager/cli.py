@@ -76,6 +76,7 @@ from kor_travel_docker_manager.services.standalone_backup import (
     gc_standalone_backups,
     list_standalone_backups,
     plan_standalone_restore,
+    rehearse_standalone_restore,
 )
 
 DIRECT_ENSURE_ALIASES = {
@@ -1190,14 +1191,65 @@ def _cmd_db_backup_restore_plan(args: argparse.Namespace) -> int:
             # 마지막 문장이 지워 버린다.
             print(
                 "무결성은 확인됐지만 위 [참고] 항목을 읽고 판단해야 합니다. "
-                "복원 명령은 아직 없습니다."
+                "'db-backup rehearse-restore'로 scratch DB 복원을 검증할 수 있습니다."
             )
         elif plan.restorable:
-            print("이 백업은 복원 가능한 상태로 보입니다. 다만 복원 명령은 아직 없습니다.")
+            print(
+                "이 백업은 복원 가능한 상태로 보입니다. "
+                "'db-backup rehearse-restore'로 scratch DB 복원을 검증할 수 있습니다."
+            )
         else:
             print("이 백업으로는 복원하면 안 됩니다.")
     # 차단 요인이 있으면 비정상 종료로 알린다 — 스크립트에서 게이트로 쓸 수 있다.
     return 0 if plan.restorable else 1
+
+
+def _cmd_db_backup_rehearse_restore(args: argparse.Namespace) -> int:
+    """백업을 scratch DB에 실제로 복원해 검증한다. 운영 DB는 절대 건드리지 않는다.
+
+    실제 role DB로 덮어쓰는 파괴적 복원은 아직 없다 — 그 결정은 오너가 이미 로드맵
+    뒤로 미뤄 두었다(docs/general-mgmt-audit.md GM-07 검증 노트). 여기서 증명하는
+    것은 "이 백업이 실제로 복원 가능하다"는 사실뿐이다.
+    """
+
+    try:
+        outcome = rehearse_standalone_restore(
+            args.role, backup_filename=args.file, timeout=args.timeout
+        )
+    except StandaloneBackupError as exc:
+        if args.json:
+            print(
+                json.dumps(
+                    {"status": "unavailable", "detail": str(exc)}, ensure_ascii=False
+                )
+            )
+        print(str(exc), file=sys.stderr)
+        return 1 if isinstance(exc, StandaloneBackupNotFoundError) else 2
+    if args.json:
+        print(json.dumps(outcome.to_json(), ensure_ascii=False, indent=2))
+    else:
+        print(f"대상      {outcome.role} · {outcome.backup_filename}")
+        if not outcome.attempted:
+            print("리허설을 시도하지 않았습니다 — 복원 계획에 차단 사유가 있습니다.")
+        else:
+            print(f"scratch DB  {outcome.scratch_database} (검증 후 삭제됨)")
+            print(f"pg_restore  {'성공' if outcome.restore_succeeded else '실패'}")
+            if outcome.restored_alembic_head is not None:
+                print(f"복원된 schema  {outcome.restored_alembic_head}")
+            if outcome.restored_db_size_bytes is not None:
+                print(f"복원된 크기    {outcome.restored_db_size_bytes} bytes")
+            if outcome.duration_sec is not None:
+                print(f"소요 시간      {outcome.duration_sec}s")
+        print()
+        for finding in outcome.findings:
+            marker = "차단" if finding.blocking else "참고"
+            print(f"  [{marker}] {finding.text}")
+        print()
+        if outcome.verified:
+            print("이 백업은 scratch DB 복원으로 검증됐습니다.")
+        else:
+            print("이 백업은 복원 가능함이 아직 증명되지 않았습니다.")
+    return 0 if outcome.verified else 1
 
 
 def _cmd_pin_show_pending(args: argparse.Namespace) -> int:
@@ -1922,7 +1974,8 @@ def build_parser() -> argparse.ArgumentParser:
         "restore-plan",
         help=(
             "이 백업으로 복원하면 무슨 일이 일어나는지 계산합니다(읽기 전용). "
-            "복원 명령 자체는 아직 없습니다."
+            "실제 role DB로 덮어쓰는 복원 명령은 아직 없습니다(scratch DB 검증은 "
+            "rehearse-restore)."
         ),
     )
     db_backup_restore_plan.add_argument("role", choices=BACKUP_ROLES)
@@ -1931,6 +1984,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     db_backup_restore_plan.add_argument("--json", action="store_true")
     db_backup_restore_plan.set_defaults(func=_cmd_db_backup_restore_plan)
+
+    db_backup_rehearse_restore = db_backup_subparsers.add_parser(
+        "rehearse-restore",
+        help=(
+            "백업을 같은 인스턴스의 scratch DB에 실제로 복원해 검증합니다. 운영 DB는 "
+            "전혀 건드리지 않고 검증 후 scratch DB를 지웁니다. 실제 role DB로 "
+            "덮어쓰는 파괴적 복원은 아직 없습니다."
+        ),
+    )
+    db_backup_rehearse_restore.add_argument("role", choices=BACKUP_ROLES)
+    db_backup_rehearse_restore.add_argument(
+        "--file", help="검사할 백업 파일명. 생략하면 가장 최근 백업입니다."
+    )
+    db_backup_rehearse_restore.add_argument(
+        "--timeout",
+        type=int,
+        default=14_400,
+        help="pg_restore 대기 한도(초). 큰 인스턴스는 넉넉히 늘리세요(기본 4시간).",
+    )
+    db_backup_rehearse_restore.add_argument("--json", action="store_true")
+    db_backup_rehearse_restore.set_defaults(func=_cmd_db_backup_rehearse_restore)
 
     return parser
 

@@ -23,7 +23,7 @@
 | GM-04 | `[x]` | P1 | M | correctness | REVISED | n150 live | trusted installer가 실행 중인 서비스 발밑의 /opt 트리를 교체하고, 매 설치마다 요청 디렉터리 소유권을 리셋한다 |
 | GM-05 | `[x]` | P1 | M | security | REVISED | mock | 로그인 rate limit이 프록시 뒤에서 단일 전역 버킷으로 붕괴 — 외부인이 관리자 로그인을 지속 봉쇄 가능 |
 | GM-06 | `[x]` | P1 | M | operability | REVISED | mock | 예외 분류가 영어 문장 문자열 비교에 의존하고, CLI --json은 오류 정보를 버리거나 계약을 절반만 지킨다 |
-| GM-07 | `[ ]` | P1 | L | correctness | REVISED | n150 live | 백업 복원 CLI 부재 — restore-plan까지만 있고 실제 복구·리허설 경로는 수동 문서 절차뿐 |
+| GM-07 | `[x]` | P1 | L | correctness | REVISED | n150 live | 백업 복원 CLI 부재 — restore-plan까지만 있고 실제 복구·리허설 경로는 수동 문서 절차뿐 |
 | GM-08 | `[ ]` | P2 | M | operability | CONFIRMED | mock | off-box 백업 사본 부재 + pin registry 보존본이 어떤 백업 자동화에도 포함되지 않음 |
 | GM-09 | `[ ]` | P2 | S | correctness | REVISED | mock | 신뢰 경로·글로벌 락·root 게이트 상수의 다중 정의 통일 — drift 시 host-wide 락이 조용히 무력화 |
 | GM-10 | `[ ]` | P2 | M | correctness | CONFIRMED | mock | root-safe atomic write/fsync 프리미티브 12벌 복제 — execution registry는 디렉터리 fsync 누락으로 crash 시 v6 rename 유실 가능 |
@@ -166,6 +166,25 @@
 **검증 노트** (구현 시 본문보다 우선):
 
 핵심 공백 주장은 코드로 확인됨: standalone_backup.py:481 "복원 자체는 아직 구현하지 않는다", :522 "복원 **계획**만 만든다", cli.py:1666-1714에 create/list/gc/restore-plan만 존재, docs/docker-management.md:1158-1162 "복원 CLI가 없다", routes.py:162-163 "Restore itself is still unimplemented". decisions.md:1659-1660(F1D ADR)이 "data recovery는 final-schema backup 또는 source/ETL 재적재 workflow로 분리된다"고 명시하므로 독립 restore CLI는 C6c/rebuild-pinned 계약과 충돌하지 않는다. 그러나 수정 필요 5건: (1) "여섯 role의 백업이 매일" — docker-management.md:1148-1152상 cron은 geo_dagster/concierge/pinvi 3개 role뿐이고 geo는 앱 레벨 백업 정본, Map 두 role은 kor-travel-map #148 소유로 의도적 제외. (2) 인용한 유산 코드 _rehearse_database_restore/restore_database_backup은 현재 트리에 없다(grep: docs/journal.md에만 존재; 커밋 21dddba "remove legacy pair orchestration"에서 제거). 재사용할 진짜 선례는 태스크가 누락한 T-055 커밋 d262a6f — ktdctl db-backup restore --confirm + _STANDALONE_RESTORE_CAPABILITY 2중 방어 + --expected-schema-revision fail-close를 구현·병합 후 v5 리팩터에서 제거된 코드다. (3) 게이트 설계 결함: HEAD_MISMATCH는 의도적 non-blocking이라(standalone_backup.py:627-636, journal 2026-08-28 KUM-M13 "schema revision 불일치는 차단이 아니다") "blocking finding 거부"만으로는 schema 역행 복원이 --confirm 하나로 통과 — T-055의 --expected-schema-revision 명시 opt-in 패턴이 필요. (4) ktdctl-ui-migration.md:801-804 [v3] 경계 누락: restore 범위는 "전용 DB 데이터 복원"이며 pinned generation 롤백 수단이 아님을 명문화해야 하고, 같은 문서 :800이 요구하는 "role별 정지/기동 절차 설계"(복원 중 writer 처리)가 improvement에 없다 — 실제 어려운 부분이다. (5) cron 상시 리허설은 실측 비용 재검토 필요: map_application pg_restore 단독 ~97분(journal 2026-08-03), 스트리밍 archive라 --jobs 병렬화 불가, scratch DB는 인스턴스 볼륨 2배 디스크(geo 33GB급) — role별 opt-in/주기 설계가 빠졌다. 참고로 이 공백은 미인지가 아니라 오너가 의도적으로 순서를 미룬 로드맵 확정 항목이다(journal 2026-08-28 "오너 결정에 따라 파괴적 복원은 뒤로 미루고", ktdctl-ui-migration.md:792 "로드맵 편입 확정 Q6") — effort L은 그 문서의 300-500줄+절차 설계 추정과 부합해 현실적이다.
+
+**구현 범위 확정** (사용자 확인): 검증 노트 (3)이 지적한 실제 role DB 파괴적 복원은
+오너가 이미 로드맵 뒤로 미룬 항목이므로, 구현 착수 전 사용자에게 범위를 직접
+확인했다 — "스크래치 리허설만 구현"으로 확정. `rehearse_standalone_restore`
+(standalone_backup.py)를 추가해 `restore-plan`이 차단하지 않은 백업만 같은
+인스턴스의 scratch DB(`ktdm_rehearsal_<epoch>`)에 실제로 `pg_restore`하고,
+exit code·복원된 schema revision(`REHEARSAL_HEAD_MISMATCH`)·DB 크기
+(`REHEARSAL_EMPTY_DATABASE`)를 검증한 뒤 성공/실패와 무관하게 scratch DB와
+컨테이너 안 dump 사본을 항상 지운다(`finally`). `ktdctl db-backup
+rehearse-restore <role> [--file] [--timeout] [--json]`로 노출했고, `pg_restore`가
+성공해도 stderr에 경고를 낼 수 있어 `_run_checked`의 "stderr가 있으면 실패"
+판정 대신 exit code만으로 성패를 가르는 `_run_pg_restore`를 별도로 뒀다. 실제
+role DB로 덮어쓰는 파괴적 복원(writer 정지/재기동 절차 설계 필요)은 계속
+범위 밖으로 남긴다 — `docs/docker-management.md` "아직 안 된 것"에 그대로
+기록했다. 회귀 테스트 7건(서비스 5 + CLI 2) 추가, cleanup이 `finally`가 아니라
+조건부로 바뀌는 회귀를 mutation으로 검증함. n150 live E2E는 실제 백업이 쌓인
+role 하나에 `rehearse-restore`를 한 번 실행해 scratch DB 생성·복원·삭제가
+실제로 동작하는지 확인하는 후속 단계로 남는다(이 세션에서는 service/CLI 단위
+mock 테스트까지만 완료).
 
 
 ## GM-08: off-box 백업 사본 부재 + pin registry 보존본이 어떤 백업 자동화에도 포함되지 않음
