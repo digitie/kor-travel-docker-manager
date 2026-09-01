@@ -82,6 +82,9 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
   const [role, setRole] = useState<StandaloneBackupManifest['role'] | 'all'>('all');
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobError, setJobError] = useState<HumanError | null>(null);
+  // GM-14: 백업 자체는 시작됐지만 그 사실을 남기는 감사 로그 기록이 실패했을
+  // 때만 온다 — jobError(제출 자체의 실패)와는 다른, 덜 급한 경고다.
+  const [auditWarning, setAuditWarning] = useState<string | null>(null);
   // 경과 시간은 렌더 시점에 계산되므로, 무언가 주기적으로 리렌더하지 않으면 4시간짜리
   // 작업이 "3초 경과"에 멈춰 있다. 살아 있는지 알려 주는 유일한 숫자가 거짓이 된다.
   const [nowUnix, setNowUnix] = useState(() => Math.floor(Date.now() / 1000));
@@ -120,6 +123,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
   useEffect(() => {
     setJobId(null);
     setJobError(null);
+    setAuditWarning(null);
   }, [role]);
 
   // 새로고침으로 job id를 잃어도 진행 중인 작업에 다시 붙는다.
@@ -169,6 +173,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
       }),
     onSuccess: (started) => {
       setJobError(null);
+      setAuditWarning(started.audit_warning ?? null);
       setJobId(started.job_id);
     },
     onError: (error) => setJobError(humanizeError(error, '백업 생성')),
@@ -395,6 +400,20 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
         {jobError ? (
           <div className="mb-4">
             <InlineError error={jobError} />
+          </div>
+        ) : null}
+
+        {auditWarning ? (
+          <div className="mb-4">
+            {/* 백업 자체는 이미 시작됐다 — jobError처럼 실패를 알리는 게 아니라
+                "시작은 됐지만 기록이 하나 빠졌다"는 덜 급한 경고다. */}
+            <InlineError
+              error={{
+                title: '백업은 시작됐지만 감사 기록에 실패했습니다.',
+                hint: '백업 진행에는 영향이 없습니다. 아래 원문을 운영자에게 전달하세요.',
+                raw: auditWarning,
+              }}
+            />
           </div>
         ) : null}
 

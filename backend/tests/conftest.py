@@ -13,8 +13,26 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
+import kor_travel_docker_manager.database as _database_module
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SEED = _REPO_ROOT / "config" / "runtime-pins.seed.json"
+
+# GM-14 리뷰: test_api.py/test_metrics.py가 모듈 레벨에서
+# `kor_travel_docker_manager.database.engine`을 테스트용 인메모리 엔진으로
+# 바꿔치기한다. conftest.py는 pytest가 어떤 test_*.py보다도 먼저 임포트하므로,
+# 여기서 미리 참조를 잡아 두면 이후 어느 파일이 스와핑을 하든(수집 순서와
+# 무관하게) "실제 프로덕션 엔진에 원하는 리스너가 걸려 있는가" 같은 검증을
+# 안전하게 할 수 있다.
+ORIGINAL_METRICS_DB_ENGINE = _database_module.engine
+
+
+@pytest.fixture(scope="session")
+def original_metrics_db_engine():
+    return ORIGINAL_METRICS_DB_ENGINE
+
 
 os.environ["KTDM_RUNTIME_PINS_FILE"] = str(_SEED)
 # 개발 체크아웃이 Windows 공유 마운트(WSL drvfs)에 있으면 모든 파일이 0777로 보고돼

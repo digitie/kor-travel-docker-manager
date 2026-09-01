@@ -222,6 +222,10 @@ export type BackupJob = {
   finished_at_unix: number | null;
   result: StandaloneBackupManifest | null;
   error: string | null;
+  /** GM-14: 백업 자체는 시작됐지만(그래서 여기까지 온다) 그 사실을 남기는
+   * 감사 로그 기록이 실패했을 때만 `POST /backups/{role}`의 202 응답에 붙는다
+   * — `GET .../jobs/{id}` 폴링 응답에는 없다(그 시점엔 이미 지나간 일이다). */
+  audit_warning?: string;
 };
 
 export type LatestBackupJobResponse = { job: BackupJob | null };

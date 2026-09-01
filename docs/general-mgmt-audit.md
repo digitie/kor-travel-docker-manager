@@ -814,16 +814,16 @@ collector 자신)를 그대로 따랐다. (1) `routes.py`의 `post_backup`: 감�
 개발 환경에서 검증하지 않고는 켜지 않기로 하고 `docs/tasks.md` 후속
 항목으로 남겼다.
 
-회귀 테스트 6건 추가: `post_backup`의 감사 쓰기가 실제로 event loop 스레드가
-아닌 곳에서 실행되는지(스레드 *이름* 비교로는 못 잡는다는 것을 먼저
-확인했다 — TestClient 자체가 이미 별도 스레드에서 앱의 이벤트 루프를 돌려
-"메인 스레드 아님"이 to_thread 여부와 무관하게 항상 참이 된다. 대신
-`asyncio.get_running_loop()`의 성공 여부로 판별: to_thread의 실행기 워커
-스레드에는 바인딩된 루프가 없다) 1건, 감사 쓰기 실패가 여전히 202를
+신규 테스트 5건(`+def test_` 기준 — `post_backup`의 감사 쓰기가 실제로 event
+loop 스레드가 아닌 곳에서 실행되는지 1건, 감사 쓰기 실패가 여전히 202를
 반환하는지 1건, `metrics_collector._collect_loop`의 초기 cleanup 호출이
 같은 방식으로 event loop 밖에서 도는지 1건, `database.py`의 connect 리스너
-함수 자체가 실제로 PRAGMA를 거는지 2건(연결마다 독립적으로 재적용되는지
-포함) — `test_metrics.py`/`test_api.py`가 이미 `kor_travel_docker_manager.database.engine`을
+함수 자체가 실제로 PRAGMA를 거는지 2건). 스레드 판별은 *이름* 비교로는
+못 잡는다는 것을 먼저 확인했다 — TestClient 자체가 이미 별도 스레드에서
+앱의 이벤트 루프를 돌려 "메인 스레드 아님"이 to_thread 여부와 무관하게
+항상 참이 된다. 대신 `asyncio.get_running_loop()`의 성공 여부로
+판별했다(to_thread의 실행기 워커 스레드에는 바인딩된 루프가 없다).
+`test_metrics.py`/`test_api.py`가 이미 `kor_travel_docker_manager.database.engine`을
 모듈 레벨에서 테스트용 엔진으로 바꿔치기하므로, `database.engine`을 직접
 참조하는 테스트는 파일 수집 순서에 의존하는 오탐이 남을 수 있다는 것을
 먼저 재현으로 확인하고(`test_metrics.py`를 먼저 수집시켜 재현), connect
@@ -835,6 +835,41 @@ collector 자신)를 그대로 따랐다. (1) `routes.py`의 `post_backup`: 감�
 post_backup 감사 실패 시 500 승격 여부, collector cleanup to_thread — 셋 다
 전용 테스트가 예상대로 실패, 원복 후 재통과). 전체 backend 1373 passed,
 2 skipped, ruff 통과.
+
+**구현 후 적대적 리뷰 반영** (2명, 독립): 두 리뷰어 모두 같은 Medium 발견
+(`audit_warning`이 프론트에서 완전히 유실된다)에 독립적으로 도달했고,
+리뷰 A는 추가로 신규 테스트 자체의 커버리지 공백을 mutation으로 찾았다.
+
+[Medium, 리뷰 A] `test_database.py`의 두 테스트는 `_set_sqlite_busy_timeout`
+함수를 raw sqlite3 커넥션에 직접 호출해 **함수 로직만** 증명하고,
+"`database.py`가 이 함수를 실제로 올바른 이벤트(`"connect"`)에 올바른
+엔진(`engine`)으로 등록했는가"라는 배선 자체는 검증하지 못했다 —
+`@event.listens_for(engine, "connect")`의 이벤트 이름을 `"checkout"`으로
+바꾸는 mutation을 직접 재현한 결과 전체 스위트가 그대로 통과해 이 결함을
+증명했다. `conftest.py`가 pytest 수집 순서와 무관하게 원본 `database.engine`
+참조를 미리 캡처해 두는 세션 픽스처(`original_metrics_db_engine`)를
+추가하고, `test_database.py`에 SQLAlchemy 자신의 이벤트 레지스트리를
+`event.contains()`로 직접 조회하는 3번째 테스트를 추가했다. 같은 mutation
+(`"connect"` → `"checkout"`)으로 재검증: 이번엔 새 테스트가 정확히 실패,
+원복 후 재통과.
+
+[Medium, 리뷰 A·B 공통] `post_backup`이 감사 실패를 500으로 승격하지 않고
+남기는 `audit_warning` 필드가 `frontend/src/lib/api.ts`의 `BackupJob` 타입에
+없고 `BackupHistoryPanel.tsx`도 이를 읽지 않아, "감사 실패를 완전히 숨기지
+않는다"는 목표가 서버 로그(`logger.critical`) 기준으로만 참이고 화면
+기준으로는 달성되지 않았다 — 백업 버튼을 누른 운영자가 이 경고를 볼 방법이
+없었다. `BackupJob`에 optional `audit_warning?: string` 필드를 추가하고,
+`BackupHistoryPanel.tsx`에 `auditWarning` 상태와 전용 `InlineError` 렌더링
+(jobError와는 다른, "백업은 시작됐지만 감사 기록에 실패했습니다" 문구)을
+추가했다. frontend type-check/lint/build 모두 통과.
+
+[Low, 리뷰 B] 이 문서와 커밋 메시지의 "회귀 테스트 6건"이 실제 diff의
+`+def test_` 5건과 맞지 않았다(GM-13에서도 같은 종류의 실수가 지적된 바
+있다) — 위 문단을 정확한 수치로 고쳤다(이미 push된 커밋 메시지 자체는
+고치지 않는다).
+
+전체 backend 1374 passed(신규 3건 반영: mutation-검증된 통합 테스트 1건
+추가), 2 skipped, ruff 통과. frontend type-check/lint/build 통과.
 
 
 ## GM-15: 상태 broadcast가 클라이언트 직렬 전송 — 느린 소켓 하나가 모든 탭의 상태 갱신을 무기한 정지

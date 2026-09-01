@@ -10,11 +10,21 @@
 
 WAL은 개발 환경(drvfs/9p)에서 shm/mmap이 실패할 수 있어 별도 검증 없이는
 켜지 않았다(docs/tasks.md 후속 항목) — 여기서는 무조건 안전한 busy_timeout만
-검증한다."""
+검증한다.
+
+다만 리스너 함수를 raw 커넥션에 직접 호출하는 위 두 테스트는 함수 자체의
+로직만 증명할 뿐, "`database.py`가 실제로 이 함수를 올바른 이벤트 이름으로
+올바른 엔진에 등록했는가"라는 배선(integration point)은 검증하지 못한다
+(리뷰 발견 — `@event.listens_for(engine, "connect")`의 `"connect"`를
+`"checkout"`으로 mutation해도 이 두 테스트는 여전히 통과한다). 세 번째
+테스트는 `conftest.py`가 미리 잡아 둔 원본 엔진 참조로 SQLAlchemy 자신의
+이벤트 레지스트리(`event.contains`)를 직접 조회해 그 배선 자체를 검증한다."""
 
 from __future__ import annotations
 
 import sqlite3
+
+from sqlalchemy import event
 
 from kor_travel_docker_manager.database import _set_sqlite_busy_timeout
 
@@ -46,3 +56,16 @@ def test_set_sqlite_busy_timeout_applies_independently_to_each_connection() -> N
         second.close()
     assert first_value == 3000
     assert second_value == 3000
+
+
+def test_the_real_engine_has_the_busy_timeout_listener_registered_on_connect(
+    original_metrics_db_engine,
+) -> None:
+    """리뷰 반영: 위 두 테스트는 리스너 함수 자체만 증명한다 — `database.py`가
+    그 함수를 실제로 (올바른 이벤트에, 올바른 엔진에) 등록했는지는 SQLAlchemy의
+    이벤트 레지스트리를 직접 조회해야 확인할 수 있다. `original_metrics_db_engine`은
+    `conftest.py`가 pytest 수집 순서와 무관하게 미리 캡처해 둔 원본 엔진이다
+    (test_api.py/test_metrics.py가 나중에 `database.engine`을 테스트용으로
+    바꿔치기해도 이 참조 자체는 영향받지 않는다)."""
+
+    assert event.contains(original_metrics_db_engine, "connect", _set_sqlite_busy_timeout)
