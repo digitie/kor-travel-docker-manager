@@ -1271,6 +1271,36 @@ def test_get_backups_requires_authentication():
     assert response.status_code == 401
 
 
+@patch("kor_travel_docker_manager.api.routes.read_offbox_sync_status")
+def test_get_offbox_sync_status_reports_none_when_never_run(mock_status):
+    login_client()
+    mock_status.return_value = None
+
+    response = client.get("/api/v1/backups/offbox-sync-status")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": None}
+
+
+@patch("kor_travel_docker_manager.api.routes.read_offbox_sync_status")
+def test_get_offbox_sync_status_reports_the_last_result(mock_status):
+    login_client()
+    mock_status.return_value = {"destination_host": "backup-vault.internal", "all_verified": True}
+
+    response = client.get("/api/v1/backups/offbox-sync-status")
+
+    assert response.status_code == 200
+    assert response.json()["status"]["all_verified"] is True
+
+
+def test_get_offbox_sync_status_requires_authentication():
+    client.cookies.clear()
+
+    response = client.get("/api/v1/backups/offbox-sync-status")
+
+    assert response.status_code == 401
+
+
 @patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
 def test_get_runtime_pins_exposes_lifecycle_and_plain_language_summary(mock_read):
     login_client()

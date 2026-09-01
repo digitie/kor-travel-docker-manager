@@ -1340,6 +1340,91 @@ def test_cli_db_backup_rehearse_restore_fails_closed_when_restore_is_unverified(
     assert payload["verified"] is False
 
 
+# --- ktdctl offbox-sync (GM-08) -----------------------------------------------
+
+
+def test_cli_offbox_sync_run_requires_root(capsys) -> None:
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=False):
+        assert main(["offbox-sync", "run"]) == 2
+    assert "root" in capsys.readouterr().err
+
+
+def test_cli_offbox_sync_run_reports_all_verified(capsys) -> None:
+    from types import SimpleNamespace
+
+    outcome = SimpleNamespace(
+        destination_host="backup-vault.internal",
+        targets=(
+            SimpleNamespace(label="geo", synced=True, verified=True, detail="synced and verified"),
+        ),
+        all_verified=True,
+        to_json=lambda: {"all_verified": True},
+    )
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.sync_backups_offbox", return_value=outcome
+        ) as syncer,
+    ):
+        exit_code = main(["offbox-sync", "run", "--json"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["all_verified"] is True
+    syncer.assert_called_once_with(include_pin_registry=True, timeout=14_400)
+
+
+def test_cli_offbox_sync_run_json_failure_when_not_configured(capsys) -> None:
+    from kor_travel_docker_manager.services.offbox_backup_sync import (
+        OffboxSyncNotConfiguredError,
+    )
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.sync_backups_offbox",
+            side_effect=OffboxSyncNotConfiguredError("KTDM_OFFBOX_HOST is not set"),
+        ),
+    ):
+        exit_code = main(["offbox-sync", "run", "--json"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    payload = json.loads(captured.out)
+    assert payload["status"] == "failed"
+    assert "KTDM_OFFBOX_HOST" in payload["detail"]
+    assert "KTDM_OFFBOX_HOST" in captured.err
+
+
+def test_cli_offbox_sync_status_reports_never_run(capsys) -> None:
+    with patch(
+        "kor_travel_docker_manager.cli.read_offbox_sync_status", return_value=None
+    ):
+        exit_code = main(["offbox-sync", "status", "--json"])
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "never_run"
+
+
+def test_cli_offbox_sync_status_reports_the_last_result(capsys) -> None:
+    status = {
+        "destination_host": "backup-vault.internal",
+        "started_at_unix": 1000,
+        "all_verified": True,
+        "targets": [{"label": "geo", "verified": True}],
+    }
+    with patch(
+        "kor_travel_docker_manager.cli.read_offbox_sync_status", return_value=status
+    ):
+        exit_code = main(["offbox-sync", "status", "--json"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == status
+
+
 # --- ktdctl pin apply-pending (KUM-M5) ---------------------------------------
 
 

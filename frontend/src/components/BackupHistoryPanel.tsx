@@ -7,6 +7,7 @@ import {
   BackupJob,
   BackupListResponse,
   LatestBackupJobResponse,
+  OffboxSyncStatusResponse,
   StandaloneBackupManifest,
   apiJson,
   postJson,
@@ -98,6 +99,13 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
   const { data: allBackups } = useQuery<BackupListResponse>({
     queryKey: ['backups', 'all'],
     queryFn: () => apiJson<BackupListResponse>('/api/v1/backups'),
+    retry: false,
+  });
+
+  // 트리거는 CLI 전용(`ktdctl offbox-sync run`)이다 — 이 쿼리는 마지막 결과만 읽는다.
+  const { data: offboxSync } = useQuery<OffboxSyncStatusResponse>({
+    queryKey: ['backups', 'offbox-sync-status'],
+    queryFn: () => apiJson<OffboxSyncStatusResponse>('/api/v1/backups/offbox-sync-status'),
     retry: false,
   });
 
@@ -302,6 +310,22 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
             ))}
           </ul>
         ) : null}
+
+        {/* 로컬 백업만으로는 호스트 디스크 유실에서 살아남지 못한다 — off-box
+            동기화(GM-08) 상태를 같은 화면에서 보여야 "백업이 있다"는 착각이 안 생긴다.
+            트리거는 CLI 전용이라 여기서는 마지막 결과만 읽는다. */}
+        <p
+          className={`text-xs mb-4 ${
+            offboxSync?.status && !offboxSync.status.all_verified ? 'text-danger' : 'text-secondary'
+          }`}
+        >
+          off-box 동기화:{' '}
+          {offboxSync?.status
+            ? `${offboxSync.status.destination_host} · ${
+                offboxSync.status.all_verified ? '검증됨' : '일부 실패'
+              } · ${formatTimestamp(offboxSync.status.started_at_unix)}`
+            : '설정되지 않음 또는 아직 실행하지 않음 (ktdctl offbox-sync run)'}
+        </p>
 
         {job ? (
           <div

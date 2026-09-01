@@ -29,6 +29,7 @@ from kor_travel_docker_manager.services.job_runner import (
     job_runner,
 )
 from kor_travel_docker_manager.services.metrics_service import metrics_service
+from kor_travel_docker_manager.services.offbox_backup_sync import read_offbox_sync_status
 from kor_travel_docker_manager.services.pinned_rebuild_preflight import (
     read_pinned_rebuild_preflight,
 )
@@ -180,6 +181,18 @@ def get_backups(role: str | None = Query(default=None)):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
     backups.sort(key=lambda item: item["created_at_unix"])
     return {"backups": backups}
+
+
+@router.get("/backups/offbox-sync-status")
+def get_offbox_sync_status() -> dict[str, Any]:
+    """Last `ktdctl offbox-sync run` result, if any (GM-08). Read-only, CLI-only trigger.
+
+    `None`/absent means off-box sync has never run on this host — that is not an
+    error, just a fact the dashboard should surface plainly (e.g. "설정되지 않음"),
+    not blend into a 4xx/5xx."""
+
+    status = read_offbox_sync_status()
+    return {"status": status}
 
 
 @router.post("/backups/{role}", status_code=202)

@@ -1211,6 +1211,41 @@ keep 4/7/7). geo application은 앱 레벨
 경계). **실제 role DB로 덮어쓰는 복원 CLI는 아직 없다** — scratch DB 리허설
 (`rehearse-restore`)은 있다. 아래 "아직 안 된 것" 참고.
 
+#### `offbox-sync` — 백업과 pin registry 보존본을 원격 호스트로 옮기고 재검증한다 (GM-08)
+
+로컬 백업만으로는 호스트 디스크 유실에서 살아남지 못한다. `runtime-pins.json`과
+그 옆의 `runtime-pins.<digest>.json` 보존본(= `pin rollback`의 유일한 소스, git
+밖)도 같은 문제를 안고 있다(ADR-40 트레이드오프가 이미 자인한 공백). `offbox-sync`는
+설정된 원격 호스트에 `rsync`로 옮기고, 원격에서 `sha256sum -c`로 다시 확인한다.
+
+```bash
+export KTDM_OFFBOX_HOST=backup-vault.example         # 미설정이면 동기화는 비활성
+export KTDM_OFFBOX_USER=ktdm-sync
+export KTDM_OFFBOX_REMOTE_ROOT=/srv/ktdm-offbox
+export KTDM_OFFBOX_SSH_KEY=/etc/ktdm/offbox-sync-key  # 생략하면 기본 SSH 설정을 쓴다
+export KTDM_OFFBOX_PORT=22                            # 생략하면 22
+
+sudo -n backend/.venv/bin/ktdctl offbox-sync run --json
+sudo -n backend/.venv/bin/ktdctl offbox-sync status --json   # root 불필요, 마지막 결과만 읽음
+```
+
+- pin registry 파일은 root `0600`이라 `run`은 root 실행을 요구한다. `status`는 상태
+  파일이 `0644`라 root가 필요 없다.
+- role마다 독립적으로 진행한다 — 한 role의 rsync/검증 실패가 나머지를 막지 않는다.
+  `--skip-pin-registry`로 백업만 돌릴 수도 있다.
+- `.dump` 파일은 백업 생성 시점에 이미 만든 `.dump.sha256` sidecar를 그대로 신뢰해
+  원격 검증에 쓴다 — 매 동기화마다 수십 GB 백업을 다시 로컬에서 해시하는 비용을
+  피한다. sidecar가 없는 작은 파일(manifest, pin registry JSON)만 즉석에서
+  스트리밍 해시한다.
+- 결과는 `KTDM_BACKUP_ROOT/.offbox-sync-status.json`(`0644`)에 남고, 읽기 전용
+  `GET /api/v1/backups/offbox-sync-status`로 Dashboard "백업 이력" 패널에도 보인다.
+  트리거는 위 CLI 전용이다 — API에 mutation 라우트를 두지 않는다(표준 mutation 경계).
+- 아직 주기 자동화(cron/systemd timer)는 없다 — `scripts/run-standalone-backup.sh`
+  처럼 wrapper를 만들어 별도로 걸어야 한다.
+- `--delete`를 쓰지 않는다 — 로컬 `gc`가 지운 오래된 백업도 원격에는 남는다.
+  off-box 사본의 존재 이유가 재해 복구 보험이므로, 로컬에서 이미 지워진 자료를
+  원격에서까지 따라 지우면 그 보험 가치가 줄어든다.
+
 ### 아직 안 된 것
 
 - **실제 role DB로 덮어쓰는 파괴적 복원 CLI가 없다.** `rehearse-restore`가 백업이
@@ -1219,8 +1254,8 @@ keep 4/7/7). geo application은 앱 레벨
   (`docs/general-mgmt-audit.md` GM-07 검증 노트). map은 여전히 kor-travel-map
   `docs/backup-restore.md` §8.1 수동 절차가 정본이고, geo·concierge·pinvi는 각
   프로젝트 alembic migration을 타야 한다(§ "복원" 참고).
-- **외부(오프박스) 사본 자동화가 없다.** 지금은 `KTDM_BACKUP_ROOT/<role>/` 로컬 경로뿐이다.
-  n150에서 외부 목적지·자격증명·전송 자동화가 확인되지 않았으므로 same-host 경로를
-  off-box로 간주하지 않았다. rsync/scp 대상·주기·sha256 대조 검증은 별도 결선이 필요하다.
+- **off-box 동기화의 주기 자동화가 없다.** `offbox-sync run` primitive는 있지만
+  cron/systemd timer로 거는 것은 운영자 몫이다 — 목적지·자격증명은 환경마다
+  다르므로 이 저장소가 기본값을 강제하지 않는다.
 - 위 실측 표의 수치는 **일 1회가 가능하다**는 것만 보여준다. Map 쪽 최종 주기화
   여부는 kor-travel-map #148이 소유하며, 이 wrapper는 Map role을 주기 실행하지 않는다.

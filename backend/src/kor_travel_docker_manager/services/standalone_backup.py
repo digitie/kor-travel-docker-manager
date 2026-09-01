@@ -1126,6 +1126,14 @@ def _resolve_backup_root(role: BackupRole, backup_root: Path | None) -> Path:
     return root / role
 
 
+def backup_root_for_role(role: BackupRole, *, backup_root: Path | None = None) -> Path:
+    """`role`의 백업 산출물 디렉터리 경로. off-box 동기화 등 이 모듈 밖에서
+    같은 경로 해석 규칙(``KTDM_BACKUP_ROOT`` → ``~/backups`` fallback)이 필요할 때
+    쓴다 — private 함수를 다른 모듈이 직접 가져오지 않게 한다."""
+
+    return _resolve_backup_root(role, backup_root)
+
+
 def _manifest_path(root: Path, backup_filename: str) -> Path:
     if not backup_filename.endswith(".dump"):
         raise StandaloneBackupError(f"backup filename is invalid: {backup_filename}")

@@ -87,7 +87,10 @@ release 설치가 회전 결과를 조용히 되돌리기 때문이다.
   그 상태에서는 `rebuild-pinned`가 거부되므로, verify가 0을 반환할 때만 재구축을 시작한다.
 - **백업·보존 대상**: 위 두 파일과 같은 디렉터리의 `runtime-pins.<digest>.json`
   보존본(= 회전 이력이자 `pin rollback`의 유일한 소스). git 밖에 있으므로 이 디렉터리가
-  유실되면 롤백 소스도 함께 유실된다.
+  유실되면 롤백 소스도 함께 유실된다. `KTDM_OFFBOX_HOST` 등을 설정했다면
+  `ktdctl offbox-sync run`이 이 디렉터리를 6개 role 백업과 함께 원격으로 옮기고
+  재검증한다(`docs/docker-management.md` "offbox-sync" 참고) — 로컬 디스크 유실이
+  이 소스까지 함께 삼키는 시나리오를 없앤다.
 - registry가 없으면 `rebuild-pinned`와 pin 조회는 fail-close하고, 조회 API는 값을
   추측하지 않고 `unknown`을 표시한다. 그 외 target 관리·컨테이너 제어·백업 조회 등
   나머지 기능은 영향받지 않는다(검증 완료).

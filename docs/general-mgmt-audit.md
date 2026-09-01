@@ -24,7 +24,7 @@
 | GM-05 | `[x]` | P1 | M | security | REVISED | mock | 로그인 rate limit이 프록시 뒤에서 단일 전역 버킷으로 붕괴 — 외부인이 관리자 로그인을 지속 봉쇄 가능 |
 | GM-06 | `[x]` | P1 | M | operability | REVISED | mock | 예외 분류가 영어 문장 문자열 비교에 의존하고, CLI --json은 오류 정보를 버리거나 계약을 절반만 지킨다 |
 | GM-07 | `[x]` | P1 | L | correctness | REVISED | n150 live | 백업 복원 CLI 부재 — restore-plan까지만 있고 실제 복구·리허설 경로는 수동 문서 절차뿐 |
-| GM-08 | `[ ]` | P2 | M | operability | CONFIRMED | mock | off-box 백업 사본 부재 + pin registry 보존본이 어떤 백업 자동화에도 포함되지 않음 |
+| GM-08 | `[x]` | P2 | M | operability | CONFIRMED | mock | off-box 백업 사본 부재 + pin registry 보존본이 어떤 백업 자동화에도 포함되지 않음 |
 | GM-09 | `[ ]` | P2 | S | correctness | REVISED | mock | 신뢰 경로·글로벌 락·root 게이트 상수의 다중 정의 통일 — drift 시 host-wide 락이 조용히 무력화 |
 | GM-10 | `[ ]` | P2 | M | correctness | CONFIRMED | mock | root-safe atomic write/fsync 프리미티브 12벌 복제 — execution registry는 디렉터리 fsync 누락으로 crash 시 v6 rename 유실 가능 |
 | GM-11 | `[ ]` | P2 | M | correctness | REVISED | mock | docker-targets.yml 스키마 검증 부재 — 오타 하나로 CLI/API 전체가 raw KeyError로 죽고, containers 목록은 손 복사 전이 폐포 |
@@ -231,6 +231,23 @@ scratch DB 유일성과 shortfall 판정 두 개를 mutation으로 검증함. �
 **검증 노트** (구현 시 본문보다 우선):
 
 모든 인용이 라인 단위로 정확하다. (1) docker-management.md:1163-1165 "외부(오프박스) 사본 자동화가 없다... rsync/scp 대상·주기·sha256 대조 검증은 별도 결선이 필요하다" 실재, 저장소 전체 grep에서 전송 자동화 부재 확인. (2) tasks.md:13 "[/] standalone backup 운영 보강 — off-box 사본 자동화" 진행 중 등재, journal.md:2733-2735가 off-box AC 미결을 명시. (3) prod-deployment.md:82-84 "백업·보존 대상: ...runtime-pins.<digest>.json 보존본(= 회전 이력이자 pin rollback의 유일한 소스). git 밖" 실재. (4) '유일한 소스'는 코드로도 사실: runtime_pin_registry.py:1252-1255의 rollback_runtime_pin은 _preserved_copy_path만 읽고, PinRotation history에는 revision이 없어 보존본 유실 시 재구성 불가. (5) standalone_backup.py:41-57의 6개 role(geo/geo_dagster/concierge/map_application/map_dagster/pinvi)은 전부 pg_dump 대상이고 pin registry 파일은 어디에도 없으며 run-standalone-backup.sh도 db-backup create/gc만 호출. (6) 결정적으로 decisions.md:2529-2530(ADR-40 트레이드오프)이 "보존본이 git처럼 분산 백업되지 않으므로 백업 대상 등재가 필요하다"고 이미 자인 — 태스크는 프로젝트 스스로 약속한 후속이다. 계약 충돌 없음: 전송은 읽기 전용이라 mutation 경계(생성·GC CLI 전용) 유지, registry payload는 비밀 없음(--reason은 world-readable 공개 사본에 기록되는 계약), _read_manifest(standalone_backup.py:896-946)는 지정 키만 읽고 여분 필드를 거부하지 않아 전송 상태 기록이 fail-close 파싱을 깨지 않는다. 경미한 참고: 공개 사본(/var/lib/kor-travel-docker-manager-public/)은 publish_runtime_pins로 재생성 가능한 파생 상태라 '반드시'는 과함(포함해도 무해); registry·보존본은 root 0600이라 전송 작업이 root 실행 또는 root staging 필요; manifest 갱신은 기존 role lock을 지켜야 한다. effort M은 원격 sha256 대조·대시보드 노출 포함 시 현실적.
+
+**구현**: `services/offbox_backup_sync.py`를 신설해 `KTDM_OFFBOX_HOST` 등 4개 env로
+설정한 원격 호스트에 `rsync -a --checksum`으로 옮기고, 원격에서 `sha256sum -c`로
+재검증한다(`.dump`는 이미 있는 `.sha256` sidecar를 재사용해 매번 수십 GB를 다시
+해시하지 않고, manifest·pin registry JSON처럼 sidecar가 없는 작은 파일만 즉석
+스트리밍 해시). pin registry 보존본 디렉터리(`runtime_pin_registry_path().parent`)와
+공개 사본 디렉터리를 role 백업과 함께 대상에 포함시켰다(검증 노트가 "포함해도
+무해"로 정리한 공개 사본도 비용이 거의 없어 함께 넣음). role/대상마다 독립 진행해
+한쪽 실패가 나머지를 막지 않는다. `--delete`는 쓰지 않는다 — 로컬 `gc`가 지운
+백업도 원격에는 남아야 재해 복구 보험 가치가 유지된다. `ktdctl offbox-sync
+run/status` CLI(생성은 root 필요, 상태 조회는 불필요)와 읽기 전용
+`GET /api/v1/backups/offbox-sync-status`를 추가하고, BackupHistoryPanel에 동기화
+상태 한 줄을 노출했다(트리거는 CLI 전용 유지 — 이 저장소의 표준 mutation 경계).
+주기 자동화(cron/systemd timer)는 목적지·자격증명이 환경마다 달라 이번 범위에
+넣지 않고 "아직 안 된 것"에 명시했다. 회귀 테스트 15건(서비스 7 + CLI 5 + API 3)
+추가, 부분 실패 시 나머지 대상이 계속 진행되는지를 mutation으로 검증함. 프론트
+type-check/lint/build/vitest 전부 통과.
 
 
 ## GM-09: 신뢰 경로·글로벌 락·root 게이트 상수의 다중 정의 통일 — drift 시 host-wide 락이 조용히 무력화

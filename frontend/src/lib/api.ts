@@ -218,6 +218,26 @@ export type BackupJob = {
 
 export type LatestBackupJobResponse = { job: BackupJob | null };
 
+/** `ktdctl offbox-sync run`이 남기는 상태(GM-08) — 백업과 pin registry 보존본을
+ * 설정된 원격 호스트로 옮기고 원격 `sha256sum -c`로 재검증한 마지막 결과다.
+ * 실행 트리거는 CLI 전용이라 `GET /api/v1/backups/offbox-sync-status`는 읽기 전용. */
+export type OffboxSyncTargetStatus = {
+  label: string;
+  synced: boolean;
+  verified: boolean;
+  detail: string;
+};
+
+export type OffboxSyncStatus = {
+  destination_host: string;
+  started_at_unix: number;
+  duration_sec: number;
+  targets: OffboxSyncTargetStatus[];
+  all_verified: boolean;
+};
+
+export type OffboxSyncStatusResponse = { status: OffboxSyncStatus | null };
+
 /** `GET /api/v1/admin/password/preflight`.
  *
  * `unfinished_journal`은 **우회 경로가 없는** 거부다(증명된 사실이고, 증명됐다는 것은

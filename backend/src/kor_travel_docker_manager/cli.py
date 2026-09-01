@@ -24,6 +24,12 @@ from kor_travel_docker_manager.services.legacy_override_retirement import (
     retire_legacy_compose_override,
     stage_legacy_compose_override,
 )
+from kor_travel_docker_manager.services.offbox_backup_sync import (
+    OffboxSyncError,
+    OffboxSyncNotConfiguredError,
+    read_offbox_sync_status,
+    sync_backups_offbox,
+)
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     publish_pinned_runtime_generation,
     read_manifest,
@@ -1252,6 +1258,60 @@ def _cmd_db_backup_rehearse_restore(args: argparse.Namespace) -> int:
     return 0 if outcome.verified else 1
 
 
+def _cmd_offbox_sync_run(args: argparse.Namespace) -> int:
+    """설정된 원격 호스트로 백업과 pin registry 보존본을 옮기고 원격에서 재검증한다.
+
+    pin registry 파일은 root `0600`이라 이 명령은 root 실행을 요구한다.
+    """
+
+    if not _running_as_root():
+        print("offbox-sync run requires root (pin registry is root-owned 0600)", file=sys.stderr)
+        return 2
+    try:
+        outcome = sync_backups_offbox(
+            include_pin_registry=not args.skip_pin_registry, timeout=args.timeout
+        )
+    except OffboxSyncError as exc:
+        if args.json:
+            print(json.dumps({"status": "failed", "detail": str(exc)}, ensure_ascii=False))
+        print(str(exc), file=sys.stderr)
+        return 1 if isinstance(exc, OffboxSyncNotConfiguredError) else 2
+    if args.json:
+        print(json.dumps(outcome.to_json(), ensure_ascii=False, indent=2))
+    else:
+        print(f"대상 호스트  {outcome.destination_host}")
+        for target in outcome.targets:
+            status = "검증됨" if target.verified else ("전송됨" if target.synced else "실패")
+            print(f"  [{status}] {target.label}: {target.detail}")
+        print()
+        if outcome.all_verified:
+            print("모든 대상이 원격에서 sha256sum -c로 재검증됐습니다.")
+        else:
+            print("일부 대상이 전송·검증되지 않았습니다 — 위 목록을 확인하세요.")
+    return 0 if outcome.all_verified else 1
+
+
+def _cmd_offbox_sync_status(args: argparse.Namespace) -> int:
+    """마지막 `offbox-sync run` 결과를 읽기만 한다(root 불필요, 상태 파일은 0644)."""
+
+    status = read_offbox_sync_status()
+    if status is None:
+        if args.json:
+            print(json.dumps({"status": "never_run"}, ensure_ascii=False))
+        else:
+            print("off-box 동기화를 아직 실행한 적이 없습니다.")
+        return 1
+    if args.json:
+        print(json.dumps(status, ensure_ascii=False, indent=2))
+    else:
+        print(f"마지막 실행  {status.get('started_at_unix')} (unix)")
+        print(f"대상 호스트  {status.get('destination_host')}")
+        print(f"전체 검증됨  {status.get('all_verified')}")
+        for target in status.get("targets", []):
+            print(f"  {target.get('label')}: verified={target.get('verified')}")
+    return 0 if status.get("all_verified") else 1
+
+
 def _cmd_pin_show_pending(args: argparse.Namespace) -> int:
     try:
         request = read_runtime_pin_request()
@@ -2005,6 +2065,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     db_backup_rehearse_restore.add_argument("--json", action="store_true")
     db_backup_rehearse_restore.set_defaults(func=_cmd_db_backup_rehearse_restore)
+
+    offbox_sync = subparsers.add_parser(
+        "offbox-sync",
+        help=(
+            "백업과 pin registry 보존본을 설정된 원격 호스트로 옮기고 sha256sum -c로 "
+            "재검증합니다(KTDM_OFFBOX_HOST 등 env 필요)."
+        ),
+    )
+    offbox_sync_subparsers = offbox_sync.add_subparsers(
+        dest="offbox_sync_action", required=True
+    )
+
+    offbox_sync_run = offbox_sync_subparsers.add_parser(
+        "run", help="지금 모든 role과 pin registry 보존본을 동기화합니다."
+    )
+    offbox_sync_run.add_argument(
+        "--skip-pin-registry",
+        action="store_true",
+        help="pin registry 보존본 동기화를 건너뜁니다(백업만).",
+    )
+    offbox_sync_run.add_argument(
+        "--timeout",
+        type=int,
+        default=14_400,
+        help="role별 rsync 대기 한도(초, 기본 4시간).",
+    )
+    offbox_sync_run.add_argument("--json", action="store_true")
+    offbox_sync_run.set_defaults(func=_cmd_offbox_sync_run)
+
+    offbox_sync_status = offbox_sync_subparsers.add_parser(
+        "status", help="마지막 동기화 결과를 읽기 전용으로 출력합니다."
+    )
+    offbox_sync_status.add_argument("--json", action="store_true")
+    offbox_sync_status.set_defaults(func=_cmd_offbox_sync_status)
 
     return parser
 
