@@ -493,3 +493,42 @@ def test_runtime_rejects_expected_port_that_is_exposed_but_unbound() -> None:
             image_inspects=_image_inspects(expectation),
             network_inspects=_network_inspects(expectation),
         )
+
+
+def test_m05_isolated_runtime_role_is_wired_to_the_canonical_runtime_source_role() -> None:
+    """GM-18 후속: 이 파일의 `M05IsolatedRuntimeRole`은 독립적인
+    `Literal["map", "pinvi"]` 재선언이 아니라 `pinned_runtime_release.RuntimeSourceRole`을
+    직접 참조해야 한다 — 그래야 정본이 role을 늘리거나 바꿀 때 이 파일도 같이 움직인다.
+
+    identity 비교(`M05IsolatedRuntimeRole is RuntimeSourceRole`)만으로는 부족하다:
+    `typing.Literal`은 동일 인자 조합을 `_tp_cache`로 캐시하므로, 이 파일이
+    `from typing import Literal`을 유지한 채 `M05IsolatedRuntimeRole = Literal["map", "pinvi"]`를
+    독립적으로 다시 적었더라도 오늘은 두 Literal이 같은 ("map", "pinvi") 인자를 쓰기 때문에
+    캐시 덕분에 identity 비교가 우연히 참이 된다 — 즉 이 비교만으로는 '진짜 배선'과
+    '우연히 같은 값의 독립 선언'을 구분하지 못한다. 그래서 소스 텍스트까지 확인해
+    (1) import 블록이 실제로 canonical 모듈에서 `RuntimeSourceRole`을 가져오고,
+    (2) 독립적인 `Literal[` 재선언이 전혀 없다는 것을 함께 대조한다."""
+
+    import inspect
+
+    from kor_travel_docker_manager.services import m05_isolated_harness
+    from kor_travel_docker_manager.services.m05_isolated_harness import (
+        M05IsolatedRuntimeRole,
+    )
+    from kor_travel_docker_manager.services.pinned_runtime_release import RuntimeSourceRole
+
+    # 약한 신호: 오늘은 참이지만, 캐시된 우연의 일치일 수도 있어 이것만으로는 불충분하다.
+    assert M05IsolatedRuntimeRole is RuntimeSourceRole
+
+    source = inspect.getsource(m05_isolated_harness)
+
+    # 강한 신호: import 블록이 실제로 canonical 모듈에서 RuntimeSourceRole을 가져온다.
+    marker = "from kor_travel_docker_manager.services.pinned_runtime_release import"
+    assert marker in source, "pinned_runtime_release import 블록을 찾을 수 없다"
+    imported_block = source.split(marker, 1)[1].split(")", 1)[0]
+    assert "RuntimeSourceRole" in imported_block
+
+    # 가장 강한 신호: 독립적인 Literal[...] 재선언이 파일 어디에도 없다 — 있었다면
+    # 위 identity 비교는 캐시 덕에 통과했을 뿐 실제로는 정본과 무관한 하드코딩이다.
+    assert "Literal[" not in source
+    assert "typing.Literal" not in source
