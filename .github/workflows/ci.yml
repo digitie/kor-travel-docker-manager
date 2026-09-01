@@ -47,6 +47,8 @@ jobs:
         run: npm ci
       - name: 타입 검사
         run: npm run type-check
+      - name: 린트
+        run: npm run lint -- --max-warnings=0
       - name: 단위 테스트
         run: npm run test
       - name: 빌드

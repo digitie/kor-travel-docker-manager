@@ -8,7 +8,7 @@
     "start": "next start -p 12905",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "TZ=Asia/Seoul vitest run"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.28.0",

@@ -1521,7 +1521,9 @@ export default function DashboardClient() {
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--color-line)" />
                     <XAxis
                       dataKey="timestamp"
-                      tickFormatter={formatTimestamp}
+                      tickFormatter={(value) =>
+                        formatTimestamp(value as string, { includeDate: chartHours > 1 })
+                      }
                       stroke="var(--color-secondary)"
                       style={{ fontSize: 14, fontFamily: 'var(--font-mono)' }}
                       dy={5}
@@ -1546,7 +1548,9 @@ export default function DashboardClient() {
                         fontFamily: 'var(--font-mono)',
                         color: 'var(--color-strong)'
                       }}
-                      labelFormatter={(label) => `수집 시각: ${formatTimestamp(label as string)}`}
+                      labelFormatter={(label) =>
+                        `수집 시각: ${formatTimestamp(label as string, { includeDate: true })}`
+                      }
                       formatter={(value: any, name: any) => {
                         const formattedVal = chartMetricType === 'io' ? formatBytes(value as number) : `${Number(value).toFixed(1)}%`;
                         const labelName = name === 'cpu_pct' ? 'CPU 사용량' : name === 'mem_pct' ? '메모리 사용량' : name === 'io_read' ? 'Disk Read' : 'Disk Write';
