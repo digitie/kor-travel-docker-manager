@@ -358,24 +358,30 @@ def _pin_actor() -> str:
         return f"uid:{os.getuid()}" if hasattr(os, "getuid") else "unknown"
 
 
-def _print_pin_registry_failure(exc: DeploymentContractError, *, json_output: bool) -> None:
-    """pin registry 계열 명령이 실패했을 때 --json이면 stdout에도 JSON을 낸다.
+def _print_pin_command_failure(detail: str, *, json_output: bool) -> None:
+    """pin 계열 명령이 실패했을 때 --json이면 stdout에도 JSON을 낸다.
 
     `pin show-pending`이 먼저 지킨 계약("--json은 어떤 경로에서도 stdout에 JSON만
-    낸다")을 init/show/verify/rotate/rotate-pair/block/rollback도 지키게 한다 —
-    그러지 않으면 실패 시 stdout이 비어 `| jq`가 죽는다.
+    낸다")을 init/show/verify/rotate/rotate-pair/block/rollback/apply-pending도
+    지키게 한다 — 그러지 않으면 실패 시 stdout이 비어 `| jq`가 죽는다.
 
-    여기서 다루는 예외(RuntimePinRegistryError·RuntimePairRotationError 등)는 전부
-    이 모듈이 조립한 안전한 문구다 — pinvi-pair rebuild의 unclassified contract
-    오류(원문 subprocess 출력을 감쌀 수 있음)와 달리 raw str(exc)를 그대로 노출해도
-    비밀이 새지 않는다. 그 다른 경로의 "노출 안 함" 계약은
+    여기서 넘기는 detail은 전부 이 모듈이나 pin registry 계열 서비스가 조립한
+    안전한 문구다 — pinvi-pair rebuild의 unclassified contract 오류(원문
+    subprocess 출력을 감쌀 수 있음)와 달리 raw 텍스트를 그대로 노출해도 비밀이
+    새지 않는다. 그 다른 경로의 "노출 안 함" 계약은
     test_cli_rebuild_pinned_runtime_hides_unclassified_contract_error_in_json이
     지키므로 여기서 건드리지 않는다.
     """
 
     if json_output:
-        print(json.dumps({"status": "failed", "detail": str(exc)}, ensure_ascii=False))
-    print(str(exc), file=sys.stderr)
+        print(json.dumps({"status": "failed", "detail": detail}, ensure_ascii=False))
+    print(detail, file=sys.stderr)
+
+
+def _print_pin_registry_failure(exc: DeploymentContractError, *, json_output: bool) -> None:
+    """DeploymentContractError를 _print_pin_command_failure의 detail로 넘긴다."""
+
+    _print_pin_command_failure(str(exc), json_output=json_output)
 
 
 def _print_registry(registry: Any, *, json_output: bool) -> None:
@@ -841,14 +847,19 @@ def _cmd_pin_publish_generation(args: argparse.Namespace) -> int:
     return 0 if published else 1
 
 
-def _print_rotation_write_failure(exc: OSError) -> None:
+def _print_rotation_write_failure(exc: OSError, *, json_output: bool) -> None:
     """registry write 도중의 I/O 실패를 traceback 없이 복구 경로와 함께 보고한다.
 
     durable intent가 남아 있으므로 같은 명령 재실행이 미완 transaction을 재개한다 —
-    이를 모르면 운영자는 절반 기록된 상태를 수동으로 수술하려 든다.
+    이를 모르면 운영자는 절반 기록된 상태를 수동으로 수술하려 든다. --json이면
+    이 실패도 stdout에 {"status": "failed", ...}로 낸다 — DeploymentContractError만
+    그 계약을 지키고 OSError는 예외로 남으면 자동화가 성공/실패를 구분하지 못한다.
     """
 
-    print(f"registry write failed: {exc}", file=sys.stderr)
+    detail = f"registry write failed: {exc}"
+    if json_output:
+        print(json.dumps({"status": "failed", "detail": detail}, ensure_ascii=False))
+    print(detail, file=sys.stderr)
     print(
         "durable intent가 남아 있으면 같은 명령을 다시 실행해 미완 transaction을 "
         "재개하세요. 'ktdctl pin verify'로 현재 상태를 확인할 수 있습니다.",
@@ -920,7 +931,7 @@ def _cmd_pin_rotate(args: argparse.Namespace) -> int:
         _print_pin_registry_failure(exc, json_output=args.json)
         return 2
     except OSError as exc:
-        _print_rotation_write_failure(exc)
+        _print_rotation_write_failure(exc, json_output=args.json)
         return 2
     print(f"rotated {args.role} pin; new pinset {registry.pinset_sha256}")
     _print_registry(registry, json_output=args.json)
@@ -974,7 +985,7 @@ def _cmd_pin_rotate_pair(args: argparse.Namespace) -> int:
         _print_pin_registry_failure(exc, json_output=args.json)
         return 2
     except OSError as exc:
-        _print_rotation_write_failure(exc)
+        _print_rotation_write_failure(exc, json_output=args.json)
         return 2
     print(f"rotated Map/PinVi pair; new pinset {registry.pinset_sha256}")
     _print_registry(registry, json_output=args.json)
@@ -1300,7 +1311,7 @@ def _cmd_pin_apply_pending(args: argparse.Namespace) -> int:
         with _runtime_pin_mutation_lock(allow_pending_pair_recovery=True):
             return _cmd_pin_apply_pending_locked(args)
     except DeploymentContractError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_pin_registry_failure(exc, json_output=args.json)
         return 2
 
 
@@ -1335,23 +1346,30 @@ def _cmd_pin_apply_pending_locked(args: argparse.Namespace) -> int:
     try:
         request = read_runtime_pin_request()
     except DeploymentContractError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_pin_command_failure(str(exc), json_output=args.json)
         print(
             "손상된 요청 파일은 'ktdctl pin clear-pending --force --confirm'으로 지웁니다.",
             file=sys.stderr,
         )
         return 2
     if request is None:
-        print("대기 중인 회전 요청이 없습니다.")
+        # show-pending과 같은 "absent" 어휘를 쓴다 — 실패가 아니라 상태 보고다.
+        if args.json:
+            print(json.dumps({"status": "absent"}, ensure_ascii=False))
+        else:
+            print("대기 중인 회전 요청이 없습니다.")
         return 1
     try:
         registry = load_runtime_pin_registry()
     except DeploymentContractError as exc:
-        print(str(exc), file=sys.stderr)
+        _print_pin_registry_failure(exc, json_output=args.json)
         return 2
 
     if args.expect_revision and args.expect_revision != request.revision:
-        print("pending request revision does not match --expect-revision", file=sys.stderr)
+        _print_pin_command_failure(
+            "pending request revision does not match --expect-revision",
+            json_output=args.json,
+        )
         return 2
 
     # 직전 apply가 v5 write와 v6 write 사이에서 중단됐다면 registry는 이미 회전 후
@@ -1363,24 +1381,24 @@ def _cmd_pin_apply_pending_locked(args: argparse.Namespace) -> int:
     pending_rotation = load_pending_runtime_pair_rotation()
     if pending_rotation is not None:
         if pending_rotation.pin_registry.pinset_sha256 != request.prospective_pinset_sha256:
-            print(
+            _print_pin_command_failure(
                 "대기 중인 transaction이 이 요청과 다른 pinset을 향합니다"
                 f"(intent {pending_rotation.pin_registry.pinset_sha256[:12]}... vs 요청 "
                 f"{request.prospective_pinset_sha256[:12]}...). "
                 "먼저 해당 transaction을 같은 명령으로 재개해 완료한 뒤 이 요청을 처리하세요.",
-                file=sys.stderr,
+                json_output=args.json,
             )
             return 2
     else:
         if request.base_pinset_sha256 != registry.pinset_sha256:
             # 자동으로 지우지 않는다 — 무엇이 버려지는지 운영자가 보고 결정해야 한다.
-            print(
+            _print_pin_command_failure(
                 "요청이 만들어진 이후 pin이 바뀌었습니다(요청 base "
                 f"{request.base_pinset_sha256[:12]}... vs 현재 "
                 f"{registry.pinset_sha256[:12]}...). UI에서 취소 후 다시 요청하거나 "
                 f'"ktdctl pin clear-pending --request-id {request.request_id} --confirm"'
                 "으로 지우세요.",
-                file=sys.stderr,
+                json_output=args.json,
             )
             return 2
 
@@ -1394,13 +1412,20 @@ def _cmd_pin_apply_pending_locked(args: argparse.Namespace) -> int:
             ),
         )
         if expected != request.prospective_pinset_sha256:
-            print("request digest does not match the canonical recomputation", file=sys.stderr)
+            _print_pin_command_failure(
+                "request digest does not match the canonical recomputation",
+                json_output=args.json,
+            )
             return 2
         if registry.is_blocked_pinset(expected):
-            print("this request targets a permanently blocked pinset", file=sys.stderr)
+            _print_pin_command_failure(
+                "this request targets a permanently blocked pinset", json_output=args.json
+            )
             return 2
         if expected == registry.pinset_sha256:
-            print("this request would not change any revision", file=sys.stderr)
+            _print_pin_command_failure(
+                "this request would not change any revision", json_output=args.json
+            )
             return 2
 
     try:
@@ -1412,7 +1437,8 @@ def _cmd_pin_apply_pending_locked(args: argparse.Namespace) -> int:
             block_previous=args.block_previous,
         )
     except DeploymentContractError as exc:
-        print(f"{exc} (요청은 그대로 남아 있습니다)", file=sys.stderr)
+        _print_pin_command_failure(str(exc), json_output=args.json)
+        print("(요청은 그대로 남아 있습니다)", file=sys.stderr)
         if "pair rotation" in str(exc):
             # 단일 role 요청으로는 해소되지 않는 상태다. 실제 해소 명령을 준다.
             print(
@@ -1424,7 +1450,7 @@ def _cmd_pin_apply_pending_locked(args: argparse.Namespace) -> int:
     except OSError as exc:
         # v5/v6 transaction 도중의 I/O 실패다. 요청과 durable intent가 모두 남으므로
         # 같은 apply-pending 재실행이 미완 transaction을 재개하고 요청을 정리한다.
-        _print_rotation_write_failure(exc)
+        _print_rotation_write_failure(exc, json_output=args.json)
         print("(요청은 그대로 남아 있습니다)", file=sys.stderr)
         return 2
 
@@ -1522,7 +1548,7 @@ def _cmd_pin_rollback(args: argparse.Namespace) -> int:
         _print_pin_registry_failure(exc, json_output=args.json)
         return 2
     except OSError as exc:
-        _print_rotation_write_failure(exc)
+        _print_rotation_write_failure(exc, json_output=args.json)
         return 2
     print(f"rolled back to pinset {registry.pinset_sha256}")
     _print_registry(registry, json_output=args.json)

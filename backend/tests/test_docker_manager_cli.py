@@ -1408,6 +1408,91 @@ def test_pin_show_pending_reports_nothing_pending(pin_cli_env, pending_request_e
     assert "없습니다" in capsys.readouterr().out
 
 
+def test_pin_apply_pending_json_reports_absent_when_nothing_pending(
+    pin_cli_env, pending_request_env, capsys
+):
+    """GM-06 잔여 지적 회귀: apply-pending도 --json이면 stdout이 비지 않는다.
+
+    request가 없는 상태는 실패가 아니라 상태 보고이므로 show-pending과 같은
+    "absent" 어휘를 쓴다.
+    """
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        exit_code = main(["pin", "apply-pending", "--any-revision", "--confirm", "--json"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    payload = json.loads(captured.out)
+    assert payload == {"status": "absent"}
+
+
+def test_pin_apply_pending_json_failure_when_expect_revision_mismatches(
+    pin_cli_env, pending_request_env, capsys
+):
+    _init_rotatable_registry()
+    capsys.readouterr()
+    _file_a_request()
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        exit_code = main(
+            [
+                "pin",
+                "apply-pending",
+                "--expect-revision",
+                "f" * 40,
+                "--confirm",
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    payload = json.loads(captured.out)
+    assert payload["status"] == "failed"
+    assert "expect-revision" in payload["detail"]
+    assert "expect-revision" in captured.err
+
+
+def test_pin_apply_pending_json_failure_when_registry_is_missing(
+    pin_cli_env, pending_request_env, capsys
+):
+    """등록된 registry 없이 요청 파일만 있으면 read_runtime_pin_request 다음 단계인
+    load_runtime_pin_registry가 DeploymentContractError를 낸다 — 그 경로도 --json이면
+    stdout에 JSON을 내야 한다."""
+
+    from kor_travel_docker_manager.services.runtime_pin_request import (
+        RuntimePinRequest,
+        utc_timestamp,
+        write_runtime_pin_request,
+    )
+
+    write_runtime_pin_request(
+        RuntimePinRequest(
+            request_id="6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+            role="pinvi",
+            revision="d" * 40,
+            reason="registry 없는 상태에서의 회귀 테스트",
+            requested_by="admin",
+            requested_at=utc_timestamp(),
+            base_pinset_sha256="a" * 64,
+            prospective_pinset_sha256="b" * 64,
+        )
+    )
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        exit_code = main(["pin", "apply-pending", "--any-revision", "--confirm", "--json"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    payload = json.loads(captured.out)
+    assert payload["status"] == "failed"
+    assert "missing" in payload["detail"]
+    assert "missing" in captured.err
+
+
 def test_pin_apply_pending_rotates_and_records_both_actors(
     pin_cli_env, pending_request_env, capsys
 ):
