@@ -169,6 +169,7 @@ _PUBLIC_TERMINAL_PHASES = frozenset(
         "m04_fixture_invalid",
         "m04_m05_e2e",
         "m04_map_approval_http_failed",
+        "m04_map_feature_ref_resolve_failed",
         "m04_map_approval_invalid",
         "m05_case_decision_http_failed",
         "m05_case_invalid",
@@ -1285,7 +1286,12 @@ def _approve_map_request(
     feature_id = value.get("feature_id")
     if not isinstance(feature_id, str) or not feature_id:
         _fail("m04_map_approval_invalid")
-    return feature_id
+    # T-VN-32C: 승인 응답의 feature_id는 UUID 정본이다 — canonical 형태로
+    # 정규화해 URL 보간 안전성과 결박 비교의 견고성을 함께 얻는다(적대 리뷰).
+    try:
+        return str(uuid.UUID(feature_id))
+    except ValueError:
+        _fail("m04_map_approval_invalid")
 
 
 def _resolve_manual_feature_text_id(
@@ -1305,7 +1311,7 @@ def _resolve_manual_feature_text_id(
             f"{admin_url.rstrip('/')}/v1/admin/features/{feature_uuid}"
             "/creation-provenance",
             headers=_map_headers(proxy_secret),
-            failure_phase="m04_map_approval_http_failed",
+            failure_phase="m04_map_feature_ref_resolve_failed",
         )
     )
     text_id = value.get("feature_id")

@@ -2191,8 +2191,13 @@ def test_manual_feature_uuid_resolves_to_text_id_via_provenance(
     driver = _driver()
     feature_uuid = "01a05b4c-dc60-7444-95a4-98fde8aeb782"
 
-    def fake_http_json(url: str, **_kwargs: object) -> dict[str, object]:
+    def fake_http_json(url: str, **kwargs: object) -> dict[str, object]:
         assert url.endswith(f"/v1/admin/features/{feature_uuid}/creation-provenance")
+        headers = kwargs.get("headers")
+        assert isinstance(headers, dict)
+        # 직접 admin 호출은 proxy secret 헤더가 계약이다 — 빠지는 회귀를 고정.
+        assert any("Proxy-Secret" in key for key in headers)
+        assert kwargs.get("failure_phase") == "m04_map_feature_ref_resolve_failed"
         return {
             "data": {
                 "feature_id": "f_manual_abc123",
@@ -2209,11 +2214,33 @@ def test_manual_feature_uuid_resolves_to_text_id_via_provenance(
     assert resolved == "f_manual_abc123"
 
     def detached_http_json(url: str, **_kwargs: object) -> dict[str, object]:
+        # 실제 결박 붕괴 시나리오: 형태는 유효하지만 다른 UUID가 돌아온다.
         return {
-            "data": {"feature_id": "f_manual_abc123", "feature_uuid": "0" * 36}
+            "data": {
+                "feature_id": "f_manual_abc123",
+                "feature_uuid": "0e0e0e0e-0e0e-70e0-8e0e-0e0e0e0e0e0e",
+            }
         }
 
     monkeypatch.setattr(driver, "_http_json", detached_http_json)
+    with pytest.raises(driver._PhaseError, match="m04_map_approval_invalid"):
+        driver._resolve_manual_feature_text_id(
+            admin_url="http://127.0.0.1:20001",
+            proxy_secret="s" * 32,
+            feature_uuid=feature_uuid,
+        )
+
+
+def test_manual_feature_resolution_rejects_missing_text_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _driver()
+    feature_uuid = "01a05b4c-dc60-7444-95a4-98fde8aeb782"
+    monkeypatch.setattr(
+        driver,
+        "_http_json",
+        lambda *_a, **_k: {"data": {"feature_id": "", "feature_uuid": feature_uuid}},
+    )
     with pytest.raises(driver._PhaseError, match="m04_map_approval_invalid"):
         driver._resolve_manual_feature_text_id(
             admin_url="http://127.0.0.1:20001",
