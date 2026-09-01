@@ -249,6 +249,38 @@ run/status` CLI(생성은 root 필요, 상태 조회는 불필요)와 읽기 전
 추가, 부분 실패 시 나머지 대상이 계속 진행되는지를 mutation으로 검증함. 프론트
 type-check/lint/build/vitest 전부 통과.
 
+**구현 후 적대적 리뷰 반영** (2명, 독립): 두 리뷰어 모두 같은 근본 결함을 서로
+다른 경로로 찾아냈다 — "한 대상의 실패가 나머지를 막지 않는다"는 설계 목표가
+실제로는 지켜지지 않았다. [High, 리뷰 A] `_run`이 timeout·실행 파일 부재를
+반환값이 아니라 예외(`OffboxSyncError`)로 냈는데 `_sync_directory`/
+`sync_backups_offbox`가 그 예외를 전혀 잡지 않아, 한 role의 rsync timeout이
+**role 루프 전체와 그 뒤에 오는 pin registry 동기화까지** 통째로 건너뛰게
+만들었다 — 이 기능이 지키려는 바로 그 대상이 가장 먼저 희생됐다. [High, 리뷰 B]
+같은 증상의 다른 원인: gc가 파일을 지우는 TOCTOU 경합으로 로컬 해싱 중
+`OSError`가 나도 잡히지 않아 마찬가지로 전체가 중단되고, 이미 끝난 대상의 결과도
+status 파일에 저장되지 못했다. 대상별 처리(체크섬 계산 + 전송 + 검증) 전체를
+감싸는 `_sync_target_safely` helper를 추가해 `OSError`와 `OffboxSyncError`를
+그 대상 하나의 실패로만 국한시켰다 — role lock을 rsync 전체 구간에 걸지는
+않는다(그러면 대용량 role의 전송이 그날 밤 cron 백업 생성을 몇 시간 막을 수
+있다 — GM-07의 리허설과 같은 교훈). [High, 리뷰 A] 원격 `sha256sum -c` 검증이
+전송(`timeout`, 기본 4시간)과 달리 하드코딩된 120초였다 — sidecar 재사용은 로컬
+해싱만 아끼므로, 원격은 여전히 대용량 dump 전체를 다시 읽어야 해 이 기능이
+지키려는 큰 백업에서 가장 먼저 timeout에 걸린다. 검증도 같은 `timeout`을
+쓰도록 고쳤다. [Medium, 리뷰 B] 체크섬 매니페스트가 role lock 파일(`.backup.lock`)과
+중단된 백업이 남긴 `.<role>-<ts>.dump.copying`을 걸러내지 않아, `--delete` 없는
+rsync가 그 잔해를 원격에 영원히 남길 수 있었다 — 점 파일을 매니페스트와 rsync
+`--exclude=.*` 양쪽에서 제외했다. [Medium, 리뷰 A] `_backup_directory_checksum_manifest`류
+함수가 `OSError`에 무방비였던 것도 위 `_sync_target_safely`로 함께 해소됨.
+[Medium, 리뷰 A] 대시보드가 "일부 실패"만 보여주고 어느 대상인지 숨겼다 — 실패한
+대상 label을 나열하는 줄을 추가했다. [Low, 리뷰 B] "설정 안 함"과 "설정했지만
+방치"가 같은 문구로 보였다 — `GET .../offbox-sync-status`에 `configured` 필드를
+추가해 세 상태(미설정/설정+미실행/실행 결과)를 구분했고, host만 설정되고
+user/remote_root가 없는 misconfiguration이 이 읽기 전용 조회를 500으로 죽이지
+않도록 방어했다. [Medium, 리뷰 B] `scripts/run-standalone-backup.sh`와 짝이 되는
+`scripts/run-offbox-sync.sh` wrapper 스텁을 추가했다(root crontab 필요 — pin
+registry가 0600). 회귀 테스트 6건 추가(대상 격리 2건을 포함해 mutation 검증),
+프론트 type-check/lint 재통과.
+
 
 ## GM-09: 신뢰 경로·글로벌 락·root 게이트 상수의 다중 정의 통일 — drift 시 host-wide 락이 조용히 무력화
 

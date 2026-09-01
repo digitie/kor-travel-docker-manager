@@ -23,6 +23,7 @@ import os
 import shlex
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -160,7 +161,11 @@ def _sha256_file(path: Path) -> str:
 def _backup_directory_checksum_manifest(local_dir: Path) -> str:
     lines: list[str] = []
     for path in sorted(local_dir.iterdir()):
-        if not path.is_file() or path.name.endswith(".sha256"):
+        # 점 파일은 건너뛴다 — `.backup.lock`(role lock)과
+        # `.<role>-<ts>.dump.copying`(중단된 백업이 남긴 임시 사본)은 백업 산출물이
+        # 아니다. `--delete` 없이 rsync하므로, 한 번 옮겨진 잔해는 로컬에서 지워져도
+        # 원격에 영원히 남는다 — 애초에 옮기지 않아야 한다.
+        if not path.is_file() or path.name.startswith(".") or path.name.endswith(".sha256"):
             continue
         if path.name.endswith(".dump"):
             sidecar = path.with_name(f"{path.name}.sha256")
@@ -175,9 +180,59 @@ def _plain_directory_checksum_manifest(local_dir: Path) -> str:
     lines = [
         f"{_sha256_file(path)}  {path.name}"
         for path in sorted(local_dir.iterdir())
-        if path.is_file()
+        if path.is_file() and not path.name.startswith(".")
     ]
     return "\n".join(lines) + ("\n" if lines else "")
+
+
+def _sync_target_safely(
+    local_dir: Path,
+    destination: OffboxDestination,
+    *,
+    label: str,
+    remote_subpath: str,
+    manifest_builder: Callable[[Path], str],
+    timeout: int,
+) -> OffboxSyncTargetResult:
+    """한 대상의 처리 전체(체크섬 계산 + 전송 + 검증)를 예외로부터 격리한다.
+
+    `create_standalone_backup`/`gc_standalone_backups`가 잡는 role lock을 이 함수는
+    잡지 않는다 — 그 lock을 rsync 전체 구간에 걸어 두면 대용량 role의 off-box
+    전송이 그날 밤 cron 백업 생성을 몇 시간 동안 막을 수 있다(GM-07의 리허설과 같은
+    교훈). 대신 그 사이 gc가 파일을 지우는 TOCTOU 경합을 여기서 흡수한다 — 이
+    함수가 실패해도 다른 대상은 계속 진행되고, 이미 완료된 대상의 결과는 지워지지
+    않는다.
+    """
+
+    try:
+        if not local_dir.is_dir():
+            return OffboxSyncTargetResult(
+                label, False, False, f"local directory missing: {local_dir}"
+            )
+        checksum_manifest = manifest_builder(local_dir)
+        return _sync_directory(
+            local_dir,
+            destination,
+            label=label,
+            remote_subpath=remote_subpath,
+            checksum_manifest=checksum_manifest,
+            timeout=timeout,
+        )
+    except OSError as exc:
+        return OffboxSyncTargetResult(
+            label,
+            False,
+            False,
+            f"local read failed while preparing this target (possibly a concurrent "
+            f"backup create/gc): {exc}",
+        )
+    except OffboxSyncError as exc:
+        # `_run`은 timeout·실행 파일 부재 같은 프로세스 레벨 실패를 예외로 낸다(정상
+        # 종료·비정상 exit code와 달리 `_sync_directory`가 반환값으로 처리하지 못하는
+        # 경로다). 여기서 잡지 않으면 이 한 대상의 문제가 아직 시도하지 않은 나머지
+        # 대상(특히 role 루프 뒤에 오는 pin registry — 이 기능이 지키려는 진짜
+        # 대상)까지 전부 건너뛰게 만든다.
+        return OffboxSyncTargetResult(label, False, False, f"sync command failed: {exc}")
 
 
 def _sync_directory(
@@ -200,6 +255,10 @@ def _sync_directory(
             "rsync",
             "-a",
             "--checksum",
+            # 점 파일(`.backup.lock`, 중단된 백업이 남긴 `.*.dump.copying`)은 백업
+            # 산출물이 아니다 — 체크섬 매니페스트에서도 빠지므로 여기서도 빼야
+            # "옮겼지만 검증 목록에는 없는" 파일이 원격에 남지 않는다.
+            "--exclude=.*",
             "-e",
             destination.rsync_shell(),
             f"{local_dir}/",
@@ -216,9 +275,13 @@ def _sync_directory(
             f"{rsync_result.stderr.decode('utf-8', 'replace')[:2000]}",
         )
 
+    # sidecar 재사용은 **로컬** 해싱 비용만 아낀다 — 원격 sha256sum -c는 대용량
+    # dump 전체를 원격 디스크에서 다시 읽어야 하므로, 이 검증에도 rsync와 같은
+    # 여유(호출자가 지정한 timeout)를 줘야 한다. 고정된 짧은 값은 이 기능이 지키려는
+    # 바로 그 큰 백업에서 가장 먼저 터진다.
     verify_result = _run(
         destination.ssh_argv(f"cd {shlex.quote(remote_path)} && sha256sum -c -"),
-        timeout=120,
+        timeout=timeout,
         input_bytes=checksum_manifest.encode("utf-8"),
     )
     verified = verify_result.returncode == 0
@@ -266,47 +329,38 @@ def sync_backups_offbox(
     for role in roles:
         role_backup_root = backup_root / role if backup_root is not None else None
         local_dir = backup_root_for_role(role, backup_root=role_backup_root)
-        checksum_manifest = (
-            _backup_directory_checksum_manifest(local_dir) if local_dir.is_dir() else ""
-        )
         targets.append(
-            _sync_directory(
+            _sync_target_safely(
                 local_dir,
                 destination,
                 label=role,
                 remote_subpath=role,
-                checksum_manifest=checksum_manifest,
+                manifest_builder=_backup_directory_checksum_manifest,
                 timeout=timeout,
             )
         )
 
     if include_pin_registry:
         registry_dir = runtime_pin_registry_path().parent
-        registry_manifest = (
-            _plain_directory_checksum_manifest(registry_dir) if registry_dir.is_dir() else ""
-        )
         targets.append(
-            _sync_directory(
+            _sync_target_safely(
                 registry_dir,
                 destination,
                 label="pin_registry",
                 remote_subpath=_PIN_REGISTRY_REMOTE_SUBPATH,
-                checksum_manifest=registry_manifest,
+                manifest_builder=_plain_directory_checksum_manifest,
                 timeout=300,
             )
         )
         public_dir = runtime_pin_registry_public_path().parent
         if public_dir != registry_dir:
-            public_manifest = (
-                _plain_directory_checksum_manifest(public_dir) if public_dir.is_dir() else ""
-            )
             targets.append(
-                _sync_directory(
+                _sync_target_safely(
                     public_dir,
                     destination,
                     label="pin_registry_public",
                     remote_subpath=_PIN_REGISTRY_PUBLIC_REMOTE_SUBPATH,
-                    checksum_manifest=public_manifest,
+                    manifest_builder=_plain_directory_checksum_manifest,
                     timeout=300,
                 )
             )

@@ -313,9 +313,10 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
 
         {/* 로컬 백업만으로는 호스트 디스크 유실에서 살아남지 못한다 — off-box
             동기화(GM-08) 상태를 같은 화면에서 보여야 "백업이 있다"는 착각이 안 생긴다.
-            트리거는 CLI 전용이라 여기서는 마지막 결과만 읽는다. */}
+            트리거는 CLI 전용이라 여기서는 마지막 결과만 읽는다. "설정 안 함"과
+            "설정했지만 방치"를 구분해야 후자가 전자로 오해돼 방치되지 않는다. */}
         <p
-          className={`text-xs mb-4 ${
+          className={`text-xs mb-1 ${
             offboxSync?.status && !offboxSync.status.all_verified ? 'text-danger' : 'text-secondary'
           }`}
         >
@@ -324,8 +325,21 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
             ? `${offboxSync.status.destination_host} · ${
                 offboxSync.status.all_verified ? '검증됨' : '일부 실패'
               } · ${formatTimestamp(offboxSync.status.started_at_unix)}`
-            : '설정되지 않음 또는 아직 실행하지 않음 (ktdctl offbox-sync run)'}
+            : offboxSync?.configured
+              ? '설정됐지만 아직 실행한 적이 없습니다 (ktdctl offbox-sync run — 주기 자동화는 별도 설정 필요)'
+              : '설정되지 않음 (선택 기능, KTDM_OFFBOX_HOST 등 env 필요)'}
         </p>
+        {offboxSync?.status && !offboxSync.status.all_verified ? (
+          <p className="text-xs text-danger mb-4">
+            실패한 대상:{' '}
+            {offboxSync.status.targets
+              .filter((target) => !target.verified)
+              .map((target) => target.label)
+              .join(', ')}
+          </p>
+        ) : (
+          <div className="mb-4" />
+        )}
 
         {job ? (
           <div

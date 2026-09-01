@@ -1240,8 +1240,11 @@ sudo -n backend/.venv/bin/ktdctl offbox-sync status --json   # root 불필요, �
 - 결과는 `KTDM_BACKUP_ROOT/.offbox-sync-status.json`(`0644`)에 남고, 읽기 전용
   `GET /api/v1/backups/offbox-sync-status`로 Dashboard "백업 이력" 패널에도 보인다.
   트리거는 위 CLI 전용이다 — API에 mutation 라우트를 두지 않는다(표준 mutation 경계).
-- 아직 주기 자동화(cron/systemd timer)는 없다 — `scripts/run-standalone-backup.sh`
-  처럼 wrapper를 만들어 별도로 걸어야 한다.
+- `scripts/run-offbox-sync.sh`가 `scripts/run-standalone-backup.sh`와 같은
+  wrapper 관례로 이미 있다. **root** crontab에 걸어야 한다(pin registry가 0600).
+  03:15/03:30/03:55 role 백업 생성 cron과 겹치면 `_role_lock`이 거부하므로 그
+  창을 피한다(예: 04:45). 어느 host에 어떤 주기로 걸지는 운영자가 결정한다 —
+  목적지·자격증명이 환경마다 달라 이 저장소가 기본값을 강제하지 않는다.
 - `--delete`를 쓰지 않는다 — 로컬 `gc`가 지운 오래된 백업도 원격에는 남는다.
   off-box 사본의 존재 이유가 재해 복구 보험이므로, 로컬에서 이미 지워진 자료를
   원격에서까지 따라 지우면 그 보험 가치가 줄어든다.
@@ -1254,8 +1257,10 @@ sudo -n backend/.venv/bin/ktdctl offbox-sync status --json   # root 불필요, �
   (`docs/general-mgmt-audit.md` GM-07 검증 노트). map은 여전히 kor-travel-map
   `docs/backup-restore.md` §8.1 수동 절차가 정본이고, geo·concierge·pinvi는 각
   프로젝트 alembic migration을 타야 한다(§ "복원" 참고).
-- **off-box 동기화의 주기 자동화가 없다.** `offbox-sync run` primitive는 있지만
-  cron/systemd timer로 거는 것은 운영자 몫이다 — 목적지·자격증명은 환경마다
-  다르므로 이 저장소가 기본값을 강제하지 않는다.
+- **off-box 동기화를 실제로 cron/systemd timer에 거는 것은 운영자 몫이다.**
+  `scripts/run-offbox-sync.sh` wrapper와 목적지 env 관례는 있지만, 이 저장소는
+  어떤 host에도 자동으로 걸지 않는다 — 설정 없이는 아무 일도 일어나지 않으므로,
+  env만 선언하고 wrapper를 crontab에 걸지 않으면 이 기능은 방치된 상태로 남는다.
+  Dashboard의 "설정됐지만 아직 실행한 적이 없습니다" 배지가 이 상태를 알린다.
 - 위 실측 표의 수치는 **일 1회가 가능하다**는 것만 보여준다. Map 쪽 최종 주기화
   여부는 kor-travel-map #148이 소유하며, 이 wrapper는 Map role을 주기 실행하지 않는다.

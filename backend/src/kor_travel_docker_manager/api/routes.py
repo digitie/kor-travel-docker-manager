@@ -29,7 +29,11 @@ from kor_travel_docker_manager.services.job_runner import (
     job_runner,
 )
 from kor_travel_docker_manager.services.metrics_service import metrics_service
-from kor_travel_docker_manager.services.offbox_backup_sync import read_offbox_sync_status
+from kor_travel_docker_manager.services.offbox_backup_sync import (
+    OffboxSyncError,
+    offbox_sync_is_configured,
+    read_offbox_sync_status,
+)
 from kor_travel_docker_manager.services.pinned_rebuild_preflight import (
     read_pinned_rebuild_preflight,
 )
@@ -187,12 +191,21 @@ def get_backups(role: str | None = Query(default=None)):
 def get_offbox_sync_status() -> dict[str, Any]:
     """Last `ktdctl offbox-sync run` result, if any (GM-08). Read-only, CLI-only trigger.
 
-    `None`/absent means off-box sync has never run on this host — that is not an
-    error, just a fact the dashboard should surface plainly (e.g. "설정되지 않음"),
-    not blend into a 4xx/5xx."""
+    `status: None` with `configured: False` means nobody has set `KTDM_OFFBOX_HOST`
+    — an intentionally-unused feature, not a problem. `status: None` with
+    `configured: True` means the env is set but `offbox-sync run` has never
+    actually executed (no cron/systemd timer wires this — that step is still
+    manual) — the dashboard should tell these two apart instead of showing the
+    same neutral message for both. A half-set env (host without user/remote_root)
+    is a misconfiguration, not a 500 — `offbox_sync_is_configured` can raise for
+    exactly that, so this route treats "misconfigured" the same as "not configured"
+    rather than crashing a read-only status check the operator didn't cause."""
 
-    status = read_offbox_sync_status()
-    return {"status": status}
+    try:
+        configured = offbox_sync_is_configured()
+    except OffboxSyncError:
+        configured = False
+    return {"status": read_offbox_sync_status(), "configured": configured}
 
 
 @router.post("/backups/{role}", status_code=202)

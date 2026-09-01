@@ -236,7 +236,13 @@ export type OffboxSyncStatus = {
   all_verified: boolean;
 };
 
-export type OffboxSyncStatusResponse = { status: OffboxSyncStatus | null };
+export type OffboxSyncStatusResponse = {
+  status: OffboxSyncStatus | null;
+  // false: 아무도 KTDM_OFFBOX_HOST를 설정하지 않았다(의도적 미사용, 문제 아님).
+  // true + status null: env는 있지만 offbox-sync run을 아직 실행한 적이 없다 —
+  // 이 둘을 구분하지 않으면 "설정하고 방치"와 "애초에 안 씀"이 화면에서 똑같이 보인다.
+  configured: boolean;
+};
 
 /** `GET /api/v1/admin/password/preflight`.
  *

@@ -1276,10 +1276,13 @@ def test_get_offbox_sync_status_reports_none_when_never_run(mock_status):
     login_client()
     mock_status.return_value = None
 
-    response = client.get("/api/v1/backups/offbox-sync-status")
+    with patch(
+        "kor_travel_docker_manager.api.routes.offbox_sync_is_configured", return_value=False
+    ):
+        response = client.get("/api/v1/backups/offbox-sync-status")
 
     assert response.status_code == 200
-    assert response.json() == {"status": None}
+    assert response.json() == {"status": None, "configured": False}
 
 
 @patch("kor_travel_docker_manager.api.routes.read_offbox_sync_status")
@@ -1287,10 +1290,34 @@ def test_get_offbox_sync_status_reports_the_last_result(mock_status):
     login_client()
     mock_status.return_value = {"destination_host": "backup-vault.internal", "all_verified": True}
 
-    response = client.get("/api/v1/backups/offbox-sync-status")
+    with patch(
+        "kor_travel_docker_manager.api.routes.offbox_sync_is_configured", return_value=True
+    ):
+        response = client.get("/api/v1/backups/offbox-sync-status")
 
     assert response.status_code == 200
     assert response.json()["status"]["all_verified"] is True
+    assert response.json()["configured"] is True
+
+
+@patch("kor_travel_docker_manager.api.routes.read_offbox_sync_status")
+def test_get_offbox_sync_status_treats_a_half_set_env_as_not_configured(mock_status):
+    """host만 설정되고 user/remote_root가 없으면 offbox_sync_is_configured가 예외를
+    낸다 — 이 읽기 전용 상태 조회는 그 misconfiguration으로 500이 나면 안 된다."""
+
+    from kor_travel_docker_manager.services.offbox_backup_sync import OffboxSyncError
+
+    login_client()
+    mock_status.return_value = None
+
+    with patch(
+        "kor_travel_docker_manager.api.routes.offbox_sync_is_configured",
+        side_effect=OffboxSyncError("KTDM_OFFBOX_HOST is set but KTDM_OFFBOX_USER is missing"),
+    ):
+        response = client.get("/api/v1/backups/offbox-sync-status")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": None, "configured": False}
 
 
 def test_get_offbox_sync_status_requires_authentication():

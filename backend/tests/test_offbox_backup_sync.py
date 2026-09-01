@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -173,3 +174,121 @@ def test_backup_directory_checksum_manifest_reuses_the_existing_sidecar(
 
 def test_read_offbox_sync_status_returns_none_when_never_written(tmp_path: Path) -> None:
     assert read_offbox_sync_status(backup_root=tmp_path) is None
+
+
+def test_backup_directory_checksum_manifest_excludes_dotfiles(tmp_path: Path) -> None:
+    """role lock과 중단된 백업이 남긴 `.<role>-<ts>.dump.copying`은 백업 산출물이
+    아니다. `--delete` 없이 rsync하므로, 한 번 옮겨진 잔해는 원격에 영원히 남는다."""
+
+    role_dir = _seed_backup_dir(tmp_path, "geo")
+    (role_dir / ".backup.lock").write_bytes(b"")
+    (role_dir / ".geo-2000.dump.copying").write_bytes(b"partial")
+
+    manifest = offbox_backup_sync._backup_directory_checksum_manifest(role_dir)
+
+    assert ".backup.lock" not in manifest
+    assert ".geo-2000.dump.copying" not in manifest
+    assert "geo-1000.dump" in manifest
+
+
+def test_plain_directory_checksum_manifest_excludes_dotfiles(tmp_path: Path) -> None:
+    (tmp_path / "runtime-pins.json").write_text("{}", encoding="utf-8")
+    (tmp_path / ".hidden-lock").write_bytes(b"")
+
+    manifest = offbox_backup_sync._plain_directory_checksum_manifest(tmp_path)
+
+    assert "runtime-pins.json" in manifest
+    assert ".hidden-lock" not in manifest
+
+
+def test_sync_target_excludes_dotfiles_from_the_rsync_command(
+    offbox_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    role_dir = _seed_backup_dir(tmp_path / "backups", "geo")
+    (role_dir / ".backup.lock").write_bytes(b"")
+
+    rsync_calls: list[list[str]] = []
+
+    def fake_run(argv, *, timeout, input=None, capture_output=True, check=False):  # noqa: A002
+        if argv[0] == "rsync":
+            rsync_calls.append(argv)
+            return Mock(returncode=0, stdout=b"", stderr=b"")
+        return Mock(returncode=0, stdout=b"OK\n", stderr=b"")
+
+    monkeypatch.setattr(offbox_backup_sync.subprocess, "run", fake_run)
+
+    sync_backups_offbox(roles=("geo",), backup_root=tmp_path / "backups", include_pin_registry=False)
+
+    assert rsync_calls
+    assert "--exclude=.*" in rsync_calls[0]
+
+
+def test_sync_backups_offbox_isolates_a_target_that_raises_during_hashing(
+    offbox_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """gc가 동시에 파일을 지우는 TOCTOU 경합이 발생해도(한 대상만 실패) 이미 끝난
+    다른 대상의 결과가 사라지면 안 된다 — 예전에는 처리되지 않은 OSError가 전체
+    sync_backups_offbox 호출을 중단시켜 status 파일이 아예 쓰이지 않았다."""
+
+    backup_root = tmp_path / "backups"
+    _seed_backup_dir(backup_root, "geo")
+    _seed_backup_dir(backup_root, "pinvi")
+
+    # manifest는 sidecar가 없는 작은 파일이라 즉석에서 해싱된다 — gc가 그 사이 파일을
+    # 지우는 TOCTOU 경합을 흉내 내려고 pinvi 해싱만 OSError를 내게 한다.
+    real_sha256_file = offbox_backup_sync._sha256_file
+
+    def flaky_sha256_file(path):
+        if path.name.endswith(".manifest") and "pinvi" in path.name:
+            raise OSError("file vanished mid-read (simulated concurrent gc)")
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(offbox_backup_sync, "_sha256_file", flaky_sha256_file)
+
+    def fake_run(argv, *, timeout, input=None, capture_output=True, check=False):  # noqa: A002
+        return Mock(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(offbox_backup_sync.subprocess, "run", fake_run)
+
+    outcome = sync_backups_offbox(
+        roles=("geo", "pinvi"), backup_root=backup_root, include_pin_registry=False
+    )
+
+    by_label = {t.label: t for t in outcome.targets}
+    assert by_label["geo"].verified is True
+    assert by_label["pinvi"].synced is False
+    assert "concurrent" in by_label["pinvi"].detail.lower() or "read failed" in by_label[
+        "pinvi"
+    ].detail.lower()
+    # 한 대상이 실패해도 다른 대상의 결과와 status 파일 기록은 살아남는다.
+    status_path = backup_root / ".offbox-sync-status.json"
+    assert status_path.is_file()
+
+
+def test_sync_backups_offbox_isolates_a_target_whose_rsync_times_out(
+    offbox_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`_run`은 timeout·실행 파일 부재를 예외로 낸다(비정상 exit code와 다른 경로다).
+    이전에는 이 예외가 role 루프 전체를 중단시켜 role 루프 **뒤**에 오는 pin
+    registry 동기화까지 통째로 건너뛰었다 — 이 기능이 지키려는 바로 그 대상이다."""
+
+    backup_root = tmp_path / "backups"
+    _seed_backup_dir(backup_root, "geo")
+    _seed_backup_dir(backup_root, "pinvi")
+    _seed_pin_registry_dir(tmp_path, monkeypatch)
+
+    def fake_run(argv, *, timeout, input=None, capture_output=True, check=False):  # noqa: A002
+        if argv[0] == "rsync" and "/geo/" in argv[-2]:
+            raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
+        return Mock(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(offbox_backup_sync.subprocess, "run", fake_run)
+
+    outcome = sync_backups_offbox(roles=("geo", "pinvi"), backup_root=backup_root)
+
+    by_label = {t.label: t for t in outcome.targets}
+    assert by_label["geo"].synced is False
+    assert "sync command failed" in by_label["geo"].detail
+    # geo가 timeout으로 죽어도 이후 role과 pin registry는 계속 진행된다.
+    assert by_label["pinvi"].verified is True
+    assert by_label["pin_registry"].verified is True
