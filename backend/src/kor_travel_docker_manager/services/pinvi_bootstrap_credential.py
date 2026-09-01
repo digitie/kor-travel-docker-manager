@@ -8,6 +8,7 @@ runner가 종료됐음을 확인한 호출자만 같은 transaction을 명시적
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import stat
@@ -25,6 +26,8 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     pinned_runtime_state_paths as canonical_pinned_runtime_state_paths,
 )
+
+logger = logging.getLogger(__name__)
 
 _BOOTSTRAP_DIRECTORY = "bootstrap"
 _CREDENTIAL_FILENAME = "credential.json"
@@ -111,8 +114,14 @@ def create_pinvi_bootstrap_credential(
         finally:
             os.close(descriptor)
 
-        _fsync_directory_descriptor(transaction_fd)
-        _fsync_directory_descriptor(bootstrap_fd)
+        # credential은 이미 쓰기+fsync+stat 검증까지 성공했다(위 try 블록).
+        # 여기부터는 "그 결과가 crash에서도 살아남는가"라는 durability 보강일
+        # 뿐이므로 best_effort=True로 부른다 — 그렇지 않으면 디렉터리 fsync
+        # 실패가 아래 `except BaseException`을 타고 이미 올바른 파일을
+        # zeroize+unlink하게 만든다(문서화된 버그, `_fsync_directory_descriptor`
+        # 정의부 참고).
+        _fsync_directory_descriptor(transaction_fd, best_effort=True)
+        _fsync_directory_descriptor(bootstrap_fd, best_effort=True)
         creation_complete = True
     except BaseException:
         if metadata is not None and transaction_fd is not None:
@@ -856,14 +865,36 @@ def _validate_private_file_stat(metadata: os.stat_result) -> None:
         raise DeploymentContractError("PinVi bootstrap credential artifact is unsafe")
 
 
-def _fsync_directory_descriptor(descriptor: int) -> None:
-    # GM-10 후속 확인 필요: 이 함수를 부르는 자리(예: 95번째 줄 부근)는 이미 성공한
-    # credential 파일 생성 뒤에 이 fsync를 호출하는데, 여기서 raise하면 바깥
-    # `except BaseException`이 그 성공한 파일을 zeroize+unlink할 수 있다 —
-    # pinned_runtime_generation.py에서 고친 것보다 더 심한 형태(오탐 보고가 아니라
-    # 실제 파괴)일 수 있다. one-shot 보안 초기화 경로라 개별 검토 없이 이번
-    # 패스에서는 고치지 않았다(docs/tasks.md 후속 항목).
+def _fsync_directory_descriptor(descriptor: int, *, best_effort: bool = False) -> None:
+    """디렉터리 fsync 실패를 호출부 성격에 따라 다르게 다룬다.
+
+    ``best_effort=True``는 correctness가 이미 끝난 뒤 durability만 보강하는
+    자리에서 쓴다 — `create_pinvi_bootstrap_credential`이 credential 파일을
+    쓰고 fsync·stat 검증까지 이미 성공시킨 뒤, 그 디렉터리 항목 교체가
+    crash에서도 살아남는지 보강하는 두 자리(위 호출부 주석 참고)가 그렇다.
+    거기서 raise하면 바깥 `except BaseException`이 "이미 올바르게 쓰여 있는
+    파일"을 실패로 오인해 zeroize+unlink해 버린다 — durability 실패가
+    correctness를 파괴하는 형태다. `secure_state_file.py`의
+    `fsync_directory`, `admin_password_service.py`의 `.env` 디렉터리 fsync와
+    같은 이유로 여기서도 로그만 남기고 계속 진행한다.
+
+    기본값(``best_effort=False``)은 삭제 뒤 디렉터리 fsync를 쓰는 다른 자리
+    (`_remove_empty_transaction_directory`, `_zeroize_and_unlink`)의 기존
+    raise 동작을 그대로 보존한다. 그 자리들은 디렉터리 fsync 이전에 이미
+    zeroize·unlink(또는 rmdir)가 완료돼 있어 "이미 성공한 파일을 파괴"할
+    위험이 없으므로 best-effort로 낮출 필요가 없다 — 최소 변경 원칙상 그대로
+    둔다.
+    """
+
     try:
         os.fsync(descriptor)
     except OSError as exc:
+        if best_effort:
+            logger.warning(
+                "PinVi bootstrap credential directory fsync failed after the "
+                "protected file was already written and validated; treating "
+                "as a best-effort durability step and continuing: %s",
+                exc,
+            )
+            return
         raise DeploymentContractError("PinVi bootstrap credential directory fsync failed") from exc

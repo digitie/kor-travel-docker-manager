@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 import uuid
@@ -124,6 +125,67 @@ def test_context_manager_cleans_credential_after_runner_scope(tmp_path: Path) ->
         assert credential.path.is_file()
 
     assert not credential.path.exists()
+
+
+def test_directory_fsync_failure_after_successful_write_does_not_destroy_credential(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """디렉터리 fsync는 durability 보강일 뿐이다 — 이미 쓰기+fsync+stat 검증까지
+    성공한 credential 파일을 그 실패가 파괴해서는 안 된다
+    (`secure_state_file.py`의 `fsync_directory`와 같은 best-effort 계약).
+
+    실제 디렉터리를 깨지 않고 재현하기 위해 ``os.fsync``를 감싸서, 대상 fd가
+    디렉터리인지(``S_ISDIR``)로 구분한다: credential 파일 자신의 fd에 대한
+    fsync(성공해야 함)가 관측된 "이후"의 디렉터리 fsync만 실패시킨다. 그
+    이전(디렉터리 최초 생성 시점)의 디렉터리 fsync는 그대로 성공시켜 준비
+    단계 자체는 건드리지 않는다.
+    """
+
+    state_paths, values = _state_paths(tmp_path)
+    transaction_id = str(uuid.uuid4())
+    real_fsync = os.fsync
+    file_fsync_observed = {"value": False}
+
+    def fake_fsync(fd: int) -> None:
+        try:
+            is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        except OSError:
+            is_directory = False
+        if not is_directory:
+            file_fsync_observed["value"] = True
+            real_fsync(fd)
+            return
+        if file_fsync_observed["value"]:
+            raise OSError(5, "simulated directory fsync failure (no real directory touched)")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fake_fsync)
+    with caplog.at_level(logging.WARNING):
+        credential = create_pinvi_bootstrap_credential(
+            state_paths=state_paths,
+            values=values,
+            transaction_id=transaction_id,
+            email=_EMAIL,
+            password=_PASSWORD,
+        )
+    monkeypatch.setattr(os, "fsync", real_fsync)
+
+    assert credential.path.is_file()
+    assert json.loads(credential.path.read_text(encoding="utf-8")) == {
+        "email": _EMAIL,
+        "password": _PASSWORD,
+    }
+    assert any(
+        "directory fsync failed" in record.getMessage() for record in caplog.records
+    )
+
+    cleanup_pinvi_bootstrap_credential(
+        credential,
+        state_paths=state_paths,
+        values=values,
+    )
 
 
 def test_second_active_transaction_is_never_scavenged_or_deleted(tmp_path: Path) -> None:
