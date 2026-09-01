@@ -91,6 +91,81 @@ def test_registry_writer_refuses_a_symlinked_state_directory(tmp_path: Path) -> 
         )
 
 
+def test_write_fsyncs_the_state_directory_after_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GM-10 회귀: 이전에는 이 registry만 파일 fsync 뒤 디렉터리 fsync가 없어서
+    crash 시 os.replace의 디렉터리 항목 갱신이 유실될 수 있었다(특히
+    block-execution 경로 — terminal 차단 기록이 사라지면 fail-open이 된다).
+    지금은 secure_state_file.atomic_write_json에 위임하므로 파일마다 디렉터리
+    fsync가 한 번씩 일어나야 한다.
+
+    `secure_state_file.fsync_directory` 자체를 스파이한다 — 원시 `os.fsync` 총
+    호출 수를 세면(예: 파일 fsync 포함) 이 함수가 실제로 지키는 불변("쓰기마다
+    디렉터리 fsync 한 번")과 무관한 이유로도 숫자가 바뀌어 나중에 무관한 변경이
+    이 테스트를 헷갈리게 깨뜨릴 수 있다."""
+
+    from kor_travel_docker_manager.services import secure_state_file
+
+    real_fsync_directory = secure_state_file.fsync_directory
+    fsynced_directories: list[Path] = []
+
+    def spy_fsync_directory(path: Path) -> None:
+        fsynced_directories.append(path)
+        real_fsync_directory(path)
+
+    monkeypatch.setattr(secure_state_file, "fsync_directory", spy_fsync_directory)
+
+    registry = migrate_execution_registry(
+        pins=_pins(), manager_source_revision=_MANAGER_A, bound_by="tester", reason="migrate"
+    )
+    write_runtime_execution_registry(
+        registry,
+        path=tmp_path / "private.json",
+        public_path=tmp_path / "public.json",
+    )
+
+    # private.json과 public.json은 같은 디렉터리(tmp_path)에 있으므로 값 자체는
+    # 두 번 다 tmp_path지만, 호출 "횟수"가 파일 개수(2)와 같아야 한다는 것이
+    # 여기서 지키려는 불변이다.
+    assert fsynced_directories == [tmp_path, tmp_path]
+
+
+def test_pair_rotation_write_is_not_reported_as_failed_when_only_dir_fsync_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GM-10 회귀: runtime_pair_rotation.py의 옛 `_atomic_write`는 디렉터리
+    fsync를 파일 교체와 **같은** try/except 안에서 했다 — `os.replace`가 이미
+    성공한 뒤 fsync만 실패해도 임시 파일 unlink(이미 rename됐으니 no-op)+재raise로
+    떨어져 "성공한 쓰기"를 실패로 잘못 보고했다. `secure_state_file.atomic_write_json`은
+    디렉터리 fsync를 별도 단계로 두고 실패를 조용히 삼키므로 이 오탐이 없어야
+    한다."""
+
+    from kor_travel_docker_manager.services import secure_state_file
+
+    # fsync_directory 자체는 실패를 삼키는 계약이다 — 그 계약을 우회해 강제로
+    # 예외를 내면 atomic_write_bytes 입장에서는 "있을 수 없는" 상황을 시험하는
+    # 것이 된다. 대신 fsync_directory 내부가 실제로 쓰는 os.fsync만, 파일 자체의
+    # fsync(첫 호출)는 통과시키고 디렉터리 fsync(두 번째 호출)만 실패하게 한다.
+    real_fsync = secure_state_file.os.fsync
+    call_count = 0
+
+    def flaky_fsync(fd: int) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            real_fsync(fd)
+            return
+        raise OSError("simulated directory fsync failure")
+
+    monkeypatch.setattr(secure_state_file.os, "fsync", flaky_fsync)
+    path = tmp_path / "pair-rotation.json"
+
+    pair_rotation._atomic_write(path, {"a": 1})
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {"a": 1}
+
+
 def test_execution_verify_requires_an_exact_public_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

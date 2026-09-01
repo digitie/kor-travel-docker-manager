@@ -10,6 +10,7 @@ from kor_travel_docker_manager.services.auth_service import (
     check_login_rate_limit,
     create_admin_session,
     expire_admin_cookie,
+    login_bucket_is_shared_fallback,
     record_login_audit_event,
     require_admin_session,
     require_frontend_origin,
@@ -40,6 +41,9 @@ def login(payload: LoginRequest, request: Request, response: Response):
             attempted_username=payload.username,
             reason="rate_limited",
             next_path=next_path,
+            # 신뢰되지 않은 프록시 뒤 공유 버킷이면 이 잠금이 외부 DoS일 수 있음을
+            # 감사에 남긴다 — 운영자가 "진짜 관리자가 왜 잠겼나"를 추적할 단서다(GM-05).
+            detail={"shared_ip_bucket": login_bucket_is_shared_fallback(request)},
         )
         # Retry-After는 HTTPException의 headers로 전달해야 한다. 주입된 response 객체에 설정해도
         # 예외 발생 시 응답에 반영되지 않아 클라이언트가 재시도 시점을 알 수 없다.

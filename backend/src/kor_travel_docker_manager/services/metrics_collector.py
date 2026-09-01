@@ -4,14 +4,15 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from typing import Any
 
+import docker
 from docker.errors import NotFound
 
-from kor_travel_docker_manager.services.docker_service import MANAGED_CONTAINERS, docker_service
 from kor_travel_docker_manager.services.metrics_service import metrics_service
+from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,17 @@ class MetricsCollector:
         self._last_collection_timestamp = 0.0
         self._last_collection_duration = 0.0
         self._docker_daemon_up = 0
+        # GM-20: docker_service를 모듈 레벨로 import하면 docker_service가
+        # metrics_collector를 되읽는 순환이 생긴다(둘 다 서로의 상태를 필요로
+        # 한다). 실제 client 접근만 콜백으로 주입받고, docker_service.py가 자기
+        # 싱글턴 생성 직후 이 accessor를 배선한다(runtime wiring, import-time
+        # 결합 아님).
+        self._docker_client_provider: Callable[[], docker.DockerClient] | None = None
+
+    def set_docker_client_provider(
+        self, provider: Callable[[], docker.DockerClient]
+    ) -> None:
+        self._docker_client_provider = provider
 
     @staticmethod
     def _default_observation(container_id: str) -> dict[str, Any]:
@@ -352,9 +364,13 @@ class MetricsCollector:
             return deepcopy(observation) if observation is not None else None
 
     async def _collect_loop(self):
+        # GM-14: cleanup_old_metrics()는 30일치 대량 DELETE+commit이라 event loop
+        # 위에서 동기로 돌리면 그 fsync 시간만큼 /health·모든 WebSocket·broadcast가
+        # 함께 멈춘다 — 경합 여부와 무관하게 이 호출 자체가 loop를 막는 시간이 크다.
+        # 스레드로 내려 loop가 그 사이에도 다른 요청을 계속 처리하게 한다.
         cleanup_counter = 0
         try:
-            metrics_service.cleanup_old_metrics()
+            await asyncio.to_thread(metrics_service.cleanup_old_metrics)
         except Exception as exc:
             logger.error(f"Initial old metrics cleanup failed: {exc}")
 
@@ -362,7 +378,7 @@ class MetricsCollector:
             try:
                 cleanup_counter += 1
                 if cleanup_counter >= 360:
-                    metrics_service.cleanup_old_metrics()
+                    await asyncio.to_thread(metrics_service.cleanup_old_metrics)
                     cleanup_counter = 0
                 await self.collect_metrics()
             except asyncio.CancelledError:
@@ -372,12 +388,19 @@ class MetricsCollector:
             await asyncio.sleep(10)
 
     async def collect_metrics(self):
+        if self._docker_client_provider is None:
+            # docker_service.py가 자기 모듈 로드 시 이 accessor를 배선한다 —
+            # 여기 걸리면 "docker daemon down"이 아니라 배선 자체가 빠진
+            # 것이므로 "offline"으로 조용히 뭉개지 않고 바로 드러낸다.
+            raise RuntimeError(
+                "MetricsCollector.set_docker_client_provider() was never called"
+            )
         started = time.monotonic()
         with self._lock:
             self._collection_runs_total += 1
         try:
             try:
-                client = docker_service._get_client()
+                client = self._docker_client_provider()
             except Exception:
                 with self._lock:
                     self._collection_errors_total += 1
@@ -518,7 +541,11 @@ class MetricsCollector:
                     }
 
                     try:
-                        metrics_service.save_metric(
+                        # GM-14: 이 컨테이너 루프 전체가 event loop 위에서 도는 async
+                        # 메서드 안이다 — 동기 DB 쓰기를 그대로 두면 컨테이너 수만큼
+                        # 10초마다 loop가 짧게라도 멈춘다. 스레드로 내린다.
+                        await asyncio.to_thread(
+                            metrics_service.save_metric,
                             container_id=key,
                             cpu_pct=metric["cpu_pct"],
                             mem_usage=mem_usage,

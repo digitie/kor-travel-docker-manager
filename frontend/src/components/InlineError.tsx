@@ -15,6 +15,13 @@ export default function InlineError({ error }: { error: HumanError }) {
     <div className="rounded-card border border-danger p-3" role="alert">
       <p className="text-sm font-semibold text-danger">{error.title}</p>
       <p className="text-xs text-secondary mt-1">{error.hint}</p>
+      {error.requestId ? (
+        // GM-16: 서버 로그·감사 행과 조인하는 키다 — 스크린샷 하나로 추적할 수
+        // 있도록 접지 않고 바로 보여준다.
+        <p className="text-[11px] text-secondary mt-1 font-mono break-all">
+          요청 ID: {error.requestId}
+        </p>
+      ) : null}
       {error.raw ? (
         <>
           <button

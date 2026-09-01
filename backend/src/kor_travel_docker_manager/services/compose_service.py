@@ -4,7 +4,6 @@ import os
 import re
 import stat
 import subprocess
-import tarfile
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -22,11 +21,9 @@ import yaml
 from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import (
-    _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _MAP_APPLICATION_FRESH_300_SERVICE,
     _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
     _MAP_RUNTIME_SERVICES,
-    _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
     _PINVI_ADMIN_BOOTSTRAP_SERVICE,
     _PINVI_API_SERVICE,
     _PINVI_DB_RUNTIME_ROLE_SERVICE,
@@ -34,9 +31,6 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     C6cCancelProbeFixture,
     C6cDeploymentConfig,
     CandidateSystemBindSnapshot,
-    ComposeCandidateContractError,
-    ComposePostMutationContractError,
-    DeploymentContractError,
     PinviCancelProbeState,
     _assert_candidate_single_file_boundary,
     _expand_env_path,
@@ -68,6 +62,10 @@ from kor_travel_docker_manager.services.c6c_image_retention import (
     reconcile_candidate_build_references,
     reconcile_generation_references,
 )
+from kor_travel_docker_manager.services.capabilities import (
+    _MANAGED_COMPOSE_MUTATION_CAPABILITY,
+    _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
+)
 from kor_travel_docker_manager.services.database_runtime import (
     Application300DatabaseIdentity as RuntimeApplication300DatabaseIdentity,
 )
@@ -86,6 +84,11 @@ from kor_travel_docker_manager.services.database_runtime import (
     read_database_schema_revision,
     read_pinned_database_identity,
     reset_databases_for_application_300,
+)
+from kor_travel_docker_manager.services.errors import (
+    ComposeCandidateContractError,
+    ComposePostMutationContractError,
+    DeploymentContractError,
 )
 from kor_travel_docker_manager.services.map_application_300 import (
     Application300Candidate as Application300ExecutionCandidate,
@@ -186,11 +189,18 @@ from kor_travel_docker_manager.services.pinvi_database_role_credentials import (
     trusted_pinned_runtime_project_root,
 )
 from kor_travel_docker_manager.services.registry import (
+    get_project_root,
     init_steps_for_target,
     is_known_target,
     runtime_services_for_target,
     services_for_target,
     target_sequence_for_target,
+)
+from kor_travel_docker_manager.services.trusted_install import (
+    require_pinned_runtime_rebuild_root,
+)
+from kor_travel_docker_manager.services.yaml_strict import (
+    load_yaml_rejecting_duplicate_keys,
 )
 
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
@@ -565,6 +575,33 @@ class _PinviRoleLifecycleError(DeploymentContractError):
         self.role_topology_block = role_topology_block
 
 
+@dataclass(frozen=True)
+class _ComposeFailureDiagnostic:
+    """pinned runtime rebuild 실패 진단을 사람이 읽는 문구와 기계 판독 코드로 나눈다.
+
+    ``message_suffix``는 로그·CLI에 그대로 보이는 문구다(``"; pinvi_role:code"``
+    형태, 하위호환 유지). ``pinvi_role_code``는 그 문구를 나중에 다시 파싱하지 않고
+    바로 쓰는 구조화된 값이다 — 문구 조립 형식(괄호 위치 등)이 바뀌어도 lifecycle
+    분류가 조용히 깨지지 않게 한다.
+    """
+
+    message_suffix: str
+    pinvi_role_code: str | None = None
+
+
+class PinnedRuntimeComposeFailure(DeploymentContractError):
+    """pinned runtime rebuild Compose 실행 실패. 진단 코드를 속성으로 전달한다.
+
+    ``_pinvi_lifecycle_diagnostic``는 이 속성을 우선 쓰고, 이 타입이 아니거나 속성이
+    없는 예외에 대해서만 메시지 재파싱으로 폴백한다 — 기존 경로를 깨지 않는 additive
+    변경이다.
+    """
+
+    def __init__(self, message: str, *, pinvi_role_diagnostic: str | None = None) -> None:
+        super().__init__(message)
+        self.pinvi_role_diagnostic = pinvi_role_diagnostic
+
+
 # fresh Dagster DB의 PostgreSQL readiness window를 덮되 총 retry 대기는 58초를 넘지 않는다.
 
 
@@ -651,10 +688,12 @@ def _compose_prefixed_typed_error_candidate(line: str, *, target: str) -> str | 
 
 
 def _require_pinned_runtime_rebuild_root() -> None:
-    """source staging·state owner와 Docker mutation authority를 root로 고정한다."""
+    """source staging·state owner와 Docker mutation authority를 root로 고정한다.
 
-    if os.geteuid() != 0:
-        raise DeploymentContractError("pinned runtime rebuild requires root execution")
+    GM-09: 정본은 services/trusted_install.py다.
+    """
+
+    require_pinned_runtime_rebuild_root()
 
 
 def _assert_pinset_is_not_permanently_blocked(pinset_sha256: str) -> None:
@@ -708,14 +747,6 @@ def _assert_pinset_is_not_permanently_blocked(pinset_sha256: str) -> None:
         )
 
 
-def get_project_root() -> str:
-    configured = os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", "").strip()
-    if configured:
-        return os.path.abspath(configured)
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.abspath(os.path.join(current_dir, "../../../../"))
-
-
 def get_compose_path() -> str:
     return os.environ.get(
         "KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE",
@@ -760,47 +791,6 @@ def _create_frozen_compose_descriptor(label: str) -> int:
     return descriptor
 
 
-def _clean_repository_revision(
-    configured_path: str,
-    *,
-    compose_directory: Path,
-    label: str,
-) -> str:
-    repository = _resolve_repository_path(
-        configured_path,
-        compose_directory=compose_directory,
-        label=label,
-    )
-
-    root = _run_git_read(repository, ["rev-parse", "--show-toplevel"], label=label)
-    try:
-        git_root = Path(root).resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise DeploymentContractError(f"{label} Git root cannot be resolved") from exc
-    if git_root != repository:
-        raise DeploymentContractError(
-            f"{label} build context must be the exact Git worktree root"
-        )
-    status = _run_git_read(
-        repository,
-        ["status", "--porcelain=v1", "--untracked-files=normal"],
-        label=label,
-        allow_output_whitespace=True,
-    )
-    if status:
-        raise DeploymentContractError(f"{label} build context worktree is not clean")
-    revision = _run_git_read(
-        repository,
-        ["rev-parse", "--verify", "HEAD"],
-        label=label,
-    )
-    if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
-        raise DeploymentContractError(
-            f"{label} build context HEAD is not an exact lowercase commit"
-        )
-    return revision
-
-
 def _resolve_repository_path(
     configured_path: str,
     *,
@@ -819,111 +809,6 @@ def _resolve_repository_path(
     if not repository.is_dir():
         raise DeploymentContractError(f"{label} build context is not a directory")
     return repository
-
-
-@contextmanager
-def _c6c_source_snapshot_environment(
-    environment: Mapping[str, str],
-    *,
-    compose_path: str,
-    provenance: C6cBuildProvenance,
-) -> Iterator[dict[str, str]]:
-    """live 파일 대신 두 exact Git tree를 일회성 build context로 제공한다."""
-
-    compose_directory = Path(compose_path).resolve().parent
-    repositories = {
-        "KOR_TRAVEL_MAP_REPO_DIR": (
-            _resolve_repository_path(
-                environment.get("KOR_TRAVEL_MAP_REPO_DIR", "../kor-travel-map"),
-                compose_directory=compose_directory,
-                label="Map",
-            ),
-            provenance.map_source_revision,
-            "Map",
-        ),
-        "PINVI_REPO_DIR": (
-            _resolve_repository_path(
-                environment.get("PINVI_REPO_DIR", "../pinvi"),
-                compose_directory=compose_directory,
-                label="PinVi",
-            ),
-            provenance.pinvi_source_revision,
-            "PinVi",
-        ),
-    }
-    with tempfile.TemporaryDirectory(prefix="ktdm-c6c-source-") as temporary:
-        snapshot_root = Path(temporary)
-        build_environment = provenance.compose_environment()
-        for env_name, (repository, revision, label) in repositories.items():
-            target = snapshot_root / env_name.lower()
-            target.mkdir(mode=0o700)
-            _export_git_tree(repository, revision, target, label=label)
-            build_environment[env_name] = str(target)
-        yield build_environment
-
-
-def _export_git_tree(
-    repository: Path,
-    revision: str,
-    target: Path,
-    *,
-    label: str,
-) -> None:
-    tree = _run_git_read(
-        repository,
-        ["ls-tree", "-r", "--full-tree", revision],
-        label=label,
-        allow_output_whitespace=True,
-    )
-    if re.search(r"(?m)^160000 ", tree) is not None:
-        raise DeploymentContractError(
-            f"{label} build context Git submodules are not supported"
-        )
-    archive_path = target.parent / f"{target.name}.tar"
-    try:
-        completed = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repository),
-                "archive",
-                "--format=tar",
-                f"--output={archive_path}",
-                revision,
-            ],
-            cwd=get_project_root(),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except OSError as exc:
-        raise DeploymentContractError(
-            f"cannot snapshot {label} build context Git tree"
-        ) from exc
-    if completed.returncode != 0:
-        raise DeploymentContractError(
-            f"cannot snapshot {label} build context Git tree"
-        )
-    try:
-        with tarfile.open(archive_path, mode="r:") as archive:
-            for member in archive.getmembers():
-                parts = Path(member.name).parts
-                if (
-                    not parts
-                    or Path(member.name).is_absolute()
-                    or ".." in parts
-                    or not (member.isfile() or member.isdir())
-                ):
-                    raise DeploymentContractError(
-                        f"{label} Git tree has an unsafe build context entry"
-                    )
-            archive.extractall(target)
-    except (OSError, tarfile.TarError) as exc:
-        raise DeploymentContractError(
-            f"cannot extract {label} build context Git tree"
-        ) from exc
-    finally:
-        archive_path.unlink(missing_ok=True)
 
 
 def _run_git_read(
@@ -1064,51 +949,11 @@ _MAP_SOURCE_ENV_FILE_CONTRACT = {
 _MAP_SOURCE_TRACKED_ENV_FILE_MAX_BYTES = 64 * 1024
 
 
-class _UniqueKeySafeLoader(yaml.SafeLoader):
-    pass
-
-
-def _construct_unique_yaml_mapping(
-    loader: _UniqueKeySafeLoader,
-    node: yaml.MappingNode,
-    deep: bool = False,
-) -> dict[Any, Any]:
-    loader.flatten_mapping(node)
-    mapping: dict[Any, Any] = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        try:
-            duplicate = key in mapping
-        except TypeError as exc:
-            raise yaml.constructor.ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                "found an unhashable mapping key",
-                key_node.start_mark,
-            ) from exc
-        if duplicate:
-            raise yaml.constructor.ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                f"found duplicate key {key!r}",
-                key_node.start_mark,
-            )
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_UniqueKeySafeLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
-    _construct_unique_yaml_mapping,
-)
-
-
+# GM-11: 중복 키 거부 YAML 로더의 정본은 services/yaml_strict.py다 — registry.py도
+# 같은 로더를 쓰지만, 여기서 그 모듈을 두면 registry.py→compose_service.py
+# import와 맞물려 순환이 된다.
 def _load_unique_map_source_yaml(source: str) -> Any:
-    loader = _UniqueKeySafeLoader(source)
-    try:
-        return loader.get_single_data()
-    finally:
-        loader.dispose()
+    return load_yaml_rejecting_duplicate_keys(source)
 
 
 def _walk_map_source_scalars(
@@ -1481,10 +1326,6 @@ def _map_source_environment_contract_version(
         payload,
     )
     return contract_version
-
-
-def get_c6c_deployment_lock_path() -> str:
-    return _capture_c6c_deployment_lock_snapshot().lock_path
 
 
 @dataclass(frozen=True)
@@ -2554,6 +2395,8 @@ def _atomic_restore_compose_source(
     *,
     mode: int,
 ) -> None:
+    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
+    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -3516,13 +3359,26 @@ def _application_300_owner_only_receipt_status(path: Path) -> str:
 
 
 class ComposeService:
-    def _capture_transaction_unlocked(
+    def capture_transaction_unlocked(
         self,
         *,
         environment_override: Mapping[str, str] | None = None,
         derive_manifest_path: bool = False,
         environment_snapshot: ComposeEnvironmentSnapshot | None = None,
     ) -> tuple[ComposeTransactionSnapshot, ValidatedComposeCandidate]:
+        """GM-20: docker_service.py가 자신이 이미 확보한 host lock 아래에서 직접
+        호출하도록 공개 승격했다(이전에는 프라이빗 크로스 모듈 호출이었다).
+
+        **선행조건**: 호출자가 c6c deployment host lock(실제 flock)을 이미 잡고
+        있어야 한다 — 이름의 "_unlocked"는 이 메서드 자신은 lock을 추가로 잡지
+        않는다는 뜻이지, lock 없이 안전하다는 뜻이 아니다. 이 lock을 얻는 경로는
+        하나가 아니다: `c6c_deployment_lock_from_environment()`가 가장 흔하지만,
+        `rebuild_pinned_runtime`처럼 `pinned_runtime_rebuild_lock()` 경로를 타는
+        호출자는 `_pinned_runtime_rebuild_environment_lock()` 안에서
+        `c6c_deployment_lock(lock_snapshot.lock_path)`를 직접 잡아 같은 flock에
+        도달한다 — 어느 경로든 "이 host의 c6c deployment lock을 쥔 채로"만
+        만족하면 된다. lock 없이 호출하면 동시 mutation과 경합해 읽은 compose
+        원문이 곧바로 stale해질 수 있다."""
         if environment_snapshot is None:
             environment_snapshot = _capture_compose_environment_snapshot(
                 environment_override=None,
@@ -3786,7 +3642,7 @@ class ComposeService:
             with c6c_deployment_lock_from_environment() as lock_snapshot:
                 captured_validation: ValidatedComposeCandidate | None = None
                 if transaction is None and expected_environment_snapshot is None:
-                    transaction, captured_validation = self._capture_transaction_unlocked(
+                    transaction, captured_validation = self.capture_transaction_unlocked(
                         environment_override=environment,
                     )
                     _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
@@ -3927,19 +3783,19 @@ class ComposeService:
         """mutex 안의 config transaction이 재검증할 candidate identity를 반환한다."""
 
         with c6c_deployment_lock_from_environment() as lock_snapshot:
-            transaction, persisted = self._capture_transaction_unlocked(
+            transaction, persisted = self.capture_transaction_unlocked(
                 environment_override=environment_override,
                 environment_snapshot=environment_snapshot,
             )
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
-            return self._capture_candidate_transaction_unlocked(
+            return self.capture_candidate_transaction_unlocked(
                 candidate,
                 baseline_transaction=transaction,
                 baseline_validation=persisted,
                 environment_override=environment_override,
             )
 
-    def _capture_candidate_transaction_unlocked(
+    def capture_candidate_transaction_unlocked(
         self,
         candidate: Mapping[str, Any],
         *,
@@ -3947,6 +3803,11 @@ class ComposeService:
         baseline_validation: ValidatedComposeCandidate,
         environment_override: Mapping[str, str] | None = None,
     ) -> ValidatedComposeCandidate:
+        """GM-20: `capture_transaction_unlocked`와 같은 이유로 공개 승격했다.
+
+        **선행조건**: `baseline_transaction`은 이미 host lock 아래에서 캡처된
+        것이어야 한다(`capture_transaction_unlocked` 참고) — 이 메서드 자신은
+        lock을 검증하지 않는다."""
         candidate_validation = self._validate_compose_candidate_document_unlocked(
             candidate,
             environment_override=environment_override,
@@ -4656,7 +4517,7 @@ class ComposeService:
                 "manage this service directly on the host instead"
             )
         with c6c_deployment_lock_from_environment() as lock_snapshot:
-            transaction, validation = self._capture_transaction_unlocked()
+            transaction, validation = self.capture_transaction_unlocked()
             _assert_transaction_matches_c6c_lock(transaction, lock_snapshot)
             mode = assert_manager_mutation_allowed(
                 environment=transaction.environment.effective
@@ -4987,11 +4848,13 @@ class ComposeService:
         diagnostic = (
             self._pinned_runtime_compose_failure_diagnostic(args, result)
             if allow_typed_error_diagnostic
-            else ""
+            else _ComposeFailureDiagnostic(message_suffix="")
         )
-        raise DeploymentContractError(
+        raise PinnedRuntimeComposeFailure(
             "pinned runtime rebuild Compose "
-            f"{compose_action} command failed (exit {result['returncode']}{diagnostic})"
+            f"{compose_action} command failed "
+            f"(exit {result['returncode']}{diagnostic.message_suffix})",
+            pinvi_role_diagnostic=diagnostic.pinvi_role_code,
         )
 
     @staticmethod
@@ -5009,12 +4872,17 @@ class ComposeService:
     def _pinned_runtime_compose_failure_diagnostic(
         args: Sequence[str],
         result: Mapping[str, Any],
-    ) -> str:
-        """허용된 one-shot typed error만 원문 없이 F1D 오류에 붙인다."""
+    ) -> _ComposeFailureDiagnostic:
+        """허용된 one-shot typed error만 원문 없이 F1D 오류에 붙인다.
+
+        ``pinvi_role_code``는 pinvi_role 대상일 때만 채운다 — 그 값이
+        ``_pinvi_lifecycle_diagnostic``이 메시지를 재파싱하지 않고 바로 쓰는
+        구조화된 판정 결과다.
+        """
 
         compose_action = ComposeService._pinned_runtime_compose_action(args)
         if compose_action != "run":
-            return ""
+            return _ComposeFailureDiagnostic(message_suffix="")
         target = args[-1] if args else ""
         for stream_name in ("stderr", "stdout"):
             output = result.get(stream_name)
@@ -5031,7 +4899,10 @@ class ComposeService:
                             candidate.strip()
                         )
                         if code is not None:
-                            return f"; pinvi_role:{code}"
+                            return _ComposeFailureDiagnostic(
+                                message_suffix=f"; pinvi_role:{code}",
+                                pinvi_role_code=code,
+                            )
                     try:
                         payload = json.loads(
                             candidate,
@@ -5050,7 +4921,7 @@ class ComposeService:
                             and isinstance(code, str)
                             and code in _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES
                         ):
-                            return f"; {code}"
+                            return _ComposeFailureDiagnostic(message_suffix=f"; {code}")
                         continue
                     if target == "pinvi-admin-bootstrap":
                         code = payload.get("error_code")
@@ -5062,15 +4933,35 @@ class ComposeService:
                             and _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE.get(code)
                             == phase
                         ):
-                            return f"; pinvi:{code}"
+                            # 두 코드 공간(role/admin-bootstrap)이 같은 다운스트림
+                            # ``_pinvi_lifecycle_diagnostic`` 판정으로 합류하므로 같은
+                            # 속성에 싣는다. 두 enum이 겹치지 않아 충돌하지 않는다.
+                            return _ComposeFailureDiagnostic(
+                                message_suffix=f"; pinvi:{code}",
+                                pinvi_role_code=code,
+                            )
         if target == _PINVI_DB_RUNTIME_ROLE_SERVICE:
-            return "; pinvi_role:unclassified"
-        return ""
+            return _ComposeFailureDiagnostic(
+                message_suffix="; pinvi_role:unclassified",
+                pinvi_role_code="unclassified",
+            )
+        return _ComposeFailureDiagnostic(message_suffix="")
 
     @staticmethod
     def _pinvi_lifecycle_diagnostic(error: BaseException) -> str:
-        """이미 allowlist한 PinVi one-shot 코드만 lifecycle 오류에 보존한다."""
+        """이미 allowlist한 PinVi one-shot 코드만 lifecycle 오류에 보존한다.
 
+        ``PinnedRuntimeComposeFailure``가 코드를 속성으로 실어 오면 그것을 그대로
+        쓴다 — 메시지 문구·괄호 위치가 바뀌어도 판정이 깨지지 않는다. 그 타입이
+        아니거나 속성이 비어 있으면(다른 경로에서 온 예외, 과거 raw 예외 등) 기존
+        메시지 재파싱으로 폴백한다.
+        """
+
+        if (
+            isinstance(error, PinnedRuntimeComposeFailure)
+            and error.pinvi_role_diagnostic is not None
+        ):
+            return error.pinvi_role_diagnostic
         message = str(error)
         for code in _PINVI_DB_RUNTIME_ROLE_ERROR_CODES | {"unclassified"}:
             if f"; pinvi_role:{code})" in message:
@@ -6524,7 +6415,7 @@ class ComposeService:
                     dagster_storage_permit=application_paths.metadata_permit_directory,
                 )
             with _pinned_runtime_prejournal_step("prebuild_snapshot"):
-                prebuild_transaction, _ = self._capture_transaction_unlocked(
+                prebuild_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=dict(artifact_directories.compose_environment()),
                     environment_snapshot=environment_snapshot,
                 )
@@ -6579,7 +6470,7 @@ class ComposeService:
                 ),
             }
             with _pinned_runtime_prejournal_step("candidate_snapshot"):
-                candidate_transaction, _ = self._capture_transaction_unlocked(
+                candidate_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=candidate_environment,
                     environment_snapshot=environment_snapshot,
                 )
@@ -6682,7 +6573,7 @@ class ComposeService:
                     candidate_generation.map_application_head
                 ),
             }
-            runtime_transaction, _ = self._capture_transaction_unlocked(
+            runtime_transaction, _ = self.capture_transaction_unlocked(
                 environment_override=runtime_environment,
                 environment_snapshot=environment_snapshot,
             )

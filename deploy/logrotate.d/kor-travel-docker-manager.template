@@ -1,0 +1,26 @@
+# cron standalone 백업 로그 로테이션 — 템플릿
+#
+# scripts/run-standalone-backup.sh의 crontab 권고는 `>>` append라 로그가 영구
+# 누적된다. installer가 root 소유 `.env`의 KTDM_BACKUP_ROOT로 렌더링해
+# /etc/logrotate.d/kor-travel-docker-manager로 설치한다. 키가 없으면 건너뛰고
+# 경고만 남긴다.
+#
+# copytruncate인 이유: cron job이 fd를 계속 들고 append하므로 move-and-reopen
+# 방식은 시그널 협조가 필요하다. 백업 로그는 truncate 경계에서 몇 줄 잃어도
+# 무방한 진단 로그다.
+#
+# su가 필요한 이유: 공유 백업 디렉터리는 §3.x에서 chgrp + 2770(group-writable)로
+# 만든다. logrotate는 group-writable 부모를 su directive 없이는 거부하므로
+# (insecure permissions), installer가 KTDM_BACKUP_SHARED_GROUP으로 렌더링한다
+# (미선언이면 su root root). 경로는 공백을 대비해 따옴표로 감싼다.
+
+"__KTDM_BACKUP_ROOT__"/*.log {
+    su root __KTDM_BACKUP_GROUP__
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}

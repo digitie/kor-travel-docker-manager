@@ -1,4 +1,6 @@
-from typing import Annotated, Any, Literal
+import asyncio
+import logging
+from typing import Annotated, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -9,11 +11,7 @@ from kor_travel_docker_manager.services.auth_service import (
     record_login_audit_event,
     require_admin_session,
 )
-from kor_travel_docker_manager.services.c6c_deployment import (
-    ComposeCandidateContractError,
-    ComposePostMutationContractError,
-    DeploymentContractError,
-)
+from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.compose_service import compose_service
 from kor_travel_docker_manager.services.deployment_readiness import (
     read_deployment_readiness,
@@ -29,11 +27,19 @@ from kor_travel_docker_manager.services.job_runner import (
     job_runner,
 )
 from kor_travel_docker_manager.services.metrics_service import metrics_service
+from kor_travel_docker_manager.services.offbox_backup_sync import (
+    OffboxSyncError,
+    offbox_sync_is_configured,
+    read_offbox_sync_status,
+)
 from kor_travel_docker_manager.services.pinned_rebuild_preflight import (
     read_pinned_rebuild_preflight,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     read_published_pinned_runtime_generation,
+)
+from kor_travel_docker_manager.services.pinned_runtime_release import (
+    RuntimeSourceRole,
 )
 from kor_travel_docker_manager.services.registry import list_targets
 from kor_travel_docker_manager.services.runtime_pin_registry import (
@@ -54,8 +60,10 @@ from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
     StandaloneBackupError,
     create_standalone_backup,
-    list_standalone_backups,
+    list_standalone_backups_for_display,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(require_admin_session)])
 
@@ -90,7 +98,9 @@ class BackupCreateRequest(BaseModel):
 class RuntimePinRotationRequestBody(BaseModel):
     """UI가 남기는 회전 **요청** 본문. 이 값이 pin이 되지는 않는다."""
 
-    role: Literal["map", "pinvi"]
+    # GM-18: 정본은 pinned_runtime_release.RuntimeSourceRole이다 — 여기서
+    # Literal["map", "pinvi"]를 다시 적으면 그 타입과 독립적으로 어긋날 수 있다.
+    role: RuntimeSourceRole
     revision: str = Field(..., min_length=40, max_length=40, pattern=r"^[0-9a-f]{40}$")
     reason: str = Field(..., min_length=1, max_length=500)
 
@@ -118,37 +128,6 @@ def _config_failure_detail(result: dict[str, Any]) -> dict[str, Any]:
     return detail
 
 
-def _candidate_contract_detail(
-    error: ComposeCandidateContractError,
-) -> dict[str, Any]:
-    return {
-        "code": error.code,
-        "message": str(error),
-        "stage": "candidate_validation",
-        "mutation_applied": False,
-    }
-
-
-def _post_mutation_contract_detail(
-    error: ComposePostMutationContractError,
-) -> dict[str, Any]:
-    original_code = getattr(error.original_error, "code", None)
-    return {
-        "code": error.code,
-        "message": str(error),
-        "stage": "post_mutation_recovery",
-        "mutation_applied": True,
-        "original_error": {
-            "code": original_code,
-            "message": str(error.original_error),
-        },
-        "recovery_attempted": error.recovery_attempted,
-        "recovery_succeeded": error.recovery_succeeded,
-        "recovery_error": error.recovery_error,
-        "restoration": error.restoration,
-    }
-
-
 @router.get("/targets")
 def get_targets():
     """Retrieve application-oriented infrastructure targets for UI and CLI parity."""
@@ -160,22 +139,59 @@ def get_backups(role: str | None = Query(default=None)):
     """The durable record of what backups actually exist on disk.
 
     Creation now has its own route (`POST /backups/{role}`); `gc` and restore stay
-    CLI-only. Restore itself is still unimplemented — `ktdctl db-backup restore-plan`
-    only *judges* whether a backup could be restored. This listing is the authority:
-    job records are process-local and vanish on restart, manifests do not."""
+    CLI-only. `ktdctl db-backup restore-plan` *judges* whether a backup could be
+    restored, and `ktdctl db-backup rehearse-restore` actually restores it into a
+    throwaway scratch database on the same instance to prove it — but restoring
+    over the real application database itself is still unimplemented by design
+    (deferred pending a writer stop/start procedure). This listing is the
+    authority: job records are process-local and vanish on restart, manifests do
+    not.
+
+    GM-13: a single corrupt/malformed/wrong-role manifest no longer erases this
+    whole listing with a 409 — it degrades to one `{"state": "unreadable", ...}`
+    row and every other manifest still renders. Only a role's backup directory
+    itself being unreadable (e.g. a permission problem) is fail-close (503) —
+    that is a storage-layer problem, not a single bad file."""
     roles = BACKUP_ROLES if role is None else (role,)
     if role is not None and role not in BACKUP_ROLES:
         raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")
     backups: list[dict[str, Any]] = []
     for backup_role in roles:
         try:
-            backups.extend(
-                manifest.to_json() for manifest in list_standalone_backups(backup_role)
-            )
+            backups.extend(list_standalone_backups_for_display(backup_role))
         except StandaloneBackupError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-    backups.sort(key=lambda item: item["created_at_unix"])
-    return {"backups": backups}
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    # GM-13 리뷰: "unreadable" 행은 created_at_unix가 없다 — 기본값을 0으로 두면
+    # 실제 시각(항상 훨씬 큰 unix timestamp)보다 앞으로 밀려나 role을 섞어 볼 때
+    # 손상된 항목들이 실제 발생 시점과 무관하게 응답 맨 앞에 뭉친다. +inf를 써서
+    # 항상 맨 뒤로 보낸다(정렬 키로만 쓰이고 응답 JSON에는 들어가지 않는다).
+    backups.sort(key=lambda item: item.get("created_at_unix", float("inf")))
+    # GM-18: role 목록의 정본은 이 모듈이 이미 파생하는 BACKUP_ROLES 하나다 — 프론트가
+    # select/생성 버튼 목록을 별도로 하드코딩하지 않고 여기서 파생하도록 함께 싣는다.
+    # `role` 필터 유무와 무관하게 항상 전체 canonical 목록을 싣는다(필터링된 응답이라도
+    # "무엇을 고를 수 있는가"는 바뀌지 않는다).
+    return {"backups": backups, "roles": list(BACKUP_ROLES)}
+
+
+@router.get("/backups/offbox-sync-status")
+def get_offbox_sync_status() -> dict[str, Any]:
+    """Last `ktdctl offbox-sync run` result, if any (GM-08). Read-only, CLI-only trigger.
+
+    `status: None` with `configured: False` means nobody has set `KTDM_OFFBOX_HOST`
+    — an intentionally-unused feature, not a problem. `status: None` with
+    `configured: True` means the env is set but `offbox-sync run` has never
+    actually executed (no cron/systemd timer wires this — that step is still
+    manual) — the dashboard should tell these two apart instead of showing the
+    same neutral message for both. A half-set env (host without user/remote_root)
+    is a misconfiguration, not a 500 — `offbox_sync_is_configured` can raise for
+    exactly that, so this route treats "misconfigured" the same as "not configured"
+    rather than crashing a read-only status check the operator didn't cause."""
+
+    try:
+        configured = offbox_sync_is_configured()
+    except OffboxSyncError:
+        configured = False
+    return {"status": read_offbox_sync_status(), "configured": configured}
 
 
 @router.post("/backups/{role}", status_code=202)
@@ -189,11 +205,20 @@ async def post_backup(
 
     A `def` handler runs in the threadpool where there is no running loop, so this one
     must be `async def` — `asyncio.create_task` inside the runner would raise otherwise.
+    That means any *synchronous* call made directly in this body runs on the event
+    loop itself, not a worker thread — the audit write below is pushed to a thread
+    (`asyncio.to_thread`) so a slow/contended SQLite write here cannot stall every
+    other request and WebSocket the loop is serving (GM-14).
 
     Only the *start* is audited. The job finishes in a worker thread with no `Request`
     object, and the audit helper needs one. Completion is observable through
     `GET /backups/{role}/jobs/{job_id}`, the runner's log line, and — the durable record
-    — the manifest that `GET /backups` lists."""
+    — the manifest that `GET /backups` lists.
+
+    The audit write happens *after* the job is already submitted and running — if it
+    fails, the backup itself is unaffected, so this does not fail the request (GM-14):
+    a 500 here would make the caller think the backup never started when it already
+    has."""
     if role not in BACKUP_ROLES:
         raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")
 
@@ -206,20 +231,33 @@ async def post_backup(
         record = await job_runner.submit(kind="db_backup_create", key=role, run=run)
     except JobConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    record_login_audit_event(
-        request,
-        event_type="backup",
-        outcome="succeeded",
-        attempted_username=session.username,
-        reason="db_backup_create_started",
-        session_id_hash=session.session_id_hash,
-        detail={
-            "role": role,
-            "job_id": record.job_id,
-            "timeout_seconds": timeout_seconds,
-        },
-    )
-    return record.to_json()
+
+    result = record.to_json()
+    try:
+        await asyncio.to_thread(
+            record_login_audit_event,
+            request,
+            event_type="backup",
+            outcome="succeeded",
+            attempted_username=session.username,
+            reason="db_backup_create_started",
+            session_id_hash=session.session_id_hash,
+            detail={
+                "role": role,
+                "job_id": record.job_id,
+                "timeout_seconds": timeout_seconds,
+            },
+        )
+    except Exception:
+        logger.critical(
+            "db_backup_create audit event failed to record (role=%s, job_id=%s) — "
+            "the backup itself started successfully and is unaffected",
+            role,
+            record.job_id,
+            exc_info=True,
+        )
+        result["audit_warning"] = "backup started, but the audit log entry failed to record"
+    return result
 
 
 @router.get("/backups/{role}/jobs")
@@ -687,16 +725,11 @@ def ensure_target(target: str, payload: EnsureTargetRequest):
             build=payload.build,
             recreate=payload.recreate,
         )
-    except ComposePostMutationContractError as exc:
-        raise HTTPException(
-            status_code=500, detail=_post_mutation_contract_detail(exc)
-        ) from exc
-    except ComposeCandidateContractError as exc:
-        raise HTTPException(
-            status_code=409, detail=_candidate_contract_detail(exc)
-        ) from exc
-    except DeploymentContractError as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+    except DeploymentContractError:
+        # GM-12: main.py의 app 레벨 핸들러 3종(post-mutation/candidate/base)이 처리한다.
+        # 여기서 다시 잡지 않으면 아래 bare ValueError 절이 하위클래스인 이 예외까지
+        # 삼켜 404로 잘못 바꿔 버린다.
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -729,18 +762,9 @@ def control_container(container_id: str, payload: ActionRequest):
     if action not in ["start", "stop", "restart"]:
         raise HTTPException(status_code=400, detail="Action must be start, stop, or restart")
 
-    try:
-        result = docker_service.control_container(container_id, action)
-    except ComposePostMutationContractError as exc:
-        raise HTTPException(
-            status_code=500, detail=_post_mutation_contract_detail(exc)
-        ) from exc
-    except ComposeCandidateContractError as exc:
-        raise HTTPException(
-            status_code=409, detail=_candidate_contract_detail(exc)
-        ) from exc
-    except DeploymentContractError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # GM-12: DeploymentContractError(및 그 하위클래스인 candidate/post-mutation 계약
+    # 위반)는 여기서 잡지 않는다 — main.py의 app 레벨 핸들러 3종이 처리한다.
+    result = docker_service.control_container(container_id, action)
     if not result.get("success"):
         detail: Any = result.get("error")
         if "restoration" in result:
@@ -779,16 +803,6 @@ def update_container_config(container_id: str, payload: ContainerConfigUpdate):
         )
     except ContainerConfigValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except ComposePostMutationContractError as exc:
-        raise HTTPException(
-            status_code=500, detail=_post_mutation_contract_detail(exc)
-        ) from exc
-    except ComposeCandidateContractError as exc:
-        raise HTTPException(
-            status_code=409, detail=_candidate_contract_detail(exc)
-        ) from exc
-    except DeploymentContractError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=_config_failure_detail(result))
 
@@ -798,18 +812,9 @@ def update_container_config(container_id: str, payload: ContainerConfigUpdate):
 @router.post("/containers/{container_id}/reset")
 def reset_container_config(container_id: str):
     """Reset container configurations to default and recreate the container using Docker SDK."""
-    try:
-        result = docker_service.reset_container_config(container_id)
-    except ComposePostMutationContractError as exc:
-        raise HTTPException(
-            status_code=500, detail=_post_mutation_contract_detail(exc)
-        ) from exc
-    except ComposeCandidateContractError as exc:
-        raise HTTPException(
-            status_code=409, detail=_candidate_contract_detail(exc)
-        ) from exc
-    except DeploymentContractError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # GM-12: DeploymentContractError 계열은 여기서 잡지 않는다 — main.py의 app 레벨
+    # 핸들러 3종이 처리한다.
+    result = docker_service.reset_container_config(container_id)
     if not result.get("success"):
         raise HTTPException(status_code=500, detail=_config_failure_detail(result))
 

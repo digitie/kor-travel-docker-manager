@@ -1,6 +1,8 @@
+import asyncio
 import hashlib
 import os
 import time
+import uuid
 from unittest.mock import Mock, patch
 
 import pytest
@@ -18,7 +20,10 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
 )
 from kor_travel_docker_manager.services.public_api_key_service import public_api_key_is_valid
-from kor_travel_docker_manager.services.standalone_backup import StandaloneBackupError
+from kor_travel_docker_manager.services.standalone_backup import (
+    BACKUP_ROLES,
+    StandaloneBackupError,
+)
 
 FRONTEND_ORIGIN = "http://localhost:12905"
 os.environ["KTDM_ADMIN_USERNAME"] = "admin"
@@ -56,6 +61,54 @@ def test_health_check():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "healthy", "service": "kor-travel-docker-manager-backend"}
+
+
+# --- GM-16: 요청 상관관계 ID -----------------------------------------------------
+
+
+def test_every_response_carries_a_fresh_x_request_id_header():
+    """GM-16: 성공 응답에도 오류 응답에도 항상 붙는다 — 미들웨어가
+    call_next() 뒤에 헤더를 다는데, call_next는 등록된 예외 핸들러를 거친
+    뒤의 Response를 돌려주므로 두 경로 모두 커버된다."""
+
+    success = client.get("/health")
+    assert success.status_code == 200
+    uuid.UUID(success.headers["x-request-id"])  # 유효한 uuid4 형태인지
+
+    login_client()
+    not_found = client.get("/api/v1/backups/geo/jobs/does-not-exist")
+    assert not_found.status_code == 404
+    uuid.UUID(not_found.headers["x-request-id"])
+
+    # 요청마다 새로 발급된다 — 두 응답이 같은 값을 재사용하지 않는다.
+    assert success.headers["x-request-id"] != not_found.headers["x-request-id"]
+
+
+def test_client_supplied_request_id_is_ignored_not_trusted():
+    """서버가 신뢰하지 않고 항상 새로 발급한다 — 클라이언트가 보낸 값을
+    그대로 돌려주면 로그 검색 키를 외부에서 위조(로그 스푸핑)할 수 있다."""
+
+    response = client.get(
+        "/health", headers={"X-Request-ID": "attacker-supplied-value"}
+    )
+    assert response.headers["x-request-id"] != "attacker-supplied-value"
+    uuid.UUID(response.headers["x-request-id"])
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_error_response_request_id_matches_the_response_header(mock_compose_service):
+    """GM-12 예외 핸들러가 본문에 심는 request_id가 미들웨어가 헤더에 심는
+    것과 같은 값이어야 "UI 오류 → 로그 라인"이 실제로 한 키로 조인된다."""
+
+    login_client()
+    mock_compose_service.ensure_target.side_effect = DeploymentContractError(
+        "C6c production preflight failed"
+    )
+
+    response = client.post("/api/v1/targets/main/ensure", json={"recreate": True})
+
+    assert response.status_code == 409
+    assert response.json()["request_id"] == response.headers["x-request-id"]
 
 
 def test_admin_api_requires_frontend_origin_and_session():
@@ -317,6 +370,50 @@ def test_public_api_key_lifecycle(monkeypatch):
 
     missing = client.delete("/api/v1/admin/public-api-keys/not-a-uuid")
     assert missing.status_code == 404
+
+
+def test_metrics_route_is_open_by_default(monkeypatch):
+    """GM-19: KTDM_METRICS_REQUIRE_KEY 미설정(기본값)이면 인증 없이 접근 가능해야
+    한다 — 기존 Prometheus scrape(config/prometheus/prometheus.yml)를 깨지 않는다."""
+    monkeypatch.delenv("KTDM_METRICS_REQUIRE_KEY", raising=False)
+    client.cookies.clear()
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+
+
+def test_metrics_route_requires_key_when_opted_in(monkeypatch):
+    """GM-19: KTDM_METRICS_REQUIRE_KEY=1이면 세션도 키도 없는 요청은 거부돼야
+    한다 — require_public_api_key에 첫 실제 소비처가 생긴 것의 회귀 검증."""
+    monkeypatch.setenv("KTDM_METRICS_REQUIRE_KEY", "1")
+    client.cookies.clear()
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 401
+
+
+def test_metrics_route_accepts_a_valid_key_when_opted_in(monkeypatch):
+    login_client()
+    created = client.post("/api/v1/admin/public-api-keys", json={"label": "metrics test"})
+    assert created.status_code == 200
+    key = created.json()["key"]
+    client.cookies.clear()
+
+    monkeypatch.setenv("KTDM_METRICS_REQUIRE_KEY", "1")
+    response = client.get("/metrics", params={"key": key})
+
+    assert response.status_code == 200
+
+
+def test_metrics_route_accepts_an_admin_session_when_opted_in(monkeypatch):
+    login_client()
+    monkeypatch.setenv("KTDM_METRICS_REQUIRE_KEY", "1")
+
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
 
 
 @patch("kor_travel_docker_manager.api.routes.docker_service")
@@ -981,7 +1078,29 @@ def test_ensure_target_contract_failure_is_conflict_without_secret_body(
     response = client.post("/api/v1/targets/main/ensure", json={"recreate": True})
 
     assert response.status_code == 409
-    assert response.json() == {"detail": "C6c production preflight failed"}
+    body = response.json()
+    assert body["detail"] == "C6c production preflight failed"
+    # GM-16: request_id는 요청마다 새로 발급되는 uuid4라 리터럴로 고정할 수
+    # 없다 — 존재와 형태만 확인하고, "비밀이 안 새는지"라는 이 테스트 본래의
+    # 목적은 detail이 정확히 이 문자열 하나뿐임을 확인하는 것으로 유지한다.
+    assert set(body.keys()) == {"detail", "request_id"}
+    uuid.UUID(body["request_id"])
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_ensure_target_unknown_target_is_not_found_not_conflict(mock_compose_service):
+    """GM-12: DeploymentContractError는 ValueError의 하위클래스라, ensure_target의
+    남은 로컬 `except ValueError` 절이 순서상 그것까지 삼켜 404로 잘못 바꿀 수
+    있다 — 위의 `except DeploymentContractError: raise`가 먼저 가로채 막는다. 이
+    테스트는 그 반대 경로(계약 위반이 아닌 bare ValueError는 여전히 404)가 이번
+    app 레벨 핸들러 통합 이후에도 유지되는지 확인한다."""
+    login_client()
+    mock_compose_service.ensure_target.side_effect = ValueError("unknown target: bogus")
+
+    response = client.post("/api/v1/targets/bogus/ensure", json={})
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "unknown target: bogus"}
 
 
 @patch("kor_travel_docker_manager.api.routes.compose_service")
@@ -1160,26 +1279,24 @@ def test_is_https_via_configured_public_origin(monkeypatch):
     assert _is_https(make_request("https", None)) is True
 
 
-@patch("kor_travel_docker_manager.api.routes.list_standalone_backups")
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups_for_display")
 def test_get_backups_lists_all_roles_when_role_is_omitted(mock_list):
-    from kor_travel_docker_manager.services.standalone_backup import BackupManifest
-
     login_client()
 
     def fake_list(role):
         return [
-            BackupManifest(
-                role=role,
-                created_at_unix=1000,
-                duration_sec=1.0,
-                byte_size=1,
-                sha256="a" * 64,
-                backup_filename=f"{role}-1000.dump",
-                instance="container:127.0.0.1:12345/db",
-                db_size_bytes=100,
-                toc_entry_count=2,
-                alembic_head="0001_head",
-            )
+            {
+                "role": role,
+                "created_at_unix": 1000,
+                "duration_sec": 1.0,
+                "byte_size": 1,
+                "sha256": "a" * 64,
+                "backup_filename": f"{role}-1000.dump",
+                "instance": "container:127.0.0.1:12345/db",
+                "db_size_bytes": 100,
+                "toc_entry_count": 2,
+                "alembic_head": "0001_head",
+            }
         ]
 
     mock_list.side_effect = fake_list
@@ -1197,26 +1314,27 @@ def test_get_backups_lists_all_roles_when_role_is_omitted(mock_list):
         "map_dagster",
         "pinvi",
     }
+    # GM-18: 프론트가 select/생성 버튼 role 목록을 하드코딩하지 않고 여기서 파생할 수
+    # 있도록, 응답이 canonical 목록을 함께 실어야 한다.
+    assert data["roles"] == list(BACKUP_ROLES)
 
 
-@patch("kor_travel_docker_manager.api.routes.list_standalone_backups")
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups_for_display")
 def test_get_backups_filters_by_role(mock_list):
-    from kor_travel_docker_manager.services.standalone_backup import BackupManifest
-
     login_client()
     mock_list.return_value = [
-        BackupManifest(
-            role="pinvi",
-            created_at_unix=1000,
-            duration_sec=1.0,
-            byte_size=1,
-            sha256="a" * 64,
-            backup_filename="pinvi-1000.dump",
-            instance="container:127.0.0.1:12345/db",
-            db_size_bytes=100,
-            toc_entry_count=2,
-            alembic_head="0001_head",
-        )
+        {
+            "role": "pinvi",
+            "created_at_unix": 1000,
+            "duration_sec": 1.0,
+            "byte_size": 1,
+            "sha256": "a" * 64,
+            "backup_filename": "pinvi-1000.dump",
+            "instance": "container:127.0.0.1:12345/db",
+            "db_size_bytes": 100,
+            "toc_entry_count": 2,
+            "alembic_head": "0001_head",
+        }
     ]
 
     response = client.get("/api/v1/backups?role=pinvi")
@@ -1236,7 +1354,10 @@ def test_get_backups_filters_by_role(mock_list):
                 "toc_entry_count": 2,
                 "alembic_head": "0001_head",
             }
-        ]
+        ],
+        # GM-18: role 필터가 걸려도 roles는 항상 전체 canonical 목록이다 — "무엇을
+        # 고를 수 있는가"는 지금 보고 있는 필터와 무관하다.
+        "roles": list(BACKUP_ROLES),
     }
     mock_list.assert_called_once_with("pinvi")
 
@@ -1250,23 +1371,217 @@ def test_get_backups_rejects_unknown_role():
     assert "not-a-real-role" in response.json()["detail"]
 
 
-@patch("kor_travel_docker_manager.api.routes.list_standalone_backups")
-def test_get_backups_surfaces_storage_error_as_conflict(mock_list):
-    from kor_travel_docker_manager.services.standalone_backup import StandaloneBackupError
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups_for_display")
+def test_get_backups_degrades_a_single_corrupt_manifest_instead_of_hiding_everything(
+    mock_list,
+):
+    """GM-13: geo 백업 세트를 map 디렉터리에 잘못 복사하는 것 같은 흔한 실수 하나로
+    장애 중 가장 필요한 순간에 멀쩡한 백업 전체 목록이 사라지던 문제의 핵심 회귀
+    테스트. 손상된 manifest 1건은 200 응답 안에서 {"state": "unreadable", ...}
+    행으로 격하되고, 같은 role의 나머지 정상 manifest는 그대로 보인다."""
 
     login_client()
-    mock_list.side_effect = StandaloneBackupError("manifest is malformed: geo-1.dump.manifest.json")
+
+    def fake_list(role):
+        if role != "geo":
+            return []
+        return [
+            {
+                "role": "geo",
+                "created_at_unix": 1000,
+                "duration_sec": 1.0,
+                "byte_size": 1,
+                "sha256": "a" * 64,
+                "backup_filename": "geo-1000.dump",
+                "instance": "container:127.0.0.1:12500/kor_travel_geo",
+                "db_size_bytes": 100,
+                "toc_entry_count": 2,
+                "alembic_head": "0001_head",
+            },
+            {
+                "state": "unreadable",
+                "filename": "geo-999.manifest",
+                "reason": "manifest role does not match the requested role: geo-999.manifest",
+            },
+        ]
+
+    mock_list.side_effect = fake_list
 
     response = client.get("/api/v1/backups?role=geo")
 
-    assert response.status_code == 409
-    assert "malformed" in response.json()["detail"]
+    assert response.status_code == 200
+    backups = response.json()["backups"]
+    # 순서까지 고정한다 — 손상된 항목을 목록 어디에 두는지는 그 자체가 회귀 대상이다
+    # (적대적 리뷰가 지적: 순서를 안 보는 단언은 정렬 버그를 놓친다).
+    assert backups == [
+        {
+            "role": "geo",
+            "created_at_unix": 1000,
+            "duration_sec": 1.0,
+            "byte_size": 1,
+            "sha256": "a" * 64,
+            "backup_filename": "geo-1000.dump",
+            "instance": "container:127.0.0.1:12500/kor_travel_geo",
+            "db_size_bytes": 100,
+            "toc_entry_count": 2,
+            "alembic_head": "0001_head",
+        },
+        {
+            "state": "unreadable",
+            "filename": "geo-999.manifest",
+            "reason": "manifest role does not match the requested role: geo-999.manifest",
+        },
+    ]
+
+
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups_for_display")
+def test_get_backups_sorts_unreadable_entries_after_every_readable_entry_across_roles(
+    mock_list,
+):
+    """GM-13 리뷰 반영: unreadable 항목은 created_at_unix가 없어, role을 섞어
+    전역 재정렬할 때 기본값을 잘못 고르면(예: 0) 실제 시각과 무관하게 맨 앞으로
+    쏠린다 — geo의 unreadable 항목 하나가 map_application의 훨씬 나중 백업보다도
+    앞에 뜨는 식으로 재현된다. 이 테스트는 role 두 개에 걸쳐 readable 두 건과
+    unreadable 한 건을 섞어, 최종 응답이 시간순 readable 다음에 unreadable이
+    오는지(그 반대나 뒤섞임이 아닌지) 직접 확인한다."""
+
+    login_client()
+
+    def fake_list(role):
+        if role == "geo":
+            return [
+                {
+                    "state": "unreadable",
+                    "filename": "geo-1.manifest",
+                    "reason": "manifest is unreadable: geo-1.manifest",
+                }
+            ]
+        if role == "map_application":
+            return [
+                {
+                    "role": "map_application",
+                    "created_at_unix": 2_000_000_000,
+                    "duration_sec": 1.0,
+                    "byte_size": 1,
+                    "sha256": "b" * 64,
+                    "backup_filename": "map_application-2000000000.dump",
+                    "instance": "container:127.0.0.1:12700/kor_travel_map",
+                    "db_size_bytes": 100,
+                    "toc_entry_count": 2,
+                    "alembic_head": "0002_head",
+                }
+            ]
+        if role == "pinvi":
+            return [
+                {
+                    "role": "pinvi",
+                    "created_at_unix": 1,
+                    "duration_sec": 1.0,
+                    "byte_size": 1,
+                    "sha256": "c" * 64,
+                    "backup_filename": "pinvi-1.dump",
+                    "instance": "container:127.0.0.1:12800/pinvi",
+                    "db_size_bytes": 100,
+                    "toc_entry_count": 2,
+                    "alembic_head": "0003_head",
+                }
+            ]
+        return []
+
+    mock_list.side_effect = fake_list
+
+    response = client.get("/api/v1/backups")
+
+    assert response.status_code == 200
+    backups = response.json()["backups"]
+    states = [row.get("state") for row in backups]
+    # readable 항목은 시간순(pinvi created_at_unix=1이 map_application의
+    # 2_000_000_000보다 먼저), unreadable은 시각과 무관하게 맨 뒤 하나뿐이어야 한다.
+    assert [row.get("backup_filename") for row in backups if row.get("state") != "unreadable"] == [
+        "pinvi-1.dump",
+        "map_application-2000000000.dump",
+    ]
+    assert states[-1] == "unreadable"
+    assert states.count("unreadable") == 1
+
+
+@patch("kor_travel_docker_manager.api.routes.list_standalone_backups_for_display")
+def test_get_backups_surfaces_unreadable_directory_as_service_unavailable(mock_list):
+    """디렉터리 자체를 못 읽는 것(권한 문제 등)은 개별 manifest 손상과 다르다 —
+    이건 여전히 fail-close(503)다. 이전 GM-13 이전 동작은 409였다."""
+
+    from kor_travel_docker_manager.services.standalone_backup import StandaloneBackupError
+
+    login_client()
+    mock_list.side_effect = StandaloneBackupError("geo backup directory is unreadable: ...")
+
+    response = client.get("/api/v1/backups?role=geo")
+
+    assert response.status_code == 503
+    assert "unreadable" in response.json()["detail"]
 
 
 def test_get_backups_requires_authentication():
     client.cookies.clear()
 
     response = client.get("/api/v1/backups")
+
+    assert response.status_code == 401
+
+
+@patch("kor_travel_docker_manager.api.routes.read_offbox_sync_status")
+def test_get_offbox_sync_status_reports_none_when_never_run(mock_status):
+    login_client()
+    mock_status.return_value = None
+
+    with patch(
+        "kor_travel_docker_manager.api.routes.offbox_sync_is_configured", return_value=False
+    ):
+        response = client.get("/api/v1/backups/offbox-sync-status")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": None, "configured": False}
+
+
+@patch("kor_travel_docker_manager.api.routes.read_offbox_sync_status")
+def test_get_offbox_sync_status_reports_the_last_result(mock_status):
+    login_client()
+    mock_status.return_value = {"destination_host": "backup-vault.internal", "all_verified": True}
+
+    with patch(
+        "kor_travel_docker_manager.api.routes.offbox_sync_is_configured", return_value=True
+    ):
+        response = client.get("/api/v1/backups/offbox-sync-status")
+
+    assert response.status_code == 200
+    assert response.json()["status"]["all_verified"] is True
+    assert response.json()["configured"] is True
+
+
+@patch("kor_travel_docker_manager.api.routes.read_offbox_sync_status")
+def test_get_offbox_sync_status_treats_a_half_set_env_as_not_configured(mock_status):
+    """host만 설정되고 user/remote_root가 없으면 offbox_sync_is_configured가 예외를
+    낸다 — 이 읽기 전용 상태 조회는 그 misconfiguration으로 500이 나면 안 된다."""
+
+    from kor_travel_docker_manager.services.offbox_backup_sync import OffboxSyncError
+
+    login_client()
+    mock_status.return_value = None
+
+    with patch(
+        "kor_travel_docker_manager.api.routes.offbox_sync_is_configured",
+        side_effect=OffboxSyncError("KTDM_OFFBOX_HOST is set but KTDM_OFFBOX_USER is missing"),
+    ):
+        response = client.get("/api/v1/backups/offbox-sync-status")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": None, "configured": False}
+
+
+def test_get_offbox_sync_status_requires_authentication():
+    client.cookies.clear()
+
+    response = client.get("/api/v1/backups/offbox-sync-status")
 
     assert response.status_code == 401
 
@@ -1415,9 +1730,49 @@ def test_post_admin_password_records_the_verdict_but_never_the_secret(mock_chang
         "/api/v1/admin/login-audit-events?event_type=admin_password&outcome=succeeded"
     ).json()
     detail = events[0]["detail"]
-    assert detail == {"guard": "no_journal", "acknowledged": False}
+    assert detail["guard"] == "no_journal"
+    assert detail["acknowledged"] is False
+    # GM-16: http_request_id는 요청마다 새로 발급되는 uuid4라 리터럴로 고정할
+    # 수 없다 — 존재와 형태만 확인한다. 이 테스트 본래의 목적(env_path/비밀번호가
+    # 안 새는지)은 정확한 키 집합 확인으로 유지한다. 감사 주입 키를
+    # "request_id"가 아니라 "http_request_id"로 부르는 이유는 runtime-pin
+    # 회전 요청처럼 도메인 객체가 이미 "request_id"라는 이름을 쓰는 경우와
+    # 충돌해 그 값을 지우는 것을 막기 위해서다(적대적 리뷰가 실제로 재현).
+    assert set(detail.keys()) == {"guard", "acknowledged", "http_request_id"}
+    uuid.UUID(detail["http_request_id"])
     # 비밀번호도 해시도 감사에 남기지 않는다.
     assert "a-new-password-1" not in str(events)
+
+
+@patch("kor_travel_docker_manager.api.admin.change_admin_password")
+def test_audit_event_request_id_matches_the_triggering_response_header(mock_change):
+    """GM-16의 핵심 주장: UI가 받은 오류(또는 성공) 응답의 request_id가 그
+    요청이 남긴 감사 행의 http_request_id와 정확히 같은 값이어야 둘을 하나의
+    키로 조인할 수 있다 — 존재만이 아니라 *일치*를 확인한다. 감사 쪽 키
+    이름이 "request_id"가 아니라 "http_request_id"인 이유는 위
+    test_post_admin_password_records_the_verdict_but_never_the_secret의
+    주석 참고(도메인 객체의 자체 request_id와 충돌 방지)."""
+
+    login_client()
+    mock_change.return_value = {
+        "ok": True,
+        "guard": "no_journal",
+        "acknowledged": False,
+        "env_path": "/opt/x/.env",
+    }
+
+    response = client.post(
+        "/api/v1/admin/password",
+        json={"current_password": TEST_ADMIN_PASSWORD, "new_password": "a-different-password-2"},
+    )
+
+    assert response.status_code == 200
+    triggering_request_id = response.headers["x-request-id"]
+
+    events = client.get(
+        "/api/v1/admin/login-audit-events?event_type=admin_password&outcome=succeeded"
+    ).json()
+    assert events[0]["detail"]["http_request_id"] == triggering_request_id
 
 
 @patch("kor_travel_docker_manager.api.admin.change_admin_password")
@@ -1549,6 +1904,69 @@ def test_post_backup_returns_202_and_a_job_that_finishes(mock_create, clean_job_
     mock_create.assert_called_once_with("geo", timeout=60)
 
 
+@patch("kor_travel_docker_manager.api.routes.record_login_audit_event")
+@patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
+def test_post_backup_records_the_audit_event_off_the_event_loop_thread(
+    mock_create, mock_audit, clean_job_runner
+):
+    """GM-14: 이 감사 기록은 asyncio.to_thread로 내려야 한다 — 그냥 동기 호출로
+    두면 이 async 핸들러가 event loop 스레드 위에서 직접 블로킹 DB 쓰기를
+    하게 되어, 그 사이 /health·모든 WebSocket·broadcast가 함께 멈춘다.
+
+    스레드 *이름* 비교로는 이걸 못 잡는다 — TestClient 자체가 이미 메인
+    스레드가 아닌 별도 스레드에서 앱의 이벤트 루프를 돌리므로, to_thread를
+    빼도 "메인 스레드가 아니다"는 여전히 참이 돼 오탐 없이 통과해 버린다
+    (직접 재현·mutation으로 확인). 대신 asyncio.get_running_loop()의
+    성공 여부로 판별한다 — to_thread의 ThreadPoolExecutor 워커 스레드에는
+    바인딩된 이벤트 루프가 없어 RuntimeError가 나지만, 이벤트 루프 스레드
+    위에서 직접 호출되면 루프가 잡힌다."""
+
+    login_client()
+    manifest = Mock()
+    manifest.to_json.return_value = {"role": "geo", "backup_filename": "geo-1.dump"}
+    mock_create.return_value = manifest
+    ran_without_a_running_loop = None
+
+    def capture_loop_state(*args, **kwargs):
+        nonlocal ran_without_a_running_loop
+        try:
+            asyncio.get_running_loop()
+            ran_without_a_running_loop = False
+        except RuntimeError:
+            ran_without_a_running_loop = True
+
+    mock_audit.side_effect = capture_loop_state
+
+    response = client.post("/api/v1/backups/geo", json={"timeout_seconds": 60})
+
+    assert response.status_code == 202
+    assert ran_without_a_running_loop is True
+
+
+@patch("kor_travel_docker_manager.api.routes.record_login_audit_event")
+@patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
+def test_post_backup_still_returns_202_when_the_audit_write_fails(
+    mock_create, mock_audit, clean_job_runner
+):
+    """GM-14: 감사 기록은 job이 이미 시작된 *뒤*에 남긴다 — 그 기록이 실패해도
+    백업 자체는 멀쩡히 도는데 이걸 500으로 보고하면 클라이언트가 '시작 안 됐다'고
+    오판하고 재시도해 이중 pg_dump를 유발할 수 있다."""
+
+    login_client()
+    manifest = Mock()
+    manifest.to_json.return_value = {"role": "geo", "backup_filename": "geo-1.dump"}
+    mock_create.return_value = manifest
+    mock_audit.side_effect = RuntimeError("database is locked")
+
+    response = client.post("/api/v1/backups/geo", json={"timeout_seconds": 60})
+
+    assert response.status_code == 202
+    started = response.json()
+    assert started["state"] == "running"
+    assert "failed to record" in started["audit_warning"]
+    mock_audit.assert_called_once()
+
+
 @patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
 def test_a_failed_backup_job_reports_the_failure_instead_of_vanishing(
     mock_create, clean_job_runner
@@ -1645,6 +2063,27 @@ def test_post_runtime_pin_request_records_a_proposal_not_a_rotation(
     assert "apply-pending" in body["next_action"]
     # 요청은 파일 하나일 뿐이고 registry는 건드리지 않는다.
     assert isolated_pin_requests.exists()
+
+
+def test_post_runtime_pin_request_rejects_a_role_outside_the_canonical_set(
+    isolated_pin_requests,
+):
+    """GM-18: `RuntimePinRotationRequestBody.role`은
+    `pinned_runtime_release.RuntimeSourceRole`(정본)을 참조해야 한다 —
+    독립적으로 `Literal["map", "pinvi"]`를 다시 적으면 정본이 바뀔 때
+    이 라우트만 조용히 구식으로 남을 수 있다. Pydantic 검증이 라우트
+    본문에 들어가기도 전에 422로 거부하므로 published pins mock조차
+    필요 없다."""
+
+    login_client()
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "not-a-real-role", "revision": "d" * 40, "reason": "x"},
+    )
+
+    assert response.status_code == 422
+    assert not isolated_pin_requests.exists()
 
 
 @patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
@@ -1768,6 +2207,37 @@ def test_post_runtime_pin_request_never_overwrites_a_pending_one(
     detail = second.json()["detail"]
     assert detail["code"] == "RUNTIME_PIN_REQUEST_EXISTS"
     assert detail["request_id"] == first.json()["request"]["request_id"]
+
+
+@patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")
+def test_runtime_pin_audit_event_keeps_its_own_domain_request_id(
+    mock_read, isolated_pin_requests
+):
+    """GM-16 적대적 리뷰 발견: 감사 기록이 모든 행에 HTTP 상관관계 ID를
+    "request_id"라는 이름으로 주입했다면, 여기서 이미 그 이름을 domain
+    id(대기 중인 회전 요청 자신의 id — 나중에 DELETE .../requests/{id}로
+    그대로 넘겨야 하는 값)로 쓰는 이 이벤트의 값을 조용히 덮어써 지웠을
+    것이다. 감사 쪽 키를 "http_request_id"로 분리했으므로 둘 다 살아남아야
+    한다."""
+
+    login_client()
+    mock_read.return_value = _published_pins()
+
+    response = client.post(
+        "/api/v1/runtime-pins/requests",
+        json={"role": "map", "revision": "d" * 40, "reason": "첫 요청"},
+    )
+    assert response.status_code == 201
+    domain_request_id = response.json()["request"]["request_id"]
+    http_request_id = response.headers["x-request-id"]
+    assert domain_request_id != http_request_id  # 서로 다른 개념임을 전제로 한 테스트다
+
+    events = client.get(
+        "/api/v1/admin/login-audit-events?event_type=runtime_pin&outcome=succeeded"
+    ).json()
+    detail = events[0]["detail"]
+    assert detail["request_id"] == domain_request_id
+    assert detail["http_request_id"] == http_request_id
 
 
 @patch("kor_travel_docker_manager.api.routes.read_published_runtime_pins")

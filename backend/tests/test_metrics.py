@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import os
 from unittest.mock import patch
@@ -108,6 +109,40 @@ def test_metrics_service_cleanup():
         assert count_after == 1
         
     clear_metrics()
+
+@patch("kor_travel_docker_manager.services.metrics_collector.metrics_service")
+def test_collect_loop_runs_cleanup_old_metrics_off_the_event_loop(mock_metrics_service):
+    """GM-14: cleanup_old_metrics()는 30일치 대량 DELETE+commit이라, event loop
+    위에서 동기로 돌리면 그 시간만큼 /health·모든 WebSocket·broadcast가 함께
+    멈춘다 — asyncio.to_thread로 내려야 한다. asyncio.get_running_loop()의
+    성공 여부로 판별한다: to_thread의 워커 스레드에는 바인딩된 이벤트 루프가
+    없어 RuntimeError가 나지만, event loop 스레드 위에서 직접 호출되면 루프가
+    잡힌다(post_backup의 asyncio.to_thread 검증과 같은 기법)."""
+
+    from kor_travel_docker_manager.services.metrics_collector import MetricsCollector
+
+    ran_without_a_running_loop = None
+
+    def capture_loop_state(*args, **kwargs):
+        nonlocal ran_without_a_running_loop
+        try:
+            asyncio.get_running_loop()
+            ran_without_a_running_loop = False
+        except RuntimeError:
+            ran_without_a_running_loop = True
+
+    mock_metrics_service.cleanup_old_metrics.side_effect = capture_loop_state
+
+    collector = MetricsCollector()
+    # _running을 미리 False로 둔다 — _collect_loop의 초기 cleanup 호출(while
+    # 진입 전)만 겨냥하고, docker client mocking이 필요한 while 본문(collect_metrics)은
+    # 건드리지 않는다.
+    collector._running = False
+
+    asyncio.run(collector._collect_loop())
+
+    assert ran_without_a_running_loop is True
+
 
 @patch("kor_travel_docker_manager.api.routes.metrics_service")
 def test_metrics_api_route(mock_metrics_service):

@@ -15,6 +15,7 @@ from sqlalchemy import delete, select
 from kor_travel_docker_manager import database
 from kor_travel_docker_manager._time import utcnow
 from kor_travel_docker_manager.models import AdminSession, Base, LoginAuditEvent
+from kor_travel_docker_manager.request_context import current_request_id
 
 SESSION_COOKIE_NAME = "ktdm_admin_session"
 SESSION_TTL_SECONDS = 8 * 60 * 60
@@ -298,7 +299,21 @@ def record_login_audit_event(
                 origin=_safe_header(request.headers.get("origin"), 255),
                 request_path=_safe_value(str(request.url.path), 500),
                 session_id_hash=session_id_hash,
-                detail_json=json.dumps(detail or {}, ensure_ascii=False, sort_keys=True),
+                # GM-16: 호출부가 신경 쓰지 않아도 모든 감사 행이 그 요청의
+                # HTTP 상관관계 ID를 갖도록 여기서 주입한다 — UI가 받은 오류
+                # 응답의 request_id와 이 값이 같으면 감사 행과 직접 조인된다.
+                # 키 이름을 "request_id"가 아니라 "http_request_id"로 둔다 —
+                # runtime-pin 회전 요청 같은 도메인 객체는 자기 고유 id를 이미
+                # "request_id"라는 이름으로 detail에 싣는다(routes.py의
+                # RuntimePinRequest.request_id, 나중에 DELETE .../requests/{id}로
+                # 그대로 넘겨야 하는 값). 같은 키 이름을 쓰면 dict unpacking에서
+                # 뒤에 오는 이 값이 이겨 그 도메인 id를 조용히 지워 버린다 —
+                # 적대적 리뷰가 실제로 재현해 찾은 결함이다.
+                detail_json=json.dumps(
+                    {**(detail or {}), "http_request_id": current_request_id()},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
             )
         )
         session.commit()
@@ -534,6 +549,46 @@ def _trusted_proxy_networks() -> tuple[ipaddress._BaseNetwork, ...]:
     if not networks:
         return tuple(ipaddress.ip_network(item) for item in DEFAULT_TRUSTED_PROXY_CIDRS)
     return tuple(networks)
+
+
+def login_bucket_is_shared_fallback(request: Request) -> bool:
+    """이 요청의 rate-limit 버킷이 신뢰되지 않은 프록시 뒤에서 공유되는지 판정한다.
+
+    엣지 프록시가 X-Forwarded-For를 붙여 보내는데 그 프록시가 신뢰 대상이 아니면,
+    ``_client_ip``는 XFF를 무시하고 프록시의 소켓 IP 하나로 떨어진다 — 그러면 WAN의
+    모든 클라이언트가 같은 버킷을 공유해, 외부인이 5회 실패만으로 진짜 관리자를
+    잠글 수 있다(GM-05). 이 사실을 감사 detail에 남겨 운영자가 원인을 알게 한다.
+    """
+
+    has_forwarded = bool(
+        request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip")
+    )
+    return has_forwarded and not _request_from_trusted_proxy(request)
+
+
+def trusted_proxy_posture() -> dict[str, object]:
+    """신뢰 프록시 설정 자세를 요약한다(요청 무관, readiness 진단용).
+
+    production에서 신뢰 CIDR이 loopback 전용이면 엣지 프록시의 XFF를 신뢰하지 못해
+    per-IP rate limit이 공유 버킷으로 붕괴한다. 광역 CIDR(/24 등)은 LAN 피어의 XFF
+    위조로 rate limit을 우회당하므로 secret 동반이 아니면 그것도 위험하다.
+    """
+
+    raw = os.environ.get("KTDM_TRUSTED_PROXY_CIDRS", "").strip()
+    configured = [item.strip() for item in raw.split(",") if item.strip()]
+    networks = _trusted_proxy_networks()
+    loopback_only = all(net.is_loopback for net in networks)
+    secret_set = _trusted_proxy_secret() is not None
+    # /32(v4)·/128(v6) 이 아닌 광역 CIDR이 있는가.
+    wide = any(
+        (not net.is_loopback) and net.num_addresses > 1 for net in networks
+    )
+    return {
+        "configured_cidrs": configured,
+        "loopback_only": loopback_only,
+        "secret_set": secret_set,
+        "has_wide_cidr": wide,
+    }
 
 
 def _base64url_encode(value: bytes) -> str:

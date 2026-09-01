@@ -1610,6 +1610,8 @@ def write_owner_only_artifact(path: Path, raw: bytes) -> HostArtifactReceipt:
         return _verify_existing_artifact(path, raw)
 
     digest = sha256_bytes(raw)
+    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
+    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
     descriptor, tmp_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=parent
     )
@@ -1725,6 +1727,8 @@ def publish_root_read_only_artifact(path: Path, raw: bytes) -> HostArtifactRecei
         return _verify_existing_fixed_artifact(path, raw)
 
     digest = sha256_bytes(raw)
+    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
+    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
     descriptor, tmp_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=parent
     )
@@ -1776,6 +1780,8 @@ def replace_root_read_only_artifact(
         raise MapApplication300ContractError("fixed artifact digest is invalid")
 
     digest = sha256_bytes(raw)
+    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
+    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
     descriptor, tmp_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=parent
     )

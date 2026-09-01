@@ -15,7 +15,9 @@ import {
   apiJson,
 } from '@/lib/api';
 import { buildGithubCommitUrl, buildGithubCompareUrl, shortRevision } from '@/lib/github';
+import { humanizeError } from '@/lib/errors';
 import CopyableCommand from './CopyableCommand';
+import InlineError from './InlineError';
 
 function VerdictIcon({ level }: { level: HumanVerdict['level'] }) {
   if (level === 'action_required') {
@@ -212,12 +214,7 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
             </p>
           ) : null}
           {readinessError ? (
-            <p className="text-sm text-danger">
-              사전 점검 결과를 불러오지 못했습니다.{' '}
-              {readinessError instanceof Error
-                ? readinessError.message
-                : String(readinessError)}
-            </p>
+            <InlineError error={humanizeError(readinessError, '사전 점검 결과 조회')} />
           ) : readiness ? (
             <>
               <div
@@ -286,10 +283,7 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
           <h3 className="text-sm font-semibold text-strong mb-1">재구축 실행</h3>
           {rebuildError ? (
             // 섹션이 통째로 사라지면 "보고할 것이 없다"로 읽힌다 — 정직성 규약 위반이다.
-            <p className="text-sm text-danger">
-              재구축 실행 가능 여부를 확인하지 못했습니다.{' '}
-              {rebuildError instanceof Error ? rebuildError.message : String(rebuildError)}
-            </p>
+            <InlineError error={humanizeError(rebuildError, '재구축 실행 가능 여부 조회')} />
           ) : !rebuild ? (
             <p className="text-sm text-secondary">재구축 실행 조건을 확인하는 중입니다.</p>
           ) : (
@@ -393,10 +387,7 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
         {isLoading ? (
           <p className="text-sm text-secondary">배포 상태를 확인하는 중입니다.</p>
         ) : error ? (
-          <p className="text-sm text-danger">
-            배포 상태를 불러오지 못했습니다.{' '}
-            {error instanceof Error ? error.message : String(error)}
-          </p>
+          <InlineError error={humanizeError(error, '배포 상태 조회')} />
         ) : data ? (
           <>
             <section

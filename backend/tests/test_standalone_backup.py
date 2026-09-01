@@ -12,10 +12,13 @@ import kor_travel_docker_manager.services.standalone_backup as standalone_backup
 from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
     StandaloneBackupError,
+    StandaloneBackupInProgressError,
     create_standalone_backup,
     gc_standalone_backups,
     list_standalone_backups,
+    list_standalone_backups_for_display,
     plan_standalone_restore,
+    rehearse_standalone_restore,
 )
 
 _CMD_JSON = json.dumps(["postgres", "-p", "12500", "-c", "listen_addresses=127.0.0.1"]).encode(
@@ -39,6 +42,8 @@ def _happy_run_checked():
             return _CMD_JSON
         if arguments[:2] == ["docker", "inspect"] and "Env" in arguments[3]:
             return _ENV_OUTPUT
+        if "pg_stat_activity" in " ".join(arguments):
+            return b"0\n"
         if arguments[:3] == ["docker", "exec", "--user"] and "pg_dump" in arguments:
             return b""
         if arguments[:2] == ["docker", "exec"] and "pg_restore" in arguments:
@@ -161,6 +166,8 @@ def test_create_standalone_backup_rejects_empty_dump_file(
             return json.dumps(["postgres", "-p", "12800"]).encode("utf-8")
         if arguments[:2] == ["docker", "inspect"] and "Env" in arguments[3]:
             return b"POSTGRES_USER=pinvi\n"
+        if "pg_stat_activity" in " ".join(arguments):
+            return b"0\n"
         if "pg_dump" in arguments:
             return b""
         if "pg_restore" in arguments:
@@ -191,6 +198,8 @@ def test_create_standalone_backup_attempts_container_cleanup_even_on_copy_failur
             return json.dumps(["postgres", "-p", "12700"]).encode("utf-8")
         if arguments[:2] == ["docker", "inspect"] and "Env" in arguments[3]:
             return b"POSTGRES_USER=kor_travel_map\n"
+        if "pg_stat_activity" in " ".join(arguments):
+            return b"0\n"
         if "pg_dump" in arguments:
             return b""
         if "pg_restore" in arguments:
@@ -210,6 +219,36 @@ def test_create_standalone_backup_attempts_container_cleanup_even_on_copy_failur
     cleanup.assert_called_once()
     assert not (root / ".map_application-1000.dump.copying").exists()
     assert not (root / "map_application-1000.dump").exists()
+
+
+def test_create_standalone_backup_refuses_when_a_pg_dump_is_already_running(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """GM-13: role lock은 프로세스 재기동에서 살아남지 못한다 — 재기동 직후 같은
+    role을 다시 시작했을 때 컨테이너 안에 이전 pg_dump가 여전히 돌고 있으면
+    (pg_stat_activity로 확인) 새 pg_dump를 시작하지 않고 즉시 거부해야 한다."""
+
+    root = tmp_path / "geo"
+
+    def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
+        if arguments[:2] == ["docker", "inspect"] and "Cmd" in arguments[3]:
+            return _CMD_JSON
+        if arguments[:2] == ["docker", "inspect"] and "Env" in arguments[3]:
+            return _ENV_OUTPUT
+        if "pg_stat_activity" in " ".join(arguments):
+            return b"1\n"
+        raise AssertionError(f"unexpected command after in-progress guard: {arguments}")
+
+    monkeypatch.setattr(standalone_backup, "_run_checked", Mock(side_effect=run_checked))
+    _fake_time(monkeypatch)
+    subprocess_run = Mock(side_effect=AssertionError("pg_dump must not start"))
+    monkeypatch.setattr(standalone_backup.subprocess, "run", subprocess_run)
+
+    with pytest.raises(StandaloneBackupInProgressError, match="already running"):
+        create_standalone_backup("geo", backup_root=root)
+    subprocess_run.assert_not_called()
+    assert not (root / "geo-1000.dump").exists()
+    assert not (root / "geo-1000.manifest").exists()
 
 
 def test_discover_port_parses_dash_p_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -298,6 +337,79 @@ def test_list_standalone_backups_sorted_by_created_at(tmp_path: Path) -> None:
 
 def test_list_standalone_backups_empty_when_root_missing(tmp_path: Path) -> None:
     assert list_standalone_backups("geo", backup_root=tmp_path / "does-not-exist") == []
+
+
+def test_list_standalone_backups_for_display_degrades_a_single_corrupt_manifest(
+    tmp_path: Path,
+) -> None:
+    """GM-13: manifest 하나가 손상돼도(여기서는 role 불일치) 나머지 정상 manifest는
+    여전히 보이고, 손상된 것은 예외 대신 {"state": "unreadable", ...} 행이 된다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    (root / "geo-1000.manifest").write_text(
+        json.dumps(_manifest_payload("geo", 1000, "geo-1000.dump")), encoding="utf-8"
+    )
+    # role 불일치 — map 세트가 geo 디렉터리에 잘못 복사된 것과 같은 실제 사고를 재현.
+    (root / "geo-999.manifest").write_text(
+        json.dumps(_manifest_payload("map_application", 999, "geo-999.dump")),
+        encoding="utf-8",
+    )
+
+    rows = list_standalone_backups_for_display("geo", backup_root=root)
+
+    assert len(rows) == 2
+    assert rows[0]["backup_filename"] == "geo-1000.dump"
+    assert rows[1]["state"] == "unreadable"
+    assert rows[1]["filename"] == "geo-999.manifest"
+    assert "role does not match" in rows[1]["reason"]
+
+
+def test_list_standalone_backups_for_display_empty_when_root_missing(tmp_path: Path) -> None:
+    assert (
+        list_standalone_backups_for_display("geo", backup_root=tmp_path / "does-not-exist")
+        == []
+    )
+
+
+def test_list_standalone_backups_for_display_all_corrupt_returns_no_readable_rows(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    (root / "geo-1.manifest").write_text("not json", encoding="utf-8")
+
+    rows = list_standalone_backups_for_display("geo", backup_root=root)
+
+    assert rows == [
+        {
+            "state": "unreadable",
+            "filename": "geo-1.manifest",
+            "reason": "manifest is unreadable: geo-1.manifest",
+        }
+    ]
+
+
+def test_list_standalone_backups_for_display_raises_when_the_directory_itself_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """디렉터리 자체를 못 읽는 것(권한 문제 등)은 개별 manifest 손상과 성격이 다르다
+    — 이건 여전히 fail-close다(라우트가 503로 옮긴다). drvfs 마운트에서는 실제
+    chmod 권한 거부가 재현되지 않을 수 있어(conftest.py 참고) glob 자체를
+    OSError로 monkeypatch해 결정적으로 재현한다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+
+    def raising_glob(self: Path, pattern: str):
+        if self == root:
+            raise OSError("Permission denied")
+        return []
+
+    monkeypatch.setattr(standalone_backup.Path, "glob", raising_glob)
+
+    with pytest.raises(StandaloneBackupError, match="unreadable"):
+        list_standalone_backups_for_display("geo", backup_root=root)
 
 
 def test_list_standalone_backups_rejects_malformed_manifest(tmp_path: Path) -> None:
@@ -845,3 +957,311 @@ def test_restore_plan_turns_a_vanishing_dump_into_a_finding(
 
     assert plan.restorable is False
     assert "DUMP_UNREADABLE" in [f.code for f in plan.findings]
+
+
+# --- 복원 리허설(GM-07, scratch DB만 건드림) -----------------------------------
+#
+# 이 블록의 요점: 운영 DB로 덮어쓰는 파괴적 복원은 여전히 없다(오너가 로드맵 뒤로
+# 미룸). 여기서 증명하는 것은 "이 백업이 scratch DB에 실제로 복원된다"는 사실뿐이고,
+# scratch DB는 성공/실패와 무관하게 항상 지워야 한다.
+
+
+def _rehearsal_probes(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pg_restore_returncode: int = 0,
+    pg_restore_stderr: bytes = b"",
+    restored_head: str | None = "0001_head",
+    restored_size: int = 12345,
+) -> list[list[str]]:
+    """createdb/pg_restore/cleanup을 가짜로 응답하고, cleanup 호출을 기록한다."""
+
+    monkeypatch.setattr(standalone_backup, "_discover_port", lambda name: 12500)
+    monkeypatch.setattr(standalone_backup, "_discover_admin_role", lambda name: "addr")
+    monkeypatch.setattr(standalone_backup, "_query_db_size", lambda *a, **k: restored_size)
+    monkeypatch.setattr(
+        standalone_backup, "_discover_alembic_head", lambda *a, **k: restored_head
+    )
+    # 오래된 scratch DB 스윕은 별도 테스트에서 다룬다 — 여기서는 항상 없다고 답한다.
+    monkeypatch.setattr(
+        standalone_backup, "_drop_stale_rehearsal_databases", lambda *a, **k: ()
+    )
+
+    def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
+        if arguments[:2] == ["docker", "cp"]:
+            return b""
+        if "createdb" in arguments:
+            return b""
+        raise AssertionError(f"unexpected _run_checked command in rehearsal: {arguments}")
+
+    monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
+
+    def run_pg_restore(arguments: list[str], *, label: str, timeout: int) -> tuple[int, bytes]:
+        assert "pg_restore" in arguments
+        return pg_restore_returncode, pg_restore_stderr
+
+    monkeypatch.setattr(standalone_backup, "_run_pg_restore", run_pg_restore)
+
+    cleanup_calls: list[list[str]] = []
+
+    def fake_subprocess_run(arguments: list[str], **kwargs: object) -> Mock:
+        cleanup_calls.append(arguments)
+        return Mock(returncode=0, stderr=b"", stdout=b"")
+
+    monkeypatch.setattr(standalone_backup.subprocess, "run", fake_subprocess_run)
+    return cleanup_calls
+
+
+def test_rehearse_standalone_restore_confirms_a_healthy_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    cleanup_calls = _rehearsal_probes(monkeypatch, restored_head="0001_head")
+
+    outcome = rehearse_standalone_restore("geo", backup_root=root)
+
+    assert outcome.attempted is True
+    assert outcome.restore_succeeded is True
+    assert outcome.verified is True
+    assert outcome.restored_alembic_head == "0001_head"
+    assert outcome.restored_db_size_bytes == 12345
+    assert outcome.scratch_database is not None
+    # scratch DB는 항상 지운다 — dropdb가 실제로 호출됐는지 확인한다.
+    assert any("dropdb" in call for call in cleanup_calls)
+    assert any("rm" in call for call in cleanup_calls)
+
+
+def test_rehearse_standalone_restore_skips_the_attempt_when_the_plan_is_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """무결성이 깨진 dump를 scratch DB에라도 복원 시도하는 것은 낭비다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    # dump 파일 자체가 없다 — plan이 DUMP_MISSING으로 차단한다. 이 probe는
+    # plan_standalone_restore 자신의 정당한 live-schema 조회만 허용한다.
+    payload = _manifest_payload("geo", 1000, "geo-1000.dump")
+    (root / "geo-1000.manifest").write_text(json.dumps(payload), encoding="utf-8")
+    _plan_probes(monkeypatch, live_head="0001_head")
+
+    def fail_if_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("복원 계획이 차단됐으면 pg_restore를 시도하면 안 된다")
+
+    monkeypatch.setattr(standalone_backup, "_run_pg_restore", fail_if_called)
+
+    outcome = rehearse_standalone_restore("geo", backup_root=root)
+
+    assert outcome.attempted is False
+    assert outcome.verified is False
+    assert outcome.plan.restorable is False
+
+
+def test_rehearse_standalone_restore_reports_a_failed_pg_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    cleanup_calls = _rehearsal_probes(
+        monkeypatch, pg_restore_returncode=1, pg_restore_stderr=b"boom"
+    )
+
+    outcome = rehearse_standalone_restore("geo", backup_root=root)
+
+    assert outcome.attempted is True
+    assert outcome.restore_succeeded is False
+    assert outcome.verified is False
+    assert "REHEARSAL_RESTORE_FAILED" in [f.code for f in outcome.findings]
+    assert any(f.blocking for f in outcome.findings)
+    # 실패해도 scratch DB 정리는 여전히 시도한다.
+    assert any("dropdb" in call for call in cleanup_calls)
+
+
+def test_rehearse_standalone_restore_flags_a_schema_mismatch_after_a_successful_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pg_restore가 exit 0으로 끝나도 복원된 내용이 manifest와 다르면 검증 실패다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    _rehearsal_probes(monkeypatch, restored_head="9999_other_head")
+
+    outcome = rehearse_standalone_restore("geo", backup_root=root)
+
+    assert outcome.restore_succeeded is True
+    assert outcome.verified is False
+    assert "REHEARSAL_HEAD_MISMATCH" in [f.code for f in outcome.findings]
+
+
+def test_rehearse_standalone_restore_always_drops_the_scratch_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cleanup은 try 블록의 예외 여부와 무관하게 실행돼야 한다(finally)."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    monkeypatch.setattr(standalone_backup, "_discover_port", lambda name: 12500)
+    monkeypatch.setattr(standalone_backup, "_discover_admin_role", lambda name: "addr")
+
+    def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
+        if arguments[:2] == ["docker", "cp"]:
+            return b""
+        raise StandaloneBackupError("createdb exploded")
+
+    monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
+
+    cleanup_calls: list[list[str]] = []
+
+    def fake_subprocess_run(arguments: list[str], **kwargs: object) -> Mock:
+        cleanup_calls.append(arguments)
+        return Mock(returncode=0, stderr=b"", stdout=b"")
+
+    monkeypatch.setattr(standalone_backup.subprocess, "run", fake_subprocess_run)
+
+    with pytest.raises(StandaloneBackupError):
+        rehearse_standalone_restore("geo", backup_root=root)
+
+    assert any("dropdb" in call for call in cleanup_calls)
+
+
+def test_rehearse_standalone_restore_generates_a_unique_scratch_database_name_per_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """같은 초에 두 번 불러도 이름이 겹치면 안 된다 — geo/geo_dagster처럼 컨테이너를
+    공유하는 role 쌍이 동시에 리허설하면 한쪽 dropdb가 다른 쪽의 진행 중인 scratch
+    DB를 지울 수 있었다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    _rehearsal_probes(monkeypatch)
+    monkeypatch.setattr(standalone_backup.time, "time", lambda: 1000.0)
+
+    first = rehearse_standalone_restore("geo", backup_root=root)
+    second = rehearse_standalone_restore("geo", backup_root=root)
+
+    assert first.scratch_database != second.scratch_database
+    assert first.scratch_database.startswith("ktdm_rehearsal_1000_")
+
+
+def test_rehearse_standalone_restore_flags_a_size_shortfall_short_of_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """복원된 크기가 0은 아니어도 백업 시점 크기의 절반에 못 미치면 부분 복원을 의심한다.
+
+    갓 만든 빈 DB도 카탈로그만으로 몇 MB라 순수 0바이트 판정은 현실에서 거의 걸리지
+    않는다 — manifest 크기 대비 비율로 봐야 실제로 잡는다.
+    """
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    # _manifest_payload의 db_size_bytes == 100.
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    _rehearsal_probes(monkeypatch, restored_size=10)
+
+    outcome = rehearse_standalone_restore("geo", backup_root=root)
+
+    assert outcome.restore_succeeded is True
+    assert outcome.verified is False
+    assert "REHEARSAL_SIZE_SHORTFALL" in [f.code for f in outcome.findings]
+    assert "REHEARSAL_EMPTY_DATABASE" not in [f.code for f in outcome.findings]
+
+
+def test_rehearse_standalone_restore_surfaces_a_cleanup_failure_without_hiding_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dropdb 정리가 실패해도 예외로 삼키지 않고 findings에 남긴다 — 그래야 잔해가
+    생겼다는 사실이 조용히 사라지지 않는다. 복원 자체는 성공했으므로 verified는 유지한다.
+    """
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    monkeypatch.setattr(standalone_backup, "_discover_port", lambda name: 12500)
+    monkeypatch.setattr(standalone_backup, "_discover_admin_role", lambda name: "addr")
+    monkeypatch.setattr(standalone_backup, "_query_db_size", lambda *a, **k: 12345)
+    monkeypatch.setattr(standalone_backup, "_discover_alembic_head", lambda *a, **k: "0001_head")
+    monkeypatch.setattr(
+        standalone_backup, "_drop_stale_rehearsal_databases", lambda *a, **k: ()
+    )
+
+    def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
+        return b""
+
+    monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
+    monkeypatch.setattr(
+        standalone_backup, "_run_pg_restore", lambda *a, **k: (0, b"")
+    )
+
+    def fake_subprocess_run(arguments: list[str], **kwargs: object) -> Mock:
+        if "dropdb" in arguments:
+            return Mock(returncode=1, stderr=b"still has active connections", stdout=b"")
+        return Mock(returncode=0, stderr=b"", stdout=b"")
+
+    monkeypatch.setattr(standalone_backup.subprocess, "run", fake_subprocess_run)
+
+    outcome = rehearse_standalone_restore("geo", backup_root=root)
+
+    assert outcome.restore_succeeded is True
+    assert outcome.verified is True
+    assert "REHEARSAL_CLEANUP_INCOMPLETE" in [f.code for f in outcome.findings]
+
+
+def test_drop_stale_rehearsal_databases_removes_only_databases_older_than_the_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 1_000_000.0
+    stale_epoch = int(now) - standalone_backup._REHEARSAL_STALE_AFTER_SECONDS - 1
+    fresh_epoch = int(now) - 10
+    listing = (
+        f"ktdm_rehearsal_{stale_epoch}_aaaa\n"
+        f"ktdm_rehearsal_{fresh_epoch}_bbbb\n"
+        "\n"
+    ).encode()
+
+    monkeypatch.setattr(standalone_backup.time, "time", lambda: now)
+
+    def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
+        assert "pg_database" in " ".join(arguments)
+        return listing
+
+    monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
+
+    dropped_names: list[str] = []
+
+    def fake_subprocess_run(arguments: list[str], **kwargs: object) -> Mock:
+        if "dropdb" in arguments:
+            dropped_names.append(arguments[-1])
+        return Mock(returncode=0, stderr=b"", stdout=b"")
+
+    monkeypatch.setattr(standalone_backup.subprocess, "run", fake_subprocess_run)
+
+    dropped = standalone_backup._drop_stale_rehearsal_databases(
+        "kor-travel-geo-postgres", 12500, "addr"
+    )
+
+    assert dropped == (f"ktdm_rehearsal_{stale_epoch}_aaaa",)
+    assert dropped_names == [f"ktdm_rehearsal_{stale_epoch}_aaaa"]
+
+
+def test_rehearse_standalone_restore_reports_swept_stale_databases_as_a_finding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    _rehearsal_probes(monkeypatch)
+    monkeypatch.setattr(
+        standalone_backup,
+        "_drop_stale_rehearsal_databases",
+        lambda *a, **k: ("ktdm_rehearsal_1_aaaa",),
+    )
+
+    outcome = rehearse_standalone_restore("geo", backup_root=root)
+
+    assert "STALE_REHEARSAL_DATABASES_CLEANED" in [f.code for f in outcome.findings]
+    assert outcome.verified is True

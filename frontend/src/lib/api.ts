@@ -12,7 +12,12 @@ export class ApiError extends Error {
   /** 응답 본문 원문. "자세히" 접기에서 그대로 보여 준다. */
   raw: string;
 
-  constructor(status: number, raw: string) {
+  /** GM-16: 이 요청의 상관관계 ID(`X-Request-ID` 응답 헤더). 서버 로그·감사
+   * 행과 조인하는 키라, 운영자가 이슈에 붙여넣을 수 있게 화면에도 남긴다.
+   * 헤더가 없으면(예: 네트워크 자체가 끊겨 응답을 못 받은 경우) null. */
+  requestId: string | null;
+
+  constructor(status: number, raw: string, requestId: string | null = null) {
     const parsed = parseErrorBody(raw);
     super(parsed.serverMessage || raw || `${status}`);
     this.name = 'ApiError';
@@ -20,6 +25,7 @@ export class ApiError extends Error {
     this.code = parsed.code;
     this.serverMessage = parsed.serverMessage;
     this.raw = raw;
+    this.requestId = requestId;
   }
 }
 
@@ -183,7 +189,9 @@ export type LoginAuditEvent = {
 /** `ktdctl db-backup create`가 생성하는 standalone DB backup manifest 항목
  * (issue #177). `GET /api/v1/backups` 응답 요소. */
 export type StandaloneBackupManifest = {
-  role: 'geo' | 'geo_dagster' | 'concierge' | 'map_application' | 'map_dagster' | 'pinvi';
+  // GM-18: role 값의 정본은 backend standalone_backup.py의 BACKUP_ROLES다 — 여기서
+  // 리터럴 union을 다시 적으면 새 role 추가 시 이 타입만 조용히 구식으로 남는다.
+  role: string;
   created_at_unix: number;
   duration_sec: number;
   sha256: string;
@@ -195,10 +203,21 @@ export type StandaloneBackupManifest = {
   alembic_head: string | null;
 };
 
+/** GM-13: manifest 파일 하나가 손상·형식 위반·role 불일치여도 `GET /api/v1/backups`
+ * 전체를 409로 지우지 않고, 그 항목만 이 형태로 성공한 항목들 사이에 끼워 보여준다. */
+export type UnreadableBackupEntry = {
+  state: 'unreadable';
+  filename: string;
+  reason: string;
+};
+
 /** `GET /api/v1/backups` 응답. 생성/보존 정리는 `ktdctl db-backup` CLI 전용이라
  * 이 API는 mutation을 노출하지 않는 읽기 전용 목록이다. */
 export type BackupListResponse = {
-  backups: StandaloneBackupManifest[];
+  backups: (StandaloneBackupManifest | UnreadableBackupEntry)[];
+  /** GM-18: 백엔드 BACKUP_ROLES 정본 목록 — 프론트는 이 값에서 select/생성 버튼을
+   * 파생하고 별도로 role 목록을 하드코딩하지 않는다. */
+  roles: string[];
 };
 
 /** `POST /api/v1/backups/{role}`의 202 응답이자 `GET .../jobs/{id}` 폴링 응답.
@@ -214,9 +233,39 @@ export type BackupJob = {
   finished_at_unix: number | null;
   result: StandaloneBackupManifest | null;
   error: string | null;
+  /** GM-14: 백업 자체는 시작됐지만(그래서 여기까지 온다) 그 사실을 남기는
+   * 감사 로그 기록이 실패했을 때만 `POST /backups/{role}`의 202 응답에 붙는다
+   * — `GET .../jobs/{id}` 폴링 응답에는 없다(그 시점엔 이미 지나간 일이다). */
+  audit_warning?: string;
 };
 
 export type LatestBackupJobResponse = { job: BackupJob | null };
+
+/** `ktdctl offbox-sync run`이 남기는 상태(GM-08) — 백업과 pin registry 보존본을
+ * 설정된 원격 호스트로 옮기고 원격 `sha256sum -c`로 재검증한 마지막 결과다.
+ * 실행 트리거는 CLI 전용이라 `GET /api/v1/backups/offbox-sync-status`는 읽기 전용. */
+export type OffboxSyncTargetStatus = {
+  label: string;
+  synced: boolean;
+  verified: boolean;
+  detail: string;
+};
+
+export type OffboxSyncStatus = {
+  destination_host: string;
+  started_at_unix: number;
+  duration_sec: number;
+  targets: OffboxSyncTargetStatus[];
+  all_verified: boolean;
+};
+
+export type OffboxSyncStatusResponse = {
+  status: OffboxSyncStatus | null;
+  // false: 아무도 KTDM_OFFBOX_HOST를 설정하지 않았다(의도적 미사용, 문제 아님).
+  // true + status null: env는 있지만 offbox-sync run을 아직 실행한 적이 없다 —
+  // 이 둘을 구분하지 않으면 "설정하고 방치"와 "애초에 안 씀"이 화면에서 똑같이 보인다.
+  configured: boolean;
+};
 
 /** `GET /api/v1/admin/password/preflight`.
  *
@@ -496,7 +545,11 @@ export async function apiJson<T>(path: string, init?: ApiRequestInit): Promise<T
   const response = await apiFetch(path, init);
   if (!response.ok) {
     const text = await response.text();
-    throw new ApiError(response.status, text || `${response.status} ${response.statusText}`);
+    throw new ApiError(
+      response.status,
+      text || `${response.status} ${response.statusText}`,
+      response.headers.get('x-request-id')
+    );
   }
   return (await response.json()) as T;
 }

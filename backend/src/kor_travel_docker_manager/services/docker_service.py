@@ -12,15 +12,15 @@ import yaml
 from docker.errors import DockerException, NotFound
 
 from kor_travel_docker_manager.services.c6c_deployment import (
-    _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _PINVI_POSTGRES_INITDB_ARGS,
-    ComposeCandidateContractError,
-    ComposePostMutationContractError,
     assert_contract_locked_env_unchanged,
     assert_manager_mutation_allowed,
     compose_volume_graph_hash,
     contract_locked_env_names,
     revalidate_candidate_system_bind_snapshots,
+)
+from kor_travel_docker_manager.services.capabilities import (
+    _MANAGED_COMPOSE_MUTATION_CAPABILITY,
 )
 from kor_travel_docker_manager.services.compose_service import (
     ComposeEnvironmentSnapshot,
@@ -31,6 +31,10 @@ from kor_travel_docker_manager.services.compose_service import (
     c6c_deployment_lock_from_environment,
     compose_service,
     get_compose_path,
+)
+from kor_travel_docker_manager.services.errors import (
+    ComposeCandidateContractError,
+    ComposePostMutationContractError,
 )
 from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS
 
@@ -541,9 +545,6 @@ class DockerService:
         compose_cfg = get_compose_config()
         services = compose_cfg.get("services", {})
 
-        # 순환 참조 방지를 위해 로컬 임포트 수행
-        from kor_travel_docker_manager.services.metrics_collector import metrics_collector
-
         try:
             client = self._get_client()
         except RuntimeError:
@@ -826,9 +827,6 @@ class DockerService:
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}
 
-        # 순환 참조 방지를 위해 메서드 안에서 최신 stats 캐시를 읽는다.
-        from kor_travel_docker_manager.services.metrics_collector import metrics_collector
-
         spec = MANAGED_CONTAINERS[container_id]
         cname = spec["name"]
         try:
@@ -994,7 +992,7 @@ class DockerService:
         try:
             compose_path = Path(environment_snapshot.compose_path)
             baseline_transaction, baseline_validation = (
-                compose_service._capture_transaction_unlocked(
+                compose_service.capture_transaction_unlocked(
                     environment_snapshot=environment_snapshot,
                 )
             )
@@ -1056,7 +1054,7 @@ class DockerService:
                 raise ComposeCandidateContractError(
                     "compose candidate volume configuration is immutable through the Manager API"
                 )
-            validation = compose_service._capture_candidate_transaction_unlocked(
+            validation = compose_service.capture_candidate_transaction_unlocked(
                 compose_cfg,
                 baseline_transaction=baseline_transaction,
                 baseline_validation=baseline_validation,
@@ -1358,3 +1356,12 @@ class DockerService:
 
 
 docker_service = DockerService()
+
+# GM-20: metrics_collector.py는 이제 docker_service를 전혀 import하지 않는다
+# (MANAGED_CONTAINERS는 registry.py에서 직접 가져오고, docker client 접근은
+# 콜백 주입이다) — 그래서 이 방향의 top-level import는 더 이상 순환이 아니다.
+# 여기서 배선해야 실제 백그라운드 수집 루프(main.py의 lifespan)가 진짜 docker
+# client를 받는다.
+from kor_travel_docker_manager.services.metrics_collector import metrics_collector  # noqa: E402
+
+metrics_collector.set_docker_client_provider(docker_service._get_client)

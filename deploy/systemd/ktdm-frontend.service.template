@@ -1,0 +1,41 @@
+# kor-travel-docker-manager 프론트엔드 (Next.js :12905) — 템플릿
+#
+# 프론트엔드는 trusted release(/opt)가 아니라 운영자 계정 홈의 rsync 배포본에서
+# 구동되고, 그 계정명·경로는 저장소에 커밋하지 않는 민감 정보다. 그래서 이 파일은
+# placeholder를 가진 템플릿이며, installer가 root 소유 `.env`의 아래 키로 렌더링해
+# /etc/systemd/system/ktdm-frontend.service로 설치한다.
+#
+#   KTDM_FRONTEND_SERVICE_USER=<프론트엔드를 소유·실행할 계정>
+#   KTDM_FRONTEND_APP_DIR=<frontend 디렉터리 절대 경로>
+#   KTDM_FRONTEND_NPM=<npm 절대 경로, 생략 시 /usr/local/bin/npm>
+#
+# 두 필수 키가 .env에 없으면 installer는 이 유닛을 건너뛰고 경고만 남긴다.
+# User를 비워 두면 root로 실행된다 — 프론트엔드는 root 권한이 전혀 필요 없으므로
+# 반드시 비root 계정을 지정한다(현행 nohup 방식이 root로 띄우던 것은 불필요한
+# 권한 확대였다).
+
+[Unit]
+Description=kor-travel-docker-manager frontend (Next.js :12905)
+Wants=network-online.target
+After=network-online.target ktdm-backend.service
+# 크래시 루프 시 무한 재기동 thrash를 막되 일시 실패는 복구한다([Unit] 섹션 지시어).
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=exec
+User=__KTDM_FRONTEND_USER__
+WorkingDirectory=__KTDM_FRONTEND_DIR__
+# npm의 shebang은 `#!/usr/bin/env node`라 node가 PATH에 있어야 한다. systemd 서비스는
+# 로그인 PATH를 상속하지 않고 컴파일된 기본값만 쓰므로, node가 흔히 있는 위치를 명시한다
+# (nvm/fnm 경로를 쓰는 host는 이 유닛 대신 KTDM_FRONTEND_NPM에 wrapper를 지정한다).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=__KTDM_FRONTEND_NPM__ run start
+# 클린 종료(exit 0) 크래시까지 복구하려면 on-failure가 아니라 always가 필요하다.
+Restart=always
+RestartSec=3
+# 프론트엔드는 상승 권한이 전혀 필요 없다.
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -19,8 +19,6 @@ import json
 import os
 import re
 import stat
-import sys
-import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,6 +26,16 @@ from pathlib import Path
 from typing import Any, Final
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.secure_state_file import (
+    atomic_write_json,
+    insecure_mode_allowed,
+)
+from kor_travel_docker_manager.services.trusted_install import (
+    TRUSTED_INSTALL_ROOT,
+    TRUSTED_PUBLIC_ROOT,
+    TRUSTED_STATE_ROOT,
+    running_from_trusted_install_root,
+)
 
 RUNTIME_PIN_REGISTRY_SCHEMA: Final = "kor-travel-docker-manager.runtime-pin-registry.v1"
 RUNTIME_PINS_FILE_ENV: Final = "KTDM_RUNTIME_PINS_FILE"
@@ -46,14 +54,13 @@ _SEED_RELPATH: Final = ("config", _SEED_BASENAME)
 # scope에서 import하면 순환이 되므로 값을 복제하고 테스트로 동일성을 고정한다.
 _SUPPORTED_RELEASE_VERSION: Final = 5
 _DEFAULT_PUBLIC_BASENAME: Final = ".ktdm-runtime-pins.json"
-# trusted installer의 canonical execution root. 이 트리는 release마다 통째 교체된다.
-_TRUSTED_INSTALL_ROOT: Final = Path("/opt/kor-travel-docker-manager")
-# 설치 root에서 돌 때의 registry 기본 위치. 트리 교체에 살아남아야 하므로 트리 밖이다.
-_TRUSTED_STATE_ROOT: Final = Path("/var/lib/kor-travel-docker-manager")
-# 공개 사본은 **별도 트리**다. installer가 위 상태 root를 매 설치마다 0700 root:root로
+# GM-09: 경로 상수와 trusted-root 판정의 정본은 services/trusted_install.py다.
+# 공개 사본은 **별도 트리**다. installer가 상태 root를 매 설치마다 0700 root:root로
 # 되돌리므로 그 안에 두면 비-root backend가 traverse조차 못 해 조회 API가 영구
 # ``unknown``이 된다(n150 실측). 사본은 비밀이 없으므로 world-readable 트리에 둔다.
-_TRUSTED_PUBLIC_ROOT: Final = Path("/var/lib/kor-travel-docker-manager-public")
+_TRUSTED_INSTALL_ROOT: Final = TRUSTED_INSTALL_ROOT
+_TRUSTED_STATE_ROOT: Final = TRUSTED_STATE_ROOT
+_TRUSTED_PUBLIC_ROOT: Final = TRUSTED_PUBLIC_ROOT
 
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -554,12 +561,9 @@ def _parse_sources(payload: Any, *, release_version: int) -> Mapping[str, str]:
 
 
 def _project_root() -> Path:
-    # trusted release의 root launcher는 wheel 안의 Python을 ``-I``로 직접 실행한다.
-    # 그때 entrypoint가 주입하는 project-root env가 없더라도 sys.prefix는 설치 venv를
-    # 그대로 보존한다. package 부모를 네 번 거슬러 올리는 개발 checkout 규칙을 먼저
-    # 적용하면 ``.../.venv/lib/config``이라는 존재하지 않는 경로가 되어 one-shot이
-    # ledger claim 전 import 단계에서 끝난다.
-    if Path(sys.prefix) == _TRUSTED_INSTALL_ROOT / "backend" / ".venv":
+    # GM-09: trusted-root 판정 자체(wheel 직접 실행의 sys.prefix 특례 포함)는
+    # services/trusted_install.py의 running_from_trusted_install_root가 정본이다.
+    if running_from_trusted_install_root():
         return _TRUSTED_INSTALL_ROOT
 
     from kor_travel_docker_manager.services.registry import get_project_root
@@ -570,11 +574,7 @@ def _project_root() -> Path:
 def _running_from_trusted_install_root() -> bool:
     """trusted installer가 통째 교체하는 canonical execution root에서 도는가."""
 
-    project_root = _project_root()
-    try:
-        return project_root.resolve() == _TRUSTED_INSTALL_ROOT.resolve()
-    except OSError:
-        return False
+    return running_from_trusted_install_root()
 
 
 def runtime_pin_registry_path() -> Path:
@@ -630,11 +630,15 @@ def _effective_uid() -> int | None:
 
 
 def _insecure_mode_allowed() -> bool:
-    """개발 환경에서만 mode 검사를 완화한다. 소유자 검사는 완화하지 않는다."""
+    """개발 환경에서만 mode 검사를 완화한다. 소유자 검사는 완화하지 않는다.
+
+    GM-10: env 파싱 규칙(.strip() == "1")의 정본은 services/secure_state_file.py다
+    — 이 함수가 그 규칙의 원본이었다.
+    """
 
     if _effective_uid() == 0:
         return False
-    return os.environ.get(RUNTIME_PINS_ALLOW_INSECURE_MODE_ENV, "").strip() == "1"
+    return insecure_mode_allowed(RUNTIME_PINS_ALLOW_INSECURE_MODE_ENV)
 
 
 def _assert_registry_file_integrity(path: Path) -> None:
@@ -749,41 +753,13 @@ def _atomic_write_json(
     mode: int,
     directory_mode: int | None = None,
 ) -> None:
-    """같은 디렉터리의 임시 파일에 쓰고 fsync 뒤 원자 교체한다."""
+    """같은 디렉터리의 임시 파일에 쓰고 fsync 뒤 원자 교체한다.
 
-    parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    if directory_mode is not None:
-        # 파일 mode만 맞아도 부모가 traverse 불가면 읽는 쪽은 lstat조차 못 한다.
-        try:
-            os.chmod(parent, directory_mode)
-        except OSError:
-            pass
-    body = json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=False) + "\n"
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(parent)
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(body)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary_path, mode)
-        os.replace(temporary_path, path)
-    except BaseException:
-        temporary_path.unlink(missing_ok=True)
-        raise
-    try:
-        directory_fd = os.open(str(parent), os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(directory_fd)
-    except OSError:
-        pass
-    finally:
-        os.close(directory_fd)
+    GM-10: 정본은 services/secure_state_file.py다 — 이 함수가 원본이었고
+    execution registry 등이 여기서 빠진 디렉터리 fsync 없이 따로 구현했었다.
+    """
+
+    atomic_write_json(path, payload, mode=mode, directory_mode=directory_mode)
 
 
 def publish_runtime_pins(
@@ -1228,17 +1204,19 @@ def block_runtime_pinset(
     return updated
 
 
-def rollback_runtime_pin(
+def build_runtime_pin_rollback(
     *,
     pinset_sha256: str,
     rotated_by: str,
     reason: str,
     path: Path | None = None,
 ) -> RuntimePinRegistry:
-    """보존된 이전 registry로 원복한다.
+    """보존본 원복 결과를 **기록하지 않고** 준비한다.
 
     차단(terminal) pinset으로의 원복은 거부한다 — Map·PinVi 저장소가 문서 규율로
     지켜 온 "terminal candidate는 재시도하지 않는다"를 코드가 깨뜨리지 않기 위해서다.
+    v6 execution registry와 함께 durable intent 아래 기록해야 하는 host에서는 이
+    준비 단계와 writer가 분리되어 있어야 v5만 먼저 영구 반영되는 일이 없다.
     """
 
     registry_path = path or runtime_pin_registry_path()
@@ -1265,7 +1243,7 @@ def rollback_runtime_pin(
             supersedes_pinset_sha256=current.pinset_sha256,
         ),
     )[-_MAX_HISTORY_ENTRIES:]
-    updated = build_registry(
+    return build_registry(
         release_version=preserved.release_version,
         map_revision=preserved.map_revision,
         pinvi_revision=preserved.pinvi_revision,
@@ -1274,6 +1252,24 @@ def rollback_runtime_pin(
         rotated_at=rotated_at,
         history=history,
         blocked_pinsets=current.blocked_pinsets,
+    )
+
+
+def rollback_runtime_pin(
+    *,
+    pinset_sha256: str,
+    rotated_by: str,
+    reason: str,
+    path: Path | None = None,
+) -> RuntimePinRegistry:
+    """보존된 이전 registry로 원복한다. (계약은 ``build_runtime_pin_rollback`` 참조)"""
+
+    registry_path = path or runtime_pin_registry_path()
+    updated = build_runtime_pin_rollback(
+        pinset_sha256=pinset_sha256,
+        rotated_by=rotated_by,
+        reason=reason,
+        path=registry_path,
     )
     write_runtime_pin_registry(updated, path=registry_path)
     return updated

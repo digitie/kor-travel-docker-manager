@@ -857,6 +857,12 @@ def _validate_private_file_stat(metadata: os.stat_result) -> None:
 
 
 def _fsync_directory_descriptor(descriptor: int) -> None:
+    # GM-10 후속 확인 필요: 이 함수를 부르는 자리(예: 95번째 줄 부근)는 이미 성공한
+    # credential 파일 생성 뒤에 이 fsync를 호출하는데, 여기서 raise하면 바깥
+    # `except BaseException`이 그 성공한 파일을 zeroize+unlink할 수 있다 —
+    # pinned_runtime_generation.py에서 고친 것보다 더 심한 형태(오탐 보고가 아니라
+    # 실제 파괴)일 수 있다. one-shot 보안 초기화 경로라 개별 검토 없이 이번
+    # 패스에서는 고치지 않았다(docs/tasks.md 후속 항목).
     try:
         os.fsync(descriptor)
     except OSError as exc:

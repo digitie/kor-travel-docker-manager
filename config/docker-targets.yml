@@ -1,20 +1,7 @@
 version: 1
 
-port_policy:
-  base_port: 12000
-  band_size: 100
-  api_offset: 1
-  service_offset_start: 2
-  web_ui_offset: 5
-  additional_web_ui_offset_start: 6
-  kor_travel_docker_manager_band: 12900
-  # ADR-37 — PostgreSQL은 프로젝트마다 전용 instance를 쓰고 포트는 각 대역의 x00이다.
-  # 통합 instance(5432)는 2026-08-17에 폐지했다.
-  postgresql_fixed_ports:
-    - 12500
-    - 12600
-    - 12700
-    - 12800
+# GM-19: port_policy/port_band 블록을 소비하는 코드가 0건이라 제거했다 — 포트 정책의
+# 유일한 정본은 docs/ports.md다.
 
 dependency_order:
   - db

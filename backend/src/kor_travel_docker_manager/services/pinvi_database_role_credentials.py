@@ -23,6 +23,9 @@ from types import MappingProxyType
 from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.trusted_install import (
+    TRUSTED_INSTALL_ROOT,
+)
 
 _ROLE_ENVIRONMENT_NAMES = (
     "PINVI_APP_DB_USER",
@@ -57,7 +60,8 @@ _GENERATED_ROLE_NAMES = {
 }
 _ROLE_NAME = re.compile(r"[a-z_][a-z0-9_]*\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-_TRUSTED_PINNED_RUNTIME_PROJECT_ROOT = Path("/opt/kor-travel-docker-manager")
+# GM-09: 경로 상수의 정본은 services/trusted_install.py다.
+_TRUSTED_PINNED_RUNTIME_PROJECT_ROOT = TRUSTED_INSTALL_ROOT
 
 
 @dataclass(frozen=True)
@@ -380,6 +384,8 @@ def _write_atomic(
             raise DeploymentContractError(
                 "PinVi root environment changed before role credential initialization"
             )
+        # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
+        # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
         )

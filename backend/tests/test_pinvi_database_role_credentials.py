@@ -244,7 +244,7 @@ def test_pinned_snapshot_keeps_literal_role_credentials_out_of_caller_ambient(
         "_validate_current_compose_candidate_unlocked",
         lambda **_kwargs: validation,
     )
-    transaction, _ = service._capture_transaction_unlocked(
+    transaction, _ = service.capture_transaction_unlocked(
         environment_snapshot=snapshot
     )
     assert transaction.environment.effective["PINVI_APP_DB_PASSWORD"] == literal_application

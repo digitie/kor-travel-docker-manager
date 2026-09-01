@@ -327,6 +327,8 @@ def _rewrite_env_single_key(path: Path, name: str, value: str) -> None:
             f".env 재작성이 예상 밖의 키를 바꿉니다: {', '.join(sorted(differing))}",
         )
 
+    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
+    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
     descriptor, temporary_name = tempfile.mkstemp(
         dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
     )

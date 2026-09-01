@@ -20,6 +20,10 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.trusted_install import (
+    TRUSTED_PUBLIC_ROOT,
+    running_from_trusted_install_root,
+)
 
 DeploymentEnvironment = Literal["local", "rehearsal", "production"]
 DeploymentLifecycle = Literal["development", "rebuildable", "operational"]
@@ -202,7 +206,8 @@ _STATE_ROOT_ENV = "KTDM_PINNED_RUNTIME_STATE_ROOT"
 _PUBLIC_ROOT_ENV = "KTDM_PINNED_RUNTIME_PUBLIC_ROOT"
 _PROJECT_NAME = re.compile(r"^[a-z][a-z0-9_-]{1,62}$")
 _DEFAULT_STATE_ROOT = Path.home() / ".local" / "state" / "kor-travel-docker-manager"
-_DEFAULT_PUBLIC_ROOT = Path("/var/lib/kor-travel-docker-manager-public")
+# GM-09: 경로 상수의 정본은 services/trusted_install.py다.
+_DEFAULT_PUBLIC_ROOT = TRUSTED_PUBLIC_ROOT
 _MANIFEST_FILENAME = "pinned-runtime-generation-v6.json"
 _JOURNAL_FILENAME_PREFIX = "pinned-runtime-rebuild-v8-"
 _PUBLIC_JOURNAL_FILENAME = "pinned-runtime-rebuild-v8.json"
@@ -3730,12 +3735,19 @@ def _write_private_json(path: Path, payload: Mapping[str, object], label: str) -
             os.fsync(handle.fileno())
         os.replace(temporary, path)
         temporary = None
-        _fsync_directory(path.parent)
     except OSError as exc:
         raise DeploymentContractError(f"{label} cannot be written") from exc
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+    # GM-10 후속(적대적 리뷰 발견): 디렉터리 fsync는 os.replace가 이미 성공한
+    # 뒤의 추가 durability 보장일 뿐이다 — 예전에는 이 호출이 위 try 안에 있어서
+    # fsync만 실패해도 이미 끝난 쓰기를 "쓸 수 없음"으로 잘못 보고했다(runtime_pair_rotation.py에서
+    # 고친 것과 같은 버그 계열). 여기서는 실패를 조용히 삼킨다.
+    try:
+        _fsync_directory(path.parent)
+    except OSError:
+        pass
 
 
 def _write_public_json(path: Path, payload: Mapping[str, object]) -> None:
@@ -3756,38 +3768,48 @@ def _write_public_json(path: Path, payload: Mapping[str, object]) -> None:
     directory = _open_public_state_directory(path.parent, create=True)
     temporary_name: str | None = None
     try:
-        _validate_existing_public_file(directory, path.name)
-        temporary_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
-        descriptor = os.open(
-            temporary_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o644,
-            dir_fd=directory,
-        )
         try:
-            os.fchmod(descriptor, 0o644)
-            _write_all(descriptor, raw)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        os.replace(
-            temporary_name,
-            path.name,
-            src_dir_fd=directory,
-            dst_dir_fd=directory,
-        )
-        temporary_name = None
-        os.fsync(directory)
-    except OSError as exc:
-        raise DeploymentContractError("pinned runtime public copy cannot be written") from exc
-    finally:
-        if temporary_name is not None:
+            _validate_existing_public_file(directory, path.name)
+            temporary_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
+            descriptor = os.open(
+                temporary_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o644,
+                dir_fd=directory,
+            )
             try:
-                os.unlink(temporary_name, dir_fd=directory)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                pass
+                os.fchmod(descriptor, 0o644)
+                _write_all(descriptor, raw)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            os.replace(
+                temporary_name,
+                path.name,
+                src_dir_fd=directory,
+                dst_dir_fd=directory,
+            )
+            temporary_name = None
+        except OSError as exc:
+            raise DeploymentContractError(
+                "pinned runtime public copy cannot be written"
+            ) from exc
+        finally:
+            if temporary_name is not None:
+                try:
+                    os.unlink(temporary_name, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
+        # GM-10 후속(적대적 리뷰 발견): os.replace가 이미 성공한 뒤의 디렉터리
+        # fsync 실패를 "쓸 수 없음"으로 잘못 보고하지 않는다 — 위 블록에서 예외 없이
+        # 여기 도달했다는 것 자체가 replace 성공을 뜻한다.
+        try:
+            os.fsync(directory)
+        except OSError:
+            pass
+    finally:
         os.close(directory)
 
 
@@ -3931,14 +3953,15 @@ def _write_all(descriptor: int, raw: bytes) -> None:
 
 
 def _running_from_trusted_install_root() -> bool:
-    """설치 tree에서는 public state를 release 밖 `/var/lib`에 고정한다."""
+    """설치 tree에서는 public state를 release 밖 `/var/lib`에 고정한다.
 
-    try:
-        return Path(__file__).resolve().is_relative_to(
-            Path("/opt/kor-travel-docker-manager").resolve()
-        )
-    except OSError:
-        return False
+    GM-09: 이 모듈만 `__file__` 상대경로 확인 하나였다 — services/trusted_install.py의
+    running_from_trusted_install_root가 그 확인을 포함해 sys.prefix·
+    get_project_root() 비교까지 셋을 모두 확인하는 정본이다(OR 결합이라 이 모듈이
+    이미 잡던 경우를 그대로 포함하고 잃지 않는다).
+    """
+
+    return running_from_trusted_install_root()
 
 
 def _validate_state_parent(path: Path, label: str) -> None:

@@ -48,7 +48,7 @@ KTDM_RUNTIME_PINS_FILE=<배포 트리 밖 경로>
 KTDM_RUNTIME_PINS_PUBLIC_FILE=<배포 트리 밖, 비-root가 읽을 수 있는 경로>
 ```
 
-**회전 요청 디렉터리**(대시보드가 요청을 남기는 자리)는 installer가
+**회전 요청 디렉터리**(대시보드가 요청을 남기는 자리)는 installer가 **최초 1회만**
 `/var/lib/kor-travel-docker-manager-requests`를 `root:root 0700`으로 만든다. backend를
 비-root로 돌리는 호스트에서는 설치 후 소유자를 그 사용자로 바꾼다:
 
@@ -56,8 +56,14 @@ KTDM_RUNTIME_PINS_PUBLIC_FILE=<배포 트리 밖, 비-root가 읽을 수 있는 
 sudo chown <backend-user>:<backend-group> /var/lib/kor-travel-docker-manager-requests
 ```
 
+이 chown은 **한 번만** 하면 된다. 이후 설치는 이미 있는 디렉터리의 소유권을 보존하고
+안전성(symlink 아님, group/other 쓰기 금지)만 검증한다 — 예전에는 `install -d`가 매
+설치마다 소유자를 root로 되돌려, 비-root backend 호스트에서 업그레이드 때마다 회전 요청
+경로가 침묵 회귀했다(GM-04).
+
 **group-writable로 만들지 않는다**(`0770` 등). 무결성 검사가 그 디렉터리를 영구히
-거부해 회전 요청 경로 전체가 잠긴다.
+거부해 회전 요청 경로 전체가 잠긴다 — installer도 group/other 쓰기가 열린 기존
+디렉터리를 발견하면 설치를 중단한다.
 
 **공개 사본은 별도 트리에 둔다.** installer가 `/var/lib/kor-travel-docker-manager`를 매
 설치마다 `0700 root:root`로 되돌리므로, 그 안에 사본을 두면 비-root 백엔드가 traverse조차
@@ -81,7 +87,10 @@ release 설치가 회전 결과를 조용히 되돌리기 때문이다.
   그 상태에서는 `rebuild-pinned`가 거부되므로, verify가 0을 반환할 때만 재구축을 시작한다.
 - **백업·보존 대상**: 위 두 파일과 같은 디렉터리의 `runtime-pins.<digest>.json`
   보존본(= 회전 이력이자 `pin rollback`의 유일한 소스). git 밖에 있으므로 이 디렉터리가
-  유실되면 롤백 소스도 함께 유실된다.
+  유실되면 롤백 소스도 함께 유실된다. `KTDM_OFFBOX_HOST` 등을 설정했다면
+  `ktdctl offbox-sync run`이 이 디렉터리를 6개 role 백업과 함께 원격으로 옮기고
+  재검증한다(`docs/docker-management.md` "offbox-sync" 참고) — 로컬 디스크 유실이
+  이 소스까지 함께 삼키는 시나리오를 없앤다.
 - registry가 없으면 `rebuild-pinned`와 pin 조회는 fail-close하고, 조회 API는 값을
   추측하지 않고 `unknown`을 표시한다. 그 외 target 관리·컨테이너 제어·백업 조회 등
   나머지 기능은 영향받지 않는다(검증 완료).
@@ -235,6 +244,32 @@ installer는 `--no-index` wheelhouse에서 `backend/.venv`를 만들고 `ktdctl`
 installer가 새로 전달하지 않으며 운영 호스트에서 별도로 준비한 canonical 파일을 사용한다. 백엔드는
 그 루트 `.env`를 로드해 `KTDM_CORS_ALLOW_ORIGINS`와 `KTDM_PROD_URL_*`를 적용한다.
 
+installer는 `/opt/kor-travel-docker-manager` 트리를 통째로 교체하고 구 트리를 삭제한다.
+그 트리에서 서비스가 실행 중이면 설치 순간부터 재기동까지 반파손 상태로 돈다(특히 Next.js는
+route 번들을 요청 시점에 lazy 해석한다). 그래서 installer는 **APP_ROOT 트리에서 실행 중인
+프로세스(cwd·exe·open fd 기준)를 preflight로 탐지해 fail-close**한다 — 먼저 서비스를
+중지(`sudo systemctl stop ktdm-backend ktdm-frontend`)하는 것이 표준 순서다. 위험을 감수하고
+실행 중 교체를 강행하려면 `--allow-live`를 준다. 설치 뒤 백엔드를 곧바로 올리려면
+`--restart-backend`를 함께 주면 commit 직후 `systemctl restart ktdm-backend`가 수행된다
+(프론트엔드는 clean checkout이라 아래 §4의 build가 선행돼야 하므로 자동화하지 않는다).
+
+백엔드는 systemd 유닛으로 구동한다. installer가 `deploy/systemd/ktdm-backend.service`를
+`/etc/systemd/system/`에 설치·enable하므로(재기동은 하지 않는다), **설치 직후에는 옛
+코드가 계속 돌고 있다** — 새 release 반영은 명시적 재기동이다:
+
+```bash
+sudo systemctl restart ktdm-backend
+sudo systemctl status ktdm-backend --no-pager   # active (running) 확인
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:12901/health   # 200
+```
+
+재부팅·크래시 복구는 systemd가 소유한다(`Restart=on-failure`, enable됨). 로그는
+journald(`journalctl -u ktdm-backend`)와 백엔드 자체의 월간 로테이션 파일
+(`backend/logs/`) 양쪽에 남는다 — 과거의 `/tmp` 로그는 tmpfs라 재부팅(진단이 가장
+필요한 순간) 직후 증발했다.
+
+유닛이 아직 없는 호스트(첫 설치 전, rehearsal 등)의 폴백만 nohup을 쓴다:
+
 ```bash
 cd /opt/kor-travel-docker-manager/backend
 nohup setsid env PYTHONPATH=src .venv/bin/python \
@@ -364,10 +399,14 @@ drwxrwxrwt 5 root root ...  ..
 트리도 installer도 없다. 그런 호스트에서는 위 두 명령을 저장소 체크아웃에서 한 번 직접
 실행한다. 유닛 자체는 release와 무관하므로 재설치할 필요가 없다.
 
-**이 유닛은 `/opt/kor-travel-docker-manager` 밖에 남는 유일한 설치 산출물이다.** release
-rollback은 이것을 되돌리지 않는다 — 이전 release로 내려가도 `/usr/lib/tmpfiles.d`의 유닛은
-그대로 남는다. 내용이 경로·mode·소유자 한 줄뿐이라 실무상 문제가 되지 않지만, 완전히
-제거하려면 다음과 같이 한다.
+**`/opt/kor-travel-docker-manager` 밖에 남는 설치 산출물**(release rollback이 되돌리지
+않는 것들): `/etc`의 세 파일 — 이 tmpfiles 유닛,
+`/etc/systemd/system/ktdm-backend.service`·`ktdm-frontend.service`(3절·4절),
+`/etc/logrotate.d/kor-travel-docker-manager`(백업 로그 로테이션, `KTDM_BACKUP_ROOT` 선언
+시) — 과 `/var/lib`의 상태 트리 — `/var/lib/kor-travel-docker-manager`(state root·
+registry·archive)와 `/var/lib/kor-travel-docker-manager-requests`(회전 요청). 이전
+release로 내려가도 이들은 그대로 남고 다음 설치가 갱신한다(state/registry는 의도된
+영속 상태다). tmpfiles 유닛을 완전히 제거하려면 다음과 같이 한다.
 
 ```bash
 sudo rm -f /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
@@ -383,13 +422,28 @@ sudo rm -rf /run/lock/kor-travel-docker-manager   # 진행 중인 mutation이 �
 ## 4. 프론트엔드 (Next.js, :12905)
 
 ```bash
-cd /opt/kor-travel-docker-manager/frontend
+cd <프론트엔드 배포 디렉터리>
 npm ci
 npm run build      # .env.production 의 NEXT_PUBLIC_BACKEND_URL 이 번들에 인라인됨
-nohup setsid npm run start > /tmp/ktdm_frontend.log 2>&1 &   # next start -p 12905
+sudo systemctl restart ktdm-frontend
 ```
 
 `NEXT_PUBLIC_*`은 빌드 타임에 인라인되므로 운영 호스트에서 빌드해야 운영 API 주소가 반영된다.
+
+프론트엔드 유닛은 계정명·경로가 host 민감 정보라 템플릿
+(`deploy/systemd/ktdm-frontend.service.template`)이며, installer가 root 소유 `.env`의
+아래 키로 렌더링해 설치한다. 두 필수 키가 없으면 유닛을 건너뛰고 경고만 남긴다.
+
+```bash
+# .env (root 0600)
+KTDM_FRONTEND_SERVICE_USER=<프론트엔드를 소유·실행할 비root 계정>
+KTDM_FRONTEND_APP_DIR=<frontend 디렉터리 절대 경로>
+KTDM_FRONTEND_NPM=<npm 절대 경로, 생략 시 /usr/local/bin/npm>
+```
+
+프론트엔드는 root 권한이 전혀 필요 없다 — 과거 nohup 방식이 root로 띄우던 것은
+불필요한 권한 확대였고, 유닛은 반드시 비root 계정으로 지정한다. 유닛 미설치 호스트의
+폴백: `nohup setsid npm run start > /tmp/ktdm_frontend.log 2>&1 &`
 
 ## 5. 공개 도메인 라우팅 (네트워크 인프라 — 저장소 밖)
 
@@ -403,6 +457,32 @@ nohup setsid npm run start > /tmp/ktdm_frontend.log 2>&1 &   # next start -p 129
 
 이 라우팅이 없으면 대시보드(prod 빌드)가 API(`manager-api.*`)에 닿지 못한다. 라우팅 설정은 라우터/프록시
 인프라 영역이며 이 저장소 범위 밖이다.
+
+### 5.1 신뢰 프록시 설정 (필수 — 로그인 rate limit 정상 동작)
+
+엣지 프록시(HAProxy 등) 뒤에서 백엔드는 모든 공개 트래픽을 프록시의 소켓 IP 하나로 본다.
+로그인 rate limit은 client IP별로 실패를 집계하는데, 프록시를 신뢰하도록 설정하지 않으면
+**모든 WAN 클라이언트가 같은 버킷을 공유**한다 — 인터넷의 아무나 10분 창에 잘못된 로그인
+5회를 보내면 진짜 관리자의 로그인·비밀번호 변경이 함께 429로 잠긴다(외부 DoS). 그래서 아래
+두 값은 **선택이 아니라 필수**다.
+
+```bash
+# .env — 엣지 프록시의 IP를 exact /32 로, 그리고 secret 헤더를 함께 쓴다.
+KTDM_TRUSTED_PROXY_CIDRS=<프록시 IP>/32
+KTDM_TRUSTED_PROXY_SECRET=<프록시가 주입하는 헤더 시크릿>
+```
+
+- **exact /32(IPv6는 /128)를 쓴다.** `/24` 같은 광역 CIDR은 그 대역의 다른 LAN 피어가
+  `X-Forwarded-For`를 위조해 rate limit을 우회하게 한다.
+- **secret을 반드시 함께 쓴다.** CIDR만으로는 host 네트워크의 로컬 프로세스가 loopback
+  출처로 `X-Forwarded-*`를 위조할 수 있다. 프록시가 매 요청에 이 시크릿 헤더를 주입하고,
+  백엔드는 그 일치까지 확인해야 XFF를 신뢰한다.
+- 엣지(HAProxy 등)에도 소스 IP별 연결 수 제한을 두어 이 저장소의 durable 로그인 한도와
+  이중으로 방어한다.
+
+설정이 빠져 있으면 대시보드의 **배포 사전 점검**(`login_rate_limit_proxy` 체크)이
+production에서 `warn`으로 노출하고, rate-limit 429 감사 행에는 `shared_ip_bucket` 사실이
+기록된다.
 
 ## 6. 검증
 

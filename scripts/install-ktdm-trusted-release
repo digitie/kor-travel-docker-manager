@@ -10,6 +10,8 @@ APP_PARENT="/opt"
 SOURCE_ROOT=""
 ENV_FILE=""
 EXPECTED_SOURCE_REVISION="${KTDM_TRUSTED_RELEASE_EXPECTED_SOURCE_REVISION:-}"
+ALLOW_LIVE=0
+RESTART_BACKEND=0
 WHEELHOUSE="${KTDM_TRUSTED_RELEASE_WHEELHOUSE:-/var/lib/kor-travel-docker-manager/wheelhouse}"
 STAGING="${APP_PARENT}/.kor-travel-docker-manager.stage"
 ROLLBACK="${APP_PARENT}/.kor-travel-docker-manager.rollback"
@@ -579,9 +581,24 @@ while [[ "$#" -gt 0 ]]; do
       [[ "$#" -gt 0 ]] || die "--expected-source-revision requires a revision"
       EXPECTED_SOURCE_REVISION="$1"
       ;;
+    --allow-live)
+      # 서비스가 APP_ROOT 트리에서 실행 중이어도 설치를 진행한다. 기본은 fail-close다
+      # (아래 preflight 참조). 이 플래그는 "실행 중 교체의 위험을 알고 감수한다"는
+      # 명시적 승인이다.
+      ALLOW_LIVE=1
+      ;;
+    --restart-backend)
+      # commit 직후 백엔드를 systemctl restart한다. 기본은 하지 않는다(GM-03: 반영
+      # 시점은 운영자 결정). 백엔드는 venv·코드가 /opt에 있고 installer가 방금
+      # 재빌드했으므로 build 없이 재기동 가능하다. 프론트엔드는 clean checkout이라
+      # npm ci + build가 선행돼야 해 자동화하지 않고 안내만 한다.
+      RESTART_BACKEND=1
+      ;;
     --help|-h)
-      echo "usage: install-ktdm-trusted-release [--env-file PATH] [--wheelhouse ROOT_OWNED_WHEELHOUSE] [--expected-source-revision SHA] [SOURCE_ROOT]"
+      echo "usage: install-ktdm-trusted-release [--env-file PATH] [--wheelhouse ROOT_OWNED_WHEELHOUSE] [--expected-source-revision SHA] [--allow-live] [--restart-backend] [SOURCE_ROOT]"
       echo "default wheelhouse: /var/lib/kor-travel-docker-manager/wheelhouse"
+      echo "--allow-live: APP_ROOT 트리에서 실행 중인 프로세스가 있어도 진행(기본은 중단)"
+      echo "--restart-backend: commit 후 systemctl restart ktdm-backend(기본은 안내만)"
       exit 0
       ;;
     -*)
@@ -612,6 +629,80 @@ fi
 if [[ -n "${EXPECTED_SOURCE_REVISION}" && ! "${EXPECTED_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]]; then
   die "expected source revision is invalid"
 fi
+
+warn_or_die_on_live_processes() {
+  # 설치는 APP_ROOT를 통째로 mv-교체하고 reconcile이 구 트리를 rmtree한다. 백엔드
+  # uvicorn과 next start가 그 트리에서 실행 중이면, 설치 순간부터 재기동까지 서비스가
+  # 반파손 상태로 돈다(특히 next는 route 번들을 요청 시점에 lazy 해석한다). 사람의
+  # 기억이 아니라 설치가 이를 fail-close로 막는다 — /proc에서 cwd·exe·open fd가
+  # APP_ROOT 아래인 프로세스를 찾는다. `--allow-live`로만 우회한다.
+  local canonical hits
+  canonical="$(cd "${APP_ROOT}" 2>/dev/null && pwd -P || printf '%s' "${APP_ROOT}")"
+  hits="$(/usr/bin/python3 - "${canonical}" <<'PY'
+import os, sys
+
+root = sys.argv[1].rstrip("/") + "/"
+hits = []
+proc = "/proc"
+for entry in os.listdir(proc):
+    if not entry.isdigit():
+        continue
+    pid = entry
+    if pid == str(os.getpid()) or pid == str(os.getppid()):
+        continue
+    base = os.path.join(proc, pid)
+    targets = []
+    # cwd·exe·root symlink
+    for name in ("cwd", "exe", "root"):
+        try:
+            targets.append(os.readlink(os.path.join(base, name)))
+        except OSError:
+            pass
+    # open fd 대상
+    fddir = os.path.join(base, "fd")
+    try:
+        for fd in os.listdir(fddir):
+            try:
+                targets.append(os.readlink(os.path.join(fddir, fd)))
+            except OSError:
+                pass
+    except OSError:
+        pass
+    for target in targets:
+        # "/opt/x" 가 "/opt/x-foo" 를 오탐하지 않도록 정확히 root 하위만 센다.
+        resolved = (target + "/") if not target.endswith("/") else target
+        if resolved == root or resolved.startswith(root):
+            cmd = ""
+            try:
+                with open(os.path.join(base, "comm"), encoding="utf-8") as handle:
+                    cmd = handle.read().strip()
+            except OSError:
+                pass
+            hits.append(f"{pid} {cmd}")
+            break
+print("\n".join(sorted(set(hits))))
+PY
+)" || hits=""
+  if [[ -n "${hits}" ]]; then
+    echo "APP_ROOT(${canonical}) 트리에서 실행 중인 프로세스가 있습니다:" >&2
+    # hits는 "pid comm" 줄들이다. 따옴표 없이 확장하면 공백에서 쪼개져 각 필드가
+    # 별도 줄로 찍힌다 — 줄 단위로 읽어 들여쓴다.
+    while IFS= read -r _hit_line; do
+      [[ -n "${_hit_line}" ]] && printf '  %s\n' "${_hit_line}" >&2
+    done <<< "${hits}"
+    if [[ "${ALLOW_LIVE}" == "1" ]]; then
+      echo "--allow-live 지정됨 — 실행 중 교체의 위험을 감수하고 진행합니다." >&2
+    else
+      die "설치가 실행 중 서비스를 교체하려 합니다. 먼저 중지하거나(sudo systemctl stop ktdm-backend ktdm-frontend), 위험을 감수하려면 --allow-live로 다시 실행하세요."
+    fi
+  fi
+}
+
+# 재-exec된 자식(lock FD 상속본)에서는 재확인하지 않는다 — 부모가 이미 판정했다.
+if [[ -z "${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD:-}" ]]; then
+  warn_or_die_on_live_processes
+fi
+
 if [[ -z "${KTDM_TRUSTED_INSTALL_GLOBAL_LOCK_FD:-}" ]]; then
   # 이미 설치된 tmpfiles 유닛이 있으면 lock을 잡기 **전에** 한 번 적용한다.
   #
@@ -758,9 +849,25 @@ PY
 # 못 하고, root backend라면 registry와 권한 구분이 사라진다). 여기서 미리 만들어 두지
 # 않으면 backend가 /var/lib 아래에 디렉터리를 만들 수 없어 첫 요청이 503으로 끝난다.
 #
-# backend를 비-root로 돌리는 호스트에서는 설치 후 소유자를 그 사용자로 바꾼다:
-#   sudo chown <backend-user>:<backend-group> "${REQUEST_ROOT}"
-/usr/bin/install -d -o root -g root -m 0700 "${REQUEST_ROOT}"
+# 소유권은 **최초 생성 시에만** root:root로 잡는다. `install -d`는 기존 디렉터리에도
+# 소유자·mode를 재적용하므로, 비-root backend 호스트(NONROOT-BACKEND 태스크)에서
+# 운영자가 설치 후 이 디렉터리를 backend 계정으로 chown해 두면 다음 release 설치가
+# 그 소유권을 매번 root로 되돌려 회전 요청 경로가 침묵 회귀한다. 이미 있으면
+# 소유권은 보존하고 안전성(symlink 아님, group/other 쓰기 금지)만 검증한다.
+if [[ -e "${REQUEST_ROOT}" ]]; then
+  if [[ -L "${REQUEST_ROOT}" || ! -d "${REQUEST_ROOT}" ]]; then
+    die "runtime pin request root is not a real directory: ${REQUEST_ROOT}"
+  fi
+  request_root_mode="$(/usr/bin/stat -c '%a' "${REQUEST_ROOT}")"
+  if [[ ! "${request_root_mode}" =~ ^[0-7]{3,4}$ || $((8#${request_root_mode} & 022)) != "0" ]]; then
+    die "runtime pin request root is group/other-writable: ${REQUEST_ROOT} (${request_root_mode})"
+  fi
+else
+  # backend를 비-root로 돌리는 호스트에서는 설치 후 소유자를 그 사용자로 바꾼다:
+  #   sudo chown <backend-user>:<backend-group> "${REQUEST_ROOT}"
+  # 그 이후의 설치는 위 분기로 들어가 소유권을 보존한다.
+  /usr/bin/install -d -o root -g root -m 0700 "${REQUEST_ROOT}"
+fi
 trusted_release_transaction reconcile
 
 if [[ -z "${KTDM_TRUSTED_INSTALL_ENV_FD:-}" ]]; then
@@ -1480,3 +1587,288 @@ install_host_lease_tmpfiles() {
 if ! install_host_lease_tmpfiles; then
   echo "trusted release committed; host lease boot provisioning requires attention" >&2
 fi
+
+# Manager 자신의 systemd 유닛을 설치한다.
+#
+# 관리 대상 컨테이너는 restart: unless-stopped로 재부팅에서 살아나지만 Manager는
+# nohup으로 떠 있어 재부팅·크래시 후 아무도 다시 띄우지 않았다. 유닛 설치·갱신은
+# 설치가 책임지되, **재기동은 하지 않는다** — 실행 중인 서비스 발밑의 트리를 지금
+# 막 교체했으므로, 새 코드 반영 시점은 운영자의 `systemctl restart` 결정에 맡긴다.
+# 설치 직후에는 옛 코드가 계속 돌고 있음을 아래 안내가 명시한다.
+require_root_trusted_source_file() {
+  # tmpfiles 함수와 같은 신뢰 기준: 존재·일반 파일·root 소유·group/other 쓰기 금지.
+  local source="$1" label="$2" uid mode
+  if [[ -L "${source}" || ! -f "${source}" ]]; then
+    echo "${label} missing from the installed release: ${source}" >&2
+    return 1
+  fi
+  uid="$(/usr/bin/stat -c '%u' "${source}" 2>/dev/null || true)"
+  mode="$(/usr/bin/stat -c '%a' "${source}" 2>/dev/null || true)"
+  if [[ ! "${uid}" =~ ^[0-9]+$ || ! "${mode}" =~ ^[0-7]{3,4}$ ]]; then
+    echo "cannot read ${label} metadata: ${source}" >&2
+    return 1
+  fi
+  if [[ "${uid}" != "0" || $((8#${mode} & 022)) != "0" ]]; then
+    echo "${label} is writable or not root-owned: ${source}" >&2
+    return 1
+  fi
+  return 0
+}
+
+require_root_owned_env_for_units() {
+  # 아래 .env 값들은 root가 설치하는 systemd unit의 User=·ExecStart= 로 들어가므로
+  # root 권한을 결정한다. 그 입력이 root 소유가 아니면(예: 서비스 계정이 .env를
+  # 소유하는 미래의 non-root backend 구성) 그 계정이 root unit을 임의로 조립할 수
+  # 있다 — root escalation이다. unit/logrotate 렌더링 전에 .env를 root 소유·비쓰기로
+  # 강제한다. trusted-release 본체의 .env 계약(fd 스냅샷)과 별개로, "값이 root
+  # directive가 된다"는 이 경로만의 추가 요구다.
+  require_root_trusted_source_file "${APP_ROOT}/.env" "deployment .env (unit source)"
+}
+
+read_env_value() {
+  # .env에서 KEY=VALUE 한 줄을 읽는다. 마지막 선언이 이긴다. 백엔드가 이 파일을
+  # python-dotenv로 파싱하므로(main.py) 그 표기와 일치시킨다: `export ` 접두,
+  # 양끝 따옴표, CRLF의 `\r`를 벗긴다. 셸 확장은 하지 않는다 — 문자 그대로 취급한다.
+  local key="$1" line=""
+  # 접두 export 를 허용하되 KEY 가 다른 키의 접두인 오탐(KEYFOO)은 `=` 로 막는다.
+  line="$(/usr/bin/grep -E "^(export[[:space:]]+)?${key}=" "${APP_ROOT}/.env" 2>/dev/null \
+    | /usr/bin/tail -1 || true)"
+  [[ -z "${line}" ]] && return 0
+  line="${line#export }"
+  line="${line#"${line%%[![:space:]]*}"}"   # export 뒤 남은 앞 공백 제거
+  local value="${line#"${key}"=}"
+  value="${value%$'\r'}"                       # CRLF의 trailing CR
+  # 양끝을 감싼 동일 따옴표 한 쌍만 벗긴다(python-dotenv와 동일).
+  if [[ "${value}" == \"*\" && "${#value}" -ge 2 ]]; then
+    value="${value:1:${#value}-2}"
+  elif [[ "${value}" == \'*\' && "${#value}" -ge 2 ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+  printf '%s' "${value}"
+}
+
+# systemd unit 필드로 들어갈 .env 값에서 systemd가 재해석하는 문자를 거부한다.
+# 경로로서 `-d`/`-x`를 통과해도 `%`(specifier)·`$`(env 확장)·공백(인자 분리)·따옴표·
+# 백슬래시(줄 연속)·제어문자는 unit을 조용히 망가뜨린다(F4).
+_rejects_systemd_unsafe_value() {
+  local value="$1"
+  [[ "${value}" =~ [[:space:]%\$\"\'\\[:cntrl:]] ]]
+}
+
+install_manager_systemd_units() {
+  local backend_source="${APP_ROOT}/deploy/systemd/ktdm-backend.service"
+  local frontend_template="${APP_ROOT}/deploy/systemd/ktdm-frontend.service.template"
+  local failed=0
+  local backend_installed=0
+
+  if [[ ! -x /usr/bin/systemctl ]]; then
+    echo "systemctl unavailable; Manager systemd units are not installed" >&2
+    return 1
+  fi
+  # unit User=·ExecStart= 값의 출처인 .env가 root 소유가 아니면 그 소유자가 root
+  # unit을 조립할 수 있다(H1). 렌더링 전에 강제한다.
+  require_root_owned_env_for_units || { failed=1; }
+
+  if require_root_trusted_source_file "${backend_source}" "backend systemd unit"; then
+    if _install_verified_unit "${backend_source}" /etc/systemd/system/ktdm-backend.service; then
+      backend_installed=1
+    else
+      failed=1
+    fi
+  else
+    failed=1
+  fi
+
+  # 프론트엔드 유닛은 계정명·경로가 host 민감 정보라 템플릿이다. .env의 두 필수
+  # 키가 없으면 건너뛴다 — 프론트엔드를 다른 방식으로 돌리는 host를 막지 않는다.
+  local frontend_user frontend_dir frontend_npm frontend_uid
+  frontend_user="$(read_env_value KTDM_FRONTEND_SERVICE_USER)"
+  frontend_dir="$(read_env_value KTDM_FRONTEND_APP_DIR)"
+  frontend_npm="$(read_env_value KTDM_FRONTEND_NPM)"
+  frontend_npm="${frontend_npm:-/usr/local/bin/npm}"
+  local frontend_installed=0
+  frontend_uid="$(/usr/bin/id -u -- "${frontend_user}" 2>/dev/null || true)"
+  if [[ -z "${frontend_user}" || -z "${frontend_dir}" ]]; then
+    echo "KTDM_FRONTEND_SERVICE_USER/KTDM_FRONTEND_APP_DIR가 .env에 없어 frontend 유닛을 건너뜁니다" >&2
+    # 이전에 설치된 유닛이 남아 있으면 옛 계정·경로로 매 부팅 기동한다(F8). 키가
+    # 사라졌다는 것은 "이 방식으로 안 돌린다"는 뜻이므로 disable 후 제거한다.
+    if [[ -f /etc/systemd/system/ktdm-frontend.service ]]; then
+      /usr/bin/systemctl disable ktdm-frontend.service >/dev/null 2>&1 || true
+      /usr/bin/rm -f -- /etc/systemd/system/ktdm-frontend.service
+      echo "removed a stale ktdm-frontend.service left by a prior install" >&2
+    fi
+  elif [[ ! "${frontend_uid}" =~ ^[0-9]+$ ]]; then
+    echo "frontend service user is not a host account: ${frontend_user}" >&2
+    failed=1
+  elif [[ "${frontend_uid}" == "0" ]]; then
+    # 프론트엔드는 root 권한이 전혀 필요 없다. 템플릿이 요구하는 비root 계약을 강제한다(F3/H2).
+    echo "frontend service user must be non-root (got uid 0): ${frontend_user}" >&2
+    failed=1
+  elif [[ "${frontend_dir}" != /* || ! -d "${frontend_dir}" ]] || _rejects_systemd_unsafe_value "${frontend_dir}"; then
+    echo "frontend app dir must be an absolute existing directory with no systemd-unsafe chars: ${frontend_dir}" >&2
+    failed=1
+  elif [[ ! -x "${frontend_npm}" ]] || _rejects_systemd_unsafe_value "${frontend_npm}"; then
+    echo "frontend npm must be executable with no systemd-unsafe chars: ${frontend_npm}" >&2
+    failed=1
+  elif [[ "$(/usr/bin/stat -c '%u' "${frontend_npm}" 2>/dev/null || echo -1)" != "0" ]]; then
+    # npm이 제3의 uid 소유면 그 계정 침해가 frontend 서비스 계정 실행으로 이어진다(H2).
+    # n150의 /usr/local/bin/npm 은 root 소유 target 심링크라 통과한다.
+    echo "frontend npm must resolve to a root-owned executable: ${frontend_npm}" >&2
+    failed=1
+  elif require_root_trusted_source_file "${frontend_template}" "frontend systemd unit template"; then
+    local rendered content
+    rendered="$(/usr/bin/mktemp)" || { echo "mktemp failed" >&2; return 1; }
+    # 치환문의 & 는 sed·awk gsub뿐 아니라 bash 5.2+의 patsub_replacement에서도
+    # 특수문자다(매치 패턴으로 확장 — 실행 검증으로 확인). 치환문을 따옴표로
+    # 감싸면 bash가 literal을 보장한다.
+    content="$(<"${frontend_template}")"
+    content="${content//__KTDM_FRONTEND_USER__/"${frontend_user}"}"
+    content="${content//__KTDM_FRONTEND_DIR__/"${frontend_dir}"}"
+    content="${content//__KTDM_FRONTEND_NPM__/"${frontend_npm}"}"
+    if [[ "${content}" == *__KTDM_* ]]; then
+      echo "frontend unit render left an unresolved placeholder" >&2
+      failed=1
+    elif ! printf '%s\n' "${content}" > "${rendered}"; then
+      echo "cannot write rendered frontend unit" >&2
+      failed=1
+    elif ! _install_verified_unit "${rendered}" /etc/systemd/system/ktdm-frontend.service; then
+      failed=1
+    else
+      frontend_installed=1
+    fi
+    /usr/bin/rm -f -- "${rendered}"
+  else
+    failed=1
+  fi
+
+  if ! /usr/bin/systemctl daemon-reload; then
+    echo "systemctl daemon-reload failed" >&2
+    failed=1
+  fi
+  # enable 실패는 곧 재부팅 복구 실패다 — GM-03의 목적 자체이므로 삼키지 않는다(F2/M1).
+  # 이번 설치에서 실제로 설치된 유닛만 enable한다(이전 release의 잔여 유닛을 만지지
+  # 않는다, L1).
+  if [[ "${backend_installed}" == "1" ]]; then
+    if ! /usr/bin/systemctl enable ktdm-backend.service >/dev/null 2>&1; then
+      echo "cannot enable ktdm-backend.service (재부팅 복구가 되지 않습니다)" >&2
+      failed=1
+    fi
+  fi
+  if [[ "${frontend_installed}" == "1" ]]; then
+    if ! /usr/bin/systemctl enable ktdm-frontend.service >/dev/null 2>&1; then
+      echo "cannot enable ktdm-frontend.service (재부팅 복구가 되지 않습니다)" >&2
+      failed=1
+    fi
+  fi
+  if [[ "${failed}" == "0" ]]; then
+    echo "systemd units installed/updated. 실행 중인 프로세스는 아직 옛 코드다 —" >&2
+    echo "새 release 반영: sudo systemctl restart ktdm-backend (프론트엔드 갱신 시 ktdm-frontend)" >&2
+  fi
+  return "${failed}"
+}
+
+# 렌더된/원본 unit 파일을 systemd 구조 검증 후 설치한다. verify 실패는 설치 거부다(F4/M4).
+_install_verified_unit() {
+  local source="$1" destination="$2"
+  if [[ -x /usr/bin/systemd-analyze ]]; then
+    if ! /usr/bin/systemd-analyze verify "${source}" >/dev/null 2>"${source}.verifyerr"; then
+      # ExecStart 바이너리 부재는 설치 시점(트리 교체 전/후)에 정상적으로 날 수 있으므로
+      # 그 라인만 무시하고, 그 밖의 구조 오류는 거부한다.
+      if /usr/bin/grep -qvE "is not executable|not found|Failed to prepare" "${source}.verifyerr" 2>/dev/null \
+        && [[ -s "${source}.verifyerr" ]]; then
+        echo "systemd unit failed structural verification: ${destination}" >&2
+        /usr/bin/sed 's/^/  /' "${source}.verifyerr" >&2
+        /usr/bin/rm -f -- "${source}.verifyerr"
+        return 1
+      fi
+    fi
+    /usr/bin/rm -f -- "${source}.verifyerr"
+  fi
+  if ! /usr/bin/install -T -o root -g root -m 0644 -- "${source}" "${destination}"; then
+    echo "cannot install systemd unit: ${destination}" >&2
+    return 1
+  fi
+  return 0
+}
+
+install_backup_logrotate() {
+  # cron 백업 로그(`>>` append)의 무한 누적을 막는다. KTDM_BACKUP_ROOT는 crontab
+  # 라인뿐 아니라 .env에도 선언돼야 이 로테이션이 설치된다 — 없으면 백업 자동화를
+  # 쓰지 않는 host일 수 있으나, 조용히 건너뛰면 "설치했는데 로테이션 안 됨"을 알 수
+  # 없으므로 안내를 남긴다(F6).
+  local template="${APP_ROOT}/deploy/logrotate.d/kor-travel-docker-manager.template"
+  local backup_root backup_group
+  backup_root="$(read_env_value KTDM_BACKUP_ROOT)"
+  if [[ -z "${backup_root}" ]]; then
+    echo "KTDM_BACKUP_ROOT가 .env에 없어 백업 로그 로테이션을 건너뜁니다" >&2
+    echo "  (cron 백업 로그 로테이션을 원하면 crontab 라인과 별개로 .env에도 선언하세요)" >&2
+    return 0
+  fi
+  require_root_owned_env_for_units || return 1
+  # 경로에 공백·glob 문자가 있으면 로테이션 패턴이 쪼개지거나 상대 경로가 된다(F7).
+  if [[ "${backup_root}" != /* || ! -d "${backup_root}" ]] || [[ "${backup_root}" =~ [[:space:]*?\[] ]]; then
+    echo "KTDM_BACKUP_ROOT must be an absolute existing directory with no whitespace/glob chars: ${backup_root}" >&2
+    return 1
+  fi
+  require_root_trusted_source_file "${template}" "backup logrotate template" || return 1
+
+  # 공유 백업 디렉터리(§3.x: chgrp + 2770)에서 logrotate는 group-writable 부모를
+  # `su` directive 없이는 거부한다(F1). 그 그룹을 렌더링한다. 미선언이면 su root root.
+  backup_group="$(read_env_value KTDM_BACKUP_SHARED_GROUP)"
+  if [[ -z "${backup_group}" ]]; then
+    backup_group="root"
+  elif ! /usr/bin/getent group "${backup_group}" >/dev/null 2>&1; then
+    echo "KTDM_BACKUP_SHARED_GROUP is not a host group: ${backup_group}" >&2
+    return 1
+  fi
+
+  local rendered content
+  rendered="$(/usr/bin/mktemp)" || { echo "mktemp failed" >&2; return 1; }
+  content="$(<"${template}")"
+  # 치환문 따옴표: bash 5.2+ patsub_replacement의 & 확장을 막는다.
+  content="${content//__KTDM_BACKUP_ROOT__/"${backup_root}"}"
+  content="${content//__KTDM_BACKUP_GROUP__/"${backup_group}"}"
+  if [[ "${content}" == *__KTDM_* ]]; then
+    echo "backup logrotate render left an unresolved placeholder" >&2
+    /usr/bin/rm -f -- "${rendered}"
+    return 1
+  fi
+  if ! printf '%s\n' "${content}" > "${rendered}"; then
+    echo "cannot write rendered logrotate config" >&2
+    /usr/bin/rm -f -- "${rendered}"
+    return 1
+  fi
+  if ! /usr/bin/install -T -o root -g root -m 0644 -- \
+    "${rendered}" /etc/logrotate.d/kor-travel-docker-manager; then
+    echo "cannot install backup logrotate config" >&2
+    /usr/bin/rm -f -- "${rendered}"
+    return 1
+  fi
+  /usr/bin/rm -f -- "${rendered}"
+  return 0
+}
+
+if ! install_manager_systemd_units; then
+  echo "trusted release committed; Manager systemd unit provisioning requires attention" >&2
+fi
+if ! install_backup_logrotate; then
+  echo "trusted release committed; backup logrotate provisioning requires attention" >&2
+fi
+
+# 새 백엔드 코드 반영. 백엔드는 venv·코드가 /opt에 있고 방금 재빌드됐으므로 build
+# 없이 재기동 가능하다. 프론트엔드는 clean checkout이라 npm ci + build가 선행돼야 해
+# 자동화하지 않는다(검증 노트 b) — 아래 안내를 남긴다.
+if [[ "${RESTART_BACKEND}" == "1" ]]; then
+  if [[ -x /usr/bin/systemctl && -f /etc/systemd/system/ktdm-backend.service ]]; then
+    if /usr/bin/systemctl restart ktdm-backend.service; then
+      echo "ktdm-backend restarted onto the new release." >&2
+    else
+      echo "trusted release committed; ktdm-backend restart failed — 'systemctl status ktdm-backend'로 확인하세요" >&2
+    fi
+  else
+    echo "--restart-backend 지정됨이나 systemctl/유닛이 없어 재기동을 건너뜁니다" >&2
+  fi
+else
+  echo "새 백엔드 반영: sudo systemctl restart ktdm-backend (또는 설치 시 --restart-backend)" >&2
+fi
+echo "프론트엔드 갱신 시: 배포 디렉터리에서 npm ci && npm run build 후 sudo systemctl restart ktdm-frontend" >&2

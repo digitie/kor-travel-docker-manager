@@ -7,27 +7,32 @@ import {
   BackupJob,
   BackupListResponse,
   LatestBackupJobResponse,
+  OffboxSyncStatusResponse,
   StandaloneBackupManifest,
+  UnreadableBackupEntry,
   apiJson,
   postJson,
 } from '@/lib/api';
+import { buildBackupRoleOptions } from '@/lib/backupRoles';
+
+function isUnreadableBackupEntry(
+  entry: StandaloneBackupManifest | UnreadableBackupEntry
+): entry is UnreadableBackupEntry {
+  return 'state' in entry && entry.state === 'unreadable';
+}
 import { HumanError, humanizeError } from '@/lib/errors';
 import CopyableCommand from './CopyableCommand';
 import InlineError from './InlineError';
 
-const ROLE_OPTIONS: Array<{ value: StandaloneBackupManifest['role'] | 'all'; label: string }> = [
-  { value: 'all', label: '전체' },
-  { value: 'geo', label: 'geo' },
-  { value: 'geo_dagster', label: 'geo_dagster' },
-  { value: 'concierge', label: 'concierge' },
-  { value: 'map_application', label: 'map_application' },
-  { value: 'map_dagster', label: 'map_dagster' },
-  { value: 'pinvi', label: 'pinvi' },
-];
+// GM-18: role 목록의 정본은 backend standalone_backup.py의 BACKUP_ROLES고,
+// `GET /api/v1/backups`의 `roles` 필드로 온다 — 여기서 하드코딩하면 새 role 추가 시
+// 백엔드는 이미 인식하는데 이 select/생성 버튼만 조용히 못 보게 된다.
 
 // scripts/run-standalone-backup.sh가 확정한 cron 주기(하루 1회). 나머지 role은 그
 // wrapper의 대상이 아니므로 배지를 달지 않는다 — 없는 기대치로 경고를 만들지 않는다.
-const EXPECTED_INTERVAL_HOURS: Partial<Record<StandaloneBackupManifest['role'], number>> = {
+// 이 정책은 config에서 파생할 수 없다(cron wrapper의 하드코딩된 대상 목록을 그대로
+// 미러링한 것) — role 목록 자체와 달리 이 표는 의도적으로 남겨둔다.
+const EXPECTED_INTERVAL_HOURS: Partial<Record<string, number>> = {
   geo_dagster: 24,
   concierge: 24,
   pinvi: 24,
@@ -38,7 +43,7 @@ const BACKUP_TIMEOUT_SECONDS = 14_400;
 
 /** 누르기 전에 알아야 할 유일한 숫자. role마다 규모가 달라 문구도 달라야 한다 —
  * pinvi 백업을 확인하는데 geo 경고가 뜨면 그 경고를 읽지 않게 된다. */
-function durationWarning(role: StandaloneBackupManifest['role']): string {
+function durationWarning(role: string): string {
   const tail = '브라우저를 닫아도 진행됩니다. 상한은 4시간입니다.';
   if (role === 'geo') {
     return `geo는 수 시간이 걸릴 수 있습니다(실측 879초~22분). ${tail}`;
@@ -71,9 +76,12 @@ function formatTimestamp(createdAtUnix: number): string {
 }
 
 export default function BackupHistoryPanel({ onClose }: { onClose: () => void }) {
-  const [role, setRole] = useState<StandaloneBackupManifest['role'] | 'all'>('all');
+  const [role, setRole] = useState<string>('all');
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobError, setJobError] = useState<HumanError | null>(null);
+  // GM-14: 백업 자체는 시작됐지만 그 사실을 남기는 감사 로그 기록이 실패했을
+  // 때만 온다 — jobError(제출 자체의 실패)와는 다른, 덜 급한 경고다.
+  const [auditWarning, setAuditWarning] = useState<string | null>(null);
   // 경과 시간은 렌더 시점에 계산되므로, 무언가 주기적으로 리렌더하지 않으면 4시간짜리
   // 작업이 "3초 경과"에 멈춰 있다. 살아 있는지 알려 주는 유일한 숫자가 거짓이 된다.
   const [nowUnix, setNowUnix] = useState(() => Math.floor(Date.now() / 1000));
@@ -101,10 +109,18 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
     retry: false,
   });
 
+  // 트리거는 CLI 전용(`ktdctl offbox-sync run`)이다 — 이 쿼리는 마지막 결과만 읽는다.
+  const { data: offboxSync } = useQuery<OffboxSyncStatusResponse>({
+    queryKey: ['backups', 'offbox-sync-status'],
+    queryFn: () => apiJson<OffboxSyncStatusResponse>('/api/v1/backups/offbox-sync-status'),
+    retry: false,
+  });
+
   // role을 바꾸면 이전 role의 job을 따라다니지 않는다.
   useEffect(() => {
     setJobId(null);
     setJobError(null);
+    setAuditWarning(null);
   }, [role]);
 
   // 새로고침으로 job id를 잃어도 진행 중인 작업에 다시 붙는다.
@@ -154,6 +170,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
       }),
     onSuccess: (started) => {
       setJobError(null);
+      setAuditWarning(started.audit_warning ?? null);
       setJobId(started.job_id);
     },
     onError: (error) => setJobError(humanizeError(error, '백업 생성')),
@@ -169,13 +186,20 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
   }, [onClose]);
 
   const backups = data?.backups ?? [];
-  const everyBackup = allBackups?.backups ?? [];
+  // 신선도 판정은 손상된 manifest를 "없다"로 잘못 세지 않도록 읽을 수 있는 항목만 본다
+  // — 읽지 못한 항목 자체는 위 표에서 별도 경고 행으로 여전히 보인다.
+  const everyBackup = (allBackups?.backups ?? []).filter(
+    (entry): entry is StandaloneBackupManifest => !isUnreadableBackupEntry(entry)
+  );
   const running = job?.state === 'running';
+  // GM-18: 정본은 backend가 실어 보내는 roles다 — 아직 로딩 전이면 빈 배열이라
+  // select/생성 버튼은 '전체'만 보이다가 응답이 오면 채워진다.
+  const roles = allBackups?.roles ?? [];
+  const roleOptions = buildBackupRoleOptions(roles);
 
   // role별 최신 백업 시각. 기대 주기가 있는 role만 신선도를 판정한다.
-  const freshness = ROLE_OPTIONS.filter((option) => option.value !== 'all')
-    .map((option) => {
-      const value = option.value as StandaloneBackupManifest['role'];
+  const freshness = roles
+    .map((value) => {
       const expected = EXPECTED_INTERVAL_HOURS[value];
       if (expected === undefined) return null;
       const newest = everyBackup
@@ -190,9 +214,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
       const hours = (Date.now() / 1000 - newest) / 3600;
       return { role: value, hours, stale: hours > expected * FRESHNESS_WARN_MULTIPLIER };
     })
-    .filter((row): row is { role: StandaloneBackupManifest['role']; hours: number | null; stale: boolean } =>
-      row !== null
-    );
+    .filter((row): row is { role: string; hours: number | null; stale: boolean } => row !== null);
 
   return (
     <div
@@ -229,7 +251,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
       <div className="overflow-y-auto p-6">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <div className="flex flex-wrap gap-2">
-            {ROLE_OPTIONS.map((option) => (
+            {roleOptions.map((option) => (
               <button
                 className={`inline-flex items-center gap-2 min-h-[36px] rounded-card px-3 text-xs font-semibold border ${
                   role === option.value
@@ -303,6 +325,36 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
           </ul>
         ) : null}
 
+        {/* 로컬 백업만으로는 호스트 디스크 유실에서 살아남지 못한다 — off-box
+            동기화(GM-08) 상태를 같은 화면에서 보여야 "백업이 있다"는 착각이 안 생긴다.
+            트리거는 CLI 전용이라 여기서는 마지막 결과만 읽는다. "설정 안 함"과
+            "설정했지만 방치"를 구분해야 후자가 전자로 오해돼 방치되지 않는다. */}
+        <p
+          className={`text-xs mb-1 ${
+            offboxSync?.status && !offboxSync.status.all_verified ? 'text-danger' : 'text-secondary'
+          }`}
+        >
+          off-box 동기화:{' '}
+          {offboxSync?.status
+            ? `${offboxSync.status.destination_host} · ${
+                offboxSync.status.all_verified ? '검증됨' : '일부 실패'
+              } · ${formatTimestamp(offboxSync.status.started_at_unix)}`
+            : offboxSync?.configured
+              ? '설정됐지만 아직 실행한 적이 없습니다 (ktdctl offbox-sync run — 주기 자동화는 별도 설정 필요)'
+              : '설정되지 않음 (선택 기능, KTDM_OFFBOX_HOST 등 env 필요)'}
+        </p>
+        {offboxSync?.status && !offboxSync.status.all_verified ? (
+          <p className="text-xs text-danger mb-4">
+            실패한 대상:{' '}
+            {offboxSync.status.targets
+              .filter((target) => !target.verified)
+              .map((target) => target.label)
+              .join(', ')}
+          </p>
+        ) : (
+          <div className="mb-4" />
+        )}
+
         {job ? (
           <div
             aria-live="polite"
@@ -349,6 +401,20 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
           </div>
         ) : null}
 
+        {auditWarning ? (
+          <div className="mb-4">
+            {/* 백업 자체는 이미 시작됐다 — jobError처럼 실패를 알리는 게 아니라
+                "시작은 됐지만 기록이 하나 빠졌다"는 덜 급한 경고다. */}
+            <InlineError
+              error={{
+                title: '백업은 시작됐지만 감사 기록에 실패했습니다.',
+                hint: '백업 진행에는 영향이 없습니다. 아래 원문을 운영자에게 전달하세요.',
+                raw: auditWarning,
+              }}
+            />
+          </div>
+        ) : null}
+
         {isLoading ? (
           <p className="text-sm text-secondary">백업 이력을 불러오는 중입니다.</p>
         ) : error ? (
@@ -371,37 +437,45 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
                 </tr>
               </thead>
               <tbody>
-                {backups.map((backup) => (
-                  <tr
-                    className="border-t border-line"
-                    key={`${backup.role}-${backup.backup_filename}`}
-                  >
-                    <td data-label="생성 시각" className="py-2 px-3 text-ink break-all">
-                      {formatTimestamp(backup.created_at_unix)}
-                    </td>
-                    <td data-label="역할" className="py-2 px-3 text-ink font-mono">{backup.role}</td>
-                    <td data-label="크기" className="py-2 px-3 text-ink break-all">
-                      {formatBytes(backup.byte_size)}
-                    </td>
-                    <td data-label="alembic" className="py-2 px-3 text-ink font-mono break-all">
-                      {backup.alembic_head ?? '—'}
-                    </td>
-                    <td
-                      className="py-2 px-3 text-secondary font-mono text-xs break-all"
-                      data-label="SHA-256"
-                      title={backup.sha256}
+                {backups.map((backup) =>
+                  isUnreadableBackupEntry(backup) ? (
+                    <tr className="border-t border-line" key={`unreadable-${backup.filename}`}>
+                      <td className="py-2 px-3 text-danger break-all" colSpan={6}>
+                        읽을 수 없는 백업 기록: {backup.filename} — {backup.reason}
+                      </td>
+                    </tr>
+                  ) : (
+                    <tr
+                      className="border-t border-line"
+                      key={`${backup.role}-${backup.backup_filename}`}
                     >
-                      {backup.sha256.slice(0, 12)}…
-                    </td>
-                    <td
-                      className="py-2 px-3 text-secondary font-mono text-xs break-all"
-                      data-label="파일명"
-                      title={backup.backup_filename}
-                    >
-                      {backup.backup_filename}
-                    </td>
-                  </tr>
-                ))}
+                      <td data-label="생성 시각" className="py-2 px-3 text-ink break-all">
+                        {formatTimestamp(backup.created_at_unix)}
+                      </td>
+                      <td data-label="역할" className="py-2 px-3 text-ink font-mono">{backup.role}</td>
+                      <td data-label="크기" className="py-2 px-3 text-ink break-all">
+                        {formatBytes(backup.byte_size)}
+                      </td>
+                      <td data-label="alembic" className="py-2 px-3 text-ink font-mono break-all">
+                        {backup.alembic_head ?? '—'}
+                      </td>
+                      <td
+                        className="py-2 px-3 text-secondary font-mono text-xs break-all"
+                        data-label="SHA-256"
+                        title={backup.sha256}
+                      >
+                        {backup.sha256.slice(0, 12)}…
+                      </td>
+                      <td
+                        className="py-2 px-3 text-secondary font-mono text-xs break-all"
+                        data-label="파일명"
+                        title={backup.backup_filename}
+                      >
+                        {backup.backup_filename}
+                      </td>
+                    </tr>
+                  )
+                )}
               </tbody>
             </table>
           </div>

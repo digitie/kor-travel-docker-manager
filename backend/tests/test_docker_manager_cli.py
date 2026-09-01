@@ -857,6 +857,63 @@ def test_pin_parser_registers_every_leaf_command():
         assert callable(args.func)
 
 
+def test_pin_rotate_role_choices_come_from_the_canonical_runtime_source_roles():
+    """GM-18: `pin rotate --role`의 choices는 `RUNTIME_SOURCE_ROLES`(정본,
+    pinned_runtime_release.py)에서 가져와야 한다 — 여기서 독립적으로
+    `["map", "pinvi"]`를 다시 적으면 정본이 바뀌어도 이 CLI만 조용히
+    구식으로 남을 수 있다."""
+
+    from kor_travel_docker_manager.services.pinned_runtime_release import (
+        RUNTIME_SOURCE_ROLES,
+    )
+
+    parser = build_parser()
+
+    # 정본에 있는 각 role은 그대로 받아들여야 한다.
+    for role in RUNTIME_SOURCE_ROLES:
+        args = parser.parse_args(
+            ["pin", "rotate", "--role", role, "--revision", "a" * 40, "--reason", "r"]
+        )
+        assert args.role == role
+
+    # 정본에 없는 값은 choices 제약으로 거부돼야 한다(하드코딩된 목록이 아니라
+    # 실제로 RUNTIME_SOURCE_ROLES를 참조하고 있다는 것의 반증 — 이 값이 우연히
+    # 통과하면 choices가 더 이상 정본과 연결돼 있지 않다는 뜻이다).
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["pin", "rotate", "--role", "not-a-real-role", "--revision", "a" * 40, "--reason", "r"]
+        )
+
+
+def test_pin_rotate_role_choices_track_the_canonical_tuple_dynamically(monkeypatch):
+    """GM-18 리뷰 반영(2인 적대적 리뷰 공통 지적): 위 테스트는 지금 값이 우연히
+    같은 독립 하드코딩(`choices=["map", "pinvi"]`)과 실제 배선을 구분하지
+    못한다 — 둘 다 오늘은 같은 값을 받아들인다. 이 테스트는
+    `kor_travel_docker_manager.cli.RUNTIME_SOURCE_ROLES` 자체를 다른 값으로
+    바꿔치기해 `build_parser()`의 choices가 그 값을 실제로 따라가는지 본다.
+    하드코딩이었다면 patch는 무시되고 여전히 ("map", "pinvi")만 받아들였을
+    것이다."""
+
+    import kor_travel_docker_manager.cli as cli_module
+
+    monkeypatch.setattr(cli_module, "RUNTIME_SOURCE_ROLES", ("only-patched-role",))
+
+    parser = cli_module.build_parser()
+
+    args = parser.parse_args(
+        ["pin", "rotate", "--role", "only-patched-role", "--revision", "a" * 40, "--reason", "r"]
+    )
+    assert args.role == "only-patched-role"
+
+    # patch 전에는 유효했던 "map"이 지금은 거부돼야 한다 — choices가 patch된
+    # 값을 그대로 반영한다는 뜻이고, 어딘가 ["map", "pinvi"]가 여전히
+    # 하드코딩돼 있었다면 이 assert가 실패했을 것이다.
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            ["pin", "rotate", "--role", "map", "--revision", "a" * 40, "--reason", "r"]
+        )
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -961,6 +1018,96 @@ def test_pin_show_and_verify_are_read_only_and_report_lifecycle(pin_cli_env, cap
     assert pin_cli_env.read_bytes() == before
 
 
+def test_pin_show_without_json_flag_still_only_prints_to_stderr(pin_cli_env, capsys):
+    """--json이 없으면 실패해도 stdout은 비운다 — 사람이 읽는 출력은 그대로 stderr다."""
+
+    assert main(["pin", "show"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "missing" in captured.err
+
+
+@pytest.mark.parametrize(
+    "argv, patch_root",
+    [
+        (["pin", "show", "--json"], False),
+        (["pin", "verify", "--json"], False),
+        (
+            [
+                "pin",
+                "rotate",
+                "--role",
+                "map",
+                "--revision",
+                "a" * 40,
+                "--reason",
+                "r",
+                "--confirm",
+                "--json",
+            ],
+            False,
+        ),
+        (
+            [
+                "pin",
+                "rotate-pair",
+                "--map-revision",
+                "a" * 40,
+                "--pinvi-revision",
+                "b" * 40,
+                "--reason",
+                "r",
+                "--confirm",
+                "--json",
+            ],
+            False,
+        ),
+        (["pin", "block", "a" * 64, "--reason", "r", "--confirm", "--json"], True),
+        (
+            ["pin", "rollback", "--to", "a" * 64, "--reason", "r", "--confirm", "--json"],
+            False,
+        ),
+    ],
+)
+def test_pin_json_failures_always_emit_status_failed_json_to_stdout(
+    argv, patch_root, pin_cli_env, capsys
+):
+    """GM-06: --json이면 실패해도 stdout이 비지 않는다 (pin show-pending 관례 확장).
+
+    registry 파일이 없는 상태에서 각 pin 하위 명령을 --json으로 실행하면, 예전에는
+    stderr에만 사람이 읽는 메시지를 내고 stdout은 비웠다 — `| jq`가 파싱 대상 없이
+    죽는다. 이제는 stdout에 {"status": "failed", "detail": ...} JSON을 낸다.
+    """
+
+    if patch_root:
+        with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+            code = main(argv)
+    else:
+        code = main(argv)
+
+    captured = capsys.readouterr()
+    assert code == 2
+    payload = json.loads(captured.out)
+    assert payload["status"] == "failed"
+    assert "missing" in payload["detail"]
+    assert "missing" in captured.err
+
+
+def test_pin_init_json_failure_emits_status_failed_json_to_stdout(
+    pin_cli_env, capsys, tmp_path
+):
+    missing_seed = tmp_path / "does-not-exist-seed.json"
+
+    code = main(["pin", "init", "--seed", str(missing_seed), "--confirm", "--json"])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    payload = json.loads(captured.out)
+    assert payload["status"] == "failed"
+    assert "missing" in payload["detail"]
+    assert "missing" in captured.err
+
+
 @patch("kor_travel_docker_manager.cli.verify_runtime_pin_registry")
 @patch("kor_travel_docker_manager.cli.read_published_pinned_runtime_generation")
 def test_pin_verify_allows_a_valid_terminal_generation_pending_new_pair(
@@ -1039,6 +1186,60 @@ def test_pin_verify_allows_a_legacy_terminal_with_current_unblocked_execution(
     assert output["current_pinset_is_blocked"] is True
     assert output["execution_binding"] == "current"
     assert output["current_execution_is_blocked"] is False
+
+
+@patch("kor_travel_docker_manager.cli.verify_runtime_pin_registry")
+@patch("kor_travel_docker_manager.cli.read_published_pinned_runtime_generation")
+def test_pin_verify_guides_manager_drift_to_rebind_not_a_self_targeted_rollback(
+    generation_reader,
+    registry_verifier,
+    capsys,
+    monkeypatch,
+):
+    """GM-01 F1 회귀: source는 그대로고 trusted Manager revision만 바뀐 표준 업그레이드에서,
+    verify는 rebind-execution을 안내해야 한다. rollback --to <현재 pinset>은 항상
+    'already uses this pinset'으로 거부되므로 안내로 주면 안 된다.
+    """
+    from unittest.mock import MagicMock
+
+    registry_verifier.return_value = {
+        "published_copy": "current",
+        "current_pinset_is_blocked": False,
+    }
+    generation_reader.return_value = {"status": "ok", "pinset_binding": {"status": "match"}}
+
+    pins = MagicMock()
+    pins.pinset_sha256 = "a" * 64
+    pins.map_revision = "1" * 40
+    pins.pinvi_revision = "2" * 40
+
+    execution = MagicMock()
+    execution.current_matches.return_value = False  # manager revision만 다름
+    execution.current.source_pinset_sha256 = "a" * 64  # == 현재 pinset
+    execution.current.map_revision = "1" * 40
+    execution.current.pinvi_revision = "2" * 40
+    execution.is_unconditionally_blocked_current.return_value = False
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.cli.load_runtime_execution_registry", lambda: execution
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.cli.load_runtime_pin_registry", lambda: pins
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.cli.trusted_manager_source_revision", lambda: "9" * 40
+    )
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.cli.verify_runtime_execution_registry",
+        lambda: {"execution_public_copy": "current"},
+    )
+
+    code = main(["pin", "verify"])
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "rebind-execution" in captured.err
+    # 자기 자신을 향하는(항상 실패하는) rollback 안내를 주지 않는다.
+    assert "rollback --to" not in captured.err
 
 
 def test_pin_rotate_computes_the_digest_and_records_the_reason(pin_cli_env, capsys):
@@ -1128,8 +1329,157 @@ def test_cli_db_backup_restore_plan_reports_a_healthy_backup(capsys) -> None:
         assert main(["db-backup", "restore-plan", "geo"]) == 0
 
     output = capsys.readouterr().out
-    # 복원 명령이 아직 없다는 사실을 계획이 스스로 말한다.
-    assert "복원 명령은 아직 없습니다" in output
+    # 파괴적 복원 명령은 아직 없지만, scratch DB 리허설 경로는 안내한다.
+    assert "rehearse-restore" in output
+
+
+def test_cli_db_backup_rehearse_restore_reports_a_verified_backup(capsys) -> None:
+    from types import SimpleNamespace
+
+    outcome = SimpleNamespace(
+        role="geo",
+        backup_filename="geo-1.dump",
+        plan=SimpleNamespace(to_json=lambda: {}),
+        attempted=True,
+        restore_succeeded=True,
+        scratch_database="ktdm_rehearsal_1000",
+        restored_alembic_head="0001_head",
+        restored_db_size_bytes=12345,
+        duration_sec=1.23,
+        findings=(SimpleNamespace(code="OK", text="검증 성공", blocking=False),),
+        verified=True,
+        to_json=lambda: {"verified": True},
+    )
+
+    with patch(
+        "kor_travel_docker_manager.cli.rehearse_standalone_restore", return_value=outcome
+    ) as rehearser:
+        exit_code = main(["db-backup", "rehearse-restore", "geo"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "검증됐습니다" in output
+    assert "ktdm_rehearsal_1000" in output
+    rehearser.assert_called_once_with("geo", backup_filename=None, timeout=14_400)
+
+
+def test_cli_db_backup_rehearse_restore_fails_closed_when_restore_is_unverified(
+    capsys,
+) -> None:
+    from types import SimpleNamespace
+
+    outcome = SimpleNamespace(
+        role="geo",
+        backup_filename="geo-1.dump",
+        plan=SimpleNamespace(to_json=lambda: {}),
+        attempted=True,
+        restore_succeeded=False,
+        scratch_database="ktdm_rehearsal_1000",
+        restored_alembic_head=None,
+        restored_db_size_bytes=None,
+        duration_sec=1.23,
+        findings=(
+            SimpleNamespace(
+                code="REHEARSAL_RESTORE_FAILED", text="pg_restore가 실패했습니다", blocking=True
+            ),
+        ),
+        verified=False,
+        to_json=lambda: {"verified": False},
+    )
+
+    with patch(
+        "kor_travel_docker_manager.cli.rehearse_standalone_restore", return_value=outcome
+    ):
+        exit_code = main(["db-backup", "rehearse-restore", "geo", "--json"])
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["verified"] is False
+
+
+# --- ktdctl offbox-sync (GM-08) -----------------------------------------------
+
+
+def test_cli_offbox_sync_run_requires_root(capsys) -> None:
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=False):
+        assert main(["offbox-sync", "run"]) == 2
+    assert "root" in capsys.readouterr().err
+
+
+def test_cli_offbox_sync_run_reports_all_verified(capsys) -> None:
+    from types import SimpleNamespace
+
+    outcome = SimpleNamespace(
+        destination_host="backup-vault.internal",
+        targets=(
+            SimpleNamespace(label="geo", synced=True, verified=True, detail="synced and verified"),
+        ),
+        all_verified=True,
+        to_json=lambda: {"all_verified": True},
+    )
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.sync_backups_offbox", return_value=outcome
+        ) as syncer,
+    ):
+        exit_code = main(["offbox-sync", "run", "--json"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["all_verified"] is True
+    syncer.assert_called_once_with(include_pin_registry=True, timeout=14_400)
+
+
+def test_cli_offbox_sync_run_json_failure_when_not_configured(capsys) -> None:
+    from kor_travel_docker_manager.services.offbox_backup_sync import (
+        OffboxSyncNotConfiguredError,
+    )
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.sync_backups_offbox",
+            side_effect=OffboxSyncNotConfiguredError("KTDM_OFFBOX_HOST is not set"),
+        ),
+    ):
+        exit_code = main(["offbox-sync", "run", "--json"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    payload = json.loads(captured.out)
+    assert payload["status"] == "failed"
+    assert "KTDM_OFFBOX_HOST" in payload["detail"]
+    assert "KTDM_OFFBOX_HOST" in captured.err
+
+
+def test_cli_offbox_sync_status_reports_never_run(capsys) -> None:
+    with patch(
+        "kor_travel_docker_manager.cli.read_offbox_sync_status", return_value=None
+    ):
+        exit_code = main(["offbox-sync", "status", "--json"])
+
+    assert exit_code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "never_run"
+
+
+def test_cli_offbox_sync_status_reports_the_last_result(capsys) -> None:
+    status = {
+        "destination_host": "backup-vault.internal",
+        "started_at_unix": 1000,
+        "all_verified": True,
+        "targets": [{"label": "geo", "verified": True}],
+    }
+    with patch(
+        "kor_travel_docker_manager.cli.read_offbox_sync_status", return_value=status
+    ):
+        exit_code = main(["offbox-sync", "status", "--json"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == status
 
 
 # --- ktdctl pin apply-pending (KUM-M5) ---------------------------------------
@@ -1262,6 +1612,91 @@ def test_pin_show_pending_reports_nothing_pending(pin_cli_env, pending_request_e
 
     assert main(["pin", "show-pending"]) == 1
     assert "없습니다" in capsys.readouterr().out
+
+
+def test_pin_apply_pending_json_reports_absent_when_nothing_pending(
+    pin_cli_env, pending_request_env, capsys
+):
+    """GM-06 잔여 지적 회귀: apply-pending도 --json이면 stdout이 비지 않는다.
+
+    request가 없는 상태는 실패가 아니라 상태 보고이므로 show-pending과 같은
+    "absent" 어휘를 쓴다.
+    """
+
+    main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
+    capsys.readouterr()
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        exit_code = main(["pin", "apply-pending", "--any-revision", "--confirm", "--json"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    payload = json.loads(captured.out)
+    assert payload == {"status": "absent"}
+
+
+def test_pin_apply_pending_json_failure_when_expect_revision_mismatches(
+    pin_cli_env, pending_request_env, capsys
+):
+    _init_rotatable_registry()
+    capsys.readouterr()
+    _file_a_request()
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        exit_code = main(
+            [
+                "pin",
+                "apply-pending",
+                "--expect-revision",
+                "f" * 40,
+                "--confirm",
+                "--json",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    payload = json.loads(captured.out)
+    assert payload["status"] == "failed"
+    assert "expect-revision" in payload["detail"]
+    assert "expect-revision" in captured.err
+
+
+def test_pin_apply_pending_json_failure_when_registry_is_missing(
+    pin_cli_env, pending_request_env, capsys
+):
+    """등록된 registry 없이 요청 파일만 있으면 read_runtime_pin_request 다음 단계인
+    load_runtime_pin_registry가 DeploymentContractError를 낸다 — 그 경로도 --json이면
+    stdout에 JSON을 내야 한다."""
+
+    from kor_travel_docker_manager.services.runtime_pin_request import (
+        RuntimePinRequest,
+        utc_timestamp,
+        write_runtime_pin_request,
+    )
+
+    write_runtime_pin_request(
+        RuntimePinRequest(
+            request_id="6f9619ff-8b86-4d01-b42d-00cf4fc964ff",
+            role="pinvi",
+            revision="d" * 40,
+            reason="registry 없는 상태에서의 회귀 테스트",
+            requested_by="admin",
+            requested_at=utc_timestamp(),
+            base_pinset_sha256="a" * 64,
+            prospective_pinset_sha256="b" * 64,
+        )
+    )
+
+    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=True):
+        exit_code = main(["pin", "apply-pending", "--any-revision", "--confirm", "--json"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    payload = json.loads(captured.out)
+    assert payload["status"] == "failed"
+    assert "missing" in payload["detail"]
+    assert "missing" in captured.err
 
 
 def test_pin_apply_pending_rotates_and_records_both_actors(
@@ -1409,6 +1844,206 @@ def test_pin_apply_pending_reports_a_distinct_code_when_cleanup_fails(
     assert str(pending_request_env) in captured.err
     # 적용된 registry 상태는 그래도 보여 준다 — 무엇이 됐는지 봐야 수습할 수 있다.
     assert "pinset" in captured.out
+
+
+def _make_v6_host(tmp_path, monkeypatch):
+    """격리 v5 registry 위에 v6 execution registry와 intent 경로를 얹는다."""
+
+    from kor_travel_docker_manager.services import runtime_execution_registry as executions_module
+    from kor_travel_docker_manager.services import runtime_pair_rotation as pair_rotation
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        migrate_execution_registry,
+        write_runtime_execution_registry,
+    )
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        load_runtime_pin_registry,
+    )
+
+    monkeypatch.setenv(
+        executions_module.RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV, "1"
+    )
+    monkeypatch.setenv(
+        pair_rotation.RUNTIME_PAIR_ROTATION_ALLOW_INSECURE_MODE_ENV, "1"
+    )
+    monkeypatch.setenv(
+        executions_module.RUNTIME_EXECUTIONS_FILE_ENV, str(tmp_path / "executions.json")
+    )
+    monkeypatch.setenv(
+        executions_module.RUNTIME_EXECUTIONS_PUBLIC_FILE_ENV,
+        str(tmp_path / "public" / "executions.json"),
+    )
+    monkeypatch.setenv(
+        pair_rotation.RUNTIME_PAIR_ROTATION_FILE_ENV, str(tmp_path / "rotation.json")
+    )
+    manager = "9" * 40
+    executions = migrate_execution_registry(
+        pins=load_runtime_pin_registry(),
+        manager_source_revision=manager,
+        bound_by="tester",
+        reason="migrate",
+    )
+    write_runtime_execution_registry(executions)
+    return manager
+
+
+def test_pin_apply_pending_updates_the_execution_registry_on_a_v6_host(
+    pin_cli_env, pending_request_env, tmp_path, monkeypatch, capsys
+):
+    """GM-01 회귀: UI 요청 승인 한 번이 v6 binding을 stale로 만들면 안 된다."""
+
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        load_runtime_execution_registry,
+    )
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        load_runtime_pin_registry,
+    )
+
+    _init_rotatable_registry()
+    manager = _make_v6_host(tmp_path, monkeypatch)
+    capsys.readouterr()
+    _file_a_request()
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.trusted_manager_source_revision",
+            return_value=manager,
+        ),
+    ):
+        exit_code = main(["pin", "apply-pending", "--any-revision", "--confirm"])
+
+    assert exit_code == 0
+    rotated = load_runtime_pin_registry()
+    assert rotated.pinvi_revision == "d" * 40
+    assert load_runtime_execution_registry().current_matches(
+        pins=rotated, manager_source_revision=manager
+    )
+    assert not pending_request_env.exists()
+
+
+def test_pin_apply_pending_resumes_a_partial_v5_v6_write(
+    pin_cli_env, pending_request_env, tmp_path, monkeypatch, capsys
+):
+    """v5/v6 사이 crash 뒤 같은 apply-pending 재실행이 끝까지 publish하고 요청을 지운다."""
+
+    from kor_travel_docker_manager.services import runtime_pair_rotation as pair_rotation
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        load_runtime_execution_registry,
+    )
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        load_runtime_pin_registry,
+    )
+
+    _init_rotatable_registry()
+    manager = _make_v6_host(tmp_path, monkeypatch)
+    capsys.readouterr()
+    _file_a_request()
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.trusted_manager_source_revision",
+            return_value=manager,
+        ),
+        patch.object(
+            pair_rotation,
+            "write_runtime_execution_registry",
+            side_effect=OSError("simulated v6 write failure"),
+        ),
+    ):
+        first = main(["pin", "apply-pending", "--any-revision", "--confirm"])
+
+    assert first == 2
+    # 요청은 남아 있고 intent도 남아 있다 — 이 상태에서 재실행이 복구여야 한다.
+    assert pending_request_env.exists()
+    assert pair_rotation.load_pending_runtime_pair_rotation() is not None
+    capsys.readouterr()
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.trusted_manager_source_revision",
+            return_value=manager,
+        ),
+    ):
+        second = main(["pin", "apply-pending", "--any-revision", "--confirm"])
+
+    assert second == 0
+    assert pair_rotation.load_pending_runtime_pair_rotation() is None
+    rotated = load_runtime_pin_registry()
+    assert load_runtime_execution_registry().current_matches(
+        pins=rotated, manager_source_revision=manager
+    )
+    assert not pending_request_env.exists()
+
+
+def test_pin_apply_pending_refuses_a_request_unrelated_to_a_pending_intent(
+    pin_cli_env, pending_request_env, tmp_path, monkeypatch, capsys
+):
+    """재개 경로는 intent가 이 요청의 것일 때만 가드를 건너뛴다.
+
+    운영자의 pair 회전이 v5 write 뒤 crash한 상태에서, 남아 있던 무관한 단일 role
+    요청을 apply-pending이 "적용됨"으로 소비하고 pair 결과를 그 요청에 귀속시키면
+    안 된다. intent의 pinset이 요청의 prospective와 다르면 거부해야 한다.
+    """
+
+    from kor_travel_docker_manager.services import runtime_pair_rotation as pair_rotation
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        migrate_execution_registry,
+        rotate_execution_source_binding,
+    )
+    from kor_travel_docker_manager.services.runtime_pin_registry import (
+        build_registry,
+        load_runtime_pin_registry,
+    )
+
+    _init_rotatable_registry()
+    manager = _make_v6_host(tmp_path, monkeypatch)
+    capsys.readouterr()
+    # 단일 role 요청: pinvi → d*40
+    _file_a_request()
+
+    # 요청과 무관한 pair(map e*40, pinvi f*40)를 향하는 pending intent를 손으로 남긴다.
+    current = load_runtime_pin_registry()
+    other_pins = build_registry(
+        release_version=current.release_version,
+        map_revision="e" * 40,
+        pinvi_revision="f" * 40,
+        rotated_by="tester",
+        reason="무관한 pair",
+    )
+    executions = migrate_execution_registry(
+        pins=current, manager_source_revision=manager, bound_by="tester", reason="seed"
+    )
+    other_executions = rotate_execution_source_binding(
+        registry=executions,
+        pins=other_pins,
+        manager_source_revision=manager,
+        bound_by="tester",
+        reason="무관한 pair",
+    )
+    intent = pair_rotation.RuntimePairRotation(
+        created_at="2026-09-01T00:00:00Z",
+        pin_registry=other_pins,
+        execution_registry=other_executions,
+    )
+    pair_rotation._atomic_write(pair_rotation.runtime_pair_rotation_path(), intent.to_payload())
+
+    before = load_runtime_pin_registry().pinset_sha256
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli.trusted_manager_source_revision",
+            return_value=manager,
+        ),
+    ):
+        exit_code = main(["pin", "apply-pending", "--any-revision", "--confirm"])
+
+    assert exit_code == 2
+    assert "다른 pinset을 향합니다" in capsys.readouterr().err
+    # 요청도 registry도 건드리지 않았다 — 무관한 요청을 소비하지 않는다.
+    assert pending_request_env.exists()
+    assert load_runtime_pin_registry().pinset_sha256 == before
 
 
 def test_pin_clear_pending_force_removes_an_unreadable_request(

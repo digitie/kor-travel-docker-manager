@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -28,9 +27,17 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     RuntimePinRegistry,
     RuntimePinRegistryError,
     build_runtime_pin_pair_rotation,
+    build_runtime_pin_rollback,
     load_runtime_pin_registry,
     utc_timestamp,
     write_runtime_pin_registry,
+)
+from kor_travel_docker_manager.services.secure_state_file import (
+    atomic_write_json,
+    insecure_mode_allowed,
+)
+from kor_travel_docker_manager.services.trusted_install import (
+    TRUSTED_STATE_ROOT,
 )
 
 RUNTIME_PAIR_ROTATION_SCHEMA: Final = "kor-travel-docker-manager.runtime-pair-rotation.v1"
@@ -38,7 +45,8 @@ RUNTIME_PAIR_ROTATION_FILE_ENV: Final = "KTDM_RUNTIME_PAIR_ROTATION_FILE"
 RUNTIME_PAIR_ROTATION_ALLOW_INSECURE_MODE_ENV: Final = (
     "KTDM_RUNTIME_PAIR_ROTATION_ALLOW_INSECURE_MODE"
 )
-_TRUSTED_STATE_ROOT: Final = Path("/var/lib/kor-travel-docker-manager")
+# GM-09: 경로 상수의 정본은 services/trusted_install.py다.
+_TRUSTED_STATE_ROOT: Final = TRUSTED_STATE_ROOT
 _DEFAULT_BASENAME: Final = "runtime-pair-rotation.json"
 
 
@@ -52,12 +60,14 @@ def runtime_pair_rotation_path() -> Path:
 
 
 def _insecure_mode_allowed() -> bool:
-    """공유 마운트 개발 fixture만 명시적으로 완화하고 root에서는 절대 열지 않는다."""
+    """공유 마운트 개발 fixture만 명시적으로 완화하고 root에서는 절대 열지 않는다.
+
+    GM-10: env 파싱 규칙(.strip() == "1")의 정본은 services/secure_state_file.py다.
+    """
 
     geteuid = getattr(os, "geteuid", None)
-    return (
-        (geteuid is None or geteuid() != 0)
-        and os.environ.get(RUNTIME_PAIR_ROTATION_ALLOW_INSECURE_MODE_ENV) == "1"
+    return (geteuid is None or geteuid() != 0) and insecure_mode_allowed(
+        RUNTIME_PAIR_ROTATION_ALLOW_INSECURE_MODE_ENV
     )
 
 
@@ -95,30 +105,18 @@ def _require_private_parent(path: Path) -> None:
 
 
 def _atomic_write(path: Path, payload: dict[str, object]) -> None:
+    # GM-10: 예전에는 디렉터리 fsync가 파일 교체와 같은 try/except 안에 있어,
+    # os.replace가 이미 성공한 뒤에 디렉터리 fsync만 실패해도 임시 파일
+    # unlink+재raise로 떨어져 "성공한 쓰기"를 실패로 잘못 보고했다.
+    # secure_state_file.atomic_write_json은 디렉터리 fsync를 별도 단계로 두고
+    # 그 실패를 조용히 삼킨다 — 파일은 이미 올바르게 교체됐으므로 그래야 맞다.
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
         pass
     _require_private_parent(path)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=True, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_CLOEXEC)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+    atomic_write_json(path, payload, mode=0o600)
 
 
 @dataclass(frozen=True)
@@ -209,12 +207,17 @@ def _same_requested_target(
     *,
     map_revision: str,
     pinvi_revision: str,
-    manager_source_revision: str,
 ) -> bool:
+    # target 유일성은 operator가 선언하는 map·pinvi revision으로 판정한다.
+    # manager_source_revision은 여기에 넣지 않는다: operator가 선언하지 않는 값이고
+    # `trusted_manager_source_revision()`은 trusted 설치마다 바뀌므로, 비교에 넣으면
+    # v5/v6 사이 crash 뒤 Manager release를 설치한 순간 모든 재개 경로가
+    # "different target"으로 거부돼 host가 wedge된다(mainline clear 경로도 없다).
+    # 재개는 intent에 baked된 execution을 그대로 publish하고, Manager가 그 사이
+    # 바뀌었으면 이후 `pin rebind-execution`이 정본 복구다(verify가 manager_drift로 안내).
     return (
         pending.pin_registry.map_revision == map_revision
         and pending.pin_registry.pinvi_revision == pinvi_revision
-        and pending.execution_registry.current.manager_source_revision == manager_source_revision
     )
 
 
@@ -240,7 +243,6 @@ def rotate_pair_with_execution(
             pending,
             map_revision=map_revision,
             pinvi_revision=pinvi_revision,
-            manager_source_revision=manager_source_revision,
         ):
             raise RuntimePairRotationError(
                 "runtime pair rotation is incomplete for a different target"
@@ -282,3 +284,170 @@ def rotate_pair_with_execution(
     write_runtime_execution_registry(target.execution_registry)
     _clear_pending_runtime_pair_rotation()
     return target.pin_registry
+
+
+def _publish_rotation_target(target: RuntimePairRotation) -> RuntimePinRegistry:
+    """intent에 준비된 v5/v6 target을 끝까지 publish하고 intent를 지운다.
+
+    ``rotate_pair_with_execution``과 동일한 꼬리 계약: 어느 단계에서 실패해도 intent가
+    남아 같은 target의 retry가 전체를 다시 publish한다.
+    """
+
+    write_runtime_pin_registry(target.pin_registry)
+    write_runtime_execution_registry(target.execution_registry)
+    _clear_pending_runtime_pair_rotation()
+    return target.pin_registry
+
+
+def rotate_single_role_with_execution(
+    *,
+    role: str,
+    revision: str,
+    manager_source_revision: str,
+    reason: str,
+    rotated_by: str,
+    block_previous: bool,
+) -> RuntimePinRegistry:
+    """한 role의 source 회전을 v6 execution과 durable intent 아래 함께 기록한다.
+
+    v6 host에서 단일 role 회전이 v5만 바꾸면 execution binding이 stale이 되어 모든
+    runtime mutation이 fail-close된다 — 이 함수가 있기 전 ``pin rotate``와
+    ``pin apply-pending``이 정확히 그 상태를 만들었다. pair 회전과 같은 transaction
+    계약을 쓰되, terminal current pinset은 ``rotate_runtime_pin``과 동일하게 거부한다.
+    pair 선언 없는 단일 role 탈출은 M05가 pair-incomplete pinset을 one-shot ledger에
+    먼저 소비할 수 있는 문이기 때문이다. terminal에서의 탈출은 두 revision을 함께
+    선언하는 ``rotate-pair``만 허용된다.
+    """
+
+    from kor_travel_docker_manager.services.pinned_runtime_release import RUNTIME_SOURCE_ROLES
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        load_runtime_execution_registry,
+        rotate_execution_source_binding,
+    )
+
+    if role not in RUNTIME_SOURCE_ROLES:
+        raise RuntimePairRotationError("runtime pin role must be map or pinvi")
+
+    current = load_runtime_pin_registry()
+    requested_map = revision if role == "map" else current.map_revision
+    requested_pinvi = revision if role == "pinvi" else current.pinvi_revision
+
+    pending = load_pending_runtime_pair_rotation()
+    if pending is not None:
+        # v5 write 이후 crash면 current의 다른 role slot은 이미 pending과 같고, write
+        # 이전 crash면 회전 전 값 그대로 pending과 같다 — 어느 crash 지점에서도 이
+        # 대조는 "같은 단일 role 재시도"만 통과시킨다.
+        if not _same_requested_target(
+            pending,
+            map_revision=requested_map,
+            pinvi_revision=requested_pinvi,
+        ):
+            raise RuntimePairRotationError(
+                "runtime pair rotation is incomplete for a different target"
+            )
+        return _publish_rotation_target(pending)
+
+    if current.is_unconditionally_blocked_pinset(current.pinset_sha256):
+        raise RuntimePairRotationError(
+            "a terminal current pinset requires atomic Map/PinVi pair rotation"
+        )
+    executions = load_runtime_execution_registry()
+    # v5 미차단이 v6 미차단을 뜻하지 않는다. M05 launcher의 terminal 판정은 `pin
+    # block-execution`으로 v6에만 기록되고 v5 blocked_pinsets는 비어 있는 것이 정상
+    # 경로다(run-m05-isolated-e2e-once). v6 terminal도 검사하지 않으면, 단일 role
+    # 회전이 새 미차단 execution identity를 만들어 rebuild gate를 다시 열어 준다 —
+    # pair 선언 없이 terminal one-shot을 탈출하는 정확히 그 구멍이다. 탈출은
+    # rotate-pair(두 revision 선언)로만 허용한다.
+    if executions.is_unconditionally_blocked_current():
+        raise RuntimePairRotationError(
+            "a terminal current execution requires atomic Map/PinVi pair rotation"
+        )
+    target_pins = build_runtime_pin_pair_rotation(
+        current=current,
+        map_revision=requested_map,
+        pinvi_revision=requested_pinvi,
+        reason=reason,
+        rotated_by=rotated_by,
+        block_previous=block_previous,
+    )
+    executions = load_runtime_execution_registry()
+    target_executions = rotate_execution_source_binding(
+        registry=executions,
+        pins=target_pins,
+        manager_source_revision=manager_source_revision,
+        bound_by=rotated_by,
+        reason=reason,
+    )
+    target = RuntimePairRotation(
+        created_at=utc_timestamp(),
+        pin_registry=target_pins,
+        execution_registry=target_executions,
+    )
+    _atomic_write(runtime_pair_rotation_path(), target.to_payload())
+    return _publish_rotation_target(target)
+
+
+def rollback_with_execution(
+    *,
+    pinset_sha256: str,
+    manager_source_revision: str,
+    reason: str,
+    rotated_by: str,
+) -> RuntimePinRegistry:
+    """보존본 원복을 v6 execution과 durable intent 아래 함께 기록한다.
+
+    v6가 이미 target pinset을 가리키는 **치유형** 사례 — 단일 role 회전 결함이나 수동
+    조작으로 v5만 앞서간 상태를 되돌리는 경우 — 에서는 execution을 그대로 보존한다.
+    ``rotate_execution_source_binding``의 "did not change" 거부를 여기서 흡수하지
+    않으면 정확히 그 치유가 막힌다. v5/v6가 함께 current인 일반 원복에서는 execution도
+    새 binding으로 이행한다.
+    """
+
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        load_runtime_execution_registry,
+        rotate_execution_source_binding,
+    )
+
+    normalized = pinset_sha256.strip().lower()
+    if len(normalized) != 64 or any(ch not in "0123456789abcdef" for ch in normalized):
+        raise RuntimePairRotationError("rollback pinset must be a 64-hex digest")
+
+    pending = load_pending_runtime_pair_rotation()
+    if pending is not None:
+        if (
+            pending.pin_registry.pinset_sha256 != normalized
+            or pending.execution_registry.current.manager_source_revision
+            != manager_source_revision
+        ):
+            raise RuntimePairRotationError(
+                "runtime pair rotation is incomplete for a different target"
+            )
+        return _publish_rotation_target(pending)
+
+    target_pins = build_runtime_pin_rollback(
+        pinset_sha256=normalized,
+        rotated_by=rotated_by,
+        reason=reason,
+    )
+    executions = load_runtime_execution_registry()
+    if executions.current_matches(
+        pins=target_pins, manager_source_revision=manager_source_revision
+    ):
+        # 치유형: v6는 이미 정확하다. 새 binding을 만들면 동일 identity가 history에
+        # 중복 등재되고, terminal audit이 붙어 있던 execution이 새 것으로 교체된다.
+        target_executions = executions
+    else:
+        target_executions = rotate_execution_source_binding(
+            registry=executions,
+            pins=target_pins,
+            manager_source_revision=manager_source_revision,
+            bound_by=rotated_by,
+            reason=reason,
+        )
+    target = RuntimePairRotation(
+        created_at=utc_timestamp(),
+        pin_registry=target_pins,
+        execution_registry=target_executions,
+    )
+    _atomic_write(runtime_pair_rotation_path(), target.to_payload())
+    return _publish_rotation_target(target)

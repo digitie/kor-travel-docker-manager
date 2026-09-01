@@ -32,6 +32,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_concierge_ui_canonical_compose_boundary,
 )
 from kor_travel_docker_manager.services.compose_service import get_project_root
+from kor_travel_docker_manager.services.trusted_install import TRUSTED_INSTALL_ROOT
 
 _OVERRIDE_NAME = "docker-compose.override.yml"
 _ARCHIVE_DIRECTORY_NAME = ".retired-compose-overrides"
@@ -39,7 +40,8 @@ _LEGACY_STAGE_DIRECTORY_NAME = "legacy-compose-override"
 _LEGACY_PENDING_DIRECTORY_NAME = "pending"
 _STAGED_SOURCE_ENV_NAME = "concierge-source.env"
 _MAX_IMPORT_BYTES = 128 * 1024
-_TRUSTED_PRODUCTION_PROJECT_ROOT = Path("/opt/kor-travel-docker-manager")
+# GM-09: 경로 상수의 정본은 services/trusted_install.py다.
+_TRUSTED_PRODUCTION_PROJECT_ROOT = TRUSTED_INSTALL_ROOT
 _GEO_SERVICES = (
     "kor-travel-geo-api",
     "kor-travel-geo-dagster",
@@ -732,6 +734,8 @@ def _canonical_concierge_compose_projection(
     except yaml.YAMLError as exc:
         raise LegacyOverrideRetirementError("canonical Compose projection cannot be serialized") from exc
 
+    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
+    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -1251,6 +1255,8 @@ def _read_regular_bytes(path: Path) -> bytes:
 
 
 def _write_atomic(path: Path, payload: bytes, *, mode: int) -> None:
+    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
+    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     replaced = False

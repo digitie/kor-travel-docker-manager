@@ -9,6 +9,10 @@ export type HumanError = {
   title: string;
   hint: string;
   raw: string;
+  /** GM-16: 이 오류를 낸 요청의 상관관계 ID. 서버 로그·감사 행과 조인하는
+   * 키라 운영자가 이슈에 붙여넣을 수 있게 노출한다. `ApiError`에서 온 것이
+   * 아니거나(클라이언트 자체 오류) 헤더가 없으면 없다. */
+  requestId?: string | null;
 };
 
 /** 백엔드 계약 오류 코드 → 사람 말.
@@ -154,7 +158,12 @@ export function humanizeError(error: unknown, action: string): HumanError {
   if (error instanceof ApiError) {
     const byCode = error.code ? CODE_MESSAGES[error.code] : undefined;
     if (byCode) {
-      return { title: `${action} 실패 — ${byCode.title}`, hint: byCode.hint, raw: error.raw };
+      return {
+        title: `${action} 실패 — ${byCode.title}`,
+        hint: byCode.hint,
+        raw: error.raw,
+        requestId: error.requestId,
+      };
     }
     const byStatus = STATUS_MESSAGES[error.status];
     if (error.serverMessage) {
@@ -163,6 +172,7 @@ export function humanizeError(error: unknown, action: string): HumanError {
         title: `${action} 실패 — ${error.serverMessage}`,
         hint: byStatus?.hint ?? '아래 원문을 확인하세요.',
         raw: error.raw,
+        requestId: error.requestId,
       };
     }
     if (byStatus) {
@@ -170,12 +180,14 @@ export function humanizeError(error: unknown, action: string): HumanError {
         title: `${action} 실패 — ${byStatus.title}`,
         hint: byStatus.hint,
         raw: error.raw,
+        requestId: error.requestId,
       };
     }
     return {
       title: `${action} 실패`,
       hint: '아래 원문을 확인하세요.',
       raw: error.raw,
+      requestId: error.requestId,
     };
   }
   const message = error instanceof Error ? error.message : String(error);

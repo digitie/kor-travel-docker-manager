@@ -18,8 +18,6 @@ import {
   Boxes
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
-import { useForm } from 'react-hook-form';
-import { z } from 'zod';
 import AdminSettingsPanel from './AdminSettingsPanel';
 import BackupHistoryPanel from './BackupHistoryPanel';
 import RuntimePinPanel from './RuntimePinPanel';
@@ -43,6 +41,7 @@ import {
   notifyUnauthorized,
   setUnauthorizedHandler,
 } from '@/lib/api';
+import { mergeChartData } from '@/lib/chartData';
 import { diffEnv, diffList } from '@/lib/configDiff';
 import {
   validateEnvEntry,
@@ -58,10 +57,6 @@ import {
   statusLabel,
 } from '@/lib/containerPresentation';
 import { formatBytes, formatTimestamp } from '@/lib/format';
-
-// 향후 스키마 정의 및 폼 검증 확장을 위해 사전 import
-const _unusedForm = typeof useForm !== 'undefined';
-const _unusedZod = typeof z !== 'undefined';
 
 // Dynamic Import for Recharts to resolve 'Heavy library loaded eagerly' warning
 const ResponsiveContainer = dynamic(() => import('recharts').then(mod => mod.ResponsiveContainer), { ssr: false });
@@ -642,25 +637,10 @@ export default function DashboardClient() {
   });
 
   // Derived combined chart data using useMemo (resolves react-doctor's 'no-derived-state')
-  const combinedChartData = useMemo(() => {
-    if (wsMetricsPoints.length === 0) return queryChartData;
-    
-    const merged = [...queryChartData];
-    const existingTimestamps = new Set(queryChartData.map(d => d.timestamp));
-    
-    for (const pt of wsMetricsPoints) {
-      if (!existingTimestamps.has(pt.timestamp)) {
-        merged.push(pt);
-        existingTimestamps.add(pt.timestamp);
-      }
-    }
-    
-    // Max 1 hour (360 points at 10s intervals)
-    if (merged.length > 360) {
-      return merged.slice(merged.length - 360);
-    }
-    return merged;
-  }, [queryChartData, wsMetricsPoints]);
+  const combinedChartData = useMemo(
+    () => mergeChartData(queryChartData, wsMetricsPoints, chartHours),
+    [queryChartData, wsMetricsPoints, chartHours],
+  );
 
   // WebSocket live logs stream hook - Versioned v1
   useEffect(() => {
@@ -1535,7 +1515,9 @@ export default function DashboardClient() {
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--color-line)" />
                     <XAxis
                       dataKey="timestamp"
-                      tickFormatter={formatTimestamp}
+                      tickFormatter={(value) =>
+                        formatTimestamp(value as string, { includeDate: chartHours > 1 })
+                      }
                       stroke="var(--color-secondary)"
                       style={{ fontSize: 14, fontFamily: 'var(--font-mono)' }}
                       dy={5}
@@ -1560,7 +1542,9 @@ export default function DashboardClient() {
                         fontFamily: 'var(--font-mono)',
                         color: 'var(--color-strong)'
                       }}
-                      labelFormatter={(label) => `수집 시각: ${formatTimestamp(label as string)}`}
+                      labelFormatter={(label) =>
+                        `수집 시각: ${formatTimestamp(label as string, { includeDate: true })}`
+                      }
                       formatter={(value: any, name: any) => {
                         const formattedVal = chartMetricType === 'io' ? formatBytes(value as number) : `${Number(value).toFixed(1)}%`;
                         const labelName = name === 'cpu_pct' ? 'CPU 사용량' : name === 'mem_pct' ? '메모리 사용량' : name === 'io_read' ? 'Disk Read' : 'Disk Write';

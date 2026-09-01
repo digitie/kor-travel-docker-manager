@@ -13,7 +13,6 @@ import json
 import os
 import re
 import stat
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +26,15 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     RuntimePinRegistry,
     utc_timestamp,
 )
+from kor_travel_docker_manager.services.secure_state_file import (
+    atomic_write_json,
+    insecure_mode_allowed,
+)
+from kor_travel_docker_manager.services.trusted_install import (
+    TRUSTED_INSTALL_ROOT,
+    TRUSTED_PUBLIC_ROOT,
+    TRUSTED_STATE_ROOT,
+)
 
 RUNTIME_EXECUTION_REGISTRY_SCHEMA: Final = (
     "kor-travel-docker-manager.runtime-execution-registry.v1"
@@ -37,9 +45,10 @@ RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV: Final = (
     "KTDM_RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE"
 )
 
-_TRUSTED_STATE_ROOT: Final = Path("/var/lib/kor-travel-docker-manager")
-_TRUSTED_PUBLIC_ROOT: Final = Path("/var/lib/kor-travel-docker-manager-public")
-_TRUSTED_INSTALL_ROOT: Final = Path("/opt/kor-travel-docker-manager")
+# GM-09: 경로 상수의 정본은 services/trusted_install.py다.
+_TRUSTED_STATE_ROOT: Final = TRUSTED_STATE_ROOT
+_TRUSTED_PUBLIC_ROOT: Final = TRUSTED_PUBLIC_ROOT
+_TRUSTED_INSTALL_ROOT: Final = TRUSTED_INSTALL_ROOT
 _DEFAULT_BASENAME: Final = "runtime-executions.json"
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -365,10 +374,11 @@ def trusted_manager_source_revision(*, install_root: Path = _TRUSTED_INSTALL_ROO
 
 
 def _insecure_mode_allowed() -> bool:
+    # GM-10: env 파싱 규칙(.strip() == "1")의 정본은 services/secure_state_file.py다
+    # — root 게이트는 모듈마다 다른 판정을 쓰므로 그대로 둔다.
     geteuid = getattr(os, "geteuid", None)
-    return (
-        (geteuid is None or geteuid() != 0)
-        and os.environ.get(RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV) == "1"
+    return (geteuid is None or geteuid() != 0) and insecure_mode_allowed(
+        RUNTIME_EXECUTIONS_ALLOW_INSECURE_MODE_ENV
     )
 
 
@@ -451,21 +461,16 @@ def verify_runtime_execution_registry() -> dict[str, object]:
 
 
 def _write(path: Path, payload: Mapping[str, object], *, mode: int) -> None:
+    # GM-10: 예전에는 이 함수만 파일 fsync 뒤 디렉터리 fsync가 없었다 — crash 시
+    # os.replace의 디렉터리 항목 갱신이 디스크에 반영되지 않고 유실될 수 있었다.
+    # cli.py의 migrate-execution-v6/rebind-execution/block-execution 세 경로가
+    # journal 없이 이 함수만 호출한다 — 특히 block-execution의 유실은 terminal
+    # 차단이 "풀린" 것으로 나타나는 fail-open이라 다른 두 경로보다 심각했다.
+    # 지금은 이미 맞게 구현돼 있던 runtime_pin_registry.py와 같은 정본
+    # (secure_state_file.atomic_write_json)을 쓴다.
     path.parent.mkdir(parents=True, exist_ok=True)
     _assert_registry_parent(path)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=True, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, mode)
-        os.replace(temporary, path)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+    atomic_write_json(path, payload, mode=mode)
 
 
 def write_runtime_execution_registry(

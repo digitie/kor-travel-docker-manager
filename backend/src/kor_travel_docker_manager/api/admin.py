@@ -14,6 +14,7 @@ from kor_travel_docker_manager.services.auth_service import (
     admin_username,
     check_login_rate_limit,
     list_login_audit_events,
+    login_bucket_is_shared_fallback,
     record_login_audit_event,
     require_admin_session,
 )
@@ -131,6 +132,7 @@ def post_admin_password(
             attempted_username=session.username,
             reason="rate_limited",
             session_id_hash=session.session_id_hash,
+            detail={"shared_ip_bucket": login_bucket_is_shared_fallback(request)},
         )
         raise HTTPException(
             status_code=429,

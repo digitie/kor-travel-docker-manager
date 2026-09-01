@@ -22,17 +22,31 @@ from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from typing import Any, Final, Literal, TypeVar, cast
-from urllib.parse import quote, unquote, urlencode, urlsplit
+from urllib.parse import unquote, urlsplit
 
-import yaml
 from dotenv import dotenv_values
 
+from kor_travel_docker_manager.services.capabilities import (
+    _MANAGED_COMPOSE_MUTATION_CAPABILITY,
+    _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
+)
+from kor_travel_docker_manager.services.errors import (
+    ComposeCandidateContractError,
+    ComposePostMutationContractError,
+    DeploymentContractError,
+)
 from kor_travel_docker_manager.services.loopback_readiness import (
     LOOPBACK_HTTP_READINESS_ATTEMPTS,
     LOOPBACK_HTTP_READINESS_RETRY_SECONDS,
 )
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
+)
+from kor_travel_docker_manager.services.trusted_install import (
+    GLOBAL_MUTATION_LOCK_FD_ENV,
+    GLOBAL_MUTATION_LOCK_PATH,
+    TRUSTED_STATE_ROOT,
+    require_pinned_runtime_rebuild_root,
 )
 
 _MAP_API_SERVICE = "kor-travel-map-api"
@@ -108,16 +122,17 @@ _MAP_RUNTIME_CONTAINERS = {
     _MAP_DAGSTER_SERVICE: "kor-travel-map-dagster-latest",
     _MAP_DAGSTER_DAEMON_SERVICE: "kor-travel-map-dagster-daemon-latest",
 }
-_C6C_GLOBAL_MUTATION_LOCK = Path(
-    "/run/lock/kor-travel-docker-manager/global-mutation.lock"
-)
+# GM-09: cli.py의 _GLOBAL_MUTATION_LOCK_PATH와 반드시 같은 파일을 가리켜야 pinned
+# rebuild와 pin 회전이 서로 직렬화된다 — 정본은 services/trusted_install.py다.
+_C6C_GLOBAL_MUTATION_LOCK = GLOBAL_MUTATION_LOCK_PATH
 # F1D rebuild는 rehearsal에서도 root로만 실행하는 host-wide destructive operation이다.
 # 일반 C6c rehearsal lock은 실행 사용자 home 아래여서 서로 다른 launcher를 직렬화할 수
 # 없으므로, build부터 final commit까지 이 고정 lease를 별도로 잡는다.
 _PINNED_RUNTIME_REBUILD_LOCK = Path(
     "/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock"
 )
-_DEFAULT_C6C_PRODUCTION_STATE_ROOT = Path("/var/lib/kor-travel-docker-manager")
+# GM-09: 경로 상수의 정본은 services/trusted_install.py다.
+_DEFAULT_C6C_PRODUCTION_STATE_ROOT = TRUSTED_STATE_ROOT
 _C6C_PRODUCTION_STATE_ROOT = _DEFAULT_C6C_PRODUCTION_STATE_ROOT
 _MAP_READ_ENV = "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
 _MAP_CANCEL_ENV = "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
@@ -1834,53 +1849,7 @@ _CANDIDATE_ALLOWED_EXTERNAL_VOLUME_REFERENCES: frozenset[str] = frozenset()
 _HELD_DEPLOYMENT_LOCKS: ContextVar[frozenset[str]] = ContextVar(
     "held_c6c_deployment_locks", default=frozenset()
 )
-_PINNED_REBUILD_INHERITED_GLOBAL_LOCK_FD_ENV = (
-    "KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD"
-)
-
-
-class _ManagedComposeMutationCapability:
-    __slots__ = ()
-
-
-class _PinnedRuntimeRebuildMutationCapability:
-    __slots__ = ()
-
-
-_MANAGED_COMPOSE_MUTATION_CAPABILITY = _ManagedComposeMutationCapability()
-_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY = _PinnedRuntimeRebuildMutationCapability()
-
-
-class DeploymentContractError(ValueError):
-    """C6c 배포가 컨테이너 변경 전에 중단되어야 하는 계약 위반."""
-
-
-class ComposeCandidateContractError(DeploymentContractError):
-    """compose candidate가 C6c 보호값 격리 계약을 위반했다."""
-
-    code = "COMPOSE_CANDIDATE_PROTECTED_REFERENCE"
-
-
-class ComposePostMutationContractError(DeploymentContractError):
-    """mutation 성공 뒤 계약 drift가 발생해 복구 결과를 함께 보존한다."""
-
-    code = "COMPOSE_POST_MUTATION_CONTRACT_FAILURE"
-
-    def __init__(
-        self,
-        error: Exception,
-        *,
-        recovery_attempted: bool,
-        recovery_succeeded: bool,
-        recovery_error: str | None,
-        restoration: Mapping[str, Any] | None = None,
-    ) -> None:
-        super().__init__(str(error))
-        self.original_error = error
-        self.recovery_attempted = recovery_attempted
-        self.recovery_succeeded = recovery_succeeded
-        self.recovery_error = recovery_error
-        self.restoration = restoration
+_PINNED_REBUILD_INHERITED_GLOBAL_LOCK_FD_ENV = GLOBAL_MUTATION_LOCK_FD_ENV
 
 
 @dataclass(frozen=True)
@@ -2208,10 +2177,12 @@ def pinned_runtime_rebuild_lock_path() -> str:
 
 
 def _require_pinned_runtime_rebuild_root() -> None:
-    """고정 host lease를 여는 주체도 root로 제한한다."""
+    """고정 host lease를 여는 주체도 root로 제한한다.
 
-    if os.geteuid() != 0:
-        raise DeploymentContractError("pinned runtime rebuild requires root execution")
+    GM-09: 정본은 services/trusted_install.py다.
+    """
+
+    require_pinned_runtime_rebuild_root()
 
 
 @contextmanager
@@ -3329,352 +3300,6 @@ def _validate_production_config(
             raise DeploymentContractError(f"{env_name} must not contain line breaks")
 
 
-def validate_resolved_compose_secret_isolation(
-    resolved: Mapping[str, Any],
-    config: C6cDeploymentConfig,
-) -> None:
-    _validate_map_production_secrets(config)
-    services = resolved.get("services")
-    if not isinstance(services, Mapping):
-        raise DeploymentContractError("resolved compose config has no services mapping")
-
-    map_service = _service_mapping(services, _MAP_API_SERVICE)
-    pinvi_service = _service_mapping(services, _PINVI_API_SERVICE)
-    map_ui_service = _service_mapping(services, _MAP_UI_SERVICE)
-    map_environment = _environment_mapping(map_service.get("environment"))
-    pinvi_environment = _environment_mapping(pinvi_service.get("environment"))
-    removed_provider_names = _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES.intersection(
-        map_environment
-    )
-    if removed_provider_names:
-        raise DeploymentContractError(
-            "resolved compose Map API includes removed provider runtime environment"
-        )
-    if map_service.get("command") is not None or map_service.get("entrypoint") is not None:
-        raise DeploymentContractError(
-            "resolved compose Map API must use the immutable image entrypoint and command"
-        )
-
-    for service_name, service in (
-        (_MAP_API_SERVICE, map_service),
-        (_PINVI_API_SERVICE, pinvi_service),
-        (_MAP_UI_SERVICE, map_ui_service),
-    ):
-        if service.get("network_mode") != "host":
-            raise DeploymentContractError(
-                f"resolved compose requires host network for {service_name}"
-            )
-        if service.get("env_file"):
-            raise DeploymentContractError(
-                f"resolved compose forbids env_file on {service_name}"
-            )
-    if map_service.get("container_name") != config.map_container:
-        raise DeploymentContractError("resolved compose Map API container identity is invalid")
-    if pinvi_service.get("container_name") != config.pinvi_container:
-        raise DeploymentContractError("resolved compose PinVi API container identity is invalid")
-    if map_ui_service.get("container_name") != config.map_ui_container:
-        raise DeploymentContractError(
-            "resolved compose Map UI container identity is invalid"
-        )
-    if map_environment.get("KOR_TRAVEL_MAP_API_PORT") != str(config.map_container_port):
-        raise DeploymentContractError("resolved compose Map API bind port is invalid")
-    if pinvi_environment.get("PINVI_ENVIRONMENT") != "production":
-        raise DeploymentContractError("resolved compose PinVi mode must be production")
-    if pinvi_environment.get("PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL") != config.base_url:
-        raise DeploymentContractError("resolved compose PinVi Map base URL is invalid")
-    expected = {
-        _MAP_API_SERVICE: {
-            _MAP_READ_ENV: _compose_resolved_escaped_value(config.read_token),
-            _MAP_CANCEL_ENV: _compose_resolved_escaped_value(config.cancel_token),
-            _MAP_FIXTURE_ENV: _compose_resolved_escaped_value(config.fixture_token),
-            _MAP_REQUIRED_ENV: "true",
-            _MAP_ADMIN_PROXY_ENV: _compose_resolved_escaped_value(
-                config.map_admin_proxy_secret
-            ),
-            _MAP_SERVICE_TOKEN_ENV: _compose_resolved_escaped_value(
-                config.map_service_token
-            ),
-            _MAP_CURSOR_SIGNING_SECRET_ENV: _compose_resolved_escaped_value(
-                config.map_cursor_signing_secret
-            ),
-            _MAP_GEO_API_KEY_SOURCE_ENV: _compose_resolved_escaped_value(
-                config.map_geo_api_key
-            ),
-            _MAP_CURATION_SNAPSHOT_DIGEST_ENV: _compose_resolved_escaped_value(
-                hashlib.sha256(config.curation_snapshot_token.encode("utf-8")).hexdigest()
-                if config.curation_snapshot_token
-                else ""
-            ),
-            _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV: _compose_resolved_escaped_value(
-                hashlib.sha256(
-                    config.curation_cutover_mapping_token.encode("utf-8")
-                ).hexdigest()
-                if config.curation_cutover_mapping_token
-                else ""
-            ),
-            _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV: _compose_resolved_escaped_value(
-                hashlib.sha256(config.feature_create_token.encode("utf-8")).hexdigest()
-                if config.feature_create_token
-                else ""
-            ),
-            **_MAP_PRODUCTION_API_LITERAL_VALUES,
-        },
-        _PINVI_API_SERVICE: {
-            _PINVI_READ_ENV: _compose_resolved_escaped_value(config.read_token),
-            _PINVI_CANCEL_ENV: _compose_resolved_escaped_value(config.cancel_token),
-            _PINVI_CURATION_SNAPSHOT_ENV: _compose_resolved_escaped_value(
-                config.curation_snapshot_token
-            ),
-            _PINVI_CUTOVER_MAPPING_ENV: _compose_resolved_escaped_value(
-                config.curation_cutover_mapping_token
-            ),
-        },
-        _MAP_UI_SERVICE: {
-            _MAP_UI_USERNAME_ENV: _compose_resolved_escaped_value(
-                config.smoke.map_ui_username
-            ),
-            _MAP_UI_PASSWORD_HASH_ENV: _compose_resolved_escaped_value(
-                config.map_ui_password_hash
-            ),
-            _MAP_UI_SESSION_SECRET_ENV: _compose_resolved_escaped_value(
-                config.map_ui_session_secret
-            ),
-            _MAP_ADMIN_PROXY_ENV: _compose_resolved_escaped_value(
-                config.map_admin_proxy_secret
-            ),
-            _MAP_UI_GEO_API_KEY_ENV: _compose_resolved_escaped_value(
-                config.map_geo_api_key
-            ),
-            _MAP_FEATURE_CREATE_TOKEN_ENV: _compose_resolved_escaped_value(
-                config.feature_create_token
-            ),
-        },
-        _MAP_DAGSTER_SERVICE: {
-            _MAP_GEO_API_KEY_SOURCE_ENV: _compose_resolved_escaped_value(
-                config.map_geo_api_key
-            ),
-        },
-        _MAP_DAGSTER_DAEMON_SERVICE: {
-            _MAP_GEO_API_KEY_SOURCE_ENV: _compose_resolved_escaped_value(
-                config.map_geo_api_key
-            ),
-        },
-    }
-    for service_name, expected_environment in expected.items():
-        service = _service_mapping(services, service_name)
-        environment = _environment_mapping(service.get("environment"))
-        for env_name, expected_value in expected_environment.items():
-            actual = environment.get(env_name)
-            if actual is None or not hmac.compare_digest(actual, expected_value):
-                raise DeploymentContractError(
-                    f"resolved compose does not wire {env_name} to {service_name}"
-                )
-
-    allowed_paths = {
-        (
-            "services",
-            _MAP_API_SERVICE,
-            "environment",
-            _MAP_READ_ENV,
-        ): _compose_resolved_escaped_value(config.read_token),
-        (
-            "services",
-            _MAP_API_SERVICE,
-            "environment",
-            _MAP_CANCEL_ENV,
-        ): _compose_resolved_escaped_value(config.cancel_token),
-        (
-            "services",
-            _MAP_API_SERVICE,
-            "environment",
-            _MAP_FIXTURE_ENV,
-        ): _compose_resolved_escaped_value(config.fixture_token),
-        ("services", _MAP_API_SERVICE, "environment", _MAP_REQUIRED_ENV): "true",
-        (
-            "services",
-            _PINVI_API_SERVICE,
-            "environment",
-            _PINVI_READ_ENV,
-        ): _compose_resolved_escaped_value(config.read_token),
-        (
-            "services",
-            _PINVI_API_SERVICE,
-            "environment",
-            _PINVI_CANCEL_ENV,
-        ): _compose_resolved_escaped_value(config.cancel_token),
-        (
-            "services",
-            _MAP_UI_SERVICE,
-            "environment",
-            _MAP_UI_USERNAME_ENV,
-        ): _compose_resolved_escaped_value(config.smoke.map_ui_username),
-        (
-            "services",
-            _MAP_UI_SERVICE,
-            "environment",
-            _MAP_UI_PASSWORD_HASH_ENV,
-        ): _compose_resolved_escaped_value(config.map_ui_password_hash),
-        (
-            "services",
-            _MAP_UI_SERVICE,
-            "environment",
-            _MAP_UI_SESSION_SECRET_ENV,
-        ): _compose_resolved_escaped_value(config.map_ui_session_secret),
-        (
-            "services",
-            _MAP_API_SERVICE,
-            "environment",
-            _MAP_ADMIN_PROXY_ENV,
-        ): _compose_resolved_escaped_value(config.map_admin_proxy_secret),
-        (
-            "services",
-            _MAP_UI_SERVICE,
-            "environment",
-            _MAP_ADMIN_PROXY_ENV,
-        ): _compose_resolved_escaped_value(config.map_admin_proxy_secret),
-        (
-            "services",
-            _MAP_API_SERVICE,
-            "environment",
-            _MAP_SERVICE_TOKEN_ENV,
-        ): _compose_resolved_escaped_value(config.map_service_token),
-        (
-            "services",
-            _MAP_API_SERVICE,
-            "environment",
-            _MAP_CURSOR_SIGNING_SECRET_ENV,
-        ): _compose_resolved_escaped_value(config.map_cursor_signing_secret),
-        (
-            "services",
-            _MAP_API_SERVICE,
-            "environment",
-            _MAP_GEO_API_KEY_SOURCE_ENV,
-        ): _compose_resolved_escaped_value(config.map_geo_api_key),
-        (
-            "services",
-            _MAP_UI_SERVICE,
-            "environment",
-            _MAP_UI_GEO_API_KEY_ENV,
-        ): _compose_resolved_escaped_value(config.map_geo_api_key),
-        (
-            "services",
-            _MAP_DAGSTER_SERVICE,
-            "environment",
-            _MAP_GEO_API_KEY_SOURCE_ENV,
-        ): _compose_resolved_escaped_value(config.map_geo_api_key),
-        (
-            "services",
-            _MAP_DAGSTER_DAEMON_SERVICE,
-            "environment",
-            _MAP_GEO_API_KEY_SOURCE_ENV,
-        ): _compose_resolved_escaped_value(config.map_geo_api_key),
-        (
-            "services",
-            _MAP_API_SERVICE,
-            "environment",
-            _MAP_CURATION_SNAPSHOT_DIGEST_ENV,
-        ): _compose_resolved_escaped_value(
-            hashlib.sha256(config.curation_snapshot_token.encode("utf-8")).hexdigest()
-            if config.curation_snapshot_token
-            else ""
-        ),
-        (
-            "services",
-            _MAP_API_SERVICE,
-            "environment",
-            _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV,
-        ): _compose_resolved_escaped_value(
-            hashlib.sha256(
-                config.curation_cutover_mapping_token.encode("utf-8")
-            ).hexdigest()
-            if config.curation_cutover_mapping_token
-            else ""
-        ),
-        (
-            "services",
-            _MAP_API_SERVICE,
-            "environment",
-            _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV,
-        ): _compose_resolved_escaped_value(
-            hashlib.sha256(config.feature_create_token.encode("utf-8")).hexdigest()
-            if config.feature_create_token
-            else ""
-        ),
-        (
-            "services",
-            _MAP_UI_SERVICE,
-            "environment",
-            _MAP_FEATURE_CREATE_TOKEN_ENV,
-        ): _compose_resolved_escaped_value(config.feature_create_token),
-        (
-            "services",
-            _PINVI_API_SERVICE,
-            "environment",
-            _PINVI_CURATION_SNAPSHOT_ENV,
-        ): _compose_resolved_escaped_value(config.curation_snapshot_token),
-        (
-            "services",
-            _PINVI_API_SERVICE,
-            "environment",
-            _PINVI_CUTOVER_MAPPING_ENV,
-        ): _compose_resolved_escaped_value(config.curation_cutover_mapping_token),
-        **{
-            ("services", _MAP_API_SERVICE, "environment", env_name): value
-            for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
-        },
-    }
-    for path, scalar in _walk_scalars(resolved):
-        if path in allowed_paths or (
-            path[-1:] == ("<key>",) and path[:-1] in allowed_paths
-        ):
-            continue
-        # OCI image digest는 임의의 16진 문자열이다. capability 값이 우연히 digest의
-        # 부분 문자열과 같아도 credential 전달이 아니므로, 고정된 image field는
-        # value-leak 검사 대상에서 제외한다.
-        if len(path) == 3 and path[0] == "services" and path[-1] == "image":
-            continue
-        text = str(scalar)
-        if any(
-            env_name in text
-            for env_name in (
-                _OPS_ENV_NAMES
-                | _MANAGER_ONLY_CREDENTIAL_NAMES
-                | _MAP_UI_AUTH_ENV_NAMES
-                | _MAP_PRODUCTION_SECRET_ENV_NAMES
-                | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
-                | _CURATION_PRINCIPAL_ENV_NAMES
-                | _MAP_FEATURE_CREATE_CONTROL_ENV_NAMES
-            )
-        ):
-            raise DeploymentContractError(
-                "C6c protected environment name leaks outside its exact wiring"
-            )
-        if any(
-            escaped and escaped in text
-            for escaped in (
-                _compose_resolved_escaped_value(config.read_token),
-                _compose_resolved_escaped_value(config.cancel_token),
-                _compose_resolved_escaped_value(config.fixture_token),
-                _compose_resolved_escaped_value(config.map_ui_password_hash),
-                _compose_resolved_escaped_value(config.map_ui_session_secret),
-                _compose_resolved_escaped_value(config.map_admin_proxy_secret),
-                _compose_resolved_escaped_value(config.map_service_token),
-                _compose_resolved_escaped_value(config.map_cursor_signing_secret),
-                _compose_resolved_escaped_value(config.map_geo_api_key),
-                _compose_resolved_escaped_value(config.smoke.map_ui_password),
-                _compose_resolved_escaped_value(config.smoke.pinvi_admin_email),
-                _compose_resolved_escaped_value(config.smoke.pinvi_admin_password),
-                _compose_resolved_escaped_value(config.contract_generation),
-                _compose_resolved_escaped_value(config.curation_snapshot_token),
-                _compose_resolved_escaped_value(config.curation_cutover_mapping_token),
-                _compose_resolved_escaped_value(config.feature_create_token),
-            )
-        ):
-            raise DeploymentContractError(
-                "C6c protected value leaks outside its exact wiring"
-            )
-
-
 def validate_resolved_compose_candidate_protected_values(
     resolved: Mapping[str, Any],
     *,
@@ -4044,68 +3669,6 @@ def _service_mapping(services: Mapping[str, Any], service_name: str) -> Mapping[
     return service
 
 
-def validate_compose_env_file_isolation(
-    compose_paths: Iterable[str],
-    *,
-    root_env_path: str,
-    environment: Mapping[str, str],
-) -> None:
-    root_env = Path(root_env_path).resolve()
-    for compose_path_text in compose_paths:
-        compose_path = Path(compose_path_text)
-        if not compose_path.exists():
-            continue
-        try:
-            loaded = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
-        except (OSError, yaml.YAMLError) as exc:
-            raise DeploymentContractError(
-                f"cannot validate compose source: {compose_path.name}"
-            ) from exc
-        services = loaded.get("services", {})
-        if not isinstance(services, Mapping):
-            continue
-        for service_name, service in services.items():
-            if not isinstance(service, Mapping):
-                continue
-            for env_file in _env_file_entries(service.get("env_file")):
-                if service_name in {
-                    _MAP_API_SERVICE,
-                    _PINVI_API_SERVICE,
-                    _MAP_UI_SERVICE,
-                }:
-                    raise DeploymentContractError(
-                        "C6c protected services must use explicit environment, "
-                        "not env_file"
-                    )
-                expanded = _expand_env_path(env_file, environment)
-                path = Path(expanded)
-                if not path.is_absolute():
-                    path = compose_path.parent / path
-                resolved_path = path.resolve()
-                if resolved_path == root_env:
-                    raise DeploymentContractError(
-                        "managed services must not load the manager root .env through env_file"
-                    )
-                if not resolved_path.exists():
-                    continue
-                env_keys = dotenv_values(resolved_path, interpolate=False).keys()
-                if any(
-                    key
-                    in (
-                        _OPS_ENV_NAMES
-                        | _MANAGER_ONLY_CREDENTIAL_NAMES
-                        | _MAP_UI_AUTH_ENV_NAMES
-                        | _MAP_PRODUCTION_SECRET_ENV_NAMES
-                        | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
-                        | _MAP_FEATURE_CREATE_CONTROL_ENV_NAMES
-                    )
-                    for key in env_keys
-                ):
-                    raise DeploymentContractError(
-                        "managed service env_file must not carry C6c ops secrets"
-                    )
-
-
 def validate_compose_candidate_protected_values(
     candidate: Mapping[str, Any],
     *,
@@ -4339,125 +3902,6 @@ def validate_compose_candidate_protected_values(
                 f"compose candidate top-level {collection_name} file resources are unsupported"
             )
     return system_bind_snapshots
-
-
-def run_map_ops_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]:
-    base_url = config.base_url.rstrip("/")
-    read_headers = {
-        "X-Kor-Travel-Map-Ops-Token": config.read_token,
-        "X-Kor-Travel-Map-Ops-Scope": "ops:read",
-    }
-    cancel_headers = {
-        "X-Kor-Travel-Map-Ops-Token": config.cancel_token,
-        "X-Kor-Travel-Map-Ops-Scope": "ops:cancel",
-    }
-    results: list[dict[str, int | str]] = []
-
-    status, payload = _retry_smoke_connection(
-        lambda: _request_json(
-            f"{base_url}/v1/ops/datasets",
-            method="GET",
-            headers=read_headers,
-        ),
-        unavailable_message="C6c Map smoke endpoint is unavailable",
-    )
-    if status != 200 or not _validate_map_datasets_envelope(payload):
-        raise DeploymentContractError("C6c signed canonical read smoke did not return 200 envelope")
-    results.append({"name": "signed_read", "status": status})
-
-    status, payload = _request_json(
-        f"{base_url}/v1/ops/datasets",
-        method="GET",
-        headers={"X-Kor-Travel-Map-Ops-Scope": "ops:read"},
-        read_error_body=True,
-    )
-    if status != 401 or not _validate_problem(
-        payload,
-        expected_status=401,
-        expected_code="OPS_TOKEN_REQUIRED",
-    ):
-        raise DeploymentContractError(
-            "C6c tokenless canonical read smoke did not return typed 401"
-        )
-    results.append({"name": "tokenless_read", "status": status})
-
-    status, payload = _request_json(
-        f"{base_url}/v1/ops/datasets",
-        method="GET",
-        headers=cancel_headers,
-        read_error_body=True,
-    )
-    if status != 403 or not _validate_problem(
-        payload,
-        expected_status=403,
-        expected_code="OPS_SCOPE_FORBIDDEN",
-    ):
-        raise DeploymentContractError(
-            "C6c cancel token canonical read smoke did not return typed 403"
-        )
-    results.append({"name": "cancel_token_read_rejection", "status": status})
-
-    missing_execution_id = uuid.uuid4()
-    cancel_url = (
-        f"{base_url}/v1/ops/pipeline/executions/import_job/"
-        f"{missing_execution_id}/cancel"
-    )
-    status, payload = _request_json(
-        cancel_url,
-        method="POST",
-        headers={
-            **read_headers,
-            "X-Kor-Travel-Map-Ops-Scope": "ops:cancel",
-        },
-        read_error_body=True,
-    )
-    if status != 403 or not _validate_problem(
-        payload,
-        expected_status=403,
-        expected_code="OPS_SCOPE_FORBIDDEN",
-    ):
-        raise DeploymentContractError(
-            "C6c read token exact cancel smoke did not return typed 403"
-        )
-    results.append({"name": "read_token_cancel_rejection", "status": status})
-
-    status, payload = _request_json(
-        cancel_url,
-        method="POST",
-        headers=cancel_headers,
-        read_error_body=True,
-    )
-    if status != 404 or not _validate_problem(
-        payload,
-        expected_status=404,
-        expected_code="PIPELINE_EXECUTION_NOT_FOUND",
-    ):
-        raise DeploymentContractError(
-            "C6c exact import-job cancel authentication smoke did not reach the typed 404 domain boundary"
-        )
-    results.append({"name": "cancel_auth_boundary", "status": status})
-
-    status, payload = _request_json(
-        f"{base_url}/v1/ops/pipeline/schedules/__c6c_auth_probe__/commands",
-        method="POST",
-        headers={
-            **cancel_headers,
-            "Content-Type": "application/json",
-            "Idempotency-Key": str(uuid.uuid4()),
-        },
-        body=b'{"command":"start","reason":"c6c authorization preflight"}',
-        read_error_body=True,
-    )
-    if status != 403 or not _validate_problem(
-        payload,
-        expected_status=403,
-        expected_code="OPS_SCOPE_FORBIDDEN",
-    ):
-        raise DeploymentContractError(
-            "C6c cancel token non-cancel mutation smoke did not return typed 403"
-        )
-    results.append({"name": "cancel_scope_rejection", "status": status})
-    return results
 
 
 def _fixture_headers(config: C6cDeploymentConfig) -> dict[str, str]:
@@ -5384,98 +4828,6 @@ def _validate_cancellation_engine_times(
     )
 
 
-def run_map_ui_auth_preflight(
-    config: C6cDeploymentConfig,
-) -> list[dict[str, int | str]]:
-    """현재 plaintext credential로 Map UI auth lifecycle만 비파괴 검사한다."""
-
-    smoke = config.smoke
-    opener = _cookie_opener(follow_redirects=False)
-    origin = smoke.map_ui_base_url
-    login = _session_request(
-        opener,
-        f"{origin}/api/auth/login",
-        method="POST",
-        headers={"Content-Type": "application/json", "Origin": origin},
-        body=json.dumps(
-            {
-                "username": smoke.map_ui_username,
-                "password": smoke.map_ui_password,
-                "next": _MAP_UI_PROTECTED_PATH,
-            }
-        ).encode(),
-        read_error_body=False,
-        retry_connection_refused=True,
-    )
-    if login.status != 200 or not login.set_cookie:
-        raise DeploymentContractError("C6c Map UI login smoke failed")
-    protected = _session_request(
-        opener,
-        f"{origin}{_MAP_UI_PROTECTED_PATH}",
-        method="GET",
-        headers={},
-        read_error_body=False,
-    )
-    if protected.status != 200:
-        raise DeploymentContractError("C6c Map UI protected-page smoke failed")
-    logout = _session_request(
-        opener,
-        f"{origin}/api/auth/logout",
-        method="POST",
-        headers={"Origin": origin},
-        read_error_body=False,
-    )
-    if logout.status != 200 or not logout.set_cookie:
-        raise DeploymentContractError("C6c Map UI logout smoke failed")
-    post_logout = _session_request(
-        opener,
-        f"{origin}{_MAP_UI_PROTECTED_PATH}",
-        method="GET",
-        headers={},
-        read_error_body=False,
-    )
-    redirect_path = urlsplit(post_logout.location or "").path
-    if post_logout.status not in {302, 303, 307, 308} or redirect_path != "/login":
-        raise DeploymentContractError("C6c Map UI post-logout protection smoke failed")
-    return [
-        {"name": "map_ui_login", "status": login.status},
-        {"name": "map_ui_protected", "status": protected.status},
-        {"name": "map_ui_logout", "status": logout.status},
-        {"name": "map_ui_post_logout", "status": post_logout.status},
-    ]
-
-
-def run_ui_auth_smoke(config: C6cDeploymentConfig) -> list[dict[str, int | str]]:
-    """필수 app readiness 뒤 Map UI auth lifecycle와 PinVi login shell을 검사한다."""
-
-    map_ui_smoke = run_map_ui_auth_preflight(config)
-    smoke = config.smoke
-
-    pinvi_login_shell = _session_request(
-        _cookie_opener(follow_redirects=False),
-        f"{smoke.pinvi_web_base_url}/admin/login",
-        method="GET",
-        headers={},
-        read_error_body=False,
-        retry_connection_refused=True,
-    )
-    pinvi_content_type = (
-        (pinvi_login_shell.content_type or "").partition(";")[0].strip().lower()
-    )
-    if (
-        pinvi_login_shell.status != 200
-        or pinvi_content_type != "text/html"
-        or not pinvi_login_shell.body_text
-        or "/_next/static/" not in pinvi_login_shell.body_text
-        or not _PINVI_LOGIN_PAGE_CHUNK_PATTERN.search(pinvi_login_shell.body_text)
-    ):
-        raise DeploymentContractError("C6c PinVi Web login shell smoke failed")
-    return [
-        *map_ui_smoke,
-        {"name": "pinvi_web_login", "status": pinvi_login_shell.status},
-    ]
-
-
 def _pinvi_envelope_ok(payload: Any | None) -> bool:
     return isinstance(payload, Mapping) and isinstance(payload.get("data"), Mapping)
 
@@ -5500,26 +4852,6 @@ def _validate_problem(
         and isinstance(payload.get("request_id"), str)
         and bool(payload["request_id"])
         and isinstance(payload.get("errors"), list)
-    )
-
-
-def _validate_map_datasets_envelope(payload: Any | None) -> bool:
-    if not isinstance(payload, Mapping):
-        return False
-    data = payload.get("data")
-    meta = payload.get("meta")
-    return (
-        isinstance(data, Mapping)
-        and isinstance(data.get("items"), list)
-        and data.get("schedule_source_status") in {"ok", "unavailable", "error"}
-        and isinstance(data.get("schedule_source_errors"), list)
-        and all(isinstance(item, str) for item in data["schedule_source_errors"])
-        and data.get("execution_coverage")
-        == "db_recorded_canonical_operations"
-        and all(_validate_map_dataset_row(item) for item in data["items"])
-        and isinstance(meta, Mapping)
-        and _is_nonnegative_number(meta.get("duration_ms"))
-        and isinstance(meta.get("request_id"), str)
     )
 
 
@@ -5649,124 +4981,6 @@ def _is_canonical_sync_scope(value: Any) -> bool:
         bool(external_system)
         and external_system == external_system.strip()
         and len(external_system) <= 112
-    )
-
-
-def _map_dataset_detail_url(
-    provider_dataset_id: int,
-    sync_scope: str,
-    operation_key: str | None,
-) -> str:
-    """Map의 dataset membership triple을 lossless detail URL로 표현한다.
-
-    catalog-only 행만 ``operation_key``가 null이다. 그 외에는 같은
-    ``provider_dataset_id × sync_scope`` 형제 operation을 절대 pair로 접지 않는다.
-    """
-
-    return (
-        f"/v1/ops/datasets/{provider_dataset_id}?"
-        + urlencode(
-            {
-                "sync_scope": sync_scope,
-                **({"operation_key": operation_key} if operation_key is not None else {}),
-            },
-            quote_via=quote,
-        )
-    )
-
-
-def _validate_map_dataset_identity(value: Mapping[str, Any]) -> bool:
-    provider_dataset_id = value.get("provider_dataset_id")
-    sync_scope = value.get("sync_scope")
-    operation_key = value.get("operation_key")
-    if (
-        type(provider_dataset_id) is not int
-        or provider_dataset_id <= 0
-        or not isinstance(sync_scope, str)
-        or not _is_canonical_sync_scope(sync_scope)
-        or (
-            operation_key is not None
-            and (not isinstance(operation_key, str) or not operation_key)
-        )
-    ):
-        return False
-    return value.get("detail_url") == _map_dataset_detail_url(
-        provider_dataset_id,
-        sync_scope,
-        operation_key,
-    )
-
-
-def _validate_map_dataset_row(value: Any) -> bool:
-    if not isinstance(value, Mapping):
-        return False
-    provider = value.get("provider")
-    dataset_key = value.get("dataset_key")
-    sync_scope = value.get("sync_scope")
-    provider_dataset_id = value.get("provider_dataset_id")
-    operation_key = value.get("operation_key")
-    freshness = value.get("freshness")
-    schedule = value.get("schedule")
-    dataset_issues = value.get("dataset_issues")
-    provider_issues = value.get("provider_issues")
-    catalog_state = value.get("catalog_state")
-    return (
-        all(
-            isinstance(value.get(field), str) and bool(value[field])
-            for field in ("provider", "dataset_key")
-        )
-        and _validate_map_dataset_identity(value)
-        and value.get("status") in _PROVIDER_SYNC_STATUSES
-        and all(
-            _is_nullable_iso8601(value.get(field))
-            for field in ("last_success_at", "last_failure_at", "eligible_after")
-        )
-        and _is_nonnegative_int(value.get("consecutive_failures"))
-        and _validate_dataset_freshness(freshness)
-        and _validate_dataset_schedule(schedule)
-        and _validate_dataset_execution(
-            value.get("latest_execution"),
-            provider=provider,
-            dataset_key=dataset_key,
-            provider_dataset_id=provider_dataset_id,
-            sync_scope=sync_scope,
-            operation_key=operation_key,
-            active=False,
-        )
-        and _validate_dataset_execution(
-            value.get("active_execution"),
-            provider=provider,
-            dataset_key=dataset_key,
-            provider_dataset_id=provider_dataset_id,
-            sync_scope=sync_scope,
-            operation_key=operation_key,
-            active=True,
-        )
-        and catalog_state in {"canonical", "orphan"}
-        and isinstance(value.get("mutable"), bool)
-        and _validate_refresh_policy(
-            value.get("refresh_policy"),
-            provider=provider,
-            dataset_key=dataset_key,
-        )
-        and _validate_issue_summary(dataset_issues)
-        and _validate_issue_summary(provider_issues)
-        and (
-            (
-                catalog_state == "canonical"
-                and isinstance(value.get("catalog"), Mapping)
-                and _validate_dataset_catalog(value["catalog"])
-                and value.get("orphan_reason") is None
-                and value.get("mutable") == value["catalog"].get("is_active")
-            )
-            or (
-                catalog_state == "orphan"
-                and value.get("catalog") is None
-                and isinstance(value.get("orphan_reason"), str)
-                and bool(value["orphan_reason"])
-                and value.get("mutable") is False
-            )
-        )
     )
 
 
@@ -6853,30 +6067,6 @@ def _run_docker_query(
     )
 
 
-def require_local_c6c_image(
-    image_id: str,
-    *,
-    docker_bin: str = "docker",
-    cwd: str | None = None,
-    env: Mapping[str, str] | None = None,
-    runner: C6cCommandRunner | None = None,
-) -> None:
-    _validate_image_id(image_id, "runtime")
-    try:
-        completed = _run_docker_query(
-            [docker_bin, "image", "inspect", "--format={{.Id}}", "--", image_id],
-            runner=runner,
-            cwd=cwd,
-            env=env,
-        )
-    except OSError as exc:
-        raise DeploymentContractError(
-            "runtime image ID cannot be inspected locally"
-        ) from exc
-    if completed.returncode != 0 or completed.stdout.strip() != image_id:
-        raise DeploymentContractError("runtime image ID is not available locally")
-
-
 def inspect_c6c_image_source_revision(
     image_id: str,
     *,
@@ -7844,3 +7034,15 @@ def _resolve_compose_path_variable(
             "compose candidate path requires a configured environment value"
         )
     return current
+
+
+# GM-20: 이 모듈이 재수출만 하고 내부에서는 쓰지 않는 이름을 ruff의 미사용 import
+# 경고에서 제외한다(metrics_collector.py:971의 3-이름 __all__과 같은 관례 —
+# 이 거대 모듈의 다른 공개 이름 전부를 여기 나열할 필요는 없다).
+__all__ = [
+    "ComposeCandidateContractError",
+    "ComposePostMutationContractError",
+    "DeploymentContractError",
+    "_MANAGED_COMPOSE_MUTATION_CAPABILITY",
+    "_PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY",
+]

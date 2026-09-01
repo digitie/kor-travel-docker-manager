@@ -131,6 +131,24 @@ db -> storage -> gra -> cadv -> prom ─┬─ geo ──┐
 
 핵심 의존: `geo`와 `conc`는 모두 `prom`에만 의존하며 서로 독립이다(**concierge는 geo에 의존하지 않는다**). `map`은 `geo`와 `conc` 모두에 의존하고, `pinvi`는 `map`에 의존한다. 예를 들어 `ktdctl conc`는 `db, storage, gra, cadv, prom, conc`만 실행하고(geo 제외), `ktdctl map`은 `db, storage, gra, cadv, prom, geo, conc, map`을 실행한다. 새 의존성은 `targets.<id>.depends_on`으로 선언한다.
 
+**`docker-targets.yml` 편집 후 재기동 전 검증(GM-11)**: `registry.load_targets_config()`는
+컨테이너 필수 필드·`depends_on`/`include`/`containers`/`dependency_order`의 참조 무결성·
+alias 충돌을 fail-close로 검증한다. 이 검증은 `MANAGED_CONTAINERS` 등 모듈 레벨 상수 계산에
+걸려 있어(registry.py:135), `ktdctl`뿐 아니라 **backend(FastAPI) 프로세스 자체의 기동**도
+막는다 — 오타 하나가 서비스 재기동 직후 전체 다운타임으로 이어질 수 있다는 뜻이므로,
+편집 후 재기동하기 **전에** 다음처럼 별도 프로세스에서 미리 검증한다(무거운 `cli.py`/
+`compose_service.py` import 체인을 타지 않는 `registry.py` 단독 import라 안전하다):
+
+```bash
+KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE=/path/to/edited/docker-targets.yml \
+  <venv>/bin/python -c \
+  'from kor_travel_docker_manager.services.registry import load_targets_config; load_targets_config(); print("OK")'
+```
+
+exit 0 + `OK`면 안전하게 배포본에 반영하고 재기동한다. exit 1이면 출력된
+`{파일} targets.<id>.<필드>: ...` 메시지가 고칠 위치를 정확히 짚는다. `ktdctl targets
+validate` 같은 전용 서브커맨드는 아직 없다(`docs/tasks.md`에 후속 항목으로 추적).
+
 | 공식 별칭 | 의미 | 누적 실행 범위 | 대표 별칭 |
 |---|---|---|---|
 | `db` | Kor Travel Geo DB | geo 전용 PostgreSQL/PostGIS(:12500) 실행 및 DB/extension/schema grant 복구. 다른 프로젝트 DB는 각 target이 소유한다(ADR-37) | `postgresql`, `postgres`, `database` |
@@ -1039,14 +1057,17 @@ migration을 태운다. 빈 PGDATA에서 시작할 때 superuser 확장이 먼�
 ktdctl db-backup create concierge
 ktdctl db-backup list concierge
 ktdctl db-backup gc concierge --keep 7
-ktdctl db-backup restore-plan concierge [--file <name>] [--json]   # 읽기 전용
+ktdctl db-backup restore-plan concierge [--file <name>] [--json]      # 읽기 전용
+ktdctl db-backup rehearse-restore concierge [--file <name>] [--timeout <초>] [--json]
 ```
 
 #### `restore-plan` — 복원하기 전에 "복원할 수 있는가"를 먼저 묻는다
 
-**복원 명령 자체는 아직 없다.** `restore-plan`을 먼저 만든 이유는, 목록에 백업이 보이는
-것과 그 백업으로 실제 복원할 수 있는 것이 다르기 때문이다 — dump가 잘려 있어도, digest가
-manifest와 어긋나도, live schema revision이 백업 시점과 달라도 목록은 똑같이 보인다.
+**실제 role DB로 덮어쓰는 파괴적 복원 명령은 아직 없다** — 그 결정은 오너가 이미
+로드맵 뒤로 미뤄 두었다(`docs/general-mgmt-audit.md` GM-07 검증 노트, 2026-08-28
+journal). `restore-plan`을 먼저 만든 이유는, 목록에 백업이 보이는 것과 그 백업으로
+실제 복원할 수 있는 것이 다르기 때문이다 — dump가 잘려 있어도, digest가 manifest와
+어긋나도, live schema revision이 백업 시점과 달라도 목록은 똑같이 보인다.
 
 계획은 아무것도 바꾸지 않고 다음을 답한다:
 
@@ -1062,6 +1083,58 @@ manifest와 어긋나도, live schema revision이 백업 시점과 달라도 목
 불일치는 **차단이 아니다** — 복원 자체는 가능하고, 코드가 기대하는 schema보다 과거로
 간다는 사실을 알고 결정하는 것이 사람의 몫이다. 차단 요인이 있으면 exit 1이라 스크립트
 게이트로 쓸 수 있다.
+
+#### `rehearse-restore` — 이 백업이 실제로 복원되는지 scratch DB에서 증명한다
+
+`restore-plan`이 통과(차단 없음)한 백업만 시도한다. **대상과 같은, 실행 중인 postgres
+인스턴스** 안에 이름이 겹치지 않는 scratch 데이터베이스
+(`ktdm_rehearsal_<epoch>_<random>`)를 만들어 그 안에만 `pg_restore`하고, 검증이
+끝나면 **성공이든 실패든 항상** scratch DB와 컨테이너 안의 dump 사본을 지운다 — 운영
+DB(`concierge`/`geo` 등 실제 role 데이터베이스)는 어떤 경로로도 건드리지 않는다.
+이름에 role을 넣지 않고 epoch+무작위 접미사만 쓰는 이유는 `geo`/`geo_dagster`,
+`map_application`/`map_dagster`처럼 컨테이너를 공유하는 role 쌍이 같은 초에 각자
+리허설을 시작해도 이름이 절대 겹치지 않게 하기 위함이다 — role별 `_role_lock`은
+같은 role의 중복 실행만 막고 컨테이너 공유까지는 막지 않는다.
+
+**운영 비용 — 실제 서비스 중인 인스턴스에 부하를 준다.** scratch DB로의 `pg_restore`는
+같은 postgres 프로세스 안에서 실행되므로 CPU·IO·커넥션을 실제 서비스와 공유한다.
+`map_application`처럼 큰 role은 복원 자체가 90분 이상 걸릴 수 있고(대시보드 "백업
+이력" 실측 참고), 그동안 scratch DB가 원본과 비슷한 만큼의 디스크를 추가로 쓴다.
+**트래픽이 적은 시간대에 실행**하고, 여러 role을 한 번에 리허설하지 말 것. 03:15/
+03:30/03:55 cron(`geo_dagster`/`concierge`/`pinvi` 백업 생성)과 겹치면 `_role_lock`이
+그 role의 backup 생성을 "another rehearsal is already running for this role"로
+거부하고 wrapper는 `set -eu`로 그대로 중단한다 — 자동화 없이 수동으로만 돌리는 지금
+단계에서는 저 cron 시각을 피해서 실행할 것.
+
+검증 항목:
+
+- `pg_restore` exit code(경고성 stderr는 실패로 치지 않는다 — 성공한 복원도 notice를
+  낼 수 있다).
+- 복원된 scratch DB의 schema revision이 manifest의 `alembic_head`와 같은가
+  (`REHEARSAL_HEAD_MISMATCH`, 차단).
+- 복원된 scratch DB 크기가 0바이트가 아닌가(`REHEARSAL_EMPTY_DATABASE`, 차단) —
+  드물게만 걸린다(갓 만든 빈 DB도 카탈로그만으로 몇 MB다). 실제로 부분 복원을 잡는
+  것은 다음 항목이다.
+- 복원된 크기가 백업 시점 크기(manifest의 `db_size_bytes`)의 50% 미만인가
+  (`REHEARSAL_SIZE_SHORTFALL`, 차단) — TOC가 일부만 적용된 부분 복원 탐지.
+
+모두 통과해야 `verified: true`이고 exit 0이다.
+
+**잔해 처리.** 프로세스가 `kill -9`나 OOM으로 죽으면 `finally` cleanup이 못 돌아
+scratch DB와 컨테이너 안 dump 사본이 남을 수 있다 — `db-backup list`/`gc`는 파일
+manifest만 보므로 이 DB 잔해를 발견하지 못한다. 다음 `rehearse-restore` 실행(같은
+role이 아니어도 된다, 인스턴스가 같으면 된다)이 시작할 때마다 이름이
+`ktdm_rehearsal_`로 시작하고 6시간보다 오래된 DB를 스스로 찾아 지운다
+(`STALE_REHEARSAL_DATABASES_CLEANED` 참고 finding으로 결과에 남는다). 급하게 수동
+확인이 필요하면 `docker exec <container> psql -U <admin> -c "SELECT datname FROM
+pg_database WHERE datname LIKE 'ktdm_rehearsal_%'"`로 잔해를 조회하고 `dropdb`로
+직접 지울 수 있다. dropdb 자체가 실패(예: 아직 연결이 남아 있음)해도 예외로 삼키지
+않고 `REHEARSAL_CLEANUP_INCOMPLETE` finding으로 남긴다.
+
+실제 role DB로 덮어쓰는 경로(운영자가 직접 압박받는 장애 대응 시나리오)는 writer
+정지/재기동 절차 설계가 별도로 필요해 의도적으로 범위 밖에 남아 있다 — 장애 시에는
+여전히 각 프로젝트의 수동 `pg_restore` 절차를 따른다. 주기 자동화(cron/systemd
+timer)도 아직 없다 — 지금은 운영자가 수동으로 트리거하는 1차 primitive다.
 
 geo application DB는 위 앱 레벨 백업이 정본이다. 운영자가 장애 대응을 위해 한 번만 수동 dump가 필요할 때는
 `ktdctl db-backup create geo --timeout <초>`처럼 명시적으로 실행하고, cron/systemd timer에는 넣지 않는다.
@@ -1153,15 +1226,67 @@ keep 4/7/7). geo application은 앱 레벨
 
 읽기 전용 `GET /api/v1/backups?role=<role>`도 있다 — Dashboard "백업 이력" 패널이
 쓴다. 생성·GC는 CLI 전용이며 API에 노출하지 않는다(이 저장소의 표준 mutation
-경계). **복원 CLI는 아직 없다** — 아래 "아직 안 된 것" 참고.
+경계). **실제 role DB로 덮어쓰는 복원 CLI는 아직 없다** — scratch DB 리허설
+(`rehearse-restore`)은 있다. 아래 "아직 안 된 것" 참고.
+
+**GM-13**: manifest 하나가 손상·형식 위반·role 불일치여도 이 목록 전체를 지우지
+않는다 — 그 항목만 `{"state": "unreadable", "filename", "reason"}` 행으로 격하되고
+나머지 정상 manifest는 그대로 보인다(디렉터리 자체를 못 읽는 경우만 `503`).
+같은 작업에서, `POST /api/v1/backups/{role}`가 시작하는 `pg_dump`는 role lock
+아래에서도 `pg_stat_activity`를 먼저 물어 같은 role의 DB에 이미 pg_dump가
+돌고 있으면 새 pg_dump를 시작하지 않고 거부한다 — role lock(파일 기반)은
+backend 재기동에서 살아남지 못하지만 컨테이너 안 pg_dump는 계속 돌 수 있어서다.
+
+#### `offbox-sync` — 백업과 pin registry 보존본을 원격 호스트로 옮기고 재검증한다 (GM-08)
+
+로컬 백업만으로는 호스트 디스크 유실에서 살아남지 못한다. `runtime-pins.json`과
+그 옆의 `runtime-pins.<digest>.json` 보존본(= `pin rollback`의 유일한 소스, git
+밖)도 같은 문제를 안고 있다(ADR-40 트레이드오프가 이미 자인한 공백). `offbox-sync`는
+설정된 원격 호스트에 `rsync`로 옮기고, 원격에서 `sha256sum -c`로 다시 확인한다.
+
+```bash
+export KTDM_OFFBOX_HOST=backup-vault.example         # 미설정이면 동기화는 비활성
+export KTDM_OFFBOX_USER=ktdm-sync
+export KTDM_OFFBOX_REMOTE_ROOT=/srv/ktdm-offbox
+export KTDM_OFFBOX_SSH_KEY=/etc/ktdm/offbox-sync-key  # 생략하면 기본 SSH 설정을 쓴다
+export KTDM_OFFBOX_PORT=22                            # 생략하면 22
+
+sudo -n backend/.venv/bin/ktdctl offbox-sync run --json
+sudo -n backend/.venv/bin/ktdctl offbox-sync status --json   # root 불필요, 마지막 결과만 읽음
+```
+
+- pin registry 파일은 root `0600`이라 `run`은 root 실행을 요구한다. `status`는 상태
+  파일이 `0644`라 root가 필요 없다.
+- role마다 독립적으로 진행한다 — 한 role의 rsync/검증 실패가 나머지를 막지 않는다.
+  `--skip-pin-registry`로 백업만 돌릴 수도 있다.
+- `.dump` 파일은 백업 생성 시점에 이미 만든 `.dump.sha256` sidecar를 그대로 신뢰해
+  원격 검증에 쓴다 — 매 동기화마다 수십 GB 백업을 다시 로컬에서 해시하는 비용을
+  피한다. sidecar가 없는 작은 파일(manifest, pin registry JSON)만 즉석에서
+  스트리밍 해시한다.
+- 결과는 `KTDM_BACKUP_ROOT/.offbox-sync-status.json`(`0644`)에 남고, 읽기 전용
+  `GET /api/v1/backups/offbox-sync-status`로 Dashboard "백업 이력" 패널에도 보인다.
+  트리거는 위 CLI 전용이다 — API에 mutation 라우트를 두지 않는다(표준 mutation 경계).
+- `scripts/run-offbox-sync.sh`가 `scripts/run-standalone-backup.sh`와 같은
+  wrapper 관례로 이미 있다. **root** crontab에 걸어야 한다(pin registry가 0600).
+  03:15/03:30/03:55 role 백업 생성 cron과 겹치면 `_role_lock`이 거부하므로 그
+  창을 피한다(예: 04:45). 어느 host에 어떤 주기로 걸지는 운영자가 결정한다 —
+  목적지·자격증명이 환경마다 달라 이 저장소가 기본값을 강제하지 않는다.
+- `--delete`를 쓰지 않는다 — 로컬 `gc`가 지운 오래된 백업도 원격에는 남는다.
+  off-box 사본의 존재 이유가 재해 복구 보험이므로, 로컬에서 이미 지워진 자료를
+  원격에서까지 따라 지우면 그 보험 가치가 줄어든다.
 
 ### 아직 안 된 것
 
-- **복원 CLI가 없다.** map은 여전히 kor-travel-map `docs/backup-restore.md` §8.1
-  수동 절차가 정본이고, geo·concierge·pinvi는 각 프로젝트 alembic migration을
-  타야 한다(§ "복원" 참고). `ktdctl db-backup restore`는 별도 범위다.
-- **외부(오프박스) 사본 자동화가 없다.** 지금은 `KTDM_BACKUP_ROOT/<role>/` 로컬 경로뿐이다.
-  n150에서 외부 목적지·자격증명·전송 자동화가 확인되지 않았으므로 same-host 경로를
-  off-box로 간주하지 않았다. rsync/scp 대상·주기·sha256 대조 검증은 별도 결선이 필요하다.
+- **실제 role DB로 덮어쓰는 파괴적 복원 CLI가 없다.** `rehearse-restore`가 백업이
+  scratch DB에 실제로 복원됨을 증명하지만, 운영 DB 자체를 되돌리는 경로는 writer
+  정지/재기동 절차 설계가 필요해 오너가 의도적으로 로드맵 뒤로 미뤘다
+  (`docs/general-mgmt-audit.md` GM-07 검증 노트). map은 여전히 kor-travel-map
+  `docs/backup-restore.md` §8.1 수동 절차가 정본이고, geo·concierge·pinvi는 각
+  프로젝트 alembic migration을 타야 한다(§ "복원" 참고).
+- **off-box 동기화를 실제로 cron/systemd timer에 거는 것은 운영자 몫이다.**
+  `scripts/run-offbox-sync.sh` wrapper와 목적지 env 관례는 있지만, 이 저장소는
+  어떤 host에도 자동으로 걸지 않는다 — 설정 없이는 아무 일도 일어나지 않으므로,
+  env만 선언하고 wrapper를 crontab에 걸지 않으면 이 기능은 방치된 상태로 남는다.
+  Dashboard의 "설정됐지만 아직 실행한 적이 없습니다" 배지가 이 상태를 알린다.
 - 위 실측 표의 수치는 **일 1회가 가능하다**는 것만 보여준다. Map 쪽 최종 주기화
   여부는 kor-travel-map #148이 소유하며, 이 wrapper는 Map role을 주기 실행하지 않는다.
