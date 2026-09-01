@@ -48,7 +48,7 @@ KTDM_RUNTIME_PINS_FILE=<배포 트리 밖 경로>
 KTDM_RUNTIME_PINS_PUBLIC_FILE=<배포 트리 밖, 비-root가 읽을 수 있는 경로>
 ```
 
-**회전 요청 디렉터리**(대시보드가 요청을 남기는 자리)는 installer가
+**회전 요청 디렉터리**(대시보드가 요청을 남기는 자리)는 installer가 **최초 1회만**
 `/var/lib/kor-travel-docker-manager-requests`를 `root:root 0700`으로 만든다. backend를
 비-root로 돌리는 호스트에서는 설치 후 소유자를 그 사용자로 바꾼다:
 
@@ -56,8 +56,14 @@ KTDM_RUNTIME_PINS_PUBLIC_FILE=<배포 트리 밖, 비-root가 읽을 수 있는 
 sudo chown <backend-user>:<backend-group> /var/lib/kor-travel-docker-manager-requests
 ```
 
+이 chown은 **한 번만** 하면 된다. 이후 설치는 이미 있는 디렉터리의 소유권을 보존하고
+안전성(symlink 아님, group/other 쓰기 금지)만 검증한다 — 예전에는 `install -d`가 매
+설치마다 소유자를 root로 되돌려, 비-root backend 호스트에서 업그레이드 때마다 회전 요청
+경로가 침묵 회귀했다(GM-04).
+
 **group-writable로 만들지 않는다**(`0770` 등). 무결성 검사가 그 디렉터리를 영구히
-거부해 회전 요청 경로 전체가 잠긴다.
+거부해 회전 요청 경로 전체가 잠긴다 — installer도 group/other 쓰기가 열린 기존
+디렉터리를 발견하면 설치를 중단한다.
 
 **공개 사본은 별도 트리에 둔다.** installer가 `/var/lib/kor-travel-docker-manager`를 매
 설치마다 `0700 root:root`로 되돌리므로, 그 안에 사본을 두면 비-root 백엔드가 traverse조차
@@ -234,6 +240,15 @@ sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C
 installer는 `--no-index` wheelhouse에서 `backend/.venv`를 만들고 `ktdctl`을 설치한다. `.env`는
 installer가 새로 전달하지 않으며 운영 호스트에서 별도로 준비한 canonical 파일을 사용한다. 백엔드는
 그 루트 `.env`를 로드해 `KTDM_CORS_ALLOW_ORIGINS`와 `KTDM_PROD_URL_*`를 적용한다.
+
+installer는 `/opt/kor-travel-docker-manager` 트리를 통째로 교체하고 구 트리를 삭제한다.
+그 트리에서 서비스가 실행 중이면 설치 순간부터 재기동까지 반파손 상태로 돈다(특히 Next.js는
+route 번들을 요청 시점에 lazy 해석한다). 그래서 installer는 **APP_ROOT 트리에서 실행 중인
+프로세스(cwd·exe·open fd 기준)를 preflight로 탐지해 fail-close**한다 — 먼저 서비스를
+중지(`sudo systemctl stop ktdm-backend ktdm-frontend`)하는 것이 표준 순서다. 위험을 감수하고
+실행 중 교체를 강행하려면 `--allow-live`를 준다. 설치 뒤 백엔드를 곧바로 올리려면
+`--restart-backend`를 함께 주면 commit 직후 `systemctl restart ktdm-backend`가 수행된다
+(프론트엔드는 clean checkout이라 아래 §4의 build가 선행돼야 하므로 자동화하지 않는다).
 
 백엔드는 systemd 유닛으로 구동한다. installer가 `deploy/systemd/ktdm-backend.service`를
 `/etc/systemd/system/`에 설치·enable하므로(재기동은 하지 않는다), **설치 직후에는 옛
