@@ -485,7 +485,7 @@ def test_runtime_rejects_expected_port_that_is_exposed_but_unbound() -> None:
         service: _inspect(expectation, service=service)
         for service in expectation.services
     }
-    containers["map-api"]["NetworkSettings"]["Ports"]["13701/tcp"] = None
+    containers["map-api"]["NetworkSettings"]["Ports"]["8000/tcp"] = None
     with pytest.raises(DeploymentContractError, match="published ports differ"):
         assert_m05_isolated_runtime(
             expectation=expectation,
