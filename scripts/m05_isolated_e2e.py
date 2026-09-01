@@ -65,6 +65,9 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     materialize_pinned_runtime_sources,
 )
+from kor_travel_docker_manager.services.runtime_execution_identity import (
+    ExecutionIdentityV6,
+)
 from kor_travel_docker_manager.services.runtime_execution_registry import (
     RuntimeExecutionRegistry,
     RuntimeExecutionRegistryError,
@@ -159,6 +162,15 @@ _MAP_FRESH_INIT_EXIT_DIAGNOSTICS = {
     55: "metadata_contract_invalid",
     127: "unclassified",
 }
+# result.json의 map_fresh_init_reason은 **닫힌 어휘**다 — launcher receipt
+# 검증기가 FRESH_INIT_REASONS로 대조하고, 벗어나면 ValueError로 떨어져 claim
+# 전 실패도 무조건 소각으로 승격된다(full-path 시뮬레이션 적발). 그런데
+# _fail(diagnostic=...)은 사람이 읽는 자유형 문자열도 싣는다. 어휘는 여기서
+# 한 번만 선언하고(위 exit map에서 파생), 그 밖의 값은 이 필드에 싣지 않는다.
+# unclassified로 수렴시키지 않는 이유: 그 값은 "fresh-init runner가 미상 exit
+# code로 죽었다"는 **다른 사실**을 뜻해서, playwright 버전 불일치 같은 무관한
+# 진단에 붙이면 receipt가 거짓을 주장한다. 원문은 root 0600 forensic leaf로.
+_MAP_FRESH_INIT_REASONS = frozenset(_MAP_FRESH_INIT_EXIT_DIAGNOSTICS.values())
 # terminal pinset registry는 비-root도 읽는 감사 표면이다. driver의 예외 원문을
 # reason에 흘리지 않고, 다음 immutable candidate의 보정 범위만 나타내는 고정 phase만
 # 허용한다. 이 집합 밖의 값은 가장 좁은 안전 진단으로 수렴한다.
@@ -2219,6 +2231,17 @@ def main(expected_revision: str, output: Path) -> int:
     #: (one-shot: 본문은 정확히 한 번. 적대 리뷰 R1-S4/R2-S4).
     body_entered = False
     transaction = secrets.token_hex(16)
+    # receipt의 execution identity는 **plan보다 먼저** 확정돼야 한다. plan은
+    # 다섯 개의 실패 가능한 문장 뒤에 만들어지는데, 그 창에서 죽으면 종전 코드는
+    # identity를 null로 실었다. launcher는 그걸 Tier 1 불일치로 읽어 receipt를
+    # 통째로 버리고 무조건 소각한다 — stale candidate/registry 회전 계열 phase
+    # 열 개 전체가 claim 전인데도 exit 4에 도달할 수 없었다(적대 리뷰 BLOCKER-1).
+    # 이 값은 pinset + revision에서 결정적으로 파생되므로 여기서 계산할 수 있고,
+    # 실제 registry와 어긋나면 launcher가 여전히 fail-close한다(그건 진짜 회전이다).
+    execution_identity = ExecutionIdentityV6.build(
+        source_pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        manager_source_revision=expected_revision,
+    ).execution_identity_sha256
     plan: M05IsolatedHarnessPlan | None = None
     claim_attempted = False
     failure_diagnostic: str | None = None
@@ -3073,6 +3096,23 @@ def main(expected_revision: str, output: Path) -> int:
                 )
             except Exception:  # noqa: BLE001, S110 - evidence-only boundary
                 pass
+        if (
+            os.environ.get(_FORENSIC_CAPTURE_ENV) == "1"
+            and failure_diagnostic is not None
+            and failure_diagnostic not in _MAP_FRESH_INIT_REASONS
+        ):
+            # receipt에는 어휘 내 값만 실리므로 어휘 밖 원문은 여기서만 남긴다.
+            try:
+                _write_private_bytes(
+                    output
+                    / f"failed-{_public_terminal_phase(progress_phase)}-diagnostic.txt",
+                    _scrub_forensic_bytes(failure_diagnostic.encode("utf-8"))[
+                        :_FORENSIC_CAPTURE_LIMIT
+                    ]
+                    or b"\n",
+                )
+            except Exception:  # noqa: BLE001, S110 - evidence-only boundary
+                pass
     # 이 boundary 밖으로 예외가 새면 launcher는 raw driver output 없이 결과 부재만
     # 관측한다. 예상하지 못한 ordinary exception도 현재 allowlist 실행 경계로만
     # 수렴하므로, raw detail 없이 다음 immutable candidate의 보정 범위를 좁힐 수 있다.
@@ -3113,7 +3153,15 @@ def main(expected_revision: str, output: Path) -> int:
         driver_phase = "completed" if completed else phase
         if unexpected_finalization_failure or cleanup_failed:
             completed = False
-            if not body_entered and _terminal_block_phase(phase) is not None:
+            # claim 이전이면 phase를 바꾸지 않는다. 바꾸면 preflight_rejected
+            # receipt가 driver_phase != phase가 되어 launcher가 거부하고, 아무것도
+            # claim하지 않은 실행이 소각된다(적대 리뷰 BLOCKER-2). claim 이후에는
+            # phase가 block scope를 고르므로 재작성이 유효하다.
+            if (
+                claim_attempted
+                and not body_entered
+                and _terminal_block_phase(phase) is not None
+            ):
                 # 본문 진입 이후(또는 ledger claim 실패)는 무조건 소각을 유지해야
                 # 하므로 cleanup phase가 실패 표면을 강등하지 못한다(R1-S4).
                 # cleanup 신호는 result의 `cleanup_failed` 필드가 이미 나른다.
@@ -3139,9 +3187,7 @@ def main(expected_revision: str, output: Path) -> int:
             "driver_phase": driver_phase,
             "cleanup_failed": cleanup_failed,
             "pinset_sha256": PINNED_RUNTIME_RELEASE.pinset_sha256,
-            "execution_identity_sha256": (
-                plan.execution_identity_sha256 if plan is not None else None
-            ),
+            "execution_identity_sha256": execution_identity,
             "status": (
                 "passed"
                 if completed
@@ -3150,9 +3196,19 @@ def main(expected_revision: str, output: Path) -> int:
                 else "preflight_rejected"
             ),
             "transaction_id": transaction,
-            **result_hashes,
+            # launcher는 이 세 key를 status=="passed"에서만 허용한다. body가
+            # 통과한 뒤 cleanup이 실패하면 completed는 False가 되는데 hash는 남아
+            # key 집합이 어긋났고, 그러면 "본문이 통과했다"는 가장 값진 사실이
+            # launcher_safe_result_unavailable로 지워졌다(적대 리뷰 MAJOR-1).
+            **(result_hashes if completed else {}),
         }
-        if failure_diagnostic is not None:
+        # 어휘뿐 아니라 **phase**로도 잠근다. diagnostic은 _command/_compose의
+        # 범용 채널이라, 다른 호출부가 겹치는 단어를 쓰는 exit map을 넘기는 순간
+        # 무관한 실패에 fresh-init 사유가 붙는다(적대 리뷰 MAJOR-2).
+        if (
+            driver_phase == "map_fresh_init_failed"
+            and failure_diagnostic in _MAP_FRESH_INIT_REASONS
+        ):
             result["map_fresh_init_reason"] = failure_diagnostic
         try:
             _write_private_json(output / "result.json", result)
