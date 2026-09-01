@@ -2279,3 +2279,21 @@ def test_launcher_preflight_phases_mirror_the_driver_pre_claim_set() -> None:
 
     # 이번에 추가된 runner 이미지 보장 단계가 실제로 포함돼야 한다(#289 전제).
     assert "runtime_setup_playwright_runner_image" in driver_pre_claim
+
+    # claim 이후에만 도달 가능한 phase는 절대 들어오면 안 된다 — 들어오면
+    # "실행권 미소비" 주장을 소비 증명 phase와 함께 통과시킨다(적대 리뷰 major).
+    post_claim_only = {
+        # claim 바로 다음 줄에서 대입된다.
+        "runtime_setup_pinvi_config",
+        # 전 호출부(_compose_model_profiles/_rendered_service_images/
+        # _container_inspect/map_runtime)가 claim 이후다.
+        "runtime_inspect_invalid",
+        # finally 강등으로만 생기며 driver_phase != phase가 되어 launcher가
+        # 이미 별도로 거부한다(= 이 목록에 있으면 죽은 항목).
+        "runtime_cleanup_failed",
+    }
+    assert not (driver_pre_claim & post_claim_only)
+    claim_at = driver_source.index("claim_m05_isolated_harness_ledger(ledger_root=")
+    for phase in sorted(post_claim_only - {"runtime_cleanup_failed"}):
+        marker = f'"{phase}"'
+        assert driver_source.index(marker, claim_at) > claim_at
