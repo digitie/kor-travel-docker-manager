@@ -592,6 +592,43 @@ id가 디스크의 것과 다르면 `404 RUNTIME_PIN_REQUEST_NOT_FOUND`다. 없�
 
 ---
 
+## 7.5 회전 전에 pair 계약을 본다
+
+**`ktdctl pin rotate-pair`를 직접 부르지 말고 `scripts/rotate-pinned-pair`를 쓴다.**
+
+M05 격리 harness는 PinVi가 vendoring한
+`contracts/kor-travel-map-m05-pair-provenance-v1.json`의 `map.full.source_revision`이
+pinned Map revision과 같기를 요구한다. 그런데 그 검사는 격리 e2e launcher에서만 돌고
+`run-pinned-rebuild-once`는 그 계약을 **읽지 않는다**.
+
+그래서 어긋난 pair로 회전하면 이렇게 된다 — 2026-09-02 실측:
+
+1. `rotate-pair` 성공(계약을 보지 않으므로)
+2. `run-pinned-rebuild-once` **71분** 성공
+3. `run-m05-isolated-e2e-once`가 **몇 초 만에** preflight에서 거부
+
+그때 어긋난 것은 문자열 두 개였다. Map이 문서 4커밋 앞서 있었고 OpenAPI blob은
+바이트 단위로 동일했다.
+
+`rotate-pinned-pair`는 회전 **전에** 대상 PinVi revision의 계약을 shallow fetch로
+읽어 그 두 값을 비교하고, 어긋나면 **두 값을 모두 찍고 회전을 거부한다**(원장은
+그대로다). 검사를 약하게 하지 않고 앞으로 당기는 것이다.
+
+```
+sudo /opt/kor-travel-docker-manager/scripts/rotate-pinned-pair \
+  <MAP_REVISION> <PINVI_REVISION> "회전 사유"
+```
+
+거부되면 PinVi 쪽 계약을 대상 Map revision으로 재핀한 뒤 다시 회전한다. 그 재핀은
+`admin`·`full`의 `source_revision`과 테스트 핀 두 곳만 옮기는 4줄 작업이고, digest와
+vendored 스냅샷은 Map의 OpenAPI blob이 바뀌지 않았다면 손대지 않는다.
+
+> 이 게이트가 generic pin registry가 아니라 M05 adapter에 있는 이유는
+> `run-m05-isolated-e2e-once`가 선언한 소유 경계와 같다 — Map/PinVi integration
+> provenance는 adapter가 소유한다. launcher가 둘을 순서대로 엮는다.
+
+---
+
 ## 8. rebuild와의 관계
 
 ```

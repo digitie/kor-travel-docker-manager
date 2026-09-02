@@ -1,0 +1,68 @@
+#!/usr/bin/bash
+# Map/PinVi pinned pair 회전의 sanctioned 진입점.
+#
+# `ktdctl pin rotate-pair`를 직접 부르지 않고 이 launcher를 쓰는 이유는 하나다:
+# **회전이 만들어 낼 모순을 회전 전에 본다.**
+#
+# M05 격리 harness는 PinVi가 vendoring한 pair 계약의 `map.full.source_revision`이
+# pinned Map revision과 같기를 요구한다. 그런데 그 검사는 격리 e2e launcher에서만
+# 돌고 `run-pinned-rebuild-once`는 그 계약을 읽지 않는다. 그래서 어긋난 pair로
+# 회전하면 **71분짜리 rebuild를 다 태운 뒤에** 몇 초 만에 거부당한다 —
+# 2026-09-02에 실제로 그렇게 잃었다.
+#
+# 여기서 보는 것은 문자열 두 개이고 비용은 shallow fetch 한 번이다. 검사를
+# 약하게 하지 않고 **앞으로 당긴다**.
+#
+# Map/PinVi integration provenance는 generic pin registry가 아니라 M05 adapter가
+# 소유한다(`run-m05-isolated-e2e-once`의 같은 선언). 그래서 이 게이트는 `ktdctl`
+# 본체가 아니라 adapter 쪽에 있고, 이 launcher가 둘을 순서대로 엮는다.
+set -euo pipefail
+
+if [[ "$#" -lt 3 ]]; then
+  echo "usage: rotate-pinned-pair MAP_REVISION PINVI_REVISION REASON [--block-previous]" >&2
+  exit 2
+fi
+
+if [[ "$(/usr/bin/id -u)" != "0" ]]; then
+  echo "pinned pair rotation launcher must run as root" >&2
+  exit 2
+fi
+
+map_revision="$1"
+pinvi_revision="$2"
+reason="$3"
+shift 3
+
+for revision in "${map_revision}" "${pinvi_revision}"; do
+  if [[ ! "${revision}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "rotation revision is invalid" >&2
+    exit 2
+  fi
+done
+
+# 남은 인자는 `ktdctl`에 그대로 넘긴다(예: --block-previous). 알 수 없는 값은
+# `ktdctl`이 거부하므로 여기서 다시 열거하지 않는다 — 열거하면 두 곳이 드리프트한다.
+extra_arguments=("$@")
+
+ktdctl=/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl
+driver=/opt/kor-travel-docker-manager/scripts/m05_isolated_e2e.py
+python=/opt/kor-travel-docker-manager/backend/.venv/bin/python
+
+# driver는 거부 사유를 stdout에 낸다. 값은 40-hex 커밋 SHA와 고정 문구뿐이라
+# 비밀이 없다 — 그리고 이 값이 없으면 운영자가 다시 역추적해야 한다.
+set +e
+rotation_detail="$("${python}" -I "${driver}" --rotation-preflight "${map_revision}" "${pinvi_revision}" 2>/dev/null)"
+rotation_status="$?"
+set -e
+if [[ "${rotation_status}" != 0 ]]; then
+  echo "M05 pair rotation preflight refused: ${rotation_detail}" >&2
+  echo "회전하지 않았다 — 원장은 그대로다." >&2
+  exit 1
+fi
+
+exec "${ktdctl}" pin rotate-pair \
+  --map-revision "${map_revision}" \
+  --pinvi-revision "${pinvi_revision}" \
+  --reason "${reason}" \
+  --confirm \
+  "${extra_arguments[@]}"

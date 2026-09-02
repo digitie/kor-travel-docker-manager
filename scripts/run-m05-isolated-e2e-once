@@ -211,10 +211,22 @@ fi
 # Map/PinVi integration provenance는 generic pin registry가 아니라 M05 adapter가 소유한다.
 # 이를 one-shot ledger/output leaf 전에 검사해 잘못 회전한 source pair가 execution terminal을
 # 소비하지 않게 한다. stderr 원문은 기존 launcher 경계와 같이 보관하지 않는다.
-if ! /opt/kor-travel-docker-manager/backend/.venv/bin/python -I \
-  /opt/kor-travel-docker-manager/scripts/m05_isolated_e2e.py \
-  --preflight "$expected_revision" >/dev/null 2>&1; then
-  echo "M05 isolated source pair preflight is not runnable" >&2
+# driver가 stdout에 내는 **닫힌 어휘** 거부 사유는 받는다 — 자유 문자열이 아니라
+# driver가 allowlist로 거른 값이다. 종전에는 그것마저 버려서 이 거부가 어디서
+# 났는지 알 방법이 없었다: 2026-09-02에 71분짜리 rebuild를 태운 뒤 이 한 줄에
+# 막히고도 이유를 몰라 traceback으로 역추적해야 했다.
+# `set -e` 아래서는 실패한 명령 치환이 대입 자리에서 곧바로 스크립트를 죽여
+# 메시지를 잃는다. 포착을 위해 그 구간만 연다.
+set +e
+preflight_detail="$(
+  /opt/kor-travel-docker-manager/backend/.venv/bin/python -I \
+    /opt/kor-travel-docker-manager/scripts/m05_isolated_e2e.py \
+    --preflight "$expected_revision" 2>/dev/null
+)"
+preflight_status="$?"
+set -e
+if [[ "${preflight_status}" != 0 ]]; then
+  echo "M05 isolated source pair preflight is not runnable: ${preflight_detail}" >&2
   exit 1
 fi
 # driver가 남긴 기록이 scoped(phase-scoped, 보정 후 재실행 가능)든 무조건이든,
