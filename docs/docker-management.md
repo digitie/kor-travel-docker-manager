@@ -131,23 +131,37 @@ db -> storage -> gra -> cadv -> prom ─┬─ geo ──┐
 
 핵심 의존: `geo`와 `conc`는 모두 `prom`에만 의존하며 서로 독립이다(**concierge는 geo에 의존하지 않는다**). `map`은 `geo`와 `conc` 모두에 의존하고, `pinvi`는 `map`에 의존한다. 예를 들어 `ktdctl conc`는 `db, storage, gra, cadv, prom, conc`만 실행하고(geo 제외), `ktdctl map`은 `db, storage, gra, cadv, prom, geo, conc, map`을 실행한다. 새 의존성은 `targets.<id>.depends_on`으로 선언한다.
 
-**`docker-targets.yml` 편집 후 재기동 전 검증(GM-11)**: `registry.load_targets_config()`는
-컨테이너 필수 필드·`depends_on`/`include`/`containers`/`dependency_order`의 참조 무결성·
-alias 충돌을 fail-close로 검증한다. 이 검증은 `MANAGED_CONTAINERS` 등 모듈 레벨 상수 계산에
-걸려 있어(registry.py:135), `ktdctl`뿐 아니라 **backend(FastAPI) 프로세스 자체의 기동**도
-막는다 — 오타 하나가 서비스 재기동 직후 전체 다운타임으로 이어질 수 있다는 뜻이므로,
-편집 후 재기동하기 **전에** 다음처럼 별도 프로세스에서 미리 검증한다(무거운 `cli.py`/
-`compose_service.py` import 체인을 타지 않는 `registry.py` 단독 import라 안전하다):
+**`docker-targets.yml` 편집 후 재기동 전 검증(GM-11, docker-targets.yml 스키마 검증
+잔여로 갱신)**: `registry.load_targets_config()`는 컨테이너 필수 필드·`depends_on`/
+`include`/`containers`/`dependency_order`의 참조 무결성·alias 충돌을 fail-close로
+검증한다. `MANAGED_CONTAINERS`/`MANAGED_TARGETS`/`TARGET_ALIASES`(registry.py:187-191)는
+이제 최초 실제 접근(구독·순회·`in`·`.items()`) 시점에만 이 검증을 실행하는 지연
+`Mapping`이다 — 예전에는 이 계산이 모듈 import 시점의 top-level 코드였어서, `ktdctl`은
+`--help`조차 argparse가 뜨기도 전에 raw traceback으로 죽었고 **backend(FastAPI)
+프로세스 자체의 기동**도 막았다. 지금은 두 프로세스 다 config가 깨져 있어도 뜨는 것
+자체는 막지 않는다 — backend는 대신 매 metrics 수집 tick(10초 간격)과 실제 target/
+container 조회가 필요한 요청에서 같은 오류를 계속 관측 가능하게 다시 낸다(조용히
+사라지지 않는다).
+
+그래도 오타 하나가 서비스 재기동 직후 일부 기능 저하로 이어질 수 있으므로, 편집 후
+재기동하기 **전에** 미리 검증하는 습관은 그대로 유지한다. 정식 인터페이스는 CLI
+서브커맨드다:
+
+```bash
+KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE=/path/to/edited/docker-targets.yml ktdctl targets validate
+```
+
+exit 0 + `OK`면 안전하게 배포본에 반영하고 재기동한다. exit 1이면 출력된
+`{파일} targets.<id>.<필드>: ...` 메시지가 고칠 위치를 정확히 짚는다. `ktdctl`이 아직
+설치되지 않은 환경에서는 예전과 같은 python 한 줄로도 동일하게 검증할 수 있다(무거운
+`cli.py`/`compose_service.py` import 체인을 타지 않는 `registry.py` 단독 import라
+안전하다):
 
 ```bash
 KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE=/path/to/edited/docker-targets.yml \
   <venv>/bin/python -c \
   'from kor_travel_docker_manager.services.registry import load_targets_config; load_targets_config(); print("OK")'
 ```
-
-exit 0 + `OK`면 안전하게 배포본에 반영하고 재기동한다. exit 1이면 출력된
-`{파일} targets.<id>.<필드>: ...` 메시지가 고칠 위치를 정확히 짚는다. `ktdctl targets
-validate` 같은 전용 서브커맨드는 아직 없다(`docs/tasks.md`에 후속 항목으로 추적).
 
 | 공식 별칭 | 의미 | 누적 실행 범위 | 대표 별칭 |
 |---|---|---|---|
@@ -191,7 +205,8 @@ validate` 같은 전용 서브커맨드는 아직 없다(`docs/tasks.md`에 후�
 정식 CLI는 백엔드 패키지의 console script인 `ktdctl`이다. 짧은 별칭은 곧바로 `ensure`로 해석된다.
 
 ```bash
-ktdctl targets
+ktdctl targets list
+ktdctl targets validate
 ktdctl db --build
 ktdctl storage
 ktdctl geo --recreate

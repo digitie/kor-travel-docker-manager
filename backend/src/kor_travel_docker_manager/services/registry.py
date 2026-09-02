@@ -1,4 +1,5 @@
 import os
+from collections.abc import Callable, Iterator, Mapping
 from functools import lru_cache
 from typing import Any
 
@@ -153,9 +154,41 @@ def _build_aliases() -> dict[str, str]:
     return aliases
 
 
-MANAGED_CONTAINERS: dict[str, dict[str, Any]] = load_targets_config()["containers"]
-MANAGED_TARGETS: dict[str, dict[str, Any]] = _targets()
-TARGET_ALIASES: dict[str, str] = _build_aliases()
+class _LazyMapping(Mapping[str, Any]):
+    """`loader`를 최초 실제 접근(구독/순회/`in`/`.items()` 등) 시점에만 호출하는
+    지연 dict-like 객체.
+
+    module import 시점에는 loader를 실행하지 않으므로, 이 객체를 그저 import만
+    하고 실제로 사용하지 않는 경로(예: `ktdctl --help`가 registry.py를 참조하는
+    다른 모듈을 거쳐 import될 때)는 설정 파일이 깨져 있어도 import 자체는 깨지지
+    않는다. `loader`가 내부적으로 참조하는 `load_targets_config()`가 이미
+    `@lru_cache`이므로 최초 접근 이후 재계산 비용은 없다.
+    """
+
+    def __init__(self, loader: Callable[[], dict[str, Any]]) -> None:
+        self._loader = loader
+
+    def _resolve(self) -> dict[str, Any]:
+        return self._loader()
+
+    def __getitem__(self, key: str) -> Any:
+        return self._resolve()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._resolve())
+
+    def __len__(self) -> int:
+        return len(self._resolve())
+
+    def __repr__(self) -> str:
+        return repr(self._resolve())
+
+
+MANAGED_CONTAINERS: Mapping[str, dict[str, Any]] = _LazyMapping(
+    lambda: load_targets_config()["containers"]
+)
+MANAGED_TARGETS: Mapping[str, dict[str, Any]] = _LazyMapping(_targets)
+TARGET_ALIASES: Mapping[str, str] = _LazyMapping(_build_aliases)
 
 
 def resolve_target_name(target: str | None) -> str:

@@ -212,9 +212,25 @@ class MetricsCollector:
         self._running = False
         self._prev_io: dict[str, tuple[int, int]] = {}
         self._latest_metrics: dict[str, dict[str, Any]] = {}
-        self._container_observations: dict[str, dict[str, Any]] = {
-            key: self._default_observation(key) for key in MANAGED_CONTAINERS
-        }
+        try:
+            self._container_observations: dict[str, dict[str, Any]] = {
+                key: self._default_observation(key) for key in MANAGED_CONTAINERS
+            }
+        except ValueError as exc:
+            # GM-followups(docker-targets.yml 스키마 검증 잔여): 이 생성자는 모듈
+            # 레벨 싱글턴(`metrics_collector = MetricsCollector()`, 이 파일 맨 끝)으로
+            # import 시점에 즉시 실행된다. `MANAGED_CONTAINERS`는 registry.py에서
+            # 이제 지연 계산이라(GM-11 후속) 여기서 처음 실제로 순회하는 순간 config
+            # 검증이 실행되는데, 여기서 그대로 죽으면 이 모듈을 그저 import만 하는
+            # `ktdctl`까지 raw traceback으로 죽는다 — DockerService.__init__의
+            # `_backup_default_config` try/except와 같은 이유로 여기도 fail-open한다.
+            # 빈 dict로 시작해도 안전한 이유: `_collect_loop`이 매 tick마다
+            # `collect_metrics()`를 호출하는데 그 안의 `MANAGED_CONTAINERS` 순회가
+            # 같은 `ValueError`를 그대로 다시 내고, 그 호출은 이미 `except Exception`으로
+            # 감싸여 있어(`_collect_loop` 참고) 조용히 사라지지 않고 매 tick 로그로
+            # 계속 드러난다 — config를 고치기 전까지 관측 가능한 채로 fail-close된다.
+            logger.error(f"MANAGED_CONTAINERS unavailable at metrics collector startup: {exc}")
+            self._container_observations = {}
         self._lock = threading.RLock()
         self._collection_runs_total = 0
         self._collection_errors_total = 0

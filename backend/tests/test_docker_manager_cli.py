@@ -2161,3 +2161,177 @@ def test_terminal_seed_refuses_a_single_role_rotation(pin_cli_env, capsys):
         == 2
     )
     assert "atomic Map/PinVi pair" in capsys.readouterr().err
+
+
+# GM-11 후속(docker-targets.yml 스키마 검증 잔여): 아래 fixture와 테스트들은 실제
+# 커밋된 config/docker-targets.yml을 절대 건드리지 않고, 임시 파일 +
+# `KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE` 환경변수 override + `cache_clear()`로만
+# `load_targets_config()`의 배선을 격리해 확인한다(test_registry_targets_config.py의
+# `_isolated_targets_config_cache`와 같은 패턴).
+
+_BROKEN_TARGETS_YAML = """
+containers:
+  geo_db:
+    compose_service: geo-db
+    name: geo_db
+    display_name: Geo DB
+    role: database
+    connection: {}
+    expected_ports: []
+targets:
+  geo:
+    containers: [geo_db]
+    services: [geo-db]
+    depends_on: [typo_target]
+dependency_order: [geo]
+"""
+
+_VALID_TARGETS_YAML = """
+containers:
+  geo_db:
+    compose_service: geo-db
+    name: geo_db
+    display_name: Geo DB
+    role: database
+    connection: {}
+    expected_ports: []
+targets:
+  geo:
+    containers: [geo_db]
+    services: [geo-db]
+dependency_order: [geo]
+"""
+
+
+@pytest.fixture
+def _isolated_targets_config_cache(monkeypatch: pytest.MonkeyPatch):
+    from kor_travel_docker_manager.services import registry as registry_module
+
+    registry_module.load_targets_config.cache_clear()
+    yield
+    monkeypatch.delenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", raising=False)
+    registry_module.load_targets_config.cache_clear()
+
+
+def test_cli_reports_clean_error_for_broken_config_instead_of_traceback(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _isolated_targets_config_cache: None,
+) -> None:
+    """`DIRECT_ENSURE_ALIASES`가 모듈 import 시점에 `list_targets()`를 즉시
+    호출하던 시절에는, 깨진 config면 `ktdctl --help`조차 argparse가 뜨기도
+    전에 raw traceback으로 죽었다. 지금은 그 계산이 `main()`의 dispatch
+    직전으로 미뤄지고 `ValueError`를 감싼 try/except가 깔끔한 한 줄
+    메시지로 바꿔 exit 1로 끝나야 한다."""
+
+    config_path = tmp_path / "docker-targets.yml"
+    config_path.write_text(_BROKEN_TARGETS_YAML, encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--help"])
+
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "depends_on: unknown target 'typo_target'" in err
+    assert "Traceback" not in err
+    assert len(err.strip().splitlines()) == 1
+
+
+def test_cli_targets_validate_prints_ok_on_success(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _isolated_targets_config_cache: None,
+) -> None:
+    config_path = tmp_path / "docker-targets.yml"
+    config_path.write_text(_VALID_TARGETS_YAML, encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+
+    assert main(["targets", "validate"]) == 0
+    assert capsys.readouterr().out.strip() == "OK"
+
+
+def test_cli_targets_validate_prints_error_and_exits_1_on_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _isolated_targets_config_cache: None,
+) -> None:
+    """참고: `main()`이 dispatch 직전에 `_direct_ensure_aliases()`를 호출하므로
+    (0.5절 참고), 깨진 config에서는 `args.func(args)`(= `_cmd_targets_validate`
+    자신의 try/except)에 도달하기도 전에 `main()`의 outer try/except가 먼저
+    같은 `ValueError`를 잡아 `sys.exit(1)`한다 — 그래서 `main([...]) == 1`이
+    아니라 `SystemExit`을 확인한다. 사용자 관측 결과(메시지·exit code)는
+    두 경로 모두 동일하다."""
+
+    config_path = tmp_path / "docker-targets.yml"
+    config_path.write_text(_BROKEN_TARGETS_YAML, encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["targets", "validate"])
+
+    assert excinfo.value.code == 1
+    out = capsys.readouterr()
+    assert out.out.strip() != "OK"
+    assert "depends_on: unknown target 'typo_target'" in out.err
+
+
+def test_cmd_targets_validate_directly_handles_success_and_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _isolated_targets_config_cache: None,
+) -> None:
+    """`_cmd_targets_validate`를 `main()` 경유 없이 직접 호출해 그 자신의
+    try/except 분기를 검증한다 — `main()`을 통하면 `_direct_ensure_aliases()`가
+    dispatch보다 먼저 같은 `ValueError`를 잡아버려서(위 테스트들처럼 `SystemExit`으로
+    끝난다) 이 함수 자신의 `except ValueError`/`return 1`/`return 0` 분기가
+    실행되지 않는다."""
+
+    import argparse
+
+    from kor_travel_docker_manager.cli import _cmd_targets_validate
+    from kor_travel_docker_manager.services import registry as registry_module
+
+    config_path = tmp_path / "docker-targets.yml"
+    config_path.write_text(_VALID_TARGETS_YAML, encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+
+    assert _cmd_targets_validate(argparse.Namespace()) == 0
+    assert capsys.readouterr().out.strip() == "OK"
+
+    config_path.write_text(_BROKEN_TARGETS_YAML, encoding="utf-8")
+    registry_module.load_targets_config.cache_clear()
+
+    assert _cmd_targets_validate(argparse.Namespace()) == 1
+    out = capsys.readouterr()
+    assert out.out.strip() != "OK"
+    assert "depends_on: unknown target 'typo_target'" in out.err
+
+
+def test_cli_targets_list_preserves_previous_flat_targets_behavior(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`targets`를 `list`/`validate` 서브액션으로 nest했지만, `targets list`의
+    출력 자체는 예전 flat `targets` 명령과 동일해야 한다(실제 커밋된 config
+    사용, target별 요약 한 줄 + `--json` 지원)."""
+
+    assert main(["targets", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "geo:" in out
+    assert "sequence=[" in out
+
+    assert main(["targets", "list", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert any(target["id"] == "geo" for target in payload)
+
+
+def test_cli_targets_without_subaction_is_rejected() -> None:
+    """`pin`과 같은 nested subparser 패턴이므로, sub-action 없이 `ktdctl targets`만
+    호출하면(예전 flat 명령과 달리) argparse가 required=True로 거부해야 한다."""
+
+    with pytest.raises(SystemExit, match="2"):
+        main(["targets"])

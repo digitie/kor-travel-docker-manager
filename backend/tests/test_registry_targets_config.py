@@ -264,3 +264,48 @@ def test_load_targets_config_rejects_broken_reference_via_env_override(
         ValueError, match="depends_on: unknown target 'typo_target'"
     ):
         registry_module.load_targets_config()
+
+
+def test_lazy_mapping_defers_loader_until_first_real_access() -> None:
+    """docker-targets.yml 스키마 검증 잔여(GM-11 후속): `MANAGED_CONTAINERS`/
+    `MANAGED_TARGETS`/`TARGET_ALIASES`를 모듈 import 시점에 즉시 계산되는 plain
+    dict 대신 `_LazyMapping`으로 바꾼 핵심 계약 — 생성 자체는 `loader`를 절대
+    호출하지 않고, 구독/순회/`in`/`.items()` 같은 실제 접근에서만 호출해야
+    `ktdctl`뿐 아니라 이 모듈을 그저 import만 하는 다른 프로세스(FastAPI 등)도
+    깨진 config에서 import 시점에 죽지 않는다."""
+
+    calls: list[int] = []
+
+    def loader() -> dict[str, Any]:
+        calls.append(1)
+        return {"a": 1}
+
+    mapping = registry_module._LazyMapping(loader)
+
+    assert calls == []  # 생성만으로는 loader가 호출되지 않아야 한다.
+
+    assert mapping["a"] == 1
+    assert calls == [1]
+    assert "a" in mapping
+    assert list(mapping) == ["a"]
+    assert dict(mapping.items()) == {"a": 1}
+    assert mapping.get("missing", "default") == "default"
+
+
+def test_managed_containers_raises_only_on_first_real_access_with_broken_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _isolated_targets_config_cache: None,
+) -> None:
+    """실제 모듈 레벨 `MANAGED_CONTAINERS` 객체 자신이 깨진 config에서 구독/`in`
+    시점에 `_validate_targets_config`의 명확한 메시지를 그대로 낸다는 것을
+    확인한다(단순 참조는 여기서 안전을 재확인하지 않는다 — 모듈이 이미
+    import돼 있어 재import로는 계약을 재현할 수 없기 때문에, 실제 접근에서
+    예외가 나는지만 본다)."""
+
+    config_path = tmp_path / "docker-targets.yml"
+    config_path.write_text(_BROKEN_REFERENCE_YAML, encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+
+    with pytest.raises(ValueError, match="depends_on: unknown target 'typo_target'"):
+        assert "kor-travel-geo-postgresql" in registry_module.MANAGED_CONTAINERS

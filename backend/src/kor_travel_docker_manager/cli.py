@@ -39,7 +39,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     RUNTIME_SOURCE_ROLES,
 )
-from kor_travel_docker_manager.services.registry import list_targets
+from kor_travel_docker_manager.services.registry import list_targets, load_targets_config
 from kor_travel_docker_manager.services.runtime_execution_registry import (
     block_current_execution,
     load_runtime_execution_registry,
@@ -92,9 +92,22 @@ from kor_travel_docker_manager.services.trusted_install import (
     GLOBAL_MUTATION_LOCK_PATH,
 )
 
-DIRECT_ENSURE_ALIASES = {
-    alias for target in list_targets() for alias in [target["id"], *target.get("aliases", [])]
-}
+
+def _direct_ensure_aliases() -> set[str]:
+    """`ktdctl <target>`처럼 target 이름을 바로 첫 인자로 주면 `ensure`로
+    해석해 주는 축약 표기용 alias 집합.
+
+    예전에는 이 값을 모듈 import 시점의 top-level 코드로 계산했다 — 그러면
+    `list_targets()`가 즉시 실행되며 config 파일이 깨져 있을 때 `ktdctl --help`
+    조차 argparse가 뜨기도 전에 raw traceback으로 죽었다. 실제로 필요한
+    시점(`main()`의 dispatch 직전)까지 계산을 미루면, 그 호출부를 감싼
+    try/except가 잘못된 config를 깔끔한 오류 메시지로 바꿔줄 수 있다.
+    """
+
+    return {
+        alias for target in list_targets() for alias in [target["id"], *target.get("aliases", [])]
+    }
+
 
 # GM-09: c6c_deployment.py의 _C6C_GLOBAL_MUTATION_LOCK과 반드시 같은 파일을 가리켜야
 # pinned rebuild와 pin 회전이 서로 직렬화된다 — 정본은 services/trusted_install.py다.
@@ -115,7 +128,7 @@ def _emit_process_result(result: dict[str, Any], *, json_output: bool = False) -
     return int(result.get("returncode", 1))
 
 
-def _cmd_targets(args: argparse.Namespace) -> int:
+def _cmd_targets_list(args: argparse.Namespace) -> int:
     targets = list_targets()
     if args.json:
         print(json.dumps(targets, ensure_ascii=False, indent=2))
@@ -130,6 +143,21 @@ def _cmd_targets(args: argparse.Namespace) -> int:
             f"{target['id']}: {target['display_name']} "
             f"sequence=[{sequence}] services=[{services}]{alias_text}"
         )
+    return 0
+
+
+def _cmd_targets_validate(args: argparse.Namespace) -> int:
+    """GM-11 후속(docker-targets.yml 스키마 검증 잔여): `docs/docker-management.md`
+    3절이 안내하던 별도 python 한 줄 pre-flight 검증(`load_targets_config()`를 직접
+    import해 호출)을 전용 서브커맨드로 대체한다. `config/docker-targets.yml`을 편집한
+    뒤 재기동 전에 `ktdctl targets validate`로 참조 무결성을 미리 확인할 수 있다."""
+
+    try:
+        load_targets_config()
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print("OK")
     return 0
 
 
@@ -1683,9 +1711,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    targets = subparsers.add_parser("targets", help="관리 target 목록을 출력합니다.")
-    targets.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
-    targets.set_defaults(func=_cmd_targets)
+    targets = subparsers.add_parser(
+        "targets", help="관리 target 목록을 조회하거나 config를 검증합니다."
+    )
+    targets_subparsers = targets.add_subparsers(dest="targets_action", required=True)
+
+    targets_list = targets_subparsers.add_parser("list", help="관리 target 목록을 출력합니다.")
+    targets_list.add_argument("--json", action="store_true", help="JSON으로 출력합니다.")
+    targets_list.set_defaults(func=_cmd_targets_list)
+
+    targets_validate = targets_subparsers.add_parser(
+        "validate",
+        help="config/docker-targets.yml의 참조 무결성을 재기동 전에 미리 검증합니다.",
+    )
+    targets_validate.set_defaults(func=_cmd_targets_validate)
 
     status = subparsers.add_parser("status", help="target의 docker compose 상태를 출력합니다.")
     status.add_argument("target", nargs="?", default="all")
@@ -2117,11 +2156,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parsed_argv = list(sys.argv[1:] if argv is None else argv)
-    if parsed_argv and parsed_argv[0] in DIRECT_ENSURE_ALIASES:
-        parsed_argv = ["ensure", parsed_argv[0], *parsed_argv[1:]]
-    parser = build_parser()
-    args = parser.parse_args(parsed_argv)
-    return int(args.func(args))
+    try:
+        if parsed_argv and parsed_argv[0] in _direct_ensure_aliases():
+            parsed_argv = ["ensure", parsed_argv[0], *parsed_argv[1:]]
+        parser = build_parser()
+        args = parser.parse_args(parsed_argv)
+        return int(args.func(args))
+    except ValueError as exc:
+        # GM-followups: 깨진 config/docker-targets.yml이 raw traceback 대신
+        # registry.py의 이미 명확한 검증 메시지 그대로 stderr에 한두 줄로 나가게 한다.
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

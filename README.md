@@ -41,7 +41,7 @@ kor-travel-docker-manager/
 ```bash
 cd /mnt/f/dev/kor-travel-docker-manager/backend
 poetry install
-poetry run ktdctl targets
+poetry run ktdctl targets list
 poetry run ktdctl srv --build
 ```
 

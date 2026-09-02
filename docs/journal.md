@@ -2,6 +2,84 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-02 — docker-targets.yml 스키마 검증 잔여 3건 해소 (GM-11 후속)
+
+`docs/tasks.md`에 남아 있던 GM-11 후속 세 항목을 순서대로 이행했다.
+
+**(1) 지연 계산 + 깔끔한 CLI 오류.** `registry.py`의 `MANAGED_CONTAINERS`/
+`MANAGED_TARGETS`/`TARGET_ALIASES`는 원래 모듈 import 시점에 즉시 계산되는
+plain dict였다 — `load_targets_config()` 자체는 이미 `@lru_cache`였지만, 이
+세 상수의 계산이 top-level 코드라 config가 깨지면 이 모듈을 그저 import만
+해도 죽었다. `collections.abc.Mapping`을 구현하는 `_LazyMapping`으로 바꿔
+`loader`가 최초 실제 접근(구독/순회/`in`/`.items()`)에서만 호출되게 했다 —
+기존 20여 곳의 `MANAGED_CONTAINERS[...]`/`.items()`/`in` 사용부는 전혀 손대지
+않았다(Mapping 프로토콜을 구현하면 이 문법이 그대로 동작한다). `cli.py`의
+`DIRECT_ENSURE_ALIASES`도 모듈 top-level 상수에서 `_direct_ensure_aliases()`
+함수로 옮겨 `main()`의 dispatch 직전에만 호출되게 했고, `main()`의
+`build_parser()`~`args.func(args)` 구간 전체를 `except ValueError`로 감싸
+registry.py의 이미 명확한 검증 메시지를 raw traceback 대신 stderr 한 줄 +
+exit 1로 낸다.
+
+여기서 끝나지 않고 임시 깨진 config로 fresh subprocess(`python -m
+kor_travel_docker_manager.cli --help`)를 실제로 실행해 재현했더니, 별도
+원인이 하나 더 드러났다: `metrics_collector.py` 맨 끝의 모듈 레벨 싱글턴
+`metrics_collector = MetricsCollector()`가 `__init__`에서 `MANAGED_CONTAINERS`를
+`{key: self._default_observation(key) for key in MANAGED_CONTAINERS}`로 즉시
+순회한다 — `cli.py`가 `docker_service`를 top-level import하는 순간(`targets
+validate`나 `pin show`처럼 Docker와 무관한 명령이라도) 이 순회가 실행돼 같은
+문제가 재현됐다. `DockerService.__init__`의 `_backup_default_config`가 이미
+써 온 것과 같은 패턴(생성자에서 config 로딩 실패를 삼키고 로그만 남김)을
+적용해, 그 dict comprehension을 `try/except ValueError`로 감싸 fail-open(빈
+dict로 시작, `logger.error`로 로그 남김)하게 고쳤다. `_collect_loop`가 매
+10초 tick마다 `collect_metrics()`를 부르고 그 안의 `MANAGED_CONTAINERS` 순회가
+같은 예외를 다시 내는데, 이미 `except Exception: logger.error(...)`로 감싸져
+있어 조용히 사라지지 않고 계속 로그로 드러난다 — 관측 가능성을 잃지 않는다.
+
+이 fail-open의 대가로 backend(FastAPI) 프로세스도 이제 깨진 config에서
+import/기동 자체는 막지 않는다. 이것은 GM-11이 "의도적으로" 만들었다고 감사
+기록에 남겼던 "backend 기동도 막는다"는 성질을 이번 후속이 명시적으로
+되돌리는 것이다 — 대신 매 metrics 수집 tick과 실제 target/container 조회가
+필요한 요청에서 같은 오류가 계속 관측 가능하게 다시 난다. `ktdctl`을 위해
+지연 계산을 도입하면서 이 대가도 함께 받아들이는 것이 자연스러운 방향이라고
+판단했다(그대로 두면 `ktdctl`만 고쳐지고 fastAPI 프로세스는 여전히 같은
+싱글턴 경로로 죽었을 것이다).
+
+**(2) `ktdctl targets validate`.** `targets` 서브커맨드를 `pin`과 같은 nested
+subparser 패턴(`targets_subparsers = targets.add_subparsers(dest=
+"targets_action", required=True)`)으로 바꿔 `targets list`(기존 flat `targets`
+동작 그대로, `--json` 포함)와 `targets validate`(성공 시 `OK` 출력 + exit 0,
+실패 시 `ValueError` 메시지를 stderr에 출력 + exit 1)로 나눴다.
+`docs/docker-management.md` 3절의 GM-11 안내를 갱신해 `ktdctl targets
+validate`를 정본 pre-flight 검증 경로로 세우고, 예전 python 한 줄짜리
+워크어라운드는 `ktdctl` 미설치 환경을 위한 대안으로 남겼다. stale 라인 인용
+(`registry.py:135`가 `MANAGED_CONTAINERS = load_targets_config()[...]`의 옛
+top-level 자리를 가리키던 것)도 `registry.py:187-191`(현재 `_LazyMapping`
+인스턴스 세 개가 있는 자리)로 고쳤다. README.md/`docs/dev-environment.md`의
+예전 flat `ktdctl targets` 예시도 `ktdctl targets list`로 맞췄다.
+
+**(3) frontend 주석 정정.** `DashboardClient.tsx`의 두 댓글
+(`detailTarget`/`containerGroups` 자리)이 `target.containers`를 여전히
+"`depends_on` 전이 폐포"로 설명하고 있었다 — GM-11의 `_validate_targets_config`
+docstring이 이미 이 전제가 틀렸다고 확인한 내용이다(모니터링 target이
+`depends_on` 폐포엔 있어도 `containers`엔 없는 것이 반증). 두 댓글을
+"`containers`는 `config/docker-targets.yml`에 target마다 손으로 채운 고정
+목록이고, 참조 무결성만 검증되지 유도되지 않는다"는 정확한 설명으로 고쳤다
+— 근거로 `rustfs`가 `geo`/`conc`/`map`/`pinvi`/`all` target의 `containers`에
+각각 독립적으로 반복 등재돼 있는 실제 config를 인용했다. narrowest-target/
+`기타` 버킷 로직 자체는 이미 이 손 목록 전제와 무관하게 올바르게 동작해서
+변경하지 않았다(댓글만 정정, 동작은 그대로).
+
+`test_docker_manager_cli.py`에 6건(broken-config 종단 확인 1건,
+`_cmd_targets_validate` 직접 호출 성공/실패 1건, through-`main()` 성공/실패
+2건, `targets list` 하위호환 1건, sub-action 없는 `targets` 거부 1건),
+`test_registry_targets_config.py`에 2건(`_LazyMapping`이 생성 시점엔
+`loader`를 부르지 않는다는 계약, `MANAGED_CONTAINERS` 자신이 실제 접근에서만
+예외를 낸다는 계약), `test_prometheus_metrics.py`에 1건(`MetricsCollector()`
+생성이 깨진 config에서도 살아남되 `render_prometheus_metrics()` 같은 실제
+호출 시점 메서드는 여전히 같은 예외를 낸다는 대조)을 추가했다. 새 테스트
+전부 mutation-test로 원복 전 실패를 확인한 뒤 복원했다. 전체 backend 1501
+passed, 2 skipped, ruff 통과. frontend type-check/lint/test/build 전부 통과.
+
 ## 2026-09-02 — WebSocket 경로 요청 상관관계 ID 공백 해소 (GM-16 후속)
 
 `docs/tasks.md`에 남아 있던 GM-16 후속 항목을 이행했다. `main.py`의
