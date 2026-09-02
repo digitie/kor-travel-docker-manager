@@ -4,12 +4,14 @@ import json
 import logging
 import os
 import random
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from kor_travel_docker_manager._time import utcnow
+from kor_travel_docker_manager.request_context import current_request_id, request_id_var
 from kor_travel_docker_manager.services.auth_service import (
     SESSION_COOKIE_NAME,
     AdminSessionContext,
@@ -312,6 +314,15 @@ class ConnectionManager:
             logger.info("Client disconnected. Total connections: %d", len(self.active_connections))
 
     async def broadcast(self, message: dict) -> None:
+        # 구조적 한계(의도적, 버그 아님): 이 메서드는 status_broadcast_loop의 단일
+        # 백그라운드 task에서 실행되며, 한 번의 broadcast가 여러 연결에 동시에
+        # fan-out된다 — 어느 한 연결의 request_id_var 컨텍스트에도 속하지 않는다.
+        # 그래서 아래 log 줄(예: "Dropping WebSocket client after send timed out")은
+        # per-connection request_id를 실을 수 없다: 하나의 broadcast가 N개 client로
+        # 갈라지는 시점에는 "이 로그의 request_id"라 부를 단일 연결이 애초에 없다.
+        # 각 client의 개별 handler(ws_status)가 자기 receive 루프에서 disconnect를
+        # 감지해 자기 request_id 컨텍스트로 다시 로그를 남기므로, 상관관계가 필요하면
+        # 그쪽 로그 줄을 봐야 한다.
         if not self.active_connections:
             return
         # 직렬화를 fan-out 밖에서 한 번만 한다. 직렬화 불가 payload가 모든 client를
@@ -354,7 +365,15 @@ status_manager = ConnectionManager()
 
 
 async def status_broadcast_loop():
-    """주기적으로 컨테이너 상태/메트릭을 broadcast한다."""
+    """주기적으로 컨테이너 상태/메트릭을 broadcast한다.
+
+    구조적 한계(의도적, 버그 아님): 이 loop는 main.py의 lifespan에서 딱 한 번
+    시작되는 독립 asyncio task로, 어느 개별 연결의 request_id_var 컨텍스트
+    안에도 있지 않다. 그래서 아래 "Error in status broadcast loop" 로그(그리고
+    이 함수가 부르는 ConnectionManager.broadcast() 내부 로그)는 per-connection
+    request_id를 실을 수 없다 — 하나의 broadcast tick이 여러 연결에 동시에
+    나가므로 "이 오류의 request_id"라 부를 단일 연결이 없다.
+    """
     while True:
         try:
             # 연결이 없으면 docker sweep 자체를 건너뛴다.
@@ -371,77 +390,104 @@ async def status_broadcast_loop():
 
 @router.websocket("/ws/status")
 async def ws_status(websocket: WebSocket):
-    granted, context = await _authorize_with_limit(websocket)
-    if not granted:
-        await _accept_and_close(
-            websocket, code=WS_CLOSE_TRY_AGAIN_LATER, reason="TRY_AGAIN_LATER"
-        )
-        return
-    if context is None:
-        await _accept_and_close(websocket, code=WS_CLOSE_AUTH_REQUIRED, reason="AUTH_REQUIRED")
-        return
-
-    if not await _accept_best_effort(websocket):
-        return  # accept 실패 뒤에는 close도 보내지 않는다.
-
-    status_manager.register(websocket)
-    close_code = WS_CLOSE_NORMAL
-    recv_task: asyncio.Task | None = None
+    # GM-16 후속: main.py의 `@app.middleware("http")` request-id 미들웨어는
+    # Starlette BaseHTTPMiddleware라 `scope["type"] != "http"`인 요청(즉 모든
+    # WebSocket)에서는 아예 실행되지 않는다 — starlette가 명시적으로 skip한다.
+    # 그 결과 request_id_var가 기본값 "-"에 머물러 WS 로그 줄을 UI에 노출되는
+    # request id와 상관지을 방법이 없었다. 그래서 이 handler가 직접, main.py
+    # 미들웨어와 정확히 같은 패턴으로 발급한다.
+    #
+    # 반드시 함수의 **첫 줄**이어야 한다: shed 검사(1013)·인가 거부(4401) 분기가
+    # 모두 아래 기존 inner try/finally보다 앞에서 return하므로, 이 set()을
+    # accept() 성공 이후로 옮기면 거절된 연결은 request_id를 아예 받지 못한 채
+    # (로그가 계속 "-") 반환된다 — 그게 바로 이 handler가 고치려는 공백이다.
+    # 그래서 이 outer try/finally는 함수 전체(모든 조기 return과 기존 inner
+    # try/finally 포함)를 감싸고, reset()은 기존 inner finally(status_manager.
+    # disconnect, 마지막 _close_best_effort)가 전부 끝난 뒤 이 outer finally에서
+    # 마지막으로 실행된다 — 그렇지 않으면(inner finally 안에서만 reset하면) 거절/
+    # shed된 연결은 inner try에 도달조차 못 하므로 contextvar token이 새어나간다.
+    request_id = str(uuid.uuid4())
+    token = request_id_var.set(request_id)
     try:
-        status = await asyncio.to_thread(docker_service.get_containers_status)
-        # broadcast와 같은 encoder를 쓴다. send_json은 ensure_ascii=False라 lone surrogate가
-        # 섞이면 최초 프레임에서만 죽어 소켓이 영구히 1011로 끊긴다.
-        initial = encode_status_payload({"type": "status", "containers": status})
-        if initial is not None:
-            await websocket.send_text(initial)
-
-        recv_task = asyncio.create_task(websocket.receive())
-        loop = asyncio.get_running_loop()
-        # 재인가 시점은 monotonic deadline에 고정한다. wait의 timeout을 그대로 쓰면
-        # 프레임이 올 때마다 창이 처음부터 다시 시작해, keepalive를 주기보다 자주 보내는
-        # client는 영원히 재검증되지 않는다(logout/TTL이 살아 있는 소켓에 적용되지 않음).
-        deadline = _next_reauth_deadline(loop)
-        while True:
-            # wait_for가 아니라 wait를 쓴다: timeout이 나도 recv_task를 취소하지 않으므로
-            # websockets의 recv()를 반복 취소하는 위험이 없다.
-            done, _ = await asyncio.wait(
-                {recv_task}, timeout=max(0.0, deadline - loop.time())
+        logger.debug("WS /ws/status connection assigned request_id=%s", current_request_id())
+        granted, context = await _authorize_with_limit(websocket)
+        if not granted:
+            await _accept_and_close(
+                websocket, code=WS_CLOSE_TRY_AGAIN_LATER, reason="TRY_AGAIN_LATER"
             )
+            return
+        if context is None:
+            await _accept_and_close(
+                websocket, code=WS_CLOSE_AUTH_REQUIRED, reason="AUTH_REQUIRED"
+            )
+            return
 
-            if recv_task in done:
-                message = recv_task.result()
-                if message["type"] == "websocket.disconnect":
-                    break
-                # text/binary 어떤 프레임이든 keepalive로 무시한다.
-                recv_task = asyncio.create_task(websocket.receive())
-                if loop.time() < deadline:
-                    continue
+        if not await _accept_best_effort(websocket):
+            return  # accept 실패 뒤에는 close도 보내지 않는다.
 
-            # deadline 도달 — logout(revoked_at)/TTL 만료를 살아 있는 소켓에도 적용한다.
+        status_manager.register(websocket)
+        close_code = WS_CLOSE_NORMAL
+        recv_task: asyncio.Task | None = None
+        try:
+            status = await asyncio.to_thread(docker_service.get_containers_status)
+            # broadcast와 같은 encoder를 쓴다. send_json은 ensure_ascii=False라 lone
+            # surrogate가 섞이면 최초 프레임에서만 죽어 소켓이 영구히 1011로 끊긴다.
+            initial = encode_status_payload({"type": "status", "containers": status})
+            if initial is not None:
+                await websocket.send_text(initial)
+
+            recv_task = asyncio.create_task(websocket.receive())
+            loop = asyncio.get_running_loop()
+            # 재인가 시점은 monotonic deadline에 고정한다. wait의 timeout을 그대로 쓰면
+            # 프레임이 올 때마다 창이 처음부터 다시 시작해, keepalive를 주기보다 자주
+            # 보내는 client는 영원히 재검증되지 않는다(logout/TTL이 살아 있는 소켓에
+            # 적용되지 않음).
             deadline = _next_reauth_deadline(loop)
-            if utcnow() >= context.expires_at:
-                close_code = WS_CLOSE_AUTH_REQUIRED
-                break
-            refreshed = await asyncio.to_thread(_websocket_authorize, websocket)
-            if refreshed is None:
-                close_code = WS_CLOSE_AUTH_REQUIRED
-                break
-            context = refreshed
-    except WebSocketDisconnect:
-        pass
-    except Exception:
-        logger.exception("WS status handler failed")
-        close_code = WS_CLOSE_INTERNAL_ERROR
+            while True:
+                # wait_for가 아니라 wait를 쓴다: timeout이 나도 recv_task를 취소하지
+                # 않으므로 websockets의 recv()를 반복 취소하는 위험이 없다.
+                done, _ = await asyncio.wait(
+                    {recv_task}, timeout=max(0.0, deadline - loop.time())
+                )
+
+                if recv_task in done:
+                    message = recv_task.result()
+                    if message["type"] == "websocket.disconnect":
+                        break
+                    # text/binary 어떤 프레임이든 keepalive로 무시한다.
+                    recv_task = asyncio.create_task(websocket.receive())
+                    if loop.time() < deadline:
+                        continue
+
+                # deadline 도달 — logout(revoked_at)/TTL 만료를 살아 있는 소켓에도
+                # 적용한다.
+                deadline = _next_reauth_deadline(loop)
+                if utcnow() >= context.expires_at:
+                    close_code = WS_CLOSE_AUTH_REQUIRED
+                    break
+                refreshed = await asyncio.to_thread(_websocket_authorize, websocket)
+                if refreshed is None:
+                    close_code = WS_CLOSE_AUTH_REQUIRED
+                    break
+                context = refreshed
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            logger.exception("WS status handler failed")
+            close_code = WS_CLOSE_INTERNAL_ERROR
+        finally:
+            # 규칙: accept된 WebSocket handler는 명시적 close 없이 return하지 않는다.
+            # finally이므로 CancelledError(BaseException)에서도 등록이 해제된다.
+            status_manager.disconnect(websocket)
+            if recv_task is not None:
+                if not recv_task.done():
+                    recv_task.cancel()
+                # done인 task도 예외가 회수되지 않을 수 있다(ws_logs와 같은 모양으로
+                # 맞춘다).
+                recv_task.add_done_callback(_discard_future_result)
+            await _close_best_effort(websocket, code=close_code)
     finally:
-        # 규칙: accept된 WebSocket handler는 명시적 close 없이 return하지 않는다.
-        # finally이므로 CancelledError(BaseException)에서도 등록이 해제된다.
-        status_manager.disconnect(websocket)
-        if recv_task is not None:
-            if not recv_task.done():
-                recv_task.cancel()
-            # done인 task도 예외가 회수되지 않을 수 있다(ws_logs와 같은 모양으로 맞춘다).
-            recv_task.add_done_callback(_discard_future_result)
-        await _close_best_effort(websocket, code=close_code)
+        request_id_var.reset(token)
 
 
 def _read_next_chunk(stream) -> Any:
@@ -472,102 +518,127 @@ def _open_log_stream(container):
 
 @router.websocket("/ws/logs/{container_id}")
 async def ws_logs(websocket: WebSocket, container_id: str):
-    # 인증을 먼저 본다: container 존재 여부가 미인증 peer에게 새면 안 된다.
-    granted, context = await _authorize_with_limit(websocket)
-    if not granted:
-        await _accept_and_close(
-            websocket, code=WS_CLOSE_TRY_AGAIN_LATER, reason="TRY_AGAIN_LATER"
-        )
-        return
-    if context is None:
-        await _accept_and_close(websocket, code=WS_CLOSE_AUTH_REQUIRED, reason="AUTH_REQUIRED")
-        return
-    if container_id not in MANAGED_CONTAINERS:
-        await _accept_and_close(
-            websocket, code=WS_CLOSE_INVALID_CONTAINER, reason="INVALID_CONTAINER_ID"
-        )
-        return
-
-    if not await _accept_best_effort(websocket):
-        return  # accept 실패 뒤에는 close도 보내지 않는다.
-
-    cname = MANAGED_CONTAINERS[container_id]["name"]
-    close_code = WS_CLOSE_NORMAL
-    log_stream = None                       # finally가 미바인딩 이름을 만지지 않게
-    recv_task: asyncio.Task | None = None
-    read_task: asyncio.Future | None = None
-    loop = asyncio.get_running_loop()
-
+    # GM-16 후속: ws_status와 동일한 이유·동일한 위치 제약이다 — main.py의 HTTP
+    # request-id 미들웨어는 WebSocket scope에서 전혀 실행되지 않으므로 여기서
+    # 직접 발급해야 한다. 반드시 함수의 **첫 줄**이어야 한다: 인증 거부(4401)·
+    # container 미상(4000) 조기 return이 모두 아래 기존 inner try/finally보다
+    # 앞에 있고, outer try/finally가 함수 전체(그 조기 return들과 기존 inner
+    # try/finally 포함)를 감싸야 거절된 연결도 request_id를 받는다. reset()은
+    # 기존 inner finally(log_stream.close, 마지막 _close_best_effort)가 전부
+    # 끝난 뒤 이 outer finally에서 마지막으로 실행된다.
+    request_id = str(uuid.uuid4())
+    token = request_id_var.set(request_id)
     try:
-        container = await asyncio.to_thread(_open_container, cname)
-        log_stream = await asyncio.to_thread(_open_log_stream, container)
+        logger.debug(
+            "WS /ws/logs/%s connection assigned request_id=%s",
+            container_id,
+            current_request_id(),
+        )
+        # 인증을 먼저 본다: container 존재 여부가 미인증 peer에게 새면 안 된다.
+        granted, context = await _authorize_with_limit(websocket)
+        if not granted:
+            await _accept_and_close(
+                websocket, code=WS_CLOSE_TRY_AGAIN_LATER, reason="TRY_AGAIN_LATER"
+            )
+            return
+        if context is None:
+            await _accept_and_close(
+                websocket, code=WS_CLOSE_AUTH_REQUIRED, reason="AUTH_REQUIRED"
+            )
+            return
+        if container_id not in MANAGED_CONTAINERS:
+            await _accept_and_close(
+                websocket, code=WS_CLOSE_INVALID_CONTAINER, reason="INVALID_CONTAINER_ID"
+            )
+            return
 
-        # read와 receive를 각각 한 개만 유지한다. 같은 generator에 next()를 동시에 두 번
-        # 걸면 ValueError: generator already executing이 난다.
-        recv_task = asyncio.create_task(websocket.receive())
-        read_task = loop.run_in_executor(_log_stream_executor, _read_next_chunk, log_stream)
+        if not await _accept_best_effort(websocket):
+            return  # accept 실패 뒤에는 close도 보내지 않는다.
 
-        # ws_status와 같은 재인가 계약을 적용한다. 로그 stdout/stderr는 status보다
-        # 민감할 수 있으므로 revoked/만료 세션이 스트림을 이어받게 두지 않는다.
-        deadline = _next_reauth_deadline(loop)
-        while True:
-            done, _ = await asyncio.wait(
-                {read_task, recv_task},
-                timeout=max(0.0, deadline - loop.time()),
-                return_when=asyncio.FIRST_COMPLETED,
+        cname = MANAGED_CONTAINERS[container_id]["name"]
+        close_code = WS_CLOSE_NORMAL
+        log_stream = None                       # finally가 미바인딩 이름을 만지지 않게
+        recv_task: asyncio.Task | None = None
+        read_task: asyncio.Future | None = None
+        loop = asyncio.get_running_loop()
+
+        try:
+            container = await asyncio.to_thread(_open_container, cname)
+            log_stream = await asyncio.to_thread(_open_log_stream, container)
+
+            # read와 receive를 각각 한 개만 유지한다. 같은 generator에 next()를 동시에
+            # 두 번 걸면 ValueError: generator already executing이 난다.
+            recv_task = asyncio.create_task(websocket.receive())
+            read_task = loop.run_in_executor(
+                _log_stream_executor, _read_next_chunk, log_stream
             )
 
-            # 재인가를 send보다 먼저 본다. 뒤에 두면 deadline이 지난 iteration에서
-            # 폐기된 세션에 로그 chunk를 한 번 더 흘려보낸다.
-            if loop.time() >= deadline:
-                deadline = _next_reauth_deadline(loop)
-                if utcnow() >= context.expires_at:
-                    close_code = WS_CLOSE_AUTH_REQUIRED
-                    break
-                refreshed = await asyncio.to_thread(_websocket_authorize, websocket)
-                if refreshed is None:
-                    close_code = WS_CLOSE_AUTH_REQUIRED
-                    break
-                context = refreshed
-
-            if recv_task in done:
-                message = recv_task.result()
-                if message["type"] == "websocket.disconnect":
-                    break            # idle container에서도 client 종료를 관측한다
-                recv_task = asyncio.create_task(websocket.receive())
-
-            if read_task in done:
-                chunk = read_task.result()
-                if chunk is _EOF:
-                    # 기존 {"error": ...} envelope을 유지해 프론트 변경을 강제하지 않는다.
-                    await websocket.send_json({"error": "로그 스트림이 종료되었습니다."})
-                    break
-                await websocket.send_json({"log": chunk.decode("utf-8", errors="ignore")})
-                read_task = loop.run_in_executor(
-                    _log_stream_executor, _read_next_chunk, log_stream
+            # ws_status와 같은 재인가 계약을 적용한다. 로그 stdout/stderr는 status보다
+            # 민감할 수 있으므로 revoked/만료 세션이 스트림을 이어받게 두지 않는다.
+            deadline = _next_reauth_deadline(loop)
+            while True:
+                done, _ = await asyncio.wait(
+                    {read_task, recv_task},
+                    timeout=max(0.0, deadline - loop.time()),
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-    except WebSocketDisconnect:
-        pass
-    except Exception:
-        logger.exception("Error streaming logs for %s", container_id)
-        close_code = WS_CLOSE_INTERNAL_ERROR
-        with contextlib.suppress(Exception):
-            await websocket.send_json({"error": "로그 스트림을 열지 못했습니다."})
+
+                # 재인가를 send보다 먼저 본다. 뒤에 두면 deadline이 지난 iteration에서
+                # 폐기된 세션에 로그 chunk를 한 번 더 흘려보낸다.
+                if loop.time() >= deadline:
+                    deadline = _next_reauth_deadline(loop)
+                    if utcnow() >= context.expires_at:
+                        close_code = WS_CLOSE_AUTH_REQUIRED
+                        break
+                    refreshed = await asyncio.to_thread(_websocket_authorize, websocket)
+                    if refreshed is None:
+                        close_code = WS_CLOSE_AUTH_REQUIRED
+                        break
+                    context = refreshed
+
+                if recv_task in done:
+                    message = recv_task.result()
+                    if message["type"] == "websocket.disconnect":
+                        break            # idle container에서도 client 종료를 관측한다
+                    recv_task = asyncio.create_task(websocket.receive())
+
+                if read_task in done:
+                    chunk = read_task.result()
+                    if chunk is _EOF:
+                        # 기존 {"error": ...} envelope을 유지해 프론트 변경을 강제하지
+                        # 않는다.
+                        await websocket.send_json({"error": "로그 스트림이 종료되었습니다."})
+                        break
+                    await websocket.send_json({"log": chunk.decode("utf-8", errors="ignore")})
+                    read_task = loop.run_in_executor(
+                        _log_stream_executor, _read_next_chunk, log_stream
+                    )
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            logger.exception("Error streaming logs for %s", container_id)
+            close_code = WS_CLOSE_INTERNAL_ERROR
+            with contextlib.suppress(Exception):
+                await websocket.send_json({"error": "로그 스트림을 열지 못했습니다."})
+        finally:
+            if recv_task is not None and not recv_task.done():
+                recv_task.cancel()
+            if read_task is not None:
+                # 실행 중인 blocking read는 취소되지 않는다. 결과/예외만 소비해 경고를
+                # 막는다. 이미 done인 future도 포함해야 한다: disconnect와 read 실패가
+                # 같은 wait에서 함께 끝나면 result()를 읽지 않은 채 break하므로 예외가
+                # 회수되지 않는다.
+                read_task.add_done_callback(_discard_future_result)
+            if log_stream is not None:
+                try:
+                    # docker-py 7.x의 CancellableStream.close()는 소켓을 shutdown해
+                    # next()에 park된 worker thread를 깨운다(그 뒤 __next__가
+                    # StopIteration).
+                    log_stream.close()
+                except Exception:
+                    logger.warning(
+                        "log stream teardown failed for %s", container_id, exc_info=True
+                    )
+            await _close_best_effort(websocket, code=close_code)
     finally:
-        if recv_task is not None and not recv_task.done():
-            recv_task.cancel()
-        if read_task is not None:
-            # 실행 중인 blocking read는 취소되지 않는다. 결과/예외만 소비해 경고를 막는다.
-            # 이미 done인 future도 포함해야 한다: disconnect와 read 실패가 같은 wait에서
-            # 함께 끝나면 result()를 읽지 않은 채 break하므로 예외가 회수되지 않는다.
-            read_task.add_done_callback(_discard_future_result)
-        if log_stream is not None:
-            try:
-                # docker-py 7.x의 CancellableStream.close()는 소켓을 shutdown해
-                # next()에 park된 worker thread를 깨운다(그 뒤 __next__가 StopIteration).
-                log_stream.close()
-            except Exception:
-                logger.warning(
-                    "log stream teardown failed for %s", container_id, exc_info=True
-                )
-        await _close_best_effort(websocket, code=close_code)
+        request_id_var.reset(token)

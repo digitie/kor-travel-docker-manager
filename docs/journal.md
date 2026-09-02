@@ -2,6 +2,47 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-02 — WebSocket 경로 요청 상관관계 ID 공백 해소 (GM-16 후속)
+
+`docs/tasks.md`에 남아 있던 GM-16 후속 항목을 이행했다. `main.py`의
+`@app.middleware("http")`(Starlette `BaseHTTPMiddleware`)는 `scope["type"] !=
+"http"`인 요청을 명시적으로 skip하므로 WebSocket 연결에는 전혀 실행되지 않았다
+— `request_id_var`가 기본값 `"-"`에 머물러 `/ws/status`·`/ws/logs/{id}`의 로그
+줄(특히 4401/1013/4000 거절 로그)이 UI에 노출되는 request id와 상관지어지지
+않았다.
+
+`websocket.py`의 `ws_status`/`ws_logs` 두 handler 모두 **함수 첫 줄**에서
+main.py 미들웨어와 정확히 같은 패턴(`request_id = str(uuid.uuid4()); token =
+request_id_var.set(request_id)`)으로 직접 발급하도록 고쳤다. 두 handler 모두
+shed 검사(1013)·인가 거부(4401)·container 미상(4000, ws_logs만) 조기 return이
+기존 inner try/finally보다 앞에 있어, 새 outer try/finally가 함수 전체(그
+조기 return들과 기존 inner try/finally 전부)를 감싸도록 구조를 바꿨다.
+`request_id_var.reset(token)`은 기존 inner finally(status_manager.disconnect
+/log_stream.close, 마지막 `_close_best_effort`)가 전부 끝난 뒤 이 outer
+finally에서 마지막으로 실행된다 — inner finally 안에서만 reset했다면 조기
+return하는 거절/shed 연결이 inner try에 도달하지 못해 contextvar token이
+새어나갔을 것이다(다음 연결이 이전 연결의 토큰을 reset하는 등 격리가 깨짐).
+
+**명시적 범위 제한(버그 아님)**: `ConnectionManager.broadcast()`와
+`status_broadcast_loop()`는 main.py lifespan에서 단 한 번 시작되는 독립
+asyncio task로, 어느 개별 연결의 request_id_var 컨텍스트 안에도 있지 않다 —
+한 번의 broadcast tick이 여러 연결에 동시에 fan-out되므로 "이 로그의
+request_id"라 부를 단일 연결이 애초에 없다. 이 구조적 한계를 조용히 넘어가지
+않고 두 자리 모두에 그 이유를 설명하는 주석을 남겼다(고치려는 시도는 하지
+않음 — 상관관계가 필요하면 각 연결의 개별 handler가 자기 컨텍스트로 남기는
+로그를 봐야 한다).
+
+`test_ws_contract.py`에 caplog 기반 회귀 테스트 3건을 새로 추가했다(기존
+파일에는 request_id 관련 검증이 전혀 없었다): 거절된(4401) `/ws/status`·
+`/ws/logs/{id}` 연결도 실제 uuid4 request id를 로그에 남기는지, 그리고 연속된
+두 `/ws/status` 연결이 서로 다른 id를 받는지(격리 — token 누수 시 값이
+재사용되거나 크래시함). mutation-test로 두 handler 각각에서
+`request_id_var.set()`을 함수 첫 줄이 아니라 `_accept_best_effort()` 성공
+이후로 옮겨봤고, 해당 새 테스트가 정확히 실패함(거절 경로 로그가 `"-"`로
+남고, 조기 return 시 `token`이 미정의라 outer finally에서
+`UnboundLocalError`)을 확인한 뒤 원래 위치로 되돌렸다. 백엔드 전체 스위트
+1492 passed / 2 skipped, ruff 통과.
+
 ## 2026-09-02 — WAL fallback 경고 once-guard 경합 수정 (48ab0cc2 적대적 리뷰 2인 반영)
 
 바로 아래 항목(`48ab0cc2`, WAL 모드 안전 fallback + `save_metric` to_thread 테스트
