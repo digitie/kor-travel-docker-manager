@@ -2,6 +2,84 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-02 — 소각 판정을 선언에서 관측으로, 실측이 두 번 범위를 넓혔다
+
+앞 항목이 후속으로 남긴 `classification: unclassified` 구멍을 닫았다. 그런데
+이건 이론적 경로가 아니었다 — **고치는 도중 실제 rebuild가 그 구멍을 밟았다.**
+
+### 실측
+
+09:35 UTC rebuild(pinset `cc3c516f`)가 29분 실행 후
+`{"status":"failed","classification":"unclassified"}`로 닫혔다. `stderr.log`는
+**0바이트** — `--json`이 원문을 내지 않는다. journal은 없고
+`generation_public_copy`는 `pending_rebuild`. 아무것도 소비하지 않았는데
+launcher는 claim을 유지했다.
+
+비-JSON으로 한 번 더 돌려 원문을 얻었다 — `pinned runtime rebuild Compose build
+command failed (exit 1)`. 후보 이미지 넷이 서 있었고 다음 순서는 `pinvi-web`.
+근본 원인은 PinVi 쪽 의존성 트리 드리프트였다(digitie/pinvi#518): deps
+스테이지가 workspace manifest를 손으로 나열하다 `apps/mobile/package.json`을
+빠뜨렸고, `npm install`이 그 불일치에서 lockfile 트리를 조용히 버렸다.
+**Manager에서 고치던 것과 같은 결함 클래스** — 한 사실이 두 곳에 독립 선언되고
+둘을 묶는 기계가 없다.
+
+### 열거를 두 번 시도하고 두 번 틀렸다
+
+첫 수정은 봉인 밖 지점마다 stage를 붙이는 것이었다. 두 곳을 고친 직후 AST로
+세어 보니 세 번째(`c6c_deployment_lock` 획득 자체)와 네 번째가 나왔다. lock
+획득은 `with` 문으로는 표시조차 불가능하다 — 같은 블록이 `yield`까지 감싸
+journal **이후** 실패도 지나간다.
+
+그래서 선언을 버리고 **관측**으로 갔다. journal 경로를 알게 되면 적어 두고
+실패 시 그 파일의 존재를 본다. 누가 언제 썼든 관측이 답을 주므로 앞으로
+write가 늘어도 판정이 저절로 맞는다.
+
+그런데도 AST 측정에서 `if journal_exists: … else:`를 "resume 검증"으로 읽고
+넘겼다. `else`가 fresh 빌드 경로라는 것 — 이 흐름에서 가장 오래 걸리고 가장
+잘 실패하는 구간이 통째로 봉인 밖이라는 것 — 은 실행이 가르쳐 줬다.
+
+### 적대 리뷰 2인이 이 수정 자체에서 찾은 것
+
+- **관측이 terminal block 게이트보다 늦었다.** 그 게이트는 바로 "이미 소비된
+  후보"를 거절하려고 있는데, 관측 전에 두면 그 거절이 "도달한 적 없음" 통에
+  담겨 **소비된 후보의 claim을 해제**한다. 정확히 반대 방향이었다.
+- **봉인된 실패가 관측을 우회했다.** 봉인 단계는 전부 resume 분기보다 앞에서
+  돌아, journal이 이미 있는 실행에서 봉인 단계가 실패하면 이미 DB를 리셋한
+  후보의 claim이 해제됐다. `postjournal_failure`를 신설해 갈랐다.
+- **테스트가 공허했다.** 초안은 본문을 통째로 stub으로 바꿔 래퍼 3줄만 걸었고,
+  리뷰어의 mutation에서 `observe()` 삭제·게이트 뒤로 이동·`reached()` 대신
+  `journal_path is None` 셋이 **전부 살아남았다.** 진짜 lock 경로를 타는 동작
+  테스트로 대체해 셋 다 잡았다. 정적 AST 테스트는 삭제했다 —
+  `min(observations) < min(writes)`는 1400줄 함수의 어휘적 줄번호 비교라
+  저 mutant를 하나도 잡지 못한다.
+- **중간 커밋 하나가 단독으로는 회귀**였다. 브랜치를 하나로 합쳐 bisect나
+  cherry-pick으로도 그 상태를 밟을 수 없게 했다.
+
+### 2차 리뷰가 다시 mutation으로 구멍을 증명했다
+
+- **`postjournal_failure`가 어떤 테스트에도 걸려 있지 않았다.** CLI의 판정을
+  `False`로 바꿔도 1535건이 전부 통과했다. 그 값을 지우면 resume 실행의 봉인
+  실패가 다시 `prejournal_failure`가 되어, 이미 DB를 리셋한 후보의 claim이
+  원장에서 빠진다 — 그 커밋이 닫으려던 바로 그 결함이다. **같은 커밋에서
+  M-1은 동작 테스트를 받고 M-2는 받지 못했다**는 것이 요점이다.
+- **pinset을 식별한 뒤 경로 계산이 실패하면 해제하고 있었다.** 경로 계산은
+  lifecycle 4개 키 밖(cache-target 10개 · `COMPOSE_PROJECT_NAME` 정규식 ·
+  state root canonical)까지 보는데 그 전에 검증되지 않는다. 규칙을 갈랐다 —
+  **식별 전은 해제, 식별 후는 유지.**
+- **봉인이 오늘의 진단 경로를 막았다.** `candidate_compose_build`를 봉인하면서
+  어느 서비스가 죽었는지가 사라졌다. 오늘 그 정보가 없었다면 PinVi 원인을
+  못 짚었을 것이다. fan-out이 이미 한 곳에 있으므로 그 자리에서 실어 보낸다.
+- **내가 쓴 문서 세 곳이 틀렸다.** 코드가 구현하지 않는 규칙을 안전하지 않은
+  방향으로 단정했고(§9), 파괴적 재실행을 "진단"으로 안내했으며(오늘 내가 실제로
+  그렇게 했다 — 원장에 아무것도 남기지 않고), §8은 존재하지 않는 단언과 틀린
+  lock 순서를 가리키고 있었다.
+
+### 남은 것
+
+재시도 잔여물 수거 job, 런타임 이미지 크기(PinVi 쪽 후속), `environment_admission`
+이 세 지점을 한 이름으로 덮는 것(어느 블록이 닫혔는지 구분되지 않는다),
+`c6c_deployment_lock`이 root `.env` 회전보다 뒤에 잡히는 것.
+
 ## 2026-09-02 — rebuild ledger: 소비하지 않은 후보를 태우던 claim을 해제한다
 
 M05 launcher에 적용했던 감사 렌즈를 형제 `run-pinned-rebuild-once`에 처음 댔다.

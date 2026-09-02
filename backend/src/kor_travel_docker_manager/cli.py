@@ -16,6 +16,8 @@ from kor_travel_docker_manager.services.c6c_deployment import (
 from kor_travel_docker_manager.services.compose_service import (
     PinnedRuntimePrejournalFailure,
     compose_service,
+    pinned_runtime_failed_before_journal,
+    pinned_runtime_journal_was_reached,
 )
 from kor_travel_docker_manager.services.docker_service import docker_service
 from kor_travel_docker_manager.services.legacy_override_retirement import (
@@ -245,11 +247,23 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
             return 2
         result = compose_service.rebuild_pinned_runtime()
     except PinnedRuntimePrejournalFailure as exc:
+        # 봉인 단계는 전부 resume 분기보다 앞에서 돈다. journal이 이미 존재하는
+        # 실행에서 봉인 단계가 실패하면 그 후보는 **이미 소비됐다** — 같은
+        # `prejournal_failure`로 내면 launcher가 그 claim을 해제한다.
         payload = {
             "status": "failed",
-            "classification": "prejournal_failure",
+            "classification": (
+                "postjournal_failure"
+                if pinned_runtime_journal_was_reached(exc)
+                else "prejournal_failure"
+            ),
             "stage": exc.stage,
         }
+        # 후보 Compose 빌드는 서비스가 넷이다. 값은 고정 목록에서만 나오므로
+        # 원문 노출이 아니고, 이것이 없으면 다음 실행이 어느 서비스인지 모른 채
+        # 같은 30분을 다시 쓴다.
+        if exc.service is not None:
+            payload["service"] = exc.service
         if args.json:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
@@ -259,14 +273,22 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
             )
         return 2
     except DeploymentContractError as exc:
+        # 봉인 밖 실패는 원문을 보존하되(운영자가 이유를 봐야 한다)
+        # "이 실행은 journal을 쓰지 않았다"는 사실까지 잃지는 않는다. 그 사실이
+        # `unclassified`로 접히면 launcher가 소비하지 않은 후보를 태운다.
+        # 원문은 여전히 JSON에 넣지 않는다 — 노출 계약은 그대로다.
         if args.json:
-            print(
-                json.dumps(
-                    {"status": "failed", "classification": "unclassified"},
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
+            # stage는 넣지 않는다. 봉인된 실패만 자기 stage를 갖고, 여기 오는 것들은
+            # 봉인 밖이라 안전한 고정 어휘가 없다 — 없는 정밀도를 지어내지 않는다.
+            payload = {
+                "status": "failed",
+                "classification": (
+                    "prejournal_failure"
+                    if pinned_runtime_failed_before_journal(exc)
+                    else "unclassified"
+                ),
+            }
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
             return 2
         print(str(exc), file=sys.stderr)
         return 2

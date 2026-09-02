@@ -120,6 +120,17 @@ def test_prejournal_failure_releases_the_claim_for_retry(tmp_path: Path) -> None
     [
         ("post_journal_failure", 1, {"status": "failed"}),
         ("unknown_classification", 2, {"status": "failed", "classification": "other"}),
+        # 봉인된 실패라도 journal이 이미 있으면 CLI가 이 값을 낸다. launcher는
+        # `prejournal_failure`에서만 해제하므로 여기서도 유지여야 한다.
+        (
+            "postjournal_failure",
+            2,
+            {
+                "status": "failed",
+                "classification": "postjournal_failure",
+                "stage": "external_prerequisites",
+            },
+        ),
         ("unparseable", 2, None),
         # 아래 셋은 해제 술어의 각 연접을 단독으로 판별한다 — 하나만 지워도
         # 잡히도록(적대 리뷰 M-2: 종전 표는 전부 다른 이유로 먼저 걸러졌다).

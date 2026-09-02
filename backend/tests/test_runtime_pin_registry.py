@@ -13,6 +13,7 @@ import os
 import stat
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -806,11 +807,29 @@ def test_rebuild_refuses_a_blocked_pinset_before_touching_anything(
     materialize = Mock()
     lock_entered = False
 
+    # 실제 lock은 `assert_pinned_runtime_rebuild_allowed`와
+    # `validate_c6c_operation_tokens`를 통과한 **검증된** 스냅샷만 넘긴다.
+    # bare `Mock()`을 넘기면 이 지점이 production에서 도달할 수 없는 상태를
+    # 모델링한다 — 게이트보다 앞선 journal 경로 관측이 그 차이를 드러냈다.
+    environment = SimpleNamespace(
+        effective={
+            "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+            "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+            "PINVI_ENVIRONMENT": "production",
+            "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+            "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+            "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+            "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
+            "COMPOSE_PROJECT_NAME": "f1d-blocked-pinset",
+        },
+        env_file_bytes=b"frozen-env" + bytes([10]),
+    )
+
     @contextmanager
     def lock(*, prewrite_admission):
         nonlocal lock_entered
         lock_entered = True
-        prewrite_admission(Mock())
+        prewrite_admission(environment)
         yield (Mock(), Mock(), False)
     monkeypatch.setattr(
         compose_service_module, "_require_pinned_runtime_rebuild_root", lambda: None
@@ -822,9 +841,14 @@ def test_rebuild_refuses_a_blocked_pinset_before_touching_anything(
         compose_service_module, "_pinned_runtime_rebuild_environment_lock", lock
     )
 
-    with pytest.raises(DeploymentContractError, match="missing, stale, or terminal"):
+    with pytest.raises(DeploymentContractError, match="missing, stale, or terminal") as raised:
         compose_service_module.ComposeService().rebuild_pinned_runtime()
 
+    # 이 게이트는 **이미 소비된 후보**를 거절하려고 있다. `prejournal_failure`로
+    # 나가면 launcher가 원장에서 claim을 빼내 그 후보가 다시 실행 가능해진다.
+    # 여기서는 journal 파일이 없으므로 해제가 맞고, journal이 있는 경우는
+    # `test_terminal_block_refusal_does_not_release_a_consumed_candidate`가 건다.
+    assert compose_service_module.pinned_runtime_failed_before_journal(raised.value)
     materialize.assert_not_called()
     # release snapshot과 v6 gate는 회전과 같은 global lock 안에서만 읽는다.
     assert lock_entered
