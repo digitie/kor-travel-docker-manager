@@ -2,6 +2,33 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-02 — frontend 컴포넌트 렌더 테스트 인프라 도입 + 오류 표시 분기 회귀 테스트 (GM-12 후속)
+
+`docs/tasks.md`에 남아 있던 GM-12 항목("컴포넌트 렌더링 테스트 인프라 자체가
+없다")을 이행했다. `jsdom`, `@testing-library/react`/`jest-dom`/`user-event`/`dom`을
+devDependencies로 추가하고(npm이 실제로 해석한 React 18 peer 호환 버전), `vitest.config.mts`의
+`environment`를 `node`→`jsdom`으로, `include`에 `*.test.tsx`를 추가하고
+`setupFiles: ['./src/vitest-setup.ts']`(`@testing-library/jest-dom/vitest` import)를
+달았다. 기존 3개 순수 로직 테스트는 jsdom 아래서도 그대로 통과함을 확인했다.
+
+예상 밖의 블로커: 이 프로젝트의 Vite(vitest가 무설치로 끌어온 8.2.2)는 SSR 모듈
+변환에서 `.tsx`의 JSX를 확장자만으로 인식하지 않아 `@vitejs/plugin-react` 없이는
+테스트 파일 자체가 파싱 에러로 죽었다 — Next.js는 SWC를 쓰므로 이 프로젝트에 원래
+없던 의존성이었다. `@vitejs/plugin-react@6.1.1`을 추가해 해결했다.
+
+`@tanstack/react-query`용 `frontend/src/test-utils.tsx`에 `renderWithQueryClient()`를
+추가하고(테스트마다 새 `QueryClient`, `retry: false`), `SourceStatusPanel`(2건) ·
+`ContainerDetailModal`(2건 + production 은닉 전용 1건) · `AdminSettingsPanel`(3건, 감사
+노트가 지목했던 `loadPublicKeys` 상태 초기화 버그의 현재 수정 동작 회귀 포함) 세 컴포넌트의
+오류 표시 분기에 회귀 테스트 8건을 추가했다. `postJson`/`deleteJson`이 `api.ts` 내부에서
+`apiJson`을 모듈 스코프로 직접 참조해 export만 mock해서는 안 잡히는 함정, `IS_DEV`가
+모듈 최초 평가 시 한 번만 고정되는 상수라 `vi.stubEnv` 검증에 파일 단위 격리 +
+그 파일 안에서의 첫 동적 `import()`가 필요한 함정을 실측으로 확인하고 반영했다. 8건
+전부 mutation-test로 비어있지 않음을 확인(해당 조건부 렌더를 일시적으로 깨고 그
+테스트만 실패 → 정확히 원상복구, `git diff --stat` 0으로 확인). 상세 내역은
+`docs/tasks.md`의 GM-12 완료 항목 참고. 전체 frontend type-check/lint/test(8
+files, 31 passed)/build 통과.
+
 ## 2026-09-02 — docker-targets.yml 스키마 검증 잔여 3건 해소 (GM-11 후속)
 
 `docs/tasks.md`에 남아 있던 GM-11 후속 세 항목을 순서대로 이행했다.
