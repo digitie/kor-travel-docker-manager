@@ -3032,20 +3032,20 @@ def test_preflight_reports_only_allowlisted_diagnostics(monkeypatch, capsys) -> 
     assert "pair_contract_invalid" in leaked
 
 
-def test_rotation_launcher_is_executable_like_its_siblings() -> None:
-    """실행 비트가 없으면 launcher가 **조용히** 무효가 된다.
+def test_installer_executable_set_mirrors_the_git_index() -> None:
+    """설치본의 실행 비트는 **두 곳**이 정한다 — git index와 설치 스크립트다.
 
-    `rotate-pinned-pair`가 `100644`로 들어가 설치본에서 실행되지 않았다(n150에서
-    `test -x`로 실측). 설치 스크립트는 파일을 그대로 복사하므로 index의 mode가
-    곧 운영 mode다.
+    설치 스크립트는 archive의 mode를 신뢰하지 않고 전부 0644로 정규화한 뒤
+    명시 목록만 0755로 되돌린다(trusted install posture, 옳다). 그래서 index에서
+    executable이어도 그 목록에 없으면 설치본에서는 아니다.
 
-    목록을 손으로 두지 않고 **형제와 대조한다**. 셋 다 운영자가 절대 경로로 직접
-    실행하는 root launcher이고, 규약이 바뀌면 형제도 함께 바뀐다. (shebang이
-    있다고 전부 직접 실행되는 것은 아니다 — 이 저장소의 python 스크립트는 venv
-    인터프리터로, `run-pin-request-isolated-e2e`는 스스로 `bash <path>`로
-    호출된다고 적어 뒀다.)
+    2026-09-02에 `rotate-pinned-pair`가 정확히 그렇게 무효가 됐다 — 파일은 있고
+    index는 `100755`인데 설치본은 `-rw-r--r--`였고, launcher는 조용히 실행되지
+    않았다. 이중 선언을 없애지는 않는다(posture가 그 명시성을 요구한다).
+    대신 **index를 정본으로 삼아 미러를 강제한다.**
     """
 
+    import re
     import subprocess
 
     root = Path(__file__).resolve().parents[2]
@@ -3055,13 +3055,24 @@ def test_rotation_launcher_is_executable_like_its_siblings() -> None:
         text=True,
         check=True,
     ).stdout
-    modes = {
-        line.split("	", 1)[1].rsplit("/", 1)[-1]: line.split(" ", 1)[0]
+    indexed = {
+        line.split("	", 1)[1].rsplit("/", 1)[-1]
         for line in listed.splitlines()
-        if line
+        if line and line.split(" ", 1)[0] == "100755"
     }
+    assert indexed, "index에 executable script가 없다 — 이 검사가 공허해졌다"
 
-    siblings = ("run-pinned-rebuild-once", "run-m05-isolated-e2e-once")
-    for name in siblings:
-        assert modes.get(name) == "100755", f"형제 launcher 규약이 바뀌었다: {name}"
-    assert modes.get("rotate-pinned-pair") == modes[siblings[0]]
+    installer = (root / "scripts/install-ktdm-trusted-release").read_text(
+        encoding="utf-8"
+    )
+    granted = set(
+        re.findall(
+            r'chmod 0755 "\$\{STAGING\}/scripts/([^"]+)"',
+            installer,
+        )
+    )
+
+    assert granted == indexed, (
+        "설치 스크립트의 0755 목록이 git index와 다르다 — "
+        f"목록에만: {sorted(granted - indexed)}, index에만: {sorted(indexed - granted)}"
+    )
