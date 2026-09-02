@@ -1105,9 +1105,15 @@ run_source_git archive --format=tar "${revision}" > "${ARCHIVE}"
 /usr/bin/find "${STAGING}" -type d -exec /usr/bin/chmod 0755 {} +
 /usr/bin/find "${STAGING}" -type f -exec /usr/bin/chmod 0644 {} +
 /usr/bin/chmod 0700 "${STAGING}"
+# archive의 mode는 신뢰하지 않는다 — 위에서 전부 0644로 정규화한 뒤 여기서만
+# 되돌린다. 그 posture는 그대로 두되, 이 목록은 **git index의 `100755` 집합과
+# 정확히 같아야 한다.** 2026-09-02에 `rotate-pinned-pair`가 index에서는
+# executable인데 이 목록에 없어, 설치본에서 `-rw-r--r--`로 조용히 무효가 됐다.
+# `test_installer_executable_set_mirrors_the_git_index`가 둘을 결박한다.
 /usr/bin/chmod 0755 "${STAGING}/scripts/install-ktdm-trusted-release"
 /usr/bin/chmod 0755 "${STAGING}/scripts/run-pinned-rebuild-once"
 /usr/bin/chmod 0755 "${STAGING}/scripts/run-m05-isolated-e2e-once"
+/usr/bin/chmod 0755 "${STAGING}/scripts/rotate-pinned-pair"
 
 /usr/bin/printf '%s\n' "${revision}" > "${STAGING}/.ktdm-source-revision"
 /usr/bin/chown root:root "${STAGING}/.ktdm-source-revision"
