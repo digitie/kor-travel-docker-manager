@@ -3030,3 +3030,38 @@ def test_preflight_reports_only_allowlisted_diagnostics(monkeypatch, capsys) -> 
     leaked = capsys.readouterr().out
     assert "/root/secret/path" not in leaked
     assert "pair_contract_invalid" in leaked
+
+
+def test_rotation_launcher_is_executable_like_its_siblings() -> None:
+    """실행 비트가 없으면 launcher가 **조용히** 무효가 된다.
+
+    `rotate-pinned-pair`가 `100644`로 들어가 설치본에서 실행되지 않았다(n150에서
+    `test -x`로 실측). 설치 스크립트는 파일을 그대로 복사하므로 index의 mode가
+    곧 운영 mode다.
+
+    목록을 손으로 두지 않고 **형제와 대조한다**. 셋 다 운영자가 절대 경로로 직접
+    실행하는 root launcher이고, 규약이 바뀌면 형제도 함께 바뀐다. (shebang이
+    있다고 전부 직접 실행되는 것은 아니다 — 이 저장소의 python 스크립트는 venv
+    인터프리터로, `run-pin-request-isolated-e2e`는 스스로 `bash <path>`로
+    호출된다고 적어 뒀다.)
+    """
+
+    import subprocess
+
+    root = Path(__file__).resolve().parents[2]
+    listed = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "-s", "--", "scripts"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    modes = {
+        line.split("	", 1)[1].rsplit("/", 1)[-1]: line.split(" ", 1)[0]
+        for line in listed.splitlines()
+        if line
+    }
+
+    siblings = ("run-pinned-rebuild-once", "run-m05-isolated-e2e-once")
+    for name in siblings:
+        assert modes.get(name) == "100755", f"형제 launcher 규약이 바뀌었다: {name}"
+    assert modes.get("rotate-pinned-pair") == modes[siblings[0]]
