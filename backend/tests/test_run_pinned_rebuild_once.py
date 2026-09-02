@@ -65,15 +65,21 @@ def _tail(launcher: str) -> str:
 
 
 def _run_tail(
-    tmp_path: Path, *, child_status: int, result: object, pinset: str = "a" * 64
+    tmp_path: Path,
+    *,
+    child_status: int,
+    result: object,
+    pinset: str = "a" * 64,
+    output_name: str = "out",
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     ledger = tmp_path / "ledger"
-    ledger.mkdir()
+    ledger.mkdir(exist_ok=True)
     claim = ledger / pinset
-    claim.write_text("{}" + chr(10), encoding="utf-8")
+    if not claim.exists():
+        claim.write_text("{}" + chr(10), encoding="utf-8")
 
-    output = tmp_path / "out"
-    output.mkdir()
+    output = tmp_path / output_name
+    output.mkdir(exist_ok=True)
     body = "" if result is None else json.dumps(result)
 
     tail = _tail(_LAUNCHER.read_text(encoding="utf-8"))
@@ -193,3 +199,36 @@ def test_burn_decision_commands_use_absolute_paths() -> None:
     for command in ("python3", "install", "chown", "chmod", "mv"):
         bare = re.search(r"(?m)^[ ]*" + command + r"[ ]", launcher)
         assert bare is None, f"{command}가 PATH에 의존한다: {bare.group(0) if bare else ''}"
+
+
+def test_repeated_prejournal_failures_preserve_every_record(tmp_path: Path) -> None:
+    """두 번째 prejournal 실패가 첫 기록을 덮어쓰면 안 된다.
+
+    `os.rename`은 POSIX에서 대상을 **조용히 덮어쓴다** — `FileExistsError`로 빈
+    슬롯을 찾는 형태는 동작하지 않는다(실측 확인). 원장은 "이 pinset이 몇 번
+    시도됐는가"의 유일한 증거이므로 기록을 잃으면 감사가 무너진다.
+    """
+
+    pinset = "b" * 64
+    prejournal = {
+        "status": "failed",
+        "classification": "prejournal_failure",
+        "stage": "application_builder",
+    }
+
+    first, claim = _run_tail(tmp_path, child_status=2, result=prejournal, pinset=pinset)
+    assert first.returncode == 2, first.stderr
+    ledger = claim.parent
+    assert sorted(item.name for item in ledger.iterdir()) == [f"{pinset}.prejournal-01"]
+
+    # 같은 원장에 두 번째 시도를 얹는다(새 claim을 쓰고 다시 실패).
+    claim.write_text("{}" + chr(10), encoding="utf-8")
+    second_output = tmp_path / "out2"
+    second_output.mkdir()
+    second, _claim = _run_tail(
+        tmp_path, child_status=2, result=prejournal, pinset=pinset, output_name="out2"
+    )
+    assert second.returncode == 2, second.stderr
+
+    records = sorted(item.name for item in ledger.iterdir())
+    assert records == [f"{pinset}.prejournal-01", f"{pinset}.prejournal-02"], records
