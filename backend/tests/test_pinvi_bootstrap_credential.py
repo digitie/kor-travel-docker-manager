@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import stat
 import uuid
@@ -124,6 +125,67 @@ def test_context_manager_cleans_credential_after_runner_scope(tmp_path: Path) ->
         assert credential.path.is_file()
 
     assert not credential.path.exists()
+
+
+def test_directory_fsync_failure_after_successful_write_does_not_destroy_credential(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """디렉터리 fsync는 durability 보강일 뿐이다 — 이미 쓰기+fsync+stat 검증까지
+    성공한 credential 파일을 그 실패가 파괴해서는 안 된다
+    (`secure_state_file.py`의 `fsync_directory`와 같은 best-effort 계약).
+
+    실제 디렉터리를 깨지 않고 재현하기 위해 ``os.fsync``를 감싸서, 대상 fd가
+    디렉터리인지(``S_ISDIR``)로 구분한다: credential 파일 자신의 fd에 대한
+    fsync(성공해야 함)가 관측된 "이후"의 디렉터리 fsync만 실패시킨다. 그
+    이전(디렉터리 최초 생성 시점)의 디렉터리 fsync는 그대로 성공시켜 준비
+    단계 자체는 건드리지 않는다.
+    """
+
+    state_paths, values = _state_paths(tmp_path)
+    transaction_id = str(uuid.uuid4())
+    real_fsync = os.fsync
+    file_fsync_observed = {"value": False}
+
+    def fake_fsync(fd: int) -> None:
+        try:
+            is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        except OSError:
+            is_directory = False
+        if not is_directory:
+            file_fsync_observed["value"] = True
+            real_fsync(fd)
+            return
+        if file_fsync_observed["value"]:
+            raise OSError(5, "simulated directory fsync failure (no real directory touched)")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fake_fsync)
+    with caplog.at_level(logging.WARNING):
+        credential = create_pinvi_bootstrap_credential(
+            state_paths=state_paths,
+            values=values,
+            transaction_id=transaction_id,
+            email=_EMAIL,
+            password=_PASSWORD,
+        )
+    monkeypatch.setattr(os, "fsync", real_fsync)
+
+    assert credential.path.is_file()
+    assert json.loads(credential.path.read_text(encoding="utf-8")) == {
+        "email": _EMAIL,
+        "password": _PASSWORD,
+    }
+    assert any(
+        "directory fsync failed" in record.getMessage() for record in caplog.records
+    )
+
+    cleanup_pinvi_bootstrap_credential(
+        credential,
+        state_paths=state_paths,
+        values=values,
+    )
 
 
 def test_second_active_transaction_is_never_scavenged_or_deleted(tmp_path: Path) -> None:
@@ -470,3 +532,110 @@ def test_invalid_input_never_reflects_password_in_error(
 
     assert password not in str(caught.value)
     assert password not in repr(caught.value)
+
+
+def test_transaction_directory_fsync_failure_does_not_leak_an_orphan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """디렉터리 **생성** 직후의 fsync 실패가 orphan을 남기면 안 된다.
+
+    `os.mkdir`는 이미 성공했으므로 여기서 raise하면 되돌릴 것이 없는 채로
+    중단되어 빈 `bootstrap/<uuid>/`가 남는다. 그러면
+    `_validate_exact_transaction_contents`가 `entries != [credential.json]`로
+    이후 **모든** orphan 정리를 영구 fail-close한다 — 운영자가 손으로 rmdir
+    하기 전까지 PinVi rebuild가 막힌다(적대 리뷰 2인이 독립 재현).
+
+    기존 fsync 테스트는 credential 파일 fsync가 관측된 **이후**의 디렉터리
+    fsync만 실패시켜 이 시점을 덮지 못했다.
+    """
+
+    state_paths, values = _state_paths(tmp_path)
+    transaction_id = str(uuid.uuid4())
+    real_fsync = os.fsync
+
+    def fail_every_directory_fsync(fd: int) -> None:
+        try:
+            is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        except OSError:
+            is_directory = False
+        if is_directory:
+            raise OSError(5, "simulated directory fsync failure")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fail_every_directory_fsync)
+    with caplog.at_level(logging.WARNING):
+        credential = create_pinvi_bootstrap_credential(
+            state_paths=state_paths,
+            values=values,
+            transaction_id=transaction_id,
+            email=_EMAIL,
+            password=_PASSWORD,
+        )
+    monkeypatch.setattr(os, "fsync", real_fsync)
+
+    # 생성은 성공했고 credential은 쓸 수 있다.
+    assert credential.path.is_file()
+
+    # 그리고 정리가 orphan 없이 끝난다 — 이것이 잠김 사슬의 마지막 고리다.
+    cleanup_pinvi_bootstrap_credential(
+        credential,
+        state_paths=state_paths,
+        values=values,
+    )
+    bootstrap_root = credential.path.parent.parent
+    assert not (bootstrap_root / transaction_id).exists(), (
+        "빈 transaction 디렉터리가 남으면 이후 orphan 정리가 영구 fail-close한다"
+    )
+
+
+def test_cleanup_directory_fsync_failure_still_removes_the_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`unlink`/`rmdir` **직후**의 fsync 실패도 정리를 중단시키면 안 된다.
+
+    unlink는 이미 성공했다(시크릿은 zeroize 후 사라졌다). 여기서 raise하면
+    호출자의 `artifact_removed = True`에 도달하지 못해 `finally`의
+    `_remove_empty_transaction_directory`가 건너뛰어지고, 같은 orphan 잠김
+    사슬이 재현된다.
+    """
+
+    state_paths, values = _state_paths(tmp_path)
+    transaction_id = str(uuid.uuid4())
+    credential = create_pinvi_bootstrap_credential(
+        state_paths=state_paths,
+        values=values,
+        transaction_id=transaction_id,
+        email=_EMAIL,
+        password=_PASSWORD,
+    )
+    bootstrap_root = credential.path.parent.parent
+    assert (bootstrap_root / transaction_id).is_dir()
+
+    real_fsync = os.fsync
+
+    def fail_every_directory_fsync(fd: int) -> None:
+        try:
+            is_directory = stat.S_ISDIR(os.fstat(fd).st_mode)
+        except OSError:
+            is_directory = False
+        if is_directory:
+            raise OSError(5, "simulated directory fsync failure")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fail_every_directory_fsync)
+    with caplog.at_level(logging.WARNING):
+        cleanup_pinvi_bootstrap_credential(
+            credential,
+            state_paths=state_paths,
+            values=values,
+        )
+    monkeypatch.setattr(os, "fsync", real_fsync)
+
+    assert not credential.path.exists()
+    assert not (bootstrap_root / transaction_id).exists(), (
+        "정리가 중단되면 빈 transaction 디렉터리가 남아 rebuild가 막힌다"
+    )

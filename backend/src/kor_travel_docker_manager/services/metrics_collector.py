@@ -12,7 +12,10 @@ import docker
 from docker.errors import NotFound
 
 from kor_travel_docker_manager.services.metrics_service import metrics_service
-from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS
+from kor_travel_docker_manager.services.registry import (
+    MANAGED_CONTAINERS,
+    TARGETS_CONFIG_ERRORS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -212,9 +215,48 @@ class MetricsCollector:
         self._running = False
         self._prev_io: dict[str, tuple[int, int]] = {}
         self._latest_metrics: dict[str, dict[str, Any]] = {}
-        self._container_observations: dict[str, dict[str, Any]] = {
-            key: self._default_observation(key) for key in MANAGED_CONTAINERS
-        }
+        try:
+            self._container_observations: dict[str, dict[str, Any]] = {
+                key: self._default_observation(key) for key in MANAGED_CONTAINERS
+            }
+        except TARGETS_CONFIG_ERRORS:
+            # 잡는 범위는 `TARGETS_CONFIG_ERRORS`다 — 스키마 오류뿐 아니라 중복 키
+            # (`yaml.YAMLError`)와 파일 부재(`OSError`)까지 포함한다. 종전에는
+            # `TargetsConfigError`만 잡아 손편집 시 가장 흔한 두 실수가 그대로
+            # raw traceback으로 샜다(적대 리뷰 2인 실측: 52·61·26줄).
+            # GM-followups(docker-targets.yml 스키마 검증 잔여): 이 생성자는 모듈
+            # 레벨 싱글턴(`metrics_collector = MetricsCollector()`, 이 파일 맨 끝)으로
+            # import 시점에 즉시 실행된다. `MANAGED_CONTAINERS`는 registry.py에서
+            # 이제 지연 계산이라(GM-11 후속) 여기서 처음 실제로 순회하는 순간 config
+            # 검증이 실행되는데, 여기서 그대로 죽으면 이 모듈을 그저 import만 하는
+            # `ktdctl`까지 raw traceback으로 죽는다 — DockerService.__init__의
+            # `_backup_default_config` try/except와 같은 이유로 여기도 fail-open한다.
+            #
+            # 적대적 리뷰 2건(item2-targets-validate 재검토) 반영: 여기서
+            # `logger.error(...)`를 호출하지 않는다. `cli.py`는 로깅을 전혀
+            # 설정하지 않으므로(핸들러가 root logger 어디에도 없다) 실제
+            # fresh 프로세스에서는 `logging.lastResort`가 이 메시지를 형식
+            # 없이 그대로 stderr에 찍는다 — `ktdctl`은 이 싱글턴을
+            # `docker_service` import 체인을 통해 이 생성자에서 바로
+            # 구성하므로, `cli.py`의 `main()`이 잡아 내는 "깔끔한 한 줄"
+            # 바로 앞에 원인이 같은 두 번째 줄이 매번 따라붙어 그 계약을
+            # 깨뜨렸다(리뷰 재현: `KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE`에
+            # 깨진 config를 가리키고 실제 `python -m
+            # kor_travel_docker_manager.cli targets validate`를 fresh
+            # subprocess로 실행하면 stderr 두 줄; 기존 회귀 테스트는 pytest가
+            # 이 모듈을 collection 시점에 이미 정상 config로 import해 둔
+            # 뒤라 이 except 분기 자체가 그 테스트 안에서는 전혀 실행되지
+            # 않아 통과해 버렸다). 관측성은 잃지 않는다 — `_collect_loop`이
+            # 매 tick마다 `collect_metrics()`를 호출하는데 그 안의
+            # `MANAGED_CONTAINERS` 순회가 같은 `TargetsConfigError`를 그대로
+            # 다시 내고, 그 호출은 이미 `except Exception`으로 감싸여 있어
+            # (`_collect_loop` 참고) FastAPI 백엔드가 실제로 수집을 시작한
+            # 뒤에는 (main.py가 구성한 포맷 있는 핸들러로) 조용히 사라지지
+            # 않고 매 tick 로그로 계속 드러난다 — config를 고치기 전까지
+            # 관측 가능한 채로 fail-close된다. 여기서 그 신호를 한 번 더
+            # 앞당겨 내보내는 것은 CLI 계약을 깨뜨리는 비용에 비해 이득이
+            # 없다.
+            self._container_observations = {}
         self._lock = threading.RLock()
         self._collection_runs_total = 0
         self._collection_errors_total = 0

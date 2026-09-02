@@ -1,6 +1,9 @@
 import os
+from collections.abc import Callable, Iterator, Mapping
 from functools import lru_cache
-from typing import Any
+from typing import Any, Final
+
+import yaml
 
 from kor_travel_docker_manager.services.yaml_strict import (
     load_yaml_rejecting_duplicate_keys,
@@ -14,6 +17,26 @@ _REQUIRED_CONTAINER_FIELDS = (
     "connection",
     "expected_ports",
 )
+
+
+class TargetsConfigError(ValueError):
+    """`config/docker-targets.yml` 스키마·참조 무결성 검증 실패 전용 타입.
+
+    적대적 리뷰 2건(item2-targets-validate 재검토) 반영: `cli.py`의 `main()`은
+    이 타입만 잡아 "config가 깨졌으니 깔끔한 한 줄 메시지로 안내"하는 fail-open
+    경로를 태운다. 예전에는 `main()`이 bare `ValueError`를 통째로 잡았는데,
+    `compose_service.py`/`c6c_deployment.py`의 내부 불변식 위반(스테이지 값 오류,
+    재시도 횟수 음수 등, 버그이지 config 오타가 아님)까지 같이 삼켜 "config
+    오류처럼 보이는 exit 1"로 둔갑시킬 위험이 있었다 — 오늘은 그 두 사이트가 이미
+    자기 자신의 좁은 `except`로 먼저 잡혀 실제로 새지는 않지만, 새 명령이 추가될
+    때마다 반복 확인할 근거가 없었다. `ValueError`를 상속하므로 기존
+    `except ValueError:` 호출부(레지스트리 자신의 `resolve_target_name`/
+    `container_id_to_compose_service` 같은 "잘못된 사용자 입력" 오류를 잡던
+    `_cmd_status`/`_cmd_ensure`/`_cmd_action` 등)는 전혀 바뀌지 않는다 — 이
+    서브클래스는 오직 `main()`/`_cmd_targets_validate`/
+    `MetricsCollector.__init__`이 정확히 무엇을 fail-open으로 삼키는지 좁히기
+    위한 것이다.
+    """
 
 
 def get_project_root() -> str:
@@ -38,11 +61,11 @@ def load_targets_config() -> dict[str, Any]:
         config = load_yaml_rejecting_duplicate_keys(f.read()) or {}
 
     if not isinstance(config.get("containers"), dict):
-        raise ValueError("docker target config must define containers")
+        raise TargetsConfigError("docker target config must define containers")
     if not isinstance(config.get("targets"), dict):
-        raise ValueError("docker target config must define targets")
+        raise TargetsConfigError("docker target config must define targets")
     if not isinstance(config.get("dependency_order"), list):
-        raise ValueError("docker target config must define dependency_order")
+        raise TargetsConfigError("docker target config must define dependency_order")
     _validate_targets_config(config, label=os.path.basename(path))
     return config
 
@@ -58,7 +81,7 @@ def _require_list_field(
     if value is None:
         return []
     if not isinstance(value, list):
-        raise ValueError(
+        raise TargetsConfigError(
             f"{label} targets.{target_id}.{field}: must be a list, got "
             f"{type(value).__name__}"
         )
@@ -81,33 +104,33 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
 
     for container_id, spec in containers.items():
         if not isinstance(spec, dict):
-            raise ValueError(f"{label} containers.{container_id}: must be a mapping")
+            raise TargetsConfigError(f"{label} containers.{container_id}: must be a mapping")
         for field in _REQUIRED_CONTAINER_FIELDS:
             if field not in spec:
-                raise ValueError(
+                raise TargetsConfigError(
                     f"{label} containers.{container_id}: missing required field '{field}'"
                 )
 
     seen_aliases: dict[str, str] = {}
     for target_id, spec in targets.items():
         if not isinstance(spec, dict):
-            raise ValueError(f"{label} targets.{target_id}: must be a mapping")
+            raise TargetsConfigError(f"{label} targets.{target_id}: must be a mapping")
 
         for dep in _require_list_field(spec, "depends_on", target_id=target_id, label=label):
             if dep not in targets:
-                raise ValueError(
+                raise TargetsConfigError(
                     f"{label} targets.{target_id}.depends_on: unknown target '{dep}'"
                 )
         for included in _require_list_field(spec, "include", target_id=target_id, label=label):
             if included not in targets:
-                raise ValueError(
+                raise TargetsConfigError(
                     f"{label} targets.{target_id}.include: unknown target '{included}'"
                 )
         for container_id in _require_list_field(
             spec, "containers", target_id=target_id, label=label
         ):
             if container_id not in containers:
-                raise ValueError(
+                raise TargetsConfigError(
                     f"{label} targets.{target_id}.containers: unknown container '{container_id}'"
                 )
 
@@ -116,7 +139,7 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
             normalized = str(alias).strip().lower()
             owner = seen_aliases.get(normalized)
             if owner is not None and owner != target_id:
-                raise ValueError(
+                raise TargetsConfigError(
                     f"{label} targets.{target_id}.aliases: alias '{alias}' already used "
                     f"by target '{owner}'"
                 )
@@ -124,7 +147,7 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
 
     for name in config["dependency_order"]:
         if name not in targets:
-            raise ValueError(f"{label} dependency_order: unknown target '{name}'")
+            raise TargetsConfigError(f"{label} dependency_order: unknown target '{name}'")
 
 
 def _targets() -> dict[str, dict[str, Any]]:
@@ -153,9 +176,49 @@ def _build_aliases() -> dict[str, str]:
     return aliases
 
 
-MANAGED_CONTAINERS: dict[str, dict[str, Any]] = load_targets_config()["containers"]
-MANAGED_TARGETS: dict[str, dict[str, Any]] = _targets()
-TARGET_ALIASES: dict[str, str] = _build_aliases()
+class _LazyMapping(Mapping[str, Any]):
+    """`loader`를 최초 실제 접근(구독/순회/`in`/`.items()` 등) 시점에만 호출하는
+    지연 dict-like 객체.
+
+    module import 시점에는 loader를 실행하지 않으므로, 이 객체를 그저 import만
+    하고 실제로 사용하지 않는 경로(예: `ktdctl --help`가 registry.py를 참조하는
+    다른 모듈을 거쳐 import될 때)는 설정 파일이 깨져 있어도 import 자체는 깨지지
+    않는다. `loader`가 내부적으로 참조하는 `load_targets_config()`가 이미
+    `@lru_cache`이므로 최초 접근 이후 재계산 비용은 없다.
+    """
+
+    def __init__(self, loader: Callable[[], dict[str, Any]]) -> None:
+        self._loader = loader
+
+    def _resolve(self) -> dict[str, Any]:
+        return self._loader()
+
+    def __getitem__(self, key: str) -> Any:
+        return self._resolve()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._resolve())
+
+    def __len__(self) -> int:
+        return len(self._resolve())
+
+    def __repr__(self) -> str:
+        return repr(self._resolve())
+
+
+# `docker-targets.yml`을 읽다 날 수 있는 오류 전체. `TargetsConfigError`만 잡으면
+# **손편집 시 가장 흔한 실수**가 전부 raw traceback으로 샌다 — 중복 키는
+# `yaml.constructor.ConstructorError`(→`yaml.YAMLError`), 들여쓰기 오류는
+# `yaml.scanner.ScannerError`, 파일 부재·권한은 `OSError`이고 셋 다 `ValueError`가
+# 아니다(적대 리뷰 2인 실측: 각각 52·61·26줄 traceback).
+TARGETS_CONFIG_ERRORS: Final = (TargetsConfigError, OSError, yaml.YAMLError)
+
+
+MANAGED_CONTAINERS: Mapping[str, dict[str, Any]] = _LazyMapping(
+    lambda: load_targets_config()["containers"]
+)
+MANAGED_TARGETS: Mapping[str, dict[str, Any]] = _LazyMapping(_targets)
+TARGET_ALIASES: Mapping[str, str] = _LazyMapping(_build_aliases)
 
 
 def resolve_target_name(target: str | None) -> str:

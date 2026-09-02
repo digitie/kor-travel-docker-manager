@@ -17,7 +17,7 @@ mkstemp 기반 atomic write와 디렉터리 fsync가 이 저장소에 여러 벌
 `atomic_write_json`보다 더 강한 보장을 가지므로 치환 대상에서 제외한다 — 억지로
 맞추면 그쪽을 하향 평준화하게 된다. admin_password_service·map_application_300·
 compose_service·pinvi_database_role_credentials·legacy_override_retirement·
-standalone_backup·pinvi_bootstrap_credential의 나머지 mkstemp 자리도 각자 다른
+pinvi_bootstrap_credential의 나머지 mkstemp 자리도 각자 다른
 O_NOFOLLOW/소유권 정책을 갖고 있어(검증 노트가 4가지 혼재를 확인함) 이번 패스에서는
 옮기지 않는다 — 파일마다 그 정책이 실제로 무엇을 지키는지 개별 확인 없이 일괄
 치환하면 조용한 보안 완화가 될 수 있다.

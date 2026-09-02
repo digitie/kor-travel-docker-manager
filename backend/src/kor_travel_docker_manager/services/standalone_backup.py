@@ -31,12 +31,16 @@ import os
 import re
 import stat
 import subprocess
-import tempfile
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+from kor_travel_docker_manager.services.secure_state_file import (
+    atomic_write_bytes,
+    atomic_write_json,
+)
 
 BackupRole = Literal[
     "geo",
@@ -1394,25 +1398,19 @@ def _sha256_file(path: Path) -> str:
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
-    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
-    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, path)
-    finally:
-        if os.path.exists(tmp_name):
-            try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
+    """GM-10 후속: mkstemp+write+fsync+os.replace 인라인 반복을 정본
+    ``atomic_write_bytes``로 옮겼다. hardlink나 교체 전 identity 재검사가 없는
+    평범한 발행이라 그대로 옮겨진다. 옮기기 전에는 디렉터리 fsync가 아예 없었으므로
+    (``dir_fsync`` 기본값 적용) durability만 더해질 뿐 기존 동작을 약화하지 않는다.
+    발행 직후 호출자가 정책 mode로 다시 chmod하므로 여기서는 임시 파일 단계의
+    보수적 기본값(``0o600``)만 준다.
+    """
+
+    atomic_write_bytes(path, data, mode=0o600)
 
 
 def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
-    _atomic_write_bytes(path, json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8") + b"\n")
+    atomic_write_json(path, payload, mode=0o600)
 
 
 def _read_manifest(

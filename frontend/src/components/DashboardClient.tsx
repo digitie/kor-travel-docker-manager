@@ -235,9 +235,14 @@ export default function DashboardClient() {
     refetchInterval: false,
   });
 
-  // `containers`는 target이 "직접 소유한" 목록이 아니다 — depends_on까지 펼쳐진
-  // 전이 폐포이므로 여러 target에서 공유 인프라가 반복된다. 따라서 첫 매치를 쓰면
-  // `dependency_order`가 좁은 것부터 나열된다는 우연에 기대게 된다.
+  // `containers`는 depends_on 전이 폐포에서 기계적으로 유도된 목록이 아니다 —
+  // config/docker-targets.yml에 target마다 손으로 직접 채운 고정 목록이고,
+  // registry.py의 `_validate_targets_config`는 그 목록이 서로 참조 무결성을
+  // 지키는지만 검증한다(유도를 시도하지 않는다). 그래서 공유 인프라 컨테이너가
+  // 여러 target의 목록에 각각 독립적으로 반복 등재된다 — 예를 들어 `rustfs`는
+  // `geo`/`conc`/`map`/`pinvi`/`all` target의 `containers`에 전부 손으로
+  // 반복해서 적혀 있다. 따라서 첫 매치를 쓰면 `dependency_order`가 좁은
+  // 것부터 나열된다는 우연에 기대게 된다.
   // (`all` target은 현재 21개 서비스를 담는다 — 순서가 바뀌면 전체 스택 범위가 달라진다.)
   // 순서와 무관하게 **가장 좁은** target을 고른다.
   const detailTarget = useMemo(() => {
@@ -281,9 +286,10 @@ export default function DashboardClient() {
   // 21개 컨테이너가 평면 테이블 하나라 "PinVi 쪽이 지금 정상인가"에 답하려면 행을 눈으로
   // 골라 세야 했다. 앱 단위로 묶어 한 줄 요약을 준다.
   //
-  // `targets.containers`는 target이 직접 소유한 목록이 아니라 depends_on 전이 폐포라
-  // 공용 인프라가 여러 target에 중복 등장한다. 그래서 컨테이너마다 **가장 좁은** target에
-  // 한 번만 배정한다(`detailTarget`이 쓰는 것과 같은 규칙).
+  // `targets.containers`는 depends_on에서 유도된 목록이 아니라 config/docker-targets.yml에
+  // target마다 손으로 직접 채운 고정 목록이라(위 `detailTarget` 주석 참고), 공용 인프라가
+  // 여러 target의 목록에 각각 독립적으로 반복 등재된다. 그래서 컨테이너마다 **가장 좁은**
+  // target에 한 번만 배정한다(`detailTarget`이 쓰는 것과 같은 규칙).
   const containerGroups = useMemo(() => {
     const groups = new Map<string, { label: string; containers: ContainerStatus[] }>();
     for (const container of displayContainers) {

@@ -12,9 +12,11 @@ uvicorn이 403을 보낼지 101을 보낼지는 이 시퀀스의 첫 메시지 t
 import asyncio
 import contextlib
 import datetime
+import logging
 import os
 import threading
 import time
+import uuid
 from unittest.mock import patch
 
 import pytest
@@ -782,3 +784,78 @@ def test_read_next_chunk_returns_eof_sentinel():
     assert ws_mod._read_next_chunk(stream) == b"a\n"
     assert ws_mod._read_next_chunk(stream) is ws_mod._EOF
     assert ws_mod._read_next_chunk(stream) is ws_mod._EOF
+
+
+# --- WS request-id 상관관계 (GM-16 후속) ---------------------------------------------------
+#
+# main.py의 `@app.middleware("http")` request-id 미들웨어는 Starlette
+# BaseHTTPMiddleware라 `scope["type"] != "http"`인 WebSocket 연결에서는 전혀 실행되지
+# 않는다 — request_id_var가 기본값 "-"에 머문 채 WS 로그가 UI에 노출되는 request id와
+# 상관지어지지 않는다. 아래 테스트는 handler가 함수 **첫 줄**에서 직접 발급하고, 거절된
+# (조기 return하는) 연결도 예외 없이 실제 id를 받는지를 검증한다 — accept 이후로만
+# 발급하면 바로 이 조기 return 경로들이 공백으로 남기 때문이다.
+
+
+def _debug_records(caplog, *, startswith: str) -> list[logging.LogRecord]:
+    return [
+        r
+        for r in caplog.records
+        if r.name == ws_mod.logger.name and r.getMessage().startswith(startswith)
+    ]
+
+
+def test_ws_status_rejected_connection_logs_a_real_request_id(caplog):
+    """AUTH_REQUIRED(4401)로 거절되는 연결도 "-" 아닌 실제 request id를 받아야 한다.
+
+    거절 분기(granted/context 검사)는 기존 inner try/finally보다 앞에서 return한다.
+    request_id_var.set()을 함수 첫 줄이 아니라 accept() 성공 이후로 옮기면 이 경로는
+    발급 자체를 건너뛰어 "-"가 그대로 로그에 남는다.
+    """
+    caplog.set_level(logging.DEBUG, logger=ws_mod.logger.name)
+
+    sent = drive_websocket("/api/v1/ws/status", headers=[ORIGIN_HEADER])
+
+    assert sent[-1]["code"] == ws_mod.WS_CLOSE_AUTH_REQUIRED, "거절 시나리오 자체가 깨졌다"
+    records = _debug_records(caplog, startswith="WS /ws/status connection assigned")
+    assert len(records) == 1, f"request-id 발급 로그가 안 보인다: {caplog.records}"
+    (logged_id,) = records[0].args
+    assert logged_id != "-", "거절된 연결의 request_id가 기본값 그대로다"
+    uuid.UUID(logged_id)  # 형식 검증 — 실제로 발급된 uuid4여야 한다
+
+
+def test_ws_logs_rejected_connection_logs_a_real_request_id(caplog):
+    """ws_logs의 AUTH_REQUIRED 거절도 동일하게 실제 request id를 받아야 한다.
+
+    container 존재 여부 검사보다도 앞선 인증 거부 분기라, 이 경로가 새면 ws_logs의
+    모든 조기 return 분기(1013/4401/4000)가 함께 새는 셈이다.
+    """
+    caplog.set_level(logging.DEBUG, logger=ws_mod.logger.name)
+    valid_id = next(iter(MANAGED_CONTAINERS))
+
+    sent = drive_websocket(f"/api/v1/ws/logs/{valid_id}", headers=[ORIGIN_HEADER])
+
+    assert sent[-1]["code"] == ws_mod.WS_CLOSE_AUTH_REQUIRED, "거절 시나리오 자체가 깨졌다"
+    records = _debug_records(caplog, startswith=f"WS /ws/logs/{valid_id} connection assigned")
+    assert len(records) == 1, f"request-id 발급 로그가 안 보인다: {caplog.records}"
+    container_arg, logged_id = records[0].args
+    assert container_arg == valid_id
+    assert logged_id != "-", "거절된 연결의 request_id가 기본값 그대로다"
+    uuid.UUID(logged_id)
+
+
+def test_ws_status_connection_ids_are_isolated_between_connections(caplog):
+    """연속된 두 연결(둘 다 거절됨)이 서로 다른 request id를 받아야 한다.
+
+    같은 값이 반복되면 발급이 아니라 이전 연결에서 reset되지 않고 새어나온 값을
+    재사용하고 있다는 뜻이다 — 로그 상관관계가 연결별로 격리되지 않는다.
+    """
+    caplog.set_level(logging.DEBUG, logger=ws_mod.logger.name)
+
+    drive_websocket("/api/v1/ws/status", headers=[ORIGIN_HEADER])
+    drive_websocket("/api/v1/ws/status", headers=[ORIGIN_HEADER])
+
+    records = _debug_records(caplog, startswith="WS /ws/status connection assigned")
+    assert len(records) == 2
+    first_id, second_id = (r.args[0] for r in records)
+    assert first_id != "-" and second_id != "-"
+    assert first_id != second_id, "두 연결이 같은 request_id를 공유했다 — token이 새고 있다"

@@ -6,7 +6,7 @@ import uuid
 from unittest.mock import Mock, patch
 
 import pytest
-from fastapi import WebSocketDisconnect
+from fastapi import HTTPException, WebSocketDisconnect
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -172,6 +172,12 @@ def test_login_rejects_invalid_password_and_records_audit_event():
         json={"username": "admin", "password": "wrong", "next": "/"},
     )
     assert response.status_code == 401
+    # 구조화된 { code, message } 봉투여야 한다 — bare 문자열이면 프런트가 CODE_MESSAGES를
+    # 조회하지 못하고 이 토큰을 그대로 사용자에게 노출한다.
+    body = response.json()["detail"]
+    assert body["code"] == "INVALID_CREDENTIALS"
+    assert isinstance(body["message"], str) and body["message"]
+    assert body["message"] != "INVALID_CREDENTIALS"
 
     events = client.get("/api/v1/admin/login-audit-events?event_type=login").json()
     # 기본 TestClient(client.host="testclient")는 신뢰 프록시가 아니므로 X-Forwarded-For가
@@ -186,6 +192,48 @@ def test_login_rejects_invalid_password_and_records_audit_event():
         and event["client_ip_hash"] == untrusted_hash
     )
     assert denied["client_ip_hash"] != forwarded_hash
+
+
+@patch("kor_travel_docker_manager.api.auth.verify_admin_password")
+def test_login_misconfigured_returns_structured_error_envelope(mock_verify):
+    """AUTH_MISCONFIGURED도 bare 문자열이 아니라 { code, message } 봉투여야 한다.
+
+    /api/v1/auth/login 자체는 세션을 요구하지 않는 로그인 엔드포인트이므로
+    login_client() 없이 미인증 상태로 바로 호출한다."""
+    client.cookies.clear()
+    mock_verify.return_value = "misconfigured"
+
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "whatever", "next": "/"},
+    )
+
+    assert response.status_code == 503
+    body = response.json()["detail"]
+    assert body["code"] == "AUTH_MISCONFIGURED"
+    assert isinstance(body["message"], str) and body["message"]
+    assert body["message"] != "AUTH_MISCONFIGURED"
+
+
+def test_require_session_secret_returns_structured_error_envelope(monkeypatch):
+    """service 계층의 AUTH_MISCONFIGURED도 bare 문자열이 아니라 { code, message } 봉투여야 한다.
+
+    /api/v1/auth/login 경로는 verify_admin_password가 같은 조건을 먼저 걸러내므로
+    이 함수까지 도달하지 않는다 — 그래서 route 레벨 테스트로는 이 지점을 덮지 못한다.
+    create_admin_session의 다른 호출부나 두 검사 사이 TOCTOU 창을 대비해 이 함수를
+    직접 호출해 검증한다."""
+    from kor_travel_docker_manager.services.auth_service import _require_session_secret
+
+    monkeypatch.setenv("KTDM_SESSION_SECRET", "")
+    with pytest.raises(HTTPException) as excinfo:
+        _require_session_secret()
+
+    assert excinfo.value.status_code == 503
+    body = excinfo.value.detail
+    assert isinstance(body, dict)
+    assert body["code"] == "AUTH_MISCONFIGURED"
+    assert isinstance(body["message"], str) and body["message"]
+    assert body["message"] != "AUTH_MISCONFIGURED"
 
 
 def test_client_ip_trusts_forwarded_only_from_trusted_proxy():
@@ -370,6 +418,12 @@ def test_public_api_key_lifecycle(monkeypatch):
 
     missing = client.delete("/api/v1/admin/public-api-keys/not-a-uuid")
     assert missing.status_code == 404
+    # 구조화된 { code, message } 봉투여야 한다 — bare 문자열이면 프런트가 CODE_MESSAGES를
+    # 조회하지 못하고 이 토큰을 그대로 사용자에게 노출한다.
+    missing_body = missing.json()["detail"]
+    assert missing_body["code"] == "PUBLIC_API_KEY_NOT_FOUND"
+    assert isinstance(missing_body["message"], str) and missing_body["message"]
+    assert missing_body["message"] != "PUBLIC_API_KEY_NOT_FOUND"
 
 
 def test_metrics_route_is_open_by_default(monkeypatch):
@@ -1243,6 +1297,12 @@ def test_rate_limited_login_returns_retry_after_header():
     assert resp.status_code == 429
     assert resp.headers.get("retry-after") is not None
     assert int(resp.headers["retry-after"]) >= 1
+    # 구조화된 { code, message } 봉투여야 한다 — bare 문자열이면 프런트가 CODE_MESSAGES를
+    # 조회하지 못하고 이 토큰을 그대로 사용자에게 노출한다.
+    body = resp.json()["detail"]
+    assert body["code"] == "RATE_LIMITED"
+    assert isinstance(body["message"], str) and body["message"]
+    assert body["message"] != "RATE_LIMITED"
 
     _clear()
 
@@ -1773,6 +1833,53 @@ def test_audit_event_request_id_matches_the_triggering_response_header(mock_chan
         "/api/v1/admin/login-audit-events?event_type=admin_password&outcome=succeeded"
     ).json()
     assert events[0]["detail"]["http_request_id"] == triggering_request_id
+
+
+def test_admin_password_rate_limit_returns_structured_error_envelope():
+    """POST /api/v1/admin/password도 로그인과 같은 durable 카운터로 429를 낸다 —
+    RATE_LIMITED가 bare 문자열이 아니라 { code, message } 봉투여야 한다."""
+    import kor_travel_docker_manager.database as _db
+    from kor_travel_docker_manager._time import utcnow as _utcnow
+    from kor_travel_docker_manager.models import LoginAuditEvent
+
+    login_client()
+    client_hash = hashlib.sha256(b"testclient").hexdigest()
+
+    def _clear():
+        with _db.get_db_session() as s:
+            s.query(LoginAuditEvent).filter(
+                LoginAuditEvent.client_ip_hash == client_hash,
+                LoginAuditEvent.audit_event_id.like("admin-pw-ra-fail-%"),
+            ).delete()
+            s.commit()
+
+    with _db.get_db_session() as s:
+        for i in range(5):
+            s.add(
+                LoginAuditEvent(
+                    audit_event_id=f"admin-pw-ra-fail-{i}",
+                    event_type="login",
+                    outcome="denied",
+                    reason="invalid_credentials",
+                    client_ip_hash=client_hash,
+                    occurred_at=_utcnow(),
+                )
+            )
+        s.commit()
+
+    response = client.post(
+        "/api/v1/admin/password",
+        json={"current_password": TEST_ADMIN_PASSWORD, "new_password": "a-new-password-9"},
+    )
+
+    assert response.status_code == 429
+    assert response.headers.get("retry-after") is not None
+    body = response.json()["detail"]
+    assert body["code"] == "RATE_LIMITED"
+    assert isinstance(body["message"], str) and body["message"]
+    assert body["message"] != "RATE_LIMITED"
+
+    _clear()
 
 
 @patch("kor_travel_docker_manager.api.admin.change_admin_password")

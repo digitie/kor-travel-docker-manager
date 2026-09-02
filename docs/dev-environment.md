@@ -43,7 +43,7 @@ poetry install
 설치 후 `ktdctl` CLI를 사용할 수 있다.
 
 ```bash
-poetry run ktdctl targets
+poetry run ktdctl targets list
 poetry run ktdctl srv --build
 poetry run ktdctl status srv
 ```

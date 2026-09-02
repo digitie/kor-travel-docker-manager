@@ -8,6 +8,7 @@ runner가 종료됐음을 확인한 호출자만 같은 transaction을 명시적
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import stat
@@ -25,6 +26,8 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     pinned_runtime_state_paths as canonical_pinned_runtime_state_paths,
 )
+
+logger = logging.getLogger(__name__)
 
 _BOOTSTRAP_DIRECTORY = "bootstrap"
 _CREDENTIAL_FILENAME = "credential.json"
@@ -111,6 +114,12 @@ def create_pinvi_bootstrap_credential(
         finally:
             os.close(descriptor)
 
+        # credential은 이미 쓰기+fsync+stat 검증까지 성공했다(위 try 블록).
+        # 여기부터는 "그 결과가 crash에서도 살아남는가"라는 durability 보강일
+        # 뿐이다. raise하면 아래 `except BaseException`이 파일을 zeroize+unlink
+        # 하는데, 그 정리 자체는 계약상 올바른 fail-close다 — 실제 피해는
+        # 파괴가 아니라 **가용성**이다: rebuild one-shot이 중단되고 그 claim이
+        # 탄다(claim은 명령 이전에 O_EXCL로 쓰인다).
         _fsync_directory_descriptor(transaction_fd)
         _fsync_directory_descriptor(bootstrap_fd)
         creation_complete = True
@@ -633,7 +642,10 @@ def _open_private_subdirectory(
             raise DeploymentContractError(f"{label} is missing") from None
         try:
             os.mkdir(name, mode=0o700, dir_fd=parent_fd)
-            os.fsync(parent_fd)
+            # mkdir는 이미 성공했다. 디렉터리 fsync는 durability 보강일 뿐이라
+            # 여기서 raise하면 만들어진 디렉터리를 되돌리지 못한 채 중단해
+            # orphan을 남긴다 — 그 orphan이 이후 모든 정리를 잠근다(적대 리뷰).
+            _fsync_directory_descriptor(parent_fd)
             before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except OSError as exc:
             raise DeploymentContractError(f"{label} cannot be created") from exc
@@ -672,7 +684,9 @@ def _create_transaction_directory(
         raise DeploymentContractError("PinVi bootstrap credential transaction already exists")
     try:
         os.mkdir(transaction_id, mode=0o700, dir_fd=bootstrap_fd)
-        os.fsync(bootstrap_fd)
+        # 위와 같은 이유로 best-effort다. 여기서 raise하면 방금 만든
+        # transaction 디렉터리가 그대로 남아 orphan reconcile을 영구히 잠근다.
+        _fsync_directory_descriptor(bootstrap_fd)
     except OSError as exc:
         raise DeploymentContractError("PinVi bootstrap transaction cannot be created") from exc
     return _open_private_subdirectory(
@@ -712,6 +726,9 @@ def _remove_empty_transaction_directory(
         raise DeploymentContractError("PinVi bootstrap transaction changed before cleanup")
     try:
         os.rmdir(transaction_id, dir_fd=bootstrap_fd)
+        # rmdir는 이미 성공했다 — 되돌릴 것이 없다. 나머지 세 자리와 대칭으로
+        # best-effort로 둔다(적대 리뷰: 한 모듈 안에서 fsync 실패 처리가 갈리면
+        # 그 자체가 다음 결함의 씨앗이다).
         _fsync_directory_descriptor(bootstrap_fd)
     except OSError as exc:
         raise DeploymentContractError("PinVi bootstrap transaction cannot be cleaned") from exc
@@ -804,6 +821,11 @@ def _zeroize_and_unlink(
         raise DeploymentContractError("PinVi bootstrap credential artifact changed before removal")
     try:
         os.unlink(name, dir_fd=directory_fd)
+        # unlink는 이미 성공했다 — 시크릿은 zeroize 후 사라졌다. 여기서 raise하면
+        # 호출자의 `artifact_removed = True`에 도달하지 못해 `finally`의
+        # `_remove_empty_transaction_directory`가 건너뛰어지고, 빈 transaction
+        # 디렉터리가 남아 이후 모든 orphan 정리가 영구 fail-close한다(적대 리뷰
+        # 2인이 독립 재현). 생성 쪽과 대칭으로 best-effort로 둔다.
         _fsync_directory_descriptor(directory_fd)
     except OSError as exc:
         raise DeploymentContractError("PinVi bootstrap credential artifact cannot be cleaned") from exc
@@ -857,13 +879,33 @@ def _validate_private_file_stat(metadata: os.stat_result) -> None:
 
 
 def _fsync_directory_descriptor(descriptor: int) -> None:
-    # GM-10 후속 확인 필요: 이 함수를 부르는 자리(예: 95번째 줄 부근)는 이미 성공한
-    # credential 파일 생성 뒤에 이 fsync를 호출하는데, 여기서 raise하면 바깥
-    # `except BaseException`이 그 성공한 파일을 zeroize+unlink할 수 있다 —
-    # pinned_runtime_generation.py에서 고친 것보다 더 심한 형태(오탐 보고가 아니라
-    # 실제 파괴)일 수 있다. one-shot 보안 초기화 경로라 개별 검토 없이 이번
-    # 패스에서는 고치지 않았다(docs/tasks.md 후속 항목).
+    """디렉터리 항목 변경을 최선의 노력으로 durable하게 만든다.
+
+    이 모듈의 여섯 호출부는 전부 **이미 성공한 변경 뒤**에 온다 —
+    `os.mkdir`(디렉터리 생성 2곳), credential 파일 write+fsync+stat 검증
+    (2곳), `os.unlink`(zeroize 후), `os.rmdir`. 되돌릴 것이 없는 시점이므로
+    여기서 raise하면 durability 실패가 correctness를 파괴한다:
+
+    - 생성 쪽에서 raise하면 방금 만든 transaction 디렉터리가 그대로 남고,
+    - 삭제 쪽에서 raise하면 호출자의 `artifact_removed = True`에 도달하지
+      못해 `finally`의 `_remove_empty_transaction_directory`가 건너뛰어진다.
+
+    두 경우 모두 **빈 transaction 디렉터리**를 남기고, 그러면
+    `_validate_exact_transaction_contents`가 `entries != [credential.json]`로
+    이후 모든 orphan 정리를 영구 fail-close한다 — 운영자가 손으로 rmdir하기
+    전까지 rebuild가 막힌다(적대 리뷰 2인이 독립적으로 재현).
+
+    이 파일이 실제로 지키는 사후조건은 '컨테이너가 bind-mount로 읽을 수 있는
+    0600 파일이 이 프로세스 수명 동안 존재한다'이지 crash durability가
+    아니다. 정본 규칙은 `services/secure_state_file.fsync_directory`와 같다.
+    """
+
     try:
         os.fsync(descriptor)
     except OSError as exc:
-        raise DeploymentContractError("PinVi bootstrap credential directory fsync failed") from exc
+        logger.warning(
+            "PinVi bootstrap credential directory fsync failed after the "
+            "change it protects had already succeeded; continuing as a "
+            "best-effort durability step: %s",
+            exc,
+        )

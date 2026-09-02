@@ -307,7 +307,20 @@ def _fsync_directory(parent: Path) -> None:
 
 
 def _atomic_write_json(path: Path, payload: Mapping[str, Any], *, mode: int) -> None:
-    """registry의 원자 쓰기를 복제한다 — 그쪽은 private이고 디렉터리 mode 계약이 다르다."""
+    """`replace_existing=True` 전용 교체 쓰기 — **프로덕션 호출자가 없다.**
+
+    GM-10 후속으로 한 차례 정본 `atomic_write_json`으로 옮겼다가 적대 리뷰
+    2인이 되돌리라고 판정했다(PR #300). 이유는 이관 자체의 결함이 아니라
+    **대상이 죽은 코드**이기 때문이다: `replace_existing=True`를 켜는
+    호출자가 저장소에 없고(`api/routes.py`는 기본값을 쓴다), 그 플래그는
+    같은 함수 docstring이 명시한 계약 — *기존 요청을 조용히 덮어쓰지
+    않는다* — 과 정면으로 모순된다. 이관하고 회귀 테스트까지 얹으면 그
+    초록 테스트가 '지원되는 동작'으로 읽혀 감사 붕괴를 부른다.
+
+    살아 있는 경로는 `_exclusive_write_json`(O_CREAT|O_EXCL)이다. 그쪽을
+    건드리지 않는 한 GM-10의 목적(포맷 정의 단일화)은 이 파일에서 달성되지
+    않으므로, 이관 대신 **플래그 자체의 제거**를 후속으로 남긴다.
+    """
 
     parent = path.parent
     _prepare_request_parent(parent)

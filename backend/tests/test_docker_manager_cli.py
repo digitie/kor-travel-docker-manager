@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -2161,3 +2163,246 @@ def test_terminal_seed_refuses_a_single_role_rotation(pin_cli_env, capsys):
         == 2
     )
     assert "atomic Map/PinVi pair" in capsys.readouterr().err
+
+
+# GM-11 후속(docker-targets.yml 스키마 검증 잔여): 아래 fixture와 테스트들은 실제
+# 커밋된 config/docker-targets.yml을 절대 건드리지 않고, 임시 파일 +
+# `KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE` 환경변수 override + `cache_clear()`로만
+# `load_targets_config()`의 배선을 격리해 확인한다(test_registry_targets_config.py의
+# `_isolated_targets_config_cache`와 같은 패턴).
+
+_BROKEN_TARGETS_YAML = """
+containers:
+  geo_db:
+    compose_service: geo-db
+    name: geo_db
+    display_name: Geo DB
+    role: database
+    connection: {}
+    expected_ports: []
+targets:
+  geo:
+    containers: [geo_db]
+    services: [geo-db]
+    depends_on: [typo_target]
+dependency_order: [geo]
+"""
+
+_VALID_TARGETS_YAML = """
+containers:
+  geo_db:
+    compose_service: geo-db
+    name: geo_db
+    display_name: Geo DB
+    role: database
+    connection: {}
+    expected_ports: []
+targets:
+  geo:
+    containers: [geo_db]
+    services: [geo-db]
+dependency_order: [geo]
+"""
+
+
+@pytest.fixture
+def _isolated_targets_config_cache(monkeypatch: pytest.MonkeyPatch):
+    from kor_travel_docker_manager.services import registry as registry_module
+
+    registry_module.load_targets_config.cache_clear()
+    yield
+    monkeypatch.delenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", raising=False)
+    registry_module.load_targets_config.cache_clear()
+
+
+def test_cli_reports_clean_error_for_broken_config_instead_of_traceback(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _isolated_targets_config_cache: None,
+) -> None:
+    """`DIRECT_ENSURE_ALIASES`가 모듈 import 시점에 `list_targets()`를 즉시
+    호출하던 시절에는, 깨진 config면 `ktdctl --help`조차 argparse가 뜨기도
+    전에 raw traceback으로 죽었다. 지금은 그 계산이 `main()`의 dispatch
+    직전으로 미뤄지고 `ValueError`를 감싼 try/except가 깔끔한 한 줄
+    메시지로 바꿔 exit 1로 끝나야 한다."""
+
+    config_path = tmp_path / "docker-targets.yml"
+    config_path.write_text(_BROKEN_TARGETS_YAML, encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--help"])
+
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "depends_on: unknown target 'typo_target'" in err
+    assert "Traceback" not in err
+    assert len(err.strip().splitlines()) == 1
+
+
+def test_real_subprocess_prints_exactly_one_clean_stderr_line_for_broken_config(
+    tmp_path,
+) -> None:
+    """적대적 리뷰 2건(item2-targets-validate 재검토)이 독립적으로 짚은 결함:
+    위 `test_cli_reports_clean_error_...`는 pytest 안에서만 통과했다 — 이
+    테스트 파일이 collection 시점에 `cli.py`를 이미 정상 config로 import해
+    둔 뒤라, `metrics_collector.py` 모듈 레벨 싱글턴(`metrics_collector =
+    MetricsCollector()`)의 생성자가 그 시점에 이미 성공해 버리고, 테스트
+    본문의 `monkeypatch.setenv(...)`는 그 뒤라 이 싱글턴을 다시 만들지
+    않는다 — 그래서 `MetricsCollector.__init__`의 fail-open
+    `except`/`logger.error(...)` 분기 자체가 이 테스트 안에서는 전혀
+    실행되지 않는다. 진짜 `ktdctl` 사용은 매번 fresh 프로세스라 이 분기가
+    반드시 실행되는데, `cli.py`는 로깅을 전혀 설정하지 않으므로(root
+    logger에 handler가 없다) 그 `logger.error(...)`가
+    `logging.lastResort`를 통해 형식 없이 그대로 stderr에 찍혀 `main()`이
+    내는 깔끔한 한 줄 앞에 원인이 같은 두 번째 줄이 따라붙었다. 이 테스트는
+    실제 `python -m kor_travel_docker_manager.cli` fresh subprocess로
+    재현해, pytest의 import/logging-capture 부작용을 우회한다 —
+    `metrics_collector.py`에서 그 `logger.error(...)` 호출을 되살리면(뒤의
+    MUTATION-TEST-TEMP) 이 테스트는 실패해야 하고, 지금은 통과해야 한다."""
+
+    backend_dir = Path(__file__).resolve().parents[1]
+    src_dir = backend_dir / "src"
+    config_path = tmp_path / "docker-targets.yml"
+    config_path.write_text(_BROKEN_TARGETS_YAML, encoding="utf-8")
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(src_dir)
+    env["KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE"] = str(config_path)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "kor_travel_docker_manager.cli", "targets", "validate"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "depends_on: unknown target 'typo_target'" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert len(result.stderr.strip().splitlines()) == 1
+
+
+def test_main_does_not_swallow_unrelated_bare_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """적대적 리뷰 2건(item2-targets-validate 재검토)이 독립적으로 짚은 결함:
+    `main()`의 outer `except`가 bare `ValueError`를 통째로 잡던 시절에는,
+    config 오타와 무관한 내부 불변식 위반(`compose_service.py`/
+    `c6c_deployment.py`의 "stage is invalid"/"attempt count must be
+    positive" 같은 프로그래밍 버그성 assert)까지 같이 삼켜 "config
+    오류인 척하는 exit 1"로 둔갑시킬 수 있었다. `registry.py`의
+    `TargetsConfigError` 서브클래스만 좁혀 잡도록 고친 뒤에는, config
+    검증과 무관한 bare `ValueError`가 실제 예외로 그대로 새 나와야 한다
+    (디버깅 시 원래 stack trace가 보존된다)."""
+
+    from kor_travel_docker_manager import cli as cli_module
+
+    def _boom(args) -> int:
+        raise ValueError("internal invariant broke, not a config typo")
+
+    monkeypatch.setattr(cli_module, "_cmd_targets_list", _boom)
+
+    with pytest.raises(ValueError, match="internal invariant broke, not a config typo"):
+        main(["targets", "list"])
+
+
+def test_cli_targets_validate_prints_ok_on_success(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _isolated_targets_config_cache: None,
+) -> None:
+    config_path = tmp_path / "docker-targets.yml"
+    config_path.write_text(_VALID_TARGETS_YAML, encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+
+    assert main(["targets", "validate"]) == 0
+    assert capsys.readouterr().out.strip() == "OK"
+
+
+def test_cli_targets_validate_prints_error_and_exits_1_on_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _isolated_targets_config_cache: None,
+) -> None:
+    """참고: `main()`이 dispatch 직전에 `_direct_ensure_aliases()`를 호출하므로
+    (0.5절 참고), 깨진 config에서는 `args.func(args)`(= `_cmd_targets_validate`
+    자신의 try/except)에 도달하기도 전에 `main()`의 outer try/except가 먼저
+    같은 `ValueError`를 잡아 `sys.exit(1)`한다 — 그래서 `main([...]) == 1`이
+    아니라 `SystemExit`을 확인한다. 사용자 관측 결과(메시지·exit code)는
+    두 경로 모두 동일하다."""
+
+    config_path = tmp_path / "docker-targets.yml"
+    config_path.write_text(_BROKEN_TARGETS_YAML, encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["targets", "validate"])
+
+    assert excinfo.value.code == 1
+    out = capsys.readouterr()
+    assert out.out.strip() != "OK"
+    assert "depends_on: unknown target 'typo_target'" in out.err
+
+
+def test_cmd_targets_validate_directly_handles_success_and_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    _isolated_targets_config_cache: None,
+) -> None:
+    """`_cmd_targets_validate`를 `main()` 경유 없이 직접 호출해 그 자신의
+    try/except 분기를 검증한다 — `main()`을 통하면 `_direct_ensure_aliases()`가
+    dispatch보다 먼저 같은 `ValueError`를 잡아버려서(위 테스트들처럼 `SystemExit`으로
+    끝난다) 이 함수 자신의 `except ValueError`/`return 1`/`return 0` 분기가
+    실행되지 않는다."""
+
+    import argparse
+
+    from kor_travel_docker_manager.cli import _cmd_targets_validate
+    from kor_travel_docker_manager.services import registry as registry_module
+
+    config_path = tmp_path / "docker-targets.yml"
+    config_path.write_text(_VALID_TARGETS_YAML, encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+
+    assert _cmd_targets_validate(argparse.Namespace()) == 0
+    assert capsys.readouterr().out.strip() == "OK"
+
+    config_path.write_text(_BROKEN_TARGETS_YAML, encoding="utf-8")
+    registry_module.load_targets_config.cache_clear()
+
+    assert _cmd_targets_validate(argparse.Namespace()) == 1
+    out = capsys.readouterr()
+    assert out.out.strip() != "OK"
+    assert "depends_on: unknown target 'typo_target'" in out.err
+
+
+def test_cli_targets_list_preserves_previous_flat_targets_behavior(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`targets`를 `list`/`validate` 서브액션으로 nest했지만, `targets list`의
+    출력 자체는 예전 flat `targets` 명령과 동일해야 한다(실제 커밋된 config
+    사용, target별 요약 한 줄 + `--json` 지원)."""
+
+    assert main(["targets", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "geo:" in out
+    assert "sequence=[" in out
+
+    assert main(["targets", "list", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert any(target["id"] == "geo" for target in payload)
+
+
+def test_cli_targets_without_subaction_is_rejected() -> None:
+    """`pin`과 같은 nested subparser 패턴이므로, sub-action 없이 `ktdctl targets`만
+    호출하면(예전 flat 명령과 달리) argparse가 required=True로 거부해야 한다."""
+
+    with pytest.raises(SystemExit, match="2"):
+        main(["targets"])

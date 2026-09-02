@@ -493,3 +493,5 @@ def test_runtime_rejects_expected_port_that_is_exposed_but_unbound() -> None:
             image_inspects=_image_inspects(expectation),
             network_inspects=_network_inspects(expectation),
         )
+
+

@@ -2,6 +2,313 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-02 — frontend 컴포넌트 렌더 테스트 인프라 도입 + 오류 표시 분기 회귀 테스트 (GM-12 후속)
+
+`docs/tasks.md`에 남아 있던 GM-12 항목("컴포넌트 렌더링 테스트 인프라 자체가
+없다")을 이행했다. `jsdom`, `@testing-library/react`/`jest-dom`/`user-event`/`dom`을
+devDependencies로 추가하고(npm이 실제로 해석한 React 18 peer 호환 버전), `vitest.config.mts`의
+`environment`를 `node`→`jsdom`으로, `include`에 `*.test.tsx`를 추가하고
+`setupFiles: ['./src/vitest-setup.ts']`(`@testing-library/jest-dom/vitest` import)를
+달았다. 기존 3개 순수 로직 테스트는 jsdom 아래서도 그대로 통과함을 확인했다.
+
+예상 밖의 블로커: 이 프로젝트의 Vite(vitest가 무설치로 끌어온 8.2.2)는 SSR 모듈
+변환에서 `.tsx`의 JSX를 확장자만으로 인식하지 않아 `@vitejs/plugin-react` 없이는
+테스트 파일 자체가 파싱 에러로 죽었다 — Next.js는 SWC를 쓰므로 이 프로젝트에 원래
+없던 의존성이었다. `@vitejs/plugin-react@6.1.1`을 추가해 해결했다.
+
+`@tanstack/react-query`용 `frontend/src/test-utils.tsx`에 `renderWithQueryClient()`를
+추가하고(테스트마다 새 `QueryClient`, `retry: false`), `SourceStatusPanel`(2건) ·
+`ContainerDetailModal`(2건 + production 은닉 전용 1건) · `AdminSettingsPanel`(3건, 감사
+노트가 지목했던 `loadPublicKeys` 상태 초기화 버그의 현재 수정 동작 회귀 포함) 세 컴포넌트의
+오류 표시 분기에 회귀 테스트 8건을 추가했다. `postJson`/`deleteJson`이 `api.ts` 내부에서
+`apiJson`을 모듈 스코프로 직접 참조해 export만 mock해서는 안 잡히는 함정, `IS_DEV`가
+모듈 최초 평가 시 한 번만 고정되는 상수라 `vi.stubEnv` 검증에 파일 단위 격리 +
+그 파일 안에서의 첫 동적 `import()`가 필요한 함정을 실측으로 확인하고 반영했다. 8건
+전부 mutation-test로 비어있지 않음을 확인(해당 조건부 렌더를 일시적으로 깨고 그
+테스트만 실패 → 정확히 원상복구, `git diff --stat` 0으로 확인). 상세 내역은
+`docs/tasks.md`의 GM-12 완료 항목 참고. 전체 frontend type-check/lint/test(8
+files, 31 passed)/build 통과.
+
+## 2026-09-02 — docker-targets.yml 스키마 검증 잔여 3건 해소 (GM-11 후속)
+
+`docs/tasks.md`에 남아 있던 GM-11 후속 세 항목을 순서대로 이행했다.
+
+**(1) 지연 계산 + 깔끔한 CLI 오류.** `registry.py`의 `MANAGED_CONTAINERS`/
+`MANAGED_TARGETS`/`TARGET_ALIASES`는 원래 모듈 import 시점에 즉시 계산되는
+plain dict였다 — `load_targets_config()` 자체는 이미 `@lru_cache`였지만, 이
+세 상수의 계산이 top-level 코드라 config가 깨지면 이 모듈을 그저 import만
+해도 죽었다. `collections.abc.Mapping`을 구현하는 `_LazyMapping`으로 바꿔
+`loader`가 최초 실제 접근(구독/순회/`in`/`.items()`)에서만 호출되게 했다 —
+기존 20여 곳의 `MANAGED_CONTAINERS[...]`/`.items()`/`in` 사용부는 전혀 손대지
+않았다(Mapping 프로토콜을 구현하면 이 문법이 그대로 동작한다). `cli.py`의
+`DIRECT_ENSURE_ALIASES`도 모듈 top-level 상수에서 `_direct_ensure_aliases()`
+함수로 옮겨 `main()`의 dispatch 직전에만 호출되게 했고, `main()`의
+`build_parser()`~`args.func(args)` 구간 전체를 `except ValueError`로 감싸
+registry.py의 이미 명확한 검증 메시지를 raw traceback 대신 stderr 한 줄 +
+exit 1로 낸다.
+
+여기서 끝나지 않고 임시 깨진 config로 fresh subprocess(`python -m
+kor_travel_docker_manager.cli --help`)를 실제로 실행해 재현했더니, 별도
+원인이 하나 더 드러났다: `metrics_collector.py` 맨 끝의 모듈 레벨 싱글턴
+`metrics_collector = MetricsCollector()`가 `__init__`에서 `MANAGED_CONTAINERS`를
+`{key: self._default_observation(key) for key in MANAGED_CONTAINERS}`로 즉시
+순회한다 — `cli.py`가 `docker_service`를 top-level import하는 순간(`targets
+validate`나 `pin show`처럼 Docker와 무관한 명령이라도) 이 순회가 실행돼 같은
+문제가 재현됐다. `DockerService.__init__`의 `_backup_default_config`가 이미
+써 온 것과 같은 패턴(생성자에서 config 로딩 실패를 삼키고 로그만 남김)을
+적용해, 그 dict comprehension을 `try/except ValueError`로 감싸 fail-open(빈
+dict로 시작, `logger.error`로 로그 남김)하게 고쳤다. `_collect_loop`가 매
+10초 tick마다 `collect_metrics()`를 부르고 그 안의 `MANAGED_CONTAINERS` 순회가
+같은 예외를 다시 내는데, 이미 `except Exception: logger.error(...)`로 감싸져
+있어 조용히 사라지지 않고 계속 로그로 드러난다 — 관측 가능성을 잃지 않는다.
+
+이 fail-open의 대가로 backend(FastAPI) 프로세스도 이제 깨진 config에서
+import/기동 자체는 막지 않는다. 이것은 GM-11이 "의도적으로" 만들었다고 감사
+기록에 남겼던 "backend 기동도 막는다"는 성질을 이번 후속이 명시적으로
+되돌리는 것이다 — 대신 매 metrics 수집 tick과 실제 target/container 조회가
+필요한 요청에서 같은 오류가 계속 관측 가능하게 다시 난다. `ktdctl`을 위해
+지연 계산을 도입하면서 이 대가도 함께 받아들이는 것이 자연스러운 방향이라고
+판단했다(그대로 두면 `ktdctl`만 고쳐지고 fastAPI 프로세스는 여전히 같은
+싱글턴 경로로 죽었을 것이다).
+
+**(2) `ktdctl targets validate`.** `targets` 서브커맨드를 `pin`과 같은 nested
+subparser 패턴(`targets_subparsers = targets.add_subparsers(dest=
+"targets_action", required=True)`)으로 바꿔 `targets list`(기존 flat `targets`
+동작 그대로, `--json` 포함)와 `targets validate`(성공 시 `OK` 출력 + exit 0,
+실패 시 `ValueError` 메시지를 stderr에 출력 + exit 1)로 나눴다.
+`docs/docker-management.md` 3절의 GM-11 안내를 갱신해 `ktdctl targets
+validate`를 정본 pre-flight 검증 경로로 세우고, 예전 python 한 줄짜리
+워크어라운드는 `ktdctl` 미설치 환경을 위한 대안으로 남겼다. stale 라인 인용
+(`registry.py:135`가 `MANAGED_CONTAINERS = load_targets_config()[...]`의 옛
+top-level 자리를 가리키던 것)도 `registry.py:187-191`(현재 `_LazyMapping`
+인스턴스 세 개가 있는 자리)로 고쳤다. README.md/`docs/dev-environment.md`의
+예전 flat `ktdctl targets` 예시도 `ktdctl targets list`로 맞췄다.
+
+**(3) frontend 주석 정정.** `DashboardClient.tsx`의 두 댓글
+(`detailTarget`/`containerGroups` 자리)이 `target.containers`를 여전히
+"`depends_on` 전이 폐포"로 설명하고 있었다 — GM-11의 `_validate_targets_config`
+docstring이 이미 이 전제가 틀렸다고 확인한 내용이다(모니터링 target이
+`depends_on` 폐포엔 있어도 `containers`엔 없는 것이 반증). 두 댓글을
+"`containers`는 `config/docker-targets.yml`에 target마다 손으로 채운 고정
+목록이고, 참조 무결성만 검증되지 유도되지 않는다"는 정확한 설명으로 고쳤다
+— 근거로 `rustfs`가 `geo`/`conc`/`map`/`pinvi`/`all` target의 `containers`에
+각각 독립적으로 반복 등재돼 있는 실제 config를 인용했다. narrowest-target/
+`기타` 버킷 로직 자체는 이미 이 손 목록 전제와 무관하게 올바르게 동작해서
+변경하지 않았다(댓글만 정정, 동작은 그대로).
+
+`test_docker_manager_cli.py`에 6건(broken-config 종단 확인 1건,
+`_cmd_targets_validate` 직접 호출 성공/실패 1건, through-`main()` 성공/실패
+2건, `targets list` 하위호환 1건, sub-action 없는 `targets` 거부 1건),
+`test_registry_targets_config.py`에 2건(`_LazyMapping`이 생성 시점엔
+`loader`를 부르지 않는다는 계약, `MANAGED_CONTAINERS` 자신이 실제 접근에서만
+예외를 낸다는 계약), `test_prometheus_metrics.py`에 1건(`MetricsCollector()`
+생성이 깨진 config에서도 살아남되 `render_prometheus_metrics()` 같은 실제
+호출 시점 메서드는 여전히 같은 예외를 낸다는 대조)을 추가했다. 새 테스트
+전부 mutation-test로 원복 전 실패를 확인한 뒤 복원했다. 전체 backend 1501
+passed, 2 skipped, ruff 통과. frontend type-check/lint/test/build 전부 통과.
+
+**적대적 리뷰 2건(item2-targets-validate 재검토) 반영.** 두 리뷰가 독립적으로
+같은 Medium 결함을 짚었다: fresh 프로세스(진짜 `ktdctl` 사용)에서 깨진
+config면 stderr에 두 줄이 찍힌다 — `metrics_collector.py`의 모듈 레벨 싱글턴
+생성자가 fail-open하며 남기는 `logger.error(...)`가 `cli.py`가 로깅을 전혀
+설정하지 않아 `logging.lastResort`를 통해 형식 없이 그대로 새고, 바로 뒤에
+`main()`의 깔끔한 한 줄이 따라붙는다. 기존 회귀 테스트(`len(err.strip()
+.splitlines()) == 1`)는 pytest가 이 모듈을 collection 시점에 이미 정상
+config로 import해 둔 뒤라 그 `except` 분기 자체가 테스트 안에서 실행되지
+않아 통과해 버리고 있었다 — 직접 fresh subprocess로 재현해 확인(두 줄).
+`logger.error(...)` 호출을 제거했다: 관측성은 잃지 않는다(`_collect_loop`가
+매 tick마다 같은 예외를 다시 내고 이미 `except Exception`으로 감싸여 있어
+FastAPI 백엔드가 실제로 수집을 시작한 뒤에는 `main.py`가 구성한 포맷 있는
+핸들러로 계속 로그에 드러난다). 새 실제-subprocess 회귀 테스트를 추가해
+pytest의 import/logging-capture 부작용을 우회하고 진짜 stderr를 확인한다.
+
+두 번째 리뷰는 추가로 Medium 하나를 짚었다: `main()`의 outer `except
+ValueError`가 `args.func(args)` 전체(~30개 명령 핸들러)를 감싸, config
+오타와 무관한 내부 불변식 위반(`compose_service.py`/`c6c_deployment.py`의
+"stage is invalid"/"attempt count must be positive" 같은 프로그래밍 버그성
+assert)까지 "config 오류인 척하는 exit 1"로 둔갑시킬 표면적을 남겼다(오늘은
+그 두 사이트가 `_cmd_pinvi_pair` 자신의 더 좁은 기존 `except ValueError`에
+먼저 걸려 실제로 새지는 않지만, 새 명령이 추가될 때마다 그 전제가 계속
+성립한다는 보장이 없다). `registry.py`에 `TargetsConfigError(ValueError)`
+전용 서브클래스를 추가해 스키마/참조 무결성 검증 raise 전부(`load_
+targets_config`/`_validate_targets_config`/`_require_list_field`)를 여기로
+옮기고, `main()`/`_cmd_targets_validate`/`MetricsCollector.__init__`은
+`TargetsConfigError`만 좁혀 잡도록 고쳤다 — `ValueError`를 상속하므로 기존
+`except ValueError:` 호출부(`resolve_target_name`/
+`container_id_to_compose_service`의 "잘못된 사용자 입력" 오류를 잡던
+`_cmd_status`/`_cmd_ensure`/`_cmd_action` 등)는 전혀 바뀌지 않는다. 새
+테스트로 (1) 실제 subprocess에서 stderr가 정확히 한 줄인지, (2) `main()`이
+config와 무관한 bare `ValueError`를 더 이상 삼키지 않는지(monkeypatch로
+명령 핸들러가 그런 예외를 내게 하고 실제로 새 나오는지 확인), (3)
+`_validate_targets_config`가 실제로 `TargetsConfigError` 타입(단순
+`ValueError` 상위 타입 매치가 아니라)을 내는지를 각각 추가했다. 세 건 모두
+mutation-test(고쳤던 코드를 되돌려 새 테스트가 기대한 이유로 실패하는지
+확인한 뒤 복원)로 효력을 확인했다. 리뷰가 짚은 나머지(사전 존재하던 `targets`
+sub-action 필수화로 인한 exit 2 변경)는 의도된 breaking change로 문서·테스트에
+이미 반영돼 있어 손대지 않았다. 전체 backend 1504 passed, 2 skipped, ruff
+통과.
+
+## 2026-09-02 — WebSocket 경로 요청 상관관계 ID 공백 해소 (GM-16 후속)
+
+`docs/tasks.md`에 남아 있던 GM-16 후속 항목을 이행했다. `main.py`의
+`@app.middleware("http")`(Starlette `BaseHTTPMiddleware`)는 `scope["type"] !=
+"http"`인 요청을 명시적으로 skip하므로 WebSocket 연결에는 전혀 실행되지 않았다
+— `request_id_var`가 기본값 `"-"`에 머물러 `/ws/status`·`/ws/logs/{id}`의 로그
+줄(특히 4401/1013/4000 거절 로그)이 UI에 노출되는 request id와 상관지어지지
+않았다.
+
+`websocket.py`의 `ws_status`/`ws_logs` 두 handler 모두 **함수 첫 줄**에서
+main.py 미들웨어와 정확히 같은 패턴(`request_id = str(uuid.uuid4()); token =
+request_id_var.set(request_id)`)으로 직접 발급하도록 고쳤다. 두 handler 모두
+shed 검사(1013)·인가 거부(4401)·container 미상(4000, ws_logs만) 조기 return이
+기존 inner try/finally보다 앞에 있어, 새 outer try/finally가 함수 전체(그
+조기 return들과 기존 inner try/finally 전부)를 감싸도록 구조를 바꿨다.
+`request_id_var.reset(token)`은 기존 inner finally(status_manager.disconnect
+/log_stream.close, 마지막 `_close_best_effort`)가 전부 끝난 뒤 이 outer
+finally에서 마지막으로 실행된다 — inner finally 안에서만 reset했다면 조기
+return하는 거절/shed 연결이 inner try에 도달하지 못해 contextvar token이
+새어나갔을 것이다(다음 연결이 이전 연결의 토큰을 reset하는 등 격리가 깨짐).
+
+**명시적 범위 제한(버그 아님)**: `ConnectionManager.broadcast()`와
+`status_broadcast_loop()`는 main.py lifespan에서 단 한 번 시작되는 독립
+asyncio task로, 어느 개별 연결의 request_id_var 컨텍스트 안에도 있지 않다 —
+한 번의 broadcast tick이 여러 연결에 동시에 fan-out되므로 "이 로그의
+request_id"라 부를 단일 연결이 애초에 없다. 이 구조적 한계를 조용히 넘어가지
+않고 두 자리 모두에 그 이유를 설명하는 주석을 남겼다(고치려는 시도는 하지
+않음 — 상관관계가 필요하면 각 연결의 개별 handler가 자기 컨텍스트로 남기는
+로그를 봐야 한다).
+
+`test_ws_contract.py`에 caplog 기반 회귀 테스트 3건을 새로 추가했다(기존
+파일에는 request_id 관련 검증이 전혀 없었다): 거절된(4401) `/ws/status`·
+`/ws/logs/{id}` 연결도 실제 uuid4 request id를 로그에 남기는지, 그리고 연속된
+두 `/ws/status` 연결이 서로 다른 id를 받는지(격리 — token 누수 시 값이
+재사용되거나 크래시함). mutation-test로 두 handler 각각에서
+`request_id_var.set()`을 함수 첫 줄이 아니라 `_accept_best_effort()` 성공
+이후로 옮겨봤고, 해당 새 테스트가 정확히 실패함(거절 경로 로그가 `"-"`로
+남고, 조기 return 시 `token`이 미정의라 outer finally에서
+`UnboundLocalError`)을 확인한 뒤 원래 위치로 되돌렸다. 백엔드 전체 스위트
+1492 passed / 2 skipped, ruff 통과.
+
+## 2026-09-02 — WAL fallback 경고 once-guard 경합 수정 (48ab0cc2 적대적 리뷰 2인 반영)
+
+바로 아래 항목(`48ab0cc2`, WAL 모드 안전 fallback + `save_metric` to_thread 테스트
+커버리지)을 독립 적대적 리뷰 2인에게 맡겼다. 한 리뷰는 결함 없음으로 판정했고,
+다른 한 리뷰가 Medium 1건을 찾았다.
+
+**Medium(고침)**: `database.py`의 `_wal_fallback_warning_emitted` once-guard가
+"플래그 확인 → `logger.warning()` → 플래그 세팅" 순서로 non-atomic했다. 엔진이
+`connect_args={"check_same_thread": False}`라 connect 이벤트가 FastAPI 스레드풀과
+metrics collector의 `asyncio.to_thread` 양쪽에서 동시에 발생할 수 있는데, 실제
+핸들러(파일/syslog 등 I/O가 있는 핸들러)가 `logger.warning()` 도중 GIL을 놓으면
+그 틈에 다른 스레드가 여전히 "아직 안 남겼음" 상태를 보고 통과해 경고가 여러 번
+찍힐 수 있다는 지적이다 — 리뷰어가 지연 핸들러 + 동시 연결 64개로 11~12건 중복을
+실측 재현했다. 영향은 로그 스팸뿐(모든 연결이 여전히 올바르게 rollback-journal로
+fallback한다)이지만, 코드 자신의 주석("경고를 한 번만 남기고")과 정면으로
+어긋나고, 이 프로젝트가 이미 `disk_usage.py`/`job_runner.py`/`source_status.py`/
+`deployment_readiness.py`에서 쓰는 모듈 전역 상태 보호 관례(`threading.Lock()`)를
+이 새 코드만 건너뛴 것이었다. `_wal_fallback_lock = threading.Lock()`을 추가해
+확인과 세팅(및 `logger.warning()` 호출 자체)을 그 락 안에서 원자적으로 묶었다 —
+락을 쥔 스레드가 로그를 남기는 동안 다른 스레드는 GIL 스케줄링이 아니라 락
+자체에 막혀 대기하므로, 핸들러 속도와 무관하게 항상 정확히 한 번만 남는다.
+
+`test_database.py`에 회귀 테스트
+`test_set_sqlite_wal_mode_warns_only_once_under_concurrent_connections`를
+추가했다: 지연 핸들러(10ms sleep)를 걸고 스레드 32개를 `threading.Barrier`로
+동시에 출발시켜 각자 `:memory:` 연결로 `_set_sqlite_wal_mode`를 호출하는 시행을
+5번 반복하며, 캡처된 경고 총 개수가 시행 횟수(5)와 정확히 같은지 확인한다.
+기존 순차 호출 테스트(같은 스레드에서 두 번 부름)는 이 경합을 전혀 커버하지
+못한다. 단일 시행만으로는 OS 스레드 스케줄링에 따라 non-atomic 버전이 우연히
+안 걸릴 수 있음을 실측으로 확인했다(고치기 전 코드로 단일 시행 3회 중 1회는
+우연히 통과) — 5회 반복으로 바꾸자 non-atomic 버전은 5회 연속 안정적으로 잡혔고,
+고친 코드는 여러 번 반복 실행해도 항상 결정적으로 통과했다. 새 로직을 원래의
+non-atomic 버전으로 되돌려(`MUTATION-TEST-TEMP`) 이 테스트가 실제로 실패하는
+것을 확인한 뒤 정확히 복원해 재통과시켰다.
+
+**Nit(고치지 않음)**: 같은 리뷰가 `test_database.py`의 신규/수정 라인 중 2줄이
+`ruff format` 결과와 다르다고 지적했으나, 리뷰 스스로 확인했듯 저장소 내 84/105
+파일이 이미 `ruff format --check`를 통과하지 못해 이 저장소에서 포맷팅은 애초에
+게이트되지 않는다 — 조치하지 않는다.
+
+전체 backend 테스트(1489 passed, 2 skipped)와 `ruff check`가 모두 깨끗하다.
+`docs/tasks.md`에 남길 후속 항목은 없다 — 두 리뷰의 Critical/High/Medium findings는
+모두 이 라운드에서 해소됐다.
+
+## 2026-09-02 — SQLite WAL 모드 안전 fallback + `save_metric` to_thread 테스트 커버리지 (GM-14 후속 2건 종결)
+
+`docs/tasks.md`에 남아 있던 GM-14 후속 항목 두 개를 모두 처리했다.
+
+**(1) WAL 모드.** `database.py`의 `connect` 리스너는 지금까지 `busy_timeout`
+PRAGMA만 걸고 WAL은 개발 체크아웃이 drvfs/9p 위에 있을 수 있다는 이유로 켜지
+않았다. 이번에 두 번째 `connect` 리스너 `_set_sqlite_wal_mode`를 추가해 매
+연결마다 `PRAGMA journal_mode=WAL`을 시도한 뒤, 그 성패를 예외 여부가 아니라
+`PRAGMA journal_mode` 재조회 값으로 판정한다 — SQLite가 WAL 전환이 안 될 때
+항상 예외를 던지는 게 아니라 조용히 이전 모드를 유지하는 경우가 있기 때문이다
+(실측 확인: `:memory:` DB가 정확히 이 경우이며, 예외 없이 항상 `"memory"`
+모드를 유지한다 — 이번 fallback 경로 테스트의 결정적이고 항상 재현 가능한
+재료로 그대로 썼다). 실제로 WAL이 안 된 경우 경고를 한 번만 남기고(매 연결마다
+스팸하지 않도록 모듈 전역 플래그로 억제) rollback-journal 모드로 계속 진행하며,
+`busy_timeout`은 이 성패와 무관하게 항상 걸린다. `PRAGMA` 실행 자체가
+`OSError`/`sqlite3.OperationalError`를 던지는 경우도 같은 fallback 경로로
+처리한다. `test_database.py`에 기존 `busy_timeout` 3계층 테스트와 같은 구조로
+7개 테스트를 추가했다: 일반 파일 기반 연결에서의 WAL 성공, `:memory:` 기반
+fallback(경고 로그 1건 포함), PRAGMA 자체가 예외를 던지는 경로(dbapi 커넥션을
+흉내 낸 얇은 래퍼로 재현 — `sqlite3.Connection`은 내장 메서드가 read-only
+속성이라 인스턴스에 직접 monkeypatch할 수 없었다), 경고가 여러 연결에 걸쳐도
+한 번만 남는지, 성공/fallback 양쪽에서 `busy_timeout`이 그대로 유지되는지,
+그리고 `event.contains(...)`로 실제 엔진에 올바른 이벤트로 배선됐는지까지
+확인한다. 새 리스너를 통째로 no-op으로 되돌려 5개 테스트가 실제로 실패하는
+것을 먼저 확인했고, "경고 once" 가드만 좁게 제거해도 해당 테스트 하나가
+정확히 그 이유로 실패하는 것도 별도로 확인한 뒤 복원해 재통과시켰다.
+
+**(2) `save_metric` to_thread 커버리지.** `metrics_collector.py`의
+`collect_metrics()`가 `metrics_service.save_metric(...)`을
+`asyncio.to_thread`로 감싸는 부분(GM-14 원 커밋)에 전용 테스트가 없었다 —
+같은 파일의 `cleanup_old_metrics` to_thread 테스트는 `collector._running`을
+미리 `False`로 둬서 Docker client mocking이 필요한 `collect_metrics()` 본문을
+일부러 건드리지 않기 때문이다. `test_prometheus_metrics.py`에 이미 있던
+`_FakeDockerClient`/`_FakeContainer`로 `collect_metrics()`를 end-to-end로 실행하는
+새 테스트를 추가하되, 기존 테스트가 쓰던 no-op `save_metric` monkeypatch 대신
+`asyncio.get_running_loop()`가 `RuntimeError`를 던지는지로 to_thread 워커
+스레드에서 실행됐음을 증명하는 기법(`_collect_loop`의 대응 테스트와 동일 기법)으로
+교체했다. `metrics_collector.py`에서 `asyncio.to_thread` 래핑을 일시적으로 제거해
+이 새 테스트가 실제로 실패하는 것을 확인한 뒤 복원해 재통과를 확인했다.
+
+전체 backend 테스트(1488 passed, 2 skipped)와 `ruff check`가 모두 깨끗하다.
+`docs/tasks.md`의 해당 항목은 완전히 해소돼 제거했다.
+
+## 2026-09-02 — admin-auth-envelope 적대적 리뷰 2인 반영
+
+바로 아래 항목(3d0a740d, `admin.py`/`auth.py` bare-string `HTTPException` 5곳을
+`{code, message}` 구조화 봉투로 바꾼 수정)을 독립 적대적 리뷰 2인에게 맡겼다.
+둘 다 Critical/High는 없었고 Medium은 한 리뷰에서 하나 나왔다.
+
+**Medium(설명으로 종결, 코드 수정 없음)**: `auth.py`의 다섯 곳 중 RATE_LIMITED/
+AUTH_MISCONFIGURED/INVALID_CREDENTIALS 세 곳은 봉투를 구조화해도 `LoginScreen.tsx`가
+`humanizeError`/`CODE_MESSAGES`를 아예 부르지 않고 `err.status`만 보고 하드코딩된
+문구를 쓰므로 로그인 화면에 관측 가능한 차이가 없다는 지적이다. 실제로 확인해보니
+LoginScreen을 그대로 `humanizeError`로 옮기면 **새 회귀**가 생긴다는 것도 함께
+드러났다 — 같은 로그인 흐름의 403 분기(`require_frontend_origin`,
+`auth_service.py:95`)가 여전히 bare 문자열 `"INVALID_ORIGIN"`이고 `CODE_MESSAGES`에도
+없어서, `humanizeError`가 `serverMessage`로 폴백해 지금 잘 나오는 "허용되지 않은
+요청입니다..." 대신 원문 토큰을 그대로 보여주게 된다. 이 리팩터는 `require_frontend_origin`
+봉투화까지 함께 해야 하는 별도 범위라 이번 라운드에서 하지 않고 `docs/tasks.md`에
+후속으로 남겼다.
+
+**Low 2건은 고쳤다.** (1) 두 리뷰 모두 6번째 bare-string `AUTH_MISCONFIGURED`
+자리를 찾았다 — `auth_service.py`의 `_require_session_secret()`(`create_admin_session`
+전용, 지금은 `verify_admin_password`가 로그인 경로에서 먼저 같은 조건을 걸러내
+도달하지 않지만, 두 검사 사이 TOCTOU 창이나 `create_admin_session`의 다른 호출부가
+생기면 노출된다). 같은 `{code, message}` 봉투로 바꾸고, 이 함수를 직접 호출해
+검증하는 회귀 테스트를 추가했다(route 테스트로는 도달하지 않는 지점이라 unit 레벨
+호출이 필요했다). (2) `frontend/src/lib/errors.ts`의 `INVALID_CREDENTIALS`
+문구가 "현재 비밀번호가 일치하지 않습니다"로 비밀번호-변경 폼 전용 문구였는데, 이제
+`auth.py`의 일반 로그인 실패도 같은 코드를 탄다 — `humanizeError`는 코드 매핑이
+서버 메시지보다 우선이라, 이 좁은 문구가 로그인 실패에도 그대로 뜰 여지가 생겼다.
+"현재"를 빼고 두 문맥 모두에서 참인 중립적 문구로 통일했다.
+
+두 수정 모두 MUTATION-TEST-TEMP로 되돌려 새 테스트가 실제로 실패하는 것을 먼저
+확인한 뒤 복원해 재통과를 확인했다.
+
 ## 2026-09-02 — 관측자의 딸꾹질이 후보를 태우던 경로를 닫는다
 
 M05 격리 launcher는 driver 실행 **전**에는 registry 관측 함수의 exit status를 살려
@@ -32,6 +339,73 @@ execution identity·transaction으로 이미 이 launch에 결박한다. 결박�
 이중 선언 후보 7건을 병렬 검증한 결과 6건은 **이미 행동 테스트로 결박**돼 있었다.
 이미 결박된 사실에 텍스트 미러를 얹는 것은 이 저장소가 결함으로 보는 과결박이라
 추가하지 않았다.
+
+## 2026-09-02 — GM-10 이관 적대적 리뷰 반영: compose_service.py 되돌림
+
+바로 아래 항목(PinVi credential 수정 + GM-10 이관 2건)을 독립 적대적 리뷰
+2인에게 맡겼다. 두 리뷰 모두 High/Critical은 없었지만, 한 리뷰가 Medium
+하나를 정확히 잡았다: `compose_service.py`의 `_atomic_restore_compose_source`를
+정본 `atomic_write_bytes`로 옮기면서, os.replace 뒤 디렉터리 fsync 실패
+처리가 strict(uncaught raise)에서 best-effort(무조건 삼킴)로 조용히
+바뀌었다. 이 함수의 유일한 호출자 `_recover_persisted_target_runtime`은
+`except Exception`으로 그 예외를 잡아 `recovery_succeeded=False`를
+보고하는데, 정본의 `fsync_directory`가 그 실패를 삼키면 함수가 정상
+반환해 `ComposePostMutationContractError.recovery_succeeded`가 `True`로
+오보된다 — 하필 사후 뮤테이션 실패를 다루는 안전망 경로에서, rename의
+crash-durability가 실제로는 확인되지 않은 채로다. 같은 세션에서
+`legacy_override_retirement.py`/`pinvi_database_role_credentials.py`의
+`_write_atomic`을 정확히 이 이유로 이관 대상에서 뺐으면서, 같은 논리가
+이 자리에도 적용된다는 것을 놓친 것이었다.
+
+`_atomic_restore_compose_source`를 원래의 strict 인라인 구현(mkstemp+
+write+fsync+os.replace+uncaught 디렉터리 fsync)으로 되돌리고, 새 테스트
+`test_compose_service_atomic_restore.py`를 추가했다 — `os.fsync`를 감싸
+파일 자신의 fsync가 관측된 이후의 디렉터리 fsync만 실패시켜, 그 예외가
+propagate되고(호출자가 실패로 판정할 수 있게) rename 자체는 이미 끝나
+있음(`compose_path`가 새 payload를 담고 있음)을 함께 확인한다.
+mutation-test로 되돌리기 전 버전(정본 경유)이 이 테스트를 통과시키지
+못함을 먼저 확인한 뒤 원복해 재통과를 확인했다.
+
+두 리뷰가 공통으로 지적한 Low 하나(`standalone_backup.py`가 정본
+`atomic_write_json`으로 옮기며 `ensure_ascii=False`→`True`로 조용히
+바뀐 점)는 코드는 그대로 두고 `docs/tasks.md`에 명시적으로 기록했다 —
+`BackupManifest.to_json()`의 필드는 오늘 전부 ASCII라 무해하지만, 향후
+비-ASCII 필드가 추가되면 인코딩이 달라진다는 사실을 남겨야 한다.
+
+전체 백엔드 테스트(1470 passed, 2 skipped)와 ruff가 모두 통과했다.
+
+## 2026-09-02 — PinVi bootstrap credential 디렉터리 fsync 파괴 버그 수정, atomic-write 프리미티브 후속 이관 2건
+
+`pinvi_bootstrap_credential.py`의 `_fsync_directory_descriptor`가 디렉터리
+fsync 실패 시 항상 `DeploymentContractError`를 던지던 결함을 고쳤다.
+`create_pinvi_bootstrap_credential`은 credential 파일을 쓰고 fsync·stat
+검증까지 이미 성공시킨 **뒤**에 이 함수를 두 번 호출해 디렉터리 항목 교체의
+durability만 보강하는데, 여기서 raise하면 바깥 `except BaseException`이
+metadata가 non-None임을 보고 이미 올바르게 쓰인 파일을 zeroize+unlink해
+버렸다 — durability 실패(디렉터리 fsync)가 correctness(파일 내용)를
+파괴하는 형태의 버그였다. `_fsync_directory_descriptor`에 `best_effort`
+파라미터를 추가해 해당 두 호출부만 경고 로그 후 계속 진행하도록 낮췄고,
+삭제 뒤 디렉터리 fsync를 쓰는 나머지 두 자리(`_remove_empty_transaction_directory`,
+`_zeroize_and_unlink`)는 그 시점에 이미 파일이 지워져 있어 파괴할 대상이
+없으므로 기존 raise 동작을 그대로 뒀다. 회귀 테스트는 `os.fsync`를 감싸
+대상 fd가 디렉터리인지로 구분해, credential 파일 자신의 fsync가 관측된
+이후의 디렉터리 fsync만 실패시켜 실제 디렉터리를 건드리지 않고 재현했다.
+`best_effort` 제거 상태로 되돌려 실패를 확인한 뒤 원복해 통과를 재확인했다.
+
+이어서 GM-10 후속으로 남아 있던 mkstemp 자리 9곳을 모두 다시 읽고 개별
+검토했다. `compose_service.py`의 `_atomic_restore_compose_source`와
+`standalone_backup.py`의 `_atomic_write_bytes`/`_atomic_write_json` 2곳은
+os.replace 기반의 평범한 발행이라 정본 `atomic_write_bytes`/`atomic_write_json`으로
+옮겼다. 문서화되지 않았던 10번째 자리 `runtime_pin_request.py`의
+`_atomic_write_json`도 grep으로 발견해 함께 이관했다(그 파일의 인라인
+`_fsync_directory`가 이미 best-effort였어 동작 변화 없음; 이관 전
+`replace_existing=True` 경로가 어떤 테스트에서도 실행되지 않는다는 것을
+발견해 회귀 테스트를 추가했다). 나머지 7곳은 각각 os.replace 직전/후
+identity 재검사, os.link(hardlink) 발행, 또는 디렉터리 fsync 실패를 별도
+durability-uncertain 에러로 승격하는 의도된 strict 계약을 갖고 있어 정본
+시그니처에 맞지 않는다고 판단해 그대로 뒀다 — 각 사유를 `docs/tasks.md`에
+정리했다. 전체 백엔드 테스트(1469 passed, 2 skipped)와 ruff가 모두
+통과했다.
 
 ## 2026-09-01 — GM 트랙 GM-11~GM-20 순차 이행 (P1 7건에 이어 P2 10건 중 9건 완료)
 

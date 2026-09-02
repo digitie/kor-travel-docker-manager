@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 from fastapi.testclient import TestClient
 
 from kor_travel_docker_manager.main import app
@@ -162,6 +163,39 @@ def test_collector_keeps_detailed_resource_observation_and_prometheus_series(mon
     assert 'interface="eth0"' in rendered
 
 
+def test_collect_metrics_persists_save_metric_off_the_event_loop(monkeypatch):
+    """GM-14: collect_metrics()의 `metrics_service.save_metric(...)` 호출도
+    `asyncio.to_thread`로 감싸져 있다(_collect_loop의 cleanup_old_metrics와
+    같은 이유 — 동기 DB 쓰기가 event loop를 막지 않게 하기 위함) — 하지만
+    test_metrics.py의 대응 테스트는 일부러 `collector._running = False`로
+    _collect_loop 본문(=collect_metrics, Docker client mocking 필요)을
+    건드리지 않는다. 여기서는 이 파일에 이미 있는 `_FakeDockerClient`로
+    collect_metrics()를 실제로 실행시키면서, save_metric을 단순 no-op으로
+    몽키패치하는 대신 event loop 위에서 실행되지 않았음을 증명하는
+    capture_loop_state 기법으로 대체해 end-to-end로 검증한다."""
+
+    ran_without_a_running_loop = None
+
+    def capture_loop_state(*args, **kwargs):
+        nonlocal ran_without_a_running_loop
+        try:
+            asyncio.get_running_loop()
+            ran_without_a_running_loop = False
+        except RuntimeError:
+            ran_without_a_running_loop = True
+
+    fake_container = _FakeContainer()
+    fake_client = _FakeDockerClient(fake_container)
+    collector = MetricsCollector()
+
+    collector.set_docker_client_provider(lambda: fake_client)
+    monkeypatch.setattr(metrics_service, "save_metric", capture_loop_state)
+
+    asyncio.run(collector.collect_metrics())
+
+    assert ran_without_a_running_loop is True
+
+
 def test_prometheus_distinguishes_unavailable_exit_code_and_pid_values():
     collector = MetricsCollector()
     container_id = next(iter(MANAGED_CONTAINERS))
@@ -178,3 +212,54 @@ def test_prometheus_distinguishes_unavailable_exit_code_and_pid_values():
         line.startswith("ktdm_container_pids_current{") and f'container_id="{container_id}"' in line
         for line in rendered.splitlines()
     )
+
+
+def test_metrics_collector_construction_survives_broken_targets_config(tmp_path, monkeypatch) -> None:
+    """GM-followups(docker-targets.yml 스키마 검증 잔여): `metrics_collector.py`
+    맨 끝의 `metrics_collector = MetricsCollector()`는 이 모듈이 import되는 순간
+    바로 실행되는 모듈 레벨 싱글턴이다. registry.py의 `MANAGED_CONTAINERS`를
+    지연 계산(`_LazyMapping`)으로 바꿔도, `__init__`이 그 최초 실제 순회를
+    수행하는 자리라면 여전히 import 시점에 config 검증이 실행돼 `ktdctl`처럼
+    이 모듈을 그저 import만 하는 프로세스까지 raw traceback으로 죽는다 — 그래서
+    `__init__` 자신이 `MANAGED_CONTAINERS` 접근 실패를 fail-open(빈 dict로
+    시작)으로 흡수해야 한다(`DockerService.__init__`의 `_backup_default_config`
+    try/except와 같은 이유)."""
+
+    from kor_travel_docker_manager.services import registry as registry_module
+
+    config_path = tmp_path / "docker-targets.yml"
+    config_path.write_text(
+        """
+containers:
+  geo_db:
+    compose_service: geo-db
+    name: geo_db
+    display_name: Geo DB
+    role: database
+    connection: {}
+    expected_ports: []
+targets:
+  geo:
+    containers: [geo_db]
+    services: [geo-db]
+    depends_on: [does_not_exist]
+dependency_order: [geo]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+    registry_module.load_targets_config.cache_clear()
+    try:
+        collector = MetricsCollector()  # 여기서 raise하면 이 테스트 자체가 에러로 죽는다.
+        assert collector._container_observations == {}
+
+        # 대조: `render_prometheus_metrics()`는 생성자와 달리 실제 호출 시점의
+        # 메서드라서 그 안의 MANAGED_CONTAINERS 순회가 같은 ValueError를 그대로
+        # 다시 내는 것이 맞다 — 여기서 흡수해 조용히 빈 결과를 주면 실제 config
+        # 문제를 API 호출자에게 숨기게 된다. import 시점 생성자만 fail-open이어야
+        # 한다는 것의 반증으로 이 대조를 남겨둔다.
+        with pytest.raises(ValueError, match="depends_on: unknown target 'does_not_exist'"):
+            collector.render_prometheus_metrics()
+    finally:
+        monkeypatch.delenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", raising=False)
+        registry_module.load_targets_config.cache_clear()

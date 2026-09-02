@@ -2395,8 +2395,16 @@ def _atomic_restore_compose_source(
     *,
     mode: int,
 ) -> None:
-    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 이 자리는
-    # 개별 소유권 정책 검토 없이 옮기지 않기로 결정돼 아직 남아 있다(docs/tasks.md).
+    # GM-10: services/secure_state_file.py에 이 패턴의 정본이 있다. 한 차례
+    # 정본 `atomic_write_bytes`로 옮겼다가 적대적 리뷰로 되돌렸다(PR #300) — 이
+    # 자리의 디렉터리 fsync 실패는 `_recover_persisted_target_runtime`이
+    # `recovery_succeeded`를 판정하는 유일한 신호원인데, 정본의
+    # `fsync_directory`는 디렉터리 fsync 실패를 무조건 삼킨다(best-effort).
+    # 그러면 os.replace의 crash-durability가 실제로는 확인되지 않았는데도
+    # 이 함수가 정상 반환해 복구가 "성공"으로 보고된다 — 바로 이 이유로
+    # `legacy_override_retirement.py`/`pinvi_database_role_credentials.py`의
+    # `_write_atomic`도 정본으로 옮기지 않았다(docs/tasks.md). 같은 논리를
+    # 이 자리에도 적용해 strict 원본을 유지한다.
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
