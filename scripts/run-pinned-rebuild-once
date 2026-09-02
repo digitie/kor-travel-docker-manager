@@ -7,7 +7,7 @@ if [[ "$#" -ne 2 ]]; then
   exit 2
 fi
 
-if [[ "$(id -u)" != "0" ]]; then
+if [[ "$(/usr/bin/id -u)" != "0" ]]; then
   echo "pinned rebuild launcher must run as root" >&2
   exit 2
 fi
@@ -108,16 +108,16 @@ if [[ ! -d "${parent_dir}" || -L "${parent_dir}" ]]; then
   echo "pinned rebuild output parent is invalid" >&2
   exit 2
 fi
-parent_uid="$(stat -c '%u' "${parent_dir}")"
-parent_mode="$(stat -c '%a' "${parent_dir}")"
+parent_uid="$(/usr/bin/stat -c '%u' "${parent_dir}")"
+parent_mode="$(/usr/bin/stat -c '%a' "${parent_dir}")"
 if [[ "${parent_uid}" != "0" || $((8#${parent_mode} & 022)) -ne 0 ]]; then
   echo "pinned rebuild output parent is not root locked" >&2
   exit 2
 fi
 
-install -d -o root -g root -m 0700 "${output_dir}"
+/usr/bin/install -d -o root -g root -m 0700 "${output_dir}"
 
-python3 -I -S - "${expected_manager_revision}" <<'PY'
+/usr/bin/python3 -I -S - "${expected_manager_revision}" <<'PY'
 import json
 import os
 import pathlib
@@ -185,8 +185,8 @@ if [[ ! "${installed_pinset}" =~ ^[0-9a-f]{64}$ ]]; then
 fi
 
 ledger_dir="/var/lib/kor-travel-docker-manager/pinned-rebuild-once"
-install -d -o root -g root -m 0700 "${ledger_dir}"
-python3 -I -S - "${ledger_dir}" "${installed_pinset}" "${expected_manager_revision}" "${output_dir}" <<'PY'
+/usr/bin/install -d -o root -g root -m 0700 "${ledger_dir}"
+/usr/bin/python3 -I -S - "${ledger_dir}" "${installed_pinset}" "${expected_manager_revision}" "${output_dir}" <<'PY'
 import json
 import os
 import pathlib
@@ -243,6 +243,7 @@ PY
 result_tmp="${output_dir}/.result.json.tmp"
 result_path="${output_dir}/result.json"
 stderr_path="${output_dir}/stderr.log"
+release_marker="${output_dir}/claim-released"
 
 set +e
 /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
@@ -250,18 +251,131 @@ set +e
 status="$?"
 set -e
 
-chown root:root "${result_tmp}" "${stderr_path}"
-chmod 0600 "${result_tmp}" "${stderr_path}"
-mv -T "${result_tmp}" "${result_path}"
+# 소각(=claim 유지)은 기본값으로 두되, **해제만 양성 증거에 건다.** CLI는
+# durable journal 이전에 fail-close하면 result에
+# `classification=prejournal_failure`를 명시한다 — 즉 "이번 실행은 journal을
+# 쓰지 않았다"를 스스로 적어 준다. 종전 launcher는 그 파일을 dict인지만 보고
+# 버렸고, 그래서 `docker pull` 한 번의 rate limit이 회전 사이클 1회를 태웠다.
+#
+# **판정은 result_tmp를 대상으로, chown/chmod/mv 이전에 한다.** 그 셋은
+# `set -e` 아래라 ENOSPC/EIO에서 스크립트를 죽이는데, 디스크가 차서 빌드가
+# prejournal에서 실패한 경우가 바로 그 상황이다 — 재시도가 가장 정당한
+# 순간에 해제가 실행되지 않는다(적대 리뷰 MAJOR-3).
+#
+# stage allowlist는 두지 않는다. `PinnedRuntimePrejournalFailure.__init__`이
+# 이미 같은 집합으로 stage를 검증하므로, launcher 사본은 위험 방향(post-journal을
+# prejournal로 오분류)을 막지 못하고 **좁아지는 방향(= 재시도 가능한 후보 소각)**
+# 만 만든다. 형제 launcher에서 tenant 어휘를 걷어낸 것과 같은 판단이다.
+set +e
+/usr/bin/python3 -I -S - "${result_tmp}" "${ledger_dir}" "${installed_pinset}" "${status}" <<'PY'
+import json
+import os
+import pathlib
+import sys
 
-python3 -I -S - "${result_path}" <<'PY'
+result_path, ledger_root, pinset, child_status = sys.argv[1:5]
+
+if child_status != "2":
+    # prejournal 실패는 CLI가 정확히 2로 낸다. 그 밖의 값은 소비 여부를
+    # 증명하지 못하므로 claim을 유지한다.
+    raise SystemExit(3)
+try:
+    value = json.loads(pathlib.Path(result_path).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(3) from None
+if (
+    not isinstance(value, dict)
+    or value.get("status") != "failed"
+    or value.get("classification") != "prejournal_failure"
+):
+    raise SystemExit(3)
+
+# claim writer와 같은 강도로 원장을 다시 연다 — 사이에 1~2시간이 흐른다.
+try:
+    directory = os.open(
+        ledger_root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    )
+except OSError:
+    raise SystemExit(3) from None
+try:
+    # 시도 상한은 5다. 1회 = 1~2시간 + 이미지 4개 풀 빌드 + 새 output leaf이고
+    # 그 잔여물을 수거하는 job이 없다 — M05에서 복사한 32는 이 워크로드에
+    # 맞지 않는다(적대 리뷰 MAJOR-5).
+    for ordinal in range(1, 6):
+        target = f"{pinset}.prejournal-{ordinal:02d}"
+        try:
+            # `os.rename`은 POSIX에서 대상을 **조용히 덮어쓴다** — 빈 슬롯을
+            # 찾는 형태가 성립하지 않아 두 번째 실패가 첫 기록을 파괴한다.
+            # `os.link`는 대상이 있으면 FileExistsError를 내므로 create-only다.
+            os.link(pinset, target, src_dir_fd=directory, dst_dir_fd=directory)
+        except FileExistsError:
+            continue
+        except OSError:
+            raise SystemExit(3) from None
+        try:
+            os.unlink(pinset, dir_fd=directory)
+        except OSError:
+            # link는 성공해 기록이 남았다. 원본이 남으면 재시도는 계속 막히지만
+            # 기록을 잃는 것보다 낫다 — 다음 실행이 같은 판정을 다시 한다.
+            raise SystemExit(3) from None
+        try:
+            os.fsync(directory)
+        except OSError:
+            # claim write와 같은 규칙 — 이미 끝난 변경을 되돌리지 못하면서
+            # 실패로 만들면 안 된다. 유실되면 방향은 fail-safe(소각)다.
+            pass
+        raise SystemExit(0)
+    # 상한에 닿았다 — 같은 pinset이 5회 prejournal 실패했다면 사람이 봐야 한다.
+    raise SystemExit(3)
+finally:
+    os.close(directory)
+PY
+claim_released="$?"
+set -e
+
+/usr/bin/chown root:root "${result_tmp}" "${stderr_path}"
+/usr/bin/chmod 0600 "${result_tmp}" "${stderr_path}"
+/usr/bin/mv -T "${result_tmp}" "${result_path}"
+
+if [[ "${claim_released}" == 0 ]]; then
+  # 해제 사실의 유일한 durable 증거가 아무도 읽지 않는 0700 디렉터리의
+  # 파일명이면 사후 판독이 불가능하다. 형제 launcher의 `claimed` 마커와
+  # 같은 형태로 output leaf에 root 0600 마커를 남긴다(적대 리뷰 MAJOR-2).
+  ( umask 0077; echo "prejournal" >"${release_marker}" )
+  /usr/bin/chmod 0600 "${release_marker}"
+  # 문구는 좁게 쓴다. `prejournal_failure`는 "이번 실행이 durable journal을
+  # 쓰지 않았다"이지 "후보가 소비된 적 없다"가 아니다 — resume 실행도 이
+  # 분류를 낼 수 있다(적대 리뷰 MAJOR-4).
+  echo "pinned rebuild closed before its durable journal; this pinset may be retried in a fresh output leaf" >&2
+fi
+
+set +e
+/usr/bin/python3 -I -S - "${result_path}" <<'PY' 2>/dev/null
 import json
 import pathlib
 import sys
 
-value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+try:
+    value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1) from None
 if not isinstance(value, dict):
-    raise SystemExit("pinned rebuild result must be a JSON object")
+    raise SystemExit(1)
 PY
+result_is_object="$?"
+set -e
+if [[ "${result_is_object}" != 0 ]]; then
+  # 자식의 종료값이 가장 강한 증거다 — 검증은 진단일 뿐 status를 대체하지
+  # 않는다. 종전에는 이 검증기가 `set -e` 아래 있어 126/127/137/143이 전부
+  # exit 1 + raw traceback으로 접혔다.
+  echo "pinned rebuild result is not a JSON object (child exit ${status})" >&2
+  if [[ "${status}" == 0 ]]; then
+    # 자식이 성공을 주장하는데 결과가 판독 불가면 "exit 0 ⇒ result.json은 JSON
+    # object"라는 불변식이 깨진 것이다. 검증기를 `set -e` 밖으로 뺀 것은 자식의
+    # **실패** 종료값(126/127/137/143)을 보존하기 위해서였지 이 fail-close를
+    # 없애려던 게 아니다(적대 리뷰 M-1: 이 완화를 내가 만들었다).
+    exit 1
+  fi
+fi
 
 exit "${status}"
