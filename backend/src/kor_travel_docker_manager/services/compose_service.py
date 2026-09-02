@@ -230,6 +230,21 @@ _PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES = frozenset(
         "application_candidate",
         "candidate_snapshot",
         "candidate_contract",
+        # journal 직전 runtime transaction 구간. 종전에는 봉인 밖이라 여기서
+        # 닫히면 result가 `unclassified`가 되고, `--json`은 원문을 내지 않아
+        # **어디에도 진단이 남지 않았다**(2026-09-02 rebuild: 29분 실행,
+        # stderr 0바이트). 이 트랙의 확립된 절차대로 원문을 노출하는 대신
+        # 비밀 없는 고정 어휘를 넓혀 다음 실행이 지점을 특정하게 한다.
+        # fresh candidate 빌드 구간. 이 흐름에서 가장 오래 걸리고 가장 잘
+        # 실패하는 곳인데 봉인 밖이었다 — 2026-09-02 rebuild가 `pinvi-web`
+        # 빌드에서 exit 1로 닫히고 `unclassified`가 돼 회전 사이클 1회를 태웠다.
+        "candidate_compose_build",
+        "candidate_images",
+        "candidate_bootstrap_settings",
+        "candidate_heads",
+        "runtime_generation",
+        "runtime_transaction",
+        "runtime_transaction_lock",
     }
 )
 _MAP_APPLICATION_FRESH_PYTHON = "/usr/local/bin/python"
@@ -260,11 +275,130 @@ _PINVI_ROLE_TOPOLOGY_NONCANONICAL_REASONS = (
 class PinnedRuntimePrejournalFailure(DeploymentContractError):
     """journal 전 후보 준비 실패를 비밀 없는 고정 단계로 전달한다."""
 
-    def __init__(self, stage: str) -> None:
+    def __init__(self, stage: str, service: str | None = None) -> None:
         if stage not in _PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES:
             raise ValueError("pinned runtime pre-journal failure stage is invalid")
+        # 후보 Compose 빌드는 서비스가 넷이고 각각 다른 이유로 죽는다.
+        # stage 하나로 접으면 다음 실행이 여전히 어느 서비스인지 모른 채
+        # 30분을 다시 쓴다. 값은 `COMPOSE_BUILT_RUNTIME_SERVICES` 안에서만
+        # 나오므로 비밀이 없다 — 자유 문자열을 여는 것이 아니다.
+        if service is not None and service not in COMPOSE_BUILT_RUNTIME_SERVICES:
+            raise ValueError("pinned runtime compose build service is invalid")
         self.stage = stage
+        self.service = service
         super().__init__("pinned runtime candidate preparation failed")
+
+
+_PINNED_RUNTIME_PREJOURNAL_MARK = "_ktdm_pinned_runtime_failed_before_journal"
+
+
+class _PinnedRuntimeJournalWatermark:
+    """이 실행이 durable journal에 도달했는지 **관측**한다.
+
+    write 지점마다 손으로 표시하는 방식은 새 write가 생길 때마다 규율을 요구하고,
+    그 규율이 한 번 깨지면 조용히 **소비된 후보를 재시도 가능**으로 푼다 —
+    이 트랙에서 가장 피해야 할 방향이다. 대신 journal 경로를 알게 된 시점에
+    한 번 적어 두고 실패 시 그 파일의 존재를 본다. 누가 언제 썼든 관측이 답을
+    주므로, 앞으로 write가 늘어도 이 판정은 저절로 맞는다.
+
+    경로를 모른 채 닫혔다면 그 실행은 journal에 도달한 적이 없다 — host lease
+    경합, root 아님, lock 디렉터리 불안전, 배포 lifecycle 게이트 거부가 여기다.
+    `prewrite_admission`의 거절들은 **여기가 아니다** — 관측이 그보다 먼저
+    일어나므로 파일로 판정된다(적대 리뷰 m-3).
+    """
+
+    def __init__(self) -> None:
+        self.journal_path: Path | None = None
+        self.identified_without_a_path = False
+
+    def observe(self, journal_path: Path) -> None:
+        """journal 경로가 확정되는 즉시 적어 둔다."""
+
+        self.journal_path = journal_path
+
+    def observe_unresolvable(self) -> None:
+        """pinset은 식별했는데 경로를 못 냈다 — 그때는 유지가 fail-safe다.
+
+        경로 계산(`pinned_runtime_state_paths`)은 lifecycle 4개 키만이 아니라
+        rebuildable cache-target 10개 · `COMPOSE_PROJECT_NAME` 정규식 ·
+        state root의 canonical 여부까지 본다. 그중 어느 것도 여기 도달하기
+        전에 검증되지 않는다 — 즉 `.env` 하나로 이 지점이 닫힐 수 있다.
+
+        그때 경로를 모른다고 해제하면, journal이 이미 있는 **소비된 후보**의
+        claim이 사라진다(적대 리뷰 MAJOR-3). pinset을 이미 식별한 이상
+        무엇이 걸려 있는지는 알므로, 불확실은 유지 쪽으로 접는다.
+
+        pinset을 식별하기 **전**(root 게이트·host lease 경합)은 그대로 해제다.
+        거기서는 걸려 있는 후보 자체가 없다 — 그게 이 트랙이 처음 닫은 소각
+        경로다.
+        """
+
+        self.identified_without_a_path = True
+
+    def reached(self) -> bool:
+        """journal이 존재하면 이 후보는 lifecycle에 들어간 것으로 본다.
+
+        판독 불가(`OSError`)는 `False`로 접지 않는다. 불확실할 때의 fail-safe는
+        claim 유지(= 소각)지 해제가 아니다 — 관측자의 불확실성이 후보를 살려
+        이중 실행을 열어서는 안 된다.
+        """
+
+        path = self.journal_path
+        if path is None:
+            return self.identified_without_a_path
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        except Exception:
+            # 소각 판정 술어는 **전역**이어야 한다. 여기서 예외가 나가면
+            # 그 예외가 원래 실패를 덮어 `--json` 계약(stdout에 JSON)을
+            # 깨고 진단이 통째로 사라진다(적대 리뷰 m-1). 판독 불가는
+            # 전부 도달로 본다 — 불확실할 때의 fail-safe는 claim 유지다.
+            return True
+        return True
+
+
+def _mark_pinned_runtime_prejournal(exc: DeploymentContractError) -> None:
+    """예외를 **바꾸지 않고** "이 실행은 journal을 쓰지 않았다"만 붙인다.
+
+    타입·메시지·traceback이 그대로라 상위 `except` 절이 하나도 달라지지 않고,
+    비-JSON 경로의 원문 출력도 그대로다. 달라지는 것은 JSON classification 하나다.
+    """
+
+    setattr(exc, _PINNED_RUNTIME_PREJOURNAL_MARK, True)
+
+
+def pinned_runtime_failed_before_journal(exc: BaseException) -> bool:
+    """봉인하지 않은 실패가 journal 전이었는지 읽는다."""
+
+    return getattr(exc, _PINNED_RUNTIME_PREJOURNAL_MARK, False) is True
+
+
+_PINNED_RUNTIME_JOURNAL_REACHED_MARK = "_ktdm_pinned_runtime_journal_reached"
+
+
+def _mark_pinned_runtime_journal_reached(exc: DeploymentContractError) -> None:
+    """봉인된 실패에도 관측 결과를 싣는다.
+
+    **봉인은 메시지 정책이고 watermark는 소각 정책이다 — 다른 질문이다.**
+    종전에는 봉인된 실패가 무조건 `prejournal_failure`였다. 그런데 봉인 단계는
+    전부 resume 분기보다 **앞**에서 돌기 때문에, journal이 이미 존재하는
+    resume 실행에서 봉인 단계가 실패하면 — 예: rustfs가 불건강해
+    `external_prerequisites`가 거절 — **이미 DB를 리셋하고 compose를 적용한**
+    후보의 claim이 해제됐다(적대 리뷰 M-2).
+    """
+
+    setattr(exc, _PINNED_RUNTIME_JOURNAL_REACHED_MARK, True)
+
+
+def pinned_runtime_journal_was_reached(exc: BaseException) -> bool:
+    """봉인된 실패 시점에 journal이 이미 존재했는지 읽는다."""
+
+    return getattr(exc, _PINNED_RUNTIME_JOURNAL_REACHED_MARK, False) is True
+
+
+_PINNED_RUNTIME_COMPOSE_SERVICE_MARK = "_ktdm_pinned_runtime_compose_service"
 
 
 @contextmanager
@@ -276,7 +410,10 @@ def _pinned_runtime_prejournal_step(stage: str) -> Iterator[None]:
     except PinnedRuntimePrejournalFailure:
         raise
     except DeploymentContractError as exc:
-        raise PinnedRuntimePrejournalFailure(stage) from exc
+        service = getattr(exc, _PINNED_RUNTIME_COMPOSE_SERVICE_MARK, None)
+        if service not in COMPOSE_BUILT_RUNTIME_SERVICES:
+            service = None
+        raise PinnedRuntimePrejournalFailure(stage, service) from exc
 
 
 def _application_300_profile_operation_args(
@@ -1462,6 +1599,10 @@ def _pinned_runtime_rebuild_environment_lock(
         # 진단이 아니라 고정 정책 문장("rehearsal/rebuildable이 아니다")이라 비밀이
         # 없고, 운영자가 알아야 하는 유일한 정보가 그 문장 자체다. 이것까지
         # "candidate preparation failed"로 봉인하면 왜 거부됐는지 알 방법이 사라진다.
+        #
+        # 다만 **봉인 여부와 소각 여부는 다른 질문**이다. 이 거부는 어떤 write보다
+        # 먼저 일어나 후보를 소비하지 않으며, 그 사실은 여기서 선언하지 않는다 —
+        # `rebuild_pinned_runtime`의 journal watermark가 관측으로 답한다.
         assert_pinned_runtime_rebuild_allowed(
             environment=initial_environment_snapshot.effective
         )
@@ -4838,12 +4979,21 @@ class ComposeService:
         ):
             build_result: dict[str, Any] = {}
             for service in COMPOSE_BUILT_RUNTIME_SERVICES:
-                build_result = self._run_pinned_runtime_rebuild_compose(
-                    ["build", service],
-                    transaction=transaction,
-                    capture_output=capture_output,
-                    allow_typed_error_diagnostic=allow_typed_error_diagnostic,
-                )
+                try:
+                    build_result = self._run_pinned_runtime_rebuild_compose(
+                        ["build", service],
+                        transaction=transaction,
+                        capture_output=capture_output,
+                        allow_typed_error_diagnostic=allow_typed_error_diagnostic,
+                    )
+                except DeploymentContractError as exc:
+                    # fan-out은 여기 한 곳에만 있다. 실패한 서비스를 여기서 실어
+                    # 보내지 않으면 봉인이 result를 `candidate_compose_build`까지만
+                    # 말하게 만들고, 다음 실행이 넷 중 어느 것인지 모른 채 같은
+                    # 30분을 다시 쓴다(적대 리뷰 MINOR-10). 값은 이 고정 목록에서만
+                    # 나오므로 자유 문자열을 여는 것이 아니다.
+                    setattr(exc, _PINNED_RUNTIME_COMPOSE_SERVICE_MARK, service)
+                    raise
             return build_result
         result = self._run_frozen_recovery(
             args,
@@ -6358,7 +6508,55 @@ class ComposeService:
         return journal, plan
 
     def rebuild_pinned_runtime(self) -> dict[str, Any]:
-        """application-300 paired candidate에 결박된 destructive rebuild를 실행한다."""
+        """application-300 paired candidate에 결박된 destructive rebuild를 실행한다.
+
+        얇은 래퍼는 한 가지만 한다 — 봉인되지 않은 실패에
+        "이 실행은 durable journal을 쓰지 않았다"를 붙인다.
+
+        launcher(`run-pinned-rebuild-once`)는 `ktdctl` 호출 **전에** claim을 쓰고,
+        result의 `classification` 하나로 그 claim을 해제할지 판정한다. 봉인
+        (`_pinned_runtime_prejournal_step`) 밖에서 새는 `DeploymentContractError`는
+        전부 `unclassified`로 접혔고, 그러면 아무것도 소비하지 않은 후보가
+        영구 거절돼 **회전 사이클 1회**(= Map+PinVi revision부터 다시)가 탄다.
+
+        그 봉인 밖 경로는 적지 않다 — host lease 획득 실패(**다른 배포가 lock을
+        잡고 있다** · root 아님 · lock 디렉터리 불안전), 배포 lifecycle 게이트
+        거부, candidate 준비 중 봉인 밖 문장들.
+
+        `prewrite_admission`의 거절은 이 목록에 **없다.** 관측이 그보다 먼저
+        일어나므로 파일로 판정된다 — journal이 있으면(= resume, 이미 소비됨)
+        유지, 없으면 해제. 그게 이 방식을 고른 이유다(적대 리뷰 M-1/m-3).
+
+        경계는 **journal이지 mutation이 아니다.** journal write 전에도 root
+        `.env` role credential 회전·source materialize·이미지 4개 빌드는 이미
+        일어난다. claim은 동시성 가드이자 감사 원장이고 재실행 권한의 정본은
+        runtime pin/execution registry라는 전제 위에서만 이 경계가 성립한다 —
+        `docs/runtime-pin-registry.md` §9.
+
+        문장마다 표시하는 대신 **관측**한다: journal 경로를 알게 되면 watermark에
+        적어 두고, 실패 시 그 파일의 존재를 본다. 앞으로 write가 늘어도 판정이
+        저절로 맞고, 열거를 유지할 규율이 필요 없다.
+        """
+
+        watermark = _PinnedRuntimeJournalWatermark()
+        try:
+            return self._rebuild_pinned_runtime(watermark)
+        except PinnedRuntimePrejournalFailure as exc:
+            # 봉인된 실패는 자기 **stage**를 들고 있지만 소각 판정은 들고 있지
+            # 않다. 봉인 단계는 전부 resume 분기보다 앞에서 돌므로, journal이
+            # 이미 있는 실행에서 봉인 단계가 실패하면 소비된 후보가 해제된다.
+            if watermark.reached():
+                _mark_pinned_runtime_journal_reached(exc)
+            raise
+        except DeploymentContractError as exc:
+            if not watermark.reached():
+                _mark_pinned_runtime_prejournal(exc)
+            raise
+
+    def _rebuild_pinned_runtime(
+        self, watermark: _PinnedRuntimeJournalWatermark
+    ) -> dict[str, Any]:
+        """rebuild 본문. 분류는 호출자(래퍼)가 관측으로 붙인다."""
 
         _require_pinned_runtime_rebuild_root()
         release: PinnedRuntimeRelease | None = None
@@ -6372,11 +6570,24 @@ class ComposeService:
             # source/v6 execution gate를 확인한다. rotate가 두 read 사이에 끼어 old
             # release와 new execution을 섞는 TOCTOU를 막는다.
             release = current_pinned_runtime_release()
+            try:
+                state_paths = pinned_runtime_state_paths(
+                    environment_snapshot.effective,
+                    pinset_sha256=release.pinset_sha256,
+                )
+            except DeploymentContractError:
+                # 여기서부터 pinset은 식별됐다. 경로를 못 냈다는 이유로
+                # 해제하면 journal이 이미 있는 후보의 claim이 사라진다.
+                watermark.observe_unresolvable()
+                raise
+            # 관측을 **terminal block 게이트보다 먼저** 한다. 그 게이트는
+            # 바로 '이미 소비된 후보'를 거절하려고 있는데, 관측 전에 두면
+            # 그 거절이 `journal_path is None`(= 도달한 적 없음) 통에 담겨
+            # **소비된 후보의 claim을 해제**한다 — 정확히 반대 방향이다
+            # (적대 리뷰 M-1). 순서를 바꾸면 같은 거절이 파일 관측으로
+            # 판정된다: journal이 있으면 유지, 없으면(= 정말 소비 안 됨) 해제.
+            watermark.observe(state_paths.journal)
             _assert_pinset_is_not_permanently_blocked(release.pinset_sha256)
-            state_paths = pinned_runtime_state_paths(
-                environment_snapshot.effective,
-                pinset_sha256=release.pinset_sha256,
-            )
             try:
                 state_paths.journal.lstat()
             except FileNotFoundError:
@@ -6446,7 +6657,10 @@ class ComposeService:
                     values=environment_snapshot.effective,
                 )
             journal_exists = resume_journal is not None
-            paired_build_images = map_application_300_paired_build_image_names(sources)
+            with _pinned_runtime_prejournal_step("application_base_images"):
+                paired_build_images = map_application_300_paired_build_image_names(
+                    sources
+                )
             with _pinned_runtime_prejournal_step("application_base_images"):
                 _ensure_map_application_300_python_base_images(sources)
             with _pinned_runtime_prejournal_step("application_builder"):
@@ -6462,14 +6676,15 @@ class ComposeService:
                     sources=sources,
                     paths=application_paths,
                 )
-            build = CandidateRuntimeBuild(
-                sources=sources,
-                map_application_300_candidate=map_candidate,
-            )
-            candidate_build_references = {
-                **paired_build_images,
-                **build.image_names,
-            }
+            with _pinned_runtime_prejournal_step("application_candidate"):
+                build = CandidateRuntimeBuild(
+                    sources=sources,
+                    map_application_300_candidate=map_candidate,
+                )
+                candidate_build_references = {
+                    **paired_build_images,
+                    **build.image_names,
+                }
             candidate_environment = {
                 **build.compose_environment(),
                 **artifact_directories.compose_environment(),
@@ -6518,74 +6733,97 @@ class ComposeService:
                 )
                 ensure_generation_references((journal.candidate,), cwd=get_project_root())
             else:
-                self._run_pinned_runtime_rebuild_compose(
-                    ["build", *COMPOSE_BUILT_RUNTIME_SERVICES],
-                    transaction=candidate_transaction,
-                )
-                image_ids = self._attest_pinned_runtime_candidate_images(
-                    build=build,
-                    map_candidate=map_candidate,
-                )
-                self._verify_pinned_runtime_pinvi_bootstrap_settings(
-                    transaction=candidate_transaction,
-                )
-                map_application_output = _run_pinned_runtime_static_command(
-                    image_ids["kor-travel-map-api"],
-                    ("head",),
-                    label="Map application",
-                    entrypoint="/usr/local/bin/ktm-application-schema",
-                )
-                map_application_head = parse_candidate_static_head(
-                    map_application_output,
-                    schema="kor-travel-map.application-head.v1",
-                    field="head",
-                )
-                map_dagster_output = _run_pinned_runtime_static_command(
-                    image_ids["kor-travel-map-dagster"],
-                    ("head",),
-                    label="Map Dagster",
-                    entrypoint="/usr/local/bin/ktm-dagster-storage",
-                )
-                map_dagster_head = parse_candidate_static_head(
-                    map_dagster_output,
-                    schema="kor-travel-map.dagster-storage-head.v1",
-                    field="head",
-                )
-                pinvi_output = _run_pinned_runtime_static_command(
-                    image_ids["pinvi-api"],
-                    ("pinvi-admin-bootstrap", "head"),
-                    label="PinVi",
-                )
-                pinvi_head = parse_candidate_static_head(
-                    pinvi_output,
-                    schema="pinvi.candidate-head.v1",
-                    field="pinvi_head",
-                )
-                candidate = build_candidate_generation(
-                    sources=sources,
-                    map_application_300_candidate=map_candidate,
-                    image_ids=image_ids,
-                    map_application_head=map_application_head,
-                    map_dagster_head=map_dagster_head,
-                    pinvi_head=pinvi_head,
-                )
+                # 여기부터 journal write까지는 전부 journal 전이다. 종전에는
+                # 이 분기 전체가 봉인 밖이라, 30분짜리 후보 빌드가 한 번
+                # 실패하면 `unclassified`가 되고 launcher가 claim을 유지해
+                # **회전 사이클 1회**가 탔다(2026-09-02 `pinvi-web` exit 1).
+                #
+                # 네 단계를 각각 다른 stage로 둔다. 하나로 묶으면 다음 실행이
+                # 여전히 지점을 못 짚어 같은 값비싼 반복을 한 번 더 한다.
+                with _pinned_runtime_prejournal_step("candidate_compose_build"):
+                    self._run_pinned_runtime_rebuild_compose(
+                        ["build", *COMPOSE_BUILT_RUNTIME_SERVICES],
+                        transaction=candidate_transaction,
+                    )
+                with _pinned_runtime_prejournal_step("candidate_images"):
+                    image_ids = self._attest_pinned_runtime_candidate_images(
+                        build=build,
+                        map_candidate=map_candidate,
+                    )
+                with _pinned_runtime_prejournal_step("candidate_bootstrap_settings"):
+                    self._verify_pinned_runtime_pinvi_bootstrap_settings(
+                        transaction=candidate_transaction,
+                    )
+                with _pinned_runtime_prejournal_step("candidate_heads"):
+                    # 세 static head 명령은 후보 이미지를 network-less로 한 번씩
+                    # 돌린다. 실패해도 journal 전이고 Compose·DB mutation 전이다.
+                    map_application_output = _run_pinned_runtime_static_command(
+                        image_ids["kor-travel-map-api"],
+                        ("head",),
+                        label="Map application",
+                        entrypoint="/usr/local/bin/ktm-application-schema",
+                    )
+                    map_application_head = parse_candidate_static_head(
+                        map_application_output,
+                        schema="kor-travel-map.application-head.v1",
+                        field="head",
+                    )
+                    map_dagster_output = _run_pinned_runtime_static_command(
+                        image_ids["kor-travel-map-dagster"],
+                        ("head",),
+                        label="Map Dagster",
+                        entrypoint="/usr/local/bin/ktm-dagster-storage",
+                    )
+                    map_dagster_head = parse_candidate_static_head(
+                        map_dagster_output,
+                        schema="kor-travel-map.dagster-storage-head.v1",
+                        field="head",
+                    )
+                    pinvi_output = _run_pinned_runtime_static_command(
+                        image_ids["pinvi-api"],
+                        ("pinvi-admin-bootstrap", "head"),
+                        label="PinVi",
+                    )
+                    pinvi_head = parse_candidate_static_head(
+                        pinvi_output,
+                        schema="pinvi.candidate-head.v1",
+                        field="pinvi_head",
+                    )
+                    candidate = build_candidate_generation(
+                        sources=sources,
+                        map_application_300_candidate=map_candidate,
+                        image_ids=image_ids,
+                        map_application_head=map_application_head,
+                        map_dagster_head=map_dagster_head,
+                        pinvi_head=pinvi_head,
+                    )
 
-            candidate_generation = journal.candidate if journal_exists else candidate
-            runtime_environment = {
-                **build.compose_environment(),
-                **generation_compose_environment(
-                    candidate_generation,
-                    artifact_directories=artifact_directories,
-                ),
-                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": (
-                    candidate_generation.map_application_head
-                ),
-            }
-            runtime_transaction, _ = self.capture_transaction_unlocked(
-                environment_override=runtime_environment,
-                environment_snapshot=environment_snapshot,
-            )
-            _assert_transaction_matches_c6c_lock(runtime_transaction, lock_snapshot)
+            with _pinned_runtime_prejournal_step("runtime_generation"):
+                candidate_generation = (
+                    journal.candidate if journal_exists else candidate
+                )
+                runtime_environment = {
+                    **build.compose_environment(),
+                    **generation_compose_environment(
+                        candidate_generation,
+                        artifact_directories=artifact_directories,
+                    ),
+                    "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": (
+                        candidate_generation.map_application_head
+                    ),
+                }
+            # 이 둘을 한 stage로 묶지 않는다. capture는 compose 후보 계약
+            # 전체를 검증하고, assert는 lock snapshot과의 일치만 본다 —
+            # 원인이 전혀 달라서 묶으면 다음 실행이 여전히 지점을 못 짚는다.
+            with _pinned_runtime_prejournal_step("runtime_transaction"):
+                runtime_transaction, _ = self.capture_transaction_unlocked(
+                    environment_override=runtime_environment,
+                    environment_snapshot=environment_snapshot,
+                )
+            with _pinned_runtime_prejournal_step("runtime_transaction_lock"):
+                _assert_transaction_matches_c6c_lock(
+                    runtime_transaction, lock_snapshot
+                )
             if journal_exists:
                 current_environment_sha256 = hashlib.sha256(
                     environment_snapshot.env_file_bytes

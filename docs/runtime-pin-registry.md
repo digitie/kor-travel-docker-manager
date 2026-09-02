@@ -597,20 +597,33 @@ id가 디스크의 것과 다르면 `404 RUNTIME_PIN_REQUEST_NOT_FOUND`다. 없�
 ```
 ktdctl pinvi-pair rebuild-pinned --confirm
   └─ _require_pinned_runtime_rebuild_root()            root 강제
-  └─ global mutation lock → pinned rebuild lock         rotate/block/install과 직렬화
-  └─ current_pinned_runtime_release()                  lock 안에서 registry snapshot 로드 (없으면 fail-close)
-  └─ _assert_pinset_is_not_permanently_blocked(digest) ★ 같은 snapshot의 current v6 execution을 검증하고, 없거나 terminal이면 거부; legacy terminal은 추가 감사 근거
-  └─ (락 획득, env snapshot, source materialize, DB reset …)   ← 여기부터가 mutation
+  └─ global mutation lock → pinned rebuild lock         rotate/block/install과 직렬화 (게이트보다 **앞**이다)
+  └─ env snapshot · assert_pinned_runtime_rebuild_allowed · validate_c6c_operation_tokens
+  └─ prewrite_admission:
+       └─ current_pinned_runtime_release()             lock 안에서 registry snapshot 로드 (없으면 fail-close)
+       └─ pinned_runtime_state_paths() → watermark.observe()   소각 판정의 관측 지점
+       └─ _assert_pinset_is_not_permanently_blocked(digest) ★ 같은 snapshot의 current v6 execution을 검증하고, 없거나 terminal이면 거부; legacy terminal은 추가 감사 근거
        └─ resume journal이 있으면
             _assert_pinvi_role_lifecycle_block_admission()
               └─ is_blocked_pinset_retry(...)          ★ phase 한정 차단 판정
+  └─ (role credential 회전, source materialize, 후보 빌드, DB reset …)   ← 여기부터가 mutation
 ```
 
-★ 표시 지점이 게이트다. **시작 게이트는 락 획득보다도 앞이며**, 회귀
-`test_rebuild_refuses_a_blocked_pinset_before_touching_anything`이 실제
-`rebuild_pinned_runtime()`을 호출해 `materialize.assert_not_called()` /
-`lock.assert_not_called()`로 그 순서를 결박한다. 이 호출을 뒤로 옮기거나 지우면 그
-테스트가 깨진다 — 깨지면 고치지 말고 되돌려라.
+★ 표시 지점이 게이트다. 게이트는 **두 host lease 안**에서 돌고(global mutation
+lock + pinned rebuild lease), env snapshot과 lifecycle 판정보다 뒤다 — 종전 이
+문단은 "락 획득보다도 앞"이라고 적고 있었는데 사실이 아니었다. 게이트가 보장하는
+것은 **mutation보다 앞**이라는 것이다.
+
+결박하는 회귀는 둘이다:
+
+- `test_rebuild_refuses_a_blocked_pinset_before_touching_anything` — 실제
+  `rebuild_pinned_runtime()`을 호출해 `materialize.assert_not_called()`로 mutation
+  이전임을 건다(`lock_entered`는 lease **안**임을 함께 확인한다).
+- `test_terminal_block_refusal_does_not_release_a_consumed_candidate` — 관측이
+  게이트보다 먼저인지를 건다. 이 순서가 뒤집히면 게이트의 거절이 "도달한 적
+  없음"으로 분류돼 **소비된 후보의 claim이 해제**된다.
+
+이 호출들을 뒤로 옮기거나 지우면 두 테스트가 깨진다 — 깨지면 고치지 말고 되돌려라.
 
 ---
 
@@ -637,14 +650,55 @@ launcher가 claim을 `<pinset>.prejournal-NN`으로 **개명**하고(삭제하�
    회전(`rotate-pair`)은 필요 없다.
 2. 재실행 전에 이전 output leaf와 dangling candidate 이미지를 정리한다. 재시도가
    누적되면 디스크가 차고, 디스크가 차면 그 자체가 다음 prejournal 실패를 만든다.
-3. `stderr.log`와 `result.json`의 `stage`로 원인을 좁힌다. `application_base_images`/
-   `application_builder`는 대개 네트워크(레지스트리 rate limit·DNS)다.
+3. `result.json`의 `stage`로 원인을 좁힌다. `application_base_images`/
+   `application_builder`는 대개 네트워크(레지스트리 rate limit·DNS)이고,
+   `candidate_compose_build`는 후보 이미지 빌드 자체다.
+
+   `stage`가 `candidate_compose_build`면 `service`가 넷 중 어느 빌드가 죽었는지
+   말해 준다. 값은 `COMPOSE_BUILT_RUNTIME_SERVICES`에서만 나온다.
+
+   **`stage`가 없으면** 봉인 밖에서 닫힌 것이다. 그 경우 `--json`은 원문을
+   내지 않으므로 stdout·stderr 어디에도 진단이 없다 — `stderr.log`가 0바이트인
+   것이 정상이다.
+
+   > **원문을 얻으려고 `ktdctl pinvi-pair rebuild-pinned --confirm`을 플래그 없이
+   > 돌리지 마라.** 그건 진단이 아니라 **전체 destructive rebuild 재시도**다 —
+   > host lease를 다시 잡고, root `.env`의 PinVi role credential을 회전시키고,
+   > 후보 이미지를 다시 빌드하고, 통과하면 journal을 쓰고 DB를 리셋한다.
+   > 그러면서 **원장에 claim을 남기지 않아** append-only 감사 기록에 구멍을
+   > 낸다(이 절 앞머리의 보증이 깨진다). 부득이 돌려야 한다면 launcher를
+   > 통하거나, 최소한 실행 전에 claim을 수동으로 기록한다.
+   >
+   > 봉인 밖 실패가 반복되면 원문을 캐는 대신 **그 구간을 봉인해 고정 어휘를
+   > 넓히는 것**이 이 트랙의 절차다. 그래야 다음 실행이 값비싼 반복 없이
+   > 지점을 짚는다.
 4. 마커가 **없으면** 해제되지 않은 것이다 — 이번 실행이 durable journal 이후까지
    갔거나, 소비 여부를 증명하지 못했다는 뜻이다. 그때만 아래 회전 절차로 간다.
 
 > `prejournal_failure`는 "이번 실행이 durable journal을 쓰지 않았다"는 뜻이지
 > "후보가 소비된 적 없다"가 아니다. resume 실행도 이 분류를 낼 수 있으므로,
 > 직접 `ktdctl pinvi-pair rebuild-pinned`를 돌린 적이 있다면 journal 상태를 먼저 본다.
+>
+> 그 판정은 이제 선언이 아니라 **관측**이다. 다만 관측이 성립한 실패에만
+> 적용된다 — journal 경로를 알아낸 뒤(`prewrite_admission`의
+> `pinned_runtime_state_paths`) 닫힌 실행만 파일 존재로 판정된다. 그보다
+> 앞에서 닫힌 실행(root 게이트 · host lease 경합 · env snapshot · lifecycle
+> 게이트)은 journal이 있어도 `prejournal_failure`를 낸다. 거기서는 아직
+> 어느 후보가 걸려 있는지조차 확정되지 않았고, 그 구간의 무조건 소각이
+> 이 트랙이 처음 닫은 결함이다.
+>
+> pinset을 식별한 **뒤** 경로 계산이 실패하면(잘못된 `.env` 하나로 가능하다)
+> 해제하지 않는다 — 그때는 무엇이 걸려 있는지 알면서 상태를 모르는 것이라
+> 불확실을 유지 쪽으로 접는다.
+>
+> journal이 이미 있는 상태에서 **봉인된** 실패가 나면 `postjournal_failure`이고
+> launcher는 claim을 유지한다. 봉인은 **메시지 정책**이고 관측은 **소각
+> 정책**이라 서로 다른 질문이다.
+>
+> 경계는 journal이지 mutation이 아니다. journal write 전에도 root `.env`
+> role credential 회전·source materialize·후보 이미지 빌드는 이미 일어난다.
+> claim이 동시성 가드이자 감사 원장이고 재실행 권한의 정본은 runtime
+> pin/execution registry라는 전제 위에서만 이 경계가 성립한다.
 
 ### "rebuild-pinned가 거부됩니다"
 

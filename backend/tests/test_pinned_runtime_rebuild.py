@@ -1767,6 +1767,121 @@ def test_prebuild_compose_resolution_overrides_blank_artifact_environment(
     assert all(volume["read_only"] is True for volume in volumes)
 
 
+def test_candidate_compose_build_failure_is_sealed_with_its_own_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """후보 Compose 빌드 실패가 `unclassified`로 새지 않는다.
+
+    2026-09-02 rebuild가 정확히 여기서 닫혔다 — `pinvi-web` 빌드 exit 1.
+    29분을 돌고 result에는
+    `classification: unclassified`만 남았고, `--json`이 원문을 막아 stderr는
+    **0바이트**였다 — 어디에도 진단이 없었다. launcher는 claim을 유지했고
+    회전 사이클 1회(= Map+PinVi revision부터 다시)가 탔다.
+
+    이 구간은 journal write 전이고 Compose·DB mutation 전이다. 원문을 노출하는
+    대신 이 트랙의 확립된 절차대로 **고정 어휘를 넓혀** 다음 실행이 지점을
+    특정하게 한다.
+    """
+
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
+        "COMPOSE_PROJECT_NAME": "f1d-candidate-refusal",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
+    }
+    transaction = SimpleNamespace(
+        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
+        compose_source_bytes=b"services: {}\n",
+        resolved_document_hash="c" * 64,
+        resolved={"services": {}},
+    )
+    service = ComposeService()
+    run_compose = Mock(
+        side_effect=DeploymentContractError(
+            "pinned runtime rebuild Compose build command failed (exit 1)"
+        )
+    )
+    database_reset = Mock()
+    journal_write = Mock()
+    paired_builder = Mock()
+    paired_candidate = _map_application_300_candidate()
+
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: __import__("contextlib").nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_require_pinned_runtime_rebuild_root",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: transaction.environment,
+    )
+    monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
+    monkeypatch.setattr(
+        compose_service_module,
+        "materialize_pinned_runtime_sources",
+        lambda **_kwargs: _sources(),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_run_map_application_300_paired_builder",
+        paired_builder,
+    )
+    monkeypatch.setattr(
+        service,
+        "_load_application_300_paired_candidate",
+        Mock(return_value=paired_candidate),
+    )
+    monkeypatch.setattr(
+        service,
+        "capture_transaction_unlocked",
+        lambda **_kwargs: (transaction, None),
+    )
+    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
+    monkeypatch.setattr(
+        service,
+        "_validate_pinned_runtime_candidate_build_contract",
+        Mock(),
+    )
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
+    monkeypatch.setattr(
+        compose_service_module,
+        "reset_databases_for_application_300",
+        database_reset,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "write_pinned_runtime_rebuild_journal",
+        journal_write,
+    )
+
+    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
+        service.rebuild_pinned_runtime()
+
+    state_paths = pinned_runtime_state_paths(
+        values,
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+    )
+    assert captured.value.stage == "candidate_compose_build"
+    assert "Compose build command failed" in str(captured.value.__cause__)
+    journal_write.assert_not_called()
+    database_reset.assert_not_called()
+    run_compose.assert_called_once()
+    assert not state_paths.journal.exists()
+
 def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_reset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1874,7 +1989,9 @@ def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_r
 def test_sealed_role_topology_verifier_is_a_fresh_target_state_postcondition() -> None:
     """폐기할 기존 DB가 아니라 role bootstrap 뒤 fresh PinVi DB만 검증한다."""
 
-    source = inspect.getsource(ComposeService.rebuild_pinned_runtime)
+    # 본문은 `_rebuild_pinned_runtime`이다 — `rebuild_pinned_runtime`은
+    # journal 도달을 관측하는 얇은 래퍼다.
+    source = inspect.getsource(ComposeService._rebuild_pinned_runtime)
 
     assert source.index("reset_databases_for_application_300") < source.index(
         "_run_pinvi_schema_bootstrap_with_role_lifecycle"
@@ -5143,3 +5260,355 @@ def test_pinned_runtime_rebuild_lease_rejects_nonroot(
     with pytest.raises(c6c_deployment.DeploymentContractError, match="requires root"):
         with c6c_deployment.pinned_runtime_rebuild_lock():
             pass  # pragma: no cover - root gate must reject before entering.
+
+
+def test_journal_watermark_reports_unreached_without_a_path() -> None:
+    """경로를 모른 채 닫혔다면 그 실행은 journal에 도달한 적이 없다.
+
+    host lease 경합·root 아님·lifecycle 게이트 거부가 전부 여기다 — 종전에는
+    `unclassified`로 접혀 흔한 lock 경합 한 번이 회전 사이클 1회를 태웠다.
+    """
+
+    assert compose_service_module._PinnedRuntimeJournalWatermark().reached() is False
+
+
+def test_journal_watermark_follows_the_file_not_a_manual_flag(tmp_path: Path) -> None:
+    """write 지점마다 손으로 표시하지 않는다 — 파일을 본다.
+
+    그래서 앞으로 journal write가 늘어도 판정이 저절로 맞는다. 손 표시 방식은
+    규율이 한 번 깨지면 조용히 **소비된 후보를 재시도 가능**으로 푼다.
+    """
+
+    watermark = compose_service_module._PinnedRuntimeJournalWatermark()
+    journal = tmp_path / "journal.json"
+    watermark.observe(journal)
+
+    assert watermark.reached() is False
+    journal.write_text("{}", encoding="utf-8")
+    assert watermark.reached() is True
+
+
+def test_journal_watermark_treats_an_unreadable_path_as_reached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """판독 불가는 "없다"로 접지 않는다.
+
+    불확실할 때의 fail-safe는 claim 유지(= 소각)지 해제가 아니다 — 관측자의
+    불확실성이 후보를 살려 본문 이중 실행을 열어서는 안 된다.
+    """
+
+    watermark = compose_service_module._PinnedRuntimeJournalWatermark()
+    journal = tmp_path / "journal.json"
+    watermark.observe(journal)
+
+    def unreadable(self: Path) -> None:
+        raise PermissionError("journal stat denied")
+
+    monkeypatch.setattr(Path, "lstat", unreadable)
+
+    assert watermark.reached() is True
+
+
+def test_rebuild_marks_an_unobserved_body_failure_as_prejournal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """본문이 관측 전에 닫히면 표시된다 — 래퍼 자체의 계약.
+
+    이 테스트는 본문을 통째로 대체하므로 **lock 경합을 증명하지 않는다.**
+    실제 배선은 `test_terminal_block_refusal_*` 두 건이 진짜 lock 경로로 건다
+    (적대 리뷰 MAJOR-3: 이름과 단언이 실행하지 않는 경로를 주장하고 있었다).
+    """
+
+    service = ComposeService()
+
+    def refuse(watermark: object) -> dict[str, Any]:
+        raise DeploymentContractError("body closed before the journal")
+
+    monkeypatch.setattr(service, "_rebuild_pinned_runtime", refuse)
+
+    with pytest.raises(DeploymentContractError) as raised:
+        service.rebuild_pinned_runtime()
+
+    # 원문이 그대로다 — 봉인이 아니라 표시다.
+    assert "body closed before the journal" in str(raised.value)
+    assert compose_service_module.pinned_runtime_failed_before_journal(raised.value)
+
+
+def test_rebuild_leaves_a_post_journal_failure_unmarked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """journal이 존재하면 후보는 lifecycle에 들어간 것이다 — 해제하지 않는다.
+
+    소각 기본값을 넓히지 않는 것과 짝이다: 해제는 **양성 증거**가 있을 때만이고,
+    여기서는 그 증거가 없다.
+    """
+
+    service = ComposeService()
+    journal = tmp_path / "journal.json"
+    journal.write_text("{}", encoding="utf-8")
+
+    def fail_after_journal(
+        watermark: compose_service_module._PinnedRuntimeJournalWatermark,
+    ) -> dict[str, Any]:
+        watermark.observe(journal)
+        raise DeploymentContractError("pinned runtime manifest differs from committed journal")
+
+    monkeypatch.setattr(service, "_rebuild_pinned_runtime", fail_after_journal)
+
+    with pytest.raises(DeploymentContractError) as raised:
+        service.rebuild_pinned_runtime()
+
+    assert not compose_service_module.pinned_runtime_failed_before_journal(raised.value)
+
+
+def _admission_gate_harness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    refusal: Exception,
+) -> tuple[ComposeService, dict[str, str]]:
+    """`prewrite_admission`의 terminal 게이트까지만 도달시키는 최소 하네스.
+
+    이 모듈의 autouse fixture가 host lease와 rebuild environment lock을 이미
+    격리하므로, 여기서는 그 fixture가 쓰는 `_capture_compose_environment_snapshot`
+    과 release·게이트만 주입한다.
+    """
+
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
+        "COMPOSE_PROJECT_NAME": "f1d-admission-gate",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
+    }
+    snapshot = SimpleNamespace(
+        effective=values,
+        env_path=str(tmp_path / ".env"),
+        env_file_bytes=b"frozen-env" + bytes([10]),
+    )
+
+    monkeypatch.setattr(
+        compose_service_module, "_require_pinned_runtime_rebuild_root", lambda: None
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_compose_environment_snapshot",
+        lambda *, environment_override: snapshot,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "c6c_deployment_lock_from_environment",
+        lambda: nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "current_pinned_runtime_release",
+        lambda: PINNED_RUNTIME_RELEASE,
+    )
+
+    def gate(_pinset: str) -> None:
+        raise refusal
+
+    monkeypatch.setattr(
+        compose_service_module, "_assert_pinset_is_not_permanently_blocked", gate
+    )
+    return ComposeService(), values
+
+def test_terminal_block_refusal_does_not_release_a_consumed_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """이미 소비된 후보를 거절하는 게이트가 그 후보의 claim을 풀면 안 된다.
+
+    `_assert_pinset_is_not_permanently_blocked`는 **바로 그 목적으로** 있다.
+    이 거절이 `prejournal_failure`로 나가면 launcher가 원장에서 claim을
+    빼내고, 소비된 pinset이 다시 실행 가능해진다 — 소각 원칙의 정확히
+    반대 방향이다(적대 리뷰 B-1/M-1).
+
+    관측이 게이트보다 **먼저** 일어나야만 이 단언이 선다. 관측을 게이트
+    뒤로 옮기면 `journal_path is None`이 되어 실패한다.
+    """
+
+    service, values = _admission_gate_harness(
+        tmp_path,
+        monkeypatch,
+        refusal=DeploymentContractError("pinned runtime rebuild is blocked"),
+    )
+    state_paths = pinned_runtime_state_paths(
+        values, pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256
+    )
+    state_paths.journal.parent.mkdir(parents=True, exist_ok=True)
+    state_paths.journal.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(DeploymentContractError) as raised:
+        service.rebuild_pinned_runtime()
+
+    assert not compose_service_module.pinned_runtime_failed_before_journal(
+        raised.value
+    )
+
+
+def test_sealed_failure_carries_the_journal_observation(tmp_path: Path) -> None:
+    """봉인된 실패도 journal이 이미 있으면 그 사실을 실어 나가야 한다.
+
+    봉인 단계는 전부 resume 분기보다 앞에서 돈다. 이 표시가 없으면 CLI가
+    `prejournal_failure`를 내고 launcher가 **이미 DB를 리셋한** 후보의 claim을
+    원장에서 빼낸다. 표시를 지워도 스위트가 초록이던 것이 이 회귀를 만든 이유다
+    (적대 리뷰 BLOCKER-1).
+
+    결박 대상은 래퍼 자체다 — 본문을 대역으로 두는 것은 여기서는 정확한 선택이다
+    (본문의 봉인 배선은 `test_candidate_compose_build_failure_is_sealed_*`가 건다).
+    """
+
+    service = ComposeService()
+    journal = tmp_path / "journal.json"
+    journal.write_text("{}", encoding="utf-8")
+
+    def fail_sealed(
+        watermark: compose_service_module._PinnedRuntimeJournalWatermark,
+    ) -> dict[str, Any]:
+        watermark.observe(journal)
+        raise compose_service_module.PinnedRuntimePrejournalFailure(
+            "external_prerequisites"
+        )
+
+    service._rebuild_pinned_runtime = fail_sealed  # type: ignore[method-assign]
+
+    with pytest.raises(
+        compose_service_module.PinnedRuntimePrejournalFailure
+    ) as raised:
+        service.rebuild_pinned_runtime()
+
+    assert compose_service_module.pinned_runtime_journal_was_reached(raised.value)
+
+
+def test_sealed_failure_without_a_journal_is_not_marked_reached(
+    tmp_path: Path,
+) -> None:
+    """반대쪽 — journal이 없으면 표시하지 않는다(그래야 재시도가 열린다)."""
+
+    service = ComposeService()
+
+    def fail_sealed(
+        watermark: compose_service_module._PinnedRuntimeJournalWatermark,
+    ) -> dict[str, Any]:
+        watermark.observe(tmp_path / "absent.json")
+        raise compose_service_module.PinnedRuntimePrejournalFailure(
+            "external_prerequisites"
+        )
+
+    service._rebuild_pinned_runtime = fail_sealed  # type: ignore[method-assign]
+
+    with pytest.raises(
+        compose_service_module.PinnedRuntimePrejournalFailure
+    ) as raised:
+        service.rebuild_pinned_runtime()
+
+    assert not compose_service_module.pinned_runtime_journal_was_reached(
+        raised.value
+    )
+
+
+def test_state_path_refusal_after_identification_keeps_the_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pinset을 식별한 뒤 경로를 못 내면 유지다 — 해제가 아니다.
+
+    경로 계산은 lifecycle 4개 키 밖의 것(cache-target 10개 ·
+    `COMPOSE_PROJECT_NAME` 정규식 · state root canonical 여부)까지 보는데,
+    그중 어느 것도 이 지점 전에 검증되지 않는다. `.env` 하나로 여기서 닫힐 수
+    있고, 그때 해제하면 journal이 이미 있는 **소비된 후보**의 claim이 사라진다
+    (적대 리뷰 MAJOR-3).
+    """
+
+    service, _values = _admission_gate_harness(
+        tmp_path,
+        monkeypatch,
+        refusal=DeploymentContractError("unused"),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "pinned_runtime_state_paths",
+        Mock(
+            side_effect=DeploymentContractError(
+                "pinned runtime state root is not canonical"
+            )
+        ),
+    )
+
+    with pytest.raises(DeploymentContractError) as raised:
+        service.rebuild_pinned_runtime()
+
+    assert "state root is not canonical" in str(raised.value)
+    assert not compose_service_module.pinned_runtime_failed_before_journal(
+        raised.value
+    )
+
+
+def test_terminal_block_refusal_releases_an_unconsumed_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """반대쪽도 같은 관측이 답한다 — journal이 없으면 소비된 적이 없다.
+
+    block 자체는 독립적으로 계속 거절하므로 해제해도 이중 실행이 열리지
+    않는다. 여기서 claim까지 태우면 **아무것도 소비하지 않은** 후보가
+    영구 거절된다.
+    """
+
+    service, _values = _admission_gate_harness(
+        tmp_path,
+        monkeypatch,
+        refusal=DeploymentContractError("pinned runtime rebuild is blocked"),
+    )
+
+    with pytest.raises(DeploymentContractError) as raised:
+        service.rebuild_pinned_runtime()
+
+    assert compose_service_module.pinned_runtime_failed_before_journal(raised.value)
+
+
+def test_sealed_failure_on_a_resume_run_is_not_reported_prejournal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """봉인은 메시지 정책이고 watermark는 소각 정책이다 — 다른 질문이다.
+
+    봉인 단계는 전부 resume 분기보다 앞에서 돈다. journal이 이미 존재하는
+    실행에서 봉인 단계가 실패하면(예: rustfs 불건강 →
+    `external_prerequisites`), 종전에는 **이미 DB를 리셋하고 compose를
+    적용한** 후보의 claim이 해제됐다(적대 리뷰 M-2).
+    """
+
+    service, values = _admission_gate_harness(
+        tmp_path,
+        monkeypatch,
+        refusal=DeploymentContractError("unused"),
+    )
+    state_paths = pinned_runtime_state_paths(
+        values, pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256
+    )
+    state_paths.journal.parent.mkdir(parents=True, exist_ok=True)
+    state_paths.journal.write_text("{}", encoding="utf-8")
+
+    # 게이트는 통과시키고, 그 다음 봉인 단계에서 닫는다.
+    monkeypatch.setattr(
+        compose_service_module,
+        "_assert_pinset_is_not_permanently_blocked",
+        lambda _pinset: None,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "read_pinned_runtime_rebuild_journal",
+        Mock(side_effect=DeploymentContractError("journal is unreadable")),
+    )
+
+    with pytest.raises(DeploymentContractError) as raised:
+        service.rebuild_pinned_runtime()
+
+    assert not compose_service_module.pinned_runtime_failed_before_journal(
+        raised.value
+    )

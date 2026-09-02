@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kor_travel_docker_manager.cli import build_parser, main
+from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
@@ -520,6 +521,106 @@ def test_cli_rebuild_pinned_runtime_hides_unclassified_contract_error_in_json(
     }
     assert "sensitive unexpected contract detail" not in captured.out
     assert not captured.err
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+
+
+def test_cli_rebuild_pinned_runtime_reports_a_sealed_postjournal_failure(
+    mock_compose_service,
+    capsys,
+):
+    """봉인된 실패라도 journal이 이미 있으면 재시도 가능으로 내면 안 된다.
+
+    launcher는 `prejournal_failure`에서만 claim을 해제한다. 그 값이 나가면
+    이미 DB를 리셋한 후보가 원장에서 빠진다.
+    """
+
+    failure = compose_service_module.PinnedRuntimePrejournalFailure(
+        "external_prerequisites"
+    )
+    compose_service_module._mark_pinned_runtime_journal_reached(failure)
+    mock_compose_service.rebuild_pinned_runtime.side_effect = failure
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
+
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "failed",
+        "classification": "postjournal_failure",
+        "stage": "external_prerequisites",
+    }
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+
+
+def test_cli_rebuild_pinned_runtime_names_the_failing_compose_service(
+    mock_compose_service,
+    capsys,
+):
+    """후보 빌드는 서비스가 넷이다 — 어느 것인지 없으면 30분을 다시 쓴다."""
+
+    mock_compose_service.rebuild_pinned_runtime.side_effect = (
+        compose_service_module.PinnedRuntimePrejournalFailure(
+            "candidate_compose_build", "pinvi-web"
+        )
+    )
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
+
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "failed",
+        "classification": "prejournal_failure",
+        "stage": "candidate_compose_build",
+        "service": "pinvi-web",
+    }
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+
+
+def test_cli_rebuild_pinned_runtime_marks_a_prejournal_contract_failure(
+    mock_compose_service,
+    capsys,
+):
+    """봉인 밖 admission 거부도 "journal을 쓰지 않았다"까지는 잃지 않는다.
+
+    launcher는 `classification`만 보고 claim 해제를 판단한다. 이 거부가
+    `unclassified`로 접히면 아무것도 소비하지 않은 pinset이 탄다.
+    그러면서도 **원문은 여전히 JSON에 넣지 않는다** — 아래 단언이 그 경계다.
+    """
+
+    failure = DeploymentContractError("sensitive unexpected contract detail")
+    compose_service_module._mark_pinned_runtime_prejournal(failure)
+    mock_compose_service.rebuild_pinned_runtime.side_effect = failure
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "status": "failed",
+        "classification": "prejournal_failure",
+    }
+    assert "sensitive unexpected contract detail" not in captured.out
+    assert not captured.err
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+
+
+def test_cli_rebuild_pinned_runtime_keeps_the_message_outside_json(
+    mock_compose_service,
+    capsys,
+):
+    """비-JSON 경로의 원문 출력은 그대로다 — disclosure는 봉인이 아니다."""
+
+    failure = DeploymentContractError("pinned runtime rebuild requires rehearsal")
+    compose_service_module._mark_pinned_runtime_prejournal(failure)
+    mock_compose_service.rebuild_pinned_runtime.side_effect = failure
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm"]) == 2
+
+    assert "requires rehearsal" in capsys.readouterr().err
 
 
 @patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
