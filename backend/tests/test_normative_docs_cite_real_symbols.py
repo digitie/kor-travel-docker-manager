@@ -37,6 +37,9 @@ _NORMATIVE_DOCS: tuple[str, ...] = (
     "docs/resume.md",
     "docs/runtime-pin-registry.md",
     "docs/docker-management.md",
+    # 결박 인벤토리 자신도 테스트 이름을 인용한다. 그 이름이 낡으면 인벤토리가
+    # 조용히 거짓말한다 — 이 파일이 막으려는 바로 그 실패다.
+    "docs/bindings.md",
 )
 
 _TEST_NAME = re.compile(r"`(test_[A-Za-z0-9_]+)`")
