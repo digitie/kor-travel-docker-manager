@@ -12,7 +12,10 @@ import docker
 from docker.errors import NotFound
 
 from kor_travel_docker_manager.services.metrics_service import metrics_service
-from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS, TargetsConfigError
+from kor_travel_docker_manager.services.registry import (
+    MANAGED_CONTAINERS,
+    TARGETS_CONFIG_ERRORS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +219,11 @@ class MetricsCollector:
             self._container_observations: dict[str, dict[str, Any]] = {
                 key: self._default_observation(key) for key in MANAGED_CONTAINERS
             }
-        except TargetsConfigError:
+        except TARGETS_CONFIG_ERRORS:
+            # 잡는 범위는 `TARGETS_CONFIG_ERRORS`다 — 스키마 오류뿐 아니라 중복 키
+            # (`yaml.YAMLError`)와 파일 부재(`OSError`)까지 포함한다. 종전에는
+            # `TargetsConfigError`만 잡아 손편집 시 가장 흔한 두 실수가 그대로
+            # raw traceback으로 샜다(적대 리뷰 2인 실측: 52·61·26줄).
             # GM-followups(docker-targets.yml 스키마 검증 잔여): 이 생성자는 모듈
             # 레벨 싱글턴(`metrics_collector = MetricsCollector()`, 이 파일 맨 끝)으로
             # import 시점에 즉시 실행된다. `MANAGED_CONTAINERS`는 registry.py에서

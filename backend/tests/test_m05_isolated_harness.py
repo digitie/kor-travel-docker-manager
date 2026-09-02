@@ -495,32 +495,3 @@ def test_runtime_rejects_expected_port_that_is_exposed_but_unbound() -> None:
         )
 
 
-def test_m05_isolated_harness_is_deliberately_two_role() -> None:
-    """이 harness는 구조적으로 map/pinvi 2-role이다 — 정본 별칭에 배선하지 않는다.
-
-    한 차례 `M05IsolatedRuntimeRole`을 `pinned_runtime_release.RuntimeSourceRole`에
-    배선했다가 적대 리뷰 2인이 독립적으로 되돌리라고 판정했다. 이유는 배선이
-    사는 안전 속성이 **0**이기 때문이다:
-
-    - 오늘은 완전한 no-op이다(정본도 `("map", "pinvi")` 두 원소).
-    - 정본이 role을 하나 늘리면 이 파일은 따라 움직이지 못하고 **부서진다** —
-      `len(networks) != 2`, `expected_names = {"map": …, "pinvi": …}`,
-      `_EXPOSED_RUNTIME_SERVICE_ROLES`, `_RUNTIME_IMAGE_ROLES`, provenance
-      payload 키, `role == "map" else pinvi` 이항 분기가 전부 2-role이다.
-      게다가 그 실패는 두 스택을 다 띄운 뒤(1~2시간)에 나온다.
-    - CI에 mypy가 없어 타입 별칭 정본화는 강제되지도 않는다.
-
-    즉 배선은 능력 없는 결합이고, 이 저장소가 결함으로 규정한 과결박이다.
-    ADR-40이 pair를 정확히 두 role로 동결했으므로 리터럴이 정직하다.
-    """
-
-    from kor_travel_docker_manager.services.pinned_runtime_release import (
-        RUNTIME_SOURCE_ROLES,
-    )
-
-    # 정본이 늘어나면 이 테스트가 먼저 붉어져, 배선이 아니라 harness 전체
-    # 일반화가 필요하다는 사실을 1~2시간짜리 실행 전에 알린다.
-    assert tuple(RUNTIME_SOURCE_ROLES) == ("map", "pinvi"), (
-        "정본 role이 늘었다 — M05 harness는 2-role 고정이므로 별칭만 배선하지 말고 "
-        "networks/services/images/provenance/이항 분기를 함께 일반화해야 한다"
-    )

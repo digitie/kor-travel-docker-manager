@@ -342,7 +342,6 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any], *, mode: int) -> 
     _fsync_directory(parent)
 
 
-
 def _exclusive_write_json(path: Path, payload: Mapping[str, Any], *, mode: int) -> None:
     """배타 생성. 이미 있으면 커널이 ``FileExistsError``로 거절한다.
 

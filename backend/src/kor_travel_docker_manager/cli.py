@@ -40,7 +40,7 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
     RUNTIME_SOURCE_ROLES,
 )
 from kor_travel_docker_manager.services.registry import (
-    TargetsConfigError,
+    TARGETS_CONFIG_ERRORS,
     list_targets,
     load_targets_config,
 )
@@ -158,7 +158,7 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
 
     try:
         load_targets_config()
-    except TargetsConfigError as exc:
+    except TARGETS_CONFIG_ERRORS as exc:
         print(str(exc), file=sys.stderr)
         return 1
     print("OK")
@@ -2166,7 +2166,7 @@ def main(argv: list[str] | None = None) -> int:
         parser = build_parser()
         args = parser.parse_args(parsed_argv)
         return int(args.func(args))
-    except TargetsConfigError as exc:
+    except TARGETS_CONFIG_ERRORS as exc:
         # GM-followups: 깨진 config/docker-targets.yml이 raw traceback 대신
         # registry.py의 이미 명확한 검증 메시지 그대로 stderr에 한 줄로 나가게 한다.
         #

@@ -10,6 +10,9 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -324,3 +327,66 @@ def test_managed_containers_raises_only_on_first_real_access_with_broken_config(
 
     with pytest.raises(ValueError, match="depends_on: unknown target 'typo_target'"):
         assert "kor-travel-geo-postgresql" in registry_module.MANAGED_CONTAINERS
+
+
+@pytest.mark.parametrize(
+    ("label", "content"),
+    [
+        (
+            "duplicate_key",
+            "containers:\n"
+            "  a: {name: x, compose_service: x}\n"
+            "  a: {name: y, compose_service: y}\n"
+            "targets: {}\ndependency_order: []\n",
+        ),
+        ("yaml_syntax", "containers:\n  a: {name: x\ntargets: {}\n"),
+    ],
+)
+def test_targets_validate_reports_hand_edit_mistakes_without_a_traceback(
+    tmp_path: Path, label: str, content: str
+) -> None:
+    """중복 키와 들여쓰기 오류는 손편집 시 가장 흔한 실수인데, 종전에는
+    `TargetsConfigError`만 잡아 각각 52줄·61줄 raw traceback으로 샜다.
+
+    실패 지점이 `main()` 이전의 import 체인
+    (`cli -> docker_service -> metrics_collector` 모듈 레벨 싱글턴)이라
+    fresh subprocess가 아니면 재현되지 않는다 — pytest는 collection 시점에
+    이미 정상 config로 그 모듈을 import해 두기 때문이다(적대 리뷰 2인).
+    """
+
+    config = tmp_path / f"{label}.yml"
+    config.write_text(content, encoding="utf-8")
+    completed = _run_cli_subprocess(config)
+
+    assert completed.returncode != 0
+    assert "Traceback (most recent call last)" not in completed.stderr, completed.stderr
+    assert completed.stderr.strip(), "원인을 알 수 없는 침묵 실패는 안 된다"
+
+
+def test_targets_validate_reports_a_missing_config_in_one_line(tmp_path: Path) -> None:
+    """파일 부재는 26줄 traceback이었다."""
+
+    completed = _run_cli_subprocess(tmp_path / "absent.yml")
+
+    assert completed.returncode != 0
+    assert "Traceback (most recent call last)" not in completed.stderr, completed.stderr
+    assert len(completed.stderr.strip().splitlines()) == 1, completed.stderr
+
+
+def _run_cli_subprocess(config: Path) -> subprocess.CompletedProcess[str]:
+    """`main()` 이전 import 체인까지 포함해 재현하려면 fresh 프로세스여야 한다."""
+
+    root = Path(__file__).resolve().parents[1] / "src"
+    environment = {
+        **os.environ,
+        "KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE": str(config),
+        "PYTHONPATH": str(root),
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "kor_travel_docker_manager.cli", "targets", "validate"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+        env=environment,
+    )

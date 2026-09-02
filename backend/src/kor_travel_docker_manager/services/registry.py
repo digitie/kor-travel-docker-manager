@@ -1,7 +1,9 @@
 import os
 from collections.abc import Callable, Iterator, Mapping
 from functools import lru_cache
-from typing import Any
+from typing import Any, Final
+
+import yaml
 
 from kor_travel_docker_manager.services.yaml_strict import (
     load_yaml_rejecting_duplicate_keys,
@@ -202,6 +204,14 @@ class _LazyMapping(Mapping[str, Any]):
 
     def __repr__(self) -> str:
         return repr(self._resolve())
+
+
+# `docker-targets.yml`을 읽다 날 수 있는 오류 전체. `TargetsConfigError`만 잡으면
+# **손편집 시 가장 흔한 실수**가 전부 raw traceback으로 샌다 — 중복 키는
+# `yaml.constructor.ConstructorError`(→`yaml.YAMLError`), 들여쓰기 오류는
+# `yaml.scanner.ScannerError`, 파일 부재·권한은 `OSError`이고 셋 다 `ValueError`가
+# 아니다(적대 리뷰 2인 실측: 각각 52·61·26줄 traceback).
+TARGETS_CONFIG_ERRORS: Final = (TargetsConfigError, OSError, yaml.YAMLError)
 
 
 MANAGED_CONTAINERS: Mapping[str, dict[str, Any]] = _LazyMapping(
