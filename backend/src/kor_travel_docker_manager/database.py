@@ -1,6 +1,7 @@
 import logging
 import os
 import sqlite3
+import threading
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, event
@@ -43,6 +44,15 @@ def _set_sqlite_busy_timeout(dbapi_connection, connection_record) -> None:
 # 예외 캐치만으로는 부족하고 반드시 읽어온 값을 확인해야 한다. 실패하면
 # 경고를 한 번만 남기고(매 연결마다 스팸하지 않음) 기본 rollback-journal
 # 모드로 계속 진행한다 — busy_timeout은 이 성패와 무관하게 항상 걸린다.
+#
+# 리뷰 반영: check_same_thread=False 엔진이라 connect 이벤트가 FastAPI의
+# sync 스레드풀과 metrics collector의 asyncio.to_thread에서 동시에 발생할
+# 수 있다. "플래그 확인 -> logger.warning() -> 플래그 세팅" 사이에 실제
+# 핸들러(파일/syslog 등 I/O가 있는 핸들러)가 GIL을 놓으면, 그 틈에 다른
+# 스레드가 같은 "아직 안 남겼음"을 보고 통과해 경고가 여러 번 찍힐 수 있다.
+# 이 프로젝트의 기존 관례(disk_usage.py 등)를 따라 전용 Lock으로 확인과
+# 세팅을 원자적으로 묶는다.
+_wal_fallback_lock = threading.Lock()
 _wal_fallback_warning_emitted = False
 
 
@@ -61,14 +71,16 @@ def _set_sqlite_wal_mode(dbapi_connection, connection_record) -> None:
         except (OSError, sqlite3.OperationalError):
             journal_mode = ""
 
-        if journal_mode != "wal" and not _wal_fallback_warning_emitted:
-            logger.warning(
-                "SQLite WAL 모드를 활성화하지 못했습니다(journal_mode=%s) — "
-                "기본 rollback-journal 모드로 계속 진행합니다. busy_timeout은 "
-                "그대로 적용됩니다.",
-                journal_mode or "unknown",
-            )
-            _wal_fallback_warning_emitted = True
+        if journal_mode != "wal":
+            with _wal_fallback_lock:
+                if not _wal_fallback_warning_emitted:
+                    _wal_fallback_warning_emitted = True
+                    logger.warning(
+                        "SQLite WAL 모드를 활성화하지 못했습니다(journal_mode=%s) — "
+                        "기본 rollback-journal 모드로 계속 진행합니다. busy_timeout은 "
+                        "그대로 적용됩니다.",
+                        journal_mode or "unknown",
+                    )
     finally:
         cursor.close()
 

@@ -25,7 +25,10 @@ SQLite는 WAL 전환 실패 시 항상 예외를 던지는 게 아니라 조용�
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+import threading
+import time
 
 from sqlalchemy import event
 
@@ -174,6 +177,60 @@ def test_set_sqlite_wal_mode_warns_only_once_across_connections(monkeypatch, cap
         first.close()
         second.close()
     assert len(caplog.records) == 1
+
+
+def test_set_sqlite_wal_mode_warns_only_once_under_concurrent_connections(
+    monkeypatch, caplog
+) -> None:
+    """리뷰 반영(Medium) — 엔진이 `check_same_thread=False`라 connect 이벤트는
+    FastAPI 스레드풀과 metrics collector의 `asyncio.to_thread` 양쪽에서 동시에
+    발생할 수 있다. "플래그 확인 -> logger.warning() -> 플래그 세팅"이 원자적
+    이지 않으면, 실제 I/O 핸들러가 `logger.warning()` 도중 GIL을 놓는 사이 다른
+    스레드가 여전히 "아직 안 남겼음"을 보고 통과해 경고가 여러 번 찍힌다(실측:
+    지연 핸들러 + 동시 연결 다수로 재현 시 중복 발생). 위의 순차 호출 테스트는
+    같은 스레드에서 두 번 부르므로 이 경합을 전혀 커버하지 못한다 — 실제
+    스레드로 동시에 여러 연결을 만들어 경고가 정확히 한 번만 남는지 확인한다.
+
+    OS 스레드 스케줄링에 의존하는 경합이라 한 번의 시행만으로는 non-atomic
+    버전이 우연히 안 걸릴 수 있다(실측: 단일 시행 시 약 1/3 확률로 놓침) —
+    여러 시행을 반복해 매 시행 정확히 1건이 남는지 누적으로 확인하면, 고친
+    코드는 항상 결정적으로 통과하고 원래의 non-atomic 버전은 거의 매번
+    잡아낸다."""
+
+    class _SlowHandler(logging.Handler):
+        """logger.warning() 호출 구간을 인위적으로 늘려 경합 창을 넓힌다 —
+        time.sleep()은 GIL을 놓으므로 그 사이 다른 스레드가 스케줄될 수 있다."""
+
+        def emit(self, record: logging.LogRecord) -> None:
+            time.sleep(0.01)
+
+    slow_handler = _SlowHandler()
+    database_module.logger.addHandler(slow_handler)
+    trial_count = 5
+    thread_count = 32
+    try:
+        with caplog.at_level("WARNING", logger=database_module.logger.name):
+            for _ in range(trial_count):
+                monkeypatch.setattr(database_module, "_wal_fallback_warning_emitted", False)
+                barrier = threading.Barrier(thread_count)
+
+                def worker(barrier: threading.Barrier = barrier) -> None:
+                    barrier.wait()
+                    connection = sqlite3.connect(":memory:")
+                    try:
+                        _set_sqlite_wal_mode(connection, None)
+                    finally:
+                        connection.close()
+
+                threads = [threading.Thread(target=worker) for _ in range(thread_count)]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+    finally:
+        database_module.logger.removeHandler(slow_handler)
+
+    assert len(caplog.records) == trial_count
 
 
 def test_set_sqlite_busy_timeout_is_unaffected_by_wal_success_or_fallback(tmp_path, monkeypatch) -> None:

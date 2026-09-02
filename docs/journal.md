@@ -2,6 +2,50 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-02 — WAL fallback 경고 once-guard 경합 수정 (48ab0cc2 적대적 리뷰 2인 반영)
+
+바로 아래 항목(`48ab0cc2`, WAL 모드 안전 fallback + `save_metric` to_thread 테스트
+커버리지)을 독립 적대적 리뷰 2인에게 맡겼다. 한 리뷰는 결함 없음으로 판정했고,
+다른 한 리뷰가 Medium 1건을 찾았다.
+
+**Medium(고침)**: `database.py`의 `_wal_fallback_warning_emitted` once-guard가
+"플래그 확인 → `logger.warning()` → 플래그 세팅" 순서로 non-atomic했다. 엔진이
+`connect_args={"check_same_thread": False}`라 connect 이벤트가 FastAPI 스레드풀과
+metrics collector의 `asyncio.to_thread` 양쪽에서 동시에 발생할 수 있는데, 실제
+핸들러(파일/syslog 등 I/O가 있는 핸들러)가 `logger.warning()` 도중 GIL을 놓으면
+그 틈에 다른 스레드가 여전히 "아직 안 남겼음" 상태를 보고 통과해 경고가 여러 번
+찍힐 수 있다는 지적이다 — 리뷰어가 지연 핸들러 + 동시 연결 64개로 11~12건 중복을
+실측 재현했다. 영향은 로그 스팸뿐(모든 연결이 여전히 올바르게 rollback-journal로
+fallback한다)이지만, 코드 자신의 주석("경고를 한 번만 남기고")과 정면으로
+어긋나고, 이 프로젝트가 이미 `disk_usage.py`/`job_runner.py`/`source_status.py`/
+`deployment_readiness.py`에서 쓰는 모듈 전역 상태 보호 관례(`threading.Lock()`)를
+이 새 코드만 건너뛴 것이었다. `_wal_fallback_lock = threading.Lock()`을 추가해
+확인과 세팅(및 `logger.warning()` 호출 자체)을 그 락 안에서 원자적으로 묶었다 —
+락을 쥔 스레드가 로그를 남기는 동안 다른 스레드는 GIL 스케줄링이 아니라 락
+자체에 막혀 대기하므로, 핸들러 속도와 무관하게 항상 정확히 한 번만 남는다.
+
+`test_database.py`에 회귀 테스트
+`test_set_sqlite_wal_mode_warns_only_once_under_concurrent_connections`를
+추가했다: 지연 핸들러(10ms sleep)를 걸고 스레드 32개를 `threading.Barrier`로
+동시에 출발시켜 각자 `:memory:` 연결로 `_set_sqlite_wal_mode`를 호출하는 시행을
+5번 반복하며, 캡처된 경고 총 개수가 시행 횟수(5)와 정확히 같은지 확인한다.
+기존 순차 호출 테스트(같은 스레드에서 두 번 부름)는 이 경합을 전혀 커버하지
+못한다. 단일 시행만으로는 OS 스레드 스케줄링에 따라 non-atomic 버전이 우연히
+안 걸릴 수 있음을 실측으로 확인했다(고치기 전 코드로 단일 시행 3회 중 1회는
+우연히 통과) — 5회 반복으로 바꾸자 non-atomic 버전은 5회 연속 안정적으로 잡혔고,
+고친 코드는 여러 번 반복 실행해도 항상 결정적으로 통과했다. 새 로직을 원래의
+non-atomic 버전으로 되돌려(`MUTATION-TEST-TEMP`) 이 테스트가 실제로 실패하는
+것을 확인한 뒤 정확히 복원해 재통과시켰다.
+
+**Nit(고치지 않음)**: 같은 리뷰가 `test_database.py`의 신규/수정 라인 중 2줄이
+`ruff format` 결과와 다르다고 지적했으나, 리뷰 스스로 확인했듯 저장소 내 84/105
+파일이 이미 `ruff format --check`를 통과하지 못해 이 저장소에서 포맷팅은 애초에
+게이트되지 않는다 — 조치하지 않는다.
+
+전체 backend 테스트(1489 passed, 2 skipped)와 `ruff check`가 모두 깨끗하다.
+`docs/tasks.md`에 남길 후속 항목은 없다 — 두 리뷰의 Critical/High/Medium findings는
+모두 이 라운드에서 해소됐다.
+
 ## 2026-09-02 — SQLite WAL 모드 안전 fallback + `save_metric` to_thread 테스트 커버리지 (GM-14 후속 2건 종결)
 
 `docs/tasks.md`에 남아 있던 GM-14 후속 항목 두 개를 모두 처리했다.
