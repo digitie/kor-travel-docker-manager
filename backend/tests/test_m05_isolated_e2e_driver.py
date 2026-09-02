@@ -2830,3 +2830,203 @@ def test_passing_run_survives_a_directory_fsync_failure(
 
     launcher = _LAUNCHER_PATH.read_text(encoding='utf-8')
     assert '[[ ! -e "$output_dir/claimed" ]]' in launcher
+
+
+def _rotation_contract(*, admin: str, full: str) -> bytes:
+    """회전 게이트가 읽는 최소 계약 봉투."""
+
+    return json.dumps(
+        {
+            "map": {
+                "admin": {"source_revision": admin},
+                "full": {"source_revision": full},
+            }
+        }
+    ).encode("utf-8")
+
+
+def _run_rotation_preflight(
+    monkeypatch,
+    *,
+    map_revision: str,
+    pinvi_revision: str,
+    contract: bytes | None,
+    capsys,
+) -> tuple[int, str]:
+    """실제 `rotation_preflight`를 돌리되 git만 대역으로 바꾼다."""
+
+    driver = _driver()
+
+    def command(*args: str, **kwargs: object) -> str:
+        if "show" in args:
+            if contract is None:
+                raise driver._PhaseError("rotation_contract_unreadable")
+            return contract.decode("utf-8")
+        return ""
+
+    monkeypatch.setattr(driver, "_command", command)
+    status = driver.rotation_preflight(map_revision, pinvi_revision)
+    return status, capsys.readouterr().out
+
+
+def test_rotation_preflight_accepts_a_pair_that_targets_the_requested_map(
+    monkeypatch, capsys
+) -> None:
+    """일치하면 통과한다 — 게이트가 무조건 거부하는 것이 아님을 먼저 건다."""
+
+    map_revision = "a" * 40
+    status, _out = _run_rotation_preflight(
+        monkeypatch,
+        map_revision=map_revision,
+        pinvi_revision="b" * 40,
+        contract=_rotation_contract(admin=map_revision, full=map_revision),
+        capsys=capsys,
+    )
+
+    assert status == 0
+
+
+def test_rotation_preflight_refuses_a_contract_for_another_map_revision(
+    monkeypatch, capsys
+) -> None:
+    """이 거부가 없으면 71분짜리 rebuild를 태운 뒤에야 같은 모순이 드러난다.
+
+    2026-09-02에 실제로 그렇게 잃었다 — 계약은 Map `4f268633`을 지목하는데
+    pinset은 `f58de9f4`를 핀했고, rebuild가 끝난 뒤 격리 preflight가 몇 초 만에
+    거부했다. `run-pinned-rebuild-once`는 이 계약을 읽지 않는다.
+    """
+
+    contract_revision = "c" * 40
+    requested = "d" * 40
+    status, out = _run_rotation_preflight(
+        monkeypatch,
+        map_revision=requested,
+        pinvi_revision="b" * 40,
+        contract=_rotation_contract(
+            admin=contract_revision, full=contract_revision
+        ),
+        capsys=capsys,
+    )
+
+    assert status == 1
+    # 두 값이 **실제로** 보여야 한다. 안 보이면 운영자가 다시 역추적한다.
+    assert contract_revision in out
+    assert requested in out
+
+
+def test_rotation_preflight_refuses_a_contract_whose_admin_and_full_disagree(
+    monkeypatch, capsys
+) -> None:
+    """admin/full이 갈라진 pair는 body 진입 후 무조건 소각으로만 드러난다."""
+
+    full = "e" * 40
+    status, out = _run_rotation_preflight(
+        monkeypatch,
+        map_revision=full,
+        pinvi_revision="b" * 40,
+        contract=_rotation_contract(admin="f" * 40, full=full),
+        capsys=capsys,
+    )
+
+    assert status == 1
+    assert "admin" in out and "full" in out
+
+
+def test_rotation_preflight_refuses_an_unreadable_contract(
+    monkeypatch, capsys
+) -> None:
+    """읽지 못하면 회전하지 않는다 — 불확실할 때 원장을 바꾸지 않는다."""
+
+    status, out = _run_rotation_preflight(
+        monkeypatch,
+        map_revision="a" * 40,
+        pinvi_revision="b" * 40,
+        contract=None,
+        capsys=capsys,
+    )
+
+    assert status == 1
+    assert "unreadable" in out
+
+
+def test_rotation_preflight_refuses_a_non_hex_revision(monkeypatch, capsys) -> None:
+    """40-hex가 아니면 fetch조차 하지 않는다."""
+
+    driver = _driver()
+    called: list[tuple[str, ...]] = []
+
+    def command(*args: str, **kwargs: object) -> str:
+        called.append(args)
+        return ""
+
+    monkeypatch.setattr(driver, "_command", command)
+
+    assert driver.rotation_preflight("not-hex", "b" * 40) == 1
+    assert called == []
+
+
+def test_pair_failures_carry_a_closed_vocabulary_diagnostic() -> None:
+    """`pair_contract_invalid` 15곳이 전부 진단 없이 같은 문자열만 냈다.
+
+    2026-09-02에 그 때문에 실패 지점을 traceback으로 역추적해야 했다. 진단은
+    닫힌 어휘여야 한다 — 자유 문자열을 열면 호스트 상태가 새는 경로가 된다.
+    """
+
+    import re
+
+    driver = _driver()
+    source = (
+        Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
+    ).read_text(encoding="utf-8")
+
+    bare = re.findall(r'_fail\("pair_contract_invalid"\)', source)
+    assert not bare, "진단 없는 pair_contract_invalid가 남아 있다"
+
+    used = set(
+        re.findall(
+            r'_fail\(\s*"pair_contract_invalid",\s*diagnostic="([^"]+)"',
+            source,
+        )
+    ) | set(
+        re.findall(
+            r'"pair_contract_invalid",\s*\n\s*diagnostic="([^"]+)",',
+            source,
+        )
+    )
+    assert used, "진단 문자열을 하나도 찾지 못했다 — 이 검사가 공허해졌다"
+    assert used <= driver._PAIR_DIAGNOSTICS
+
+
+def test_preflight_reports_only_allowlisted_diagnostics(monkeypatch, capsys) -> None:
+    """진단은 내되 allowlist 밖 문자열은 phase만 낸다.
+
+    이 경로는 아직 output leaf가 없어 forensic scrub 채널을 쓸 수 없다
+    (leaf는 launcher가 preflight **뒤에** 만든다). 그래서 노출은 닫힌 어휘로만
+    한다 — 그러지 않으면 호스트 상태가 launcher stderr로 나간다.
+    """
+
+    driver = _driver()
+
+    def allowed() -> None:
+        driver._fail(
+            "pair_contract_invalid",
+            diagnostic="pair full source revision differs from the pinned release",
+        )
+
+    def leaky() -> None:
+        driver._fail("pair_contract_invalid", diagnostic="/root/secret/path")
+
+    monkeypatch.setattr(driver, "_validate_trusted_release", lambda _r: None)
+    monkeypatch.setattr(
+        driver, "_assert_current_m05_execution_is_runnable", lambda _r: None
+    )
+
+    monkeypatch.setattr(driver, "_source_pair_preflight", allowed)
+    assert driver.preflight("a" * 40) == 1
+    assert "pair full source revision differs" in capsys.readouterr().out
+
+    monkeypatch.setattr(driver, "_source_pair_preflight", leaky)
+    assert driver.preflight("a" * 40) == 1
+    leaked = capsys.readouterr().out
+    assert "/root/secret/path" not in leaked
+    assert "pair_contract_invalid" in leaked

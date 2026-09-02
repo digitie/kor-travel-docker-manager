@@ -2,6 +2,61 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-02 — 71분을 태운 뒤에야 문자열 두 개가 다르다고 했다
+
+rebuild가 성공하고(pinset `4516a107`, 71분) e2e17을 돌렸더니 **몇 초 만에**
+preflight가 거부했다: `M05 isolated source pair preflight is not runnable`.
+
+### 진단에 걸린 시간이 결함이었다
+
+launcher는 preflight stderr를 `>/dev/null`로 버리고, `preflight()`는 예외를
+전부 삼켜 exit 1만 냈다. 단계를 손으로 나눠 돌려 `_pair`까지 좁히고, 거기서도
+`pair_contract_invalid`를 내는 **15곳이 전부 진단 없이** 같은 문자열만 내서
+traceback으로 줄번호를 역추적해야 했다.
+
+실제 원인: PinVi의 pair 계약이 Map `4f268633`을 지목하는데 pinset은
+`f58de9f4`를 핀했다. 그 사이는 **문서 3건 + 테스트 1건**이고 OpenAPI blob은
+바이트 단위로 동일하다. 계약의 digest는 여전히 정확했고 어긋난 것은 라벨뿐이다.
+
+### 세 각도로 판정했다 — 검사를 지우는 것은 오답
+
+- **탐지력은 0이다.** `full.source_revision`은 `_pair` 밖으로 전파되지 않고,
+  OCI 라벨 검사는 pinned 값끼리의 항등식이다. 주석이 주장하던 "라벨을 full
+  기준으로 결박한다"는 코드상 거짓이었다.
+- **그런데 지우면 유일한 계약↔릴리스 결박이 사라진다.** `_pair`의 digest 대조는
+  **계약이 스스로 지목한 revision**에 앵커돼 있어 "계약은 자기무모순이다"만
+  증명한다. 1690행을 지우면 Map 이력의 임의 커밋을 담은 계약이 통과한다.
+- **그리고 실패가 무료에서 유료로 이동한다.** PinVi는 같은 동등성을 body 안에서
+  세 번 재강제하는데(`attestation:594`, OCI 라벨 3개, `_assert_clean_checkout`의
+  집합 멤버십) 전부 `body_entered=True` 이후라 **무조건 소각**이다. 이 트랙의
+  원칙("소각은 양성 증거가 있을 때만")을 정면으로 위반한다.
+
+과결박은 맞다. 다만 그 위치는 이 검사가 아니라 **계약 스키마의 `source_revision`
+필드**다. 함정 감지기를 떼면 함정만 남는다.
+
+### 그래서 검사를 앞으로 당겼다
+
+오늘의 손실은 검사가 있어서가 아니라 **검사가 늦어서** 났다. `rotate-pair`는
+계약을 보지 않고, `run-pinned-rebuild-once`도 보지 않는다. 문자열 두 개 비교로
+0초에 판정 가능한 모순이 71분을 태운 뒤에 드러났다.
+
+`scripts/rotate-pinned-pair`가 회전 **전에** 대상 PinVi revision의 계약을 shallow
+fetch로 읽어 그 둘을 비교하고, 어긋나면 두 값을 찍고 회전을 거부한다. 원장은
+그대로다. M05 adapter가 소유하는 검사이므로 `ktdctl` 본체가 아니라 driver에
+두고 launcher가 엮는다.
+
+### 진단도 함께
+
+`pair_contract_invalid` 15곳에 닫힌 어휘 진단을 부여하고, `preflight()`가 그걸
+**allowlist로 걸러** stdout에 내며, launcher가 그 값을 stderr 메시지에 싣는다.
+이 경로는 output leaf 이전이라 forensic scrub 채널을 못 쓴다 — 그래서 노출은
+닫힌 어휘로만 한다. 그 경계를 테스트가 건다(allowlist 밖 문자열은 phase만 난다).
+
+### 남은 것
+
+계약 스키마 v2에서 `source_revision`을 걷어내는 것(근본, PinVi 3개 검사 재설계
+동반). 그때까지는 Map 문서 커밋마다 재핀이 필요하고, 이번이 **네 번째**다.
+
 ## 2026-09-02 — 소각 판정을 선언에서 관측으로, 실측이 두 번 범위를 넓혔다
 
 앞 항목이 후속으로 남긴 `classification: unclassified` 구멍을 닫았다. 그런데

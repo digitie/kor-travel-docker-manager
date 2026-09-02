@@ -17,6 +17,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -1632,13 +1633,42 @@ def _canonical_json(value: object) -> bytes:
     ).encode("utf-8")
 
 
+# `pair_contract_invalid`를 내는 지점이 15곳인데 전부 진단 없이 같은 문자열만
+# 냈다. 2026-09-02에 그 때문에 실패 지점을 traceback으로 역추적해야 했다 —
+# 71분짜리 rebuild를 태운 **뒤에** 몇 초 만에 거부당하고도 이유를 몰랐다.
+#
+# 이 트랙의 확립된 절차대로 원문을 노출하는 대신 **비밀 없는 고정 어휘**를 둔다.
+# 값은 전부 이 파일이 쓴 상수라 호스트 상태·경로·비밀을 담지 않는다.
+_PAIR_DIAGNOSTICS: frozenset[str] = frozenset(
+    {
+        "pair contract is unreadable",
+        "pair contract envelope schema is invalid",
+        "pair entry schema is invalid",
+        "pair digest field is not sha256",
+        "pair source revision is not a 40-hex commit",
+        "pair full source revision differs from the pinned release",
+        "pair admin source revision differs from full",
+        "pair source blob is unreadable at the contract revision",
+        "pair source blob digest differs from the contract",
+        "pair source blob is not canonical json",
+        "pair source canonical digest differs from the contract",
+        "pair service entry is invalid",
+        # `_source_pair_preflight`가 이미 쓰던 셋. 같은 phase를 내므로 같은
+        # 어휘에 들어와야 preflight가 이것도 내보인다.
+        "committed pinned-runtime generation manifest unavailable",
+        "committed generation pinset differs from the current release",
+        "derived application head differs from the committed generation",
+    }
+)
+
+
 def _sha256_text(value: object) -> str:
     if (
         not isinstance(value, str)
         or len(value) != 64
         or any(char not in "0123456789abcdef" for char in value)
     ):
-        _fail("pair_contract_invalid")
+        _fail("pair_contract_invalid", diagnostic="pair digest field is not sha256")
     return value
 
 
@@ -1651,7 +1681,7 @@ def _pair(pinvi_root: Path, map_root: Path) -> tuple[M05IsolatedPairEvidence, st
         mapping = value["map"]
         full = mapping["full"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError):
-        _fail("pair_contract_invalid")
+        _fail("pair_contract_invalid", diagnostic="pair contract is unreadable")
     expected_entry_keys = {
         "openapi_sha256",
         "runtime_operation_contract_sha256",
@@ -1668,12 +1698,15 @@ def _pair(pinvi_root: Path, map_root: Path) -> tuple[M05IsolatedPairEvidence, st
         or not isinstance(full, dict)
         or set(full) != expected_entry_keys
     ):
-        _fail("pair_contract_invalid")
+        _fail(
+            "pair_contract_invalid",
+            diagnostic="pair contract envelope schema is invalid",
+        )
     revisions: set[str] = set()
     for name in ("admin", "full", "service", "user"):
         entry = mapping.get(name)
         if not isinstance(entry, dict) or set(entry) != expected_entry_keys:
-            _fail("pair_contract_invalid")
+            _fail("pair_contract_invalid", diagnostic="pair entry schema is invalid")
         _sha256_text(entry.get("openapi_sha256"))
         _sha256_text(entry.get("runtime_operation_contract_sha256"))
         _sha256_text(entry.get("source_canonical_sha256"))
@@ -1684,17 +1717,26 @@ def _pair(pinvi_root: Path, map_root: Path) -> tuple[M05IsolatedPairEvidence, st
             or len(entry_revision) != _REVISION_LENGTH
             or any(char not in "0123456789abcdef" for char in entry_revision)
         ):
-            _fail("pair_contract_invalid")
+            _fail(
+                "pair_contract_invalid",
+                diagnostic="pair source revision is not a 40-hex commit",
+            )
         revisions.add(entry_revision)
     map_hash = _sha256_text(full.get("openapi_sha256"))
     if full.get("source_revision") != PINNED_RUNTIME_RELEASE.source_for("map").revision:
-        _fail("pair_contract_invalid")
+        _fail(
+            "pair_contract_invalid",
+            diagnostic="pair full source revision differs from the pinned release",
+        )
     # 이 harness는 runtime 컨테이너의 OCI revision 라벨을 full 기준으로 결박하고,
     # PinVi attestation은 같은 컨테이너를 admin 기준으로 대조한다. 두 엔트리가
     # 갈라진 pair를 여기서(실행권 소비 전, scoped) 닫지 않으면 그 모순은 body
     # 진입 후 무조건 소각으로만 드러난다(적대 리뷰 정찰).
     if mapping["admin"].get("source_revision") != full.get("source_revision"):
-        _fail("pair_contract_invalid")
+        _fail(
+            "pair_contract_invalid",
+            diagnostic="pair admin source revision differs from full",
+        )
     # M05 source attestation은 pair가 지정한 admin/full/service/user Git blob 모두를
     # exact revision으로 다시 읽는다. materializer가 현재 head만 fetch하므로 worktree는
     # 바꾸지 않고 canonical bare source에 이 네 object만 보충한다.
@@ -1718,10 +1760,13 @@ def _pair(pinvi_root: Path, map_root: Path) -> tuple[M05IsolatedPairEvidence, st
     for name, relative_path in paths.items():
         entry = mapping[name]
         if not isinstance(entry, dict):
-            _fail("pair_contract_invalid")
+            _fail("pair_contract_invalid", diagnostic="pair entry schema is invalid")
         revision = entry.get("source_revision")
         if not isinstance(revision, str):
-            _fail("pair_contract_invalid")
+            _fail(
+                "pair_contract_invalid",
+                diagnostic="pair source revision is not a 40-hex commit",
+            )
         try:
             raw = subprocess.run(
                 [
@@ -1739,26 +1784,38 @@ def _pair(pinvi_root: Path, map_root: Path) -> tuple[M05IsolatedPairEvidence, st
                 check=False,
             )
         except OSError:
-            _fail("pair_contract_invalid")
+            _fail(
+                "pair_contract_invalid",
+                diagnostic="pair source blob is unreadable at the contract revision",
+            )
         if raw.returncode != 0 or hashlib.sha256(
             raw.stdout
         ).hexdigest() != _sha256_text(entry["openapi_sha256"]):
-            _fail("pair_contract_invalid")
+            _fail(
+                "pair_contract_invalid",
+                diagnostic="pair source blob digest differs from the contract",
+            )
         try:
             source_value = json.loads(raw.stdout)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            _fail("pair_contract_invalid")
+            _fail(
+                "pair_contract_invalid",
+                diagnostic="pair source blob is not canonical json",
+            )
         if hashlib.sha256(_canonical_json(source_value)).hexdigest() != _sha256_text(
             entry["source_canonical_sha256"]
         ):
-            _fail("pair_contract_invalid")
+            _fail(
+                "pair_contract_invalid",
+                diagnostic="pair source canonical digest differs from the contract",
+            )
     service = mapping["service"]
     if not isinstance(service, dict):
-        _fail("pair_contract_invalid")
+        _fail("pair_contract_invalid", diagnostic="pair service entry is invalid")
     service_openapi_sha256 = _sha256_text(service.get("openapi_sha256"))
     service_source_revision = service.get("source_revision")
     if not isinstance(service_source_revision, str):
-        _fail("pair_contract_invalid")
+        _fail("pair_contract_invalid", diagnostic="pair service entry is invalid")
     return (
         M05IsolatedPairEvidence(
             map_full_openapi_sha256=map_hash,
@@ -1844,14 +1901,108 @@ def _source_pair_preflight() -> tuple[Path, Path, M05IsolatedPairEvidence, str, 
     return map_root, pinvi_root, pair, service_openapi_sha256, service_source_revision
 
 
+_PAIR_CONTRACT_PATH = "contracts/kor-travel-map-m05-pair-provenance-v1.json"
+
+
+def rotation_preflight(map_revision: str, pinvi_revision: str) -> int:
+    """`pin rotate-pair` **전에** 대상 pair가 서로를 지목하는지 본다.
+
+    `_pair`(:1690)는 계약의 `map.full.source_revision`이 pinned Map revision과
+    같기를 요구한다. 그런데 그 검사는 격리 e2e launcher에서만 돌고,
+    `run-pinned-rebuild-once`는 이 계약을 읽지 않는다. 그래서 어긋난 pair로
+    회전하면 **71분짜리 rebuild를 다 태운 뒤에** 몇 초 만에 거부당한다 —
+    2026-09-02에 실제로 그렇게 잃었다.
+
+    여기서 보는 것은 문자열 두 개다. 비용은 fetch 한 번이고, 막아 주는 것은
+    rebuild 한 사이클이다. 검사를 **약하게 하지 않고** 앞으로 당긴다.
+
+    회전 대상 PinVi revision은 아직 pinned가 아니므로 materialize된 트리에
+    없다. 임시 bare 저장소에 그 하나만 fetch해서 읽는다 — 기존 상태를
+    건드리지 않고, 실패해도 남기는 것이 없다.
+    """
+
+    for revision in (map_revision, pinvi_revision):
+        if len(revision) != _REVISION_LENGTH or any(
+            char not in "0123456789abcdef" for char in revision
+        ):
+            print("rotation revision is not a 40-hex commit", flush=True)
+            return 1
+    pinvi_source = PINNED_RUNTIME_RELEASE.source_for("pinvi")
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            bare = Path(scratch) / "pinvi.git"
+            _command("/usr/bin/git", "init", "--quiet", "--bare", str(bare))
+            _command(
+                "/usr/bin/git",
+                "-C",
+                str(bare),
+                "fetch",
+                "--no-tags",
+                "--depth",
+                "1",
+                pinvi_source.canonical_url,
+                pinvi_revision,
+            )
+            raw = _command(
+                "/usr/bin/git",
+                "-C",
+                str(bare),
+                "show",
+                f"{pinvi_revision}:{_PAIR_CONTRACT_PATH}",
+                capture=True,
+            )
+    except (_PhaseError, OSError, RuntimeError, ValueError):
+        print("rotation pair contract is unreadable at the target revision", flush=True)
+        return 1
+    try:
+        contract = json.loads(raw)
+        mapping = contract["map"]
+        full_revision = mapping["full"]["source_revision"]
+        admin_revision = mapping["admin"]["source_revision"]
+    except (KeyError, TypeError, json.JSONDecodeError):
+        print("rotation pair contract schema is invalid", flush=True)
+        return 1
+    if admin_revision != full_revision:
+        # 두 값 모두 공개 커밋 SHA다 — 비밀이 아니다. 이 자리에서 실제 값을
+        # 보여 주지 않으면 운영자가 다시 traceback으로 역추적해야 한다.
+        print(
+            "rotation pair contract admin/full disagree: "
+            f"admin={admin_revision} full={full_revision}",
+            flush=True,
+        )
+        return 1
+    if full_revision != map_revision:
+        print(
+            "rotation pair contract targets a different Map revision: "
+            f"contract={full_revision} requested={map_revision}",
+            flush=True,
+        )
+        return 1
+    return 0
+
+
 def preflight(expected_revision: str) -> int:
-    """launcher용 비소비 source-materialization preflight; terminal/ledger를 쓰지 않는다."""
+    """launcher용 비소비 source-materialization preflight; terminal/ledger를 쓰지 않는다.
+
+    거부 이유를 **stdout으로 낸다.** 종전에는 phase도 diagnostic도 전부 삼키고
+    exit 1만 냈다 — 2026-09-02에 그 때문에 71분짜리 rebuild를 태운 뒤 몇 초 만에
+    거부당하고도 이유를 몰라 traceback으로 역추적해야 했다.
+
+    내보내는 값은 **닫힌 어휘로 걸러서** 낸다. 이 경로는 아직 output leaf가 없어
+    forensic scrub 채널을 못 쓰고(leaf는 launcher가 preflight **뒤에** 만든다),
+    stdout은 launcher가 받는 자리다. allowlist 밖의 문자열은 phase만 낸다 —
+    호스트 상태나 경로가 섞여 나가는 경로를 열지 않는다.
+    """
 
     try:
         _validate_trusted_release(expected_revision)
         _assert_current_m05_execution_is_runnable(expected_revision)
         _source_pair_preflight()
-    except (_PhaseError, OSError, RuntimeError, ValueError):
+    except _PhaseError as error:
+        detail = error.diagnostic if error.diagnostic in _PAIR_DIAGNOSTICS else None
+        print(error.phase if detail is None else f"{error.phase}: {detail}", flush=True)
+        return 1
+    except (OSError, RuntimeError, ValueError):
         return 1
     return 0
 
@@ -3328,6 +3479,8 @@ if __name__ == "__main__":
         raise SystemExit(2)
     if len(sys.argv) == 3 and sys.argv[1] == "--preflight":
         raise SystemExit(preflight(sys.argv[2]))
+    if len(sys.argv) == 4 and sys.argv[1] == "--rotation-preflight":
+        raise SystemExit(rotation_preflight(sys.argv[2], sys.argv[3]))
     if len(sys.argv) != 3:
         raise SystemExit(2)
     raise SystemExit(main(sys.argv[1], Path(sys.argv[2])))
