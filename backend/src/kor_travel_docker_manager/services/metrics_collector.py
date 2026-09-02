@@ -12,7 +12,7 @@ import docker
 from docker.errors import NotFound
 
 from kor_travel_docker_manager.services.metrics_service import metrics_service
-from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS
+from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS, TargetsConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +216,7 @@ class MetricsCollector:
             self._container_observations: dict[str, dict[str, Any]] = {
                 key: self._default_observation(key) for key in MANAGED_CONTAINERS
             }
-        except ValueError as exc:
+        except TargetsConfigError:
             # GM-followups(docker-targets.yml 스키마 검증 잔여): 이 생성자는 모듈
             # 레벨 싱글턴(`metrics_collector = MetricsCollector()`, 이 파일 맨 끝)으로
             # import 시점에 즉시 실행된다. `MANAGED_CONTAINERS`는 registry.py에서
@@ -224,12 +224,31 @@ class MetricsCollector:
             # 검증이 실행되는데, 여기서 그대로 죽으면 이 모듈을 그저 import만 하는
             # `ktdctl`까지 raw traceback으로 죽는다 — DockerService.__init__의
             # `_backup_default_config` try/except와 같은 이유로 여기도 fail-open한다.
-            # 빈 dict로 시작해도 안전한 이유: `_collect_loop`이 매 tick마다
-            # `collect_metrics()`를 호출하는데 그 안의 `MANAGED_CONTAINERS` 순회가
-            # 같은 `ValueError`를 그대로 다시 내고, 그 호출은 이미 `except Exception`으로
-            # 감싸여 있어(`_collect_loop` 참고) 조용히 사라지지 않고 매 tick 로그로
-            # 계속 드러난다 — config를 고치기 전까지 관측 가능한 채로 fail-close된다.
-            logger.error(f"MANAGED_CONTAINERS unavailable at metrics collector startup: {exc}")
+            #
+            # 적대적 리뷰 2건(item2-targets-validate 재검토) 반영: 여기서
+            # `logger.error(...)`를 호출하지 않는다. `cli.py`는 로깅을 전혀
+            # 설정하지 않으므로(핸들러가 root logger 어디에도 없다) 실제
+            # fresh 프로세스에서는 `logging.lastResort`가 이 메시지를 형식
+            # 없이 그대로 stderr에 찍는다 — `ktdctl`은 이 싱글턴을
+            # `docker_service` import 체인을 통해 이 생성자에서 바로
+            # 구성하므로, `cli.py`의 `main()`이 잡아 내는 "깔끔한 한 줄"
+            # 바로 앞에 원인이 같은 두 번째 줄이 매번 따라붙어 그 계약을
+            # 깨뜨렸다(리뷰 재현: `KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE`에
+            # 깨진 config를 가리키고 실제 `python -m
+            # kor_travel_docker_manager.cli targets validate`를 fresh
+            # subprocess로 실행하면 stderr 두 줄; 기존 회귀 테스트는 pytest가
+            # 이 모듈을 collection 시점에 이미 정상 config로 import해 둔
+            # 뒤라 이 except 분기 자체가 그 테스트 안에서는 전혀 실행되지
+            # 않아 통과해 버렸다). 관측성은 잃지 않는다 — `_collect_loop`이
+            # 매 tick마다 `collect_metrics()`를 호출하는데 그 안의
+            # `MANAGED_CONTAINERS` 순회가 같은 `TargetsConfigError`를 그대로
+            # 다시 내고, 그 호출은 이미 `except Exception`으로 감싸여 있어
+            # (`_collect_loop` 참고) FastAPI 백엔드가 실제로 수집을 시작한
+            # 뒤에는 (main.py가 구성한 포맷 있는 핸들러로) 조용히 사라지지
+            # 않고 매 tick 로그로 계속 드러난다 — config를 고치기 전까지
+            # 관측 가능한 채로 fail-close된다. 여기서 그 신호를 한 번 더
+            # 앞당겨 내보내는 것은 CLI 계약을 깨뜨리는 비용에 비해 이득이
+            # 없다.
             self._container_observations = {}
         self._lock = threading.RLock()
         self._collection_runs_total = 0

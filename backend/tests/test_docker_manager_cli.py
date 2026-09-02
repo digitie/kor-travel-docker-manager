@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -2237,6 +2239,75 @@ def test_cli_reports_clean_error_for_broken_config_instead_of_traceback(
     assert "depends_on: unknown target 'typo_target'" in err
     assert "Traceback" not in err
     assert len(err.strip().splitlines()) == 1
+
+
+def test_real_subprocess_prints_exactly_one_clean_stderr_line_for_broken_config(
+    tmp_path,
+) -> None:
+    """적대적 리뷰 2건(item2-targets-validate 재검토)이 독립적으로 짚은 결함:
+    위 `test_cli_reports_clean_error_...`는 pytest 안에서만 통과했다 — 이
+    테스트 파일이 collection 시점에 `cli.py`를 이미 정상 config로 import해
+    둔 뒤라, `metrics_collector.py` 모듈 레벨 싱글턴(`metrics_collector =
+    MetricsCollector()`)의 생성자가 그 시점에 이미 성공해 버리고, 테스트
+    본문의 `monkeypatch.setenv(...)`는 그 뒤라 이 싱글턴을 다시 만들지
+    않는다 — 그래서 `MetricsCollector.__init__`의 fail-open
+    `except`/`logger.error(...)` 분기 자체가 이 테스트 안에서는 전혀
+    실행되지 않는다. 진짜 `ktdctl` 사용은 매번 fresh 프로세스라 이 분기가
+    반드시 실행되는데, `cli.py`는 로깅을 전혀 설정하지 않으므로(root
+    logger에 handler가 없다) 그 `logger.error(...)`가
+    `logging.lastResort`를 통해 형식 없이 그대로 stderr에 찍혀 `main()`이
+    내는 깔끔한 한 줄 앞에 원인이 같은 두 번째 줄이 따라붙었다. 이 테스트는
+    실제 `python -m kor_travel_docker_manager.cli` fresh subprocess로
+    재현해, pytest의 import/logging-capture 부작용을 우회한다 —
+    `metrics_collector.py`에서 그 `logger.error(...)` 호출을 되살리면(뒤의
+    MUTATION-TEST-TEMP) 이 테스트는 실패해야 하고, 지금은 통과해야 한다."""
+
+    backend_dir = Path(__file__).resolve().parents[1]
+    src_dir = backend_dir / "src"
+    config_path = tmp_path / "docker-targets.yml"
+    config_path.write_text(_BROKEN_TARGETS_YAML, encoding="utf-8")
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(src_dir)
+    env["KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE"] = str(config_path)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "kor_travel_docker_manager.cli", "targets", "validate"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "depends_on: unknown target 'typo_target'" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert len(result.stderr.strip().splitlines()) == 1
+
+
+def test_main_does_not_swallow_unrelated_bare_value_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """적대적 리뷰 2건(item2-targets-validate 재검토)이 독립적으로 짚은 결함:
+    `main()`의 outer `except`가 bare `ValueError`를 통째로 잡던 시절에는,
+    config 오타와 무관한 내부 불변식 위반(`compose_service.py`/
+    `c6c_deployment.py`의 "stage is invalid"/"attempt count must be
+    positive" 같은 프로그래밍 버그성 assert)까지 같이 삼켜 "config
+    오류인 척하는 exit 1"로 둔갑시킬 수 있었다. `registry.py`의
+    `TargetsConfigError` 서브클래스만 좁혀 잡도록 고친 뒤에는, config
+    검증과 무관한 bare `ValueError`가 실제 예외로 그대로 새 나와야 한다
+    (디버깅 시 원래 stack trace가 보존된다)."""
+
+    from kor_travel_docker_manager import cli as cli_module
+
+    def _boom(args) -> int:
+        raise ValueError("internal invariant broke, not a config typo")
+
+    monkeypatch.setattr(cli_module, "_cmd_targets_list", _boom)
+
+    with pytest.raises(ValueError, match="internal invariant broke, not a config typo"):
+        main(["targets", "list"])
 
 
 def test_cli_targets_validate_prints_ok_on_success(

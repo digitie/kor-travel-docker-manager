@@ -17,6 +17,26 @@ _REQUIRED_CONTAINER_FIELDS = (
 )
 
 
+class TargetsConfigError(ValueError):
+    """`config/docker-targets.yml` 스키마·참조 무결성 검증 실패 전용 타입.
+
+    적대적 리뷰 2건(item2-targets-validate 재검토) 반영: `cli.py`의 `main()`은
+    이 타입만 잡아 "config가 깨졌으니 깔끔한 한 줄 메시지로 안내"하는 fail-open
+    경로를 태운다. 예전에는 `main()`이 bare `ValueError`를 통째로 잡았는데,
+    `compose_service.py`/`c6c_deployment.py`의 내부 불변식 위반(스테이지 값 오류,
+    재시도 횟수 음수 등, 버그이지 config 오타가 아님)까지 같이 삼켜 "config
+    오류처럼 보이는 exit 1"로 둔갑시킬 위험이 있었다 — 오늘은 그 두 사이트가 이미
+    자기 자신의 좁은 `except`로 먼저 잡혀 실제로 새지는 않지만, 새 명령이 추가될
+    때마다 반복 확인할 근거가 없었다. `ValueError`를 상속하므로 기존
+    `except ValueError:` 호출부(레지스트리 자신의 `resolve_target_name`/
+    `container_id_to_compose_service` 같은 "잘못된 사용자 입력" 오류를 잡던
+    `_cmd_status`/`_cmd_ensure`/`_cmd_action` 등)는 전혀 바뀌지 않는다 — 이
+    서브클래스는 오직 `main()`/`_cmd_targets_validate`/
+    `MetricsCollector.__init__`이 정확히 무엇을 fail-open으로 삼키는지 좁히기
+    위한 것이다.
+    """
+
+
 def get_project_root() -> str:
     configured = os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", "").strip()
     if configured:
@@ -39,11 +59,11 @@ def load_targets_config() -> dict[str, Any]:
         config = load_yaml_rejecting_duplicate_keys(f.read()) or {}
 
     if not isinstance(config.get("containers"), dict):
-        raise ValueError("docker target config must define containers")
+        raise TargetsConfigError("docker target config must define containers")
     if not isinstance(config.get("targets"), dict):
-        raise ValueError("docker target config must define targets")
+        raise TargetsConfigError("docker target config must define targets")
     if not isinstance(config.get("dependency_order"), list):
-        raise ValueError("docker target config must define dependency_order")
+        raise TargetsConfigError("docker target config must define dependency_order")
     _validate_targets_config(config, label=os.path.basename(path))
     return config
 
@@ -59,7 +79,7 @@ def _require_list_field(
     if value is None:
         return []
     if not isinstance(value, list):
-        raise ValueError(
+        raise TargetsConfigError(
             f"{label} targets.{target_id}.{field}: must be a list, got "
             f"{type(value).__name__}"
         )
@@ -82,33 +102,33 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
 
     for container_id, spec in containers.items():
         if not isinstance(spec, dict):
-            raise ValueError(f"{label} containers.{container_id}: must be a mapping")
+            raise TargetsConfigError(f"{label} containers.{container_id}: must be a mapping")
         for field in _REQUIRED_CONTAINER_FIELDS:
             if field not in spec:
-                raise ValueError(
+                raise TargetsConfigError(
                     f"{label} containers.{container_id}: missing required field '{field}'"
                 )
 
     seen_aliases: dict[str, str] = {}
     for target_id, spec in targets.items():
         if not isinstance(spec, dict):
-            raise ValueError(f"{label} targets.{target_id}: must be a mapping")
+            raise TargetsConfigError(f"{label} targets.{target_id}: must be a mapping")
 
         for dep in _require_list_field(spec, "depends_on", target_id=target_id, label=label):
             if dep not in targets:
-                raise ValueError(
+                raise TargetsConfigError(
                     f"{label} targets.{target_id}.depends_on: unknown target '{dep}'"
                 )
         for included in _require_list_field(spec, "include", target_id=target_id, label=label):
             if included not in targets:
-                raise ValueError(
+                raise TargetsConfigError(
                     f"{label} targets.{target_id}.include: unknown target '{included}'"
                 )
         for container_id in _require_list_field(
             spec, "containers", target_id=target_id, label=label
         ):
             if container_id not in containers:
-                raise ValueError(
+                raise TargetsConfigError(
                     f"{label} targets.{target_id}.containers: unknown container '{container_id}'"
                 )
 
@@ -117,7 +137,7 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
             normalized = str(alias).strip().lower()
             owner = seen_aliases.get(normalized)
             if owner is not None and owner != target_id:
-                raise ValueError(
+                raise TargetsConfigError(
                     f"{label} targets.{target_id}.aliases: alias '{alias}' already used "
                     f"by target '{owner}'"
                 )
@@ -125,7 +145,7 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
 
     for name in config["dependency_order"]:
         if name not in targets:
-            raise ValueError(f"{label} dependency_order: unknown target '{name}'")
+            raise TargetsConfigError(f"{label} dependency_order: unknown target '{name}'")
 
 
 def _targets() -> dict[str, dict[str, Any]]:

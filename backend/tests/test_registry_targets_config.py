@@ -159,6 +159,21 @@ def test_error_message_includes_the_caller_supplied_label() -> None:
         _validate_targets_config(config, label="custom-label.yml")
 
 
+def test_validate_targets_config_raises_the_targets_config_error_subclass() -> None:
+    """적대적 리뷰 2건(item2-targets-validate 재검토)이 짚은 결함 대응:
+    `cli.py`의 `main()`은 이제 bare `ValueError`가 아니라
+    `TargetsConfigError`만 좁혀 잡는다(config 오타와 무관한 내부 불변식
+    위반까지 "config 오류인 척"하는 exit 1로 둔갑시키지 않기 위해). 위
+    테스트들이 쓰는 `pytest.raises(ValueError, ...)`는 `TargetsConfigError`가
+    `ValueError`를 상속하기만 하면 계속 통과하므로, 실제로 이 서브클래스가
+    나오는지는 별도로 타입 자체를 고정해야 한다."""
+
+    config = _minimal_valid_config()
+    config["dependency_order"] = ["does_not_exist"]
+    with pytest.raises(registry_module.TargetsConfigError):
+        _validate_targets_config(config, label="test.yml")
+
+
 _VALID_YAML = """
 containers:
   geo_db:

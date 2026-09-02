@@ -80,6 +80,47 @@ docstring이 이미 이 전제가 틀렸다고 확인한 내용이다(모니터�
 전부 mutation-test로 원복 전 실패를 확인한 뒤 복원했다. 전체 backend 1501
 passed, 2 skipped, ruff 통과. frontend type-check/lint/test/build 전부 통과.
 
+**적대적 리뷰 2건(item2-targets-validate 재검토) 반영.** 두 리뷰가 독립적으로
+같은 Medium 결함을 짚었다: fresh 프로세스(진짜 `ktdctl` 사용)에서 깨진
+config면 stderr에 두 줄이 찍힌다 — `metrics_collector.py`의 모듈 레벨 싱글턴
+생성자가 fail-open하며 남기는 `logger.error(...)`가 `cli.py`가 로깅을 전혀
+설정하지 않아 `logging.lastResort`를 통해 형식 없이 그대로 새고, 바로 뒤에
+`main()`의 깔끔한 한 줄이 따라붙는다. 기존 회귀 테스트(`len(err.strip()
+.splitlines()) == 1`)는 pytest가 이 모듈을 collection 시점에 이미 정상
+config로 import해 둔 뒤라 그 `except` 분기 자체가 테스트 안에서 실행되지
+않아 통과해 버리고 있었다 — 직접 fresh subprocess로 재현해 확인(두 줄).
+`logger.error(...)` 호출을 제거했다: 관측성은 잃지 않는다(`_collect_loop`가
+매 tick마다 같은 예외를 다시 내고 이미 `except Exception`으로 감싸여 있어
+FastAPI 백엔드가 실제로 수집을 시작한 뒤에는 `main.py`가 구성한 포맷 있는
+핸들러로 계속 로그에 드러난다). 새 실제-subprocess 회귀 테스트를 추가해
+pytest의 import/logging-capture 부작용을 우회하고 진짜 stderr를 확인한다.
+
+두 번째 리뷰는 추가로 Medium 하나를 짚었다: `main()`의 outer `except
+ValueError`가 `args.func(args)` 전체(~30개 명령 핸들러)를 감싸, config
+오타와 무관한 내부 불변식 위반(`compose_service.py`/`c6c_deployment.py`의
+"stage is invalid"/"attempt count must be positive" 같은 프로그래밍 버그성
+assert)까지 "config 오류인 척하는 exit 1"로 둔갑시킬 표면적을 남겼다(오늘은
+그 두 사이트가 `_cmd_pinvi_pair` 자신의 더 좁은 기존 `except ValueError`에
+먼저 걸려 실제로 새지는 않지만, 새 명령이 추가될 때마다 그 전제가 계속
+성립한다는 보장이 없다). `registry.py`에 `TargetsConfigError(ValueError)`
+전용 서브클래스를 추가해 스키마/참조 무결성 검증 raise 전부(`load_
+targets_config`/`_validate_targets_config`/`_require_list_field`)를 여기로
+옮기고, `main()`/`_cmd_targets_validate`/`MetricsCollector.__init__`은
+`TargetsConfigError`만 좁혀 잡도록 고쳤다 — `ValueError`를 상속하므로 기존
+`except ValueError:` 호출부(`resolve_target_name`/
+`container_id_to_compose_service`의 "잘못된 사용자 입력" 오류를 잡던
+`_cmd_status`/`_cmd_ensure`/`_cmd_action` 등)는 전혀 바뀌지 않는다. 새
+테스트로 (1) 실제 subprocess에서 stderr가 정확히 한 줄인지, (2) `main()`이
+config와 무관한 bare `ValueError`를 더 이상 삼키지 않는지(monkeypatch로
+명령 핸들러가 그런 예외를 내게 하고 실제로 새 나오는지 확인), (3)
+`_validate_targets_config`가 실제로 `TargetsConfigError` 타입(단순
+`ValueError` 상위 타입 매치가 아니라)을 내는지를 각각 추가했다. 세 건 모두
+mutation-test(고쳤던 코드를 되돌려 새 테스트가 기대한 이유로 실패하는지
+확인한 뒤 복원)로 효력을 확인했다. 리뷰가 짚은 나머지(사전 존재하던 `targets`
+sub-action 필수화로 인한 exit 2 변경)는 의도된 breaking change로 문서·테스트에
+이미 반영돼 있어 손대지 않았다. 전체 backend 1504 passed, 2 skipped, ruff
+통과.
+
 ## 2026-09-02 — WebSocket 경로 요청 상관관계 ID 공백 해소 (GM-16 후속)
 
 `docs/tasks.md`에 남아 있던 GM-16 후속 항목을 이행했다. `main.py`의

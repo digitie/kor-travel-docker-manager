@@ -39,7 +39,11 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     RUNTIME_SOURCE_ROLES,
 )
-from kor_travel_docker_manager.services.registry import list_targets, load_targets_config
+from kor_travel_docker_manager.services.registry import (
+    TargetsConfigError,
+    list_targets,
+    load_targets_config,
+)
 from kor_travel_docker_manager.services.runtime_execution_registry import (
     block_current_execution,
     load_runtime_execution_registry,
@@ -154,7 +158,7 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
 
     try:
         load_targets_config()
-    except ValueError as exc:
+    except TargetsConfigError as exc:
         print(str(exc), file=sys.stderr)
         return 1
     print("OK")
@@ -2162,9 +2166,27 @@ def main(argv: list[str] | None = None) -> int:
         parser = build_parser()
         args = parser.parse_args(parsed_argv)
         return int(args.func(args))
-    except ValueError as exc:
+    except TargetsConfigError as exc:
         # GM-followups: 깨진 config/docker-targets.yml이 raw traceback 대신
-        # registry.py의 이미 명확한 검증 메시지 그대로 stderr에 한두 줄로 나가게 한다.
+        # registry.py의 이미 명확한 검증 메시지 그대로 stderr에 한 줄로 나가게 한다.
+        #
+        # 적대적 리뷰 2건(item2-targets-validate 재검토) 반영: 예전에는 여기서
+        # bare `ValueError`를 잡았다 — `args.func(args)`가 다시 ~30개 명령
+        # 핸들러 전체로 펼쳐지는 자리라, config 오타와 무관한 내부 불변식
+        # 위반(예: `compose_service.py`/`c6c_deployment.py`의 "stage is
+        # invalid"/"attempt count must be positive" 같은 프로그래밍 버그성
+        # assert)까지 같이 삼켜 "config 문제인 척하는 exit 1"로 둔갑시킬 수
+        # 있는 표면적이 컸다(오늘은 그 두 사이트가 `_cmd_pinvi_pair` 자신의
+        # 더 좁은 `except ValueError`에 먼저 걸려 실제로 새지는 않았지만, 새
+        # 명령이 추가될 때마다 그 전제가 계속 성립한다고 보장할 근거가
+        # 없었다). `TargetsConfigError`는 registry.py의 스키마/참조 무결성
+        # 검증 실패만 표시하는 전용 서브클래스라, 여기서 좁혀 잡아도 이
+        # 기능이 원래 고치려던 경로(등록되지 않은 config 오타)는 전혀
+        # 좁아지지 않는다 — `resolve_target_name`/
+        # `container_id_to_compose_service`의 "잘못된 사용자 입력" 계열
+        # bare `ValueError`는 여전히 각 `_cmd_*`의 기존 로컬 `except
+        # ValueError`가 그대로 처리한다(이 부분은 이 커밋 이전부터 있던
+        # 동작이라 손대지 않았다).
         print(str(exc), file=sys.stderr)
         sys.exit(1)
 
