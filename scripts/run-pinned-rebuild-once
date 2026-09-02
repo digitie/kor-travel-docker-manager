@@ -115,9 +115,9 @@ if [[ "${parent_uid}" != "0" || $((8#${parent_mode} & 022)) -ne 0 ]]; then
   exit 2
 fi
 
-install -d -o root -g root -m 0700 "${output_dir}"
+/usr/bin/install -d -o root -g root -m 0700 "${output_dir}"
 
-python3 -I -S - "${expected_manager_revision}" <<'PY'
+/usr/bin/python3 -I -S - "${expected_manager_revision}" <<'PY'
 import json
 import os
 import pathlib
@@ -185,8 +185,8 @@ if [[ ! "${installed_pinset}" =~ ^[0-9a-f]{64}$ ]]; then
 fi
 
 ledger_dir="/var/lib/kor-travel-docker-manager/pinned-rebuild-once"
-install -d -o root -g root -m 0700 "${ledger_dir}"
-python3 -I -S - "${ledger_dir}" "${installed_pinset}" "${expected_manager_revision}" "${output_dir}" <<'PY'
+/usr/bin/install -d -o root -g root -m 0700 "${ledger_dir}"
+/usr/bin/python3 -I -S - "${ledger_dir}" "${installed_pinset}" "${expected_manager_revision}" "${output_dir}" <<'PY'
 import json
 import os
 import pathlib
@@ -250,18 +250,108 @@ set +e
 status="$?"
 set -e
 
-chown root:root "${result_tmp}" "${stderr_path}"
-chmod 0600 "${result_tmp}" "${stderr_path}"
-mv -T "${result_tmp}" "${result_path}"
+/usr/bin/chown root:root "${result_tmp}" "${stderr_path}"
+/usr/bin/chmod 0600 "${result_tmp}" "${stderr_path}"
+/usr/bin/mv -T "${result_tmp}" "${result_path}"
 
-python3 -I -S - "${result_path}" <<'PY'
+# 자식의 종료값은 **가장 강한 증거**다. 종전에는 그 아래 JSON 검증기가
+# `set -e` 아래 있어, ktdctl이 stdout을 못 남기면(126/127 기동 실패,
+# 137 OOM-kill, 129/143 SSH 끊김) `json.loads("")`가 먼저 죽어 status를
+# exit 1로 덮고 raw traceback만 남겼다. 검증은 진단일 뿐 status를
+# 대체하면 안 된다(적대 감사 F-2).
+set +e
+/usr/bin/python3 -I -S - "${result_path}" <<'PY' 2>/dev/null
 import json
 import pathlib
 import sys
 
-value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+try:
+    value = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1) from None
 if not isinstance(value, dict):
-    raise SystemExit("pinned rebuild result must be a JSON object")
+    raise SystemExit(1)
 PY
+result_is_object="$?"
+set -e
+if [[ "${result_is_object}" != 0 ]]; then
+  echo "pinned rebuild result is not a JSON object (child exit ${status})" >&2
+fi
+
+# 소각(=claim 유지)은 기본값으로 두되, **해제만 양성 증거에 건다.** CLI는
+# durable journal 이전에 fail-close하면 `classification=prejournal_failure`와
+# 그 stage를 result.json에 명시한다 — 즉 "아무것도 소비하지 않았다"를 스스로
+# 적어 준다. 종전 launcher는 그 파일을 dict인지만 보고 버렸고, 그래서
+# `docker pull` 한 번의 rate limit이나 DNS 순간 장애가 회전 사이클 1회를
+# 태웠다(`application_base_images`/`application_builder`가 그 목록에 있다).
+#
+# M05 트랙은 같은 감사(I-1)를 거쳐 ledger 파일명에 attempt ordinal을 붙이고
+# 무조건 규칙을 phase-scoped로 개정했다. 이 launcher는 그 개정 전 규칙을
+# 들고 M05 **직전**에 돈다 — 같은 원칙의 쌍대를 여기에도 적용한다.
+#
+# 해제는 claim을 **지우지 않고** 이름만 바꾼다. "원장에서 지운 적 없다"는
+# 보증을 보존하면서 재시도만 허용한다.
+set +e
+/usr/bin/python3 -I -S - "${result_path}" "${ledger_dir}" "${installed_pinset}" "${status}" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+result_path, ledger_root, pinset, child_status = sys.argv[1:5]
+
+# durable journal 이전에 fail-close하는 stage. compose_service의
+# _PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES와 같은 집합이어야 한다 —
+# 이 launcher는 backend를 import할 수 없으므로(root 최소 신뢰 표면)
+# 리터럴로 두고 test_run_pinned_rebuild_once.py가 미러 결박한다.
+PREJOURNAL_STAGES = frozenset(
+    {
+        "environment_admission",
+        "state_initialization",
+        "prebuild_snapshot",
+        "external_prerequisites",
+        "source_materialization",
+        "application_base_images",
+        "application_builder",
+        "application_candidate",
+        "candidate_snapshot",
+        "candidate_contract",
+    }
+)
+
+if child_status != "2":
+    # prejournal 실패는 CLI가 정확히 2로 낸다. 그 밖의 값은 소비 여부를
+    # 증명하지 못하므로 claim을 유지한다.
+    raise SystemExit(3)
+try:
+    value = json.loads(pathlib.Path(result_path).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(3) from None
+if (
+    not isinstance(value, dict)
+    or value.get("status") != "failed"
+    or value.get("classification") != "prejournal_failure"
+    or value.get("stage") not in PREJOURNAL_STAGES
+):
+    raise SystemExit(3)
+
+root = pathlib.Path(ledger_root)
+for ordinal in range(1, 33):
+    target = root / f"{pinset}.prejournal-{ordinal:02d}"
+    try:
+        os.rename(root / pinset, target)
+    except FileExistsError:
+        continue
+    except OSError:
+        raise SystemExit(3) from None
+    raise SystemExit(0)
+# 상한에 닿았다 — 같은 pinset이 32회 prejournal 실패했다면 사람이 봐야 한다.
+raise SystemExit(3)
+PY
+claim_released="$?"
+set -e
+if [[ "${claim_released}" == 0 ]]; then
+  echo "pinned rebuild failed before the durable journal; the candidate was not consumed and may be retried" >&2
+fi
 
 exit "${status}"
