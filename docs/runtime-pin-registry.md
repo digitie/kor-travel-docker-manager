@@ -616,6 +616,36 @@ ktdctl pinvi-pair rebuild-pinned --confirm
 
 ## 9. 흔한 상황별 대응
 
+### "pinned rebuild candidate was already claimed"
+
+`run-pinned-rebuild-once`는 `ktdctl`을 부르기 **전에**
+`/var/lib/kor-travel-docker-manager/pinned-rebuild-once/<pinset>`에 `O_EXCL` claim을
+쓴다. 이 원장은 **append-only 감사 기록이자 동시성 가드**이지 재실행 권한의 정본이
+아니다 — 재실행 허용의 정본은 runtime pin/execution registry가 갖는다(§단발 실행의
+완료 판정). M05 트랙이 I-1 감사로 같은 개정을 먼저 받았고(ledger 파일명 ordinal),
+rebuild 쪽은 그 개정을 뒤늦게 받는다.
+
+**durable journal 이전에 닫힌 실행은 claim이 해제된다.** CLI가 result에
+`classification: prejournal_failure`를 명시하면(= 이번 실행이 journal을 쓰지 않았다)
+launcher가 claim을 `<pinset>.prejournal-NN`으로 **개명**하고(삭제하지 않는다 — 원장은
+보존된다) `output_dir/claim-released` 마커(root 0600)를 남긴다. 시도 상한은 **5회**다
+— 1회가 1~2시간 + 이미지 4개 풀 빌드이고 그 잔여물을 수거하는 job이 없다.
+
+이 상태에서 할 일:
+
+1. `output_dir/claim-released`가 있으면 **같은 pinset을 새 output leaf로 재실행한다.**
+   회전(`rotate-pair`)은 필요 없다.
+2. 재실행 전에 이전 output leaf와 dangling candidate 이미지를 정리한다. 재시도가
+   누적되면 디스크가 차고, 디스크가 차면 그 자체가 다음 prejournal 실패를 만든다.
+3. `stderr.log`와 `result.json`의 `stage`로 원인을 좁힌다. `application_base_images`/
+   `application_builder`는 대개 네트워크(레지스트리 rate limit·DNS)다.
+4. 마커가 **없으면** 해제되지 않은 것이다 — 이번 실행이 durable journal 이후까지
+   갔거나, 소비 여부를 증명하지 못했다는 뜻이다. 그때만 아래 회전 절차로 간다.
+
+> `prejournal_failure`는 "이번 실행이 durable journal을 쓰지 않았다"는 뜻이지
+> "후보가 소비된 적 없다"가 아니다. resume 실행도 이 분류를 낼 수 있으므로,
+> 직접 `ktdctl pinvi-pair rebuild-pinned`를 돌린 적이 있다면 journal 상태를 먼저 본다.
+
 ### "rebuild-pinned가 거부됩니다"
 
 항상 `ktdctl pin verify`로 v6 execution binding을 확인한다. `execution_binding: current`,

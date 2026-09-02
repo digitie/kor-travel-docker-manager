@@ -21,44 +21,6 @@ import pytest
 _LAUNCHER = Path(__file__).resolve().parents[2] / "scripts/run-pinned-rebuild-once"
 
 # durable journal 이전에 fail-close하는 stage — compose_service의 정본과 같아야 한다.
-_PREJOURNAL_STAGES = frozenset(
-    {
-        "environment_admission",
-        "state_initialization",
-        "prebuild_snapshot",
-        "external_prerequisites",
-        "source_materialization",
-        "application_base_images",
-        "application_builder",
-        "application_candidate",
-        "candidate_snapshot",
-        "candidate_contract",
-    }
-)
-
-
-def test_prejournal_stage_literal_mirrors_the_service_canon() -> None:
-    """launcher는 root 최소 신뢰 표면이라 backend를 import할 수 없다.
-
-    그래서 stage 목록을 리터럴로 들고 있는데, 정본과 갈라지면 (a) 넓어지면 실제로
-    소비된 실행을 재시도 허용으로 풀고 (b) 좁아지면 소비 안 한 후보를 계속 태운다.
-    """
-
-    from kor_travel_docker_manager.services.compose_service import (
-        _PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES,
-    )
-
-    launcher = _LAUNCHER.read_text(encoding="utf-8")
-    start = launcher.index("PREJOURNAL_STAGES = frozenset(")
-    end = launcher.index(")", launcher.index("}", start)) + 1
-    import re
-
-    declared = set(re.findall(r'"([a-z_]+)"', launcher[start:end]))
-
-    assert declared == set(_PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES)
-    assert declared == set(_PREJOURNAL_STAGES)
-
-
 def _tail(launcher: str) -> str:
     start = launcher.index('result_tmp="${output_dir}/.result.json.tmp"')
     return launcher[start:]
@@ -147,6 +109,9 @@ def test_prejournal_failure_releases_the_claim_for_retry(tmp_path: Path) -> None
     assert not claim.exists(), "claim이 그대로면 같은 pinset 재실행이 영구 거절된다"
     released = list(claim.parent.glob(claim.name + ".prejournal-*"))
     assert len(released) == 1, "해제는 삭제가 아니라 개명이어야 한다(원장 보존)"
+    marker = tmp_path / "out" / "claim-released"
+    assert marker.is_file(), "해제 사실이 output leaf에서 판독 가능해야 한다"
+    assert oct(marker.stat().st_mode)[-3:] == "600"
     assert "may be retried" in completed.stderr
 
 
@@ -155,8 +120,24 @@ def test_prejournal_failure_releases_the_claim_for_retry(tmp_path: Path) -> None
     [
         ("post_journal_failure", 1, {"status": "failed"}),
         ("unknown_classification", 2, {"status": "failed", "classification": "other"}),
-        ("stage_outside_allowlist", 2, {"status": "failed", "classification": "prejournal_failure", "stage": "durable_journal"}),
         ("unparseable", 2, None),
+        # 아래 셋은 해제 술어의 각 연접을 단독으로 판별한다 — 하나만 지워도
+        # 잡히도록(적대 리뷰 M-2: 종전 표는 전부 다른 이유로 먼저 걸러졌다).
+        (
+            "status_not_failed",
+            2,
+            {"status": "succeeded", "classification": "prejournal_failure"},
+        ),
+        (
+            "classification_unclassified",
+            2,
+            {"status": "failed", "classification": "unclassified"},
+        ),
+        (
+            "matching_payload_wrong_exit",
+            3,
+            {"status": "failed", "classification": "prejournal_failure"},
+        ),
         ("success", 0, {"status": "succeeded"}),
     ],
 )
@@ -196,8 +177,8 @@ def test_burn_decision_commands_use_absolute_paths() -> None:
     launcher = _LAUNCHER.read_text(encoding="utf-8")
     import re
 
-    for command in ("python3", "install", "chown", "chmod", "mv"):
-        bare = re.search(r"(?m)^[ ]*" + command + r"[ ]", launcher)
+    for command in ("python3", "install", "chown", "chmod", "mv", "id", "stat"):
+        bare = re.search(r"(?m)(^|[^/\w])" + command + r"[ ]-", launcher)
         assert bare is None, f"{command}가 PATH에 의존한다: {bare.group(0) if bare else ''}"
 
 
@@ -232,3 +213,21 @@ def test_repeated_prejournal_failures_preserve_every_record(tmp_path: Path) -> N
 
     records = sorted(item.name for item in ledger.iterdir())
     assert records == [f"{pinset}.prejournal-01", f"{pinset}.prejournal-02"], records
+
+
+@pytest.mark.parametrize("body", [None, [1, 2, 3]])
+def test_successful_child_with_an_unreadable_result_fails_closed(
+    tmp_path: Path, body: object
+) -> None:
+    """`exit 0 ⇒ result.json은 JSON object`라는 불변식은 유지돼야 한다.
+
+    검증기를 `set -e` 밖으로 뺀 것은 자식의 **실패** 종료값(126/127/137/143)을
+    보존하기 위해서였다. 그 과정에서 자식이 성공을 주장하는 경우의 fail-close까지
+    없애면, 1~2시간 rebuild 뒤 비가역 단계로 넘어가는 판단 지점에서 조용히
+    안전장치가 하나 사라진다(적대 리뷰 M-1).
+    """
+
+    completed, _claim = _run_tail(tmp_path, child_status=0, result=body)
+
+    assert completed.returncode == 1, completed.stderr
+    assert "not a JSON object" in completed.stderr

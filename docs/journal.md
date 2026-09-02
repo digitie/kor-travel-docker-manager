@@ -2,6 +2,56 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-02 — rebuild ledger: 소비하지 않은 후보를 태우던 claim을 해제한다
+
+M05 launcher에 적용했던 감사 렌즈를 형제 `run-pinned-rebuild-once`에 처음 댔다.
+이 파일을 **실제로 실행하는 테스트가 0건**이었다.
+
+**blocker.** launcher는 `ktdctl` 실행 전에 `O_EXCL` claim을 쓰고 어떤 경우에도
+해제하지 않았다. 그런데 CLI는 durable journal 이전에 fail-close하면 result에
+`classification: prejournal_failure`를 명시한다 — 즉 이번 실행이 journal을 쓰지
+않았음을 스스로 적어 준다. launcher는 그 파일을 dict인지만 보고 버렸다.
+그 분류를 내는 stage에 `application_base_images`(`docker pull`)와
+`application_builder`(빌드 중 네트워크)가 있어, **레지스트리 rate limit 한 번이
+회전 사이클 1회를 태웠다.** 저장소 역사의 `53d4639f`·`6269138f`가 이 계열이고,
+`docs/tasks.md`는 "rebuild가 중단되고 그 claim이 탄다"를 피해 기전으로 이미
+적어 뒀다 — 원인(fsync)은 고쳤는데 증폭기(claim)가 그대로였다.
+
+소각(claim 유지)은 기본값으로 두고 **해제만 양성 증거에 걸었다.** 해제는 삭제가
+아니라 `<pinset>.prejournal-NN` 개명이라 원장이 보존된다.
+
+**적대 리뷰 2인이 이 수정 자체에서 다시 여섯 건을 찾았다.**
+
+- 문서가 정반대를 지시하고 있었다 — 유일한 트러블슈팅 절이 `rotate-pair
+  --block-previous`(= 소각)를 안내해, 코드가 살려 둔 후보를 사람이 태우게 된다.
+  §9에 해제 규약과 재시도 절차를 신설했다(이 커밋).
+- 해제 판정이 `chown`/`chmod`/`mv` **뒤**에 있었다. 그 셋은 `set -e` 아래라
+  ENOSPC/EIO면 스크립트가 먼저 죽는데, 디스크가 차서 빌드가 prejournal에서
+  실패한 경우가 바로 그 상황이다 — **재시도가 가장 정당한 순간에 해제가
+  실행되지 않는다.** 판정을 `result_tmp` 대상으로 앞으로 옮겼다.
+- 해제 사실의 유일한 증거가 아무도 읽지 않는 0700 디렉터리의 파일명이었다.
+  형제 launcher의 `claimed` 마커와 같은 형태로 `output_dir/claim-released`를 남긴다.
+- stage allowlist를 없앴다. `PinnedRuntimePrejournalFailure.__init__`이 이미 같은
+  집합으로 stage를 검증하므로, launcher 사본은 위험 방향을 막지 못하고 **좁아지는
+  방향(= 재시도 가능한 후보 소각)만** 만든다. 형제 launcher에서 tenant 어휘를
+  걷어낸 것과 같은 판단이다.
+- 시도 상한 32 → **5**. 32는 M05(짧은 실행)에서 복사한 값인데 여기선 1회가
+  1~2시간 + 이미지 4개 풀 빌드이고 잔여물 수거 job이 없다.
+- `"the candidate was not consumed"` 문구를 좁혔다. `prejournal_failure`는
+  "이번 실행이 journal을 쓰지 않았다"이지 "후보가 소비된 적 없다"가 아니다 —
+  resume 실행도 이 분류를 낼 수 있다.
+
+그리고 리뷰 대기 중 **내 수정 자체의 버그**를 자체 검증에서 잡았다: `os.rename`은
+POSIX에서 대상을 조용히 덮어써 `FileExistsError`로 빈 슬롯을 찾는 루프가 동작하지
+않고, 두 번째 실패가 첫 기록을 파괴했다. `os.link` + `unlink`로 create-only
+의미론을 만들었다.
+
+셸을 진짜 bash로 실행하는 동작 테스트 11건을 신설했다. mutation 3종 확인.
+
+**후속으로 남긴 것**: `classification: unclassified` 구멍(admission gate와 seal 밖
+pre-journal 구간 ~107줄이 전부 여기로 온다 — 근본 수정 위치는 launcher가 아니라
+`rebuild_pinned_runtime`이다), OOM-kill/기동 실패의 소각, 재시도 잔여물 수거 job.
+
 ## 2026-09-02 — frontend 컴포넌트 렌더 테스트 인프라 도입 + 오류 표시 분기 회귀 테스트 (GM-12 후속)
 
 `docs/tasks.md`에 남아 있던 GM-12 항목("컴포넌트 렌더링 테스트 인프라 자체가
