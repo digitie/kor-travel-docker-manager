@@ -2832,16 +2832,29 @@ def test_passing_run_survives_a_directory_fsync_failure(
     assert '[[ ! -e "$output_dir/claimed" ]]' in launcher
 
 
-def _rotation_contract(*, admin: str, full: str) -> bytes:
-    """회전 게이트가 읽는 최소 계약 봉투."""
+def _rotation_contract(*, admin: str, full: str, version: int = 1) -> bytes:
+    """회전 게이트가 읽는 최소 계약 봉투.
+
+    `version`이 필수다 — 실제 계약은 항상 갖고 있고, dual-read가 그 값으로
+    v1/v2를 가른다.
+    """
 
     return json.dumps(
         {
             "map": {
                 "admin": {"source_revision": admin},
                 "full": {"source_revision": full},
-            }
+            },
+            "version": version,
         }
+    ).encode("utf-8")
+
+
+def _rotation_contract_v2() -> bytes:
+    """v2 봉투 — revision 선언이 없다."""
+
+    return json.dumps(
+        {"map": {name: {"openapi_sha256": "a" * 64} for name in ("admin", "full")}, "version": 2}
     ).encode("utf-8")
 
 
@@ -2930,6 +2943,51 @@ def test_rotation_preflight_refuses_a_contract_whose_admin_and_full_disagree(
 
     assert status == 1
     assert "admin" in out and "full" in out
+
+
+def test_rotation_preflight_accepts_v2_without_comparing_revisions(
+    monkeypatch, capsys
+) -> None:
+    """v2에는 비교할 문자열이 없다 — 회전이 만들 수 있는 모순이 사라졌다.
+
+    이 게이트는 "계약이 지목한 Map revision"과 "회전 대상 Map revision"이 어긋나는
+    것을 막으려고 있다. v2는 그 선언을 계약에서 걷어내 **생산자를 pin registry
+    하나로** 만들므로, 막을 모순 자체가 구조적으로 존재하지 않는다.
+
+    검사가 약해지는 것이 아니다 — 격리 preflight가 네 표면의 digest를 릴리스의
+    blob과 대조하고, v1에서는 그 대조가 계약 자신의 revision에 앵커돼 있어
+    service·user는 릴리스와 한 번도 맞춰지지 않았다.
+    """
+
+    driver = _driver()
+
+    def command(*args: str, **kwargs: object) -> str:
+        if "show" in args:
+            return _rotation_contract_v2().decode("utf-8")
+        return ""
+
+    monkeypatch.setattr(driver, "_command", command)
+
+    assert driver.rotation_preflight("a" * 40, "b" * 40) == 0
+    assert "v2" in capsys.readouterr().out
+
+
+def test_rotation_preflight_refuses_an_unsupported_contract_version(
+    monkeypatch, capsys
+) -> None:
+    """알 수 없는 버전은 회전하지 않는다 — 불확실할 때 원장을 바꾸지 않는다."""
+
+    driver = _driver()
+
+    def command(*args: str, **kwargs: object) -> str:
+        if "show" in args:
+            return json.dumps({"map": {}, "version": 7}).encode("utf-8").decode("utf-8")
+        return ""
+
+    monkeypatch.setattr(driver, "_command", command)
+
+    assert driver.rotation_preflight("a" * 40, "b" * 40) == 1
+    assert "unsupported" in capsys.readouterr().out
 
 
 def test_rotation_preflight_refuses_an_unreadable_contract(
@@ -3075,4 +3133,195 @@ def test_installer_executable_set_mirrors_the_git_index() -> None:
     assert granted == indexed, (
         "설치 스크립트의 0755 목록이 git index와 다르다 — "
         f"목록에만: {sorted(granted - indexed)}, index에만: {sorted(indexed - granted)}"
+    )
+
+
+def _v2_pair_entry(raw: bytes) -> dict[str, str]:
+    """v2 엔트리 — `source_revision`이 **없다**."""
+
+    entry = _pair_entry(revision="0" * 40, raw=raw)
+    del entry["source_revision"]
+    return entry
+
+
+def _write_v2_pair(pinvi_root: Path, blobs: dict[str, bytes]) -> dict[str, object]:
+    paths = {
+        "admin": "packages/kor-travel-map-api/openapi.json",
+        "full": "packages/kor-travel-map-api/openapi.json",
+        "service": "packages/kor-travel-map-api/openapi.service.json",
+        "user": "packages/kor-travel-map-api/openapi.user.json",
+    }
+    pair: dict[str, object] = {
+        "map": {name: _v2_pair_entry(blobs[paths[name]]) for name in paths},
+        "version": 2,
+    }
+    (pinvi_root / "contracts").mkdir(parents=True, exist_ok=True)
+    (pinvi_root / "contracts/kor-travel-map-m05-pair-provenance-v1.json").write_text(
+        json.dumps(pair), encoding="utf-8"
+    )
+    return pair
+
+
+def test_pair_v2_anchors_every_surface_to_the_pinned_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v2는 네 표면 전부를 **릴리스**의 blob과 대조한다.
+
+    v1에서 digest 대조는 계약이 스스로 지목한 revision에 앵커돼 있어
+    "계약은 자기무모순이다"만 증명했다. service·user는 각자의 낡은 revision에서
+    읽혀 릴리스와의 관계가 한 번도 확인되지 않았다. v2에서는 그 관계가
+    **처음으로** 검사된다.
+    """
+
+    driver = _driver()
+    pinvi_root = tmp_path / "pinvi"
+    map_root = tmp_path / "map"
+    map_root.mkdir()
+    pinned = PINNED_RUNTIME_RELEASE.source_for("map").revision
+    paths = {
+        "admin": "packages/kor-travel-map-api/openapi.json",
+        "full": "packages/kor-travel-map-api/openapi.json",
+        "service": "packages/kor-travel-map-api/openapi.service.json",
+        "user": "packages/kor-travel-map-api/openapi.user.json",
+    }
+    blobs = {
+        path: json.dumps({"path": path}).encode() for path in set(paths.values())
+    }
+    pair = _write_v2_pair(pinvi_root, blobs)
+
+    reads: list[str] = []
+    fetches: list[tuple[str, ...]] = []
+
+    def fake_command(*args: str, **_kwargs: object) -> str:
+        fetches.append(args)
+        return ""
+
+    def fake_run(
+        args: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        target = args[-1]
+        reads.append(target)
+        revision, _, path = target.partition(":")
+        return subprocess.CompletedProcess(args, 0, stdout=blobs[path])
+
+    monkeypatch.setattr(driver, "_command", fake_command)
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    actual, service_openapi_sha256, service_source_revision = driver._pair(
+        pinvi_root, map_root
+    )
+
+    # 네 read 전부가 pinned revision에서 났다 — 이것이 v2의 실질이다.
+    assert reads and all(target.startswith(pinned + ":") for target in reads)
+    # fetch도 하나로 줄어든다(계약이 네 revision을 흩뿌리지 않으므로).
+    assert {args[-1] for args in fetches} == {pinned}
+    assert actual.map_full_openapi_sha256 == pair["map"]["full"]["openapi_sha256"]
+    assert service_openapi_sha256 == pair["map"]["service"]["openapi_sha256"]
+    assert service_source_revision == pinned
+
+
+def test_pair_v2_rejects_a_declared_source_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v2가 revision을 다시 선언하면 이 전환의 목적 자체가 무효다.
+
+    생산자를 하나로 만드는 것이 v2의 요지인데, 필드를 남겨 두면 같은 이중
+    선언이 조용히 돌아온다.
+    """
+
+    driver = _driver()
+    pinvi_root = tmp_path / "pinvi"
+    map_root = tmp_path / "map"
+    map_root.mkdir()
+    raw = b'{"version":2}'
+    pair = {
+        "map": {name: _v2_pair_entry(raw) for name in ("admin", "full", "service", "user")},
+        "version": 2,
+    }
+    pair["map"]["user"]["source_revision"] = "e" * 40
+    (pinvi_root / "contracts").mkdir(parents=True)
+    (pinvi_root / "contracts/kor-travel-map-m05-pair-provenance-v1.json").write_text(
+        json.dumps(pair), encoding="utf-8"
+    )
+    monkeypatch.setattr(driver, "_command", lambda *_a, **_k: "")
+
+    with pytest.raises(driver._PhaseError) as raised:
+        driver._pair(pinvi_root, map_root)
+
+    assert raised.value.phase == "pair_contract_invalid"
+    assert raised.value.diagnostic in driver._PAIR_DIAGNOSTICS
+
+
+def test_pair_rejects_an_unsupported_contract_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dual-read는 1과 2만 받는다 — 알 수 없는 버전은 fail-close다."""
+
+    driver = _driver()
+    pinvi_root = tmp_path / "pinvi"
+    map_root = tmp_path / "map"
+    map_root.mkdir()
+    raw = b'{"version":3}'
+    pair = {
+        "map": {name: _v2_pair_entry(raw) for name in ("admin", "full", "service", "user")},
+        "version": 3,
+    }
+    (pinvi_root / "contracts").mkdir(parents=True)
+    (pinvi_root / "contracts/kor-travel-map-m05-pair-provenance-v1.json").write_text(
+        json.dumps(pair), encoding="utf-8"
+    )
+    monkeypatch.setattr(driver, "_command", lambda *_a, **_k: "")
+
+    with pytest.raises(driver._PhaseError) as raised:
+        driver._pair(pinvi_root, map_root)
+
+    assert (
+        raised.value.diagnostic
+        == "pair contract version is unsupported"
+    )
+
+
+def test_pair_v2_rejects_a_surface_that_differs_from_the_pinned_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v2에서 digest 불일치는 "계약이 릴리스와 어긋난다"는 뜻이다.
+
+    v1의 같은 실패와 **다른 사실**이므로 진단 문자열도 달라야 한다. 같은
+    문자열이 두 사실을 뜻하게 두는 것이 2026-09-02 결함 #1의 형태였다.
+    """
+
+    driver = _driver()
+    pinvi_root = tmp_path / "pinvi"
+    map_root = tmp_path / "map"
+    map_root.mkdir()
+    paths = {
+        "admin": "packages/kor-travel-map-api/openapi.json",
+        "full": "packages/kor-travel-map-api/openapi.json",
+        "service": "packages/kor-travel-map-api/openapi.service.json",
+        "user": "packages/kor-travel-map-api/openapi.user.json",
+    }
+    blobs = {
+        path: json.dumps({"path": path}).encode() for path in set(paths.values())
+    }
+    pair = _write_v2_pair(pinvi_root, blobs)
+    # 릴리스의 blob은 그대로인데 계약이 다른 digest를 담는다.
+    pair["map"]["user"]["openapi_sha256"] = "0" * 64
+    (pinvi_root / "contracts/kor-travel-map-m05-pair-provenance-v1.json").write_text(
+        json.dumps(pair), encoding="utf-8"
+    )
+
+    def fake_run(
+        args: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        _, _, path = args[-1].partition(":")
+        return subprocess.CompletedProcess(args, 0, stdout=blobs[path])
+
+    monkeypatch.setattr(driver, "_command", lambda *_a, **_k: "")
+    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+
+    with pytest.raises(driver._PhaseError) as raised:
+        driver._pair(pinvi_root, map_root)
+
+    assert (
+        raised.value.diagnostic
+        == "pair source blob digest differs from the pinned release"
     )
