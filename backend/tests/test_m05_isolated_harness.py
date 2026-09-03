@@ -495,3 +495,46 @@ def test_runtime_rejects_expected_port_that_is_exposed_but_unbound() -> None:
         )
 
 
+def test_m05_isolated_harness_is_deliberately_two_role() -> None:
+    """이 harness는 2-role로 **의도적으로** 굳어 있다 — 정본이 늘면 여기서 잡는다.
+
+    `docs/tasks.md`의 won't-fix 결정(GM-18)이 이 테스트를 안전망으로 들었는데
+    **실제로는 존재하지 않았다.** 규범 문서가 없는 가드에 기대고 있었고,
+    `test_normative_docs_cite_real_symbols`가 그걸 잡아 여기에 이르렀다.
+
+    그 결정의 논지는 이렇다 — `M05IsolatedRuntimeRole`을 정본
+    `RuntimeSourceRole`의 별칭으로 배선하는 것은 오늘 no-op이고, 정본이 role을
+    늘리면 별칭만 따라가고 networks/services/images/provenance/이항 분기가 그대로
+    남아 harness가 통째로 unconstructible이 된다. 그 실패는 두 스택을 다 띄운
+    뒤(1~2시간)에야 드러난다. 그래서 배선 대신 **정본이 늘어나는 순간**을 여기서
+    잡고, 그때 필요한 것이 별칭이 아니라 전면 일반화임을 안내한다.
+
+    이 테스트가 깨지면 별칭을 배선하지 말고, 아래 다섯 곳을 함께 일반화하라:
+    `_EXPOSED_RUNTIME_SERVICE_ROLES` · `_RUNTIME_IMAGE_ROLES` · network 개수 ·
+    provenance payload 키 · `role == "map" else pinvi` 이항 분기.
+    """
+
+    import typing
+
+    from kor_travel_docker_manager.services import m05_isolated_harness
+    from kor_travel_docker_manager.services.pinned_runtime_release import (
+        RUNTIME_SOURCE_ROLES,
+    )
+
+    assert RUNTIME_SOURCE_ROLES == ("map", "pinvi"), (
+        "runtime source role 정본이 늘었다 — harness는 2-role로 굳어 있으므로 "
+        "별칭 배선이 아니라 networks/services/images/provenance/이항 분기의 "
+        "전면 일반화가 필요하다"
+    )
+
+    # harness 자신의 선언도 같은 두 원소여야 한다. 정본만 보고 harness를 보지
+    # 않으면, harness가 먼저 갈라졌을 때 이 가드가 침묵한다.
+    assert set(typing.get_args(m05_isolated_harness.M05IsolatedRuntimeRole)) == set(
+        RUNTIME_SOURCE_ROLES
+    )
+    assert set(m05_isolated_harness._EXPOSED_RUNTIME_SERVICE_ROLES.values()) == set(
+        RUNTIME_SOURCE_ROLES
+    )
+    assert set(m05_isolated_harness._RUNTIME_IMAGE_ROLES.values()) == set(
+        RUNTIME_SOURCE_ROLES
+    )
