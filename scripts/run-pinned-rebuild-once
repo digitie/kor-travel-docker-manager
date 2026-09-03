@@ -184,9 +184,36 @@ if [[ ! "${installed_pinset}" =~ ^[0-9a-f]{64}$ ]]; then
   exit 2
 fi
 
+# 죽은 실행이 남긴 claim을 되찾을 수 있는지 판정할 **근거**를 먼저 읽는다.
+#
+# 소각(=claim 유지)은 실행권을 소비했다는 양성 증거가 있을 때만 정당하다. 그런데
+# 종전 launcher에서 해제는 **자기 프로세스가 살아서 결과를 분류할 때만** 일어났다.
+# 프로세스 그룹이 시그널로 죽으면 분류기 자체가 돌지 않으므로, 소각은 기본값이
+# 아니라 **유일한 결과**였다 — 2026-09-03 rebuild-021이 60분을 태우고 0바이트로
+# 사라졌을 때, 레지스트리는 generation이 오르지 않았다고 말하는데도 다음 실행이
+# "already claimed"로 거부됐다.
+#
+# 그래서 반대 방향의 양성 증거를 registry에서 읽는다. `generation_pinset_binding`이
+# `pending_rebuild`면 이 pinset의 generation은 아직 오르지 않았다 — 이전 실행은
+# 아무것도 착지시키지 않았다. 읽기에 실패하면 값을 비워 두고 fail-close한다.
+set +e
+generation_binding="$(/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin verify --json 2>/dev/null   | /usr/bin/python3 -I -S -c '
+import json
+import sys
+
+try:
+    document = json.load(sys.stdin)
+except (json.JSONDecodeError, ValueError):
+    raise SystemExit(0)
+binding = document.get("generation_pinset_binding")
+if isinstance(binding, str):
+    print(binding)
+')"
+set -e
+
 ledger_dir="/var/lib/kor-travel-docker-manager/pinned-rebuild-once"
 /usr/bin/install -d -o root -g root -m 0700 "${ledger_dir}"
-/usr/bin/python3 -I -S - "${ledger_dir}" "${installed_pinset}" "${expected_manager_revision}" "${output_dir}" <<'PY'
+/usr/bin/python3 -I -S - "${ledger_dir}" "${installed_pinset}" "${expected_manager_revision}" "${output_dir}" "${generation_binding}" <<'PY'
 import json
 import os
 import pathlib
@@ -197,6 +224,37 @@ ledger_dir = pathlib.Path(sys.argv[1])
 pinset = sys.argv[2]
 revision = sys.argv[3]
 output_dir = sys.argv[4]
+generation_binding = sys.argv[5] if len(sys.argv) > 5 else ""
+
+
+def stale_claim_is_retakable(path):
+    """죽은 실행이 남긴 claim인지 **두 증인**으로 판정한다.
+
+    전역 lock이 동시 실행을 이미 막으므로, claim이 남아 있는데 아래 둘이 함께
+    참이면 그것을 만든 실행은 아무것도 소비하지 않고 죽은 것이다.
+
+    1. registry: 이 pinset의 generation이 아직 `pending_rebuild`다.
+    2. 그 claim이 가리키는 output에 `result.json`이 없다 — CLI가 결론을 쓴 적이
+       없다는 뜻이다.
+
+    하나라도 확인할 수 없으면 되찾지 않는다(fail-close).
+    """
+
+    if generation_binding != "pending_rebuild":
+        return False
+    try:
+        with open(path, "rb") as handle:
+            recorded = json.loads(handle.read().decode("ascii"))
+    except (OSError, ValueError, UnicodeDecodeError):
+        return False
+    if not isinstance(recorded, dict) or recorded.get("pinset_sha256") != pinset:
+        return False
+    previous_output = recorded.get("output_directory")
+    if not isinstance(previous_output, str) or not previous_output.startswith("/"):
+        return False
+    return not pathlib.Path(previous_output, "result.json").exists()
+
+
 metadata = ledger_dir.lstat()
 if (
     stat.S_ISLNK(metadata.st_mode)
@@ -227,8 +285,20 @@ try:
         0o600,
     )
 except FileExistsError as error:
-    os.close(directory_descriptor)
-    raise SystemExit("pinned rebuild candidate was already claimed") from error
+    if not stale_claim_is_retakable(claim):
+        os.close(directory_descriptor)
+        raise SystemExit("pinned rebuild candidate was already claimed") from error
+    # 되찾는다. 판정은 위 두 증인이 했고, 여기서는 그 결론만 적용한다.
+    os.unlink(claim, dir_fd=directory_descriptor)
+    try:
+        descriptor = os.open(
+            claim,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+        )
+    except OSError as reopen_error:
+        os.close(directory_descriptor)
+        raise SystemExit("pinned rebuild claim could not be retaken") from reopen_error
 try:
     os.write(descriptor, payload)
     os.fsync(descriptor)
