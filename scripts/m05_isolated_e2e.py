@@ -601,15 +601,34 @@ def _command(
     # 규명에 격리 run을 회당 통으로 태웠다 — 호출부가 opt-in한 곳만 증거를
     # 남기는 설계는 이 harness의 실패 표면 전체를 덮지 못한다.
     forensic_capture = os.environ.get(_FORENSIC_CAPTURE_ENV) == "1"
+    # 증거로만 쓰는 stdout 포획. 호출부가 capture를 요구하지 않았어도 forensic
+    # 모드에서는 실패한 명령의 stdout을 남겨야 한다 — 2026-09-03 e2e22가
+    # `M04 live UI command exited with 1`만 남기고 1시간 39분을 태웠다. Playwright는
+    # **어느 spec의 어떤 단언이 깨졌는지를 stdout으로** 내는데 하네스는 stderr만
+    # 잡았고, 남은 stderr에는 npm의 lifecycle 오류밖에 없었다.
+    evidence_stdout = forensic_capture and not capture
     if capture_failure_stderr or forensic_capture or capture_output_limit is not None:
         stdout, returncode, stderr, stdout_bytes, stdout_truncated = _run_with_bounded_output(
             args,
             cwd=cwd,
             env=child_env,
-            capture=capture,
+            capture=capture or evidence_stdout,
             capture_stderr=capture_failure_stderr or forensic_capture,
-            stdout_limit=capture_output_limit,
+            stdout_limit=(
+                capture_output_limit
+                if capture_output_limit is not None
+                else (_FORENSIC_CAPTURE_LIMIT if evidence_stdout else None)
+            ),
         )
+        if evidence_stdout:
+            # 반환값의 의미는 종전 그대로 둔다 — 호출부는 capture를 요구하지
+            # 않았다. 증거는 stdout_bytes로만 흐른다.
+            stdout = ""
+            if capture_output_limit is None:
+                # 증거용 상한은 **실패 사유가 아니다.** 이것을 아래
+                # `runtime_command_output_too_large`로 흘리면 출력이 큰 성공
+                # 명령이 실패로 뒤집힌다.
+                stdout_truncated = False
     else:
         completed = subprocess.run(
             list(args),
@@ -637,6 +656,7 @@ def _command(
             diagnostic=diagnostic,
             returncode=returncode,
             stderr=stderr,
+            stdout=stdout_bytes,
         )
     if stdout_truncated:
         _fail(
@@ -769,6 +789,8 @@ def _compose(
                 diagnostic=error.diagnostic,
                 returncode=error.returncode,
                 stderr=error.stderr,
+                # 증거 stdout을 여기서 떨어뜨리면 바깥 handler가 쓸 것이 없다.
+                stdout=error.stdout,
             )
         raise
 
@@ -845,9 +867,20 @@ def _write_compose_failure_evidence(
 
 
 def _write_command_failure_evidence(
-    path: Path, *, returncode: int | None, stderr: bytes | None
+    path: Path,
+    *,
+    returncode: int | None,
+    stderr: bytes | None,
+    stdout: bytes | None = None,
 ) -> None:
-    """Persist a bounded generic external-command receipt without command or env disclosure."""
+    """Persist a bounded generic external-command receipt without command or env disclosure.
+
+    stderr뿐 아니라 **stdout도** 남긴다. 많은 러너가 진짜 진단을 stdout으로 낸다 —
+    Playwright는 어느 spec의 어떤 단언이 깨졌는지를 거기 쓰고, stderr에는 npm의
+    lifecycle 오류만 남는다. 2026-09-03 e2e22가 그래서 1시간 39분을 태우고
+    "UI 명령이 1로 끝났다"만 남겼다. 두 스트림 모두 같은 scrub과 같은 상한을
+    지나고 root 0600 leaf를 벗어나지 않는다.
+    """
 
     if not isinstance(returncode, int) or returncode < 1 or returncode > 255:
         safe_returncode: int | None = None
@@ -857,11 +890,15 @@ def _write_command_failure_evidence(
         path,
         {"kind": "runtime_command", "returncode": safe_returncode, "version": 1},
     )
-    if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1" or stderr is None:
+    if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1":
         return
-    _write_private_bytes(
-        path.with_suffix(".stderr"), _scrub_forensic_bytes(stderr)[:_FORENSIC_CAPTURE_LIMIT] or b"\n"
-    )
+    for suffix, raw in ((".stderr", stderr), (".stdout", stdout)):
+        if raw is None:
+            continue
+        _write_private_bytes(
+            path.with_suffix(suffix),
+            _scrub_forensic_bytes(raw)[:_FORENSIC_CAPTURE_LIMIT] or b"\n",
+        )
 
 
 def _write_compose_output_evidence(
@@ -3106,6 +3143,7 @@ def main(expected_revision: str, output: Path) -> int:
                         runtime / f"pinvi-runtime-{action}-error.json",
                         returncode=error.returncode,
                         stderr=error.stderr,
+                        stdout=error.stdout,
                     )
                 raise
         # 종전의 `up --force-recreate app-api app-web` 재기동은 제거했다:
@@ -3425,6 +3463,8 @@ def main(expected_revision: str, output: Path) -> int:
                     returncode=error.returncode,
                     # scrub은 evidence writer 내부에서 수행된다.
                     stderr=error.stderr,
+                    # 러너의 진짜 진단은 대개 stdout에 있다(Playwright 등).
+                    stdout=error.stdout,
                 )
             except Exception:  # noqa: BLE001, S110 - evidence-only boundary
                 pass
