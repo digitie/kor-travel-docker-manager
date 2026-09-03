@@ -208,7 +208,7 @@ def _run_read_only(
 def _git_text(repository: Path, args: Sequence[str]) -> str | None:
     try:
         completed = subprocess.run(
-            ["git", "-C", str(repository), *args],
+            ["git", "--no-replace-objects", "-C", str(repository), *args],
             cwd="/",
             env=_child_environment(),
             capture_output=True,
@@ -235,7 +235,7 @@ def _git_blob_text(repository: Path, revision_path: str, *, max_bytes: int) -> s
 
     try:
         process = subprocess.Popen(  # noqa: S603 - 인자 배열, shell 없음
-            ["git", "-C", str(repository), "show", revision_path],
+            ["git", "--no-replace-objects", "-C", str(repository), "show", revision_path],
             cwd="/",
             env=_child_environment(),
             stdout=subprocess.PIPE,

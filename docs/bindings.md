@@ -42,9 +42,12 @@
 
 - **정본**: `scripts/` 아래 git index mode가 `100755`인 파일
 - **사본**: `scripts/install-ktdm-trusted-release`의 `chmod 0755` 목록
-- **사본이 필요한 이유**: 설치 스크립트는 archive의 mode를 **신뢰하지 않는다**.
-  전부 0644로 정규화한 뒤 명시 목록만 되돌린다. root trusted install이 archive의
-  mode를 상속하면 안 되므로 이 명시성은 posture 자체다 — 유도로 지울 수 없다.
+- **사본이 필요한 이유**: 설치 시점에는 **git index가 없다**. 설치 스크립트는
+  release archive를 상대로 돌기 때문에 정본을 그 자리에서 읽을 수 없고, 목록을
+  들고 갈 수밖에 없다. 그리고 정규화가 막는 것은 exec 비트가 아니라 **write
+  비트**다 — `tar.umask=0`인 archive는 world-writable 파일을 그대로 푼다(실측).
+  그래서 전부 0644로 내린 뒤 명시 목록만 0755로 되돌린다. 사본은 지울 수 없고,
+  대신 index와 어긋나지 않게 결박한다.
 - **결박**: `test_installer_executable_set_mirrors_the_git_index`
 - **드러난 경위**: `rotate-pinned-pair`가 index에서는 `100755`인데 목록에 없어
   설치본에서 `-rw-r--r--`로 조용히 무효가 됐다. index를 고쳐도 여전히 무효였다.
