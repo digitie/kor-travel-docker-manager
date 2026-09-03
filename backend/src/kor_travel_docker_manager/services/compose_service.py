@@ -957,7 +957,7 @@ def _run_git_read(
 ) -> str:
     try:
         completed = subprocess.run(
-            ["git", "-C", str(repository), *args],
+            ["git", "--no-replace-objects", "-C", str(repository), *args],
             cwd=get_project_root(),
             text=True,
             capture_output=True,
@@ -984,7 +984,7 @@ def _run_git_bytes(
 ) -> bytes:
     try:
         completed = subprocess.run(
-            ["git", "-C", str(repository), *args],
+            ["git", "--no-replace-objects", "-C", str(repository), *args],
             cwd=get_project_root(),
             capture_output=True,
             check=False,
