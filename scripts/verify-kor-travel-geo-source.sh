@@ -44,7 +44,25 @@ table_count() {
 
 missing=0
 for table in load_manifest tl_juso_text mv_geocode_target; do
-  count="$(table_count "$table" | tr -d '[:space:]')"
+  # psql의 종료 상태를 파이프에 묻지 않는다. 종전에는
+  # `count="$(table_count "$table" | tr -d ...)"`였고, 그러면 상태가 `tr`의
+  # 것이 되어 연결 실패·인증 실패가 **빈 문자열**로만 남았다. 아래 `case`에
+  # 빈 값 분기가 없어 그 빈 값은 `*)`로 떨어졌고, 검증기는 DB에 닿지도 못한
+  # 채 "정상"을 보고했다. POSIX sh라 `pipefail`을 쓸 수 없으므로 파이프를
+  # 걷어내고 상태와 형식을 각각 본다.
+  if ! raw_count="$(table_count "$table")"; then
+    log "$table: query failed"
+    missing=1
+    continue
+  fi
+  count="$(printf '%s' "$raw_count" | tr -d '[:space:]')"
+  case "$count" in
+    '' | *[!0-9-]*)
+      log "$table: unreadable count"
+      missing=1
+      continue
+      ;;
+  esac
   case "$count" in
     -1)
       log "$table: missing"
