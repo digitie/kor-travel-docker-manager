@@ -1676,6 +1676,13 @@ def _canonical_json(value: object) -> bytes:
 #
 # 이 트랙의 확립된 절차대로 원문을 노출하는 대신 **비밀 없는 고정 어휘**를 둔다.
 # 값은 전부 이 파일이 쓴 상수라 호스트 상태·경로·비밀을 담지 않는다.
+#: preflight가 stdout으로 낼 수 있는 source-materialization 문구의 접두.
+#:
+#: `pinned_runtime_sources`의 `DeploymentContractError`는 전부 이 접두로 시작하는
+#: **컴파일 시점 리터럴**이다 — 호스트 상태나 경로가 섞일 수 없다. 문구를 열거하지
+#: 않고 접두로 거르므로, 새 문구가 생겨도 이 상수가 뒤처지지 않는다.
+_SOURCE_DIAGNOSTIC_PREFIX = "pinned runtime source "
+
 _PAIR_DIAGNOSTICS: frozenset[str] = frozenset(
     {
         "pair contract is unreadable",
@@ -2114,7 +2121,25 @@ def preflight(expected_revision: str) -> int:
         detail = error.diagnostic if error.diagnostic in _PAIR_DIAGNOSTICS else None
         print(error.phase if detail is None else f"{error.phase}: {detail}", flush=True)
         return 1
-    except (OSError, RuntimeError, ValueError):
+    except (OSError, RuntimeError, ValueError) as error:
+        # 종전에는 여기서 exit 1만 냈다. launcher는 그래서
+        # `M05 isolated source pair preflight is not runnable:` 뒤에 **빈칸**을
+        # 찍었고, 2026-09-03 e2e23이 그 침묵 때문에 계측 스크립트를 따로 붙여서야
+        # 원인(`pinned runtime source worktree is unsafe`)을 알 수 있었다 —
+        # 이 함수의 독스트링이 "거부 이유를 stdout으로 낸다"고 약속하는데도.
+        #
+        # 내용은 여전히 닫아 둔다. 예외 **타입 이름**은 호스트 상태를 담지 않으므로
+        # 항상 낼 수 있고, 메시지는 Manager 자신이 쓴 고정 문구일 때만 낸다 —
+        # `pinned runtime source `로 시작하는 문자열은 `pinned_runtime_sources`의
+        # 리터럴에만 쓰이고 그 뒤도 상수다. 문구를 **열거하지 않으므로** 새 문구가
+        # 생겨도 드리프트하지 않는다(AGENTS.md DO NOT 15).
+        message = str(error)
+        detail = message if message.startswith(_SOURCE_DIAGNOSTIC_PREFIX) else None
+        print(
+            f"source_materialization: {type(error).__name__}"
+            + (f": {detail}" if detail is not None else ""),
+            flush=True,
+        )
         return 1
     return 0
 
