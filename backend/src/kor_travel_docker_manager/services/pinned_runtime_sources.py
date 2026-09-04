@@ -353,6 +353,166 @@ def _materialize_source(
     )
 
 
+def materialize_disposable_run_worktree(
+    *,
+    release: PinnedRuntimeRelease,
+    state_paths: PinnedRuntimeStatePaths,
+    values: Mapping[str, str],
+    role: RuntimeSourceRole,
+    destination: Path,
+    runner: GitRunner = subprocess.run,
+) -> Path:
+    """**쓰기가 허용된** 일회용 실행 체크아웃을 만든다.
+
+    핀 source worktree는 불변으로 봉인된다(0555/0444). 그런데 격리 e2e는 그 트리를
+    컨테이너에 root RW로 마운트하고 그 안에서 `npm ci`와 Playwright를 돌린다 — root는
+    모드를 무시하므로 `apps/web/node_modules`가 실제로 쓰이고, Docker가 만드는
+    마운트포인트 3개가 0755 디렉터리로 남는다. 그러면 다음 preflight의
+    `_validate_immutable_tree`가 정당하게 거부해 **같은 pinset 재실행이 불가능해진다**
+    (2026-09-03·04 연속 재현).
+
+    그래서 실행은 봉인된 트리가 아니라 여기서 만드는 일회용 체크아웃에서 한다. 이
+    체크아웃은 **object store에서 재유도**된다 — 같은 bare 저장소, 같은 revision,
+    같은 tree object다. 디스크 사본이 아니므로 파일 모드나 잔여물을 물려받지 않고,
+    provenance는 아래 세 검사가 지탱한다: HEAD가 핀 revision일 것, tree object가
+    일치할 것, 체크아웃이 clean일 것.
+
+    불변 봉인은 **걸지 않는다.** 쓰기가 목적이기 때문이다. 대신 호출자가 실행 뒤
+    `remove_disposable_run_worktree`로 지우고 봉인된 원본이 그대로인지 사후조건으로
+    재검증한다 — 그 재검증이 "실행이 봉인 트리를 건드리지 않았다"를 관측으로 만든다.
+    """
+
+    _require_canonical_rebuildable_state_paths(
+        state_paths=state_paths,
+        values=values,
+        release=release,
+    )
+    paths = pinned_runtime_source_paths(state_paths=state_paths, release=release)
+    source = _release_source(release, role)
+    bare = paths.bare_repository(role)
+    if not _path_exists(bare):
+        raise DeploymentContractError("pinned runtime source bare repository is missing")
+    if _path_exists(destination):
+        raise DeploymentContractError("disposable run worktree destination already exists")
+    _validate_private_directory(destination.parent, label="disposable run worktree parent")
+
+    expected_tree = _revision_output(
+        _run_root_git(
+            ["--git-dir", str(bare), "rev-parse", f"{source.revision}^{{tree}}"],
+            runner=runner,
+        ).stdout,
+        label="disposable run worktree tree",
+    )
+    _run_root_git(
+        [
+            "--git-dir",
+            str(bare),
+            "worktree",
+            "add",
+            "--detach",
+            str(destination),
+            source.revision,
+        ],
+        runner=runner,
+    )
+    # Git은 private parent 아래에도 worktree root를 보통 0755로 만든다. 봉인된
+    # 트리와 달리 여기는 쓰기가 필요하므로 0700으로 좁히기만 한다.
+    try:
+        os.chmod(destination, 0o700)
+    except OSError as exc:
+        raise DeploymentContractError(
+            "disposable run worktree cannot be secured"
+        ) from exc
+    _validate_private_directory(destination, label="disposable run worktree")
+
+    revision = _revision_output(
+        _run_root_git(
+            ["-C", str(destination), "rev-parse", "--verify", "HEAD"],
+            runner=runner,
+        ).stdout,
+        label="disposable run worktree revision",
+    )
+    if revision != source.revision:
+        raise DeploymentContractError("disposable run worktree revision does not match the pin")
+    tree = _revision_output(
+        _run_root_git(
+            ["-C", str(destination), "rev-parse", "HEAD^{tree}"],
+            runner=runner,
+        ).stdout,
+        label="disposable run worktree tree",
+    )
+    if tree != expected_tree:
+        raise DeploymentContractError("disposable run worktree tree does not match the pin")
+    _assert_worktree_clean(target=destination, runner=runner)
+    return destination
+
+
+def remove_disposable_run_worktree(
+    *,
+    release: PinnedRuntimeRelease,
+    state_paths: PinnedRuntimeStatePaths,
+    values: Mapping[str, str],
+    role: RuntimeSourceRole,
+    destination: Path,
+    runner: GitRunner = subprocess.run,
+) -> None:
+    """일회용 실행 체크아웃을 Git-owned 제거로 지운다.
+
+    `git worktree remove`를 쓰는 이유는 admin 엔트리까지 함께 정리하기 위해서다 —
+    디렉터리만 지우면 bare 저장소에 stale 엔트리가 남고, 이 저장소는
+    `git worktree prune`을 운영 금지로 두고 있어 그것을 되돌릴 수단이 없다.
+    """
+
+    if not _path_exists(destination):
+        return
+    _require_canonical_rebuildable_state_paths(
+        state_paths=state_paths,
+        values=values,
+        release=release,
+    )
+    paths = pinned_runtime_source_paths(state_paths=state_paths, release=release)
+    bare = paths.bare_repository(role)
+    _run_root_git(
+        ["--git-dir", str(bare), "worktree", "remove", "--force", str(destination)],
+        runner=runner,
+    )
+    if _path_exists(destination):
+        raise DeploymentContractError("disposable run worktree removal is incomplete")
+
+
+def assert_pinned_worktree_is_still_sealed(
+    *,
+    release: PinnedRuntimeRelease,
+    state_paths: PinnedRuntimeStatePaths,
+    values: Mapping[str, str],
+    role: RuntimeSourceRole,
+) -> None:
+    """봉인된 source worktree가 실행 뒤에도 그대로인지 **사후조건**으로 본다.
+
+    일회용 체크아웃으로 옮긴 것이 실제로 효과가 있었는지를 관측으로 만든다. 이 검사가
+    없으면 "봉인 트리를 건드리지 않았다"는 주장이 다음 실행의 preflight에서야 드러나고,
+    그때는 이미 한 사이클을 태운 뒤다.
+    """
+
+    _require_canonical_rebuildable_state_paths(
+        state_paths=state_paths,
+        values=values,
+        release=release,
+    )
+    paths = pinned_runtime_source_paths(state_paths=state_paths, release=release)
+    source = _release_source(release, role)
+    _validate_immutable_tree(paths.worktree(source))
+
+
+def _release_source(
+    release: PinnedRuntimeRelease, role: RuntimeSourceRole
+) -> PinnedRuntimeSourceSpec:
+    for source in release.sources:
+        if source.role == role:
+            return source
+    raise DeploymentContractError("pinned runtime release has no such source role")
+
+
 def _promote_staging_worktree(
     *,
     bare: Path,

@@ -1801,7 +1801,16 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
     monkeypatch.setattr(
         driver,
         "_source_pair_preflight",
-        lambda: (tmp_path, tmp_path, _Pair(), "a" * 64, "b" * 40),
+        # `state_paths`/`values`도 함께 온다 — body가 일회용 실행 체크아웃을 만들
+        # 때 쓴다. 이 테스트는 그 생성을 스텁하므로 통과용 값이면 된다.
+        lambda: (tmp_path, tmp_path, _Pair(), "a" * 64, "b" * 40, object(), {}),
+    )
+    monkeypatch.setattr(
+        driver, "materialize_disposable_run_worktree", lambda **_kwargs: tmp_path
+    )
+    monkeypatch.setattr(driver, "remove_disposable_run_worktree", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        driver, "assert_pinned_worktree_is_still_sealed", lambda **_kwargs: None
     )
     monkeypatch.setattr(
         driver, "build_m05_isolated_manager_admission", lambda **_kwargs: {}

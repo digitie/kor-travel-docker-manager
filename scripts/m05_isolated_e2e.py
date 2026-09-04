@@ -55,6 +55,7 @@ from kor_travel_docker_manager.services.m05_isolated_harness import (
     claim_m05_isolated_harness_ledger,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    PinnedRuntimeStatePaths,
     pinned_runtime_state_paths,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
@@ -64,7 +65,10 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
     current_pinned_runtime_release,
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
+    assert_pinned_worktree_is_still_sealed,
+    materialize_disposable_run_worktree,
     materialize_pinned_runtime_sources,
+    remove_disposable_run_worktree,
 )
 from kor_travel_docker_manager.services.runtime_execution_identity import (
     ExecutionIdentityV6,
@@ -86,6 +90,11 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
 # 시점에 한 번만 해석한다 — 실행 도중 회전이 끼어들면 전후가 다른 pinset이 된다.
 PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
 _CleanupProject = tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]]
+#: 실행이 쓰는 일회용 체크아웃 (role, destination, state_paths, values).
+#: 봉인된 핀 트리는 여기 오지 않는다. 이 파일은 `importlib`로 `sys.modules` 등록
+#: 없이 로드되므로 `@dataclass`를 쓸 수 없다 — `dataclasses`가 문자열 annotation을
+#: 풀 때 `sys.modules.get(cls.__module__)`를 참조해 `None`에서 깨진다.
+_DisposableRunWorktree = tuple[str, Path, PinnedRuntimeStatePaths, Mapping[str, str]]
 
 _ROOT = Path("/opt/kor-travel-docker-manager")
 _LEDGER = Path("/var/lib/kor-travel-docker-manager/m05-isolated-once")
@@ -1014,6 +1023,7 @@ def _cleanup_temporary_resources(
     map_cleanup: _CleanupProject | None,
     pinvi_cleanup: _CleanupProject | None,
     private_files: tuple[Path, ...],
+    disposable_run_worktree: _DisposableRunWorktree | None = None,
 ) -> tuple[bool, bool]:
     """정상 cleanup failure와 receipt로 수렴해야 할 unexpected failure를 분리한다."""
 
@@ -1041,6 +1051,31 @@ def _cleanup_temporary_resources(
             cleanup_failed = True
         except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
             unexpected_failure = True
+    if disposable_run_worktree is not None:
+        run_role, run_destination, run_state_paths, run_values = disposable_run_worktree
+        try:
+            remove_disposable_run_worktree(
+                release=PINNED_RUNTIME_RELEASE,
+                state_paths=run_state_paths,
+                values=run_values,
+                role=run_role,
+                destination=run_destination,
+            )
+        except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+            cleanup_failed = True
+        try:
+            # **사후조건.** 일회용 체크아웃으로 옮긴 것이 실제로 효과가 있었는지를
+            # 관측으로 만든다. 이 검사가 없으면 "봉인 트리를 건드리지 않았다"는
+            # 주장이 다음 실행의 preflight에서야 드러나고, 그때는 이미 한 사이클을
+            # 태운 뒤다(2026-09-03·04에 실제로 그렇게 잃었다).
+            assert_pinned_worktree_is_still_sealed(
+                release=PINNED_RUNTIME_RELEASE,
+                state_paths=run_state_paths,
+                values=run_values,
+                role=run_role,
+            )
+        except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+            cleanup_failed = True
     return cleanup_failed, unexpected_failure
 
 
@@ -1953,7 +1988,9 @@ def _assert_pinvi_manager_admission_contract(pinvi_root: Path) -> None:
         _fail("pinvi_manager_admission_contract_invalid")
 
 
-def _source_pair_preflight() -> tuple[Path, Path, M05IsolatedPairEvidence, str, str]:
+def _source_pair_preflight() -> tuple[
+    Path, Path, M05IsolatedPairEvidence, str, str, PinnedRuntimeStatePaths, Mapping[str, str]
+]:
     """실행권을 소비하기 전에 pinned source pair의 integration 계약만 검사한다."""
 
     ambient = dict(os.environ)
@@ -2002,7 +2039,17 @@ def _source_pair_preflight() -> tuple[Path, Path, M05IsolatedPairEvidence, str, 
         )
     pair, service_openapi_sha256, service_source_revision = _pair(pinvi_root, map_root)
     _assert_pinvi_manager_admission_contract(pinvi_root)
-    return map_root, pinvi_root, pair, service_openapi_sha256, service_source_revision
+    # `state_paths`/`values`도 함께 돌려준다. body가 일회용 실행 체크아웃을 만들려면
+    # 이 둘이 필요한데, 거기서 다시 유도하면 같은 사실의 두 번째 선언이 된다.
+    return (
+        map_root,
+        pinvi_root,
+        pair,
+        service_openapi_sha256,
+        service_source_revision,
+        state_paths,
+        values,
+    )
 
 
 _PAIR_CONTRACT_PATH = "contracts/kor-travel-map-m05-pair-provenance-v1.json"
@@ -2622,6 +2669,7 @@ def main(expected_revision: str, output: Path) -> int:
     pinvi_cleanup: _CleanupProject | None = None
     private_files: tuple[Path, ...] = ()
     result_hashes: dict[str, str] = {}
+    disposable_run_worktree: _DisposableRunWorktree | None = None
     try:
         os.umask(0o077)
         _validate_trusted_release(expected_revision)
@@ -2643,6 +2691,8 @@ def main(expected_revision: str, output: Path) -> int:
             pair,
             service_openapi_sha256,
             service_source_revision,
+            source_state_paths,
+            source_values,
         ) = _source_pair_preflight()
         # head를 여기서 확정한다 — materialize된 source를 읽는 일이므로 이 phase에
         # 속하고, 실패하면 `source_materialization` receipt가 정확히 그 사실을 남긴다.
@@ -2657,6 +2707,28 @@ def main(expected_revision: str, output: Path) -> int:
         runtime = output / "runtime"
         runtime.mkdir(mode=0o700)
         _root_directory(runtime)
+        # 실행은 봉인된 핀 트리가 아니라 **일회용 체크아웃**에서 한다. 러너는 저장소
+        # 루트를 컨테이너에 root RW로 마운트하고 그 안에서 `npm ci`와 Playwright를
+        # 돌리므로, 봉인 트리를 그대로 주면 root가 모드를 무시하고 써서 다음
+        # preflight가 같은 pinset 재실행을 거부한다(2026-09-03·04 연속 재현).
+        #
+        # 사본이 아니라 **object store에서 재유도**한다 — 같은 bare 저장소, 같은
+        # revision, 같은 tree object다. 그래서 파일 모드도 잔여물도 물려받지 않는다.
+        # attestation과 러너가 자기 `__file__`/위치에서 repo root를 유도하므로, 이
+        # 루트에서 실행하면 체인 전체가 따라온다(PinVi 쪽 변경이 필요 없다).
+        disposable_run_worktree = (
+            "pinvi",
+            runtime / "pinvi-run",
+            source_state_paths,
+            source_values,
+        )
+        pinvi_run_root = materialize_disposable_run_worktree(
+            release=PINNED_RUNTIME_RELEASE,
+            state_paths=source_state_paths,
+            values=source_values,
+            role="pinvi",
+            destination=runtime / "pinvi-run",
+        )
         map_env, pinvi_env = runtime / "map.env", runtime / "pinvi.env"
         pinvi_admission = runtime / "pinvi-isolated-manager-admission.json"
         map_override, pinvi_override = (
@@ -3277,7 +3349,7 @@ def main(expected_revision: str, output: Path) -> int:
         _command(
             sys.executable,
             "-I",
-            str(pinvi_root / "scripts/m05_activation_attestation.py"),
+            str(pinvi_run_root / "scripts/m05_activation_attestation.py"),
             "m04",
             "--evidence-dir",
             str(m04_evidence),
@@ -3301,7 +3373,7 @@ def main(expected_revision: str, output: Path) -> int:
             _PLAYWRIGHT_RUNNER_IMAGE,
             "--require-root-owned",
             "--",
-            str(pinvi_root / "scripts/n150-playwright-runner.sh"),
+            str(pinvi_run_root / "scripts/n150-playwright-runner.sh"),
             "--",
             "npm",
             "-w",
@@ -3311,7 +3383,7 @@ def main(expected_revision: str, output: Path) -> int:
             "--",
             "apps/web/e2e/admin-feature-request-queue-live-mutating.live.ts",
             "--workers=1",
-            cwd=pinvi_root,
+            cwd=pinvi_run_root,
             env=m04_environment,
         )
         manual_feature_uuid = _approve_map_request(
@@ -3370,7 +3442,7 @@ def main(expected_revision: str, output: Path) -> int:
         _command(
             sys.executable,
             "-I",
-            str(pinvi_root / "scripts/m05_activation_attestation.py"),
+            str(pinvi_run_root / "scripts/m05_activation_attestation.py"),
             "live",
             "--evidence-dir",
             str(m05_evidence),
@@ -3428,7 +3500,7 @@ def main(expected_revision: str, output: Path) -> int:
             _PLAYWRIGHT_RUNNER_IMAGE,
             "--require-root-owned",
             "--",
-            str(pinvi_root / "scripts/n150-playwright-runner.sh"),
+            str(pinvi_run_root / "scripts/n150-playwright-runner.sh"),
             "--",
             "npm",
             "-w",
@@ -3438,7 +3510,7 @@ def main(expected_revision: str, output: Path) -> int:
             "--",
             "apps/web/e2e/admin-feature-reference-reconciliations-live-mutating.live.ts",
             "--workers=1",
-            cwd=pinvi_root,
+            cwd=pinvi_run_root,
             env=m05_environment,
         )
         result_hashes = {
@@ -3540,6 +3612,7 @@ def main(expected_revision: str, output: Path) -> int:
             map_cleanup=map_cleanup,
             pinvi_cleanup=pinvi_cleanup,
             private_files=private_files,
+            disposable_run_worktree=disposable_run_worktree,
         )
         # driver_phase는 cleanup 전 실행 표면의 정본이다(2026-08-28 journal 계약).
         # 종전 코드는 강등/블록 표기 **뒤에** 대입해 두 결함을 만들었다:

@@ -1654,7 +1654,29 @@ def _build_harness(
     monkeypatch.setattr(
         driver,
         "_source_pair_preflight",
-        lambda: (map_root, pinvi_root, pair, "2" * 64, pair.map_source_revision),
+        # `state_paths`/`values`도 함께 온다 — body가 일회용 실행 체크아웃을 만들 때
+        # 쓴다. 이 하네스는 그 생성을 스텁하므로 값 자체는 통과용이면 된다.
+        lambda: (
+            map_root,
+            pinvi_root,
+            pair,
+            "2" * 64,
+            pair.map_source_revision,
+            SimpleNamespace(),
+            {},
+        ),
+    )
+    # 실행은 일회용 체크아웃에서 한다(봉인 트리 오염 방지). 이 테스트는 실제 git
+    # worktree를 만들지 않으므로 핀 루트를 그대로 돌려주고, 제거·사후 봉인검사는
+    # 무해화한다 — 그 동작은 `test_m05_disposable_run_worktree.py`가 따로 본다.
+    monkeypatch.setattr(
+        driver,
+        "materialize_disposable_run_worktree",
+        lambda **_kwargs: pinvi_root,
+    )
+    monkeypatch.setattr(driver, "remove_disposable_run_worktree", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        driver, "assert_pinned_worktree_is_still_sealed", lambda **_kwargs: None
     )
     monkeypatch.setattr(driver, "_root_directory", lambda _path, mode=0o700: None)
     monkeypatch.setattr(
