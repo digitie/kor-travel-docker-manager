@@ -2,6 +2,78 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-03 — 격리 M04/M05 live E2E가 통과했다
+
+pinset `e6b52db4`(Map `8078b110` + PinVi `357da189`), Manager `5befecbb`에서
+`run-m05-isolated-e2e-once`가 `status: passed`로 닫혔다.
+
+    phase                       completed
+    m04_attestation_sha256      d5f0c4d0…
+    m05_attestation_sha256      69fb285e…
+    runtime_provenance_sha256   bac562a0…
+    cleanup_failed              false
+
+실패 증거 파일은 하나도 없다. 상시 서비스 9개는 그대로였고 격리 스택은 완전히
+정리됐다.
+
+### 벽은 하나가 아니었다
+
+같은 날 앞선 시도들이 각각 다른 이유로 죽었고, 그 이유들이 서로 다른 층에 있었다.
+
+- **침묵사 3회** — 하네스와 런처가 `python -I`로 도는데 `-I`가 `-E`를 함의해
+  `PYTHONUNBUFFERED`가 무효다. 로그인 세션에 매달아 두면 죽을 때 버퍼째 사라진다.
+  `systemd-run`으로 옮기자 세 번의 침묵이 한 줄로 드러났다.
+- **claim 소각** — 해제가 자기 프로세스의 분류기에만 걸려 있어, 프로세스 그룹이
+  죽으면 소각이 기본값이 아니라 **유일한 결과**였다(#309에서 되찾기 도입).
+- **다중 타깃 bake** — PinVi `docker-app.sh`가 두 타깃을 한 BuildKit 요청으로
+  묶어 작은 호스트의 세션 한도를 넘겼다(PinVi #523).
+- **계약이 운영 표면과 달랐다** — `/v1/debug` 라우트가 `debug_routes_enabled`
+  뒤에 있었고 그 기본값은 `true`인데 배포 이미지는 production으로 돈다. 계약이
+  운영이 제공하지 않는 라우트를 기술해 attestation이 구조적으로 통과 불가였다
+  (Map #1140에서 라우트 제거, PinVi #526에서 재벤더).
+
+### 이번 사이클이 새로 드러낸 것 둘
+
+**preflight가 침묵했다.** `except (OSError, RuntimeError, ValueError): return 1`
+분기가 아무것도 출력하지 않아 launcher가 `is not runnable:` 뒤에 빈칸을 찍었다.
+계측 스크립트를 따로 붙여서야 사유를 알았고 한 사이클을 더 썼다(#312).
+
+**그 사유가 불변 핀 소스 트리 오염이었다.** 하네스가 `cwd=pinvi_root`로
+npm/playwright를 돌려 `node_modules`·`apps/web/node_modules`·`playwright-report`·
+`test-results`를 0555 트리 안에 쓴다(root라 mode를 무시한다). Manager의 불변성
+검사는 정당하게 거부한 것이다.
+
+이것은 **pinset마다 worktree가 새로 생기기 때문에 지금까지 보이지 않았다** —
+같은 pinset을 재실행하려는 순간에만 드러난다. 오늘 e2e를 여러 번 돌리면서 처음
+부딪혔다. 오염 넷을 걷어내 preflight를 통과시켰고, 근본 수정은 러너의 마운트
+설계에 걸리므로 `docs/tasks.md`에 올렸다.
+
+### 실패한 명령의 stdout을 남기기 시작했다
+
+e2e22는 `M04 live UI command exited with 1` 하나만 남기고 1시간 39분을 태웠다.
+Playwright는 어느 spec의 어떤 단언이 깨졌는지를 **stdout**으로 내는데 하네스는
+stderr만 잡았고, 거기엔 npm의 lifecycle 오류뿐이었다. #311에서 두 스트림을 같은
+scrub·같은 상한·같은 root 0600 leaf 규칙으로 남기게 했다.
+
+## 2026-09-03 — tasks.md에서 이관한 조사 기록
+
+`docs/tasks.md`의 머리말은 활성 작업을 **한 줄씩** 두고 실행 근거는 이 파일이
+정본이라고 규정한다. 그런데 미완 항목 셋이 각각 1천~6천 자 조사 기록을 그 자리에
+쌓아 두어 활성 목록을 읽을 수 없게 만들고 있었다. 본문을 여기로 옮기고 태스크는
+한 줄로 남긴다 — **내용은 한 글자도 줄이지 않았다.**
+
+### atomic-write 프리미티브 잔여 통합
+
+atomic-write 프리미티브 잔여 통합 (GM-10 후속, 일부 완료) — `pinvi_bootstrap_credential.py`의 `_fsync_directory_descriptor`(디렉터리 fsync 실패가 이미 성공한 credential 파일을 바깥 `except BaseException`의 zeroize+unlink로 파괴하던 버그)는 이번 세션에서 고쳤다: **여섯 호출부 전부**를 best-effort로 대칭화하고 `best_effort` 파라미터는 제거했다(모든 호출부가 같아져 죽은 분기가 됐다). 처음에는 두 자리만 낮췄는데, 적대 리뷰 2인이 독립적으로 같은 사슬을 재현했다 — 생성 쪽(`os.mkdir` 직후)이나 삭제 쪽(`unlink`/`rmdir` 직후)에서 raise하면 되돌릴 것이 없는 채로 중단되어 **빈 transaction 디렉터리**가 남고, 그러면 `_validate_exact_transaction_contents`가 이후 모든 orphan 정리를 영구 fail-close해 운영자가 손으로 rmdir하기 전까지 PinVi rebuild가 막힌다. 특히 `os.mkdir` 쪽 누수는 이 PR 이전부터 있었으므로 되돌리기만으로는 사슬이 닫히지 않는다. 네 자리를 각각 strict로 되돌리면 실패하는 회귀 테스트 2건을 붙였다(`test_transaction_directory_fsync_failure_does_not_leak_an_orphan`, `test_cleanup_directory_fsync_failure_still_removes_the_transaction`) — 종전 테스트는 credential 파일 fsync 관측 **이후**의 디렉터리 fsync만 실패시켜 네 자리를 전혀 덮지 못했다. 심각도 서술도 정정했다: `except BaseException`의 zeroize+unlink는 버그가 아니라 **계약상 올바른 fail-close 시크릿 위생**이고, 실제 피해는 파괴가 아니라 **가용성**이다(rebuild가 중단되고 그 claim이 탄다). mkstemp 자리 9곳 중 처음에는 2곳(`compose_service.py`의 `_atomic_restore_compose_source`, `standalone_backup.py`의 `_atomic_write_bytes`/`_atomic_write_json`)을 정본 `atomic_write_bytes`/`atomic_write_json`으로 옮겼으나, 적대적 리뷰(2인)에서 `compose_service.py` 쪽 이관이 회귀임이 드러나 되돌렸다 — 이 자리의 디렉터리 fsync 실패는 `_recover_persisted_target_runtime`이 `recovery_succeeded`를 판정하는 유일한 신호원인데, 옛 인라인 구현은 uncaught raise라 호출자의 `except Exception`이 그 실패를 잡아 `recovery_succeeded=False`로 정확히 보고했지만, 정본 `atomic_write_bytes`가 쓰는 `fsync_directory`는 디렉터리 fsync 실패를 무조건 삼켜(best-effort) 같은 상황에서 함수가 정상 반환하고 `recovery_succeeded=True`로 오보되는 회귀였다 — `legacy_override_retirement.py`/`pinvi_database_role_credentials.py`의 `_write_atomic`을 애초에 옮기지 않은 이유와 동일한 성격의 문제를 놓친 것이다. 원래의 strict 인라인 구현으로 되돌리고 `test_compose_service_atomic_restore.py`에 회귀 테스트를 추가했다(mutation-test로 되돌리기 전 버전이 실제로 이 테스트를 통과 못 시킴을 확인). `standalone_backup.py` 쪽은 원래 디렉터리 fsync가 전혀 없었던 자리라 이관이 durability를 오히려 추가하는 방향이라 그대로 뒀다 — 다만 정본 `atomic_write_json`이 `ensure_ascii=True`를 하드코딩해 옛 인라인의 `ensure_ascii=False`에서 조용히 바뀐 점은 리뷰에서 지적됐다: `BackupManifest.to_json()`의 필드(역할 enum·정수/실수·hex sha256·머신 생성 파일명)가 현재 전부 ASCII라 오늘은 바이트 차이가 없지만, 앞으로 비-ASCII 필드가 추가되면 이스케이프된 `\uXXXX` 표현으로 조용히 바뀔 수 있다는 점을 여기 명시적으로 기록해둔다. 문서화되지 않았던 10번째 자리 `runtime_pin_request.py`의 `_atomic_write_json`도 한 차례 이관했다가 **되돌렸다** — 이관 자체의 결함이 아니라 **대상이 죽은 코드**이기 때문이다: `replace_existing=True`를 켜는 프로덕션 호출자가 저장소에 없고(`api/routes.py`는 기본값을 쓴다), 그 플래그는 같은 함수 docstring이 명시한 계약(*기존 요청을 조용히 덮어쓰지 않는다*)과 정면으로 모순된다. 이관하고 회귀 테스트까지 얹으면 그 초록 테스트가 '지원되는 동작'으로 읽혀 감사 붕괴를 부른다는 적대 리뷰 지적을 받아 이관과 테스트를 함께 철회했다(현재 `backend/tests`에 `replace_existing` 테스트는 없다). 살아 있는 경로 `_exclusive_write_json`의 인라인 포맷은 그대로라 **이 파일에서 GM-10 목적(포맷 정의 단일화)은 미달성으로 남는다** — 후속은 이관이 아니라 `replace_existing` 플래그 자체의 제거다. 결과적으로 GM-10 태그가 붙은 9곳 중 실제로 이관된 것은 `standalone_backup.py` 1곳뿐이고, 나머지 8곳은 개별 검토 결과 정본 시그니처에 맞지 않아 남겨뒀다: (1) `admin_password_service.py` — os.replace 직전 `.env` identity 재검사(TOCTOU 방지, `_identity`가 크기·ctime까지 봄)가 있어 단순 write+replace로 축약할 수 없다. (2) `legacy_override_retirement.py`의 `_canonical_concierge_compose_projection` — 발행용이 아니라 Concierge compose projection을 만들어 `docker compose --file`에 넘겼다가 scope 종료 시 unlink하는 scratch 파일이라 os.replace 자체가 없다. (3) `legacy_override_retirement.py`의 `_write_atomic`과 (4) `pinvi_database_role_credentials.py`의 `_write_atomic` — 둘 다 replace 성공 후 디렉터리 fsync가 실패하면 각각 `LegacyRootEnvironmentDurabilityError`/"PinVi root environment durability is uncertain"으로 승격하는 의도된 strict 계약이고(전자는 `test_legacy_override_retirement.py`가 고정) 정본의 `dir_fsync`는 best-effort라 그대로 옮기면 이 계약을 무너뜨린다. 둘 다 replace 전후 identity 재검사도 있다. (5)(6) `map_application_300.py`의 `write_owner_only_artifact`/`publish_root_read_only_artifact` — os.replace가 아니라 os.link(hardlink)로 발행한다. (7) `map_application_300.py`의 `replace_root_read_only_artifact` — os.replace를 쓰지만 같은 파일의 `_fsync_directory`(uncaught raise)를 hardlink 쓰는 두 자리와 공유한다 — 이 하나만 best-effort로 낮추면 한 모듈 안에서 fsync 실패 처리 방식이 갈리므로 개별 보안 검토 없이 그렇게 하지 않았다. (8) `compose_service.py`의 `_atomic_restore_compose_source` — 위에서 서술한 대로 `recovery_succeeded` 신호를 지키기 위해 strict 인라인 구현으로 남겨뒀다.
+
+### LoginScreen.tsx가 humanizeError
+
+LoginScreen.tsx가 humanizeError/CODE_MESSAGES를 쓰지 않음 (admin-auth-envelope 적대적 리뷰 2인 발견) — `admin.py`/`auth.py`의 bare-string `HTTPException(detail="TOKEN")` 5곳을 `{code, message}` 구조화 봉투로 바꾼 수정(3d0a740d) 이후에도, `frontend/src/components/LoginScreen.tsx`는 `humanizeError`/`CODE_MESSAGES`를 전혀 부르지 않고 `err.status`(401/403/429/503)만 보고 하드코딩된 한국어 문구를 직접 분기한다. 그 결과 `auth.py`의 RATE_LIMITED/AUTH_MISCONFIGURED/INVALID_CREDENTIALS 세 곳(다섯 곳 중 세 곳)은 봉투를 구조화해도 로그인 화면에 관측 가능한 차이가 없다 — 실제로 이 경로를 고치는 것은 `admin.py`의 두 곳(`AdminSettingsPanel`이 `humanizeError`를 쓰는 곳)뿐이다. LoginScreen을 다른 패널처럼 `humanizeError`로 옮기는 것 자체는 이번 라운드에서 하지 않았다 — `require_frontend_origin`(`auth_service.py:95`, 403 INVALID_ORIGIN)이 여전히 bare 문자열이고 `CODE_MESSAGES`에도 없어, 그대로 옮기면 `humanizeError`가 `serverMessage`로 폴백해 지금 잘 나오는 "허용되지 않은 요청입니다..." 대신 원문 토큰 "INVALID_ORIGIN"을 노출하는 새 회귀가 생긴다. 착수 시 `require_frontend_origin`의 봉투화와 `INVALID_ORIGIN`의 `CODE_MESSAGES` 추가를 먼저 하고 나서 LoginScreen을 옮겨야 한다.
+
+### GM-17 본작업
+
+GM-17 본작업(required-set 완화 + bind allowlist 외부화) 미진행 — production compose candidate 검증(`c6c_deployment.py`)의 Map/PinVi 14(실질 15)개 서비스 존재 강제를 dev ensure에서 완화하고, `_CANDIDATE_ALLOWED_OPERATOR_BINDS` bind allowlist를 root-owned 설정 파일로 옮기는 작업(`docs/general-mgmt-audit.md` GM-17 검증 노트 참고)은 오너 결정으로 이번 세션에서 진행하지 않았다 — production 보안 경계를 직접 건드리고 effort L(검증 노트 자체가 "그 이하로 축소 불가"라고 명시)이라 review 없이 자동 진행하기에는 위험도가 다르다고 판단해 확인을 구했고, 오너는 가장 안전한 부분(`.env.example` 플레이스홀더 정리)만 승인했다. bind allowlist를 옮기려면 새 root-owned 파일에 대한 소유권·권한 검증 인프라(pin registry식)를 먼저 만들어야 하고(안 그러면 그 자체로 보안 회귀), required-set 완화는 다수 cross-service validator를 존재-조건부로 바꾸는 광범위 감사가 필요하다. 착수 전 오너와 범위를 재확인할 것.
+
 ## 2026-09-02 — 71분을 태운 뒤에야 문자열 두 개가 다르다고 했다
 
 rebuild가 성공하고(pinset `4516a107`, 71분) e2e17을 돌렸더니 **몇 초 만에**
