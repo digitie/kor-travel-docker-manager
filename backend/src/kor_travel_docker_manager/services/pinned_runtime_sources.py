@@ -359,6 +359,7 @@ def materialize_disposable_run_worktree(
     state_paths: PinnedRuntimeStatePaths,
     values: Mapping[str, str],
     role: RuntimeSourceRole,
+    expected_tree: str,
     destination: Path,
     runner: GitRunner = subprocess.run,
 ) -> Path:
@@ -378,8 +379,18 @@ def materialize_disposable_run_worktree(
     일치할 것, 체크아웃이 clean일 것.
 
     불변 봉인은 **걸지 않는다.** 쓰기가 목적이기 때문이다. 대신 호출자가 실행 뒤
-    `remove_disposable_run_worktree`로 지우고 봉인된 원본이 그대로인지 사후조건으로
-    재검증한다 — 그 재검증이 "실행이 봉인 트리를 건드리지 않았다"를 관측으로 만든다.
+    `summarize_disposable_run_worktree`로 무엇이 남았는지 증거를 남기고,
+    `remove_disposable_run_worktree`로 지운 뒤 봉인된 원본의 모드가 그대로인지
+    `assert_pinned_worktree_is_still_sealed`로 본다. 그 사후조건이 관측하는 것은
+    **엔트리 추가·삭제·모드 변경이 없었다**까지이며, root의 in-place 내용 변조는
+    잡지 못한다(2026-09-04 journal §1).
+
+    destination은 **실행마다 유일해야 한다.** 비정상 종료(SIGTERM/SIGHUP)로 cleanup이
+    건너뛰어지면 bare에 admin 엔트리가 남는데, 같은 경로를 재사용하면 다음
+    `worktree add`가 "missing but already registered"로 죽는다(적대 리뷰 #1 실측).
+
+    `npm ci`가 만드는 `node_modules`가 여기에 쌓이므로 destination 파티션은 수백 MB의
+    여유를 필요로 한다.
     """
 
     _require_canonical_rebuildable_state_paths(
@@ -396,13 +407,10 @@ def materialize_disposable_run_worktree(
         raise DeploymentContractError("disposable run worktree destination already exists")
     _validate_private_directory(destination.parent, label="disposable run worktree parent")
 
-    expected_tree = _revision_output(
-        _run_root_git(
-            ["--git-dir", str(bare), "rev-parse", f"{source.revision}^{{tree}}"],
-            runner=runner,
-        ).stdout,
-        label="disposable run worktree tree",
-    )
+    # 기대 tree는 **호출자가 materialize된 핀 소스에서 그대로 가져온 값**이다.
+    # 같은 bare에서 다시 유도하면 git 결정성만 확인하는 자기참조가 되고 핀 트리와의
+    # 결박이 아니다(적대 리뷰 2026-09-04 #8).
+    expected_tree = _revision_output(expected_tree, label="disposable run worktree tree")
     _run_root_git(
         [
             "--git-dir",
@@ -460,11 +468,16 @@ def remove_disposable_run_worktree(
 
     `git worktree remove`를 쓰는 이유는 admin 엔트리까지 함께 정리하기 위해서다 —
     디렉터리만 지우면 bare 저장소에 stale 엔트리가 남고, 이 저장소는
-    `git worktree prune`을 운영 금지로 두고 있어 그것을 되돌릴 수단이 없다.
+    `git worktree prune`을 운영 금지로 두고 있다.
+
+    **디렉터리가 이미 없어도 그냥 돌아가지 않는다.** 앞선 실행이 SIGTERM/SIGHUP으로
+    죽어 cleanup을 건너뛴 뒤 운영자가 경로만 지웠다면 등록만 남는데, 그 상태를 여기서
+    치우지 않으면 아무도 치울 수 없다. `worktree remove --force`는 경로가 사라진
+    엔트리도 지운다(2026-09-04 실측) — `prune` 없이 되돌릴 수 있다.
+
+    성공 판정은 exit code가 아니라 **등록이 실제로 사라졌는가**로 한다.
     """
 
-    if not _path_exists(destination):
-        return
     _require_canonical_rebuildable_state_paths(
         state_paths=state_paths,
         values=values,
@@ -472,12 +485,97 @@ def remove_disposable_run_worktree(
     )
     paths = pinned_runtime_source_paths(state_paths=state_paths, release=release)
     bare = paths.bare_repository(role)
-    _run_root_git(
-        ["--git-dir", str(bare), "worktree", "remove", "--force", str(destination)],
-        runner=runner,
-    )
+    if _path_exists(destination):
+        # 형제 cleanup(`_cleanup_staging_worktree`)과 같은 봉쇄를 건다 — private
+        # parent 안의 현재 owner 디렉터리에만 `--force` 제거를 허용한다.
+        _validate_private_directory(destination.parent, label="disposable run worktree parent")
+        _reject_symlink_components(destination, label="disposable run worktree")
+    try:
+        _run_root_git(
+            ["--git-dir", str(bare), "worktree", "remove", "--force", str(destination)],
+            runner=runner,
+        )
+    except DeploymentContractError:
+        # 등록도 경로도 이미 없으면 git은 실패하지만 결과는 우리가 원하는 상태다.
+        if _is_registered_worktree(bare=bare, destination=destination, runner=runner):
+            raise
+        if _path_exists(destination):
+            raise
     if _path_exists(destination):
         raise DeploymentContractError("disposable run worktree removal is incomplete")
+    if _is_registered_worktree(bare=bare, destination=destination, runner=runner):
+        raise DeploymentContractError("disposable run worktree registration is still present")
+
+
+def summarize_disposable_run_worktree(
+    *,
+    destination: Path,
+    runner: GitRunner = subprocess.run,
+) -> dict[str, object]:
+    """삭제 **전에** 일회용 체크아웃에 무엇이 남았는지를 증거로 만든다.
+
+    봉인 트리를 실행에서 뺀 뒤로는, gitignore 경로(`node_modules/`, `test-results/`)
+    쓰기를 관측하던 유일한 탐지기(다음 preflight의 모드 검사)가 사라진다. 여기서
+    `--ignored=matching`까지 세어 두지 않으면 "실행이 무엇을 남겼는가"가 증거 없이
+    삭제된다(적대 리뷰 2026-09-04 #3).
+
+    경로 전체가 아니라 **repo-상대 최상위 이름**만 남긴다 — 진단에 필요한 만큼이고
+    호스트 경로는 담지 않는다.
+    """
+
+    status = _run_root_git(
+        [
+            "-C",
+            str(destination),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignored=matching",
+        ],
+        runner=runner,
+    ).stdout
+    tracked = untracked = ignored = 0
+    names: set[str] = set()
+    for line in status.splitlines():
+        if len(line) < 4:
+            continue
+        code, path = line[:2], line[3:].strip().strip('"')
+        if code == "!!":
+            ignored += 1
+        elif code == "??":
+            untracked += 1
+        else:
+            tracked += 1
+        names.add(path.split("/", 1)[0])
+    return {
+        "tracked_changes": tracked,
+        "untracked_entries": untracked,
+        "ignored_entries": ignored,
+        "top_level_names": sorted(names),
+    }
+
+
+def _is_registered_worktree(
+    *,
+    bare: Path,
+    destination: Path,
+    runner: GitRunner,
+) -> bool:
+    """bare가 이 경로를 worktree로 **아직 등록하고 있는지** 본다.
+
+    경로 존재 여부와 등록 여부는 다르다. 비정상 종료 뒤에는 등록만 남는데, 그것이
+    다음 `worktree add`를 죽인다.
+    """
+
+    listing = _run_root_git(
+        ["--git-dir", str(bare), "worktree", "list", "--porcelain"],
+        runner=runner,
+    ).stdout
+    wanted = str(destination)
+    for line in listing.splitlines():
+        if line.startswith("worktree ") and line[len("worktree ") :].strip() == wanted:
+            return True
+    return False
 
 
 def assert_pinned_worktree_is_still_sealed(
@@ -487,11 +585,16 @@ def assert_pinned_worktree_is_still_sealed(
     values: Mapping[str, str],
     role: RuntimeSourceRole,
 ) -> None:
-    """봉인된 source worktree가 실행 뒤에도 그대로인지 **사후조건**으로 본다.
+    """봉인된 source worktree의 **모드가** 실행 뒤에도 그대로인지 사후조건으로 본다.
 
-    일회용 체크아웃으로 옮긴 것이 실제로 효과가 있었는지를 관측으로 만든다. 이 검사가
-    없으면 "봉인 트리를 건드리지 않았다"는 주장이 다음 실행의 preflight에서야 드러나고,
-    그때는 이미 한 사이클을 태운 뒤다.
+    일회용 체크아웃으로 옮긴 것이 효과가 있었는지를 관측으로 만든다. 이 검사가 없으면
+    "봉인 트리를 건드리지 않았다"는 주장이 다음 실행의 preflight에서야 드러나고, 그때는
+    이미 한 사이클을 태운 뒤다.
+
+    **한계를 분명히 한다.** `_validate_immutable_tree`는 모드·소유자·nlink 검사다.
+    root는 0444 파일을 모드 변경 없이 덮어쓰므로 in-place 내용 변조는 잡지 못한다
+    (2026-09-04 journal §1). 이 함수가 보증하는 것은 "엔트리가 추가·삭제되지 않았고
+    모드가 바뀌지 않았다"까지다.
     """
 
     _require_canonical_rebuildable_state_paths(
@@ -520,10 +623,21 @@ def _promote_staging_worktree(
     target: Path,
     runner: GitRunner,
 ) -> None:
-    """seal 검증된 stage만 Git-owned move로 final source root에 공개한다."""
+    """seal 검증된 stage만 Git-owned move로 final source root에 공개한다.
+
+    운영자가 오염된 봉인 worktree를 `rm -rf`로 지우면 **등록만 남는다.** 그 상태에서
+    `worktree move`는 "missing but already registered"로 죽는데, 종전에는 그것이
+    일반 Git 실패로 접혀 사유가 보이지 않았다. 여기서 먼저 판정해 조치까지 말한다
+    (적대 리뷰 2026-09-04 #2 실측).
+    """
 
     if _path_exists(target):
         raise DeploymentContractError("pinned runtime source worktree target already exists")
+    if _is_registered_worktree(bare=bare, destination=target, runner=runner):
+        raise DeploymentContractError(
+            "pinned runtime source worktree target is registered but missing; "
+            "clear it with git worktree remove --force"
+        )
     _run_root_git(
         ["--git-dir", str(bare), "worktree", "move", str(staging), str(target)],
         runner=runner,
