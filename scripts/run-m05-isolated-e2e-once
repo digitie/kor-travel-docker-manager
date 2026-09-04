@@ -504,7 +504,8 @@ try:
     # 별도 종료값으로 알린다.
     expected_keys = {
         "harness", "manager_source_revision", "phase", "driver_phase",
-        "cleanup_failed", "pinset_sha256", "execution_identity_sha256", "status", "transaction_id",
+        "cleanup_failed", "disposable_run_worktree_retained",
+        "pinset_sha256", "execution_identity_sha256", "status", "transaction_id",
     }
     if value["status"] == "passed":
         expected_keys |= {
@@ -519,6 +520,9 @@ try:
         or value.get("phase") not in PHASES
         or value.get("driver_phase") not in PHASES
         or not isinstance(value.get("cleanup_failed"), bool)
+        # 일회용 체크아웃이 남았다는 사실은 실행을 태우지 않는다(핀 상태를 오염시키지
+        # 못하는 output leaf 안의 사본이다). 그래도 receipt에는 있어야 한다.
+        or not isinstance(value.get("disposable_run_worktree_retained"), bool)
         or (reason is not None and (
             not isinstance(reason, str) or DIAGNOSTIC_TOKEN.fullmatch(reason) is None
         ))

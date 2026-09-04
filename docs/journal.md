@@ -2,6 +2,87 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-04 — 불변 트리 오염을 B안으로 고치고, 적대 리뷰 2인의 지적을 반영했다
+
+실행을 봉인된 핀 worktree가 아니라 **일회용 체크아웃**에서 하도록 바꿨다. 그 체크아웃은
+디스크 사본이 아니라 같은 bare 저장소의 object store에서 **재유도**한다 — 같은 revision,
+같은 tree object이므로 파일 모드도 잔여물도 물려받지 않는다. 앞선 리뷰가 D(`cp -a`)를
+기각한 사유(사본이 git admin dir을 공유한다)를 피하는 지점이 여기다.
+
+PinVi 쪽 변경은 필요 없다. attestation과 러너가 각각 자기 `__file__`/스크립트 위치에서
+repo root를 유도하고 `PINVI_PLAYWRIGHT_RUNNER_REPO_ROOT`를 무조건 덮어쓰므로, 하네스가
+그 둘을 일회용 루트에서 실행하면 체인 전체가 따라온다(2026-09-04 §3의 패턴 그대로).
+compose root와 build context는 봉인 트리를 계속 본다 — 읽기 전용 소비이기 때문이다.
+
+### 적대 리뷰 2인이 바꾼 것
+
+초판(`eea0618`)에 정확성·보안 두 각도로 리뷰어를 붙였고 각각 **BLOCK**과
+**FIX-BEFORE-MERGE**를 냈다. 둘 다 실측으로 근거를 댔고, 다섯 가지를 고쳤다.
+
+1. **중단된 실행이 남긴 등록을 하네스가 스스로 못 지웠다.** `main()`의 `finally`는
+   SIGTERM/SIGHUP에서 돌지 않는데, 초판 `remove_disposable_run_worktree`는 디렉터리가
+   없으면 그냥 돌아가서 admin 등록을 영구히 남겼다. 그러면 같은 경로의 다음
+   `worktree add`가 `missing but already registered`로 죽는다. destination에 uuid를
+   붙여 경로 충돌 자체를 없애고, 제거는 경로가 없어도 시도하며 **성공 판정을 exit code가
+   아니라 등록이 사라졌는가**로 바꿨다(`worktree remove --force`는 경로가 사라진
+   엔트리도 지운다 — 실측).
+2. **테스트가 이 수정을 통째로 되돌려도 green이었다.** 초판 게이트는
+   `_validate_immutable_tree`만 import하고 raw `git`으로 git 자체의 동작을 확인했다.
+   더 나쁜 것은 full-path 스텁이 `materialize_disposable_run_worktree`를 **봉인 루트를
+   그대로 돌려주도록** 대체해, 실행-루트 단언 전부가 무의미해진 것이다. 게이트를 프로덕션
+   함수 직접 호출로 바꾸고 스텁이 다른 경로를 돌려주게 했다. 변이 검증: 제거 early-return
+   복원과 tree 자기참조 복원에 각각 1건, 실행-루트 치환 **한 곳**만 되돌리면 20건이 red다.
+3. **일회용 디렉터리 삭제 실패가 통과한 1.5시간짜리 실행을 태웠다.** 컨테이너 tmpfs 마운트
+   잔존(EBUSY)이나 ENOSPC 하나로 `cleanup_failed`가 켜지고 pinset이 소각되며 attestation
+   해시가 버려졌다 — 이 수정이 막으려던 바로 그 손실이다. 제거 실패는 실행을 태우지 않는
+   receipt 필드(`disposable_run_worktree_retained`)로 강등하고, **봉인 파손만** 태운다.
+4. **사후조건이 위험하지 않은 트리를 검사하면서 그 한계를 과대주장했다.** 봉인 트리를
+   실행에서 뺀 뒤로는 gitignore 경로 쓰기를 관측하던 유일한 탐지기가 사라진다(§2). 삭제
+   **전에** `--ignored=matching`까지 세어 receipt 증거로 남기게 했다. 사후조건 독스트링에는
+   그것이 모드 검사이며 root의 in-place 내용 변조는 잡지 못한다는 §1의 사실을 적었다.
+   검사 대상도 pinvi 한 role에서 map까지 둘로 넓혔다.
+5. **기대 tree가 자기참조였다.** 같은 bare에서 다시 유도해 비교하면 git 결정성만 확인한다.
+   `materialize_pinned_runtime_sources`가 이미 검증한 값을 preflight가 넘기도록 바꿔야
+   비로소 핀과의 결박이다.
+
+### 운영 선행조치 — 머지만으로는 다음 실행이 되지 않는다
+
+**활성 pinset `e6b52db4`의 봉인 PinVi 트리는 지금 오염돼 있다**(e2e24가 다시 만들었다).
+이 코드는 `materialize_pinned_runtime_sources`보다 **뒤**에서 도는데 거부는 그보다 앞에서
+일어나므로, 그대로 머지하면 새 코드가 한 줄도 실행되지 않은 채 `source_materialization`
+에서 끝난다. 같은 오염이 비활성 pinset 4개에도 있다.
+
+조치는 `rm -rf`가 **아니다.** 디렉터리만 지우면 등록이 남고 다음 materialize의
+`worktree move`가 죽는다(실측). 유일하게 등록까지 지우는 방법은
+
+    git --git-dir=<bare> worktree remove --force <봉인 worktree>
+
+다. 그 fatal을 일반 Git 실패로 접지 않고 조치까지 말하도록 `_promote_staging_worktree`에
+선판정을 넣었다. 자기치유로 넣지 않은 이유는 §2 그대로다 — 상시 제거는 유일한 탐지기를
+무음화한다. 1회성 운영 조치로 간다.
+
+**실행했다(2026-09-04).** 활성 pinset `e6b52db4`의 PinVi 봉인 트리에서 잔여물 4개
+(`node_modules`, `apps/web/node_modules` 864K, `apps/web/test-results`,
+`apps/web/playwright-report`)를 제거했다. 봉인 worktree 자체는 지우지 않았으므로 등록
+문제는 발생하지 않았고, `git worktree remove --force`도 필요 없었다. 제거 후 실측:
+
+    pinvi   ACCEPT — immutable tree is sealed
+    map     ACCEPT — immutable tree is sealed
+    git status --porcelain --untracked-files=all   (빈 출력)
+    HEAD                                           357da1897c2df2c86e5f3376e212451cf0f019ab
+
+검사는 설치된 Manager의 `_validate_immutable_tree`를 그대로 돌려서 했다 — 다음
+preflight가 쓸 바로 그 코드다. 다른 pinset 24개의 worktree에는 잔여물이 없다(활성
+pinset만 오염돼 있었다). `rm -rf` 대신 잔여물만 지우는 쪽을 택한 이유는 그것이 최소
+조치이고 봉인 worktree의 재materialize를 요구하지 않기 때문이다.
+
+### 수용한 비용
+
+`git worktree list` 관측이 Manager에 없다는 §4 B의 지적은 남아 있다. destination이
+실행마다 유일해지면서 **경로 충돌로 죽는 경로는 없어졌지만**, 하드킬된 실행의 등록은
+누적된다(prune 금지). 지금은 받아들이고, 누적 점검을 백로그에 둔다. 중단된 실행이 output
+leaf에 PinVi 체크아웃 전체를 남기는 것도 같다 — n150은 74G 여유다.
+
 ## 2026-09-04 — 불변 트리 수정안 리뷰가 확립한 것
 
 격리 하네스가 핀 소스 worktree를 오염시켜 같은 pinset 재실행이 막히는 문제에 대해

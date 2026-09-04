@@ -861,7 +861,7 @@ def test_cleanup_boundary_marks_ordinary_exceptions_for_fixed_receipt(
         map_cleanup=cleanup,
         pinvi_cleanup=None,
         private_files=(),
-    ) == (False, True)
+    ) == (False, True, False)
 
 
 def test_preclaim_cleanup_failure_keeps_the_receipt_launcher_acceptable(
@@ -883,7 +883,7 @@ def test_preclaim_cleanup_failure_keeps_the_receipt_launcher_acceptable(
     monkeypatch.setattr(
         driver,
         "_cleanup_temporary_resources",
-        lambda **_kwargs: (False, True),
+        lambda **_kwargs: (False, True, False),
     )
     monkeypatch.setattr(driver, "_block_terminal_m05_execution", lambda *_args, **_kwargs: True)
 
@@ -1801,7 +1801,20 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
     monkeypatch.setattr(
         driver,
         "_source_pair_preflight",
-        lambda: (tmp_path, tmp_path, _Pair(), "a" * 64, "b" * 40),
+        # `state_paths`/`values`/핀 tree도 함께 온다 — body가 일회용 실행 체크아웃을
+        # 만들 때 쓴다. 이 테스트는 그 생성을 스텁하므로 통과용 값이면 된다.
+        lambda: (tmp_path, tmp_path, _Pair(), "a" * 64, "b" * 40, object(), {}, "c" * 40),
+    )
+    # 일회용 루트는 봉인 루트와 **달라야** 한다. 같은 값을 돌려주면 실행-루트 치환을
+    # 되돌려도 이 테스트가 통과한다(적대 리뷰 BLOCKER-2).
+    disposable_root = tmp_path / "pinvi-run"
+    disposable_root.mkdir()
+    monkeypatch.setattr(
+        driver, "materialize_disposable_run_worktree", lambda **_kwargs: disposable_root
+    )
+    monkeypatch.setattr(driver, "remove_disposable_run_worktree", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        driver, "assert_pinned_worktree_is_still_sealed", lambda **_kwargs: None
     )
     monkeypatch.setattr(
         driver, "build_m05_isolated_manager_admission", lambda **_kwargs: {}
@@ -1817,7 +1830,7 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
         driver, "_assert_rendered_loopback_tcp_publish", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
-        driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False)
+        driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False, False)
     )
     monkeypatch.setattr(
         driver,
@@ -2122,7 +2135,7 @@ def _exception_sink_run(
         lambda _expected: (_ for _ in ()).throw(ValueError("boom-ordinary")),
     )
     monkeypatch.setattr(
-        driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False)
+        driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False, False)
     )
     monkeypatch.setattr(
         driver, "_block_terminal_m05_execution", lambda *_a, **_k: True
@@ -2167,7 +2180,7 @@ def test_traceback_evidence_write_failure_does_not_change_the_receipt(
         lambda _expected: (_ for _ in ()).throw(ValueError("boom-ordinary")),
     )
     monkeypatch.setattr(
-        driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False)
+        driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False, False)
     )
     monkeypatch.setattr(
         driver, "_block_terminal_m05_execution", lambda *_a, **_k: True
@@ -2575,7 +2588,7 @@ def test_preclaim_receipt_with_a_cleanup_hiccup_is_not_escalated_to_a_burn(
         "_validate_trusted_release",
         lambda _expected: (_ for _ in ()).throw(driver._PhaseError("admission")),
     )
-    monkeypatch.setattr(driver, "_cleanup_temporary_resources", lambda **_k: (True, False))
+    monkeypatch.setattr(driver, "_cleanup_temporary_resources", lambda **_k: (True, False, False))
     monkeypatch.setattr(driver, "_block_terminal_m05_execution", lambda *_a, **_k: True)
     assert driver.main("a" * 40, tmp_path) == 1
 
