@@ -2,6 +2,61 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-04 — 불변 트리 수정안 리뷰가 확립한 것
+
+격리 하네스가 핀 소스 worktree를 오염시켜 같은 pinset 재실행이 막히는 문제에 대해
+전문 리뷰어 5인(설계 3 + 적대 검증 2)을 붙였다. **합의는 나오지 않았다** — 설계
+권고가 A(overlayfs)·B(일회용 git worktree)·D(일회용 복제본)로 갈렸고 검증 2인이
+모두 `NEEDS-CHANGE`를 냈다. 그러나 리뷰가 확립한 사실 넷은 다음 착수의 출발점이다.
+
+### 1. `_validate_immutable_tree`는 내용 검사가 아니라 **모드 검사**다
+
+root는 CAP_DAC_OVERRIDE로 0444 파일을 모드 변경 없이 덮어쓸 수 있고, 0555인 ignored
+디렉터리는 세 검사(`_validate_immutable_tree`, `_assert_worktree_clean`, 러너의
+`assert_exact_live_checkout`)를 **모두 통과한다**(실측). 따라서 "이 검사가 유일한
+tripwire이므로 보존해야 한다"는 A의 핵심 논거는 생각보다 약하다. 검증자는 판단 기준을
+**"run tree를 object store에서 재유도하는가"**로 바꾸라고 했고, 그 기준에서는 B만
+재유도하고 A·D는 디스크 트리를 물려받는다.
+
+### 2. gitignore 경로 쓰기를 잡는 것은 모드 검사뿐이다
+
+`node_modules/`·`test-results/`는 `.gitignore`에 있고 `playwright-report`는 빈
+디렉터리라, 러너의 `--untracked-files=all`도 attestation의 `_assert_clean_checkout`도
+넷 전부에 대해 눈이 멀어 있다. 그래서 **사후 삭제(C안)는 증거 세탁**이다 — 유일한
+탐지기가 쓸 증거를 정확히 지우고 성공 경로의 fail-close를 fail-open으로 뒤집는다.
+
+### 3. `PINVI_PLAYWRIGHT_RUNNER_REPO_ROOT`는 이미 확립된 패턴이다
+
+`m05_activation_attestation.py`가 `os.environ.copy()` **뒤에** 자기 `__file__`에서
+유도한 값으로 무조건 덮어쓰고, 그 경로에 실행 전후로 `_assert_clean_checkout`을 건다.
+즉 권한 근거는 env가 아니라 **핀된 스크립트의 자기 위치 + git identity 검증**이다.
+"caller 환경변수는 권한 근거가 아니다" 규칙과 충돌하지 않는다.
+
+### 4. 각 후보안의 차단 사유
+
+- **A(overlayfs)**: 사후 `_assert_clean_checkout`이 여전히 핀 트리를 보므로 컨테이너가
+  실행한 트리와 검증한 트리가 갈라진다 — 보강 없이는 **회귀**다. merged 경로로 재검사하고
+  upperdir를 write manifest로 증거화해야 비로소 현재보다 강해진다. 마운트 네임스페이스
+  함정도 있다(private ns에서 마운트하면 dockerd가 조용히 lower를 bind한다).
+- **B(일회용 worktree)**: 복사 비용은 실측 0.2초/20MB로 무시할 만하다. 다만 Manager에
+  `git worktree list`가 없어 여분 worktree가 **보이지 않고**, `git worktree prune`이 운영
+  금지라 제거 실패 시 admin 엔트리가 영구 누적된다.
+- **D(cp -a 복제본)**: 사본이 핀 worktree의 git admin dir(index/HEAD)을 **공유한다**(실측
+  inode 일치) — B를 기각한 바로 그 사유에 정면으로 걸린다.
+
+### 5. 착수 전 결정이 필요한 것
+
+현재 pinset의 worktree는 **지금 오염돼 있다**(e2e24가 다시 만들었다). pinset은
+map+pinvi revision에서만 파생되므로, 어떤 수정을 넣든 그 수정의 첫 실행이 preflight에서
+거부되고 leaf·receipt·ledger가 없는 자리라 또 한 사이클을 태운다. 제거를 자기치유로
+넣으면 2번의 유일한 탐지기를 상시 무음화하므로 안 되고, 1회성 운영 조치로 간다면
+`git worktree prune` 금지 하에 stale 엔트리를 받아들이는 결정을 명시해야 한다.
+
+### 부수 발견
+
+러너의 `assert_exact_live_checkout`에는 `GIT_OPTIONAL_LOCKS=0`이 없다(attestation의
+`_git_env()`에는 있다). 핀 worktree의 index를 실행 중에 건드릴 수 있는 경로다.
+
 ## 2026-09-03 — 격리 M04/M05 live E2E가 통과했다
 
 pinset `e6b52db4`(Map `8078b110` + PinVi `357da189`), Manager `5befecbb`에서
