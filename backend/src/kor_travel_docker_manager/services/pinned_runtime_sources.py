@@ -529,6 +529,12 @@ def summarize_disposable_run_worktree(
             str(destination),
             "status",
             "--porcelain=v1",
+            # **`-z`가 아니면 증거가 깨진다.** 기본 출력은 `core.quotePath` 때문에
+            # 비-ASCII 경로를 8진 이스케이프로 감싸고, 초판 파서는 그것을 풀지 못해
+            # 한글 파일명이 `í…`로 JSON에 실려 나갔다(pygit2 조사
+            # 2026-09-04 실측). NUL 구분 출력은 경로를 인용하지도 이스케이프하지도
+            # 않으므로 파싱 규칙 자체가 사라진다.
+            "-z",
             "--untracked-files=all",
             "--ignored=matching",
         ],
@@ -536,16 +542,24 @@ def summarize_disposable_run_worktree(
     ).stdout
     tracked = untracked = ignored = 0
     names: set[str] = set()
-    for line in status.splitlines():
-        if len(line) < 4:
+    records = [record for record in status.split("\0") if record]
+    position = 0
+    while position < len(records):
+        record = records[position]
+        position += 1
+        if len(record) < 4:
             continue
-        code, path = line[:2], line[3:].strip().strip('"')
+        code, path = record[:2], record[3:]
         if code == "!!":
             ignored += 1
         elif code == "??":
             untracked += 1
         else:
             tracked += 1
+            if code[0] in {"R", "C"}:
+                # rename/copy는 **다음 레코드가 원본 경로**다. 건너뛰지 않으면 그
+                # 경로를 상태 코드로 읽어 이름 집합이 오염된다.
+                position += 1
         names.add(path.split("/", 1)[0])
     return {
         "tracked_changes": tracked,
@@ -751,6 +765,9 @@ def _source_owner_git_environment() -> dict[str, str]:
     return {
         "PATH": "/usr/bin:/bin",
         "HOME": "/nonexistent",
+        # 위 `_root_git_environment`와 같은 이유. 사람 소유 체크아웃을 읽는 경로라
+        # 특히 쓰기를 원치 않는다.
+        "GIT_OPTIONAL_LOCKS": "0",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_SYSTEM": "/dev/null",
@@ -763,6 +780,17 @@ def _root_git_environment() -> dict[str, str]:
     return {
         "PATH": "/usr/bin:/bin",
         "HOME": "/nonexistent",
+        # 조회가 대상 체크아웃의 index를 갱신(=쓰기)하지 않게 한다. `source_status.py`가
+        # 처음부터 걸고 있던 플래그인데 이 모듈만 빠져 있었다 — 같은 계약의 두 선언이
+        # 갈라진 자리다.
+        #
+        # **정직하게 적는다**: 이 경로에서 그 쓰기를 관측하지는 못했다. 2026-09-04에
+        # 맨 셸에서는 mtime 갱신 뒤 `git status`가 index를 다시 쓰는 것을 실측했지만
+        # (`GIT_OPTIONAL_LOCKS=0`이면 쓰지 않았다), `_run_root_git`을 통과하는 실제
+        # 호출에서는 플래그 유무와 무관하게 index가 그대로였다. 그래서 이 항목에는
+        # 동작 게이트를 붙이지 않았다 — 통과·실패가 갈리지 않는 게이트는 없느니만
+        # 못하다. 남기는 이유는 방어 심층화와 두 모듈의 계약 일치다.
+        "GIT_OPTIONAL_LOCKS": "0",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_SYSTEM": "/dev/null",

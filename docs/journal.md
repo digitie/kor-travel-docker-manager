@@ -2,6 +2,69 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-04 — pygit2 포팅은 하지 않는다 (조사 종결)
+
+Manager의 git 접근(`pinned_runtime_sources.py`의 `_run_root_git` 18곳, `source_status.py`,
+`scripts/m05_isolated_e2e.py`)을 subprocess에서 pygit2로 옮기는 안을 조사했다. **하지
+않기로 한다.** 소유자 결정이며, 근거는 아래 실측이다. 다시 제안되지 않도록 남긴다.
+
+### 결정적 이유 — worktree API가 libgit2에 없다
+
+`nm -D` 실측: libgit2 1.9.6에 **`git_worktree_move`도 `git_worktree_remove`도 없다.**
+그래서 `_promote_staging_worktree`와 `remove_disposable_run_worktree`/
+`_cleanup_staging_worktree`의 git-owned 제거를 옮길 수 없다. `prune(force=True)`는
+admin 엔트리만 지우고 **작업 디렉터리를 남긴다**(실측) — 우리가 방금 세운 계약과 정반대다.
+
+`add_worktree`는 **로컬 브랜치만** 받는다. `--detach`가 불가능하므로 핀 worktree가
+브랜치 위에 놓이고, 브랜치는 움직일 수 있다 — 핀 불변성이 약해진다. 우회하면 실행마다
+유일한 브랜치를 만들어야 하고 비정상 종료 시 **stale 브랜치까지** 남는다(지금은 stale
+admin 엔트리만 남는다).
+
+그리고 libgit2는 **이미 등록된 경로에 두 번째 worktree를 만드는 것을 막지 않는다**(실측).
+`rm -rf` 뒤 다른 이름으로 같은 경로에 add하면 성공하고, 원래 stale 등록이
+`is_prunable=False`로 뒤집혀 판정이 영구히 오염된다. 즉 어제 우리가 넣은
+`_is_registered_worktree` 우회 판정은 **사라지기는커녕 필수가 된다.**
+
+### 기대했던 이점 둘이 무너졌다
+
+- **오류 식별**: `GitError`에 code도 klass도 없다(실측 `attrs = ['add_note','args',
+  'with_traceback']`). 구분은 여전히 문자열 비교다. 게다가 어제 우리를 괴롭힌
+  `missing but already registered`는 **git CLI의 검사이지 libgit2의 검사가 아니다.**
+- **성능**: 실행당 git 프로세스 오버헤드 총합 약 50 ms. 같은 harness 실행 시간은
+  1시간 39분이다(0.001% 미만). `add_worktree`·`status`는 오히려 CLI가 빠르다.
+  `_validate_immutable_tree`는 애초에 git이 아니라 `os.walk`다.
+
+### 보안은 순손실
+
+hook 미실행·credential helper 미실행은 libgit2의 구조적 우위지만 **이미 봉인돼 있어
+신규 이득이 아니다.** 반면 `protocol.*.allow` 등가물 부재(`file://`·`git://` 상시 활성),
+경로별 `-c safe.directory=<경로>`가 **전역 `owner_validation=False`로만** 대체,
+`source_status.py`의 `timeout=5.0` 상실, `_drop_privileges`의 uid 강등이 in-process로
+불가능, 그리고 설정 봉인이 프로세스 전역이라 장수하는 FastAPI 백엔드 안에서 한 줄로
+되돌려질 수 있다. 배포 비용도 있다 — wheel이 자체 OpenSSL 3/libssh2를 번들해 `apt`
+보안 갱신 경로 밖으로 나가고, offline wheelhouse(`--no-index`) 계약과 CPython ABI 핀에
+새 제약이 생긴다.
+
+### 조사가 찾은 것 중 실제로 고친 것
+
+**1. `summarize_disposable_run_worktree`의 porcelain 파싱이 비-ASCII 경로를 깨뜨렸다.**
+어제 넣은 코드의 진짜 버그다. 기본 출력은 `core.quotePath` 때문에 경로를 8진
+이스케이프로 감싸는데 파서가 그것을 풀지 못해 한글 파일명이 증거 JSON에
+`\355\225\234…`로 실렸다. rename 엔트리(`R  <new>\0<old>`)의 원본 경로도 상태 코드로
+오독해 이름 집합을 오염시켰다. `-z`(NUL 구분)로 바꿔 파싱 규칙 자체를 없애고, rename의
+두 번째 레코드를 건너뛰게 했다. 게이트 3건이 이 변이를 잡는다.
+
+**2. `GIT_OPTIONAL_LOCKS=0`을 두 env에 추가했다 — 다만 주장은 축소한다.**
+`source_status.py`는 처음부터 이 플래그를 걸고 있었고 이 모듈만 빠져 있었다. 조사는
+"봉인 트리 검증이 admin index를 쓴다"고 보고했고 맨 셸에서는 재현됐다(mtime 갱신 뒤
+plain=YES / 플래그=NO). **그러나 `_run_root_git`을 통과하는 실제 호출에서는 플래그
+유무와 무관하게 index가 그대로였다**(직접 재측정). 그래서 동작 게이트를 붙이지
+않았다 — 통과·실패가 갈리지 않는 게이트는 없느니만 못하다. 대신 기존
+`test_pinned_runtime_sources.py`의 **env 정확일치 단언**이 이 추가를 고정한다. 남기는
+이유는 방어 심층화와 두 모듈의 계약 일치이며, 관측되지 않은 효과를 주석에 적지 않았다.
+
+서브에이전트 보고를 그대로 싣지 않고 재측정한 결과가 이 축소다.
+
 ## 2026-09-04 — 불변 트리 오염을 B안으로 고치고, 적대 리뷰 2인의 지적을 반영했다
 
 실행을 봉인된 핀 worktree가 아니라 **일회용 체크아웃**에서 하도록 바꿨다. 그 체크아웃은

@@ -203,6 +203,9 @@ def test_materializes_exact_v5_release_without_changing_canonical_sources(tmp_pa
         assert kwargs["env"] == {
             "PATH": "/usr/bin:/bin",
             "HOME": "/nonexistent",
+            # 조회가 대상 체크아웃의 index를 갱신하지 않게 한다. `source_status.py`가
+            # 처음부터 걸던 플래그이고, 이 모듈만 빠져 있었다.
+            "GIT_OPTIONAL_LOCKS": "0",
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_CONFIG_SYSTEM": "/dev/null",
@@ -227,6 +230,9 @@ def test_materializes_exact_v5_release_without_changing_canonical_sources(tmp_pa
         assert kwargs["env"] == {
             "PATH": "/usr/bin:/bin",
             "HOME": "/nonexistent",
+            # 조회가 대상 체크아웃의 index를 갱신하지 않게 한다. `source_status.py`가
+            # 처음부터 걸던 플래그이고, 이 모듈만 빠져 있었다.
+            "GIT_OPTIONAL_LOCKS": "0",
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_CONFIG_SYSTEM": "/dev/null",
