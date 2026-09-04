@@ -2,6 +2,48 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-04 — 일회용 체크아웃의 첫 프로덕션 사이클이 통과했다
+
+`e2e025`(Manager `b3217edc`, pinset `e6b52db4`)가 `status: passed`로 닫혔고, **끝난 뒤에도
+봉인 트리가 그대로였다.** 이 수정이 목표한 것이 정확히 그것이다.
+
+    m04_attestation_sha256            f08620a9…
+    m05_attestation_sha256            37320bb5…
+    runtime_provenance_sha256         25a80946…
+    execution_identity_sha256         148f76b1…
+    cleanup_failed                    false
+    disposable_run_worktree_retained  false
+
+실행 중 실측으로도 확인했다 — 일회용 체크아웃 `pinvi-run-b1049614…`가 uuid 접미로
+0700·root 소유로 생성돼 pinvi bare에 세 번째 worktree로 등록됐고(핀 revision `357da18`),
+그 시점에 봉인 트리 잔여물은 0건이었다. 종료 후:
+
+    봉인 트리 잔여물          0건
+    _validate_immutable_tree  pinvi ACCEPT / map ACCEPT
+    일회용 worktree 등록      제거됨 (bare + 핀 worktree만 남음)
+    일회용 디렉터리           제거됨
+    격리 스택                 컨테이너 0개
+
+### 새 증거가 실제로 쓸모 있었다
+
+`disposable-run-worktree.json`:
+
+    ignored_entries    3
+    untracked_entries  0
+    tracked_changes    0
+    top_level_names    ["apps", "node_modules"]
+
+적대 리뷰 #3의 지적("봉인 트리를 실행에서 빼면 gitignore 경로 쓰기를 관측하던 유일한
+탐지기가 사라진다")이 옳았음을 첫 실행이 보여줬다. 이 세 건이 이전 두 사이클을 태운
+잔여물과 같은 것이고, 이제는 삭제 전에 세어져 receipt에 남는다. `tracked_changes 0`은
+실행이 추적 파일을 건드리지 않았다는 뜻이다.
+
+### 우연히 확인된 것
+
+`disposable_run_worktree_retained: false` — 적대 리뷰 #5를 받아들여 제거 실패를 실행
+소각에서 분리했는데, 이번에는 제거가 성공해 그 분기를 타지 않았다. 분리 자체의 값어치는
+실패했을 때 드러나므로 아직 관측되지 않았다.
+
 ## 2026-09-04 — pygit2 포팅은 하지 않는다 (조사 종결)
 
 Manager의 git 접근(`pinned_runtime_sources.py`의 `_run_root_git` 18곳, `source_status.py`,

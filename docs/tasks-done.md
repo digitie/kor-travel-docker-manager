@@ -16,6 +16,15 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-09-04 — 격리 하네스의 불변 핀 소스 트리 오염
+
+- [x] 실행을 봉인 트리가 아니라 **일회용 체크아웃**(같은 bare의 object store에서 재유도)에서
+  하도록 바꿨다(#315). 적대 리뷰 2인의 지적 5건을 반영하고(#315), porcelain 경로 파싱을
+  NUL 구분으로 고쳤다(#316). 운영 선행조치로 활성 pinset의 봉인 PinVi 트리에서 잔여물
+  4건을 제거했다.
+- [x] `e2e025`가 통과하고 **끝난 뒤에도 봉인 트리가 ACCEPT**임을 실측했다 — 같은 pinset
+  재실행이 가능하다. 상세는 `docs/journal.md` 2026-09-04.
+
 ## 2026-08-26 — C7 v4 capture 운영 항목 퇴역
 
 - [x] **T-C7-CAPTURE-OPS — H300 v6/v8 정본과 충돌하는 v4 capture 퇴역**
