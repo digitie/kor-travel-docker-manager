@@ -174,11 +174,23 @@ KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE=/path/to/edited/docker-targets.yml \
 | `conc` | Kor Travel Concierge | `prom` + `kor-travel-concierge` API/MCP/Scheduler/Web UI 실행 (geo 비의존) | `kor-travel-concierge`, `concierge`, `agent` |
 | `map` | Kor Travel Map | `geo`+`conc` + `kor-travel-map` API/Dagster/Web UI 실행 | `kor-travel-map`, `krtour-map`, `python-krtour-map` |
 | `pinvi` | PinVi | `map` + PinVi API/Dagster/Web UI 실행 | `srv`, `main`, `pinvi` |
-| `all` | 전체 | `db`부터 `pinvi`까지 전체 순서 | `default` |
+| `weather` | Kor Travel Weather | 독립 sibling. geo/concierge/map/pinvi 어디에도 의존하지 않는다 | `kor-travel-weather`, `weather` |
+| `all` | 전체 | `db`부터 `weather`까지 전체 순서 | `default` |
 
 `geo` 이후 앱 target은 모두 실제 앱 컨테이너를 이 저장소 compose에서 빌드하고 실행한다. `main`은 독립 target이 아니라 `pinvi`의 호환 별칭이며, 새 자동화에서는 짧은 별칭 `srv`를 사용한다.
 
-로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `db` 대역 `12000-12099`는 폐지된 통합 instance의 자리라 비어 있다 — PostgreSQL은 프로젝트마다 전용 instance이고 포트는 각 대역의 `x00`(`12500`/`12600`/`12700`/`12800`, ADR-37)이다. `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `gra`는 Grafana `12205`, `cadv`는 cAdvisor `12301`, `prom`은 Prometheus `12401`을 사용한다. `geo` 대역의 `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `conc` 대역은 `12601`/`12602`/`12605`, `map` 대역은 `12701`/`12702`/`12705`, `pinvi` 대역은 `12801`(API)/`12802`(Dagster)/`12805`(Web)를 사용한다. `kor-travel-docker-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
+로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `db` 대역 `12000-12099`는 폐지된 통합 instance의 자리라 비어 있다 — PostgreSQL은 프로젝트마다 전용 instance이고 포트는 각 대역의 `x00`(`12500`/`12600`/`12700`/`12800`, ADR-37)이다. `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `gra`는 Grafana `12205`, `cadv`는 cAdvisor `12301`, `prom`은 Prometheus `12401`을 사용한다. `geo` 대역의 `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `conc` 대역은 `12601`/`12602`/`12605`, `map` 대역은 `12701`/`12702`/`12705`, `pinvi` 대역은 `12801`(API)/`12802`(Dagster)/`12805`(Web)를 사용한다. `kor-travel-docker-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다. `weather`는 독립 sibling 저장소가 이미 문서화한 `14100-14106`을 그대로 쓴다(`docs/ports.md` 참조).
+
+### 3.1 `.env` 완전성 — 한 target만 써도 전체 필수 변수가 다 있어야 한다
+
+`docker compose`는 요청한 서비스와 무관하게 파일 전체를 interpolate한 뒤에야 대상을
+고른다 — 즉 `up gra`(Grafana, 자체 필수 변수 0개) 한 줄도 Map/PinVi처럼 전혀 무관한
+target의 `${VAR:?...}` 하나가 `.env`에 없으면 그 자리에서 그대로 실패한다. Compose
+profile로도 피할 수 없다(비활성 profile의 서비스도 interpolate 대상이다 — 실측
+확인). 새 worktree/새 개발 환경에서 `.env`를 `.env.example`에서 막 복사했다면, 실제로
+쓸 target만 값이 있어도 다른 target들의 `:?` 변수가 전부 비어 있어 **아무 target도**
+못 띄운다. `docker compose config --quiet`로 먼저 전체 파일이 interpolate되는지
+확인하고, 안 쓸 target들은 값의 정합성이 필요 없으니 placeholder로만 채워도 된다.
 
 ---
 
