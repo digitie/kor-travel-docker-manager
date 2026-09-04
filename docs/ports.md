@@ -29,6 +29,14 @@
 | `map` | `12700-12799` | PostgreSQL `12700`, API `12701`, Dagster `12702`, Web UI `12705` | `kor-travel-map` |
 | `pinvi` | `12800-12899` | PostgreSQL `12800`, API `12801`, Dagster `12802`, Web UI `12805` | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
+| `weather` | `14100-14199` | PostgreSQL `14100`, API `14101`, Dagster Gateway `14102`, Dagster 내부 `14106`, Dagster metrics `14103`, Prometheus `14104`, Web UI `14105` | `kor-travel-weather` |
+
+`weather`는 다른 target과 다른 `14100` 대역을 쓴다 — 독립 sibling 저장소가 이미 자기
+README·production 도메인(`weather-api`/`weather-dagster`/`weather.digitie.mywire.org`)에서
+이 포트로 문서화하고 있어, `12000`대 순번 규칙에 맞춰 재배치하지 않았다. Dagster
+원본 webserver(원본 compose는 bridge 네트워크라 겹치지 않았다)는 host 네트워크에서
+dagster-gateway의 외부 포트(14102)와 충돌해 내부 전용 `14106`으로 옮겼다 —
+gateway와 web의 server-side proxy만 이 포트로 직접 붙고 외부에는 노출하지 않는다.
 
 Concierge scheduler와 Map Dagster daemon은 외부 포트를 열지 않는 내부 실행 서비스다.
 Geo Dagster webserver는 registry의 일반 runtime 표에는 없는 보조 서비스지만 Compose에서

@@ -2,6 +2,41 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-09-04 — Concierge/Grafana 실행불가 원인 규명, kor-travel-weather를 관리 목록에 추가, 메뉴 글꼴 버그 수정
+
+Concierge MCP·Grafana가 "실행 안 됨"으로 보고된 근본 원인은 코드 결함이 아니라
+`.env` 완전성이었다 — `docker compose`는 요청한 서비스와 무관하게 파일 전체를
+interpolate하므로, Map/PinVi 쪽의 `${VAR:?...}` 하나만 비어 있어도 Grafana(자체
+필수 변수 0개)조차 못 띄운다. 로컬 `.env`가 Concierge/Map/PinVi 구간을 채운 적이
+없었던 것으로 확인했다(`docs/docker-management.md` 3.1에 이 함정을 기록). 별개로
+Grafana의 Prometheus datasource provisioning(`config/grafana/provisioning/datasources/prometheus.yml`)이
+host 네트워크 전환 이전의 `http://prometheus:9090`을 그대로 쓰고 있어 `127.0.0.1:12401`로
+고쳤다 — 대시보드가 없어 지금까지 드러나지 않았을 뿐 실제 버그였다.
+
+`kor-travel-weather`(독립 sibling, KMA/AirKorea 날씨 데이터 플랫폼)를 새 `weather`
+target으로 등록했다. 원본 compose.yaml은 bridge 네트워크 DNS를 쓰므로 이 저장소의
+host 네트워크 규칙에 맞춰 모든 내부 참조를 `127.0.0.1:<포트>`로 옮겼고, dagster
+원본 webserver는 host 모드에서 dagster-gateway의 외부 포트(14102)와 겹쳐 내부 전용
+`14106`으로 재배치했다. dagster-gateway의 nginx conf와 자체 Prometheus scrape
+config는 bridge DNS를 하드코딩하고 있어 `config/weather/`의 host 모드 override
+파일로 컨테이너 기동 시점에 덮어쓴다(원본 sibling 저장소는 건드리지 않음, Grafana
+datasource provisioning과 같은 패턴).
+
+메뉴 글꼴 불일치는 두 개의 별개 CSS 버그였다: (1) `.nav-button { font: inherit }`가
+`.nav-link`의 `font-size: 0.75rem`과 동일 specificity·더 늦은 source order라 캐스케이드에서
+이겨, 버튼 기반 메뉴 항목(운영 도구 그룹, 시스템 그룹, 사이드바 하단 로그아웃)만
+브라우저 기본 버튼 글꼴 크기로 커졌다 — `font-family: inherit`으로 좁혀 해결.
+(2) `.nav-title`이 `--font-sans`와 같은 폰트 3개를 다른 우선순위로 나열한
+`--font-display`를 썼는데 실제로 로드되는 웹폰트가 하나도 없어 OS 설치 폰트에 따라
+그룹 헤더만 다른 글꼴로 보일 수 있었다 — `--font-sans`로 통일(상속 삭제).
+
+세 가지 모두 실제 컨테이너를 기동해 live로 검증했다: weather 7개 서비스 전부
+healthy(Prometheus가 api·dagster 두 scrape target 모두 `up`), Concierge 5개
+컨테이너 전부 기동(API/MCP/Scheduler/UI, `db-init` 성공 종료), Grafana datasource
+health API가 `"Successfully queried the Prometheus API."`, 메뉴 글꼴은 컴파일된
+CSS로 실제 DOM computed style을 측정해 버튼·링크·그룹 헤더가 동일 폰트
+스택(12px/560/`Noto Sans KR,...`)으로 렌더링됨을 확인했다.
+
 ## 2026-09-04 — 일회용 체크아웃의 첫 프로덕션 사이클이 통과했다
 
 `e2e025`(Manager `b3217edc`, pinset `e6b52db4`)가 `status: passed`로 닫혔고, **끝난 뒤에도

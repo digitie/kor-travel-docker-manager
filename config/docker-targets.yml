@@ -13,6 +13,7 @@ dependency_order:
   - conc
   - map
   - pinvi
+  - weather
 
 containers:
   kor-travel-geo-postgresql:
@@ -197,6 +198,56 @@ containers:
     prod_url_env: KTDM_PROD_URL_CADVISOR
     expected_ports:
       - "12301:12301"
+  kor-travel-weather-postgresql:
+    name: kor-travel-weather-db
+    compose_service: kor-travel-weather-db
+    role: weather-postgresql
+    display_name: Kor Travel Weather 전용 PostgreSQL
+    connection: "postgresql://127.0.0.1:14100 (DBs: kor_travel_weather)"
+    expected_ports:
+      - "14100:14100"
+  kor-travel-weather-api:
+    name: kor-travel-weather-api
+    compose_service: kor-travel-weather-api
+    role: weather-api
+    display_name: Kor Travel Weather API
+    connection: http://127.0.0.1:14101
+    prod_url_env: KTDM_PROD_URL_WEATHER_API
+    expected_ports:
+      - "14101:14101"
+  kor-travel-weather-dagster:
+    name: kor-travel-weather-dagster
+    compose_service: kor-travel-weather-dagster
+    role: weather-dagster
+    display_name: Kor Travel Weather Dagster (internal webserver)
+    connection: internal Dagster webserver (gateway 경유만 외부 노출)
+    expected_ports: []
+  kor-travel-weather-dagster-gateway:
+    name: kor-travel-weather-dagster-gateway
+    compose_service: kor-travel-weather-dagster-gateway
+    role: weather-dagster-gateway
+    display_name: Kor Travel Weather Dagster Gateway
+    connection: http://127.0.0.1:14102
+    prod_url_env: KTDM_PROD_URL_WEATHER_DAGSTER
+    expected_ports:
+      - "14102:14102"
+  kor-travel-weather-prometheus:
+    name: kor-travel-weather-prometheus
+    compose_service: kor-travel-weather-prometheus
+    role: weather-prometheus
+    display_name: Kor Travel Weather 전용 Prometheus
+    connection: http://127.0.0.1:14104
+    expected_ports:
+      - "14104:14104"
+  kor-travel-weather-web:
+    name: kor-travel-weather-web
+    compose_service: kor-travel-weather-web
+    role: weather-web
+    display_name: Kor Travel Weather Web UI
+    connection: http://127.0.0.1:14105
+    prod_url_env: KTDM_PROD_URL_WEATHER
+    expected_ports:
+      - "14105:14105"
 
 targets:
   db:
@@ -448,6 +499,34 @@ targets:
       - pinvi-dagster
     init_steps: []
 
+  weather:
+    port_band: "14100-14199"
+    depends_on: []
+    display_name: Kor Travel Weather
+    description: Kor Travel Weather API/Dagster/Web UI를 실행합니다. 독립 프로젝트로 geo/concierge/map/pinvi 어디에도 의존하지 않는다.
+    aliases:
+      - kor-travel-weather
+      - weather
+    services:
+      - kor-travel-weather-db
+      - kor-travel-weather-api
+      - kor-travel-weather-dagster
+      - kor-travel-weather-dagster-gateway
+      - kor-travel-weather-web
+    runtime_services:
+      - kor-travel-weather-api
+      - kor-travel-weather-dagster
+      - kor-travel-weather-dagster-gateway
+      - kor-travel-weather-web
+    containers:
+      - kor-travel-weather-postgresql
+      - kor-travel-weather-api
+      - kor-travel-weather-dagster
+      - kor-travel-weather-dagster-gateway
+      - kor-travel-weather-prometheus
+      - kor-travel-weather-web
+    init_steps: []
+
   all:
     display_name: 전체 Kor Travel/PinVi 개발 인프라
     description: dependency_order 전체를 순서대로 실행합니다.
@@ -463,6 +542,7 @@ targets:
       - conc
       - map
       - pinvi
+      - weather
     services: []
     runtime_services: []
     containers:
@@ -487,4 +567,10 @@ targets:
       - pinvi-api
       - pinvi-web
       - pinvi-dagster
+      - kor-travel-weather-postgresql
+      - kor-travel-weather-api
+      - kor-travel-weather-dagster
+      - kor-travel-weather-dagster-gateway
+      - kor-travel-weather-prometheus
+      - kor-travel-weather-web
     init_steps: []

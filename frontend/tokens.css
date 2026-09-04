@@ -39,7 +39,11 @@
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 
-  --font-display: "Pretendard Variable", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif;
+  /* 실제로 로드되는 웹폰트가 없어(둘 다 OS 설치 폰트에 기댄다) 두 토큰의 우선순위가
+     다르면 어떤 요소가 어느 폰트로 보일지가 사용자 OS에 따라 갈린다 — 같은 순서로
+     고정해 --font-display/--font-sans 어디를 섞어 써도 항상 같은 폰트가 먼저
+     매칭되게 한다. */
+  --font-display: "Noto Sans KR", "Pretendard Variable", "Apple SD Gothic Neo", sans-serif;
   --font-sans: "Noto Sans KR", "Pretendard Variable", "Apple SD Gothic Neo", sans-serif;
   --font-mono: "IBM Plex Mono", "SFMono-Regular", "Cascadia Code", Menlo, Consolas, monospace;
 }
