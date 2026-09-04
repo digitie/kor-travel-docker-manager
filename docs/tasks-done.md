@@ -16,7 +16,7 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
-## 격리 하네스의 불변 핀 소스 트리 오염 (2026-09-04 완료)
+## 2026-09-04 — 격리 하네스의 불변 핀 소스 트리 오염
 
 - [x] 실행을 봉인 트리가 아니라 **일회용 체크아웃**(같은 bare의 object store에서 재유도)에서
   하도록 바꿨다(#315). 적대 리뷰 2인의 지적 5건을 반영하고(#315), porcelain 경로 파싱을
