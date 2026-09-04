@@ -61,6 +61,21 @@ compose root와 build context는 봉인 트리를 계속 본다 — 읽기 전�
 선판정을 넣었다. 자기치유로 넣지 않은 이유는 §2 그대로다 — 상시 제거는 유일한 탐지기를
 무음화한다. 1회성 운영 조치로 간다.
 
+**실행했다(2026-09-04).** 활성 pinset `e6b52db4`의 PinVi 봉인 트리에서 잔여물 4개
+(`node_modules`, `apps/web/node_modules` 864K, `apps/web/test-results`,
+`apps/web/playwright-report`)를 제거했다. 봉인 worktree 자체는 지우지 않았으므로 등록
+문제는 발생하지 않았고, `git worktree remove --force`도 필요 없었다. 제거 후 실측:
+
+    pinvi   ACCEPT — immutable tree is sealed
+    map     ACCEPT — immutable tree is sealed
+    git status --porcelain --untracked-files=all   (빈 출력)
+    HEAD                                           357da1897c2df2c86e5f3376e212451cf0f019ab
+
+검사는 설치된 Manager의 `_validate_immutable_tree`를 그대로 돌려서 했다 — 다음
+preflight가 쓸 바로 그 코드다. 다른 pinset 24개의 worktree에는 잔여물이 없다(활성
+pinset만 오염돼 있었다). `rm -rf` 대신 잔여물만 지우는 쪽을 택한 이유는 그것이 최소
+조치이고 봉인 worktree의 재materialize를 요구하지 않기 때문이다.
+
 ### 수용한 비용
 
 `git worktree list` 관측이 Manager에 없다는 §4 B의 지적은 남아 있다. destination이
