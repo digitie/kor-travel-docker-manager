@@ -279,6 +279,45 @@ def test_the_summary_counts_ignored_residue_before_removal(pinned: Any) -> None:
     assert all("/" not in name for name in summary["top_level_names"])
 
 
+def test_the_summary_survives_a_non_ascii_path(pinned: Any) -> None:
+    r"""증거에 실린 이름이 **읽을 수 있어야** 한다.
+
+    기본 porcelain 출력은 `core.quotePath` 때문에 비-ASCII 경로를 8진 이스케이프로
+    감싼다. 초판 파서는 그것을 풀지 못해 한글 파일명이 `\355\225\234…`로 증거 JSON에
+    실렸다(pygit2 조사 2026-09-04 실측). `-z` 출력은 인용도 이스케이프도 하지 않는다.
+    """
+
+    destination = pinned.run_parent / "pinvi-run"
+    pinned.call(
+        materialize_disposable_run_worktree,
+        expected_tree=pinned.tree,
+        destination=destination,
+    )
+    (destination / "한글파일.txt").write_text("y", encoding="utf-8")
+
+    summary = summarize_disposable_run_worktree(destination=destination)
+    assert "한글파일.txt" in summary["top_level_names"]
+    assert not any(chr(92) in name for name in summary["top_level_names"])
+
+
+def test_the_summary_does_not_count_a_rename_source(pinned: Any) -> None:
+    """rename은 레코드 **둘**이다 — 원본 경로를 상태 코드로 읽으면 증거가 오염된다."""
+
+    destination = pinned.run_parent / "pinvi-run"
+    pinned.call(
+        materialize_disposable_run_worktree,
+        expected_tree=pinned.tree,
+        destination=destination,
+    )
+    _git("-C", str(destination), "mv", "apps/web/app.txt", "moved.txt")
+
+    summary = summarize_disposable_run_worktree(destination=destination)
+    assert summary["tracked_changes"] == 1
+    assert "moved.txt" in summary["top_level_names"]
+    # 원본 경로를 레코드로 오독하면 `"/web/app.txt".split("/")[0]` == "" 가 섞인다.
+    assert "" not in summary["top_level_names"]
+
+
 # -------------------------------------------------------------- 사후조건 봉인
 
 
