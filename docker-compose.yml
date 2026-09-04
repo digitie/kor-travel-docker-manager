@@ -1527,7 +1527,11 @@ services:
     environment:
       POSTGRES_DB: ${KOR_TRAVEL_WEATHER_POSTGRES_DB:-kor_travel_weather}
       POSTGRES_USER: ${KOR_TRAVEL_WEATHER_POSTGRES_USER:-kor_travel_weather}
-      POSTGRES_PASSWORD: ${KOR_TRAVEL_WEATHER_POSTGRES_PASSWORD:?KOR_TRAVEL_WEATHER_POSTGRES_PASSWORD must be explicitly set}
+      # 다른 세 인스턴스와 같은 이유(issue #178): 평문 POSTGRES_PASSWORD는
+      # `docker inspect`에 그대로 남는다. secret file로만 전달한다.
+      POSTGRES_PASSWORD_FILE: /run/secrets/kor-travel-weather-postgres-password
+    secrets:
+    - kor-travel-weather-postgres-password
     command:
     - postgres
     - -p
@@ -1539,7 +1543,7 @@ services:
     healthcheck:
       test:
       - CMD-SHELL
-      - pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB} -p ${KOR_TRAVEL_WEATHER_DB_PORT:-14100}
+      - pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB} -p ${KOR_TRAVEL_WEATHER_DB_PORT:-14100}
       interval: 5s
       timeout: 5s
       retries: 12
@@ -1559,8 +1563,16 @@ services:
         condition: service_healthy
     environment:
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_POSTGRES_USER:-kor_travel_weather}@127.0.0.1:${KOR_TRAVEL_WEATHER_DB_PORT:-14100}/${KOR_TRAVEL_WEATHER_POSTGRES_DB:-kor_travel_weather}
-      PGPASSWORD: ${KOR_TRAVEL_WEATHER_POSTGRES_PASSWORD:?KOR_TRAVEL_WEATHER_POSTGRES_PASSWORD must be explicitly set}
-    command: ["alembic", "upgrade", "head"]
+    secrets:
+    - kor-travel-weather-postgres-password
+    # PGPASSWORD를 평문 environment로 주지 않는다(docker inspect 노출, issue #178과 같은 이유) —
+    # 컨테이너 기동 시점에 secret file에서 읽어 export한다.
+    command:
+    - sh
+    - -ec
+    - |
+      export PGPASSWORD="$$(cat /run/secrets/kor-travel-weather-postgres-password)"
+      exec alembic upgrade head
     working_dir: /app
 
   kor-travel-weather-api:
@@ -1581,7 +1593,6 @@ services:
     environment:
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_POSTGRES_USER:-kor_travel_weather}@127.0.0.1:${KOR_TRAVEL_WEATHER_DB_PORT:-14100}/${KOR_TRAVEL_WEATHER_POSTGRES_DB:-kor_travel_weather}
-      PGPASSWORD: ${KOR_TRAVEL_WEATHER_POSTGRES_PASSWORD:?KOR_TRAVEL_WEATHER_POSTGRES_PASSWORD must be explicitly set}
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?KOR_TRAVEL_WEATHER_ADMIN_TOKEN must be explicitly set}
       KOR_TRAVEL_WEATHER_METRICS_TOKEN: ${KOR_TRAVEL_WEATHER_METRICS_TOKEN:?KOR_TRAVEL_WEATHER_METRICS_TOKEN must be explicitly set}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
@@ -1603,9 +1614,18 @@ services:
       KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL: ${KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL:-https://wttr.in}
       KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL:-https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services}
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
+    secrets:
+    - kor-travel-weather-postgres-password
     ports:
     - ${KOR_TRAVEL_WEATHER_API_PORT:-14101}:${KOR_TRAVEL_WEATHER_API_PORT:-14101}
-    command: ["uvicorn", "kortravelweather_api.app:app", "--host", "0.0.0.0", "--port", "${KOR_TRAVEL_WEATHER_API_PORT:-14101}"]
+    # PGPASSWORD를 평문 environment로 주지 않는다(docker inspect 노출, issue #178과 같은 이유) —
+    # 컨테이너 기동 시점에 secret file에서 읽어 export한다.
+    command:
+    - sh
+    - -ec
+    - |
+      export PGPASSWORD="$$(cat /run/secrets/kor-travel-weather-postgres-password)"
+      exec uvicorn kortravelweather_api.app:app --host 0.0.0.0 --port ${KOR_TRAVEL_WEATHER_API_PORT:-14101}
     working_dir: /app
     healthcheck:
       test:
@@ -1636,7 +1656,6 @@ services:
       DAGSTER_HOME: /opt/dagster/home
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_POSTGRES_USER:-kor_travel_weather}@127.0.0.1:${KOR_TRAVEL_WEATHER_DB_PORT:-14100}/${KOR_TRAVEL_WEATHER_POSTGRES_DB:-kor_travel_weather}
-      PGPASSWORD: ${KOR_TRAVEL_WEATHER_POSTGRES_PASSWORD:?KOR_TRAVEL_WEATHER_POSTGRES_PASSWORD must be explicitly set}
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?KOR_TRAVEL_WEATHER_ADMIN_TOKEN must be explicitly set}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
       KOR_TRAVEL_WEATHER_METRICS_PORT: ${KOR_TRAVEL_WEATHER_DAGSTER_METRICS_PORT:-14103}
@@ -1665,6 +1684,8 @@ services:
       KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN:-1000000}
       KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN:-500000}
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
+    secrets:
+    - kor-travel-weather-postgres-password
     volumes:
     - ${KOR_TRAVEL_WEATHER_DAGSTER_HOME:-/home/digitie/kor-travel-weather-data/dagster-home}:/opt/dagster/home
     # PROMETHEUS_MULTIPROC_DIR가 실존 디렉터리를 가리켜야 kortravelweather.metrics가
@@ -1673,8 +1694,14 @@ services:
     - /var/run/kor-travel-weather-metrics
     # dagster-gateway가 host 네트워크에서 외부 포트 14102를 그대로 쓰므로, 원본
     # webserver는 내부 전용 포트로 옮긴다(원본 bridge 모드는 서로 다른 네트워크
-    # namespace라 겹치지 않았다).
-    command: ["dagster", "dev", "-m", "kortravelweather_dagster.definitions", "-h", "127.0.0.1", "-p", "${KOR_TRAVEL_WEATHER_DAGSTER_INTERNAL_PORT:-14106}"]
+    # namespace라 겹치지 않았다). PGPASSWORD도 평문 environment 대신 secret file에서
+    # 읽는다(docker inspect 노출, issue #178과 같은 이유).
+    command:
+    - sh
+    - -ec
+    - |
+      export PGPASSWORD="$$(cat /run/secrets/kor-travel-weather-postgres-password)"
+      exec dagster dev -m kortravelweather_dagster.definitions -h 127.0.0.1 -p ${KOR_TRAVEL_WEATHER_DAGSTER_INTERNAL_PORT:-14106}
     working_dir: /app
 
   kor-travel-weather-dagster-gateway:
@@ -1778,3 +1805,5 @@ secrets:
     environment: PINVI_POSTGRES_PASSWORD
   kor-travel-weather-metrics-token:
     environment: KOR_TRAVEL_WEATHER_METRICS_TOKEN
+  kor-travel-weather-postgres-password:
+    environment: KOR_TRAVEL_WEATHER_POSTGRES_PASSWORD

@@ -198,7 +198,7 @@ containers:
     prod_url_env: KTDM_PROD_URL_CADVISOR
     expected_ports:
       - "12301:12301"
-  kor-travel-weather-db:
+  kor-travel-weather-postgresql:
     name: kor-travel-weather-db
     compose_service: kor-travel-weather-db
     role: weather-postgresql
@@ -206,13 +206,6 @@ containers:
     connection: "postgresql://127.0.0.1:14100 (DBs: kor_travel_weather)"
     expected_ports:
       - "14100:14100"
-  kor-travel-weather-migrate:
-    name: kor-travel-weather-migrate
-    compose_service: kor-travel-weather-migrate
-    role: weather-migrate
-    display_name: Kor Travel Weather DB Migration (one-shot)
-    connection: internal one-shot migration
-    expected_ports: []
   kor-travel-weather-api:
     name: kor-travel-weather-api
     compose_service: kor-travel-weather-api
@@ -526,7 +519,7 @@ targets:
       - kor-travel-weather-dagster-gateway
       - kor-travel-weather-web
     containers:
-      - kor-travel-weather-db
+      - kor-travel-weather-postgresql
       - kor-travel-weather-api
       - kor-travel-weather-dagster
       - kor-travel-weather-dagster-gateway
@@ -574,7 +567,7 @@ targets:
       - pinvi-api
       - pinvi-web
       - pinvi-dagster
-      - kor-travel-weather-db
+      - kor-travel-weather-postgresql
       - kor-travel-weather-api
       - kor-travel-weather-dagster
       - kor-travel-weather-dagster-gateway
