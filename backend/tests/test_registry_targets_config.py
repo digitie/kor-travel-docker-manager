@@ -17,8 +17,11 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from kor_travel_docker_manager.services import registry as registry_module
+
+_ROOT = Path(__file__).resolve().parents[2]
 from kor_travel_docker_manager.services.registry import _validate_targets_config
 
 
@@ -389,4 +392,39 @@ def _run_cli_subprocess(config: Path) -> subprocess.CompletedProcess[str]:
         timeout=120,
         check=False,
         env=environment,
+    )
+
+
+def test_real_config_only_names_services_that_exist_in_docker_compose() -> None:
+    """targets와 compose는 같은 커밋에서 같이 움직여야 한다.
+
+    `_validate_targets_config`는 targets 파일 **내부** 참조만 본다 — compose를 열지
+    않는다. 그래서 한쪽에서만 서비스를 지우면 `ktdctl targets validate`는 OK를 찍고,
+    `status all`/`ensure all`이 런타임에 `no such service`로 죽을 때까지 아무것도
+    잡지 못한다. 2026-09-05 weather 등록 해제에서 두 파일을 반드시 함께 움직여야 했던
+    이유가 이것이다.
+    """
+
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    compose_services = set(compose["services"])
+
+    registry_module.load_targets_config.cache_clear()
+    try:
+        config = registry_module.load_targets_config()
+    finally:
+        registry_module.load_targets_config.cache_clear()
+
+    dangling: list[str] = []
+    for container_id, spec in config["containers"].items():
+        service = spec["compose_service"]
+        if service not in compose_services:
+            dangling.append(f"containers.{container_id}.compose_service={service!r}")
+    for target_id, spec in config["targets"].items():
+        for field in ("services", "runtime_services"):
+            for service in spec.get(field) or []:
+                if service not in compose_services:
+                    dangling.append(f"targets.{target_id}.{field}: {service!r}")
+
+    assert not dangling, (
+        f"docker-targets.yml이 compose에 없는 서비스를 가리킨다: {dangling!r}"
     )
