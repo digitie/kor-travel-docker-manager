@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from copy import deepcopy
@@ -20,8 +21,10 @@ from kor_travel_docker_manager.services import c6c_deployment as c6c_deployment_
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     _CANDIDATE_ALLOWED_OPERATOR_BINDS,
+    _CANDIDATE_ALLOWED_SYSTEM_BINDS,
     C6cBuildProvenance,
     DeploymentContractError,
+    _candidate_volume_mounts,
     _validate_feature_create_credentials,
     _validate_map_production_secret_values,
     derive_curation_service_principal_environment,
@@ -2169,3 +2172,47 @@ def test_ordinary_runtime_services_never_receive_bootstrap_credential_contract()
 
     for service_name in (*_MAP_RUNTIME_SERVICES, *_PINVI_RUNTIME_SERVICES):
         assert "PINVI_BOOTSTRAP_ADMIN" not in json.dumps(services[service_name])
+
+
+def test_every_real_compose_bind_is_declared_in_a_candidate_bind_allowlist() -> None:
+    """compose에 서비스를 등록하면 그 bind도 **같은 커밋에서** baseline에 등록돼야 한다.
+
+    `_validate_candidate_volume_graph`는 문서 전체의 bind를 순회하며
+    `(service, target, read_only)` 키가 두 allowlist 어디에도 없으면 fail-close한다.
+    그런데 그 실패는 CI가 아니라 **n150의 compose mutation 시점에만** 드러난다 —
+    PR #318이 정확히 그렇게 깨졌다(weather bind 6건, 등록 0건). 그 결과 pinned rebuild가
+    `prebuild_snapshot`에서 죽었고, 사유는 러너가 가려서 c6c lock을 직접 잡고 재현해야
+    나왔다(2026-09-05).
+
+    여기서 같은 조건을 정적으로 건다. 단언을 스키마에 결박하지 않으면 다음 등록이
+    또 조용히 깨뜨린다(AGENTS.md DO NOT 15).
+    """
+
+    text = _COMPOSE_PATH.read_text(encoding="utf-8")
+    services = yaml.safe_load(text)["services"]
+    # 키는 (service, target, read_only)뿐이라 source **값**은 검사 대상이 아니다.
+    # 기본값 없는 `${VAR}`에서 파서가 죽지 않게만 채운다.
+    environment = {
+        name: "/placeholder" for name in set(re.findall(r"\$\{([A-Za-z0-9_]+)", text))
+    }
+
+    undeclared: list[tuple[str, str | None, str, bool]] = []
+    for service_name, service in services.items():
+        for mount in _candidate_volume_mounts(
+            service.get("volumes"), environment=environment
+        ):
+            if mount.kind != "bind":
+                continue
+            key = (service_name, mount.target, mount.read_only)
+            if key in _CANDIDATE_ALLOWED_SYSTEM_BINDS:
+                continue
+            if key in _CANDIDATE_ALLOWED_OPERATOR_BINDS:
+                continue
+            undeclared.append(
+                (service_name, mount.declared_source, mount.target, mount.read_only)
+            )
+
+    assert not undeclared, (
+        "docker-compose.yml의 bind가 candidate baseline에 없다 — 이 상태로 배포하면 "
+        f"Manager의 모든 compose mutation이 fail-close한다: {undeclared!r}"
+    )
