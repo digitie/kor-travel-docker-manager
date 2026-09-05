@@ -37,6 +37,63 @@ health API가 `"Successfully queried the Prometheus API."`, 메뉴 글꼴은 컴
 CSS로 실제 DOM computed style을 측정해 버튼·링크·그룹 헤더가 동일 폰트
 스택(12px/560/`Noto Sans KR,...`)으로 렌더링됨을 확인했다.
 
+## 2026-09-05 — 회전이 weather target의 미완 등록에서 막혔다, 그리고 재부팅이 docker를 끄고 갔다
+
+D2가 드러낸 helper 계약 결함을 고치고(Map #1156, PinVi #527) 새 pinset
+`af6d7061`(Map `c72456f6` + PinVi `f4401659`)으로 회전했다. 그런데 rebuild가 2초 만에
+`prejournal_failure` / `stage: prebuild_snapshot`으로 죽었다.
+
+### 먼저: 재부팅이 docker를 끄고 갔다
+
+진단 중에 `docker ps`가 소켓 부재로 실패했다. 확인해 보니 n150이 **2026-09-05 00:12:00에
+재부팅**됐고(dockerd 마지막 로그 09-04 22:18), `docker.service`·`docker.socket`이 **둘 다
+disabled**라 아무도 띄우지 않았다. 상시 서비스(weather/concierge/geo/pinvi/map/prometheus)가
+전부 내려가 있었다.
+
+`systemctl start docker`로 복구했고 restart 정책이 컨테이너를 전부 되살렸다. 그리고
+**`docker.socket`·`docker.service`를 enable**했다 — 어제 `ktdm-frontend`가 없어서 재부팅을
+못 넘긴 것과 **정확히 같은 계열**이고, 이 호스트의 모든 서비스가 docker에 얹혀 있는데 그것이
+부팅에 안 올라오는 것은 잠재 장애다.
+
+### rebuild가 죽은 진짜 이유
+
+러너는 `stderr.log`를 0바이트로 남긴다(CLI가 사유를 가린다). c6c lock을 정식으로 잡고
+`capture_transaction_unlocked`를 직접 돌려 예외를 꺼냈다. 두 단계로 나왔다.
+
+1. `compose candidate secrets.kor-travel-weather-metrics-token environment is unresolved`
+   — Manager #318이 weather secret 둘을 compose에 선언했는데 `.env`에 대응 값이 없었다
+   (`KOR_TRAVEL_WEATHER_METRICS_TOKEN`, `KOR_TRAVEL_WEATHER_POSTGRES_PASSWORD`).
+   값은 `/home/digitie/kor-travel-weather/.env`에 있었다(후자는 `POSTGRES_PASSWORD` 이름으로).
+   두 값을 n150 안에서 직접 옮겨 넣었다(백업 `.bak-pre-weather-keys-…`, sha256
+   `f2f6c0aa` → `a5a85312`).
+2. `compose candidate kor-travel-weather-db bind source does not exist`
+   — **여기서 멈췄다.**
+
+### 멈춘 이유 — 데이터 소유권 판정이다
+
+Manager compose는 weather DB를 **bind**로 본다:
+
+    ${KOR_TRAVEL_WEATHER_PGDATA:-/home/digitie/kor-travel-weather-data/pgdata}
+      -> /var/lib/postgresql/data
+
+그런데 **실행 중인 weather DB는 named volume**을 쓴다:
+
+    /var/lib/docker/volumes/kor-travel-weather_weather-postgres/_data
+
+즉 #318의 등록이 실제 배포와 다른 레이아웃을 전제한다. 빈 디렉터리를 만들면 검증은 통과하지만
+Manager의 weather-db가 **실행 중인 것과 다른 빈 DB**가 되고 같은 호스트 포트(14100)에서
+충돌한다. 이건 weather 스택의 데이터 소유권 문제이므로 임의로 정하지 않았다.
+
+선택지는 셋이고 전부 소유자 판정이다.
+
+- **(a) 모델을 현실에 맞춘다** — compose가 named volume을 쓰도록 고친다. 데이터 이동 없음.
+- **(b) 현실을 모델에 맞춘다** — 실행 중 DB를 bind 경로로 이전한다. 다운타임과 데이터 이동.
+- **(c) weather target을 pinned candidate에서 분리한다** — 등록을 되돌리거나 검증 범위에서 뺀다.
+
+이것이 풀리기 전에는 `af6d7061` rebuild가 진행되지 않고, 따라서 attestation 재발행·D1·D2도
+막힌다. 회전 자체는 이미 됐고 되돌릴 필요는 없다 — 같은 pinset을 새 output leaf에서 재시도할 수
+있다고 러너가 명시한다.
+
 ## 2026-09-04 — 일회용 체크아웃의 첫 프로덕션 사이클이 통과했다
 
 `e2e025`(Manager `b3217edc`, pinset `e6b52db4`)가 `status: passed`로 닫혔고, **끝난 뒤에도
