@@ -1099,6 +1099,38 @@ services:
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_DAEMON_CONTAINER:-kor-travel-map-dagster-daemon-latest}
     restart: unless-stopped
+    # **회수 기제가 살아 있는지 본다.**
+    #
+    # `run_monitoring`(프로세스가 사라진 run을 회수)과 queued run dequeue는 전부 이
+    # 프로세스 안의 스레드다. 그런데 이 서비스에는 healthcheck가 없었다 — 같은 스택의
+    # webserver와 api는 갖고 있다. 그리고 daemon controller의 `check_daemon_threads`는
+    # 스레드 하나가 죽으면 프로세스를 **스스로 끝낸다**.
+    #
+    # 그래서 두 실패가 조용했다. (a) 프로세스가 나가면 `restart: unless-stopped`가
+    # 되살리지만 그 사이 회수 기제가 없었다는 사실은 어디에도 남지 않는다.
+    # (b) 스레드가 살아 있으면서 끼이면 heartbeat만 낡는데 — controller는 그것에
+    # warning만 남기고 프로세스를 끝내지 않는다 — 그것을 보는 것이 아무것도 없다.
+    # 형제 프로젝트 `kor-travel-weather`가 (a) 계열로 18시간 정지했다.
+    #
+    # `dagster-daemon liveness-check`는 dagster가 제공하는 정식 판정이다.
+    # `all_daemons_live`가 **required daemon 전부**의 heartbeat 신선도를 보고
+    # (`ignore_errors=True` — 오류 유무가 아니라 살아 있는지만) 하나라도 낡으면 exit 1.
+    #
+    # **유예를 명시한다.** 기본값은 `DEFAULT_DAEMON_HEARTBEAT_TOLERANCE_SECONDS = 1800`
+    # 이고 판정식이 `now <= heartbeat + interval(30) + tolerance`이므로, 그대로 두면
+    # (b)를 **31분 뒤에** 알게 된다 — interval·retries를 어떻게 줄여도 그 지연은
+    # 줄지 않는다. 300을 고른 근거는 임의값이 아니다: dagster 자신이 같은 controller
+    # 에서 `DEFAULT_WORKSPACE_FRESHNESS_TOLERANCE = 300`을 "이만큼 낡으면 계속할 수
+    # 없다"로 쓴다. daemon loop의 정상 heartbeat 간격은 15~30초이므로 10~20배 여유다.
+    #
+    # heartbeat는 metadata DB에 있어 이 검사는 DB까지 왕복한다. interval을 web(10s)
+    # 보다 길게 두고 start_period로 기동 창(code location 로딩 포함)을 준다.
+    healthcheck:
+      test: ["CMD-SHELL", "dagster-daemon liveness-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       # daemon도 web readiness의 transitive 의존만 믿지 않는다. candidate
@@ -1113,6 +1145,7 @@ services:
     - -m
     - kortravelmap.dagster.definitions
     environment:
+      DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       TMPDIR: /tmp
       TEMP: /tmp
       TMP: /tmp
@@ -1472,6 +1505,38 @@ services:
       dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
     container_name: ${KOR_TRAVEL_GEO_DAGSTER_DAEMON_CONTAINER:-kor-travel-geo-dagster-daemon-latest}
     restart: unless-stopped
+    # **회수 기제가 살아 있는지 본다.**
+    #
+    # `run_monitoring`(프로세스가 사라진 run을 회수)과 queued run dequeue는 전부 이
+    # 프로세스 안의 스레드다. 그런데 이 서비스에는 healthcheck가 없었다 — 같은 스택의
+    # webserver와 api는 갖고 있다. 그리고 daemon controller의 `check_daemon_threads`는
+    # 스레드 하나가 죽으면 프로세스를 **스스로 끝낸다**.
+    #
+    # 그래서 두 실패가 조용했다. (a) 프로세스가 나가면 `restart: unless-stopped`가
+    # 되살리지만 그 사이 회수 기제가 없었다는 사실은 어디에도 남지 않는다.
+    # (b) 스레드가 살아 있으면서 끼이면 heartbeat만 낡는데 — controller는 그것에
+    # warning만 남기고 프로세스를 끝내지 않는다 — 그것을 보는 것이 아무것도 없다.
+    # 형제 프로젝트 `kor-travel-weather`가 (a) 계열로 18시간 정지했다.
+    #
+    # `dagster-daemon liveness-check`는 dagster가 제공하는 정식 판정이다.
+    # `all_daemons_live`가 **required daemon 전부**의 heartbeat 신선도를 보고
+    # (`ignore_errors=True` — 오류 유무가 아니라 살아 있는지만) 하나라도 낡으면 exit 1.
+    #
+    # **유예를 명시한다.** 기본값은 `DEFAULT_DAEMON_HEARTBEAT_TOLERANCE_SECONDS = 1800`
+    # 이고 판정식이 `now <= heartbeat + interval(30) + tolerance`이므로, 그대로 두면
+    # (b)를 **31분 뒤에** 알게 된다 — interval·retries를 어떻게 줄여도 그 지연은
+    # 줄지 않는다. 300을 고른 근거는 임의값이 아니다: dagster 자신이 같은 controller
+    # 에서 `DEFAULT_WORKSPACE_FRESHNESS_TOLERANCE = 300`을 "이만큼 낡으면 계속할 수
+    # 없다"로 쓴다. daemon loop의 정상 heartbeat 간격은 15~30초이므로 10~20배 여유다.
+    #
+    # heartbeat는 metadata DB에 있어 이 검사는 DB까지 왕복한다. interval을 web(10s)
+    # 보다 길게 두고 start_period로 기동 창(code location 로딩 포함)을 준다.
+    healthcheck:
+      test: ["CMD-SHELL", "dagster-daemon liveness-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-geo-postgres:
@@ -1484,6 +1549,7 @@ services:
     - -m
     - kortravelgeo_dagster.definitions
     environment:
+      DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:?KOR_TRAVEL_GEO_DAGSTER_PG_URL must be explicitly set}
