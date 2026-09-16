@@ -428,3 +428,158 @@ def test_real_config_only_names_services_that_exist_in_docker_compose() -> None:
     assert not dangling, (
         f"docker-targets.yml이 compose에 없는 서비스를 가리킨다: {dangling!r}"
     )
+
+
+# ── GM-17 선행조건: targets 문서의 자리와 무결성 ─────────────────────────
+#
+# GM-17 본작업은 bind allowlist(`_CANDIDATE_ALLOWED_OPERATOR_BINDS`)를 이 문서로
+# 옮기려 한다. 그 순간 이 파일은 **"어떤 host 경로가 production 컨테이너에
+# 마운트돼도 되는가"를 결정하는 보안 경계**가 된다. 그런데 종전 로더는
+# `KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE` 하나로 자리를 아무 데로나 돌릴 수 있었고
+# 소유권·권한 검증이 **0건**이었다(감사 노트 (b): "그대로 옮기면 보안 회귀").
+# 아래는 그 선행조건을 결박한다 — 이것이 초록이어야 allowlist를 옮길 수 있다.
+
+
+def _trusted(monkeypatch: pytest.MonkeyPatch, value: bool) -> None:
+    """`running_from_trusted_install_root`를 그 자리에서 갈아 끼운다.
+
+    실제 `/opt` 아래에서 도는 것을 테스트가 재현할 수는 없다. 대신 registry가
+    **그 판정을 실제로 물어본다**는 사실에 결박한다 — 묻지 않게 되면 아래가 빨개진다.
+    """
+
+    import kor_travel_docker_manager.services.trusted_install as trusted_install
+
+    monkeypatch.setattr(
+        trusted_install, "running_from_trusted_install_root", lambda: value
+    )
+
+
+def test_trusted_install_pins_the_targets_path_and_refuses_redirection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """설치본에서는 env로 자리를 옮길 수 없다 — 조용히 무시하지 않고 **거절**한다.
+
+    무시하면 "왜 내 설정이 안 먹지"가 되고 그 물음이 운영자를 다시 env로 데려간다.
+    """
+
+    _trusted(monkeypatch, True)
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", "/tmp/attacker.yml")
+
+    with pytest.raises(registry_module.TargetsConfigError) as excinfo:
+        registry_module.get_targets_config_path()
+    assert "KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE" in str(excinfo.value)
+
+
+def test_trusted_install_also_refuses_project_root_redirection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """자리를 한 단계 위에서 돌리는 것도 같은 구멍이다.
+
+    `PROJECT_ROOT`만 막지 않으면 `TARGETS_FILE`을 막은 것이 장식이 된다 —
+    기본 경로가 `get_project_root()`에서 나오기 때문이다.
+    """
+
+    _trusted(monkeypatch, True)
+    monkeypatch.delenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", raising=False)
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", "/tmp/attacker-root")
+
+    with pytest.raises(registry_module.TargetsConfigError) as excinfo:
+        registry_module.get_targets_config_path()
+    assert "KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT" in str(excinfo.value)
+
+
+def test_trusted_install_allows_an_override_that_points_at_the_pinned_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """같은 자리를 가리키는 override는 무해하므로 막지 않는다.
+
+    installer·launcher가 명시적으로 넘기는 경우가 있다. 그것까지 거절하면 정당한
+    호출을 깨뜨리고, 그러면 다음 사람이 이 검사를 통째로 들어낸다.
+    """
+
+    from kor_travel_docker_manager.services.trusted_install import TRUSTED_INSTALL_ROOT
+
+    _trusted(monkeypatch, True)
+    pinned = TRUSTED_INSTALL_ROOT / "config" / "docker-targets.yml"
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(pinned))
+
+    assert registry_module.get_targets_config_path() == str(pinned)
+
+
+def test_development_checkout_keeps_the_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """개발 checkout에서는 종전 그대로다 — 거기서 이 override는 정당한 편의다.
+
+    이 검사가 없으면 위 셋을 만족시키려고 override를 전역으로 막게 되고, 그러면
+    이 로더를 부르는 모든 명령(CLI·metrics·compose)이 개발 환경에서 죽는다.
+    """
+
+    _trusted(monkeypatch, False)
+    elsewhere = tmp_path / "docker-targets.yml"
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(elsewhere))
+
+    assert registry_module.get_targets_config_path() == str(elsewhere)
+
+
+def test_trusted_install_refuses_a_non_root_owned_targets_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """설치본에서 읽는 문서는 root 소유여야 한다 — 설치본의 데이터만 신뢰한다.
+
+    tmp 파일은 테스트 사용자 소유이므로, `_read_targets_bytes`가 소유권을 실제로
+    보는 한 이것은 반드시 거절된다. 검사를 지우면 초록이 된다.
+    """
+
+    _trusted(monkeypatch, True)
+    config = tmp_path / "docker-targets.yml"
+    config.write_text("version: 1\n", encoding="utf-8")
+
+    if os.geteuid() == 0:  # pragma: no cover - CI는 root로 돌지 않는다
+        pytest.skip("root로 돌면 tmp 파일도 root 소유라 이 구분이 성립하지 않는다")
+
+    with pytest.raises(registry_module.TargetsConfigError) as excinfo:
+        registry_module._read_targets_bytes(str(config))
+    assert "root 소유가 아니다" in str(excinfo.value)
+
+
+def test_development_checkout_reads_a_user_owned_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """개발 checkout의 사용자 소유 파일은 그대로 읽힌다."""
+
+    _trusted(monkeypatch, False)
+    config = tmp_path / "docker-targets.yml"
+    config.write_text("version: 1\n", encoding="utf-8")
+
+    assert registry_module._read_targets_bytes(str(config)) == b"version: 1\n"
+
+
+def test_targets_file_symlink_is_refused(tmp_path: Path) -> None:
+    """심링크는 열지 않는다(`O_NOFOLLOW`).
+
+    경로를 검사하고 나서 여는 사이에 심링크로 바꿔치기하는 것이 이 패턴이 막는
+    바로 그 경로다 — 그래서 경로가 아니라 **열린 fd**를 `fstat`한다.
+    """
+
+    real = tmp_path / "real.yml"
+    real.write_text("version: 1\n", encoding="utf-8")
+    link = tmp_path / "link.yml"
+    try:
+        link.symlink_to(real)
+    except (OSError, NotImplementedError):  # pragma: no cover - Windows 권한
+        pytest.skip("이 환경에서는 심링크를 만들 수 없다")
+
+    with pytest.raises(registry_module.TargetsConfigError):
+        registry_module._read_targets_bytes(str(link))
+
+
+def test_oversized_targets_file_is_refused_before_parsing(tmp_path: Path) -> None:
+    """상한을 넘으면 **파싱 전에** 멈춘다 — 크기로 YAML 파서를 밀지 않는다."""
+
+    config = tmp_path / "docker-targets.yml"
+    config.write_bytes(b"#" * (registry_module._MAX_TARGETS_BYTES + 1))
+
+    with pytest.raises(registry_module.TargetsConfigError) as excinfo:
+        registry_module._read_targets_bytes(str(config))
+    assert "지원 크기" in str(excinfo.value)

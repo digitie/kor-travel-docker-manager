@@ -1,6 +1,8 @@
 import os
+import stat
 from collections.abc import Callable, Iterator, Mapping
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Final
 
 import yaml
@@ -8,6 +10,15 @@ import yaml
 from kor_travel_docker_manager.services.yaml_strict import (
     load_yaml_rejecting_duplicate_keys,
 )
+
+#: 이 둘이 targets 파일의 **자리**를 바꾼다. 개발 checkout에서는 정당한 편의이고,
+#: trusted 설치본에서는 그렇지 않다 — 아래 `get_targets_config_path`가 가른다.
+TARGETS_FILE_ENV: Final = "KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE"
+PROJECT_ROOT_ENV: Final = "KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT"
+
+#: targets 문서의 상한. 이 파일은 손으로 편집하는 수백 줄짜리 선언이고, 그보다
+#: 크다면 다른 것을 읽고 있다는 뜻이다 — 읽기 전에 멈춘다.
+_MAX_TARGETS_BYTES: Final = 1 << 20
 
 _REQUIRED_CONTAINER_FIELDS = (
     "compose_service",
@@ -48,17 +59,131 @@ def get_project_root() -> str:
 
 
 def get_targets_config_path() -> str:
-    return os.environ.get(
-        "KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE",
-        os.path.join(get_project_root(), "config", "docker-targets.yml"),
+    """targets 문서의 자리. **trusted 설치본에서는 env로 옮길 수 없다.**
+
+    이 파일은 컨테이너 이름·compose 서비스·기대 포트를 정하고, GM-17이 bind
+    allowlist까지 여기로 옮기려 한다 — 그 순간 이 파일은 **"어떤 host 경로가
+    production 컨테이너에 마운트돼도 되는가"를 결정하는 보안 경계**가 된다.
+    종전에는 `KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE` 하나로 그 자리를 아무 데로나
+    돌릴 수 있었고 소유권·권한 검증은 하나도 없었다(GM-17 검증 노트 (b)).
+
+    그래서 trusted 설치본에서는 자리를 **핀으로 고정**한다. 자리를 옮기려는 시도를
+    조용히 무시하지 않고 거절하는 이유: 무시하면 "왜 내 설정이 안 먹지"가 되고,
+    그 물음이 운영자를 다시 env로 데려간다. 거절은 그 자리에서 이유를 말한다.
+
+    개발 checkout에서는 종전과 같다 — 거기서 이 override는 정당한 편의다.
+    """
+
+    from kor_travel_docker_manager.services.trusted_install import (
+        TRUSTED_INSTALL_ROOT,
+        running_from_trusted_install_root,
     )
+
+    if not running_from_trusted_install_root():
+        return os.environ.get(
+            TARGETS_FILE_ENV,
+            os.path.join(get_project_root(), "config", "docker-targets.yml"),
+        )
+
+    pinned = TRUSTED_INSTALL_ROOT / "config" / "docker-targets.yml"
+    # 같은 자리를 가리키는 override는 무해하므로 막지 않는다 — installer나 launcher가
+    # 명시적으로 넘기는 경우가 있고, 그것까지 거절하면 정당한 호출을 깨뜨린다.
+    for name, expected in ((TARGETS_FILE_ENV, pinned), (PROJECT_ROOT_ENV, TRUSTED_INSTALL_ROOT)):
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            continue
+        try:
+            redirects = Path(raw).resolve() != expected.resolve()
+        except OSError:
+            redirects = True
+        if redirects:
+            raise TargetsConfigError(
+                f"{name}은 trusted 설치본에서 docker target config의 자리를 바꿀 수 없다 "
+                f"(요청: {raw}, 고정: {expected}). 이 문서는 컨테이너 정체와 "
+                "bind 허용 범위를 정하므로 설치본 밖에서 주입될 수 없다"
+            )
+    return str(pinned)
+
+
+def _read_targets_bytes(path: str) -> bytes:
+    """targets 문서를 **검증된 descriptor**로 읽는다.
+
+    `legacy_override_retirement._read_legacy_import_bytes`와 같은 모양이다:
+    `O_NOFOLLOW`로 열고 경로가 아니라 **열린 fd를** `fstat`한다. 경로를 두 번
+    보면(검사 한 번, 열기 한 번) 그 사이에 바꿔치기할 수 있다.
+
+    trusted 설치본에서만 소유권·모드를 강제한다. 개발 checkout의 파일은 사용자
+    소유가 정상이고, 거기서 root를 요구하면 이 로더를 부르는 모든 명령이 죽는다.
+    """
+
+    from kor_travel_docker_manager.services.trusted_install import (
+        running_from_trusted_install_root,
+    )
+
+    trusted = running_from_trusted_install_root()
+    flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise TargetsConfigError(
+            f"docker target config를 안전하게 열 수 없다: {path} ({exc})"
+        ) from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise TargetsConfigError(
+                f"docker target config가 평범한 파일이 아니다: {path}"
+            )
+        if metadata.st_size > _MAX_TARGETS_BYTES:
+            raise TargetsConfigError(
+                f"docker target config가 지원 크기를 넘는다: {path} "
+                f"({metadata.st_size} > {_MAX_TARGETS_BYTES})"
+            )
+        if trusted:
+            if metadata.st_uid != 0:
+                raise TargetsConfigError(
+                    f"docker target config가 root 소유가 아니다: {path} "
+                    f"(uid {metadata.st_uid}). 설치본의 데이터만 신뢰한다"
+                )
+            if metadata.st_nlink != 1:
+                # 하드링크가 있으면 다른 이름으로 같은 내용을 바꿔 쓸 수 있다.
+                raise TargetsConfigError(
+                    f"docker target config에 하드링크가 있다: {path} "
+                    f"(nlink {metadata.st_nlink})"
+                )
+            if stat.S_IMODE(metadata.st_mode) & 0o022:
+                raise TargetsConfigError(
+                    f"docker target config가 group/other 쓰기 가능이다: {path} "
+                    f"(mode {stat.S_IMODE(metadata.st_mode):04o})"
+                )
+        payload = bytearray()
+        while len(payload) <= _MAX_TARGETS_BYTES:
+            chunk = os.read(descriptor, min(65_536, _MAX_TARGETS_BYTES + 1 - len(payload)))
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > _MAX_TARGETS_BYTES:
+            raise TargetsConfigError(f"docker target config가 지원 크기를 넘는다: {path}")
+        return bytes(payload)
+    except OSError as exc:
+        raise TargetsConfigError(
+            f"docker target config를 안전하게 읽을 수 없다: {path} ({exc})"
+        ) from exc
+    finally:
+        os.close(descriptor)
 
 
 @lru_cache(maxsize=1)
 def load_targets_config() -> dict[str, Any]:
+    # 캐시는 프로세스당 한 번이다 — 첫 로드 이후 파일이 바뀌어도 다시 검증하지
+    # 않는다. 종전과 같은 성질이고, mutation 경로는 별도의 sealed candidate
+    # 검증을 거치므로 여기서 재검증을 더하지 않는다.
     path = get_targets_config_path()
-    with open(path, encoding="utf-8") as f:
-        config = load_yaml_rejecting_duplicate_keys(f.read()) or {}
+    try:
+        text = _read_targets_bytes(path).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise TargetsConfigError(f"docker target config가 UTF-8이 아니다: {path}") from exc
+    config = load_yaml_rejecting_duplicate_keys(text) or {}
 
     if not isinstance(config.get("containers"), dict):
         raise TargetsConfigError("docker target config must define containers")
