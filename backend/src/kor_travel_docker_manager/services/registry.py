@@ -213,6 +213,93 @@ def _require_list_field(
     return value
 
 
+#: `(compose service, container_path, read_only) -> compose 문서에 적힌 host source`
+ComposeBindAllowlist = Mapping[tuple[str, str, bool], str]
+
+_BIND_FIELDS: Final = ("container_path", "read_only", "source")
+
+
+def _validate_compose_binds(config: dict[str, Any], *, label: str) -> None:
+    """`compose_binds` 절의 **구조**를 검증한다 (GM-17 본작업 A).
+
+    이 절은 보안 경계다 — 여기 없는 bind는 candidate 검증이 거부한다. 그래서
+    형태가 어긋난 항목을 조용히 건너뛰면 **경계에 구멍이 뚫리는 게 아니라 그 반대로,
+    있어야 할 항목이 사라져 정상 배포가 거부된다.** 어느 쪽이든 조용하면 안 되므로
+    fail-close한다.
+
+    **여기서 값의 정책은 보지 않는다.** 이관은 자리만 옮기는 일이고, 새 규칙을
+    더하면 지금 유효한 항목이 거부될 수 있다(예: `rustfs-init`은 manager 설치 경로를
+    container target으로 쓴다 — "manager 경로 금지" 같은 규칙을 순진하게 넣으면
+    그것이 깨진다). 정책 강화는 별도 작업으로 남긴다.
+    """
+
+    raw = config.get("compose_binds")
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        raise TargetsConfigError(f"{label} compose_binds: must be a mapping")
+    seen: set[tuple[str, str, bool]] = set()
+    for service, entries in raw.items():
+        if not isinstance(service, str) or not service.strip():
+            raise TargetsConfigError(f"{label} compose_binds: service name must be a string")
+        if not isinstance(entries, list) or not entries:
+            raise TargetsConfigError(
+                f"{label} compose_binds.{service}: must be a non-empty list"
+            )
+        for index, entry in enumerate(entries):
+            where = f"{label} compose_binds.{service}[{index}]"
+            if not isinstance(entry, dict):
+                raise TargetsConfigError(f"{where}: must be a mapping")
+            unknown = sorted(set(entry) - set(_BIND_FIELDS))
+            if unknown:
+                # 오타 난 키를 조용히 무시하면 그 항목이 의도와 다른 bind가 된다.
+                raise TargetsConfigError(f"{where}: unknown fields {unknown}")
+            missing = [field for field in _BIND_FIELDS if field not in entry]
+            if missing:
+                raise TargetsConfigError(f"{where}: missing fields {missing}")
+            container_path = entry["container_path"]
+            if not isinstance(container_path, str) or not container_path.startswith("/"):
+                raise TargetsConfigError(
+                    f"{where}.container_path: must be an absolute path"
+                )
+            read_only = entry["read_only"]
+            if not isinstance(read_only, bool):
+                # YAML의 `read_only: "false"`는 참인 문자열이다 — 읽기 전용이어야 할
+                # bind가 쓰기 가능으로 등재되는 조용한 경로다.
+                raise TargetsConfigError(f"{where}.read_only: must be a boolean")
+            source = entry["source"]
+            if not isinstance(source, str) or not source.strip():
+                raise TargetsConfigError(f"{where}.source: must be a non-empty string")
+            key = (service, container_path, read_only)
+            if key in seen:
+                raise TargetsConfigError(
+                    f"{where}: duplicate bind key {key!r} — 뒤엣것이 조용히 이긴다"
+                )
+            seen.add(key)
+
+
+@lru_cache(maxsize=1)
+def load_compose_bind_allowlist() -> ComposeBindAllowlist:
+    """production compose candidate가 허용하는 host bind의 정본.
+
+    종전에는 `c6c_deployment._CANDIDATE_ALLOWED_OPERATOR_BINDS` 상수였다 —
+    새 bind 하나에 backend 수정 + trusted release 재설치가 필요했고, 그것이 GM-17이
+    지목한 범용성의 실질 병목이었다. 자리를 설정으로 옮기고 코드에는 검증 규칙만
+    남긴다. 이 문서의 신뢰는 `get_targets_config_path`/`_read_targets_bytes`가
+    받친다(trusted 설치본에서 env redirect 거부 + root 소유·비쓰기 강제).
+    """
+
+    config = load_targets_config()
+    raw = config.get("compose_binds") or {}
+    allowlist: dict[tuple[str, str, bool], str] = {}
+    for service, entries in raw.items():
+        for entry in entries:
+            allowlist[(service, entry["container_path"], entry["read_only"])] = entry[
+                "source"
+            ]
+    return allowlist
+
+
 def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
     """GM-11: 오타 하나가 raw KeyError로 죽거나 조용히 무시되지 않게 fail-close한다.
 
@@ -273,6 +360,10 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
     for name in config["dependency_order"]:
         if name not in targets:
             raise TargetsConfigError(f"{label} dependency_order: unknown target '{name}'")
+
+    # `ktdctl targets validate`가 bind 절도 함께 본다 — 배포 도중이 아니라 그 전에
+    # 형태 오류를 잡는 것이 이 명령의 존재 이유다.
+    _validate_compose_binds(config, label=label)
 
 
 def _targets() -> dict[str, dict[str, Any]]:

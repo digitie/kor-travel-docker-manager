@@ -42,6 +42,7 @@ from kor_travel_docker_manager.services.loopback_readiness import (
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
+from kor_travel_docker_manager.services.registry import load_compose_bind_allowlist
 from kor_travel_docker_manager.services.trusted_install import (
     GLOBAL_MUTATION_LOCK_FD_ENV,
     GLOBAL_MUTATION_LOCK_PATH,
@@ -1720,131 +1721,15 @@ _MAP_ROLE_BOOTSTRAP_SOURCE_TARGETS = frozenset(
     }
 )
 _PINVI_ROLE_BOOTSTRAP_SOURCE_TARGETS = frozenset({_PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET})
-_CANDIDATE_ALLOWED_OPERATOR_BINDS = {
-    (
-        "kor-travel-concierge-postgres",
-        "/var/lib/postgresql/data",
-        False,
-    ): "${KOR_TRAVEL_CONCIERGE_PGDATA:-/home/digitie/kor-travel-concierge-data/pgdata}",
-    (
-        "kor-travel-map-postgres",
-        "/var/lib/postgresql/data",
-        False,
-    ): "${KOR_TRAVEL_MAP_PGDATA:-/home/digitie/kor-travel-map-data/pgdata}",
-    (
-        "pinvi-postgres",
-        "/var/lib/postgresql/data",
-        False,
-    ): "${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}",
-    (
-        "kor-travel-map-db-role-bootstrap",
-        "/usr/local/bin/postgres-role-bootstrap",
-        True,
-    ): "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/docker/postgres-role-bootstrap.sh",
-    (
-        "kor-travel-map-db-role-bootstrap",
-        "/usr/local/lib/kor-travel-map/database-credential-preflight.sh",
-        True,
-    ): ("${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/scripts/database-credential-preflight.sh"),
-    (
-        _PINVI_DB_RUNTIME_ROLE_SERVICE,
-        _PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET,
-        True,
-    ): ("${PINVI_REPO_DIR:-../pinvi}/infra/postgres/bootstrap-pinvi-runtime-role.sh"),
-    (
-        _MAP_APPLICATION_FRESH_300_SERVICE,
-        "/run/kor-travel-map-application-fresh-migrate",
-        True,
-    ): "${KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR:?}",
-    (
-        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
-        "/run/kor-travel-map-application-fresh-finalize",
-        True,
-    ): "${KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR:?}",
-    (
-        _MAP_API_SERVICE,
-        "/run/kor-travel-map-application-final-permit",
-        True,
-    ): "${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?}",
-    (
-        _MAP_DAGSTER_SERVICE,
-        "/run/kor-travel-map-application-final-permit",
-        True,
-    ): "${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?}",
-    (
-        _MAP_DAGSTER_SERVICE,
-        "/run/kor-travel-map-dagster-storage-permit",
-        True,
-    ): "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}",
-    (
-        _MAP_DAGSTER_DAEMON_SERVICE,
-        "/run/kor-travel-map-application-final-permit",
-        True,
-    ): "${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?}",
-    (
-        _MAP_DAGSTER_DAEMON_SERVICE,
-        "/run/kor-travel-map-dagster-storage-permit",
-        True,
-    ): "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}",
-    (
-        _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
-        "/run/kor-travel-map-dagster-storage-permit",
-        True,
-    ): "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}",
-    (
-        "kor-travel-geo-postgres",
-        "/var/lib/postgresql/data",
-        False,
-    ): "${KOR_TRAVEL_GEO_PGDATA:-/home/digitie/kor-travel-geo-data/pgdata-final-20260529}",
-    (
-        "kor-travel-geo-postgres",
-        "/data/juso",
-        True,
-    ): "${KOR_TRAVEL_GEO_JUSO_DATA:-/mnt/f/dev/kor-travel-geo/data/juso}",
-    (
-        "kor-travel-geo-postgres",
-        "/docker-entrypoint-initdb.d/010-ensure-kor-travel-geo-db.sh",
-        True,
-    ): "./scripts/ensure-kor-travel-geo-db.sh",
-    (
-        "kor-travel-geo-postgres",
-        "/opt/kor-travel-docker-manager/ensure-kor-travel-geo-db.sh",
-        True,
-    ): "./scripts/ensure-kor-travel-geo-db.sh",
-    (
-        "kor-travel-geo-postgres",
-        "/opt/kor-travel-docker-manager/verify-kor-travel-geo-source.sh",
-        True,
-    ): "./scripts/verify-kor-travel-geo-source.sh",
-    ("rustfs", "/data", False): ("${RUSTFS_DATA_DIR:-/home/digitie/kor-travel-geo-data/rustfs}"),
-    (
-        "rustfs-init",
-        "/opt/kor-travel-docker-manager/ensure-rustfs-buckets.sh",
-        True,
-    ): "./scripts/ensure-rustfs-buckets.sh",
-    ("kor-travel-geo-api", "/data", True): (
-        "${KOR_TRAVEL_GEO_APP_DATA_DIR:-../kor-travel-geo/data}"
-    ),
-    ("kor-travel-geo-api", "/app/data/backups", False): (
-        "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
-    ),
-    ("prometheus", "/etc/prometheus/prometheus.yml", True): ("./config/prometheus/prometheus.yml"),
-    ("prometheus", "/prometheus", False): (
-        "${PROMETHEUS_DATA_DIR:-/home/digitie/kor-travel-geo-data/prometheus}"
-    ),
-    ("grafana", "/var/lib/grafana", False): (
-        "${GRAFANA_DATA_DIR:-/home/digitie/kor-travel-geo-data/grafana}"
-    ),
-    ("grafana", "/etc/grafana/provisioning/datasources", True): (
-        "./config/grafana/provisioning/datasources"
-    ),
-    ("kor-travel-geo-dagster", "/app/data/backups", False): (
-        "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
-    ),
-    ("kor-travel-geo-dagster-daemon", "/app/data/backups", False): (
-        "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
-    ),
-}
+# GM-17 본작업 A: 허용 bind 목록의 정본은 `config/docker-targets.yml`의
+# `compose_binds:` 절이다. 종전에는 여기 125줄짜리 dict 리터럴이었고, 그래서 새 bind
+# 하나 또는 여섯 번째 프로젝트의 pgdata에도 backend 수정 + trusted release 재설치가
+# 필요했다. 값은 한 글자도 바꾸지 않고 자리만 옮겼다 — 옮기기 전후의 해석된 매핑이
+# 정확히 같다는 것을 `tests/test_registry_targets_config.py`가 결박한다.
+#
+# 그 문서를 신뢰할 수 있게 만든 것이 선행조건이었다(`registry.get_targets_config_path`/
+# `_read_targets_bytes`): trusted 설치본에서 env redirect 거부 + root 소유·비쓰기 강제.
+# 그것 없이 옮겼다면 이 이관 자체가 보안 회귀였다.
 _CANDIDATE_ALLOWED_EXTERNAL_VOLUME_REFERENCES: frozenset[str] = frozenset()
 _HELD_DEPLOYMENT_LOCKS: ContextVar[frozenset[str]] = ContextVar(
     "held_c6c_deployment_locks", default=frozenset()
@@ -6442,7 +6327,7 @@ def _validate_candidate_volume_graph(
                     )
                 )
                 continue
-            expected_raw_source = _CANDIDATE_ALLOWED_OPERATOR_BINDS.get(
+            expected_raw_source = load_compose_bind_allowlist().get(
                 (str(service_name), mount.target, mount.read_only)
             )
             if expected_raw_source is None:

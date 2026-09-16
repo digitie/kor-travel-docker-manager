@@ -19,8 +19,10 @@ import yaml
 
 from kor_travel_docker_manager.services import c6c_deployment as c6c_deployment_module
 from kor_travel_docker_manager.services import compose_service as compose_service_module
+from kor_travel_docker_manager.services.registry import (
+    load_compose_bind_allowlist,
+)
 from kor_travel_docker_manager.services.c6c_deployment import (
-    _CANDIDATE_ALLOWED_OPERATOR_BINDS,
     _CANDIDATE_ALLOWED_SYSTEM_BINDS,
     C6cBuildProvenance,
     DeploymentContractError,
@@ -227,13 +229,13 @@ def test_map_runtime_requires_the_image_entrypoint_and_empty_command(
 
 
 def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
-    assert _CANDIDATE_ALLOWED_OPERATOR_BINDS[
+    assert load_compose_bind_allowlist()[
         ("pinvi-postgres", "/var/lib/postgresql/data", False)
     ] == "${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}"
 
 
 def test_pinvi_role_bootstrap_source_bind_is_in_canonical_candidate_allowlist() -> None:
-    assert _CANDIDATE_ALLOWED_OPERATOR_BINDS[
+    assert load_compose_bind_allowlist()[
         ("pinvi-db-runtime-role", "/opt/pinvi/bootstrap-pinvi-runtime-role.sh", True)
     ] == ("${PINVI_REPO_DIR:-../pinvi}/infra/postgres/bootstrap-pinvi-runtime-role.sh")
 
@@ -268,7 +270,7 @@ def test_pinvi_role_bootstrap_entrypoint_interprets_a_non_executable_source(
 
 
 def test_concierge_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
-    assert _CANDIDATE_ALLOWED_OPERATOR_BINDS[
+    assert load_compose_bind_allowlist()[
         ("kor-travel-concierge-postgres", "/var/lib/postgresql/data", False)
     ] == (
         "${KOR_TRAVEL_CONCIERGE_PGDATA:-/home/digitie/kor-travel-concierge-data/pgdata}"
@@ -2206,7 +2208,7 @@ def test_every_real_compose_bind_is_declared_in_a_candidate_bind_allowlist() -> 
             key = (service_name, mount.target, mount.read_only)
             if key in _CANDIDATE_ALLOWED_SYSTEM_BINDS:
                 continue
-            if key in _CANDIDATE_ALLOWED_OPERATOR_BINDS:
+            if key in load_compose_bind_allowlist():
                 continue
             undeclared.append(
                 (service_name, mount.declared_source, mount.target, mount.read_only)
