@@ -33,7 +33,7 @@
 | GM-14 | `[x]` | P2 | S | operability | REVISED | mock | async 핸들러 안의 동기 SQLite 감사 기록이 event loop 전체를 정지시킬 수 있음 |
 | GM-15 | `[x]` | P2 | M | operability | CONFIRMED | mock | 상태 broadcast가 클라이언트 직렬 전송 — 느린 소켓 하나가 모든 탭의 상태 갱신을 무기한 정지 |
 | GM-16 | `[x]` | P2 | M | observability | CONFIRMED | mock | 모든 백엔드 로그가 두 번씩 기록되고, 요청 상관관계 ID가 없어 UI 오류와 로그·감사를 이을 수 없다 |
-| GM-17 | `[ ]` | P2 | L | generality | REVISED | mock | compose candidate 검증의 Map/PinVi 하드코딩 완화 — 14개 서비스 존재 강제와 bind allowlist를 설정으로 외부화 |
+| GM-17 | `[/]` | P2 | L | generality | REVISED | mock | compose candidate 검증의 Map/PinVi 하드코딩 완화 — 14개 서비스 존재 강제와 bind allowlist를 설정으로 외부화. **선행조건 완료(2026-09-17)**, 본작업 A/B는 `docs/tasks.md` |
 | GM-18 | `[x]` | P2 | M | generality | REVISED | mock | 백업 role과 pinned pair role이 백엔드·프론트 다층 하드코딩 — config 파생으로 전환 |
 | GM-19 | `[x]` | P2 | S | dead-code | REVISED | 불필요 | 죽은 코드 일괄 제거 — 구 C6c 경로 ~650줄, 미사용 프론트 의존성, 무소비 port_policy, 무참조 API key 게이트 |
 | GM-20 | `[x]` | P2 | M | complexity | CONFIRMED | 불필요 | 서비스 계층 분리 1단계 — errors/capabilities 모듈 신설과 프라이빗 크로스 import·순환 의존 해소 |
@@ -1139,6 +1139,38 @@ required-set 완화와 bind allowlist 외부화(이 태스크의 실질 핵심)�
 변경이 순수 문서 수정뿐이라 mutation 검증이나 2인 적대적 리뷰 라운드는
 비례성에 맞지 않는다고 판단해 생략했다(`git grep`으로 남은 개인 경로
 없음만 재확인).
+
+**2026-09-17 — 검증 노트를 다시 쟀고, 선행조건을 닫았다.**
+
+노트가 2026-09-03자라 착수 전에 주장 넷을 오늘 다시 확인했다. **전부 그대로
+참이었다**(라인 번호만 이동): (b) `registry.get_targets_config_path`가
+`KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE`을 제한 없이 받고
+`load_targets_config`는 평범한 `open()`이며 소유권·권한 검증이 0건,
+(c) frozenset 14개 + `_PINVI_DB_INIT_SERVICE` 별도 강제 = 실질 15개,
+(d) production ensure는 `compose_service.py:4663-4676`에서 이미 원천 거부,
+required-set 무조건 강제는 `c6c_deployment.py:3334`·`:3706` 두 자리.
+
+오너 범위 재확인(이 절이 요구하는 조건)을 거쳐 **선행조건만** 구현했다 —
+노트 (b)가 "그대로 옮기면 보안 회귀"라고 지목한 그 자리다. 본작업 둘은
+`docs/tasks.md`에 GM-17 본작업 A(allowlist 이관) / B(required-set 완화)로
+쪼개 남겼다. 쪼갠 이유: A는 이제 선행조건이 닫혀 착수 가능하고, B는 노트가
+"광범위 감사, effort L, 그 이하 축소 불가"라고 못박은 별개의 일이라 한 항목으로
+묶어 두면 A까지 B의 무게에 눌린다.
+
+구현한 것(`registry.py` + `tests/test_registry_targets_config.py`): trusted
+설치본에서 `TARGETS_FILE`·`PROJECT_ROOT` redirect를 **거절**하고(같은 자리를
+가리키는 override는 허용 — 정당한 호출까지 깨뜨리면 다음 사람이 검사를 들어낸다),
+읽기를 `legacy_override_retirement._read_legacy_import_bytes`와 같은 모양의
+검증 descriptor로 바꿔(`O_NOFOLLOW` + 경로가 아닌 fd의 `fstat`) root 소유·
+`nlink==1`·group/other 비쓰기를 강제한다. 개발 checkout은 종전 그대로다 —
+거기서 root를 요구하면 이 로더를 부르는 모든 명령이 죽는다.
+
+변이 셋으로 결박을 확인했고 각각 대응하는 검사 하나만 빨갛다(나머지 40건은 매번
+초록): trusted 소유권 검증 제거 → `refuses_a_non_root_owned_targets_file`,
+`O_NOFOLLOW` 제거 → `symlink_is_refused`, `PROJECT_ROOT` 거부 제거 →
+`also_refuses_project_root_redirection`. 검증: backend 전체 **1,669 passed ·
+3 skipped · 실패 0**, ruff 전체 트리 149건으로 기준선과 동일(추가 0건 — 기존
+149건은 로컬 0.3.x와 CI 핀 0.16.4의 불일치다).
 
 
 ## GM-18: 백업 role과 pinned pair role이 백엔드·프론트 다층 하드코딩 — config 파생으로 전환
