@@ -33,7 +33,7 @@
 | GM-14 | `[x]` | P2 | S | operability | REVISED | mock | async 핸들러 안의 동기 SQLite 감사 기록이 event loop 전체를 정지시킬 수 있음 |
 | GM-15 | `[x]` | P2 | M | operability | CONFIRMED | mock | 상태 broadcast가 클라이언트 직렬 전송 — 느린 소켓 하나가 모든 탭의 상태 갱신을 무기한 정지 |
 | GM-16 | `[x]` | P2 | M | observability | CONFIRMED | mock | 모든 백엔드 로그가 두 번씩 기록되고, 요청 상관관계 ID가 없어 UI 오류와 로그·감사를 이을 수 없다 |
-| GM-17 | `[/]` | P2 | L | generality | REVISED | mock | compose candidate 검증의 Map/PinVi 하드코딩 완화 — 14개 서비스 존재 강제와 bind allowlist를 설정으로 외부화. **선행조건 완료(2026-09-17)**, 본작업 A/B는 `docs/tasks.md` |
+| GM-17 | `[/]` | P2 | L | generality | REVISED | mock | compose candidate 검증의 Map/PinVi 하드코딩 완화 — 14개 서비스 존재 강제와 bind allowlist를 설정으로 외부화. **선행조건 + 본작업 A(allowlist) 완료(2026-09-17)**, 남은 것은 B(required-set 완화)와 후속 둘 — `docs/tasks.md` |
 | GM-18 | `[x]` | P2 | M | generality | REVISED | mock | 백업 role과 pinned pair role이 백엔드·프론트 다층 하드코딩 — config 파생으로 전환 |
 | GM-19 | `[x]` | P2 | S | dead-code | REVISED | 불필요 | 죽은 코드 일괄 제거 — 구 C6c 경로 ~650줄, 미사용 프론트 의존성, 무소비 port_policy, 무참조 API key 게이트 |
 | GM-20 | `[x]` | P2 | M | complexity | CONFIRMED | 불필요 | 서비스 계층 분리 1단계 — errors/capabilities 모듈 신설과 프라이빗 크로스 import·순환 의존 해소 |
@@ -1171,6 +1171,33 @@ required-set 무조건 강제는 `c6c_deployment.py:3334`·`:3706` 두 자리.
 `also_refuses_project_root_redirection`. 검증: backend 전체 **1,669 passed ·
 3 skipped · 실패 0**, ruff 전체 트리 149건으로 기준선과 동일(추가 0건 — 기존
 149건은 로컬 0.3.x와 CI 핀 0.16.4의 불일치다).
+
+**2026-09-17 — 본작업 A(bind allowlist 외부화)도 닫았다.**
+
+`_CANDIDATE_ALLOWED_OPERATOR_BINDS`(125줄 dict 리터럴)를 `config/docker-targets.yml`의
+최상위 `compose_binds:` 절로 옮겼다. 컨테이너 정의 안이 아니라 최상위인 이유: bind를
+가진 19개 서비스 중 **8개가 `containers:`에 없다**(one-shot init 넷, geo dagster 쌍,
+db role bootstrap 둘). 거기 끼워 넣으면 `status`/`ensure`/metrics가 one-shot을 상시
+관리 대상으로 보게 된다.
+
+**동치를 증명했다.** 옮기기 전 해석된 매핑을 뜨고(29건, sha256 `e7ec261c30db1d04`)
+옮긴 뒤 다시 떠서 비교했다 — 정확히 같다. 값에 손대지 않은 것이 이 작업의 유일한
+안전 요건이다. 노트가 이미 실측으로 적었듯 `${VAR:?}` 필수화는 "조율 없이 배포하면
+실제 운영 환경을 멈추는 변경"이므로, 그 정리는 `docs/tasks.md`에 별도 후속으로 뺐다.
+
+**코드에 남긴 것은 규칙뿐이다**: 구조(필수 필드·미지 필드 거부), `container_path`
+절대경로, `read_only`가 진짜 bool(YAML의 `"false"`는 참인 문자열이다 — 읽기 전용이어야
+할 bind가 조용히 쓰기 가능으로 등재되는 경로), 중복 키 거부. **값의 정책은 넣지
+않았다** — `rustfs-init`이 실제로 manager 설치 경로를 container target으로 쓰므로
+"manager 경로 금지" 같은 순진한 규칙은 지금 유효한 항목을 거부한다. 그 예외를 먼저
+분류해야 규칙을 세울 수 있어 별도 후속으로 뺐다.
+
+**변이 확인**: allowlist에서 pinvi pgdata 항목 하나를 지우면 3건이 빨개진다 — 그중
+`test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validation`은 실제
+배포 검증 경로라, 이 설정이 테스트용이 아니라 진짜 소비된다는 증명이다. 기존 교차
+검사(`test_every_real_compose_bind_is_declared_in_a_candidate_bind_allowlist` — compose의
+모든 bind가 allowlist에 있는가)도 그대로 살려 새 정본을 보게 했다. 검증: backend
+**1,684 passed · 3 skipped · 실패 0**(기준선 1,676 + 신규 8), ruff 149건 기준선 동일.
 
 
 ## GM-18: 백업 role과 pinned pair role이 백엔드·프론트 다층 하드코딩 — config 파생으로 전환
