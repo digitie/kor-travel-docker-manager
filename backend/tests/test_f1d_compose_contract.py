@@ -3921,3 +3921,200 @@ def test_the_two_postgres_services_share_one_initdb_contract() -> None:
     # 검증 경로에만 머무르지 않는다는 것이 이 수정의 절반이다.
     locked = c6c_deployment_module._CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE
     assert "POSTGRES_INITDB_ARGS" in locked["kor-travel-map-postgres"]
+
+
+# ── Concierge UI 게이트가 API 계약을 함께 끄던 것 ────────────────────────
+#
+# 2026-09-17 감사(14 에이전트)가 "존재 게이트 뒤에 숨은 전역 불변식"의 **네 번째
+# 인스턴스**를 찾았다. S2·S3-a·S3-c와 달리 이것은 S4를 기다리지 않았다 — main에서
+# 이미 열려 있었다.
+#
+# `_validate_concierge_ui_canonical_contract`가 `UI not in services`면 함수째
+# return하고, 그 안에 **API의 계약 전부와 Manager root env 불변식**이 있었다.
+# concierge 두 서비스는 required set 밖이라 UI 한 줄만 지우면 API는 남은 채 전부
+# 꺼졌다. 방향도 비대칭이었다 — API 삭제는 거부, **UI 삭제는 통과**.
+#
+# 처방이 한 번 틀렸던 것도 함께 적는다. "API가 있으면 검사"로 고치자 정당한 Map
+# 단독 후보가 9건 빨개졌다 — 의존성으로만 끌려온 서비스는 `image` 하나뿐인 **stub**
+# 이고(`concierge-api`·`geo-api`·`rustfs`가 같은 모양) Map API가 concierge를 HTTP로
+# 부르므로 stub이 정상이다. 그래서 **stub이냐 구성됨이냐**로 가른다.
+
+
+def _configured_concierge_api(*, auth_enabled: str = "false") -> dict[str, object]:
+    """감사가 통과시킨 그 형상 — 구성됐지만 안전하지 않은 concierge-api."""
+
+    return {
+        "image": "kor-travel-concierge-api:latest",
+        "network_mode": "bridge",
+        "command": ["uvicorn", "app:app", "--host", "0.0.0.0"],
+        "environment": {
+            "KTC_ADMIN_PROXY_SECRET": "attacker-chosen-secret",
+            "APP_ENV": "development",
+            "API_AUTH_ENABLED": auth_enabled,
+            "API_KEYS": "",
+        },
+    }
+
+
+def test_configured_concierge_api_is_validated_without_the_ui_service(
+    tmp_path: Path,
+) -> None:
+    """**구멍이 닫혔다.** UI가 없어도 구성된 API는 계약을 받는다.
+
+    감사가 실측한 착취 형상을 그대로 재현한다 — `API_AUTH_ENABLED=false` +
+    `network_mode: bridge` + 임의 proxy secret인 concierge-api를 두고 UI는 넣지
+    않는다. 종전에는 두 진입점 모두 ACCEPT였다.
+
+    API는 `--host 0.0.0.0`이므로 인증이 꺼지는 대상이 전 인터페이스라는 점이
+    이 형상의 심각도를 정한다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    assert "kor-travel-concierge-ui" not in services, "전제: fixture에 UI가 없다"
+    services["kor-travel-concierge-api"] = _configured_concierge_api()
+
+    with pytest.raises(ComposeCandidateContractError) as rejection:
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+    assert "Concierge" in str(rejection.value), (
+        f"구성된 API가 UI 없이 검사를 빠져나갔다 — {rejection.value}"
+    )
+
+
+def test_a_dependency_stub_concierge_api_still_passes(tmp_path: Path) -> None:
+    """**정당한 형상은 그대로 통과한다.** 의존성 stub에 계약을 요구하지 않는다.
+
+    이 검사가 없으면 "구멍을 막았다"가 "정당한 배포를 막았다"로 미끄러진다.
+    실제로 첫 처방이 그랬다 — `test_frozen_bootstrap_...`을 포함해 9건이 빨개졌다.
+
+    raw stub은 `['image']`이고 resolved stub은 `docker compose config`가 붙인
+    `command: null`·`entrypoint: null`까지 갖는다. 그래서 "구성됨" 판정은 **키 존재가
+    아니라 값이 있는지**로 해야 한다 — 키로 하면 resolved에서 모든 stub이 오인된다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    api = services["kor-travel-concierge-api"]
+    assert isinstance(api, dict)
+    assert sorted(api) == ["image"], f"전제: raw stub은 image 하나뿐이다 — {sorted(api)}"
+
+    # 기동 후보 그대로 통과해야 한다(아무 예외도 없이).
+    validate_compose_candidate_protected_values(
+        candidate,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+        environment=environment,
+    )
+
+    # resolved stub은 값이 None인 키를 더 갖는다 — 그래도 stub이다.
+    resolved = _bootstrap_resolved(environment)
+    resolved_api = resolved["services"]["kor-travel-concierge-api"]
+    assert isinstance(resolved_api, dict)
+    assert resolved_api.get("command") is None
+    assert resolved_api.get("environment") is None
+    validate_resolved_compose_candidate_protected_values(
+        resolved,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+        environment=environment,
+    )
+
+
+def test_removing_the_ui_is_no_longer_a_way_to_disable_the_api_contract(
+    tmp_path: Path,
+) -> None:
+    """비대칭이 사라졌다 — 어느 쪽을 지워도 구성된 API는 검사를 받는다.
+
+    감사가 지적한 것이 정확히 이 비대칭이었다: API를 지우면 거부되고 UI를 지우면
+    통과했다. 같은 편집이 Map superuser password에 대해서는 전역 불변식에 잡히는데
+    concierge에서는 빠져나갔다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+
+    def verdict(services_mutation: object) -> str:
+        shaped = deepcopy(candidate)
+        services = shaped["services"]
+        assert isinstance(services, dict)
+        services_mutation(services)  # type: ignore[operator]
+        try:
+            validate_compose_candidate_protected_values(
+                shaped,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+                environment=environment,
+            )
+        except ComposeCandidateContractError as exc:
+            return f"REJECT: {exc}"
+        return "ACCEPT"
+
+    def configured_api_without_ui(services: dict[str, object]) -> None:
+        services.pop("kor-travel-concierge-ui", None)
+        services["kor-travel-concierge-api"] = _configured_concierge_api()
+
+    def configured_api_with_auth_on(services: dict[str, object]) -> None:
+        services.pop("kor-travel-concierge-ui", None)
+        services["kor-travel-concierge-api"] = _configured_concierge_api(
+            auth_enabled="true"
+        )
+
+    # 둘 다 거부돼야 한다 — auth를 켜도 나머지 계약(network_mode·command·proxy 권위)이
+    # 어긋나 있으므로, "auth만 켜면 통과"가 되어서는 안 된다.
+    for label, mutation in (
+        ("auth off", configured_api_without_ui),
+        ("auth on", configured_api_with_auth_on),
+    ):
+        result = verdict(mutation)
+        assert result.startswith("REJECT"), f"{label}: {result}"
+
+
+@pytest.mark.parametrize(
+    ("axis", "value"),
+    [
+        ("network_mode", "bridge"),
+        ("command", ["uvicorn", "app:app", "--host", "0.0.0.0"]),
+        ("environment", {"API_AUTH_ENABLED": "false"}),
+    ],
+)
+def test_each_configured_axis_alone_puts_the_api_under_contract(
+    axis: str, value: object, tmp_path: Path
+) -> None:
+    """"구성됨" 신호는 **세 축 각각**으로 성립한다.
+
+    변이 실측: 신호를 `environment` 하나로 좁혀도 검사가 전부 초록이었다 — 내 착취
+    형상이 environment를 갖고 있어서다. 축마다 **단독으로** 세워 그 구멍을 막는다.
+
+    `network_mode` 단독이 특히 중요하다. environment가 없어 proxy 권위는 못 얻지만,
+    `host`로 바꾸면 호스트 네트워크에 붙는다 — 그것을 "stub이라 검사 안 함"으로
+    넘기면 안 된다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    assert "kor-travel-concierge-ui" not in services
+    # stub에 **한 축만** 값을 준다.
+    services["kor-travel-concierge-api"] = {
+        "image": "kor-travel-concierge-api:latest",
+        axis: value,
+    }
+
+    with pytest.raises(ComposeCandidateContractError) as rejection:
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+    assert "Concierge" in str(rejection.value), (
+        f"{axis} 축만 구성된 API가 검사를 빠져나갔다 — {rejection.value}"
+    )

@@ -2974,32 +2974,69 @@ def _validate_concierge_ui_canonical_contract(
     *,
     resolved: bool,
 ) -> None:
-    """Concierge UI의 raw/resolved single-file boundary를 같은 계약으로 검사한다.
+    """Concierge UI/API의 raw/resolved single-file boundary를 같은 계약으로 검사한다.
 
     Concierge 전체 `.env`는 provider와 server-only 키를 함께 담으므로 UI에 주입할
-    수 없다. UI가 있을 때만 API도 함께 검사해, BFF proxy authority가 source `.env`
-    값으로 갈라지는 drift를 차단한다.
+    수 없다. UI와 API를 함께 검사해, BFF proxy authority가 source `.env` 값으로
+    갈라지는 drift를 차단한다.
+
+    **게이트가 "UI 존재"에서 "UI 존재 또는 API가 구성됨"으로 바뀌었다**(2026-09-18).
+    종전에는 `UI not in services`면 함수째 return했고, 그 안에 **API의 계약 전부와
+    Manager root env 불변식**이 들어 있었다. concierge 두 서비스는 required set 밖이라
+    후보에서 UI 한 줄만 지우면 API는 남은 채 그 전부가 조용히 꺼졌다 — 실측으로
+    `API_AUTH_ENABLED=false` + `network_mode: bridge` + 임의 proxy secret인 API가 두
+    진입점을 통과했다. 방향도 비대칭이었다(API 삭제는 거부, **UI 삭제는 통과**).
+    raw 정본 기본값이 `${KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED:-false}`라 **compose를
+    한 글자도 안 바꿔도** UI 한 줄 삭제 + root env 미설정만으로 통과했고, API는
+    `--host 0.0.0.0` + `network_mode: host`이므로 대상은 전 인터페이스였다.
+
+    **"API가 있으면 검사"는 틀린 처방이다.** `_compose_fragment`가 의존성으로만
+    끌어온 서비스는 `image` 하나뿐인 **stub**이고(`concierge-api`·`geo-api`·`rustfs`가
+    같은 모양), Map API가 concierge를 HTTP로 부르므로 **Map 단독 target 후보에는
+    concierge-api가 stub으로 들어온다.** stub에 전체 계약을 요구하면 정당한 배포가
+    거부된다(실측: 9건 빨감). UI 게이트에는 이유가 있었다 — UI의 존재가 "concierge를
+    실제로 배포한다"는 신호다. 그래서 **stub이냐 구성됨이냐**로 가른다.
+
+    **검사 순서는 한 줄도 바꾸지 않았다.** 각 검사에 자기 주체의 조건만 달았다.
     """
 
-    if _CONCIERGE_UI_SERVICE not in services:
-        return
-    ui_service = services[_CONCIERGE_UI_SERVICE]
+    ui_service = services.get(_CONCIERGE_UI_SERVICE)
     api_service = services.get(_CONCIERGE_API_SERVICE)
-    if not isinstance(ui_service, Mapping) or not isinstance(api_service, Mapping):
-        raise ComposeCandidateContractError(
-            "Concierge UI canonical contract requires valid API and UI services"
-        )
-    if "env_file" in ui_service:
+    #: stub은 `image` 하나뿐이다. 배포되는 서비스는 environment·network_mode·command에
+    #: **값**을 갖는다. 그 차이가 "이 후보가 concierge를 실제로 세우는가"의 신호다.
+    #:
+    #: **키 존재가 아니라 값이 있는지를 본다.** `docker compose config`가 stub에도
+    #: `command: null`·`entrypoint: null`을 붙이기 때문이다(실측: raw stub은
+    #: `['image']`인데 resolved stub은 `['command', 'entrypoint', 'image', 'networks']`).
+    #: 키로 판정하면 resolved에서 모든 stub이 "구성됨"으로 오인된다.
+    api_is_configured = isinstance(api_service, Mapping) and any(
+        api_service.get(key) is not None
+        for key in ("environment", "command", "network_mode")
+    )
+    if ui_service is None and not api_is_configured:
+        # UI가 없고 API도 stub이다 — 지킬 대상이 없다(Map 단독 target의 정상 형상).
+        return
+    if ui_service is not None:
+        # UI가 있으면 API도 있어야 한다(오늘 그대로) — UI는 자기 backend 없이 설 수 없다.
+        if not isinstance(ui_service, Mapping) or not isinstance(api_service, Mapping):
+            raise ComposeCandidateContractError(
+                "Concierge UI canonical contract requires valid API and UI services"
+            )
+    if ui_service is not None and "env_file" in ui_service:
         raise ComposeCandidateContractError(
             "Concierge UI must not load an env_file at the single-file boundary"
         )
-    ui_environment = ui_service.get("environment")
+    ui_environment = ui_service.get("environment") if ui_service is not None else None
     api_environment = api_service.get("environment")
-    if not isinstance(ui_environment, Mapping) or not isinstance(api_environment, Mapping):
+    if not isinstance(api_environment, Mapping) or (
+        ui_service is not None and not isinstance(ui_environment, Mapping)
+    ):
         raise ComposeCandidateContractError(
             "Concierge API and UI must use mapping environment"
         )
-    if set(ui_environment) != set(_CONCIERGE_UI_CANONICAL_RAW_ENV_VALUES):
+    if ui_environment is not None and set(ui_environment) != set(
+        _CONCIERGE_UI_CANONICAL_RAW_ENV_VALUES
+    ):
         raise ComposeCandidateContractError(
             "Concierge UI environment must be the exact canonical allowlist"
         )
@@ -3024,6 +3061,8 @@ def _validate_concierge_ui_canonical_contract(
         (_CONCIERGE_API_SERVICE, api_service),
         (_CONCIERGE_UI_SERVICE, ui_service),
     ):
+        if service is None:
+            continue
         network_mode = service.get("network_mode")
         if not isinstance(network_mode, str) or not hmac.compare_digest(
             network_mode, expected_network_mode
@@ -3042,12 +3081,15 @@ def _validate_concierge_ui_canonical_contract(
         raise ComposeCandidateContractError(
             "Concierge API must keep the canonical loopback BFF command"
         )
-    expected_ui_command = _concierge_ui_expected_command(environment, resolved=resolved)
-    ui_command = ui_service.get("command")
-    if not isinstance(ui_command, list) or tuple(ui_command) != expected_ui_command:
-        raise ComposeCandidateContractError(
-            "Concierge UI must keep the canonical production command"
+    if ui_service is not None:
+        expected_ui_command = _concierge_ui_expected_command(
+            environment, resolved=resolved
         )
+        ui_command = ui_service.get("command")
+        if not isinstance(ui_command, list) or tuple(ui_command) != expected_ui_command:
+            raise ComposeCandidateContractError(
+                "Concierge UI must keep the canonical production command"
+            )
 
     if resolved:
         expected_ui_environment = {
@@ -3065,7 +3107,9 @@ def _validate_concierge_ui_canonical_contract(
         )
     else:
         expected_ui_environment = _CONCIERGE_UI_CANONICAL_RAW_ENV_VALUES
-    for target_name, expected in expected_ui_environment.items():
+    for target_name, expected in (
+        expected_ui_environment.items() if ui_environment is not None else ()
+    ):
         actual = ui_environment.get(target_name)
         if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
             raise ComposeCandidateContractError(
