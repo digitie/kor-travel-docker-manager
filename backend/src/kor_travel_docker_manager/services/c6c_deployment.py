@@ -1549,8 +1549,18 @@ def _validate_map_application_300_service(
         )
 
 
-def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
-    """전용 PostgreSQL admin password의 유일한 소비자를 고정한다."""
+def _validate_map_postgres_password_declaration(document: Mapping[str, Any]) -> None:
+    """최상위 `secrets` 절이 Map superuser password를 **올바른 env로** 선언하는가.
+
+    이것은 소유자 서비스에 관한 물음이 **아니다** — 문서 전역의 성질이다. 첫 판은
+    이 블록을 (A) 안에 두었고, 그래서 (A)의 docstring("소유자 배선만 묻는다")이
+    거짓이었다(적대 리뷰 2026-09-17 M2).
+
+    떼어내야 하는 실질적 이유가 있다. `_DATABASE_ALLOWED_NON_ENV_PATHS`가
+    `("secrets", <이 secret>, "environment")` 경로를 전역 보호 이름 스캔에서
+    **무조건 면제**하는데, 그 면제의 정당화가 "이 검사가 그 경로를 소유한다"였다.
+    S4가 (A)를 끄면 면제만 남고 주인이 사라진다.
+    """
 
     secrets = document.get("secrets")
     if not isinstance(secrets, Mapping):
@@ -1561,7 +1571,74 @@ def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
     ):
         raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
 
+
+def _authorized_map_postgres_password_reference(
+    document: Mapping[str, Any],
+) -> object | None:
+    """소유자가 **인가받은** secret reference. 소유자가 없거나 모양이 아니면 `None`.
+
+    이 함수는 **아무것도 거부하지 않는다** — 판정은 호출부의 일이다. 여기서 예외를
+    던지면 "소유자가 없다"와 "소유자 배선이 틀렸다"가 다시 한 덩어리가 되고, 그 둘을
+    떼어내는 것이 GM-17 B S2의 전부다.
+
+    `None`은 **공집합**을 뜻한다: 소유자가 없는 문서에서는 이 secret을 가리키는
+    **모든** 참조가 무단이다. 그 방향이 안전한 쪽이다 — 소유자가 사라졌다고 해서
+    남의 소비가 인가되지는 않는다.
+
+    **모양까지 검증한다**(적대 리뷰 2026-09-17 M1 정정). 첫 판은 소유자의
+    `secrets[0]`을 검증 없이 돌려줬고, 그래서 이름이 거짓이었다 — "인가받은"이
+    아니라 "소유자가 선언한"이었다. 그 상태로는 (B)가 **단독으로 안전하지 않다**:
+    소유자가 secret을 임의 target이나 짧은 문법으로 마운트해도 (B)는 고무도장을
+    찍고, 인가 판정은 여전히 (A)에 기생한다. S4의 scope 축이
+    `declared OR witnessed`인 이상 "(A)는 꺼졌는데 소유자는 문서에 남아 있는"
+    형상이 **설계상 가능**하므로, 그 기생을 여기서 끊는다.
+    """
+
     services = document.get("services")
+    if not isinstance(services, Mapping):
+        return None
+    postgres = services.get(_MAP_POSTGRES_SERVICE)
+    if not isinstance(postgres, Mapping):
+        return None
+    references = postgres.get("secrets")
+    if not isinstance(references, list) or len(references) != 1:
+        return None
+    reference = references[0]
+    if (
+        not isinstance(reference, Mapping)
+        or reference.get("source") != _MAP_POSTGRES_PASSWORD_SECRET
+        or reference.get("target") != _MAP_POSTGRES_PASSWORD_SECRET
+    ):
+        # 소유자가 선언했더라도 **exact target**이 아니면 인가하지 않는다.
+        return None
+    return reference
+
+
+def _validate_map_postgres_password_owner_wiring(document: Mapping[str, Any]) -> None:
+    """(A) 소유자 배선 — `kor-travel-map-postgres`가 secret file로만 password를 받는가.
+
+    **소유자 서비스의 존재를 전제한다.** 그래서 GM-17 B S4가 Map family를 scope에서
+    빼면 이 검사는 건너뛴다. 건너뛰어도 되는 이유는 이것이 "그 서비스가 올바르게
+    배선됐는가"만 묻기 때문이다 — 서비스가 없으면 물음 자체가 성립하지 않는다.
+
+    **건너뛰면 안 되는 쪽은 (B)다.** 둘을 한 함수에 두면 S4가 이것을 통째로 끄면서
+    전역 불변식까지 함께 끈다 — 감사가 찾은 함정이 정확히 그것이다.
+    """
+
+    services = document.get("services")
+    if isinstance(services, Mapping) and _MAP_POSTGRES_SERVICE not in services:
+        # 소유자가 없다. 배선을 물을 대상이 없으므로 (A)는 여기서 끝난다.
+        #
+        # 오늘 이 분기는 공개 진입점으로 도달 불가다: S1이 required-set 검사를 여섯
+        # validator보다 앞으로 옮겼고 `kor-travel-map-postgres`는 required 14개 안에
+        # 있다. 도달 가능해지는 것은 S4가 집합을 좁히는 순간이다.
+        #
+        # **이 early-return이 전역 불변식을 끄지 않는다**: 선언 검사와 소비자 스캔은
+        # 진입점이 family validator **밖에서** 따로 부른다. 첫 판은 그 둘을 이 함수
+        # 안에 두고 "호출부를 보라"고 적었는데, 적대 리뷰가 실측으로 보였듯 S4가
+        # 자르는 층은 그 호출부보다 **위**였다.
+        return
+
     if not isinstance(services, Mapping):
         raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
     postgres = services.get(_MAP_POSTGRES_SERVICE)
@@ -1583,10 +1660,40 @@ def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
     ) or reference.get("target") != _MAP_POSTGRES_PASSWORD_SECRET:
         raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
 
-    # Compose secret file은 값이 Config.Env에 드러나지 않아도 mount한 container는
-    # 읽을 수 있다. 따라서 initial superuser credential은 PostgreSQL entrypoint의
-    # exact target 한 곳만 소비할 수 있고, API/Dagster/PinVi one-shot을 포함한
-    # 다른 service의 alias reference는 mutation 전에 거부한다.
+
+def _assert_map_postgres_password_sole_consumer(document: Mapping[str, Any]) -> None:
+    """(B) 유일 소비자 — 문서의 **아무** 서비스도 이 secret을 alias로 가져가지 못한다.
+
+    Compose secret file은 값이 `Config.Env`에 드러나지 않아도 mount한 container는
+    읽을 수 있다. 따라서 initial superuser credential은 PostgreSQL entrypoint의 exact
+    target 한 곳만 소비할 수 있고, API/Dagster/PinVi one-shot을 포함한 다른 service의
+    alias reference는 mutation 전에 거부한다.
+
+    **이 검사는 조건부가 되어서는 안 된다.** 소유자 서비스의 존재와 무관한 전역
+    불변식이고, 이것이 꺼지면 남는 그물이 없다 — 감사가 실측했다: 전역 보호 이름
+    스캔은 alias를 잡지 못하고(소문자·하이픈 vs 대문자·언더스코어라 substring이
+    아니다), external-resource 검사는 그 alias를 **무조건 면제**하며, runtime 검사는
+    소비자를 보지 않는다.
+
+    인가 집합은 `_authorized_map_postgres_password_reference`가 문서에서 **독립으로**
+    파생한다 — (A)의 지역 변수를 빌려 쓰면 (A)를 끄는 순간 이 검사도 함께 무너진다.
+    소유자가 없으면 인가 집합은 **공집합**이다.
+
+    **`authorized is None` 논리합은 오늘 판정을 바꾸지 않는다**(적대 리뷰 2026-09-17 —
+    1,782개 문서 × 두 진입 형상에서 그것을 지운 변이와 한 칸도 다르지 않았고, 논리합의
+    다른 두 항도 각각 지워도 스위트가 초록이었다). 오늘 남의 소비를 실제로 거부하는
+    것은 `service_name != _MAP_POSTGRES_SERVICE`다.
+
+    그래도 셋 다 남긴다. S4가 소유자-이름 결합을 느슨하게 하는 순간 나머지 둘이
+    **처음으로 하중을 받는다.** 다만 그것이 지금 일을 하고 있다고 **주장하지는
+    않는다** — 그 주장이 리뷰가 정정한 것이다.
+    """
+
+    services = document.get("services")
+    if not isinstance(services, Mapping):
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+    authorized = _authorized_map_postgres_password_reference(document)
+
     for service_name, service in services.items():
         if not isinstance(service, Mapping):
             raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
@@ -1608,12 +1715,15 @@ def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
             if source_name != _MAP_POSTGRES_PASSWORD_SECRET:
                 continue
             if (
-                service_name != _MAP_POSTGRES_SERVICE
-                or candidate_reference != reference
+                authorized is None
+                or service_name != _MAP_POSTGRES_SERVICE
+                or candidate_reference != authorized
             ):
                 raise ComposeCandidateContractError(
                     "Map PostgreSQL password secret has an unauthorized consumer"
                 )
+
+
 
 
 def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> None:
@@ -3348,13 +3458,41 @@ def validate_resolved_compose_candidate_protected_values(
             "resolved compose candidate service is missing or invalid: "
             + _describe_candidate_service_key(service_name)
         )
-    _validate_map_postgres_password_secret(resolved)
+    # ── Map superuser password : **family scope 밖의 전역 불변식** ──────────
+    # 이 두 줄은 아래 여섯 family validator와 **다른 층**이다. S4가 family scope로
+    # 아래 블록을 게이팅하더라도 이 둘은 그대로 돈다 — 그것이 요점이다.
+    #
+    # 적대 리뷰 2026-09-17이 첫 판을 뚫었다: 전역 불변식이 Map validator **안에**
+    # 있어서, 호출부를 `if _MAP_POSTGRES_SERVICE in services:`로 감싸는 순진한 S4가
+    # 전체 스위트 1700건을 그대로 통과했고, 그 상태에서 `pinvi-api`가 Map superuser
+    # password를 마운트하는 후보가 mutation 경계를 **통과**했다.
+    #
+    # **여기에 family 조건을 달지 마라.** 소유자가 없다고 남의 소비가 인가되지 않고,
+    # 소유자가 없다고 secret 선언이 아무 env나 가리켜도 되는 것이 아니다.
+    _validate_map_postgres_password_declaration(resolved)
+
+    _validate_map_postgres_password_owner_wiring(resolved)
     _validate_pinvi_postgres_password_secret(resolved)
     _validate_pinvi_database_url_identities(services, environment, resolved=True)
     _validate_pinvi_db_init_identity(services, environment, resolved=True)
     _validate_pinvi_db_runtime_role(services, environment, resolved=True)
     _validate_concierge_ui_canonical_contract(services, environment, resolved=True)
     _validate_map_application_300_images(services)
+
+    # ── 위 family 블록 **밖**: Map superuser password의 유일 소비자 ────────
+    # family validator가 전부 건너뛰어져도 이 그물은 남는다. S4가 scope로 위 블록을
+    # 게이팅하는 순간 여기가 유일한 방어다 — 적대 리뷰 2026-09-17이 실측으로 보였다:
+    # 전역 불변식이 family validator **안**에 있으면, 호출부를 소유자 존재로 감싸는
+    # 순진한 S4가 전체 스위트 1,700건을 그대로 통과하고 그 상태에서 `pinvi-api`가
+    # Map superuser password를 마운트하는 후보가 mutation 경계를 통과했다.
+    #
+    # **뒤에 두는 이유**: 앞에 두면 소유자가 어긋난 target에 마운트한 문서의 문구가
+    # (A)의 "...is invalid"에서 "...unauthorized consumer"로 바뀐다. 판정은 같지만
+    # 진단이 바뀌므로 S2의 "동작 변경 0"이 깨진다. 뒤에 두면 오늘은 (A)가 먼저
+    # 말하고, S4 이후에는 이것이 말한다.
+    #
+    # **여기에 family 조건을 달지 마라.**
+    _assert_map_postgres_password_sole_consumer(resolved)
     protected_names = (
         _OPS_ENV_NAMES
         | _MANAGER_ONLY_CREDENTIAL_NAMES
@@ -3762,13 +3900,41 @@ def validate_compose_candidate_protected_values(
             "compose candidate service is missing or invalid: "
             + _describe_candidate_service_key(service_name)
         )
-    _validate_map_postgres_password_secret(candidate)
+    # ── Map superuser password : **family scope 밖의 전역 불변식** ──────────
+    # 이 두 줄은 아래 여섯 family validator와 **다른 층**이다. S4가 family scope로
+    # 아래 블록을 게이팅하더라도 이 둘은 그대로 돈다 — 그것이 요점이다.
+    #
+    # 적대 리뷰 2026-09-17이 첫 판을 뚫었다: 전역 불변식이 Map validator **안에**
+    # 있어서, 호출부를 `if _MAP_POSTGRES_SERVICE in services:`로 감싸는 순진한 S4가
+    # 전체 스위트 1700건을 그대로 통과했고, 그 상태에서 `pinvi-api`가 Map superuser
+    # password를 마운트하는 후보가 mutation 경계를 **통과**했다.
+    #
+    # **여기에 family 조건을 달지 마라.** 소유자가 없다고 남의 소비가 인가되지 않고,
+    # 소유자가 없다고 secret 선언이 아무 env나 가리켜도 되는 것이 아니다.
+    _validate_map_postgres_password_declaration(candidate)
+
+    _validate_map_postgres_password_owner_wiring(candidate)
     _validate_pinvi_postgres_password_secret(candidate)
     _validate_pinvi_database_url_identities(services, environment, resolved=False)
     _validate_pinvi_db_init_identity(services, environment, resolved=False)
     _validate_pinvi_db_runtime_role(services, environment, resolved=False)
     _validate_concierge_ui_canonical_contract(services, environment, resolved=False)
     _validate_map_application_300_images(services)
+
+    # ── 위 family 블록 **밖**: Map superuser password의 유일 소비자 ────────
+    # family validator가 전부 건너뛰어져도 이 그물은 남는다. S4가 scope로 위 블록을
+    # 게이팅하는 순간 여기가 유일한 방어다 — 적대 리뷰 2026-09-17이 실측으로 보였다:
+    # 전역 불변식이 family validator **안**에 있으면, 호출부를 소유자 존재로 감싸는
+    # 순진한 S4가 전체 스위트 1,700건을 그대로 통과하고 그 상태에서 `pinvi-api`가
+    # Map superuser password를 마운트하는 후보가 mutation 경계를 통과했다.
+    #
+    # **뒤에 두는 이유**: 앞에 두면 소유자가 어긋난 target에 마운트한 문서의 문구가
+    # (A)의 "...is invalid"에서 "...unauthorized consumer"로 바뀐다. 판정은 같지만
+    # 진단이 바뀌므로 S2의 "동작 변경 0"이 깨진다. 뒤에 두면 오늘은 (A)가 먼저
+    # 말하고, S4 이후에는 이것이 말한다.
+    #
+    # **여기에 family 조건을 달지 마라.**
+    _assert_map_postgres_password_sole_consumer(candidate)
     protected_names = (
         _OPS_ENV_NAMES
         | _MANAGER_ONLY_CREDENTIAL_NAMES
