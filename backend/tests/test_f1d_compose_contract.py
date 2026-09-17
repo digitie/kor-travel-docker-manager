@@ -1804,6 +1804,13 @@ def test_c6c_rejects_map_postgres_password_secret_extra_consumer(
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
+        # GM-17 B S1: required-set 검사가 이제 소비자 스캔보다 **먼저** 돈다. 이
+        # fragment는 종전에 required 서비스 둘을 빼고도 "무단 소비자" 오류에 도달했는데,
+        # 지금은 부재가 먼저 보고된다(그것이 S1의 목적이다). 이 검사의 의도는 무단
+        # 소비자 거부이므로 fragment를 완전하게 만들어 그 의도를 보존한다.
+        "pinvi-postgres",
+        "pinvi-db-init",
+        "pinvi-db-runtime-role",
     )
     candidate = (
         _resolved_compose(*service_names)
@@ -2439,25 +2446,31 @@ def _verdict(
             environment=environment,
         )
     except Exception as exc:  # noqa: BLE001 - 표를 만드는 것이 목적이다
-        return f"{type(exc).__name__}: {str(exc)[:70]}"
+        return f"{type(exc).__name__}: {str(exc)[:200]}"
     return "PASS"
 
 
 #: 오늘(2026-09-17, GM-17 A 머지 직후) main의 raw 경로 실측. 값이 바뀌면 이 표를
 #: 갱신하되, **"… → PASS"로 바뀐 칸은 PR 본문에 의도한 완화로 열거해야 한다.**
 #:
-#:     all_present            PASS
-#:     absent_map_core        Map PostgreSQL password secret is invalid
-#:     absent_map_oneshots    missing required protected services: ...
-#:     absent_pinvi_core      PinVi PostgreSQL password secret is invalid
-#:     absent_pinvi_oneshots  PinVi database init identity is invalid
-#:     nulled_map_api         Map PostgreSQL password secret is invalid
-#:     nulled_pinvi_api       Map PostgreSQL password secret is invalid
+#: **S0(표를 박기 전) 실측** — 여섯 형상 중 부재를 부재라고 말하는 것은 하나뿐이었다:
 #:
-#: 이 표가 드러내는 것이 이 단계의 값이다. **여섯 형상 중 부재를 부재라고 말하는 것은
-#: 하나뿐이다.** 그리고 마지막 줄을 보라 — PinVi 서비스를 `null`로 만들었는데 Map
-#: 메시지가 나온다(소비자 스캔 루프가 non-Mapping 서비스를 만나 Map 계약으로 거부한다).
-#: 운영자는 "왜 Map password가 invalid하지?"를 쫓다가 실제 원인에 도달하지 못한다.
+#:     all_present            PASS
+#:     absent_map_core        Map PostgreSQL password secret is invalid      ← 무관한 메시지
+#:     absent_map_oneshots    missing required protected services: ...
+#:     absent_pinvi_core      PinVi PostgreSQL password secret is invalid    ← 무관한 메시지
+#:     absent_pinvi_oneshots  PinVi database init identity is invalid        ← 무관한 메시지
+#:     nulled_map_api         Map PostgreSQL password secret is invalid
+#:     nulled_pinvi_api       Map PostgreSQL password secret is invalid      ← PinVi인데 Map 오류
+#:
+#: **S1(순서 교정 + 서비스 모양 검사) 이후 — 현재:**
+#:
+#:     all_present            PASS
+#:     absent_*               missing required protected services: <실제로 빠진 이름들>
+#:     nulled_*               compose candidate service is missing or invalid: <그 서비스>
+#:
+#: 판정은 하나도 바뀌지 않았다(전부 거부, 전부 같은 예외 타입). **바뀐 것은 "왜"뿐이다.**
+#: 그것이 S1의 전부이고, 그 다음 단계들이 이 표를 기준으로 diff를 낸다.
 _ABSENCE_GOLDEN: dict[str, str] = {
     "all_present/raw": "PASS",
 }
@@ -2514,16 +2527,15 @@ def test_absence_matrix_is_pinned(tmp_path: Path) -> None:
         )
 
 
-def test_absence_is_not_reported_as_absence(tmp_path: Path) -> None:
-    """**오늘의 결함을 기록한다**: 부재가 부재라고 말해지지 않는다.
+def test_absence_is_reported_as_absence(tmp_path: Path) -> None:
+    """부재는 **부재라고** 보고된다 — 그리고 어느 이름이 빠졌는지 말한다 (S1).
 
-    required-set 검사(`c6c_deployment.py:3298`/`:3670`)가 여섯 validator보다 뒤에 있어,
-    서비스가 빠져도 사용자는 `missing required protected services`를 보지 못한다.
-    그래서 운영자는 "왜 password secret이 invalid하지?"를 쫓다가 실제 원인(서비스
-    부재)에 도달하지 못한다.
+    S0이 박은 표가 드러낸 것: required-set 검사가 여섯 validator보다 **뒤**에 있어서,
+    서비스가 빠져도 사용자는 "Map PostgreSQL password secret is invalid" 같은 무관한
+    문구를 봤다. 운영자는 그것을 쫓다가 실제 원인에 도달하지 못한다.
 
-    이 검사가 **빨개지는 것이 진전이다** — 이후 단계가 검사 순서를 교정하면 그때
-    이 검사를 뒤집는다. 지금 초록인 것은 결함이 그대로 있다는 뜻이다.
+    S1이 순서를 교정했다. 이 검사가 그 교정을 결박한다 — 누군가 순서를 되돌리면
+    빨개진다.
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
@@ -2532,8 +2544,31 @@ def test_absence_is_not_reported_as_absence(tmp_path: Path) -> None:
     verdict = _verdict(
         validate_compose_candidate_protected_values, shaped, environment, root_env
     )
-    assert "missing required protected services" not in verdict, (
-        "부재가 부재로 보고되기 시작했다 — 검사 순서가 교정된 것이다. "
-        "이 검사를 뒤집고 골든 테이블을 갱신하라"
+    assert "missing required protected services" in verdict, verdict
+    assert "kor-travel-map-postgres" in verdict, (
+        f"무엇이 빠졌는지 말하지 않는다: {verdict}"
     )
-    assert verdict.startswith("ComposeCandidateContractError"), verdict
+
+
+def test_null_service_is_invalid_not_absent(tmp_path: Path) -> None:
+    """`service: null`은 **부재가 아니라 invalid**다 — 그리고 그 서비스를 지목한다.
+
+    이 구분이 S4의 안전 조건이다. 완화의 skip 판정은 **키 부재로만** 해야 하는데,
+    falsy 기반(`if not services.get(x)`)으로 쓰면 `null` 한 줄이 부재로 오인되어
+    계약을 우회한다.
+
+    S0 표의 실측: 종전에는 **어느 서비스를 null로 만들든** "Map PostgreSQL password
+    secret is invalid"가 나왔다(소비자 스캔이 non-Mapping을 먼저 만난다). PinVi를
+    null로 해도 Map 오류였다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    for name in ("kor-travel-map-api", "pinvi-api"):
+        verdict = _verdict(
+            validate_compose_candidate_protected_values,
+            _shape_nulled(candidate, name),
+            environment,
+            root_env,
+        )
+        assert "missing or invalid" in verdict, verdict
+        assert name in verdict, f"{name}을 null로 했는데 그 이름을 말하지 않는다: {verdict}"
