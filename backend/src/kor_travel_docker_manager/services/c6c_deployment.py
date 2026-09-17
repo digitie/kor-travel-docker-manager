@@ -430,6 +430,38 @@ _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
         _MAP_UI_SERVICE,
     }
 )
+_CANDIDATE_KNOWN_SERVICE_NAMES = _CANDIDATE_REQUIRED_PROTECTED_SERVICES | {
+    _PINVI_DB_INIT_SERVICE
+}
+
+
+def _describe_candidate_service_key(service_name: object) -> str:
+    """계약 오류 문구에 실을 서비스 키의 표현.
+
+    이 문구는 CLI stderr(`cli.py`의 `DeploymentContractError` 핸들러)와 HTTP 409/500
+    body(`main.py`의 예외 핸들러, `api/routes.py::_config_failure_detail`)로 나간다.
+    그런데 서비스 키는 **후보 문서 작성자가 정하는 임의 문자열**이라, 보호값이 키
+    자리에 들어오면 그대로 에코된다 — 적대 리뷰 2026-09-17이
+    `KOR_TRAVEL_MAP_POSTGRES_PASSWORD` 값을 서비스 이름으로 넣어 실측했다(main은
+    싣지 않았고 S1의 첫 판만 실었다). 게다가 이 루프는 보호 이름/값 전역 스캔보다
+    **앞**이라 그 스캔이 막아 주지도 못한다.
+
+    권한 상승은 아니다 — 그 키는 운영자가 직접 적은 것이다. 심층 방어이고, 이
+    저장소가 이미 명시적으로 지키는 계약이다(`cli.py`: "원문은 여전히 JSON에 넣지
+    않는다"). 그래서 **계약이 아는 이름일 때만 그대로 지목하고**, 모르는 키는
+    sha8로만 가리킨다. 운영자는 자기 키를 해싱해 대조할 수 있고 우리는 아무것도
+    흘리지 않는다.
+
+    S4가 required 집합을 좁히면 아는 이름이 줄어 해싱되는 키가 늘어난다 — 완화가
+    노출을 **넓히지 않는** 방향이라 그대로 두어도 안전하다.
+    """
+
+    if isinstance(service_name, str) and service_name in _CANDIDATE_KNOWN_SERVICE_NAMES:
+        return service_name
+    digest = hashlib.sha256(repr(service_name).encode("utf-8")).hexdigest()[:8]
+    return f"<unrecognized service key sha256:{digest}>"
+
+
 _OPS_ENV_NAMES = frozenset(
     {
         _MAP_READ_ENV,
@@ -3310,10 +3342,12 @@ def validate_resolved_compose_candidate_protected_values(
     # 해야 하는데, null을 부재로 오인하면 계약을 한 줄로 우회할 수 있다. 여기서
     # null을 "부재"가 아니라 "invalid"로 못박아 그 혼동의 여지를 없앤다.
     for service_name, service_document in services.items():
-        if not isinstance(service_document, Mapping):
-            raise ComposeCandidateContractError(
-                f"compose candidate service is missing or invalid: {service_name}"
-            )
+        if isinstance(service_document, Mapping):
+            continue
+        raise ComposeCandidateContractError(
+            "resolved compose candidate service is missing or invalid: "
+            + _describe_candidate_service_key(service_name)
+        )
     _validate_map_postgres_password_secret(resolved)
     _validate_pinvi_postgres_password_secret(resolved)
     _validate_pinvi_database_url_identities(services, environment, resolved=True)
@@ -3366,15 +3400,26 @@ def validate_resolved_compose_candidate_protected_values(
     ):
         # **무조건 인덱싱하지 않는다**(GM-17 B S1). 종전 `services[service_name]`은
         # 이름이 빠지면 raw `KeyError`를 던졌고, 그것이 계약 오류가 아니라 traceback으로
-        # 사용자에게 샜다. 지금은 위 required-set 검사가 먼저 걸러 주므로 이 자리에
-        # 도달할 때 이름은 반드시 있다 — 그래도 `.get()`으로 두는 이유는 S4가
-        # required 집합을 좁히는 순간 이 루프가 **그 변경의 첫 희생자**가 되기
-        # 때문이다. 방어를 먼저 두고 완화를 나중에 한다.
-        service = services.get(service_name)
-        if not isinstance(service, Mapping):
+        # 사용자에게 샜다.
+        #
+        # **이 루프의 15개 이름 중 14개만 required set이 보증한다**(적대 리뷰
+        # 2026-09-17 정정 — S1의 첫 주석은 15개 전부라고 단언했고 그것이 틀렸다).
+        # 나머지 하나 `pinvi-db-init`은 `_CANDIDATE_REQUIRED_PROTECTED_SERVICES`
+        # 밖이고, 그 보증의 출처는 required-set이 아니라
+        # `_validate_pinvi_db_init_identity`다. S3가 바로 그 함수를 이분할하므로
+        # 여기서 출처를 분명히 적어 둔다.
+        #
+        # 부재와 invalid를 **쪼개서** 본다. `.get()`은 둘을 `None` 하나로 뭉개는데,
+        # S4가 required 집합을 좁히면 "키가 그냥 없는" 서비스가 이 자리에 도달한다 —
+        # 그때 `missing or invalid`로 뭉뚱그리면 S1이 없앤 혼동을 한 층 아래에서
+        # 되살리는 셈이다. 이 루프는 사실상 **두 번째 required-set**이므로 그렇게
+        # 말하게 한다.
+        if service_name not in services:
             raise ComposeCandidateContractError(
-                f"compose candidate service is missing or invalid: {service_name}"
+                "resolved compose candidate is missing required protected service: "
+                + service_name
             )
+        service = services.get(service_name)
         if not isinstance(service, Mapping):
             raise ComposeCandidateContractError(
                 f"resolved compose candidate service {service_name} is invalid"
@@ -3711,10 +3756,12 @@ def validate_compose_candidate_protected_values(
     # 해야 하는데, null을 부재로 오인하면 계약을 한 줄로 우회할 수 있다. 여기서
     # null을 "부재"가 아니라 "invalid"로 못박아 그 혼동의 여지를 없앤다.
     for service_name, service_document in services.items():
-        if not isinstance(service_document, Mapping):
-            raise ComposeCandidateContractError(
-                f"compose candidate service is missing or invalid: {service_name}"
-            )
+        if isinstance(service_document, Mapping):
+            continue
+        raise ComposeCandidateContractError(
+            "compose candidate service is missing or invalid: "
+            + _describe_candidate_service_key(service_name)
+        )
     _validate_map_postgres_password_secret(candidate)
     _validate_pinvi_postgres_password_secret(candidate)
     _validate_pinvi_database_url_identities(services, environment, resolved=False)
@@ -3767,15 +3814,25 @@ def validate_compose_candidate_protected_values(
     ):
         # **무조건 인덱싱하지 않는다**(GM-17 B S1). 종전 `services[service_name]`은
         # 이름이 빠지면 raw `KeyError`를 던졌고, 그것이 계약 오류가 아니라 traceback으로
-        # 사용자에게 샜다. 지금은 위 required-set 검사가 먼저 걸러 주므로 이 자리에
-        # 도달할 때 이름은 반드시 있다 — 그래도 `.get()`으로 두는 이유는 S4가
-        # required 집합을 좁히는 순간 이 루프가 **그 변경의 첫 희생자**가 되기
-        # 때문이다. 방어를 먼저 두고 완화를 나중에 한다.
-        service = services.get(service_name)
-        if not isinstance(service, Mapping):
+        # 사용자에게 샜다.
+        #
+        # **이 루프의 15개 이름 중 14개만 required set이 보증한다**(적대 리뷰
+        # 2026-09-17 정정 — S1의 첫 주석은 15개 전부라고 단언했고 그것이 틀렸다).
+        # 나머지 하나 `pinvi-db-init`은 `_CANDIDATE_REQUIRED_PROTECTED_SERVICES`
+        # 밖이고, 그 보증의 출처는 required-set이 아니라
+        # `_validate_pinvi_db_init_identity`다. S3가 바로 그 함수를 이분할하므로
+        # 여기서 출처를 분명히 적어 둔다.
+        #
+        # 부재와 invalid를 **쪼개서** 본다. `.get()`은 둘을 `None` 하나로 뭉개는데,
+        # S4가 required 집합을 좁히면 "키가 그냥 없는" 서비스가 이 자리에 도달한다 —
+        # 그때 `missing or invalid`로 뭉뚱그리면 S1이 없앤 혼동을 한 층 아래에서
+        # 되살리는 셈이다. 이 루프는 사실상 **두 번째 required-set**이므로 그렇게
+        # 말하게 한다.
+        if service_name not in services:
             raise ComposeCandidateContractError(
-                f"compose candidate service is missing or invalid: {service_name}"
+                "compose candidate is missing required protected service: " + service_name
             )
+        service = services.get(service_name)
         if not isinstance(service, Mapping):
             raise ComposeCandidateContractError(
                 f"compose candidate service {service_name} is invalid"
