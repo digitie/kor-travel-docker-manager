@@ -2442,7 +2442,7 @@ _REQUIRED_SERVICES_GOLDEN: tuple[str, ...] = (
 )
 
 #: required 집합 **밖**이지만 15개 소비자 루프에는 있는 이름. 이 비대칭이 실질 15의
-#: 정체다 — `frozenset` 14 + `_validate_pinvi_db_init_identity`의 별도 강제.
+#: 정체다 — `frozenset` 14 + `_validate_pinvi_db_init_presence`의 별도 강제.
 #: 코드 주석이 한동안 "15개 전부 required-set이 보증한다"고 잘못 적고 있었다.
 _NON_REQUIRED_LOOP_SERVICE = "pinvi-db-init"
 
@@ -2541,7 +2541,7 @@ def test_required_protected_service_set_is_pinned() -> None:
     집합을 프로덕션 상수에서 파생해 비교하면 항진명제가 되므로 리터럴로 적는다.
 
     `pinvi-db-init`이 여기 **없다**는 것도 함께 박는다. 15개 소비자 루프에는 있으나
-    required 집합에는 없고, 그 보증의 출처는 `_validate_pinvi_db_init_identity`다 —
+    required 집합에는 없고, 그 보증의 출처는 `_validate_pinvi_db_init_presence`다 —
     S3가 바로 그 함수를 이분할한다.
     """
 
@@ -2591,7 +2591,7 @@ _SINGLE_ABSENCE_GOLDEN: dict[str, str] = {
         for name in _REQUIRED_SERVICES_GOLDEN
     },
     # `pinvi-db-init`은 required 집합 밖이라 **부재를 부재라고 말하지 않는다.**
-    # `_validate_pinvi_db_init_identity`가 먼저 걸러서 정체성 오류로 보고한다.
+    # `_validate_pinvi_db_init_presence`가 먼저 걸러서 정체성 오류로 보고한다.
     # S1 커밋과 `docs/tasks.md`가 "absent_* → missing required protected services"라고
     # 단정했는데 15개 중 이 하나에서 거짓이었다(적대 리뷰 2026-09-17). 표에 그
     # 예외를 **적어서** 남긴다 — 숨기면 S3가 그 함수를 이분할할 때 아무도 모른다.
@@ -3277,6 +3277,18 @@ def _s4_without_pinvi_oneshots(
             if not name.startswith("pinvi-")
         ),
     )
+    # **required 목록은 두 곳이다.** frozenset만 패치하면 하드코딩 15개 소비자 루프가
+    # 여전히 부재를 거부해서, 시뮬레이션이 목표 지점에 닿기도 전에 막힌다(적대 리뷰
+    # 2026-09-17 L-2). `docs/tasks.md`가 "S4는 둘 다 풀어야 한다"고 적어 둔 그 루프다.
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_CANDIDATE_KNOWN_SERVICE_NAMES",
+        frozenset(
+            name
+            for name in c6c_deployment_module._CANDIDATE_KNOWN_SERVICE_NAMES
+            if not name.startswith("pinvi-")
+        ),
+    )
     return _shape_without(document, ("pinvi-db-init",))
 
 
@@ -3353,15 +3365,41 @@ def test_the_loopback_binding_has_exactly_one_home() -> None:
     빨개진다.
     """
 
-    source = (_ROOT / "backend/src/kor_travel_docker_manager").rglob("*.py")
-    homes = [
-        path.relative_to(_ROOT).as_posix()
-        for path in source
-        if "listen_addresses=127.0.0.1" in path.read_text(encoding="utf-8")
-    ]
-    assert homes == ["backend/src/kor_travel_docker_manager/services/c6c_deployment.py"], (
-        f"loopback 결박의 자리가 바뀌었다: {homes}"
-    )
+    # **파일이 아니라 출현 횟수를 센다.** 첫 판은 파일 목록을 비교해서, 같은 파일 안의
+    # 두 번째 자리를 원리적으로 볼 수 없었다(적대 리뷰 2026-09-17 L-1 — docstring이
+    # "두 번째 자리가 생기면 빨개진다"고 적었는데 거짓이었다).
+    #
+    # 다만 **코드 리터럴만** 센다. 그냥 문자열을 세면 이 결박을 설명하는 주석을 한 줄
+    # 더 쓸 때마다 검사가 빨개진다 — 그것은 결박이 아니라 잡음이다. 주석은 AST에
+    # 없으므로 문자열 상수만 세면 산문과 코드가 자동으로 갈린다.
+    import ast
+
+    homes: dict[str, int] = {}
+    for path in (_ROOT / "backend/src/kor_travel_docker_manager").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(
+                node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            )
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+        }
+        count = sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and node.value == "listen_addresses=127.0.0.1"
+            and id(node) not in docstrings
+        )
+        if count:
+            homes[path.relative_to(_ROOT).as_posix()] = count
+
+    assert homes == {
+        "backend/src/kor_travel_docker_manager/services/c6c_deployment.py": 1
+    }, f"loopback 결박의 자리나 개수가 바뀌었다: {homes}"
 
 
 def test_db_init_image_check_is_conditional_but_still_runs_today(
@@ -3597,4 +3635,177 @@ def test_pinvi_global_invariants_are_not_inside_the_family_validator() -> None:
     ):
         assert forbidden not in wiring_source, (
             f"전역 불변식 {forbidden}이 family validator 안으로 들어왔다"
+        )
+
+
+# ── S3 적대 리뷰 반영: PinVi에도 Map(S2)의 결박을 건다 ───────────────────
+#
+# 리뷰가 실측했다 — "Map(S2)과 같은 배치다"는 **코드 배치에 대해서만** 참이었고
+# **검증에 대해서는 거짓**이었다. S2가 Map에 넣은 네 검사가 PinVi에 복제되지 않아,
+# PinVi 전역 둘을 게이팅하거나 owner gate 뒤로 인라인하는 변이 넷이 전부 초록이었다.
+#
+# 그리고 `..._not_inside_the_family_validator`는 **이름에 결박**돼 있어 인라인 한 번에
+# 뚫린다(리뷰 H-3). 이름 grep은 싸니까 두되, 아래가 **효과**를 센다.
+
+
+def test_pinvi_entry_points_keep_the_global_checks_when_the_owner_is_out_of_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**S4를 오늘 시뮬레이션한다** — PinVi 소유자가 scope 밖이어도 전역 둘이 산다.
+
+    Map에는 S2가 같은 검사를 넣었고(적대 리뷰가 두 번 뚫은 뒤에), PinVi에는 빠져
+    있었다. 이 검사 하나가 리뷰가 보고한 생존 변이 일곱(전역 둘 게이팅·인라인·간접
+    호출, 소유자 배선의 핵심 검사 셋)을 한꺼번에 덮는다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    for name in ("_CANDIDATE_REQUIRED_PROTECTED_SERVICES", "_CANDIDATE_KNOWN_SERVICE_NAMES"):
+        monkeypatch.setattr(
+            c6c_deployment_module,
+            name,
+            frozenset(
+                value
+                for value in getattr(c6c_deployment_module, name)
+                if not value.startswith("pinvi-")
+            ),
+        )
+
+    base = _shape_without(
+        candidate,
+        ("pinvi-postgres", "pinvi-db-init", "pinvi-db-runtime-role", "pinvi-api"),
+    )
+
+    # (1) 무단 소비자는 소유자가 없어도 거부된다 — 두 문법 모두.
+    for shorthand in (False, True):
+        shaped = deepcopy(base)
+        services = shaped["services"]
+        assert isinstance(services, dict)
+        assert "pinvi-postgres" not in services
+        services["zz-thief"] = {
+            "image": "example:latest",
+            "secrets": [
+                "pinvi-postgres-password"
+                if shorthand
+                else {
+                    "source": "pinvi-postgres-password",
+                    "target": "pinvi-postgres-password",
+                }
+            ],
+        }
+        with pytest.raises(
+            ComposeCandidateContractError, match="unauthorized consumer"
+        ) as rejection:
+            validate_compose_candidate_protected_values(
+                shaped,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+                environment=environment,
+            )
+        assert "unauthorized consumer" in str(rejection.value), f"shorthand={shorthand}"
+
+    # (2) 선언이 틀리면 소유자가 없어도 거부된다.
+    shaped = deepcopy(base)
+    secrets = shaped["secrets"]
+    assert isinstance(secrets, dict)
+    secrets["pinvi-postgres-password"] = {"environment": "WRONG_ENV"}
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="PinVi PostgreSQL password secret is invalid",
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_pinvi_owner_must_receive_the_password_only_through_the_secret_file(
+    tmp_path: Path,
+) -> None:
+    """소유자 배선의 **핵심 셋**을 센다 (적대 리뷰 M-2).
+
+    함수 docstring이 "`pinvi-postgres`가 secret file로만 password를 받는가"라고
+    선언하는데, 그 문장을 실현하는 세 줄을 지워도 1,721건이 전부 초록이었다.
+    Map에는 S2가 같은 검사를 넣었고 PinVi에는 빠져 있었다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+
+    def reject(mutate: object, expected: str) -> None:
+        shaped = deepcopy(candidate)
+        services = shaped["services"]
+        assert isinstance(services, dict)
+        owner = services["pinvi-postgres"]
+        assert isinstance(owner, dict)
+        mutate(owner)  # type: ignore[operator]
+        with pytest.raises(ComposeCandidateContractError) as rejection:
+            validate_compose_candidate_protected_values(
+                shaped,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+                environment=environment,
+            )
+        assert expected in str(rejection.value), f"{expected} 기대, 실제 {rejection.value}"
+
+    message = "PinVi PostgreSQL password secret is invalid"
+    # PASSWORD_FILE을 Map secret으로 돌려놓기 / 삭제
+    reject(
+        lambda owner: owner["environment"].__setitem__(
+            "POSTGRES_PASSWORD_FILE", "/run/secrets/kor-travel-map-postgres-password"
+        ),
+        message,
+    )
+    reject(lambda owner: owner["environment"].pop("POSTGRES_PASSWORD_FILE"), message)
+    # 참조를 두 번 마운트 / 모양이 어긋난 참조
+    reject(
+        lambda owner: owner.__setitem__(
+            "secrets", [*owner["secrets"], {"source": "pinvi-postgres-password"}]
+        ),
+        message,
+    )
+    reject(
+        lambda owner: owner.__setitem__(
+            "secrets", [{"source": "pinvi-postgres-password", "target": "/elsewhere"}]
+        ),
+        message,
+    )
+
+
+def test_entrypoint_override_cannot_defeat_the_loopback_binding(tmp_path: Path) -> None:
+    """**command를 한 글자도 안 바꾸고** loopback을 무력화하는 경로를 막는다 (리뷰 M-1).
+
+    Compose에서 `entrypoint`를 주면 `command` 배열은 그 entrypoint의 **인자**가 된다.
+    즉 고정된 command 검사를 전부 통과하면서 실제로는 다른 명령이 돈다. 그 유일한
+    방어가 `entrypoint not in (None, [])` 한 줄인데 **지워도 1,721건이 전부 초록**이었다.
+
+    S3-a가 그 줄을 "loopback을 지키는 함수"로 옮겨 서사의 무게를 실었으므로, 검사도
+    함께 옮긴다 — `test_loopback_binding_survives_...`가 command만 변조하는 한
+    그 검사가 초록이라는 사실은 "결박이 살아 있다"를 뜻하지 않는다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+
+    for service, expected in (
+        ("pinvi-postgres", "PinVi PostgreSQL identity is invalid"),
+        ("pinvi-db-init", "PinVi database init command is invalid"),
+    ):
+        shaped = deepcopy(candidate)
+        services = shaped["services"]
+        assert isinstance(services, dict)
+        target = services[service]
+        assert isinstance(target, dict)
+        before = deepcopy(target.get("command"))
+        target["entrypoint"] = ["sh", "-ec", "exec postgres -c listen_addresses=*"]
+        assert target.get("command") == before, "command는 건드리지 않는다 — 그것이 요점이다"
+
+        with pytest.raises(ComposeCandidateContractError) as rejection:
+            validate_compose_candidate_protected_values(
+                shaped,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+                environment=environment,
+            )
+        assert expected in str(rejection.value), (
+            f"{service}: entrypoint 우회가 거부되지 않았다 — {rejection.value}"
         )
