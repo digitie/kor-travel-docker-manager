@@ -1186,18 +1186,50 @@ db role bootstrap 둘). 거기 끼워 넣으면 `status`/`ensure`/metrics가 one
 실제 운영 환경을 멈추는 변경"이므로, 그 정리는 `docs/tasks.md`에 별도 후속으로 뺐다.
 
 **코드에 남긴 것은 규칙뿐이다**: 구조(필수 필드·미지 필드 거부), `container_path`
-절대경로, `read_only`가 진짜 bool(YAML의 `"false"`는 참인 문자열이다 — 읽기 전용이어야
-할 bind가 조용히 쓰기 가능으로 등재되는 경로), 중복 키 거부. **값의 정책은 넣지
-않았다** — `rustfs-init`이 실제로 manager 설치 경로를 container target으로 쓰므로
-"manager 경로 금지" 같은 순진한 규칙은 지금 유효한 항목을 거부한다. 그 예외를 먼저
-분류해야 규칙을 세울 수 있어 별도 후속으로 뺐다.
+절대경로·정규형, `read_only`가 진짜 bool(YAML의 `"false"`는 참인 문자열이다 — 읽기
+전용이어야 할 bind가 조용히 쓰기 가능으로 등재되는 경로), 서비스명 공백 거부, 중복 키
+거부, 그리고 **source-side 값 정책**.
 
-**변이 확인**: allowlist에서 pinvi pgdata 항목 하나를 지우면 3건이 빨개진다 — 그중
-`test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validation`은 실제
-배포 검증 경로라, 이 설정이 테스트용이 아니라 진짜 소비된다는 증명이다. 기존 교차
-검사(`test_every_real_compose_bind_is_declared_in_a_candidate_bind_allowlist` — compose의
-모든 bind가 allowlist에 있는가)도 그대로 살려 새 정본을 보게 했다. 검증: backend
-**1,684 passed · 3 skipped · 실패 0**(기준선 1,676 + 신규 8), ruff 149건 기준선 동일.
+**2026-09-17 정정 — 값 정책 유예 근거가 틀렸었다.** 처음에는 "`rustfs-init`이 manager
+설치 경로를 쓰므로 순진한 규칙이 유효한 항목을 거부한다"며 값 정책 전체를 후속으로
+뺐다. 적대 리뷰가 29건을 전수 대조해 반증했다 — manager 경로는 **`container_path`
+쪽에만** 있고 `source` 쪽은 **0건**이다. 즉 source-side 정책은 처음부터 함께 나갈 수
+있었고, 그 자리에 실제 구멍이 있었다:
+
+    source: "/etc"    # manager 파일의 조상이 아니라 종전 가드를 지나가고,
+                      # 디렉터리라 protected 값 스캔도 받지 않는다 → 통과
+
+`_assert_operator_bind_source_is_permitted`를 넣어 민감 host 자리(`/etc`·`/root`·
+`/boot`·`/proc`·`/sys`·`/dev`·`/var/lib/docker`·docker.sock과 그 하위), 자격증명
+디렉터리(`.ssh`·`.gnupg`·`.aws`·`.kube`), 그리고 **allowlist 파일 자신과 backend
+소스**를 거부한다. 마지막 것이 자기-인가 루프다 — 인가하는 파일을 인가되는 것으로
+쓰면 그 컨테이너가 다음 재기동에 임의 bind를 인가할 수 있고, 인가하는 것과 인가되는
+것이 같아지면 그것은 경계가 아니다. **남은 것은 target-side 정책뿐**이고 그것은
+`rustfs-init` 예외 분류가 선행이다.
+
+**적대 리뷰 2인(2026-09-17) — Critical 0, High 3, Medium 4를 반영했다.**
+
+가장 무거운 지적은 **손으로 한 변이가 아무것도 결박하지 않는다**는 것이었다. 처음에는
+"allowlist에서 항목 하나를 지우면 3건이 빨개진다"를 근거로 들었는데, 리뷰어가 로더를
+코드 안 얼린 dict로 갈아끼운 **고장난 구현에서 전체 스위트 `1684 passed`를 재현했다** —
+내가 근거로 든 바로 그 숫자다. 즉 "설정이 정본"이라는 이 이관의 유일한 결과물을 지키는
+검사가 **0건**이었다. 연결고리는 `c6c_deployment`의 import 한 줄뿐이고 그것을 세는
+검사가 없었다.
+
+고친 방식: 배포 경로가 로더를 **모듈 경유**로 부르게 하고(`registry_module.
+load_compose_bind_allowlist()`), 실제 배포 검증 진입점에 결박된 검사 3건을 추가했다.
+두 변이 모두 이제 빨갛다 — (1) 로더를 얼린 dict로 교체, (2) 모듈 경유를 직접 import로
+되돌리기. 둘 다 종전에는 전체 초록이던 구현이다.
+
+나머지 반영: `compose_binds` 절 누락을 통과시키던 것을 필수로 승격(절 이름 오타 하나로
+`targets validate`는 OK인데 전 배포가 죽는 경로였고, 그 함수 docstring이 금지한다고
+적어 놓고 절 전체가 사라지는 경우만 빠져 있었다) · 부모 디렉터리 검증 추가(`O_NOFOLLOW`는
+마지막 조각만 막는다) · 파생 `lru_cache` 제거 · docstring 거짓 둘 정정("legacy와 같은
+모양"·"mutation 경로는 별도 검증을 거친다" — 후자는 그 검증이 바로 캐시된 allowlist를
+읽는다) · 서비스명 공백 거부 · `container_path` 정규형 · `MappingProxyType`.
+
+검증: backend **1,687 passed · 3 skipped · 실패 0**, ruff 149건 기준선 동일,
+이관 동치 29건 유지.
 
 
 ## GM-18: 백업 role과 pinned pair role이 백엔드·프론트 다층 하드코딩 — config 파생으로 전환
