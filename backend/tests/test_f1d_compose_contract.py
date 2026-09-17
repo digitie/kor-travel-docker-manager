@@ -3234,3 +3234,167 @@ def test_authorized_reference_requires_the_exact_shape() -> None:
         "참조가 리스트": [good],
     }.items():
         assert derive(owner_with(bad)) is None, f"{label}: 인가하면 안 된다"
+
+
+# ── GM-17 B · S3-a: PinVi postgres 신원을 db-init 게이트에서 떼어낸다 ────
+#
+# 종전 `_validate_pinvi_db_init_identity`는 맨 앞에서 `pinvi-db-init` 부재를 즉시
+# 거부한 뒤, 같은 함수 안에서 `pinvi-postgres`의 image·environment·**command**를
+# 검사했다. 그 command 배열이 `listen_addresses=127.0.0.1`을 강제하는
+# **저장소에서 유일한 자리**다(`backend/src` 전역 1건).
+#
+# 그래서 S4가 그 함수를 db-init 존재로 게이팅하면 PostgreSQL의 loopback 결박이
+# 통째로 사라진다. 네트워크 노출 통제라 S2의 secret 소비자 스캔보다 결과가 나쁘다.
+
+
+def _s4_without_pinvi_oneshots(
+    monkeypatch: pytest.MonkeyPatch, document: dict[str, object]
+) -> dict[str, object]:
+    """S4가 PinVi one-shot을 scope에서 뺀 상태를 흉내낸다.
+
+    **문서에서도 db-init을 뺀다.** 전용 validator만 no-op으로 만들고 문서에 서비스를
+    남겨 두면 시뮬레이션이 가짜가 된다 — 변이로 확인했다: `pinvi-postgres` 신원 검사를
+    db-init 존재로 게이팅해도 검사가 **전부 초록**이었다(게이트 조건이 여전히 참이라).
+    S4가 실제로 만드는 형상은 서비스가 사라진 상태다.
+    """
+
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_validate_pinvi_db_init_presence",
+        lambda services, environment: ({}, {}, ("", "", "", "")),
+    )
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_validate_pinvi_db_init_command",
+        lambda service, service_environment, expected, *, resolved: None,
+    )
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_CANDIDATE_REQUIRED_PROTECTED_SERVICES",
+        frozenset(
+            name
+            for name in c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
+            if not name.startswith("pinvi-")
+        ),
+    )
+    return _shape_without(document, ("pinvi-db-init",))
+
+
+def test_loopback_binding_survives_when_db_init_is_out_of_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**S3-a의 핵심.** db-init이 scope 밖이어도 loopback 결박은 남는다.
+
+    `listen_addresses=127.0.0.1`은 저장소에서 이 command 배열 한 곳에만 있다. 종전
+    구조에서는 그것이 db-init 게이트 뒤에 있었으므로, S4가 PinVi one-shot을 빼는
+    순간 PostgreSQL이 모든 인터페이스에 바인딩해도 아무도 막지 못했다.
+
+    이 검사는 진입점을 태운다 — db-init 전용 검사를 no-op으로 만든 뒤
+    `pinvi-postgres`의 바인딩을 열어 보고, 여전히 거부되는지 본다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = _s4_without_pinvi_oneshots(monkeypatch, deepcopy(candidate))
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    assert "pinvi-db-init" not in services, "시뮬레이션이 db-init을 실제로 빼야 한다"
+    postgres = services["pinvi-postgres"]
+    assert isinstance(postgres, dict)
+    command = postgres["command"]
+    assert isinstance(command, list)
+    assert "listen_addresses=127.0.0.1" in command, "전제가 깨졌다 — 결박 문자열이 없다"
+    postgres["command"] = [
+        "listen_addresses=*" if item == "listen_addresses=127.0.0.1" else item
+        for item in command
+    ]
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="PinVi PostgreSQL identity is invalid"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_postgres_image_provenance_survives_when_db_init_is_out_of_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """같은 이유로 `pinvi-postgres`의 image provenance도 남는다."""
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = _s4_without_pinvi_oneshots(monkeypatch, deepcopy(candidate))
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    assert "pinvi-db-init" not in services, "시뮬레이션이 db-init을 실제로 빼야 한다"
+    postgres = services["pinvi-postgres"]
+    assert isinstance(postgres, dict)
+    postgres["image"] = "postgres:16"
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="PinVi PostgreSQL image provenance is invalid",
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_the_loopback_binding_has_exactly_one_home() -> None:
+    """`listen_addresses` 강제가 **한 곳뿐**이라는 전제를 결박한다.
+
+    S3-a의 모든 논거가 이 사실에 기댄다. 누군가 두 번째 자리를 만들면 이 검사가
+    빨개지고, 그때 위 검사들의 서사를 다시 써야 한다. 반대로 유일한 자리가 사라져도
+    빨개진다.
+    """
+
+    source = (_ROOT / "backend/src/kor_travel_docker_manager").rglob("*.py")
+    homes = [
+        path.relative_to(_ROOT).as_posix()
+        for path in source
+        if "listen_addresses=127.0.0.1" in path.read_text(encoding="utf-8")
+    ]
+    assert homes == ["backend/src/kor_travel_docker_manager/services/c6c_deployment.py"], (
+        f"loopback 결박의 자리가 바뀌었다: {homes}"
+    )
+
+
+def test_db_init_image_check_is_conditional_but_still_runs_today(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """db-init image 검사는 존재-조건부지만 **오늘은 항상 돈다**.
+
+    그 한 줄은 db-init의 image를 보는데 자리가 두 postgres 검사 **사이**라, 옮기면
+    두 결함이 동시에 있는 문서의 문구가 바뀐다. 그래서 자리를 두고 조건만 걸었다.
+    이 검사가 "조건을 걸었다"가 "그냥 껐다"로 미끄러지지 않게 한다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    db_init = services["pinvi-db-init"]
+    assert isinstance(db_init, dict)
+    db_init["image"] = "postgres:16"
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="PinVi database init image provenance is invalid",
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+    # db-init이 아예 없으면 물을 대상이 없다 — 조용히 지나간다(S4 이후의 형상).
+    without = _s4_without_pinvi_oneshots(monkeypatch, shaped)
+    c6c_deployment_module._validate_pinvi_postgres_identity(
+        without["services"], environment, resolved=False
+    )
