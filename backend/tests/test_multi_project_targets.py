@@ -166,13 +166,23 @@ def test_external_command_carries_project_directory_and_every_file() -> None:
 
 
 def test_manager_command_shape_is_unchanged() -> None:
-    """외부 인자를 주지 않으면 명령이 종전과 같다."""
+    """외부 인자를 주지 않으면 명령이 종전과 같다.
+
+    `--env-file`은 **환경 의존**이라 여기서 세지 않는다 — `build_command`가
+    `os.path.exists(env_path)`일 때만 붙이므로, `.env`가 없는 CI 러너에서는 애초에
+    없다(첫 판이 그것을 단언해 CI만 빨갰다). 불변인 것은 **프로젝트 플래그가 붙지
+    않는다**와 **Manager 자신의 compose를 가리킨다**이다.
+    """
 
     service = ComposeService()
     command = service.build_command(["ps", "kor-travel-map-api"])
     assert "-p" not in command, "Manager 경로에는 프로젝트 플래그가 붙지 않는다"
     assert "--project-directory" not in command
-    assert "--env-file" in command
+    assert command[:2] == ["docker", "compose"]
+    assert "-f" in command
+    assert command[command.index("-f") + 1].endswith("docker-compose.yml"), (
+        f"Manager 자신의 compose를 가리켜야 한다: {command}"
+    )
 
 
 def test_single_file_boundary_is_refused_for_an_external_project() -> None:
