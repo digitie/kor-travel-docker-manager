@@ -33,5 +33,25 @@
 - [ ] GM-17 B · S2 — Map 계열 validator 이분할 (동작 변경 0). **감사가 찾은 함정**: `_validate_map_postgres_password_secret`은 두 불변식을 품는다 — (A) 전용 배선(서비스 필요)과 (B) **유일 소비자 스캔**. 함수째 건너뛰면 B가 함께 꺼지고, 그러면 아무 서비스나 Map superuser password를 mount해도 **파이프라인 어디서도 안 걸린다**(전역 이름 스캔 hit 0, external-resource가 그 alias를 무조건 면제, runtime은 소비자를 안 본다). B는 무조건 실행하되 authorized 집합을 "소유자 없으면 공집합"으로 파생해야 한다.
 - [ ] GM-17 B · S3 — PinVi 계열 validator 이분할 (동작 변경 0). 네 함수가 얽혀 있고 `listen_addresses=127.0.0.1` 강제가 `c6c_deployment.py:1241` **한 곳뿐**이라, `_validate_pinvi_db_init_identity`의 pinvi-postgres 블록을 db-init 존재로 게이팅하면 loopback 결박이 사라진다.
 - [ ] GM-17 B · S4 — family scope 도입 (**유일한 실제 완화**). 축은 mode도 호출부도 아니라 `in_scope(F) = declared(F) OR witnessed(F)`다. declared는 `config/docker-targets.yml`이 주고(GM-17 A가 이미 그 문서를 신뢰시켜 뒀다), witnessed는 문서의 흔적 — **하한이지 상한이 아니다**(요구를 더할 뿐 빼지 못한다). 이 형태가 자가무장해제를 막는다: targets가 `map`을 선언하는 한 compose에서 한 줄 지워도 계속 거부된다. 되돌리기는 "모든 family 항상 in_scope" 한 줄 kill switch.
-- [ ] GM-17 B · 선행 조사 둘 — (1) pinned-rebuild가 도는 rehearsal 호스트에서 `running_from_trusted_install_root()`가 참인가(거짓이면 declared 축의 권위가 약해진다), (2) validation 밖에서 15개 존재를 전제하는 **런타임** 지점 전수(`compose_service.py`의 `_PINNED_RUNTIME_ONESHOT_WRITERS` 등 — 검증만 완화하면 "이른 거부"가 "핀셋 소모 후 런타임 실패"로 바뀐다).
+- [x] GM-17 B · 선행 조사 (1) `running_from_trusted_install_root()` (2026-09-17 실측, **참**). n150의 두 실행 경로 모두 `/opt/kor-travel-docker-manager/backend/.venv`에서 돈다 — 상주 backend(`ktdm-backend.service` `ExecStart`, active·enabled, 12901 리스닝)와 pinned-rebuild 런처(`run-pinned-rebuild-once:319`가 `/opt/.../\.venv/bin/ktdctl`). 술어를 그 venv에서 직접 태워 확인했다: `__file__`이 trusted root 아래(분기 1 참), `sys.prefix == TRUSTED_INSTALL_ROOT/backend/.venv`(분기 2 참) → `True`. 호스트의 다른 `ktdctl`은 `/home/digitie/ktdm-gate/.venv` 하나뿐인데 **2026-08-30 #291 시점 체크아웃이라 `trusted_install` 모듈 자체가 없다**(`ModuleNotFoundError`) — 없는 메커니즘을 우회할 수는 없고, prod 검증 경로에 결선돼 있지도 않다. **결론: `declared` 축(= `config/docker-targets.yml`, GM-17 A가 신뢰시킨 문서)의 권위가 S4가 의존하는 모든 경로에서 유지된다.**
+- [x] GM-17 B · 선행 조사 (2) 런타임 전제 전수 (2026-09-17). **"15개를 전제하는 자리"는 하나가 아니다 — 네 모듈에 걸친 여섯 집합이고, S4가 완화하는 것은 그중 하나뿐이다.**
+
+  | 집합 | n | 모듈 | S4 대상 |
+  |---|---|---|---|
+  | `_CANDIDATE_REQUIRED_PROTECTED_SERVICES` | 14 | `c6c_deployment` (검증) | **이것뿐** |
+  | 15개 소비자 루프(= required 14 + `pinvi-db-init`) | 15 | `c6c_deployment` (검증) | 따라온다 |
+  | `_MAP_RUNTIME_SERVICES` | 4 | `c6c_deployment` (검증) | 따라온다 |
+  | `RUNTIME_SERVICES` (핀셋) | 7 | `pinned_runtime_generation` | **아니다 — 런타임** |
+  | `COMPOSE_BUILT_RUNTIME_SERVICES` | 4 | `pinned_runtime_rebuild` | **아니다** |
+  | `_PINNED_RUNTIME_ONESHOT_WRITERS` | 8 | `compose_service` | **아니다 — 여기가 터진다** |
+
+  검증 **밖**의 경성 전제 셋을 찾았고, 전부 `docker compose`에 서비스 이름을 그대로 넘긴다:
+
+  1. `compose_service.py:5150 _retire_pinned_runtime_oneshot_writers` — 8개 이름을 `compose rm -f -s` / `compose ps --all`에 그대로 넘긴다. **실측**(n150, 더미 compose): 정의되지 않은 서비스를 주면 `no such service: <이름>`이다. 그 8개는 전부 required(14) ∪ {`pinvi-db-init`} 안에 있으므로 **S4가 한 family를 빼는 순간 최대 8개가 사라지고 이 호출이 죽는다.**
+  2. `compose_service.py:8056 _require_services_ready` — 같은 방식으로 `ps`에 넘기고, 실패하면 `cannot inspect mandatory service readiness`. `RUNTIME_SERVICES`(7)와 `("kor-travel-map-postgres", "pinvi-postgres")`에 쓰인다.
+  3. `compose_service.py:6894-6912` — 위 두 개짜리 호출의 결과를 **위치로** 인덱싱한다(`postgres_records[0]`은 Map, `[1]`은 PinVi로 가정해 각각 `validate_map_postgres_runtime_secret_isolation`·`validate_pinvi_postgres_runtime_secret_isolation`에 넘긴다). 한쪽 family가 빠지면 이 대응이 **조용히 어긋난다**.
+
+  **비대칭 하나 더**: `RUNTIME_SERVICES`에는 `pinvi-web`·`pinvi-dagster`가 있는데 required(14)에는 **없다**. 즉 핀셋은 검증이 요구하지 않는 서비스의 존재를 이미 전제한다.
+
+  **결론 — S4의 범위가 커진다.** family scope는 validator만 통과시키면 끝나는 것이 아니라 위 런타임 집합에도 같은 scope를 먹여야 한다. 그러지 않으면 원장이 경고한 그대로 **"이른 거부"가 "핀셋 소모 후 런타임 실패"로 바뀐다** — 그것도 `rm`/`ps`가 뱉는 `no such service`라는, 원인을 말하지 않는 문구로. S1이 진단을 고친 의미가 그 지점에서 사라진다.
 - [ ] GM-17 본작업 B — required-set 완화. dev ensure에서 15개 서비스 존재 강제를 존재-조건부로 바꾼다(frozenset 14 + `_PINVI_DB_INIT_SERVICE` 별도 강제 = 실질 15). 감사 노트 (d)대로 production ensure는 이미 원천 거부(`compose_service.py:4663-4676`)라 "production 모드로 한정"은 ensure에 한해 공허하고, 실제 적용 대상은 pinned-rebuild와 production save/mutation 경로다. **다수 cross-service validator를 존재-조건부로 바꾸는 광범위 감사가 필요하고 effort L, 그 이하로 축소 불가**(노트 원문). 문서 전역 보호 이름/값 스캔은 무조건 유지한다. **착수 전 오너와 범위를 재확인할 것.**
