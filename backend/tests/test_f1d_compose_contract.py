@@ -10,7 +10,7 @@ import shutil
 import subprocess
 from copy import deepcopy
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -19,15 +19,11 @@ import yaml
 
 from kor_travel_docker_manager.services import c6c_deployment as c6c_deployment_module
 from kor_travel_docker_manager.services import compose_service as compose_service_module
-from kor_travel_docker_manager.services.registry import (
-    load_compose_bind_allowlist,
-)
-from types import MappingProxyType
 from kor_travel_docker_manager.services import registry as registry_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     _CANDIDATE_ALLOWED_SYSTEM_BINDS,
-    ComposeCandidateContractError,
     C6cBuildProvenance,
+    ComposeCandidateContractError,
     DeploymentContractError,
     _candidate_volume_mounts,
     _validate_feature_create_credentials,
@@ -63,6 +59,9 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     MaterializedRuntimeSource,
     PinnedRuntimeSourceMaterialization,
+)
+from kor_travel_docker_manager.services.registry import (
+    load_compose_bind_allowlist,
 )
 
 _ROOT = Path(__file__).resolve().parents[2]

@@ -26,6 +26,12 @@ from urllib.parse import unquote, urlsplit
 
 from dotenv import dotenv_values
 
+# **모듈 경유로 부른다**(GM-17 A 적대 리뷰 H-1). `from ... import load_compose_bind_allowlist`
+# 로 이름을 당겨오면 배포 경로와 로더의 연결이 이 import 한 줄에만 있고, 그 줄이
+# 끊기거나 이름이 다른 것으로 바뀌어도 어떤 검사도 세지 못한다 — 리뷰어가 로더를
+# 코드 안 얼린 dict로 갈아끼운 고장난 구현에서 전체 스위트 초록을 재현했다.
+# 모듈 속성으로 부르면 그 연결 자체를 테스트가 결박할 수 있다.
+from kor_travel_docker_manager.services import registry as registry_module
 from kor_travel_docker_manager.services.capabilities import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
@@ -42,12 +48,6 @@ from kor_travel_docker_manager.services.loopback_readiness import (
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
-# **모듈 경유로 부른다**(GM-17 A 적대 리뷰 H-1). `from ... import load_compose_bind_allowlist`
-# 로 이름을 당겨오면 배포 경로와 로더의 연결이 이 import 한 줄에만 있고, 그 줄이
-# 끊기거나 이름이 다른 것으로 바뀌어도 어떤 검사도 세지 못한다 — 리뷰어가 로더를
-# 코드 안 얼린 dict로 갈아끼운 고장난 구현에서 전체 스위트 초록을 재현했다.
-# 모듈 속성으로 부르면 그 연결 자체를 테스트가 결박할 수 있다.
-from kor_travel_docker_manager.services import registry as registry_module
 from kor_travel_docker_manager.services.registry import get_targets_config_path
 from kor_travel_docker_manager.services.trusted_install import (
     GLOBAL_MUTATION_LOCK_FD_ENV,
