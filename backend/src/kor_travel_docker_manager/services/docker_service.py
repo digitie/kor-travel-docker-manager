@@ -35,14 +35,27 @@ from kor_travel_docker_manager.services.compose_service import (
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
+    DeploymentContractError,
 )
-from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS
+from kor_travel_docker_manager.services.registry import (
+    MANAGED_CONTAINERS,
+    external_project_for_container,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _get_compose_path() -> str:
     return get_compose_path()
+
+
+class ExternalContainerMutationError(DeploymentContractError):
+    """형제 프로젝트 컨테이너에 Manager의 compose 변경을 시도했다.
+
+    `compose_service`는 **그 프로젝트 안에서만** 유일하다. Manager의 compose에서 같은
+    이름을 찾으면 전혀 다른 서비스가 나온다 — `prometheus`가 실제로 그렇다. 그래서
+    이름이 우연히 맞을 때가 **가장 위험하다**(조용히 남의 것을 고치고 성공을 보고한다).
+    """
 
 
 def _locked_env_present(service_name: str, svc_config: Mapping[str, Any]) -> list[str]:
@@ -56,6 +69,25 @@ def _locked_env_present(service_name: str, svc_config: Mapping[str, Any]) -> lis
     if not isinstance(environment, Mapping):
         return []
     return [name for name in contract_locked_env_names(service_name) if name in environment]
+
+
+def _managed_service_config(
+    container_id: str, spec: Mapping[str, Any], services: Mapping[str, Any]
+) -> tuple[str, Mapping[str, Any]]:
+    """이 컨테이너의 compose service 설정. 외부 프로젝트면 **빈 것**이다.
+
+    `spec["compose_service"]`를 Manager의 compose에 그대로 조회하면 이름이 겹치는
+    순간 남의 설정이 나온다(weather의 `prometheus` ↔ Manager의 `prometheus`). 외부
+    컨테이너의 정본은 그 프로젝트의 compose이고 Manager는 그 파일을 읽을 권한을
+    주장하지 않는다 — 그래서 **모른다고 말한다**. 화면은 `external_project`를 보고
+    편집기를 잠근다.
+    """
+
+    svc_name = str(spec["compose_service"])
+    if external_project_for_container(container_id) is not None:
+        return svc_name, {}
+    resolved = services.get(svc_name, {})
+    return svc_name, resolved if isinstance(resolved, Mapping) else {}
 
 
 def _public_url(spec: dict[str, Any]) -> str | None:
@@ -549,8 +581,7 @@ class DockerService:
             client = self._get_client()
         except RuntimeError:
             for key, spec in MANAGED_CONTAINERS.items():
-                svc_name = spec["compose_service"]
-                svc_config = services.get(svc_name, {})
+                svc_name, svc_config = _managed_service_config(key, spec, services)
                 status_list.append(
                     {
                         "id": key,
@@ -584,8 +615,7 @@ class DockerService:
 
         for key, spec in MANAGED_CONTAINERS.items():
             cname = spec["name"]
-            svc_name = spec["compose_service"]
-            svc_config = services.get(svc_name, {})
+            svc_name, svc_config = _managed_service_config(key, spec, services)
 
             try:
                 container = client.containers.get(cname)
@@ -782,7 +812,10 @@ class DockerService:
                 except (
                     ComposePostMutationContractError,
                     ComposeCandidateContractError,
+                    ExternalContainerMutationError,
                 ):
+                    # guard를 `create_err`로 삼키면 "생성 과정에서 실패"라는 엉뚱한
+                    # 문구가 되고, 진짜 이유(남의 프로젝트다)가 사라진다.
                     raise
                 except Exception as create_err:
                     return {
@@ -980,6 +1013,16 @@ class DockerService:
         """검증과 host lock을 이미 확보한 config transaction 구현."""
 
         spec = MANAGED_CONTAINERS[container_id]
+        external = external_project_for_container(container_id)
+        if external is not None:
+            # 변경 세 경로(update / reset / NotFound 재생성)가 전부 여기로 모인다.
+            # guard가 한 곳인 것이 요점이다 — 호출부로 흩으면 한 벌을 지워도 아무
+            # 검사가 빨개지지 않는다.
+            raise ExternalContainerMutationError(
+                f"container '{container_id}' belongs to external compose project "
+                f"'{external.project}'; the Manager does not edit another "
+                "project's compose file"
+            )
         cname = spec["name"]
         svc_name = spec["compose_service"]
 

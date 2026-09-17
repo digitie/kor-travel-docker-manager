@@ -493,6 +493,8 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
         if name not in targets:
             raise TargetsConfigError(f"{label} dependency_order: unknown target '{name}'")
 
+    _validate_external_wiring(config, label=label)
+
     # `ktdctl targets validate`가 bind 절도 함께 본다 — 배포 도중이 아니라 그 전에
     # 형태 오류를 잡는 것이 이 명령의 존재 이유다.
     _validate_compose_binds(config, label=label)
@@ -634,6 +636,134 @@ def services_for_target(target: str | None) -> list[str]:
     return _dedupe(services)
 
 
+def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
+    """선언들 **사이의** 무결성. 개별 절의 형태는 `_validate_external_project`가 본다.
+
+    이 검사들은 한때 `test_registry_targets_config.py`의 assert였다. 그 자리에서는
+    저장소의 `config/docker-targets.yml`만 봤으므로 설치본이나 env로 지정된 설정에는
+    아무 효력이 없었고 `ktdctl targets validate`도 잡지 못했다(적대 리뷰 2026-09-18
+    H-1). 검증기 안이 원래 자리다.
+    """
+
+    containers = config["containers"]
+    targets = config["targets"]
+
+    # H-3: project 이름 하나에 좌표 하나. `service_groups_for_target`의 묶음 키는
+    # 좌표 전체지만 `external_project_for_container`는 이름으로 첫 매치를 고른다 —
+    # 둘이 갈리면 컨테이너가 어느 좌표에 속하는지가 **파일 순서**로 정해진다.
+    coordinates: dict[str, tuple[str, str, tuple[str, ...]]] = {}
+    owning_target: dict[str, str] = {}
+    for target_id, spec in targets.items():
+        external = spec.get("external_project")
+        if not external:
+            continue
+        coordinate = (
+            str(external["project"]),
+            str(external["working_dir"]),
+            tuple(str(name) for name in external["config_files"]),
+        )
+        project = coordinate[0]
+        previous = coordinates.get(project)
+        if previous is not None and previous != coordinate:
+            raise TargetsConfigError(
+                f"{label} targets.{target_id}.external_project: project "
+                f"'{project}' is already declared by target "
+                f"'{owning_target[project]}' with different coordinates "
+                "(working_dir/config_files must match for the same project)"
+            )
+        coordinates[project] = coordinate
+        owning_target.setdefault(project, target_id)
+
+    # H-1: 컨테이너 절도 같은 등급으로 본다.
+    for container_id, spec in containers.items():
+        if "external_project" not in spec:
+            continue
+        where = f"{label} containers.{container_id}.external_project"
+        project = spec["external_project"]
+        if not isinstance(project, str) or not project.strip() or project != project.strip():
+            raise TargetsConfigError(
+                f"{where}: must be a non-empty string without surrounding whitespace"
+            )
+        if project not in coordinates:
+            # 오타는 `external_project_for_container`에서 조용히 `None`이 되고,
+            # 그러면 그 컨테이너는 Manager 소속으로 취급된다 — 남의 컨테이너
+            # 자리에 Manager 설정이 뜨고, 편집이 Manager compose로 간다.
+            raise TargetsConfigError(
+                f"{where}: no target declares project '{project}' "
+                f"(declared projects: {sorted(coordinates)})"
+            )
+
+    # H-1(계속) + H-2: target이 자기 것이라 적은 컨테이너와 소속이 맞는가, 그리고
+    # 그 컨테이너의 `compose_service`가 target의 `services`에 실재하는가.
+    for target_id, spec in targets.items():
+        external = spec.get("external_project")
+        target_project = str(external["project"]) if external else None
+        declared_services = set(spec.get("services") or [])
+        for container_id in spec.get("containers") or []:
+            container_spec = containers.get(container_id)
+            if not isinstance(container_spec, dict):
+                continue  # 참조 무결성은 호출자가 이미 본다
+            container_project = container_spec.get("external_project") or None
+            if container_project != target_project:
+                raise TargetsConfigError(
+                    f"{label} targets.{target_id}.containers: container "
+                    f"'{container_id}' belongs to project "
+                    f"{container_project!r} but the target declares "
+                    f"{target_project!r}"
+                )
+            if target_project is None:
+                continue
+            # H-2: 외부 target의 `services`는 저장소 밖 compose를 열지 않고는 실재를
+            # 확인할 수 없다. 대신 **선언끼리** 묶는다. 반대 방향은 강제하지 않는다 —
+            # one-shot(migrate 등)은 `services`에만 있고 `containers:`에는 없는 것이
+            # 이 저장소의 규칙이다.
+            compose_service_name = str(container_spec["compose_service"])
+            if compose_service_name not in declared_services:
+                raise TargetsConfigError(
+                    f"{label} targets.{target_id}.services: container "
+                    f"'{container_id}' declares compose_service "
+                    f"'{compose_service_name}' which the target does not list"
+                )
+
+    # M-4: Manager target이 외부 target에 의존하면 **Manager target의** 배포가
+    # 막힌다(`ensure`가 의존 폐포를 보고 거부하고, 메시지는 Manager target을
+    # 탓한다). 선언 시점에 막는 편이 훨씬 싸다.
+    external_targets = {
+        target_id for target_id, spec in targets.items() if spec.get("external_project")
+    }
+    for target_id, spec in targets.items():
+        if target_id in external_targets:
+            continue
+        for field in ("depends_on", "include"):
+            for referenced in spec.get(field) or []:
+                if referenced in external_targets:
+                    raise TargetsConfigError(
+                        f"{label} targets.{target_id}.{field}: '{referenced}' is an "
+                        "external compose project; a Manager target that reaches it "
+                        "can no longer be deployed by `ensure`"
+                    )
+
+    # `all`이 무엇을 담는지 못박는다. 새 Manager target을 `dependency_order`에만
+    # 넣고 `all.include`에서 빠뜨리면 `ensure all`이 조용히 그것을 건너뛴다 —
+    # 지금 `dependency_order` 12개 대 `all.include` 9개의 차이가 정확히 외부 셋인
+    # 것이 **우연이 아니라 규칙**임을 여기서 말한다.
+    all_spec = targets.get("all")
+    if isinstance(all_spec, dict):
+        # 외부 target이 `all`에 들어가는 쪽은 위의 M-4 검사가 이미 막는다(`all`은
+        # Manager target이므로 그 `include`가 외부를 가리키면 거기서 걸린다).
+        # 여기서는 **빠뜨림**만 본다 — 같은 규칙을 두 번 쓰면 한쪽을 지워도 아무
+        # 검사가 빨개지지 않는다.
+        included = set(all_spec.get("include") or [])
+        for name in config["dependency_order"]:
+            if name in external_targets or name == "all":
+                continue
+            if name not in included:
+                raise TargetsConfigError(
+                    f"{label} targets.all.include: missing Manager target "
+                    f"'{name}' declared in dependency_order"
+                )
+
+
 def _validate_external_project(spec: dict[str, Any], *, target_id: str, label: str) -> None:
     """`external_project` 절의 형태를 검증한다 — 없으면 아무것도 하지 않는다.
 
@@ -670,6 +800,7 @@ def _validate_external_project(spec: dict[str, Any], *, target_id: str, label: s
     config_files = external["config_files"]
     if not isinstance(config_files, list) or not config_files:
         raise TargetsConfigError(f"{where}.config_files: must be a non-empty list")
+    seen_config_files: set[str] = set()
     for index, name in enumerate(config_files):
         if not isinstance(name, str) or not name.strip():
             raise TargetsConfigError(
@@ -681,11 +812,20 @@ def _validate_external_project(spec: dict[str, Any], *, target_id: str, label: s
             raise TargetsConfigError(
                 f"{where}.config_files[{index}]: must be relative to working_dir"
             )
-        if name != posixpath.normpath(name) or name.startswith(".."):
+        if name != posixpath.normpath(name) or ".." in name.split("/"):
+            # 경로 **구성요소**로 본다. `startswith("..")`는 `..hidden/compose.yml`
+            # 처럼 탈출이 아닌 이름을 거부하는 오탐이었다.
             raise TargetsConfigError(
                 f"{where}.config_files[{index}]: must be normalized and stay inside "
                 f"working_dir (got {name!r})"
             )
+        if name in seen_config_files:
+            # compose는 `-f`를 순서대로 병합한다. 같은 파일을 두 번 적으면 뒤엣것이
+            # 조용히 이겨서, 선언을 읽는 사람이 예상하지 못한 병합이 된다.
+            raise TargetsConfigError(
+                f"{where}.config_files: duplicate entry {name!r}"
+            )
+        seen_config_files.add(name)
 
     if spec.get("init_steps"):
         # init_steps는 Manager compose의 `exec`로 돈다. 외부 프로젝트에 그대로

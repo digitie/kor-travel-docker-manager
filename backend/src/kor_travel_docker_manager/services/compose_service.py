@@ -3512,6 +3512,13 @@ def _application_300_owner_only_receipt_status(path: Path) -> str:
     return "unsafe"
 
 
+#: 형제 프로젝트 호출에 물려줄 최소 환경. Compose에서 셸 환경은 `.env`보다 우선하므로
+#: Manager의 변수를 그대로 상속하면 남의 프로젝트 설정을 조용히 덮어쓴다.
+_EXTERNAL_PROJECT_PASSTHROUGH_ENV: Final = frozenset(
+    {"PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "XDG_RUNTIME_DIR"}
+)
+
+
 class ComposeService:
     def capture_transaction_unlocked(
         self,
@@ -3772,8 +3779,22 @@ class ComposeService:
         expected_environment_snapshot: ComposeEnvironmentSnapshot | None = None,
         expected_external_input_snapshot: ComposeExternalInputSnapshot | None = None,
         transaction: ComposeTransactionSnapshot | None = None,
+        external: ExternalProject | None = None,
         _frozen_recovery_capability: object | None = None,
     ) -> dict[str, Any]:
+        if external is not None and (
+            mutation_capability is not None
+            or transaction is not None
+            or expected_environment_snapshot is not None
+            or expected_system_bind_snapshots is not None
+        ):
+            # 형제 프로젝트는 C6c 변경 기계를 통과한 적이 없다. 읽기(ps/logs)만
+            # 허용하고 변경 경로는 여기서 끊는다 — `ensure_target`의 거부와 같은
+            # 이유이고, 이쪽이 더 낮은 층이라 우회가 어렵다.
+            raise DeploymentContractError(
+                "external compose projects are read-only from the Manager; "
+                "mutation paths are reserved for the Manager's own project"
+            )
         if (
             _frozen_recovery_capability is not None
             and _frozen_recovery_capability is not _TRUSTED_FROZEN_RECOVERY_CAPABILITY
@@ -3932,6 +3953,7 @@ class ComposeService:
             environment_snapshot=None,
             external_input_snapshot=None,
             materialized_compose=None,
+            external=external,
         )
 
     def validate_compose_candidate_document(
@@ -4285,10 +4307,26 @@ class ComposeService:
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
+        working_directory = get_project_root()
+        if external is not None:
+            # **`-f`는 `--project-directory`가 아니라 cwd 기준이다.** Manager 루트에서
+            # 돌리면 `-f docker-compose.yml`이 Manager 자신의 compose를 연다(적대 리뷰
+            # 2026-09-18 실측: `airport` 명령이 Manager의 concierge-ui 보간 오류를 냈다).
+            working_directory = external.working_dir
+            # 그리고 Manager의 프로세스 환경을 물려주지 않는다. Compose에서 셸 환경은
+            # `.env`보다 **우선**하므로, 상속하면 형제 프로젝트의 `.env`를 조용히
+            # 덮어쓴다 — `--env-file`을 뺀 것만으로는 그것을 막지 못했다.
+            if process_environment is None:
+                process_environment = {
+                    name: value
+                    for name, value in os.environ.items()
+                    if name in _EXTERNAL_PROJECT_PASSTHROUGH_ENV
+                    or name.startswith("DOCKER_")
+                }
         try:
             completed = subprocess.run(
                 command,
-                cwd=get_project_root(),
+                cwd=working_directory,
                 text=True,
                 capture_output=capture_output,
                 check=False,
@@ -8191,8 +8229,16 @@ class ComposeService:
             group_result["project"] = group.project_label
             group_result["services"] = list(group.services)
             group_results.append(group_result)
+        # `returncode`가 없으면 `cli._emit_process_result`가 `int(result.get(
+        # "returncode", 1))`로 **항상 1**을 낸다 — 전부 running이어도 exit 1이다.
+        failed = [item for item in group_results if not item.get("success")]
         return {
-            "success": all(bool(item.get("success")) for item in group_results),
+            "success": not failed,
+            "returncode": 0 if not failed else 1,
+            "command": None,
+            "stderr": "\n".join(
+                str(item.get("stderr") or "") for item in group_results
+            ).strip(),
             "target": target,
             "target_sequence": target_sequence_for_target(target),
             "services": services,
