@@ -1111,13 +1111,36 @@ def _validate_map_database_dsn_identities(environment: Mapping[str, str]) -> Non
             raise ComposeCandidateContractError("Map database DSN identity is invalid")
 
 
-def _validate_pinvi_database_url_identities(
-    services: Mapping[str, Any],
+@dataclass(frozen=True)
+class _PinviDatabaseIdentity:
+    """전역 env 불변식이 통과한 뒤 per-service 검사가 쓰는 파생값."""
+
+    expected_port: int
+    expected_database: str
+    role_values: Mapping[str, str]
+
+
+def _validate_pinvi_database_url_environment(
     environment: Mapping[str, str],
-    *,
-    resolved: bool,
-) -> None:
-    """PinVi runtime/migrator DSN과 dedicated DB 역할 분리를 고정한다."""
+) -> _PinviDatabaseIdentity:
+    """(전역) PinVi DB의 **env 불변식** — 어떤 서비스의 존재와도 무관하다.
+
+    넷을 본다:
+
+    - `PINVI_DB_PORT == 12800` 고정
+    - role 이름 5자(root·app·schema owner·migration owner·migrator)의 **상호 상이성**
+    - 그 5자의 정규식 `[a-z_][a-z0-9_]*`
+    - root/app/migrator **password 3자 상호 비동일**
+
+    **이 함수에 family 조건을 달지 마라.** 종전에는 이 블록이 per-service 검사와 한
+    함수에 있어서, S4가 그 호출을 family scope로 게이팅하면 여기까지 함께 꺼졌다 —
+    S3-a가 loopback 결박에 대해 고친 것과 같은 모양이다. Map 쪽 쌍둥이
+    (`_validate_map_database_dsn_identities`)는 이미 `environment`만 받는다.
+
+    참고로 같은 술어가 `pinvi_database_role_credentials._validate_credentials`에도
+    있다(저장소 유일이 아니다). 다만 그 자리는 `rebuild_pinned_runtime` 경로에만
+    있어서, managed compose mutation 경로에서는 이 절이 유일한 그물이다.
+    """
 
     try:
         expected_port = int(environment.get("PINVI_DB_PORT", str(_PINVI_DEDICATED_POSTGRES_PORT)))
@@ -1161,6 +1184,29 @@ def _validate_pinvi_database_url_identities(
     ):
         raise ComposeCandidateContractError("PinVi database URL identity is invalid")
 
+    return _PinviDatabaseIdentity(
+        expected_port=expected_port,
+        expected_database=cast(str, expected_database),
+        role_values=cast("Mapping[str, str]", role_values),
+    )
+
+
+def _validate_pinvi_database_url_service_identities(
+    services: Mapping[str, Any],
+    identity: _PinviDatabaseIdentity,
+    *,
+    resolved: bool,
+) -> None:
+    """(per-service) 세 서비스의 DSN이 role 분리를 지키는가.
+
+    `services`를 보는 절반이고, 이미 존재-조건부다(`.get()` + `continue`) — 그래서
+    S4가 게이팅할 수 있는 쪽이다. 전역 불변식은
+    `_validate_pinvi_database_url_environment`가 따로 본다.
+    """
+
+    expected_port = identity.expected_port
+    expected_database = identity.expected_database
+    role_values = identity.role_values
     expected_credentials = {
         _PINVI_API_SERVICE: (
             cast(str, role_values[_PINVI_APP_DB_USER_ENV]),
@@ -3734,7 +3780,16 @@ def validate_resolved_compose_candidate_protected_values(
     _validate_pinvi_postgres_password_declaration(resolved)
     _validate_pinvi_postgres_password_owner_wiring(resolved)
     _assert_pinvi_postgres_password_sole_consumer(resolved)
-    _validate_pinvi_database_url_identities(services, environment, resolved=True)
+    # GM-17 B S3-c — 종전 한 줄을 둘로 편다. **자리는 그대로다**(감사 실측:
+    # 제자리 분할은 396형상에서 메시지 변경 0칸, Map DSN 자리로 올리면 46칸이
+    # 바뀌고 그중 일부는 S1의 "부재를 부재라고 말하기"를 되돌린다).
+    #
+    # 첫 줄은 **전역 env 불변식**이라 어떤 family 조건도 달지 않는다. 둘째 줄이
+    # S4가 게이팅할 수 있는 per-service 절반이다.
+    _pinvi_database_identity = _validate_pinvi_database_url_environment(environment)
+    _validate_pinvi_database_url_service_identities(
+        services, _pinvi_database_identity, resolved=True
+    )
     # GM-17 B S3 — 종전 `_validate_pinvi_db_init_identity` 한 줄을 셋으로 편다.
     # 순서는 그대로다(그 함수 안의 실행 순서와 동일). 나뉜 이유는 가운데 조각이
     # **db-init이 아니라 pinvi-postgres**의 것이기 때문이다 — 거기에 저장소에서
@@ -4190,7 +4245,16 @@ def validate_compose_candidate_protected_values(
     _validate_pinvi_postgres_password_declaration(candidate)
     _validate_pinvi_postgres_password_owner_wiring(candidate)
     _assert_pinvi_postgres_password_sole_consumer(candidate)
-    _validate_pinvi_database_url_identities(services, environment, resolved=False)
+    # GM-17 B S3-c — 종전 한 줄을 둘로 편다. **자리는 그대로다**(감사 실측:
+    # 제자리 분할은 396형상에서 메시지 변경 0칸, Map DSN 자리로 올리면 46칸이
+    # 바뀌고 그중 일부는 S1의 "부재를 부재라고 말하기"를 되돌린다).
+    #
+    # 첫 줄은 **전역 env 불변식**이라 어떤 family 조건도 달지 않는다. 둘째 줄이
+    # S4가 게이팅할 수 있는 per-service 절반이다.
+    _pinvi_database_identity = _validate_pinvi_database_url_environment(environment)
+    _validate_pinvi_database_url_service_identities(
+        services, _pinvi_database_identity, resolved=False
+    )
     # GM-17 B S3 — 종전 `_validate_pinvi_db_init_identity` 한 줄을 셋으로 편다.
     # 순서는 그대로다(그 함수 안의 실행 순서와 동일). 나뉜 이유는 가운데 조각이
     # **db-init이 아니라 pinvi-postgres**의 것이기 때문이다 — 거기에 저장소에서
