@@ -29,9 +29,27 @@
 | `map` | `12700-12799` | PostgreSQL `12700`, API `12701`, Dagster `12702`, Web UI `12705` | `kor-travel-map` |
 | `pinvi` | `12800-12899` | PostgreSQL `12800`, API `12801`, Dagster `12802`, Web UI `12805` | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
+| `airport-db` | `14000-14000` | PostgreSQL `14000` | `kor-travel-airport` (외부 프로젝트) |
+| `airport` | `14001-14099` | Backend `14001`, Frontend `14002` | `kor-travel-airport` (외부 프로젝트) |
+| `weather` | `14100-14199` | PostgreSQL `14100`, API `14101`, Dagster 게이트웨이 `14102`, Prometheus `14104`, Web `14105` | `kor-travel-weather` (외부 프로젝트) |
 
-`14100-14199`는 Manager 미등록 sibling `kor-travel-weather`가 자기 compose로 점유 중이다
-(`parking-radar`와 같은 취급) — 다른 target에 배정하지 않는다.
+### 외부 프로젝트 대역 (`14000-14199`)
+
+위 세 target은 **compose 정본이 이 저장소 밖**에 있다(`external_project` 선언).
+2026-09-18 등록 전까지 `14100-14199`는 "Manager 미등록 sibling이 점유 중"으로 적혀
+있었는데, 지금은 등록됐으므로 그 문장을 지웠다. 등록의 뜻은 좁다:
+
+- Manager가 **상태를 보고**(`status`) **컨테이너 수명주기를 다룬다**
+  (`start`/`stop`/`restart` — `control_container`가 Docker SDK로 컨테이너를 직접
+  잡으므로 compose 프로젝트와 무관하게 동작한다).
+- **배포는 각 저장소가 계속 소유한다.** `ensure`는 외부 target을 거부한다 — Manager의
+  C6c 계약 기계(보호값 스캔·볼륨 그래프·단일파일 경계·핀셋)는 Manager 자신의 후보를
+  전제하고, 형제 프로젝트의 compose는 그 계약을 받은 적이 없다.
+
+`airport`이 두 target인 것은 실제로 **compose 프로젝트가 둘**이기 때문이다
+(`docker-compose.yml`과 `docker-compose.db.yml`이 각각 `kor-travel-airport`와
+`kor-travel-airport-db` 프로젝트로 돈다). `airport`이 `airport-db`에 `depends_on`으로
+매달려 있어 `status airport`는 두 프로젝트를 순서대로 조회한다.
 
 Concierge scheduler와 Map Dagster daemon은 외부 포트를 열지 않는 내부 실행 서비스다.
 Geo Dagster webserver는 registry의 일반 runtime 표에는 없는 보조 서비스지만 Compose에서

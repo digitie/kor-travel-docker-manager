@@ -440,12 +440,25 @@ def test_real_config_only_names_services_that_exist_in_docker_compose() -> None:
     finally:
         registry_module.load_targets_config.cache_clear()
 
+    # 외부 프로젝트(형제 저장소)의 서비스는 이 검사의 전제 밖이다 — 정본 compose가
+    # 다른 저장소에 있어 이 저장소의 커밋으로 묶을 수 없다. 면제하되, 면제가 구멍이
+    # 되지 않도록 아래에서 **더 강한** 검사를 함께 한다.
+    declared_projects = {
+        spec["external_project"]["project"]
+        for spec in config["targets"].values()
+        if spec.get("external_project")
+    }
+
     dangling: list[str] = []
     for container_id, spec in config["containers"].items():
+        if spec.get("external_project"):
+            continue
         service = spec["compose_service"]
         if service not in compose_services:
             dangling.append(f"containers.{container_id}.compose_service={service!r}")
     for target_id, spec in config["targets"].items():
+        if spec.get("external_project"):
+            continue
         for field in ("services", "runtime_services"):
             for service in spec.get(field) or []:
                 if service not in compose_services:
@@ -453,6 +466,39 @@ def test_real_config_only_names_services_that_exist_in_docker_compose() -> None:
 
     assert not dangling, (
         f"docker-targets.yml이 compose에 없는 서비스를 가리킨다: {dangling!r}"
+    )
+
+    # (1) 컨테이너가 가리키는 프로젝트는 실제로 선언된 것이어야 한다.
+    #     이것이 없으면 `external_project: kor-travel-weater` 같은 오타가 면제만 받고
+    #     조용히 통과한다.
+    unknown_projects = sorted(
+        f"containers.{container_id}.external_project={spec['external_project']!r}"
+        for container_id, spec in config["containers"].items()
+        if spec.get("external_project")
+        and spec["external_project"] not in declared_projects
+    )
+    assert not unknown_projects, (
+        f"어떤 target도 선언하지 않은 프로젝트를 가리킨다: {unknown_projects!r} "
+        f"(선언된 것: {sorted(declared_projects)!r})"
+    )
+
+    # (2)(3) target과 컨테이너의 소속이 어긋나면 안 된다.
+    mismatched: list[str] = []
+    for target_id, spec in config["targets"].items():
+        expected = (
+            spec["external_project"]["project"] if spec.get("external_project") else None
+        )
+        for container_id in spec.get("containers") or []:
+            actual = config["containers"][container_id].get("external_project")
+            if actual != expected:
+                mismatched.append(
+                    f"targets.{target_id} (project={expected!r}) -> "
+                    f"containers.{container_id} (project={actual!r})"
+                )
+    assert not mismatched, (
+        "target과 컨테이너의 프로젝트 소속이 어긋난다 — Manager target의 컨테이너에는"
+        f" external_project가 없어야 하고, 외부 target의 컨테이너는 전부 같은"
+        f" 프로젝트여야 한다: {mismatched!r}"
     )
 
 

@@ -189,11 +189,16 @@ from kor_travel_docker_manager.services.pinvi_database_role_credentials import (
     trusted_pinned_runtime_project_root,
 )
 from kor_travel_docker_manager.services.registry import (
+    ExternalProject,
+    container_id_to_compose_service,
+    external_project_for_container,
     get_project_root,
     init_steps_for_target,
     is_known_target,
     runtime_services_for_target,
+    service_groups_for_target,
     services_for_target,
+    target_is_external,
     target_sequence_for_target,
 )
 from kor_travel_docker_manager.services.trusted_install import (
@@ -3598,8 +3603,28 @@ class ComposeService:
         *,
         canonical_single_file: bool = False,
         compose_path: str | None = None,
+        external: ExternalProject | None = None,
     ) -> list[str]:
         command = ["docker", "compose"]
+        if external is not None:
+            # 형제 프로젝트다. Manager의 `--env-file`도 override도 붙이지 않는다 —
+            # 그 프로젝트는 자기 `working_dir`의 `.env`를 compose가 알아서 읽고,
+            # Manager의 env를 주입하면 남의 프로젝트 값을 덮어쓴다.
+            if canonical_single_file:
+                raise DeploymentContractError(
+                    "canonical single-file boundary does not apply to an external project"
+                )
+            command.extend(
+                [
+                    "-p",
+                    external.project,
+                    "--project-directory",
+                    external.working_dir,
+                ]
+            )
+            command.extend(external.compose_file_arguments())
+            command.extend(args)
+            return command
         if canonical_single_file:
             command.extend(
                 [
@@ -4220,6 +4245,7 @@ class ComposeService:
         environment_snapshot: ComposeEnvironmentSnapshot | None,
         external_input_snapshot: ComposeExternalInputSnapshot | None,
         materialized_compose: Mapping[str, Any] | None,
+        external: ExternalProject | None = None,
     ) -> dict[str, Any]:
         command = self.build_command(
             args,
@@ -4229,6 +4255,7 @@ class ComposeService:
                 if environment_snapshot is not None
                 else None
             ),
+            external=external,
         )
         process_environment = None
         if environment_snapshot is not None:
@@ -4653,6 +4680,17 @@ class ComposeService:
         capture_output: bool = True,
     ) -> dict[str, Any]:
         target_sequence = target_sequence_for_target(target)
+        if target_is_external(target):
+            # `ensure`는 Manager의 C6c 계약 기계(보호값 스캔·볼륨 그래프·단일파일
+            # 경계·핀셋)를 통과한 **Manager 자신의** 후보를 전제한다. 형제 프로젝트의
+            # compose는 그 계약을 받은 적이 없고, 정본도 이 저장소가 아니다.
+            # 수명주기는 `control_container`(Docker SDK)로 다루고, 배포는 각 저장소가
+            # 계속 소유한다.
+            raise DeploymentContractError(
+                f"target '{target}' belongs to an external compose project; "
+                "ensure is only for the Manager's own project — use container "
+                "start/stop/restart, or deploy from that project's repository"
+            )
         services = services_for_target(target)
         preflight_environment = _capture_compose_environment_snapshot(
             environment_override=None,
@@ -8132,11 +8170,40 @@ class ComposeService:
 
     def status_target(self, target: str = "all", *, capture_output: bool = True) -> dict[str, Any]:
         services = services_for_target(target)
-        result = self.run(["ps", *services], capture_output=capture_output)
-        result["target"] = target
-        result["target_sequence"] = target_sequence_for_target(target)
-        result["services"] = services
-        return result
+        groups = service_groups_for_target(target)
+        external_groups = [group for group in groups if group.external is not None]
+        if not external_groups:
+            result = self.run(["ps", *services], capture_output=capture_output)
+            result["target"] = target
+            result["target_sequence"] = target_sequence_for_target(target)
+            result["services"] = services
+            return result
+
+        # 여러 프로젝트에 걸친 target은 **묶음마다 한 번씩** 돌아야 한다. 평평한
+        # 목록으로 한 번에 부르면 남의 프로젝트 서비스 이름이 되어 `no such service`다.
+        group_results: list[dict[str, Any]] = []
+        for group in groups:
+            group_result = self.run(
+                ["ps", *group.services],
+                capture_output=capture_output,
+                external=group.external,
+            )
+            group_result["project"] = group.project_label
+            group_result["services"] = list(group.services)
+            group_results.append(group_result)
+        return {
+            "success": all(bool(item.get("success")) for item in group_results),
+            "target": target,
+            "target_sequence": target_sequence_for_target(target),
+            "services": services,
+            "groups": group_results,
+            # 묶음이 여러 개면 단일 stdout이 없다 — 합치면 어느 프로젝트의 줄인지
+            # 알 수 없으므로 묶어서 내보내고, 소비자가 `groups`를 읽게 한다.
+            "stdout": "\n".join(
+                f"# project={item['project']}\n{item.get('stdout', '')}"
+                for item in group_results
+            ),
+        }
 
     def logs(
         self,
@@ -8146,16 +8213,35 @@ class ComposeService:
         tail: int = 100,
         capture_output: bool = True,
     ) -> dict[str, Any]:
+        external: ExternalProject | None = None
         if is_known_target(name):
             services = runtime_services_for_target(name)
+            groups = service_groups_for_target(name, runtime_only=True)
+            external_groups = [group for group in groups if group.external is not None]
+            if external_groups:
+                if len(groups) > 1:
+                    # 여러 프로젝트의 로그를 한 스트림으로 합칠 수 없다(특히 `-f`).
+                    # 어느 프로젝트를 볼지 고르게 한다 — 조용히 하나만 보여주면
+                    # 나머지가 없는 것처럼 읽힌다.
+                    raise DeploymentContractError(
+                        f"target '{name}' spans multiple compose projects "
+                        f"({', '.join(group.project_label for group in groups)}); "
+                        "ask for one project's target instead"
+                    )
+                external = external_groups[0].external
+                services = list(external_groups[0].services)
         else:
             services = [name]
+            owner = external_project_for_container(name)
+            if owner is not None:
+                external = owner
+                services = [container_id_to_compose_service(name)]
 
         args = ["logs", f"--tail={tail}"]
         if follow:
             args.append("-f")
         args.extend(services)
-        result = self.run(args, capture_output=capture_output)
+        result = self.run(args, capture_output=capture_output, external=external)
         result["target"] = name
         if is_known_target(name):
             result["target_sequence"] = target_sequence_for_target(name)
