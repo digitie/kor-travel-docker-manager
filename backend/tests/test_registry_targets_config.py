@@ -44,6 +44,17 @@ def _minimal_valid_config() -> dict[str, Any]:
             },
         },
         "dependency_order": ["geo"],
+        # GM-17 A 이후 `compose_binds`는 필수다 — 절이 없으면 모든 operator bind가
+        # baseline 밖이 되어 배포가 전부 거부되므로, 그 상태를 통과시키지 않는다.
+        "compose_binds": {
+            "geo-db": [
+                {
+                    "container_path": "/var/lib/postgresql/data",
+                    "read_only": False,
+                    "source": "./geo-pgdata",
+                }
+            ]
+        },
     }
 
 
@@ -194,6 +205,11 @@ targets:
     containers: [geo_db]
     services: [geo-db]
 dependency_order: [geo]
+compose_binds:
+  geo-db:
+    - container_path: "/data"
+      read_only: true
+      source: "./x"
 """
 
 _DUPLICATE_KEY_YAML = """
@@ -217,6 +233,11 @@ targets:
     containers: [geo_db]
     services: [geo-db]
 dependency_order: [geo]
+compose_binds:
+  geo-db:
+    - container_path: "/data"
+      read_only: true
+      source: "./x"
 """
 
 _BROKEN_REFERENCE_YAML = """
@@ -234,6 +255,11 @@ targets:
     services: [geo-db]
     depends_on: [typo_target]
 dependency_order: [geo]
+compose_binds:
+  geo-db:
+    - container_path: "/data"
+      read_only: true
+      source: "./x"
 """
 
 

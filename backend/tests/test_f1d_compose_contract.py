@@ -22,8 +22,11 @@ from kor_travel_docker_manager.services import compose_service as compose_servic
 from kor_travel_docker_manager.services.registry import (
     load_compose_bind_allowlist,
 )
+from types import MappingProxyType
+from kor_travel_docker_manager.services import registry as registry_module
 from kor_travel_docker_manager.services.c6c_deployment import (
     _CANDIDATE_ALLOWED_SYSTEM_BINDS,
+    ComposeCandidateContractError,
     C6cBuildProvenance,
     DeploymentContractError,
     _candidate_volume_mounts,
@@ -1001,13 +1004,18 @@ def test_manual_feature_create_credentials_fail_closed(
         _validate_feature_create_credentials(environment, require_nonempty=True)
 
 
-def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validation(
-    tmp_path: Path,
-) -> None:
-    """F1D reset 전에 bootstrap의 실제 profile/production 환경을 정적으로 고정한다."""
+def _bootstrap_candidate(tmp_path: Path) -> tuple[dict[str, object], dict[str, str], Path]:
+    """F1D bootstrap candidate + 그것을 통과시키는 환경 + root .env.
+
+    `test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validation`의
+    설정 블록을 그대로 옮긴 것이다(본문 무변경). 배포 진입점에 결박된 GM-17 A 검사들이
+    같은 환경을 필요로 하는데, 40줄을 복제하면 그 사본이 곧 원본과 갈라진다.
+    """
 
     source = _source_compose()
     assert "x-pinvi-map-ops-validation" not in source
+    root_env = tmp_path / ".env"
+    root_env.write_text("\n", encoding="utf-8")
     candidate = _compose_fragment(
         "kor-travel-map-postgres",
         "kor-travel-map-api",
@@ -1060,6 +1068,25 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         directory.mkdir()
         environment[environment_name] = str(directory)
 
+    return candidate, environment, root_env
+
+
+def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validation(
+    tmp_path: Path,
+) -> None:
+    """F1D reset 전에 bootstrap의 실제 profile/production 환경을 정적으로 고정한다."""
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    source = _source_compose()
+    assert "x-pinvi-map-ops-validation" not in source
+    map_source = Path(environment["KOR_TRAVEL_MAP_REPO_DIR"])
+    pinvi_source = Path(environment["PINVI_REPO_DIR"])
+    credential_preflight = map_source / "scripts" / "database-credential-preflight.sh"
+    role_bootstrap_script = (
+        pinvi_source / "infra" / "postgres" / "bootstrap-pinvi-runtime-role.sh"
+    )
+    map_pgdata = Path(environment["KOR_TRAVEL_MAP_PGDATA"])
+    pinvi_pgdata = Path(environment["PINVI_PGDATA"])
     raw_snapshots = validate_compose_candidate_protected_values(
         candidate,
         compose_path=str(_COMPOSE_PATH),
@@ -2218,3 +2245,126 @@ def test_every_real_compose_bind_is_declared_in_a_candidate_bind_allowlist() -> 
         "docker-compose.yml의 bind가 candidate baseline에 없다 — 이 상태로 배포하면 "
         f"Manager의 모든 compose mutation이 fail-close한다: {undeclared!r}"
     )
+
+
+# ── GM-17 A 적대 리뷰 H-1: 배포 경로가 **설정을 실제로 소비하는가** ──────────
+#
+# 리뷰어가 로더를 코드 안 얼린 dict로 갈아끼운 고장난 구현에서 전체 스위트
+# `1684 passed`를 재현했다 — 커밋이 근거로 든 바로 그 숫자다. 즉 "설정이 정본"이라는
+# 이 이관의 유일한 결과물을 지키는 검사가 **0건**이었다. 손으로 한 변이("항목 하나
+# 지우면 3건 빨개진다")는 다음 사람이 깨뜨릴 때 아무것도 세지 않는다.
+#
+# 아래는 그 변이를 **자동화**한 것이다. `registry.load_compose_bind_allowlist`를
+# 갈아끼우고 **실제 배포 검증 진입점**이 그 변화를 보는지 단언한다. 상수 부활,
+# import 끊김, 로더 우회 어느 쪽이든 빨개진다.
+
+_MAP_PGDATA_BIND_KEY = ("kor-travel-map-postgres", "/var/lib/postgresql/data", False)
+
+
+def _patched_allowlist(
+    monkeypatch: pytest.MonkeyPatch, entries: dict[tuple[str, str, bool], str]
+) -> None:
+    """배포 경로가 보는 allowlist를 갈아끼운다.
+
+    `registry_module`의 속성을 갈아끼우는 것이 핵심이다 — `c6c_deployment`가 이름을
+    직접 당겨왔다면 이 패치가 아무 효과도 없고, 그 사실 자체가 결함이다.
+    """
+
+    monkeypatch.setattr(
+        registry_module, "load_compose_bind_allowlist", lambda: MappingProxyType(entries)
+    )
+
+
+def test_deployment_validation_actually_consumes_the_config_allowlist(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """설정에서 항목이 사라지면 **배포 검증**이 거부해야 한다.
+
+    이 검사가 묻는 것은 "설정 파일에 무엇이 적혔나"가 아니라 **"배포기가 그것을
+    읽나"**다. 앞의 것만 재는 검사는 로더가 통째로 우회돼도 초록이다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+
+    validate_compose_candidate_protected_values(
+        candidate,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+        environment=environment,
+    )
+
+    reduced = dict(load_compose_bind_allowlist())
+    assert reduced.pop(_MAP_PGDATA_BIND_KEY, None), "fixture가 겨냥한 항목이 allowlist에 없다"
+    _patched_allowlist(monkeypatch, reduced)
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="not in the canonical baseline"
+    ):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_deployment_validation_rejects_a_forbidden_host_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """allowlist가 설정이 된 뒤 필요해진 값 정책 (적대 리뷰 H-1).
+
+    `source: "/etc"` 한 줄이면 production 컨테이너가 host `/etc`를 쓰기 가능으로
+    얻는다 — 종전 manager 가드는 manager 파일의 **조상**만 거부하므로 `/etc`는 그냥
+    지나가고, 디렉터리 bind는 protected 값 스캔도 받지 않는다(`S_ISDIR`이면 내용
+    검사가 없다). 즉 아무 신호 없이 통과했다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    service = services["kor-travel-map-postgres"]
+    assert isinstance(service, dict)
+    service["volumes"] = ["/etc:/var/lib/postgresql/data"]
+
+    patched = dict(load_compose_bind_allowlist())
+    patched[_MAP_PGDATA_BIND_KEY] = "/etc"
+    _patched_allowlist(monkeypatch, patched)
+
+    with pytest.raises(ComposeCandidateContractError, match="forbidden host location"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_deployment_validation_rejects_binding_the_allowlist_itself(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """인가하는 파일을 인가되는 것으로 쓸 수 없다 (자기-인가 루프).
+
+    allowlist 한 줄이 allowlist 파일을 RW로 마운트하면, 그 컨테이너가 다음 backend
+    재기동에 임의 bind를 인가할 수 있다. 인가하는 것과 인가되는 것이 같아지면 그것은
+    경계가 아니다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    targets_config = registry_module.get_targets_config_path()
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    service = services["kor-travel-map-postgres"]
+    assert isinstance(service, dict)
+    service["volumes"] = [f"{targets_config}:/var/lib/postgresql/data"]
+
+    patched = dict(load_compose_bind_allowlist())
+    patched[_MAP_PGDATA_BIND_KEY] = targets_config
+    _patched_allowlist(monkeypatch, patched)
+
+    with pytest.raises(ComposeCandidateContractError, match="bind allowlist itself"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )

@@ -1,8 +1,10 @@
 import os
+import posixpath
 import stat
 from collections.abc import Callable, Iterator, Mapping
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final
 
 import yaml
@@ -105,15 +107,63 @@ def get_targets_config_path() -> str:
     return str(pinned)
 
 
+def _assert_trusted_parents(path: Path) -> None:
+    """설치본에서 targets 문서의 **조상 디렉터리**가 root 소유·비쓰기·비심링크인가.
+
+    `O_NOFOLLOW`는 마지막 조각만 막는다. `config/`가 심링크이거나 다른 사용자가 쓸 수
+    있으면, 파일 자체를 아무리 검증해도 통째로 갈아끼울 수 있다 — 검증이 자기완결적이지
+    않고 검증하지 않는 불변식에 전부를 거는 상태가 된다. 이 파일이 "운영자가 고치는
+    설정"이 된 이상 누군가 `config/`의 소유권을 backend 계정으로 옮기는 것이 개연성
+    있는 동작이 됐고, 그 순간 아무 오류 없이 보호가 사라진다.
+    """
+
+    from kor_travel_docker_manager.services.trusted_install import TRUSTED_INSTALL_ROOT
+
+    root = TRUSTED_INSTALL_ROOT.resolve()
+    for parent in path.resolve().parents:
+        try:
+            metadata = parent.lstat()
+        except OSError as exc:
+            raise TargetsConfigError(
+                f"docker target config의 상위 디렉터리를 확인할 수 없다: {parent} ({exc})"
+            ) from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise TargetsConfigError(
+                f"docker target config의 상위가 심링크다: {parent}"
+            )
+        if metadata.st_uid != 0:
+            raise TargetsConfigError(
+                f"docker target config의 상위가 root 소유가 아니다: {parent} "
+                f"(uid {metadata.st_uid})"
+            )
+        if stat.S_IMODE(metadata.st_mode) & 0o022:
+            raise TargetsConfigError(
+                f"docker target config의 상위가 group/other 쓰기 가능이다: {parent} "
+                f"(mode {stat.S_IMODE(metadata.st_mode):04o})"
+            )
+        if parent == root:
+            # 설치 루트까지만 본다. 그 위(`/opt`, `/`)는 이 프로그램이 소유하지 않는
+            # 호스트의 몫이고, 거기까지 요구하면 정당한 호스트 구성을 거부하게 된다.
+            return
+
+
 def _read_targets_bytes(path: str) -> bytes:
     """targets 문서를 **검증된 descriptor**로 읽는다.
 
-    `legacy_override_retirement._read_legacy_import_bytes`와 같은 모양이다:
+    `legacy_override_retirement._read_legacy_import_bytes`에서 **열기 방식만** 가져왔다:
     `O_NOFOLLOW`로 열고 경로가 아니라 **열린 fd를** `fstat`한다. 경로를 두 번
     보면(검사 한 번, 열기 한 번) 그 사이에 바꿔치기할 수 있다.
 
-    trusted 설치본에서만 소유권·모드를 강제한다. 개발 checkout의 파일은 사용자
-    소유가 정상이고, 거기서 root를 요구하면 이 로더를 부르는 모든 명령이 죽는다.
+    **그쪽과 같은 모양은 아니다**(GM-17 A 적대 리뷰 M-1 정정). 그 함수는 `nlink != 1`과
+    `S_IMODE == 0o600`을 **무조건** 강제한다. 여기서는 trusted 설치본에서만 건다 —
+    개발 checkout의 파일은 사용자 소유가 정상이고 거기서 root를 요구하면 이 로더를
+    부르는 모든 명령이 죽기 때문이다. 즉 보호 강도가 실행 형태에 따라 다르다.
+
+    **부모 디렉터리도 함께 본다.** `O_NOFOLLOW`는 경로의 **마지막 조각**에만 걸리므로,
+    파일만 검증하면 `/opt/kor-travel-docker-manager/config`가 통째로 바꿔치기된 경우를
+    놓친다. 저장소의 선례 셋(`runtime_execution_registry._assert_registry_parent`,
+    `trusted_manager_source_revision`, `map_application_300_candidate._validate_parent_metadata`)
+    과 `docs/decisions.md`의 typed path 기준이 전부 부모를 본다.
     """
 
     from kor_travel_docker_manager.services.trusted_install import (
@@ -121,6 +171,8 @@ def _read_targets_bytes(path: str) -> bytes:
     )
 
     trusted = running_from_trusted_install_root()
+    if trusted:
+        _assert_trusted_parents(Path(path))
     flags = os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
@@ -175,9 +227,15 @@ def _read_targets_bytes(path: str) -> bytes:
 
 @lru_cache(maxsize=1)
 def load_targets_config() -> dict[str, Any]:
-    # 캐시는 프로세스당 한 번이다 — 첫 로드 이후 파일이 바뀌어도 다시 검증하지
-    # 않는다. 종전과 같은 성질이고, mutation 경로는 별도의 sealed candidate
-    # 검증을 거치므로 여기서 재검증을 더하지 않는다.
+    # 캐시는 프로세스당 한 번이다 — 첫 로드 이후 파일이 바뀌어도 다시 읽지 않는다.
+    #
+    # **이것이 무해하지 않다**(GM-17 A 적대 리뷰 M-2). 종전에는 이 캐시에 컨테이너
+    # 정체만 있었지만 지금은 bind allowlist가 들어 있고, 상주 root uvicorn backend는
+    # installer가 **재기동하지 않는다**(`deploy/systemd/ktdm-backend.service`). 그래서
+    # 운영자가 위험한 bind를 설정에서 지워도 그 프로세스는 재기동 전까지 옛 목록으로
+    # candidate를 통과시킨다 — 취소가 즉시 반영되지 않는다. 그 창을 닫는 것은
+    # 별도 작업이고(`docs/tasks.md` 후속), 여기서는 최소한 파생 캐시를 없애
+    # "두 캐시가 어긋나 더 낡은 값을 본다"는 층은 제거했다.
     path = get_targets_config_path()
     try:
         text = _read_targets_bytes(path).decode("utf-8")
@@ -233,15 +291,31 @@ def _validate_compose_binds(config: dict[str, Any], *, label: str) -> None:
     그것이 깨진다). 정책 강화는 별도 작업으로 남긴다.
     """
 
+    # **절이 통째로 없는 것을 통과시키지 않는다**(GM-17 A 적대 리뷰 H-2).
+    # 종전에는 `if raw is None: return`이었는데, 그러면 `compose_bind:`(단수) 같은
+    # 오타 하나로 `ktdctl targets validate`는 OK를 찍고 그 뒤 **모든 배포가**
+    # `bind is not in the canonical baseline`으로 죽는다 — 이 함수 자신의 docstring이
+    # 금지한 바로 그 모양이고, 절 전체가 사라지는 가장 큰 경우에만 규칙이 빠져 있었다.
+    if "compose_binds" not in config:
+        raise TargetsConfigError(
+            f"{label}: compose_binds 절이 없다 — 이 절이 없으면 모든 operator bind가 "
+            "baseline 밖이 되어 배포가 전부 거부된다. 절 이름 오타를 의심하라"
+        )
     raw = config.get("compose_binds")
-    if raw is None:
-        return
-    if not isinstance(raw, dict):
-        raise TargetsConfigError(f"{label} compose_binds: must be a mapping")
+    if not isinstance(raw, dict) or not raw:
+        raise TargetsConfigError(
+            f"{label} compose_binds: must be a non-empty mapping"
+        )
     seen: set[tuple[str, str, bool]] = set()
     for service, entries in raw.items():
         if not isinstance(service, str) or not service.strip():
             raise TargetsConfigError(f"{label} compose_binds: service name must be a string")
+        if service != service.strip():
+            # `"rustfs "`는 validate를 통과하고 배포에서 baseline 밖으로 죽는다 —
+            # 그때 나오는 메시지는 bind를 가리키는데 실제 원인은 공백이다.
+            raise TargetsConfigError(
+                f"{label} compose_binds: service name has surrounding whitespace: {service!r}"
+            )
         if not isinstance(entries, list) or not entries:
             raise TargetsConfigError(
                 f"{label} compose_binds.{service}: must be a non-empty list"
@@ -262,6 +336,15 @@ def _validate_compose_binds(config: dict[str, Any], *, label: str) -> None:
                 raise TargetsConfigError(
                     f"{where}.container_path: must be an absolute path"
                 )
+            if container_path != posixpath.normpath(container_path):
+                # `/a/../b`·`/a//b`·후행 슬래시는 서로 다른 allowlist 키가 되는데
+                # 조회는 `mount.target`과 문자열 그대로 비교한다. 방향은 fail-close라
+                # 사고는 아니지만, 경계 파일에 "읽을 때와 인가할 때가 다른 경로"가
+                # 남는다.
+                raise TargetsConfigError(
+                    f"{where}.container_path: must be normalized "
+                    f"({container_path!r} -> {posixpath.normpath(container_path)!r})"
+                )
             read_only = entry["read_only"]
             if not isinstance(read_only, bool):
                 # YAML의 `read_only: "false"`는 참인 문자열이다 — 읽기 전용이어야 할
@@ -278,7 +361,6 @@ def _validate_compose_binds(config: dict[str, Any], *, label: str) -> None:
             seen.add(key)
 
 
-@lru_cache(maxsize=1)
 def load_compose_bind_allowlist() -> ComposeBindAllowlist:
     """production compose candidate가 허용하는 host bind의 정본.
 
@@ -297,7 +379,9 @@ def load_compose_bind_allowlist() -> ComposeBindAllowlist:
             allowlist[(service, entry["container_path"], entry["read_only"])] = entry[
                 "source"
             ]
-    return allowlist
+    # 캐시하지 않지만 호출자끼리 같은 객체를 공유하는 실수를 애초에 막는다 —
+    # 보안 경계를 한 줄로 오염시킬 수 있는 가변 dict를 돌려줄 이유가 없다.
+    return MappingProxyType(allowlist)
 
 
 def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
