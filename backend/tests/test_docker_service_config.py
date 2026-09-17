@@ -1771,107 +1771,111 @@ def _prepare_candidate_transaction(
     monkeypatch: pytest.MonkeyPatch,
     compose_config: dict[str, object],
 ) -> tuple[DockerService, Path, Mock]:
-    services = compose_config.get("services")
-    if isinstance(services, dict) and {
-        _MAP_API_SERVICE,
-        _MAP_UI_SERVICE,
-        _PINVI_API_SERVICE,
-    }.issubset(services):
-        monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
-        monkeypatch.setenv("PINVI_ENVIRONMENT", "development")
-        monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_READ_TOKEN", "")
-        monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN", "")
-        monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN", "")
-        monkeypatch.setenv("PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN", "")
-        monkeypatch.setenv("PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN", "")
-        monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED", "false")
-        monkeypatch.setenv("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", _MAP_UI_USERNAME)
-        monkeypatch.setenv("KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH", _MAP_UI_PASSWORD_HASH)
-        monkeypatch.setenv("KOR_TRAVEL_MAP_UI_SESSION_SECRET", _MAP_UI_SESSION_SECRET)
-        monkeypatch.setenv("KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET", _MAP_ADMIN_PROXY_SECRET)
-        monkeypatch.setenv("KOR_TRAVEL_MAP_API_SERVICE_TOKEN", _MAP_SERVICE_TOKEN)
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN",
-            "manual-feature-create-test-token-0000",
-        )
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256",
-            hashlib.sha256(b"manual-feature-create-test-token-0000").hexdigest(),
-        )
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET",
-            _MAP_CURSOR_SIGNING_SECRET,
-        )
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY",
-            "test-map-geo-api-key",
-        )
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_API_IMAGE",
-            f"sha256:{'1' * 64}",
-        )
-        fixed_directories = {
-            "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": (
-                tmp_path / "map-application-fresh-migrate-fence"
-            ),
-            "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": (
-                tmp_path / "map-application-fresh-finalize-fence"
-            ),
-            "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": (
-                tmp_path / "map-application-final-permit"
-            ),
-            "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": (tmp_path / "map-dagster-storage-permit"),
-        }
-        for name, directory in fixed_directories.items():
-            directory.mkdir(mode=0o755)
-            monkeypatch.setenv(name, str(directory))
-        monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_DB", "kor_travel_map")
-        monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB", "kor_travel_map_dagster")
-        monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_USER", "test_map_admin")
-        monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_PASSWORD", "test-map-postgres-password")
-        monkeypatch.setenv("PINVI_POSTGRES_PASSWORD", "pinvi-contract-password")
-        monkeypatch.setenv("PINVI_APP_DB_USER", "pinvi_runtime")
-        monkeypatch.setenv("PINVI_APP_DB_PASSWORD", "pinvi-runtime-password")
-        monkeypatch.setenv("PINVI_APP_SCHEMA_OWNER", "pinvi_application_owner")
-        monkeypatch.setenv("PINVI_MIGRATION_OWNER", "pinvi_migration_owner")
-        monkeypatch.setenv("PINVI_MIGRATOR_DB_USER", "pinvi_migrator")
-        monkeypatch.setenv("PINVI_MIGRATOR_DB_PASSWORD", "pinvi-migrator-password")
-        pinvi_role_script = (
-            tmp_path / "pinvi-source" / "infra" / "postgres" / "bootstrap-pinvi-runtime-role.sh"
-        )
-        pinvi_role_script.parent.mkdir(parents=True)
-        pinvi_role_script.write_text(
-            "#!/bin/sh\n"
-            "runtime_name=PINVI_APP_DB_PASSWORD\n"
-            "migrator_name=PINVI_MIGRATOR_DB_PASSWORD\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("PINVI_REPO_DIR", str(pinvi_role_script.parents[2]))
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
-            "postgresql://test_map_admin:test-map-postgres-password@127.0.0.1:12700/kor_travel_map",
-        )
-        monkeypatch.setenv("KOR_TRAVEL_MAP_MIGRATOR_PASSWORD", "test-map-migrator")
-        monkeypatch.setenv("KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD", "test-map-api-runtime")
-        monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD", "test-map-dagster-runtime")
-        monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_METADATA_USER", "test_map_dagster_metadata")
-        monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD", "test-map-dagster-metadata")
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
-            "postgresql+asyncpg://ktm_feature_migrator:test-map-migrator@127.0.0.1:12700/kor_travel_map",
-        )
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
-            "postgresql+asyncpg://ktm_feature_api_runtime:test-map-api-runtime@127.0.0.1:12700/kor_travel_map",
-        )
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
-            "postgresql+asyncpg://ktm_feature_dagster_runtime:test-map-dagster-runtime@127.0.0.1:12700/kor_travel_map",
-        )
-        monkeypatch.setenv(
-            "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
-            "postgresql://test_map_dagster_metadata:test-map-dagster-metadata@127.0.0.1:12700/kor_travel_map_dagster",
-        )
+    # **환경은 compose 구성과 무관하게 세운다.** 종전에는 이 블록 전체가
+    # `{map-api, map-ui, pinvi-api}.issubset(services)` 뒤에 있었고, 그래서 `rustfs`
+    # 하나만 담은 compose를 쓰는 테스트들은 환경 없이 검증에 들어갔다. 그러면
+    # 검증 함수 **맨 앞**의 `_validate_map_production_secret_values`가 payload와
+    # 무관하게 `KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must contain at least 32
+    # characters`로 먼저 던진다 — payload를 비워도 같은 예외다(적대 리뷰 2026-09-17
+    # 실측). 그 테스트들은 자기가 겨냥한 보호 이름 스캔에 도달조차 못 했다.
+    #
+    # 환경은 "이 compose에 무엇이 들어 있는가"가 아니라 **호스트 상태**다. 부분
+    # compose를 쓰는 테스트가 그 이유만으로 무효가 되어서는 안 된다.
+    monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
+    monkeypatch.setenv("PINVI_ENVIRONMENT", "development")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_READ_TOKEN", "")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN", "")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN", "")
+    monkeypatch.setenv("PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN", "")
+    monkeypatch.setenv("PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN", "")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED", "false")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_UI_ADMIN_USERNAME", _MAP_UI_USERNAME)
+    monkeypatch.setenv("KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH", _MAP_UI_PASSWORD_HASH)
+    monkeypatch.setenv("KOR_TRAVEL_MAP_UI_SESSION_SECRET", _MAP_UI_SESSION_SECRET)
+    monkeypatch.setenv("KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET", _MAP_ADMIN_PROXY_SECRET)
+    monkeypatch.setenv("KOR_TRAVEL_MAP_API_SERVICE_TOKEN", _MAP_SERVICE_TOKEN)
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN",
+        "manual-feature-create-test-token-0000",
+    )
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256",
+        hashlib.sha256(b"manual-feature-create-test-token-0000").hexdigest(),
+    )
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET",
+        _MAP_CURSOR_SIGNING_SECRET,
+    )
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY",
+        "test-map-geo-api-key",
+    )
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_API_IMAGE",
+        f"sha256:{'1' * 64}",
+    )
+    fixed_directories = {
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": (
+            tmp_path / "map-application-fresh-migrate-fence"
+        ),
+        "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": (
+            tmp_path / "map-application-fresh-finalize-fence"
+        ),
+        "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": (
+            tmp_path / "map-application-final-permit"
+        ),
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": (tmp_path / "map-dagster-storage-permit"),
+    }
+    for name, directory in fixed_directories.items():
+        directory.mkdir(mode=0o755)
+        monkeypatch.setenv(name, str(directory))
+    monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_DB", "kor_travel_map")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB", "kor_travel_map_dagster")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_USER", "test_map_admin")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_PASSWORD", "test-map-postgres-password")
+    monkeypatch.setenv("PINVI_POSTGRES_PASSWORD", "pinvi-contract-password")
+    monkeypatch.setenv("PINVI_APP_DB_USER", "pinvi_runtime")
+    monkeypatch.setenv("PINVI_APP_DB_PASSWORD", "pinvi-runtime-password")
+    monkeypatch.setenv("PINVI_APP_SCHEMA_OWNER", "pinvi_application_owner")
+    monkeypatch.setenv("PINVI_MIGRATION_OWNER", "pinvi_migration_owner")
+    monkeypatch.setenv("PINVI_MIGRATOR_DB_USER", "pinvi_migrator")
+    monkeypatch.setenv("PINVI_MIGRATOR_DB_PASSWORD", "pinvi-migrator-password")
+    pinvi_role_script = (
+        tmp_path / "pinvi-source" / "infra" / "postgres" / "bootstrap-pinvi-runtime-role.sh"
+    )
+    pinvi_role_script.parent.mkdir(parents=True)
+    pinvi_role_script.write_text(
+        "#!/bin/sh\n"
+        "runtime_name=PINVI_APP_DB_PASSWORD\n"
+        "migrator_name=PINVI_MIGRATOR_DB_PASSWORD\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PINVI_REPO_DIR", str(pinvi_role_script.parents[2]))
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+        "postgresql://test_map_admin:test-map-postgres-password@127.0.0.1:12700/kor_travel_map",
+    )
+    monkeypatch.setenv("KOR_TRAVEL_MAP_MIGRATOR_PASSWORD", "test-map-migrator")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD", "test-map-api-runtime")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD", "test-map-dagster-runtime")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_METADATA_USER", "test_map_dagster_metadata")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD", "test-map-dagster-metadata")
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
+        "postgresql+asyncpg://ktm_feature_migrator:test-map-migrator@127.0.0.1:12700/kor_travel_map",
+    )
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
+        "postgresql+asyncpg://ktm_feature_api_runtime:test-map-api-runtime@127.0.0.1:12700/kor_travel_map",
+    )
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
+        "postgresql+asyncpg://ktm_feature_dagster_runtime:test-map-dagster-runtime@127.0.0.1:12700/kor_travel_map",
+    )
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+        "postgresql://test_map_dagster_metadata:test-map-dagster-metadata@127.0.0.1:12700/kor_travel_map_dagster",
+    )
     compose_path = tmp_path / "docker-compose.yml"
     compose_path.write_text(yaml.safe_dump(compose_config, sort_keys=False), encoding="utf-8")
     monkeypatch.setattr(docker_service_module, "_get_compose_path", lambda: str(compose_path))
@@ -1902,10 +1906,58 @@ def _prepare_candidate_transaction(
     return DockerService(), compose_path, compose_run
 
 
+def _assert_rejection_names_both_families(
+    rejection: pytest.ExceptionInfo[ComposeCandidateContractError],
+) -> None:
+    """부재 보고가 **두 family를 모두** 지목하는지 본다.
+
+    범주(`missing required protected services`)만 확인하면 required 집합에서 이름
+    하나가 사라져도 통과한다 — 나머지가 여전히 빠져 있어 문구가 그대로이기 때문이다.
+    GM-17 B S4는 정확히 그 "이름 하나" 단위로 집합을 좁히므로, family별 **대표 이름**을
+    확인해 어느 방향의 완화든 이 자리에서 빨개지게 한다.
+
+    대표를 둘만 두는 이유: 14개를 전부 적으면 이 파일이 골든 테이블의 사본이 되고,
+    정본은 `test_f1d_compose_contract.py`의 `_SINGLE_ABSENCE_GOLDEN`이다. 여기서는
+    "두 family가 모두 강제된다"만 지킨다.
+    """
+
+    message = str(rejection.value)
+    for family, representative in (
+        ("Map", "kor-travel-map-ui"),
+        ("PinVi", "pinvi-postgres"),
+    ):
+        assert representative in message, (
+            f"{family} family가 부재 보고에서 사라졌다 — GM-17 B S4의 완화라면 "
+            f"이 검사와 PR 본문에 그것을 명시하라.\n  실제 문구: {message}"
+        )
+
+
 def test_non_api_config_update_rejects_candidate_before_write_or_recreate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """후보가 거부되면 **파일 기록도 recreate도 일어나지 않는다**(순서 계약).
+
+    적대 리뷰 2026-09-17이 이 검사가 **항진명제**임을 실측했다. compose에 `rustfs`
+    하나뿐이라 required 서비스 14개가 전부 빠져 있고, 그래서 payload를 **아예 비워도**
+    같은 예외가 났다 — 겨냥한 보호 이름 스캔에는 도달조차 하지 않았다. 게다가 종전에는
+    `_prepare_candidate_transaction`의 환경 블록이 서비스 구성 뒤에 숨어 있어
+    `KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must contain at least 32 characters`라는
+    **완전히 무관한** 문구가 나왔다.
+
+    그 환경 게이트는 없앴다(진단이 정확해진다). 하지만 이 fragment로는 여전히 보호 이름
+    스캔에 닿지 못한다 — 닿게 하려면 완전한 compose와 완전한 환경이 필요하고, 그것은
+    `test_f1d_compose_contract.py`의 `_bootstrap_candidate`가 이미 갖고 있다.
+    **보호 참조 규칙 자체는 거기서 검사한다**(`test_f1d_compose_contract.py`의
+    `protected C6c reference` 검사).
+
+    그래서 이 검사의 진짜 값은 규칙이 아니라 **순서**다: 어떤 이유로든 후보가 거부되면
+    그 전에 파일이 쓰이거나 컨테이너가 다시 만들어지지 않는다. 그것을 재는 자리가
+    여기뿐이므로 남긴다. 다만 이유를 `match=`로 박아 **무엇이든 거부이기만 하면 통과**하는
+    상태는 끝낸다 — GM-17 B S4가 required 집합을 좁히면 이 문구가 바뀌고, 그때 이 검사가
+    빨개져 작성자가 이 자리를 보게 된다. 그것이 의도다.
+    """
+
     compose_config: dict[str, object] = {
         "services": {
             "rustfs": {"image": "rustfs/rustfs:latest", "volumes": []}
@@ -1916,7 +1968,10 @@ def test_non_api_config_update_rejects_candidate_before_write_or_recreate(
     )
     original = compose_path.read_bytes()
 
-    with pytest.raises(ComposeCandidateContractError):
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="missing required protected services",
+       ) as rejection:
         service.update_container_config(
             "rustfs",
             [],
@@ -1925,6 +1980,7 @@ def test_non_api_config_update_rejects_candidate_before_write_or_recreate(
             [],
         )
 
+    _assert_rejection_names_both_families(rejection)
     assert compose_path.read_bytes() == original
     compose_run.assert_not_called()
 
@@ -2258,6 +2314,28 @@ def test_non_api_config_reset_rejects_candidate_before_write_or_recreate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """후보가 거부되면 **파일 기록도 recreate도 일어나지 않는다**(순서 계약).
+
+    적대 리뷰 2026-09-17이 이 검사가 **항진명제**임을 실측했다. compose에 `rustfs`
+    하나뿐이라 required 서비스 14개가 전부 빠져 있고, 그래서 payload를 **아예 비워도**
+    같은 예외가 났다 — 겨냥한 보호 이름 스캔에는 도달조차 하지 않았다. 게다가 종전에는
+    `_prepare_candidate_transaction`의 환경 블록이 서비스 구성 뒤에 숨어 있어
+    `KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must contain at least 32 characters`라는
+    **완전히 무관한** 문구가 나왔다.
+
+    그 환경 게이트는 없앴다(진단이 정확해진다). 하지만 이 fragment로는 여전히 보호 이름
+    스캔에 닿지 못한다 — 닿게 하려면 완전한 compose와 완전한 환경이 필요하고, 그것은
+    `test_f1d_compose_contract.py`의 `_bootstrap_candidate`가 이미 갖고 있다.
+    **보호 참조 규칙 자체는 거기서 검사한다**(`test_f1d_compose_contract.py`의
+    `protected C6c reference` 검사).
+
+    그래서 이 검사의 진짜 값은 규칙이 아니라 **순서**다: 어떤 이유로든 후보가 거부되면
+    그 전에 파일이 쓰이거나 컨테이너가 다시 만들어지지 않는다. 그것을 재는 자리가
+    여기뿐이므로 남긴다. 다만 이유를 `match=`로 박아 **무엇이든 거부이기만 하면 통과**하는
+    상태는 끝낸다 — GM-17 B S4가 required 집합을 좁히면 이 문구가 바뀌고, 그때 이 검사가
+    빨개져 작성자가 이 자리를 보게 된다. 그것이 의도다.
+    """
+
     compose_config: dict[str, object] = {
         "services": {"rustfs": {"image": "rustfs/rustfs:latest"}}
     }
@@ -2274,9 +2352,13 @@ def test_non_api_config_reset_rejects_candidate_before_write_or_recreate(
     }
     original = compose_path.read_bytes()
 
-    with pytest.raises(ComposeCandidateContractError):
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="missing required protected services",
+       ) as rejection:
         service.reset_container_config("rustfs")
 
+    _assert_rejection_names_both_families(rejection)
     assert compose_path.read_bytes() == original
     compose_run.assert_not_called()
 
@@ -2325,6 +2407,28 @@ def test_missing_non_api_container_create_rejects_candidate_before_recreate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """후보가 거부되면 **파일 기록도 recreate도 일어나지 않는다**(순서 계약).
+
+    적대 리뷰 2026-09-17이 이 검사가 **항진명제**임을 실측했다. compose에 `rustfs`
+    하나뿐이라 required 서비스 14개가 전부 빠져 있고, 그래서 payload를 **아예 비워도**
+    같은 예외가 났다 — 겨냥한 보호 이름 스캔에는 도달조차 하지 않았다. 게다가 종전에는
+    `_prepare_candidate_transaction`의 환경 블록이 서비스 구성 뒤에 숨어 있어
+    `KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must contain at least 32 characters`라는
+    **완전히 무관한** 문구가 나왔다.
+
+    그 환경 게이트는 없앴다(진단이 정확해진다). 하지만 이 fragment로는 여전히 보호 이름
+    스캔에 닿지 못한다 — 닿게 하려면 완전한 compose와 완전한 환경이 필요하고, 그것은
+    `test_f1d_compose_contract.py`의 `_bootstrap_candidate`가 이미 갖고 있다.
+    **보호 참조 규칙 자체는 거기서 검사한다**(`test_f1d_compose_contract.py`의
+    `protected C6c reference` 검사).
+
+    그래서 이 검사의 진짜 값은 규칙이 아니라 **순서**다: 어떤 이유로든 후보가 거부되면
+    그 전에 파일이 쓰이거나 컨테이너가 다시 만들어지지 않는다. 그것을 재는 자리가
+    여기뿐이므로 남긴다. 다만 이유를 `match=`로 박아 **무엇이든 거부이기만 하면 통과**하는
+    상태는 끝낸다 — GM-17 B S4가 required 집합을 좁히면 이 문구가 바뀌고, 그때 이 검사가
+    빨개져 작성자가 이 자리를 보게 된다. 그것이 의도다.
+    """
+
     compose_config: dict[str, object] = {
         "services": {
             "rustfs": {
@@ -2341,9 +2445,13 @@ def test_missing_non_api_container_create_rejects_candidate_before_recreate(
     monkeypatch.setattr(service, "_get_client", Mock(return_value=client))
     original = compose_path.read_bytes()
 
-    with pytest.raises(ComposeCandidateContractError):
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="missing required protected services",
+       ) as rejection:
         service.control_container("rustfs", "start")
 
+    _assert_rejection_names_both_families(rejection)
     assert compose_path.read_bytes() == original
     compose_run.assert_not_called()
 
