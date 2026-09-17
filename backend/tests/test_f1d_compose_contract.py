@@ -3398,3 +3398,203 @@ def test_db_init_image_check_is_conditional_but_still_runs_today(
     c6c_deployment_module._validate_pinvi_postgres_identity(
         without["services"], environment, resolved=False
     )
+
+
+# ── GM-17 B · S3-b: PinVi password validator 삼분할 ──────────────────────
+#
+# Map(S2)과 같은 모양이되 인가 집합이 셋이다 — 소유자(`pinvi-postgres`)는 파생,
+# `pinvi-db-init`·`pinvi-db-runtime-role`은 리터럴이다. 리터럴 둘은 소유자와 무관하므로
+# 소유자가 없어도 유효하고, 그 사실이 스캔을 소유자로부터 독립시킨다.
+#
+# S2에서 적대 리뷰가 실제로 뚫은 것만 골라 결박한다: 진입점 결박, 파생의 모양 검증,
+# 짧은 문법 축.
+
+_PINVI_PASSWORD_SECRET = "pinvi-postgres-password"
+
+
+def _pinvi_document_with_foreign_consumer(
+    *, include_owner: bool, shorthand: bool = False
+) -> dict[str, object]:
+    """PinVi password secret을 **인가되지 않은 서비스**가 가져가는 문서."""
+
+    foreign_reference: object = (
+        _PINVI_PASSWORD_SECRET
+        if shorthand
+        else {"source": _PINVI_PASSWORD_SECRET, "target": _PINVI_PASSWORD_SECRET}
+    )
+    services: dict[str, object] = {
+        "some-other-service": {
+            "image": "example:latest",
+            "secrets": [foreign_reference],
+        }
+    }
+    if include_owner:
+        services["pinvi-postgres"] = {
+            "image": "postgis:latest",
+            "environment": {
+                "POSTGRES_PASSWORD_FILE": f"/run/secrets/{_PINVI_PASSWORD_SECRET}"
+            },
+            "secrets": [
+                {"source": _PINVI_PASSWORD_SECRET, "target": _PINVI_PASSWORD_SECRET}
+            ],
+        }
+    return {
+        "secrets": {
+            _PINVI_PASSWORD_SECRET: {"environment": "PINVI_POSTGRES_PASSWORD"}
+        },
+        "services": services,
+    }
+
+
+@pytest.mark.parametrize("shorthand", [False, True], ids=["long", "shorthand"])
+@pytest.mark.parametrize("include_owner", [True, False], ids=["owner", "no-owner"])
+def test_pinvi_sole_consumer_scan_rejects_a_foreign_consumer(
+    include_owner: bool, shorthand: bool
+) -> None:
+    """인가되지 않은 소비자는 **두 문법 모두** 거부된다 — 소유자 유무와 무관하게."""
+
+    document = _pinvi_document_with_foreign_consumer(
+        include_owner=include_owner, shorthand=shorthand
+    )
+    with pytest.raises(
+        ComposeCandidateContractError, match="unauthorized consumer"
+    ):
+        c6c_deployment_module._assert_pinvi_postgres_password_sole_consumer(document)
+
+
+def test_pinvi_entry_point_runs_the_consumer_scan(tmp_path: Path) -> None:
+    """소비자 스캔이 **진입점에서** 실제로 불린다.
+
+    S2에서 배운 것: 쪼갠 함수를 직접 태우는 검사만으로는 호출부의 게이팅을 잡지 못한다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["some-other-service"] = {
+        "image": "example:latest",
+        "secrets": [_PINVI_PASSWORD_SECRET],
+    }
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="unauthorized consumer"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_pinvi_entry_point_checks_the_secret_declaration(tmp_path: Path) -> None:
+    """선언 검사가 **진입점에서** 실제로 불린다."""
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    secrets = shaped["secrets"]
+    assert isinstance(secrets, dict)
+    secrets[_PINVI_PASSWORD_SECRET] = {"environment": "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"}
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="PinVi PostgreSQL password secret is invalid",
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_pinvi_authorized_reference_requires_a_valid_shape() -> None:
+    """인가 파생은 **모양까지** 본다 — PinVi는 Map보다 느슨해서 더 중요하다.
+
+    PinVi 소유자 참조는 짧은 문법과 **두 가지 target**을 허용한다. 그래서 파생을
+    무검증으로 두면 Map보다 위험하다(S2 적대 리뷰 M1을 여기서는 처음부터 적용했다).
+    """
+
+    derive = c6c_deployment_module._authorized_pinvi_postgres_password_reference
+
+    def owner_with(reference: object) -> dict[str, object]:
+        return {"services": {"pinvi-postgres": {"secrets": [reference]}}}
+
+    # 허용되는 세 모양
+    assert derive(owner_with(_PINVI_PASSWORD_SECRET)) == _PINVI_PASSWORD_SECRET
+    for target in (_PINVI_PASSWORD_SECRET, f"/run/secrets/{_PINVI_PASSWORD_SECRET}"):
+        reference = {"source": _PINVI_PASSWORD_SECRET, "target": target}
+        assert derive(owner_with(reference)) == reference
+
+    # 거부되는 모양들
+    for label, bad in {
+        "target 어긋남": {"source": _PINVI_PASSWORD_SECRET, "target": "elsewhere"},
+        "source 어긋남": {"source": "other", "target": _PINVI_PASSWORD_SECRET},
+        "target 없음": {"source": _PINVI_PASSWORD_SECRET},
+        "참조가 리스트": [{"source": _PINVI_PASSWORD_SECRET}],
+        "다른 secret 이름": "some-other-secret",
+    }.items():
+        assert derive(owner_with(bad)) is None, f"{label}: 인가하면 안 된다"
+
+    assert derive({"services": {}}) is None
+    assert derive({"services": {"pinvi-postgres": {"secrets": []}}}) is None
+
+
+def test_pinvi_literal_allowances_survive_without_the_owner() -> None:
+    """리터럴 인가 둘(`pinvi-db-init`·`pinvi-db-runtime-role`)은 소유자와 무관하다.
+
+    이 사실이 PinVi 스캔을 소유자로부터 독립시킨다 — 소유자가 사라져도 one-shot들의
+    정당한 소비는 계속 인가되고, 그 밖은 계속 거부된다.
+    """
+
+    document = _pinvi_document_with_foreign_consumer(include_owner=False)
+    services = document["services"]
+    assert isinstance(services, dict)
+    del services["some-other-service"]
+    services["pinvi-db-init"] = {
+        "image": "postgis:latest",
+        "secrets": [_PINVI_PASSWORD_SECRET],
+    }
+    services["pinvi-db-runtime-role"] = {
+        "image": "postgis:latest",
+        "secrets": [
+            {
+                "source": _PINVI_PASSWORD_SECRET,
+                "target": f"/run/secrets/{_PINVI_PASSWORD_SECRET}",
+            }
+        ],
+    }
+
+    # 소유자가 없어도 정당한 소비는 통과한다.
+    c6c_deployment_module._assert_pinvi_postgres_password_sole_consumer(document)
+
+    # 같은 one-shot이라도 모양이 다르면 거부된다.
+    runtime_role = services["pinvi-db-runtime-role"]
+    assert isinstance(runtime_role, dict)
+    runtime_role["secrets"] = [_PINVI_PASSWORD_SECRET]
+    with pytest.raises(
+        ComposeCandidateContractError, match="unauthorized consumer"
+    ):
+        c6c_deployment_module._assert_pinvi_postgres_password_sole_consumer(document)
+
+
+def test_pinvi_global_invariants_are_not_inside_the_family_validator() -> None:
+    """전역 불변식 둘은 PinVi family validator **밖**에 있어야 한다.
+
+    S2에서 이 자리를 두 번 틀렸다 — 처음에는 validator 안에 두었고, 다음에는 이중화해서
+    어느 쪽을 지워도 아무 검사가 빨개지지 않았다. 자리가 하나여야 결박이 성립한다.
+    """
+
+    import inspect
+
+    wiring_source = inspect.getsource(
+        c6c_deployment_module._validate_pinvi_postgres_password_owner_wiring
+    )
+    for forbidden in (
+        "_assert_pinvi_postgres_password_sole_consumer",
+        "_validate_pinvi_postgres_password_declaration",
+    ):
+        assert forbidden not in wiring_source, (
+            f"전역 불변식 {forbidden}이 family validator 안으로 들어왔다"
+        )

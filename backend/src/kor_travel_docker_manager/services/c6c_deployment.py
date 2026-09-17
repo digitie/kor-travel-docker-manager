@@ -1802,8 +1802,12 @@ def _assert_map_postgres_password_sole_consumer(document: Mapping[str, Any]) -> 
 
 
 
-def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> None:
-    """PinVi PostgreSQL의 초기 password가 secret file로만 전달되는지 고정한다."""
+def _validate_pinvi_postgres_password_declaration(document: Mapping[str, Any]) -> None:
+    """최상위 `secrets` 절이 PinVi password를 올바른 env로 선언하는가 — **전역**.
+
+    소유자 서비스에 관한 물음이 아니라 문서 전역의 성질이다. S2에서 Map 쪽을 고치며
+    배운 것을 여기서는 처음부터 적용한다(적대 리뷰 2026-09-17 M2).
+    """
 
     secrets = document.get("secrets")
     if not isinstance(secrets, Mapping):
@@ -1812,7 +1816,58 @@ def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> Non
     if not isinstance(source, Mapping) or source.get("environment") != ("PINVI_POSTGRES_PASSWORD"):
         raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
 
+
+def _pinvi_postgres_password_reference_is_valid(reference: object) -> bool:
+    """소유자가 쓸 수 있는 참조 모양인가.
+
+    PinVi는 Map보다 느슨하다 — **짧은 문법**과 **두 가지 target**을 모두 허용한다.
+    그래서 파생을 무검증으로 두면 Map보다 위험하다(S2 적대 리뷰 M1의 교훈을 여기서는
+    처음부터 적용한다).
+    """
+
+    return reference == _PINVI_POSTGRES_PASSWORD_SECRET or (
+        isinstance(reference, Mapping)
+        and reference.get("source") == _PINVI_POSTGRES_PASSWORD_SECRET
+        and reference.get("target")
+        in {_PINVI_POSTGRES_PASSWORD_SECRET, _PINVI_POSTGRES_PASSWORD_FILE}
+    )
+
+
+def _authorized_pinvi_postgres_password_reference(
+    document: Mapping[str, Any],
+) -> object | None:
+    """소유자가 인가받은 참조. 소유자가 없거나 모양이 아니면 `None`(= 공집합).
+
+    **모양까지 본다.** (A)의 지역 변수를 빌리면 (A)를 끄는 순간 소비자 스캔이 함께
+    무너진다 — 그것이 S2에서 적대 리뷰가 실측한 실패다.
+    """
+
     services = document.get("services")
+    if not isinstance(services, Mapping):
+        return None
+    postgres = services.get(_PINVI_POSTGRES_SERVICE)
+    if not isinstance(postgres, Mapping):
+        return None
+    references = postgres.get("secrets")
+    if not isinstance(references, list) or len(references) != 1:
+        return None
+    reference = references[0]
+    if not _pinvi_postgres_password_reference_is_valid(reference):
+        return None
+    return reference
+
+
+def _validate_pinvi_postgres_password_owner_wiring(document: Mapping[str, Any]) -> None:
+    """(A) 소유자 배선 — `pinvi-postgres`가 secret file로만 password를 받는가.
+
+    소유자의 존재를 전제하므로 S4가 PinVi family를 scope에서 빼면 건너뛴다.
+    **전역 불변식(선언·유일 소비자)은 이 함수 안에 없다** — 진입점이 따로 부른다.
+    """
+
+    services = document.get("services")
+    if isinstance(services, Mapping) and _PINVI_POSTGRES_SERVICE not in services:
+        return
+
     if not isinstance(services, Mapping):
         raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
     postgres = services.get(_PINVI_POSTGRES_SERVICE)
@@ -1830,15 +1885,32 @@ def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> Non
     references = postgres.get("secrets")
     if not isinstance(references, list) or len(references) != 1:
         raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
-    reference = references[0]
-    reference_is_valid = reference == _PINVI_POSTGRES_PASSWORD_SECRET or (
-        isinstance(reference, Mapping)
-        and reference.get("source") == _PINVI_POSTGRES_PASSWORD_SECRET
-        and reference.get("target")
-        in {_PINVI_POSTGRES_PASSWORD_SECRET, _PINVI_POSTGRES_PASSWORD_FILE}
-    )
-    if not reference_is_valid:
+    if not _pinvi_postgres_password_reference_is_valid(references[0]):
         raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+
+
+def _assert_pinvi_postgres_password_sole_consumer(document: Mapping[str, Any]) -> None:
+    """(B) 유일 소비자 — 인가된 셋 말고는 이 secret을 가져갈 수 없다.
+
+    인가 집합이 셋이다: 소유자(`pinvi-postgres`)는 **파생**, `pinvi-db-init`과
+    `pinvi-db-runtime-role`은 **리터럴**이다. 리터럴 둘은 소유자와 무관하므로 소유자가
+    없어도 그대로 유효하다 — 그 사실이 이 스캔을 소유자로부터 독립시킨다.
+
+    **이 검사는 조건부가 되어서는 안 된다.** Map 쪽에서 적대 리뷰가 실측했듯, 이것이
+    꺼지면 전역 이름 스캔도 external-resource 검사도 alias 마운트를 잡지 못한다.
+
+    소유자 분기의 `reference is None`은 **오늘 판정을 바꾸지 않는다**(변이 실측: 그 절을
+    지워도 전부 초록). 그 분기에 도달하려면 소유자가 존재해야 하고, 모양이 유효하면
+    파생은 `None`이 아니며, 모양이 유효하지 않으면 파생이 `None`이 되는데 그때는
+    `candidate_reference != None`이 항상 참이라 어차피 거부된다. Map 쪽과 같은 구조이고
+    같은 이유로 남긴다 — S4가 소유자-이름 결합을 느슨하게 하면 그때 하중을 받는다.
+    **지금 일하고 있다고 주장하지는 않는다.**
+    """
+
+    services = document.get("services")
+    if not isinstance(services, Mapping):
+        raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+    reference = _authorized_pinvi_postgres_password_reference(document)
 
     for service_name, service in services.items():
         if not isinstance(service, Mapping):
@@ -1859,7 +1931,7 @@ def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> Non
             if source_name != _PINVI_POSTGRES_PASSWORD_SECRET:
                 continue
             if service_name == _PINVI_POSTGRES_SERVICE:
-                if candidate_reference != reference:
+                if reference is None or candidate_reference != reference:
                     raise ComposeCandidateContractError(
                         "PinVi PostgreSQL password secret has an unauthorized consumer"
                     )
@@ -3546,9 +3618,10 @@ def validate_resolved_compose_candidate_protected_values(
     # **여기에 family 조건을 달지 마라.** 소유자가 없다고 남의 소비가 인가되지 않고,
     # 소유자가 없다고 secret 선언이 아무 env나 가리켜도 되는 것이 아니다.
     _validate_map_postgres_password_declaration(resolved)
+    _validate_pinvi_postgres_password_declaration(resolved)
 
     _validate_map_postgres_password_owner_wiring(resolved)
-    _validate_pinvi_postgres_password_secret(resolved)
+    _validate_pinvi_postgres_password_owner_wiring(resolved)
     _validate_pinvi_database_url_identities(services, environment, resolved=True)
     # GM-17 B S3 — 종전 `_validate_pinvi_db_init_identity` 한 줄을 셋으로 편다.
     # 순서는 그대로다(그 함수 안의 실행 순서와 동일). 나뉜 이유는 가운데 조각이
@@ -3584,6 +3657,7 @@ def validate_resolved_compose_candidate_protected_values(
     #
     # **여기에 family 조건을 달지 마라.**
     _assert_map_postgres_password_sole_consumer(resolved)
+    _assert_pinvi_postgres_password_sole_consumer(resolved)
     protected_names = (
         _OPS_ENV_NAMES
         | _MANAGER_ONLY_CREDENTIAL_NAMES
@@ -4003,9 +4077,10 @@ def validate_compose_candidate_protected_values(
     # **여기에 family 조건을 달지 마라.** 소유자가 없다고 남의 소비가 인가되지 않고,
     # 소유자가 없다고 secret 선언이 아무 env나 가리켜도 되는 것이 아니다.
     _validate_map_postgres_password_declaration(candidate)
+    _validate_pinvi_postgres_password_declaration(candidate)
 
     _validate_map_postgres_password_owner_wiring(candidate)
-    _validate_pinvi_postgres_password_secret(candidate)
+    _validate_pinvi_postgres_password_owner_wiring(candidate)
     _validate_pinvi_database_url_identities(services, environment, resolved=False)
     # GM-17 B S3 — 종전 `_validate_pinvi_db_init_identity` 한 줄을 셋으로 편다.
     # 순서는 그대로다(그 함수 안의 실행 순서와 동일). 나뉜 이유는 가운데 조각이
@@ -4041,6 +4116,7 @@ def validate_compose_candidate_protected_values(
     #
     # **여기에 family 조건을 달지 마라.**
     _assert_map_postgres_password_sole_consumer(candidate)
+    _assert_pinvi_postgres_password_sole_consumer(candidate)
     protected_names = (
         _OPS_ENV_NAMES
         | _MANAGER_ONLY_CREDENTIAL_NAMES
