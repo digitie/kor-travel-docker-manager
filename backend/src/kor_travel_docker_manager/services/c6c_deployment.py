@@ -926,7 +926,7 @@ _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE: Final[dict[str, frozenset[str]]] = {
     for service_name in {service for service, _ in _CANDIDATE_CANONICAL_API_ENV_VALUES}
 }
 # DSN과 PostgreSQL identity는 위 dict가 아니라 별도 검증기가 결박한다
-# (`_validate_pinvi_db_init_identity`, `_PINVI_DATABASE_URL_RAW_VALUES`). 계약의
+# (`_validate_pinvi_postgres_identity`, `_PINVI_DATABASE_URL_RAW_VALUES`). 계약의
 # 소유자가 다르므로 유도하지 않고 명시하되, **덮어쓰지 않고 합집합을 취한다** —
 # 대입으로 두면 나중에 같은 service가 candidate 계약에 등장했을 때 유도된 이름들이
 # 조용히 사라진다.
@@ -1197,13 +1197,24 @@ def _validate_pinvi_database_url_identities(
             raise ComposeCandidateContractError("PinVi database URL identity is invalid")
 
 
-def _validate_pinvi_db_init_identity(
+def _validate_pinvi_db_init_presence(
     services: Mapping[str, Any],
     environment: Mapping[str, str],
-    *,
-    resolved: bool,
-) -> None:
-    """PinVi DB init one-shot이 reset 대상과 같은 loopback DB를 가리키는지 고정한다."""
+) -> tuple[Mapping[str, Any], Mapping[str, Any], tuple[str, str, str, str]]:
+    """(1) db-init 서비스가 있고 environment 모양이 맞는가 + 기대값 파생.
+
+    파생한 넷은 (3)이 쓴다. (2)는 자기 사본을 따로 만든다 — 그것이 이 분할의
+    요점이라 **"공통"이 아니다**(적대 리뷰 2026-09-17 L-4 정정). 두 사본이 갈라질
+    위험은 `docs/tasks.md`에 후속으로 적었다.
+
+    `pinvi-db-init` **존재를 전제한다.** S4가 PinVi one-shot을 scope에서 빼면
+    이 검사는 건너뛴다 — 물을 대상이 없기 때문이다.
+
+    **건너뛰어도 되는 이유가 (2)에는 적용되지 않는다.** 종전에는 (2)가 이 함수
+    안에 있어서, db-init 부재로 함수를 끄면 `pinvi-postgres`의 loopback 결박까지
+    함께 꺼졌다. 그래서 떼어냈다.
+    """
+
 
     service = services.get(_PINVI_DB_INIT_SERVICE)
     if not isinstance(service, Mapping):
@@ -1227,12 +1238,69 @@ def _validate_pinvi_db_init_identity(
     if any(not isinstance(value, str) or not value for value in expected_values):
         raise ComposeCandidateContractError("PinVi database init identity is invalid")
 
+    return service, service_environment, (
+        expected_port,
+        expected_user,
+        expected_database,
+        expected_bootstrap_database,
+    )
+
+
+def _validate_pinvi_postgres_identity(
+    services: Mapping[str, Any],
+    environment: Mapping[str, str],
+    *,
+    resolved: bool,
+) -> None:
+    """(2) PinVi PostgreSQL의 신원과 **loopback 결박**을 고정한다.
+
+    `pinvi-postgres`가 **있어야 한다**(부재는 거부한다 — 같은 파일의
+    `_validate_map_postgres_password_owner_wiring`이 쓰는 "존재를 전제한다"는
+    early-return을 뜻하므로 여기서는 그 표현을 피한다). 핵심은 이 검사가
+    **`pinvi-db-init`과 무관하다**는 것이다.
+
+    종전에는 이 블록이 `_validate_pinvi_db_init_identity` 안에 있었다. 그 함수는
+    맨 앞에서 `pinvi-db-init` 부재를 즉시 거부하므로, S4가 그것을 존재-조건부로
+    바꾸면 **PinVi PostgreSQL의 `listen_addresses=127.0.0.1` 강제가 통째로 사라진다.**
+    유일한 것은 그 *문자열*이 아니라 그것을 **강제하는 검증 코드**다 — 실제
+    `docker-compose.yml`에는 그 값이 네 서비스(geo·concierge·pinvi·map postgres)에
+    있지만, **검증이 강제하는 것은 PinVi 하나뿐**이다(Map postgres의 `command`는
+    어느 validator도 보지 않는다 — `docs/tasks.md` 후속 항목). 네트워크 노출
+    통제라 secret 소비자 스캔보다 결과가 나쁘다.
+
+    **여기에 db-init 조건을 달지 마라.** PostgreSQL이 어디에 바인딩하는가는
+    one-shot이 존재하는지와 아무 상관이 없다.
+    """
+
+    expected_port = environment.get("PINVI_DB_PORT", "12800")
+    expected_user = environment.get("PINVI_POSTGRES_USER", "pinvi")
+    expected_bootstrap_database = environment.get(
+        "PINVI_POSTGRES_BOOTSTRAP_DB", "pinvi_bootstrap"
+    )
+    if any(
+        not isinstance(value, str) or not value
+        for value in (expected_port, expected_user, expected_bootstrap_database)
+    ):
+        raise ComposeCandidateContractError("PinVi PostgreSQL identity is invalid")
+
     postgres = services.get(_PINVI_POSTGRES_SERVICE)
     if not isinstance(postgres, Mapping):
         raise ComposeCandidateContractError("PinVi PostgreSQL identity is invalid")
     if postgres.get("image") != _PINVI_POSTGRES_IMAGE:
         raise ComposeCandidateContractError("PinVi PostgreSQL image provenance is invalid")
-    if service.get("image") != _PINVI_POSTGRES_IMAGE:
+    # **db-init의** image를 보는 한 줄이다 — 이 함수가 보는 다른 것들과 주체가 다르다.
+    # 그런데 자리가 두 postgres 검사 **사이**라, (3)으로 옮기면 두 결함이 동시에 있는
+    # 문서의 문구가 바뀐다. 자리는 그대로 두고 존재를 조건으로 건다.
+    #
+    # 오늘은 `_validate_pinvi_db_init_presence`가 부재를 먼저 거부하므로 여기 도달할 때
+    # db-init은 항상 있다 — 조건은 항상 참이고 동작이 바뀌지 않는다. S4가 PinVi
+    # one-shot을 scope에서 빼면 이 한 줄만 조용해지고, **loopback 결박을 포함한
+    # pinvi-postgres 검사는 계속 돈다.** 그것이 이 분할의 요점이다.
+    db_init_service = services.get(_PINVI_DB_INIT_SERVICE)
+    if (
+        isinstance(db_init_service, Mapping)
+        and db_init_service.get("image") != _PINVI_POSTGRES_IMAGE
+    ):
         raise ComposeCandidateContractError("PinVi database init image provenance is invalid")
     postgres_environment = postgres.get("environment")
     if not isinstance(postgres_environment, Mapping):
@@ -1298,6 +1366,22 @@ def _validate_pinvi_db_init_identity(
     ):
         raise ComposeCandidateContractError("PinVi PostgreSQL identity is invalid")
 
+
+
+def _validate_pinvi_db_init_command(
+    service: Mapping[str, Any],
+    service_environment: Mapping[str, Any],
+    expected: tuple[str, str, str, str],
+    *,
+    resolved: bool,
+) -> None:
+    """(3) db-init one-shot의 command와 environment.
+
+    (1)과 마찬가지로 `pinvi-db-init` 존재를 전제한다.
+    """
+
+    expected_port, expected_user, expected_database, expected_bootstrap_database = expected
+
     init_command = service.get("command")
     if (
         not isinstance(init_command, list)
@@ -1338,6 +1422,8 @@ def _validate_pinvi_db_init_identity(
             value != expected and not (value.startswith(expected) and value.endswith("}"))
         ):
             raise ComposeCandidateContractError("PinVi database init identity is invalid")
+
+
 
 
 def _validate_pinvi_db_runtime_role(
@@ -1726,8 +1812,12 @@ def _assert_map_postgres_password_sole_consumer(document: Mapping[str, Any]) -> 
 
 
 
-def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> None:
-    """PinVi PostgreSQL의 초기 password가 secret file로만 전달되는지 고정한다."""
+def _validate_pinvi_postgres_password_declaration(document: Mapping[str, Any]) -> None:
+    """최상위 `secrets` 절이 PinVi password를 올바른 env로 선언하는가 — **전역**.
+
+    소유자 서비스에 관한 물음이 아니라 문서 전역의 성질이다. S2에서 Map 쪽을 고치며
+    배운 것을 여기서는 처음부터 적용한다(적대 리뷰 2026-09-17 M2).
+    """
 
     secrets = document.get("secrets")
     if not isinstance(secrets, Mapping):
@@ -1736,7 +1826,58 @@ def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> Non
     if not isinstance(source, Mapping) or source.get("environment") != ("PINVI_POSTGRES_PASSWORD"):
         raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
 
+
+def _pinvi_postgres_password_reference_is_valid(reference: object) -> bool:
+    """소유자가 쓸 수 있는 참조 모양인가.
+
+    PinVi는 Map보다 느슨하다 — **짧은 문법**과 **두 가지 target**을 모두 허용한다.
+    그래서 파생을 무검증으로 두면 Map보다 위험하다(S2 적대 리뷰 M1의 교훈을 여기서는
+    처음부터 적용한다).
+    """
+
+    return reference == _PINVI_POSTGRES_PASSWORD_SECRET or (
+        isinstance(reference, Mapping)
+        and reference.get("source") == _PINVI_POSTGRES_PASSWORD_SECRET
+        and reference.get("target")
+        in {_PINVI_POSTGRES_PASSWORD_SECRET, _PINVI_POSTGRES_PASSWORD_FILE}
+    )
+
+
+def _authorized_pinvi_postgres_password_reference(
+    document: Mapping[str, Any],
+) -> object | None:
+    """소유자가 인가받은 참조. 소유자가 없거나 모양이 아니면 `None`(= 공집합).
+
+    **모양까지 본다.** (A)의 지역 변수를 빌리면 (A)를 끄는 순간 소비자 스캔이 함께
+    무너진다 — 그것이 S2에서 적대 리뷰가 실측한 실패다.
+    """
+
     services = document.get("services")
+    if not isinstance(services, Mapping):
+        return None
+    postgres = services.get(_PINVI_POSTGRES_SERVICE)
+    if not isinstance(postgres, Mapping):
+        return None
+    references = postgres.get("secrets")
+    if not isinstance(references, list) or len(references) != 1:
+        return None
+    reference = references[0]
+    if not _pinvi_postgres_password_reference_is_valid(reference):
+        return None
+    return reference
+
+
+def _validate_pinvi_postgres_password_owner_wiring(document: Mapping[str, Any]) -> None:
+    """(A) 소유자 배선 — `pinvi-postgres`가 secret file로만 password를 받는가.
+
+    소유자의 존재를 전제하므로 S4가 PinVi family를 scope에서 빼면 건너뛴다.
+    **전역 불변식(선언·유일 소비자)은 이 함수 안에 없다** — 진입점이 따로 부른다.
+    """
+
+    services = document.get("services")
+    if isinstance(services, Mapping) and _PINVI_POSTGRES_SERVICE not in services:
+        return
+
     if not isinstance(services, Mapping):
         raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
     postgres = services.get(_PINVI_POSTGRES_SERVICE)
@@ -1754,15 +1895,32 @@ def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> Non
     references = postgres.get("secrets")
     if not isinstance(references, list) or len(references) != 1:
         raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
-    reference = references[0]
-    reference_is_valid = reference == _PINVI_POSTGRES_PASSWORD_SECRET or (
-        isinstance(reference, Mapping)
-        and reference.get("source") == _PINVI_POSTGRES_PASSWORD_SECRET
-        and reference.get("target")
-        in {_PINVI_POSTGRES_PASSWORD_SECRET, _PINVI_POSTGRES_PASSWORD_FILE}
-    )
-    if not reference_is_valid:
+    if not _pinvi_postgres_password_reference_is_valid(references[0]):
         raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+
+
+def _assert_pinvi_postgres_password_sole_consumer(document: Mapping[str, Any]) -> None:
+    """(B) 유일 소비자 — 인가된 셋 말고는 이 secret을 가져갈 수 없다.
+
+    인가 집합이 셋이다: 소유자(`pinvi-postgres`)는 **파생**, `pinvi-db-init`과
+    `pinvi-db-runtime-role`은 **리터럴**이다. 리터럴 둘은 소유자와 무관하므로 소유자가
+    없어도 그대로 유효하다 — 그 사실이 이 스캔을 소유자로부터 독립시킨다.
+
+    **이 검사는 조건부가 되어서는 안 된다.** Map 쪽에서 적대 리뷰가 실측했듯, 이것이
+    꺼지면 전역 이름 스캔도 external-resource 검사도 alias 마운트를 잡지 못한다.
+
+    소유자 분기의 `reference is None`은 **오늘 판정을 바꾸지 않는다**(변이 실측: 그 절을
+    지워도 전부 초록). 그 분기에 도달하려면 소유자가 존재해야 하고, 모양이 유효하면
+    파생은 `None`이 아니며, 모양이 유효하지 않으면 파생이 `None`이 되는데 그때는
+    `candidate_reference != None`이 항상 참이라 어차피 거부된다. Map 쪽과 같은 구조이고
+    같은 이유로 남긴다 — S4가 소유자-이름 결합을 느슨하게 하면 그때 하중을 받는다.
+    **지금 일하고 있다고 주장하지는 않는다.**
+    """
+
+    services = document.get("services")
+    if not isinstance(services, Mapping):
+        raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
+    reference = _authorized_pinvi_postgres_password_reference(document)
 
     for service_name, service in services.items():
         if not isinstance(service, Mapping):
@@ -1783,7 +1941,7 @@ def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> Non
             if source_name != _PINVI_POSTGRES_PASSWORD_SECRET:
                 continue
             if service_name == _PINVI_POSTGRES_SERVICE:
-                if candidate_reference != reference:
+                if reference is None or candidate_reference != reference:
                     raise ComposeCandidateContractError(
                         "PinVi PostgreSQL password secret has an unauthorized consumer"
                     )
@@ -3469,30 +3627,43 @@ def validate_resolved_compose_candidate_protected_values(
     #
     # **여기에 family 조건을 달지 마라.** 소유자가 없다고 남의 소비가 인가되지 않고,
     # 소유자가 없다고 secret 선언이 아무 env나 가리켜도 되는 것이 아니다.
-    _validate_map_postgres_password_declaration(resolved)
 
+    # ── family scope 밖의 전역 불변식 여섯 ────────────────────────────────
+    # **자리는 main과 같고(메시지 보존), 조건은 걸리지 않는다(S4 방어).**
+    # 그 둘이 다른 축이라는 것이 적대 리뷰 2026-09-17의 정정이다 — 처음에는 "밖"을
+    # 물리적 위치로 읽고 블록 앞뒤로 흩어 놓았는데, 그 탓에 1,434 형상 중 215칸의
+    # 메시지가 바뀌었다. main에서 소비자 스캔은 (A)뿐 아니라 **같은 family의
+    # validator 전부보다 앞**이었다.
+    #
+    # **이 여섯 줄에 family 조건을 달지 마라.** 아래 family validator들이 scope로
+    # 게이팅되어도 이 여섯은 그대로 돈다 — 그것이 S2·S3의 전부다.
+    _validate_map_postgres_password_declaration(resolved)
     _validate_map_postgres_password_owner_wiring(resolved)
-    _validate_pinvi_postgres_password_secret(resolved)
+    _assert_map_postgres_password_sole_consumer(resolved)
+    _validate_pinvi_postgres_password_declaration(resolved)
+    _validate_pinvi_postgres_password_owner_wiring(resolved)
+    _assert_pinvi_postgres_password_sole_consumer(resolved)
     _validate_pinvi_database_url_identities(services, environment, resolved=True)
-    _validate_pinvi_db_init_identity(services, environment, resolved=True)
+    # GM-17 B S3 — 종전 `_validate_pinvi_db_init_identity` 한 줄을 셋으로 편다.
+    # 순서는 그대로다(그 함수 안의 실행 순서와 동일). 나뉜 이유는 가운데 조각이
+    # **db-init이 아니라 pinvi-postgres**의 것이기 때문이다 — 거기에 저장소에서
+    # 유일한 `listen_addresses=127.0.0.1` 강제가 있다.
+    (
+        _pinvi_db_init_service,
+        _pinvi_db_init_environment,
+        _pinvi_expected_identity,
+    ) = _validate_pinvi_db_init_presence(services, environment)
+    _validate_pinvi_postgres_identity(services, environment, resolved=True)
+    _validate_pinvi_db_init_command(
+        _pinvi_db_init_service,
+        _pinvi_db_init_environment,
+        _pinvi_expected_identity,
+        resolved=True,
+    )
     _validate_pinvi_db_runtime_role(services, environment, resolved=True)
     _validate_concierge_ui_canonical_contract(services, environment, resolved=True)
     _validate_map_application_300_images(services)
 
-    # ── 위 family 블록 **밖**: Map superuser password의 유일 소비자 ────────
-    # family validator가 전부 건너뛰어져도 이 그물은 남는다. S4가 scope로 위 블록을
-    # 게이팅하는 순간 여기가 유일한 방어다 — 적대 리뷰 2026-09-17이 실측으로 보였다:
-    # 전역 불변식이 family validator **안**에 있으면, 호출부를 소유자 존재로 감싸는
-    # 순진한 S4가 전체 스위트 1,700건을 그대로 통과하고 그 상태에서 `pinvi-api`가
-    # Map superuser password를 마운트하는 후보가 mutation 경계를 통과했다.
-    #
-    # **뒤에 두는 이유**: 앞에 두면 소유자가 어긋난 target에 마운트한 문서의 문구가
-    # (A)의 "...is invalid"에서 "...unauthorized consumer"로 바뀐다. 판정은 같지만
-    # 진단이 바뀌므로 S2의 "동작 변경 0"이 깨진다. 뒤에 두면 오늘은 (A)가 먼저
-    # 말하고, S4 이후에는 이것이 말한다.
-    #
-    # **여기에 family 조건을 달지 마라.**
-    _assert_map_postgres_password_sole_consumer(resolved)
     protected_names = (
         _OPS_ENV_NAMES
         | _MANAGER_ONLY_CREDENTIAL_NAMES
@@ -3544,8 +3715,8 @@ def validate_resolved_compose_candidate_protected_values(
         # 2026-09-17 정정 — S1의 첫 주석은 15개 전부라고 단언했고 그것이 틀렸다).
         # 나머지 하나 `pinvi-db-init`은 `_CANDIDATE_REQUIRED_PROTECTED_SERVICES`
         # 밖이고, 그 보증의 출처는 required-set이 아니라
-        # `_validate_pinvi_db_init_identity`다. S3가 바로 그 함수를 이분할하므로
-        # 여기서 출처를 분명히 적어 둔다.
+        # `_validate_pinvi_db_init_presence`다(S3가 종전 `_validate_pinvi_db_init_identity`를
+        # **셋**으로 나눈 뒤의 이름). 여기서 출처를 분명히 적어 둔다.
         #
         # 부재와 invalid를 **쪼개서** 본다. `.get()`은 둘을 `None` 하나로 뭉개는데,
         # S4가 required 집합을 좁히면 "키가 그냥 없는" 서비스가 이 자리에 도달한다 —
@@ -3911,30 +4082,43 @@ def validate_compose_candidate_protected_values(
     #
     # **여기에 family 조건을 달지 마라.** 소유자가 없다고 남의 소비가 인가되지 않고,
     # 소유자가 없다고 secret 선언이 아무 env나 가리켜도 되는 것이 아니다.
-    _validate_map_postgres_password_declaration(candidate)
 
+    # ── family scope 밖의 전역 불변식 여섯 ────────────────────────────────
+    # **자리는 main과 같고(메시지 보존), 조건은 걸리지 않는다(S4 방어).**
+    # 그 둘이 다른 축이라는 것이 적대 리뷰 2026-09-17의 정정이다 — 처음에는 "밖"을
+    # 물리적 위치로 읽고 블록 앞뒤로 흩어 놓았는데, 그 탓에 1,434 형상 중 215칸의
+    # 메시지가 바뀌었다. main에서 소비자 스캔은 (A)뿐 아니라 **같은 family의
+    # validator 전부보다 앞**이었다.
+    #
+    # **이 여섯 줄에 family 조건을 달지 마라.** 아래 family validator들이 scope로
+    # 게이팅되어도 이 여섯은 그대로 돈다 — 그것이 S2·S3의 전부다.
+    _validate_map_postgres_password_declaration(candidate)
     _validate_map_postgres_password_owner_wiring(candidate)
-    _validate_pinvi_postgres_password_secret(candidate)
+    _assert_map_postgres_password_sole_consumer(candidate)
+    _validate_pinvi_postgres_password_declaration(candidate)
+    _validate_pinvi_postgres_password_owner_wiring(candidate)
+    _assert_pinvi_postgres_password_sole_consumer(candidate)
     _validate_pinvi_database_url_identities(services, environment, resolved=False)
-    _validate_pinvi_db_init_identity(services, environment, resolved=False)
+    # GM-17 B S3 — 종전 `_validate_pinvi_db_init_identity` 한 줄을 셋으로 편다.
+    # 순서는 그대로다(그 함수 안의 실행 순서와 동일). 나뉜 이유는 가운데 조각이
+    # **db-init이 아니라 pinvi-postgres**의 것이기 때문이다 — 거기에 저장소에서
+    # 유일한 `listen_addresses=127.0.0.1` 강제가 있다.
+    (
+        _pinvi_db_init_service,
+        _pinvi_db_init_environment,
+        _pinvi_expected_identity,
+    ) = _validate_pinvi_db_init_presence(services, environment)
+    _validate_pinvi_postgres_identity(services, environment, resolved=False)
+    _validate_pinvi_db_init_command(
+        _pinvi_db_init_service,
+        _pinvi_db_init_environment,
+        _pinvi_expected_identity,
+        resolved=False,
+    )
     _validate_pinvi_db_runtime_role(services, environment, resolved=False)
     _validate_concierge_ui_canonical_contract(services, environment, resolved=False)
     _validate_map_application_300_images(services)
 
-    # ── 위 family 블록 **밖**: Map superuser password의 유일 소비자 ────────
-    # family validator가 전부 건너뛰어져도 이 그물은 남는다. S4가 scope로 위 블록을
-    # 게이팅하는 순간 여기가 유일한 방어다 — 적대 리뷰 2026-09-17이 실측으로 보였다:
-    # 전역 불변식이 family validator **안**에 있으면, 호출부를 소유자 존재로 감싸는
-    # 순진한 S4가 전체 스위트 1,700건을 그대로 통과하고 그 상태에서 `pinvi-api`가
-    # Map superuser password를 마운트하는 후보가 mutation 경계를 통과했다.
-    #
-    # **뒤에 두는 이유**: 앞에 두면 소유자가 어긋난 target에 마운트한 문서의 문구가
-    # (A)의 "...is invalid"에서 "...unauthorized consumer"로 바뀐다. 판정은 같지만
-    # 진단이 바뀌므로 S2의 "동작 변경 0"이 깨진다. 뒤에 두면 오늘은 (A)가 먼저
-    # 말하고, S4 이후에는 이것이 말한다.
-    #
-    # **여기에 family 조건을 달지 마라.**
-    _assert_map_postgres_password_sole_consumer(candidate)
     protected_names = (
         _OPS_ENV_NAMES
         | _MANAGER_ONLY_CREDENTIAL_NAMES
@@ -3986,8 +4170,8 @@ def validate_compose_candidate_protected_values(
         # 2026-09-17 정정 — S1의 첫 주석은 15개 전부라고 단언했고 그것이 틀렸다).
         # 나머지 하나 `pinvi-db-init`은 `_CANDIDATE_REQUIRED_PROTECTED_SERVICES`
         # 밖이고, 그 보증의 출처는 required-set이 아니라
-        # `_validate_pinvi_db_init_identity`다. S3가 바로 그 함수를 이분할하므로
-        # 여기서 출처를 분명히 적어 둔다.
+        # `_validate_pinvi_db_init_presence`다(S3가 종전 `_validate_pinvi_db_init_identity`를
+        # **셋**으로 나눈 뒤의 이름). 여기서 출처를 분명히 적어 둔다.
         #
         # 부재와 invalid를 **쪼개서** 본다. `.get()`은 둘을 `None` 하나로 뭉개는데,
         # S4가 required 집합을 좁히면 "키가 그냥 없는" 서비스가 이 자리에 도달한다 —
