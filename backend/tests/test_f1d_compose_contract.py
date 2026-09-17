@@ -3809,3 +3809,115 @@ def test_entrypoint_override_cannot_defeat_the_loopback_binding(tmp_path: Path) 
         assert expected in str(rejection.value), (
             f"{service}: entrypoint 우회가 거부되지 않았다 — {rejection.value}"
         )
+
+
+# ── PostgreSQL 인증 우회 두 경로 ─────────────────────────────────────────
+#
+# 2026-09-17 감사가 Map↔PinVi 60필드를 전수로 재서 찾았다. Map postgres에는 PinVi의
+# `_validate_pinvi_postgres_identity`에 해당하는 **서비스 신원 validator가 없어서**
+# image·command(`listen_addresses` 포함)·entrypoint·`POSTGRES_INITDB_ARGS`가 통째로
+# 무검사였다. 그리고 `POSTGRES_HOST_AUTH_METHOD`는 **양쪽 모두** 무검사였다 — 계약
+# 기계가 값-동등 비교라 "키가 추가됐다"를 표현하지 못하기 때문이다.
+#
+# 두 값 다 fresh PGDATA의 인증을 끄는 데 쓰인다. 전자는 initdb가 쓰는 `pg_hba.conf`의
+# host 행을, 후자는 entrypoint가 같은 행을 통째로 덮어쓴다.
+
+
+@pytest.mark.parametrize(
+    "service",
+    ["kor-travel-map-postgres", "pinvi-postgres"],
+)
+def test_initdb_trust_auth_is_rejected_for_both_postgres_services(
+    service: str, tmp_path: Path
+) -> None:
+    """`POSTGRES_INITDB_ARGS=--auth-host=trust`는 **양쪽 다** 거부된다.
+
+    종전에는 Map 쪽만 통과했다(raw·resolved·UI 저장 경로 전부). PinVi에는 신원
+    validator가 그 값을 강제하는데 Map에는 대응물이 없었고, 계약표에도 없었다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    postgres = services[service]
+    assert isinstance(postgres, dict)
+    postgres_environment = postgres["environment"]
+    assert isinstance(postgres_environment, dict)
+    assert postgres_environment["POSTGRES_INITDB_ARGS"] == "--auth-host=scram-sha-256", (
+        "전제가 깨졌다 — 정본 값이 바뀌었다"
+    )
+    postgres_environment["POSTGRES_INITDB_ARGS"] = "--auth-host=trust"
+
+    with pytest.raises(ComposeCandidateContractError) as rejection:
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+    assert "POSTGRES_INITDB_ARGS" in str(rejection.value) or "identity is invalid" in str(
+        rejection.value
+    ), f"{service}: trust 초기화가 거부되지 않았다 — {rejection.value}"
+
+
+@pytest.mark.parametrize(
+    "service",
+    ["kor-travel-map-postgres", "pinvi-postgres", "kor-travel-map-api"],
+)
+def test_host_auth_method_override_is_rejected_anywhere(
+    service: str, tmp_path: Path
+) -> None:
+    """`POSTGRES_HOST_AUTH_METHOD`는 **어느 서비스에서도** 거부된다.
+
+    이것이 계약표로 막히지 않는 이유가 핵심이다 — 계약표는 **값 동등**을 비교하므로
+    나열된 키의 값만 본다. **키가 추가된 것**은 표현할 수 없다. 그래서 이름 자체를
+    금지하고, 그 금지를 **전역**으로 둔다(어느 서비스가 들고 있든 결과가 같다).
+
+    세 번째 파라미터가 postgres가 아닌 것은 의도적이다 — 이 금지가 특정 서비스의
+    존재에 매이지 않는다는 것을 센다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    target = services[service]
+    assert isinstance(target, dict)
+    target.setdefault("environment", {})
+    target_environment = target["environment"]
+    assert isinstance(target_environment, dict)
+    target_environment["POSTGRES_HOST_AUTH_METHOD"] = "trust"
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="overrides PostgreSQL host authentication",
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_the_two_postgres_services_share_one_initdb_contract() -> None:
+    """두 PostgreSQL이 **같은** 초기화 인증 인자를 쓴다 — 한쪽만 바뀌는 것을 막는다.
+
+    이 비대칭이 바로 구멍의 원인이었다: PinVi에는 강제가 있고 Map에는 없었다.
+    공유 상수를 쓰는지 값으로 확인한다.
+    """
+
+    canonical = c6c_deployment_module._POSTGRES_CANONICAL_INITDB_ARGS
+    assert canonical == "--auth-host=scram-sha-256"
+    assert c6c_deployment_module._PINVI_POSTGRES_INITDB_ARGS == canonical
+    assert (
+        c6c_deployment_module._MAP_DATABASE_CANONICAL_ENV_VALUES[
+            ("kor-travel-map-postgres", "POSTGRES_INITDB_ARGS")
+        ]
+        == canonical
+    )
+    # UI 저장 경로의 잠금이 같은 dict에서 파생되는지도 센다 — 계약표에 넣은 효과가
+    # 검증 경로에만 머무르지 않는다는 것이 이 수정의 절반이다.
+    locked = c6c_deployment_module._CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE
+    assert "POSTGRES_INITDB_ARGS" in locked["kor-travel-map-postgres"]

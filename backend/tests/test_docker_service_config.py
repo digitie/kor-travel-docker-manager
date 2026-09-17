@@ -242,6 +242,10 @@ def _compose_with_canonical_c6c_services(
                     "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
                 ),
                 "POSTGRES_PASSWORD_FILE": "/run/secrets/kor-travel-map-postgres-password",
+                # 정본 compose와 같은 값. 2026-09-17에 이 키가 Map 계약표에
+                # 들어오면서 fixture도 정본과 같아져야 한다 — 종전에는 Map 쪽에만
+                # 이 강제가 없어서 `--auth-host=trust`가 세 층을 전부 통과했다.
+                "POSTGRES_INITDB_ARGS": "--auth-host=scram-sha-256",
             },
             "secrets": [
                 {

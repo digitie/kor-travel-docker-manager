@@ -94,7 +94,12 @@ _PINVI_DB_INIT_SERVICE = "pinvi-db-init"
 _PINVI_DB_RUNTIME_ROLE_SERVICE = "pinvi-db-runtime-role"
 _PINVI_POSTGRES_PASSWORD_SECRET = "pinvi-postgres-password"
 _PINVI_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_PINVI_POSTGRES_PASSWORD_SECRET}"
-_PINVI_POSTGRES_INITDB_ARGS = "--auth-host=scram-sha-256"
+#: 두 PostgreSQL이 **같은** 초기화 인증 인자를 쓴다. 공유 상수로 두는 이유는 한쪽만
+#: 바뀌는 것을 막기 위해서다 — 2026-09-17 감사가 실측했듯 Map 쪽은 이 값이 계약에
+#: 없어서 `--auth-host=trust`(fresh PGDATA에서 superuser 인증을 통째로 끄는 값)가
+#: raw·resolved·UI 저장 경로를 **전부 통과**했다.
+_POSTGRES_CANONICAL_INITDB_ARGS = "--auth-host=scram-sha-256"
+_PINVI_POSTGRES_INITDB_ARGS = _POSTGRES_CANONICAL_INITDB_ARGS
 _PINVI_DEDICATED_POSTGRES_PORT = 12800
 _PINVI_POSTGRES_IMAGE = (
     "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
@@ -669,6 +674,11 @@ _MAP_DATABASE_CANONICAL_ENV_VALUES = {
         "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
     ),
     (_MAP_POSTGRES_SERVICE, "POSTGRES_PASSWORD_FILE"): _MAP_POSTGRES_PASSWORD_FILE,
+    # PinVi에는 `_validate_pinvi_postgres_identity`가 이 값을 강제하는데 Map에는
+    # 대응 validator가 없다. 계약표가 Map 쪽의 유일한 자리다 —
+    # `_CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE`가 이 dict에서 파생되므로 UI 저장
+    # 경로의 잠금도 함께 따라온다.
+    (_MAP_POSTGRES_SERVICE, "POSTGRES_INITDB_ARGS"): _POSTGRES_CANONICAL_INITDB_ARGS,
     (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
         "${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?"
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}"
@@ -1633,6 +1643,42 @@ def _validate_map_application_300_service(
         raise ComposeCandidateContractError(
             "Map application 300 resolved image identity is invalid"
         )
+
+
+#: 계약 기계는 **값 동등**을 비교하므로 "키가 추가됐다"를 표현하지 못한다. 그래서
+#: 서버 기본 인증을 통째로 갈아치우는 키는 이름 자체를 금지한다. 정본 compose는
+#: 이 키를 어디에도 쓰지 않는다(2026-09-17 전수 확인) — 쓸 일이 생기면 계약표에
+#: 명시적으로 넣고 이 집합에서 빼라. 값이 아니라 **존재**를 막는 것이 요점이다.
+_FORBIDDEN_AUTH_OVERRIDE_ENV_NAMES = frozenset({"POSTGRES_HOST_AUTH_METHOD"})
+
+
+def _assert_no_postgres_auth_override(document: Mapping[str, Any]) -> None:
+    """서버 기본 인증을 갈아치우는 env 키를 **어느 서비스에서도** 금지한다.
+
+    `POSTGRES_HOST_AUTH_METHOD=trust`는 `pg_hba.conf`의 host 행을 통째로 대체해
+    비밀번호 없이 접속을 허용한다. 2026-09-17 감사 실측: 이 키는 Map·PinVi **양쪽**
+    에서 raw·resolved·UI 저장 경로를 전부 통과했다 — 계약표가 값-동등 비교라
+    **키 추가를 볼 수 없기** 때문이다.
+
+    **전역 불변식이다.** 어떤 서비스의 존재에도 게이팅하지 마라 — 어느 서비스가
+    그 키를 들고 있든 결과는 같다. (이 파일의 S2·S3가 같은 교훈으로 정리됐다.)
+    """
+
+    services = document.get("services")
+    if not isinstance(services, Mapping):
+        return
+    for service_name, service in services.items():
+        if not isinstance(service, Mapping):
+            continue
+        environment = service.get("environment")
+        if not isinstance(environment, Mapping):
+            continue
+        for name in environment:
+            if name in _FORBIDDEN_AUTH_OVERRIDE_ENV_NAMES:
+                raise ComposeCandidateContractError(
+                    "compose candidate overrides PostgreSQL host authentication: "
+                    + _describe_candidate_service_key(service_name)
+                )
 
 
 def _validate_map_postgres_password_declaration(document: Mapping[str, Any]) -> None:
@@ -3637,6 +3683,7 @@ def validate_resolved_compose_candidate_protected_values(
     #
     # **이 여섯 줄에 family 조건을 달지 마라.** 아래 family validator들이 scope로
     # 게이팅되어도 이 여섯은 그대로 돈다 — 그것이 S2·S3의 전부다.
+    _assert_no_postgres_auth_override(resolved)
     _validate_map_postgres_password_declaration(resolved)
     _validate_map_postgres_password_owner_wiring(resolved)
     _assert_map_postgres_password_sole_consumer(resolved)
@@ -4092,6 +4139,7 @@ def validate_compose_candidate_protected_values(
     #
     # **이 여섯 줄에 family 조건을 달지 마라.** 아래 family validator들이 scope로
     # 게이팅되어도 이 여섯은 그대로 돈다 — 그것이 S2·S3의 전부다.
+    _assert_no_postgres_auth_override(candidate)
     _validate_map_postgres_password_declaration(candidate)
     _validate_map_postgres_password_owner_wiring(candidate)
     _assert_map_postgres_password_sole_consumer(candidate)
