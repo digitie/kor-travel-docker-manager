@@ -430,6 +430,38 @@ _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
         _MAP_UI_SERVICE,
     }
 )
+_CANDIDATE_KNOWN_SERVICE_NAMES = _CANDIDATE_REQUIRED_PROTECTED_SERVICES | {
+    _PINVI_DB_INIT_SERVICE
+}
+
+
+def _describe_candidate_service_key(service_name: object) -> str:
+    """계약 오류 문구에 실을 서비스 키의 표현.
+
+    이 문구는 CLI stderr(`cli.py`의 `DeploymentContractError` 핸들러)와 HTTP 409/500
+    body(`main.py`의 예외 핸들러, `api/routes.py::_config_failure_detail`)로 나간다.
+    그런데 서비스 키는 **후보 문서 작성자가 정하는 임의 문자열**이라, 보호값이 키
+    자리에 들어오면 그대로 에코된다 — 적대 리뷰 2026-09-17이
+    `KOR_TRAVEL_MAP_POSTGRES_PASSWORD` 값을 서비스 이름으로 넣어 실측했다(main은
+    싣지 않았고 S1의 첫 판만 실었다). 게다가 이 루프는 보호 이름/값 전역 스캔보다
+    **앞**이라 그 스캔이 막아 주지도 못한다.
+
+    권한 상승은 아니다 — 그 키는 운영자가 직접 적은 것이다. 심층 방어이고, 이
+    저장소가 이미 명시적으로 지키는 계약이다(`cli.py`: "원문은 여전히 JSON에 넣지
+    않는다"). 그래서 **계약이 아는 이름일 때만 그대로 지목하고**, 모르는 키는
+    sha8로만 가리킨다. 운영자는 자기 키를 해싱해 대조할 수 있고 우리는 아무것도
+    흘리지 않는다.
+
+    S4가 required 집합을 좁히면 아는 이름이 줄어 해싱되는 키가 늘어난다 — 완화가
+    노출을 **넓히지 않는** 방향이라 그대로 두어도 안전하다.
+    """
+
+    if isinstance(service_name, str) and service_name in _CANDIDATE_KNOWN_SERVICE_NAMES:
+        return service_name
+    digest = hashlib.sha256(repr(service_name).encode("utf-8")).hexdigest()[:8]
+    return f"<unrecognized service key sha256:{digest}>"
+
+
 _OPS_ENV_NAMES = frozenset(
     {
         _MAP_READ_ENV,
@@ -3289,18 +3321,39 @@ def validate_resolved_compose_candidate_protected_values(
         raise ComposeCandidateContractError(
             "resolved compose candidate has no valid services mapping"
         )
-    _validate_map_postgres_password_secret(resolved)
-    _validate_pinvi_postgres_password_secret(resolved)
-    _validate_pinvi_database_url_identities(services, environment, resolved=True)
-    _validate_pinvi_db_init_identity(services, environment, resolved=True)
-    _validate_pinvi_db_runtime_role(services, environment, resolved=True)
-    _validate_concierge_ui_canonical_contract(services, environment, resolved=True)
+    # **required-set을 여섯 validator보다 먼저 본다**(GM-17 B S1).
+    # 종전에는 순서가 반대였고, 그래서 서비스가 빠지면 사용자가 보는 것은 부재가
+    # 아니라 "Map PostgreSQL password secret is invalid" 같은 **무관해 보이는**
+    # 문구였다(S0 골든 테이블 실측: 여섯 형상 중 부재를 부재라고 말하는 것은 하나뿐).
+    # 운영자는 그 메시지를 쫓다가 실제 원인에 도달하지 못한다. 집합 자체는 바꾸지
+    # 않는다 — 완화는 S4의 일이고 여기서는 진단만 고친다.
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
             "resolved compose candidate is missing required protected services: "
             + ", ".join(sorted(missing_services))
         )
+    # **서비스 값의 모양을 먼저 본다**(GM-17 B S1). `pinvi-api: null`은 유효한 YAML이라
+    # required-set을 지나가고(키는 있다), 그 뒤 소비자 스캔이 non-Mapping을 만나
+    # **어느 서비스를 null로 만들든 "Map PostgreSQL password secret is invalid"**를
+    # 낸다(S0 골든 테이블 실측). 원인과 무관한 메시지다.
+    #
+    # 그리고 이 검사는 S4의 안전 조건이기도 하다 — 완화의 skip 판정은 **키 부재로만**
+    # 해야 하는데, null을 부재로 오인하면 계약을 한 줄로 우회할 수 있다. 여기서
+    # null을 "부재"가 아니라 "invalid"로 못박아 그 혼동의 여지를 없앤다.
+    for service_name, service_document in services.items():
+        if isinstance(service_document, Mapping):
+            continue
+        raise ComposeCandidateContractError(
+            "resolved compose candidate service is missing or invalid: "
+            + _describe_candidate_service_key(service_name)
+        )
+    _validate_map_postgres_password_secret(resolved)
+    _validate_pinvi_postgres_password_secret(resolved)
+    _validate_pinvi_database_url_identities(services, environment, resolved=True)
+    _validate_pinvi_db_init_identity(services, environment, resolved=True)
+    _validate_pinvi_db_runtime_role(services, environment, resolved=True)
+    _validate_concierge_ui_canonical_contract(services, environment, resolved=True)
     _validate_map_application_300_images(services)
     protected_names = (
         _OPS_ENV_NAMES
@@ -3345,7 +3398,28 @@ def validate_resolved_compose_candidate_protected_values(
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
     ):
-        service = services[service_name]
+        # **무조건 인덱싱하지 않는다**(GM-17 B S1). 종전 `services[service_name]`은
+        # 이름이 빠지면 raw `KeyError`를 던졌고, 그것이 계약 오류가 아니라 traceback으로
+        # 사용자에게 샜다.
+        #
+        # **이 루프의 15개 이름 중 14개만 required set이 보증한다**(적대 리뷰
+        # 2026-09-17 정정 — S1의 첫 주석은 15개 전부라고 단언했고 그것이 틀렸다).
+        # 나머지 하나 `pinvi-db-init`은 `_CANDIDATE_REQUIRED_PROTECTED_SERVICES`
+        # 밖이고, 그 보증의 출처는 required-set이 아니라
+        # `_validate_pinvi_db_init_identity`다. S3가 바로 그 함수를 이분할하므로
+        # 여기서 출처를 분명히 적어 둔다.
+        #
+        # 부재와 invalid를 **쪼개서** 본다. `.get()`은 둘을 `None` 하나로 뭉개는데,
+        # S4가 required 집합을 좁히면 "키가 그냥 없는" 서비스가 이 자리에 도달한다 —
+        # 그때 `missing or invalid`로 뭉뚱그리면 S1이 없앤 혼동을 한 층 아래에서
+        # 되살리는 셈이다. 이 루프는 사실상 **두 번째 required-set**이므로 그렇게
+        # 말하게 한다.
+        if service_name not in services:
+            raise ComposeCandidateContractError(
+                "resolved compose candidate is missing required protected service: "
+                + service_name
+            )
+        service = services.get(service_name)
         if not isinstance(service, Mapping):
             raise ComposeCandidateContractError(
                 f"resolved compose candidate service {service_name} is invalid"
@@ -3661,18 +3735,39 @@ def validate_compose_candidate_protected_values(
     services = candidate.get("services")
     if not isinstance(services, Mapping):
         raise ComposeCandidateContractError("compose candidate has no valid services mapping")
-    _validate_map_postgres_password_secret(candidate)
-    _validate_pinvi_postgres_password_secret(candidate)
-    _validate_pinvi_database_url_identities(services, environment, resolved=False)
-    _validate_pinvi_db_init_identity(services, environment, resolved=False)
-    _validate_pinvi_db_runtime_role(services, environment, resolved=False)
-    _validate_concierge_ui_canonical_contract(services, environment, resolved=False)
+    # **required-set을 여섯 validator보다 먼저 본다**(GM-17 B S1).
+    # 종전에는 순서가 반대였고, 그래서 서비스가 빠지면 사용자가 보는 것은 부재가
+    # 아니라 "Map PostgreSQL password secret is invalid" 같은 **무관해 보이는**
+    # 문구였다(S0 골든 테이블 실측: 여섯 형상 중 부재를 부재라고 말하는 것은 하나뿐).
+    # 운영자는 그 메시지를 쫓다가 실제 원인에 도달하지 못한다. 집합 자체는 바꾸지
+    # 않는다 — 완화는 S4의 일이고 여기서는 진단만 고친다.
     missing_services = _CANDIDATE_REQUIRED_PROTECTED_SERVICES.difference(services)
     if missing_services:
         raise ComposeCandidateContractError(
             "compose candidate is missing required protected services: "
             + ", ".join(sorted(missing_services))
         )
+    # **서비스 값의 모양을 먼저 본다**(GM-17 B S1). `pinvi-api: null`은 유효한 YAML이라
+    # required-set을 지나가고(키는 있다), 그 뒤 소비자 스캔이 non-Mapping을 만나
+    # **어느 서비스를 null로 만들든 "Map PostgreSQL password secret is invalid"**를
+    # 낸다(S0 골든 테이블 실측). 원인과 무관한 메시지다.
+    #
+    # 그리고 이 검사는 S4의 안전 조건이기도 하다 — 완화의 skip 판정은 **키 부재로만**
+    # 해야 하는데, null을 부재로 오인하면 계약을 한 줄로 우회할 수 있다. 여기서
+    # null을 "부재"가 아니라 "invalid"로 못박아 그 혼동의 여지를 없앤다.
+    for service_name, service_document in services.items():
+        if isinstance(service_document, Mapping):
+            continue
+        raise ComposeCandidateContractError(
+            "compose candidate service is missing or invalid: "
+            + _describe_candidate_service_key(service_name)
+        )
+    _validate_map_postgres_password_secret(candidate)
+    _validate_pinvi_postgres_password_secret(candidate)
+    _validate_pinvi_database_url_identities(services, environment, resolved=False)
+    _validate_pinvi_db_init_identity(services, environment, resolved=False)
+    _validate_pinvi_db_runtime_role(services, environment, resolved=False)
+    _validate_concierge_ui_canonical_contract(services, environment, resolved=False)
     _validate_map_application_300_images(services)
     protected_names = (
         _OPS_ENV_NAMES
@@ -3717,7 +3812,27 @@ def validate_compose_candidate_protected_values(
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
     ):
-        service = services[service_name]
+        # **무조건 인덱싱하지 않는다**(GM-17 B S1). 종전 `services[service_name]`은
+        # 이름이 빠지면 raw `KeyError`를 던졌고, 그것이 계약 오류가 아니라 traceback으로
+        # 사용자에게 샜다.
+        #
+        # **이 루프의 15개 이름 중 14개만 required set이 보증한다**(적대 리뷰
+        # 2026-09-17 정정 — S1의 첫 주석은 15개 전부라고 단언했고 그것이 틀렸다).
+        # 나머지 하나 `pinvi-db-init`은 `_CANDIDATE_REQUIRED_PROTECTED_SERVICES`
+        # 밖이고, 그 보증의 출처는 required-set이 아니라
+        # `_validate_pinvi_db_init_identity`다. S3가 바로 그 함수를 이분할하므로
+        # 여기서 출처를 분명히 적어 둔다.
+        #
+        # 부재와 invalid를 **쪼개서** 본다. `.get()`은 둘을 `None` 하나로 뭉개는데,
+        # S4가 required 집합을 좁히면 "키가 그냥 없는" 서비스가 이 자리에 도달한다 —
+        # 그때 `missing or invalid`로 뭉뚱그리면 S1이 없앤 혼동을 한 층 아래에서
+        # 되살리는 셈이다. 이 루프는 사실상 **두 번째 required-set**이므로 그렇게
+        # 말하게 한다.
+        if service_name not in services:
+            raise ComposeCandidateContractError(
+                "compose candidate is missing required protected service: " + service_name
+            )
+        service = services.get(service_name)
         if not isinstance(service, Mapping):
             raise ComposeCandidateContractError(
                 f"compose candidate service {service_name} is invalid"
@@ -3800,7 +3915,7 @@ def validate_compose_candidate_protected_values(
         protected_names=protected_names,
         protected_values=protected_values,
     )
-    _validate_pinvi_postgres_password_secret(candidate)
+    # (GM-17 B S1) 같은 함수 앞머리에서 이미 같은 인자로 불렀다 — 중복 제거.
     system_bind_snapshots = _validate_candidate_volume_graph(
         candidate,
         services,

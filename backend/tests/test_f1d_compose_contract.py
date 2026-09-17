@@ -1804,6 +1804,13 @@ def test_c6c_rejects_map_postgres_password_secret_extra_consumer(
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
+        # GM-17 B S1: required-set 검사가 이제 소비자 스캔보다 **먼저** 돈다. 이
+        # fragment는 종전에 required 서비스 둘을 빼고도 "무단 소비자" 오류에 도달했는데,
+        # 지금은 부재가 먼저 보고된다(그것이 S1의 목적이다). 이 검사의 의도는 무단
+        # 소비자 거부이므로 fragment를 완전하게 만들어 그 의도를 보존한다.
+        "pinvi-postgres",
+        "pinvi-db-init",
+        "pinvi-db-runtime-role",
     )
     candidate = (
         _resolved_compose(*service_names)
@@ -2367,3 +2374,464 @@ def test_deployment_validation_rejects_binding_the_allowlist_itself(
             root_env_path=str(root_env),
             environment=environment,
         )
+
+
+# ── GM-17 B · S0: 서비스 부재 형상의 골든 테이블 ─────────────────────────
+#
+# **동작을 바꾸지 않는다.** 오늘 이 저장소가 각 부재 형상을 어떤 예외·어떤 메시지로
+# 거부하는지를 표로 박기만 한다.
+#
+# 왜 이것이 먼저인가. GM-17 B S4는 required-set(실질 15개 서비스) 강제를 존재-조건부로
+# 바꾸는 일인데, **그 변경의 폭발 반경이 지금 CI에 전혀 보이지 않는다**:
+#
+# 1. `missing required protected services` 문자열을 잡는 테스트가 저장소에 0건이었다.
+# 2. 여섯 개의 cross-service validator가 required-set 검사보다 먼저 돌았다(S1이 교정).
+# 3. 기존 계약 테스트는 전부 "서비스가 다 있는 상태의 값 드리프트"만 덮는다.
+#
+# 즉 완화 후 어떤 부재 형상이 계속 거부되고 어떤 것이 조용히 통과하는지는 **한 번도
+# 테스트된 적 없는 경로**가 결정하며, 어느 쪽이든 CI는 초록이다. 이 표가 그 침묵을
+# 리뷰 가능한 diff로 바꾼다.
+#
+# ── 2026-09-17 적대 리뷰 정정 — 이 표의 첫 판은 자기 목적을 달성하지 못했다 ──
+#
+# 첫 판은 `PASS / not-PASS`만 박았고 실질 한 칸(`all_present`)만 값을 고정했다.
+# 리뷰가 그것을 뚫었다: **required set을 `frozenset()`으로 통째로 비워도 초록이었다.**
+# 3개로 줄여도, 이름 셋을 빼도 초록이었다.
+#
+# 이유는 완화가 "거부 → 통과"로 움직이지 않기 때문이다. required 집합을 좁혀도
+# 15개 이름 루프의 `.get()` 가드(S1이 넣은 그것)가 전부 받아내서, 실제로는
+# **"거부 이유 A → 거부 이유 B"**가 된다(리뷰의 S4 시뮬레이션: 이름 하나를 빼고 그
+# 서비스를 지우면 14/14 전부 여전히 거부, 그중 8건이 바로 그 가드). 이유를 보지 않는
+# 표는 구조적으로 그 이동을 못 본다.
+#
+# 그래서 이 판은 둘을 바꾼다.
+#
+# * **이유를 박는다** — 예외 타입 + 메시지를 칸마다 고정한다.
+# * **서비스별 단독 제거를 전수로 돈다** — 묶음 형상은 입도가 굵어 서비스별 변화를
+#   가린다. 같은 리뷰가 실측했다: main에서 무관한 문구를 낸 것은 "여섯 형상 중 다섯"이
+#   아니라 **14개 중 3개**였고(`kor-travel-map-postgres`·`pinvi-postgres`·
+#   `pinvi-db-runtime-role`), 묶음 4행이 각각 그 셋 중 하나를 품어서 그렇게 보였다.
+# * **resolved 열을 더한다** — 리뷰가 실측으로 보였다: resolved 진입점에 들어간 S1
+#   수정 세 가지(순서·모양 루프·`.get()`)를 **전부 되돌려도 스위트가 초록**이었다.
+#   프로덕션 diff의 절반이 무증거였다. Docker는 CI(`ubuntu-24.04`)에도 있고 이 파일의
+#   이웃 테스트들이 이미 `_resolved_compose`를 스킵 없이 쓴다.
+#
+# 표가 고정하는 것은 "오늘의 동작"이지 "옳은 동작"이 아니다. **이후 단계의 PR은 이
+# 표의 diff를 본문에 싣고, 바뀐 칸을 전부 의도한 변경으로 열거해야 한다** — 특히
+# "거부 이유 A → 거부 이유 B"로 움직인 칸을. 그것이 S4가 실제로 만들 변화다.
+
+#: required 집합의 **리터럴 사본**이다. 프로덕션 상수에서 파생하지 않는다 —
+#: 파생하면 S4가 집합을 비웠을 때 이 표도 함께 비어 **공허하게 초록**이 된다.
+#: (그것이 리뷰가 실제로 뚫은 구멍이다. `docs/tasks-rule.md`가 말하는 "검사기 하한은
+#: 본 것에 건다"의 정확한 반례이므로 여기서는 세지 않고 **적는다**.)
+_REQUIRED_SERVICES_GOLDEN: tuple[str, ...] = (
+    "kor-travel-map-api",
+    "kor-travel-map-application-fresh-300",
+    "kor-travel-map-application-fresh-finalize",
+    "kor-travel-map-dagster",
+    "kor-travel-map-dagster-daemon",
+    "kor-travel-map-dagster-db-init",
+    "kor-travel-map-dagster-storage-migrate",
+    "kor-travel-map-db-role-bootstrap",
+    "kor-travel-map-postgres",
+    "kor-travel-map-ui",
+    "pinvi-admin-bootstrap",
+    "pinvi-api",
+    "pinvi-db-runtime-role",
+    "pinvi-postgres",
+)
+
+#: required 집합 **밖**이지만 15개 소비자 루프에는 있는 이름. 이 비대칭이 실질 15의
+#: 정체다 — `frozenset` 14 + `_validate_pinvi_db_init_identity`의 별도 강제.
+#: 코드 주석이 한동안 "15개 전부 required-set이 보증한다"고 잘못 적고 있었다.
+_NON_REQUIRED_LOOP_SERVICE = "pinvi-db-init"
+
+_ABSENCE_MATRIX_SERVICES = {
+    "map_core": ("kor-travel-map-api", "kor-travel-map-postgres", "kor-travel-map-ui"),
+    "map_oneshots": _MAP_DATABASE_ONESHOT_SERVICES,
+    "pinvi_core": ("pinvi-api", "pinvi-postgres"),
+    "pinvi_oneshots": ("pinvi-db-init", "pinvi-db-runtime-role", "pinvi-admin-bootstrap"),
+}
+
+
+def _shape_without(candidate: dict[str, object], names: tuple[str, ...]) -> dict[str, object]:
+    """서비스 키를 **제거한** 문서. `null` 값과 구분하려고 키 자체를 지운다."""
+
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    for name in names:
+        services.pop(name, None)
+    return shaped
+
+
+def _shape_nulled(candidate: dict[str, object], name: str) -> dict[str, object]:
+    """서비스 키는 있고 값이 `null`인 문서.
+
+    유효한 YAML이고 **부재가 아니다.** 완화 조건을 falsy 기반으로 쓰면(`if not
+    services.get(x)`) 이 형상이 부재로 오인되어 계약을 한 줄로 우회할 수 있다.
+    """
+
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services[name] = None  # type: ignore[assignment]
+    return shaped
+
+
+def _verdict(
+    entry: object, candidate: dict[str, object], environment: dict[str, str], root_env: Path
+) -> str:
+    """진입점을 태우고 `예외클래스: 메시지`를 돌려준다."""
+
+    try:
+        entry(  # type: ignore[operator]
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+    except Exception as exc:  # noqa: BLE001 - 표를 만드는 것이 목적이다
+        # **절단하지 않는다.** 종전 `[:200]`은 긴 메시지의 꼬리를 잘랐고, 그 때문에
+        # "빠진 이름 대신 전체 집합을 나열한다"는 변이가 **우연히** 죽었다(적대 리뷰
+        # 2026-09-17 실측 — 14개 이름이 상한을 넘겨 확인 대상이 잘려나갔을 뿐이다).
+        # 우연으로 잡힌 것은 잡힌 것이 아니다.
+        return f"{type(exc).__name__}: {exc}"
+    return "PASS"
+
+
+def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
+    """`_bootstrap_candidate`와 **같은 fragment**의 resolved 문서.
+
+    `_resolved_compose`는 `docker compose config`를 부르므로 형상마다 부르지 않는다 —
+    **한 번** 해석한 뒤 메모리에서 서비스를 지우거나 null로 만든다. 서비스 수만큼
+    Docker를 부르면 이 표가 스위트에서 가장 느린 검사가 된다.
+    """
+
+    return _resolved_compose(
+        "kor-travel-map-postgres",
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        *_MAP_DATABASE_ONESHOT_SERVICES,
+        "pinvi-api",
+        "pinvi-admin-bootstrap",
+        "pinvi-db-runtime-role",
+        environment_update={
+            name: environment[name]
+            for name in (
+                "KOR_TRAVEL_MAP_PGDATA",
+                "KOR_TRAVEL_MAP_REPO_DIR",
+                "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR",
+                "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR",
+                "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR",
+                "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR",
+                "PINVI_REPO_DIR",
+                "PINVI_PGDATA",
+            )
+        },
+    )
+
+
+def test_required_protected_service_set_is_pinned() -> None:
+    """required 집합을 **리터럴로** 고정한다 — 이 검사가 S4의 첫 관문이다.
+
+    S4는 이 집합을 좁히는 일이고, 그 diff가 리뷰에 보이게 만드는 것이 S0의 전부다.
+    집합을 프로덕션 상수에서 파생해 비교하면 항진명제가 되므로 리터럴로 적는다.
+
+    `pinvi-db-init`이 여기 **없다**는 것도 함께 박는다. 15개 소비자 루프에는 있으나
+    required 집합에는 없고, 그 보증의 출처는 `_validate_pinvi_db_init_identity`다 —
+    S3가 바로 그 함수를 이분할한다.
+    """
+
+    assert len(_REQUIRED_SERVICES_GOLDEN) == 14
+    assert set(_REQUIRED_SERVICES_GOLDEN) == set(
+        c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
+    ), (
+        "required 집합이 바뀌었다 — S4라면 이 리터럴을 갱신하고 "
+        "PR 본문에 어느 서비스를 왜 뺐는지 열거하라"
+    )
+    assert _NON_REQUIRED_LOOP_SERVICE not in _REQUIRED_SERVICES_GOLDEN
+    assert (
+        _NON_REQUIRED_LOOP_SERVICE
+        not in c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
+    )
+
+
+#: 15개 소비자 루프 이름의 **리터럴 사본**. `_REQUIRED_SERVICES_GOLDEN`(14)과 달리
+#: 이 목록은 S4가 줄이지 않는다 — 줄이면 그 서비스의 행이 표에서 통째로 사라져
+#: 다시 눈이 먼다. required 집합이 좁아져도 **행은 남고 이유만 바뀐다**, 그것이
+#: 보여야 할 diff다.
+_PROTECTED_LOOP_SERVICES_GOLDEN: tuple[str, ...] = (
+    *_REQUIRED_SERVICES_GOLDEN,
+    _NON_REQUIRED_LOOP_SERVICE,
+)
+
+#: 서비스 **하나만** 지웠을 때의 거부 이유. 키는 `<서비스>/<진입점>`.
+#: 값이 바뀌면 그것이 곧 S4의 폭발 반경이다 — PR 본문에 옮겨 적어라.
+#:
+#: required 14개는 기계적이라 리터럴 목록에서 **파생**한다(프로덕션 상수가 아니라
+#: 이 파일의 리터럴에서다). S4가 그 리터럴을 줄이면 빠진 이름의 기대값이 사라지고,
+#: 그래도 `_PROTECTED_LOOP_SERVICES_GOLDEN`은 그 행을 계속 관측하므로 표가
+#: **빨개진다** — 작성자가 새 이유를 명시적으로 적어야 통과한다.
+_SINGLE_ABSENCE_GOLDEN: dict[str, str] = {
+    **{
+        f"{name}/raw": (
+            "ComposeCandidateContractError: compose candidate is missing "
+            f"required protected services: {name}"
+        )
+        for name in _REQUIRED_SERVICES_GOLDEN
+    },
+    **{
+        f"{name}/resolved": (
+            "ComposeCandidateContractError: resolved compose candidate is missing "
+            f"required protected services: {name}"
+        )
+        for name in _REQUIRED_SERVICES_GOLDEN
+    },
+    # `pinvi-db-init`은 required 집합 밖이라 **부재를 부재라고 말하지 않는다.**
+    # `_validate_pinvi_db_init_identity`가 먼저 걸러서 정체성 오류로 보고한다.
+    # S1 커밋과 `docs/tasks.md`가 "absent_* → missing required protected services"라고
+    # 단정했는데 15개 중 이 하나에서 거짓이었다(적대 리뷰 2026-09-17). 표에 그
+    # 예외를 **적어서** 남긴다 — 숨기면 S3가 그 함수를 이분할할 때 아무도 모른다.
+    "pinvi-db-init/raw": (
+        "ComposeCandidateContractError: PinVi database init identity is invalid"
+    ),
+    "pinvi-db-init/resolved": (
+        "ComposeCandidateContractError: PinVi database init identity is invalid"
+    ),
+}
+
+
+def test_single_service_absence_reason_is_pinned(tmp_path: Path) -> None:
+    """15개 서비스를 **하나씩** 지웠을 때의 거부 이유를 전수로 고정한다.
+
+    첫 판이 묶음 4행이었고, 그래서 리뷰가 required 집합을 비워도 초록이었다. 이유를
+    서비스별로 박으면 완화는 반드시 어떤 칸의 문구를 바꾼다 — 그것이 보이는 diff다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    resolved = _bootstrap_resolved(environment)
+    names = _PROTECTED_LOOP_SERVICES_GOLDEN
+
+    observed: dict[str, str] = {}
+    for name in names:
+        observed[f"{name}/raw"] = _verdict(
+            validate_compose_candidate_protected_values,
+            _shape_without(candidate, (name,)),
+            environment,
+            root_env,
+        )
+        observed[f"{name}/resolved"] = _verdict(
+            validate_resolved_compose_candidate_protected_values,
+            _shape_without(resolved, (name,)),
+            environment,
+            root_env,
+        )
+
+    assert observed == _SINGLE_ABSENCE_GOLDEN, _golden_diff(observed, _SINGLE_ABSENCE_GOLDEN)
+
+
+def _golden_diff(observed: dict[str, str], golden: dict[str, str]) -> str:
+    """표가 틀렸을 때 **어느 칸이 어떻게** 움직였는지 보여 준다."""
+
+    lines = ["골든 테이블과 다르다 — 바뀐 칸을 PR 본문에 열거하라:"]
+    for key in sorted(set(observed) | set(golden)):
+        was, now = golden.get(key, "<없던 칸>"), observed.get(key, "<사라진 칸>")
+        if was != now:
+            lines.append(
+                f"  {key}\n      before: {was}\n      after : {now}"
+            )
+    return "\n".join(lines)
+
+
+#: 묶음 부재 + `null` 형상. 서비스별 표가 못 보는 **상호작용**(둘 이상이 함께 빠질 때
+#: 어느 이름이 먼저 보고되는가)과 `null` 경로를 덮는다.
+#:
+#: `absent_pinvi_oneshots`가 서비스 **셋**을 지우는데 이름은 **둘**만 댄다는 점에
+#: 주목하라 — `pinvi-db-init`이 required 집합 밖이라서다. 첫 판의 표는 이 비대칭을
+#: 드러내지 못했다.
+_SHAPE_GOLDEN: dict[str, str] = {
+    "all_present/raw": "PASS",
+    "all_present/resolved": "PASS",
+    "absent_map_core/raw": (
+        "ComposeCandidateContractError: compose candidate is missing required "
+        "protected services: kor-travel-map-api, kor-travel-map-postgres, "
+        "kor-travel-map-ui"
+    ),
+    "absent_map_core/resolved": (
+        "ComposeCandidateContractError: resolved compose candidate is missing "
+        "required protected services: kor-travel-map-api, kor-travel-map-postgres, "
+        "kor-travel-map-ui"
+    ),
+    "absent_map_oneshots/raw": (
+        "ComposeCandidateContractError: compose candidate is missing required "
+        "protected services: kor-travel-map-application-fresh-300, "
+        "kor-travel-map-application-fresh-finalize, kor-travel-map-dagster-db-init, "
+        "kor-travel-map-dagster-storage-migrate, kor-travel-map-db-role-bootstrap"
+    ),
+    "absent_map_oneshots/resolved": (
+        "ComposeCandidateContractError: resolved compose candidate is missing "
+        "required protected services: kor-travel-map-application-fresh-300, "
+        "kor-travel-map-application-fresh-finalize, kor-travel-map-dagster-db-init, "
+        "kor-travel-map-dagster-storage-migrate, kor-travel-map-db-role-bootstrap"
+    ),
+    "absent_pinvi_core/raw": (
+        "ComposeCandidateContractError: compose candidate is missing required "
+        "protected services: pinvi-api, pinvi-postgres"
+    ),
+    "absent_pinvi_core/resolved": (
+        "ComposeCandidateContractError: resolved compose candidate is missing "
+        "required protected services: pinvi-api, pinvi-postgres"
+    ),
+    "absent_pinvi_oneshots/raw": (
+        "ComposeCandidateContractError: compose candidate is missing required "
+        "protected services: pinvi-admin-bootstrap, pinvi-db-runtime-role"
+    ),
+    "absent_pinvi_oneshots/resolved": (
+        "ComposeCandidateContractError: resolved compose candidate is missing "
+        "required protected services: pinvi-admin-bootstrap, pinvi-db-runtime-role"
+    ),
+    "nulled_kor-travel-map-api/raw": (
+        "ComposeCandidateContractError: compose candidate service is missing or "
+        "invalid: kor-travel-map-api"
+    ),
+    "nulled_kor-travel-map-api/resolved": (
+        "ComposeCandidateContractError: resolved compose candidate service is "
+        "missing or invalid: kor-travel-map-api"
+    ),
+    "nulled_pinvi-api/raw": (
+        "ComposeCandidateContractError: compose candidate service is missing or "
+        "invalid: pinvi-api"
+    ),
+    "nulled_pinvi-api/resolved": (
+        "ComposeCandidateContractError: resolved compose candidate service is "
+        "missing or invalid: pinvi-api"
+    ),
+}
+
+
+def test_absence_matrix_is_pinned(tmp_path: Path) -> None:
+    """묶음 부재·`null` 형상의 판정을 표로 고정한다.
+
+    이 검사는 **아무것도 주장하지 않는다.** "이 형상이 거부돼야 한다"가 아니라
+    "오늘은 이렇게 거부된다"를 적는다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    resolved = _bootstrap_resolved(environment)
+    entries = {
+        "raw": (validate_compose_candidate_protected_values, candidate),
+        "resolved": (validate_resolved_compose_candidate_protected_values, resolved),
+    }
+
+    observed: dict[str, str] = {}
+    for entry_name, (entry, base) in entries.items():
+        observed[f"all_present/{entry_name}"] = _verdict(entry, base, environment, root_env)
+        for family, names in _ABSENCE_MATRIX_SERVICES.items():
+            observed[f"absent_{family}/{entry_name}"] = _verdict(
+                entry, _shape_without(base, names), environment, root_env
+            )
+        for name in ("kor-travel-map-api", "pinvi-api"):
+            observed[f"nulled_{name}/{entry_name}"] = _verdict(
+                entry, _shape_nulled(base, name), environment, root_env
+            )
+
+    assert observed == _SHAPE_GOLDEN, _golden_diff(observed, _SHAPE_GOLDEN)
+
+
+def test_absence_is_reported_as_absence(tmp_path: Path) -> None:
+    """부재는 **부재라고** 보고된다 — 그리고 어느 이름이 빠졌는지 말한다 (S1).
+
+    S0이 박은 표가 드러낸 것: required-set 검사가 여섯 validator보다 **뒤**에 있어서,
+    서비스가 빠져도 사용자는 "Map PostgreSQL password secret is invalid" 같은 무관한
+    문구를 봤다. 운영자는 그것을 쫓다가 실제 원인에 도달하지 못한다.
+
+    S1이 순서를 교정했다. 이 검사가 그 교정을 결박한다 — 누군가 순서를 되돌리면
+    빨개진다. **두 진입점 모두** 건다: 리뷰가 실측으로 보였듯 resolved 쪽만 되돌리면
+    종전에는 아무도 못 봤다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    resolved = _bootstrap_resolved(environment)
+
+    for entry, base, label in (
+        (validate_compose_candidate_protected_values, candidate, "raw"),
+        (validate_resolved_compose_candidate_protected_values, resolved, "resolved"),
+    ):
+        verdict = _verdict(
+            entry, _shape_without(base, ("kor-travel-map-postgres",)), environment, root_env
+        )
+        assert "missing required protected services" in verdict, f"{label}: {verdict}"
+        assert "kor-travel-map-postgres" in verdict, (
+            f"{label}: 무엇이 빠졌는지 말하지 않는다: {verdict}"
+        )
+
+
+def test_null_service_is_invalid_not_absent(tmp_path: Path) -> None:
+    """`service: null`은 **부재가 아니라 invalid**다 — 그리고 그 서비스를 지목한다.
+
+    이 구분이 S4의 안전 조건이다. 완화의 skip 판정은 **키 부재로만** 해야 하는데,
+    falsy 기반(`if not services.get(x)`)으로 쓰면 `null` 한 줄이 부재로 오인되어
+    계약을 우회한다.
+
+    S0 표의 실측: 종전에는 **어느 서비스를 null로 만들든** "Map PostgreSQL password
+    secret is invalid"가 나왔다(소비자 스캔이 non-Mapping을 먼저 만난다). PinVi를
+    null로 해도 Map 오류였다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    resolved = _bootstrap_resolved(environment)
+
+    for entry, base, label in (
+        (validate_compose_candidate_protected_values, candidate, "raw"),
+        (validate_resolved_compose_candidate_protected_values, resolved, "resolved"),
+    ):
+        for name in ("kor-travel-map-api", "pinvi-api"):
+            verdict = _verdict(entry, _shape_nulled(base, name), environment, root_env)
+            assert "missing or invalid" in verdict, f"{label}/{name}: {verdict}"
+            assert name in verdict, (
+                f"{label}: {name}을 null로 했는데 그 이름을 말하지 않는다: {verdict}"
+            )
+
+
+def test_unknown_service_key_is_not_echoed_into_the_contract_error(
+    tmp_path: Path,
+) -> None:
+    """계약이 모르는 서비스 키는 **문구에 그대로 실리지 않는다**.
+
+    이 오류는 CLI stderr와 HTTP 500 body로 나가는데(`api/routes.py`의
+    `_config_failure_detail`), 서비스 키는 후보 문서 작성자가 정하는 임의 문자열이다.
+    적대 리뷰 2026-09-17이 보호값을 키 자리에 넣어 실측했다 — S1의 첫 판은 그 문자열을
+    그대로 실었고 main은 싣지 않았다. 이 루프는 보호값 전역 스캔보다 **앞**이라
+    그 스캔이 막아 주지도 못한다.
+
+    권한 상승은 아니다(운영자가 직접 적은 키다). 심층 방어이고, 이 저장소가 이미
+    명시적으로 지키는 계약이다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    secret_shaped_key = environment["KOR_TRAVEL_MAP_POSTGRES_PASSWORD"]
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services[secret_shaped_key] = None
+
+    verdict = _verdict(
+        validate_compose_candidate_protected_values, shaped, environment, root_env
+    )
+    assert verdict != "PASS", verdict
+    assert secret_shaped_key not in verdict, (
+        f"후보가 정한 키가 계약 오류 문구로 새어 나왔다: {verdict}"
+    )
+    assert "sha256:" in verdict, f"모르는 키를 가리키는 표식이 없다: {verdict}"
+
+    # 아는 이름은 그대로 지목한다 — 진단을 잃지 않는다.
+    known = _verdict(
+        validate_compose_candidate_protected_values,
+        _shape_nulled(candidate, "pinvi-api"),
+        environment,
+        root_env,
+    )
+    assert "pinvi-api" in known, known
