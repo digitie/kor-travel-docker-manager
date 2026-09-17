@@ -2,6 +2,7 @@ import os
 import posixpath
 import stat
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
@@ -30,6 +31,51 @@ _REQUIRED_CONTAINER_FIELDS = (
     "connection",
     "expected_ports",
 )
+
+
+#: 외부 compose 프로젝트를 가리키는 target의 선언 필드.
+_EXTERNAL_PROJECT_FIELDS: Final = ("project", "working_dir", "config_files")
+
+
+@dataclass(frozen=True)
+class ExternalProject:
+    """Manager 자신의 compose가 아닌 **형제 프로젝트**의 좌표.
+
+    `docker compose -p <project> --project-directory <working_dir> -f <f1> -f <f2>`를
+    그대로 재구성할 수 있는 최소 집합이다. 실행 중인 컨테이너의
+    `com.docker.compose.*` 라벨에서 읽은 값과 같은 모양이라, 살아 있는 프로젝트를
+    그대로 선언에 옮길 수 있다.
+    """
+
+    project: str
+    working_dir: str
+    config_files: tuple[str, ...]
+
+    def compose_file_arguments(self) -> list[str]:
+        """`-f` 인자열. 경로는 `working_dir` 기준 상대 경로다."""
+
+        arguments: list[str] = []
+        for name in self.config_files:
+            arguments.extend(["-f", name])
+        return arguments
+
+
+@dataclass(frozen=True)
+class ServiceGroup:
+    """한 번의 `docker compose` 호출로 다룰 수 있는 서비스 묶음.
+
+    `external`이 `None`이면 Manager 자신의 프로젝트다. target이 여러 프로젝트에
+    걸치면(예: `airport`가 `airport-db`에 의존) 묶음이 여럿 나오고, 호출하는 쪽이
+    **묶음마다 한 번씩** 명령을 돌려야 한다 — 그것이 단일 프로젝트 전제를 깨는
+    지점이고, 평평한 이름 목록으로는 표현할 수 없다.
+    """
+
+    external: ExternalProject | None
+    services: tuple[str, ...]
+
+    @property
+    def project_label(self) -> str:
+        return self.external.project if self.external is not None else "kor-travel-docker-manager"
 
 
 class TargetsConfigError(ValueError):
@@ -430,6 +476,8 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
                     f"{label} targets.{target_id}.containers: unknown container '{container_id}'"
                 )
 
+        _validate_external_project(spec, target_id=target_id, label=label)
+
         aliases = _require_list_field(spec, "aliases", target_id=target_id, label=label)
         for alias in [target_id, *aliases]:
             normalized = str(alias).strip().lower()
@@ -586,6 +634,134 @@ def services_for_target(target: str | None) -> list[str]:
     return _dedupe(services)
 
 
+def _validate_external_project(spec: dict[str, Any], *, target_id: str, label: str) -> None:
+    """`external_project` 절의 형태를 검증한다 — 없으면 아무것도 하지 않는다.
+
+    오타 하나가 "Manager 자신의 프로젝트"로 조용히 해석되면 다른 프로젝트를
+    대상으로 명령이 돌아간다. fail-close한다.
+    """
+
+    if "external_project" not in spec:
+        return
+    where = f"{label} targets.{target_id}.external_project"
+    external = spec["external_project"]
+    if not isinstance(external, dict):
+        raise TargetsConfigError(f"{where}: must be a mapping")
+    unknown = sorted(set(external) - set(_EXTERNAL_PROJECT_FIELDS))
+    if unknown:
+        raise TargetsConfigError(f"{where}: unknown fields {unknown}")
+    missing = [field for field in _EXTERNAL_PROJECT_FIELDS if field not in external]
+    if missing:
+        raise TargetsConfigError(f"{where}: missing fields {missing}")
+
+    project = external["project"]
+    if not isinstance(project, str) or not project.strip() or project != project.strip():
+        raise TargetsConfigError(
+            f"{where}.project: must be a non-empty string without surrounding whitespace"
+        )
+    working_dir = external["working_dir"]
+    if not isinstance(working_dir, str) or not working_dir.startswith("/"):
+        raise TargetsConfigError(f"{where}.working_dir: must be an absolute path")
+    if working_dir != posixpath.normpath(working_dir):
+        raise TargetsConfigError(
+            f"{where}.working_dir: must be normalized (got {working_dir!r})"
+        )
+
+    config_files = external["config_files"]
+    if not isinstance(config_files, list) or not config_files:
+        raise TargetsConfigError(f"{where}.config_files: must be a non-empty list")
+    for index, name in enumerate(config_files):
+        if not isinstance(name, str) or not name.strip():
+            raise TargetsConfigError(
+                f"{where}.config_files[{index}]: must be a non-empty string"
+            )
+        if name.startswith("/"):
+            # 절대 경로를 허용하면 `working_dir`이 뜻을 잃고, 선언을 읽는 사람이
+            # 어느 디렉터리가 기준인지 알 수 없게 된다.
+            raise TargetsConfigError(
+                f"{where}.config_files[{index}]: must be relative to working_dir"
+            )
+        if name != posixpath.normpath(name) or name.startswith(".."):
+            raise TargetsConfigError(
+                f"{where}.config_files[{index}]: must be normalized and stay inside "
+                f"working_dir (got {name!r})"
+            )
+
+    if spec.get("init_steps"):
+        # init_steps는 Manager compose의 `exec`로 돈다. 외부 프로젝트에 그대로
+        # 적용하면 엉뚱한 컨테이너를 잡으므로, 지원 전에는 선언 자체를 막는다.
+        raise TargetsConfigError(
+            f"{where}: external targets cannot declare init_steps yet "
+            "(they would run against the Manager project)"
+        )
+
+
+def external_project_for_target(target: str | None) -> ExternalProject | None:
+    """target이 선언한 외부 프로젝트. 선언이 없으면 `None`(= Manager 자신)."""
+
+    target_name = resolve_target_name(target)
+    spec = _targets()[target_name]
+    external = spec.get("external_project")
+    if not external:
+        return None
+    return ExternalProject(
+        project=str(external["project"]),
+        working_dir=str(external["working_dir"]),
+        config_files=tuple(str(name) for name in external["config_files"]),
+    )
+
+
+def service_groups_for_target(
+    target: str | None, *, runtime_only: bool = False
+) -> list[ServiceGroup]:
+    """target의 서비스를 **프로젝트별로 묶어** 의존성 순서대로 돌려준다.
+
+    `services_for_target`의 평평한 목록은 프로젝트가 하나일 때만 성립한다. 여러
+    프로젝트에 걸친 target은 묶음마다 별도 `docker compose` 호출이 필요하므로,
+    호출하는 쪽이 그 사실을 볼 수 있어야 한다.
+
+    같은 프로젝트의 서비스는 한 묶음으로 합친다 — 의존성 순서상 떨어져 있어도
+    호출은 한 번으로 족하고, 그것이 compose가 기대하는 사용법이다.
+    """
+
+    field = "runtime_services" if runtime_only else "services"
+    grouped: dict[tuple[str, str, tuple[str, ...]] | None, list[str]] = {}
+    order: list[tuple[str, str, tuple[str, ...]] | None] = []
+    for target_name in target_sequence_for_target(target):
+        spec = _targets()[target_name]
+        external = external_project_for_target(target_name)
+        key = (
+            (external.project, external.working_dir, external.config_files)
+            if external is not None
+            else None
+        )
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        for service in spec.get(field, []):
+            if service not in grouped[key]:
+                grouped[key].append(service)
+
+    groups: list[ServiceGroup] = []
+    for key in order:
+        services = tuple(grouped[key])
+        if not services:
+            continue
+        external = (
+            ExternalProject(project=key[0], working_dir=key[1], config_files=key[2])
+            if key is not None
+            else None
+        )
+        groups.append(ServiceGroup(external=external, services=services))
+    return groups
+
+
+def target_is_external(target: str | None) -> bool:
+    """이 target(또는 그 의존 폐포)이 Manager 밖의 프로젝트를 건드리는가."""
+
+    return any(group.external is not None for group in service_groups_for_target(target))
+
+
 def runtime_services_for_target(target: str | None) -> list[str]:
     services: list[str] = []
     for target_name in target_sequence_for_target(target):
@@ -599,6 +775,28 @@ def init_steps_for_target(target: str | None) -> list[dict[str, Any]]:
         for step in _targets()[target_name].get("init_steps", []):
             steps.append({"target": target_name, **step})
     return steps
+
+
+def external_project_for_container(container_id: str) -> ExternalProject | None:
+    """이 컨테이너가 속한 외부 프로젝트. Manager 자신의 것이면 `None`.
+
+    컨테이너 선언의 `external_project`는 **프로젝트 이름**만 담는다(좌표 전체를
+    컨테이너마다 반복하면 target 선언과 갈라진다). 그래서 이름으로 target을 찾아
+    그 target의 좌표를 쓴다 — 정본이 한 곳이다.
+    """
+
+    spec = MANAGED_CONTAINERS.get(container_id)
+    if spec is None:
+        return None
+    project = spec.get("external_project")
+    if not project:
+        return None
+    for target_name in _targets():
+        external = external_project_for_target(target_name)
+        if external is not None and external.project == project:
+            return external
+    # 스키마 검증이 이 경우를 막는다(선언되지 않은 프로젝트). 방어로만 남긴다.
+    return None
 
 
 def container_id_to_compose_service(container_id: str) -> str:

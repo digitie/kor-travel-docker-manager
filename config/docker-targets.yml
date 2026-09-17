@@ -13,6 +13,11 @@ dependency_order:
   - conc
   - map
   - pinvi
+  # 형제 프로젝트(외부 compose). Manager 자신의 프로젝트보다 뒤에 둔다 — 기동
+  # 순서상 앞의 것들에 의존하지 않고, `all`에서 마지막에 오는 것이 읽기 쉽다.
+  - airport-db
+  - airport
+  - weather
 
 containers:
   kor-travel-geo-postgresql:
@@ -197,6 +202,95 @@ containers:
     prod_url_env: KTDM_PROD_URL_CADVISOR
     expected_ports:
       - "12301:12301"
+
+  kor-travel-weather-db:
+    name: kor-travel-weather-db-1
+    compose_service: db
+    external_project: kor-travel-weather
+    role: weather-postgresql
+    display_name: Kor Travel Weather 전용 PostgreSQL
+    connection: "postgresql://127.0.0.1:14100"
+    expected_ports:
+      - "14100:5432"
+  kor-travel-weather-api:
+    name: kor-travel-weather-api-1
+    compose_service: api
+    external_project: kor-travel-weather
+    role: weather-api
+    display_name: Kor Travel Weather API
+    connection: "http://127.0.0.1:14101"
+    expected_ports:
+      - "14101:14101"
+  kor-travel-weather-dagster:
+    name: kor-travel-weather-dagster-1
+    compose_service: dagster
+    external_project: kor-travel-weather
+    role: weather-dagster
+    display_name: Kor Travel Weather Dagster
+    connection: "내부 전용(포트 없음) — gateway를 통해 접근"
+    expected_ports: []
+  kor-travel-weather-dagster-gateway:
+    name: kor-travel-weather-dagster-gateway-1
+    compose_service: dagster-gateway
+    external_project: kor-travel-weather
+    role: weather-dagster-gateway
+    display_name: Kor Travel Weather Dagster 게이트웨이
+    connection: "http://127.0.0.1:14102"
+    expected_ports:
+      - "14102:14102"
+  kor-travel-weather-web:
+    name: kor-travel-weather-web-1
+    compose_service: web
+    external_project: kor-travel-weather
+    role: weather-web
+    display_name: Kor Travel Weather 웹
+    connection: "http://127.0.0.1:14105"
+    expected_ports:
+      - "14105:14105"
+  kor-travel-weather-prometheus:
+    name: kor-travel-weather-prometheus-1
+    compose_service: prometheus
+    external_project: kor-travel-weather
+    role: weather-prometheus
+    display_name: Kor Travel Weather Prometheus
+    connection: "http://127.0.0.1:14104"
+    expected_ports:
+      - "14104:9090"
+  kor-travel-weather-migrate:
+    name: kor-travel-weather-migrate-1
+    compose_service: migrate
+    external_project: kor-travel-weather
+    role: weather-migrate
+    display_name: Kor Travel Weather 마이그레이션(one-shot)
+    connection: "일회성 작업 — 정상 상태는 exited(0)다"
+    expected_ports: []
+  kor-travel-airport-postgresql:
+    name: kor-travel-airport-db-postgres-1
+    compose_service: postgres
+    external_project: kor-travel-airport-db
+    role: airport-postgresql
+    display_name: Kor Travel Airport 전용 PostgreSQL
+    connection: "postgresql://127.0.0.1:14000"
+    expected_ports:
+      - "14000:5432"
+  kor-travel-airport-backend:
+    name: kor-travel-airport-backend-1
+    compose_service: backend
+    external_project: kor-travel-airport
+    role: airport-backend
+    display_name: Kor Travel Airport 백엔드
+    connection: "http://127.0.0.1:14001"
+    expected_ports:
+      - "14001:8000"
+  kor-travel-airport-frontend:
+    name: kor-travel-airport-frontend-1
+    compose_service: frontend
+    external_project: kor-travel-airport
+    role: airport-frontend
+    display_name: Kor Travel Airport 프런트엔드
+    connection: "http://127.0.0.1:14002"
+    expected_ports:
+      - "14002:3000"
 
 targets:
   db:
@@ -517,6 +611,91 @@ targets:
 # `containers:`에 없다. 그래서 컨테이너 정의 안이 아니라 최상위 절로 둔다 — one-shot을
 # 컨테이너 레지스트리에 끼워 넣으면 `status`/`ensure`/metrics가 그것을 상시 관리 대상으로
 # 보게 된다.
+  airport-db:
+    # 형제 프로젝트다 — compose 정본이 이 저장소 밖에 있고, 배포는 각 저장소가
+    # 계속 소유한다. Manager는 상태를 보고 컨테이너 수명주기(start/stop/restart)만
+    # 다룬다. `control_container`가 Docker SDK로 컨테이너를 직접 잡으므로 그 축은
+    # compose 프로젝트와 무관하게 이미 동작한다.
+    external_project:
+      project: kor-travel-airport-db
+      working_dir: /home/digitie/apps/kor-travel-airport
+      config_files:
+        - docker-compose.db.yml
+    port_band: "14000-14000"
+    depends_on: []
+    display_name: Kor Travel Airport DB
+    description: Kor Travel Airport 전용 PostgreSQL 인스턴스(:14000)입니다. compose 정본은 apps/kor-travel-airport/docker-compose.db.yml입니다.
+    aliases:
+      - airport-postgresql
+      - airport-postgres
+    services:
+      - postgres
+    runtime_services:
+      - postgres
+    containers:
+      - kor-travel-airport-postgresql
+
+  airport:
+    external_project:
+      project: kor-travel-airport
+      working_dir: /home/digitie/apps/kor-travel-airport
+      config_files:
+        - docker-compose.yml
+    port_band: "14001-14099"
+    depends_on: [airport-db]
+    display_name: Kor Travel Airport
+    description: 공항 정보 서비스입니다. 백엔드(:14001)와 프런트엔드(:14002)로 구성되며 전용 DB target(airport-db)에 의존합니다.
+    aliases:
+      - kor-travel-airport
+    services:
+      - backend
+      - frontend
+    runtime_services:
+      - backend
+      - frontend
+    containers:
+      - kor-travel-airport-backend
+      - kor-travel-airport-frontend
+
+  weather:
+    external_project:
+      project: kor-travel-weather
+      working_dir: /home/digitie/kor-travel-weather
+      config_files:
+        - compose.yaml
+        - deploy/compose.n150.yaml
+    port_band: "14100-14199"
+    depends_on: []
+    display_name: Kor Travel Weather
+    description: 기상 데이터 서비스입니다. DB(:14100)·API(:14101)·Dagster 게이트웨이(:14102)·Prometheus(:14104)·웹(:14105)으로 구성되며, n150 오버레이(deploy/compose.n150.yaml)를 함께 씁니다.
+    aliases:
+      - kor-travel-weather
+    services:
+      - db
+      - migrate
+      - api
+      - dagster
+      - dagster-gateway
+      - web
+      - prometheus
+    # `migrate`는 restart=no인 one-shot이라 runtime에서 빠진다 — 정상 상태가
+    # exited(0)이므로 runtime 목록에 두면 상태 판정이 늘 실패로 읽힌다.
+    runtime_services:
+      - db
+      - api
+      - dagster
+      - dagster-gateway
+      - web
+      - prometheus
+    containers:
+      - kor-travel-weather-db
+      - kor-travel-weather-migrate
+      - kor-travel-weather-api
+      - kor-travel-weather-dagster
+      - kor-travel-weather-dagster-gateway
+      - kor-travel-weather-web
+      - kor-travel-weather-prometheus
+
 compose_binds:
   grafana:
     - container_path: "/etc/grafana/provisioning/datasources"
