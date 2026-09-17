@@ -26,6 +26,12 @@ from urllib.parse import unquote, urlsplit
 
 from dotenv import dotenv_values
 
+# **모듈 경유로 부른다**(GM-17 A 적대 리뷰 H-1). `from ... import load_compose_bind_allowlist`
+# 로 이름을 당겨오면 배포 경로와 로더의 연결이 이 import 한 줄에만 있고, 그 줄이
+# 끊기거나 이름이 다른 것으로 바뀌어도 어떤 검사도 세지 못한다 — 리뷰어가 로더를
+# 코드 안 얼린 dict로 갈아끼운 고장난 구현에서 전체 스위트 초록을 재현했다.
+# 모듈 속성으로 부르면 그 연결 자체를 테스트가 결박할 수 있다.
+from kor_travel_docker_manager.services import registry as registry_module
 from kor_travel_docker_manager.services.capabilities import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
@@ -42,9 +48,11 @@ from kor_travel_docker_manager.services.loopback_readiness import (
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
+from kor_travel_docker_manager.services.registry import get_targets_config_path
 from kor_travel_docker_manager.services.trusted_install import (
     GLOBAL_MUTATION_LOCK_FD_ENV,
     GLOBAL_MUTATION_LOCK_PATH,
+    TRUSTED_INSTALL_ROOT,
     TRUSTED_STATE_ROOT,
     require_pinned_runtime_rebuild_root,
 )
@@ -1720,131 +1728,87 @@ _MAP_ROLE_BOOTSTRAP_SOURCE_TARGETS = frozenset(
     }
 )
 _PINVI_ROLE_BOOTSTRAP_SOURCE_TARGETS = frozenset({_PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET})
-_CANDIDATE_ALLOWED_OPERATOR_BINDS = {
-    (
-        "kor-travel-concierge-postgres",
-        "/var/lib/postgresql/data",
-        False,
-    ): "${KOR_TRAVEL_CONCIERGE_PGDATA:-/home/digitie/kor-travel-concierge-data/pgdata}",
-    (
-        "kor-travel-map-postgres",
-        "/var/lib/postgresql/data",
-        False,
-    ): "${KOR_TRAVEL_MAP_PGDATA:-/home/digitie/kor-travel-map-data/pgdata}",
-    (
-        "pinvi-postgres",
-        "/var/lib/postgresql/data",
-        False,
-    ): "${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}",
-    (
-        "kor-travel-map-db-role-bootstrap",
-        "/usr/local/bin/postgres-role-bootstrap",
-        True,
-    ): "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/docker/postgres-role-bootstrap.sh",
-    (
-        "kor-travel-map-db-role-bootstrap",
-        "/usr/local/lib/kor-travel-map/database-credential-preflight.sh",
-        True,
-    ): ("${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/scripts/database-credential-preflight.sh"),
-    (
-        _PINVI_DB_RUNTIME_ROLE_SERVICE,
-        _PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET,
-        True,
-    ): ("${PINVI_REPO_DIR:-../pinvi}/infra/postgres/bootstrap-pinvi-runtime-role.sh"),
-    (
-        _MAP_APPLICATION_FRESH_300_SERVICE,
-        "/run/kor-travel-map-application-fresh-migrate",
-        True,
-    ): "${KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR:?}",
-    (
-        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
-        "/run/kor-travel-map-application-fresh-finalize",
-        True,
-    ): "${KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR:?}",
-    (
-        _MAP_API_SERVICE,
-        "/run/kor-travel-map-application-final-permit",
-        True,
-    ): "${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?}",
-    (
-        _MAP_DAGSTER_SERVICE,
-        "/run/kor-travel-map-application-final-permit",
-        True,
-    ): "${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?}",
-    (
-        _MAP_DAGSTER_SERVICE,
-        "/run/kor-travel-map-dagster-storage-permit",
-        True,
-    ): "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}",
-    (
-        _MAP_DAGSTER_DAEMON_SERVICE,
-        "/run/kor-travel-map-application-final-permit",
-        True,
-    ): "${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?}",
-    (
-        _MAP_DAGSTER_DAEMON_SERVICE,
-        "/run/kor-travel-map-dagster-storage-permit",
-        True,
-    ): "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}",
-    (
-        _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
-        "/run/kor-travel-map-dagster-storage-permit",
-        True,
-    ): "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}",
-    (
-        "kor-travel-geo-postgres",
-        "/var/lib/postgresql/data",
-        False,
-    ): "${KOR_TRAVEL_GEO_PGDATA:-/home/digitie/kor-travel-geo-data/pgdata-final-20260529}",
-    (
-        "kor-travel-geo-postgres",
-        "/data/juso",
-        True,
-    ): "${KOR_TRAVEL_GEO_JUSO_DATA:-/mnt/f/dev/kor-travel-geo/data/juso}",
-    (
-        "kor-travel-geo-postgres",
-        "/docker-entrypoint-initdb.d/010-ensure-kor-travel-geo-db.sh",
-        True,
-    ): "./scripts/ensure-kor-travel-geo-db.sh",
-    (
-        "kor-travel-geo-postgres",
-        "/opt/kor-travel-docker-manager/ensure-kor-travel-geo-db.sh",
-        True,
-    ): "./scripts/ensure-kor-travel-geo-db.sh",
-    (
-        "kor-travel-geo-postgres",
-        "/opt/kor-travel-docker-manager/verify-kor-travel-geo-source.sh",
-        True,
-    ): "./scripts/verify-kor-travel-geo-source.sh",
-    ("rustfs", "/data", False): ("${RUSTFS_DATA_DIR:-/home/digitie/kor-travel-geo-data/rustfs}"),
-    (
-        "rustfs-init",
-        "/opt/kor-travel-docker-manager/ensure-rustfs-buckets.sh",
-        True,
-    ): "./scripts/ensure-rustfs-buckets.sh",
-    ("kor-travel-geo-api", "/data", True): (
-        "${KOR_TRAVEL_GEO_APP_DATA_DIR:-../kor-travel-geo/data}"
-    ),
-    ("kor-travel-geo-api", "/app/data/backups", False): (
-        "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
-    ),
-    ("prometheus", "/etc/prometheus/prometheus.yml", True): ("./config/prometheus/prometheus.yml"),
-    ("prometheus", "/prometheus", False): (
-        "${PROMETHEUS_DATA_DIR:-/home/digitie/kor-travel-geo-data/prometheus}"
-    ),
-    ("grafana", "/var/lib/grafana", False): (
-        "${GRAFANA_DATA_DIR:-/home/digitie/kor-travel-geo-data/grafana}"
-    ),
-    ("grafana", "/etc/grafana/provisioning/datasources", True): (
-        "./config/grafana/provisioning/datasources"
-    ),
-    ("kor-travel-geo-dagster", "/app/data/backups", False): (
-        "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
-    ),
-    ("kor-travel-geo-dagster-daemon", "/app/data/backups", False): (
-        "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
-    ),
-}
+#: operator bind의 host source가 **절대 될 수 없는** 자리. GM-17 A 적대 리뷰가
+#: 찾은 구멍이다 — allowlist가 설정으로 나온 뒤 `source: "/etc"` 한 줄이면 production
+#: 컨테이너가 host `/etc`를 쓰기 가능으로 얻는다. 종전 manager 가드는 manager 파일의
+#: **조상**만 거부해서(`resolved_source in manager_path.parents`) `/etc`·`/root`처럼
+#: 조상이 아닌 민감 디렉터리를 막지 못했고, 디렉터리는 내용 스캔도 받지 않는다.
+#:
+#: 여기 있는 것과 그 **하위 전부**를 거부한다. system bind(cadvisor `/sys`,
+#: docker.sock)는 이 검사 앞에서 `continue`하므로 영향받지 않는다.
+_CANDIDATE_FORBIDDEN_OPERATOR_BIND_SOURCES: Final[tuple[str, ...]] = (
+    "/etc",
+    "/root",
+    "/boot",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/var/lib/docker",
+    "/var/run/docker.sock",
+)
+
+#: 경로 어디에든 이 이름이 있으면 거부한다. `/home/*/.ssh`를 경로 리터럴로 열거할 수
+#: 없기 때문이다.
+_CANDIDATE_FORBIDDEN_BIND_SOURCE_COMPONENTS: Final[frozenset[str]] = frozenset(
+    {".ssh", ".gnupg", ".aws", ".kube"}
+)
+
+
+def _assert_operator_bind_source_is_permitted(*, service: str, resolved_source: Path) -> None:
+    """operator bind의 host source가 허용된 자리인가.
+
+    **이 검사는 allowlist가 설정으로 나오면서 필요해졌다.** 종전에는 목록이 코드
+    상수라 새 source를 넣으려면 backend를 고치고 재설치해야 했고, 그 과정 자체가
+    리뷰였다. 이제는 설정 한 줄이므로 목록에 무엇이 들어올 수 있는지를 코드가 말해야
+    한다.
+
+    두 부류를 막는다.
+
+    1. **민감한 host 자리.** `/etc`·`/root` 같은 디렉터리는 manager 파일의 조상이
+       아니라서 종전 가드를 그냥 지나갔고, 디렉터리 bind는 protected 값 스캔도 받지
+       않는다(`S_ISDIR`이면 내용 검사가 없다). 즉 아무 신호 없이 통과했다.
+    2. **자기-인가 루프.** allowlist 파일 자신과 backend 소스를 bind source로 쓰면,
+       그 컨테이너가 다음 재기동에 임의 bind를 인가할 수 있다. 인가하는 것과 인가되는
+       것이 같아지면 경계가 아니다. 설치 트리 전체를 막지는 **않는다** —
+       `./config/prometheus/...`·`./scripts/...`가 정당하게 그 안에 있다.
+    """
+
+    for forbidden in _CANDIDATE_FORBIDDEN_OPERATOR_BIND_SOURCES:
+        denied = Path(forbidden)
+        if resolved_source == denied or denied in resolved_source.parents:
+            raise ComposeCandidateContractError(
+                f"compose candidate {service} bind source is a forbidden host location: "
+                f"{resolved_source}"
+            )
+    if _CANDIDATE_FORBIDDEN_BIND_SOURCE_COMPONENTS.intersection(resolved_source.parts):
+        raise ComposeCandidateContractError(
+            f"compose candidate {service} bind source exposes a credential directory: "
+            f"{resolved_source}"
+        )
+
+    targets_config = Path(get_targets_config_path()).resolve()
+    if resolved_source == targets_config:
+        raise ComposeCandidateContractError(
+            f"compose candidate {service} bind source is the bind allowlist itself — "
+            "인가하는 파일과 인가되는 것이 같아지면 경계가 아니다"
+        )
+    backend_root = TRUSTED_INSTALL_ROOT / "backend"
+    if resolved_source == backend_root or backend_root in resolved_source.parents:
+        raise ComposeCandidateContractError(
+            f"compose candidate {service} bind source exposes manager backend source: "
+            f"{resolved_source}"
+        )
+
+
+# GM-17 본작업 A: 허용 bind 목록의 정본은 `config/docker-targets.yml`의
+# `compose_binds:` 절이다. 종전에는 여기 125줄짜리 dict 리터럴이었고, 그래서 새 bind
+# 하나 또는 여섯 번째 프로젝트의 pgdata에도 backend 수정 + trusted release 재설치가
+# 필요했다. 값은 한 글자도 바꾸지 않고 자리만 옮겼다 — 옮기기 전후의 해석된 매핑이
+# 정확히 같다는 것을 `tests/test_registry_targets_config.py`가 결박한다.
+#
+# 그 문서를 신뢰할 수 있게 만든 것이 선행조건이었다(`registry.get_targets_config_path`/
+# `_read_targets_bytes`): trusted 설치본에서 env redirect 거부 + root 소유·비쓰기 강제.
+# 그것 없이 옮겼다면 이 이관 자체가 보안 회귀였다.
 _CANDIDATE_ALLOWED_EXTERNAL_VOLUME_REFERENCES: frozenset[str] = frozenset()
 _HELD_DEPLOYMENT_LOCKS: ContextVar[frozenset[str]] = ContextVar(
     "held_c6c_deployment_locks", default=frozenset()
@@ -6442,7 +6406,7 @@ def _validate_candidate_volume_graph(
                     )
                 )
                 continue
-            expected_raw_source = _CANDIDATE_ALLOWED_OPERATOR_BINDS.get(
+            expected_raw_source = registry_module.load_compose_bind_allowlist().get(
                 (str(service_name), mount.target, mount.read_only)
             )
             if expected_raw_source is None:
@@ -6457,6 +6421,13 @@ def _validate_candidate_volume_graph(
                 raise ComposeCandidateContractError(
                     f"compose candidate {service_name} bind source is not canonical"
                 )
+            # allowlist가 설정으로 나온 뒤에 필요해진 검사다(GM-17 A 적대 리뷰 H-1).
+            # **`resolved_source`를 본다** — allowlist의 원문은 `${VAR:-...}`라
+            # 리터럴만 보면 env로 어디든 가리킬 수 있다. 그리고 system bind가 위에서
+            # 이미 `continue`했으므로 cadvisor의 `/sys`는 여기 오지 않는다.
+            _assert_operator_bind_source_is_permitted(
+                service=str(service_name), resolved_source=resolved_source
+            )
             try:
                 source_stat = resolved_source.stat()
             except (OSError, ValueError) as exc:

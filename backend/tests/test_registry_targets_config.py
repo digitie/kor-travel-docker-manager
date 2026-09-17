@@ -44,6 +44,17 @@ def _minimal_valid_config() -> dict[str, Any]:
             },
         },
         "dependency_order": ["geo"],
+        # GM-17 A 이후 `compose_binds`는 필수다 — 절이 없으면 모든 operator bind가
+        # baseline 밖이 되어 배포가 전부 거부되므로, 그 상태를 통과시키지 않는다.
+        "compose_binds": {
+            "geo-db": [
+                {
+                    "container_path": "/var/lib/postgresql/data",
+                    "read_only": False,
+                    "source": "./geo-pgdata",
+                }
+            ]
+        },
     }
 
 
@@ -194,6 +205,11 @@ targets:
     containers: [geo_db]
     services: [geo-db]
 dependency_order: [geo]
+compose_binds:
+  geo-db:
+    - container_path: "/data"
+      read_only: true
+      source: "./x"
 """
 
 _DUPLICATE_KEY_YAML = """
@@ -217,6 +233,11 @@ targets:
     containers: [geo_db]
     services: [geo-db]
 dependency_order: [geo]
+compose_binds:
+  geo-db:
+    - container_path: "/data"
+      read_only: true
+      source: "./x"
 """
 
 _BROKEN_REFERENCE_YAML = """
@@ -234,6 +255,11 @@ targets:
     services: [geo-db]
     depends_on: [typo_target]
 dependency_order: [geo]
+compose_binds:
+  geo-db:
+    - container_path: "/data"
+      read_only: true
+      source: "./x"
 """
 
 
@@ -583,3 +609,137 @@ def test_oversized_targets_file_is_refused_before_parsing(tmp_path: Path) -> Non
     with pytest.raises(registry_module.TargetsConfigError) as excinfo:
         registry_module._read_targets_bytes(str(config))
     assert "지원 크기" in str(excinfo.value)
+
+
+# ── GM-17 본작업 A: bind allowlist가 설정에서 온다 ───────────────────────
+#
+# 종전에는 c6c_deployment.py의 125줄짜리 dict 리터럴이었다. 새 bind 하나 또는 여섯
+# 번째 프로젝트의 pgdata에도 backend 수정 + trusted release 재설치가 필요했고, 그것이
+# GM-17이 지목한 범용성의 실질 병목이다. 아래는 **자리를 옮기되 값이 바뀌지 않았다**는
+# 성질과, 설정이 경계를 지킬 만큼 엄격하게 검증된다는 성질을 함께 결박한다.
+
+
+def test_bind_allowlist_comes_from_config_not_code() -> None:
+    """상수가 코드에 남아 있으면 정본이 둘이 된다 — 그러면 조용히 갈라진다."""
+
+    source = (
+        _ROOT / "backend/src/kor_travel_docker_manager/services/c6c_deployment.py"
+    ).read_text(encoding="utf-8")
+    assert "_CANDIDATE_ALLOWED_OPERATOR_BINDS" not in source, (
+        "허용 bind 목록이 다시 코드 상수로 돌아왔다 — 정본은 "
+        "config/docker-targets.yml의 compose_binds 절이다"
+    )
+
+
+def test_bind_allowlist_is_keyed_by_service_path_and_readonly() -> None:
+    """소비부가 기대하는 키 모양 그대로여야 한다.
+
+    `c6c_deployment`는 `(service, mount.target, mount.read_only)`로 조회한다.
+    로더가 다른 모양을 내면 **모든 bind가 baseline에 없는 것이 되어** 배포가
+    통째로 거부된다 — 조용한 실패가 아니라 시끄러운 실패지만, 그 시끄러움이
+    배포 도중에 오면 늦다.
+    """
+
+    allowlist = registry_module.load_compose_bind_allowlist()
+    assert allowlist, "compose_binds 절이 비었다"
+    for key, source in allowlist.items():
+        assert isinstance(key, tuple) and len(key) == 3, key
+        service, container_path, read_only = key
+        assert isinstance(service, str) and service
+        assert isinstance(container_path, str) and container_path.startswith("/")
+        assert isinstance(read_only, bool)
+        assert isinstance(source, str) and source
+
+
+def test_every_bind_service_exists_in_compose() -> None:
+    """허용 목록이 compose에 없는 서비스를 가리키면 그 항목은 아무것도 지키지 않는다.
+
+    `docker-targets.yml`과 `docker-compose.yml`을 함께 움직여야 하는 이유는 이
+    파일의 다른 절에 이미 적혀 있다 — bind 절도 같은 규율을 받는다.
+    """
+
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    compose_services = set(compose["services"])
+    dangling = sorted(
+        {
+            service
+            for service, _, _ in registry_module.load_compose_bind_allowlist()
+            if service not in compose_services
+        }
+    )
+    assert not dangling, f"compose_binds가 compose에 없는 서비스를 가리킨다: {dangling}"
+
+
+def test_compose_binds_rejects_a_string_read_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`read_only: "false"`는 참인 문자열이다 — 읽기 전용이어야 할 bind가 조용히
+    쓰기 가능으로 등재되는 경로라 거절한다."""
+
+    config = _minimal_valid_config()
+    config["compose_binds"] = {
+        "geo-db": [
+            {"container_path": "/data", "read_only": "false", "source": "./x"},
+        ]
+    }
+    with pytest.raises(registry_module.TargetsConfigError) as excinfo:
+        registry_module._validate_compose_binds(config, label="t")
+    assert "read_only" in str(excinfo.value)
+
+
+def test_compose_binds_rejects_unknown_fields() -> None:
+    """오타 난 키를 조용히 무시하면 그 항목이 의도와 다른 bind가 된다."""
+
+    config = _minimal_valid_config()
+    config["compose_binds"] = {
+        "geo-db": [
+            {
+                "container_path": "/data",
+                "read_only": True,
+                "source": "./x",
+                "readonly": True,
+            },
+        ]
+    }
+    with pytest.raises(registry_module.TargetsConfigError) as excinfo:
+        registry_module._validate_compose_binds(config, label="t")
+    assert "readonly" in str(excinfo.value)
+
+
+def test_compose_binds_rejects_a_relative_container_path() -> None:
+    config = _minimal_valid_config()
+    config["compose_binds"] = {
+        "geo-db": [{"container_path": "data", "read_only": True, "source": "./x"}]
+    }
+    with pytest.raises(registry_module.TargetsConfigError) as excinfo:
+        registry_module._validate_compose_binds(config, label="t")
+    assert "absolute" in str(excinfo.value)
+
+
+def test_compose_binds_rejects_duplicate_keys() -> None:
+    """같은 키가 둘이면 뒤엣것이 조용히 이긴다 — 둘 중 어느 source가 쓰이는지
+    읽는 사람이 알 수 없다."""
+
+    config = _minimal_valid_config()
+    config["compose_binds"] = {
+        "geo-db": [
+            {"container_path": "/data", "read_only": True, "source": "./a"},
+            {"container_path": "/data", "read_only": True, "source": "./b"},
+        ]
+    }
+    with pytest.raises(registry_module.TargetsConfigError) as excinfo:
+        registry_module._validate_compose_binds(config, label="t")
+    assert "duplicate" in str(excinfo.value)
+
+
+def test_targets_validate_covers_the_bind_section() -> None:
+    """`ktdctl targets validate`가 bind 절도 본다.
+
+    이 검사가 없으면 형태 오류가 **배포 도중에** 처음 드러난다 — validate 명령의
+    존재 이유가 그 앞에서 잡는 것이다.
+    """
+
+    config = _minimal_valid_config()
+    config["compose_binds"] = {"geo-db": "not-a-list"}
+    with pytest.raises(registry_module.TargetsConfigError):
+        registry_module._validate_targets_config(config, label="t")

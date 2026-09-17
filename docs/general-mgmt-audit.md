@@ -33,7 +33,7 @@
 | GM-14 | `[x]` | P2 | S | operability | REVISED | mock | async 핸들러 안의 동기 SQLite 감사 기록이 event loop 전체를 정지시킬 수 있음 |
 | GM-15 | `[x]` | P2 | M | operability | CONFIRMED | mock | 상태 broadcast가 클라이언트 직렬 전송 — 느린 소켓 하나가 모든 탭의 상태 갱신을 무기한 정지 |
 | GM-16 | `[x]` | P2 | M | observability | CONFIRMED | mock | 모든 백엔드 로그가 두 번씩 기록되고, 요청 상관관계 ID가 없어 UI 오류와 로그·감사를 이을 수 없다 |
-| GM-17 | `[/]` | P2 | L | generality | REVISED | mock | compose candidate 검증의 Map/PinVi 하드코딩 완화 — 14개 서비스 존재 강제와 bind allowlist를 설정으로 외부화. **선행조건 완료(2026-09-17)**, 본작업 A/B는 `docs/tasks.md` |
+| GM-17 | `[/]` | P2 | L | generality | REVISED | mock | compose candidate 검증의 Map/PinVi 하드코딩 완화 — 14개 서비스 존재 강제와 bind allowlist를 설정으로 외부화. **선행조건 + 본작업 A(allowlist) 완료(2026-09-17)**, 남은 것은 B(required-set 완화)와 후속 둘 — `docs/tasks.md` |
 | GM-18 | `[x]` | P2 | M | generality | REVISED | mock | 백업 role과 pinned pair role이 백엔드·프론트 다층 하드코딩 — config 파생으로 전환 |
 | GM-19 | `[x]` | P2 | S | dead-code | REVISED | 불필요 | 죽은 코드 일괄 제거 — 구 C6c 경로 ~650줄, 미사용 프론트 의존성, 무소비 port_policy, 무참조 API key 게이트 |
 | GM-20 | `[x]` | P2 | M | complexity | CONFIRMED | 불필요 | 서비스 계층 분리 1단계 — errors/capabilities 모듈 신설과 프라이빗 크로스 import·순환 의존 해소 |
@@ -1171,6 +1171,65 @@ required-set 무조건 강제는 `c6c_deployment.py:3334`·`:3706` 두 자리.
 `also_refuses_project_root_redirection`. 검증: backend 전체 **1,669 passed ·
 3 skipped · 실패 0**, ruff 전체 트리 149건으로 기준선과 동일(추가 0건 — 기존
 149건은 로컬 0.3.x와 CI 핀 0.16.4의 불일치다).
+
+**2026-09-17 — 본작업 A(bind allowlist 외부화)도 닫았다.**
+
+`_CANDIDATE_ALLOWED_OPERATOR_BINDS`(125줄 dict 리터럴)를 `config/docker-targets.yml`의
+최상위 `compose_binds:` 절로 옮겼다. 컨테이너 정의 안이 아니라 최상위인 이유: bind를
+가진 19개 서비스 중 **8개가 `containers:`에 없다**(one-shot init 넷, geo dagster 쌍,
+db role bootstrap 둘). 거기 끼워 넣으면 `status`/`ensure`/metrics가 one-shot을 상시
+관리 대상으로 보게 된다.
+
+**동치를 증명했다.** 옮기기 전 해석된 매핑을 뜨고(29건, sha256 `e7ec261c30db1d04`)
+옮긴 뒤 다시 떠서 비교했다 — 정확히 같다. 값에 손대지 않은 것이 이 작업의 유일한
+안전 요건이다. 노트가 이미 실측으로 적었듯 `${VAR:?}` 필수화는 "조율 없이 배포하면
+실제 운영 환경을 멈추는 변경"이므로, 그 정리는 `docs/tasks.md`에 별도 후속으로 뺐다.
+
+**코드에 남긴 것은 규칙뿐이다**: 구조(필수 필드·미지 필드 거부), `container_path`
+절대경로·정규형, `read_only`가 진짜 bool(YAML의 `"false"`는 참인 문자열이다 — 읽기
+전용이어야 할 bind가 조용히 쓰기 가능으로 등재되는 경로), 서비스명 공백 거부, 중복 키
+거부, 그리고 **source-side 값 정책**.
+
+**2026-09-17 정정 — 값 정책 유예 근거가 틀렸었다.** 처음에는 "`rustfs-init`이 manager
+설치 경로를 쓰므로 순진한 규칙이 유효한 항목을 거부한다"며 값 정책 전체를 후속으로
+뺐다. 적대 리뷰가 29건을 전수 대조해 반증했다 — manager 경로는 **`container_path`
+쪽에만** 있고 `source` 쪽은 **0건**이다. 즉 source-side 정책은 처음부터 함께 나갈 수
+있었고, 그 자리에 실제 구멍이 있었다:
+
+    source: "/etc"    # manager 파일의 조상이 아니라 종전 가드를 지나가고,
+                      # 디렉터리라 protected 값 스캔도 받지 않는다 → 통과
+
+`_assert_operator_bind_source_is_permitted`를 넣어 민감 host 자리(`/etc`·`/root`·
+`/boot`·`/proc`·`/sys`·`/dev`·`/var/lib/docker`·docker.sock과 그 하위), 자격증명
+디렉터리(`.ssh`·`.gnupg`·`.aws`·`.kube`), 그리고 **allowlist 파일 자신과 backend
+소스**를 거부한다. 마지막 것이 자기-인가 루프다 — 인가하는 파일을 인가되는 것으로
+쓰면 그 컨테이너가 다음 재기동에 임의 bind를 인가할 수 있고, 인가하는 것과 인가되는
+것이 같아지면 그것은 경계가 아니다. **남은 것은 target-side 정책뿐**이고 그것은
+`rustfs-init` 예외 분류가 선행이다.
+
+**적대 리뷰 2인(2026-09-17) — Critical 0, High 3, Medium 4를 반영했다.**
+
+가장 무거운 지적은 **손으로 한 변이가 아무것도 결박하지 않는다**는 것이었다. 처음에는
+"allowlist에서 항목 하나를 지우면 3건이 빨개진다"를 근거로 들었는데, 리뷰어가 로더를
+코드 안 얼린 dict로 갈아끼운 **고장난 구현에서 전체 스위트 `1684 passed`를 재현했다** —
+내가 근거로 든 바로 그 숫자다. 즉 "설정이 정본"이라는 이 이관의 유일한 결과물을 지키는
+검사가 **0건**이었다. 연결고리는 `c6c_deployment`의 import 한 줄뿐이고 그것을 세는
+검사가 없었다.
+
+고친 방식: 배포 경로가 로더를 **모듈 경유**로 부르게 하고(`registry_module.
+load_compose_bind_allowlist()`), 실제 배포 검증 진입점에 결박된 검사 3건을 추가했다.
+두 변이 모두 이제 빨갛다 — (1) 로더를 얼린 dict로 교체, (2) 모듈 경유를 직접 import로
+되돌리기. 둘 다 종전에는 전체 초록이던 구현이다.
+
+나머지 반영: `compose_binds` 절 누락을 통과시키던 것을 필수로 승격(절 이름 오타 하나로
+`targets validate`는 OK인데 전 배포가 죽는 경로였고, 그 함수 docstring이 금지한다고
+적어 놓고 절 전체가 사라지는 경우만 빠져 있었다) · 부모 디렉터리 검증 추가(`O_NOFOLLOW`는
+마지막 조각만 막는다) · 파생 `lru_cache` 제거 · docstring 거짓 둘 정정("legacy와 같은
+모양"·"mutation 경로는 별도 검증을 거친다" — 후자는 그 검증이 바로 캐시된 allowlist를
+읽는다) · 서비스명 공백 거부 · `container_path` 정규형 · `MappingProxyType`.
+
+검증: backend **1,687 passed · 3 skipped · 실패 0**, ruff 149건 기준선 동일,
+이관 동치 29건 유지.
 
 
 ## GM-18: 백업 role과 pinned pair role이 백엔드·프론트 다층 하드코딩 — config 파생으로 전환

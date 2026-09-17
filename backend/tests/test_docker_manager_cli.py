@@ -2287,6 +2287,11 @@ targets:
     services: [geo-db]
     depends_on: [typo_target]
 dependency_order: [geo]
+compose_binds:
+  geo-db:
+    - container_path: "/data"
+      read_only: true
+      source: "./x"
 """
 
 _VALID_TARGETS_YAML = """
@@ -2303,6 +2308,11 @@ targets:
     containers: [geo_db]
     services: [geo-db]
 dependency_order: [geo]
+compose_binds:
+  geo-db:
+    - container_path: "/data"
+      read_only: true
+      source: "./x"
 """
 
 

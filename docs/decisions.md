@@ -2804,3 +2804,51 @@ runtime ACL 성질을 독립적으로 강제하며, destination facet(이제 hea
 
 - 실 프로덕션 rebuild. n150 CI-parity와 PostGIS 통합까지만 확인했다.
 - 이 변경 뒤 baseline을 재cut할 때 `build-baseline.sh`가 새 facet SQL과 정합한지.
+
+## 2026-09-17 — compose bind allowlist가 코드 상수에서 설치본 설정으로 옮겨졌다 (GM-17 A)
+
+**결정.** production compose candidate가 허용하는 host bind 목록의 정본을
+`c6c_deployment._CANDIDATE_ALLOWED_OPERATOR_BINDS`(코드 상수)에서
+`config/docker-targets.yml`의 `compose_binds:` 절로 옮긴다. 값은 바꾸지 않는다 —
+이관 전후 해석된 매핑 29건이 정확히 같다.
+
+**왜.** 새 bind 하나 또는 여섯 번째 프로젝트의 pgdata에도 backend 코드 수정이
+필요했고, 그것이 "범용 Docker target 관리 도구"의 가장 큰 저해 요인이었다(GM-17).
+
+**이 결정이 바꾸는 것 — 보안 경계의 거처.** 이 문서는 이제 "어떤 host 경로가
+production 컨테이너에 마운트돼도 되는가"를 정한다. 기존 항목
+(`docs/decisions.md` §"directory bind는 manager 파일 ancestor와 host root를 먼저
+거부한 뒤 서비스별 canonical source/target allowlist만 허용한다")은 그 allowlist가
+**코드**에 있다고 읽히게 두었으므로, 거처가 바뀐 사실을 여기 남긴다.
+
+**무엇으로 그 거처를 받치는가.**
+
+1. **자리 고정** — trusted 설치본에서 `KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE`·
+   `..._PROJECT_ROOT` redirect를 거절한다. 같은 자리를 가리키는 override만 허용한다.
+2. **무결성** — `O_NOFOLLOW`로 열고 경로가 아니라 **열린 fd**를 `fstat`해 root 소유·
+   `nlink==1`·group/other 비쓰기를 강제하고, 설치 루트까지의 **부모 디렉터리**도
+   심링크 아님·root 소유·비쓰기를 확인한다.
+3. **값 정책** — operator bind의 `resolved_source`가 민감 host 자리(`/etc`·`/root`·
+   `/boot`·`/proc`·`/sys`·`/dev`·`/var/lib/docker`·docker.sock과 그 하위), 자격증명
+   디렉터리(`.ssh`·`.gnupg`·`.aws`·`.kube`), **allowlist 파일 자신과 backend 소스**면
+   거부한다.
+
+3번의 마지막이 이 결정에서 가장 중요한 축이다 — **인가하는 파일을 인가되는 것으로 쓸
+수 없다.** 그것이 허용되면 한 줄이 그 파일을 RW로 마운트하고, 그 컨테이너가 다음
+backend 재기동에 임의 bind를 인가한다. 인가하는 것과 인가되는 것이 같아지면 경계가
+아니다.
+
+**방어하는 actor를 분명히 한다.** 이 보호의 대상은 **compose candidate 작성자**이지
+host root가 아니다. ADR은 privileged host filesystem actor를 threat model 밖에 두고,
+그 결정은 유지된다. 즉 위 셋이 새로 얻는 것은 "설정 파일이 되었으므로 종전보다 쉬워진
+경로"를 되돌려 놓는 것이지, 새 threat model을 세우는 것이 아니다.
+
+**적용 범위의 한계 — 명시한다.** 자리 고정과 소유권 강제는 **trusted 설치본
+(`/opt/kor-travel-docker-manager`)에서 도는 경우에만** 적용된다. 같은 호스트의 개발
+checkout에서 manager를 돌리면 세 판정이 모두 거짓이 되어 보호가 꺼지고, 그 상태에서는
+env 하나로 allowlist 전체를 교체할 수 있다. n150에는 실제로 그런 체크아웃이 있다.
+값 정책(3번)은 실행 형태와 무관하게 항상 적용된다.
+
+**남긴 것.** target-side 값 정책, allowlist 변경의 즉시 반영(상주 backend가 프로세스당
+한 번만 읽는다), `ktdctl targets validate`로의 semantic 검사 이관 — 전부
+`docs/tasks.md`에 후속으로 있다.
