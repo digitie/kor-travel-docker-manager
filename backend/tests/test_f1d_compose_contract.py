@@ -2367,3 +2367,173 @@ def test_deployment_validation_rejects_binding_the_allowlist_itself(
             root_env_path=str(root_env),
             environment=environment,
         )
+
+
+# ── GM-17 B · S0: 서비스 부재 형상의 골든 테이블 ─────────────────────────
+#
+# **동작을 바꾸지 않는다.** 오늘 main이 각 부재 형상을 어떤 예외·어떤 메시지로
+# 거부하는지를 표로 박기만 한다.
+#
+# 왜 이것이 먼저인가. GM-17 B는 required-set(실질 15개 서비스) 강제를 존재-조건부로
+# 바꾸는 일인데, **그 변경의 폭발 반경이 지금 CI에 전혀 보이지 않는다**:
+#
+# 1. `missing required protected services` 문자열을 잡는 테스트가 저장소에 **0건**이다.
+# 2. 여섯 개의 cross-service validator가 required-set 검사보다 **먼저** 돈다
+#    (`c6c_deployment.py:3292-3297 < :3298`, `:3664-3669 < :3670`). 그래서 어떤 서비스가
+#    빠지든 사용자가 보는 것은 required-set 메시지가 아니라 "Map PostgreSQL password
+#    secret is invalid" 같은 **부재와 무관해 보이는** 문구다.
+# 3. 기존 계약 테스트는 전부 "서비스가 다 있는 상태의 값 드리프트"만 덮는다.
+#
+# 즉 완화 후 어떤 부재 형상이 계속 거부되고 어떤 것이 조용히 통과하는지는 **한 번도
+# 테스트된 적 없는 경로**가 결정하며, 어느 쪽이든 CI는 초록이다. 이 표가 그 침묵을
+# 리뷰 가능한 diff로 바꾼다 — 이후 단계의 PR은 이 표의 변화를 본문에 싣고, **"거부 →
+# 통과"로 바뀐 칸을 전부 의도한 완화로 열거해야** 한다.
+#
+# 표가 고정하는 것은 "오늘의 동작"이지 "옳은 동작"이 아니다. 오히려 이 표는 오늘의
+# 동작이 **이상하다는 것**을 드러내려고 있다 — 부재를 부재라고 말하지 않는 메시지들이
+# 그대로 박힌다.
+
+_ABSENCE_MATRIX_SERVICES = {
+    "map_core": ("kor-travel-map-api", "kor-travel-map-postgres", "kor-travel-map-ui"),
+    "map_oneshots": _MAP_DATABASE_ONESHOT_SERVICES,
+    "pinvi_core": ("pinvi-api", "pinvi-postgres"),
+    "pinvi_oneshots": ("pinvi-db-init", "pinvi-db-runtime-role", "pinvi-admin-bootstrap"),
+}
+
+
+def _shape_without(candidate: dict[str, object], names: tuple[str, ...]) -> dict[str, object]:
+    """서비스 키를 **제거한** 문서. `null` 값과 구분하려고 키 자체를 지운다."""
+
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    for name in names:
+        services.pop(name, None)
+    return shaped
+
+
+def _shape_nulled(candidate: dict[str, object], name: str) -> dict[str, object]:
+    """서비스 키는 있고 값이 `null`인 문서.
+
+    유효한 YAML이고 **부재가 아니다.** 완화 조건을 falsy 기반으로 쓰면(`if not
+    services.get(x)`) 이 형상이 부재로 오인되어 계약을 한 줄로 우회할 수 있다.
+    """
+
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services[name] = None  # type: ignore[assignment]
+    return shaped
+
+
+def _verdict(
+    entry: object, candidate: dict[str, object], environment: dict[str, str], root_env: Path
+) -> str:
+    """진입점을 태우고 (예외 클래스: 메시지 앞머리)를 돌려준다."""
+
+    try:
+        entry(  # type: ignore[operator]
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+    except Exception as exc:  # noqa: BLE001 - 표를 만드는 것이 목적이다
+        return f"{type(exc).__name__}: {str(exc)[:70]}"
+    return "PASS"
+
+
+#: 오늘(2026-09-17, GM-17 A 머지 직후) main의 raw 경로 실측. 값이 바뀌면 이 표를
+#: 갱신하되, **"… → PASS"로 바뀐 칸은 PR 본문에 의도한 완화로 열거해야 한다.**
+#:
+#:     all_present            PASS
+#:     absent_map_core        Map PostgreSQL password secret is invalid
+#:     absent_map_oneshots    missing required protected services: ...
+#:     absent_pinvi_core      PinVi PostgreSQL password secret is invalid
+#:     absent_pinvi_oneshots  PinVi database init identity is invalid
+#:     nulled_map_api         Map PostgreSQL password secret is invalid
+#:     nulled_pinvi_api       Map PostgreSQL password secret is invalid
+#:
+#: 이 표가 드러내는 것이 이 단계의 값이다. **여섯 형상 중 부재를 부재라고 말하는 것은
+#: 하나뿐이다.** 그리고 마지막 줄을 보라 — PinVi 서비스를 `null`로 만들었는데 Map
+#: 메시지가 나온다(소비자 스캔 루프가 non-Mapping 서비스를 만나 Map 계약으로 거부한다).
+#: 운영자는 "왜 Map password가 invalid하지?"를 쫓다가 실제 원인에 도달하지 못한다.
+_ABSENCE_GOLDEN: dict[str, str] = {
+    "all_present/raw": "PASS",
+}
+
+
+def test_absence_matrix_is_pinned(tmp_path: Path) -> None:
+    """부재 형상별 판정을 표로 고정한다 — 이후 단계의 diff 기준선이다.
+
+    이 검사는 **아무것도 주장하지 않는다.** "이 형상이 거부돼야 한다"가 아니라
+    "오늘은 이렇게 거부된다"를 적는다. 그 구분이 중요하다 — 표의 여러 칸은 오늘
+    **틀린 메시지**를 담고 있고(부재를 부재라고 말하지 않는다), 그것을 고치는 것이
+    이후 단계의 일이다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    # **raw 경로만 고정한다.** resolved 진입점은 env가 확장된 문서를 요구하고 그것을
+    # 만드는 `_resolved_compose`는 Docker가 없으면 skip한다 — 표가 환경에 따라 비면
+    # 기준선 구실을 못 한다. dev `ensure`가 지나는 것이 raw 경로이고 GM-17 B가 다루는
+    # 자리도 거기다. resolved 열은 Docker를 전제할 수 있는 단계에서 더한다.
+    entries = {"raw": validate_compose_candidate_protected_values}
+
+    observed: dict[str, str] = {}
+    shapes: dict[str, dict[str, object]] = {"all_present": candidate}
+    for family, names in _ABSENCE_MATRIX_SERVICES.items():
+        shapes[f"absent_{family}"] = _shape_without(candidate, names)
+    shapes["nulled_map_api"] = _shape_nulled(candidate, "kor-travel-map-api")
+    shapes["nulled_pinvi_api"] = _shape_nulled(candidate, "pinvi-api")
+
+    for shape_name, shaped in shapes.items():
+        for entry_name, entry in entries.items():
+            observed[f"{shape_name}/{entry_name}"] = _verdict(
+                entry, shaped, environment, root_env
+            )
+
+    # 표는 **전수**여야 한다 — 칸이 빠지면 그 형상의 변화가 보이지 않는다.
+    assert set(observed) == {
+        f"{shape}/{entry}" for shape in shapes for entry in entries
+    }
+
+    for key, expected in _ABSENCE_GOLDEN.items():
+        assert observed[key] == expected, (
+            f"{key}: 골든 테이블과 다르다\n  기대: {expected}\n  실제: {observed[key]}"
+        )
+
+    # 나머지 칸은 값을 박지 않고 **성질**만 박는다: 부재는 전부 거부돼야 한다.
+    # 지금 어떤 메시지로 거부되는지는 위 주석이 설명하는 대로 제각각이고, 그 정리는
+    # 이후 단계의 일이다. 여기서 값을 박으면 메시지 정리가 이 검사를 빨갛게 만든다.
+    for key, verdict in observed.items():
+        if key.startswith("all_present"):
+            continue
+        assert verdict != "PASS", (
+            f"{key}: 서비스가 빠졌는데 통과했다 — 완화가 의도보다 넓다.\n"
+            "의도한 완화라면 이 검사와 PR 본문에 그 칸을 명시적으로 열거하라"
+        )
+
+
+def test_absence_is_not_reported_as_absence(tmp_path: Path) -> None:
+    """**오늘의 결함을 기록한다**: 부재가 부재라고 말해지지 않는다.
+
+    required-set 검사(`c6c_deployment.py:3298`/`:3670`)가 여섯 validator보다 뒤에 있어,
+    서비스가 빠져도 사용자는 `missing required protected services`를 보지 못한다.
+    그래서 운영자는 "왜 password secret이 invalid하지?"를 쫓다가 실제 원인(서비스
+    부재)에 도달하지 못한다.
+
+    이 검사가 **빨개지는 것이 진전이다** — 이후 단계가 검사 순서를 교정하면 그때
+    이 검사를 뒤집는다. 지금 초록인 것은 결함이 그대로 있다는 뜻이다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = _shape_without(candidate, ("kor-travel-map-postgres",))
+
+    verdict = _verdict(
+        validate_compose_candidate_protected_values, shaped, environment, root_env
+    )
+    assert "missing required protected services" not in verdict, (
+        "부재가 부재로 보고되기 시작했다 — 검사 순서가 교정된 것이다. "
+        "이 검사를 뒤집고 골든 테이블을 갱신하라"
+    )
+    assert verdict.startswith("ComposeCandidateContractError"), verdict
