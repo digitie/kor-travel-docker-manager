@@ -1114,6 +1114,13 @@ run_source_git archive --format=tar "${revision}" > "${ARCHIVE}"
 /usr/bin/chmod 0755 "${STAGING}/scripts/run-pinned-rebuild-once"
 /usr/bin/chmod 0755 "${STAGING}/scripts/run-m05-isolated-e2e-once"
 /usr/bin/chmod 0755 "${STAGING}/scripts/rotate-pinned-pair"
+# cron이 **직접 실행**하는 백업 wrapper 둘. 2026-09-12~16에 세 role의 standalone
+# 백업이 5일간 `Permission denied`로 죽었는데, 원인은 배포가 비트를 벗긴 것이 아니라
+# git이 그 비트를 가진 적이 없다는 것이었다(`100644`). index를 `100755`로 고치면서
+# 이 목록에도 더한다 — 그래야 설치본 사본도 실행 가능해지고, crontab을 개발
+# 체크아웃 대신 `/opt`로 옮길 수 있다.
+/usr/bin/chmod 0755 "${STAGING}/scripts/run-standalone-backup.sh"
+/usr/bin/chmod 0755 "${STAGING}/scripts/run-offbox-sync.sh"
 
 /usr/bin/printf '%s\n' "${revision}" > "${STAGING}/.ktdm-source-revision"
 /usr/bin/chown root:root "${STAGING}/.ktdm-source-revision"
