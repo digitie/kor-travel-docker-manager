@@ -4118,3 +4118,172 @@ def test_each_configured_axis_alone_puts_the_api_under_contract(
     assert "Concierge" in str(rejection.value), (
         f"{axis} 축만 구성된 API가 검사를 빠져나갔다 — {rejection.value}"
     )
+
+
+# ── GM-17 B · S3-c: PinVi DSN의 전역 env 불변식을 떼어낸다 ───────────────
+#
+# `_validate_pinvi_database_url_identities`의 앞 절반은 **서비스와 무관한 env
+# 불변식**이었다 — `PINVI_DB_PORT == 12800` 고정, role 이름 5자 상호 상이성과 정규식,
+# root/app/migrator password 3자 상호 비동일. 뒤 절반만 `services`를 보고, 그쪽은 이미
+# 존재-조건부였다(`.get()` + `continue`).
+#
+# 둘이 한 함수에 있어서 S4가 이 호출을 family scope로 게이팅하면 앞 절반까지 함께
+# 꺼진다 — S3-a가 loopback 결박에 대해 고친 것과 같은 모양이다. 비대칭이 결정적이었다:
+# Map 쌍둥이 `_validate_map_database_dsn_identities`는 이미 `environment`만 받는다.
+#
+# **제자리에서 쪼갰다.** 감사가 396형상으로 실측했다 — 제자리 분할은 메시지 변경 0칸,
+# Map DSN 자리로 올리면 46칸이 바뀌고 그중 일부는 S1의 성과를 되돌린다.
+
+
+def _s4_without_pinvi_services(
+    monkeypatch: pytest.MonkeyPatch, document: dict[str, object]
+) -> dict[str, object]:
+    """S4가 PinVi family를 scope에서 뺀 상태 — 문서에서도 서비스를 지운다.
+
+    S3-a에서 배운 것: validator만 no-op으로 만들고 문서에 서비스를 남기면 게이트
+    조건이 계속 참이라 시뮬레이션이 가짜가 된다.
+    """
+
+    for name in ("_CANDIDATE_REQUIRED_PROTECTED_SERVICES", "_CANDIDATE_KNOWN_SERVICE_NAMES"):
+        monkeypatch.setattr(
+            c6c_deployment_module,
+            name,
+            frozenset(
+                value
+                for value in getattr(c6c_deployment_module, name)
+                if not value.startswith("pinvi-")
+            ),
+        )
+    # per-service 절반을 끈다 — 그것이 S4가 게이팅할 수 있는 쪽이다.
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_validate_pinvi_database_url_service_identities",
+        lambda services, identity, *, resolved: None,
+    )
+    return _shape_without(
+        document,
+        (
+            "pinvi-postgres",
+            "pinvi-api",
+            "pinvi-db-init",
+            "pinvi-db-runtime-role",
+            "pinvi-admin-bootstrap",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("label", "mutation"),
+    [
+        ("포트 핀", {"PINVI_DB_PORT": "12900"}),
+        ("Map 대역 탈취", {"PINVI_DB_PORT": "12700"}),
+        ("role 이름 충돌(owner 쌍)", {"PINVI_MIGRATION_OWNER": "pinvi_app_owner",
+                                    "PINVI_APP_SCHEMA_OWNER": "pinvi_app_owner"}),
+        ("role 이름 정규식", {"PINVI_APP_SCHEMA_OWNER": "Bad-Owner"}),
+        ("password 3자 비동일(root=app)", {"PINVI_APP_DB_PASSWORD": "__ROOT__"}),
+    ],
+)
+def test_pinvi_database_env_invariants_survive_without_the_services(
+    label: str,
+    mutation: dict[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**S3-c의 핵심.** PinVi 서비스가 scope 밖이어도 env 불변식은 남는다.
+
+    `PINVI_DB_PORT == 12800` 고정이 특히 아프다. 감사가 구체적 피해를 지목했다 —
+    `12700`이면 두 PostgreSQL이 모두 `network_mode: host`로 127.0.0.1:12700을 잡는
+    후보가 통과하고(**Map 전용 대역 탈취**), 저장소에 host 포트 충돌 검사는 없다.
+
+    role 이름의 owner 쌍(`PINVI_APP_SCHEMA_OWNER`/`PINVI_MIGRATION_OWNER`)도 중요하다 —
+    그 둘은 **어느 DSN에도 나타나지 않으므로** per-service DSN 비교가 구조적으로 볼 수
+    없다. 전역 절반이 유일한 자리다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = _s4_without_pinvi_services(monkeypatch, deepcopy(candidate))
+
+    mutated_environment = dict(environment)
+    for name, value in mutation.items():
+        mutated_environment[name] = (
+            mutated_environment["PINVI_POSTGRES_PASSWORD"] if value == "__ROOT__" else value
+        )
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="PinVi database URL identity is invalid"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=mutated_environment,
+        )
+
+
+def test_the_env_half_does_not_look_at_services_at_all() -> None:
+    """전역 절반은 `services`를 **인자로도 받지 않는다** — 구조로 결박한다.
+
+    시그니처에 `services`가 없으면 family 조건을 달 재료 자체가 없다. Map 쌍둥이
+    `_validate_map_database_dsn_identities`가 이미 그 모양이고, PinVi만 달랐다.
+    """
+
+    import inspect
+
+    parameters = inspect.signature(
+        c6c_deployment_module._validate_pinvi_database_url_environment
+    ).parameters
+    assert list(parameters) == ["environment"], (
+        f"전역 절반이 services를 받으면 게이팅할 재료가 생긴다: {list(parameters)}"
+    )
+
+    source = inspect.getsource(
+        c6c_deployment_module._validate_pinvi_database_url_environment
+    )
+    # docstring은 설명을 위해 `services`를 언급한다 — 본문만 본다.
+    body = source.split('"""')[-1]
+    assert "services" not in body, "전역 절반 본문이 services를 참조한다"
+
+
+def test_the_port_pin_is_still_enforced_with_every_service_present(
+    tmp_path: Path,
+) -> None:
+    """게이팅 없이도 포트 핀이 돈다 — 분리가 기존 강제를 잃지 않았다는 증거."""
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    mutated_environment = {**environment, "PINVI_DB_PORT": "12900"}
+    with pytest.raises(
+        ComposeCandidateContractError, match="PinVi database URL identity is invalid"
+    ):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=mutated_environment,
+        )
+
+
+def test_the_service_half_stays_gateable_and_still_runs_today(tmp_path: Path) -> None:
+    """per-service 절반은 게이팅 대상이지만 **오늘은 실제로 돈다**.
+
+    "조건부로 만들 수 있다"가 "이미 껐다"로 미끄러지지 않게 한다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    api = services["pinvi-api"]
+    assert isinstance(api, dict)
+    api_environment = api["environment"]
+    assert isinstance(api_environment, dict)
+    api_environment["PINVI_DATABASE_URL"] = "postgresql://wrong:wrong@127.0.0.1:12800/pinvi"
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="PinVi database URL identity is invalid"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
