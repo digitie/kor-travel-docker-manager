@@ -1549,8 +1549,52 @@ def _validate_map_application_300_service(
         )
 
 
-def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
-    """전용 PostgreSQL admin password의 유일한 소비자를 고정한다."""
+def _authorized_map_postgres_password_reference(
+    document: Mapping[str, Any],
+) -> object | None:
+    """소유자가 **인가받은** secret reference. 소유자가 없거나 모양이 아니면 `None`.
+
+    이 함수는 **아무것도 거부하지 않는다** — 판정은 호출부의 일이다. 여기서 예외를
+    던지면 "소유자가 없다"와 "소유자 배선이 틀렸다"가 다시 한 덩어리가 되고, 그 둘을
+    떼어내는 것이 GM-17 B S2의 전부다.
+
+    `None`은 **공집합**을 뜻한다: 소유자가 없는 문서에서는 이 secret을 가리키는
+    **모든** 참조가 무단이다. 그 방향이 안전한 쪽이다 — 소유자가 사라졌다고 해서
+    남의 소비가 인가되지는 않는다.
+    """
+
+    services = document.get("services")
+    if not isinstance(services, Mapping):
+        return None
+    postgres = services.get(_MAP_POSTGRES_SERVICE)
+    if not isinstance(postgres, Mapping):
+        return None
+    references = postgres.get("secrets")
+    if not isinstance(references, list) or len(references) != 1:
+        return None
+    return references[0]
+
+
+def _validate_map_postgres_password_owner_wiring(document: Mapping[str, Any]) -> None:
+    """(A) 소유자 배선 — `kor-travel-map-postgres`가 secret file로만 password를 받는가.
+
+    **소유자 서비스의 존재를 전제한다.** 그래서 GM-17 B S4가 Map family를 scope에서
+    빼면 이 검사는 건너뛴다. 건너뛰어도 되는 이유는 이것이 "그 서비스가 올바르게
+    배선됐는가"만 묻기 때문이다 — 서비스가 없으면 물음 자체가 성립하지 않는다.
+
+    **건너뛰면 안 되는 쪽은 (B)다.** 둘을 한 함수에 두면 S4가 이것을 통째로 끄면서
+    전역 불변식까지 함께 끈다 — 감사가 찾은 함정이 정확히 그것이다.
+    """
+
+    services = document.get("services")
+    if isinstance(services, Mapping) and _MAP_POSTGRES_SERVICE not in services:
+        # 소유자가 없다. 배선을 물을 대상이 없으므로 (A)는 여기서 끝난다.
+        # **(B)는 이 뒤에 무조건 돈다** — 호출부를 보라.
+        #
+        # 오늘 이 분기는 공개 진입점으로 도달 불가다: S1이 required-set 검사를 여섯
+        # validator보다 앞으로 옮겼고 `kor-travel-map-postgres`는 required 14개 안에
+        # 있다. 도달 가능해지는 것은 S4가 집합을 좁히는 순간이다.
+        return
 
     secrets = document.get("secrets")
     if not isinstance(secrets, Mapping):
@@ -1561,7 +1605,6 @@ def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
     ):
         raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
 
-    services = document.get("services")
     if not isinstance(services, Mapping):
         raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
     postgres = services.get(_MAP_POSTGRES_SERVICE)
@@ -1583,10 +1626,31 @@ def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
     ) or reference.get("target") != _MAP_POSTGRES_PASSWORD_SECRET:
         raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
 
-    # Compose secret file은 값이 Config.Env에 드러나지 않아도 mount한 container는
-    # 읽을 수 있다. 따라서 initial superuser credential은 PostgreSQL entrypoint의
-    # exact target 한 곳만 소비할 수 있고, API/Dagster/PinVi one-shot을 포함한
-    # 다른 service의 alias reference는 mutation 전에 거부한다.
+
+def _assert_map_postgres_password_sole_consumer(document: Mapping[str, Any]) -> None:
+    """(B) 유일 소비자 — 문서의 **아무** 서비스도 이 secret을 alias로 가져가지 못한다.
+
+    Compose secret file은 값이 `Config.Env`에 드러나지 않아도 mount한 container는
+    읽을 수 있다. 따라서 initial superuser credential은 PostgreSQL entrypoint의 exact
+    target 한 곳만 소비할 수 있고, API/Dagster/PinVi one-shot을 포함한 다른 service의
+    alias reference는 mutation 전에 거부한다.
+
+    **이 검사는 조건부가 되어서는 안 된다.** 소유자 서비스의 존재와 무관한 전역
+    불변식이고, 이것이 꺼지면 남는 그물이 없다 — 감사가 실측했다: 전역 보호 이름
+    스캔은 alias를 잡지 못하고(소문자·하이픈 vs 대문자·언더스코어라 substring이
+    아니다), external-resource 검사는 그 alias를 **무조건 면제**하며, runtime 검사는
+    소비자를 보지 않는다.
+
+    인가 집합은 `_authorized_map_postgres_password_reference`가 문서에서 **독립으로**
+    파생한다 — (A)의 지역 변수를 빌려 쓰면 (A)를 끄는 순간 이 검사도 함께 무너진다.
+    소유자가 없으면 인가 집합은 **공집합**이다.
+    """
+
+    services = document.get("services")
+    if not isinstance(services, Mapping):
+        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
+    authorized = _authorized_map_postgres_password_reference(document)
+
     for service_name, service in services.items():
         if not isinstance(service, Mapping):
             raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
@@ -1608,12 +1672,24 @@ def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
             if source_name != _MAP_POSTGRES_PASSWORD_SECRET:
                 continue
             if (
-                service_name != _MAP_POSTGRES_SERVICE
-                or candidate_reference != reference
+                authorized is None
+                or service_name != _MAP_POSTGRES_SERVICE
+                or candidate_reference != authorized
             ):
                 raise ComposeCandidateContractError(
                     "Map PostgreSQL password secret has an unauthorized consumer"
                 )
+
+
+def _validate_map_postgres_password_secret(document: Mapping[str, Any]) -> None:
+    """전용 PostgreSQL admin password의 유일한 소비자를 고정한다.
+
+    두 불변식을 **이 순서로** 건다. 순서가 곧 오늘의 동작이다 — 배선 오류가 먼저
+    보고돼야 종전과 같은 문구가 나온다.
+    """
+
+    _validate_map_postgres_password_owner_wiring(document)
+    _assert_map_postgres_password_sole_consumer(document)
 
 
 def _validate_pinvi_postgres_password_secret(document: Mapping[str, Any]) -> None:

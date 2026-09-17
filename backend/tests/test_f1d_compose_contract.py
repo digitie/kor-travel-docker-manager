@@ -2835,3 +2835,169 @@ def test_unknown_service_key_is_not_echoed_into_the_contract_error(
         root_env,
     )
     assert "pinvi-api" in known, known
+
+
+# ── GM-17 B · S2: Map password validator 이분할 ──────────────────────────
+#
+# 감사가 찾은 함정은 이렇다 — `_validate_map_postgres_password_secret`이 두 가지를
+# 한 함수에 담고 있어서, S4가 서비스 부재 시 **함수째** 건너뛰면 둘 다 꺼진다.
+#
+#   (A) 소유자 배선 — `kor-travel-map-postgres`가 secret file로만 password를 받는가.
+#       소유자의 존재를 전제하므로 부재 시 건너뛰어도 된다.
+#   (B) 유일 소비자 스캔 — 문서의 **아무** 서비스도 그 secret을 alias로 가져가지
+#       못한다. 소유자와 무관한 전역 불변식이라 **절대 꺼지면 안 된다.**
+#
+# (B)가 꺼지면 남는 그물이 없다(감사 실측): 전역 보호 이름 스캔은 alias를 substring으로
+# 잡지 못하고, external-resource 검사는 그 alias를 무조건 면제하며, runtime 검사는
+# 소비자를 보지 않는다.
+#
+# 아래 검사들은 **분리가 실재하는지**를 묻는다. 오늘 공개 진입점으로는 소유자 부재에
+# 도달할 수 없으므로(required-set이 먼저 막는다) 쪼갠 함수를 직접 태운다 — 그것이
+# 요점이다. S4가 그 문을 여는 날 이 검사들이 이미 자리를 지키고 있어야 한다.
+
+_MAP_PASSWORD_SECRET = "kor-travel-map-postgres-password"
+
+
+def _document_with_foreign_consumer(*, include_owner: bool) -> dict[str, object]:
+    """Map password secret을 **남의 서비스**가 가져가는 문서.
+
+    `include_owner=False`는 S4 이후의 형상이다 — Map family가 scope 밖이라 소유자
+    서비스가 아예 없는데, 누군가는 여전히 그 secret을 마운트하려 한다.
+    """
+
+    services: dict[str, object] = {
+        "some-other-service": {
+            "image": "example:latest",
+            "secrets": [
+                {"source": _MAP_PASSWORD_SECRET, "target": _MAP_PASSWORD_SECRET}
+            ],
+        }
+    }
+    if include_owner:
+        services["kor-travel-map-postgres"] = {
+            "image": "postgis:latest",
+            "environment": {
+                "POSTGRES_PASSWORD_FILE": f"/run/secrets/{_MAP_PASSWORD_SECRET}"
+            },
+            "secrets": [
+                {"source": _MAP_PASSWORD_SECRET, "target": _MAP_PASSWORD_SECRET}
+            ],
+        }
+    return {
+        "secrets": {
+            _MAP_PASSWORD_SECRET: {"environment": "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"}
+        },
+        "services": services,
+    }
+
+
+def test_sole_consumer_scan_runs_even_without_the_owner_service() -> None:
+    """**S2의 핵심.** 소유자가 없어도 무단 소비자는 거부된다.
+
+    S4가 Map family를 scope에서 빼면 `kor-travel-map-postgres`가 문서에서 사라진다.
+    그때 (B)까지 함께 꺼지면, 아무 서비스나 Map superuser password를
+    `/run/secrets/`로 받아가도 파이프라인 어디서도 안 걸린다.
+
+    이 검사가 그 문을 잠근다 — 소유자가 없으면 인가 집합은 **공집합**이고, 따라서
+    그 secret을 가리키는 모든 참조가 무단이다.
+    """
+
+    document = _document_with_foreign_consumer(include_owner=False)
+    with pytest.raises(
+        ComposeCandidateContractError, match="unauthorized consumer"
+    ):
+        c6c_deployment_module._assert_map_postgres_password_sole_consumer(document)
+
+
+def test_sole_consumer_scan_rejects_a_foreign_consumer_with_the_owner_present() -> None:
+    """소유자가 있어도 남의 소비는 거부된다 — 종전 동작 그대로."""
+
+    document = _document_with_foreign_consumer(include_owner=True)
+    with pytest.raises(
+        ComposeCandidateContractError, match="unauthorized consumer"
+    ):
+        c6c_deployment_module._assert_map_postgres_password_sole_consumer(document)
+
+
+def test_authorized_reference_is_empty_without_an_owner() -> None:
+    """인가 집합은 소유자에서만 나온다 — 없으면 공집합(`None`)이다.
+
+    이 파생이 (A)의 지역 변수를 빌리지 않는다는 것이 S2의 전부다. 빌려 쓰면 (A)를
+    끄는 순간 (B)가 함께 무너진다.
+    """
+
+    derive = c6c_deployment_module._authorized_map_postgres_password_reference
+    assert derive(_document_with_foreign_consumer(include_owner=False)) is None
+    assert derive(_document_with_foreign_consumer(include_owner=True)) == {
+        "source": _MAP_PASSWORD_SECRET,
+        "target": _MAP_PASSWORD_SECRET,
+    }
+    # 소유자가 참조를 둘 들고 있으면 "유일"이 성립하지 않으므로 인가하지 않는다.
+    two_references = _document_with_foreign_consumer(include_owner=True)
+    owner = two_references["services"]["kor-travel-map-postgres"]  # type: ignore[index]
+    assert isinstance(owner, dict)
+    owner["secrets"] = [*owner["secrets"], {"source": "other", "target": "other"}]
+    assert derive(two_references) is None
+
+
+def test_owner_wiring_is_skipped_only_when_the_owner_is_absent() -> None:
+    """(A)는 소유자가 없을 때만 조용하다 — 있으면 종전처럼 배선을 따진다.
+
+    이 검사가 없으면 "조건부로 만든다"가 "그냥 끈다"로 조용히 미끄러질 수 있다.
+    """
+
+    wiring = c6c_deployment_module._validate_map_postgres_password_owner_wiring
+
+    # 소유자 부재 → 조용히 통과(판정할 대상이 없다).
+    wiring(_document_with_foreign_consumer(include_owner=False))
+
+    # 소유자 존재 + 배선 파손(`POSTGRES_PASSWORD`가 환경으로 샌다) → 거부.
+    leaking = _document_with_foreign_consumer(include_owner=True)
+    owner = leaking["services"]["kor-travel-map-postgres"]  # type: ignore[index]
+    assert isinstance(owner, dict)
+    environment = owner["environment"]
+    assert isinstance(environment, dict)
+    environment["POSTGRES_PASSWORD"] = "leaked"
+    with pytest.raises(
+        ComposeCandidateContractError, match="leaks to container environment"
+    ):
+        wiring(leaking)
+
+
+def test_the_composed_validator_still_reports_wiring_before_consumers() -> None:
+    """합성 진입점의 **순서**가 오늘의 문구를 정한다.
+
+    배선 오류와 무단 소비자가 동시에 있으면 배선이 먼저 보고돼야 종전과 같다.
+    쪼개면서 순서를 뒤집으면 골든 테이블이 아니라 여기서 걸린다.
+    """
+
+    document = _document_with_foreign_consumer(include_owner=True)
+    owner = document["services"]["kor-travel-map-postgres"]  # type: ignore[index]
+    assert isinstance(owner, dict)
+    environment = owner["environment"]
+    assert isinstance(environment, dict)
+    environment["POSTGRES_PASSWORD"] = "leaked"
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="leaks to container environment"
+    ):
+        c6c_deployment_module._validate_map_postgres_password_secret(document)
+
+
+def test_composed_validator_keeps_the_consumer_scan_without_the_owner() -> None:
+    """**S2의 진짜 결박점.** 공개 진입점이 소유자 부재에도 (B)를 유지하는가.
+
+    쪼갠 함수를 직접 태우는 검사만으로는 부족하다 — 변이로 확인했다: 합성 진입점
+    맨 앞에 "소유자가 없으면 `return`"을 넣으면(= 순진한 S4 구현) 직접 호출 검사들은
+    **전부 초록**이었다. 분리가 존재하는 것과 호출부가 그 분리를 쓰는 것은 다르다.
+
+    이 검사는 **진입점**을 태운다. 소유자가 없고 남의 서비스가 그 secret을 가져가는
+    문서를 주면, 진입점은 여전히 무단 소비자로 거부해야 한다. S4가 Map family를
+    scope에서 뺄 때 이 검사가 그 문을 잠근 채로 남는다.
+    """
+
+    document = _document_with_foreign_consumer(include_owner=False)
+    with pytest.raises(
+        ComposeCandidateContractError, match="unauthorized consumer"
+    ):
+        c6c_deployment_module._validate_map_postgres_password_secret(document)
