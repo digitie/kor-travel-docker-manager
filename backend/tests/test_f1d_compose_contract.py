@@ -2858,19 +2858,29 @@ def test_unknown_service_key_is_not_echoed_into_the_contract_error(
 _MAP_PASSWORD_SECRET = "kor-travel-map-postgres-password"
 
 
-def _document_with_foreign_consumer(*, include_owner: bool) -> dict[str, object]:
+def _document_with_foreign_consumer(
+    *, include_owner: bool, shorthand: bool = False
+) -> dict[str, object]:
     """Map password secret을 **남의 서비스**가 가져가는 문서.
 
     `include_owner=False`는 S4 이후의 형상이다 — Map family가 scope 밖이라 소유자
     서비스가 아예 없는데, 누군가는 여전히 그 secret을 마운트하려 한다.
+
+    `shorthand=True`는 **짧은 문법**(`secrets: ["<이름>"]`)이다. Compose에서 가장 싼
+    마운트 표기인데 첫 판의 검사는 긴 문법만 만들었다(적대 리뷰 2026-09-17 M3).
+    코드는 두 문법을 다 처리하지만 **아무도 그것을 지키지 않았다** — 짧은 문법 처리를
+    `continue`로 바꾸는 변이가 전체 스위트 1700건을 그대로 통과했다.
     """
 
+    foreign_reference: object = (
+        _MAP_PASSWORD_SECRET
+        if shorthand
+        else {"source": _MAP_PASSWORD_SECRET, "target": _MAP_PASSWORD_SECRET}
+    )
     services: dict[str, object] = {
         "some-other-service": {
             "image": "example:latest",
-            "secrets": [
-                {"source": _MAP_PASSWORD_SECRET, "target": _MAP_PASSWORD_SECRET}
-            ],
+            "secrets": [foreign_reference],
         }
     }
     if include_owner:
@@ -2891,28 +2901,20 @@ def _document_with_foreign_consumer(*, include_owner: bool) -> dict[str, object]
     }
 
 
-def test_sole_consumer_scan_runs_even_without_the_owner_service() -> None:
-    """**S2의 핵심.** 소유자가 없어도 무단 소비자는 거부된다.
+@pytest.mark.parametrize("shorthand", [False, True], ids=["long", "shorthand"])
+@pytest.mark.parametrize("include_owner", [True, False], ids=["owner", "no-owner"])
+def test_sole_consumer_scan_rejects_a_foreign_consumer(
+    include_owner: bool, shorthand: bool
+) -> None:
+    """남의 소비는 **두 문법 모두** 거부된다 — 소유자 유무와 무관하게.
 
-    S4가 Map family를 scope에서 빼면 `kor-travel-map-postgres`가 문서에서 사라진다.
-    그때 (B)까지 함께 꺼지면, 아무 서비스나 Map superuser password를
-    `/run/secrets/`로 받아가도 파이프라인 어디서도 안 걸린다.
-
-    이 검사가 그 문을 잠근다 — 소유자가 없으면 인가 집합은 **공집합**이고, 따라서
-    그 secret을 가리키는 모든 참조가 무단이다.
+    짧은 문법 축은 적대 리뷰 2026-09-17 M3이 추가시켰다: 코드는 처리하는데 검사가
+    없어서, 짧은 문법 처리를 `continue`로 바꾸는 변이가 스위트 전체를 통과했다.
     """
 
-    document = _document_with_foreign_consumer(include_owner=False)
-    with pytest.raises(
-        ComposeCandidateContractError, match="unauthorized consumer"
-    ):
-        c6c_deployment_module._assert_map_postgres_password_sole_consumer(document)
-
-
-def test_sole_consumer_scan_rejects_a_foreign_consumer_with_the_owner_present() -> None:
-    """소유자가 있어도 남의 소비는 거부된다 — 종전 동작 그대로."""
-
-    document = _document_with_foreign_consumer(include_owner=True)
+    document = _document_with_foreign_consumer(
+        include_owner=include_owner, shorthand=shorthand
+    )
     with pytest.raises(
         ComposeCandidateContractError, match="unauthorized consumer"
     ):
@@ -2964,40 +2966,271 @@ def test_owner_wiring_is_skipped_only_when_the_owner_is_absent() -> None:
         wiring(leaking)
 
 
-def test_the_composed_validator_still_reports_wiring_before_consumers() -> None:
-    """합성 진입점의 **순서**가 오늘의 문구를 정한다.
+def test_wiring_is_reported_before_consumers_at_the_entry_point(
+    tmp_path: Path,
+) -> None:
+    """배선 오류와 무단 소비자가 동시에 있으면 **배선이 먼저** 보고된다.
 
-    배선 오류와 무단 소비자가 동시에 있으면 배선이 먼저 보고돼야 종전과 같다.
-    쪼개면서 순서를 뒤집으면 골든 테이블이 아니라 여기서 걸린다.
+    이것이 S2의 "동작 변경 0"을 지키는 제약이다. 전역 소비자 스캔을 family 블록
+    **앞**에 두면 이 문서의 문구가 "...unauthorized consumer"로 바뀐다 — 판정은
+    같지만 진단이 달라지므로 종전과 다르다. 그래서 전역 블록을 family 블록 **뒤**에
+    두었고, 이 검사가 그 배치를 결박한다.
     """
 
-    document = _document_with_foreign_consumer(include_owner=True)
-    owner = document["services"]["kor-travel-map-postgres"]  # type: ignore[index]
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    owner = services["kor-travel-map-postgres"]
     assert isinstance(owner, dict)
-    environment = owner["environment"]
-    assert isinstance(environment, dict)
-    environment["POSTGRES_PASSWORD"] = "leaked"
+    owner_environment = owner["environment"]
+    assert isinstance(owner_environment, dict)
+    owner_environment["POSTGRES_PASSWORD"] = "leaked"
+    services["some-other-service"] = {
+        "image": "example:latest",
+        "secrets": [{"source": _MAP_PASSWORD_SECRET, "target": _MAP_PASSWORD_SECRET}],
+    }
 
     with pytest.raises(
         ComposeCandidateContractError, match="leaks to container environment"
     ):
-        c6c_deployment_module._validate_map_postgres_password_secret(document)
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
 
 
-def test_composed_validator_keeps_the_consumer_scan_without_the_owner() -> None:
-    """**S2의 진짜 결박점.** 공개 진입점이 소유자 부재에도 (B)를 유지하는가.
+def test_the_global_invariants_are_not_inside_the_family_validator() -> None:
+    """전역 불변식 둘은 family validator **밖**에 있어야 한다 — 자리 자체를 결박한다.
 
-    쪼갠 함수를 직접 태우는 검사만으로는 부족하다 — 변이로 확인했다: 합성 진입점
-    맨 앞에 "소유자가 없으면 `return`"을 넣으면(= 순진한 S4 구현) 직접 호출 검사들은
-    **전부 초록**이었다. 분리가 존재하는 것과 호출부가 그 분리를 쓰는 것은 다르다.
+    적대 리뷰 둘이 각각 같은 구멍을 찾았다: 첫 판은 선언 검사와 소비자 스캔을 Map
+    validator **안**에 두었고, 그래서 진입점의 호출부를 소유자 존재로 감싸는 순진한
+    S4가 전체 스위트를 통과시키면서 무단 소비자를 실제로 통과시켰다.
 
-    이 검사는 **진입점**을 태운다. 소유자가 없고 남의 서비스가 그 secret을 가져가는
-    문서를 주면, 진입점은 여전히 무단 소비자로 거부해야 한다. S4가 Map family를
-    scope에서 뺄 때 이 검사가 그 문을 잠근 채로 남는다.
+    그 뒤 이중화(합성 wrapper 안에도, 진입점에도)를 시도했는데 그것도 틀렸다 —
+    둘 중 하나를 지우는 변이가 **아무 검사도** 빨갛게 만들지 못했다. 이중화는
+    방어처럼 보이지만 검사 불가능한 방어다.
+
+    그래서 자리를 **하나**로 만들었다: family 블록은 (A)만 부르고, 전역 불변식 둘은
+    진입점의 전역 블록에만 산다. 이 검사는 그 구조를 직접 확인한다 — (A)가 전역
+    불변식을 부르면 자리가 둘로 늘어난 것이므로 빨개진다.
+    """
+
+    import inspect
+
+    wiring_source = inspect.getsource(
+        c6c_deployment_module._validate_map_postgres_password_owner_wiring
+    )
+    for forbidden in (
+        "_assert_map_postgres_password_sole_consumer",
+        "_validate_map_postgres_password_declaration",
+    ):
+        assert forbidden not in wiring_source, (
+            f"전역 불변식 {forbidden}이 family validator 안으로 들어왔다 — 자리가 둘이 되면"
+            " 하나를 지우는 변이를 아무 검사도 잡지 못한다"
+        )
+
+
+def test_entry_points_keep_the_consumer_scan_when_the_required_set_shrinks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**S4를 오늘 시뮬레이션한다.** required 집합이 줄어도 소비자 스캔은 살아 있는가.
+
+    적대 리뷰 둘이 각각 이 PR의 실질적 구멍을 찾았다. S2 검사들은 전부 private 합성
+    함수를 태우는데, **S4가 게이트를 넣을 자리는 공개 진입점의 호출부**다. 거기에
+    순진한 S4를 넣자 S2 검사 6건이 전부 초록이었고 무단 소비자가 실제로 통과했다.
+    빨개진 넷은 S1의 required-set 골든 핀뿐인데, 그 핀의 docstring은 S4 저자에게
+    **리터럴을 갱신하라고 지시한다** — 지시를 정당하게 따르면 그물이 사라진다.
+
+    그래서 이 검사는 **S4가 바꿀 바로 그것을 오늘 바꿔 본다**: required 집합에서
+    소유자를 빼고(= S4의 절반), 완전한 후보에서 소유자만 지운 뒤 진입점에 태운다.
+    진입점이 여전히 무단 소비자로 거부해야 한다.
+
+    최소 문서로는 안 된다 — 진입점은 required-set과 모양 검사를 지난 뒤 전역 블록과
+    family validator를 도는데, 최소 문서는 그 전에 다른 이유로 죽는다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_CANDIDATE_REQUIRED_PROTECTED_SERVICES",
+        frozenset(
+            name
+            for name in c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
+            if name != "kor-travel-map-postgres"
+        ),
+    )
+
+    for shorthand in (False, True):
+        shaped = _shape_without(candidate, ("kor-travel-map-postgres",))
+        services = shaped["services"]
+        assert isinstance(services, dict)
+        services["some-other-service"] = {
+            "image": "example:latest",
+            "secrets": [
+                _MAP_PASSWORD_SECRET
+                if shorthand
+                else {
+                    "source": _MAP_PASSWORD_SECRET,
+                    "target": _MAP_PASSWORD_SECRET,
+                }
+            ],
+        }
+        with pytest.raises(
+            ComposeCandidateContractError, match="unauthorized consumer"
+        ) as rejection:
+            validate_compose_candidate_protected_values(
+                shaped,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+                environment=environment,
+            )
+        assert "unauthorized consumer" in str(rejection.value), (
+            f"shorthand={shorthand}: {rejection.value}"
+        )
+
+
+def test_owner_must_mount_the_secret_at_the_exact_target(tmp_path: Path) -> None:
+    """소유자는 secret을 **exact target**에 마운트해야 한다 (적대 리뷰 M1/F-3).
+
+    **선재 공백**이었다: (A)의 `source`/`target` 검사를 지워도 backend 1,700건이 전부
+    통과하는데 게이트의 판정은 실제로 바뀐다 — 소유자가 superuser secret을 임의 alias
+    target에 마운트하거나 짧은 문법으로 target을 생략해도 통과하게 된다. main도 같아
+    회귀는 아니지만, S2가 그 위험을 올렸다: 이제 인가 집합 파생이 그 참조를 (B)에
+    넘긴다. 그래서 파생에도 모양 검증을 넣고, 그 불변식을 여기서 처음으로 센다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    owner = services["kor-travel-map-postgres"]
+    assert isinstance(owner, dict)
+    references = owner["secrets"]
+    assert isinstance(references, list) and len(references) == 1
+    authorized = references[0]
+    assert isinstance(authorized, dict)
+
+    for label, replacement in {
+        "alias target": [{**authorized, "target": "some-other-target"}],
+        "short syntax (target 생략)": [authorized["source"]],
+        "traversal-looking target": [{**authorized, "target": "../escaped"}],
+    }.items():
+        shaped = deepcopy(candidate)
+        shaped_services = shaped["services"]
+        assert isinstance(shaped_services, dict)
+        shaped_owner = shaped_services["kor-travel-map-postgres"]
+        assert isinstance(shaped_owner, dict)
+        shaped_owner["secrets"] = replacement
+        with pytest.raises(ComposeCandidateContractError) as rejection:
+            validate_compose_candidate_protected_values(
+                shaped,
+                compose_path=str(_COMPOSE_PATH),
+                root_env_path=str(root_env),
+                environment=environment,
+            )
+        assert "Map PostgreSQL password secret is invalid" in str(rejection.value), (
+            f"{label}: 소유자의 어긋난 마운트가 거부되지 않았다 — {rejection.value}"
+        )
+
+
+def test_the_secret_declaration_is_checked_without_the_owner(tmp_path: Path) -> None:
+    """최상위 `secrets` 선언 검사는 **소유자와 무관**하다 (적대 리뷰 M2).
+
+    첫 판은 이 블록을 (A) 안에 두었고 그래서 (A)의 docstring이 거짓이었다 — 최상위
+    선언은 소유자 서비스에 관한 물음이 아니라 문서 전역의 성질이다. 게다가
+    `_DATABASE_ALLOWED_NON_ENV_PATHS`가 그 경로를 전역 스캔에서 **무조건 면제**하는
+    근거가 "이 검사가 그 경로를 소유한다"였으므로, S4가 (A)를 끄면 면제만 남는다.
     """
 
     document = _document_with_foreign_consumer(include_owner=False)
+    secrets = document["secrets"]
+    assert isinstance(secrets, dict)
+    secrets[_MAP_PASSWORD_SECRET] = {"environment": "PINVI_POSTGRES_PASSWORD"}
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="Map PostgreSQL password secret is invalid"
+    ):
+        c6c_deployment_module._validate_map_postgres_password_declaration(document)
+
+
+def test_entry_point_checks_the_secret_declaration(tmp_path: Path) -> None:
+    """선언 검사가 **진입점에서** 실제로 불린다.
+
+    직접 호출 검사만 두면 진입점의 호출을 지우는 변이를 잡지 못한다(실측: 그 상태에서
+    전체 스위트가 초록이었다). 진입점을 태워 호출 자체를 결박한다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    secrets = shaped["secrets"]
+    assert isinstance(secrets, dict)
+    secrets[_MAP_PASSWORD_SECRET] = {"environment": "PINVI_POSTGRES_PASSWORD"}
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="Map PostgreSQL password secret is invalid"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_entry_point_runs_the_consumer_scan_for_a_valid_owner(tmp_path: Path) -> None:
+    """소비자 스캔이 **진입점에서** 실제로 불린다 — 소유자가 멀쩡할 때도.
+
+    `..._when_the_required_set_shrinks`는 required 집합을 patch하므로, 진입점의 전역
+    호출을 지우는 변이를 그것만으로는 못 잡는다((A) 안의 경로로 대체될 수 있었다).
+    여기서는 patch 없이, 소유자가 정상인 후보에 남의 소비자만 얹어 진입점을 태운다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["some-other-service"] = {
+        "image": "example:latest",
+        "secrets": [_MAP_PASSWORD_SECRET],
+    }
+
     with pytest.raises(
         ComposeCandidateContractError, match="unauthorized consumer"
     ):
-        c6c_deployment_module._validate_map_postgres_password_secret(document)
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_authorized_reference_requires_the_exact_shape() -> None:
+    """인가 파생은 **모양까지** 본다 (적대 리뷰 M1).
+
+    첫 판은 소유자의 `secrets[0]`을 검증 없이 돌려줬고, 그래서 이름이 거짓이었다 —
+    "인가받은"이 아니라 "소유자가 선언한"이었다. 진입점 경로로는 (A)가 같은 것을
+    확인하므로 이 결함이 보이지 않는다(실측: 모양 검증을 지워도 전체 스위트 초록).
+    그래서 파생을 **직접** 태운다.
+    """
+
+    derive = c6c_deployment_module._authorized_map_postgres_password_reference
+
+    def owner_with(reference: object) -> dict[str, object]:
+        return {
+            "services": {"kor-travel-map-postgres": {"secrets": [reference]}}
+        }
+
+    good = {"source": _MAP_PASSWORD_SECRET, "target": _MAP_PASSWORD_SECRET}
+    assert derive(owner_with(good)) == good
+
+    for label, bad in {
+        "짧은 문법": _MAP_PASSWORD_SECRET,
+        "target 어긋남": {**good, "target": "elsewhere"},
+        "source 어긋남": {**good, "source": "other-secret"},
+        "target 없음": {"source": _MAP_PASSWORD_SECRET},
+        "참조가 리스트": [good],
+    }.items():
+        assert derive(owner_with(bad)) is None, f"{label}: 인가하면 안 된다"
