@@ -44,6 +44,10 @@ from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
     ComposeTransactionSnapshot,
 )
+from kor_travel_docker_manager.services.docker_service import (
+    ContainerConfigValidationError,
+    validate_container_config_update,
+)
 from kor_travel_docker_manager.services.map_application_300 import (
     Application300Contract,
 )
@@ -1562,7 +1566,9 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         pinvi_initdb_environment = pinvi_initdb_postgres["environment"]
         assert isinstance(pinvi_initdb_environment, dict)
         pinvi_initdb_environment["POSTGRES_INITDB_ARGS"] = initdb_args
-        with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
+        # 이 값의 주인은 이제 전역 술어다 — 서비스를 열거하는 방식이 저장소의
+        # PostgreSQL 넷 중 둘(geo·concierge)을 빠뜨렸던 것이 적대 리뷰 2026-09-18 F1.
+        with pytest.raises(DeploymentContractError, match="non-canonical POSTGRES_INITDB_ARGS"):
             validate_compose_candidate_protected_values(
                 pinvi_initdb_drift,
                 compose_path=str(_COMPOSE_PATH),
@@ -1613,7 +1619,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert isinstance(pinvi_resolved_initdb_environment, dict)
     for initdb_args in ("--auth-host=trust", ""):
         pinvi_resolved_initdb_environment["POSTGRES_INITDB_ARGS"] = initdb_args
-        with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
+        with pytest.raises(DeploymentContractError, match="non-canonical POSTGRES_INITDB_ARGS"):
             validate_resolved_compose_candidate_protected_values(
                 pinvi_resolved_initdb_drift,
                 environment=environment,
@@ -4225,6 +4231,12 @@ def test_the_env_half_does_not_look_at_services_at_all() -> None:
 
     시그니처에 `services`가 없으면 family 조건을 달 재료 자체가 없다. Map 쌍둥이
     `_validate_map_database_dsn_identities`가 이미 그 모양이고, PinVi만 달랐다.
+
+    **이 검사가 못 보는 것을 적어 둔다**(적대 리뷰 2026-09-18 F12): 호출부를 family
+    scope로 감싸는 S4 변이는 함수 본문을 건드리지 않으므로 여기서는 초록이다. 실제
+    방어는 효과에 결박한 옆의
+    `test_pinvi_database_env_invariants_survive_without_the_services`가 한다. 이
+    검사는 "게이팅할 재료가 없다"만 센다 — 그 이상을 주장하지 마라.
     """
 
     import inspect
@@ -4286,4 +4298,571 @@ def test_the_service_half_stays_gateable_and_still_runs_today(tmp_path: Path) ->
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
             environment=environment,
+        )
+
+
+# ── 전역 env 술어가 **정말** 전역인가 ─────────────────────────────────────
+#
+# 적대 리뷰 2026-09-18이 세 가지를 실측했다.
+#
+# **F1** 저장소 compose에 `POSTGRES_INITDB_ARGS` 리터럴이 네 곳(geo·concierge·pinvi·
+# map)인데 2026-09-17 수정은 계약표로 막았고 **계약표는 서비스를 열거한다.**
+# `kor-travel-geo-postgres`·`kor-travel-concierge-postgres`는 계약표에도 validator
+# 에도 UI 잠금에도 없었고, `--auth-host=trust`가 raw·resolved·UI 저장 **세 진입점
+# 전부**를 통과했다. fresh PGDATA에서 initdb가 `trust`를 pg_hba **첫 행**으로 쓰므로
+# 12500/12600에 비밀번호 없는 superuser가 생긴다.
+#
+# **F4** `POSTGRES_HOST_AUTH_METHOD` 금지가 raw 층에서 전역이 아니었다 —
+# `environment`가 리스트면 통째로 건너뛰는데 `["NAME=value"]`는 합법 문법이다.
+# 오늘 최종 거부되던 이유는 `docker compose config`가 맵으로 정규화해 주기
+# 때문뿐이라 검사 이름 `..._rejected_anywhere`는 과장이었다.
+#
+# **F2** 그리고 그 금지를 `if MAP_PG in services:`로 감싸는 **순진한 S4 변이가 전체
+# 스위트를 그대로 통과**했다 — 종전 검사가 키를 놓는 서비스만 바꾸고 문서에서
+# map-postgres를 **지우지 않았기** 때문이다. 아래 S4 시뮬레이션이 그 자리를 메운다.
+
+
+def _service_with_environment(environment: object) -> dict[str, object]:
+    return {"image": "postgres:16", "environment": environment}
+
+
+def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
+    """`_bootstrap_candidate`와 **같은 서비스 집합**의 resolved 문서.
+
+    좌표는 전부 `environment`에서 되읽는다 — 목록을 복제하면 그 사본이 곧 원본과
+    갈라진다(이 파일이 `_bootstrap_candidate`를 뽑아낸 이유와 같다).
+    """
+
+    return _resolved_compose(
+        "kor-travel-map-postgres",
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        *_MAP_DATABASE_ONESHOT_SERVICES,
+        "pinvi-api",
+        "pinvi-admin-bootstrap",
+        "pinvi-db-runtime-role",
+        environment_update={
+            name: environment[name]
+            for name in (
+                "KOR_TRAVEL_MAP_PGDATA",
+                "KOR_TRAVEL_MAP_REPO_DIR",
+                "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR",
+                "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR",
+                "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR",
+                "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR",
+                "PINVI_REPO_DIR",
+                "PINVI_PGDATA",
+            )
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "service_name",
+    ["kor-travel-geo-postgres", "kor-travel-concierge-postgres", "rustfs"],
+)
+def test_non_canonical_initdb_args_are_rejected_on_any_service(
+    tmp_path: Path, service_name: str
+) -> None:
+    """**계약표 밖의 서비스도** 정본 값에 묶인다.
+
+    셋 중 앞의 둘은 정본 compose의 실재하는 PostgreSQL이고 계약표에 없었다.
+    세 번째는 postgres조차 아닌 서비스다 — 술어가 **이름을 보지 않는다**는 것을
+    센다. 이름에 결박하면 다섯째 postgres에서 같은 실수를 반복한다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services[service_name] = _service_with_environment(
+        {"POSTGRES_INITDB_ARGS": "--auth-host=trust"}
+    )
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="non-canonical POSTGRES_INITDB_ARGS"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_non_canonical_initdb_args_are_rejected_on_the_resolved_entry_point(
+    tmp_path: Path,
+) -> None:
+    """**resolved 진입점도 센다.**
+
+    적대 리뷰 실측: 종전 전역 금지의 resolved 호출은 **커버리지 0**이었다(호출을
+    지워도 전부 초록). resolved가 실제 배포에 적용되는 쪽이다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    resolved = _bootstrap_resolved(environment)
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = _service_with_environment(
+        {"POSTGRES_INITDB_ARGS": "--auth-host=trust"}
+    )
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="non-canonical POSTGRES_INITDB_ARGS"
+    ):
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+
+def test_the_forbidden_auth_key_is_rejected_on_the_resolved_entry_point(
+    tmp_path: Path,
+) -> None:
+    """같은 공백이 `POSTGRES_HOST_AUTH_METHOD` 쪽에도 있었다 — resolved 호출 무커버리지."""
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    resolved = _bootstrap_resolved(environment)
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = _service_with_environment(
+        {"POSTGRES_HOST_AUTH_METHOD": "trust"}
+    )
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="overrides PostgreSQL host authentication"
+    ):
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+
+@pytest.mark.parametrize(
+    ("entry", "message"),
+    [
+        ("POSTGRES_HOST_AUTH_METHOD=trust", "overrides PostgreSQL host authentication"),
+        ("POSTGRES_HOST_AUTH_METHOD", "overrides PostgreSQL host authentication"),
+        ("POSTGRES_INITDB_ARGS=--auth-host=trust", "non-canonical POSTGRES_INITDB_ARGS"),
+        ("POSTGRES_INITDB_ARGS", "non-canonical POSTGRES_INITDB_ARGS"),
+    ],
+)
+def test_list_form_environment_does_not_escape_the_global_predicates(
+    tmp_path: Path, entry: str, message: str
+) -> None:
+    """**리스트 문법도 본다.**
+
+    Compose는 `environment: ["NAME=value"]`를 완전히 합법으로 받는다. 종전 검사는
+    `isinstance(environment, Mapping)`이 아니면 `continue`해서 그 문법을 통째로
+    건너뛰었다 — 오늘 최종적으로 막힌 이유는 `docker compose config`가 맵으로
+    정규화해 주기 때문뿐이라, raw 층에서는 방어가 없었다.
+
+    값이 없는 항목(`"NAME"`)도 센다 — 셸에서 값을 물려받는 형태라 **문서만 보고는
+    무엇이 들어올지 알 수 없고**, 그래서 정본이 아니다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = _service_with_environment([entry])
+
+    with pytest.raises(ComposeCandidateContractError, match=message):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_the_forbidden_auth_key_is_banned_by_name_not_by_value(tmp_path: Path) -> None:
+    """**값이 아니라 존재를 막는다**는 docstring을 검사로 남긴다.
+
+    적대 리뷰 실측: 술어를 `value.lower() == "trust"`로 바꿔도 전부 초록이었다
+    (검사가 `trust`만 써 왔다). 여기서는 **무해해 보이는 값**을 준다 — 그래도
+    거부돼야 한다. 계약 기계가 값-동등 비교라 "키가 추가됐다"를 표현하지 못하는
+    것이 이 금지의 존재 이유이고, 값으로 판정하면 그 이유가 사라진다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = _service_with_environment(
+        {"POSTGRES_HOST_AUTH_METHOD": "scram-sha-256"}
+    )
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="overrides PostgreSQL host authentication"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_the_global_predicates_survive_a_document_without_any_known_postgres(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**순진한 S4 시뮬레이션.** required 집합을 줄이고 문서에서 두 postgres를 지운다.
+
+    이것이 이 파일의 다른 S4 검사들과 같은 모양이다(`_s4_without_pinvi_services`).
+    적대 리뷰 실측: 종전 검사는 키를 **어느 서비스에 놓느냐**만 바꾸고 문서에서
+    map-postgres를 지우지 않아서, 전역 금지를 `if MAP_PG in services:`로 감싸는
+    변이가 **1770건을 그대로 통과**했다.
+
+    S4가 family scope를 도입하면 정확히 이 형상이 실제로 생긴다 — 그때 두 술어가
+    함께 꺼지면 어느 PostgreSQL도 인증 계약을 받지 못한다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    for known in list(services):
+        if known.endswith("postgres") or known.endswith("postgresql"):
+            del services[known]
+    assert not any("postgres" in name for name in services), sorted(services)
+    services["some-future-database"] = _service_with_environment(
+        {"POSTGRES_HOST_AUTH_METHOD": "trust"}
+    )
+
+    survivors = frozenset(
+        name
+        for name in c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
+        if name in services
+    )
+    monkeypatch.setattr(
+        c6c_deployment_module, "_CANDIDATE_REQUIRED_PROTECTED_SERVICES", survivors
+    )
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="overrides PostgreSQL host authentication"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_the_initdb_rule_has_exactly_one_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """값 고정의 주인은 전역 술어 **하나**다.
+
+    2026-09-17에는 PinVi의 `_validate_pinvi_postgres_identity`가 같은 규칙을 자기
+    exact-match dict에 들고 있었다. 두 자리에 같은 규칙이 있으면 한쪽을 지워도 아무
+    검사가 빨개지지 않는다 — 이 저장소가 S2에서 실제로 겪은 일이다.
+
+    **이름이 아니라 효과로 센다.** 전역 술어를 no-op으로 만든 뒤 PinVi postgres의
+    initdb를 망가뜨린다. 두 번째 자리가 있으면 그래도 거부되고, 이 검사가 빨개진다.
+    소스에서 문자열을 세는 방식은 설명 주석 한 줄에 빨개지므로 결박이 아니라 잡음이다
+    (`test_the_loopback_binding_has_exactly_one_home`이 같은 이유로 AST를 쓴다).
+
+    Map의 계약표 항목은 **다른 일을 한다**(UI 저장 경로의 잠금 파생) — 그쪽은
+    `test_the_two_postgres_services_share_one_initdb_contract`가 센다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    postgres = services["pinvi-postgres"]
+    assert isinstance(postgres, dict)
+    postgres_environment = postgres["environment"]
+    assert isinstance(postgres_environment, dict)
+    postgres_environment["POSTGRES_INITDB_ARGS"] = "--auth-host=trust"
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="non-canonical POSTGRES_INITDB_ARGS"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_assert_canonical_postgres_initdb_args",
+        lambda document: None,
+    )
+    validate_compose_candidate_protected_values(
+        shaped,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+        environment=environment,
+    )
+
+
+def test_the_ui_save_path_locks_initdb_args_for_every_service() -> None:
+    """세 번째 진입점 — **UI 저장**도 서비스 이름을 보지 않는다.
+
+    종전 규칙은 `service_name == "pinvi-postgres"`였고, 그래서 geo·concierge의
+    PostgreSQL은 이 화면에서 인증을 자유롭게 끌 수 있었다. 적대 리뷰 2026-09-18이
+    raw·resolved와 함께 이 경로도 통과하는 것을 실측했다.
+    """
+
+    for service_name in (
+        "kor-travel-geo-postgres",
+        "kor-travel-concierge-postgres",
+        "kor-travel-map-postgres",
+        "pinvi-postgres",
+    ):
+        with pytest.raises(
+            ContainerConfigValidationError, match="initdb authentication policy"
+        ):
+            validate_container_config_update(
+                ports=[],
+                env={"POSTGRES_INITDB_ARGS": "--auth-host=trust"},
+                networks=[],
+                baseline_env={"POSTGRES_INITDB_ARGS": "--auth-host=scram-sha-256"},
+                service_name=service_name,
+            )
+
+
+def test_the_ui_save_path_refuses_to_add_the_forbidden_auth_key() -> None:
+    """**키 추가**는 잠금이 표현하지 못한다 — 저장 시점에 따로 막는다.
+
+    계약 잠금은 값 동등 비교라 "없던 키가 생겼다"를 볼 수 없다. 최종적으로는 후보
+    검증이 쓰기 전에 거부하므로 fail-close지만, 그때는 실패가 조작에서 멀어져 원인이
+    화면 조작이었다는 사실이 드러나지 않는다(적대 리뷰 F6).
+    """
+
+    with pytest.raises(ContainerConfigValidationError, match="cannot be added"):
+        validate_container_config_update(
+            ports=[],
+            env={"POSTGRES_HOST_AUTH_METHOD": "trust"},
+            networks=[],
+            baseline_env={},
+            service_name="kor-travel-geo-postgres",
+        )
+
+
+
+# ── Concierge 게이트: 신호 집합이 좁으면 우회로가 된다 ───────────────────
+
+
+def _canonical_concierge_api() -> dict[str, object]:
+    """정본 그대로의 raw concierge-api. **축을 하나씩만** 깨려면 나머지가 정본이어야 한다."""
+
+    return {
+        "image": "kor-travel-concierge-api:latest",
+        "network_mode": c6c_deployment_module._CONCIERGE_CANONICAL_RAW_NETWORK_MODE,
+        "command": list(c6c_deployment_module._CONCIERGE_API_CANONICAL_RAW_COMMAND),
+        "environment": dict(
+            c6c_deployment_module._CONCIERGE_API_CANONICAL_RAW_ENV_VALUES
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("signal", "value"),
+    [
+        ("entrypoint", ["python", "-m", "ktc.cli", "api", "--host", "0.0.0.0"]),
+        ("ports", ["12601:12601"]),
+        ("env_file", [{"path": "/srv/concierge/.env", "required": False}]),
+        ("build", {"context": "/srv/concierge"}),
+    ],
+)
+def test_a_deployment_signal_outside_the_first_three_still_triggers_the_contract(
+    tmp_path: Path, signal: str, value: object
+) -> None:
+    """**신호 집합이 좁으면 그것이 곧 우회로다.**
+
+    첫 판의 신호는 `environment`·`command`·`network_mode` 셋뿐이었다. 적대 리뷰
+    2026-09-18이 그 셋을 한 글자도 건드리지 않고 살아 있는 API를 세웠다 —
+    `entrypoint`로 `--host 0.0.0.0`을 주고, `ports`로 **전 인터페이스**에 게시하고,
+    `env_file`로 concierge 저장소 `.env`(정본 compose가 이미 쓰는 통로이고
+    `KTC_ADMIN_PROXY_SECRET`가 거기 있다)를 읽는 형상이다.
+
+    여기서는 신호 **하나만** 준다. 나머지는 stub 그대로다 — 그래도 계약이 걸려야
+    한다. 각 항목이 "이 키에 값이 있으면 이 서비스는 실제로 배포된다"를 만족한다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    assert "kor-travel-concierge-ui" not in services, "전제: fixture에 UI가 없다"
+    services["kor-travel-concierge-api"] = {
+        "image": "kor-travel-concierge-api:latest",
+        signal: value,
+    }
+
+    with pytest.raises(ComposeCandidateContractError) as rejection:
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+    assert "Concierge" in str(rejection.value), (
+        f"'{signal}' 신호로 세운 API가 계약을 빠져나갔다 — {rejection.value}"
+    )
+
+
+def test_a_null_ui_service_is_invalid_not_absent(tmp_path: Path) -> None:
+    """`ui: null`은 **부재가 아니다.**
+
+    게이트를 고치면서 `not in services`를 `services.get(...)`으로 바꾼 탓에 "키가
+    있고 값이 null"이 부재와 구분되지 않았다(적대 리뷰 F10). 이 저장소가 S1에서
+    명시적으로 박은 규칙의 위반이다 — null을 부재로 오인하면 계약을 한 줄로 우회할
+    수 있다. 오늘은 진입점의 non-Mapping 스캔이 더 앞에서 막아 주지만, 이 함수가
+    **단독으로도** 안전해야 한다.
+    """
+
+    with pytest.raises(ComposeCandidateContractError):
+        c6c_deployment_module._validate_concierge_ui_canonical_contract(
+            {"kor-travel-concierge-ui": None, "kor-travel-concierge-api": {"image": "x"}},
+            {},
+            resolved=False,
+        )
+
+
+def test_the_api_auth_axis_is_counted_on_its_own(tmp_path: Path) -> None:
+    """**축을 하나만 깨서** 그 축이 실제로 일하는지 센다.
+
+    종전 착취 형상은 `network_mode: bridge` + 비정본 `command`를 함께 갖고 있어
+    **더 앞의 검사에서** 거부됐고, 단언이 `"Concierge" in str(...)`라 어느 축이
+    잡았는지 세지 않았다. 그래서 API env 계약을 UI 존재로 다시 게이팅하는 변이가
+    전체 스위트를 통과했다(적대 리뷰 F9). 여기서는 나머지를 정본으로 두고
+    `API_AUTH_ENABLED`만 리터럴 `false`로 바꾼다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    api = _canonical_concierge_api()
+    api_environment = api["environment"]
+    assert isinstance(api_environment, dict)
+    api_environment["API_AUTH_ENABLED"] = "false"
+    services["kor-travel-concierge-api"] = api
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="API_AUTH_ENABLED canonical wiring"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_the_proxy_authority_axis_is_counted_on_its_own(tmp_path: Path) -> None:
+    """같은 이유로 proxy secret 축도 단독으로 센다."""
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    api = _canonical_concierge_api()
+    api_environment = api["environment"]
+    assert isinstance(api_environment, dict)
+    api_environment["KTC_ADMIN_PROXY_SECRET"] = "attacker-chosen-secret"
+    services["kor-travel-concierge-api"] = api
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="canonical Manager proxy authority"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_the_manager_root_environment_axis_is_counted_on_its_own(
+    tmp_path: Path,
+) -> None:
+    """Manager root env 불변식도 UI 없이 단독으로 걸린다.
+
+    이 축이 PBKDF2 형식·반복수·32자 secret·API_KEYS 소속을 본다. UI 게이트 뒤에
+    있던 탓에 UI 한 줄 삭제로 전부 꺼지던 것이 2026-09-18 수정의 절반이었고,
+    적대 리뷰는 그 절반이 **검사로 결박되지 않았다**는 것을 실측했다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-concierge-api"] = _canonical_concierge_api()
+    broken_environment = {
+        **environment,
+        c6c_deployment_module._CONCIERGE_ROOT_PROXY_SECRET_ENV: "too-short",
+    }
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="Manager root environment is invalid"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=broken_environment,
+        )
+
+
+def test_the_canonical_loopback_api_port_axis_is_counted_on_its_own(
+    tmp_path: Path,
+) -> None:
+    """12601 핀도 UI 없이 단독으로 걸린다."""
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-concierge-api"] = _canonical_concierge_api()
+    moved_environment = {**environment, "KOR_TRAVEL_CONCIERGE_API_PORT": "12699"}
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="canonical loopback API port"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=moved_environment,
+        )
+
+
+def test_the_expected_database_is_threaded_not_hardcoded(tmp_path: Path) -> None:
+    """`_PinviDatabaseIdentity.expected_database`가 env에서 온다.
+
+    S3-c의 전제는 "dataclass로 넘기는 값이 종전 지역변수와 정확히 같다"였는데, 그
+    전제를 지키는 검사가 없었다 — 적대 리뷰 2026-09-18 F11 실측: 그 필드를 `'pinvi'`
+    상수로 굳혀도 1770건이 전부 초록이다.
+
+    **resolved 문서라야 보인다.** raw에서는 DSN이 `${PINVI_POSTGRES_DB:-pinvi}`라
+    양쪽이 함께 움직여 불일치가 생기지 않는다. resolved는 `/pinvi`가 리터럴로 박혀
+    있으므로, env만 바꾸면 값이 실제로 흘러가는지가 드러난다.
+    """
+
+    _candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    resolved = _bootstrap_resolved(environment)
+    renamed_environment = {**environment, "PINVI_POSTGRES_DB": "pinvi_renamed"}
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="PinVi database URL identity is invalid"
+    ):
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=renamed_environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
         )

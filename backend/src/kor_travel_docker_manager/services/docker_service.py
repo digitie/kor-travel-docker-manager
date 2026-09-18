@@ -12,7 +12,9 @@ import yaml
 from docker.errors import DockerException, NotFound
 
 from kor_travel_docker_manager.services.c6c_deployment import (
-    _PINVI_POSTGRES_INITDB_ARGS,
+    _FORBIDDEN_AUTH_OVERRIDE_ENV_NAMES,
+    _POSTGRES_CANONICAL_INITDB_ARGS,
+    _POSTGRES_INITDB_ARGS_ENV,
     assert_contract_locked_env_unchanged,
     assert_manager_mutation_allowed,
     compose_volume_graph_hash,
@@ -491,10 +493,25 @@ def validate_container_config_update(
                 None if baseline_value is None else str(baseline_value)
             ),
         )
-    if service_name == "pinvi-postgres" and "POSTGRES_INITDB_ARGS" in env:
-        if env["POSTGRES_INITDB_ARGS"] != _PINVI_POSTGRES_INITDB_ARGS:
+    # **서비스 이름을 보지 않는다.** 종전에는 `service_name == "pinvi-postgres"`
+    # 였고, 그래서 정본 compose의 PostgreSQL 넷 중 둘(geo·concierge)이 이 화면에서
+    # 자유롭게 인증을 끌 수 있었다(적대 리뷰 2026-09-18 F1: 세 진입점 전부 통과).
+    # 서버 인증 정책은 어느 서비스가 들고 있든 같은 정책이다.
+    if _POSTGRES_INITDB_ARGS_ENV in env:
+        if env[_POSTGRES_INITDB_ARGS_ENV] != _POSTGRES_CANONICAL_INITDB_ARGS:
             raise ContainerConfigValidationError(
-                "PinVi PostgreSQL initdb authentication policy is immutable."
+                "PostgreSQL initdb authentication policy is immutable."
+            )
+    # 그리고 **새 키 추가**를 여기서 막는다. 계약 잠금은 값 동등 비교라 키 추가를
+    # 표현하지 못해서, 이 키를 새로 더하는 저장이 네 서비스 모두 통과했다(F6).
+    # 최종적으로는 후보 검증이 쓰기 전에 거부하므로 fail-close였지만, 실패가 조작에서
+    # 멀어져 원인이 화면 조작이었다는 사실이 드러나지 않는다 — 바로 위
+    # `assert_contract_locked_env_unchanged` 주석이 피하려는 그 형태다.
+    for forbidden in sorted(_FORBIDDEN_AUTH_OVERRIDE_ENV_NAMES):
+        if forbidden in env and forbidden not in baseline_env:
+            raise ContainerConfigValidationError(
+                f"{forbidden} cannot be added: it replaces the server "
+                "authentication policy."
             )
     if service_name is not None:
         # candidate 계약이 값을 고정한 env는 저장 시점에 막는다. 재구축까지 미루면
