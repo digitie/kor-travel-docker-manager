@@ -21,6 +21,7 @@ cwd**를 본다. 명령을 만드는 함수가 아니라 **실행되는 명령**
 
 from __future__ import annotations
 
+import os
 import subprocess
 from typing import Any
 
@@ -225,3 +226,204 @@ def test_group_aggregate_reports_failure(monkeypatch: pytest.MonkeyPatch) -> Non
     assert result["success"] is False
     assert result["returncode"] == 1
     assert "boom" in result["stderr"]
+
+
+# ── 라운드 2: 리뷰어 둘이 **독립적으로** 같은 곳을 짚었다 ────────────────
+#
+# **guard가 틀린 술어에 걸려 있었다.** `run()`의 external guard는 인자의 *존재*로
+# 판정했는데, 변경 분기로 들어갈지를 실제로 정하는 것은
+# `_compose_mutation_identifiers(args)`다. 그래서 `run(["up","-d"], external=X)`가
+# guard를 통과했고, 그 아래 분기는 `external`을 조용히 버려서 형제 프로젝트를 지시한
+# 명령이 **Manager 자신의 프로젝트에** 갔다.
+#
+# 그리고 guard의 네 조건 중 **셋을 개별로 제거해도 1797건이 전부 초록**이었다 —
+# 검사가 `mutation_capability` 하나만 줬기 때문이다. 아래는 그 축을 전부 태운다.
+
+
+def _weather() -> Any:
+    from kor_travel_docker_manager.services.registry import external_project_for_target
+
+    return external_project_for_target("weather")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"mutation_capability": object()}, id="capability"),
+        pytest.param({"expected_system_bind_snapshots": ()}, id="bind-snapshots"),
+    ],
+)
+def test_each_mutation_input_alone_refuses_an_external_project(
+    captured: _Capture, kwargs: dict[str, Any]
+) -> None:
+    """guard의 조건을 **하나씩** 태운다.
+
+    첫 판의 검사는 `mutation_capability=object()` 하나만 줘서, 나머지 조건을 지우는
+    변이가 전부 살아남았다(적대 리뷰 2026-09-18, 리뷰어 둘이 각각 실측).
+    """
+
+    service = ComposeService()
+    with pytest.raises(DeploymentContractError, match="read-only"):
+        service.run(["ps"], external=_weather(), **kwargs)
+    assert captured.calls == []
+
+
+def test_a_mutating_command_refuses_an_external_project(captured: _Capture) -> None:
+    """**인자가 아니라 명령이 변경 여부를 정한다.**
+
+    넷을 다 비우고 `up -d`만 줘도 거부돼야 한다. 첫 판은 여기서 guard를 통과한 뒤
+    C6c 변경 기계로 들어갔고, 그 분기의 `_run_unlocked` 호출은 `external`을 넘기지
+    않으므로 **Manager 자신의 compose**에 `up`이 갔다 — 운영자는 형제 프로젝트를
+    만졌다고 믿는다. C-2·C-3와 정확히 같은 계열의 조용한 오답이다.
+    """
+
+    service = ComposeService()
+    with pytest.raises(DeploymentContractError, match="read-only"):
+        service.run(["up", "-d"], external=_weather())
+    assert captured.calls == []
+
+
+def test_the_unlocked_layer_is_the_last_net(captured: _Capture) -> None:
+    """`run()`을 우회해도 변경 입력과 `external`은 함께 올 수 없다.
+
+    변경 분기의 `_run_unlocked` 호출 두 곳에 `assert`를 박는 대신 **피호출자**가
+    거부한다 — 자리가 둘이면 한쪽을 지워도 아무 검사가 빨개지지 않는다.
+    """
+
+    service = ComposeService()
+    with pytest.raises(DeploymentContractError, match="mutation machinery"):
+        service._run_unlocked(
+            ["up", "-d"],
+            capture_output=True,
+            environment=None,
+            redact_config=None,
+            expected_system_bind_snapshots=(),
+            expected_compose_source_bytes=None,
+            environment_snapshot=None,
+            external_input_snapshot=None,
+            materialized_compose=None,
+            external=_weather(),
+        )
+    assert captured.calls == []
+
+
+def test_the_narrowed_environment_is_exactly_the_allowlist(
+    captured: _Capture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """통과 집합의 **내용**을 결박한다.
+
+    첫 판 검사는 `PROMETHEUS_PORT`·`KOR_TRAVEL_MAP_PGDATA` 두 이름만 핀으로 박아서,
+    allowlist에 임의의 이름을 **더하는** 변이가 살아남았다(적대 리뷰 2026-09-18
+    B-M08c). `main.py`가 Manager `.env`를 `os.environ`에 통째로 싣기 때문에, 한 이름이
+    새는 것이 곧 Manager 비밀이 형제 프로세스 env로 가는 것이다.
+
+    그래서 카나리아를 잔뜩 심고 **결과 키 집합 자체**를 단언한다.
+    """
+
+    for index in range(12):
+        monkeypatch.setenv(f"KTDM_CANARY_{index}", "leak")
+    monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+
+    ComposeService().status_target("weather")
+
+    env = captured.only["env"]
+    assert env is not None
+    expected = {
+        name
+        for name in os.environ
+        if name in compose_module._EXTERNAL_PROJECT_PASSTHROUGH_ENV
+        or name.startswith("DOCKER_")
+    }
+    assert set(env) == expected, "좁힌 집합이 allowlist와 정확히 같아야 한다"
+    assert not any(name.startswith("KTDM_CANARY_") for name in env)
+
+
+@pytest.mark.parametrize(
+    "name", sorted({"PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "XDG_RUNTIME_DIR"})
+)
+def test_every_passthrough_name_is_declared(name: str) -> None:
+    """집합의 각 이름이 **의도된 것**임을 하나씩 센다.
+
+    `HOME`을 지우는 변이가 살아남았다 — docker CLI가 `~/.docker/config.json`과
+    `~/.docker/contexts`(= **어느 데몬에 붙는가**)를 읽는 유일한 통로라 값어치가
+    `DOCKER_HOST`와 같은 급이다.
+    """
+
+    assert name in compose_module._EXTERNAL_PROJECT_PASSTHROUGH_ENV
+
+
+def test_the_environment_argument_does_not_reopen_full_inheritance(
+    captured: _Capture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """명시 `environment`가 좁히기를 **건너뛰게** 하지 않는다.
+
+    첫 판은 좁히기가 `if process_environment is None:` 안에 있어서, `environment`
+    인자가 주어지면 그 앞의 `{**os.environ, **environment}`가 그대로 나갔다 —
+    `docs/ports.md`에 무조건문으로 적은 문장이 조건부였다.
+    """
+
+    monkeypatch.setenv("KTDM_CANARY_ENVARG", "leak")
+    service = ComposeService()
+    service._run_unlocked(
+        ["ps"],
+        capture_output=True,
+        environment={"COMPOSE_PROFILES": "x"},
+        redact_config=None,
+        expected_system_bind_snapshots=None,
+        expected_compose_source_bytes=None,
+        environment_snapshot=None,
+        external_input_snapshot=None,
+        materialized_compose=None,
+        external=_weather(),
+    )
+    env = captured.only["env"]
+    assert env is not None
+    assert "KTDM_CANARY_ENVARG" not in env
+    assert env["COMPOSE_PROFILES"] == "x", "명시 인자는 좁힌 것 위에 덮인다"
+
+
+def test_the_group_label_names_the_project(captured: _Capture) -> None:
+    """묶음 라벨이 **실제로 쓰인다**.
+
+    `ServiceGroup.project_label` 속성은 검사됐지만 그 **사용처**는 아니어서, 라벨을
+    리터럴로 바꿔도 전부 초록이었다. 그러면 `ktdctl status airport --json`의 두 묶음과
+    `# project=` 헤더가 전부 오표기돼도 아무도 모른다 — 그 dict의 docstring은
+    "소비자가 `groups`를 읽게 한다"고 말한다.
+    """
+
+    result = ComposeService().status_target("airport")
+    assert [group["project"] for group in result["groups"]] == [
+        "kor-travel-airport-db",
+        "kor-travel-airport",
+    ]
+    assert "# project=kor-travel-airport-db" in result["stdout"]
+
+
+def test_a_missing_working_directory_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    """가장 흔할 오설정이 "docker 바이너리 없음"과 구별돼야 한다.
+
+    첫 판은 `except OSError:`가 예외 이름조차 받지 않아 둘이 같은 문구였다.
+    `working_dir`이 호스트마다 다른 값이 된 지금은 그 구별이 진단의 전부다.
+    """
+
+    def missing(command: list[str], **kwargs: Any) -> Any:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(compose_module.subprocess, "run", missing)
+    result = ComposeService().status_target("weather")
+    assert result["returncode"] == 1
+    assert "/home/digitie/kor-travel-weather" in result["stderr"]
+
+
+def test_container_scoped_logs_translate_manager_ids_too(captured: _Capture) -> None:
+    """**컨테이너 id는 compose service 이름이 아니다.**
+
+    첫 판은 외부 컨테이너만 번역하고 Manager 컨테이너는 id를 그대로 넘겼다 —
+    `kor-travel-map-postgresql`(서비스는 `kor-travel-map-postgres`)처럼 둘이 다른
+    이름 넷에서 `no such service`다. 선재 결함이지만 같은 함수의 한쪽 분기만 고쳐
+    비대칭이 남아 있었다.
+    """
+
+    ComposeService().logs("kor-travel-map-postgresql", tail=3)
+    command = captured.only["command"]
+    assert command[-1] == "kor-travel-map-postgres"

@@ -26,6 +26,7 @@ assert였다 — 저장소의 `config/docker-targets.yml`만 봤으므로 설치
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -36,7 +37,57 @@ from kor_travel_docker_manager.services.docker_service import (
     DockerService,
     ExternalContainerMutationError,
 )
-from kor_travel_docker_manager.services.registry import TargetsConfigError
+from kor_travel_docker_manager.services.registry import (
+    TargetsConfigError,
+    get_project_root,
+)
+
+
+class _FakeContainer:
+    def __init__(self, name: str, project: str | None) -> None:
+        labels = {"com.docker.compose.project": project} if project else {}
+        self.attrs = {
+            "Id": f"sha256:{name}",
+            "Config": {"Labels": labels},
+            "HostConfig": {"PortBindings": {}},
+            "State": {"Status": "running"},
+        }
+        self.status = "running"
+        self.image = None
+
+
+class _FakeClient:
+    """`get_containers_status`의 **live 분기**를 태우기 위한 최소 docker client."""
+
+    def __init__(self, project_overrides: dict[str, str] | None = None) -> None:
+        self._overrides = project_overrides or {}
+        self.containers = self
+
+    def get(self, name: str) -> Any:
+        from kor_travel_docker_manager.services.registry import (
+            MANAGED_CONTAINERS,
+            external_project_for_container,
+        )
+
+        container_id = next(
+            (key for key, spec in MANAGED_CONTAINERS.items() if spec["name"] == name),
+            None,
+        )
+        if container_id is None:
+            from docker.errors import NotFound
+
+            raise NotFound(name)
+        if container_id in self._overrides:
+            project = self._overrides[container_id]
+        else:
+            external = external_project_for_container(container_id)
+            project = (
+                external.project
+                if external is not None
+                else Path(get_project_root()).name
+            )
+        return _FakeContainer(name, project)
+
 
 _MANAGER_PROMETHEUS_CONFIG = {
     "ports": ["12401:12401"],
@@ -409,5 +460,224 @@ def test_a_dotted_prefix_is_not_a_path_escape() -> None:
     config["targets"]["weather"]["external_project"]["config_files"] = [
         "sub/../../outside.yml"
     ]
+    with pytest.raises(TargetsConfigError, match="stay inside"):
+        _validate(config)
+
+
+# ── 라운드 2: 선언이 아니라 **효과**에, 그리고 공개 진입점에 ─────────────
+
+
+def test_lifecycle_actions_work_through_the_public_entry_point(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**공개 진입점에서** 외부 컨테이너를 껐다 켤 수 있어야 한다.
+
+    첫 판의 검사는 `_control_container_unlocked`를 직접 불러서, 공개
+    `control_container`가 Manager의 c6c lock과 배포 환경 계약에 걸려 죽는 것을 보지
+    못했다 — 실제로 `KTDM_DEPLOYMENT_ENVIRONMENT must be explicitly set`으로 거부됐다.
+    수명주기가 산다는 주장이 `_unlocked` 층에서만 참이었다. **C-1과 똑같은 실수다.**
+    """
+
+    performed: list[str] = []
+
+    class _Container:
+        def restart(self) -> None:
+            performed.append("restart")
+
+    class _Containers:
+        def get(self, name: str) -> Any:
+            assert name == "kor-travel-weather-prometheus-1"
+            return _Container()
+
+    class _Client:
+        containers = _Containers()
+
+    monkeypatch.setattr(DockerService, "_get_client", lambda self: _Client())
+    monkeypatch.delenv("KTDM_DEPLOYMENT_ENVIRONMENT", raising=False)
+
+    result = DockerService().control_container("kor-travel-weather-prometheus", "restart")
+    assert result["success"] is True
+    assert performed == ["restart"]
+
+
+@pytest.mark.parametrize("method", ["update", "reset"])
+def test_config_routes_refuse_external_before_taking_the_deployment_lock(
+    manager_compose: dict[str, Any], monkeypatch: pytest.MonkeyPatch, method: str
+) -> None:
+    """**guard가 첫 관문이어야 한다.**
+
+    첫 판은 lock 획득·Manager mutation env 계약·Manager baseline 조회를 전부 지난
+    뒤에야 거부했다. 그래서 거부돼야 할 요청이 전역 배포 mutex를 건드리고, 남의
+    컨테이너 요청의 답으로 Manager 계약 얘기가 나왔다.
+    """
+
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("외부 요청이 배포 lock을 건드리면 안 된다")
+
+    monkeypatch.setattr(
+        docker_service_module, "c6c_deployment_lock_from_environment", forbidden
+    )
+    service = DockerService()
+    with pytest.raises(ExternalContainerMutationError):
+        if method == "update":
+            service.update_container_config(
+                "kor-travel-weather-prometheus", ["14104:9090"], {}, [], []
+            )
+        else:
+            service.reset_container_config("kor-travel-weather-prometheus")
+
+
+def test_the_read_only_boundary_carries_its_own_error_code() -> None:
+    """전용 코드가 없으면 화면이 409의 일반 힌트를 붙인다.
+
+    그 힌트는 "일시적 상태일 수 있습니다"인데 이 경계는 **항구적**이라 정반대의
+    안내가 된다. 첫 판은 영문 원문 + 그 힌트가 함께 떴다.
+    """
+
+    assert ExternalContainerMutationError.code == "EXTERNAL_PROJECT_READ_ONLY"
+
+
+def test_the_status_payload_names_the_owning_project(
+    manager_compose: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """화면이 편집기를 잠글 **재료**를 실제로 준다.
+
+    `_managed_service_config`의 docstring이 "화면은 `external_project`를 보고 편집기를
+    잠근다"고 적었는데 **API가 그 필드를 내보내지 않았다**. 둘 중 하나는 거짓이어야
+    했고, 고칠 쪽은 문서가 아니라 코드였다.
+    """
+
+    monkeypatch.setattr(
+        DockerService, "_get_client", lambda self: (_ for _ in ()).throw(RuntimeError())
+    )
+    entries = {entry["id"]: entry for entry in DockerService().get_containers_status()}
+    assert entries["kor-travel-weather-prometheus"]["external_project"] == (
+        "kor-travel-weather"
+    )
+    assert entries["prometheus"]["external_project"] is None
+
+
+def test_the_live_daemon_branch_also_hides_manager_config(
+    manager_compose: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**운영에서 도는 분기**를 태운다.
+
+    첫 판의 검사는 `_get_client`를 `RuntimeError`로 막아 **daemon이 죽은 분기만**
+    태웠다. 그래서 C-3의 실제 증상("목록 화면이 남의 카드에 Manager 설정을 그린다")을
+    만드는 바로 그 줄을 되돌려도 아무 검사가 빨개지지 않았다.
+    """
+
+    monkeypatch.setattr(DockerService, "_get_client", lambda self: _FakeClient())
+    entries = {entry["id"]: entry for entry in DockerService().get_containers_status()}
+    assert entries["kor-travel-weather-prometheus"]["config"]["env"] == {}
+    assert entries["prometheus"]["config"]["env"] == {"KTDM_ONLY": "manager"}
+
+
+def test_a_runtime_label_that_contradicts_the_declaration_fails_closed(
+    manager_compose: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """선언이 틀렸을 때 **컨테이너 자신이 말하는 것**을 믿는다.
+
+    컨테이너 절의 `external_project` **부재**는 "Manager 소유"와 구분되지 않는다 —
+    H-1 검사는 값의 오타만 잡는다. 그런데 정본이 이미 실행 중 컨테이너에 있다:
+    `com.docker.compose.project` 라벨이 `ExternalProject.project` 그대로다. 선언과
+    어긋나면 설정을 그리지 않는다.
+    """
+
+    monkeypatch.setattr(
+        DockerService,
+        "_get_client",
+        lambda self: _FakeClient(project_overrides={"prometheus": "somebody-else"}),
+    )
+    entries = {entry["id"]: entry for entry in DockerService().get_containers_status()}
+    assert entries["prometheus"]["config"]["env"] == {}, (
+        "라벨이 선언과 어긋나면 Manager 설정을 그리지 않는다"
+    )
+
+
+def test_container_specs_reject_unknown_fields() -> None:
+    """target 절에는 있고 컨테이너 절에는 없던 검사.
+
+    그 비대칭 때문에 `external_projct` 오타가 조용히 무시되고 컨테이너가 **Manager
+    소유**로 취급됐다 — C-3의 세 증상이 그대로 복원되는 경로다.
+    """
+
+    config = _real_config()
+    config["containers"]["kor-travel-weather-api"] = {
+        **config["containers"]["kor-travel-weather-api"],
+        "external_projct": "kor-travel-weather",
+    }
+    with pytest.raises(TargetsConfigError, match="unknown fields"):
+        _validate(config)
+
+
+def test_compose_binds_reject_a_service_that_only_exists_externally() -> None:
+    """`compose_binds`는 **Manager 자신의** 보안 경계다.
+
+    키가 `(compose service, container_path, read_only)`뿐이라 프로젝트 차원이 없다.
+    형제를 겨냥해 쓴 한 줄이 Manager의 production bind allowlist를 넓힌다. 두
+    프로젝트에 다 있는 이름(`prometheus`)은 Manager 쪽 정당한 항목이므로 막지 않는다.
+    """
+
+    config = _real_config()
+    config["compose_binds"] = {
+        **config["compose_binds"],
+        "dagster-gateway": [
+            {"container_path": "/data", "read_only": False, "source": "./x"}
+        ],
+    }
+    with pytest.raises(TargetsConfigError, match="only exists in an external"):
+        _validate(config)
+
+    # 겹치는 이름은 통과한다 — 과결박이면 정당한 Manager 항목이 죽는다.
+    config = _real_config()
+    config["compose_binds"] = {
+        **config["compose_binds"],
+        "prometheus": [
+            {"container_path": "/data", "read_only": False, "source": "./x"}
+        ],
+    }
+    _validate(config)
+
+
+def test_a_manager_target_can_opt_out_of_all() -> None:
+    """**의도를 말할 자리를 둔다.**
+
+    `all.include` 완전성은 안전 규칙이 아니라 관례 검사인데 `load_targets_config()`
+    안에서 돌아 모든 CLI 명령과 라우트가 함께 죽는다. 탈출구가 없으면 의도적 제외
+    하나가 설치본을 벽돌로 만든다 — 그런데 빠뜨림은 계속 잡아야 한다.
+    """
+
+    config = _real_config()
+    config["targets"]["all"] = {
+        **config["targets"]["all"],
+        "include": [
+            name for name in config["targets"]["all"]["include"] if name != "map"
+        ],
+    }
+    with pytest.raises(TargetsConfigError, match="excluded_from_all"):
+        _validate(config)
+
+    config["targets"]["map"] = {**config["targets"]["map"], "excluded_from_all": True}
+    _validate(config)
+
+
+def test_a_normalized_path_escape_is_still_refused() -> None:
+    """경로 **구성요소** 검사만이 잡는 형태를 센다.
+
+    첫 판의 검사는 탈출 케이스로 `sub/../../outside.yml`을 썼는데 그것은 정규화 검사가
+    먼저 잡는다 — 구성요소 검사를 지워도 초록이었다. 이미 정규화된 탈출
+    (`../outside.yml`)이 그 절만이 잡는 형태다.
+    """
+
+    config = _real_config()
+    config["targets"]["weather"] = {
+        **config["targets"]["weather"],
+        "external_project": {
+            "project": "kor-travel-weather",
+            "working_dir": "/home/digitie/kor-travel-weather",
+            "config_files": ["../outside.yml"],
+        },
+    }
     with pytest.raises(TargetsConfigError, match="stay inside"):
         _validate(config)

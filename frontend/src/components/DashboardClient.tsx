@@ -1234,7 +1234,12 @@ export default function DashboardClient() {
                             type="button"
                             onClick={() => openConfigModal(container)}
                             className="ops-icon-button"
-                            title="컨테이너 세부 설정 변경"
+                            disabled={Boolean(container.external_project)}
+                            title={
+                              container.external_project
+                                ? `${container.external_project} 프로젝트가 소유한 컨테이너입니다 — 설정 정본이 이 저장소 밖에 있어 변경할 수 없습니다`
+                                : '컨테이너 세부 설정 변경'
+                            }
                           >
                             <Settings className="w-4 h-4" />
                           </button>

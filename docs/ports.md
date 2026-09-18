@@ -53,9 +53,14 @@
 
 호출은 **그 프로젝트의 `working_dir`에서** 돈다. compose가 `-f`를 푸는 기준은
 `--project-directory`가 아니라 **cwd**라서, Manager 루트에서 돌리면
-`-f docker-compose.yml`이 Manager 자신의 compose를 연다. 그리고 그 호출은 Manager의
-프로세스 환경을 물려받지 않는다 — Compose에서 셸 환경은 `.env`보다 **우선**하므로
-상속하면 형제 프로젝트의 설정을 조용히 덮어쓴다.
+`-f docker-compose.yml`이 Manager 자신의 compose를 연다. 그리고 그 호출이 물려받는
+환경은 **명시된 allowlist뿐이다**(`PATH`·`HOME`·`USER`·`LANG`·`LC_ALL`·`TMPDIR`·
+`XDG_RUNTIME_DIR`과 `DOCKER_*`) — Compose에서 셸 환경은 `.env`보다 **우선**하므로
+전부 상속하면 형제 프로젝트의 설정을 조용히 덮어쓴다.
+
+`ktdctl logs <외부 target>`은 **그 target 자신의 프로젝트**만 보여 준다. 여러
+프로젝트의 로그는 한 스트림으로 합칠 수 없고(특히 `-f`), `airport`은 `airport-db`에
+의존하므로 폐포가 항상 두 프로젝트에 걸친다. 빠진 프로젝트는 stderr에 한 줄로 알린다.
 
 Manager는 외부 컨테이너의 **compose 설정을 편집하지 않는다.** `compose_service` 이름은
 그 프로젝트 안에서만 유일해서(weather의 `prometheus`와 Manager의 `prometheus`가 실제로
@@ -65,8 +70,8 @@ Manager는 외부 컨테이너의 **compose 설정을 편집하지 않는다.** 
 
 `kor-travel-weather-migrate`는 정상 상태가 `exited(0)`인 one-shot이라 `containers:`에
 등재하지 않는다 — 등재하면 대시보드에 상시 비정상 카드로 남고 metrics 관측 대상이
-된다(`rustfs-init`이 같은 이유로 빠져 있다). `ensure`가 한 번 돌려야 하는 목록인
-`services:`에는 남아 있다.
+된다(`rustfs-init`이 같은 이유로 빠져 있다). `services:`에는 남아 있다 — 외부 target의
+그 목록은 `ensure`(외부에는 거부된다)가 아니라 `status_target`의 묶음 구성이 쓴다.
 
 Concierge scheduler와 Map Dagster daemon은 외부 포트를 열지 않는 내부 실행 서비스다.
 Geo Dagster webserver는 registry의 일반 runtime 표에는 없는 보조 서비스지만 Compose에서

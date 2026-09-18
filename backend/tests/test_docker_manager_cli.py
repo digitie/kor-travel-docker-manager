@@ -2517,3 +2517,40 @@ def test_cli_targets_without_subaction_is_rejected() -> None:
 
     with pytest.raises(SystemExit, match="2"):
         main(["targets"])
+
+
+# ── `logs`만 예외 처리가 빠져 있었다 ─────────────────────────────────────
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_logs_reports_contract_errors_without_a_traceback(
+    mock_compose_service, capsys
+):
+    """`_cmd_logs`에만 `try`가 없어 raw traceback이 새어 나갔다.
+
+    `main()`이 잡는 것은 `(TargetsConfigError, OSError, yaml.YAMLError)`뿐이고
+    `DeploymentContractError`는 그 안에 없다. `_cmd_status`·`_cmd_ensure`·`_cmd_action`
+    에는 `except ValueError`가 있는데 `logs`만 빠졌다(적대 리뷰 2026-09-18). 형제
+    이름들이 들어온 뒤로는 그 경로가 평범한 오설정에서도 열린다.
+    """
+
+    mock_compose_service.logs.side_effect = DeploymentContractError("nope")
+    assert main(["logs", "airport"]) == 2
+    assert "nope" in capsys.readouterr().err
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_logs_says_which_projects_it_left_out(mock_compose_service, capsys):
+    """보여 주지 않은 것을 **말한다** — 조용한 생략이 원래 거부의 이유였다."""
+
+    mock_compose_service.logs.return_value = {
+        "success": True,
+        "returncode": 0,
+        "command": ["docker", "compose", "logs"],
+        "stdout": "",
+        "stderr": "",
+        "omitted_projects": ["kor-travel-airport-db"],
+    }
+    assert main(["logs", "airport"]) == 0
+    assert "kor-travel-airport-db" in capsys.readouterr().err
+

@@ -159,9 +159,34 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
     뒤 재기동 전에 `ktdctl targets validate`로 참조 무결성을 미리 확인할 수 있다."""
 
     try:
-        load_targets_config()
+        config = load_targets_config()
     except TARGETS_CONFIG_ERRORS as exc:
         print(str(exc), file=sys.stderr)
+        return 1
+
+    # 좌표가 **실재하는지**는 여기서만 본다. `_validate_targets_config`는 모든 로드
+    # 경로에서 도는 순수 스키마 검사로 남겨야 한다 — 거기에 파일시스템 접근을 넣으면
+    # 오프라인 로드와 합성 설정 검사가 함께 깨진다. 없는 좌표에 OK를 찍는 것이
+    # 이 명령의 실질 문제였다(적대 리뷰 2026-09-18).
+    missing: list[str] = []
+    for target_id, spec in (config.get("targets") or {}).items():
+        external = spec.get("external_project")
+        if not external:
+            continue
+        working_dir = Path(str(external["working_dir"]))
+        if not working_dir.is_dir():
+            missing.append(f"targets.{target_id}.external_project.working_dir: {working_dir}")
+            continue
+        for name in external["config_files"]:
+            candidate = working_dir / str(name)
+            if not candidate.is_file():
+                missing.append(
+                    f"targets.{target_id}.external_project.config_files: {candidate}"
+                )
+    if missing:
+        print("declared external coordinates do not exist here:", file=sys.stderr)
+        for line in missing:
+            print(f"  {line}", file=sys.stderr)
         return 1
     print("OK")
     return 0
@@ -191,12 +216,27 @@ def _cmd_ensure(args: argparse.Namespace) -> int:
 
 
 def _cmd_logs(args: argparse.Namespace) -> int:
-    result = compose_service.logs(
-        args.name,
-        follow=args.follow,
-        tail=args.tail,
-        capture_output=not args.follow,
-    )
+    try:
+        result = compose_service.logs(
+            args.name,
+            follow=args.follow,
+            tail=args.tail,
+            capture_output=not args.follow,
+        )
+    except ValueError as exc:
+        # `logs`만 이 절이 없어서 `DeploymentContractError`가 raw traceback으로
+        # 새어 나갔다(적대 리뷰 2026-09-18). 형제 이름들이 들어온 뒤로는 그 경로가
+        # 평범한 오설정에서도 열린다.
+        print(str(exc), file=sys.stderr)
+        return 2
+    omitted = result.get("omitted_projects") or []
+    if omitted and not args.json:
+        # 보여 주지 않은 것을 말하지 않으면 그것이 조용한 생략이다.
+        print(
+            f"note: {', '.join(omitted)} 프로젝트의 로그는 포함하지 않았습니다 "
+            "(한 스트림으로 합칠 수 없습니다). 그 target을 따로 지정하세요.",
+            file=sys.stderr,
+        )
     return _emit_process_result(result, json_output=args.json)
 
 

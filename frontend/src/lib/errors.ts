@@ -20,6 +20,10 @@ export type HumanError = {
  * 코드는 `services/c6c_deployment.py`의 계약 예외가 소유한다. 여기 없는 코드는
  * 서버 메시지를 그대로 쓰되 raw는 접어 둔다 — 매핑 누락이 표시 실패가 되면 안 된다. */
 const CODE_MESSAGES: Record<string, { title: string; hint: string }> = {
+  EXTERNAL_PROJECT_READ_ONLY: {
+    title: '다른 프로젝트가 소유한 컨테이너라 설정을 바꿀 수 없습니다.',
+    hint: '이 컨테이너의 compose 정본은 이 저장소 밖에 있습니다. 상태 확인과 시작·중지·재시작만 가능하며, 설정 변경은 해당 프로젝트에서 하세요.',
+  },
   COMPOSE_CANDIDATE_PROTECTED_REFERENCE: {
     title: '변경하려는 값이 보호된 항목이라 적용하지 않았습니다.',
     hint: '컨테이너는 그대로입니다. 볼륨이나 이미지처럼 고정된 항목은 이 화면에서 바꿀 수 없습니다.',
