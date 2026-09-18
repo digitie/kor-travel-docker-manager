@@ -668,6 +668,11 @@ targets:
 # 코드에는 **검증 규칙만** 남긴다.
 #
 # **이 절은 보안 경계다.** 여기 없는 bind는 candidate 검증이 거부한다
+#
+# **이 절은 Manager 자신의 후보에만 적용된다.** 키가 (compose service,
+# container_path, read_only)뿐이라 프로젝트 차원이 없다 — 형제 프로젝트를 겨냥해
+# 여기에 한 줄을 쓰면 같은 이름의 **Manager 서비스**에 대한 allowlist가 넓어진다
+# (`prometheus`가 실제로 두 프로젝트에 다 있다). 형제의 bind는 그 저장소가 소유한다.
 # ("bind is not in the canonical baseline"). 그래서 이 파일 자체가 신뢰돼야 하고,
 # 그 선행조건은 `registry.get_targets_config_path`/`_read_targets_bytes`가 닫았다 —
 # trusted 설치본에서는 자리를 env로 옮길 수 없고 root 소유·비쓰기가 강제된다.

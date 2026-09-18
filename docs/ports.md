@@ -61,6 +61,12 @@
 `ktdctl logs <외부 target>`은 **그 target 자신의 프로젝트**만 보여 준다. 여러
 프로젝트의 로그는 한 스트림으로 합칠 수 없고(특히 `-f`), `airport`은 `airport-db`에
 의존하므로 폐포가 항상 두 프로젝트에 걸친다. 빠진 프로젝트는 stderr에 한 줄로 알린다.
+target이 **자기 프로젝트에 runtime 서비스를 하나도 선언하지 않으면** 거부한다 —
+그때 폐포만 남기면 남의 서비스 이름을 Manager compose에 물어보게 된다.
+
+좌표가 이 호스트에 실재하는지는 `ktdctl targets validate --check-coordinates`가 본다.
+기본값이 아닌 이유는 형제 저장소가 **배포 호스트에만** 있기 때문이다 — 무조건 돌리면
+개발 checkout과 CI에서 스키마가 완벽해도 실패한다.
 
 Manager는 외부 컨테이너의 **compose 설정을 편집하지 않는다.** `compose_service` 이름은
 그 프로젝트 안에서만 유일해서(weather의 `prometheus`와 Manager의 `prometheus`가 실제로

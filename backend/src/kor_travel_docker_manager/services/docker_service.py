@@ -138,7 +138,13 @@ def _declared_project_matches_runtime(container_id: str, container: object) -> b
 
     라벨이 없으면(compose가 만들지 않은 컨테이너) 판단 재료가 없으므로 선언을 따른다 —
     그 경우 라벨 축은 아무 말도 하지 않는다. 라벨이 **있는데 다르면** 선언이 틀린
-    것이고, 그때 Manager의 설정을 그리거나 편집을 허용하면 안 된다.
+    것이고, 그때 Manager의 설정을 그리지 않는다.
+
+    **범위**: 지금 이 대조를 쓰는 곳은 `get_containers_status` 하나다. 변경 경로
+    (`control_container`/`update`/`reset`)는 여전히 **선언만** 본다 — 그쪽까지 넓히려면
+    변경 시점에 Docker에 질의해야 하고, 그 실패 모드(데몬 불가)가 변경을 막는 것이
+    옳은지 따로 판단해야 한다. 첫 판 docstring은 "편집을 허용하면 안 된다"고 적었는데
+    구현되어 있지 않았다(적대 리뷰 2026-09-18 E-F10).
     """
 
     runtime_project = _live_compose_project(container)
@@ -1476,12 +1482,10 @@ class DockerService:
     ) -> dict[str, Any]:
         """기본값 계산부터 재생성까지 한 config transaction으로 수행한다."""
 
-        if external_project_for_container(container_id) is not None:
-            # 기본값은 **Manager compose의 백업본**에서 온다. 형제 컨테이너에 그 값을
-            # 적용하는 것은 정의상 틀렸다. 거부 문구는 아래 한 자리와 같은 것을 쓴다.
-            return self._update_container_config_unlocked(
-                container_id, [], {}, [], [], environment_snapshot=None
-            )
+        # 형제 컨테이너를 따로 거르지 않는다 — 기본값 계산이 끝나면 아래
+        # `_update_container_config_unlocked`가 **한 자리에서** 거부한다. 첫 판은
+        # 여기에도 같은 조건을 뒀는데, 그것을 지워도 아무 검사가 빨개지지 않았다
+        # (적대 리뷰 2026-09-18 E-M38) — 결박되지 않는 중복은 안전이 아니라 잡음이다.
         if not self._default_compose_config:
             return {"success": False, "error": "No default config backup available."}
 

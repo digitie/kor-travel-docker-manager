@@ -89,6 +89,8 @@ class _FakeClient:
         return _FakeContainer(name, project)
 
 
+_ROOT = Path(__file__).resolve().parents[2]
+
 _MANAGER_PROMETHEUS_CONFIG = {
     "ports": ["12401:12401"],
     "environment": {"KTDM_ONLY": "manager"},
@@ -596,10 +598,13 @@ def test_a_runtime_label_that_contradicts_the_declaration_fails_closed(
 
 
 def test_container_specs_reject_unknown_fields() -> None:
-    """target 절에는 있고 컨테이너 절에는 없던 검사.
+    """오타 한 글자가 컨테이너를 **Manager 소유**로 만든다.
 
-    그 비대칭 때문에 `external_projct` 오타가 조용히 무시되고 컨테이너가 **Manager
-    소유**로 취급됐다 — C-3의 세 증상이 그대로 복원되는 경로다.
+    `external_projct`가 조용히 무시되면 C-3의 세 증상이 그대로 복원된다.
+
+    정정: 첫 판 docstring은 "target 절에는 이 검사가 있었다"고 적었는데 거짓이었다 —
+    둘 다 없었다(적대 리뷰 2026-09-18 E-F8). target 쪽은
+    `test_target_specs_reject_unknown_fields`가 센다.
     """
 
     config = _real_config()
@@ -611,33 +616,28 @@ def test_container_specs_reject_unknown_fields() -> None:
         _validate(config)
 
 
-def test_compose_binds_reject_a_service_that_only_exists_externally() -> None:
-    """`compose_binds`는 **Manager 자신의** 보안 경계다.
+def test_compose_binds_is_documented_as_the_managers_own_boundary() -> None:
+    """`compose_binds`에는 프로젝트 차원이 **없다** — 그 사실을 문서가 말한다.
 
-    키가 `(compose service, container_path, read_only)`뿐이라 프로젝트 차원이 없다.
-    형제를 겨냥해 쓴 한 줄이 Manager의 production bind allowlist를 넓힌다. 두
-    프로젝트에 다 있는 이름(`prometheus`)은 Manager 쪽 정당한 항목이므로 막지 않는다.
+    키가 `(compose service, container_path, read_only)`뿐이라, 형제를 겨냥해 쓴 한 줄이
+    Manager의 production bind allowlist를 넓힌다(적대 리뷰 2026-09-18 B-F8).
+
+    **런타임 검사로 막지 않기로 했다.** "Manager 쪽"을 `containers:` 등재로 판정했더니
+    그 파일 자신의 주석과 모순됐다 — 서비스 19개 중 8개(one-shot init 넷, geo dagster
+    쌍, db role bootstrap 둘)는 `containers:`에 없다. 형제가 그 여덟 이름 중 하나를
+    쓰는 순간 `load_targets_config()`가 죽어 **모든 CLI 명령과 라우트**가 함께 죽는다
+    (리뷰 E-F6 실측). 막으려던 것은 공격이 아니라 오해이고, 그 파일은 prod에서 root
+    소유다 — 과결박이라 거뒀다.
+
+    남은 방어는 **경계의 뜻을 파일에 적어 두는 것**이다. 이 검사는 그 문장이 사라지지
+    않게 한다.
     """
 
-    config = _real_config()
-    config["compose_binds"] = {
-        **config["compose_binds"],
-        "dagster-gateway": [
-            {"container_path": "/data", "read_only": False, "source": "./x"}
-        ],
-    }
-    with pytest.raises(TargetsConfigError, match="only exists in an external"):
-        _validate(config)
-
-    # 겹치는 이름은 통과한다 — 과결박이면 정당한 Manager 항목이 죽는다.
-    config = _real_config()
-    config["compose_binds"] = {
-        **config["compose_binds"],
-        "prometheus": [
-            {"container_path": "/data", "read_only": False, "source": "./x"}
-        ],
-    }
-    _validate(config)
+    path = _ROOT / "config" / "docker-targets.yml"
+    text = path.read_text(encoding="utf-8")
+    assert "이 절은 Manager 자신의 후보에만 적용된다" in text, (
+        "compose_binds 헤더에서 경계의 범위를 말하는 문장이 사라졌다"
+    )
 
 
 def test_a_manager_target_can_opt_out_of_all() -> None:
@@ -681,3 +681,121 @@ def test_a_normalized_path_escape_is_still_refused() -> None:
     }
     with pytest.raises(TargetsConfigError, match="stay inside"):
         _validate(config)
+
+
+# ── 라운드 3: 항진명제였던 검사들을 효과에 결박한다 ──────────────────────
+
+
+def test_the_read_only_boundary_reaches_the_wire_with_its_code() -> None:
+    """**코드가 와이어에 나가는지**를 센다 — 상수가 자기 자신과 같은지가 아니라.
+
+    첫 판 검사는 `assert ...code == "EXTERNAL_PROJECT_READ_ONLY"` 한 줄이었다. 그런데
+    `main.py`에서 `code`를 payload에 싣는 핸들러는 `ComposeCandidateContractError`
+    **전용**이라, base 핸들러를 타는 이 예외의 코드는 **한 번도 나가지 않았다**.
+    프런트는 `code: null`을 보고 409의 일반 힌트("일시적 상태일 수 있습니다")를
+    붙였다 — 이 경계는 항구적이라 정반대의 안내다(적대 리뷰 2026-09-18 E-F1).
+
+    `errors.ts`에 넣은 한국어 문구가 **도달 불가 코드**였다는 뜻이다.
+    """
+
+    from kor_travel_docker_manager.main import _contract_error_detail
+
+    detail = _contract_error_detail(
+        ExternalContainerMutationError("container 'x' belongs to project 'y'")
+    )
+    assert isinstance(detail, dict)
+    assert detail["code"] == "EXTERNAL_PROJECT_READ_ONLY"
+    assert "belongs to project" in detail["message"]
+
+    # 코드가 없는 계약 오류는 종전대로 평문이다 — 좁히기가 너무 넓으면 여기가 잡는다.
+    from kor_travel_docker_manager.services.errors import DeploymentContractError
+
+    assert _contract_error_detail(DeploymentContractError("plain")) == "plain"
+
+
+def test_the_frontend_has_a_message_for_that_code() -> None:
+    """와이어에 나가는 코드와 화면 문구가 **같은 이름**을 쓴다.
+
+    둘이 갈리면 코드는 나가는데 화면은 여전히 영문 원문을 보여 준다.
+    """
+
+    errors_ts = (_ROOT / "frontend" / "src" / "lib" / "errors.ts").read_text(
+        encoding="utf-8"
+    )
+    assert "EXTERNAL_PROJECT_READ_ONLY:" in errors_ts
+
+
+def test_target_specs_reject_unknown_fields() -> None:
+    """target 절에도 컨테이너 절과 **같은 등급**의 검사를 둔다.
+
+    내 주석과 검사 docstring이 둘 다 "target 절에는 있는데 컨테이너 절에는 없었다"고
+    적었는데 `_ALLOWED_TARGET_FIELDS`가 **존재하지 않았다**(적대 리뷰 2026-09-18 E-F8).
+    비대칭이 없어진 것이 아니라 방향이 뒤집혔고, `dependz_on` 오타 한 글자가 여전히
+    조용히 의존을 지웠다.
+    """
+
+    config = _real_config()
+    config["targets"]["map"] = {
+        **config["targets"]["map"],
+        "dependz_on": ["db"],
+    }
+    with pytest.raises(TargetsConfigError, match="unknown fields"):
+        _validate(config)
+
+
+@pytest.mark.parametrize("value", ["no", "false", 0, 1, "true"])
+def test_excluded_from_all_must_be_a_boolean(value: object) -> None:
+    """`"no"`처럼 **의미가 정반대인** YAML 값이 진리값으로는 참이다.
+
+    이 탈출구의 존재 이유가 "빠뜨림"을 잡는 것인데, 그런 값을 통과시키면 그 실패를
+    그대로 재도입한다(적대 리뷰 2026-09-18 E-F9).
+    """
+
+    config = _real_config()
+    config["targets"]["map"] = {
+        **config["targets"]["map"],
+        "excluded_from_all": value,
+    }
+    with pytest.raises(TargetsConfigError, match="must be a boolean"):
+        _validate(config)
+
+
+def test_an_external_target_cannot_hold_a_manager_container() -> None:
+    """소속 대조의 **반대 방향**.
+
+    H-1을 검증기로 옮기면서 한 방향만 검사가 따라왔다 — 대조에 `is not None`을 더해
+    Manager 컨테이너 쪽만 남기는 변이가 살아남았다(적대 리뷰 2026-09-18 E-M55).
+    지워진 옛 assert는 두 방향을 다 봤다.
+    """
+
+    config = _real_config()
+    weather = config["targets"]["weather"]
+    config["targets"]["weather"] = {
+        **weather,
+        "containers": [*weather["containers"], "prometheus"],
+    }
+    with pytest.raises(TargetsConfigError, match="belongs to project"):
+        _validate(config)
+
+
+def test_the_manager_project_name_comes_from_the_environment_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**운영에서 도는 분기**를 태운다.
+
+    `main.py`가 `.env`를 `os.environ`에 실으므로 `COMPOSE_PROJECT_NAME`이 정본이고,
+    production에서는 `c6c_state_paths`가 그 값을 명시 필수로 강제한다. 그런데 검사가
+    fallback만 태워서 env 조회를 지우는 변이가 살아남았다(적대 리뷰 2026-09-18 E-M27).
+
+    n150 실측(2026-09-18): Manager 컨테이너 21개의 `com.docker.compose.project` 라벨은
+    전부 `kor-travel-docker-manager`다. 설치본 경로가 `/opt/kor-travel-docker-manager`
+    이므로 fallback과 env 값이 오늘은 같지만, **같다는 것이 우연이 아니어야 한다.**
+    """
+
+    monkeypatch.setenv("COMPOSE_PROJECT_NAME", "from-environment")
+    assert docker_service_module._manager_compose_project() == "from-environment"
+    monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
+    assert docker_service_module._manager_compose_project() == Path(
+        docker_service_module.get_project_root()
+    ).name
+

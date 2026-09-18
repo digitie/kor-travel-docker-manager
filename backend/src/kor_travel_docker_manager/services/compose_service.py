@@ -4280,7 +4280,8 @@ class ComposeService:
         external: ExternalProject | None = None,
     ) -> dict[str, Any]:
         if external is not None and (
-            environment_snapshot is not None
+            bool(self._compose_mutation_identifiers(args))
+            or environment_snapshot is not None
             or materialized_compose is not None
             or expected_compose_source_bytes is not None
             or expected_system_bind_snapshots is not None
@@ -4288,8 +4289,13 @@ class ComposeService:
             # **마지막 그물.** `run()`의 guard를 고쳐도 변경 분기의 두 호출 지점은
             # `external`을 넘기지 않는 채 남는다 — 거기에 `assert`를 박으면 자리가
             # 둘이 되어 한쪽을 지워도 아무 검사가 빨개지지 않는다(S2에서 배운 것).
-            # 그래서 여기 한 자리에서 거부한다: 변경 입력과 `external`은 함께 올 수
-            # 없다. 가장 낮은 층이라 새 호출부가 생겨도 우회되지 않는다.
+            # 그래서 여기 한 자리에서 거부한다.
+            #
+            # **술어가 `run()`과 같은 것을 봐야 한다.** 첫 판은 여기서 변경 *입력*
+            # 넷만 봤는데, 변경 여부를 정하는 것은 **명령**이다 — 그래서
+            # `_run_unlocked(["down","-v"], external=X)`가 형제 프로젝트의 볼륨을
+            # 지웠다(적대 리뷰 2026-09-18 E-F2). 주석은 "가장 낮은 층이라 우회되지
+            # 않는다"고 적었는데 술어가 두 벌이면 그 말이 성립하지 않는다.
             raise DeploymentContractError(
                 "external compose projects cannot enter the Manager mutation "
                 "machinery"
@@ -8328,6 +8334,20 @@ class ComposeService:
                 services = [
                     service for group in selected for service in group.services
                 ]
+            elif groups:
+                # **fail-open을 막는다.** 첫 판은 `selected`가 비면 `external`이
+                # `None`인 채 `services`에 의존 폐포 전체가 남아서, 남의 프로젝트
+                # 서비스 이름을 Manager compose에 물어봤다 — C-2와 같은 계열의 조용한
+                # 오답이다(적대 리뷰 2026-09-18 E-F7: 외부 target의 `runtime_services`가
+                # 비면 실제로 그 경로로 떨어졌다).
+                #
+                # 빈 명령을 Manager 프로젝트에 돌리는 것도 답이 아니다 — 운영자가
+                # 물어본 것은 이 target이다. 말하고 멈춘다.
+                raise DeploymentContractError(
+                    f"target '{name}' declares no runtime services in its own "
+                    f"project ({own_project}); the closure only reaches "
+                    f"{', '.join(group.project_label for group in groups)}"
+                )
         elif name in MANAGED_CONTAINERS:
             # **컨테이너 id는 compose service 이름이 아니다.** 첫 판은 외부 컨테이너만
             # 번역하고 Manager 컨테이너는 id를 그대로 넘겼다 — `kor-travel-map-postgresql`

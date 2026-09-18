@@ -346,13 +346,34 @@ async def _handle_candidate_contract_error(
     )
 
 
+def _contract_error_detail(exc: Exception) -> dict[str, str] | str:
+    """예외가 전용 `code`를 들고 있으면 `{code, message}`로 내보낸다.
+
+    첫 판은 `ComposeCandidateContractError` **전용** 핸들러만 `code`를 실었다. 그래서
+    `ExternalContainerMutationError`에 코드를 달아도 와이어에 나가지 않았고, 프런트가
+    `code: null`을 보고 409의 일반 힌트("일시적 상태일 수 있습니다")를 붙였다 —
+    그 경계는 **항구적**이라 정반대의 안내다(적대 리뷰 2026-09-18 E-F1).
+
+    상속으로 판정하지 않고 **`code` 속성의 존재**로 판정한다. 새 계약 오류가 코드를
+    달면 핸들러를 고치지 않아도 따라온다.
+    """
+
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code:
+        return {"code": code, "message": str(exc)}
+    return str(exc)
+
+
 @app.exception_handler(DeploymentContractError)
 async def _handle_deployment_contract_error(
     request: Request, exc: DeploymentContractError
 ) -> JSONResponse:
     return JSONResponse(
         status_code=409,
-        content={"detail": str(exc), "request_id": current_request_id()},
+        content={
+            "detail": _contract_error_detail(exc),
+            "request_id": current_request_id(),
+        },
     )
 
 

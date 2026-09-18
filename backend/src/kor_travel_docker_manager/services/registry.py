@@ -347,17 +347,6 @@ def _validate_compose_binds(config: dict[str, Any], *, label: str) -> None:
             f"{label}: compose_binds 절이 없다 — 이 절이 없으면 모든 operator bind가 "
             "baseline 밖이 되어 배포가 전부 거부된다. 절 이름 오타를 의심하라"
         )
-    containers = config.get("containers") or {}
-    manager_services = {
-        str(spec["compose_service"])
-        for spec in containers.values()
-        if isinstance(spec, dict) and not spec.get("external_project")
-    }
-    external_only_services = {
-        str(spec["compose_service"])
-        for spec in containers.values()
-        if isinstance(spec, dict) and spec.get("external_project")
-    } - manager_services
     raw = config.get("compose_binds")
     if not isinstance(raw, dict) or not raw:
         raise TargetsConfigError(
@@ -410,17 +399,6 @@ def _validate_compose_binds(config: dict[str, Any], *, label: str) -> None:
             source = entry["source"]
             if not isinstance(source, str) or not source.strip():
                 raise TargetsConfigError(f"{where}.source: must be a non-empty string")
-            if service in external_only_services:
-                # **이 절은 Manager 자신의 보안 경계다.** 키가 (compose service,
-                # container_path, read_only)뿐이라 프로젝트 차원이 없다 — 형제
-                # 프로젝트를 겨냥해 쓴 한 줄이 Manager의 production bind allowlist를
-                # 넓힌다(적대 리뷰 2026-09-18 B-F8). 두 프로젝트에 다 있는 이름
-                # (`prometheus`)은 Manager 쪽 정당한 항목이므로 막지 않는다 —
-                # **외부에만 있는 이름**이 여기 나타나는 것이 오설정의 신호다.
-                raise TargetsConfigError(
-                    f"{where}: '{service}' only exists in an external compose "
-                    "project; this allowlist governs the Manager's own candidate"
-                )
             key = (service, container_path, read_only)
             if key in seen:
                 raise TargetsConfigError(
@@ -660,6 +638,26 @@ def services_for_target(target: str | None) -> list[str]:
 
 #: 컨테이너 절이 쓸 수 있는 필드. target 절과 **같은 등급으로** 닫는다 — 오타 한
 #: 글자가 조용히 무시되면 그 컨테이너는 Manager 소유로 취급된다.
+#: target 절이 쓸 수 있는 필드. 첫 판은 이 집합이 **없는데도** 주석이 "target 절에는
+#: unknown-field 검사가 있다"고 적었다 — 비대칭이 없어진 것이 아니라 방향이 뒤집혔고,
+#: `dependz_on` 오타 한 글자가 조용히 의존을 지웠다(적대 리뷰 2026-09-18 E-F8).
+_ALLOWED_TARGET_FIELDS: Final = frozenset(
+    {
+        "aliases",
+        "containers",
+        "depends_on",
+        "description",
+        "display_name",
+        "excluded_from_all",
+        "external_project",
+        "include",
+        "init_steps",
+        "port_band",
+        "runtime_services",
+        "services",
+    }
+)
+
 _ALLOWED_CONTAINER_FIELDS: Final = frozenset(
     {
         "name",
@@ -716,10 +714,12 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
     for container_id, spec in containers.items():
         unknown = sorted(set(spec) - _ALLOWED_CONTAINER_FIELDS)
         if unknown:
-            # target 절에는 unknown-field 검사가 있는데 컨테이너 절에는 없었다.
-            # 그 비대칭 때문에 `external_projct` 오타가 조용히 무시되고 컨테이너가
-            # **Manager 소유**로 취급됐다 — C-3의 세 증상이 그대로 복원되는
-            # 경로다(적대 리뷰 2026-09-18 B-F2).
+            # 오타가 조용히 무시되면 그 컨테이너는 **Manager 소유**로 취급되고, C-3의
+            # 세 증상이 그대로 복원된다(적대 리뷰 2026-09-18 B-F2).
+            #
+            # 정정: 첫 판 주석은 "target 절에는 이 검사가 있는데 컨테이너 절에는
+            # 없었다"고 적었는데 **거짓이었다** — 둘 다 없었다(리뷰 E-F8). 지금은
+            # 위쪽에 `_ALLOWED_TARGET_FIELDS`로 둘 다 있다.
             raise TargetsConfigError(
                 f"{label} containers.{container_id}: unknown fields {unknown}"
             )
@@ -743,6 +743,19 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
     # H-1(계속) + H-2: target이 자기 것이라 적은 컨테이너와 소속이 맞는가, 그리고
     # 그 컨테이너의 `compose_service`가 target의 `services`에 실재하는가.
     for target_id, spec in targets.items():
+        unknown = sorted(set(spec) - _ALLOWED_TARGET_FIELDS)
+        if unknown:
+            raise TargetsConfigError(
+                f"{label} targets.{target_id}: unknown fields {unknown}"
+            )
+        excluded = spec.get("excluded_from_all")
+        if excluded is not None and not isinstance(excluded, bool):
+            # `"no"`처럼 **의미가 정반대인** YAML 값이 진리값으로는 참이다. 이 탈출구의
+            # 존재 이유가 "빠뜨림"을 잡는 것인데, 그런 값을 통과시키면 그 실패를 그대로
+            # 재도입한다(적대 리뷰 2026-09-18 E-F9).
+            raise TargetsConfigError(
+                f"{label} targets.{target_id}.excluded_from_all: must be a boolean"
+            )
         external = spec.get("external_project")
         target_project = str(external["project"]) if external else None
         declared_services = set(spec.get("services") or [])
@@ -751,7 +764,7 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
             if not isinstance(container_spec, dict):
                 continue  # 참조 무결성은 호출자가 이미 본다
             container_project = container_spec.get("external_project") or None
-            if container_project != target_project:
+            if container_project != target_project:  # noqa: SIM102 - 양방향
                 raise TargetsConfigError(
                     f"{label} targets.{target_id}.containers: container "
                     f"'{container_id}' belongs to project "
@@ -804,7 +817,7 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
         for name in config["dependency_order"]:
             if name in external_targets or name == "all":
                 continue
-            if targets[name].get("excluded_from_all"):
+            if targets[name].get("excluded_from_all") is True:
                 # **의도를 말할 자리를 둔다.** 이 검사는 안전 규칙이 아니라 관례
                 # 검사인데 `load_targets_config()` 안에서 도므로, 탈출구가 없으면
                 # 의도적 제외 하나가 모든 CLI 명령과 라우트를 함께 죽인다(적대 리뷰

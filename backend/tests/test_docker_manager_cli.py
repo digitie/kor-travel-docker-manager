@@ -2554,3 +2554,39 @@ def test_cli_logs_says_which_projects_it_left_out(mock_compose_service, capsys):
     assert main(["logs", "airport"]) == 0
     assert "kor-travel-airport-db" in capsys.readouterr().err
 
+
+def test_targets_validate_does_not_require_sibling_repositories(capsys):
+    """이 명령은 **형제 저장소가 없는 호스트에서도** 성공해야 한다.
+
+    첫 판은 좌표 실재 확인을 무조건 돌려서, 형제가 n150에만 있으므로 개발 checkout·
+    CI·그 밖의 모든 호스트에서 스키마가 완벽해도 exit 1이 됐다(적대 리뷰 2026-09-18
+    E-F3). 이 명령은 문서가 "편집 후 재기동 **전에**" 쓰라고 규정한 정본 pre-flight라,
+    거짓 실패가 곧 "내 편집이 틀렸다"는 잘못된 신호다.
+    """
+
+    assert main(["targets", "validate"]) == 0
+    assert capsys.readouterr().out.strip() == "OK"
+
+
+def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch):
+    """확인은 **요청받았을 때만** 한다 — 그리고 그때는 실제로 본다."""
+
+    from pathlib import Path as _Path
+
+    monkeypatch.setattr(_Path, "is_dir", lambda self: False)
+    assert main(["targets", "validate", "--check-coordinates"]) == 1
+    captured = capsys.readouterr()
+    assert "declared external coordinates do not exist here" in captured.err
+    assert "kor-travel-weather" in captured.err
+
+
+def test_targets_validate_coordinates_pass_when_they_exist(capsys, monkeypatch):
+    """반대 방향 — 좌표가 실재하면 통과한다. 검사가 항상 빨간 것이 아니어야 한다."""
+
+    from pathlib import Path as _Path
+
+    monkeypatch.setattr(_Path, "is_dir", lambda self: True)
+    monkeypatch.setattr(_Path, "is_file", lambda self: True)
+    assert main(["targets", "validate", "--check-coordinates"]) == 0
+    assert capsys.readouterr().out.strip() == "OK"
+

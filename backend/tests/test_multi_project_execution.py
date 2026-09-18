@@ -320,36 +320,51 @@ def test_the_narrowed_environment_is_exactly_the_allowlist(
     그래서 카나리아를 잔뜩 심고 **결과 키 집합 자체**를 단언한다.
     """
 
-    for index in range(12):
-        monkeypatch.setenv(f"KTDM_CANARY_{index}", "leak")
+    # **실제 위험 접두사**로 심는다. `KTDM_CANARY_`만 쓰면 allowlist에 진짜 비밀
+    # 이름을 더하는 변이가 보이지 않는다.
+    for name in (
+        "KTDM_SESSION_SECRET",
+        "KTDM_ADMIN_PASSWORD_HASH",
+        "POSTGRES_PASSWORD",
+        "KOR_TRAVEL_MAP_POSTGRES_USER",
+        "PINVI_APP_DB_PASSWORD",
+        "PROMETHEUS_PORT",
+        "KOR_TRAVEL_MAP_PGDATA",
+        "AWS_SECRET_ACCESS_KEY",
+    ):
+        monkeypatch.setenv(name, "leak")
     monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
 
     ComposeService().status_target("weather")
 
     env = captured.only["env"]
     assert env is not None
+    # 기대값을 **구현에서 파생하지 않는다** — 그러면 집합을 넓히는 변이가 보이지 않는다.
+    allowed = {"PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "XDG_RUNTIME_DIR"}
     expected = {
         name
         for name in os.environ
-        if name in compose_module._EXTERNAL_PROJECT_PASSTHROUGH_ENV
-        or name.startswith("DOCKER_")
+        if name in allowed or name.startswith("DOCKER_")
     }
     assert set(env) == expected, "좁힌 집합이 allowlist와 정확히 같아야 한다"
-    assert not any(name.startswith("KTDM_CANARY_") for name in env)
 
 
-@pytest.mark.parametrize(
-    "name", sorted({"PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "XDG_RUNTIME_DIR"})
-)
-def test_every_passthrough_name_is_declared(name: str) -> None:
-    """집합의 각 이름이 **의도된 것**임을 하나씩 센다.
+def test_the_passthrough_allowlist_is_exactly_this_set() -> None:
+    """집합을 **테스트 쪽 리터럴로** 박는다 — 추가도 삭제도 여기서 보인다.
 
-    `HOME`을 지우는 변이가 살아남았다 — docker CLI가 `~/.docker/config.json`과
-    `~/.docker/contexts`(= **어느 데몬에 붙는가**)를 읽는 유일한 통로라 값어치가
-    `DOCKER_HOST`와 같은 급이다.
+    첫 판은 "각 이름이 집합에 있는가"만 세서 방향이 반대였고, 위의 집합 단언도
+    기대값을 **구현에서 파생**해 항진명제였다. 그래서 allowlist에 임의의 이름을
+    더하는 변이가 전체 스위트를 통과했다(적대 리뷰 2026-09-18 E-M49).
+
+    `main.py`가 Manager `.env`를 `os.environ`에 통째로 싣기 때문에, 한 이름 추가가
+    곧 Manager 비밀 하나가 형제 프로세스 env로 가는 것이다. `HOME`이 특히 중요하다 —
+    docker CLI가 `~/.docker/config.json`·`~/.docker/contexts`(= **어느 데몬에 붙는가**)를
+    읽는 유일한 통로라 값어치가 `DOCKER_HOST`와 같은 급이다.
     """
 
-    assert name in compose_module._EXTERNAL_PROJECT_PASSTHROUGH_ENV
+    assert compose_module._EXTERNAL_PROJECT_PASSTHROUGH_ENV == frozenset(
+        {"PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "XDG_RUNTIME_DIR"}
+    )
 
 
 def test_the_environment_argument_does_not_reopen_full_inheritance(
@@ -363,11 +378,15 @@ def test_the_environment_argument_does_not_reopen_full_inheritance(
     """
 
     monkeypatch.setenv("KTDM_CANARY_ENVARG", "leak")
+    monkeypatch.setenv("TMPDIR", "/inherited")
     service = ComposeService()
     service._run_unlocked(
         ["ps"],
         capture_output=True,
-        environment={"COMPOSE_PROFILES": "x"},
+        # **allowlist와 겹치는 이름**을 쓴다. 겹치지 않는 이름이면 두 순서가 같은
+        # 결과를 내서 "명시 인자가 위에 덮인다"가 검사되지 않는다(적대 리뷰
+        # 2026-09-18 E-M09: 순서를 뒤집는 변이가 살아남았다).
+        environment={"TMPDIR": "/explicit"},
         redact_config=None,
         expected_system_bind_snapshots=None,
         expected_compose_source_bytes=None,
@@ -379,7 +398,7 @@ def test_the_environment_argument_does_not_reopen_full_inheritance(
     env = captured.only["env"]
     assert env is not None
     assert "KTDM_CANARY_ENVARG" not in env
-    assert env["COMPOSE_PROFILES"] == "x", "명시 인자는 좁힌 것 위에 덮인다"
+    assert env["TMPDIR"] == "/explicit", "명시 인자는 좁힌 것 **위에** 덮인다"
 
 
 def test_the_group_label_names_the_project(captured: _Capture) -> None:
@@ -427,3 +446,91 @@ def test_container_scoped_logs_translate_manager_ids_too(captured: _Capture) -> 
     ComposeService().logs("kor-travel-map-postgresql", tail=3)
     command = captured.only["command"]
     assert command[-1] == "kor-travel-map-postgres"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"expected_compose_source_bytes": b"x"}, id="source-bytes"),
+        pytest.param({"expected_system_bind_snapshots": ()}, id="bind-snapshots"),
+    ],
+)
+def test_each_mutation_input_alone_trips_the_last_net(
+    captured: _Capture, kwargs: dict[str, Any]
+) -> None:
+    """last net의 조건을 **하나씩** 태운다.
+
+    첫 판 검사는 `expected_system_bind_snapshots`만 줘서, `expected_compose_source_bytes`
+    조건을 지우는 변이가 살아남았다(적대 리뷰 2026-09-18 E-M07).
+    """
+
+    base = {
+        "capture_output": True,
+        "environment": None,
+        "redact_config": None,
+        "expected_system_bind_snapshots": None,
+        "expected_compose_source_bytes": None,
+        "environment_snapshot": None,
+        "external_input_snapshot": None,
+        "materialized_compose": None,
+    }
+    service = ComposeService()
+    with pytest.raises(DeploymentContractError, match="mutation machinery"):
+        service._run_unlocked(["ps"], external=_weather(), **{**base, **kwargs})
+    assert captured.calls == []
+
+
+def test_the_last_net_also_reads_the_command(captured: _Capture) -> None:
+    """**술어가 `run()`과 같은 것을 봐야 한다.**
+
+    첫 판은 여기서 변경 *입력*만 봐서, 입력을 하나도 주지 않고 `down -v`를 부르면
+    형제 프로젝트의 볼륨이 지워졌다 — 주석이 "가장 낮은 층이라 새 호출부가 생겨도
+    우회되지 않는다"고 적은 바로 그 층이다(적대 리뷰 2026-09-18 E-F2).
+    """
+
+    service = ComposeService()
+    with pytest.raises(DeploymentContractError, match="mutation machinery"):
+        service._run_unlocked(
+            ["down", "-v"],
+            capture_output=True,
+            environment=None,
+            redact_config=None,
+            expected_system_bind_snapshots=None,
+            expected_compose_source_bytes=None,
+            environment_snapshot=None,
+            external_input_snapshot=None,
+            materialized_compose=None,
+            external=_weather(),
+        )
+    assert captured.calls == []
+
+
+def test_logs_does_not_fall_back_to_the_manager_project(
+    captured: _Capture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**fail-open을 막는다.**
+
+    `selected`가 비면 `external`은 `None`인데 `services`는 의존 폐포 전체가 남아서,
+    남의 프로젝트 서비스 이름을 Manager compose에 물어보게 된다 — C-2와 같은 계열의
+    조용한 오답이다(적대 리뷰 2026-09-18 E-F7).
+    """
+
+    from kor_travel_docker_manager.services import registry as registry_module
+
+    original = registry_module.service_groups_for_target
+
+    def only_dependencies(target, *, runtime_only=False):  # noqa: ANN001, ANN202
+        return [
+            group
+            for group in original(target, runtime_only=runtime_only)
+            if group.external is not None
+            and group.external.project == "kor-travel-airport-db"
+        ]
+
+    monkeypatch.setattr(
+        compose_module, "service_groups_for_target", only_dependencies
+    )
+    with pytest.raises(DeploymentContractError, match="declares no runtime services"):
+        ComposeService().logs("airport", tail=3)
+    assert captured.calls == [], "Manager 프로젝트에 빈 명령을 돌리지 않는다"
+
