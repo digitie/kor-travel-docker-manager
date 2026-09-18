@@ -155,10 +155,37 @@ def _declared_project_matches_runtime(container_id: str, container: object) -> b
     return runtime_project == declared
 
 
-def _manager_compose_project() -> str:
-    """Manager 자신의 compose 프로젝트 이름(= 저장소 디렉터리 이름이 기본값)."""
+#: compose 문서가 자기 프로젝트 이름을 선언하는 키. 이 저장소의
+#: `docker-compose.yml` 1행이 `name: kor-travel-docker-manager`다.
+_COMPOSE_PROJECT_NAME_KEY = "name"
 
-    return os.environ.get("COMPOSE_PROJECT_NAME") or Path(get_project_root()).name
+
+def _manager_compose_project() -> str:
+    """Manager 자신의 compose 프로젝트 이름.
+
+    **compose의 실제 우선순위를 따른다**: `-p` > `--env-file`의
+    `COMPOSE_PROJECT_NAME` > **문서의 `name:`** > 디렉터리 이름. 첫 판은 가운데 둘을
+    건너뛰고 디렉터리를 봤다(적대 리뷰 2026-09-18 E-R2-03).
+
+    그래서 `.env`에 `COMPOSE_PROJECT_NAME`이 없고 체크아웃 디렉터리 이름이 다른
+    호스트에서 **Manager 컨테이너 21개 전부의 `config`가 빈 값**이 됐다 — 라벨 대조가
+    전부 불일치로 떨어지기 때문이다. n150 prod는 두 값이 우연히 같아 영향이 없었다
+    (실측: 라벨과 설치본 디렉터리 모두 `kor-travel-docker-manager`).
+
+    그런데 그것을 못 본 이유가 더 중요하다 — 테스트 대역이 **구현과 같은 틀린 모델**로
+    라벨을 만들었다. 그래서 불일치가 원리상 발생할 수 없었다.
+
+    `-p`는 여기서 보지 않는다. Manager 자신의 호출은 `build_command`가 그 플래그를
+    붙이지 않으므로(외부 프로젝트 전용이다) 이 함수의 대상이 아니다.
+    """
+
+    explicit = os.environ.get("COMPOSE_PROJECT_NAME")
+    if explicit:
+        return explicit
+    declared = get_compose_config().get(_COMPOSE_PROJECT_NAME_KEY)
+    if isinstance(declared, str) and declared.strip():
+        return declared.strip()
+    return Path(get_project_root()).name
 
 
 def _public_url(spec: dict[str, Any]) -> str | None:
@@ -1482,10 +1509,19 @@ class DockerService:
     ) -> dict[str, Any]:
         """기본값 계산부터 재생성까지 한 config transaction으로 수행한다."""
 
-        # 형제 컨테이너를 따로 거르지 않는다 — 기본값 계산이 끝나면 아래
-        # `_update_container_config_unlocked`가 **한 자리에서** 거부한다. 첫 판은
-        # 여기에도 같은 조건을 뒀는데, 그것을 지워도 아무 검사가 빨개지지 않았다
-        # (적대 리뷰 2026-09-18 E-M38) — 결박되지 않는 중복은 안전이 아니라 잡음이다.
+        # **순서가 문제였다.** 라운드 3에서 여기의 조건을 "결박되지 않는 중복"이라며
+        # 지웠는데 그 판단이 틀렸다 — 아래 두 early-return이 guard보다 **먼저** 돌아서
+        # 외부 컨테이너 9개 중 8개가 `Service db not found in default config backup.`
+        # 이라는 **영문 내부 메시지 + HTTP 500 + code 없음**으로 답했다(적대 리뷰
+        # 2026-09-18 E-R2-02 실측). 정상 동작하는 유일한 경우가 이름이 우연히 겹치는
+        # `prometheus`였다 — docstring이 "가장 위험하다"고 지목한 그 경우다.
+        #
+        # 지울 것이 아니라 **앞으로 옮길** 것이었다. 거부 문구는 아래 한 자리와 같은
+        # 예외를 쓴다.
+        if external_project_for_container(container_id) is not None:
+            return self._update_container_config_unlocked(
+                container_id, [], {}, [], [], environment_snapshot=None
+            )
         if not self._default_compose_config:
             return {"success": False, "error": "No default config backup available."}
 

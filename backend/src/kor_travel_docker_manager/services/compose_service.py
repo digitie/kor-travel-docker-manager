@@ -8334,19 +8334,25 @@ class ComposeService:
                 services = [
                     service for group in selected for service in group.services
                 ]
-            elif groups:
-                # **fail-open을 막는다.** 첫 판은 `selected`가 비면 `external`이
-                # `None`인 채 `services`에 의존 폐포 전체가 남아서, 남의 프로젝트
-                # 서비스 이름을 Manager compose에 물어봤다 — C-2와 같은 계열의 조용한
-                # 오답이다(적대 리뷰 2026-09-18 E-F7: 외부 target의 `runtime_services`가
-                # 비면 실제로 그 경로로 떨어졌다).
+            elif own_external is not None:
+                # **술어를 폐포가 아니라 지목한 target의 소속에 건다.** 첫 판은
+                # `elif groups:`였는데 `service_groups_for_target`이 빈 묶음을 버리므로
+                # **폐포가 비면 이 팔이 아예 돌지 않았다** — 그러면 `external`은 `None`
+                # 인데 `services`는 빈 목록이라, `docker compose -f <Manager compose>
+                # logs`가 **서비스 필터 없이** 돌면서 Manager 전체 서비스의 로그를 그
+                # target의 것으로 제시하고 `omitted_projects: []`로 "빠뜨린 것 없음"을
+                # 단언했다(적대 리뷰 2026-09-18 E-R2-01 실측, CLI로 재현).
+                #
+                # 내가 쓴 검사가 그것을 못 본 이유가 더 중요하다 —
+                # `service_groups_for_target`을 **의존 묶음만 남기도록** 스텁해서
+                # `groups`가 비지 않는 절반만 태웠다.
                 #
                 # 빈 명령을 Manager 프로젝트에 돌리는 것도 답이 아니다 — 운영자가
                 # 물어본 것은 이 target이다. 말하고 멈춘다.
+                reached = ", ".join(group.project_label for group in groups) or "nothing"
                 raise DeploymentContractError(
                     f"target '{name}' declares no runtime services in its own "
-                    f"project ({own_project}); the closure only reaches "
-                    f"{', '.join(group.project_label for group in groups)}"
+                    f"project ({own_project}); the closure only reaches {reached}"
                 )
         elif name in MANAGED_CONTAINERS:
             # **컨테이너 id는 compose service 이름이 아니다.** 첫 판은 외부 컨테이너만

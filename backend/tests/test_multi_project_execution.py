@@ -534,3 +534,41 @@ def test_logs_does_not_fall_back_to_the_manager_project(
         ComposeService().logs("airport", tail=3)
     assert captured.calls == [], "Manager 프로젝트에 빈 명령을 돌리지 않는다"
 
+
+def test_logs_refuses_when_the_whole_closure_is_empty(
+    captured: _Capture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**폐포가 통째로 비는 절반**을 태운다.
+
+    첫 판의 술어는 `elif groups:`였고, 위 검사는 `service_groups_for_target`을 의존
+    묶음만 남기도록 스텁해서 `groups`가 **비지 않는** 절반만 태웠다. 그래서 폐포가
+    비면 팔이 아예 돌지 않는 것을 못 봤다 — 그때 `docker compose -f <Manager compose>
+    logs`가 **서비스 필터 없이** 돌아 Manager 전체 서비스의 로그를 그 target의 것으로
+    제시하고 `omitted_projects: []`로 "빠뜨린 것 없음"을 단언했다(적대 리뷰
+    2026-09-18 E-R2-01, CLI로 실측).
+    """
+
+    monkeypatch.setattr(
+        compose_module, "service_groups_for_target", lambda target, **_: []
+    )
+    with pytest.raises(DeploymentContractError, match="declares no runtime services"):
+        ComposeService().logs("weather", tail=3)
+    assert captured.calls == []
+
+
+def test_logs_of_a_manager_target_is_untouched_by_that_predicate(
+    captured: _Capture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """술어가 **지목한 target의 소속**에 걸리므로 Manager target은 영향이 없다.
+
+    폐포가 비어도 Manager target은 거부되지 않아야 한다 — 그쪽은 `own_external`이
+    `None`이고, 그 형상은 Manager 자신의 compose에 물어보는 것이 맞다.
+    """
+
+    monkeypatch.setattr(
+        compose_module, "service_groups_for_target", lambda target, **_: []
+    )
+    result = ComposeService().logs("map", tail=3)
+    assert result["omitted_projects"] == []
+    assert captured.only["cwd"] == get_project_root()
+

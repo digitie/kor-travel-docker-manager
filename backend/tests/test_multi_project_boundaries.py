@@ -26,6 +26,7 @@ assert였다 — 저장소의 `config/docker-targets.yml`만 봤으므로 설치
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 from typing import Any
 
@@ -39,8 +40,10 @@ from kor_travel_docker_manager.services.docker_service import (
 )
 from kor_travel_docker_manager.services.registry import (
     TargetsConfigError,
-    get_project_root,
 )
+
+#: 정본 `docker-compose.yml` 1행이 선언하는 이름. 구현에서 파생하지 않는다.
+_MANAGER_PROJECT_NAME = "kor-travel-docker-manager"
 
 
 class _FakeContainer:
@@ -81,10 +84,13 @@ class _FakeClient:
             project = self._overrides[container_id]
         else:
             external = external_project_for_container(container_id)
+            # **구현과 같은 식으로 만들지 않는다.** 첫 판은 Manager 라벨을
+            # `Path(get_project_root()).name`으로 만들었고, 구현도 같은 식이어서
+            # 불일치가 **원리상 발생할 수 없었다** — 그 탓에 구현이 compose의 정본
+            # 순서를 잘못 모델링한 것을 스위트가 구조적으로 못 봤다(적대 리뷰
+            # 2026-09-18 E-R2-03). 정본 문서가 선언한 이름을 리터럴로 쓴다.
             project = (
-                external.project
-                if external is not None
-                else Path(get_project_root()).name
+                external.project if external is not None else _MANAGER_PROJECT_NAME
             )
         return _FakeContainer(name, project)
 
@@ -103,7 +109,13 @@ _MANAGER_PROMETHEUS_CONFIG = {
 def manager_compose(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Manager compose에 `prometheus`가 **있는** 상태. 겹침이 실재해야 검사가 뜻이 있다."""
 
-    document = {"services": {"prometheus": copy.deepcopy(_MANAGER_PROMETHEUS_CONFIG)}}
+    # **`name:`을 함께 준다.** 정본 `docker-compose.yml` 1행이 그것을 선언하고,
+    # 프로젝트 이름 해석이 그 값을 본다. 빼면 디렉터리 이름으로 떨어져 라벨 대조가
+    # 전부 불일치가 된다 — 검사를 약하게 하지 않고 fragment를 완전하게 한다(S1 처방).
+    document = {
+        "name": _MANAGER_PROJECT_NAME,
+        "services": {"prometheus": copy.deepcopy(_MANAGER_PROMETHEUS_CONFIG)},
+    }
     monkeypatch.setattr(
         docker_service_module, "get_compose_config", lambda path=None: document
     )
@@ -778,24 +790,106 @@ def test_an_external_target_cannot_hold_a_manager_container() -> None:
         _validate(config)
 
 
-def test_the_manager_project_name_comes_from_the_environment_first(
-    monkeypatch: pytest.MonkeyPatch,
+def test_the_manager_project_name_follows_composes_own_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """**운영에서 도는 분기**를 태운다.
+    """compose의 우선순위를 그대로 따른다: env > 문서의 `name:` > 디렉터리.
 
-    `main.py`가 `.env`를 `os.environ`에 실으므로 `COMPOSE_PROJECT_NAME`이 정본이고,
-    production에서는 `c6c_state_paths`가 그 값을 명시 필수로 강제한다. 그런데 검사가
-    fallback만 태워서 env 조회를 지우는 변이가 살아남았다(적대 리뷰 2026-09-18 E-M27).
+    첫 판은 가운데를 건너뛰고 디렉터리를 봤다. 이 저장소의 `docker-compose.yml` 1행이
+    `name: kor-travel-docker-manager`이므로, `.env`에 `COMPOSE_PROJECT_NAME`이 없고
+    체크아웃 디렉터리 이름이 다른 호스트(= 이 worktree)에서는 **Manager 컨테이너
+    21개 전부의 `config`가 빈 값**이 됐다 — 라벨 대조가 전부 불일치로 떨어진다
+    (적대 리뷰 2026-09-18 E-R2-03).
 
-    n150 실측(2026-09-18): Manager 컨테이너 21개의 `com.docker.compose.project` 라벨은
-    전부 `kor-travel-docker-manager`다. 설치본 경로가 `/opt/kor-travel-docker-manager`
-    이므로 fallback과 env 값이 오늘은 같지만, **같다는 것이 우연이 아니어야 한다.**
+    n150 prod는 두 값이 우연히 같아 영향이 없었다(실측: 라벨과 설치본 디렉터리 모두
+    `kor-travel-docker-manager`). **같다는 것이 우연이 아니어야 한다.**
     """
 
+    monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
+    # (1) 문서의 `name:`이 디렉터리보다 앞이다 — 이 worktree의 디렉터리 이름은 다르다.
+    assert docker_service_module._manager_compose_project() == _MANAGER_PROJECT_NAME
+    assert Path(docker_service_module.get_project_root()).name != _MANAGER_PROJECT_NAME
+
+    # (2) env가 문서보다 앞이다.
     monkeypatch.setenv("COMPOSE_PROJECT_NAME", "from-environment")
     assert docker_service_module._manager_compose_project() == "from-environment"
+
+    # (3) 문서가 이름을 선언하지 않으면 디렉터리로 떨어진다.
     monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
+    monkeypatch.setattr(
+        docker_service_module, "get_compose_config", lambda path=None: {"services": {}}
+    )
     assert docker_service_module._manager_compose_project() == Path(
         docker_service_module.get_project_root()
     ).name
 
+
+def test_the_live_label_matches_the_declared_project_name() -> None:
+    """실행 중 라벨과 문서 선언이 같은지 **실측 값으로** 센다.
+
+    n150 실측(2026-09-18): Manager 컨테이너 21개의 `com.docker.compose.project` 라벨은
+    전부 `kor-travel-docker-manager`이고, 그것이 정본 문서 1행의 선언과 같다. 이
+    검사는 그 두 값이 갈리는 순간 빨개진다 — 그때 라벨 대조가 모든 Manager 컨테이너를
+    불일치로 판정하기 때문이다.
+    """
+
+    declared = (_ROOT / "docker-compose.yml").read_text(encoding="utf-8").splitlines()[0]
+    assert declared == f"name: {_MANAGER_PROJECT_NAME}", declared
+
+
+@pytest.mark.parametrize(
+    "container_id",
+    [
+        pytest.param("kor-travel-weather-db", id="name-differs"),
+        pytest.param("kor-travel-weather-prometheus", id="name-collides"),
+        pytest.param("kor-travel-airport-backend", id="airport"),
+    ],
+)
+def test_reset_reaches_the_guard_for_every_external_container(
+    manager_compose: dict[str, Any], container_id: str
+) -> None:
+    """`reset`이 두 early-return **앞에서** 거부돼야 한다.
+
+    라운드 3에서 이 자리의 조건을 "결박되지 않는 중복"이라며 지웠는데 **그 판단이
+    틀렸다.** 중복이 아니라 **순서**가 문제였다 — `_default_compose_config` 부재와
+    `svc_name not in default_services`가 guard보다 먼저 돌아서 외부 컨테이너 9개 중
+    8개가 `Service db not found in default config backup.`이라는 **영문 내부 메시지 +
+    HTTP 500 + code 없음**으로 답했다(적대 리뷰 2026-09-18 E-R2-02 실측).
+
+    정상 동작하는 유일한 경우가 **이름이 우연히 겹치는** `prometheus`였다 —
+    docstring이 "가장 위험하다"고 지목한 그 경우다. 그래서 이 검사는 이름이 다른 것·
+    겹치는 것·또 다른 프로젝트 셋을 함께 태운다.
+    """
+
+    with pytest.raises(ExternalContainerMutationError):
+        DockerService().reset_container_config(container_id)
+
+
+def test_the_external_boundary_maps_to_409_with_its_code() -> None:
+    """앱에 **등록된 핸들러**를 태워 status와 code를 함께 센다.
+
+    첫 판 검사는 `_contract_error_detail`을 직접 불러서 핸들러 배선을 보지 않았다.
+    전체 HTTP 스택은 이 파일의 대상이 아니다(origin 가드 + 세션 쿠키 하네스가 필요하고
+    그것은 `test_api.py`가 갖고 있다) — 대신 **핸들러 선택과 그 응답**을 센다.
+    """
+
+    import asyncio
+
+    from kor_travel_docker_manager.main import app
+    from kor_travel_docker_manager.services.errors import DeploymentContractError
+
+    handler = None
+    for exception_type, candidate in app.exception_handlers.items():
+        if exception_type is DeploymentContractError:
+            handler = candidate
+    assert handler is not None, "DeploymentContractError 핸들러가 등록돼 있어야 한다"
+
+    error = ExternalContainerMutationError(
+        "container 'kor-travel-weather-db' belongs to external compose project "
+        "'kor-travel-weather'"
+    )
+    response = asyncio.run(handler(None, error))
+    assert response.status_code == 409
+    payload = json.loads(response.body)
+    assert payload["detail"]["code"] == "EXTERNAL_PROJECT_READ_ONLY", payload
+    assert "kor-travel-weather" in payload["detail"]["message"]
