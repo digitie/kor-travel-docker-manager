@@ -104,7 +104,6 @@ _PINVI_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_PINVI_POSTGRES_PASSWORD_SECRET}
 #: 없어서 `--auth-host=trust`(fresh PGDATA에서 superuser 인증을 통째로 끄는 값)가
 #: raw·resolved·UI 저장 경로를 **전부 통과**했다.
 _POSTGRES_CANONICAL_INITDB_ARGS = "--auth-host=scram-sha-256"
-_PINVI_POSTGRES_INITDB_ARGS = _POSTGRES_CANONICAL_INITDB_ARGS
 _PINVI_DEDICATED_POSTGRES_PORT = 12800
 _PINVI_POSTGRES_IMAGE = (
     "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
@@ -2028,6 +2027,69 @@ def _service_witnesses_a_postgres_server(
     return any(name in declared_env for name in _POSTGRES_CLUSTER_INIT_ENV_NAMES)
 
 
+#: 클러스터 서비스의 `healthcheck` payload에 나타나는 **프로그램 자리**. 정본 넷을
+#: 실측해 얻었다 — `pg_isready`, 그리고 map이 쓰는 `test "$(cat /proc/1/comm)" = postgres`.
+#:
+#: 허용 목록이 **키 이름만** 묶었던 것이 적대 리뷰 2026-09-18 라운드4 F5다.
+#: `["CMD-SHELL", "psql -U postgres -c \"ALTER ROLE postgres PASSWORD ...\""]`가 통과했고,
+#: 컨테이너 안 소켓은 `local all all trust`라 그것이 superuser 실행이다.
+_POSTGRES_HEALTHCHECK_PROGRAMS: Final = frozenset({"pg_isready", "test", "cat"})
+#: 셸 payload를 조각으로 자르는 구분자. 각 조각의 첫 낱말이 프로그램 자리다.
+_SHELL_FRAGMENT_SEPARATORS: Final = ("&&", "||", ";", "|", "\n", "$(", "`")
+
+
+def _shell_program_positions(payload: str) -> list[str]:
+    """셸 문장에서 **프로그램 자리**의 basename들.
+
+    연산자와 명령 치환으로 조각을 내고 각 조각의 첫 낱말을 본다. 이름을 금지하는
+    방향(`psql`을 막는다)이 아니라 **허용하는** 방향이어야 한다 — 금지 목록은 이
+    파일에서 세 라운드 연속으로 뒤처졌다.
+    """
+
+    fragments = [payload]
+    for separator in _SHELL_FRAGMENT_SEPARATORS:
+        nested: list[str] = []
+        for fragment in fragments:
+            nested.extend(fragment.split(separator))
+        fragments = nested
+    names: list[str] = []
+    for fragment in fragments:
+        words = fragment.replace(")", " ").split()
+        if words:
+            names.append(PurePosixPath(words[0].strip("\"'")).name)
+    return names
+
+
+def _assert_postgres_healthcheck_is_canonical(
+    service_name: str, service: Mapping[str, Any]
+) -> None:
+    """클러스터 서비스의 healthcheck가 **정본 프로그램만** 부르는가."""
+
+    healthcheck = service.get("healthcheck")
+    if not isinstance(healthcheck, Mapping):
+        return
+    test = healthcheck.get("test")
+    if test is None:
+        return
+    tokens = test if isinstance(test, list) else [test]
+    payload_words: list[str] = []
+    for index, token in enumerate(tokens):
+        if not isinstance(token, str):
+            raise ComposeCandidateContractError(
+                "compose candidate PostgreSQL healthcheck is not a string command: "
+                + _describe_candidate_service_key(service_name)
+            )
+        if index == 0 and token in {"CMD", "CMD-SHELL", "NONE"}:
+            continue
+        payload_words.extend(_shell_program_positions(token))
+    for name in payload_words:
+        if name not in _POSTGRES_HEALTHCHECK_PROGRAMS:
+            raise ComposeCandidateContractError(
+                f"compose candidate PostgreSQL healthcheck runs a non-canonical "
+                f"program {name}: " + _describe_candidate_service_key(service_name)
+            )
+
+
 def _assert_one_postgres_cluster_runtime(
     service_name: str, service: Mapping[str, Any], *, declared: bool
 ) -> None:
@@ -2063,6 +2125,7 @@ def _assert_one_postgres_cluster_runtime(
             f"{unknown_keys}: " + _describe_candidate_service_key(service_name)
         )
 
+    _assert_postgres_healthcheck_is_canonical(service_name, service)
     settings = _postgres_command_settings(service.get("command"))
     if settings is None:
         raise ComposeCandidateContractError(
@@ -2088,19 +2151,10 @@ def _assert_one_postgres_cluster_runtime(
             "compose candidate PostgreSQL service must keep the loopback binding: "
             + _describe_candidate_service_key(service_name)
         )
-    for forbidden in sorted(_POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES):
-        if forbidden in dict(_service_environment_items(service)):
-            raise ComposeCandidateContractError(
-                f"compose candidate relocates PostgreSQL data with {forbidden}: "
-                + _describe_candidate_service_key(service_name)
-            )
-    if _env_file_entries(service.get("env_file")):
-        # 허용 목록이 이미 막지만 문구를 유지한다 — `env_file`이 왜 특별히 나쁜지는
-        # 전역 술어 쪽 docstring이 설명한다.
-        raise ComposeCandidateContractError(
-            "compose candidate forbids env_file on a PostgreSQL service: "
-            + _describe_candidate_service_key(service_name)
-        )
+    # `PGDATA`와 `env_file`은 여기서 보지 않는다. 앞의 허용 목록이 `env_file`을 막고,
+    # `PGDATA`는 `_assert_canonical_postgres_initdb_args`가 소유한다 — 두 분기 모두
+    # **도달하지 않는 코드**였다(적대 리뷰 2026-09-18 라운드4 F13 실측). 닿지 않는
+    # 분기는 안전이 아니라, 그 규칙의 자리가 어디인지에 대한 거짓 신호다.
 
 
 def _assert_postgres_cluster_runtime_is_canonical(document: Mapping[str, Any]) -> None:
@@ -2139,23 +2193,55 @@ def _assert_postgres_cluster_runtime_is_canonical(document: Mapping[str, Any]) -
 #: 들면 **기본이 거부**이므로 열거가 늘어나도 fail-close가 유지된다.
 _FORBIDDEN_PRIVILEGE_KEYS: Final = (
     "cap_add",
-    "cap_drop",
+    "cgroup",
     "cgroup_parent",
+    "device_cgroup_rules",
     "devices",
     "group_add",
     "ipc",
     "links",
     "pid",
     "privileged",
+    "runtime",
     "security_opt",
     "sysctls",
     "user",
     "userns_mode",
+    "uts",
     "volumes_from",
 )
 
+#: `deploy.resources.reservations.devices`는 중첩이라 최상위 키 스캔에 걸리지 않는다.
+#: `docker compose config`가 그 값을 그대로 낸다(실측).
+_FORBIDDEN_NESTED_PRIVILEGE_PATH: Final = ("deploy", "resources", "reservations", "devices")
+
+#: **값을 봐야 하는 키.** 이 둘은 하드닝에도 쓰인다 — 능력을 버리거나 권한 상승을
+#: 막는 것은 특권 **부여**가 아니다. 첫 판은 키 존재만 봐서 `cap_drop: [ALL]`·
+#: `security_opt: [no-new-privileges:true]`·`user: 65534`를 전부 거부했다(적대 리뷰
+#: 2026-09-18 라운드4 F12 — 하드닝을 금지하는 규칙이었다).
+_ROOT_USER_VALUES: Final = frozenset({"0", "root", "0:0", "root:root"})
+_UNCONFINED_SECURITY_OPT: Final = "unconfined"
+
+
+def _privilege_key_grants_host_access(key: str, value: object) -> bool:
+    """이 (키, 값)이 실제로 **호스트 권한을 주는가.**
+
+    `user`는 root일 때만, `security_opt`는 `*:unconfined`/`systempaths=unconfined`일
+    때만 위험하다. 나머지 키는 값이 truthy이면 위험하다.
+    """
+
+    if key == "user":
+        return str(value).strip() in _ROOT_USER_VALUES
+    if key == "security_opt":
+        entries = value if isinstance(value, list) else [value]
+        return any(
+            _UNCONFINED_SECURITY_OPT in str(entry).lower() for entry in entries
+        )
+    return bool(value)
+
 #: 정본이 실제로 쓰는 (서비스, 키) 쌍. 실측으로 얻었고, 늘리려면 여기 한 줄을
 #: 명시적으로 더해야 한다 — 그 마찰이 이 규칙의 값어치다.
+#: `test_the_privilege_exception_set_is_pinned`가 이 집합을 리터럴로 못박는다.
 _ALLOWED_PRIVILEGE_KEY_PAIRS: Final = frozenset(
     {
         ("cadvisor", "privileged"),
@@ -2164,6 +2250,39 @@ _ALLOWED_PRIVILEGE_KEY_PAIRS: Final = frozenset(
         ("grafana", "user"),
     }
 )
+
+#: 예외는 **이름만으로 성립하지 않는다.** 정본 cadvisor의 mount와 `privileged: true`를
+#: 그대로 두고 `image`만 바꾸면 한 줄로 호스트 root였다(적대 리뷰 2026-09-18 라운드4
+#: F3 실측). 그래서 그 서비스의 **신원**까지 본다.
+#:
+#: 발행자/이름 접두로 묶고 버전은 묶지 않는다 — 버전 bump는 정당한 변경이고, 막으려는
+#: 것은 **임의 이미지**다. 정본은 `${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.52.1}`
+#: 처럼 placeholder 안에 기본값을 담으므로 raw·resolved 양쪽에서 이 접두가 보인다.
+_PRIVILEGE_EXCEPTION_IMAGE_PREFIXES: Final = MappingProxyType(
+    {
+        "cadvisor": "gcr.io/cadvisor/cadvisor:",
+        "prometheus": "prom/prometheus:",
+        "grafana": "grafana/grafana:",
+    }
+)
+
+
+def _privilege_exception_applies(
+    service_name: str, key: str, service: Mapping[str, Any]
+) -> bool:
+    """이 서비스가 그 특권 키를 쓸 **자격이 있는가.**
+
+    이름이 목록에 있는 것만으로는 부족하다 — 그 이름으로 임의 이미지를 세우면 예외가
+    공격자에게 상속된다.
+    """
+
+    if (service_name, key) not in _ALLOWED_PRIVILEGE_KEY_PAIRS:
+        return False
+    expected_prefix = _PRIVILEGE_EXCEPTION_IMAGE_PREFIXES.get(service_name)
+    if expected_prefix is None:
+        return False
+    image = service.get("image")
+    return isinstance(image, str) and expected_prefix in image
 
 
 def _assert_no_host_privilege_escalation(document: Mapping[str, Any]) -> None:
@@ -2188,10 +2307,21 @@ def _assert_no_host_privilege_escalation(document: Mapping[str, Any]) -> None:
     for service_name, service in services.items():
         if not isinstance(service, Mapping):
             continue
+        nested = service
+        for segment in _FORBIDDEN_NESTED_PRIVILEGE_PATH:
+            nested = nested.get(segment) if isinstance(nested, Mapping) else None
+            if nested is None:
+                break
+        if nested:
+            raise ComposeCandidateContractError(
+                "compose candidate grants host privilege with "
+                f"{'.'.join(_FORBIDDEN_NESTED_PRIVILEGE_PATH)}: "
+                + _describe_candidate_service_key(service_name)
+            )
         for key in _FORBIDDEN_PRIVILEGE_KEYS:
-            if not service.get(key):
+            if not _privilege_key_grants_host_access(key, service.get(key)):
                 continue
-            if (service_name, key) in _ALLOWED_PRIVILEGE_KEY_PAIRS:
+            if _privilege_exception_applies(service_name, key, service):
                 continue
             raise ComposeCandidateContractError(
                 f"compose candidate grants host privilege with {key}: "
@@ -3611,15 +3741,22 @@ def _concierge_ui_root_values_are_valid(values: Mapping[str, str]) -> bool:
 #: 있는 파일)를 읽는 후보가 **세 신호를 한 글자도 건드리지 않고** 통과하는 것을
 #: 실측했다. 새 키를 더할 때는 "그 키에 값이 있으면 이 서비스는 실제로 배포된다"가
 #: 참인지만 물어라 — 정당한 stub이 그 키를 값으로 갖지 않으면 비용은 0이다.
-#: compose가 stub에도 `null`로 붙이는 키 — 존재가 아니라 **값이 있음**으로 본다.
-_CONCIERGE_NULLABLE_DEPLOYMENT_SIGNALS: Final = ("command", "entrypoint", "network_mode")
-#: 붙지 않는 키 — 빈 리스트·빈 dict는 "배포한다"는 신호가 아니므로 **truthy**로 본다.
-_CONCIERGE_PRESENT_DEPLOYMENT_SIGNALS: Final = (
+#: compose가 stub에도 `null`로 붙이는 키, **그리고 `environment`** — 존재가 아니라
+#: 값이 `None`이 아님으로 본다.
+#:
+#: `environment`가 여기 있는 것이 중요하다. 라운드 3에서 그것을 truthy 쪽으로 옮겼고,
+#: 그 결과 `{image, environment: {}}`인 concierge-api가 UI 없이 계약을 **통째로**
+#: 빠져나갔다 — 2,836형상 대조에서 **약화 24칸**이 전부 그 결함군이었다(적대 리뷰
+#: 2026-09-18 라운드4 F1). compose는 stub에 `environment`를 붙이지 않으므로 빈 dict·
+#: 빈 list는 "이 서비스를 실제로 선언했다"는 신호다.
+_CONCIERGE_NULLABLE_DEPLOYMENT_SIGNALS: Final = (
+    "command",
+    "entrypoint",
     "environment",
-    "ports",
-    "env_file",
-    "build",
+    "network_mode",
 )
+#: 붙지 않는 키 — 빈 리스트·빈 dict는 "배포한다"는 신호가 아니므로 **truthy**로 본다.
+_CONCIERGE_PRESENT_DEPLOYMENT_SIGNALS: Final = ("ports", "env_file", "build")
 _CONCIERGE_API_DEPLOYMENT_SIGNALS = (
     *_CONCIERGE_NULLABLE_DEPLOYMENT_SIGNALS,
     *_CONCIERGE_PRESENT_DEPLOYMENT_SIGNALS,
