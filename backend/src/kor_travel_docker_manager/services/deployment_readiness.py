@@ -37,6 +37,7 @@ from kor_travel_docker_manager.services.compose_service import (
     get_override_path,
     map_application_300_python_base_references_from_root,
 )
+from kor_travel_docker_manager.services.postgres_hba_posture import read_posture
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     read_published_runtime_pins,
 )
@@ -91,6 +92,8 @@ _CHECK_LABELS: Final = {
     "sibling_bootstrap_scripts": "사이드카 저장소 필수 스크립트",
     "pinvi_role_bootstrap_modes": "고정된 PinVi revision의 역할 부트스트랩 계약",
     "map_python_base_images": "Map 후보 빌드의 고정 Python base image",
+    "login_rate_limit_proxy": "로그인 rate limit 프록시 신뢰 경계",
+    "postgres_hba_posture": "살아있는 PostgreSQL pg_hba의 TCP trust 부재",
 }
 
 _CHECK_ORDER: Final = (
@@ -98,6 +101,11 @@ _CHECK_ORDER: Final = (
     "sibling_bootstrap_scripts",
     "pinvi_role_bootstrap_modes",
     "map_python_base_images",
+    # `login_rate_limit_proxy`는 `_probe_deployment_readiness`가 만드는데 이 표에
+    # 없었다 — `_unknown_payload`가 만드는 대체 응답에서 그 행이 조용히 사라졌다.
+    # 새 행을 더하면서 함께 등재한다(둘 다 등재하지 않으면 UI가 코드 경로 둘을 갖는다).
+    "login_rate_limit_proxy",
+    "postgres_hba_posture",
 )
 
 _UNAVAILABLE_CHECKS: Final = (
@@ -860,6 +868,43 @@ def _check_login_rate_limit_proxy(values: Mapping[str, str] | None) -> Readiness
     )
 
 
+def _check_postgres_hba_posture() -> ReadinessCheck:
+    """살아있는 PostgreSQL의 `pg_hba`가 TCP 경로에 `trust`를 주지 않는지 본다.
+
+    **compose 문서 검사와 다른 축이다.** `POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256`
+    은 **initdb 시점에만** 적용되므로, 그 값이 계약에 들어오기 전에 만들어진 PGDATA는
+    그대로 남는다. 2026-09-18에 적대 리뷰가 n150의 여섯 인스턴스 전부에서
+    `host replication all 127.0.0.1/32 trust`를 실측했고, 빈 `PGPASSWORD`로
+    `IDENTIFY_SYSTEM`이 응답했다 — `pg_basebackup` 한 줄로 클러스터 전체와 `pg_authid`의
+    롤 해시가 복사된다. 그때 계약에 live `pg_hba` 검사는 **0건**이었다.
+
+    판정은 `postgres_hba_posture.decide`가 하는 **순수 함수**다. 이 자리는 그 결과를
+    행 하나로 옮기기만 한다 — 그래서 판정을 형상으로 직접 태울 수 있다.
+    """
+
+    verdict = read_posture()
+    return ReadinessCheck(
+        id="postgres_hba_posture",
+        state=verdict.state,
+        label_ko=_CHECK_LABELS["postgres_hba_posture"],
+        detail=verdict.detail,
+        source="docker_cli",
+        evidence={
+            **dict(verdict.evidence),
+            "per_instance": [
+                {
+                    "container": instance.container_id,
+                    "state": instance.state,
+                    "external_project": instance.external_project,
+                    "detail": instance.detail,
+                    **dict(instance.evidence),
+                }
+                for instance in verdict.instances
+            ],
+        },
+    )
+
+
 def _probe_deployment_readiness() -> dict[str, Any]:
     values = _effective_values()
     checks = [
@@ -868,6 +913,7 @@ def _probe_deployment_readiness() -> dict[str, Any]:
         _check_pinvi_role_bootstrap_modes(values),
         _check_map_python_base_images(values),
         _check_login_rate_limit_proxy(values),
+        _check_postgres_hba_posture(),
     ]
     return {
         "schema": DEPLOYMENT_READINESS_SCHEMA,
