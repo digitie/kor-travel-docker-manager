@@ -5084,33 +5084,42 @@ def test_env_file_on_a_cluster_service_is_rejected(tmp_path: Path) -> None:
 
 
 def test_a_one_shot_on_the_postgres_image_is_not_a_cluster(tmp_path: Path) -> None:
-    """**식별을 넓히면 정당한 서비스가 죽는다.**
+    """**식별을 넓히면 정당한 서비스가 죽고, 좁히면 서버가 새어나간다.**
 
-    `pinvi-db-init`은 같은 postgis 이미지를 쓰지만 psql을 돌리는 one-shot이라 initdb와
-    무관하다. 첫 판은 이미지로 식별해서 계약 fragment 13건을 빨갛게 만들었다.
-    판정 재료는 "entrypoint가 initdb를 돌리게 하는 env를 선언했는가"다.
+    `pinvi-db-init`은 같은 postgis 이미지를 쓰지만 psql을 돌리는 one-shot이라 서버가
+    아니다. 첫 판은 이미지로 식별해서 계약 fragment 13건을 빨갛게 만들었고, 둘째 판은
+    `command[0]` 리터럴 비교여서 절대경로·문자열 command가 판정을 피했다.
+
+    지금 재료는 **command 토큰의 basename**(+ 초기화 env 보조축)이고, 이미지 문자열은
+    아예 쓰지 않는다. 그리고 이 흔적 축은 `config/docker-targets.yml`의 `role`에서 오는
+    **declared 축과 논리합**이다 — `test_an_undeclared_postgres_server_is_refused`가
+    그 둘의 관계를 센다.
     """
 
-    runs = c6c_deployment_module._service_runs_a_postgres_server
-    # 자기 entrypoint로 one-shot을 돌리는 정본 형상 둘 — 서버가 아니다.
-    assert not runs(
+    witnesses = c6c_deployment_module._service_witnesses_a_postgres_server
+    # 자기 entrypoint로 one-shot을 돌리는 정본 형상 둘 — 서버 흔적이 없다.
+    assert not witnesses(
         {
             "image": "postgis/postgis@sha256:deadbeef",
             "entrypoint": ["/bin/sh", "/usr/local/bin/postgres-role-bootstrap"],
         },
         {"POSTGRES_USER": "x", "POSTGRES_DB": "y"},
     )
-    assert not runs(
+    assert not witnesses(
         {"image": "postgis/postgis@sha256:deadbeef", "command": ["sh", "-ec", "psql"]},
         {"PGUSER": "x"},
     )
-    # **`environment`가 통째로 없어도** command가 서버를 돌리면 서버다 — 첫 판이
-    # 놓친 회피 경로다.
-    assert runs({"image": "postgres:16", "command": ["postgres", "-c", "x=1"]}, {})
-    # command도 entrypoint도 없으면 이미지의 기본 entrypoint가 서버를 띄운다.
-    assert runs({"image": "postgres:16"}, {})
-    # 보조 축 — 위 둘이 침묵해도 초기화 env가 있으면 서버로 본다.
-    assert runs({"image": "scratch"}, {"POSTGRES_PASSWORD_FILE": "/run/secrets/x"})
+    # **basename으로 본다.** 첫 판은 `command[0] == "postgres"` 리터럴 비교여서
+    # 절대경로·문자열 command·`sh -c 'exec postgres …'`가 판정을 피했다(적대 리뷰
+    # 2026-09-18 F1 실측).
+    assert witnesses({"command": ["postgres", "-c", "x=1"]}, {})
+    assert witnesses({"command": ["/usr/local/bin/postgres", "-i"]}, {})
+    assert witnesses({"command": "sh -c 'exec postgres -i'"}, {})
+    # 보조 축 — command가 침묵해도 초기화 env가 있으면 흔적이다.
+    assert witnesses({"image": "scratch"}, {"POSTGRES_PASSWORD_FILE": "/run/secrets/x"})
+    # **이미지 문자열은 재료가 아니다.** digest 핀·리네임·플레이스홀더에서 깨지고,
+    # 리뷰어가 map-postgres의 resolved 층에서 마커가 꺼지는 것까지 실측했다(F6).
+    assert not witnesses({"image": "postgres:16"}, {})
 
 
 def test_the_rejection_names_the_service_it_rejected(tmp_path: Path) -> None:
@@ -5198,24 +5207,36 @@ def test_an_empty_signal_is_not_a_deployment(signal: str) -> None:
     [
         pytest.param(
             {"entrypoint": ["sh", "-c", "postgres"]},
-            "non-canonical entrypoint",
+            "non-canonical keys",
             id="entrypoint",
         ),
-        pytest.param({"privileged": True}, "non-canonical privileged", id="privileged"),
-        pytest.param({"user": "root"}, "non-canonical user", id="user"),
+        pytest.param({"privileged": True}, "host privilege", id="privileged"),
+        pytest.param({"user": "root"}, "host privilege", id="user"),
+        pytest.param({"cap_add": ["SYS_ADMIN"]}, "host privilege", id="cap_add"),
+        pytest.param({"pid": "host"}, "host privilege", id="pid"),
+        pytest.param({"devices": ["/dev/sda:/dev/sda"]}, "host privilege", id="devices"),
+        pytest.param({"ipc": "host"}, "host privilege", id="ipc"),
         pytest.param(
-            {"cap_add": ["SYS_ADMIN"]}, "non-canonical cap_add", id="cap_add"
+            {"security_opt": ["apparmor:unconfined"]}, "host privilege", id="security_opt"
         ),
-        pytest.param({"pid": "host"}, "non-canonical pid", id="pid"),
+        pytest.param({"userns_mode": "host"}, "host privilege", id="userns_mode"),
+        pytest.param({"volumes_from": ["other"]}, "host privilege", id="volumes_from"),
     ],
 )
 def test_a_cluster_service_cannot_take_privileged_shapes(
     tmp_path: Path, mutation: dict[str, object], message: str
 ) -> None:
-    """`entrypoint`가 특히 중요하다 — 주면 `command`가 인자로 강등된다.
+    """두 기계가 이것을 막는다 — 그리고 **둘의 범위가 다르다.**
 
-    그러면 아래 `command` 규칙이 통째로 무의미해진다. 정본 compose의 네 클러스터
-    서비스는 이 키를 **하나도** 선언하지 않는다(실측).
+    `entrypoint`는 PostgreSQL **허용 목록**이 막는다(그 키가 목록에 없다). 주면
+    `command`가 인자로 강등되어 command 규칙이 무의미해지므로, 허용 목록에서 빼는
+    것으로 금지가 자동 성립한다 — 기계가 하나 줄었다.
+
+    나머지는 **문서 전역** 특권 금지가 막는다. 정본 34 서비스 실측에서 `devices`·
+    `ipc`·`security_opt`·`userns_mode`·`volumes_from`·`cap_add`·`pid` 사용은 0건이고,
+    `privileged`·`devices`는 cadvisor, `user`는 prometheus·grafana만 쓴다. 첫 판은
+    금지 목록이 PostgreSQL 안쪽에만 있어서 **정본 그대로의 geo 클러스터에
+    `devices: /dev/sda`가 양쪽 통과했다**(적대 리뷰 2026-09-18 F3, 호스트 root).
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
@@ -5240,6 +5261,8 @@ def test_a_cluster_service_cannot_take_privileged_shapes(
         pytest.param("-c {name}={value}", id="short"),
         pytest.param("--{dashed}={value}", id="long-option"),
         pytest.param("-c {upper}={value}", id="upper-case-guc"),
+        pytest.param("-c{name}={value}", id="glued-short"),
+        pytest.param("-c{upper}={value}", id="glued-upper"),
     ],
 )
 def test_a_runtime_setting_cannot_replace_the_authentication_policy(
@@ -5271,7 +5294,7 @@ def test_a_runtime_setting_cannot_replace_the_authentication_policy(
 
     with pytest.raises(
         ComposeCandidateContractError,
-        match=f"overrides PostgreSQL authentication with {setting}",
+        match=f"PostgreSQL command sets a non-canonical {setting}",
     ):
         validate_compose_candidate_protected_values(
             shaped,
@@ -5533,10 +5556,12 @@ def test_deleting_the_environment_does_not_hide_a_postgres_server(
 def test_privilege_keys_are_refused_even_on_a_postgres_one_shot(
     tmp_path: Path, key: str, value: object
 ) -> None:
-    """서버 판정에서 **빠지는** PostgreSQL 이미지 서비스까지 덮는다.
+    """서버 판정에서 **빠지는** 서비스까지 덮는다 — 그리고 PostgreSQL에 한정하지 않는다.
 
-    `entrypoint`로 서버 판정을 피한 후보와 정당한 one-shot 둘이 그 범주다. 정본
-    compose의 PostgreSQL 이미지 서비스 열 개 중 이 키를 쓰는 것은 하나도 없다(실측).
+    첫 판은 이 그물을 "PostgreSQL 이미지를 쓰는 서비스"에 걸었는데 이미지 문자열
+    판정이 신뢰할 수 없었다(F6). 그래서 **문서 전역**으로 올렸다 — 리뷰어 둘이 각각
+    실측한 것이 그 자리다: `concierge-api`에 `privileged: true` + `pid: host`를 준
+    후보가 계약 전무로 통과하고 `ktdctl deploy conc`가 그것을 띄운다(호스트 root).
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
@@ -5548,9 +5573,7 @@ def test_privilege_keys_are_refused_even_on_a_postgres_one_shot(
         key: value,
     }
 
-    with pytest.raises(
-        ComposeCandidateContractError, match=f"non-canonical {key}"
-    ):
+    with pytest.raises(ComposeCandidateContractError, match="host privilege"):
         validate_compose_candidate_protected_values(
             shaped,
             compose_path=str(_COMPOSE_PATH),
@@ -5576,7 +5599,7 @@ def test_the_runtime_predicate_runs_on_the_resolved_entry_point(tmp_path: Path) 
     postgres["command"] = [*postgres["command"], "-c", "hba_file=/tmp/evil.conf"]
 
     with pytest.raises(
-        ComposeCandidateContractError, match="overrides PostgreSQL authentication"
+        ComposeCandidateContractError, match="non-canonical hba_file"
     ):
         validate_resolved_compose_candidate_protected_values(
             resolved,
@@ -5584,4 +5607,168 @@ def test_the_runtime_predicate_runs_on_the_resolved_entry_point(tmp_path: Path) 
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
         )
+
+
+@pytest.mark.parametrize(
+    ("fragment", "id_"),
+    [
+        pytest.param(["-i"], "bare-i", id="bare-i"),
+        pytest.param(["-h", "0.0.0.0"], "h-spaced", id="h-spaced"),
+        pytest.param(["-h0.0.0.0"], "h-glued", id="h-glued"),
+        pytest.param(["-clisten_addresses=0.0.0.0"], "c-glued", id="c-glued"),
+        pytest.param(["--listen-addresses=0.0.0.0"], "long", id="long"),
+    ],
+)
+def test_every_spelling_that_widens_the_binding_is_refused(
+    tmp_path: Path, fragment: list[str], id_: str
+) -> None:
+    """**파서가 postgres와 같아야 한다.**
+
+    첫 판은 `-c name=value`와 `--name=value` 둘만 읽었다. 실제 서버는 이 다섯을 모두
+    honor하고, 리뷰어가 `-i` 한 토큰으로 map·geo·concierge 세 대를 LAN에 여는 것을
+    실측했다(적대 리뷰 2026-09-18 F2). 세 대 다 `network_mode: host`라
+    `ports: 127.0.0.1:…`는 무시된다 — 정본 compose 주석이 스스로 적어 둔 사실이다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    postgres = services["kor-travel-map-postgres"]
+    assert isinstance(postgres, dict)
+    postgres["command"] = [*postgres["command"], *fragment]
+
+    with pytest.raises(ComposeCandidateContractError, match="loopback binding"):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        pytest.param(["-D", "/tmp/fresh"], id="D-spaced"),
+        pytest.param(["-D/tmp/fresh"], id="D-glued"),
+        pytest.param(["-c", "data_directory=/tmp/fresh"], id="data_directory"),
+        pytest.param(["-c", "config_file=/tmp/evil.conf"], id="config_file"),
+        pytest.param(["-k", "/tmp/sock"], id="socket-dir"),
+        pytest.param(["--unknown-future-option=1"], id="unknown-long"),
+        pytest.param(["-X"], id="unknown-short"),
+        pytest.param(["extra-positional"], id="positional"),
+    ],
+)
+def test_an_unknown_command_token_is_refused(
+    tmp_path: Path, fragment: list[str]
+) -> None:
+    """**모르는 것이 하나라도 있으면 거부**가 이 방향의 전부다.
+
+    금지 목록은 세 라운드 연속으로 뒤처졌다 — 매번 내가 놓친 철자가 우회로였다.
+    허용 목록은 `hba_file`·`config_file`·`data_directory`·`-D`를 **따로 열거하지
+    않아도** 전부 막고, 다음 postgres 버전이 추가하는 옵션에 대해서도 fail-close다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    postgres = services["kor-travel-map-postgres"]
+    assert isinstance(postgres, dict)
+    postgres["command"] = [*postgres["command"], *fragment]
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="non-canonical|canonical postgres command"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_an_undeclared_postgres_server_is_refused(tmp_path: Path) -> None:
+    """`in_scope = declared OR witnessed` — 그리고 **불일치 자체가 거부**다.
+
+    `declared`는 `config/docker-targets.yml`의 `role`(`*postgresql`)에서 온다. 그
+    문서는 GM-17 A가 신뢰시켜 뒀다(trusted 설치본에서 env redirect 거부 + root 소유).
+    `role`은 UI 문자열이라 아무것도 강제하지 않지만, witnessed가 declared에 없는
+    형상을 거부하므로 **여섯째 postgres를 `role: db`로 선언해도 새어나가지 않는다.**
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    # 다른 축은 전부 정본으로 둔다 — 이 검사의 대상은 declared/witnessed 불일치
+    # 하나다. env를 비우면 더 앞의 "부재=trust" 검사가 먼저 말한다.
+    services["shadow-database"] = {
+        "image": "postgres:16",
+        "command": ["postgres", "-c", "listen_addresses=127.0.0.1"],
+        "environment": {"POSTGRES_INITDB_ARGS": "--auth-host=scram-sha-256"},
+    }
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="undeclared PostgreSQL server"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_the_declared_set_comes_from_the_trusted_document() -> None:
+    """declared 축이 실제로 그 문서에서 나오는지 센다 — 리터럴 목록이 아니라.
+
+    이 검사가 없으면 `_declared_postgres_compose_services()`를 하드코딩 집합으로
+    굳혀도 아무도 빨개지지 않는다.
+    """
+
+    declared = c6c_deployment_module._declared_postgres_compose_services()
+    assert declared == frozenset(
+        {
+            "kor-travel-geo-postgres",
+            "kor-travel-concierge-postgres",
+            "kor-travel-map-postgres",
+            "pinvi-postgres",
+        }
+    ), declared
+
+
+@pytest.mark.parametrize(
+    ("service_name", "key", "value"),
+    [
+        pytest.param("cadvisor", "privileged", True, id="cadvisor-privileged"),
+        pytest.param("prometheus", "user", "65534:65534", id="prometheus-user"),
+    ],
+)
+def test_the_canonical_privilege_exceptions_still_pass(
+    tmp_path: Path, service_name: str, key: str, value: object
+) -> None:
+    """예외가 **너무 좁으면** 정본 배포가 깨진다 — 이 검사가 그 방향을 잡는다.
+
+    정본 34 서비스 중 `privileged`·`devices`는 cadvisor, `user`는 prometheus·grafana가
+    쓴다(실측). 전역 금지가 그것까지 막으면 다음 배포가 실패한다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services[service_name] = {"image": "fixture.invalid/x:test", key: value}
+
+    # 이 서비스들은 계약의 다른 축을 태우지 않는다 — 특권 축에서 거부되지 않는 것만 본다.
+    try:
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+    except ComposeCandidateContractError as rejection:
+        assert "host privilege" not in str(rejection), rejection
 

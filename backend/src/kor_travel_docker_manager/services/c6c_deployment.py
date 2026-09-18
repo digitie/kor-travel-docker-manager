@@ -8,6 +8,7 @@ import http.cookiejar
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import time
@@ -20,7 +21,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from io import StringIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import Any, Final, Literal, TypeVar, cast
 from urllib.parse import unquote, urlsplit
 
@@ -48,7 +50,10 @@ from kor_travel_docker_manager.services.loopback_readiness import (
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
-from kor_travel_docker_manager.services.registry import get_targets_config_path
+from kor_travel_docker_manager.services.registry import (
+    get_targets_config_path,
+    load_targets_config,
+)
 from kor_travel_docker_manager.services.trusted_install import (
     GLOBAL_MUTATION_LOCK_FD_ENV,
     GLOBAL_MUTATION_LOCK_PATH,
@@ -1769,189 +1774,412 @@ def _service_environment_items(service: Mapping[str, Any]) -> list[tuple[str, st
     )
 
 
-#: **postgres 서버를 돌리는지**를 알아보는 신호. **이름을 열거하지 않는다** — 계약표가
-#: 서비스를 열거해서 저장소의 넷 중 둘을 빠뜨린 것이 적대 리뷰 2026-09-18 F1이었다.
+def _normalize_postgres_setting_name(name: str) -> str:
+    """postgres가 GUC 이름을 읽는 방식과 같게 정규화한다.
+
+    GUC 이름은 **대소문자를 구분하지 않고**, long option 형태(`--hba-file=`)에서는
+    하이픈이 밑줄과 같다.
+    """
+
+    return name.strip().lower().replace("-", "_")
+
+
+#: 정본 compose의 PostgreSQL 서버 넷이 쓰는 **최상위 키 전부**(실측 2026-09-18).
+#: `shm_size`는 하나만 쓰지만 정당하므로 포함한다.
 #:
-#: 첫 판은 `POSTGRES_PASSWORD{,_FILE}` 선언 여부로 판정했다. **틀린 재료였다.**
-#: official entrypoint는 그 값을 빈 PGDATA에서 initdb할 때만 요구하므로, **이미
-#: 초기화된 PGDATA에서는 env 없이도 서버가 뜬다.** 그래서 `environment`를 통째로
-#: 지우면 식별을 피하면서 `privileged: true` + `listen_addresses=0.0.0.0`인 서버를
-#: 세울 수 있었다(리뷰어 D/F가 실제 컨테이너로 재현했다).
+#: **금지 목록이 아니라 허용 목록이다.** 앞선 세 라운드가 같은 병으로 뚫렸다 —
+#: `entrypoint`·`privileged`·`user`·`cap_add`·`pid`를 막았더니 `devices: /dev/sda`가
+#: 통과했고(호스트 root), `docs/tasks.md`가 위험 키 열 개를 이미 열거해 뒀는데 그
+#: 목록이 계속 뒤처졌다. 이 방향은 **다음 compose 스펙이 추가하는 키에 대해서도
+#: fail-close**다. 새 키가 필요해지면 여기 한 줄을 명시적으로 더하게 하라.
 #:
-#: 지금의 재료는 **무엇을 실행하는가**다. `pinvi-db-init`은 같은 postgis 이미지지만
-#: `command`가 `sh -ec …`라 서버가 아니다 — 이미지만 보던 첫 판이 그것까지 걸어
-#: fragment 13건을 빨갛게 만든 문제가 이 판정에서는 생기지 않는다.
+#: `entrypoint`가 없는 것이 의도다 — 그것으로 entrypoint 금지가 자동 성립하고
+#: 기계가 하나로 줄어든다(entrypoint를 주면 아래 command 규칙이 무의미해진다).
+_POSTGRES_ALLOWED_SERVICE_KEYS: Final = frozenset(
+    {
+        "command",
+        "container_name",
+        "environment",
+        "healthcheck",
+        "image",
+        "network_mode",
+        "ports",
+        "restart",
+        "secrets",
+        "shm_size",
+        "volumes",
+    }
+)
+
+#: 정본 넷의 `command`가 `-c`로 설정하는 GUC 전부(실측). 이 밖의 설정은 거부한다 —
+#: 그래서 `hba_file`·`ident_file`·`password_encryption`·`config_file`·`data_directory`·
+#: `external_pid_file`을 **따로 열거하지 않아도** 전부 막힌다.
+_POSTGRES_ALLOWED_COMMAND_SETTINGS: Final = frozenset(
+    {
+        "checkpoint_completion_target",
+        "effective_cache_size",
+        "listen_addresses",
+        "maintenance_work_mem",
+        "max_wal_size",
+        "pg_prewarm.autoprewarm",
+        "pg_stat_statements.max",
+        "pg_stat_statements.track",
+        "random_page_cost",
+        "shared_buffers",
+        "shared_preload_libraries",
+        "work_mem",
+    }
+)
+
 _POSTGRES_SERVER_COMMAND = "postgres"
-_POSTGRES_IMAGE_MARKERS: Final = ("postgres", "postgis")
-#: 보조 축. command도 image도 신호를 주지 않는 형상을 위해 남긴다.
+_POSTGRES_LISTEN_SETTING: Final = "listen_addresses"
+_POSTGRES_CANONICAL_LISTEN_VALUE: Final = "127.0.0.1"
+#: 초기화 위치를 바꾸는 env. 명령행 축은 위 허용 목록이 덮는다(`-D`는 아래 파서가
+#: `data_directory`로 매핑하고, 그 이름이 허용 목록에 없다).
+_POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES: Final = frozenset({"PGDATA"})
+#: 보조 식별 축. official entrypoint는 이 둘 중 하나가 없으면 빈 PGDATA에서 initdb를
+#: 돌리지 않는다.
 _POSTGRES_CLUSTER_INIT_ENV_NAMES: Final = frozenset(
     {"POSTGRES_PASSWORD", "POSTGRES_PASSWORD_FILE"}
 )
-
-#: 초기화의 **위치**를 바꾸는 키. 새 경로를 주면 initdb가 다시 돌므로, "fresh
-#: PGDATA에서만 위험하다"는 전제를 공격자가 스스로 만들 수 있다(적대 리뷰
-#: 2026-09-18 C-F4 실측: map·pinvi 양쪽에서 통과했다).
-_POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES: Final = frozenset({"PGDATA"})
+#: `role`이 이것으로 끝나는 Manager 컨테이너의 `compose_service`가 declared 집합이다.
+_POSTGRES_DECLARED_ROLE_SUFFIX: Final = "postgresql"
 
 
-def _service_uses_a_postgres_image(service: Mapping[str, Any]) -> bool:
-    """이미지가 PostgreSQL 계열인가. 서버든 one-shot이든 이 축은 같다."""
+def _postgres_command_tokens(command: object) -> list[str] | None:
+    """`command`를 토큰 목록으로. 문자열도 받고, 알 수 없는 모양이면 `None`."""
 
-    image = service.get("image")
-    if not isinstance(image, str):
-        return False
-    lowered = image.lower()
-    return any(marker in lowered for marker in _POSTGRES_IMAGE_MARKERS)
+    if isinstance(command, list):
+        if any(not isinstance(item, str) for item in command):
+            return None
+        return list(command)
+    if isinstance(command, str):
+        try:
+            return shlex.split(command)
+        except ValueError:
+            return None
+    return None
 
 
-def _service_runs_a_postgres_server(
-    service: Mapping[str, Any], declared: Mapping[str, Any]
-) -> bool:
-    """이 서비스가 **postgres 서버를 돌리는가**. 이름이 아니라 실행 내용으로 본다.
+def _postgres_command_settings(command: object) -> list[tuple[str, str]] | None:
+    """`command`가 설정하는 (정규화된 GUC 이름, 값) 전부. **모르는 토큰이 있으면 `None`.**
 
-    1. `command`가 `postgres`로 시작한다 — 명시적으로 서버를 돌린다.
-    2. 이미지가 PostgreSQL 계열이고 `command`도 `entrypoint`도 없다 — 이미지의
-       기본 entrypoint가 서버를 띄운다.
-    3. `POSTGRES_PASSWORD{,_FILE}`를 선언했다 — 보조 축(위 둘이 침묵하는 형상).
+    postgres의 실제 인자 처리를 따른다. 앞선 판은 `-c name=value`와 `--name=value`
+    둘만 읽었고, 그래서 실제 서버가 honor하는 다음 형태가 전부 통과했다(적대 리뷰
+    2026-09-18 F2 실측):
 
-    (1)이 결정적이다. 첫 판은 (3)만 봤고, entrypoint가 그 값을 **빈 PGDATA에서만**
-    요구하기 때문에 `environment`를 지우면 식별을 피할 수 있었다(적대 리뷰 2026-09-18
-    F: `environment` 삭제 + `privileged` + `listen_addresses=0.0.0.0`이 geo·concierge에서
-    raw·resolved 양쪽 통과했고 실제 컨테이너로 재현됐다).
+        -i                     한 토큰. `listen_addresses = '*'`
+        -h 0.0.0.0 / -h0.0.0.0 붙여쓴 short option
+        -clisten_addresses=…   붙여쓴 getopt 형
+        -chba_file=…           금지 설정을 붙여쓰기 한 번으로 우회
 
-    (2)에서 `entrypoint` 부재를 함께 요구하는 이유가 있다. 정본 compose에는 PostgreSQL
-    이미지를 쓰면서 **자기 entrypoint로 one-shot을 돌리는** 서비스가 둘 있다
-    (`pinvi-db-runtime-role`, `kor-travel-map-db-role-bootstrap`). 그것들은 서버가
-    아니므로 loopback·command 요구를 걸면 안 된다 — 각자의 exact-match validator가
-    따로 그 entrypoint를 핀으로 박는다.
-
-    **이 판정으로 닫히지 않는 축이 있다**: 공격자가 map-postgres에 자기 `entrypoint`를
-    넣으면 (1)(2) 둘 다 침묵해 서버 판정에서 빠진다. 후보 문서만 보고는 그것을 서버로
-    단정할 수 없다 — 그 구분은 **신뢰된 문서**(`config/docker-targets.yml`)가 줘야 하고,
-    그것이 S4의 `declared(F)` 축이다. `docs/tasks.md`에 열어 뒀다. 다만 아래
-    `_assert_postgres_image_service_is_unprivileged`가 특권 키를 그 경우에도 막는다.
+    `None`을 돌려주는 것이 요점이다 — 호출부가 그것을 **거부**로 다룬다. 모르는
+    토큰을 조용히 건너뛰면 그 토큰이 곧 우회로가 된다.
     """
 
-    command = service.get("command")
-    if isinstance(command, list) and command and command[0] == _POSTGRES_SERVER_COMMAND:
-        return True
-    if any(name in declared for name in _POSTGRES_CLUSTER_INIT_ENV_NAMES):
-        # 초기화 credential을 선언했다는 것은 **클러스터를 세울 의도**다. 명시적
-        # command가 `postgres`가 아니어도 서버로 본다 — `sh -c postgres`는 표준
-        # entrypoint의 initdb 준비를 건너뛰고 기존 PGDATA로 서버를 띄운다.
-        return True
-    if command is None and service.get("entrypoint") in (None, []):
-        # command도 entrypoint도 없으면 이미지의 기본 entrypoint가 서버를 띄운다.
-        return _service_uses_a_postgres_image(service)
-    return False
+    tokens = _postgres_command_tokens(command)
+    if tokens is None or not tokens:
+        return None
+    head, *rest = tokens
+    if PurePosixPath(head).name != _POSTGRES_SERVER_COMMAND:
+        return None
 
-
-def _assert_postgres_image_service_is_unprivileged(
-    service_name: str, service: Mapping[str, Any]
-) -> None:
-    """PostgreSQL 이미지를 쓰는 **모든** 서비스에 특권 키를 금지한다.
-
-    서버 판정에서 빠지는 one-shot(그리고 `entrypoint`로 판정을 피한 후보)까지 덮는다.
-    정본 compose의 PostgreSQL 이미지 서비스 열 개 중 이 키를 쓰는 것은 **하나도
-    없다**(실측) — 그래서 이름을 열거하지 않고도 전부 묶인다.
-    """
-
-    for key in _POSTGRES_FORBIDDEN_SERVICE_KEYS:
-        if key == "entrypoint":
-            # one-shot 둘은 정당하게 자기 entrypoint를 갖는다 — 그쪽은 각자의
-            # exact-match validator가 핀으로 박는다.
+    settings: list[tuple[str, str]] = []
+    index = 0
+    while index < len(rest):
+        token = rest[index]
+        index += 1
+        if token == "-i":
+            # `-i`는 값이 없다. postgres는 이것을 `listen_addresses = '*'`로 읽는다.
+            settings.append((_POSTGRES_LISTEN_SETTING, "*"))
             continue
-        if service.get(key):
+        if token.startswith("--") and "=" in token:
+            name, _separator, value = token[2:].partition("=")
+            settings.append((_normalize_postgres_setting_name(name), value.strip()))
+            continue
+        # short option: 값이 붙어 있거나 다음 토큰이다.
+        if len(token) >= 2 and token[0] == "-" and token[1] != "-":
+            flag = token[1]
+            payload = token[2:]
+            if not payload:
+                if index >= len(rest):
+                    return None
+                payload = rest[index]
+                index += 1
+            if flag == "c":
+                if "=" not in payload:
+                    return None
+                name, _separator, value = payload.partition("=")
+                settings.append(
+                    (_normalize_postgres_setting_name(name), value.strip())
+                )
+                continue
+            mapped = _POSTGRES_SHORT_OPTION_SETTINGS.get(flag)
+            if mapped is None:
+                return None
+            settings.append((mapped, payload.strip()))
+            continue
+        return None
+    return settings
+
+
+#: postgres의 short option → 그것이 설정하는 GUC. `-p`만 허용 목록 안이고 나머지는
+#: 이름이 허용 목록에 없어서 자동으로 거부된다 — 매핑을 두는 이유는 **무엇을 설정하는
+#: 지 말하게** 해서 `-h`/`-D`가 조용히 통과하지 않게 하는 것이다.
+_POSTGRES_SHORT_OPTION_SETTINGS: Final = MappingProxyType(
+    {
+        "p": "port",
+        "h": _POSTGRES_LISTEN_SETTING,
+        "D": "data_directory",
+        "k": "unix_socket_directories",
+    }
+)
+#: `-p`는 정본 넷이 전부 쓰므로 GUC 허용 목록과 별도로 허용한다(값은 포트 핀이
+#: 소유한다 — PinVi는 exact-match, 나머지는 대역 문서가 본다).
+_POSTGRES_ALLOWED_COMMAND_EXTRA_SETTINGS: Final = frozenset({"port"})
+
+
+def _declared_postgres_compose_services() -> frozenset[str]:
+    """`config/docker-targets.yml`이 PostgreSQL이라고 **선언한** Manager compose 서비스.
+
+    GM-17 A가 이 문서를 자리 고정·무결성·값 정책으로 신뢰시켰다(trusted 설치본에서
+    env redirect 거부 + root 소유·비쓰기 강제). 그래서 후보 문서의 철자에 의존하지
+    않는 **declared 축**이 여기서 나온다.
+
+    외부 프로젝트 컨테이너는 제외한다 — 그쪽 compose는 이 저장소의 후보가 아니다.
+    설정을 읽을 수 없으면 빈 집합을 돌려준다(witnessed 축이 남는다).
+    """
+
+    try:
+        config = load_targets_config()
+    except Exception:  # noqa: BLE001 - 설정을 못 읽으면 witnessed 축만 쓴다
+        return frozenset()
+    declared: set[str] = set()
+    for spec in (config.get("containers") or {}).values():
+        if not isinstance(spec, Mapping) or spec.get("external_project"):
+            continue
+        role = spec.get("role")
+        if isinstance(role, str) and role.endswith(_POSTGRES_DECLARED_ROLE_SUFFIX):
+            service = spec.get("compose_service")
+            if isinstance(service, str) and service:
+                declared.add(service)
+    return frozenset(declared)
+
+
+#: 셸로 인식하는 프로그램 이름. 이 뒤의 `-c` 페이로드는 그 자체가 명령줄이다.
+_COMMAND_SHELL_NAMES: Final = frozenset({"sh", "bash", "dash", "ash", "busybox"})
+
+
+def _command_program_names(command: object) -> list[str]:
+    """이 `command`가 **실행하는 프로그램**의 이름들(basename).
+
+    물어야 할 것은 "문서에 그 낱말이 있는가"가 아니라 "무엇이 실행되는가"다. 첫 판은
+    토큰을 전부 쪼개 봤는데 `psql -d postgres -tAc …`의 **데이터베이스 이름**이 흔적으로
+    잡혀 정당한 one-shot(`pinvi-db-init`)이 죽었다.
+
+    그래서 프로그램 자리만 본다 — `argv[0]`, 셸이면 그 `-c` 페이로드의 첫 낱말, 그리고
+    `exec` 바로 뒤. `sh -c 'exec postgres -i'`가 그 셋째 경우다.
+    """
+
+    tokens = _postgres_command_tokens(command)
+    if not tokens:
+        return []
+    names = [PurePosixPath(tokens[0]).name]
+    if names[0] not in _COMMAND_SHELL_NAMES:
+        return names
+    payload: str | None = None
+    for index, token in enumerate(tokens[1:], start=1):
+        if token.startswith("-") and "c" in token.lstrip("-"):
+            if index + 1 < len(tokens):
+                payload = tokens[index + 1]
+            break
+    if payload is None:
+        return names
+    try:
+        inner = shlex.split(payload)
+    except ValueError:
+        inner = payload.split()
+    for index, word in enumerate(inner):
+        if index == 0 or (index > 0 and inner[index - 1] == "exec"):
+            names.append(PurePosixPath(word).name)
+    return names
+
+
+def _service_witnesses_a_postgres_server(
+    service: Mapping[str, Any], declared_env: Mapping[str, Any]
+) -> bool:
+    """후보 문서 자체가 "여기 postgres 서버가 있다"고 말하는가.
+
+    **basename으로 본다.** 앞선 판은 `command[0] == "postgres"` 리터럴 비교여서
+    `/usr/local/bin/postgres`·문자열 command·`sh -c 'exec postgres …'`가 판정을
+    피했다(적대 리뷰 2026-09-18 F1 실측).
+
+    이미지 문자열은 **판정 재료로 쓰지 않는다** — digest 핀·리네임에서 깨지고,
+    리뷰어가 map-postgres의 resolved 층에서 마커가 아예 꺼지는 것까지 실측했다
+    (raw에서 켜진 이유는 플레이스홀더 문자열이 우연히 "POSTGRES"를 담고 있었기
+    때문이다).
+    """
+
+    if any(
+        name == _POSTGRES_SERVER_COMMAND
+        for name in _command_program_names(service.get("command"))
+    ):
+        return True
+    return any(name in declared_env for name in _POSTGRES_CLUSTER_INIT_ENV_NAMES)
+
+
+def _assert_one_postgres_cluster_runtime(
+    service_name: str, service: Mapping[str, Any], *, declared: bool
+) -> None:
+    """PostgreSQL 서버의 **형태 전체**를 허용 목록으로 묶는다.
+
+    금지 목록은 세 라운드 연속으로 뒤처졌다 — 매번 내가 놓친 철자·키가 우회로였다.
+    정본 넷의 형태는 좁고 고정적이므로(최상위 키 11개, GUC 12개 + `-p`) 방향을
+    뒤집으면 **모르는 것이 하나라도 있으면 거부**가 되고, 다음 compose 스펙이나
+    postgres 버전이 무엇을 추가해도 fail-close다.
+    """
+
+    if not declared:
+        # 후보가 서버를 세우는데 신뢰된 문서가 그것을 PostgreSQL로 선언하지 않았다.
+        # `role`은 UI 문자열이라 아무것도 강제하지 않으므로, 이 불일치 자체를
+        # 거부하는 것이 declared 축을 항진명제에서 빼낸다.
+        raise ComposeCandidateContractError(
+            "compose candidate runs an undeclared PostgreSQL server: "
+            + _describe_candidate_service_key(service_name)
+        )
+
+    # **키 존재가 아니라 값이 있음으로 본다.** `docker compose config`가 resolved
+    # 문서의 모든 서비스에 `entrypoint: null`·`command: null` 같은 빈 키를 붙이기
+    # 때문이다 — 키로 판정하면 정본 넷이 resolved 층에서 전부 거부된다(실측).
+    # concierge 신호 집합에서 이미 겪은 함정이고, 같은 처방이다.
+    unknown_keys = sorted(
+        name
+        for name, value in service.items()
+        if name not in _POSTGRES_ALLOWED_SERVICE_KEYS and value is not None
+    )
+    if unknown_keys:
+        raise ComposeCandidateContractError(
+            f"compose candidate gives a PostgreSQL service non-canonical keys "
+            f"{unknown_keys}: " + _describe_candidate_service_key(service_name)
+        )
+
+    settings = _postgres_command_settings(service.get("command"))
+    if settings is None:
+        raise ComposeCandidateContractError(
+            "compose candidate PostgreSQL service must run the canonical postgres "
+            "command: " + _describe_candidate_service_key(service_name)
+        )
+    allowed = (
+        _POSTGRES_ALLOWED_COMMAND_SETTINGS | _POSTGRES_ALLOWED_COMMAND_EXTRA_SETTINGS
+    )
+    for name, _value in settings:
+        if name not in allowed:
             raise ComposeCandidateContractError(
-                f"compose candidate gives a PostgreSQL service a non-canonical "
-                f"{key}: " + _describe_candidate_service_key(service_name)
+                f"compose candidate PostgreSQL command sets a non-canonical "
+                f"{name}: " + _describe_candidate_service_key(service_name)
             )
+    bindings = [value for name, value in settings if name == _POSTGRES_LISTEN_SETTING]
+    # **모든** `listen_addresses`가 loopback이어야 한다 — postgres는 같은 설정이
+    # 여러 번 오면 마지막을 쓴다.
+    if not bindings or any(
+        value != _POSTGRES_CANONICAL_LISTEN_VALUE for value in bindings
+    ):
+        raise ComposeCandidateContractError(
+            "compose candidate PostgreSQL service must keep the loopback binding: "
+            + _describe_candidate_service_key(service_name)
+        )
     for forbidden in sorted(_POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES):
         if forbidden in dict(_service_environment_items(service)):
             raise ComposeCandidateContractError(
                 f"compose candidate relocates PostgreSQL data with {forbidden}: "
                 + _describe_candidate_service_key(service_name)
             )
-
-
-#: 클러스터 서비스가 선언해서는 안 되는 최상위 키. 정본 compose의 넷은 하나도 쓰지
-#: 않는다(실측). `entrypoint`가 특히 중요하다 — 주면 `command`가 인자로 강등되어
-#: 아래 `command` 규칙이 통째로 무의미해진다.
-_POSTGRES_FORBIDDEN_SERVICE_KEYS: Final = ("entrypoint", "privileged", "user", "cap_add", "pid")
-
-#: `-c <setting>=...`로 주면 인증 자체를 갈아치우는 설정. `hba_file`은
-#: `--auth-host=trust`와 **결과가 같고 fresh PGDATA도 필요 없다**(적대 리뷰
-#: 2026-09-18 C-F4 실측).
-_POSTGRES_FORBIDDEN_RUNTIME_SETTINGS: Final = frozenset(
-    {"hba_file", "ident_file", "password_encryption"}
-)
-
-#: 저장소의 네 PostgreSQL이 전부 쓰는 값. 종전에는 이것을 강제하는 자리가 PinVi
-#: 하나뿐이었다 — Map은 `listen_addresses=*`로 바꿔도 통과했다(`docs/tasks.md`의
-#: 오래된 열린 항목). host 네트워킹이라 전 인터페이스 노출이 된다.
-_POSTGRES_LISTEN_SETTING: Final = "listen_addresses"
-_POSTGRES_CANONICAL_LISTEN_VALUE: Final = "127.0.0.1"
-_POSTGRES_CANONICAL_LISTEN_ADDRESSES: Final = (
-    f"{_POSTGRES_LISTEN_SETTING}={_POSTGRES_CANONICAL_LISTEN_VALUE}"
-)
-
-
-def _normalize_postgres_setting_name(name: str) -> str:
-    """postgres가 GUC 이름을 읽는 방식과 같게 정규화한다.
-
-    GUC 이름은 **대소문자를 구분하지 않고**, long option 형태(`--hba-file=`)에서는
-    하이픈이 밑줄과 같다. 첫 판은 리터럴 소문자 `-c hba_file=`만 봤고, 그래서
-    `--hba-file=`·`-c HBA_FILE=`·`-c Listen_Addresses=`가 전부 통과했다 — 실제 서버는
-    그 셋을 모두 honor한다(적대 리뷰 2026-09-18 F 실측).
-    """
-
-    return name.strip().lower().replace("-", "_")
-
-
-def _postgres_command_settings(command: object) -> list[tuple[str, str]]:
-    """`command`가 설정하는 (정규화된 이름, 값) 전부.
-
-    postgres는 `-c name=value`와 `--name=value`를 **같게** 받는다. 둘 중 하나만 읽으면
-    나머지가 그대로 우회로가 된다.
-    """
-
-    if not isinstance(command, list):
-        return []
-    settings: list[tuple[str, str]] = []
-    index = 0
-    while index < len(command):
-        item = command[index]
-        if not isinstance(item, str):
-            index += 1
-            continue
-        raw: str | None = None
-        if item == "-c" and index + 1 < len(command):
-            following = command[index + 1]
-            if isinstance(following, str):
-                raw = following
-            index += 2
-        elif item.startswith("--") and "=" in item:
-            raw = item[2:]
-            index += 1
-        else:
-            index += 1
-        if raw is None or "=" not in raw:
-            continue
-        name, _separator, value = raw.partition("=")
-        settings.append((_normalize_postgres_setting_name(name), value.strip()))
-    return settings
+    if _env_file_entries(service.get("env_file")):
+        # 허용 목록이 이미 막지만 문구를 유지한다 — `env_file`이 왜 특별히 나쁜지는
+        # 전역 술어 쪽 docstring이 설명한다.
+        raise ComposeCandidateContractError(
+            "compose candidate forbids env_file on a PostgreSQL service: "
+            + _describe_candidate_service_key(service_name)
+        )
 
 
 def _assert_postgres_cluster_runtime_is_canonical(document: Mapping[str, Any]) -> None:
-    """클러스터 서비스의 **실행 형태**를 묶는다 — env 축보다 강한 축이다.
+    """문서 전역에서 PostgreSQL 서버의 실행 형태를 묶는다.
 
-    `POSTGRES_INITDB_ARGS`만 지키는 것으로는 부족하다. `-c hba_file=...` 한 줄이면
-    pg_hba가 통째로 갈리고, 그쪽은 fresh PGDATA도 필요 없어서 **이미 도는 클러스터**에
-    적용된다. `entrypoint`를 주면 `command`가 인자로 강등되므로 그것부터 막는다.
+        in_scope = declared OR witnessed
 
-    **이름을 열거하지 않는다.** 정본 compose의 네 PostgreSQL이 전부 같은 형태라
-    (실측: 넷 다 `postgres`로 시작하고 loopback을 박고 특권 키를 안 쓴다) 규칙 하나가
-    넷을 덮고 다섯째가 생겨도 따라온다.
+    `declared`는 신뢰된 문서(`config/docker-targets.yml`)의 `role`에서, `witnessed`는
+    후보가 스스로 드러내는 것에서 온다. 논리합이라 어느 한쪽을 피해도 다른 쪽이 남고,
+    **witnessed인데 declared가 아니면** 그 불일치 자체를 거부한다.
+    """
+
+    services = document.get("services")
+    if not isinstance(services, Mapping):
+        return
+    declared_services = _declared_postgres_compose_services()
+    for service_name, service in services.items():
+        if not isinstance(service, Mapping):
+            continue
+        declared_env = dict(_service_environment_items(service))
+        is_declared = service_name in declared_services
+        if not (
+            is_declared or _service_witnesses_a_postgres_server(service, declared_env)
+        ):
+            continue
+        _assert_one_postgres_cluster_runtime(service_name, service, declared=is_declared)
+
+
+#: 컨테이너에 **호스트 권한을 주는** compose 키. 정본 34 서비스 실측(2026-09-18)에서
+#: 이 중 열한 개는 사용 0건이고, 세 개(`privileged`·`devices`·`user`)만 아래 예외에
+#: 적힌 서비스가 쓴다.
+#:
+#: **방향이 계약표와 반대다.** 계약표는 "이 서비스의 이 값은 이래야 한다"를 열거해서,
+#: 열거되지 않은 서비스가 무방비였다(적대 리뷰 2026-09-18 F1이 그것으로 뚫었다).
+#: 이쪽은 "이 키는 어디서도 금지, 단 열거된 자리만 예외"다 — 새 서비스가 이 키를
+#: 들면 **기본이 거부**이므로 열거가 늘어나도 fail-close가 유지된다.
+_FORBIDDEN_PRIVILEGE_KEYS: Final = (
+    "cap_add",
+    "cap_drop",
+    "cgroup_parent",
+    "devices",
+    "group_add",
+    "ipc",
+    "links",
+    "pid",
+    "privileged",
+    "security_opt",
+    "sysctls",
+    "user",
+    "userns_mode",
+    "volumes_from",
+)
+
+#: 정본이 실제로 쓰는 (서비스, 키) 쌍. 실측으로 얻었고, 늘리려면 여기 한 줄을
+#: 명시적으로 더해야 한다 — 그 마찰이 이 규칙의 값어치다.
+_ALLOWED_PRIVILEGE_KEY_PAIRS: Final = frozenset(
+    {
+        ("cadvisor", "privileged"),
+        ("cadvisor", "devices"),
+        ("prometheus", "user"),
+        ("grafana", "user"),
+    }
+)
+
+
+def _assert_no_host_privilege_escalation(document: Mapping[str, Any]) -> None:
+    """어떤 서비스도 호스트 권한을 가져갈 수 없다 — 열거된 예외만 빼고.
+
+    리뷰어 둘이 각각 실측했다: `concierge-api`에 `privileged: true` + `pid: host`를
+    준 후보가 계약을 전무로 통과하고 `ktdctl deploy conc`가 그것을 띄운다 = 호스트
+    root. concierge 게이트의 "구성됨" 신호 집합에 그 키들이 없기 때문이고, 신호
+    집합을 넓히는 것으로는 이 축이 닫히지 않는다(배포는 target의 서비스 목록으로
+    도는데 `image`만 있는 서비스도 실제로 뜬다).
+
+    **falsy는 부재로 본다.** `docker compose config`가 resolved 문서에 `privileged:
+    false`·`user: ""`·`cap_add: []`를 붙이므로 키 존재로 판정하면 정본이 거부된다 —
+    같은 함정을 concierge 신호와 PostgreSQL 허용 목록에서 두 번 겪었다.
+
+    **전역 불변식이다. 어떤 서비스의 존재에도 게이팅하지 마라.**
     """
 
     services = document.get("services")
@@ -1960,57 +2188,15 @@ def _assert_postgres_cluster_runtime_is_canonical(document: Mapping[str, Any]) -
     for service_name, service in services.items():
         if not isinstance(service, Mapping):
             continue
-        declared = dict(_service_environment_items(service))
-        if _service_uses_a_postgres_image(service):
-            # 서버 판정보다 **넓은** 그물. `entrypoint`로 서버 판정을 피한 후보와
-            # 정당한 one-shot 둘까지 덮는다.
-            _assert_postgres_image_service_is_unprivileged(service_name, service)
-        if not _service_runs_a_postgres_server(service, declared):
-            continue
-        _assert_one_postgres_cluster_runtime(service_name, service)
-
-
-def _assert_one_postgres_cluster_runtime(
-    service_name: str, service: Mapping[str, Any]
-) -> None:
-    for key in _POSTGRES_FORBIDDEN_SERVICE_KEYS:
-        if service.get(key):
+        for key in _FORBIDDEN_PRIVILEGE_KEYS:
+            if not service.get(key):
+                continue
+            if (service_name, key) in _ALLOWED_PRIVILEGE_KEY_PAIRS:
+                continue
             raise ComposeCandidateContractError(
-                f"compose candidate gives a PostgreSQL service a non-canonical "
-                f"{key}: " + _describe_candidate_service_key(service_name)
+                f"compose candidate grants host privilege with {key}: "
+                + _describe_candidate_service_key(service_name)
             )
-
-    command = service.get("command")
-    if (
-        not isinstance(command, list)
-        or not command
-        or command[0] != _POSTGRES_SERVER_COMMAND
-    ):
-        # `command`가 없으면 기본값으로 뜨고 `listen_addresses`는 `*`다 — host
-        # 네트워킹에서는 전 인터페이스 노출이다. "지우면 통과"를 남기지 않는다.
-        raise ComposeCandidateContractError(
-            "compose candidate PostgreSQL service must run the canonical postgres "
-            "command: " + _describe_candidate_service_key(service_name)
-        )
-    settings = _postgres_command_settings(command)
-    for name, _value in settings:
-        if name in _POSTGRES_FORBIDDEN_RUNTIME_SETTINGS:
-            raise ComposeCandidateContractError(
-                f"compose candidate overrides PostgreSQL authentication with "
-                f"{name}: " + _describe_candidate_service_key(service_name)
-            )
-    bindings = [value for name, value in settings if name == _POSTGRES_LISTEN_SETTING]
-    # **모든** `listen_addresses`가 loopback이어야 한다. 첫 판은 "정본 문자열이 목록에
-    # 있는가"만 봤는데, postgres는 같은 설정이 여러 번 오면 **마지막을 쓴다** — 그래서
-    # canonical 뒤에 `0.0.0.0` 한 줄을 더하면 통과하면서 전 인터페이스에 붙었다
-    # (적대 리뷰 2026-09-18 F 실측).
-    if not bindings or any(
-        value != _POSTGRES_CANONICAL_LISTEN_VALUE for value in bindings
-    ):
-        raise ComposeCandidateContractError(
-            "compose candidate PostgreSQL service must keep the loopback binding: "
-            + _describe_candidate_service_key(service_name)
-        )
 
 
 def _assert_no_postgres_auth_override(document: Mapping[str, Any]) -> None:
@@ -2067,7 +2253,10 @@ def _assert_canonical_postgres_initdb_args(document: Mapping[str, Any]) -> None:
         if not isinstance(service, Mapping):
             continue
         declared = dict(_service_environment_items(service))
-        if _service_runs_a_postgres_server(service, declared):
+        if (
+            service_name in _declared_postgres_compose_services()
+            or _service_witnesses_a_postgres_server(service, declared)
+        ):
             # **부재는 `trust`와 같다.** initdb를 `--auth-host` 없이 부르면 기본이
             # `trust`이고, 그러면 pg_hba **첫 행**이 `host all all 127.0.0.1/32 trust`가
             # 된다 — first-match-wins라 뒤에 붙는 scram 행은 무의미하다. 실제
@@ -4243,6 +4432,9 @@ def validate_resolved_compose_candidate_protected_values(
     # exact-match 하므로 이 전역 바닥보다 강하다 — 앞에 두면 PinVi 형상의 거부
     # 문구가 바뀐다(자리와 게이팅은 다른 축이고, 여기서 필요한 것은 자리다).
     # geo·concierge·map은 이 술어 말고 아무도 보지 않으므로 자리와 무관하다.
+    # 특권 축은 PostgreSQL보다 넓다 — 어떤 서비스도 호스트 권한을 가져갈 수
+    # 없다. 같은 자리(family validator 뒤)에 두어 기존 문구를 보존한다.
+    _assert_no_host_privilege_escalation(resolved)
     _assert_postgres_cluster_runtime_is_canonical(resolved)
     _validate_concierge_ui_canonical_contract(services, environment, resolved=True)
     _validate_map_application_300_images(services)
@@ -4716,6 +4908,9 @@ def validate_compose_candidate_protected_values(
     # exact-match 하므로 이 전역 바닥보다 강하다 — 앞에 두면 PinVi 형상의 거부
     # 문구가 바뀐다(자리와 게이팅은 다른 축이고, 여기서 필요한 것은 자리다).
     # geo·concierge·map은 이 술어 말고 아무도 보지 않으므로 자리와 무관하다.
+    # 특권 축은 PostgreSQL보다 넓다 — 어떤 서비스도 호스트 권한을 가져갈 수
+    # 없다. 같은 자리(family validator 뒤)에 두어 기존 문구를 보존한다.
+    _assert_no_host_privilege_escalation(candidate)
     _assert_postgres_cluster_runtime_is_canonical(candidate)
     _validate_concierge_ui_canonical_contract(services, environment, resolved=False)
     _validate_map_application_300_images(services)
