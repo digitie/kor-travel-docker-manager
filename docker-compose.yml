@@ -1051,7 +1051,13 @@ services:
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
       KOR_TRAVEL_MAP_OPINET_API_KEY: ${KOR_TRAVEL_MAP_OPINET_API_KEY:-}
       KOR_TRAVEL_MAP_KREX_EX_API_KEY: ${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}
-      KOR_TRAVEL_MAP_KREX_GO_API_KEY: ${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-}
+      # KREX의 go key는 data.go.kr service key와 **같은 값**이다(python-krex-api의
+      # `.env`에서 `KEX_GO_API_KEY`와 `DATA_GO_KR_SERVICE_KEY`가 같은 다이제스트임을
+      # 실측했다). 이 줄에 폴백이 없어 prod에서 빈 값이었고(`.env`에는 `KRTOUR_` 접두의
+      # 이름만 있다), `feature_place_krex_rest_areas_job`이 자격증명 없이 돌았다.
+      # 위 `KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY`와 **같은 원천**으로 떨어뜨린다 —
+      # 새 비밀을 만들지 않는다.
+      KOR_TRAVEL_MAP_KREX_GO_API_KEY: ${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}}
       # issue #114 — reverse_geocoder가 전역 필수 리소스라 이 key 없이는 geocode 관련
       # provider ETL job 전체가 GeoAuthNotConfiguredError로 fail-close된다.
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
@@ -1175,7 +1181,13 @@ services:
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
       KOR_TRAVEL_MAP_OPINET_API_KEY: ${KOR_TRAVEL_MAP_OPINET_API_KEY:-}
       KOR_TRAVEL_MAP_KREX_EX_API_KEY: ${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}
-      KOR_TRAVEL_MAP_KREX_GO_API_KEY: ${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-}
+      # KREX의 go key는 data.go.kr service key와 **같은 값**이다(python-krex-api의
+      # `.env`에서 `KEX_GO_API_KEY`와 `DATA_GO_KR_SERVICE_KEY`가 같은 다이제스트임을
+      # 실측했다). 이 줄에 폴백이 없어 prod에서 빈 값이었고(`.env`에는 `KRTOUR_` 접두의
+      # 이름만 있다), `feature_place_krex_rest_areas_job`이 자격증명 없이 돌았다.
+      # 위 `KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY`와 **같은 원천**으로 떨어뜨린다 —
+      # 새 비밀을 만들지 않는다.
+      KOR_TRAVEL_MAP_KREX_GO_API_KEY: ${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}}
       # issue #114 — reverse_geocoder가 전역 필수 리소스라 이 key 없이는 geocode 관련
       # provider ETL job 전체가 GeoAuthNotConfiguredError로 fail-close된다.
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}

@@ -105,7 +105,13 @@ _PINVI_MAP_BASE_URL_SOURCE = (
 )
 _OPINET_API_KEY_ENV = "${KOR_TRAVEL_MAP_OPINET_API_KEY:-}"
 _KREX_EX_API_KEY_ENV = "${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}"
-_KREX_GO_API_KEY_ENV = "${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-}"
+#: KREX go key는 data.go.kr service key와 **같은 비밀**이다. 이 줄에 폴백이 없어
+#: prod에서 빈 값이었고(`.env`에는 `KRTOUR_` 접두 이름만 있다)
+#: `feature_place_krex_rest_areas_job`이 자격증명 없이 돌았다(2026-09-18 n150 실측).
+#: 위 `KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY`와 **같은 원천**으로 떨어뜨린다.
+_KREX_GO_API_KEY_ENV = (
+    "${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}}"
+)
 _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = {
     "KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY",
     "KOR_TRAVEL_MAP_API_KMA_SERVICE_KEY",
