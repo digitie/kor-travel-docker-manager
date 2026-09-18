@@ -1049,6 +1049,9 @@ services:
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://127.0.0.1:12501}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
+      # 서울 열린데이터광장은 data.go.kr과 **다른 포털이고 키도 다르다**.
+      # 서울 책방(OA-21062) 하나가 쓴다 — 종전 odcloud 원천이 404로 사라졌다.
+      KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY: ${KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY:-${SEOUL_OPEN_DATA_API_KEY:-}}
       KOR_TRAVEL_MAP_OPINET_API_KEY: ${KOR_TRAVEL_MAP_OPINET_API_KEY:-}
       # OpiNet에는 전국 목록(bulk) 엔드포인트가 없어서 **scope를 골라야** 적재가
       # 시작된다. 이 줄들이 없으면 설정이 기본값 `disabled`로 떨어지고 job이
@@ -1201,6 +1204,9 @@ services:
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://127.0.0.1:12501}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
+      # 서울 열린데이터광장은 data.go.kr과 **다른 포털이고 키도 다르다**.
+      # 서울 책방(OA-21062) 하나가 쓴다 — 종전 odcloud 원천이 404로 사라졌다.
+      KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY: ${KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY:-${SEOUL_OPEN_DATA_API_KEY:-}}
       KOR_TRAVEL_MAP_OPINET_API_KEY: ${KOR_TRAVEL_MAP_OPINET_API_KEY:-}
       # OpiNet에는 전국 목록(bulk) 엔드포인트가 없어서 **scope를 골라야** 적재가
       # 시작된다. 이 줄들이 없으면 설정이 기본값 `disabled`로 떨어지고 job이

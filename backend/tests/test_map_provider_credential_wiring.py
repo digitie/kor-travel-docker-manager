@@ -209,3 +209,26 @@ def test_the_opinet_default_mode_actually_starts_a_load() -> None:
         f"{_OPINET_SCOPE_SELECTOR} 기본값이 `{_OPINET_DISABLED}`라 적재가 켜지지 "
         "않는다 — 배포 후 손 편집이 필요해진다"
     )
+
+
+#: 서울 열린데이터광장 인증키.
+#:
+#: data.go.kr과 **다른 포털이고 키도 다르다**(서울시 자체 발급). Map의 curated
+#: fileData 4종 중 서울 책방만 이 키를 쓴다 — 종전 odcloud 원천이 404
+#: `등록되지 않은 서비스 입니다`로 사라져 2026-09-19에 원천을 OA-21062로 옮겼다.
+_SEOUL_OPEN_DATA_KEY = "KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY"
+
+
+def test_the_seoul_open_data_key_reaches_every_service_that_runs_file_data() -> None:
+    """fileData를 돌리는 서비스는 서울 열린데이터광장 키도 받아야 한다.
+
+    data.go.kr 키 쪽을 기준으로 삼는 이유는 그쪽이 "이 서비스가 curated fileData를
+    돌린다"는 선언이기 때문이다. 키를 안 넘기면 4종 중 서울 책방만 조용히
+    `ProviderCredentialMissing`으로 죽는다 — KREX go key, OpiNet scope와 **같은
+    형태의 구멍**이고, 이 파일이 세 번째로 같은 모양을 막는다.
+    """
+
+    with_data_go_kr = _services_declaring("KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY")
+    assert with_data_go_kr, "data.go.kr 키를 받는 서비스가 하나도 없다"
+    missing = sorted(with_data_go_kr - _services_declaring(_SEOUL_OPEN_DATA_KEY))
+    assert not missing, f"{_SEOUL_OPEN_DATA_KEY}를 못 받는 서비스: {missing}"
