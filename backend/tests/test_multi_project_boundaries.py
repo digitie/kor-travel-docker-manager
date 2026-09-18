@@ -806,7 +806,24 @@ def test_the_manager_project_name_follows_composes_own_order(
     """
 
     monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
-    # (1) 문서의 `name:`이 디렉터리보다 앞이다 — 이 worktree의 디렉터리 이름은 다르다.
+    # 디렉터리 축을 **구성으로** 다르게 만든다. 첫 판은 "이 worktree의 디렉터리
+    # 이름은 다르다"는 우연에 기댔는데, GitHub Actions의 체크아웃 디렉터리 이름은
+    # 정확히 `kor-travel-docker-manager`라 그 전제가 깨졌다(CI 실측). 두 값이 같다는
+    # 것이 우연이면 안 된다는 것이 이 검사의 요지인데, 전제 쪽이 우연이었다.
+    elsewhere = tmp_path / "not-the-manager-project-name"
+    elsewhere.mkdir()
+    monkeypatch.setattr(
+        docker_service_module, "get_project_root", lambda: str(elsewhere)
+    )
+    # `.env` 단계는 이 검사의 축이 아니다 — 전용 검사 둘이 따로 센다
+    # (`..._env_file_step_is_read_by_the_function_itself`,
+    # `..._missing_or_broken_env_file_falls_through`). 여기서 열어 두면 `.env`가
+    # 있는 호스트에서 문서 단계를 못 보게 된다.
+    monkeypatch.setattr(
+        docker_service_module, "_env_file_compose_project", lambda: None
+    )
+
+    # (1) 문서의 `name:`이 디렉터리보다 앞이다.
     assert docker_service_module._manager_compose_project() == _MANAGER_PROJECT_NAME
     assert Path(docker_service_module.get_project_root()).name != _MANAGER_PROJECT_NAME
 
