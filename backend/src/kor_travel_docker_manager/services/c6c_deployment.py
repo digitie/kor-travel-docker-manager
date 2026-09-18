@@ -435,9 +435,18 @@ _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
         _MAP_UI_SERVICE,
     }
 )
-_CANDIDATE_KNOWN_SERVICE_NAMES = _CANDIDATE_REQUIRED_PROTECTED_SERVICES | {
-    _PINVI_DB_INIT_SERVICE
-}
+#: 거부 문구가 **이름을 말해도 되는** 서비스. 여기 없으면 sha8로 가려지는데,
+#: 그러면 운영자가 어느 서비스가 거부됐는지 알 수 없다 — 적대 리뷰 2026-09-18 C-F6
+#: 실측: 이 수정의 **대상 서비스 둘 다**가 가려졌다. 저장소 공개 이름이라 유출
+#: 위험이 없고, 정본 compose에 실재하는 것만 넣는다.
+_CANDIDATE_NAMEABLE_SERVICE_NAMES: Final = frozenset(
+    {"kor-travel-geo-postgres", "kor-travel-concierge-postgres"}
+)
+_CANDIDATE_KNOWN_SERVICE_NAMES = (
+    _CANDIDATE_REQUIRED_PROTECTED_SERVICES
+    | {_PINVI_DB_INIT_SERVICE}
+    | _CANDIDATE_NAMEABLE_SERVICE_NAMES
+)
 
 
 def _describe_candidate_service_key(service_name: object) -> str:
@@ -1730,6 +1739,10 @@ def _service_environment_items(service: Mapping[str, Any]) -> list[tuple[str, st
 
     environment = service.get("environment")
     if isinstance(environment, Mapping):
+        # 매핑형의 `None` 값도 리스트형 bare 이름과 **같은 것**이다 —
+        # `docker compose config`가 `environment: [NAME]`을 `{"NAME": null}`로
+        # 정규화한다(적대 리뷰 2026-09-18 C-F7 실측). 그래서 resolved 층에서 `None`은
+        # 실제로 발생하고, 값을 묻는 술어는 그것을 "정본 아님"으로 봐야 한다.
         return [
             (str(name), None if value is None else str(value))
             for name, value in environment.items()
@@ -1738,11 +1751,138 @@ def _service_environment_items(service: Mapping[str, Any]) -> list[tuple[str, st
         items: list[tuple[str, str | None]] = []
         for entry in environment:
             if not isinstance(entry, str):
-                continue
+                # **조용히 건너뛰지 않는다.** 리스트 안의 dict나 숫자는 이 함수가
+                # 읽을 수 없는 형태이고, 그때 "env가 없다"로 보면 위의 전역 술어들이
+                # 볼 재료를 잃는다 — 오늘 최종적으로 막히는 이유는 `docker compose
+                # config`가 그 형태를 거부하기 때문뿐이라, 그것이 바로 F4가
+                # "방어가 아니다"라고 판정한 의존이다(적대 리뷰 2026-09-18 D-F10).
+                raise ComposeCandidateContractError(
+                    "compose candidate declares an unreadable environment entry"
+                )
             name, separator, value = entry.partition("=")
             items.append((name, value if separator else None))
         return items
-    return []
+    if environment is None:
+        return []
+    raise ComposeCandidateContractError(
+        "compose candidate declares an unreadable environment shape"
+    )
+
+
+#: 클러스터를 **초기화하는** 서비스를 알아보는 신호. **이름을 열거하지 않는다** —
+#: 계약표가 서비스를 열거해서 저장소의 넷 중 둘을 빠뜨린 것이 적대 리뷰 2026-09-18
+#: F1이었다.
+#:
+#: official entrypoint는 이 둘 중 하나가 없으면 initdb를 돌리지 않는다(빈 PGDATA에서
+#: "you must specify POSTGRES_PASSWORD"로 죽는다). 그래서 이것이 "이 서비스가
+#: `POSTGRES_INITDB_ARGS`를 **의미 있게** 가질 수 있는가"의 정확한 판정이다.
+#:
+#: 이미지 이름으로 넓히지 **않는다**. `pinvi-db-init`은 같은 postgis 이미지를 쓰지만
+#: psql을 돌리는 one-shot이라 initdb와 무관하다 — 이미지로 식별하면 그런 서비스에
+#: 무의미한 요구를 걸게 된다(첫 판이 그랬고, 계약 fragment 13건이 빨개졌다).
+_POSTGRES_CLUSTER_INIT_ENV_NAMES: Final = frozenset(
+    {"POSTGRES_PASSWORD", "POSTGRES_PASSWORD_FILE"}
+)
+
+#: 초기화의 **위치**를 바꾸는 키. 새 경로를 주면 initdb가 다시 돌므로, "fresh
+#: PGDATA에서만 위험하다"는 전제를 공격자가 스스로 만들 수 있다(적대 리뷰
+#: 2026-09-18 C-F4 실측: map·pinvi 양쪽에서 통과했다).
+_POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES: Final = frozenset({"PGDATA"})
+
+
+def _service_initializes_a_postgres_cluster(declared: Mapping[str, Any]) -> bool:
+    """이 서비스가 PostgreSQL 클러스터를 **초기화하는가**. 이름이 아니라 효과로 본다."""
+
+    return any(name in declared for name in _POSTGRES_CLUSTER_INIT_ENV_NAMES)
+
+
+#: 클러스터 서비스가 선언해서는 안 되는 최상위 키. 정본 compose의 넷은 하나도 쓰지
+#: 않는다(실측). `entrypoint`가 특히 중요하다 — 주면 `command`가 인자로 강등되어
+#: 아래 `command` 규칙이 통째로 무의미해진다.
+_POSTGRES_FORBIDDEN_SERVICE_KEYS: Final = ("entrypoint", "privileged", "user", "cap_add", "pid")
+
+#: `-c <setting>=...`로 주면 인증 자체를 갈아치우는 설정. `hba_file`은
+#: `--auth-host=trust`와 **결과가 같고 fresh PGDATA도 필요 없다**(적대 리뷰
+#: 2026-09-18 C-F4 실측).
+_POSTGRES_FORBIDDEN_RUNTIME_SETTINGS: Final = frozenset(
+    {"hba_file", "ident_file", "password_encryption"}
+)
+
+#: 저장소의 네 PostgreSQL이 전부 쓰는 값. 종전에는 이것을 강제하는 자리가 PinVi
+#: 하나뿐이었다 — Map은 `listen_addresses=*`로 바꿔도 통과했다(`docs/tasks.md`의
+#: 오래된 열린 항목). host 네트워킹이라 전 인터페이스 노출이 된다.
+_POSTGRES_CANONICAL_LISTEN_ADDRESSES: Final = "listen_addresses=127.0.0.1"
+
+
+def _postgres_command_settings(command: object) -> list[str]:
+    """`command` 배열에서 `-c` 다음에 오는 설정 문자열만 모은다."""
+
+    if not isinstance(command, list):
+        return []
+    settings: list[str] = []
+    for index, item in enumerate(command):
+        if item == "-c" and index + 1 < len(command):
+            following = command[index + 1]
+            if isinstance(following, str):
+                settings.append(following)
+    return settings
+
+
+def _assert_postgres_cluster_runtime_is_canonical(document: Mapping[str, Any]) -> None:
+    """클러스터 서비스의 **실행 형태**를 묶는다 — env 축보다 강한 축이다.
+
+    `POSTGRES_INITDB_ARGS`만 지키는 것으로는 부족하다. `-c hba_file=...` 한 줄이면
+    pg_hba가 통째로 갈리고, 그쪽은 fresh PGDATA도 필요 없어서 **이미 도는 클러스터**에
+    적용된다. `entrypoint`를 주면 `command`가 인자로 강등되므로 그것부터 막는다.
+
+    **이름을 열거하지 않는다.** 정본 compose의 네 PostgreSQL이 전부 같은 형태라
+    (실측: 넷 다 `postgres`로 시작하고 loopback을 박고 특권 키를 안 쓴다) 규칙 하나가
+    넷을 덮고 다섯째가 생겨도 따라온다.
+    """
+
+    services = document.get("services")
+    if not isinstance(services, Mapping):
+        return
+    for service_name, service in services.items():
+        if not isinstance(service, Mapping):
+            continue
+        declared = dict(_service_environment_items(service))
+        if not _service_initializes_a_postgres_cluster(declared):
+            continue
+        _assert_one_postgres_cluster_runtime(service_name, service)
+
+
+def _assert_one_postgres_cluster_runtime(
+    service_name: str, service: Mapping[str, Any]
+) -> None:
+    for key in _POSTGRES_FORBIDDEN_SERVICE_KEYS:
+        if service.get(key):
+            raise ComposeCandidateContractError(
+                f"compose candidate gives a PostgreSQL service a non-canonical "
+                f"{key}: " + _describe_candidate_service_key(service_name)
+            )
+
+    command = service.get("command")
+    if not isinstance(command, list) or not command or command[0] != "postgres":
+        # `command`가 없으면 기본값으로 뜨고 `listen_addresses`는 `*`다 — host
+        # 네트워킹에서는 전 인터페이스 노출이다. "지우면 통과"를 남기지 않는다.
+        raise ComposeCandidateContractError(
+            "compose candidate PostgreSQL service must run the canonical postgres "
+            "command: " + _describe_candidate_service_key(service_name)
+        )
+    settings = _postgres_command_settings(command)
+    for setting in settings:
+        name = setting.split("=", 1)[0].strip()
+        if name in _POSTGRES_FORBIDDEN_RUNTIME_SETTINGS:
+            raise ComposeCandidateContractError(
+                f"compose candidate overrides PostgreSQL authentication with "
+                f"-c {name}: " + _describe_candidate_service_key(service_name)
+            )
+    if _POSTGRES_CANONICAL_LISTEN_ADDRESSES not in settings:
+        raise ComposeCandidateContractError(
+            "compose candidate PostgreSQL service must keep the loopback binding: "
+            + _describe_candidate_service_key(service_name)
+        )
 
 
 def _assert_no_postgres_auth_override(document: Mapping[str, Any]) -> None:
@@ -1798,7 +1938,49 @@ def _assert_canonical_postgres_initdb_args(document: Mapping[str, Any]) -> None:
     for service_name, service in services.items():
         if not isinstance(service, Mapping):
             continue
-        for name, value in _service_environment_items(service):
+        declared = dict(_service_environment_items(service))
+        if _service_initializes_a_postgres_cluster(declared):
+            # **부재는 `trust`와 같다.** initdb를 `--auth-host` 없이 부르면 기본이
+            # `trust`이고, 그러면 pg_hba **첫 행**이 `host all all 127.0.0.1/32 trust`가
+            # 된다 — first-match-wins라 뒤에 붙는 scram 행은 무의미하다. 실제
+            # 컨테이너로 실측하면 "키 없음"과 "키=trust"의 pg_hba가 한 글자도 다르지
+            # 않다(적대 리뷰 2026-09-18 C-F1). 그래서 값만 묻는 술어는 **더 짧은
+            # payload**에 그대로 뚫린다.
+            # official entrypoint는 `file_env 'POSTGRES_INITDB_ARGS'`를 부르므로
+            # **`POSTGRES_INITDB_ARGS_FILE`도 같은 값을 준다**(적대 리뷰 2026-09-18
+            # D-F7: 실제 이미지의 entrypoint 251행에서 확인했고, 그 형태로 `trust`
+            # pg_hba가 만들어지는 것까지 실측했다). 이름으로 막는 술어는 이름의
+            # **변형**까지 봐야 한다. `POSTGRES_HOST_AUTH_METHOD`는 `file_env`를
+            # 거치지 않으므로(252행) 그쪽 변형은 대상이 아니다.
+            if f"{_POSTGRES_INITDB_ARGS_ENV}_FILE" in declared:
+                raise ComposeCandidateContractError(
+                    f"compose candidate sources {_POSTGRES_INITDB_ARGS_ENV} from a "
+                    "file the contract cannot read: "
+                    + _describe_candidate_service_key(service_name)
+                )
+            if _POSTGRES_INITDB_ARGS_ENV not in declared:
+                raise ComposeCandidateContractError(
+                    f"compose candidate omits {_POSTGRES_INITDB_ARGS_ENV} on a "
+                    "PostgreSQL service (absence selects trust authentication): "
+                    + _describe_candidate_service_key(service_name)
+                )
+            for forbidden in sorted(_POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES):
+                if forbidden in declared:
+                    # 초기화 위치를 바꾸면 "fresh PGDATA에서만"이라는 전제를 공격자가
+                    # 스스로 만들 수 있다.
+                    raise ComposeCandidateContractError(
+                        f"compose candidate relocates PostgreSQL data with "
+                        f"{forbidden}: " + _describe_candidate_service_key(service_name)
+                    )
+            if _env_file_entries(service.get("env_file")):
+                # `env_file`은 이 문서를 읽어서는 알 수 없는 값을 주입한다. 그러면
+                # 위 두 검사가 볼 재료 자체가 사라진다 — 종전에는 이 금지가 **열거된
+                # 서비스에만** 걸려서 geo/concierge가 통째로 빠져나갔다.
+                raise ComposeCandidateContractError(
+                    "compose candidate forbids env_file on a PostgreSQL service: "
+                    + _describe_candidate_service_key(service_name)
+                )
+        for name, value in declared.items():
             if name != _POSTGRES_INITDB_ARGS_ENV:
                 continue
             if value != _POSTGRES_CANONICAL_INITDB_ARGS:
@@ -3112,14 +3294,18 @@ def _concierge_ui_root_values_are_valid(values: Mapping[str, str]) -> bool:
 #: 있는 파일)를 읽는 후보가 **세 신호를 한 글자도 건드리지 않고** 통과하는 것을
 #: 실측했다. 새 키를 더할 때는 "그 키에 값이 있으면 이 서비스는 실제로 배포된다"가
 #: 참인지만 물어라 — 정당한 stub이 그 키를 값으로 갖지 않으면 비용은 0이다.
-_CONCIERGE_API_DEPLOYMENT_SIGNALS = (
+#: compose가 stub에도 `null`로 붙이는 키 — 존재가 아니라 **값이 있음**으로 본다.
+_CONCIERGE_NULLABLE_DEPLOYMENT_SIGNALS: Final = ("command", "entrypoint", "network_mode")
+#: 붙지 않는 키 — 빈 리스트·빈 dict는 "배포한다"는 신호가 아니므로 **truthy**로 본다.
+_CONCIERGE_PRESENT_DEPLOYMENT_SIGNALS: Final = (
     "environment",
-    "command",
-    "entrypoint",
-    "network_mode",
     "ports",
     "env_file",
     "build",
+)
+_CONCIERGE_API_DEPLOYMENT_SIGNALS = (
+    *_CONCIERGE_NULLABLE_DEPLOYMENT_SIGNALS,
+    *_CONCIERGE_PRESENT_DEPLOYMENT_SIGNALS,
 )
 
 
@@ -3162,8 +3348,17 @@ def _validate_concierge_ui_canonical_contract(
     ui_declared = _CONCIERGE_UI_SERVICE in services
     ui_service = services.get(_CONCIERGE_UI_SERVICE)
     api_service = services.get(_CONCIERGE_API_SERVICE)
-    api_is_configured = isinstance(api_service, Mapping) and any(
-        api_service.get(key) is not None for key in _CONCIERGE_API_DEPLOYMENT_SIGNALS
+    # `command`/`entrypoint`는 compose가 stub에도 `null`을 붙이므로 **`is not None`**이
+    # 옳다. 나머지는 그 이유가 없고 빈 리스트·빈 dict가 흔한 관용구라 **truthy**로
+    # 본다(적대 리뷰 2026-09-18 C-F5).
+    api_is_configured = isinstance(api_service, Mapping) and (
+        any(
+            api_service.get(key) is not None
+            for key in _CONCIERGE_NULLABLE_DEPLOYMENT_SIGNALS
+        )
+        or any(
+            api_service.get(key) for key in _CONCIERGE_PRESENT_DEPLOYMENT_SIGNALS
+        )
     )
     if not ui_declared and not api_is_configured:
         # UI가 없고 API도 stub이다 — 지킬 대상이 없다(Map 단독 target의 정상 형상).
@@ -3916,6 +4111,11 @@ def validate_resolved_compose_candidate_protected_values(
         resolved=True,
     )
     _validate_pinvi_db_runtime_role(services, environment, resolved=True)
+    # **family validator 뒤에 둔다.** PinVi의 신원 검사는 command 배열 전체를
+    # exact-match 하므로 이 전역 바닥보다 강하다 — 앞에 두면 PinVi 형상의 거부
+    # 문구가 바뀐다(자리와 게이팅은 다른 축이고, 여기서 필요한 것은 자리다).
+    # geo·concierge·map은 이 술어 말고 아무도 보지 않으므로 자리와 무관하다.
+    _assert_postgres_cluster_runtime_is_canonical(resolved)
     _validate_concierge_ui_canonical_contract(services, environment, resolved=True)
     _validate_map_application_300_images(services)
 
@@ -4384,6 +4584,11 @@ def validate_compose_candidate_protected_values(
         resolved=False,
     )
     _validate_pinvi_db_runtime_role(services, environment, resolved=False)
+    # **family validator 뒤에 둔다.** PinVi의 신원 검사는 command 배열 전체를
+    # exact-match 하므로 이 전역 바닥보다 강하다 — 앞에 두면 PinVi 형상의 거부
+    # 문구가 바뀐다(자리와 게이팅은 다른 축이고, 여기서 필요한 것은 자리다).
+    # geo·concierge·map은 이 술어 말고 아무도 보지 않으므로 자리와 무관하다.
+    _assert_postgres_cluster_runtime_is_canonical(candidate)
     _validate_concierge_ui_canonical_contract(services, environment, resolved=False)
     _validate_map_application_300_images(services)
 

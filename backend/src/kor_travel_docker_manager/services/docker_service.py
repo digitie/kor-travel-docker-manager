@@ -14,6 +14,7 @@ from docker.errors import DockerException, NotFound
 from kor_travel_docker_manager.services.c6c_deployment import (
     _FORBIDDEN_AUTH_OVERRIDE_ENV_NAMES,
     _POSTGRES_CANONICAL_INITDB_ARGS,
+    _POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES,
     _POSTGRES_INITDB_ARGS_ENV,
     assert_contract_locked_env_unchanged,
     assert_manager_mutation_allowed,
@@ -498,9 +499,26 @@ def validate_container_config_update(
     # 자유롭게 인증을 끌 수 있었다(적대 리뷰 2026-09-18 F1: 세 진입점 전부 통과).
     # 서버 인증 정책은 어느 서비스가 들고 있든 같은 정책이다.
     if _POSTGRES_INITDB_ARGS_ENV in env:
-        if env[_POSTGRES_INITDB_ARGS_ENV] != _POSTGRES_CANONICAL_INITDB_ARGS:
+        value = env[_POSTGRES_INITDB_ARGS_ENV]
+        # 바로 위 루프가 `str(value)`로 정규화한다 — 같은 규칙을 쓴다. 비문자열이나
+        # 앞뒤 공백 때문에 **정본 값이 거부되는** 오탐을 만들지 않는다.
+        if str("" if value is None else value).strip() != _POSTGRES_CANONICAL_INITDB_ARGS:
             raise ContainerConfigValidationError(
                 "PostgreSQL initdb authentication policy is immutable."
+            )
+    elif _POSTGRES_INITDB_ARGS_ENV in baseline_env:
+        # **삭제도 막는다.** 부재는 initdb 기본값(`trust`)을 고르는 것과 같다 —
+        # 값을 막고 삭제를 열어 두면 더 짧은 payload가 생길 뿐이다.
+        raise ContainerConfigValidationError(
+            "PostgreSQL initdb authentication policy cannot be removed."
+        )
+    for relocating in sorted(_POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES):
+        if relocating in env and relocating not in baseline_env:
+            # `PGDATA` 재지정은 "fresh PGDATA에서만 위험하다"는 전제를 **공격자가
+            # 만들 수 있게** 한다. 후보 검증이 최종적으로 막지만, 이 화면에서
+            # 통과시키면 실패가 조작에서 멀어진다(적대 리뷰 2026-09-18 D-F11).
+            raise ContainerConfigValidationError(
+                f"{relocating} cannot be added: it relocates the PostgreSQL cluster."
             )
     # 그리고 **새 키 추가**를 여기서 막는다. 계약 잠금은 값 동등 비교라 키 추가를
     # 표현하지 못해서, 이 키를 새로 더하는 저장이 네 서비스 모두 통과했다(F6).

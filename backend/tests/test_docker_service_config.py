@@ -235,6 +235,11 @@ def _compose_with_canonical_c6c_services(
             "image": "fixture.invalid/postgis:test",
             "container_name": "kor-travel-map-postgres",
             "network_mode": "host",
+            # 정본과 같은 loopback 결박. 2026-09-18에 그 강제가 네 PostgreSQL 전부로
+            # 넓어지면서 fixture도 정본과 같아져야 한다 — 종전에는 PinVi 하나만
+            # 보고 있어서 Map은 `listen_addresses=*`로 바꿔도 통과했다. S1에서 한
+            # 것과 같은 처방이다(검사를 약하게 하지 않고 fragment를 완전하게).
+            "command": ["postgres", "-c", "listen_addresses=127.0.0.1"],
             "environment": {
                 "POSTGRES_DB": "postgres",
                 "POSTGRES_USER": (

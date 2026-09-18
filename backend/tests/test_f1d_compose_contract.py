@@ -3363,12 +3363,22 @@ def test_postgres_image_provenance_survives_when_db_init_is_out_of_scope(
         )
 
 
-def test_the_loopback_binding_has_exactly_one_home() -> None:
-    """`listen_addresses` 강제가 **한 곳뿐**이라는 전제를 결박한다.
+def test_the_loopback_binding_has_two_load_bearing_homes() -> None:
+    """`listen_addresses` 강제의 **자리와 개수**를 결박한다.
 
-    S3-a의 모든 논거가 이 사실에 기댄다. 누군가 두 번째 자리를 만들면 이 검사가
-    빨개지고, 그때 위 검사들의 서사를 다시 써야 한다. 반대로 유일한 자리가 사라져도
-    빨개진다.
+    S3-a 때는 한 곳뿐이었다 — PinVi의 신원 검사가 command 배열을 exact-match 하는
+    자리다. 그것이 저장소의 네 PostgreSQL 중 **하나만** 지킨다는 것이 오래된 열린
+    항목이었고, 적대 리뷰 2026-09-18이 실측으로 확인했다(map은 `listen_addresses=*`로
+    바꿔도 통과한다).
+
+    그래서 두 번째 자리를 **의도적으로** 만들었다: 클러스터 서비스를 효과로 식별하는
+    전역 바닥이다. 둘은 일이 다르고 **둘 다 결박돼 있다** —
+
+      전역 바닥을 지우면  geo·concierge·map의 loopback 강제가 사라진다 (새 검사 red)
+      PinVi 쪽을 지우면   exact-match가 느슨해진다                    (기존 검사 red)
+
+    "중복은 결박을 없앤다"는 이 저장소의 교훈이 여기에는 적용되지 않는다 — 그 교훈의
+    조건은 "어느 쪽을 지워도 아무 검사가 빨개지지 않는다"인데, 그것이 성립하지 않는다.
     """
 
     # **파일이 아니라 출현 횟수를 센다.** 첫 판은 파일 목록을 비교해서, 같은 파일 안의
@@ -3404,7 +3414,7 @@ def test_the_loopback_binding_has_exactly_one_home() -> None:
             homes[path.relative_to(_ROOT).as_posix()] = count
 
     assert homes == {
-        "backend/src/kor_travel_docker_manager/services/c6c_deployment.py": 1
+        "backend/src/kor_travel_docker_manager/services/c6c_deployment.py": 2
     }, f"loopback 결박의 자리나 개수가 바뀌었다: {homes}"
 
 
@@ -4510,8 +4520,24 @@ def test_the_forbidden_auth_key_is_banned_by_name_not_by_value(tmp_path: Path) -
         )
 
 
+@pytest.mark.parametrize(
+    ("flaw", "message"),
+    [
+        (
+            {"POSTGRES_HOST_AUTH_METHOD": "trust"},
+            "overrides PostgreSQL host authentication",
+        ),
+        (
+            {"POSTGRES_INITDB_ARGS": "--auth-host=trust"},
+            "non-canonical POSTGRES_INITDB_ARGS",
+        ),
+    ],
+)
 def test_the_global_predicates_survive_a_document_without_any_known_postgres(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flaw: dict[str, str],
+    message: str,
 ) -> None:
     """**순진한 S4 시뮬레이션.** required 집합을 줄이고 문서에서 두 postgres를 지운다.
 
@@ -4532,9 +4558,7 @@ def test_the_global_predicates_survive_a_document_without_any_known_postgres(
         if known.endswith("postgres") or known.endswith("postgresql"):
             del services[known]
     assert not any("postgres" in name for name in services), sorted(services)
-    services["some-future-database"] = _service_with_environment(
-        {"POSTGRES_HOST_AUTH_METHOD": "trust"}
-    )
+    services["some-future-database"] = _service_with_environment(flaw)
 
     survivors = frozenset(
         name
@@ -4545,9 +4569,7 @@ def test_the_global_predicates_survive_a_document_without_any_known_postgres(
         c6c_deployment_module, "_CANDIDATE_REQUIRED_PROTECTED_SERVICES", survivors
     )
 
-    with pytest.raises(
-        ComposeCandidateContractError, match="overrides PostgreSQL host authentication"
-    ):
+    with pytest.raises(ComposeCandidateContractError, match=message):
         validate_compose_candidate_protected_values(
             shaped,
             compose_path=str(_COMPOSE_PATH),
@@ -4567,6 +4589,10 @@ def test_the_initdb_rule_has_exactly_one_home(
 
     **이름이 아니라 효과로 센다.** 전역 술어를 no-op으로 만든 뒤 PinVi postgres의
     initdb를 망가뜨린다. 두 번째 자리가 있으면 그래도 거부되고, 이 검사가 빨개진다.
+
+    **이 검사는 심층 방어를 금지한다.** 언젠가 의도적으로 두 번째 자리를 두기로
+    한다면 여기를 "둘 다 센다"로 고쳐야 한다 — 조용히 늘어나는 것만 막는 것이 목적이다
+    (적대 리뷰 2026-09-18이 이 성질을 명시해 달라고 지적했다).
     소스에서 문자열을 세는 방식은 설명 주석 한 줄에 빨개지므로 결박이 아니라 잡음이다
     (`test_the_loopback_binding_has_exactly_one_home`이 같은 이유로 AST를 쓴다).
 
@@ -4866,3 +4892,504 @@ def test_the_expected_database_is_threaded_not_hardcoded(tmp_path: Path) -> None
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
         )
+
+
+# ── 보안 라운드 2: 값을 막았더니 **삭제**가 열렸다 ───────────────────────
+#
+# 적대 리뷰가 실제 postgres 컨테이너로 실측했다:
+#
+#     POSTGRES_INITDB_ARGS 없음   host all all 127.0.0.1/32  trust
+#     POSTGRES_INITDB_ARGS=trust  host all all 127.0.0.1/32  trust
+#
+# **부재는 `trust`와 한 글자도 다르지 않다.** 이 저장소의 `docker-compose.yml` 주석이
+# 이미 그렇게 적어 뒀는데도 첫 수정은 "값이 정본인가"만 물었다.
+#
+# 더 나쁜 것은 그 사이 **한 칸을 약화시켰다**는 것이다. PinVi 신원 검사의 exact-match
+# dict는 `.get()` 비교라 **부재도 거부**했는데, "자리를 하나로" 한다며 그 항목을 뺄 때
+# 그 성질이 함께 사라졌다. 960형상 대조에서 약화된 14칸이 전부 이 형상이다. 중복
+# 제거 자체는 옳았지만 **남긴 쪽이 원래보다 약했다.**
+
+
+def _cluster_service(**extra: object) -> dict[str, object]:
+    """클러스터를 **초기화하는** 서비스. 판정의 정확한 재료만 담는다."""
+
+    base: dict[str, object] = {
+        "image": "postgres:16",
+        "command": ["postgres", "-c", "listen_addresses=127.0.0.1"],
+        "environment": {
+            "POSTGRES_PASSWORD": "x",
+            "POSTGRES_INITDB_ARGS": "--auth-host=scram-sha-256",
+        },
+    }
+    base.update(extra)
+    return base
+
+
+@pytest.mark.parametrize(
+    "service_name",
+    ["kor-travel-geo-postgres", "kor-travel-concierge-postgres", "some-future-database"],
+)
+def test_omitting_initdb_args_is_rejected(tmp_path: Path, service_name: str) -> None:
+    """**부재가 곧 `trust`다.** 값을 막고 삭제를 열어 두면 더 짧은 payload가 생길 뿐이다."""
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services[service_name] = {
+        "image": "postgres:16",
+        "environment": {"POSTGRES_PASSWORD": "x"},
+    }
+
+    with pytest.raises(ComposeCandidateContractError, match="absence selects trust"):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_omitting_initdb_args_is_rejected_on_the_resolved_entry_point(
+    tmp_path: Path,
+) -> None:
+    """resolved가 실제 배포에 적용되는 쪽이다."""
+
+    _candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    resolved = _bootstrap_resolved(environment)
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = {
+        "image": "postgres:16",
+        "environment": {"POSTGRES_PASSWORD": "x"},
+    }
+
+    with pytest.raises(ComposeCandidateContractError, match="absence selects trust"):
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+        )
+
+
+def test_deleting_initdb_args_is_rejected_at_the_ui_save_path() -> None:
+    """세 번째 진입점에서도 삭제를 막는다."""
+
+    with pytest.raises(ContainerConfigValidationError, match="cannot be removed"):
+        validate_container_config_update(
+            ports=[],
+            env={},
+            networks=[],
+            baseline_env={"POSTGRES_INITDB_ARGS": "--auth-host=scram-sha-256"},
+            service_name="kor-travel-geo-postgres",
+        )
+
+
+def test_the_canonical_value_survives_incidental_whitespace() -> None:
+    """정본 값이 앞뒤 공백 때문에 거부되면 안 된다.
+
+    바로 위 루프가 `str(value)`로 정규화하는데 새 규칙만 원시 비교를 했다 — 이 파일이
+    "터미널·`.env` 복붙 공백"을 일부러 trim하는 것과 어긋났다(적대 리뷰 C-F8).
+    """
+
+    validate_container_config_update(
+        ports=[],
+        env={"POSTGRES_INITDB_ARGS": "  --auth-host=scram-sha-256 "},
+        networks=[],
+        baseline_env={"POSTGRES_INITDB_ARGS": "--auth-host=scram-sha-256"},
+        service_name="kor-travel-geo-postgres",
+    )
+
+
+def test_the_forbidden_key_may_stay_if_it_was_already_there() -> None:
+    """추가만 막는다 — **의미론을 센다**.
+
+    `forbidden not in baseline_env` 조건을 떼는 변이가 살아남았다(적대 리뷰 C-M11).
+    그 조건이 없으면 "이미 있던 값을 그대로 다시 저장"이 거부돼, 정당한 편집이 막힌다.
+    """
+
+    validate_container_config_update(
+        ports=[],
+        env={"POSTGRES_HOST_AUTH_METHOD": "trust"},
+        networks=[],
+        baseline_env={"POSTGRES_HOST_AUTH_METHOD": "trust"},
+        service_name="kor-travel-geo-postgres",
+    )
+
+
+def test_relocating_the_data_directory_is_rejected(tmp_path: Path) -> None:
+    """`PGDATA` 재지정은 "fresh PGDATA에서만"이라는 전제를 **공격자가 만들 수 있게** 한다.
+
+    적대 리뷰 실측: map·pinvi 양쪽에서 통과했다. 새 경로를 주면 initdb가 다시 돌므로
+    이미 초기화된 클러스터에서도 부재/`trust`의 조건이 성립한다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = _cluster_service()
+    environment_map = services["kor-travel-geo-postgres"]["environment"]
+    assert isinstance(environment_map, dict)
+    environment_map["PGDATA"] = "/var/lib/postgresql/data/fresh"
+
+    with pytest.raises(ComposeCandidateContractError, match="relocates PostgreSQL data"):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_env_file_on_a_cluster_service_is_rejected(tmp_path: Path) -> None:
+    """`env_file`은 이 문서를 읽어서는 알 수 없는 값을 주입한다 — 볼 재료가 사라진다.
+
+    종전에는 이 금지가 **열거된 서비스에만** 걸려서 geo/concierge가 통째로 빠져나갔다.
+    resolved는 막지만 그것은 `docker compose config`가 인라인해 주기 때문일 뿐이라,
+    같은 결함이 다른 문으로 돌아온 것이었다(적대 리뷰 C-F3).
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = _cluster_service(env_file=["./pg.env"])
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="forbids env_file on a PostgreSQL service"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_a_one_shot_on_the_postgres_image_is_not_a_cluster(tmp_path: Path) -> None:
+    """**식별을 넓히면 정당한 서비스가 죽는다.**
+
+    `pinvi-db-init`은 같은 postgis 이미지를 쓰지만 psql을 돌리는 one-shot이라 initdb와
+    무관하다. 첫 판은 이미지로 식별해서 계약 fragment 13건을 빨갛게 만들었다.
+    판정 재료는 "entrypoint가 initdb를 돌리게 하는 env를 선언했는가"다.
+    """
+
+    assert not c6c_deployment_module._service_initializes_a_postgres_cluster(
+        {"PGPASSWORD": "x", "POSTGRES_DB": "pinvi"}
+    )
+    assert c6c_deployment_module._service_initializes_a_postgres_cluster(
+        {"POSTGRES_PASSWORD_FILE": "/run/secrets/x"}
+    )
+
+
+def test_the_rejection_names_the_service_it_rejected(tmp_path: Path) -> None:
+    """운영자가 어느 서비스가 거부됐는지 알아야 한다.
+
+    `_CANDIDATE_KNOWN_SERVICE_NAMES` 밖의 이름은 sha8로 가려지는데, 적대 리뷰 실측상
+    **이 수정의 대상 서비스 둘 다**가 가려졌다. 새 검사가 문구의 앞부분만 보고 있어서
+    그 결함을 영영 못 봤다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-concierge-postgres"] = _service_with_environment(
+        {"POSTGRES_INITDB_ARGS": "--auth-host=trust"}
+    )
+
+    with pytest.raises(ComposeCandidateContractError) as rejection:
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+    assert "kor-travel-concierge-postgres" in str(rejection.value)
+
+
+def test_a_null_mapping_value_is_not_a_canonical_value(tmp_path: Path) -> None:
+    """매핑형 `{"NAME": None}`도 리스트형 bare 이름과 같은 것이다.
+
+    `docker compose config`가 `environment: [NAME]`을 그 형태로 정규화한다 — 즉
+    resolved 층에서 `None`은 실제로 발생한다. 리스트형만 보던 검사가 그것을 놓쳤고,
+    매핑형 `None`을 버리는 변이가 살아남았다(적대 리뷰 C-M20).
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = _service_with_environment(
+        {"POSTGRES_INITDB_ARGS": None}
+    )
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="non-canonical POSTGRES_INITDB_ARGS"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+@pytest.mark.parametrize("signal", ["ports", "env_file", "build"])
+def test_an_empty_signal_is_not_a_deployment(signal: str) -> None:
+    """빈 리스트·빈 dict는 "배포한다"는 신호가 아니다.
+
+    `command`/`entrypoint`는 compose가 stub에도 `null`을 붙이므로 `is not None`이
+    옳지만, 나머지 셋은 그 이유가 없다. 오늘 깨지지 않는 이유는 compose가 그 키를
+    stub에 붙이지 않기 때문뿐이었다(적대 리뷰 C-F5).
+    """
+
+    assert signal in c6c_deployment_module._CONCIERGE_PRESENT_DEPLOYMENT_SIGNALS
+    c6c_deployment_module._validate_concierge_ui_canonical_contract(
+        {"kor-travel-concierge-api": {"image": "x", signal: [] if signal != "build" else {}}},
+        {},
+        resolved=False,
+    )
+
+
+# ── env 축보다 **강한** 축이 무검사였다 (적대 리뷰 C-F4) ─────────────────
+#
+# 리뷰어가 심각도를 다시 쟀다. `-c hba_file=<경로>`는 pg_hba를 통째로 갈아치우므로
+# `--auth-host=trust`와 결과가 같고, **fresh PGDATA를 요구하지 않는다** — 이미
+# 초기화된 클러스터에도 즉시 적용된다. 즉 initdb 축을 지키는 것만으로는 부족했다.
+#
+# 그리고 `listen_addresses` 강제는 저장소에 **PinVi 하나뿐**이었다. 네 PostgreSQL이
+# 전부 loopback을 쓰는데 검증은 하나만 봤다(오래된 열린 항목).
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        pytest.param(
+            {"entrypoint": ["sh", "-c", "postgres"]},
+            "non-canonical entrypoint",
+            id="entrypoint",
+        ),
+        pytest.param({"privileged": True}, "non-canonical privileged", id="privileged"),
+        pytest.param({"user": "root"}, "non-canonical user", id="user"),
+        pytest.param(
+            {"cap_add": ["SYS_ADMIN"]}, "non-canonical cap_add", id="cap_add"
+        ),
+        pytest.param({"pid": "host"}, "non-canonical pid", id="pid"),
+    ],
+)
+def test_a_cluster_service_cannot_take_privileged_shapes(
+    tmp_path: Path, mutation: dict[str, object], message: str
+) -> None:
+    """`entrypoint`가 특히 중요하다 — 주면 `command`가 인자로 강등된다.
+
+    그러면 아래 `command` 규칙이 통째로 무의미해진다. 정본 compose의 네 클러스터
+    서비스는 이 키를 **하나도** 선언하지 않는다(실측).
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = _cluster_service(**mutation)
+
+    with pytest.raises(ComposeCandidateContractError, match=message):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+@pytest.mark.parametrize("setting", ["hba_file", "ident_file", "password_encryption"])
+def test_a_runtime_setting_cannot_replace_the_authentication_policy(
+    tmp_path: Path, setting: str
+) -> None:
+    """`-c hba_file=...`는 `--auth-host=trust`와 **결과가 같고 더 강하다.**
+
+    fresh PGDATA를 요구하지 않으므로 이미 도는 클러스터에도 즉시 적용된다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = _cluster_service(
+        command=[
+            "postgres",
+            "-c",
+            "listen_addresses=127.0.0.1",
+            "-c",
+            f"{setting}=/tmp/evil.conf",
+        ]
+    )
+
+    with pytest.raises(
+        ComposeCandidateContractError, match=f"overrides PostgreSQL authentication with -c {setting}"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+@pytest.mark.parametrize(
+    ("command", "message"),
+    [
+        pytest.param(None, "canonical postgres command", id="absent"),
+        pytest.param(
+            ["postgres", "-c", "listen_addresses=*"],
+            "loopback binding",
+            id="all-interfaces",
+        ),
+        pytest.param(
+            ["sh", "-c", "postgres"], "canonical postgres command", id="not-postgres"
+        ),
+    ],
+)
+def test_a_cluster_service_keeps_the_loopback_binding(
+    tmp_path: Path, command: object, message: str
+) -> None:
+    """**네 PostgreSQL 전부**에 걸린다 — 종전에는 PinVi 하나뿐이었다.
+
+    `command`가 없으면 기본값으로 뜨고 `listen_addresses`는 `*`다. 이 스택은 host
+    네트워킹이므로 그것은 전 인터페이스 노출이다 — "지우면 통과"를 남기지 않는다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    shaped_service = _cluster_service()
+    if command is None:
+        shaped_service.pop("command")
+    else:
+        shaped_service["command"] = command
+    services["kor-travel-geo-postgres"] = shaped_service
+
+    with pytest.raises(ComposeCandidateContractError, match=message):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_the_map_postgres_loopback_binding_is_now_enforced(tmp_path: Path) -> None:
+    """이름을 지목한 회귀 검사.
+
+    `docs/tasks.md`의 오래된 열린 항목이다 — "Map에는 `command` 검사가 아예 없다".
+    PinVi는 `listen_addresses=*`로 바꾸면 거부하는데 Map은 통과했다. 그 비대칭이
+    닫혔는지 **Map 이름으로** 확인한다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    postgres = services["kor-travel-map-postgres"]
+    assert isinstance(postgres, dict)
+    command = list(postgres["command"])
+    command[command.index("listen_addresses=127.0.0.1")] = "listen_addresses=*"
+    postgres["command"] = command
+
+    with pytest.raises(ComposeCandidateContractError, match="loopback binding"):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_sourcing_initdb_args_from_a_file_is_rejected(tmp_path: Path) -> None:
+    """entrypoint의 `file_env`가 **두 번째 이름**을 읽는다.
+
+    실제 이미지의 entrypoint 251행이 `file_env 'POSTGRES_INITDB_ARGS'`이므로
+    `POSTGRES_INITDB_ARGS_FILE`이 같은 값을 준다 — 적대 리뷰 2026-09-18 D-F7이 그
+    형태로 `trust` pg_hba가 만들어지는 것까지 실측했다. 이름으로 막는 술어는 이름의
+    **변형**까지 봐야 한다. (`POSTGRES_HOST_AUTH_METHOD`는 252행에서 `file_env`를
+    거치지 않으므로 그쪽 변형은 대상이 아니다.)
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = {
+        "image": "postgres:16",
+        "command": ["postgres", "-c", "listen_addresses=127.0.0.1"],
+        "environment": {
+            "POSTGRES_PASSWORD": "x",
+            "POSTGRES_INITDB_ARGS_FILE": "/run/secrets/initdb-args",
+        },
+    }
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="from a file the contract cannot read"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        pytest.param([{"POSTGRES_HOST_AUTH_METHOD": "trust"}], id="dict-in-list"),
+        pytest.param([5432], id="number-in-list"),
+        pytest.param("POSTGRES_HOST_AUTH_METHOD=trust", id="scalar"),
+    ],
+)
+def test_an_unreadable_environment_shape_is_rejected(
+    tmp_path: Path, environment: object
+) -> None:
+    """읽을 수 없는 형태를 **"env가 없다"로 보지 않는다.**
+
+    종전에는 조용히 건너뛰어서, 위의 전역 술어들이 볼 재료를 잃었다. 오늘 최종적으로
+    막히는 이유는 `docker compose config`가 그 형태를 거부하기 때문뿐이고, 그것이
+    바로 F4가 "방어가 아니다"라고 판정한 의존이다(적대 리뷰 D-F10).
+    """
+
+    candidate, contract_environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = {
+        "image": "postgres:16",
+        "environment": environment,
+    }
+
+    with pytest.raises(ComposeCandidateContractError, match="unreadable environment"):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=contract_environment,
+        )
+
+
+def test_relocating_the_cluster_is_rejected_at_the_ui_save_path() -> None:
+    """`PGDATA` 재지정이 UI 저장 경로를 통과했다(적대 리뷰 D-F11).
+
+    후보 검증이 최종적으로 막지만, 이 화면에서 통과시키면 실패가 조작에서 멀어진다.
+    """
+
+    with pytest.raises(ContainerConfigValidationError, match="relocates the PostgreSQL"):
+        validate_container_config_update(
+            ports=[],
+            env={"PGDATA": "/var/lib/postgresql/data/fresh"},
+            networks=[],
+            baseline_env={},
+            service_name="kor-travel-geo-postgres",
+        )
+
