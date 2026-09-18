@@ -111,3 +111,57 @@ def test_the_krex_go_key_is_not_a_dead_end(
         )
     # 검사가 공허하지 않은지: 비교 대상이 실제로 비어 있지 않다.
     assert data_go_kr_sources
+
+
+#: OpiNet 적재를 **시작시키는** 선택자.
+#:
+#: OpiNet에는 전국 목록(bulk) 엔드포인트가 없어서 scope를 고르지 않으면 fetcher가
+#: `ProviderCredentialMissing`으로 멈춘다 — 키가 있어도 그렇다. 2026-09-18 prod에서
+#: place·price 두 job이 그 상태였고, 원인은 이 문서가 그 선택자를 **아예 넘기지
+#: 않아** 설정이 기본값 `disabled`로 떨어진 것이었다(Map 저장소 자신의 compose에는
+#: 배선돼 있었다).
+_OPINET_SCOPE_SELECTOR = "KOR_TRAVEL_MAP_OPINET_SCOPE_MODE"
+
+
+def _services_declaring(name: str) -> set[str]:
+    text = _COMPOSE.read_text(encoding="utf-8")
+    services: set[str] = set()
+    current: str | None = None
+    for line in text.splitlines():
+        if line.startswith("  ") and not line.startswith("    ") and line.rstrip().endswith(":"):
+            current = line.strip().rstrip(":")
+        elif current is not None and line.strip().startswith(f"{name}:"):
+            services.add(current)
+    return services
+
+
+def test_the_opinet_scope_selector_reaches_every_service_that_holds_its_key() -> None:
+    """키를 받는 서비스는 scope 선택자도 받아야 한다.
+
+    둘 중 하나만 있으면 "자격증명은 있는데 영원히 비활성"이 된다 — 그것이 prod의
+    모습이었다. 키 쪽을 기준으로 삼는 이유는 그쪽이 "이 서비스가 OpiNet을 쓴다"는
+    선언이기 때문이다.
+    """
+
+    with_key = _services_declaring("KOR_TRAVEL_MAP_OPINET_API_KEY")
+    assert with_key, "OpiNet 키를 받는 서비스가 하나도 없다"
+    with_selector = _services_declaring(_OPINET_SCOPE_SELECTOR)
+    missing = sorted(with_key - with_selector)
+    assert not missing, f"{_OPINET_SCOPE_SELECTOR}를 못 받는 서비스: {missing}"
+
+
+def test_the_opinet_selector_is_not_hard_wired_to_a_mode() -> None:
+    """모드는 운영자가 `.env`로 고른다 — 문서가 값을 박아 두지 않는다.
+
+    기본값은 `disabled`로 둔다. 적재를 켜는 것은 배포가 아니라 운영 결정이고,
+    OpiNet은 무료키 일일 한도가 300회라 모드마다 호출량이 크게 다르다.
+    """
+
+    text = _COMPOSE.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(f"{_OPINET_SCOPE_SELECTOR}:"):
+            continue
+        value = stripped.split(":", 1)[1].strip()
+        assert value.startswith("${"), value
+        assert value.endswith("disabled}}"), value
