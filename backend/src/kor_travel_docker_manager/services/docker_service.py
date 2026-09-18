@@ -34,18 +34,38 @@ from kor_travel_docker_manager.services.compose_service import (
     c6c_deployment_lock_from_environment,
     compose_service,
     get_compose_path,
+    get_env_path,
 )
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
+    DeploymentContractError,
 )
-from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS
+from kor_travel_docker_manager.services.registry import (
+    MANAGED_CONTAINERS,
+    external_project_for_container,
+    get_project_root,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _get_compose_path() -> str:
     return get_compose_path()
+
+
+class ExternalContainerMutationError(DeploymentContractError):
+    """형제 프로젝트 컨테이너에 Manager의 compose 변경을 시도했다.
+
+    `compose_service`는 **그 프로젝트 안에서만** 유일하다. Manager의 compose에서 같은
+    이름을 찾으면 전혀 다른 서비스가 나온다 — `prometheus`가 실제로 그렇다. 그래서
+    이름이 우연히 맞을 때가 **가장 위험하다**(조용히 남의 것을 고치고 성공을 보고한다).
+    """
+
+    #: 전용 코드를 둔다. 없으면 `humanizeError`가 409의 일반 힌트("일시적 상태일 수
+    #: 있습니다")를 붙이는데, 이 경계는 **항구적**이라 정반대의 안내가 된다(적대 리뷰
+    #: 2026-09-18 B-F3).
+    code = "EXTERNAL_PROJECT_READ_ONLY"
 
 
 def _locked_env_present(service_name: str, svc_config: Mapping[str, Any]) -> list[str]:
@@ -59,6 +79,157 @@ def _locked_env_present(service_name: str, svc_config: Mapping[str, Any]) -> lis
     if not isinstance(environment, Mapping):
         return []
     return [name for name in contract_locked_env_names(service_name) if name in environment]
+
+
+def _external_project_label(container_id: str) -> str | None:
+    """화면이 편집기를 잠그는 근거. Manager 자신의 컨테이너면 `None`.
+
+    첫 판은 `_managed_service_config`의 docstring이 "화면은 `external_project`를 보고
+    편집기를 잠근다"고 적었는데 **API가 그 필드를 내보내지 않았다**(적대 리뷰
+    2026-09-18 A-F5 / B-F3). 그래서 외부 컨테이너 9개가 "설정 가능"으로 보이고,
+    눌러 보면 빈 값이 나오고, 저장하면 영문 409가 떴다.
+    """
+
+    external = external_project_for_container(container_id)
+    return external.project if external is not None else None
+
+
+def _managed_service_config(
+    container_id: str, spec: Mapping[str, Any], services: Mapping[str, Any]
+) -> tuple[str, Mapping[str, Any]]:
+    """이 컨테이너의 compose service 설정. 외부 프로젝트면 **빈 것**이다.
+
+    `spec["compose_service"]`를 Manager의 compose에 그대로 조회하면 이름이 겹치는
+    순간 남의 설정이 나온다(weather의 `prometheus` ↔ Manager의 `prometheus`). 외부
+    컨테이너의 정본은 그 프로젝트의 compose이고 Manager는 그 파일을 읽을 권한을
+    주장하지 않는다 — 그래서 **모른다고 말한다**. 화면은 `external_project`를 보고
+    편집기를 잠근다.
+    """
+
+    svc_name = str(spec["compose_service"])
+    if external_project_for_container(container_id) is not None:
+        return svc_name, {}
+    resolved = services.get(svc_name, {})
+    return svc_name, resolved if isinstance(resolved, Mapping) else {}
+
+
+_COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
+
+
+def _live_compose_project(container: object) -> str | None:
+    """실행 중 컨테이너가 **스스로 말하는** compose 프로젝트.
+
+    선언(`config/docker-targets.yml`)은 오타 한 글자로 틀릴 수 있고, 컨테이너 절의
+    `external_project` **부재**는 "Manager 소유"와 구분되지 않는다. 그런데 정본이 이미
+    컨테이너에 있다 — compose가 붙이는 이 라벨이다. 선언과 어긋나면 **fail-close**한다.
+    """
+
+    attrs = getattr(container, "attrs", None)
+    if not isinstance(attrs, Mapping):
+        return None
+    config = attrs.get("Config")
+    if not isinstance(config, Mapping):
+        return None
+    labels = config.get("Labels")
+    if not isinstance(labels, Mapping):
+        return None
+    project = labels.get(_COMPOSE_PROJECT_LABEL)
+    return str(project) if isinstance(project, str) and project else None
+
+
+def _declared_project_matches_runtime(
+    container_id: str, container: object, *, manager_project: str
+) -> bool:
+    """선언된 소속이 실행 중 라벨과 일치하는가. 모르면 **일치로 보지 않는다**.
+
+    라벨이 없으면(compose가 만들지 않은 컨테이너) 판단 재료가 없으므로 선언을 따른다 —
+    그 경우 라벨 축은 아무 말도 하지 않는다. 라벨이 **있는데 다르면** 선언이 틀린
+    것이고, 그때 Manager의 설정을 그리지 않는다.
+
+    **범위**: 지금 이 대조를 쓰는 곳은 `get_containers_status` 하나다. 변경 경로
+    (`control_container`/`update`/`reset`)는 여전히 **선언만** 본다 — 그쪽까지 넓히려면
+    변경 시점에 Docker에 질의해야 하고, 그 실패 모드(데몬 불가)가 변경을 막는 것이
+    옳은지 따로 판단해야 한다. 첫 판 docstring은 "편집을 허용하면 안 된다"고 적었는데
+    구현되어 있지 않았다(적대 리뷰 2026-09-18 E-F10).
+    """
+
+    runtime_project = _live_compose_project(container)
+    if runtime_project is None:
+        return True
+    external = external_project_for_container(container_id)
+    declared = external.project if external is not None else manager_project
+    return runtime_project == declared
+
+
+#: compose 문서가 자기 프로젝트 이름을 선언하는 키. 이 저장소의
+#: `docker-compose.yml` 1행이 `name: kor-travel-docker-manager`다.
+_COMPOSE_PROJECT_NAME_KEY = "name"
+
+
+def _manager_compose_project(compose_document: Mapping[str, Any] | None = None) -> str:
+    """Manager 자신의 compose 프로젝트 이름.
+
+    **compose의 실제 우선순위를 따른다**: `-p` > `--env-file`의
+    `COMPOSE_PROJECT_NAME` > **문서의 `name:`** > 디렉터리 이름. 첫 판은 가운데 둘을
+    건너뛰고 디렉터리를 봤다(적대 리뷰 2026-09-18 E-R2-03).
+
+    그래서 `.env`에 `COMPOSE_PROJECT_NAME`이 없고 체크아웃 디렉터리 이름이 다른
+    호스트에서 **Manager 컨테이너 21개 전부의 `config`가 빈 값**이 됐다 — 라벨 대조가
+    전부 불일치로 떨어지기 때문이다. n150 prod는 두 값이 우연히 같아 영향이 없었다
+    (실측: 라벨과 설치본 디렉터리 모두 `kor-travel-docker-manager`).
+
+    그런데 그것을 못 본 이유가 더 중요하다 — 테스트 대역이 **구현과 같은 틀린 모델**로
+    라벨을 만들었다. 그래서 불일치가 원리상 발생할 수 없었다.
+
+    `-p`는 여기서 보지 않는다. Manager 자신의 호출은 `build_command`가 그 플래그를
+    붙이지 않으므로(외부 프로젝트 전용이다) 이 함수의 대상이 아니다.
+
+    `compose_document`를 받는 이유는 성능이다 — 호출부가 컨테이너마다 이 함수를
+    부르는데 첫 판은 매번 92KB YAML을 다시 파싱했다(실측 **19.6배, +1.8초**이고
+    websocket broadcast 주기가 2.0초다 — 적대 리뷰 2026-09-18 라운드4 F-01).
+    """
+
+    if compose_document is None:
+        compose_document = get_compose_config()
+
+    explicit = os.environ.get("COMPOSE_PROJECT_NAME")
+    if explicit:
+        return explicit
+    # **`--env-file` 단계를 여기서 직접 읽는다.** 첫 판은 `os.environ`만 보고 그 단계를
+    # `main.py`의 `load_dotenv(_ENV_PATH)` 한 줄에 의존했는데, 그 줄을 지우는 변이가
+    # **1843건을 전부 초록으로 통과했다**(적대 리뷰 2026-09-18 라운드4 F-03, 변이 53종
+    # 중 유일 생존). import 시점 부작용에 기대면 결박할 것이 이 함수 밖에 남는다.
+    from_env_file = _env_file_compose_project()
+    if from_env_file:
+        return from_env_file
+    declared = compose_document.get(_COMPOSE_PROJECT_NAME_KEY)
+    if isinstance(declared, str) and declared.strip():
+        return declared.strip()
+    return Path(get_project_root()).name
+
+
+def _env_file_compose_project() -> str | None:
+    """Manager 루트 `.env`가 선언한 `COMPOSE_PROJECT_NAME`.
+
+    `build_command`가 `--env-file <root>/.env`를 붙이므로 compose는 이 값을 문서의
+    `name:`보다 **먼저** 본다. 읽을 수 없으면 `None`이고 다음 단계로 내려간다 —
+    이 함수는 관측 경로에서 돌기 때문에 예외를 던지지 않는다.
+    """
+
+    try:
+        path = Path(get_env_path())
+        if not path.is_file():
+            return None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            name, _separator, value = stripped.partition("=")
+            if name.strip() == "COMPOSE_PROJECT_NAME":
+                return value.strip().strip("\"'") or None
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return None
 
 
 def _public_url(spec: dict[str, Any]) -> str | None:
@@ -584,8 +755,7 @@ class DockerService:
             client = self._get_client()
         except RuntimeError:
             for key, spec in MANAGED_CONTAINERS.items():
-                svc_name = spec["compose_service"]
-                svc_config = services.get(svc_name, {})
+                svc_name, svc_config = _managed_service_config(key, spec, services)
                 status_list.append(
                     {
                         "id": key,
@@ -606,6 +776,7 @@ class DockerService:
                             "io_read": 0,
                             "io_write": 0,
                         },
+                        "external_project": _external_project_label(key),
                         "config": {
                             "ports": svc_config.get("ports", []),
                             "env": svc_config.get("environment", {}),
@@ -617,13 +788,21 @@ class DockerService:
                 )
             return status_list
 
+        # 프로젝트 이름은 문서당 한 번만 유도한다 — 컨테이너마다 부르면 92KB YAML을
+        # 다시 파싱한다(적대 리뷰 2026-09-18 라운드4 F-01: 98ms → 1917ms).
+        manager_project = _manager_compose_project(compose_cfg)
         for key, spec in MANAGED_CONTAINERS.items():
             cname = spec["name"]
-            svc_name = spec["compose_service"]
-            svc_config = services.get(svc_name, {})
+            svc_name, svc_config = _managed_service_config(key, spec, services)
 
             try:
                 container = client.containers.get(cname)
+                if not _declared_project_matches_runtime(
+                    key, container, manager_project=manager_project
+                ):
+                    # 선언이 실행 중 라벨과 어긋난다 — 어느 쪽이 맞는지 Manager는
+                    # 모른다. 설정을 그리지 않는 쪽이 fail-close다.
+                    svc_config = {}
                 metric = metrics_collector.get_latest_metric(
                     key,
                     docker_id=str(container.attrs.get("Id") or ""),
@@ -657,6 +836,7 @@ class DockerService:
                         "state": container.attrs.get("State", {}).get("Status", "unknown"),
                         "ports": ports,
                         "metrics": metric,
+                        "external_project": _external_project_label(key),
                         "config": {
                             "ports": svc_config.get("ports", []),
                             "env": svc_config.get("environment", {}),
@@ -687,6 +867,7 @@ class DockerService:
                             "io_read": 0,
                             "io_write": 0,
                         },
+                        "external_project": _external_project_label(key),
                         "config": {
                             "ports": svc_config.get("ports", []),
                             "env": svc_config.get("environment", {}),
@@ -718,6 +899,7 @@ class DockerService:
                             "io_read": 0,
                             "io_write": 0,
                         },
+                        "external_project": _external_project_label(key),
                         "config": {
                             "ports": svc_config.get("ports", []),
                             "env": svc_config.get("environment", {}),
@@ -735,6 +917,16 @@ class DockerService:
             return {"success": False, "error": f"Container {container_id} is not managed."}
         if action not in {"start", "stop", "restart"}:
             return {"success": False, "error": f"Invalid action: {action}"}
+        if external_project_for_container(container_id) is not None:
+            # 형제 컨테이너의 수명주기는 Docker SDK만 쓴다. c6c lock과 Manager mutation
+            # 환경 계약은 **Manager 자신의 compose**를 지키는 장치라, 남의 컨테이너를
+            # 껐다 켜는 데 그것을 요구하면 기능이 통째로 죽는다 — 실제로 죽어 있었다
+            # (적대 리뷰 2026-09-18 A-F7-f: 공개 진입점에서
+            # `KTDM_DEPLOYMENT_ENVIRONMENT must be explicitly set`으로 거부됐다).
+            # 검사가 `_unlocked` 층만 태워서 못 봤다. **C-1과 똑같은 실수다.**
+            return self._control_container_unlocked(
+                container_id, action, environment_snapshot=None
+            )
         with c6c_deployment_lock_from_environment() as lock_snapshot:
             environment_snapshot = _capture_compose_environment_snapshot(
                 environment_override=None
@@ -757,7 +949,7 @@ class DockerService:
         container_id: str,
         action: str,
         *,
-        environment_snapshot: ComposeEnvironmentSnapshot,
+        environment_snapshot: ComposeEnvironmentSnapshot | None,
     ) -> dict[str, Any]:
         """검증과 host lock을 이미 확보한 container SDK 변경 구현."""
 
@@ -779,8 +971,14 @@ class DockerService:
                     f"Container {cname} not found. Attempting to create and start it from docker-compose.yml settings."
                 )
                 try:
-                    compose_cfg = get_compose_config(
-                        environment_snapshot.compose_path
+                    # 스냅샷이 없으면(= 형제 컨테이너 경로) Manager compose를 읽지
+                    # 않는다. 빈 설정으로 내려가면 바로 아래
+                    # `_update_container_config_unlocked`의 guard가 **한 자리에서**
+                    # 거부한다 — 여기서 따로 거부하면 자리가 둘이 된다.
+                    compose_cfg = (
+                        get_compose_config(environment_snapshot.compose_path)
+                        if environment_snapshot is not None
+                        else {}
                     )
                     services = compose_cfg.get("services", {})
                     svc_name = MANAGED_CONTAINERS[container_id]["compose_service"]
@@ -817,7 +1015,10 @@ class DockerService:
                 except (
                     ComposePostMutationContractError,
                     ComposeCandidateContractError,
+                    ExternalContainerMutationError,
                 ):
+                    # guard를 `create_err`로 삼키면 "생성 과정에서 실패"라는 엉뚱한
+                    # 문구가 되고, 진짜 이유(남의 프로젝트다)가 사라진다.
                     raise
                 except Exception as create_err:
                     return {
@@ -970,6 +1171,22 @@ class DockerService:
         # 읽기라 lock이 필요 없다 — env의 기존(baseline) 값이 이미 `${...}` 보간이었는지
         # 알아야 "보간 → 리터럴 되돌리기"만 정확히 잡고 원래부터 리터럴이던 값(불리언
         # flag 등)은 건드리지 않는다.
+        external = external_project_for_container(container_id)
+        if external is not None:
+            # **guard가 첫 관문이어야 한다.** 첫 판은 이 아래 lock·env 계약·Manager
+            # baseline 조회를 전부 지난 뒤에야 거부해서, 거부돼야 할 요청이 전역 배포
+            # mutex를 건드리고 남의 컨테이너 요청의 답으로 Manager 계약 얘기가 나왔다
+            # (적대 리뷰 2026-09-18 A-F10 / B-F7). 거부 자체의 자리는 여전히
+            # `_update_container_config_unlocked` 하나다 — 여기서는 그 자리로 곧장
+            # 내려보내기만 한다.
+            return self._update_container_config_unlocked(
+                container_id,
+                new_ports,
+                new_env,
+                new_volumes,
+                new_networks,
+                environment_snapshot=None,
+            )
         svc_name = MANAGED_CONTAINERS[container_id]["compose_service"]
         baseline_env = (
             get_compose_config().get("services", {}).get(svc_name, {}).get("environment")
@@ -1010,11 +1227,21 @@ class DockerService:
         new_networks: list[str],
         *,
         replacement_service_config: dict[str, Any] | None = None,
-        environment_snapshot: ComposeEnvironmentSnapshot,
+        environment_snapshot: ComposeEnvironmentSnapshot | None,
     ) -> dict[str, Any]:
         """검증과 host lock을 이미 확보한 config transaction 구현."""
 
         spec = MANAGED_CONTAINERS[container_id]
+        external = external_project_for_container(container_id)
+        if external is not None:
+            # 변경 세 경로(update / reset / NotFound 재생성)가 전부 여기로 모인다.
+            # guard가 한 곳인 것이 요점이다 — 호출부로 흩으면 한 벌을 지워도 아무
+            # 검사가 빨개지지 않는다.
+            raise ExternalContainerMutationError(
+                f"container '{container_id}' belongs to external compose project "
+                f"'{external.project}'; the Manager does not edit another "
+                "project's compose file"
+            )
         cname = spec["name"]
         svc_name = spec["compose_service"]
 
@@ -1334,6 +1561,11 @@ class DockerService:
         """Reset container configuration in docker-compose.yml to default and recreate it."""
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}
+        if external_project_for_container(container_id) is not None:
+            # `update`와 같은 이유로 첫 관문에서 내려보낸다. 거부는 아래 한 자리에서.
+            return self._reset_container_config_unlocked(
+                container_id, environment_snapshot=None
+            )
         with c6c_deployment_lock_from_environment() as lock_snapshot:
             environment_snapshot = _capture_compose_environment_snapshot(
                 environment_override=None
@@ -1354,10 +1586,23 @@ class DockerService:
         self,
         container_id: str,
         *,
-        environment_snapshot: ComposeEnvironmentSnapshot,
+        environment_snapshot: ComposeEnvironmentSnapshot | None,
     ) -> dict[str, Any]:
         """기본값 계산부터 재생성까지 한 config transaction으로 수행한다."""
 
+        # **순서가 문제였다.** 라운드 3에서 여기의 조건을 "결박되지 않는 중복"이라며
+        # 지웠는데 그 판단이 틀렸다 — 아래 두 early-return이 guard보다 **먼저** 돌아서
+        # 외부 컨테이너 9개 중 8개가 `Service db not found in default config backup.`
+        # 이라는 **영문 내부 메시지 + HTTP 500 + code 없음**으로 답했다(적대 리뷰
+        # 2026-09-18 E-R2-02 실측). 정상 동작하는 유일한 경우가 이름이 우연히 겹치는
+        # `prometheus`였다 — docstring이 "가장 위험하다"고 지목한 그 경우다.
+        #
+        # 지울 것이 아니라 **앞으로 옮길** 것이었다. 거부 문구는 아래 한 자리와 같은
+        # 예외를 쓴다.
+        if external_project_for_container(container_id) is not None:
+            return self._update_container_config_unlocked(
+                container_id, [], {}, [], [], environment_snapshot=None
+            )
         if not self._default_compose_config:
             return {"success": False, "error": "No default config backup available."}
 

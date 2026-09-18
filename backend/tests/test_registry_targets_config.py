@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import subprocess
 import sys
@@ -442,13 +443,7 @@ def test_real_config_only_names_services_that_exist_in_docker_compose() -> None:
 
     # 외부 프로젝트(형제 저장소)의 서비스는 이 검사의 전제 밖이다 — 정본 compose가
     # 다른 저장소에 있어 이 저장소의 커밋으로 묶을 수 없다. 면제하되, 면제가 구멍이
-    # 되지 않도록 아래에서 **더 강한** 검사를 함께 한다.
-    declared_projects = {
-        spec["external_project"]["project"]
-        for spec in config["targets"].values()
-        if spec.get("external_project")
-    }
-
+    # 되지 않도록 소속 무결성을 **검증기 안에서** 함께 본다(아래 마지막 줄).
     dangling: list[str] = []
     for container_id, spec in config["containers"].items():
         if spec.get("external_project"):
@@ -468,38 +463,15 @@ def test_real_config_only_names_services_that_exist_in_docker_compose() -> None:
         f"docker-targets.yml이 compose에 없는 서비스를 가리킨다: {dangling!r}"
     )
 
-    # (1) 컨테이너가 가리키는 프로젝트는 실제로 선언된 것이어야 한다.
-    #     이것이 없으면 `external_project: kor-travel-weater` 같은 오타가 면제만 받고
-    #     조용히 통과한다.
-    unknown_projects = sorted(
-        f"containers.{container_id}.external_project={spec['external_project']!r}"
-        for container_id, spec in config["containers"].items()
-        if spec.get("external_project")
-        and spec["external_project"] not in declared_projects
-    )
-    assert not unknown_projects, (
-        f"어떤 target도 선언하지 않은 프로젝트를 가리킨다: {unknown_projects!r} "
-        f"(선언된 것: {sorted(declared_projects)!r})"
-    )
-
-    # (2)(3) target과 컨테이너의 소속이 어긋나면 안 된다.
-    mismatched: list[str] = []
-    for target_id, spec in config["targets"].items():
-        expected = (
-            spec["external_project"]["project"] if spec.get("external_project") else None
-        )
-        for container_id in spec.get("containers") or []:
-            actual = config["containers"][container_id].get("external_project")
-            if actual != expected:
-                mismatched.append(
-                    f"targets.{target_id} (project={expected!r}) -> "
-                    f"containers.{container_id} (project={actual!r})"
-                )
-    assert not mismatched, (
-        "target과 컨테이너의 프로젝트 소속이 어긋난다 — Manager target의 컨테이너에는"
-        f" external_project가 없어야 하고, 외부 target의 컨테이너는 전부 같은"
-        f" 프로젝트여야 한다: {mismatched!r}"
-    )
+    # (1)(2)(3) 소속 무결성은 **검증기 안**에 있다(`_validate_external_wiring`).
+    # 여기 assert로 두면 저장소의 설정만 보므로 설치본이나
+    # `KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE`로 온 설정에는 아무 효력이 없고
+    # `ktdctl targets validate`도 잡지 못했다(적대 리뷰 2026-09-18 A-H1).
+    #
+    # 옮기고 나서도 이 사본을 남겨 뒀던 것이 다음 리뷰의 지적이다 — 같은 규칙이 두
+    # 벌이면 한쪽을 지워도 아무 검사가 빨개지지 않는다. 검증기를 태우는 검사는
+    # `test_multi_project_boundaries.py`에 있다.
+    registry_module._validate_targets_config(copy.deepcopy(config), label="<real>")
 
 
 # ── GM-17 선행조건: targets 문서의 자리와 무결성 ─────────────────────────

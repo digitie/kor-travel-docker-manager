@@ -159,9 +159,43 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
     뒤 재기동 전에 `ktdctl targets validate`로 참조 무결성을 미리 확인할 수 있다."""
 
     try:
-        load_targets_config()
+        config = load_targets_config()
     except TARGETS_CONFIG_ERRORS as exc:
         print(str(exc), file=sys.stderr)
+        return 1
+
+    # 좌표가 **실재하는지**는 여기서만, 그리고 **요청받았을 때만** 본다.
+    #
+    # 첫 판은 무조건 돌렸는데, 형제 저장소는 n150에만 있으므로 개발 checkout·CI·그
+    # 밖의 모든 호스트에서 스키마가 완벽해도 exit 1이 됐다(적대 리뷰 2026-09-18 E-F3).
+    # 이 명령은 문서가 "편집 후 재기동 **전에**" 쓰라고 규정한 정본 pre-flight라,
+    # 거짓 실패가 곧 "내 편집이 틀렸다"는 잘못된 신호다.
+    #
+    # `_validate_targets_config`에 넣지 않는 이유는 따로다 — 그쪽은 모든 로드 경로에서
+    # 도는 순수 스키마 검사여야 하고, 파일시스템 접근을 넣으면 오프라인 로드와 합성
+    # 설정 검사가 함께 깨진다.
+    if not getattr(args, "check_coordinates", False):
+        print("OK")
+        return 0
+    missing: list[str] = []
+    for target_id, spec in (config.get("targets") or {}).items():
+        external = spec.get("external_project")
+        if not external:
+            continue
+        working_dir = Path(str(external["working_dir"]))
+        if not working_dir.is_dir():
+            missing.append(f"targets.{target_id}.external_project.working_dir: {working_dir}")
+            continue
+        for name in external["config_files"]:
+            candidate = working_dir / str(name)
+            if not candidate.is_file():
+                missing.append(
+                    f"targets.{target_id}.external_project.config_files: {candidate}"
+                )
+    if missing:
+        print("declared external coordinates do not exist here:", file=sys.stderr)
+        for line in missing:
+            print(f"  {line}", file=sys.stderr)
         return 1
     print("OK")
     return 0
@@ -191,12 +225,28 @@ def _cmd_ensure(args: argparse.Namespace) -> int:
 
 
 def _cmd_logs(args: argparse.Namespace) -> int:
-    result = compose_service.logs(
-        args.name,
-        follow=args.follow,
-        tail=args.tail,
-        capture_output=not args.follow,
-    )
+    try:
+        result = compose_service.logs(
+            args.name,
+            follow=args.follow,
+            tail=args.tail,
+            capture_output=not args.follow,
+        )
+    except ValueError as exc:
+        # `logs`만 이 절이 없어서 `DeploymentContractError`가 raw traceback으로
+        # 새어 나갔다(적대 리뷰 2026-09-18). 지금 그 경로는 "외부 target이 자기
+        # 프로젝트에 runtime 서비스를 하나도 선언하지 않았다"는 거부다 — 설정 편집
+        # 한 줄로 열리는 평범한 오설정이다.
+        print(str(exc), file=sys.stderr)
+        return 2
+    omitted = result.get("omitted_projects") or []
+    if omitted and not args.json:
+        # 보여 주지 않은 것을 말하지 않으면 그것이 조용한 생략이다.
+        print(
+            f"note: {', '.join(omitted)} 프로젝트의 로그는 포함하지 않았습니다 "
+            "(한 스트림으로 합칠 수 없습니다). 그 target을 따로 지정하세요.",
+            file=sys.stderr,
+        )
     return _emit_process_result(result, json_output=args.json)
 
 
@@ -1749,6 +1799,14 @@ def build_parser() -> argparse.ArgumentParser:
     targets_validate = targets_subparsers.add_parser(
         "validate",
         help="config/docker-targets.yml의 참조 무결성을 재기동 전에 미리 검증합니다.",
+    )
+    targets_validate.add_argument(
+        "--check-coordinates",
+        action="store_true",
+        help=(
+            "외부 프로젝트의 working_dir·config_files가 이 호스트에 실재하는지 함께 "
+            "확인합니다. 형제 저장소가 있는 배포 호스트에서만 의미가 있습니다."
+        ),
     )
     targets_validate.set_defaults(func=_cmd_targets_validate)
 

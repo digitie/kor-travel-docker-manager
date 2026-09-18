@@ -189,9 +189,11 @@ from kor_travel_docker_manager.services.pinvi_database_role_credentials import (
     trusted_pinned_runtime_project_root,
 )
 from kor_travel_docker_manager.services.registry import (
+    MANAGED_CONTAINERS,
     ExternalProject,
     container_id_to_compose_service,
     external_project_for_container,
+    external_project_for_target,
     get_project_root,
     init_steps_for_target,
     is_known_target,
@@ -3512,6 +3514,13 @@ def _application_300_owner_only_receipt_status(path: Path) -> str:
     return "unsafe"
 
 
+#: 형제 프로젝트 호출에 물려줄 최소 환경. Compose에서 셸 환경은 `.env`보다 우선하므로
+#: Manager의 변수를 그대로 상속하면 남의 프로젝트 설정을 조용히 덮어쓴다.
+_EXTERNAL_PROJECT_PASSTHROUGH_ENV: Final = frozenset(
+    {"PATH", "HOME", "USER", "LANG", "LC_ALL", "TMPDIR", "XDG_RUNTIME_DIR"}
+)
+
+
 class ComposeService:
     def capture_transaction_unlocked(
         self,
@@ -3772,20 +3781,42 @@ class ComposeService:
         expected_environment_snapshot: ComposeEnvironmentSnapshot | None = None,
         expected_external_input_snapshot: ComposeExternalInputSnapshot | None = None,
         transaction: ComposeTransactionSnapshot | None = None,
+        external: ExternalProject | None = None,
         _frozen_recovery_capability: object | None = None,
     ) -> dict[str, Any]:
+        # **guard와 분기가 같은 변수를 본다.** 첫 판은 guard를 `mutation_capability`
+        # 같은 **인자의 존재**로 판정했는데, 변경 분기로 들어갈지를 실제로 정하는 것은
+        # `_compose_mutation_identifiers(args)`다. 그래서 `run(["up","-d"], external=X)`가
+        # guard를 통과했고, 그 아래 분기는 `external`을 조용히 버려서 형제 프로젝트를
+        # 지시한 명령이 **Manager 자신의 프로젝트에** 갔다(적대 리뷰 2026-09-18 F1).
+        #
+        # 조건을 두 벌 쓰면 한쪽만 바뀌는 것이 이 버그의 모양이었다. 한 변수로 합치면
+        # 드리프트가 구조적으로 불가능하다 — **이 변수를 분기에서 다시 풀어 쓰지 마라.**
+        mutation_identifiers = self._compose_mutation_identifiers(args)
+        enters_mutation_machinery = (
+            bool(mutation_identifiers)
+            or transaction is not None
+            or expected_environment_snapshot is not None
+        )
+        if external is not None and (
+            enters_mutation_machinery
+            or mutation_capability is not None
+            or expected_system_bind_snapshots is not None
+        ):
+            # 형제 프로젝트는 C6c 변경 기계를 통과한 적이 없다. 읽기(ps/logs)만
+            # 허용하고 변경 경로는 여기서 끊는다 — `ensure_target`의 거부와 같은
+            # 이유이고, 이쪽이 더 낮은 층이라 우회가 어렵다.
+            raise DeploymentContractError(
+                "external compose projects are read-only from the Manager; "
+                "mutation paths are reserved for the Manager's own project"
+            )
         if (
             _frozen_recovery_capability is not None
             and _frozen_recovery_capability is not _TRUSTED_FROZEN_RECOVERY_CAPABILITY
         ):
             raise ComposeCandidateContractError("untrusted frozen recovery capability")
         frozen_recovery = _frozen_recovery_capability is _TRUSTED_FROZEN_RECOVERY_CAPABILITY
-        mutation_identifiers = self._compose_mutation_identifiers(args)
-        if (
-            mutation_identifiers
-            or transaction is not None
-            or expected_environment_snapshot is not None
-        ):
+        if enters_mutation_machinery:
             if frozen_recovery:
                 if transaction is None or environment is not None:
                     raise ComposeCandidateContractError(
@@ -3932,6 +3963,7 @@ class ComposeService:
             environment_snapshot=None,
             external_input_snapshot=None,
             materialized_compose=None,
+            external=external,
         )
 
     def validate_compose_candidate_document(
@@ -4247,6 +4279,27 @@ class ComposeService:
         materialized_compose: Mapping[str, Any] | None,
         external: ExternalProject | None = None,
     ) -> dict[str, Any]:
+        if external is not None and (
+            bool(self._compose_mutation_identifiers(args))
+            or environment_snapshot is not None
+            or materialized_compose is not None
+            or expected_compose_source_bytes is not None
+            or expected_system_bind_snapshots is not None
+        ):
+            # **마지막 그물.** `run()`의 guard를 고쳐도 변경 분기의 두 호출 지점은
+            # `external`을 넘기지 않는 채 남는다 — 거기에 `assert`를 박으면 자리가
+            # 둘이 되어 한쪽을 지워도 아무 검사가 빨개지지 않는다(S2에서 배운 것).
+            # 그래서 여기 한 자리에서 거부한다.
+            #
+            # **술어가 `run()`과 같은 것을 봐야 한다.** 첫 판은 여기서 변경 *입력*
+            # 넷만 봤는데, 변경 여부를 정하는 것은 **명령**이다 — 그래서
+            # `_run_unlocked(["down","-v"], external=X)`가 형제 프로젝트의 볼륨을
+            # 지웠다(적대 리뷰 2026-09-18 E-F2). 주석은 "가장 낮은 층이라 우회되지
+            # 않는다"고 적었는데 술어가 두 벌이면 그 말이 성립하지 않는다.
+            raise DeploymentContractError(
+                "external compose projects cannot enter the Manager mutation "
+                "machinery"
+            )
         command = self.build_command(
             args,
             canonical_single_file=materialized_compose is not None,
@@ -4285,23 +4338,52 @@ class ComposeService:
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
+        working_directory = get_project_root()
+        if external is not None:
+            # **`-f`는 `--project-directory`가 아니라 cwd 기준이다.** Manager 루트에서
+            # 돌리면 `-f docker-compose.yml`이 Manager 자신의 compose를 연다(적대 리뷰
+            # 2026-09-18 실측: `airport` 명령이 Manager의 concierge-ui 보간 오류를 냈다).
+            working_directory = external.working_dir
+            # 그리고 Manager의 프로세스 환경을 물려주지 않는다. Compose에서 셸 환경은
+            # `.env`보다 **우선**하므로, 상속하면 형제 프로젝트의 `.env`를 조용히
+            # 덮어쓴다 — `--env-file`을 뺀 것만으로는 그것을 막지 못했다.
+            #
+            # **좁히는 것은 상속되는 부분뿐이다.** 첫 판은 이 블록이
+            # `if process_environment is None:` 안에 있어서, `environment` 인자가
+            # 주어지면 그 앞의 `{**os.environ, **environment}`가 그대로 나갔다 —
+            # 무조건문으로 적은 문서가 조건부였다(적대 리뷰 2026-09-18 F2). 명시 인자는
+            # 호출자의 의도적 선택이므로 좁힌 것 **위에** 덮는다.
+            inherited = {
+                name: value
+                for name, value in os.environ.items()
+                if name in _EXTERNAL_PROJECT_PASSTHROUGH_ENV
+                or name.startswith("DOCKER_")
+            }
+            process_environment = (
+                inherited if environment is None else {**inherited, **environment}
+            )
         try:
             completed = subprocess.run(
                 command,
-                cwd=get_project_root(),
+                cwd=working_directory,
                 text=True,
                 capture_output=capture_output,
                 check=False,
                 env=process_environment,
                 input=process_input,
             )
-        except OSError:
+        except OSError as exc:
+            # 예외 이름조차 받지 않아서, `working_dir`이 없다는 가장 흔할 오설정이
+            # "docker 바이너리 없음"과 **같은 문구**를 냈다(적대 리뷰 2026-09-18).
+            # cwd가 호스트마다 다른 값이 된 지금은 그 구별이 진단의 전부다.
             return {
                 "success": False,
                 "returncode": 127,
                 "command": command,
                 "stdout": "",
-                "stderr": "docker compose command could not start",
+                "stderr": (
+                    f"docker compose command could not start in {working_directory}: {exc}"
+                ),
             }
 
         stdout = completed.stdout if capture_output else ""
@@ -8191,8 +8273,16 @@ class ComposeService:
             group_result["project"] = group.project_label
             group_result["services"] = list(group.services)
             group_results.append(group_result)
+        # `returncode`가 없으면 `cli._emit_process_result`가 `int(result.get(
+        # "returncode", 1))`로 **항상 1**을 낸다 — 전부 running이어도 exit 1이다.
+        failed = [item for item in group_results if not item.get("success")]
         return {
-            "success": all(bool(item.get("success")) for item in group_results),
+            "success": not failed,
+            "returncode": 0 if not failed else 1,
+            "command": None,
+            "stderr": "\n".join(
+                str(item.get("stderr") or "") for item in group_results
+            ).strip(),
             "target": target,
             "target_sequence": target_sequence_for_target(target),
             "services": services,
@@ -8214,28 +8304,65 @@ class ComposeService:
         capture_output: bool = True,
     ) -> dict[str, Any]:
         external: ExternalProject | None = None
+        omitted_projects: list[str] = []
         if is_known_target(name):
             services = runtime_services_for_target(name)
             groups = service_groups_for_target(name, runtime_only=True)
-            external_groups = [group for group in groups if group.external is not None]
-            if external_groups:
-                if len(groups) > 1:
-                    # 여러 프로젝트의 로그를 한 스트림으로 합칠 수 없다(특히 `-f`).
-                    # 어느 프로젝트를 볼지 고르게 한다 — 조용히 하나만 보여주면
-                    # 나머지가 없는 것처럼 읽힌다.
-                    raise DeploymentContractError(
-                        f"target '{name}' spans multiple compose projects "
-                        f"({', '.join(group.project_label for group in groups)}); "
-                        "ask for one project's target instead"
-                    )
-                external = external_groups[0].external
-                services = list(external_groups[0].services)
+            # **지목한 target 자신의 프로젝트로 좁힌다.** 여러 프로젝트의 로그를 한
+            # 스트림으로 합칠 수는 없는데, 첫 판은 그럴 때 "한 프로젝트의 target을
+            # 고르라"며 거부했다. 그 조언은 `airport`에 대해 **따를 수 없었다** —
+            # `depends_on: [airport-db]` 때문에 의존 폐포가 **항상** 두 프로젝트에
+            # 걸치고, `airport`이 자기 서비스를 가리키는 유일한 이름이기 때문이다
+            # (적대 리뷰 2026-09-18 F3).
+            #
+            # Manager target은 폐포 전체가 같은 프로젝트(`None`)라 **한 글자도 바뀌지
+            # 않는다.** 빠진 프로젝트는 조용히 버리지 않고 결과에 실어 호출자가 알린다
+            # — 조용한 생략이 원래 거부의 이유였다.
+            own_external = external_project_for_target(name)
+            own_project = own_external.project if own_external is not None else None
+            selected = [
+                group
+                for group in groups
+                if (group.external.project if group.external is not None else None)
+                == own_project
+            ]
+            omitted_projects = [
+                group.project_label for group in groups if group not in selected
+            ]
+            if selected:
+                external = selected[0].external
+                services = [
+                    service for group in selected for service in group.services
+                ]
+            elif own_external is not None:
+                # **술어를 폐포가 아니라 지목한 target의 소속에 건다.** 첫 판은
+                # `elif groups:`였는데 `service_groups_for_target`이 빈 묶음을 버리므로
+                # **폐포가 비면 이 팔이 아예 돌지 않았다** — 그러면 `external`은 `None`
+                # 인데 `services`는 빈 목록이라, `docker compose -f <Manager compose>
+                # logs`가 **서비스 필터 없이** 돌면서 Manager 전체 서비스의 로그를 그
+                # target의 것으로 제시하고 `omitted_projects: []`로 "빠뜨린 것 없음"을
+                # 단언했다(적대 리뷰 2026-09-18 E-R2-01 실측, CLI로 재현).
+                #
+                # 내가 쓴 검사가 그것을 못 본 이유가 더 중요하다 —
+                # `service_groups_for_target`을 **의존 묶음만 남기도록** 스텁해서
+                # `groups`가 비지 않는 절반만 태웠다.
+                #
+                # 빈 명령을 Manager 프로젝트에 돌리는 것도 답이 아니다 — 운영자가
+                # 물어본 것은 이 target이다. 말하고 멈춘다.
+                reached = ", ".join(group.project_label for group in groups) or "nothing"
+                raise DeploymentContractError(
+                    f"target '{name}' declares no runtime services in its own "
+                    f"project ({own_project}); the closure only reaches {reached}"
+                )
+        elif name in MANAGED_CONTAINERS:
+            # **컨테이너 id는 compose service 이름이 아니다.** 첫 판은 외부 컨테이너만
+            # 번역하고 Manager 컨테이너는 id를 그대로 넘겼다 — `kor-travel-map-postgresql`
+            # 처럼 둘이 다른 이름 넷에서 `no such service`다(적대 리뷰 2026-09-18 B-F12,
+            # 선재 결함). 번역은 소속과 무관하므로 양쪽에 똑같이 한다.
+            external = external_project_for_container(name)
+            services = [container_id_to_compose_service(name)]
         else:
             services = [name]
-            owner = external_project_for_container(name)
-            if owner is not None:
-                external = owner
-                services = [container_id_to_compose_service(name)]
 
         args = ["logs", f"--tail={tail}"]
         if follow:
@@ -8246,6 +8373,9 @@ class ComposeService:
         if is_known_target(name):
             result["target_sequence"] = target_sequence_for_target(name)
         result["services"] = services
+        # 빈 목록이어도 키를 둔다 — 소비자가 `.get()`의 기본값과 "정말 없음"을
+        # 구분하지 못하는 것이 조용한 생략의 시작이다.
+        result["omitted_projects"] = omitted_projects
         return result
 
 

@@ -51,6 +51,34 @@
 `kor-travel-airport-db` 프로젝트로 돈다). `airport`이 `airport-db`에 `depends_on`으로
 매달려 있어 `status airport`는 두 프로젝트를 순서대로 조회한다.
 
+호출은 **그 프로젝트의 `working_dir`에서** 돈다. compose가 `-f`를 푸는 기준은
+`--project-directory`가 아니라 **cwd**라서, Manager 루트에서 돌리면
+`-f docker-compose.yml`이 Manager 자신의 compose를 연다. 그리고 그 호출이 물려받는
+환경은 **명시된 allowlist뿐이다**(`PATH`·`HOME`·`USER`·`LANG`·`LC_ALL`·`TMPDIR`·
+`XDG_RUNTIME_DIR`과 `DOCKER_*`) — Compose에서 셸 환경은 `.env`보다 **우선**하므로
+전부 상속하면 형제 프로젝트의 설정을 조용히 덮어쓴다.
+
+`ktdctl logs <외부 target>`은 **그 target 자신의 프로젝트**만 보여 준다. 여러
+프로젝트의 로그는 한 스트림으로 합칠 수 없고(특히 `-f`), `airport`은 `airport-db`에
+의존하므로 폐포가 항상 두 프로젝트에 걸친다. 빠진 프로젝트는 stderr에 한 줄로 알린다.
+target이 **자기 프로젝트에 runtime 서비스를 하나도 선언하지 않으면** 거부한다 —
+그때 폐포만 남기면 남의 서비스 이름을 Manager compose에 물어보게 된다.
+
+좌표가 이 호스트에 실재하는지는 `ktdctl targets validate --check-coordinates`가 본다.
+기본값이 아닌 이유는 형제 저장소가 **배포 호스트에만** 있기 때문이다 — 무조건 돌리면
+개발 checkout과 CI에서 스키마가 완벽해도 실패한다.
+
+Manager는 외부 컨테이너의 **compose 설정을 편집하지 않는다.** `compose_service` 이름은
+그 프로젝트 안에서만 유일해서(weather의 `prometheus`와 Manager의 `prometheus`가 실제로
+겹친다), Manager 문서에서 같은 이름을 찾으면 전혀 다른 서비스가 나온다. 그래서 목록
+화면은 외부 컨테이너의 `config`를 비워 보내고, 설정 변경·초기화·부재 시 재생성은
+거부한다. 수명주기(start/stop/restart)만 Docker SDK로 동작한다.
+
+`kor-travel-weather-migrate`는 정상 상태가 `exited(0)`인 one-shot이라 `containers:`에
+등재하지 않는다 — 등재하면 대시보드에 상시 비정상 카드로 남고 metrics 관측 대상이
+된다(`rustfs-init`이 같은 이유로 빠져 있다). `services:`에는 남아 있다 — 외부 target의
+그 목록은 `ensure`(외부에는 거부된다)가 아니라 `status_target`의 묶음 구성이 쓴다.
+
 Concierge scheduler와 Map Dagster daemon은 외부 포트를 열지 않는 내부 실행 서비스다.
 Geo Dagster webserver는 registry의 일반 runtime 표에는 없는 보조 서비스지만 Compose에서
 `12502`를 사용한다. PinVi의 `srv`와 `main`은 `pinvi` target 별칭이다.

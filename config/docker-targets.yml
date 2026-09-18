@@ -256,14 +256,6 @@ containers:
     connection: "http://127.0.0.1:14104"
     expected_ports:
       - "14104:9090"
-  kor-travel-weather-migrate:
-    name: kor-travel-weather-migrate-1
-    compose_service: migrate
-    external_project: kor-travel-weather
-    role: weather-migrate
-    display_name: Kor Travel Weather 마이그레이션(one-shot)
-    connection: "일회성 작업 — 정상 상태는 exited(0)다"
-    expected_ports: []
   kor-travel-airport-postgresql:
     name: kor-travel-airport-db-postgres-1
     compose_service: postgres
@@ -583,34 +575,6 @@ targets:
       - pinvi-dagster
     init_steps: []
 
-# ── compose bind allowlist (GM-17 본작업 A) ─────────────────────────────
-#
-# production compose candidate에서 **허용되는 host bind의 정본**이다. 종전에는
-# c6c_deployment.py의 `_CANDIDATE_ALLOWED_OPERATOR_BINDS` 상수였고, 그래서 새 bind
-# 하나를 더하거나 여섯 번째 프로젝트의 pgdata를 붙이려면 backend 코드 수정 +
-# trusted release 재설치가 필요했다(GM-17의 실질 병목). 자리를 여기로 옮기고
-# 코드에는 **검증 규칙만** 남긴다.
-#
-# **이 절은 보안 경계다.** 여기 없는 bind는 candidate 검증이 거부한다
-# ("bind is not in the canonical baseline"). 그래서 이 파일 자체가 신뢰돼야 하고,
-# 그 선행조건은 `registry.get_targets_config_path`/`_read_targets_bytes`가 닫았다 —
-# trusted 설치본에서는 자리를 env로 옮길 수 없고 root 소유·비쓰기가 강제된다.
-# 그것이 초록이 아니었다면 이 이관 자체가 보안 회귀였을 것이다.
-#
-# 키는 (compose service, container_path, read_only)이고 값은 **compose 문서에 적힌
-# 그대로의 host source**다. `${VAR:-default}` 형태를 그대로 둔다 — `_expand_env_path`가
-# effective env로 확장해 비교하므로 env만 설정하면 코드 수정 없이 다른 호스트로
-# 이식된다.
-#
-# **기본값의 개인 경로를 지우는 것은 이 작업이 아니다.** 로컬 dev와 n150 prod 둘 다
-# 지금 그 기본값에만 의존해 돌고 있어서, 조율 없이 `${VAR:?}`로 필수화하면 다음
-# 재시작이 즉시 깨진다(GM-17 검증 노트의 실측). 이 이관은 자리만 옮기고 값은 한 글자도
-# 바꾸지 않는다 — 옮기기 전후의 해석된 매핑이 정확히 같다는 것을 테스트가 결박한다.
-#
-# 서비스 19개 중 8개(one-shot init 넷, geo dagster 쌍, db role bootstrap 둘)는
-# `containers:`에 없다. 그래서 컨테이너 정의 안이 아니라 최상위 절로 둔다 — one-shot을
-# 컨테이너 레지스트리에 끼워 넣으면 `status`/`ensure`/metrics가 그것을 상시 관리 대상으로
-# 보게 된다.
   airport-db:
     # 형제 프로젝트다 — compose 정본이 이 저장소 밖에 있고, 배포는 각 저장소가
     # 계속 소유한다. Manager는 상태를 보고 컨테이너 수명주기(start/stop/restart)만
@@ -689,12 +653,45 @@ targets:
       - prometheus
     containers:
       - kor-travel-weather-db
-      - kor-travel-weather-migrate
       - kor-travel-weather-api
       - kor-travel-weather-dagster
       - kor-travel-weather-dagster-gateway
       - kor-travel-weather-web
       - kor-travel-weather-prometheus
+
+# ── compose bind allowlist (GM-17 본작업 A) ─────────────────────────────
+#
+# production compose candidate에서 **허용되는 host bind의 정본**이다. 종전에는
+# c6c_deployment.py의 `_CANDIDATE_ALLOWED_OPERATOR_BINDS` 상수였고, 그래서 새 bind
+# 하나를 더하거나 여섯 번째 프로젝트의 pgdata를 붙이려면 backend 코드 수정 +
+# trusted release 재설치가 필요했다(GM-17의 실질 병목). 자리를 여기로 옮기고
+# 코드에는 **검증 규칙만** 남긴다.
+#
+# **이 절은 보안 경계다.** 여기 없는 bind는 candidate 검증이 거부한다
+#
+# **이 절은 Manager 자신의 후보에만 적용된다.** 키가 (compose service,
+# container_path, read_only)뿐이라 프로젝트 차원이 없다 — 형제 프로젝트를 겨냥해
+# 여기에 한 줄을 쓰면 같은 이름의 **Manager 서비스**에 대한 allowlist가 넓어진다
+# (`prometheus`가 실제로 두 프로젝트에 다 있다). 형제의 bind는 그 저장소가 소유한다.
+# ("bind is not in the canonical baseline"). 그래서 이 파일 자체가 신뢰돼야 하고,
+# 그 선행조건은 `registry.get_targets_config_path`/`_read_targets_bytes`가 닫았다 —
+# trusted 설치본에서는 자리를 env로 옮길 수 없고 root 소유·비쓰기가 강제된다.
+# 그것이 초록이 아니었다면 이 이관 자체가 보안 회귀였을 것이다.
+#
+# 키는 (compose service, container_path, read_only)이고 값은 **compose 문서에 적힌
+# 그대로의 host source**다. `${VAR:-default}` 형태를 그대로 둔다 — `_expand_env_path`가
+# effective env로 확장해 비교하므로 env만 설정하면 코드 수정 없이 다른 호스트로
+# 이식된다.
+#
+# **기본값의 개인 경로를 지우는 것은 이 작업이 아니다.** 로컬 dev와 n150 prod 둘 다
+# 지금 그 기본값에만 의존해 돌고 있어서, 조율 없이 `${VAR:?}`로 필수화하면 다음
+# 재시작이 즉시 깨진다(GM-17 검증 노트의 실측). 이 이관은 자리만 옮기고 값은 한 글자도
+# 바꾸지 않는다 — 옮기기 전후의 해석된 매핑이 정확히 같다는 것을 테스트가 결박한다.
+#
+# 서비스 19개 중 8개(one-shot init 넷, geo dagster 쌍, db role bootstrap 둘)는
+# `containers:`에 없다. 그래서 컨테이너 정의 안이 아니라 최상위 절로 둔다 — one-shot을
+# 컨테이너 레지스트리에 끼워 넣으면 `status`/`ensure`/metrics가 그것을 상시 관리 대상으로
+# 보게 된다.
 
 compose_binds:
   grafana:

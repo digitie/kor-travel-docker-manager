@@ -22,10 +22,13 @@ weather는 2026-09-05에 **등록 해제된 적이 있다** — targets와 compo
 from __future__ import annotations
 
 import copy
+import subprocess
 from typing import Any
+from unittest import mock
 
 import pytest
 
+from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services import registry as registry_module
 from kor_travel_docker_manager.services.compose_service import ComposeService
 from kor_travel_docker_manager.services.errors import DeploymentContractError
@@ -34,6 +37,7 @@ from kor_travel_docker_manager.services.registry import (
     TargetsConfigError,
     external_project_for_container,
     external_project_for_target,
+    runtime_services_for_target,
     service_groups_for_target,
     target_is_external,
 )
@@ -234,15 +238,39 @@ def test_ensure_target_still_works_for_manager_targets() -> None:
 # ── 로그: 프로젝트를 하나로 좁혀야 한다 ──────────────────────────────────
 
 
-def test_logs_refuses_a_target_that_spans_projects() -> None:
-    """여러 프로젝트의 로그를 한 스트림으로 합칠 수 없다 — 고르게 한다.
+def test_logs_scopes_to_the_named_targets_own_project() -> None:
+    """여러 프로젝트의 로그를 한 스트림으로 합칠 수 없다 — **지목한 쪽**을 쓴다.
 
-    조용히 하나만 보여주면 나머지가 없는 것처럼 읽힌다. `-f`에서는 더 나쁘다.
+    첫 판은 그럴 때 거부하면서 "한 프로젝트의 target을 고르라"고 안내했다. 그 조언은
+    `airport`에 대해 **따를 수 없었다** — `depends_on: [airport-db]` 때문에 의존
+    폐포가 항상 두 프로젝트에 걸치고, `airport`이 자기 서비스를 가리키는 유일한
+    이름이기 때문이다(적대 리뷰 2026-09-18). 즉 새로 등록한 headline target 둘 중
+    하나가 자기 로그를 볼 방법이 없었다.
+
+    빠진 프로젝트는 **조용히 버리지 않는다** — 조용한 생략이 원래 거부의 이유였다.
     """
 
     service = ComposeService()
-    with pytest.raises(DeploymentContractError, match="spans multiple compose projects"):
-        service.logs("airport")
+    with mock.patch.object(compose_service_module.subprocess, "run") as runner:
+        runner.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        result = service.logs("airport", tail=5)
+
+    assert result["services"] == ["backend", "frontend"]
+    assert result["omitted_projects"] == ["kor-travel-airport-db"]
+    command = runner.call_args.args[0]
+    assert command[command.index("-p") + 1] == "kor-travel-airport"
+
+
+def test_logs_of_a_manager_target_omits_nothing() -> None:
+    """Manager target은 폐포 전체가 같은 프로젝트라 한 글자도 바뀌지 않는다."""
+
+    service = ComposeService()
+    with mock.patch.object(compose_service_module.subprocess, "run") as runner:
+        runner.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        result = service.logs("map", tail=5)
+
+    assert result["omitted_projects"] == []
+    assert result["services"] == runtime_services_for_target("map")
 
 
 def test_container_scoped_logs_resolve_their_owning_project() -> None:

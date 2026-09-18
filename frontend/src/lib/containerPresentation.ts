@@ -24,6 +24,12 @@ export interface ContainerStatus {
   state: string;
   ports: string[];
   metrics?: ContainerMetricSnapshot;
+  /** 이 컨테이너를 소유한 **다른** compose 프로젝트. Manager 자신의 것이면 null.
+   *
+   * compose service 이름은 그 프로젝트 안에서만 유일하다(weather의 `prometheus`가
+   * Manager의 것과 겹친다). 그래서 Manager는 남의 컨테이너 설정을 읽지도 쓰지도
+   * 않는다 — 서버가 409로 거부하므로 편집기도 처음부터 잠근다. */
+  external_project?: string | null;
   config?: {
     ports: string[];
     env: Record<string, string>;
