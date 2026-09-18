@@ -893,3 +893,97 @@ def test_the_external_boundary_maps_to_409_with_its_code() -> None:
     payload = json.loads(response.body)
     assert payload["detail"]["code"] == "EXTERNAL_PROJECT_READ_ONLY", payload
     assert "kor-travel-weather" in payload["detail"]["message"]
+
+
+# ── 라운드 5: 내가 라운드 4에서 만든 표면 둘 ────────────────────────────
+
+
+def test_the_env_file_step_is_read_by_the_function_itself(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """**docstring이 적은 단계를 함수가 직접 읽는다.**
+
+    첫 판은 `os.environ`만 보고 `--env-file` 단계를 `main.py`의
+    `load_dotenv(_ENV_PATH)` 한 줄에 의존했다. 그 줄을 지우는 변이가 **1843건을 전부
+    초록으로 통과했다**(적대 리뷰 2026-09-18 라운드4 F-03, 변이 53종 중 유일 생존) —
+    즉 `.env`가 프로젝트 이름을 정하는 호스트에서 그 줄이 사라지면 Manager 컨테이너
+    21/21의 `config`가 빈 값이 되는데 아무 검사도 빨개지지 않았다.
+
+    import 시점 부작용에 기대면 결박할 것이 함수 밖에 남는다.
+    """
+
+    monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "# comment\n"
+        "KTDM_OTHER=x\n"
+        "COMPOSE_PROJECT_NAME=from-env-file\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        docker_service_module, "get_env_path", lambda: str(env_file)
+    )
+    # 문서에도 이름이 있지만 env-file이 **앞**이다.
+    assert docker_service_module._manager_compose_project(
+        {"name": _MANAGER_PROJECT_NAME}
+    ) == "from-env-file"
+
+    # 프로세스 env는 env-file보다 앞이다.
+    monkeypatch.setenv("COMPOSE_PROJECT_NAME", "from-process-env")
+    assert docker_service_module._manager_compose_project(
+        {"name": _MANAGER_PROJECT_NAME}
+    ) == "from-process-env"
+
+
+def test_a_missing_or_broken_env_file_falls_through(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """관측 경로에서 도는 함수는 예외를 던지지 않는다 — 다음 단계로 내려간다."""
+
+    monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
+    monkeypatch.setattr(
+        docker_service_module, "get_env_path", lambda: str(tmp_path / "absent")
+    )
+    assert docker_service_module._manager_compose_project(
+        {"name": _MANAGER_PROJECT_NAME}
+    ) == _MANAGER_PROJECT_NAME
+
+    broken = tmp_path / "broken.env"
+    broken.write_bytes(bytes([0xFF, 0xFE]) + b" not utf-8")
+    monkeypatch.setattr(docker_service_module, "get_env_path", lambda: str(broken))
+    assert docker_service_module._manager_compose_project(
+        {"name": _MANAGER_PROJECT_NAME}
+    ) == _MANAGER_PROJECT_NAME
+
+
+def test_the_compose_document_is_parsed_once_per_status_call(
+    manager_compose: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**컨테이너당 92KB 재파싱을 막는다.**
+
+    라운드 4에서 프로젝트 이름 해석이 `get_compose_config()`를 읽게 했고, 그것을
+    `get_containers_status()`가 컨테이너마다 불렀다 — `COMPOSE_PROJECT_NAME`이 프로세스
+    env에 없는 호스트에서 폴링 1회가 **98ms → 1917ms(19.6배, +1.8초)**가 됐다.
+    websocket status broadcast 주기가 **2.0초**다(적대 리뷰 2026-09-18 라운드4 F-01).
+    """
+
+    monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
+    calls = 0
+    original = docker_service_module.get_compose_config
+
+    def counting(path: str | None = None) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return original(path)
+
+    monkeypatch.setattr(DockerService, "_get_client", lambda self: _FakeClient())
+    # 생성자의 `_backup_default_config()`가 한 번 읽는다 — 그것은 세지 않는다.
+    service = DockerService()
+    monkeypatch.setattr(docker_service_module, "get_compose_config", counting)
+
+    entries = service.get_containers_status()
+    assert len(entries) > 10, "컨테이너가 여러 개여야 이 검사가 뜻이 있다"
+    assert calls == 1, (
+        f"compose 문서를 {calls}번 파싱했다 — 컨테이너 수와 무관하게 1이어야 한다"
+    )
+

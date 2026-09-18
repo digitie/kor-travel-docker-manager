@@ -31,6 +31,7 @@ from kor_travel_docker_manager.services.compose_service import (
     c6c_deployment_lock_from_environment,
     compose_service,
     get_compose_path,
+    get_env_path,
 )
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
@@ -133,7 +134,9 @@ def _live_compose_project(container: object) -> str | None:
     return str(project) if isinstance(project, str) and project else None
 
 
-def _declared_project_matches_runtime(container_id: str, container: object) -> bool:
+def _declared_project_matches_runtime(
+    container_id: str, container: object, *, manager_project: str
+) -> bool:
     """선언된 소속이 실행 중 라벨과 일치하는가. 모르면 **일치로 보지 않는다**.
 
     라벨이 없으면(compose가 만들지 않은 컨테이너) 판단 재료가 없으므로 선언을 따른다 —
@@ -151,7 +154,7 @@ def _declared_project_matches_runtime(container_id: str, container: object) -> b
     if runtime_project is None:
         return True
     external = external_project_for_container(container_id)
-    declared = external.project if external is not None else _manager_compose_project()
+    declared = external.project if external is not None else manager_project
     return runtime_project == declared
 
 
@@ -160,7 +163,7 @@ def _declared_project_matches_runtime(container_id: str, container: object) -> b
 _COMPOSE_PROJECT_NAME_KEY = "name"
 
 
-def _manager_compose_project() -> str:
+def _manager_compose_project(compose_document: Mapping[str, Any] | None = None) -> str:
     """Manager 자신의 compose 프로젝트 이름.
 
     **compose의 실제 우선순위를 따른다**: `-p` > `--env-file`의
@@ -177,15 +180,53 @@ def _manager_compose_project() -> str:
 
     `-p`는 여기서 보지 않는다. Manager 자신의 호출은 `build_command`가 그 플래그를
     붙이지 않으므로(외부 프로젝트 전용이다) 이 함수의 대상이 아니다.
+
+    `compose_document`를 받는 이유는 성능이다 — 호출부가 컨테이너마다 이 함수를
+    부르는데 첫 판은 매번 92KB YAML을 다시 파싱했다(실측 **19.6배, +1.8초**이고
+    websocket broadcast 주기가 2.0초다 — 적대 리뷰 2026-09-18 라운드4 F-01).
     """
+
+    if compose_document is None:
+        compose_document = get_compose_config()
 
     explicit = os.environ.get("COMPOSE_PROJECT_NAME")
     if explicit:
         return explicit
-    declared = get_compose_config().get(_COMPOSE_PROJECT_NAME_KEY)
+    # **`--env-file` 단계를 여기서 직접 읽는다.** 첫 판은 `os.environ`만 보고 그 단계를
+    # `main.py`의 `load_dotenv(_ENV_PATH)` 한 줄에 의존했는데, 그 줄을 지우는 변이가
+    # **1843건을 전부 초록으로 통과했다**(적대 리뷰 2026-09-18 라운드4 F-03, 변이 53종
+    # 중 유일 생존). import 시점 부작용에 기대면 결박할 것이 이 함수 밖에 남는다.
+    from_env_file = _env_file_compose_project()
+    if from_env_file:
+        return from_env_file
+    declared = compose_document.get(_COMPOSE_PROJECT_NAME_KEY)
     if isinstance(declared, str) and declared.strip():
         return declared.strip()
     return Path(get_project_root()).name
+
+
+def _env_file_compose_project() -> str | None:
+    """Manager 루트 `.env`가 선언한 `COMPOSE_PROJECT_NAME`.
+
+    `build_command`가 `--env-file <root>/.env`를 붙이므로 compose는 이 값을 문서의
+    `name:`보다 **먼저** 본다. 읽을 수 없으면 `None`이고 다음 단계로 내려간다 —
+    이 함수는 관측 경로에서 돌기 때문에 예외를 던지지 않는다.
+    """
+
+    try:
+        path = Path(get_env_path())
+        if not path.is_file():
+            return None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            name, _separator, value = stripped.partition("=")
+            if name.strip() == "COMPOSE_PROJECT_NAME":
+                return value.strip().strip("\"'") or None
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return None
 
 
 def _public_url(spec: dict[str, Any]) -> str | None:
@@ -712,13 +753,18 @@ class DockerService:
                 )
             return status_list
 
+        # 프로젝트 이름은 문서당 한 번만 유도한다 — 컨테이너마다 부르면 92KB YAML을
+        # 다시 파싱한다(적대 리뷰 2026-09-18 라운드4 F-01: 98ms → 1917ms).
+        manager_project = _manager_compose_project(compose_cfg)
         for key, spec in MANAGED_CONTAINERS.items():
             cname = spec["name"]
             svc_name, svc_config = _managed_service_config(key, spec, services)
 
             try:
                 container = client.containers.get(cname)
-                if not _declared_project_matches_runtime(key, container):
+                if not _declared_project_matches_runtime(
+                    key, container, manager_project=manager_project
+                ):
                     # 선언이 실행 중 라벨과 어긋난다 — 어느 쪽이 맞는지 Manager는
                     # 모른다. 설정을 그리지 않는 쪽이 fail-close다.
                     svc_config = {}
