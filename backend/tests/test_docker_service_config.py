@@ -279,6 +279,11 @@ def _compose_with_canonical_c6c_services(
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE: {
             "image": "fixture.invalid/postgres:test",
             "network_mode": "host",
+            # 정본과 같이 **자기 entrypoint로 one-shot을 돌린다.** 2026-09-18에 postgres
+            # 서버 식별이 "무엇을 실행하는가"로 바뀌면서, PostgreSQL 이미지에 command도
+            # entrypoint도 없으면 서버로 판정된다 — fixture가 정본과 달라서 이 one-shot이
+            # 서버로 오인됐다. 검사를 약하게 하지 않고 fragment를 완전하게 한다(S1 처방).
+            "entrypoint": ["/bin/sh", "/usr/local/bin/postgres-role-bootstrap"],
             "environment": {
                 "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN": bootstrap_dsn,
                 "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE": (

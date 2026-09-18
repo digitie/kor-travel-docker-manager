@@ -1769,17 +1769,21 @@ def _service_environment_items(service: Mapping[str, Any]) -> list[tuple[str, st
     )
 
 
-#: 클러스터를 **초기화하는** 서비스를 알아보는 신호. **이름을 열거하지 않는다** —
-#: 계약표가 서비스를 열거해서 저장소의 넷 중 둘을 빠뜨린 것이 적대 리뷰 2026-09-18
-#: F1이었다.
+#: **postgres 서버를 돌리는지**를 알아보는 신호. **이름을 열거하지 않는다** — 계약표가
+#: 서비스를 열거해서 저장소의 넷 중 둘을 빠뜨린 것이 적대 리뷰 2026-09-18 F1이었다.
 #:
-#: official entrypoint는 이 둘 중 하나가 없으면 initdb를 돌리지 않는다(빈 PGDATA에서
-#: "you must specify POSTGRES_PASSWORD"로 죽는다). 그래서 이것이 "이 서비스가
-#: `POSTGRES_INITDB_ARGS`를 **의미 있게** 가질 수 있는가"의 정확한 판정이다.
+#: 첫 판은 `POSTGRES_PASSWORD{,_FILE}` 선언 여부로 판정했다. **틀린 재료였다.**
+#: official entrypoint는 그 값을 빈 PGDATA에서 initdb할 때만 요구하므로, **이미
+#: 초기화된 PGDATA에서는 env 없이도 서버가 뜬다.** 그래서 `environment`를 통째로
+#: 지우면 식별을 피하면서 `privileged: true` + `listen_addresses=0.0.0.0`인 서버를
+#: 세울 수 있었다(리뷰어 D/F가 실제 컨테이너로 재현했다).
 #:
-#: 이미지 이름으로 넓히지 **않는다**. `pinvi-db-init`은 같은 postgis 이미지를 쓰지만
-#: psql을 돌리는 one-shot이라 initdb와 무관하다 — 이미지로 식별하면 그런 서비스에
-#: 무의미한 요구를 걸게 된다(첫 판이 그랬고, 계약 fragment 13건이 빨개졌다).
+#: 지금의 재료는 **무엇을 실행하는가**다. `pinvi-db-init`은 같은 postgis 이미지지만
+#: `command`가 `sh -ec …`라 서버가 아니다 — 이미지만 보던 첫 판이 그것까지 걸어
+#: fragment 13건을 빨갛게 만든 문제가 이 판정에서는 생기지 않는다.
+_POSTGRES_SERVER_COMMAND = "postgres"
+_POSTGRES_IMAGE_MARKERS: Final = ("postgres", "postgis")
+#: 보조 축. command도 image도 신호를 주지 않는 형상을 위해 남긴다.
 _POSTGRES_CLUSTER_INIT_ENV_NAMES: Final = frozenset(
     {"POSTGRES_PASSWORD", "POSTGRES_PASSWORD_FILE"}
 )
@@ -1790,10 +1794,84 @@ _POSTGRES_CLUSTER_INIT_ENV_NAMES: Final = frozenset(
 _POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES: Final = frozenset({"PGDATA"})
 
 
-def _service_initializes_a_postgres_cluster(declared: Mapping[str, Any]) -> bool:
-    """이 서비스가 PostgreSQL 클러스터를 **초기화하는가**. 이름이 아니라 효과로 본다."""
+def _service_uses_a_postgres_image(service: Mapping[str, Any]) -> bool:
+    """이미지가 PostgreSQL 계열인가. 서버든 one-shot이든 이 축은 같다."""
 
-    return any(name in declared for name in _POSTGRES_CLUSTER_INIT_ENV_NAMES)
+    image = service.get("image")
+    if not isinstance(image, str):
+        return False
+    lowered = image.lower()
+    return any(marker in lowered for marker in _POSTGRES_IMAGE_MARKERS)
+
+
+def _service_runs_a_postgres_server(
+    service: Mapping[str, Any], declared: Mapping[str, Any]
+) -> bool:
+    """이 서비스가 **postgres 서버를 돌리는가**. 이름이 아니라 실행 내용으로 본다.
+
+    1. `command`가 `postgres`로 시작한다 — 명시적으로 서버를 돌린다.
+    2. 이미지가 PostgreSQL 계열이고 `command`도 `entrypoint`도 없다 — 이미지의
+       기본 entrypoint가 서버를 띄운다.
+    3. `POSTGRES_PASSWORD{,_FILE}`를 선언했다 — 보조 축(위 둘이 침묵하는 형상).
+
+    (1)이 결정적이다. 첫 판은 (3)만 봤고, entrypoint가 그 값을 **빈 PGDATA에서만**
+    요구하기 때문에 `environment`를 지우면 식별을 피할 수 있었다(적대 리뷰 2026-09-18
+    F: `environment` 삭제 + `privileged` + `listen_addresses=0.0.0.0`이 geo·concierge에서
+    raw·resolved 양쪽 통과했고 실제 컨테이너로 재현됐다).
+
+    (2)에서 `entrypoint` 부재를 함께 요구하는 이유가 있다. 정본 compose에는 PostgreSQL
+    이미지를 쓰면서 **자기 entrypoint로 one-shot을 돌리는** 서비스가 둘 있다
+    (`pinvi-db-runtime-role`, `kor-travel-map-db-role-bootstrap`). 그것들은 서버가
+    아니므로 loopback·command 요구를 걸면 안 된다 — 각자의 exact-match validator가
+    따로 그 entrypoint를 핀으로 박는다.
+
+    **이 판정으로 닫히지 않는 축이 있다**: 공격자가 map-postgres에 자기 `entrypoint`를
+    넣으면 (1)(2) 둘 다 침묵해 서버 판정에서 빠진다. 후보 문서만 보고는 그것을 서버로
+    단정할 수 없다 — 그 구분은 **신뢰된 문서**(`config/docker-targets.yml`)가 줘야 하고,
+    그것이 S4의 `declared(F)` 축이다. `docs/tasks.md`에 열어 뒀다. 다만 아래
+    `_assert_postgres_image_service_is_unprivileged`가 특권 키를 그 경우에도 막는다.
+    """
+
+    command = service.get("command")
+    if isinstance(command, list) and command and command[0] == _POSTGRES_SERVER_COMMAND:
+        return True
+    if any(name in declared for name in _POSTGRES_CLUSTER_INIT_ENV_NAMES):
+        # 초기화 credential을 선언했다는 것은 **클러스터를 세울 의도**다. 명시적
+        # command가 `postgres`가 아니어도 서버로 본다 — `sh -c postgres`는 표준
+        # entrypoint의 initdb 준비를 건너뛰고 기존 PGDATA로 서버를 띄운다.
+        return True
+    if command is None and service.get("entrypoint") in (None, []):
+        # command도 entrypoint도 없으면 이미지의 기본 entrypoint가 서버를 띄운다.
+        return _service_uses_a_postgres_image(service)
+    return False
+
+
+def _assert_postgres_image_service_is_unprivileged(
+    service_name: str, service: Mapping[str, Any]
+) -> None:
+    """PostgreSQL 이미지를 쓰는 **모든** 서비스에 특권 키를 금지한다.
+
+    서버 판정에서 빠지는 one-shot(그리고 `entrypoint`로 판정을 피한 후보)까지 덮는다.
+    정본 compose의 PostgreSQL 이미지 서비스 열 개 중 이 키를 쓰는 것은 **하나도
+    없다**(실측) — 그래서 이름을 열거하지 않고도 전부 묶인다.
+    """
+
+    for key in _POSTGRES_FORBIDDEN_SERVICE_KEYS:
+        if key == "entrypoint":
+            # one-shot 둘은 정당하게 자기 entrypoint를 갖는다 — 그쪽은 각자의
+            # exact-match validator가 핀으로 박는다.
+            continue
+        if service.get(key):
+            raise ComposeCandidateContractError(
+                f"compose candidate gives a PostgreSQL service a non-canonical "
+                f"{key}: " + _describe_candidate_service_key(service_name)
+            )
+    for forbidden in sorted(_POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES):
+        if forbidden in dict(_service_environment_items(service)):
+            raise ComposeCandidateContractError(
+                f"compose candidate relocates PostgreSQL data with {forbidden}: "
+                + _describe_candidate_service_key(service_name)
+            )
 
 
 #: 클러스터 서비스가 선언해서는 안 되는 최상위 키. 정본 compose의 넷은 하나도 쓰지
@@ -1811,20 +1889,56 @@ _POSTGRES_FORBIDDEN_RUNTIME_SETTINGS: Final = frozenset(
 #: 저장소의 네 PostgreSQL이 전부 쓰는 값. 종전에는 이것을 강제하는 자리가 PinVi
 #: 하나뿐이었다 — Map은 `listen_addresses=*`로 바꿔도 통과했다(`docs/tasks.md`의
 #: 오래된 열린 항목). host 네트워킹이라 전 인터페이스 노출이 된다.
-_POSTGRES_CANONICAL_LISTEN_ADDRESSES: Final = "listen_addresses=127.0.0.1"
+_POSTGRES_LISTEN_SETTING: Final = "listen_addresses"
+_POSTGRES_CANONICAL_LISTEN_VALUE: Final = "127.0.0.1"
+_POSTGRES_CANONICAL_LISTEN_ADDRESSES: Final = (
+    f"{_POSTGRES_LISTEN_SETTING}={_POSTGRES_CANONICAL_LISTEN_VALUE}"
+)
 
 
-def _postgres_command_settings(command: object) -> list[str]:
-    """`command` 배열에서 `-c` 다음에 오는 설정 문자열만 모은다."""
+def _normalize_postgres_setting_name(name: str) -> str:
+    """postgres가 GUC 이름을 읽는 방식과 같게 정규화한다.
+
+    GUC 이름은 **대소문자를 구분하지 않고**, long option 형태(`--hba-file=`)에서는
+    하이픈이 밑줄과 같다. 첫 판은 리터럴 소문자 `-c hba_file=`만 봤고, 그래서
+    `--hba-file=`·`-c HBA_FILE=`·`-c Listen_Addresses=`가 전부 통과했다 — 실제 서버는
+    그 셋을 모두 honor한다(적대 리뷰 2026-09-18 F 실측).
+    """
+
+    return name.strip().lower().replace("-", "_")
+
+
+def _postgres_command_settings(command: object) -> list[tuple[str, str]]:
+    """`command`가 설정하는 (정규화된 이름, 값) 전부.
+
+    postgres는 `-c name=value`와 `--name=value`를 **같게** 받는다. 둘 중 하나만 읽으면
+    나머지가 그대로 우회로가 된다.
+    """
 
     if not isinstance(command, list):
         return []
-    settings: list[str] = []
-    for index, item in enumerate(command):
+    settings: list[tuple[str, str]] = []
+    index = 0
+    while index < len(command):
+        item = command[index]
+        if not isinstance(item, str):
+            index += 1
+            continue
+        raw: str | None = None
         if item == "-c" and index + 1 < len(command):
             following = command[index + 1]
             if isinstance(following, str):
-                settings.append(following)
+                raw = following
+            index += 2
+        elif item.startswith("--") and "=" in item:
+            raw = item[2:]
+            index += 1
+        else:
+            index += 1
+        if raw is None or "=" not in raw:
+            continue
+        name, _separator, value = raw.partition("=")
+        settings.append((_normalize_postgres_setting_name(name), value.strip()))
     return settings
 
 
@@ -1847,7 +1961,11 @@ def _assert_postgres_cluster_runtime_is_canonical(document: Mapping[str, Any]) -
         if not isinstance(service, Mapping):
             continue
         declared = dict(_service_environment_items(service))
-        if not _service_initializes_a_postgres_cluster(declared):
+        if _service_uses_a_postgres_image(service):
+            # 서버 판정보다 **넓은** 그물. `entrypoint`로 서버 판정을 피한 후보와
+            # 정당한 one-shot 둘까지 덮는다.
+            _assert_postgres_image_service_is_unprivileged(service_name, service)
+        if not _service_runs_a_postgres_server(service, declared):
             continue
         _assert_one_postgres_cluster_runtime(service_name, service)
 
@@ -1863,7 +1981,11 @@ def _assert_one_postgres_cluster_runtime(
             )
 
     command = service.get("command")
-    if not isinstance(command, list) or not command or command[0] != "postgres":
+    if (
+        not isinstance(command, list)
+        or not command
+        or command[0] != _POSTGRES_SERVER_COMMAND
+    ):
         # `command`가 없으면 기본값으로 뜨고 `listen_addresses`는 `*`다 — host
         # 네트워킹에서는 전 인터페이스 노출이다. "지우면 통과"를 남기지 않는다.
         raise ComposeCandidateContractError(
@@ -1871,14 +1993,20 @@ def _assert_one_postgres_cluster_runtime(
             "command: " + _describe_candidate_service_key(service_name)
         )
     settings = _postgres_command_settings(command)
-    for setting in settings:
-        name = setting.split("=", 1)[0].strip()
+    for name, _value in settings:
         if name in _POSTGRES_FORBIDDEN_RUNTIME_SETTINGS:
             raise ComposeCandidateContractError(
                 f"compose candidate overrides PostgreSQL authentication with "
-                f"-c {name}: " + _describe_candidate_service_key(service_name)
+                f"{name}: " + _describe_candidate_service_key(service_name)
             )
-    if _POSTGRES_CANONICAL_LISTEN_ADDRESSES not in settings:
+    bindings = [value for name, value in settings if name == _POSTGRES_LISTEN_SETTING]
+    # **모든** `listen_addresses`가 loopback이어야 한다. 첫 판은 "정본 문자열이 목록에
+    # 있는가"만 봤는데, postgres는 같은 설정이 여러 번 오면 **마지막을 쓴다** — 그래서
+    # canonical 뒤에 `0.0.0.0` 한 줄을 더하면 통과하면서 전 인터페이스에 붙었다
+    # (적대 리뷰 2026-09-18 F 실측).
+    if not bindings or any(
+        value != _POSTGRES_CANONICAL_LISTEN_VALUE for value in bindings
+    ):
         raise ComposeCandidateContractError(
             "compose candidate PostgreSQL service must keep the loopback binding: "
             + _describe_candidate_service_key(service_name)
@@ -1939,7 +2067,7 @@ def _assert_canonical_postgres_initdb_args(document: Mapping[str, Any]) -> None:
         if not isinstance(service, Mapping):
             continue
         declared = dict(_service_environment_items(service))
-        if _service_initializes_a_postgres_cluster(declared):
+        if _service_runs_a_postgres_server(service, declared):
             # **부재는 `trust`와 같다.** initdb를 `--auth-host` 없이 부르면 기본이
             # `trust`이고, 그러면 pg_hba **첫 행**이 `host all all 127.0.0.1/32 trust`가
             # 된다 — first-match-wins라 뒤에 붙는 scram 행은 무의미하다. 실제
