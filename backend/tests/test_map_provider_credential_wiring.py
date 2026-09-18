@@ -150,18 +150,62 @@ def test_the_opinet_scope_selector_reaches_every_service_that_holds_its_key() ->
     assert not missing, f"{_OPINET_SCOPE_SELECTOR}를 못 받는 서비스: {missing}"
 
 
-def test_the_opinet_selector_is_not_hard_wired_to_a_mode() -> None:
-    """모드는 운영자가 `.env`로 고른다 — 문서가 값을 박아 두지 않는다.
+#: `low_top_area` 모드에서 fetcher를 **멈추게 하는** 유일한 값.
+#:
+#: 나머지 모드 이름을 여기 베끼지 않는다 — 베끼면 Map이 모드를 하나 더 만들 때
+#: 이 문서가 조용히 낡는다. 이 검사가 지키는 것은 목록이 아니라 "기본값이 적재를
+#: 시작시킨다"는 성질이다.
+_OPINET_DISABLED = "disabled"
 
-    기본값은 `disabled`로 둔다. 적재를 켜는 것은 배포가 아니라 운영 결정이고,
-    OpiNet은 무료키 일일 한도가 300회라 모드마다 호출량이 크게 다르다.
+
+def _selector_defaults() -> list[str]:
+    """compose가 선언한 `${A:-${B:-값}}`에서 **맨 안쪽 기본값**만 꺼낸다.
+
+    문자열 포함 검사로 때우면 주석에 남은 단어까지 세어 통과한다. 여기서 보는 것은
+    "운영자가 `.env`에 아무것도 넣지 않았을 때 컨테이너가 실제로 받는 값"이다.
     """
 
-    text = _COMPOSE.read_text(encoding="utf-8")
-    for line in text.splitlines():
+    defaults: list[str] = []
+    for line in _COMPOSE.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped.startswith(f"{_OPINET_SCOPE_SELECTOR}:"):
             continue
         value = stripped.split(":", 1)[1].strip()
         assert value.startswith("${"), value
-        assert value.endswith("disabled}}"), value
+        while value.startswith("${") and value.endswith("}"):
+            inner = value[2:-1]
+            _head, sep, tail = inner.partition(":-")
+            if not sep:
+                value = ""
+                break
+            value = tail.strip()
+        defaults.append(value)
+    return defaults
+
+
+def test_the_opinet_selector_stays_overridable_by_the_operator() -> None:
+    """모드는 운영자가 `.env`로 덮을 수 있어야 한다 — 값을 그대로 박지 않는다."""
+
+    for line in _COMPOSE.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(f"{_OPINET_SCOPE_SELECTOR}:"):
+            continue
+        value = stripped.split(":", 1)[1].strip()
+        assert value.startswith("${") and value.endswith("}"), value
+
+
+def test_the_opinet_default_mode_actually_starts_a_load() -> None:
+    """기본 모드가 적재를 **시작시키는** 값이어야 한다.
+
+    `disabled`가 기본이면 배포가 끝나도 적재가 켜지지 않아 운영자가 호스트 `.env`를
+    손으로 고쳐야 한다 — 그 손 편집이 prod와 이 문서를 어긋나게 만든 자리이고,
+    2026-09-18 prod에서 place·price 두 job이 영원히 비활성이던 원인이다. 값 이름이
+    아니라 **효과**에 결박한다: fetcher는 `disabled`에서만 멈춘다.
+    """
+
+    defaults = _selector_defaults()
+    assert defaults, f"{_OPINET_SCOPE_SELECTOR}를 선언하는 서비스가 하나도 없다"
+    assert _OPINET_DISABLED not in defaults, (
+        f"{_OPINET_SCOPE_SELECTOR} 기본값이 `{_OPINET_DISABLED}`라 적재가 켜지지 "
+        "않는다 — 배포 후 손 편집이 필요해진다"
+    )

@@ -1057,12 +1057,17 @@ services:
       # Map 저장소 자신의 compose에는 이 셋이 배선돼 있는데 여기에는 없었다
       # (KREX go key와 **같은 형태의 구멍**이다).
       #
+      # 운영 모드는 `low_top_area`다(2026-09-19 결정). 기본값을 `disabled`로
+      # 두면 배포가 끝나도 적재가 켜지지 않아 호스트 `.env`를 손으로 고쳐야
+      # 했다 — 그 손 편집이 prod와 이 문서를 어긋나게 만든 자리다. 끄려면
+      # `.env`에서 `disabled`로 덮는다.
+      #
       # `low_top_area`는 시군구별 `lowTop10`을 로테이션으로 돈다. 아래 두 노브는
       # 그 모드의 호출량 상한이라 함께 넘긴다 — 무료키 일일 한도가 300회이고
       # (일반 19종 기준, 2026-09-14 확인) 매월 1일에는 place job이 같은 경로를
       # 한 번 더 돌아 여유가 좁아진다. 노브가 compose에 없으면 그때 조정하려고
       # 또 이 파일을 고쳐야 한다.
-      KOR_TRAVEL_MAP_OPINET_SCOPE_MODE: ${KOR_TRAVEL_MAP_OPINET_SCOPE_MODE:-${OPINET_SCOPE_MODE:-disabled}}
+      KOR_TRAVEL_MAP_OPINET_SCOPE_MODE: ${KOR_TRAVEL_MAP_OPINET_SCOPE_MODE:-${OPINET_SCOPE_MODE:-low_top_area}}
       KOR_TRAVEL_MAP_OPINET_SCOPE_BBOX: ${KOR_TRAVEL_MAP_OPINET_SCOPE_BBOX:-${OPINET_SCOPE_BBOX:-}}
       KOR_TRAVEL_MAP_OPINET_SCOPE_RADIUS_M: ${KOR_TRAVEL_MAP_OPINET_SCOPE_RADIUS_M:-${OPINET_SCOPE_RADIUS_M:-5000}}
       KOR_TRAVEL_MAP_OPINET_LOW_TOP_MAX_CALLS: ${KOR_TRAVEL_MAP_OPINET_LOW_TOP_MAX_CALLS:-${OPINET_LOW_TOP_MAX_CALLS:-90}}
@@ -1204,12 +1209,17 @@ services:
       # Map 저장소 자신의 compose에는 이 셋이 배선돼 있는데 여기에는 없었다
       # (KREX go key와 **같은 형태의 구멍**이다).
       #
+      # 운영 모드는 `low_top_area`다(2026-09-19 결정). 기본값을 `disabled`로
+      # 두면 배포가 끝나도 적재가 켜지지 않아 호스트 `.env`를 손으로 고쳐야
+      # 했다 — 그 손 편집이 prod와 이 문서를 어긋나게 만든 자리다. 끄려면
+      # `.env`에서 `disabled`로 덮는다.
+      #
       # `low_top_area`는 시군구별 `lowTop10`을 로테이션으로 돈다. 아래 두 노브는
       # 그 모드의 호출량 상한이라 함께 넘긴다 — 무료키 일일 한도가 300회이고
       # (일반 19종 기준, 2026-09-14 확인) 매월 1일에는 place job이 같은 경로를
       # 한 번 더 돌아 여유가 좁아진다. 노브가 compose에 없으면 그때 조정하려고
       # 또 이 파일을 고쳐야 한다.
-      KOR_TRAVEL_MAP_OPINET_SCOPE_MODE: ${KOR_TRAVEL_MAP_OPINET_SCOPE_MODE:-${OPINET_SCOPE_MODE:-disabled}}
+      KOR_TRAVEL_MAP_OPINET_SCOPE_MODE: ${KOR_TRAVEL_MAP_OPINET_SCOPE_MODE:-${OPINET_SCOPE_MODE:-low_top_area}}
       KOR_TRAVEL_MAP_OPINET_SCOPE_BBOX: ${KOR_TRAVEL_MAP_OPINET_SCOPE_BBOX:-${OPINET_SCOPE_BBOX:-}}
       KOR_TRAVEL_MAP_OPINET_SCOPE_RADIUS_M: ${KOR_TRAVEL_MAP_OPINET_SCOPE_RADIUS_M:-${OPINET_SCOPE_RADIUS_M:-5000}}
       KOR_TRAVEL_MAP_OPINET_LOW_TOP_MAX_CALLS: ${KOR_TRAVEL_MAP_OPINET_LOW_TOP_MAX_CALLS:-${OPINET_LOW_TOP_MAX_CALLS:-90}}
