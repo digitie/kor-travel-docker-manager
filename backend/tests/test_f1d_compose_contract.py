@@ -5737,6 +5737,7 @@ def test_the_declared_set_comes_from_the_trusted_document() -> None:
             "kor-travel-concierge-postgres",
             "kor-travel-map-postgres",
             "pinvi-postgres",
+            "kor-travel-shared-postgres",
         }
     ), declared
 

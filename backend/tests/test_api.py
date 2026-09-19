@@ -1020,6 +1020,8 @@ def test_get_targets():
         "kor-travel-geo-dagster-daemon",
         "kor-travel-geo-dagster-code-server",
         "kor-travel-concierge-postgres",
+        "kor-travel-shared-postgres",
+        "kor-travel-shared-db-init-concierge",
         "kor-travel-concierge-api",
         "kor-travel-concierge-mcp",
         "kor-travel-concierge-scheduler",
