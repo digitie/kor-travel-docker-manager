@@ -1095,7 +1095,7 @@ services:
       test:
       - CMD-SHELL
       - >-
-        python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/' % os.environ.get('KOR_TRAVEL_MAP_DAGSTER_PORT', '12702'), timeout=2).read()"
+        python -c "import os, json, urllib.request as u; p = os.environ.get('KOR_TRAVEL_MAP_DAGSTER_PORT', '12702'); q = json.dumps({'query': '{repositoriesOrError{__typename}}'}).encode(); r = u.urlopen(u.Request('http://127.0.0.1:%s/graphql' % p, data=q, headers={'Content-Type': 'application/json'}), timeout=5); d = json.load(r); t = d.get('data', {}).get('repositoriesOrError', {}).get('__typename'); raise SystemExit(0 if t == 'RepositoryConnection' else 'code location not loaded: %s' % t)"
       interval: 10s
       timeout: 5s
       retries: 20
@@ -1400,7 +1400,7 @@ services:
       test:
       - CMD-SHELL
       - >-
-        python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/' % os.environ.get('PINVI_DAGSTER_PORT', '12802'), timeout=2).read()"
+        python -c "import os, json, urllib.request as u; p = os.environ.get('PINVI_DAGSTER_PORT', '12802'); q = json.dumps({'query': '{repositoriesOrError{__typename}}'}).encode(); r = u.urlopen(u.Request('http://127.0.0.1:%s/graphql' % p, data=q, headers={'Content-Type': 'application/json'}), timeout=5); d = json.load(r); t = d.get('data', {}).get('repositoriesOrError', {}).get('__typename'); raise SystemExit(0 if t == 'RepositoryConnection' else 'code location not loaded: %s' % t)"
       interval: 10s
       timeout: 5s
       retries: 20
@@ -1555,7 +1555,7 @@ services:
       test:
       - CMD-SHELL
       - >-
-        python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/' % os.environ.get('KTG_DAGSTER_PORT', '12502'), timeout=2).read()"
+        python -c "import os, json, urllib.request as u; p = os.environ.get('KTG_DAGSTER_PORT', '12502'); q = json.dumps({'query': '{repositoriesOrError{__typename}}'}).encode(); r = u.urlopen(u.Request('http://127.0.0.1:%s/graphql' % p, data=q, headers={'Content-Type': 'application/json'}), timeout=5); d = json.load(r); t = d.get('data', {}).get('repositoriesOrError', {}).get('__typename'); raise SystemExit(0 if t == 'RepositoryConnection' else 'code location not loaded: %s' % t)"
       interval: 10s
       timeout: 5s
       retries: 20
