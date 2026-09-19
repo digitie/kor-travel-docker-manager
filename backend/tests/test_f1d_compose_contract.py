@@ -2235,13 +2235,9 @@ def test_every_protected_env_reference_in_compose_sits_at_a_registered_path() ->
     한쪽만 넓히면 다른 쪽이 빨개지도록.
     """
 
-    text = _COMPOSE_PATH.read_text(encoding="utf-8")
-    document = yaml.safe_load(text)
-    # 기본값 없는 `${VAR}`에서 파서가 죽지 않게만 채운다. 값은 검사 대상이 아니다 —
-    # 이 검사가 보는 것은 **이름**의 등장 위치다.
-    environment = {
-        name: "" for name in set(re.findall(r"\$\{([A-Za-z0-9_]+)", text))
-    }
+    # **치환하지 않는다.** 이 검사가 보는 것은 값이 아니라 `${PINVI_APP_DB_PASSWORD…}`
+    # 같은 **이름의 등장 위치**이고, 런타임 검사도 raw 스칼라를 그대로 훑는다.
+    document = yaml.safe_load(_COMPOSE_PATH.read_text(encoding="utf-8"))
 
     protected_names = c6c_deployment_module._CANDIDATE_PROTECTED_VALUE_ENV_NAMES
     allowed_paths = (
