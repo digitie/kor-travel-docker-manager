@@ -120,12 +120,26 @@ _PINVI_MIGRATOR_DB_PASSWORD_ENV = "PINVI_MIGRATOR_DB_PASSWORD"
 _PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET = "/opt/pinvi/bootstrap-pinvi-runtime-role.sh"
 _PINVI_ROLE_BOOTSTRAP_ENTRYPOINT_SCRIPT = f"""export POSTGRES_PASSWORD="$(cat {_PINVI_POSTGRES_PASSWORD_FILE})"
 exec sh {_PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET}"""
+#: db-init one-shot의 스크립트 본문. **글자 단위로 고정한다.**
+#:
+#: 두 database를 만든다. Dagster instance storage가 앱 DB와 **같은 database를 쓸
+#: 수 없기 때문이다 — dagster-postgres가 자기 스키마 이력을 `alembic_version`
+#: 이라는 이름의 테이블로 관리해 PinVi 자신의 것과 충돌한다.
+#:
+#: dagster DB만 `-O`로 소유자를 지정한다. 앱 이미지의 dagster.yaml이
+#: `should_autocreate_tables`를 켠 채라 런타임이 첫 기동에 테이블을 만들고,
+#: 그러려면 그 롤이 DDL 권한을 가져야 한다.
 _PINVI_DB_INIT_COMMAND_SCRIPT = """PGPASSWORD=\"$(cat /run/secrets/pinvi-postgres-password)\"
 export PGPASSWORD
 if psql -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='$PINVI_POSTGRES_DB'\" | grep -q 1; then
   echo \"database $PINVI_POSTGRES_DB already exists\"
 else
   createdb \"$PINVI_POSTGRES_DB\"
+fi
+if psql -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='$PINVI_DAGSTER_DB'\" | grep -q 1; then
+  echo \"database $PINVI_DAGSTER_DB already exists\"
+else
+  createdb -O \"$PINVI_DAGSTER_DB_OWNER\" \"$PINVI_DAGSTER_DB\"
 fi"""
 _MAP_RUNTIME_SERVICES = (
     _MAP_API_SERVICE,
@@ -1269,7 +1283,9 @@ def _validate_pinvi_database_url_service_identities(
 def _validate_pinvi_db_init_presence(
     services: Mapping[str, Any],
     environment: Mapping[str, str],
-) -> tuple[Mapping[str, Any], Mapping[str, Any], tuple[str, str, str, str]]:
+) -> tuple[
+    Mapping[str, Any], Mapping[str, Any], tuple[str, str, str, str, str, str]
+]:
     """(1) db-init 서비스가 있고 environment 모양이 맞는가 + 기대값 파생.
 
     파생한 넷은 (3)이 쓴다. (2)는 자기 사본을 따로 만든다 — 그것이 이 분할의
@@ -1298,20 +1314,30 @@ def _validate_pinvi_db_init_presence(
     expected_bootstrap_database = environment.get(
         "PINVI_POSTGRES_BOOTSTRAP_DB", "pinvi_bootstrap"
     )
+    expected_dagster_database = environment.get("PINVI_DAGSTER_DB", "pinvi_dagster")
     expected_values = (
         expected_port,
         expected_user,
         expected_database,
         expected_bootstrap_database,
+        expected_dagster_database,
     )
     if any(not isinstance(value, str) or not value for value in expected_values):
         raise ComposeCandidateContractError("PinVi database init identity is invalid")
+
+    # 소유자에는 **기본값을 주지 않는다.** compose가 `${PINVI_APP_DB_USER:?}`로
+    # 필수 선언하므로, resolved 후보에 이 값이 없다면 그 후보가 잘못된 것이다.
+    # 여기서 빈 문자열을 흘려보내면 아래 resolved 비교가 실패하고, 그것이 옳은
+    # 결과다. unresolved 경로는 이 값을 쓰지 않고 `${...` 접두만 본다.
+    expected_dagster_owner = environment.get("PINVI_APP_DB_USER", "")
 
     return service, service_environment, (
         expected_port,
         expected_user,
         expected_database,
         expected_bootstrap_database,
+        expected_dagster_database,
+        expected_dagster_owner,
     )
 
 
@@ -1448,7 +1474,7 @@ def _validate_pinvi_postgres_identity(
 def _validate_pinvi_db_init_command(
     service: Mapping[str, Any],
     service_environment: Mapping[str, Any],
-    expected: tuple[str, str, str, str],
+    expected: tuple[str, str, str, str, str, str],
     *,
     resolved: bool,
 ) -> None:
@@ -1457,7 +1483,14 @@ def _validate_pinvi_db_init_command(
     (1)과 마찬가지로 `pinvi-db-init` 존재를 전제한다.
     """
 
-    expected_port, expected_user, expected_database, expected_bootstrap_database = expected
+    (
+        expected_port,
+        expected_user,
+        expected_database,
+        expected_bootstrap_database,
+        expected_dagster_database,
+        expected_dagster_owner,
+    ) = expected
 
     init_command = service.get("command")
     if (
@@ -1478,6 +1511,8 @@ def _validate_pinvi_db_init_command(
             "PGUSER": expected_user,
             "PGDATABASE": expected_bootstrap_database,
             "PINVI_POSTGRES_DB": expected_database,
+            "PINVI_DAGSTER_DB": expected_dagster_database,
+            "PINVI_DAGSTER_DB_OWNER": expected_dagster_owner,
         }
         if any(
             service_environment.get(name) != value
@@ -1492,6 +1527,11 @@ def _validate_pinvi_db_init_command(
         "PGUSER": "${PINVI_POSTGRES_USER:",
         "PGDATABASE": "${PINVI_POSTGRES_BOOTSTRAP_DB:",
         "PINVI_POSTGRES_DB": "${PINVI_POSTGRES_DB:",
+        "PINVI_DAGSTER_DB": "${PINVI_DAGSTER_DB:",
+        # 소유자는 **앱 runtime 롤과 같은 변수에서** 와야 한다. 다른 변수로 갈리면
+        # dagster DB의 소유자와 실제로 접속하는 롤이 달라져, 첫 기동의 암묵 테이블
+        # 생성이 권한 오류로 죽는다.
+        "PINVI_DAGSTER_DB_OWNER": "${PINVI_APP_DB_USER:",
     }
     for name, expected in expected_raw.items():
         value = service_environment.get(name)
