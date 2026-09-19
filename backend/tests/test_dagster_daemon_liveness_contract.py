@@ -143,3 +143,77 @@ def test_every_dagster_daemon_comes_back_on_its_own(service_name: str) -> None:
         f"`{service_name}`의 restart 정책이 `unless-stopped`가 아니다: {restart!r}. "
         "healthcheck는 상태를 보이게 하지만 되돌리지 않는다."
     )
+
+
+# ── webserver 쪽 ────────────────────────────────────────────────────────
+#
+# daemon과 같은 질문을 webserver에도 한다. 다만 판정 대상이 다르다 — daemon은
+# **자기 스레드**의 생존이고, webserver는 **code location이 실제로 로드됐는가**다.
+#
+# 2026-09-19 실측: 세 Dagster webserver(map 12702 / pinvi 12802 / geo 12502)의
+# healthcheck가 전부 `urlopen('http://127.0.0.1:<port>/')`였다. 그 경로는 webserver가
+# **정적으로** 주는 페이지라, code location이 로드에 실패해도 200이 돌아온다.
+# 그러면 컨테이너는 끝까지 healthy로 보고되고 job은 조용히 멈춘다.
+#
+# 이 사고는 이미 집 안에 기록돼 있었다 — `pinvi/apps/etl/Dockerfile`의 HEALTHCHECK
+# 주석이 정확히 그 probe를 규탄하며 GraphQL 대안을 적어 뒀는데, Manager compose의
+# healthcheck가 그것을 덮고 있었다. 이미지가 옳은 것을 알고 있어도 orchestrator가
+# 덮으면 소용이 없다.
+
+#: code location이 로드됐을 때만 돌아오는 GraphQL 타입.
+#:
+#: `repositoriesOrError`는 성공 시 `RepositoryConnection`, 실패 시 `PythonError`를
+#: 준다. 둘 다 HTTP 200이므로 **본문을 봐야** 갈린다.
+_CODE_LOCATION_PROBE_FRAGMENT = "repositoriesOrError"
+_CODE_LOCATION_PROBE_EXPECTED = "RepositoryConnection"
+
+
+def _webserver_services() -> dict[str, dict[str, Any]]:
+    """`dagster-webserver`를 실행하는 서비스. **이름으로 찾지 않는다.**"""
+    services = _compose()["services"]
+    return {
+        name: service
+        for name, service in services.items()
+        if "dagster-webserver" in _command_text(service.get("command"))
+        or "dagster-webserver" in _command_text(service.get("entrypoint"))
+    }
+
+
+def test_the_compose_declares_at_least_one_dagster_webserver() -> None:
+    """유도의 전제. 못 찾으면 아래 검사가 조용히 항진명제가 된다."""
+    found = _webserver_services()
+    assert found, (
+        "`dagster-webserver`를 실행하는 서비스를 command에서 찾지 못했다 — "
+        "command 모양이 바뀌었거나 이 계약의 파서가 낡았다."
+    )
+
+
+@pytest.mark.parametrize("service_name", sorted(_webserver_services()))
+def test_every_dagster_webserver_probe_asks_whether_code_loaded(
+    service_name: str,
+) -> None:
+    """webserver probe는 **code location이 로드됐는지**를 물어야 한다.
+
+    정적 페이지를 받아 오는 probe는 "프로세스가 떠 있다"만 재고, 정작 그 프로세스가
+    존재하는 이유(job을 실행할 수 있는가)는 재지 않는다.
+    """
+
+    service = _webserver_services()[service_name]
+    healthcheck = service.get("healthcheck")
+    assert healthcheck, (
+        f"`{service_name}`에 healthcheck가 없다 — code location 로드 실패가 "
+        "조용해진다."
+    )
+    probe = _command_text(healthcheck.get("test"))
+    assert _CODE_LOCATION_PROBE_FRAGMENT in probe, (
+        f"`{service_name}`의 healthcheck가 code location을 묻지 않는다: {probe}. "
+        "`/`나 `/server_info`는 webserver가 정적으로 주는 문서라 code location이 "
+        "죽어도 200이다 — 컨테이너는 끝까지 healthy로 보고되고 job은 조용히 멈춘다."
+    )
+    assert _CODE_LOCATION_PROBE_EXPECTED in probe, (
+        f"`{service_name}`의 probe가 응답 **본문을 판정하지 않는다**: {probe}. "
+        "`repositoriesOrError`는 실패 시에도 HTTP 200으로 `PythonError`를 주므로, "
+        "요청이 성공한 것만 보면 아무것도 관측하지 못한다."
+    )
+    # 기동 창이 없으면 code location 로딩 중에 unhealthy로 떨어진다.
+    assert healthcheck.get("start_period"), (service_name, healthcheck)
