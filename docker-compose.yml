@@ -457,6 +457,15 @@ services:
         createdb -O "$$KOR_TRAVEL_CONCIERGE_SHARED_APP_USER" "$$KOR_TRAVEL_CONCIERGE_SHARED_DB"
       fi
       psql -d "$$KOR_TRAVEL_CONCIERGE_SHARED_DB" -c "CREATE EXTENSION IF NOT EXISTS postgis"
+      # PostgreSQL은 기본적으로 모든 database에 PUBLIC CONNECT를 부여한다 — DB만
+      # 나누는 것으로는 격리가 안 된다는 ADR-37의 교훈이 CONNECT 권한에도 그대로
+      # 적용된다. bootstrap DB와 이 DB 모두에서 PUBLIC의 CONNECT를 걷어내고, 이
+      # DB는 소유 role에게만 명시적으로 되돌려준다 — 다른 프로젝트가 나중에 같은
+      # 클러스터에 합류해도 서로의 database에 기본적으로 닿지 않는다(실측: 2026-09-19,
+      # revoke 전에는 이 role이 bootstrap DB에 SELECT 1까지 실행할 수 있었다).
+      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PGDATABASE\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_CONCIERGE_SHARED_DB\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_CONCIERGE_SHARED_DB\" TO \"$$KOR_TRAVEL_CONCIERGE_SHARED_APP_USER\""
 
   rustfs:
     image: rustfs/rustfs:latest
