@@ -113,31 +113,30 @@ target 단위로만 남아 있다.
 
 ## 5. 지금의 제어 평면 — Dagster
 
-**`pinvi`가 §7 1단계(code-server 분리)를 충족한 첫 프로젝트다**(2026-09-19,
-PinVi ADR-069 — 참조 구현은 `kor-travel-weather` PR #61). 나머지 프로젝트의
-webserver/daemon은 여전히 각자 `-m <모듈>`로 코드를 **in-process로 직접
-로드**한다.
+**`pinvi`와 `geo`가 §7 1단계(code-server 분리)를 충족한 첫 두 프로젝트다**
+(둘 다 2026-09-19, 서로 다른 PR이 거의 동시에 착지했다 — PinVi ADR-069/PR
+`digitie/pinvi#559`+`#358`, geo는 PR #357). 참조 구현은 `kor-travel-weather`
+PR #61. `map`/`conc`의 webserver/daemon은 여전히 각자 `-m <모듈>`로 코드를
+**in-process로 직접 로드**한다.
 
 | 프로젝트 | webserver | daemon | code-server(gRPC) | 코드 로드 방식 |
 |---|---|---|---|---|
 | `pinvi` | `pinvi-dagster` `12802` | `pinvi-dagster-daemon` (포트 없음) | `pinvi-dagster-code-server` `12803` | webserver/daemon → `-w workspace.yaml`(grpc_server), code-server만 `-m pinvi.etl.definitions` |
+| `geo` | `kor-travel-geo-dagster` `12502` | `kor-travel-geo-dagster-daemon`(포트 없음) | `kor-travel-geo-dagster-code-server` `12503` | PR #357 — pinvi와 같은 3-분리 형태(상세는 그 PR 참조, 이 문서는 표만 갱신) |
 | `map` | `kor-travel-map-dagster` `12702` | `kor-travel-map-dagster-daemon` (포트 없음) | 없음 | `-m kortravelmap.dagster.definitions` |
 | `weather` | 내부 전용 + 게이트웨이 `14102` | — | 외부 프로젝트 소유(자체 3-분리, `dagster-code-server`) | 외부 프로젝트 소유 |
-| `geo` | [`ports.md`]는 `12502`를 적어 두었으나 `docker-targets.yml`에 **등록된 컨테이너가 없다** | — | 없음 | 확인 필요 |
 | `conc` | 없음 | — | 없음 | — |
 
-> geo의 `12502`는 **문서와 등록이 어긋나 있는 자리**다. 둘 중 하나가 낡았다. 이 문서는
-> 그것을 덮지 않고 드러낸다 — 고치는 것은 geo 소유자의 몫이다.
->
 > **PinVi가 weather와 다른 점**: weather는 자체 bridge network + 서비스명 DNS로
 > code-server에 접속하지만, PinVi는 이 저장소의 compose가 강제하는
 > `network_mode: host`라 `workspace.yaml`이 `host: 127.0.0.1`을 쓴다(PinVi
-> ADR-069 §결정 2) — 이 표의 다른 프로젝트가 같은 1단계를 밟을 때도 같은
-> 이유로 서비스명이 아니라 loopback을 써야 한다.
+> ADR-069 §결정 2) — `map`/`conc`가 같은 1단계를 밟을 때도 같은 이유로
+> 서비스명이 아니라 loopback을 써야 한다. geo도 같은 `network_mode: host`
+> compose 안에 있으므로 같은 제약을 받는다(구체적인 접속 방식은 PR #357 확인).
 
 이 배치의 결과가 §7 전환의 전제다: **공유 webserver/daemon으로 가려면 모든 프로젝트가
-먼저 code-server를 분리해야 한다.** `pinvi`가 그 1단계를 밟았고, 나머지
-(`map`/`weather`/`geo`/`conc`)는 아직이다.
+먼저 code-server를 분리해야 한다.** `pinvi`·`geo`가 그 1단계를 밟았고, 나머지
+(`map`/`weather`/`conc`)는 아직이다.
 
 ---
 
