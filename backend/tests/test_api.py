@@ -1032,6 +1032,7 @@ def test_get_targets():
         "pinvi-postgres",
         "pinvi-api",
         "pinvi-web",
+        "pinvi-dagster-code-server",
         "pinvi-dagster",
         "pinvi-dagster-daemon",
     ]
@@ -1071,6 +1072,7 @@ def test_ensure_target_success(mock_compose_service):
                 "pinvi-postgres",
                 "pinvi-api",
                 "pinvi-web",
+                "pinvi-dagster-code-server",
                 "pinvi-dagster",
                 "pinvi-dagster-daemon",
             ]
@@ -1110,6 +1112,7 @@ def test_ensure_target_success(mock_compose_service):
             "pinvi-postgres",
             "pinvi-api",
             "pinvi-web",
+            "pinvi-dagster-code-server",
             "pinvi-dagster",
             "pinvi-dagster-daemon",
         ],

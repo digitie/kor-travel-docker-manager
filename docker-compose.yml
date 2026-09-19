@@ -1378,6 +1378,66 @@ services:
       NEXT_PUBLIC_PINVI_API_URL: ${PINVI_PUBLIC_API_URL:-http://127.0.0.1:12801}
     ports:
     - ${PINVI_WEB_PORT:-12805}:${PINVI_WEB_PORT:-12805}
+  # PinVi ADR-069 — `pinvi.etl.definitions`를 실제로 import·실행하는 유일한
+  # 프로세스. webserver/daemon은 이 컨테이너에 gRPC로만 접속하고(`workspace.yaml`)
+  # 유저 코드를 전혀 만지지 않는다 — job 코드의 버그나 무거운 import가 그 둘의
+  # 헬스체크·프로세스 자체를 끌고 내려가지 않는다. 참조 구현은
+  # `kor-travel-weather`(PR #61)이지만, PinVi는 `network_mode: host`라
+  # `workspace.yaml`이 서비스명이 아니라 `127.0.0.1`을 쓴다(ADR-069 §결정 2).
+  pinvi-dagster-code-server:
+    image: ${PINVI_DAGSTER_IMAGE:-pinvi-dagster:latest-main}
+    build:
+      context: ${PINVI_REPO_DIR:-../pinvi}
+      dockerfile: apps/etl/Dockerfile
+      args:
+        PINVI_SOURCE_REVISION: ${PINVI_SOURCE_REVISION:-development}
+        PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
+    container_name: ${PINVI_DAGSTER_CODE_SERVER_CONTAINER:-pinvi-dagster-code-server-latest}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      pinvi-postgres:
+        condition: service_healthy
+      pinvi-db-init:
+        condition: service_completed_successfully
+      pinvi-api:
+        condition: service_healthy
+    command:
+    - dagster
+    - api
+    - grpc
+    - -h
+    - 0.0.0.0
+    - -p
+    - '${PINVI_DAGSTER_CODE_SERVER_PORT:-12803}'
+    - -m
+    - pinvi.etl.definitions
+    environment:
+      DAGSTER_HOME: /opt/pinvi/.dagster
+      DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
+      # 여기가 code location이 실제로 도는 곳이다 — `DefaultRunLauncher`의 run
+      # worker는 이 프로세스의 자식으로 뜬다. asset/job/resource가 app DB를
+      # 직접 쓴다(PinviDatabaseResource 등).
+      PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}
+      # Dagster instance storage. **scheme이 앱 DSN과 다르다** —
+      # dagster-postgres는 psycopg2(동기)를 쓰므로 `+asyncpg`를 붙이면 안 된다.
+      PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_DAGSTER_DB:-pinvi_dagster}
+    healthcheck:
+      # dagster 자신의 grpc health protocol — 프로세스 존재가 아니라 gRPC
+      # 서버가 실제로 응답하는지를 본다.
+      test:
+      - CMD
+      - dagster
+      - api
+      - grpc-health-check
+      - -h
+      - 127.0.0.1
+      - -p
+      - '${PINVI_DAGSTER_CODE_SERVER_PORT:-12803}'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
   pinvi-dagster:
     image: ${PINVI_DAGSTER_IMAGE:-pinvi-dagster:latest-main}
     build:
@@ -1396,18 +1456,29 @@ services:
         condition: service_completed_successfully
       pinvi-api:
         condition: service_healthy
+      # ADR-069 — webserver는 이제 code location을 직접 import하지 않는다.
+      # workspace.yaml의 grpc_server가 이 컨테이너를 가리키므로, 이게
+      # healthy해야 webserver의 code location 로드 자체가 가능하다.
+      pinvi-dagster-code-server:
+        condition: service_healthy
+    # ADR-069 — `-m` 직접 import에서 `-w workspace.yaml`(grpc_server)로 전환.
+    # webserver는 더 이상 pinvi.etl.definitions를 import하지 않는다.
     command:
     - dagster-webserver
     - -h
     - 0.0.0.0
     - -p
     - '${PINVI_DAGSTER_PORT:-12802}'
-    - -m
-    - pinvi.etl.definitions
+    - -w
+    - /opt/pinvi/.dagster/workspace.yaml
     environment:
       DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       PINVI_DAGSTER_PORT: ${PINVI_DAGSTER_PORT:-12802}
+      # ADR-069: webserver는 code location을 더 이상 직접 import하지 않으므로
+      # 엄밀히는 앱 DSN이 필요 없다 — 하지만 이 컷오버 직후 관측 기간 동안은
+      # 제거하지 않는다(부작용 없음, 혹시 모를 Dagster UI 내부 경로의 암묵
+      # 의존을 배제하기 전까지 안전한 쪽을 택한다). 안정 확인 후 제거 후보.
       PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}
       # Dagster instance storage. **scheme이 앱 DSN과 다르다** —
       # dagster-postgres는 psycopg2(동기)를 쓰므로 `+asyncpg`를 붙이면 안 된다.
@@ -1442,9 +1513,10 @@ services:
         condition: service_healthy
       pinvi-db-init:
         condition: service_completed_successfully
-      # webserver가 먼저 healthy가 되면 code location이 로드 가능하다는 뜻이고,
-      # 그 시점에 daemon이 붙는 편이 schedule 첫 tick의 실패 로그를 줄인다.
-      pinvi-dagster:
+      # ADR-069 — daemon도 더 이상 code location을 직접 import하지 않는다.
+      # "code location이 로드 가능한가"의 신호는 이제 webserver가 아니라
+      # code-server 자신이다.
+      pinvi-dagster-code-server:
         condition: service_healthy
     # **낡은 이미지로 뜨면 조용히 두 번째 instance가 생긴다.**
     #
@@ -1459,6 +1531,10 @@ services:
     # 않고, 기동 시점에 실제로 resolve된 storage 세 개의 구현을 본다. 하나라도
     # Postgres가 아니면 daemon을 띄우지 않고 죽는다(fail-close). 이 가드가 있으면
     # 이미지 재빌드보다 이 compose가 먼저 적용돼도 안전하다 — 순서 의존이 사라진다.
+    #
+    # ADR-069 — 가드 통과 뒤 넘어가는 명령이 `-m` 직접 import에서
+    # `-w workspace.yaml`(grpc_server)로 바뀌었다. 가드 자체(instance storage
+    # 판정)는 코드 로딩 방식과 무관해 그대로 유효하다.
     command:
     - sh
     - -ec
@@ -1484,7 +1560,7 @@ services:
               "rebuild the pinned PinVi image before starting the daemon." % wrong
           )
       '
-      exec dagster-daemon run -m pinvi.etl.definitions
+      exec dagster-daemon run -w /opt/pinvi/.dagster/workspace.yaml
     environment:
       DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
@@ -1496,8 +1572,9 @@ services:
       # webserver와 **같은 instance storage**를 봐야 한다. 다르면 schedule 켜짐
       # 상태와 run 이력이 갈려 UI에 보이는 것과 실제로 도는 것이 달라진다.
       PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_DAGSTER_DB:-pinvi_dagster}
-      # code location이 도는 곳이므로 앱 DSN도 필요하다 —
-      # `DefaultRunLauncher`에서 run worker는 이 프로세스의 자식이다.
+      # ADR-069: daemon은 code location을 더 이상 직접 import하지 않는다
+      # (run worker는 이제 code-server의 자식이다) — 엄밀히는 앱 DSN이 필요
+      # 없지만, webserver와 같은 이유로 컷오버 직후에는 제거하지 않는다.
       PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}
     healthcheck:
       # dagster의 정식 판정. required daemon 전부의 heartbeat 신선도를 보고

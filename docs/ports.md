@@ -27,7 +27,7 @@
 | `geo` | `12500-12599` | PostgreSQL `12500`, API `12501`, Dagster `12502`, Web UI `12505` | `kor-travel-geo` |
 | `conc` | `12600-12699` | PostgreSQL `12600`, API `12601`, MCP `12602`, Web UI `12605` | `kor-travel-concierge` |
 | `map` | `12700-12799` | PostgreSQL `12700`, API `12701`, Dagster `12702`, Web UI `12705` | `kor-travel-map` |
-| `pinvi` | `12800-12899` | PostgreSQL `12800`, API `12801`, Dagster `12802`, Web UI `12805` | PinVi |
+| `pinvi` | `12800-12899` | PostgreSQL `12800`, API `12801`, Dagster webserver `12802`, Dagster code-server(gRPC, PinVi ADR-069) `12803`, Web UI `12805` | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
 | `airport-db` | `14000-14000` | PostgreSQL `14000` | `kor-travel-airport` (외부 프로젝트) |
 | `airport` | `14001-14099` | Backend `14001`, Frontend `14002` | `kor-travel-airport` (외부 프로젝트) |
@@ -81,7 +81,9 @@ Manager는 외부 컨테이너의 **compose 설정을 편집하지 않는다.** 
 
 Concierge scheduler와 Map Dagster daemon은 외부 포트를 열지 않는 내부 실행 서비스다.
 Geo Dagster webserver는 registry의 일반 runtime 표에는 없는 보조 서비스지만 Compose에서
-`12502`를 사용한다. PinVi의 `srv`와 `main`은 `pinvi` target 별칭이다.
+`12502`를 사용한다. PinVi의 `srv`와 `main`은 `pinvi` target 별칭이다. PinVi Dagster
+code-server(`12803`, PinVi ADR-069)도 daemon과 같은 내부 전용이다 — webserver/daemon만
+gRPC로 접속하고, 외부에는 열지 않는다.
 
 ## PostgreSQL instance 경계
 
