@@ -1049,7 +1049,32 @@ services:
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://127.0.0.1:12501}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
+      # 서울 열린데이터광장은 data.go.kr과 **다른 포털이고 키도 다르다**.
+      # 서울 책방(OA-21062) 하나가 쓴다 — 종전 odcloud 원천이 404로 사라졌다.
+      KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY: ${KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY:-${SEOUL_OPEN_DATA_API_KEY:-}}
       KOR_TRAVEL_MAP_OPINET_API_KEY: ${KOR_TRAVEL_MAP_OPINET_API_KEY:-}
+      # OpiNet에는 전국 목록(bulk) 엔드포인트가 없어서 **scope를 골라야** 적재가
+      # 시작된다. 이 줄들이 없으면 설정이 기본값 `disabled`로 떨어지고 job이
+      # `ProviderCredentialMissing: opinet 적재 비활성(opinet_scope_mode=disabled)`로
+      # 실패한다 — 2026-09-18 prod에서 place·price 두 job이 그 상태였다.
+      # Map 저장소 자신의 compose에는 이 셋이 배선돼 있는데 여기에는 없었다
+      # (KREX go key와 **같은 형태의 구멍**이다).
+      #
+      # 운영 모드는 `low_top_area`다(2026-09-19 결정). 기본값을 `disabled`로
+      # 두면 배포가 끝나도 적재가 켜지지 않아 호스트 `.env`를 손으로 고쳐야
+      # 했다 — 그 손 편집이 prod와 이 문서를 어긋나게 만든 자리다. 끄려면
+      # `.env`에서 `disabled`로 덮는다.
+      #
+      # `low_top_area`는 시군구별 `lowTop10`을 로테이션으로 돈다. 아래 두 노브는
+      # 그 모드의 호출량 상한이라 함께 넘긴다 — 무료키 일일 한도가 300회이고
+      # (일반 19종 기준, 2026-09-14 확인) 매월 1일에는 place job이 같은 경로를
+      # 한 번 더 돌아 여유가 좁아진다. 노브가 compose에 없으면 그때 조정하려고
+      # 또 이 파일을 고쳐야 한다.
+      KOR_TRAVEL_MAP_OPINET_SCOPE_MODE: ${KOR_TRAVEL_MAP_OPINET_SCOPE_MODE:-${OPINET_SCOPE_MODE:-low_top_area}}
+      KOR_TRAVEL_MAP_OPINET_SCOPE_BBOX: ${KOR_TRAVEL_MAP_OPINET_SCOPE_BBOX:-${OPINET_SCOPE_BBOX:-}}
+      KOR_TRAVEL_MAP_OPINET_SCOPE_RADIUS_M: ${KOR_TRAVEL_MAP_OPINET_SCOPE_RADIUS_M:-${OPINET_SCOPE_RADIUS_M:-5000}}
+      KOR_TRAVEL_MAP_OPINET_LOW_TOP_MAX_CALLS: ${KOR_TRAVEL_MAP_OPINET_LOW_TOP_MAX_CALLS:-${OPINET_LOW_TOP_MAX_CALLS:-90}}
+      KOR_TRAVEL_MAP_OPINET_RUN_CALL_BUDGET: ${KOR_TRAVEL_MAP_OPINET_RUN_CALL_BUDGET:-${OPINET_RUN_CALL_BUDGET:-140}}
       KOR_TRAVEL_MAP_KREX_EX_API_KEY: ${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}
       # KREX의 go key는 data.go.kr service key와 **같은 값**이다(python-krex-api의
       # `.env`에서 `KEX_GO_API_KEY`와 `DATA_GO_KR_SERVICE_KEY`가 같은 다이제스트임을
@@ -1179,7 +1204,32 @@ services:
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://127.0.0.1:12501}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
+      # 서울 열린데이터광장은 data.go.kr과 **다른 포털이고 키도 다르다**.
+      # 서울 책방(OA-21062) 하나가 쓴다 — 종전 odcloud 원천이 404로 사라졌다.
+      KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY: ${KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY:-${SEOUL_OPEN_DATA_API_KEY:-}}
       KOR_TRAVEL_MAP_OPINET_API_KEY: ${KOR_TRAVEL_MAP_OPINET_API_KEY:-}
+      # OpiNet에는 전국 목록(bulk) 엔드포인트가 없어서 **scope를 골라야** 적재가
+      # 시작된다. 이 줄들이 없으면 설정이 기본값 `disabled`로 떨어지고 job이
+      # `ProviderCredentialMissing: opinet 적재 비활성(opinet_scope_mode=disabled)`로
+      # 실패한다 — 2026-09-18 prod에서 place·price 두 job이 그 상태였다.
+      # Map 저장소 자신의 compose에는 이 셋이 배선돼 있는데 여기에는 없었다
+      # (KREX go key와 **같은 형태의 구멍**이다).
+      #
+      # 운영 모드는 `low_top_area`다(2026-09-19 결정). 기본값을 `disabled`로
+      # 두면 배포가 끝나도 적재가 켜지지 않아 호스트 `.env`를 손으로 고쳐야
+      # 했다 — 그 손 편집이 prod와 이 문서를 어긋나게 만든 자리다. 끄려면
+      # `.env`에서 `disabled`로 덮는다.
+      #
+      # `low_top_area`는 시군구별 `lowTop10`을 로테이션으로 돈다. 아래 두 노브는
+      # 그 모드의 호출량 상한이라 함께 넘긴다 — 무료키 일일 한도가 300회이고
+      # (일반 19종 기준, 2026-09-14 확인) 매월 1일에는 place job이 같은 경로를
+      # 한 번 더 돌아 여유가 좁아진다. 노브가 compose에 없으면 그때 조정하려고
+      # 또 이 파일을 고쳐야 한다.
+      KOR_TRAVEL_MAP_OPINET_SCOPE_MODE: ${KOR_TRAVEL_MAP_OPINET_SCOPE_MODE:-${OPINET_SCOPE_MODE:-low_top_area}}
+      KOR_TRAVEL_MAP_OPINET_SCOPE_BBOX: ${KOR_TRAVEL_MAP_OPINET_SCOPE_BBOX:-${OPINET_SCOPE_BBOX:-}}
+      KOR_TRAVEL_MAP_OPINET_SCOPE_RADIUS_M: ${KOR_TRAVEL_MAP_OPINET_SCOPE_RADIUS_M:-${OPINET_SCOPE_RADIUS_M:-5000}}
+      KOR_TRAVEL_MAP_OPINET_LOW_TOP_MAX_CALLS: ${KOR_TRAVEL_MAP_OPINET_LOW_TOP_MAX_CALLS:-${OPINET_LOW_TOP_MAX_CALLS:-90}}
+      KOR_TRAVEL_MAP_OPINET_RUN_CALL_BUDGET: ${KOR_TRAVEL_MAP_OPINET_RUN_CALL_BUDGET:-${OPINET_RUN_CALL_BUDGET:-140}}
       KOR_TRAVEL_MAP_KREX_EX_API_KEY: ${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}
       # KREX의 go key는 data.go.kr service key와 **같은 값**이다(python-krex-api의
       # `.env`에서 `KEX_GO_API_KEY`와 `DATA_GO_KR_SERVICE_KEY`가 같은 다이제스트임을

@@ -111,3 +111,130 @@ def test_the_krex_go_key_is_not_a_dead_end(
         )
     # 검사가 공허하지 않은지: 비교 대상이 실제로 비어 있지 않다.
     assert data_go_kr_sources
+
+
+#: OpiNet 적재를 **시작시키는** 선택자.
+#:
+#: OpiNet에는 전국 목록(bulk) 엔드포인트가 없어서 scope를 고르지 않으면 fetcher가
+#: `ProviderCredentialMissing`으로 멈춘다 — 키가 있어도 그렇다. 2026-09-18 prod에서
+#: place·price 두 job이 그 상태였고, 원인은 이 문서가 그 선택자를 **아예 넘기지
+#: 않아** 설정이 기본값 `disabled`로 떨어진 것이었다(Map 저장소 자신의 compose에는
+#: 배선돼 있었다).
+_OPINET_SCOPE_SELECTOR = "KOR_TRAVEL_MAP_OPINET_SCOPE_MODE"
+
+
+def _services_declaring(name: str) -> set[str]:
+    text = _COMPOSE.read_text(encoding="utf-8")
+    services: set[str] = set()
+    current: str | None = None
+    for line in text.splitlines():
+        if line.startswith("  ") and not line.startswith("    ") and line.rstrip().endswith(":"):
+            current = line.strip().rstrip(":")
+        elif current is not None and line.strip().startswith(f"{name}:"):
+            services.add(current)
+    return services
+
+
+def test_the_opinet_scope_selector_reaches_every_service_that_holds_its_key() -> None:
+    """키를 받는 서비스는 scope 선택자도 받아야 한다.
+
+    둘 중 하나만 있으면 "자격증명은 있는데 영원히 비활성"이 된다 — 그것이 prod의
+    모습이었다. 키 쪽을 기준으로 삼는 이유는 그쪽이 "이 서비스가 OpiNet을 쓴다"는
+    선언이기 때문이다.
+    """
+
+    with_key = _services_declaring("KOR_TRAVEL_MAP_OPINET_API_KEY")
+    assert with_key, "OpiNet 키를 받는 서비스가 하나도 없다"
+    with_selector = _services_declaring(_OPINET_SCOPE_SELECTOR)
+    missing = sorted(with_key - with_selector)
+    assert not missing, f"{_OPINET_SCOPE_SELECTOR}를 못 받는 서비스: {missing}"
+
+
+#: `low_top_area` 모드에서 fetcher를 **멈추게 하는** 유일한 값.
+#:
+#: 나머지 모드 이름을 여기 베끼지 않는다 — 베끼면 Map이 모드를 하나 더 만들 때
+#: 이 문서가 조용히 낡는다. 이 검사가 지키는 것은 목록이 아니라 "기본값이 적재를
+#: 시작시킨다"는 성질이다.
+_OPINET_DISABLED = "disabled"
+
+
+def _selector_defaults() -> list[str]:
+    """compose가 선언한 `${A:-${B:-값}}`에서 **맨 안쪽 기본값**만 꺼낸다.
+
+    문자열 포함 검사로 때우면 주석에 남은 단어까지 세어 통과한다. 여기서 보는 것은
+    "운영자가 `.env`에 아무것도 넣지 않았을 때 컨테이너가 실제로 받는 값"이다.
+    """
+
+    defaults: list[str] = []
+    for line in _COMPOSE.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(f"{_OPINET_SCOPE_SELECTOR}:"):
+            continue
+        value = stripped.split(":", 1)[1].strip()
+        assert value.startswith("${"), value
+        while value.startswith("${") and value.endswith("}"):
+            inner = value[2:-1]
+            _head, sep, tail = inner.partition(":-")
+            if not sep:
+                value = ""
+                break
+            value = tail.strip()
+        defaults.append(value)
+    return defaults
+
+
+def test_the_opinet_selector_stays_overridable_by_the_operator() -> None:
+    """모드는 운영자가 `.env`로 덮을 수 있어야 한다 — 값을 그대로 박지 않는다."""
+
+    seen = 0
+    for line in _COMPOSE.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith(f"{_OPINET_SCOPE_SELECTOR}:"):
+            continue
+        seen += 1
+        value = stripped.split(":", 1)[1].strip()
+        assert value.startswith("${") and value.endswith("}"), value
+    # **본 것이 없으면 초록이 아니다.** 매칭되는 줄이 하나도 없으면 위 루프가 한
+    # 번도 돌지 않아 "선택자를 통째로 지운다"는 바로 그 사고를 이 검사가 관측하지
+    # 못한다(2026-09-19 적대 리뷰 — 같은 파일의 형제 검사 둘은 이미 막고 있었다).
+    assert seen, f"{_OPINET_SCOPE_SELECTOR}를 선언하는 줄이 하나도 없다"
+
+
+def test_the_opinet_default_mode_actually_starts_a_load() -> None:
+    """기본 모드가 적재를 **시작시키는** 값이어야 한다.
+
+    `disabled`가 기본이면 배포가 끝나도 적재가 켜지지 않아 운영자가 호스트 `.env`를
+    손으로 고쳐야 한다 — 그 손 편집이 prod와 이 문서를 어긋나게 만든 자리이고,
+    2026-09-18 prod에서 place·price 두 job이 영원히 비활성이던 원인이다. 값 이름이
+    아니라 **효과**에 결박한다: fetcher는 `disabled`에서만 멈춘다.
+    """
+
+    defaults = _selector_defaults()
+    assert defaults, f"{_OPINET_SCOPE_SELECTOR}를 선언하는 서비스가 하나도 없다"
+    assert _OPINET_DISABLED not in defaults, (
+        f"{_OPINET_SCOPE_SELECTOR} 기본값이 `{_OPINET_DISABLED}`라 적재가 켜지지 "
+        "않는다 — 배포 후 손 편집이 필요해진다"
+    )
+
+
+#: 서울 열린데이터광장 인증키.
+#:
+#: data.go.kr과 **다른 포털이고 키도 다르다**(서울시 자체 발급). Map의 curated
+#: fileData 4종 중 서울 책방만 이 키를 쓴다 — 종전 odcloud 원천이 404
+#: `등록되지 않은 서비스 입니다`로 사라져 2026-09-19에 원천을 OA-21062로 옮겼다.
+_SEOUL_OPEN_DATA_KEY = "KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY"
+
+
+def test_the_seoul_open_data_key_reaches_every_service_that_runs_file_data() -> None:
+    """fileData를 돌리는 서비스는 서울 열린데이터광장 키도 받아야 한다.
+
+    data.go.kr 키 쪽을 기준으로 삼는 이유는 그쪽이 "이 서비스가 curated fileData를
+    돌린다"는 선언이기 때문이다. 키를 안 넘기면 4종 중 서울 책방만 조용히
+    `ProviderCredentialMissing`으로 죽는다 — KREX go key, OpiNet scope와 **같은
+    형태의 구멍**이고, 이 파일이 세 번째로 같은 모양을 막는다.
+    """
+
+    with_data_go_kr = _services_declaring("KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY")
+    assert with_data_go_kr, "data.go.kr 키를 받는 서비스가 하나도 없다"
+    missing = sorted(with_data_go_kr - _services_declaring(_SEOUL_OPEN_DATA_KEY))
+    assert not missing, f"{_SEOUL_OPEN_DATA_KEY}를 못 받는 서비스: {missing}"
