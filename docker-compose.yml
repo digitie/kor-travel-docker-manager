@@ -345,6 +345,119 @@ services:
       export POSTGRES_PASSWORD="$$(cat /run/secrets/pinvi-postgres-password)"
       exec sh /opt/pinvi/bootstrap-pinvi-runtime-role.sh
 
+  # platform-topology.md §7(2026-09-19 결정)의 공용 제어 평면 instance. concierge가
+  # 첫 합류 프로젝트다 — geo/map/pinvi는 아직 각자 전용 instance(ADR-37)에 남아
+  # 있으며, 그 프로젝트들이 합류할 때는 각자 role+database만 만드는 별도 db-init
+  # one-shot을 추가한다(아래 -concierge 접미사와 같은 패턴). 한 스크립트가 여러
+  # 프로젝트의 role/database를 만들지 않는다 — 그것이 2026-08-17 사고(ADR-37)의
+  # 직접 원인이었다.
+  kor-travel-shared-postgres:
+    image: postgis/postgis:16-3.5
+    container_name: ${KOR_TRAVEL_SHARED_POSTGRES_CONTAINER:-kor-travel-shared-postgres}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    environment:
+      POSTGRES_USER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
+      # cluster 관리용 계정이다 — 앱에는 절대 주입하지 않는다. 앱은 아래
+      # kor-travel-shared-db-init-concierge가 만드는 프로젝트 전용 role만 쓴다.
+      POSTGRES_PASSWORD_FILE: /run/secrets/kor-travel-shared-postgres-password
+      # 앱 DB와 다른 중립 이름으로 init한다 — 같은 이름으로 init하면 initdb가 심은
+      # 확장과 dump의 확장 배치가 복원에서 충돌한다(map 커토버 실측).
+      POSTGRES_DB: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
+      # loopback을 scram으로 잠근다 — ADR-37이 겪은 실패(첫 instance들이 이 값
+      # 없이 initdb돼 trust loopback이 남았던 것)를 새 instance에서 반복하지
+      # 않는다. ⚠️ initdb 때만 쓰이므로 이미 만들어진 PGDATA는 pg_hba.conf를
+      # 직접 고쳐야 한다.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    command:
+    - postgres
+    - -c
+    - listen_addresses=127.0.0.1
+    - -p
+    - ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
+    - -c
+    - shared_preload_libraries=pg_stat_statements
+    - -c
+    - shared_buffers=${KOR_TRAVEL_SHARED_POSTGRES_SHARED_BUFFERS:-128MB}
+    - -c
+    - work_mem=${KOR_TRAVEL_SHARED_POSTGRES_WORK_MEM:-16MB}
+    - -c
+    - maintenance_work_mem=${KOR_TRAVEL_SHARED_POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
+    - -c
+    - effective_cache_size=${KOR_TRAVEL_SHARED_POSTGRES_EFFECTIVE_CACHE_SIZE:-512MB}
+    - -c
+    - random_page_cost=${KOR_TRAVEL_SHARED_POSTGRES_RANDOM_PAGE_COST:-1.1}
+    - -c
+    - max_wal_size=${KOR_TRAVEL_SHARED_POSTGRES_MAX_WAL_SIZE:-1GB}
+    - -c
+    - pg_stat_statements.track=all
+    - -c
+    - pg_stat_statements.max=10000
+    secrets:
+    - kor-travel-shared-postgres-password
+    volumes:
+    - ${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}:/var/lib/postgresql/data
+    ports:
+    - 127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}:${KOR_TRAVEL_SHARED_DB_PORT:-11000}
+    healthcheck:
+      test:
+      - CMD-SHELL
+      - pg_isready -h 127.0.0.1 -p ${KOR_TRAVEL_SHARED_DB_PORT:-11000} -U ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin} -d ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # concierge 전용 role+database만 만든다. 다른 프로젝트가 합류할 때는 각자 또
+  # 다른 -db-init one-shot을 추가한다(위 서비스 주석 참고) — role/ACL은 database가
+  # 아니라 cluster 전역이라는 ADR-37의 교훈을 그대로 지킨다.
+  kor-travel-shared-db-init-concierge:
+    image: postgis/postgis:16-3.5
+    container_name: ${KOR_TRAVEL_SHARED_DB_INIT_CONCIERGE_CONTAINER:-kor-travel-shared-db-init-concierge}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
+      PGUSER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
+      PGDATABASE: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
+      KOR_TRAVEL_CONCIERGE_SHARED_DB: ${KOR_TRAVEL_CONCIERGE_SHARED_DB:-kor_travel_concierge}
+      KOR_TRAVEL_CONCIERGE_SHARED_APP_USER: ${KOR_TRAVEL_CONCIERGE_SHARED_APP_USER:-kor_travel_concierge_app}
+    secrets:
+    - source: kor-travel-shared-postgres-password
+      target: /run/secrets/kor-travel-shared-postgres-password
+    - source: kor-travel-concierge-shared-app-password
+      target: /run/secrets/kor-travel-concierge-shared-app-password
+    # `createdb ... 2>/dev/null || true`는 쓰지 않는다(기존 -db-init 패턴과 동일한
+    # 이유 — 인증 실패·연결 거부·권한 부족을 삼키면 막으려던 상황에서 오히려
+    # `service_completed_successfully` 게이트가 통과한다). role 생성은 재실행 시
+    # 비밀번호를 최신 secret으로 맞추도록 존재해도 ALTER ROLE을 태운다.
+    # 다른 database에는 어떤 권한도 주지 않는다 — PostgreSQL 기본 동작(명시적
+    # GRANT가 없으면 비-superuser는 접근 불가)이 격리를 보장하고, 이 role이
+    # CREATEDB/CREATEROLE/superuser가 아님을 여기서 직접 확인한다(2026-08-17
+    # 사고 재발 방지의 핵심 지점).
+    command:
+    - sh
+    - -ec
+    - |
+      PGPASSWORD="$$(cat /run/secrets/kor-travel-shared-postgres-password)"
+      export PGPASSWORD
+      APP_PASSWORD="$$(cat /run/secrets/kor-travel-concierge-shared-app-password)"
+      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$KOR_TRAVEL_CONCIERGE_SHARED_APP_USER'" | grep -q 1; then
+        echo "role $$KOR_TRAVEL_CONCIERGE_SHARED_APP_USER already exists"
+        psql -d "$$PGDATABASE" -c "ALTER ROLE \"$$KOR_TRAVEL_CONCIERGE_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+      else
+        psql -d "$$PGDATABASE" -c "CREATE ROLE \"$$KOR_TRAVEL_CONCIERGE_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+      fi
+      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_CONCIERGE_SHARED_DB'" | grep -q 1; then
+        echo "database $$KOR_TRAVEL_CONCIERGE_SHARED_DB already exists"
+      else
+        createdb -O "$$KOR_TRAVEL_CONCIERGE_SHARED_APP_USER" "$$KOR_TRAVEL_CONCIERGE_SHARED_DB"
+      fi
+      psql -d "$$KOR_TRAVEL_CONCIERGE_SHARED_DB" -c "CREATE EXTENSION IF NOT EXISTS postgis"
+
   rustfs:
     image: rustfs/rustfs:latest
     container_name: kor-travel-rustfs
@@ -520,9 +633,16 @@ services:
       required: false
       format: raw
     depends_on:
+      # 구 전용 instance는 롤백 안전망으로 계속 띄워 두므로(platform-topology.md
+      # §7, concierge 부분 이전) 의존성도 남겨 둔다 — 무해하게 같이 healthy해진다.
+      # 실제 DATABASE_URL은 아래 공용 instance를 가리킨다.
       kor-travel-concierge-postgres:
         condition: service_healthy
       kor-travel-concierge-db-init:
+        condition: service_completed_successfully
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-concierge:
         condition: service_completed_successfully
       rustfs:
         condition: service_healthy
@@ -1912,3 +2032,7 @@ secrets:
     environment: KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD
   pinvi-postgres-password:
     environment: PINVI_POSTGRES_PASSWORD
+  kor-travel-shared-postgres-password:
+    environment: KOR_TRAVEL_SHARED_POSTGRES_PASSWORD
+  kor-travel-concierge-shared-app-password:
+    environment: KOR_TRAVEL_CONCIERGE_SHARED_APP_PASSWORD

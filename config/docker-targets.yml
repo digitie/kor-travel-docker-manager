@@ -52,6 +52,14 @@ containers:
     connection: "postgresql://127.0.0.1:12800 (DBs: pinvi)"
     expected_ports:
       - "12800:12800"
+  kor-travel-shared-postgresql:
+    name: kor-travel-shared-postgres
+    compose_service: kor-travel-shared-postgres
+    role: shared-postgresql
+    display_name: 공용 제어 평면 PostgreSQL / PostGIS (platform-topology.md §7)
+    connection: "postgresql://127.0.0.1:11000 (DBs: kor_travel_concierge)"
+    expected_ports:
+      - "11000:11000"
   rustfs:
     name: kor-travel-rustfs
     compose_service: rustfs
@@ -482,8 +490,15 @@ targets:
       - concierge
       - agent
       - conc
+    # concierge는 platform-topology.md §7에 따라 공용 instance(kor-travel-shared-postgres,
+    # :11000)로 이전했다. 구 전용 instance(kor-travel-concierge-postgres, :12600)는
+    # 데이터를 삭제하지 않고 롤백 안전망으로 그대로 두며, 이 target이 계속 관리한다
+    # (ensure/stop/restart가 둘 다 건강하게 유지한다) — DATABASE_URL만 새 instance를
+    # 가리키고, 구 instance는 이 target 밖에서 별도로 폐기되기 전까지 여기 남는다.
     services:
       - kor-travel-concierge-postgres
+      - kor-travel-shared-postgres
+      - kor-travel-shared-db-init-concierge
       - kor-travel-concierge-api
       - kor-travel-concierge-mcp
       - kor-travel-concierge-scheduler
@@ -496,6 +511,7 @@ targets:
     containers:
       - kor-travel-geo-postgresql
       - kor-travel-concierge-postgresql
+      - kor-travel-shared-postgresql
       - rustfs
       - kor-travel-concierge-api
       - kor-travel-concierge-mcp
@@ -526,6 +542,7 @@ targets:
     containers:
       - kor-travel-geo-postgresql
       - kor-travel-concierge-postgresql
+      - kor-travel-shared-postgresql
       - kor-travel-map-postgresql
       - rustfs
       - kor-travel-geo-api
@@ -567,6 +584,7 @@ targets:
     containers:
       - kor-travel-geo-postgresql
       - kor-travel-concierge-postgresql
+      - kor-travel-shared-postgresql
       - kor-travel-map-postgresql
       - pinvi-postgresql
       - rustfs
@@ -607,6 +625,7 @@ targets:
     containers:
       - kor-travel-geo-postgresql
       - kor-travel-concierge-postgresql
+      - kor-travel-shared-postgresql
       - kor-travel-map-postgresql
       - pinvi-postgresql
       - rustfs
@@ -837,6 +856,10 @@ compose_binds:
     - container_path: "/var/lib/postgresql/data"
       read_only: false
       source: "${KOR_TRAVEL_MAP_PGDATA:-/home/digitie/kor-travel-map-data/pgdata}"
+  kor-travel-shared-postgres:
+    - container_path: "/var/lib/postgresql/data"
+      read_only: false
+      source: "${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}"
   pinvi-db-runtime-role:
     - container_path: "/opt/pinvi/bootstrap-pinvi-runtime-role.sh"
       read_only: true

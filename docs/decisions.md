@@ -1910,7 +1910,8 @@ hex, 임의 shadow/radius, `transition-all`, 의미 없는 gradient/glass, 고�
 
 ## ADR-37: PostgreSQL은 프로젝트마다 전용 instance를 쓰고 DB 포트는 대역의 `x00`이다
 
-- 상태: accepted
+- 상태: accepted (concierge 범위는 ADR-44로 2026-09-19 일부 superseded — geo/map/pinvi는
+  이 ADR 그대로 유지)
 - 날짜: 2026-08-17
 - 결정자: 사용자, Claude
 - 관련: #176, ADR-35, ADR-5, ADR-16, Map ADR-090, `docs/ports.md`, `AGENTS.md` 룰 4·9
@@ -2852,3 +2853,89 @@ env 하나로 allowlist 전체를 교체할 수 있다. n150에는 실제로 그
 **남긴 것.** target-side 값 정책, allowlist 변경의 즉시 반영(상주 backend가 프로세스당
 한 번만 읽는다), `ktdctl targets validate`로의 semantic 검사 이관 — 전부
 `docs/tasks.md`에 후속으로 있다.
+
+## ADR-44: concierge를 공용 제어 평면 PostgreSQL instance(`:11000`)로 이전한다 — ADR-37의 concierge 범위 부분 supersede
+
+- 상태: accepted (구현 진행 중 — instance·role·database는 이 변경으로 만들어졌고,
+  실제 데이터 cutover는 별도 배포 단계에서 뒤이어 실행한다)
+- 날짜: 2026-09-19
+- 결정자: 사용자("데이터 마이그레이션까지 진행"), Claude
+- 관련: ADR-37, ADR-25, `platform-topology.md` §7, `docs/ports.md`, `config/docker-targets.yml`,
+  `config/backup-policy.yml`, kor-travel-concierge PR #236
+
+### 컨텍스트
+
+`platform-topology.md` §7(같은 날 작성)이 프로젝트별 전용 instance 4개(geo/concierge/
+map/pinvi, ADR-37)를 공용 제어 평면 instance 하나로 통합하는 것을 목표로 정했지만
+"결정됐지만 아직 안 만들어졌다"고 명시했다. concierge 저장소는 그 전 턴에서 연결 설정만
+파라미터화(`DATABASE_POOL_SIZE`/`DATABASE_MAX_OVERFLOW`, PR #236)해 두고 실제 이전은
+보류했다. 이번 턴에 이전 실행을 지시받았다.
+
+조사로 확인한 제약:
+
+- **실제 prod 복원 도구가 없다.** `ktdctl db-backup`은 백업과 scratch DB 리허설
+  복원만 하고, CLI 도움말이 직접 "실제 role DB로 덮어쓰는 복원 명령은 아직 없습니다"라고
+  밝힌다. 실제 cutover restore는 수동 `pg_restore`로 처음 실행한다.
+- **role·ACL·확장은 database가 아니라 cluster 전역이라는 ADR-37의 교훈이 그대로
+  적용된다.** 공용 instance로 되돌아가는 이 결정이 ADR-37이 막으려던 위험(여러
+  프로젝트가 서로의 principal namespace를 공유)을 다시 불러올 수 있는 지점이다.
+- **`pg_advisory_xact_lock`은 database 단위**(concierge 코드 5곳)라 cutover 중 신·구
+  DB에 동시 쓰기가 있으면 동시성 보장이 깨진다 — 점진 전환이 아니라 완전 정지 후
+  일괄 전환(hard cutover)이어야 한다.
+- 데이터 규모가 작다(실측 231MB, PostGIS 확장 하나, Alembic head `20260901_0029`) —
+  실제 다운타임은 컨테이너 재기동을 포함해도 수 분 내로 추정된다.
+
+### 결정
+
+**concierge만** `kor-travel-shared-postgres`(`:11000`, `postgis/postgis:16-3.5`,
+`kor-travel-concierge-postgres`와 동일한 loopback scram-sha-256 패턴)로 이전한다.
+geo/map/pinvi는 이 ADR의 범위 밖이며 각자 전용 instance(ADR-37)에 남는다.
+
+공용 instance 안에서도 ADR-37의 교훈을 지킨다 — cluster 관리자 계정(`shared_admin`)은
+앱에 절대 노출하지 않고, `kor-travel-shared-db-init-concierge` one-shot이 concierge
+전용 role(`kor_travel_concierge_app`, NOSUPERUSER/NOCREATEDB/NOCREATEROLE)을 만들어
+`kor_travel_concierge` database 하나에만 소유권을 준다. 다른 프로젝트가 합류할 때는
+이 role을 재사용하지 않고 각자 새 role+새 db-init one-shot을 추가한다(한 스크립트가
+여러 프로젝트의 role/database를 만드는 것이 2026-08-17 사고의 직접 원인이었다).
+
+전환은 완전 정지 → 최종 `pg_dump`(`--format=custom --compress=6`) → 새 instance로
+`pg_restore` → row count/Alembic head/PostGIS 검증 → `DATABASE_URL` 전환 →
+재기동·live 검증 순의 hard cutover로 실행한다. 옛 `kor-travel-concierge-postgres`는
+삭제하지 않고 롤백 안전망으로 그대로 둔다 — `config/docker-targets.yml`의 `conc`
+target이 옛/새 instance를 함께 관리해 둘 다 건강 상태를 유지한다.
+
+### 근거
+
+이 인스턴스에서 concierge가 첫 이전 사례다. geo·map·pinvi까지 한 번에 옮기지 않는
+이유는 `platform-topology.md` 자신의 원칙("결정됐지만 아직 안 만들어진 구조를 현황으로
+주장하지 않는다")을 지키기 위해서다 — 실제로 한 일만 문서에 반영한다. concierge를
+먼저 고른 것은 데이터가 가장 작고(231MB) Dagster 등 상태 저장 daemon이 없어 cutover
+정지 시간의 blast radius가 가장 작기 때문이다.
+
+### 결과
+
+- `docker-compose.yml`: `kor-travel-shared-postgres` + `kor-travel-shared-db-init-concierge`
+  서비스, 새 secret 2개(`kor-travel-shared-postgres-password`,
+  `kor-travel-concierge-shared-app-password`), concierge api의 `depends_on`에 새
+  instance 추가(옛 instance 의존은 유지 — 롤백 안전망도 같이 건강해야 한다).
+- `config/docker-targets.yml`: `kor-travel-shared-postgresql` container 등록,
+  `conc`/`map`/`pinvi`/`all` target의 `containers`(`services`는 `conc`만)에 추가,
+  `compose_binds`에 새 pgdata bind 허용 항목 추가(GM-17 보안 경계 — 여기 없는 bind는
+  candidate 검증이 거부한다).
+- `docs/ports.md`: `11000` 포트와 새 instance 행 추가, "네 instance"→"다섯 instance"로
+  갱신.
+- `AGENTS.md` 룰 4·9와 DB 서비스 정보 표: concierge 포트가 `12600`이 아니라 `:11000`
+  기준임을 반영하도록 이 변경과 함께 갱신한다(기존 문구는 ADR-37만 참조해
+  concierge 이전을 반영하지 못했다).
+- `config/backup-policy.yml`의 `concierge` role 자체는 바꾸지 않는다(`ktdm_standalone`
+  layout 유지). `standalone_backup.py`의 `_ROLE_CONFIG["concierge"]` 컨테이너 참조는
+  **실제 cutover가 끝난 뒤** 별도 커밋에서 `kor-travel-concierge-postgres`→
+  `kor-travel-shared-postgres`로 옮긴다 — cutover 전에 미리 옮기면 cutover 직전
+  백업이 아직 비어 있는 새 instance를 겨냥해 무의미해진다.
+
+### 확인하지 않은 것
+
+- 이 커밋 시점에는 instance·role·database 생성 코드만 존재한다. 실제 n150 배포,
+  백업, `pg_restore` cutover, live 검증은 이어지는 별도 단계에서 수행하고 결과를
+  `docs/journal.md`에 남긴다.
+- geo/map/pinvi의 이전 여부·시점은 이 ADR이 정하지 않는다.
