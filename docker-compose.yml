@@ -1446,11 +1446,45 @@ services:
       # 그 시점에 daemon이 붙는 편이 schedule 첫 tick의 실패 로그를 줄인다.
       pinvi-dagster:
         condition: service_healthy
+    # **낡은 이미지로 뜨면 조용히 두 번째 instance가 생긴다.**
+    #
+    # webserver와 daemon은 같은 이미지를 쓰지만 **다른 컨테이너**이고
+    # `/opt/pinvi/.dagster`에는 볼륨이 없다. 그 이미지에 `apps/etl/dagster.yaml`이
+    # 없거나 `dagster-postgres`가 안 깔려 있으면 둘은 각자 자기 컨테이너 안에
+    # SQLite를 만든다. 그러면 daemon은 자기 **빈** DB를 dequeue하고, webserver에서
+    # 띄운 run은 QUEUED인 채로 영원히 남는다 — 아무 데도 에러가 찍히지 않는다.
+    # daemon이 없던 지금까지보다 **더 나쁜** 상태이면서 겉보기는 정상이다.
+    #
+    # 그래서 이름이 아니라 **효과**로 막는다. 이미지 tag도 패키지 존재도 보지
+    # 않고, 기동 시점에 실제로 resolve된 storage 세 개의 구현을 본다. 하나라도
+    # Postgres가 아니면 daemon을 띄우지 않고 죽는다(fail-close). 이 가드가 있으면
+    # 이미지 재빌드보다 이 compose가 먼저 적용돼도 안전하다 — 순서 의존이 사라진다.
     command:
-    - dagster-daemon
-    - run
-    - -m
-    - pinvi.etl.definitions
+    - sh
+    - -ec
+    - |
+      python -c '
+      import sys
+      from dagster import DagsterInstance
+
+      with DagsterInstance.get() as instance:
+          wrong = {
+              label: type(storage).__name__
+              for label, storage in (
+                  ("run", instance.run_storage),
+                  ("event log", instance.event_log_storage),
+                  ("schedule", instance.schedule_storage),
+              )
+              if "Postgres" not in type(storage).__name__
+          }
+      if wrong:
+          sys.exit(
+              "PinVi Dagster instance storage is not PostgreSQL: %s. "
+              "The image predates apps/etl/dagster.yaml or lacks dagster-postgres; "
+              "rebuild the pinned PinVi image before starting the daemon." % wrong
+          )
+      '
+      exec dagster-daemon run -m pinvi.etl.definitions
     environment:
       DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
