@@ -201,8 +201,7 @@ def test_every_dagster_webserver_probe_asks_whether_code_loaded(
     service = _webserver_services()[service_name]
     healthcheck = service.get("healthcheck")
     assert healthcheck, (
-        f"`{service_name}`에 healthcheck가 없다 — code location 로드 실패가 "
-        "조용해진다."
+        f"`{service_name}`에 healthcheck가 없다 — code location 로드 실패가 조용해진다."
     )
     probe = _command_text(healthcheck.get("test"))
     assert _CODE_LOCATION_PROBE_FRAGMENT in probe, (
@@ -217,3 +216,67 @@ def test_every_dagster_webserver_probe_asks_whether_code_loaded(
     )
     # 기동 창이 없으면 code location 로딩 중에 unhealthy로 떨어진다.
     assert healthcheck.get("start_period"), (service_name, healthcheck)
+
+
+# ── code-server 쪽 (PinVi ADR-069, 2026-09-19) ──────────────────────────
+#
+# code-server는 daemon·webserver와 또 다른 질문을 받는다 — **유일하게 유저
+# 코드를 실제로 import·실행하는 프로세스**이므로, 그 프로세스가 죽으면
+# webserver/daemon이 아무리 healthy해도 job은 하나도 못 돈다. daemon처럼
+# "이름 목록이 아니라 command에서 유도한다" — code-server가 새로 생기면(다른
+# 프로젝트가 §7 1단계를 밟으면) 같은 요구를 자동으로 받는다.
+
+_GRPC_HEALTH_PROBE = "grpc-health-check"
+
+
+def _code_server_services() -> dict[str, dict[str, Any]]:
+    """`dagster api grpc`를 실행하는 서비스. **이름으로 찾지 않는다.**"""
+    services = _compose()["services"]
+    return {
+        name: service
+        for name, service in services.items()
+        if "dagster api grpc" in _command_text(service.get("command"))
+        or "dagster api grpc" in _command_text(service.get("entrypoint"))
+    }
+
+
+def test_the_compose_declares_at_least_one_dagster_code_server() -> None:
+    """유도의 전제. 못 찾으면 아래 검사가 조용히 항진명제가 된다."""
+    found = _code_server_services()
+    assert found, (
+        "`dagster api grpc`를 실행하는 서비스를 command에서 찾지 못했다 — "
+        "command 모양이 바뀌었거나 이 계약의 파서가 낡았다."
+    )
+
+
+@pytest.mark.parametrize("service_name", sorted(_code_server_services()))
+def test_every_dagster_code_server_has_a_grpc_health_healthcheck(
+    service_name: str,
+) -> None:
+    """유저 코드를 실제로 실행하는 유일한 프로세스의 생존을 무엇이 본다.
+
+    프로세스 존재만 보는 probe(예: pgrep)는 gRPC 서버가 실제로 응답하는지를
+    보지 못한다 — `dagster api grpc-health-check`는 dagster 자신의 gRPC health
+    protocol을 실제로 호출한다.
+    """
+    service = _code_server_services()[service_name]
+    healthcheck = service.get("healthcheck")
+    assert healthcheck, (
+        f"`{service_name}`이 유저 코드를 실행하는 유일한 프로세스인데 "
+        "healthcheck가 없다 — 죽거나 응답 없어져도 조용하다."
+    )
+    probe = _command_text(healthcheck.get("test"))
+    assert _GRPC_HEALTH_PROBE in probe, (
+        f"`{service_name}`의 healthcheck가 dagster의 gRPC health protocol을 쓰지 않는다: {probe}."
+    )
+    assert healthcheck.get("start_period"), (service_name, healthcheck)
+
+
+@pytest.mark.parametrize("service_name", sorted(_code_server_services()))
+def test_every_dagster_code_server_comes_back_on_its_own(service_name: str) -> None:
+    """daemon/webserver와 같은 요구 — healthcheck는 보이게만 하고, 되돌리는
+    것은 restart 정책이다."""
+    restart = _code_server_services()[service_name].get("restart")
+    assert restart == "unless-stopped", (
+        f"`{service_name}`의 restart 정책이 `unless-stopped`가 아니다: {restart!r}."
+    )

@@ -75,6 +75,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "pinvi-postgres",
         "pinvi-api",
         "pinvi-web",
+        "pinvi-dagster-code-server",
         "pinvi-dagster",
         "pinvi-dagster-daemon",
     ]
@@ -96,6 +97,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "kor-travel-map-dagster-daemon",
         "pinvi-api",
         "pinvi-web",
+        "pinvi-dagster-code-server",
         "pinvi-dagster",
         "pinvi-dagster-daemon",
     ]
@@ -328,6 +330,7 @@ def test_compose_ensure_build_command(
         "pinvi-postgres",
         "pinvi-api",
         "pinvi-web",
+        "pinvi-dagster-code-server",
         "pinvi-dagster",
         "pinvi-dagster-daemon",
     ]

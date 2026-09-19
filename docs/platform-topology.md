@@ -97,12 +97,13 @@ target 단위로만 남아 있다.
 | `kor-travel-geo-postgres` | `12500` | Manager compose | `kor_travel_geo`, `kor_travel_geo_dagster` |
 | `kor-travel-concierge-postgres` | `12600` | Manager compose | `kor_travel_concierge` |
 | `kor-travel-map-postgres` | `12700` | Manager compose | `kor_travel_map`, `kor_travel_map_dagster` |
-| `pinvi-postgres` | `12800` | Manager compose | `pinvi` |
+| `pinvi-postgres` | `12800` | Manager compose | `pinvi`, `pinvi_dagster` |
 | `kor-travel-weather-db` | `14100`→`5432` | 외부 | — |
 | `kor-travel-airport-db` | `14000`→`5432` | 외부 | — |
 
-**애플리케이션 DB와 Dagster 메타DB가 같은 인스턴스 안에 나란히 있다**(geo·map).
-이것이 §7의 전환에서 갈라지는 지점이다.
+**애플리케이션 DB와 Dagster 메타DB가 같은 인스턴스 안에 나란히 있다**(geo·map·pinvi,
+2026-09-19 PinVi PR #558/#356으로 pinvi도 합류). 이것이 §7의 전환에서 갈라지는
+지점이다.
 
 `db` target이 `12000-12099` 대역을 들고 있으면서 실제로는 geo 인스턴스(`12500`)를
 가리키는 것은 **폐지된 통합 인스턴스의 빈 자리**를 역사로 남겨 둔 것이다. 새
@@ -112,22 +113,31 @@ target 단위로만 남아 있다.
 
 ## 5. 지금의 제어 평면 — Dagster
 
-**어느 프로젝트도 code-server(gRPC)를 분리해 쓰지 않는다.** webserver와 daemon이
-각자 `-m <모듈>`로 코드를 **in-process로 직접 로드**한다.
+**`pinvi`가 §7 1단계(code-server 분리)를 충족한 첫 프로젝트다**(2026-09-19,
+PinVi ADR-069 — 참조 구현은 `kor-travel-weather` PR #61). 나머지 프로젝트의
+webserver/daemon은 여전히 각자 `-m <모듈>`로 코드를 **in-process로 직접
+로드**한다.
 
-| 프로젝트 | webserver | daemon | 코드 로드 방식 |
-|---|---|---|---|
-| `map` | `kor-travel-map-dagster` `12702` | `kor-travel-map-dagster-daemon` (포트 없음) | `-m kortravelmap.dagster.definitions` |
-| `pinvi` | `pinvi-dagster` `12802` | (등록된 daemon 없음) | `-m pinvi.etl.definitions` |
-| `weather` | 내부 전용 + 게이트웨이 `14102` | — | 외부 프로젝트 소유 |
-| `geo` | [`ports.md`]는 `12502`를 적어 두었으나 `docker-targets.yml`에 **등록된 컨테이너가 없다** | — | 확인 필요 |
-| `conc` | 없음 | — | — |
+| 프로젝트 | webserver | daemon | code-server(gRPC) | 코드 로드 방식 |
+|---|---|---|---|---|
+| `pinvi` | `pinvi-dagster` `12802` | `pinvi-dagster-daemon` (포트 없음) | `pinvi-dagster-code-server` `12803` | webserver/daemon → `-w workspace.yaml`(grpc_server), code-server만 `-m pinvi.etl.definitions` |
+| `map` | `kor-travel-map-dagster` `12702` | `kor-travel-map-dagster-daemon` (포트 없음) | 없음 | `-m kortravelmap.dagster.definitions` |
+| `weather` | 내부 전용 + 게이트웨이 `14102` | — | 외부 프로젝트 소유(자체 3-분리, `dagster-code-server`) | 외부 프로젝트 소유 |
+| `geo` | [`ports.md`]는 `12502`를 적어 두었으나 `docker-targets.yml`에 **등록된 컨테이너가 없다** | — | 없음 | 확인 필요 |
+| `conc` | 없음 | — | 없음 | — |
 
 > geo의 `12502`는 **문서와 등록이 어긋나 있는 자리**다. 둘 중 하나가 낡았다. 이 문서는
 > 그것을 덮지 않고 드러낸다 — 고치는 것은 geo 소유자의 몫이다.
+>
+> **PinVi가 weather와 다른 점**: weather는 자체 bridge network + 서비스명 DNS로
+> code-server에 접속하지만, PinVi는 이 저장소의 compose가 강제하는
+> `network_mode: host`라 `workspace.yaml`이 `host: 127.0.0.1`을 쓴다(PinVi
+> ADR-069 §결정 2) — 이 표의 다른 프로젝트가 같은 1단계를 밟을 때도 같은
+> 이유로 서비스명이 아니라 loopback을 써야 한다.
 
 이 배치의 결과가 §7 전환의 전제다: **공유 webserver/daemon으로 가려면 모든 프로젝트가
-먼저 code-server를 분리해야 한다.** 지금은 분리된 것이 하나도 없다.
+먼저 code-server를 분리해야 한다.** `pinvi`가 그 1단계를 밟았고, 나머지
+(`map`/`weather`/`geo`/`conc`)는 아직이다.
 
 ---
 
