@@ -1607,6 +1607,71 @@ services:
       else
         createdb "$$KOR_TRAVEL_GEO_DAGSTER_DB"
       fi
+  # T-307 (kor-travel-geo #548): code loading and op execution live here, split out of
+  # webserver/daemon into their own process — same fix kor-travel-weather shipped after
+  # a code-load hang silently froze its single in-process webserver/daemon, undetected
+  # because the outer container stayed "Up" and `restart: unless-stopped` never fired.
+  # No `--heartbeat` flag: that self-destruct timer is for `dagster dev`-style bundling
+  # (an inner worker a wrapping process must notice and react to). This IS the whole
+  # container, so an ordinary crash/OOM is Docker's normal restart-policy problem like
+  # any other service. Not externally exposed — reached over loopback only (host network).
+  kor-travel-geo-dagster-code-server:
+    image: ${KOR_TRAVEL_GEO_DAGSTER_IMAGE:-kor-travel-geo-dagster:latest-main}
+    build:
+      context: ${KOR_TRAVEL_GEO_REPO_DIR:-../kor-travel-geo}
+      dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
+    container_name: ${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-geo-dagster-code-server-latest}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-geo-postgres:
+        condition: service_healthy
+      kor-travel-geo-dagster-db-init:
+        condition: service_completed_successfully
+    command:
+    - dagster
+    - api
+    - grpc
+    - -h
+    - 0.0.0.0
+    - -p
+    - ${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_PORT:-12503}
+    - -m
+    - kortravelgeo_dagster.definitions
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
+      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:?KOR_TRAVEL_GEO_DAGSTER_PG_URL must be explicitly set}
+      KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:?KOR_TRAVEL_GEO_DOCKER_PG_DSN must be explicitly set}
+      KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
+      KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
+      KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
+      KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
+      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      # T-290 on-ramp (kor-travel-geo #444): op execution happens in this container now
+      # (T-307), including the scheduled_backup Dagster run that calls the geo admin API
+      # (POST /v1/admin/backups/scheduled/run-due) and must present the admin proxy
+      # secret the API expects, else the run-due call 403s.
+      KTG_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_GEO_ADMIN_PROXY_SECRET:-}
+      KTG_DAGSTER_ADMIN_API_URL: ${KOR_TRAVEL_GEO_DAGSTER_ADMIN_API_URL:-http://127.0.0.1:12501}
+      # geo scheduled DB backup execution side (see geo-api block): TTL/keep_min are read here
+      # when the db_backup op finalizes an artifact — keep in sync with geo-api.
+      KTG_BACKUP_SCHEDULE_ENABLED: ${KOR_TRAVEL_GEO_BACKUP_SCHEDULE_ENABLED:-false}
+      KTG_BACKUP_SCHEDULE_INTERVAL_HOURS: ${KOR_TRAVEL_GEO_BACKUP_SCHEDULE_INTERVAL_HOURS:-24}
+      KTG_BACKUP_ARTIFACT_TTL_DAYS: ${KOR_TRAVEL_GEO_BACKUP_ARTIFACT_TTL_DAYS:-30}
+      KTG_BACKUP_RETENTION_KEEP_MIN: ${KOR_TRAVEL_GEO_BACKUP_RETENTION_KEEP_MIN:-3}
+    # T-290g: db_backup ops execute here now (T-307) and write to /app/data/backups —
+    # mount the SAME shared host dir as geo-api/webserver/daemon so the artifact is
+    # restorable/downloadable/verifiable there.
+    volumes:
+    - ${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}:/app/data/backups
+    healthcheck:
+      test: ["CMD-SHELL", "dagster api grpc-health-check -p ${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_PORT:-12503}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
   kor-travel-geo-dagster:
     image: ${KOR_TRAVEL_GEO_DAGSTER_IMAGE:-kor-travel-geo-dagster:latest-main}
     build:
@@ -1620,6 +1685,16 @@ services:
         condition: service_healthy
       kor-travel-geo-dagster-db-init:
         condition: service_completed_successfully
+      kor-travel-geo-dagster-code-server:
+        condition: service_healthy
+    command:
+    - dagster-webserver
+    - -w
+    - /opt/dagster/dagster_home/workspace.yaml
+    - -h
+    - "0.0.0.0"
+    - -p
+    - ${KOR_TRAVEL_GEO_DAGSTER_PORT:-12502}
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
@@ -1709,11 +1784,19 @@ services:
         condition: service_healthy
       kor-travel-geo-dagster-db-init:
         condition: service_completed_successfully
+      kor-travel-geo-dagster-code-server:
+        condition: service_healthy
+    # T-307: attaches to the code-server over gRPC (workspace.yaml) instead of loading
+    # kortravelgeo_dagster.definitions in-process — see the code-server service comment
+    # above for why. The `_NOT_GUARDED_BY_COMMAND` storage-guard exemption for this
+    # service's old reason ("instance storage를 env DSN으로 선언하지 않는다") was already
+    # inaccurate before this change (KTG_DAGSTER_PG_URL below IS an env-DSN declaration,
+    # matching PinVi's own pattern) — flagging here since T-307 touches this exact block.
     command:
     - dagster-daemon
     - run
-    - -m
-    - kortravelgeo_dagster.definitions
+    - -w
+    - /opt/dagster/dagster_home/workspace.yaml
     environment:
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       DAGSTER_HOME: /opt/dagster/dagster_home

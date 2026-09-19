@@ -42,13 +42,20 @@ _PYTHON_INLINE_OPEN: Final = "python -c '"
 #: (`docker/dagster-entrypoint.sh`)가 production profile에서 argv를 문자 단위로
 #: 강제하고 허용 모양이 정확히 셋뿐이라, `sh -ec ...`는 그 자리에서 거절된다.
 #: Map은 대신 permit으로 게이트된 one-shot storage 마이그레이션이 같은 일을 한다.
-#: geo는 아직 instance storage를 env DSN으로 선언하지 않는다.
+#: geo는 instance storage를 env DSN(`KTG_DAGSTER_PG_URL`)으로 이미 선언한다(T-290b부터,
+#: PinVi처럼 나중에 추가된 게 아니다) — 그런데도 이 전제조건 메커니즘 자체는 아직 붙어
+#: 있지 않다. PinVi를 다치게 한 것과 같은 이미지/compose 순서 리스크가 이론상 geo에도
+#: 똑같이 적용될 수 있는 미해결 gap이다(T-307 code-server 분리 작업 중 발견, 별도 후속
+#: 필요 — 이 PR의 범위 밖).
 #:
 #: 이 표는 **면제 목록이 아니라 이유의 목록**이다. 여기 이름을 더하려면 그 서비스가
 #: 어떤 다른 기계로 같은 것을 보장하는지 적어야 한다.
 _NOT_GUARDED_BY_COMMAND: Final = {
     "kor-travel-map-dagster-daemon": "이미지 entrypoint가 argv를 봉인한다(permit one-shot이 대신 본다)",
-    "kor-travel-geo-dagster-daemon": "instance storage를 env DSN으로 선언하지 않는다",
+    "kor-travel-geo-dagster-daemon": (
+        "instance storage를 env DSN(KTG_DAGSTER_PG_URL)으로 이미 선언하지만, 이 전제조건 "
+        "메커니즘 자체는 아직 붙어 있지 않다 — T-307에서 발견한 미해결 gap, 후속 필요"
+    ),
 }
 
 #: 가짜 dagster 모듈. 전제조건이 만지는 표면만 갖는다.

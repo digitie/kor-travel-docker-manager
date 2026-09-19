@@ -80,6 +80,29 @@ containers:
     prod_url_env: KTDM_PROD_URL_GEO
     expected_ports:
       - "12505:12505"
+  kor-travel-geo-dagster:
+    name: kor-travel-geo-dagster-latest
+    compose_service: kor-travel-geo-dagster
+    role: geo-dagster
+    display_name: Kor Travel Geo Dagster
+    connection: http://127.0.0.1:12502
+    prod_url_env: KTDM_PROD_URL_GEO_DAGSTER
+    expected_ports:
+      - "12502:12502"
+  kor-travel-geo-dagster-daemon:
+    name: kor-travel-geo-dagster-daemon-latest
+    compose_service: kor-travel-geo-dagster-daemon
+    role: geo-dagster-daemon
+    display_name: Kor Travel Geo Dagster Daemon
+    connection: internal daemon
+    expected_ports: []
+  kor-travel-geo-dagster-code-server:
+    name: kor-travel-geo-dagster-code-server-latest
+    compose_service: kor-travel-geo-dagster-code-server
+    role: geo-dagster-code-server
+    display_name: Kor Travel Geo Dagster Code Server
+    connection: internal grpc
+    expected_ports: []
   kor-travel-concierge-api:
     name: kor-travel-concierge-api-latest
     compose_service: kor-travel-concierge-api
@@ -414,14 +437,23 @@ targets:
     services:
       - kor-travel-geo-api
       - kor-travel-geo-ui
+      - kor-travel-geo-dagster
+      - kor-travel-geo-dagster-daemon
+      - kor-travel-geo-dagster-code-server
     runtime_services:
       - kor-travel-geo-api
       - kor-travel-geo-ui
+      - kor-travel-geo-dagster
+      - kor-travel-geo-dagster-daemon
+      - kor-travel-geo-dagster-code-server
     containers:
       - kor-travel-geo-postgresql
       - rustfs
       - kor-travel-geo-api
       - kor-travel-geo-ui
+      - kor-travel-geo-dagster
+      - kor-travel-geo-dagster-daemon
+      - kor-travel-geo-dagster-code-server
     init_steps:
       - name: geo-source-verification
         description: /data/juso 마운트와 T-027 계열 핵심 적재 테이블을 검증합니다.
@@ -699,10 +731,11 @@ targets:
 # 재시작이 즉시 깨진다(GM-17 검증 노트의 실측). 이 이관은 자리만 옮기고 값은 한 글자도
 # 바꾸지 않는다 — 옮기기 전후의 해석된 매핑이 정확히 같다는 것을 테스트가 결박한다.
 #
-# 서비스 19개 중 8개(one-shot init 넷, geo dagster 쌍, db role bootstrap 둘)는
-# `containers:`에 없다. 그래서 컨테이너 정의 안이 아니라 최상위 절로 둔다 — one-shot을
-# 컨테이너 레지스트리에 끼워 넣으면 `status`/`ensure`/metrics가 그것을 상시 관리 대상으로
-# 보게 된다.
+# 서비스 20개 중 6개(one-shot init 넷, db role bootstrap 둘)는 `containers:`에 없다.
+# 그래서 컨테이너 정의 안이 아니라 최상위 절로 둔다 — one-shot을 컨테이너 레지스트리에
+# 끼워 넣으면 `status`/`ensure`/metrics가 그것을 상시 관리 대상으로 보게 된다.
+# (T-307: geo dagster 쌍은 여기서 빠졌다 — code-server 분리를 계기로 `containers:`에
+# 정식 등록했다, 원래 `geo` 소유자 몫으로 남아 있던 gap.)
 
 compose_binds:
   grafana:
@@ -728,6 +761,10 @@ compose_binds:
       read_only: false
       source: "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
   kor-travel-geo-dagster-daemon:
+    - container_path: "/app/data/backups"
+      read_only: false
+      source: "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
+  kor-travel-geo-dagster-code-server:
     - container_path: "/app/data/backups"
       read_only: false
       source: "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
