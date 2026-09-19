@@ -175,6 +175,13 @@ containers:
     prod_url_env: KTDM_PROD_URL_PINVI_DAGSTER
     expected_ports:
       - "12802:12802"
+  pinvi-dagster-daemon:
+    name: pinvi-dagster-daemon-latest
+    compose_service: pinvi-dagster-daemon
+    role: pinvi-dagster-daemon
+    display_name: PinVi Dagster daemon
+    connection: 내부 전용(포트 없음) — schedule tick과 queued run dequeue
+    expected_ports: []
   prometheus:
     name: kor-travel-prometheus
     compose_service: prometheus
@@ -509,10 +516,12 @@ targets:
       - pinvi-api
       - pinvi-web
       - pinvi-dagster
+      - pinvi-dagster-daemon
     runtime_services:
       - pinvi-api
       - pinvi-web
       - pinvi-dagster
+      - pinvi-dagster-daemon
     containers:
       - kor-travel-geo-postgresql
       - kor-travel-concierge-postgresql
@@ -532,6 +541,7 @@ targets:
       - pinvi-api
       - pinvi-web
       - pinvi-dagster
+      - pinvi-dagster-daemon
     init_steps: []
 
   all:
@@ -573,6 +583,7 @@ targets:
       - pinvi-api
       - pinvi-web
       - pinvi-dagster
+      - pinvi-dagster-daemon
     init_steps: []
 
   airport-db:

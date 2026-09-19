@@ -272,6 +272,16 @@ services:
       PGUSER: ${PINVI_POSTGRES_USER:-pinvi}
       PGDATABASE: ${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}
       PINVI_POSTGRES_DB: ${PINVI_POSTGRES_DB:-pinvi}
+      # Dagster instance storage는 **앱 DB와 같은 database를 쓸 수 없다** —
+      # dagster-postgres가 자기 스키마 이력을 `alembic_version`이라는 이름의
+      # 테이블로 관리해 PinVi 자신의 것과 충돌한다. 인스턴스는 같이 쓰고
+      # database만 가른다.
+      PINVI_DAGSTER_DB: ${PINVI_DAGSTER_DB:-pinvi_dagster}
+      # `should_autocreate_tables`가 켜져 있어(앱 이미지의 dagster.yaml) 런타임이
+      # 첫 기동에 테이블을 만든다. 그러려면 그 롤이 이 database에 DDL 권한을
+      # 가져야 하므로 **소유자로** 만든다 — 나중에 GRANT로 메우려 하면 PG15부터
+      # public 스키마가 CREATE를 기본 부여하지 않아 또 막힌다.
+      PINVI_DAGSTER_DB_OWNER: ${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}
     secrets:
     - pinvi-postgres-password
     # `createdb ... 2>/dev/null || true`는 쓰지 않는다. 인증 실패·연결 거부·권한
@@ -290,6 +300,11 @@ services:
         echo "database $$PINVI_POSTGRES_DB already exists"
       else
         createdb "$$PINVI_POSTGRES_DB"
+      fi
+      if psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$$PINVI_DAGSTER_DB'" | grep -q 1; then
+        echo "database $$PINVI_DAGSTER_DB already exists"
+      else
+        createdb -O "$$PINVI_DAGSTER_DB_OWNER" "$$PINVI_DAGSTER_DB"
       fi
 
   # M05 role topology의 root-only one-shot이다. normal PinVi runtime에는 root secret을
@@ -1394,6 +1409,9 @@ services:
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       PINVI_DAGSTER_PORT: ${PINVI_DAGSTER_PORT:-12802}
       PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}
+      # Dagster instance storage. **scheme이 앱 DSN과 다르다** —
+      # dagster-postgres는 psycopg2(동기)를 쓰므로 `+asyncpg`를 붙이면 안 된다.
+      PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_DAGSTER_DB:-pinvi_dagster}
     ports:
     - ${PINVI_DAGSTER_PORT:-12802}:${PINVI_DAGSTER_PORT:-12802}
     healthcheck:
@@ -1405,6 +1423,92 @@ services:
       timeout: 5s
       retries: 20
       start_period: 30s
+  # **이 서비스가 없어서 PinVi Dagster는 한 번도 job을 실행한 적이 없다.**
+  #
+  # 2026-09-19 n150 실측: instance의 run_coordinator가 `QueuedRunCoordinator`인데
+  # (dagster 최신 기본값) 그것을 dequeue하는 daemon이 이 compose에 없었다. 그 조합은
+  # "schedule이 안 돈다"가 아니라 **아무 run도 시작되지 않는다**는 뜻이다 — UI에서
+  # 손으로 띄워도 QUEUED에서 멈춘다. 실측 run 0건이 그 결과이고, 등록된 job 8개
+  # (`pinvi_pii_retention` 포함)·schedule 7개·sensor 1개가 전부 그 상태였다.
+  #
+  # webserver와 **같은 이미지**를 argv만 달리해 돌린다(Map·geo와 같은 형태).
+  pinvi-dagster-daemon:
+    image: ${PINVI_DAGSTER_IMAGE:-pinvi-dagster:latest-main}
+    container_name: ${PINVI_DAGSTER_DAEMON_CONTAINER:-pinvi-dagster-daemon-latest}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      pinvi-postgres:
+        condition: service_healthy
+      pinvi-db-init:
+        condition: service_completed_successfully
+      # webserver가 먼저 healthy가 되면 code location이 로드 가능하다는 뜻이고,
+      # 그 시점에 daemon이 붙는 편이 schedule 첫 tick의 실패 로그를 줄인다.
+      pinvi-dagster:
+        condition: service_healthy
+    # **낡은 이미지로 뜨면 조용히 두 번째 instance가 생긴다.**
+    #
+    # webserver와 daemon은 같은 이미지를 쓰지만 **다른 컨테이너**이고
+    # `/opt/pinvi/.dagster`에는 볼륨이 없다. 그 이미지에 `apps/etl/dagster.yaml`이
+    # 없거나 `dagster-postgres`가 안 깔려 있으면 둘은 각자 자기 컨테이너 안에
+    # SQLite를 만든다. 그러면 daemon은 자기 **빈** DB를 dequeue하고, webserver에서
+    # 띄운 run은 QUEUED인 채로 영원히 남는다 — 아무 데도 에러가 찍히지 않는다.
+    # daemon이 없던 지금까지보다 **더 나쁜** 상태이면서 겉보기는 정상이다.
+    #
+    # 그래서 이름이 아니라 **효과**로 막는다. 이미지 tag도 패키지 존재도 보지
+    # 않고, 기동 시점에 실제로 resolve된 storage 세 개의 구현을 본다. 하나라도
+    # Postgres가 아니면 daemon을 띄우지 않고 죽는다(fail-close). 이 가드가 있으면
+    # 이미지 재빌드보다 이 compose가 먼저 적용돼도 안전하다 — 순서 의존이 사라진다.
+    command:
+    - sh
+    - -ec
+    - |
+      python -c '
+      import sys
+      from dagster import DagsterInstance
+
+      with DagsterInstance.get() as instance:
+          wrong = {
+              label: type(storage).__name__
+              for label, storage in (
+                  ("run", instance.run_storage),
+                  ("event log", instance.event_log_storage),
+                  ("schedule", instance.schedule_storage),
+              )
+              if "Postgres" not in type(storage).__name__
+          }
+      if wrong:
+          sys.exit(
+              "PinVi Dagster instance storage is not PostgreSQL: %s. "
+              "The image predates apps/etl/dagster.yaml or lacks dagster-postgres; "
+              "rebuild the pinned PinVi image before starting the daemon." % wrong
+          )
+      '
+      exec dagster-daemon run -m pinvi.etl.definitions
+    environment:
+      DAGSTER_HOME: /opt/pinvi/.dagster
+      DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
+      # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 판정식이
+      # `now <= heartbeat + interval + tolerance`라, 기본값이면 끼인 스레드를
+      # 31분 뒤에 알게 되고 healthcheck의 interval·retries로는 그 지연이
+      # 줄지 않는다. Map·geo와 같은 300초를 쓴다.
+      DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
+      # webserver와 **같은 instance storage**를 봐야 한다. 다르면 schedule 켜짐
+      # 상태와 run 이력이 갈려 UI에 보이는 것과 실제로 도는 것이 달라진다.
+      PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_DAGSTER_DB:-pinvi_dagster}
+      # code location이 도는 곳이므로 앱 DSN도 필요하다 —
+      # `DefaultRunLauncher`에서 run worker는 이 프로세스의 자식이다.
+      PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}
+    healthcheck:
+      # dagster의 정식 판정. required daemon 전부의 heartbeat 신선도를 보고
+      # 하나라도 낡으면 exit 1이다 — 프로세스 존재만 보는 pgrep류와 다르다.
+      test:
+      - CMD-SHELL
+      - dagster-daemon liveness-check
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
   prometheus:
     image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.1}
     container_name: ${PROMETHEUS_CONTAINER:-kor-travel-prometheus}

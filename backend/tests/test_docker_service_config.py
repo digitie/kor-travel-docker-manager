@@ -172,6 +172,7 @@ def _config_transaction(
             "PINVI_POSTGRES_USER": "pinvi",
             "PINVI_POSTGRES_DB": "pinvi",
             "PINVI_POSTGRES_BOOTSTRAP_DB": "pinvi_bootstrap",
+            "PINVI_DAGSTER_DB": "pinvi_dagster",
             "PINVI_APP_DB_USER": "pinvi_runtime",
             "PINVI_APP_DB_PASSWORD": "pinvi-runtime-password",
             "PINVI_APP_SCHEMA_OWNER": "pinvi_application_owner",
@@ -440,6 +441,10 @@ def _compose_with_canonical_c6c_services(
                 "PGUSER": "${PINVI_POSTGRES_USER:-pinvi}",
                 "PGDATABASE": "${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}",
                 "PINVI_POSTGRES_DB": "${PINVI_POSTGRES_DB:-pinvi}",
+                "PINVI_DAGSTER_DB": "${PINVI_DAGSTER_DB:-pinvi_dagster}",
+                "PINVI_DAGSTER_DB_OWNER": (
+                    "${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}"
+                ),
             },
             "secrets": ["pinvi-postgres-password"],
             "command": [
@@ -451,6 +456,11 @@ def _compose_with_canonical_c6c_services(
                 '  echo "database $$PINVI_POSTGRES_DB already exists"\n'
                 "else\n"
                 '  createdb "$$PINVI_POSTGRES_DB"\n'
+                "fi\n"
+                "if psql -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='$$PINVI_DAGSTER_DB'\" | grep -q 1; then\n"
+                '  echo "database $$PINVI_DAGSTER_DB already exists"\n'
+                "else\n"
+                '  createdb -O "$$PINVI_DAGSTER_DB_OWNER" "$$PINVI_DAGSTER_DB"\n'
                 "fi\n",
             ],
         },
