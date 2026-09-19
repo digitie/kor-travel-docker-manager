@@ -2932,6 +2932,17 @@ target이 옛/새 instance를 함께 관리해 둘 다 건강 상태를 유지�
   **실제 cutover가 끝난 뒤** 별도 커밋에서 `kor-travel-concierge-postgres`→
   `kor-travel-shared-postgres`로 옮긴다 — cutover 전에 미리 옮기면 cutover 직전
   백업이 아직 비어 있는 새 instance를 겨냥해 무의미해진다.
+- **n150 실측으로 발견한 CONNECT 권한 gap(2026-09-19, 최초 배포 직후).**
+  PostgreSQL은 기본적으로 모든 database에 `PUBLIC` `CONNECT`를 부여한다 —
+  database만 나누는 것으로는 격리가 안 된다는 ADR-37의 교훈이 CONNECT 권한에도
+  그대로 적용됨을 놓쳤다. 최초 db-init 스크립트는 role/database/extension만
+  만들고 CONNECT는 걷어내지 않아, `kor_travel_concierge_app`이 bootstrap
+  `postgres` database에 `SELECT 1`까지 실행할 수 있었다(실측 확인). db-init에
+  `REVOKE CONNECT ... FROM PUBLIC`(bootstrap DB와 자기 DB 모두)과
+  `GRANT CONNECT ... TO kor_travel_concierge_app`(자기 DB에만)을 추가해 즉시
+  고쳤다 — 다른 프로젝트가 이 instance에 합류해도 서로의 database에 기본
+  CONNECT가 새지 않는다. n150에는 같은 SQL을 직접 실행해 즉시 반영했고, 이
+  커밋은 재현 가능하도록 소스에 반영한다.
 
 ### 확인하지 않은 것
 
