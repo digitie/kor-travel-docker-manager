@@ -186,12 +186,18 @@ def _selector_defaults() -> list[str]:
 def test_the_opinet_selector_stays_overridable_by_the_operator() -> None:
     """모드는 운영자가 `.env`로 덮을 수 있어야 한다 — 값을 그대로 박지 않는다."""
 
+    seen = 0
     for line in _COMPOSE.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped.startswith(f"{_OPINET_SCOPE_SELECTOR}:"):
             continue
+        seen += 1
         value = stripped.split(":", 1)[1].strip()
         assert value.startswith("${") and value.endswith("}"), value
+    # **본 것이 없으면 초록이 아니다.** 매칭되는 줄이 하나도 없으면 위 루프가 한
+    # 번도 돌지 않아 "선택자를 통째로 지운다"는 바로 그 사고를 이 검사가 관측하지
+    # 못한다(2026-09-19 적대 리뷰 — 같은 파일의 형제 검사 둘은 이미 막고 있었다).
+    assert seen, f"{_OPINET_SCOPE_SELECTOR}를 선언하는 줄이 하나도 없다"
 
 
 def test_the_opinet_default_mode_actually_starts_a_load() -> None:

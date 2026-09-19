@@ -1004,16 +1004,49 @@ def test_map_features_routes_are_explicitly_enabled_only_for_map_api() -> None:
     } == {_MAP_API_SERVICE}
 
 
+def _map_collector_credentials_sourced_from_their_own_name() -> set[str]:
+    """Map 수집 서비스가 **자기 이름에서** 값을 길어 오는 credential 이름.
+
+    목록을 손으로 적지 않는 이유는 2026-09-19에 그 목록이 낡았기 때문이다 —
+    compose에 `KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY`를 배선하고 그것을 강제하는
+    검사까지 넣었는데, **운영자가 값을 채우는 자리**인 `.env.example`과 이 검사의
+    고정 목록은 그대로였다. 다음 키에서 같은 자리를 또 빠뜨리지 않으려면 선언에서
+    유도해야 한다.
+
+    "자기 이름에서 길어 온다"가 판정 기준인 이유: `KOR_TRAVEL_MAP_DATA_GO_KR_
+    SERVICE_KEY`처럼 **다른 이름**(`KRTOUR_MAP_*`)을 원천으로 쓰는 키는 이 파일의
+    placeholder 대상이 아니다. 그 키들은 오히려
+    `_FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES`가 **없어야 한다**고 센다.
+    """
+
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    names: set[str] = set()
+    for service_name in (_MAP_DAGSTER_SERVICE, _MAP_DAGSTER_DAEMON_SERVICE):
+        environment = services[service_name].get("environment") or {}
+        for key, value in environment.items():
+            if not key.endswith(("_API_KEY", "_SERVICE_KEY")):
+                continue
+            if str(value).startswith("${" + key + ":-"):
+                names.add(key)
+    return names
+
+
 def test_map_provider_credentials_have_empty_env_example_placeholders() -> None:
     env_example_lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
-    for key in (
-        "KOR_TRAVEL_MAP_OPINET_API_KEY",
-        "KOR_TRAVEL_MAP_KREX_EX_API_KEY",
-        "KOR_TRAVEL_MAP_KREX_GO_API_KEY",
-    ):
-        assert [line for line in env_example_lines if line.startswith(f"{key}=")] == [
-            f"{key}="
-        ]
+    declared = _map_collector_credentials_sourced_from_their_own_name()
+    # 검사가 공허하지 않은지 — 유도가 0건이면 아래 루프가 아무것도 세지 않는다.
+    assert len(declared) >= 3, f"유도된 credential이 너무 적다: {sorted(declared)}"
+    missing = sorted(
+        key
+        for key in declared
+        if [line for line in env_example_lines if line.startswith(f"{key}=")]
+        != [f"{key}="]
+    )
+    assert not missing, (
+        "compose가 수집 서비스에 넘기는 credential인데 `.env.example`에 빈 "
+        f"placeholder가 없다(운영자가 채울 자리를 모른다): {missing}"
+    )
     for key in _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES:
         assert not any(line.startswith(f"{key}=") for line in env_example_lines)
 
