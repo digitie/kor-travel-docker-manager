@@ -188,6 +188,19 @@ postgresql+asyncpg://<app_role>:<password>@kor-travel-shared-postgres:11000/<dat
 기준 join 허용: weather(dagster-code-server/webserver/daemon 3개뿐, 그 프로젝트의
 api/web 등 나머지 서비스는 join하지 않는다).
 
+**이 브리지를 열기 위해 `kor-travel-shared-postgres` 쪽이 바뀐 것**(2026-09-20,
+아직 n150에 배포 전 — 이 서비스가 실제로 이 형태가 됐는지는 §1.1 표가 배포 후
+실측으로 갱신한다): `network_mode: host`에서 `networks: [kor-travel-shared-net]`로,
+`listen_addresses`는 `127.0.0.1`에서 **정확히** `127.0.0.1,10.88.0.1`로(`10.88.0.1`은
+`kor-travel-shared-net`의 고정 게이트웨이 IP, 실 LAN `192.168.1.0/24`와는 분리된
+Docker-local 서브넷이다). **와일드카드(`*`)가 아니다** — 이 인스턴스는 여전히
+이 두 주소 이외에는 듣지 않는다. Manager의 compose 계약
+(`backend/tests/test_f1d_compose_contract.py`, `c6c_deployment.py`의
+`_POSTGRES_CANONICAL_LISTEN_VALUES`/`_postgres_networks_value_is_canonical`)이
+이 두 값의 정확한 형태(키 이름·값 둘 다, 부분 일치 불허)를 CI에서 강제한다 —
+다른 브리지 이름이나 다른 `listen_addresses` 값으로는 애초에 compose가
+CI를 통과하지 못한다.
+
 ### 4.2 네 app role의 권한
 
 db-init이 만드는 role은 정확히 이렇다:

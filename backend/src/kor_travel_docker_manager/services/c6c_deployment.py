@@ -2008,6 +2008,11 @@ _POSTGRES_ALLOWED_SERVICE_KEYS: Final = frozenset(
         "healthcheck",
         "image",
         "network_mode",
+        # kor-travel-shared-postgres가 network_mode: host에서 kor-travel-shared-net
+        # 브리지로 옮겨 weather 같은 브리지 네트워크 외부 프로젝트를 서비스명으로
+        # 받는다(2026-09-20). network_mode와 함께 둘 다 있을 수 없는 배타 키가
+        # 아니라 compose 자체가 둘을 배타로 강제하므로 여기서는 단순 허용이다.
+        "networks",
         "ports",
         "restart",
         "secrets",
@@ -2038,7 +2043,32 @@ _POSTGRES_ALLOWED_COMMAND_SETTINGS: Final = frozenset(
 
 _POSTGRES_SERVER_COMMAND = "postgres"
 _POSTGRES_LISTEN_SETTING: Final = "listen_addresses"
-_POSTGRES_CANONICAL_LISTEN_VALUE: Final = "127.0.0.1"
+#: `listen_addresses`가 취할 수 있는 값의 닫힌 집합 — 와일드카드도, 부분 일치도
+#: 아니고 정확히 이 두 리터럴만 허용한다.
+#:
+#: - `"127.0.0.1"`: 그대로, 다른 모든 PostgreSQL-role 서비스(map/pinvi/concierge
+#:   자체 전용 인스턴스 등, 이 변경과 무관)는 계속 loopback만 허용한다.
+#: - `"127.0.0.1,10.88.0.1"`: kor-travel-shared-postgres가 `network_mode: host`에서
+#:   `networks: [kor-travel-shared-net]` 브리지(10.88.0.0/24, 실LAN 192.168.1.0/24와
+#:   분리된 Docker-local 서브넷)로 옮기며 `-c listen_addresses=127.0.0.1,10.88.0.1`을
+#:   쓰게 된 결과다. `10.88.0.1`은 "아무 브리지 네트워크"가 아니라
+#:   kor-travel-shared-net의 고정 게이트웨이 IP — `127.0.0.1`처럼 이 파일 전체에
+#:   이미 하드코딩돼 있는 것과 같은 부류의 고정 토폴로지 상수다.
+#:
+#: 이 두 값 검사는 서비스별 분기 없이 모든 PostgreSQL-role 서비스에 균일하게
+#: 적용된다 — 다른 postgres 서비스가 원칙적으로 같은 값을 선언할 수 있다는 뜻이지,
+#: 그 서비스들이 가만히 있는데도 통과한다는 뜻이 아니다(각자 compose에 명시적으로
+#: 옵트인해야 한다).
+_POSTGRES_CANONICAL_LISTEN_VALUES: Final = frozenset(
+    {"127.0.0.1", "127.0.0.1,10.88.0.1"}
+)
+#: `networks`를 얹는 PostgreSQL-role 서비스가 붙을 수 있는 **유일한** 네트워크
+#: 이름. `networks` 키 자체는 허용 목록에 있지만(위 `_POSTGRES_ALLOWED_SERVICE_KEYS`),
+#: 그 **값**은 지금까지 검사되지 않았다(적대 리뷰 2026-09-20 F1) — 이름이
+#: `kor-travel-shared-net`이 아니거나, 별칭·고정 IP(`ipv4_address` 등) 같은
+#: non-null 부속 옵션이 붙은 형태는 전부 거부해야, "키 이름은 좁혔지만 값은
+#: 무한대" 패턴(이 파일이 `devices:`에서 이미 겪은 것과 같은 부류)을 피한다.
+_POSTGRES_CANONICAL_NETWORKS_NAME: Final = "kor-travel-shared-net"
 #: 초기화 위치를 바꾸는 env. 명령행 축은 위 허용 목록이 덮는다(`-D`는 아래 파서가
 #: `data_directory`로 매핑하고, 그 이름이 허용 목록에 없다).
 _POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES: Final = frozenset({"PGDATA"})
@@ -2296,13 +2326,31 @@ def _assert_postgres_healthcheck_is_canonical(
             )
 
 
+def _postgres_networks_value_is_canonical(value: object) -> bool:
+    """`networks`의 **값**이 정확히 `kor-travel-shared-net` 하나뿐인가.
+
+    같은 뜻이 두 층에서 다른 모양으로 온다 — candidate(`yaml.safe_load`, 짧은
+    문법)는 리스트 `["kor-travel-shared-net"]`, resolved(`docker compose config`)는
+    긴 문법으로 편 딕셔너리 `{"kor-travel-shared-net": None}`(실측)다. 둘 다
+    받되, 이름이 다르거나 네트워크가 둘 이상이거나 `None`이 아닌 부속 옵션
+    (별칭·`ipv4_address` 등, 값을 다른 네트워크에 재배정하거나 고정 IP를 얹는
+    수단)이 붙으면 거부한다 — 부분 일치나 "포함"이 아니라 정확히 이 형태만.
+    """
+
+    if value == [_POSTGRES_CANONICAL_NETWORKS_NAME]:
+        return True
+    if isinstance(value, Mapping):
+        return dict(value) == {_POSTGRES_CANONICAL_NETWORKS_NAME: None}
+    return False
+
+
 def _assert_one_postgres_cluster_runtime(
     service_name: str, service: Mapping[str, Any], *, declared: bool
 ) -> None:
     """PostgreSQL 서버의 **형태 전체**를 허용 목록으로 묶는다.
 
     금지 목록은 세 라운드 연속으로 뒤처졌다 — 매번 내가 놓친 철자·키가 우회로였다.
-    정본 넷의 형태는 좁고 고정적이므로(최상위 키 11개, GUC 12개 + `-p`) 방향을
+    정본 넷의 형태는 좁고 고정적이므로(최상위 키 12개, GUC 12개 + `-p`) 방향을
     뒤집으면 **모르는 것이 하나라도 있으면 거부**가 되고, 다음 compose 스펙이나
     postgres 버전이 무엇을 추가해도 fail-close다.
     """
@@ -2331,6 +2379,19 @@ def _assert_one_postgres_cluster_runtime(
             f"{unknown_keys}: " + _describe_candidate_service_key(service_name)
         )
 
+    # 키 이름(`networks`)만 허용 목록에 있고 값이 무제한이면 "좁은 키, 무한
+    # 값" 우회로가 된다 — networks: {아무-네트워크: {ipv4_address: ...}}가
+    # listen_addresses 검사를 그대로 통과해 버린다(적대 리뷰 2026-09-20 F1
+    # 실측). 값도 닫힌 형태로 묶는다.
+    networks_value = service.get("networks")
+    if networks_value is not None and not _postgres_networks_value_is_canonical(
+        networks_value
+    ):
+        raise ComposeCandidateContractError(
+            "compose candidate PostgreSQL service declares a non-canonical "
+            "networks binding: " + _describe_candidate_service_key(service_name)
+        )
+
     _assert_postgres_healthcheck_is_canonical(service_name, service)
     settings = _postgres_command_settings(service.get("command"))
     if settings is None:
@@ -2348,10 +2409,10 @@ def _assert_one_postgres_cluster_runtime(
                 f"{name}: " + _describe_candidate_service_key(service_name)
             )
     bindings = [value for name, value in settings if name == _POSTGRES_LISTEN_SETTING]
-    # **모든** `listen_addresses`가 loopback이어야 한다 — postgres는 같은 설정이
-    # 여러 번 오면 마지막을 쓴다.
+    # **모든** `listen_addresses`가 두 리터럴 중 하나여야 한다(정확 일치, 닫힌
+    # 집합) — postgres는 같은 설정이 여러 번 오면 마지막을 쓴다.
     if not bindings or any(
-        value != _POSTGRES_CANONICAL_LISTEN_VALUE for value in bindings
+        value not in _POSTGRES_CANONICAL_LISTEN_VALUES for value in bindings
     ):
         raise ComposeCandidateContractError(
             "compose candidate PostgreSQL service must keep the loopback binding: "

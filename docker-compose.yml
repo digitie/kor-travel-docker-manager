@@ -381,12 +381,17 @@ services:
     command:
     - postgres
     - -c
-    # 브리지 전환에 맞춰 '*'로 넓힌다. 노출은 listen_addresses가 아니라
-    # pg_hba.conf가 지킨다 — catch-all(`host all all all scram-sha-256`)을
-    # 걷어내고 프로젝트마다 자기 db/role로만 스코프한 규칙으로 대체했다(n150
-    # 로컬 파일, POSTGRES_INITDB_ARGS는 initdb 시점에만 적용되므로 이 compose
-    # 변경으로는 안 바뀐다 — 별도로 편집·reload했다).
-    - listen_addresses=*
+    # 브리지 전환에 맞춰 loopback에 kor-travel-shared-net 게이트웨이(10.88.0.1,
+    # 이 브리지 전용 -- 실 LAN(wlp2s0, 192.168.1.0/24)과는 무관)를 명시적으로
+    # 더한다. '*'는 쓰지 않는다 -- 이 서비스는 network_mode: host가 아니라
+    # networks:(브리지 전용)라 컨테이너 자신의 네임스페이스 안에서만 뜻을 갖고,
+    # 실 LAN을 듣지 않는다(대비: '*' + network_mode: host였다면 실 LAN
+    # 인터페이스까지 들었을 것 -- 2026-09-20 계약 리뷰에서 지적). pg_hba.conf가
+    # 추가 방어선이다 -- catch-all(`host all all all scram-sha-256`)을 걷어내고
+    # loopback 전용 기본 규칙(all/all, initdb 표준)만 남겼다(n150 로컬 파일,
+    # POSTGRES_INITDB_ARGS는 initdb 시점에만 적용되므로 이 compose 변경으로는 안
+    # 바뀐다 -- 별도로 편집·reload했다).
+    - listen_addresses=127.0.0.1,10.88.0.1
     - -p
     - ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
     - -c

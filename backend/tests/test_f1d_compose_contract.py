@@ -490,6 +490,16 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
             fragment["secrets"]["kor-travel-shared-postgres-password"] = deepcopy(
                 source_secrets["kor-travel-shared-postgres-password"]
             )
+    if "kor-travel-shared-postgres" in services:
+        # kor-travel-shared-postgres가 `networks: [kor-travel-shared-net]`를
+        # 선언하므로(network_mode: host에서 브리지로 전환, 2026-09-20), 그 이름을
+        # 실제로 풀 수 있게 문서 최상위 `networks:` 블록도 함께 옮긴다 — 안 옮기면
+        # `docker compose config`가 "refers to undefined network"로 죽는다(실측).
+        source_networks = _source_compose().get("networks")
+        assert isinstance(source_networks, dict)
+        fragment["networks"] = {
+            "kor-travel-shared-net": deepcopy(source_networks["kor-travel-shared-net"])
+        }
     return fragment
 
 
@@ -5367,6 +5377,16 @@ def test_an_empty_signal_is_not_a_deployment(signal: str) -> None:
             "non-canonical keys",
             id="entrypoint",
         ),
+        pytest.param(
+            {"labels": {"x": "y"}},
+            "non-canonical keys",
+            id="labels",
+        ),
+        pytest.param(
+            {"expose": ["5432"]},
+            "non-canonical keys",
+            id="expose",
+        ),
         pytest.param({"privileged": True}, "host privilege", id="privileged"),
         pytest.param({"user": "root"}, "host privilege", id="user"),
         pytest.param({"cap_add": ["SYS_ADMIN"]}, "host privilege", id="cap_add"),
@@ -5529,6 +5549,171 @@ def test_the_map_postgres_loopback_binding_is_now_enforced(tmp_path: Path) -> No
             root_env_path=str(root_env),
             environment=environment,
         )
+
+
+# ── kor-travel-shared-postgres가 브리지로 옮겼다 (2026-09-20) ────────────
+#
+# host networking이었던 것이 `networks: [kor-travel-shared-net]`로 바뀌고,
+# `listen_addresses`가 `127.0.0.1,10.88.0.1`(전용 브리지의 고정 게이트웨이 IP)로
+# 넓어졌다 — weather 같은 브리지-네트워크 외부 프로젝트가 서비스명 DNS로 이
+# instance에 닿기 위해서다. 닫힌 허용 집합(`_POSTGRES_CANONICAL_LISTEN_VALUES`)에
+# 그 정확한 리터럴 하나만 더했다 — 와일드카드도, "10.88.0.1을 포함하면"도 아니다.
+
+
+def test_the_shared_postgres_bridge_binding_is_accepted(tmp_path: Path) -> None:
+    """실제 compose 형상 그대로(`networks` + 이중 `listen_addresses`)가 통과한다.
+
+    `_bootstrap_candidate`가 pinvi-api의 `depends_on`을 통해 kor-travel-shared-postgres의
+    **실제** 정의를 이미 끌어오므로(스텁이 아니다), 그 형상이 계약에서 거부되지
+    않는다는 것을 이름으로 직접 확인한다 — raise하지 않음이 단언이다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    shared_postgres = services["kor-travel-shared-postgres"]
+    assert isinstance(shared_postgres, dict)
+    assert shared_postgres.get("networks") == ["kor-travel-shared-net"]
+    command = shared_postgres.get("command")
+    assert isinstance(command, list)
+    assert "listen_addresses=127.0.0.1,10.88.0.1" in command
+
+    validate_compose_candidate_protected_values(
+        candidate,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+        environment=environment,
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "message"),
+    [
+        pytest.param(
+            ["postgres", "-c", "listen_addresses=*"],
+            "loopback binding",
+            id="wildcard-with-networks",
+        ),
+        pytest.param(
+            ["postgres", "-c", "listen_addresses=10.88.0.1"],
+            "loopback binding",
+            id="gateway-without-loopback",
+        ),
+        pytest.param(
+            ["postgres", "-c", "listen_addresses=127.0.0.1,10.88.0.1,0.0.0.0"],
+            "loopback binding",
+            id="third-value-appended",
+        ),
+        pytest.param(
+            ["postgres", "-c", "listen_addresses=10.88.0.1,127.0.0.1"],
+            "loopback binding",
+            id="reversed-order",
+        ),
+    ],
+)
+def test_the_bridge_listen_addresses_allowlist_is_a_closed_exact_match_set(
+    tmp_path: Path, command: list[str], message: str
+) -> None:
+    """`networks`를 얹어도 `listen_addresses`는 정확히 두 리터럴 중 하나여야 한다.
+
+    부분 일치·값 하나만 있음·세 번째 값 추가·순서 바꿈은 모두 거부돼야 한다 —
+    `_POSTGRES_CANONICAL_LISTEN_VALUES`가 `in` 멤버십의 **닫힌 집합**이지, `10.88.0.1`을
+    포함하는지 보는 부분 문자열 검사가 아님을 증명한다. 순서 바꿈(`reversed-order`)은
+    실제 compose 리터럴 `127.0.0.1,10.88.0.1`과 문자열이 다르므로 함께 거부된다 —
+    이 계약은 compose 그대로의 표기만 정본으로 삼는다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = _cluster_service(
+        networks=["kor-travel-shared-net"], command=command
+    )
+
+    with pytest.raises(ComposeCandidateContractError, match=message):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+# ── 적대 리뷰 2026-09-20 F1: `networks` 키는 좁혔지만 값은 무제한이었다 ─────
+#
+# `networks`를 허용 목록에 더할 때 값을 보지 않았다 — 이름이 `kor-travel-shared-net`이
+# 아니거나, `ipv4_address` 같은 non-null 부속 옵션으로 그 게이트웨이 IP를 다른
+# 네트워크에서 재선언해도 통과했다(실측, `_assert_one_postgres_cluster_runtime`을
+# pytest 밖에서 직접 호출). `_postgres_networks_value_is_canonical`이 그 값도
+# 닫힌 형태(정확히 `kor-travel-shared-net` 하나, 부속 옵션 없음)로 묶는다.
+
+
+@pytest.mark.parametrize(
+    "networks",
+    [
+        pytest.param(["rogue-net"], id="wrong-network-name"),
+        pytest.param(
+            {"kor-travel-shared-net": {"ipv4_address": "10.88.0.1"}},
+            id="gateway-ip-reassigned-via-alias",
+        ),
+        pytest.param(
+            ["kor-travel-shared-net", "rogue-net"],
+            id="extra-network-appended",
+        ),
+        pytest.param({"rogue-net": None}, id="dict-form-wrong-name"),
+    ],
+)
+def test_the_networks_value_is_a_closed_exact_match_too(
+    tmp_path: Path, networks: object
+) -> None:
+    """`networks` 키가 열려도 그 **값**은 `kor-travel-shared-net` 하나로만 닫혀 있다.
+
+    특히 `gateway-ip-reassigned-via-alias`는 리뷰가 실측한 정확한 우회로다 —
+    이름이 다른 네트워크가 `ipv4_address: 10.88.0.1`로 kor-travel-shared-net의
+    게이트웨이 IP를 자칭해도, canonical `listen_addresses=127.0.0.1,10.88.0.1`과
+    무관하게 `networks` 값 자체가 닫힌 집합 밖이면 거부돼야 한다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-geo-postgres"] = _cluster_service(
+        networks=networks,
+        command=["postgres", "-c", "listen_addresses=127.0.0.1,10.88.0.1"],
+    )
+
+    with pytest.raises(ComposeCandidateContractError, match="non-canonical networks"):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_the_resolved_dict_form_networks_value_is_still_accepted() -> None:
+    """`docker compose config`가 짧은 문법을 펴는 딕셔너리 형태도 정본이다.
+
+    candidate 층은 `networks: [kor-travel-shared-net]`(리스트)이지만 resolved
+    층은 같은 뜻을 `networks: {kor-travel-shared-net: null}`(딕셔너리)로 편다
+    (실측) — 값 검사가 층 하나에서만 통과하는 형태로 좁아지지 않았는지, 두
+    형태 모두 대상 함수를 직접 불러 확인한다.
+    """
+
+    assert c6c_deployment_module._postgres_networks_value_is_canonical(
+        ["kor-travel-shared-net"]
+    )
+    assert c6c_deployment_module._postgres_networks_value_is_canonical(
+        {"kor-travel-shared-net": None}
+    )
+    assert not c6c_deployment_module._postgres_networks_value_is_canonical(
+        {"kor-travel-shared-net": {}}
+    )
+    assert not c6c_deployment_module._postgres_networks_value_is_canonical(
+        {"kor-travel-shared-net": None, "rogue-net": None}
+    )
 
 
 def test_sourcing_initdb_args_from_a_file_is_rejected(tmp_path: Path) -> None:
