@@ -467,6 +467,71 @@ services:
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_CONCIERGE_SHARED_DB\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_CONCIERGE_SHARED_DB\" TO \"$$KOR_TRAVEL_CONCIERGE_SHARED_APP_USER\""
 
+  # geo 전용 role+database 2개(앱 DB + Dagster 메타 DB)만 만든다 — concierge와 같은
+  # 이유로 role/ACL은 cluster 전역이라는 ADR-37 교훈을 지킨다(ADR-45). concierge
+  # db-init과 달리 여기서는 extension을 만들지 않는다 — geo의 실제 스키마
+  # (kor-travel-geo의 sql/ddl/001_schema.sql)는 postgis/pg_trgm/unaccent/
+  # pg_stat_statements를 전부 `x_extension` 스키마에 설치하는데, 여기서 기본
+  # `public` 스키마에 먼저 심어 버리면 cutover pg_restore 때 dump가 가져오는
+  # `x_extension` 배치와 충돌한다(공용 instance 자체 주석이 경고하는 "map 커토버
+  # 실측" 함정과 동일 원인). 그래서 db-init은 빈 database 2개 + role + CONNECT
+  # grant까지만 하고, extension/스키마/테이블은 cutover의 pg_restore가 dump
+  # 그대로 재생하게 둔다.
+  kor-travel-shared-db-init-geo:
+    image: postgis/postgis:16-3.5
+    container_name: ${KOR_TRAVEL_SHARED_DB_INIT_GEO_CONTAINER:-kor-travel-shared-db-init-geo}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
+      PGUSER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
+      PGDATABASE: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
+      KOR_TRAVEL_GEO_SHARED_DB: ${KOR_TRAVEL_GEO_SHARED_DB:-kor_travel_geo}
+      KOR_TRAVEL_GEO_DAGSTER_SHARED_DB: ${KOR_TRAVEL_GEO_DAGSTER_SHARED_DB:-kor_travel_geo_dagster}
+      KOR_TRAVEL_GEO_SHARED_APP_USER: ${KOR_TRAVEL_GEO_SHARED_APP_USER:-kor_travel_geo_app}
+    secrets:
+    - source: kor-travel-shared-postgres-password
+      target: /run/secrets/kor-travel-shared-postgres-password
+    - source: kor-travel-geo-shared-app-password
+      target: /run/secrets/kor-travel-geo-shared-app-password
+    # concierge db-init과 동일한 이유로 `|| true` 삼킴을 쓰지 않는다 — 인증 실패나
+    # 권한 부족을 삼키면 `service_completed_successfully` 게이트가 잘못 통과한다.
+    # role은 geo의 두 database를 모두 소유한다(오늘 옛 instance에서 `addr`
+    # superuser 하나가 둘 다 소유하는 것과 동일한 권한 경계, 다만 이번엔
+    # NOSUPERUSER/NOCREATEDB/NOCREATEROLE로 scoped — 2026-08-17 사고 재발 방지의
+    # 핵심 지점을 여기서도 지킨다).
+    command:
+    - sh
+    - -ec
+    - |
+      PGPASSWORD="$$(cat /run/secrets/kor-travel-shared-postgres-password)"
+      export PGPASSWORD
+      APP_PASSWORD="$$(cat /run/secrets/kor-travel-geo-shared-app-password)"
+      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$KOR_TRAVEL_GEO_SHARED_APP_USER'" | grep -q 1; then
+        echo "role $$KOR_TRAVEL_GEO_SHARED_APP_USER already exists"
+        psql -d "$$PGDATABASE" -c "ALTER ROLE \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+      else
+        psql -d "$$PGDATABASE" -c "CREATE ROLE \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+      fi
+      for db in "$$KOR_TRAVEL_GEO_SHARED_DB" "$$KOR_TRAVEL_GEO_DAGSTER_SHARED_DB"; do
+        if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1; then
+          echo "database $$db already exists"
+        else
+          createdb -O "$$KOR_TRAVEL_GEO_SHARED_APP_USER" "$$db"
+        fi
+      done
+      # PUBLIC CONNECT 걷어내기 — ADR-44가 concierge 최초 배포 뒤에야 발견해 hotfix로
+      # 추가했던 것을 여기서는 처음부터 반영한다(bootstrap DB + geo의 두 DB 모두).
+      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PGDATABASE\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_SHARED_DB\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_DAGSTER_SHARED_DB\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_SHARED_DB\" TO \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\""
+      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\""
+
   rustfs:
     image: rustfs/rustfs:latest
     container_name: kor-travel-rustfs
@@ -525,8 +590,16 @@ services:
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
+      # 옛 전용 instance는 롤백 안전망으로 계속 띄워 두므로(ADR-45, concierge와
+      # 동일 원칙) 의존성도 남겨 둔다 — 무해하게 같이 healthy해진다. 이 커밋
+      # 시점에는 KTG_PG_DSN이 여전히 옛 instance를 가리킨다 — 실제 data cutover가
+      # 끝난 뒤에야 이 값이 아래 공용 instance로 바뀐다(별도 배포 단계, ADR-45).
       kor-travel-geo-postgres:
         condition: service_healthy
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-geo:
+        condition: service_completed_successfully
       rustfs:
         condition: service_healthy
     environment:
@@ -1830,9 +1903,17 @@ services:
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
+      # 옛 전용 instance는 롤백 안전망으로 계속 띄워 두므로(ADR-45) 의존성도
+      # 남겨 둔다 — 무해하게 같이 healthy해진다. 이 커밋 시점에는 KTG_PG_DSN/
+      # KTG_DAGSTER_PG_URL이 여전히 옛 instance를 가리킨다 — 실제 data cutover가
+      # 끝난 뒤에야 이 값들이 아래 공용 instance로 바뀐다(별도 배포 단계, ADR-45).
       kor-travel-geo-postgres:
         condition: service_healthy
       kor-travel-geo-dagster-db-init:
+        condition: service_completed_successfully
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-geo:
         condition: service_completed_successfully
     command:
     - dagster
@@ -1887,9 +1968,17 @@ services:
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
+      # 옛 전용 instance는 롤백 안전망으로 계속 띄워 두므로(ADR-45) 의존성도
+      # 남겨 둔다 — 무해하게 같이 healthy해진다. 이 커밋 시점에는 KTG_PG_DSN/
+      # KTG_DAGSTER_PG_URL이 여전히 옛 instance를 가리킨다 — 실제 data cutover가
+      # 끝난 뒤에야 이 값들이 아래 공용 instance로 바뀐다(별도 배포 단계, ADR-45).
       kor-travel-geo-postgres:
         condition: service_healthy
       kor-travel-geo-dagster-db-init:
+        condition: service_completed_successfully
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-geo:
         condition: service_completed_successfully
       kor-travel-geo-dagster-code-server:
         condition: service_healthy
@@ -1986,9 +2075,17 @@ services:
       start_period: 90s
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
+      # 옛 전용 instance는 롤백 안전망으로 계속 띄워 두므로(ADR-45) 의존성도
+      # 남겨 둔다 — 무해하게 같이 healthy해진다. 이 커밋 시점에는 KTG_PG_DSN/
+      # KTG_DAGSTER_PG_URL이 여전히 옛 instance를 가리킨다 — 실제 data cutover가
+      # 끝난 뒤에야 이 값들이 아래 공용 instance로 바뀐다(별도 배포 단계, ADR-45).
       kor-travel-geo-postgres:
         condition: service_healthy
       kor-travel-geo-dagster-db-init:
+        condition: service_completed_successfully
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-geo:
         condition: service_completed_successfully
       kor-travel-geo-dagster-code-server:
         condition: service_healthy
@@ -2045,3 +2142,5 @@ secrets:
     environment: KOR_TRAVEL_SHARED_POSTGRES_PASSWORD
   kor-travel-concierge-shared-app-password:
     environment: KOR_TRAVEL_CONCIERGE_SHARED_APP_PASSWORD
+  kor-travel-geo-shared-app-password:
+    environment: KOR_TRAVEL_GEO_SHARED_APP_PASSWORD

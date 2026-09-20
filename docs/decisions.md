@@ -2950,3 +2950,106 @@ target이 옛/새 instance를 함께 관리해 둘 다 건강 상태를 유지�
   백업, `pg_restore` cutover, live 검증은 이어지는 별도 단계에서 수행하고 결과를
   `docs/journal.md`에 남긴다.
 - geo/map/pinvi의 이전 여부·시점은 이 ADR이 정하지 않는다.
+
+## ADR-45: geo를 공용 제어 평면 PostgreSQL instance(`:11000`)로 이전한다 — ADR-37의 geo 범위 부분 supersede
+
+- 상태: accepted (구현 진행 중 — instance·role·database 생성 코드는 이 변경으로
+  만들어졌고, 실제 데이터 cutover는 별도 배포 단계에서 뒤이어 실행한다)
+- 날짜: 2026-09-20
+- 결정자: 사용자("kor-travel-shared-postgres로 db를 옮겨놔"), Claude
+- 관련: ADR-37, ADR-44, `platform-topology.md` §7, `docs/ports.md`,
+  `config/docker-targets.yml`, kor-travel-geo T-307(PR #357, code-server 분리),
+  kor-travel-geo T-308
+
+### 컨텍스트
+
+ADR-44가 concierge만 공용 instance(`kor-travel-shared-postgres`, `:11000`)로 옮기고
+"geo/map/pinvi의 이전 여부·시점은 이 ADR이 정하지 않는다"고 명시적으로 범위 밖에 뒀다.
+이번 턴에 사용자가 geo도 옮기도록 지시했다 — `kor_travel_geo`(메인 앱 DB)와
+`kor_travel_geo_dagster`(Dagster 메타 DB) 둘 다.
+
+concierge와 달리 geo는:
+
+- **데이터 규모가 훨씬 크다** — `kor_travel_geo` 단독 ~31GB(전국 지오코딩 실 데이터,
+  `mv_geocode_target` 6.4M rows), 인스턴스 전체로는 ~33GB. concierge는 231MB였다.
+- **REST API가 실 트래픽을 서빙 중**이라 hard cutover 동안 다운타임이 실제로 체감된다.
+- **Dagster daemon/webserver/code-server**(T-307, PR #357)가 붙어 있다 — concierge는
+  Dagster가 없어 이 제약이 없었다.
+- **현재 role이 `addr` superuser**다 — concierge는 이미 scoped role(`kor_travel_concierge_app`)
+  이었다. 공용 instance에 다른 프로젝트와 함께 들어가면서 superuser를 계속 쓰는 것은
+  ADR-37이 막으려던 위험(principal namespace 공유)을 그대로 재현한다.
+- **`pg_advisory_xact_lock`을 쓴다**(geo API 동시성, 백업 retention janitor) — ADR-44가
+  concierge에 적용한 것과 같은 이유로 hard cutover(완전 정지 → dump → restore → 검증 →
+  DSN 전환 → 재기동)여야 한다.
+- 반대로 geo는 concierge에 없던 이점이 있다 — ADR-030으로 이미 검증된 `pg_dump`/
+  `pg_restore`/체크섬/restore-drill 파이프라인, 그리고 docker-manager 자체
+  `standalone_backup.py`의 `_ROLE_CONFIG`에 이미 등록된 `geo`/`geo_dagster` role로
+  `ktdctl db-backup create`가 바로 신뢰 가능한 dump를 만든다. concierge는 이런 도구가
+  없어 실제 cutover를 수동 `pg_restore`로 처음 실행해야 했다.
+
+### 결정
+
+**geo**를 `kor-travel-shared-postgres`로 이전한다 — `kor_travel_geo`와
+`kor_travel_geo_dagster` 둘 다, 새 scoped role `kor_travel_geo_app`
+(NOSUPERUSER/NOCREATEDB/NOCREATEROLE) 소유로. map/pinvi는 이 ADR의 범위 밖이며 각자
+전용 instance(ADR-37)에 남는다.
+
+`platform-topology.md` §7의 5단계 계획 중 2~4단계(전 프로젝트 공용 Dagster storage/
+workspace/webserver/daemon)는 이번에 하지 않는다 — ADR-44가 concierge에 대해 그랬듯,
+geo의 webserver/daemon/code-server 3-프로세스 토폴로지(T-307)는 그대로 두고 두 DB만
+공용 instance로 옮긴다. concierge와 마찬가지로, `kor-travel-shared-db-init-concierge`를
+그대로 본떠 `kor-travel-shared-db-init-geo` one-shot이 geo 전용 role을 만들어 geo의
+두 database에만 소유권을 준다 — 다른 프로젝트의 role/db-init을 재사용하지 않는다
+(2026-08-17 사고 재발 방지 원칙 유지).
+
+**geo만의 차이 — extension을 db-init에서 만들지 않는다.** concierge db-init은
+`CREATE EXTENSION IF NOT EXISTS postgis`를 기본 `public` 스키마에 미리 심는다. geo의
+실제 스키마(`kor-travel-geo`의 `sql/ddl/001_schema.sql`)는 postgis/pg_trgm/unaccent/
+pg_stat_statements를 전부 `x_extension` 스키마에 설치한다 — db-init이 먼저
+`public`에 심으면 cutover의 `pg_restore`가 가져오는 `x_extension` 배치와 충돌한다
+(공용 instance 서비스 자체 주석이 경고하는 "map 커토버 실측" 함정과 정확히 같은
+원인). 그래서 geo의 db-init은 **빈 database 두 개 + role + CONNECT grant까지만** 하고,
+extension/스키마/테이블은 cutover의 `pg_restore`가 dump 그대로 재생하게 둔다.
+
+PUBLIC CONNECT 격리는 ADR-44가 concierge 최초 배포 뒤에야 발견해 hotfix로 추가했던
+`REVOKE CONNECT ... FROM PUBLIC`(bootstrap DB + 자기 DB) / `GRANT CONNECT ... TO
+kor_travel_geo_app`(자기 DB에만) 패턴을 처음부터 db-init에 반영한다.
+
+전환은 ADR-44와 동일하게 완전 정지 → `ktdctl db-backup create --role geo`/
+`--role geo_dagster`로 dump → 새 instance로 `pg_restore` → row count/Alembic head/
+extension 배치 검증 → `KTG_PG_DSN`/`KTG_DAGSTER_PG_URL` 전환 → 재기동·live 검증 순의
+hard cutover로 실행한다. 옛 `kor-travel-geo-postgres`는 삭제하지 않고 롤백 안전망으로
+그대로 둔다 — `config/docker-targets.yml`의 `geo` target이 옛/새 instance를 함께
+관리해 둘 다 건강 상태를 유지한다.
+
+### 근거
+
+geo는 이미 `platform-topology.md` §7 1단계(code-server 분리, T-307/PR #357)를 마쳤다.
+2~4단계(전 프로젝트 공용 Dagster storage/webserver/daemon)는 map/pinvi/concierge와의
+조정이 필요한 더 큰 변경이라 이번 지시의 범위가 아니다 — 사용자는 명시적으로 두 DB
+("둘 다")만 옮기라고 확인했다. ADR-44가 concierge에 대해 5단계 순서를 건너뛰고 앱 DB만
+곧장 옮긴 것과 같은 논리로, geo도 Dagster 공유 인프라 없이 자신의 두 DB만 공용
+instance에 올린다 — geo의 프로세스 토폴로지는 바뀌지 않으므로 이 지름길의 blast
+radius는 "DSN이 가리키는 곳"으로 한정된다.
+
+### 결과
+
+- `docker-compose.yml`: `kor-travel-shared-db-init-geo` one-shot 신규, 새 secret
+  `kor-travel-geo-shared-app-password`, geo의 4개 서비스(api·code-server·webserver·
+  daemon) `depends_on`에 새 instance 추가(옛 instance 의존은 유지).
+- `config/docker-targets.yml`: `geo` target의 `services`/`runtime_services`/`containers`에
+  `kor-travel-shared-postgres`·`kor-travel-shared-db-init-geo` 추가.
+- `docs/ports.md`: geo 행에 이전 상태 주석 추가(concierge 행과 동일 패턴).
+- `AGENTS.md` 룰 4·9와 DB 서비스 정보 표: geo 포트가 `12500`이 아니라 `:11000` 기준임을
+  반영하도록 갱신.
+- `standalone_backup.py`의 `_ROLE_CONFIG["geo"]`/`["geo_dagster"]` 컨테이너 참조는
+  **실제 cutover가 끝난 뒤** 별도 커밋에서 `kor-travel-geo-postgres`→
+  `kor-travel-shared-postgres`로 옮긴다(ADR-44와 동일 이유 — cutover 전에 미리 옮기면
+  cutover 직전 백업이 아직 비어 있는 새 instance를 겨냥해 무의미해진다).
+
+### 확인하지 않은 것
+
+- 이 커밋 시점에는 instance·role·database 생성 코드만 존재한다. 실제 n150 배포, dump/
+  `pg_restore` cutover, DSN 전환, live 검증은 이어지는 별도 단계에서 수행하고 결과를
+  `docs/journal.md`(docker-manager)와 kor-travel-geo의 `docs/journal.md`에 남긴다.
+- map/pinvi의 이전 여부·시점은 이 ADR도 정하지 않는다.
