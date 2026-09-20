@@ -51,13 +51,11 @@ def test_external_targets_declare_the_measured_project_coordinates() -> None:
     이 값들은 추측이 아니라 실행 중인 컨테이너의 `com.docker.compose.*` 라벨과
     `docker compose config`에서 읽은 것이다. 좌표가 틀리면 Manager가 엉뚱한
     프로젝트에 명령을 보내거나 `no configuration file provided`로 죽는다.
+
+    weather는 2026-09-20(ADR-47)부터 Manager internal target이라 이 실측
+    좌표가 없다 — 남은 외부 target 둘(airport/airport-db)만 센다.
     """
 
-    assert external_project_for_target("weather") == ExternalProject(
-        project="kor-travel-weather",
-        working_dir="/home/digitie/kor-travel-weather",
-        config_files=("compose.yaml", "deploy/compose.n150.yaml"),
-    )
     assert external_project_for_target("airport") == ExternalProject(
         project="kor-travel-airport",
         working_dir="/home/digitie/apps/kor-travel-airport",
@@ -104,8 +102,20 @@ def test_a_multi_project_target_produces_one_group_per_project() -> None:
     ]
 
 
-def test_weather_is_one_group_with_both_compose_files() -> None:
-    """weather는 프로젝트 하나지만 **파일이 둘**이다(n150 오버레이)."""
+def test_weather_is_one_group_with_both_compose_files(
+    weather_as_external: None,
+) -> None:
+    """(합성) 한 target·파일 둘 그룹핑이 여전히 실제 코드 경로로 도는지 센다.
+
+    weather는 2026-09-20(ADR-47)부터 Manager internal target이라 "한 프로젝트,
+    compose 파일 둘"(n150 HAProxy 오버레이)의 실제 사례가 저장소에 더 이상 없다
+    — airport는 대신 "target 하나, 프로젝트 둘"이라는 다른 축이다
+    (`test_a_multi_project_target_produces_one_group_per_project`). 이 메커니즘
+    자체는 여전히 유효한 기능(다른 프로젝트가 다시 쓸 수 있다)이라
+    `weather_as_external` fixture로 weather의 옛 좌표를 합성 복원해 계속 태운다.
+    services 목록은 weather의 **현재** 등록(ADR-47 이후)을 그대로 반영한다 —
+    external 좌표만 합성이다.
+    """
 
     groups = service_groups_for_target("weather")
     assert len(groups) == 1
@@ -113,13 +123,16 @@ def test_weather_is_one_group_with_both_compose_files() -> None:
     assert external is not None
     assert external.config_files == ("compose.yaml", "deploy/compose.n150.yaml")
     assert list(groups[0].services) == [
-        "db",
-        "migrate",
-        "api",
-        "dagster",
-        "dagster-gateway",
-        "web",
-        "prometheus",
+        "kor-travel-shared-postgres",
+        "kor-travel-shared-db-init-weather",
+        "kor-travel-weather-migrate",
+        "kor-travel-weather-api",
+        "kor-travel-weather-web",
+        "kor-travel-weather-dagster-code-server",
+        "kor-travel-weather-dagster-webserver",
+        "kor-travel-weather-dagster-daemon",
+        "kor-travel-weather-dagster-gateway",
+        "kor-travel-weather-prometheus",
     ]
 
 
@@ -127,12 +140,14 @@ def test_runtime_groups_drop_the_one_shot_migration() -> None:
     """`migrate`는 `restart: no`인 one-shot이라 runtime 목록에서 빠진다.
 
     정상 상태가 `exited(0)`이므로 runtime에 두면 상태 판정이 늘 실패로 읽힌다.
+    weather는 여전히(2026-09-20 ADR-47 이후에도) Manager target이라 external
+    합성 없이 현재 등록을 그대로 쓴다 — 이 속성은 external 여부와 무관하다.
     """
 
     groups = service_groups_for_target("weather", runtime_only=True)
     assert len(groups) == 1
-    assert "migrate" not in groups[0].services
-    assert "api" in groups[0].services
+    assert "kor-travel-weather-migrate" not in groups[0].services
+    assert "kor-travel-weather-api" in groups[0].services
 
 
 def test_manager_target_stays_a_single_group() -> None:
@@ -147,12 +162,16 @@ def test_manager_target_stays_a_single_group() -> None:
 # ── 명령 구성 ────────────────────────────────────────────────────────────
 
 
-def test_external_command_carries_project_directory_and_every_file() -> None:
+def test_external_command_carries_project_directory_and_every_file(
+    weather_as_external: None,
+) -> None:
     """`-p` · `--project-directory` · 파일마다 `-f`.
 
     그리고 Manager의 `--env-file`을 **붙이지 않는다** — 형제 프로젝트는 자기
     `working_dir`의 `.env`를 compose가 알아서 읽고, Manager env를 주입하면 남의
-    프로젝트 값을 덮어쓴다.
+    프로젝트 값을 덮어쓴다. (합성: weather는 2026-09-20 ADR-47부터 internal
+    target이라 `weather_as_external`이 옛 좌표를 복원해 파일-둘 경로를 계속
+    태운다.)
     """
 
     service = ComposeService()
@@ -189,7 +208,9 @@ def test_manager_command_shape_is_unchanged() -> None:
     )
 
 
-def test_single_file_boundary_is_refused_for_an_external_project() -> None:
+def test_single_file_boundary_is_refused_for_an_external_project(
+    weather_as_external: None,
+) -> None:
     """단일파일 경계는 Manager 후보의 계약이다 — 외부에 적용하려 하면 거부한다."""
 
     service = ComposeService()
@@ -204,7 +225,7 @@ def test_single_file_boundary_is_refused_for_an_external_project() -> None:
 # ── C6c 계약 경로는 외부를 거부한다 ──────────────────────────────────────
 
 
-@pytest.mark.parametrize("target", ["weather", "airport", "airport-db"])
+@pytest.mark.parametrize("target", ["airport", "airport-db"])
 def test_ensure_target_refuses_external_projects(target: str) -> None:
     """`ensure`는 Manager 자신의 후보만 다룬다.
 
@@ -213,8 +234,13 @@ def test_ensure_target_refuses_external_projects(target: str) -> None:
     이 저장소가 아니다. 수명주기는 `control_container`(Docker SDK)가 다루고, 배포는
     각 저장소가 계속 소유한다.
 
-    이 검사가 없으면 `ensure weather`가 Manager의 compose에 대고 weather 서비스
+    이 검사가 없으면 `ensure airport`가 Manager의 compose에 대고 airport 서비스
     이름을 찾다가 `no such service`로 죽는다 — 원인을 말하지 않는 실패다.
+
+    weather는 2026-09-20(ADR-47)부터 Manager internal target이라 이 parametrize
+    에서 뺐다 — `ensure weather`는 이제 정당하게 (외부 거부가 아닌) 다른 배포
+    계약 게이트를 탄다. 남은 airport/airport-db 둘만으로도 "외부는 거부된다"는
+    실제 메커니즘이 충분히 증명된다.
     """
 
     service = ComposeService()
@@ -305,6 +331,45 @@ def _config_with_external(external: Any) -> dict[str, Any]:
         config["targets"]["weather"]["external_project"] = external
     config["containers"] = copy.deepcopy(dict(config["containers"]))
     return config
+
+
+#: weather가 2026-09-20(ADR-47)까지 실제로 갖고 있던 external_project 좌표 —
+#: **한 프로젝트, compose 파일 둘**(n150 HAProxy 오버레이)의 유일한 실제 사례였다.
+#: weather가 Manager internal target으로 바뀌며 저장소에 이 정확한 형태가 더 이상
+#: 없다 — airport/airport-db는 여전히 외부지만 둘 다 "프로젝트당 파일 하나"이고,
+#: airport는 대신 "target 하나, 프로젝트 둘"이라는 **다른** 축을 이미 별도로
+#: 증명한다(`test_a_multi_project_target_produces_one_group_per_project`). "한
+#: 프로젝트, 파일 여럿" 자체는 여전히 유효한 Manager 기능(n150의 실제 오버레이
+#: 패턴, 다른 프로젝트가 다시 쓸 수 있다)이므로, 그 경로를 실제 코드로 계속
+#: 태우기 위해 weather의 옛 좌표를 합성으로 복원한다.
+_WEATHER_LEGACY_EXTERNAL_PROJECT = {
+    "project": "kor-travel-weather",
+    "working_dir": "/home/digitie/kor-travel-weather",
+    "config_files": ["compose.yaml", "deploy/compose.n150.yaml"],
+}
+
+
+@pytest.fixture
+def weather_as_external(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`service_groups_for_target`/`build_command`/`external_project_for_target`
+    등 **실제 로드 경로**를 쓰는 함수들이 weather를 다시 (합성으로) 외부로 보게
+    한다. `_config_with_external`과 달리 이쪽은 그 함수들이 전부 거쳐 가는
+    `load_targets_config()` 자체를 갈아 끼운다 — `_LazyMapping`
+    (`MANAGED_CONTAINERS`/`MANAGED_TARGETS` 등, registry.py)이 접근할 때마다
+    이 함수를 다시 부르므로 patch 하나로 양쪽 모듈이 일관되게 새 값을 본다.
+    """
+
+    registry_module.load_targets_config.cache_clear()
+    try:
+        config = copy.deepcopy(dict(registry_module.load_targets_config()))
+    finally:
+        registry_module.load_targets_config.cache_clear()
+    config["targets"] = copy.deepcopy(dict(config["targets"]))
+    config["targets"]["weather"] = {
+        **config["targets"]["weather"],
+        "external_project": copy.deepcopy(_WEATHER_LEGACY_EXTERNAL_PROJECT),
+    }
+    monkeypatch.setattr(registry_module, "load_targets_config", lambda: config)
 
 
 @pytest.mark.parametrize(

@@ -21,6 +21,7 @@ cwd**를 본다. 명령을 만드는 함수가 아니라 **실행되는 명령**
 
 from __future__ import annotations
 
+import copy
 import os
 import subprocess
 from typing import Any
@@ -58,6 +59,50 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> _Capture:
     return capture
 
 
+#: weather가 2026-09-20(ADR-47)까지 실제로 갖고 있던 external_project 좌표 — 이
+#: 파일의 "실행되는 명령" 계약을 태우는 유일한 실제 사례였다(한 프로젝트, compose
+#: 파일 둘, n150 HAProxy 오버레이). weather가 Manager internal target으로 바뀌며
+#: 저장소에 이 정확한 형태가 더 이상 없다 — 남은 외부 target(airport/airport-db)은
+#: "target 하나, 프로젝트 둘"이라는 다른 축을 이미 `test_a_two_project_target_runs_once_per_project`
+#: 등에서 증명한다. "한 프로젝트, 파일 여럿" 자체는 여전히 유효한 Manager
+#: 기능이므로, weather의 옛 좌표를 합성으로 복원해 그 경로를 계속 실제 코드로
+#: 태운다(`test_multi_project_targets.py`의 같은 이름 fixture와 같은 원리).
+_WEATHER_LEGACY_EXTERNAL_PROJECT = {
+    "project": "kor-travel-weather",
+    "working_dir": "/home/digitie/kor-travel-weather",
+    "config_files": ["compose.yaml", "deploy/compose.n150.yaml"],
+}
+
+
+@pytest.fixture
+def weather_as_external(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`registry.py`의 실제 로드 경로(`load_targets_config()`)를 갈아 끼워
+    weather target **및** 그 `kor-travel-weather-api` 컨테이너가 다시 (합성으로)
+    옛 external_project를 갖게 한다. 컨테이너 쪽도 갈아 끼우는 이유는
+    `external_project_for_container`가 컨테이너 자신의 선언을 먼저 보기
+    때문이다(target 선언만으로는 컨테이너발 조회가 여전히 `None`을 돌려준다).
+    """
+
+    from kor_travel_docker_manager.services import registry as registry_module
+
+    registry_module.load_targets_config.cache_clear()
+    try:
+        config = copy.deepcopy(dict(registry_module.load_targets_config()))
+    finally:
+        registry_module.load_targets_config.cache_clear()
+    config["targets"] = copy.deepcopy(dict(config["targets"]))
+    config["targets"]["weather"] = {
+        **config["targets"]["weather"],
+        "external_project": copy.deepcopy(_WEATHER_LEGACY_EXTERNAL_PROJECT),
+    }
+    config["containers"] = copy.deepcopy(dict(config["containers"]))
+    config["containers"]["kor-travel-weather-api"] = {
+        **config["containers"]["kor-travel-weather-api"],
+        "external_project": "kor-travel-weather",
+    }
+    monkeypatch.setattr(registry_module, "load_targets_config", lambda: config)
+
+
 def _flag_values(command: list[str], flag: str) -> list[str]:
     return [command[i + 1] for i, item in enumerate(command) if item == flag]
 
@@ -67,6 +112,7 @@ def _flag_values(command: list[str], flag: str) -> list[str]:
 
 def test_status_of_an_external_target_runs_in_that_projects_directory(
     captured: _Capture,
+    weather_as_external: None,
 ) -> None:
     """**cwd가 요점이다.**
 
@@ -90,7 +136,9 @@ def test_status_of_an_external_target_runs_in_that_projects_directory(
     assert _flag_values(command, "-f") == ["compose.yaml", "deploy/compose.n150.yaml"]
 
 
-def test_container_logs_run_in_the_owning_projects_directory(captured: _Capture) -> None:
+def test_container_logs_run_in_the_owning_projects_directory(
+    captured: _Capture, weather_as_external: None
+) -> None:
     """컨테이너 이름으로 부를 때도 같다 — 소유 프로젝트의 좌표를 쓴다."""
 
     ComposeService().logs("kor-travel-weather-api", tail=5)
@@ -98,7 +146,7 @@ def test_container_logs_run_in_the_owning_projects_directory(captured: _Capture)
     call = captured.only
     assert call["cwd"] == "/home/digitie/kor-travel-weather"
     assert _flag_values(call["command"], "-p") == ["kor-travel-weather"]
-    assert "api" in call["command"], call["command"]
+    assert "kor-travel-weather-api" in call["command"], call["command"]
 
 
 def test_logs_still_works_for_every_manager_name(captured: _Capture) -> None:
@@ -144,7 +192,7 @@ def test_a_two_project_target_runs_once_per_project(captured: _Capture) -> None:
 
 
 def test_external_calls_do_not_inherit_the_managers_environment(
-    captured: _Capture, monkeypatch: pytest.MonkeyPatch
+    captured: _Capture, weather_as_external: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Compose에서 **셸 환경은 `.env`보다 우선한다.**
 
@@ -179,7 +227,9 @@ def test_manager_calls_still_inherit_the_process_environment(captured: _Capture)
 # ── 변경 경로는 외부를 받지 않는다 ───────────────────────────────────────
 
 
-def test_run_refuses_external_on_mutation_paths(captured: _Capture) -> None:
+def test_run_refuses_external_on_mutation_paths(
+    captured: _Capture, weather_as_external: None
+) -> None:
     """읽기만 허용한다. 변경 기계(C6c)는 Manager 후보를 전제한다.
 
     `ensure_target`이 이미 거부하지만 그쪽은 한 층 위다. 여기서 끊어야 새 호출부가
@@ -254,7 +304,7 @@ def _weather() -> Any:
     ],
 )
 def test_each_mutation_input_alone_refuses_an_external_project(
-    captured: _Capture, kwargs: dict[str, Any]
+    captured: _Capture, weather_as_external: None, kwargs: dict[str, Any]
 ) -> None:
     """guard의 조건을 **하나씩** 태운다.
 
@@ -268,7 +318,9 @@ def test_each_mutation_input_alone_refuses_an_external_project(
     assert captured.calls == []
 
 
-def test_a_mutating_command_refuses_an_external_project(captured: _Capture) -> None:
+def test_a_mutating_command_refuses_an_external_project(
+    captured: _Capture, weather_as_external: None
+) -> None:
     """**인자가 아니라 명령이 변경 여부를 정한다.**
 
     넷을 다 비우고 `up -d`만 줘도 거부돼야 한다. 첫 판은 여기서 guard를 통과한 뒤
@@ -283,7 +335,9 @@ def test_a_mutating_command_refuses_an_external_project(captured: _Capture) -> N
     assert captured.calls == []
 
 
-def test_the_unlocked_layer_is_the_last_net(captured: _Capture) -> None:
+def test_the_unlocked_layer_is_the_last_net(
+    captured: _Capture, weather_as_external: None
+) -> None:
     """`run()`을 우회해도 변경 입력과 `external`은 함께 올 수 없다.
 
     변경 분기의 `_run_unlocked` 호출 두 곳에 `assert`를 박는 대신 **피호출자**가
@@ -308,7 +362,7 @@ def test_the_unlocked_layer_is_the_last_net(captured: _Capture) -> None:
 
 
 def test_the_narrowed_environment_is_exactly_the_allowlist(
-    captured: _Capture, monkeypatch: pytest.MonkeyPatch
+    captured: _Capture, weather_as_external: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """통과 집합의 **내용**을 결박한다.
 
@@ -368,7 +422,7 @@ def test_the_passthrough_allowlist_is_exactly_this_set() -> None:
 
 
 def test_the_environment_argument_does_not_reopen_full_inheritance(
-    captured: _Capture, monkeypatch: pytest.MonkeyPatch
+    captured: _Capture, weather_as_external: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """명시 `environment`가 좁히기를 **건너뛰게** 하지 않는다.
 
@@ -418,7 +472,9 @@ def test_the_group_label_names_the_project(captured: _Capture) -> None:
     assert "# project=kor-travel-airport-db" in result["stdout"]
 
 
-def test_a_missing_working_directory_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_missing_working_directory_says_so(
+    weather_as_external: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """가장 흔할 오설정이 "docker 바이너리 없음"과 구별돼야 한다.
 
     첫 판은 `except OSError:`가 예외 이름조차 받지 않아 둘이 같은 문구였다.
@@ -456,7 +512,7 @@ def test_container_scoped_logs_translate_manager_ids_too(captured: _Capture) -> 
     ],
 )
 def test_each_mutation_input_alone_trips_the_last_net(
-    captured: _Capture, kwargs: dict[str, Any]
+    captured: _Capture, weather_as_external: None, kwargs: dict[str, Any]
 ) -> None:
     """last net의 조건을 **하나씩** 태운다.
 
@@ -480,7 +536,9 @@ def test_each_mutation_input_alone_trips_the_last_net(
     assert captured.calls == []
 
 
-def test_the_last_net_also_reads_the_command(captured: _Capture) -> None:
+def test_the_last_net_also_reads_the_command(
+    captured: _Capture, weather_as_external: None
+) -> None:
     """**술어가 `run()`과 같은 것을 봐야 한다.**
 
     첫 판은 여기서 변경 *입력*만 봐서, 입력을 하나도 주지 않고 `down -v`를 부르면
@@ -536,7 +594,7 @@ def test_logs_does_not_fall_back_to_the_manager_project(
 
 
 def test_logs_refuses_when_the_whole_closure_is_empty(
-    captured: _Capture, monkeypatch: pytest.MonkeyPatch
+    captured: _Capture, weather_as_external: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """**폐포가 통째로 비는 절반**을 태운다.
 
@@ -546,6 +604,12 @@ def test_logs_refuses_when_the_whole_closure_is_empty(
     logs`가 **서비스 필터 없이** 돌아 Manager 전체 서비스의 로그를 그 target의 것으로
     제시하고 `omitted_projects: []`로 "빠뜨린 것 없음"을 단언했다(적대 리뷰
     2026-09-18 E-R2-01, CLI로 실측).
+
+    `weather_as_external`이 필요하다 — target이 Manager 소유(own_external=None)면
+    폐포가 비어도 이 거부 대신 Manager 자신의 compose로 정당하게 떨어진다
+    (`test_logs_of_a_manager_target_is_untouched_by_that_predicate` 참고). weather는
+    2026-09-20(ADR-47)부터 Manager 소유라 이 시나리오(외부 target의 폐포가 통째로
+    비는 경우)를 계속 태우려면 옛 좌표를 합성으로 복원해야 한다.
     """
 
     monkeypatch.setattr(

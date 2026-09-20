@@ -35,15 +35,14 @@
 | `map` | `12700-12799` | PostgreSQL `12700`, API `12701`, Dagster `12702`, Web UI `12705` | `kor-travel-map` |
 | `pinvi` | `12800-12899` | PostgreSQL `12800`, API `12801`, Dagster webserver `12802`, Dagster code-server(gRPC, PinVi ADR-069) `12803`, Web UI `12805` | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
+| `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Prometheus `14104`, Web `14105` | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
 | `airport-db` | `14000-14000` | PostgreSQL `14000` | `kor-travel-airport` (외부 프로젝트) |
 | `airport` | `14001-14099` | Backend `14001`, Frontend `14002` | `kor-travel-airport` (외부 프로젝트) |
-| `weather` | `14100-14199` | PostgreSQL `14100`, API `14101`, Dagster 게이트웨이 `14102`, Prometheus `14104`, Web `14105` | `kor-travel-weather` (외부 프로젝트) |
 
-### 외부 프로젝트 대역 (`14000-14199`)
+### 외부 프로젝트 대역 (`14000-14099`)
 
-위 세 target은 **compose 정본이 이 저장소 밖**에 있다(`external_project` 선언).
-2026-09-18 등록 전까지 `14100-14199`는 "Manager 미등록 sibling이 점유 중"으로 적혀
-있었는데, 지금은 등록됐으므로 그 문장을 지웠다. 등록의 뜻은 좁다:
+위 두 target(`airport-db`, `airport`)은 **compose 정본이 이 저장소 밖**에 있다
+(`external_project` 선언). 등록의 뜻은 좁다:
 
 - Manager가 **상태를 보고**(`status`) **컨테이너 수명주기를 다룬다**
   (`start`/`stop`/`restart` — `control_container`가 Docker SDK로 컨테이너를 직접
@@ -75,21 +74,27 @@ target이 **자기 프로젝트에 runtime 서비스를 하나도 선언하지 �
 개발 checkout과 CI에서 스키마가 완벽해도 실패한다.
 
 Manager는 외부 컨테이너의 **compose 설정을 편집하지 않는다.** `compose_service` 이름은
-그 프로젝트 안에서만 유일해서(weather의 `prometheus`와 Manager의 `prometheus`가 실제로
-겹친다), Manager 문서에서 같은 이름을 찾으면 전혀 다른 서비스가 나온다. 그래서 목록
-화면은 외부 컨테이너의 `config`를 비워 보내고, 설정 변경·초기화·부재 시 재생성은
-거부한다. 수명주기(start/stop/restart)만 Docker SDK로 동작한다.
+그 프로젝트 안에서만 유일해서, Manager 문서에서 같은 이름을 찾으면 전혀 다른 서비스가
+나올 수 있다. 그래서 목록 화면은 외부 컨테이너의 `config`를 비워 보내고, 설정
+변경·초기화·부재 시 재생성은 거부한다. 수명주기(start/stop/restart)만 Docker SDK로
+동작한다.
 
-`kor-travel-weather-migrate`는 정상 상태가 `exited(0)`인 one-shot이라 `containers:`에
-등재하지 않는다 — 등재하면 대시보드에 상시 비정상 카드로 남고 metrics 관측 대상이
-된다(`rustfs-init`이 같은 이유로 빠져 있다). `services:`에는 남아 있다 — 외부 target의
-그 목록은 `ensure`(외부에는 거부된다)가 아니라 `status_target`의 묶음 구성이 쓴다.
+**weather는 2026-09-20부터 이 섹션에 없다** — Manager의 own internal target이 됐고
+(`config/docker-targets.yml`의 `weather:` target에서 `external_project:` 필드가
+빠졌다), compose 정본도 이 저장소의 `docker-compose.yml`로 옮겨왔다
+(`kor-travel-weather-api`/`-web`/`-dagster-*`/`-prometheus` + `kor-travel-shared-db-init-weather`
++ `kor-travel-weather-migrate`, ADR-47). weather 자신의 `compose.yaml`/`deploy/compose.n150.yaml`은
+삭제되지 않고 local-dev/e2e 용으로 남는다 — prod 정본이 아니라는 뜻만 바뀌었다. weather의
+bare `prometheus` compose 서비스명이 Manager 자신의 `prometheus:` 서비스와 겹쳤던 문제는
+`kor-travel-weather-prometheus`로 이름을 바꿔 해소했다(외부 target이었을 때는 "config
+편집 거부" 특례로 무해했지만, internal target에는 그 특례가 적용되지 않는다).
 
 Concierge scheduler와 Map Dagster daemon은 외부 포트를 열지 않는 내부 실행 서비스다.
 Geo Dagster webserver는 registry의 일반 runtime 표에는 없는 보조 서비스지만 Compose에서
 `12502`를 사용한다. PinVi의 `srv`와 `main`은 `pinvi` target 별칭이다. PinVi Dagster
 code-server(`12803`, PinVi ADR-069)도 daemon과 같은 내부 전용이다 — webserver/daemon만
-gRPC로 접속하고, 외부에는 열지 않는다.
+gRPC로 접속하고, 외부에는 열지 않는다. weather의 Dagster code-server(`14106`)/webserver
+(`14107`, ADR-47로 재배치)도 같은 이유로 loopback 전용이다 — gateway(`14102`)만 외부에 연다.
 
 ## PostgreSQL instance 경계
 
@@ -99,7 +104,7 @@ gRPC로 접속하고, 외부에는 열지 않는다.
 | `kor-travel-concierge-postgres` | `12600` | `kor_travel_concierge`(**cutover 전까지는 활성 원본**, 이후 롤백 보관용 — 아래 참고) |
 | `kor-travel-map-postgres` | `12700` | `kor_travel_map`, `kor_travel_map_dagster` |
 | `pinvi-postgres` | `12800` | `pinvi`, `pinvi_dagster`(**롤백 안전망** — ADR-46 이후 앱은 여기 쓰지 않는다) |
-| `kor-travel-shared-postgres` | `11000` | `kor_travel_concierge`(concierge 전용 role — ADR-44 cutover 완료로 **현재 활성**), `kor_travel_geo`/`kor_travel_geo_dagster`(geo 전용 role `kor_travel_geo_app` — ADR-45 role/database 생성 완료, data cutover는 아직이라 **활성 아님**), `pinvi`+`pinvi_dagster`(ADR-46, 데이터 보존 없이 fresh 구성으로 이전해 **현재 활성**). 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) |
+| `kor-travel-shared-postgres` | `11000` | `kor_travel_concierge`(concierge 전용 role — ADR-44 cutover 완료로 **현재 활성**), `kor_travel_geo`/`kor_travel_geo_dagster`(geo 전용 role `kor_travel_geo_app` — ADR-45 role/database 생성 완료, data cutover는 아직이라 **활성 아님**), `pinvi`+`pinvi_dagster`(ADR-46, 데이터 보존 없이 fresh 구성으로 이전해 **현재 활성**), `kor_travel_weather`+`kor_travel_weather_dagster`(weather 전용 role `kor_travel_weather_app`/`kor_travel_weather_dagster_app` — ADR-47, 데이터 보존 없이 fresh 구성으로 internal target 전환해 **현재 활성**). 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) |
 
 다섯 instance 모두 loopback 전용이다. `db` target의 호환 이름은 Geo instance만 실행하며,
 Map database provisioning은 각 Compose 서비스 또는 pinned workflow가 자기 instance에서
@@ -107,9 +112,9 @@ Map database provisioning은 각 Compose 서비스 또는 pinned workflow가 자
 `pinvi-shared-db-runtime-role`(아래 참고)이 공용 instance에서 수행한다.
 
 `kor-travel-shared-postgres`는 platform-topology.md §7(2026-09-19 결정)이 목표로 한
-공용 제어 평면의 첫 실제 구현이다. **이전 대상은 concierge·geo·PinVi다**
-(ADR-44/ADR-45/ADR-46) — map은 여전히 전용 instance에 남고, 이 문서가 그 프로젝트의
-이전까지 끝났다고 주장하지 않는다.
+공용 제어 평면의 첫 실제 구현이다. **이전 대상은 concierge·geo·PinVi·weather다**
+(ADR-44/ADR-45/ADR-46/ADR-47) — map은 여전히 전용 instance에 남고, 이 문서가 그
+프로젝트의 이전까지 끝났다고 주장하지 않는다.
 
 - **concierge**는 2026-09-19/20에 실제 데이터 cutover까지 끝났다(위 표의 "현재
   활성"이 그 사실을 반영). §7의 원래 계획대로 실 데이터를 pg_dump/restore로 옮긴
@@ -133,6 +138,15 @@ Map database provisioning은 각 Compose 서비스 또는 pinned workflow가 자
   migrator)를 재구성했다 — root bootstrap 계정만 전용 instance 자신의 superuser
   (`PINVI_POSTGRES_USER`)에서 공용 cluster 관리자(`KOR_TRAVEL_SHARED_POSTGRES_USER`)로
   바뀐다.
+- **weather는 PinVi와 같은 패턴이다** — 사용자 지시로 데이터 보존을 요구하지
+  않아("어차피 새로 쌓으면 됨"), 옛 전용 `db`(`weather-postgres` volume, weather
+  자신의 compose.yaml에만 남는다)의 데이터를 옮기지 않고 공용 instance에 완전히
+  빈 상태로 `kor_travel_weather`(앱)·`kor_travel_weather_dagster`(Dagster 메타)를
+  새로 만든다. weather는 concierge/geo/pinvi와 달리 **Manager가 관리하는 전용
+  postgres 컨테이너를 애초에 가진 적이 없다** — 그래서 롤백 안전망으로 옛 전용
+  instance를 그대로 남겨 두는 나머지 셋의 패턴이 여기는 적용되지 않는다; 롤백은
+  weather 자신의 `compose.yaml`(local-dev/e2e로 격하됐지만 삭제되지 않은)을 다시
+  띄우는 것이고, 그 안의 `db` 서비스/볼륨이 그 역할을 대신한다.
 
 cutover 후에도 옛 instance는 삭제하지 않고 롤백 안전망으로 그대로 둔다(쓰기 대상
 아님, 읽기도 정상 운영에서는 쓰지 않는다). 공용 instance 안에서도 ADR-37의 교훈

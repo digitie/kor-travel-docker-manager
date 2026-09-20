@@ -13,11 +13,11 @@ dependency_order:
   - conc
   - map
   - pinvi
+  - weather
   # 형제 프로젝트(외부 compose). Manager 자신의 프로젝트보다 뒤에 둔다 — 기동
   # 순서상 앞의 것들에 의존하지 않고, `all`에서 마지막에 오는 것이 읽기 쉽다.
   - airport-db
   - airport
-  - weather
 
 containers:
   kor-travel-geo-postgresql:
@@ -249,59 +249,72 @@ containers:
     expected_ports:
       - "12301:12301"
 
-  kor-travel-weather-db:
-    name: kor-travel-weather-db-1
-    compose_service: db
-    external_project: kor-travel-weather
-    role: weather-postgresql
-    display_name: Kor Travel Weather 전용 PostgreSQL
-    connection: "postgresql://127.0.0.1:14100"
-    expected_ports:
-      - "14100:5432"
+  # kor-travel-weather-db는 삭제됐다(replaced, not renamed) — weather 전용 db는
+  # internal target 전환(ADR-47)으로 은퇴했다. 앱 데이터는 kor-travel-shared-postgres
+  # 위의 kor_travel_weather database로 fresh 이전한다(데이터 보존 없음, PinVi
+  # ADR-46과 같은 패턴). concierge/geo/map/pinvi처럼 weather도 Manager 소유
+  # 전용 postgres 컨테이너를 새로 갖지 않는다 — 그런 게 있었던 적도 없다.
   kor-travel-weather-api:
-    name: kor-travel-weather-api-1
-    compose_service: api
-    external_project: kor-travel-weather
+    name: kor-travel-weather-api-latest
+    compose_service: kor-travel-weather-api
     role: weather-api
     display_name: Kor Travel Weather API
     connection: "http://127.0.0.1:14101"
     expected_ports:
       - "14101:14101"
-  kor-travel-weather-dagster:
-    name: kor-travel-weather-dagster-1
-    compose_service: dagster
-    external_project: kor-travel-weather
-    role: weather-dagster
-    display_name: Kor Travel Weather Dagster
-    connection: "내부 전용(포트 없음) — gateway를 통해 접근"
+    prod_url_env: KTDM_PROD_URL_WEATHER_API
+  # dagster는 code-server/webserver/daemon 3-분리로 나뉜다 — registry가 실제
+  # compose.yaml 토폴로지(weather PR #61, code-server 분리) 뒤로 밀려 있었다.
+  kor-travel-weather-dagster-code-server:
+    name: kor-travel-weather-dagster-code-server-latest
+    compose_service: kor-travel-weather-dagster-code-server
+    role: weather-dagster-code-server
+    display_name: Kor Travel Weather Dagster Code Server
+    connection: "내부 전용(gRPC, 127.0.0.1:14106) — 인증 없음, loopback만 허용"
+    expected_ports: []
+  kor-travel-weather-dagster-webserver:
+    name: kor-travel-weather-dagster-webserver-latest
+    compose_service: kor-travel-weather-dagster-webserver
+    role: weather-dagster-webserver
+    display_name: Kor Travel Weather Dagster Webserver
+    connection: "내부 전용(127.0.0.1:14107) — gateway를 통해서만 접근"
+    expected_ports: []
+  kor-travel-weather-dagster-daemon:
+    name: kor-travel-weather-dagster-daemon-latest
+    compose_service: kor-travel-weather-dagster-daemon
+    role: weather-dagster-daemon
+    display_name: Kor Travel Weather Dagster Daemon
+    connection: internal daemon
     expected_ports: []
   kor-travel-weather-dagster-gateway:
-    name: kor-travel-weather-dagster-gateway-1
-    compose_service: dagster-gateway
-    external_project: kor-travel-weather
+    name: kor-travel-weather-dagster-gateway-latest
+    compose_service: kor-travel-weather-dagster-gateway
     role: weather-dagster-gateway
     display_name: Kor Travel Weather Dagster 게이트웨이
     connection: "http://127.0.0.1:14102"
     expected_ports:
       - "14102:14102"
+    prod_url_env: KTDM_PROD_URL_WEATHER_DAGSTER
   kor-travel-weather-web:
-    name: kor-travel-weather-web-1
-    compose_service: web
-    external_project: kor-travel-weather
+    name: kor-travel-weather-web-latest
+    compose_service: kor-travel-weather-web
     role: weather-web
     display_name: Kor Travel Weather 웹
     connection: "http://127.0.0.1:14105"
     expected_ports:
       - "14105:14105"
+    prod_url_env: KTDM_PROD_URL_WEATHER
   kor-travel-weather-prometheus:
-    name: kor-travel-weather-prometheus-1
-    compose_service: prometheus
-    external_project: kor-travel-weather
+    name: kor-travel-weather-prometheus
+    # compose_service는 더 이상 bare prometheus가 아니다 — Manager 자신의
+    # prometheus: 서비스와 실제로 이름이 겹쳤다(외부 target일 때는 config 편집
+    # 거부로 무해했지만, internal target이 되며 그 방어막이 없어진다).
+    compose_service: kor-travel-weather-prometheus
     role: weather-prometheus
     display_name: Kor Travel Weather Prometheus
     connection: "http://127.0.0.1:14104"
     expected_ports:
-      - "14104:9090"
+      - "14104:14104"
   kor-travel-airport-postgresql:
     name: kor-travel-airport-db-postgres-1
     compose_service: postgres
@@ -638,6 +651,7 @@ targets:
       - conc
       - map
       - pinvi
+      - weather
     services: []
     runtime_services: []
     containers:
@@ -714,41 +728,42 @@ targets:
       - kor-travel-airport-frontend
 
   weather:
-    external_project:
-      project: kor-travel-weather
-      working_dir: /home/digitie/kor-travel-weather
-      config_files:
-        - compose.yaml
-        - deploy/compose.n150.yaml
     port_band: "14100-14199"
     depends_on: []
     display_name: Kor Travel Weather
-    description: 기상 데이터 서비스입니다. DB(:14100)·API(:14101)·Dagster 게이트웨이(:14102)·Prometheus(:14104)·웹(:14105)으로 구성되며, n150 오버레이(deploy/compose.n150.yaml)를 함께 씁니다.
+    description: 기상 데이터 서비스. API(:14101)·Dagster 게이트웨이(:14102, Basic Auth)·자체 Prometheus(:14104)·Web(:14105)으로 구성되며, 공용 control-plane instance(kor-travel-shared-postgres, :11000)에 fresh app/Dagster DB를 새로 만들어 쓴다(옛 전용 db 데이터는 옮기지 않는다 — PinVi ADR-46과 같은 패턴). weather 자신의 compose.yaml/deploy/compose.n150.yaml은 local-dev/e2e 전용으로 남는다 — prod 정본은 이제 이 파일이다(ADR-47).
     aliases:
       - kor-travel-weather
     services:
-      - db
-      - migrate
-      - api
-      - dagster
-      - dagster-gateway
-      - web
-      - prometheus
-    # `migrate`는 restart=no인 one-shot이라 runtime에서 빠진다 — 정상 상태가
-    # exited(0)이므로 runtime 목록에 두면 상태 판정이 늘 실패로 읽힌다.
-    runtime_services:
-      - db
-      - api
-      - dagster
-      - dagster-gateway
-      - web
-      - prometheus
-    containers:
-      - kor-travel-weather-db
+      - kor-travel-shared-postgres
+      - kor-travel-shared-db-init-weather
+      - kor-travel-weather-migrate
       - kor-travel-weather-api
-      - kor-travel-weather-dagster
-      - kor-travel-weather-dagster-gateway
       - kor-travel-weather-web
+      - kor-travel-weather-dagster-code-server
+      - kor-travel-weather-dagster-webserver
+      - kor-travel-weather-dagster-daemon
+      - kor-travel-weather-dagster-gateway
+      - kor-travel-weather-prometheus
+    # `kor-travel-shared-db-init-weather`/`kor-travel-weather-migrate`는
+    # restart=no인 one-shot이라 runtime에서 빠진다 — 정상 상태가 exited(0)이므로
+    # runtime 목록에 두면 상태 판정이 늘 실패로 읽힌다.
+    runtime_services:
+      - kor-travel-weather-api
+      - kor-travel-weather-web
+      - kor-travel-weather-dagster-code-server
+      - kor-travel-weather-dagster-webserver
+      - kor-travel-weather-dagster-daemon
+      - kor-travel-weather-dagster-gateway
+      - kor-travel-weather-prometheus
+    containers:
+      - kor-travel-shared-postgresql
+      - kor-travel-weather-api
+      - kor-travel-weather-web
+      - kor-travel-weather-dagster-code-server
+      - kor-travel-weather-dagster-webserver
+      - kor-travel-weather-dagster-daemon
+      - kor-travel-weather-dagster-gateway
       - kor-travel-weather-prometheus
 
 # ── compose bind allowlist (GM-17 본작업 A) ─────────────────────────────
@@ -878,6 +893,38 @@ compose_binds:
     - container_path: "/var/lib/postgresql/data"
       read_only: false
       source: "${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}"
+  kor-travel-weather-dagster-code-server:
+    - container_path: "/opt/dagster/home/dagster.yaml"
+      read_only: true
+      source: "${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/dagster.yaml"
+  kor-travel-weather-dagster-webserver:
+    - container_path: "/opt/dagster/home/dagster.yaml"
+      read_only: true
+      source: "${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/dagster.yaml"
+    - container_path: "/app/deploy/workspace.yaml"
+      read_only: true
+      source: "./config/kor-travel-weather/workspace.yaml"
+  kor-travel-weather-dagster-daemon:
+    - container_path: "/opt/dagster/home/dagster.yaml"
+      read_only: true
+      source: "${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/dagster.yaml"
+    - container_path: "/app/deploy/workspace.yaml"
+      read_only: true
+      source: "./config/kor-travel-weather/workspace.yaml"
+  kor-travel-weather-dagster-gateway:
+    - container_path: "/etc/nginx/conf.d/default.conf"
+      read_only: true
+      source: "./config/kor-travel-weather/dagster-gateway.conf"
+  kor-travel-weather-prometheus:
+    - container_path: "/etc/prometheus/prometheus.yml"
+      read_only: true
+      source: "./config/kor-travel-weather/prometheus.yml"
+    - container_path: "/etc/prometheus/alerts.yml"
+      read_only: true
+      source: "${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/prometheus/alerts.yml"
+    - container_path: "/prometheus"
+      read_only: false
+      source: "${KOR_TRAVEL_WEATHER_PROMETHEUS_DATA_DIR:-/home/digitie/kor-travel-weather-data/prometheus}"
   pinvi-db-runtime-role:
     - container_path: "/opt/pinvi/bootstrap-pinvi-runtime-role.sh"
       read_only: true

@@ -2607,7 +2607,10 @@ def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch):
     assert main(["targets", "validate", "--check-coordinates"]) == 1
     captured = capsys.readouterr()
     assert "declared external coordinates do not exist here" in captured.err
-    assert "kor-travel-weather" in captured.err
+    # weather는 2026-09-20(ADR-47)부터 internal target이라 더 이상 external
+    # coordinate를 선언하지 않는다 — 남은 external target(airport-db/airport)만으로도
+    # 이 메커니즘이 실제로 동작함을 증명하기에 충분하다.
+    assert "kor-travel-airport" in captured.err
 
 
 def test_targets_validate_coordinates_pass_when_they_exist(capsys, monkeypatch):

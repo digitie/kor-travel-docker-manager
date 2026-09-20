@@ -56,6 +56,11 @@ _NOT_GUARDED_BY_COMMAND: Final = {
         "instance storage를 env DSN(KTG_DAGSTER_PG_URL)으로 이미 선언하지만, 이 전제조건 "
         "메커니즘 자체는 아직 붙어 있지 않다 — T-307에서 발견한 미해결 gap, 후속 필요"
     ),
+    "kor-travel-weather-dagster-daemon": (
+        "instance storage를 env DSN(DAGSTER_POSTGRES_URL)으로 이미 선언하지만, 이 전제조건 "
+        "메커니즘 자체는 아직 붙어 있지 않다 — geo와 같은 미해결 gap(ADR-47, weather "
+        "internal-target 전환), 후속 필요"
+    ),
 }
 
 #: 가짜 dagster 모듈. 전제조건이 만지는 표면만 갖는다.
