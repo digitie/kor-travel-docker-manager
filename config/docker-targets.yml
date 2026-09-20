@@ -450,7 +450,17 @@ targets:
       - kor-travel-geo-api
       - geocoder
       - reverse-geocoder
+    # geo는 ADR-45에 따라 공용 instance(kor-travel-shared-postgres, :11000)로
+    # 이전 중이다 — 이 커밋 시점에는 role/database 생성 코드만 있고, 실제 data
+    # cutover(KTG_PG_DSN/KTG_DAGSTER_PG_URL 전환)는 별도 배포 단계에서 수행한다.
+    # 구 전용 instance(kor-travel-geo-postgres, :12500)는 데이터를 삭제하지 않고
+    # 롤백 안전망으로 그대로 두며, 이 target이 계속 관리한다(ensure/stop/restart가
+    # 둘 다 건강하게 유지한다) — cutover가 끝나면 KTG_PG_DSN/KTG_DAGSTER_PG_URL만
+    # 새 instance를 가리키게 되고, 구 instance는 이 target 밖에서 별도로
+    # 폐기되기 전까지 여기 남는다.
     services:
+      - kor-travel-shared-postgres
+      - kor-travel-shared-db-init-geo
       - kor-travel-geo-api
       - kor-travel-geo-ui
       - kor-travel-geo-dagster
@@ -464,6 +474,7 @@ targets:
       - kor-travel-geo-dagster-code-server
     containers:
       - kor-travel-geo-postgresql
+      - kor-travel-shared-postgresql
       - rustfs
       - kor-travel-geo-api
       - kor-travel-geo-ui
