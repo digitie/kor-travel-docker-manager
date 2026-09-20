@@ -1793,6 +1793,59 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     }
 
 
+def test_pinvi_shared_db_runtime_role_bind_leak_exemption_matches_dedicated_instance(
+    tmp_path: Path,
+) -> None:
+    """ADR-46 shared-instance one-shot도 dedicated-instance와 같은 identifier-only 면제를 받는다.
+
+    `pinvi-shared-db-runtime-role`은 `pinvi-db-runtime-role`과 완전히 같은
+    `bootstrap-pinvi-runtime-role.sh`를 그대로 마운트한다(docker-compose.yml 주석
+    실측, 두 서비스 모두 같은 `PINVI_REPO_DIR` 기준 경로). 이 테스트를 추가하기 전
+    코드는 `_PINVI_DB_RUNTIME_ROLE_SERVICE`(dedicated 이름)만 면제했고,
+    `_PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE`는 일반 스캔으로 떨어져 스크립트가 선언하는
+    role/password env 이름(`PINVI_APP_DB_PASSWORD` 등, protected_names의 일부)만으로도
+    거짓 양성 "bind source leaks C6c data"를 냈다 — n150 실배포 `t52a` 재구축이 바로
+    이 자리에서 막혔다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    source_services = _source_compose()["services"]
+    for name in (
+        "pinvi-shared-db-runtime-role",
+        "kor-travel-shared-postgres",
+        "kor-travel-shared-db-init-pinvi",
+    ):
+        if name not in candidate["services"]:
+            candidate["services"][name] = deepcopy(source_services[name])
+    role_bootstrap_script = (
+        Path(environment["PINVI_REPO_DIR"]) / "infra" / "postgres" / "bootstrap-pinvi-runtime-role.sh"
+    )
+
+    raw_snapshots = validate_compose_candidate_protected_values(
+        candidate,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+        environment=environment,
+    )
+    assert raw_snapshots is not None
+
+    role_bootstrap_script.write_text(
+        f"#!/bin/sh\nleaked_value={environment['PINVI_APP_DB_PASSWORD']}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DeploymentContractError, match="bind source leaks C6c data"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+    role_bootstrap_script.write_text(
+        "#!/bin/sh\nruntime=PINVI_APP_DB_PASSWORD\nmigrator=PINVI_MIGRATOR_DB_PASSWORD\n",
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.parametrize(
     "leaked_name",
     [
