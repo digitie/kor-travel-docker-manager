@@ -381,17 +381,23 @@ services:
     command:
     - postgres
     - -c
-    # 브리지 전환에 맞춰 loopback에 kor-travel-shared-net 게이트웨이(10.88.0.1,
-    # 이 브리지 전용 -- 실 LAN(wlp2s0, 192.168.1.0/24)과는 무관)를 명시적으로
-    # 더한다. '*'는 쓰지 않는다 -- 이 서비스는 network_mode: host가 아니라
-    # networks:(브리지 전용)라 컨테이너 자신의 네임스페이스 안에서만 뜻을 갖고,
-    # 실 LAN을 듣지 않는다(대비: '*' + network_mode: host였다면 실 LAN
-    # 인터페이스까지 들었을 것 -- 2026-09-20 계약 리뷰에서 지적). pg_hba.conf가
-    # 추가 방어선이다 -- catch-all(`host all all all scram-sha-256`)을 걷어내고
-    # loopback 전용 기본 규칙(all/all, initdb 표준)만 남겼다(n150 로컬 파일,
-    # POSTGRES_INITDB_ARGS는 initdb 시점에만 적용되므로 이 compose 변경으로는 안
-    # 바뀐다 -- 별도로 편집·reload했다).
-    - listen_addresses=127.0.0.1,10.88.0.1
+    # 브리지 게이트웨이 IP(10.88.0.1)를 명시적으로 더하는 시도는 실패한다 --
+    # 그 주소는 컨테이너 자신의 것이 아니라 브리지 인프라 소유라
+    # "could not bind IPv4 address \"10.88.0.1\": Cannot assign requested
+    # address"로 postgres가 조용히 그 주소만 건너뛴다(FATAL이 아니라 WARNING
+    # 이라 컨테이너는 healthy로 뜬다 -- 2026-09-20 n150 실측, concierge
+    # 연결이 몇 분간 끊겼다). 대신 0.0.0.0을 쓴다 -- 이 서비스는
+    # network_mode: host가 아니라 networks:(브리지 전용)이므로 0.0.0.0은
+    # **컨테이너 자신의 네임스페이스 안**(loopback + 이 컨테이너의 브리지 IP)
+    # 으로만 스코프되고, 실 LAN(wlp2s0, 192.168.1.0/24)은 그 네임스페이스
+    # 밖이라 애초에 보이지 않는다 -- network_mode: host였다면 0.0.0.0이 그
+    # 실 인터페이스까지 들었겠지만 여기는 다르다. pg_hba.conf가 추가
+    # 방어선이다 -- catch-all(`host all all all scram-sha-256`)을 걷어내고
+    # loopback 전용 기본 규칙(all/all, initdb 표준) + kor_travel_weather_dagster_app
+    # 전용 스코프 규칙만 남겼다(n150 로컬 파일, POSTGRES_INITDB_ARGS는 initdb
+    # 시점에만 적용되므로 이 compose 변경으로는 안 바뀐다 -- 별도로
+    # 편집·reload했다).
+    - listen_addresses=0.0.0.0
     - -p
     - ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
     - -c
