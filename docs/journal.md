@@ -7120,3 +7120,59 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
 열지 않는다. root registry의 공개 reason은 이제 임의 예외 문자열이 아니라 allowlist fixed phase만 기록한다.
 따라서 다음 immutable source pair는 raw artifact 없이도 보정 범위를 알 수 있고, 같은 pinset의 재실행은 계속
 불가능하다.
+
+## 2026-09-20 — weather를 external target에서 internal target으로 전환 (ADR-47)
+
+- **작업 내용**:
+  - weather(`kor-travel-weather`)의 8개 서비스(api·web·dagster-code-server·
+    dagster-webserver·dagster-daemon·dagster-gateway·migrate·prometheus) 전부를
+    Manager의 `docker-compose.yml`로 옮겼다(`network_mode: host`) — weather 자신의
+    저장소 compose는 local-dev/e2e 전용으로 격하됐다(삭제하지 않음).
+  - weather 전용 `db`는 은퇴한다. 사용자 지시("데이터는 옮기지 마 — 어차피 새로 쌓으면
+    됨")에 따라 `kor-travel-shared-postgres`(`:11000`)에 완전히 빈 상태로 앱 DB
+    (`kor_travel_weather`)를 새로 만들었다(`kor-travel-shared-db-init-weather`). Dagster
+    메타 DB(`kor_travel_weather_dagster`)는 오늘 앞서 이미 만들어져 있던 것을 그대로
+    재사용했다(같은 역할·이름, PinVi ADR-46과 같은 패턴).
+  - 멀티에이전트 workflow(연구 5개 + 설계 + 적대 리뷰 2건)로 `network_mode: host` 전환이
+    바꾸는 두 가지를 미리 잡았다: dagster-webserver/gateway의 포트 14102 충돌(→
+    webserver를 내부 전용 14107로 이동, gateway nginx 오버라이드가 그리로 proxy_pass),
+    dagster-code-server의 무인증 gRPC 포트(14106) loopback-only 보장이 bridge NAT
+    대신 `-h 127.0.0.1` 자체 바인드로 넘어간 것.
+  - CI가 잡은 것(로컬에서 계약 테스트 파일 하나만 돌리고 놓쳤던 것): dagster-webserver의
+    healthcheck가 `/server_info`(code location이 죽어도 200)를 썼던 것 → GraphQL
+    `repositoriesOrError` 질의로 교체(geo/map/pinvi와 동일). dagster-daemon에
+    `DAGSTER_DAEMON_HEARTBEAT_TOLERANCE`가 없었던 것 → weather 자신이 이 하드닝의
+    원인이 된 사고(18시간 정지) 당사자라 추가했다. 그리고 weather가 더 이상 external
+    target이 아니게 되며 그 사실을 실제 예시로 삼던 5개 테스트 파일의 전제가 낡았다 —
+    fork 서브에이전트가 합성 fixture(airport 아래에 이름 충돌을 재현)로 커버리지를
+    보존한 채 갱신했다.
+  - **n150 실배포까지 완료했다**: 이미지 4종 build(대부분 캐시 히트) → db-init
+    실행(role/db 확인) → `alembic upgrade head`(빈 DB에 16개 마이그레이션, 문제
+    없음 — 별도 부트스트랩 불필요했음이 실측됨) → weather 자신의 독립 스택
+    `docker compose down`(볼륨 보존, 롤백 안전망) → Manager 소유 스택 기동. 검증:
+    공개 도메인 3개(`weather`/`weather-api`/`weather-dagster`.digitie.mywire.org) 전부
+    HAProxy 경유로 정상 응답, 14106/14107이 LAN IP로는 연결 거부되지만 loopback으로는
+    연결됨(핵심 보안 요구사항 실측 확인), Prometheus 타겟 2개 모두 up, 7개 컨테이너
+    로그 전부 깨끗.
+  - 알려진 채 남겨 둔 노출(사용자 결정): dagster-code-server의 metrics 포트(14103)는
+    weather 자신의 Python 코드가 여는 것이라 compose로 바인드 주소를 제어할 수 없다 —
+    host 모드에서 LAN에 노출된다. geo·PinVi의 dagster-code-server에도 이미 같은 부류의
+    노출이 실재함을 이번 적대 리뷰에서 발견했다(이 작업과 무관, 별도 후속).
+- **결정 사항**:
+  - weather는 PinVi(ADR-46)와 같은 패턴 — 데이터 보존 없이 fresh 구성. 롤백은 옛
+    Manager 전용 instance가 아니라 weather 자신의 `compose.yaml`(격하됐지만 존재)과
+    그 안의 `weather-postgres` 볼륨(cutover 시점까지의 데이터, 보존됨)이다.
+  - 기존 포트 대역(14100-14199)은 그대로 유지 — n150 HAProxy가 이미 그 포트로
+    라우팅 중이고, `network_mode: host`는 포트 NAT이 없어 코드/설정 변경 없이 계속
+    동작함이 실측 확인됐다.
+  - §7(공유 `dagster_shared`/공용 webserver·daemon으로의 통합)은 이 작업의 범위 밖 —
+    weather는 자기 전용 dagster 4종(code-server/webserver/daemon/gateway)을 그대로
+    유지한 채 internal target이 됐을 뿐이다.
+- **다음 작업**:
+  - dagster-code-server 계열 metrics 포트(14103) LAN 노출 — weather/geo/pinvi 공통,
+    별도 후속(weather 저장소 소스 변경 또는 n150 호스트 방화벽).
+  - 최소 24-48시간 안정성 관찰(스케줄된 ingest 사이클이 실제로 `kor_travel_weather`에
+    데이터를 쌓는지) 후, 옛 `weather-postgres` 볼륨 폐기 여부를 별도로 결정.
+  - 세션 우선순위 순서(geo → weather/transport/concierge → map → pinvi)의 다음
+    단계는 transport — 단, 그 저장소는 read-only 제약(미추적 WIP 다수)이 걸려 있어
+    별도 스코프 확인 필요.
