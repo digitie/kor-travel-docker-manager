@@ -97,8 +97,8 @@ target 단위로만 남아 있다.
 | `kor-travel-geo-postgres` | `12500` | Manager compose | `kor_travel_geo`, `kor_travel_geo_dagster` |
 | `kor-travel-concierge-postgres` | `12600` | Manager compose | `kor_travel_concierge` |
 | `kor-travel-map-postgres` | `12700` | Manager compose | `kor_travel_map`, `kor_travel_map_dagster` |
-| `pinvi-postgres` | `12800` | Manager compose | `pinvi`, `pinvi_dagster` |
-| `kor-travel-shared-postgres` | `11000` | Manager compose | `kor_travel_concierge` (ADR-44 공용 제어 평면 instance — concierge가 2026-09-19/20에 이전을 마쳤다. 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)) |
+| `pinvi-postgres` | `12800` | Manager compose | `pinvi`, `pinvi_dagster` (**롤백 안전망** — ADR-46 이후 앱은 여기 쓰지 않는다) |
+| `kor-travel-shared-postgres` | `11000` | Manager compose | `kor_travel_concierge` (ADR-44, concierge가 2026-09-19/20에 실 데이터 이전을 마쳤다), `kor_travel_geo`+`kor_travel_geo_dagster` (ADR-45 — role/database는 생성됐으나 실 데이터 cutover는 아직이라 옛 instance가 계속 활성), `pinvi`+`pinvi_dagster` (ADR-46 — PinVi는 데이터 보존 없이 fresh 구성으로 이전. 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)) |
 | `kor-travel-weather-db` | `14100`→`5432` | 외부 | — |
 | `kor-travel-airport-db` | `14000`→`5432` | 외부 | — |
 
@@ -172,12 +172,29 @@ KOR_TRAVEL_MAP_OPINET_API_KEY: ${KOR_TRAVEL_MAP_OPINET_API_KEY:-}
 
 **결정된 목표**이고 **대부분 아직 만들어지지 않았다.** 이 절은 계획이지 현황이 아니다.
 
-**단, 5단계(애플리케이션 DB 이사)는 concierge 하나에 대해 먼저 실행됐다** — 공용
-instance `kor-travel-shared-postgres`(`:11000`)가 실제로 떠 있고 `kor_travel_concierge`가
-거기 산다(ADR-44, 2026-09-19/20). 1~4단계(code-server 분리 · 공유 Dagster 스토리지
-`dagster_shared` · 공용 webserver/daemon · 프로젝트별 daemon 철거)는 여전히 계획이다 —
-`dagster_shared`도 `11001`/`11002`도 **아직 없다**. 다른 프로젝트가 5단계를 먼저 밟는
-절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)가 갖는다.
+**단, 5단계(애플리케이션 DB 이사)는 concierge·geo·PinVi 셋에 대해 먼저 실행됐다** —
+공용 instance `kor-travel-shared-postgres`(`:11000`)가 실제로 떠 있고
+`kor_travel_concierge`(ADR-44, 2026-09-19/20, 실 데이터 이전까지 완료)와
+`pinvi`+`pinvi_dagster`(ADR-46, 데이터 보존 없이 fresh 구성)가 활성이다.
+`kor_travel_geo`+`kor_travel_geo_dagster`(ADR-45)는 role/database까지만 만들어져
+있고, 실 데이터 cutover는 별도 배포 단계로 남아 있다 — 그때까지 옛
+`kor-travel-geo-postgres`가 계속 활성 원본이다. 1~4단계
+(code-server 분리 · 공유 Dagster 스토리지 `dagster_shared` · 공용 webserver/daemon ·
+프로젝트별 daemon 철거)는 여전히 계획이다 — `dagster_shared`도 `11001`/`11002`도
+**아직 없다**. 다른 프로젝트가 5단계를 먼저 밟는 절차는
+[`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)가 갖는다.
+
+**PinVi의 `pinvi_dagster`는 2단계(`dagster_shared`)가 아니다.** PinVi는 이미 자체
+Dagster 메타DB(§5 표 참고, ADR-069로 code-server까지 분리됐다)를 갖고 있었고, 이번
+이전은 그 데이터베이스를 **PinVi 전용으로 유지한 채** 물리적으로 공용 instance로
+옮긴 것뿐이다 — concierge의 `kor_travel_concierge`처럼 5단계(애플리케이션 DB급 이사)의
+연장이지, 여러 프로젝트가 하나의 `dagster_shared`로 통합되는 2단계가 아니다. 나중에
+2~4단계가 실제로 진행되면 `pinvi_dagster`도 다시 한번 `dagster_shared`로 옮기는
+별도 작업이 필요하다 — 이번 이전이 그 작업을 대신하지 않는다. 또한 PinVi는 사용자
+지시로 **데이터 보존을 요구하지 않아**, concierge의 hard cutover(pg_dump/restore)
+대신 옛 `pinvi`/`pinvi_dagster`를 그대로 두고 공용 instance에 fresh 상태로(PinVi
+자체 M05 role topology를 처음부터 재구성) 만들었다 — 옛 instance(`pinvi-postgres`)는
+데이터가 그 시점에 멈춘 롤백 안전망으로 남는다.
 
 ```
 11000  PostgreSQL (단일 공용 인스턴스)

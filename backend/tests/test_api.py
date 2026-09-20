@@ -1035,6 +1035,7 @@ def test_get_targets():
         "kor-travel-map-dagster",
         "kor-travel-map-dagster-daemon",
         "pinvi-postgres",
+        "kor-travel-shared-db-init-pinvi",
         "pinvi-api",
         "pinvi-web",
         "pinvi-dagster-code-server",

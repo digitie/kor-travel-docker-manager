@@ -633,7 +633,7 @@ def _compose_with_canonical_c6c_services(
                 "PINVI_DATABASE_URL": (
                     "postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:"
                     "${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}"
-                    "@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}"
+                    "@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}"
                 ),
                 "PINVI_KOR_TRAVEL_MAP_API_BASE_URL": (
                     "${PINVI_KOR_TRAVEL_MAP_API_BASE_URL:-http://127.0.0.1:"
@@ -650,7 +650,7 @@ def _compose_with_canonical_c6c_services(
                 "PINVI_DATABASE_URL": (
                     "postgresql+asyncpg://${PINVI_MIGRATOR_DB_USER:?PINVI_MIGRATOR_DB_USER must be explicitly set}:"
                     "${PINVI_MIGRATOR_DB_PASSWORD:?PINVI_MIGRATOR_DB_PASSWORD must be explicitly set}"
-                    "@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}"
+                    "@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}"
                 ),
             },
         },
