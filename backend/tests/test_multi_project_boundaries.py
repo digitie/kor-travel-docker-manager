@@ -1,8 +1,8 @@
 """멀티프로젝트 target — Manager의 compose가 남의 프로젝트에 새지 않는 경계.
 
-`compose_service`는 **그 프로젝트 안에서만** 유일한 이름이다. 새로 등록한 컨테이너
+`compose_service`는 **그 프로젝트 안에서만** 유일한 이름이다. 등록 당시 컨테이너
 중 `prometheus`(weather)·`postgres`(airport-db)·`backend`·`frontend`·`web`은 전부 흔한
-이름이고, 그중 `prometheus`는 **Manager 자신의 서비스 이름과 정확히 겹친다**.
+이름이고, 그중 `prometheus`는 **Manager 자신의 서비스 이름과 정확히 겹쳤다**.
 
 Manager는 그 값을 자기 compose에 곧장 조회했다. 그래서 겹치는 순간 셋이 한꺼번에
 틀어졌다(적대 리뷰 2026-09-18 C-3):
@@ -11,6 +11,11 @@ Manager는 그 값을 자기 compose에 곧장 조회했다. 그래서 겹치는
     저장         그 화면의 편집이 **Manager의 docker-compose.yml**로 간다
     없는 것 start `kor-travel-weather-prometheus`를 켜라 했는데 **Manager의 Prometheus가
                  생기고** "만들어서 시작했다"고 성공을 보고한다
+
+weather는 2026-09-20(ADR-47)부터 Manager internal target이라(자기 `prometheus`도
+`kor-travel-weather-prometheus`로 개명) 이 정확한 실제 사례는 저장소에서 사라졌다.
+아래 테스트들은 `colliding_external_container` fixture로 같은 이름 충돌을 airport
+아래에 합성해 재현한다 — 메커니즘 자체는 이름이 실재하든 합성이든 똑같이 유효하다.
 
 Docker SDK 경로(start/stop/restart)는 compose 프로젝트와 무관하므로 막지 않는다 —
 외부 컨테이너도 이름으로 껐다 켤 수 있어야 하고 그것이 이 기능의 값어치다. 막는
@@ -122,11 +127,61 @@ def manager_compose(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return document
 
 
+#: 합성 충돌 컨테이너의 등록 id. weather의 옛 `prometheus`(2026-09-20 ADR-47 이전)가
+#: 실제로 제공하던 유일한 사례 — "외부 target의 compose_service 이름이 Manager 자신의
+#: 서비스 이름과 정확히 겹친다" — 를 대신한다. weather가 internal target으로 바뀌며
+#: (그리고 자기 `prometheus`도 `kor-travel-weather-prometheus`로 개명하며) 그 실제
+#: 사례가 저장소에서 사라졌다 — 남은 외부 target(airport/airport-db)의 실제
+#: compose_service 이름(`postgres`/`backend`/`frontend`) 중에는 Manager 서비스와
+#: 겹치는 것이 하나도 없다(실측). 이 파일의 목적(C-3 회귀: 이름이 겹치면 목록·변경·
+#: 없는 것 start 세 경로가 한꺼번에 틀어진다) 자체는 이름이 실재하든 합성이든
+#: 똑같이 유효하므로, 진짜 외부 프로젝트(airport) 아래에 이름만 겹치는 컨테이너
+#: 하나를 더해 그 시나리오를 계속 실제 코드 경로로 태운다.
+_COLLISION_CONTAINER_ID = "kor-travel-test-collision-prometheus"
+_COLLISION_CONTAINER_NAME = f"{_COLLISION_CONTAINER_ID}-1"
+
+
+@pytest.fixture
+def colliding_external_container(monkeypatch: pytest.MonkeyPatch) -> str:
+    """`load_targets_config()`가 반환하는 실제 설정에 합성 충돌 컨테이너를 얹는다.
+
+    `MANAGED_CONTAINERS`/`external_project_for_container`/`_targets()`는 전부
+    `_LazyMapping`으로 `load_targets_config()`를 접근할 때마다 다시 부른다
+    (`registry.py`의 `_LazyMapping` docstring 참고, 그 함수 자신은
+    `@lru_cache`라 재계산 비용이 없다) — 그래서 이 함수 하나만 갈아 끼우면
+    `docker_service.py`와 `registry.py` 양쪽이 일관되게 새 값을 본다.
+    """
+
+    config = _real_config()
+    config["containers"][_COLLISION_CONTAINER_ID] = {
+        "name": _COLLISION_CONTAINER_NAME,
+        "compose_service": "prometheus",
+        "external_project": "kor-travel-airport",
+        "role": "test-collision-prometheus",
+        "display_name": "Test Collision Prometheus",
+        "connection": "http://127.0.0.1:19999",
+        "expected_ports": [],
+    }
+    config["targets"]["airport"] = {
+        **config["targets"]["airport"],
+        "services": [*config["targets"]["airport"]["services"], "prometheus"],
+        "containers": [
+            *config["targets"]["airport"]["containers"],
+            _COLLISION_CONTAINER_ID,
+        ],
+    }
+    _validate(config)  # 합성 config 자체가 무결성 검사를 통과하는지 먼저 확인한다.
+    monkeypatch.setattr(registry_module, "load_targets_config", lambda: config)
+    return _COLLISION_CONTAINER_ID
+
+
 # ── 표시: 외부 컨테이너의 config는 Manager compose에서 오지 않는다 ───────
 
 
 def test_external_container_config_does_not_come_from_the_manager_compose(
-    manager_compose: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    manager_compose: dict[str, Any],
+    colliding_external_container: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """이름이 겹쳤다는 이유로 남의 카드에 내 설정을 그리면 안 된다.
 
@@ -139,7 +194,7 @@ def test_external_container_config_does_not_come_from_the_manager_compose(
     )
     entries = {entry["id"]: entry for entry in DockerService().get_containers_status()}
 
-    external = entries["kor-travel-weather-prometheus"]["config"]
+    external = entries[colliding_external_container]["config"]
     assert external["ports"] == []
     assert external["env"] == {}
     assert external["volumes"] == []
@@ -155,6 +210,7 @@ def test_external_container_config_does_not_come_from_the_manager_compose(
 
 def test_compose_mutation_is_refused_for_an_external_container(
     manager_compose: dict[str, Any],
+    colliding_external_container: str,
 ) -> None:
     """`update` · `reset` · NotFound 재생성이 전부 이 함수로 모인다.
 
@@ -162,9 +218,9 @@ def test_compose_mutation_is_refused_for_an_external_container(
     한 자리에 두는 것이 요점이라, 이 검사도 그 한 자리를 본다.
     """
 
-    with pytest.raises(ExternalContainerMutationError, match="kor-travel-weather"):
+    with pytest.raises(ExternalContainerMutationError, match="kor-travel-airport"):
         DockerService()._update_container_config_unlocked(
-            "kor-travel-weather-prometheus",
+            colliding_external_container,
             ["14104:9090"],
             {},
             [],
@@ -174,12 +230,14 @@ def test_compose_mutation_is_refused_for_an_external_container(
 
 
 def test_starting_a_missing_external_container_does_not_recreate_a_manager_service(
-    manager_compose: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    manager_compose: dict[str, Any],
+    colliding_external_container: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """NotFound 분기가 Manager compose에서 같은 이름을 찾아 만들어 버리는 경로.
 
-    사용자가 켜려던 것은 weather의 Prometheus인데 Manager의 Prometheus가 생기고
-    **성공이 보고된다**. 조용한 오답이 실패보다 나쁘다.
+    사용자가 켜려던 것은 (이름이 겹치는) 외부 target의 Prometheus인데 Manager의
+    Prometheus가 생기고 **성공이 보고된다**. 조용한 오답이 실패보다 나쁘다.
     """
 
     from docker.errors import NotFound
@@ -207,7 +265,7 @@ def test_starting_a_missing_external_container_does_not_recreate_a_manager_servi
     # 올라온 예외와 **파일이 쓰이지 않았다는 것**을 함께 본다.
     with pytest.raises(ExternalContainerMutationError):
         DockerService()._control_container_unlocked(
-            "kor-travel-weather-prometheus",
+            colliding_external_container,
             "start",
             environment_snapshot=_Snapshot(),  # type: ignore[arg-type]
         )
@@ -264,7 +322,7 @@ def test_lifecycle_actions_stay_available_for_external_containers(
 
     class _Containers:
         def get(self, name: str) -> Any:
-            assert name == "kor-travel-weather-prometheus-1"
+            assert name == "kor-travel-airport-backend-1"
             return _Container()
 
     class _Client:
@@ -272,7 +330,7 @@ def test_lifecycle_actions_stay_available_for_external_containers(
 
     monkeypatch.setattr(DockerService, "_get_client", lambda self: _Client())
     result = DockerService()._control_container_unlocked(
-        "kor-travel-weather-prometheus",
+        "kor-travel-airport-backend",
         action,
         environment_snapshot=None,  # type: ignore[arg-type]
     )
@@ -320,7 +378,7 @@ def test_a_manager_container_cannot_be_tagged_with_an_external_project() -> None
     config = _real_config()
     config["containers"]["prometheus"] = {
         **config["containers"]["prometheus"],
-        "external_project": "kor-travel-weather",
+        "external_project": "kor-travel-airport",
     }
     with pytest.raises(TargetsConfigError, match="belongs to project"):
         _validate(config)
@@ -340,15 +398,17 @@ def test_external_target_must_list_the_services_its_containers_name() -> None:
     """외부 target의 `services`는 저장소 밖 compose와 대조할 수 없다 — 선언끼리 묶는다.
 
     이 결박이 없으면 외부 target의 `services`가 **아무것과도** 대조되지 않는다.
-    적대 리뷰는 weather target에 Manager 서비스 이름과 존재하지 않는 이름을 넣어도
-    무결성 검사가 하나도 빨개지지 않는 것을 실측했다.
+    적대 리뷰는 (당시 외부 target이던) weather target에 Manager 서비스 이름과
+    존재하지 않는 이름을 넣어도 무결성 검사가 하나도 빨개지지 않는 것을 실측했다
+    — weather는 2026-09-20(ADR-47)부터 internal target이라 이제 airport로
+    같은 것을 증명한다(여전히 외부 target).
     """
 
     config = _real_config()
-    weather = config["targets"]["weather"]
-    config["targets"]["weather"] = {
-        **weather,
-        "services": [name for name in weather["services"] if name != "prometheus"],
+    airport = config["targets"]["airport"]
+    config["targets"]["airport"] = {
+        **airport,
+        "services": [name for name in airport["services"] if name != "frontend"],
     }
     with pytest.raises(TargetsConfigError, match="the target does not list"):
         _validate(config)
@@ -362,7 +422,7 @@ def test_one_shot_services_need_no_container_registration() -> None:
     """
 
     config = _real_config()
-    assert "migrate" in config["targets"]["weather"]["services"]
+    assert "kor-travel-weather-migrate" in config["targets"]["weather"]["services"]
     assert "kor-travel-weather-migrate" not in config["containers"]
     _validate(config)
 
@@ -389,15 +449,17 @@ def test_the_same_project_cannot_be_declared_with_two_coordinates() -> None:
 def test_a_manager_target_cannot_depend_on_an_external_target() -> None:
     """의존 한 줄이 **Manager target의** 배포를 막는다. 메시지는 Manager를 탓한다.
 
-    `ensure`는 의존 폐포를 보고 거부하므로, `map`에 `depends_on: [weather]`를 더하면
+    `ensure`는 의존 폐포를 보고 거부하므로, `map`에 `depends_on: [airport]`를 더하면
     `ensure map`이 "target 'map' belongs to an external compose project"로 죽는다.
-    원인을 찾기 아주 어려운 모양이라 선언 시점에 막는다.
+    원인을 찾기 아주 어려운 모양이라 선언 시점에 막는다(weather는 2026-09-20
+    ADR-47부터 internal target이라 이 예시로 더 이상 쓸 수 없다 — airport가
+    여전히 외부다).
     """
 
     config = _real_config()
     config["targets"]["map"] = {
         **config["targets"]["map"],
-        "depends_on": [*config["targets"]["map"]["depends_on"], "weather"],
+        "depends_on": [*config["targets"]["map"]["depends_on"], "airport"],
     }
     with pytest.raises(TargetsConfigError, match="can no longer be deployed"):
         _validate(config)
@@ -432,22 +494,28 @@ def test_all_cannot_reach_an_external_target() -> None:
     config = _real_config()
     config["targets"]["all"] = {
         **config["targets"]["all"],
-        "include": [*config["targets"]["all"]["include"], "weather"],
+        "include": [*config["targets"]["all"]["include"], "airport"],
     }
     with pytest.raises(TargetsConfigError, match="can no longer be deployed"):
         _validate(config)
 
 
 def test_duplicate_config_files_are_rejected() -> None:
-    """compose는 `-f`를 순서대로 병합한다 — 같은 파일을 두 번 적으면 뒤엣것이 이긴다."""
+    """compose는 `-f`를 순서대로 병합한다 — 같은 파일을 두 번 적으면 뒤엣것이 이긴다.
+
+    airport로 센다(weather는 2026-09-20 ADR-47부터 internal target이라
+    `external_project`를 target에만 더하면 weather 자신의 컨테이너들 — 전부
+    `external_project`가 없는 Manager 소유 — 과 즉시 소속이 어긋나 이 검사가
+    보려는 것(중복 파일)에 닿기 전에 "belongs to project"로 먼저 죽는다. airport는
+    target·컨테이너 양쪽이 이미 일관되게 외부라 안전하다).
+    """
 
     config = _real_config()
-    config["targets"]["weather"] = {
-        **config["targets"]["weather"],
+    config["targets"]["airport"] = {
+        **config["targets"]["airport"],
         "external_project": {
-            "project": "kor-travel-weather",
-            "working_dir": "/home/digitie/kor-travel-weather",
-            "config_files": ["compose.yaml", "compose.yaml"],
+            **config["targets"]["airport"]["external_project"],
+            "config_files": ["docker-compose.yml", "docker-compose.yml"],
         },
     }
     with pytest.raises(TargetsConfigError, match="duplicate entry"):
@@ -458,20 +526,20 @@ def test_a_dotted_prefix_is_not_a_path_escape() -> None:
     """`startswith("..")`는 `..hidden/compose.yml`을 거부하는 오탐이었다.
 
     경로 **구성요소**로 봐야 한다. 오탐은 조용하지 않지만, 정당한 선언을 막는다.
+    airport로 센다(이유는 `test_duplicate_config_files_are_rejected` 참고).
     """
 
     config = _real_config()
-    config["targets"]["weather"] = {
-        **config["targets"]["weather"],
+    config["targets"]["airport"] = {
+        **config["targets"]["airport"],
         "external_project": {
-            "project": "kor-travel-weather",
-            "working_dir": "/home/digitie/kor-travel-weather",
+            **config["targets"]["airport"]["external_project"],
             "config_files": ["..hidden/compose.yml"],
         },
     }
     _validate(config)
 
-    config["targets"]["weather"]["external_project"]["config_files"] = [
+    config["targets"]["airport"]["external_project"]["config_files"] = [
         "sub/../../outside.yml"
     ]
     with pytest.raises(TargetsConfigError, match="stay inside"):
@@ -500,7 +568,7 @@ def test_lifecycle_actions_work_through_the_public_entry_point(
 
     class _Containers:
         def get(self, name: str) -> Any:
-            assert name == "kor-travel-weather-prometheus-1"
+            assert name == "kor-travel-airport-backend-1"
             return _Container()
 
     class _Client:
@@ -509,7 +577,7 @@ def test_lifecycle_actions_work_through_the_public_entry_point(
     monkeypatch.setattr(DockerService, "_get_client", lambda self: _Client())
     monkeypatch.delenv("KTDM_DEPLOYMENT_ENVIRONMENT", raising=False)
 
-    result = DockerService().control_container("kor-travel-weather-prometheus", "restart")
+    result = DockerService().control_container("kor-travel-airport-backend", "restart")
     assert result["success"] is True
     assert performed == ["restart"]
 
@@ -535,10 +603,10 @@ def test_config_routes_refuse_external_before_taking_the_deployment_lock(
     with pytest.raises(ExternalContainerMutationError):
         if method == "update":
             service.update_container_config(
-                "kor-travel-weather-prometheus", ["14104:9090"], {}, [], []
+                "kor-travel-airport-backend", ["14104:9090"], {}, [], []
             )
         else:
-            service.reset_container_config("kor-travel-weather-prometheus")
+            service.reset_container_config("kor-travel-airport-backend")
 
 
 def test_the_read_only_boundary_carries_its_own_error_code() -> None:
@@ -552,7 +620,9 @@ def test_the_read_only_boundary_carries_its_own_error_code() -> None:
 
 
 def test_the_status_payload_names_the_owning_project(
-    manager_compose: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    manager_compose: dict[str, Any],
+    colliding_external_container: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """화면이 편집기를 잠글 **재료**를 실제로 준다.
 
@@ -565,14 +635,16 @@ def test_the_status_payload_names_the_owning_project(
         DockerService, "_get_client", lambda self: (_ for _ in ()).throw(RuntimeError())
     )
     entries = {entry["id"]: entry for entry in DockerService().get_containers_status()}
-    assert entries["kor-travel-weather-prometheus"]["external_project"] == (
-        "kor-travel-weather"
+    assert entries[colliding_external_container]["external_project"] == (
+        "kor-travel-airport"
     )
     assert entries["prometheus"]["external_project"] is None
 
 
 def test_the_live_daemon_branch_also_hides_manager_config(
-    manager_compose: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    manager_compose: dict[str, Any],
+    colliding_external_container: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """**운영에서 도는 분기**를 태운다.
 
@@ -583,7 +655,7 @@ def test_the_live_daemon_branch_also_hides_manager_config(
 
     monkeypatch.setattr(DockerService, "_get_client", lambda self: _FakeClient())
     entries = {entry["id"]: entry for entry in DockerService().get_containers_status()}
-    assert entries["kor-travel-weather-prometheus"]["config"]["env"] == {}
+    assert entries[colliding_external_container]["config"]["env"] == {}
     assert entries["prometheus"]["config"]["env"] == {"KTDM_ONLY": "manager"}
 
 
@@ -679,15 +751,15 @@ def test_a_normalized_path_escape_is_still_refused() -> None:
 
     첫 판의 검사는 탈출 케이스로 `sub/../../outside.yml`을 썼는데 그것은 정규화 검사가
     먼저 잡는다 — 구성요소 검사를 지워도 초록이었다. 이미 정규화된 탈출
-    (`../outside.yml`)이 그 절만이 잡는 형태다.
+    (`../outside.yml`)이 그 절만이 잡는 형태다. airport로 센다(이유는
+    `test_duplicate_config_files_are_rejected` 참고).
     """
 
     config = _real_config()
-    config["targets"]["weather"] = {
-        **config["targets"]["weather"],
+    config["targets"]["airport"] = {
+        **config["targets"]["airport"],
         "external_project": {
-            "project": "kor-travel-weather",
-            "working_dir": "/home/digitie/kor-travel-weather",
+            **config["targets"]["airport"]["external_project"],
             "config_files": ["../outside.yml"],
         },
     }
@@ -777,14 +849,15 @@ def test_an_external_target_cannot_hold_a_manager_container() -> None:
 
     H-1을 검증기로 옮기면서 한 방향만 검사가 따라왔다 — 대조에 `is not None`을 더해
     Manager 컨테이너 쪽만 남기는 변이가 살아남았다(적대 리뷰 2026-09-18 E-M55).
-    지워진 옛 assert는 두 방향을 다 봤다.
+    지워진 옛 assert는 두 방향을 다 봤다(weather는 2026-09-20 ADR-47부터
+    internal target이라 이 예시로 더 이상 쓸 수 없다 — airport가 여전히 외부다).
     """
 
     config = _real_config()
-    weather = config["targets"]["weather"]
-    config["targets"]["weather"] = {
-        **weather,
-        "containers": [*weather["containers"], "prometheus"],
+    airport = config["targets"]["airport"]
+    config["targets"]["airport"] = {
+        **airport,
+        "containers": [*airport["containers"], "prometheus"],
     }
     with pytest.raises(TargetsConfigError, match="belongs to project"):
         _validate(config)
@@ -854,16 +927,25 @@ def test_the_live_label_matches_the_declared_project_name() -> None:
     assert declared == f"name: {_MANAGER_PROJECT_NAME}", declared
 
 
+#: `test_reset_reaches_the_guard_for_every_external_container`의 "name-collides"
+#: 자리 표시자. 파라미터 목록은 수집 시점에 평가되므로 그 시점엔 아직 존재하지
+#: 않는 fixture 값을 직접 넣을 수 없다 — 테스트 본문에서 이 sentinel을
+#: `colliding_external_container` fixture의 실제 id로 바꿔 끼운다.
+_COLLISION_SENTINEL = "__COLLISION__"
+
+
 @pytest.mark.parametrize(
     "container_id",
     [
-        pytest.param("kor-travel-weather-db", id="name-differs"),
-        pytest.param("kor-travel-weather-prometheus", id="name-collides"),
+        pytest.param("kor-travel-airport-postgresql", id="name-differs"),
+        pytest.param(_COLLISION_SENTINEL, id="name-collides"),
         pytest.param("kor-travel-airport-backend", id="airport"),
     ],
 )
 def test_reset_reaches_the_guard_for_every_external_container(
-    manager_compose: dict[str, Any], container_id: str
+    manager_compose: dict[str, Any],
+    colliding_external_container: str,
+    container_id: str,
 ) -> None:
     """`reset`이 두 early-return **앞에서** 거부돼야 한다.
 
@@ -875,8 +957,13 @@ def test_reset_reaches_the_guard_for_every_external_container(
 
     정상 동작하는 유일한 경우가 **이름이 우연히 겹치는** `prometheus`였다 —
     docstring이 "가장 위험하다"고 지목한 그 경우다. 그래서 이 검사는 이름이 다른 것·
-    겹치는 것·또 다른 프로젝트 셋을 함께 태운다.
+    겹치는 것·또 다른 프로젝트 셋을 함께 태운다. weather가 2026-09-20(ADR-47)부터
+    internal target이라 실제 이름 충돌 사례가 저장소에서 사라져,
+    `colliding_external_container`가 합성으로 그 사례를 대신한다.
     """
+
+    if container_id == _COLLISION_SENTINEL:
+        container_id = colliding_external_container
 
     with pytest.raises(ExternalContainerMutationError):
         DockerService().reset_container_config(container_id)
@@ -902,14 +989,14 @@ def test_the_external_boundary_maps_to_409_with_its_code() -> None:
     assert handler is not None, "DeploymentContractError 핸들러가 등록돼 있어야 한다"
 
     error = ExternalContainerMutationError(
-        "container 'kor-travel-weather-db' belongs to external compose project "
-        "'kor-travel-weather'"
+        "container 'kor-travel-airport-backend' belongs to external compose project "
+        "'kor-travel-airport'"
     )
     response = asyncio.run(handler(None, error))
     assert response.status_code == 409
     payload = json.loads(response.body)
     assert payload["detail"]["code"] == "EXTERNAL_PROJECT_READ_ONLY", payload
-    assert "kor-travel-weather" in payload["detail"]["message"]
+    assert "kor-travel-airport" in payload["detail"]["message"]
 
 
 # ── 라운드 5: 내가 라운드 4에서 만든 표면 둘 ────────────────────────────

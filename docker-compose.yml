@@ -2621,8 +2621,14 @@ services:
     cpu_shares: 2048
     mem_reservation: 512m
     mem_swappiness: 10
+    # `/server_info`는 webserver가 정적으로 주는 문서라 code location이 죽어도
+    # 200이다 — GraphQL로 실제 code location이 로드됐는지 묻는다(geo/map/pinvi와
+    # 같은 패턴, docker-compose.yml의 다른 dagster-webserver 블록 참고).
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:14107/server_info', timeout=3)"]
+      test:
+      - CMD-SHELL
+      - >-
+        python -c "import json, urllib.request as u; q = json.dumps({'query': '{repositoriesOrError{__typename}}'}).encode(); r = u.urlopen(u.Request('http://127.0.0.1:14107/graphql', data=q, headers={'Content-Type': 'application/json'}), timeout=5); d = json.load(r); t = d.get('data', {}).get('repositoriesOrError', {}).get('__typename'); raise SystemExit(0 if t == 'RepositoryConnection' else 'code location not loaded: %s' % t)"
       interval: 15s
       timeout: 5s
       retries: 8
@@ -2645,6 +2651,11 @@ services:
     command: ["dagster-daemon", "run", "-w", "/app/deploy/workspace.yaml"]
     environment:
       DAGSTER_HOME: /opt/dagster/home
+      # 끼인 daemon 스레드를 기본 유예(1800초/31분)보다 훨씬 빨리 알아챈다 —
+      # weather 자신이 이 부류(daemon 프로세스는 살아 있는데 회수 스레드가
+      # 죽는 것)로 18시간 정지했던 사고 당사자다(geo-dagster-daemon 블록
+      # 주석 참고). geo/map/pinvi와 같은 값(300초)을 쓴다.
+      DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
       PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
