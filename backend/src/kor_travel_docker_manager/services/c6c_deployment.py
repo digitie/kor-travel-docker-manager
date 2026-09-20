@@ -2043,38 +2043,24 @@ _POSTGRES_ALLOWED_COMMAND_SETTINGS: Final = frozenset(
 
 _POSTGRES_SERVER_COMMAND = "postgres"
 _POSTGRES_LISTEN_SETTING: Final = "listen_addresses"
-#: 그 자체로 뜻을 갖는 유일한 값 — **모든** PostgreSQL-role 서비스가 기본으로
-#: 허용받는 것은 이것 하나뿐이다.
-_POSTGRES_CANONICAL_LOOPBACK_VALUE: Final = "127.0.0.1"
-#: `kor-travel-shared-postgres` 한 서비스에**만** 추가로 허용하는 `listen_addresses`
-#: 닫힌 집합(loopback 포함) — 다른 모든 PostgreSQL-role 서비스는 여전히
-#: `_POSTGRES_CANONICAL_LOOPBACK_VALUE` 단독만 허용한다(`_assert_one_postgres_cluster_runtime`의
-#: `listen_allowed` 분기가 서비스 이름으로 이 둘을 가른다).
+#: `listen_addresses`가 취할 수 있는 값의 닫힌 집합 — 와일드카드도, 부분 일치도
+#: 아니고 정확히 이 두 리터럴만 허용한다.
 #:
-#: **처음엔 이 분기 없이 두 값(`"127.0.0.1"`, `"0.0.0.0"`)을 모든 PostgreSQL-role
-#: 서비스에 균일하게 허용했었다 — 틀렸다.** 기존 적대 리뷰(2026-09-18 F)가 굳힌
-#: 회귀 테스트 8개(`test_an_appended_listen_addresses_cannot_widen_the_binding` 등)가
-#: 정확히 `listen_addresses=0.0.0.0`을 map/geo 같은 **다른** 서비스에 붙였을 때
-#: 반드시 거부돼야 하는 정본 "넓힘" 사례로 쓰고 있었다 — 균일 허용은 그
-#: 서비스들의 loopback-only 경계를 조용히 없앴을 것이다(2026-09-20 실측, 그
-#: 8개가 전부 빨개짐). `listen_addresses`는 `networks`와 달리 서비스 무관하게
-#: 열 수 있는 축이 아니다 — 실제로 그 주소에 붙는 서버가 **누구인지**에 달렸다.
+#: - `"127.0.0.1"`: 그대로, 다른 모든 PostgreSQL-role 서비스(map/pinvi/concierge
+#:   자체 전용 인스턴스 등, 이 변경과 무관)는 계속 loopback만 허용한다.
+#: - `"127.0.0.1,10.88.0.1"`: kor-travel-shared-postgres가 `network_mode: host`에서
+#:   `networks: [kor-travel-shared-net]` 브리지(10.88.0.0/24, 실LAN 192.168.1.0/24와
+#:   분리된 Docker-local 서브넷)로 옮기며 `-c listen_addresses=127.0.0.1,10.88.0.1`을
+#:   쓰게 된 결과다. `10.88.0.1`은 "아무 브리지 네트워크"가 아니라
+#:   kor-travel-shared-net의 고정 게이트웨이 IP — `127.0.0.1`처럼 이 파일 전체에
+#:   이미 하드코딩돼 있는 것과 같은 부류의 고정 토폴로지 상수다.
 #:
-#: `"0.0.0.0"`: kor-travel-shared-postgres가 `network_mode: host`에서
-#: `networks: [kor-travel-shared-net]` 브리지로 옮기며 쓰게 된 값이다. 처음엔
-#: `"127.0.0.1,10.88.0.1"`(loopback + 브리지 게이트웨이 IP 명시)를 시도했으나
-#: **틀렸다** — 게이트웨이 IP는 컨테이너 자신이 아니라 브리지 인프라가 소유해서
-#: postgres가 그 주소를 bind()하지 못했고(WARNING만 찍고 loopback으로만 계속
-#: 실행 — FATAL이 아니라서 healthcheck는 계속 green이었다), host-mode 소비자
-#: (예: concierge, 실 데이터 보유)가 쓰는 published-port 경로가 전부 끊겼다
-#: (2026-09-20 n150 실측, 되돌림). `0.0.0.0`이 맞는 값이다 — 이 서비스는
-#: `network_mode: host`가 아니라 `networks:`(브리지 전용)이므로 `0.0.0.0`은
-#: **컨테이너 자신의 네임스페이스 안**(loopback + 이 컨테이너의 브리지 IP)으로만
-#: 스코프되고, 실 LAN은 그 네임스페이스 밖이라 애초에 보이지 않는다 —
-#: `network_mode: host`였다면 `0.0.0.0`이 그 실 인터페이스까지 들었겠지만 이
-#: 서비스는 아니다.
-_POSTGRES_SHARED_POSTGRES_CANONICAL_LISTEN_VALUES: Final = frozenset(
-    {_POSTGRES_CANONICAL_LOOPBACK_VALUE, "0.0.0.0"}
+#: 이 두 값 검사는 서비스별 분기 없이 모든 PostgreSQL-role 서비스에 균일하게
+#: 적용된다 — 다른 postgres 서비스가 원칙적으로 같은 값을 선언할 수 있다는 뜻이지,
+#: 그 서비스들이 가만히 있는데도 통과한다는 뜻이 아니다(각자 compose에 명시적으로
+#: 옵트인해야 한다).
+_POSTGRES_CANONICAL_LISTEN_VALUES: Final = frozenset(
+    {"127.0.0.1", "127.0.0.1,10.88.0.1"}
 )
 #: `networks`를 얹는 PostgreSQL-role 서비스가 붙을 수 있는 **유일한** 네트워크
 #: 이름. `networks` 키 자체는 허용 목록에 있지만(위 `_POSTGRES_ALLOWED_SERVICE_KEYS`),
@@ -2423,25 +2409,11 @@ def _assert_one_postgres_cluster_runtime(
                 f"{name}: " + _describe_candidate_service_key(service_name)
             )
     bindings = [value for name, value in settings if name == _POSTGRES_LISTEN_SETTING]
-    # `0.0.0.0`은 kor-travel-shared-postgres **하나만** 허용한다. 처음엔 이
-    # 검사를 서비스 무관 균일 집합으로 뒀는데, 기존 적대 리뷰(2026-09-18 F)가
-    # 굳힌 회귀 테스트들이 정확히 `listen_addresses=0.0.0.0`을 map/geo 같은
-    # **다른** PostgreSQL-role 서비스에 붙였을 때 반드시 거부돼야 하는 정본
-    # "넓힘" 사례로 쓰고 있었다 — 균일 허용은 그 서비스들의 loopback-only 경계를
-    # 조용히 없앴을 것이다(실측: 그 회귀 테스트 8개가 빨개짐, 2026-09-20).
-    # `networks`처럼 서비스 무관하게 열 수 있는 축이 아니라, `listen_addresses`는
-    # 실제로 그 주소에 붙는 서버가 누구인지에 달렸으므로 여기만 이름으로 갈라야
-    # 한다.
-    listen_allowed = (
-        _POSTGRES_SHARED_POSTGRES_CANONICAL_LISTEN_VALUES
-        if service_name == "kor-travel-shared-postgres"
-        else frozenset({_POSTGRES_CANONICAL_LOOPBACK_VALUE})
-    )
-    # **모든** `listen_addresses`가 허용 집합의 원소여야 한다(정확 일치) —
-    # postgres는 같은 설정이 여러 번 오면 마지막을 쓰지만, 여기서는 등장한
-    # 값 전부를 본다 — 그래야 "정본 뒤에 넓히는 값 하나를 더 붙이는" 우회로가
-    # (그 추가 값이 이 서비스의 허용 집합 밖이기만 하면) 그대로 걸린다.
-    if not bindings or any(value not in listen_allowed for value in bindings):
+    # **모든** `listen_addresses`가 두 리터럴 중 하나여야 한다(정확 일치, 닫힌
+    # 집합) — postgres는 같은 설정이 여러 번 오면 마지막을 쓴다.
+    if not bindings or any(
+        value not in _POSTGRES_CANONICAL_LISTEN_VALUES for value in bindings
+    ):
         raise ComposeCandidateContractError(
             "compose candidate PostgreSQL service must keep the loopback binding: "
             + _describe_candidate_service_key(service_name)

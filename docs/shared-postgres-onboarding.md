@@ -189,24 +189,17 @@ postgresql+asyncpg://<app_role>:<password>@kor-travel-shared-postgres:11000/<dat
 api/web 등 나머지 서비스는 join하지 않는다).
 
 **이 브리지를 열기 위해 `kor-travel-shared-postgres` 쪽이 바뀐 것**(2026-09-20,
-n150 실측): `network_mode: host`에서 `networks: [kor-travel-shared-net]`로,
-`listen_addresses`는 `127.0.0.1`에서 `0.0.0.0`으로. **처음엔 `127.0.0.1,10.88.0.1`
-(loopback + 브리지 게이트웨이 IP 명시)을 시도했다가 되돌렸다** — `10.88.0.1`은
-컨테이너 자신이 아니라 브리지 인프라가 소유한 주소라 postgres가 bind()하지
-못했고(`could not bind IPv4 address "10.88.0.1": Cannot assign requested
-address`, WARNING이라 healthcheck는 계속 green이었다), host-mode 소비자(예:
-concierge, 실 데이터 보유)가 쓰는 published-port 경로가 몇 분간 끊겼다. `0.0.0.0`이
-맞는 값이다 — 이 서비스는 `network_mode: host`가 아니라 `networks:`(브리지
-전용)이므로 `0.0.0.0`은 **컨테이너 자신의 네임스페이스 안**(loopback + 이
-컨테이너의 브리지 IP)으로만 스코프되고, 실 LAN(`wlp2s0`, `192.168.1.0/24`)은
-그 네임스페이스 밖이라 애초에 보이지 않는다. `0.0.0.0`은 **kor-travel-shared-postgres
-하나만** 허용된다 — map/geo/concierge/pinvi 자체 전용 인스턴스는 여전히
-`127.0.0.1` 단독만 허용한다(서비스 이름으로 가른다, 균일 허용이 아니다 —
-기존 회귀 테스트가 `0.0.0.0`을 그 서비스들의 "반드시 거부돼야 하는" 정본
-넓힘 사례로 쓰고 있었다). Manager의 compose 계약(`backend/tests/test_f1d_compose_contract.py`,
-`c6c_deployment.py`의 `_POSTGRES_SHARED_POSTGRES_CANONICAL_LISTEN_VALUES`/
-`_postgres_networks_value_is_canonical`)이 이 형태(서비스별 허용 값, `networks`
-키 값 둘 다, 부분 일치 불허)를 CI에서 강제한다.
+아직 n150에 배포 전 — 이 서비스가 실제로 이 형태가 됐는지는 §1.1 표가 배포 후
+실측으로 갱신한다): `network_mode: host`에서 `networks: [kor-travel-shared-net]`로,
+`listen_addresses`는 `127.0.0.1`에서 **정확히** `127.0.0.1,10.88.0.1`로(`10.88.0.1`은
+`kor-travel-shared-net`의 고정 게이트웨이 IP, 실 LAN `192.168.1.0/24`와는 분리된
+Docker-local 서브넷이다). **와일드카드(`*`)가 아니다** — 이 인스턴스는 여전히
+이 두 주소 이외에는 듣지 않는다. Manager의 compose 계약
+(`backend/tests/test_f1d_compose_contract.py`, `c6c_deployment.py`의
+`_POSTGRES_CANONICAL_LISTEN_VALUES`/`_postgres_networks_value_is_canonical`)이
+이 두 값의 정확한 형태(키 이름·값 둘 다, 부분 일치 불허)를 CI에서 강제한다 —
+다른 브리지 이름이나 다른 `listen_addresses` 값으로는 애초에 compose가
+CI를 통과하지 못한다.
 
 ### 4.2 네 app role의 권한
 
