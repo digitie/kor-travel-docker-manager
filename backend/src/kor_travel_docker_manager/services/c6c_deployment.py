@@ -2454,6 +2454,10 @@ _ALLOWED_PRIVILEGE_KEY_PAIRS: Final = frozenset(
         ("cadvisor", "devices"),
         ("prometheus", "user"),
         ("grafana", "user"),
+        # weather의 자체 Prometheus(ADR-47)도 host-mode 포트 바인딩·데이터 디렉터리
+        # 소유권 때문에 정본 prometheus와 같은 이유로 root user가 필요하다 — 이름이
+        # 다를 뿐 `prom/prometheus` 신원은 같다(아래 접두 표).
+        ("kor-travel-weather-prometheus", "user"),
     }
 )
 
@@ -2469,6 +2473,7 @@ _PRIVILEGE_EXCEPTION_IMAGE_PREFIXES: Final = MappingProxyType(
         "cadvisor": "gcr.io/cadvisor/cadvisor:",
         "prometheus": "prom/prometheus:",
         "grafana": "grafana/grafana:",
+        "kor-travel-weather-prometheus": "prom/prometheus:",
     }
 )
 
