@@ -528,7 +528,7 @@ def test_role_lock_releases_after_context_exits(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("role", "env_var", "expected"),
     [
-        ("concierge", "KOR_TRAVEL_CONCIERGE_POSTGRES_CONTAINER", "concierge-override"),
+        ("concierge", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "concierge-override"),
         ("map_application", "KOR_TRAVEL_MAP_POSTGRES_CONTAINER", "map-override"),
         ("pinvi", "PINVI_POSTGRES_CONTAINER", "pinvi-override"),
     ],
