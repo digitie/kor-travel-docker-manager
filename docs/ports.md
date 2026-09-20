@@ -100,11 +100,11 @@ gRPC로 접속하고, 외부에는 열지 않는다. weather의 Dagster code-ser
 
 | 인스턴스 | 포트 | 데이터베이스 |
 |---|---:|---|
-| `kor-travel-geo-postgres` | `12500` | `kor_travel_geo`, `kor_travel_geo_dagster`(**cutover 전까지는 활성 원본**, 이후 롤백 보관용 — 아래 참고) |
+| `kor-travel-geo-postgres` | `12500` | `kor_travel_geo`, `kor_travel_geo_dagster`(**롤백 안전망 — 2026-09-20 cutover 완료로 앱은 더 이상 여기 쓰지 않는다**, 아래 참고) |
 | `kor-travel-concierge-postgres` | `12600` | `kor_travel_concierge`(**cutover 전까지는 활성 원본**, 이후 롤백 보관용 — 아래 참고) |
 | `kor-travel-map-postgres` | `12700` | `kor_travel_map`, `kor_travel_map_dagster` |
-| `pinvi-postgres` | `12800` | `pinvi`, `pinvi_dagster`(**롤백 안전망** — ADR-46 이후 앱은 여기 쓰지 않는다) |
-| `kor-travel-shared-postgres` | `11000` | `kor_travel_concierge`(concierge 전용 role — ADR-44 cutover 완료로 **현재 활성**), `kor_travel_geo`/`kor_travel_geo_dagster`(geo 전용 role `kor_travel_geo_app` — ADR-45 role/database 생성 완료, data cutover는 아직이라 **활성 아님**), `pinvi`+`pinvi_dagster`(ADR-46, 데이터 보존 없이 fresh 구성으로 이전해 **현재 활성**), `kor_travel_weather`+`kor_travel_weather_dagster`(weather 전용 role `kor_travel_weather_app`/`kor_travel_weather_dagster_app` — ADR-47, 데이터 보존 없이 fresh 구성으로 internal target 전환해 **현재 활성**). 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) |
+| `pinvi-postgres` | `12800` | `pinvi`, `pinvi_dagster`(**여전히 활성 원본** — ADR-46은 결정·compose 계약·one-shot 정의까지만 됐고, 공용 instance에 role/database가 실제로 만들어진 적이 없다, 2026-09-20 실측·아래 참고) |
+| `kor-travel-shared-postgres` | `11000` | `kor_travel_concierge`(concierge 전용 role — ADR-44 cutover 완료로 **현재 활성**), `kor_travel_geo`/`kor_travel_geo_dagster`(geo 전용 role `kor_travel_geo_app` — ADR-45, 2026-09-20 실 데이터 cutover까지 완료돼 **현재 활성**), `kor_travel_weather`+`kor_travel_weather_dagster`(weather 전용 role `kor_travel_weather_app`/`kor_travel_weather_dagster_app` — ADR-47, 데이터 보존 없이 fresh 구성으로 internal target 전환해 **현재 활성**). **pinvi/pinvi_dagster는 아직 여기 없다** — ADR-46은 계약·compose 정의만 됐고 실제 role/database 생성은 안 됐다(2026-09-20 실측, `\du`/`\l` 둘 다 0 rows). 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) |
 
 다섯 instance 모두 loopback 전용이다. `db` target의 호환 이름은 Geo instance만 실행하며,
 Map database provisioning은 각 Compose 서비스 또는 pinned workflow가 자기 instance에서
@@ -112,32 +112,43 @@ Map database provisioning은 각 Compose 서비스 또는 pinned workflow가 자
 `pinvi-shared-db-runtime-role`(아래 참고)이 공용 instance에서 수행한다.
 
 `kor-travel-shared-postgres`는 platform-topology.md §7(2026-09-19 결정)이 목표로 한
-공용 제어 평면의 첫 실제 구현이다. **이전 대상은 concierge·geo·PinVi·weather다**
-(ADR-44/ADR-45/ADR-46/ADR-47) — map은 여전히 전용 instance에 남고, 이 문서가 그
-프로젝트의 이전까지 끝났다고 주장하지 않는다.
+공용 제어 평면의 첫 실제 구현이다. **실제로 이전을 마친 것은 concierge·geo·weather다**
+(ADR-44/ADR-45/ADR-47). **PinVi(ADR-46)는 결정과 compose 계약만 됐고 실제 배포는
+아직이다** — map은 결정조차 없이 여전히 전용 instance에 남는다. 이 문서가 결정된
+것을 배포된 현황으로 주장하지 않는다는 원칙(§1)은 지금도 PinVi에 적용된다.
 
 - **concierge**는 2026-09-19/20에 실제 데이터 cutover까지 끝났다(위 표의 "현재
   활성"이 그 사실을 반영). §7의 원래 계획대로 실 데이터를 pg_dump/restore로 옮긴
   hard cutover였다.
-- **geo는 아직 role/database가 만들어진 단계다** — 앱 DB(`kor_travel_geo`)와 Dagster
-  메타 DB(`kor_travel_geo_dagster`) 둘 다 옮길 예정이고, geo의
-  webserver/daemon/code-server 3-프로세스 토폴로지(T-307) 자체는 바뀌지 않고 DSN만
-  새 instance를 가리키게 될 것이지만, 실제 데이터 cutover
-  (`kor-travel-geo-postgres`→`kor-travel-shared-postgres`)와 DSN 전환은 아직 별도
-  배포 단계로 남아 있다 — 합류 전 확인·절차는
-  [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)를 따른다. geo의
-  cutover가 끝나면 위 표의 "활성 아님" 표시가 이 사실을 반영해 갱신된다.
-- **PinVi는 concierge·geo와 다르다** — 사용자 지시로 데이터 보존을 요구하지 않아,
-  옛 `pinvi`/`pinvi_dagster`의 데이터를 옮기지 않고 공용 instance에 fresh
-  상태로(M05 role topology를 처음부터 재구성) 만들었다. 옛 instance
-  (`pinvi-postgres`)는 삭제하지 않고 롤백 안전망으로 그대로 둔다(쓰기 대상 아님,
-  읽기도 정상 운영에서는 쓰지 않는다) — 단, 데이터 자체는 cutover 시점 이후로
-  갱신되지 않으므로 "롤백"은 그 시점 데이터로 되돌아간다는 뜻이다. PinVi는 이미
-  자체 M05 role topology(`bootstrap-pinvi-runtime-role.sh`)를 갖고 있어, 공용
-  instance에서도 같은 스크립트로 같은 role 분리(app/schema-owner/migration-owner/
-  migrator)를 재구성했다 — root bootstrap 계정만 전용 instance 자신의 superuser
-  (`PINVI_POSTGRES_USER`)에서 공용 cluster 관리자(`KOR_TRAVEL_SHARED_POSTGRES_USER`)로
-  바뀐다.
+- **geo는 2026-09-20에 실제 데이터 cutover까지 끝났다**(위 표의 "현재 활성"이 그
+  사실을 반영). 앱 DB(`kor_travel_geo`)와 Dagster 메타 DB(`kor_travel_geo_dagster`)
+  둘 다 옮겼고, geo의 webserver/daemon/code-server 3-프로세스 토폴로지(T-307) 자체는
+  바뀌지 않고 DSN만 공용 instance를 가리키도록 바뀌었다. ⚠️ **실측으로 발견한 함정**:
+  cutover 자체(`kor-travel-geo-api`/`-dagster` 등 실행 중인 컨테이너의 DSN)는 실제로
+  `:11000`을 가리키며 살아 있었지만, n150의 영속 `.env`(`KOR_TRAVEL_GEO_DOCKER_PG_DSN`/
+  `KOR_TRAVEL_GEO_DAGSTER_PG_URL`)는 여전히 옛 인스턴스(`:12500`)를 가리키고 있었다 —
+  다음에 그 서비스를 재생성했다면 조용히 옛 인스턴스로 되돌아갔을 것이다. 이 문서
+  갱신과 함께 `.env`도 실제 살아 있는 값(공용 instance, role `kor_travel_geo_app`)으로
+  맞추고 직접 연결까지 검증했다.
+- **PinVi는 ADR-46이 결정·compose 계약·one-shot 서비스 정의(`kor-travel-shared-db-init-pinvi`
+  ·`pinvi-shared-db-runtime-role`, 둘 다 n150 compose에 이미 존재)까지만 됐고, 실제
+  배포는 되지 않았다** — 2026-09-20 실측: 공용 instance에 `pinvi`/`pinvi_dagster`
+  role·database가 **하나도 없다**(`\du`/`\l` 둘 다 0 rows). `pinvi-api`는 현재
+  내려가 있고, 마지막으로 설정된 `PINVI_DATABASE_URL`도 여전히 옛 전용 instance
+  (`127.0.0.1:12800/pinvi`)를 가리킨다. 옛 `pinvi-postgres`는 아직 롤백 안전망이
+  아니라 **유일한 활성 원본**이다. 문서가 이전에 "현재 활성"이라고 적었던 것은
+  틀렸다 — 결정된 계약을 배포된 현황으로 착각한 사례였다(이 저장소 자신의 원칙,
+  §1 위반). 실제 배포(두 one-shot 실행 → DSN 전환 → 앱 재기동)는 별도 작업으로
+  남아 있으며, PinVi의 앱 재기동은 별도로 진단된 pinned-rebuild journal 고착
+  문제(map_runtime_ready 이후 `.env` 변경 시 영구 재개 불가)에 막혀 있을 가능성이
+  높다.
+  PinVi는 이미 자체 M05 role topology(`bootstrap-pinvi-runtime-role.sh`)를 갖고
+  있어, 실제 배포 시에도 같은 스크립트로 같은 role 분리(app/schema-owner/
+  migration-owner/migrator)를 재구성할 계획이다 — root bootstrap 계정만 전용
+  instance 자신의 superuser(`PINVI_POSTGRES_USER`)에서 공용 cluster 관리자
+  (`KOR_TRAVEL_SHARED_POSTGRES_USER`)로 바뀐다. 사용자 지시로 데이터 보존은
+  요구되지 않는다 — 옛 `pinvi`/`pinvi_dagster`의 데이터를 옮기지 않고 공용
+  instance에 fresh 상태로 만들 계획이다.
 - **weather는 PinVi와 같은 패턴이다** — 사용자 지시로 데이터 보존을 요구하지
   않아("어차피 새로 쌓으면 됨"), 옛 전용 `db`(`weather-postgres` volume, weather
   자신의 compose.yaml에만 남는다)의 데이터를 옮기지 않고 공용 instance에 완전히
