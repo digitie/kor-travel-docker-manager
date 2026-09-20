@@ -97,6 +97,9 @@ _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _PINVI_DB_INIT_SERVICE = "pinvi-db-init"
 _PINVI_DB_RUNTIME_ROLE_SERVICE = "pinvi-db-runtime-role"
+#: ADR-46 — 공용 instance에서 같은 M05 role topology를 세우는 root-only one-shot.
+#: 스크립트는 pinvi-db-runtime-role과 완전히 같고 대상 endpoint만 다르다.
+_PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE = "pinvi-shared-db-runtime-role"
 _PINVI_POSTGRES_PASSWORD_SECRET = "pinvi-postgres-password"
 _PINVI_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_PINVI_POSTGRES_PASSWORD_SECRET}"
 #: 두 PostgreSQL이 **같은** 초기화 인증 인자를 쓴다. 공유 상수로 두는 이유는 한쪽만
@@ -104,7 +107,14 @@ _PINVI_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_PINVI_POSTGRES_PASSWORD_SECRET}
 #: 없어서 `--auth-host=trust`(fresh PGDATA에서 superuser 인증을 통째로 끄는 값)가
 #: raw·resolved·UI 저장 경로를 **전부 통과**했다.
 _POSTGRES_CANONICAL_INITDB_ARGS = "--auth-host=scram-sha-256"
+#: pinvi-postgres/pinvi-db-init/pinvi-db-runtime-role 세 서비스 전용. 이 셋은
+#: 이전(ADR-46) 뒤에도 롤백 안전망으로 그대로 남아 이 포트를 계속 검증한다.
 _PINVI_DEDICATED_POSTGRES_PORT = 12800
+#: ADR-46 — PinVi 앱(`pinvi`)·Dagster(`pinvi_dagster`) DSN은 공용 제어 평면
+#: instance(`kor-travel-shared-postgres`, ADR-46)로 이전했다. 위 전용 포트와
+#: 달리 이 값은 pinvi-api/pinvi-dagster/pinvi-dagster-code-server/
+#: pinvi-dagster-daemon/pinvi-admin-bootstrap이 실제로 접속하는 DSN에만 쓴다.
+_PINVI_SHARED_POSTGRES_PORT = 11000
 _PINVI_POSTGRES_IMAGE = (
     "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
 )
@@ -461,7 +471,13 @@ _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
 #: 실측: 이 수정의 **대상 서비스 둘 다**가 가려졌다. 저장소 공개 이름이라 유출
 #: 위험이 없고, 정본 compose에 실재하는 것만 넣는다.
 _CANDIDATE_NAMEABLE_SERVICE_NAMES: Final = frozenset(
-    {"kor-travel-geo-postgres", "kor-travel-concierge-postgres"}
+    {
+        "kor-travel-geo-postgres",
+        "kor-travel-concierge-postgres",
+        "kor-travel-shared-postgres",
+        "kor-travel-shared-db-init-pinvi",
+        _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE,
+    }
 )
 _CANDIDATE_KNOWN_SERVICE_NAMES = (
     _CANDIDATE_REQUIRED_PROTECTED_SERVICES
@@ -672,6 +688,26 @@ _PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES = {
     (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_M05_LEGACY_REBASELINE"): "0",
     (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_MIGRATOR_DISABLE_LOGIN"): "1",
 }
+#: ADR-46 — pinvi-shared-db-runtime-role은 같은 role/schema/migrator 이름·비밀번호
+#: 원본을 쓰지만(같은 여섯 env var), 접속 대상만 다르다 — root bootstrap 계정이
+#: `PINVI_POSTGRES_USER`(전용 instance 자신)가 아니라
+#: `KOR_TRAVEL_SHARED_POSTGRES_USER`(공용 cluster 관리자)이고, 포트도
+#: `PINVI_DB_PORT`가 아니라 `KOR_TRAVEL_SHARED_DB_PORT`다. 나머지 여섯 role env는
+#: 위 dict에서 **그대로 파생한다** — 손으로 복제하면 한쪽만 자라는 것이
+#: `_PINVI_DSN_SERVICE_CREDENTIALS`가 막으려 한 바로 그 드리프트다.
+_PINVI_SHARED_RUNTIME_ROLE_CANONICAL_ENV_VALUES = {
+    (_PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE, env_name): raw_value
+    for (service_name, env_name), raw_value in _PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES.items()
+    if service_name == _PINVI_DB_RUNTIME_ROLE_SERVICE
+    and env_name not in {"POSTGRES_USER", "PINVI_DB_PORT"}
+} | {
+    (_PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE, "POSTGRES_USER"): (
+        "${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}"
+    ),
+    (_PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE, "PINVI_DB_PORT"): (
+        "${KOR_TRAVEL_SHARED_DB_PORT:-11000}"
+    ),
+}
 #: PinVi DSN을 조립하는 서비스와, 그때 쓰는 자격증명 쌍.
 #:
 #: **이 선언 하나에서 canonical 값과 허용 경로를 둘 다 유도한다.** 종전에는 같은
@@ -705,13 +741,18 @@ _PINVI_DSN_SERVICE_CREDENTIALS: Final = (
 
 
 def _pinvi_dsn(*, scheme: str, username_env: str, password_env: str, database: str) -> str:
-    """compose가 적는 **raw**(미해석) DSN 문자열. 계약은 이 글자열을 고정한다."""
+    """compose가 적는 **raw**(미해석) DSN 문자열. 계약은 이 글자열을 고정한다.
+
+    ADR-46 이전에는 `${PINVI_DB_PORT:-12800}`(전용 instance)이었다. 앱/Dagster DSN은
+    공용 instance로 옮겼으므로 `KOR_TRAVEL_SHARED_DB_PORT`를 쓴다 — `PINVI_DB_PORT`는
+    이제 pinvi-postgres/pinvi-db-init/pinvi-db-runtime-role(롤백 안전망) 전용이다.
+    """
 
     return (
         f"{scheme}://"
         f"${{{username_env}:?{username_env} must be explicitly set}}:"
         f"${{{password_env}:?{password_env} must be explicitly set}}"
-        f"@127.0.0.1:${{PINVI_DB_PORT:-12800}}/{database}"
+        f"@127.0.0.1:${{KOR_TRAVEL_SHARED_DB_PORT:-{_PINVI_SHARED_POSTGRES_PORT}}}/{database}"
     )
 
 
@@ -923,6 +964,12 @@ _DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
             "entrypoint",
             "2",
         ),
+        (
+            "services",
+            _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE,
+            "entrypoint",
+            "2",
+        ),
     }
 )
 _CANDIDATE_CANONICAL_API_ENV_VALUES = {
@@ -1007,6 +1054,7 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     },
     **_MAP_DATABASE_CANONICAL_ENV_VALUES,
     **_PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES,
+    **_PINVI_SHARED_RUNTIME_ROLE_CANONICAL_ENV_VALUES,
 }
 # 계약이 값을 고정한 env 이름 — 화면이 처음부터 잠글 수 있도록 service별로 공개한다.
 #
@@ -1217,9 +1265,16 @@ def _validate_pinvi_database_url_environment(
 ) -> _PinviDatabaseIdentity:
     """(전역) PinVi DB의 **env 불변식** — 어떤 서비스의 존재와도 무관하다.
 
-    넷을 본다:
+    다섯을 본다:
 
-    - `PINVI_DB_PORT == 12800` 고정
+    - `KOR_TRAVEL_SHARED_DB_PORT == 11000` 고정(ADR-46 — 앱/Dagster DSN이 실제로
+      접속하는 공용 instance 포트)
+    - `PINVI_DB_PORT == 12800` 고정(전용 instance, 즉 pinvi-postgres/pinvi-db-init
+      자신의 포트 — `_validate_pinvi_postgres_identity`/`_validate_pinvi_db_init_presence`는
+      이 값을 **환경에서 그대로 파생**해 resolved 후보와 자기-일관성만 보므로,
+      `.env` 자체가 드리프트하면(예: Map 대역 `12700`) 그 두 함수는 못 잡는다 —
+      ADR-46 이전에는 이 함수의 단일 검사가 그 구멍을 막았고, DSN 검사와 분리된
+      뒤에도 **여기 남겨 둔다**)
     - role 이름 5자(root·app·schema owner·migration owner·migrator)의 **상호 상이성**
     - 그 5자의 정규식 `[a-z_][a-z0-9_]*`
     - root/app/migrator **password 3자 상호 비동일**
@@ -1235,7 +1290,12 @@ def _validate_pinvi_database_url_environment(
     """
 
     try:
-        expected_port = int(environment.get("PINVI_DB_PORT", str(_PINVI_DEDICATED_POSTGRES_PORT)))
+        expected_port = int(
+            environment.get("KOR_TRAVEL_SHARED_DB_PORT", str(_PINVI_SHARED_POSTGRES_PORT))
+        )
+        expected_dedicated_port = int(
+            environment.get("PINVI_DB_PORT", str(_PINVI_DEDICATED_POSTGRES_PORT))
+        )
     except (TypeError, ValueError) as exc:
         raise ComposeCandidateContractError("PinVi database URL identity is invalid") from exc
     expected_database = environment.get("PINVI_POSTGRES_DB", "pinvi")
@@ -1260,7 +1320,8 @@ def _validate_pinvi_database_url_environment(
     migrator_password = cast(str, role_values[_PINVI_MIGRATOR_DB_PASSWORD_ENV])
     root_password = cast(str, bootstrap_password)
     if (
-        expected_port != _PINVI_DEDICATED_POSTGRES_PORT
+        expected_port != _PINVI_SHARED_POSTGRES_PORT
+        or expected_dedicated_port != _PINVI_DEDICATED_POSTGRES_PORT
         or not expected_database
         or not isinstance(bootstrap_password, str)
         or not bootstrap_password

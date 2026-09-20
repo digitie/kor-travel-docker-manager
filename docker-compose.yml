@@ -532,6 +532,100 @@ services:
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_SHARED_DB\" TO \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\""
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\""
 
+  # ADR-46 — PinVi가 세 번째로 합류하는 프로젝트다. `pinvi` database만 만든다(소유자는
+  # 이 role 자신 — bootstrap-pinvi-runtime-role.sh가 기대하는 root bootstrap owner가
+  # 바로 이 shared_admin이다). `pinvi_dagster`는 PINVI_APP_DB_USER 소유로 만들어야
+  # 하는데 그 role은 pinvi-shared-db-runtime-role(아래, bootstrap profile)이 M05 role
+  # topology를 세울 때에야 생긴다 — 그래서 role이 아직 없으면 조용히 건너뛴다. 순서는
+  # (1) 이 one-shot 최초 실행 → (2) pinvi-shared-db-runtime-role 수동 실행(profile
+  # bootstrap) → (3) 이 one-shot 재실행(멱등)으로 pinvi_dagster 생성. `pinvi` 자신의
+  # CONNECT 격리(REVOKE FROM PUBLIC + GRANT to owner)는 그 bootstrap 스크립트가 스스로
+  # 하므로 여기서 반복하지 않는다 — 반복하면 같은 GRANT를 두 스크립트가 각자
+  # 소유한다고 주장하게 된다.
+  kor-travel-shared-db-init-pinvi:
+    image: postgis/postgis:16-3.5
+    container_name: ${KOR_TRAVEL_SHARED_DB_INIT_PINVI_CONTAINER:-kor-travel-shared-db-init-pinvi}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
+      PGUSER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
+      PGDATABASE: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
+      PINVI_POSTGRES_DB: ${PINVI_POSTGRES_DB:-pinvi}
+      PINVI_DAGSTER_DB: ${PINVI_DAGSTER_DB:-pinvi_dagster}
+      PINVI_APP_DB_USER: ${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}
+    secrets:
+    - source: kor-travel-shared-postgres-password
+      target: /run/secrets/kor-travel-shared-postgres-password
+    # `createdb ... 2>/dev/null || true`는 쓰지 않는다(기존 -db-init 패턴과 동일한
+    # 이유). 비밀번호는 secret file로만 받는다.
+    command:
+    - sh
+    - -ec
+    - |
+      PGPASSWORD="$$(cat /run/secrets/kor-travel-shared-postgres-password)"
+      export PGPASSWORD
+      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$PINVI_POSTGRES_DB'" | grep -q 1; then
+        echo "database $$PINVI_POSTGRES_DB already exists"
+      else
+        createdb "$$PINVI_POSTGRES_DB"
+      fi
+      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$PINVI_DAGSTER_DB'" | grep -q 1; then
+        echo "database $$PINVI_DAGSTER_DB already exists"
+      elif psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$PINVI_APP_DB_USER'" | grep -q 1; then
+        createdb -O "$$PINVI_APP_DB_USER" "$$PINVI_DAGSTER_DB"
+        psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PINVI_DAGSTER_DB\" FROM PUBLIC"
+        psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$PINVI_DAGSTER_DB\" TO \"$$PINVI_APP_DB_USER\""
+      else
+        echo "$$PINVI_APP_DB_USER role does not exist yet — skipping $$PINVI_DAGSTER_DB (re-run after pinvi-shared-db-runtime-role bootstraps the M05 role topology)"
+      fi
+
+  # M05 role topology의 root-only one-shot을 공용 instance에서 세운다(ADR-46). 구
+  # 전용 instance용 pinvi-db-runtime-role과 완전히 같은 스크립트를 그대로 마운트하되
+  # 대상 endpoint만 다르다 — 그 스크립트의 endpoint allowlist가 127.0.0.1:11000을
+  # 이미 허용한다(pinvi 저장소 쪽 변경). root bootstrap 계정은 shared_admin이다 —
+  # 정상 런타임에는 이 계정을 전달하지 않으며, rebuild가 explicit open → migration →
+  # seal 순서로만 실행한다.
+  pinvi-shared-db-runtime-role:
+    profiles:
+    - bootstrap
+    image: postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40
+    restart: "no"
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-pinvi:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_USER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
+      POSTGRES_DB: ${PINVI_POSTGRES_DB:-pinvi}
+      PINVI_DB_HOST: 127.0.0.1
+      PINVI_DB_PORT: ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
+      PINVI_APP_DB_USER: ${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}
+      PINVI_APP_DB_PASSWORD: ${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}
+      PINVI_APP_SCHEMA_OWNER: ${PINVI_APP_SCHEMA_OWNER:?PINVI_APP_SCHEMA_OWNER must be explicitly set}
+      PINVI_MIGRATION_OWNER: ${PINVI_MIGRATION_OWNER:?PINVI_MIGRATION_OWNER must be explicitly set}
+      PINVI_MIGRATOR_DB_USER: ${PINVI_MIGRATOR_DB_USER:?PINVI_MIGRATOR_DB_USER must be explicitly set}
+      PINVI_MIGRATOR_DB_PASSWORD: ${PINVI_MIGRATOR_DB_PASSWORD:?PINVI_MIGRATOR_DB_PASSWORD must be explicitly set}
+      PINVI_M05_LEGACY_REBASELINE: '0'
+      PINVI_MIGRATOR_DISABLE_LOGIN: '1'
+    secrets:
+    - source: kor-travel-shared-postgres-password
+      target: /run/secrets/kor-travel-shared-postgres-password
+    volumes:
+    - ${PINVI_REPO_DIR:-../pinvi}/infra/postgres/bootstrap-pinvi-runtime-role.sh:/opt/pinvi/bootstrap-pinvi-runtime-role.sh:ro
+    entrypoint:
+    - sh
+    - -ec
+    - |
+      export POSTGRES_PASSWORD="$$(cat /run/secrets/kor-travel-shared-postgres-password)"
+      exec sh /opt/pinvi/bootstrap-pinvi-runtime-role.sh
+
   rustfs:
     image: rustfs/rustfs:latest
     container_name: kor-travel-rustfs
@@ -1477,6 +1571,12 @@ services:
         condition: service_healthy
       pinvi-db-init:
         condition: service_completed_successfully
+      # ADR-46 — 앱 DSN이 실제로 접속하는 곳. 구 전용 instance 의존은 롤백 안전망으로
+      # 그대로 둔다(conc target과 같은 패턴).
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-pinvi:
+        condition: service_completed_successfully
       rustfs:
         condition: service_healthy
       kor-travel-map-api:
@@ -1497,7 +1597,7 @@ services:
     environment:
       PINVI_ENVIRONMENT: ${PINVI_ENVIRONMENT:?PINVI_ENVIRONMENT must be explicitly set}
       PINVI_API_WORKERS: ${PINVI_API_WORKERS:-1}
-      PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}
+      PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}
       PINVI_JWT_SECRET_KEY: ${PINVI_JWT_SECRET_KEY:-pinvi-local-jwt-secret-32-bytes-minimum}
       PINVI_RESEND_API_KEY: ${PINVI_RESEND_API_KEY:-}
       PINVI_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
@@ -1540,12 +1640,16 @@ services:
         condition: service_healthy
       pinvi-db-init:
         condition: service_completed_successfully
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-pinvi:
+        condition: service_completed_successfully
     command:
     - pinvi-admin-bootstrap
     environment:
       # one-shot도 API와 같은 production Settings를 import하므로 필요한 Map 검증값만 둔다.
       PINVI_ENVIRONMENT: ${PINVI_ENVIRONMENT:?PINVI_ENVIRONMENT must be explicitly set}
-      PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_MIGRATOR_DB_USER:?PINVI_MIGRATOR_DB_USER must be explicitly set}:${PINVI_MIGRATOR_DB_PASSWORD:?PINVI_MIGRATOR_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}
+      PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_MIGRATOR_DB_USER:?PINVI_MIGRATOR_DB_USER must be explicitly set}:${PINVI_MIGRATOR_DB_PASSWORD:?PINVI_MIGRATOR_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}
       PINVI_APP_DB_USER: ${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}
       PINVI_APP_SCHEMA_OWNER: ${PINVI_APP_SCHEMA_OWNER:?PINVI_APP_SCHEMA_OWNER must be explicitly set}
       PINVI_MIGRATION_OWNER: ${PINVI_MIGRATION_OWNER:?PINVI_MIGRATION_OWNER must be explicitly set}
@@ -1602,6 +1706,10 @@ services:
         condition: service_healthy
       pinvi-db-init:
         condition: service_completed_successfully
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-pinvi:
+        condition: service_completed_successfully
       pinvi-api:
         condition: service_healthy
     command:
@@ -1620,10 +1728,10 @@ services:
       # 여기가 code location이 실제로 도는 곳이다 — `DefaultRunLauncher`의 run
       # worker는 이 프로세스의 자식으로 뜬다. asset/job/resource가 app DB를
       # 직접 쓴다(PinviDatabaseResource 등).
-      PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}
+      PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}
       # Dagster instance storage. **scheme이 앱 DSN과 다르다** —
       # dagster-postgres는 psycopg2(동기)를 쓰므로 `+asyncpg`를 붙이면 안 된다.
-      PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_DAGSTER_DB:-pinvi_dagster}
+      PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}
     healthcheck:
       # dagster 자신의 grpc health protocol — 프로세스 존재가 아니라 gRPC
       # 서버가 실제로 응답하는지를 본다.
@@ -1656,6 +1764,10 @@ services:
         condition: service_healthy
       pinvi-db-init:
         condition: service_completed_successfully
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-pinvi:
+        condition: service_completed_successfully
       pinvi-api:
         condition: service_healthy
       # ADR-069 — webserver는 이제 code location을 직접 import하지 않는다.
@@ -1681,10 +1793,10 @@ services:
       # 엄밀히는 앱 DSN이 필요 없다 — 하지만 이 컷오버 직후 관측 기간 동안은
       # 제거하지 않는다(부작용 없음, 혹시 모를 Dagster UI 내부 경로의 암묵
       # 의존을 배제하기 전까지 안전한 쪽을 택한다). 안정 확인 후 제거 후보.
-      PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}
+      PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}
       # Dagster instance storage. **scheme이 앱 DSN과 다르다** —
       # dagster-postgres는 psycopg2(동기)를 쓰므로 `+asyncpg`를 붙이면 안 된다.
-      PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_DAGSTER_DB:-pinvi_dagster}
+      PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}
     ports:
     - ${PINVI_DAGSTER_PORT:-12802}:${PINVI_DAGSTER_PORT:-12802}
     healthcheck:
@@ -1714,6 +1826,10 @@ services:
       pinvi-postgres:
         condition: service_healthy
       pinvi-db-init:
+        condition: service_completed_successfully
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-pinvi:
         condition: service_completed_successfully
       # ADR-069 — daemon도 더 이상 code location을 직접 import하지 않는다.
       # "code location이 로드 가능한가"의 신호는 이제 webserver가 아니라
@@ -1773,11 +1889,11 @@ services:
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       # webserver와 **같은 instance storage**를 봐야 한다. 다르면 schedule 켜짐
       # 상태와 run 이력이 갈려 UI에 보이는 것과 실제로 도는 것이 달라진다.
-      PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_DAGSTER_DB:-pinvi_dagster}
+      PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}
       # ADR-069: daemon은 code location을 더 이상 직접 import하지 않는다
       # (run worker는 이제 code-server의 자식이다) — 엄밀히는 앱 DSN이 필요
       # 없지만, webserver와 같은 이유로 컷오버 직후에는 제거하지 않는다.
-      PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}
+      PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}
     healthcheck:
       # dagster의 정식 판정. required daemon 전부의 heartbeat 신선도를 보고
       # 하나라도 낡으면 exit 1이다 — 프로세스 존재만 보는 pgrep류와 다르다.

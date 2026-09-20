@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
@@ -283,9 +284,23 @@ def test_concierge_postgres_data_bind_is_in_canonical_candidate_allowlist() -> N
     )
 
 
+def _shared_postgres_contract_pgdata() -> str:
+    """ADR-46 — kor-travel-shared-postgres resolved bind이 요구하는, 실제로 존재하는 경로.
+
+    `PINVI_PGDATA`(362행)는 이미 존재하는 checkout 디렉터리를 우연히 재사용하는
+    기존 관행이다. 여기서는 그 관행에 기대지 않고 직접 만든다 — 이 값이 없는
+    환경(CI 등)에서도 안전하다.
+    """
+
+    path = Path(tempfile.gettempdir()) / "ktdm-shared-postgres-contract-pgdata"
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 def _compose_contract_environment() -> dict[str, str]:
     return {
         **os.environ,
+        "KOR_TRAVEL_SHARED_PGDATA": _shared_postgres_contract_pgdata(),
         "COMPOSE_PROJECT_NAME": "ktdm-f1d-compose-contract",
         "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET": "a" * 32,
         "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET": "s" * 32,
@@ -370,6 +385,10 @@ def _compose_contract_environment() -> dict[str, str]:
         "PINVI_MIGRATOR_DB_USER": "pinvi_contract_migrator",
         "PINVI_MIGRATOR_DB_PASSWORD": "pinvi-contract-migrator-password",
         "PINVI_ENVIRONMENT": "production",
+        # ADR-46 — PinVi 앱/Dagster DSN이 실제로 접속하는 공용 instance의 cluster
+        # 관리자 비밀번호. `kor-travel-shared-db-init-pinvi`/`pinvi-shared-db-runtime-role`
+        # 둘 다 이 secret을 참조한다.
+        "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD": "shared-contract-postgres-password",
     }
 
 
@@ -435,14 +454,27 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
             if dependency not in services:
                 # DB service는 F1D target identity의 일부이므로 실제 Compose 정의를
                 # 유지한다. 나머지 dependency의 실행 내용은 이 계약의 대상이 아니다.
-                if dependency in {"pinvi-postgres", "pinvi-db-init"}:
+                # ADR-46 — 공용 instance 두 서비스도 같은 이유로 실제 정의가 필요하다:
+                # `kor-travel-shared-postgres`는 `_declared_postgres_compose_services()`에
+                # 등록돼 있어(config/docker-targets.yml), alpine stub으로 두면
+                # POSTGRES_INITDB_ARGS가 없다며 전역 술어가 거부한다.
+                if dependency in {
+                    "pinvi-postgres",
+                    "pinvi-db-init",
+                    "kor-travel-shared-postgres",
+                    "kor-travel-shared-db-init-pinvi",
+                }:
                     services[dependency] = deepcopy(source_services[dependency])
                 else:
                     # 실제 resolver가 dependency graph를 검증하게 이름만 최소 stub으로 둔다.
                     services[dependency] = {"image": "alpine:3.20"}
 
     fragment: dict[str, object] = {"services": services}
-    if "kor-travel-map-postgres" in services or "pinvi-postgres" in services:
+    if (
+        "kor-travel-map-postgres" in services
+        or "pinvi-postgres" in services
+        or "kor-travel-shared-postgres" in services
+    ):
         source_secrets = _source_compose().get("secrets")
         assert isinstance(source_secrets, dict)
         fragment["secrets"] = {}
@@ -453,6 +485,10 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
         if "pinvi-postgres" in services:
             fragment["secrets"]["pinvi-postgres-password"] = deepcopy(
                 source_secrets["pinvi-postgres-password"]
+            )
+        if "kor-travel-shared-postgres" in services:
+            fragment["secrets"]["kor-travel-shared-postgres-password"] = deepcopy(
+                source_secrets["kor-travel-shared-postgres-password"]
             )
     return fragment
 
@@ -1251,7 +1287,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert isinstance(drifted_pinvi_environment, dict)
     drifted_pinvi_environment["PINVI_DATABASE_URL"] = (
         "postgresql+asyncpg://pinvi_contract_app:pinvi-contract-app-password@"
-        "127.0.0.1:12800/wrong_database"
+        "127.0.0.1:11000/wrong_database"
     )
     with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
         validate_resolved_compose_candidate_protected_values(
@@ -1270,7 +1306,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert isinstance(encoded_pinvi_environment, dict)
     encoded_pinvi_environment["PINVI_DATABASE_URL"] = (
         "postgresql+asyncpg://pinvi_contract_app:pinvi-contract-app%2Dpassword@"
-        "127.0.0.1:12800/pinvi"
+        "127.0.0.1:11000/pinvi"
     )
     assert (
         validate_resolved_compose_candidate_protected_values(
@@ -1291,7 +1327,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         leaked_pinvi_environment = leaked_pinvi_api["environment"]
         assert isinstance(leaked_pinvi_environment, dict)
         leaked_pinvi_environment["PINVI_DATABASE_URL"] = (
-            f"postgresql+asyncpg://pinvi_contract_app:{leaked_password}@127.0.0.1:12800/pinvi"
+            f"postgresql+asyncpg://pinvi_contract_app:{leaked_password}@127.0.0.1:11000/pinvi"
         )
         with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
             validate_resolved_compose_candidate_protected_values(
@@ -1309,7 +1345,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     admin_environment = admin_bootstrap["environment"]
     assert isinstance(admin_environment, dict)
     admin_environment["PINVI_DATABASE_URL"] = (
-        "postgresql+asyncpg://pinvi_contract_app:pinvi-contract-app-password@127.0.0.1:12800/pinvi"
+        "postgresql+asyncpg://pinvi_contract_app:pinvi-contract-app-password@127.0.0.1:11000/pinvi"
     )
     with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
         validate_resolved_compose_candidate_protected_values(
@@ -1327,6 +1363,18 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
             environment=wrong_pinvi_port,
+        )
+
+    # ADR-46 — 앱/Dagster DSN이 실제로 접속하는 공용 instance 포트도 같은 자리에서
+    # 독립적으로 고정된다.
+    wrong_pinvi_shared_port = dict(environment)
+    wrong_pinvi_shared_port["KOR_TRAVEL_SHARED_DB_PORT"] = "12900"
+    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=wrong_pinvi_shared_port,
         )
 
     repeated_pinvi_role = dict(environment)
@@ -1359,7 +1407,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert isinstance(resolved_repeated_admin_environment, dict)
     resolved_repeated_admin_environment["PINVI_DATABASE_URL"] = (
         "postgresql+asyncpg://pinvi_contract_migrator:pinvi-contract-app-password@"
-        "127.0.0.1:12800/pinvi"
+        "127.0.0.1:11000/pinvi"
     )
     with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
         validate_resolved_compose_candidate_protected_values(
@@ -1389,7 +1437,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert isinstance(resolved_runtime_api_environment, dict)
     resolved_runtime_api_environment["PINVI_DATABASE_URL"] = (
         "postgresql+asyncpg://pinvi_contract_app:pinvi-contract-postgres-password@"
-        "127.0.0.1:12800/pinvi"
+        "127.0.0.1:11000/pinvi"
     )
     with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
         validate_resolved_compose_candidate_protected_values(
@@ -1419,7 +1467,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert isinstance(resolved_migrator_admin_environment, dict)
     resolved_migrator_admin_environment["PINVI_DATABASE_URL"] = (
         "postgresql+asyncpg://pinvi_contract_migrator:pinvi-contract-postgres-password@"
-        "127.0.0.1:12800/pinvi"
+        "127.0.0.1:11000/pinvi"
     )
     with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
         validate_resolved_compose_candidate_protected_values(
@@ -4259,32 +4307,71 @@ def _s4_without_pinvi_services(
             "pinvi-db-init",
             "pinvi-db-runtime-role",
             "pinvi-admin-bootstrap",
+            # ADR-46 — pinvi-api/pinvi-admin-bootstrap의 depends_on을 통해서만 이
+            # 최소 fragment에 들어온다. 그 둘을 지우면 이 두 서비스도 pinvi
+            # family와 함께 지워야 "PinVi가 scope 밖" 시뮬레이션이 유지된다.
+            "kor-travel-shared-postgres",
+            "kor-travel-shared-db-init-pinvi",
         ),
     )
 
 
 @pytest.mark.parametrize(
-    ("label", "mutation"),
+    ("label", "mutation", "expected_error"),
     [
-        ("포트 핀", {"PINVI_DB_PORT": "12900"}),
-        ("Map 대역 탈취", {"PINVI_DB_PORT": "12700"}),
-        ("role 이름 충돌(owner 쌍)", {"PINVI_MIGRATION_OWNER": "pinvi_app_owner",
-                                    "PINVI_APP_SCHEMA_OWNER": "pinvi_app_owner"}),
-        ("role 이름 정규식", {"PINVI_APP_SCHEMA_OWNER": "Bad-Owner"}),
-        ("password 3자 비동일(root=app)", {"PINVI_APP_DB_PASSWORD": "__ROOT__"}),
+        (
+            "전용 instance 포트 핀",
+            {"PINVI_DB_PORT": "12900"},
+            "PinVi database URL identity is invalid",
+        ),
+        (
+            "Map 대역 탈취(전용 instance)",
+            {"PINVI_DB_PORT": "12700"},
+            "PinVi database URL identity is invalid",
+        ),
+        (
+            "공용 instance 포트 핀",
+            {"KOR_TRAVEL_SHARED_DB_PORT": "12800"},
+            "PinVi database URL identity is invalid",
+        ),
+        (
+            "role 이름 충돌(owner 쌍)",
+            {
+                "PINVI_MIGRATION_OWNER": "pinvi_app_owner",
+                "PINVI_APP_SCHEMA_OWNER": "pinvi_app_owner",
+            },
+            "PinVi database URL identity is invalid",
+        ),
+        (
+            "role 이름 정규식",
+            {"PINVI_APP_SCHEMA_OWNER": "Bad-Owner"},
+            "PinVi database URL identity is invalid",
+        ),
+        (
+            "password 3자 비동일(root=app)",
+            {"PINVI_APP_DB_PASSWORD": "__ROOT__"},
+            "PinVi database URL identity is invalid",
+        ),
     ],
 )
 def test_pinvi_database_env_invariants_survive_without_the_services(
     label: str,
     mutation: dict[str, str],
+    expected_error: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """**S3-c의 핵심.** PinVi 서비스가 scope 밖이어도 env 불변식은 남는다.
 
-    `PINVI_DB_PORT == 12800` 고정이 특히 아프다. 감사가 구체적 피해를 지목했다 —
-    `12700`이면 두 PostgreSQL이 모두 `network_mode: host`로 127.0.0.1:12700을 잡는
-    후보가 통과하고(**Map 전용 대역 탈취**), 저장소에 host 포트 충돌 검사는 없다.
+    ADR-46 이후 포트 핀은 둘이다 — `PINVI_DB_PORT == 12800`(전용 instance 자신의
+    listen 포트)과 `KOR_TRAVEL_SHARED_DB_PORT == 11000`(앱/Dagster DSN이 실제로
+    접속하는 공용 instance 포트). 둘 다 `_validate_pinvi_database_url_environment`
+    **한 함수**가 계속 쥔다 — `_validate_pinvi_postgres_identity`/
+    `_validate_pinvi_db_init_presence`는 `PINVI_DB_PORT`를 환경에서 그대로 파생해
+    resolved 후보와 자기-일관성만 볼 뿐, `.env` 자체의 드리프트는 못 잡는다. 감사가
+    구체적 피해를 지목했다 — 전용 instance 포트가 `12700`이면 두 PostgreSQL이 모두
+    `network_mode: host`로 127.0.0.1:12700을 잡는 후보가 통과하고(**Map 전용 대역
+    탈취**), 저장소에 host 포트 충돌 검사는 없다.
 
     role 이름의 owner 쌍(`PINVI_APP_SCHEMA_OWNER`/`PINVI_MIGRATION_OWNER`)도 중요하다 —
     그 둘은 **어느 DSN에도 나타나지 않으므로** per-service DSN 비교가 구조적으로 볼 수
@@ -4300,9 +4387,7 @@ def test_pinvi_database_env_invariants_survive_without_the_services(
             mutated_environment["PINVI_POSTGRES_PASSWORD"] if value == "__ROOT__" else value
         )
 
-    with pytest.raises(
-        ComposeCandidateContractError, match="PinVi database URL identity is invalid"
-    ):
+    with pytest.raises(ComposeCandidateContractError, match=expected_error):
         validate_compose_candidate_protected_values(
             shaped,
             compose_path=str(_COMPOSE_PATH),
@@ -4344,7 +4429,12 @@ def test_the_env_half_does_not_look_at_services_at_all() -> None:
 def test_the_port_pin_is_still_enforced_with_every_service_present(
     tmp_path: Path,
 ) -> None:
-    """게이팅 없이도 포트 핀이 돈다 — 분리가 기존 강제를 잃지 않았다는 증거."""
+    """게이팅 없이도 포트 핀이 돈다 — 분리가 기존 강제를 잃지 않았다는 증거.
+
+    ADR-46 이후에도 `PINVI_DB_PORT == 12800`은 `_validate_pinvi_database_url_environment`
+    (전역 절반)가 계속 쥔다 — 공용 instance 포트(`KOR_TRAVEL_SHARED_DB_PORT`)가
+    새로 생겼을 뿐, 전용 instance 포트 핀은 그대로다.
+    """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
     mutated_environment = {**environment, "PINVI_DB_PORT": "12900"}

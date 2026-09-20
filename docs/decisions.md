@@ -3053,3 +3053,134 @@ radius는 "DSN이 가리키는 곳"으로 한정된다.
   `pg_restore` cutover, DSN 전환, live 검증은 이어지는 별도 단계에서 수행하고 결과를
   `docs/journal.md`(docker-manager)와 kor-travel-geo의 `docs/journal.md`에 남긴다.
 - map/pinvi의 이전 여부·시점은 이 ADR도 정하지 않는다.
+
+## ADR-46: PinVi를 공용 제어 평면 PostgreSQL instance(`:11000`)로 이전한다 — 데이터 보존 없이, ADR-44의 pinvi 범위 확장
+
+- 상태: accepted (구현 진행 중 — instance·role·database·DSN 배선은 이 변경으로
+  만들어졌고, n150에서의 실제 fresh bootstrap 실행은 별도 배포 단계에서 수행한다)
+- 날짜: 2026-09-20
+- 결정자: 사용자("kor-travel-shared-postgres로 db를 옮겨놔", "데이터 보존 불필요",
+  AskUserQuestion 답변 "둘 다(pinvi + pinvi_dagster)"), Claude
+- 관련: ADR-37, ADR-44, `platform-topology.md` §7, `docs/ports.md`,
+  `config/docker-targets.yml`, PinVi 저장소 ADR-069·
+  `infra/postgres/bootstrap-pinvi-runtime-role.sh`, PinVi PR #558/#356/#559/#358
+
+### 컨텍스트
+
+ADR-44는 "concierge만" 공용 instance로 이전하며 "geo/map/pinvi의 이전 여부·시점은 이
+ADR이 정하지 않는다"고 명시했다. 사용자가 이번 턴에 PinVi도 이전하라고 지시했고,
+데이터 보존은 필요 없다고 별도로 밝혔다(작업 도중 인터럽트로 전달). 후속 질문에 대한
+답으로, `pinvi`(앱 DB)와 `pinvi_dagster`(Dagster 메타DB) 둘 다 이전 대상임을
+확인받았다 — PinVi 전용 instance(`pinvi-postgres`, `:12800`) 전체를 사실상 폐역하는
+결정이다.
+
+조사로 확인한 제약(ADR-44의 concierge 사례와 다른 지점들):
+
+- **PinVi는 concierge와 달리 이미 자체 다중 role 보안 모델(M05)을 갖고 있다.**
+  `bootstrap-pinvi-runtime-role.sh`가 root bootstrap 계정과 별개로 4개 role
+  (`PINVI_APP_DB_USER`/`PINVI_APP_SCHEMA_OWNER`/`PINVI_MIGRATION_OWNER`/
+  `PINVI_MIGRATOR_DB_USER`)을 만들고, `x_extension`/`ops`/`pinvi_internal` 스키마와
+  자체 CONNECT 격리(REVOKE/GRANT)까지 스스로 수행한다. 이 스크립트는 **fresh
+  database에서 처음부터 role topology를 구성하도록 설계돼 있어**, 데이터 보존이
+  필요 없는 이번 이전과 정확히 맞는다 — concierge처럼 새 role을 Manager
+  db-init에서 만들 필요가 없다.
+- **그 스크립트는 endpoint를 하드코딩된 allowlist로 검증한다** —
+  `app-postgres:5432`/`127.0.0.1:12800`만 허용했다. 공용 instance(`127.0.0.1:11000`)를
+  쓰려면 PinVi 저장소 쪽에서 이 allowlist를 먼저 넓혀야 했다(PinVi 자체 PR, 이
+  ADR의 범위 밖).
+- **`root bootstrap` 계정은 superuser급 권한이 필요하다** — 스크립트가
+  `pg_catalog.pg_authid` 등을 `ACCESS EXCLUSIVE`로 잠그므로, 전용 instance에서는
+  그 instance 자신의 superuser(`PINVI_POSTGRES_USER`)였던 이 역할이 공용
+  instance에서는 cluster 관리자(`shared_admin`/`KOR_TRAVEL_SHARED_POSTGRES_USER`)로
+  바뀐다 — concierge처럼 "cluster 관리자는 앱에 노출하지 않는다"는 원칙은 지키되,
+  이 **root-only bootstrap one-shot**(`profile: bootstrap`, 정상 런타임에는 포함되지
+  않음)만 예외로 그 계정을 받는다.
+- **`pinvi_dagster`는 M05 범위 밖이다** — 그 스크립트가 만드는 것은 `pinvi`
+  하나뿐이고, `pinvi_dagster`는 기존 `pinvi-db-init`처럼 `PINVI_APP_DB_USER` 소유의
+  평범한 database다. 그 role은 M05 bootstrap이 만들기 전에는 존재하지 않으므로,
+  새 `kor-travel-shared-db-init-pinvi`는 role 부재 시 `pinvi_dagster` 생성을
+  조용히 건너뛰고 멱등하게 재실행 가능해야 한다(순서: db-init → role bootstrap
+  (수동, profile bootstrap) → db-init 재실행).
+- **PinVi는 `ktdctl pinvi-pair rebuild-pinned --confirm`이라는 별도의 pinned-image
+  재구축 계약(`c6c_deployment.py`)의 대상이다** — concierge에는 이런 계약이 없다.
+  이 계약은 `PINVI_DATABASE_URL`/`PINVI_DAGSTER_PG_URL`의 포트를 `PINVI_DB_PORT
+  == 12800`으로 하드핀했다. 그대로 두면 DSN만 공용 instance로 바꿔도 다음
+  `rebuild-pinned`가 그 컴포즈 후보를 비정상으로 판정해 거부한다 — 이 ADR은 이
+  계약도 함께 확장한다.
+
+### 결정
+
+**PinVi의 `pinvi`(앱)와 `pinvi_dagster`(Dagster 메타DB) 둘 다** `kor-travel-shared-postgres`
+(`:11000`)로 이전한다. **데이터는 옮기지 않는다** — 사용자 지시에 따라 공용 instance에
+fresh 상태로 만들고, 옛 `pinvi-postgres`(`:12800`)의 기존 데이터는 그대로 둔 채
+폐기하지 않는다(롤백 안전망, concierge와 같은 패턴).
+
+구체적으로:
+
+- Manager `docker-compose.yml`에 `kor-travel-shared-db-init-pinvi`(`pinvi` database
+  생성 + `pinvi_dagster`를 role 존재 조건부로 생성)와 `pinvi-shared-db-runtime-role`
+  (profile `bootstrap`, PinVi의 M05 bootstrap 스크립트를 공용 instance 대상으로
+  재실행하는 root-only one-shot) 두 서비스를 추가한다. 옛 `pinvi-postgres`/
+  `pinvi-db-init`/`pinvi-db-runtime-role`은 **손대지 않는다** — 롤백 안전망으로
+  그대로 관리한다.
+- `pinvi-api`/`pinvi-admin-bootstrap`/`pinvi-dagster`/`pinvi-dagster-code-server`/
+  `pinvi-dagster-daemon`의 `PINVI_DATABASE_URL`/`PINVI_DAGSTER_PG_URL`을
+  `${PINVI_DB_PORT:-12800}`에서 `${KOR_TRAVEL_SHARED_DB_PORT:-11000}`로 바꾼다.
+  role 이름(`PINVI_APP_DB_USER` 등)과 database 이름(`pinvi`/`pinvi_dagster`)은
+  **그대로 재사용한다** — 서로 다른 물리 cluster라 이름이 겹쳐도 충돌하지 않고,
+  M05 스크립트 자신의 인터페이스이기도 하다. 이 다섯 서비스의 `depends_on`에
+  `kor-travel-shared-postgres`/`kor-travel-shared-db-init-pinvi`를 추가하되, 옛
+  `pinvi-postgres`/`pinvi-db-init` 의존은 유지한다(concierge와 같은 이유 —
+  롤백 안전망도 같이 건강해야 한다).
+- `c6c_deployment.py`: `_PINVI_SHARED_POSTGRES_PORT`(11000) 상수를 새로 두고,
+  `_pinvi_dsn`/`_validate_pinvi_database_url_environment`가 `PINVI_DATABASE_URL`/
+  `PINVI_DAGSTER_PG_URL`의 포트 핀을 `KOR_TRAVEL_SHARED_DB_PORT == 11000`으로
+  바꾼다. `PINVI_DB_PORT == 12800` 핀은 **같은 함수 안에 별도 조건으로 남긴다** —
+  전용 instance(`pinvi-postgres`/`pinvi-db-init`) 자신의 포트는 그대로 검증해야
+  Map 대역(`12700`) 탈취 같은 기존 방어가 유지된다. 새 두 서비스는
+  `_CANDIDATE_NAMEABLE_SERVICE_NAMES`에 등록해 오류 메시지에서 이름이 보이게 하고,
+  `pinvi-shared-db-runtime-role`의 role env 참조는 `_PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES`에서
+  **파생**(POSTGRES_USER/PINVI_DB_PORT만 재정의)해 protected-reference leak-scan을
+  통과시킨다. 두 서비스의 shape 자체를 바이트 단위로 고정하는 전용 validator는
+  **쓰지 않았다** — 옛 두 서비스(`pinvi-postgres`/`pinvi-db-init`/
+  `pinvi-db-runtime-role`)가 받는 것과 같은 수준의 exact-match 보호는 이 ADR의
+  범위 밖이며, 필요해지면 별도 작업으로 추가한다.
+- `config/docker-targets.yml`: `pinvi` target의 `services`에 두 서비스 추가(옛
+  `pinvi-postgres`는 유지), `pinvi-shared-db-runtime-role`은 `pinvi-db-runtime-role`과
+  같은 이유로 `services`에 넣지 않는다(bootstrap profile, ensure 대상 아님).
+  `compose_binds`에 `pinvi-shared-db-runtime-role`의 스크립트 bind 허용 항목 추가.
+- PinVi 저장소: `bootstrap-pinvi-runtime-role.sh`의 endpoint allowlist에
+  `127.0.0.1:11000` 추가(별도 PinVi PR).
+
+### 근거
+
+PinVi를 concierge 다음으로 고른 것은 사용자가 직접 지시했기 때문이고, 데이터
+보존을 요구하지 않은 것도 사용자의 명시적 결정이다(PinVi 사용자 데이터가 실 서비스
+데이터임에도 이 선택을 했다 — 재현 가능한 손실로 판단한 것으로 이해한다). M05
+role topology를 그대로 재사용하기로 한 것은, 이미 존재하는 보안 설계를 공용
+instance라는 이유만으로 단순화(예: concierge 같은 단일 role 모델로 축소)하는 것이
+PinVi 자체의 다중 role 분리(app/schema-owner/migration-owner/migrator) 설계 의도를
+훼손하기 때문이다 — "같은 스크립트, 다른 endpoint"가 가장 작은 변경이었다.
+
+### 결과
+
+위 "결정" 절의 각 파일 변경이 실제 diff다. 검증: `pytest`(Manager backend
+전체, 이 변경 전후 실패 집합 동일 — 사전 존재하는 무관한 flake 1건 제외),
+`docker compose config` 기반 raw/resolved C6c 계약 테스트(`test_f1d_compose_contract.py`)
+226건 통과.
+
+### 확인하지 않은 것
+
+- n150에서의 실제 fresh bootstrap 실행(`kor-travel-shared-db-init-pinvi` →
+  `pinvi-shared-db-runtime-role` → `kor-travel-shared-db-init-pinvi` 재실행 →
+  `DATABASE_URL` 전환 → 재기동·live 검증)은 별도 배포 단계에서 수행하고 결과를
+  `docs/journal.md`에 남긴다.
+- 옛 `pinvi-postgres` instance의 폐기 시점·조건은 이 ADR이 정하지 않는다
+  (concierge와 같은 미해결 상태 — `shared-postgres-onboarding.md` P12 참고).
+- `pinvi-shared-db-runtime-role`을 `ktdctl pinvi-pair rebuild-pinned`의
+  role-topology 재검증 시퀀싱(`pinvi_database_role_credentials.py` 등)에 통합할지는
+  이 ADR이 정하지 않는다 — 이번 이전은 그 시퀀싱과 독립적인, 수동 실행되는 root-only
+  one-shot으로 취급했다.
+- `pinvi_dagster`가 향후 §7 2단계(`dagster_shared`)로 다시 이전될 때, 이번 이전으로
+  생긴 공용 instance 안의 `pinvi_dagster`를 어떻게 승계할지는 정하지 않았다
+  (`platform-topology.md` §7 참고).
