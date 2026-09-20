@@ -355,16 +355,7 @@ services:
     image: postgis/postgis:16-3.5
     container_name: ${KOR_TRAVEL_SHARED_POSTGRES_CONTAINER:-kor-travel-shared-postgres}
     restart: unless-stopped
-    # host networking(다른 모든 kor-travel-* 서비스의 플랫폼 전역 원칙)이었으나,
-    # weather처럼 자기 compose project를 따로 갖는 "외부 target"은 host 네임스페이스
-    # 밖이라 host.docker.internal(브리지 게이트웨이 IP) 경유로도 이 instance에
-    # 닿지 못한다(listen_addresses=127.0.0.1이 그 인터페이스를 아예 안 듣는다 —
-    # 2026-09-20 weather PR#63/#64에서 ConnectionRefusedError로 실측). 전용 브리지
-    # `kor-travel-shared-net`에 옮겨 서비스명 DNS로 닿게 한다. geo/concierge/map/
-    # pinvi 등 host-mode 소비자는 아래 `ports:`의 127.0.0.1 퍼블리시가
-    # (EnableUserlandProxy로) 계속 살려주므로 코드 변경이 필요 없다.
-    networks:
-    - kor-travel-shared-net
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     environment:
       POSTGRES_USER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
       # cluster 관리용 계정이다 — 앱에는 절대 주입하지 않는다. 앱은 아래
@@ -381,23 +372,7 @@ services:
     command:
     - postgres
     - -c
-    # 브리지 게이트웨이 IP(10.88.0.1)를 명시적으로 더하는 시도는 실패한다 --
-    # 그 주소는 컨테이너 자신의 것이 아니라 브리지 인프라 소유라
-    # "could not bind IPv4 address \"10.88.0.1\": Cannot assign requested
-    # address"로 postgres가 조용히 그 주소만 건너뛴다(FATAL이 아니라 WARNING
-    # 이라 컨테이너는 healthy로 뜬다 -- 2026-09-20 n150 실측, concierge
-    # 연결이 몇 분간 끊겼다). 대신 0.0.0.0을 쓴다 -- 이 서비스는
-    # network_mode: host가 아니라 networks:(브리지 전용)이므로 0.0.0.0은
-    # **컨테이너 자신의 네임스페이스 안**(loopback + 이 컨테이너의 브리지 IP)
-    # 으로만 스코프되고, 실 LAN(wlp2s0, 192.168.1.0/24)은 그 네임스페이스
-    # 밖이라 애초에 보이지 않는다 -- network_mode: host였다면 0.0.0.0이 그
-    # 실 인터페이스까지 들었겠지만 여기는 다르다. pg_hba.conf가 추가
-    # 방어선이다 -- catch-all(`host all all all scram-sha-256`)을 걷어내고
-    # loopback 전용 기본 규칙(all/all, initdb 표준) + kor_travel_weather_dagster_app
-    # 전용 스코프 규칙만 남겼다(n150 로컬 파일, POSTGRES_INITDB_ARGS는 initdb
-    # 시점에만 적용되므로 이 compose 변경으로는 안 바뀐다 -- 별도로
-    # 편집·reload했다).
-    - listen_addresses=0.0.0.0
+    - listen_addresses=127.0.0.1
     - -p
     - ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
     - -c
@@ -556,58 +531,6 @@ services:
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_DAGSTER_SHARED_DB\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_SHARED_DB\" TO \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\""
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\""
-
-  # weather는 host 네임스페이스 밖의 "외부 target"이라 role/db를
-  # kor-travel-shared-net(전용 브리지, 위 kor-travel-shared-postgres 서비스 주석
-  # 참고) 경유로만 쓴다 — 그래서 이 one-shot도 host가 아니라 그 브리지에 붙는다
-  # (concierge/geo와의 유일한 위상 차이). role/db는 실측으로 이미 존재를 확인했다
-  # (2026-09-20) — 이 문장은 존재 여부와 무관하게 멱등이고, 매 실행마다 비밀번호를
-  # 최신 secret으로 맞춘다.
-  kor-travel-shared-db-init-weather:
-    image: postgis/postgis:16-3.5
-    container_name: ${KOR_TRAVEL_SHARED_DB_INIT_WEATHER_CONTAINER:-kor-travel-shared-db-init-weather}
-    networks:
-    - kor-travel-shared-net
-    restart: "no"
-    depends_on:
-      kor-travel-shared-postgres:
-        condition: service_healthy
-    environment:
-      PGHOST: kor-travel-shared-postgres
-      PGPORT: ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
-      PGUSER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
-      PGDATABASE: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
-      KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB: ${KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB:-kor_travel_weather_dagster}
-      KOR_TRAVEL_WEATHER_SHARED_APP_USER: ${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_dagster_app}
-    secrets:
-    - source: kor-travel-shared-postgres-password
-      target: /run/secrets/kor-travel-shared-postgres-password
-    - source: kor-travel-weather-shared-app-password
-      target: /run/secrets/kor-travel-weather-shared-app-password
-    # concierge/geo db-init과 동일한 이유로 `|| true` 삼킴을 쓰지 않는다. Dagster
-    # instance storage는 순수 관계형 스키마라 postgis 등 확장이 필요 없다 — geo의
-    # 앱 DB와 달리 여기서는 CREATE EXTENSION을 내지 않는다.
-    command:
-    - sh
-    - -ec
-    - |
-      PGPASSWORD="$$(cat /run/secrets/kor-travel-shared-postgres-password)"
-      export PGPASSWORD
-      APP_PASSWORD="$$(cat /run/secrets/kor-travel-weather-shared-app-password)"
-      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$KOR_TRAVEL_WEATHER_SHARED_APP_USER'" | grep -q 1; then
-        echo "role $$KOR_TRAVEL_WEATHER_SHARED_APP_USER already exists"
-        psql -d "$$PGDATABASE" -c "ALTER ROLE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
-      else
-        psql -d "$$PGDATABASE" -c "CREATE ROLE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
-      fi
-      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB'" | grep -q 1; then
-        echo "database $$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB already exists"
-      else
-        createdb -O "$$KOR_TRAVEL_WEATHER_SHARED_APP_USER" "$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB"
-      fi
-      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PGDATABASE\" FROM PUBLIC"
-      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB\" FROM PUBLIC"
-      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\""
 
   # ADR-46 — PinVi가 세 번째로 합류하는 프로젝트다. `pinvi` database만 만든다(소유자는
   # 이 role 자신 — bootstrap-pinvi-runtime-role.sh가 기대하는 root bootstrap owner가
@@ -2322,14 +2245,6 @@ services:
     volumes:
     - ${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}:/app/data/backups
 
-networks:
-  # kor-travel-shared-postgres 전용 브리지. host 네임스페이스 밖의 "외부 target"
-  # (weather, 추후 transport)이 서비스명 DNS로 닿는 유일한 경로다 — 이름만 알면
-  # join 가능하므로 이 네트워크에 붙는 프로젝트는 `docs/integration-map.md`의
-  # allowlist에 먼저 등재한다.
-  kor-travel-shared-net:
-    external: true
-
 secrets:
   kor-travel-geo-postgres-password:
     environment: KOR_TRAVEL_GEO_POSTGRES_PASSWORD
@@ -2345,5 +2260,3 @@ secrets:
     environment: KOR_TRAVEL_CONCIERGE_SHARED_APP_PASSWORD
   kor-travel-geo-shared-app-password:
     environment: KOR_TRAVEL_GEO_SHARED_APP_PASSWORD
-  kor-travel-weather-shared-app-password:
-    environment: KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD

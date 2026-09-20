@@ -163,51 +163,6 @@ PostgreSQL advisory lock은 **database 단위로 스코프**된다. 같은 키�
 
 컨테이너 안에서 `docker exec --user postgres ... psql -U shared_admin`이 비밀번호 없이 붙는 것은 unix socket이 `trust`이기 때문이다. Manager의 백업 모듈도 바로 그 경로를 쓴다("어떤 postgres 비밀번호도 읽거나 다루지 않는다"). **운영 작업(§7의 덤프·복원)은 그 소켓 경로를 쓰고, 네 앱은 그 경로를 쓰지 않는다** — 앱에게는 TCP + scram만이 접속 경로다.
 
-### 4.1-bis 네 프로젝트가 "내부"인가 "외부"인가로 접속 경로가 갈린다
-
-geo/concierge/map/pinvi처럼 **Manager 자신의 `docker-compose.yml` 안에서** 뜨는
-프로젝트("내부 target")는 host networking을 공유하므로 위 표의 `127.0.0.1:11000`을
-그대로 쓴다 — 코드 변경이 필요 없다.
-
-weather/transport처럼 **자기 저장소의 독립된 compose로** 뜨는 프로젝트("외부
-target")는 별도 docker bridge network를 쓰므로 `127.0.0.1`로 이 instance에
-닿지 못한다(2026-09-20 weather 실측 — `host.docker.internal` 경유 시도가
-`listen_addresses`가 그 인터페이스를 듣지 않아 `ConnectionRefusedError`).
-**전용 브리지 `kor-travel-shared-net`에 join해 서비스명 DNS로 접속한다**:
-
-```
-postgresql+asyncpg://<app_role>:<password>@kor-travel-shared-postgres:11000/<database>
-```
-
-합류하려면 (1) 네 compose의 해당 서비스에 `networks: [default, kor-travel-shared-net]`를
-추가하고(`default`를 빼먹으면 프로젝트 내부 서비스 간 접속이 조용히 깨진다),
-(2) `kor-travel-shared-net`은 Manager가 `docker network create`로 미리 만들어
-둔 **external** 네트워크이므로 네 compose에도 `networks: { kor-travel-shared-net:
-{ external: true } }` 선언이 필요하다. 이름만 알면 누구나 join할 수 있으므로,
-합류 전에 이 문서(§9)에 프로젝트를 적어 두는 것을 관례로 한다 — 2026-09-20
-기준 join 허용: weather(dagster-code-server/webserver/daemon 3개뿐, 그 프로젝트의
-api/web 등 나머지 서비스는 join하지 않는다).
-
-**이 브리지를 열기 위해 `kor-travel-shared-postgres` 쪽이 바뀐 것**(2026-09-20,
-n150 실측): `network_mode: host`에서 `networks: [kor-travel-shared-net]`로,
-`listen_addresses`는 `127.0.0.1`에서 `0.0.0.0`으로. **처음엔 `127.0.0.1,10.88.0.1`
-(loopback + 브리지 게이트웨이 IP 명시)을 시도했다가 되돌렸다** — `10.88.0.1`은
-컨테이너 자신이 아니라 브리지 인프라가 소유한 주소라 postgres가 bind()하지
-못했고(`could not bind IPv4 address "10.88.0.1": Cannot assign requested
-address`, WARNING이라 healthcheck는 계속 green이었다), host-mode 소비자(예:
-concierge, 실 데이터 보유)가 쓰는 published-port 경로가 몇 분간 끊겼다. `0.0.0.0`이
-맞는 값이다 — 이 서비스는 `network_mode: host`가 아니라 `networks:`(브리지
-전용)이므로 `0.0.0.0`은 **컨테이너 자신의 네임스페이스 안**(loopback + 이
-컨테이너의 브리지 IP)으로만 스코프되고, 실 LAN(`wlp2s0`, `192.168.1.0/24`)은
-그 네임스페이스 밖이라 애초에 보이지 않는다. `0.0.0.0`은 **kor-travel-shared-postgres
-하나만** 허용된다 — map/geo/concierge/pinvi 자체 전용 인스턴스는 여전히
-`127.0.0.1` 단독만 허용한다(서비스 이름으로 가른다, 균일 허용이 아니다 —
-기존 회귀 테스트가 `0.0.0.0`을 그 서비스들의 "반드시 거부돼야 하는" 정본
-넓힘 사례로 쓰고 있었다). Manager의 compose 계약(`backend/tests/test_f1d_compose_contract.py`,
-`c6c_deployment.py`의 `_POSTGRES_SHARED_POSTGRES_CANONICAL_LISTEN_VALUES`/
-`_postgres_networks_value_is_canonical`)이 이 형태(서비스별 허용 값, `networks`
-키 값 둘 다, 부분 일치 불허)를 CI에서 강제한다.
-
 ### 4.2 네 app role의 권한
 
 db-init이 만드는 role은 정확히 이렇다:
