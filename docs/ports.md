@@ -98,7 +98,7 @@ gRPC로 접속하고, 외부에는 열지 않는다.
 | `kor-travel-concierge-postgres` | `12600` | `kor_travel_concierge`(**cutover 전까지는 활성 원본**, 이후 롤백 보관용 — 아래 참고) |
 | `kor-travel-map-postgres` | `12700` | `kor_travel_map`, `kor_travel_map_dagster` |
 | `pinvi-postgres` | `12800` | `pinvi` |
-| `kor-travel-shared-postgres` | `11000` | `kor_travel_concierge`(concierge 전용 role — cutover 완료 후 활성) |
+| `kor-travel-shared-postgres` | `11000` | `kor_travel_concierge`(concierge 전용 role — ADR-44 cutover 완료로 **현재 활성**. 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)) |
 
 다섯 instance 모두 loopback 전용이다. `db` target의 호환 이름은 Geo instance만 실행하며,
 Map·PinVi database provisioning은 각 Compose 서비스 또는 pinned workflow가 자기

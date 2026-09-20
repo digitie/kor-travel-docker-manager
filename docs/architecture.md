@@ -6,7 +6,7 @@
 
 ## 1. 개요
 
-`kor-travel-docker-manager`는 Kor Travel/PinVi 계열 서비스를 구동하기 위한 프로젝트별 전용 PostgreSQL/PostGIS 4개, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi Docker 컨테이너의 구동 상태를 모니터링하고 제어하는 시스템이다.
+`kor-travel-docker-manager`는 Kor Travel/PinVi 계열 서비스를 구동하기 위한 PostgreSQL/PostGIS 인스턴스 5개(프로젝트별 전용 4개 + 공용 제어 평면 `:11000` 1개 — ADR-37/ADR-44), RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi Docker 컨테이너의 구동 상태를 모니터링하고 제어하는 시스템이다.
 
 ```mermaid
 graph TD
