@@ -13,6 +13,8 @@
 - [/] standalone backup 운영 보강 — off-box 사본 자동화와 보존 정책을 완료한다.
 - [/] ktdctl UI migration — public generation 관측과 남은 M5~M7 UI 이관을, root CLI authority를 유지한 채 완료한다.
 - [/] journal/attestation drift — Manager generation receipt와 Map attestation의 execution binding field를 함께 정렬한다.
+- [ ] **concierge 백업 cron이 쓰기가 끊긴 옛 instance를 뜬다** — prod에 Manager 사본이 둘이다. 스택은 `/opt/kor-travel-docker-manager`에서 뜨는데(컨테이너 라벨이 그 경로를 가리킨다) `digitie` crontab은 `/home/digitie/kor-travel-docker-manager/scripts/run-standalone-backup.sh`를 부르고, 그 트리의 `backend/ktd_venv`는 같은 트리의 `backend/src`를 editable로 가리킨다. 그 사본은 #363을 못 받아 `_ROLE_CONFIG["concierge"]`가 아직 `kor-travel-concierge-postgres`(`:12600`)를 겨냥하고, 최근 `concierge-*.manifest`의 `"instance"`가 그 사실을 그대로 적는다. ADR-44 cutover 뒤 `:12600`은 롤백 보관용이라 **매일 03:30 백업이 변하지 않는 사본을 뜨고 있다.** 조사 근거: `docs/shared-postgres-onboarding.md` §1.1·§7.5.
+
 - [ ] non-root backend — root ownership을 유지하면서 service-group 접근 경계와 root/서비스 계정 mutation 검증을 완료한다.
 - [ ] atomic-write 프리미티브 잔여 통합 (GM-10 후속) — mkstemp 9곳 중 `standalone_backup.py` 1곳만 정본으로 이관됐고 나머지 8곳은 각각 정본 시그니처와 맞지 않는 이유가 있다(TOCTOU 재검사·strict 디렉터리 fsync 계약·hardlink 발행·`recovery_succeeded` 신호원). `runtime_pin_request.py`는 대상이 죽은 코드라 후속은 이관이 아니라 `replace_existing` 플래그 제거다. 조사 기록: `docs/journal.md` 2026-09-03 「tasks.md에서 이관한 조사 기록」.
 - [ ] LoginScreen.tsx를 `humanizeError`/`CODE_MESSAGES`로 옮긴다 — 다만 `require_frontend_origin`(403 `INVALID_ORIGIN`)이 bare 문자열이고 `CODE_MESSAGES`에도 없어, 먼저 그것을 봉투화하고 코드 매핑을 추가하지 않으면 원문 토큰이 화면에 노출되는 새 회귀가 생긴다. 조사 기록: `docs/journal.md` 2026-09-03 「tasks.md에서 이관한 조사 기록」.
