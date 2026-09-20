@@ -1,0 +1,8 @@
+# Manager가 소유하는 weather deploy/workspace.yaml 오버라이드. weather 자신의
+# 파일은 `host: dagster-code-server`(compose 서비스명 DNS)를 쓰는데,
+# network_mode: host에서는 그 이름이 해석되지 않는다 — 유일한 차이는 이것뿐이다.
+load_from:
+  - grpc_server:
+      host: 127.0.0.1
+      port: 14106
+      location_name: kortravelweather_dagster.definitions

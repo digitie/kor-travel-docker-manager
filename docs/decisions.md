@@ -3184,3 +3184,112 @@ PinVi 자체의 다중 role 분리(app/schema-owner/migration-owner/migrator) �
 - `pinvi_dagster`가 향후 §7 2단계(`dagster_shared`)로 다시 이전될 때, 이번 이전으로
   생긴 공용 instance 안의 `pinvi_dagster`를 어떻게 승계할지는 정하지 않았다
   (`platform-topology.md` §7 참고).
+
+## ADR-47: weather를 external target에서 Manager internal target으로 전환한다 — 앱·Dagster DB 둘 다 공용 instance로, 데이터 보존 없이
+
+- 상태: accepted (구현 진행 중 — compose 서비스·db-init·registry·포트 문서 배선은 이
+  변경으로 만들어졌고, n150에서의 실제 배포·cutover는 별도 단계에서 수행한다)
+- 날짜: 2026-09-20
+- 결정자: 사용자("weather, transport도 내부 target으로 바꿔", "weather 전체(db·api·web·dagster
+  전부)를 Manager compose로 통합", "weather는 데이터는 옮기지 마 — 어차피 새로 쌓으면 됨",
+  "기존 14100-14199 그대로 유지"), Claude
+- 관련: ADR-46, `platform-topology.md` §2·§7, `docs/ports.md`, `config/docker-targets.yml`,
+  weather 저장소 `deploy/n150.md`·PR #61(code-server 분리)·PR #63/#64(되돌려진 공유
+  Dagster storage 첫 시도)
+
+### 컨텍스트
+
+weather는 `platform-topology.md` §2가 정의하는 두 축(내부/외부 target) 중 **외부
+target**이었다 — compose 정본이 weather 자신의 저장소에 있고, Manager는 상태·수명주기만
+다뤘다(`ensure` 거부). 이번 세션 초반에는 weather의 Dagster 메타데이터 저장소만
+공용 instance로 옮기는 좁은 작업(bridge network 경유)을 시도했으나, 그 방식은
+`kor-travel-shared-postgres` 자신의 네트워크 형태를 바꿔야 했고 그 과정에서 실제
+production 장애(concierge 연결 몇 분간 단절, 즉시 되돌림)를 냈다. 사용자가 이후 이
+전제 자체를 바꿔 weather(와 장래 transport)를 **완전한 internal target**으로
+전환하라고 지시했다 — 이러면 bridge network가 아예 필요 없어진다(internal target은
+`network_mode: host`로 공용 instance에 `127.0.0.1:11000`으로 직접 닿는다, geo/concierge/
+map/pinvi와 동일).
+
+리서치(멀티에이전트 workflow, 5개 조사 + 설계 + 적대 리뷰 2건)로 확인한 제약:
+
+- **weather는 Manager가 관리하는 전용 postgres 컨테이너를 가진 적이 없다** — 외부
+  target이었을 때부터 자기 저장소의 `db`(`postgres:16-alpine`) 하나뿐이었다. 그래서
+  concierge/geo/pinvi(전용 instance → 공용 instance로 "이전")와 달리, weather는
+  "새로 만든다"는 쪽에 더 가깝다 — 롤백 안전망으로 남는 것도 Manager가 관리하던
+  전용 instance가 아니라 weather 자신의 `compose.yaml`(격하되지만 삭제 안 됨)과
+  그 안의 `db` 볼륨이다.
+- **`network_mode: host`는 bridge NAT을 없애 두 가지를 직접 방어선으로 바꿔야
+  했다**: (1) `dagster-webserver`와 `dagster-gateway`가 원래 컨테이너 내부에서 같은
+  포트 14102를 썼다(bridge에서는 별 네임스페이스라 무해) — host 모드에서는 충돌하므로
+  webserver를 내부 전용 `14107`로 옮기고 gateway의 nginx 오버라이드(Manager 소유)가
+  거기로 proxy_pass한다. (2) `dagster-code-server`의 gRPC 포트(`14106`, 인증 없음,
+  코드 실행 가능)는 bridge의 `ports: 127.0.0.1:14106:14106` publish 매핑이 지키던
+  loopback-only를, host 모드에서는 프로세스 자신의 `-h` 바인드로 대체해야 한다(weather
+  자신의 compose.yaml은 `-h 0.0.0.0`을 쓰는데 bridge 전제라서만 안전했다).
+- **`dagster-code-server`의 metrics 포트(`14103`)는 compose로 제어할 수 없다** —
+  weather 자신의 Python 코드(prometheus_client multiprocess 서버)가 여는 것이라 이
+  compose의 `-h` 플래그가 닿지 않는다. host 모드에서 인증 없이 LAN에 노출된다.
+  적대 리뷰가 이 노출을 HIGH로 escalate했고, 같은 패턴이 geo(`kor-travel-geo-dagster-code-server`)
+  ·PinVi(`pinvi-dagster-code-server`)에도 이미 실재함을 발견했다(이 작업과 무관하게
+  이미 있던 노출). **사용자 결정: 지금은 그대로 두고 알려진 것으로 기록, 후속
+  작업으로 미룬다** — compose 수준 해법이 없어(weather 저장소 소스 변경 또는 n150
+  호스트 방화벽 필요) 이 ADR의 범위 밖이다.
+- **포트는 재배정하지 않는다** — n150의 HAProxy(저장소 밖, 호스트 설정)가 이미
+  weather의 기존 포트(`192.168.1.14:14101`/`14102`/`14105`)로 공개 도메인을
+  라우팅 중이다. `network_mode: host`에는 NAT이 없어 `ports:`는 사실상 무의미하고
+  (Docker가 무시), 프로세스가 같은 포트에서 `0.0.0.0` 바인드를 유지하는 한 HAProxy는
+  코드 변경 없이 계속 동작한다 — 실측 확인됨(`docker compose up`의
+  "Published ports are discarded when using host network mode" 경고).
+- **롤백 안전망 서술이 갈린다** — concierge/geo/pinvi는 "옛 전용 instance를 그대로
+  둔다"가 롤백이지만, weather는 그런 instance가 없었으므로 롤백은 weather 자신의
+  `compose.yaml`(local-dev/e2e로 격하)을 다시 띄우는 것이다. 실측: n150의 weather
+  체크아웃은 이 ADR 작성 시점에 `main`(commit `fbb52e8`, PR #63/#64 되돌림 이후
+  상태, clean)이라 이 롤백 경로가 실제로 유효함을 확인했다.
+
+### 결정
+
+weather의 **`api`·`web`·`dagster-code-server`·`dagster-webserver`·`dagster-daemon`·
+`dagster-gateway`·`migrate`(one-shot)·`prometheus`** 8개 서비스 전부를 Manager의
+`docker-compose.yml`로 옮긴다(`network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}`).
+weather 자신의 `db`는 은퇴한다 — 앱 DB(`kor_travel_weather`)와 Dagster 메타DB
+(`kor_travel_weather_dagster`)를 `kor-travel-shared-postgres`(`:11000`)에 **완전히
+빈 상태로** 새로 만든다(`kor-travel-shared-db-init-weather`, 데이터 이전 없음, PinVi
+ADR-46과 같은 패턴 — pg_dump/restore 없음). 기존 포트 대역(`14100-14199`)은 그대로
+유지한다. weather 자신의 저장소(`compose.yaml`/`deploy/`)는 삭제하지 않고
+local-dev/e2e 전용으로 남긴다 — prod 정본 지위만 옮겨온다.
+
+Dagster 메타DB의 role/database 이름(`kor_travel_weather_dagster_app`/
+`kor_travel_weather_dagster`)은 weather 자신의 compose.yaml(x-dagster-environment
+앵커)이 이미 하드코딩해 둔 literal이므로 그대로 재사용한다 — 이 ADR이 새로 짓는
+이름이 아니다. 앱 DB 쪽(`kor_travel_weather_app`/`kor_travel_weather`)은 이 ADR이
+새로 정한다.
+
+`§7 2~4단계`(여러 프로젝트가 하나의 `dagster_shared`/공유 webserver·daemon으로
+합치는 것)는 이 ADR의 범위 밖이다 — weather는 자기 전용 webserver/daemon/
+code-server/gateway 4종을 그대로 유지한 채 internal target이 될 뿐이다.
+
+### 결과
+
+`docker-compose.yml`(신규 9서비스 + secrets 3종), `config/kor-travel-weather/`(신규
+지원 파일 3개: workspace.yaml·dagster-gateway.conf·prometheus.yml — weather 자신의
+저장소는 건드리지 않고 Manager가 오버라이드만 소유), `config/docker-targets.yml`
+(dependency_order·containers 7종·targets.weather·compose_binds 5종),
+`.env.example`, `docs/ports.md`가 이 변경의 diff다. 검증:
+`test_f1d_compose_contract.py`(전체 스위트 실행 예정 — 이 ADR 작성 직후).
+
+### 확인하지 않은 것
+
+- n150에서의 실제 배포(이미지 build, `kor-travel-shared-db-init-weather`/
+  `kor-travel-weather-migrate` 실행, weather 자신의 기존 스택 정지, Manager 소유
+  스택 기동, HAProxy 경유 공개 도메인 검증)는 별도 배포 단계에서 수행하고 결과를
+  `docs/journal.md`에 남긴다.
+- n150의 이미지 build 메커니즘(`ktdctl weather --build` 가정)은 geo/concierge에도
+  적용되는 미확인 사항이며 이 ADR이 새로 만든 문제가 아니다.
+- `alembic upgrade head`만으로 완전히 빈 database에 충분한지(옛 `db` 서비스의
+  `docker-entrypoint-initdb.d`가 암묵적으로 하던 일이 있었는지)는 실제 배포 전
+  dry-run으로 확인해야 한다.
+- `dagster-code-server`의 metrics 포트(`14103`) 노출은 위에서 서술한 대로 사용자
+  결정에 따라 의도적으로 미해결 상태로 남긴다.
+- 옛 weather `db`(`weather-postgres` volume, weather 자신의 compose.yaml에만 남음)의
+  폐기 시점·조건은 이 ADR이 정하지 않는다.
+- transport의 internal target 전환은 이 ADR의 범위 밖이다 — 별도 작업.

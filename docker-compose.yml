@@ -626,6 +626,94 @@ services:
       export POSTGRES_PASSWORD="$$(cat /run/secrets/kor-travel-shared-postgres-password)"
       exec sh /opt/pinvi/bootstrap-pinvi-runtime-role.sh
 
+  # weather 전용 role 2개 + database 2개(앱 DB + Dagster 메타 DB)를 만든다. 사용자
+  # 지시: "weather는 데이터는 옮기지 마 — 어차피 새로 쌓으면 됨" — pg_dump/restore
+  # 없이 완전히 빈 DB로 시작한다(PinVi ADR-46과 같은 패턴, concierge/geo의
+  # 실data-cutover 계획과 다르다). weather 자신의 compose.yaml(x-dagster-environment
+  # 앵커)이 이미 Dagster 쪽 role/db 이름을 literal로 못박아 뒀으므로
+  # (`kor_travel_weather_dagster_app` / `kor_travel_weather_dagster`) 그대로
+  # 재사용한다 — 앱 DB 쪽(`kor_travel_weather_app` / `kor_travel_weather`)은
+  # 이 설계에서 새로 정하는 이름이다. geo와 달리 extension은 만들지 않는다
+  # (weather의 alembic 마이그레이션 어디에도 postgis/geometry 의존이 없다).
+  #
+  # ⚠️ 이 이름의 one-shot이 한 번 있었다(PR #368, bridge network + 서비스명
+  # PGHOST) — 같은 날 PR #371로 완전히 되돌려졌다(2026-09-20). 아래 정의는 그
+  # 되돌려진 버전의 재활용이 아니라, concierge/geo/pinvi의 db-init과 같은
+  # PGHOST 127.0.0.1 + network_mode: host 규약으로 처음부터 새로 짠 것이다
+  # (ADR-47 — weather internal-target 전환).
+  kor-travel-shared-db-init-weather:
+    image: postgis/postgis:16-3.5
+    container_name: ${KOR_TRAVEL_SHARED_DB_INIT_WEATHER_CONTAINER:-kor-travel-shared-db-init-weather}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
+      PGUSER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
+      PGDATABASE: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
+      KOR_TRAVEL_WEATHER_SHARED_APP_DB: ${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
+      KOR_TRAVEL_WEATHER_SHARED_APP_USER: ${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}
+      # Dagster 쪽은 literal — weather 자신의 compose.yaml이 이미 이 이름을
+      # 하드코딩해 뒀으므로 여기서 환경변수로 바꿔치기할 여지를 두지 않는다.
+      KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB: kor_travel_weather_dagster
+      KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER: kor_travel_weather_dagster_app
+    secrets:
+    - source: kor-travel-shared-postgres-password
+      target: /run/secrets/kor-travel-shared-postgres-password
+    - source: kor-travel-weather-shared-app-password
+      target: /run/secrets/kor-travel-weather-shared-app-password
+    - source: kor-travel-weather-dagster-shared-app-password
+      target: /run/secrets/kor-travel-weather-dagster-shared-app-password
+    # `createdb ... 2>/dev/null || true`는 쓰지 않는다 — 기존 -db-init 패턴과
+    # 동일한 이유(인증 실패·연결 거부·권한 부족을 삼키면 그 상황에서 오히려
+    # `service_completed_successfully` 게이트가 통과한다). 두 role 모두
+    # NOSUPERUSER/NOCREATEDB/NOCREATEROLE. 재실행 시 비밀번호를 최신 secret으로
+    # 맞추도록 존재해도 ALTER ROLE을 태운다.
+    command:
+    - sh
+    - -ec
+    - |
+      PGPASSWORD="$$(cat /run/secrets/kor-travel-shared-postgres-password)"
+      export PGPASSWORD
+      APP_PASSWORD="$$(cat /run/secrets/kor-travel-weather-shared-app-password)"
+      DAGSTER_PASSWORD="$$(cat /run/secrets/kor-travel-weather-dagster-shared-app-password)"
+
+      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$KOR_TRAVEL_WEATHER_SHARED_APP_USER'" | grep -q 1; then
+        echo "role $$KOR_TRAVEL_WEATHER_SHARED_APP_USER already exists"
+        psql -d "$$PGDATABASE" -c "ALTER ROLE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+      else
+        psql -d "$$PGDATABASE" -c "CREATE ROLE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+      fi
+      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_WEATHER_SHARED_APP_DB'" | grep -q 1; then
+        echo "database $$KOR_TRAVEL_WEATHER_SHARED_APP_DB already exists"
+      else
+        createdb -O "$$KOR_TRAVEL_WEATHER_SHARED_APP_USER" "$$KOR_TRAVEL_WEATHER_SHARED_APP_DB"
+      fi
+
+      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER'" | grep -q 1; then
+        echo "role $$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER already exists"
+        psql -d "$$PGDATABASE" -c "ALTER ROLE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$DAGSTER_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+      else
+        psql -d "$$PGDATABASE" -c "CREATE ROLE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$DAGSTER_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+      fi
+      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB'" | grep -q 1; then
+        echo "database $$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB already exists"
+      else
+        createdb -O "$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER" "$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB"
+      fi
+
+      # PUBLIC CONNECT 걷어내기 — concierge/geo db-init과 같은 이유(ADR-37/ADR-44
+      # 교훈: role·ACL은 database가 아니라 cluster 전역, DB만 나누는 것으로는
+      # 격리가 안 된다).
+      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PGDATABASE\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_DB\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_DB\" TO \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\""
+      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER\""
+
   rustfs:
     image: rustfs/rustfs:latest
     container_name: kor-travel-rustfs
@@ -2245,6 +2333,479 @@ services:
     volumes:
     - ${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}:/app/data/backups
 
+  # ── kor-travel-weather: internal target 전환 (ADR-47, 2026-09-20) ──────────
+  #
+  # weather는 원래 external target(자기 저장소 compose가 prod 정본, platform-topology.md
+  # §2)이었다. 사용자 지시로 전체(db·api·web·dagster 전부)를 Manager compose로
+  # 통합한다 — db는 데이터 이전 없이 공용 instance(kor-travel-shared-postgres)에
+  # fresh로 새로 만든다("어차피 새로 쌓으면 됨", PinVi ADR-46과 같은 패턴).
+  # 기존 포트(14100-14199)는 그대로 유지한다 — n150 HAProxy가 이미 그 포트로
+  # 공개 도메인을 라우팅 중이라 바꾸면 별도 호스트 설정 변경이 필요해진다.
+  #
+  # network_mode: host는 bridge NAT을 없앤다 — weather 자신의 compose.yaml에서
+  # bridge-mode NAT이 대신 지켜주던 두 가지를 여기서 명시로 대체해야 했다:
+  # (1) dagster-webserver와 dagster-gateway가 원래 컨테이너 내부에서 같은 포트
+  #     14102를 각자 썼다(bridge에서는 별 네임스페이스라 충돌이 없다) — host
+  #     모드에서는 충돌하므로 webserver를 14107(loopback 전용, 새 포트)로 옮기고
+  #     gateway의 nginx conf(Manager 소유 오버라이드)가 거기로 proxy_pass한다.
+  #     외부에 노출되는 14102는 gateway 혼자 그대로 쓴다 — HAProxy는 안 바뀐다.
+  # (2) dagster-code-server의 gRPC 포트(14106, 인증 전혀 없음, 코드 실행 가능)는
+  #     bridge에서 `ports: 127.0.0.1:14106:14106` publish 매핑이 loopback-only를
+  #     지켰다 — host 모드는 publish 자체가 없어(Docker가 무시) 프로세스 자신의
+  #     -h 바인드가 유일한 방어선이다. weather 자신의 compose.yaml은 -h 0.0.0.0을
+  #     쓰는데(bridge 전제라 안전했다) 여기서는 -h 127.0.0.1로 바꾼다. 같은 이유로
+  #     dagster-webserver(자체 인증 없음, gateway가 앞단일 때만 안전)도 127.0.0.1.
+  #
+  # ⚠️ 알려진 채 남겨둔 노출(사용자 결정, 2026-09-20): dagster-code-server의
+  # metrics 포트(14103)는 weather 자신의 Python 코드(prometheus_client multiprocess
+  # 서버)가 여는 것이라 이 compose의 -h 플래그로 제어되지 않는다. host 모드에서
+  # 인증 없이 LAN에 노출된다 — geo(`kor-travel-geo-dagster-code-server`)·PinVi
+  # (`pinvi-dagster-code-server`)도 이미 같은 부류로 LAN에 노출돼 있다(이번
+  # 적대 리뷰가 발견, 이 작업과 무관하게 이미 실재). 지금은 그대로 두고 기록만
+  # 한다 — 별도 후속 작업(weather 저장소 소스 변경 또는 n150 호스트 방화벽) 필요.
+  #
+  # weather 자신의 compose.yaml/deploy/는 지우지 않는다 — local-dev/e2e 전용으로
+  # 격하될 뿐, prod 정본 지위만 여기로 옮겨온다.
+
+  kor-travel-weather-api:
+    image: ${KOR_TRAVEL_WEATHER_API_IMAGE:-kor-travel-weather-api:latest-main}
+    build:
+      context: ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}
+      dockerfile: deploy/Dockerfile.python
+      args:
+        INSTALL_DAGSTER: "0"
+        GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-unknown}
+    container_name: ${KOR_TRAVEL_WEATHER_API_CONTAINER:-kor-travel-weather-api-latest}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-weather:
+        condition: service_completed_successfully
+      kor-travel-weather-migrate:
+        condition: service_completed_successfully
+    command:
+    - uvicorn
+    - kortravelweather_api.app:app
+    - --host
+    - "0.0.0.0"
+    - --port
+    - "14101"
+    environment:
+      KOR_TRAVEL_WEATHER_ENV: production
+      # weather 자신의 전용 db는 은퇴한다(사용자 결정: 데이터 이전 없음, fresh
+      # 재적재로 충분). 변수 이름은 weather 자신의 compose.yaml(line 119-123)과
+      # 동일하게 유지 — 값(host/port/user/db)만 공용 instance를 가리키도록 바뀐다.
+      # 비밀번호는 URL에 넣지 않고 libpq PGPASSWORD로 전달한다 — weather 자신의
+      # 기존 관례(compose.yaml 주석) 그대로다.
+      KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
+      PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
+      KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
+      KOR_TRAVEL_WEATHER_METRICS_TOKEN: ${KOR_TRAVEL_WEATHER_METRICS_TOKEN:?set KOR_TRAVEL_WEATHER_METRICS_TOKEN in .env}
+      KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+      KOR_TRAVEL_WEATHER_CORS_ORIGINS: '${KOR_TRAVEL_WEATHER_CORS_ORIGINS:-["https://weather.digitie.mywire.org","http://127.0.0.1:14105"]}'
+      KOR_TRAVEL_WEATHER_API_BASE_URL: ${KOR_TRAVEL_WEATHER_API_BASE_URL:-https://weather-api.digitie.mywire.org}
+      KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
+      KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
+      KOR_TRAVEL_WEATHER_KREX_API_KEY: ${KOR_TRAVEL_WEATHER_KREX_API_KEY:-}
+      KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID: ${KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID:-108}
+      KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS: ${KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS:-["python-kma-api","python-airkorea-api","open_meteo","weatherapi","openweathermap","tomorrow_io","weatherbit","weatherstack","accuweather"]}
+      KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY:-}
+      KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY: ${KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY:-}
+      KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY:-}
+      KOR_TRAVEL_WEATHER_TOMORROW_IO_API_KEY: ${KOR_TRAVEL_WEATHER_TOMORROW_IO_API_KEY:-}
+      KOR_TRAVEL_WEATHER_WEATHERBIT_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERBIT_API_KEY:-}
+      KOR_TRAVEL_WEATHER_WEATHERSTACK_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERSTACK_API_KEY:-}
+      KOR_TRAVEL_WEATHER_ACCUWEATHER_API_KEY: ${KOR_TRAVEL_WEATHER_ACCUWEATHER_API_KEY:-}
+      KOR_TRAVEL_WEATHER_OPEN_METEO_BASE_URL: ${KOR_TRAVEL_WEATHER_OPEN_METEO_BASE_URL:-https://api.open-meteo.com/v1}
+      KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL: ${KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL:-https://wttr.in}
+      KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL:-https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services}
+      KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
+    ports:
+    - ${KOR_TRAVEL_WEATHER_API_PORT:-14101}:${KOR_TRAVEL_WEATHER_API_PORT:-14101}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:14101/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  kor-travel-weather-migrate:
+    image: ${KOR_TRAVEL_WEATHER_API_IMAGE:-kor-travel-weather-api:latest-main}
+    build:
+      context: ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}
+      dockerfile: deploy/Dockerfile.python
+      args:
+        INSTALL_DAGSTER: "0"
+        GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-unknown}
+    container_name: ${KOR_TRAVEL_WEATHER_MIGRATE_CONTAINER:-kor-travel-weather-migrate}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-weather:
+        condition: service_completed_successfully
+    environment:
+      KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
+      PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
+    command: ["alembic", "upgrade", "head"]
+    working_dir: /app
+
+  kor-travel-weather-dagster-code-server:
+    image: ${KOR_TRAVEL_WEATHER_DAGSTER_IMAGE:-kor-travel-weather-dagster:latest-main}
+    build:
+      context: ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}
+      dockerfile: deploy/Dockerfile.python
+      args:
+        INSTALL_DAGSTER: "1"
+        GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-unknown}
+    container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-weather-dagster-code-server-latest}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-weather:
+        condition: service_completed_successfully
+      kor-travel-weather-migrate:
+        condition: service_completed_successfully
+    # ⚠️ loopback-only는 필수 요구사항이다(weather 자신의 deploy/n150.md) — 이
+    # gRPC 포트는 인증이 전혀 없고 닿는 쪽이 코드를 실행할 수 있다. bridge
+    # 모드에서는 `127.0.0.1:14106:14106` publish 매핑이 지켰지만, host 모드는
+    # publish 자체가 없어 -h 바인드 값이 유일한 방어선이다(weather 자신의
+    # compose.yaml은 -h 0.0.0.0을 쓰는데, 그건 bridge NAT을 전제한 것이라
+    # 여기서는 안전하지 않다).
+    command:
+    - dagster
+    - api
+    - grpc
+    - -h
+    - "127.0.0.1"
+    - -p
+    - "14106"
+    - -m
+    - kortravelweather_dagster.definitions
+    - --inject-env-vars-from-instance
+    environment:
+      DAGSTER_HOME: /opt/dagster/home
+      KOR_TRAVEL_WEATHER_ENV: production
+      KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
+      PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
+      # Dagster instance storage — app DSN과 다른 role. literal 이름은 여기서
+      # 새로 짓는 게 아니라 weather 자신의 compose.yaml(x-dagster-environment
+      # 앵커)이 이미 하드코딩해 둔 것이다.
+      DAGSTER_POSTGRES_URL: postgresql://kor_travel_weather_dagster_app:${KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD:?set KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/kor_travel_weather_dagster
+      KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
+      KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+      KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
+      KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
+      KOR_TRAVEL_WEATHER_KREX_API_KEY: ${KOR_TRAVEL_WEATHER_KREX_API_KEY:-}
+      KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID: ${KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID:-108}
+      KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS: ${KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS:-["python-kma-api","python-airkorea-api","open_meteo","weatherapi","openweathermap","tomorrow_io","weatherbit","weatherstack","accuweather"]}
+      KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS:-20}
+      KOR_TRAVEL_WEATHER_PROVIDER_RETRIES: ${KOR_TRAVEL_WEATHER_PROVIDER_RETRIES:-3}
+      KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY:-}
+      KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY: ${KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY:-}
+      KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY:-}
+      KOR_TRAVEL_WEATHER_TOMORROW_IO_API_KEY: ${KOR_TRAVEL_WEATHER_TOMORROW_IO_API_KEY:-}
+      KOR_TRAVEL_WEATHER_WEATHERBIT_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERBIT_API_KEY:-}
+      KOR_TRAVEL_WEATHER_WEATHERSTACK_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERSTACK_API_KEY:-}
+      KOR_TRAVEL_WEATHER_ACCUWEATHER_API_KEY: ${KOR_TRAVEL_WEATHER_ACCUWEATHER_API_KEY:-}
+      KOR_TRAVEL_WEATHER_OPEN_METEO_BASE_URL: ${KOR_TRAVEL_WEATHER_OPEN_METEO_BASE_URL:-https://api.open-meteo.com/v1}
+      KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL: ${KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL:-https://wttr.in}
+      KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL:-https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services}
+      KOR_TRAVEL_WEATHER_TARGETS: ${KOR_TRAVEL_WEATHER_TARGETS:-[]}
+      KOR_TRAVEL_WEATHER_EXTRA_POINTS: ${KOR_TRAVEL_WEATHER_EXTRA_POINTS:-}
+      KOR_TRAVEL_WEATHER_AIRKOREA_MAX_STATIONS: ${KOR_TRAVEL_WEATHER_AIRKOREA_MAX_STATIONS:-1000}
+      KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN:-300}
+      KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN:-10000}
+      KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS: ${KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS:-{"weatherapi":150,"open_meteo":380,"openweathermap":350}}
+      KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS:-{"openweathermap":1.25}}
+      KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN:-1000000}
+      KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN:-8000000}
+      KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
+      KOR_TRAVEL_WEATHER_RETENTION_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_DAYS:-2}
+      KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS:-7}
+      KOR_TRAVEL_WEATHER_METRICS_PORT: ${KOR_TRAVEL_WEATHER_METRICS_PORT:-14103}
+      PROMETHEUS_MULTIPROC_DIR: /var/run/kor-travel-weather-metrics
+    volumes:
+    - ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/dagster.yaml:/opt/dagster/home/dagster.yaml:ro
+    tmpfs:
+    - /var/run/kor-travel-weather-metrics
+    cpu_shares: 4096
+    mem_reservation: 2g
+    mem_limit: 4g
+    mem_swappiness: 10
+    oom_score_adj: -500
+    pids_limit: 2048
+    healthcheck:
+      test: ["CMD", "dagster", "api", "grpc-health-check", "-h", "127.0.0.1", "-p", "14106"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  kor-travel-weather-dagster-webserver:
+    image: ${KOR_TRAVEL_WEATHER_DAGSTER_IMAGE:-kor-travel-weather-dagster:latest-main}
+    build:
+      context: ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}
+      dockerfile: deploy/Dockerfile.python
+      args:
+        INSTALL_DAGSTER: "1"
+        GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-unknown}
+    container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-weather-dagster-webserver-latest}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-weather:
+        condition: service_completed_successfully
+      kor-travel-weather-migrate:
+        condition: service_completed_successfully
+      kor-travel-weather-dagster-code-server:
+        condition: service_healthy
+    # ⚠️ 14102가 아니다 — dagster-gateway가 이미 공개 14102를 쓴다. weather
+    # 대역(14100-14199) 안 미사용 포트 14107로 옮기고 loopback 전용으로 묶는다
+    # (gateway 뒤가 아니면 자체 인증이 없다). gateway의 nginx 오버라이드(Manager
+    # 소유)가 127.0.0.1:14107로 proxy_pass한다.
+    command:
+    - dagster-webserver
+    - -h
+    - "127.0.0.1"
+    - -p
+    - "14107"
+    - -w
+    - /app/deploy/workspace.yaml
+    environment:
+      DAGSTER_HOME: /opt/dagster/home
+      KOR_TRAVEL_WEATHER_ENV: production
+      KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
+      PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
+      DAGSTER_POSTGRES_URL: postgresql://kor_travel_weather_dagster_app:${KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD:?set KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/kor_travel_weather_dagster
+      KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
+      KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+      KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
+      KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
+      KOR_TRAVEL_WEATHER_KREX_API_KEY: ${KOR_TRAVEL_WEATHER_KREX_API_KEY:-}
+      KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID: ${KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID:-108}
+      KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS: ${KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS:-["python-kma-api","python-airkorea-api","open_meteo","weatherapi","openweathermap","tomorrow_io","weatherbit","weatherstack","accuweather"]}
+      KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS:-20}
+      KOR_TRAVEL_WEATHER_PROVIDER_RETRIES: ${KOR_TRAVEL_WEATHER_PROVIDER_RETRIES:-3}
+      KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY:-}
+      KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY: ${KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY:-}
+      KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY:-}
+      KOR_TRAVEL_WEATHER_TOMORROW_IO_API_KEY: ${KOR_TRAVEL_WEATHER_TOMORROW_IO_API_KEY:-}
+      KOR_TRAVEL_WEATHER_WEATHERBIT_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERBIT_API_KEY:-}
+      KOR_TRAVEL_WEATHER_WEATHERSTACK_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERSTACK_API_KEY:-}
+      KOR_TRAVEL_WEATHER_ACCUWEATHER_API_KEY: ${KOR_TRAVEL_WEATHER_ACCUWEATHER_API_KEY:-}
+      KOR_TRAVEL_WEATHER_OPEN_METEO_BASE_URL: ${KOR_TRAVEL_WEATHER_OPEN_METEO_BASE_URL:-https://api.open-meteo.com/v1}
+      KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL: ${KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL:-https://wttr.in}
+      KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL:-https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services}
+      KOR_TRAVEL_WEATHER_TARGETS: ${KOR_TRAVEL_WEATHER_TARGETS:-[]}
+      KOR_TRAVEL_WEATHER_EXTRA_POINTS: ${KOR_TRAVEL_WEATHER_EXTRA_POINTS:-}
+      KOR_TRAVEL_WEATHER_AIRKOREA_MAX_STATIONS: ${KOR_TRAVEL_WEATHER_AIRKOREA_MAX_STATIONS:-1000}
+      KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN:-300}
+      KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN:-10000}
+      KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS: ${KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS:-{"weatherapi":150,"open_meteo":380,"openweathermap":350}}
+      KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS:-{"openweathermap":1.25}}
+      KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN:-1000000}
+      KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN:-8000000}
+      KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
+      KOR_TRAVEL_WEATHER_RETENTION_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_DAYS:-2}
+      KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS:-7}
+    volumes:
+    - ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/dagster.yaml:/opt/dagster/home/dagster.yaml:ro
+    - ./config/kor-travel-weather/workspace.yaml:/app/deploy/workspace.yaml:ro
+    cpu_shares: 2048
+    mem_reservation: 512m
+    mem_swappiness: 10
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:14107/server_info', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+
+  kor-travel-weather-dagster-daemon:
+    image: ${KOR_TRAVEL_WEATHER_DAGSTER_IMAGE:-kor-travel-weather-dagster:latest-main}
+    container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_DAEMON_CONTAINER:-kor-travel-weather-dagster-daemon-latest}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-weather:
+        condition: service_completed_successfully
+      kor-travel-weather-migrate:
+        condition: service_completed_successfully
+      kor-travel-weather-dagster-code-server:
+        condition: service_healthy
+    command: ["dagster-daemon", "run", "-w", "/app/deploy/workspace.yaml"]
+    environment:
+      DAGSTER_HOME: /opt/dagster/home
+      KOR_TRAVEL_WEATHER_ENV: production
+      KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
+      PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
+      DAGSTER_POSTGRES_URL: postgresql://kor_travel_weather_dagster_app:${KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD:?set KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/kor_travel_weather_dagster
+      KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
+      KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+      KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
+      KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
+      KOR_TRAVEL_WEATHER_KREX_API_KEY: ${KOR_TRAVEL_WEATHER_KREX_API_KEY:-}
+      KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID: ${KOR_TRAVEL_WEATHER_KMA_ALERT_STATION_ID:-108}
+      KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS: ${KOR_TRAVEL_WEATHER_ENABLED_PROVIDERS:-["python-kma-api","python-airkorea-api","open_meteo","weatherapi","openweathermap","tomorrow_io","weatherbit","weatherstack","accuweather"]}
+      KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_HTTP_TIMEOUT_SECONDS:-20}
+      KOR_TRAVEL_WEATHER_PROVIDER_RETRIES: ${KOR_TRAVEL_WEATHER_PROVIDER_RETRIES:-3}
+      KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERAPI_API_KEY:-}
+      KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY: ${KOR_TRAVEL_WEATHER_OPENWEATHERMAP_API_KEY:-}
+      KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_API_KEY:-}
+      KOR_TRAVEL_WEATHER_TOMORROW_IO_API_KEY: ${KOR_TRAVEL_WEATHER_TOMORROW_IO_API_KEY:-}
+      KOR_TRAVEL_WEATHER_WEATHERBIT_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERBIT_API_KEY:-}
+      KOR_TRAVEL_WEATHER_WEATHERSTACK_API_KEY: ${KOR_TRAVEL_WEATHER_WEATHERSTACK_API_KEY:-}
+      KOR_TRAVEL_WEATHER_ACCUWEATHER_API_KEY: ${KOR_TRAVEL_WEATHER_ACCUWEATHER_API_KEY:-}
+      KOR_TRAVEL_WEATHER_OPEN_METEO_BASE_URL: ${KOR_TRAVEL_WEATHER_OPEN_METEO_BASE_URL:-https://api.open-meteo.com/v1}
+      KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL: ${KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL:-https://wttr.in}
+      KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL:-https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services}
+      KOR_TRAVEL_WEATHER_TARGETS: ${KOR_TRAVEL_WEATHER_TARGETS:-[]}
+      KOR_TRAVEL_WEATHER_EXTRA_POINTS: ${KOR_TRAVEL_WEATHER_EXTRA_POINTS:-}
+      KOR_TRAVEL_WEATHER_AIRKOREA_MAX_STATIONS: ${KOR_TRAVEL_WEATHER_AIRKOREA_MAX_STATIONS:-1000}
+      KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_GRIDS_PER_RUN:-300}
+      KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_TARGETS_PER_RUN:-10000}
+      KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS: ${KOR_TRAVEL_WEATHER_PROVIDER_LOCATION_CAPS:-{"weatherapi":150,"open_meteo":380,"openweathermap":350}}
+      KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS: ${KOR_TRAVEL_WEATHER_PROVIDER_MIN_REQUEST_INTERVAL_SECONDS:-{"openweathermap":1.25}}
+      KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_RESPONSE_ROWS_PER_RUN:-1000000}
+      KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_VALUES_PER_RUN:-8000000}
+      KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
+      KOR_TRAVEL_WEATHER_RETENTION_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_DAYS:-2}
+      KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS:-7}
+    volumes:
+    - ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/dagster.yaml:/opt/dagster/home/dagster.yaml:ro
+    - ./config/kor-travel-weather/workspace.yaml:/app/deploy/workspace.yaml:ro
+    cpu_shares: 2048
+    mem_reservation: 512m
+    mem_swappiness: 10
+    healthcheck:
+      test: ["CMD-SHELL", "dagster-daemon liveness-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  kor-travel-weather-dagster-gateway:
+    image: ${KOR_TRAVEL_WEATHER_DAGSTER_GATEWAY_IMAGE:-kor-travel-weather-dagster-gateway:latest-main}
+    build:
+      context: ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}
+      dockerfile: deploy/Dockerfile.dagster-gateway
+    container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_GATEWAY_CONTAINER:-kor-travel-weather-dagster-gateway-latest}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-weather-dagster-webserver:
+        condition: service_started
+    environment:
+      DAGSTER_UI_USER: ${DAGSTER_UI_USER:-admin}
+      DAGSTER_UI_PASSWORD: ${WEATHER_UI_PASSWORD:?set WEATHER_UI_PASSWORD in .env}
+    volumes:
+    # weather 자신의 baked conf(deploy/nginx/dagster-gateway.conf)는
+    # `http://dagster-webserver:14102`로 서비스명 DNS를 쓴다 — host networking엔
+    # 없고, 이 컨테이너 자신의 14102 listen과도 충돌한다. Manager가 오버라이드를
+    # 소유한다(support file #2) — weather 저장소는 안 건드린다.
+    - ./config/kor-travel-weather/dagster-gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+    - ${KOR_TRAVEL_WEATHER_DAGSTER_GATEWAY_PORT:-14102}:${KOR_TRAVEL_WEATHER_DAGSTER_GATEWAY_PORT:-14102}
+
+  kor-travel-weather-web:
+    image: ${KOR_TRAVEL_WEATHER_WEB_IMAGE:-kor-travel-weather-web:latest-main}
+    build:
+      context: ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}
+      dockerfile: deploy/Dockerfile.web
+      args:
+        NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
+    container_name: ${KOR_TRAVEL_WEATHER_WEB_CONTAINER:-kor-travel-weather-web-latest}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-weather-api:
+        condition: service_healthy
+      kor-travel-weather-dagster-gateway:
+        condition: service_started
+    # command: 오버라이드 불필요 — deploy/Dockerfile.web이 이미
+    # `next start -- --hostname 0.0.0.0 --port 14105`를 이미지 CMD로 굽는다.
+    environment:
+      # weather 자신의 compose.yaml은 여기서 서비스명 DNS를 썼다(서버사이드
+      # fetch라 브라우저가 아니라 web 컨테이너 자신이 부른다) — host 모드엔
+      # 없으니 loopback으로 바꾼다.
+      WEATHER_API_INTERNAL_URL: http://127.0.0.1:14101
+      # dagster-webserver의 새 내부 전용 포트(14107)를 가리킨다 — 공개
+      # gateway(14102)가 아니다. weather 자신의 원래 의도(이 Next 프록시는
+      # gateway를 거치지 않고 내부 dagster 서비스에 직접 붙는다)를 포트 재배치
+      # 아래서도 그대로 지킨다.
+      DAGSTER_UI_INTERNAL_URL: http://127.0.0.1:14107
+      NEXT_PUBLIC_DAGSTER_URL: ${NEXT_PUBLIC_DAGSTER_URL:-https://weather-dagster.digitie.mywire.org}
+      NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
+      WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
+      WEATHER_UI_USER: ${WEATHER_UI_USER:-admin}
+      WEATHER_UI_PASSWORD: ${WEATHER_UI_PASSWORD:?set WEATHER_UI_PASSWORD in .env}
+      WEATHER_UI_PASSWORD_HASH: ${WEATHER_UI_PASSWORD_HASH:-}
+      WEATHER_UI_SESSION_SECRET: ${WEATHER_UI_SESSION_SECRET:?set WEATHER_UI_SESSION_SECRET in .env}
+      # 기본값을 비워 둔다 — n150 전용 값(HAProxy가 X-Forwarded-For를 벗기고
+      # 붙이는 걸 전제하는 TRUST_PROXY, 실 공개 origin)을 이 파일의 기본값으로
+      # 못박지 않는다. 다른 모든 internal target의 대응 설정
+      # (KOR_TRAVEL_GEO_DAGSTER_PUBLIC_URL, KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS
+      # 등)도 전부 빈 기본값 + n150 자신의 .env(추적 안 됨)에만 실값을 둔다 —
+      # 이 파일(추적됨)에 prod 전용 값을 못박으면 CI·fresh clone·로컬 개발이
+      # 조용히 그 값을 물려받는다(TRUST_PROXY=true인데 실제 HAProxy가 없으면
+      # X-Forwarded-For 스푸핑 경로가 열리고, 동시에 로컬 CSRF 검사가 prod
+      # HTTPS origin과 안 맞아 깨진다 — weather 자신의 deploy/compose.n150.yaml
+      # 주석이 이 위험을 이미 명시한다).
+      WEATHER_UI_TRUST_PROXY: ${WEATHER_UI_TRUST_PROXY:-}
+      WEATHER_UI_PUBLIC_ORIGIN: ${WEATHER_UI_PUBLIC_ORIGIN:-}
+    ports:
+    - ${KOR_TRAVEL_WEATHER_WEB_PORT:-14105}:${KOR_TRAVEL_WEATHER_WEB_PORT:-14105}
+
+  kor-travel-weather-prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: ${KOR_TRAVEL_WEATHER_PROMETHEUS_CONTAINER:-kor-travel-weather-prometheus}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    user: ${KOR_TRAVEL_WEATHER_PROMETHEUS_RUN_AS_USER:-0}
+    depends_on:
+      kor-travel-weather-api:
+        condition: service_healthy
+      kor-travel-weather-dagster-code-server:
+        condition: service_started
+    secrets:
+    - source: kor-travel-weather-metrics-token
+      target: metrics.token
+    # ⚠️ weather 자신의 command는 --web.listen-address를 생략하고 bridge 모드의
+    # `127.0.0.1:14104:9090` publish 재매핑에 의존했다(컨테이너는 이미지 기본
+    # 9090을 듣고, host 쪽만 NAT으로 14104로 바뀐다). network_mode: host는
+    # 재매핑이 없다 — 프로세스 자신이 14104를 들어야 한다. Manager 자신의
+    # `prometheus:` 서비스도 같은 이유로 이렇게 한다.
+    command:
+    - --config.file=/etc/prometheus/prometheus.yml
+    - --storage.tsdb.path=/prometheus
+    - --web.console.libraries=/usr/share/prometheus/console_libraries
+    - --web.console.templates=/usr/share/prometheus/consoles
+    - --web.listen-address=:${KOR_TRAVEL_WEATHER_PROMETHEUS_PORT:-14104}
+    volumes:
+    # weather 자신의 deploy/prometheus/prometheus.yml은 `api:14101` /
+    # `dagster-code-server:14103`(서비스명 DNS)를 스크랩한다 — Manager 소유의
+    # 127.0.0.1 재작성 사본으로 교체(support file #3). alerts.yml은 DNS 참조가
+    # 없어 weather 자신의 체크아웃에서 그대로 bind mount한다.
+    - ./config/kor-travel-weather/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    - ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    - ${KOR_TRAVEL_WEATHER_PROMETHEUS_DATA_DIR:-/home/digitie/kor-travel-weather-data/prometheus}:/prometheus
+    ports:
+    - ${KOR_TRAVEL_WEATHER_PROMETHEUS_PORT:-14104}:${KOR_TRAVEL_WEATHER_PROMETHEUS_PORT:-14104}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:14104/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
 secrets:
   kor-travel-geo-postgres-password:
     environment: KOR_TRAVEL_GEO_POSTGRES_PASSWORD
@@ -2260,3 +2821,11 @@ secrets:
     environment: KOR_TRAVEL_CONCIERGE_SHARED_APP_PASSWORD
   kor-travel-geo-shared-app-password:
     environment: KOR_TRAVEL_GEO_SHARED_APP_PASSWORD
+  kor-travel-weather-shared-app-password:
+    environment: KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD
+  kor-travel-weather-dagster-shared-app-password:
+    # 이름을 새로 짓지 않는다 — weather 자신의 compose.yaml(x-dagster-environment
+    # 앵커)이 이미 이 정확한 env var 이름으로 DAGSTER_POSTGRES_URL을 조립한다.
+    environment: KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD
+  kor-travel-weather-metrics-token:
+    environment: KOR_TRAVEL_WEATHER_METRICS_TOKEN
