@@ -110,7 +110,10 @@ _PINVI_POSTGRES_IMAGE = (
 )
 _PINVI_WEB_SERVICE = "pinvi-web"
 _PINVI_DAGSTER_SERVICE = "pinvi-dagster"
+_PINVI_DAGSTER_CODE_SERVER_SERVICE = "pinvi-dagster-code-server"
+_PINVI_DAGSTER_DAEMON_SERVICE = "pinvi-dagster-daemon"
 _PINVI_DATABASE_URL_ENV = "PINVI_DATABASE_URL"
+_PINVI_DAGSTER_PG_URL_ENV = "PINVI_DAGSTER_PG_URL"
 _PINVI_APP_DB_USER_ENV = "PINVI_APP_DB_USER"
 _PINVI_APP_DB_PASSWORD_ENV = "PINVI_APP_DB_PASSWORD"
 _PINVI_APP_SCHEMA_OWNER_ENV = "PINVI_APP_SCHEMA_OWNER"
@@ -669,31 +672,89 @@ _PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES = {
     (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_M05_LEGACY_REBASELINE"): "0",
     (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_MIGRATOR_DISABLE_LOGIN"): "1",
 }
-_PINVI_DATABASE_URL_RAW_VALUES = {
-    service_name: (
-        "postgresql+asyncpg://"
+#: PinVi DSN을 조립하는 서비스와, 그때 쓰는 자격증명 쌍.
+#:
+#: **이 선언 하나에서 canonical 값과 허용 경로를 둘 다 유도한다.** 종전에는 같은
+#: 사실을 `_PINVI_DATABASE_URL_RAW_VALUES`와 `_PINVI_DATABASE_URL_ALLOWED_PATHS`가
+#: 따로 들고 있었고, 서비스를 하나 더해도 한쪽만 바뀌면 조용히 어긋났다.
+#:
+#: 2026-09-19에 정확히 그렇게 깨졌다 — #356이 `pinvi-dagster-daemon`을, #358이
+#: `pinvi-dagster-code-server`를 더하면서 compose에는 DSN을 넣었지만 이 계약에는
+#: 등록하지 않았다. 그 결과 **핀 재구축 전부**가 `prebuild_snapshot`에서
+#: `compose candidate leaks a protected C6c reference`로 죽었고, 러너가 사유를
+#: 봉인해 원인이 보이지 않았다(#318과 같은 부류의 재발).
+_PINVI_DSN_SERVICE_CREDENTIALS: Final = (
+    (_PINVI_API_SERVICE, _PINVI_APP_DB_USER_ENV, _PINVI_APP_DB_PASSWORD_ENV),
+    (_PINVI_DAGSTER_SERVICE, _PINVI_APP_DB_USER_ENV, _PINVI_APP_DB_PASSWORD_ENV),
+    (
+        _PINVI_DAGSTER_CODE_SERVER_SERVICE,
+        _PINVI_APP_DB_USER_ENV,
+        _PINVI_APP_DB_PASSWORD_ENV,
+    ),
+    (
+        _PINVI_DAGSTER_DAEMON_SERVICE,
+        _PINVI_APP_DB_USER_ENV,
+        _PINVI_APP_DB_PASSWORD_ENV,
+    ),
+    (
+        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
+        _PINVI_MIGRATOR_DB_USER_ENV,
+        _PINVI_MIGRATOR_DB_PASSWORD_ENV,
+    ),
+)
+
+
+def _pinvi_dsn(*, scheme: str, username_env: str, password_env: str, database: str) -> str:
+    """compose가 적는 **raw**(미해석) DSN 문자열. 계약은 이 글자열을 고정한다."""
+
+    return (
+        f"{scheme}://"
         f"${{{username_env}:?{username_env} must be explicitly set}}:"
         f"${{{password_env}:?{password_env} must be explicitly set}}"
-        "@127.0.0.1:${PINVI_DB_PORT:-12800}/${PINVI_POSTGRES_DB:-pinvi}"
+        f"@127.0.0.1:${{PINVI_DB_PORT:-12800}}/{database}"
     )
-    for service_name, username_env, password_env in (
-        (_PINVI_API_SERVICE, _PINVI_APP_DB_USER_ENV, _PINVI_APP_DB_PASSWORD_ENV),
-        (_PINVI_DAGSTER_SERVICE, _PINVI_APP_DB_USER_ENV, _PINVI_APP_DB_PASSWORD_ENV),
-        (
-            _PINVI_ADMIN_BOOTSTRAP_SERVICE,
-            _PINVI_MIGRATOR_DB_USER_ENV,
-            _PINVI_MIGRATOR_DB_PASSWORD_ENV,
-        ),
+
+
+_PINVI_DATABASE_URL_RAW_VALUES = {
+    service_name: _pinvi_dsn(
+        scheme="postgresql+asyncpg",
+        username_env=username_env,
+        password_env=password_env,
+        database="${PINVI_POSTGRES_DB:-pinvi}",
     )
+    for service_name, username_env, password_env in _PINVI_DSN_SERVICE_CREDENTIALS
 }
-_PINVI_DATABASE_URL_ALLOWED_PATHS = frozenset(
-    ("services", service_name, "environment", _PINVI_DATABASE_URL_ENV)
-    for service_name in (
-        _PINVI_API_SERVICE,
-        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
-        _PINVI_DAGSTER_SERVICE,
-    )
+
+#: Dagster instance storage DSN. webserver·code-server·daemon이 **같은 storage**를
+#: 봐야 하므로 셋 다 같은 값을 든다. 앱 DSN과 달리 `postgresql://`(동기)이고
+#: 데이터베이스가 `pinvi_dagster`다 — 저장소를 앱 DB와 가르는 것이 #356의 요지다.
+_PINVI_DAGSTER_PG_URL_SERVICES: Final = (
+    _PINVI_DAGSTER_SERVICE,
+    _PINVI_DAGSTER_CODE_SERVER_SERVICE,
+    _PINVI_DAGSTER_DAEMON_SERVICE,
 )
+_PINVI_DAGSTER_PG_URL_RAW_VALUES = {
+    service_name: _pinvi_dsn(
+        scheme="postgresql",
+        username_env=_PINVI_APP_DB_USER_ENV,
+        password_env=_PINVI_APP_DB_PASSWORD_ENV,
+        database="${PINVI_DAGSTER_DB:-pinvi_dagster}",
+    )
+    for service_name in _PINVI_DAGSTER_PG_URL_SERVICES
+}
+
+#: 보호 이름 스캔에서 면제할 경로. **위 두 dict에서 유도한다** — 새 서비스를
+#: 어느 한쪽에 더하면 면제도 같이 따라온다.
+_PINVI_DATABASE_URL_ALLOWED_PATHS = frozenset(
+    ("services", service_name, "environment", env_name)
+    for raw_values, env_name in (
+        (_PINVI_DATABASE_URL_RAW_VALUES, _PINVI_DATABASE_URL_ENV),
+        (_PINVI_DAGSTER_PG_URL_RAW_VALUES, _PINVI_DAGSTER_PG_URL_ENV),
+    )
+    for service_name in raw_values
+)
+
+
 _MAP_DATABASE_CANONICAL_ENV_VALUES = {
     (_MAP_POSTGRES_SERVICE, "POSTGRES_DB"): "postgres",
     (_MAP_POSTGRES_SERVICE, "POSTGRES_USER"): (
@@ -973,6 +1034,10 @@ for _service_name, _extra_locked in (
         (_dsn_service, {_PINVI_DATABASE_URL_ENV})
         for _dsn_service in _PINVI_DATABASE_URL_RAW_VALUES
     ),
+    *(
+        (_dsn_service, {_PINVI_DAGSTER_PG_URL_ENV})
+        for _dsn_service in _PINVI_DAGSTER_PG_URL_RAW_VALUES
+    ),
 ):
     _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE[_service_name] = frozenset(
         _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE.get(_service_name, frozenset())
@@ -1234,19 +1299,15 @@ def _validate_pinvi_database_url_service_identities(
     expected_port = identity.expected_port
     expected_database = identity.expected_database
     role_values = identity.role_values
+    # **서비스 목록을 다시 적지 않는다.** 어느 서비스가 어느 자격증명으로 DSN을
+    # 조립하는지는 `_PINVI_DSN_SERVICE_CREDENTIALS` 하나가 소유한다 — 사본을 두면
+    # 서비스가 늘 때 한쪽만 자라고, 그 어긋남은 n150 재구축 시점에만 드러난다.
     expected_credentials = {
-        _PINVI_API_SERVICE: (
-            cast(str, role_values[_PINVI_APP_DB_USER_ENV]),
-            cast(str, role_values[_PINVI_APP_DB_PASSWORD_ENV]),
-        ),
-        _PINVI_DAGSTER_SERVICE: (
-            cast(str, role_values[_PINVI_APP_DB_USER_ENV]),
-            cast(str, role_values[_PINVI_APP_DB_PASSWORD_ENV]),
-        ),
-        _PINVI_ADMIN_BOOTSTRAP_SERVICE: (
-            cast(str, role_values[_PINVI_MIGRATOR_DB_USER_ENV]),
-            cast(str, role_values[_PINVI_MIGRATOR_DB_PASSWORD_ENV]),
-        ),
+        service_name: (
+            cast(str, role_values[username_env]),
+            cast(str, role_values[password_env]),
+        )
+        for service_name, username_env, password_env in _PINVI_DSN_SERVICE_CREDENTIALS
     }
     for service_name, (expected_user, expected_password) in expected_credentials.items():
         service = services.get(service_name)
@@ -1278,6 +1339,50 @@ def _validate_pinvi_database_url_service_identities(
             or parsed.fragment
         ):
             raise ComposeCandidateContractError("PinVi database URL identity is invalid")
+
+    # Dagster instance storage DSN. webserver·code-server·daemon이 **같은** storage를
+    # 봐야 하고(다르면 schedule 켜짐 상태와 run 이력이 갈린다), 그 storage는 앱 DB와
+    # **달라야 한다**(#356의 요지 — 적재 트랜잭션과 Dagster 쓰기를 가른다).
+    for service_name in _PINVI_DAGSTER_PG_URL_SERVICES:
+        service = services.get(service_name)
+        if not isinstance(service, Mapping):
+            continue
+        service_environment = service.get("environment")
+        if not isinstance(service_environment, Mapping):
+            raise ComposeCandidateContractError("PinVi Dagster storage URL is invalid")
+        value = service_environment.get(_PINVI_DAGSTER_PG_URL_ENV)
+        if not isinstance(value, str) or not value:
+            raise ComposeCandidateContractError("PinVi Dagster storage URL is invalid")
+        if not resolved:
+            if not hmac.compare_digest(
+                value, _PINVI_DAGSTER_PG_URL_RAW_VALUES[service_name]
+            ):
+                raise ComposeCandidateContractError(
+                    "PinVi Dagster storage URL is invalid"
+                )
+            continue
+        try:
+            parsed = urlsplit(value)
+            parsed_port = parsed.port
+        except ValueError as exc:
+            raise ComposeCandidateContractError(
+                "PinVi Dagster storage URL is invalid"
+            ) from exc
+        expected_user = cast(str, role_values[_PINVI_APP_DB_USER_ENV])
+        expected_password = cast(str, role_values[_PINVI_APP_DB_PASSWORD_ENV])
+        if (
+            parsed.scheme != "postgresql"
+            or parsed.hostname != "127.0.0.1"
+            or parsed_port != expected_port
+            or unquote(parsed.username or "") != expected_user
+            or not hmac.compare_digest(unquote(parsed.password or ""), expected_password)
+            or not parsed.path.lstrip("/")
+            # 앱 DB와 같은 이름이면 #356이 가른 것이 도로 붙은 것이다.
+            or parsed.path == f"/{expected_database}"
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ComposeCandidateContractError("PinVi Dagster storage URL is invalid")
 
 
 def _validate_pinvi_db_init_presence(

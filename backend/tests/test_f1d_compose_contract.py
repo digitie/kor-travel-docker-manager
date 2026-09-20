@@ -2215,6 +2215,71 @@ def test_ordinary_runtime_services_never_receive_bootstrap_credential_contract()
         assert "PINVI_BOOTSTRAP_ADMIN" not in json.dumps(services[service_name])
 
 
+def test_every_protected_env_reference_in_compose_sits_at_a_registered_path() -> None:
+    """compose가 보호 env를 참조하면 그 경로가 **같은 커밋에서** 계약에 등록돼야 한다.
+
+    `validate_compose_candidate_protected_values`는 문서 전체의 스칼라를 훑어
+    보호 이름/값이 등장하는데 `allowed_paths`에 없으면
+    `compose candidate leaks a protected C6c reference`로 fail-close한다. 그런데
+    그 실패는 CI가 아니라 **n150의 핀 재구축 시점에만** 드러나고, 러너가 사유를
+    `prebuild_snapshot` 한 단어로 봉인해 원인이 보이지 않는다.
+
+    2026-09-19에 정확히 그렇게 깨졌다 — #356이 `pinvi-dagster-daemon`을, #358이
+    `pinvi-dagster-code-server`를 더하면서 compose에는 PinVi DSN을 넣었지만
+    `_PINVI_DATABASE_URL_ALLOWED_PATHS`에는 등록하지 않았다. 그 사이 재구축이
+    한 번도 돌지 않아 **핀 재구축 전부가 조용히 막힌 채** 있었고, ADR-099 2단계
+    배포가 처음으로 그것을 밟았다. `_validate_candidate_volume_graph`의 bind
+    allowlist가 #318에서 겪은 것과 같은 부류다.
+
+    여기서 같은 조건을 정적으로 건다 — 런타임 검사와 **같은 집합**을 써서,
+    한쪽만 넓히면 다른 쪽이 빨개지도록.
+    """
+
+    # **치환하지 않는다.** 이 검사가 보는 것은 값이 아니라 `${PINVI_APP_DB_PASSWORD…}`
+    # 같은 **이름의 등장 위치**이고, 런타임 검사도 raw 스칼라를 그대로 훑는다.
+    document = yaml.safe_load(_COMPOSE_PATH.read_text(encoding="utf-8"))
+
+    protected_names = c6c_deployment_module._CANDIDATE_PROTECTED_VALUE_ENV_NAMES
+    allowed_paths = (
+        {
+            ("services", service_name, "environment", target_name)
+            for service_name, target_name in (
+                c6c_deployment_module._CANDIDATE_CANONICAL_API_ENV_VALUES
+            )
+        }
+        | c6c_deployment_module._DATABASE_ALLOWED_NON_ENV_PATHS
+        | c6c_deployment_module._PINVI_DATABASE_URL_ALLOWED_PATHS
+    )
+
+    unregistered: list[tuple[str, tuple[str, ...]]] = []
+    seen = 0
+    for path, scalar in c6c_deployment_module._walk_scalars(document):
+        value = "" if scalar is None else str(scalar)
+        names = sorted(name for name in protected_names if name in value)
+        if not names:
+            continue
+        seen += 1
+        if path in allowed_paths:
+            continue
+        if path[-1:] == ("<key>",) and path[:-1] in allowed_paths:
+            continue
+        # 값이 아니라 **이름**만 보여준다. 값은 자격증명일 수 있다.
+        unregistered.append((names[0], path))
+
+    assert seen >= 5, (
+        f"보호 env를 참조하는 스칼라를 {seen}개만 찾았다 — `_walk_scalars`나 보호 "
+        "집합이 바뀌었으면 이 검사는 항진명제가 된다."
+    )
+    assert not unregistered, (
+        "compose가 보호 C6c 참조를 등록되지 않은 경로에서 쓴다 — 이 상태로는 "
+        "**모든 핀 재구축**이 prebuild_snapshot에서 fail-close한다: "
+        + ", ".join(
+            f"{name} @ {'.'.join(str(part) for part in path)}"
+            for name, path in unregistered
+        )
+    )
+
+
 def test_every_real_compose_bind_is_declared_in_a_candidate_bind_allowlist() -> None:
     """compose에 서비스를 등록하면 그 bind도 **같은 커밋에서** baseline에 등록돼야 한다.
 
