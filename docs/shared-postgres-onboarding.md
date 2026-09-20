@@ -163,6 +163,31 @@ PostgreSQL advisory lock은 **database 단위로 스코프**된다. 같은 키�
 
 컨테이너 안에서 `docker exec --user postgres ... psql -U shared_admin`이 비밀번호 없이 붙는 것은 unix socket이 `trust`이기 때문이다. Manager의 백업 모듈도 바로 그 경로를 쓴다("어떤 postgres 비밀번호도 읽거나 다루지 않는다"). **운영 작업(§7의 덤프·복원)은 그 소켓 경로를 쓰고, 네 앱은 그 경로를 쓰지 않는다** — 앱에게는 TCP + scram만이 접속 경로다.
 
+### 4.1-bis 네 프로젝트가 "내부"인가 "외부"인가로 접속 경로가 갈린다
+
+geo/concierge/map/pinvi처럼 **Manager 자신의 `docker-compose.yml` 안에서** 뜨는
+프로젝트("내부 target")는 host networking을 공유하므로 위 표의 `127.0.0.1:11000`을
+그대로 쓴다 — 코드 변경이 필요 없다.
+
+weather/transport처럼 **자기 저장소의 독립된 compose로** 뜨는 프로젝트("외부
+target")는 별도 docker bridge network를 쓰므로 `127.0.0.1`로 이 instance에
+닿지 못한다(2026-09-20 weather 실측 — `host.docker.internal` 경유 시도가
+`listen_addresses`가 그 인터페이스를 듣지 않아 `ConnectionRefusedError`).
+**전용 브리지 `kor-travel-shared-net`에 join해 서비스명 DNS로 접속한다**:
+
+```
+postgresql+asyncpg://<app_role>:<password>@kor-travel-shared-postgres:11000/<database>
+```
+
+합류하려면 (1) 네 compose의 해당 서비스에 `networks: [default, kor-travel-shared-net]`를
+추가하고(`default`를 빼먹으면 프로젝트 내부 서비스 간 접속이 조용히 깨진다),
+(2) `kor-travel-shared-net`은 Manager가 `docker network create`로 미리 만들어
+둔 **external** 네트워크이므로 네 compose에도 `networks: { kor-travel-shared-net:
+{ external: true } }` 선언이 필요하다. 이름만 알면 누구나 join할 수 있으므로,
+합류 전에 이 문서(§9)에 프로젝트를 적어 두는 것을 관례로 한다 — 2026-09-20
+기준 join 허용: weather(dagster-code-server/webserver/daemon 3개뿐, 그 프로젝트의
+api/web 등 나머지 서비스는 join하지 않는다).
+
 ### 4.2 네 app role의 권한
 
 db-init이 만드는 role은 정확히 이렇다:
