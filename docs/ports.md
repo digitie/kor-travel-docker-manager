@@ -13,9 +13,10 @@
 - Manager 자체 포트는 별도 `12900-12999` 대역을 사용한다.
 - `11000`은 `12000`대 target별 100단위 대역과 별개인 공용 제어 평면 PostgreSQL
   instance(`kor-travel-shared-postgres`, platform-topology.md §7) 전용 포트다.
-  특정 target의 100단위 대역에 속하지 않는다 — 한 target이 아니라 이전을 마친
-  프로젝트들이 공유하는 자리이기 때문이다(현재는 concierge·geo, ADR-44/ADR-45). 새
-  프로젝트가 합류해도 이 포트 자체는 바뀌지 않는다.
+  특정 target의 100단위 대역에 속하지 않는다 — 한 target이 아니라 공용 instance에
+  합류한 프로젝트들이 공유하는 자리이기 때문이다(이전을 마친 concierge, ADR-44; role/
+  database만 만들고 data cutover는 아직인 geo, ADR-45). 새 프로젝트가 합류해도 이
+  포트 자체는 바뀌지 않는다.
 - 표의 값은 host 네트워크 기본값 기준이다. `KTDM_DOCKER_NETWORK_MODE=host`에서는
   컨테이너 내부 프로세스가 호스트 포트에 직접 listen하고 서비스 간 참조는
   `127.0.0.1:<포트>`를 사용한다.
@@ -98,7 +99,7 @@ gRPC로 접속하고, 외부에는 열지 않는다.
 | `kor-travel-concierge-postgres` | `12600` | `kor_travel_concierge`(**cutover 전까지는 활성 원본**, 이후 롤백 보관용 — 아래 참고) |
 | `kor-travel-map-postgres` | `12700` | `kor_travel_map`, `kor_travel_map_dagster` |
 | `pinvi-postgres` | `12800` | `pinvi` |
-| `kor-travel-shared-postgres` | `11000` | `kor_travel_concierge`(concierge 전용 role — cutover 완료 후 활성), `kor_travel_geo`/`kor_travel_geo_dagster`(geo 전용 role `kor_travel_geo_app` — cutover 완료 후 활성) |
+| `kor-travel-shared-postgres` | `11000` | `kor_travel_concierge`(concierge 전용 role — ADR-44 cutover 완료로 **현재 활성**), `kor_travel_geo`/`kor_travel_geo_dagster`(geo 전용 role `kor_travel_geo_app` — ADR-45 role/database 생성 완료, data cutover는 아직이라 **활성 아님**). 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) |
 
 다섯 instance 모두 loopback 전용이다. `db` target의 호환 이름은 Geo instance만 실행하며,
 Map·PinVi database provisioning은 각 Compose 서비스 또는 pinned workflow가 자기
@@ -107,17 +108,19 @@ instance에서 수행한다.
 `kor-travel-shared-postgres`는 platform-topology.md §7(2026-09-19 결정)이 목표로 한
 공용 제어 평면의 첫 실제 구현이다. **이전 대상은 concierge·geo다**(ADR-44/ADR-45) —
 map·pinvi는 여전히 각자 전용 instance에 남고, 이 문서가 그 프로젝트들의 이전까지
-끝났다고 주장하지 않는다. geo의 경우 앱 DB(`kor_travel_geo`)와 Dagster 메타 DB
-(`kor_travel_geo_dagster`) 둘 다 옮긴다 — geo의 webserver/daemon/code-server
-3-프로세스 토폴로지(T-307) 자체는 바뀌지 않고 DSN만 새 instance를 가리킨다. 이 절은
-instance와 role/database가 만들어졌다는 사실만 반영한다 — 실제 데이터 cutover
-(`kor-travel-concierge-postgres`→`kor-travel-shared-postgres`, `kor-travel-geo-postgres`→
-`kor-travel-shared-postgres`)와 각 앱의 DSN 전환은 별도 배포 단계다. cutover가 끝나면
-위 표의 "활성" 표시가 이 사실을 반영해 갱신된다. cutover 후에도 옛 instance는 삭제하지
-않고 롤백 안전망으로 그대로 둔다(쓰기 대상 아님,
-읽기도 정상 운영에서는 쓰지 않는다). 공용 instance 안에서도 ADR-37의 교훈(role·ACL은
-database가 아니라 cluster 전역)을 지켜, 프로젝트마다 자기 database 하나에만 권한을
-갖는 전용 role을 새로 만든다 — cluster 관리자 계정은 앱에 노출하지 않는다.
+끝났다고 주장하지 않는다. **concierge는 2026-09-19/20에 실제 데이터 cutover까지
+끝났다**(위 표의 "현재 활성"이 그 사실을 반영). **geo는 아직 role/database가 만들어진
+단계다** — 앱 DB(`kor_travel_geo`)와 Dagster 메타 DB(`kor_travel_geo_dagster`) 둘 다
+옮길 예정이고, geo의 webserver/daemon/code-server 3-프로세스 토폴로지(T-307) 자체는
+바뀌지 않고 DSN만 새 instance를 가리키게 될 것이지만, 실제 데이터 cutover
+(`kor-travel-geo-postgres`→`kor-travel-shared-postgres`)와 DSN 전환은 아직 별도
+배포 단계로 남아 있다 — 합류 전 확인·절차는
+[`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)를 따른다. geo의
+cutover가 끝나면 위 표의 "활성 아님" 표시가 이 사실을 반영해 갱신된다. cutover 후에도
+옛 instance는 삭제하지 않고 롤백 안전망으로 그대로 둔다(쓰기 대상 아님, 읽기도 정상
+운영에서는 쓰지 않는다). 공용 instance 안에서도 ADR-37의 교훈(role·ACL은 database가
+아니라 cluster 전역)을 지켜, 프로젝트마다 자기 database 하나에만 권한을 갖는 전용
+role을 새로 만든다 — cluster 관리자 계정은 앱에 노출하지 않는다.
 
 ## 변경 절차
 

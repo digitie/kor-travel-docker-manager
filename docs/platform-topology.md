@@ -98,6 +98,7 @@ target 단위로만 남아 있다.
 | `kor-travel-concierge-postgres` | `12600` | Manager compose | `kor_travel_concierge` |
 | `kor-travel-map-postgres` | `12700` | Manager compose | `kor_travel_map`, `kor_travel_map_dagster` |
 | `pinvi-postgres` | `12800` | Manager compose | `pinvi`, `pinvi_dagster` |
+| `kor-travel-shared-postgres` | `11000` | Manager compose | `kor_travel_concierge` (ADR-44 공용 제어 평면 instance — concierge가 2026-09-19/20에 이전을 마쳤다. 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)) |
 | `kor-travel-weather-db` | `14100`→`5432` | 외부 | — |
 | `kor-travel-airport-db` | `14000`→`5432` | 외부 | — |
 
@@ -169,7 +170,14 @@ KOR_TRAVEL_MAP_OPINET_API_KEY: ${KOR_TRAVEL_MAP_OPINET_API_KEY:-}
 
 ## 7. 전환 중 — 공유 제어 평면 (2026-09-19 결정)
 
-**결정된 목표**이고 **아직 만들어지지 않았다.** 이 절은 계획이지 현황이 아니다.
+**결정된 목표**이고 **대부분 아직 만들어지지 않았다.** 이 절은 계획이지 현황이 아니다.
+
+**단, 5단계(애플리케이션 DB 이사)는 concierge 하나에 대해 먼저 실행됐다** — 공용
+instance `kor-travel-shared-postgres`(`:11000`)가 실제로 떠 있고 `kor_travel_concierge`가
+거기 산다(ADR-44, 2026-09-19/20). 1~4단계(code-server 분리 · 공유 Dagster 스토리지
+`dagster_shared` · 공용 webserver/daemon · 프로젝트별 daemon 철거)는 여전히 계획이다 —
+`dagster_shared`도 `11001`/`11002`도 **아직 없다**. 다른 프로젝트가 5단계를 먼저 밟는
+절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)가 갖는다.
 
 ```
 11000  PostgreSQL (단일 공용 인스턴스)
