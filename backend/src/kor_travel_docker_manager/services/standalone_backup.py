@@ -78,9 +78,12 @@ BACKUP_SHARED_GROUP_ENV = "KTDM_BACKUP_SHARED_GROUP"
 _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
     "geo": (None, "kor-travel-geo-postgres", "kor_travel_geo"),
     "geo_dagster": (None, "kor-travel-geo-postgres", "kor_travel_geo_dagster"),
+    # ADR-44(2026-09-19/20)로 concierge를 공용 instance(kor-travel-shared-postgres)로
+    # cutover했다. 옛 kor-travel-concierge-postgres는 롤백 안전망으로 계속 떠 있지만
+    # 더 이상 쓰기 대상이 아니므로, 일상 백업은 활성 instance를 겨냥해야 한다.
     "concierge": (
-        "KOR_TRAVEL_CONCIERGE_POSTGRES_CONTAINER",
-        "kor-travel-concierge-postgres",
+        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
+        "kor-travel-shared-postgres",
         "kor_travel_concierge",
     ),
     "map_application": (
