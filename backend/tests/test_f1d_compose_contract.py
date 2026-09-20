@@ -5554,14 +5554,22 @@ def test_the_map_postgres_loopback_binding_is_now_enforced(tmp_path: Path) -> No
 # ── kor-travel-shared-postgres가 브리지로 옮겼다 (2026-09-20) ────────────
 #
 # host networking이었던 것이 `networks: [kor-travel-shared-net]`로 바뀌고,
-# `listen_addresses`가 `127.0.0.1,10.88.0.1`(전용 브리지의 고정 게이트웨이 IP)로
-# 넓어졌다 — weather 같은 브리지-네트워크 외부 프로젝트가 서비스명 DNS로 이
-# instance에 닿기 위해서다. 닫힌 허용 집합(`_POSTGRES_CANONICAL_LISTEN_VALUES`)에
-# 그 정확한 리터럴 하나만 더했다 — 와일드카드도, "10.88.0.1을 포함하면"도 아니다.
+# `listen_addresses`가 `0.0.0.0`으로 넓어졌다 — weather 같은 브리지-네트워크
+# 외부 프로젝트가 서비스명 DNS로 이 instance에 닿기 위해서다. 처음엔
+# `127.0.0.1,10.88.0.1`(loopback + 브리지 게이트웨이 IP 명시)을 시도했으나
+# 틀렸다 — 게이트웨이 IP는 컨테이너 자신이 아니라 브리지 인프라가 소유해서
+# postgres가 bind()하지 못했고(WARNING만 찍고 loopback으로만 계속 실행됐다 —
+# FATAL이 아니라서 healthcheck는 계속 green), host-mode 소비자(예: concierge,
+# 실 데이터 보유)가 쓰는 published-port 경로가 전부 끊겼다(n150 실측, 되돌림).
+# `0.0.0.0`은 이 서비스가 `network_mode: host`가 아니라 `networks:`(브리지
+# 전용)이므로 컨테이너 자신의 네임스페이스 안(loopback + 이 컨테이너의 브리지
+# IP)으로만 스코프되고 실 LAN은 그 네임스페이스 밖이라 보이지 않는다. 닫힌
+# 허용 집합(`_POSTGRES_SHARED_POSTGRES_CANONICAL_LISTEN_VALUES`)에 그 정확한 리터럴 하나만
+# 더했다 — 와일드카드(`*`)도, 다른 값과의 조합도 아니다.
 
 
 def test_the_shared_postgres_bridge_binding_is_accepted(tmp_path: Path) -> None:
-    """실제 compose 형상 그대로(`networks` + 이중 `listen_addresses`)가 통과한다.
+    """실제 compose 형상 그대로(`networks` + `listen_addresses=0.0.0.0`)가 통과한다.
 
     `_bootstrap_candidate`가 pinvi-api의 `depends_on`을 통해 kor-travel-shared-postgres의
     **실제** 정의를 이미 끌어오므로(스텁이 아니다), 그 형상이 계약에서 거부되지
@@ -5576,7 +5584,7 @@ def test_the_shared_postgres_bridge_binding_is_accepted(tmp_path: Path) -> None:
     assert shared_postgres.get("networks") == ["kor-travel-shared-net"]
     command = shared_postgres.get("command")
     assert isinstance(command, list)
-    assert "listen_addresses=127.0.0.1,10.88.0.1" in command
+    assert "listen_addresses=0.0.0.0" in command
 
     validate_compose_candidate_protected_values(
         candidate,
@@ -5595,19 +5603,19 @@ def test_the_shared_postgres_bridge_binding_is_accepted(tmp_path: Path) -> None:
             id="wildcard-with-networks",
         ),
         pytest.param(
-            ["postgres", "-c", "listen_addresses=10.88.0.1"],
+            ["postgres", "-c", "listen_addresses=127.0.0.1,0.0.0.0"],
             "loopback binding",
-            id="gateway-without-loopback",
+            id="both-canonical-values-combined",
         ),
         pytest.param(
-            ["postgres", "-c", "listen_addresses=127.0.0.1,10.88.0.1,0.0.0.0"],
+            ["postgres", "-c", "listen_addresses=0.0.0.0/0"],
             "loopback binding",
-            id="third-value-appended",
+            id="cidr-notation-lookalike",
         ),
         pytest.param(
-            ["postgres", "-c", "listen_addresses=10.88.0.1,127.0.0.1"],
+            ["postgres", "-c", "listen_addresses=00.0.0.0"],
             "loopback binding",
-            id="reversed-order",
+            id="near-miss-not-exact-string",
         ),
     ],
 )
@@ -5616,11 +5624,12 @@ def test_the_bridge_listen_addresses_allowlist_is_a_closed_exact_match_set(
 ) -> None:
     """`networks`를 얹어도 `listen_addresses`는 정확히 두 리터럴 중 하나여야 한다.
 
-    부분 일치·값 하나만 있음·세 번째 값 추가·순서 바꿈은 모두 거부돼야 한다 —
-    `_POSTGRES_CANONICAL_LISTEN_VALUES`가 `in` 멤버십의 **닫힌 집합**이지, `10.88.0.1`을
-    포함하는지 보는 부분 문자열 검사가 아님을 증명한다. 순서 바꿈(`reversed-order`)은
-    실제 compose 리터럴 `127.0.0.1,10.88.0.1`과 문자열이 다르므로 함께 거부된다 —
-    이 계약은 compose 그대로의 표기만 정본으로 삼는다.
+    와일드카드·두 정본 값의 조합·CIDR 표기·문자열이 살짝 다른 근사값은 모두 거부돼야 한다 —
+    `_POSTGRES_SHARED_POSTGRES_CANONICAL_LISTEN_VALUES`가 `in` 멤버십의 **닫힌 집합**이지,
+    "정본 값을 포함하면" 또는 "정본 값과 비슷하면" 통과시키는 부분 일치가
+    아님을 증명한다. `both-canonical-values-combined`가 핵심 —
+    `"127.0.0.1"`도 `"0.0.0.0"`도 각각은 정본이지만 그 조합
+    `"127.0.0.1,0.0.0.0"`은 집합의 **원소가 아니다**.
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
@@ -5671,8 +5680,8 @@ def test_the_networks_value_is_a_closed_exact_match_too(
 
     특히 `gateway-ip-reassigned-via-alias`는 리뷰가 실측한 정확한 우회로다 —
     이름이 다른 네트워크가 `ipv4_address: 10.88.0.1`로 kor-travel-shared-net의
-    게이트웨이 IP를 자칭해도, canonical `listen_addresses=127.0.0.1,10.88.0.1`과
-    무관하게 `networks` 값 자체가 닫힌 집합 밖이면 거부돼야 한다.
+    게이트웨이 IP를 자칭해도, canonical `listen_addresses=0.0.0.0`과 무관하게
+    `networks` 값 자체가 닫힌 집합 밖이면 거부돼야 한다.
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
@@ -5681,7 +5690,7 @@ def test_the_networks_value_is_a_closed_exact_match_too(
     assert isinstance(services, dict)
     services["kor-travel-geo-postgres"] = _cluster_service(
         networks=networks,
-        command=["postgres", "-c", "listen_addresses=127.0.0.1,10.88.0.1"],
+        command=["postgres", "-c", "listen_addresses=0.0.0.0"],
     )
 
     with pytest.raises(ComposeCandidateContractError, match="non-canonical networks"):
