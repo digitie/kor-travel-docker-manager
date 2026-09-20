@@ -8071,6 +8071,19 @@ def _validate_candidate_volume_graph(
                             f"compose candidate {service_name} bind source leaks C6c data"
                         )
                     continue
+                if (
+                    str(service_name) == _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE
+                    and mount.target in _PINVI_ROLE_BOOTSTRAP_SOURCE_TARGETS
+                ):
+                    # ADR-46 shared-instance one-shot은 dedicated-instance
+                    # pinvi-db-runtime-role과 완전히 같은 role script를 그대로
+                    # 마운트한다(docker-compose.yml 주석 실측) — 같은 frozen source
+                    # bind이므로 위와 같은 근거로 identifier declaration만 허용한다.
+                    if any(value in source_text for value in protected_values):
+                        raise ComposeCandidateContractError(
+                            f"compose candidate {service_name} bind source leaks C6c data"
+                        )
+                    continue
                 if any(name in source_text for name in protected_names) or any(
                     value in source_text for value in protected_values
                 ):
