@@ -5955,6 +5955,7 @@ _PRIVILEGE_EXCEPTION_IMAGES = {
     "cadvisor": "${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.52.1}",
     "prometheus": "${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.1}",
     "grafana": "${GRAFANA_IMAGE:-grafana/grafana:11.1.4}",
+    "kor-travel-weather-prometheus": "prom/prometheus:v3.5.0",
 }
 
 
@@ -5965,6 +5966,9 @@ _PRIVILEGE_EXCEPTION_IMAGES = {
         pytest.param("cadvisor", "devices", ["/dev/kmsg:/dev/kmsg"], id="cadvisor-devices"),
         pytest.param("prometheus", "user", "0", id="prometheus-root"),
         pytest.param("grafana", "user", "0", id="grafana-root"),
+        pytest.param(
+            "kor-travel-weather-prometheus", "user", "0", id="weather-prometheus-root"
+        ),
     ],
 )
 def test_the_canonical_privilege_exceptions_still_pass(
@@ -6003,6 +6007,9 @@ def test_the_canonical_privilege_exceptions_still_pass(
     [
         pytest.param("cadvisor", "privileged", True, id="cadvisor-privileged"),
         pytest.param("prometheus", "user", "0", id="prometheus-root"),
+        pytest.param(
+            "kor-travel-weather-prometheus", "user", "0", id="weather-prometheus-root"
+        ),
     ],
 )
 def test_a_privilege_exception_does_not_survive_an_image_swap(
@@ -6044,6 +6051,7 @@ def test_the_privilege_exception_set_is_pinned() -> None:
             ("cadvisor", "devices"),
             ("prometheus", "user"),
             ("grafana", "user"),
+            ("kor-travel-weather-prometheus", "user"),
         }
     )
 
