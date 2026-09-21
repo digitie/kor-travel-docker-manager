@@ -56,6 +56,17 @@ canonical scale/replica/container name은 exact singleton이어야 한다.
 - **Backend**: Python FastAPI 기반 (`backend/`)
 - **Frontend**: Next.js 14+ TypeScript 기반 (`frontend/`)
 
+## 설계 원칙 — 과결박 금지 (ADR-50)
+
+**보안모델도, Manager가 이미지를 만들어 map · geo · pinvi · concierge · weather ·
+transport를 올리고 이미지 간 정합성을 맞추는 구조도, 과결박 없이 단순하게 간다.**
+정본은 `docs/decisions.md` ADR-50, 실무 규칙은 `AGENTS.md` §과결박 금지.
+
+위 "프로젝트 현황"에 적힌 pinned generation · rebuild journal · runtime pin registry ·
+healthcheck fail-close 같은 기존 결박은 **현재 상태의 서술이지 확장하라는 지시가 아니다.**
+새 검사기·게이트·봉인·attestation을 더하는 방향이 아니라 걷어내는 방향이 기본값이다.
+단, 동작 중인 보장을 조용히 없애지 말고 무엇을 잃는지 밝히고 사용자 판단을 받는다.
+
 ## 디렉토리 구조
 
 ```
