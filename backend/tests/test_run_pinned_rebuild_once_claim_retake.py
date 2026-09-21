@@ -1,26 +1,31 @@
-"""죽은 실행이 남긴 claim을 되찾는 판정의 동작 테스트.
+"""claim 획득 판정의 동작 테스트.
 
-소각(=claim 유지)은 실행권을 **소비했다는 양성 증거**가 있을 때만 정당하다.
-그런데 종전 launcher에서 해제는 자기 프로세스가 살아서 결과를 분류할 때만
-일어났다. 프로세스 그룹이 시그널로 죽으면 분류기 자체가 돌지 않으므로, 소각은
-기본값이 아니라 **유일한 결과**였다 — 2026-09-03 rebuild-021이 60분을 태우고
-0바이트로 사라졌을 때, registry는 generation이 오르지 않았다고 말하는데도 다음
+**이 파일의 주제가 한 번 바뀌었다.** 종전에는 "죽은 실행이 남긴 claim을 되찾을
+수 있는가"를 두 증인으로 판정했다 — registry가 이 pinset의 generation을 아직
+`pending_rebuild`로 보고, 그 claim이 가리키는 output에 `result.json`이 없을 것.
+그 판정을 만든 사고는 보존할 가치가 있다: 2026-09-03 rebuild-021이 60분을 태우고
+시그널로 죽었을 때, registry는 generation이 오르지 않았다고 말하는데도 다음
 실행이 `already claimed`로 거부됐다. 회전 사이클 하나가 아무 근거 없이 죽었다.
 
-그래서 반대 방향의 양성 증거를 둘 요구한다. registry가 이 pinset의 generation을
-아직 `pending_rebuild`로 보고, 그 claim이 가리키는 output에 `result.json`이
-없어야 한다. 전역 lock이 동시 실행을 이미 막으므로, 둘이 함께 참이면 그 claim을
-만든 실행은 아무것도 소비하지 않고 죽은 것이다.
+그런데 그 판정은 **모르는 것을 소비의 증거로 취급**했다. `result.json`의 존재는
+"파괴적 단계가 돌았다"가 아니라 "launcher가 결론을 쓸 만큼 살아 있었다"만
+증명한다. 그래서 호스트 설정 하나가 틀려 아무것도 배포하지 못한 실행도 결론을
+남겼다는 이유로 같은 (map, pinvi) 쌍을 **영구히** 실행 불가능하게 만들었다 —
+`pinset_sha256`이 그 쌍의 순수 함수라 재회전으로도 같은 이름에 착지하고,
+registry는 동일 쌍 회전을 아예 거절하므로 탈출구가 "아무 커밋이나 새로
+올린다"밖에 없었다(실측: classification `unclassified`, 즉 "무슨 일이 났는지
+모른다"가 영구 소각 사유가 됐다).
 
-여기서는 launcher 본문에서 판정 함수를 잘라내 **실제로 실행한다** — 텍스트
-단언이 아니라 동작을 본다(형제 `test_run_pinned_rebuild_once.py`와 같은 방식).
-launcher의 ledger 검사는 uid 0을 요구하므로 claim 블록 전체는 비-root 테스트에서
-돌릴 수 없고, 판정만 떼어 낸다.
+파괴적 3-DB 재생성의 double-apply를 막는 것은 이 파일이 아니라 durable journal의
+phase 가드이고(`_pinned_runtime_reset_required`), 동시 실행은 전역 flock이 막는다.
+그래서 원장은 감사 흔적만 맡고, 파일명이 attempt 차원을 갖는다 — 형제 M05
+launcher가 적대 리뷰 R1-S2에서 먼저 받은 개정과 같다. 여기서는 그 새 판정을
+launcher 본문에서 잘라내 **실제로 실행한다**(텍스트 단언이 아니라 동작).
 """
 
 from __future__ import annotations
 
-import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -31,83 +36,105 @@ _LAUNCHER = Path(__file__).resolve().parents[2] / "scripts/run-pinned-rebuild-on
 _PINSET = "a" * 64
 
 
-def _decision(generation_binding: str) -> Callable[[Path], bool]:
-    """launcher 본문의 판정 함수를 그대로 실행 가능한 형태로 꺼낸다."""
+def _chooser() -> Callable[..., str]:
+    """launcher 본문의 파일명 선택 함수를 그대로 실행 가능한 형태로 꺼낸다.
+
+    launcher의 ledger 검사는 uid 0을 요구해 claim 블록 전체는 비-root 테스트에서
+    돌릴 수 없다. 판정만 떼어 낸다(종전 이 파일과 같은 방식).
+    """
+
     source = _LAUNCHER.read_text(encoding="utf-8")
-    start = source.index("def stale_claim_is_retakable(path):")
-    end = source.index("\nmetadata = ledger_dir.lstat()", start)
-    namespace: dict[str, Any] = {
-        "json": json,
-        "pathlib": __import__("pathlib"),
-        "open": open,
-        "pinset": _PINSET,
-        "generation_binding": generation_binding,
-    }
+    start = source.index("_LEDGER_CLAIM_ATTEMPT_LIMIT")
+    end = source.index(chr(10) + "metadata = ledger_dir.lstat()", start)
+    namespace: dict[str, Any] = {"os": os}
     exec(compile(source[start:end], str(_LAUNCHER), "exec"), namespace)  # noqa: S102
-    return namespace["stale_claim_is_retakable"]
+    return namespace["next_claim_filename"]
 
 
-def _claim(tmp_path: Path, *, pinset: str = _PINSET, output: Path | None = None) -> Path:
-    claim = tmp_path / "claim"
-    claim.write_text(
-        json.dumps(
-            {
-                "manager_source_revision": "b" * 40,
-                "output_directory": str(output if output is not None else tmp_path / "out"),
-                "pinset_sha256": pinset,
-            }
-        ),
-        encoding="ascii",
-    )
-    return claim
+def _ledger(tmp_path: Path, *names: str) -> Path:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir(exist_ok=True)
+    for name in names:
+        (ledger / name).write_text("{}" + chr(10), encoding="ascii")
+    return ledger
 
 
-def test_a_dead_run_leaves_a_retakable_claim(tmp_path: Path) -> None:
-    output = tmp_path / "out"
-    output.mkdir()
-    assert _decision("pending_rebuild")(_claim(tmp_path, output=output)) is True
+def test_the_first_attempt_uses_the_bare_pinset_filename(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path)
+    assert _chooser()(str(ledger), _PINSET) == _PINSET
 
 
-@pytest.mark.parametrize("binding", ["match", "drift", "unknown", ""])
-def test_a_generation_that_moved_is_never_retakable(tmp_path: Path, binding: str) -> None:
-    """registry가 `pending_rebuild`를 말하지 않으면 되찾지 않는다."""
-    output = tmp_path / "out"
-    output.mkdir()
-    assert _decision(binding)(_claim(tmp_path, output=output)) is False
+def test_a_dead_run_does_not_block_the_next_attempt(tmp_path: Path) -> None:
+    """rebuild-021 회귀: 시그널로 죽은 실행의 claim이 다음 시도를 막지 않는다."""
+
+    ledger = _ledger(tmp_path, _PINSET)
+    assert _chooser()(str(ledger), _PINSET) == _PINSET + "-01"
 
 
-def test_a_run_that_wrote_its_conclusion_is_never_retakable(tmp_path: Path) -> None:
-    """`result.json`이 있으면 그 실행은 결론을 남겼다 — 되찾지 않는다."""
-    output = tmp_path / "out"
-    output.mkdir()
-    (output / "result.json").write_text("{}", encoding="ascii")
-    assert _decision("pending_rebuild")(_claim(tmp_path, output=output)) is False
+def test_a_concluded_failure_does_not_burn_the_pair(tmp_path: Path) -> None:
+    """**이 저장소가 실제로 겪은 사고의 회귀다.**
+
+    종전 판정에서는 이전 실행이 결론을 남겼다는 사실 하나로 같은 쌍이 영구
+    소각됐다 — 그 결론이 "아무것도 배포하지 못했다"여도 마찬가지였다. 이제
+    `result.json`의 존재는 파일명 선택에 아무 영향도 주지 않는다.
+    """
+
+    ledger = _ledger(tmp_path, _PINSET)
+    previous = tmp_path / "out-1"
+    previous.mkdir()
+    (previous / "result.json").write_text("{}", encoding="ascii")
+
+    assert _chooser()(str(ledger), _PINSET) == _PINSET + "-01"
 
 
-def test_a_claim_for_another_pinset_is_never_retakable(tmp_path: Path) -> None:
-    output = tmp_path / "out"
-    output.mkdir()
-    claim = _claim(tmp_path, pinset="c" * 64, output=output)
-    assert _decision("pending_rebuild")(claim) is False
+def test_ordinals_continue_from_the_highest_record(tmp_path: Path) -> None:
+    """count가 아니라 max+1이라, 사람이 중간 항목을 지워도 충돌하지 않는다."""
+
+    ledger = _ledger(tmp_path, _PINSET, _PINSET + "-01", _PINSET + "-03")
+    assert _chooser()(str(ledger), _PINSET) == _PINSET + "-04"
 
 
-@pytest.mark.parametrize("body", ["", "not json", '{"output_directory": "relative"}', "[]"])
-def test_an_unreadable_claim_is_never_retakable(tmp_path: Path, body: str) -> None:
-    """판정할 수 없으면 되찾지 않는다(fail-close)."""
-    claim = tmp_path / "claim"
-    claim.write_text(body, encoding="ascii")
-    assert _decision("pending_rebuild")(claim) is False
+def test_legacy_prejournal_records_are_ignored(tmp_path: Path) -> None:
+    """`<pinset>.prejournal-NN`은 `.` 접두라 ordinal 계산에 들어가지 않는다."""
+
+    ledger = _ledger(tmp_path, _PINSET + ".prejournal-01", _PINSET + ".prejournal-02")
+    assert _chooser()(str(ledger), _PINSET) == _PINSET
 
 
-def test_a_missing_claim_is_never_retakable(tmp_path: Path) -> None:
-    assert _decision("pending_rebuild")(tmp_path / "absent") is False
+def test_another_pinset_does_not_shift_the_ordinal(tmp_path: Path) -> None:
+    ledger = _ledger(tmp_path, "c" * 64, "c" * 64 + "-01")
+    assert _chooser()(str(ledger), _PINSET) == _PINSET
 
 
-def test_the_launcher_feeds_the_registry_evidence_into_the_claim_block() -> None:
-    """판정이 근거 없이 돌지 않도록, launcher가 실제로 그 값을 넘기는지 본다."""
+@pytest.mark.parametrize("suffix", ["-ab", "-", "-001x"])
+def test_unparsable_suffixes_are_ignored(tmp_path: Path, suffix: str) -> None:
+    """원장에 사람이 남긴 메모가 ordinal을 밀지 않는다."""
+
+    ledger = _ledger(tmp_path, _PINSET + suffix)
+    assert _chooser()(str(ledger), _PINSET) == _PINSET
+
+
+def test_the_attempt_limit_fails_closed(tmp_path: Path) -> None:
+    """상한은 후보 예산이 아니라 폭주 방어다 — 넘으면 거절한다."""
+
+    names = [_PINSET] + [_PINSET + f"-{ordinal:02d}" for ordinal in range(1, 12)]
+    ledger = _ledger(tmp_path, *names)
+    with pytest.raises(SystemExit) as captured:
+        _chooser()(str(ledger), _PINSET)
+    assert "attempts exceeded the limit" in str(captured.value)
+
+
+def test_the_launcher_no_longer_gates_on_registry_evidence() -> None:
+    """죽은 증인 배관이 실제로 걷혔는지 본다 — 주석만 남고 코드가 남으면 안 된다.
+
+    `generation_pinset_binding`은 이 판정에 대해 정보량이 0이었다(실행 전후로
+    항상 같은 값이다). 재실행 허용의 정본은 registry의 차단 목록과 journal의
+    phase 가드다.
+    """
+
     source = _LAUNCHER.read_text(encoding="utf-8")
-    assert '"${generation_binding}" <<' in source
-    assert 'generation_binding = sys.argv[5] if len(sys.argv) > 5 else ""' in source
-    assert "generation_pinset_binding" in source
-    # 되찾지 못하면 종전과 똑같이 거절해야 한다.
+    assert "stale_claim_is_retakable" not in source
+    assert "generation_binding" not in source
+    assert "def next_claim_filename(" in source
+    # 같은 ordinal을 계산한 동시 claim은 종전과 똑같이 거절해야 한다.
     assert 'raise SystemExit("pinned rebuild candidate was already claimed")' in source
