@@ -42,7 +42,8 @@ concierge cutover는 **2026-09-19/20에 이미 끝났다**(실행 기록은 kor-
 | 공용 Dagster 스토리지 `dagster_shared` | **없다.** compose에도 live에도 없다 |
 | 공용 Dagster webserver(`11002`) / daemon(`11001`) | **없다.** `docker-compose.yml`에 서비스 0건, n150에 컨테이너 0건. (`docs/platform-topology.md` §7(176·181·182·195·203·205·206행)에는 **계획으로** 등장한다 — 저장소 grep은 0건이 아니다) |
 | geo / map / pinvi의 공용 instance 이전 | **없다.** 셋 다 ADR-37의 전용 instance 그대로 |
-| geo/map/pinvi/weather/transport용 role·database | 정식 경로로 만들어진 것은 **없다** (§10.1 예외 주의) |
+| geo/map/pinvi용 role·database | 정식 경로로 만들어진 것은 **없다** (§10.1 예외 주의) |
+| weather/transport용 role·database | Manager compose의 각 `kor-travel-shared-db-init-<project>` one-shot이 정식 경로다. 실제 n150 실행 여부는 배포 영수증·컨테이너 상태로 따로 확인해야 한다 |
 | `ktdctl db-backup`의 실제 복원 명령 | **없다.** 백업·리허설 복원만 있다 |
 | 옛 instance 폐기 기준 | **아무 문서에도 없다** |
 
@@ -245,7 +246,7 @@ GRANT  CONNECT ON DATABASE <app DB>       TO <app_user>;
 | C2 | one-shot 스크립트에 **REVOKE/GRANT 3줄 포함** | 다른 프로젝트 role이 네 database에 기본 CONNECT로 붙는다(§5.3) |
 | C3 | `|| true`로 오류를 삼키지 않는다 | 인증 실패·권한 부족을 삼키면 `service_completed_successfully` 게이트가 **막으려던 상황에서 오히려 통과**한다 |
 | C4 | 앱 서비스 `depends_on`에 `kor-travel-shared-postgres: service_healthy` + `kor-travel-shared-db-init-<project>: service_completed_successfully` | DB 준비 전에 앱이 떠서 기동 레이스가 난다 |
-| C5 | 최상위 `secrets:`에 `<project-kebab>-shared-app-password` (provider는 `environment:`) | compose interpolate 실패 |
+| C5 | 최상위 `secrets:`에 application password와, Dagster metadata DB를 쓰면 별도 Dagster password를 추가한다(provider는 `environment:`) | compose interpolate 실패 또는 app/Dagster DB 권한이 섞인다 |
 | C6 | secret은 **반드시 env provider**. `file:` 금지 | 후보/resolved 양쪽 계약이 명시적으로 거부 → 배포 차단 |
 | C7 | 앱 컨테이너에는 secret을 **마운트하지 않는다**(비밀번호는 DSN env로만) | 선례와 어긋나고, 비밀번호 보관처가 하나 더 늘어난다 |
 | C8 | override 파일(`docker-compose.override.yml`)로 시도하지 않는다 | 그 파일이 **존재하는 것만으로** deployment readiness가 `missing`으로 떨어져 승인된 재구축 전체가 막힌다 |
@@ -507,7 +508,7 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
 | **concierge** | **이전 완료**(2026-09-19/20, 기록은 자기 저장소 `docs/journal.md` 최상단). 앱 DB가 `:11000`에 있고 Alembic head 유지 | ① **지금 prod 백업이 옛 instance를 뜨고 있다** — §6.4의 "crontab이 가리키는 체크아웃" 행을 먼저 닫아라(§7.5의 manifest `instance` 필드로 확인). ② 옛 instance 폐기 종료 조건 정의(§3 P12, 기준 시각은 **cutover 날짜**). ③ 새 확장이 필요할 때 Manager one-shot에 줄 추가(§4.3) |
 | **geo** | 전용 `:12500`. `kor_travel_geo` **32 GB** + `kor_travel_geo_dagster` 92 MB | 규모가 자릿수로 다르다 — §3 P7부터. **P2는 이미 충족돼 있다**(`KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:?...}` — 확인만 하고 넘어가라). geo만의 항목: (i) **소유 role이 superuser `addr` 하나**라 §7.1.3의 리맵 + **NOSUPERUSER 강등**이 동반된다, (ii) **`init_steps: geo-source-verification`** 이 `kor-travel-geo-postgres` 안에서 `addr`로 `load_manifest`/`tl_juso_text`/`mv_geocode_target`을 세고 `/data/juso` 바인드를 요구한다 — 새 instance로 옮기려면 `/data/juso:ro`를 들고 가야 해 **`compose_binds` allowlist가 정확히 걸린다**(§6.2 T6·T7), (iii) **`geo.depends_on: [prom]`이라 폐포에 `conc`가 없다**(§6.2 T1), (iv) **cutover 직전 백업의 주인은 Manager cron이 아니라 kor-travel-geo 앱의 스케줄 백업이다**(§6.4) — 창을 열기 전에 그 백업이 실재하는지 네가 확인해야 한다, (v) `_ROLE_CONFIG["geo"]`는 `container_env=None`이라 env override 경로가 없고 재지정이 반드시 코드 변경이다. code-server 3-분리는 이미 완료 |
 | **weather** | **외부 프로젝트.** DB는 `kor-travel-weather-db-1`(`postgres:16-alpine`, PostGIS 아님, compose bridge `kor-travel-weather_default`, `127.0.0.1:14100->5432`, 확장 `plpgsql`뿐). 사용자 테이블은 **`weather` DB 34개 + 같은 instance의 `weather_dagster` DB 22개**(2026-09-20 실측; `weather`의 카탈로그 밖 ordinary relation은 33개). Manager에는 수명주기만 등록 | ⚠️ **네 Dagster 메타DB는 이미 두 군데에 있다 — 로컬 `weather_dagster`와 공용 instance의 `kor_travel_weather_dagster`(§10.1이 "흔적"이라 부르는 그것). §3 P10을 시작하기 전에 어느 쪽이 정본인지부터 정하라.** 그다음: 공용 instance는 **Manager 소유**이므로 db-init one-shot이 **Manager compose에** 들어가야 한다 — 네 저장소 compose에 넣으면 prod에서 읽히지 않는다(§2). PostGIS 기반 이미지로 옮겨가는 것의 영향(확장·타입)도 미리 본다 |
-| **transport** | **Manager에 자리가 없다.** 프로젝트로서 등장하는 곳 0건 — `docker-compose.yml` 서비스·`docker-targets.yml` target·n150 컨테이너 모두 없다. 포트 대역 미배정. (코드 주석·`websocket.py`·`compose_service.py` 등에 보이는 영어 단어 `transport`는 무관하다) | §6의 등록 체크리스트를 **처음부터** 밟는다. 합류 요청 시 §9.1의 정보를 제출하는 것이 출발점 |
+| **transport** | Manager가 공용 DB 초기화 one-shot(`kor-travel-shared-db-init-transport`)과 RustFS raw bucket만 소유한다. application·Dagster 서비스와 포트는 `kor-travel-transport` 저장소의 별도 compose가 소유한다. application DB `kor_travel_transport`와 Dagster metadata DB `kor_travel_transport_dagster`는 **literal identity**의 분리 role로 만들며 override하지 않는다 | Manager PR을 n150 배포 트리에 반영해 one-shot과 `rustfs-init`을 먼저 성공시킨 뒤, transport 저장소의 receipt-gated hard cutover를 실행한다. receipt gate는 두 target DB의 빈 상태를 확인한다. transport의 `config/docker-targets.yml` target 등록은 Manager가 앱 lifecycle까지 인수할 때 별도 PR로 한다 |
 
 ### 9.1 합류 요청 시 Manager에 제출할 정보
 
@@ -517,7 +518,7 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
 |---|---|
 | 프로젝트 슬러그 | kebab(`kor-travel-transport`) + UPPER_SNAKE(`KOR_TRAVEL_TRANSPORT`) |
 | database 이름 | `kor_travel_transport` |
-| app role 이름 | `kor_travel_transport_app` |
+| app role 이름 | `kor_travel_transport_app` (Dagster metadata는 별도 `kor_travel_transport_dagster_app`) |
 | **현재 객체 소유 role 이름** | 옛 instance에서 `pg_tables`의 `tableowner` 집계 결과. **그 role이 superuser면 명시하라** — §7.1.3의 리맵과 NOSUPERUSER 강등이 동반된다 |
 | **필요한 확장 목록** | `extname` + 최소 버전 (§4.3 — Manager가 superuser로 만든다) |
 | DSN env 변수 이름 | 신규면 `KOR_TRAVEL_TRANSPORT_DOCKER_DATABASE_URL`. **이미 배포된 이름이 있으면 그 이름 그대로**(§6.6) |
@@ -529,7 +530,7 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
 | **필요한 튜닝값 + 기존 테넌트에 미치는 영향** | `shared_buffers`/`work_mem` 등. **`shm_size` 요구 여부를 반드시 적는다**(현재 공용 서비스에는 설정이 없어 `/dev/shm` 기본 64MB다). 이 값들은 cluster 전역이고 반영에 **공용 instance 재기동 = 기존 테넌트 다운타임**이 따른다(§6.1 C9) |
 | `init_steps` 유무 | 있으면 그 step이 어느 컨테이너에 `exec`하고 어떤 bind를 요구하는지(§6.2 T7) |
 | 백업 role 필요 여부 | 필요하면 role 이름 제안. **현재 cutover 직전 백업의 주인이 누구인지도 함께**(§6.4) |
-| Dagster 메타DB 유무 | 있으면 §7 계획의 어느 단계인지. **이미 공용 instance에 흔적이 있으면 그 사실을 적는다**(§10.1) |
+| Dagster 메타DB 유무 | 있으면 별도 database/role/password를 쓴다. transport는 `kor_travel_transport_dagster` / `kor_travel_transport_dagster_app`으로 provision한다. **이미 공용 instance에 흔적이 있으면 그 사실을 적는다**(§10.1) |
 | 이전 대상 database 분류 | 앱 데이터 / bootstrap / 잔해 |
 | 옛 instance 폐기 종료 조건 | "N일 무사고 + 백업 M세대" 같은 문장 (기준 시각 = cutover 날짜) |
 
@@ -567,7 +568,7 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
 | ADR-44의 "231 MB" | database 실측(81~83 MB)과 불일치. instance 전체 또는 부수 DB 합산으로 **보인다**(단정 불가) |
 | advisory lock 호출부 개수 | ADR의 "5곳"은 파일 수로 보이고, 실측은 트랜잭션 락 6 + 세션 락 1이다. **네 저장소에서 직접 센 목록을 쓰라** |
 | cutover 실행 기록 | Manager `docs/journal.md`에는 **없다**(`11000` 0건 — ADR-44가 "결과를 `docs/journal.md`에 남긴다"고 한 약속은 Manager 쪽에서 미이행). **실제 기록은 kor-travel-concierge 저장소 `docs/journal.md` 2026-09-20 항목**이고, 그것이 유일한 실행 선례다(§7 도입부) |
-| weather·transport의 합류 요청 여부·마이그레이션 도구 | Manager 저장소에서 확인할 수 없다. weather는 외부 compose 소유라 Manager에 스키마 정보가 없다 |
+| transport의 실제 cutover 실행 여부·원본 DB 크기 | Manager가 provision만 하므로 transport 저장소의 cutover receipt와 운영 검증이 정본이다 |
 | 호스트 여력 | **2026-09-20 03:2x UTC 실측**: 메모리 14 GB(available 약 7 GB), 루트 466 G 중 **373 G 사용(84%, 여유 74 G)**. geo 32 GB를 그대로 옮기면(옛 instance를 지우지 않으므로 순증가다) 덤프 파일 약 4.4~4.7 GB가 창 동안 얹혀 약 37 G — 가능하지만 여유가 절반 아래로 떨어진다. **이 숫자를 그대로 쓰지 말고 창을 열기 전에 다시 재라 — 판정 기준은 §7.1 0f다** |
 
 ---

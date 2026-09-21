@@ -29,10 +29,13 @@ for bucket in \
   "${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}" \
   "${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}" \
   "${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}" \
-  "${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}"; do
+  "${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}" \
+  "${KOR_TRAVEL_TRANSPORT_RUSTFS_BUCKET:-kor-travel-transport-raw}"; do
   if [ -n "$bucket" ]; then
     log "ensuring bucket: $bucket"
-    mc mb -p "local/$bucket" >/dev/null 2>&1 || true
+    # 이미 존재하는 bucket만 멱등으로 허용한다. 인증·연결·권한 같은 실패를
+    # `|| true`로 삼키면 init one-shot이 성공한 것처럼 보인다.
+    mc mb --ignore-existing "local/$bucket" >/dev/null
   fi
 done
 
