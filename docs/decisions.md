@@ -3293,3 +3293,97 @@ code-server/gateway 4종을 그대로 유지한 채 internal target이 될 뿐�
 - 옛 weather `db`(`weather-postgres` volume, weather 자신의 compose.yaml에만 남음)의
   폐기 시점·조건은 이 ADR이 정하지 않는다.
 - transport의 internal target 전환은 이 ADR의 범위 밖이다 — 별도 작업.
+
+## ADR-50: 보안모델과 이미지 정합성은 과결박 없이 단순하게 간다 — 상시 설계 원칙
+
+- 상태: accepted (상시 원칙 — 개별 변경이 아니라 앞으로의 모든 설계 결정에 적용)
+- 날짜: 2026-09-22
+- 결정자: 사용자("보안모델은 단순하게", "manager 에서 docker 이미지 만들고 map geo pinvi
+  concierge weather transport 올려서 이미지간 정합성 맞추는 것도 과결박없이 단순하게"),
+  Claude
+- 관련: ADR-37/44/45/46/47(공용 instance 이전 계열), kor-travel-map ADR-100(LOGIN role
+  3→1 통합), kor-travel-map ADR-090(이 원칙 이전에 세워진 21-role 모델), PinVi M05 폐기
+
+### 컨텍스트
+
+이 플랫폼은 "안전한 쪽으로" 결박을 하나씩 더하는 방향으로 오래 자라왔다. 각각은 그
+시점에 타당했지만, 누적 결과가 반복적으로 비용을 만들었고 그 비용이 실제로 관측됐다.
+
+**관측된 과결박 비용(전부 이 저장소·형제 저장소에서 실제로 난 일이다):**
+
+- **소비된 pinset을 다시 회전할 수 없었다** — claim 파일의 two-witness 술어가 재시도
+  자체를 막아, 무해한 원인으로 멈춘 재구축이 영구 고착됐다. 탈출구가 "새 커밋"뿐이었다
+  (PR #377에서 ledger 파일명에 attempt ordinal을 주는 것으로 완화).
+- **봉인된 실패가 원인을 가린다** — 재구축 실패가 stage 한 단어만 남기고 끝나,
+  venv에서 같은 호출을 재현해야 원문이 나왔다. 진단 가능한 실패보다 "조용한 실패"가
+  더 비쌌다.
+- **`.env` 해시 rebind 게이트가 pinset을 영구 고착시켰다** — `map_runtime_ready` 이후
+  `.env`가 바뀌면 원인이 무해해도 그 pinset은 재개 불가였다(PR #382에서 제거).
+- **4겹 중첩 해시** — Map의 `schema.sql` → `application-reference.json` →
+  `application-reference.sha256` → 그 안의 receipt digest → receipt 파일 자체의
+  byte hash. 한 줄 고치는 데 연쇄 재봉인이 필요했고, 각 층이 서로 다른 실패
+  메시지로 따로 터졌다.
+- **상호 배타 게이트 35개+가 role 하나 합치자 전부 무효화됐다** — ADR-090의
+  "admin executor XOR provider executor" 강제가, LOGIN role을 하나로 합치는 순간
+  구조적으로 성립 불가능해졌다(`ktm_feature_service`가 양쪽 모두의 member라서 모든
+  호출을 거절). 결박이 촘촘할수록 그 위의 변경 하나가 더 크게 번졌다.
+- **PinVi M05 다중 role 모델** — 전용 cluster 전제(`foreign_database_owner` 등)가
+  공용 instance로 옮기는 순간 깨졌고, 그 전제를 지키려던 role lifecycle 기계장치가
+  한 주에 half-cutover 결함 다섯 개를 냈다. 결국 통째로 폐기하고 geo 패턴(단일 scoped
+  app role)으로 교체하는 것이 답이었다.
+
+kor-travel-map 저장소는 2026-09-21에 vNext 우선순위를 **정확성 → 단일 정본/설계적
+우월성 → 단순성 → 보안 → 확장성 → 실측 성능 → 호환성**으로 개정했다(CLAUDE.md /
+AGENTS.md). 단순성이 보안보다 위다. 이 ADR은 그 순서를 Manager 쪽 설계에도 명시적으로
+확장한다.
+
+### 결정
+
+1. **보안모델은 단순하게 간다.** role 분리·상호 배타 게이트·봉인 digest·attestation
+   체인을 겹겹이 쌓지 않는다. 단일 scoped 주체(geo 패턴)를 기본형으로 두고, 그보다
+   복잡한 모델은 그 복잡도가 막아주는 구체적 위협을 명시할 수 있을 때만 쓴다.
+   "이론적으로 더 안전하다"는 근거로는 부족하다.
+
+2. **Manager의 이미지 빌드와 다중 프로젝트 정합성도 같은 원칙으로 간다.** Manager가
+   docker 이미지를 만들고 map · geo · pinvi · concierge · weather · transport를 올려
+   이미지 간 정합성을 맞추는 구조에서, pinset 해시 계약 · 교차 저장소 revision 핀 ·
+   journal phase 게이트 · receipt/permit 체인 같은 결박을 **더 늘리지 않는다.** 이미
+   있는 것도 걷어낼 수 있으면 걷어낸다.
+
+3. **새 게이트를 추가하려면 먼저 멈춘다.** 검사기·봉인·attestation을 하나 더 붙이자는
+   판단이 들면, 그것 없이 성립하는 더 단순한 설계가 있는지부터 본다. 추가가 정말
+   필요하면 무엇을 막는지와 어떤 실패 모드를 새로 만드는지를 같이 적는다.
+
+4. **다만 동작 중인 보장을 조용히 없애지는 않는다.** 기존 결박을 걷어낼 때는 무엇을
+   잃는지 명시하고 사용자 판단을 받는다. kor-travel-map ADR-100이 그 방식의 사례다 —
+   LOGIN role을 합치면서 "API인지 Dagster인지 구분하던 감사 출처가 사라진다"는 것을
+   범위가 밝혀질 때마다(21개 → 56개) 다시 보고하고 승인을 받았다.
+
+### 근거
+
+결박 하나하나는 국소적으로 옳아 보이지만, 이 플랫폼에서 실제로 비싼 실패는
+"막지 못해서" 난 것보다 **"막아놔서 못 고친"** 쪽이 많았다. 위 목록이 그 증거다.
+1~2인이 운영하는 시스템에서 진단 가능성과 복구 가능성은 그 자체로 보안 속성이다 —
+영구 고착된 재구축과 원인을 가린 봉인은 가용성 사고였다.
+
+### 결과
+
+- **긍정**: 변경 한 건의 파급이 줄고, 실패했을 때 원인을 읽을 수 있고, 재시도가
+  가능해진다. 형제 프로젝트 여섯 개를 한 Manager가 올리는 구조에서 프로젝트마다
+  다른 결박을 외울 필요가 줄어든다.
+- **부정**: DB가 강제하던 일부 경계가 애플리케이션 코드의 규율로 내려온다. 예를 들어
+  "이 procedure는 Dagster만 부른다"는 것을 이제 DB가 확인해 주지 않는다 —
+  호출부가 맞게 쓰는지는 코드 리뷰와 테스트의 몫이다.
+- **후속**: 이 원칙은 소급 적용되지 않는다. 기존 결박을 언제 어디까지 걷어낼지는
+  개별 작업에서 범위를 정하고 사용자 승인을 받는다. 이 ADR은 "앞으로 더 쌓지 않는다"와
+  "걷어내는 방향이 기본값이다"까지를 고정한다.
+
+### 미해결
+
+- Manager의 pinned-runtime 재구축 파이프라인(pinset 해시 계약, journal phase,
+  receipt/permit 체인)에서 실제로 무엇을 걷어낼지는 아직 정하지 않았다 — 별도 작업.
+- kor-travel-map의 `schema.sql` 4겹 중첩 봉인을 줄일지도 별도 판단이다. ADR-100
+  작업에서 해시 갱신 절차 자체는 스크립트로 흡수했지만 층 수는 그대로다.
+- ADR-090(21-role 모델)의 나머지 부분 — NOLOGIN procedure owner 계층과 SECURITY
+  DEFINER 경계 — 은 ADR-100 범위 밖으로 남겨뒀고, 이 ADR도 그것을 자동으로
+  폐기하지 않는다.
