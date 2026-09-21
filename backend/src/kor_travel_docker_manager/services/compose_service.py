@@ -24,6 +24,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _MAP_APPLICATION_FRESH_300_SERVICE,
     _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
     _MAP_RUNTIME_SERVICES,
+    _PINVI_ACTIVE_DB_ROLE_SERVICE,
     _PINVI_ADMIN_BOOTSTRAP_SERVICE,
     _PINVI_API_SERVICE,
     _PINVI_DB_RUNTIME_ROLE_SERVICE,
@@ -213,7 +214,11 @@ from kor_travel_docker_manager.services.yaml_strict import (
 
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "pinvi-db-init",
+    # 전용/공용 둘 다 센다. 탐지 목록은 포함적이어야 한다 — ADR-46 전환 중에는
+    # 양쪽 one-shot이 모두 compose에 선언돼 있고, 활성 쪽만 세면 다른 쪽이
+    # 돌고 있을 때 파괴 단계가 그것을 못 본다.
     _PINVI_DB_RUNTIME_ROLE_SERVICE,
+    _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE,
     "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
     _MAP_APPLICATION_FRESH_300_SERVICE,
@@ -5173,7 +5178,7 @@ class ComposeService:
                 if prefixed is not None:
                     candidates += (prefixed,)
                 for candidate in candidates:
-                    if target == _PINVI_DB_RUNTIME_ROLE_SERVICE:
+                    if target == _PINVI_ACTIVE_DB_ROLE_SERVICE:
                         code = _PINVI_DB_RUNTIME_ROLE_ERROR_CODE_BY_LINE.get(
                             candidate.strip()
                         )
@@ -5219,7 +5224,7 @@ class ComposeService:
                                 message_suffix=f"; pinvi:{code}",
                                 pinvi_role_code=code,
                             )
-        if target == _PINVI_DB_RUNTIME_ROLE_SERVICE:
+        if target == _PINVI_ACTIVE_DB_ROLE_SERVICE:
             return _ComposeFailureDiagnostic(
                 message_suffix="; pinvi_role:unclassified",
                 pinvi_role_code="unclassified",
@@ -5358,7 +5363,7 @@ class ComposeService:
                 "PINVI_MIGRATOR_DISABLE_LOGIN=1",
                 "-e",
                 "PINVI_M05_LEGACY_REBASELINE=0",
-                _PINVI_DB_RUNTIME_ROLE_SERVICE,
+                _PINVI_ACTIVE_DB_ROLE_SERVICE,
             ],
             transaction=transaction,
         )
@@ -5514,7 +5519,7 @@ class ComposeService:
         # NOLOGIN이었다 — 실측 원문은
         # `role "pinvi_migrator_runtime" is not permitted to log in`이고,
         # 운영자에게는 봉인된 `migration_failed` 한 단어로만 보였다.
-        role_service = _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE
+        role_service = _PINVI_ACTIVE_DB_ROLE_SERVICE
         open_role = [
             *role_command_prefix,
             "PINVI_MIGRATOR_DISABLE_LOGIN=0",
@@ -5701,7 +5706,7 @@ class ComposeService:
                     "PINVI_ROLE_CATALOG_RESET_PERMIT_FILE=/run/pinvi/role-catalog-reset.permit",
                     "-e",
                     "PINVI_ROLE_CATALOG_RESET_RESULT_FILE=/run/pinvi/role-catalog-reset.result",
-                    _PINVI_DB_RUNTIME_ROLE_SERVICE,
+                    _PINVI_ACTIVE_DB_ROLE_SERVICE,
                 ],
                 transaction=transaction,
                 capture_output=False,
