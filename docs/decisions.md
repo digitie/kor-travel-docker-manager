@@ -3451,4 +3451,11 @@ API)과 `12105`(RustFS console) 사이의 빈 자리라 다른 서비스와의 �
   이 저장소 조사 범위 밖이다 — 저장소 안에서는 그런 설정을 찾지 못했다.
 
 ### 후속
-- (open) n150 실제 재배포 — 사용자 확인 후 별도 작업으로 수행한다.
+- (open) n150 실제 재배포 — 사용자 확인 후 별도 작업으로 수행한다. 재생성 직전에는
+  `scripts/verify-monitoring-port-migration.sh`의 환경변수 사전 검사를 통과해야 하며,
+  재생성 뒤에는 같은 스크립트로 Prometheus readiness, cAdvisor health, Grafana health,
+  Prometheus self/cAdvisor scrape를 모두 확인한다. 이 순서는 기존 `.env`의 옛 포트
+  override가 scrape/datasource와 분리되는 것을 막는다.
+- host network 모드에서는 `ports:`가 방화벽 경계가 아니다. 운영자는 새 포트
+  `12102`/`12103`/`12104`가 기존 관측 포트와 같은 방화벽 노출 정책을 갖는지 별도로
+  확인한다. 외부 노출을 바꾸는 것은 이 포트 이전과 분리된 보안 변경으로 다룬다.
