@@ -27,7 +27,7 @@
 |---|---:|---|---|
 | `db` | `12000-12099` | 없음 | 과거 통합 DB target의 호환 이름. 실제 Geo DB는 `12500`이다. |
 | `storage` | `12100-12199` | S3 API `12101`, console `12105`, **Prometheus `12102`, cAdvisor `12103`, Grafana `12104`**(ADR-48, 대역 예외 — 아래 참고) | RustFS |
-| `gra` | `12200-12299` | Web UI `12104`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | Grafana |
+| `gra` | `12200-12299` | Web UI `12104`는 여기 없다(ADR-48로 `storage` 대역 안으로 재배치). 대신 **weather API `12201`, Dagster 게이트웨이 `12202`, Web `12205`**(ADR-49, 아래 참고)가 이 대역을 쓴다 | Grafana(이름만 — 실제 점유자는 weather, 아래 참고) |
 | `cadv` | `12300-12399` | Exporter `12103`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | cAdvisor |
 | `prom` | `12400-12499` | HTTP `12102`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | Prometheus |
 | `geo` | `12500-12599` | PostgreSQL `12500`, API `12501`, Dagster `12502`, Web UI `12505` | `kor-travel-geo` |
@@ -35,7 +35,7 @@
 | `map` | `12700-12799` | PostgreSQL `12700`, API `12701`, Dagster `12702`, Web UI `12705` | `kor-travel-map` |
 | `pinvi` | `12800-12899` | PostgreSQL `12800`, API `12801`, Dagster webserver `12802`, Dagster code-server(gRPC, PinVi ADR-069) `12803`, Web UI `12805` | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
-| `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Prometheus `14104`, Web `14105` | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
+| `weather` | `14100-14199` | Prometheus `14104`, Dagster webserver(내부 전용) `14107`, Dagster code-server(gRPC, 내부 전용) `14106`. API·Dagster 게이트웨이·Web은 여기 없다 — ADR-49로 `gra` 대역(`12200-12299`)의 `12201`/`12202`/`12205`로 재배치, 아래 참고 | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
 | `airport-db` | `14000-14000` | PostgreSQL `14000` | `kor-travel-airport` (외부 프로젝트) |
 | `airport` | `14001-14099` | Backend `14001`, Frontend `14002` | `kor-travel-airport` (외부 프로젝트) |
 
@@ -48,6 +48,26 @@ target 이름이 가리키는 100단위 대역(`12200-12299`/`12300-12399`/`1240
 대역"이라는 §기본 규칙 전제는 이 세 target에 더 이상 성립하지 않는다 — target 이름
 (`gra`/`cadv`/`prom`)과 `config/docker-targets.yml`의 키는 바뀌지 않았고 포트만
 옮겼다. 근거·배경은 `docs/decisions.md` ADR-48(ADR-10의 포트 배정 부분을 supersede).
+
+### `weather`의 대역 예외 (ADR-49)
+
+weather의 API(`12201`)·Dagster 게이트웨이(`12202`)·Web(`12205`)은 2026-09-21부터
+자신의 target 이름(`weather`)이 가리키는 대역(`14100-14199`)이 아니라 `gra`
+대역(`12200-12299`) 안의 세 포트를 쓴다 — ADR-48로 Grafana가 그 대역을 완전히
+떠나 실제 포트 충돌은 없다. `gra`/`cadv`/`prom`과 같은 패턴으로, target 이름과
+`config/docker-targets.yml`의 키는 바뀌지 않았고 이 세 포트만 옮겼다. weather의
+나머지 서비스(자체 Prometheus `14104`, Dagster webserver·code-server 내부 전용
+`14107`/`14106`)는 원래 대역에 그대로 남는다 — weather 하나의 target이 이제 두
+대역(`14100-14199`, `12200-12299`)에 걸쳐 있다.
+
+⚠️ **ADR-47은 원래 "포트는 재배정하지 않는다"고 명시적으로 결정했었다** — n150의
+HAProxy(저장소 밖, 호스트 설정)가 이미 weather의 기존 포트로 공개 도메인
+(`weather.digitie.mywire.org` 등)을 라우팅 중이기 때문이었다. ADR-49는 이 부분만
+사용자 지시로 supersede한다. **repo-level 변경(이 문서 포함)만으로는 공개 도메인이
+새 포트로 옮겨가지 않는다** — 컨테이너를 새 포트로 재배포하는 것과 별개로, n150
+HAProxy의 백엔드 설정도 이 저장소 밖에서 `12201`/`12202`/`12205`로 갱신해야
+공개 도메인이 계속 동작한다. 근거·배경은 `docs/decisions.md` ADR-49(ADR-47의
+포트 재배정 부분을 supersede).
 
 ### 외부 프로젝트 대역 (`14000-14099`)
 
@@ -104,7 +124,8 @@ Geo Dagster webserver는 registry의 일반 runtime 표에는 없는 보조 서�
 `12502`를 사용한다. PinVi의 `srv`와 `main`은 `pinvi` target 별칭이다. PinVi Dagster
 code-server(`12803`, PinVi ADR-069)도 daemon과 같은 내부 전용이다 — webserver/daemon만
 gRPC로 접속하고, 외부에는 열지 않는다. weather의 Dagster code-server(`14106`)/webserver
-(`14107`, ADR-47로 재배치)도 같은 이유로 loopback 전용이다 — gateway(`14102`)만 외부에 연다.
+(`14107`, ADR-47로 재배치)도 같은 이유로 loopback 전용이다 — gateway(`12202`, ADR-49로
+재배정)만 외부에 연다.
 
 ## PostgreSQL instance 경계
 

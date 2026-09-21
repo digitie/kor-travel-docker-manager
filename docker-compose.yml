@@ -2332,8 +2332,19 @@ services:
   # §2)이었다. 사용자 지시로 전체(db·api·web·dagster 전부)를 Manager compose로
   # 통합한다 — db는 데이터 이전 없이 공용 instance(kor-travel-shared-postgres)에
   # fresh로 새로 만든다("어차피 새로 쌓으면 됨", PinVi ADR-46과 같은 패턴).
-  # 기존 포트(14100-14199)는 그대로 유지한다 — n150 HAProxy가 이미 그 포트로
-  # 공개 도메인을 라우팅 중이라 바꾸면 별도 호스트 설정 변경이 필요해진다.
+  #
+  # ⚠️ 포트 재배정 (ADR-49, 2026-09-21): ADR-47은 "포트는 재배정하지 않는다 —
+  # n150 HAProxy가 이미 기존 포트로 공개 도메인을 라우팅 중"이라고 명시적으로
+  # 결정했었다. 사용자 지시로 이 부분만 supersede한다 — 공개로 노출되는 세
+  # 서비스만 `gra` target의 빈 100-블록(`12200-12299`, ADR-48로 Grafana가 빠져
+  # 나간 자리)으로 옮긴다: API `14101`→`12201`, Dagster 게이트웨이
+  # `14102`→`12202`(둘 다 아래 `command`/`ports`), Web `14105`→`12205`. 내부
+  # 전용 포트(Dagster code-server `14106`, webserver `14107`, 자체 Prometheus
+  # `14104`)는 `14100-14199`에 그대로 남는다 — 이 셋은 HAProxy가 라우팅하지
+  # 않는다. **n150 HAProxy의 백엔드 설정(이 저장소 밖, 호스트 설정)은 이
+  # 변경으로 바뀌지 않는다** — 실제 재배포 시 HAProxy도 새 포트(`12201`/
+  # `12202`/`12205`)로 함께 갱신하지 않으면 공개 도메인(weather.digitie.mywire.org
+  # 등)이 끊긴다. 상세는 ADR-49.
   #
   # network_mode: host는 bridge NAT을 없앤다 — weather 자신의 compose.yaml에서
   # bridge-mode NAT이 대신 지켜주던 두 가지를 여기서 명시로 대체해야 했다:
@@ -2341,7 +2352,7 @@ services:
   #     14102를 각자 썼다(bridge에서는 별 네임스페이스라 충돌이 없다) — host
   #     모드에서는 충돌하므로 webserver를 14107(loopback 전용, 새 포트)로 옮기고
   #     gateway의 nginx conf(Manager 소유 오버라이드)가 거기로 proxy_pass한다.
-  #     외부에 노출되는 14102는 gateway 혼자 그대로 쓴다 — HAProxy는 안 바뀐다.
+  #     외부에 노출되는 포트(ADR-49로 `12202`)는 gateway 혼자 그대로 쓴다.
   # (2) dagster-code-server의 gRPC 포트(14106, 인증 전혀 없음, 코드 실행 가능)는
   #     bridge에서 `ports: 127.0.0.1:14106:14106` publish 매핑이 loopback-only를
   #     지켰다 — host 모드는 publish 자체가 없어(Docker가 무시) 프로세스 자신의
@@ -2384,7 +2395,7 @@ services:
     - --host
     - "0.0.0.0"
     - --port
-    - "14101"
+    - "12201"
     environment:
       KOR_TRAVEL_WEATHER_ENV: production
       # weather 자신의 전용 db는 은퇴한다(사용자 결정: 데이터 이전 없음, fresh
@@ -2397,7 +2408,7 @@ services:
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_METRICS_TOKEN: ${KOR_TRAVEL_WEATHER_METRICS_TOKEN:?set KOR_TRAVEL_WEATHER_METRICS_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
-      KOR_TRAVEL_WEATHER_CORS_ORIGINS: '${KOR_TRAVEL_WEATHER_CORS_ORIGINS:-["https://weather.digitie.mywire.org","http://127.0.0.1:14105"]}'
+      KOR_TRAVEL_WEATHER_CORS_ORIGINS: '${KOR_TRAVEL_WEATHER_CORS_ORIGINS:-["https://weather.digitie.mywire.org","http://127.0.0.1:12205"]}'
       KOR_TRAVEL_WEATHER_API_BASE_URL: ${KOR_TRAVEL_WEATHER_API_BASE_URL:-https://weather-api.digitie.mywire.org}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
       KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
@@ -2416,9 +2427,9 @@ services:
       KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL:-https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services}
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
     ports:
-    - ${KOR_TRAVEL_WEATHER_API_PORT:-14101}:${KOR_TRAVEL_WEATHER_API_PORT:-14101}
+    - ${KOR_TRAVEL_WEATHER_API_PORT:-12201}:${KOR_TRAVEL_WEATHER_API_PORT:-12201}
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:14101/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:12201/health', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -2714,11 +2725,12 @@ services:
     volumes:
     # weather 자신의 baked conf(deploy/nginx/dagster-gateway.conf)는
     # `http://dagster-webserver:14102`로 서비스명 DNS를 쓴다 — host networking엔
-    # 없고, 이 컨테이너 자신의 14102 listen과도 충돌한다. Manager가 오버라이드를
-    # 소유한다(support file #2) — weather 저장소는 안 건드린다.
+    # 없고, 이 컨테이너 자신의 listen 포트와도 충돌한다. Manager가 오버라이드를
+    # 소유한다(support file #2, listen도 ADR-49로 12202) — weather 저장소는 안
+    # 건드린다.
     - ./config/kor-travel-weather/dagster-gateway.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
-    - ${KOR_TRAVEL_WEATHER_DAGSTER_GATEWAY_PORT:-14102}:${KOR_TRAVEL_WEATHER_DAGSTER_GATEWAY_PORT:-14102}
+    - ${KOR_TRAVEL_WEATHER_DAGSTER_GATEWAY_PORT:-12202}:${KOR_TRAVEL_WEATHER_DAGSTER_GATEWAY_PORT:-12202}
 
   kor-travel-weather-web:
     image: ${KOR_TRAVEL_WEATHER_WEB_IMAGE:-kor-travel-weather-web:latest-main}
@@ -2735,17 +2747,28 @@ services:
         condition: service_healthy
       kor-travel-weather-dagster-gateway:
         condition: service_started
-    # command: 오버라이드 불필요 — deploy/Dockerfile.web이 이미
-    # `next start -- --hostname 0.0.0.0 --port 14105`를 이미지 CMD로 굽는다.
+    # command 오버라이드 (ADR-49): weather 자신의 deploy/Dockerfile.web은
+    # `next start -- --hostname 0.0.0.0 --port 14105`를 이미지 CMD로 굽는다 —
+    # 빌드 시점 literal이라 env var로 바꿀 수 없다. weather 저장소를 건드리지
+    # 않고 Manager compose의 command로 12205를 듣도록 덮어쓴다.
+    command:
+    - npm
+    - run
+    - start
+    - --
+    - --hostname
+    - "0.0.0.0"
+    - --port
+    - "12205"
     environment:
       # weather 자신의 compose.yaml은 여기서 서비스명 DNS를 썼다(서버사이드
       # fetch라 브라우저가 아니라 web 컨테이너 자신이 부른다) — host 모드엔
       # 없으니 loopback으로 바꾼다.
-      WEATHER_API_INTERNAL_URL: http://127.0.0.1:14101
+      WEATHER_API_INTERNAL_URL: http://127.0.0.1:12201
       # dagster-webserver의 새 내부 전용 포트(14107)를 가리킨다 — 공개
-      # gateway(14102)가 아니다. weather 자신의 원래 의도(이 Next 프록시는
-      # gateway를 거치지 않고 내부 dagster 서비스에 직접 붙는다)를 포트 재배치
-      # 아래서도 그대로 지킨다.
+      # gateway(ADR-49로 12202)가 아니다. weather 자신의 원래 의도(이 Next
+      # 프록시는 gateway를 거치지 않고 내부 dagster 서비스에 직접 붙는다)를
+      # 포트 재배치 아래서도 그대로 지킨다.
       DAGSTER_UI_INTERNAL_URL: http://127.0.0.1:14107
       NEXT_PUBLIC_DAGSTER_URL: ${NEXT_PUBLIC_DAGSTER_URL:-https://weather-dagster.digitie.mywire.org}
       NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
@@ -2767,7 +2790,7 @@ services:
       WEATHER_UI_TRUST_PROXY: ${WEATHER_UI_TRUST_PROXY:-}
       WEATHER_UI_PUBLIC_ORIGIN: ${WEATHER_UI_PUBLIC_ORIGIN:-}
     ports:
-    - ${KOR_TRAVEL_WEATHER_WEB_PORT:-14105}:${KOR_TRAVEL_WEATHER_WEB_PORT:-14105}
+    - ${KOR_TRAVEL_WEATHER_WEB_PORT:-12205}:${KOR_TRAVEL_WEATHER_WEB_PORT:-12205}
 
   kor-travel-weather-prometheus:
     image: prom/prometheus:v3.5.0

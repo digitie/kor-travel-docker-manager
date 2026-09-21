@@ -259,9 +259,9 @@ containers:
     compose_service: kor-travel-weather-api
     role: weather-api
     display_name: Kor Travel Weather API
-    connection: "http://127.0.0.1:14101"
+    connection: "http://127.0.0.1:12201"
     expected_ports:
-      - "14101:14101"
+      - "12201:12201"
     prod_url_env: KTDM_PROD_URL_WEATHER_API
   # dagster는 code-server/webserver/daemon 3-분리로 나뉜다 — registry가 실제
   # compose.yaml 토폴로지(weather PR #61, code-server 분리) 뒤로 밀려 있었다.
@@ -291,18 +291,18 @@ containers:
     compose_service: kor-travel-weather-dagster-gateway
     role: weather-dagster-gateway
     display_name: Kor Travel Weather Dagster 게이트웨이
-    connection: "http://127.0.0.1:14102"
+    connection: "http://127.0.0.1:12202"
     expected_ports:
-      - "14102:14102"
+      - "12202:12202"
     prod_url_env: KTDM_PROD_URL_WEATHER_DAGSTER
   kor-travel-weather-web:
     name: kor-travel-weather-web-latest
     compose_service: kor-travel-weather-web
     role: weather-web
     display_name: Kor Travel Weather 웹
-    connection: "http://127.0.0.1:14105"
+    connection: "http://127.0.0.1:12205"
     expected_ports:
-      - "14105:14105"
+      - "12205:12205"
     prod_url_env: KTDM_PROD_URL_WEATHER
   kor-travel-weather-prometheus:
     name: kor-travel-weather-prometheus
@@ -731,7 +731,7 @@ targets:
     port_band: "14100-14199"
     depends_on: []
     display_name: Kor Travel Weather
-    description: 기상 데이터 서비스. API(:14101)·Dagster 게이트웨이(:14102, Basic Auth)·자체 Prometheus(:14104)·Web(:14105)으로 구성되며, 공용 control-plane instance(kor-travel-shared-postgres, :11000)에 fresh app/Dagster DB를 새로 만들어 쓴다(옛 전용 db 데이터는 옮기지 않는다 — PinVi ADR-46과 같은 패턴). weather 자신의 compose.yaml/deploy/compose.n150.yaml은 local-dev/e2e 전용으로 남는다 — prod 정본은 이제 이 파일이다(ADR-47).
+    description: 기상 데이터 서비스. API(:12201)·Dagster 게이트웨이(:12202, Basic Auth)·Web(:12205)은 ADR-49로 `gra` target의 빈 100-블록(`12200-12299`)으로 재배정됐다(공개로 노출되는 세 서비스만). 자체 Prometheus(:14104)·Dagster webserver(내부 전용 :14107)·code-server(내부 전용 :14106)는 원래 대역(`14100-14199`)에 그대로 남는다. 공용 control-plane instance(kor-travel-shared-postgres, :11000)에 fresh app/Dagster DB를 새로 만들어 쓴다(옛 전용 db 데이터는 옮기지 않는다 — PinVi ADR-46과 같은 패턴). weather 자신의 compose.yaml/deploy/compose.n150.yaml은 local-dev/e2e 전용으로 남는다 — prod 정본은 이제 이 파일이다(ADR-47, 포트는 ADR-49).
     aliases:
       - kor-travel-weather
     services:
