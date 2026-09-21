@@ -32,9 +32,12 @@ lock 경로·FD env 리터럴은 `scripts/run-pinned-rebuild-once`·
 from __future__ import annotations
 
 import os
+import stat
 import sys
 from pathlib import Path
 from typing import Final
+
+from kor_travel_docker_manager.services.errors import DeploymentContractError
 
 TRUSTED_INSTALL_ROOT: Final = Path("/opt/kor-travel-docker-manager")
 TRUSTED_STATE_ROOT: Final = Path("/var/lib/kor-travel-docker-manager")
@@ -98,3 +101,33 @@ def require_pinned_runtime_rebuild_root() -> None:
 
     if os.geteuid() != 0:
         raise DeploymentContractError("pinned runtime rebuild requires root execution")
+
+
+def trusted_pinned_runtime_project_root() -> Path:
+    """root `rebuild-pinned`가 쓸 수 있는 유일한 trusted release root를 반환한다.
+
+    ADR-46 역전으로 PinVi의 다중 role 모델이 폐기되면서
+    `pinvi_database_role_credentials`가 통째로 사라졌다. 이 함수만은 그 모델과
+    무관하게 pinned rebuild의 env snapshot 경로가 쓰므로 경로 상수의 정본인
+    여기로 옮겼다(GM-09).
+    """
+
+    raw_root = TRUSTED_INSTALL_ROOT
+    try:
+        metadata = raw_root.lstat()
+    except OSError as exc:
+        raise DeploymentContractError(
+            "trusted PinVi rebuild project root cannot be inspected"
+        ) from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        raise DeploymentContractError(
+            "trusted PinVi rebuild project root has unsafe ownership or mode"
+        )
+    root = raw_root.resolve(strict=True)
+    if root != raw_root:
+        raise DeploymentContractError("trusted PinVi rebuild project root is not canonical")
+    return root

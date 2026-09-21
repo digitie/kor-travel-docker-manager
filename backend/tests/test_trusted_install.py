@@ -19,7 +19,6 @@ from kor_travel_docker_manager.services import (
     compose_service,
     legacy_override_retirement,
     pinned_runtime_generation,
-    pinvi_database_role_credentials,
     runtime_execution_registry,
     runtime_pair_rotation,
     runtime_pin_registry,
@@ -94,11 +93,6 @@ def test_compose_service_and_c6c_root_checks_delegate_to_the_shared_function(
         (c6c_deployment, "_DEFAULT_C6C_PRODUCTION_STATE_ROOT", TRUSTED_STATE_ROOT),
         (c6c_deployment, "_C6C_PRODUCTION_STATE_ROOT", TRUSTED_STATE_ROOT),
         (pinned_runtime_generation, "_DEFAULT_PUBLIC_ROOT", TRUSTED_PUBLIC_ROOT),
-        (
-            pinvi_database_role_credentials,
-            "_TRUSTED_PINNED_RUNTIME_PROJECT_ROOT",
-            TRUSTED_INSTALL_ROOT,
-        ),
         (
             legacy_override_retirement,
             "_TRUSTED_PRODUCTION_PROJECT_ROOT",

@@ -74,7 +74,7 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
             "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
             "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
             "PINVI_POSTGRES_DB": "pin_app",
-            "KOR_TRAVEL_SHARED_POSTGRES_USER": "pin_owner",
+            "PINVI_APP_DB_USER": "pin_owner",
         },
     )
 

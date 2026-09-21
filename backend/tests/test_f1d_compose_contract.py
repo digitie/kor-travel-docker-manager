@@ -241,41 +241,6 @@ def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
     ] == "${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}"
 
 
-def test_pinvi_role_bootstrap_source_bind_is_in_canonical_candidate_allowlist() -> None:
-    assert load_compose_bind_allowlist()[
-        ("pinvi-db-runtime-role", "/opt/pinvi/bootstrap-pinvi-runtime-role.sh", True)
-    ] == ("${PINVI_REPO_DIR:-../pinvi}/infra/postgres/bootstrap-pinvi-runtime-role.sh")
-
-
-def test_pinvi_role_bootstrap_entrypoint_interprets_a_non_executable_source(
-    tmp_path: Path,
-) -> None:
-    source = _source_compose()
-    services = source["services"]
-    assert isinstance(services, dict)
-    role_service = services["pinvi-db-runtime-role"]
-    assert isinstance(role_service, dict)
-    assert role_service["entrypoint"] == [
-        "sh",
-        "-ec",
-        'export POSTGRES_PASSWORD="$$(cat /run/secrets/pinvi-postgres-password)"\n'
-        "exec sh /opt/pinvi/bootstrap-pinvi-runtime-role.sh\n",
-    ]
-
-    script = tmp_path / "bootstrap-pinvi-runtime-role.sh"
-    script.write_text('test "$POSTGRES_PASSWORD" = "root-password"\n', encoding="utf-8")
-    script.chmod(0o444)
-    assert script.stat().st_mode & 0o111 == 0
-    completed = subprocess.run(
-        ["sh", str(script)],
-        env={"POSTGRES_PASSWORD": "root-password"},
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stderr
-
-
 def test_concierge_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
     assert load_compose_bind_allowlist()[
         ("kor-travel-concierge-postgres", "/var/lib/postgresql/data", False)
@@ -380,10 +345,6 @@ def _compose_contract_environment() -> dict[str, str]:
         "PINVI_POSTGRES_PASSWORD": "pinvi-contract-postgres-password",
         "PINVI_APP_DB_USER": "pinvi_contract_app",
         "PINVI_APP_DB_PASSWORD": "pinvi-contract-app-password",
-        "PINVI_APP_SCHEMA_OWNER": "pinvi_contract_app_owner",
-        "PINVI_MIGRATION_OWNER": "pinvi_contract_migration_owner",
-        "PINVI_MIGRATOR_DB_USER": "pinvi_contract_migrator",
-        "PINVI_MIGRATOR_DB_PASSWORD": "pinvi-contract-migrator-password",
         "PINVI_ENVIRONMENT": "production",
         # ADR-46 — PinVi 앱/Dagster DSN이 실제로 접속하는 공용 instance의 cluster
         # 관리자 비밀번호. `kor-travel-shared-db-init-pinvi`/`pinvi-shared-db-runtime-role`
@@ -474,6 +435,7 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
         "kor-travel-map-postgres" in services
         or "pinvi-postgres" in services
         or "kor-travel-shared-postgres" in services
+        or "kor-travel-shared-db-init-pinvi" in services
     ):
         source_secrets = _source_compose().get("secrets")
         assert isinstance(source_secrets, dict)
@@ -489,6 +451,11 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
         if "kor-travel-shared-postgres" in services:
             fragment["secrets"]["kor-travel-shared-postgres-password"] = deepcopy(
                 source_secrets["kor-travel-shared-postgres-password"]
+            )
+        # geo 패턴 전환 이후 PinVi의 app role 비밀번호도 secret file로 들어온다.
+        if "kor-travel-shared-db-init-pinvi" in services:
+            fragment["secrets"]["pinvi-shared-app-password"] = deepcopy(
+                source_secrets["pinvi-shared-app-password"]
             )
     return fragment
 
@@ -1064,7 +1031,6 @@ def _bootstrap_candidate(tmp_path: Path) -> tuple[dict[str, object], dict[str, s
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
-        "pinvi-db-runtime-role",
     )
     environment = _compose_contract_environment()
     root_env = tmp_path / ".env"
@@ -1121,9 +1087,6 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     map_source = Path(environment["KOR_TRAVEL_MAP_REPO_DIR"])
     pinvi_source = Path(environment["PINVI_REPO_DIR"])
     credential_preflight = map_source / "scripts" / "database-credential-preflight.sh"
-    role_bootstrap_script = (
-        pinvi_source / "infra" / "postgres" / "bootstrap-pinvi-runtime-role.sh"
-    )
     map_pgdata = Path(environment["KOR_TRAVEL_MAP_PGDATA"])
     pinvi_pgdata = Path(environment["PINVI_PGDATA"])
     raw_snapshots = validate_compose_candidate_protected_values(
@@ -1132,21 +1095,10 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         root_env_path=str(root_env),
         environment=environment,
     )
-    role_bootstrap_script.write_text(
-        f"#!/bin/sh\nleaked_value={environment['PINVI_APP_DB_PASSWORD']}\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(DeploymentContractError, match="bind source leaks C6c data"):
-        validate_compose_candidate_protected_values(
-            candidate,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-    role_bootstrap_script.write_text(
-        "#!/bin/sh\nruntime=PINVI_APP_DB_PASSWORD\nmigrator=PINVI_MIGRATOR_DB_PASSWORD\n",
-        encoding="utf-8",
-    )
+    # M05 폐기(geo 패턴 전환) 전에는 여기서 role_bootstrap_script가 실제로
+    # bind-mount되는 frozen source였고, 그 안에 보호 값을 흘리면 bind-leak
+    # 스캐너가 잡았다. 이제 그 스크립트를 마운트하는 서비스가 없다 — 디스크 위
+    # 파일 하나일 뿐이라 leak 검사가 볼 대상이 아니다.
     credential_preflight.write_text(
         f"#!/bin/sh\nleaked_value={environment['KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET']}\n",
         encoding="utf-8",
@@ -1204,7 +1156,6 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
-        "pinvi-db-runtime-role",
         environment_update={
             "KOR_TRAVEL_MAP_PGDATA": str(map_pgdata),
             "KOR_TRAVEL_MAP_REPO_DIR": str(map_source),
@@ -1337,23 +1288,10 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
                 root_env_path=str(root_env),
             )
 
-    admin_uses_runtime_role = deepcopy(resolved)
-    admin_uses_runtime_services = admin_uses_runtime_role["services"]
-    assert isinstance(admin_uses_runtime_services, dict)
-    admin_bootstrap = admin_uses_runtime_services["pinvi-admin-bootstrap"]
-    assert isinstance(admin_bootstrap, dict)
-    admin_environment = admin_bootstrap["environment"]
-    assert isinstance(admin_environment, dict)
-    admin_environment["PINVI_DATABASE_URL"] = (
-        "postgresql+asyncpg://pinvi_contract_app:pinvi-contract-app-password@127.0.0.1:11000/pinvi"
-    )
-    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
-        validate_resolved_compose_candidate_protected_values(
-            admin_uses_runtime_role,
-            environment=environment,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-        )
+    # M05 폐기(geo 패턴 전환) 전에는 여기서 admin-bootstrap이 app runtime role과
+    # 같은 자격증명을 쓰면 역할 분리 위반으로 거부됐다. 이제 role이 하나뿐이라
+    # admin-bootstrap이 app runtime과 같은 자격증명을 쓰는 것이 정상이다 — 그
+    # 거부를 검사하는 것은 더 이상 맞지 않는다.
 
     wrong_pinvi_port = dict(environment)
     wrong_pinvi_port["PINVI_DB_PORT"] = "12900"
@@ -1375,46 +1313,6 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
             environment=wrong_pinvi_shared_port,
-        )
-
-    repeated_pinvi_role = dict(environment)
-    repeated_pinvi_role["PINVI_MIGRATOR_DB_USER"] = repeated_pinvi_role["PINVI_APP_DB_USER"]
-    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
-        validate_compose_candidate_protected_values(
-            candidate,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=repeated_pinvi_role,
-        )
-
-    repeated_pinvi_password = dict(environment)
-    repeated_pinvi_password["PINVI_MIGRATOR_DB_PASSWORD"] = repeated_pinvi_password[
-        "PINVI_APP_DB_PASSWORD"
-    ]
-    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
-        validate_compose_candidate_protected_values(
-            candidate,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=repeated_pinvi_password,
-        )
-    resolved_repeated_pinvi_password = deepcopy(resolved)
-    resolved_repeated_password_services = resolved_repeated_pinvi_password["services"]
-    assert isinstance(resolved_repeated_password_services, dict)
-    resolved_repeated_admin = resolved_repeated_password_services["pinvi-admin-bootstrap"]
-    assert isinstance(resolved_repeated_admin, dict)
-    resolved_repeated_admin_environment = resolved_repeated_admin["environment"]
-    assert isinstance(resolved_repeated_admin_environment, dict)
-    resolved_repeated_admin_environment["PINVI_DATABASE_URL"] = (
-        "postgresql+asyncpg://pinvi_contract_migrator:pinvi-contract-app-password@"
-        "127.0.0.1:11000/pinvi"
-    )
-    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
-        validate_resolved_compose_candidate_protected_values(
-            resolved_repeated_pinvi_password,
-            environment=repeated_pinvi_password,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
         )
 
     runtime_uses_root_password = dict(environment)
@@ -1447,35 +1345,10 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             root_env_path=str(root_env),
         )
 
-    migrator_uses_root_password = dict(environment)
-    migrator_uses_root_password["PINVI_MIGRATOR_DB_PASSWORD"] = migrator_uses_root_password[
-        "PINVI_POSTGRES_PASSWORD"
-    ]
-    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
-        validate_compose_candidate_protected_values(
-            candidate,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=migrator_uses_root_password,
-        )
-    resolved_migrator_uses_root_password = deepcopy(resolved)
-    resolved_migrator_uses_root_services = resolved_migrator_uses_root_password["services"]
-    assert isinstance(resolved_migrator_uses_root_services, dict)
-    resolved_migrator_admin = resolved_migrator_uses_root_services["pinvi-admin-bootstrap"]
-    assert isinstance(resolved_migrator_admin, dict)
-    resolved_migrator_admin_environment = resolved_migrator_admin["environment"]
-    assert isinstance(resolved_migrator_admin_environment, dict)
-    resolved_migrator_admin_environment["PINVI_DATABASE_URL"] = (
-        "postgresql+asyncpg://pinvi_contract_migrator:pinvi-contract-postgres-password@"
-        "127.0.0.1:11000/pinvi"
-    )
-    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
-        validate_resolved_compose_candidate_protected_values(
-            resolved_migrator_uses_root_password,
-            environment=migrator_uses_root_password,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-        )
+    # M05 폐기(geo 패턴 전환) 전에는 여기서 migrator/schema-owner/migration-owner
+    # 이름·비밀번호 충돌과 migrator=root 재사용을 각각 거부했다. 그 role들이
+    # 전부 사라졌으므로 남는 것은 app role과 root의 구분뿐이다(바로 위
+    # runtime_uses_root_password가 그것을 본다).
 
     root_secret_leak = deepcopy(candidate)
     root_secret_services = root_secret_leak["services"]
@@ -1793,59 +1666,6 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     }
 
 
-def test_pinvi_shared_db_runtime_role_bind_leak_exemption_matches_dedicated_instance(
-    tmp_path: Path,
-) -> None:
-    """ADR-46 shared-instance one-shot도 dedicated-instance와 같은 identifier-only 면제를 받는다.
-
-    `pinvi-shared-db-runtime-role`은 `pinvi-db-runtime-role`과 완전히 같은
-    `bootstrap-pinvi-runtime-role.sh`를 그대로 마운트한다(docker-compose.yml 주석
-    실측, 두 서비스 모두 같은 `PINVI_REPO_DIR` 기준 경로). 이 테스트를 추가하기 전
-    코드는 `_PINVI_DB_RUNTIME_ROLE_SERVICE`(dedicated 이름)만 면제했고,
-    `_PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE`는 일반 스캔으로 떨어져 스크립트가 선언하는
-    role/password env 이름(`PINVI_APP_DB_PASSWORD` 등, protected_names의 일부)만으로도
-    거짓 양성 "bind source leaks C6c data"를 냈다 — n150 실배포 `t52a` 재구축이 바로
-    이 자리에서 막혔다.
-    """
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    source_services = _source_compose()["services"]
-    for name in (
-        "pinvi-shared-db-runtime-role",
-        "kor-travel-shared-postgres",
-        "kor-travel-shared-db-init-pinvi",
-    ):
-        if name not in candidate["services"]:
-            candidate["services"][name] = deepcopy(source_services[name])
-    role_bootstrap_script = (
-        Path(environment["PINVI_REPO_DIR"]) / "infra" / "postgres" / "bootstrap-pinvi-runtime-role.sh"
-    )
-
-    raw_snapshots = validate_compose_candidate_protected_values(
-        candidate,
-        compose_path=str(_COMPOSE_PATH),
-        root_env_path=str(root_env),
-        environment=environment,
-    )
-    assert raw_snapshots is not None
-
-    role_bootstrap_script.write_text(
-        f"#!/bin/sh\nleaked_value={environment['PINVI_APP_DB_PASSWORD']}\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(DeploymentContractError, match="bind source leaks C6c data"):
-        validate_compose_candidate_protected_values(
-            candidate,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-    role_bootstrap_script.write_text(
-        "#!/bin/sh\nruntime=PINVI_APP_DB_PASSWORD\nmigrator=PINVI_MIGRATOR_DB_PASSWORD\n",
-        encoding="utf-8",
-    )
-
-
 @pytest.mark.parametrize(
     "leaked_name",
     [
@@ -1866,7 +1686,6 @@ def test_map_geo_key_cannot_leak_outside_exact_runtime_wiring(
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
-        "pinvi-db-runtime-role",
     )
     pinvi_api = candidate["services"]["pinvi-api"]
     assert isinstance(pinvi_api, dict)
@@ -1917,7 +1736,6 @@ def test_c6c_rejects_map_postgres_password_secret_extra_consumer(
         # 소비자 거부이므로 fragment를 완전하게 만들어 그 의도를 보존한다.
         "pinvi-postgres",
         "pinvi-db-init",
-        "pinvi-db-runtime-role",
     )
     candidate = (
         _resolved_compose(*service_names)
@@ -2118,7 +1936,6 @@ def test_c6c_rejects_resolved_map_database_bridge_network(
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
-        "pinvi-db-runtime-role",
     )
     services = resolved["services"]
     assert isinstance(services, dict)
@@ -2609,7 +2426,6 @@ _REQUIRED_SERVICES_GOLDEN: tuple[str, ...] = (
     "kor-travel-map-ui",
     "pinvi-admin-bootstrap",
     "pinvi-api",
-    "pinvi-db-runtime-role",
     "pinvi-postgres",
 )
 
@@ -2622,7 +2438,7 @@ _ABSENCE_MATRIX_SERVICES = {
     "map_core": ("kor-travel-map-api", "kor-travel-map-postgres", "kor-travel-map-ui"),
     "map_oneshots": _MAP_DATABASE_ONESHOT_SERVICES,
     "pinvi_core": ("pinvi-api", "pinvi-postgres"),
-    "pinvi_oneshots": ("pinvi-db-init", "pinvi-db-runtime-role", "pinvi-admin-bootstrap"),
+    "pinvi_oneshots": ("pinvi-db-init", "pinvi-admin-bootstrap"),
 }
 
 
@@ -2689,7 +2505,6 @@ def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
-        "pinvi-db-runtime-role",
         environment_update={
             name: environment[name]
             for name in (
@@ -2717,7 +2532,7 @@ def test_required_protected_service_set_is_pinned() -> None:
     S3가 바로 그 함수를 이분할한다.
     """
 
-    assert len(_REQUIRED_SERVICES_GOLDEN) == 14
+    assert len(_REQUIRED_SERVICES_GOLDEN) == 13
     assert set(_REQUIRED_SERVICES_GOLDEN) == set(
         c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
     ), (
@@ -2731,7 +2546,7 @@ def test_required_protected_service_set_is_pinned() -> None:
     )
 
 
-#: 15개 소비자 루프 이름의 **리터럴 사본**. `_REQUIRED_SERVICES_GOLDEN`(14)과 달리
+#: 14개 소비자 루프 이름의 **리터럴 사본**. `_REQUIRED_SERVICES_GOLDEN`(13)과 달리
 #: 이 목록은 S4가 줄이지 않는다 — 줄이면 그 서비스의 행이 표에서 통째로 사라져
 #: 다시 눈이 먼다. required 집합이 좁아져도 **행은 남고 이유만 바뀐다**, 그것이
 #: 보여야 할 diff다.
@@ -2743,7 +2558,7 @@ _PROTECTED_LOOP_SERVICES_GOLDEN: tuple[str, ...] = (
 #: 서비스 **하나만** 지웠을 때의 거부 이유. 키는 `<서비스>/<진입점>`.
 #: 값이 바뀌면 그것이 곧 S4의 폭발 반경이다 — PR 본문에 옮겨 적어라.
 #:
-#: required 14개는 기계적이라 리터럴 목록에서 **파생**한다(프로덕션 상수가 아니라
+#: required 13개는 기계적이라 리터럴 목록에서 **파생**한다(프로덕션 상수가 아니라
 #: 이 파일의 리터럴에서다). S4가 그 리터럴을 줄이면 빠진 이름의 기대값이 사라지고,
 #: 그래도 `_PROTECTED_LOOP_SERVICES_GOLDEN`은 그 행을 계속 관측하므로 표가
 #: **빨개진다** — 작성자가 새 이유를 명시적으로 적어야 통과한다.
@@ -2765,7 +2580,7 @@ _SINGLE_ABSENCE_GOLDEN: dict[str, str] = {
     # `pinvi-db-init`은 required 집합 밖이라 **부재를 부재라고 말하지 않는다.**
     # `_validate_pinvi_db_init_presence`가 먼저 걸러서 정체성 오류로 보고한다.
     # S1 커밋과 `docs/tasks.md`가 "absent_* → missing required protected services"라고
-    # 단정했는데 15개 중 이 하나에서 거짓이었다(적대 리뷰 2026-09-17). 표에 그
+    # 단정했는데 14개 중 이 하나에서 거짓이었다(적대 리뷰 2026-09-17). 표에 그
     # 예외를 **적어서** 남긴다 — 숨기면 S3가 그 함수를 이분할할 때 아무도 모른다.
     "pinvi-db-init/raw": (
         "ComposeCandidateContractError: PinVi database init identity is invalid"
@@ -2777,7 +2592,7 @@ _SINGLE_ABSENCE_GOLDEN: dict[str, str] = {
 
 
 def test_single_service_absence_reason_is_pinned(tmp_path: Path) -> None:
-    """15개 서비스를 **하나씩** 지웠을 때의 거부 이유를 전수로 고정한다.
+    """14개 서비스를 **하나씩** 지웠을 때의 거부 이유를 전수로 고정한다.
 
     첫 판이 묶음 4행이었고, 그래서 리뷰가 required 집합을 비워도 초록이었다. 이유를
     서비스별로 박으면 완화는 반드시 어떤 칸의 문구를 바꾼다 — 그것이 보이는 diff다.
@@ -2821,7 +2636,7 @@ def _golden_diff(observed: dict[str, str], golden: dict[str, str]) -> str:
 #: 묶음 부재 + `null` 형상. 서비스별 표가 못 보는 **상호작용**(둘 이상이 함께 빠질 때
 #: 어느 이름이 먼저 보고되는가)과 `null` 경로를 덮는다.
 #:
-#: `absent_pinvi_oneshots`가 서비스 **셋**을 지우는데 이름은 **둘**만 댄다는 점에
+#: `absent_pinvi_oneshots`가 서비스 **둘**을 지우는데 이름은 **하나**만 댄다는 점에
 #: 주목하라 — `pinvi-db-init`이 required 집합 밖이라서다. 첫 판의 표는 이 비대칭을
 #: 드러내지 못했다.
 _SHAPE_GOLDEN: dict[str, str] = {
@@ -2859,11 +2674,11 @@ _SHAPE_GOLDEN: dict[str, str] = {
     ),
     "absent_pinvi_oneshots/raw": (
         "ComposeCandidateContractError: compose candidate is missing required "
-        "protected services: pinvi-admin-bootstrap, pinvi-db-runtime-role"
+        "protected services: pinvi-admin-bootstrap"
     ),
     "absent_pinvi_oneshots/resolved": (
         "ComposeCandidateContractError: resolved compose candidate is missing "
-        "required protected services: pinvi-admin-bootstrap, pinvi-db-runtime-role"
+        "required protected services: pinvi-admin-bootstrap"
     ),
     "nulled_kor-travel-map-api/raw": (
         "ComposeCandidateContractError: compose candidate service is missing or "
@@ -3769,44 +3584,6 @@ def test_pinvi_authorized_reference_requires_a_valid_shape() -> None:
     assert derive({"services": {"pinvi-postgres": {"secrets": []}}}) is None
 
 
-def test_pinvi_literal_allowances_survive_without_the_owner() -> None:
-    """리터럴 인가 둘(`pinvi-db-init`·`pinvi-db-runtime-role`)은 소유자와 무관하다.
-
-    이 사실이 PinVi 스캔을 소유자로부터 독립시킨다 — 소유자가 사라져도 one-shot들의
-    정당한 소비는 계속 인가되고, 그 밖은 계속 거부된다.
-    """
-
-    document = _pinvi_document_with_foreign_consumer(include_owner=False)
-    services = document["services"]
-    assert isinstance(services, dict)
-    del services["some-other-service"]
-    services["pinvi-db-init"] = {
-        "image": "postgis:latest",
-        "secrets": [_PINVI_PASSWORD_SECRET],
-    }
-    services["pinvi-db-runtime-role"] = {
-        "image": "postgis:latest",
-        "secrets": [
-            {
-                "source": _PINVI_PASSWORD_SECRET,
-                "target": f"/run/secrets/{_PINVI_PASSWORD_SECRET}",
-            }
-        ],
-    }
-
-    # 소유자가 없어도 정당한 소비는 통과한다.
-    c6c_deployment_module._assert_pinvi_postgres_password_sole_consumer(document)
-
-    # 같은 one-shot이라도 모양이 다르면 거부된다.
-    runtime_role = services["pinvi-db-runtime-role"]
-    assert isinstance(runtime_role, dict)
-    runtime_role["secrets"] = [_PINVI_PASSWORD_SECRET]
-    with pytest.raises(
-        ComposeCandidateContractError, match="unauthorized consumer"
-    ):
-        c6c_deployment_module._assert_pinvi_postgres_password_sole_consumer(document)
-
-
 def test_pinvi_global_invariants_are_not_inside_the_family_validator() -> None:
     """전역 불변식 둘은 PinVi family validator **밖**에 있어야 한다.
 
@@ -4358,7 +4135,6 @@ def _s4_without_pinvi_services(
             "pinvi-postgres",
             "pinvi-api",
             "pinvi-db-init",
-            "pinvi-db-runtime-role",
             "pinvi-admin-bootstrap",
             # ADR-46 — pinvi-api/pinvi-admin-bootstrap의 depends_on을 통해서만 이
             # 최소 fragment에 들어온다. 그 둘을 지우면 이 두 서비스도 pinvi
@@ -4388,16 +4164,13 @@ def _s4_without_pinvi_services(
             "PinVi database URL identity is invalid",
         ),
         (
-            "role 이름 충돌(owner 쌍)",
-            {
-                "PINVI_MIGRATION_OWNER": "pinvi_app_owner",
-                "PINVI_APP_SCHEMA_OWNER": "pinvi_app_owner",
-            },
+            "role 이름 충돌(root=app)",
+            {"PINVI_APP_DB_USER": "__ROOT_USER__"},
             "PinVi database URL identity is invalid",
         ),
         (
             "role 이름 정규식",
-            {"PINVI_APP_SCHEMA_OWNER": "Bad-Owner"},
+            {"PINVI_APP_DB_USER": "Bad-User"},
             "PinVi database URL identity is invalid",
         ),
         (
@@ -4436,9 +4209,12 @@ def test_pinvi_database_env_invariants_survive_without_the_services(
 
     mutated_environment = dict(environment)
     for name, value in mutation.items():
-        mutated_environment[name] = (
-            mutated_environment["PINVI_POSTGRES_PASSWORD"] if value == "__ROOT__" else value
-        )
+        if value == "__ROOT__":
+            mutated_environment[name] = mutated_environment["PINVI_POSTGRES_PASSWORD"]
+        elif value == "__ROOT_USER__":
+            mutated_environment[name] = mutated_environment["PINVI_POSTGRES_USER"]
+        else:
+            mutated_environment[name] = value
 
     with pytest.raises(ComposeCandidateContractError, match=expected_error):
         validate_compose_candidate_protected_values(
@@ -4577,7 +4353,6 @@ def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
-        "pinvi-db-runtime-role",
         environment_update={
             name: environment[name]
             for name in (
@@ -6178,11 +5953,6 @@ def test_the_new_predicates_survive_a_shrunken_required_set(
     monkeypatch.setattr(
         c6c_deployment_module,
         "_validate_pinvi_postgres_identity",
-        lambda services, environment, *, resolved: None,
-    )
-    monkeypatch.setattr(
-        c6c_deployment_module,
-        "_validate_pinvi_db_runtime_role",
         lambda services, environment, *, resolved: None,
     )
     services = shaped["services"]

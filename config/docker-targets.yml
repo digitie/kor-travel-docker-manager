@@ -925,18 +925,10 @@ compose_binds:
     - container_path: "/prometheus"
       read_only: false
       source: "${KOR_TRAVEL_WEATHER_PROMETHEUS_DATA_DIR:-/home/digitie/kor-travel-weather-data/prometheus}"
-  pinvi-db-runtime-role:
-    - container_path: "/opt/pinvi/bootstrap-pinvi-runtime-role.sh"
-      read_only: true
-      source: "${PINVI_REPO_DIR:-../pinvi}/infra/postgres/bootstrap-pinvi-runtime-role.sh"
   pinvi-postgres:
     - container_path: "/var/lib/postgresql/data"
       read_only: false
       source: "${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}"
-  pinvi-shared-db-runtime-role:
-    - container_path: "/opt/pinvi/bootstrap-pinvi-runtime-role.sh"
-      read_only: true
-      source: "${PINVI_REPO_DIR:-../pinvi}/infra/postgres/bootstrap-pinvi-runtime-role.sh"
   prometheus:
     - container_path: "/etc/prometheus/prometheus.yml"
       read_only: true

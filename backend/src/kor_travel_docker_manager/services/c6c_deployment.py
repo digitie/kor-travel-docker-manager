@@ -96,27 +96,8 @@ _MAP_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_MAP_POSTGRES_PASSWORD_SECRET}"
 _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _PINVI_DB_INIT_SERVICE = "pinvi-db-init"
-_PINVI_DB_RUNTIME_ROLE_SERVICE = "pinvi-db-runtime-role"
-#: ADR-46 — 공용 instance에서 같은 M05 role topology를 세우는 root-only one-shot.
-#: 스크립트는 pinvi-db-runtime-role과 완전히 같고 대상 endpoint만 다르다.
-_PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE = "pinvi-shared-db-runtime-role"
-
-#: **PinVi DB role one-shot의 단일 전환점.**
-#:
-#: ADR-46으로 PinVi의 application DB와 role은 공용 제어 평면 instance로 옮겼다.
-#: 그런데 이 서비스 이름은 *호출부*와 *진단 매칭부* 양쪽에 흩어져 있었고, 둘을
-#: 따로 옮기면 조용히 어긋난다 — 실제로 이번 주에 같은 결함이 세 번 났다:
-#: migrator login 창을 전용 instance에서 열고(#377), schema revision을 전용
-#: instance에서 읽고(#379), role catalog reset을 전용 instance에서 돌렸다.
-#: 마지막 것은 permit에 공용 cluster의 system_identifier/oid/owner를 적어 두고
-#: 전용 cluster에 접속해 비교해 `target_identity_invalid`로 끝났다.
-#:
-#: 게다가 호출부만 옮기면 아래 진단 매칭(`target == ...`)이 더 이상 맞지 않아
-#: PinVi one-shot의 **타입 있는 오류 코드가 전부 `unclassified`로 접힌다** —
-#: 원인 문장을 잃는 그 실패 모양이 이번 주 진단을 계속 가렸다. 그래서 이름을
-#: 리터럴로 흩지 않고 여기 하나로 묶는다.
-_PINVI_ACTIVE_DB_ROLE_SERVICE = _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE
 _PINVI_POSTGRES_PASSWORD_SECRET = "pinvi-postgres-password"
+_PINVI_SHARED_APP_PASSWORD_SECRET = "pinvi-shared-app-password"
 _PINVI_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_PINVI_POSTGRES_PASSWORD_SECRET}"
 #: 두 PostgreSQL이 **같은** 초기화 인증 인자를 쓴다. 공유 상수로 두는 이유는 한쪽만
 #: 바뀌는 것을 막기 위해서다 — 2026-09-17 감사가 실측했듯 Map 쪽은 이 값이 계약에
@@ -142,10 +123,6 @@ _PINVI_DATABASE_URL_ENV = "PINVI_DATABASE_URL"
 _PINVI_DAGSTER_PG_URL_ENV = "PINVI_DAGSTER_PG_URL"
 _PINVI_APP_DB_USER_ENV = "PINVI_APP_DB_USER"
 _PINVI_APP_DB_PASSWORD_ENV = "PINVI_APP_DB_PASSWORD"
-_PINVI_APP_SCHEMA_OWNER_ENV = "PINVI_APP_SCHEMA_OWNER"
-_PINVI_MIGRATION_OWNER_ENV = "PINVI_MIGRATION_OWNER"
-_PINVI_MIGRATOR_DB_USER_ENV = "PINVI_MIGRATOR_DB_USER"
-_PINVI_MIGRATOR_DB_PASSWORD_ENV = "PINVI_MIGRATOR_DB_PASSWORD"
 _PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET = "/opt/pinvi/bootstrap-pinvi-runtime-role.sh"
 _PINVI_ROLE_BOOTSTRAP_ENTRYPOINT_SCRIPT = f"""export POSTGRES_PASSWORD="$(cat {_PINVI_POSTGRES_PASSWORD_FILE})"
 exec sh {_PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET}"""
@@ -461,7 +438,6 @@ _DATABASE_SECRET_ENV_NAMES = frozenset(
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
         "PINVI_POSTGRES_PASSWORD",
         _PINVI_APP_DB_PASSWORD_ENV,
-        _PINVI_MIGRATOR_DB_PASSWORD_ENV,
     }
 )
 _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
@@ -472,7 +448,6 @@ _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
         _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
         _MAP_POSTGRES_SERVICE,
         _PINVI_POSTGRES_SERVICE,
-        _PINVI_DB_RUNTIME_ROLE_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _MAP_APPLICATION_FRESH_300_SERVICE,
@@ -492,7 +467,6 @@ _CANDIDATE_NAMEABLE_SERVICE_NAMES: Final = frozenset(
         "kor-travel-concierge-postgres",
         "kor-travel-shared-postgres",
         "kor-travel-shared-db-init-pinvi",
-        _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE,
     }
 )
 _CANDIDATE_KNOWN_SERVICE_NAMES = (
@@ -654,75 +628,12 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
     ),
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "POSTGRES_USER"): "PINVI_POSTGRES_USER",
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "POSTGRES_DB"): "PINVI_POSTGRES_DB",
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_DB_PORT"): "PINVI_DB_PORT",
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, _PINVI_APP_DB_USER_ENV): _PINVI_APP_DB_USER_ENV,
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, _PINVI_APP_DB_PASSWORD_ENV): (_PINVI_APP_DB_PASSWORD_ENV),
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, _PINVI_APP_SCHEMA_OWNER_ENV): (_PINVI_APP_SCHEMA_OWNER_ENV),
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, _PINVI_MIGRATION_OWNER_ENV): (_PINVI_MIGRATION_OWNER_ENV),
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, _PINVI_MIGRATOR_DB_USER_ENV): (_PINVI_MIGRATOR_DB_USER_ENV),
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, _PINVI_MIGRATOR_DB_PASSWORD_ENV): (
-        _PINVI_MIGRATOR_DB_PASSWORD_ENV
-    ),
 }
 _CANDIDATE_SOURCE_DEFAULT_VALUES = {
     _MAP_FEATURE_CREATE_ENABLED_ENV: "false",
     "PINVI_DB_PORT": str(_PINVI_DEDICATED_POSTGRES_PORT),
     "PINVI_POSTGRES_DB": "pinvi",
     "PINVI_POSTGRES_USER": "pinvi",
-}
-_PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES = {
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "POSTGRES_USER"): "${PINVI_POSTGRES_USER:-pinvi}",
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "POSTGRES_DB"): "${PINVI_POSTGRES_DB:-pinvi}",
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_DB_HOST"): "127.0.0.1",
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_DB_PORT"): "${PINVI_DB_PORT:-12800}",
-    (
-        _PINVI_DB_RUNTIME_ROLE_SERVICE,
-        _PINVI_APP_DB_USER_ENV,
-    ): "${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}",
-    (
-        _PINVI_DB_RUNTIME_ROLE_SERVICE,
-        _PINVI_APP_DB_PASSWORD_ENV,
-    ): "${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}",
-    (
-        _PINVI_DB_RUNTIME_ROLE_SERVICE,
-        _PINVI_APP_SCHEMA_OWNER_ENV,
-    ): "${PINVI_APP_SCHEMA_OWNER:?PINVI_APP_SCHEMA_OWNER must be explicitly set}",
-    (
-        _PINVI_DB_RUNTIME_ROLE_SERVICE,
-        _PINVI_MIGRATION_OWNER_ENV,
-    ): "${PINVI_MIGRATION_OWNER:?PINVI_MIGRATION_OWNER must be explicitly set}",
-    (
-        _PINVI_DB_RUNTIME_ROLE_SERVICE,
-        _PINVI_MIGRATOR_DB_USER_ENV,
-    ): "${PINVI_MIGRATOR_DB_USER:?PINVI_MIGRATOR_DB_USER must be explicitly set}",
-    (
-        _PINVI_DB_RUNTIME_ROLE_SERVICE,
-        _PINVI_MIGRATOR_DB_PASSWORD_ENV,
-    ): "${PINVI_MIGRATOR_DB_PASSWORD:?PINVI_MIGRATOR_DB_PASSWORD must be explicitly set}",
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_M05_LEGACY_REBASELINE"): "0",
-    (_PINVI_DB_RUNTIME_ROLE_SERVICE, "PINVI_MIGRATOR_DISABLE_LOGIN"): "1",
-}
-#: ADR-46 — pinvi-shared-db-runtime-role은 같은 role/schema/migrator 이름·비밀번호
-#: 원본을 쓰지만(같은 여섯 env var), 접속 대상만 다르다 — root bootstrap 계정이
-#: `PINVI_POSTGRES_USER`(전용 instance 자신)가 아니라
-#: `KOR_TRAVEL_SHARED_POSTGRES_USER`(공용 cluster 관리자)이고, 포트도
-#: `PINVI_DB_PORT`가 아니라 `KOR_TRAVEL_SHARED_DB_PORT`다. 나머지 여섯 role env는
-#: 위 dict에서 **그대로 파생한다** — 손으로 복제하면 한쪽만 자라는 것이
-#: `_PINVI_DSN_SERVICE_CREDENTIALS`가 막으려 한 바로 그 드리프트다.
-_PINVI_SHARED_RUNTIME_ROLE_CANONICAL_ENV_VALUES = {
-    (_PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE, env_name): raw_value
-    for (service_name, env_name), raw_value in _PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES.items()
-    if service_name == _PINVI_DB_RUNTIME_ROLE_SERVICE
-    and env_name not in {"POSTGRES_USER", "PINVI_DB_PORT"}
-} | {
-    (_PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE, "POSTGRES_USER"): (
-        "${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}"
-    ),
-    (_PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE, "PINVI_DB_PORT"): (
-        "${KOR_TRAVEL_SHARED_DB_PORT:-11000}"
-    ),
 }
 #: PinVi DSN을 조립하는 서비스와, 그때 쓰는 자격증명 쌍.
 #:
@@ -750,8 +661,8 @@ _PINVI_DSN_SERVICE_CREDENTIALS: Final = (
     ),
     (
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
-        _PINVI_MIGRATOR_DB_USER_ENV,
-        _PINVI_MIGRATOR_DB_PASSWORD_ENV,
+        _PINVI_APP_DB_USER_ENV,
+        _PINVI_APP_DB_PASSWORD_ENV,
     ),
 )
 
@@ -969,22 +880,18 @@ _DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
             _MAP_POSTGRES_PASSWORD_SECRET,
             "environment",
         ),
+        # geo 패턴 전환: PinVi의 app role 비밀번호도 secret file로 들어온다. 이
+        # 경로를 등록하지 않으면 보호 이름 전역 스캔이 leak으로 판정해 **모든 핀
+        # 재구축**이 prebuild_snapshot에서 막힌다(정적 검사가 같은 집합을 본다).
+        (
+            "secrets",
+            _PINVI_SHARED_APP_PASSWORD_SECRET,
+            "environment",
+        ),
         (
             "secrets",
             _PINVI_POSTGRES_PASSWORD_SECRET,
             "environment",
-        ),
-        (
-            "services",
-            _PINVI_DB_RUNTIME_ROLE_SERVICE,
-            "entrypoint",
-            "2",
-        ),
-        (
-            "services",
-            _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE,
-            "entrypoint",
-            "2",
         ),
     }
 )
@@ -1069,8 +976,6 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
         for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
     },
     **_MAP_DATABASE_CANONICAL_ENV_VALUES,
-    **_PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES,
-    **_PINVI_SHARED_RUNTIME_ROLE_CANONICAL_ENV_VALUES,
 }
 # 계약이 값을 고정한 env 이름 — 화면이 처음부터 잠글 수 있도록 service별로 공개한다.
 #
@@ -1317,23 +1222,17 @@ def _validate_pinvi_database_url_environment(
     expected_database = environment.get("PINVI_POSTGRES_DB", "pinvi")
     bootstrap_user = environment.get("PINVI_POSTGRES_USER", "pinvi")
     bootstrap_password = environment.get("PINVI_POSTGRES_PASSWORD")
+    # M05 폐기: role은 application 하나뿐이다(geo 패턴). 종전에는 schema owner·
+    # migration owner·migrator까지 넷을 서로 다른 이름으로 요구했다.
     role_values = {
         _PINVI_APP_DB_USER_ENV: environment.get(_PINVI_APP_DB_USER_ENV),
         _PINVI_APP_DB_PASSWORD_ENV: environment.get(_PINVI_APP_DB_PASSWORD_ENV),
-        _PINVI_APP_SCHEMA_OWNER_ENV: environment.get(_PINVI_APP_SCHEMA_OWNER_ENV),
-        _PINVI_MIGRATION_OWNER_ENV: environment.get(_PINVI_MIGRATION_OWNER_ENV),
-        _PINVI_MIGRATOR_DB_USER_ENV: environment.get(_PINVI_MIGRATOR_DB_USER_ENV),
-        _PINVI_MIGRATOR_DB_PASSWORD_ENV: environment.get(_PINVI_MIGRATOR_DB_PASSWORD_ENV),
     }
     role_names = (
         bootstrap_user,
         role_values[_PINVI_APP_DB_USER_ENV],
-        role_values[_PINVI_APP_SCHEMA_OWNER_ENV],
-        role_values[_PINVI_MIGRATION_OWNER_ENV],
-        role_values[_PINVI_MIGRATOR_DB_USER_ENV],
     )
     application_password = cast(str, role_values[_PINVI_APP_DB_PASSWORD_ENV])
-    migrator_password = cast(str, role_values[_PINVI_MIGRATOR_DB_PASSWORD_ENV])
     root_password = cast(str, bootstrap_password)
     if (
         expected_port != _PINVI_SHARED_POSTGRES_PORT
@@ -1348,8 +1247,6 @@ def _validate_pinvi_database_url_environment(
         )
         or len(set(role_names)) != len(role_names)
         or hmac.compare_digest(root_password, application_password)
-        or hmac.compare_digest(root_password, migrator_password)
-        or hmac.compare_digest(application_password, migrator_password)
     ):
         raise ComposeCandidateContractError("PinVi database URL identity is invalid")
 
@@ -1725,104 +1622,6 @@ def _validate_pinvi_db_init_command(
 
 
 
-def _validate_pinvi_db_runtime_role(
-    services: Mapping[str, Any],
-    environment: Mapping[str, str],
-    *,
-    resolved: bool,
-) -> None:
-    """PinVi role one-shot만 root secret file과 role password를 함께 소비하게 고정한다."""
-
-    service = services.get(_PINVI_DB_RUNTIME_ROLE_SERVICE)
-    if not isinstance(service, Mapping):
-        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
-    if (
-        service.get("image") != _PINVI_POSTGRES_IMAGE
-        or service.get("restart") != "no"
-        or service.get("profiles") != ["bootstrap"]
-        or service.get("command") is not None
-    ):
-        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
-    expected_network_mode = "host" if resolved else "${KTDM_DOCKER_NETWORK_MODE:-host}"
-    if service.get("network_mode") != expected_network_mode:
-        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
-    depends_on = service.get("depends_on")
-    expected_dependencies = {
-        _PINVI_POSTGRES_SERVICE: "service_healthy",
-        _PINVI_DB_INIT_SERVICE: "service_completed_successfully",
-    }
-    if not isinstance(depends_on, Mapping) or set(depends_on) != set(expected_dependencies):
-        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
-    for dependency_name, expected_condition in expected_dependencies.items():
-        dependency = depends_on.get(dependency_name)
-        if not isinstance(dependency, Mapping) or dependency.get("condition") != expected_condition:
-            raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
-
-    service_environment = service.get("environment")
-    if not isinstance(service_environment, Mapping):
-        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
-    expected_environment: dict[str, str] = {}
-    for (service_name, env_name), raw_value in _PINVI_RUNTIME_ROLE_CANONICAL_ENV_VALUES.items():
-        if service_name != _PINVI_DB_RUNTIME_ROLE_SERVICE:
-            continue
-        source_name = _CANDIDATE_ALLOWED_API_ENV_SOURCES.get((service_name, env_name))
-        expected_environment[env_name] = (
-            environment.get(
-                source_name,
-                _CANDIDATE_SOURCE_DEFAULT_VALUES.get(source_name, ""),
-            )
-            if resolved and source_name is not None
-            else raw_value
-        )
-    if (
-        set(service_environment) != set(expected_environment)
-        or any(
-            not isinstance(service_environment.get(name), str)
-            or not hmac.compare_digest(service_environment[name], value)
-            for name, value in expected_environment.items()
-        )
-        or {"POSTGRES_PASSWORD", "PINVI_POSTGRES_PASSWORD", _PINVI_DATABASE_URL_ENV}.intersection(
-            service_environment
-        )
-    ):
-        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
-
-    entrypoint = service.get("entrypoint")
-    if (
-        not isinstance(entrypoint, list)
-        or entrypoint[:2] != ["sh", "-ec"]
-        or len(entrypoint) != 3
-        or not isinstance(entrypoint[2], str)
-        or entrypoint[2].strip().replace("$$", "$") != _PINVI_ROLE_BOOTSTRAP_ENTRYPOINT_SCRIPT
-    ):
-        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
-    expected_secret_reference = {
-        "source": _PINVI_POSTGRES_PASSWORD_SECRET,
-        "target": _PINVI_POSTGRES_PASSWORD_FILE,
-    }
-    if service.get("secrets") != [expected_secret_reference]:
-        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
-
-    volumes = service.get("volumes")
-    if not isinstance(volumes, list) or len(volumes) != 1:
-        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
-    if not resolved:
-        expected_volume = (
-            "${PINVI_REPO_DIR:-../pinvi}/infra/postgres/"
-            "bootstrap-pinvi-runtime-role.sh:"
-            f"{_PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET}:ro"
-        )
-        if volumes != [expected_volume]:
-            raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
-        return
-    volume = volumes[0]
-    if (
-        not isinstance(volume, Mapping)
-        or volume.get("type") != "bind"
-        or volume.get("target") != _PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET
-        or volume.get("read_only") is not True
-    ):
-        raise ComposeCandidateContractError("PinVi runtime role bootstrap is invalid")
 def _require_map_database_host_network(service: Mapping[str, Any]) -> None:
     if service.get("network_mode") != "host":
         raise ComposeCandidateContractError(
@@ -2989,11 +2788,6 @@ def _assert_pinvi_postgres_password_sole_consumer(document: Mapping[str, Any]) -
                 },
             ):
                 continue
-            elif service_name == _PINVI_DB_RUNTIME_ROLE_SERVICE and candidate_reference == {
-                "source": _PINVI_POSTGRES_PASSWORD_SECRET,
-                "target": _PINVI_POSTGRES_PASSWORD_FILE,
-            }:
-                continue
             else:
                 raise ComposeCandidateContractError(
                     "PinVi PostgreSQL password secret has an unauthorized consumer"
@@ -3059,7 +2853,6 @@ _MAP_ROLE_BOOTSTRAP_SOURCE_TARGETS = frozenset(
         "/usr/local/lib/kor-travel-map/database-credential-preflight.sh",
     }
 )
-_PINVI_ROLE_BOOTSTRAP_SOURCE_TARGETS = frozenset({_PINVI_ROLE_BOOTSTRAP_SCRIPT_TARGET})
 #: operator bind의 host source가 **절대 될 수 없는** 자리. GM-17 A 적대 리뷰가
 #: 찾은 구멍이다 — allowlist가 설정으로 나온 뒤 `source: "/etc"` 한 줄이면 production
 #: 컨테이너가 host `/etc`를 쓰기 가능으로 얻는다. 종전 manager 가드는 manager 파일의
@@ -4791,7 +4584,6 @@ def validate_resolved_compose_candidate_protected_values(
         _pinvi_expected_identity,
         resolved=True,
     )
-    _validate_pinvi_db_runtime_role(services, environment, resolved=True)
     # **family validator 뒤에 둔다.** PinVi의 신원 검사는 command 배열 전체를
     # exact-match 하므로 이 전역 바닥보다 강하다 — 앞에 두면 PinVi 형상의 거부
     # 문구가 바뀐다(자리와 게이팅은 다른 축이고, 여기서 필요한 것은 자리다).
@@ -4841,7 +4633,6 @@ def validate_resolved_compose_candidate_protected_values(
         _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
         _PINVI_POSTGRES_SERVICE,
         _PINVI_DB_INIT_SERVICE,
-        _PINVI_DB_RUNTIME_ROLE_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -4884,7 +4675,6 @@ def validate_resolved_compose_candidate_protected_values(
             _MAP_APPLICATION_FRESH_300_SERVICE,
             _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
             _PINVI_DB_INIT_SERVICE,
-            _PINVI_DB_RUNTIME_ROLE_SERVICE,
         }:
             _require_map_database_host_network(service)
         service_environment = service.get("environment")
@@ -5267,7 +5057,6 @@ def validate_compose_candidate_protected_values(
         _pinvi_expected_identity,
         resolved=False,
     )
-    _validate_pinvi_db_runtime_role(services, environment, resolved=False)
     # **family validator 뒤에 둔다.** PinVi의 신원 검사는 command 배열 전체를
     # exact-match 하므로 이 전역 바닥보다 강하다 — 앞에 두면 PinVi 형상의 거부
     # 문구가 바뀐다(자리와 게이팅은 다른 축이고, 여기서 필요한 것은 자리다).
@@ -5317,7 +5106,6 @@ def validate_compose_candidate_protected_values(
         _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
         _PINVI_POSTGRES_SERVICE,
         _PINVI_DB_INIT_SERVICE,
-        _PINVI_DB_RUNTIME_ROLE_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -8080,31 +7868,6 @@ def _validate_candidate_volume_graph(
                             f"compose candidate {service_name} bind source leaks C6c data"
                         )
                     continue
-                if (
-                    str(service_name) == _PINVI_DB_RUNTIME_ROLE_SERVICE
-                    and mount.target in _PINVI_ROLE_BOOTSTRAP_SOURCE_TARGETS
-                ):
-                    # PinVi release source의 role script는 one-shot에 필요한 role/password
-                    # identifier만 선언할 수 있다. frozen source bind가 exact revision에
-                    # 결박되므로 실제 protected value가 없다는 것만 별도로 확인한다.
-                    if any(value in source_text for value in protected_values):
-                        raise ComposeCandidateContractError(
-                            f"compose candidate {service_name} bind source leaks C6c data"
-                        )
-                    continue
-                if (
-                    str(service_name) == _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE
-                    and mount.target in _PINVI_ROLE_BOOTSTRAP_SOURCE_TARGETS
-                ):
-                    # ADR-46 shared-instance one-shot은 dedicated-instance
-                    # pinvi-db-runtime-role과 완전히 같은 role script를 그대로
-                    # 마운트한다(docker-compose.yml 주석 실측) — 같은 frozen source
-                    # bind이므로 위와 같은 근거로 identifier declaration만 허용한다.
-                    if any(value in source_text for value in protected_values):
-                        raise ComposeCandidateContractError(
-                            f"compose candidate {service_name} bind source leaks C6c data"
-                        )
-                    continue
                 if any(name in source_text for name in protected_names) or any(
                     value in source_text for value in protected_values
                 ):
@@ -8538,7 +8301,20 @@ def _validate_candidate_external_resource_references(
                     and alias == _PINVI_POSTGRES_PASSWORD_SECRET
                     and environment_name == "PINVI_POSTGRES_PASSWORD"
                 )
-                if not (is_map_postgres_password_secret or is_pinvi_postgres_password_secret) and (
+                # geo 패턴 전환: PinVi의 app role 비밀번호도 secret file로 선언된다
+                # (`pinvi-shared-app-password` -> `PINVI_APP_DB_PASSWORD`) — 위 둘과
+                # 같은 근거로 면제한다: **이 선언 자체가 보호 이름을 담을 자격이 있는
+                # secret alias**이고, 값이 아니라 이름의 등장만 본다.
+                is_pinvi_shared_app_password_secret = (
+                    collection_name == "secrets"
+                    and alias == _PINVI_SHARED_APP_PASSWORD_SECRET
+                    and environment_name == _PINVI_APP_DB_PASSWORD_ENV
+                )
+                if not (
+                    is_map_postgres_password_secret
+                    or is_pinvi_postgres_password_secret
+                    or is_pinvi_shared_app_password_secret
+                ) and (
                     any(name in environment_name for name in protected_names)
                     or any(value in environment_value for value in protected_values)
                 ):
