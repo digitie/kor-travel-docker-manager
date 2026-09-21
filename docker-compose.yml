@@ -1997,9 +1997,9 @@ services:
     - --web.console.libraries=/usr/share/prometheus/console_libraries
     - --web.console.templates=/usr/share/prometheus/consoles
     - --web.enable-lifecycle
-    - --web.listen-address=:${PROMETHEUS_PORT:-12401}
+    - --web.listen-address=:${PROMETHEUS_PORT:-12102}
     ports:
-    - ${PROMETHEUS_PORT:-12401}:${PROMETHEUS_PORT:-12401}
+    - ${PROMETHEUS_PORT:-12102}:${PROMETHEUS_PORT:-12102}
     volumes:
     - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     - ${PROMETHEUS_DATA_DIR:-/home/digitie/kor-travel-geo-data/prometheus}:/prometheus
@@ -2013,9 +2013,9 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: 'false'
-      GF_SERVER_HTTP_PORT: ${GRAFANA_PORT:-12205}
+      GF_SERVER_HTTP_PORT: ${GRAFANA_PORT:-12104}
     ports:
-    - ${GRAFANA_PORT:-12205}:${GRAFANA_PORT:-12205}
+    - ${GRAFANA_PORT:-12104}:${GRAFANA_PORT:-12104}
     volumes:
     - ${GRAFANA_DATA_DIR:-/home/digitie/kor-travel-geo-data/grafana}:/var/lib/grafana
     - ./config/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
@@ -2030,17 +2030,17 @@ services:
     command:
     - --logtostderr
     - --docker_only=true
-    - --port=${CADVISOR_PORT:-12301}
+    - --port=${CADVISOR_PORT:-12103}
     healthcheck:
       test:
       - CMD-SHELL
-      - wget -qO- http://127.0.0.1:${CADVISOR_PORT:-12301}/healthz >/dev/null || exit 1
+      - wget -qO- http://127.0.0.1:${CADVISOR_PORT:-12103}/healthz >/dev/null || exit 1
       interval: 10s
       timeout: 5s
       retries: 12
       start_period: 10s
     ports:
-    - ${CADVISOR_PORT:-12301}:${CADVISOR_PORT:-12301}
+    - ${CADVISOR_PORT:-12103}:${CADVISOR_PORT:-12103}
     volumes:
     - /var/run/docker.sock:/var/run/docker.sock:ro
     - /sys:/sys:ro

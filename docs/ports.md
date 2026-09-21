@@ -26,10 +26,10 @@
 | 대상 | 대역 | 현재 사용 포트 | 관리 대상 |
 |---|---:|---|---|
 | `db` | `12000-12099` | 없음 | 과거 통합 DB target의 호환 이름. 실제 Geo DB는 `12500`이다. |
-| `storage` | `12100-12199` | S3 API `12101`, console `12105` | RustFS |
-| `gra` | `12200-12299` | Web UI `12205` | Grafana |
-| `cadv` | `12300-12399` | Exporter `12301` | cAdvisor |
-| `prom` | `12400-12499` | HTTP `12401` | Prometheus |
+| `storage` | `12100-12199` | S3 API `12101`, console `12105`, **Prometheus `12102`, cAdvisor `12103`, Grafana `12104`**(ADR-48, 대역 예외 — 아래 참고) | RustFS |
+| `gra` | `12200-12299` | Web UI `12104`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | Grafana |
+| `cadv` | `12300-12399` | Exporter `12103`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | cAdvisor |
+| `prom` | `12400-12499` | HTTP `12102`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | Prometheus |
 | `geo` | `12500-12599` | PostgreSQL `12500`, API `12501`, Dagster `12502`, Web UI `12505` | `kor-travel-geo` |
 | `conc` | `12600-12699` | PostgreSQL `12600`, API `12601`, MCP `12602`, Web UI `12605` | `kor-travel-concierge` |
 | `map` | `12700-12799` | PostgreSQL `12700`, API `12701`, Dagster `12702`, Web UI `12705` | `kor-travel-map` |
@@ -38,6 +38,16 @@
 | `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Prometheus `14104`, Web `14105` | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
 | `airport-db` | `14000-14000` | PostgreSQL `14000` | `kor-travel-airport` (외부 프로젝트) |
 | `airport` | `14001-14099` | Backend `14001`, Frontend `14002` | `kor-travel-airport` (외부 프로젝트) |
+
+### `gra`/`cadv`/`prom`의 대역 예외 (ADR-48)
+
+Grafana(`12104`)·cAdvisor(`12103`)·Prometheus(`12102`)는 2026-09-21부터 자신의
+target 이름이 가리키는 100단위 대역(`12200-12299`/`12300-12399`/`12400-12499`)이
+아니라 `storage` 대역(`12100-12199`) 안의 세 포트를 쓴다. `12101`(S3 API)·`12105`
+(console) 사이가 비어 있어 실제 포트 충돌은 없지만, "target 이름 대역 = 실제 포트
+대역"이라는 §기본 규칙 전제는 이 세 target에 더 이상 성립하지 않는다 — target 이름
+(`gra`/`cadv`/`prom`)과 `config/docker-targets.yml`의 키는 바뀌지 않았고 포트만
+옮겼다. 근거·배경은 `docs/decisions.md` ADR-48(ADR-10의 포트 배정 부분을 supersede).
 
 ### 외부 프로젝트 대역 (`14000-14099`)
 

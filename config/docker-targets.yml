@@ -226,28 +226,28 @@ containers:
     compose_service: prometheus
     role: prometheus
     display_name: Prometheus 메트릭 저장소
-    connection: http://127.0.0.1:12401
+    connection: http://127.0.0.1:12102
     prod_url_env: KTDM_PROD_URL_PROMETHEUS
     expected_ports:
-      - "12401:12401"
+      - "12102:12102"
   grafana:
     name: kor-travel-grafana
     compose_service: grafana
     role: grafana
     display_name: 공용 Grafana 시각화 도구
-    connection: http://127.0.0.1:12205
+    connection: http://127.0.0.1:12104
     prod_url_env: KTDM_PROD_URL_GRAFANA
     expected_ports:
-      - "12205:12205"
+      - "12104:12104"
   cadvisor:
     name: kor-travel-cadvisor
     compose_service: cadvisor
     role: metrics-exporter
     display_name: cAdvisor 컨테이너 메트릭 Exporter
-    connection: http://127.0.0.1:12301
+    connection: http://127.0.0.1:12103
     prod_url_env: KTDM_PROD_URL_CADVISOR
     expected_ports:
-      - "12301:12301"
+      - "12103:12103"
 
   # kor-travel-weather-db는 삭제됐다(replaced, not renamed) — weather 전용 db는
   # internal target 전환(ADR-47)으로 은퇴했다. 앱 데이터는 kor-travel-shared-postgres
