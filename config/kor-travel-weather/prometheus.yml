@@ -1,7 +1,9 @@
 # Manager가 소유하는 weather deploy/prometheus/prometheus.yml 오버라이드.
 # weather 자신의 원본은 compose 서비스명 DNS(`api:14101`, `dagster-code-server:14103`)를
 # 스크랩 대상으로 쓴다 — network_mode: host에서는 해석되지 않아 127.0.0.1로
-# 바꿨다. 그 외 내용은 전부 동일.
+# 바꿨다. api의 포트는 ADR-49로 12201로 재배정됐다(dagster-code-server의
+# 14103은 내부 전용 metrics 포트라 이 ADR의 범위 밖, 변경 없음). 그 외 내용은
+# 전부 동일.
 global:
   scrape_interval: 30s
   scrape_timeout: 10s
@@ -14,7 +16,7 @@ scrape_configs:
     metrics_path: /metrics
     bearer_token_file: /run/secrets/metrics.token
     static_configs:
-      - targets: ["127.0.0.1:14101"]
+      - targets: ["127.0.0.1:12201"]
 
   - job_name: kor-travel-weather-dagster
     metrics_path: /metrics

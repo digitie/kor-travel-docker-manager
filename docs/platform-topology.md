@@ -131,7 +131,7 @@ webserver/daemon은 여전히 각자 `-m <모듈>`로 코드를 **in-process로 
 | `pinvi` | `pinvi-dagster` `12802` | `pinvi-dagster-daemon` (포트 없음) | `pinvi-dagster-code-server` `12803` | webserver/daemon → `-w workspace.yaml`(grpc_server), code-server만 `-m pinvi.etl.definitions` |
 | `geo` | `kor-travel-geo-dagster` `12502` | `kor-travel-geo-dagster-daemon`(포트 없음) | `kor-travel-geo-dagster-code-server` `12503` | PR #357 — pinvi와 같은 3-분리 형태(상세는 그 PR 참조, 이 문서는 표만 갱신) |
 | `map` | `kor-travel-map-dagster` `12702` | `kor-travel-map-dagster-daemon` (포트 없음) | 없음 | `-m kortravelmap.dagster.definitions` |
-| `weather` | `kor-travel-weather-dagster-webserver` 내부 전용 `14107` + 게이트웨이(Basic Auth) `14102` | `kor-travel-weather-dagster-daemon` (포트 없음) | `kor-travel-weather-dagster-code-server` `14106`(loopback 전용, 무인증) | ADR-47 — Manager 소유, webserver/daemon → `-w workspace.yaml`(grpc_server, Manager 소유 오버라이드가 `host: dagster-code-server`를 `127.0.0.1`로 재작성), code-server만 `-m kortravelweather_dagster.definitions` |
+| `weather` | `kor-travel-weather-dagster-webserver` 내부 전용 `14107` + 게이트웨이(Basic Auth) `12202`(ADR-49, 옛 `14102`) | `kor-travel-weather-dagster-daemon` (포트 없음) | `kor-travel-weather-dagster-code-server` `14106`(loopback 전용, 무인증) | ADR-47 — Manager 소유, webserver/daemon → `-w workspace.yaml`(grpc_server, Manager 소유 오버라이드가 `host: dagster-code-server`를 `127.0.0.1`로 재작성), code-server만 `-m kortravelweather_dagster.definitions` |
 | `conc` | 없음 | — | 없음 | — |
 
 > **접속 방식**: pinvi·geo·weather 모두 이 저장소의 compose가 강제하는

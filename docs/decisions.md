@@ -3190,7 +3190,11 @@ PinVi 자체의 다중 role 분리(app/schema-owner/migration-owner/migrator) �
 ## ADR-47: weather를 external target에서 Manager internal target으로 전환한다 — 앱·Dagster DB 둘 다 공용 instance로, 데이터 보존 없이
 
 - 상태: accepted (구현 진행 중 — compose 서비스·db-init·registry·포트 문서 배선은 이
-  변경으로 만들어졌고, n150에서의 실제 배포·cutover는 별도 단계에서 수행한다)
+  변경으로 만들어졌고, n150에서의 실제 배포·cutover는 별도 단계에서 수행한다).
+  **"포트는 재배정하지 않는다"는 결정만 ADR-49로 2026-09-21 superseded** — API
+  `14101`→`12201`, Dagster 게이트웨이 `14102`→`12202`, Web `14105`→`12205`.
+  나머지(internal target 전환, DB 이전 방식, network_mode: host, 내부 전용 포트
+  14104/14106/14107 유지)는 그대로 유지
 - 날짜: 2026-09-20
 - 결정자: 사용자("weather, transport도 내부 target으로 바꿔", "weather 전체(db·api·web·dagster
   전부)를 Manager compose로 통합", "weather는 데이터는 옮기지 마 — 어차피 새로 쌓으면 됨",
@@ -3359,3 +3363,108 @@ API)과 `12105`(RustFS console) 사이의 빈 자리라 다른 서비스와의 �
 
 ### 후속
 - (open) n150 실제 재배포 — 사용자 확인 후 별도 작업으로 수행한다.
+
+## ADR-49: weather API/Dagster 게이트웨이/Web host 포트를 12201/12202/12205로 재배정한다 — ADR-47의 포트 재배정 부분 supersede
+
+- 상태: accepted (repo-level 설정·문서 변경만 이 변경의 범위 — n150 실제 재배포는 별도
+  단계, 아래 "확인하지 않은 것" 참고)
+- 날짜: 2026-09-21
+- 결정자: 사용자, Claude
+- 관련: ADR-47(포트 재배정하지 않는다는 부분을 supersede), ADR-48(같은 재배정 패턴 —
+  `gra` 대역을 비운 쪽), `docs/ports.md`
+
+### 컨텍스트
+
+ADR-47(2026-09-20)은 weather를 external target에서 Manager internal target으로
+전환하면서도 "포트는 재배정하지 않는다"고 명시적으로 결정했다 — 이유는 n150의
+HAProxy(저장소 밖, 호스트 설정)가 이미 weather의 기존 포트(`14101`/`14102`/`14105`)로
+공개 도메인(`weather.digitie.mywire.org`/`weather-api.digitie.mywire.org`/
+`weather-dagster.digitie.mywire.org`)을 라우팅 중이었기 때문이다. 사용자가 이번에
+명시적으로 API `12201`·Dagster 게이트웨이 `12202`·Web `12205`로 재배정하도록
+지시했다 — ADR-47의 그 결정만 뒤집는다.
+
+세 목표 포트는 `gra` target의 나머지 100-블록(`12200-12299`) 안에 있다. ADR-48
+(2026-09-21, 앞선 항목)이 그 대역에 있던 Grafana를 `storage` 대역(`12102`-`12104`)
+으로 이미 옮겼으므로, 이 ADR이 적용되는 시점에는 `12200-12299`에 살아 있는 서비스가
+없다 — `docs/ports.md`가 실제 포트의 정본이고(`config/docker-targets.yml`의
+`port_band` 필드는 GM-19로 소비 코드가 0건이라 제거됨), 그 문서 기준으로 충돌은
+없다.
+
+weather의 나머지 서비스(자체 Prometheus `14104`, Dagster webserver 내부 전용
+`14107`, Dagster code-server 내부 전용 `14106`)는 HAProxy가 라우팅하지 않는
+내부/loopback 전용 포트라 이 ADR의 범위 밖이다 — `14100-14199`에 그대로 둔다.
+
+### 결정
+
+- weather API host 포트: `14101` → `12201`
+- weather Dagster 게이트웨이 host 포트: `14102` → `12202`
+- weather Web host 포트: `14105` → `12205`
+
+target 이름(`weather`)과 `config/docker-targets.yml`의 키·compose service 이름은
+그대로 두고 포트값만 바꾼다 — `gra`/`cadv`/`prom`이 ADR-48로 얻은 것과 같은 종류의
+대역 예외가 `weather`에도 생긴다: weather 하나의 target이 이제 두 대역
+(`14100-14199` 내부 전용 셋, `12200-12299` 공개 셋)에 걸쳐 있다.
+
+### 근거
+
+- 사용자가 정확한 목표값(`12201`/`12202`/`12205`)을 명시적으로 지정했다.
+- ADR-48이 `gra` 대역을 비워 실제 포트 충돌이 없다 — 이 ADR은 그 결과에 의존한다
+  (ADR-48이 머지되지 않은 상태로 이 변경만 단독 적용되면 `12200-12299`는 아직
+  비어 있지 않을 수 있다 — PR 설명에 이 순서 의존성을 명시한다).
+- ADR-47이 "재배정하지 않는다"고 판단한 근거(HAProxy가 이미 기존 포트를 라우팅
+  중)는 지금도 사실이다 — 이 ADR은 그 사실을 반박하지 않는다. 사용자가 그 위험을
+  감수하고 명시적으로 재배정을 지시했다는 점만 다르다.
+
+### 결과(긍정)
+
+- `docker-compose.yml`의 API `command`/healthcheck/`ports`/CORS 기본값, Dagster
+  게이트웨이 `ports`, Web의 새 `command` 오버라이드(baked Dockerfile CMD가
+  `next start -- --port 14105`를 굽고 있어 env var로 바꿀 수 없다 — Manager
+  compose가 command로 덮어쓴다)와 내부 `WEATHER_API_INTERNAL_URL`이 새 포트로
+  일관된다.
+- `config/docker-targets.yml`의 `connection`/`expected_ports`/weather target
+  description, `config/kor-travel-weather/prometheus.yml`의 api scrape target,
+  `config/kor-travel-weather/dagster-gateway.conf`의 `listen`·CSRF origin map이
+  같은 값을 반영한다.
+- `docs/ports.md`(표 + 새 "`weather`의 대역 예외" 절), `docs/platform-topology.md`의
+  Dagster 3-분리 표가 같은 값을 반영한다.
+
+### 결과(부정)
+
+- **ADR-47이 경고했던 위험이 그대로 남는다.** `network_mode: host`에는 NAT이 없어
+  `ports:`는 사실상 무의미하고(Docker가 무시), 실제로 공개 도메인을 살리는 것은
+  프로세스가 그 포트로 `0.0.0.0` 바인드하는 것뿐이다 — 이 ADR이 컨테이너를 새
+  포트로 재배포해도, **n150 HAProxy의 백엔드 설정(이 저장소 밖)을 같이 바꾸지
+  않으면 공개 도메인 세 개가 전부 끊긴다.** ADR-48(Prometheus/cAdvisor/Grafana)은
+  이런 공개 도메인 종속이 없었다 — Manager 자신의 대시보드/프록시로만 접근했다.
+  weather는 다르다: 이 ADR은 ADR-48보다 실제 재배포 리스크가 크다.
+- `weather` target 이름과 실제 포트 대역이 더 이상 하나로 맞지 않는다(두 대역에
+  걸침) — 이 target을 보는 사람은 `docs/ports.md`의 예외 설명을 함께 봐야 한다.
+- 이 ADR은 ADR-48(PR #383)이 머지돼 `12200-12299`가 실제로 비어 있어야 유효하다 —
+  순서가 바뀌면(이 변경이 먼저 머지되면) 일시적으로 `gra`의 나머지 대역이 Grafana와
+  weather 둘 다에 문서상 걸쳐 있는 상태가 된다.
+
+### 확인하지 않은 것
+
+- n150 production에서 실제로 도는 weather 컨테이너는 이 변경만으로는 바뀌지
+  않는다 — 새 포트는 재배포(이미지 재사용 가능, `api`/`dagster-gateway`/`web`
+  compose service 재생성) 전까지 적용되지 않는다. 재배포 전까지 n150은 계속 옛
+  포트(`14101`/`14102`/`14105`)로 서비스한다.
+- **n150 HAProxy의 백엔드 설정 갱신은 이 ADR의 범위 밖이다** — 저장소 밖 호스트
+  설정이라 이 PR이 건드릴 수 없다. 컨테이너 재배포와 HAProxy 갱신 중 어느 쪽을
+  먼저 해도 그 사이에는 공개 도메인이 끊긴다(전형적인 무중단 배포 문제) — 실제
+  절차(동시 전환, 잠깐의 다운타임 허용, 혹은 HAProxy가 신구 포트 둘 다에 잠깐
+  붙는 임시 이중 backend)는 n150 재배포를 실제로 수행할 때 정해야 한다.
+- weather-web의 `command` 오버라이드(baked Dockerfile CMD 대체)가 이미지의
+  entrypoint/권한 설정과 실제로 충돌 없이 동작하는지는 실제 컨테이너 기동으로
+  확인해야 한다 — 이 ADR은 YAML 형식만 weather 자신의 Dockerfile.web CMD 배열과
+  동일하게 맞췄다.
+- ADR-48(PR #383)이 이 ADR보다 먼저 머지되는지는 이 ADR이 강제하지 않는다 — PR
+  설명에 순서 의존성을 명시한다.
+
+### 후속
+
+- (open) n150 실제 재배포 — HAProxy 백엔드 갱신을 포함해 사용자 확인 후 별도
+  작업으로 수행한다.
+- (open) ADR-48(PR #383)이 머지되지 않은 채 이 변경이 먼저 머지될 경우의 처리는
+  PR 리뷰에서 정한다.
