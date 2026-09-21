@@ -2076,7 +2076,7 @@ def test_fresh_role_catalog_reset_uses_only_manager_permit_and_current_identity(
             "PINVI_ROLE_CATALOG_RESET_PERMIT_FILE=/run/pinvi/role-catalog-reset.permit",
             "-e",
             "PINVI_ROLE_CATALOG_RESET_RESULT_FILE=/run/pinvi/role-catalog-reset.result",
-        "pinvi-db-runtime-role",
+        "pinvi-shared-db-runtime-role",
     ]
     assert run_compose.call_args.kwargs["capture_output"] is False
     assert run_compose.call_args.kwargs["allow_typed_error_diagnostic"] is False
@@ -2621,16 +2621,16 @@ def test_rebuild_compose_error_exposes_only_allowlisted_pinvi_bootstrap_code(
             "role_topology_noncanonical",
         ),
         (
-            "pinvi-db-runtime-role-1 | "
+            "pinvi-shared-db-runtime-role-1 | "
             "Postgres TCP endpoint did not become ready for DB role bootstrap",
             "role_endpoint_not_ready",
         ),
         (
-            "pinvi-db-runtime-role | invalid PostgreSQL role name",
+            "pinvi-shared-db-runtime-role | invalid PostgreSQL role name",
             "role_input_invalid",
         ),
         (
-            "pinvi-db-runtime-role-1 | "
+            "pinvi-shared-db-runtime-role-1 | "
             "existing app objects are not owned by PINVI_APP_SCHEMA_OWNER; "
             "use the approved root-only legacy rebaseline profile",
             "role_existing_owner_noncanonical",
@@ -2662,7 +2662,7 @@ def test_rebuild_compose_error_exposes_only_allowlisted_pinvi_role_code(
         match=rf"Compose run command failed \(exit 1; pinvi_role:{expected}\)",
     ) as captured:
         service._run_pinned_runtime_rebuild_compose(
-            ["run", "--rm", "--no-deps", "pinvi-db-runtime-role"],
+            ["run", "--rm", "--no-deps", "pinvi-shared-db-runtime-role"],
             transaction=_opaque_transaction(),
         )
 
@@ -2692,7 +2692,7 @@ def test_rebuild_compose_error_keeps_unclassified_pinvi_role_output_private(
         match=r"Compose run command failed \(exit 1; pinvi_role:unclassified\)",
     ) as captured:
         service._run_pinned_runtime_rebuild_compose(
-            ["run", "--rm", "--no-deps", "pinvi-db-runtime-role"],
+            ["run", "--rm", "--no-deps", "pinvi-shared-db-runtime-role"],
             transaction=_opaque_transaction(),
         )
 
@@ -2735,7 +2735,7 @@ def test_pinvi_sealed_role_topology_verifier_accepts_only_canonical_output(
             "PINVI_MIGRATOR_DISABLE_LOGIN=1",
             "-e",
             "PINVI_M05_LEGACY_REBASELINE=0",
-            "pinvi-db-runtime-role",
+            "pinvi-shared-db-runtime-role",
         )
     ]
 
@@ -4917,6 +4917,7 @@ def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
     expected_writers = (
         "pinvi-db-init",
         "pinvi-db-runtime-role",
+        "pinvi-shared-db-runtime-role",
         "kor-travel-map-dagster-db-init",
         "kor-travel-map-db-role-bootstrap",
         "kor-travel-map-application-fresh-300",

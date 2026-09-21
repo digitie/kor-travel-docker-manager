@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from kor_travel_docker_manager.services.c6c_deployment import (
-    _PINVI_DB_RUNTIME_ROLE_SERVICE,
+    _PINVI_ACTIVE_DB_ROLE_SERVICE,
     DeploymentContractError,
 )
 from kor_travel_docker_manager.services.compose_service import (
@@ -33,7 +33,7 @@ def test_diagnostic_carries_role_topology_code_structurally() -> None:
         stderr="runtime/migrator/migration-owner role topology is not canonical\n"
     )
     diagnostic = ComposeService._pinned_runtime_compose_failure_diagnostic(
-        ["run", "--rm", _PINVI_DB_RUNTIME_ROLE_SERVICE], result
+        ["run", "--rm", _PINVI_ACTIVE_DB_ROLE_SERVICE], result
     )
     assert isinstance(diagnostic, _ComposeFailureDiagnostic)
     assert diagnostic.pinvi_role_code == "role_topology_noncanonical"
@@ -43,7 +43,7 @@ def test_diagnostic_carries_role_topology_code_structurally() -> None:
 def test_unmatched_pinvi_role_output_is_unclassified_but_structural() -> None:
     result = _run_result(stderr="some unexpected container output\n")
     diagnostic = ComposeService._pinned_runtime_compose_failure_diagnostic(
-        ["run", "--rm", _PINVI_DB_RUNTIME_ROLE_SERVICE], result
+        ["run", "--rm", _PINVI_ACTIVE_DB_ROLE_SERVICE], result
     )
     assert diagnostic.pinvi_role_code == "unclassified"
 

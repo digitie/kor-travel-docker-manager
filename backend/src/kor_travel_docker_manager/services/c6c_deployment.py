@@ -100,6 +100,22 @@ _PINVI_DB_RUNTIME_ROLE_SERVICE = "pinvi-db-runtime-role"
 #: ADR-46 — 공용 instance에서 같은 M05 role topology를 세우는 root-only one-shot.
 #: 스크립트는 pinvi-db-runtime-role과 완전히 같고 대상 endpoint만 다르다.
 _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE = "pinvi-shared-db-runtime-role"
+
+#: **PinVi DB role one-shot의 단일 전환점.**
+#:
+#: ADR-46으로 PinVi의 application DB와 role은 공용 제어 평면 instance로 옮겼다.
+#: 그런데 이 서비스 이름은 *호출부*와 *진단 매칭부* 양쪽에 흩어져 있었고, 둘을
+#: 따로 옮기면 조용히 어긋난다 — 실제로 이번 주에 같은 결함이 세 번 났다:
+#: migrator login 창을 전용 instance에서 열고(#377), schema revision을 전용
+#: instance에서 읽고(#379), role catalog reset을 전용 instance에서 돌렸다.
+#: 마지막 것은 permit에 공용 cluster의 system_identifier/oid/owner를 적어 두고
+#: 전용 cluster에 접속해 비교해 `target_identity_invalid`로 끝났다.
+#:
+#: 게다가 호출부만 옮기면 아래 진단 매칭(`target == ...`)이 더 이상 맞지 않아
+#: PinVi one-shot의 **타입 있는 오류 코드가 전부 `unclassified`로 접힌다** —
+#: 원인 문장을 잃는 그 실패 모양이 이번 주 진단을 계속 가렸다. 그래서 이름을
+#: 리터럴로 흩지 않고 여기 하나로 묶는다.
+_PINVI_ACTIVE_DB_ROLE_SERVICE = _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE
 _PINVI_POSTGRES_PASSWORD_SECRET = "pinvi-postgres-password"
 _PINVI_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_PINVI_POSTGRES_PASSWORD_SECRET}"
 #: 두 PostgreSQL이 **같은** 초기화 인증 인자를 쓴다. 공유 상수로 두는 이유는 한쪽만
