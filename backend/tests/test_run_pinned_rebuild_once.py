@@ -242,3 +242,117 @@ def test_successful_child_with_an_unreadable_result_fails_closed(
 
     assert completed.returncode == 1, completed.stderr
     assert "not a JSON object" in completed.stderr
+
+
+# ── claim 획득 표면 ────────────────────────────────────────────────────────
+#
+# 이 구간은 회귀 테스트가 **0건**이었고, 그래서 "파일명이 순수 content hash라
+# attempt 차원이 없다"는 결함이 오래 살아남았다. 후보 내용과 무관한 호스트 실패
+# 하나가 같은 (map, pinvi) 쌍을 영구히 실행 불가능하게 만들었다 — registry가
+# 동일 쌍 회전을 거절하므로 재회전으로도 빠져나갈 수 없었다.
+
+
+def _claim_block(launcher: str) -> str:
+    """claim을 획득하는 python heredoc 본문만 잘라낸다."""
+
+    anchor = launcher.index("def next_claim_filename(")
+    start = launcher.rindex("<<" + chr(39) + "PY" + chr(39), 0, anchor)
+    start = launcher.index(chr(10), start) + 1
+    end = launcher.index(chr(10) + "PY" + chr(10), start)
+    return launcher[start:end]
+
+
+def _acquire_claim(ledger: Path, pinset: str, output_dir: str):
+    block = _claim_block(_LAUNCHER.read_text(encoding="utf-8"))
+    # 비-root 테스트에서 돌 수 있게 원장 소유권 단언만 완화한다(위 tail 테스트가
+    # chown을 `true`로 바꾸는 것과 같은 이유). 나머지 판정은 원문 그대로 돈다.
+    block = block.replace("    or metadata.st_uid != 0" + chr(10), "", 1)
+    return subprocess.run(
+        [
+            "python3",
+            "-I",
+            "-S",
+            "-c",
+            block,
+            str(ledger),
+            pinset,
+            "b" * 40,
+            output_dir,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def test_first_claim_uses_the_bare_pinset_filename(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir(mode=0o700)
+    pinset = "c" * 64
+
+    completed = _acquire_claim(ledger, pinset, str(tmp_path / "out"))
+
+    assert completed.returncode == 0, completed.stderr
+    assert (ledger / pinset).exists()
+    recorded = json.loads((ledger / pinset).read_text(encoding="utf-8"))
+    # 파일명만 attempt 차원을 갖는다 — claim 내용은 identity-pure로 남는다.
+    assert recorded["pinset_sha256"] == pinset
+
+
+def test_a_concluded_failure_does_not_burn_the_pair(tmp_path: Path) -> None:
+    """**이 저장소가 실제로 겪은 사고의 회귀다.**
+
+    이전 실행이 결론(result.json)을 썼다는 이유만으로 같은 쌍이 영구 소각됐다.
+    그 결론이 "호스트 설정이 틀려서 아무것도 배포하지 못했다"여도 마찬가지였고,
+    탈출구는 아무 커밋이나 새로 올리는 것뿐이었다.
+    """
+
+    ledger = tmp_path / "ledger"
+    ledger.mkdir(mode=0o700)
+    pinset = "d" * 64
+    previous = tmp_path / "out-1"
+    previous.mkdir()
+    (ledger / pinset).write_text("{}" + chr(10), encoding="utf-8")
+    # 이전 실행이 결론을 남겼다 — 종전에는 이것이 재시도를 영구히 막았다.
+    (previous / "result.json").write_text(
+        json.dumps({"status": "failed", "classification": "unclassified"}),
+        encoding="utf-8",
+    )
+
+    completed = _acquire_claim(ledger, pinset, str(tmp_path / "out-2"))
+
+    assert completed.returncode == 0, completed.stderr
+    assert (ledger / (pinset + "-01")).exists()
+    # 앞선 기록은 감사 흔적으로 남는다 — 되찾기가 아니라 덧쓰기다.
+    assert (ledger / pinset).exists()
+
+
+def test_legacy_prejournal_records_do_not_shift_the_ordinal(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger"
+    ledger.mkdir(mode=0o700)
+    pinset = "e" * 64
+    (ledger / (pinset + ".prejournal-01")).write_text("{}" + chr(10), encoding="utf-8")
+    (ledger / (pinset + ".prejournal-02")).write_text("{}" + chr(10), encoding="utf-8")
+
+    completed = _acquire_claim(ledger, pinset, str(tmp_path / "out"))
+
+    assert completed.returncode == 0, completed.stderr
+    # `.` 접두는 ordinal 계산에 들어가지 않는다.
+    assert (ledger / pinset).exists()
+
+
+def test_claim_attempts_are_capped(tmp_path: Path) -> None:
+    """상한은 후보 예산이 아니라 폭주 방어다 — 넘으면 fail-closed."""
+
+    ledger = tmp_path / "ledger"
+    ledger.mkdir(mode=0o700)
+    pinset = "f" * 64
+    (ledger / pinset).write_text("{}" + chr(10), encoding="utf-8")
+    for ordinal in range(1, 12):
+        (ledger / (pinset + f"-{ordinal:02d}")).write_text("{}" + chr(10), encoding="utf-8")
+
+    completed = _acquire_claim(ledger, pinset, str(tmp_path / "out"))
+
+    assert completed.returncode != 0
+    assert "attempts exceeded the limit" in completed.stderr

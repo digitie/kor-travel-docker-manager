@@ -2800,12 +2800,12 @@ def test_pinvi_role_lifecycle_reports_primary_and_seal_failures_without_raw_outp
         del transaction
         operation = tuple(args)
         operations.append(operation)
-        if operation[-2:] == ("PINVI_MIGRATOR_DISABLE_LOGIN=0", "pinvi-db-runtime-role"):
+        if operation[-2:] == ("PINVI_MIGRATOR_DISABLE_LOGIN=0", "pinvi-shared-db-runtime-role"):
             raise DeploymentContractError(
                 "pinned runtime rebuild Compose run command failed "
                 "(exit 1; pinvi_role:role_topology_noncanonical)"
             )
-        if operation[-2:] == ("PINVI_MIGRATOR_DISABLE_LOGIN=1", "pinvi-db-runtime-role"):
+        if operation[-2:] == ("PINVI_MIGRATOR_DISABLE_LOGIN=1", "pinvi-shared-db-runtime-role"):
             raise DeploymentContractError(
                 "pinned runtime rebuild Compose run command failed "
                 "(exit 1; pinvi_role:unclassified)"
@@ -2835,8 +2835,8 @@ def test_pinvi_role_lifecycle_reports_primary_and_seal_failures_without_raw_outp
         code="role_topology_noncanonical",
     )
     assert [operation[-1] for operation in operations] == [
-        "pinvi-db-runtime-role",
-        "pinvi-db-runtime-role",
+        "pinvi-shared-db-runtime-role",
+        "pinvi-shared-db-runtime-role",
     ]
 
 
@@ -2850,7 +2850,7 @@ def test_pinvi_role_lifecycle_preserves_cancellation_after_successful_seal(
         del transaction
         operation = tuple(args)
         operations.append(operation)
-        if operation[-2:] == ("PINVI_MIGRATOR_DISABLE_LOGIN=0", "pinvi-db-runtime-role"):
+        if operation[-2:] == ("PINVI_MIGRATOR_DISABLE_LOGIN=0", "pinvi-shared-db-runtime-role"):
             raise KeyboardInterrupt()
         return {"success": True, "stdout": ""}
 
@@ -2868,8 +2868,8 @@ def test_pinvi_role_lifecycle_preserves_cancellation_after_successful_seal(
         )
 
     assert [operation[-2:] for operation in operations] == [
-        ("PINVI_MIGRATOR_DISABLE_LOGIN=0", "pinvi-db-runtime-role"),
-        ("PINVI_MIGRATOR_DISABLE_LOGIN=1", "pinvi-db-runtime-role"),
+        ("PINVI_MIGRATOR_DISABLE_LOGIN=0", "pinvi-shared-db-runtime-role"),
+        ("PINVI_MIGRATOR_DISABLE_LOGIN=1", "pinvi-shared-db-runtime-role"),
     ]
 
 
@@ -2910,8 +2910,8 @@ def test_pinvi_role_lifecycle_separates_credential_preparation_from_admin_run(
     assert captured.value.__cause__ is None
     assert captured.value.__context__ is None
     assert [operation[-1] for operation in operations] == [
-        "pinvi-db-runtime-role",
-        "pinvi-db-runtime-role",
+        "pinvi-shared-db-runtime-role",
+        "pinvi-shared-db-runtime-role",
     ]
 
 
@@ -2958,9 +2958,9 @@ def test_pinvi_role_lifecycle_separates_credential_cleanup_from_admin_run(
     assert captured.value.__cause__ is None
     assert captured.value.__context__ is None
     assert [operation[-1] for operation in operations] == [
-        "pinvi-db-runtime-role",
+        "pinvi-shared-db-runtime-role",
         "pinvi-admin-bootstrap",
-        "pinvi-db-runtime-role",
+        "pinvi-shared-db-runtime-role",
     ]
 
 
@@ -2984,7 +2984,7 @@ def test_pinvi_role_lifecycle_keeps_admin_and_seal_codes_without_raw_output(
                 "pinned runtime rebuild Compose run command failed "
                 "(exit 1; pinvi:migration_failed)"
             )
-        if operation[-2:] == ("PINVI_MIGRATOR_DISABLE_LOGIN=1", "pinvi-db-runtime-role"):
+        if operation[-2:] == ("PINVI_MIGRATOR_DISABLE_LOGIN=1", "pinvi-shared-db-runtime-role"):
             raise DeploymentContractError(
                 "pinned runtime rebuild Compose run command failed "
                 "(exit 1; pinvi_role:role_topology_noncanonical); "
@@ -3023,9 +3023,9 @@ def test_pinvi_role_lifecycle_keeps_admin_and_seal_codes_without_raw_output(
         code="role_topology_noncanonical",
     )
     assert [operation[-1] for operation in operations] == [
-        "pinvi-db-runtime-role",
+        "pinvi-shared-db-runtime-role",
         "pinvi-admin-bootstrap",
-        "pinvi-db-runtime-role",
+        "pinvi-shared-db-runtime-role",
     ]
 
 
@@ -4792,7 +4792,7 @@ def test_pinvi_role_lifecycle_seals_the_migrator_after_bootstrap(
         operation = tuple(args)
         operations.append(operation)
         if (
-            operation[-1] == "pinvi-db-runtime-role"
+            operation[-1] == "pinvi-shared-db-runtime-role"
             and operation[-2] == "PINVI_MIGRATOR_DISABLE_LOGIN=0"
             and failure_stage == "open"
         ):
@@ -4800,7 +4800,7 @@ def test_pinvi_role_lifecycle_seals_the_migrator_after_bootstrap(
         if operation[-1] == "pinvi-admin-bootstrap" and failure_stage == "admin":
             raise DeploymentContractError("admin bootstrap failed")
         if (
-            operation[-1] == "pinvi-db-runtime-role"
+            operation[-1] == "pinvi-shared-db-runtime-role"
             and operation[-2] == "PINVI_MIGRATOR_DISABLE_LOGIN=1"
             and failure_stage == "seal"
         ):
@@ -4859,19 +4859,19 @@ def test_pinvi_role_lifecycle_seals_the_migrator_after_bootstrap(
     assert operations[0] == (
         *role_prefix,
         "PINVI_MIGRATOR_DISABLE_LOGIN=0",
-        "pinvi-db-runtime-role",
+        "pinvi-shared-db-runtime-role",
     )
     assert operations[-1] == (
         *role_prefix,
         "PINVI_MIGRATOR_DISABLE_LOGIN=1",
-        "pinvi-db-runtime-role",
+        "pinvi-shared-db-runtime-role",
     )
     assert (
         operations.count(
             (
                 *role_prefix,
                 "PINVI_MIGRATOR_DISABLE_LOGIN=1",
-                "pinvi-db-runtime-role",
+                "pinvi-shared-db-runtime-role",
             )
         )
         == 1

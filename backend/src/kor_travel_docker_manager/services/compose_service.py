@@ -27,6 +27,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _PINVI_ADMIN_BOOTSTRAP_SERVICE,
     _PINVI_API_SERVICE,
     _PINVI_DB_RUNTIME_ROLE_SERVICE,
+    _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE,
     C6cBuildProvenance,
     C6cCancelProbeFixture,
     C6cDeploymentConfig,
@@ -5506,15 +5507,23 @@ class ComposeService:
             "--no-deps",
             "-e",
         ]
+        # ADR-46: pinvi-admin-bootstrap의 PINVI_DATABASE_URL은 공용 instance로
+        # 넘어갔는데(KOR_TRAVEL_SHARED_DB_PORT) 이 lifecycle은 여전히 **전용**
+        # instance의 role one-shot에서 migrator login을 열고 봉인했다. 창은
+        # :12800에 열리고 migration은 :11000으로 인증하니 그쪽 migrator는 계속
+        # NOLOGIN이었다 — 실측 원문은
+        # `role "pinvi_migrator_runtime" is not permitted to log in`이고,
+        # 운영자에게는 봉인된 `migration_failed` 한 단어로만 보였다.
+        role_service = _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE
         open_role = [
             *role_command_prefix,
             "PINVI_MIGRATOR_DISABLE_LOGIN=0",
-            _PINVI_DB_RUNTIME_ROLE_SERVICE,
+            role_service,
         ]
         seal_role = [
             *role_command_prefix,
             "PINVI_MIGRATOR_DISABLE_LOGIN=1",
-            _PINVI_DB_RUNTIME_ROLE_SERVICE,
+            role_service,
         ]
         primary_stage = "pinvi_role_open"
         primary_lifecycle_error: str | None = None
