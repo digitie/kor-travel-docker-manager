@@ -714,6 +714,79 @@ services:
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_DB\" TO \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\""
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER\""
 
+  # kor-travel-transport는 application schema와 Dagster metadata schema가 모두
+  # alembic_version을 사용하므로 하나의 DB를 공유할 수 없다.
+  kor-travel-shared-db-init-transport:
+    image: postgis/postgis:16-3.5
+    container_name: ${KOR_TRAVEL_SHARED_DB_INIT_TRANSPORT_CONTAINER:-kor-travel-shared-db-init-transport}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
+      PGUSER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
+      PGDATABASE: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
+      # transport deployment script도 이 정확한 identity만 허용한다. 다른 tenant
+      # role/db로 override되면 비밀번호를 회전하거나 ACL을 바꾸지 않도록 literal로
+      # 고정한다.
+      KOR_TRAVEL_TRANSPORT_SHARED_APP_DB: kor_travel_transport
+      KOR_TRAVEL_TRANSPORT_SHARED_APP_USER: kor_travel_transport_app
+      KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB: kor_travel_transport_dagster
+      KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_APP_USER: kor_travel_transport_dagster_app
+    secrets:
+    - source: kor-travel-shared-postgres-password
+      target: /run/secrets/kor-travel-shared-postgres-password
+    - source: kor-travel-transport-shared-app-password
+      target: /run/secrets/kor-travel-transport-shared-app-password
+    - source: kor-travel-transport-dagster-shared-app-password
+      target: /run/secrets/kor-travel-transport-dagster-shared-app-password
+    command:
+    - sh
+    - -ec
+    - |
+      PGPASSWORD="$$(cat /run/secrets/kor-travel-shared-postgres-password)"
+      export PGPASSWORD
+      APP_PASSWORD="$$(cat /run/secrets/kor-travel-transport-shared-app-password)"
+      DAGSTER_PASSWORD="$$(cat /run/secrets/kor-travel-transport-dagster-shared-app-password)"
+
+      ensure_role() {
+        role="$$1"
+        password="$$2"
+        if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$role'" | grep -q 1; then
+          psql -d "$$PGDATABASE" -v role_password="$$password" -c "ALTER ROLE \"$$role\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+        else
+          psql -d "$$PGDATABASE" -v role_password="$$password" -c "CREATE ROLE \"$$role\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+        fi
+      }
+      ensure_database() {
+        database="$$1"
+        owner="$$2"
+        if ! psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$database'" | grep -q 1; then
+          createdb -O "$$owner" "$$database"
+        fi
+      }
+
+      ensure_role "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER" "$$APP_PASSWORD"
+      ensure_database "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB" "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER"
+      ensure_role "$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_APP_USER" "$$DAGSTER_PASSWORD"
+      ensure_database "$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB" "$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_APP_USER"
+
+      # 이미 존재한 DB라도 잘못된 owner를 재사용하면 다른 tenant 데이터에 쓰거나
+      # 기존 Dagster metadata를 정본으로 삼게 된다. 재기동 안전성은 유지하되,
+      # identity가 다르면 여기서 멈춘다. 빈 상태 검증은 데이터 cutover 직전의
+      # transport receipt gate가 application/Dagster 양쪽에 대해 수행한다.
+      test "$$(psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -qAt -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB'")" = "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER"
+      test "$$(psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -qAt -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB'")" = "$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_APP_USER"
+
+      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PGDATABASE\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB\" TO \"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER\""
+      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_APP_USER\""
+
   rustfs:
     image: rustfs/rustfs:latest
     container_name: kor-travel-rustfs
@@ -758,6 +831,7 @@ services:
       KOR_TRAVEL_GEO_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KRTOUR_MAP_RUSTFS_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
+      KOR_TRAVEL_TRANSPORT_RUSTFS_BUCKET: ${KOR_TRAVEL_TRANSPORT_RUSTFS_BUCKET:-kor-travel-transport-raw}
     volumes:
     - ./scripts/ensure-rustfs-buckets.sh:/opt/kor-travel-docker-manager/ensure-rustfs-buckets.sh:ro
     entrypoint:
@@ -2838,5 +2912,9 @@ secrets:
     # 이름을 새로 짓지 않는다 — weather 자신의 compose.yaml(x-dagster-environment
     # 앵커)이 이미 이 정확한 env var 이름으로 DAGSTER_POSTGRES_URL을 조립한다.
     environment: KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD
+  kor-travel-transport-shared-app-password:
+    environment: KOR_TRAVEL_TRANSPORT_SHARED_APP_PASSWORD
+  kor-travel-transport-dagster-shared-app-password:
+    environment: KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_APP_PASSWORD
   kor-travel-weather-metrics-token:
     environment: KOR_TRAVEL_WEATHER_METRICS_TOKEN

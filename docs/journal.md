@@ -7176,3 +7176,21 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
   - 세션 우선순위 순서(geo → weather/transport/concierge → map → pinvi)의 다음
     단계는 transport — 단, 그 저장소는 read-only 제약(미추적 WIP 다수)이 걸려 있어
     별도 스코프 확인 필요.
+
+## 2026-09-21 — transport 공용 DB·RustFS provisioning 계약 추가
+
+- **작업 내용**:
+  - `kor-travel-shared-db-init-transport` one-shot을 추가해 공용 PostgreSQL에
+    application DB(`kor_travel_transport`)와 Dagster metadata DB
+    (`kor_travel_transport_dagster`)를 각각 별도 비특권 role로 멱등 생성하도록 했다.
+    둘 다 `alembic_version`을 쓰므로 한 DB를 공유하지 않는다.
+  - 각 DB에서 `PUBLIC CONNECT`를 회수하고 해당 role에만 접속 권한을 부여했다.
+    application·Dagster 비밀번호는 서로 다른 Docker secret/env로 분리했다.
+  - RustFS 초기화 bucket에 `kor-travel-transport-raw`를 추가했다. KRIC 등 갱신 빈도가
+    낮은 원본 파일은 transport 라이브러리가 이 공용 bucket에 보관한다.
+  - transport의 api/web/Dagster 컨테이너는 아직 Manager가 소유하지 않는다. transport
+    저장소의 분리 compose와 receipt-gated hard cutover가 배포 정본이며, 이 변경은 그
+    전에 필요한 공용 기반만 제공한다.
+- **다음 작업**:
+  - Manager 변경을 n150 배포 트리에 반영해 db-init과 RustFS bucket 성공을 확인한 뒤,
+    transport 저장소의 cutover receipt·배포·live E2E를 실행한다.
