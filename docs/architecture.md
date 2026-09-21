@@ -159,7 +159,7 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
    - 컨테이너: `kor-travel-grafana`
    - compose service: `grafana`
    - 목적: Prometheus datasource 기반 공용 메트릭 시각화.
-   - host 포트: `12205`.
+   - host 포트: `12104`(ADR-48 — `gra` target의 100단위 대역이 아니라 `storage` 대역 안, `docs/ports.md` 참고).
    - 컨테이너 내부 포트: `3000`.
 4. **cAdvisor Exporter**:
    - 컨테이너: `kor-travel-cadvisor`
@@ -169,15 +169,15 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
      directory는 mount하지 않는다. 현재 Compose는 cAdvisor 수집기 호환성을 위해 `privileged: true`와
      `/dev/kmsg` device도 함께 선언한다.
    - Docker socket은 root:docker `0660`, `/sys`는 root-owned mountpoint 계약과 inode/device/mode 재검증을 통과해야 한다.
-   - host 포트: `12301`.
-   - host network에서 cAdvisor 프로세스는 `CADVISOR_PORT`(기본 `12301`)에 직접
+   - host 포트: `12103`(ADR-48 — `cadv` target의 100단위 대역이 아니라 `storage` 대역 안, `docs/ports.md` 참고).
+   - host network에서 cAdvisor 프로세스는 `CADVISOR_PORT`(기본 `12103`)에 직접
      listen하며, Compose의 명시적 healthcheck도 같은 포트의 `/healthz`를 조회함.
      image에 상속된 기본 `8080` healthcheck에 의존하지 않음.
 5. **Prometheus**:
    - 컨테이너: `kor-travel-prometheus`
    - compose service: `prometheus`
    - 목적: cAdvisor Exporter와 앱 메트릭 수집 및 저장.
-   - host 포트: `12401`.
+   - host 포트: `12102`(ADR-48 — `prom` target의 100단위 대역이 아니라 `storage` 대역 안, `docs/ports.md` 참고).
    - 컨테이너 내부 포트: `9090`.
 6. **kor-travel-geo API**:
    - 컨테이너: `kor-travel-geo-api-latest`

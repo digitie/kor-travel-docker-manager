@@ -287,7 +287,9 @@ Kor Travel/PinVi 계열 레포가 각자 `9001`, `9003`, `9041`, `13082`, `18082
 
 ## ADR-10: Prometheus, Grafana, Exporter 관측 스택을 별도 컨테이너로 분리한다
 
-- 상태: accepted
+- 상태: accepted (host 포트 배정만 ADR-48로 2026-09-21 superseded — Grafana `12205`→`12104`,
+  cAdvisor `12301`→`12103`, Prometheus `12401`→`12102`. target 분리·dependency 순서·
+  compose 구조 결정은 이 ADR 그대로 유지)
 - 날짜: 2026-06-13
 - 결정자: human, AI agent
 
@@ -3387,3 +3389,66 @@ AGENTS.md). 단순성이 보안보다 위다. 이 ADR은 그 순서를 Manager �
 - ADR-090(21-role 모델)의 나머지 부분 — NOLOGIN procedure owner 계층과 SECURITY
   DEFINER 경계 — 은 ADR-100 범위 밖으로 남겨뒀고, 이 ADR도 그것을 자동으로
   폐기하지 않는다.
+## ADR-48: Prometheus/cAdvisor/Grafana host 포트를 12102/12103/12104로 재배정한다 — ADR-10의 포트 배정 부분 supersede
+
+- 상태: accepted (repo-level 설정·문서 변경만 이 변경의 범위 — n150 실제 재배포는 별도
+  단계, 아래 "확인하지 않은 것" 참고)
+- 날짜: 2026-09-21
+- 결정자: 사용자, Claude
+
+### 컨텍스트
+ADR-10(2026-06-13)이 배정한 host 포트 Grafana `12205`/cAdvisor `12301`/Prometheus
+`12401`을 사용자가 명시적으로 `12102`/`12103`/`12104`로 바꾸도록 지시했다. 저장소를
+조사한 범위(compose·target registry·문서·저장소 전체 grep)에서는 기존 포트가 다른
+서비스와 충돌했다는 기록이나 미해결 이슈는 찾지 못했다 — 이 ADR은 사실만 기록하고
+사유를 지어내지 않는다. 세 target 이름(`gra`/`cadv`/`prom`)과
+`config/docker-targets.yml`의 키·compose service 이름은 그대로 두고 포트값만 바꾼다.
+
+### 결정
+- Prometheus host 포트: `12401` → `12102`
+- cAdvisor host 포트: `12301` → `12103`
+- Grafana host 포트: `12205` → `12104`
+
+새 세 포트는 `storage` 대역(`12100-12199`) 안으로 들어간다 — `12101`(RustFS S3
+API)과 `12105`(RustFS console) 사이의 빈 자리라 다른 서비스와의 실제 포트 충돌은
+없지만, `docs/ports.md` §기본 규칙이 전제하는 "target 이름 대역 = 실제 포트 대역"
+관례에는 이 세 target만 명시적 예외가 생긴다(`docs/ports.md` "`gra`/`cadv`/`prom`의
+대역 예외" 절 참고).
+
+### 근거
+- 사용자가 정확한 목표값(`12102`/`12103`/`12104`)을 명시적으로 지정했다 — 기존
+  100단위 대역 규칙과 어긋나더라도 그 값을 그대로 쓴다(사용자가 준 값을 임의
+  재해석해 "올바른" 대역으로 바꾸지 않는다).
+- `storage` 대역 안에 빈 자리(`12102`-`12104`)가 있어 저장소 전체 grep 기준으로 다른
+  서비스와 실제 포트 충돌은 없다.
+
+### 결과(긍정)
+- `docker-compose.yml`의 `PROMETHEUS_PORT`/`CADVISOR_PORT`/`GRAFANA_PORT` 기본값,
+  `config/docker-targets.yml`의 `connection`/`expected_ports`,
+  `config/prometheus/prometheus.yml`의 scrape target,
+  `config/grafana/provisioning/datasources/prometheus.yml`의 datasource URL,
+  `.env.example`이 새 포트로 일관된다.
+- `docs/ports.md`, `docs/architecture.md`, `docs/dev-environment.md`,
+  `docs/docker-management.md`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `SKILL.md`가
+  같은 값을 반영한다.
+
+### 결과(부정)
+- `gra`/`cadv`/`prom` target 이름과 실제 포트 대역이 더 이상 맞지 않는다 — 이 세
+  target을 보는 사람은 `docs/ports.md`의 예외 설명을 함께 봐야 한다.
+- 기존에 `12205`/`12301`/`12401`을 가정한 외부 dashboard·북마크·방화벽 규칙이
+  저장소 밖에 있다면 이 변경으로 깨진다(저장소 조사 범위에서는 찾지 못했다).
+
+### 확인하지 않은 것
+- n150 production에서 실제로 도는 Prometheus/cAdvisor/Grafana 컨테이너는 이 변경만
+  으로는 바뀌지 않는다 — 새 포트는 재배포(컨테이너 재생성, 최소한 새 `.env`/
+  `ports:` 매핑으로 `prometheus`/`cadvisor`/`grafana` compose service를 다시
+  기동하는 것) 전까지 적용되지 않는다. 재배포 전까지 n150은 계속 옛 포트
+  (`12401`/`12301`/`12205`)로 서비스한다. 이 ADR·PR은 repo-level 설정·문서 변경만
+  포함하고 live 서비스는 건드리지 않았다.
+- Grafana의 Prometheus datasource가 provisioning YAML 갱신만으로 반영되는지, 아니면
+  재배포 시 컨테이너 재생성이 필요한지는 실제 n150 재배포에서 확인해야 한다.
+- 저장소 밖의 방화벽/리버스 프록시가 이 세 포트를 번호로 참조하는 설정이 있는지는
+  이 저장소 조사 범위 밖이다 — 저장소 안에서는 그런 설정을 찾지 못했다.
+
+### 후속
+- (open) n150 실제 재배포 — 사용자 확인 후 별도 작업으로 수행한다.

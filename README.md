@@ -60,9 +60,9 @@ poetry run ktdctl geo --build
 | PostgreSQL / PostGIS (프로젝트별 전용 4개, ADR-37) | `12500` · `12600` · `12700` · `12800` | `kor-travel-geo-postgres`(`kor_travel_geo`) · `kor-travel-concierge-postgres`(`kor_travel_concierge`) · `kor-travel-map-postgres`(`kor_travel_map`) · `pinvi-postgres`(`pinvi`). 넷 다 loopback 전용이고 `5432`는 쓰지 않는다 |
 | RustFS S3 API | `12101` | `http://127.0.0.1:12101` |
 | RustFS console | `12105` | `http://127.0.0.1:12105/rustfs/console/` |
-| Grafana Web UI | `12205` | `http://127.0.0.1:12205` |
-| cAdvisor Exporter | `12301` | `http://127.0.0.1:12301` |
-| Prometheus | `12401` | `http://127.0.0.1:12401` |
+| Grafana Web UI | `12104`(ADR-48) | `http://127.0.0.1:12104` |
+| cAdvisor Exporter | `12103`(ADR-48) | `http://127.0.0.1:12103` |
+| Prometheus | `12102`(ADR-48) | `http://127.0.0.1:12102` |
 | kor-travel-geo API | `12501` | `http://127.0.0.1:12501` |
 | kor-travel-geo Web UI | `12505` | `http://127.0.0.1:12505` |
 | kor-travel-concierge API | `12601` | `http://127.0.0.1:12601` |

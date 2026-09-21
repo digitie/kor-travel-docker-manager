@@ -96,7 +96,7 @@ done
 `.env`는 권한 **600**이다. 백업본을 만들면 그것도 600으로 맞춘다 — 규정이 원본 이름만
 지목하면 파생물이 통째로 빠져나간다(#179).
 
-RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이다. 관측 target은 Grafana `12205`, cAdvisor `12301`, Prometheus `12401`을 사용하며, `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `kor-travel-concierge`는 `12601`/`12602`/`12605`, `kor-travel-map`은 `12701`/`12702`/`12705`, PinVi는 `12801`/`12805`를 사용한다. PostgreSQL은 프로젝트마다 전용 instance이고 포트는 각 대역의 `x00`이다 — `12500`/`12600`/`12700`/`12800`(ADR-37). 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
+RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이다. 관측 target은 Grafana `12104`, cAdvisor `12103`, Prometheus `12102`를 사용한다(ADR-48 — `storage` 대역 안, `docs/ports.md` 참고). `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `kor-travel-concierge`는 `12601`/`12602`/`12605`, `kor-travel-map`은 `12701`/`12702`/`12705`, PinVi는 `12801`/`12805`를 사용한다. PostgreSQL은 프로젝트마다 전용 instance이고 포트는 각 대역의 `x00`이다 — `12500`/`12600`/`12700`/`12800`(ADR-37). 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
 
 ### 2.3 로컬 개발 서버 실행
 Poetry를 사용할 경우:
