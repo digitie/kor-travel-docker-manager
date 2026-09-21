@@ -27,7 +27,7 @@ def _runtime(role: database_runtime.DatabaseRole) -> DatabaseRuntime:
     return DatabaseRuntime(
         role=role,
         container_name="postgres-rehearsal",
-        port=12800 if role == "pinvi" else 12700,
+        port=11000 if role == "pinvi" else 12700,
         database_name={
             "map_application": "map_app",
             "map_dagster": "map_dagster",
@@ -62,8 +62,8 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
                     "container_name": "map-postgres-production",
                     "environment": {"POSTGRES_USER": "map_cluster_admin"},
                 },
-                "pinvi-postgres": {
-                    "container_name": "pinvi-postgres-production",
+                "kor-travel-shared-postgres": {
+                    "container_name": "shared-postgres-production",
                     "environment": {"POSTGRES_USER": "pin_cluster_admin"},
                 },
             }
@@ -74,7 +74,7 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
             "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
             "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
             "PINVI_POSTGRES_DB": "pin_app",
-            "PINVI_POSTGRES_USER": "pin_owner",
+            "KOR_TRAVEL_SHARED_POSTGRES_USER": "pin_owner",
         },
     )
 
@@ -91,11 +91,11 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
     ] == [
         ("map_application", "map-postgres-production", 12700, "map_app", "map_owner", "map_cluster_admin"),
         ("map_dagster", "map-postgres-production", 12700, "map_dagster", "map_owner", "map_cluster_admin"),
-        ("pinvi", "pinvi-postgres-production", 12800, "pin_app", "pin_owner", "pin_cluster_admin"),
+        ("pinvi", "shared-postgres-production", 11000, "pin_app", "pin_owner", "pin_cluster_admin"),
     ]
     assert {runtime.container_name for runtime in runtimes} == {
         "map-postgres-production",
-        "pinvi-postgres-production",
+        "shared-postgres-production",
     }
     assert runtimes[1].additional_owner_names == frozenset({"map_dagster_metadata"})
 
@@ -109,7 +109,7 @@ def test_database_runtime_rejects_pinvi_container_alias() -> None:
                         "container_name": "map-postgres-production",
                         "environment": {"POSTGRES_USER": "map_cluster_admin"},
                     },
-                    "pinvi-postgres": {
+                    "kor-travel-shared-postgres": {
                         "container_name": "map-postgres-production",
                         "environment": {"POSTGRES_USER": "pin_cluster_admin"},
                     },
@@ -121,7 +121,7 @@ def test_database_runtime_rejects_pinvi_container_alias() -> None:
                 "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
                 "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
                 "PINVI_POSTGRES_DB": "pin_app",
-                "PINVI_POSTGRES_USER": "pin_owner",
+                "KOR_TRAVEL_SHARED_POSTGRES_USER": "pin_owner",
             },
         )
 
@@ -135,8 +135,8 @@ def test_database_runtime_rejects_database_name_alias() -> None:
                         "container_name": "map-postgres-production",
                         "environment": {"POSTGRES_USER": "map_cluster_admin"},
                     },
-                    "pinvi-postgres": {
-                        "container_name": "pinvi-postgres-production",
+                    "kor-travel-shared-postgres": {
+                        "container_name": "shared-postgres-production",
                         "environment": {"POSTGRES_USER": "pin_cluster_admin"},
                     },
                 }
@@ -147,7 +147,7 @@ def test_database_runtime_rejects_database_name_alias() -> None:
                 "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
                 "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
                 "PINVI_POSTGRES_DB": "map_app",
-                "PINVI_POSTGRES_USER": "pin_owner",
+                "KOR_TRAVEL_SHARED_POSTGRES_USER": "pin_owner",
             },
         )
 
@@ -171,8 +171,8 @@ def test_database_runtime_rejects_invalid_frozen_admin_role(
                         "container_name": "map-postgres-production",
                         "environment": {"POSTGRES_USER": "map_cluster_admin"},
                     },
-                    "pinvi-postgres": {
-                        "container_name": "pinvi-postgres-production",
+                    "kor-travel-shared-postgres": {
+                        "container_name": "shared-postgres-production",
                         "environment": postgres_environment,
                     },
                 }
@@ -194,8 +194,8 @@ def test_database_runtime_rejects_invalid_frozen_port(port_value: str) -> None:
                         "container_name": "map-postgres-production",
                         "environment": {"POSTGRES_USER": "map_cluster_admin"},
                     },
-                    "pinvi-postgres": {
-                        "container_name": "pinvi-postgres-production",
+                    "kor-travel-shared-postgres": {
+                        "container_name": "shared-postgres-production",
                         "environment": {"POSTGRES_USER": "pin_cluster_admin"},
                     },
                 }
@@ -206,8 +206,8 @@ def test_database_runtime_rejects_invalid_frozen_port(port_value: str) -> None:
                 "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
                 "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
                 "PINVI_POSTGRES_DB": "pin_app",
-                "PINVI_POSTGRES_USER": "pin_owner",
-                "PINVI_DB_PORT": port_value,
+                "KOR_TRAVEL_SHARED_POSTGRES_USER": "pin_owner",
+                "KOR_TRAVEL_SHARED_DB_PORT": port_value,
             },
         )
 
@@ -255,7 +255,7 @@ def test_recreate_empty_databases_uses_only_canonical_frozen_roles(
     assert [
         arguments[arguments.index("--port") + 1]
         for arguments, _ in calls
-    ] == ["12700", "12700", "12700", "12700", "12800", "12800"]
+    ] == ["12700", "12700", "12700", "12700", "11000", "11000"]
     create_commands = {
         label: arguments
         for arguments, label in calls
@@ -952,3 +952,45 @@ def test_schema_revision_rejects_ambiguous_rows(
 
     with pytest.raises(DeploymentContractError, match="revision output"):
         read_database_schema_revision(_runtime("map_application"))
+
+
+@pytest.mark.parametrize(
+    "reserved",
+    ["postgres", "template0", "template1", "template_postgis"],
+)
+def test_destructive_reset_refuses_cluster_maintenance_databases(
+    monkeypatch: pytest.MonkeyPatch, reserved: str
+) -> None:
+    """공용 instance로 옮긴 뒤 남는 유일한 오조준 대상은 유지보수 DB다.
+
+    바로 앞의 owner preflight가 "현재 소유자가 이 role의 허용 소유자 집합에 있을
+    것"을 요구하므로 형제 프로젝트 운영 DB(geo·concierge·weather)는 각자의 app
+    role 소유라 이미 막힌다. 그런데 유지보수 DB는 bootstrap owner 소유라 그
+    preflight를 통과해 버리고, PinVi가 전용 instance에 있을 때와 달리 이제 그
+    실수는 네 프로젝트의 관리 경로를 한 번에 없앤다.
+    """
+
+    runtime = DatabaseRuntime(
+        role="pinvi",
+        container_name="shared-postgres-production",
+        port=11000,
+        database_name=reserved,
+        owner_name="pin_owner",
+        admin_name="cluster_admin",
+    )
+    commands: list[list[str]] = []
+
+    def _record(command, *, label):  # noqa: ANN001, ANN202
+        commands.append(list(command))
+        return b""
+
+    # owner preflight 자체는 읽기다 — 그것까지 막으면 울타리가 아니라 읽기 실패를
+    # 보게 된다. 소유자는 허용 집합과 일치시켜, 막는 것이 **이름**임을 고정한다.
+    monkeypatch.setattr(database_runtime, "_read_database_owner", lambda runtime: "pin_owner")
+    monkeypatch.setattr(database_runtime, "_run_checked", _record)
+
+    with pytest.raises(DeploymentContractError, match="is not destructible"):
+        recreate_empty_database(runtime)
+
+    assert not any("dropdb" in token for command in commands for token in command)
+    assert commands == []

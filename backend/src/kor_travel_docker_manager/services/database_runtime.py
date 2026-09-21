@@ -12,7 +12,7 @@ import re
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 
@@ -43,18 +43,43 @@ _ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str, str]] = {
         "kor_travel_map",
         "kor-travel-map-postgres",
     ),
+    # ADR-46: PinVi의 application DB는 공용 제어 평면 instance에 있다. **소유자는
+    # 여전히 그 instance의 bootstrap owner(`shared_admin`)다** — app role이 아니다.
+    # PinVi의 `bootstrap-pinvi-runtime-role.sh`가 세 곳에서 그것을 강제한다:
+    # runtime role은 DB owner와 달라야 하고(:330), DB에 대한 CREATE를 가지면 안 되며
+    # (:337 — owner는 그것을 암묵적으로 갖는다), fresh admission fence의 소유자가
+    # 곧 DB owner여야 한다(:291, fence는 bootstrap owner 소유로 고정). 그래서
+    # `kor-travel-shared-db-init-pinvi`가 `pinvi`만 bare `createdb`로 만들고
+    # (`pinvi_dagster`는 `-O PINVI_APP_DB_USER`로 만든다) — 그 비대칭은 의도다.
+    # 여기서 owner를 app role로 바꾸면 role topology 검증이 봉인된 한 단어
+    # `role_topology_noncanonical`로만 실패한다.
     "pinvi": (
         "PINVI_POSTGRES_DB",
         "pinvi",
-        "PINVI_POSTGRES_USER",
-        "pinvi",
-        "pinvi-postgres",
+        "KOR_TRAVEL_SHARED_POSTGRES_USER",
+        "shared_admin",
+        "kor-travel-shared-postgres",
     ),
 }
+
+#: **절대 파기할 수 없는 database 이름.**
+#:
+#: `recreate_empty_database`는 `runtime.database_name`을 그대로 `dropdb --force`의
+#: 인자로 넘긴다. 그 이름의 유일한 출처는 운영자 `.env`이고, 유일한 필터는
+#: `_DATABASE_IDENTIFIER` 정규식이었다. 바로 앞의 owner preflight가 "현재 소유자가
+#: 이 role의 허용 소유자 집합에 있을 것"을 요구하므로 형제 프로젝트의 운영 DB는
+#: 이미 막힌다(geo·concierge·weather DB는 각자의 app role 소유다). 그래서 공용
+#: instance에서 소유자가 겹치는 것은 **cluster 유지보수 DB뿐**이다 — 그것들은
+#: bootstrap owner 소유라 preflight를 통과해 버린다. PinVi가 전용 instance에 있을
+#: 때는 그 사고의 상한이 자기 cluster였지만, 이제 같은 실수가 네 프로젝트의 관리
+#: 경로를 한 번에 없앤다. 이름을 프로젝트별 allowlist로 묶지 않는 이유는 그것이
+#: 운영 DB 이름을 테스트까지 전파시켜 합성 이름을 못 쓰게 만들기 때문이다 —
+#: 막아야 할 것은 예약어 쪽이다.
+_UNDROPPABLE_DATABASES: Final = frozenset({"postgres", "template0", "template1"})
 _ROLE_PORT_CONFIG: dict[DatabaseRole, tuple[str, int]] = {
     "map_application": ("KOR_TRAVEL_MAP_POSTGRES_PORT", 12700),
     "map_dagster": ("KOR_TRAVEL_MAP_POSTGRES_PORT", 12700),
-    "pinvi": ("PINVI_DB_PORT", 12800),
+    "pinvi": ("KOR_TRAVEL_SHARED_DB_PORT", 11000),
 }
 _SCHEMA_REVISION_LOCATION: dict[DatabaseRole, tuple[str, str]] = {
     "map_application": ("public", "alembic_version"),
@@ -348,6 +373,15 @@ def _recreate_empty_database_after_owner_preflight(
     """사전 owner 검증이 끝난 하나의 DB를 파기·재생성한다."""
 
     _validate_runtime(runtime)
+    # **파괴 직전의 이름 울타리.** `_validate_runtime`이 아니라 여기 둔다 — 읽기
+    # 경로(schema revision·identity)는 이름에 무관해야 하고, 위험한 것은 이 함수
+    # 하나다. 세 진입점(recreate_empty_database·recreate_empty_databases·
+    # reset_databases_for_application_300)이 전부 여기로 모인다.
+    if (
+        runtime.database_name in _UNDROPPABLE_DATABASES
+        or runtime.database_name.startswith("template")
+    ):
+        raise DeploymentContractError("pinned runtime database name is not destructible")
     if existing_owner is not None:
         if existing_owner not in _permitted_existing_owners(runtime):
             raise DeploymentContractError(
