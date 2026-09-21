@@ -14,7 +14,7 @@ from enum import StrEnum
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final, Literal, NoReturn, cast
+from typing import Any, Final, Literal, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import yaml
@@ -24,11 +24,8 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _MAP_APPLICATION_FRESH_300_SERVICE,
     _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
     _MAP_RUNTIME_SERVICES,
-    _PINVI_ACTIVE_DB_ROLE_SERVICE,
     _PINVI_ADMIN_BOOTSTRAP_SERVICE,
     _PINVI_API_SERVICE,
-    _PINVI_DB_RUNTIME_ROLE_SERVICE,
-    _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE,
     C6cBuildProvenance,
     C6cCancelProbeFixture,
     C6cDeploymentConfig,
@@ -126,7 +123,6 @@ from kor_travel_docker_manager.services.map_application_300_candidate import (
     load_map_application_300_candidate,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS,
     REBUILD_PHASES,
     RUNTIME_SERVICES,
     MapApplication300ApplicationDatabaseIdentity,
@@ -139,8 +135,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
     PinnedRuntimeStatePaths,
-    PinviRoleCatalogResetDiagnostic,
-    PinviRoleLifecycleBlock,
     RebuildPhase,
     RuntimeService,
     ensure_pinned_runtime_state_directory,
@@ -174,7 +168,6 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     PinnedRuntimeRelease,
     current_pinned_runtime_release,
-    is_blocked_pinset_retry,
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     PinnedRuntimeSourceMaterialization,
@@ -183,12 +176,6 @@ from kor_travel_docker_manager.services.pinned_runtime_sources import (
 from kor_travel_docker_manager.services.pinvi_bootstrap_credential import (
     pinvi_bootstrap_credential_file,
     reconcile_orphaned_pinvi_bootstrap_credentials,
-)
-from kor_travel_docker_manager.services.pinvi_database_role_credentials import (
-    ensure_pinned_runtime_pinvi_role_credentials,
-    pinvi_role_credentials_are_all_undeclared,
-    rebind_source_environment_sha256,
-    trusted_pinned_runtime_project_root,
 )
 from kor_travel_docker_manager.services.registry import (
     MANAGED_CONTAINERS,
@@ -207,6 +194,7 @@ from kor_travel_docker_manager.services.registry import (
 )
 from kor_travel_docker_manager.services.trusted_install import (
     require_pinned_runtime_rebuild_root,
+    trusted_pinned_runtime_project_root,
 )
 from kor_travel_docker_manager.services.yaml_strict import (
     load_yaml_rejecting_duplicate_keys,
@@ -214,11 +202,6 @@ from kor_travel_docker_manager.services.yaml_strict import (
 
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "pinvi-db-init",
-    # 전용/공용 둘 다 센다. 탐지 목록은 포함적이어야 한다 — ADR-46 전환 중에는
-    # 양쪽 one-shot이 모두 compose에 선언돼 있고, 활성 쪽만 세면 다른 쪽이
-    # 돌고 있을 때 파괴 단계가 그것을 못 본다.
-    _PINVI_DB_RUNTIME_ROLE_SERVICE,
-    _PINVI_SHARED_DB_RUNTIME_ROLE_SERVICE,
     "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
     _MAP_APPLICATION_FRESH_300_SERVICE,
@@ -687,44 +670,6 @@ _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE = {
     "schema_version_unavailable": "schema_check",
     "static_head_unavailable": "migration",
 }
-_PINVI_DB_RUNTIME_ROLE_ERROR_CODE_BY_LINE = {
-    "invalid PostgreSQL role name": "role_input_invalid",
-    "invalid POSTGRES_DB": "role_input_invalid",
-    "PINVI_M05_LEGACY_REBASELINE must be 0 or 1": "role_input_invalid",
-    "PINVI_MIGRATOR_DISABLE_LOGIN must be 0 or 1": "role_input_invalid",
-    (
-        "PINVI_DB_HOST and PINVI_DB_PORT must name an approved PostgreSQL endpoint"
-    ): "role_input_invalid",
-    (
-        "runtime, schema owner, migration owner, migrator, and bootstrap roles must differ"
-    ): "role_input_invalid",
-    "Postgres TCP endpoint did not become ready for DB role bootstrap": "role_endpoint_not_ready",
-    (
-        "existing app objects are not owned by PINVI_APP_SCHEMA_OWNER; "
-        "use the approved root-only legacy rebaseline profile"
-    ): "role_existing_owner_noncanonical",
-    "runtime/migrator/migration-owner role topology is not canonical": (
-        "role_topology_noncanonical"
-    ),
-}
-_PINVI_DB_RUNTIME_ROLE_ERROR_CODES = frozenset(
-    _PINVI_DB_RUNTIME_ROLE_ERROR_CODE_BY_LINE.values()
-)
-
-
-class _PinviRoleLifecycleError(DeploymentContractError):
-    """lifecycle의 공개 오류와 재실행 차단 receipt를 함께 전달한다."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        role_topology_block: PinviRoleLifecycleBlock | None,
-    ) -> None:
-        super().__init__(message)
-        self.role_topology_block = role_topology_block
-
-
 @dataclass(frozen=True)
 class _ComposeFailureDiagnostic:
     """pinned runtime rebuild 실패 진단을 사람이 읽는 문구와 기계 판독 코드로 나눈다.
@@ -766,57 +711,6 @@ def _json_object_without_duplicate_keys(
             raise ValueError("duplicate JSON object key")
         payload[key] = value
     return payload
-
-
-def _parse_pinvi_role_catalog_reset_result(
-    raw: bytes, *, transaction_id: str, pinset_sha256: str
-) -> str:
-    try:
-        payload = json.loads(raw, object_pairs_hook=_json_object_without_duplicate_keys)
-    except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
-        return "unclassified"
-    if not isinstance(payload, Mapping) or set(payload) != {
-        "schema", "status", "class", "transaction", "pinset"
-    }:
-        return "unclassified"
-    if (
-        payload.get("schema") != "pinvi.role-catalog-reset-diagnostic.v1"
-        or payload.get("transaction") != transaction_id
-        or payload.get("pinset") != pinset_sha256
-    ):
-        return "unclassified"
-    if payload.get("status") == "completed" and payload.get("class") == "completed":
-        return "completed"
-    if (
-        payload.get("status") == "failed"
-        and payload.get("class") in PINVI_ROLE_CATALOG_RESET_DIAGNOSTICS
-        and payload.get("class") not in {"permit_invalid", "unclassified"}
-    ):
-        return cast(str, payload["class"])
-    return "unclassified"
-
-
-def _read_pinvi_role_catalog_reset_result(
-    path: Path,
-    *,
-    expected_identity: tuple[int, int],
-    transaction_id: str,
-    pinset_sha256: str,
-) -> str:
-    """Read a reset receipt only when the Manager-created inode is preserved."""
-
-    raw = read_owner_only_artifact(path)
-    try:
-        observed = path.lstat()
-    except OSError as exc:
-        raise MapApplication300ContractError("reset receipt is unavailable") from exc
-    if (observed.st_dev, observed.st_ino) != expected_identity:
-        return "unclassified"
-    return _parse_pinvi_role_catalog_reset_result(
-        raw,
-        transaction_id=transaction_id,
-        pinset_sha256=pinset_sha256,
-    )
 
 
 def _compose_prefixed_typed_error_candidate(line: str, *, target: str) -> str | None:
@@ -1624,27 +1518,13 @@ def _pinned_runtime_rebuild_environment_lock(
                 initial_environment_snapshot.effective,
                 require_nonempty=True,
             )
-        # 기존 journal의 lifecycle admission은 immutable terminal evidence를
-        # 해석하는 경계다. 새 candidate preparation failure로 재분류하지 않는다.
-        rebind_source_sha256 = prewrite_admission(initial_environment_snapshot)
+        # M05 폐기 전에는 여기서 Manager가 PinVi role 자격증명을 생성해 **루트
+        # `.env`에 써 넣고** 그 위에서 두 번째 snapshot을 떴다. geo 패턴에서는
+        # 자격증명이 하나뿐이고 그것은 운영자가 `.env`에 둔 `PINVI_APP_DB_PASSWORD`
+        # 이므로, rebuild가 `.env`를 변형할 이유가 사라졌다 — snapshot도 하나다.
+        prewrite_admission(initial_environment_snapshot)
         with _pinned_runtime_prejournal_step("environment_admission"):
-            role_credentials = ensure_pinned_runtime_pinvi_role_credentials(
-                Path(initial_environment_snapshot.env_path),
-                expected_environment_bytes=initial_environment_snapshot.env_file_bytes,
-                rebind_source_sha256=rebind_source_sha256,
-            )
-            current_environment_snapshot = (
-                _capture_pinned_runtime_rebuild_environment_snapshot(
-                    environment_override=role_credentials
-                )
-            )
-            assert_pinned_runtime_rebuild_allowed(
-                environment=current_environment_snapshot.effective
-            )
-            validate_c6c_operation_tokens(
-                current_environment_snapshot.effective,
-                require_nonempty=True,
-            )
+            current_environment_snapshot = initial_environment_snapshot
             lock_snapshot = _c6c_deployment_lock_snapshot_from_environment(
                 current_environment_snapshot
             )
@@ -5178,15 +5058,6 @@ class ComposeService:
                 if prefixed is not None:
                     candidates += (prefixed,)
                 for candidate in candidates:
-                    if target == _PINVI_ACTIVE_DB_ROLE_SERVICE:
-                        code = _PINVI_DB_RUNTIME_ROLE_ERROR_CODE_BY_LINE.get(
-                            candidate.strip()
-                        )
-                        if code is not None:
-                            return _ComposeFailureDiagnostic(
-                                message_suffix=f"; pinvi_role:{code}",
-                                pinvi_role_code=code,
-                            )
                     try:
                         payload = json.loads(
                             candidate,
@@ -5217,61 +5088,13 @@ class ComposeService:
                             and _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE.get(code)
                             == phase
                         ):
-                            # 두 코드 공간(role/admin-bootstrap)이 같은 다운스트림
-                            # ``_pinvi_lifecycle_diagnostic`` 판정으로 합류하므로 같은
-                            # 속성에 싣는다. 두 enum이 겹치지 않아 충돌하지 않는다.
+                            # M05 폐기로 role 코드 공간이 사라져 이제 이 속성을
+                            # 쓰는 것은 admin-bootstrap 하나뿐이다.
                             return _ComposeFailureDiagnostic(
                                 message_suffix=f"; pinvi:{code}",
                                 pinvi_role_code=code,
                             )
-        if target == _PINVI_ACTIVE_DB_ROLE_SERVICE:
-            return _ComposeFailureDiagnostic(
-                message_suffix="; pinvi_role:unclassified",
-                pinvi_role_code="unclassified",
-            )
         return _ComposeFailureDiagnostic(message_suffix="")
-
-    @staticmethod
-    def _pinvi_lifecycle_diagnostic(error: BaseException) -> str:
-        """이미 allowlist한 PinVi one-shot 코드만 lifecycle 오류에 보존한다.
-
-        ``PinnedRuntimeComposeFailure``가 코드를 속성으로 실어 오면 그것을 그대로
-        쓴다 — 메시지 문구·괄호 위치가 바뀌어도 판정이 깨지지 않는다. 그 타입이
-        아니거나 속성이 비어 있으면(다른 경로에서 온 예외, 과거 raw 예외 등) 기존
-        메시지 재파싱으로 폴백한다.
-        """
-
-        if (
-            isinstance(error, PinnedRuntimeComposeFailure)
-            and error.pinvi_role_diagnostic is not None
-        ):
-            return error.pinvi_role_diagnostic
-        message = str(error)
-        for code in _PINVI_DB_RUNTIME_ROLE_ERROR_CODES | {"unclassified"}:
-            if f"; pinvi_role:{code})" in message:
-                return code
-        for code in _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE:
-            if f"; pinvi:{code})" in message:
-                return code
-        return "unclassified"
-
-    @staticmethod
-    def _pinvi_role_topology_block(
-        *,
-        stage: str,
-        diagnostic: str,
-    ) -> PinviRoleLifecycleBlock | None:
-        """정확히 확인된 topology failure만 same-pinset terminal receipt로 만든다."""
-
-        if (
-            stage not in {"pinvi_role_open", "pinvi_role_seal"}
-            or diagnostic != "role_topology_noncanonical"
-        ):
-            return None
-        return PinviRoleLifecycleBlock(
-            stage=cast(Literal["pinvi_role_open", "pinvi_role_seal"], stage),
-            code="role_topology_noncanonical",
-        )
 
     def _retire_pinned_runtime_oneshot_writers(
         self,
@@ -5343,158 +5166,7 @@ class ComposeService:
             transaction=transaction,
         )
 
-    def _verify_pinned_runtime_pinvi_role_topology(
-        self,
-        *,
-        transaction: ComposeTransactionSnapshot,
-    ) -> None:
-        """frozen candidate transaction에서 sealed topology JSON만 엄격히 읽는다."""
-
-        result = self._run_pinned_runtime_rebuild_compose(
-            [
-                "--profile",
-                "bootstrap",
-                "run",
-                "--rm",
-                "--no-deps",
-                "-e",
-                "PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1",
-                "-e",
-                "PINVI_MIGRATOR_DISABLE_LOGIN=1",
-                "-e",
-                "PINVI_M05_LEGACY_REBASELINE=0",
-                _PINVI_ACTIVE_DB_ROLE_SERVICE,
-            ],
-            transaction=transaction,
-        )
-        output = result.get("stdout")
-        if not isinstance(output, str):
-            raise DeploymentContractError(
-                "PinVi sealed role topology verifier is unavailable"
-            )
-        try:
-            payload = json.loads(
-                output,
-                object_pairs_hook=_json_object_without_duplicate_keys,
-            )
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise DeploymentContractError(
-                "PinVi sealed role topology verifier is unavailable"
-            ) from exc
-        if not isinstance(payload, Mapping) or set(payload) != {
-            "schema",
-            "status",
-            "mode",
-            "reasons",
-        }:
-            raise DeploymentContractError(
-                "PinVi sealed role topology verifier is unavailable"
-            )
-        status = payload.get("status")
-        reasons = payload.get("reasons")
-        if (
-            payload.get("schema") != _PINVI_ROLE_TOPOLOGY_DIAGNOSTIC_SCHEMA
-            or payload.get("mode") != "sealed"
-            or not isinstance(status, str)
-            or not isinstance(reasons, list)
-            or not all(isinstance(reason, str) for reason in reasons)
-        ):
-            raise DeploymentContractError(
-                "PinVi sealed role topology verifier is unavailable"
-            )
-        if status == "canonical" and reasons == []:
-            return
-        if (
-            status == "noncanonical"
-            and reasons
-            and all(
-                reason in _PINVI_ROLE_TOPOLOGY_NONCANONICAL_REASONS
-                for reason in reasons
-            )
-            and len(set(reasons)) == len(reasons)
-            and tuple(reasons)
-            == tuple(
-                sorted(
-                    reasons,
-                    key=_PINVI_ROLE_TOPOLOGY_NONCANONICAL_REASONS.index,
-                )
-            )
-        ):
-            raise DeploymentContractError("PinVi sealed role topology is noncanonical")
-        if (
-            (status == "invalid" and reasons == ["input_invalid"])
-            or (
-                status == "unavailable"
-                and reasons in (
-                    ["endpoint_unavailable"],
-                    ["verification_unavailable"],
-                )
-            )
-        ):
-            raise DeploymentContractError(
-                "PinVi sealed role topology verifier is unavailable"
-            )
-        raise DeploymentContractError("PinVi sealed role topology verifier is unavailable")
-
-    def _verify_pinned_runtime_pinvi_role_topology_after_bootstrap(
-        self,
-        *,
-        transaction: ComposeTransactionSnapshot,
-    ) -> None:
-        """fresh PinVi target DB의 sealed 후조건을 terminal receipt로 바꾼다.
-
-        기존 DB는 rebuild가 폐기할 입력일 뿐 sealed runtime target이 아니다. 따라서
-        role open·admin/migration bootstrap·seal 뒤의 fresh DB에만 full verifier를
-        적용한다. verifier 원문과 reason enum은 receipt·CLI에 보존하지 않는다.
-        """
-
-        try:
-            self._verify_pinned_runtime_pinvi_role_topology(
-                transaction=transaction
-            )
-        except DeploymentContractError as exc:
-            code: Literal[
-                "role_topology_noncanonical", "role_topology_unavailable"
-            ] = (
-                "role_topology_noncanonical"
-                if str(exc) == "PinVi sealed role topology is noncanonical"
-                else "role_topology_unavailable"
-            )
-            raise _PinviRoleLifecycleError(
-                "PinVi sealed role topology verification failed",
-                role_topology_block=PinviRoleLifecycleBlock(
-                    stage="pinvi_role_verify",
-                    code=code,
-                ),
-            ) from None
-
-    def _terminate_pinned_runtime_after_pinvi_role_topology_failure(
-        self,
-        *,
-        journal: PinnedRuntimeRebuildJournal,
-        journal_path: Path,
-        transaction: ComposeTransactionSnapshot,
-        error: _PinviRoleLifecycleError,
-    ) -> NoReturn:
-        """sealed target-state failure를 durable no-retry receipt 뒤 runtime stop으로 끝낸다."""
-
-        self._record_pinvi_role_lifecycle_block(
-            journal,
-            journal_path=journal_path,
-            error=error,
-        )
-        try:
-            self._run_pinned_runtime_rebuild_compose(
-                ["stop", *RUNTIME_SERVICES],
-                transaction=transaction,
-            )
-        except DeploymentContractError as stop_error:
-            raise DeploymentContractError(
-                "PinVi runtime could not be stopped after sealed topology failure"
-            ) from stop_error
-        raise error
-
-    def _run_pinvi_schema_bootstrap_with_role_lifecycle(
+    def _run_pinvi_admin_bootstrap(
         self,
         *,
         transaction: ComposeTransactionSnapshot,
@@ -5502,193 +5174,23 @@ class ComposeService:
         values: Mapping[str, str],
         transaction_id: str,
     ) -> None:
-        """짧은 migrator login을 열어 PinVi bootstrap 뒤 반드시 다시 봉인한다."""
+        """PinVi admin bootstrap을 credential file 하나로 한 번 실행한다.
 
-        role_command_prefix = [
-            "--profile",
-            "bootstrap",
-            "run",
-            "--rm",
-            "--no-deps",
-            "-e",
-        ]
-        # ADR-46: pinvi-admin-bootstrap의 PINVI_DATABASE_URL은 공용 instance로
-        # 넘어갔는데(KOR_TRAVEL_SHARED_DB_PORT) 이 lifecycle은 여전히 **전용**
-        # instance의 role one-shot에서 migrator login을 열고 봉인했다. 창은
-        # :12800에 열리고 migration은 :11000으로 인증하니 그쪽 migrator는 계속
-        # NOLOGIN이었다 — 실측 원문은
-        # `role "pinvi_migrator_runtime" is not permitted to log in`이고,
-        # 운영자에게는 봉인된 `migration_failed` 한 단어로만 보였다.
-        role_service = _PINVI_ACTIVE_DB_ROLE_SERVICE
-        open_role = [
-            *role_command_prefix,
-            "PINVI_MIGRATOR_DISABLE_LOGIN=0",
-            role_service,
-        ]
-        seal_role = [
-            *role_command_prefix,
-            "PINVI_MIGRATOR_DISABLE_LOGIN=1",
-            role_service,
-        ]
-        primary_stage = "pinvi_role_open"
-        primary_lifecycle_error: str | None = None
-        role_topology_block: PinviRoleLifecycleBlock | None = None
-        try:
-            self._run_pinned_runtime_rebuild_compose(open_role, transaction=transaction)
-            primary_stage = "pinvi_bootstrap_credential"
-            credential_context = pinvi_bootstrap_credential_file(
-                state_paths=state_paths,
-                values=values,
-                transaction_id=transaction_id,
-                email=values["KTDM_C6C_PINVI_ADMIN_EMAIL"],
-                password=values["KTDM_C6C_PINVI_ADMIN_PASSWORD"],
-            )
-            admin_error: BaseException | None = None
-            with credential_context as credential:
-                try:
-                    primary_stage = "pinvi_admin_bootstrap"
-                    self._run_pinned_runtime_rebuild_compose(
-                        [
-                            "--profile",
-                            "bootstrap",
-                            "run",
-                            "--rm",
-                            "--no-deps",
-                            "-v",
-                            f"{credential.path}:/run/pinvi/bootstrap-admin.json:ro",
-                            "-e",
-                            "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE=/run/pinvi/bootstrap-admin.json",
-                            _PINVI_ADMIN_BOOTSTRAP_SERVICE,
-                        ],
-                        transaction=transaction,
-                    )
-                except BaseException as exc:
-                    admin_error = exc
-                finally:
-                    primary_stage = "pinvi_bootstrap_credential_cleanup"
-            if admin_error is not None:
-                primary_stage = "pinvi_admin_bootstrap"
-                raise admin_error
-        except BaseException as primary_error:
-            primary_diagnostic = self._pinvi_lifecycle_diagnostic(primary_error)
-            try:
-                self._run_pinned_runtime_rebuild_compose(seal_role, transaction=transaction)
-            except BaseException as seal_error:
-                if not isinstance(primary_error, Exception) or not isinstance(
-                    seal_error, Exception
-                ):
-                    raise DeploymentContractError(
-                        "PinVi migrator login could not be sealed after bootstrap failure"
-                    ) from seal_error
-                seal_diagnostic = self._pinvi_lifecycle_diagnostic(seal_error)
-                role_topology_block = self._pinvi_role_topology_block(
-                    stage=primary_stage,
-                    diagnostic=primary_diagnostic,
-                ) or self._pinvi_role_topology_block(
-                    stage="pinvi_role_seal",
-                    diagnostic=seal_diagnostic,
-                )
-                primary_lifecycle_error = (
-                    "PinVi bootstrap failed at "
-                    f"{primary_stage} ({primary_diagnostic}); migrator seal also failed "
-                    f"at pinvi_role_seal ({seal_diagnostic})"
-                )
-            else:
-                if isinstance(primary_error, Exception):
-                    role_topology_block = self._pinvi_role_topology_block(
-                        stage=primary_stage,
-                        diagnostic=primary_diagnostic,
-                    )
-                    primary_lifecycle_error = (
-                        f"PinVi bootstrap failed at {primary_stage} ({primary_diagnostic})"
-                    )
-                else:
-                    raise
-        if primary_lifecycle_error is not None:
-            raise _PinviRoleLifecycleError(
-                primary_lifecycle_error,
-                role_topology_block=role_topology_block,
-            ) from None
-        final_seal_error: str | None = None
-        try:
-            self._run_pinned_runtime_rebuild_compose(seal_role, transaction=transaction)
-        except BaseException as seal_error:
-            if not isinstance(seal_error, Exception):
-                raise DeploymentContractError(
-                    "PinVi migrator login could not be sealed after bootstrap"
-                ) from seal_error
-            seal_diagnostic = self._pinvi_lifecycle_diagnostic(seal_error)
-            role_topology_block = self._pinvi_role_topology_block(
-                stage="pinvi_role_seal",
-                diagnostic=seal_diagnostic,
-            )
-            final_seal_error = (
-                "PinVi migrator seal failed at "
-                f"pinvi_role_seal ({seal_diagnostic})"
-            )
-        if final_seal_error is not None:
-            raise _PinviRoleLifecycleError(
-                final_seal_error,
-                role_topology_block=role_topology_block,
-            ) from None
+        종전에는 이 자리가 migrator login을 열고(`PINVI_MIGRATOR_DISABLE_LOGIN=0`)
+        bootstrap 뒤 반드시 다시 봉인하는 140줄짜리 choreography였다. PinVi의 다중
+        role 모델(M05)을 폐기하고 geo 패턴(scoped app role 하나가 자기 database를
+        소유)으로 접으면서 열고 닫을 창 자체가 없어졌다 — role이 자기 database의
+        owner라 DDL 권한을 상시 갖는다. 실패 분류도 함께 사라진다: open/seal 두
+        지점이 없으니 `_PinviRoleLifecycleError`로 감쌀 단계가 남지 않는다.
+        """
 
-    def _run_pinvi_fresh_role_catalog_reset(
-        self,
-        *,
-        transaction: ComposeTransactionSnapshot,
-        state_paths: PinnedRuntimeStatePaths,
-        journal: PinnedRuntimeRebuildJournal,
-        runtime: DatabaseRuntime,
-    ) -> None:
-        """Manager가 방금 만든 PinVi DB에만 root-owned reset permit을 발행한다."""
-
-        identity = journal.pinvi_database_identity
-        if identity is None:
-            raise _PinviRoleLifecycleError(
-                "PinVi fresh role catalog reset failed",
-                role_topology_block=PinviRoleLifecycleBlock(
-                    stage="pinvi_role_catalog_reset",
-                    code="role_catalog_reset_failed",
-                ),
-            ) from None
-        live_identity = read_pinned_database_identity(runtime)
-        if not isinstance(live_identity, PinnedDatabaseIdentity):
-            raise _PinviRoleLifecycleError(
-                "PinVi fresh role catalog reset failed",
-                role_topology_block=PinviRoleLifecycleBlock(
-                    stage="pinvi_role_catalog_reset",
-                    code="role_catalog_reset_failed",
-                ),
-            ) from None
-        observed_identity = _pinned_runtime_journal_database_identity(live_identity)
-        if observed_identity != identity:
-            raise _PinviRoleLifecycleError(
-                "PinVi fresh role catalog reset failed",
-                role_topology_block=PinviRoleLifecycleBlock(
-                    stage="pinvi_role_catalog_reset",
-                    code="role_catalog_reset_failed",
-                ),
-            ) from None
-        permit_path = (
-            state_paths.state_root
-            / f"pinvi-role-catalog-reset-{journal.candidate.pinset_sha256}.permit"
-        )
-        result_path = (
-            state_paths.state_root
-            / f"pinvi-role-catalog-reset-{journal.candidate.pinset_sha256}.result"
-        )
-        permit = (
-            "pinvi-role-catalog-reset-v2|"
-            f"{journal.transaction_id}|{journal.candidate.pinset_sha256}|"
-            f"{identity.system_identifier}|{identity.oid}|{identity.name}|{identity.owner}|"
-            "revoke_external_memberships\n"
-        ).encode()
-        result_identity: tuple[int, int] | None = None
-        try:
-            write_owner_only_artifact(permit_path, permit)
-            write_owner_only_artifact(result_path, b"{}")
-            result_metadata = result_path.lstat()
-            result_identity = (result_metadata.st_dev, result_metadata.st_ino)
+        with pinvi_bootstrap_credential_file(
+            state_paths=state_paths,
+            values=values,
+            transaction_id=transaction_id,
+            email=values["KTDM_C6C_PINVI_ADMIN_EMAIL"],
+            password=values["KTDM_C6C_PINVI_ADMIN_PASSWORD"],
+        ) as credential:
             self._run_pinned_runtime_rebuild_compose(
                 [
                     "--profile",
@@ -5697,49 +5199,13 @@ class ComposeService:
                     "--rm",
                     "--no-deps",
                     "-v",
-                    f"{permit_path}:/run/pinvi/role-catalog-reset.permit:ro",
-                    "-v",
-                    f"{result_path}:/run/pinvi/role-catalog-reset.result",
+                    f"{credential.path}:/run/pinvi/bootstrap-admin.json:ro",
                     "-e",
-                    "PINVI_ROLE_CATALOG_RESET_ONLY=1",
-                    "-e",
-                    "PINVI_ROLE_CATALOG_RESET_PERMIT_FILE=/run/pinvi/role-catalog-reset.permit",
-                    "-e",
-                    "PINVI_ROLE_CATALOG_RESET_RESULT_FILE=/run/pinvi/role-catalog-reset.result",
-                    _PINVI_ACTIVE_DB_ROLE_SERVICE,
+                    "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE=/run/pinvi/bootstrap-admin.json",
+                    _PINVI_ADMIN_BOOTSTRAP_SERVICE,
                 ],
                 transaction=transaction,
-                capture_output=False,
-                allow_typed_error_diagnostic=False,
             )
-            if _read_pinvi_role_catalog_reset_result(
-                result_path,
-                expected_identity=result_identity,
-                transaction_id=journal.transaction_id,
-                pinset_sha256=journal.candidate.pinset_sha256,
-            ) != "completed":
-                raise DeploymentContractError("PinVi fresh role catalog reset result is invalid")
-        except (DeploymentContractError, MapApplication300ContractError):
-            if result_identity is None:
-                diagnostic = "unclassified"
-            else:
-                try:
-                    diagnostic = _read_pinvi_role_catalog_reset_result(
-                        result_path,
-                        expected_identity=result_identity,
-                        transaction_id=journal.transaction_id,
-                        pinset_sha256=journal.candidate.pinset_sha256,
-                    )
-                except MapApplication300ContractError:
-                    diagnostic = "unclassified"
-            raise _PinviRoleLifecycleError(
-                "PinVi fresh role catalog reset failed",
-                role_topology_block=PinviRoleLifecycleBlock(
-                    stage="pinvi_role_catalog_reset",
-                    code="role_catalog_reset_failed",
-                    diagnostic=cast(PinviRoleCatalogResetDiagnostic, diagnostic),
-                ),
-            ) from None
 
     @staticmethod
     def _inspect_image_reference_id(image_reference: str, *, label: str) -> str:
@@ -6131,74 +5597,6 @@ class ComposeService:
                 "pinvi-dagster": pinvi_context,
             },
         )
-
-    @staticmethod
-    def _assert_pinvi_role_credential_rebind_admission(
-        journal: PinnedRuntimeRebuildJournal,
-        *,
-        environment_bytes: bytes,
-        values: Mapping[str, str],
-    ) -> str | None:
-        """root `.env` write 전에 current v8 resume과의 유일한 재결박을 판정한다."""
-
-        current_environment_sha256 = hashlib.sha256(environment_bytes).hexdigest()
-        rebind_source_sha256 = rebind_source_environment_sha256(values)
-        if journal.environment_sha256 == current_environment_sha256:
-            if (
-                pinvi_role_credentials_are_all_undeclared(values)
-                and (
-                    journal.phase != "map_runtime_ready"
-                    or journal.pinvi_role_credential_environment_rebind is not None
-                )
-            ):
-                raise DeploymentContractError(
-                    "PinVi role credentials cannot rebind this pinned runtime journal"
-                )
-            if pinvi_role_credentials_are_all_undeclared(values):
-                return journal.environment_sha256
-            return None
-        if (
-            rebind_source_sha256 != journal.environment_sha256
-            or journal.phase != "map_runtime_ready"
-            or journal.pinvi_role_credential_environment_rebind is not None
-        ):
-            raise DeploymentContractError(
-                "PinVi role credentials differ from the pinned runtime journal"
-            )
-        return None
-
-    @staticmethod
-    def _assert_pinvi_role_lifecycle_block_admission(
-        journal: PinnedRuntimeRebuildJournal,
-    ) -> None:
-        """terminal role topology receipt가 있으면 어떤 same-pinset write도 시작하지 않는다."""
-
-        if journal.pinvi_role_lifecycle_block is not None or (
-            is_blocked_pinset_retry(
-                pinset_sha256=journal.candidate.pinset_sha256,
-                map_source_revision=journal.candidate.map_source_revision,
-                pinvi_source_revision=journal.candidate.pinvi_source_revision,
-                phase=journal.phase,
-            )
-        ):
-            raise DeploymentContractError(
-                "pinned runtime rebuild is blocked by durable PinVi role topology failure"
-            )
-
-    @staticmethod
-    def _record_pinvi_role_lifecycle_block(
-        journal: PinnedRuntimeRebuildJournal,
-        *,
-        journal_path: Path,
-        error: _PinviRoleLifecycleError,
-    ) -> PinnedRuntimeRebuildJournal:
-        """확정 topology failure를 같은 v8 journal에 먼저 fsync한다."""
-
-        if error.role_topology_block is None:
-            return journal
-        updated = journal.with_pinvi_role_lifecycle_block(error.role_topology_block)
-        write_pinned_runtime_rebuild_journal(journal_path, updated)
-        return updated
 
     @staticmethod
     def _assert_pinned_runtime_journal_matches_candidate_input(
@@ -6727,12 +6125,12 @@ class ComposeService:
             except FileNotFoundError:
                 return None
             resume_journal = read_pinned_runtime_rebuild_journal(state_paths.journal)
-            self._assert_pinvi_role_lifecycle_block_admission(resume_journal)
-            return self._assert_pinvi_role_credential_rebind_admission(
-                resume_journal,
-                environment_bytes=environment_snapshot.env_file_bytes,
-                values=environment_snapshot.effective,
-            )
+            # M05 폐기 전에는 여기서 두 admission이 더 돌았다: durable role topology
+            # block 거절과 role credential rebind 판정. 전자는 reset 경로의 버그가
+            # 그대로 후보를 영구 차단하는 통로였고(오늘 실측), 후자는 `.env`에 role
+            # 자격증명을 심고 그 해시로 재개를 게이팅했다 — 둘 다 다중 role 모델과
+            # 함께 사라진다. 이제 rebind할 자격증명이 없으므로 항상 None이다.
+            return None
 
         with _pinned_runtime_rebuild_environment_lock(
             prewrite_admission=prewrite_admission
@@ -6963,15 +6361,13 @@ class ComposeService:
                     environment_snapshot.env_file_bytes
                 ).hexdigest()
                 if journal.environment_sha256 != current_environment_sha256:
-                    rebind_source_sha256 = rebind_source_environment_sha256(
-                        environment_snapshot.effective
-                    )
-                    if rebind_source_sha256 is None:
-                        raise DeploymentContractError(
-                            "PinVi role credential rebind source is missing"
-                        )
+                    # 종전에는 여기서 `.env`에 심긴 rebind 스탬프를 요구했고, 그것이
+                    # 없으면 후보가 영구히 재개 불가였다 — Manager가 role 자격증명을
+                    # `.env`에 쓰던 시절의 provenance 요구다. 이제 rebuild가 `.env`를
+                    # 건드리지 않으므로 증명할 provenance가 없다. 전이 자체는 계속
+                    # journal에 남긴다(감사 흔적).
                     journal = journal.with_pinvi_role_credential_environment_rebind(
-                        previous_environment_sha256=rebind_source_sha256,
+                        previous_environment_sha256=journal.environment_sha256,
                         compose_sha256=hashlib.sha256(
                             runtime_transaction.compose_source_bytes
                         ).hexdigest(),
@@ -7890,64 +7286,22 @@ class ComposeService:
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                     journal = updated
                 if journal.phase == "map_runtime_ready":
-                    try:
-                        if journal.pinvi_role_catalog_reset is None:
-                            raise _PinviRoleLifecycleError(
-                                "PinVi fresh role catalog reset receipt is missing",
-                                role_topology_block=PinviRoleLifecycleBlock(
-                                    stage="pinvi_role_catalog_reset",
-                                    code="role_catalog_reset_failed",
-                                ),
-                            )
-                        if journal.pinvi_role_catalog_reset.state == "intent":
-                            if not reset_required:
-                                raise _PinviRoleLifecycleError(
-                                    "PinVi fresh role catalog reset outcome is ambiguous",
-                                    role_topology_block=PinviRoleLifecycleBlock(
-                                        stage="pinvi_role_catalog_reset",
-                                        code="role_catalog_reset_failed",
-                                    ),
-                                )
-                            self._run_pinvi_fresh_role_catalog_reset(
-                                transaction=runtime_transaction,
-                                state_paths=state_paths,
-                                journal=journal,
-                                runtime=runtimes[2],
-                            )
-                            updated = journal.with_pinvi_role_catalog_reset_completed()
-                            write_pinned_runtime_rebuild_journal(
-                                state_paths.journal, updated
-                            )
-                            journal = updated
-                        self._run_pinvi_schema_bootstrap_with_role_lifecycle(
-                            transaction=runtime_transaction,
-                            state_paths=state_paths,
-                            values=environment_snapshot.effective,
-                            transaction_id=journal.transaction_id,
-                        )
-                    except _PinviRoleLifecycleError as exc:
-                        journal = self._record_pinvi_role_lifecycle_block(
-                            journal,
-                            journal_path=state_paths.journal,
-                            error=exc,
-                        )
-                        raise
+                    # M05 폐기(geo 패턴 전환) 전에는 이 자리가 fresh role catalog
+                    # reset → migrator login open → bootstrap → seal → sealed
+                    # topology verifier의 다섯 단계였다. 그 단계들은 전부 "이
+                    # cluster는 PinVi 것뿐"을 증명하려고 존재했고, 공용 instance로
+                    # 옮긴 뒤에는 sibling 프로젝트의 role/database를 foreign으로
+                    # 판정해 구조적으로 통과할 수 없었다. 이제 scoped app role
+                    # 하나가 자기 database를 소유하므로 남는 것은 migration 실행과
+                    # 그 결과가 candidate head와 같은지 보는 것뿐이다.
+                    self._run_pinvi_admin_bootstrap(
+                        transaction=runtime_transaction,
+                        state_paths=state_paths,
+                        values=environment_snapshot.effective,
+                        transaction_id=journal.transaction_id,
+                    )
                 if read_database_schema_revision(runtimes[2]) != journal.candidate.pinvi_head:
                     raise DeploymentContractError("PinVi schema differs from candidate head")
-                try:
-                    # sealed verifier는 기존 DB admission이 아니라 fresh target-state
-                    # 후조건이다. open → bootstrap/migration → seal과 head 검증 뒤에만
-                    # 실행하고 raw verifier output은 durable receipt에 남기지 않는다.
-                    self._verify_pinned_runtime_pinvi_role_topology_after_bootstrap(
-                        transaction=runtime_transaction,
-                    )
-                except _PinviRoleLifecycleError as exc:
-                    self._terminate_pinned_runtime_after_pinvi_role_topology_failure(
-                        journal=journal,
-                        journal_path=state_paths.journal,
-                        transaction=runtime_transaction,
-                        error=exc,
-                    )
                 updated = self._advance_pinned_runtime_journal(
                     journal, "pinvi_schema_ready"
                 )

@@ -43,21 +43,18 @@ _ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str, str]] = {
         "kor_travel_map",
         "kor-travel-map-postgres",
     ),
-    # ADR-46: PinVi의 application DB는 공용 제어 평면 instance에 있다. **소유자는
-    # 여전히 그 instance의 bootstrap owner(`shared_admin`)다** — app role이 아니다.
-    # PinVi의 `bootstrap-pinvi-runtime-role.sh`가 세 곳에서 그것을 강제한다:
-    # runtime role은 DB owner와 달라야 하고(:330), DB에 대한 CREATE를 가지면 안 되며
-    # (:337 — owner는 그것을 암묵적으로 갖는다), fresh admission fence의 소유자가
-    # 곧 DB owner여야 한다(:291, fence는 bootstrap owner 소유로 고정). 그래서
-    # `kor-travel-shared-db-init-pinvi`가 `pinvi`만 bare `createdb`로 만들고
-    # (`pinvi_dagster`는 `-O PINVI_APP_DB_USER`로 만든다) — 그 비대칭은 의도다.
-    # 여기서 owner를 app role로 바꾸면 role topology 검증이 봉인된 한 단어
-    # `role_topology_noncanonical`로만 실패한다.
+    # ADR-46: PinVi의 application DB는 공용 제어 평면 instance에 있고, **소유자는
+    # 그 project의 app role이다** — geo/concierge/weather와 같은 모양이다.
+    #
+    # 한때 소유자를 bootstrap owner(`shared_admin`)로 두었는데, 그것은 PinVi의 다중
+    # role 모델(M05)이 "runtime role은 database owner일 수 없다"를 세 곳에서 강제했기
+    # 때문이다. 그 모델을 폐기하면서 그 제약도 함께 사라졌다 — 이제 role 하나가 자기
+    # database를 소유하고, 그래서 migration이 별도 권한 창 없이 DDL을 실행한다.
     "pinvi": (
         "PINVI_POSTGRES_DB",
         "pinvi",
-        "KOR_TRAVEL_SHARED_POSTGRES_USER",
-        "shared_admin",
+        "PINVI_APP_DB_USER",
+        "pinvi_app",
         "kor-travel-shared-postgres",
     ),
 }

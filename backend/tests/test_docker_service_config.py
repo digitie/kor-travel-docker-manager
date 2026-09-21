@@ -175,10 +175,6 @@ def _config_transaction(
             "PINVI_DAGSTER_DB": "pinvi_dagster",
             "PINVI_APP_DB_USER": "pinvi_runtime",
             "PINVI_APP_DB_PASSWORD": "pinvi-runtime-password",
-            "PINVI_APP_SCHEMA_OWNER": "pinvi_application_owner",
-            "PINVI_MIGRATION_OWNER": "pinvi_migration_owner",
-            "PINVI_MIGRATOR_DB_USER": "pinvi_migrator",
-            "PINVI_MIGRATOR_DB_PASSWORD": "pinvi-migrator-password",
             "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "false",
         },
         env_path=str(compose_path.parent / ".env"),
@@ -464,59 +460,6 @@ def _compose_with_canonical_c6c_services(
                 "fi\n",
             ],
         },
-        _PINVI_DB_RUNTIME_ROLE_SERVICE: {
-            "profiles": ["bootstrap"],
-            "image": _PINVI_POSTGRES_IMAGE,
-            "restart": "no",
-            "network_mode": "${KTDM_DOCKER_NETWORK_MODE:-host}",
-            "depends_on": {
-                _PINVI_POSTGRES_SERVICE: {"condition": "service_healthy"},
-                _PINVI_DB_INIT_SERVICE: {"condition": "service_completed_successfully"},
-            },
-            "environment": {
-                "POSTGRES_USER": "${PINVI_POSTGRES_USER:-pinvi}",
-                "POSTGRES_DB": "${PINVI_POSTGRES_DB:-pinvi}",
-                "PINVI_DB_HOST": "127.0.0.1",
-                "PINVI_DB_PORT": "${PINVI_DB_PORT:-12800}",
-                "PINVI_APP_DB_USER": (
-                    "${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}"
-                ),
-                "PINVI_APP_DB_PASSWORD": (
-                    "${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}"
-                ),
-                "PINVI_APP_SCHEMA_OWNER": (
-                    "${PINVI_APP_SCHEMA_OWNER:?PINVI_APP_SCHEMA_OWNER must be explicitly set}"
-                ),
-                "PINVI_MIGRATION_OWNER": (
-                    "${PINVI_MIGRATION_OWNER:?PINVI_MIGRATION_OWNER must be explicitly set}"
-                ),
-                "PINVI_MIGRATOR_DB_USER": (
-                    "${PINVI_MIGRATOR_DB_USER:?PINVI_MIGRATOR_DB_USER must be explicitly set}"
-                ),
-                "PINVI_MIGRATOR_DB_PASSWORD": (
-                    "${PINVI_MIGRATOR_DB_PASSWORD:?PINVI_MIGRATOR_DB_PASSWORD must be explicitly set}"
-                ),
-                "PINVI_M05_LEGACY_REBASELINE": "0",
-                "PINVI_MIGRATOR_DISABLE_LOGIN": "1",
-            },
-            "secrets": [
-                {
-                    "source": "pinvi-postgres-password",
-                    "target": "/run/secrets/pinvi-postgres-password",
-                }
-            ],
-            "volumes": [
-                "${PINVI_REPO_DIR:-../pinvi}/infra/postgres/"
-                "bootstrap-pinvi-runtime-role.sh:"
-                "/opt/pinvi/bootstrap-pinvi-runtime-role.sh:ro"
-            ],
-            "entrypoint": [
-                "sh",
-                "-ec",
-                'export POSTGRES_PASSWORD="$$(cat /run/secrets/pinvi-postgres-password)"\n'
-                "exec sh /opt/pinvi/bootstrap-pinvi-runtime-role.sh",
-            ],
-        },
         _MAP_API_SERVICE: {
             "image": "fixture.invalid/kor-travel-map-api:test",
             "container_name": "kor-travel-map-api-latest",
@@ -648,8 +591,8 @@ def _compose_with_canonical_c6c_services(
                 "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _OPS_READ_SOURCE,
                 "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _OPS_CANCEL_SOURCE,
                 "PINVI_DATABASE_URL": (
-                    "postgresql+asyncpg://${PINVI_MIGRATOR_DB_USER:?PINVI_MIGRATOR_DB_USER must be explicitly set}:"
-                    "${PINVI_MIGRATOR_DB_PASSWORD:?PINVI_MIGRATOR_DB_PASSWORD must be explicitly set}"
+                    "postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:"
+                    "${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}"
                     "@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}"
                 ),
             },
@@ -1682,22 +1625,30 @@ def test_validate_container_config_update_rejects_pinvi_initdb_auth_drift(
 
 
 def test_contract_locked_env_names_come_from_the_candidate_contract() -> None:
-    """손으로 관리하는 두 번째 목록을 만들지 않는다 — 계약에서 유도한다."""
+    """손으로 관리하는 두 번째 목록을 만들지 않는다 — 계약에서 유도한다.
+
+    종전에는 M05 role one-shot(`pinvi-db-runtime-role`)의 PINVI_DB_PORT/PINVI_DB_HOST
+    잠금을 봤다. 그 모델을 폐기(geo 패턴 전환)하면서 role one-shot과 그 잠금이 함께
+    사라졌다 — 남은 PinVi 서비스 중 계약이 값을 고정하는 것은
+    `pinvi-admin-bootstrap`이다(PINVI_DATABASE_URL, ops 토큰).
+    """
 
     from kor_travel_docker_manager.services.c6c_deployment import (
         _CANDIDATE_CANONICAL_API_ENV_VALUES,
         contract_locked_env_names,
     )
 
-    locked = contract_locked_env_names("pinvi-db-runtime-role")
+    locked = contract_locked_env_names("pinvi-admin-bootstrap")
 
-    assert "PINVI_DB_PORT" in locked
-    assert "PINVI_DB_HOST" in locked
+    # PINVI_DATABASE_URL은 candidate 계약 dict가 아니라 별도 DSN 검증기가 소유한다
+    # (module 주석 실측) — 합집합의 다른 절반이다. 유도된 나머지는 여전히 계약
+    # 하나에서 나온다.
+    assert "PINVI_DATABASE_URL" in locked
     assert set(locked) == {
         env_name
         for service, env_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
-        if service == "pinvi-db-runtime-role"
-    }
+        if service == "pinvi-admin-bootstrap"
+    } | {"PINVI_DATABASE_URL"}
     assert list(locked) == sorted(locked)
     # 계약에 없는 service는 빈 튜플이다 — 없는 잠금을 지어내지 않는다.
     assert contract_locked_env_names("rustfs") == ()
