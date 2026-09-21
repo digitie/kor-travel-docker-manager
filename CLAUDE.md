@@ -100,7 +100,7 @@ poetry run pytest
 # 개발 의존 Docker 실행
 poetry run ktdctl srv --build
 # 짧은 별칭: db, storage, gra, cadv, prom, geo, conc, map, pinvi, srv
-# gra/cadv/prom은 Grafana 12205, cAdvisor 12301, Prometheus 12401을 분리 실행
+# gra/cadv/prom은 Grafana 12104, cAdvisor 12103, Prometheus 12102를 분리 실행(ADR-48, storage 대역 안)
 # geo target은 kor-travel-geo API 12501, Web UI 12505까지 포함
 # conc target은 kor-travel-concierge API/MCP/Web UI를 포함하고, map target은 kor-travel-map API/Dagster/Web UI까지 포함
 ```
