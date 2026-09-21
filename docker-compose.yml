@@ -756,9 +756,9 @@ services:
         role="$$1"
         password="$$2"
         if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$role'" | grep -q 1; then
-          psql -d "$$PGDATABASE" -v role_password="$$password" -c "ALTER ROLE \"$$role\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+          printf '%s\n' "ALTER ROLE \"$$role\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE" | psql -d "$$PGDATABASE" -v role_password="$$password"
         else
-          psql -d "$$PGDATABASE" -v role_password="$$password" -c "CREATE ROLE \"$$role\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE"
+          printf '%s\n' "CREATE ROLE \"$$role\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE" | psql -d "$$PGDATABASE" -v role_password="$$password"
         fi
       }
       ensure_database() {
