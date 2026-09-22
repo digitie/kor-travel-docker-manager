@@ -318,6 +318,12 @@ def _compose_contract_environment() -> dict[str, str]:
             "postgresql+asyncpg://ktm_feature_dagster_runtime:map-contract-dagster-password@"
             "127.0.0.1:12700/map_contract"
         ),
+        # ADR-100 superset window — the collapsed pair the Map bootstrap now requires.
+        "KOR_TRAVEL_MAP_SERVICE_PASSWORD": "map-contract-service-password",
+        "KOR_TRAVEL_MAP_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_service:map-contract-service-password@"
+            "127.0.0.1:12700/map_contract"
+        ),
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
             "postgresql://map_contract_dagster_metadata:map-contract-dagster-metadata-password@"
             "127.0.0.1:12700/map_contract_dagster"
@@ -1639,6 +1645,9 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
+        # ADR-100: the bootstrap one-shot cannot run without these two.
+        "KOR_TRAVEL_MAP_SERVICE_PASSWORD",
+        "KOR_TRAVEL_MAP_PG_DSN",
     }.issubset(map_bootstrap_environment)
     assert map_fresh_environment == {
         "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",

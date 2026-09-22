@@ -301,6 +301,16 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
                     "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
                 ),
+                # ADR-100 superset window — mirrors docker-compose.yml exactly; the
+                # raw layer compares these literals with hmac.compare_digest.
+                "KOR_TRAVEL_MAP_SERVICE_PASSWORD": (
+                    "${KOR_TRAVEL_MAP_SERVICE_PASSWORD:?"
+                    "KOR_TRAVEL_MAP_SERVICE_PASSWORD must be explicitly set}"
+                ),
+                "KOR_TRAVEL_MAP_PG_DSN": (
+                    "${KOR_TRAVEL_MAP_PG_DSN:?"
+                    "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+                ),
                 "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD": (
                     "${KOR_TRAVEL_MAP_MIGRATOR_PASSWORD:?"
                     "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD must be explicitly set}"
@@ -1889,6 +1899,13 @@ def _prepare_candidate_transaction(
     monkeypatch.setenv(
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
         "postgresql://test_map_dagster_metadata:test-map-dagster-metadata@127.0.0.1:12700/kor_travel_map_dagster",
+    )
+    # ADR-100 superset window — distinct from the other three, so the Map preflight's
+    # pairwise-distinctness check stays satisfiable in this fixture too.
+    monkeypatch.setenv("KOR_TRAVEL_MAP_SERVICE_PASSWORD", "test-map-service")
+    monkeypatch.setenv(
+        "KOR_TRAVEL_MAP_PG_DSN",
+        "postgresql+asyncpg://ktm_feature_service:test-map-service@127.0.0.1:12700/kor_travel_map",
     )
     compose_path = tmp_path / "docker-compose.yml"
     compose_path.write_text(yaml.safe_dump(compose_config, sort_keys=False), encoding="utf-8")
