@@ -135,6 +135,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeManifest,
     PinnedRuntimeRebuildJournal,
     PinnedRuntimeStatePaths,
+    PinviRoleCatalogResetReceipt,
     RebuildPhase,
     RuntimeService,
     ensure_pinned_runtime_state_directory,
@@ -7300,6 +7301,20 @@ class ComposeService:
                         values=environment_snapshot.effective,
                         transaction_id=journal.transaction_id,
                     )
+                    # 저 다섯 단계가 사라질 때 `with_databases_recreated`가 찍는
+                    # `intent` receipt를 `completed`로 닫던 호출까지 같이 사라졌다.
+                    # journal은 `map_runtime_ready`에서는 `intent`를 허용하지만 그
+                    # 다음 phase부터는 거절하므로, 닫지 않으면 이 재구축은 여기서
+                    # 영구히 멈춘다. receipt를 아예 안 찍는 쪽은 안 된다 — 봉인된
+                    # journal에서 이 자리가 `null`이면 Map의 production attestation이
+                    # 거절한다.
+                    if journal.pinvi_role_catalog_reset == PinviRoleCatalogResetReceipt(
+                        state="intent"
+                    ):
+                        journal = journal.with_pinvi_role_catalog_reset_completed()
+                        write_pinned_runtime_rebuild_journal(
+                            state_paths.journal, journal
+                        )
                 if read_database_schema_revision(runtimes[2]) != journal.candidate.pinvi_head:
                     raise DeploymentContractError("PinVi schema differs from candidate head")
                 updated = self._advance_pinned_runtime_journal(
