@@ -1196,6 +1196,12 @@ services:
       KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN: ${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_POSTGRES_DB: ${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}
       KOR_TRAVEL_MAP_POSTGRES_USER: ${KOR_TRAVEL_MAP_POSTGRES_USER:?KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}
+      # ADR-100 (superset window): Map은 세 LOGIN을 ktm_feature_service 하나로 합쳤고
+      # docker/postgres-role-bootstrap.sh와 scripts/database-credential-preflight.sh는
+      # 이제 아래 두 이름을 요구한다. 구 여섯 이름은 아직 함께 보낸다 — Map의 이전
+      # 형상도 계속 동작해야 하므로 이 PR은 순수 superset이고, 제거는 후속 PR이다.
+      KOR_TRAVEL_MAP_SERVICE_PASSWORD: ${KOR_TRAVEL_MAP_SERVICE_PASSWORD:?KOR_TRAVEL_MAP_SERVICE_PASSWORD must be explicitly set}
+      KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_MIGRATOR_PASSWORD: ${KOR_TRAVEL_MAP_MIGRATOR_PASSWORD:?KOR_TRAVEL_MAP_MIGRATOR_PASSWORD must be explicitly set}
       KOR_TRAVEL_MAP_MIGRATOR_PG_DSN: ${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD: ${KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD:?KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD must be explicitly set}

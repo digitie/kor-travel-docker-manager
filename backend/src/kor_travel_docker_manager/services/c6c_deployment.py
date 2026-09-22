@@ -436,6 +436,16 @@ _DATABASE_SECRET_ENV_NAMES = frozenset(
         "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+        # ADR-100 superset window. 이 두 이름은 `_MAP_DATABASE_CANONICAL_ENV_VALUES`에
+        # **먼저** 등록한 뒤에만 여기 들어올 수 있다 — allowed_paths가 그 dict에서만
+        # 파생되므로, 경로 없이 이름을 보호하면 prebuild_snapshot이 모든 pinned
+        # rebuild를 "leaks a protected C6c reference"로 죽인다.
+        #
+        # `KOR_TRAVEL_MAP_PG_DSN`은 지금까지 이 집합에 없었고, 값이 보호 대상 DSN과
+        # 같다는 사실로만 **간접 보호**되고 있었다. Map이 그 값을 정본으로 쓰기
+        # 시작했으므로 이름으로 보호해야 한다.
+        "KOR_TRAVEL_MAP_SERVICE_PASSWORD",
+        "KOR_TRAVEL_MAP_PG_DSN",
         "PINVI_POSTGRES_PASSWORD",
         _PINVI_APP_DB_PASSWORD_ENV,
     }
@@ -575,6 +585,13 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_DB"): ("KOR_TRAVEL_MAP_POSTGRES_DB"),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_USER"): (
         "KOR_TRAVEL_MAP_POSTGRES_USER"
+    ),
+    # ADR-100 superset window — each maps to itself, same as the six names below.
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_SERVICE_PASSWORD"): (
+        "KOR_TRAVEL_MAP_SERVICE_PASSWORD"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+        "KOR_TRAVEL_MAP_PG_DSN"
     ),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"): (
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"
@@ -766,6 +783,20 @@ _MAP_DATABASE_CANONICAL_ENV_VALUES = {
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_USER"): (
         "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
         "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
+    ),
+    # ADR-100 superset window. 이 두 항목은 compose에 방금 추가한 키의 **정확한**
+    # 리터럴이며, allowed_paths가 이 dict에서만 파생되므로(`:978`이
+    # `_CANDIDATE_CANONICAL_API_ENV_VALUES`로 흡수) 여기 등록이
+    # `_DATABASE_SECRET_ENV_NAMES` 등록보다 먼저여야 한다. 순서를 뒤집으면
+    # prebuild_snapshot이 "compose candidate leaks a protected C6c reference"로
+    # 모든 pinned rebuild를 죽인다.
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_SERVICE_PASSWORD"): (
+        "${KOR_TRAVEL_MAP_SERVICE_PASSWORD:?"
+        "KOR_TRAVEL_MAP_SERVICE_PASSWORD must be explicitly set}"
+    ),
+    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_PG_DSN:?"
+        "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
     ),
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"): (
         "${KOR_TRAVEL_MAP_MIGRATOR_PASSWORD:?"
