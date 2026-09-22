@@ -15,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import ANY, Mock, call
+from unittest.mock import ANY, MagicMock, Mock, call
 
 import pytest
 
@@ -3267,6 +3267,15 @@ def test_expired_finalize_fence_reconciliation_converges_file_first_crash(
             "kor-travel-map-dagster-storage-migrate",
             "Map Dagster storage execution result is uncertain",
         ),
+        # `map_runtime_ready` is the phase whose production block closes the
+        # PinVi role catalog reset receipt. Resuming from it is the only way to
+        # see that close happen on the real path — `pinvi_schema_ready` below
+        # starts from a journal the fixture builder already closed.
+        (
+            "map_runtime_ready",
+            "pinvi-admin-bootstrap",
+            "stop after PinVi API startup",
+        ),
         (
             "pinvi_schema_ready",
             "pinvi-admin-bootstrap",
@@ -3307,6 +3316,7 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         if phase in {
             "map_dagster_storage_intent_durable",
             "map_application_ready",
+            "map_runtime_ready",
             "pinvi_schema_ready",
         }
         else _journal_at_application_300_phase(phase)
@@ -3597,6 +3607,7 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         "fresh_finalize_execution_intent",
         "map_dagster_storage_intent_durable",
         "map_application_ready",
+        "map_runtime_ready",
         "pinvi_schema_ready",
     }:
         monkeypatch.setattr(
@@ -3618,6 +3629,7 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
     if phase in {
         "map_dagster_storage_intent_durable",
         "map_application_ready",
+        "map_runtime_ready",
         "pinvi_schema_ready",
     }:
         monkeypatch.setattr(
@@ -3663,7 +3675,7 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
                 else journal.candidate.map_dagster_head
             ),
         ]
-        if phase == "pinvi_schema_ready":
+        if phase in {"map_runtime_ready", "pinvi_schema_ready"}:
             revision_values.append(journal.candidate.pinvi_head)
         revision_heads = iter(revision_values)
         monkeypatch.setattr(
@@ -3681,8 +3693,11 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
                 )
             ),
         )
-    elif phase == "pinvi_schema_ready":
-        credential_file = Mock()
+    elif phase in {"map_runtime_ready", "pinvi_schema_ready"}:
+        # map_runtime_ready에서 재개하면 production이 실제로
+        # _run_pinvi_admin_bootstrap을 부르고, 그 안에서 이 helper가 context
+        # manager로 쓰인다 — MagicMock만 __enter__/__exit__를 갖는다.
+        credential_file = MagicMock()
         monkeypatch.setattr(
             compose_service_module,
             "pinvi_bootstrap_credential_file",
@@ -3703,6 +3718,22 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
 
     if phase == "map_application_ready":
         assert "stop after map runtime startup" not in str(captured.value)
+
+    if phase == "map_runtime_ready":
+        # `with_databases_recreated`는 이 receipt를 `intent`로 찍고, journal은
+        # `map_runtime_ready` 다음 phase부터 `intent`를 거절한다. 그래서 production이
+        # 이 자리에서 receipt를 닫지 않으면 재구축은 phase 20에서 영구히 멈춘다 —
+        # 탈출구가 새 pinset(= 새 커밋)뿐인 상태가 된다. 닫는 호출을 지우면 이
+        # 단언 대신 위 pytest.raises가 'invalid PinVi role catalog reset receipt'로
+        # 먼저 터진다(확인함).
+        #
+        # 그리고 `null`로 두는 우회도 안 된다: Map의
+        # scripts/lib/c7_prod_attestation.py가 봉인된 journal에서 이 자리를
+        # `completed`로 요구한다.
+        resumed = read_rebuild_journal(state_paths.journal)
+        assert resumed.pinvi_role_catalog_reset == PinviRoleCatalogResetReceipt(
+            state="completed"
+        )
 
     root_execution_command = (
         "--profile",
