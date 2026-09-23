@@ -25,7 +25,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     MapApplication300DagsterMetadataDatabaseIdentity,
     MapApplication300DagsterMetadataRoleAttributes,
     MapApplication300ExecutionEvidence,
-    MapApplication300OperationPlan,
     PinnedRuntimeCancelProbeOutcome,
     PinnedRuntimeCancelProbeReceipt,
     PinnedRuntimeDatabaseIdentity,
@@ -168,23 +167,6 @@ def _journal(seed: str = "a") -> PinnedRuntimeRebuildJournal:
     )
 
 
-def _operation_plan(
-    journal: PinnedRuntimeRebuildJournal,
-    *,
-    seed: str,
-    result_sha256: str | None = None,
-) -> MapApplication300OperationPlan:
-    return MapApplication300OperationPlan(
-        transaction_id=journal.transaction_id,
-        operation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{journal.transaction_id}:{seed}")),
-        basis_journal_sha256=rebuild_journal_sha256(journal),
-        basis_journal_generation=journal.journal_generation,
-        writer_fence_expires_at="2026-08-06T00:05:00+00:00",
-        fence_sha256=_digest(seed),
-        result_sha256=result_sha256,
-    )
-
-
 def _copy_journal(
     journal: PinnedRuntimeRebuildJournal,
     *,
@@ -248,28 +230,7 @@ def _journal_with_application_roles_ready() -> PinnedRuntimeRebuildJournal:
 
 def _journal_with_map_application_ready() -> PinnedRuntimeRebuildJournal:
     journal = _journal_with_application_roles_ready()
-    root_plan = _operation_plan(journal, seed="2")
-    journal = journal.with_fresh_root_plan_ready(fresh_root_operation_plan=root_plan)
-    journal = journal.with_fresh_root_fence_ready(fresh_root_operation_plan=root_plan)
-    journal = journal.with_fresh_root_execution_intent(fresh_root_operation_plan=root_plan)
-    root_result_plan = root_plan.with_result(_digest("4"))
-    journal = journal.with_fresh_root_ready(fresh_root_operation_plan=root_result_plan)
-
-    finalize_plan = _operation_plan(journal, seed="5")
-    journal = journal.with_fresh_finalize_plan_ready(
-        fresh_finalize_operation_plan=finalize_plan
-    )
-    journal = journal.with_fresh_finalize_fence_ready(
-        fresh_finalize_operation_plan=finalize_plan
-    )
-    journal = journal.with_fresh_finalize_execution_intent(
-        fresh_finalize_operation_plan=finalize_plan
-    )
-    finalize_result_plan = finalize_plan.with_result(_digest("7"))
-    journal = journal.with_fresh_finalize_ready(
-        fresh_finalize_operation_plan=finalize_result_plan
-    )
-    journal = journal.with_application_permit_ready(app_final_permit_sha256=_digest("8"))
+    journal = journal.with_application_schema_ready(application_schema_head="400")
     journal = journal.with_metadata_permit_ready(
         dagster_metadata_database_identity=_dagster_metadata_database_identity(),
         metadata_permit_sha256=_digest("9"),
@@ -859,59 +820,22 @@ def test_rebuild_journal_application_300_phases_require_evidence_methods() -> No
             metadata_permit_sha256=_digest("9"),
         )
     with pytest.raises(DeploymentContractError, match="evidence-specific"):
-        journal.transition("fresh_root_plan_ready")
+        journal.transition("application_schema_ready")
 
-    root_plan = _operation_plan(journal, seed="2")
-    journal = journal.with_fresh_root_plan_ready(fresh_root_operation_plan=root_plan)
-    assert journal.phase == "fresh_root_plan_ready"
-    assert journal.map_application_300_execution_evidence.fresh_root_operation_plan == (
-        root_plan
-    )
-    journal = journal.with_fresh_root_fence_ready(fresh_root_operation_plan=root_plan)
-    root_intent = journal.with_fresh_root_execution_intent(
-        fresh_root_operation_plan=root_plan
+    # ADR-101: 여기 있던 여덟 전이가 하나가 됐다. 인자는 one-shot 뒤에 **관측한**
+    # `public.alembic_version` 값이다.
+    journal = journal.with_application_schema_ready(application_schema_head="400")
+    assert journal.phase == "application_schema_ready"
+    assert (
+        journal.map_application_300_execution_evidence.application_schema_head == "400"
     )
 
-    assert root_intent.phase == "fresh_root_execution_intent"
-    root_intent_plan = (
-        root_intent.map_application_300_execution_evidence.fresh_root_operation_plan
-    )
-    assert root_intent_plan is not None
-    assert root_intent_plan.result_sha256 is None
-    with pytest.raises(DeploymentContractError, match="evidence-specific"):
-        root_intent.transition("fresh_root_ready")
+    # 관측은 다시 묶이지 않는다 — 같은 phase에서 다른 head를 주장할 수 없다.
+    with pytest.raises(DeploymentContractError, match="cannot be rebound"):
+        journal.map_application_300_execution_evidence.with_application_schema_head(
+            "401_other"
+        )
 
-    root_result_plan = root_plan.with_result(_digest("4"))
-    journal = root_intent.with_fresh_root_ready(
-        fresh_root_operation_plan=root_result_plan
-    )
-    finalize_plan = _operation_plan(journal, seed="5")
-    journal = journal.with_fresh_finalize_plan_ready(
-        fresh_finalize_operation_plan=finalize_plan
-    )
-    journal = journal.with_fresh_finalize_fence_ready(
-        fresh_finalize_operation_plan=finalize_plan
-    )
-    finalize_intent = journal.with_fresh_finalize_execution_intent(
-        fresh_finalize_operation_plan=finalize_plan
-    )
-
-    assert finalize_intent.phase == "fresh_finalize_execution_intent"
-    finalize_intent_plan = (
-        finalize_intent
-        .map_application_300_execution_evidence
-        .fresh_finalize_operation_plan
-    )
-    assert finalize_intent_plan is not None
-    assert finalize_intent_plan.result_sha256 is None
-    with pytest.raises(DeploymentContractError, match="evidence-specific"):
-        finalize_intent.transition("fresh_finalize_ready")
-
-    finalize_result_plan = finalize_plan.with_result(_digest("7"))
-    journal = finalize_intent.with_fresh_finalize_ready(
-        fresh_finalize_operation_plan=finalize_result_plan
-    )
-    journal = journal.with_application_permit_ready(app_final_permit_sha256=_digest("8"))
     metadata_identity = _dagster_metadata_database_identity()
     journal = journal.with_metadata_permit_ready(
         dagster_metadata_database_identity=metadata_identity,
@@ -965,49 +889,31 @@ def test_application_create_and_bootstrap_receipts_bind_one_database_identity() 
         )
 
 
-def test_rebuild_journal_rejects_skipped_phase_and_operation_plan_basis_drift() -> None:
+def test_rebuild_journal_rejects_skipped_phase_and_rebound_schema_head() -> None:
+    """건너뛰기와 재결박을 거부한다.
+
+    ADR-101 이전에는 이 자리에서 operation plan의 basis journal 결박(세대·sha)을
+    확인했다. 그 결박은 "영수증 파일을 어느 저널 상태에서 썼는가"를 되짚기 위한
+    것이었고, 파일이 사라지면서 되짚을 대상도 사라졌다.
+
+    남은 두 성질은 여전히 실질적이다 — phase를 건너뛰면 거부하고, 이미 적힌
+    관측값을 다른 값으로 덮으면 거부한다.
+    """
+
     journal = _journal_with_application_roles_ready()
-    root_plan = _operation_plan(journal, seed="2")
 
-    with pytest.raises(DeploymentContractError, match="root fence is out of order"):
-        journal.with_fresh_root_fence_ready(fresh_root_operation_plan=root_plan)
+    ready = journal.with_application_schema_ready(application_schema_head="400")
+    with pytest.raises(DeploymentContractError, match="schema readiness is out of order"):
+        ready.with_application_schema_ready(application_schema_head="400")
 
-    wrong_generation_plan = MapApplication300OperationPlan(
-        transaction_id=root_plan.transaction_id,
-        operation_id=root_plan.operation_id,
-        basis_journal_sha256=root_plan.basis_journal_sha256,
-        basis_journal_generation=root_plan.basis_journal_generation + 1,
-        writer_fence_expires_at=root_plan.writer_fence_expires_at,
-        fence_sha256=root_plan.fence_sha256,
-    )
-    with pytest.raises(DeploymentContractError, match="basis generation differs"):
-        journal.with_fresh_root_plan_ready(
-            fresh_root_operation_plan=wrong_generation_plan
+    with pytest.raises(DeploymentContractError, match="metadata permit is out of order"):
+        journal.with_metadata_permit_ready(
+            dagster_metadata_database_identity=_dagster_metadata_database_identity(),
+            metadata_permit_sha256=_digest("9"),
         )
 
-    wrong_sha_plan = MapApplication300OperationPlan(
-        transaction_id=root_plan.transaction_id,
-        operation_id=root_plan.operation_id,
-        basis_journal_sha256=_digest("e"),
-        basis_journal_generation=root_plan.basis_journal_generation,
-        writer_fence_expires_at=root_plan.writer_fence_expires_at,
-        fence_sha256=root_plan.fence_sha256,
-    )
-    with pytest.raises(DeploymentContractError, match="basis journal differs"):
-        journal.with_fresh_root_plan_ready(fresh_root_operation_plan=wrong_sha_plan)
-
-    root_plan_ready = journal.with_fresh_root_plan_ready(
-        fresh_root_operation_plan=root_plan
-    )
-    changed_plan = _operation_plan(journal, seed="3")
-    with pytest.raises(DeploymentContractError, match="root operation plan changed"):
-        root_plan_ready.with_fresh_root_fence_ready(
-            fresh_root_operation_plan=changed_plan
-        )
-    with pytest.raises(DeploymentContractError, match="finalize plan is out of order"):
-        root_plan_ready.with_fresh_finalize_plan_ready(
-            fresh_finalize_operation_plan=_operation_plan(root_plan_ready, seed="5")
-        )
+    with pytest.raises(DeploymentContractError, match="schema head is invalid"):
+        journal.with_application_schema_ready(application_schema_head="NOT A HEAD")
 
 
 def test_rebuild_journal_application_300_journal_generation_is_monotonic() -> None:
@@ -1032,37 +938,7 @@ def test_rebuild_journal_application_300_journal_generation_is_monotonic() -> No
         application_database_identity=_application_database_identity()
     )
     observed.append(journal.journal_generation)
-    root_plan = _operation_plan(journal, seed="2")
-    journal = journal.with_fresh_root_plan_ready(fresh_root_operation_plan=root_plan)
-    observed.append(journal.journal_generation)
-    journal = journal.with_fresh_root_fence_ready(fresh_root_operation_plan=root_plan)
-    observed.append(journal.journal_generation)
-    journal = journal.with_fresh_root_execution_intent(
-        fresh_root_operation_plan=root_plan
-    )
-    observed.append(journal.journal_generation)
-    journal = journal.with_fresh_root_ready(
-        fresh_root_operation_plan=root_plan.with_result(_digest("4"))
-    )
-    observed.append(journal.journal_generation)
-    finalize_plan = _operation_plan(journal, seed="5")
-    journal = journal.with_fresh_finalize_plan_ready(
-        fresh_finalize_operation_plan=finalize_plan
-    )
-    observed.append(journal.journal_generation)
-    journal = journal.with_fresh_finalize_fence_ready(
-        fresh_finalize_operation_plan=finalize_plan
-    )
-    observed.append(journal.journal_generation)
-    journal = journal.with_fresh_finalize_execution_intent(
-        fresh_finalize_operation_plan=finalize_plan
-    )
-    observed.append(journal.journal_generation)
-    journal = journal.with_fresh_finalize_ready(
-        fresh_finalize_operation_plan=finalize_plan.with_result(_digest("7"))
-    )
-    observed.append(journal.journal_generation)
-    journal = journal.with_application_permit_ready(app_final_permit_sha256=_digest("8"))
+    journal = journal.with_application_schema_ready(application_schema_head="400")
     observed.append(journal.journal_generation)
     journal = journal.with_metadata_permit_ready(
         dagster_metadata_database_identity=_dagster_metadata_database_identity(),
@@ -1088,32 +964,21 @@ def test_rebuild_journal_application_300_rejects_missing_or_future_evidence() ->
             map_application_300_execution_evidence=MapApplication300ExecutionEvidence(),
         )
 
-    root_intent = _journal_with_application_roles_ready()
-    root_plan = _operation_plan(root_intent, seed="2")
-    root_intent = root_intent.with_fresh_root_plan_ready(
-        fresh_root_operation_plan=root_plan
-    )
-    root_intent = root_intent.with_fresh_root_fence_ready(
-        fresh_root_operation_plan=root_plan
-    )
-    root_intent = root_intent.with_fresh_root_execution_intent(
-        fresh_root_operation_plan=root_plan
-    )
+    roles_ready = _journal_with_application_roles_ready()
     with pytest.raises(DeploymentContractError, match="future evidence"):
         _copy_journal(
-            root_intent,
+            roles_ready,
             map_application_300_execution_evidence=(
-                root_intent.map_application_300_execution_evidence.with_fresh_root_result(
-                    root_plan.with_result(_digest("4"))
-                )
+                roles_ready.map_application_300_execution_evidence
+                .with_application_schema_head("400")
             ),
         )
 
-    with pytest.raises(DeploymentContractError, match="result is missing"):
+    with pytest.raises(DeploymentContractError, match="lacks required evidence"):
         _copy_journal(
-            root_intent,
-            phase="fresh_root_ready",
-            journal_generation=REBUILD_PHASES.index("fresh_root_ready"),
+            roles_ready,
+            phase="application_schema_ready",
+            journal_generation=REBUILD_PHASES.index("application_schema_ready"),
         )
 
 
@@ -1147,12 +1012,7 @@ def test_rebuild_journal_binds_candidate_evidence_and_strict_payload() -> None:
     )
     execution_payload = payload["map_application_300_execution_evidence"]
     assert isinstance(execution_payload, dict)
-    root_plan_payload = execution_payload["fresh_root_operation_plan"]
-    assert isinstance(root_plan_payload, dict)
-    assert root_plan_payload["basis_journal_generation"] == REBUILD_PHASES.index(
-        "application_roles_ready"
-    )
-    assert root_plan_payload["result_sha256"] == _digest("4")
+    assert execution_payload["application_schema_head"] == "400"
 
     with pytest.raises(DeploymentContractError, match="candidate evidence differs"):
         _copy_journal(
@@ -1163,10 +1023,8 @@ def test_rebuild_journal_binds_candidate_evidence_and_strict_payload() -> None:
     with pytest.raises(DeploymentContractError, match="payload is invalid"):
         journal_from_payload({**payload, "extra": "nope"})
     nested_extra = json.loads(json.dumps(payload))
-    nested_extra["map_application_300_execution_evidence"]["fresh_root_operation_plan"][
-        "extra"
-    ] = "nope"
-    with pytest.raises(DeploymentContractError, match="operation plan payload"):
+    nested_extra["map_application_300_execution_evidence"]["extra"] = "nope"
+    with pytest.raises(DeploymentContractError, match="execution evidence payload"):
         journal_from_payload(nested_extra)
 
 
@@ -1330,10 +1188,10 @@ def test_rebuild_journal_sha256_is_canonical_and_evidence_sensitive() -> None:
         journal_from_payload(journal.to_payload())
     )
 
-    root_plan = journal.map_application_300_execution_evidence.fresh_root_operation_plan
-    assert root_plan is not None
-    with pytest.raises(DeploymentContractError, match="result cannot be rebound"):
-        root_plan.with_result(_digest("0"))
+    evidence = journal.map_application_300_execution_evidence
+    assert evidence.application_schema_head == "400"
+    with pytest.raises(DeploymentContractError, match="cannot be rebound"):
+        evidence.with_application_schema_head("401_other")
 
 
 def test_rebuild_journal_requires_durable_cancel_post_and_finalize_receipts() -> None:
@@ -1715,6 +1573,6 @@ def test_rebuild_phase_vocabulary_is_frozen() -> None:
     새 단계를 추가해야 하면 map 쪽이 그 값을 받아들이는지 먼저 확인해야 한다.
     """
 
-    assert len(generation_module.REBUILD_PHASES) == 28
+    assert len(generation_module.REBUILD_PHASES) == 20
     assert generation_module.REBUILD_PHASES[0] == "candidate_attested"
     assert len(set(generation_module.REBUILD_PHASES)) == len(generation_module.REBUILD_PHASES)

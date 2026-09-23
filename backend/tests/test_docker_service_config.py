@@ -69,10 +69,7 @@ _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
 _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
-_MAP_APPLICATION_FRESH_300_SERVICE = "kor-travel-map-application-fresh-300"
-_MAP_APPLICATION_FRESH_FINALIZE_SERVICE = (
-    "kor-travel-map-application-fresh-finalize"
-)
+_MAP_APPLICATION_SCHEMA_SERVICE = "kor-travel-map-application-schema"
 _PINVI_POSTGRES_SERVICE = "pinvi-postgres"
 _PINVI_DB_INIT_SERVICE = "pinvi-db-init"
 _PINVI_DB_RUNTIME_ROLE_SERVICE = "pinvi-db-runtime-role"
@@ -223,6 +220,10 @@ def _compose_with_canonical_c6c_services(
         "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?"
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}"
     )
+    #: ADR-100 이후 런타임이 실제로 접속하는 DSN. 세 per-role 이름이 하나로 합쳐졌다.
+    service_dsn = (
+        "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+    )
     dagster_pg_url = (
         "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
     )
@@ -341,58 +342,27 @@ def _compose_with_canonical_c6c_services(
                 "KOR_TRAVEL_MAP_DAGSTER_PG_URL": dagster_pg_url,
             },
         },
-        _MAP_APPLICATION_FRESH_300_SERVICE: {
+        # ADR-101: root migration과 finalize 두 one-shot이 하나로 접혔다. 이 fixture는
+        # compose 문서의 사본이므로 같은 형상을 든다 — 고정 실행기(`sh -c`)와 검사
+        # 가능한 인자(스크립트 한 덩어리), 그리고 migration 전용 schema-owner 스위치.
+        _MAP_APPLICATION_SCHEMA_SERVICE: {
             "profiles": ["bootstrap"],
             "image": "fixture.invalid/kor-travel-map-api:test",
             "restart": "no",
             "network_mode": "host",
             "environment": {
                 "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
-                "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_IMAGE_ID": (
+                "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_IMAGE_ID": (
                     "${KOR_TRAVEL_MAP_API_IMAGE:?KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}"
                 ),
-                "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": migrator_dsn,
-                "KOR_TRAVEL_MAP_PG_DSN": migrator_dsn,
+                "KOR_TRAVEL_MAP_PG_DSN": service_dsn,
+                "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE": "true",
             },
-            "volumes": [
-                "${KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR:?"
-                "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR must be "
-                "explicitly set}:/run/kor-travel-map-application-fresh-migrate:ro"
-            ],
-            "entrypoint": [
-                "/usr/local/bin/python",
-                "-I",
-                "/usr/local/bin/ktm-application-schema-fresh-300",
-                "migrate",
-                "--writer-fence-receipt",
-                "/run/kor-travel-map-application-fresh-migrate/fence.json",
-            ],
-        },
-        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE: {
-            "profiles": ["bootstrap"],
-            "image": "fixture.invalid/kor-travel-map-api:test",
-            "restart": "no",
-            "network_mode": "host",
-            "environment": {
-                "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
-                "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_IMAGE_ID": (
-                    "${KOR_TRAVEL_MAP_API_IMAGE:?KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}"
-                ),
-                "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": migrator_dsn,
-                "KOR_TRAVEL_MAP_PG_DSN": migrator_dsn,
-            },
-            "volumes": [
-                "${KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR:?"
-                "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR must be "
-                "explicitly set}:/run/kor-travel-map-application-fresh-finalize:ro"
-            ],
-            "entrypoint": [
-                "/usr/local/bin/python",
-                "-I",
-                "/usr/local/bin/ktm-application-schema-fresh-finalize",
-                "finalize",
-                "--writer-fence-receipt",
-                "/run/kor-travel-map-application-fresh-finalize/fence.json",
+            "entrypoint": ["/bin/sh", "-c"],
+            "command": [
+                "set -eu\n"
+                "/usr/local/bin/python -I -m alembic upgrade head\n"
+                "/usr/local/bin/python -I -m kortravelmap.infra.runtime_privileges\n"
             ],
         },
         _PINVI_POSTGRES_SERVICE: {
@@ -511,9 +481,11 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
                     "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
                 ),
+                # ADR-100: 런타임도 migration도 같은 단일 LOGIN이므로 DSN 이름이
+                # 하나다. 이 fixture는 compose 배선의 사본이고, 계약과 함께 움직인다.
                 "KOR_TRAVEL_MAP_PG_DSN": (
-                    "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
-                    "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
+                    "${KOR_TRAVEL_MAP_PG_DSN:?"
+                    "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
                 ),
                 "KOR_TRAVEL_MAP_API_PROFILE": "production",
                 "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": "true",
@@ -533,7 +505,8 @@ def _compose_with_canonical_c6c_services(
                     **(
                         {
                             "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (dagster_runtime_dsn),
-                            "KOR_TRAVEL_MAP_PG_DSN": dagster_runtime_dsn,
+                            # ADR-100: Dagster runtime도 단일 LOGIN의 DSN을 쓴다.
+                            "KOR_TRAVEL_MAP_PG_DSN": service_dsn,
                             "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": (_MAP_GEO_API_KEY_SOURCE),
                         }
                         if service_name in (_MAP_DAGSTER_SERVICE, _MAP_DAGSTER_DAEMON_SERVICE)

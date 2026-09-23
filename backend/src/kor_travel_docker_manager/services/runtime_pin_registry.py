@@ -646,7 +646,7 @@ def _assert_registry_file_integrity(path: Path) -> None:
 
     "값은 파일, 신뢰는 소유권"이 이 전환의 안전 논거인데, 그 소유권을 실제로 보는
     코드가 없으면 논거가 성립하지 않는다. 같은 저장소의 root 아티팩트 표준
-    (``map_application_300._require_artifact_directory``)과 같은 기준을 쓴다.
+    (``map_application_300._require_fixed_artifact_directory``)과 같은 기준을 쓴다.
 
     - ``lstat``으로 본다. symlink를 따라가 다른 파일을 읽지 않는다.
     - 일반 파일이어야 한다.

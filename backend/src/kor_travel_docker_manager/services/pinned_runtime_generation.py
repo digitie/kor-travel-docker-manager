@@ -81,15 +81,7 @@ RebuildPhase = Literal[
     "application_created",
     "application_bootstrap_intent_durable",
     "application_roles_ready",
-    "fresh_root_plan_ready",
-    "fresh_root_fence_ready",
-    "fresh_root_execution_intent",
-    "fresh_root_ready",
-    "fresh_finalize_plan_ready",
-    "fresh_finalize_fence_ready",
-    "fresh_finalize_execution_intent",
-    "fresh_finalize_ready",
-    "application_permit_ready",
+    "application_schema_ready",
     "metadata_permit_ready",
     "map_application_ready",
     "map_dagster_storage_intent_durable",
@@ -134,15 +126,7 @@ REBUILD_PHASES: tuple[RebuildPhase, ...] = (
     "application_created",
     "application_bootstrap_intent_durable",
     "application_roles_ready",
-    "fresh_root_plan_ready",
-    "fresh_root_fence_ready",
-    "fresh_root_execution_intent",
-    "fresh_root_ready",
-    "fresh_finalize_plan_ready",
-    "fresh_finalize_fence_ready",
-    "fresh_finalize_execution_intent",
-    "fresh_finalize_ready",
-    "application_permit_ready",
+    "application_schema_ready",
     "metadata_permit_ready",
     "map_application_ready",
     "map_dagster_storage_intent_durable",
@@ -227,16 +211,8 @@ _APPLICATION_300_CONTROLLED_PHASES: frozenset[RebuildPhase] = frozenset(
         "application_created",
         "application_bootstrap_intent_durable",
         "application_roles_ready",
+        "application_schema_ready",
         "metadata_permit_ready",
-        "fresh_root_plan_ready",
-        "fresh_root_fence_ready",
-        "fresh_root_execution_intent",
-        "fresh_root_ready",
-        "fresh_finalize_plan_ready",
-        "fresh_finalize_fence_ready",
-        "fresh_finalize_execution_intent",
-        "fresh_finalize_ready",
-        "application_permit_ready",
         "map_application_ready",
     }
 )
@@ -245,9 +221,7 @@ _APPLICATION_300_EVIDENCE_FIELDS: tuple[str, ...] = (
     "application_create_database_identity_sha256",
     "application_database_identity",
     "application_database_identity_sha256",
-    "fresh_root_operation_plan",
-    "fresh_finalize_operation_plan",
-    "app_final_permit_sha256",
+    "application_schema_head",
     "dagster_metadata_database_identity",
     "dagster_metadata_database_identity_sha256",
     "metadata_permit_sha256",
@@ -940,69 +914,6 @@ class MapApplication300DagsterMetadataDatabaseIdentity:
 
 
 @dataclass(frozen=True)
-class MapApplication300OperationPlan:
-    """root/finalize write를 재개할 수 있게 보존하는 durable operation plan."""
-
-    transaction_id: str
-    operation_id: str
-    basis_journal_sha256: str
-    basis_journal_generation: int
-    writer_fence_expires_at: str
-    fence_sha256: str
-    result_sha256: str | None = None
-
-    def __post_init__(self) -> None:
-        _validate_canonical_uuid(
-            self.transaction_id,
-            "Map application 300 operation transaction ID",
-        )
-        _validate_canonical_uuid(
-            self.operation_id,
-            "Map application 300 operation ID",
-        )
-        for digest in (
-            self.basis_journal_sha256,
-            self.fence_sha256,
-            self.result_sha256,
-        ):
-            if digest is not None and _SHA256.fullmatch(digest) is None:
-                raise DeploymentContractError(
-                    "Map application 300 operation plan digest is invalid"
-                )
-        if type(self.basis_journal_generation) is not int or (
-            self.basis_journal_generation < 0
-        ):
-            raise DeploymentContractError(
-                "Map application 300 operation plan basis generation is invalid"
-            )
-        _validate_utc_timestamp(
-            self.writer_fence_expires_at,
-            "Map application 300 operation writer fence expiry",
-        )
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "transaction_id": self.transaction_id,
-            "operation_id": self.operation_id,
-            "basis_journal_sha256": self.basis_journal_sha256,
-            "basis_journal_generation": self.basis_journal_generation,
-            "writer_fence_expires_at": self.writer_fence_expires_at,
-            "fence_sha256": self.fence_sha256,
-            "result_sha256": self.result_sha256,
-        }
-
-    def pending(self) -> MapApplication300OperationPlan:
-        return replace(self, result_sha256=None)
-
-    def with_result(self, result_sha256: str) -> MapApplication300OperationPlan:
-        if self.result_sha256 is not None and self.result_sha256 != result_sha256:
-            raise DeploymentContractError(
-                "Map application 300 operation plan result cannot be rebound"
-            )
-        return replace(self, result_sha256=result_sha256)
-
-
-@dataclass(frozen=True)
 class MapApplication300ExecutionEvidence:
     """fresh application 300 execution receipts accumulated by phase."""
 
@@ -1012,9 +923,10 @@ class MapApplication300ExecutionEvidence:
     application_create_database_identity_sha256: str | None = None
     application_database_identity: MapApplication300ApplicationDatabaseIdentity | None = None
     application_database_identity_sha256: str | None = None
-    fresh_root_operation_plan: MapApplication300OperationPlan | None = None
-    fresh_finalize_operation_plan: MapApplication300OperationPlan | None = None
-    app_final_permit_sha256: str | None = None
+    #: one-shot이 돈 **뒤에** `public.alembic_version`에서 읽은 revision. 쉘 명령의
+    #: exit status가 아니라 데이터베이스의 관측값이다 — 이것이 ADR-101이 영수증
+    #: 사이드카를 지우고도 "스키마가 올라갔다"를 주장할 수 있는 근거다.
+    application_schema_head: str | None = None
     dagster_metadata_database_identity: (
         MapApplication300DagsterMetadataDatabaseIdentity | None
     ) = None
@@ -1025,7 +937,6 @@ class MapApplication300ExecutionEvidence:
         for digest in (
             self.application_create_database_identity_sha256,
             self.application_database_identity_sha256,
-            self.app_final_permit_sha256,
             self.dagster_metadata_database_identity_sha256,
             self.metadata_permit_sha256,
         ):
@@ -1033,6 +944,13 @@ class MapApplication300ExecutionEvidence:
                 raise DeploymentContractError(
                     "Map application 300 execution evidence digest is invalid"
                 )
+        if self.application_schema_head is not None and (
+            not isinstance(self.application_schema_head, str)
+            or _SCHEMA_HEAD.fullmatch(self.application_schema_head) is None
+        ):
+            raise DeploymentContractError(
+                "Map application 300 observed schema head is invalid"
+            )
         if self.application_create_database_identity is not None:
             if not isinstance(
                 self.application_create_database_identity,
@@ -1070,34 +988,6 @@ class MapApplication300ExecutionEvidence:
         elif self.application_database_identity_sha256 is not None:
             raise DeploymentContractError(
                 "Map application 300 application database identity is missing"
-            )
-        if self.fresh_root_operation_plan is not None and not isinstance(
-            self.fresh_root_operation_plan,
-            MapApplication300OperationPlan,
-        ):
-            raise DeploymentContractError(
-                "Map application 300 root operation plan is invalid"
-            )
-        if self.fresh_finalize_operation_plan is not None and not isinstance(
-            self.fresh_finalize_operation_plan,
-            MapApplication300OperationPlan,
-        ):
-            raise DeploymentContractError(
-                "Map application 300 finalize operation plan is invalid"
-            )
-        if self.fresh_finalize_operation_plan is not None and (
-            self.fresh_root_operation_plan is None
-            or self.fresh_root_operation_plan.result_sha256 is None
-        ):
-            raise DeploymentContractError(
-                "Map application 300 finalize operation lacks root result"
-            )
-        if self.app_final_permit_sha256 is not None and (
-            self.fresh_finalize_operation_plan is None
-            or self.fresh_finalize_operation_plan.result_sha256 is None
-        ):
-            raise DeploymentContractError(
-                "Map application 300 final permit lacks finalize result"
             )
         if self.dagster_metadata_database_identity is not None:
             if not isinstance(
@@ -1179,118 +1069,33 @@ class MapApplication300ExecutionEvidence:
             dagster_metadata_database_identity_sha256=identity.sha256(),
         )
 
-    def with_fresh_root_operation_plan(
+    def with_application_schema_head(
         self,
-        plan: MapApplication300OperationPlan,
+        application_schema_head: str,
     ) -> MapApplication300ExecutionEvidence:
-        _validate_operation_plan_object(plan, "root")
-        _validate_operation_plan_result_state(plan, result_required=False)
-        if (
-            self.fresh_root_operation_plan is not None
-            and self.fresh_root_operation_plan != plan
-        ):
-            raise DeploymentContractError(
-                "Map application 300 root operation plan cannot be rebound"
-            )
-        return self.with_digest(fresh_root_operation_plan=plan)
+        """관측된 schema head를 결박한다 — 한 번 적히면 바뀌지 않는다."""
 
-    def with_fresh_root_result(
-        self,
-        plan: MapApplication300OperationPlan,
-    ) -> MapApplication300ExecutionEvidence:
-        _validate_operation_plan_object(plan, "root")
-        _validate_operation_plan_result_state(plan, result_required=True)
-        if self.fresh_root_operation_plan is None:
-            raise DeploymentContractError("Map application 300 root operation plan is missing")
-        if self.fresh_root_operation_plan.pending() != plan.pending():
-            raise DeploymentContractError(
-                "Map application 300 root operation plan changed"
-            )
         if (
-            self.fresh_root_operation_plan.result_sha256 is not None
-            and self.fresh_root_operation_plan != plan
+            not isinstance(application_schema_head, str)
+            or _SCHEMA_HEAD.fullmatch(application_schema_head) is None
         ):
             raise DeploymentContractError(
-                "Map application 300 root operation result cannot be rebound"
-            )
-        return replace(self, fresh_root_operation_plan=plan)
-
-    def with_renewed_fresh_root_operation_plan(
-        self,
-        plan: MapApplication300OperationPlan,
-    ) -> MapApplication300ExecutionEvidence:
-        _validate_operation_plan_object(plan, "root")
-        _validate_operation_plan_result_state(plan, result_required=False)
-        if (
-            self.fresh_root_operation_plan is None
-            or self.fresh_root_operation_plan.result_sha256 is not None
-            or self.fresh_root_operation_plan.operation_id != plan.operation_id
-        ):
-            raise DeploymentContractError(
-                "Map application 300 root operation plan cannot be renewed"
-            )
-        return replace(self, fresh_root_operation_plan=plan)
-
-    def with_fresh_finalize_operation_plan(
-        self,
-        plan: MapApplication300OperationPlan,
-    ) -> MapApplication300ExecutionEvidence:
-        _validate_operation_plan_object(plan, "finalize")
-        _validate_operation_plan_result_state(plan, result_required=False)
-        if (
-            self.fresh_finalize_operation_plan is not None
-            and self.fresh_finalize_operation_plan != plan
-        ):
-            raise DeploymentContractError(
-                "Map application 300 finalize operation plan cannot be rebound"
-            )
-        return self.with_digest(fresh_finalize_operation_plan=plan)
-
-    def with_fresh_finalize_result(
-        self,
-        plan: MapApplication300OperationPlan,
-    ) -> MapApplication300ExecutionEvidence:
-        _validate_operation_plan_object(plan, "finalize")
-        _validate_operation_plan_result_state(plan, result_required=True)
-        if self.fresh_finalize_operation_plan is None:
-            raise DeploymentContractError(
-                "Map application 300 finalize operation plan is missing"
-            )
-        if self.fresh_finalize_operation_plan.pending() != plan.pending():
-            raise DeploymentContractError(
-                "Map application 300 finalize operation plan changed"
+                "Map application 300 observed schema head is invalid"
             )
         if (
-            self.fresh_finalize_operation_plan.result_sha256 is not None
-            and self.fresh_finalize_operation_plan != plan
+            self.application_schema_head is not None
+            and self.application_schema_head != application_schema_head
         ):
             raise DeploymentContractError(
-                "Map application 300 finalize operation result cannot be rebound"
+                "Map application 300 execution evidence cannot be rebound"
             )
-        return replace(self, fresh_finalize_operation_plan=plan)
-
-    def with_renewed_fresh_finalize_operation_plan(
-        self,
-        plan: MapApplication300OperationPlan,
-    ) -> MapApplication300ExecutionEvidence:
-        _validate_operation_plan_object(plan, "finalize")
-        _validate_operation_plan_result_state(plan, result_required=False)
-        if (
-            self.fresh_finalize_operation_plan is None
-            or self.fresh_finalize_operation_plan.result_sha256 is not None
-            or self.fresh_finalize_operation_plan.operation_id != plan.operation_id
-        ):
-            raise DeploymentContractError(
-                "Map application 300 finalize operation plan cannot be renewed"
-            )
-        return replace(self, fresh_finalize_operation_plan=plan)
+        return replace(self, application_schema_head=application_schema_head)
 
     def with_digest(
         self,
         **changes: str
         | MapApplication300ApplicationDatabaseIdentity
-        | MapApplication300DagsterMetadataDatabaseIdentity
-        | MapApplication300OperationPlan,
+        | MapApplication300DagsterMetadataDatabaseIdentity,
     ) -> MapApplication300ExecutionEvidence:
         for key, value in changes.items():
             if key not in _APPLICATION_300_EVIDENCE_FIELDS:
@@ -1301,8 +1106,6 @@ class MapApplication300ExecutionEvidence:
                 "application_create_database_identity",
                 "application_database_identity",
                 "dagster_metadata_database_identity",
-                "fresh_root_operation_plan",
-                "fresh_finalize_operation_plan",
             }:
                 if key in {
                     "application_create_database_identity",
@@ -1320,13 +1123,6 @@ class MapApplication300ExecutionEvidence:
                 ):
                     raise DeploymentContractError(
                         "Map application 300 Dagster metadata identity is invalid"
-                    )
-                if key in {
-                    "fresh_root_operation_plan",
-                    "fresh_finalize_operation_plan",
-                } and not isinstance(value, MapApplication300OperationPlan):
-                    raise DeploymentContractError(
-                        "Map application 300 operation plan is invalid"
                     )
                 existing = getattr(self, key)
                 if existing is not None and existing != value:
@@ -1363,17 +1159,7 @@ class MapApplication300ExecutionEvidence:
             "application_database_identity_sha256": (
                 self.application_database_identity_sha256
             ),
-            "fresh_root_operation_plan": (
-                None
-                if self.fresh_root_operation_plan is None
-                else self.fresh_root_operation_plan.to_payload()
-            ),
-            "fresh_finalize_operation_plan": (
-                None
-                if self.fresh_finalize_operation_plan is None
-                else self.fresh_finalize_operation_plan.to_payload()
-            ),
-            "app_final_permit_sha256": self.app_final_permit_sha256,
+            "application_schema_head": self.application_schema_head,
             "dagster_metadata_database_identity": (
                 None
                 if self.dagster_metadata_database_identity is None
@@ -1384,59 +1170,6 @@ class MapApplication300ExecutionEvidence:
             ),
             "metadata_permit_sha256": self.metadata_permit_sha256,
         }
-
-
-def _validate_operation_plan_object(
-    plan: MapApplication300OperationPlan,
-    label: str,
-) -> None:
-    if not isinstance(plan, MapApplication300OperationPlan):
-        raise DeploymentContractError(
-            f"Map application 300 {label} operation plan is invalid"
-        )
-
-
-def _validate_operation_plan_result_state(
-    plan: MapApplication300OperationPlan,
-    *,
-    result_required: bool,
-) -> None:
-    if result_required and plan.result_sha256 is None:
-        raise DeploymentContractError("Map application 300 operation result is missing")
-    if not result_required and plan.result_sha256 is not None:
-        raise DeploymentContractError("Map application 300 phase has future evidence")
-
-
-def _validate_operation_plan_basis(
-    plan: MapApplication300OperationPlan,
-    journal: PinnedRuntimeRebuildJournal,
-    *,
-    label: str,
-) -> None:
-    if plan.basis_journal_generation != journal.journal_generation:
-        raise DeploymentContractError(
-            f"Map application 300 {label} operation plan basis generation differs"
-        )
-    if plan.basis_journal_sha256 != rebuild_journal_sha256(journal):
-        raise DeploymentContractError(
-            f"Map application 300 {label} operation plan basis journal differs"
-        )
-
-
-def _validate_same_pending_operation_plan(
-    expected: MapApplication300OperationPlan | None,
-    actual: MapApplication300OperationPlan,
-    *,
-    label: str,
-) -> None:
-    if expected is None:
-        raise DeploymentContractError(
-            f"Map application 300 {label} operation plan is missing"
-        )
-    if expected.pending() != actual.pending():
-        raise DeploymentContractError(
-            f"Map application 300 {label} operation plan changed"
-        )
 
 
 @dataclass(frozen=True)
@@ -1841,7 +1574,7 @@ class PinnedRuntimeRebuildJournal:
         dagster_metadata_database_identity: MapApplication300DagsterMetadataDatabaseIdentity,
         metadata_permit_sha256: str,
     ) -> PinnedRuntimeRebuildJournal:
-        if self.phase != "application_permit_ready":
+        if self.phase != "application_schema_ready":
             raise DeploymentContractError("Map application 300 metadata permit is out of order")
         evidence = (
             self.map_application_300_execution_evidence.with_dagster_metadata_database_identity(
@@ -1855,255 +1588,35 @@ class PinnedRuntimeRebuildJournal:
             map_application_300_execution_evidence=evidence,
         )
 
-    def with_fresh_root_plan_ready(
+    def with_application_schema_ready(
         self,
         *,
-        fresh_root_operation_plan: MapApplication300OperationPlan,
+        application_schema_head: str,
     ) -> PinnedRuntimeRebuildJournal:
+        """one-shot이 돈 뒤 **관측된** schema head를 저널에 결박한다.
+
+        ADR-101 이전에는 이 자리에 아홉 개의 phase가 있었다 — root/finalize 각각
+        plan·fence·execution_intent·ready, 그리고 final permit. 그 계단은 영수증
+        사이드카를 안전하게 재개하기 위한 것이었고, 사이드카가 사라진 지금은 결박할
+        대상이 없다.
+
+        대신 이 전이는 **데이터베이스를 봤다**고 주장한다. 인자는 호출자가
+        `public.alembic_version`에서 읽은 값이어야 한다 — 쉘 명령의 exit status로
+        이 전이를 부르면 그것은 거짓 증거다.
+        """
+
         if self.phase != "application_roles_ready":
-            raise DeploymentContractError("Map application 300 root plan is out of order")
-        _validate_operation_plan_basis(
-            fresh_root_operation_plan,
-            self,
-            label="root",
-        )
-        evidence = self.map_application_300_execution_evidence.with_fresh_root_operation_plan(
-            fresh_root_operation_plan
-        )
-        return replace(
-            self,
-            phase="fresh_root_plan_ready",
-            journal_generation=self.journal_generation + 1,
-            map_application_300_execution_evidence=evidence,
-        )
-
-    def with_fresh_root_fence_ready(
-        self,
-        *,
-        fresh_root_operation_plan: MapApplication300OperationPlan,
-    ) -> PinnedRuntimeRebuildJournal:
-        if self.phase != "fresh_root_plan_ready":
-            raise DeploymentContractError("Map application 300 root fence is out of order")
-        _validate_operation_plan_object(fresh_root_operation_plan, "root")
-        _validate_operation_plan_result_state(
-            fresh_root_operation_plan,
-            result_required=False,
-        )
-        _validate_same_pending_operation_plan(
-            self.map_application_300_execution_evidence.fresh_root_operation_plan,
-            fresh_root_operation_plan,
-            label="root",
-        )
-        return replace(
-            self,
-            phase="fresh_root_fence_ready",
-            journal_generation=self.journal_generation + 1,
-        )
-
-    def with_fresh_root_execution_intent(
-        self,
-        *,
-        fresh_root_operation_plan: MapApplication300OperationPlan,
-    ) -> PinnedRuntimeRebuildJournal:
-        if self.phase != "fresh_root_fence_ready":
-            raise DeploymentContractError("Map application 300 root execution intent is out of order")
-        _validate_operation_plan_object(fresh_root_operation_plan, "root")
-        _validate_operation_plan_result_state(
-            fresh_root_operation_plan,
-            result_required=False,
-        )
-        _validate_same_pending_operation_plan(
-            self.map_application_300_execution_evidence.fresh_root_operation_plan,
-            fresh_root_operation_plan,
-            label="root",
-        )
-        return replace(
-            self,
-            phase="fresh_root_execution_intent",
-            journal_generation=self.journal_generation + 1,
-        )
-
-    def with_renewed_fresh_root_execution_intent(
-        self,
-        *,
-        fresh_root_operation_plan: MapApplication300OperationPlan,
-    ) -> PinnedRuntimeRebuildJournal:
-        if self.phase != "fresh_root_execution_intent":
             raise DeploymentContractError(
-                "Map application 300 root renewal is out of order"
+                "Map application 300 schema readiness is out of order"
             )
-        _validate_operation_plan_basis(
-            fresh_root_operation_plan,
-            self,
-            label="root renewal",
-        )
         evidence = (
-            self.map_application_300_execution_evidence
-            .with_renewed_fresh_root_operation_plan(fresh_root_operation_plan)
-        )
-        return replace(
-            self,
-            journal_generation=self.journal_generation + 1,
-            map_application_300_execution_evidence=evidence,
-        )
-
-    def with_fresh_root_ready(
-        self,
-        *,
-        fresh_root_operation_plan: MapApplication300OperationPlan,
-    ) -> PinnedRuntimeRebuildJournal:
-        if self.phase != "fresh_root_execution_intent":
-            raise DeploymentContractError("Map application 300 root result is out of order")
-        _validate_same_pending_operation_plan(
-            self.map_application_300_execution_evidence.fresh_root_operation_plan,
-            fresh_root_operation_plan,
-            label="root",
-        )
-        evidence = self.map_application_300_execution_evidence.with_fresh_root_result(
-            fresh_root_operation_plan
-        )
-        return replace(
-            self,
-            phase="fresh_root_ready",
-            journal_generation=self.journal_generation + 1,
-            map_application_300_execution_evidence=evidence,
-        )
-
-    def with_fresh_finalize_plan_ready(
-        self,
-        *,
-        fresh_finalize_operation_plan: MapApplication300OperationPlan,
-    ) -> PinnedRuntimeRebuildJournal:
-        if self.phase != "fresh_root_ready":
-            raise DeploymentContractError("Map application 300 finalize plan is out of order")
-        _validate_operation_plan_basis(
-            fresh_finalize_operation_plan,
-            self,
-            label="finalize",
-        )
-        evidence = (
-            self.map_application_300_execution_evidence.with_fresh_finalize_operation_plan(
-                fresh_finalize_operation_plan
+            self.map_application_300_execution_evidence.with_application_schema_head(
+                application_schema_head
             )
         )
         return replace(
             self,
-            phase="fresh_finalize_plan_ready",
-            journal_generation=self.journal_generation + 1,
-            map_application_300_execution_evidence=evidence,
-        )
-
-    def with_fresh_finalize_fence_ready(
-        self,
-        *,
-        fresh_finalize_operation_plan: MapApplication300OperationPlan,
-    ) -> PinnedRuntimeRebuildJournal:
-        if self.phase != "fresh_finalize_plan_ready":
-            raise DeploymentContractError("Map application 300 finalize fence is out of order")
-        _validate_operation_plan_object(fresh_finalize_operation_plan, "finalize")
-        _validate_operation_plan_result_state(
-            fresh_finalize_operation_plan,
-            result_required=False,
-        )
-        _validate_same_pending_operation_plan(
-            self.map_application_300_execution_evidence.fresh_finalize_operation_plan,
-            fresh_finalize_operation_plan,
-            label="finalize",
-        )
-        return replace(
-            self,
-            phase="fresh_finalize_fence_ready",
-            journal_generation=self.journal_generation + 1,
-        )
-
-    def with_fresh_finalize_execution_intent(
-        self,
-        *,
-        fresh_finalize_operation_plan: MapApplication300OperationPlan,
-    ) -> PinnedRuntimeRebuildJournal:
-        if self.phase != "fresh_finalize_fence_ready":
-            raise DeploymentContractError(
-                "Map application 300 finalize execution intent is out of order"
-            )
-        _validate_operation_plan_object(fresh_finalize_operation_plan, "finalize")
-        _validate_operation_plan_result_state(
-            fresh_finalize_operation_plan,
-            result_required=False,
-        )
-        _validate_same_pending_operation_plan(
-            self.map_application_300_execution_evidence.fresh_finalize_operation_plan,
-            fresh_finalize_operation_plan,
-            label="finalize",
-        )
-        return replace(
-            self,
-            phase="fresh_finalize_execution_intent",
-            journal_generation=self.journal_generation + 1,
-        )
-
-    def with_renewed_fresh_finalize_execution_intent(
-        self,
-        *,
-        fresh_finalize_operation_plan: MapApplication300OperationPlan,
-    ) -> PinnedRuntimeRebuildJournal:
-        if self.phase != "fresh_finalize_execution_intent":
-            raise DeploymentContractError(
-                "Map application 300 finalize renewal is out of order"
-            )
-        _validate_operation_plan_basis(
-            fresh_finalize_operation_plan,
-            self,
-            label="finalize renewal",
-        )
-        evidence = (
-            self.map_application_300_execution_evidence
-            .with_renewed_fresh_finalize_operation_plan(
-                fresh_finalize_operation_plan
-            )
-        )
-        return replace(
-            self,
-            journal_generation=self.journal_generation + 1,
-            map_application_300_execution_evidence=evidence,
-        )
-
-    def with_fresh_finalize_ready(
-        self,
-        *,
-        fresh_finalize_operation_plan: MapApplication300OperationPlan,
-    ) -> PinnedRuntimeRebuildJournal:
-        if self.phase != "fresh_finalize_execution_intent":
-            raise DeploymentContractError("Map application 300 finalize result is out of order")
-        _validate_same_pending_operation_plan(
-            self.map_application_300_execution_evidence.fresh_finalize_operation_plan,
-            fresh_finalize_operation_plan,
-            label="finalize",
-        )
-        evidence = self.map_application_300_execution_evidence.with_fresh_finalize_result(
-            fresh_finalize_operation_plan
-        )
-        return replace(
-            self,
-            phase="fresh_finalize_ready",
-            journal_generation=self.journal_generation + 1,
-            map_application_300_execution_evidence=evidence,
-        )
-
-    def with_application_permit_ready(
-        self,
-        *,
-        app_final_permit_sha256: str,
-    ) -> PinnedRuntimeRebuildJournal:
-        if self.phase != "fresh_finalize_ready":
-            raise DeploymentContractError(
-                "Map application 300 application permit is out of order"
-            )
-        evidence = self.map_application_300_execution_evidence.with_digest(
-            app_final_permit_sha256=app_final_permit_sha256
-        )
-        return replace(
-            self,
-            phase="application_permit_ready",
+            phase="application_schema_ready",
             journal_generation=self.journal_generation + 1,
             map_application_300_execution_evidence=evidence,
         )
@@ -2561,9 +2074,7 @@ def map_application_300_execution_evidence_from_payload(
         "application_create_database_identity_sha256",
         "application_database_identity",
         "application_database_identity_sha256",
-        "fresh_root_operation_plan",
-        "fresh_finalize_operation_plan",
-        "app_final_permit_sha256",
+        "application_schema_head",
         "dagster_metadata_database_identity",
         "dagster_metadata_database_identity_sha256",
         "metadata_permit_sha256",
@@ -2576,14 +2087,10 @@ def map_application_300_execution_evidence_from_payload(
         "application_create_database_identity"
     )
     application_identity = payload.get("application_database_identity")
-    fresh_root_operation_plan = payload.get("fresh_root_operation_plan")
-    fresh_finalize_operation_plan = payload.get("fresh_finalize_operation_plan")
     dagster_metadata_identity = payload.get("dagster_metadata_database_identity")
     digest_fields = expected - {
         "application_create_database_identity",
         "application_database_identity",
-        "fresh_root_operation_plan",
-        "fresh_finalize_operation_plan",
         "dagster_metadata_database_identity",
     }
     if any(
@@ -2616,21 +2123,7 @@ def map_application_300_execution_evidence_from_payload(
         application_database_identity_sha256=values[
             "application_database_identity_sha256"
         ],
-        fresh_root_operation_plan=(
-            None
-            if fresh_root_operation_plan is None
-            else map_application_300_operation_plan_from_payload(
-                fresh_root_operation_plan
-            )
-        ),
-        fresh_finalize_operation_plan=(
-            None
-            if fresh_finalize_operation_plan is None
-            else map_application_300_operation_plan_from_payload(
-                fresh_finalize_operation_plan
-            )
-        ),
-        app_final_permit_sha256=values["app_final_permit_sha256"],
+        application_schema_head=values["application_schema_head"],
         dagster_metadata_database_identity=(
             None
             if dagster_metadata_identity is None
@@ -2642,52 +2135,6 @@ def map_application_300_execution_evidence_from_payload(
             "dagster_metadata_database_identity_sha256"
         ],
         metadata_permit_sha256=values["metadata_permit_sha256"],
-    )
-
-
-def map_application_300_operation_plan_from_payload(
-    payload: object,
-) -> MapApplication300OperationPlan:
-    expected = {
-        "transaction_id",
-        "operation_id",
-        "basis_journal_sha256",
-        "basis_journal_generation",
-        "writer_fence_expires_at",
-        "fence_sha256",
-        "result_sha256",
-    }
-    if not isinstance(payload, Mapping) or set(payload) != expected:
-        raise DeploymentContractError(
-            "Map application 300 operation plan payload is invalid"
-        )
-    transaction_id = payload.get("transaction_id")
-    operation_id = payload.get("operation_id")
-    basis_journal_sha256 = payload.get("basis_journal_sha256")
-    basis_journal_generation = payload.get("basis_journal_generation")
-    writer_fence_expires_at = payload.get("writer_fence_expires_at")
-    fence_sha256 = payload.get("fence_sha256")
-    result_sha256 = payload.get("result_sha256")
-    if (
-        not isinstance(transaction_id, str)
-        or not isinstance(operation_id, str)
-        or not isinstance(basis_journal_sha256, str)
-        or type(basis_journal_generation) is not int
-        or not isinstance(writer_fence_expires_at, str)
-        or not isinstance(fence_sha256, str)
-        or (result_sha256 is not None and not isinstance(result_sha256, str))
-    ):
-        raise DeploymentContractError(
-            "Map application 300 operation plan payload is invalid"
-        )
-    return MapApplication300OperationPlan(
-        transaction_id=transaction_id,
-        operation_id=operation_id,
-        basis_journal_sha256=basis_journal_sha256,
-        basis_journal_generation=basis_journal_generation,
-        writer_fence_expires_at=writer_fence_expires_at,
-        fence_sha256=fence_sha256,
-        result_sha256=result_sha256,
     )
 
 
@@ -2881,37 +2328,6 @@ def _validate_application_300_phase_evidence(
             raise DeploymentContractError(
                 "Map application 300 phase has future evidence"
             )
-    phase_index = REBUILD_PHASES.index(phase)
-    if evidence.fresh_root_operation_plan is not None:
-        if phase in {
-            "fresh_root_plan_ready",
-            "fresh_root_fence_ready",
-            "fresh_root_execution_intent",
-        }:
-            _validate_operation_plan_result_state(
-                evidence.fresh_root_operation_plan,
-                result_required=False,
-            )
-        elif phase_index >= REBUILD_PHASES.index("fresh_root_ready"):
-            _validate_operation_plan_result_state(
-                evidence.fresh_root_operation_plan,
-                result_required=True,
-            )
-    if evidence.fresh_finalize_operation_plan is not None:
-        if phase in {
-            "fresh_finalize_plan_ready",
-            "fresh_finalize_fence_ready",
-            "fresh_finalize_execution_intent",
-        }:
-            _validate_operation_plan_result_state(
-                evidence.fresh_finalize_operation_plan,
-                result_required=False,
-            )
-        elif phase_index >= REBUILD_PHASES.index("fresh_finalize_ready"):
-            _validate_operation_plan_result_state(
-                evidence.fresh_finalize_operation_plan,
-                result_required=True,
-            )
 
 
 def _application_300_required_evidence_fields(phase: RebuildPhase) -> tuple[str, ...]:
@@ -2930,12 +2346,8 @@ def _application_300_required_evidence_fields(phase: RebuildPhase) -> tuple[str,
         "application_database_identity_sha256",
         ]
     )
-    if phase_index >= REBUILD_PHASES.index("fresh_root_plan_ready"):
-        fields.append("fresh_root_operation_plan")
-    if phase_index >= REBUILD_PHASES.index("fresh_finalize_plan_ready"):
-        fields.append("fresh_finalize_operation_plan")
-    if phase_index >= REBUILD_PHASES.index("application_permit_ready"):
-        fields.append("app_final_permit_sha256")
+    if phase_index >= REBUILD_PHASES.index("application_schema_ready"):
+        fields.append("application_schema_head")
     if phase_index >= REBUILD_PHASES.index("metadata_permit_ready"):
         fields.extend(
             (
