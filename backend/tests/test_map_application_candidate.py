@@ -10,8 +10,8 @@ ADR-101 이전에는 이 모듈이 sealed receipt를 파싱하는 450줄짜리 �
 from __future__ import annotations
 
 from kor_travel_docker_manager.services.map_application_candidate import (
-    MapApplicationCandidate,
     POSTGRES_IMAGE_ID,
+    MapApplicationCandidate,
 )
 
 _COMMIT = "1" * 40

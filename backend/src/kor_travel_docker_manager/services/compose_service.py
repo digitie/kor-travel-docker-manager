@@ -100,7 +100,6 @@ from kor_travel_docker_manager.services.map_application_300 import (
 )
 from kor_travel_docker_manager.services.map_application_candidate import (
     MapApplicationCandidate,
-    MapApplicationCandidateError,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     REBUILD_PHASES,
