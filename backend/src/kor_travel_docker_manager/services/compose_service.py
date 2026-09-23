@@ -2889,6 +2889,33 @@ def _load_application_300_candidate(
     )
 
 
+def _map_application_candidate_from_journal(
+    journal: PinnedRuntimeRebuildJournal,
+    *,
+    sources: PinnedRuntimeSourceMaterialization,
+) -> MapApplicationCandidate:
+    """resume 시 재빌드·재관측 대신 durable journal에 이미 적힌 값을 그대로 쓴다.
+
+    `docker buildx build`는 (다른 Manager 재빌드 스크립트들과 달리) 소스 commit이
+    같아도 byte-identical 이미지를 보장하지 않는다 — `pip install` 버전 해석,
+    레이어 타임스탬프 등이 재실행마다 미세하게 달라질 수 있다. resume에서 다시
+    빌드·관측하면 이미 durable하게 적힌 journal evidence와 새로 관측한 값이
+    갈릴 수 있고, 실제로 그렇게 갈리는 것이 관측됐다(2026-09-23). 이미지가 이미
+    태그돼 있으므로 다시 빌드할 이유가 없다 — journal이 정본이다.
+    """
+
+    evidence = journal.map_application_300_candidate_evidence
+    return MapApplicationCandidate(
+        candidate_commit=sources.source_for("map").revision,
+        candidate_git_tree=evidence.candidate_git_tree,
+        api_image_id=journal.candidate.map_api_image_id,
+        dagster_image_id=journal.candidate.map_dagster_image_id,
+        postgres_image_id=evidence.postgres_image_id,
+        dagster_config_sha256=evidence.dagster_config_sha256,
+        application_head=journal.candidate.map_application_head,
+    )
+
+
 def map_application_300_python_base_references_from_root(
     map_root: Path,
 ) -> tuple[str, ...]:
@@ -5477,17 +5504,28 @@ class ComposeService:
                 )
             with _pinned_runtime_prejournal_step("application_base_images"):
                 _ensure_map_application_300_python_base_images(sources)
-            with _pinned_runtime_prejournal_step("application_builder"):
-                _build_map_application_300_images(
-                    sources=sources,
-                    api_image=paired_build_images["kor-travel-map-api"],
-                    dagster_image=paired_build_images["kor-travel-map-dagster"],
-                )
+            if not journal_exists:
+                with _pinned_runtime_prejournal_step("application_builder"):
+                    _build_map_application_300_images(
+                        sources=sources,
+                        api_image=paired_build_images["kor-travel-map-api"],
+                        dagster_image=paired_build_images["kor-travel-map-dagster"],
+                    )
             with _pinned_runtime_prejournal_step("application_candidate"):
-                map_candidate = _load_application_300_candidate(
-                    sources=sources,
-                    api_image=paired_build_images["kor-travel-map-api"],
-                    dagster_image=paired_build_images["kor-travel-map-dagster"],
+                # resume이면 이미 durable하게 적힌 candidate를 그대로 쓴다 -- 다시
+                # 빌드·관측하면 재현되지 않는 이미지 digest 때문에 journal과 갈릴 수
+                # 있다(_map_application_candidate_from_journal의 docstring 참고).
+                map_candidate = (
+                    _map_application_candidate_from_journal(
+                        cast(PinnedRuntimeRebuildJournal, resume_journal),
+                        sources=sources,
+                    )
+                    if journal_exists
+                    else _load_application_300_candidate(
+                        sources=sources,
+                        api_image=paired_build_images["kor-travel-map-api"],
+                        dagster_image=paired_build_images["kor-travel-map-dagster"],
+                    )
                 )
             with _pinned_runtime_prejournal_step("application_candidate"):
                 build = CandidateRuntimeBuild(

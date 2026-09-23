@@ -3119,7 +3119,10 @@ def test_legacy_tombstone_failure_is_retried_before_any_database_reset(
     assert tombstone.call_count == 2
     run_compose.assert_not_called()
     database_reset.assert_not_called()
-    assert paired_builder.call_count == 2
+    # 이 테스트는 durable journal을 미리 심어 둔다(resume) -- resume이면 이미
+    # 태그된 이미지를 다시 빌드하지 않는다(재현 불가능한 digest가 journal과
+    # 갈리는 것을 막는다). 그래서 builder는 한 번도 불리지 않는다.
+    paired_builder.assert_not_called()
 
 
 def test_new_pinset_ignores_previous_journal_and_starts_a_fresh_generation(
