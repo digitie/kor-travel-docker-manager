@@ -208,7 +208,7 @@ def _read_targets_bytes(path: str) -> bytes:
     **부모 디렉터리도 함께 본다.** `O_NOFOLLOW`는 경로의 **마지막 조각**에만 걸리므로,
     파일만 검증하면 `/opt/kor-travel-docker-manager/config`가 통째로 바꿔치기된 경우를
     놓친다. 저장소의 선례 셋(`runtime_execution_registry._assert_registry_parent`,
-    `trusted_manager_source_revision`, `map_application_300_candidate._validate_parent_metadata`)
+    `trusted_manager_source_revision`, `map_application_candidate._validate_parent_metadata`)
     과 `docs/decisions.md`의 typed path 기준이 전부 부모를 본다.
     """
 

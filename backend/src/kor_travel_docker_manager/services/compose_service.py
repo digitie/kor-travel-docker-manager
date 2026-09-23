@@ -98,11 +98,9 @@ from kor_travel_docker_manager.services.map_application_300 import (
     build_dagster_metadata_permit,
     publish_root_read_only_artifact,
 )
-from kor_travel_docker_manager.services.map_application_300_candidate import (
-    ImmutableImageObservation,
-    MapApplication300Candidate,
-    MapApplication300CandidateError,
-    load_map_application_300_candidate,
+from kor_travel_docker_manager.services.map_application_candidate import (
+    MapApplicationCandidate,
+    MapApplicationCandidateError,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     REBUILD_PHASES,
@@ -410,7 +408,7 @@ def _validate_map_dagster_storage_receipt(
     receipt: object,
     *,
     journal: PinnedRuntimeRebuildJournal,
-    candidate: MapApplication300Candidate,
+    candidate: MapApplicationCandidate,
 ) -> None:
     """Map v3 receipt를 journal·permit·candidate·DB identity에 exact 결박한다."""
 
@@ -421,9 +419,10 @@ def _validate_map_dagster_storage_receipt(
     permit_sha256 = (
         journal.map_application_300_execution_evidence.metadata_permit_sha256
     )
+    # Map's dagster-storage-migrate.py hashes exactly
+    # "<image_id>:<config_sha256>" -- no receipt sha256, one colon.
     candidate_binding = (
-        f"{candidate.dagster_image_id}:{candidate.receipt_sha256}:"
-        f"{candidate.dagster_yaml_sha256}"
+        f"{candidate.dagster_image_id}:{candidate.dagster_config_sha256}"
     )
     if (
         not isinstance(receipt, Mapping)
@@ -2656,7 +2655,7 @@ def _ensure_application_300_mount_directory(path: Path) -> None:
 
 
 def _application_300_execution_candidate(
-    candidate: MapApplication300Candidate,
+    candidate: MapApplicationCandidate,
 ) -> Application300ExecutionCandidate:
     try:
         return Application300ExecutionCandidate(
@@ -2784,146 +2783,111 @@ def _application_300_dagster_identities(
     return contract_identity, journal_identity
 
 
-def _discard_application_300_receipt(path: Path) -> None:
-    """Discard one exact pre-journal candidate receipt before a fresh build."""
-
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise DeploymentContractError(
-            "application 300 stale candidate receipt cannot be inspected"
-        ) from exc
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or metadata.st_uid != os.geteuid()
-        or stat.S_IMODE(metadata.st_mode) != 0o600
-        or metadata.st_nlink != 1
-    ):
-        raise DeploymentContractError(
-            "application 300 stale candidate receipt is unsafe"
-        )
-    try:
-        path.unlink()
-        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    except OSError as exc:
-        raise DeploymentContractError(
-            "application 300 stale candidate receipt cannot be discarded"
-        ) from exc
-
-
-def _run_map_application_300_paired_builder(
+def _build_map_application_300_images(
     *,
     sources: PinnedRuntimeSourceMaterialization,
     api_image: str,
     dagster_image: str,
-    paths: _MapApplication300Paths,
-    resume_journal: bool,
 ) -> None:
+    """api/dagster 두 이미지를 직접 빌드한다 -- sealed 외부 스크립트는 없다."""
+
     map_source = sources.source_for("map")
-    script = map_source.root / "scripts" / "build-application-300-paired-candidate.sh"
-    try:
-        script_metadata = script.lstat()
-    except OSError as exc:
-        raise DeploymentContractError(
-            "application 300 paired builder is unavailable"
-        ) from exc
-    if (
-        not stat.S_ISREG(script_metadata.st_mode)
-        or stat.S_ISLNK(script_metadata.st_mode)
-        or script_metadata.st_uid != os.geteuid()
-    ):
-        raise DeploymentContractError("application 300 paired builder is unsafe")
-    receipt_presence_values: list[bool] = []
-    for receipt_path in (paths.api_receipt, paths.paired_receipt):
-        try:
-            receipt_path.lstat()
-        except FileNotFoundError:
-            receipt_presence_values.append(False)
-        except OSError as exc:
-            raise DeploymentContractError(
-                "application 300 paired receipt set cannot be inspected"
-            ) from exc
-        else:
-            # A symlink or foreign-owned entry is still an existing partial
-            # result.  Pass it to the sealed builder, whose O_NOFOLLOW and
-            # exact-ownership checks must reject it rather than treating it as
-            # an absent receipt that may be overwritten.
-            receipt_presence_values.append(True)
-    receipt_presence = tuple(receipt_presence_values)
-    if resume_journal and receipt_presence != (True, True):
-        raise DeploymentContractError(
-            "application 300 journal resume requires a complete receipt set"
-        )
-    if not resume_journal and any(receipt_presence):
-        # A receipt pair without a durable rebuild journal is only a pre-journal
-        # candidate.  It may be left behind by a failed static inspection (or
-        # by a response-loss crash) and must never silently become ``--verify``
-        # evidence on the next run.  Remove only the two exact, owner-only
-        # receipt paths; the sealed builder will create a fresh pair below.
-        for receipt_path in (paths.api_receipt, paths.paired_receipt):
-            _discard_application_300_receipt(receipt_path)
-        receipt_presence = (False, False)
-    if receipt_presence not in {(False, False), (True, False), (True, True)}:
-        raise DeploymentContractError(
-            "application 300 paired receipt set is incomplete"
-        )
-    command = [
-        str(script),
-        "--candidate-commit",
-        map_source.revision,
-        "--api-image",
-        api_image,
-        "--dagster-image",
-        dagster_image,
-        "--api-receipt",
-        str(paths.api_receipt),
-        "--receipt",
-        str(paths.paired_receipt),
-        "--git-root",
-        str(map_source.root),
-    ]
-    if resume_journal and receipt_presence == (True, True):
-        command.append("--verify")
     builder_environment = {
         name: value
-        for name in (
-            "DOCKER_CONFIG",
-            "DOCKER_HOST",
-            "PATH",
-            "XDG_RUNTIME_DIR",
-        )
-        if (value := os.environ.get(name))
+        for name in ("DOCKER_CONFIG", "DOCKER_HOST", "XDG_RUNTIME_DIR")
+        if (value := os.environ.get(name)) is not None
     }
     builder_environment["PATH"] = (
         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     )
-    builder_environment["TMPDIR"] = "/tmp"
+    for image, dockerfile in (
+        (api_image, "docker/api.Dockerfile"),
+        (dagster_image, "docker/dagster.Dockerfile"),
+    ):
+        try:
+            completed = subprocess.run(
+                [
+                    "docker",
+                    "buildx",
+                    "build",
+                    "--load",
+                    "--file",
+                    str(map_source.root / dockerfile),
+                    "--tag",
+                    image,
+                    str(map_source.root),
+                ],
+                cwd="/",
+                env=builder_environment,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=3600,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentContractError(
+                "application 300 image build could not start"
+            ) from exc
+        if completed.returncode != 0:
+            raise DeploymentContractError(
+                f"application 300 image build failed ({dockerfile})"
+            )
+
+
+def _inspect_local_image_id(image: str) -> str:
     try:
         completed = subprocess.run(
-            command,
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image],
             cwd="/",
-            env=builder_environment,
-            stdout=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=False,
-            timeout=3600,
+            timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise DeploymentContractError(
-            "application 300 paired builder could not complete"
+            "application 300 image cannot be inspected"
         ) from exc
-    if completed.returncode != 0:
+    image_id = completed.stdout.decode("ascii", errors="replace").strip()
+    if completed.returncode != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
         raise DeploymentContractError(
-            "application 300 paired builder failed: "
-            f"{_map_application_300_builder_failure_code(paths)}"
+            "application 300 image cannot be inspected"
         )
+    return image_id
+
+
+def _load_application_300_candidate(
+    *,
+    sources: PinnedRuntimeSourceMaterialization,
+    api_image: str,
+    dagster_image: str,
+) -> MapApplicationCandidate:
+    """빌드된 두 이미지를 관측해서 후보 identity를 만든다."""
+
+    map_source = sources.source_for("map")
+    dagster_config_sha256 = hashlib.sha256(
+        (map_source.root / "docker" / "dagster.yaml").read_bytes()
+    ).hexdigest()
+    api_image_id = _inspect_local_image_id(api_image)
+    application_head_output = _run_pinned_runtime_static_command(
+        api_image_id,
+        ("head",),
+        label="Map application",
+        entrypoint="/usr/local/bin/ktm-application-schema",
+    )
+    application_head = parse_candidate_static_head(
+        application_head_output,
+        schema="kor-travel-map.application-head.v1",
+        field="head",
+    )
+    return MapApplicationCandidate(
+        candidate_commit=map_source.revision,
+        candidate_git_tree=map_source.tree,
+        api_image_id=api_image_id,
+        dagster_image_id=_inspect_local_image_id(dagster_image),
+        dagster_config_sha256=dagster_config_sha256,
+        application_head=application_head,
+    )
 
 
 def map_application_300_python_base_references_from_root(
@@ -3047,40 +3011,6 @@ def _ensure_map_application_300_python_base_images(
             raise DeploymentContractError(
                 "Map application immutable base image is unavailable"
             )
-
-
-def _map_application_300_builder_failure_code(
-    paths: _MapApplication300Paths,
-) -> str:
-    """sealed builder 출력 대신 owner-only receipt 상태만 분류한다."""
-
-    api_status = _application_300_owner_only_receipt_status(paths.api_receipt)
-    paired_status = _application_300_owner_only_receipt_status(paths.paired_receipt)
-    if api_status == "missing" and paired_status == "missing":
-        return "api_receipt_missing"
-    if api_status == "trusted" and paired_status == "missing":
-        return "paired_receipt_missing"
-    return "unclassified"
-
-
-def _application_300_owner_only_receipt_status(path: Path) -> str:
-    """분류에 쓸 수 있는 owner-only receipt 상태만 fail-close로 관측한다."""
-
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError:
-        return "missing"
-    except OSError:
-        return "unsafe"
-    if (
-        stat.S_ISREG(metadata.st_mode)
-        and not stat.S_ISLNK(metadata.st_mode)
-        and metadata.st_uid == os.geteuid()
-        and stat.S_IMODE(metadata.st_mode) == 0o600
-        and metadata.st_nlink == 1
-    ):
-        return "trusted"
-    return "unsafe"
 
 
 #: 형제 프로젝트 호출에 물려줄 최소 환경. Compose에서 셸 환경은 `.env`보다 우선하므로
@@ -5033,7 +4963,7 @@ class ComposeService:
         records: Sequence[Mapping[str, Any]],
         *,
         transaction: ComposeTransactionSnapshot,
-        map_candidate: MapApplication300Candidate,
+        map_candidate: MapApplicationCandidate,
     ) -> None:
         """두 PostgreSQL container를 frozen Compose와 paired Map image에 결박한다."""
 
@@ -5133,7 +5063,7 @@ class ComposeService:
         self,
         *,
         build: CandidateRuntimeBuild,
-        map_candidate: MapApplication300Candidate,
+        map_candidate: MapApplicationCandidate,
     ) -> dict[RuntimeService, str]:
         built_image_ids = {
             service: self._inspect_image_reference_id(
@@ -5165,76 +5095,6 @@ class ComposeService:
             "pinvi-dagster": built_image_ids["pinvi-dagster"],
         }
         return image_ids
-
-    def _load_application_300_paired_candidate(
-        self,
-        *,
-        sources: PinnedRuntimeSourceMaterialization,
-        paths: _MapApplication300Paths,
-    ) -> MapApplication300Candidate:
-        map_source = sources.source_for("map")
-
-        def attest_image(role: str, image_id: str) -> ImmutableImageObservation:
-            if role == "map_postgres":
-                try:
-                    observed_id = self._inspect_image_reference_id(
-                        image_id,
-                        label="Map PostgreSQL",
-                    )
-                except DeploymentContractError:
-                    try:
-                        pulled = subprocess.run(
-                            ["docker", "pull", _MAP_APPLICATION_300_POSTGRES_REFERENCE],
-                            cwd="/",
-                            text=True,
-                            capture_output=True,
-                            check=False,
-                            timeout=900,
-                        )
-                    except (OSError, subprocess.SubprocessError) as exc:
-                        raise DeploymentContractError(
-                            "Map PostgreSQL candidate image is unavailable"
-                        ) from exc
-                    if pulled.returncode != 0:
-                        raise DeploymentContractError(
-                            "Map PostgreSQL candidate image is unavailable"
-                        ) from None
-                    observed_id = self._inspect_image_reference_id(
-                        image_id,
-                        label="Map PostgreSQL",
-                    )
-                return ImmutableImageObservation(
-                    available=True,
-                    image_id=observed_id,
-                    oci_revision=None,
-                )
-            if role not in {"map_api", "map_dagster"}:
-                raise DeploymentContractError(
-                    "application 300 image role is invalid"
-                )
-            observed_id = self._inspect_image_reference_id(image_id, label=role)
-            observed_revision = self._inspect_image_source_revision(
-                observed_id,
-                label=role,
-            )
-            return ImmutableImageObservation(
-                available=True,
-                image_id=observed_id,
-                oci_revision=observed_revision,
-            )
-
-        try:
-            return load_map_application_300_candidate(
-                paths.paired_receipt,
-                paths.api_receipt,
-                expected_candidate_commit=map_source.revision,
-                expected_candidate_tree=map_source.tree,
-                attest_image=attest_image,
-            )
-        except MapApplication300CandidateError as exc:
-            raise DeploymentContractError(
-                "application 300 paired candidate attestation failed"
-            ) from exc
 
     @staticmethod
     def _validate_pinned_runtime_candidate_build_contract(
@@ -5308,21 +5168,15 @@ class ComposeService:
     def _assert_pinned_runtime_journal_matches_map_candidate(
         journal: PinnedRuntimeRebuildJournal,
         *,
-        map_candidate: MapApplication300Candidate,
+        map_candidate: MapApplicationCandidate,
     ) -> None:
         """resume receipt/image evidence must be the journal's exact Map pair."""
 
         evidence = journal.map_application_300_candidate_evidence
         if (
-            evidence.paired_receipt_sha256 != map_candidate.receipt_sha256
-            or evidence.api_receipt_sha256 != map_candidate.api_receipt_sha256
-            or evidence.candidate_git_tree != map_candidate.candidate_git_tree
+            evidence.candidate_git_tree != map_candidate.candidate_git_tree
             or evidence.postgres_image_id != map_candidate.postgres_image_id
             or evidence.dagster_config_sha256 != map_candidate.dagster_config_sha256
-            or evidence.dagster_yaml_sha256 != map_candidate.dagster_yaml_sha256
-            or evidence.application_contract_sha256
-            != map_candidate.application_contract_sha256
-            or evidence.launch_contract_sha256 != map_candidate.launch_contract_sha256
             or journal.candidate.map_api_image_id != map_candidate.api_image_id
             or journal.candidate.map_dagster_image_id != map_candidate.dagster_image_id
         ):
@@ -5625,22 +5479,21 @@ class ComposeService:
             with _pinned_runtime_prejournal_step("application_base_images"):
                 _ensure_map_application_300_python_base_images(sources)
             with _pinned_runtime_prejournal_step("application_builder"):
-                _run_map_application_300_paired_builder(
+                _build_map_application_300_images(
                     sources=sources,
                     api_image=paired_build_images["kor-travel-map-api"],
                     dagster_image=paired_build_images["kor-travel-map-dagster"],
-                    paths=application_paths,
-                    resume_journal=journal_exists,
                 )
             with _pinned_runtime_prejournal_step("application_candidate"):
-                map_candidate = self._load_application_300_paired_candidate(
+                map_candidate = _load_application_300_candidate(
                     sources=sources,
-                    paths=application_paths,
+                    api_image=paired_build_images["kor-travel-map-api"],
+                    dagster_image=paired_build_images["kor-travel-map-dagster"],
                 )
             with _pinned_runtime_prejournal_step("application_candidate"):
                 build = CandidateRuntimeBuild(
                     sources=sources,
-                    map_application_300_candidate=map_candidate,
+                    map_application_candidate=map_candidate,
                 )
                 candidate_build_references = {
                     **paired_build_images,
@@ -5650,7 +5503,7 @@ class ComposeService:
                 **build.compose_environment(),
                 **artifact_directories.compose_environment(),
                 "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": (
-                    map_candidate.application_contract.application_head
+                    map_candidate.application_head
                 ),
             }
             with _pinned_runtime_prejournal_step("candidate_snapshot"):
@@ -5716,19 +5569,12 @@ class ComposeService:
                         transaction=candidate_transaction,
                     )
                 with _pinned_runtime_prejournal_step("candidate_heads"):
-                    # 세 static head 명령은 후보 이미지를 network-less로 한 번씩
-                    # 돌린다. 실패해도 journal 전이고 Compose·DB mutation 전이다.
-                    map_application_output = _run_pinned_runtime_static_command(
-                        image_ids["kor-travel-map-api"],
-                        ("head",),
-                        label="Map application",
-                        entrypoint="/usr/local/bin/ktm-application-schema",
-                    )
-                    map_application_head = parse_candidate_static_head(
-                        map_application_output,
-                        schema="kor-travel-map.application-head.v1",
-                        field="head",
-                    )
+                    # Map application head는 후보를 빌드한 직후 이미 한 번 관측했다
+                    # (`_load_application_300_candidate`). 같은 이미지를 다시 돌려
+                    # 같은 값을 구하는 대신 그 결과를 그대로 쓴다.
+                    #
+                    # 나머지 두 static head 명령은 후보 이미지를 network-less로
+                    # 한 번씩 돌린다. 실패해도 journal 전이고 Compose·DB mutation 전이다.
                     map_dagster_output = _run_pinned_runtime_static_command(
                         image_ids["kor-travel-map-dagster"],
                         ("head",),
@@ -5752,9 +5598,8 @@ class ComposeService:
                     )
                     candidate = build_candidate_generation(
                         sources=sources,
-                        map_application_300_candidate=map_candidate,
+                        map_application_candidate=map_candidate,
                         image_ids=image_ids,
-                        map_application_head=map_application_head,
                         map_dagster_head=map_dagster_head,
                         pinvi_head=pinvi_head,
                     )
@@ -6097,10 +5942,7 @@ class ComposeService:
                 )
                 dagster_storage_candidate = DagsterStorageCandidate(
                     dagster_image_id=map_candidate.dagster_image_id,
-                    paired_candidate_build_receipt_sha256=(
-                        map_candidate.receipt_sha256
-                    ),
-                    dagster_config_sha256=map_candidate.dagster_yaml_sha256,
+                    dagster_config_sha256=map_candidate.dagster_config_sha256,
                 )
                 try:
                     metadata_permit = build_dagster_metadata_permit(

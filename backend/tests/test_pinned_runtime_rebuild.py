@@ -38,11 +38,8 @@ from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRuntime,
     PinnedDatabaseIdentity,
 )
-from kor_travel_docker_manager.services.map_application_300 import (
-    Application300Contract,
-)
-from kor_travel_docker_manager.services.map_application_300_candidate import (
-    MapApplication300Candidate,
+from kor_travel_docker_manager.services.map_application_candidate import (
+    MapApplicationCandidate,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     REBUILD_PHASES,
@@ -285,49 +282,27 @@ def _paired_builder_inputs(
     )
 
 
-def _map_application_300_candidate(
+def _map_application_candidate(
     sources: PinnedRuntimeSourceMaterialization | None = None,
     *,
     api_image_id: str = f"sha256:{101:064x}",
     dagster_image_id: str = f"sha256:{102:064x}",
     postgres_image_id: str = f"sha256:{103:064x}",
-) -> MapApplication300Candidate:
+) -> MapApplicationCandidate:
     materialized = sources or _sources()
-    contract = Application300Contract(
-        application_head="300",
-        reference_manifest_sha256="1" * 64,
-        postgres_image_id=postgres_image_id,
-        source_catalog_sha256="2" * 64,
-        destination_catalog_sha256="3" * 64,
-        seed_sha256="4" * 64,
-        privileged_residue_sha256="5" * 64,
-        source_alembic_version_sha256="6" * 64,
-        destination_alembic_version_sha256="7" * 64,
-        runtime_invariants_sql_sha256="8" * 64,
-    )
-    return MapApplication300Candidate(
-        receipt_sha256="9" * 64,
-        api_receipt_sha256="a" * 64,
+    return MapApplicationCandidate(
         candidate_commit=materialized.source_for("map").revision,
         candidate_git_tree=materialized.source_for("map").tree,
         api_image_id=api_image_id,
         dagster_image_id=dagster_image_id,
         postgres_image_id=postgres_image_id,
         dagster_config_sha256="b" * 64,
-        dagster_yaml_sha256="c" * 64,
-        application_contract=contract,
-        application_contract_sha256="d" * 64,
-        launch_contract_sha256="e" * 64,
-        webserver_argv_prefix=("/usr/local/bin/dagster-webserver",),
-        webserver_port_minimum=1,
-        webserver_port_maximum=65535,
-        daemon_argv=("/usr/local/bin/dagster-daemon", "run"),
-        storage_migration_argv=("/usr/local/bin/ktm-dagster-storage", "migrate"),
+        application_head="300",
     )
 
 
 def _candidate_image_ids(
-    candidate: MapApplication300Candidate,
+    candidate: MapApplicationCandidate,
 ) -> dict[RuntimeService, str]:
     image_ids: dict[RuntimeService, str] = {
         service: f"sha256:{index + 1:064x}"
@@ -343,12 +318,11 @@ def _candidate_generation(
     sources: PinnedRuntimeSourceMaterialization | None = None,
 ) -> PinnedRuntimeGeneration:
     materialized = sources or _sources()
-    paired = _map_application_300_candidate(materialized)
+    paired = _map_application_candidate(materialized)
     return build_candidate_generation(
         sources=materialized,
-        map_application_300_candidate=paired,
+        map_application_candidate=paired,
         image_ids=_candidate_image_ids(paired),
-        map_application_head="300",
         map_dagster_head="map-dagster-head",
         pinvi_head="pinvi-head",
     )
@@ -472,7 +446,7 @@ def _dagster_database_identity() -> MapApplication300DagsterMetadataDatabaseIden
 
 def _dagster_storage_receipt(
     journal: PinnedRuntimeRebuildJournal,
-    candidate: MapApplication300Candidate,
+    candidate: MapApplicationCandidate,
 ) -> dict[str, object]:
     identity = (
         journal.map_application_300_execution_evidence
@@ -487,10 +461,7 @@ def _dagster_storage_receipt(
         identity = _dagster_database_identity()
     if permit_sha256 is None:
         permit_sha256 = "9" * 64
-    candidate_binding = (
-        f"{candidate.dagster_image_id}:{candidate.receipt_sha256}:"
-        f"{candidate.dagster_yaml_sha256}"
-    )
+    candidate_binding = f"{candidate.dagster_image_id}:{candidate.dagster_config_sha256}"
     return {
         "schema": "kor-travel-map.dagster-storage-migration.v3",
         "status": "migrated",
@@ -583,10 +554,6 @@ def _cancel_probe_receipts() -> tuple[PinnedRuntimeCancelProbeReceipt, ...]:
     return armed, attempted, consumed, finalize_attempted, finalized
 
 
-def _finalized_cancel_probe() -> PinnedRuntimeCancelProbeReceipt:
-    return _cancel_probe_receipts()[-1]
-
-
 def _journal_at_runtime_phase(
     phase: RebuildPhase,
     *,
@@ -629,7 +596,7 @@ def _release_with_pinvi_revision(pinvi_revision: str) -> PinnedRuntimeRelease:
 
 def test_candidate_build_uses_private_deterministic_tags_and_staged_sources() -> None:
     sources = _sources()
-    candidate = _map_application_300_candidate(sources)
+    candidate = _map_application_candidate(sources)
     build = CandidateRuntimeBuild(sources, candidate)
     paired_build_names = map_application_300_paired_build_image_names(sources)
 
@@ -661,9 +628,6 @@ def test_candidate_build_uses_private_deterministic_tags_and_staged_sources() ->
     assert "KOR_TRAVEL_MAP_DAGSTER_DAEMON_IMAGE" not in environment
     assert environment["KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID"] == candidate.postgres_image_id
     assert environment["KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256"] == (
-        candidate.dagster_yaml_sha256
-    )
-    assert environment["KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256"] != (
         candidate.dagster_config_sha256
     )
 
@@ -743,13 +707,12 @@ def test_static_head_parser_accepts_exact_one_line_schema_contract() -> None:
 
 def test_candidate_generation_and_journal_bind_all_runtime_inputs() -> None:
     sources = _sources()
-    paired = _map_application_300_candidate(sources)
+    paired = _map_application_candidate(sources)
     image_ids = _candidate_image_ids(paired)
     generation = build_candidate_generation(
         sources=sources,
-        map_application_300_candidate=paired,
+        map_application_candidate=paired,
         image_ids=image_ids,
-        map_application_head="300",
         map_dagster_head="dagster_storage_1",
         pinvi_head="20260806_0001",
         recorded_at="2026-08-06T00:00:00+00:00",
@@ -797,13 +760,7 @@ def test_candidate_generation_and_journal_bind_all_runtime_inputs() -> None:
     assert runtime_environment["KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID"] == (
         paired.postgres_image_id
     )
-    assert runtime_environment[
-        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256"
-    ] == paired.receipt_sha256
     assert runtime_environment["KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256"] == (
-        paired.dagster_yaml_sha256
-    )
-    assert runtime_environment["KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256"] != (
         paired.dagster_config_sha256
     )
     assert runtime_environment[
@@ -813,7 +770,7 @@ def test_candidate_generation_and_journal_bind_all_runtime_inputs() -> None:
 
 def test_candidate_generation_rejects_paired_source_and_image_drift() -> None:
     sources = _sources()
-    paired = _map_application_300_candidate(sources)
+    paired = _map_application_candidate(sources)
     image_ids = _candidate_image_ids(paired)
 
     with pytest.raises(DeploymentContractError, match="source differs"):
@@ -825,29 +782,27 @@ def test_candidate_generation_rejects_paired_source_and_image_drift() -> None:
     with pytest.raises(DeploymentContractError, match="Map API candidate image differs"):
         build_candidate_generation(
             sources=sources,
-            map_application_300_candidate=paired,
+            map_application_candidate=paired,
             image_ids={**image_ids, "kor-travel-map-api": f"sha256:{999:064x}"},
-            map_application_head="300",
-            map_dagster_head="dagster_storage_1",
+                map_dagster_head="dagster_storage_1",
             pinvi_head="20260806_0001",
         )
 
     with pytest.raises(DeploymentContractError, match="web and daemon"):
         build_candidate_generation(
             sources=sources,
-            map_application_300_candidate=paired,
+            map_application_candidate=paired,
             image_ids={
                 **image_ids,
                 "kor-travel-map-dagster-daemon": f"sha256:{998:064x}",
             },
-            map_application_head="300",
-            map_dagster_head="dagster_storage_1",
+                map_dagster_head="dagster_storage_1",
             pinvi_head="20260806_0001",
         )
 
 
 def test_journal_resume_requires_exact_current_map_candidate_evidence() -> None:
-    paired = _map_application_300_candidate()
+    paired = _map_application_candidate()
     journal = new_candidate_journal(
         candidate=_candidate_generation(),
         environment_bytes=b"frozen-env\n",
@@ -860,7 +815,7 @@ def test_journal_resume_requires_exact_current_map_candidate_evidence() -> None:
         map_candidate=paired,
     )
     for changed in (
-        replace(paired, receipt_sha256="f" * 64),
+        replace(paired, dagster_config_sha256="f" * 64),
         replace(paired, api_image_id=f"sha256:{999:064x}"),
     ):
         with pytest.raises(
@@ -933,121 +888,6 @@ def test_application_300_paths_reject_a_symlinked_private_directory(
             state_root=tmp_path,
             pinset_sha256="b" * 64,
         )
-
-
-@pytest.mark.parametrize(
-    ("api_receipt_exists", "paired_receipt_exists", "verify"),
-    (
-        (False, False, False),
-        (True, False, False),
-        (True, True, True),
-    ),
-)
-def test_application_300_paired_builder_accepts_fresh_api_only_and_complete_receipts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    api_receipt_exists: bool,
-    paired_receipt_exists: bool,
-    verify: bool,
-) -> None:
-    sources, paths = _paired_builder_inputs(tmp_path)
-    if api_receipt_exists:
-        paths.api_receipt.write_text("{}\n", encoding="utf-8")
-        paths.api_receipt.chmod(0o600)
-    if paired_receipt_exists:
-        paths.paired_receipt.write_text("{}\n", encoding="utf-8")
-        paths.paired_receipt.chmod(0o600)
-    runner = Mock(return_value=subprocess.CompletedProcess(args=(), returncode=0))
-    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
-
-    compose_service_module._run_map_application_300_paired_builder(
-        sources=sources,
-        api_image="map-api:test",
-        dagster_image="map-dagster:test",
-        paths=paths,
-        resume_journal=verify,
-    )
-
-    command = runner.call_args.args[0]
-    assert ("--verify" in command) is verify
-    assert command[command.index("--api-receipt") + 1] == str(paths.api_receipt)
-    assert command[command.index("--receipt") + 1] == str(paths.paired_receipt)
-    assert runner.call_args.kwargs["stdout"] is subprocess.DEVNULL
-    assert runner.call_args.kwargs["stderr"] is subprocess.DEVNULL
-    assert "capture_output" not in runner.call_args.kwargs
-
-
-@pytest.mark.parametrize(
-    ("api_receipt", "paired_receipt", "expected"),
-    (
-        (False, False, "api_receipt_missing"),
-        (True, False, "paired_receipt_missing"),
-        (False, True, "unclassified"),
-        (True, True, "unclassified"),
-    ),
-)
-def test_application_300_paired_builder_failure_code_uses_only_receipt_state(
-    tmp_path: Path,
-    *,
-    api_receipt: bool,
-    paired_receipt: bool,
-    expected: str,
-) -> None:
-    _, paths = _paired_builder_inputs(tmp_path)
-    for receipt_path, should_exist in (
-        (paths.api_receipt, api_receipt),
-        (paths.paired_receipt, paired_receipt),
-    ):
-        if should_exist:
-            receipt_path.write_text("{}\n", encoding="utf-8")
-            receipt_path.chmod(0o600)
-
-    assert (
-        compose_service_module._map_application_300_builder_failure_code(paths)
-        == expected
-    )
-
-
-def test_application_300_paired_builder_failure_code_rejects_unsafe_receipt(
-    tmp_path: Path,
-) -> None:
-    _, paths = _paired_builder_inputs(tmp_path)
-    paths.api_receipt.write_text("{}\n", encoding="utf-8")
-    paths.api_receipt.chmod(0o644)
-
-    assert (
-        compose_service_module._map_application_300_builder_failure_code(paths)
-        == "unclassified"
-    )
-
-
-def test_application_300_paired_builder_failure_never_leaks_builder_output(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sources, paths = _paired_builder_inputs(tmp_path)
-    raw_output = "build-application-300-candidate: password=not-a-real-secret"
-    runner = Mock(
-        return_value=subprocess.CompletedProcess(
-            args=(), returncode=1, stdout=raw_output, stderr=""
-        )
-    )
-    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
-
-    with pytest.raises(DeploymentContractError) as exc_info:
-        compose_service_module._run_map_application_300_paired_builder(
-            sources=sources,
-            api_image="map-api:test",
-            dagster_image="map-dagster:test",
-            paths=paths,
-            resume_journal=False,
-        )
-
-    assert str(exc_info.value) == (
-        "application 300 paired builder failed: api_receipt_missing"
-    )
-    assert raw_output not in str(exc_info.value)
 
 
 def test_map_application_300_python_base_images_pull_and_reinspect_missing_base(
@@ -1129,119 +969,6 @@ def test_map_application_300_python_base_images_reject_extra_docker_stage(
         match="Map application candidate base image contract is invalid",
     ):
         compose_service_module._ensure_map_application_300_python_base_images(sources)
-
-
-def test_application_300_paired_builder_rejects_paired_only_receipt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sources, paths = _paired_builder_inputs(tmp_path)
-    paths.paired_receipt.write_text("{}\n", encoding="utf-8")
-    runner = Mock()
-    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
-
-    with pytest.raises(
-        DeploymentContractError,
-        match="journal resume requires a complete receipt set",
-    ):
-        compose_service_module._run_map_application_300_paired_builder(
-            sources=sources,
-            api_image="map-api:test",
-            dagster_image="map-dagster:test",
-            paths=paths,
-            resume_journal=True,
-        )
-
-    runner.assert_not_called()
-
-
-def test_application_300_journal_resume_requires_both_receipts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sources, paths = _paired_builder_inputs(tmp_path)
-    paths.api_receipt.write_text("{}\n", encoding="utf-8")
-    paths.api_receipt.chmod(0o600)
-    runner = Mock()
-    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
-
-    with pytest.raises(
-        DeploymentContractError,
-        match="journal resume requires a complete receipt set",
-    ):
-        compose_service_module._run_map_application_300_paired_builder(
-            sources=sources,
-            api_image="map-api:test",
-            dagster_image="map-dagster:test",
-            paths=paths,
-            resume_journal=True,
-        )
-
-    runner.assert_not_called()
-
-
-@pytest.mark.parametrize("unsafe_api_receipt", ("symlink", "foreign-owner"))
-def test_application_300_unsafe_stale_receipt_is_not_discarded(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    unsafe_api_receipt: str,
-) -> None:
-    sources, paths = _paired_builder_inputs(tmp_path)
-    if unsafe_api_receipt == "symlink":
-        target = tmp_path / "foreign-api.json"
-        target.write_text("{}\n", encoding="utf-8")
-        paths.api_receipt.symlink_to(target)
-    else:
-        paths.api_receipt.write_text("{}\n", encoding="utf-8")
-        paths.api_receipt.chmod(0o600)
-        original_lstat = Path.lstat
-
-        def foreign_api_lstat(path: Path) -> os.stat_result:
-            metadata = original_lstat(path)
-            if path != paths.api_receipt:
-                return metadata
-            fields = list(metadata)
-            fields[4] = os.geteuid() + 1
-            return os.stat_result(fields)
-
-        monkeypatch.setattr(Path, "lstat", foreign_api_lstat)
-    runner = Mock()
-    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
-
-    with pytest.raises(DeploymentContractError, match="stale candidate receipt is unsafe"):
-        compose_service_module._run_map_application_300_paired_builder(
-            sources=sources,
-            api_image="map-api:test",
-            dagster_image="map-dagster:test",
-            paths=paths,
-            resume_journal=False,
-        )
-
-    runner.assert_not_called()
-
-
-def test_application_300_prejournal_receipts_are_discarded_before_fresh_build(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sources, paths = _paired_builder_inputs(tmp_path)
-    for receipt_path in (paths.api_receipt, paths.paired_receipt):
-        receipt_path.write_text("{}\n", encoding="utf-8")
-        receipt_path.chmod(0o600)
-    runner = Mock(return_value=subprocess.CompletedProcess(args=(), returncode=0))
-    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
-
-    compose_service_module._run_map_application_300_paired_builder(
-        sources=sources,
-        api_image="map-api:test",
-        dagster_image="map-dagster:test",
-        paths=paths,
-        resume_journal=False,
-    )
-
-    assert not paths.api_receipt.exists()
-    assert not paths.paired_receipt.exists()
-    assert "--verify" not in runner.call_args.args[0]
 
 
 def test_application_300_mount_directory_rejects_nonroot(
@@ -1328,7 +1055,7 @@ def test_committed_resume_revalidates_both_postgres_container_images(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
-    map_candidate = _map_application_300_candidate()
+    map_candidate = _map_application_candidate()
     pinvi_image = "sha256:" + "f" * 64
     transaction = SimpleNamespace(
         resolved={
@@ -1725,7 +1452,7 @@ def test_candidate_compose_build_failure_is_sealed_with_its_own_stage(
     database_reset = Mock()
     journal_write = Mock()
     paired_builder = Mock()
-    paired_candidate = _map_application_300_candidate()
+    paired_candidate = _map_application_candidate()
 
     monkeypatch.setattr(
         compose_service_module,
@@ -1750,12 +1477,12 @@ def test_candidate_compose_build_failure_is_sealed_with_its_own_stage(
     )
     monkeypatch.setattr(
         compose_service_module,
-        "_run_map_application_300_paired_builder",
+        "_build_map_application_300_images",
         paired_builder,
     )
     monkeypatch.setattr(
-        service,
-        "_load_application_300_paired_candidate",
+        compose_service_module,
+        "_load_application_300_candidate",
         Mock(return_value=paired_candidate),
     )
     monkeypatch.setattr(
@@ -1826,7 +1553,7 @@ def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_r
     database_reset = Mock()
     journal_write = Mock()
     paired_builder = Mock()
-    paired_candidate = _map_application_300_candidate()
+    paired_candidate = _map_application_candidate()
 
     monkeypatch.setattr(
         compose_service_module,
@@ -1851,12 +1578,12 @@ def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_r
     )
     monkeypatch.setattr(
         compose_service_module,
-        "_run_map_application_300_paired_builder",
+        "_build_map_application_300_images",
         paired_builder,
     )
     monkeypatch.setattr(
-        service,
-        "_load_application_300_paired_candidate",
+        compose_service_module,
+        "_load_application_300_candidate",
         Mock(return_value=paired_candidate),
     )
     monkeypatch.setattr(
@@ -1958,7 +1685,7 @@ def test_external_prerequisite_refusal_precedes_source_and_candidate_mutation(
     )
     monkeypatch.setattr(
         compose_service_module,
-        "_run_map_application_300_paired_builder",
+        "_build_map_application_300_images",
         paired_builder,
     )
     monkeypatch.setattr(
@@ -2461,7 +2188,7 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
     operations: list[tuple[str, ...]] = []
     static_commands: list[tuple[str, ...]] = []
     static_entrypoints: list[str | None] = []
-    paired_candidate = _map_application_300_candidate()
+    paired_candidate = _map_application_candidate()
     image_ids = _candidate_image_ids(paired_candidate)
     paired_builder = Mock()
     database_reset = Mock()
@@ -2498,12 +2225,12 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
     )
     monkeypatch.setattr(
         compose_service_module,
-        "_run_map_application_300_paired_builder",
+        "_build_map_application_300_images",
         paired_builder,
     )
     monkeypatch.setattr(
-        service,
-        "_load_application_300_paired_candidate",
+        compose_service_module,
+        "_load_application_300_candidate",
         Mock(return_value=paired_candidate),
     )
     def run_compose(
@@ -2594,18 +2321,17 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
             "head",
         ),
     ]
+    # Map application head는 이제 후보를 빌드한 직후 한 번만 관측한다
+    # (_load_application_300_candidate) -- candidate_heads에서 다시 돌리지 않는다.
     assert static_commands == [
-        ("head",),
         ("head",),
         ("pinvi-admin-bootstrap", "head"),
     ]
     assert static_entrypoints == [
-        "/usr/local/bin/ktm-application-schema",
         "/usr/local/bin/ktm-dagster-storage",
         None,
     ]
     paired_builder.assert_called_once()
-    assert paired_builder.call_args.kwargs["resume_journal"] is False
     candidate_contract.assert_called_once()
     assert external_readiness.call_args_list == [
         call(
@@ -2679,7 +2405,7 @@ def test_dagster_live_identity_preserves_login_and_inherit_attestation() -> None
 
 def test_dagster_storage_v3_receipt_is_exactly_bound_to_journal() -> None:
     journal = _journal_at_runtime_phase("map_dagster_storage_intent_durable")
-    candidate = _map_application_300_candidate()
+    candidate = _map_application_candidate()
     receipt = _dagster_storage_receipt(journal, candidate)
 
     compose_service_module._validate_map_dagster_storage_receipt(
@@ -2952,7 +2678,7 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
     operations: list[tuple[str, ...]] = []
     database_reset = Mock()
     create_database = Mock()
-    map_candidate = _map_application_300_candidate()
+    map_candidate = _map_application_candidate()
 
     def run_compose(
         arguments: list[str],
@@ -3004,12 +2730,12 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
     )
     monkeypatch.setattr(
         compose_service_module,
-        "_run_map_application_300_paired_builder",
+        "_build_map_application_300_images",
         Mock(),
     )
     monkeypatch.setattr(
-        service,
-        "_load_application_300_paired_candidate",
+        compose_service_module,
+        "_load_application_300_candidate",
         Mock(return_value=map_candidate),
     )
     monkeypatch.setattr(
@@ -3368,13 +3094,13 @@ def test_legacy_tombstone_failure_is_retried_before_any_database_reset(
     )
     monkeypatch.setattr(
         compose_service_module,
-        "_run_map_application_300_paired_builder",
+        "_build_map_application_300_images",
         paired_builder,
     )
     monkeypatch.setattr(
-        service,
-        "_load_application_300_paired_candidate",
-        Mock(return_value=_map_application_300_candidate()),
+        compose_service_module,
+        "_load_application_300_candidate",
+        Mock(return_value=_map_application_candidate()),
     )
     monkeypatch.setattr(service, "_attest_pinned_runtime_candidate_images", Mock())
     monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
@@ -3438,7 +3164,7 @@ def test_new_pinset_ignores_previous_journal_and_starts_a_fresh_generation(
     service = ComposeService()
     compose_calls: list[tuple[str, ...]] = []
     next_sources = _sources_for(next_release)
-    next_map_candidate = _map_application_300_candidate(next_sources)
+    next_map_candidate = _map_application_candidate(next_sources)
 
     def run_compose(
         args: list[str],
@@ -3498,12 +3224,12 @@ def test_new_pinset_ignores_previous_journal_and_starts_a_fresh_generation(
     )
     monkeypatch.setattr(
         compose_service_module,
-        "_run_map_application_300_paired_builder",
+        "_build_map_application_300_images",
         Mock(),
     )
     monkeypatch.setattr(
-        service,
-        "_load_application_300_paired_candidate",
+        compose_service_module,
+        "_load_application_300_candidate",
         Mock(return_value=next_map_candidate),
     )
     monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)

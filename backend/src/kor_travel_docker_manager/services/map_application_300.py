@@ -38,7 +38,7 @@ def _require_schema_head(value: Any, field: str) -> str:
     migration을 하나만 더해도 Manager가 candidate를 거절한다. 이 값이 신뢰되는 근거는
     리터럴 일치가 아니라 `_canonical_digest(contract)`가 head를 **포함해** 해시되고
     그 digest가 paired receipt → candidate evidence → journal로 전파돼 재대조된다는
-    점이다(`map_application_300_candidate.py`). 즉 결박은 이미 암호학적으로 존재하고,
+    점이다(`map_application_candidate.py`). 즉 결박은 이미 암호학적으로 존재하고,
     리터럴 비교는 그 위에 얹힌 값 고정일 뿐이었다.
     """
     if not isinstance(value, str) or not _SCHEMA_HEAD.fullmatch(value):
@@ -46,7 +46,6 @@ def _require_schema_head(value: Any, field: str) -> str:
     return value
 APPLICATION_DATABASE_OWNER: Final = "ktm_feature_schema_owner"
 
-BASELINE_CONTRACT_SCHEMA: Final = "kor-travel-map.application-baseline-contract.v1"
 DAGSTER_STORAGE_PERMIT_SCHEMA: Final = (
     "kor-travel-map.dagster-storage-database-permit.v2"
 )
@@ -58,21 +57,6 @@ _COMMIT_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
 _DATABASE_NAME_PATTERN: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _ROLE_NAME_PATTERN: Final = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
-_CONTRACT_FIELDS: Final = frozenset(
-    {
-        "schema",
-        "application_head",
-        "reference_manifest_sha256",
-        "postgres_image_id",
-        "source_catalog_sha256",
-        "destination_catalog_sha256",
-        "seed_sha256",
-        "privileged_residue_sha256",
-        "source_alembic_version_sha256",
-        "destination_alembic_version_sha256",
-        "runtime_invariants_sql_sha256",
-    }
-)
 _DAGSTER_STORAGE_PERMIT_FIELDS: Final = frozenset(
     {
         "schema",
@@ -84,7 +68,7 @@ _DAGSTER_STORAGE_PERMIT_FIELDS: Final = frozenset(
     }
 )
 _DAGSTER_STORAGE_CANDIDATE_FIELDS: Final = frozenset(
-    {"dagster_image_id", "paired_candidate_build_receipt_sha256", "dagster_config_sha256"}
+    {"dagster_image_id", "dagster_config_sha256"}
 )
 _DAGSTER_DATABASE_FIELDS: Final = frozenset(
     {
@@ -139,96 +123,6 @@ class HostArtifactReceipt:
     sha256: str
     size: int
 
-
-@dataclass(frozen=True)
-class Application300Contract:
-    """Installed Map static application contract."""
-
-    reference_manifest_sha256: str
-    postgres_image_id: str
-    source_catalog_sha256: str
-    destination_catalog_sha256: str
-    seed_sha256: str
-    privileged_residue_sha256: str
-    source_alembic_version_sha256: str
-    destination_alembic_version_sha256: str
-    runtime_invariants_sql_sha256: str
-    application_head: str
-
-    def __post_init__(self) -> None:
-        _require_schema_head(self.application_head, "application_head")
-        _require_sha256(self.reference_manifest_sha256, "reference_manifest_sha256")
-        _require_image_id(self.postgres_image_id, "postgres_image_id")
-        _require_sha256(self.source_catalog_sha256, "source_catalog_sha256")
-        _require_sha256(self.destination_catalog_sha256, "destination_catalog_sha256")
-        _require_sha256(self.seed_sha256, "seed_sha256")
-        _require_sha256(self.privileged_residue_sha256, "privileged_residue_sha256")
-        _require_sha256(
-            self.source_alembic_version_sha256, "source_alembic_version_sha256"
-        )
-        _require_sha256(
-            self.destination_alembic_version_sha256,
-            "destination_alembic_version_sha256",
-        )
-        _require_sha256(
-            self.runtime_invariants_sql_sha256, "runtime_invariants_sql_sha256"
-        )
-
-    @classmethod
-    def from_payload(cls, value: Mapping[str, Any]) -> Application300Contract:
-        payload = _require_exact_fields(value, _CONTRACT_FIELDS, "baseline contract")
-        if payload["schema"] != BASELINE_CONTRACT_SCHEMA:
-            raise MapApplication300ContractError("baseline contract identity is invalid")
-        return cls(
-            application_head=_require_schema_head(
-                payload["application_head"], "application_head"
-            ),
-            reference_manifest_sha256=_require_sha256(
-                payload["reference_manifest_sha256"], "reference_manifest_sha256"
-            ),
-            postgres_image_id=_require_image_id(
-                payload["postgres_image_id"], "postgres_image_id"
-            ),
-            source_catalog_sha256=_require_sha256(
-                payload["source_catalog_sha256"], "source_catalog_sha256"
-            ),
-            destination_catalog_sha256=_require_sha256(
-                payload["destination_catalog_sha256"], "destination_catalog_sha256"
-            ),
-            seed_sha256=_require_sha256(payload["seed_sha256"], "seed_sha256"),
-            privileged_residue_sha256=_require_sha256(
-                payload["privileged_residue_sha256"], "privileged_residue_sha256"
-            ),
-            source_alembic_version_sha256=_require_sha256(
-                payload["source_alembic_version_sha256"],
-                "source_alembic_version_sha256",
-            ),
-            destination_alembic_version_sha256=_require_sha256(
-                payload["destination_alembic_version_sha256"],
-                "destination_alembic_version_sha256",
-            ),
-            runtime_invariants_sql_sha256=_require_sha256(
-                payload["runtime_invariants_sql_sha256"],
-                "runtime_invariants_sql_sha256",
-            ),
-        )
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "schema": BASELINE_CONTRACT_SCHEMA,
-            "application_head": self.application_head,
-            "reference_manifest_sha256": self.reference_manifest_sha256,
-            "postgres_image_id": self.postgres_image_id,
-            "source_catalog_sha256": self.source_catalog_sha256,
-            "destination_catalog_sha256": self.destination_catalog_sha256,
-            "seed_sha256": self.seed_sha256,
-            "privileged_residue_sha256": self.privileged_residue_sha256,
-            "source_alembic_version_sha256": self.source_alembic_version_sha256,
-            "destination_alembic_version_sha256": (
-                self.destination_alembic_version_sha256
-            ),
-            "runtime_invariants_sql_sha256": self.runtime_invariants_sql_sha256,
-        }
 
 
 def expected_application_300_source_commit() -> str:
@@ -459,15 +353,10 @@ class DagsterStorageCandidate:
     """Candidate inputs for the Dagster metadata permit."""
 
     dagster_image_id: str
-    paired_candidate_build_receipt_sha256: str
     dagster_config_sha256: str
 
     def __post_init__(self) -> None:
         _require_image_id(self.dagster_image_id, "dagster_image_id")
-        _require_sha256(
-            self.paired_candidate_build_receipt_sha256,
-            "paired_candidate_build_receipt_sha256",
-        )
         _require_sha256(self.dagster_config_sha256, "dagster_config_sha256")
 
     @classmethod
@@ -479,10 +368,6 @@ class DagsterStorageCandidate:
             dagster_image_id=_require_image_id(
                 payload["dagster_image_id"], "dagster_image_id"
             ),
-            paired_candidate_build_receipt_sha256=_require_sha256(
-                payload["paired_candidate_build_receipt_sha256"],
-                "paired_candidate_build_receipt_sha256",
-            ),
             dagster_config_sha256=_require_sha256(
                 payload["dagster_config_sha256"], "dagster_config_sha256"
             ),
@@ -491,9 +376,6 @@ class DagsterStorageCandidate:
     def to_payload(self) -> dict[str, Any]:
         return {
             "dagster_image_id": self.dagster_image_id,
-            "paired_candidate_build_receipt_sha256": (
-                self.paired_candidate_build_receipt_sha256
-            ),
             "dagster_config_sha256": self.dagster_config_sha256,
         }
 

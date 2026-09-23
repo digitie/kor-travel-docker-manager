@@ -68,7 +68,6 @@ def test_candidate_is_fixed_to_reviewed_map_commit() -> None:
 def test_dagster_metadata_permit_binds_candidate_and_isolates_databases() -> None:
     storage_candidate = DagsterStorageCandidate(
         dagster_image_id=_candidate().dagster_image_id,
-        paired_candidate_build_receipt_sha256=_digest("d"),
         dagster_config_sha256=_digest("e"),
     )
     dagster_database = DagsterDatabaseIdentity(
@@ -104,7 +103,7 @@ def test_dagster_metadata_permit_binds_candidate_and_isolates_databases() -> Non
     }
     assert payload["authority"] == "docker-manager"
     assert payload["operation_id"] == operation_id
-    assert payload["candidate"]["paired_candidate_build_receipt_sha256"] == _digest("d")
+    assert payload["candidate"]["dagster_config_sha256"] == _digest("e")
     assert payload["dagster_database"]["login_role_attributes"]["can_login"] is True
     assert payload["dagster_database"]["login_role_attributes"]["inherit"] is False
     assert b"application-final-permit" not in permit.raw
@@ -115,8 +114,7 @@ def test_dagster_metadata_permit_rejects_application_database_target() -> None:
         build_dagster_metadata_permit(
             candidate=DagsterStorageCandidate(
                 dagster_image_id=_candidate().dagster_image_id,
-                paired_candidate_build_receipt_sha256=_digest("d"),
-                dagster_config_sha256=_digest("e"),
+                        dagster_config_sha256=_digest("e"),
             ),
             dagster_database=DagsterDatabaseIdentity(
                 system_identifier=_application_database().system_identifier,
@@ -157,7 +155,6 @@ def test_dagster_metadata_permit_rejects_login_attribute_drift(
 ) -> None:
     storage_candidate = DagsterStorageCandidate(
         dagster_image_id=_candidate().dagster_image_id,
-        paired_candidate_build_receipt_sha256=_digest("d"),
         dagster_config_sha256=_digest("e"),
     )
     dagster_database = DagsterDatabaseIdentity(
