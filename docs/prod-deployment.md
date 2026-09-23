@@ -102,6 +102,42 @@ release 설치가 회전 결과를 조용히 되돌리기 때문이다.
   자동으로 만족한다. 수동으로 seed를 옮겨 왔다면 `install -o root -g root -m 0644`로
   배치한다(사용자 소유 seed는 `pin init`이 거부한다 — n150 실측).
 
+#### Map 단일 LOGIN 자격증명은 **운영자가** `.env`에 넣는다 (ADR-100)
+
+ADR-100이 Map의 LOGIN role 셋(`ktm_feature_migrator` / `ktm_feature_api_runtime` /
+`ktm_feature_dagster_runtime`)을 `ktm_feature_service` 하나로 합쳤다. 새 compose는 그
+하나의 자격증명 쌍을 **모든** Map service에 먹인다 — db-role-bootstrap,
+application-schema one-shot, api, dagster, dagster-daemon.
+
+```
+KOR_TRAVEL_MAP_SERVICE_PASSWORD=<48자 영숫자>
+KOR_TRAVEL_MAP_PG_DSN=postgresql+asyncpg://ktm_feature_service:<같은 값>@127.0.0.1:12700/kor_travel_map
+```
+
+**Manager는 이 값을 만들지 않는다.** M05를 폐기하면서 `.env`에 role 자격증명을 심고 그
+해시로 재개를 게이팅하던 경로가 함께 사라졌다(`compose_service.py`의
+`prewrite_admission` 주석). 그 전까지는 Manager가 넣었으므로 운영자가 신경 쓸 일이
+아니었고, 사라진 뒤에도 이 문서가 그것을 이어받지 못했다.
+
+두 값이 없으면 재구축은 **`prejournal_failure` / stage `prebuild_snapshot`** 으로
+죽는다. compose가 `${KOR_TRAVEL_MAP_PG_DSN:?...}`를 쓰므로 resolved 문서를 만드는
+단계에서 막히는 것인데, 봉인된 실패는 stage 한 단어만 남기므로 원인이 보이지 않는다
+(2026-09-23 실측). `.env`에 키가 있는지부터 본다:
+
+```bash
+for k in KOR_TRAVEL_MAP_SERVICE_PASSWORD KOR_TRAVEL_MAP_PG_DSN; do
+  sudo grep -q "^$k=" /opt/kor-travel-docker-manager/.env && echo "$k: 설정됨" || echo "$k: 없음"
+done
+```
+
+특수문자 없는 영숫자를 쓴다 — DSN에 그대로 들어가므로 URL 인코딩이 필요해지면 두 값이
+갈릴 수 있다. 값을 바꿀 때는 `.env`를 먼저 백업하고(`cp -a`), `journal`이 없는 시점에만
+바꾼다: `map_runtime_ready` 이후에 `.env`가 바뀌면 그 pinset은 영구 재개 불가가 된다.
+
+퇴역한 키 셋(`KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR`,
+`..._FRESH_FINALIZE_FENCE_DIR`, `KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR`)은
+ADR-101에서 소비자가 사라졌다. 남아 있어도 무해하므로 굳이 지우지 않는다.
+
 #### 재시도 금지(terminal) pinset과 재구축 선행 절차
 
 `rebuild-pinned`는 registry가 terminal로 등재한 pinset에 대해 **어떤 mutation보다 먼저**
