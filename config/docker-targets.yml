@@ -848,29 +848,11 @@ compose_binds:
     - container_path: "/var/lib/postgresql/data"
       read_only: false
       source: "${KOR_TRAVEL_GEO_PGDATA:-/home/digitie/kor-travel-geo-data/pgdata-final-20260529}"
-  kor-travel-map-api:
-    - container_path: "/run/kor-travel-map-application-final-permit"
-      read_only: true
-      source: "${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?}"
-  kor-travel-map-application-fresh-300:
-    - container_path: "/run/kor-travel-map-application-fresh-migrate"
-      read_only: true
-      source: "${KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR:?}"
-  kor-travel-map-application-fresh-finalize:
-    - container_path: "/run/kor-travel-map-application-fresh-finalize"
-      read_only: true
-      source: "${KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR:?}"
   kor-travel-map-dagster:
-    - container_path: "/run/kor-travel-map-application-final-permit"
-      read_only: true
-      source: "${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?}"
     - container_path: "/run/kor-travel-map-dagster-storage-permit"
       read_only: true
       source: "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}"
   kor-travel-map-dagster-daemon:
-    - container_path: "/run/kor-travel-map-application-final-permit"
-      read_only: true
-      source: "${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?}"
     - container_path: "/run/kor-travel-map-dagster-storage-permit"
       read_only: true
       source: "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}"

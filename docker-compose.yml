@@ -1219,10 +1219,19 @@ services:
     - /bin/sh
     - /usr/local/bin/postgres-role-bootstrap
 
-  # virgin application DB에는 paired API image의 fresh root와 finalize executable만
-  # 실행한다. 두 service 모두 restricted migrator DSN과 root-owned fixed fence 외의
-  # 권한을 받지 않는다.
-  kor-travel-map-application-fresh-300:
+  # virgin application DB에 스키마를 적용하는 one-shot. paired API image의 고정
+  # entrypoint만 실행하며 restricted service DSN 외의 권한을 받지 않는다.
+  #
+  # ADR-101 이전에는 두 service였다 — `fresh-300`이 root migration을 적용하고
+  # `fresh-finalize`가 ACL을 재조정했다. 그 둘이 나눠 하던 일이 revision `400` 하나와
+  # `kortravelmap.infra.runtime_privileges` 하나로 합쳐졌고, 두 executable은 Map
+  # 이미지에서 삭제됐다.
+  #
+  # 하나로 두는 이유: 두 명령은 같은 DB를 같은 세션 권한으로 연속 처리하고 둘 다
+  # 멱등하다(`alembic upgrade head`는 이미 head면 무연산). 나누면 "스키마는 올라갔고
+  # ACL은 아니다"라는 이름 붙은 중간 상태가 생기는데, 그 상태에서 할 수 있는 일이
+  # 다시 돌리는 것뿐이라 이름이 값을 잃었다.
+  kor-travel-map-application-schema:
     profiles:
     - bootstrap
     image: ${KOR_TRAVEL_MAP_API_IMAGE:-kor-travel-map-api:latest-main}
@@ -1230,39 +1239,18 @@ services:
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     environment:
       KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE: production
-      KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_IMAGE_ID: ${KOR_TRAVEL_MAP_API_IMAGE:?KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}
-      KOR_TRAVEL_MAP_MIGRATOR_PG_DSN: ${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}
-      KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}
-    volumes:
-    - ${KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR:?KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR must be explicitly set}:/run/kor-travel-map-application-fresh-migrate:ro
+      KOR_TRAVEL_MAP_APPLICATION_SCHEMA_IMAGE_ID: ${KOR_TRAVEL_MAP_API_IMAGE:?KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}
+      KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
+      # migration만 schema owner로 돈다. 런타임 서비스는 이 스위치를 받지 않는다.
+      KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE: "true"
     entrypoint:
-    - /usr/local/bin/python
-    - -I
-    - /usr/local/bin/ktm-application-schema-fresh-300
-    - migrate
-    - --writer-fence-receipt
-    - /run/kor-travel-map-application-fresh-migrate/fence.json
-
-  kor-travel-map-application-fresh-finalize:
-    profiles:
-    - bootstrap
-    image: ${KOR_TRAVEL_MAP_API_IMAGE:-kor-travel-map-api:latest-main}
-    restart: "no"
-    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
-    environment:
-      KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE: production
-      KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_IMAGE_ID: ${KOR_TRAVEL_MAP_API_IMAGE:?KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}
-      KOR_TRAVEL_MAP_MIGRATOR_PG_DSN: ${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}
-      KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}
-    volumes:
-    - ${KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR:?KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR must be explicitly set}:/run/kor-travel-map-application-fresh-finalize:ro
-    entrypoint:
-    - /usr/local/bin/python
-    - -I
-    - /usr/local/bin/ktm-application-schema-fresh-finalize
-    - finalize
-    - --writer-fence-receipt
-    - /run/kor-travel-map-application-fresh-finalize/fence.json
+    - /bin/sh
+    - -c
+    command:
+    - |
+      set -eu
+      /usr/local/bin/python -I -m alembic upgrade head
+      /usr/local/bin/python -I -m kortravelmap.infra.runtime_privileges
 
   kor-travel-map-api:
     image: ${KOR_TRAVEL_MAP_API_IMAGE:-kor-travel-map-api:latest-main}
@@ -1341,8 +1329,6 @@ services:
       # DB 연결 전에 기동을 거부한다. 이 값은 installer가 canonical env에 명시하며,
       # 빈 값이나 Compose 기본값은 허용하지 않는다.
       KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD: ${KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD:?KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD must be explicitly set}
-    volumes:
-    - ${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR must be explicitly set}:/run/kor-travel-map-application-final-permit:ro
     ports:
     - ${KOR_TRAVEL_MAP_API_PORT:-12701}:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}
     healthcheck:
@@ -1489,7 +1475,6 @@ services:
       # provider ETL job 전체가 GeoAuthNotConfiguredError로 fail-close된다.
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
     volumes:
-    - ${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR must be explicitly set}:/run/kor-travel-map-application-final-permit:ro
     - ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR must be explicitly set}:/run/kor-travel-map-dagster-storage-permit:ro
     ports:
     - ${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}:${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
@@ -1644,7 +1629,6 @@ services:
       # provider ETL job 전체가 GeoAuthNotConfiguredError로 fail-close된다.
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
     volumes:
-    - ${KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR:?KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR must be explicitly set}:/run/kor-travel-map-application-final-permit:ro
     - ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR must be explicitly set}:/run/kor-travel-map-dagster-storage-permit:ro
   pinvi-api:
     image: ${PINVI_API_IMAGE:-pinvi-api:latest-main}

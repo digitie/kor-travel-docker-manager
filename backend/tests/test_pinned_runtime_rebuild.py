@@ -8,7 +8,6 @@ import os
 import shutil
 import subprocess
 import tempfile
-import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
@@ -41,7 +40,6 @@ from kor_travel_docker_manager.services.database_runtime import (
 )
 from kor_travel_docker_manager.services.map_application_300 import (
     Application300Contract,
-    FreshRootResult,
 )
 from kor_travel_docker_manager.services.map_application_300_candidate import (
     MapApplication300Candidate,
@@ -52,7 +50,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     MapApplication300ApplicationDatabaseIdentity,
     MapApplication300DagsterMetadataDatabaseIdentity,
     MapApplication300DagsterMetadataRoleAttributes,
-    MapApplication300OperationPlan,
     PinnedRuntimeCancelProbeOutcome,
     PinnedRuntimeCancelProbeReceipt,
     PinnedRuntimeDatabaseIdentity,
@@ -65,7 +62,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     manifest_from_payload,
     pinned_runtime_state_paths,
     read_rebuild_journal,
-    rebuild_journal_sha256,
     write_rebuild_journal,
 )
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
@@ -180,11 +176,7 @@ def _bypass_root_host_lease_in_nonroot_unit_process(
         lambda *, state_root, pinset_sha256: compose_service_module._MapApplication300Paths(
             api_receipt=base / "receipts" / "api.json",
             paired_receipt=base / "receipts" / "paired.json",
-            root_fence_directory=base / "fresh-root-fence",
-            finalize_fence_directory=base / "fresh-finalize-fence",
-            application_permit_directory=base / "application-final-permit",
             metadata_permit_directory=base / "dagster-storage-permit",
-            result_directory=base / "results",
         ),
     )
     # 각 orchestration 회귀는 그 이전/이후 phase만 격리한다. root `.env`를 실제로
@@ -268,11 +260,7 @@ def _paired_builder_inputs(
     paths = compose_service_module._MapApplication300Paths(
         api_receipt=receipt_directory / "api.json",
         paired_receipt=receipt_directory / "paired.json",
-        root_fence_directory=tmp_path / "fresh-root-fence",
-        finalize_fence_directory=tmp_path / "fresh-finalize-fence",
-        application_permit_directory=tmp_path / "application-final-permit",
         metadata_permit_directory=tmp_path / "dagster-storage-permit",
-        result_directory=tmp_path / "results",
     )
     release = PINNED_RUNTIME_RELEASE
     return (
@@ -493,8 +481,12 @@ def _dagster_storage_receipt(
     permit_sha256 = (
         journal.map_application_300_execution_evidence.metadata_permit_sha256
     )
-    assert identity is not None
-    assert permit_sha256 is not None
+    # 재개 phase가 `application_schema_ready`면 이 둘은 아직 저널에 없다 — 같은
+    # 실행에서 만들어지고, mock이 내는 값이 곧 production이 저널에 적을 값이다.
+    if identity is None:
+        identity = _dagster_database_identity()
+    if permit_sha256 is None:
+        permit_sha256 = "9" * 64
     candidate_binding = (
         f"{candidate.dagster_image_id}:{candidate.receipt_sha256}:"
         f"{candidate.dagster_yaml_sha256}"
@@ -513,23 +505,6 @@ def _dagster_storage_receipt(
         "postgres_system_identifier": identity.system_identifier,
         "catalog_sha256": "a" * 64,
     }
-
-
-def _operation_plan(
-    journal: PinnedRuntimeRebuildJournal,
-    *,
-    seed: str,
-) -> MapApplication300OperationPlan:
-    return MapApplication300OperationPlan(
-        transaction_id=journal.transaction_id,
-        operation_id=str(
-            uuid.uuid5(uuid.NAMESPACE_URL, f"{journal.transaction_id}:{seed}")
-        ),
-        basis_journal_sha256=rebuild_journal_sha256(journal),
-        basis_journal_generation=journal.journal_generation,
-        writer_fence_expires_at="2026-08-06T00:05:00+00:00",
-        fence_sha256=seed * 64,
-    )
 
 
 def _journal_at_application_300_phase(
@@ -568,48 +543,8 @@ def _journal_at_application_300_phase(
     )
     if phase == "application_roles_ready":
         return journal
-    root_plan = _operation_plan(journal, seed="2")
-    journal = journal.with_fresh_root_plan_ready(fresh_root_operation_plan=root_plan)
-    if phase == "fresh_root_plan_ready":
-        return journal
-    journal = journal.with_fresh_root_fence_ready(fresh_root_operation_plan=root_plan)
-    if phase == "fresh_root_fence_ready":
-        return journal
-    journal = journal.with_fresh_root_execution_intent(
-        fresh_root_operation_plan=root_plan
-    )
-    if phase == "fresh_root_execution_intent":
-        return journal
-    journal = journal.with_fresh_root_ready(
-        fresh_root_operation_plan=root_plan.with_result("4" * 64)
-    )
-    if phase == "fresh_root_ready":
-        return journal
-    finalize_plan = _operation_plan(journal, seed="5")
-    journal = journal.with_fresh_finalize_plan_ready(
-        fresh_finalize_operation_plan=finalize_plan
-    )
-    if phase == "fresh_finalize_plan_ready":
-        return journal
-    journal = journal.with_fresh_finalize_fence_ready(
-        fresh_finalize_operation_plan=finalize_plan
-    )
-    if phase == "fresh_finalize_fence_ready":
-        return journal
-    journal = journal.with_fresh_finalize_execution_intent(
-        fresh_finalize_operation_plan=finalize_plan
-    )
-    if phase == "fresh_finalize_execution_intent":
-        return journal
-    journal = journal.with_fresh_finalize_ready(
-        fresh_finalize_operation_plan=finalize_plan.with_result("7" * 64)
-    )
-    if phase == "fresh_finalize_ready":
-        return journal
-    journal = journal.with_application_permit_ready(
-        app_final_permit_sha256="8" * 64
-    )
-    if phase == "application_permit_ready":
+    journal = journal.with_application_schema_ready(application_schema_head="400")
+    if phase == "application_schema_ready":
         return journal
     journal = journal.with_metadata_permit_ready(
         dagster_metadata_database_identity=_dagster_database_identity(),
@@ -848,9 +783,6 @@ def test_candidate_generation_and_journal_bind_all_runtime_inputs() -> None:
     ).active_generation == generation
 
     artifact_directories = MapApplication300ArtifactDirectories(
-        fresh_migrate_fence=Path("/state/root-fence"),
-        fresh_finalize_fence=Path("/state/finalize-fence"),
-        application_final_permit=Path("/state/application-permit"),
         dagster_storage_permit=Path("/state/metadata-permit"),
     )
     runtime_environment = generation_compose_environment(
@@ -875,8 +807,8 @@ def test_candidate_generation_and_journal_bind_all_runtime_inputs() -> None:
         paired.dagster_config_sha256
     )
     assert runtime_environment[
-        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR"
-    ] == "/state/root-fence"
+        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR"
+    ] == "/state/metadata-permit"
 
 
 def test_candidate_generation_rejects_paired_source_and_image_drift() -> None:
@@ -952,7 +884,12 @@ def test_application_300_paths_separate_private_and_read_only_mount_modes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """appuser mount 네 개만 0755이고 영수증·결과·부모는 계속 0700이다."""
+    """appuser mount 하나만 0755이고 영수증 디렉터리와 부모는 계속 0700이다.
+
+    ADR-101 이전에는 mount가 넷이었다 — fence 둘, application final permit,
+    storage permit. 앞의 셋은 읽던 코드가 사라져 함께 지웠다. 결과 디렉터리도
+    영수증 사이드카를 담던 자리라 없다.
+    """
 
     original_lstat = Path.lstat
 
@@ -970,18 +907,10 @@ def test_application_300_paths_separate_private_and_read_only_mount_modes(
         pinset_sha256="a" * 64,
     )
 
-    mount_directories = (
-        paths.root_fence_directory,
-        paths.finalize_fence_directory,
-        paths.application_permit_directory,
-        paths.metadata_permit_directory,
-    )
+    mount_directories = (paths.metadata_permit_directory,)
     private_directories = {
         paths.api_receipt.parent,
         paths.api_receipt.parent.parent,
-        paths.result_directory,
-        paths.result_directory.parent,
-        paths.result_directory.parent.parent,
     }
     assert all(directory.stat().st_mode & 0o777 == 0o755 for directory in mount_directories)
     assert all(directory.stat().st_mode & 0o777 == 0o700 for directory in private_directories)
@@ -2641,16 +2570,9 @@ def test_rebuild_candidate_journal_binds_application_300_inputs(
     assert candidate_journal.phase == "candidate_attested"
     assert candidate_journal.candidate.map_application_head == "300"
     artifact_root = tmp_path / "application-300"
+    # ADR-101: fixed mount가 넷에서 하나로 줄었다. 나머지 셋을 읽던 코드가 Map
+    # 이미지에서 사라졌으므로 생산자도 함께 지웠다.
     assert captured[0] == {
-        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": str(
-            artifact_root / "fresh-root-fence"
-        ),
-        "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": str(
-            artifact_root / "fresh-finalize-fence"
-        ),
-        "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": str(
-            artifact_root / "application-final-permit"
-        ),
         "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": str(
             artifact_root / "dagster-storage-permit"
         ),
@@ -2948,319 +2870,18 @@ def test_bootstrap_intent_fails_closed_on_nonconvergent_state(
     compose.assert_not_called()
 
 
-def _application_paths(tmp_path: Path) -> Any:
-    return compose_service_module._MapApplication300Paths(
-        api_receipt=tmp_path / "api-candidate-build.json",
-        paired_receipt=tmp_path / "paired-candidate-build.json",
-        root_fence_directory=tmp_path / "fresh-root-fence",
-        finalize_fence_directory=tmp_path / "fresh-finalize-fence",
-        application_permit_directory=tmp_path / "application-final-permit",
-        metadata_permit_directory=tmp_path / "dagster-storage-permit",
-        result_directory=tmp_path / "results",
-    )
-
-
-def _fresh_root_result_for_finalize_renewal(
-    *,
-    journal: PinnedRuntimeRebuildJournal,
-    map_candidate: MapApplication300Candidate,
-    database: Any,
-) -> FreshRootResult:
-    root_plan = (
-        journal.map_application_300_execution_evidence.fresh_root_operation_plan
-    )
-    if root_plan is None:
-        raise AssertionError("root plan is missing")
-    return FreshRootResult(
-        payload_sha256=root_plan.result_sha256 or "4" * 64,
-        operation_id=root_plan.operation_id,
-        writer_fence_receipt_sha256=root_plan.fence_sha256,
-        writer_fence_transaction_id=root_plan.transaction_id,
-        journal_sha256=root_plan.basis_journal_sha256,
-        journal_generation=root_plan.basis_journal_generation,
-        map_candidate_commit=map_candidate.candidate_commit,
-        map_candidate_image_id=map_candidate.api_image_id,
-        postgres_image_id=map_candidate.postgres_image_id,
-        reference_manifest_sha256=(
-            map_candidate.application_contract.reference_manifest_sha256
-        ),
-        database_identity=database,
-        post_source_catalog_sha256=(
-            map_candidate.application_contract.source_catalog_sha256
-        ),
-        post_seed_sha256=map_candidate.application_contract.seed_sha256,
-        post_head_catalog_sha256=(
-            map_candidate.application_contract.source_catalog_sha256
-        ),
-        post_head_seed_sha256=map_candidate.application_contract.seed_sha256,
-        expected_privileged_residue_sha256=(
-            map_candidate.application_contract.privileged_residue_sha256
-        ),
-        expected_destination_alembic_version_sha256=(
-            map_candidate.application_contract.destination_alembic_version_sha256
-        ),
-        post_destination_alembic_version_sha256=(
-            map_candidate.application_contract.destination_alembic_version_sha256
-        ),
-    )
-
-
-def test_expired_root_fence_renewal_preserves_operation_id(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    journal = _journal_at_application_300_phase("fresh_root_execution_intent")
-    plan = (
-        journal.map_application_300_execution_evidence.fresh_root_operation_plan
-    )
-    if plan is None:
-        raise AssertionError("root plan is missing")
-    map_candidate = _map_application_300_candidate()
-    application_database, _ = compose_service_module._application_300_database_identities(
-        _runtime_application_database_identity()
-    )
-    replace_artifact = Mock()
-    write_journal = Mock()
-    monkeypatch.setattr(
-        compose_service_module,
-        "replace_root_read_only_artifact",
-        replace_artifact,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "write_pinned_runtime_rebuild_journal",
-        write_journal,
-    )
-
-    updated, renewed_plan = service._renew_fresh_root_operation_plan(
-        journal=journal,
-        plan=plan,
-        map_candidate=map_candidate,
-        execution_candidate=compose_service_module._application_300_execution_candidate(
-            map_candidate
-        ),
-        application_database=application_database,
-        application_paths=_application_paths(tmp_path),
-        journal_path=tmp_path / "journal.json",
-    )
-
-    raw = replace_artifact.call_args.kwargs["raw"]
-    fence = json.loads(raw)
-    assert renewed_plan.operation_id == plan.operation_id
-    assert renewed_plan.transaction_id != plan.transaction_id
-    assert renewed_plan.fence_sha256 != plan.fence_sha256
-    assert fence["operation_id"] == plan.operation_id
-    assert fence["transaction_id"] == renewed_plan.transaction_id
-    assert fence["writer_fence_expires_at"] == renewed_plan.writer_fence_expires_at
-    assert replace_artifact.call_args.kwargs["expected_old_sha256"] == plan.fence_sha256
-    assert updated.phase == "fresh_root_execution_intent"
-    assert updated.journal_generation == journal.journal_generation + 1
-    assert (
-        updated.map_application_300_execution_evidence.fresh_root_operation_plan
-        == renewed_plan
-    )
-    write_journal.assert_called_once_with(tmp_path / "journal.json", updated)
-
-
-def test_expired_root_fence_reconciliation_converges_file_first_crash(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    journal = _journal_at_application_300_phase("fresh_root_execution_intent")
-    plan = journal.map_application_300_execution_evidence.fresh_root_operation_plan
-    if plan is None:
-        raise AssertionError("root plan is missing")
-    map_candidate = _map_application_300_candidate()
-    application_database, _ = compose_service_module._application_300_database_identities(
-        _runtime_application_database_identity()
-    )
-    expected_plan, renewed_raw = service._build_fresh_root_renewal(
-        journal=journal,
-        plan=plan,
-        map_candidate=map_candidate,
-        execution_candidate=compose_service_module._application_300_execution_candidate(
-            map_candidate
-        ),
-        application_database=application_database,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "read_root_read_only_artifact",
-        Mock(return_value=renewed_raw),
-    )
-    write_journal = Mock()
-    monkeypatch.setattr(
-        compose_service_module,
-        "write_pinned_runtime_rebuild_journal",
-        write_journal,
-    )
-
-    updated, reconciled_plan = service._reconcile_expired_fresh_root_fence(
-        journal=journal,
-        plan=plan,
-        map_candidate=map_candidate,
-        execution_candidate=compose_service_module._application_300_execution_candidate(
-            map_candidate
-        ),
-        application_database=application_database,
-        application_paths=_application_paths(tmp_path),
-        journal_path=tmp_path / "journal.json",
-    )
-
-    assert reconciled_plan == expected_plan
-    assert reconciled_plan.operation_id == plan.operation_id
-    assert reconciled_plan.transaction_id != plan.transaction_id
-    assert updated.phase == "fresh_root_execution_intent"
-    assert write_journal.call_args.args[0] == tmp_path / "journal.json"
-    assert write_journal.call_args.args[1] == updated
-
-
-def test_expired_finalize_fence_renewal_preserves_operation_id(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    journal = _journal_at_application_300_phase("fresh_finalize_execution_intent")
-    plan = (
-        journal.map_application_300_execution_evidence
-        .fresh_finalize_operation_plan
-    )
-    if plan is None:
-        raise AssertionError("finalize plan is missing")
-    map_candidate = _map_application_300_candidate()
-    application_database, _ = compose_service_module._application_300_database_identities(
-        _runtime_application_database_identity()
-    )
-    replace_artifact = Mock()
-    write_journal = Mock()
-    monkeypatch.setattr(
-        compose_service_module,
-        "replace_root_read_only_artifact",
-        replace_artifact,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "write_pinned_runtime_rebuild_journal",
-        write_journal,
-    )
-
-    updated, renewed_plan = service._renew_fresh_finalize_operation_plan(
-        journal=journal,
-        plan=plan,
-        map_candidate=map_candidate,
-        execution_candidate=compose_service_module._application_300_execution_candidate(
-            map_candidate
-        ),
-        application_database=application_database,
-        application_paths=_application_paths(tmp_path),
-        journal_path=tmp_path / "journal.json",
-        root_result=_fresh_root_result_for_finalize_renewal(
-            journal=journal,
-            map_candidate=map_candidate,
-            database=application_database,
-        ),
-    )
-
-    raw = replace_artifact.call_args.kwargs["raw"]
-    fence = json.loads(raw)
-    assert renewed_plan.operation_id == plan.operation_id
-    assert renewed_plan.transaction_id != plan.transaction_id
-    assert renewed_plan.fence_sha256 != plan.fence_sha256
-    assert fence["operation_id"] == plan.operation_id
-    assert fence["transaction_id"] == renewed_plan.transaction_id
-    assert fence["writer_fence_expires_at"] == renewed_plan.writer_fence_expires_at
-    assert (
-        fence["prior_fresh_migration_operation_id"]
-        == journal.map_application_300_execution_evidence
-        .fresh_root_operation_plan
-        .operation_id
-    )
-    assert replace_artifact.call_args.kwargs["expected_old_sha256"] == plan.fence_sha256
-    assert updated.phase == "fresh_finalize_execution_intent"
-    assert updated.journal_generation == journal.journal_generation + 1
-    assert (
-        updated.map_application_300_execution_evidence
-        .fresh_finalize_operation_plan
-        == renewed_plan
-    )
-    write_journal.assert_called_once_with(tmp_path / "journal.json", updated)
-
-
-def test_expired_finalize_fence_reconciliation_converges_file_first_crash(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    journal = _journal_at_application_300_phase("fresh_finalize_execution_intent")
-    plan = journal.map_application_300_execution_evidence.fresh_finalize_operation_plan
-    if plan is None:
-        raise AssertionError("finalize plan is missing")
-    map_candidate = _map_application_300_candidate()
-    application_database, _ = compose_service_module._application_300_database_identities(
-        _runtime_application_database_identity()
-    )
-    root_result = _fresh_root_result_for_finalize_renewal(
-        journal=journal,
-        map_candidate=map_candidate,
-        database=application_database,
-    )
-    expected_plan, renewed_raw = service._build_fresh_finalize_renewal(
-        journal=journal,
-        plan=plan,
-        map_candidate=map_candidate,
-        execution_candidate=compose_service_module._application_300_execution_candidate(
-            map_candidate
-        ),
-        application_database=application_database,
-        root_result=root_result,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "read_root_read_only_artifact",
-        Mock(return_value=renewed_raw),
-    )
-    write_journal = Mock()
-    monkeypatch.setattr(
-        compose_service_module,
-        "write_pinned_runtime_rebuild_journal",
-        write_journal,
-    )
-
-    updated, reconciled_plan = service._reconcile_expired_fresh_finalize_fence(
-        journal=journal,
-        plan=plan,
-        map_candidate=map_candidate,
-        execution_candidate=compose_service_module._application_300_execution_candidate(
-            map_candidate
-        ),
-        application_database=application_database,
-        application_paths=_application_paths(tmp_path),
-        journal_path=tmp_path / "journal.json",
-        root_result=root_result,
-    )
-
-    assert reconciled_plan == expected_plan
-    assert reconciled_plan.operation_id == plan.operation_id
-    assert reconciled_plan.transaction_id != plan.transaction_id
-    assert updated.phase == "fresh_finalize_execution_intent"
-    assert write_journal.call_args.args[0] == tmp_path / "journal.json"
-    assert write_journal.call_args.args[1] == updated
-
-
 @pytest.mark.parametrize(
     ("phase", "_one_shot_service", "expected_error"),
     (
+        # ADR-101: 여기 있던 두 칸(`fresh_root_execution_intent`,
+        # `fresh_finalize_execution_intent`)이 하나가 됐다. `alembic upgrade head`는
+        # 멱등하므로 "durable intent 이후 재실행 금지"는 더는 지킬 성질이 아니다.
+        # 대신 **이미 끝난 것을 다시 돌리지 않는다**를 확인한다 — 아래 단언이
+        # schema one-shot 명령이 `operations`에 없음을 요구한다.
         (
-            "fresh_root_execution_intent",
-            "kor-travel-map-application-fresh-300",
-            "application 300 root execution result is uncertain",
-        ),
-        (
-            "fresh_finalize_execution_intent",
-            "kor-travel-map-application-fresh-finalize",
-            "application 300 finalize execution result is uncertain",
+            "application_schema_ready",
+            "kor-travel-map-application-schema",
+            "Map Dagster storage execution result is uncertain",
         ),
         (
             "map_dagster_storage_intent_durable",
@@ -3332,12 +2953,6 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
     database_reset = Mock()
     create_database = Mock()
     map_candidate = _map_application_300_candidate()
-    root_plan = (
-        journal.map_application_300_execution_evidence.fresh_root_operation_plan
-    )
-    finalize_plan = (
-        journal.map_application_300_execution_evidence.fresh_finalize_operation_plan
-    )
 
     def run_compose(
         arguments: list[str],
@@ -3347,131 +2962,6 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         del transaction
         operation = tuple(arguments)
         operations.append(operation)
-        if (
-            phase == "fresh_root_execution_intent"
-            and root_plan is not None
-            and operation
-            == (
-                "--profile",
-                "bootstrap",
-                "run",
-                "--rm",
-                "--no-deps",
-                "--entrypoint",
-                "/usr/local/bin/python",
-                "kor-travel-map-application-fresh-300",
-                "-I",
-                "/usr/local/bin/ktm-application-schema-fresh-300",
-                "recover",
-                "--operation-id",
-                root_plan.operation_id,
-            )
-        ):
-            raise DeploymentContractError("root receipt missing")
-        if (
-            phase == "fresh_root_execution_intent"
-            and root_plan is not None
-            and operation
-            == (
-                "--profile",
-                "bootstrap",
-                "run",
-                "--rm",
-                "--no-deps",
-                "--entrypoint",
-                "/usr/local/bin/python",
-                "kor-travel-map-application-fresh-300",
-                "-I",
-                "/usr/local/bin/ktm-application-schema-fresh-300",
-                "probe-missing",
-                "--operation-id",
-                root_plan.operation_id,
-            )
-        ):
-            runtime_identity = _runtime_application_database_identity()
-            contract = map_candidate.application_contract
-            return {
-                "success": True,
-                "stdout": json.dumps(
-                    {
-                        "schema": (
-                            "kor-travel-map.application-fresh-300-"
-                            "root-missing-receipt.v1"
-                        ),
-                        "outcome": "receipt-missing-exact-prestate",
-                        "operation_id": root_plan.operation_id,
-                        "destination_head": "300",
-                        "map_candidate_commit": map_candidate.candidate_commit,
-                        "map_candidate_image_id": map_candidate.api_image_id,
-                        "postgres_image_id": map_candidate.postgres_image_id,
-                        "reference_manifest_sha256": contract.reference_manifest_sha256,
-                        "writer_fence_receipt_sha256": root_plan.fence_sha256,
-                        "writer_fence_transaction_id": root_plan.transaction_id,
-                        "journal_sha256": root_plan.basis_journal_sha256,
-                        "journal_generation": root_plan.basis_journal_generation,
-                        "database_identity": {
-                            "database_name": runtime_identity.database_name,
-                            "database_oid": runtime_identity.database_oid,
-                            "database_owner": runtime_identity.database_owner,
-                            "postgres_system_identifier": (
-                                runtime_identity.postgres_system_identifier
-                            ),
-                        },
-                        "pre_root_state_schema": (
-                            "kor-travel-map.application-fresh-300-pre-root.v1"
-                        ),
-                        "expected_post_source_catalog_sha256": (
-                            contract.source_catalog_sha256
-                        ),
-                        "expected_post_seed_sha256": contract.seed_sha256,
-                        "expected_post_destination_alembic_version_sha256": (
-                            contract.destination_alembic_version_sha256
-                        ),
-                    },
-                    sort_keys=True,
-                ),
-            }
-        if (
-            phase == "fresh_finalize_execution_intent"
-            and finalize_plan is not None
-            and operation
-            == (
-                "--profile",
-                "bootstrap",
-                "run",
-                "--rm",
-                "--no-deps",
-                "--entrypoint",
-                "/usr/local/bin/python",
-                "kor-travel-map-application-fresh-finalize",
-                "-I",
-                "/usr/local/bin/ktm-application-schema-fresh-finalize",
-                "recover",
-                "--operation-id",
-                finalize_plan.operation_id,
-            )
-        ):
-            raise DeploymentContractError("finalize receipt missing")
-        if (
-            finalize_plan is not None
-            and operation
-            == (
-                "--profile",
-                "bootstrap",
-                "run",
-                "--rm",
-                "--no-deps",
-                "--entrypoint",
-                "/usr/local/bin/python",
-                "kor-travel-map-application-fresh-finalize",
-                "-I",
-                "/usr/local/bin/ktm-application-schema-fresh-finalize",
-                "recover",
-                "--operation-id",
-                finalize_plan.operation_id,
-            )
-        ):
-            return {"success": True, "stdout": "root-result\n"}
         if operation == (
             "run",
             "--rm",
@@ -3597,51 +3087,13 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         "create_fresh_application_300_database",
         create_database,
     )
-    if phase == "fresh_root_execution_intent":
-        monkeypatch.setattr(
-            compose_service_module,
-            "inspect_application_300_bootstrap_state",
-            Mock(return_value="partial"),
-        )
     if phase in {
-        "fresh_finalize_execution_intent",
+        "application_schema_ready",
         "map_dagster_storage_intent_durable",
         "map_application_ready",
         "map_runtime_ready",
         "pinvi_schema_ready",
     }:
-        monkeypatch.setattr(
-            compose_service_module,
-            "read_owner_only_artifact",
-            Mock(return_value=b"root-result\n"),
-        )
-        monkeypatch.setattr(
-            compose_service_module,
-            "_application_300_root_result",
-            Mock(return_value=object()),
-        )
-    if phase == "fresh_finalize_execution_intent":
-        monkeypatch.setattr(
-            compose_service_module,
-            "read_database_schema_revision",
-            Mock(return_value="unexpected-map-head"),
-        )
-    if phase in {
-        "map_dagster_storage_intent_durable",
-        "map_application_ready",
-        "map_runtime_ready",
-        "pinvi_schema_ready",
-    }:
-        monkeypatch.setattr(
-            compose_service_module,
-            "_application_300_finalize_result",
-            Mock(return_value=object()),
-        )
-        monkeypatch.setattr(
-            compose_service_module,
-            "build_application_final_permit",
-            Mock(return_value=SimpleNamespace(raw=b"app-permit", sha256="8" * 64)),
-        )
         monkeypatch.setattr(
             compose_service_module,
             "publish_root_read_only_artifact",
@@ -3668,10 +3120,13 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
             ),
         )
         revision_values = [
-            "300",
+            # api 기동 뒤의 head 확인. schema one-shot은 이 재개 phase들에서
+            # 건너뛰어지므로 그 직후 관측은 일어나지 않는다.
+            journal.candidate.map_application_head,
             (
                 "unexpected-dagster-head"
-                if phase == "map_dagster_storage_intent_durable"
+                if phase
+                in {"map_dagster_storage_intent_durable", "application_schema_ready"}
                 else journal.candidate.map_dagster_head
             ),
         ]
@@ -3735,82 +3190,26 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
             state="completed"
         )
 
-    root_execution_command = (
-        "--profile",
-        "bootstrap",
-        "run",
-        "--rm",
-        "--no-deps",
-        "kor-travel-map-application-fresh-300",
-    )
-    finalize_execution_command = (
-        "--profile",
-        "bootstrap",
-        "run",
-        "--rm",
-        "--no-deps",
-        "kor-travel-map-application-fresh-finalize",
-    )
-    root_recovery_prefix = (
-        "--profile",
-        "bootstrap",
-        "run",
-        "--rm",
-        "--no-deps",
-        "--entrypoint",
-        "/usr/local/bin/python",
-        "kor-travel-map-application-fresh-300",
-        "-I",
-        "/usr/local/bin/ktm-application-schema-fresh-300",
-    )
-    finalize_recovery_prefix = (
-        "--profile",
-        "bootstrap",
-        "run",
-        "--rm",
-        "--no-deps",
-        "--entrypoint",
-        "/usr/local/bin/python",
-        "kor-travel-map-application-fresh-finalize",
-        "-I",
-        "/usr/local/bin/ktm-application-schema-fresh-finalize",
-    )
     storage_command = (
         "run",
         "--rm",
         "--no-deps",
         "kor-travel-map-dagster-storage-migrate",
     )
-    if phase == "fresh_root_execution_intent":
-        assert root_plan is not None
-        assert (
-            *root_recovery_prefix,
-            "recover",
-            "--operation-id",
-            root_plan.operation_id,
-        ) in operations
-        assert (
-            *root_recovery_prefix,
-            "probe-missing",
-            "--operation-id",
-            root_plan.operation_id,
-        ) in operations
-        assert root_execution_command not in operations
-    elif phase == "fresh_finalize_execution_intent":
-        assert finalize_plan is not None
-        assert (
-            *finalize_recovery_prefix,
-            "recover",
-            "--operation-id",
-            finalize_plan.operation_id,
-        ) in operations
-        assert (
-            *finalize_recovery_prefix,
-            "probe-missing",
-            "--operation-id",
-            finalize_plan.operation_id,
-        ) in operations
-        assert finalize_execution_command not in operations
+    schema_command = (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "kor-travel-map-application-schema",
+    )
+    if phase == "application_schema_ready":
+        # 핵심 단언: 저널이 이미 schema 관측을 들고 있으면 one-shot을 부르지 않는다.
+        assert schema_command not in operations
+        assert operations.count(storage_command) == 1
+    else:
+        assert schema_command not in operations
     if phase == "map_application_ready":
         assert operations.count(storage_command) == 1
         assert (
@@ -3877,8 +3276,7 @@ def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
         "pinvi-db-init",
         "kor-travel-map-dagster-db-init",
         "kor-travel-map-db-role-bootstrap",
-        "kor-travel-map-application-fresh-300",
-        "kor-travel-map-application-fresh-finalize",
+        "kor-travel-map-application-schema",
         "kor-travel-map-dagster-storage-migrate",
         "pinvi-admin-bootstrap",
     )

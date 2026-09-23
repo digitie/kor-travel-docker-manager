@@ -9,20 +9,17 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, Literal, cast
-from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import yaml
 from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import (
-    _MAP_APPLICATION_FRESH_300_SERVICE,
-    _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+    _MAP_APPLICATION_SCHEMA_SERVICE,
     _MAP_RUNTIME_SERVICES,
     _PINVI_ADMIN_BOOTSTRAP_SERVICE,
     _PINVI_API_SERVICE,
@@ -97,24 +94,9 @@ from kor_travel_docker_manager.services.map_application_300 import (
     DagsterDatabaseIdentity,
     DagsterLoginRoleAttributes,
     DagsterStorageCandidate,
-    FreshFinalizeResult,
-    FreshRootMissingReceipt,
-    FreshRootResult,
-    JournalStamp,
     MapApplication300ContractError,
-    build_application_final_permit,
     build_dagster_metadata_permit,
-    build_fresh_finalize_fence,
-    build_fresh_migration_fence,
-    parse_fresh_finalize_missing_receipt,
-    parse_fresh_finalize_result,
-    parse_fresh_root_missing_receipt,
-    parse_fresh_root_result,
     publish_root_read_only_artifact,
-    read_owner_only_artifact,
-    read_root_read_only_artifact,
-    replace_root_read_only_artifact,
-    write_owner_only_artifact,
 )
 from kor_travel_docker_manager.services.map_application_300_candidate import (
     ImmutableImageObservation,
@@ -128,7 +110,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     MapApplication300ApplicationDatabaseIdentity,
     MapApplication300DagsterMetadataDatabaseIdentity,
     MapApplication300DagsterMetadataRoleAttributes,
-    MapApplication300OperationPlan,
     PinnedRuntimeCancelProbeOutcome,
     PinnedRuntimeCancelProbeReceipt,
     PinnedRuntimeDatabaseIdentity,
@@ -141,7 +122,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     ensure_pinned_runtime_state_directory,
     generation_logical_sha256,
     pinned_runtime_state_paths,
-    rebuild_journal_sha256,
     retire_f1d_legacy_artifacts,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
@@ -205,8 +185,7 @@ _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "pinvi-db-init",
     "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
-    _MAP_APPLICATION_FRESH_300_SERVICE,
-    _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+    _MAP_APPLICATION_SCHEMA_SERVICE,
     "kor-travel-map-dagster-storage-migrate",
     "pinvi-admin-bootstrap",
 )
@@ -243,13 +222,6 @@ _PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES = frozenset(
         "runtime_transaction",
         "runtime_transaction_lock",
     }
-)
-_MAP_APPLICATION_FRESH_PYTHON = "/usr/local/bin/python"
-_MAP_APPLICATION_FRESH_300_EXECUTABLE = (
-    "/usr/local/bin/ktm-application-schema-fresh-300"
-)
-_MAP_APPLICATION_FRESH_FINALIZE_EXECUTABLE = (
-    "/usr/local/bin/ktm-application-schema-fresh-finalize"
 )
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
 # profile을 해석 단계에서 빼면 `run --profile bootstrap`가 같은 문서에서 service를 찾지 못한다.
@@ -411,32 +383,6 @@ def _pinned_runtime_prejournal_step(stage: str) -> Iterator[None]:
         if service not in COMPOSE_BUILT_RUNTIME_SERVICES:
             service = None
         raise PinnedRuntimePrejournalFailure(stage, service) from exc
-
-
-def _application_300_profile_operation_args(
-    *,
-    service: str,
-    executable: str,
-    operation: str,
-    operation_id: str,
-) -> list[str]:
-    """고정 entrypoint를 보존하면서 recovery/probe argv를 명시한다."""
-
-    return [
-        "--profile",
-        "bootstrap",
-        "run",
-        "--rm",
-        "--no-deps",
-        "--entrypoint",
-        _MAP_APPLICATION_FRESH_PYTHON,
-        service,
-        "-I",
-        executable,
-        operation,
-        "--operation-id",
-        operation_id,
-    ]
 
 
 _MAP_APPLICATION_300_RECEIPT_DIRECTORY = "map-application-300-candidate"
@@ -2612,33 +2558,11 @@ def _run_pinned_runtime_static_command(
 
 @dataclass(frozen=True)
 class _MapApplication300Paths:
+    """ADR-101 이후 남은 host artifact — 빌드 영수증 둘과 metadata permit 하나."""
+
     api_receipt: Path
     paired_receipt: Path
-    root_fence_directory: Path
-    finalize_fence_directory: Path
-    application_permit_directory: Path
     metadata_permit_directory: Path
-    result_directory: Path
-
-    @property
-    def root_result(self) -> Path:
-        return self.result_directory / "fresh-root-result.json"
-
-    @property
-    def finalize_result(self) -> Path:
-        return self.result_directory / "fresh-finalize-result.json"
-
-    @property
-    def root_fence(self) -> Path:
-        return self.root_fence_directory / "fence.json"
-
-    @property
-    def finalize_fence(self) -> Path:
-        return self.finalize_fence_directory / "fence.json"
-
-    @property
-    def application_permit(self) -> Path:
-        return self.application_permit_directory / "permit.json"
 
     @property
     def metadata_permit(self) -> Path:
@@ -2663,27 +2587,12 @@ def _map_application_300_paths(
         artifact_directory,
     ):
         _ensure_application_300_private_directory(directory)
-    artifact_directories = tuple(
-        artifact_directory / name
-        for name in (
-            "fresh-root-fence",
-            "fresh-finalize-fence",
-            "application-final-permit",
-            "dagster-storage-permit",
-            "results",
-        )
-    )
-    for directory in artifact_directories[:4]:
-        _ensure_application_300_mount_directory(directory)
-    _ensure_application_300_private_directory(artifact_directories[4])
+    metadata_permit_directory = artifact_directory / "dagster-storage-permit"
+    _ensure_application_300_mount_directory(metadata_permit_directory)
     return _MapApplication300Paths(
         api_receipt=receipt_directory / "api-candidate-build.json",
         paired_receipt=receipt_directory / "paired-candidate-build.json",
-        root_fence_directory=artifact_directories[0],
-        finalize_fence_directory=artifact_directories[1],
-        application_permit_directory=artifact_directories[2],
-        metadata_permit_directory=artifact_directories[3],
-        result_directory=artifact_directories[4],
+        metadata_permit_directory=metadata_permit_directory,
     )
 
 
@@ -2873,233 +2782,6 @@ def _application_300_dagster_identities(
             "application 300 Dagster metadata identity is invalid"
         ) from exc
     return contract_identity, journal_identity
-
-
-def _application_300_plan_expiry(plan: MapApplication300OperationPlan) -> datetime:
-    try:
-        value = datetime.fromisoformat(plan.writer_fence_expires_at)
-    except ValueError as exc:
-        raise DeploymentContractError(
-            "application 300 operation expiry is invalid"
-        ) from exc
-    if value.tzinfo is None or value.utcoffset() != timedelta(0):
-        raise DeploymentContractError("application 300 operation expiry is invalid")
-    return value
-
-
-def _application_300_journal_stamp(
-    plan: MapApplication300OperationPlan,
-) -> JournalStamp:
-    try:
-        return JournalStamp(
-            transaction_id=plan.transaction_id,
-            operation_id=plan.operation_id,
-            journal_sha256=plan.basis_journal_sha256,
-            journal_generation=plan.basis_journal_generation,
-        )
-    except MapApplication300ContractError as exc:
-        raise DeploymentContractError("application 300 journal stamp is invalid") from exc
-
-
-def _application_300_root_fence(
-    *,
-    candidate: MapApplication300Candidate,
-    database: ApplicationDatabaseIdentity,
-    plan: MapApplication300OperationPlan,
-) -> bytes:
-    try:
-        artifact = build_fresh_migration_fence(
-            contract=candidate.application_contract,
-            candidate=_application_300_execution_candidate(candidate),
-            database=database,
-            journal=_application_300_journal_stamp(plan),
-            writer_fence_expires_at=_application_300_plan_expiry(plan),
-        )
-    except MapApplication300ContractError as exc:
-        raise DeploymentContractError("application 300 root fence is invalid") from exc
-    if artifact.sha256 != plan.fence_sha256:
-        raise DeploymentContractError("application 300 root fence digest differs")
-    return artifact.raw
-
-
-def _application_300_finalize_fence(
-    *,
-    candidate: MapApplication300Candidate,
-    database: ApplicationDatabaseIdentity,
-    prior: FreshRootResult,
-    plan: MapApplication300OperationPlan,
-) -> bytes:
-    try:
-        artifact = build_fresh_finalize_fence(
-            contract=candidate.application_contract,
-            candidate=_application_300_execution_candidate(candidate),
-            database=database,
-            journal=_application_300_journal_stamp(plan),
-            prior=prior,
-            writer_fence_expires_at=_application_300_plan_expiry(plan),
-        )
-    except MapApplication300ContractError as exc:
-        raise DeploymentContractError("application 300 finalize fence is invalid") from exc
-    if artifact.sha256 != plan.fence_sha256:
-        raise DeploymentContractError("application 300 finalize fence digest differs")
-    return artifact.raw
-
-
-def _application_300_root_result(
-    *,
-    raw: bytes,
-    candidate: MapApplication300Candidate,
-    database: ApplicationDatabaseIdentity,
-    plan: MapApplication300OperationPlan,
-) -> FreshRootResult:
-    try:
-        result = parse_fresh_root_result(
-            raw,
-            contract=candidate.application_contract,
-            candidate=_application_300_execution_candidate(candidate),
-        )
-    except MapApplication300ContractError as exc:
-        raise DeploymentContractError(
-            "application 300 root result is invalid"
-        ) from exc
-    if (
-        result.writer_fence_receipt_sha256 != plan.fence_sha256
-        or result.writer_fence_transaction_id != plan.transaction_id
-        or result.operation_id != plan.operation_id
-        or result.journal_sha256 != plan.basis_journal_sha256
-        or result.journal_generation != plan.basis_journal_generation
-        or result.database_identity != database
-    ):
-        raise DeploymentContractError("application 300 root result differs from plan")
-    return result
-
-
-def _application_300_root_missing_receipt(
-    *,
-    raw: bytes,
-    candidate: MapApplication300Candidate,
-    database: ApplicationDatabaseIdentity,
-    plan: MapApplication300OperationPlan,
-) -> FreshRootMissingReceipt:
-    try:
-        result = parse_fresh_root_missing_receipt(
-            raw,
-            contract=candidate.application_contract,
-            candidate=_application_300_execution_candidate(candidate),
-        )
-    except MapApplication300ContractError as exc:
-        raise DeploymentContractError(
-            "application 300 root missing-receipt proof is invalid"
-        ) from exc
-    if (
-        result.operation_id != plan.operation_id
-        or result.writer_fence_receipt_sha256 != plan.fence_sha256
-        or result.writer_fence_transaction_id != plan.transaction_id
-        or result.journal_sha256 != plan.basis_journal_sha256
-        or result.journal_generation != plan.basis_journal_generation
-        or result.database_identity != database
-    ):
-        raise DeploymentContractError(
-            "application 300 root missing-receipt proof differs from plan"
-        )
-    return result
-
-
-def _application_300_finalize_result(
-    *,
-    raw: bytes,
-    candidate: MapApplication300Candidate,
-    prior: FreshRootResult,
-    plan: MapApplication300OperationPlan,
-) -> FreshFinalizeResult:
-    try:
-        result = parse_fresh_finalize_result(
-            raw,
-            contract=candidate.application_contract,
-            candidate=_application_300_execution_candidate(candidate),
-            prior=prior,
-        )
-    except MapApplication300ContractError as exc:
-        raise DeploymentContractError(
-            "application 300 finalize result is invalid"
-        ) from exc
-    if (
-        result.writer_fence_receipt_sha256 != plan.fence_sha256
-        or result.writer_fence_transaction_id != plan.transaction_id
-        or result.operation_id != plan.operation_id
-        or result.journal_sha256 != plan.basis_journal_sha256
-        or result.journal_generation != plan.basis_journal_generation
-        or result.database_identity != prior.database_identity
-    ):
-        raise DeploymentContractError(
-            "application 300 finalize result differs from plan"
-        )
-    return result
-
-
-def _application_300_finalize_missing_receipt(
-    *,
-    raw: bytes,
-    candidate: MapApplication300Candidate,
-    prior: FreshRootResult,
-    plan: MapApplication300OperationPlan,
-) -> None:
-    try:
-        result = parse_fresh_finalize_missing_receipt(
-            raw,
-            contract=candidate.application_contract,
-            candidate=_application_300_execution_candidate(candidate),
-            prior=prior,
-        )
-    except MapApplication300ContractError as exc:
-        raise DeploymentContractError(
-            "application 300 finalize missing-receipt proof is invalid"
-        ) from exc
-    if result.operation_id != plan.operation_id:
-        raise DeploymentContractError(
-            "application 300 finalize missing-receipt proof differs from plan"
-        )
-
-
-def _application_300_plan_expired(plan: MapApplication300OperationPlan) -> bool:
-    return _application_300_plan_expiry(plan) <= datetime.now(UTC)
-
-
-def _application_300_renewal_expiry(
-    plan: MapApplication300OperationPlan,
-) -> datetime:
-    """Return a time-independent renewal expiry for crash reconciliation."""
-
-    expiry = _application_300_plan_expiry(plan) + timedelta(days=3650)
-    deterministic_floor = datetime(2100, 1, 1, tzinfo=UTC)
-    while expiry <= deterministic_floor:
-        expiry += timedelta(days=3650)
-    return expiry
-
-
-def _application_300_renewal_transaction_id(
-    *,
-    journal: PinnedRuntimeRebuildJournal,
-    plan: MapApplication300OperationPlan,
-    label: Literal["root", "finalize"],
-) -> str:
-    return str(
-        uuid5(
-            NAMESPACE_URL,
-            ":".join(
-                (
-                    "kor-travel-docker-manager",
-                    "map-application-300-renewal",
-                    label,
-                    journal.transaction_id,
-                    str(journal.journal_generation),
-                    plan.operation_id,
-                    plan.transaction_id,
-                    plan.fence_sha256,
-                )
-            ),
-        )
-    )
 
 
 def _discard_application_300_receipt(path: Path) -> None:
@@ -5791,255 +5473,6 @@ class ComposeService:
             )
         return journal, application_database
 
-    def _renew_fresh_root_operation_plan(
-        self,
-        *,
-        journal: PinnedRuntimeRebuildJournal,
-        plan: MapApplication300OperationPlan,
-        map_candidate: MapApplication300Candidate,
-        execution_candidate: Application300ExecutionCandidate,
-        application_database: ApplicationDatabaseIdentity,
-        application_paths: _MapApplication300Paths,
-        journal_path: Path,
-    ) -> tuple[PinnedRuntimeRebuildJournal, MapApplication300OperationPlan]:
-        renewed_plan, root_fence_raw = self._build_fresh_root_renewal(
-            journal=journal,
-            plan=plan,
-            map_candidate=map_candidate,
-            execution_candidate=execution_candidate,
-            application_database=application_database,
-        )
-        try:
-            replace_root_read_only_artifact(
-                application_paths.root_fence,
-                expected_old_sha256=plan.fence_sha256,
-                raw=root_fence_raw,
-            )
-        except MapApplication300ContractError as exc:
-            raise DeploymentContractError(
-                "application 300 root fence renewal failed"
-            ) from exc
-        updated = journal.with_renewed_fresh_root_execution_intent(
-            fresh_root_operation_plan=renewed_plan
-        )
-        write_pinned_runtime_rebuild_journal(journal_path, updated)
-        return updated, renewed_plan
-
-    def _build_fresh_root_renewal(
-        self,
-        *,
-        journal: PinnedRuntimeRebuildJournal,
-        plan: MapApplication300OperationPlan,
-        map_candidate: MapApplication300Candidate,
-        execution_candidate: Application300ExecutionCandidate,
-        application_database: ApplicationDatabaseIdentity,
-    ) -> tuple[MapApplication300OperationPlan, bytes]:
-        renewal_basis_sha256 = rebuild_journal_sha256(journal)
-        renewal_generation = journal.journal_generation
-        renewal_expiry = _application_300_renewal_expiry(plan)
-        renewal_transaction_id = _application_300_renewal_transaction_id(
-            journal=journal,
-            plan=plan,
-            label="root",
-        )
-        try:
-            root_fence = build_fresh_migration_fence(
-                contract=map_candidate.application_contract,
-                candidate=execution_candidate,
-                database=application_database,
-                journal=JournalStamp(
-                    transaction_id=renewal_transaction_id,
-                    operation_id=plan.operation_id,
-                    journal_sha256=renewal_basis_sha256,
-                    journal_generation=renewal_generation,
-                ),
-                writer_fence_expires_at=renewal_expiry,
-            )
-            renewed_plan = MapApplication300OperationPlan(
-                transaction_id=renewal_transaction_id,
-                operation_id=plan.operation_id,
-                basis_journal_sha256=renewal_basis_sha256,
-                basis_journal_generation=renewal_generation,
-                writer_fence_expires_at=renewal_expiry.isoformat(),
-                fence_sha256=root_fence.sha256,
-            )
-        except MapApplication300ContractError as exc:
-            raise DeploymentContractError(
-                "application 300 root fence renewal failed"
-            ) from exc
-        return renewed_plan, root_fence.raw
-
-    def _reconcile_expired_fresh_root_fence(
-        self,
-        *,
-        journal: PinnedRuntimeRebuildJournal,
-        plan: MapApplication300OperationPlan,
-        map_candidate: MapApplication300Candidate,
-        execution_candidate: Application300ExecutionCandidate,
-        application_database: ApplicationDatabaseIdentity,
-        application_paths: _MapApplication300Paths,
-        journal_path: Path,
-    ) -> tuple[PinnedRuntimeRebuildJournal, MapApplication300OperationPlan]:
-        """Converge a fence-first renewal crash before consuming a probe."""
-
-        if not _application_300_plan_expired(plan):
-            return journal, plan
-        try:
-            renewed_plan, renewed_fence_raw = self._build_fresh_root_renewal(
-                journal=journal,
-                plan=plan,
-                map_candidate=map_candidate,
-                execution_candidate=execution_candidate,
-                application_database=application_database,
-            )
-        except DeploymentContractError:
-            return journal, plan
-        try:
-            current_fence_raw = read_root_read_only_artifact(application_paths.root_fence)
-        except (FileNotFoundError, MapApplication300ContractError):
-            # Let the typed probe inspect the same mounted artifact.  A missing or
-            # unsafe file can never satisfy the old-plan binding, so this remains
-            # fail-closed while preserving the recovery proof path.
-            return journal, plan
-        if current_fence_raw == renewed_fence_raw:
-            updated = journal.with_renewed_fresh_root_execution_intent(
-                fresh_root_operation_plan=renewed_plan
-            )
-            write_pinned_runtime_rebuild_journal(journal_path, updated)
-            return updated, renewed_plan
-        if hashlib.sha256(current_fence_raw).hexdigest() == plan.fence_sha256:
-            return journal, plan
-        # Unknown bytes are deliberately not adopted.  The probe below must bind to
-        # the old durable plan and will reject them before any root re-execution.
-        return journal, plan
-
-    def _renew_fresh_finalize_operation_plan(
-        self,
-        *,
-        journal: PinnedRuntimeRebuildJournal,
-        plan: MapApplication300OperationPlan,
-        map_candidate: MapApplication300Candidate,
-        execution_candidate: Application300ExecutionCandidate,
-        application_database: ApplicationDatabaseIdentity,
-        application_paths: _MapApplication300Paths,
-        journal_path: Path,
-        root_result: FreshRootResult,
-    ) -> tuple[PinnedRuntimeRebuildJournal, MapApplication300OperationPlan]:
-        renewed_plan, finalize_fence_raw = self._build_fresh_finalize_renewal(
-            journal=journal,
-            plan=plan,
-            map_candidate=map_candidate,
-            execution_candidate=execution_candidate,
-            application_database=application_database,
-            root_result=root_result,
-        )
-        try:
-            replace_root_read_only_artifact(
-                application_paths.finalize_fence,
-                expected_old_sha256=plan.fence_sha256,
-                raw=finalize_fence_raw,
-            )
-        except (MapApplication300ContractError, AttributeError) as exc:
-            raise DeploymentContractError(
-                "application 300 finalize fence renewal failed"
-            ) from exc
-        updated = journal.with_renewed_fresh_finalize_execution_intent(
-            fresh_finalize_operation_plan=renewed_plan
-        )
-        write_pinned_runtime_rebuild_journal(journal_path, updated)
-        return updated, renewed_plan
-
-    def _build_fresh_finalize_renewal(
-        self,
-        *,
-        journal: PinnedRuntimeRebuildJournal,
-        plan: MapApplication300OperationPlan,
-        map_candidate: MapApplication300Candidate,
-        execution_candidate: Application300ExecutionCandidate,
-        application_database: ApplicationDatabaseIdentity,
-        root_result: FreshRootResult,
-    ) -> tuple[MapApplication300OperationPlan, bytes]:
-        renewal_basis_sha256 = rebuild_journal_sha256(journal)
-        renewal_generation = journal.journal_generation
-        renewal_expiry = _application_300_renewal_expiry(plan)
-        renewal_transaction_id = _application_300_renewal_transaction_id(
-            journal=journal,
-            plan=plan,
-            label="finalize",
-        )
-        try:
-            finalize_fence = build_fresh_finalize_fence(
-                contract=map_candidate.application_contract,
-                candidate=execution_candidate,
-                database=application_database,
-                journal=JournalStamp(
-                    transaction_id=renewal_transaction_id,
-                    operation_id=plan.operation_id,
-                    journal_sha256=renewal_basis_sha256,
-                    journal_generation=renewal_generation,
-                ),
-                prior=root_result,
-                writer_fence_expires_at=renewal_expiry,
-            )
-            renewed_plan = MapApplication300OperationPlan(
-                transaction_id=renewal_transaction_id,
-                operation_id=plan.operation_id,
-                basis_journal_sha256=renewal_basis_sha256,
-                basis_journal_generation=renewal_generation,
-                writer_fence_expires_at=renewal_expiry.isoformat(),
-                fence_sha256=finalize_fence.sha256,
-            )
-        except (MapApplication300ContractError, AttributeError) as exc:
-            raise DeploymentContractError(
-                "application 300 finalize fence renewal failed"
-            ) from exc
-        return renewed_plan, finalize_fence.raw
-
-    def _reconcile_expired_fresh_finalize_fence(
-        self,
-        *,
-        journal: PinnedRuntimeRebuildJournal,
-        plan: MapApplication300OperationPlan,
-        map_candidate: MapApplication300Candidate,
-        execution_candidate: Application300ExecutionCandidate,
-        application_database: ApplicationDatabaseIdentity,
-        application_paths: _MapApplication300Paths,
-        journal_path: Path,
-        root_result: FreshRootResult,
-    ) -> tuple[PinnedRuntimeRebuildJournal, MapApplication300OperationPlan]:
-        """Converge a fence-first finalize renewal crash before consuming a probe."""
-
-        if not _application_300_plan_expired(plan):
-            return journal, plan
-        try:
-            renewed_plan, renewed_fence_raw = self._build_fresh_finalize_renewal(
-                journal=journal,
-                plan=plan,
-                map_candidate=map_candidate,
-                execution_candidate=execution_candidate,
-                application_database=application_database,
-                root_result=root_result,
-            )
-        except DeploymentContractError:
-            return journal, plan
-        try:
-            current_fence_raw = read_root_read_only_artifact(
-                application_paths.finalize_fence
-            )
-        except (FileNotFoundError, MapApplication300ContractError):
-            # See the root reconciliation path: the strict probe remains the
-            # authority for missing/unsafe mounted bytes.
-            return journal, plan
-        if current_fence_raw == renewed_fence_raw:
-            updated = journal.with_renewed_fresh_finalize_execution_intent(
-                fresh_finalize_operation_plan=renewed_plan
-            )
-            write_pinned_runtime_rebuild_journal(journal_path, updated)
-            return updated, renewed_plan
-        if hashlib.sha256(current_fence_raw).hexdigest() == plan.fence_sha256:
-            return journal, plan
-        return journal, plan
-
     def rebuild_pinned_runtime(self) -> dict[str, Any]:
         """application-300 paired candidate에 결박된 destructive rebuild를 실행한다.
 
@@ -6159,11 +5592,6 @@ class ComposeService:
                     pinset_sha256=release.pinset_sha256,
                 )
                 artifact_directories = MapApplication300ArtifactDirectories(
-                    fresh_migrate_fence=application_paths.root_fence_directory,
-                    fresh_finalize_fence=application_paths.finalize_fence_directory,
-                    application_final_permit=(
-                        application_paths.application_permit_directory
-                    ),
                     dagster_storage_permit=application_paths.metadata_permit_directory,
                 )
             with _pinned_runtime_prejournal_step("prebuild_snapshot"):
@@ -6600,503 +6028,34 @@ class ComposeService:
                     )
                 )
 
-                execution_candidate = _application_300_execution_candidate(
-                    map_candidate
-                )
-                root_plan: MapApplication300OperationPlan | None = None
                 if journal.phase == "application_roles_ready":
-                    root_transaction_id = str(uuid4())
-                    root_operation_id = str(uuid4())
-                    root_expiry = datetime.now(UTC) + timedelta(hours=2)
-                    root_basis_sha256 = rebuild_journal_sha256(journal)
-                    try:
-                        root_fence = build_fresh_migration_fence(
-                            contract=map_candidate.application_contract,
-                            candidate=execution_candidate,
-                            database=application_database,
-                            journal=JournalStamp(
-                                transaction_id=root_transaction_id,
-                                operation_id=root_operation_id,
-                                journal_sha256=root_basis_sha256,
-                                journal_generation=journal.journal_generation,
-                            ),
-                            writer_fence_expires_at=root_expiry,
-                        )
-                    except MapApplication300ContractError as exc:
+                    # ADR-101: root migration과 finalize 두 one-shot이 하나가 됐다.
+                    # 그 안은 `alembic upgrade head` 뒤 런타임 권한 재조정 — 순서가
+                    # 계약이다(스키마가 없으면 GRANT할 relation이 없다).
+                    self._run_pinned_runtime_rebuild_compose(
+                        [
+                            "--profile",
+                            "bootstrap",
+                            "run",
+                            "--rm",
+                            "--no-deps",
+                            _MAP_APPLICATION_SCHEMA_SERVICE,
+                        ],
+                        transaction=runtime_transaction,
+                    )
+                    # 성공의 근거는 **종료 코드가 아니라 데이터베이스**다. 이 읽기는
+                    # Manager가 자기 admin 자격으로 하는 독립 관측이고, one-shot이
+                    # 조용히 아무것도 안 하고 0으로 끝나면 여기서 걸린다.
+                    observed_head = read_database_schema_revision(runtimes[0])
+                    if observed_head != journal.candidate.map_application_head:
                         raise DeploymentContractError(
-                            "application 300 root plan is invalid"
-                        ) from exc
-                    root_plan = MapApplication300OperationPlan(
-                        transaction_id=root_transaction_id,
-                        operation_id=root_operation_id,
-                        basis_journal_sha256=root_basis_sha256,
-                        basis_journal_generation=journal.journal_generation,
-                        writer_fence_expires_at=root_expiry.isoformat(),
-                        fence_sha256=root_fence.sha256,
-                    )
-                    updated = journal.with_fresh_root_plan_ready(
-                        fresh_root_operation_plan=root_plan
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                root_plan = (
-                    journal.map_application_300_execution_evidence
-                    .fresh_root_operation_plan
-                )
-                if root_plan is None:
-                    raise DeploymentContractError(
-                        "application 300 root plan is missing"
-                    )
-                if journal.phase == "fresh_root_plan_ready":
-                    root_fence_raw = _application_300_root_fence(
-                        candidate=map_candidate,
-                        database=application_database,
-                        plan=root_plan,
-                    )
-                    try:
-                        publish_root_read_only_artifact(
-                            application_paths.root_fence,
-                            root_fence_raw,
+                            "Map application schema differs from candidate head"
                         )
-                    except MapApplication300ContractError as exc:
-                        raise DeploymentContractError(
-                            "application 300 root fence cannot be published"
-                        ) from exc
-                    updated = journal.with_fresh_root_fence_ready(
-                        fresh_root_operation_plan=root_plan
+                    updated = journal.with_application_schema_ready(
+                        application_schema_head=observed_head
                     )
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                     journal = updated
-                if journal.phase == "fresh_root_fence_ready":
-                    updated = journal.with_fresh_root_execution_intent(
-                        fresh_root_operation_plan=root_plan
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                if journal.phase == "fresh_root_execution_intent":
-                    try:
-                        application_paths.root_result.lstat()
-                        root_result_raw = read_owner_only_artifact(
-                            application_paths.root_result
-                        )
-                    except FileNotFoundError:
-                        try:
-                            root_recover_command = (
-                                self._run_pinned_runtime_rebuild_compose(
-                                    _application_300_profile_operation_args(
-                                        service=_MAP_APPLICATION_FRESH_300_SERVICE,
-                                        executable=_MAP_APPLICATION_FRESH_300_EXECUTABLE,
-                                        operation="recover",
-                                        operation_id=root_plan.operation_id,
-                                    ),
-                                    transaction=runtime_transaction,
-                                )
-                            )
-                            root_recover_stdout = root_recover_command.get("stdout")
-                            if not isinstance(root_recover_stdout, str):
-                                raise DeploymentContractError(
-                                    "application 300 root recovery output is invalid"
-                                )
-                            root_result_raw = root_recover_stdout.encode("utf-8")
-                        except DeploymentContractError:
-                            try:
-                                journal, root_plan = (
-                                    self._reconcile_expired_fresh_root_fence(
-                                        journal=journal,
-                                        plan=root_plan,
-                                        map_candidate=map_candidate,
-                                        execution_candidate=execution_candidate,
-                                        application_database=application_database,
-                                        application_paths=application_paths,
-                                        journal_path=state_paths.journal,
-                                    )
-                                )
-                                missing_probe_command = (
-                                    self._run_pinned_runtime_rebuild_compose(
-                                        _application_300_profile_operation_args(
-                                            service=_MAP_APPLICATION_FRESH_300_SERVICE,
-                                            executable=_MAP_APPLICATION_FRESH_300_EXECUTABLE,
-                                            operation="probe-missing",
-                                            operation_id=root_plan.operation_id,
-                                        ),
-                                        transaction=runtime_transaction,
-                                    )
-                                )
-                                missing_probe_stdout = missing_probe_command.get(
-                                    "stdout"
-                                )
-                                if not isinstance(missing_probe_stdout, str):
-                                    raise DeploymentContractError(
-                                        "application 300 root missing-receipt "
-                                        "proof output is invalid"
-                                    )
-                                _application_300_root_missing_receipt(
-                                    raw=missing_probe_stdout.encode("utf-8"),
-                                    candidate=map_candidate,
-                                    database=application_database,
-                                    plan=root_plan,
-                                )
-                            except DeploymentContractError as probe_error:
-                                raise DeploymentContractError(
-                                    "application 300 root execution result is uncertain"
-                                ) from probe_error
-                            if _application_300_plan_expired(root_plan):
-                                journal, root_plan = (
-                                    self._renew_fresh_root_operation_plan(
-                                        journal=journal,
-                                        plan=root_plan,
-                                        map_candidate=map_candidate,
-                                        execution_candidate=execution_candidate,
-                                        application_database=application_database,
-                                        application_paths=application_paths,
-                                        journal_path=state_paths.journal,
-                                    )
-                                )
-                            root_command = self._run_pinned_runtime_rebuild_compose(
-                                [
-                                    "--profile",
-                                    "bootstrap",
-                                    "run",
-                                    "--rm",
-                                    "--no-deps",
-                                    _MAP_APPLICATION_FRESH_300_SERVICE,
-                                ],
-                                transaction=runtime_transaction,
-                            )
-                            root_stdout = root_command.get("stdout")
-                            if not isinstance(root_stdout, str):
-                                raise DeploymentContractError(
-                                    "application 300 root result output is invalid"
-                                ) from None
-                            root_result_raw = root_stdout.encode("utf-8")
-                    except MapApplication300ContractError as exc:
-                        raise DeploymentContractError(
-                            "application 300 root result artifact is invalid"
-                        ) from exc
-                    root_result = _application_300_root_result(
-                        raw=root_result_raw,
-                        candidate=map_candidate,
-                        database=application_database,
-                        plan=root_plan,
-                    )
-                    try:
-                        write_owner_only_artifact(
-                            application_paths.root_result,
-                            root_result_raw,
-                        )
-                    except MapApplication300ContractError as exc:
-                        raise DeploymentContractError(
-                            "application 300 root result cannot be persisted"
-                        ) from exc
-                    root_plan = root_plan.with_result(root_result.payload_sha256)
-                    updated = journal.with_fresh_root_ready(
-                        fresh_root_operation_plan=root_plan
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                root_plan = (
-                    journal.map_application_300_execution_evidence
-                    .fresh_root_operation_plan
-                )
-                if root_plan is None or root_plan.result_sha256 is None:
-                    raise DeploymentContractError(
-                        "application 300 root result is missing"
-                    )
-                try:
-                    root_result_raw = read_owner_only_artifact(
-                        application_paths.root_result,
-                        expected_sha256=root_plan.result_sha256,
-                    )
-                except MapApplication300ContractError as exc:
-                    raise DeploymentContractError(
-                        "application 300 root result artifact is invalid"
-                    ) from exc
-                root_result = _application_300_root_result(
-                    raw=root_result_raw,
-                    candidate=map_candidate,
-                    database=application_database,
-                    plan=root_plan,
-                )
-
-                finalize_plan: MapApplication300OperationPlan | None = None
-                if journal.phase == "fresh_root_ready":
-                    finalize_transaction_id = str(uuid4())
-                    finalize_operation_id = str(uuid4())
-                    finalize_expiry = datetime.now(UTC) + timedelta(hours=2)
-                    finalize_basis_sha256 = rebuild_journal_sha256(journal)
-                    try:
-                        finalize_fence = build_fresh_finalize_fence(
-                            contract=map_candidate.application_contract,
-                            candidate=execution_candidate,
-                            database=application_database,
-                            journal=JournalStamp(
-                                transaction_id=finalize_transaction_id,
-                                operation_id=finalize_operation_id,
-                                journal_sha256=finalize_basis_sha256,
-                                journal_generation=journal.journal_generation,
-                            ),
-                            prior=root_result,
-                            writer_fence_expires_at=finalize_expiry,
-                        )
-                    except MapApplication300ContractError as exc:
-                        raise DeploymentContractError(
-                            "application 300 finalize plan is invalid"
-                        ) from exc
-                    finalize_plan = MapApplication300OperationPlan(
-                        transaction_id=finalize_transaction_id,
-                        operation_id=finalize_operation_id,
-                        basis_journal_sha256=finalize_basis_sha256,
-                        basis_journal_generation=journal.journal_generation,
-                        writer_fence_expires_at=finalize_expiry.isoformat(),
-                        fence_sha256=finalize_fence.sha256,
-                    )
-                    updated = journal.with_fresh_finalize_plan_ready(
-                        fresh_finalize_operation_plan=finalize_plan
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                finalize_plan = (
-                    journal.map_application_300_execution_evidence
-                    .fresh_finalize_operation_plan
-                )
-                if finalize_plan is None:
-                    raise DeploymentContractError(
-                        "application 300 finalize plan is missing"
-                    )
-                if journal.phase == "fresh_finalize_plan_ready":
-                    finalize_fence_raw = _application_300_finalize_fence(
-                        candidate=map_candidate,
-                        database=application_database,
-                        prior=root_result,
-                        plan=finalize_plan,
-                    )
-                    try:
-                        publish_root_read_only_artifact(
-                            application_paths.finalize_fence,
-                            finalize_fence_raw,
-                        )
-                    except MapApplication300ContractError as exc:
-                        raise DeploymentContractError(
-                            "application 300 finalize fence cannot be published"
-                        ) from exc
-                    updated = journal.with_fresh_finalize_fence_ready(
-                        fresh_finalize_operation_plan=finalize_plan
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                if journal.phase == "fresh_finalize_fence_ready":
-                    updated = journal.with_fresh_finalize_execution_intent(
-                        fresh_finalize_operation_plan=finalize_plan
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                if journal.phase == "fresh_finalize_execution_intent":
-                    try:
-                        application_paths.finalize_result.lstat()
-                        finalize_result_raw = read_owner_only_artifact(
-                            application_paths.finalize_result
-                        )
-                    except FileNotFoundError:
-                        try:
-                            finalize_recover_command = (
-                                self._run_pinned_runtime_rebuild_compose(
-                                    _application_300_profile_operation_args(
-                                        service=_MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
-                                        executable=_MAP_APPLICATION_FRESH_FINALIZE_EXECUTABLE,
-                                        operation="recover",
-                                        operation_id=finalize_plan.operation_id,
-                                    ),
-                                    transaction=runtime_transaction,
-                                )
-                            )
-                            finalize_recover_stdout = finalize_recover_command.get(
-                                "stdout"
-                            )
-                            if not isinstance(finalize_recover_stdout, str):
-                                raise DeploymentContractError(
-                                    "application 300 finalize recovery output is invalid"
-                                )
-                            finalize_result_raw = finalize_recover_stdout.encode(
-                                "utf-8"
-                            )
-                        except DeploymentContractError:
-                            try:
-                                journal, finalize_plan = (
-                                    self._reconcile_expired_fresh_finalize_fence(
-                                        journal=journal,
-                                        plan=finalize_plan,
-                                        map_candidate=map_candidate,
-                                        execution_candidate=execution_candidate,
-                                        application_database=application_database,
-                                        application_paths=application_paths,
-                                        journal_path=state_paths.journal,
-                                        root_result=root_result,
-                                    )
-                                )
-                                missing_probe_command = (
-                                    self._run_pinned_runtime_rebuild_compose(
-                                        _application_300_profile_operation_args(
-                                            service=_MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
-                                            executable=_MAP_APPLICATION_FRESH_FINALIZE_EXECUTABLE,
-                                            operation="probe-missing",
-                                            operation_id=finalize_plan.operation_id,
-                                        ),
-                                        transaction=runtime_transaction,
-                                    )
-                                )
-                                missing_probe_stdout = missing_probe_command.get(
-                                    "stdout"
-                                )
-                                if not isinstance(missing_probe_stdout, str):
-                                    raise DeploymentContractError(
-                                        "application 300 finalize missing-receipt "
-                                        "proof output is invalid"
-                                    )
-                                _application_300_finalize_missing_receipt(
-                                    raw=missing_probe_stdout.encode("utf-8"),
-                                    candidate=map_candidate,
-                                    prior=root_result,
-                                    plan=finalize_plan,
-                                )
-                            except DeploymentContractError as probe_error:
-                                raise DeploymentContractError(
-                                    "application 300 finalize execution result is uncertain"
-                                ) from probe_error
-                            if _application_300_plan_expired(finalize_plan):
-                                journal, finalize_plan = (
-                                    self._renew_fresh_finalize_operation_plan(
-                                        journal=journal,
-                                        plan=finalize_plan,
-                                        map_candidate=map_candidate,
-                                        execution_candidate=execution_candidate,
-                                        application_database=application_database,
-                                        application_paths=application_paths,
-                                        journal_path=state_paths.journal,
-                                        root_result=root_result,
-                                    )
-                                )
-                            finalize_command = self._run_pinned_runtime_rebuild_compose(
-                                [
-                                    "--profile",
-                                    "bootstrap",
-                                    "run",
-                                    "--rm",
-                                    "--no-deps",
-                                    _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
-                                ],
-                                transaction=runtime_transaction,
-                            )
-                            finalize_stdout = finalize_command.get("stdout")
-                            if not isinstance(finalize_stdout, str):
-                                raise DeploymentContractError(
-                                    "application 300 finalize result output is invalid"
-                                ) from None
-                            finalize_result_raw = finalize_stdout.encode("utf-8")
-                    except MapApplication300ContractError as exc:
-                        raise DeploymentContractError(
-                            "application 300 finalize result artifact is invalid"
-                        ) from exc
-                    finalize_result = _application_300_finalize_result(
-                        raw=finalize_result_raw,
-                        candidate=map_candidate,
-                        prior=root_result,
-                        plan=finalize_plan,
-                    )
-                    try:
-                        write_owner_only_artifact(
-                            application_paths.finalize_result,
-                            finalize_result_raw,
-                        )
-                    except MapApplication300ContractError as exc:
-                        raise DeploymentContractError(
-                            "application 300 finalize result cannot be persisted"
-                        ) from exc
-                    finalize_plan = finalize_plan.with_result(
-                        finalize_result.payload_sha256
-                    )
-                    updated = journal.with_fresh_finalize_ready(
-                        fresh_finalize_operation_plan=finalize_plan
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                finalize_plan = (
-                    journal.map_application_300_execution_evidence
-                    .fresh_finalize_operation_plan
-                )
-                if finalize_plan is None or finalize_plan.result_sha256 is None:
-                    raise DeploymentContractError(
-                        "application 300 finalize result is missing"
-                    )
-                try:
-                    finalize_result_raw = read_owner_only_artifact(
-                        application_paths.finalize_result,
-                        expected_sha256=finalize_plan.result_sha256,
-                    )
-                except MapApplication300ContractError as exc:
-                    raise DeploymentContractError(
-                        "application 300 finalize result artifact is invalid"
-                    ) from exc
-                finalize_result = _application_300_finalize_result(
-                    raw=finalize_result_raw,
-                    candidate=map_candidate,
-                    prior=root_result,
-                    plan=finalize_plan,
-                )
-                finalize_recover_command = self._run_pinned_runtime_rebuild_compose(
-                    _application_300_profile_operation_args(
-                        service=_MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
-                        executable=_MAP_APPLICATION_FRESH_FINALIZE_EXECUTABLE,
-                        operation="recover",
-                        operation_id=finalize_plan.operation_id,
-                    ),
-                    transaction=runtime_transaction,
-                )
-                finalize_recover_stdout = finalize_recover_command.get("stdout")
-                if not isinstance(finalize_recover_stdout, str):
-                    raise DeploymentContractError(
-                        "application 300 finalize recovery output is invalid"
-                    )
-                finalize_recover_raw = finalize_recover_stdout.encode("utf-8")
-                _application_300_finalize_result(
-                    raw=finalize_recover_raw,
-                    candidate=map_candidate,
-                    prior=root_result,
-                    plan=finalize_plan,
-                )
-                if finalize_recover_raw != finalize_result_raw:
-                    raise DeploymentContractError(
-                        "application 300 finalize recovery differs from stored result"
-                    )
-
-                try:
-                    application_permit = build_application_final_permit(
-                        contract=map_candidate.application_contract,
-                        candidate=execution_candidate,
-                        database=application_database,
-                        finalize_result=finalize_result,
-                    )
-                    publish_root_read_only_artifact(
-                        application_paths.application_permit,
-                        application_permit.raw,
-                    )
-                except MapApplication300ContractError as exc:
-                    raise DeploymentContractError(
-                        "application 300 final permit is invalid"
-                    ) from exc
-                if journal.phase == "fresh_finalize_ready":
-                    updated = journal.with_application_permit_ready(
-                        app_final_permit_sha256=application_permit.sha256
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                elif (
-                    journal.map_application_300_execution_evidence
-                    .app_final_permit_sha256
-                    != application_permit.sha256
-                ):
-                    raise DeploymentContractError(
-                        "application 300 final permit differs from journal"
-                    )
 
                 metadata_user = runtime_transaction.environment.effective.get(
                     "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
@@ -7110,7 +6069,7 @@ class ComposeService:
                     raise DeploymentContractError(
                         "Map Dagster metadata credentials are unavailable"
                     )
-                if journal.phase == "application_permit_ready":
+                if journal.phase == "application_schema_ready":
                     try:
                         runtime_dagster_identity = (
                             read_application_300_dagster_metadata_identity(
@@ -7158,7 +6117,7 @@ class ComposeService:
                     raise DeploymentContractError(
                         "Map Dagster metadata permit is invalid"
                     ) from exc
-                if journal.phase == "application_permit_ready":
+                if journal.phase == "application_schema_ready":
                     updated = journal.with_metadata_permit_ready(
                         dagster_metadata_database_identity=journal_dagster_database,
                         metadata_permit_sha256=metadata_permit.sha256,

@@ -81,10 +81,10 @@ _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_POSTGRES_SERVICE = "kor-travel-map-postgres"
 _MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
-_MAP_APPLICATION_FRESH_300_SERVICE = "kor-travel-map-application-fresh-300"
-_MAP_APPLICATION_FRESH_FINALIZE_SERVICE = (
-    "kor-travel-map-application-fresh-finalize"
-)
+#: ADR-101: root migration과 finalize 두 one-shot이 하나로 접혔다. Map 이미지의
+#: `ktm-application-schema-fresh-300` / `-fresh-finalize`가 삭제됐고, 그 둘이
+#: 나눠 하던 일은 revision `400`과 `kortravelmap.infra.runtime_privileges`가 한다.
+_MAP_APPLICATION_SCHEMA_SERVICE = "kor-travel-map-application-schema"
 _PINVI_POSTGRES_SERVICE = "pinvi-postgres"
 # ADR-047 대역 규칙(각 프로젝트 100번대의 x00이 그 프로젝트 DB)에 맞춘 값이다.
 # `docker-compose.yml`의 `KOR_TRAVEL_MAP_POSTGRES_PORT:-12700` 기본값과 **같아야**
@@ -460,8 +460,7 @@ _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
         _PINVI_POSTGRES_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
-        _MAP_APPLICATION_FRESH_300_SERVICE,
-        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+        _MAP_APPLICATION_SCHEMA_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
@@ -551,18 +550,13 @@ _CANDIDATE_ALLOWED_API_ENV_SOURCES = {
         _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV
     ),
     (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_ENABLED_ENV): (_MAP_FEATURE_CREATE_ENABLED_ENV),
-    (_MAP_APPLICATION_FRESH_300_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
-    ),
-    (_MAP_APPLICATION_FRESH_300_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
-    ),
-    (_MAP_APPLICATION_FRESH_FINALIZE_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
-    ),
-    (_MAP_APPLICATION_FRESH_FINALIZE_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
-    ),
+    # ADR-100 + ADR-101: one-shot도 단일 LOGIN의 DSN 하나만 받는다. 두 service를
+    # 합치면서 네 항목이 같은 키로 겹쳤고, 값도 퇴역 이름을 가리키고 있었다.
+    (_MAP_APPLICATION_SCHEMA_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): "KOR_TRAVEL_MAP_PG_DSN",
+    # `KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE`은 여기 없다. 이 값은 호스트 env에서
+    # 오지 않고 compose가 `"true"`로 **직접 적는** 고정 리터럴이다 — 출처 매핑에 넣으면
+    # 검증기가 없는 호스트 변수를 찾아 항상 거부한다. 고정값 계약은 아래
+    # `_MAP_DATABASE_CANONICAL_ENV_VALUES` 쪽이 담당한다.
     (_MAP_UI_SERVICE, _MAP_FEATURE_CREATE_TOKEN_ENV): (_MAP_FEATURE_CREATE_TOKEN_ENV),
     (_PINVI_API_SERVICE, _PINVI_CURATION_SNAPSHOT_ENV): (_PINVI_CURATION_SNAPSHOT_ENV),
     (_PINVI_API_SERVICE, _PINVI_CUTOVER_MAPPING_ENV): (_PINVI_CUTOVER_MAPPING_ENV),
@@ -876,26 +870,14 @@ _MAP_DATABASE_CANONICAL_ENV_VALUES = {
             _MAP_DAGSTER_DAEMON_SERVICE,
         )
     },
-    **{
-        (service, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
-            "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
-            "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
-        )
-        for service in (
-            _MAP_APPLICATION_FRESH_300_SERVICE,
-            _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
-        )
-    },
-    **{
-        (service, "KOR_TRAVEL_MAP_PG_DSN"): (
-            "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?"
-            "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
-        )
-        for service in (
-            _MAP_APPLICATION_FRESH_300_SERVICE,
-            _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
-        )
-    },
+    (_MAP_APPLICATION_SCHEMA_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+        "${KOR_TRAVEL_MAP_PG_DSN:?"
+        "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+    ),
+    (
+        _MAP_APPLICATION_SCHEMA_SERVICE,
+        "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE",
+    ): "true",
 }
 _DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
     {
@@ -1662,16 +1644,15 @@ def _require_map_database_host_network(service: Mapping[str, Any]) -> None:
 def _validate_map_application_300_images(
     services: Mapping[str, Any],
 ) -> None:
-    """fresh root/finalize가 Map API와 같은 paired candidate를 쓰는지 고정한다."""
+    """schema one-shot이 Map API와 **같은** candidate image를 쓰는지 고정한다.
+
+    ADR-101 이전에는 두 one-shot을 각각 대조했다. 하나가 된 지금도 성질은 같다 —
+    스키마를 만드는 코드와 그 스키마로 도는 코드가 같은 이미지에서 나와야 한다.
+    """
 
     map_api = services.get(_MAP_API_SERVICE)
-    fresh = services.get(_MAP_APPLICATION_FRESH_300_SERVICE)
-    finalize = services.get(_MAP_APPLICATION_FRESH_FINALIZE_SERVICE)
-    if (
-        not isinstance(map_api, Mapping)
-        or not isinstance(fresh, Mapping)
-        or not isinstance(finalize, Mapping)
-    ):
+    schema = services.get(_MAP_APPLICATION_SCHEMA_SERVICE)
+    if not isinstance(map_api, Mapping) or not isinstance(schema, Mapping):
         raise ComposeCandidateContractError(
             "Map application 300 image provenance is invalid"
         )
@@ -1679,8 +1660,7 @@ def _validate_map_application_300_images(
     if (
         not isinstance(map_image, str)
         or not map_image
-        or fresh.get("image") != map_image
-        or finalize.get("image") != map_image
+        or schema.get("image") != map_image
     ):
         raise ComposeCandidateContractError(
             "Map application 300 image provenance is invalid"
@@ -1694,62 +1674,67 @@ def _validate_map_application_300_service(
     environment: Mapping[str, str],
     resolved: bool,
 ) -> None:
-    """fresh root/finalize one-shot의 최소 권한 실행 표면을 고정한다."""
+    """application schema one-shot의 최소 권한 실행 표면을 고정한다.
 
-    specifications = {
-        _MAP_APPLICATION_FRESH_300_SERVICE: (
-            "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_IMAGE_ID",
-            "/usr/local/bin/ktm-application-schema-fresh-300",
-            "migrate",
-            "/run/kor-travel-map-application-fresh-migrate/fence.json",
-        ),
-        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE: (
-            "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_IMAGE_ID",
-            "/usr/local/bin/ktm-application-schema-fresh-finalize",
-            "finalize",
-            "/run/kor-travel-map-application-fresh-finalize/fence.json",
-        ),
-    }
-    try:
-        image_id_env, executable, operation, fence_path = specifications[service_name]
-    except KeyError as exc:
+    ADR-101 이전에는 두 service였고(root migration / finalize), 각각 Map 이미지의
+    전용 실행파일을 고정된 operation과 writer-fence 영수증 경로로 불렀다. 그 실행파일
+    둘은 Map 이미지에서 삭제됐고, operation 인자와 fence 영수증은 그 CLI의 일부였다.
+
+    지키는 성질은 그대로다 — 이 one-shot은 **고정된 형상으로만** 돈다. environment는
+    정확히 네 키이고, entrypoint는 고정된 두 명령이며, 한 번 돌고 끝난다.
+
+    `KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE`가 여기 **있다는 것**과 런타임
+    서비스에 **없다는 것**이 함께 계약이다. migration만 schema owner로 돌아야 한다.
+    """
+
+    if service_name != _MAP_APPLICATION_SCHEMA_SERVICE:
         raise ComposeCandidateContractError(
             "Map application 300 service identity is invalid"
-        ) from exc
+        )
 
     if resolved:
         image_id = environment.get("KOR_TRAVEL_MAP_API_IMAGE", "")
-        migrator_dsn = environment.get("KOR_TRAVEL_MAP_MIGRATOR_PG_DSN", "")
+        service_dsn = environment.get("KOR_TRAVEL_MAP_PG_DSN", "")
     else:
         image_id = (
             "${KOR_TRAVEL_MAP_API_IMAGE:?"
             "KOR_TRAVEL_MAP_API_IMAGE must be explicitly set}"
         )
-        migrator_dsn = _MAP_DATABASE_CANONICAL_ENV_VALUES[
-            (service_name, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN")
+        service_dsn = _MAP_DATABASE_CANONICAL_ENV_VALUES[
+            (service_name, "KOR_TRAVEL_MAP_PG_DSN")
         ]
     expected_environment = {
         "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
-        image_id_env: image_id,
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": migrator_dsn,
-        "KOR_TRAVEL_MAP_PG_DSN": migrator_dsn,
+        "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_IMAGE_ID": image_id,
+        "KOR_TRAVEL_MAP_PG_DSN": service_dsn,
+        "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE": "true",
     }
     if service.get("environment") != expected_environment:
         raise ComposeCandidateContractError(
             "Map application 300 service environment is invalid"
         )
-    if service.get("entrypoint") != [
-        "/usr/local/bin/python",
-        "-I",
-        executable,
-        operation,
-        "--writer-fence-receipt",
-        fence_path,
-    ]:
+    if service.get("entrypoint") != ["/bin/sh", "-c"]:
         raise ComposeCandidateContractError(
             "Map application 300 service entrypoint is invalid"
         )
-    if service.get("command") not in (None, []):
+    command = service.get("command")
+    if not isinstance(command, list) or len(command) != 1:
+        raise ComposeCandidateContractError(
+            "Map application 300 service command is invalid"
+        )
+    script = command[0]
+    if not isinstance(script, str):
+        raise ComposeCandidateContractError(
+            "Map application 300 service command is invalid"
+        )
+    # 두 명령을 **이 순서로** 요구한다. 스키마를 올리기 전에 권한을 재조정하면
+    # 아직 없는 relation에 GRANT를 내게 된다.
+    expected_script_lines = (
+        "set -eu",
+        "/usr/local/bin/python -I -m alembic upgrade head",
+        "/usr/local/bin/python -I -m kortravelmap.infra.runtime_privileges",
+    )
+    if tuple(line.strip() for line in script.strip().splitlines()) != expected_script_lines:
         raise ComposeCandidateContractError(
             "Map application 300 service command is invalid"
         )
@@ -4659,8 +4644,7 @@ def validate_resolved_compose_candidate_protected_values(
         _MAP_POSTGRES_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
-        _MAP_APPLICATION_FRESH_300_SERVICE,
-        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+        _MAP_APPLICATION_SCHEMA_SERVICE,
         _PINVI_POSTGRES_SERVICE,
         _PINVI_DB_INIT_SERVICE,
         _PINVI_API_SERVICE,
@@ -4702,8 +4686,7 @@ def validate_resolved_compose_candidate_protected_values(
             _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
             _MAP_DAGSTER_DB_INIT_SERVICE,
             _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
-            _MAP_APPLICATION_FRESH_300_SERVICE,
-            _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+            _MAP_APPLICATION_SCHEMA_SERVICE,
             _PINVI_DB_INIT_SERVICE,
         }:
             _require_map_database_host_network(service)
@@ -4713,8 +4696,7 @@ def validate_resolved_compose_candidate_protected_values(
                 f"resolved compose candidate {service_name} has no environment mapping"
             )
         if service_name in {
-            _MAP_APPLICATION_FRESH_300_SERVICE,
-            _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+            _MAP_APPLICATION_SCHEMA_SERVICE,
         }:
             _validate_map_application_300_service(
                 service_name,
@@ -5132,8 +5114,7 @@ def validate_compose_candidate_protected_values(
         _MAP_POSTGRES_SERVICE,
         _MAP_DAGSTER_DB_INIT_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
-        _MAP_APPLICATION_FRESH_300_SERVICE,
-        _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+        _MAP_APPLICATION_SCHEMA_SERVICE,
         _PINVI_POSTGRES_SERVICE,
         _PINVI_DB_INIT_SERVICE,
         _PINVI_API_SERVICE,
@@ -5185,8 +5166,7 @@ def validate_compose_candidate_protected_values(
                 "compose candidate Map API must use the immutable image entrypoint and command"
             )
         if service_name in {
-            _MAP_APPLICATION_FRESH_300_SERVICE,
-            _MAP_APPLICATION_FRESH_FINALIZE_SERVICE,
+            _MAP_APPLICATION_SCHEMA_SERVICE,
         }:
             _validate_map_application_300_service(
                 service_name,

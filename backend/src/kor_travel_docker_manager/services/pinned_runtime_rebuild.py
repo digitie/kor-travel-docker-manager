@@ -251,53 +251,34 @@ class CandidateRuntimeBuild:
 
 @dataclass(frozen=True)
 class MapApplication300ArtifactDirectories:
-    """application 300 fence/permit의 canonical fixed-mount host 디렉터리."""
+    """Map runtime이 읽는 fixed-mount host 디렉터리.
 
-    fresh_migrate_fence: Path
-    fresh_finalize_fence: Path
-    application_final_permit: Path
+    ADR-101 이전에는 넷이었다 — fence 둘, application final permit, storage permit.
+    fence 둘은 삭제된 one-shot 실행파일이 읽던 것이고, final permit은 그것을 읽던
+    `docker/application-schema-final-permit.py`가 rev 400 스쿼시에서 사라졌다.
+    남은 하나는 Map의 `dagster-storage-migrate.py`가 실제로 읽는다.
+    """
+
     dagster_storage_permit: Path
 
     def __post_init__(self) -> None:
-        paths = self.paths
-        if any(not isinstance(path, Path) for path in paths):
+        path = self.dagster_storage_permit
+        if not isinstance(path, Path):
             raise DeploymentContractError(
                 "Map application 300 artifact directory is invalid"
             )
-        if len(set(paths)) != len(paths):
+        if not path.is_absolute() or path != path.resolve(strict=False):
             raise DeploymentContractError(
-                "Map application 300 artifact directories must be distinct"
+                "Map application 300 artifact directory is invalid"
             )
-        for path in paths:
-            if (
-                not path.is_absolute()
-                or path != path.resolve(strict=False)
-            ):
-                raise DeploymentContractError(
-                    "Map application 300 artifact directory is invalid"
-                )
 
     @property
-    def paths(self) -> tuple[Path, Path, Path, Path]:
-        return (
-            self.fresh_migrate_fence,
-            self.fresh_finalize_fence,
-            self.application_final_permit,
-            self.dagster_storage_permit,
-        )
+    def paths(self) -> tuple[Path, ...]:
+        return (self.dagster_storage_permit,)
 
     def compose_environment(self) -> Mapping[str, str]:
         return MappingProxyType(
             {
-                "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": str(
-                    self.fresh_migrate_fence
-                ),
-                "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": str(
-                    self.fresh_finalize_fence
-                ),
-                "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": str(
-                    self.application_final_permit
-                ),
                 "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": str(
                     self.dagster_storage_permit
                 ),

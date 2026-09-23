@@ -80,8 +80,7 @@ _MAP_RUNTIME_SERVICES = (
 _MAP_DATABASE_ONESHOT_SERVICES = (
     "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
-    "kor-travel-map-application-fresh-300",
-    "kor-travel-map-application-fresh-finalize",
+    "kor-travel-map-application-schema",
     "kor-travel-map-dagster-storage-migrate",
 )
 _PINVI_RUNTIME_SERVICES = ("pinvi-api", "pinvi-web", "pinvi-dagster")
@@ -1126,7 +1125,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     raw_image_drift = deepcopy(candidate)
     raw_image_services = raw_image_drift["services"]
     assert isinstance(raw_image_services, dict)
-    raw_image_fresh = raw_image_services["kor-travel-map-application-fresh-300"]
+    raw_image_fresh = raw_image_services["kor-travel-map-application-schema"]
     assert isinstance(raw_image_fresh, dict)
     raw_image_fresh["image"] = "attacker.invalid/map-application:stale"
     with pytest.raises(DeploymentContractError, match="image provenance"):
@@ -1139,7 +1138,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     fresh_drift = deepcopy(candidate)
     fresh_services = fresh_drift["services"]
     assert isinstance(fresh_services, dict)
-    fresh_service = fresh_services["kor-travel-map-application-fresh-300"]
+    fresh_service = fresh_services["kor-travel-map-application-schema"]
     assert isinstance(fresh_service, dict)
     fresh_environment = fresh_service["environment"]
     assert isinstance(fresh_environment, dict)
@@ -1194,7 +1193,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     resolved_image_drift = deepcopy(resolved)
     resolved_image_services = resolved_image_drift["services"]
     assert isinstance(resolved_image_services, dict)
-    resolved_image_fresh = resolved_image_services["kor-travel-map-application-fresh-finalize"]
+    resolved_image_fresh = resolved_image_services["kor-travel-map-application-schema"]
     assert isinstance(resolved_image_fresh, dict)
     resolved_image_fresh["image"] = "attacker.invalid/map-application:stale"
     with pytest.raises(DeploymentContractError, match="image provenance"):
@@ -1209,7 +1208,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     resolved_environment_services = resolved_environment_drift["services"]
     assert isinstance(resolved_environment_services, dict)
     resolved_environment_fresh = resolved_environment_services[
-        "kor-travel-map-application-fresh-finalize"
+        "kor-travel-map-application-schema"
     ]
     assert isinstance(resolved_environment_fresh, dict)
     resolved_fresh_environment = resolved_environment_fresh["environment"]
@@ -1615,13 +1614,11 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert map_api_environment["KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"] == "v" * 32
     map_dagster_environment = services["kor-travel-map-dagster"]["environment"]
     map_bootstrap_environment = services["kor-travel-map-db-role-bootstrap"]["environment"]
-    map_fresh_environment = services["kor-travel-map-application-fresh-300"]["environment"]
-    map_finalize_environment = services["kor-travel-map-application-fresh-finalize"]["environment"]
+    map_schema_environment = services["kor-travel-map-application-schema"]["environment"]
     assert isinstance(map_api_environment, dict)
     assert isinstance(map_dagster_environment, dict)
     assert isinstance(map_bootstrap_environment, dict)
-    assert isinstance(map_fresh_environment, dict)
-    assert isinstance(map_finalize_environment, dict)
+    assert isinstance(map_schema_environment, dict)
     assert "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN" not in map_api_environment
     assert "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN" in map_api_environment
     assert "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN" not in map_api_environment
@@ -1649,29 +1646,18 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         "KOR_TRAVEL_MAP_SERVICE_PASSWORD",
         "KOR_TRAVEL_MAP_PG_DSN",
     }.issubset(map_bootstrap_environment)
-    assert map_fresh_environment == {
+    # ADR-101: root migration과 finalize 두 one-shot이 하나가 됐다. 이 계약은 그
+    # 하나가 **정확히 네 키**만 받는다고 적는다 — 프로파일, 이미지 신원, 단일 LOGIN의
+    # DSN, 그리고 migration 전용 schema-owner 스위치. `KOR_TRAVEL_MAP_MIGRATOR_PG_DSN`이
+    # **없다는 것**도 같은 계약이다(ADR-100에서 그 LOGIN이 퇴역했다).
+    assert map_schema_environment == {
         "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
-        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_IMAGE_ID": f"sha256:{'1' * 64}",
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
-            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
-            "127.0.0.1:12700/map_contract"
-        ),
+        "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_IMAGE_ID": f"sha256:{'1' * 64}",
         "KOR_TRAVEL_MAP_PG_DSN": (
-            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
+            "postgresql+asyncpg://ktm_feature_service:map-contract-service-password@"
             "127.0.0.1:12700/map_contract"
         ),
-    }
-    assert map_finalize_environment == {
-        "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_PROFILE": "production",
-        "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_IMAGE_ID": f"sha256:{'1' * 64}",
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
-            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
-            "127.0.0.1:12700/map_contract"
-        ),
-        "KOR_TRAVEL_MAP_PG_DSN": (
-            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
-            "127.0.0.1:12700/map_contract"
-        ),
+        "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE": "true",
     }
 
 
@@ -2424,8 +2410,7 @@ def test_deployment_validation_rejects_binding_the_allowlist_itself(
 #: 본 것에 건다"의 정확한 반례이므로 여기서는 세지 않고 **적는다**.)
 _REQUIRED_SERVICES_GOLDEN: tuple[str, ...] = (
     "kor-travel-map-api",
-    "kor-travel-map-application-fresh-300",
-    "kor-travel-map-application-fresh-finalize",
+    "kor-travel-map-application-schema",
     "kor-travel-map-dagster",
     "kor-travel-map-dagster-daemon",
     "kor-travel-map-dagster-db-init",
@@ -2541,7 +2526,7 @@ def test_required_protected_service_set_is_pinned() -> None:
     S3가 바로 그 함수를 이분할한다.
     """
 
-    assert len(_REQUIRED_SERVICES_GOLDEN) == 13
+    assert len(_REQUIRED_SERVICES_GOLDEN) == 12
     assert set(_REQUIRED_SERVICES_GOLDEN) == set(
         c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
     ), (
@@ -2663,14 +2648,14 @@ _SHAPE_GOLDEN: dict[str, str] = {
     ),
     "absent_map_oneshots/raw": (
         "ComposeCandidateContractError: compose candidate is missing required "
-        "protected services: kor-travel-map-application-fresh-300, "
-        "kor-travel-map-application-fresh-finalize, kor-travel-map-dagster-db-init, "
+        "protected services: kor-travel-map-application-schema, "
+        "kor-travel-map-dagster-db-init, "
         "kor-travel-map-dagster-storage-migrate, kor-travel-map-db-role-bootstrap"
     ),
     "absent_map_oneshots/resolved": (
         "ComposeCandidateContractError: resolved compose candidate is missing "
-        "required protected services: kor-travel-map-application-fresh-300, "
-        "kor-travel-map-application-fresh-finalize, kor-travel-map-dagster-db-init, "
+        "required protected services: kor-travel-map-application-schema, "
+        "kor-travel-map-dagster-db-init, "
         "kor-travel-map-dagster-storage-migrate, kor-travel-map-db-role-bootstrap"
     ),
     "absent_pinvi_core/raw": (
