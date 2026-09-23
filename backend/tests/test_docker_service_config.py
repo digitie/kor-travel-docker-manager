@@ -223,6 +223,10 @@ def _compose_with_canonical_c6c_services(
         "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?"
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}"
     )
+    #: ADR-100 이후 런타임이 실제로 접속하는 DSN. 세 per-role 이름이 하나로 합쳐졌다.
+    service_dsn = (
+        "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+    )
     dagster_pg_url = (
         "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
     )
@@ -511,9 +515,11 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
                     "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
                 ),
+                # ADR-100: 런타임도 migration도 같은 단일 LOGIN이므로 DSN 이름이
+                # 하나다. 이 fixture는 compose 배선의 사본이고, 계약과 함께 움직인다.
                 "KOR_TRAVEL_MAP_PG_DSN": (
-                    "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
-                    "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
+                    "${KOR_TRAVEL_MAP_PG_DSN:?"
+                    "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
                 ),
                 "KOR_TRAVEL_MAP_API_PROFILE": "production",
                 "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED": "true",
@@ -533,7 +539,8 @@ def _compose_with_canonical_c6c_services(
                     **(
                         {
                             "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (dagster_runtime_dsn),
-                            "KOR_TRAVEL_MAP_PG_DSN": dagster_runtime_dsn,
+                            # ADR-100: Dagster runtime도 단일 LOGIN의 DSN을 쓴다.
+                            "KOR_TRAVEL_MAP_PG_DSN": service_dsn,
                             "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": (_MAP_GEO_API_KEY_SOURCE),
                         }
                         if service_name in (_MAP_DAGSTER_SERVICE, _MAP_DAGSTER_DAEMON_SERVICE)

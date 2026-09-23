@@ -850,7 +850,11 @@ def test_map_principal_bootstrap_assertion_requires_exact_catalog_result(
     command = runner.call_args.args[0]
     assert command[command.index("--dbname") + 1] == "map_app"
     assert "ktm_feature_schema_owner" in command[-1]
-    assert "ktm_feature_api_runtime" in command[-1]
+    # ADR-100: application LOGIN은 `ktm_feature_service` 하나다. 종전의
+    # `ktm_feature_api_runtime`을 계속 단언하면, 이 검사는 Map의 bootstrap이 더는
+    # 만들지 않는 role을 요구하는 쿼리를 초록으로 지키게 된다.
+    assert "ktm_feature_service" in command[-1]
+    assert "ktm_feature_api_runtime" not in command[-1]
     assert "ktm_curation_command_owner" in command[-1]
     assert "ktm_curation_admin_executor" in command[-1]
     assert "pg_auth_members" in command[-1]

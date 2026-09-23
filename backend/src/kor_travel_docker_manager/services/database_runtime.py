@@ -84,11 +84,14 @@ _SCHEMA_REVISION_LOCATION: dict[DatabaseRole, tuple[str, str]] = {
     "pinvi": ("app", "alembic_version"),
 }
 _MAP_SCHEMA_OWNER = "ktm_feature_schema_owner"
-_MAP_REQUIRED_LOGIN_ROLES = (
-    "ktm_feature_migrator",
-    "ktm_feature_api_runtime",
-    "ktm_feature_dagster_runtime",
-)
+#: ADR-100 이후 Map의 application LOGIN은 **하나**다. 세 이름
+#: (`ktm_feature_migrator` / `ktm_feature_api_runtime` / `ktm_feature_dagster_runtime`)은
+#: Map의 bootstrap이 더 이상 만들지 않으므로, 여기 남겨 두면 attestation이 영원히
+#: `partial`이고 fresh 재구축이 "role bootstrap result is not exact"에서 선다.
+#: ADR-100의 단일 application LOGIN.
+_MAP_SERVICE_LOGIN = "ktm_feature_service"
+
+_MAP_REQUIRED_LOGIN_ROLES = (_MAP_SERVICE_LOGIN,)
 _MAP_REQUIRED_GROUP_ROLES = (
     _MAP_SCHEMA_OWNER,
     "ktm_feature_state_procedure_owner",
@@ -121,80 +124,38 @@ _MAP_FUTURE_PHASE_ROLES = (
     "ktm_manual_provider_dedup_admin_executor",
     "ktm_feature_reference_reconciliation_service_executor",
 )
+#: Map `docker/postgres-role-bootstrap.sh`가 선언하는 기대 membership 그래프의 사본.
+#: ADR-100 이후 18개 edge — `ktm_feature_service`로 11개, schema owner로 7개다.
+#:
+#: 튜플 자리는 bootstrap 스크립트와 같다: (role, member, admin_option, inherit_option,
+#: set_option). `ktm_feature_service`가 runtime group은 **상속**하고(inherit) schema
+#: owner는 **켤 수만** 있는(set) 비대칭이 ADR-100이 남긴 유일한 권한 구분이므로,
+#: 두 자리를 뭉뚱그리면 이 검증은 아무것도 재지 않는다.
 _MAP_BASELINE_300_MEMBERSHIPS = (
-    ("ktm_curation_admin_executor", "ktm_feature_api_runtime", False, True, False),
+    ("ktm_curation_admin_executor", _MAP_SERVICE_LOGIN, False, True, False),
     ("ktm_curation_audit_writer", _MAP_SCHEMA_OWNER, False, False, True),
     ("ktm_curation_command_owner", _MAP_SCHEMA_OWNER, False, False, True),
-    (
-        "ktm_curation_provider_executor",
-        "ktm_feature_dagster_runtime",
-        False,
-        True,
-        False,
-    ),
+    ("ktm_curation_provider_executor", _MAP_SERVICE_LOGIN, False, True, False),
     ("ktm_feature_audit_writer", _MAP_SCHEMA_OWNER, False, False, True),
-    (
-        "ktm_feature_create_provider_executor",
-        "ktm_feature_dagster_runtime",
-        False,
-        True,
-        False,
-    ),
+    ("ktm_feature_create_provider_executor", _MAP_SERVICE_LOGIN, False, True, False),
     (
         "ktm_feature_reference_reconciliation_service_executor",
-        "ktm_feature_api_runtime",
+        _MAP_SERVICE_LOGIN,
         False,
         True,
         False,
     ),
-    (
-        "ktm_feature_request_admin_executor",
-        "ktm_feature_api_runtime",
-        False,
-        True,
-        False,
-    ),
+    ("ktm_feature_request_admin_executor", _MAP_SERVICE_LOGIN, False, True, False),
     ("ktm_feature_request_procedure_owner", _MAP_SCHEMA_OWNER, False, False, True),
-    (
-        "ktm_feature_request_service_executor",
-        "ktm_feature_api_runtime",
-        False,
-        True,
-        False,
-    ),
-    ("ktm_feature_runtime", "ktm_feature_api_runtime", False, True, False),
-    ("ktm_feature_runtime", "ktm_feature_dagster_runtime", False, True, False),
-    (_MAP_SCHEMA_OWNER, "ktm_feature_migrator", False, False, True),
+    ("ktm_feature_request_service_executor", _MAP_SERVICE_LOGIN, False, True, False),
+    ("ktm_feature_runtime", _MAP_SERVICE_LOGIN, False, True, False),
+    ("ktm_feature_schema_owner", _MAP_SERVICE_LOGIN, False, False, True),
     ("ktm_feature_state_procedure_owner", _MAP_SCHEMA_OWNER, False, False, True),
-    (
-        "ktm_manual_feature_admin_executor",
-        "ktm_feature_api_runtime",
-        False,
-        True,
-        False,
-    ),
+    ("ktm_manual_feature_admin_executor", _MAP_SERVICE_LOGIN, False, True, False),
     ("ktm_manual_feature_procedure_owner", _MAP_SCHEMA_OWNER, False, False, True),
-    (
-        "ktm_manual_provider_dedup_admin_executor",
-        "ktm_feature_api_runtime",
-        False,
-        True,
-        False,
-    ),
-    (
-        "ktm_manual_provider_dedup_detector_executor",
-        "ktm_feature_dagster_runtime",
-        False,
-        True,
-        False,
-    ),
-    (
-        "ktm_manual_provider_dedup_procedure_owner",
-        _MAP_SCHEMA_OWNER,
-        False,
-        False,
-        True,
-    ),
+    ("ktm_manual_provider_dedup_admin_executor", _MAP_SERVICE_LOGIN, False, True, False),
+    ("ktm_manual_provider_dedup_detector_executor", _MAP_SERVICE_LOGIN, False, True, False),
+    ("ktm_manual_provider_dedup_procedure_owner", _MAP_SCHEMA_OWNER, False, False, True),
 )
 
 
@@ -660,12 +621,14 @@ def _application_300_bootstrap_attestation_query(runtime: DatabaseRuntime) -> st
         "ktm_feature_request_procedure_owner",
         "ktm_manual_provider_dedup_procedure_owner",
     )
+    # Map `docker/postgres-role-bootstrap.sh`의 `GRANT USAGE ON SCHEMA x_extension TO`
+    # 목록 그대로. ADR-100이 두 runtime LOGIN을 `ktm_feature_service` 하나로 합치면서
+    # 7 -> 6이 됐다.
     extension_acl_roles = (
         _MAP_SCHEMA_OWNER,
         "ktm_feature_state_procedure_owner",
         "ktm_feature_runtime",
-        "ktm_feature_api_runtime",
-        "ktm_feature_dagster_runtime",
+        _MAP_SERVICE_LOGIN,
         "ktm_curation_command_owner",
         "ktm_manual_provider_dedup_procedure_owner",
     )
@@ -1006,27 +969,23 @@ def assert_map_database_principal_bootstrap(
     future_phase_names = ", ".join(f"'{role}'" for role in _MAP_FUTURE_PHASE_ROLES)
     group_names = ", ".join(f"'{role}'" for role in _MAP_REQUIRED_GROUP_ROLES)
     login_names = ", ".join(f"'{role}'" for role in _MAP_REQUIRED_LOGIN_ROLES)
+    # ADR-100: runtime 권한을 지니는 principal은 group `ktm_feature_runtime`과 그것을
+    # 상속하는 단일 LOGIN 둘뿐이다.
     runtime_principal_names = ", ".join(
-        f"'{role}'"
-        for role in (
-            "ktm_feature_runtime",
-            "ktm_feature_api_runtime",
-            "ktm_feature_dagster_runtime",
-        )
+        f"'{role}'" for role in ("ktm_feature_runtime", _MAP_SERVICE_LOGIN)
     )
     query = (
         f"WITH expected(role_name) AS (VALUES {expected_values}), "
         "expected_membership(member_name, role_name, inherit_option, set_option) AS "
         "(VALUES "
-        "('ktm_feature_migrator', 'ktm_feature_schema_owner', FALSE, TRUE), "
-        "('ktm_feature_api_runtime', 'ktm_feature_runtime', TRUE, FALSE), "
-        "('ktm_feature_dagster_runtime', 'ktm_feature_runtime', TRUE, FALSE), "
+        "('ktm_feature_service', 'ktm_curation_admin_executor', TRUE, FALSE), "
+        "('ktm_feature_service', 'ktm_curation_provider_executor', TRUE, FALSE), "
+        "('ktm_feature_service', 'ktm_feature_runtime', TRUE, FALSE), "
+        "('ktm_feature_service', 'ktm_feature_schema_owner', FALSE, TRUE), "
         "('ktm_feature_schema_owner', 'ktm_feature_state_procedure_owner', FALSE, TRUE), "
         "('ktm_feature_schema_owner', 'ktm_feature_audit_writer', FALSE, TRUE), "
         "('ktm_feature_schema_owner', 'ktm_curation_command_owner', FALSE, TRUE), "
-        "('ktm_feature_schema_owner', 'ktm_curation_audit_writer', FALSE, TRUE), "
-        "('ktm_feature_api_runtime', 'ktm_curation_admin_executor', TRUE, FALSE), "
-        "('ktm_feature_dagster_runtime', 'ktm_curation_provider_executor', TRUE, FALSE)) "
+        "('ktm_feature_schema_owner', 'ktm_curation_audit_writer', FALSE, TRUE)) "
         "SELECT CASE WHEN "
         "(SELECT pg_get_userbyid(datdba) FROM pg_database "
         f"WHERE datname = '{runtime.database_name}') = '{_MAP_SCHEMA_OWNER}' "
