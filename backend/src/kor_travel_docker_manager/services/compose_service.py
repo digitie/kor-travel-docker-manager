@@ -2855,6 +2855,45 @@ def _inspect_local_image_id(image: str) -> str:
     return image_id
 
 
+def _resolve_map_postgres_image_id() -> str:
+    """참조 이미지를 pull-if-missing 뒤 content-addressed id로 관측한다."""
+
+    try:
+        completed = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", _MAP_APPLICATION_300_POSTGRES_REFERENCE],
+            cwd="/",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeploymentContractError(
+            "Map PostgreSQL candidate image cannot be inspected"
+        ) from exc
+    if completed.returncode != 0:
+        try:
+            pulled = subprocess.run(
+                ["docker", "pull", _MAP_APPLICATION_300_POSTGRES_REFERENCE],
+                cwd="/",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=900,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentContractError(
+                "Map PostgreSQL candidate image is unavailable"
+            ) from exc
+        if pulled.returncode != 0:
+            raise DeploymentContractError("Map PostgreSQL candidate image is unavailable")
+        return _inspect_local_image_id(_MAP_APPLICATION_300_POSTGRES_REFERENCE)
+    image_id = completed.stdout.decode("ascii", errors="replace").strip()
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+        raise DeploymentContractError("Map PostgreSQL candidate image cannot be inspected")
+    return image_id
+
+
 def _load_application_300_candidate(
     *,
     sources: PinnedRuntimeSourceMaterialization,
@@ -2880,6 +2919,7 @@ def _load_application_300_candidate(
         field="head",
     )
     return MapApplicationCandidate(
+        postgres_image_id=_resolve_map_postgres_image_id(),
         candidate_commit=map_source.revision,
         candidate_git_tree=map_source.tree,
         api_image_id=api_image_id,
