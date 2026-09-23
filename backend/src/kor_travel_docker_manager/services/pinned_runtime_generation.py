@@ -663,28 +663,15 @@ class PinnedRuntimeCancelProbeReceipt:
 class MapApplication300CandidateEvidence:
     """fresh application 300 candidate build/runtime contract evidence."""
 
-    paired_receipt_sha256: str
-    api_receipt_sha256: str
     candidate_git_tree: str
     postgres_image_id: str
     dagster_config_sha256: str
-    dagster_yaml_sha256: str
-    application_contract_sha256: str
-    launch_contract_sha256: str
 
     def __post_init__(self) -> None:
-        for digest in (
-            self.paired_receipt_sha256,
-            self.api_receipt_sha256,
-            self.dagster_config_sha256,
-            self.dagster_yaml_sha256,
-            self.application_contract_sha256,
-            self.launch_contract_sha256,
-        ):
-            if _SHA256.fullmatch(digest) is None:
-                raise DeploymentContractError(
-                    "Map application 300 candidate evidence digest is invalid"
-                )
+        if _SHA256.fullmatch(self.dagster_config_sha256) is None:
+            raise DeploymentContractError(
+                "Map application 300 candidate evidence digest is invalid"
+            )
         if _REVISION.fullmatch(self.candidate_git_tree) is None:
             raise DeploymentContractError(
                 "Map application 300 candidate git tree is invalid"
@@ -696,14 +683,9 @@ class MapApplication300CandidateEvidence:
 
     def to_payload(self) -> dict[str, str]:
         return {
-            "paired_receipt_sha256": self.paired_receipt_sha256,
-            "api_receipt_sha256": self.api_receipt_sha256,
             "candidate_git_tree": self.candidate_git_tree,
             "postgres_image_id": self.postgres_image_id,
             "dagster_config_sha256": self.dagster_config_sha256,
-            "dagster_yaml_sha256": self.dagster_yaml_sha256,
-            "application_contract_sha256": self.application_contract_sha256,
-            "launch_contract_sha256": self.launch_contract_sha256,
         }
 
 
@@ -2045,14 +2027,9 @@ def map_application_300_candidate_evidence_from_payload(
     payload: object,
 ) -> MapApplication300CandidateEvidence:
     expected = {
-        "paired_receipt_sha256",
-        "api_receipt_sha256",
         "candidate_git_tree",
         "postgres_image_id",
         "dagster_config_sha256",
-        "dagster_yaml_sha256",
-        "application_contract_sha256",
-        "launch_contract_sha256",
     }
     if (
         not isinstance(payload, Mapping)

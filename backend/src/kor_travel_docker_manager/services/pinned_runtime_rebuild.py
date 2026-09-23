@@ -17,11 +17,8 @@ from pathlib import Path
 from types import MappingProxyType
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
-from kor_travel_docker_manager.services.map_application_300 import (
-    Application300Contract,
-)
-from kor_travel_docker_manager.services.map_application_300_candidate import (
-    MapApplication300Candidate,
+from kor_travel_docker_manager.services.map_application_candidate import (
+    MapApplicationCandidate,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     RUNTIME_SERVICES,
@@ -58,12 +55,12 @@ _IMAGE_ENVIRONMENT: Mapping[RuntimeService, str] = MappingProxyType(
 )
 
 
-def _validate_map_application_300_candidate(
+def _validate_map_application_candidate(
     *,
     sources: PinnedRuntimeSourceMaterialization,
-    candidate: MapApplication300Candidate,
+    candidate: MapApplicationCandidate,
 ) -> None:
-    if not isinstance(candidate, MapApplication300Candidate):
+    if not isinstance(candidate, MapApplicationCandidate):
         raise DeploymentContractError("Map application 300 candidate is invalid")
     map_source = sources.source_for("map")
     if (
@@ -74,17 +71,7 @@ def _validate_map_application_300_candidate(
         raise DeploymentContractError(
             "Map application 300 candidate source differs from the release pin"
         )
-    if any(
-        not isinstance(digest, str) or _SHA256.fullmatch(digest) is None
-        for digest in (
-            candidate.receipt_sha256,
-            candidate.api_receipt_sha256,
-            candidate.dagster_config_sha256,
-            candidate.dagster_yaml_sha256,
-            candidate.application_contract_sha256,
-            candidate.launch_contract_sha256,
-        )
-    ):
+    if _SHA256.fullmatch(candidate.dagster_config_sha256) is None:
         raise DeploymentContractError(
             "Map application 300 candidate evidence digest is invalid"
         )
@@ -97,28 +84,15 @@ def _validate_map_application_300_candidate(
         )
     ):
         raise DeploymentContractError("Map application 300 candidate image ID is invalid")
-    if (
-        not isinstance(candidate.application_contract, Application300Contract)
-        or candidate.application_contract.postgres_image_id
-        != candidate.postgres_image_id
-    ):
-        raise DeploymentContractError(
-            "Map application 300 candidate PostgreSQL image differs from its contract"
-        )
 
 
 def _candidate_evidence(
-    candidate: MapApplication300Candidate,
+    candidate: MapApplicationCandidate,
 ) -> MapApplication300CandidateEvidence:
     return MapApplication300CandidateEvidence(
-        paired_receipt_sha256=candidate.receipt_sha256,
-        api_receipt_sha256=candidate.api_receipt_sha256,
         candidate_git_tree=candidate.candidate_git_tree,
         postgres_image_id=candidate.postgres_image_id,
         dagster_config_sha256=candidate.dagster_config_sha256,
-        dagster_yaml_sha256=candidate.dagster_yaml_sha256,
-        application_contract_sha256=candidate.application_contract_sha256,
-        launch_contract_sha256=candidate.launch_contract_sha256,
     )
 
 
@@ -179,14 +153,14 @@ class CandidateRuntimeBuild:
     """하나의 release pinset에서 deterministic하게 계산한 Compose build input."""
 
     sources: PinnedRuntimeSourceMaterialization
-    map_application_300_candidate: MapApplication300Candidate
+    map_application_candidate: MapApplicationCandidate
 
     def __post_init__(self) -> None:
         if _SHA256.fullmatch(self.sources.pinset_sha256) is None:
             raise DeploymentContractError("pinned runtime candidate pinset is invalid")
-        _validate_map_application_300_candidate(
+        _validate_map_application_candidate(
             sources=self.sources,
-            candidate=self.map_application_300_candidate,
+            candidate=self.map_application_candidate,
         )
 
     @property
@@ -204,7 +178,7 @@ class CandidateRuntimeBuild:
     def runtime_image_references(self) -> Mapping[RuntimeService, str]:
         """네 build tag와 paired Map exact image 세 개를 합친 runtime 입력."""
 
-        candidate = self.map_application_300_candidate
+        candidate = self.map_application_candidate
         return MappingProxyType(
             {
                 "kor-travel-map-api": candidate.api_image_id,
@@ -234,15 +208,12 @@ class CandidateRuntimeBuild:
                 require_immutable=False,
             )
         )
-        candidate = self.map_application_300_candidate
+        candidate = self.map_application_candidate
         values.update(
             {
                 "KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID": candidate.postgres_image_id,
-                "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256": (
-                    candidate.receipt_sha256
-                ),
                 "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256": (
-                    candidate.dagster_yaml_sha256
+                    candidate.dagster_config_sha256
                 ),
             }
         )
@@ -303,13 +274,8 @@ def generation_compose_environment(
     values.update(
         {
             "KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID": evidence.postgres_image_id,
-            "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256": (
-                evidence.paired_receipt_sha256
-            ),
-            # Dagster launch receipt의 config digest와 실제 dagster.yaml digest는
-            # 서로 다른 증거다. runtime storage contract에는 후자만 전달한다.
             "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256": (
-                evidence.dagster_yaml_sha256
+                evidence.dagster_config_sha256
             ),
             **artifact_directories.compose_environment(),
         }
@@ -350,50 +316,34 @@ def parse_candidate_static_head(
 def build_candidate_generation(
     *,
     sources: PinnedRuntimeSourceMaterialization,
-    map_application_300_candidate: MapApplication300Candidate,
+    map_application_candidate: MapApplicationCandidate,
     image_ids: Mapping[RuntimeService, str],
-    map_application_head: str,
     map_dagster_head: str,
     pinvi_head: str,
     recorded_at: str | None = None,
 ) -> PinnedRuntimeGeneration:
     """검증 완료된 seven-image candidate를 typed durable generation으로 만든다."""
 
-    _validate_map_application_300_candidate(
+    _validate_map_application_candidate(
         sources=sources,
-        candidate=map_application_300_candidate,
+        candidate=map_application_candidate,
     )
     _runtime_image_environment(image_ids, require_immutable=True)
-    if image_ids["kor-travel-map-api"] != map_application_300_candidate.api_image_id:
+    if image_ids["kor-travel-map-api"] != map_application_candidate.api_image_id:
         raise DeploymentContractError(
             "Map API candidate image differs from the paired candidate"
         )
     if (
         image_ids["kor-travel-map-dagster"]
-        != map_application_300_candidate.dagster_image_id
+        != map_application_candidate.dagster_image_id
     ):
         raise DeploymentContractError(
             "Map Dagster candidate image differs from the paired candidate"
         )
-    for head in (map_application_head, map_dagster_head, pinvi_head):
+    declared_head = map_application_candidate.application_head
+    for head in (declared_head, map_dagster_head, pinvi_head):
         if _SCHEMA_HEAD.fullmatch(head) is None:
             raise DeploymentContractError("pinned runtime candidate schema head is invalid")
-    # Map application head는 **두 독립 출처가 일치할 때만** 받는다.
-    #
-    #   1) paired receipt의 baseline contract — `_canonical_digest(contract)`가
-    #      `application_contract_sha256`으로 결박돼 receipt sha256까지 전파된다.
-    #   2) candidate API image가 network 없이 출력한 installed graph의 head
-    #      (`/usr/local/bin/ktm-application-schema head`).
-    #
-    # 종전에는 baseline root 리터럴이었다. 그래서 Map이 migration을 하나 더하는 순간 Manager가
-    # candidate를 거절했고, 스키마 진화를 막은 것은 배포 안전성이 아니라 값 고정이었다.
-    # 여기서 값은 풀되 **결박은 강화한다** — receipt가 선언한 head와 image가 실제로 담고
-    # 있는 head가 다르면 그것이야말로 거절해야 할 상태다(재빌드 없이 receipt 재사용 등).
-    declared_head = map_application_300_candidate.application_contract.application_head
-    if map_application_head != declared_head:
-        raise DeploymentContractError(
-            "Map application candidate head differs from the paired baseline contract"
-        )
     timestamp = recorded_at or datetime.now(UTC).isoformat()
     return PinnedRuntimeGeneration(
         map_api_image_id=image_ids["kor-travel-map-api"],
@@ -410,7 +360,7 @@ def build_candidate_generation(
         pinvi_head=pinvi_head,
         pinset_sha256=sources.pinset_sha256,
         map_application_300_candidate_evidence=_candidate_evidence(
-            map_application_300_candidate
+            map_application_candidate
         ),
         recorded_at=timestamp,
     )

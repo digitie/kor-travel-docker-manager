@@ -34,14 +34,9 @@ def _image(character: str) -> str:
 
 def _candidate_evidence(seed: str) -> MapApplication300CandidateEvidence:
     return MapApplication300CandidateEvidence(
-        paired_receipt_sha256=seed * 64,
-        api_receipt_sha256=seed * 64,
         candidate_git_tree=seed * 40,
         postgres_image_id=_image(seed),
         dagster_config_sha256=seed * 64,
-        dagster_yaml_sha256=seed * 64,
-        application_contract_sha256=seed * 64,
-        launch_contract_sha256=seed * 64,
     )
 
 

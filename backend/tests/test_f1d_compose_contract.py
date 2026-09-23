@@ -49,11 +49,8 @@ from kor_travel_docker_manager.services.docker_service import (
     ContainerConfigValidationError,
     validate_container_config_update,
 )
-from kor_travel_docker_manager.services.map_application_300 import (
-    Application300Contract,
-)
-from kor_travel_docker_manager.services.map_application_300_candidate import (
-    MapApplication300Candidate,
+from kor_travel_docker_manager.services.map_application_candidate import (
+    MapApplicationCandidate,
 )
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     CandidateRuntimeBuild,
@@ -364,40 +361,18 @@ def _source_compose() -> dict[str, Any]:
     return document
 
 
-def _map_application_300_candidate(
+def _map_application_candidate(
     sources: PinnedRuntimeSourceMaterialization,
-) -> MapApplication300Candidate:
-    contract = Application300Contract(
-        application_head="300",
-        reference_manifest_sha256="1" * 64,
-        postgres_image_id=_MAP_POSTGRES_IMAGE_ID,
-        source_catalog_sha256="2" * 64,
-        destination_catalog_sha256="3" * 64,
-        seed_sha256="4" * 64,
-        privileged_residue_sha256="5" * 64,
-        source_alembic_version_sha256="6" * 64,
-        destination_alembic_version_sha256="7" * 64,
-        runtime_invariants_sql_sha256="8" * 64,
-    )
+) -> MapApplicationCandidate:
     map_source = sources.source_for("map")
-    return MapApplication300Candidate(
-        receipt_sha256="9" * 64,
-        api_receipt_sha256="a" * 64,
+    return MapApplicationCandidate(
         candidate_commit=map_source.revision,
         candidate_git_tree=map_source.tree,
         api_image_id=_MAP_API_IMAGE_ID,
         dagster_image_id=_MAP_DAGSTER_IMAGE_ID,
         postgres_image_id=_MAP_POSTGRES_IMAGE_ID,
         dagster_config_sha256="b" * 64,
-        dagster_yaml_sha256="c" * 64,
-        application_contract=contract,
-        application_contract_sha256="d" * 64,
-        launch_contract_sha256="e" * 64,
-        webserver_argv_prefix=("/usr/local/bin/dagster-webserver",),
-        webserver_port_minimum=1,
-        webserver_port_maximum=65535,
-        daemon_argv=("/usr/local/bin/dagster-daemon", "run"),
-        storage_migration_argv=("/usr/local/bin/ktm-dagster-storage", "migrate"),
+        application_head="300",
     )
 
 
@@ -680,7 +655,6 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
             "127.0.0.1:12700/map_contract_dagster"
         ),
         "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256": "5" * 64,
-        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256": "4" * 64,
         "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_IMAGE_ID": f"sha256:{'2' * 64}",
     }
     assert migration["depends_on"]["kor-travel-map-postgres"]["condition"] == (
@@ -2070,7 +2044,7 @@ def test_candidate_preflight_rejects_a_build_context_outside_staged_source(
     )
     build = CandidateRuntimeBuild(
         sources=sources,
-        map_application_300_candidate=_map_application_300_candidate(sources),
+        map_application_candidate=_map_application_candidate(sources),
     )
     environment_snapshot = ComposeEnvironmentSnapshot(
         effective={},
