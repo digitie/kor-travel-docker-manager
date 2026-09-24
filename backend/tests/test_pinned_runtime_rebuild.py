@@ -2884,6 +2884,15 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
             "pinvi_bootstrap_credential_file",
             credential_file,
         )
+        # _ensure_pinvi_fresh_migration_fence는 _run_pinvi_admin_bootstrap보다
+        # 먼저 실제 docker exec를 시도한다 -- 이 fixture의 values에는
+        # PINVI_APP_DB_USER도 없고 CI에 shared postgres도 없으므로 여기서도
+        # no-op으로 건너뛴다(아래 두 patch와 같은 이유).
+        monkeypatch.setattr(
+            ComposeService,
+            "_ensure_pinvi_fresh_migration_fence",
+            Mock(),
+        )
         monkeypatch.setattr(
             compose_service_module,
             "load_c6c_deployment_config_from_environment",
