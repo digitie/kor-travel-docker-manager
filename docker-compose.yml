@@ -549,15 +549,22 @@ services:
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$PINVI_POSTGRES_DB\" TO \"$$PINVI_APP_DB_USER\""
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$PINVI_DAGSTER_DB\" TO \"$$PINVI_APP_DB_USER\""
 
-  # weather 전용 role 2개 + database 2개(앱 DB + Dagster 메타 DB)를 만든다. 사용자
-  # 지시: "weather는 데이터는 옮기지 마 — 어차피 새로 쌓으면 됨" — pg_dump/restore
-  # 없이 완전히 빈 DB로 시작한다(PinVi ADR-46과 같은 패턴, concierge/geo의
-  # 실data-cutover 계획과 다르다). weather 자신의 compose.yaml(x-dagster-environment
-  # 앵커)이 이미 Dagster 쪽 role/db 이름을 literal로 못박아 뒀으므로
-  # (`kor_travel_weather_dagster_app` / `kor_travel_weather_dagster`) 그대로
-  # 재사용한다 — 앱 DB 쪽(`kor_travel_weather_app` / `kor_travel_weather`)은
-  # 이 설계에서 새로 정하는 이름이다. geo와 달리 extension은 만들지 않는다
-  # (weather의 alembic 마이그레이션 어디에도 postgis/geometry 의존이 없다).
+  # weather 전용 role 1개(2026-09-25 이전엔 2개) + database 2개(앱 DB + Dagster
+  # 메타 DB)를 만든다. 사용자 지시: "weather는 데이터는 옮기지 마 — 어차피 새로
+  # 쌓으면 됨" — pg_dump/restore 없이 완전히 빈 DB로 시작한다(PinVi ADR-46과
+  # 같은 패턴, concierge/geo의 실data-cutover 계획과 다르다). geo와 달리
+  # extension은 만들지 않는다(weather의 alembic 마이그레이션 어디에도
+  # postgis/geometry 의존이 없다).
+  #
+  # 2026-09-25: Dagster 쪽 별도 role(`kor_travel_weather_dagster_app`)을
+  # PinVi/geo와 같은 단일-role 패턴으로 통합했다. 이전 주석은 "weather 자신의
+  # compose.yaml(x-dagster-environment 앵커)이 이 이름을 literal로 못박아 뒀다"고
+  # 했으나 실제로 그 앵커는 로컬 dev 전용(`db:5432` 서비스명, `${POSTGRES_USER:-
+  # weather}` 제네릭 기본값)이고 n150 배포는 weather의 deploy/dagster.yaml만
+  # 마운트하는데 그 파일은 `DAGSTER_POSTGRES_URL`을 env에서 그대로 읽을 뿐 role
+  # 이름을 하드코딩하지 않는다 — 별도 role을 유지할 기술적 근거가 없었다.
+  # 앱 DB 쪽(`kor_travel_weather_app` / `kor_travel_weather`)은 이 설계에서
+  # 새로 정하는 이름이다.
   #
   # ⚠️ 이 이름의 one-shot이 한 번 있었다(PR #368, bridge network + 서비스명
   # PGHOST) — 같은 날 PR #371로 완전히 되돌려졌다(2026-09-20). 아래 정의는 그
@@ -579,20 +586,15 @@ services:
       PGDATABASE: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
       KOR_TRAVEL_WEATHER_SHARED_APP_DB: ${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
       KOR_TRAVEL_WEATHER_SHARED_APP_USER: ${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}
-      # Dagster 쪽은 literal — weather 자신의 compose.yaml이 이미 이 이름을
-      # 하드코딩해 뒀으므로 여기서 환경변수로 바꿔치기할 여지를 두지 않는다.
       KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB: kor_travel_weather_dagster
-      KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER: kor_travel_weather_dagster_app
     secrets:
     - source: kor-travel-shared-postgres-password
       target: /run/secrets/kor-travel-shared-postgres-password
     - source: kor-travel-weather-shared-app-password
       target: /run/secrets/kor-travel-weather-shared-app-password
-    - source: kor-travel-weather-dagster-shared-app-password
-      target: /run/secrets/kor-travel-weather-dagster-shared-app-password
     # `createdb ... 2>/dev/null || true`는 쓰지 않는다 — 기존 -db-init 패턴과
     # 동일한 이유(인증 실패·연결 거부·권한 부족을 삼키면 그 상황에서 오히려
-    # `service_completed_successfully` 게이트가 통과한다). 두 role 모두
+    # `service_completed_successfully` 게이트가 통과한다). role은
     # NOSUPERUSER/NOCREATEDB/NOCREATEROLE. 재실행 시 비밀번호를 최신 secret으로
     # 맞추도록 존재해도 ALTER ROLE을 태운다.
     command:
@@ -602,7 +604,6 @@ services:
       PGPASSWORD="$$(cat /run/secrets/kor-travel-shared-postgres-password)"
       export PGPASSWORD
       APP_PASSWORD="$$(cat /run/secrets/kor-travel-weather-shared-app-password)"
-      DAGSTER_PASSWORD="$$(cat /run/secrets/kor-travel-weather-dagster-shared-app-password)"
 
       if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$KOR_TRAVEL_WEATHER_SHARED_APP_USER'" | grep -q 1; then
         echo "role $$KOR_TRAVEL_WEATHER_SHARED_APP_USER already exists"
@@ -610,23 +611,13 @@ services:
       else
         psql -d "$$PGDATABASE" -c "CREATE ROLE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
       fi
-      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_WEATHER_SHARED_APP_DB'" | grep -q 1; then
-        echo "database $$KOR_TRAVEL_WEATHER_SHARED_APP_DB already exists"
-      else
-        createdb -O "$$KOR_TRAVEL_WEATHER_SHARED_APP_USER" "$$KOR_TRAVEL_WEATHER_SHARED_APP_DB"
-      fi
-
-      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER'" | grep -q 1; then
-        echo "role $$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER already exists"
-        psql -d "$$PGDATABASE" -c "ALTER ROLE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$DAGSTER_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
-      else
-        psql -d "$$PGDATABASE" -c "CREATE ROLE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$DAGSTER_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
-      fi
-      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB'" | grep -q 1; then
-        echo "database $$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB already exists"
-      else
-        createdb -O "$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER" "$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB"
-      fi
+      for db in "$$KOR_TRAVEL_WEATHER_SHARED_APP_DB" "$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB"; do
+        if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1; then
+          echo "database $$db already exists"
+        else
+          createdb -O "$$KOR_TRAVEL_WEATHER_SHARED_APP_USER" "$$db"
+        fi
+      done
 
       # PUBLIC CONNECT 걷어내기 — concierge/geo db-init과 같은 이유(ADR-37/ADR-44
       # 교훈: role·ACL은 database가 아니라 cluster 전역, DB만 나누는 것으로는
@@ -635,7 +626,7 @@ services:
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_DB\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_DB\" TO \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\""
-      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_APP_USER\""
+      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\""
 
   # kor-travel-transport는 application schema와 Dagster metadata schema가 모두
   # alembic_version을 사용하므로 하나의 DB를 공유할 수 없다.
@@ -2472,10 +2463,9 @@ services:
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
       PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
-      # Dagster instance storage — app DSN과 다른 role. literal 이름은 여기서
-      # 새로 짓는 게 아니라 weather 자신의 compose.yaml(x-dagster-environment
-      # 앵커)이 이미 하드코딩해 둔 것이다.
-      DAGSTER_POSTGRES_URL: postgresql://kor_travel_weather_dagster_app:${KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD:?set KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/kor_travel_weather_dagster
+      # Dagster instance storage — app 계정과 같은 role, DB만 분리(2026-09-25
+      # 단일-role 통합, PinVi/geo 패턴).
+      DAGSTER_POSTGRES_URL: postgresql://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}:${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/kor_travel_weather_dagster
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
@@ -2563,7 +2553,7 @@ services:
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
       PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
-      DAGSTER_POSTGRES_URL: postgresql://kor_travel_weather_dagster_app:${KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD:?set KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/kor_travel_weather_dagster
+      DAGSTER_POSTGRES_URL: postgresql://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}:${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/kor_travel_weather_dagster
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
@@ -2639,7 +2629,7 @@ services:
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
       PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
-      DAGSTER_POSTGRES_URL: postgresql://kor_travel_weather_dagster_app:${KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD:?set KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/kor_travel_weather_dagster
+      DAGSTER_POSTGRES_URL: postgresql://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}:${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/kor_travel_weather_dagster
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
@@ -2816,10 +2806,6 @@ secrets:
     environment: PINVI_APP_DB_PASSWORD
   kor-travel-weather-shared-app-password:
     environment: KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD
-  kor-travel-weather-dagster-shared-app-password:
-    # 이름을 새로 짓지 않는다 — weather 자신의 compose.yaml(x-dagster-environment
-    # 앵커)이 이미 이 정확한 env var 이름으로 DAGSTER_POSTGRES_URL을 조립한다.
-    environment: KOR_TRAVEL_WEATHER_DAGSTER_SHARED_PG_PASSWORD
   kor-travel-transport-shared-app-password:
     environment: KOR_TRAVEL_TRANSPORT_SHARED_APP_PASSWORD
   kor-travel-transport-dagster-shared-app-password:
