@@ -2815,6 +2815,8 @@ def _build_map_application_300_images(
                     str(map_source.root / dockerfile),
                     "--tag",
                     image,
+                    "--build-arg",
+                    f"KOR_TRAVEL_MAP_GIT_COMMIT={map_source.revision}",
                     str(map_source.root),
                 ],
                 cwd="/",
