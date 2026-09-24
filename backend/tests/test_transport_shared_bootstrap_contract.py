@@ -35,6 +35,9 @@ def test_transport_bootstrap_separates_application_and_dagster_databases() -> No
     assert environment["KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB"] == (
         "kor_travel_transport_dagster"
     )
+    # 2026-09-25: 별도 dagster role은 통합돼 더는 없다(PinVi/geo/weather와 같은
+    # 단일-role 패턴) — 두 DB는 여전히 분리, owner만 하나.
+    assert "KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_APP_USER" not in environment
 
     command = service["command"]
     assert isinstance(command, list)
@@ -44,7 +47,7 @@ def test_transport_bootstrap_separates_application_and_dagster_databases() -> No
     assert 'REVOKE CONNECT ON DATABASE \\"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB\\" FROM PUBLIC' in script
     assert 'REVOKE CONNECT ON DATABASE \\"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB\\" FROM PUBLIC' in script
     assert 'GRANT CONNECT ON DATABASE \\"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB\\" TO \\"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER\\"' in script
-    assert 'GRANT CONNECT ON DATABASE \\"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB\\" TO \\"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_APP_USER\\"' in script
+    assert 'GRANT CONNECT ON DATABASE \\"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB\\" TO \\"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER\\"' in script
     assert "SELECT pg_get_userbyid(datdba) FROM pg_database" in script
     assert "-v role_password=\"$$password\"" in script
     assert "PASSWORD :'role_password'" in script
@@ -55,9 +58,7 @@ def test_transport_bootstrap_separates_application_and_dagster_databases() -> No
     assert secrets["kor-travel-transport-shared-app-password"] == {
         "environment": "KOR_TRAVEL_TRANSPORT_SHARED_APP_PASSWORD"
     }
-    assert secrets["kor-travel-transport-dagster-shared-app-password"] == {
-        "environment": "KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_APP_PASSWORD"
-    }
+    assert "kor-travel-transport-dagster-shared-app-password" not in secrets
 
 
 def test_transport_raw_bucket_is_provisioned_and_documented() -> None:
@@ -82,5 +83,5 @@ def test_transport_raw_bucket_is_provisioned_and_documented() -> None:
     assert "KOR_TRAVEL_TRANSPORT_SHARED_APP_USER=" not in env_example
     assert "KOR_TRAVEL_TRANSPORT_SHARED_APP_DB=" not in env_example
     assert "KOR_TRAVEL_TRANSPORT_SHARED_APP_PASSWORD=" in env_example
-    assert "KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_APP_PASSWORD=" in env_example
+    assert "KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_APP_PASSWORD=" not in env_example
     assert "KOR_TRAVEL_TRANSPORT_RUSTFS_BUCKET=kor-travel-transport-raw" in env_example
