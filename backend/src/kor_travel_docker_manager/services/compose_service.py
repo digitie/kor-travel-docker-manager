@@ -385,6 +385,7 @@ def _pinned_runtime_prejournal_step(stage: str) -> Iterator[None]:
 _MAP_APPLICATION_300_RECEIPT_DIRECTORY = "map-application-300-candidate"
 _MAP_APPLICATION_300_ARTIFACT_DIRECTORY = "map-application-300-artifacts"
 _MAP_APPLICATION_300_POSTGRES_REFERENCE = "postgis/postgis:16-3.5-alpine"
+_ROLE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 _MAP_DAGSTER_STORAGE_RECEIPT_FIELDS = frozenset(
     {
         "schema",
@@ -4845,6 +4846,89 @@ class ComposeService:
             transaction=transaction,
         )
 
+    @staticmethod
+    def _ensure_pinvi_fresh_migration_fence(*, values: Mapping[str, str]) -> None:
+        """0101 migration이 요구하는 catalog-lock fence 함수를 매 rebuild마다 세운다.
+
+        `pinvi_internal.acquire_fresh_0101_database_fence()`는 `pg_authid`/
+        `pg_database`를 ACCESS EXCLUSIVE로 잠근다 -- scoped app role이 자기
+        database의 owner라도 Postgres는 이 권한을 owner에게 주지 않는다(catalog
+        전역이지 database 소유물이 아니다). M05 다중 role 모델을 폐기하며 이
+        함수를 세우던 `bootstrap-pinvi-runtime-role.sh`도 함께 버렸는데, 이 한
+        함수만은 role 분리와 무관하게 fresh install마다 여전히 필요하다.
+        Destructive reset이 매 rebuild마다 `pinvi_internal` schema를 지우므로
+        한 번이 아니라 매번 다시 세운다.
+        """
+
+        app_role = values["PINVI_APP_DB_USER"]
+        bootstrap_owner = values.get("KOR_TRAVEL_SHARED_POSTGRES_USER", "shared_admin")
+        if _ROLE_IDENTIFIER.fullmatch(app_role) is None:
+            raise DeploymentContractError("PinVi app role name is invalid")
+        if _ROLE_IDENTIFIER.fullmatch(bootstrap_owner) is None:
+            raise DeploymentContractError("PinVi bootstrap owner name is invalid")
+        container = values.get(
+            "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "kor-travel-shared-postgres"
+        )
+        port = values.get("KOR_TRAVEL_SHARED_DB_PORT", "11000")
+        database = values.get("PINVI_POSTGRES_DB", "pinvi")
+        script = (
+            f'CREATE SCHEMA IF NOT EXISTS pinvi_internal AUTHORIZATION "{app_role}";\n'
+            'REVOKE ALL ON SCHEMA pinvi_internal FROM PUBLIC;\n'
+            f'GRANT USAGE ON SCHEMA pinvi_internal TO "{app_role}";\n'
+            "CREATE OR REPLACE FUNCTION pinvi_internal.acquire_fresh_0101_database_fence()\n"
+            "RETURNS void\n"
+            "LANGUAGE plpgsql\n"
+            "SECURITY DEFINER\n"
+            "SET search_path = pg_catalog\n"
+            "AS $pinvi_fresh_0101_fence$\n"
+            "BEGIN\n"
+            "    LOCK TABLE pg_catalog.pg_database IN ACCESS EXCLUSIVE MODE;\n"
+            "    LOCK TABLE pg_catalog.pg_authid, pg_catalog.pg_auth_members,\n"
+            "              pg_catalog.pg_db_role_setting IN ACCESS EXCLUSIVE MODE;\n"
+            "END\n"
+            "$pinvi_fresh_0101_fence$;\n"
+            "ALTER FUNCTION pinvi_internal.acquire_fresh_0101_database_fence() "
+            f'OWNER TO "{bootstrap_owner}";\n'
+            "REVOKE ALL ON FUNCTION pinvi_internal.acquire_fresh_0101_database_fence() "
+            "FROM PUBLIC;\n"
+            "GRANT EXECUTE ON FUNCTION pinvi_internal.acquire_fresh_0101_database_fence() "
+            f'TO "{app_role}";\n'
+        )
+        try:
+            completed = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "-i",
+                    "--user",
+                    "postgres",
+                    container,
+                    "psql",
+                    "--no-psqlrc",
+                    "--set=ON_ERROR_STOP=1",
+                    "--port",
+                    port,
+                    "--username",
+                    bootstrap_owner,
+                    "--dbname",
+                    database,
+                ],
+                input=script.encode("utf-8"),
+                cwd="/",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentContractError(
+                "PinVi fresh migration fence could not be established"
+            ) from exc
+        if completed.returncode != 0:
+            raise DeploymentContractError(
+                "PinVi fresh migration fence could not be established"
+            )
+
     def _run_pinvi_admin_bootstrap(
         self,
         *,
@@ -6173,6 +6257,15 @@ class ComposeService:
                     # 판정해 구조적으로 통과할 수 없었다. 이제 scoped app role
                     # 하나가 자기 database를 소유하므로 남는 것은 migration 실행과
                     # 그 결과가 candidate head와 같은지 보는 것뿐이다.
+                    #
+                    # 예외 하나: 0101 migration의 fresh-install 경로는 pg_authid/
+                    # pg_database catalog lock을 요구하는데, 이건 database owner
+                    # 권한 밖이다(catalog는 database 소유물이 아니라 cluster
+                    # 전역). destructive reset이 매번 pinvi_internal schema를
+                    # 지우므로 이 fence 함수도 매번 다시 세운다.
+                    self._ensure_pinvi_fresh_migration_fence(
+                        values=environment_snapshot.effective
+                    )
                     self._run_pinvi_admin_bootstrap(
                         transaction=runtime_transaction,
                         state_paths=state_paths,
