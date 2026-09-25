@@ -22,6 +22,9 @@ import yaml
 
 from kor_travel_docker_manager.services import c6c_deployment, runtime_pin_registry
 from kor_travel_docker_manager.services import compose_service as compose_service_module
+from kor_travel_docker_manager.services import (
+    pinned_runtime_rebuild as pinned_runtime_rebuild_module,
+)
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
     DeploymentContractError,
@@ -62,9 +65,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     pinned_runtime_state_paths,
     read_rebuild_journal,
     write_rebuild_journal,
-)
-from kor_travel_docker_manager.services import (
-    pinned_runtime_rebuild as pinned_runtime_rebuild_module,
 )
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     COMPOSE_BUILT_RUNTIME_SERVICES,
