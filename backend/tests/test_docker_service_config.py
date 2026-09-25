@@ -54,10 +54,12 @@ _CONCIERGE_UI_VWORLD_KEY = (
 )
 _MAP_FETCH_SERVICES = (
     "kor-travel-map-dagster",
+    "kor-travel-map-dagster-code-server",
     "kor-travel-map-dagster-daemon",
 )
 _MAP_INGESTION_SERVICES = (
     "kor-travel-map-dagster",
+    "kor-travel-map-dagster-code-server",
     "kor-travel-map-dagster-daemon",
 )
 _MAP_API_SERVICE = "kor-travel-map-api"

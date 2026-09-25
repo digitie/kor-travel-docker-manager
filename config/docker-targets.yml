@@ -172,6 +172,13 @@ containers:
     prod_url_env: KTDM_PROD_URL_MAP_DAGSTER
     expected_ports:
       - "12702:12702"
+  kor-travel-map-dagster-code-server:
+    name: kor-travel-map-dagster-code-server-latest
+    compose_service: kor-travel-map-dagster-code-server
+    role: map-dagster-code-server
+    display_name: Kor Travel Map Dagster Code Server
+    connection: internal grpc (loopback-only)
+    expected_ports: []
   kor-travel-map-dagster-daemon:
     name: kor-travel-map-dagster-daemon-latest
     compose_service: kor-travel-map-dagster-daemon
@@ -557,11 +564,13 @@ targets:
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster
+      - kor-travel-map-dagster-code-server
       - kor-travel-map-dagster-daemon
     runtime_services:
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster
+      - kor-travel-map-dagster-code-server
       - kor-travel-map-dagster-daemon
     containers:
       - kor-travel-geo-postgresql
@@ -578,6 +587,7 @@ targets:
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster
+      - kor-travel-map-dagster-code-server
       - kor-travel-map-dagster-daemon
     init_steps: []
 
@@ -628,6 +638,7 @@ targets:
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster
+      - kor-travel-map-dagster-code-server
       - kor-travel-map-dagster-daemon
       - pinvi-api
       - pinvi-web
@@ -673,6 +684,7 @@ targets:
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster
+      - kor-travel-map-dagster-code-server
       - kor-travel-map-dagster-daemon
       - pinvi-api
       - pinvi-web
@@ -849,6 +861,10 @@ compose_binds:
       read_only: false
       source: "${KOR_TRAVEL_GEO_PGDATA:-/home/digitie/kor-travel-geo-data/pgdata-final-20260529}"
   kor-travel-map-dagster:
+    - container_path: "/run/kor-travel-map-dagster-storage-permit"
+      read_only: true
+      source: "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}"
+  kor-travel-map-dagster-code-server:
     - container_path: "/run/kor-travel-map-dagster-storage-permit"
       read_only: true
       source: "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}"
