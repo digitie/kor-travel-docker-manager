@@ -1053,6 +1053,12 @@ def _validate_map_source_protected_scalar_tree(
         ): _MAP_SOURCE_DAGSTER_PROFILE_FALLBACK_VALUE,
         (
             "services",
+            "dagster-code-server",
+            "environment",
+            "KOR_TRAVEL_MAP_DAGSTER_PROFILE",
+        ): _MAP_SOURCE_DAGSTER_PROFILE_FALLBACK_VALUE,
+        (
+            "services",
             "dagster-daemon",
             "environment",
             "KOR_TRAVEL_MAP_DAGSTER_PROFILE",
