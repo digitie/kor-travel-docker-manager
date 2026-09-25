@@ -699,6 +699,7 @@ def test_map_source_dagster_profile_fallback_is_allowed_at_exact_paths() -> None
         "dagster-db-init",
         "dagster-db-init-fresh-300",
         "dagster",
+        "dagster-code-server",
         "dagster-daemon",
         "dagster-storage-migrate",
     ):
@@ -740,6 +741,7 @@ def test_map_source_dagster_profile_fallback_cannot_move_to_another_path() -> No
         "dagster-db-init",
         "dagster-db-init-fresh-300",
         "dagster",
+        "dagster-code-server",
         "dagster-daemon",
         "dagster-storage-migrate",
     ):
@@ -772,6 +774,7 @@ def test_map_source_dagster_profile_bare_placeholder_cannot_be_added() -> None:
         "dagster-db-init",
         "dagster-db-init-fresh-300",
         "dagster",
+        "dagster-code-server",
         "dagster-daemon",
         "dagster-storage-migrate",
     ):
