@@ -1381,12 +1381,97 @@ services:
       timeout: 5s
       retries: 20
       start_period: 30s
+  # ADR-069 짝(weather/geo/transport/PinVi와 같은 code-server 분리 패턴) —
+  # 실제 code location이 도는 유일한 프로세스. `DefaultRunLauncher`의 run
+  # worker는 이 프로세스의 자식으로 뜬다. host network에서는 127.0.0.1이 곧
+  # 호스트 loopback이므로(Map 저장소 자신의 docker-compose.yml처럼 netns를
+  # 빌릴 필요가 없다) webserver/daemon과 그대로 통신한다. gRPC에는 인증이
+  # 없으므로 `-h`는 loopback으로 고정한다(dagster-entrypoint.sh의 production
+  # 봉인과 같은 이유 — weather의 code-server도 동일).
+  kor-travel-map-dagster-code-server:
+    image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
+    command:
+    - /usr/local/bin/dagster
+    - api
+    - grpc
+    - -h
+    - 127.0.0.1
+    - -p
+    - ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT:-12703}
+    - -m
+    - kortravelmap.dagster.definitions
+    container_name: ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-map-dagster-code-server-latest}
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-map-postgres:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+      kor-travel-map-dagster-storage-migrate:
+        condition: service_completed_successfully
+      kor-travel-map-api:
+        condition: service_healthy
+    environment:
+      TMPDIR: /tmp
+      TEMP: /tmp
+      TMP: /tmp
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
+      KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT: ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT:-12703}
+      KOR_TRAVEL_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_IMAGE_ID: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:?KOR_TRAVEL_MAP_DAGSTER_IMAGE must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256: ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256 must be explicitly set}
+      KOR_TRAVEL_MAP_DAGSTER_ADDRESS_VALIDATION: ${KOR_TRAVEL_MAP_DOCKER_ADDRESS_VALIDATION:-drop}
+      KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DB_PATH:-/tmp/mois_source.db}
+      KOR_TRAVEL_MAP_KMA_WEATHER_MAX_GRIDS_PER_RUN: ${KOR_TRAVEL_MAP_DOCKER_KMA_MAX_GRIDS:-80}
+      KOR_TRAVEL_MAP_KMA_WEATHER_EXTRA_POINTS: ${KOR_TRAVEL_MAP_DOCKER_KMA_WEATHER_EXTRA_POINTS:-126.978,37.566;127.047,37.517;126.979,37.573;126.924,37.521;127.011,37.64;129.075,35.18;129.16,35.163;129.024,35.098;126.705,37.456;126.66,37.383;128.601,35.871;128.637,35.857;127.385,36.35;127.34,36.362;126.852,35.16;129.311,35.539;127.289,36.48;127.029,37.263;127.138,37.42;126.832,37.658;127.178,37.241;126.766,37.503;127.734,37.881;128.896,37.752;127.92,37.342;128.591,38.207;127.489,36.642;127.926,36.991;127.114,36.815;127.004,36.79;127.148,35.821;126.737,35.978;127.662,34.76;127.487,34.951;126.392,34.812;129.365,36.019;129.225,35.856;128.729,36.568;128.682,35.228;128.108,35.18;128.434,34.854;126.531,33.499;126.566,33.254;128.889,35.234;126.864,37.478;126.821,37.322;127.113,36.992;126.958,35.948;128.114,36.14;128.621,34.88;126.2838,36.673;127.4416,35.4118;128.7527,37.3221;129.4045,36.9182;127.9057,35.7043;126.0097,37.4346;126.7659,34.2899;127.7243,35.5217;128.9902,37.1551;130.9057,37.4845}
+      KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN: ${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}
+      KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
+      KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DAGSTER_IMAGE_ID: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:?KOR_TRAVEL_MAP_DAGSTER_IMAGE must be explicitly set}
+      KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
+      KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
+      KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
+      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
+      KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
+      KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://127.0.0.1:12501}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
+      KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY: ${KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY:-${SEOUL_OPEN_DATA_API_KEY:-}}
+      KOR_TRAVEL_MAP_OPINET_API_KEY: ${KOR_TRAVEL_MAP_OPINET_API_KEY:-}
+      KOR_TRAVEL_MAP_OPINET_SCOPE_MODE: ${KOR_TRAVEL_MAP_OPINET_SCOPE_MODE:-${OPINET_SCOPE_MODE:-low_top_area}}
+      KOR_TRAVEL_MAP_OPINET_SCOPE_BBOX: ${KOR_TRAVEL_MAP_OPINET_SCOPE_BBOX:-${OPINET_SCOPE_BBOX:-}}
+      KOR_TRAVEL_MAP_OPINET_SCOPE_RADIUS_M: ${KOR_TRAVEL_MAP_OPINET_SCOPE_RADIUS_M:-${OPINET_SCOPE_RADIUS_M:-5000}}
+      KOR_TRAVEL_MAP_OPINET_LOW_TOP_MAX_CALLS: ${KOR_TRAVEL_MAP_OPINET_LOW_TOP_MAX_CALLS:-${OPINET_LOW_TOP_MAX_CALLS:-90}}
+      KOR_TRAVEL_MAP_OPINET_RUN_CALL_BUDGET: ${KOR_TRAVEL_MAP_OPINET_RUN_CALL_BUDGET:-${OPINET_RUN_CALL_BUDGET:-140}}
+      KOR_TRAVEL_MAP_KREX_EX_API_KEY: ${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}
+      KOR_TRAVEL_MAP_KREX_GO_API_KEY: ${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
+    volumes:
+    - ${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR must be explicitly set}:/run/kor-travel-map-dagster-storage-permit:ro
+    healthcheck:
+      test:
+      - CMD
+      - dagster
+      - api
+      - grpc-health-check
+      - -h
+      - 127.0.0.1
+      - -p
+      - ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT:-12703}
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
   kor-travel-map-dagster:
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
     command:
     - /usr/local/bin/dagster-webserver
-    - -m
-    - kortravelmap.dagster.definitions
+    - -w
+    - /opt/dagster/dagster_home/workspace.yaml
     - -h
     - 0.0.0.0
     - -p
@@ -1405,6 +1490,11 @@ services:
       kor-travel-map-dagster-storage-migrate:
         condition: service_completed_successfully
       kor-travel-map-api:
+        condition: service_healthy
+      # ADR-069 — webserver는 이제 code location을 직접 import하지 않는다.
+      # workspace.yaml의 grpc_server가 이 컨테이너를 가리키므로, code-server가
+      # healthy해야 webserver의 code location 로드 자체가 가능하다.
+      kor-travel-map-dagster-code-server:
         condition: service_healthy
     environment:
       TMPDIR: /tmp
@@ -1548,16 +1638,21 @@ services:
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       # daemon도 web readiness의 transitive 의존만 믿지 않는다. candidate
-      # storage migration의 성공을 직접 predecessor로 고정한다.
+      # storage migration의 성공과 code-server healthy를 직접 predecessor로
+      # 고정한다(ADR-069 — daemon도 더 이상 code location을 직접 import하지
+      # 않는다, code location 로드 가능 여부의 신호는 이제 daemon이 아니라
+      # code-server 자신이다).
       kor-travel-map-dagster-storage-migrate:
         condition: service_completed_successfully
+      kor-travel-map-dagster-code-server:
+        condition: service_healthy
       kor-travel-map-dagster:
         condition: service_healthy
     command:
     - /usr/local/bin/dagster-daemon
     - run
-    - -m
-    - kortravelmap.dagster.definitions
+    - -w
+    - /opt/dagster/dagster_home/workspace.yaml
     environment:
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       TMPDIR: /tmp
