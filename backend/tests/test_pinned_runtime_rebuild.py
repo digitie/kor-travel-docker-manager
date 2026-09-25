@@ -5,6 +5,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +18,7 @@ from typing import Any, cast
 from unittest.mock import ANY, MagicMock, Mock, call
 
 import pytest
+import yaml
 
 from kor_travel_docker_manager.services import c6c_deployment, runtime_pin_registry
 from kor_travel_docker_manager.services import compose_service as compose_service_module
@@ -61,11 +63,15 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     read_rebuild_journal,
     write_rebuild_journal,
 )
+from kor_travel_docker_manager.services import (
+    pinned_runtime_rebuild as pinned_runtime_rebuild_module,
+)
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     COMPOSE_BUILT_RUNTIME_SERVICES,
     CandidateRuntimeBuild,
     MapApplication300ArtifactDirectories,
     build_candidate_generation,
+    generation_companion_services,
     generation_compose_environment,
     map_application_300_paired_build_image_names,
     new_candidate_journal,
@@ -1004,7 +1010,118 @@ def test_runtime_container_image_mismatch_is_fail_closed(
         DeploymentContractError,
         match="pinvi-web runtime image differs from committed generation",
     ):
-        service._assert_pinned_runtime_container_images(records, journal=journal)
+        service._assert_pinned_runtime_container_images(
+            records, journal=journal, companions={}
+        )
+
+
+def test_runtime_companion_containers_are_bound_to_their_owner_slot_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    journal = _journal_at_runtime_phase("committed")
+    companions: dict[str, RuntimeService] = {
+        "kor-travel-map-dagster-code-server": "kor-travel-map-dagster",
+        "pinvi-dagster-daemon": "pinvi-dagster",
+    }
+    records = [
+        {"Service": name, "Name": f"container-{name}"}
+        for name in (*RUNTIME_SERVICES, *companions)
+    ]
+    slot_images = journal.candidate.image_ids
+    observed: dict[str, str] = {
+        **slot_images,
+        **{name: slot_images[owner] for name, owner in companions.items()},
+    }
+    monkeypatch.setattr(
+        service,
+        "_inspect_container_image_id",
+        lambda container_name, *, label: observed[label],
+    )
+
+    service._assert_pinned_runtime_container_images(
+        records, journal=journal, companions=companions
+    )
+
+    observed["pinvi-dagster-daemon"] = f"sha256:{998:064x}"
+    with pytest.raises(
+        DeploymentContractError,
+        match="pinvi-dagster-daemon runtime image differs from committed generation",
+    ):
+        service._assert_pinned_runtime_container_images(
+            records, journal=journal, companions=companions
+        )
+
+    with pytest.raises(DeploymentContractError, match="evidence is incomplete"):
+        service._assert_pinned_runtime_container_images(
+            records[:-1], journal=journal, companions=companions
+        )
+
+
+def test_generation_companions_are_non_slot_services_sharing_a_slot_image() -> None:
+    image_ids = _candidate_generation().image_ids
+    dagster_image = image_ids["kor-travel-map-dagster"]
+    resolved = {
+        "services": {
+            **{slot: {"image": image_ids[slot]} for slot in RUNTIME_SERVICES},
+            "kor-travel-map-dagster-code-server": {"image": dagster_image},
+            "kor-travel-map-dagster-storage-migrate": {"image": dagster_image},
+            "pinvi-dagster-daemon": {"image": image_ids["pinvi-dagster"]},
+            "prometheus": {"image": "prom/prometheus:v2.53.1"},
+            "kor-travel-map-postgres": {"image": image_ids["kor-travel-map-api"] + "x"},
+        }
+    }
+
+    companions = generation_companion_services(
+        resolved,
+        image_ids,
+        excluded_services=("kor-travel-map-dagster-storage-migrate",),
+    )
+
+    # daemon과 dagster가 같은 이미지여도 owner는 RUNTIME_SERVICES 순서상 먼저인 slot이다.
+    assert dict(companions) == {
+        "kor-travel-map-dagster-code-server": "kor-travel-map-dagster",
+        "pinvi-dagster-daemon": "pinvi-dagster",
+    }
+    with pytest.raises(DeploymentContractError, match="services are invalid"):
+        generation_companion_services({"services": []}, image_ids, excluded_services=())
+
+
+def test_real_compose_generation_companions_are_every_dagster_process_sharing_an_image() -> None:
+    """실제 compose에서 파생되는 companion 집합을 고정한다.
+
+    code-server가 자기 이미지 변수를 따로 갖게 되면 companion에서 조용히 빠져 다시
+    기동되지 않는다(2026-09-25 t56e/t56h: rebuild가 한 번도 Map code-server를 띄운
+    적이 없었다). 그 회귀를 이 단언이 잡는다.
+    """
+
+    compose_path = Path(__file__).resolve().parents[2] / "docker-compose.yml"
+    document = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    image_ids = _candidate_generation().image_ids
+    image_by_variable = {
+        variable: image_ids[slot]
+        for slot, variable in pinned_runtime_rebuild_module._IMAGE_ENVIRONMENT.items()
+    }
+    services: dict[str, dict[str, str]] = {}
+    for name, service in document["services"].items():
+        raw_image = str(service.get("image", ""))
+        match = re.fullmatch(r"\$\{([A-Z0-9_]+)[^}]*\}", raw_image)
+        resolved_image = (
+            image_by_variable.get(match.group(1), raw_image) if match else raw_image
+        )
+        services[name] = {"image": resolved_image}
+
+    companions = generation_companion_services(
+        {"services": services},
+        image_ids,
+        excluded_services=compose_service_module._PINNED_RUNTIME_ONESHOT_WRITERS,
+    )
+
+    assert dict(companions) == {
+        "kor-travel-map-dagster-code-server": "kor-travel-map-dagster",
+        "pinvi-dagster-code-server": "pinvi-dagster",
+        "pinvi-dagster-daemon": "pinvi-dagster",
+    }
 
 
 def test_committed_resume_revalidates_all_database_identities(

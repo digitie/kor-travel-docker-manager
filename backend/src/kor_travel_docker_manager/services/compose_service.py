@@ -138,6 +138,7 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     CandidateRuntimeBuild,
     MapApplication300ArtifactDirectories,
     build_candidate_generation,
+    generation_companion_services,
     generation_compose_environment,
     map_application_300_paired_build_image_names,
     new_candidate_journal,
@@ -186,6 +187,18 @@ _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "kor-travel-map-dagster-storage-migrate",
     "pinvi-admin-bootstrap",
 )
+
+
+def _with_generation_companions(
+    services: Sequence[str],
+    companions: Mapping[str, RuntimeService],
+) -> tuple[str, ...]:
+    return (
+        *(name for name, owner in companions.items() if owner in services),
+        *services,
+    )
+
+
 _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
     "rustfs",
     "kor-travel-geo-api",
@@ -5181,11 +5194,19 @@ class ComposeService:
         records: Sequence[Mapping[str, Any]],
         *,
         journal: PinnedRuntimeRebuildJournal,
+        companions: Mapping[str, RuntimeService],
     ) -> None:
-        """실행 중인 seven-service container를 committed exact image에 결박한다."""
+        """실행 중인 slot·companion container를 committed exact image에 결박한다.
 
-        expected_images = journal.candidate.image_ids
-        if len(records) != len(RUNTIME_SERVICES):
+        companion은 자기 slot이 없으므로 owner slot의 이미지를 기대값으로 쓴다.
+        """
+
+        slot_images = journal.candidate.image_ids
+        expected_images: dict[str, str] = {
+            **slot_images,
+            **{name: slot_images[owner] for name, owner in companions.items()},
+        }
+        if len(records) != len(expected_images):
             raise DeploymentContractError(
                 "pinned runtime container image evidence is incomplete"
             )
@@ -5208,11 +5229,11 @@ class ComposeService:
                 container_name,
                 label=service,
             )
-            if observed_image != expected_images[cast(RuntimeService, service)]:
+            if observed_image != expected_images[service]:
                 raise DeploymentContractError(
                     f"{service} runtime image differs from committed generation"
                 )
-        if observed_services != set(RUNTIME_SERVICES):
+        if observed_services != set(expected_images):
             raise DeploymentContractError(
                 "pinned runtime container image evidence is incomplete"
             )
@@ -5795,6 +5816,11 @@ class ComposeService:
                     environment_override=runtime_environment,
                     environment_snapshot=environment_snapshot,
                 )
+                companions = generation_companion_services(
+                    runtime_transaction.resolved,
+                    candidate_generation.image_ids,
+                    excluded_services=_PINNED_RUNTIME_ONESHOT_WRITERS,
+                )
             with _pinned_runtime_prejournal_step("runtime_transaction_lock"):
                 _assert_transaction_matches_c6c_lock(
                     runtime_transaction, lock_snapshot
@@ -5856,13 +5882,14 @@ class ComposeService:
             resumed = journal_exists
             if journal.phase == "committed":
                 runtime_records = self._require_services_ready(
-                    RUNTIME_SERVICES,
+                    (*RUNTIME_SERVICES, *companions),
                     transaction=runtime_transaction,
                     frozen_recovery=True,
                 )
                 self._assert_pinned_runtime_container_images(
                     runtime_records,
                     journal=journal,
+                    companions=companions,
                 )
                 postgres_records = self._require_services_ready(
                     ("kor-travel-map-postgres", "pinvi-postgres"),
@@ -5912,7 +5939,7 @@ class ComposeService:
                 if isinstance(config, C6cDeploymentConfig):
                     runtime_configs = self._inspect_c6c_runtime_configs(
                         config,
-                        list(RUNTIME_SERVICES),
+                        [*RUNTIME_SERVICES, *companions],
                         transaction=runtime_transaction,
                         frozen_recovery=True,
                     )
@@ -5945,7 +5972,7 @@ class ComposeService:
                 # fixture outcome만 보존하며, live runtime/partial writer를
                 # 재사용하지는 않는다.
                 self._run_pinned_runtime_rebuild_compose(
-                    ["stop", *RUNTIME_SERVICES],
+                    ["stop", *RUNTIME_SERVICES, *companions],
                     transaction=runtime_transaction,
                 )
                 self._retire_pinned_runtime_oneshot_writers(
@@ -6244,9 +6271,14 @@ class ComposeService:
                         "--wait",
                         "--wait-timeout",
                         str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
-                        "kor-travel-map-ui",
-                        "kor-travel-map-dagster",
-                        "kor-travel-map-dagster-daemon",
+                        *_with_generation_companions(
+                            (
+                                "kor-travel-map-ui",
+                                "kor-travel-map-dagster",
+                                "kor-travel-map-dagster-daemon",
+                            ),
+                            companions,
+                        ),
                     ],
                     transaction=runtime_transaction,
                 )
@@ -6363,19 +6395,22 @@ class ComposeService:
                         "--wait",
                         "--wait-timeout",
                         str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
-                        "pinvi-web",
-                        "pinvi-dagster",
+                        *_with_generation_companions(
+                            ("pinvi-web", "pinvi-dagster"),
+                            companions,
+                        ),
                     ],
                     transaction=runtime_transaction,
                 )
                 runtime_records = self._require_services_ready(
-                    RUNTIME_SERVICES,
+                    (*RUNTIME_SERVICES, *companions),
                     transaction=runtime_transaction,
                     frozen_recovery=True,
                 )
                 self._assert_pinned_runtime_container_images(
                     runtime_records,
                     journal=journal,
+                    companions=companions,
                 )
                 config = load_c6c_deployment_config_from_environment(
                     runtime_transaction.environment.effective
@@ -6383,7 +6418,7 @@ class ComposeService:
                 if isinstance(config, C6cDeploymentConfig):
                     runtime_configs = self._inspect_c6c_runtime_configs(
                         config,
-                        list(RUNTIME_SERVICES),
+                        [*RUNTIME_SERVICES, *companions],
                         transaction=runtime_transaction,
                         frozen_recovery=True,
                     )
@@ -6431,7 +6466,7 @@ class ComposeService:
             except Exception:
                 try:
                     self._run_pinned_runtime_rebuild_compose(
-                        ["stop", *RUNTIME_SERVICES],
+                        ["stop", *RUNTIME_SERVICES, *companions],
                         transaction=runtime_transaction,
                     )
                     self._retire_pinned_runtime_oneshot_writers(

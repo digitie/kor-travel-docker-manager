@@ -1873,12 +1873,14 @@ services:
         condition: service_completed_successfully
       pinvi-api:
         condition: service_healthy
+    # gRPC code server에는 인증이 없고 host network다 — 0.0.0.0이면 LAN 누구나 run을
+    # 띄울 수 있다. webserver/daemon은 workspace.yaml로 127.0.0.1:12803에 붙는다.
     command:
     - dagster
     - api
     - grpc
     - -h
-    - 0.0.0.0
+    - 127.0.0.1
     - -p
     - '${PINVI_DAGSTER_CODE_SERVER_PORT:-12803}'
     - -m

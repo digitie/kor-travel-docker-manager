@@ -409,6 +409,22 @@ def _redact_value_credentials(value: str) -> str:
     )
 
 
+def redact_secret_text(text: str, environment: Mapping[str, str | None]) -> str:
+    """임의 텍스트에서 민감 key로 선언된 값 전부와 URL userinfo 비밀번호를 가린다."""
+    secrets = sorted(
+        {
+            value
+            for key, value in environment.items()
+            if value and len(value) >= 4 and _is_sensitive_key(key)
+        },
+        key=len,
+        reverse=True,
+    )
+    for secret in secrets:
+        text = text.replace(secret, "<redacted>")
+    return _redact_value_credentials(text)
+
+
 def _redact_env_pair(raw_pair: str) -> str:
     if "=" not in raw_pair:
         return raw_pair

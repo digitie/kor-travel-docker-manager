@@ -211,9 +211,25 @@ def test_map_runtime_requires_the_image_entrypoint_and_empty_command(
                 }
             )
         },
+        "kor-travel-map-dagster-code-server-latest": {
+            "Env": _runtime_environment(
+                {
+                    c6c_deployment_module._MAP_GEO_API_KEY_SOURCE_ENV: (
+                        config.map_geo_api_key
+                    )
+                }
+            )
+        },
     }
 
     validate_runtime_secret_isolation(runtime_configs, config)
+
+    # ADR-069 code-server는 job 코드를 실제로 돌리므로 geo 키를 받는다 — inspection에서
+    # 빠지면(=rebuild가 기동하지 않으면) 여기서 멈춘다.
+    broken = deepcopy(runtime_configs)
+    del broken["kor-travel-map-dagster-code-server-latest"]
+    with pytest.raises(DeploymentContractError, match="required C6c container is missing"):
+        validate_runtime_secret_isolation(broken, config)
 
     broken = deepcopy(runtime_configs)
     broken[config.map_container]["Entrypoint"] = None
