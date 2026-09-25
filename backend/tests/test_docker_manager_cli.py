@@ -107,6 +107,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
+        "kor-travel-map-dagster-code-server",
         "kor-travel-map-dagster-daemon",
         "pinvi-api",
         "pinvi-web",
