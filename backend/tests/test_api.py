@@ -1033,6 +1033,7 @@ def test_get_targets():
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
+        "kor-travel-map-dagster-code-server",
         "kor-travel-map-dagster-daemon",
         "pinvi-postgres",
         "kor-travel-shared-db-init-pinvi",
