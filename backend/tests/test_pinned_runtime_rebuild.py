@@ -2747,10 +2747,12 @@ def test_bootstrap_intent_fails_closed_on_nonconvergent_state(
         ),
     ),
 )
+@pytest.mark.parametrize("with_companions", (False, True))
 def test_application_300_one_shots_never_reexecute_after_durable_intent(
     phase: RebuildPhase,
     _one_shot_service: str,
     expected_error: str,
+    with_companions: bool,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2769,12 +2771,6 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
         "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
     }
-    transaction = SimpleNamespace(
-        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
-        compose_source_bytes=b"services: {}\n",
-        resolved_document_hash="c" * 64,
-        resolved={"services": {}},
-    )
     journal = (
         _journal_at_runtime_phase(phase)
         if phase in {
@@ -2784,6 +2780,27 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
             "pinvi_schema_ready",
         }
         else _journal_at_application_300_phase(phase)
+    )
+    companion_services: dict[str, object] = (
+        {
+            "kor-travel-map-dagster-code-server": {
+                "image": journal.candidate.image_ids["kor-travel-map-dagster"]
+            },
+            "pinvi-dagster-code-server": {
+                "image": journal.candidate.image_ids["pinvi-dagster"]
+            },
+            "pinvi-dagster-daemon": {
+                "image": journal.candidate.image_ids["pinvi-dagster"]
+            },
+        }
+        if with_companions
+        else {}
+    )
+    transaction = SimpleNamespace(
+        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
+        compose_source_bytes=b"services: {}\n",
+        resolved_document_hash="c" * 64,
+        resolved={"services": companion_services},
     )
     state_paths = pinned_runtime_state_paths(
         values,
@@ -3094,6 +3111,26 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         for operation in operations
         if "up" in operation or "run" in operation
     )
+    # companion은 compose가 `--no-deps`로 지워 버리는 depends_on 대신 같은 호출에
+    # 이름으로 실려야 정지·기동된다(t56e~t56h: Map code-server가 한 번도 안 떴다).
+    companion_names = tuple(sorted(companion_services))
+    assert ("stop", *RUNTIME_SERVICES, *companion_names) in operations
+    if phase in {"map_runtime_ready", "pinvi_schema_ready"}:
+        map_companions = (
+            ("kor-travel-map-dagster-code-server",) if with_companions else ()
+        )
+        assert (
+            "up",
+            "-d",
+            "--no-deps",
+            "--wait",
+            "--wait-timeout",
+            "300",
+            *map_companions,
+            "kor-travel-map-ui",
+            "kor-travel-map-dagster",
+            "kor-travel-map-dagster-daemon",
+        ) in operations
     database_reset.assert_not_called()
     create_database.assert_not_called()
 
