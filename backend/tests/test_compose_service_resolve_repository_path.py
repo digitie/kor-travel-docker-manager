@@ -8,7 +8,7 @@
 경로 결합/실패 판정 로직은 실제로 한 번도 실행되지 않은 채 통과해 왔다.
 
 `_resolve_repository_path`는 git을 전혀 shelling-out하지 않는 순수 경로
-연산이므로(git 호출은 별도의 `_run_git_read`/`_run_git_bytes`가 담당), 실제
+연산이므로(그 뒤의 파일 읽기는 `_read_map_source_file`이 맡는다), 실제
 git 저장소 없이도 tmp_path 기반의 평범한 파일/디렉터리만으로 아래 4개
 분기를 전부 검증할 수 있다:
 

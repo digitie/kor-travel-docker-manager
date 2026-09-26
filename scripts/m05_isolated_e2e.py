@@ -2048,31 +2048,16 @@ def _pair(pinvi_root: Path, map_root: Path) -> tuple[M05IsolatedPairEvidence, st
         entry = mapping[name]
         if not isinstance(entry, dict):
             _fail("pair_contract_invalid", diagnostic="pair entry schema is invalid")
-        revision = pinned_map_revision
+        # map_root는 pinned revision 그대로의 트리다 — 파일이 곧 그 revision의 blob이다
+        # (ADR-51 E). git을 부르지 않는다.
         try:
-            raw = subprocess.run(
-                [
-                    "/usr/bin/git",
-                    "-C",
-                    str(map_root),
-                    "show",
-                    f"{revision}:{relative_path}",
-                ],
-                cwd="/",
-                env=_SAFE_SUBPROCESS_ENV,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            )
+            raw = (map_root / relative_path).read_bytes()
         except OSError:
             _fail(
                 "pair_contract_invalid",
                 diagnostic="pair source blob is unreadable at the contract revision",
             )
-        if raw.returncode != 0 or hashlib.sha256(
-            raw.stdout
-        ).hexdigest() != _sha256_text(entry["openapi_sha256"]):
+        if hashlib.sha256(raw).hexdigest() != _sha256_text(entry["openapi_sha256"]):
             # 계약이 **릴리스**와 어긋난다 — 진짜 표면 변경이므로 운영자의
             # 다음 행동은 재벤더링이다. v1에는 "계약이 자기 revision과 어긋난다"는
             # 다른 사실도 있었으나 그 선언이 사라져 이 자리에 한 뜻만 남는다.
@@ -2081,7 +2066,7 @@ def _pair(pinvi_root: Path, map_root: Path) -> tuple[M05IsolatedPairEvidence, st
                 diagnostic="pair source blob digest differs from the pinned release",
             )
         try:
-            source_value = json.loads(raw.stdout)
+            source_value = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError):
             _fail(
                 "pair_contract_invalid",
