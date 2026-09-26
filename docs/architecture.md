@@ -238,7 +238,7 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
      `deploy-status.json`(`in_progress`/`committed`)이 배포 진행의 정본이고, 커밋 때 쓰는
      `PinnedRuntimeGeneration` v6 manifest가 일곱 immutable image ID, 두 clean source revision,
      application-300 candidate evidence, Map application/Dagster와 PinVi schema head를 active generation
-     하나에 결박한다(step D까지 M05 driver가 읽는다). 이전 pair version과 rollback slot은 수용하지 않는다.
+     하나에 결박한다(D-1부터 읽는 곳은 없고 D-1 이전 Manager로의 되돌림을 위해 D-2까지만 쓴다). 이전 pair version과 rollback slot은 수용하지 않는다.
      완전한 수렴이 불가능하면 일곱 runtime을 모두 중지해 혼합 generation 노출을 막는다.
      비운영 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`에서 runtime/DB를 새 release pin으로 수렴할 유일한
      경로는 root execution의 `sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm`이다(ADR-51 마이그레이션 전진). 이 command는 trusted source와

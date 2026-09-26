@@ -38,11 +38,6 @@ from kor_travel_docker_manager.services.offbox_backup_sync import (
     read_offbox_sync_status,
     sync_backups_offbox,
 )
-from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    publish_pinned_runtime_generation,
-    read_manifest,
-    read_published_pinned_runtime_generation,
-)
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     RUNTIME_SOURCE_ROLES,
 )
@@ -681,27 +676,9 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
     except DeploymentContractError as exc:
         _print_pin_registry_failure(exc, json_output=args.json)
         return 2
-    generation = read_published_pinned_runtime_generation()
-    generation_binding = generation.get("pinset_binding")
-    binding_status = (
-        generation_binding.get("status")
-        if isinstance(generation_binding, dict)
-        else "unknown"
-    )
-    if generation.get("status") != "ok":
-        generation_public_copy = "invalid"
-    elif binding_status == "match":
-        generation_public_copy = "current"
-    elif binding_status == "pending_rebuild":
-        # pair를 회전한 직후의 last committed generation은 정상적으로 이전 pinset을
-        # 가리킨다. v6 manifest 공개 사본이 유효하다는 사실과 배포 전의 새 pair 상태를
-        # 구분해 보여 주되, 이를 current generation이라고 부르지 않는다. manifest만 읽는
-        # 결박에는 옛 `drift`가 없으므로(ADR-51 B3) 나머지는 `unknown`뿐이다.
-        generation_public_copy = "pending_rebuild"
-    else:
-        generation_public_copy = "invalid"
-    report["generation_public_copy"] = generation_public_copy
-    report["generation_pinset_binding"] = binding_status
+    # v6 generation 공개 사본은 더 읽지 않는다(ADR-51 D-1). 배포가 끝났는지는 M05 driver가
+    # root-only `deploy-status.json`으로 직접 확인한다 — 여기서 종료 코드는 pin·execution
+    # registry, 회전 intent, runtime-pins 공개 사본만으로 정한다.
     execution_binding = "missing"
     execution_terminal = True
     execution_public_copy = "missing"
@@ -834,19 +811,6 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         exit_code = 1
-    if generation_public_copy == "invalid":
-        print(
-            "pinned runtime generation public copy is incomplete, malformed, or does not "
-            "bind to the current registry pair",
-            file=sys.stderr,
-        )
-        exit_code = 1
-    elif generation_public_copy == "pending_rebuild":
-        print(
-            "pinned runtime generation is a valid previous committed pair; the rotated "
-            "pair still requires its one-shot rebuild",
-            file=sys.stderr,
-        )
     return exit_code
 
 
@@ -966,55 +930,6 @@ def _cmd_pin_block_execution(args: argparse.Namespace) -> int:
         return 2
     _print_execution_registry(updated, json_output=args.json)
     return 0
-
-
-def _cmd_pin_publish_generation(args: argparse.Namespace) -> int:
-    """root private v6 manifest를 검증한 뒤 API용 public copy만 갱신한다.
-
-    배포가 같은 pair로 수렴하면 manifest 쓰기 전에 끝나므로(ADR-51) 잃어버린 공개
-    사본을 되살리는 길은 이 명령뿐이다.
-    """
-
-    if not args.confirm:
-        print(
-            "pin publish-generation requires --confirm (no public copy was written)",
-            file=sys.stderr,
-        )
-        return 2
-    if not _running_as_root():
-        print("pin publish-generation requires root", file=sys.stderr)
-        return 2
-    manifest_path = Path(args.manifest)
-    if not manifest_path.is_absolute():
-        print("manifest path must be absolute", file=sys.stderr)
-        return 2
-    try:
-        with _runtime_pin_mutation_lock():
-            paths = publish_pinned_runtime_generation(
-                manifest=read_manifest(manifest_path),
-            )
-    except DeploymentContractError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-    generation = read_published_pinned_runtime_generation()
-    binding = generation.get("pinset_binding")
-    binding_status = binding.get("status") if isinstance(binding, dict) else "unknown"
-    published = generation.get("status") == "ok" and binding_status == "match"
-    payload = {
-        "status": "published" if published else "unverified",
-        "manifest_public_path_name": paths.manifest.name,
-        "pinset_binding": binding_status,
-    }
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print(
-            "pinned runtime generation public copy published"
-            if published
-            else "pinned runtime generation public copy is not the current registry pair",
-            file=None if published else sys.stderr,
-        )
-    return 0 if published else 1
 
 
 def _print_rotation_write_failure(exc: OSError, *, json_output: bool) -> None:
@@ -2023,23 +1938,6 @@ def build_parser() -> argparse.ArgumentParser:
     pin_block_execution.add_argument("--confirm", action="store_true")
     pin_block_execution.add_argument("--json", action="store_true")
     pin_block_execution.set_defaults(func=_cmd_pin_block_execution)
-
-    pin_publish_generation = pin_subparsers.add_parser(
-        "publish-generation",
-        help="검증된 private v6 manifest를 API용 공개 사본으로 원자 복제합니다.",
-    )
-    pin_publish_generation.add_argument(
-        "--manifest",
-        required=True,
-        help="root-owned pinned-runtime-generation-v6.json의 절대 경로입니다.",
-    )
-    pin_publish_generation.add_argument(
-        "--confirm",
-        action="store_true",
-        help="비밀 없는 API 관측 사본 갱신을 확인합니다.",
-    )
-    pin_publish_generation.add_argument("--json", action="store_true")
-    pin_publish_generation.set_defaults(func=_cmd_pin_publish_generation)
 
     pin_rotate = pin_subparsers.add_parser(
         "rotate", help="한 role의 revision을 교체하고 digest를 자동 계산합니다."

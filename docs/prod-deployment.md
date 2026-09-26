@@ -703,9 +703,11 @@ old image, old manifest를 candidate authority로 쓰지 않는다.
 manifest·v8 journal·legacy tombstone은 넘겨받지도 고치지도 않는다(ADR-51 B3). 결과 JSON은
 launcher·`chain17`이 읽는 `success`·`phase`(항상 `committed`)·`pinset_sha256`·`schema_heads` 키를 유지한다.
 
-v6 manifest(`pinned-runtime-generation-v6.json`)는 커밋 때만 쓰이며 step D까지 M05 driver가 읽는다.
-같은 pair 수렴은 manifest를 다시 쓰지 않으므로 공개 사본을 잃었으면 root가
-`ktdctl pin publish-generation --manifest <absolute-v6-path> --confirm`으로 되살린다. 호스트에 남은
+v6 manifest(`pinned-runtime-generation-v6.json`)는 D-2 전까지 커밋 때 계속 쓰이지만 ADR-51 D-1부터
+이 Manager의 어떤 reader도 읽지 않는다 — M05 driver는 committed `deploy-status.json`을 대조하고
+`in_progress`면 거부한다(실패한 배포 뒤에는 한 번 commit될 때까지 M05가 멈춘다). 배포 상태를 사람이
+보려면 `sudo -n cat <state_root>/deploy-status.json`이나 rebuild `result.json`을 읽는다 — 공개 view·
+`pin publish-generation`은 없어졌다. 호스트에 남은
 private `pinned-runtime-rebuild-v8-*.json`, `legacy-tombstone-v8-*.json`, v2–v7 artifact와 공개
 `pinned-runtime-rebuild-v8.json`은 아무것도 읽지 않으므로 손으로 지워도 되고 두어도 된다. **step D 전에는
 `pinned-runtime-generation-v6.json`을 지우지 않는다.** source/ETL 재적재는 committed 뒤 별도 workflow다.

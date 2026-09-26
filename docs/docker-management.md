@@ -255,8 +255,7 @@ fail-close한다. 따라서 파일을 편집해 임의 저장소를 가리키게
 
 ```bash
 ktdctl pin show [--json]     # 현재 pin·digest·회전 메타·차단 목록 (읽기 전용)
-ktdctl pin verify [--json]   # registry와 v6 manifest generation 공개 사본 strict 정합 (읽기 전용)
-ktdctl pin publish-generation --manifest <absolute-v6-path> --confirm   # 잃은 공개 사본 복구 (root 전용)
+ktdctl pin verify [--json]   # registry·execution 결박과 공개 사본 strict 정합 (읽기 전용)
 ktdctl pin init --confirm    # 호스트 최초 1회 (기본 seed: config/runtime-pins.seed.json)
 ktdctl pin rotate --role map|pinvi --revision <40-hex> --reason "..." --confirm
 ktdctl pin rotate-pair --map-revision <40-hex> --pinvi-revision <40-hex> --reason "..." --confirm
@@ -282,12 +281,14 @@ ktdctl pin clear-pending --request-id <id> --confirm
   registry 트리는 installer가 매 설치마다 `0700`으로 되돌려 비-root가 traverse할 수 없다.
   사본이 registry보다 오래되면 `stale`, 사본 없이 registry를 직접 읽었으면 `degraded`,
   둘 다 읽을 수 없으면 `unknown`으로 표시하고 값을 추측하지 않는다.
-- **generation 공개 계약**: v6 manifest는 root private state에 계속 두고, 배포 커밋과
-  root `pin publish-generation`만 같은 public 트리에 `0644` 원본 사본을 원자 기록한다.
-  backend·Map·PinVi의 관측 정본은 `GET /api/v1/pinned-runtime/generation`이며, 사람이 읽는
-  summary와 registry pair 결박(`pinset_binding`)은 API envelope에만 둔다. raw 문서 키를
-  바꾸지 않는다. v8 journal은 ADR-51 B3부터 쓰지도 읽지도 않으며, 공개 트리에 남은 옛
-  `pinned-runtime-rebuild-v8.json`은 무시된다.
+- **배포 상태에는 공개 view가 없다(ADR-51 D-1)**: 배포 상태는 root private state의
+  `deploy-status.json` 하나이고 공개 사본을 두지 않는다. v6 generation 공개 사본의 reader —
+  `GET /api/v1/pinned-runtime/generation`, `pin publish-generation`, `pin verify`의
+  `generation_*` 키, rebuild preflight의 generation 판정 — 는 지웠고 대체하지 않는다(기록된 손실).
+  배포 완료는 root가 `deploy-status.json`·rebuild `result.json`으로 보고, M05 launcher는
+  `pin verify`와 M05 driver `--preflight`(committed 배포 기록 대조)의 종료 코드로 판정한다.
+  커밋은 D-2 전까지 v6 manifest와 그 공개 사본을 계속 쓰지만 아무도 읽지 않으며, 공개 트리에
+  남은 옛 `pinned-runtime-rebuild-v8.json`도 무시된다.
 - **재기동 불요**: 로드는 mtime·size·inode 스탬프로 캐시를 무효화하므로 pin 회전은
   실행 중 Manager에 즉시 반영된다.
 - **회전 이력과 롤백**: rotate는 digest를 자동 계산하고 이전 registry를
@@ -319,10 +320,11 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
   "직전 candidate가 실패로 끝났다"인 경우의 표준 사용법이다.
 - **차단 하한선은 코드가 소유한다.** registry가 손상되거나 오래된 사본으로 시딩돼도
   d9 계열 historical 차단은 유지된다 — 목록은 데이터, 하한선은 코드다.
-- `pin verify`는 현재 pinset이 재시도 금지 상태이거나 registry/generation 공개 사본이
-  없거나 손상됐거나 결박을 확인할 수 없으면(`unknown`) 비정상 종료한다. pair 회전 직후의 완전한 이전 generation은
-  `pending_rebuild`로 알리되 current라고 부르지 않는다. digest가 맞다는 이유만으로 0을 반환하면
-  운영자가 rebuild 직전에 잘못 안심하게 되기 때문이다.
+- `pin verify`는 현재 pinset이 재시도 금지 상태이거나 registry/execution 공개 사본이
+  없거나 손상됐거나, execution 결박이 current가 아니거나 pair 회전이 미완이면 비정상 종료한다.
+  digest가 맞다는 이유만으로 0을 반환하면 운영자가 rebuild 직전에 잘못 안심하게 되기 때문이다.
+  v6 generation 공개 사본은 ADR-51 D-1부터 읽지 않는다 — 배포가 현재 pinset으로 끝났는지는
+  M05 driver `--preflight`가 root-only `deploy-status.json`으로 판정한다.
 - 의도적으로 `pin unblock`은 제공하지 않는다. 해소 경로는 새 revision으로의 회전이다.
 
 ### 5.2 API
@@ -344,10 +346,9 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 | `POST` | `/api/v1/backups/{role}` | 백업 생성을 시작하고 `202` + job id를 돌려준다. 동시 실행은 `409` |
 | `GET` | `/api/v1/backups/{role}/jobs[/{job_id}]` | job 상태 폴링. `/jobs`는 새로고침 뒤 재접속용 최신 job |
 | `GET` | `/api/v1/runtime-pins` | pinned revision·pinset digest·회전 이력·차단 목록·대기 중인 회전 요청. registry 회전은 root `ktdctl pin rotate`/`pin rotate-pair`/`pin apply-pending` 전용이라 이 route는 registry를 쓰지 않는다 |
-| `GET` | `/api/v1/pinned-runtime/generation` | root가 발행한 v6 manifest 원본과 current registry pair 결박(`match`·`pending_rebuild`·`unknown`)·요약. backend는 private state를 읽지 않으며, raw 문서 키를 바꾸지 않는다. 옛 `journal`·`terminal` 키는 ADR-51 B3에서 없어졌다 |
 | `POST/DELETE` | `/api/v1/runtime-pins/requests[/{id}]` | 회전 **요청** 기록·취소. 적용은 root `ktdctl pin apply-pending --expect-revision <40-hex> --confirm` 전용이다 |
 | `GET` | `/api/v1/deployment-readiness` | 재구축 사전 점검(관측 전용). 무엇도 pull하지 않으며 호스트를 읽지 못하면 `unknown` 행으로 떨어진다. 검사하지 않기로 **결정한** 항목은 `unavailable_checks`로 이유와 함께 노출한다. 검사 4종: Compose 단일 파일, 사이드카 필수 스크립트, 고정 PinVi revision의 역할 부트스트랩 계약, Map 후보 빌드의 고정 Python base image |
-| `GET` | `/api/v1/pinned-rebuild/preflight` | 재구축을 지금 시작할 수 있는지의 판정(관측 전용). registry뿐 아니라 공개 generation이 `match` 또는 회전 직후의 유효한 `pending_rebuild`인지 함께 요구한다. `.env`의 배포 모드가 rehearsal/rebuildable이 아니면 `MODE_NOT_REBUILDABLE` 차단, 모드를 읽지 못하면 `MODE_UNVERIFIABLE`(확인 불가)이다. 상태는 `ok`·`blocked`·`unverified` 셋이다(journal 재개 경고 `warnings`/`attention`은 ADR-51 B3에서 없어졌다). **실행 route가 아니다** — 재구축은 root를 요구하므로 payload는 차단 사유와 실행할 명령만 준다 |
+| `GET` | `/api/v1/pinned-rebuild/preflight` | 재구축을 지금 시작할 수 있는지의 판정(관측 전용). 현재 execution의 terminal 여부는 root `pin verify`로만 확인할 수 있어 `can_start`는 늘 false다(공개 generation 판정은 ADR-51 D-1에서 없어졌다). `.env`의 배포 모드가 rehearsal/rebuildable이 아니면 `MODE_NOT_REBUILDABLE` 차단, 모드를 읽지 못하면 `MODE_UNVERIFIABLE`(확인 불가)이다. 상태는 `ok`·`blocked`·`unverified` 셋이다(journal 재개 경고 `warnings`/`attention`은 ADR-51 B3에서 없어졌다). **실행 route가 아니다** — 재구축은 root를 요구하므로 payload는 차단 사유와 실행할 명령만 준다 |
 | `GET` | `/api/v1/source-status` | 설치 기록·작업 사본·실행 중 이미지·계약 일치·환경 완결성(관측 전용) |
 | `GET` | `/api/v1/system/disk-usage` | `docker system df`를 사람 말로 번역. 정리(prune)는 파괴적이라 CLI에만 있다 |
 | `GET` | `/api/v1/admin/login-audit-events` | 관리자 로그인·로그아웃 감사 이벤트 |
@@ -645,7 +646,7 @@ readiness·image·secret isolation과 C6c smoke가 통과하면 v6 manifest와 `
 PinVi는 geo 패턴처럼 scoped app role 하나가 자기 database를 소유한다(ADR-46). 종전의 M05 다중 role
 topology·catalog reset·role verify one-shot과 그것을 담던 v8 journal receipt는 없어졌다. v8 rebuild
 journal·tombstone 모델은 ADR-51 B3에서 코드째 지웠고, 호스트에 남은 v8 파일은 읽지 않는다. v6 manifest는
-step D까지 M05 driver가 읽으므로 커밋 때 계속 쓴다.
+D-1부터 읽는 곳이 없고(M05는 `deploy-status.json`을 본다), D-1 이전 Manager로의 되돌림을 위해 D-2까지만 커밋 때 쓴다.
 
 rebuildable 환경에서는 cache-target integration이 완전히 inert여야 한다. Map principal registry는 `[]`,
 PinVi sync는 `false`, 관련 token·contract scalar는 비어 있고 consumer ID는 Compose 기본값이어야 한다.

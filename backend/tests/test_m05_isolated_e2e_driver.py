@@ -3483,24 +3483,28 @@ def test_preflight_reports_only_allowlisted_diagnostics(monkeypatch, capsys) -> 
     assert "pair_contract_invalid" in leaked
 
 
-def test_source_pair_preflight_binds_the_committed_v6_manifest(
+def test_source_pair_preflight_binds_the_committed_deploy_status(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`_source_pair_preflight`의 v6 manifest 대조를 대역 없이 돌린다.
+    """`_source_pair_preflight`의 `deploy-status.json` 대조를 대역 없이 돌린다.
 
-    다른 M05 테스트는 전부 `_source_pair_preflight`를 통째로 대역한다. 그래서 v8
-    journal 모델을 지운 뒤(ADR-51 B3) private v6 manifest를 읽는 이 대조에는 테스트가
-    없었다. 여기서는 source 확보·pair 계약·admission만 대역하고 manifest는
-    `write_manifest`로 실제 파일을 써서 읽힌다. 세 거부 진단은 `_PAIR_DIAGNOSTICS`의
+    다른 M05 테스트는 전부 `_source_pair_preflight`를 통째로 대역한다. 여기서는 source
+    확보·pair 계약·admission만 대역하고 배포 기록은 `begin_deploy`·`commit_deploy`·
+    `write_deploy_status`로 실제 파일을 써서 읽힌다. 네 거부 진단은 `_PAIR_DIAGNOSTICS`의
     닫힌 어휘이고, 거부는 `_pair`(실행권 소비 전 단계)에 닿기 전에 일어나야 한다.
-    ADR-51 D가 이 대조를 `deploy-status.json`으로 옮길 때 이 테스트도 함께 바뀐다.
+
+    ADR-51 D-1부터 driver는 v6 generation manifest를 읽지 않는다. 같은 디렉터리에
+    쓰레기 v6 파일을 심어 두고도 모든 판정이 배포 기록만으로 나와야 한다 — 아직 v6를
+    읽는다면 통과 사례가 거부로 바뀐다.
     """
 
-    from kor_travel_docker_manager.services.pinned_runtime_generation import (
-        MapApplication300CandidateEvidence,
-        PinnedRuntimeGeneration,
-        PinnedRuntimeManifest,
-        write_manifest,
+    from kor_travel_docker_manager.services.deploy_status import (
+        DeployedDatabase,
+        DeployStatus,
+        begin_deploy,
+        commit_deploy,
+        deploy_status_path,
+        write_deploy_status,
     )
 
     driver = _driver()
@@ -3513,7 +3517,6 @@ def test_source_pair_preflight_binds_the_committed_v6_manifest(
         "COMPOSE_PROJECT_NAME": "m05-preflight",
         "KTDM_PINNED_RUNTIME_STATE_ROOT": str(state_root),
     }
-    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
     monkeypatch.setattr(driver, "effective_environment", lambda _path: dict(values))
     map_root = tmp_path / "map"
     pinvi_root = tmp_path / "pinvi"
@@ -3539,38 +3542,51 @@ def test_source_pair_preflight_binds_the_committed_v6_manifest(
     )
 
     pinned = driver.PINNED_RUNTIME_RELEASE.pinset_sha256
-    image = "sha256:" + "a" * 64
+
+    def begin(*, pinset_sha256: str = pinned) -> DeployStatus:
+        return begin_deploy(
+            None,
+            run_id="00000000-0000-4000-8000-000000000001",
+            started_at="2026-09-27T00:00:00Z",
+            manager_revision="e" * 40,
+            map_revision=driver.PINNED_RUNTIME_RELEASE.source_for("map").revision,
+            pinvi_revision=driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
+            pinset_sha256=pinset_sha256,
+        )
 
     def commit(*, pinset_sha256: str = pinned, head: str = derived_head) -> None:
-        generation = PinnedRuntimeGeneration(
-            map_api_image_id=image,
-            map_ui_image_id=image,
-            map_dagster_image_id=image,
-            map_dagster_daemon_image_id=image,
-            pinvi_api_image_id=image,
-            pinvi_web_image_id=image,
-            pinvi_dagster_image_id=image,
-            map_source_revision=driver.PINNED_RUNTIME_RELEASE.source_for("map").revision,
-            pinvi_source_revision=driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
-            map_application_head=head,
-            map_dagster_head="dagster-1",
-            pinvi_head="pinvi-1",
-            pinset_sha256=pinset_sha256,
-            map_application_300_candidate_evidence=MapApplication300CandidateEvidence(
-                candidate_git_tree="4" * 40,
-                postgres_image_id=image,
-                dagster_config_sha256="5" * 64,
+        write_deploy_status(
+            status_path,
+            commit_deploy(
+                begin(pinset_sha256=pinset_sha256),
+                committed_at="2026-09-27T00:10:00Z",
+                images={"kor-travel-map-api": "sha256:" + "a" * 64},
+                schema_heads={
+                    "map_application": head,
+                    "map_dagster": "dagster-1",
+                    "pinvi": "pinvi-1",
+                },
+                databases={
+                    "map_application": DeployedDatabase(
+                        name="kor_travel_map", oid=16384, system_identifier="7000000000000000001"
+                    ),
+                    "map_dagster": DeployedDatabase(
+                        name="kor_travel_map_dagster",
+                        oid=16385,
+                        system_identifier="7000000000000000001",
+                    ),
+                    "pinvi": DeployedDatabase(
+                        name="pinvi", oid=16386, system_identifier="7000000000000000002"
+                    ),
+                },
             ),
-            recorded_at="2026-09-26T00:00:00+00:00",
-        )
-        write_manifest(
-            manifest_path, PinnedRuntimeManifest(version=6, active_generation=generation)
         )
 
     state_dir = state_root / "m05-preflight"
     state_dir.mkdir(parents=True, mode=0o700)
-    os.chmod(state_dir, 0o700)
-    manifest_path = state_dir / "pinned-runtime-generation-v6.json"
+    status_path = deploy_status_path(state_dir)
+    # driver가 아직 v6를 읽는다면 이 쓰레기가 통과 사례를 거부로 바꾼다.
+    (state_dir / "pinned-runtime-generation-v6.json").write_bytes(b"\x00not a v6 manifest")
 
     def refusal() -> str | None:
         with pytest.raises(driver._PhaseError) as caught:
@@ -3578,23 +3594,31 @@ def test_source_pair_preflight_binds_the_committed_v6_manifest(
         assert caught.value.phase == "pair_contract_invalid"
         return caught.value.diagnostic
 
-    # 통과: 커밋된 manifest가 현재 release의 pinset과 파생 head를 그대로 담는다.
+    # 통과: committed 배포가 현재 release의 pinset과 파생 head를 그대로 담는다.
     commit()
     result = driver._source_pair_preflight()
     assert result[:3] == (map_root, pinvi_root, pair)
-    assert result[5].manifest == manifest_path
+    assert result[5].state_root == state_dir
     assert pair_calls == [(pinvi_root, map_root)]
 
     other_pinset = "0" * 64 if pinned != "0" * 64 else "1" * 64
     diagnostics = {
-        "absent": "committed pinned-runtime generation manifest unavailable",
-        "pinset": "committed generation pinset differs from the current release",
-        "head": "derived application head differs from the committed generation",
+        "unavailable": "committed deploy status unavailable",
+        "in_progress": "last deploy did not commit; rerun the pinned rebuild",
+        "pinset": "committed deploy pinset differs from the current release",
+        "head": "derived application head differs from the committed deploy",
     }
     assert set(diagnostics.values()) <= driver._PAIR_DIAGNOSTICS
 
-    manifest_path.unlink()
-    assert refusal() == diagnostics["absent"]
+    status_path.unlink()
+    assert refusal() == diagnostics["unavailable"]
+
+    status_path.write_bytes(b"{not json")
+    assert refusal() == diagnostics["unavailable"]
+
+    # `begin_deploy`만 쓴 기록 — 배포가 시작됐다가 끝나지 못했다.
+    write_deploy_status(status_path, begin())
+    assert refusal() == diagnostics["in_progress"]
 
     commit(pinset_sha256=other_pinset)
     assert refusal() == diagnostics["pinset"]
