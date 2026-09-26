@@ -35,8 +35,12 @@ def _invocations() -> list[tuple[str, int, str]]:
 
 
 def test_the_gate_has_something_to_guard() -> None:
-    """호출부가 사라지면 이 게이트는 공허하게 통과한다 — 하한을 둔다."""
-    assert len(_invocations()) >= 4
+    """호출부가 사라지면 이 게이트는 공허하게 통과한다 — 하한을 둔다.
+
+    하한은 지금 있는 수다. ADR-51 E-1이 `compose_service`의 둘(Map 계약을 git에서 읽던
+    `_run_git_read`·`_run_git_bytes`)을 파일 읽기로 바꿔 `deployment_readiness`의 둘이 남았다.
+    """
+    assert len(_invocations()) >= 2
 
 
 def test_every_git_invocation_ignores_replace_objects() -> None:
