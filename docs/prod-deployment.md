@@ -782,14 +782,18 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
 ```
 
 이 command는 추적된 exact Map·PinVi commit만 Git archive build source로 쓰며 `.env` checkout HEAD,
-old image, old manifest를 candidate authority로 쓰지 않는다.
+old image, old manifest를 candidate authority로 쓰지 않는다. source는
+`<state_root>/pinned-runtime-sources/<role>-<revision>/tree`다 — 없을 때만 canonical HTTPS에서 그 revision을
+얕게 받아 `git archive`로 풀고(ADR-51 E-3), 있으면 git 없이 그대로 쓴다. `.env`의 `KOR_TRAVEL_MAP_REPO_DIR`·
+`PINVI_REPO_DIR` checkout은 재구축·M05의 입력이 아니다(readiness 화면과 비핀 compose 기본값만 쓴다).
 
 순서는 다음과 같다.
 
 1. **admission** — root, host-global mutation lock(G) 하나 안에서 runtime pin registry
    snapshot을 읽는다(ADR-51 C-3부터 pinned rebuild lease는 없다). 조건 없는 차단·낡은
    execution 결박은 결과의 `warnings`에만 남고, 대기 중인 pair 회전 intent만 거부한다.
-2. **candidate** — exact source를 materialize하고, Map sealed builder image(pinset tag, 이미 있으면
+2. **candidate** — exact source를 materialize하고(이번 pair가 쓰지 않는 옛 source는 지운다), Map builder
+   image(pinset tag, 이미 있으면
    재사용)와 Manager가 build하는 Map UI·PinVi image의 ID를 attest한다. 세 schema head(Map application·Map
    Dagster·PinVi)는 candidate image에서 관측한다. 여기까지는 DB를 건드리지 않는다.
 3. **판정** — 두 PostgreSQL을 frozen Compose에 맞춰 기동한 뒤 state root의 `deploy-status.json`과
@@ -828,6 +832,11 @@ v6 manifest(`pinned-runtime-generation-v6.json`)는 ADR-51 D-1부터 이 Manager
 
 `/var/lib/kor-travel-docker-manager-public` 디렉터리 자체는 지우지 않는다 — runtime-pins·
 runtime-executions 공개 사본이 그 안에 있다.
+
+ADR-51 E-3부터는 `<state_root>/pinned-runtime-sources-v5/`(pinset별 bare 저장소와 봉인 worktree)도 아무것도
+읽지도 쓰지도 않는다. 지우는 것은 **선택**이며, E-3 이전 Manager로 되돌릴 일이 없다고 판단한 뒤에만 한다 —
+그 release는 이 봉인 트리를 오프라인으로 재검증하고, `.env`의 두 checkout(정규 절대 경로, 비root 소유,
+origin이 canonical HTTPS)을 source 동의 증거로 읽는다.
 
 ADR-51 D-3부터는 `<state_root>/map-application-300-artifacts/`(pinset별 Dagster storage permit 마운트
 원천)와 `<state_root>/map-application-300-candidate/`(pinset별 영수증 디렉터리)도 아무것도 읽지도 쓰지도

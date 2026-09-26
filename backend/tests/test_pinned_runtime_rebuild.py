@@ -1799,8 +1799,9 @@ def _forward_harness(
         "_capture_compose_environment_snapshot": (
             lambda *, environment_override: transaction.environment
         ),
-        # 대역 transaction의 환경은 `.env` 증거(경로·identity)가 없는 SimpleNamespace다.
+        # 진짜 materialize는 network와 git이 필요하다 — 이 harness는 source를 대역으로 준다.
         "materialize_pinned_runtime_sources": mocks.materialize,
+        "prune_pinned_runtime_sources": Mock(),
         "_ensure_map_application_300_python_base_images": Mock(),
         "_build_map_application_300_images": mocks.paired_builder,
         "_load_application_300_candidate": Mock(return_value=map_candidate),

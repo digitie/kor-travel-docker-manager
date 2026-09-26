@@ -6,7 +6,7 @@
 빈칸을 찍었다.
 
 2026-09-03 e2e23이 그 침묵으로 죽었고, 계측 스크립트를 따로 붙여서야 진짜 사유
-(`pinned runtime source worktree is unsafe` — 앞선 실행이 불변 핀 소스 트리에
+(당시 문구 `pinned runtime source worktree is unsafe` — 앞선 실행이 불변 핀 소스 트리에
 `node_modules`를 쓴 것)를 알 수 있었다. 그 왕복이 한 사이클을 더 썼다.
 
 내용은 여전히 닫아 둔다. 예외 **타입 이름**은 호스트 상태를 담지 않으므로 항상
@@ -53,13 +53,13 @@ def test_a_contract_refusal_names_its_reason(
     """Manager 자신이 쓴 고정 문구는 그대로 낸다."""
     module = _harness()
     _refusing_preflight(
-        module, monkeypatch, RuntimeError("pinned runtime source worktree is unsafe")
+        module, monkeypatch, RuntimeError("pinned runtime source Git operation failed")
     )
 
     assert module.preflight("a" * 40) == 1
     printed = capsys.readouterr().out.strip()
     assert "source_materialization" in printed
-    assert "pinned runtime source worktree is unsafe" in printed
+    assert "pinned runtime source Git operation failed" in printed
 
 
 def test_an_unknown_message_still_names_the_exception_type(
