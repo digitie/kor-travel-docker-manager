@@ -3720,7 +3720,8 @@ Map이 M1(`51ee65d4c`, ADR-102)을 포함하는 것이다 — M1 이후 storage 
   재시작에서 깨진다. 비교하는 쪽은 양쪽을 다 푼다 — 재구축 경로 가드, operator bind의 backend 소스 가드
   (한쪽만 풀던 것이라 symlink root에서 조용히 fail-open했다), candidate volume graph(원래 양쪽 다 풀었다).
 - **symlink를 따라가는 자리**: 재구축 root·legacy retirement의 디렉터리 검사, 관리자 비밀번호 `.env`의 부모
-  검사, M05 driver의 trusted release 검사. 옛 코드는 `lstat`로 symlink root를 거부했다.
+  검사, M05 driver·`run-pinned-rebuild-once`·`trusted_manager_source_revision`의 설치 root 검사. 옛 코드는
+  `lstat`로 symlink root를 거부했다. 따라간 대상이 디렉터리·root 소유·group/other 쓰기 금지인지는 그대로 본다.
 - **provenance는 `.ktdm-source-revision` 하나다.** `trusted_manager_source_revision`(rebind-execution),
   `run-pinned-rebuild-once`, M05 driver, `source_status`가 release manifest를 읽지 않는다. 옛 설치기는 I-2까지
   manifest를 계속 쓰지만 아무도 읽지 않는다. `source_status`의 `inconsistent` 상태와 `manifest` 필드가

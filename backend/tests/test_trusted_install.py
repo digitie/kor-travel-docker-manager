@@ -337,3 +337,18 @@ def test_operator_bind_guard_sees_backend_source_behind_the_release_symlink(
         c6c_deployment._assert_operator_bind_source_is_permitted(
             service="grafana", resolved_source=Path("/usr/backend/src")
         )
+
+
+def test_rebuild_root_behind_the_symlink_must_still_be_root_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """symlink를 따라간 대상도 root 소유·group/other 쓰기 금지여야 한다."""
+
+    release = tmp_path / "ktdm-release-a"
+    release.mkdir()
+    link = tmp_path / "kor-travel-docker-manager"
+    link.symlink_to(release.name)
+    monkeypatch.setattr(trusted_install_module, "TRUSTED_INSTALL_ROOT", link)
+
+    with pytest.raises(DeploymentContractError, match="unsafe ownership or mode"):
+        trusted_install_module.trusted_pinned_runtime_project_root()

@@ -149,7 +149,15 @@ def root_locked_regular(path: pathlib.Path, mode: int) -> str:
     finally:
         os.close(descriptor)
 
-# root는 현재 release를 가리키는 symlink다(ADR-51 D). revision 파일 하나가 정본이다.
+# root는 현재 release를 가리키는 symlink다(ADR-51 D) — 따라가서 본다. revision 파일 하나가
+# 정본이다(release manifest 교차 대조는 걷어냈다).
+root_metadata = root.stat()
+if (
+    not stat.S_ISDIR(root_metadata.st_mode)
+    or root_metadata.st_uid != 0
+    or stat.S_IMODE(root_metadata.st_mode) & 0o022
+):
+    raise SystemExit("trusted Manager root is invalid")
 revision = root_locked_regular(root / ".ktdm-source-revision", 0o644)
 if re.fullmatch(r"[0-9a-f]{40}", revision) is None or revision != expected_revision:
     raise SystemExit("installed Manager source revision does not match expected revision")

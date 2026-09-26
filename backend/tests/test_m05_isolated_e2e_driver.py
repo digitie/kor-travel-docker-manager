@@ -5016,3 +5016,17 @@ def test_trusted_release_follows_the_release_symlink_and_reads_one_revision(
     installed[0] = "b" * 40
     with pytest.raises(driver._PhaseError, match="trusted_release_revision_mismatch"):
         driver._validate_trusted_release(expected)
+
+
+def test_trusted_release_behind_the_symlink_must_still_be_root_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = _driver()
+    release = tmp_path / "ktdm-release-a"
+    release.mkdir()
+    install = tmp_path / "kor-travel-docker-manager"
+    install.symlink_to(release.name)
+    monkeypatch.setattr(driver, "_ROOT", install)
+
+    with pytest.raises(driver._PhaseError, match="trusted_release_invalid"):
+        driver._validate_trusted_release("a" * 40)

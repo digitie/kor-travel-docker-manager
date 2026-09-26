@@ -341,10 +341,20 @@ def trusted_manager_source_revision(*, install_root: Path = _TRUSTED_INSTALL_ROO
 
     CLI/환경 입력을 수용하지 않는다. 이 값은 execution rebind를 위한 freshness 권한이므로
     root 소유 0644 revision 파일 하나만 정본으로 읽는다. 설치 root는 현재 release를
-    가리키는 symlink이고, release manifest와의 교차 대조는 ADR-51 D에서 걷어냈다 —
-    둘 다 root가 쓰는 파일이라 root로부터 지키는 검사였다(결정 3).
+    가리키는 symlink라 따라가서 본다. release manifest와의 교차 대조는 ADR-51 D에서
+    걷어냈다 — 둘 다 root가 쓰는 파일이라 root로부터 지키는 검사였다(결정 3).
     """
 
+    try:
+        root = install_root.stat()
+    except OSError as exc:
+        raise RuntimeExecutionRegistryError("trusted Manager install root cannot be inspected") from exc
+    if (
+        not stat.S_ISDIR(root.st_mode)
+        or root.st_uid != 0
+        or stat.S_IMODE(root.st_mode) & 0o022
+    ):
+        raise RuntimeExecutionRegistryError("trusted Manager install root is unsafe")
     return _revision(
         _read_trusted_text(
             install_root / ".ktdm-source-revision", expected_uid=0
