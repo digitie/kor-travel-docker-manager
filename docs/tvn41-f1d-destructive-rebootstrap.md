@@ -93,7 +93,7 @@ root가 소유하고, Map·PinVi source checkout은 source owner 권한으로 or
 operator는 `sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm`으로 실행하며, 일반 사용자 실행은 Docker나
 database를 건드리기 전에 거부된다.
 
-`rebuild-pinned`가 `another C6c compatible-pair operation is already active`로 거부되면 고정
+`rebuild-pinned`가 `another Manager mutation is already active; nothing was changed`로 거부되면 고정
 host lease 또는 frozen environment C6c lock의 경합이다. 이때 raw Compose나 외부 watcher와
 동시 재시도하지 않는다. release operator는 먼저 외부 watcher의 durable enablement를 끄고 관련
 process·Compose project·container가 모두 멈췄음을 확인하거나, root-owned wrapper가 같은 고정

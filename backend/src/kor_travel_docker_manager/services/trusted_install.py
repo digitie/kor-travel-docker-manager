@@ -4,9 +4,9 @@
 같아야만 성립한다:
 
 - `GLOBAL_MUTATION_LOCK_PATH` — pinned rebuild와 pin 회전이 같은 파일을 잠가야
-  서로를 직렬화한다. 한쪽만 리터럴이 바뀌면 두 mutation이 동시에 진행돼도
-  아무도 실패하지 않는다 — lock 부재가 개발 환경의 정상 통과 경로이기 때문에
-  이 drift는 조용하다.
+  서로를 직렬화한다. 한쪽만 리터럴이 바뀌면 두 mutation이 각자 다른 파일을 잠근
+  채 동시에 진행돼도 아무도 실패하지 않는다 — 모든 획득자가 lock 파일이 없으면
+  만들어 잡기 때문에(ADR-51 C-1) 이 drift는 조용하다.
 - `GLOBAL_MUTATION_LOCK_FD_ENV` — launcher가 미리 연 lock fd를 CLI에 물려줄 때
   쓰는 env 변수 이름. 이름이 어긋나면 CLI가 상속을 못 받아 직접 열기로 떨어지고,
   launcher가 이미 그 lock을 쥐고 있어 `BlockingIOError`로 fail-close한다 —
