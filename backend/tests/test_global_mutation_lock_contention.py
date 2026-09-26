@@ -5,7 +5,7 @@
 ``os.open`` + ``flock``, ``python3 -I -S``라 backend를 import하지 않는다)으로 G를 잡는다.
 Docker는 쓰지 않는다.
 
-- (a) 보유 중이면 CLI pin mutator·``manager_mutation_lock()``·pinned rebuild lease가
+- (a) 보유 중이면 CLI pin mutator·``manager_mutation_lock()``·재구축 lock 입구가
   전부 기다리지 않고 거절되고, 거절 전에 아무것도 부르지 않는다.
 - (b) 보유자가 SIGKILL로 죽으면 곧바로 다시 잡힌다 — stale lock이 없다.
 - (c) 부팅 직후처럼 lock 파일(또는 디렉터리)이 없으면 처음 온 획득자가 ``0600``으로
@@ -18,9 +18,9 @@ ADR-51 C-2(rehearsal이 같은 lock에 합류):
 - (e) rehearsal `.env`로 도는 Compose mutator 입구·legacy stage/retire·UI 컨테이너 조작·
   관리자 비밀번호 변경이 G 보유 중에는 전부 거절되고(API는 409
   ``MANAGER_MUTATION_ACTIVE``), Docker SDK도 `.env`도 건드리지 않는다.
-- (f) lock 경로 유도표: production·rehearsal은 G, local은 ``$HOME`` 개발 lock, override는
-  local에서만.
-- (g) 재구축은 실제 파일 lock을 G와 P 두 개만 잡는다 — 세 번째 획득은 G key 재진입이다.
+- (f) lock 경로 유도표: local만 ``$HOME`` 개발 lock이고 나머지(미지정 포함)는 G다.
+  override는 없고, 경로는 `.env` 값만으로 정한다(ADR-51 C-3).
+- (g) 재구축은 실제 파일 lock을 G 하나만, 한 번 잡는다 — pinned lease P는 없다(C-3).
 
 lock 경로는 conftest가 테스트마다 자기 소유 ``0700`` tmp 디렉터리로 옮겨 둔다. 자식
 프로세스는 그 monkeypatch를 물려받지 못하므로 경로와 소유자 seam을 스스로 설정한다.
@@ -258,12 +258,13 @@ def _probe(path: Path) -> str:
 
 def test_a_launcher_style_holder_refuses_every_backend_acquirer(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    pinned_lease = tmp_path / "pinned-runtime-rebuild.lock"
-    monkeypatch.setattr(c6c_deployment, "_PINNED_RUNTIME_REBUILD_LOCK", pinned_lease)
-    monkeypatch.setattr(c6c_deployment, "_require_pinned_runtime_rebuild_root", lambda: None)
+    capture = Mock(name="rebuild environment capture")
+    monkeypatch.setattr(
+        compose_service_module, "_capture_pinned_runtime_rebuild_environment_snapshot", capture
+    )
+    admission = Mock(name="rebuild prewrite admission")
 
     with _launcher_style_holder(_global_lock_path()):
         with (
@@ -313,10 +314,13 @@ def test_a_launcher_style_holder_refuses_every_backend_acquirer(
         assert str(refused.value) == _BUSY
 
         with pytest.raises(ManagerMutationActiveError):
-            with c6c_deployment.pinned_runtime_rebuild_lock():
-                pytest.fail("G를 못 잡은 rebuild가 P로 넘어가면 안 된다")
-        # G → P 순서: G에서 거절됐으므로 P는 열리지도 않았다.
-        assert not pinned_lease.exists()
+            with compose_service_module._pinned_runtime_rebuild_environment_lock(
+                prewrite_admission=admission
+            ):
+                pytest.fail("G를 못 잡은 rebuild가 본문으로 넘어가면 안 된다")
+        # `.env` 캡처·admission은 G 안에서만 돈다 — 거절됐으므로 부르지도 않았다.
+        capture.assert_not_called()
+        admission.assert_not_called()
 
 
 def test_b_a_killed_holder_leaves_no_stale_lock() -> None:
@@ -447,9 +451,8 @@ _CURRENT_PASSWORD = "current-password-1234"
 def rehearsal_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """n150과 같은 모양의 rehearsal `.env`를 Manager env-file로 지정한다.
 
-    lock 경로 유도가 보는 이름은 전부 파일에 둔다 — 파일에 없으면 호출부가 프로세스
-    환경으로 채우므로(`_c6c_lock_path_from_values`) 러너의 환경이 판정에 새어 든다.
-    ``HOME``도 옮겨, ``$HOME`` 개발 lock으로 새면 흔적이 tmp에 남아 단언이 잡는다.
+    lock 경로는 이 파일의 값만으로 정해진다(ADR-51 C-3 — 프로세스 환경으로 채우지
+    않는다). ``HOME``도 옮겨, ``$HOME`` 개발 lock으로 새면 흔적이 tmp에 남아 단언이 잡는다.
     """
 
     project = tmp_path / "project"
@@ -469,8 +472,7 @@ def rehearsal_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     compose_path.write_text("services: {}\n", encoding="utf-8")
     compose_path.chmod(0o644)
     monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_path))
-    for name in ("KTDM_C6C_DEPLOYMENT_LOCK", "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST"):
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     return env_path
 
@@ -593,36 +595,33 @@ def test_e_the_admin_password_api_answers_409_and_leaves_the_env_bytes(
 
 
 @pytest.mark.parametrize(
-    ("mode", "with_override", "expected"),
+    ("mode", "expected"),
     [
-        ("production", False, "global"),
-        ("rehearsal", False, "global"),
-        ("local", False, "home"),
-        # 모드 미지정은 아직 개발 기본값이다. C-3이 G로 뒤집는다(fail closed).
-        ("", False, "home"),
-        ("local", True, "override"),
-        ("rehearsal", True, "refused"),
-        ("production", True, "refused"),
+        ("production", "global"),
+        ("rehearsal", "global"),
+        ("local", "home"),
+        (" Local ", "home"),
+        # 모드 미지정·미지의 값은 G다(ADR-51 C-3, fail closed) — 종전에는 `$HOME`이었다.
+        ("", "global"),
+        (None, "global"),
+        ("staging", "global"),
     ],
 )
 def test_f_the_manager_mutation_lock_path_derivation(
-    mode: str,
-    with_override: bool,
+    mode: str | None,
     expected: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
-    override = (tmp_path / "override" / "dev.lock").resolve()
-    values = {"KTDM_DEPLOYMENT_ENVIRONMENT": mode}
-    if with_override:
-        values["KTDM_C6C_DEPLOYMENT_LOCK"] = str(override)
+    # 매핑에 없는 이름을 프로세스 환경에서 채우지 않는다.
+    monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
+    # 옛 override 이름은 이제 아무 뜻이 없다 — 어느 모드에서도 경로를 바꾸지 못한다.
+    values = {"KTDM_C6C_DEPLOYMENT_LOCK": str((tmp_path / "override" / "dev.lock").resolve())}
+    if mode is not None:
+        values["KTDM_DEPLOYMENT_ENVIRONMENT"] = mode
 
-    if expected == "refused":
-        with pytest.raises(DeploymentContractError, match="lock path is fixed"):
-            c6c_deployment.c6c_global_mutation_lock_path(values)
-        return
     expected_path = {
         "global": str(_global_lock_path()),
         "home": str(
@@ -630,27 +629,84 @@ def test_f_the_manager_mutation_lock_path_derivation(
                 home / ".local" / "state" / "kor-travel-docker-manager" / "global-mutation.lock"
             ).resolve(strict=False)
         ),
-        "override": str(override),
     }[expected]
-    assert c6c_deployment.c6c_global_mutation_lock_path(values) == expected_path
+    assert c6c_deployment.manager_mutation_lock_path(values) == expected_path
 
 
-def test_g_the_rebuild_takes_exactly_g_then_p_and_no_third_lock(
+def test_f_the_captured_lock_path_comes_from_the_env_file_alone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UI mutator 입구의 lock 경로는 `.env` 파일 값만으로 정한다(ADR-51 C-3).
+
+    종전에는 파일에 없는 이름을 프로세스 환경으로 채웠다. 그러면 모드를 빠뜨린 root
+    호스트의 backend가 프로세스 환경의 ``local`` 하나로 G 대신 ``$HOME`` lock을 잡았다.
+    """
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("COMPOSE_PROJECT_NAME=ktdm-c3-env-only\n", encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_path))
+    monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    snapshot = compose_service_module._capture_c6c_deployment_lock_snapshot()
+
+    assert snapshot.lock_path == str(_global_lock_path())
+
+
+@pytest.mark.parametrize("process_mode", ["production", "rehearsal"])
+def test_f_a_local_env_file_under_an_operating_process_still_takes_g(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    process_mode: str,
+) -> None:
+    """파일만 local로 고치고 재시작하지 않은 backend(C-3 적대 검토).
+
+    모드 검사는 프로세스 env(운영)로 하면서 lock은 파일의 local로 ``$HOME``을 잡으면 launcher·
+    pin 회전·installer와 갈라진다. 프로세스 env는 lock을 **더 엄격하게만** 바꾼다.
+    """
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("KTDM_DEPLOYMENT_ENVIRONMENT=local\n", encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_path))
+    monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", process_mode)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    snapshot = compose_service_module._capture_c6c_deployment_lock_snapshot()
+
+    assert snapshot.lock_path == str(_global_lock_path())
+
+
+def test_f_a_local_env_file_under_a_local_process_keeps_the_dev_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("KTDM_DEPLOYMENT_ENVIRONMENT=local\n", encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_path))
+    monkeypatch.setenv("KTDM_DEPLOYMENT_ENVIRONMENT", "local")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    snapshot = compose_service_module._capture_c6c_deployment_lock_snapshot()
+
+    assert snapshot.lock_path != str(_global_lock_path())
+    assert snapshot.lock_path.startswith(str(tmp_path / "home"))
+
+
+def test_g_the_rebuild_takes_exactly_one_file_lock_g(
     rehearsal_env: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """실제 `_pinned_runtime_rebuild_environment_lock`이 여는 파일 lock의 목록.
 
-    종전 rehearsal에서는 세 번째 획득이 ``$HOME`` lock이라, UI 요청이 그 lock을 잠깐 잡은
-    순간 G·P를 쥔 재구축이 거기서 실패했다. 이제 세 번째 획득은 이미 잡은 G key의 재진입
-    no-op이다. 환경 snapshot 캡처와 token 검증만 대역이고 lifecycle 게이트는 실제다.
+    ADR-51 C-3: 재구축은 G 하나를 한 번 잡는다. 종전에는 G 안에서 pinned lease P를 하나 더
+    잡았고, 그 전(C-2 전) rehearsal에서는 `.env`에서 유도한 세 번째 획득이 ``$HOME`` lock이었다.
+    `.env` 캡처는 G를 쥔 **뒤에** 일어난다. 환경 snapshot 캡처와 token 검증만 대역이고
+    lifecycle 게이트는 실제다.
     """
 
     global_lock = _global_lock_path()
-    pinned_lease = global_lock.parent / "pinned-runtime-rebuild.lock"
-    monkeypatch.setattr(c6c_deployment, "_PINNED_RUNTIME_REBUILD_LOCK", pinned_lease)
-    monkeypatch.setattr(c6c_deployment, "_require_pinned_runtime_rebuild_root", lambda: None)
     effective = {
         name: value for name, value in dotenv_values(rehearsal_env).items() if value is not None
     }
@@ -662,10 +718,16 @@ def test_g_the_rebuild_takes_exactly_g_then_p_and_no_third_lock(
         env_file_identity=compose_service_module._env_file_identity(rehearsal_env),
         env_file_bytes=rehearsal_env.read_bytes(),
     )
+    lock_state_at_capture: list[str] = []
+
+    def capture() -> compose_service_module.ComposeEnvironmentSnapshot:
+        lock_state_at_capture.append(_probe(global_lock))
+        return snapshot
+
     monkeypatch.setattr(
         compose_service_module,
         "_capture_pinned_runtime_rebuild_environment_snapshot",
-        lambda: snapshot,
+        capture,
     )
     monkeypatch.setattr(
         compose_service_module,
@@ -683,21 +745,18 @@ def test_g_the_rebuild_takes_exactly_g_then_p_and_no_third_lock(
 
     monkeypatch.setattr(fcntl, "flock", recording_flock)
     global_path = str(global_lock.resolve())
-    pinned_path = str(pinned_lease.resolve())
 
     with compose_service_module._pinned_runtime_rebuild_environment_lock(
         prewrite_admission=admission
-    ) as (lock_snapshot, environment_snapshot, _credentials_initialized):
+    ) as environment_snapshot:
         assert environment_snapshot is snapshot
-        # 세 번째 획득이 고른 경로는 G다 — 이미 잡은 key라 파일을 다시 열지 않았다.
-        assert lock_snapshot.lock_path == str(global_lock)
         exclusive = [path for path, operation in flocks if operation & fcntl.LOCK_EX]
-        assert exclusive == [global_path, pinned_path]
+        assert exclusive == [global_path]
         assert _probe(global_lock) == "busy"
-        assert _probe(pinned_lease) == "busy"
 
+    assert lock_state_at_capture == ["busy"]
     admission.assert_called_once_with(snapshot)
-    assert {path for path, _operation in flocks} == {global_path, pinned_path}
+    assert {path for path, _operation in flocks} == {global_path}
+    assert sorted(path.name for path in global_lock.parent.iterdir()) == [global_lock.name]
     assert not (tmp_path / "home").exists()
     assert _probe(global_lock) == "free"
-    assert _probe(pinned_lease) == "free"

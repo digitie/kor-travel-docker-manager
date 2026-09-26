@@ -93,11 +93,13 @@ root가 소유하고, Map·PinVi source checkout은 source owner 권한으로 or
 operator는 `sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm`으로 실행하며, 일반 사용자 실행은 Docker나
 database를 건드리기 전에 거부된다.
 
-`rebuild-pinned`가 `another Manager mutation is already active; nothing was changed`로 거부되면 고정
-host lease 또는 frozen environment C6c lock의 경합이다. 이때 raw Compose나 외부 watcher와
-동시 재시도하지 않는다. release operator는 먼저 외부 watcher의 durable enablement를 끄고 관련
-process·Compose project·container가 모두 멈췄음을 확인하거나, root-owned wrapper가 같은 고정
-lease를 잡은 상태에서 watcher를 실행한다.
+`rebuild-pinned`가 `another Manager mutation is already active; nothing was changed`로 거부되면
+Manager 변경 락 G(`/run/lock/kor-travel-docker-manager/global-mutation.lock`)를 다른 변경이 쥐고
+있다(ADR-51 C-3부터 Manager의 파일 락은 G 하나다). 이때 raw Compose나 외부 watcher와 동시 재시도하지
+않는다. release operator는 먼저 외부 watcher의 durable enablement를 끄고 관련 process·Compose
+project·container가 모두 멈췄음을 확인한다. G를 손으로 잡아야 한다면 `flock(1)`·`touch`가 아니라
+`/opt` venv의 `c6c_deployment.manager_mutation_lock()`으로만 잡는다 — 없는 G를 `flock(1)`이 0644로
+만들면 모든 변경이 "lock is unsafe"로 멈춘다.
 
 `candidate_attested`는 일곱 runtime image ID, 두 source revision, Map paired candidate receipt와
 application-300 contract, candidate artifact가 직접 보고한 세 expected schema head, frozen

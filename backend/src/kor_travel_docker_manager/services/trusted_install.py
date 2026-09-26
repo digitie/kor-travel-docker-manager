@@ -3,10 +3,11 @@
 이 저장소 전체 mutation 직렬화는 다음 두 값이 모든 launcher·모듈에서 정확히
 같아야만 성립한다:
 
-- `GLOBAL_MUTATION_LOCK_PATH` — pinned rebuild와 pin 회전이 같은 파일을 잠가야
-  서로를 직렬화한다. 한쪽만 리터럴이 바뀌면 두 mutation이 각자 다른 파일을 잠근
-  채 동시에 진행돼도 아무도 실패하지 않는다 — 모든 획득자가 lock 파일이 없으면
-  만들어 잡기 때문에(ADR-51 C-1) 이 drift는 조용하다.
+- `GLOBAL_MUTATION_LOCK_PATH` — Manager의 유일한 host 변경 lock ``G``다(ADR-51 C-3에서
+  pinned rebuild lease가 없어졌다). launcher·pinned rebuild·pin 회전·installer·backend
+  mutator가 같은 파일을 잠가야 서로를 직렬화한다. 한쪽만 리터럴이 바뀌면 두 mutation이
+  각자 다른 파일을 잠근 채 동시에 진행돼도 아무도 실패하지 않는다 — 모든 획득자가
+  lock 파일이 없으면 만들어 잡기 때문에(ADR-51 C-1) 이 drift는 조용하다.
 - `GLOBAL_MUTATION_LOCK_FD_ENV` — launcher가 미리 연 lock fd를 CLI에 물려줄 때
   쓰는 env 변수 이름. 이름이 어긋나면 CLI가 상속을 못 받아 직접 열기로 떨어지고,
   launcher가 이미 그 lock을 쥐고 있어 `BlockingIOError`로 fail-close한다 —
@@ -88,7 +89,9 @@ def running_from_trusted_install_root() -> bool:
 def require_pinned_runtime_rebuild_root() -> None:
     """source staging·state owner와 host-wide destructive mutation authority를
     root로 고정한다. compose_service.py·c6c_deployment.py에 바이트 그대로
-    중복돼 있던 2줄짜리 확인이다.
+    중복돼 있던 2줄짜리 확인이다. ADR-51 C-3부터는 compose_service.py의 rebuild
+    입구 하나만 부른다 — c6c_deployment.py 쪽 사본은 그것을 쓰던 pinned rebuild
+    lease와 함께 지웠다. G 자체의 root 요구는 lock 디렉터리 소유자 검사가 맡는다.
 
     `DeploymentContractError`는 c6c_deployment.py에 있다 — 모듈 scope에서
     import하면 그 모듈이 이 모듈의 lock 상수를 import하는 것과 맞물려 순환이

@@ -364,9 +364,9 @@ def test_root_execution_rejects_callers_project_root_override(
 
 
 def test_root_rehearsal_boundary_uses_the_global_mutation_lock() -> None:
-    """ADR-51 C-2: stage/retire/activate는 pinned lease P가 아니라 host 변경 lock G를 잡는다.
+    """ADR-51 C-2: stage/retire/activate는 host 변경 lock G를 잡는다.
 
-    rebuild는 G 안에서만 P를 잡으므로 G 하나로 rebuild·pin 회전·M05·installer와 모두
+    C-3부터 Manager의 파일 lock은 G 하나라 rebuild·pin 회전·M05·installer와 모두 이것으로
     직렬화된다. conftest가 G를 테스트마다 tmp로 옮겨 두므로 기대값은 그 seam 경로다.
     """
 
@@ -385,7 +385,6 @@ def test_root_rehearsal_boundary_uses_the_global_mutation_lock() -> None:
     )
 
     assert selected == str(c6c_module._C6C_GLOBAL_MUTATION_LOCK)
-    assert selected != c6c_module.pinned_runtime_rebuild_lock_path()
 
 
 @pytest.mark.parametrize(

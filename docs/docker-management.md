@@ -799,11 +799,11 @@ compose가 전체 계약을 만족하는지 **stop 전에** 확인한다. 다섯
 복원·signed smoke, Map dependent 복원·revision 검증, PinVi 복원과 전체 smoke·UI auth·runtime 격리가
 모두 일치해야 manifest의 active set을 갱신한다. 실패하면 시작 시점 set을 복구하거나 모두 중지한다.
 
-manifest와 mode 0600 lock은 checkout이 아니라
-`~/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/`에 함께 저장한다. production에서는
-root와 `compatible-pair-v4.json`/`deployment.lock`/`map-production-env-migration-v1.json` 파일명을
-고정하고 모든 path override를 거부해 같은
-Compose project가 서로 다른 lock으로 갈라지지 않게 한다. manifest version은 bool/string/float 변환 없이
+manifest는 checkout이 아니라
+`~/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/`에 저장한다. production에서는
+root와 `compatible-pair-v4.json`/`map-production-env-migration-v1.json` 파일명을
+고정하고 모든 path override를 거부한다. lock은 이 state 디렉터리에 없다 — 아래 host 변경 lock
+하나다(ADR-51 C-3). manifest version은 bool/string/float 변환 없이
 정확한 integer만 허용하고 두 pair의 `recorded_at`은 offset ISO 8601 datetime이어야 한다. 기록은 파일
 fsync, 원자 replace, 부모 디렉터리 fsync 순서이며 마지막 fsync 실패 시 이전 byte/mode를 다시 원자
 복원·fsync한다. 복원을 완료할 수 없지만 새 byte가 정확히 남아 있으면 rename commit으로 일관되게 취급해
@@ -913,11 +913,12 @@ subprocess 직전에 `.env` 생성·삭제·내용·identity drift를 다시 확
 안에서 source byte와 include/extends/env/override 부재도 다시 확인하며, raw/resolved 계약을 별도 파일 합성
 순서에 맡기지 않는다.
 
-production·rehearsal mutation mutex는 compose project나 checkout별 state가 아니라 host 하나의 고정 경로
+mutation mutex는 `local`이 아닌 모든 모드(production·rehearsal·미지정)에서 compose project나 checkout별
+state가 아니라 host 하나의 고정 경로
 `/run/lock/kor-travel-docker-manager/global-mutation.lock`(root `0600`, 디렉터리 `0700 root:root`)을 사용한다
-(ADR-51 C-2). 비root 개발용 `local`만 실행 사용자 `$HOME/.local/state/kor-travel-docker-manager/` 아래 lock을 쓰고
-`KTDM_C6C_DEPLOYMENT_LOCK`로 명시 override할 수 있다. 경합이면 기다리지 않고 409 `MANAGER_MUTATION_ACTIVE`로
-거절한다. lock 안에서 manifest 경로, root `.env`,
+(ADR-51 C-2·C-3). 비root 개발용 `local`만 실행 사용자 `$HOME/.local/state/kor-travel-docker-manager/` 아래 lock을
+쓴다. 경로는 `.env` 파일 값으로 정하며 프로세스 환경으로 채우지 않고(단 프로세스 모드가 명시적으로 local이 아니면 G — 더 엄격하게만), override는 없다. 경합이면 기다리지 않고
+409 `MANAGER_MUTATION_ACTIVE`로 거절한다. lock 안에서 manifest 경로, root `.env`,
 canonical compose byte/mode와 external `env_file` 입력을 한 번만 capture한다. `env_file`은 list의 exact
 `{path, required, format}` mapping만 허용하며 각 regular file의 존재 여부·byte·device/inode/mode/uid/gid를
 동결한다. Docker resolution에는 동결한 byte를 익명 fd로만 제공하고 외부 secret/config file source는 지원하지

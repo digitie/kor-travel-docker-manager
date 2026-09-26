@@ -364,9 +364,11 @@ ADR-51 B3에서 지웠다. 다만 `.env` 파일을 다시 쓰는 것이므로, r
 
 ### 3.z host mutation lease 디렉터리는 부팅 시점에 만든다
 
-`KTDM_DEPLOYMENT_ENVIRONMENT`가 `production`이든 `rehearsal`이든 **모든** Manager mutation은
-host 변경 lock `/run/lock/kor-travel-docker-manager/global-mutation.lock`(G) 하나를
-지난다(`c6c_global_mutation_lock_path`, ADR-51 C-2). UI의 컨테이너 조작·설정·초기화,
+`KTDM_DEPLOYMENT_ENVIRONMENT`가 `local`이 아니면(`production`·`rehearsal`·미지정 모두)
+**모든** Manager mutation은 host 변경 lock
+`/run/lock/kor-travel-docker-manager/global-mutation.lock`(G) 하나를 지난다
+(`manager_mutation_lock_path`, ADR-51 C-2·C-3). 경로는 `.env` 파일 값으로 정하고 프로세스
+환경으로 채우지 않는다 — 단 프로세스 환경의 모드가 명시적으로 local이 아니면 G다(더 엄격하게만). UI의 컨테이너 조작·설정·초기화,
 관리자 비밀번호 변경, `ktdctl compose-boundary` stage/retire/activate, `ktdctl pin`
 mutator, 재구축·M05·installer launcher가 전부 같은 lock이다(일부러 뺀 것 — 백업·offbox
 동기화·핀 요청 제안·airport 컨테이너 — 은 `docs/decisions.md` ADR-51 "C 범위"). 경합이면
@@ -374,15 +376,15 @@ mutator, 재구축·M05·installer launcher가 전부 같은 lock이다(일부�
 재구축(1~2시간)·M05(그보다 길다)·설치가 도는 동안 화면 변경이 전부 409인 것은 설계다.
 반대로 화면 요청·비밀번호 변경이 G를 몇 ms 쥔 바로 그 순간 시작한 launcher(chain17 등)는
 기다리지 않고 실패하므로 다시 돌린다.
-`$HOME/.local/state/...` 개발 lock과 `KTDM_C6C_DEPLOYMENT_LOCK` override는 비root 개발용
-`local`에만 남는다.
+`$HOME/.local/state/...` 개발 lock은 비root 개발용 `local`에만 남는다. 경로 override
+(`KTDM_C6C_DEPLOYMENT_LOCK`)는 ADR-51 C-3에서 없앴다.
 
 G를 잡는 backend는 root여야 한다(디렉터리 `0700 root:root`). 설치 뒤에는
 `sudo systemctl restart ktdm-backend`를 곧바로 한다 — 재기동 전의 backend는 rehearsal에서
 여전히 `$HOME` lock을 잡는다.
 
-재구축은 G 안에서 `pinned_runtime_rebuild_lock_path()`
-(`/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock`, P)를 하나 더 잡는다.
+재구축도 G 하나만 잡는다 — 따로 잡던 `pinned-runtime-rebuild.lock`(P)은 ADR-51 C-3에서
+없앴다. launcher가 G를 쥐고 fd를 물려주면 `rebuild-pinned`는 그 fd를 검증해 그대로 쓴다.
 rehearsal 호스트도 이 디렉터리를 쓰므로 이 절은 비운영 호스트에도 적용된다.
 
 Debian 계열의 `/run/lock`은 `1777` sticky다(n150 실측 `drwxrwxrwt root:root`). Manager가
@@ -434,16 +436,18 @@ drwx------ 2 root root ...  .
 drwxrwxrwt 5 root root ...  ..
 ```
 
-lock 파일은 나중에 생긴다 — `global-mutation.lock`은 첫 mutation 때,
-`pinned-runtime-rebuild.lock`은 첫 `rebuild-pinned` 때다. 둘 다 tmpfs라 재부팅하면
-사라진다. 즉 **비어 있다고 해서 설치가 실패한 것이 아니다.** 가동 중 상태는 이렇다.
+lock 파일은 나중에 생긴다 — `global-mutation.lock`은 첫 mutation 때 처음 온 획득자가
+만든다. tmpfs라 재부팅하면 사라진다. 즉 **비어 있다고 해서 설치가 실패한 것이 아니다.**
+가동 중 상태는 이렇다.
 
 ```
 drwx------ 2 root root ...  .
 drwxrwxrwt 5 root root ...  ..
 -rw------- 1 root root ...  global-mutation.lock
--rw------- 1 root root ...  pinned-runtime-rebuild.lock
 ```
+
+ADR-51 C-3 이전 release가 남긴 `pinned-runtime-rebuild.lock`이 보일 수 있다. 이제 아무도
+잡지 않으므로 `sudo lslocks`에 보이지 않을 때 root로 지워도 되고, 재부팅하면 사라진다.
 
 `root` 이외가 소유한 항목이 보이면 선점된 것이다.
 
@@ -631,7 +635,7 @@ candidate의 아직 준비되지 않은 explicit credential guard가 Concierge �
 projection은 trusted canonical source에서 매번 만들고 즉시 제거하며, caller/home source가 경로나 내용을 지정할 수 없다.
 성공한 경우에만 **같은
 protected state filesystem 안에서** pending directory를 owner-only archive로 rename한다. canonical
-rehearsal/rebuildable에서는 pinned-runtime rebuild host lease(production에서는 fixed C6c global mutation lock)를
+rehearsal/rebuildable과 production 모두 Manager 변경 락 G(`global-mutation.lock`)를
 계속 보유한 채 API/MCP/scheduler/UI 정확한 네 service만 canonical single-file source로 force-recreate한다.
 production의 일반 `ensure`는 허용되지 않으므로 이 단계에 사용하지 않는다. archive 뒤 재생성이 실패하면 root
 `.env`와 archive는 의도적으로 유지된다. 원인을 해소한 뒤 아래 Manager retry만 사용한다.
@@ -676,9 +680,9 @@ old image, old manifest를 candidate authority로 쓰지 않는다.
 
 순서는 다음과 같다.
 
-1. **admission** — root, host-global mutation lock과 pinned rebuild lease 안에서 runtime pin registry
-   snapshot을 읽는다. 조건 없는 차단·낡은 execution 결박은 결과의 `warnings`에만 남고, 대기 중인 pair
-   회전 intent만 거부한다.
+1. **admission** — root, host-global mutation lock(G) 하나 안에서 runtime pin registry
+   snapshot을 읽는다(ADR-51 C-3부터 pinned rebuild lease는 없다). 조건 없는 차단·낡은
+   execution 결박은 결과의 `warnings`에만 남고, 대기 중인 pair 회전 intent만 거부한다.
 2. **candidate** — exact source를 materialize하고, Map sealed builder image(pinset tag, 이미 있으면
    재사용)와 Manager가 build하는 Map UI·PinVi image의 ID를 attest한다. 세 schema head(Map application·Map
    Dagster·PinVi)는 candidate image에서 관측한다. 여기까지는 DB를 건드리지 않는다.

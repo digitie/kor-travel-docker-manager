@@ -731,7 +731,7 @@ def test_a_blocked_pinset_no_longer_stops_the_deploy_at_admission(
         nonlocal lock_entered
         lock_entered = True
         prewrite_admission(environment)
-        yield (Mock(), Mock(), False)
+        yield Mock()
     monkeypatch.setattr(
         compose_service_module, "_require_pinned_runtime_rebuild_root", lambda: None
     )

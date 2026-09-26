@@ -212,9 +212,9 @@ def next_claim_filename(directory_descriptor, pinset):
     파일명이 순수 content hash였을 때, 후보 내용과 무관한 호스트 실패 하나가 같은
     (map, pinvi) 쌍을 영구히 실행 불가능하게 만들었다 — `pinset_sha256`이 그 쌍의
     함수라 재회전으로도 같은 이름에 착지하고, registry는 동일 쌍 회전을 아예
-    거절하므로 탈출구가 "아무 커밋이나 새로 올린다"밖에 남지 않았다. 파괴적
-    3-DB 재생성의 double-apply를 막는 것은 이 파일이 아니라 durable journal의
-    phase 가드다(`_pinned_runtime_reset_required`), 동시 실행은 전역 flock이 막는다.
+    거절하므로 탈출구가 "아무 커밋이나 새로 올린다"밖에 남지 않았다. 3-DB 재생성은
+    이 파일이 막는 것이 아니다 — ADR-51 뒤로는 `--restart`를 명시한 실행만 DB를 지우고
+    그 밖의 배포는 멱등이라 다시 돌아도 수렴한다. 동시 실행은 전역 flock(G)이 막는다.
     그래서 원장은 감사 흔적만 맡는다 — 형제 M05 launcher가 적대 리뷰 R1-S2에서
     같은 결함을 먼저 고쳤다(ledger 파일명 ordinal).
 
