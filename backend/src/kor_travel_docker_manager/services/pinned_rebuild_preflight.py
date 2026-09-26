@@ -2,8 +2,9 @@
 
 설계는 "rehearsal 한정 재구축 버튼"을 적었지만 그것은 만들 수 없다.
 ``pinvi-pair rebuild-pinned``는 root를 요구하고(`_require_pinned_runtime_rebuild_root`),
-backend가 root로 도는 호스트에서도 HTTP 요청 하나가 3개 DB를 날리는 파괴적 작업을
-시작할 수 있게 만드는 것은 **경계를 없애는 것**이지 편의가 아니다.
+backend가 root로 도는 호스트에서도 HTTP 요청 하나가 고정 pair 전체를 다시 배포하는
+작업(``--restart``면 3개 DB까지 지운다)을 시작할 수 있게 만드는 것은 **경계를 없애는
+것**이지 편의가 아니다.
 
 그래서 화면이 하는 일을 둘로 나눈다. **판정은 여기서** 하고(그것이 값싸고 안전하다),
 **실행은 SSH**에 남긴다. 이 모듈은 어떤 mutation도 하지 않고 어떤 명령도 실행하지
@@ -19,10 +20,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Final
 
-from kor_travel_docker_manager.services.admin_password_service import (
-    pinned_rebuild_guard_state,
-)
 from kor_travel_docker_manager.services.deployment_readiness import (
+    read_deployment_mode,
     read_deployment_readiness,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
@@ -53,7 +52,6 @@ def read_pinned_rebuild_preflight(*, force_refresh: bool = False) -> dict[str, A
     """
 
     blockers: list[dict[str, str]] = []
-    warnings: list[dict[str, str]] = []
     unverified: list[dict[str, str]] = []
 
     # 1. 고정 값을 신뢰할 수 있는가. 신뢰할 수 없으면 어느 pinset을 재구축하는지조차
@@ -73,8 +71,9 @@ def read_pinned_rebuild_preflight(*, force_refresh: bool = False) -> dict[str, A
             )
         )
     else:
-        # phase 없는 차단만 시작 게이트가 본다. phase 한정 차단은 journal 재개만 막으므로
-        # 여기서 합치면 재구축이 실제로 허용되는데도 "회전하라"고 말하게 된다.
+        # phase 없는 차단만 본다. phase가 있는 항목은 옛 journal의 그 단계 재개만 막던
+        # 기록이고, 재개는 ADR-51에서 없어졌다. 조건 없는 차단도 재구축을 막지 않고
+        # 경고로만 남지만(ADR-51), 그 기록이 있으면 아래처럼 root 검증을 요구한다.
         blocked = [
             entry
             for entry in published.get("blocked_pinsets", [])
@@ -133,38 +132,23 @@ def read_pinned_rebuild_preflight(*, force_refresh: bool = False) -> dict[str, A
             )
         )
 
-    # 3. 배포 모드가 재구축을 허용하는가, 그리고 진행 중인 재구축이 있는가.
-    #    두 사실이 같은 판정 함수에서 나온다 — 모드 게이트를 통과해야 journal도 읽는다.
+    # 3. 배포 모드가 재구축을 허용하는가. rehearsal/rebuildable이 아니면 rebuild-pinned는
+    #    시작하자마자 거부한다. `.env`나 모드를 읽지 못하면 추측하지 않는다.
     try:
-        guard = pinned_rebuild_guard_state()
-    except Exception as exc:  # noqa: BLE001
-        guard = {"verdict": "unknown", "detail": str(exc)}
-    verdict = guard.get("verdict")
-    if verdict == "not_rebuildable":
-        blockers.append(
-            _finding(
-                "MODE_NOT_REBUILDABLE",
-                "이 배포 모드에서는 재구축을 시작할 수 없습니다. 운영 환경은 일반 "
-                "runtime mutation을 차단합니다.",
-            )
-        )
-    elif verdict == "unfinished_journal":
-        # 차단이 아니다 — 이 상태에서 rebuild-pinned는 **재개**한다. 다만 새로 시작하는
-        # 것이 아니라는 사실을 모르면 결과를 잘못 읽는다.
-        warnings.append(
-            _finding(
-                "JOURNAL_WILL_RESUME",
-                f"진행 중인 재구축 기록이 있습니다. 지금 실행하면 새로 시작하지 않고 "
-                f"그 지점부터 재개합니다. {guard.get('detail', '')}".strip(),
-            )
-        )
-    elif verdict in {"unverifiable", "unknown"}:
+        mode = read_deployment_mode()
+    except Exception as exc:  # noqa: BLE001 - 진단 route는 500이 되면 안 된다
         unverified.append(
-            _finding(
-                "JOURNAL_UNVERIFIABLE",
-                f"진행 중인 재구축이 있는지 확인할 수 없습니다. {guard.get('detail', '')}".strip(),
-            )
+            _finding("MODE_UNVERIFIABLE", f"배포 모드를 확인하지 못했습니다: {exc}")
         )
+    else:
+        if not mode.rebuildable:
+            blockers.append(
+                _finding(
+                    "MODE_NOT_REBUILDABLE",
+                    "이 배포 모드에서는 재구축을 시작할 수 없습니다. 운영 환경은 일반 "
+                    "runtime mutation을 차단합니다.",
+                )
+            )
 
     # 4. 실행 전에 알 수 있는 결손(사전 점검).
     try:
@@ -199,15 +183,6 @@ def read_pinned_rebuild_preflight(*, force_refresh: bool = False) -> dict[str, A
         text = (
             "재구축을 실행해도 되는지 확인하지 못했습니다. 화면 값만으로 판단하지 마세요."
         )
-    elif warnings:
-        # 차단은 아니지만 초록불도 아니다. "막는 요인이 없다 + 실행하세요"를 띄우면
-        # 운영자는 새로 시작한다고 믿고 누르고, 실제로는 중단됐던 재구축이 재개된다.
-        # 그 오해가 정확히 pinset 하나와 반나절을 태우는 경로다.
-        state = "attention"
-        text = (
-            "재구축을 막는 요인은 없지만, 그냥 시작되지 않습니다. 아래 내용을 먼저 "
-            "읽으세요."
-        )
     else:
         state = "ok"
         text = (
@@ -219,11 +194,9 @@ def read_pinned_rebuild_preflight(*, force_refresh: bool = False) -> dict[str, A
         "schema": PINNED_REBUILD_PREFLIGHT_SCHEMA,
         "collected_at": _now(),
         # 이 값이 true여도 화면은 실행하지 않는다. 실행 주체는 언제나 SSH의 사람이다.
-        # `attention`은 실행 가능하지만 **읽고 나서** 해야 하는 상태다.
-        "can_start": state in {"ok", "attention"},
+        "can_start": state == "ok",
         "pinset_sha256": pinset_sha256 if pin_status == "ok" else None,
         "blockers": blockers,
-        "warnings": warnings,
         "unverified": unverified,
         "command": REBUILD_COMMAND,
         "summary": {"state": state, "text": text},

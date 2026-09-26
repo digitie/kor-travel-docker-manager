@@ -27,7 +27,7 @@
 Map·PinVi를 **어느 커밋으로 재구축할지**를 고정한 값(pin)이 예전에는 Python 상수였다.
 지금은 root 소유 JSON registry 파일이 그 값을 소유하고, 코드는 **계약만** 소유한다.
 registry는 현재 pin뿐 아니라 **pinset의 생애 상태**(재시도 금지 목록, 회전 이력)도 담으며,
-`rebuild-pinned`는 재시도 금지 pinset에 대해 **어떤 mutation보다 먼저 거부**한다.
+`rebuild-pinned`는 재시도 금지 기록이 있는 pinset을 **거부하지 않고 경고로 남긴다**(ADR-51 B2부터).
 
 ```
 값(어떤 커밋인가)      → registry 파일이 소유       → M05는 ktdctl pin rotate-pair 로 함께 바꾼다
@@ -444,9 +444,8 @@ pinset을 태워 놓고 "적용 안 됨"이라고 보고한다:
   "pins": { "release_version": 5, "pinset_sha256": "...", "sources": [...],
             "rotated_at": "...", "rotated_by": "...", "reason": "..." },   // unknown이면 null
   "lifecycle": {
-    "current_pinset_is_blocked": false,              // phase 없는 차단만 계수
-    "current_pinset_has_phase_scoped_block": false,  // phase 한정은 별도 필드
-    "blocked_pinsets": [...],
+    "current_pinset_is_blocked": false,              // phase 없는 차단만 계수(재구축은 경고만)
+    "blocked_pinsets": [...],                        // phase 한정 항목은 감사 기록으로만 싣는다
     "history": [...]
   },
   "pending_request": null | {                        // §7-1. 없으면 null

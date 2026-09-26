@@ -7,7 +7,6 @@ from kor_travel_docker_manager.services.admin_password_service import (
     MIN_NEW_PASSWORD_LENGTH,
     AdminPasswordError,
     change_admin_password,
-    pinned_rebuild_guard_state,
 )
 from kor_travel_docker_manager.services.auth_service import (
     AdminSessionContext,
@@ -37,9 +36,6 @@ class PublicApiKeyCreateRequest(BaseModel):
 class AdminPasswordChangeRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=200)
     new_password: str = Field(min_length=MIN_NEW_PASSWORD_LENGTH, max_length=200)
-    # 미종결 rebuild journal을 backend가 **증명하지 못할 때만** 필요한 명시 승인.
-    # 증명된 미종결 journal은 이 플래그로도 통과하지 못한다.
-    acknowledge_pinned_rebuild_invalidation: bool = Field(default=False)
 
 
 @router.get("/login-audit-events")
@@ -108,16 +104,6 @@ def delete_public_api_key(
     return result
 
 
-@router.get("/password/preflight")
-def get_admin_password_preflight(
-    _session: Annotated[AdminSessionContext, Depends(require_admin_session)],
-):
-    """UI가 폼을 그리기 전에 rebuild journal 가드 상태를 먼저 읽는다.
-
-    눌러 본 뒤에야 거부를 알게 하지 않기 위한 읽기 전용 route다."""
-    return pinned_rebuild_guard_state()
-
-
 @router.post("/password")
 def post_admin_password(
     payload: AdminPasswordChangeRequest,
@@ -149,12 +135,9 @@ def post_admin_password(
             headers={"Retry-After": str(retry_after)},
         )
     try:
-        result = change_admin_password(
+        change_admin_password(
             current_password=payload.current_password,
             new_password=payload.new_password,
-            acknowledge_pinned_rebuild_invalidation=(
-                payload.acknowledge_pinned_rebuild_invalidation
-            ),
         )
     except AdminPasswordError as exc:
         record_login_audit_event(
@@ -176,7 +159,7 @@ def post_admin_password(
             status_code=exc.status_code,
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
-    # 비밀번호도 해시도 감사에 넣지 않는다 — 판정 문자열과 불리언뿐이다.
+    # 비밀번호도 해시도 `.env` 경로도 감사에 넣지 않는다 — detail에는 상관관계 ID만 남는다.
     record_login_audit_event(
         request,
         event_type="admin_password",
@@ -184,6 +167,5 @@ def post_admin_password(
         attempted_username=session.username,
         reason="admin_password_changed",
         session_id_hash=session.session_id_hash,
-        detail={"guard": result["guard"], "acknowledged": result["acknowledged"]},
     )
-    return {"ok": True, "guard": result["guard"]}
+    return {"ok": True}

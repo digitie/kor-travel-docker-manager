@@ -347,13 +347,12 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 | `GET` | `/api/v1/pinned-runtime/generation` | root가 발행한 v6 manifest 원본과 current registry pair 결박(`match`·`pending_rebuild`·`unknown`)·요약. backend는 private state를 읽지 않으며, raw 문서 키를 바꾸지 않는다. 옛 `journal`·`terminal` 키는 ADR-51 B3에서 없어졌다 |
 | `POST/DELETE` | `/api/v1/runtime-pins/requests[/{id}]` | 회전 **요청** 기록·취소. 적용은 root `ktdctl pin apply-pending --expect-revision <40-hex> --confirm` 전용이다 |
 | `GET` | `/api/v1/deployment-readiness` | 재구축 사전 점검(관측 전용). 무엇도 pull하지 않으며 호스트를 읽지 못하면 `unknown` 행으로 떨어진다. 검사하지 않기로 **결정한** 항목은 `unavailable_checks`로 이유와 함께 노출한다. 검사 4종: Compose 단일 파일, 사이드카 필수 스크립트, 고정 PinVi revision의 역할 부트스트랩 계약, Map 후보 빌드의 고정 Python base image |
-| `GET` | `/api/v1/pinned-rebuild/preflight` | 재구축을 지금 시작할 수 있는지의 판정(관측 전용). registry뿐 아니라 공개 generation이 `match` 또는 회전 직후의 유효한 `pending_rebuild`인지 함께 요구한다. **실행 route가 아니다** — 재구축은 root를 요구하므로 payload는 차단 사유와 실행할 명령만 준다 |
+| `GET` | `/api/v1/pinned-rebuild/preflight` | 재구축을 지금 시작할 수 있는지의 판정(관측 전용). registry뿐 아니라 공개 generation이 `match` 또는 회전 직후의 유효한 `pending_rebuild`인지 함께 요구한다. `.env`의 배포 모드가 rehearsal/rebuildable이 아니면 `MODE_NOT_REBUILDABLE` 차단, 모드를 읽지 못하면 `MODE_UNVERIFIABLE`(확인 불가)이다. 상태는 `ok`·`blocked`·`unverified` 셋이다(journal 재개 경고 `warnings`/`attention`은 ADR-51 B3에서 없어졌다). **실행 route가 아니다** — 재구축은 root를 요구하므로 payload는 차단 사유와 실행할 명령만 준다 |
 | `GET` | `/api/v1/source-status` | 설치 기록·작업 사본·실행 중 이미지·계약 일치·환경 완결성(관측 전용) |
 | `GET` | `/api/v1/system/disk-usage` | `docker system df`를 사람 말로 번역. 정리(prune)는 파괴적이라 CLI에만 있다 |
 | `GET` | `/api/v1/admin/login-audit-events` | 관리자 로그인·로그아웃 감사 이벤트 |
 | `GET/POST/DELETE` | `/api/v1/admin/public-api-keys...` | public API key 관리 |
-| `GET` | `/api/v1/admin/password/preflight` | 미종결 rebuild journal 가드 판정(읽기 전용). 폼을 그리기 전에 읽는다 |
-| `POST` | `/api/v1/admin/password` | 관리자 비밀번호 회전. `.env` 단일 키만 다시 쓰고 재기동 없이 즉시 적용된다. 증명된 미종결 journal은 **우회 불가** 거부 |
+| `POST` | `/api/v1/admin/password` | 관리자 비밀번호 회전(`current_password`·`new_password`). `.env` 단일 키만 다시 쓰고 재기동 없이 즉시 적용되며 응답은 `{"ok": true}`다. 배포가 재개하지 않으므로 재구축 journal 가드·승인 입력은 없다 — `GET /api/v1/admin/password/preflight`와 `acknowledge_pinned_rebuild_invalidation`은 ADR-51 B3에서 지웠다 |
 | `WS` | `/api/v1/ws/status`, `/api/v1/ws/logs/{container_id}` | 상태·로그 실시간 스트림 |
 
 `ensure`는 Docker SDK가 아니라 `docker compose`를 인자 배열로 실행한다. 반면 stats, logs, inspect, 개별 action은 Docker SDK를 유지한다.

@@ -19,9 +19,9 @@ const ROLE_LABELS: Record<string, string> = {
   pinvi: 'PinVi',
 };
 
-// 이 명령은 `summary.next_action`이 뜨는 상황 — 즉 **현재 세트가 재시도 금지 상태**일 때만
-// 보인다. 그 상태에서 registry는 단일 role 회전을 거부하므로(`pin rotate`는 exit 2),
-// 여기에 `pin rotate`를 두면 반드시 실패하는 명령을 쥐여 주는 셈이 된다.
+// 이 명령은 `summary.next_action`이 뜨는 상황 — 즉 **현재 세트에 옛 재시도 금지 기록이
+// 있을 때**만 보인다. 재구축은 막지 않고 경고로 남기므로(ADR-51) 회전은 선택이다. 옮기려면
+// registry가 단일 role 회전을 거부하므로(`pin rotate`는 exit 2) pair 회전만 쓸 수 있다.
 const ROTATE_PAIR_COMMAND =
   'sudo -n backend/.venv/bin/ktdctl pin rotate-pair --map-revision <커밋 SHA> ' +
   '--pinvi-revision <커밋 SHA> --reason "..." --confirm';
@@ -285,9 +285,14 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                   ) : summary?.next_action ? (
                     <>
                       <p className="text-xs text-secondary mt-1">
-                        아래 명령을 SSH에서 실행해 새 버전으로 회전해야 합니다. 지금
-                        세트는 재시도 금지 상태라 <strong>Map과 PinVi를 한 번에</strong>{' '}
-                        바꿔야 합니다 — 한쪽만 바꾸는 명령은 거부됩니다.
+                        SSH에서 아래 명령으로 확인하세요. 이 기록은 재구축을 막지 않고 경고로만
+                        남깁니다.
+                      </p>
+                      <CopyableCommand command={summary.next_action} />
+                      <p className="text-xs text-secondary mt-1">
+                        이 세트에서 옮기려면(M05 게이트가 이 기록을 요구할 때 등){' '}
+                        <strong>Map과 PinVi를 한 번에</strong> 회전해야 합니다 — 한쪽만
+                        바꾸는 명령은 거부됩니다.
                       </p>
                       <CopyableCommand command={ROTATE_PAIR_COMMAND} />
                     </>
@@ -442,8 +447,9 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                   재시도가 금지된 버전 세트
                 </h3>
                 <p className="text-xs text-secondary mb-2">
-                  과거에 재구축이 실패로 종료된 조합입니다. 관리도구가 이 조합의 재실행을
-                  자동으로 거부합니다.
+                  과거에 재구축이 실패로 종료된 조합입니다. 관리도구는 이 조합으로 바꾸거나
+                  되돌리는 것을 거부하지만, 이미 고정된 조합의 재구축은 막지 않고 경고로
+                  남깁니다.
                 </p>
                 <ul className="space-y-2">
                   {lifecycle.blocked_pinsets.map((entry) => (
@@ -451,7 +457,6 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                       <p className="text-xs font-semibold text-strong break-all">
                         {short(entry.pinset_sha256)}
                         {entry.pinset_sha256 === pins?.pinset_sha256 ? ' · 현재 고정된 세트' : ''}
-                        {entry.phase ? ` · ${entry.phase} 단계 한정` : ''}
                       </p>
                       <p className="text-xs text-secondary mt-1">{entry.reason}</p>
                     </li>

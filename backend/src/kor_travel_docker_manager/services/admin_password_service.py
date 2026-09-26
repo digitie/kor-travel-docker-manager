@@ -8,15 +8,9 @@
 그 모듈은 root 소유 설치본 ``.env``만 다루는 rebuild 전용 경로이고, 여기는 backend 실행
 사용자가 자기 ``.env``를 고치는 다른 경계다.
 
-**재구축 가드**
-
-종전 재구축은 journal에 ``.env`` 해시를 동결하고 재개 때 대조했으므로, 미종결 journal이
-있을 때 비밀번호를 바꾸면 그 재개가 영구 차단됐다. ADR-51 뒤 배포는 재개하지 않고 처음부터
-다시 돌며 ``.env``를 동결하지 않는다 — 막을 것이 없다. 판정은 두 가지만 남는다.
-
-- ``not_rebuildable`` / ``no_journal`` — 통과.
-- ``unverifiable`` / ``unknown`` — ``.env``나 배포 모드를 읽지 못했다. 명시적 승인 없이는
-  거부한다(운영자가 SSH에서 확인한 뒤 책임지고 진행하는 경로만 남긴다).
+재구축 가드는 없다. 종전 재구축은 journal에 ``.env`` 해시를 동결하고 재개 때 대조했으므로
+미종결 journal이 있으면 비밀번호 변경을 막았지만, ADR-51 뒤 배포는 재개하지 않고 처음부터
+다시 돌며 ``.env``를 동결하지 않는다 — 막을 것이 없다(ADR-51 B3에서 가드와 승인 입력을 지웠다).
 """
 
 from __future__ import annotations
@@ -38,13 +32,7 @@ from kor_travel_docker_manager.services.auth_service import (
     hash_password_for_env,
     verify_admin_password,
 )
-from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.compose_service import get_env_path
-from kor_travel_docker_manager.services.deploy_status import DEPLOY_STATUS_FILENAME
-from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    load_deployment_mode,
-    pinned_runtime_state_root,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -73,71 +61,6 @@ def _parse_dotenv(text: str) -> dict[str, str]:
         name: value
         for name, value in dotenv_values(stream=StringIO(text), interpolate=False).items()
         if value is not None
-    }
-
-
-# --- 미종결 rebuild journal 가드 ---------------------------------------------
-
-
-def pinned_rebuild_guard_state(*, env_path: Path | None = None) -> dict[str, Any]:
-    """비밀번호 변경이 진행 중인 rebuild의 재개를 무효화하는지 판정한다.
-
-    UI가 폼을 그리기 전에 먼저 읽는다 — 눌러 본 뒤에야 거부를 알게 하지 않는다.
-    """
-
-    path = _env_path(env_path)
-    try:
-        text = path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError):
-        return _verdict(
-            "unverifiable",
-            f".env를 읽지 못해 진행 중인 재구축이 있는지 확인할 수 없습니다: {path}",
-        )
-    values = _parse_dotenv(text)
-    try:
-        mode = load_deployment_mode(values)
-    except DeploymentContractError as exc:
-        return _verdict("unknown", f"배포 모드를 판정할 수 없습니다: {exc}")
-    if not mode.rebuildable:
-        return _verdict(
-            "not_rebuildable",
-            "이 배포 모드에서는 재구축이 시작될 수 없어, 비밀번호 변경이 영향을 줄 "
-            "재구축이 없습니다.",
-        )
-    # ADR-51: 배포는 재개하지 않고 처음부터 다시 돈다. `.env`를 동결해 대조하던 journal이
-    # 없으므로 비밀번호를 바꿔도 막힐 재구축이 없다. (종전에는 버려진 미종결 journal
-    # 하나가 이 가드를 영구히 `unfinished_journal`로 묶었다.)
-    return _verdict(
-        "no_journal",
-        "배포는 재개하지 않고 처음부터 다시 돕니다 — 비밀번호 변경이 막을 재구축이 없습니다.",
-    )
-
-
-def _journal_check_command(env_path: Path | None = None) -> str:
-    """운영자가 SSH에서 실행할 확인 명령.
-
-    화면에 `<COMPOSE_PROJECT_NAME>` 같은 placeholder를 넣으면 안 된다. 붙여넣으면
-    존재하지 않는 경로를 조회해 `No such file or directory`가 나오고, 운영자는 그것을
-    **"journal이 없다 = 안전"**으로 읽는다 — 살아 있는 재구축의 재개를 영구 차단하는
-    선택을 그 오해 위에서 하게 된다. 경로를 아는 쪽이 명령을 만든다.
-    """
-
-    try:
-        text = _env_path(env_path).read_bytes().decode("utf-8")
-        state_root = pinned_runtime_state_root(_parse_dotenv(text))
-    except (OSError, UnicodeDecodeError, DeploymentContractError):
-        return "sudo -n backend/.venv/bin/ktdctl pin verify   # 경로를 해석하지 못했습니다"
-    return f"sudo cat {state_root}/{DEPLOY_STATUS_FILENAME}"
-
-
-def _verdict(verdict: str, detail: str, *, env_path: Path | None = None) -> dict[str, Any]:
-    blocking = verdict == "unfinished_journal"
-    return {
-        "verdict": verdict,
-        "detail": detail,
-        "requires_acknowledgement": verdict in {"unverifiable", "unknown"},
-        "blocking": blocking,
-        "check_command": _journal_check_command(env_path),
     }
 
 
@@ -326,7 +249,6 @@ def change_admin_password(
     *,
     current_password: str,
     new_password: str,
-    acknowledge_pinned_rebuild_invalidation: bool = False,
     env_path: Path | None = None,
 ) -> dict[str, Any]:
     path = _env_path(env_path)
@@ -363,17 +285,6 @@ def change_admin_password(
             status_code=422,
         )
 
-    state = pinned_rebuild_guard_state(env_path=path)
-    if state["verdict"] == "unfinished_journal":
-        # 우회 경로를 두지 않는다. 증명된 미종결 journal은 재개가 실제로 걸려 있다는 뜻이다.
-        raise AdminPasswordError("PINNED_REBUILD_JOURNAL_UNFINISHED", str(state["detail"]))
-    if state["requires_acknowledgement"] and not acknowledge_pinned_rebuild_invalidation:
-        raise AdminPasswordError(
-            "PINNED_REBUILD_JOURNAL_UNVERIFIABLE",
-            f"{state['detail']} 진행 중인 재구축이 없는지 SSH에서 확인한 뒤 명시적으로 "
-            "승인해야 진행할 수 있습니다.",
-        )
-
     new_hash = hash_password_for_env(new_password)
     if _ENCODED_HASH.fullmatch(new_hash) is None:
         # 줄바꿈을 품은 값이 파일에 닿는 경로를 원천 차단한다.
@@ -386,12 +297,7 @@ def change_admin_password(
     # 되돌린다 — 가장 나쁜 실패다. 반대 순서에서는 파일이 새 값이고 살아 있는 프로세스만
     # 옛 값을 받는데, 그것은 재기동으로 복구되는 방향이다.
     os.environ[ADMIN_PASSWORD_HASH_ENV] = new_hash
-    return {
-        "ok": True,
-        "guard": state["verdict"],
-        "acknowledged": bool(acknowledge_pinned_rebuild_invalidation),
-        "env_path": str(path),
-    }
+    return {"ok": True, "env_path": str(path)}
 
 
 __all__ = [
@@ -399,5 +305,4 @@ __all__ = [
     "MIN_NEW_PASSWORD_LENGTH",
     "AdminPasswordError",
     "change_admin_password",
-    "pinned_rebuild_guard_state",
 ]

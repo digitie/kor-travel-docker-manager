@@ -303,15 +303,12 @@ def get_runtime_pins():
         }
     blocked = payload.get("blocked_pinsets", [])
     pinset_sha256 = payload.get("pinset_sha256")
-    # The rebuild start gate only honours entries without a phase; phase-scoped entries
-    # block one journal state, not the pinset. Collapsing the two here would tell the
-    # operator to rotate when a rebuild would in fact be allowed.
+    # Only entries without a phase count. Since ADR-51 such an entry no longer stops
+    # rebuild-pinned — the deploy records it as a warning — but it still asks for a root
+    # `pin verify`. A phase-scoped entry recorded a block on one journal resume state;
+    # journal resume is gone, so it is audit history only.
     current_is_blocked = any(
         entry.get("pinset_sha256") == pinset_sha256 and entry.get("phase") is None
-        for entry in blocked
-    )
-    current_has_phase_scoped_block = any(
-        entry.get("pinset_sha256") == pinset_sha256 and entry.get("phase") is not None
         for entry in blocked
     )
     return {
@@ -328,7 +325,6 @@ def get_runtime_pins():
         },
         "lifecycle": {
             "current_pinset_is_blocked": current_is_blocked,
-            "current_pinset_has_phase_scoped_block": current_has_phase_scoped_block,
             "blocked_pinsets": blocked,
             "history": payload.get("history", []),
         },
@@ -428,10 +424,10 @@ def get_source_status(refresh: bool = Query(default=False)):
 def get_pinned_rebuild_preflight(refresh: bool = Query(default=False)):
     """Read-only "can a pinned rebuild start right now?" verdict (KUM-M14 / design Q5).
 
-    Deliberately **not** a rebuild trigger. `rebuild-pinned` requires root and destroys
-    three databases; letting one HTTP request start that removes a boundary rather than
-    adding convenience. This route judges, and the operator executes over SSH with the
-    command the payload carries.
+    Deliberately **not** a rebuild trigger. `rebuild-pinned` requires root and redeploys
+    the whole pinned pair (with `--restart` it also recreates three databases); letting
+    one HTTP request start that removes a boundary rather than adding convenience. This
+    route judges, and the operator executes over SSH with the command the payload carries.
 
     Observation only — no mutation, so no audit row."""
     return read_pinned_rebuild_preflight(force_refresh=refresh)

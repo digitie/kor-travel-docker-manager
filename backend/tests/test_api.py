@@ -1788,14 +1788,9 @@ def test_get_pinned_runtime_generation_requires_authentication():
 
 
 @patch("kor_travel_docker_manager.api.admin.change_admin_password")
-def test_post_admin_password_records_the_verdict_but_never_the_secret(mock_change):
+def test_post_admin_password_never_records_the_secret(mock_change):
     login_client()
-    mock_change.return_value = {
-        "ok": True,
-        "guard": "no_journal",
-        "acknowledged": False,
-        "env_path": "/opt/x/.env",
-    }
+    mock_change.return_value = {"ok": True, "env_path": "/opt/x/.env"}
 
     response = client.post(
         "/api/v1/admin/password",
@@ -1803,20 +1798,18 @@ def test_post_admin_password_records_the_verdict_but_never_the_secret(mock_chang
     )
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "guard": "no_journal"}
+    assert response.json() == {"ok": True}
     events = client.get(
         "/api/v1/admin/login-audit-events?event_type=admin_password&outcome=succeeded"
     ).json()
     detail = events[0]["detail"]
-    assert detail["guard"] == "no_journal"
-    assert detail["acknowledged"] is False
     # GM-16: http_request_id는 요청마다 새로 발급되는 uuid4라 리터럴로 고정할
     # 수 없다 — 존재와 형태만 확인한다. 이 테스트 본래의 목적(env_path/비밀번호가
     # 안 새는지)은 정확한 키 집합 확인으로 유지한다. 감사 주입 키를
     # "request_id"가 아니라 "http_request_id"로 부르는 이유는 runtime-pin
     # 회전 요청처럼 도메인 객체가 이미 "request_id"라는 이름을 쓰는 경우와
     # 충돌해 그 값을 지우는 것을 막기 위해서다(적대적 리뷰가 실제로 재현).
-    assert set(detail.keys()) == {"guard", "acknowledged", "http_request_id"}
+    assert set(detail.keys()) == {"http_request_id"}
     uuid.UUID(detail["http_request_id"])
     # 비밀번호도 해시도 감사에 남기지 않는다.
     assert "a-new-password-1" not in str(events)
@@ -1828,16 +1821,11 @@ def test_audit_event_request_id_matches_the_triggering_response_header(mock_chan
     요청이 남긴 감사 행의 http_request_id와 정확히 같은 값이어야 둘을 하나의
     키로 조인할 수 있다 — 존재만이 아니라 *일치*를 확인한다. 감사 쪽 키
     이름이 "request_id"가 아니라 "http_request_id"인 이유는 위
-    test_post_admin_password_records_the_verdict_but_never_the_secret의
+    test_post_admin_password_never_records_the_secret의
     주석 참고(도메인 객체의 자체 request_id와 충돌 방지)."""
 
     login_client()
-    mock_change.return_value = {
-        "ok": True,
-        "guard": "no_journal",
-        "acknowledged": False,
-        "env_path": "/opt/x/.env",
-    }
+    mock_change.return_value = {"ok": True, "env_path": "/opt/x/.env"}
 
     response = client.post(
         "/api/v1/admin/password",
@@ -1927,14 +1915,16 @@ def test_a_wrong_current_password_joins_the_login_bruteforce_counter(mock_change
 
 
 @patch("kor_travel_docker_manager.api.admin.change_admin_password")
-def test_a_guard_refusal_does_not_pollute_the_login_counter(mock_change):
+def test_a_non_credential_refusal_does_not_pollute_the_login_counter(mock_change):
+    """설정 결함 같은 거부는 자격증명 추측이 아니다 — `admin_password` 행으로만 남는다."""
+
     from kor_travel_docker_manager.services.admin_password_service import (
         AdminPasswordError,
     )
 
     login_client()
     mock_change.side_effect = AdminPasswordError(
-        "PINNED_REBUILD_JOURNAL_UNFINISHED", "미종결 재구축 기록이 있습니다."
+        "ENV_NOT_WRITABLE", ".env를 이 프로세스가 쓸 수 없습니다."
     )
 
     response = client.post(
@@ -1943,12 +1933,15 @@ def test_a_guard_refusal_does_not_pollute_the_login_counter(mock_change):
     )
 
     assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "ENV_NOT_WRITABLE"
     denied = client.get(
         "/api/v1/admin/login-audit-events?event_type=admin_password&outcome=denied"
     ).json()
-    assert any(
-        event["reason"] == "pinned_rebuild_journal_unfinished" for event in denied
-    )
+    assert any(event["reason"] == "env_not_writable" for event in denied)
+    login_denied = client.get(
+        "/api/v1/admin/login-audit-events?event_type=login&outcome=denied"
+    ).json()
+    assert not any(event["reason"] == "env_not_writable" for event in login_denied)
 
 
 def test_the_password_route_enforces_the_minimum_length_before_any_work():
@@ -1965,7 +1958,6 @@ def test_the_password_route_enforces_the_minimum_length_before_any_work():
 def test_admin_password_routes_require_authentication():
     client.cookies.clear()
 
-    assert client.get("/api/v1/admin/password/preflight").status_code == 401
     assert (
         client.post(
             "/api/v1/admin/password",

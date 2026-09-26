@@ -7,14 +7,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from kor_travel_docker_manager.services import deployment_readiness
 from kor_travel_docker_manager.services import pinned_rebuild_preflight as preflight
+from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.pinned_runtime_generation import DeploymentMode
 
 PINSET = "a" * 64
+_REBUILDABLE = DeploymentMode(
+    environment="rehearsal",
+    lifecycle="rebuildable",
+    pinvi_environment="production",
+    map_ops_principal_required=True,
+)
+_OPERATIONAL = DeploymentMode(
+    environment="production",
+    lifecycle="operational",
+    pinvi_environment="production",
+    map_ops_principal_required=True,
+)
 
 
 def _pins(**overrides: Any) -> dict[str, Any]:
@@ -38,13 +54,15 @@ def _readiness(state: str = "ok", checks: list[dict[str, Any]] | None = None) ->
     }
 
 
-def _guard(verdict: str = "no_journal") -> dict[str, Any]:
-    return {
-        "verdict": verdict,
-        "detail": "상세",
-        "requires_acknowledgement": verdict in {"unverifiable", "unknown"},
-        "blocking": verdict == "unfinished_journal",
-    }
+def _mode(outcome: DeploymentMode | Exception = _REBUILDABLE) -> Callable[[], DeploymentMode]:
+    """`read_deployment_mode` 스텁. 예외를 주면 `.env`·모드를 읽지 못한 호스트다."""
+
+    def read() -> DeploymentMode:
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    return read
 
 
 def _generation(
@@ -71,7 +89,7 @@ def _patch(
     monkeypatch: pytest.MonkeyPatch,
     *,
     pins: dict[str, Any] | None = None,
-    guard: dict[str, Any] | None = None,
+    mode: DeploymentMode | Exception = _REBUILDABLE,
     readiness: dict[str, Any] | None = None,
     generation: dict[str, Any] | None = None,
 ) -> None:
@@ -81,7 +99,7 @@ def _patch(
         "read_published_pinned_runtime_generation",
         lambda: generation or _generation(),
     )
-    monkeypatch.setattr(preflight, "pinned_rebuild_guard_state", lambda: guard or _guard())
+    monkeypatch.setattr(preflight, "read_deployment_mode", _mode(mode))
     # 실제 함수는 `force_refresh` 키워드를 받는다 — 스텁이 그것을 못 받으면 TypeError가
     # 광범위 except에 먹혀 "관측 실패"로 둔갑하고, 테스트가 엉뚱한 경로를 검증하게 된다.
     monkeypatch.setattr(
@@ -106,6 +124,18 @@ def test_a_clean_source_requires_root_execution_verification(
     ]
     # 실행 주체는 언제나 SSH의 사람이다 — payload가 주는 것은 명령 문자열뿐이다.
     assert payload["command"].endswith("rebuild-pinned --confirm")
+    # 화면(`PinnedRebuildPreflight`)과 같은 키 집합이다. journal 재개 경고(`warnings`)는
+    # ADR-51 B3에서 지웠다.
+    assert set(payload) == {
+        "schema",
+        "collected_at",
+        "can_start",
+        "pinset_sha256",
+        "blockers",
+        "unverified",
+        "command",
+        "summary",
+    }
 
 
 def test_a_legacy_terminal_requires_root_execution_verification(
@@ -127,10 +157,13 @@ def test_a_legacy_terminal_requires_root_execution_verification(
     assert [row["code"] for row in payload["unverified"]] == ["LEGACY_SOURCE_TERMINAL"]
 
 
-def test_a_phase_scoped_block_still_requires_execution_verification(
+def test_a_phase_scoped_block_is_not_read_as_a_legacy_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """phase 한정 차단은 journal 재개만 막는다 — 여기서 합치면 과차단이 된다."""
+    """phase가 있는 항목은 옛 journal 재개 단계의 기록이다(재개는 ADR-51에서 없어졌다).
+
+    조건 없는 차단(`LEGACY_SOURCE_TERMINAL`)으로 읽지 않고 깨끗한 source와 같이 다룬다.
+    """
 
     _patch(
         monkeypatch,
@@ -155,7 +188,12 @@ def test_a_phase_scoped_block_still_requires_execution_verification(
     [
         (_generation(status="unknown", binding="unknown"), "unknown", "unknown"),
         (_generation(status="unverified", binding="unknown"), "unverified", "unknown"),
-        (_generation(status="ok", binding="drift"), "ok", "drift"),
+        # 결박이 받아들일 값이어도 사본 자체가 ok가 아니면 초록불을 주지 않는다.
+        (
+            _generation(status="unknown", binding="pending_rebuild"),
+            "unknown",
+            "pending_rebuild",
+        ),
         (_generation(status="ok", binding="unknown"), "ok", "unknown"),
     ],
 )
@@ -193,48 +231,95 @@ def test_a_valid_pending_generation_allows_the_new_pair_to_start(
 
 
 def test_a_non_rebuildable_mode_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
-    _patch(monkeypatch, guard=_guard("not_rebuildable"))
+    _patch(monkeypatch, mode=_OPERATIONAL)
 
     payload = preflight.read_pinned_rebuild_preflight()
 
     assert payload["can_start"] is False
+    assert payload["summary"]["state"] == "blocked"
     assert [row["code"] for row in payload["blockers"]] == ["MODE_NOT_REBUILDABLE"]
 
 
-def test_an_unfinished_journal_warns_that_it_will_resume(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    "failure",
+    [
+        DeploymentContractError("deployment environment/lifecycle pair is invalid"),
+        FileNotFoundError(2, "No such file or directory", "/opt/x/.env"),
+    ],
+)
+def test_an_unreadable_mode_withholds_the_green_light(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
 ) -> None:
-    """차단은 아니지만 **초록불도 아니다.**
+    """모드를 못 읽었다는 것을 "재구축 가능"으로도 "불가"로도 읽지 않는다."""
 
-    "막는 요인이 없다 + 실행하세요"를 띄우면 운영자는 새로 시작한다고 믿고 누르고,
-    실제로는 중단됐던 재구축이 재개된다. 그 오해가 pinset 하나를 태운다.
-    """
-
-    _patch(monkeypatch, guard=_guard("unfinished_journal"))
+    _patch(monkeypatch, mode=failure)
 
     payload = preflight.read_pinned_rebuild_preflight()
 
     assert payload["summary"]["state"] == "unverified"
     assert payload["can_start"] is False
-    assert [row["code"] for row in payload["warnings"]] == ["JOURNAL_WILL_RESUME"]
-    # 초록불 문구를 쓰지 않는다.
-    assert "실행하세요" not in payload["summary"]["text"]
-
-
-@pytest.mark.parametrize("verdict", ["unverifiable", "unknown"])
-def test_an_unverifiable_journal_withholds_the_green_light(
-    monkeypatch: pytest.MonkeyPatch, verdict: str
-) -> None:
-    _patch(monkeypatch, guard=_guard(verdict))
-
-    payload = preflight.read_pinned_rebuild_preflight()
-
-    assert payload["summary"]["state"] == "unverified"
-    assert payload["can_start"] is False
+    assert payload["blockers"] == []
     assert [row["code"] for row in payload["unverified"]] == [
         "EXECUTION_VERIFICATION_REQUIRED",
-        "JOURNAL_UNVERIFIABLE",
+        "MODE_UNVERIFIABLE",
     ]
+    assert str(failure) in payload["unverified"][1]["text"]
+
+
+def _write_env(path: Path, *, environment: str, lifecycle: str) -> None:
+    pinvi, required = (
+        ("development", "false") if environment == "local" else ("production", "true")
+    )
+    path.write_text(
+        f"KTDM_DEPLOYMENT_ENVIRONMENT={environment}\n"
+        f"KTDM_DEPLOYMENT_LIFECYCLE={lifecycle}\n"
+        f"PINVI_ENVIRONMENT={pinvi}\n"
+        f"KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED={required}\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    ("env_mode", "blockers", "unverified"),
+    [
+        (("rehearsal", "rebuildable"), [], ["EXECUTION_VERIFICATION_REQUIRED"]),
+        (
+            ("local", "development"),
+            ["MODE_NOT_REBUILDABLE"],
+            ["EXECUTION_VERIFICATION_REQUIRED"],
+        ),
+        (
+            ("production", "operational"),
+            ["MODE_NOT_REBUILDABLE"],
+            ["EXECUTION_VERIFICATION_REQUIRED"],
+        ),
+        # `.env`가 없다 — 모드를 추측하지 않는다.
+        (None, [], ["EXECUTION_VERIFICATION_REQUIRED", "MODE_UNVERIFIABLE"]),
+    ],
+)
+def test_the_mode_is_read_from_the_real_env_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    env_mode: tuple[str, str] | None,
+    blockers: list[str],
+    unverified: list[str],
+) -> None:
+    """스텁 없이 실제 `read_deployment_mode`가 `.env`를 읽는 경로."""
+
+    env_path = tmp_path / ".env"
+    if env_mode is not None:
+        _write_env(env_path, environment=env_mode[0], lifecycle=env_mode[1])
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_path))
+    _patch(monkeypatch)
+    # 나머지 관측은 스텁으로 두고 모드 reader만 실제 함수로 되돌린다.
+    monkeypatch.setattr(
+        preflight, "read_deployment_mode", deployment_readiness.read_deployment_mode
+    )
+
+    payload = preflight.read_pinned_rebuild_preflight()
+
+    assert [row["code"] for row in payload["blockers"]] == blockers
+    assert [row["code"] for row in payload["unverified"]] == unverified
 
 
 def test_unverified_pins_withhold_the_green_light(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -275,14 +360,14 @@ def test_a_readiness_blocker_is_named_row_by_row(monkeypatch: pytest.MonkeyPatch
     assert "모드 3종이 없습니다" in payload["blockers"][0]["text"]
 
 
-def test_legacy_terminal_and_unverified_guard_stay_fail_closed(
+def test_legacy_terminal_and_unverified_mode_stay_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """UI public audit만으로 v6 실행권을 추측하지 않는다."""
 
     _patch(
         monkeypatch,
-        guard=_guard("unverifiable"),
+        mode=DeploymentContractError("deployment environment/lifecycle pair is invalid"),
         pins=_pins(
             blocked_pinsets=[{"pinset_sha256": PINSET, "phase": None, "reason": "t"}]
         ),
@@ -301,7 +386,7 @@ def test_the_entry_point_never_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(preflight, "read_published_runtime_pins", explode)
     monkeypatch.setattr(preflight, "read_published_pinned_runtime_generation", explode)
-    monkeypatch.setattr(preflight, "pinned_rebuild_guard_state", explode)
+    monkeypatch.setattr(preflight, "read_deployment_mode", explode)
     monkeypatch.setattr(preflight, "read_deployment_readiness", explode)
 
     payload = preflight.read_pinned_rebuild_preflight()
@@ -316,17 +401,6 @@ def test_the_module_never_executes_a_rebuild() -> None:
     source = Path(preflight.__file__).read_text(encoding="utf-8")
     for forbidden in ("subprocess", "rebuild_pinned_runtime", "compose_service"):
         assert forbidden not in source, forbidden
-
-
-def test_a_resume_never_renders_as_a_green_light(monkeypatch: pytest.MonkeyPatch) -> None:
-    """초록불 + "실행하세요"를 보고 누르면 새로 시작하는 줄 알고 재개를 돌린다."""
-
-    _patch(monkeypatch, guard=_guard("unfinished_journal"))
-
-    payload = preflight.read_pinned_rebuild_preflight()
-
-    assert payload["summary"]["state"] != "ok"
-    assert payload["warnings"], "재개 사실이 어딘가에는 반드시 남아야 한다"
 
 
 def test_force_refresh_reaches_the_readiness_reader(
@@ -344,7 +418,7 @@ def test_force_refresh_reaches_the_readiness_reader(
     monkeypatch.setattr(
         preflight, "read_published_pinned_runtime_generation", lambda: _generation()
     )
-    monkeypatch.setattr(preflight, "pinned_rebuild_guard_state", lambda: _guard())
+    monkeypatch.setattr(preflight, "read_deployment_mode", _mode())
     monkeypatch.setattr(preflight, "read_deployment_readiness", readiness)
 
     preflight.read_pinned_rebuild_preflight(force_refresh=True)

@@ -349,19 +349,13 @@ sudo find "$KTDM_BACKUP_ROOT" -type f -exec chmod 0640 {} +
 `KTDM_ADMIN_PASSWORD_HASH` **한 줄만** 다시 쓰고, 재기동 없이 즉시 적용되며 진행 중인
 세션은 끊기지 않는다.
 
-> **미종결 pinned rebuild journal이 있는 동안 비밀번호를 바꾸면 그 rebuild의 재개가
-> 영구 차단된다.** resume이 journal의 `environment_sha256`을 현재 `.env` 바이트와
-> 대조하기 때문이다. 이 위험은 손으로 `.env`를 고칠 때도 똑같이 있었고 UI가 만든 것이
-> 아니다 — 다만 이제는 화면이 먼저 막는다.
-
-backend가 journal을 **항상 볼 수 있는 것은 아니다.** journal은 `rebuild-pinned`를 실행한
-프로세스의 `$HOME` 아래 `0700` 디렉터리에 있고 그 명령은 root를 요구한다. 확인할 수
-없으면 API가 `unverifiable`을 반환하고, 화면은 명시 문구 입력을 요구한다. 그때 운영자가
-SSH에서 확인할 것:
-
-```bash
-sudo cat ~root/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/deploy-status.json
-```
+화면은 재구축 상태를 이유로 변경을 막지 않는다. 종전에는 재구축 journal이 `.env` 해시를
+동결하고 재개 때 대조했으므로, 미종결 journal이 있으면 화면이 변경을 막거나 명시 문구
+입력을 요구했다. ADR-51 뒤 배포는 재개하지 않고 처음부터 다시 돌며 `.env`를 동결하지
+않으므로 막을 것이 없다 — 그 가드(`GET /api/v1/admin/password/preflight`)와 승인 입력은
+ADR-51 B3에서 지웠다. 다만 `.env` 파일을 다시 쓰는 것이므로, 그 순간 진행 중인 Compose
+mutation은 Docker를 건드리기 전의 env-file 재검증에서 거부될 수 있다 — 진행 중인 작업이
+없을 때 바꾼다.
 
 `.env`가 root `0600`인데 backend가 비-root로 돌면 이 기능은 `ENV_NOT_WRITABLE`로
 거부한다. **권한을 완화하지 마라** — 그 권한이 이 파일의 유일한 보호다. backend를 해당
