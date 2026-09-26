@@ -458,40 +458,6 @@ def _dagster_database_identity() -> MapApplication300DagsterMetadataDatabaseIden
     )
 
 
-def _dagster_storage_receipt(
-    journal: PinnedRuntimeRebuildJournal,
-    candidate: MapApplicationCandidate,
-) -> dict[str, object]:
-    identity = (
-        journal.map_application_300_execution_evidence
-        .dagster_metadata_database_identity
-    )
-    permit_sha256 = (
-        journal.map_application_300_execution_evidence.metadata_permit_sha256
-    )
-    # 재개 phase가 `application_schema_ready`면 이 둘은 아직 저널에 없다 — 같은
-    # 실행에서 만들어지고, mock이 내는 값이 곧 production이 저널에 적을 값이다.
-    if identity is None:
-        identity = _dagster_database_identity()
-    if permit_sha256 is None:
-        permit_sha256 = "9" * 64
-    candidate_binding = f"{candidate.dagster_image_id}:{candidate.dagster_config_sha256}"
-    return {
-        "schema": "kor-travel-map.dagster-storage-migration.v3",
-        "status": "migrated",
-        "operation_id": journal.transaction_id,
-        "permit_sha256": permit_sha256,
-        "candidate_sha256": hashlib.sha256(candidate_binding.encode()).hexdigest(),
-        "head": journal.candidate.map_dagster_head,
-        "version_num": journal.candidate.map_dagster_head,
-        "database_name": identity.name,
-        "database_oid": str(identity.oid),
-        "database_owner": identity.owner,
-        "postgres_system_identifier": identity.system_identifier,
-        "catalog_sha256": "a" * 64,
-    }
-
-
 def _journal_at_application_300_phase(
     phase: RebuildPhase,
     *,
@@ -2008,6 +1974,52 @@ def test_rebuild_compose_error_ignores_malformed_diagnostic_code(
     assert secret not in str(captured.value)
 
 
+@pytest.mark.parametrize(
+    ("code", "exposed"),
+    (
+        # 옛 닫힌 목록에 없던 코드 — Map이 코드를 더해도 원인이 보여야 한다.
+        ("dagster_storage_permit_unavailable", True),
+        ("postgres://user:secret@host/db", False),
+        ("Dagster_Instance_Failed", False),
+        ("x" * 65, False),
+    ),
+)
+def test_rebuild_compose_error_exposes_map_storage_codes_by_shape(
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+    exposed: bool,
+) -> None:
+    service = ComposeService()
+    monkeypatch.setattr(
+        service,
+        "_run_frozen_recovery",
+        Mock(
+            return_value={
+                "success": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": json.dumps(
+                    {
+                        "code": code,
+                        "schema": "kor-travel-map.dagster-storage-migration-error.v1",
+                    }
+                ),
+            }
+        ),
+    )
+
+    with pytest.raises(DeploymentContractError) as captured:
+        service._run_pinned_runtime_rebuild_compose(
+            ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
+            transaction=_opaque_transaction(),
+        )
+
+    message = str(captured.value)
+    assert (f"; {code})" in message) is exposed
+    if not exposed:
+        assert code not in message
+
+
 def test_rebuild_compose_error_exposes_only_allowlisted_pinvi_bootstrap_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2528,48 +2540,6 @@ def test_dagster_live_identity_preserves_login_and_inherit_attestation() -> None
     assert journal_identity.login_role_attributes.inherit is False
 
 
-def test_dagster_storage_v3_receipt_is_exactly_bound_to_journal() -> None:
-    journal = _journal_at_runtime_phase("map_dagster_storage_intent_durable")
-    candidate = _map_application_candidate()
-    receipt = _dagster_storage_receipt(journal, candidate)
-
-    compose_service_module._validate_map_dagster_storage_receipt(
-        receipt,
-        journal=journal,
-        candidate=candidate,
-    )
-
-    mutations = (
-        ("schema", "kor-travel-map.dagster-storage-migration.v2"),
-        ("permit_sha256", "0" * 64),
-        ("candidate_sha256", "0" * 64),
-        ("database_oid", 127002),
-        ("catalog_sha256", "short"),
-    )
-    for field, value in mutations:
-        changed = {**receipt, field: value}
-        with pytest.raises(DeploymentContractError, match="receipt differs"):
-            compose_service_module._validate_map_dagster_storage_receipt(
-                changed,
-                journal=journal,
-                candidate=candidate,
-            )
-    missing = dict(receipt)
-    missing.pop("catalog_sha256")
-    with pytest.raises(DeploymentContractError, match="receipt differs"):
-        compose_service_module._validate_map_dagster_storage_receipt(
-            missing,
-            journal=journal,
-            candidate=candidate,
-        )
-    with pytest.raises(DeploymentContractError, match="receipt differs"):
-        compose_service_module._validate_map_dagster_storage_receipt(
-            {**receipt, "unexpected": True},
-            journal=journal,
-            candidate=candidate,
-        )
-
-
 @pytest.mark.parametrize(
     ("can_login", "inherit"),
     ((False, False), (True, True)),
@@ -2828,21 +2798,9 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         transaction: object,
     ) -> dict[str, object]:
         del transaction
-        operation = tuple(arguments)
-        operations.append(operation)
-        if operation == (
-            "run",
-            "--rm",
-            "--no-deps",
-            "kor-travel-map-dagster-storage-migrate",
-        ):
-            return {
-                "success": True,
-                "stdout": json.dumps(
-                    _dagster_storage_receipt(journal, map_candidate),
-                    sort_keys=True,
-                ),
-            }
+        operations.append(tuple(arguments))
+        # storage one-shot도 영수증 없이 끝난다(Map M1 이후의 모양). 판정은 그 뒤
+        # Manager가 직접 읽는 head가 한다 — 아래 `uncertain` 기대가 그것이다.
         return {"success": True, "stdout": ""}
 
     monkeypatch.setattr(
@@ -3143,17 +3101,17 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
     create_database.assert_not_called()
 
 
-@pytest.mark.parametrize("fail_at_commit", (False, True))
-def test_generation_companions_ride_every_runtime_step_through_commit(
-    fail_at_commit: bool,
-    tmp_path: Path,
+def _companion_resume_harness(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """companion이 PinVi 기동·최종 readiness·이미지 결박·C6c 검사·실패 정리·
-    committed 재개에 전부 실리는지 본다.
+    tmp_path: Path,
+    *,
+    start_phase: RebuildPhase,
+    fail_at_commit: bool = False,
+) -> SimpleNamespace:
+    """저장된 journal에서 재개하는 재구축을 실제 오케스트레이션 그대로 돌리는 대역.
 
-    t56e~t56h는 호출 하나에서 companion이 빠진 것만으로 Map code-server가 한 번도
-    뜨지 않았다. 호출처 하나를 지우면 이 테스트의 단언 하나가 깨져야 한다.
+    compose 호출, readiness 요청, 이미지 조회 label, C6c 검사 대상을 기록한다. DB와
+    docker는 대역이고 head는 후보 head를 그대로 돌려준다.
     """
 
     values = {
@@ -3171,7 +3129,7 @@ def test_generation_companions_ride_every_runtime_step_through_commit(
         "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
         "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
     }
-    journal = _journal_at_runtime_phase("cancel_probe_finalized")
+    journal = _journal_at_runtime_phase(start_phase)
     image_ids = journal.candidate.image_ids
     companion_owners = {
         "kor-travel-map-dagster-code-server": "kor-travel-map-dagster",
@@ -3329,6 +3287,44 @@ def test_generation_companions_ride_every_runtime_step_through_commit(
     }.items():
         monkeypatch.setattr(service, name, replacement)
 
+    return SimpleNamespace(
+        service=service,
+        state_paths=state_paths,
+        operations=operations,
+        readiness_requests=readiness_requests,
+        image_labels=image_labels,
+        inspected_services=inspected_services,
+        companion_owners=companion_owners,
+    )
+
+
+@pytest.mark.parametrize("fail_at_commit", (False, True))
+def test_generation_companions_ride_every_runtime_step_through_commit(
+    fail_at_commit: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """companion이 PinVi 기동·최종 readiness·이미지 결박·C6c 검사·실패 정리·
+    committed 재개에 전부 실리는지 본다.
+
+    t56e~t56h는 호출 하나에서 companion이 빠진 것만으로 Map code-server가 한 번도
+    뜨지 않았다. 호출처 하나를 지우면 이 테스트의 단언 하나가 깨져야 한다.
+    """
+
+    harness = _companion_resume_harness(
+        monkeypatch,
+        tmp_path,
+        start_phase="cancel_probe_finalized",
+        fail_at_commit=fail_at_commit,
+    )
+    service = harness.service
+    state_paths = harness.state_paths
+    operations = harness.operations
+    readiness_requests = harness.readiness_requests
+    image_labels = harness.image_labels
+    inspected_services = harness.inspected_services
+    companion_owners = harness.companion_owners
+
     companion_names = tuple(sorted(companion_owners))
     stop = ("stop", *RUNTIME_SERVICES, *companion_names)
     wait = ("up", "-d", "--no-deps", "--wait", "--wait-timeout", _WAIT_TIMEOUT)
@@ -3387,6 +3383,36 @@ def test_generation_companions_ride_every_runtime_step_through_commit(
     assert set(companion_names) <= set(image_labels)
     assert inspected_services == [runtime_with_companions]
     assert not any(operation[0] in {"stop", "up"} for operation in operations)
+
+
+def test_storage_oneshot_without_receipt_advances_when_the_observed_head_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """storage one-shot의 성공 판정은 Manager가 직접 읽은 head 하나다(ADR-51 PR-A).
+
+    이 판정의 **성공 경로**를 지나는 테스트가 없으면, 비교 대상을 다른 head로 바꾸는
+    변이가 전 스위트를 통과하고 배포에서만 모든 재구축이 `uncertain`에 멈춘다.
+    """
+
+    harness = _companion_resume_harness(
+        monkeypatch,
+        tmp_path,
+        start_phase="map_dagster_storage_intent_durable",
+    )
+    monkeypatch.setattr(
+        harness.service,
+        "_ensure_pinvi_fresh_migration_fence",
+        Mock(side_effect=DeploymentContractError("stop after Map runtime startup")),
+    )
+
+    with pytest.raises(DeploymentContractError, match="stop after Map runtime startup"):
+        harness.service.rebuild_pinned_runtime()
+
+    storage = ("run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate")
+    assert harness.operations.count(storage) == 1
+    # 영수증 없이(빈 stdout) 끝난 one-shot 뒤 head가 맞으면 Map 런타임까지 간다.
+    assert read_rebuild_journal(harness.state_paths.journal).phase == "map_runtime_ready"
 
 
 def test_oneshot_writer_liveness_must_be_empty_before_database_reset(

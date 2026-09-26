@@ -151,9 +151,9 @@ transaction/candidate로 idempotently 다시 검증한다. tombstone write/unlin
    application final permit을 발행하고, 별도 Dagster metadata DB identity를 application identity와 분리해
    metadata permit을 발행한다. permit은 non-root Map API/Dagster가 읽을 수 있는 root-owned `0755`
    directory의 `0444` 파일이고, receipt/result는 root-only `0700`/`0600`으로 유지한다. 그 뒤 Map API를
-   기동해 head `300`을 확인한다. Map Dagster storage migration은 journal transaction ID를
-   `operation_id`로 쓰는 DB intent+append-only receipt v2다. durable intent 재개에서도 같은 command를
-   호출해 receipt를 복구하거나 미완료 intent를 완결하며, exact head와 operation ID가 다르면 거부한다.
+   기동해 head `300`을 확인한다. Map Dagster storage migration은 one-shot을 실행한 뒤 Manager가
+   metadata DB의 `alembic_version`을 직접 읽어 후보 head와 같은지로만 판정한다(ADR-51 PR-A — one-shot의
+   stdout 영수증은 더 보지 않는다). durable intent 재개에서도 같은 command를 다시 호출한다.
    성공 후 Dagster web·daemon은 storage migration을 암묵적으로 다시 실행하지 않도록 `--no-deps`로
    기동한다.
 6. PinVi 쪽의 별도 `pinvi-admin-bootstrap` one-shot CLI는 먼저 candidate-static `pinvi_head`까지
