@@ -160,6 +160,9 @@ _MAP_RUNTIME_CONTAINERS = {
     _MAP_DAGSTER_SERVICE: "kor-travel-map-dagster-latest",
     _MAP_DAGSTER_DAEMON_SERVICE: "kor-travel-map-dagster-daemon-latest",
 }
+# ADR-069 code-server는 generation slot이 아니라 companion이라 `_MAP_RUNTIME_SERVICES`
+# (mutation-identifier 분류용)에는 넣지 않지만, runtime secret isolation은 받는다.
+_MAP_DAGSTER_CODE_SERVER_CONTAINER = "kor-travel-map-dagster-code-server-latest"
 # GM-09: cli.py의 _GLOBAL_MUTATION_LOCK_PATH와 반드시 같은 파일을 가리켜야 pinned
 # rebuild와 pin 회전이 서로 직렬화된다 — 정본은 services/trusted_install.py다.
 _C6C_GLOBAL_MUTATION_LOCK = GLOBAL_MUTATION_LOCK_PATH
@@ -7276,6 +7279,9 @@ def validate_runtime_secret_isolation(
             _MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
         },
         _MAP_RUNTIME_CONTAINERS[_MAP_DAGSTER_DAEMON_SERVICE]: {
+            _MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
+        },
+        _MAP_DAGSTER_CODE_SERVER_CONTAINER: {
             _MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
         },
     }

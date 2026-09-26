@@ -2461,6 +2461,14 @@ committed 또는 final resume은 일곱 running container의 실제 Docker image
 다시 exact 대조한다. 이 작업에는 backup, scratch restore, 이전 revision rollback이 없다. 데이터가
 필요하면 head `300`에 맞는 source/ETL을 별도 실행한다.
 
+**generation companion (2026-09-26).** slot 이미지를 그대로 쓰는 비-slot 장기 실행 서비스
+(ADR-069 Map `kor-travel-map-dagster-code-server`, PinVi `pinvi-dagster-code-server`·`pinvi-dagster-daemon`)는
+durable slot을 늘리지 않고 frozen resolved Compose에서 파생해(`generation_companion_services`) owner slot과
+같은 `up`·`stop`·readiness·image 대조·runtime secret inspection에 태운다. companion의 기대 image는 owner
+slot의 image다. `up --no-deps`는 호출에 이름이 없는 서비스로의 `depends_on` 간선을 지우므로, 이 파생이
+없던 동안 rebuild는 Map code-server를 한 번도 기동하지 않았고(t56e~t56h) PinVi code-server·daemon은 DB
+reset을 건너 옛 image로 남았다. 새 companion은 compose 선언만으로 관리 대상이 된다.
+
 ### 근거
 
 - paired receipt를 유일 Map API/Dagster image authority로 쓰면 같은 source를 두 번 build해 생기는

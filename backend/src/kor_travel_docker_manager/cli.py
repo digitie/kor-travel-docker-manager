@@ -5,10 +5,13 @@ import os
 import stat
 import sys
 import time
+import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
+
+from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
@@ -16,10 +19,14 @@ from kor_travel_docker_manager.services.c6c_deployment import (
 from kor_travel_docker_manager.services.compose_service import (
     PinnedRuntimePrejournalFailure,
     compose_service,
+    get_env_path,
     pinned_runtime_failed_before_journal,
     pinned_runtime_journal_was_reached,
 )
-from kor_travel_docker_manager.services.docker_service import docker_service
+from kor_travel_docker_manager.services.docker_service import (
+    docker_service,
+    redact_secret_text,
+)
 from kor_travel_docker_manager.services.legacy_override_retirement import (
     LegacyOverrideRetirementError,
     activate_canonical_concierge,
@@ -286,6 +293,29 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _emit_redacted_failure_detail(exc: BaseException) -> None:
+    """실패 원문(예외 체인 전체)을 `.env` 비밀을 가린 채 stderr로 낸다.
+
+    JSON 결과는 stage 한 단어만 싣는다. 원문이 없으면 원인을 찾으려고 파괴적 재구축을
+    계측한 채 다시 돌려야 했다. launcher는 stderr를 root 0600 run 디렉터리에 남긴다.
+    """
+
+    try:
+        environment = {**os.environ, **dotenv_values(get_env_path())}
+    except (OSError, UnicodeError):
+        print(
+            "pinned runtime failure detail withheld: .env could not be read for redaction",
+            file=sys.stderr,
+        )
+        return
+    detail = "".join(traceback.format_exception(exc))
+    print(
+        "pinned runtime failure detail (redacted):\n"
+        + redact_secret_text(detail, environment),
+        file=sys.stderr,
+    )
+
+
 def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
     try:
         if not args.confirm:
@@ -321,6 +351,7 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
                 "pinned runtime candidate preparation failed: " + exc.stage,
                 file=sys.stderr,
             )
+        _emit_redacted_failure_detail(exc)
         return 2
     except DeploymentContractError as exc:
         # 봉인 밖 실패는 원문을 보존하되(운영자가 이유를 봐야 한다)
@@ -339,8 +370,7 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
                 ),
             }
             print(json.dumps(payload, ensure_ascii=False, indent=2))
-            return 2
-        print(str(exc), file=sys.stderr)
+        _emit_redacted_failure_detail(exc)
         return 2
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

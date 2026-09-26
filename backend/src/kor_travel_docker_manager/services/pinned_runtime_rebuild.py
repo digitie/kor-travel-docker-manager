@@ -10,11 +10,12 @@ import hashlib
 import json
 import re
 import uuid
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.map_application_candidate import (
@@ -121,6 +122,40 @@ def _runtime_image_environment(
             for service, environment_name in _IMAGE_ENVIRONMENT.items()
         }
     )
+
+
+def generation_companion_services(
+    resolved: Mapping[str, Any],
+    image_ids: Mapping[RuntimeService, str],
+    *,
+    excluded_services: Collection[str],
+) -> Mapping[str, RuntimeService]:
+    """generation slot의 이미지를 그대로 쓰는 비-slot 장기 실행 서비스와 그 owner slot.
+
+    ADR-069 code-server처럼 slot 이미지를 공유하는 서비스는 durable slot 없이 owner의
+    이미지에 결박된다. `up --no-deps`는 이름이 없는 서비스로의 depends_on 간선을 지우므로
+    이 목록이 없으면 그 서비스는 기동도 정지도 되지 않는다. 손으로 두지 않고 frozen
+    resolved Compose에서 파생해, compose에 추가하는 것만으로 관리 대상이 되게 한다.
+    """
+
+    services = resolved.get("services")
+    if not isinstance(services, Mapping):
+        raise DeploymentContractError("pinned runtime resolved Compose services are invalid")
+    owners: dict[str, RuntimeService] = {}
+    for slot in RUNTIME_SERVICES:
+        owners.setdefault(image_ids[slot], slot)
+    companions: dict[str, RuntimeService] = {}
+    for name, service in services.items():
+        if name in RUNTIME_SERVICES or name in excluded_services:
+            continue
+        if not isinstance(name, str) or not isinstance(service, Mapping):
+            raise DeploymentContractError(
+                "pinned runtime resolved Compose services are invalid"
+            )
+        image = service.get("image")
+        if isinstance(image, str) and image in owners:
+            companions[name] = owners[image]
+    return MappingProxyType(dict(sorted(companions.items())))
 
 
 def _candidate_image_name(

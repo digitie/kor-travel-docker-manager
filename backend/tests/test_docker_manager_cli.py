@@ -537,12 +537,12 @@ def test_cli_rebuild_pinned_runtime_emits_safe_prejournal_failure_json(
 @patch("kor_travel_docker_manager.cli.compose_service")
 
 
-def test_cli_rebuild_pinned_runtime_hides_unclassified_contract_error_in_json(
+def test_cli_rebuild_pinned_runtime_keeps_json_fixed_and_writes_the_cause_to_stderr(
     mock_compose_service,
     capsys,
 ):
     mock_compose_service.rebuild_pinned_runtime.side_effect = DeploymentContractError(
-        "sensitive unexpected contract detail"
+        "unexpected contract detail"
     )
 
     assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
@@ -552,8 +552,8 @@ def test_cli_rebuild_pinned_runtime_hides_unclassified_contract_error_in_json(
         "status": "failed",
         "classification": "unclassified",
     }
-    assert "sensitive unexpected contract detail" not in captured.out
-    assert not captured.err
+    assert "unexpected contract detail" not in captured.out
+    assert "unexpected contract detail" in captured.err
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
@@ -620,10 +620,10 @@ def test_cli_rebuild_pinned_runtime_marks_a_prejournal_contract_failure(
 
     launcher는 `classification`만 보고 claim 해제를 판단한다. 이 거부가
     `unclassified`로 접히면 아무것도 소비하지 않은 pinset이 탄다.
-    그러면서도 **원문은 여전히 JSON에 넣지 않는다** — 아래 단언이 그 경계다.
+    JSON 모양은 launcher 계약이라 그대로 두고, 원문은 가린 채 stderr로 간다.
     """
 
-    failure = DeploymentContractError("sensitive unexpected contract detail")
+    failure = DeploymentContractError("unexpected contract detail")
     compose_service_module._mark_pinned_runtime_prejournal(failure)
     mock_compose_service.rebuild_pinned_runtime.side_effect = failure
 
@@ -634,8 +634,8 @@ def test_cli_rebuild_pinned_runtime_marks_a_prejournal_contract_failure(
         "status": "failed",
         "classification": "prejournal_failure",
     }
-    assert "sensitive unexpected contract detail" not in captured.out
-    assert not captured.err
+    assert "unexpected contract detail" not in captured.out
+    assert "unexpected contract detail" in captured.err
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
@@ -654,6 +654,86 @@ def test_cli_rebuild_pinned_runtime_keeps_the_message_outside_json(
     assert main(["pinvi-pair", "rebuild-pinned", "--confirm"]) == 2
 
     assert "requires rehearsal" in capsys.readouterr().err
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+
+
+def test_cli_rebuild_pinned_runtime_reports_the_sealed_cause_with_env_secrets_redacted(
+    mock_compose_service,
+    capsys,
+    tmp_path,
+    monkeypatch,
+):
+    """봉인된 stage 실패도 원인 원문(예외 체인)을 stderr에 남기되 `.env` 비밀은 가린다."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD=pinvi-admin-secret-value\n"
+        "KOR_TRAVEL_MAP_PG_DSN=postgresql://ktm:dsn-secret-value@127.0.0.1:12700/db\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_file))
+    try:
+        raise DeploymentContractError(
+            "Map source environment contract protected wiring count is invalid; "
+            "saw pinvi-admin-secret-value and "
+            "postgresql://ktm:dsn-secret-value@127.0.0.1:12700/db"
+        )
+    except DeploymentContractError as cause:
+        failure = compose_service_module.PinnedRuntimePrejournalFailure(
+            "candidate_contract"
+        )
+        failure.__cause__ = cause
+    mock_compose_service.rebuild_pinned_runtime.side_effect = failure
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "status": "failed",
+        "classification": "prejournal_failure",
+        "stage": "candidate_contract",
+    }
+    assert "protected wiring count is invalid" in captured.err
+    assert "pinvi-admin-secret-value" not in captured.err
+    assert "dsn-secret-value" not in captured.err
+    assert "<redacted>" in captured.err
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+
+
+def test_cli_rebuild_pinned_runtime_redacts_process_environment_secrets(
+    mock_compose_service,
+    capsys,
+    tmp_path,
+    monkeypatch,
+):
+    """`.env`에 없고 프로세스 환경에만 있는 비밀도 원인 출력에서 가린다.
+
+    systemd unit·launcher가 넘긴 값은 `.env`를 거치지 않는다.
+    """
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_file))
+    monkeypatch.setenv("KTDM_LAUNCHER_API_TOKEN", "process-only-token-value")
+    try:
+        raise DeploymentContractError("saw process-only-token-value in argv")
+    except DeploymentContractError as cause:
+        failure = compose_service_module.PinnedRuntimePrejournalFailure(
+            "candidate_contract"
+        )
+        failure.__cause__ = cause
+    mock_compose_service.rebuild_pinned_runtime.side_effect = failure
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
+
+    captured = capsys.readouterr()
+    assert "in argv" in captured.err
+    assert "process-only-token-value" not in captured.err
+    assert "<redacted>" in captured.err
 
 
 @patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
