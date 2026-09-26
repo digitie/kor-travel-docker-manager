@@ -519,56 +519,39 @@ def _resolve_repository_path(
     return repository
 
 
-def _run_git_read(
+def _read_map_source_file(
     repository: Path,
-    args: Sequence[str],
+    relative_path: str,
     *,
-    label: str,
-    allow_output_whitespace: bool = False,
-) -> str:
-    try:
-        completed = subprocess.run(
-            ["git", "--no-replace-objects", "-C", str(repository), *args],
-            cwd=get_project_root(),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except OSError as exc:
-        raise DeploymentContractError(
-            f"cannot inspect {label} build context Git state"
-        ) from exc
-    if completed.returncode != 0:
-        raise DeploymentContractError(
-            f"cannot inspect {label} build context Git state"
-        )
-    if allow_output_whitespace:
-        return completed.stdout.rstrip("\r\n")
-    return completed.stdout.strip()
+    max_bytes: int,
+) -> bytes | None:
+    """materialize된 Map source root 아래의 파일 하나를 읽는다. 없으면 ``None``.
 
+    root는 핀된 revision 그대로의 트리다(재구축이 materialize한 source). 그래서 파일이 곧
+    그 revision의 blob이다 — git을 부르지 않는다(ADR-51 E). 일반 파일이 아니거나 실행
+    비트가 있거나 ``max_bytes``보다 크면 ``DeploymentContractError``로 거부하고, 호출자가
+    자기 문맥의 문구를 고를 수 있게 사유만 짧게 싣는다.
+    """
 
-def _run_git_bytes(
-    repository: Path,
-    args: Sequence[str],
-    *,
-    label: str,
-) -> bytes:
+    path = repository / relative_path
     try:
-        completed = subprocess.run(
-            ["git", "--no-replace-objects", "-C", str(repository), *args],
-            cwd=get_project_root(),
-            capture_output=True,
-            check=False,
-        )
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
     except OSError as exc:
-        raise DeploymentContractError(
-            f"cannot inspect {label} build context Git state"
-        ) from exc
-    if completed.returncode != 0:
-        raise DeploymentContractError(
-            f"cannot inspect {label} build context Git state"
-        )
-    return completed.stdout
+        raise DeploymentContractError("unreadable") from exc
+    if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o111:
+        raise DeploymentContractError("not a regular non-executable file")
+    if metadata.st_size > max_bytes:
+        raise DeploymentContractError("too large")
+    try:
+        with path.open("rb") as handle:
+            content = handle.read(max_bytes + 1)
+    except OSError as exc:
+        raise DeploymentContractError("unreadable") from exc
+    if len(content) > max_bytes:
+        raise DeploymentContractError("too large")
+    return content
 
 
 _MAP_SOURCE_V3_API_ENVIRONMENT = {
@@ -655,6 +638,7 @@ _MAP_SOURCE_ENV_FILE_CONTRACT = {
     ],
 }
 _MAP_SOURCE_TRACKED_ENV_FILE_MAX_BYTES = 64 * 1024
+_MAP_SOURCE_MANIFEST_MAX_BYTES = 4 * 1024 * 1024
 
 
 # GM-11: 중복 키 거부 YAML 로더의 정본은 services/yaml_strict.py다 — registry.py도
@@ -866,10 +850,9 @@ def _validate_map_source_protected_scalar_tree(
 
 def _validate_map_source_env_files(
     repository: Path,
-    source_revision: str,
     payload: Mapping[str, Any],
 ) -> None:
-    """source compose env_file의 경로·옵션과 tracked 내용을 고정한다."""
+    """source compose env_file의 경로·옵션과 source 트리에 있는 내용을 고정한다."""
 
     services = payload.get("services")
     if not isinstance(services, Mapping):
@@ -901,62 +884,24 @@ def _validate_map_source_env_files(
         for entries in _MAP_SOURCE_ENV_FILE_CONTRACT.values()
         for entry in entries
     }
-    for referenced_path in referenced_paths:
-        tree = _run_git_bytes(
-            repository,
-            [
-                "ls-tree",
-                "-z",
-                source_revision,
-                "--",
+    for referenced_path in sorted(referenced_paths):
+        try:
+            raw_content = _read_map_source_file(
+                repository,
                 referenced_path,
-            ],
-            label="Map",
-        )
-        if not tree:
-            continue
-        records = tree.split(b"\0")
-        if len(records) != 2 or records[-1] != b"":
-            raise DeploymentContractError(
-                "Map source environment contract env_file tree lookup is invalid"
+                max_bytes=_MAP_SOURCE_TRACKED_ENV_FILE_MAX_BYTES,
             )
-        metadata, separator, path_bytes = records[0].partition(b"\t")
-        fields = metadata.split(b" ")
-        if (
-            separator != b"\t"
-            or len(fields) != 3
-            or fields[0] != b"100644"
-            or fields[1] != b"blob"
-            or re.fullmatch(rb"[0-9a-f]{40}", fields[2]) is None
-            or path_bytes != referenced_path.encode("utf-8")
-        ):
+        except DeploymentContractError as exc:
+            if str(exc) == "too large":
+                raise DeploymentContractError(
+                    "Map source environment contract tracked env_file exceeds 64 KiB"
+                ) from exc
             raise DeploymentContractError(
                 "Map source environment contract tracked env_file is not a regular 100644 blob"
-            )
-        object_id = fields[2].decode("ascii")
-        raw_size = _run_git_read(
-            repository,
-            ["cat-file", "-s", object_id],
-            label="Map",
-        )
-        if re.fullmatch(r"[0-9]+", raw_size) is None:
-            raise DeploymentContractError(
-                "Map source environment contract tracked env_file size is invalid"
-            )
-        object_size = int(raw_size)
-        if object_size > _MAP_SOURCE_TRACKED_ENV_FILE_MAX_BYTES:
-            raise DeploymentContractError(
-                "Map source environment contract tracked env_file exceeds 64 KiB"
-            )
-        raw_content = _run_git_bytes(
-            repository,
-            ["cat-file", "blob", object_id],
-            label="Map",
-        )
-        if len(raw_content) != object_size:
-            raise DeploymentContractError(
-                "Map source environment contract tracked env_file size changed"
-            )
+            ) from exc
+        if raw_content is None:
+            # 핀된 revision이 추적하지 않는 파일이다 — runtime에만 생긴다.
+            continue
         try:
             content = raw_content.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -986,15 +931,24 @@ def _map_source_environment_contract_version(
         compose_directory=Path(compose_path).resolve().parent,
         label="Map",
     )
-    source_manifest = _run_git_read(
-        repository,
-        ["show", f"{source_revision}:docker-compose.yml"],
-        label="Map",
-        allow_output_whitespace=True,
-    )
+    # root는 핀된 revision 그대로의 트리다 — 그 파일이 곧 그 revision의 compose다(ADR-51 E).
     try:
-        payload = _load_unique_map_source_yaml(source_manifest)
-    except yaml.YAMLError as exc:
+        raw_manifest = _read_map_source_file(
+            repository,
+            "docker-compose.yml",
+            max_bytes=_MAP_SOURCE_MANIFEST_MAX_BYTES,
+        )
+    except DeploymentContractError as exc:
+        raise DeploymentContractError(
+            "Map source environment contract manifest is unreadable"
+        ) from exc
+    if raw_manifest is None:
+        raise DeploymentContractError(
+            "Map source environment contract manifest is missing"
+        )
+    try:
+        payload = _load_unique_map_source_yaml(raw_manifest.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
         raise DeploymentContractError(
             "Map source environment contract manifest is invalid"
         ) from exc
@@ -1034,11 +988,7 @@ def _map_source_environment_contract_version(
         payload,
         contract_version=contract_version,
     )
-    _validate_map_source_env_files(
-        repository,
-        source_revision,
-        payload,
-    )
+    _validate_map_source_env_files(repository, payload)
     return contract_version
 
 

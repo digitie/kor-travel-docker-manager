@@ -202,8 +202,8 @@ def _run_read_only(
 ) -> subprocess.CompletedProcess[bytes] | None:
     """프로세스를 띄우는 유일한 지점. 실패·타임아웃은 예외가 아니라 ``None``이다.
 
-    ``compose_service._run_git_read``를 재사용하지 않는다 — 거기에는 ``timeout``이
-    없어서 UI가 폴링하는 route에서 쓰면 멈춘 git 하나가 anyio worker를 무한히 문다.
+    UI가 폴링하는 route에서 도므로 모든 호출에 ``timeout``을 건다 — 멈춘 git 하나가 anyio
+    worker를 무한히 물지 않게 한다.
     """
 
     try:

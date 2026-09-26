@@ -3777,3 +3777,20 @@ I-1과 한 번뿐인 레이아웃 전환(`prod-deployment.md` §3.0) 뒤에 설�
   읽지 않는다.
 - **되돌림 하한**: I-1이다. 새 installer로 I-1을 설치하면 표식이 있는 레이아웃 전환 release를 재사용한다. 그
   아래는 §3.0 역전환 뒤 옛 installer로 간다. C-3 NOTE가 남겨 둔 "installer 자체 lock 코드"는 이것으로 끝났다.
+
+### NOTE: E(소스 봉인) E-1 — 소스 reader를 파일 읽기로 옮겼다 (2026-09-27, E-1)
+
+잃는 보장 E(소스 봉인)를 세 단계로 나눈다 — E-1 reader 이전, E-2 M05의 실행별 checkout, E-3 재구축 소스를
+`fetch` + `git archive <sha>`로. D·I와 같은 순서다: 읽는 쪽을 먼저 옮긴다. E-1은 호스트 상태를 바꾸지 않는다.
+
+- **재구축의 Map 계약 reader**(`candidate_contract` 단계 — 수렴 포함 매 실행): `docker-compose.yml`과 추적
+  env_file을 `git show`·`ls-tree`·`cat-file` 대신 materialize된 source root에서 파일로 읽는다. root는 핀된
+  revision 그대로의 트리이므로 같은 바이트다. env_file 규칙은 그대로다(일반 파일·실행 비트 없음 = 옛 "100644
+  blob", 64 KiB, UTF-8, 보호 이름 금지, 없으면 건너뜀). 정화되지 않은 환경에서 root git을 부르던
+  `_run_git_read`·`_run_git_bytes`가 없어졌다.
+- **M05 `_pair`**: 네 표면 파일도 source root에서 읽는다. PinVi attestation이 service 표면을 그 표면의 릴리스
+  revision에서 읽으므로 그 object를 보충하는 fetch는 E-2까지 남는다.
+- **드러난 것**: 이 reader를 부르는 테스트는 함수 전체를 대역으로 바꾸고 있어서, source가 git 저장소가 아니면
+  모든 재구축이 깨지는데도 CI는 초록이었을 것이다. 이제 `.git` 없는 디렉터리를 실제로 읽힌다.
+- **잃은 것**: 없다. git index의 "추적되는 100644 blob"이 파일의 "일반 파일·실행 비트 없음"이 됐고, 트리가
+  핀된 revision인 한 둘은 같다.

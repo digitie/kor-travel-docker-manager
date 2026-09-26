@@ -3668,6 +3668,19 @@ def _write_v2_pair(pinvi_root: Path, blobs: dict[str, bytes]) -> dict[str, objec
 _SERVICE_RELEASE_REVISION = "7" * 40
 
 
+def _write_map_surfaces(map_root: Path, blobs: dict[str, bytes]) -> None:
+    """map_root는 pinned revision 그대로의 트리다 — 표면 파일을 그 자리에 둔다(ADR-51 E)."""
+
+    for relative, raw in blobs.items():
+        target = map_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+
+
+def _no_git(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+    raise AssertionError("_pair must read the surfaces from the source tree, not git")
+
+
 def test_pair_v2_anchors_every_surface_to_the_pinned_release(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3694,30 +3707,21 @@ def test_pair_v2_anchors_every_surface_to_the_pinned_release(
         path: json.dumps({"path": path}).encode() for path in set(paths.values())
     }
     pair = _write_v2_pair(pinvi_root, blobs)
+    _write_map_surfaces(map_root, blobs)
 
-    reads: list[str] = []
     fetches: list[tuple[str, ...]] = []
 
     def fake_command(*args: str, **_kwargs: object) -> str:
         fetches.append(args)
         return ""
 
-    def fake_run(
-        args: list[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[bytes]:
-        target = args[-1]
-        reads.append(target)
-        revision, _, path = target.partition(":")
-        return subprocess.CompletedProcess(args, 0, stdout=blobs[path])
-
     monkeypatch.setattr(driver, "_command", fake_command)
-    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    # 네 표면은 pinned revision 그대로의 트리(map_root)에서 파일로 읽는다 — git show가 아니다.
+    monkeypatch.setattr(driver.subprocess, "run", _no_git)
     actual, service_openapi_sha256, service_source_revision = driver._pair(
         pinvi_root, map_root
     )
 
-    # 네 read 전부가 pinned revision에서 났다 — 이것이 v2의 실질이다.
-    assert reads and all(target.startswith(pinned + ":") for target in reads)
     # fetch는 둘이다: 릴리스 revision과 service 표면의 릴리스 revision. 후자는
     # 대조에 쓰이지 않고 **PinVi attestation이 읽을 수 있게** 보충하는 것이다
     # (계약이 네 revision을 흩뿌리던 v1과 달리 흩어지지 않는다).
@@ -3756,15 +3760,10 @@ def test_pair_v2_rejects_a_malformed_service_release_revision(
     (pinvi_root / "contracts/kor-travel-map-service-provenance-v1.json").write_text(
         json.dumps({"map_release_revision": broken}), encoding="utf-8"
     )
-
-    def fake_run(
-        args: list[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[bytes]:
-        _revision, _, path = args[-1].partition(":")
-        return subprocess.CompletedProcess(args, 0, stdout=blobs[path])
+    _write_map_surfaces(map_root, blobs)
 
     monkeypatch.setattr(driver, "_command", lambda *a, **k: "")
-    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    monkeypatch.setattr(driver.subprocess, "run", _no_git)
 
     with pytest.raises(driver._PhaseError) as error:
         driver._pair(pinvi_root, map_root)
@@ -3897,15 +3896,10 @@ def test_pair_v2_rejects_a_surface_that_differs_from_the_pinned_release(
     (pinvi_root / "contracts/kor-travel-map-m05-pair-provenance-v1.json").write_text(
         json.dumps(pair), encoding="utf-8"
     )
-
-    def fake_run(
-        args: list[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[bytes]:
-        _, _, path = args[-1].partition(":")
-        return subprocess.CompletedProcess(args, 0, stdout=blobs[path])
+    _write_map_surfaces(map_root, blobs)
 
     monkeypatch.setattr(driver, "_command", lambda *_a, **_k: "")
-    monkeypatch.setattr(driver.subprocess, "run", fake_run)
+    monkeypatch.setattr(driver.subprocess, "run", _no_git)
 
     with pytest.raises(driver._PhaseError) as raised:
         driver._pair(pinvi_root, map_root)
