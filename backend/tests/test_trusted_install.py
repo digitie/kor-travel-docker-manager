@@ -18,7 +18,6 @@ from kor_travel_docker_manager.services import (
     c6c_deployment,
     compose_service,
     legacy_override_retirement,
-    pinned_runtime_generation,
     runtime_execution_registry,
     runtime_pair_rotation,
     runtime_pin_registry,
@@ -98,7 +97,6 @@ def test_compose_service_root_check_delegates_to_the_shared_function(
         # 리뷰에서 추가로 찾은, _TRUSTED_* 접두 이름이 아니라 grep을 피했던 중복.
         (c6c_deployment, "_DEFAULT_C6C_PRODUCTION_STATE_ROOT", TRUSTED_STATE_ROOT),
         (c6c_deployment, "_C6C_PRODUCTION_STATE_ROOT", TRUSTED_STATE_ROOT),
-        (pinned_runtime_generation, "_DEFAULT_PUBLIC_ROOT", TRUSTED_PUBLIC_ROOT),
         (
             legacy_override_retirement,
             "_TRUSTED_PRODUCTION_PROJECT_ROOT",
@@ -130,7 +128,7 @@ def test_running_from_trusted_install_root_is_true_when_own_file_is_under_the_ro
     """분기 1(`__file__` 상대경로)을 다른 두 분기와 분리해 직접 확인한다.
 
     이전 리뷰에서 지적된 공백: sys.prefix를 패치하는 테스트만으로는 이 모듈 자신의
-    `__file__` 검사(pinned_runtime_generation.py의 원래 구현과 대응하는 분기)가
+    `__file__` 검사(옛 pinned_runtime_generation.py 구현과 대응하던 분기)가
     실제로 참을 낼 때 True를 반환하는지 확인하지 못한다 — 그 테스트는 분기 2만
     태운다. 여기서는 sys.prefix·get_project_root는 그대로 두고 `__file__`만 trusted
     root 아래로 옮겨 분기 1 단독으로 True가 나오는지 확인한다.
@@ -188,25 +186,6 @@ def test_runtime_pin_request_no_longer_false_negatives_on_wheel_execution(
     assert runtime_pin_request.runtime_pin_request_path() == (
         TRUSTED_REQUEST_ROOT / "runtime-pin-requests.json"
     )
-
-
-def test_pinned_runtime_generation_still_recognizes_its_own_file_relative_check(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """예전 구현(`__file__` 상대경로만)이 잡던 경우를 통합 판정이 계속 잡는지
-    확인한다 — union 결합이라 기존 참 조건을 잃으면 안 된다.
-
-    반드시 분기 1(`__file__`)만 패치해야 이 테스트가 의미가 있다 — sys.prefix를
-    패치하면 분기 2가 먼저 참이 돼 분기 1이 실제로 작동하는지는 확인하지 못한다.
-    """
-
-    monkeypatch.setattr(
-        trusted_install_module,
-        "__file__",
-        str(TRUSTED_INSTALL_ROOT / "backend" / "site-packages" / "trusted_install.py"),
-    )
-
-    assert pinned_runtime_generation._running_from_trusted_install_root() is True
 
 
 # --- launcher script 텍스트 대 상수 동일성 (검증 노트 (b)) ----------------------

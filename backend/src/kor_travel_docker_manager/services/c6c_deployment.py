@@ -3374,8 +3374,8 @@ def effective_environment(env_path: str) -> dict[str, str]:
 def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
     """legacy v4 tombstone 경로와 host-global lock을 함께 정한다.
 
-    첫 경로는 legacy artifact 탐지에만 남아 있으며 현재 배포 기록(``deploy-status.json``·
-    v6 manifest)은 이를 읽거나 쓰지 않는다. 두 번째 lock 경로만 현재 Manager mutation
+    첫 경로는 legacy artifact 탐지에만 남아 있으며 현재 배포 기록(``deploy-status.json``)은
+    이를 읽거나 쓰지 않는다. 두 번째 lock 경로만 현재 Manager mutation
     serialization에 사용한다.
     """
 

@@ -3630,3 +3630,31 @@ D-2 v6 쓰기와 v6 코드 삭제, D-3 permit mount 제거. 각 릴리스는 직
   설치 뒤에 멈춘다(D-2). 순서를 뒤집으면 새 pair 배포 뒤 옛 M05가 "pinset differs"로 멈춘다.
 - 교차 저장소: Map `docs/integration-map.md`와 PinVi `docs/runbooks/live-mutating-e2e.md`의 generation
   API 절차는 "`ktdctl pin verify` exit 0 + M05 launcher preflight 통과"로 바뀐다(문서 PR만, 코드 변경 없음).
+
+### NOTE: D-2 — v6 쓰기를 멈추고 v6 코드를 지웠다 (2026-09-27, D-2)
+
+D-1이 설치된 위에서 커밋의 v6 쓰기를 멈춘다. 커밋이 남기는 기록은 `deploy-status.json` 하나다.
+
+- **커밋은 v6를 쓰지 않는다.** `compose_service`의 커밋은 `write_deploy_status`만 부른다. 그 기록
+  쓰기가 실패해도 검증이 끝난 런타임을 내리지 않는다는 규칙은 그대로다 — 상태는 `in_progress`로
+  남고 다음 실행이 처음부터 다시 돈다. 덤으로, 옛 `write_manifest` 안의 공개 사본 쓰기가 런타임이
+  뜬 뒤 실패해 배포를 실패로 만들던 자리가 없어졌다.
+- **지운 코드**: `pinned_runtime_generation.py`의 `PinnedRuntimeManifest`, manifest·generation·candidate
+  evidence payload parser(살아 있는 호출자가 manifest reader뿐이었다), `read_manifest`·`write_manifest`,
+  공개 사본 경로·발행·reader와 그 결박·요약 helper, private·public JSON IO helper, manifest 상수,
+  `PinnedRuntimeStatePaths.manifest` 필드. 남긴 것은 in-memory `PinnedRuntimeGeneration`·
+  `MapApplication300CandidateEvidence`·`generation_logical_sha256`(rebuild `result.json`의
+  `generation_sha256`), 배포 mode 검증과 state 경로 함수다.
+- **남긴 것**: `TRUSTED_PUBLIC_ROOT`와 `/var/lib/kor-travel-docker-manager-public` — runtime-pins·
+  runtime-executions 공개 사본이 쓴다. `migrate-execution-v6`·`ExecutionIdentityV6`·
+  `pinned-runtime-candidate-v6/` image prefix는 v6 manifest와 무관한 이름이라 그대로다.
+  `KTDM_PINNED_RUNTIME_PUBLIC_ROOT`는 더 아무 의미가 없다(`.env`에 남아 있어도 무해).
+- **on-disk 계약이 옮겨 갔다.** v6 스키마 동결은 끝났고, 이제 동결 대상은 rebuild와 M05가 함께 읽는
+  `deploy-status.json`이다 — 옛 version reader 없이 `_VERSION`을 올리면 둘 다 멈춘다
+  (`runtime-pin-registry.md` §1-2).
+- **되돌림 하한**: 호스트의 v6 파일은 더는 갱신되지 않으므로 D-2 이후 되돌릴 수 있는 가장 낮은
+  Manager는 D-1이다. D-1 이전 release의 M05 driver는 그 옛 파일을 현재 pinset과 대조하므로 D-2
+  이후 새 pair가 커밋되면 "pinset differs"로 멈춘다.
+- **호스트 잔여물**: private·공개 `pinned-runtime-generation-v6.json`과 공개 `pinned-runtime-rebuild-v8.json`은
+  아무것도 읽지 않는다. 지우는 것은 선택이고 D-1 이전으로 되돌릴 일이 없다고 판단한 뒤에만 한다
+  (`prod-deployment.md` §8.1). 교차 저장소 변경은 없다.

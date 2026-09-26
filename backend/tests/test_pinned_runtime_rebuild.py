@@ -47,11 +47,8 @@ from kor_travel_docker_manager.services.map_application_candidate import (
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     RUNTIME_SERVICES,
     PinnedRuntimeGeneration,
-    PinnedRuntimeManifest,
     RuntimeService,
-    manifest_from_payload,
     pinned_runtime_state_paths,
-    write_manifest,
 )
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     COMPOSE_BUILT_RUNTIME_SERVICES,
@@ -460,9 +457,6 @@ def test_candidate_generation_binds_all_runtime_inputs() -> None:
     assert generation.map_application_300_candidate_evidence.candidate_git_tree == (
         paired.candidate_git_tree
     )
-    assert manifest_from_payload(
-        PinnedRuntimeManifest(version=6, active_generation=generation).to_payload()
-    ).active_generation == generation
 
     artifact_directories = MapApplication300ArtifactDirectories(
         dagster_storage_permit=Path("/state/metadata-permit"),
@@ -1841,7 +1835,6 @@ def _forward_harness(
         smoke=Mock(),
         paired_builder=Mock(),
         materialize=Mock(side_effect=lambda **_kwargs: _sources()),
-        manifest_write=Mock(),
         contract=Mock(),
         prerequisites=Mock(),
         create_pinvi=Mock(return_value=False),
@@ -1940,7 +1933,6 @@ def _forward_harness(
         "load_c6c_deployment_config_from_environment": Mock(return_value=_C6cConfig()),
         "validate_runtime_secret_isolation": Mock(),
         "validate_current_map_ui_auth_runtime": Mock(),
-        "write_pinned_runtime_manifest": mocks.manifest_write,
         "reconcile_generation_references": mocks.retention_generation,
         "reconcile_candidate_build_references": mocks.retention_candidate,
         "create_database_if_absent": mocks.create_pinvi,
@@ -2016,7 +2008,9 @@ def test_first_deploy_runs_the_idempotent_full_path_and_commits(
     assert status.state == "committed"
     assert dict(status.images) == harness.expected_images
     assert dict(status.databases or {}) == _deployed_databases()
-    harness.mocks.manifest_write.assert_called_once()
+    # 커밋이 남기는 기록은 deploy-status.json 하나다 — v6 manifest는 ADR-51 D-2부터 쓰지
+    # 않는다. 호출 대역이 아니라 state root에 파일이 생기지 않았는지로 확인한다.
+    assert not (harness.status_path.parent / "pinned-runtime-generation-v6.json").exists()
 
 
 def test_leftover_v6_v8_state_is_not_adopted_and_is_left_untouched(
@@ -2028,21 +2022,29 @@ def test_leftover_v6_v8_state_is_not_adopted_and_is_left_untouched(
     root에 남아 있어도 넘겨받지 않는다(n150에는 그런 파일이 남아 있다). manifest를
     넘겨받았다면 같은 pair라 결과는 ``converged``였을 것이다 — manifest가 유효하므로
     이 검사는 "읽지 못해서 안 넘겨받음"과 "넘겨받지 않음"을 가른다. v8 journal 모델은
-    B3에서 지워져 그 자리에는 원시 바이트만 심는다. 여기서 v6 쓰기는
-    대역(``mocks.manifest_write``)이라 두 파일은 바이트 그대로 남아야 한다.
+    B3에서, v6 manifest 모델은 D-2에서 지워져 그 자리에는 원시 바이트만 심는다. 커밋은
+    v6를 더 쓰지 않으므로(ADR-51 D-2) 두 파일은 바이트 그대로 남아야 한다.
     """
 
-    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
     harness = _forward_harness(monkeypatch, tmp_path)
     state_root = harness.status_path.parent
     manifest_path = state_root / "pinned-runtime-generation-v6.json"
     journal_path = (
         state_root / f"pinned-runtime-rebuild-v8-{harness.candidate.pinset_sha256}.json"
     )
-    write_manifest(
-        manifest_path,
-        PinnedRuntimeManifest(version=6, active_generation=harness.candidate),
+    # D-2 이전 Manager가 이 세대를 커밋하며 남겼을 v6 문서의 바이트 그대로다.
+    manifest_path.write_bytes(
+        (
+            json.dumps(
+                {"version": 6, "active_generation": harness.candidate.to_payload()},
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
     )
+    os.chmod(manifest_path, 0o600)
     journal_path.write_bytes(b'{"version": 8}')
     os.chmod(journal_path, 0o600)
     planted = {path: path.read_bytes() for path in (manifest_path, journal_path)}
@@ -2697,10 +2699,21 @@ def test_an_absent_pinvi_database_is_created_before_the_map_migrates(
 def test_a_failed_bookkeeping_write_leaves_the_verified_runtime_up(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """디스크가 차서 기록을 못 써도 검증이 끝난 런타임을 내리지 않는다."""
+    """디스크가 차서 기록을 못 써도 검증이 끝난 런타임을 내리지 않는다.
+
+    커밋 뒤 남는 기록은 deploy-status.json 하나다(ADR-51 D-2) — 그 committed 쓰기만
+    실패시킨다. 시작 때의 in_progress 쓰기는 그대로 둬야 실패 뒤 상태를 읽을 수 있다.
+    """
 
     harness = _forward_harness(monkeypatch, tmp_path)
-    harness.mocks.manifest_write.side_effect = DeploymentContractError("disk full")
+    real_write_deploy_status = compose_service_module.write_deploy_status
+
+    def fail_committed_write(path: Path, status: DeployStatus) -> None:
+        if status.state == "committed":
+            raise DeploymentContractError("disk full")
+        real_write_deploy_status(path, status)
+
+    monkeypatch.setattr(compose_service_module, "write_deploy_status", fail_committed_write)
 
     with pytest.raises(DeploymentContractError, match="disk full"):
         harness.service.rebuild_pinned_runtime()

@@ -98,15 +98,11 @@ from kor_travel_docker_manager.services.map_application_candidate import (
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     RUNTIME_SERVICES,
     PinnedRuntimeGeneration,
-    PinnedRuntimeManifest,
     PinnedRuntimeStatePaths,
     RuntimeService,
     ensure_pinned_runtime_state_directory,
     generation_logical_sha256,
     pinned_runtime_state_paths,
-)
-from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    write_manifest as write_pinned_runtime_manifest,
 )
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     COMPOSE_BUILT_RUNTIME_SERVICES,
@@ -5133,12 +5129,8 @@ class ComposeService:
                 raise
             # 여기서부터는 검증이 끝난 배포의 기록이다. 기록 쓰기가 실패해도(디스크 부족
             # 등) 떠 있는 런타임을 내리지 않는다 — 상태는 in_progress로 남고 다음 실행이
-            # 처음부터 다시 돈다(멱등). v6 manifest는 이 릴리스에서 읽는 곳이 없다 — D-1
-            # 이전 Manager로 되돌릴 때를 위해서만 한 릴리스 더 쓴다(ADR-51 D-2에서 멈춘다).
-            write_pinned_runtime_manifest(
-                state_paths.manifest,
-                PinnedRuntimeManifest(version=6, active_generation=candidate),
-            )
+            # 처음부터 다시 돈다(멱등). 커밋이 남기는 기록은 deploy-status.json 하나다 —
+            # v6 manifest는 ADR-51 D-2부터 쓰지 않는다.
             write_deploy_status(status_path, committed)
             self._reconcile_pinned_runtime_image_retention(
                 candidate,
