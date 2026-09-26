@@ -1801,6 +1801,7 @@ def _forward_harness(
         ),
         # 대역 transaction의 환경은 `.env` 증거(경로·identity)가 없는 SimpleNamespace다.
         "materialize_pinned_runtime_sources": mocks.materialize,
+        "prune_pinned_runtime_sources": Mock(),
         "_ensure_map_application_300_python_base_images": Mock(),
         "_build_map_application_300_images": mocks.paired_builder,
         "_load_application_300_candidate": Mock(return_value=map_candidate),

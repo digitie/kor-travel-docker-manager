@@ -2067,7 +2067,7 @@ def _source_pair_preflight() -> tuple[
         values, pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256
     )
     sources = materialize_pinned_runtime_sources(
-        release=PINNED_RUNTIME_RELEASE, state_paths=state_paths, values=values
+        release=PINNED_RUNTIME_RELEASE, state_paths=state_paths
     )
     map_root, pinvi_root = (
         sources.source_for("map").root,

@@ -143,8 +143,8 @@ M05 one-shot launcher는 leaf와 one-shot ledger를 만들기 전에 M05 integra
 source-materialization pair preflight를 반드시 통과한다. 이 검사는 generic registry가 소유하지 않는 committed
 배포 기록(`deploy-status.json`의 state·pinset·application head, ADR-51 D-1), PinVi provenance의
 Map full revision·OpenAPI hash와 Manager-only admission contract만 대조한다. 이 preflight 자신은 fetch하지
-않는다(ADR-51 E-2) — materialize된 source 트리의 파일만 읽고, 그 materialize는 pinset의 봉인 트리가 아직 없을
-때만 받는다. 본문은 claim 전에 실행별 checkout 둘
+않는다(ADR-51 E-2) — materialize된 source 트리의 파일만 읽고, 그 materialize는 그 revision의 source 트리가
+아직 없을 때만 받는다(E-3). 본문은 claim 전에 실행별 checkout 둘
 (`runtime/map-src`·`runtime/pinvi-src`)을 canonical HTTPS에서 받아 그 위에서 돌고, 그 fetch가 실패해도
 실행권을 쓰지 않는다. 따라서 `pin verify`가
 generic pin/execution gate를 통과했어도, 끝나지 않은 배포나 문서 commit 등을 runtime Map revision으로 잘못 회전한

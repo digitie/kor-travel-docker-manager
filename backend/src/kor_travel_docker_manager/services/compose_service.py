@@ -120,6 +120,7 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     PinnedRuntimeSourceMaterialization,
     materialize_pinned_runtime_sources,
+    prune_pinned_runtime_sources,
 )
 from kor_travel_docker_manager.services.pinvi_bootstrap_credential import (
     pinvi_bootstrap_credential_file,
@@ -4738,8 +4739,9 @@ class ComposeService:
                 sources = materialize_pinned_runtime_sources(
                     release=release,
                     state_paths=state_paths,
-                    values=values,
                 )
+                # 이번 pair가 쓰지 않는 옛 revision·끊긴 시도를 지운다(G 안, 실패해도 배포는 계속).
+                prune_pinned_runtime_sources(state_paths, keep=sources)
             with _pinned_runtime_prejournal_step("application_base_images"):
                 paired_build_images = map_application_300_paired_build_image_names(sources)
                 _ensure_map_application_300_python_base_images(sources)

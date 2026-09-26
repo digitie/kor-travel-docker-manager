@@ -3815,3 +3815,32 @@ M05 본문은 봉인된 source 트리 대신 **실행별 checkout** 둘(`<leaf>/
   잔여물 요약 증거(`disposable-run-worktree.json`), 봉인 사후조건(실행이 봉인 트리를 건드리지 않았다는 관측).
   봉인 트리는 M05 본문에 쓰이지 않으므로 지킬 것이 없다.
 - **남은 것**: 재구축 source의 봉인·staging(E-3에서 archive로), rotation preflight(결정 4의 게이트).
+
+### NOTE: E(소스 봉인) E-3 — 재구축 소스를 fetch + archive로 바꿨다, E 완료 (2026-09-27, E-3)
+
+재구축(과 M05 preflight)의 source는 revision으로 이름 붙은 디렉터리다 —
+`<state_root>/pinned-runtime-sources/<role>-<revision>/{tree/, source.json}`. 없을 때만 임시 bare에 canonical
+HTTPS에서 그 revision을 `fetch --depth 1`로 받아 `git archive`(`tar.umask=0022`, 저장소의 export-ignore·
+export-subst는 `info/attributes`로 끔)를 풀고 `source.json`(role·revision·tree)을 쓴 뒤 rename으로 놓는다. 있으면
+git을 부르지 않는다. `pinned_runtime_sources.py`는 754줄에서 401줄이 됐다(M05 실행별 checkout 포함).
+
+- **"실행마다 fetch"의 해석**: 디렉터리 이름이 SHA이고 그 SHA가 곧 증명이므로 "없을 때만 fetch하고 같은
+  revision은 재사용"으로 읽었다(설치기 I-2와 같은 방식). 같은 pair의 수렴은 네트워크 없이 끝나고, 새 pair의
+  첫 재구축만 GitHub가 필요하다(전과 같다). revision 단위라 한쪽만 바뀐 회전은 다른 쪽을 다시 받지 않는다.
+- **GC**: 재구축이 G 안에서 materialize 직후 이번 pair가 쓰지 않는 `<role>-<revision>`과 끊긴 `.partial-*`를
+  지운다(실패해도 배포는 계속). M05와 preflight는 지우지 않는다.
+- **파일 모드**: 0444/0555 봉인이 0644/0755(실행 비트는 git index 그대로, 디렉터리는 호출자의 umask와 무관하게
+  0755)가 됐다. 이미지 안의 파일 모드가 바뀌므로 새 pinset의 이미지 digest가 달라진다. 기존 pinset은 태그된
+  이미지를 재사용하므로 다시 빌드하지 않는다.
+- **지운 것(E 전부)**: 워크트리 불변화(0555/0444 봉인과 재사용 때마다의 전수 walk), symlink 금지 walk,
+  submodule 금지(archive에서 gitlink는 빈 디렉터리가 되므로 빌드가 크게 실패한다), 로컬 origin 확인(`.env`의
+  `*_REPO_DIR` checkout을 source 소유자 권한으로 읽던 동의 증거와 privilege drop), 결정 3에 따른 부수 제거(clean
+  검사, 하위 디렉터리 owner/0700/symlink 재검사, staging·promotion 상태기계, 호출자 state_paths 대조).
+  `.env`의 두 checkout은 재구축·M05의 입력이 아니다(readiness 화면과 비핀 compose 기본값만 쓴다).
+- **남긴 것**: 정화된 root git(hook·credential·file/ext 프로토콜 없음, HOME·global/system config 없음, HTTPS만) —
+  비-root 사용자의 gitconfig가 `insteadOf`로 URL을 바꿔 root로 코드를 돌리지 못하게 하는 유일한 장치다. DTO
+  필드(role·root·revision·tree)는 그대로라 `candidate_git_tree`와 `generation_sha256`은 바뀌지 않는다. M05 본문의
+  실행별 checkout(E-2 — PinVi attestation 때문에 archive가 아니다).
+- **되돌림 하한**: 조건부로 I-1 그대로다. `<state_root>/pinned-runtime-sources-v5/`와 `.env`의 두 checkout을 그대로
+  두면 옛 release는 봉인 트리를 오프라인으로 재검증하고, 없으면 네트워크로 다시 만든다. 새 레이아웃은 옛
+  release가 읽지 않으므로 무해하다. v5 디렉터리 삭제는 선택이다(`prod-deployment.md` §8.1).

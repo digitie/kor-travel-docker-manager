@@ -1,14 +1,18 @@
+"""재구축 source 트리: revision으로 이름 붙은 `git archive` 디렉터리(ADR-51 E-3).
+
+진짜 git으로 로컬 origin 두 개를 만들고 프로덕션 함수를 직접 부른다. canonical HTTPS URL만
+로컬 `file://`로 바꾸는 runner를 주입한다 — 나머지 인자와 정화된 환경은 프로덕션 그대로다.
+"""
+
 from __future__ import annotations
 
+import json
 import os
-import shutil
 import stat
 import subprocess
-from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
-from types import FunctionType
-from typing import Literal
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -17,521 +21,225 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import PinnedR
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     pinned_runtime_state_paths as canonical_pinned_runtime_state_paths,
 )
-from kor_travel_docker_manager.services.pinned_runtime_release import (
-    current_pinned_runtime_release,
-)
-
-PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
+from kor_travel_docker_manager.services.pinned_runtime_release import RUNTIME_SOURCE_ROLES
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     materialize_pinned_runtime_sources,
-    pinned_runtime_source_paths,
+    pinned_runtime_sources_directory,
+    prune_pinned_runtime_sources,
 )
 
-GitRunner = Callable[..., subprocess.CompletedProcess[str]]
-GitInvocation = tuple[list[str], dict[str, object]]
-
-_TEST_PROJECT_NAME = "f1d-source-test"
+_URLS = {role: f"https://github.com/example/{role}.git" for role in RUNTIME_SOURCE_ROLES}
 
 
-def _state_values(tmp_path: Path) -> dict[str, str]:
-    return {
+def _git(*args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        },
+    )
+    return completed.stdout.strip()
+
+
+def _origin(root: Path, role: str) -> str:
+    """실행 파일 하나와 export-ignore 표시가 된 파일 하나를 가진 저장소."""
+
+    (root / "scripts").mkdir(parents=True)
+    (root / "scripts" / "run.sh").write_text("#!/bin/sh\necho run\n", encoding="utf-8")
+    (root / "scripts" / "run.sh").chmod(0o755)
+    (root / "docker-compose.yml").write_text(f"name: {role}\n", encoding="utf-8")
+    (root / "ignored-by-archive.txt").write_text("still in the tree\n", encoding="utf-8")
+    (root / ".gitattributes").write_text("ignored-by-archive.txt export-ignore\n", encoding="utf-8")
+    _git("init", "-q", "-b", "main", str(root))
+    _git("-C", str(root), "add", "-A")
+    _git("-C", str(root), "commit", "-qm", f"{role} pinned")
+    _git("-C", str(root), "config", "uploadpack.allowAnySHA1InWant", "true")
+    return _git("-C", str(root), "rev-parse", "HEAD")
+
+
+@pytest.fixture()
+def world(tmp_path: Path) -> Any:
+    origins = {role: tmp_path / "origins" / role for role in RUNTIME_SOURCE_ROLES}
+    revisions = {role: _origin(path, role) for role, path in origins.items()}
+    specs = [
+        SimpleNamespace(role=role, revision=revisions[role], canonical_url=_URLS[role])
+        for role in RUNTIME_SOURCE_ROLES
+    ]
+    release = SimpleNamespace(
+        sources=specs,
+        source_for=lambda role: next(spec for spec in specs if spec.role == role),
+        pinset_sha256="0" * 64,
+    )
+    values = {
         "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
         "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
         "PINVI_ENVIRONMENT": "production",
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "COMPOSE_PROJECT_NAME": _TEST_PROJECT_NAME,
+        "COMPOSE_PROJECT_NAME": "e3-source-test",
         "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state-root"),
     }
-
-
-def _state_paths(tmp_path: Path) -> PinnedRuntimeStatePaths:
-    return canonical_pinned_runtime_state_paths(
-        _state_values(tmp_path),
-        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+    state_paths: PinnedRuntimeStatePaths = canonical_pinned_runtime_state_paths(
+        values, pinset_sha256="0" * 64
     )
+    calls: list[dict[str, Any]] = []
 
-
-def _values(tmp_path: Path) -> tuple[dict[str, str], Path, Path]:
-    map_source = tmp_path / "map-source"
-    pinvi_source = tmp_path / "pinvi-source"
-    map_source.mkdir(mode=0o700)
-    pinvi_source.mkdir(mode=0o700)
-    return (
-        _state_values(tmp_path)
-        | {
-            "KOR_TRAVEL_MAP_REPO_DIR": str(map_source),
-            "PINVI_REPO_DIR": str(pinvi_source),
-        },
-        map_source,
-        pinvi_source,
-    )
-
-
-def _runner_for_materialization(
-    *,
-    paths: PinnedRuntimeStatePaths,
-    calls: list[GitInvocation],
-    fail_status_once: bool = False,
-    staging_mode: int = 0o700,
-    status_modes: list[int] | None = None,
-) -> GitRunner:
-    release = PINNED_RUNTIME_RELEASE
-    runtime_paths = pinned_runtime_source_paths(state_paths=paths, release=release)
-
-    status_failure_pending = fail_status_once
-
-    def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        nonlocal status_failure_pending
-        command = args[0]
-        assert isinstance(command, list)
-        assert all(isinstance(item, str) for item in command)
-        calls.append((command, dict(kwargs)))
-        if "config" in command:
-            root = command[command.index("-C") + 1]
-            role: Literal["map", "pinvi"] = "map" if root.endswith("map-source") else "pinvi"
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=f"{release.source_for(role).canonical_url}\n",
-                stderr="",
+    def runner(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append({"argv": list(argv), "env": dict(kwargs.get("env") or {})})
+        rewritten = [
+            next(
+                (f"file://{origins[role]}" for role, url in _URLS.items() if part == url),
+                part,
             )
-        if "init" in command and "--bare" in command:
-            Path(command[-1]).mkdir(mode=0o700)
-            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-        if "worktree" in command and "add" in command:
-            target = Path(command[command.index("--detach") + 1])
-            target.mkdir(mode=0o700)
-            os.chmod(target, staging_mode)
-            (target / ".git").write_text("gitdir: managed\n", encoding="utf-8")
-            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-        if "worktree" in command and "move" in command:
-            staging = Path(command[-2])
-            target = Path(command[-1])
-            os.chmod(staging, 0o700)
-            staging.rename(target)
-            os.chmod(target, 0o555)
-            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-        if "worktree" in command and "remove" in command:
-            target = Path(command[-1])
-            os.chmod(target, 0o700)
-            shutil.rmtree(target)
-            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-        if "status" in command:
-            target = Path(command[command.index("-C") + 1])
-            if status_modes is not None:
-                status_modes.append(stat.S_IMODE(target.stat().st_mode))
-            if status_failure_pending:
-                status_failure_pending = False
-                return subprocess.CompletedProcess(command, 1, stdout="", stderr="failure")
-        if "rev-parse" in command:
-            expression = command[-1]
-            if expression == "--verify":
-                expression = command[-1]
-            materialized_role: Literal["map", "pinvi"] = (
-                "map" if "map" in " ".join(command) else "pinvi"
-            )
-            if expression == "HEAD" or command[-1] == "HEAD":
-                output = release.source_for(materialized_role).revision
-            elif "tree" in expression:
-                output = ("c" if materialized_role == "map" else "d") * 40
-            else:
-                output = ("c" if materialized_role == "map" else "d") * 40
-            return subprocess.CompletedProcess(command, 0, stdout=f"{output}\n", stderr="")
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-
-    assert runtime_paths.pinset_directory.name == release.pinset_sha256
-    return runner
-
-
-def test_materializes_exact_v5_release_without_changing_canonical_sources(tmp_path: Path) -> None:
-    paths = _state_paths(tmp_path)
-    values, map_source, pinvi_source = _values(tmp_path)
-    calls: list[GitInvocation] = []
-
-    result = materialize_pinned_runtime_sources(
-        release=PINNED_RUNTIME_RELEASE,
-        state_paths=paths,
-        values=values,
-        runner=_runner_for_materialization(paths=paths, calls=calls),
-    )
-
-    assert result.pinset_sha256 == PINNED_RUNTIME_RELEASE.pinset_sha256
-    assert result.source_for("map").revision == PINNED_RUNTIME_RELEASE.source_for("map").revision
-    assert result.source_for("pinvi").revision == PINNED_RUNTIME_RELEASE.source_for("pinvi").revision
-    assert result.source_roots == {
-        "map": result.source_for("map").root,
-        "pinvi": result.source_for("pinvi").root,
-    }
-    assert map_source.stat().st_mode & 0o777 == 0o700
-    assert pinvi_source.stat().st_mode & 0o777 == 0o700
-    fetches = [command for command, _kwargs in calls if "fetch" in command]
-    assert len(fetches) == 2
-    for source, command in zip(PINNED_RUNTIME_RELEASE.sources, fetches, strict=True):
-        assert command[-2:] == [source.canonical_url, source.revision]
-        assert command[:9] == [
-            "/usr/bin/git",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "protocol.file.allow=never",
-            "-c",
-            "protocol.ext.allow=never",
-            "-c",
-            "credential.helper=",
+            for part in argv
         ]
-
-    source_origin_calls = [
-        (command, kwargs) for command, kwargs in calls if "config" in command
-    ]
-    assert len(source_origin_calls) == 2
-    for source, (command, kwargs) in zip(
-        PINNED_RUNTIME_RELEASE.sources,
-        source_origin_calls,
-        strict=True,
-    ):
-        source_root = {"map": map_source, "pinvi": pinvi_source}[source.role]
-        assert command == [
-            "/usr/bin/git",
-            "-C",
-            str(source_root),
-            "config",
-            "--local",
-            "--get",
-            "remote.origin.url",
+        rewritten = [
+            "protocol.file.allow=always" if part == "protocol.file.allow=never" else part
+            for part in rewritten
         ]
-        assert kwargs["cwd"] == "/"
-        assert kwargs["env"] == {
-            "PATH": "/usr/bin:/bin",
-            "HOME": "/nonexistent",
-            # 조회가 대상 체크아웃의 index를 갱신하지 않게 한다. `source_status.py`가
-            # 처음부터 걸던 플래그이고, 이 모듈만 빠져 있었다.
-            "GIT_OPTIONAL_LOCKS": "0",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_CONFIG_SYSTEM": "/dev/null",
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_ALLOW_PROTOCOL": "file",
-        }
-        preexec_fn = kwargs.get("preexec_fn")
-        assert isinstance(preexec_fn, FunctionType)
-        closure = preexec_fn.__closure__
-        assert closure is not None
-        captured = {cell.cell_contents for cell in closure}
-        assert source_root.stat().st_uid in captured
-        assert source_root.stat().st_gid in captured
+        env = {**kwargs.pop("env"), "GIT_ALLOW_PROTOCOL": "file"}
+        return subprocess.run(rewritten, env=env, **kwargs)
 
-    root_git_calls = [
-        (command, kwargs) for command, kwargs in calls if "config" not in command
-    ]
-    assert root_git_calls
-    for command, kwargs in root_git_calls:
-        assert kwargs["cwd"] == "/"
-        assert "preexec_fn" not in kwargs
-        assert kwargs["env"] == {
-            "PATH": "/usr/bin:/bin",
-            "HOME": "/nonexistent",
-            # 조회가 대상 체크아웃의 index를 갱신하지 않게 한다. `source_status.py`가
-            # 처음부터 걸던 플래그이고, 이 모듈만 빠져 있었다.
-            "GIT_OPTIONAL_LOCKS": "0",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_CONFIG_SYSTEM": "/dev/null",
-            "GIT_TERMINAL_PROMPT": "0",
-            "GIT_ALLOW_PROTOCOL": "https",
-        }
-        assert command[:9] == [
-            "/usr/bin/git",
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "protocol.file.allow=never",
-            "-c",
-            "protocol.ext.allow=never",
-            "-c",
-            "credential.helper=",
-        ]
-        assert str(map_source) not in command
-        assert str(pinvi_source) not in command
-
-
-def test_rejects_noncanonical_source_origin_before_root_git_staging(tmp_path: Path) -> None:
-    paths = _state_paths(tmp_path)
-    values, _map_source, _pinvi_source = _values(tmp_path)
-    calls: list[GitInvocation] = []
-
-    def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        command = args[0]
-        assert isinstance(command, list)
-        calls.append((command, dict(kwargs)))
-        if "config" in command:
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout="https://github.com/example/not-map.git\n",
-                stderr="",
-            )
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-
-    with pytest.raises(DeploymentContractError, match="canonical HTTPS URL"):
-        materialize_pinned_runtime_sources(
-            release=PINNED_RUNTIME_RELEASE,
-            state_paths=paths,
-            values=values,
-            runner=runner,
-        )
-
-    assert all("fetch" not in command for command, _kwargs in calls)
-
-
-def test_existing_materialization_rejects_revision_drift(tmp_path: Path) -> None:
-    paths = _state_paths(tmp_path)
-    values, _map_source, _pinvi_source = _values(tmp_path)
-    source_paths = pinned_runtime_source_paths(state_paths=paths, release=PINNED_RUNTIME_RELEASE)
-    paths.state_root.mkdir(mode=0o700, parents=True)
-    source_paths.state_directory.mkdir(mode=0o700)
-    source_paths.pinset_directory.mkdir(mode=0o700)
-    source_paths.bare_directory.mkdir(mode=0o700)
-    source_paths.worktrees_directory.mkdir(mode=0o700)
-    target = source_paths.worktree(PINNED_RUNTIME_RELEASE.source_for("map"))
-    target.parent.mkdir(mode=0o700)
-    target.mkdir(mode=0o700)
-    (target / ".git").write_text("gitdir: managed\n", encoding="utf-8")
-    os.chmod(target / ".git", 0o444)
-    os.chmod(target, 0o555)
-    calls: list[GitInvocation] = []
-
-    def runner(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        command = args[0]
-        assert isinstance(command, list)
-        calls.append((command, dict(kwargs)))
-        if "config" in command:
-            root = command[command.index("-C") + 1]
-            role: Literal["map", "pinvi"] = "map" if root.endswith("map-source") else "pinvi"
-            return subprocess.CompletedProcess(
-                command,
-                0,
-                stdout=f"{PINNED_RUNTIME_RELEASE.source_for(role).canonical_url}\n",
-                stderr="",
-            )
-        if "init" in command and "--bare" in command:
-            Path(command[-1]).mkdir(mode=0o700)
-            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-        if "rev-parse" in command and command[-1] == "HEAD":
-            return subprocess.CompletedProcess(command, 0, stdout=f"{'e' * 40}\n", stderr="")
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
-
-    with pytest.raises(DeploymentContractError, match="revision drifted"):
-        materialize_pinned_runtime_sources(
-            release=PINNED_RUNTIME_RELEASE,
-            state_paths=paths,
-            values=values,
-            runner=runner,
-        )
-
-    assert all("fetch" not in command for command, _kwargs in calls)
-
-
-@pytest.mark.parametrize("unsafe", ["mode", "symlink"])
-def test_rejects_unsafe_canonical_source_root(tmp_path: Path, unsafe: str) -> None:
-    paths = _state_paths(tmp_path)
-    values, map_source, _pinvi_source = _values(tmp_path)
-    if unsafe == "mode":
-        os.chmod(map_source, 0o775)
-    else:
-        replacement = tmp_path / "map-target"
-        replacement.mkdir(mode=0o700)
-        map_source.rmdir()
-        map_source.symlink_to(replacement, target_is_directory=True)
-
-    with pytest.raises(DeploymentContractError, match="unsafe|symbolic link"):
-        materialize_pinned_runtime_sources(
-            release=PINNED_RUNTIME_RELEASE,
-            state_paths=paths,
-            values=values,
-            runner=lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
-        )
-
-
-def test_existing_materialization_is_idempotently_validated_without_refetch(tmp_path: Path) -> None:
-    paths = _state_paths(tmp_path)
-    values, _map_source, _pinvi_source = _values(tmp_path)
-    first_calls: list[GitInvocation] = []
-
-    first = materialize_pinned_runtime_sources(
-        release=PINNED_RUNTIME_RELEASE,
-        state_paths=paths,
-        values=values,
-        runner=_runner_for_materialization(paths=paths, calls=first_calls),
-    )
-    second_calls: list[GitInvocation] = []
-    second = materialize_pinned_runtime_sources(
-        release=PINNED_RUNTIME_RELEASE,
-        state_paths=paths,
-        values=values,
-        runner=_runner_for_materialization(paths=paths, calls=second_calls),
-    )
-
-    assert second == first
-    assert all("fetch" not in command for command, _kwargs in second_calls)
-    assert stat.S_IMODE(first.source_for("map").root.stat().st_mode) == 0o555
-
-
-def test_materialization_seals_git_default_staging_mode_before_inspection(
-    tmp_path: Path,
-) -> None:
-    paths = _state_paths(tmp_path)
-    values, _map_source, _pinvi_source = _values(tmp_path)
-    calls: list[GitInvocation] = []
-    status_modes: list[int] = []
-
-    result = materialize_pinned_runtime_sources(
-        release=PINNED_RUNTIME_RELEASE,
-        state_paths=paths,
-        values=values,
-        runner=_runner_for_materialization(
-            paths=paths,
-            calls=calls,
-            staging_mode=0o755,
-            status_modes=status_modes,
-        ),
-    )
-
-    assert stat.S_IMODE(result.source_for("map").root.stat().st_mode) == 0o555
-    assert stat.S_IMODE(result.source_for("pinvi").root.stat().st_mode) == 0o555
-    assert status_modes == [0o700, 0o555, 0o700, 0o555]
-
-
-def test_staging_seal_failure_cleans_default_git_mode_and_retry_succeeds(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    paths = _state_paths(tmp_path)
-    values, _map_source, _pinvi_source = _values(tmp_path)
-    calls: list[GitInvocation] = []
-    runner = _runner_for_materialization(
-        paths=paths,
+    return SimpleNamespace(
+        origins=origins,
+        revisions=revisions,
+        release=release,
+        state_paths=state_paths,
         calls=calls,
-        staging_mode=0o755,
+        runner=runner,
     )
-    original_chmod = os.chmod
-    seal_failed = False
 
-    def fail_first_stage_seal(path: str | bytes | os.PathLike[str] | os.PathLike[bytes], mode: int) -> None:
-        nonlocal seal_failed
-        candidate = Path(os.fsdecode(path))
-        if (
-            not seal_failed
-            and mode == 0o700
-            and candidate.parent.name == "map"
-            and candidate.parent.parent.name == ".staging"
-            and stat.S_IMODE(candidate.stat().st_mode) == 0o755
+
+def _materialize(world: Any) -> Any:
+    return materialize_pinned_runtime_sources(
+        release=world.release, state_paths=world.state_paths, runner=world.runner
+    )
+
+
+def test_the_source_tree_is_the_archive_of_the_pinned_revision(world: Any) -> None:
+    """트리는 그 revision의 파일 전부이고, 모드는 0644/0755(실행 비트는 index 그대로)다.
+
+    `export-ignore`가 붙은 파일도 들어 있다 — archive가 tree와 같아야 build context가 revision과
+    같다. 호출자의 umask가 077이어도(M05 driver) 디렉터리는 0755다.
+    """
+
+    previous = os.umask(0o077)
+    try:
+        result = _materialize(world)
+    finally:
+        os.umask(previous)
+
+    for role in RUNTIME_SOURCE_ROLES:
+        source = result.source_for(role)
+        root = source.root
+        assert root == (
+            pinned_runtime_sources_directory(world.state_paths)
+            / f"{role}-{world.revisions[role]}"
+            / "tree"
+        )
+        tracked = set(
+            _git("-C", str(world.origins[role]), "ls-tree", "-r", "--name-only", "HEAD").split()
+        )
+        present = {
+            str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()
+        }
+        assert present == tracked
+        assert not (root / ".git").exists()
+        assert source.tree == _git("-C", str(world.origins[role]), "rev-parse", "HEAD^{tree}")
+        assert stat.S_IMODE((root / "scripts" / "run.sh").stat().st_mode) == 0o755
+        assert stat.S_IMODE((root / "docker-compose.yml").stat().st_mode) == 0o644
+        for path in [root, *root.rglob("*")]:
+            mode = stat.S_IMODE(path.stat().st_mode)
+            assert not mode & 0o022, path
+            if path.is_dir():
+                assert mode == 0o755, path
+
+
+def test_an_existing_revision_is_reused_without_git(world: Any) -> None:
+    first = _materialize(world)
+    world.calls.clear()
+
+    second = _materialize(world)
+
+    assert world.calls == []
+    assert [source.root for source in second.sources] == [
+        source.root for source in first.sources
+    ]
+    assert [source.tree for source in second.sources] == [
+        source.tree for source in first.sources
+    ]
+
+
+def test_prune_keeps_the_current_pair_and_removes_the_rest(world: Any) -> None:
+    sources = _materialize(world)
+    directory = pinned_runtime_sources_directory(world.state_paths)
+    stale = directory / f"map-{'1' * 40}"
+    (stale / "tree").mkdir(parents=True)
+    interrupted = directory / f".pinvi-{'2' * 40}.partial-abc"
+    interrupted.mkdir()
+
+    prune_pinned_runtime_sources(world.state_paths, keep=sources)
+
+    assert sorted(path.name for path in directory.iterdir()) == sorted(
+        f"{role}-{world.revisions[role]}" for role in RUNTIME_SOURCE_ROLES
+    )
+
+
+def test_a_failed_fetch_leaves_nothing_behind(world: Any) -> None:
+    def failing(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if "fetch" in argv:
+            return subprocess.CompletedProcess(argv, 128, stdout="", stderr="fatal: secret path")
+        return world.runner(argv, **kwargs)
+
+    with pytest.raises(DeploymentContractError) as raised:
+        materialize_pinned_runtime_sources(
+            release=world.release, state_paths=world.state_paths, runner=failing
+        )
+
+    assert str(raised.value) == "pinned runtime source Git operation failed"
+    assert list(pinned_runtime_sources_directory(world.state_paths).iterdir()) == []
+
+
+def test_root_git_is_https_only_and_ignores_human_config(world: Any) -> None:
+    """비-root 사용자의 gitconfig(`insteadOf` 등)가 root git에 닿지 않는다."""
+
+    _materialize(world)
+
+    fetches = [call for call in world.calls if "fetch" in call["argv"]]
+    assert len(fetches) == len(RUNTIME_SOURCE_ROLES)
+    for call in world.calls:
+        argv, env = call["argv"], call["env"]
+        assert argv[0] == "/usr/bin/git"
+        for setting in (
+            "core.hooksPath=/dev/null",
+            "protocol.file.allow=never",
+            "protocol.ext.allow=never",
+            "credential.helper=",
         ):
-            seal_failed = True
-            raise OSError("simulated staging seal failure")
-        original_chmod(path, mode)
-
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.services.pinned_runtime_sources.os.chmod",
-        fail_first_stage_seal,
-    )
-
-    with pytest.raises(DeploymentContractError, match="staging worktree cannot be secured"):
-        materialize_pinned_runtime_sources(
-            release=PINNED_RUNTIME_RELEASE,
-            state_paths=paths,
-            values=values,
-            runner=runner,
-        )
-
-    assert seal_failed
-    assert any(
-        "worktree" in command and "remove" in command for command, _kwargs in calls
-    )
-
-    result = materialize_pinned_runtime_sources(
-        release=PINNED_RUNTIME_RELEASE,
-        state_paths=paths,
-        values=values,
-        runner=runner,
-    )
-
-    assert stat.S_IMODE(result.source_for("map").root.stat().st_mode) == 0o555
+            assert setting in argv
+        assert env["GIT_ALLOW_PROTOCOL"] == "https"
+        assert env["HOME"] == "/nonexistent"
+        assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+    for call, role in zip(fetches, RUNTIME_SOURCE_ROLES, strict=True):
+        assert call["argv"][-2:] == [_URLS[role], world.revisions[role]]
+        assert "--depth" in call["argv"]
 
 
-def test_later_staging_failure_is_cleaned_and_same_pinset_retry_succeeds(tmp_path: Path) -> None:
-    paths = _state_paths(tmp_path)
-    values, _map_source, _pinvi_source = _values(tmp_path)
-    calls: list[GitInvocation] = []
-    runner = _runner_for_materialization(
-        paths=paths,
-        calls=calls,
-        fail_status_once=True,
-    )
-    source_paths = pinned_runtime_source_paths(state_paths=paths, release=PINNED_RUNTIME_RELEASE)
-    map_source = PINNED_RUNTIME_RELEASE.source_for("map")
-    map_target = source_paths.worktree(map_source)
+def test_a_tampered_source_record_is_refused(world: Any) -> None:
+    sources = _materialize(world)
+    record = sources.source_for("map").root.parent / "source.json"
+    payload = json.loads(record.read_text(encoding="utf-8"))
+    payload["revision"] = "f" * 40
+    record.write_text(json.dumps(payload), encoding="utf-8")
 
-    with pytest.raises(DeploymentContractError, match="staging Git operation failed"):
-        materialize_pinned_runtime_sources(
-            release=PINNED_RUNTIME_RELEASE,
-            state_paths=paths,
-            values=values,
-            runner=runner,
-        )
-
-    assert not map_target.exists()
-    assert any(
-        "worktree" in command and "remove" in command for command, _kwargs in calls
-    )
-
-    result = materialize_pinned_runtime_sources(
-        release=PINNED_RUNTIME_RELEASE,
-        state_paths=paths,
-        values=values,
-        runner=runner,
-    )
-
-    assert result.source_for("map").root == map_target
-    assert result.source_for("pinvi").root == source_paths.worktree(
-        PINNED_RUNTIME_RELEASE.source_for("pinvi")
-    )
-    assert stat.S_IMODE(map_target.stat().st_mode) == 0o555
-
-
-def test_rejects_forged_state_root_before_any_git_invocation(tmp_path: Path) -> None:
-    paths = _state_paths(tmp_path)
-    values, _map_source, _pinvi_source = _values(tmp_path)
-    forged = replace(paths, state_root=tmp_path / "forged-state")
-    calls: list[GitInvocation] = []
-
-    with pytest.raises(DeploymentContractError, match="differ from canonical rebuildable state"):
-        materialize_pinned_runtime_sources(
-            release=PINNED_RUNTIME_RELEASE,
-            state_paths=forged,
-            values=values,
-            runner=_runner_for_materialization(paths=paths, calls=calls),
-        )
-
-    assert calls == []
-
-
-def test_rejects_nonrebuildable_lifecycle_before_any_git_invocation(tmp_path: Path) -> None:
-    paths = _state_paths(tmp_path)
-    values, _map_source, _pinvi_source = _values(tmp_path)
-    values.update(
-        {
-            "KTDM_DEPLOYMENT_ENVIRONMENT": "production",
-            "KTDM_DEPLOYMENT_LIFECYCLE": "operational",
-        }
-    )
-    calls: list[GitInvocation] = []
-
-    with pytest.raises(DeploymentContractError, match="requires rehearsal/rebuildable"):
-        materialize_pinned_runtime_sources(
-            release=PINNED_RUNTIME_RELEASE,
-            state_paths=paths,
-            values=values,
-            runner=_runner_for_materialization(paths=paths, calls=calls),
-        )
-
-    assert calls == []
+    with pytest.raises(DeploymentContractError, match="source record is invalid"):
+        _materialize(world)
