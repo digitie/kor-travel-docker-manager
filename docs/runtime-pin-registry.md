@@ -27,7 +27,7 @@
 Map·PinVi를 **어느 커밋으로 재구축할지**를 고정한 값(pin)이 예전에는 Python 상수였다.
 지금은 root 소유 JSON registry 파일이 그 값을 소유하고, 코드는 **계약만** 소유한다.
 registry는 현재 pin뿐 아니라 **pinset의 생애 상태**(재시도 금지 목록, 회전 이력)도 담으며,
-`rebuild-pinned`는 재시도 금지 pinset에 대해 **어떤 mutation보다 먼저 거부**한다.
+`rebuild-pinned`는 재시도 금지 기록이 있는 pinset을 **거부하지 않고 경고로 남긴다**(ADR-51 B2부터).
 
 ```
 값(어떤 커밋인가)      → registry 파일이 소유       → M05는 ktdctl pin rotate-pair 로 함께 바꾼다
