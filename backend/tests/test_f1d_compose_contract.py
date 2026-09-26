@@ -298,14 +298,7 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_API_IMAGE": _MAP_API_IMAGE_ID,
         "KOR_TRAVEL_MAP_DAGSTER_IMAGE": _MAP_DAGSTER_IMAGE_ID,
         "KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID": _MAP_POSTGRES_IMAGE_ID,
-        "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": ("/tmp/ktdm-map-application-final-permit"),
-        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": ("/tmp/ktdm-map-dagster-storage-permit"),
-        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": ("/tmp/ktdm-map-fresh-migrate-fence"),
-        "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": (
-            "/tmp/ktdm-map-fresh-finalize-fence"
-        ),
         "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256": "4" * 64,
-        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256": "5" * 64,
         "KOR_TRAVEL_MAP_POSTGRES_DB": "map_contract",
         "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_contract_dagster",
         "KOR_TRAVEL_MAP_POSTGRES_USER": "map_contract_admin",
@@ -671,24 +664,13 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
             "postgresql://map_contract_dagster_metadata:map-contract-dagster-metadata-password@"
             "127.0.0.1:12700/map_contract_dagster"
         ),
-        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256": "5" * 64,
-        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_IMAGE_ID": f"sha256:{'2' * 64}",
     }
     assert migration["depends_on"]["kor-travel-map-postgres"]["condition"] == (
         "service_healthy"
     )
     assert migration["extra_hosts"] == ["host.docker.internal=host-gateway"]
-    assert migration["volumes"] == [
-        {
-            "type": "bind",
-            "source": "/tmp/ktdm-map-dagster-storage-permit",
-            "target": "/run/kor-travel-map-dagster-storage-permit",
-            "read_only": True,
-            # Compose v2는 기본 bind option을 생략하고 v5는 이를 명시한다.
-            "bind": migration["volumes"][0]["bind"],
-        }
-    ]
-    assert migration["volumes"][0]["bind"] in ({}, {"create_host_path": True})
+    # ADR-51 D-3: M1 이후 storage one-shot은 permit을 읽지 않으므로 마운트도 없다.
+    assert "volumes" not in migration
 
     for service_name in (
         "kor-travel-map-dagster",
@@ -699,6 +681,116 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
             "service_completed_successfully"
         )
         assert services[service_name]["image"] == migration["image"]
+
+
+_MAP_DAGSTER_STORAGE_PERMIT_TARGET = "/run/kor-travel-map-dagster-storage-permit"
+_MAP_DAGSTER_PROCESS_SERVICES = frozenset(
+    {
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-code-server",
+        "kor-travel-map-dagster-daemon",
+        "kor-travel-map-dagster-storage-migrate",
+    }
+)
+
+
+def _map_permit_residue_and_binds(
+    services: dict[str, Any],
+    *,
+    environment: dict[str, str],
+) -> tuple[list[str], set[tuple[str, str, bool]]]:
+    """Map 서비스의 permit 잔재(env 이름·mount)와 operator bind 키를 모은다.
+
+    서비스는 이름 접두로 고른다 — 손으로 적은 목록이면 새 Map 서비스가 조용히 빠진다.
+    """
+
+    map_services = sorted(name for name in services if name.startswith("kor-travel-map-"))
+    # 검출기가 아무것도 못 보면 아래 단언은 항진이다 — 본 것에 하한을 건다.
+    assert _MAP_DAGSTER_PROCESS_SERVICES <= set(map_services), map_services
+    residue: list[str] = []
+    binds: set[tuple[str, str, bool]] = set()
+    for service_name in map_services:
+        service = services[service_name]
+        assert isinstance(service, dict)
+        service_environment = service.get("environment") or {}
+        names = (
+            list(service_environment)
+            if isinstance(service_environment, dict)
+            else [str(entry).split("=", 1)[0] for entry in service_environment]
+        )
+        residue.extend(
+            f"{service_name} env {name}"
+            for name in names
+            if "PERMIT" in name or "CONFIG_SHA256" in name
+        )
+        for mount in _candidate_volume_mounts(
+            service.get("volumes"), environment=environment
+        ):
+            if mount.target == _MAP_DAGSTER_STORAGE_PERMIT_TARGET:
+                residue.append(f"{service_name} mount {mount.target}")
+            key = (service_name, mount.target, mount.read_only)
+            if mount.kind == "bind" and key not in _CANDIDATE_ALLOWED_SYSTEM_BINDS:
+                binds.add(key)
+    return residue, binds
+
+
+def _allowlisted_map_binds() -> set[tuple[str, str, bool]]:
+    return {
+        key
+        for key in load_compose_bind_allowlist()
+        if key[0].startswith("kor-travel-map-")
+    }
+
+
+def _assert_map_permit_is_gone(
+    services: dict[str, Any],
+    *,
+    environment: dict[str, str],
+) -> None:
+    residue, binds = _map_permit_residue_and_binds(services, environment=environment)
+    assert not residue, f"Map 서비스에 storage permit 잔재가 남았다: {residue}"
+    # 양방향이다. compose → allowlist는 `test_every_real_compose_bind_is_declared_in_a_
+    # candidate_bind_allowlist`도 보지만, 반대 방향(compose에서 지운 bind가 allowlist에
+    # 남는 것)은 이 검사 전까지 아무도 보지 않았다 — 남은 항목은 아무것도 지키지 않는다.
+    allowed = _allowlisted_map_binds()
+    assert binds == allowed, (
+        "Map compose bind와 compose_binds가 갈라졌다: "
+        f"compose만 {sorted(binds - allowed)}, allowlist만 {sorted(allowed - binds)}"
+    )
+    # 대조가 항진이 아니게 — allowlist에 오른 Map bind를 실제로 봤어야 한다.
+    assert ("kor-travel-map-postgres", "/var/lib/postgresql/data", False) in binds
+
+
+def test_map_services_carry_no_dagster_storage_permit_in_source_compose() -> None:
+    """ADR-51 D-3: permit mount·env·allowlist 항목은 한 PR로 함께 사라졌다.
+
+    Map M1(ADR-102) 이후 storage one-shot은 permit 디렉터리도,
+    `..._STORAGE_PERMIT_IMAGE_ID`·`..._STORAGE_CONFIG_SHA256`도 읽지 않는다. compose가
+    `${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}`를 쓰던 동안에는 셋 중 하나만 바뀌어도
+    모든 재구축이 막혔으므로 셋이 같이 움직여야 했다. Docker가 없는 환경에서도 도는
+    원문 쪽 검사다 — resolved 쪽은 아래 테스트가 본다.
+    """
+
+    text = _COMPOSE_PATH.read_text(encoding="utf-8")
+    services = yaml.safe_load(text)["services"]
+    # 키는 (service, target, read_only)뿐이라 source **값**은 검사 대상이 아니다.
+    environment = {
+        name: "/placeholder" for name in set(re.findall(r"\$\{([A-Za-z0-9_]+)", text))
+    }
+    _assert_map_permit_is_gone(services, environment=environment)
+
+
+def test_resolved_map_services_carry_no_dagster_storage_permit() -> None:
+    """같은 조건을 Docker Compose가 **실제로 만드는** mount·env에 건다."""
+
+    source_services = _source_compose()["services"]
+    assert isinstance(source_services, dict)
+    resolved = _resolved_compose(
+        *(name for name in source_services if name.startswith("kor-travel-map-"))
+    )
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    _assert_map_permit_is_gone(services, environment={})
 
 
 def test_map_source_dagster_profile_fallback_is_allowed_at_exact_paths() -> None:
@@ -1062,15 +1154,6 @@ def _bootstrap_candidate(tmp_path: Path) -> tuple[dict[str, object], dict[str, s
     )
     environment["PINVI_REPO_DIR"] = str(pinvi_source)
     environment["PINVI_PGDATA"] = str(pinvi_pgdata)
-    for environment_name, directory_name in (
-        ("KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR", "application-permit"),
-        ("KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR", "metadata-permit"),
-        ("KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR", "root-fence"),
-        ("KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR", "finalize-fence"),
-    ):
-        directory = tmp_path / directory_name
-        directory.mkdir()
-        environment[environment_name] = str(directory)
 
     return candidate, environment, root_env
 
@@ -1158,18 +1241,6 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         environment_update={
             "KOR_TRAVEL_MAP_PGDATA": str(map_pgdata),
             "KOR_TRAVEL_MAP_REPO_DIR": str(map_source),
-            "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": environment[
-                "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR"
-            ],
-            "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": environment[
-                "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR"
-            ],
-            "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": environment[
-                "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR"
-            ],
-            "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": environment[
-                "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR"
-            ],
                 "PINVI_REPO_DIR": str(pinvi_source),
                 "PINVI_PGDATA": str(pinvi_pgdata),
             },
@@ -2558,10 +2629,6 @@ def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
             for name in (
                 "KOR_TRAVEL_MAP_PGDATA",
                 "KOR_TRAVEL_MAP_REPO_DIR",
-                "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR",
-                "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR",
-                "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR",
-                "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR",
                 "PINVI_REPO_DIR",
                 "PINVI_PGDATA",
             )
@@ -4406,10 +4473,6 @@ def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
             for name in (
                 "KOR_TRAVEL_MAP_PGDATA",
                 "KOR_TRAVEL_MAP_REPO_DIR",
-                "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR",
-                "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR",
-                "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR",
-                "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR",
                 "PINVI_REPO_DIR",
                 "PINVI_PGDATA",
             )

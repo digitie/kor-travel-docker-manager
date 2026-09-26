@@ -107,7 +107,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     COMPOSE_BUILT_RUNTIME_SERVICES,
     CandidateRuntimeBuild,
-    MapApplication300ArtifactDirectories,
     build_candidate_generation,
     generation_companion_services,
     generation_compose_environment,
@@ -303,8 +302,6 @@ def _pinned_runtime_prejournal_step(stage: str) -> Iterator[None]:
         raise PinnedRuntimePrejournalFailure(stage, service) from exc
 
 
-_MAP_APPLICATION_300_RECEIPT_DIRECTORY = "map-application-300-candidate"
-_MAP_APPLICATION_300_ARTIFACT_DIRECTORY = "map-application-300-artifacts"
 _MAP_APPLICATION_300_POSTGRES_REFERENCE = "postgis/postgis:16-3.5-alpine"
 _ROLE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
@@ -2276,105 +2273,6 @@ def _run_pinned_runtime_static_command(
     if completed.returncode != 0 or len(completed.stdout) > 1024 or completed.stderr:
         raise DeploymentContractError(f"{label} candidate static inspection failed")
     return completed.stdout
-
-
-@dataclass(frozen=True)
-class _MapApplication300Paths:
-    """ADR-101 이후 남은 host artifact — 빌드 영수증 둘과 metadata permit 하나."""
-
-    api_receipt: Path
-    paired_receipt: Path
-    metadata_permit_directory: Path
-
-    @property
-    def metadata_permit(self) -> Path:
-        return self.metadata_permit_directory / "permit.json"
-
-
-def _map_application_300_paths(
-    *, state_root: Path, pinset_sha256: str
-) -> _MapApplication300Paths:
-    if re.fullmatch(r"[0-9a-f]{64}", pinset_sha256) is None:
-        raise DeploymentContractError("application 300 pinset identity is invalid")
-    receipt_directory = (
-        state_root / _MAP_APPLICATION_300_RECEIPT_DIRECTORY / pinset_sha256
-    )
-    artifact_directory = (
-        state_root / _MAP_APPLICATION_300_ARTIFACT_DIRECTORY / pinset_sha256
-    )
-    for directory in (
-        receipt_directory.parent,
-        receipt_directory,
-        artifact_directory.parent,
-        artifact_directory,
-    ):
-        _ensure_application_300_private_directory(directory)
-    metadata_permit_directory = artifact_directory / "dagster-storage-permit"
-    _ensure_application_300_mount_directory(metadata_permit_directory)
-    return _MapApplication300Paths(
-        api_receipt=receipt_directory / "api-candidate-build.json",
-        paired_receipt=receipt_directory / "paired-candidate-build.json",
-        metadata_permit_directory=metadata_permit_directory,
-    )
-
-
-def _ensure_application_300_private_directory(path: Path) -> None:
-    try:
-        path.mkdir(mode=0o700, exist_ok=True)
-        metadata = path.lstat()
-    except OSError as exc:
-        raise DeploymentContractError(
-            "application 300 state directory is unavailable"
-        ) from exc
-    if (
-        path != path.resolve(strict=True)
-        or not stat.S_ISDIR(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or metadata.st_uid != os.geteuid()
-        or stat.S_IMODE(metadata.st_mode) != 0o700
-    ):
-        raise DeploymentContractError("application 300 state directory is unsafe")
-
-
-def _ensure_application_300_mount_directory(path: Path) -> None:
-    """비-root image가 읽되 root만 쓸 수 있는 fixed-artifact 디렉터리를 만든다."""
-
-    if os.geteuid() != 0:
-        raise DeploymentContractError(
-            "application 300 mount directory requires root"
-        )
-    try:
-        path.mkdir(mode=0o755, exist_ok=True)
-        metadata = path.lstat()
-    except OSError as exc:
-        raise DeploymentContractError(
-            "application 300 mount directory is unavailable"
-        ) from exc
-    if (
-        not stat.S_ISDIR(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or metadata.st_uid != 0
-        or path != path.resolve(strict=True)
-    ):
-        raise DeploymentContractError(
-            "application 300 mount directory is unsafe"
-        )
-    try:
-        os.chmod(path, 0o755, follow_symlinks=False)
-        normalized = path.lstat()
-    except OSError as exc:
-        raise DeploymentContractError(
-            "application 300 mount directory cannot be normalized"
-        ) from exc
-    if (
-        not stat.S_ISDIR(normalized.st_mode)
-        or stat.S_ISLNK(normalized.st_mode)
-        or normalized.st_uid != 0
-        or stat.S_IMODE(normalized.st_mode) != 0o755
-    ):
-        raise DeploymentContractError(
-            "application 300 mount directory is unsafe"
-        )
 
 
 def _build_map_application_300_images(
@@ -4874,20 +4772,10 @@ class ComposeService:
                     pinset_sha256=release.pinset_sha256,
                 )
                 ensure_pinned_runtime_state_directory(state_paths.state_root)
-                application_paths = _map_application_300_paths(
-                    state_root=state_paths.state_root,
-                    pinset_sha256=release.pinset_sha256,
-                )
-                # pinset별 permit 디렉터리는 계속 마운트한다. 새로 발급하지는 않는다 —
-                # M1 이전 Map 이미지로 이미 커밋된 세대가 자기 permit을 그대로 본다.
-                artifact_directories = MapApplication300ArtifactDirectories(
-                    dagster_storage_permit=application_paths.metadata_permit_directory,
-                )
                 status_path = deploy_status_path(state_paths.state_root)
                 previous = read_deploy_status(status_path)
             with _pinned_runtime_prejournal_step("prebuild_snapshot"):
                 prebuild_transaction, _ = self.capture_transaction_unlocked(
-                    environment_override=dict(artifact_directories.compose_environment()),
                     environment_snapshot=environment_snapshot,
                 )
             with _pinned_runtime_prejournal_step("external_prerequisites"):
@@ -4928,7 +4816,6 @@ class ComposeService:
                 candidate_build_references = {**paired_build_images, **build.image_names}
             candidate_environment = {
                 **build.compose_environment(),
-                **artifact_directories.compose_environment(),
                 "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": map_candidate.application_head,
             }
             with _pinned_runtime_prejournal_step("candidate_snapshot"):
@@ -4989,10 +4876,7 @@ class ComposeService:
             with _pinned_runtime_prejournal_step("runtime_generation"):
                 runtime_environment = {
                     **build.compose_environment(),
-                    **generation_compose_environment(
-                        candidate,
-                        artifact_directories=artifact_directories,
-                    ),
+                    **generation_compose_environment(candidate),
                     "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": candidate.map_application_head,
                 }
             with _pinned_runtime_prejournal_step("runtime_transaction"):

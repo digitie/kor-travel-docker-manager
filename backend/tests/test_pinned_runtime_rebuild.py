@@ -53,7 +53,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     COMPOSE_BUILT_RUNTIME_SERVICES,
     CandidateRuntimeBuild,
-    MapApplication300ArtifactDirectories,
     build_candidate_generation,
     generation_companion_services,
     generation_compose_environment,
@@ -74,8 +73,6 @@ from kor_travel_docker_manager.services.pinned_runtime_sources import (
 
 PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
 _WAIT_TIMEOUT = str(compose_service_module._COMPOSE_WAIT_TIMEOUT_SECONDS)
-
-_real_map_application_300_paths = compose_service_module._map_application_300_paths
 
 
 @pytest.fixture(autouse=True)
@@ -138,7 +135,6 @@ def linux_tmp_path() -> Iterator[Path]:
 @pytest.fixture(autouse=True)
 def _bypass_root_host_lease_in_nonroot_unit_process(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
     """root 전용 host primitive는 별도 회귀 외에는 unit orchestration에서 격리한다."""
 
@@ -149,16 +145,6 @@ def _bypass_root_host_lease_in_nonroot_unit_process(
         compose_service_module,
         "_pinned_runtime_admission_warnings",
         lambda _pinset_sha256: [],
-    )
-    base = tmp_path / "application-300"
-    monkeypatch.setattr(
-        compose_service_module,
-        "_map_application_300_paths",
-        lambda *, state_root, pinset_sha256: compose_service_module._MapApplication300Paths(
-            api_receipt=base / "receipts" / "api.json",
-            paired_receipt=base / "receipts" / "paired.json",
-            metadata_permit_directory=base / "dagster-storage-permit",
-        ),
     )
     # 각 orchestration 회귀는 그 이전/이후 phase만 격리한다. trusted `/opt` `.env` 대신
     # 테스트 env를 캡처하고 lifecycle 게이트·token 검증은 건너뛰지만, lock(G 하나,
@@ -226,43 +212,28 @@ def _sources_for(release: PinnedRuntimeRelease) -> PinnedRuntimeSourceMaterializ
     )
 
 
-def _paired_builder_inputs(
-    tmp_path: Path,
-) -> tuple[
-    PinnedRuntimeSourceMaterialization,
-    compose_service_module._MapApplication300Paths,
-]:
+def _paired_builder_inputs(tmp_path: Path) -> PinnedRuntimeSourceMaterialization:
     map_root = tmp_path / "map"
     script = map_root / "scripts" / "build-application-300-paired-candidate.sh"
     script.parent.mkdir(parents=True)
     script.write_text("#!/bin/sh\n", encoding="utf-8")
-    receipt_directory = tmp_path / "receipts"
-    receipt_directory.mkdir(mode=0o700)
-    paths = compose_service_module._MapApplication300Paths(
-        api_receipt=receipt_directory / "api.json",
-        paired_receipt=receipt_directory / "paired.json",
-        metadata_permit_directory=tmp_path / "dagster-storage-permit",
-    )
     release = PINNED_RUNTIME_RELEASE
-    return (
-        PinnedRuntimeSourceMaterialization(
-            release=release,
-            sources=(
-                MaterializedRuntimeSource(
-                    role="map",
-                    root=map_root,
-                    revision=release.source_for("map").revision,
-                    tree="a" * 40,
-                ),
-                MaterializedRuntimeSource(
-                    role="pinvi",
-                    root=tmp_path / "pinvi",
-                    revision=release.source_for("pinvi").revision,
-                    tree="b" * 40,
-                ),
+    return PinnedRuntimeSourceMaterialization(
+        release=release,
+        sources=(
+            MaterializedRuntimeSource(
+                role="map",
+                root=map_root,
+                revision=release.source_for("map").revision,
+                tree="a" * 40,
+            ),
+            MaterializedRuntimeSource(
+                role="pinvi",
+                root=tmp_path / "pinvi",
+                revision=release.source_for("pinvi").revision,
+                tree="b" * 40,
             ),
         ),
-        paths,
     )
 
 
@@ -361,9 +332,8 @@ def test_candidate_build_uses_private_deterministic_tags_and_staged_sources() ->
     assert environment["KOR_TRAVEL_MAP_DAGSTER_IMAGE"] == candidate.dagster_image_id
     assert "KOR_TRAVEL_MAP_DAGSTER_DAEMON_IMAGE" not in environment
     assert environment["KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID"] == candidate.postgres_image_id
-    assert environment["KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256"] == (
-        candidate.dagster_config_sha256
-    )
+    # ADR-51 D-3: M1 이후 Map storage one-shot은 config sha를 읽지 않는다.
+    assert "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256" not in environment
 
 
 def test_compose_run_mutation_scope_stops_at_the_service_name() -> None:
@@ -458,13 +428,7 @@ def test_candidate_generation_binds_all_runtime_inputs() -> None:
         paired.candidate_git_tree
     )
 
-    artifact_directories = MapApplication300ArtifactDirectories(
-        dagster_storage_permit=Path("/state/metadata-permit"),
-    )
-    runtime_environment = generation_compose_environment(
-        generation,
-        artifact_directories=artifact_directories,
-    )
+    runtime_environment = generation_compose_environment(generation)
 
     assert runtime_environment["PINVI_DAGSTER_IMAGE"] == generation.pinvi_dagster_image_id
     assert runtime_environment["KOR_TRAVEL_MAP_API_IMAGE"] == paired.api_image_id
@@ -473,12 +437,12 @@ def test_candidate_generation_binds_all_runtime_inputs() -> None:
     assert runtime_environment["KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID"] == (
         paired.postgres_image_id
     )
-    assert runtime_environment["KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256"] == (
-        paired.dagster_config_sha256
-    )
-    assert runtime_environment[
-        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR"
-    ] == "/state/metadata-permit"
+    # ADR-51 D-3: permit 디렉터리와 config sha는 runtime override에서 빠졌다.
+    assert not [
+        name
+        for name in runtime_environment
+        if "PERMIT" in name or "CONFIG_SHA256" in name
+    ]
 
 
 def test_candidate_generation_rejects_paired_source_and_image_drift() -> None:
@@ -521,66 +485,11 @@ def test_rebuild_requires_root_execution(monkeypatch: pytest.MonkeyPatch) -> Non
         ComposeService().rebuild_pinned_runtime()
 
 
-def test_application_300_paths_separate_private_and_read_only_mount_modes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """appuser mount 하나만 0755이고 영수증 디렉터리와 부모는 계속 0700이다.
-
-    ADR-101 이전에는 mount가 넷이었다 — fence 둘, application final permit,
-    storage permit. 앞의 셋은 읽던 코드가 사라져 함께 지웠다. 결과 디렉터리도
-    영수증 사이드카를 담던 자리라 없다.
-    """
-
-    original_lstat = Path.lstat
-
-    def root_owned_lstat(path: Path) -> os.stat_result:
-        metadata = original_lstat(path)
-        fields = list(metadata)
-        fields[4] = 0
-        return os.stat_result(fields)
-
-    monkeypatch.setattr(os, "geteuid", lambda: 0)
-    monkeypatch.setattr(Path, "lstat", root_owned_lstat)
-
-    paths = _real_map_application_300_paths(
-        state_root=tmp_path,
-        pinset_sha256="a" * 64,
-    )
-
-    mount_directories = (paths.metadata_permit_directory,)
-    private_directories = {
-        paths.api_receipt.parent,
-        paths.api_receipt.parent.parent,
-    }
-    assert all(directory.stat().st_mode & 0o777 == 0o755 for directory in mount_directories)
-    assert all(directory.stat().st_mode & 0o777 == 0o700 for directory in private_directories)
-    assert all(directory.lstat().st_uid == 0 for directory in (*mount_directories, *private_directories))
-
-
-def test_application_300_paths_reject_a_symlinked_private_directory(
-    tmp_path: Path,
-) -> None:
-    receipt_parent = tmp_path / "map-application-300-candidate"
-    receipt_parent.mkdir(mode=0o700)
-    receipt_parent.chmod(0o700)
-    target = tmp_path / "redirected-receipts"
-    target.mkdir(mode=0o700)
-    target.chmod(0o700)
-    (receipt_parent / ("b" * 64)).symlink_to(target, target_is_directory=True)
-
-    with pytest.raises(DeploymentContractError, match="state directory is unsafe"):
-        _real_map_application_300_paths(
-            state_root=tmp_path,
-            pinset_sha256="b" * 64,
-        )
-
-
 def test_map_application_300_python_base_images_pull_and_reinspect_missing_base(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    sources, _ = _paired_builder_inputs(tmp_path)
+    sources = _paired_builder_inputs(tmp_path)
     docker_directory = sources.source_for("map").root / "docker"
     docker_directory.mkdir()
     base = "python@sha256:" + "a" * 64
@@ -613,7 +522,7 @@ def test_map_application_300_python_base_images_pull_and_reinspect_missing_base(
 def test_map_application_300_python_base_images_reject_invalid_source_contract(
     tmp_path: Path,
 ) -> None:
-    sources, _ = _paired_builder_inputs(tmp_path)
+    sources = _paired_builder_inputs(tmp_path)
     docker_directory = sources.source_for("map").root / "docker"
     docker_directory.mkdir()
     (docker_directory / "api.Dockerfile").write_text(
@@ -633,7 +542,7 @@ def test_map_application_300_python_base_images_reject_invalid_source_contract(
 def test_map_application_300_python_base_images_reject_extra_docker_stage(
     tmp_path: Path,
 ) -> None:
-    sources, _ = _paired_builder_inputs(tmp_path)
+    sources = _paired_builder_inputs(tmp_path)
     docker_directory = sources.source_for("map").root / "docker"
     docker_directory.mkdir()
     base = "python@sha256:" + "a" * 64
@@ -655,18 +564,6 @@ def test_map_application_300_python_base_images_reject_extra_docker_stage(
         match="Map application candidate base image contract is invalid",
     ):
         compose_service_module._ensure_map_application_300_python_base_images(sources)
-
-
-def test_application_300_mount_directory_rejects_nonroot(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(os, "geteuid", lambda: 1000)
-
-    with pytest.raises(DeploymentContractError, match="requires root"):
-        compose_service_module._ensure_application_300_mount_directory(
-            tmp_path / "mount"
-        )
 
 
 def test_runtime_container_image_mismatch_is_fail_closed(
@@ -1005,31 +902,25 @@ def test_frozen_compose_resolution_preserves_contract_error(
     assert "candidate failed" not in str(captured.value)
 
 
-def test_prebuild_compose_resolution_overrides_blank_artifact_environment(
+def test_compose_resolution_override_replaces_a_blank_ambient_value(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """빈 ambient artifact 값도 frozen prebuild override로 실제 해석한다."""
+    """빈 ambient 값도 frozen override로 실제 해석한다.
+
+    ADR-51 D-3 전에는 prebuild snapshot이 이 경로로 permit 디렉터리를 넘겼다. 그
+    호출자는 사라졌지만 candidate·runtime snapshot이 같은 override 경로로 이미지 env를
+    넘기므로, 운영 키에 기대지 않는 중립 이름으로 경로 자체를 계속 결박한다.
+    """
 
     names = (
-        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR",
-        "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR",
-        "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR",
-        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR",
+        "KTDM_TEST_OVERRIDE_SOURCE_A",
+        "KTDM_TEST_OVERRIDE_SOURCE_B",
     )
-    artifact_root = tmp_path / "prebuild-artifacts"
+    artifact_root = tmp_path / "override-sources"
     overrides = {
         name: str(artifact_root / directory)
-        for name, directory in zip(
-            names,
-            (
-                "fresh-root-fence",
-                "fresh-finalize-fence",
-                "application-final-permit",
-                "dagster-storage-permit",
-            ),
-            strict=True,
-        )
+        for name, directory in zip(names, ("source-a", "source-b"), strict=True)
     }
     for directory in overrides.values():
         Path(directory).mkdir(parents=True)
@@ -1063,7 +954,7 @@ def test_prebuild_compose_resolution_overrides_blank_artifact_environment(
     )
     candidate = {
         "services": {
-            "prebuild-probe": {
+            "override-probe": {
                 "image": "busybox:1.36",
                 "volumes": [
                     f"${{{name}:?{name} must be explicitly set}}:/artifact-{index}:ro"
@@ -1085,7 +976,7 @@ def test_prebuild_compose_resolution_overrides_blank_artifact_environment(
         ),
     )
 
-    volumes = resolved["services"]["prebuild-probe"]["volumes"]
+    volumes = resolved["services"]["override-probe"]["volumes"]
     assert [volume["source"] for volume in volumes] == list(overrides.values())
     assert [volume["target"] for volume in volumes] == [
         f"/artifact-{index}" for index in range(len(names))

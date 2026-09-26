@@ -3658,3 +3658,44 @@ D-1이 설치된 위에서 커밋의 v6 쓰기를 멈춘다. 커밋이 남기는
 - **호스트 잔여물**: private·공개 `pinned-runtime-generation-v6.json`과 공개 `pinned-runtime-rebuild-v8.json`은
   아무것도 읽지 않는다. 지우는 것은 선택이고 D-1 이전으로 되돌릴 일이 없다고 판단한 뒤에만 한다
   (`prod-deployment.md` §8.1). 교차 저장소 변경은 없다.
+
+### NOTE: D-3 — permit mount를 걷어냈다, D 완료 (2026-09-27, D-3)
+
+D-2가 설치된 위에서 Map Dagster storage permit의 마운트·env·allowlist를 걷어낸다. 전제는 n150에 핀된
+Map이 M1(`51ee65d4c`, ADR-102)을 포함하는 것이다 — M1 이후 storage one-shot은 permit 디렉터리도
+`KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_IMAGE_ID`·`..._STORAGE_CONFIG_SHA256`도 읽지 않는다.
+
+- **지운 것**: Manager compose의 Map 서비스 넷(`kor-travel-map-dagster`·`-dagster-code-server`·
+  `-dagster-daemon`·`-dagster-storage-migrate`)의 `/run/kor-travel-map-dagster-storage-permit` bind와
+  `..._STORAGE_PERMIT_IMAGE_ID`·`..._STORAGE_CONFIG_SHA256`·`..._APPLICATION_FINAL_PERMIT_DAGSTER_IMAGE_ID` env,
+  `kor-travel-map-api`의 죽은 `..._APPLICATION_FINAL_PERMIT_API_IMAGE_ID`. `config/docker-targets.yml`의 같은
+  네 서비스 `compose_binds` 항목은 키째 지웠다(목록이 비면 validator가 거부한다). 코드에서는
+  `compose_service`의 pinset별 영수증·permit 디렉터리 준비와 prebuild snapshot의 permit override,
+  `MapApplication300ArtifactDirectories`, `generation_compose_environment`·`CandidateRuntimeBuild`의
+  permit·config sha env, M05의 죽은 `KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_VOLUME`. compose가
+  `${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}`를 쓰던 동안에는 셋 중 하나만 바뀌어도 모든 재구축이
+  막히므로 compose·allowlist·코드를 한 PR로 옮겼다. Map 서비스의 compose bind와 `compose_binds`가 양방향으로
+  같은지는 이제 계약 테스트가 본다.
+- **남긴 것**: `KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID`. M05의 `KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_VOLUME` —
+  M05는 Map 자신의 compose를 돌리고 핀된 Map revision이 아직 그 volume을 선언한다. Map이 standalone permit
+  volume을 지운 revision이 n150에 핀된 뒤에 지운다. `MapApplication300CandidateEvidence.dagster_config_sha256`은
+  판정에 쓰는 곳이 없고, `source_status`의 `_PERMIT_DIR`·`_FENCE_DIR` suffix는 이제 어떤 compose 변수에도
+  걸리지 않는다(선택 D-4 — 앞의 것을 지우면 `result.json`의 `generation_sha256` 값이 바뀐다).
+- **첫 수렴**은 `kor-travel-map-api`(env)·`-dagster`·`-dagster-daemon`·`-dagster-code-server`를 다시
+  만든다. storage one-shot은 전체 경로에서만 돈다. `.env`에 남은 `KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR`·
+  `..._CONFIG_SHA256`은 무해하다(`prod-deployment.md`의 퇴역 키 목록).
+- **D 완료 — 잃은 것(기록된 손실)**:
+  - 공개 generation view(D-1). 비-root backend·UI·Map·PinVi는 배포 진행을 볼 수 없다.
+  - M05는 실패한 배포(같은 pair 포함) 뒤 한 번 commit될 때까지 거부한다(D-1).
+  - M1 이전 Map pinset(예: Map `6511441f` / pinset `e4909e26`)으로 되돌리면 storage one-shot에서 실패한다 —
+    그 이미지는 permit을 요구하는데 마운트가 없다(`dagster_storage_permit_unavailable`). 배포는
+    `in_progress`로 남고 runtime은 멈춘 채다. 복구는 roll-forward(M1 이후 pair로 회전해 재구축)뿐이고,
+    가드를 다시 넣지 않는다.
+- **되돌림 하한**: Manager는 여전히 D-1이다. D-2·D-1 release는 permit 디렉터리를 스스로 만들어 마운트하고
+  M1 이후 Map은 그것을 무시하므로, D-3 아래로 되돌려 설치해도 동작한다.
+- **D 밖에 남긴 것**: C-3 NOTE의 CLI terminal block 상속 fd 예외와 M05 launcher fd 전달, installer 자체
+  lock 코드, 위의 M05 volume과 선택 D-4. 호스트의 `<state_root>/map-application-300-artifacts/`·
+  `map-application-300-candidate/`는 아무것도 읽지도 쓰지도 않는다 — 지우는 것은 선택이다
+  (`prod-deployment.md` §8.1).
+- 교차 저장소: Map `docs/architecture/dagster-boundary.md`의 "Manager가 전환기 동안 permit 디렉터리를 계속
+  마운트한다"는 서술이 더는 사실이 아니다 — Map 문서 PR만 필요하다(코드 변경 없음).

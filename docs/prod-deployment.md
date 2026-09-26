@@ -144,7 +144,10 @@ done
 
 퇴역한 키 셋(`KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR`,
 `..._FRESH_FINALIZE_FENCE_DIR`, `KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR`)은
-ADR-101에서 소비자가 사라졌다. 남아 있어도 무해하므로 굳이 지우지 않는다.
+ADR-101에서 소비자가 사라졌다. `KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR`와
+`KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256`은 ADR-51 D-3에서 compose가 더 참조하지
+않는다(Map M1 이후 storage one-shot이 읽지 않는다). 모두 남아 있어도 무해하므로 굳이 지우지
+않는다.
 
 #### 재시도 금지(terminal) pinset과 재구축 선행 절차
 
@@ -722,3 +725,9 @@ v6 manifest(`pinned-runtime-generation-v6.json`)는 ADR-51 D-1부터 이 Manager
 
 `/var/lib/kor-travel-docker-manager-public` 디렉터리 자체는 지우지 않는다 — runtime-pins·
 runtime-executions 공개 사본이 그 안에 있다.
+
+ADR-51 D-3부터는 `<state_root>/map-application-300-artifacts/`(pinset별 Dagster storage permit 마운트
+원천)와 `<state_root>/map-application-300-candidate/`(pinset별 영수증 디렉터리)도 아무것도 읽지도 쓰지도
+않는다. 지우는 것은 역시 **선택**이며, D-3 설치 검증(재구축·M05)이 끝나고 D-3 이전 Manager와 M1 이전
+Map pinset의 조합으로 되돌릴 일이 없다고 판단한 뒤에만 한다 — 그 조합의 storage one-shot은 pinset별
+`permit.json`을 읽는데, Manager는 그것을 다시 발급하지 않는다.
