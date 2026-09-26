@@ -250,22 +250,6 @@ def test_a_non_rebuildable_mode_needs_no_acknowledgement(tmp_path: Path) -> None
     assert state["blocking"] is False
 
 
-def test_an_unreadable_state_root_is_unverifiable_not_clear(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = tmp_path / ".env"
-    path.write_text(_REBUILDABLE_ENV, encoding="utf-8")
-    absent = tmp_path / "state"
-    absent.mkdir()
-    absent.chmod(0o755)  # 0700이 아니다 → 우리 것이라고 단정할 수 없다
-    monkeypatch.setattr(service, "pinned_runtime_state_root", lambda values: absent)
-
-    state = pinned_rebuild_guard_state(env_path=path)
-
-    assert state["verdict"] == "unverifiable"
-    assert state["requires_acknowledgement"] is True
-
-
 def test_an_absent_state_root_reads_as_no_journal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -278,41 +262,23 @@ def test_an_absent_state_root_reads_as_no_journal(
     assert pinned_rebuild_guard_state(env_path=path)["verdict"] == "no_journal"
 
 
-def test_an_unfinished_journal_is_detected_when_readable(
+def test_a_leftover_unfinished_journal_no_longer_blocks_the_password(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """ADR-51: 배포는 재개하지 않으므로 `.env`를 바꿔도 막힐 재구축이 없다.
+
+    종전에는 버려진 미종결 journal 하나(n150의 a7cc0414)가 이 가드를 영구히 묶었다.
+    """
+
     path = tmp_path / ".env"
     path.write_text(_REBUILDABLE_ENV, encoding="utf-8")
     state_root = tmp_path / "state"
     state_root.mkdir(mode=0o700)
     (state_root / "pinned-runtime-rebuild-v8-abc.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(service, "pinned_runtime_state_root", lambda values: state_root)
-
-    class _Journal:
-        phase = "map_runtime_ready"
-
-    monkeypatch.setattr(service, "read_rebuild_journal", lambda journal_path: _Journal())
 
     state = pinned_rebuild_guard_state(env_path=path)
 
-    assert state["verdict"] == "unfinished_journal"
-    assert state["blocking"] is True
-    assert "map_runtime_ready" in state["detail"]
-
-
-def test_a_committed_journal_does_not_block(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = tmp_path / ".env"
-    path.write_text(_REBUILDABLE_ENV, encoding="utf-8")
-    state_root = tmp_path / "state"
-    state_root.mkdir(mode=0o700)
-    (state_root / "pinned-runtime-rebuild-v8-abc.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(service, "pinned_runtime_state_root", lambda values: state_root)
-
-    class _Journal:
-        phase = "committed"
-
-    monkeypatch.setattr(service, "read_rebuild_journal", lambda journal_path: _Journal())
-
-    assert pinned_rebuild_guard_state(env_path=path)["verdict"] == "no_journal"
+    assert state["verdict"] == "no_journal"
+    assert state["blocking"] is False
+    assert state["requires_acknowledgement"] is False

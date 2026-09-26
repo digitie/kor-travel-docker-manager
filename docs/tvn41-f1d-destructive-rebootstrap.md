@@ -1,5 +1,11 @@
 # T-VN-41-F1D — 파기형 pinned runtime generation 재bootstrap 설계
 
+> **ADR-51(2026-09-26) 이후 배포는 마이그레이션 전진이다.** `rebuild-pinned`는 DB를 보존하고
+> 멱등 one-shot으로 head까지 올린다. 같은 pair는 수렴만 하고, DB를 지우는 길은
+> `rebuild-pinned --restart --reason "..." --confirm` 하나다. 영속 상태는 state root의
+> `deploy-status.json`(in_progress/committed) 하나이며 v8 journal은 더 쓰지 않는다.
+> 아래의 파기형·journal·resume 서술은 그 이전 설계의 기록이다.
+
 ## 전제
 
 이 문서가 다루는 n150 환경은 운영 서비스가 아니다. 현재 Map·PinVi 데이터베이스, 과거

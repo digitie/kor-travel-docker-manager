@@ -325,7 +325,20 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        result = compose_service.rebuild_pinned_runtime()
+        restart = bool(getattr(args, "restart", False))
+        reason = getattr(args, "reason", None)
+        if restart != (reason is not None):
+            print(
+                "pinvi-pair rebuild-pinned: --restart and --reason go together "
+                "(no mutation was attempted)",
+                file=sys.stderr,
+            )
+            return 2
+        result = (
+            compose_service.rebuild_pinned_runtime(restart_reason=reason)
+            if restart
+            else compose_service.rebuild_pinned_runtime()
+        )
     except PinnedRuntimePrejournalFailure as exc:
         # 봉인 단계는 전부 resume 분기보다 앞에서 돈다. journal이 이미 존재하는
         # 실행에서 봉인 단계가 실패하면 그 후보는 **이미 소비됐다** — 같은
@@ -1892,12 +1905,24 @@ def build_parser() -> argparse.ArgumentParser:
     pair_subparsers = pinvi_pair.add_subparsers(dest="pair_action", required=True)
     pair_rebuild = pair_subparsers.add_parser(
         "rebuild-pinned",
-        help="고정 release candidate를 검증한 뒤 세 DB를 비우고 일곱 runtime을 재기동합니다.",
+        help=(
+            "고정 pair를 마이그레이션 전진으로 배포합니다(DB 보존). "
+            "--restart만 세 DB를 지우고 다시 만듭니다."
+        ),
     )
     pair_rebuild.add_argument(
         "--confirm",
         action="store_true",
-        help="세 Map·Dagster·PinVi DB를 파기형으로 재생성함을 확인합니다.",
+        help="배포(와 --restart면 DB 재생성)를 확인합니다.",
+    )
+    pair_rebuild.add_argument(
+        "--restart",
+        action="store_true",
+        help="Map·Dagster·PinVi DB를 지우고 빈 DB에서 다시 만듭니다(유일한 파괴 경로).",
+    )
+    pair_rebuild.add_argument(
+        "--reason",
+        help="--restart의 사유(한 줄, 200자 이하). 배포 상태에 기록됩니다.",
     )
     pair_rebuild.add_argument(
         "--json",

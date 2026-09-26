@@ -9,13 +9,14 @@ import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import ANY, MagicMock, Mock, call
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -45,7 +46,11 @@ from kor_travel_docker_manager.services.database_runtime import (
 )
 from kor_travel_docker_manager.services.deploy_status import (
     DeployedDatabase,
+    DeployStatus,
     carry_over_committed_generation,
+    deploy_status_path,
+    read_deploy_status,
+    write_deploy_status,
 )
 from kor_travel_docker_manager.services.map_application_candidate import (
     MapApplicationCandidate,
@@ -69,7 +74,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     legacy_manifest_file,
     manifest_from_payload,
     pinned_runtime_state_paths,
-    read_rebuild_journal,
     write_manifest,
     write_rebuild_journal,
 )
@@ -173,12 +177,11 @@ def _bypass_root_host_lease_in_nonroot_unit_process(
     )
     # 이 모듈의 대형 orchestration fixture는 각 사례가 필요한 v5 source release를
     # 직접 주입한다. 실제 root registry/trusted Manager v6 snapshot은 만들지 않으므로
-    # 새 execution gate는 여기서만 명시적으로 격리한다. gate 자체(legacy/current/terminal,
-    # lock ordering)는 ``test_runtime_pin_registry`` 전용 회귀가 소유한다.
+    # admission 판정은 여기서만 격리한다. 판정 자체는 ``test_runtime_pin_registry``가 소유한다.
     monkeypatch.setattr(
         compose_service_module,
-        "_assert_pinset_is_not_permanently_blocked",
-        lambda _pinset_sha256: None,
+        "_pinned_runtime_admission_warnings",
+        lambda _pinset_sha256: [],
     )
     base = tmp_path / "application-300"
     monkeypatch.setattr(
@@ -781,33 +784,6 @@ def test_candidate_generation_rejects_paired_source_and_image_drift() -> None:
         )
 
 
-def test_journal_resume_requires_exact_current_map_candidate_evidence() -> None:
-    paired = _map_application_candidate()
-    journal = new_candidate_journal(
-        candidate=_candidate_generation(),
-        environment_bytes=b"frozen-env\n",
-        compose_source_bytes=b"services: {}\n",
-        resolved_compose_sha256="c" * 64,
-    )
-
-    ComposeService._assert_pinned_runtime_journal_matches_map_candidate(
-        journal,
-        map_candidate=paired,
-    )
-    for changed in (
-        replace(paired, dagster_config_sha256="f" * 64),
-        replace(paired, api_image_id=f"sha256:{999:064x}"),
-    ):
-        with pytest.raises(
-            DeploymentContractError,
-            match="journal differs from current Map paired candidate",
-        ):
-            ComposeService._assert_pinned_runtime_journal_matches_map_candidate(
-                journal,
-                map_candidate=changed,
-            )
-
-
 def test_rebuild_requires_root_execution(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(os, "geteuid", lambda: 1000)
 
@@ -985,7 +961,8 @@ def test_runtime_container_image_mismatch_is_fail_closed(
         match="pinvi-web runtime image differs from committed generation",
     ):
         service._assert_pinned_runtime_container_images(
-            records, journal=journal, companions={}
+            records,
+            expected_images=ComposeService._deployed_images(journal.candidate, {}),
         )
 
 
@@ -1013,22 +990,19 @@ def test_runtime_companion_containers_are_bound_to_their_owner_slot_image(
         lambda container_name, *, label: observed[label],
     )
 
-    service._assert_pinned_runtime_container_images(
-        records, journal=journal, companions=companions
-    )
+    expected = ComposeService._deployed_images(journal.candidate, companions)
+    service._assert_pinned_runtime_container_images(records, expected_images=expected)
 
     observed["pinvi-dagster-daemon"] = f"sha256:{998:064x}"
     with pytest.raises(
         DeploymentContractError,
         match="pinvi-dagster-daemon runtime image differs from committed generation",
     ):
-        service._assert_pinned_runtime_container_images(
-            records, journal=journal, companions=companions
-        )
+        service._assert_pinned_runtime_container_images(records, expected_images=expected)
 
     with pytest.raises(DeploymentContractError, match="evidence is incomplete"):
         service._assert_pinned_runtime_container_images(
-            records[:-1], journal=journal, companions=companions
+            records[:-1], expected_images=expected
         )
 
 
@@ -1096,99 +1070,6 @@ def test_real_compose_generation_companions_are_every_dagster_process_sharing_an
         "pinvi-dagster-code-server": "pinvi-dagster",
         "pinvi-dagster-daemon": "pinvi-dagster",
     }
-
-
-def test_committed_resume_revalidates_all_database_identities(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    journal = _journal_at_runtime_phase("committed")
-    runtimes = (object(), object(), object())
-    monkeypatch.setattr(
-        compose_service_module,
-        "read_application_300_database_identity",
-        lambda _runtime: _runtime_application_database_identity(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "read_application_300_dagster_metadata_identity",
-        lambda _runtime, *, metadata_user: _runtime_dagster_metadata_identity(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "read_pinned_database_identity",
-        lambda _runtime: _runtime_pinvi_database_identity(),
-    )
-
-    service._assert_committed_application_database_identities(
-        runtimes,
-        journal=journal,
-        metadata_user="map_dagster_metadata",
-    )
-
-    monkeypatch.setattr(
-        compose_service_module,
-        "read_application_300_database_identity",
-        lambda _runtime: replace(
-            _runtime_application_database_identity(),
-            database_oid=127999,
-        ),
-    )
-    with pytest.raises(DeploymentContractError, match="application database identity"):
-        service._assert_committed_application_database_identities(
-            runtimes,
-            journal=journal,
-            metadata_user="map_dagster_metadata",
-        )
-
-
-def test_committed_resume_revalidates_both_postgres_container_images(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    map_candidate = _map_application_candidate()
-    pinvi_image = "sha256:" + "f" * 64
-    transaction = SimpleNamespace(
-        resolved={
-            "services": {
-                "pinvi-postgres": {
-                    "image": "postgres:16@sha256:" + "1" * 64,
-                }
-            }
-        }
-    )
-    records = (
-        {"Service": "kor-travel-map-postgres", "Name": "map-postgres"},
-        {"Service": "pinvi-postgres", "Name": "pinvi-postgres"},
-    )
-    monkeypatch.setattr(
-        service,
-        "_inspect_image_reference_id",
-        lambda image_reference, *, label: pinvi_image,
-    )
-    observed = {
-        "map-postgres": map_candidate.postgres_image_id,
-        "pinvi-postgres": pinvi_image,
-    }
-    monkeypatch.setattr(
-        service,
-        "_inspect_container_image_id",
-        lambda container_name, *, label: observed[container_name],
-    )
-
-    service._assert_committed_postgres_images(
-        records,
-        transaction=transaction,
-        map_candidate=map_candidate,
-    )
-
-    observed["pinvi-postgres"] = "sha256:" + "e" * 64
-    with pytest.raises(DeploymentContractError, match="pinvi-postgres runtime image"):
-        service._assert_committed_postgres_images(
-            records,
-            transaction=transaction,
-            map_candidate=map_candidate,
-        )
 
 
 def test_rebuild_host_lease_blocks_before_source_or_database_mutation(
@@ -1496,304 +1377,6 @@ def test_prebuild_compose_resolution_overrides_blank_artifact_environment(
         f"/artifact-{index}" for index in range(len(names))
     ]
     assert all(volume["read_only"] is True for volume in volumes)
-
-
-def test_candidate_compose_build_failure_is_sealed_with_its_own_stage(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """후보 Compose 빌드 실패가 `unclassified`로 새지 않는다.
-
-    2026-09-02 rebuild가 정확히 여기서 닫혔다 — `pinvi-web` 빌드 exit 1.
-    29분을 돌고 result에는
-    `classification: unclassified`만 남았고, `--json`이 원문을 막아 stderr는
-    **0바이트**였다 — 어디에도 진단이 없었다. launcher는 claim을 유지했고
-    회전 사이클 1회(= Map+PinVi revision부터 다시)가 탔다.
-
-    이 구간은 journal write 전이고 Compose·DB mutation 전이다. 원문을 노출하는
-    대신 이 트랙의 확립된 절차대로 **고정 어휘를 넓혀** 다음 실행이 지점을
-    특정하게 한다.
-    """
-
-    values = {
-        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
-        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
-        "PINVI_ENVIRONMENT": "production",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
-        "COMPOSE_PROJECT_NAME": "f1d-candidate-refusal",
-        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
-        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
-        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
-    }
-    transaction = SimpleNamespace(
-        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
-        compose_source_bytes=b"services: {}\n",
-        resolved_document_hash="c" * 64,
-        resolved={"services": {}},
-    )
-    service = ComposeService()
-    run_compose = Mock(
-        side_effect=DeploymentContractError(
-            "pinned runtime rebuild Compose build command failed (exit 1)"
-        )
-    )
-    database_reset = Mock()
-    journal_write = Mock()
-    paired_builder = Mock()
-    paired_candidate = _map_application_candidate()
-
-    monkeypatch.setattr(
-        compose_service_module,
-        "c6c_deployment_lock_from_environment",
-        lambda: __import__("contextlib").nullcontext(object()),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_require_pinned_runtime_rebuild_root",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_capture_compose_environment_snapshot",
-        lambda *, environment_override: transaction.environment,
-    )
-    monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
-    monkeypatch.setattr(
-        compose_service_module,
-        "materialize_pinned_runtime_sources",
-        lambda **_kwargs: _sources(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_build_map_application_300_images",
-        paired_builder,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_load_application_300_candidate",
-        Mock(return_value=paired_candidate),
-    )
-    monkeypatch.setattr(
-        service,
-        "capture_transaction_unlocked",
-        lambda **_kwargs: (transaction, None),
-    )
-    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
-    monkeypatch.setattr(
-        service,
-        "_validate_pinned_runtime_candidate_build_contract",
-        Mock(),
-    )
-    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
-    monkeypatch.setattr(
-        compose_service_module,
-        "reset_databases_for_application_300",
-        database_reset,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "write_pinned_runtime_rebuild_journal",
-        journal_write,
-    )
-
-    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
-        service.rebuild_pinned_runtime()
-
-    state_paths = pinned_runtime_state_paths(
-        values,
-        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-    )
-    assert captured.value.stage == "candidate_compose_build"
-    assert "Compose build command failed" in str(captured.value.__cause__)
-    journal_write.assert_not_called()
-    database_reset.assert_not_called()
-    run_compose.assert_called_once()
-    assert not state_paths.journal.exists()
-
-def test_candidate_contract_refusal_precedes_journal_runtime_stop_and_database_reset(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Candidate typed refusal은 journal/Compose/DB mutation 전에 그대로 멈춘다."""
-
-    values = {
-        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
-        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
-        "PINVI_ENVIRONMENT": "production",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
-        "COMPOSE_PROJECT_NAME": "f1d-candidate-refusal",
-        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
-        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
-        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
-    }
-    transaction = SimpleNamespace(
-        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
-        compose_source_bytes=b"services: {}\n",
-        resolved_document_hash="c" * 64,
-        resolved={"services": {}},
-    )
-    service = ComposeService()
-    candidate_refusal = ComposeCandidateContractError("candidate diagnostic preserved")
-    run_compose = Mock()
-    database_reset = Mock()
-    journal_write = Mock()
-    paired_builder = Mock()
-    paired_candidate = _map_application_candidate()
-
-    monkeypatch.setattr(
-        compose_service_module,
-        "c6c_deployment_lock_from_environment",
-        lambda: __import__("contextlib").nullcontext(object()),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_require_pinned_runtime_rebuild_root",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_capture_compose_environment_snapshot",
-        lambda *, environment_override: transaction.environment,
-    )
-    monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
-    monkeypatch.setattr(
-        compose_service_module,
-        "materialize_pinned_runtime_sources",
-        lambda **_kwargs: _sources(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_build_map_application_300_images",
-        paired_builder,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_load_application_300_candidate",
-        Mock(return_value=paired_candidate),
-    )
-    monkeypatch.setattr(
-        service,
-        "capture_transaction_unlocked",
-        lambda **_kwargs: (transaction, None),
-    )
-    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
-    monkeypatch.setattr(
-        service,
-        "_validate_pinned_runtime_candidate_build_contract",
-        Mock(side_effect=candidate_refusal),
-    )
-    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
-    monkeypatch.setattr(
-        compose_service_module,
-        "reset_databases_for_application_300",
-        database_reset,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "write_pinned_runtime_rebuild_journal",
-        journal_write,
-    )
-
-    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
-        service.rebuild_pinned_runtime()
-
-    state_paths = pinned_runtime_state_paths(
-        values,
-        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-    )
-    assert captured.value.stage == "candidate_contract"
-    assert isinstance(captured.value.__cause__, ComposeCandidateContractError)
-    assert captured.value.__cause__ is candidate_refusal
-    journal_write.assert_not_called()
-    run_compose.assert_not_called()
-    database_reset.assert_not_called()
-    paired_builder.assert_called_once()
-    assert not state_paths.journal.exists()
-
-
-def test_external_prerequisite_refusal_precedes_source_and_candidate_mutation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    values = {
-        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
-        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
-        "PINVI_ENVIRONMENT": "production",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
-        "COMPOSE_PROJECT_NAME": "f1d-prerequisite-refusal",
-        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
-        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
-        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
-    }
-    transaction = SimpleNamespace(
-        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
-        compose_source_bytes=b"services: {}\n",
-        resolved_document_hash="c" * 64,
-        resolved={"services": {}},
-    )
-    service = ComposeService()
-    materialize = Mock()
-    paired_builder = Mock()
-    journal_write = Mock()
-
-    monkeypatch.setattr(
-        compose_service_module,
-        "c6c_deployment_lock_from_environment",
-        lambda: nullcontext(object()),
-    )
-    monkeypatch.setattr(
-        compose_service_module, "_require_pinned_runtime_rebuild_root", lambda: None
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_capture_compose_environment_snapshot",
-        lambda *, environment_override: transaction.environment,
-    )
-    monkeypatch.setattr(
-        service,
-        "capture_transaction_unlocked",
-        lambda **_kwargs: (transaction, None),
-    )
-    monkeypatch.setattr(
-        compose_service_module, "_assert_transaction_matches_c6c_lock", Mock()
-    )
-    monkeypatch.setattr(
-        service,
-        "_require_services_ready",
-        Mock(side_effect=DeploymentContractError("external prerequisite unavailable")),
-    )
-    monkeypatch.setattr(
-        compose_service_module, "materialize_pinned_runtime_sources", materialize
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_build_map_application_300_images",
-        paired_builder,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "write_pinned_runtime_rebuild_journal",
-        journal_write,
-    )
-
-    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
-        service.rebuild_pinned_runtime()
-
-    assert captured.value.stage == "external_prerequisites"
-    assert isinstance(captured.value.__cause__, DeploymentContractError)
-
-    materialize.assert_not_called()
-    paired_builder.assert_not_called()
-    journal_write.assert_not_called()
 
 
 def test_rebuild_compose_error_names_the_failed_action(
@@ -2285,1136 +1868,6 @@ def test_static_command_can_bypass_a_sealed_image_entrypoint(
     ]
 
 
-def test_rebuild_candidate_journal_binds_application_300_inputs(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    values = {
-        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
-        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
-        "KTDM_C6C_CONTRACT_GENERATION": "c6c-ops-v1",
-        "PINVI_ENVIRONMENT": "production",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
-        "COMPOSE_PROJECT_NAME": "f1d-c2",
-        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
-        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
-        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
-        "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "previous-candidate-head",
-    }
-    transaction = SimpleNamespace(
-        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
-        compose_source_bytes=b"services: {}\n",
-        resolved_document_hash="c" * 64,
-        resolved={"services": {}},
-    )
-    captured: list[dict[str, str] | None] = []
-
-    def capture(
-        *,
-        environment_override: dict[str, str] | None = None,
-        environment_snapshot: object | None = None,
-    ) -> tuple[SimpleNamespace, None]:
-        del environment_snapshot
-        captured.append(environment_override)
-        return transaction, None
-
-    service = ComposeService()
-    operations: list[tuple[str, ...]] = []
-    static_commands: list[tuple[str, ...]] = []
-    static_entrypoints: list[str | None] = []
-    paired_candidate = _map_application_candidate()
-    image_ids = _candidate_image_ids(paired_candidate)
-    paired_builder = Mock()
-    database_reset = Mock()
-
-    monkeypatch.setattr(
-        compose_service_module,
-        "c6c_deployment_lock_from_environment",
-        lambda: __import__("contextlib").nullcontext(object()),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_require_pinned_runtime_rebuild_root",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_capture_compose_environment_snapshot",
-        lambda *, environment_override: transaction.environment,
-    )
-    monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
-    monkeypatch.setattr(service, "capture_transaction_unlocked", capture)
-    candidate_contract = Mock()
-    monkeypatch.setattr(
-        service,
-        "_validate_pinned_runtime_candidate_build_contract",
-        candidate_contract,
-    )
-    external_readiness = Mock(return_value=[])
-    monkeypatch.setattr(service, "_require_services_ready", external_readiness)
-    monkeypatch.setattr(
-        compose_service_module,
-        "materialize_pinned_runtime_sources",
-        lambda **_kwargs: _sources(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_build_map_application_300_images",
-        paired_builder,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_load_application_300_candidate",
-        Mock(return_value=paired_candidate),
-    )
-    def run_compose(
-        args: list[str],
-        *,
-        transaction: object,
-    ) -> dict[str, object]:
-        del transaction
-        operations.append(tuple(args))
-        return {"success": True, "stdout": "[]" if "ps" in args else ""}
-
-    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
-    monkeypatch.setattr(
-        service,
-        "_attest_pinned_runtime_candidate_images",
-        lambda *, build, map_candidate: image_ids,
-    )
-    def static_command(
-        _image: str,
-        command: tuple[str, ...],
-        *,
-        label: str,
-        entrypoint: str | None = None,
-    ) -> str:
-        del label
-        static_commands.append(command)
-        static_entrypoints.append(entrypoint)
-        return {
-            "/usr/local/bin/ktm-application-schema": (
-                '{"head":"300","schema":"kor-travel-map.application-head.v1"}\n'
-            ),
-            "/usr/local/bin/ktm-dagster-storage": (
-                '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n'
-            ),
-            None: '{"pinvi_head":"pinvi-head","schema":"pinvi.candidate-head.v1"}\n',
-        }[entrypoint]
-
-    monkeypatch.setattr(
-        compose_service_module,
-        "_run_pinned_runtime_static_command",
-        static_command,
-    )
-    monkeypatch.setattr(compose_service_module, "ensure_generation_references", Mock())
-    monkeypatch.setattr(
-        compose_service_module,
-        "reset_databases_for_application_300",
-        database_reset,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "retire_f1d_legacy_artifacts",
-        Mock(side_effect=DeploymentContractError("stop after candidate journal")),
-    )
-
-    with pytest.raises(DeploymentContractError, match="stop after candidate journal"):
-        service.rebuild_pinned_runtime()
-
-    candidate_journal = read_rebuild_journal(
-        pinned_runtime_state_paths(
-            values,
-            pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-        ).journal
-    )
-    assert candidate_journal.phase == "candidate_attested"
-    assert candidate_journal.candidate.map_application_head == "300"
-    artifact_root = tmp_path / "application-300"
-    # ADR-101: fixed mount가 넷에서 하나로 줄었다. 나머지 셋을 읽던 코드가 Map
-    # 이미지에서 사라졌으므로 생산자도 함께 지웠다.
-    assert captured[0] == {
-        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": str(
-            artifact_root / "dagster-storage-permit"
-        ),
-    }
-    assert captured[1] is not None
-    assert captured[1]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == "300"
-    assert captured[-1] is not None
-    assert captured[-1]["KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD"] == "300"
-    assert operations == [
-        ("build", *COMPOSE_BUILT_RUNTIME_SERVICES),
-        (
-            "--profile",
-            "bootstrap",
-            "run",
-            "--rm",
-            "--no-deps",
-            "pinvi-admin-bootstrap",
-            "pinvi-admin-bootstrap",
-            "head",
-        ),
-    ]
-    # Map application head는 이제 후보를 빌드한 직후 한 번만 관측한다
-    # (_load_application_300_candidate) -- candidate_heads에서 다시 돌리지 않는다.
-    assert static_commands == [
-        ("head",),
-        ("pinvi-admin-bootstrap", "head"),
-    ]
-    assert static_entrypoints == [
-        "/usr/local/bin/ktm-dagster-storage",
-        None,
-    ]
-    paired_builder.assert_called_once()
-    candidate_contract.assert_called_once()
-    assert external_readiness.call_args_list == [
-        call(
-            ("rustfs", "kor-travel-geo-api", "kor-travel-concierge-api"),
-            transaction=transaction,
-            frozen_recovery=True,
-        ),
-        call(
-            ("rustfs", "kor-travel-geo-api", "kor-travel-concierge-api"),
-            transaction=transaction,
-            frozen_recovery=True,
-        ),
-    ]
-    database_reset.assert_not_called()
-
-
-def test_cancel_probe_attempt_receipt_restores_the_exact_nonretriable_state() -> None:
-    journal = _journal_at_runtime_phase("pinvi_api_ready")
-    armed = PinnedRuntimeCancelProbeReceipt().transition(
-        "armed",
-        job_id="22222222-2222-2222-2222-222222222222",
-        fixture_created_at="2026-08-06T00:00:00+00:00",
-    )
-    journal = journal.with_cancel_probe(armed)
-    journal = journal.with_cancel_probe(armed.transition("cancel_post_attempted"))
-
-    resumed = compose_service_module._pinvi_cancel_probe_state_from_journal(journal)
-
-    assert resumed.transaction_id == journal.transaction_id
-    assert resumed.fixture is not None
-    assert resumed.fixture.job_id == "22222222-2222-2222-2222-222222222222"
-    assert resumed.fixture.state == "armed"
-    assert resumed.attempted is True
-    assert resumed.finalize_attempted is False
-
-
-def test_database_reset_is_forbidden_after_databases_recreated() -> None:
-    journal = new_candidate_journal(
-        candidate=_candidate_generation(),
-        environment_bytes=b"frozen-env\n",
-        compose_source_bytes=b"services: {}\n",
-        resolved_compose_sha256="c" * 64,
-    )
-
-    assert compose_service_module._pinned_runtime_reset_required(journal) is True
-    reset_intent = journal.transition("reset_intent_durable")
-    assert compose_service_module._pinned_runtime_reset_required(reset_intent) is True
-    databases_recreated = reset_intent.with_databases_recreated(
-        pinvi_database_identity=_pinvi_database_identity()
-    )
-    assert (
-        compose_service_module._pinned_runtime_reset_required(databases_recreated)
-        is False
-    )
-    journal = _journal_at_runtime_phase("pinvi_api_ready")
-    assert compose_service_module._pinned_runtime_reset_required(journal) is False
-
-
-def test_dagster_live_identity_preserves_login_and_inherit_attestation() -> None:
-    contract_identity, journal_identity = (
-        compose_service_module._application_300_dagster_identities(
-            _runtime_dagster_metadata_identity()
-        )
-    )
-
-    assert contract_identity.login_role_attributes.can_login is True
-    assert contract_identity.login_role_attributes.inherit is False
-    assert journal_identity.login_role_attributes.can_login is True
-    assert journal_identity.login_role_attributes.inherit is False
-
-
-@pytest.mark.parametrize(
-    ("can_login", "inherit"),
-    ((False, False), (True, True)),
-)
-def test_dagster_live_identity_rejects_login_attribute_drift(
-    can_login: bool,
-    inherit: bool,
-) -> None:
-    with pytest.raises(DeploymentContractError, match="identity is invalid"):
-        compose_service_module._application_300_dagster_identities(
-            _runtime_dagster_metadata_identity(
-                can_login=can_login,
-                inherit=inherit,
-            )
-        )
-
-
-def test_createdb_response_loss_converges_from_exact_virgin_state(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    journal = _journal_at_application_300_phase(
-        "application_create_intent_durable"
-    )
-    state_reader = Mock(
-        side_effect=("virgin", "virgin", "virgin", "exact_complete")
-    )
-    identity_reader = Mock(
-        side_effect=(
-            _runtime_application_create_database_identity(),
-            _runtime_application_create_database_identity(),
-            _runtime_application_database_identity(),
-        )
-    )
-    create = Mock()
-    compose = Mock(return_value={"success": True})
-    journal_writer = Mock()
-    monkeypatch.setattr(
-        compose_service_module,
-        "inspect_application_300_bootstrap_state",
-        state_reader,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "read_application_300_database_identity",
-        identity_reader,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "create_fresh_application_300_database",
-        create,
-    )
-    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", compose)
-    monkeypatch.setattr(
-        compose_service_module,
-        "write_pinned_runtime_rebuild_journal",
-        journal_writer,
-    )
-
-    result, application_database = (
-        service._converge_application_300_database_bootstrap(
-            journal=journal,
-            runtime=_runtime_application_database(),
-            transaction=_opaque_transaction(),
-            journal_path=Path("/state/journal.json"),
-        )
-    )
-
-    assert result.phase == "application_roles_ready"
-    assert application_database.oid == 127001
-    create.assert_not_called()
-    compose.assert_called_once_with(
-        [
-            "--profile",
-            "bootstrap",
-            "run",
-            "--rm",
-            "--no-deps",
-            "--env",
-            "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
-            "kor-travel-map-db-role-bootstrap",
-        ],
-        transaction=ANY,
-    )
-    assert journal_writer.call_count == 3
-
-
-def test_bootstrap_response_loss_uses_exact_result_without_reexecution(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    journal = _journal_at_application_300_phase(
-        "application_bootstrap_intent_durable"
-    )
-    compose = Mock()
-    monkeypatch.setattr(
-        compose_service_module,
-        "inspect_application_300_bootstrap_state",
-        Mock(return_value="exact_complete"),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "read_application_300_database_identity",
-        Mock(return_value=_runtime_application_database_identity()),
-    )
-    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", compose)
-    monkeypatch.setattr(
-        compose_service_module,
-        "write_pinned_runtime_rebuild_journal",
-        Mock(),
-    )
-
-    result, _ = service._converge_application_300_database_bootstrap(
-        journal=journal,
-        runtime=_runtime_application_database(),
-        transaction=_opaque_transaction(),
-        journal_path=Path("/state/journal.json"),
-    )
-
-    assert result.phase == "application_roles_ready"
-    compose.assert_not_called()
-
-
-@pytest.mark.parametrize("state", ("partial", "foreign", "absent"))
-def test_bootstrap_intent_fails_closed_on_nonconvergent_state(
-    state: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    journal = _journal_at_application_300_phase(
-        "application_bootstrap_intent_durable"
-    )
-    compose = Mock()
-    monkeypatch.setattr(
-        compose_service_module,
-        "inspect_application_300_bootstrap_state",
-        Mock(return_value=state),
-    )
-    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", compose)
-
-    with pytest.raises(DeploymentContractError, match="bootstrap result is not exact"):
-        service._converge_application_300_database_bootstrap(
-            journal=journal,
-            runtime=_runtime_application_database(),
-            transaction=_opaque_transaction(),
-            journal_path=Path("/state/journal.json"),
-        )
-
-    compose.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    ("phase", "_one_shot_service", "expected_error"),
-    (
-        # ADR-101: 여기 있던 두 칸(`fresh_root_execution_intent`,
-        # `fresh_finalize_execution_intent`)이 하나가 됐다. `alembic upgrade head`는
-        # 멱등하므로 "durable intent 이후 재실행 금지"는 더는 지킬 성질이 아니다.
-        # 대신 **이미 끝난 것을 다시 돌리지 않는다**를 확인한다 — 아래 단언이
-        # schema one-shot 명령이 `operations`에 없음을 요구한다.
-        (
-            "application_schema_ready",
-            "kor-travel-map-application-schema",
-            "Map Dagster storage execution result is uncertain",
-        ),
-        (
-            "map_dagster_storage_intent_durable",
-            "kor-travel-map-dagster-storage-migrate",
-            "Map Dagster storage execution result is uncertain",
-        ),
-        # `map_runtime_ready` is the phase whose production block closes the
-        # PinVi role catalog reset receipt. Resuming from it is the only way to
-        # see that close happen on the real path — `pinvi_schema_ready` below
-        # starts from a journal the fixture builder already closed.
-        (
-            "map_runtime_ready",
-            "pinvi-admin-bootstrap",
-            "stop after PinVi API startup",
-        ),
-        (
-            "pinvi_schema_ready",
-            "pinvi-admin-bootstrap",
-            "stop after PinVi API startup",
-        ),
-    ),
-)
-@pytest.mark.parametrize("with_companions", (False, True))
-def test_application_300_one_shots_never_reexecute_after_durable_intent(
-    phase: RebuildPhase,
-    _one_shot_service: str,
-    expected_error: str,
-    with_companions: bool,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    values = {
-        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
-        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
-        "PINVI_ENVIRONMENT": "production",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "metadata-password",
-        "COMPOSE_PROJECT_NAME": "f1d-intent-resume",
-        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
-        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
-        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
-    }
-    journal = (
-        _journal_at_runtime_phase(phase)
-        if phase in {
-            "map_dagster_storage_intent_durable",
-            "map_application_ready",
-            "map_runtime_ready",
-            "pinvi_schema_ready",
-        }
-        else _journal_at_application_300_phase(phase)
-    )
-    companion_services: dict[str, object] = (
-        {
-            "kor-travel-map-dagster-code-server": {
-                "image": journal.candidate.image_ids["kor-travel-map-dagster"]
-            },
-            "pinvi-dagster-code-server": {
-                "image": journal.candidate.image_ids["pinvi-dagster"]
-            },
-            "pinvi-dagster-daemon": {
-                "image": journal.candidate.image_ids["pinvi-dagster"]
-            },
-        }
-        if with_companions
-        else {}
-    )
-    transaction = SimpleNamespace(
-        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
-        compose_source_bytes=b"services: {}\n",
-        resolved_document_hash="c" * 64,
-        resolved={"services": companion_services},
-    )
-    state_paths = pinned_runtime_state_paths(
-        values,
-        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-    )
-    state_paths.state_root.mkdir(parents=True, mode=0o700)
-    write_rebuild_journal(state_paths.journal, journal)
-    service = ComposeService()
-    operations: list[tuple[str, ...]] = []
-    database_reset = Mock()
-    create_database = Mock()
-    map_candidate = _map_application_candidate()
-
-    def run_compose(
-        arguments: list[str],
-        *,
-        transaction: object,
-    ) -> dict[str, object]:
-        del transaction
-        operations.append(tuple(arguments))
-        # storage one-shot도 영수증 없이 끝난다(Map M1 이후의 모양). 판정은 그 뒤
-        # Manager가 직접 읽는 head가 한다 — 아래 `uncertain` 기대가 그것이다.
-        return {"success": True, "stdout": ""}
-
-    monkeypatch.setattr(
-        compose_service_module,
-        "c6c_deployment_lock_from_environment",
-        lambda: nullcontext(object()),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_require_pinned_runtime_rebuild_root",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_capture_compose_environment_snapshot",
-        lambda *, environment_override: transaction.environment,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_assert_transaction_matches_c6c_lock",
-        Mock(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "materialize_pinned_runtime_sources",
-        lambda **_kwargs: _sources(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_build_map_application_300_images",
-        Mock(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_load_application_300_candidate",
-        Mock(return_value=map_candidate),
-    )
-    monkeypatch.setattr(
-        service,
-        "capture_transaction_unlocked",
-        lambda **_kwargs: (transaction, None),
-    )
-    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
-    monkeypatch.setattr(
-        service,
-        "_validate_pinned_runtime_candidate_build_contract",
-        Mock(),
-    )
-    monkeypatch.setattr(service, "_attest_pinned_runtime_candidate_images", Mock())
-    monkeypatch.setattr(
-        compose_service_module,
-        "ensure_generation_references",
-        Mock(),
-    )
-    monkeypatch.setattr(compose_service_module, "retire_f1d_legacy_artifacts", Mock())
-    monkeypatch.setattr(
-        compose_service_module,
-        "database_runtimes_from_frozen_contract",
-        lambda **_kwargs: (object(), object(), object()),
-    )
-    monkeypatch.setattr(
-        service,
-        "_retire_pinned_runtime_oneshot_writers",
-        Mock(),
-    )
-    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
-    monkeypatch.setattr(
-        service,
-        "_require_services_ready",
-        Mock(
-            return_value=[
-                {"Name": "map-postgres"},
-                {"Name": "pinvi-postgres"},
-            ]
-        ),
-    )
-    monkeypatch.setattr(service, "_inspect_container_runtime_config", Mock(return_value={}))
-    monkeypatch.setattr(
-        service,
-        "_inspect_container_image_id",
-        Mock(return_value=map_candidate.postgres_image_id),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "validate_map_postgres_runtime_secret_isolation",
-        Mock(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "validate_pinvi_postgres_runtime_secret_isolation",
-        Mock(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "read_application_300_database_identity",
-        Mock(return_value=_runtime_application_database_identity()),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "read_pinned_database_identity",
-        Mock(return_value=_runtime_pinvi_database_identity()),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "reset_databases_for_application_300",
-        database_reset,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "create_fresh_application_300_database",
-        create_database,
-    )
-    if phase in {
-        "application_schema_ready",
-        "map_dagster_storage_intent_durable",
-        "map_application_ready",
-        "map_runtime_ready",
-        "pinvi_schema_ready",
-    }:
-        monkeypatch.setattr(
-            compose_service_module,
-            "publish_root_read_only_artifact",
-            Mock(),
-        )
-        monkeypatch.setattr(
-            compose_service_module,
-            "read_application_300_dagster_metadata_identity",
-            Mock(return_value=object()),
-        )
-        monkeypatch.setattr(
-            compose_service_module,
-            "_application_300_dagster_identities",
-            Mock(return_value=(object(), _dagster_database_identity())),
-        )
-        monkeypatch.setattr(
-            compose_service_module,
-            "build_dagster_metadata_permit",
-            Mock(
-                return_value=SimpleNamespace(
-                    raw=b"metadata-permit",
-                    sha256="9" * 64,
-                )
-            ),
-        )
-        revision_values = [
-            # api 기동 뒤의 head 확인. schema one-shot은 이 재개 phase들에서
-            # 건너뛰어지므로 그 직후 관측은 일어나지 않는다.
-            journal.candidate.map_application_head,
-            (
-                "unexpected-dagster-head"
-                if phase
-                in {"map_dagster_storage_intent_durable", "application_schema_ready"}
-                else journal.candidate.map_dagster_head
-            ),
-        ]
-        if phase in {"map_runtime_ready", "pinvi_schema_ready"}:
-            revision_values.append(journal.candidate.pinvi_head)
-        revision_heads = iter(revision_values)
-        monkeypatch.setattr(
-            compose_service_module,
-            "read_database_schema_revision",
-            lambda _runtime: next(revision_heads),
-        )
-    if phase == "map_application_ready":
-        monkeypatch.setattr(
-            compose_service_module,
-            "pinvi_bootstrap_credential_file",
-            Mock(
-                side_effect=DeploymentContractError(
-                    "stop after map runtime startup"
-                )
-            ),
-        )
-    elif phase in {"map_runtime_ready", "pinvi_schema_ready"}:
-        # map_runtime_ready에서 재개하면 production이 실제로
-        # _run_pinvi_admin_bootstrap을 부르고, 그 안에서 이 helper가 context
-        # manager로 쓰인다 — MagicMock만 __enter__/__exit__를 갖는다.
-        credential_file = MagicMock()
-        monkeypatch.setattr(
-            compose_service_module,
-            "pinvi_bootstrap_credential_file",
-            credential_file,
-        )
-        # _ensure_pinvi_fresh_migration_fence는 _run_pinvi_admin_bootstrap보다
-        # 먼저 실제 docker exec를 시도한다 -- 이 fixture의 values에는
-        # PINVI_APP_DB_USER도 없고 CI에 shared postgres도 없으므로 여기서도
-        # no-op으로 건너뛴다(아래 두 patch와 같은 이유).
-        monkeypatch.setattr(
-            ComposeService,
-            "_ensure_pinvi_fresh_migration_fence",
-            Mock(),
-        )
-        monkeypatch.setattr(
-            compose_service_module,
-            "load_c6c_deployment_config_from_environment",
-            Mock(
-                side_effect=DeploymentContractError(
-                    "stop after PinVi API startup"
-                )
-            ),
-        )
-
-    with pytest.raises(DeploymentContractError, match=expected_error) as captured:
-        service.rebuild_pinned_runtime()
-
-    if phase == "map_application_ready":
-        assert "stop after map runtime startup" not in str(captured.value)
-
-    if phase == "map_runtime_ready":
-        # `with_databases_recreated`는 이 receipt를 `intent`로 찍고, journal은
-        # `map_runtime_ready` 다음 phase부터 `intent`를 거절한다. 그래서 production이
-        # 이 자리에서 receipt를 닫지 않으면 재구축은 phase 20에서 영구히 멈춘다 —
-        # 탈출구가 새 pinset(= 새 커밋)뿐인 상태가 된다. 닫는 호출을 지우면 이
-        # 단언 대신 위 pytest.raises가 'invalid PinVi role catalog reset receipt'로
-        # 먼저 터진다(확인함).
-        #
-        # 그리고 `null`로 두는 우회도 안 된다: Map의
-        # scripts/lib/c7_prod_attestation.py가 봉인된 journal에서 이 자리를
-        # `completed`로 요구한다.
-        resumed = read_rebuild_journal(state_paths.journal)
-        assert resumed.pinvi_role_catalog_reset == PinviRoleCatalogResetReceipt(
-            state="completed"
-        )
-
-    storage_command = (
-        "run",
-        "--rm",
-        "--no-deps",
-        "kor-travel-map-dagster-storage-migrate",
-    )
-    schema_command = (
-        "--profile",
-        "bootstrap",
-        "run",
-        "--rm",
-        "--no-deps",
-        "kor-travel-map-application-schema",
-    )
-    if phase == "application_schema_ready":
-        # 핵심 단언: 저널이 이미 schema 관측을 들고 있으면 one-shot을 부르지 않는다.
-        assert schema_command not in operations
-        assert operations.count(storage_command) == 1
-    else:
-        assert schema_command not in operations
-    if phase == "map_application_ready":
-        assert operations.count(storage_command) == 1
-        assert (
-            "up",
-            "-d",
-            "--no-deps",
-            "--wait",
-            "--wait-timeout",
-            _WAIT_TIMEOUT,
-            "kor-travel-map-ui",
-            "kor-travel-map-dagster",
-            "kor-travel-map-dagster-daemon",
-        ) in operations
-    elif phase == "map_dagster_storage_intent_durable":
-        assert operations.count(storage_command) == 1
-    elif phase == "pinvi_schema_ready":
-        assert operations.count(storage_command) == 0
-        credential_file.assert_not_called()
-        assert (
-            "up",
-            "-d",
-            "--no-deps",
-            "--wait",
-            "--wait-timeout",
-            _WAIT_TIMEOUT,
-            "pinvi-api",
-        ) in operations
-    assert all(
-        "--no-deps" in operation
-        for operation in operations
-        if "up" in operation or "run" in operation
-    )
-    # companion은 compose가 `--no-deps`로 지워 버리는 depends_on 대신 같은 호출에
-    # 이름으로 실려야 정지·기동된다(t56e~t56h: Map code-server가 한 번도 안 떴다).
-    companion_names = tuple(sorted(companion_services))
-    assert ("stop", *RUNTIME_SERVICES, *companion_names) in operations
-    if phase in {"map_runtime_ready", "pinvi_schema_ready"}:
-        map_companions = (
-            ("kor-travel-map-dagster-code-server",) if with_companions else ()
-        )
-        assert (
-            "up",
-            "-d",
-            "--no-deps",
-            "--wait",
-            "--wait-timeout",
-            _WAIT_TIMEOUT,
-            *map_companions,
-            "kor-travel-map-ui",
-            "kor-travel-map-dagster",
-            "kor-travel-map-dagster-daemon",
-        ) in operations
-    database_reset.assert_not_called()
-    create_database.assert_not_called()
-
-
-def _companion_resume_harness(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    *,
-    start_phase: RebuildPhase,
-    fail_at_commit: bool = False,
-) -> SimpleNamespace:
-    """저장된 journal에서 재개하는 재구축을 실제 오케스트레이션 그대로 돌리는 대역.
-
-    compose 호출, readiness 요청, 이미지 조회 label, C6c 검사 대상을 기록한다. DB와
-    docker는 대역이고 head는 후보 head를 그대로 돌려준다.
-    """
-
-    values = {
-        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
-        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
-        "PINVI_ENVIRONMENT": "production",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "metadata-password",
-        "COMPOSE_PROJECT_NAME": "f1d-companion-commit",
-        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
-        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
-        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
-    }
-    journal = _journal_at_runtime_phase(start_phase)
-    image_ids = journal.candidate.image_ids
-    companion_owners = {
-        "kor-travel-map-dagster-code-server": "kor-travel-map-dagster",
-        "pinvi-dagster-code-server": "pinvi-dagster",
-        "pinvi-dagster-daemon": "pinvi-dagster",
-    }
-    resolved_services: dict[str, object] = {
-        name: {"image": image_ids[owner]} for name, owner in companion_owners.items()
-    }
-    # 같은 slot 이미지를 쓰는 one-shot writer는 companion이 아니다 — 장수 서비스로
-    # 기동되면 migration·bootstrap이 다시 돈다.
-    resolved_services.update(
-        {
-            "kor-travel-map-dagster-storage-migrate": {
-                "image": image_ids["kor-travel-map-dagster"]
-            },
-            "kor-travel-map-application-schema": {
-                "image": image_ids["kor-travel-map-api"]
-            },
-            "pinvi-admin-bootstrap": {"image": image_ids["pinvi-api"]},
-        }
-    )
-    transaction = SimpleNamespace(
-        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
-        compose_source_bytes=b"services: {}\n",
-        resolved_document_hash="c" * 64,
-        resolved={"services": resolved_services},
-    )
-    state_paths = pinned_runtime_state_paths(
-        values,
-        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-    )
-    state_paths.state_root.mkdir(parents=True, mode=0o700)
-    write_rebuild_journal(state_paths.journal, journal)
-    service = ComposeService()
-    map_candidate = _map_application_candidate()
-    operations: list[tuple[str, ...]] = []
-    readiness_requests: list[tuple[str, ...]] = []
-    image_labels: list[str] = []
-    inspected_services: list[tuple[str, ...]] = []
-    map_runtime, dagster_runtime, pinvi_runtime = object(), object(), object()
-    heads = {
-        map_runtime: journal.candidate.map_application_head,
-        dagster_runtime: journal.candidate.map_dagster_head,
-        pinvi_runtime: journal.candidate.pinvi_head,
-    }
-
-    def run_compose(
-        arguments: list[str],
-        *,
-        transaction: object,
-    ) -> dict[str, object]:
-        del transaction
-        operations.append(tuple(arguments))
-        return {"success": True, "stdout": ""}
-
-    def require_ready(
-        services: Sequence[str],
-        *,
-        transaction: object,
-        frozen_recovery: bool = False,
-    ) -> list[Mapping[str, Any]]:
-        del transaction, frozen_recovery
-        readiness_requests.append(tuple(services))
-        return [
-            {"Name": f"{name}-latest", "Service": name, "State": "running"}
-            for name in services
-        ]
-
-    def inspect_image(container_name: str, *, label: str) -> str:
-        del container_name
-        image_labels.append(label)
-        if label == "Map PostgreSQL":
-            return map_candidate.postgres_image_id
-        return image_ids[cast(Any, companion_owners.get(label, label))]
-
-    class _C6cConfig:
-        map_ui_container = "kor-travel-map-ui-latest"
-
-    def inspect_c6c(
-        config: object,
-        services: list[str],
-        *,
-        transaction: object,
-        frozen_recovery: bool = False,
-    ) -> dict[str, Mapping[str, Any]]:
-        del config, transaction, frozen_recovery
-        inspected_services.append(tuple(services))
-        return {_C6cConfig.map_ui_container: {}}
-
-    for name, replacement in {
-        "c6c_deployment_lock_from_environment": lambda: nullcontext(object()),
-        "_require_pinned_runtime_rebuild_root": lambda: None,
-        "_capture_compose_environment_snapshot": (
-            lambda *, environment_override: transaction.environment
-        ),
-        "_assert_transaction_matches_c6c_lock": Mock(),
-        "materialize_pinned_runtime_sources": lambda **_kwargs: _sources(),
-        "_build_map_application_300_images": Mock(),
-        "_load_application_300_candidate": Mock(return_value=map_candidate),
-        "ensure_generation_references": Mock(),
-        "retire_f1d_legacy_artifacts": Mock(),
-        "database_runtimes_from_frozen_contract": (
-            lambda **_kwargs: (map_runtime, dagster_runtime, pinvi_runtime)
-        ),
-        "validate_map_postgres_runtime_secret_isolation": Mock(),
-        "validate_pinvi_postgres_runtime_secret_isolation": Mock(),
-        "read_application_300_database_identity": Mock(
-            return_value=_runtime_application_database_identity()
-        ),
-        "read_pinned_database_identity": Mock(
-            return_value=_runtime_pinvi_database_identity()
-        ),
-        "reset_databases_for_application_300": Mock(),
-        "create_fresh_application_300_database": Mock(),
-        "publish_root_read_only_artifact": Mock(),
-        "read_application_300_dagster_metadata_identity": Mock(return_value=object()),
-        "_application_300_dagster_identities": Mock(
-            return_value=(object(), _dagster_database_identity())
-        ),
-        "build_dagster_metadata_permit": Mock(
-            return_value=SimpleNamespace(raw=b"metadata-permit", sha256="9" * 64)
-        ),
-        "read_database_schema_revision": lambda runtime: heads[runtime],
-        "C6cDeploymentConfig": _C6cConfig,
-        "load_c6c_deployment_config_from_environment": Mock(return_value=_C6cConfig()),
-        "validate_runtime_secret_isolation": Mock(),
-        "validate_current_map_ui_auth_runtime": Mock(),
-        "run_pinvi_canonical_smoke": Mock(
-            side_effect=AssertionError("finalized cancel probe must not rerun")
-        ),
-        "reconcile_generation_references": Mock(),
-        "reconcile_candidate_build_references": Mock(
-            side_effect=(
-                DeploymentContractError("stop at commit references")
-                if fail_at_commit
-                else None
-            )
-        ),
-    }.items():
-        monkeypatch.setattr(compose_service_module, name, replacement)
-    for name, replacement in {
-        "capture_transaction_unlocked": lambda **_kwargs: (transaction, None),
-        "_validate_pinned_runtime_candidate_build_contract": Mock(),
-        "_attest_pinned_runtime_candidate_images": Mock(),
-        "_retire_pinned_runtime_oneshot_writers": Mock(),
-        "_run_pinned_runtime_rebuild_compose": run_compose,
-        "_require_services_ready": require_ready,
-        "_inspect_container_runtime_config": Mock(return_value={}),
-        "_inspect_container_image_id": inspect_image,
-        "_inspect_c6c_runtime_configs": inspect_c6c,
-        "_assert_committed_postgres_images": Mock(),
-        "_assert_pinned_runtime_database_heads": Mock(),
-        "_assert_committed_application_database_identities": Mock(),
-    }.items():
-        monkeypatch.setattr(service, name, replacement)
-
-    return SimpleNamespace(
-        service=service,
-        state_paths=state_paths,
-        operations=operations,
-        readiness_requests=readiness_requests,
-        image_labels=image_labels,
-        inspected_services=inspected_services,
-        companion_owners=companion_owners,
-    )
-
-
-@pytest.mark.parametrize("fail_at_commit", (False, True))
-def test_generation_companions_ride_every_runtime_step_through_commit(
-    fail_at_commit: bool,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """companion이 PinVi 기동·최종 readiness·이미지 결박·C6c 검사·실패 정리·
-    committed 재개에 전부 실리는지 본다.
-
-    t56e~t56h는 호출 하나에서 companion이 빠진 것만으로 Map code-server가 한 번도
-    뜨지 않았다. 호출처 하나를 지우면 이 테스트의 단언 하나가 깨져야 한다.
-    """
-
-    harness = _companion_resume_harness(
-        monkeypatch,
-        tmp_path,
-        start_phase="cancel_probe_finalized",
-        fail_at_commit=fail_at_commit,
-    )
-    service = harness.service
-    state_paths = harness.state_paths
-    operations = harness.operations
-    readiness_requests = harness.readiness_requests
-    image_labels = harness.image_labels
-    inspected_services = harness.inspected_services
-    companion_owners = harness.companion_owners
-
-    companion_names = tuple(sorted(companion_owners))
-    stop = ("stop", *RUNTIME_SERVICES, *companion_names)
-    wait = ("up", "-d", "--no-deps", "--wait", "--wait-timeout", _WAIT_TIMEOUT)
-    runtime_with_companions = (*RUNTIME_SERVICES, *companion_names)
-
-    if fail_at_commit:
-        with pytest.raises(DeploymentContractError, match="stop at commit references"):
-            service.rebuild_pinned_runtime()
-        # 기동 전 정지 한 번 + 실패 정리 정지 한 번. 정리에서 companion이 빠지면
-        # 실패한 세대의 code-server가 살아남는다.
-        assert operations.count(stop) == 2
-        return
-
-    service.rebuild_pinned_runtime()
-
-    assert read_rebuild_journal(state_paths.journal).phase == "committed"
-    assert operations.count(stop) == 1
-    assert (
-        *wait,
-        "kor-travel-map-dagster-code-server",
-        "kor-travel-map-ui",
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
-    ) in operations
-    assert (
-        *wait,
-        "pinvi-dagster-code-server",
-        "pinvi-dagster-daemon",
-        "pinvi-web",
-        "pinvi-dagster",
-    ) in operations
-    # one-shot writer는 어떤 정지·기동 호출에도 companion으로 실리지 않는다.
-    assert not any(
-        writer in operation
-        for operation in operations
-        if operation[0] in {"stop", "up"}
-        for writer in (
-            "kor-travel-map-dagster-storage-migrate",
-            "kor-travel-map-application-schema",
-            "pinvi-admin-bootstrap",
-        )
-    )
-    assert runtime_with_companions in readiness_requests
-    assert set(companion_names) <= set(image_labels)
-    assert inspected_services == [runtime_with_companions]
-
-    # committed 재개도 같은 companion 집합을 readiness·이미지·C6c 검사에 싣는다.
-    readiness_requests.clear()
-    image_labels.clear()
-    inspected_services.clear()
-    operations.clear()
-
-    service.rebuild_pinned_runtime()
-
-    assert runtime_with_companions in readiness_requests
-    assert set(companion_names) <= set(image_labels)
-    assert inspected_services == [runtime_with_companions]
-    assert not any(operation[0] in {"stop", "up"} for operation in operations)
-
-
-def test_storage_oneshot_without_receipt_advances_when_the_observed_head_matches(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """storage one-shot의 성공 판정은 Manager가 직접 읽은 head 하나다(ADR-51 PR-A).
-
-    이 판정의 **성공 경로**를 지나는 테스트가 없으면, 비교 대상을 다른 head로 바꾸는
-    변이가 전 스위트를 통과하고 배포에서만 모든 재구축이 `uncertain`에 멈춘다.
-    """
-
-    harness = _companion_resume_harness(
-        monkeypatch,
-        tmp_path,
-        start_phase="map_dagster_storage_intent_durable",
-    )
-    monkeypatch.setattr(
-        harness.service,
-        "_ensure_pinvi_fresh_migration_fence",
-        Mock(side_effect=DeploymentContractError("stop after Map runtime startup")),
-    )
-
-    with pytest.raises(DeploymentContractError, match="stop after Map runtime startup"):
-        harness.service.rebuild_pinned_runtime()
-
-    storage = ("run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate")
-    assert harness.operations.count(storage) == 1
-    # 영수증 없이(빈 stdout) 끝난 one-shot 뒤 head가 맞으면 Map 런타임까지 간다.
-    assert read_rebuild_journal(harness.state_paths.journal).phase == "map_runtime_ready"
-
-
 def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3466,255 +1919,6 @@ def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
         "json",
         *expected_writers,
     )
-
-
-def test_legacy_tombstone_failure_is_retried_before_any_database_reset(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    values = {
-        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
-        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
-        "PINVI_ENVIRONMENT": "production",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
-        "COMPOSE_PROJECT_NAME": "f1d-tombstone-retry",
-        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
-        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
-        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
-    }
-    transaction = SimpleNamespace(
-        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
-        compose_source_bytes=b"services: {}\n",
-        resolved_document_hash="c" * 64,
-        resolved={"services": {}},
-    )
-    candidate = _candidate_generation()
-    journal = new_candidate_journal(
-        candidate=candidate,
-        environment_bytes=b"frozen-env\n",
-        compose_source_bytes=b"services: {}\n",
-        resolved_compose_sha256="c" * 64,
-    )
-    state_paths = pinned_runtime_state_paths(
-        values,
-        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-    )
-    state_paths.state_root.mkdir(parents=True, mode=0o700)
-    write_rebuild_journal(state_paths.journal, journal)
-
-    service = ComposeService()
-    database_reset = Mock()
-    run_compose = Mock()
-    tombstone = Mock(side_effect=DeploymentContractError("legacy tombstone failed"))
-    paired_builder = Mock()
-
-    monkeypatch.setattr(
-        compose_service_module,
-        "c6c_deployment_lock_from_environment",
-        lambda: __import__("contextlib").nullcontext(object()),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_require_pinned_runtime_rebuild_root",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_capture_compose_environment_snapshot",
-        lambda *, environment_override: transaction.environment,
-    )
-    monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
-    monkeypatch.setattr(service, "capture_transaction_unlocked", lambda **_kwargs: (transaction, None))
-    monkeypatch.setattr(service, "_validate_pinned_runtime_candidate_build_contract", Mock())
-    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
-    monkeypatch.setattr(
-        compose_service_module,
-        "materialize_pinned_runtime_sources",
-        lambda **_kwargs: _sources(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_build_map_application_300_images",
-        paired_builder,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_load_application_300_candidate",
-        Mock(return_value=_map_application_candidate()),
-    )
-    monkeypatch.setattr(service, "_attest_pinned_runtime_candidate_images", Mock())
-    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
-    monkeypatch.setattr(compose_service_module, "ensure_generation_references", Mock())
-    monkeypatch.setattr(
-        compose_service_module,
-        "reset_databases_for_application_300",
-        database_reset,
-    )
-    monkeypatch.setattr(compose_service_module, "retire_f1d_legacy_artifacts", tombstone)
-
-    for _attempt in range(2):
-        with pytest.raises(DeploymentContractError, match="legacy tombstone failed"):
-            service.rebuild_pinned_runtime()
-
-    assert tombstone.call_count == 2
-    run_compose.assert_not_called()
-    database_reset.assert_not_called()
-    # 이 테스트는 durable journal을 미리 심어 둔다(resume) -- resume이면 이미
-    # 태그된 이미지를 다시 빌드하지 않는다(재현 불가능한 digest가 journal과
-    # 갈리는 것을 막는다). 그래서 builder는 한 번도 불리지 않는다.
-    paired_builder.assert_not_called()
-
-
-def test_new_pinset_ignores_previous_journal_and_starts_a_fresh_generation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    values = {
-        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
-        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
-        "PINVI_ENVIRONMENT": "production",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
-        "COMPOSE_PROJECT_NAME": "f1d-pinset-rotation",
-        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
-        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
-        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
-    }
-    previous_release = _release_with_pinvi_revision("d" * 40)
-    next_release = _release_with_pinvi_revision("e" * 40)
-    previous_sources = _sources_for(previous_release)
-    previous_candidate = _candidate_generation(previous_sources)
-    previous_journal = new_candidate_journal(
-        candidate=previous_candidate,
-        environment_bytes=b"frozen-env\n",
-        compose_source_bytes=b"services: {}\n",
-        resolved_compose_sha256="c" * 64,
-    )
-    previous_paths = pinned_runtime_state_paths(
-        values,
-        pinset_sha256=previous_release.pinset_sha256,
-    )
-    previous_paths.state_root.mkdir(parents=True, mode=0o700)
-    write_rebuild_journal(previous_paths.journal, previous_journal)
-    transaction = SimpleNamespace(
-        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
-        compose_source_bytes=b"services: {}\n",
-        resolved_document_hash="c" * 64,
-        resolved={"services": {}},
-    )
-    service = ComposeService()
-    compose_calls: list[tuple[str, ...]] = []
-    next_sources = _sources_for(next_release)
-    next_map_candidate = _map_application_candidate(next_sources)
-
-    def run_compose(
-        args: list[str],
-        *,
-        transaction: object,
-    ) -> dict[str, object]:
-        del transaction
-        compose_calls.append(tuple(args))
-        return {"success": True, "stdout": ""}
-
-    def static_command(
-        _image: str,
-        command: tuple[str, ...],
-        *,
-        label: str,
-        entrypoint: str | None = None,
-    ) -> str:
-        del label
-        return {
-            "/usr/local/bin/ktm-application-schema": (
-                '{"head":"300","schema":"kor-travel-map.application-head.v1"}\n'
-            ),
-            "/usr/local/bin/ktm-dagster-storage": (
-                '{"head":"map-dagster-head","schema":"kor-travel-map.dagster-storage-head.v1"}\n'
-            ),
-            None: '{"pinvi_head":"pinvi-head","schema":"pinvi.candidate-head.v1"}\n',
-        }[entrypoint]
-
-    monkeypatch.setattr(
-        compose_service_module,
-        "c6c_deployment_lock_from_environment",
-        lambda: __import__("contextlib").nullcontext(object()),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_require_pinned_runtime_rebuild_root",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_capture_compose_environment_snapshot",
-        lambda *, environment_override: transaction.environment,
-    )
-    monkeypatch.setattr(compose_service_module, "_assert_transaction_matches_c6c_lock", Mock())
-    monkeypatch.setattr(
-        compose_service_module,
-        "current_pinned_runtime_release",
-        lambda: next_release,
-    )
-    monkeypatch.setattr(service, "capture_transaction_unlocked", lambda **_kwargs: (transaction, None))
-    monkeypatch.setattr(service, "_validate_pinned_runtime_candidate_build_contract", Mock())
-    monkeypatch.setattr(service, "_require_services_ready", Mock(return_value=[]))
-    monkeypatch.setattr(
-        compose_service_module,
-        "materialize_pinned_runtime_sources",
-        lambda **_kwargs: next_sources,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_build_map_application_300_images",
-        Mock(),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_load_application_300_candidate",
-        Mock(return_value=next_map_candidate),
-    )
-    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", run_compose)
-    monkeypatch.setattr(
-        service,
-        "_attest_pinned_runtime_candidate_images",
-        lambda *, build, map_candidate: _candidate_image_ids(map_candidate),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_run_pinned_runtime_static_command",
-        static_command,
-    )
-    monkeypatch.setattr(compose_service_module, "ensure_generation_references", Mock())
-    monkeypatch.setattr(
-        compose_service_module,
-        "retire_f1d_legacy_artifacts",
-        Mock(side_effect=DeploymentContractError("stop after new journal")),
-    )
-
-    with pytest.raises(DeploymentContractError, match="stop after new journal"):
-        service.rebuild_pinned_runtime()
-
-    next_paths = pinned_runtime_state_paths(
-        values,
-        pinset_sha256=next_release.pinset_sha256,
-    )
-    assert read_rebuild_journal(previous_paths.journal) == previous_journal
-    assert read_rebuild_journal(next_paths.journal).candidate.pinvi_source_revision == "e" * 40
-    assert compose_calls[0] == ("build", *COMPOSE_BUILT_RUNTIME_SERVICES)
-    assert compose_calls[1][-2:] == ("pinvi-admin-bootstrap", "head")
-
-
-def test_finalized_fixture_receipt_at_manifest_commit_never_allows_reset() -> None:
-    journal = _journal_at_runtime_phase("manifest_committing")
-
-    assert journal.phase == "manifest_committing"
-    assert journal.cancel_probe.stage == "finalized"
-    assert compose_service_module._pinned_runtime_reset_required(journal) is False
 
 
 def test_pinned_runtime_rebuild_lease_path_is_fixed() -> None:
@@ -3800,95 +2004,6 @@ def test_journal_watermark_reports_unreached_without_a_path() -> None:
     assert compose_service_module._PinnedRuntimeJournalWatermark().reached() is False
 
 
-def test_journal_watermark_follows_the_file_not_a_manual_flag(tmp_path: Path) -> None:
-    """write 지점마다 손으로 표시하지 않는다 — 파일을 본다.
-
-    그래서 앞으로 journal write가 늘어도 판정이 저절로 맞는다. 손 표시 방식은
-    규율이 한 번 깨지면 조용히 **소비된 후보를 재시도 가능**으로 푼다.
-    """
-
-    watermark = compose_service_module._PinnedRuntimeJournalWatermark()
-    journal = tmp_path / "journal.json"
-    watermark.observe(journal)
-
-    assert watermark.reached() is False
-    journal.write_text("{}", encoding="utf-8")
-    assert watermark.reached() is True
-
-
-def test_journal_watermark_treats_an_unreadable_path_as_reached(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """판독 불가는 "없다"로 접지 않는다.
-
-    불확실할 때의 fail-safe는 claim 유지(= 소각)지 해제가 아니다 — 관측자의
-    불확실성이 후보를 살려 본문 이중 실행을 열어서는 안 된다.
-    """
-
-    watermark = compose_service_module._PinnedRuntimeJournalWatermark()
-    journal = tmp_path / "journal.json"
-    watermark.observe(journal)
-
-    def unreadable(self: Path) -> None:
-        raise PermissionError("journal stat denied")
-
-    monkeypatch.setattr(Path, "lstat", unreadable)
-
-    assert watermark.reached() is True
-
-
-def test_rebuild_marks_an_unobserved_body_failure_as_prejournal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """본문이 관측 전에 닫히면 표시된다 — 래퍼 자체의 계약.
-
-    이 테스트는 본문을 통째로 대체하므로 **lock 경합을 증명하지 않는다.**
-    실제 배선은 `test_terminal_block_refusal_*` 두 건이 진짜 lock 경로로 건다
-    (적대 리뷰 MAJOR-3: 이름과 단언이 실행하지 않는 경로를 주장하고 있었다).
-    """
-
-    service = ComposeService()
-
-    def refuse(watermark: object) -> dict[str, Any]:
-        raise DeploymentContractError("body closed before the journal")
-
-    monkeypatch.setattr(service, "_rebuild_pinned_runtime", refuse)
-
-    with pytest.raises(DeploymentContractError) as raised:
-        service.rebuild_pinned_runtime()
-
-    # 원문이 그대로다 — 봉인이 아니라 표시다.
-    assert "body closed before the journal" in str(raised.value)
-    assert compose_service_module.pinned_runtime_failed_before_journal(raised.value)
-
-
-def test_rebuild_leaves_a_post_journal_failure_unmarked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """journal이 존재하면 후보는 lifecycle에 들어간 것이다 — 해제하지 않는다.
-
-    소각 기본값을 넓히지 않는 것과 짝이다: 해제는 **양성 증거**가 있을 때만이고,
-    여기서는 그 증거가 없다.
-    """
-
-    service = ComposeService()
-    journal = tmp_path / "journal.json"
-    journal.write_text("{}", encoding="utf-8")
-
-    def fail_after_journal(
-        watermark: compose_service_module._PinnedRuntimeJournalWatermark,
-    ) -> dict[str, Any]:
-        watermark.observe(journal)
-        raise DeploymentContractError("pinned runtime manifest differs from committed journal")
-
-    monkeypatch.setattr(service, "_rebuild_pinned_runtime", fail_after_journal)
-
-    with pytest.raises(DeploymentContractError) as raised:
-        service.rebuild_pinned_runtime()
-
-    assert not compose_service_module.pinned_runtime_failed_before_journal(raised.value)
-
-
 def _admission_gate_harness(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3947,199 +2062,6 @@ def _admission_gate_harness(
         compose_service_module, "_assert_pinset_is_not_permanently_blocked", gate
     )
     return ComposeService(), values
-
-def test_terminal_block_refusal_does_not_release_a_consumed_candidate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """이미 소비된 후보를 거절하는 게이트가 그 후보의 claim을 풀면 안 된다.
-
-    `_assert_pinset_is_not_permanently_blocked`는 **바로 그 목적으로** 있다.
-    이 거절이 `prejournal_failure`로 나가면 launcher가 원장에서 claim을
-    빼내고, 소비된 pinset이 다시 실행 가능해진다 — 소각 원칙의 정확히
-    반대 방향이다(적대 리뷰 B-1/M-1).
-
-    관측이 게이트보다 **먼저** 일어나야만 이 단언이 선다. 관측을 게이트
-    뒤로 옮기면 `journal_path is None`이 되어 실패한다.
-    """
-
-    service, values = _admission_gate_harness(
-        tmp_path,
-        monkeypatch,
-        refusal=DeploymentContractError("pinned runtime rebuild is blocked"),
-    )
-    state_paths = pinned_runtime_state_paths(
-        values, pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256
-    )
-    state_paths.journal.parent.mkdir(parents=True, exist_ok=True)
-    state_paths.journal.write_text("{}", encoding="utf-8")
-
-    with pytest.raises(DeploymentContractError) as raised:
-        service.rebuild_pinned_runtime()
-
-    assert not compose_service_module.pinned_runtime_failed_before_journal(
-        raised.value
-    )
-
-
-def test_sealed_failure_carries_the_journal_observation(tmp_path: Path) -> None:
-    """봉인된 실패도 journal이 이미 있으면 그 사실을 실어 나가야 한다.
-
-    봉인 단계는 전부 resume 분기보다 앞에서 돈다. 이 표시가 없으면 CLI가
-    `prejournal_failure`를 내고 launcher가 **이미 DB를 리셋한** 후보의 claim을
-    원장에서 빼낸다. 표시를 지워도 스위트가 초록이던 것이 이 회귀를 만든 이유다
-    (적대 리뷰 BLOCKER-1).
-
-    결박 대상은 래퍼 자체다 — 본문을 대역으로 두는 것은 여기서는 정확한 선택이다
-    (본문의 봉인 배선은 `test_candidate_compose_build_failure_is_sealed_*`가 건다).
-    """
-
-    service = ComposeService()
-    journal = tmp_path / "journal.json"
-    journal.write_text("{}", encoding="utf-8")
-
-    def fail_sealed(
-        watermark: compose_service_module._PinnedRuntimeJournalWatermark,
-    ) -> dict[str, Any]:
-        watermark.observe(journal)
-        raise compose_service_module.PinnedRuntimePrejournalFailure(
-            "external_prerequisites"
-        )
-
-    service._rebuild_pinned_runtime = fail_sealed  # type: ignore[method-assign]
-
-    with pytest.raises(
-        compose_service_module.PinnedRuntimePrejournalFailure
-    ) as raised:
-        service.rebuild_pinned_runtime()
-
-    assert compose_service_module.pinned_runtime_journal_was_reached(raised.value)
-
-
-def test_sealed_failure_without_a_journal_is_not_marked_reached(
-    tmp_path: Path,
-) -> None:
-    """반대쪽 — journal이 없으면 표시하지 않는다(그래야 재시도가 열린다)."""
-
-    service = ComposeService()
-
-    def fail_sealed(
-        watermark: compose_service_module._PinnedRuntimeJournalWatermark,
-    ) -> dict[str, Any]:
-        watermark.observe(tmp_path / "absent.json")
-        raise compose_service_module.PinnedRuntimePrejournalFailure(
-            "external_prerequisites"
-        )
-
-    service._rebuild_pinned_runtime = fail_sealed  # type: ignore[method-assign]
-
-    with pytest.raises(
-        compose_service_module.PinnedRuntimePrejournalFailure
-    ) as raised:
-        service.rebuild_pinned_runtime()
-
-    assert not compose_service_module.pinned_runtime_journal_was_reached(
-        raised.value
-    )
-
-
-def test_state_path_refusal_after_identification_keeps_the_claim(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """pinset을 식별한 뒤 경로를 못 내면 유지다 — 해제가 아니다.
-
-    경로 계산은 lifecycle 4개 키 밖의 것(cache-target 10개 ·
-    `COMPOSE_PROJECT_NAME` 정규식 · state root canonical 여부)까지 보는데,
-    그중 어느 것도 이 지점 전에 검증되지 않는다. `.env` 하나로 여기서 닫힐 수
-    있고, 그때 해제하면 journal이 이미 있는 **소비된 후보**의 claim이 사라진다
-    (적대 리뷰 MAJOR-3).
-    """
-
-    service, _values = _admission_gate_harness(
-        tmp_path,
-        monkeypatch,
-        refusal=DeploymentContractError("unused"),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "pinned_runtime_state_paths",
-        Mock(
-            side_effect=DeploymentContractError(
-                "pinned runtime state root is not canonical"
-            )
-        ),
-    )
-
-    with pytest.raises(DeploymentContractError) as raised:
-        service.rebuild_pinned_runtime()
-
-    assert "state root is not canonical" in str(raised.value)
-    assert not compose_service_module.pinned_runtime_failed_before_journal(
-        raised.value
-    )
-
-
-def test_terminal_block_refusal_releases_an_unconsumed_candidate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """반대쪽도 같은 관측이 답한다 — journal이 없으면 소비된 적이 없다.
-
-    block 자체는 독립적으로 계속 거절하므로 해제해도 이중 실행이 열리지
-    않는다. 여기서 claim까지 태우면 **아무것도 소비하지 않은** 후보가
-    영구 거절된다.
-    """
-
-    service, _values = _admission_gate_harness(
-        tmp_path,
-        monkeypatch,
-        refusal=DeploymentContractError("pinned runtime rebuild is blocked"),
-    )
-
-    with pytest.raises(DeploymentContractError) as raised:
-        service.rebuild_pinned_runtime()
-
-    assert compose_service_module.pinned_runtime_failed_before_journal(raised.value)
-
-
-def test_sealed_failure_on_a_resume_run_is_not_reported_prejournal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """봉인은 메시지 정책이고 watermark는 소각 정책이다 — 다른 질문이다.
-
-    봉인 단계는 전부 resume 분기보다 앞에서 돈다. journal이 이미 존재하는
-    실행에서 봉인 단계가 실패하면(예: rustfs 불건강 →
-    `external_prerequisites`), 종전에는 **이미 DB를 리셋하고 compose를
-    적용한** 후보의 claim이 해제됐다(적대 리뷰 M-2).
-    """
-
-    service, values = _admission_gate_harness(
-        tmp_path,
-        monkeypatch,
-        refusal=DeploymentContractError("unused"),
-    )
-    state_paths = pinned_runtime_state_paths(
-        values, pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256
-    )
-    state_paths.journal.parent.mkdir(parents=True, exist_ok=True)
-    state_paths.journal.write_text("{}", encoding="utf-8")
-
-    # 게이트는 통과시키고, 그 다음 봉인 단계에서 닫는다.
-    monkeypatch.setattr(
-        compose_service_module,
-        "_assert_pinset_is_not_permanently_blocked",
-        lambda _pinset: None,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "read_pinned_runtime_rebuild_journal",
-        Mock(side_effect=DeploymentContractError("journal is unreadable")),
-    )
-
-    with pytest.raises(DeploymentContractError) as raised:
-        service.rebuild_pinned_runtime()
-
-    assert not compose_service_module.pinned_runtime_failed_before_journal(
-        raised.value
-    )
 
 
 def test_rebuild_timeouts_outlast_a_saturated_disk() -> None:
@@ -4322,3 +2244,633 @@ def test_carry_over_refuses_an_unreadable_journal(tmp_path: Path) -> None:
         carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
         is None
     )
+
+
+# ── 마이그레이션 전진 배포(ADR-51 B2) ──────────────────────────────────────────
+
+_FORWARD_COMPANIONS: dict[str, RuntimeService] = {
+    "kor-travel-map-dagster-code-server": "kor-travel-map-dagster",
+    "pinvi-dagster-code-server": "pinvi-dagster",
+    "pinvi-dagster-daemon": "pinvi-dagster",
+}
+_FORWARD_ONESHOTS = (
+    "kor-travel-map-dagster-storage-migrate",
+    "kor-travel-map-application-schema",
+    "pinvi-admin-bootstrap",
+    "kor-travel-map-db-role-bootstrap",
+)
+_STORAGE_RUN = ("run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate")
+_SCHEMA_RUN = (
+    "--profile",
+    "bootstrap",
+    "run",
+    "--rm",
+    "--no-deps",
+    "kor-travel-map-application-schema",
+)
+_LIVE_IDENTITIES: dict[str, tuple[str, int, str]] = {
+    "map_application": ("kor_travel_map", 16401, "7300000000000000001"),
+    "map_dagster": ("kor_travel_map_dagster", 16402, "7300000000000000001"),
+    "pinvi": ("pinvi", 20001, "7300000000000000002"),
+}
+
+
+def _forward_runtimes() -> tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime]:
+    def runtime(role: Any, name: str, container: str, port: int) -> DatabaseRuntime:
+        return DatabaseRuntime(
+            role=role,
+            container_name=container,
+            port=port,
+            database_name=name,
+            owner_name="pinvi_app" if role == "pinvi" else "map_owner",
+            admin_name="cluster_admin",
+        )
+
+    return (
+        runtime("map_application", "kor_travel_map", "map-postgres", 12700),
+        runtime("map_dagster", "kor_travel_map_dagster", "map-postgres", 12700),
+        runtime("pinvi", "pinvi", "shared-postgres", 11000),
+    )
+
+
+def _deployed_databases() -> dict[Any, DeployedDatabase]:
+    return {role: DeployedDatabase(*identity) for role, identity in _LIVE_IDENTITIES.items()}
+
+
+def _committed_status(
+    candidate: PinnedRuntimeGeneration,
+    **overrides: Any,
+) -> DeployStatus:
+    fields: dict[str, Any] = {
+        "state": "committed",
+        "run_id": str(uuid.UUID(int=7)),
+        "started_at": "2026-09-26T00:00:00+00:00",
+        "committed_at": "2026-09-26T01:00:00+00:00",
+        "manager_revision": "e" * 40,
+        "map_revision": candidate.map_source_revision,
+        "pinvi_revision": candidate.pinvi_source_revision,
+        "pinset_sha256": candidate.pinset_sha256,
+        "images": ComposeService._deployed_images(candidate, _FORWARD_COMPANIONS),
+        "schema_heads": {
+            str(role): head for role, head in candidate.schema_heads.items()
+        },
+        "databases": _deployed_databases(),
+    }
+    fields.update(overrides)
+    return DeployStatus(**fields)
+
+
+def _forward_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    previous: DeployStatus | None = None,
+    carried: DeployStatus | None = None,
+    images_present: bool = True,
+) -> SimpleNamespace:
+    """재구축을 실제 오케스트레이션 그대로 돌리는 대역. DB·docker·compose는 대역이다.
+
+    compose 호출, readiness 요청, 이미지 조회 label, C6c 검사 대상을 기록하고, 라이브 DB
+    identity·head는 `live`로 바꿀 수 있다.
+    """
+
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "metadata-password",
+        "COMPOSE_PROJECT_NAME": "f1d-migrate-forward",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
+    }
+    candidate = _candidate_generation()
+    map_candidate = _map_application_candidate()
+    image_ids = candidate.image_ids
+    resolved_services: dict[str, object] = {
+        name: {"image": image_ids[owner]} for name, owner in _FORWARD_COMPANIONS.items()
+    }
+    # 같은 slot 이미지를 쓰는 one-shot writer는 companion이 아니다.
+    resolved_services.update(
+        {
+            "kor-travel-map-dagster-storage-migrate": {
+                "image": image_ids["kor-travel-map-dagster"]
+            },
+            "kor-travel-map-application-schema": {"image": image_ids["kor-travel-map-api"]},
+            "pinvi-admin-bootstrap": {"image": image_ids["pinvi-api"]},
+        }
+    )
+    transaction = SimpleNamespace(
+        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
+        compose_source_bytes=b"services: {}\n",
+        resolved_document_hash="c" * 64,
+        resolved={"services": resolved_services},
+    )
+    state_paths = pinned_runtime_state_paths(
+        values,
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+    )
+    state_paths.state_root.mkdir(parents=True, mode=0o700)
+    status_path = deploy_status_path(state_paths.state_root)
+    if previous is not None:
+        write_deploy_status(status_path, previous)
+    runtimes = _forward_runtimes()
+    live: dict[str, Any] = {
+        "identities": dict(_LIVE_IDENTITIES),
+        "heads": {
+            "map_application": candidate.map_application_head,
+            "map_dagster": candidate.map_dagster_head,
+            "pinvi": candidate.pinvi_head,
+        },
+        "pinvi_schema_table": True,
+    }
+    operations: list[tuple[str, ...]] = []
+    readiness_requests: list[tuple[str, ...]] = []
+    image_labels: list[str] = []
+    inspected_services: list[tuple[str, ...]] = []
+    mocks = SimpleNamespace(
+        reset=Mock(),
+        ensure_map=Mock(return_value="present"),
+        dagster_init=Mock(),
+        fence=Mock(),
+        pinvi_bootstrap=Mock(),
+        smoke=Mock(),
+        paired_builder=Mock(),
+        materialize=Mock(side_effect=lambda **_kwargs: _sources()),
+        manifest_write=Mock(),
+        carry_over=Mock(return_value=carried),
+        contract=Mock(),
+        prerequisites=Mock(),
+    )
+
+    def run_compose(arguments: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        operations.append(tuple(arguments))
+        return {"success": True, "stdout": ""}
+
+    def require_ready(
+        services: Sequence[str],
+        *,
+        transaction: object,
+        frozen_recovery: bool = False,
+    ) -> list[Mapping[str, Any]]:
+        del transaction, frozen_recovery
+        readiness_requests.append(tuple(services))
+        if tuple(services) == compose_service_module._PINNED_RUNTIME_EXTERNAL_PREREQUISITES:
+            mocks.prerequisites()
+        return [
+            {"Name": f"{name}-latest", "Service": name, "State": "running"}
+            for name in services
+        ]
+
+    def inspect_image(container_name: str, *, label: str) -> str:
+        del container_name
+        image_labels.append(label)
+        if label == "Map PostgreSQL":
+            return map_candidate.postgres_image_id
+        return image_ids[cast(Any, _FORWARD_COMPANIONS.get(label, label))]
+
+    class _C6cConfig:
+        map_ui_container = "kor-travel-map-ui-latest"
+
+    def inspect_c6c(
+        config: object,
+        services: list[str],
+        *,
+        transaction: object,
+        frozen_recovery: bool = False,
+    ) -> dict[str, Mapping[str, Any]]:
+        del config, transaction, frozen_recovery
+        inspected_services.append(tuple(services))
+        return {_C6cConfig.map_ui_container: {}}
+
+    def read_identity(runtime: DatabaseRuntime) -> tuple[str, int, str] | None:
+        identities = cast(dict[str, Any], live["identities"])
+        return cast("tuple[str, int, str] | None", identities.get(runtime.role))
+
+    def read_head(runtime: DatabaseRuntime) -> str:
+        head = cast(dict[str, Any], live["heads"]).get(runtime.role)
+        if head is None:
+            raise DeploymentContractError(f"{runtime.role} schema revision output is invalid")
+        return cast(str, head)
+
+    from kor_travel_docker_manager.services import runtime_execution_registry
+
+    monkeypatch.setattr(
+        runtime_execution_registry, "trusted_manager_source_revision", lambda: "e" * 40
+    )
+    for name, replacement in {
+        "c6c_deployment_lock_from_environment": lambda: nullcontext(object()),
+        "_require_pinned_runtime_rebuild_root": lambda: None,
+        "_capture_compose_environment_snapshot": (
+            lambda *, environment_override: transaction.environment
+        ),
+        "_assert_transaction_matches_c6c_lock": Mock(),
+        "materialize_pinned_runtime_sources": mocks.materialize,
+        "_ensure_map_application_300_python_base_images": Mock(),
+        "_build_map_application_300_images": mocks.paired_builder,
+        "_load_application_300_candidate": Mock(return_value=map_candidate),
+        "_local_image_present": lambda _image: images_present,
+        "_run_pinned_runtime_static_command": Mock(return_value="{}"),
+        "parse_candidate_static_head": Mock(return_value="head"),
+        "build_candidate_generation": lambda **_kwargs: candidate,
+        "ensure_generation_references": Mock(),
+        "database_runtimes_from_frozen_contract": lambda **_kwargs: runtimes,
+        "validate_map_postgres_runtime_secret_isolation": Mock(),
+        "validate_pinvi_postgres_runtime_secret_isolation": Mock(),
+        "read_database_identity": read_identity,
+        "read_database_schema_revision": read_head,
+        "schema_revision_table_exists": lambda _runtime: live["pinvi_schema_table"],
+        "ensure_map_application_database": mocks.ensure_map,
+        "initialize_application_300_dagster_metadata_database": mocks.dagster_init,
+        "reset_databases_for_application_300": mocks.reset,
+        "reconcile_orphaned_pinvi_bootstrap_credentials": Mock(),
+        "run_pinvi_canonical_smoke": mocks.smoke,
+        "C6cDeploymentConfig": _C6cConfig,
+        "load_c6c_deployment_config_from_environment": Mock(return_value=_C6cConfig()),
+        "validate_runtime_secret_isolation": Mock(),
+        "validate_current_map_ui_auth_runtime": Mock(),
+        "write_pinned_runtime_manifest": mocks.manifest_write,
+        "reconcile_generation_references": Mock(),
+        "reconcile_candidate_build_references": Mock(),
+        "carry_over_committed_generation": mocks.carry_over,
+    }.items():
+        monkeypatch.setattr(compose_service_module, name, replacement)
+    service = ComposeService()
+    for name, replacement in {
+        "capture_transaction_unlocked": lambda **_kwargs: (transaction, None),
+        "_validate_pinned_runtime_candidate_build_contract": mocks.contract,
+        "_attest_pinned_runtime_candidate_images": Mock(return_value=dict(image_ids)),
+        "_verify_pinned_runtime_pinvi_bootstrap_settings": Mock(),
+        "_retire_pinned_runtime_oneshot_writers": Mock(),
+        "_run_pinned_runtime_rebuild_compose": run_compose,
+        "_require_services_ready": require_ready,
+        "_inspect_container_runtime_config": Mock(return_value={}),
+        "_inspect_container_image_id": inspect_image,
+        "_inspect_c6c_runtime_configs": inspect_c6c,
+        "_ensure_pinvi_fresh_migration_fence": mocks.fence,
+        "_run_pinvi_admin_bootstrap": mocks.pinvi_bootstrap,
+    }.items():
+        monkeypatch.setattr(service, name, replacement)
+    return SimpleNamespace(
+        service=service,
+        candidate=candidate,
+        runtimes=runtimes,
+        status_path=status_path,
+        live=live,
+        operations=operations,
+        readiness_requests=readiness_requests,
+        image_labels=image_labels,
+        inspected_services=inspected_services,
+        mocks=mocks,
+        expected_images=ComposeService._deployed_images(candidate, _FORWARD_COMPANIONS),
+    )
+
+
+def _mutating_operations(harness: SimpleNamespace) -> list[tuple[str, ...]]:
+    """DB 서버 기동 말고 무언가를 바꾸는 compose 호출."""
+
+    return [
+        operation
+        for operation in harness.operations
+        if not (
+            operation[:1] == ("up",)
+            and operation[-2:] == ("kor-travel-map-postgres", "pinvi-postgres")
+        )
+    ]
+
+
+def test_first_deploy_runs_the_idempotent_full_path_and_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    # launcher·chain17이 읽는 결과 키는 그대로다.
+    assert result["success"] is True
+    assert result["phase"] == "committed"
+    assert result["outcome"] == "deployed"
+    assert result["pinset_sha256"] == harness.candidate.pinset_sha256
+    assert result["schema_heads"] == {
+        str(role): head for role, head in harness.candidate.schema_heads.items()
+    }
+    harness.mocks.reset.assert_not_called()
+    harness.mocks.ensure_map.assert_called_once()
+    assert harness.operations.count(_SCHEMA_RUN) == 1
+    assert harness.operations.count(_STORAGE_RUN) == 1
+    harness.mocks.pinvi_bootstrap.assert_called_once()
+    status = read_deploy_status(harness.status_path)
+    assert status is not None
+    assert status.state == "committed"
+    assert dict(status.images) == harness.expected_images
+    assert dict(status.databases or {}) == _deployed_databases()
+    harness.mocks.manifest_write.assert_called_once()
+
+
+def test_the_same_committed_pair_only_converges(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """같은 pair는 빌드·migration·정지 없이 떠 있어야 할 것만 맞춘다."""
+
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "converged"
+    assert result["transaction_id"] == previous.run_id
+    assert not any(operation[0] == "stop" for operation in harness.operations)
+    assert not any(
+        writer in operation for operation in harness.operations for writer in _FORWARD_ONESHOTS
+    )
+    runtime_up = [
+        operation
+        for operation in _mutating_operations(harness)
+        if operation[0] == "up"
+    ]
+    assert len(runtime_up) == 1
+    assert set(runtime_up[0][6:]) == {*RUNTIME_SERVICES, *_FORWARD_COMPANIONS}
+    assert (*RUNTIME_SERVICES, *_FORWARD_COMPANIONS) in harness.readiness_requests
+    assert set(_FORWARD_COMPANIONS) <= set(harness.image_labels)
+    harness.mocks.paired_builder.assert_not_called()
+    harness.mocks.reset.assert_not_called()
+    assert read_deploy_status(harness.status_path) == previous
+
+
+def test_a_new_pair_migrates_forward_on_the_same_databases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate, map_revision="0" * 40)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "deployed"
+    harness.mocks.reset.assert_not_called()
+    assert harness.operations.count(_STORAGE_RUN) == 1
+    status = read_deploy_status(harness.status_path)
+    assert status is not None and status.state == "committed"
+    assert status.map_revision == candidate.map_source_revision
+    # 같은 DB — oid가 그대로다.
+    assert dict(status.databases or {}) == _deployed_databases()
+
+
+def test_a_replaced_database_is_refused_before_anything_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """지난 배포가 본 DB가 아니면(누가 지우고 다시 만들었다) 무엇도 바꾸기 전에 멈춘다."""
+
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate, map_revision="0" * 40)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    harness.live["identities"]["pinvi"] = ("pinvi", 29999, "7300000000000000002")
+
+    with pytest.raises(DeploymentContractError, match="--restart") as captured:
+        harness.service.rebuild_pinned_runtime()
+
+    assert _mutating_operations(harness) == []
+    assert read_deploy_status(harness.status_path) == previous
+    # in_progress 전의 거부다 — launcher는 claim을 해제한다.
+    assert compose_service_module.pinned_runtime_failed_before_journal(captured.value)
+
+
+def test_restart_resets_once_and_rebaselines_the_identities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    new_identities = {
+        "map_application": ("kor_travel_map", 17001, "7300000000000000001"),
+        "map_dagster": ("kor_travel_map_dagster", 17002, "7300000000000000001"),
+        "pinvi": ("pinvi", 27001, "7300000000000000002"),
+    }
+    harness.live["identities"] = {"map_application": None, "map_dagster": None, "pinvi": None}
+    harness.live["identities"].update(_LIVE_IDENTITIES)
+
+    def reset(runtimes: object) -> None:
+        del runtimes
+        harness.live["identities"].update(new_identities)
+
+    harness.mocks.reset.side_effect = reset
+
+    result = harness.service.rebuild_pinned_runtime(restart_reason="rebuild from empty")
+
+    assert result["outcome"] == "deployed"
+    harness.mocks.reset.assert_called_once()
+    status = read_deploy_status(harness.status_path)
+    assert status is not None and status.state == "committed"
+    assert status.restart is not None and status.restart.reason == "rebuild from empty"
+    assert {role: database.oid for role, database in (status.databases or {}).items()} == {
+        "map_application": 17001,
+        "map_dagster": 17002,
+        "pinvi": 27001,
+    }
+
+
+def test_a_failure_after_in_progress_cleans_up_and_the_rerun_finishes_without_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate, map_revision="0" * 40)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    harness.live["heads"]["map_dagster"] = "older-dagster-head"
+
+    with pytest.raises(DeploymentContractError, match="storage execution result") as captured:
+        harness.service.rebuild_pinned_runtime()
+
+    stop = ("stop", *RUNTIME_SERVICES, *sorted(_FORWARD_COMPANIONS))
+    # 기동 전 정지 + 실패 정리 정지. 정리에서 companion이 빠지면 실패한 세대의
+    # code-server가 살아남는다.
+    assert harness.operations.count(stop) == 2
+    status = read_deploy_status(harness.status_path)
+    assert status is not None and status.state == "in_progress"
+    assert dict(status.databases or {}) == _deployed_databases()
+    # in_progress를 쓴 뒤의 실패다 — prejournal로 표시하지 않는다.
+    assert not compose_service_module.pinned_runtime_failed_before_journal(captured.value)
+
+    harness.live["heads"]["map_dagster"] = candidate.map_dagster_head
+    harness.operations.clear()
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "deployed"
+    harness.mocks.reset.assert_not_called()
+    committed = read_deploy_status(harness.status_path)
+    assert committed is not None and committed.state == "committed"
+
+
+def test_the_live_generation_is_carried_over_and_converged_without_a_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _candidate_generation()
+    carried = _committed_status(candidate, carried_over_from="v6+v8:" + "a" * 64)
+    harness = _forward_harness(monkeypatch, tmp_path, carried=carried)
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "converged"
+    harness.mocks.carry_over.assert_called_once()
+    assert read_deploy_status(harness.status_path) == carried
+    assert not any(operation[0] == "stop" for operation in harness.operations)
+
+
+def test_companions_ride_every_step_of_the_full_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """t56e~t56h는 호출 하나에서 companion이 빠진 것만으로 Map code-server가 한 번도
+    뜨지 않았다. 호출처 하나를 지우면 이 테스트의 단언 하나가 깨져야 한다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path)
+
+    harness.service.rebuild_pinned_runtime()
+
+    companions = tuple(sorted(_FORWARD_COMPANIONS))
+    wait = ("up", "-d", "--no-deps", "--wait", "--wait-timeout", _WAIT_TIMEOUT)
+    assert ("stop", *RUNTIME_SERVICES, *companions) in harness.operations
+    assert (
+        *wait,
+        "kor-travel-map-dagster-code-server",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+    ) in harness.operations
+    assert (
+        *wait,
+        "pinvi-dagster-code-server",
+        "pinvi-dagster-daemon",
+        "pinvi-web",
+        "pinvi-dagster",
+    ) in harness.operations
+    assert not any(
+        writer in operation
+        for operation in harness.operations
+        if operation[0] in {"stop", "up"}
+        for writer in _FORWARD_ONESHOTS
+    )
+    assert (*RUNTIME_SERVICES, *companions) in harness.readiness_requests
+    assert set(companions) <= set(harness.image_labels)
+    assert harness.inspected_services == [(*RUNTIME_SERVICES, *companions)]
+
+
+@pytest.mark.parametrize("schema_table", (True, False))
+def test_the_pinvi_fresh_install_fence_is_only_for_an_empty_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schema_table: bool
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.live["pinvi_schema_table"] = schema_table
+
+    harness.service.rebuild_pinned_runtime()
+
+    assert harness.mocks.fence.called is (not schema_table)
+    harness.mocks.pinvi_bootstrap.assert_called_once()
+
+
+def test_the_dagster_metadata_database_is_created_only_when_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.service.rebuild_pinned_runtime()
+    harness.mocks.dagster_init.assert_not_called()
+
+    absent = _forward_harness(monkeypatch, tmp_path / "absent")
+    identities = absent.live["identities"]
+    created = identities.pop("map_dagster")
+
+    def create(runtime: object, **_kwargs: object) -> None:
+        del runtime
+        identities["map_dagster"] = created
+
+    absent.mocks.dagster_init.side_effect = create
+    absent.service.rebuild_pinned_runtime()
+
+    absent.mocks.dagster_init.assert_called_once()
+
+
+def test_existing_candidate_images_are_not_rebuilt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """태그는 pinset에 묶인다 — 다시 빌드하면 재현되지 않는 digest가 같은 pair를 새 이미지로 만든다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path, images_present=True)
+
+    harness.service.rebuild_pinned_runtime()
+
+    harness.mocks.paired_builder.assert_not_called()
+    assert not any(operation[0] == "build" for operation in harness.operations)
+
+
+def test_a_candidate_compose_build_failure_is_sealed_with_its_own_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path, images_present=False)
+
+    def run_compose(arguments: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        harness.operations.append(tuple(arguments))
+        if arguments[0] == "build":
+            raise DeploymentContractError(
+                "pinned runtime rebuild Compose build command failed (exit 1)"
+            )
+        return {"success": True, "stdout": ""}
+
+    monkeypatch.setattr(harness.service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
+        harness.service.rebuild_pinned_runtime()
+
+    assert captured.value.stage == "candidate_compose_build"
+    assert "Compose build command failed" in str(captured.value.__cause__)
+    assert not compose_service_module.pinned_runtime_journal_was_reached(captured.value)
+    assert read_deploy_status(harness.status_path) is None
+    harness.mocks.reset.assert_not_called()
+
+
+def test_a_candidate_contract_refusal_precedes_any_runtime_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.mocks.contract.side_effect = DeploymentContractError("candidate contract refused")
+
+    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
+        harness.service.rebuild_pinned_runtime()
+
+    assert captured.value.stage == "candidate_contract"
+    assert harness.operations == []
+    assert read_deploy_status(harness.status_path) is None
+
+
+def test_external_prerequisites_are_checked_before_sources_are_materialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.mocks.prerequisites.side_effect = DeploymentContractError("geo is not ready")
+
+    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
+        harness.service.rebuild_pinned_runtime()
+
+    assert captured.value.stage == "external_prerequisites"
+    harness.mocks.materialize.assert_not_called()
+    assert harness.operations == []
+
+
+def test_admission_warnings_ride_the_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        compose_service_module,
+        "_pinned_runtime_admission_warnings",
+        lambda _pinset: ["the trusted execution binding is stale"],
+    )
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["warnings"] == ["the trusted execution binding is stale"]

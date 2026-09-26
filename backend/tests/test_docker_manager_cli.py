@@ -2706,3 +2706,55 @@ def test_targets_validate_coordinates_pass_when_they_exist(capsys, monkeypatch):
     assert main(["targets", "validate", "--check-coordinates"]) == 0
     assert capsys.readouterr().out.strip() == "OK"
 
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_rebuild_pinned_restart_requires_a_reason(mock_compose_service, capsys):
+    """`--restart`는 유일한 파괴 경로다 — 사유 없이는 시작하지 않는다(ADR-51)."""
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--restart"]) == 2
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--reason", "why"]) == 2
+
+    mock_compose_service.rebuild_pinned_runtime.assert_not_called()
+    assert "--restart and --reason go together" in capsys.readouterr().err
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_rebuild_pinned_passes_the_restart_reason(mock_compose_service, capsys):
+    mock_compose_service.rebuild_pinned_runtime.return_value = {
+        "success": True,
+        "returncode": 0,
+    }
+
+    assert (
+        main(
+            [
+                "pinvi-pair",
+                "rebuild-pinned",
+                "--confirm",
+                "--restart",
+                "--reason",
+                "rebuild from empty databases",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    mock_compose_service.rebuild_pinned_runtime.assert_called_once_with(
+        restart_reason="rebuild from empty databases"
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_rebuild_pinned_without_restart_never_asks_for_a_reset(
+    mock_compose_service, capsys
+):
+    mock_compose_service.rebuild_pinned_runtime.return_value = {
+        "success": True,
+        "returncode": 0,
+    }
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 0
+
+    mock_compose_service.rebuild_pinned_runtime.assert_called_once_with()
