@@ -105,7 +105,10 @@ os.environ["KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT"] = "${APP}"
 from kor_travel_docker_manager.cli import main
 raise SystemExit(main())
 EOF
-  "${REL}/backend/.venv/bin/python" -I -c 'import kor_travel_docker_manager.cli'
+  # project root를 주지 않으면 import 시 만들어지는 singleton이 site-packages 기준으로 compose를 찾아
+  # 헛된 'not found'를 남긴다.
+  KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT="${REL}" "${REL}/backend/.venv/bin/python" -I \
+    -c 'import kor_travel_docker_manager.cli'
   printf '%s\n' "${SHA}" > "${REL}/.ktdm-source-revision"
 fi
 # 모든 `.env` 쓰기는 G 아래에 있다(ADR-51 C-2) — 여기서 복사한 것이 곧 live 값이다.
@@ -166,17 +169,21 @@ systemctl enable "${units[@]}"
 systemctl stop ktdm-backend.service
 ln -sfn "${NAME}" "${APP}.new"
 mv -T "${APP}.new" "${APP}"
+# 깨진 release가 재기동 한도(StartLimitBurst)를 넘겼으면 그 뒤의 롤백 start도 거절된다 — 먼저 푼다.
+systemctl reset-failed ktdm-backend.service 2>/dev/null || true
 systemctl start ktdm-backend.service || true
 # 성공은 /health 200이 **이 유닛의** 프로세스에서 온 것이다 — 재기동 틈에 포트를 차지한 남의
 # 프로세스를 새 release로 오인하면 GC까지 돈다.
 for _ in $(seq 60); do
   pid="$(systemctl show -p MainPID --value ktdm-backend.service)"
-  if curl -fsS -o /dev/null http://127.0.0.1:12901/health \
+  if curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:12901/health \
     && ss -Hltnp 'sport = :12901' | grep -q "pid=${pid},"; then
     echo "installed ${SHA} (previous: ${PREV#ktdm-release-})"
     if [[ "${PREV}" != "${NAME}" ]]; then
       for old in /opt/ktdm-release-*; do
-        [[ "${old}" == "${REL}" || "${old}" == "/opt/${PREV}" ]] || rm -rf -- "${old}"
+        # 표식부터 지운다 — 삭제가 중간에 끊겨도 반쪽 트리가 완성 release로 재사용되지 않는다.
+        [[ "${old}" == "${REL}" || "${old}" == "/opt/${PREV}" ]] \
+          || { rm -f -- "${old}/.ktdm-source-revision"; rm -rf -- "${old}"; }
       done
     fi
     exit 0

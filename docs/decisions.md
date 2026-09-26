@@ -3734,14 +3734,14 @@ Map이 M1(`51ee65d4c`, ADR-102)을 포함하는 것이다 — M1 이후 storage 
 
 ### NOTE: D(설치기) I-2 — 설치기를 release 디렉터리와 symlink로 다시 썼다, D 완료 (2026-09-27, I-2)
 
-I-1과 한 번뿐인 레이아웃 전환(`prod-deployment.md` §3.0) 뒤에 설치기를 다시 썼다. 1,887줄이 189줄(주석·빈
-줄 제외 142줄)이 됐다.
+I-1과 한 번뿐인 레이아웃 전환(`prod-deployment.md` §3.0) 뒤에 설치기를 다시 썼다. 1,887줄이 196줄(주석·빈
+줄 제외 145줄)이 됐다.
 
 - **하는 일**: root 소유 clone인지 보고 `cd /` → G를 잡는다 → clone에 그 commit이 있는지 본다 → `/opt/ktdm-release-<sha>`에 revision 표식이
   없으면 `git archive <sha>`를 풀고 `chmod -R go-w`, 오프라인 wheelhouse로 venv, `ktdctl` wrapper(설치 root
   경로 shebang + `KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT`), import 확인, 마지막에 표식 → 지금 `.env`를 복사 →
-  tmpfiles·backend·frontend 유닛·logrotate를 그 release에서 설치 → backend stop → symlink flip → start →
-  **그 유닛의 MainPID가 12901을 듣고** `/health` 200을 내는지 60초 → 직전 release 하나만 남기고 GC. flip 전
+  tmpfiles·backend·frontend 유닛·logrotate를 그 release에서 설치 → backend stop → symlink flip → `reset-failed`(깨진 release가 재기동 한도를 넘겼어도 롤백 start가 거절되지
+  않게) → start → **그 유닛의 MainPID가 12901을 듣고** `/health` 200을 내는지 60초 → 직전 release 하나만 남기고 GC. flip 전
   실패는 설치 root와 도는 backend를 건드리지 않는다(`/etc`의 유닛은 이미 새 release의 것일 수 있다).
 - **롤백은 옛 sha 재설치다.** 표식이 있는 release는 빌드 없이 재사용하고 지금 `.env`를 앞으로 복사한다. 손으로
   symlink를 넘기면 옛 `.env` 사본(옛 비밀·관리자 해시)이 살아나므로 문서로 금지한다. `.env`를 공유 symlink로
