@@ -1185,6 +1185,7 @@ def test_project_context_follows_the_release_symlink_without_resolving_it(
     (release / ".env").write_text("COMPOSE_PROJECT_NAME=ktdm\n", encoding="utf-8")
     (release / ".env").chmod(0o600)
     (release / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (release / "docker-compose.yml").chmod(0o644)
     link = tmp_path / "kor-travel-docker-manager"
     link.symlink_to(release.name, target_is_directory=True)
 

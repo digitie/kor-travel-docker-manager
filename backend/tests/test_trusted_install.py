@@ -283,24 +283,42 @@ def test_rebuild_path_guard_accepts_the_symlink_root_the_ktdctl_wrapper_injects(
         compose_service._assert_pinned_runtime_rebuild_execution_paths(link)
 
 
-def test_rebuild_compose_project_directory_is_the_unresolved_install_root(
+def test_environment_snapshot_keeps_the_unresolved_compose_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """frozen config와 canonical `up`이 쓰는 `--project-directory`가 symlink 경로 그대로다."""
+    """frozen `config`의 `--project-directory`는 snapshot compose 경로의 부모다 — 풀면 안 된다."""
 
     link = _release_symlink(tmp_path, monkeypatch)
 
-    snapshot = compose_service._capture_pinned_runtime_rebuild_environment_snapshot()
+    snapshot = compose_service._capture_compose_environment_snapshot(
+        environment_override=None,
+        env_path=link / ".env",
+        compose_path=link / "docker-compose.yml",
+        override_path=link / "docker-compose.override.yml",
+        include_process_environment=False,
+        interpolate_env_file=False,
+    )
 
     assert snapshot.compose_path == str(link / "docker-compose.yml")
     assert snapshot.override_path == str(link / "docker-compose.override.yml")
+    rebuild = compose_service._capture_pinned_runtime_rebuild_environment_snapshot()
+    assert rebuild.compose_path == snapshot.compose_path
+
+
+def test_canonical_up_project_directory_is_not_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """모든 Manager mutation의 `up`이 쓰는 `--project-directory`가 symlink 경로 그대로다."""
+
+    link = _release_symlink(tmp_path, monkeypatch)
+
     command = compose_service.ComposeService().build_command(
         ["up", "--detach"],
         canonical_single_file=True,
-        compose_path=snapshot.compose_path,
+        compose_path=str(link / "docker-compose.yml"),
     )
-    directory = command[command.index("--project-directory") + 1]
-    assert directory == str(link)
+
+    assert command[command.index("--project-directory") + 1] == str(link)
 
 
 def test_operator_bind_guard_sees_backend_source_behind_the_release_symlink(
