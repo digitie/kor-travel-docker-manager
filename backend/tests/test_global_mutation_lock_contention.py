@@ -13,6 +13,15 @@ Docker는 쓰지 않는다.
 - (d) launcher가 물려준 fd는 terminal block 정책(`allow_inherited_terminal_block`)으로만
   쓰이고, fd를 갖지 않은 형제는 거절된다.
 
+ADR-51 C-2(rehearsal이 같은 lock에 합류):
+
+- (e) rehearsal `.env`로 도는 Compose mutator 입구·legacy stage/retire·UI 컨테이너 조작·
+  관리자 비밀번호 변경이 G 보유 중에는 전부 거절되고(API는 409
+  ``MANAGER_MUTATION_ACTIVE``), Docker SDK도 `.env`도 건드리지 않는다.
+- (f) lock 경로 유도표: production·rehearsal은 G, local은 ``$HOME`` 개발 lock, override는
+  local에서만.
+- (g) 재구축은 실제 파일 lock을 G와 P 두 개만 잡는다 — 세 번째 획득은 G key 재진입이다.
+
 lock 경로는 conftest가 테스트마다 자기 소유 ``0700`` tmp 디렉터리로 옮겨 둔다. 자식
 프로세스는 그 monkeypatch를 물려받지 못하므로 경로와 소유자 seam을 스스로 설정한다.
 """
@@ -26,7 +35,10 @@ import pytest
 if not sys.platform.startswith("linux"):
     pytest.skip("flock·POSIX 소유권 계약은 Linux에서만 검증한다", allow_module_level=True)
 
+import datetime
+import fcntl
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -34,13 +46,33 @@ import textwrap
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+from dotenv import dotenv_values
+from fastapi.testclient import TestClient
 
 from kor_travel_docker_manager import cli as cli_module
-from kor_travel_docker_manager.services import c6c_deployment
+from kor_travel_docker_manager.api import admin as admin_api
+from kor_travel_docker_manager.main import app
+from kor_travel_docker_manager.services import c6c_deployment, legacy_override_retirement
+from kor_travel_docker_manager.services import compose_service as compose_service_module
+from kor_travel_docker_manager.services import docker_service as docker_service_module
+from kor_travel_docker_manager.services.admin_password_service import ADMIN_PASSWORD_HASH_ENV
+from kor_travel_docker_manager.services.auth_service import (
+    AdminSessionContext,
+    hash_password_for_env,
+    require_admin_session,
+)
 from kor_travel_docker_manager.services.errors import (
     DeploymentContractError,
     ManagerMutationActiveError,
+)
+from kor_travel_docker_manager.services.legacy_override_retirement import (
+    LegacyOverrideRetirementError,
+)
+from kor_travel_docker_manager.services.registry import (
+    MANAGED_CONTAINERS,
+    external_project_for_container,
 )
 from kor_travel_docker_manager.services.runtime_pair_rotation import (
     RUNTIME_PAIR_ROTATION_FILE_ENV,
@@ -395,3 +427,272 @@ def test_d_only_the_terminal_block_policy_may_use_an_inherited_descriptor(
     # 보유자가 끝나면 G는 비어 있다.
     with c6c_deployment.manager_mutation_lock():
         pass
+
+
+# --- ADR-51 C-2: rehearsal이 같은 lock에 합류한다 ------------------------------------
+
+_REHEARSAL_VALUES = {
+    "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+    "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+    "PINVI_ENVIRONMENT": "production",
+    "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+}
+# 실제 target이고 `external_project`가 없다 — Manager 자신의 Compose 프로젝트 소유라
+# lock을 지난다. 형제 프로젝트 컨테이너(airport)는 lock 없이 SDK로 가므로 쓰면 안 된다.
+_MANAGER_OWNED_TARGET = "kor-travel-shared-postgresql"
+_CURRENT_PASSWORD = "current-password-1234"
+
+
+@pytest.fixture
+def rehearsal_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """n150과 같은 모양의 rehearsal `.env`를 Manager env-file로 지정한다.
+
+    lock 경로 유도가 보는 이름은 전부 파일에 둔다 — 파일에 없으면 호출부가 프로세스
+    환경으로 채우므로(`_c6c_lock_path_from_values`) 러너의 환경이 판정에 새어 든다.
+    ``HOME``도 옮겨, ``$HOME`` 개발 lock으로 새면 흔적이 tmp에 남아 단언이 잡는다.
+    """
+
+    project = tmp_path / "project"
+    project.mkdir()
+    project.chmod(0o755)
+    values = {
+        **_REHEARSAL_VALUES,
+        "COMPOSE_PROJECT_NAME": "ktdm-c2-contention",
+        "KTDM_C6C_STATE_ROOT": str((tmp_path / "state").resolve()),
+    }
+    env_path = project / ".env"
+    env_path.write_text(
+        "".join(f"{name}={value}\n" for name, value in values.items()), encoding="utf-8"
+    )
+    env_path.chmod(0o600)
+    compose_path = project / "docker-compose.yml"
+    compose_path.write_text("services: {}\n", encoding="utf-8")
+    compose_path.chmod(0o644)
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_path))
+    for name in ("KTDM_C6C_DEPLOYMENT_LOCK", "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    return env_path
+
+
+def _admin_session() -> AdminSessionContext:
+    return AdminSessionContext(
+        username="admin",
+        session_id_hash="adr-51-c2-contention",
+        expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1),
+    )
+
+
+@pytest.fixture
+def api_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    """세션·감사 DB는 이 검사의 대상이 아니다 — 인증 의존성만 대역으로 바꾼다."""
+
+    monkeypatch.setitem(app.dependency_overrides, require_admin_session, _admin_session)
+    return TestClient(app)
+
+
+def test_e_rehearsal_compose_mutators_and_legacy_retirement_are_refused_while_g_is_held(
+    rehearsal_env: Path,
+    tmp_path: Path,
+) -> None:
+    """rehearsal `.env`의 lock 경로가 G라 UI·CLI Compose mutator가 경합에서 거절된다.
+
+    `c6c_deployment_lock_from_environment()`는 docker_service의 네 mutator(save_compose·
+    control·update·reset)와 compose_service의 run·candidate capture·ensure가 공유하는
+    한 입구다. 종전에는 이 경로가 실행 사용자 ``$HOME`` lock이어서 G 보유자와 무관했다.
+    """
+
+    project = rehearsal_env.parent
+    with _launcher_style_holder(_global_lock_path()):
+        with pytest.raises(ManagerMutationActiveError) as refused:
+            with compose_service_module.c6c_deployment_lock_from_environment():
+                pytest.fail("보유 중인 G 안으로 들어가면 안 된다")
+        assert refused.value.code == "MANAGER_MUTATION_ACTIVE"
+
+        selected = legacy_override_retirement._select_lock_path(
+            _REHEARSAL_VALUES,
+            project_root=Path("/irrelevant"),
+            lock_path=None,
+            require_root=True,
+        )
+        assert selected == str(_global_lock_path())
+        # 같은 선택으로 stage에 들어가면 source를 읽기도 전에 lock에서 거절된다.
+        source = tmp_path / "legacy" / "kor-travel-docker-manager" / "docker-compose.override.yml"
+        with pytest.raises(
+            LegacyOverrideRetirementError,
+            match=f"^cannot acquire the Manager mutation lock: {re.escape(_BUSY)}$",
+        ):
+            legacy_override_retirement.stage_legacy_compose_override(
+                source_path=source,
+                project_root=project,
+                lock_path=selected,
+                require_root=False,
+            )
+        assert not (project / ".legacy-compose-override-state").exists()
+
+    assert not (tmp_path / "home").exists()
+
+
+def test_e_the_container_action_api_answers_409_without_touching_docker(
+    rehearsal_env: Path,
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _MANAGER_OWNED_TARGET in MANAGED_CONTAINERS
+    assert external_project_for_container(_MANAGER_OWNED_TARGET) is None
+    sdk = Mock(name="docker SDK client")
+    monkeypatch.setattr(docker_service_module.DockerService, "_get_client", sdk)
+
+    with _launcher_style_holder(_global_lock_path()):
+        response = api_client.post(
+            f"/api/v1/containers/{_MANAGER_OWNED_TARGET}/action",
+            json={"action": "restart"},
+        )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {"code": "MANAGER_MUTATION_ACTIVE", "message": _BUSY}
+    sdk.assert_not_called()
+
+
+def test_e_the_admin_password_api_answers_409_and_leaves_the_env_bytes(
+    rehearsal_env: Path,
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """legacy retire와 같은 lock이다 — 둘이 겹치면 한쪽의 `.env` 재작성이 사라졌다."""
+
+    current_hash = hash_password_for_env(_CURRENT_PASSWORD)
+    monkeypatch.setenv("KTDM_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv(ADMIN_PASSWORD_HASH_ENV, current_hash)
+    monkeypatch.setenv("KTDM_SESSION_SECRET", "test-session-secret-minimum-32-bytes-value")
+    monkeypatch.setattr(admin_api, "check_login_rate_limit", lambda _request: None)
+    audit = Mock()
+    monkeypatch.setattr(admin_api, "record_login_audit_event", audit)
+    before = rehearsal_env.read_bytes()
+
+    with _launcher_style_holder(_global_lock_path()):
+        response = api_client.post(
+            "/api/v1/admin/password",
+            json={
+                "current_password": _CURRENT_PASSWORD,
+                "new_password": "brand-new-password-5678",
+            },
+        )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {"code": "MANAGER_MUTATION_ACTIVE", "message": _BUSY}
+    assert rehearsal_env.read_bytes() == before
+    assert os.environ[ADMIN_PASSWORD_HASH_ENV] == current_hash
+    # 자격증명 추측이 아니다 — 로그인 실패 카운터(`event_type="login"`)에 합류하지 않는다.
+    assert all(call.kwargs.get("event_type") != "login" for call in audit.call_args_list)
+
+
+@pytest.mark.parametrize(
+    ("mode", "with_override", "expected"),
+    [
+        ("production", False, "global"),
+        ("rehearsal", False, "global"),
+        ("local", False, "home"),
+        # 모드 미지정은 아직 개발 기본값이다. C-3이 G로 뒤집는다(fail closed).
+        ("", False, "home"),
+        ("local", True, "override"),
+        ("rehearsal", True, "refused"),
+        ("production", True, "refused"),
+    ],
+)
+def test_f_the_manager_mutation_lock_path_derivation(
+    mode: str,
+    with_override: bool,
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    override = (tmp_path / "override" / "dev.lock").resolve()
+    values = {"KTDM_DEPLOYMENT_ENVIRONMENT": mode}
+    if with_override:
+        values["KTDM_C6C_DEPLOYMENT_LOCK"] = str(override)
+
+    if expected == "refused":
+        with pytest.raises(DeploymentContractError, match="lock path is fixed"):
+            c6c_deployment.c6c_global_mutation_lock_path(values)
+        return
+    expected_path = {
+        "global": str(_global_lock_path()),
+        "home": str(
+            (
+                home / ".local" / "state" / "kor-travel-docker-manager" / "global-mutation.lock"
+            ).resolve(strict=False)
+        ),
+        "override": str(override),
+    }[expected]
+    assert c6c_deployment.c6c_global_mutation_lock_path(values) == expected_path
+
+
+def test_g_the_rebuild_takes_exactly_g_then_p_and_no_third_lock(
+    rehearsal_env: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """실제 `_pinned_runtime_rebuild_environment_lock`이 여는 파일 lock의 목록.
+
+    종전 rehearsal에서는 세 번째 획득이 ``$HOME`` lock이라, UI 요청이 그 lock을 잠깐 잡은
+    순간 G·P를 쥔 재구축이 거기서 실패했다. 이제 세 번째 획득은 이미 잡은 G key의 재진입
+    no-op이다. 환경 snapshot 캡처와 token 검증만 대역이고 lifecycle 게이트는 실제다.
+    """
+
+    global_lock = _global_lock_path()
+    pinned_lease = global_lock.parent / "pinned-runtime-rebuild.lock"
+    monkeypatch.setattr(c6c_deployment, "_PINNED_RUNTIME_REBUILD_LOCK", pinned_lease)
+    monkeypatch.setattr(c6c_deployment, "_require_pinned_runtime_rebuild_root", lambda: None)
+    effective = {
+        name: value for name, value in dotenv_values(rehearsal_env).items() if value is not None
+    }
+    snapshot = compose_service_module.ComposeEnvironmentSnapshot(
+        effective=effective,
+        env_path=str(rehearsal_env),
+        compose_path=str(rehearsal_env.parent / "docker-compose.yml"),
+        override_path=str(rehearsal_env.parent / "docker-compose.override.yml"),
+        env_file_identity=compose_service_module._env_file_identity(rehearsal_env),
+        env_file_bytes=rehearsal_env.read_bytes(),
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "_capture_pinned_runtime_rebuild_environment_snapshot",
+        lambda: snapshot,
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "validate_c6c_operation_tokens",
+        lambda _values, *, require_nonempty: None,
+    )
+    admission = Mock(return_value=None)
+
+    real_flock = fcntl.flock
+    flocks: list[tuple[str, int]] = []
+
+    def recording_flock(fd: int, operation: int) -> None:
+        flocks.append((os.readlink(f"/proc/self/fd/{fd}"), operation))
+        real_flock(fd, operation)
+
+    monkeypatch.setattr(fcntl, "flock", recording_flock)
+    global_path = str(global_lock.resolve())
+    pinned_path = str(pinned_lease.resolve())
+
+    with compose_service_module._pinned_runtime_rebuild_environment_lock(
+        prewrite_admission=admission
+    ) as (lock_snapshot, environment_snapshot, _credentials_initialized):
+        assert environment_snapshot is snapshot
+        # 세 번째 획득이 고른 경로는 G다 — 이미 잡은 key라 파일을 다시 열지 않았다.
+        assert lock_snapshot.lock_path == str(global_lock)
+        exclusive = [path for path, operation in flocks if operation & fcntl.LOCK_EX]
+        assert exclusive == [global_path, pinned_path]
+        assert _probe(global_lock) == "busy"
+        assert _probe(pinned_lease) == "busy"
+
+    admission.assert_called_once_with(snapshot)
+    assert {path for path, _operation in flocks} == {global_path, pinned_path}
+    assert not (tmp_path / "home").exists()
+    assert _probe(global_lock) == "free"
+    assert _probe(pinned_lease) == "free"

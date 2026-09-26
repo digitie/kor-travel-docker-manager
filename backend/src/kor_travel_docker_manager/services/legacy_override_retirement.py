@@ -28,7 +28,6 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_state_paths,
     ensure_c6c_state_directory,
     is_pbkdf2_sha256_password_hash,
-    pinned_runtime_rebuild_lock_path,
     validate_concierge_ui_canonical_compose_boundary,
 )
 from kor_travel_docker_manager.services.compose_service import get_project_root
@@ -200,7 +199,9 @@ def stage_legacy_compose_override(
             )
             return stage.pending_path
     except DeploymentContractError as exc:
-        raise LegacyOverrideRetirementError("cannot acquire canonical Compose mutation lock") from exc
+        raise LegacyOverrideRetirementError(
+            f"cannot acquire the Manager mutation lock: {exc}"
+        ) from exc
 
 
 def retire_legacy_compose_override(
@@ -291,7 +292,9 @@ def retire_legacy_compose_override(
                 ) from exc
             return archive
     except DeploymentContractError as exc:
-        raise LegacyOverrideRetirementError("cannot acquire canonical Compose mutation lock") from exc
+        raise LegacyOverrideRetirementError(
+            f"cannot acquire the Manager mutation lock: {exc}"
+        ) from exc
 
 
 def activate_canonical_concierge(
@@ -338,7 +341,9 @@ def activate_canonical_concierge(
                 compose_up_runner or _run_canonical_concierge_recreate,
             )
     except DeploymentContractError as exc:
-        raise LegacyOverrideRetirementError("cannot acquire canonical Compose mutation lock") from exc
+        raise LegacyOverrideRetirementError(
+            f"cannot acquire the Manager mutation lock: {exc}"
+        ) from exc
 
 
 def _prepare_project_context(
@@ -394,9 +399,10 @@ def _select_lock_path(
                 raise LegacyOverrideRetirementError(
                     "legacy override retirement requires the canonical rehearsal/rebuildable environment"
                 )
-            # stage/retire는 바로 다음 pinned rebuild와 같은 host lease를 쓴다. user-home
-            # rehearsal lock을 쓰면 다른 root launcher와 직렬화되지 않아 C6c 경계를 우회한다.
-            return pinned_runtime_rebuild_lock_path()
+            # stage/retire는 pinned rebuild·pin 회전·M05·installer와 같은 host 변경 lock
+            # ``G``를 쓴다(ADR-51 C-2). user-home rehearsal lock을 쓰면 다른 root launcher와
+            # 직렬화되지 않아 C6c 경계를 우회한다.
+            return c6c_global_mutation_lock_path(values)
         raise LegacyOverrideRetirementError(
             "legacy override retirement requires production or canonical rehearsal/rebuildable environment"
         )

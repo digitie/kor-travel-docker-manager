@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from kor_travel_docker_manager.services import c6c_deployment
 from kor_travel_docker_manager.services.admin_password_service import (
     ADMIN_PASSWORD_HASH_ENV,
     AdminPasswordError,
@@ -34,6 +35,9 @@ def env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         encoding="utf-8",
     )
     path.chmod(0o600)
+    # 이 `.env`는 local(모드 미지정)이라 재작성이 실행 사용자 `$HOME` 아래 개발 lock을
+    # 잡는다(ADR-51 C-2). 실행 호스트의 진짜 home에 lock 디렉터리를 만들지 않게 옮긴다.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("KTDM_ADMIN_USERNAME", "admin")
     monkeypatch.setenv(ADMIN_PASSWORD_HASH_ENV, hash_password_for_env(CURRENT))
     monkeypatch.setenv("KTDM_SESSION_SECRET", "test-session-secret-minimum-32-bytes-value")
@@ -109,6 +113,49 @@ def test_the_key_is_appended_when_absent(env_file: Path) -> None:
     text = env_file.read_text(encoding="utf-8")
     assert "OTHER_KEY=keep-me" in text
     assert f"{ADMIN_PASSWORD_HASH_ENV}=pbkdf2_sha256:" in text
+
+
+# --- Manager mutation lock (ADR-51 C-2) ----------------------------------------
+
+
+def _home_dev_lock(tmp_path: Path) -> Path:
+    return (
+        tmp_path
+        / "home"
+        / ".local"
+        / "state"
+        / "kor-travel-docker-manager"
+        / "global-mutation.lock"
+    )
+
+
+def test_a_local_env_rewrite_takes_the_per_user_dev_lock(
+    env_file: Path, tmp_path: Path
+) -> None:
+    """local(모드 미지정 포함)은 비root 개발용 `$HOME` lock이다 — host lock G가 아니다."""
+
+    change_admin_password(current_password=CURRENT, new_password=NEXT, env_path=env_file)
+
+    assert _home_dev_lock(tmp_path).is_file()
+    assert not c6c_deployment._C6C_GLOBAL_MUTATION_LOCK.exists()
+
+
+def test_a_rehearsal_env_rewrite_takes_the_host_mutation_lock(
+    env_file: Path, tmp_path: Path
+) -> None:
+    """lock은 프로세스 환경이 아니라 **다시 쓸 그 `.env`의 값**에서 정해진다."""
+
+    env_file.write_text(
+        env_file.read_text(encoding="utf-8") + "KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal\n",
+        encoding="utf-8",
+    )
+    env_file.chmod(0o600)
+
+    change_admin_password(current_password=CURRENT, new_password=NEXT, env_path=env_file)
+
+    assert c6c_deployment._C6C_GLOBAL_MUTATION_LOCK.is_file()
+    assert not _home_dev_lock(tmp_path).exists()
+    assert f"{ADMIN_PASSWORD_HASH_ENV}=pbkdf2_sha256:" in env_file.read_text(encoding="utf-8")
 
 
 # --- 자격증명·정책 ------------------------------------------------------------

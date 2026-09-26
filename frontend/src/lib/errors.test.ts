@@ -35,6 +35,21 @@ describe('humanizeError — CODE_MESSAGES 신규 항목', () => {
     expect(result.title).toContain('요청이 너무 많아 잠시 차단됐습니다.');
     expect(result.hint).not.toBe('');
   });
+
+  it('MANAGER_MUTATION_ACTIVE는 409 일반 문구가 아니라 "끝난 뒤 다시 시도" 안내를 돌려준다', () => {
+    const error = apiErrorWithCode(
+      409,
+      'MANAGER_MUTATION_ACTIVE',
+      'another Manager mutation is already active; nothing was changed',
+    );
+
+    const result = humanizeError(error, '컨테이너 재시작');
+
+    expect(result.title).not.toContain('MANAGER_MUTATION_ACTIVE');
+    expect(result.title).toBe('컨테이너 재시작 실패 — 다른 관리 작업이 진행 중입니다.');
+    expect(result.hint).toContain('아무것도 바뀌지 않았습니다');
+    expect(result.hint).toContain('끝난 뒤 다시 시도하세요.');
+  });
 });
 
 describe('humanizeError — INVALID_CREDENTIALS 문맥 충돌 회귀', () => {

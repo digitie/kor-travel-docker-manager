@@ -173,8 +173,9 @@ _C6C_GLOBAL_MUTATION_LOCK = GLOBAL_MUTATION_LOCK_PATH
 # dev/ino·디렉터리 0700 검사는 그대로 돈다.
 _GLOBAL_LOCK_OWNER_UID: int = 0
 # F1D rebuild는 rehearsal에서도 root로만 실행하는 host-wide destructive operation이다.
-# 일반 C6c rehearsal lock은 실행 사용자 home 아래여서 서로 다른 launcher를 직렬화할 수
-# 없으므로, build부터 final commit까지 이 고정 lease를 별도로 잡는다.
+# 종전 C6c rehearsal lock은 실행 사용자 home 아래여서 서로 다른 launcher를 직렬화할 수
+# 없었으므로, build부터 final commit까지 이 고정 lease를 별도로 잡았다. ADR-51 C-2부터
+# rehearsal lock도 ``G``라 이 lease는 G 안에서만 잡히는 중복이다 — C-3에서 지운다.
 _PINNED_RUNTIME_REBUILD_LOCK = Path(
     "/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock"
 )
@@ -3531,7 +3532,13 @@ def _is_relative_to(path: Path, base: Path) -> bool:
 def c6c_global_mutation_lock_path(
     environment: Mapping[str, str] | None = None,
 ) -> str:
-    """모든 Compose mutation이 공유하는 `.env` 비의존 host-global lock."""
+    """모든 Compose mutation이 공유하는 `.env` 비의존 host-global lock.
+
+    ADR-51 C-2: production과 rehearsal은 둘 다 host 변경 lock ``G`` 하나다. rehearsal의
+    UI mutator·frozen recovery·legacy retire가 실행 사용자 ``$HOME`` 아래 lock을 잡으면
+    launcher·pin 회전·installer와 직렬화되지 않는다. ``$HOME`` 개발 lock과
+    ``KTDM_C6C_DEPLOYMENT_LOCK`` override는 비root 개발용 ``local``에만 남는다.
+    """
 
     values = os.environ if environment is None else environment
     default = (
@@ -3551,7 +3558,7 @@ def c6c_global_mutation_lock_path(
         return str(
             _canonical_absolute_path(override, "KTDM_C6C_DEPLOYMENT_LOCK")
         )
-    if process_mode == "production":
+    if process_mode in {"production", "rehearsal"}:
         return str(_C6C_GLOBAL_MUTATION_LOCK)
     return str(default.resolve(strict=False))
 
