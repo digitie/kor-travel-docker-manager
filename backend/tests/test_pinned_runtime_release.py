@@ -15,9 +15,6 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
-from kor_travel_docker_manager.services.map_application_300 import (
-    expected_application_300_source_commit,
-)
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     CANONICAL_RUNTIME_SOURCE_URLS,
     PINNED_RUNTIME_RELEASE_VERSION,
@@ -64,11 +61,11 @@ def test_current_release_reads_the_registry_and_keeps_the_v5_shape() -> None:
 
 
 def test_map_application_300_expects_the_same_commit_as_the_pin() -> None:
-    """이원 관리 hazard가 소멸했는지 — 두 경로가 같은 registry 값을 읽는다."""
+    """Map source commit은 registry pin 하나에서만 나온다(옛 application-300 중복 상수는
+    지워졌다)."""
 
     release = current_pinned_runtime_release()
 
-    assert expected_application_300_source_commit() == release.source_for("map").revision
     assert current_map_source_revision() == release.source_for("map").revision
 
 

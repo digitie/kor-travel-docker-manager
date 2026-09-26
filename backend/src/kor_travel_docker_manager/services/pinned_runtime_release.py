@@ -114,52 +114,6 @@ def source_specs_for(
     )
 
 
-def is_blocked_pinset_retry(
-    *,
-    pinset_sha256: str,
-    map_source_revision: str,
-    pinvi_source_revision: str,
-    phase: str,
-) -> bool:
-    """registry의 차단 목록에 해당하는 candidate 재실행인지 판정한다.
-
-    이전에는 receipt schema 도입 전 topology failure로 끝난 d9 pinset 하나만 코드
-    상수 3종으로 고정했다. 실제 운영 규율은 "terminal 판정 candidate는 영구 재시도
-    금지"이고 그 목록은 회전마다 늘어나므로, 목록은 registry가 소유한다.
-
-    registry를 읽지 못하면 예외를 전파한다. 여기서 ``False``를 반환하면 파일이 사라진
-    순간 d9 계열 차단이 통째로 열리는 fail-open이 된다 — 호출자가 이미 registry를 읽은
-    뒤라 정상 경로에서 예외가 날 일이 없으므로 전파 비용은 0이고, 이득은 "파일이
-    사라지면 멈춘다"이다. 코드가 강제하는 하한선은 registry와 무관하게 먼저 판정한다.
-    """
-
-    from kor_travel_docker_manager.services.runtime_pin_registry import (
-        code_enforced_blocked_entry,
-        load_runtime_pin_registry,
-    )
-
-    if (
-        code_enforced_blocked_entry(
-            pinset_sha256=pinset_sha256,
-            map_source_revision=map_source_revision,
-            pinvi_source_revision=pinvi_source_revision,
-            phase=phase,
-        )
-        is not None
-    ):
-        return True
-    registry = load_runtime_pin_registry()
-    return (
-        registry.blocked_entry_for(
-            pinset_sha256=pinset_sha256,
-            map_source_revision=map_source_revision,
-            pinvi_source_revision=pinvi_source_revision,
-            phase=phase,
-        )
-        is not None
-    )
-
-
 @dataclass(frozen=True)
 class PinnedRuntimeRelease:
     """C2가 source staging·candidate build에 전달하는 v5 release pinset."""

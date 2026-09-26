@@ -34,20 +34,11 @@ from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
 )
 from kor_travel_docker_manager.services.database_runtime import (
-    Application300DatabaseIdentity as RuntimeApplication300DatabaseIdentity,
-)
-from kor_travel_docker_manager.services.database_runtime import (
-    DagsterMetadataDatabaseIdentity as RuntimeDagsterMetadataDatabaseIdentity,
-)
-from kor_travel_docker_manager.services.database_runtime import (
-    DagsterMetadataRoleAttributes,
     DatabaseRuntime,
-    PinnedDatabaseIdentity,
 )
 from kor_travel_docker_manager.services.deploy_status import (
     DeployedDatabase,
     DeployStatus,
-    carry_over_committed_generation,
     deploy_status_path,
     read_deploy_status,
     write_deploy_status,
@@ -70,8 +61,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinviRoleCatalogResetReceipt,
     RebuildPhase,
     RuntimeService,
-    legacy_journal_file,
-    legacy_manifest_file,
     manifest_from_payload,
     pinned_runtime_state_paths,
     read_published_pinned_runtime_generation,
@@ -86,7 +75,6 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     generation_companion_services,
     generation_compose_environment,
     map_application_300_paired_build_image_names,
-    new_candidate_journal,
     parse_candidate_static_head,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
@@ -118,7 +106,7 @@ def _isolate_runtime_pin_registry(
     ``rebuild_pinned_runtime``이 시작 게이트에서 즉시 거부된다(그 게이트 자체는
     ``test_runtime_pin_registry``와 아래 전용 회귀가 검증한다). 여기서는 조건 없는
     차단만 제거한 사본으로 격리해 orchestration 경로를 그대로 확인한다.
-    phase 한정 차단(d9 계열)은 그대로 남겨 resume admission 회귀를 보존한다.
+    phase 한정 차단(d9 계열)은 seed 그대로 남긴다 — 배포를 막지 않아야 하는 항목이다.
     """
 
     packaged = Path(__file__).resolve().parents[2] / "config" / "runtime-pins.seed.json"
@@ -366,26 +354,6 @@ def _application_create_database_identity() -> (
     )
 
 
-def _runtime_application_database_identity() -> RuntimeApplication300DatabaseIdentity:
-    return RuntimeApplication300DatabaseIdentity(
-        database_name="kor_travel_map",
-        database_oid=127001,
-        database_owner="ktm_feature_schema_owner",
-        postgres_system_identifier="7474747474747474747",
-    )
-
-
-def _runtime_application_create_database_identity() -> (
-    RuntimeApplication300DatabaseIdentity
-):
-    return RuntimeApplication300DatabaseIdentity(
-        database_name="kor_travel_map",
-        database_oid=127001,
-        database_owner="kor_travel_map",
-        postgres_system_identifier="7474747474747474747",
-    )
-
-
 def _pinvi_database_identity() -> PinnedRuntimeDatabaseIdentity:
     return PinnedRuntimeDatabaseIdentity(
         system_identifier="8585858585858585858",
@@ -393,53 +361,6 @@ def _pinvi_database_identity() -> PinnedRuntimeDatabaseIdentity:
         oid=127003,
         owner="pinvi",
         login_role="pinvi",
-    )
-
-
-def _runtime_pinvi_database_identity() -> PinnedDatabaseIdentity:
-    identity = _pinvi_database_identity()
-    return PinnedDatabaseIdentity(
-        system_identifier=identity.system_identifier,
-        name=identity.name,
-        oid=identity.oid,
-        owner=identity.owner,
-        login_role=identity.login_role,
-    )
-
-
-def _runtime_application_database() -> DatabaseRuntime:
-    return DatabaseRuntime(
-        role="map_application",
-        container_name="kor-travel-map-postgres",
-        port=12700,
-        database_name="kor_travel_map",
-        owner_name="kor_travel_map",
-        admin_name="kor_travel_map",
-    )
-
-
-def _runtime_dagster_metadata_identity(
-    *,
-    can_login: bool = True,
-    inherit: bool = False,
-) -> RuntimeDagsterMetadataDatabaseIdentity:
-    return RuntimeDagsterMetadataDatabaseIdentity(
-        system_identifier="7474747474747474747",
-        name="kor_travel_map_dagster",
-        oid=127002,
-        owner="map_dagster_metadata",
-        login_role="map_dagster_metadata",
-        login_role_attributes=DagsterMetadataRoleAttributes(
-            superuser=False,
-            create_database=False,
-            create_role=False,
-            replication=False,
-            bypass_rls=False,
-            granted_role_count=0,
-            member_role_count=0,
-            can_login=can_login,
-            inherit=inherit,
-        ),
     )
 
 
@@ -467,12 +388,22 @@ def _journal_at_application_300_phase(
     *,
     sources: PinnedRuntimeSourceMaterialization | None = None,
 ) -> PinnedRuntimeRebuildJournal:
-    journal = new_candidate_journal(
-        candidate=_candidate_generation(sources),
-        environment_bytes=b"frozen-env\n",
-        compose_source_bytes=b"services: {}\n",
+    # v8 journal 생성기는 지워졌다(ADR-51 B3). journal을 읽는 경로가 남아 있는 동안 그
+    # 회귀를 위해 생성기가 만들던 candidate_attested 값을 여기서 직접 만든다.
+    candidate = _candidate_generation(sources)
+    journal = PinnedRuntimeRebuildJournal(
+        version=8,
+        transaction_id=str(uuid.uuid4()),
+        phase="candidate_attested",
+        candidate=candidate,
+        map_application_300_candidate_evidence=(
+            candidate.map_application_300_candidate_evidence
+        ),
+        environment_sha256=hashlib.sha256(b"frozen-env\n").hexdigest(),
+        compose_sha256=hashlib.sha256(b"services: {}\n").hexdigest(),
         resolved_compose_sha256="c" * 64,
         created_at="2026-08-06T00:00:00+00:00",
+        journal_generation=0,
     )
     journal = journal.transition("reset_intent_durable")
     if phase == "reset_intent_durable":
@@ -689,7 +620,7 @@ def test_static_head_parser_accepts_exact_one_line_schema_contract() -> None:
         )
 
 
-def test_candidate_generation_and_journal_bind_all_runtime_inputs() -> None:
+def test_candidate_generation_binds_all_runtime_inputs() -> None:
     sources = _sources()
     paired = _map_application_candidate(sources)
     image_ids = _candidate_image_ids(paired)
@@ -701,25 +632,7 @@ def test_candidate_generation_and_journal_bind_all_runtime_inputs() -> None:
         pinvi_head="20260806_0001",
         recorded_at="2026-08-06T00:00:00+00:00",
     )
-    resolved = "c" * 64
 
-    journal = new_candidate_journal(
-        candidate=generation,
-        environment_bytes=b"frozen-env\n",
-        compose_source_bytes=b"services: {}\n",
-        resolved_compose_sha256=resolved,
-        created_at="2026-08-06T00:00:00+00:00",
-    )
-
-    assert journal.phase == "candidate_attested"
-    assert journal.version == 8
-    assert journal.journal_generation == 0
-    assert journal.candidate == generation
-    assert journal.map_application_300_candidate_evidence == (
-        generation.map_application_300_candidate_evidence
-    )
-    assert journal.environment_sha256 == hashlib.sha256(b"frozen-env\n").hexdigest()
-    assert journal.resolved_compose_sha256 == resolved
     assert generation.map_application_head == "300"
     assert generation.map_source_revision == paired.candidate_commit
     assert generation.map_application_300_candidate_evidence.candidate_git_tree == (
@@ -2005,66 +1918,6 @@ def test_journal_watermark_reports_unreached_without_a_path() -> None:
     assert compose_service_module._PinnedRuntimeJournalWatermark().reached() is False
 
 
-def _admission_gate_harness(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    refusal: Exception,
-) -> tuple[ComposeService, dict[str, str]]:
-    """`prewrite_admission`의 terminal 게이트까지만 도달시키는 최소 하네스.
-
-    이 모듈의 autouse fixture가 host lease와 rebuild environment lock을 이미
-    격리하므로, 여기서는 그 fixture가 쓰는 `_capture_compose_environment_snapshot`
-    과 release·게이트만 주입한다.
-    """
-
-    values = {
-        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
-        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
-        "PINVI_ENVIRONMENT": "production",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
-        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
-        "COMPOSE_PROJECT_NAME": "f1d-admission-gate",
-        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
-        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
-        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
-    }
-    snapshot = SimpleNamespace(
-        effective=values,
-        env_path=str(tmp_path / ".env"),
-        env_file_bytes=b"frozen-env" + bytes([10]),
-    )
-
-    monkeypatch.setattr(
-        compose_service_module, "_require_pinned_runtime_rebuild_root", lambda: None
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "_capture_compose_environment_snapshot",
-        lambda *, environment_override: snapshot,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "c6c_deployment_lock_from_environment",
-        lambda: nullcontext(object()),
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "current_pinned_runtime_release",
-        lambda: PINNED_RUNTIME_RELEASE,
-    )
-
-    def gate(_pinset: str) -> None:
-        raise refusal
-
-    monkeypatch.setattr(
-        compose_service_module, "_assert_pinset_is_not_permanently_blocked", gate
-    )
-    return ComposeService(), values
-
-
 def test_rebuild_timeouts_outlast_a_saturated_disk() -> None:
     """타임아웃은 멈춤 감지용이다 — 느린 디스크에서 정상 명령을 죽이면 안 된다.
 
@@ -2077,26 +1930,6 @@ def test_rebuild_timeouts_outlast_a_saturated_disk() -> None:
     assert module._PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS >= 2 * per_container
     assert module._ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS >= 2 * per_container
     assert module._COMPOSE_WAIT_TIMEOUT_SECONDS >= 3 * per_container
-
-
-def _write_legacy_generation(
-    state_root: Path,
-    journal: PinnedRuntimeRebuildJournal,
-    *,
-    manifest_generation: PinnedRuntimeGeneration | None = None,
-) -> None:
-    state_root.mkdir(parents=True, mode=0o700, exist_ok=True)
-    write_manifest(
-        legacy_manifest_file(state_root),
-        PinnedRuntimeManifest(
-            version=6,
-            active_generation=manifest_generation or journal.candidate,
-        ),
-    )
-    write_rebuild_journal(
-        legacy_journal_file(state_root, pinset_sha256=journal.candidate.pinset_sha256),
-        journal,
-    )
 
 
 def test_a_legacy_journal_stuck_at_manifest_committing_reads_as_committed(
@@ -2122,154 +1955,6 @@ def test_a_legacy_journal_stuck_at_manifest_committing_reads_as_committed(
     assert observed["status"] == "ok"
     assert observed["journal"] is None
     assert observed["summary"]["state"] != "rebuilding"
-
-
-@pytest.mark.parametrize("phase", ("committed", "manifest_committing"))
-def test_carry_over_adopts_the_live_committed_generation(
-    tmp_path: Path,
-    phase: RebuildPhase,
-) -> None:
-    """첫 마이그레이션 전진 배포는 지금 떠 있는 세대를 리셋 없이 넘겨받는다(ADR-51 B1)."""
-
-    state_root = tmp_path / "state"
-    journal = _journal_at_runtime_phase(phase)
-    _write_legacy_generation(state_root, journal)
-
-    status = carry_over_committed_generation(
-        state_root,
-        companions={"kor-travel-map-dagster-code-server": "kor-travel-map-dagster"},
-        manager_revision="e" * 40,
-    )
-
-    assert status is not None
-    assert status.state == "committed"
-    assert status.pinset_sha256 == journal.candidate.pinset_sha256
-    assert status.images["kor-travel-map-dagster-code-server"] == (
-        journal.candidate.image_ids["kor-travel-map-dagster"]
-    )
-    assert set(status.images) == {*RUNTIME_SERVICES, "kor-travel-map-dagster-code-server"}
-    assert dict(status.schema_heads) == dict(journal.candidate.schema_heads)
-    evidence = journal.map_application_300_execution_evidence
-    application = evidence.application_database_identity
-    assert application is not None
-    assert status.databases is not None
-    assert status.databases["map_application"] == DeployedDatabase(
-        application.database_name,
-        application.database_oid,
-        application.postgres_system_identifier,
-    )
-    assert journal.pinvi_database_identity is not None
-    assert status.databases["pinvi"].oid == journal.pinvi_database_identity.oid
-    assert status.carried_over_from == f"v6+v8:{journal.candidate.pinset_sha256}"
-
-
-def test_carry_over_refuses_an_unfinished_generation(tmp_path: Path) -> None:
-    state_root = tmp_path / "state"
-    _write_legacy_generation(state_root, _journal_at_runtime_phase("pinvi_api_ready"))
-
-    assert (
-        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
-        is None
-    )
-
-
-def test_carry_over_refuses_a_journal_for_another_generation(tmp_path: Path) -> None:
-    state_root = tmp_path / "state"
-    journal = _journal_at_runtime_phase("committed")
-    other = replace(journal.candidate, recorded_at="2026-08-07T00:00:00+00:00")
-    _write_legacy_generation(state_root, journal, manifest_generation=other)
-
-    assert (
-        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
-        is None
-    )
-
-
-def test_carry_over_without_legacy_files_is_a_full_path_not_an_error(tmp_path: Path) -> None:
-    state_root = tmp_path / "state"
-    state_root.mkdir(mode=0o700)
-
-    assert (
-        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
-        is None
-    )
-
-
-def _write_other_pinset_journal(
-    state_root: Path,
-    journal: PinnedRuntimeRebuildJournal,
-    *,
-    created_at: str,
-) -> Path:
-    path = legacy_journal_file(state_root, pinset_sha256="f" * 64)
-    write_rebuild_journal(path, replace(journal, created_at=created_at))
-    return path
-
-
-def test_carry_over_refuses_when_a_later_rebuild_reset_the_databases(tmp_path: Path) -> None:
-    """manifest는 A를 가리키지만 그 뒤 B의 재구축이 DB를 지우고 멈췄다 — 라이브 DB는 B의
-    것이다. A의 identity를 기준선으로 넘기면 이후 모든 배포가 `--restart`로만 풀린다."""
-
-    state_root = tmp_path / "state"
-    _write_legacy_generation(state_root, _journal_at_runtime_phase("committed"))
-    _write_other_pinset_journal(
-        state_root,
-        _journal_at_application_300_phase("reset_intent_durable"),
-        created_at="2026-08-07T00:00:00+00:00",
-    )
-
-    assert (
-        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
-        is None
-    )
-
-
-@pytest.mark.parametrize(
-    ("other_phase", "created_at"),
-    (
-        # 더 이른 미완료 재구축(n150의 a7cc0414 같은 것) — 그 뒤 커밋이 DB를 다시 만들었다.
-        ("reset_intent_durable", "2026-08-05T00:00:00+00:00"),
-        # 더 늦지만 리셋 전에 멈춘 재구축 — DB를 건드리지 않았다.
-        ("candidate_attested", "2026-08-07T00:00:00+00:00"),
-    ),
-)
-def test_carry_over_ignores_rebuilds_that_did_not_replace_the_live_databases(
-    tmp_path: Path,
-    other_phase: RebuildPhase,
-    created_at: str,
-) -> None:
-    state_root = tmp_path / "state"
-    _write_legacy_generation(state_root, _journal_at_runtime_phase("committed"))
-    if other_phase == "reset_intent_durable":
-        other = _journal_at_application_300_phase("reset_intent_durable")
-    else:
-        other = new_candidate_journal(
-            candidate=_candidate_generation(),
-            environment_bytes=b"frozen-env\n",
-            compose_source_bytes=b"services: {}\n",
-            resolved_compose_sha256="c" * 64,
-            created_at="2026-08-06T00:00:00+00:00",
-        )
-    assert other.phase == other_phase
-    _write_other_pinset_journal(state_root, other, created_at=created_at)
-
-    assert (
-        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
-        is not None
-    )
-
-
-def test_carry_over_refuses_an_unreadable_journal(tmp_path: Path) -> None:
-    state_root = tmp_path / "state"
-    _write_legacy_generation(state_root, _journal_at_runtime_phase("committed"))
-    path = legacy_journal_file(state_root, pinset_sha256="f" * 64)
-    path.write_text("{}", encoding="utf-8")
-    path.chmod(0o600)
-
-    assert (
-        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
-        is None
-    )
 
 
 # ── 마이그레이션 전진 배포(ADR-51 B2) ──────────────────────────────────────────
@@ -2351,7 +2036,6 @@ def _forward_harness(
     tmp_path: Path,
     *,
     previous: DeployStatus | None = None,
-    carried: DeployStatus | None = None,
     images_present: bool = True,
 ) -> SimpleNamespace:
     """재구축을 실제 오케스트레이션 그대로 돌리는 대역. DB·docker·compose는 대역이다.
@@ -2433,7 +2117,6 @@ def _forward_harness(
         paired_builder=Mock(),
         materialize=Mock(side_effect=lambda **_kwargs: _sources()),
         manifest_write=Mock(),
-        carry_over=Mock(return_value=carried),
         contract=Mock(),
         prerequisites=Mock(),
         create_pinvi=Mock(return_value=False),
@@ -2536,7 +2219,6 @@ def _forward_harness(
         "write_pinned_runtime_manifest": mocks.manifest_write,
         "reconcile_generation_references": mocks.retention_generation,
         "reconcile_candidate_build_references": mocks.retention_candidate,
-        "carry_over_committed_generation": mocks.carry_over,
         "create_database_if_absent": mocks.create_pinvi,
         "require_map_application_database_convergible": mocks.map_precheck,
     }.items():
@@ -2611,6 +2293,45 @@ def test_first_deploy_runs_the_idempotent_full_path_and_commits(
     assert dict(status.images) == harness.expected_images
     assert dict(status.databases or {}) == _deployed_databases()
     harness.mocks.manifest_write.assert_called_once()
+
+
+def test_leftover_v6_v8_state_is_not_adopted_and_is_left_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``deploy-status.json``이 없으면 기준선 없는 전체 경로 한 번이다(ADR-51 B3).
+
+    옛 v6 manifest와 **커밋된** v8 journal — 옛 carry-over라면 넘겨받았을 세대 — 이
+    state root에 남아 있어도 넘겨받지 않는다(n150에는 그런 파일이 남아 있다). 넘겨받았다면
+    결과는 ``converged``이거나 journal의 DB identity로 거부였을 것이다(B3 적대 리뷰: 읽히지
+    않는 바이트를 심으면 옛 carry-over도 조용히 None이 되어 이 검사가 둘을 가르지 못했다).
+    여기서 v6 쓰기는 대역(``mocks.manifest_write``)이라 두 파일은 바이트 그대로 남아야 한다.
+    """
+
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+    harness = _forward_harness(monkeypatch, tmp_path)
+    state_root = harness.status_path.parent
+    journal = _journal_at_runtime_phase("committed")
+    manifest_path = state_root / "pinned-runtime-generation-v6.json"
+    journal_path = (
+        state_root / f"pinned-runtime-rebuild-v8-{journal.candidate.pinset_sha256}.json"
+    )
+    write_manifest(
+        manifest_path,
+        PinnedRuntimeManifest(version=6, active_generation=journal.candidate),
+    )
+    write_rebuild_journal(journal_path, journal)
+    planted = {path: path.read_bytes() for path in (manifest_path, journal_path)}
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "deployed"
+    harness.mocks.reset.assert_not_called()
+    status = read_deploy_status(harness.status_path)
+    assert status is not None and status.state == "committed"
+    assert status.carried_over_from is None
+    assert dict(status.databases or {}) == _deployed_databases()
+    for path, content in planted.items():
+        assert path.read_bytes() == content
 
 
 def test_the_same_committed_pair_only_converges(
@@ -2745,21 +2466,6 @@ def test_a_failure_after_in_progress_cleans_up_and_the_rerun_finishes_without_re
     harness.mocks.reset.assert_not_called()
     committed = read_deploy_status(harness.status_path)
     assert committed is not None and committed.state == "committed"
-
-
-def test_the_live_generation_is_carried_over_and_converged_without_a_reset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    candidate = _candidate_generation()
-    carried = _committed_status(candidate, carried_over_from="v6+v8:" + "a" * 64)
-    harness = _forward_harness(monkeypatch, tmp_path, carried=carried)
-
-    result = harness.service.rebuild_pinned_runtime()
-
-    assert result["outcome"] == "converged"
-    harness.mocks.carry_over.assert_called_once()
-    assert read_deploy_status(harness.status_path) == carried
-    assert not any(operation[0] == "stop" for operation in harness.operations)
 
 
 def test_companions_ride_every_step_of_the_full_path(
@@ -3206,7 +2912,7 @@ def test_a_plain_rerun_after_the_reset_keeps_the_restart_record(
 def test_a_restart_on_a_host_without_a_baseline_that_dies_before_the_reset_is_not_recorded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """기준선 없이(새 호스트·carry-over 없음) 시작한 `--restart`가 리셋 전에 죽었다. 이어서
+    """기준선 없이(`deploy-status.json`이 없는 호스트) 시작한 `--restart`가 리셋 전에 죽었다. 이어서
     끝내는 일반 실행은 옛 DB를 전진시켰을 뿐이다 — 리셋 기록을 남기면 거짓이다(B2 적대 리뷰 3차)."""
 
     harness = _forward_harness(monkeypatch, tmp_path)

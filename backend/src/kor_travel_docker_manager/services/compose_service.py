@@ -82,7 +82,6 @@ from kor_travel_docker_manager.services.deploy_status import (
     DeployRestart,
     DeployStatus,
     begin_deploy,
-    carry_over_committed_generation,
     commit_deploy,
     deploy_status_path,
     read_deploy_status,
@@ -92,12 +91,6 @@ from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
     DeploymentContractError,
-)
-from kor_travel_docker_manager.services.map_application_300 import (
-    Application300Candidate as Application300ExecutionCandidate,
-)
-from kor_travel_docker_manager.services.map_application_300 import (
-    MapApplication300ContractError,
 )
 from kor_travel_docker_manager.services.map_application_candidate import (
     MapApplicationCandidate,
@@ -217,19 +210,6 @@ _PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES = frozenset(
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
 # profile을 해석 단계에서 빼면 `run --profile bootstrap`가 같은 문서에서 service를 찾지 못한다.
 _FROZEN_COMPOSE_PROFILES = ("bootstrap",)
-_PINVI_ROLE_TOPOLOGY_DIAGNOSTIC_SCHEMA = "pinvi.role-topology-diagnostic.v1"
-_PINVI_ROLE_TOPOLOGY_NONCANONICAL_REASONS = (
-    "principal_identity",
-    "bootstrap_catalog",
-    "fence_acl",
-    "runtime_role",
-    "schema_owner_membership",
-    "migration_owner_policy",
-    "migrator_sealed",
-    "migrator_membership_setting",
-    "app_ownership",
-    "extension_ownership",
-)
 
 
 class PinnedRuntimePrejournalFailure(DeploymentContractError):
@@ -257,7 +237,7 @@ class _PinnedRuntimeJournalWatermark:
 
     launcher(`run-pinned-rebuild-once`)는 이 판정 하나로 claim을 해제할지 정한다.
     ``in_progress``를 쓰기 전의 실패는 **데이터를** 바꾸지 않았으므로 해제한다(DB 서버
-    기동·carry-over 기록·이미지 태그는 그 전에 일어날 수 있지만 모두 멱등이다). 쓴 뒤의
+    기동·이미지 태그는 그 전에 일어날 수 있지만 모두 멱등이다). 쓴 뒤의
     실패도 이제 재시도할 수 있지만 launcher의 attempt 원장은 감사 흔적으로 남긴다.
     """
 
@@ -2423,21 +2403,6 @@ def _ensure_application_300_mount_directory(path: Path) -> None:
         raise DeploymentContractError(
             "application 300 mount directory is unsafe"
         )
-
-
-def _application_300_execution_candidate(
-    candidate: MapApplicationCandidate,
-) -> Application300ExecutionCandidate:
-    try:
-        return Application300ExecutionCandidate(
-            map_source_commit=candidate.candidate_commit,
-            api_image_id=candidate.api_image_id,
-            dagster_image_id=candidate.dagster_image_id,
-        )
-    except MapApplication300ContractError as exc:
-        raise DeploymentContractError(
-            "application 300 execution candidate is invalid"
-        ) from exc
 
 
 def _build_map_application_300_images(
@@ -5101,21 +5066,6 @@ class ComposeService:
                 runtime_transaction=runtime_transaction,
                 map_candidate=map_candidate,
             )
-
-            if previous is None:
-                # 이 Manager의 첫 배포: 지금 떠 있는 v6/v8 세대를 리셋 없이 넘겨받는다.
-                # 맞지 않으면 None이고, 그 결과는 전체 경로 한 번이다.
-                from kor_travel_docker_manager.services.runtime_execution_registry import (
-                    trusted_manager_source_revision,
-                )
-
-                previous = carry_over_committed_generation(
-                    state_paths.state_root,
-                    companions=companions,
-                    manager_revision=trusted_manager_source_revision(),
-                )
-                if previous is not None:
-                    write_deploy_status(status_path, previous)
 
             if (
                 not explicit

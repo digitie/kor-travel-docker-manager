@@ -6,10 +6,8 @@ ID만 소비한다. old compatible pair, backup, rollback slot은 이 경계에 
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
-import uuid
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,7 +23,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     RUNTIME_SERVICES,
     MapApplication300CandidateEvidence,
     PinnedRuntimeGeneration,
-    PinnedRuntimeRebuildJournal,
     RuntimeService,
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
@@ -398,35 +395,4 @@ def build_candidate_generation(
             map_application_candidate
         ),
         recorded_at=timestamp,
-    )
-
-
-def new_candidate_journal(
-    *,
-    candidate: PinnedRuntimeGeneration,
-    environment_bytes: bytes,
-    compose_source_bytes: bytes,
-    resolved_compose_sha256: str,
-    created_at: str | None = None,
-) -> PinnedRuntimeRebuildJournal:
-    """DB mutation 전에 fsync할 candidate_attested receipt를 생성한다."""
-
-    if _SHA256.fullmatch(resolved_compose_sha256) is None:
-        raise DeploymentContractError("pinned runtime resolved Compose digest is invalid")
-    if not environment_bytes or not compose_source_bytes:
-        raise DeploymentContractError("pinned runtime frozen input bytes are invalid")
-    timestamp = created_at or datetime.now(UTC).isoformat()
-    return PinnedRuntimeRebuildJournal(
-        version=8,
-        transaction_id=str(uuid.uuid4()),
-        phase="candidate_attested",
-        candidate=candidate,
-        map_application_300_candidate_evidence=(
-            candidate.map_application_300_candidate_evidence
-        ),
-        environment_sha256=hashlib.sha256(environment_bytes).hexdigest(),
-        compose_sha256=hashlib.sha256(compose_source_bytes).hexdigest(),
-        resolved_compose_sha256=resolved_compose_sha256,
-        created_at=timestamp,
-        journal_generation=0,
     )

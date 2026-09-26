@@ -4,6 +4,8 @@
 > 멱등 one-shot으로 head까지 올린다. 같은 pair는 수렴만 하고, DB를 지우는 길은
 > `rebuild-pinned --restart --reason "..." --confirm` 하나다. 영속 상태는 state root의
 > `deploy-status.json`(in_progress/committed) 하나이며 v8 journal은 더 쓰지 않는다.
+> `deploy-status.json`이 없는 호스트는 기준선 없는 전체 경로를 한 번 돈다 — 남아 있는 v6
+> manifest·v8 journal을 넘겨받지 않는다(carry-over 없음, ADR-51 B3).
 > 아래의 파기형·journal·resume 서술은 그 이전 설계의 기록이다.
 
 이 문서는 `kor-travel-docker-manager`를 운영 호스트에 배포·실행하는 절차를 다룬다. **민감한 접속

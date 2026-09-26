@@ -334,50 +334,6 @@ def _consistent_digest(map_revision: str = MAP_A, pinvi_revision: str = PINVI_B)
     )
 
 
-def test_block_entry_matches_only_the_declared_phase() -> None:
-    digest = _consistent_digest()
-    entry = BlockedPinset(
-        pinset_sha256=digest,
-        map_revision=MAP_A,
-        pinvi_revision=PINVI_B,
-        reason="terminal",
-        blocked_at="2026-08-28T00:00:00Z",
-        phase="map_runtime_ready",
-    )
-
-    assert entry.matches(
-        pinset_sha256=digest,
-        map_source_revision=MAP_A,
-        pinvi_source_revision=PINVI_B,
-        phase="map_runtime_ready",
-    )
-    assert not entry.matches(
-        pinset_sha256=digest,
-        map_source_revision=MAP_A,
-        pinvi_source_revision=PINVI_B,
-        phase="candidate_attested",
-    )
-
-
-def test_block_entry_without_a_phase_matches_every_phase() -> None:
-    digest = _consistent_digest()
-    entry = BlockedPinset(
-        pinset_sha256=digest,
-        map_revision=MAP_A,
-        pinvi_revision=PINVI_B,
-        reason="terminal",
-        blocked_at="2026-08-28T00:00:00Z",
-    )
-
-    for phase in ("map_runtime_ready", "candidate_attested", "databases_recreated"):
-        assert entry.matches(
-            pinset_sha256=digest,
-            map_source_revision=MAP_A,
-            pinvi_source_revision=PINVI_B,
-            phase=phase,
-        )
-
-
 def test_pin_block_registers_the_current_pinset_without_revision_arguments() -> None:
     seeded = _seed()
 
@@ -699,27 +655,6 @@ def test_admission_still_fails_closed_when_the_registry_vanishes(
 
     with pytest.raises(RuntimePinRegistryError, match="missing"):
         _pinned_runtime_admission_warnings(seeded.pinset_sha256)
-
-
-def test_blocked_pinset_retry_helper_honours_phase_scope() -> None:
-    from kor_travel_docker_manager.services.pinned_runtime_release import (
-        is_blocked_pinset_retry,
-    )
-
-    registry = _blocked_seed(phase="map_runtime_ready")
-
-    assert is_blocked_pinset_retry(
-        pinset_sha256=registry.pinset_sha256,
-        map_source_revision=MAP_A,
-        pinvi_source_revision=PINVI_B,
-        phase="map_runtime_ready",
-    )
-    assert not is_blocked_pinset_retry(
-        pinset_sha256=registry.pinset_sha256,
-        map_source_revision=MAP_A,
-        pinvi_source_revision=PINVI_B,
-        phase="candidate_attested",
-    )
 
 
 # --- 리뷰 지적 회귀 (P2-7·P2-8·P2-9) -----------------------------------------

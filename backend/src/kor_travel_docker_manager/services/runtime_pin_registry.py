@@ -136,9 +136,11 @@ def utc_timestamp() -> str:
 class BlockedPinset:
     """재시도가 영구 금지된 candidate pinset.
 
-    ``phase``가 있으면 그 phase의 journal에서만 차단하고, 없으면 해당 pinset의 모든
-    재개를 차단한다. 이전에는 이 정보가 ``pinned_runtime_release`` 의 d9 상수 3종과
-    kor-travel-map·pinvi 저장소 문서의 수기 목록에만 존재했다.
+    ``phase``가 있는 항목은 옛 journal의 그 phase 재개만 막던 기록이다. journal 재개가
+    없어진 지금(ADR-51) 필드는 파싱·보존만 하고, 판정은 pinset 단위로만 한다
+    (``is_blocked_pinset``·``is_unconditionally_blocked_pinset``). 이전에는 이 정보가
+    ``pinned_runtime_release`` 의 d9 상수 3종과 kor-travel-map·pinvi 저장소 문서의
+    수기 목록에만 존재했다.
     """
 
     pinset_sha256: str
@@ -156,8 +158,8 @@ class BlockedPinset:
         _require_timestamp(self.blocked_at, "blocked_pinsets[].blocked_at")
         if self.phase is not None:
             _require_text(self.phase, "blocked_pinsets[].phase", max_length=_MAX_ACTOR_LENGTH)
-        # digest와 revision이 어긋난 차단 항목은 어떤 journal에도 매치하지 않는다 —
-        # 즉 "차단했다"고 기록됐지만 실제로는 아무것도 막지 못하는 조용한 무력화다.
+        # digest와 revision이 어긋난 차단 항목은 기록한 pair(revision)와 판정하는
+        # pair(digest)가 다르다 — "그것을 차단했다"는 기록이 조용히 거짓이 된다.
         # 최상위 pinset digest와 같은 강도로 재계산 대조한다.
         expected = _compute_pinset_sha256(
             release_version=_SUPPORTED_RELEASE_VERSION,
@@ -168,24 +170,6 @@ class BlockedPinset:
             raise RuntimePinRegistryError(
                 "runtime pin registry blocked_pinsets[] digest does not match its revisions"
             )
-
-    def matches(
-        self,
-        *,
-        pinset_sha256: str,
-        map_source_revision: str,
-        pinvi_source_revision: str,
-        phase: str,
-    ) -> bool:
-        """journal 식별자가 이 차단 항목에 해당하는지 판정한다."""
-
-        if (
-            pinset_sha256 != self.pinset_sha256
-            or map_source_revision != self.map_revision
-            or pinvi_source_revision != self.pinvi_revision
-        ):
-            return False
-        return self.phase is None or self.phase == phase
 
     @classmethod
     def from_payload(cls, payload: Any) -> BlockedPinset:
@@ -245,26 +229,6 @@ _CODE_ENFORCED_BLOCKED_PINSETS: Final[tuple[BlockedPinset, ...]] = (
         blocked_at="2026-08-27T09:26:00Z",
     ),
 )
-
-
-def code_enforced_blocked_entry(
-    *,
-    pinset_sha256: str,
-    map_source_revision: str,
-    pinvi_source_revision: str,
-    phase: str,
-) -> BlockedPinset | None:
-    """registry를 읽지 못해도 성립하는 차단 판정."""
-
-    for entry in _CODE_ENFORCED_BLOCKED_PINSETS:
-        if entry.matches(
-            pinset_sha256=pinset_sha256,
-            map_source_revision=map_source_revision,
-            pinvi_source_revision=pinvi_source_revision,
-            phase=phase,
-        ):
-            return entry
-    return None
 
 
 @dataclass(frozen=True)
@@ -403,26 +367,6 @@ class RuntimePinRegistry:
         )
         return (*self.blocked_pinsets, *extra)
 
-    def blocked_entry_for(
-        self,
-        *,
-        pinset_sha256: str,
-        map_source_revision: str,
-        pinvi_source_revision: str,
-        phase: str,
-    ) -> BlockedPinset | None:
-        """journal 식별자에 해당하는 차단 항목을 찾는다."""
-
-        for entry in self.effective_blocked_pinsets:
-            if entry.matches(
-                pinset_sha256=pinset_sha256,
-                map_source_revision=map_source_revision,
-                pinvi_source_revision=pinvi_source_revision,
-                phase=phase,
-            ):
-                return entry
-        return None
-
     def is_blocked_pinset(self, pinset_sha256: str) -> bool:
         """pinset digest가 차단 목록에 있는지 확인한다(phase 무관).
 
@@ -437,9 +381,9 @@ class RuntimePinRegistry:
     def is_unconditionally_blocked_pinset(self, pinset_sha256: str) -> bool:
         """이 pinset의 **모든** 실행이 금지됐는지 확인한다.
 
-        phase가 지정된 항목은 특정 journal 상태의 재개만 막는 것이므로 여기서
-        제외한다 — 그 판정은 resume admission이 소유한다. rebuild 시작 게이트는
-        조건 없는 차단만 근거로 삼아야 정확하다.
+        phase가 지정된 항목은 옛 journal의 특정 phase 재개만 막던 기록이므로 여기서
+        제외한다(재개는 ADR-51에서 없어졌다). 배포 경고·회전 게이트는 조건 없는
+        차단만 근거로 삼는다.
         """
 
         return any(
@@ -645,8 +589,8 @@ def _assert_registry_file_integrity(path: Path) -> None:
     """읽기 시점에 파일 자체를 검증한다.
 
     "값은 파일, 신뢰는 소유권"이 이 전환의 안전 논거인데, 그 소유권을 실제로 보는
-    코드가 없으면 논거가 성립하지 않는다. 같은 저장소의 root 아티팩트 표준
-    (``map_application_300._require_fixed_artifact_directory``)과 같은 기준을 쓴다.
+    코드가 없으면 논거가 성립하지 않는다. 기준은 아래 목록이 전부다(옛 application-300
+    root 아티팩트 디렉터리 검사에서 가져왔고, 그 원본 모듈은 지워졌다).
 
     - ``lstat``으로 본다. symlink를 따라가 다른 파일을 읽지 않는다.
     - 일반 파일이어야 한다.

@@ -14,9 +14,7 @@ from kor_travel_docker_manager.services.database_runtime import (
     database_runtimes_from_frozen_contract,
     ensure_map_application_database,
     initialize_application_300_dagster_metadata_database,
-    inspect_application_300_bootstrap_state,
     read_application_300_dagster_metadata_identity,
-    read_application_300_database_identity,
     read_database_schema_revision,
     reset_databases_for_application_300,
     schema_revision_table_exists,
@@ -308,102 +306,6 @@ def test_fresh_application_300_database_refuses_existing_database(
         create_fresh_application_300_database(_runtime("map_application"))
 
     runner.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    ("owner", "attestation", "expected"),
-    (
-        (None, None, "absent"),
-        ("map_owner", b"virgin\n", "virgin"),
-        ("map_owner", b"partial\n", "partial"),
-        ("ktm_feature_schema_owner", b"exact_complete\n", "exact_complete"),
-        ("ktm_feature_schema_owner", b"partial\n", "partial"),
-        ("foreign_owner", None, "foreign"),
-    ),
-)
-def test_application_300_bootstrap_state_is_exactly_classified(
-    owner: str | None,
-    attestation: bytes | None,
-    expected: database_runtime.Application300BootstrapState,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runner = Mock(return_value=attestation)
-    monkeypatch.setattr(database_runtime, "_read_database_owner", Mock(return_value=owner))
-    monkeypatch.setattr(database_runtime, "_run_checked", runner)
-
-    assert inspect_application_300_bootstrap_state(_runtime("map_application")) == expected
-
-    if attestation is None:
-        runner.assert_not_called()
-    else:
-        command = runner.call_args.args[0]
-        assert command[command.index("--dbname") + 1] == "map_app"
-        assert "THEN" in command[-1]
-
-
-def test_application_300_exact_bootstrap_attestation_binds_full_role_graph(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        database_runtime,
-        "_read_database_owner",
-        Mock(return_value="ktm_feature_schema_owner"),
-    )
-    runner = Mock(return_value=b"exact_complete\n")
-    monkeypatch.setattr(database_runtime, "_run_checked", runner)
-
-    assert (
-        inspect_application_300_bootstrap_state(_runtime("map_application"))
-        == "exact_complete"
-    )
-
-    query = runner.call_args.args[0][-1]
-    assert "expected_membership" in query
-    assert "actual_membership" in query
-    assert "ktm_feature_reference_reconciliation_service_executor" in query
-    assert "pg_prewarm:x_extension" in query
-    assert "fuzzystrmatch:public" in query
-    assert "expected_acl(schema_name, role_name, privilege_type, is_grantable)" in query
-    assert "('feature', 'ktm_feature_schema_owner', 'CREATE', FALSE)" in query
-    assert "('x_extension', 'ktm_feature_schema_owner', 'CREATE', FALSE)" in query
-    assert "privilege.privilege_type, privilege.is_grantable" in query
-    assert "search_path=public, x_extension" in query
-
-
-def test_application_300_bootstrap_attestation_rejects_ambiguous_output(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        database_runtime,
-        "_read_database_owner",
-        Mock(return_value="map_owner"),
-    )
-    monkeypatch.setattr(database_runtime, "_run_checked", Mock(return_value=b"virgin\nextra\n"))
-
-    with pytest.raises(DeploymentContractError, match="attestation is ambiguous"):
-        inspect_application_300_bootstrap_state(_runtime("map_application"))
-
-
-def test_application_300_database_identity_uses_maintenance_database(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def run_checked(arguments: list[str], *, label: str) -> bytes:
-        assert label == "Map application 300 database identity"
-        assert arguments[arguments.index("--dbname") + 1] == "postgres"
-        assert "pg_catalog.pg_control_system()" in arguments[-1]
-        assert "WHERE datname = 'map_app'" in arguments[-1]
-        return b"map_app|127001|ktm_feature_schema_owner|7474747474747474747\n"
-
-    runner = Mock(side_effect=run_checked)
-    monkeypatch.setattr(database_runtime, "_run_checked", runner)
-
-    identity = read_application_300_database_identity(_runtime("map_application"))
-
-    assert identity.database_name == "map_app"
-    assert identity.database_oid == 127001
-    assert identity.database_owner == "ktm_feature_schema_owner"
-    assert identity.postgres_system_identifier == "7474747474747474747"
-    assert "password" not in " ".join(runner.call_args.args[0]).lower()
 
 
 def test_dagster_metadata_identity_query_is_strict_and_uses_maintenance_database(
