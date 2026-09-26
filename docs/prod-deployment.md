@@ -38,8 +38,8 @@ rsync 대상에 포함하지 않는다. 비밀 설정은 운영 호스트에서 
 ### 2.1 runtime pin registry는 배포 트리 밖에 둔다 (설치 전 필수 준비)
 
 Map·PinVi pinned revision은 소스코드 상수가 아니라 root 소유 JSON registry 파일에
-있다(`docs/docker-management.md` 5.1의 `ktdctl pin` 절). trusted installer는
-`/opt/kor-travel-docker-manager` 트리를 staging→commit으로 **통째 교체**하므로,
+있다(`docs/docker-management.md` 5.1의 `ktdctl pin` 절). trusted installer는 설치할 때마다
+새 release 디렉터리를 만들고 `/opt/kor-travel-docker-manager` symlink를 그쪽으로 넘기므로,
 registry가 트리 안에 있으면 다음 release 설치가 회전 결과를 덮어쓴다.
 
 설치 root(`/opt/kor-travel-docker-manager`)에서 실행하면 env가 없어도 기본값이 자동으로
@@ -182,19 +182,126 @@ execution을 다시 거부한다.
 
 ## 3. 신뢰된 운영 설치와 백엔드 (FastAPI, uvicorn :12901)
 
-운영 설치는 외부 `get-pip.py`와 비고정 `pip install -e .`를 사용하지 않는다. 먼저 운영 호스트
-밖에서 원하는 **머지된 commit의 clean git checkout**을 준비하고, 운영 호스트에는 root 소유·권한
-제한된 오프라인 wheelhouse를 준비한다. 그 뒤 저장소의 trusted installer가 archive·wheelhouse
-무결성·`.env` 권한을 확인하고 `/opt/kor-travel-docker-manager`에 설치한다.
+운영 설치는 외부 `get-pip.py`와 비고정 `pip install -e .`를 쓰지 않는다. 운영 호스트에 설치할
+**머지된 commit**을 가진 source clone과 root 소유 오프라인 wheelhouse(§3.1)를 두고, 그 clone의
+`scripts/install-ktdm-trusted-release`를 root로 실행한다(ADR-51 D).
+
+설치 root `/opt/kor-travel-docker-manager`는 현재 release를 가리키는 **상대 symlink**이고, release는
+`/opt/ktdm-release-<sha40>/`(root 0755)다. 경로 문자열이 그대로라 launcher·systemd·Map 호스트
+스크립트는 바뀌지 않는다. compose 프로젝트 루트는 이 symlink 경로 그대로 쓴다 — release 경로로
+풀리면 상대 bind가 지워질 release에 묶인다.
+
+installer가 하는 일은 이것뿐이다(순서대로).
+
+1. host 변경 lock G를 잡는다(§3.z). 다른 mutation이 돌고 있으면 기다리지 않고 종료 코드 2로 끝난다.
+   G는 설치 내내(빌드 포함 1~2분) 쥔다 — 그동안 재구축·M05·UI mutation은 거절되고, 반대로 그것들이
+   돌고 있으면 설치가 거절된다.
+2. clone에 그 commit이 있는지 본다(없으면 `git fetch` 먼저). 작업 트리는 보지 않는다 — release는
+   `git archive <sha>`로 만든다.
+3. `/opt/ktdm-release-<sha>`에 revision 표식이 없으면 처음부터 만든다. archive를 풀고 group/other
+   쓰기를 지운다(실행 비트는 git index 그대로). wheelhouse로 venv를 만들고 `ktdctl` wrapper를 쓰고
+   import를 확인한 뒤 **마지막에** `.ktdm-source-revision`을 쓴다. 표식이 있으면 그대로 다시 쓴다
+   (같은 sha 재설치·롤백).
+4. 지금의 `.env`를 새 release로 복사한다(root 0600). 모든 `.env` 쓰기는 G 아래에 있다.
+5. release의 tmpfiles 유닛(§3.z), backend 유닛, frontend 유닛(`.env`의 `KTDM_FRONTEND_*`, §4),
+   백업 logrotate(`KTDM_BACKUP_ROOT`, §3.x)를 설치하고 enable한다. 여기까지 어디서 실패해도 live는
+   그대로다.
+6. `ktdm-backend`를 멈추고 symlink를 넘기고 다시 띄운 뒤 `/health`를 60초 기다린다. 멈춘 뒤 넘기는
+   이유는 실행 중인 backend가 새 release의 모듈을 섞어 읽지 않게 하려는 것이다. 프론트엔드는
+   재기동하지 않는다(§4).
+7. 건강하면 새 release와 직전 release만 남기고 다른 `/opt/ktdm-release-*`를 지운다.
+
+```bash
+SHA=<exact-40-hex-merged-commit>
+CLONE=/home/<operator>/ktdm-release-${SHA:0:7}        # 운영자 소유 clone
+[ -d "$CLONE/.git" ] || git clone -q --no-checkout \
+  https://github.com/digitie/kor-travel-docker-manager.git "$CLONE"
+git -C "$CLONE" fetch -q origin && git -C "$CLONE" checkout -q -f "$SHA"
+sudo "$CLONE/scripts/install-ktdm-trusted-release" --expected-source-revision "$SHA" "$CLONE"
+```
+
+실행되는 installer는 clone 작업 트리의 것이다 — 설치할 commit을 checkout한 뒤 그 installer를
+돌린다. 기본 wheelhouse는 `/var/lib/kor-travel-docker-manager/wheelhouse`이고, 다른 경로는
+`--wheelhouse`로 준다. root 소유가 아니거나 group/other 쓰기가 가능한 항목이 하나라도 있으면
+거부한다. `--restart-backend`·`--allow-live`는 받되 무시한다(백엔드는 항상 재기동한다).
+`--env-file`은 없어졌다.
+
+설치 뒤 확인과 실행 레지스트리 반영:
+
+```bash
+readlink /opt/kor-travel-docker-manager                       # ktdm-release-<sha>
+sudo cat /opt/kor-travel-docker-manager/.ktdm-source-revision
+systemctl is-active ktdm-backend && curl -fsS http://127.0.0.1:12901/health
+sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin rebind-execution \
+  --expected-manager-revision "$SHA" --reason "manager install $SHA" --confirm
+sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin verify; echo $?   # 0
+```
+
+**롤백은 옛 sha를 다시 설치하는 것이다.** 지금 clone의 installer로 옛 sha를 설치한다. 직전 release는
+남아 있으므로 빌드 없이 표식을 재사용하고, 지금의 `.env`를 앞으로 복사하고, 그 release의 유닛을
+다시 설치한다.
+
+```bash
+sudo "$CLONE/scripts/install-ktdm-trusted-release" --expected-source-revision "$OLD_SHA" "$CLONE"
+```
+
+- **손으로 symlink를 넘기지 않는다.** 옛 release의 `.env` 사본에는 그 설치 때의 비밀·관리자 해시가
+  들어 있다.
+- 옛 sha를 checkout한 clone에서 **그 sha의 installer를 돌리지 않는다.** I-2 이전 installer는 symlink
+  레이아웃을 "deployment .env path must be canonical" 검사로 거부한다(해는 없다). I-1보다 낮게
+  내려가려면 §3.0의 역전환을 먼저 한다.
+
+**크래시 복구 상태기계는 없다.** revision 표식을 마지막에 쓰므로 표식 없는 release는 미완이고 다음
+실행이 지우고 다시 만든다. flip 전에 멈추면 live는 그대로이고, 같은 명령을 다시 돌리면 된다. flip
+뒤 `/health`가 오지 않으면 installer는 롤백 명령을 출력하고 종료 코드 1로 끝난다.
+
+### 3.0 한 번뿐인 레이아웃 전환 (평평한 설치본 → release symlink)
+
+새 installer는 `/opt/kor-travel-docker-manager`가 symlink가 아니면 거부한다. 옛 installer가 만든
+평평한 설치본은 아래 수동 절차로 **한 번** 옮긴다. 전제는 설치본이 I-1(ADR-51 D의 소비자 이전)
+이상이라는 것이다 — I-1 전 코드는 symlink 설치 root를 거부한다.
+
+```bash
+SHA=$(sudo cat /opt/kor-travel-docker-manager/.ktdm-source-revision)
+sudo test ! -e /var/lib/kor-travel-docker-manager/trusted-release-transaction.json
+test ! -e /opt/.kor-travel-docker-manager.stage -a ! -e /opt/.kor-travel-docker-manager.rollback
+test -d /opt/kor-travel-docker-manager -a ! -L /opt/kor-travel-docker-manager -a ! -e "/opt/ktdm-release-$SHA"
+sudo systemctl stop ktdm-backend
+sudo bash -euc 'umask 077; exec 9>>/run/lock/kor-travel-docker-manager/global-mutation.lock; umask 022
+  flock -n 9
+  mv -T /opt/kor-travel-docker-manager "/opt/ktdm-release-$1"
+  ln -s "ktdm-release-$1" /opt/kor-travel-docker-manager' _ "$SHA"
+sudo systemctl start ktdm-backend
+```
+
+- `umask 077`은 필수다. 재부팅 뒤 lock 파일이 없을 때 0644로 생기면 다른 획득자가 0600·nlink 1이
+  아니라며 재부팅 전까지 모든 mutation을 거부한다.
+- 컨테이너는 건드리지 않는다. 이미 붙은 bind는 inode를 쥐고 있어 그대로 돌고, bind 문자열
+  (`/opt/kor-travel-docker-manager/...`)도 바뀌지 않는다.
+- 확인: `readlink /opt/kor-travel-docker-manager`, `/health`, `ktdctl pin verify` 0, M05 launcher
+  preflight, 같은 pair 수렴(`run-pinned-rebuild-once`)에서 컨테이너 재생성 0.
+
+역전환(평평한 설치본으로 되돌리기 — 옛 installer로 I-1 아래로 내려갈 때만):
+
+```bash
+sudo systemctl stop ktdm-backend
+sudo bash -euc 'umask 077; exec 9>>/run/lock/kor-travel-docker-manager/global-mutation.lock; umask 022
+  flock -n 9
+  T=$(readlink /opt/kor-travel-docker-manager); rm /opt/kor-travel-docker-manager
+  mv -T "/opt/$T" /opt/kor-travel-docker-manager'
+sudo systemctl start ktdm-backend
+```
 
 ### 3.1 Debian `poetry-core` build dependency를 포함한 wheelhouse 발행
 
-trusted installer는 source의 backend wheel을 먼저 오프라인 build하므로, wheelhouse에는 runtime
-wheel뿐 아니라 build backend인 `poetry-core`도 있어야 한다. 운영 호스트에 이미 root-owned
-`/opt/kor-travel-docker-manager/.wheelhouse`가 있고 target destination이 아직 없을 때만 destination을
-**한 번** 발행한다. 이 최초 bootstrap에서는 user-owned source checkout의 파일을 `sudo`가 직접
+trusted installer는 source의 backend를 오프라인으로 build해 설치하므로, wheelhouse에는 runtime
+wheel뿐 아니라 build backend인 `poetry-core`도 있어야 한다. 이미 발행된 root-owned wheelhouse가
+있으면 그대로 쓴다(n150). 새로 발행할 때는 root 소유 원본 wheelhouse(`--source-wheelhouse`, 필수)가
+있고 target destination이 아직 없을 때만 destination을 **한 번** 발행한다 — 옛 installer가 설치본 안에
+남기던 `.wheelhouse`는 ADR-51 D(I-2)부터 만들어지지 않는다.
+이 최초 bootstrap에서는 user-owned source checkout의 파일을 `sudo`가 직접
 실행해서는 안 된다. 먼저 root operator가 out-of-band release attestation으로 exact merged commit과
-각 tool의 SHA-256을 승인하고, 아래처럼 exact Git blob을 root-owned temporary file로 복사·hash 검증한
+provisioning tool의 SHA-256을 승인하고, 아래처럼 exact Git blob을 root-owned temporary file로 복사·hash 검증한
 뒤에만 실행한다.
 
 ```bash
@@ -202,7 +309,6 @@ wheel뿐 아니라 build backend인 `poetry-core`도 있어야 한다. 운영 �
 SOURCE_ROOT=<absolute-clean-checkout>
 SOURCE_COMMIT=<exact-40-hex-merged-commit>
 PROVISION_SCRIPT_SHA256=<attested-sha256-of-provision-script>
-INSTALLER_SCRIPT_SHA256=<attested-sha256-of-installer-script>
 ROOT_STAGE_PARENT=/var/lib/kor-travel-docker-manager/trusted-tool-bootstrap
 WHEELHOUSE_DESTINATION="/var/lib/kor-travel-docker-manager/wheelhouse-${SOURCE_COMMIT:0:12}"
 
@@ -241,20 +347,16 @@ stage_merged_tool() {
 }
 
 STAGED_PROVISION=''
-STAGED_INSTALLER=''
 cleanup_staged_tools() {
   [[ -z "${STAGED_PROVISION}" ]] || sudo -n /usr/bin/rm -f -- "${STAGED_PROVISION}"
-  [[ -z "${STAGED_INSTALLER}" ]] || sudo -n /usr/bin/rm -f -- "${STAGED_INSTALLER}"
 }
 trap cleanup_staged_tools EXIT
 STAGED_PROVISION="$(stage_merged_tool \
   scripts/provision-ktdm-offline-wheelhouse.py "${PROVISION_SCRIPT_SHA256}")"
-STAGED_INSTALLER="$(stage_merged_tool \
-  scripts/install-ktdm-trusted-release "${INSTALLER_SCRIPT_SHA256}")"
 
 sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
   /usr/bin/python3 -I -S "${STAGED_PROVISION}" \
-  --source-wheelhouse /opt/kor-travel-docker-manager/.wheelhouse \
+  --source-wheelhouse <root-owned-source-wheelhouse> \
   --destination-wheelhouse "${WHEELHOUSE_DESTINATION}"
 ```
 
@@ -262,8 +364,8 @@ sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C
 root-owned/non-writable인지, Debian `python3-poetry-core`가 설치됐고 `dpkg --verify`가 깨끗한지를
 확인한 뒤 설치된 Debian package에서 pure-Python `poetry_core-<version>-py3-none-any.whl`를 만든다.
 발행 directory에는 source wheel SHA와 생성 wheel SHA만 담은 비밀 비포함 provenance manifest가 함께
-생기며, temporary directory를 fsync한 뒤 atomic publish한다. 이 manifest는 발행 시점의 audit record이며
-installer의 wheel snapshot 자체를 대체하지 않는다. 기존 destination을 덮어쓰지 않고, crash 뒤 남은
+생기며, temporary directory를 fsync한 뒤 atomic publish한다. 이 manifest는 발행 시점의 audit record다.
+기존 destination을 덮어쓰지 않고, crash 뒤 남은
 `.wheelhouse.stage.*` 또는 이미 있는 destination이 있으면 자동 삭제·재발행하지 않고 중단해 조사한다.
 source wheelhouse에 filename·version·대소문자가 무엇이든 `poetry-core` candidate가 이미 있으면 Debian
 provenance wheel과 pip 선택이 섞이지 않도록 역시 중단한다.
@@ -277,45 +379,21 @@ wheel을 인터넷에서 내려받거나, home/user-writable 경로에서 복사
 수정해서는 안 된다. `dpkg --verify` 실패, package metadata 불일치, source/destination 권한 drift도
 모두 installer 재시도보다 먼저 해결해야 할 fail-close 조건이다.
 
-```bash
-# 위에서 hash 대조해 root staging한 installer만 실행한다. source checkout은 code 실행 입력이 아니다.
-sudo -n /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
-  /usr/bin/bash "${STAGED_INSTALLER}" \
-  --env-file /opt/kor-travel-docker-manager/.env \
-  --wheelhouse "${WHEELHOUSE_DESTINATION}" \
-  --expected-source-revision "${SOURCE_COMMIT}" \
-  "${SOURCE_ROOT}"
-```
+새 destination을 발행했으면 installer에 `--wheelhouse "${WHEELHOUSE_DESTINATION}"`로 넘긴다.
 
-installer는 `--no-index` wheelhouse에서 `backend/.venv`를 만들고 `ktdctl`을 설치한다. `.env`는
-installer가 새로 전달하지 않으며 운영 호스트에서 별도로 준비한 canonical 파일을 사용한다. 백엔드는
-그 루트 `.env`를 로드해 `KTDM_CORS_ALLOW_ORIGINS`와 `KTDM_PROD_URL_*`를 적용한다.
+### 3.2 백엔드 서비스
 
-installer는 `/opt/kor-travel-docker-manager` 트리를 통째로 교체하고 구 트리를 삭제한다.
-그 트리에서 서비스가 실행 중이면 설치 순간부터 재기동까지 반파손 상태로 돈다(특히 Next.js는
-route 번들을 요청 시점에 lazy 해석한다). 그래서 installer는 **APP_ROOT 트리에서 실행 중인
-프로세스(cwd·exe·open fd 기준)를 preflight로 탐지해 fail-close**한다 — 먼저 서비스를
-중지(`sudo systemctl stop ktdm-backend ktdm-frontend`)하는 것이 표준 순서다. 위험을 감수하고
-실행 중 교체를 강행하려면 `--allow-live`를 준다. 설치 뒤 백엔드를 곧바로 올리려면
-`--restart-backend`를 함께 주면 commit 직후 `systemctl restart ktdm-backend`가 수행된다
-(프론트엔드는 clean checkout이라 아래 §4의 build가 선행돼야 하므로 자동화하지 않는다).
-
-백엔드는 systemd 유닛으로 구동한다. installer가 `deploy/systemd/ktdm-backend.service`를
-`/etc/systemd/system/`에 설치·enable하므로(재기동은 하지 않는다), **설치 직후에는 옛
-코드가 계속 돌고 있다** — 새 release 반영은 명시적 재기동이다:
+백엔드는 systemd 유닛(`deploy/systemd/ktdm-backend.service`)으로 돈다. installer가 설치·enable하고
+설치 때마다 재기동한다. 재부팅·크래시 복구는 systemd가 소유한다(`Restart=always`). 로그는
+journald(`journalctl -u ktdm-backend`)가 정본이다. 백엔드 자체의 월간 로테이션 파일
+(`backend/logs/`)은 release 안에 있으므로 그 release가 지워질 때 함께 사라진다.
 
 ```bash
-sudo systemctl restart ktdm-backend
 sudo systemctl status ktdm-backend --no-pager   # active (running) 확인
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:12901/health   # 200
 ```
 
-재부팅·크래시 복구는 systemd가 소유한다(`Restart=on-failure`, enable됨). 로그는
-journald(`journalctl -u ktdm-backend`)와 백엔드 자체의 월간 로테이션 파일
-(`backend/logs/`) 양쪽에 남는다 — 과거의 `/tmp` 로그는 tmpfs라 재부팅(진단이 가장
-필요한 순간) 직후 증발했다.
-
-유닛이 아직 없는 호스트(첫 설치 전, rehearsal 등)의 폴백만 nohup을 쓴다:
+유닛이 아직 없는 호스트(rehearsal 등)의 폴백만 nohup을 쓴다:
 
 ```bash
 cd /opt/kor-travel-docker-manager/backend
@@ -382,9 +460,8 @@ mutator, 재구축·M05·installer launcher가 전부 같은 lock이다(일부�
 `$HOME/.local/state/...` 개발 lock은 비root 개발용 `local`에만 남는다. 경로 override
 (`KTDM_C6C_DEPLOYMENT_LOCK`)는 ADR-51 C-3에서 없앴다.
 
-G를 잡는 backend는 root여야 한다(디렉터리 `0700 root:root`). 설치 뒤에는
-`sudo systemctl restart ktdm-backend`를 곧바로 한다 — 재기동 전의 backend는 rehearsal에서
-여전히 `$HOME` lock을 잡는다.
+G를 잡는 backend는 root여야 한다(디렉터리 `0700 root:root`). installer는 설치할 때마다 backend를
+재기동하므로 옛 코드의 backend가 옛 lock을 잡은 채 남지 않는다.
 
 재구축도 G 하나만 잡는다 — 따로 잡던 `pinned-runtime-rebuild.lock`(P)은 ADR-51 C-3에서
 없앴다. launcher가 G를 쥐고 fd를 물려주면 `rebuild-pinned`는 그 fd를 검증해 그대로 쓴다.
@@ -399,25 +476,19 @@ Debian 계열의 `/run/lock`은 `1777` sticky다(n150 실측 `drwxrwxrwt root:ro
 **이 창은 코드로 닫히지 않는다.** 런타임 검증을 아무리 조여도 "먼저 만든 쪽이 이긴다"는
 성질은 남는다. 부팅 시점에 이미 존재하게 만드는 것만이 닫는다.
 
-`scripts/install-ktdm-trusted-release`가 설치 말미에 아래를 자동으로 수행한다. 사람이
-기억해야 하는 절차가 아니다.
+`scripts/install-ktdm-trusted-release`가 설치할 때마다 아래를 자동으로 수행한다(flip 전 — 실패하면
+설치가 멈추고 live는 그대로다). 사람이 기억해야 하는 절차가 아니다.
 
 ```bash
-install -o root -g root -m 0644 \
-  /opt/kor-travel-docker-manager/deploy/tmpfiles.d/kor-travel-docker-manager.conf \
+install -T -o root -g root -m 0644 \
+  /opt/ktdm-release-<sha>/deploy/tmpfiles.d/kor-travel-docker-manager.conf \
   /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
 ```
 
-실패하면 release는 유지한 채 `host lease boot provisioning requires attention`을 stderr로
-보고한다. **installer의 종료 코드는 release 설치 결과만 나타낸다** — lease provisioning
-실패는 종료 코드에 반영되지 않으므로, 자동화는 stderr 또는 아래 확인 명령으로 판단한다.
-
-installer는 **시작 시점에도** 이미 설치된 유닛이 있으면 한 번 적용한다. 설치 절차의 첫
-단계가 이 lease를 잡는 것이라, 선점된 호스트에서는 구제책(맨 끝의 유닛 설치)이 자신이
-막으려는 실패 뒤에 갇히기 때문이다. 유닛이 한 번이라도 설치된 호스트는 이 조기 적용으로
-스스로 복구되고, 최초 설치 호스트는 preflight 오류가 실측 소유자·mode와 복구 명령을
-함께 보고한다.
+installer 자신도 G를 잡기 전에 `install -d -o root -g root -m 0700`으로 이 디렉터리를 바로잡는다.
+선점된 호스트에서 심어 둔 lock 파일은 소유자·mode·nlink 검사가 거부하므로 설치가 멈춘다 — 아래
+`ls -la`로 보고 root로 지운 뒤 다시 돌린다.
 
 설치 뒤 확인:
 
@@ -429,8 +500,7 @@ sudo ls -la /run/lock/kor-travel-docker-manager     # -ld가 아니라 -la로 �
 `ls -la`인 이유: tmpfiles의 `d` 타입은 기존 디렉터리의 **소유자와 mode만 바로잡고 내용은
 지우지 않는다.** 이미 선점된 호스트에서 `--create`를 돌리면 디렉터리는 `drwx------ root
 root`로 깨끗해 보이지만 침입자가 심어 둔 파일이 남는다. lock fd 검증(`st_uid == 0`,
-`nlink == 1`, `0600`)이 fail-close로 잡고 installer도 root 아닌 항목을 발견하면 보고하지만,
-눈으로도 확인한다.
+`nlink == 1`, `0600`)이 fail-close로 잡지만, 눈으로도 확인한다.
 
 설치 직후 정상 상태는 **빈 디렉터리**다. tmpfiles는 디렉터리만 만든다.
 
@@ -458,14 +528,12 @@ ADR-51 C-3 이전 release가 남긴 `pinned-runtime-rebuild.lock`이 보일 수 
 트리도 installer도 없다. 그런 호스트에서는 위 두 명령을 저장소 체크아웃에서 한 번 직접
 실행한다. 유닛 자체는 release와 무관하므로 재설치할 필요가 없다.
 
-**`/opt/kor-travel-docker-manager` 밖에 남는 설치 산출물**(release rollback이 되돌리지
-않는 것들): `/etc`의 세 파일 — 이 tmpfiles 유닛,
+**release 밖에 남는 설치 산출물**: `/etc`의 세 파일 — 이 tmpfiles 유닛,
 `/etc/systemd/system/ktdm-backend.service`·`ktdm-frontend.service`(3절·4절),
 `/etc/logrotate.d/kor-travel-docker-manager`(백업 로그 로테이션, `KTDM_BACKUP_ROOT` 선언
 시) — 과 `/var/lib`의 상태 트리 — `/var/lib/kor-travel-docker-manager`(state root·
-registry·archive)와 `/var/lib/kor-travel-docker-manager-requests`(회전 요청). 이전
-release로 내려가도 이들은 그대로 남고 다음 설치가 갱신한다(state/registry는 의도된
-영속 상태다). tmpfiles 유닛을 완전히 제거하려면 다음과 같이 한다.
+registry)와 `/var/lib/kor-travel-docker-manager-requests`(회전 요청). `/etc`의 세 파일은
+설치할 때마다(롤백 설치 포함) 그 release에서 다시 쓴다. state/registry는 의도된 영속 상태다. tmpfiles 유닛을 완전히 제거하려면 다음과 같이 한다.
 
 ```bash
 sudo rm -f /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf

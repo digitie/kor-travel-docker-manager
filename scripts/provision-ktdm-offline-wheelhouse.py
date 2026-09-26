@@ -32,9 +32,6 @@ from email.policy import default
 from pathlib import Path
 from typing import Final
 
-_DEFAULT_SOURCE_WHEELHOUSE: Final = Path(
-    "/opt/kor-travel-docker-manager/.wheelhouse"
-)
 _DEFAULT_DESTINATION_WHEELHOUSE: Final = Path(
     "/var/lib/kor-travel-docker-manager/wheelhouse"
 )
@@ -114,10 +111,12 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Debian poetry-core로 root-owned offline wheelhouse를 발행한다."
     )
+    # 기본값이 없다. 옛 installer가 설치본 안에 남기던 `.wheelhouse`는 ADR-51 D(I-2)부터
+    # 만들어지지 않는다 — 운영자가 root 소유 원본을 명시한다(보통 이미 발행된 wheelhouse).
     parser.add_argument(
         "--source-wheelhouse",
         type=Path,
-        default=_DEFAULT_SOURCE_WHEELHOUSE,
+        required=True,
     )
     parser.add_argument(
         "--destination-wheelhouse",

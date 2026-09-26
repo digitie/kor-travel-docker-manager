@@ -3731,3 +3731,43 @@ Map이 M1(`51ee65d4c`, ADR-102)을 포함하는 것이다 — M1 이후 storage 
 - **되돌림 하한**: I-1 이하 어디로든 옛 설치기로 되돌릴 수 있다(평평한 레이아웃). 레이아웃 전환 뒤에는 옛
   설치기가 "canonical .env path" 검사로 해 없이 거부하므로, 그 아래로 가려면 전환을 먼저 되돌린다
   (`prod-deployment.md`에 I-2와 함께 적는다).
+
+### NOTE: D(설치기) I-2 — 설치기를 release 디렉터리와 symlink로 다시 썼다, D 완료 (2026-09-27, I-2)
+
+I-1과 한 번뿐인 레이아웃 전환(`prod-deployment.md` §3.0) 뒤에 설치기를 다시 썼다. 1,887줄이 172줄(주석·빈
+줄 제외 131줄)이 됐다.
+
+- **하는 일**: G를 잡는다 → clone에 그 commit이 있는지 본다 → `/opt/ktdm-release-<sha>`에 revision 표식이
+  없으면 `git archive <sha>`를 풀고 `chmod -R go-w`, 오프라인 wheelhouse로 venv, `ktdctl` wrapper(설치 root
+  경로 shebang + `KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT`), import 확인, 마지막에 표식 → 지금 `.env`를 복사 →
+  tmpfiles·backend·frontend 유닛·logrotate를 그 release에서 설치 → backend stop → symlink flip → start →
+  `/health` 60초 → 직전 release 하나만 남기고 GC. flip 전 실패는 live를 건드리지 않는다.
+- **롤백은 옛 sha 재설치다.** 표식이 있는 release는 빌드 없이 재사용하고 지금 `.env`를 앞으로 복사한다. 손으로
+  symlink를 넘기면 옛 `.env` 사본(옛 비밀·관리자 해시)이 살아나므로 문서로 금지한다. `.env`를 공유 symlink로
+  두지 않은 이유는 관리자 비밀번호 재작성(`O_NOFOLLOW`), legacy retirement(`nlink 1`·`0600`), 재구축의
+  `ENV_FILE == root/.env`가 모두 실제 파일을 요구하기 때문이다.
+- **지운 것(D의 잃는 보장)**:
+  - `.env` identity: 스냅샷·fd 재실행·단계별 대조·fd 복사. 모든 `.env` 쓰기가 G 아래에 있으므로(C-2) G 아래의
+    `cp -p` 하나로 대체했다.
+  - RECORD digest: `ktdctl` RECORD 행 갱신과 설치 감사·release manifest(`.ktdm-release-manifest.json`). 읽는
+    쪽은 I-1에서 이미 옮겼다.
+  - dev/ino: wheelhouse 스냅샷, lock fd 재검증(ADR-41 결정 2의 설치기 적용분), 앱 트리 신원·신원 기반 삭제.
+  - crash-reconcile 상태기계(`trusted-release-transaction.json`, stage/rollback 디렉터리, trap). 표식을 마지막에
+    쓰고 같은 sha를 다시 돌리는 것이 복구다.
+  - 백엔드 재시작 지연 옵션. 항상 stop → flip → start다. `--restart-backend`·`--allow-live`는 호환을 위해
+    받되 무시하고, `--env-file`은 없앴다.
+- **D 목록에 이름은 없지만 함께 지운 것**: `/proc` 실행 중 프로세스 스캔(실행 중인 트리를 옮기거나 지우지
+  않는다), lock 전 tmpfiles 자가 복구(`install -d`로 대체), 설치기가 방금 만든 트리에 대한 root 대 root 검사와
+  `systemd-analyze verify` 필터, lease 디렉터리 감사(결정 3), 0755 `chmod` 목록과 `bindings.md` B-1(git index가
+  유일한 정본이 됐다), clean checkout 검사(`archive <sha>`라 결과와 무관), 설치본 안의 `.wheelhouse` 산출물 —
+  그래서 `provision-ktdm-offline-wheelhouse.py`의 `--source-wheelhouse`는 이제 필수다.
+- **남긴 것**: G(`umask 077`로 만들고 `0:600:1` 확인, 경합이면 종료 코드 2), state·request 디렉터리(request
+  소유권은 처음에만 정한다), 정확한 sha, 오프라인 wheelhouse(root 소유·group/other 쓰기 금지 한 줄), `ktdctl`
+  wrapper, tmpfiles(ADR-41 결정 1)·systemd·logrotate와 그 `.env` 값 검증(비root 계정, 안전한 절대 경로).
+- **바뀐 운영 성질**: G를 설치 내내(빌드 포함 1~2분) 쥔다 — 그동안 재구축·M05·UI mutation이 거절되고, 반대도
+  같다. 설치는 항상 backend를 재기동하므로 G 밖에서 도는 UI 백업 job이 끊길 수 있다(옛 `--restart-backend`와
+  같다). `backend/logs/`는 release 안에 있어 GC 때 사라진다(journald가 정본). 설치 root 밖에 남는 옛 설치기
+  산출물(`/var/lib/kor-travel-docker-manager/trusted-release-tools-*`·`trusted-tool-bootstrap*`)은 아무것도
+  읽지 않는다.
+- **되돌림 하한**: I-1이다. 새 installer로 I-1을 설치하면 표식이 있는 레이아웃 전환 release를 재사용한다. 그
+  아래는 §3.0 역전환 뒤 옛 installer로 간다. C-3 NOTE가 남겨 둔 "installer 자체 lock 코드"는 이것으로 끝났다.

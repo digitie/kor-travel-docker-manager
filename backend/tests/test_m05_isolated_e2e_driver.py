@@ -3631,52 +3631,6 @@ def test_source_pair_preflight_binds_the_committed_deploy_status(
 
 
 
-def test_installer_executable_set_mirrors_the_git_index() -> None:
-    """설치본의 실행 비트는 **두 곳**이 정한다 — git index와 설치 스크립트다.
-
-    설치 스크립트는 archive의 mode를 신뢰하지 않고 전부 0644로 정규화한 뒤
-    명시 목록만 0755로 되돌린다(trusted install posture, 옳다). 그래서 index에서
-    executable이어도 그 목록에 없으면 설치본에서는 아니다.
-
-    2026-09-02에 `rotate-pinned-pair`가 정확히 그렇게 무효가 됐다 — 파일은 있고
-    index는 `100755`인데 설치본은 `-rw-r--r--`였고, launcher는 조용히 실행되지
-    않았다. 이중 선언을 없애지는 않는다(posture가 그 명시성을 요구한다).
-    대신 **index를 정본으로 삼아 미러를 강제한다.**
-    """
-
-    import re
-    import subprocess
-
-    root = Path(__file__).resolve().parents[2]
-    listed = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "-s", "--", "scripts"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    indexed = {
-        line.split("	", 1)[1].rsplit("/", 1)[-1]
-        for line in listed.splitlines()
-        if line and line.split(" ", 1)[0] == "100755"
-    }
-    assert indexed, "index에 executable script가 없다 — 이 검사가 공허해졌다"
-
-    installer = (root / "scripts/install-ktdm-trusted-release").read_text(
-        encoding="utf-8"
-    )
-    granted = set(
-        re.findall(
-            r'chmod 0755 "\$\{STAGING\}/scripts/([^"]+)"',
-            installer,
-        )
-    )
-
-    assert granted == indexed, (
-        "설치 스크립트의 0755 목록이 git index와 다르다 — "
-        f"목록에만: {sorted(granted - indexed)}, index에만: {sorted(indexed - granted)}"
-    )
-
-
 def _v2_pair_entry(raw: bytes) -> dict[str, str]:
     """v2 엔트리 — `source_revision`이 **없다**."""
 

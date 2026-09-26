@@ -276,3 +276,17 @@ def test_source_snapshot_refuses_any_normalized_poetry_core_candidate(
 
     with pytest.raises(provision.ProvisionError, match="already supplies"):
         provision._snapshot_wheels(source)
+
+
+def test_source_wheelhouse_must_be_named_explicitly() -> None:
+    """옛 installer가 설치본 안에 남기던 `.wheelhouse`는 ADR-51 D(I-2)부터 없다.
+
+    그 자리를 기본값으로 두면 도구가 존재하지 않는 경로를 원본으로 삼는다.
+    """
+
+    provision = _module()
+
+    with pytest.raises(SystemExit):
+        provision._parse_arguments([])
+    parsed = provision._parse_arguments(["--source-wheelhouse", "/var/lib/source"])
+    assert parsed.source_wheelhouse == Path("/var/lib/source")

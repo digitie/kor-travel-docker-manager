@@ -268,8 +268,9 @@ ktdctl pin clear-pending --request-id <id> --confirm
 
 - **경로**: 설치 root(`/opt/kor-travel-docker-manager`)에서 실행하면 기본값이 자동으로
   배포 트리 밖(`/var/lib/kor-travel-docker-manager/`)을 가리킨다. trusted installer는
-  트리를 staging→commit으로 통째 교체하므로 registry가 트리 안에 있으면 다음 release
-  설치가 회전 결과를 조용히 덮어쓰기 때문이며, **트리 안 경로로의 회전은 거부된다**.
+  설치할 때마다 새 release 디렉터리로 설치 root symlink를 넘기므로 registry가 트리 안에
+  있으면 다음 release 설치가 회전 결과를 조용히 덮어쓰기 때문이며, **트리 안 경로로의
+  회전은 거부된다**.
   저장소의 `config/runtime-pins.seed.json`은 추적되는 **읽기 전용 seed**이고 회전 대상이
   아니다. 운영 registry와 `runtime-pins.<digest>.json` 보존본은 백업 대상에 등재한다.
 - **파일 무결성**: 읽을 때마다 `lstat`으로 일반 파일·소유자(root 또는 자기 자신)·
