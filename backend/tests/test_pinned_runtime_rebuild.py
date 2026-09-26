@@ -3094,17 +3094,17 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
     create_database.assert_not_called()
 
 
-@pytest.mark.parametrize("fail_at_commit", (False, True))
-def test_generation_companions_ride_every_runtime_step_through_commit(
-    fail_at_commit: bool,
-    tmp_path: Path,
+def _companion_resume_harness(
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """companion이 PinVi 기동·최종 readiness·이미지 결박·C6c 검사·실패 정리·
-    committed 재개에 전부 실리는지 본다.
+    tmp_path: Path,
+    *,
+    start_phase: RebuildPhase,
+    fail_at_commit: bool = False,
+) -> SimpleNamespace:
+    """저장된 journal에서 재개하는 재구축을 실제 오케스트레이션 그대로 돌리는 대역.
 
-    t56e~t56h는 호출 하나에서 companion이 빠진 것만으로 Map code-server가 한 번도
-    뜨지 않았다. 호출처 하나를 지우면 이 테스트의 단언 하나가 깨져야 한다.
+    compose 호출, readiness 요청, 이미지 조회 label, C6c 검사 대상을 기록한다. DB와
+    docker는 대역이고 head는 후보 head를 그대로 돌려준다.
     """
 
     values = {
@@ -3122,7 +3122,7 @@ def test_generation_companions_ride_every_runtime_step_through_commit(
         "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
         "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
     }
-    journal = _journal_at_runtime_phase("cancel_probe_finalized")
+    journal = _journal_at_runtime_phase(start_phase)
     image_ids = journal.candidate.image_ids
     companion_owners = {
         "kor-travel-map-dagster-code-server": "kor-travel-map-dagster",
@@ -3280,6 +3280,44 @@ def test_generation_companions_ride_every_runtime_step_through_commit(
     }.items():
         monkeypatch.setattr(service, name, replacement)
 
+    return SimpleNamespace(
+        service=service,
+        state_paths=state_paths,
+        operations=operations,
+        readiness_requests=readiness_requests,
+        image_labels=image_labels,
+        inspected_services=inspected_services,
+        companion_owners=companion_owners,
+    )
+
+
+@pytest.mark.parametrize("fail_at_commit", (False, True))
+def test_generation_companions_ride_every_runtime_step_through_commit(
+    fail_at_commit: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """companion이 PinVi 기동·최종 readiness·이미지 결박·C6c 검사·실패 정리·
+    committed 재개에 전부 실리는지 본다.
+
+    t56e~t56h는 호출 하나에서 companion이 빠진 것만으로 Map code-server가 한 번도
+    뜨지 않았다. 호출처 하나를 지우면 이 테스트의 단언 하나가 깨져야 한다.
+    """
+
+    harness = _companion_resume_harness(
+        monkeypatch,
+        tmp_path,
+        start_phase="cancel_probe_finalized",
+        fail_at_commit=fail_at_commit,
+    )
+    service = harness.service
+    state_paths = harness.state_paths
+    operations = harness.operations
+    readiness_requests = harness.readiness_requests
+    image_labels = harness.image_labels
+    inspected_services = harness.inspected_services
+    companion_owners = harness.companion_owners
+
     companion_names = tuple(sorted(companion_owners))
     stop = ("stop", *RUNTIME_SERVICES, *companion_names)
     wait = ("up", "-d", "--no-deps", "--wait", "--wait-timeout", _WAIT_TIMEOUT)
@@ -3338,6 +3376,36 @@ def test_generation_companions_ride_every_runtime_step_through_commit(
     assert set(companion_names) <= set(image_labels)
     assert inspected_services == [runtime_with_companions]
     assert not any(operation[0] in {"stop", "up"} for operation in operations)
+
+
+def test_storage_oneshot_without_receipt_advances_when_the_observed_head_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """storage one-shot의 성공 판정은 Manager가 직접 읽은 head 하나다(ADR-51 PR-A).
+
+    이 판정의 **성공 경로**를 지나는 테스트가 없으면, 비교 대상을 다른 head로 바꾸는
+    변이가 전 스위트를 통과하고 배포에서만 모든 재구축이 `uncertain`에 멈춘다.
+    """
+
+    harness = _companion_resume_harness(
+        monkeypatch,
+        tmp_path,
+        start_phase="map_dagster_storage_intent_durable",
+    )
+    monkeypatch.setattr(
+        harness.service,
+        "_ensure_pinvi_fresh_migration_fence",
+        Mock(side_effect=DeploymentContractError("stop after Map runtime startup")),
+    )
+
+    with pytest.raises(DeploymentContractError, match="stop after Map runtime startup"):
+        harness.service.rebuild_pinned_runtime()
+
+    storage = ("run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate")
+    assert harness.operations.count(storage) == 1
+    # 영수증 없이(빈 stdout) 끝난 one-shot 뒤 head가 맞으면 Map 런타임까지 간다.
+    assert read_rebuild_journal(harness.state_paths.journal).phase == "map_runtime_ready"
 
 
 def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
