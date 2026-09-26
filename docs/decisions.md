@@ -3467,3 +3467,79 @@ API)과 `12105`(RustFS console) 사이의 빈 자리라 다른 서비스와의 �
 - host network 모드에서는 `ports:`가 방화벽 경계가 아니다. 운영자는 새 포트
   `12102`/`12103`/`12104`가 기존 관측 포트와 같은 방화벽 노출 정책을 갖는지 별도로
   확인한다. 외부 노출을 바꾸는 것은 이 포트 이전과 분리된 보안 변경으로 다룬다.
+
+## ADR-51: 배포는 마이그레이션 전진이다 — 자동 리셋을 없애고, 재구축 상태기계와 봉인·신뢰 릴리스 결박을 걷어낸다
+
+- 상태: accepted
+- 날짜: 2026-09-26
+- 결정자: 사용자(잃는 보장 목록 전체 승인, "마이그레이션 전진", 쌍 preflight 게이트 유지,
+  M05 유지, rebuildable 유지, `--restart` 전 백업 강제 안 함), Claude
+- 관련: ADR-50의 미해결 첫 항목을 푼다. ADR-34·39·46의 "데이터 보존 없음" 전제와 ADR-40의
+  pinset 영구 차단 부분을 supersede한다. 건너편은 kor-travel-map ADR-102다. ADR-49는 결번으로
+  둔다.
+
+### 컨텍스트
+
+pinned-runtime 재구축은 새 pinset마다 Map·PinVi DB를 지우고 다시 만든다. 그 위에 phase 스물,
+receipt·intent 여럿, 재개 규칙, pinset별 v8 journal, 실행 레지스트리, Map storage permit이
+쌓였다. 재조사해 보니 그 대부분은 두 질문에 답하려고 존재했다 — "리셋 도중 죽으면 어디서
+재개하는가"와 "이 DB가 이번 회차에 만든 그 DB인가". 그 기계가 낸 비용은 ADR-50 목록 그대로다
+(영구 고착된 pinset, 봉인된 실패, 탈출구가 새 커밋뿐인 상태).
+
+### 결정
+
+1. **자동 리셋 경로를 없앤다.** 배포는 DB를 보존하고 멱등 one-shot으로 head까지 올린다
+   (Map `alembic upgrade head` + 권한 재조정, Dagster storage one-shot, `pinvi-admin-bootstrap`).
+   DB를 지우는 길은 `ktdctl pinvi-pair rebuild-pinned --restart --reason "<사유>" --confirm`
+   하나다(rebuildable 모드에서만). 리셋 전 백업은 강제하지 않는다.
+2. **영속 상태는 전역 `deploy-status.json` 하나다** — `absent` / `in_progress` / `committed`.
+   pinset별 journal, phase, receipt, permit, 실행 증거는 없앤다. 재개는 없고 처음부터 다시 돈다
+   (모든 단계가 멱등이다). committed와 같은 pair를 다시 돌리면 빌드 없이 수렴만 한다. 상태 파일이
+   없거나 채택에 실패해도 결과는 전체 경로 한 번이지 리셋이 아니다.
+3. **기계가 강제하는 성질은 다섯이다.** (1) 이미지는 핀된 커밋에서 빌드된다(라벨 + 해시 잠금
+   의존성) (2) migration이 런타임보다 먼저 끝나고 Manager가 head를 독립으로 읽는다 (3) mutator는
+   한 번에 하나(`/run/lock` flock 하나) (4) 무엇도 자동으로 리셋되지 않는다 (5) 비밀은 출력되지
+   않고 Dagster gRPC는 loopback이다. 이 다섯을 두 번 증명하거나, 빌드 때 정해진 사실을 런타임에
+   다시 확인하거나, root 소유 상태를 root로부터 지키는 검사는 걷어낸다.
+4. **그대로 두는 것.** pinset id 공식(`canonical_pinset_sha256` 바이트 동일 — 바꾸면 committed
+   세대를 못 찾는다), 2-revision 핀 원장, Map/PinVi 쌍 계약 preflight **게이트**(회전 전),
+   M05 격리 하네스, 컨테이너별 이미지 대조(companion 포함), one-shot writer 퇴역.
+5. **C6c 보호 참조는 리터럴 표 대신 파생 규칙으로 둔다.** UI/API 사용자는 git 리뷰 없이 compose
+   env를 고친다 — in-model 행위자다. 그 후보의 (service, env key) → 보호 변수 참조는 설치된 릴리스
+   git compose의 참조의 부분집합이어야 한다. 보호 변수는 민감 키 이름이거나 값이 `.env` 비밀과 같은
+   변수다. runtime 서비스의 `env_file`은 계속 금지한다.
+6. **락은 먼저 합치고 나서 줄인다.** rehearsal 모드에서 UI mutator는 다른 락 파일을 잡는다.
+   backend API와 legacy override retirement까지 `/run/lock`의 전역 락 하나로 모은 뒤에야 pinned
+   lease와 env 파생 락을 없앤다.
+7. **호스트 스크립트는 같은 변경에서 함께 바꾼다.** chain16·repin.sh·gen_attest.py·run-d2.sh는
+   v6/v8 파일에 묶여 있다. kor-travel-map의 `scripts/n150/`로 옮겨 버전 관리한다.
+
+### 잃는 보장 (사용자 승인, 2026-09-26)
+
+- **A. journal**: 중간 재개, phase별 증거, 크래시와 재개 사이의 `.env`/compose 변경 감지.
+- **B. 실행 결박**: 막힌 pinset 28개·실행 27개의 영구 거부(경고로 바뀐다 — 알고 재배포할 수 있다),
+  Manager 리비전과 pinset의 기계 결박(기록만 남는다).
+- **C. Map storage 봉인**: DB oid·system identifier·이미지·config sha 결박, DB 안 append-only 기록,
+  매 기동 정확 catalog 대조, entrypoint argv 봉인(loopback 가드만 남는다).
+- **D. 설치기**(1,887줄 → 약 120줄): 설치 중 root 변조 감지(`.env` identity, RECORD digest,
+  dev/ino), crash-reconcile 상태기계, 백엔드 재시작 지연 옵션. releases/와 symlink로 바꾸되
+  compose 프로젝트 루트는 resolve하지 않는다(상대 bind가 지워질 release 경로에 묶이지 않게).
+- **E. 소스 봉인**: 워크트리 불변화, symlink·submodule 금지, 로컬 origin 확인 — 실행마다
+  `fetch` + `git archive <sha>`로 바꾼다. SHA가 곧 증명이다.
+- **F. Map 측 attestation 체인**: 러너 스냅샷, `/etc` attestation, gen_attest.py.
+- **G. 실패 출력**: 닫힌 어휘. 원문을 스크럽해 남긴다(#399가 1단계). `.env`에 없는 비밀은
+  스크럽을 빠져나갈 수 있다.
+- **H. Manager의 Map DB 권한 재검증**: virgin/bootstrap attestation. Map migration one-shot과
+  런타임 head 확인에 맡긴다.
+- **리셋을 기본에서 뺀 대가**: 배포가 빈 DB 경로를 증명하지 않는다(`--restart`·M05·CI에서만),
+  손으로 만든 drift가 살아남는다, 낮은 head로 되돌릴 수 없다(roll-forward 또는 `--restart`),
+  Map 서비스 login의 `.env` 비밀번호 회전이 배포로 반영되지 않는다(후속 reconcile),
+  `pinvi-admin-bootstrap`이 매 배포 bootstrap admin을 복구한다, `--restart`가 유일한 파괴 경로다.
+
+### 순서
+
+doc-only ADR(이것과 Map ADR-102) → A(storage 영수증 없이 통과) → Map M1(storage one-shot 멱등화)
+→ Map M2 + 호스트 스크립트 → B1(`deploy_status`·ensure helper, 미연결) → B2(전환, `--restart`,
+현재 committed 세대 채택 — 추가 리셋 0회) → B3(v8·evidence 삭제) → C(락 통합) → D(permit mount
+제거, v6 쓰기 중단). 결정 2와 무관한 항목(설치기·소스 봉인·실패 출력·compose 규칙)은 그 뒤 각자.
+급한 Map 수정이 생기면 전환 전 구 모델로 리셋 포함 배포를 한 번 더 허용한다.
