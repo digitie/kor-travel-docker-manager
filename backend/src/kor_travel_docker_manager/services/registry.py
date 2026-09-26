@@ -275,13 +275,11 @@ def _read_targets_bytes(path: str) -> bytes:
 def load_targets_config() -> dict[str, Any]:
     # 캐시는 프로세스당 한 번이다 — 첫 로드 이후 파일이 바뀌어도 다시 읽지 않는다.
     #
-    # **이것이 무해하지 않다**(GM-17 A 적대 리뷰 M-2). 종전에는 이 캐시에 컨테이너
-    # 정체만 있었지만 지금은 bind allowlist가 들어 있고, 상주 root uvicorn backend는
-    # installer가 **재기동하지 않는다**(`deploy/systemd/ktdm-backend.service`). 그래서
-    # 운영자가 위험한 bind를 설정에서 지워도 그 프로세스는 재기동 전까지 옛 목록으로
-    # candidate를 통과시킨다 — 취소가 즉시 반영되지 않는다. 그 창을 닫는 것은
-    # 별도 작업이고(`docs/tasks.md` 후속), 여기서는 최소한 파생 캐시를 없애
-    # "두 캐시가 어긋나 더 낡은 값을 본다"는 층은 제거했다.
+    # 종전에는 이 캐시에 컨테이너 정체만 있었지만 지금은 bind allowlist가 들어 있다
+    # (GM-17 A 적대 리뷰 M-2). 설정은 release 설치로만 바뀌고 installer는 설치할 때마다
+    # backend를 재기동하므로(ADR-51 D) 새 목록은 설치와 함께 반영된다. 설치본의 config를
+    # 제자리에서 고치는 것은 지원 경로가 아니다 — 다음 설치가 되돌린다. 파생 캐시는
+    # 없애 "두 캐시가 어긋나 더 낡은 값을 본다"는 층은 제거했다.
     path = get_targets_config_path()
     try:
         text = _read_targets_bytes(path).decode("utf-8")

@@ -9,7 +9,8 @@
 #   KTDM_FRONTEND_APP_DIR=<frontend 디렉터리 절대 경로>
 #   KTDM_FRONTEND_NPM=<npm 절대 경로, 생략 시 /usr/local/bin/npm>
 #
-# 두 필수 키가 .env에 없으면 installer는 이 유닛을 건너뛰고 경고만 남긴다.
+# 두 필수 키가 .env에 없으면 installer는 이 유닛을 설치하지 않는다(이미 있던 유닛은 disable·삭제).
+# 값이 틀리면(root 계정, 안전하지 않은 경로, root 소유가 아닌 npm) 설치가 멈춘다.
 # User를 비워 두면 root로 실행된다 — 프론트엔드는 root 권한이 전혀 필요 없으므로
 # 반드시 비root 계정을 지정한다(현행 nohup 방식이 root로 띄우던 것은 불필요한
 # 권한 확대였다).

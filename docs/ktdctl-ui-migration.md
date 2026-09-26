@@ -76,9 +76,10 @@ Manager repository URL, trusted installed Manager revision으로 v6
 `execution_identity_sha256`을 계산한다. 이 값만 새 Manager implementation으로의
 M05 execution namespace·one-shot ledger·terminal block을 결정한다.
 
-Manager revision은 CLI 인자·UI 요청·환경변수에서 절대 받지 않는다. clean trusted
-install root의 `.ktdm-source-revision`과 `.ktdm-release-manifest.json`을 root
-no-follow 검사로 함께 읽어 exact match할 때만 입력으로 쓴다.
+Manager revision은 CLI 인자·UI 요청·환경변수에서 절대 받지 않는다. trusted install
+root(현재 release를 가리키는 symlink, 따라가서 root 소유·group/other 쓰기 금지를 본다)의
+root 소유 0644 `.ktdm-source-revision` 하나를 no-follow로 읽는다(ADR-51 D에서 release
+manifest 교차 대조를 걷어냈다).
 
 - `ktdctl pin migrate-execution-v6 --confirm`은 v5 registry의 history와 blocked
   pinset을 변경 없이 legacy audit으로 보존하고 v6 execution registry를 만든다. current
@@ -336,7 +337,7 @@ v3 교차 감사의 결론을 한 문장으로 요약하면: **Manager가 이미
   폴백 없음 — 폴백이 있으면 "파일이 진실"이라는 단일성이 깨진다).
 - **[v3] world-readable 사본 기제는 새 발명이 아니다**: trusted installer가 이미
   `.ktdm-source-revision`·`.ktdm-release-manifest.json`을 root:root `0644`로 앱
-  루트에 쓰는 선례(`scripts/install-ktdm-trusted-release:932-934,1140-1145`)를
+  루트에 쓰던 선례(ADR-51 D 이전의 `scripts/install-ktdm-trusted-release`)를
   답습한다.
 
 ### 설계 (b) — `ktdctl pin` 서브커맨드 패밀리
@@ -707,7 +708,7 @@ v1의 통합 설계(단일 `ktdctl source-status` + `GET /api/v1/source-status`)
   **[v3 정정] Manager 자신의 `--self`는 "provenance 기록 확장"이 아니라 "리더
   추가"다** — trusted installer가 이미 `.ktdm-source-revision`과
   `.ktdm-release-manifest.json`(`manager_source_revision` 포함)을 root:root `0644`로
-  앱 루트에 쓰고 있다(`scripts/install-ktdm-trusted-release:932-934,1140-1145`).
+  앱 루트에 쓰고 있었다(ADR-51 D 이전의 `scripts/install-ktdm-trusted-release`).
   backend가 그대로 읽을 수 있으므로 필요한 것은 **~10줄의 리더**뿐이고, P7-D 카드에
   즉시 편입 가능하다. 기록이 없는 legacy rsync 배포본에서는 `unknown`으로 표시한다.
 - **[v3 신규 행 후보 — 계약 drift의 조기 관측]**: (i) **Map 이미지 실행 경계** —

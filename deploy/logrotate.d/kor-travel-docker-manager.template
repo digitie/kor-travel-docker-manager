@@ -3,7 +3,7 @@
 # scripts/run-standalone-backup.sh의 crontab 권고는 `>>` append라 로그가 영구
 # 누적된다. installer가 root 소유 `.env`의 KTDM_BACKUP_ROOT로 렌더링해
 # /etc/logrotate.d/kor-travel-docker-manager로 설치한다. 키가 없으면 건너뛰고
-# 경고만 남긴다.
+# 경고 한 줄을 남긴다(이미 설치된 파일은 지우지 않는다). 경로나 그룹이 틀리면 설치가 멈춘다.
 #
 # copytruncate인 이유: cron job이 fd를 계속 들고 append하므로 move-and-reopen
 # 방식은 시그널 협조가 필요하다. 백업 로그는 truncate 경계에서 몇 줄 잃어도

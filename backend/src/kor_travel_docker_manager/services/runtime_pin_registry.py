@@ -545,7 +545,7 @@ def runtime_pin_registry_public_path() -> Path:
 
     registry 본체는 root 0600이라 비-root backend가 읽지 못한다. root가 실행하는
     rotate/init이 공개 사본을 함께 갱신한다 — trusted installer가
-    ``.ktdm-release-manifest.json``을 0644로 남기는 선례와 같은 패턴이다. 다만 사본도
+    ``.ktdm-source-revision``을 0644로 남기는 것과 같은 패턴이다. 다만 사본도
     registry와 같은 이유로 배포 트리 밖에 두어야 release 설치에 지워지지 않는다.
     """
 

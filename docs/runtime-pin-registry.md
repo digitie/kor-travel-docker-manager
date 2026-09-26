@@ -339,7 +339,7 @@ d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정
 **왜 이렇게 갈라지나**
 
 - 배포 트리 안에 registry를 두면 **다음 release 설치가 회전 결과를 조용히 되돌린다.**
-  trusted installer는 트리를 staging→commit으로 통째 교체하기 때문이다. 그래서 설치
+  trusted installer는 설치할 때마다 새 release 디렉터리로 설치 root symlink를 넘기기 때문이다. 그래서 설치
   root에서는 env 없이도 기본값이 트리 밖을 가리키고, **트리 안 경로로의 회전·부트스트랩은
   거부된다**(`_assert_registry_is_writable_target`).
 - 공개 사본이 **별도 트리**인 이유: installer가 `/var/lib/kor-travel-docker-manager`를

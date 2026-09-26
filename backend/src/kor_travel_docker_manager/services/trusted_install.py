@@ -24,8 +24,9 @@
 
 lock 경로·FD env 리터럴은 `scripts/run-pinned-rebuild-once`·
 `scripts/run-m05-isolated-e2e-once`·`scripts/install-ktdm-trusted-release`에도
-있다. 그 launcher들은 검증 전 프로젝트 코드를 import하지 않으려고 의도적으로
-`python3 -I -S`로 격리 실행하므로 이 모듈을 import할 수 없다 — 대신
+있다. launcher 둘은 검증 전 프로젝트 코드를 import하지 않으려고 의도적으로
+`python3 -I -S`로 격리 실행하고, installer는 venv를 만들기 전에 lock을 잡는 bash라
+이 모듈을 import할 수 없다 — 대신
 `tests/test_trusted_install.py`가 스크립트 텍스트와 이 모듈의 상수를 직접
 비교해 drift를 잡는다.
 """
