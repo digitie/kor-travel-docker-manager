@@ -4374,7 +4374,7 @@ def test_verify_leaf_refuses_a_provenance_from_another_run(
         ({"provenance_manager": "c" * 40}, "L6b provenance가 이 실행의 것이다"),
         ({"provenance_pinset": "d" * 64}, "L6b provenance가 이 실행의 것이다"),
         # L0가 재지 않는 범위를 드라이버는 receipt에 싣는데 아무 축도 안 읽었다.
-        ({"worktree_retained": True}, "L0b 일회용 worktree가 남지 않았다"),
+        ({"worktree_retained": True}, "L0b 실행별 소스 checkout이 남지 않았다"),
         # 양쪽에서 함께 빠지면 동등성은 통과한다 — fail-close 가드의 고유 영역이다.
         ({"drop_binding_key": "transaction_id"}, "L6b provenance가 이 실행의 것이다"),
     ],
