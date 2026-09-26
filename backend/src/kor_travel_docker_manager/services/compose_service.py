@@ -399,72 +399,6 @@ _MAP_APPLICATION_300_RECEIPT_DIRECTORY = "map-application-300-candidate"
 _MAP_APPLICATION_300_ARTIFACT_DIRECTORY = "map-application-300-artifacts"
 _MAP_APPLICATION_300_POSTGRES_REFERENCE = "postgis/postgis:16-3.5-alpine"
 _ROLE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
-_MAP_DAGSTER_STORAGE_RECEIPT_FIELDS = frozenset(
-    {
-        "schema",
-        "status",
-        "operation_id",
-        "permit_sha256",
-        "candidate_sha256",
-        "head",
-        "version_num",
-        "database_name",
-        "database_oid",
-        "database_owner",
-        "postgres_system_identifier",
-        "catalog_sha256",
-    }
-)
-
-
-def _validate_map_dagster_storage_receipt(
-    receipt: object,
-    *,
-    journal: PinnedRuntimeRebuildJournal,
-    candidate: MapApplicationCandidate,
-) -> None:
-    """Map v3 receipt를 journal·permit·candidate·DB identity에 exact 결박한다."""
-
-    database = (
-        journal.map_application_300_execution_evidence
-        .dagster_metadata_database_identity
-    )
-    permit_sha256 = (
-        journal.map_application_300_execution_evidence.metadata_permit_sha256
-    )
-    # Map's dagster-storage-migrate.py hashes exactly
-    # "<image_id>:<config_sha256>" -- no receipt sha256, one colon.
-    candidate_binding = (
-        f"{candidate.dagster_image_id}:{candidate.dagster_config_sha256}"
-    )
-    if (
-        not isinstance(receipt, Mapping)
-        or set(receipt) != _MAP_DAGSTER_STORAGE_RECEIPT_FIELDS
-        or database is None
-        or permit_sha256 is None
-        or receipt.get("schema")
-        != "kor-travel-map.dagster-storage-migration.v3"
-        or receipt.get("status") != "migrated"
-        or receipt.get("operation_id") != journal.transaction_id
-        or receipt.get("permit_sha256") != permit_sha256
-        or receipt.get("candidate_sha256")
-        != hashlib.sha256(candidate_binding.encode()).hexdigest()
-        or receipt.get("head") != journal.candidate.map_dagster_head
-        or receipt.get("version_num") != journal.candidate.map_dagster_head
-        or receipt.get("database_name") != database.name
-        or receipt.get("database_oid") != str(database.oid)
-        or receipt.get("database_owner") != database.owner
-        or receipt.get("postgres_system_identifier")
-        != database.system_identifier
-        or not isinstance(receipt.get("catalog_sha256"), str)
-        or re.fullmatch(r"[0-9a-f]{64}", cast(str, receipt["catalog_sha256"]))
-        is None
-    ):
-        raise DeploymentContractError(
-            "Map Dagster storage receipt differs from journal"
-        )
-
-
 def _pinvi_cancel_probe_state_from_journal(
     journal: PinnedRuntimeRebuildJournal,
 ) -> PinviCancelProbeState:
@@ -591,23 +525,9 @@ def _pinned_runtime_reset_required(journal: PinnedRuntimeRebuildJournal) -> bool
 _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA = (
     "kor-travel-map.dagster-storage-migration-error.v1"
 )
-_MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES = frozenset(
-    {
-        "dagster_storage_head_ambiguous",
-        "dagster_storage_head_unavailable",
-        "dagster_instance_migrate_failed",
-        "dagster_instance_migrate_unavailable",
-        "dagster_version_mismatch",
-        "dagster_version_row_count_invalid",
-        "dagster_version_table_unavailable",
-        "invalid_arguments",
-        "invalid_dagster_home",
-        "invalid_dagster_yaml",
-        "missing_dagster_home",
-        "missing_dagster_pg_url",
-        "missing_dagster_yaml",
-    }
-)
+# 닫힌 코드 목록이 아니라 모양만 본다(ADR-51 G). 목록이면 Map이 코드를 더하거나 빼는
+# 리비전마다 Manager가 새 원인을 조용히 삼킨다. 모양 검사는 값이 섞여 드는 것만 막는다.
+_MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE = {
     "alembic_config_missing": "migration",
     "credential_file_changed": "credential_file",
@@ -4783,7 +4703,8 @@ class ComposeService:
                             and payload.get("schema")
                             == _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA
                             and isinstance(code, str)
-                            and code in _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODES
+                            and _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODE.fullmatch(code)
+                            is not None
                         ):
                             return _ComposeFailureDiagnostic(message_suffix=f"; {code}")
                         continue
@@ -6219,7 +6140,10 @@ class ComposeService:
                     write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
                     journal = updated
                 if journal.phase == "map_dagster_storage_intent_durable":
-                    storage_command = self._run_pinned_runtime_rebuild_compose(
+                    # 성공의 근거는 one-shot이 스스로 쓴 영수증이 아니라 Manager가 직접
+                    # 읽은 head다(ADR-51). 영수증은 Map 리비전마다 모양이 다르고, Map M1은
+                    # permit·outbox를 걷어내 영수증을 내지 않는다.
+                    self._run_pinned_runtime_rebuild_compose(
                         [
                             "run",
                             "--rm",
@@ -6227,25 +6151,6 @@ class ComposeService:
                             "kor-travel-map-dagster-storage-migrate",
                         ],
                         transaction=runtime_transaction,
-                    )
-                    storage_stdout = storage_command.get("stdout")
-                    if not isinstance(storage_stdout, str):
-                        raise DeploymentContractError(
-                            "Map Dagster storage receipt output is invalid"
-                        )
-                    try:
-                        storage_receipt = json.loads(
-                            storage_stdout,
-                            object_pairs_hook=_json_object_without_duplicate_keys,
-                        )
-                    except (json.JSONDecodeError, ValueError) as exc:
-                        raise DeploymentContractError(
-                            "Map Dagster storage receipt output is invalid"
-                        ) from exc
-                    _validate_map_dagster_storage_receipt(
-                        storage_receipt,
-                        journal=journal,
-                        candidate=map_candidate,
                     )
                     try:
                         observed_dagster_head = read_database_schema_revision(
