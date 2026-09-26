@@ -174,3 +174,45 @@ def test_status_mappings_are_detached_from_the_caller() -> None:
     images["kor-travel-map-ui"] = "sha256:" + "3" * 64
 
     assert "kor-travel-map-ui" not in status.images
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda payload: payload.__setitem__("images", "ab"),
+        lambda payload: payload.__setitem__("schema_heads", "abc"),
+        lambda payload: payload.__setitem__("images", [["kor-travel-map-api", "x"]]),
+        lambda payload: payload.__setitem__("version", True),
+        lambda payload: payload.__setitem__("version", 1.0),
+        lambda payload: payload["databases"]["pinvi"].__setitem__("extra", 1),
+        lambda payload: payload.__setitem__("restart", {"reason": "r", "at": "t", "x": 1}),
+        lambda payload: payload.__setitem__("started_at", 5),
+        lambda payload: payload.__setitem__("step", ["x"]),
+        lambda payload: payload.__setitem__("run_id", "ABCDEF00-0000-4000-8000-000000000001"),
+        lambda payload: payload.__setitem__("run_id", "{" + _RUN_ID + "}"),
+    ),
+)
+def test_every_malformed_field_is_a_contract_error_not_a_crash(tmp_path: Path, mutate) -> None:  # noqa: ANN001
+    payload = json.loads(json.dumps(_committed().to_payload()))
+    mutate(payload)
+    path = deploy_status_path(tmp_path)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DeploymentContractError):
+        read_deploy_status(path)
+
+
+def test_a_status_the_reader_would_refuse_is_never_written(tmp_path: Path) -> None:
+    images = {f"service-{index:04d}": "sha256:" + "1" * 64 for index in range(1000)}
+    status = commit_deploy(
+        _begin(),
+        committed_at="2026-09-26T01:00:00+00:00",
+        images=images,
+        schema_heads=_HEADS,
+        databases=_DATABASES,
+    )
+
+    with pytest.raises(DeploymentContractError, match="too large"):
+        write_deploy_status(deploy_status_path(tmp_path), status)
+
+    assert not deploy_status_path(tmp_path).exists()

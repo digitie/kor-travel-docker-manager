@@ -355,6 +355,12 @@ def legacy_journal_file(state_root: Path, *, pinset_sha256: str) -> Path:
     return state_root / f"{_JOURNAL_FILENAME_PREFIX}{pinset_sha256}.json"
 
 
+def legacy_journal_files(state_root: Path) -> list[Path]:
+    """state root에 남은 모든 pinset의 v8 journal — carry-over 전용(ADR-51)."""
+
+    return sorted(state_root.glob(f"{_JOURNAL_FILENAME_PREFIX}*.json"))
+
+
 def pinned_runtime_state_paths(
     values: Mapping[str, str],
     *,
