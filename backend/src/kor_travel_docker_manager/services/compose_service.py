@@ -2467,12 +2467,20 @@ def _validate_c6c_wait_timeout(wait_timeout: int) -> None:
 # 올라가 공개 표면이 0이 됐다(issue #109). candidate image 자체를 절대 기동하지
 # 않고 `alembic heads`만 읽어(DB에 아무 것도 하지 않는 static inspection) operator가
 # 명시한 기대 head와 다르면 배포를 시작하기 전에 fail-close한다.
-_ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS = 60
-_PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 60
+#
+# 이 두 타임아웃은 멈춤 감지용이지 성능 예산이 아니다. n150은 SATA SSD가 92% 차서 IO
+# 압력 `full`이 상시 50~60%이고, 2026-09-26 실측에서 `docker run --rm /bin/true` 하나가
+# 112초, `ktm-application-schema head`가 74초 걸렸다 — 60초였을 때 t57a가 명령은
+# 정상인데 타임아웃으로 죽었다.
+_ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS = 600
+_PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 600
 #: compose `--wait-timeout` 초. **정수**로 둔다 — head는 revision 문자열이라
 #: 형이 다르고, 이 파일에 따옴표 두른 숫자가 남지 않아 head 리터럴 게이트가
 #: 파일 단위 면제 없이 이 파일을 전부 볼 수 있다. 면제는 그 자체로 사각지대였다.
-_COMPOSE_WAIT_TIMEOUT_SECONDS: Final = 300
+#:
+#: ADR-069 뒤 Map은 code-server → webserver → daemon이 `service_healthy`로 **직렬**
+#: 기동한다. 위 실측대로 컨테이너 하나가 뜨는 데만 1~2분이 걸리므로 300초는 부족하다.
+_COMPOSE_WAIT_TIMEOUT_SECONDS: Final = 900
 
 
 def _validate_expected_alembic_head(expected_alembic_head: str) -> None:

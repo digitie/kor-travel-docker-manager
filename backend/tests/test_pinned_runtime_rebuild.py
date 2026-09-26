@@ -90,6 +90,7 @@ from kor_travel_docker_manager.services.pinned_runtime_sources import (
 )
 
 PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
+_WAIT_TIMEOUT = str(compose_service_module._COMPOSE_WAIT_TIMEOUT_SECONDS)
 
 _real_map_application_300_paths = compose_service_module._map_application_300_paths
 
@@ -3087,7 +3088,7 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
             "--no-deps",
             "--wait",
             "--wait-timeout",
-            "300",
+            _WAIT_TIMEOUT,
             "kor-travel-map-ui",
             "kor-travel-map-dagster",
             "kor-travel-map-dagster-daemon",
@@ -3103,7 +3104,7 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
             "--no-deps",
             "--wait",
             "--wait-timeout",
-            "300",
+            _WAIT_TIMEOUT,
             "pinvi-api",
         ) in operations
     assert all(
@@ -3125,7 +3126,7 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
             "--no-deps",
             "--wait",
             "--wait-timeout",
-            "300",
+            _WAIT_TIMEOUT,
             *map_companions,
             "kor-travel-map-ui",
             "kor-travel-map-dagster",
@@ -3323,7 +3324,7 @@ def test_generation_companions_ride_every_runtime_step_through_commit(
 
     companion_names = tuple(sorted(companion_owners))
     stop = ("stop", *RUNTIME_SERVICES, *companion_names)
-    wait = ("up", "-d", "--no-deps", "--wait", "--wait-timeout", "300")
+    wait = ("up", "-d", "--no-deps", "--wait", "--wait-timeout", _WAIT_TIMEOUT)
     runtime_with_companions = (*RUNTIME_SERVICES, *companion_names)
 
     if fail_at_commit:
@@ -4106,3 +4107,17 @@ def test_sealed_failure_on_a_resume_run_is_not_reported_prejournal(
     assert not compose_service_module.pinned_runtime_failed_before_journal(
         raised.value
     )
+
+
+def test_rebuild_timeouts_outlast_a_saturated_disk() -> None:
+    """타임아웃은 멈춤 감지용이다 — 느린 디스크에서 정상 명령을 죽이면 안 된다.
+
+    n150 실측(2026-09-26, IO 압력 full 50~60%): `docker run /bin/true` 112초,
+    static head 74초. Map은 code-server → webserver → daemon을 직렬로 띄운다.
+    """
+
+    per_container = 112 + 74
+    module = compose_service_module
+    assert module._PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS >= 2 * per_container
+    assert module._ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS >= 2 * per_container
+    assert module._COMPOSE_WAIT_TIMEOUT_SECONDS >= 3 * per_container
