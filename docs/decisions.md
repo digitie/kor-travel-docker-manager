@@ -3794,3 +3794,24 @@ I-1과 한 번뿐인 레이아웃 전환(`prod-deployment.md` §3.0) 뒤에 설�
   모든 재구축이 깨지는데도 CI는 초록이었을 것이다. 이제 `.git` 없는 디렉터리를 실제로 읽힌다.
 - **잃은 것**: 없다. git index의 "추적되는 100644 blob"이 파일의 "일반 파일·실행 비트 없음"이 됐고, 트리가
   핀된 revision인 한 둘은 같다.
+
+### NOTE: E(소스 봉인) E-2 — M05가 봉인 트리를 떠났다 (2026-09-27, E-2)
+
+M05 본문은 봉인된 source 트리 대신 **실행별 checkout** 둘(`<leaf>/runtime/map-src`·`pinvi-src`)에서 돈다.
+`checkout_pinned_run_source`가 `git init` → canonical HTTPS에서 핀된 revision만 `fetch --depth 1` →
+`checkout --detach`로 만든다(재구축과 같은 정화된 root git). SHA가 곧 증명이라 tree·clean 재확인은 없다.
+
+- **archive가 아니라 checkout인 이유**: PinVi attestation(`m05_activation_attestation.py`)이 진짜 clean
+  checkout(`--show-toplevel`·HEAD·`status --porcelain --untracked-files=all`)과 Map의 service 릴리스 revision blob을
+  요구한다. Map checkout이 그 revision을 함께 받는다. 이 예외를 없애려면 PinVi PR과 재핀이 필요하다.
+- **preflight 자신은 fetch하지 않는다.** `_pair`의 fetch 보충(봉인 Map 트리의 object store에 service 릴리스
+  revision을 넣던 것)이 없어졌다 — 그 object는 본문의 checkout이 받는다. 재사용하는 source materialize는 그
+  pinset의 봉인 트리가 아직 없을 때(예: 회전 직후 재구축 전)만 받는다 — E-3 전까지 그대로다.
+- **순서**: checkout은 `runtime_setup_workspace`(claim 전)에서 만든다. fetch가 실패해도 실행권을 쓰지 않는다.
+  compose·빌드·러너·attestation이 모두 같은 두 checkout을 쓴다. cleanup이 지우고, 지우지 못하면 receipt의
+  `disposable_run_worktree_retained`(이름은 그대로, 뜻은 "실행별 checkout이 남았다")만 켠다.
+- **지운 것(E의 "워크트리 불변화" 중 M05 몫)**: 일회용 worktree 재유도(`expected_tree` 교차 대조, submodule·commit
+  확인 포함)·제거·
+  잔여물 요약 증거(`disposable-run-worktree.json`), 봉인 사후조건(실행이 봉인 트리를 건드리지 않았다는 관측).
+  봉인 트리는 M05 본문에 쓰이지 않으므로 지킬 것이 없다.
+- **남은 것**: 재구축 source의 봉인·staging(E-3에서 archive로), rotation preflight(결정 4의 게이트).

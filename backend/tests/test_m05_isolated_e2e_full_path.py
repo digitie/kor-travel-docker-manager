@@ -28,6 +28,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -61,7 +62,6 @@ _LAUNCHER_PATH = _REPO_ROOT / "scripts/run-m05-isolated-e2e-once"
 MANAGER_REVISION = "3c" * 20
 #: 일회용 체크아웃이 대조해야 할 PinVi 핀 tree. preflight가 materialize된
 #: 소스에서 그대로 낸 값이며, 같은 bare에서 다시 유도하면 자기참조가 된다.
-PINVI_SOURCE_TREE = "5d" * 20
 PLAYWRIGHT_PINNED_VERSION = "1.62.1"
 
 #: 승인 응답(UUID 정본)과 M02 creation-provenance의 opaque TEXT feature_id는
@@ -337,11 +337,12 @@ class _FakeDockerHost:
     def __init__(self, *, map_root: Path, pinvi_root: Path, runner_image: str) -> None:
         self.map_root = map_root
         self.pinvi_root = pinvi_root
-        #: 실행이 실제로 쓰는 일회용 체크아웃. 봉인된 `pinvi_root`와 **달라야** 한다 —
+        #: 실행이 실제로 쓰는 실행별 checkout(ADR-51 E-2). preflight 트리와 **달라야** 한다 —
         #: 같으면 이 파일의 모든 실행-루트 단언이 수정을 되돌려도 통과한다.
+        self.map_run_root: Path | None = None
         self.pinvi_run_root: Path | None = None
-        #: (함수, role, destination) — 제거·사후 봉인검사가 실제로 불렸는지 본다.
-        self.disposable_calls: list[tuple[str, str, Path]] = []
+        #: (role, destination, extra_revisions) — body가 claim 전에 무엇을 받아 왔는가.
+        self.checkout_calls: list[tuple[str, Path, tuple[str, ...]]] = []
         self.runner_image = runner_image
         self.calls: list[dict[str, Any]] = []
         self.timeline: list[str] = []
@@ -484,7 +485,7 @@ class _FakeDockerHost:
                 driver, args, cwd=cwd, env=env or {}, diagnostics=failure_exit_diagnostics
             )
         if head.endswith("scripts/docker-app.sh"):
-            return self._docker_app(driver, args, env=env or {})
+            return self._docker_app(driver, args, env=env or {}, script=Path(head))
         if head == sys.executable:
             return self._attestation(driver, args, cwd=cwd, env=env or {})
         raise AssertionError(f"unexpected external command: {args!r}")
@@ -959,7 +960,12 @@ class _FakeDockerHost:
     # -- PinVi docker-app.sh ----------------------------------------------
 
     def _docker_app(
-        self, driver: ModuleType, args: tuple[str, ...], *, env: dict[str, str]
+        self,
+        driver: ModuleType,
+        args: tuple[str, ...],
+        *,
+        env: dict[str, str],
+        script: Path,
     ) -> str:
         action = args[1]
         self.timeline.append(f"docker-app:{action}")
@@ -981,7 +987,10 @@ class _FakeDockerHost:
         if self.expected_admission is not None and admission != self.expected_admission:
             self._fail(driver, 78, "pinvi isolated manager admission mismatch")
         env_file = Path(env["PINVI_ENV_FILE"])
-        files = [self.pinvi_root / "infra/docker-compose.app.yml"]
+        # docker-app.sh는 **실행별 PinVi checkout**의 것이어야 하고, compose도 그 저장소 것이다.
+        repository = script.parents[1]
+        assert self.pinvi_run_root is not None and repository == self.pinvi_run_root
+        files = [repository / "infra/docker-compose.app.yml"]
         # e2e3: override를 넘기지 않으면 app-api가 Map network에 join하지 못한다.
         extra = env.get("PINVI_DOCKER_COMPOSE_EXTRA_FILE")
         if extra:
@@ -989,6 +998,9 @@ class _FakeDockerHost:
         project = env["PINVI_DOCKER_PROJECT"]
         model = self._model(project, env_file, tuple(files))
         environment = _read_env_file(env_file)
+        # 이미지는 실행별 checkout에서 빌드한다 — preflight 트리가 build context면 안 된다.
+        for key in ("PINVI_API_BUILD_CONTEXT", "PINVI_APP_BUILD_CONTEXT"):
+            assert environment.get(key) == str(self.pinvi_run_root), key
         self._ensure_networks(model)
         if action == "build":
             for _name, service in model.visible(()).items():
@@ -1044,6 +1056,11 @@ class _FakeDockerHost:
             options[token] = ""
             index += 1
         self.attestations[mode] = options
+        if "--map-source-root" in options:
+            # service 릴리스 blob을 읽는 Map 저장소는 실행별 checkout이다 — preflight 트리는
+            # 더 이상 그 object를 받지 않는다(ADR-51 E-2).
+            assert self.map_run_root is not None
+            assert options["--map-source-root"] == str(self.map_run_root)
         assert "--require-root-owned" in options
         assert options["--playwright-runner-image"] == self.runner_image
         assert options["--scope"] == "isolated"
@@ -1677,49 +1694,36 @@ def _build_harness(
     monkeypatch.setattr(
         driver,
         "_source_pair_preflight",
-        # `state_paths`/`values`도 함께 온다 — body가 일회용 실행 체크아웃을 만들 때
-        # 쓴다. 이 하네스는 그 생성을 스텁하므로 값 자체는 통과용이면 된다.
-        lambda: (
-            map_root,
-            pinvi_root,
-            pair,
-            "2" * 64,
-            pair.map_source_revision,
-            SimpleNamespace(),
-            {},
-            PINVI_SOURCE_TREE,
-        ),
+        lambda: (map_root, pinvi_root, pair, "2" * 64, pair.map_source_revision),
     )
 
-    # 실행은 일회용 체크아웃에서 한다(봉인 트리 오염 방지). 여기서는 진짜 git worktree를
-    # 만들지 않지만, 스텁이 **봉인 루트와 다른 경로**를 돌려주고 실행에 필요한 스크립트를
-    # 거기에 만든다. 초판 스텁은 `pinvi_root`를 그대로 돌려줘서 실행-루트 치환을
-    # 통째로 되돌려도 전 테스트가 green이었다(적대 리뷰 BLOCKER-2).
-    def _materialise_run(**kwargs: Any) -> Path:
-        assert kwargs["role"] == "pinvi"
-        # tree는 호출자가 materialize된 핀 소스에서 가져온 값이어야 한다 — 같은 bare에서
-        # 다시 유도하면 자기참조가 된다.
-        assert kwargs["expected_tree"] == PINVI_SOURCE_TREE
+    # 실행은 실행별 checkout에서 한다(ADR-51 E-2). 여기서는 진짜 git fetch를 하지 않고,
+    # 스텁이 **preflight 트리와 다른 경로**에 그 트리의 사본을 만든다(checkout = 핀된 트리).
+    # 초판 스텁은 `pinvi_root`를 그대로 돌려줘서 실행-루트 치환을 통째로 되돌려도 전
+    # 테스트가 green이었다(적대 리뷰 BLOCKER-2).
+    def _checkout(**kwargs: Any) -> Path:
+        role = str(kwargs["role"])
         destination = Path(kwargs["destination"])
-        assert destination != pinvi_root
-        (destination / "scripts").mkdir(parents=True)
-        for name in ("m05_activation_attestation.py", "n150-playwright-runner.sh"):
-            (destination / "scripts" / name).write_text("#!/bin/sh\n", encoding="utf-8")
-        host.pinvi_run_root = destination
+        assert destination.parent == output / "runtime"
+        source = map_root if role == "map" else pinvi_root
+        assert destination != source
+        shutil.copytree(source, destination)
+        if role == "map":
+            host.map_run_root = destination
+        else:
+            host.pinvi_run_root = destination
+        host.checkout_calls.append(
+            (role, destination, tuple(kwargs.get("extra_revisions", ())))
+        )
+        if host.map_run_root is not None and host.pinvi_run_root is not None:
+            # 두 checkout이 생긴 뒤에는 preflight 트리를 쓸 수 없게 치운다 — body가 어디서든
+            # 그 트리로 되돌아가면(compose root·build context·attestation) 조용히 통과하지 않고
+            # 여기서 크게 깨진다.
+            for preflight_root in (map_root, pinvi_root):
+                preflight_root.rename(preflight_root.with_name(preflight_root.name + ".gone"))
         return destination
 
-    def _remove_run(**kwargs: Any) -> None:
-        host.disposable_calls.append(
-            ("remove", kwargs["role"], Path(kwargs["destination"]))
-        )
-
-    def _assert_sealed(**kwargs: Any) -> None:
-        assert host.pinvi_run_root is not None
-        host.disposable_calls.append(("sealed", kwargs["role"], host.pinvi_run_root))
-
-    monkeypatch.setattr(driver, "materialize_disposable_run_worktree", _materialise_run)
-    monkeypatch.setattr(driver, "remove_disposable_run_worktree", _remove_run)
-    monkeypatch.setattr(driver, "assert_pinned_worktree_is_still_sealed", _assert_sealed)
+    monkeypatch.setattr(driver, "checkout_pinned_run_source", _checkout)
     monkeypatch.setattr(driver, "_root_directory", lambda _path, mode=0o700: None)
     monkeypatch.setattr(
         driver, "_root_file", lambda path, mode=0o600: _relaxed_root_file(driver, path, mode)
@@ -1784,6 +1788,17 @@ def test_full_happy_path_reaches_a_passed_receipt(harness: _Harness) -> None:
     assert result["driver_phase"] == "completed"
     assert result["cleanup_failed"] is False
     assert result["disposable_run_worktree_retained"] is False
+    # body는 claim 전에 실행별 checkout 둘을 받았고(service 릴리스가 핀과 같아 추가 fetch
+    # 없음), cleanup이 둘을 지웠다.
+    assert [(role, extra) for role, _path, extra in harness.host.checkout_calls] == [
+        ("map", ()),
+        ("pinvi", ()),
+    ]
+    assert not (harness.output / "runtime" / "map-src").exists()
+    assert not (harness.output / "runtime" / "pinvi-src").exists()
+    assert harness.host.attestations["live"]["--map-source-root"] == str(
+        harness.host.map_run_root
+    )
     assert result["harness"] == "m05-isolated-bridge-v1"
     assert result["manager_source_revision"] == MANAGER_REVISION
     assert result["pinset_sha256"] == PINNED_RUNTIME_RELEASE.pinset_sha256
