@@ -32,7 +32,12 @@ from kor_travel_docker_manager.services.auth_service import (
     hash_password_for_env,
     verify_admin_password,
 )
+from kor_travel_docker_manager.services.c6c_deployment import (
+    c6c_deployment_lock,
+    c6c_global_mutation_lock_path,
+)
 from kor_travel_docker_manager.services.compose_service import get_env_path
+from kor_travel_docker_manager.services.errors import ManagerMutationActiveError
 
 logger = logging.getLogger(__name__)
 
@@ -242,6 +247,34 @@ def _rewrite_env_single_key(path: Path, name: str, value: str) -> None:
         os.close(directory_fd)
 
 
+def _rewrite_env_single_key_under_mutation_lock(path: Path, name: str, value: str) -> None:
+    """``.env`` 재작성을 Manager mutation lock 안에서만 한다(ADR-51 C-2).
+
+    legacy retire는 lock 아래에서 읽은 ``.env`` 바이트로 파일 전체를 다시 쓴다. 그 사이에
+    끼어든 비밀번호 변경은 조용히 사라진다(lost update). 그래서 같은 lock을 잡는다.
+
+    lock 경로는 **다시 쓸 그 ``.env``의 값**에서 정한다 — rehearsal·production이면 host
+    변경 lock ``G``, local이면 실행 사용자 ``$HOME`` 아래 개발 lock이다. 프로세스 환경으로
+    채우지 않는다. 경합이면 409 ``MANAGER_MUTATION_ACTIVE``로 거절하고, 파일은 한 바이트도
+    바뀌지 않는다. 그 거절을 ``AdminPasswordError``로 올리는 이유: 이 route는 모든 거절을
+    감사에 남긴다(남지 않은 거절은 조사할 수 없다) — 맞는 자격증명으로 한 시도가 흔적 없이
+    사라지면 안 된다(C-2 적대 리뷰).
+    """
+
+    text, identity = _read_env(path)
+    try:
+        with c6c_deployment_lock(c6c_global_mutation_lock_path(_parse_dotenv(text))):
+            # lock 경로를 고른 뒤 잡기 전까지 `.env`가 바뀌었다면 그 선택은 낡았다.
+            if _read_env(path)[1] != identity:
+                raise AdminPasswordError(
+                    "ENV_CHANGED_BEFORE_WRITE", ".env가 쓰기 직전에 바뀌었습니다."
+                )
+            _rewrite_env_single_key(path, name, value)
+    except ManagerMutationActiveError as exc:
+        # 본문은 이 예외를 내지 않는다 — lock 획득의 경합뿐이다.
+        raise AdminPasswordError("MANAGER_MUTATION_ACTIVE", str(exc), status_code=409) from exc
+
+
 # --- 공개 진입점 --------------------------------------------------------------
 
 
@@ -292,7 +325,7 @@ def change_admin_password(
             "HASH_INVALID", "생성된 해시 형식이 올바르지 않습니다.", status_code=500
         )
 
-    _rewrite_env_single_key(path, ADMIN_PASSWORD_HASH_ENV, new_hash)
+    _rewrite_env_single_key_under_mutation_lock(path, ADMIN_PASSWORD_HASH_ENV, new_hash)
     # **파일이 먼저다.** env를 먼저 갱신하고 쓰기가 실패하면 재기동이 비밀번호를 조용히
     # 되돌린다 — 가장 나쁜 실패다. 반대 순서에서는 파일이 새 값이고 살아 있는 프로세스만
     # 옛 값을 받는데, 그것은 재기동으로 복구되는 방향이다.

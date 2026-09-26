@@ -1206,6 +1206,9 @@ def _pinned_runtime_rebuild_environment_lock(
             lock_snapshot = _c6c_deployment_lock_snapshot_from_environment(
                 current_environment_snapshot
             )
+        # ADR-51 C-2: rehearsal `.env`의 lock 경로도 ``G``다. 위
+        # `pinned_runtime_rebuild_lock()`이 같은 key로 이미 잡았으므로 이 획득은 재진입
+        # no-op이다(`_HELD_DEPLOYMENT_LOCKS`) — 세 번째 파일 lock은 없다.
         with c6c_deployment_lock(lock_snapshot.lock_path):
             _revalidate_c6c_deployment_lock_snapshot(lock_snapshot)
             yield (

@@ -452,8 +452,10 @@ prod 전환 순서는 다음과 같다.
    retire는 candidate `.env`를 원자
    갱신하고 canonical `/opt` Compose를 출력 없이 검증한 뒤에만 같은 protected state 안의 pending snapshot을
    owner-only archive로 옮긴다. n150의 rebuild 정본은 `rehearsal/rebuildable` mode이므로 stage/retire는 이를
-   PinVi production·Map principal-required contract와 함께 재검증하고 `rebuild-pinned`와 같은 root-owned host
-   lease로 직렬화한다. mode를 수동으로 production으로 바꾸거나 caller가 project root/state root/lock path를
+   PinVi production·Map principal-required contract와 함께 재검증하고 `rebuild-pinned`·pin 회전·M05·installer와
+   같은 host 변경 lock(`/run/lock/kor-travel-docker-manager/global-mutation.lock`, ADR-51 C-2)으로 직렬화한다.
+   lock을 다른 변경이 쥐고 있으면 기다리지 않고 `cannot acquire the Manager mutation lock: ...`으로 종료 코드 2를
+   낸다. mode를 수동으로 production으로 바꾸거나 caller가 project root/state root/lock path를
    지정할 수 없다. read 키는 `.env`의 단일 변수에만 저장하며 override에 Map API·Dagster·daemon key/base URL
    literal을 새로 만들지 않는다.
 4. Dagster·Dagster daemon을 재생성한다. 과거 배포에서 map API에 같은 환경변수가 들어갔다면
@@ -476,8 +478,8 @@ prod 전환 순서는 다음과 같다.
    `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`를 root authority로 명시해야 하며, 이 둘이 local/false이면
    이관 명령이 실패한다.
    이관 명령이 deployment lock 안에서 API/MCP/scheduler/UI를 canonical single-file source로 재생성한 뒤 실제 로그인
-   POST와 BFF 호출을 다시 확인한다. canonical rehearsal/rebuildable에서는 `rebuild-pinned`와 같은
-   pinned-runtime host lease를, production에서는 fixed C6c global mutation lock을 사용한다. 재생성만 재시도해야 하면
+   POST와 BFF 호출을 다시 확인한다. canonical rehearsal/rebuildable과 production 모두 고정 host 변경 lock
+   (`global-mutation.lock`)을 사용한다(ADR-51 C-2). 재생성만 재시도해야 하면
    `ktdctl compose-boundary activate-concierge --confirm`을 사용한다. production의 일반 `ensure`는 이 경로에 사용할 수 없다.
 7. 모든 smoke가 통과한 뒤에만 `KOR_TRAVEL_CONCIERGE_API_KEYS=new`으로 구 static 키를 제거하고
    API/MCP/scheduler를 재생성한다. 구 키 401, 새 admin 키의 내부 API 200, read 키의 공급 GET 200·
@@ -911,8 +913,11 @@ subprocess 직전에 `.env` 생성·삭제·내용·identity drift를 다시 확
 안에서 source byte와 include/extends/env/override 부재도 다시 확인하며, raw/resolved 계약을 별도 파일 합성
 순서에 맡기지 않는다.
 
-production mutation mutex는 compose project나 checkout별 state가 아니라 사용자별 단일 전역 경로를 사용한다.
-local test process만 명시 override할 수 있고 production 값은 고정된다. lock 안에서 manifest 경로, root `.env`,
+production·rehearsal mutation mutex는 compose project나 checkout별 state가 아니라 host 하나의 고정 경로
+`/run/lock/kor-travel-docker-manager/global-mutation.lock`(root `0600`, 디렉터리 `0700 root:root`)을 사용한다
+(ADR-51 C-2). 비root 개발용 `local`만 실행 사용자 `$HOME/.local/state/kor-travel-docker-manager/` 아래 lock을 쓰고
+`KTDM_C6C_DEPLOYMENT_LOCK`로 명시 override할 수 있다. 경합이면 기다리지 않고 409 `MANAGER_MUTATION_ACTIVE`로
+거절한다. lock 안에서 manifest 경로, root `.env`,
 canonical compose byte/mode와 external `env_file` 입력을 한 번만 capture한다. `env_file`은 list의 exact
 `{path, required, format}` mapping만 허용하며 각 regular file의 존재 여부·byte·device/inode/mode/uid/gid를
 동결한다. Docker resolution에는 동결한 byte를 익명 fd로만 제공하고 외부 secret/config file source는 지원하지

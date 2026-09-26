@@ -363,7 +363,13 @@ def test_root_execution_rejects_callers_project_root_override(
         retirement_module._prepare_project_context(project_root=tmp_path, require_root=True)
 
 
-def test_root_rehearsal_boundary_uses_the_pinned_runtime_host_lease() -> None:
+def test_root_rehearsal_boundary_uses_the_global_mutation_lock() -> None:
+    """ADR-51 C-2: stage/retire/activate는 pinned lease P가 아니라 host 변경 lock G를 잡는다.
+
+    rebuild는 G 안에서만 P를 잡으므로 G 하나로 rebuild·pin 회전·M05·installer와 모두
+    직렬화된다. conftest가 G를 테스트마다 tmp로 옮겨 두므로 기대값은 그 seam 경로다.
+    """
+
     values = {
         "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
         "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
@@ -371,12 +377,15 @@ def test_root_rehearsal_boundary_uses_the_pinned_runtime_host_lease() -> None:
         "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
     }
 
-    assert retirement_module._select_lock_path(
+    selected = retirement_module._select_lock_path(
         values,
         project_root=Path("/irrelevant"),
         lock_path=None,
         require_root=True,
-    ) == c6c_module.pinned_runtime_rebuild_lock_path()
+    )
+
+    assert selected == str(c6c_module._C6C_GLOBAL_MUTATION_LOCK)
+    assert selected != c6c_module.pinned_runtime_rebuild_lock_path()
 
 
 @pytest.mark.parametrize(

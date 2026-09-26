@@ -32,6 +32,13 @@ const CODE_MESSAGES: Record<string, { title: string; hint: string }> = {
     title: '변경은 적용됐지만 이후 검증에서 문제가 발견됐습니다.',
     hint: '자동 복구를 시도했습니다. 아래 원문의 복구 결과를 확인하고, 상태가 이상하면 운영자에게 알리세요.',
   },
+  // ADR-51 C: 모든 Manager 변경은 host 변경 lock 하나를 기다리지 않고 잡는다. 코드 매핑이
+  // 없으면 409 일반 문구로 떨어져 무엇이 막았는지, 언제 풀리는지 알 수 없다. 이 거절은 다른
+  // 작업이 끝나면 풀리는 일시 상태이고 아무것도 바꾸지 않았다.
+  MANAGER_MUTATION_ACTIVE: {
+    title: '다른 관리 작업이 진행 중입니다.',
+    hint: '재구축·핀 회전·설치·M05가 호스트 변경 락을 쥐고 있습니다. 기다리지 않고 거절했고 아무것도 바뀌지 않았습니다. 끝난 뒤 다시 시도하세요.',
+  },
   RUNTIME_PINS_UNVERIFIED: {
     title: '현재 고정 값을 확인할 수 없어 요청을 받지 못했습니다.',
     hint: 'SSH에서 `ktdctl pin verify`를 실행해 공개 사본을 갱신한 뒤 다시 시도하세요.',

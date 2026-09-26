@@ -353,9 +353,10 @@ sudo find "$KTDM_BACKUP_ROOT" -type f -exec chmod 0640 {} +
 동결하고 재개 때 대조했으므로, 미종결 journal이 있으면 화면이 변경을 막거나 명시 문구
 입력을 요구했다. ADR-51 뒤 배포는 재개하지 않고 처음부터 다시 돌며 `.env`를 동결하지
 않으므로 막을 것이 없다 — 그 가드(`GET /api/v1/admin/password/preflight`)와 승인 입력은
-ADR-51 B3에서 지웠다. 다만 `.env` 파일을 다시 쓰는 것이므로, 그 순간 진행 중인 Compose
-mutation은 Docker를 건드리기 전의 env-file 재검증에서 거부될 수 있다 — 진행 중인 작업이
-없을 때 바꾼다.
+ADR-51 B3에서 지웠다. 다만 `.env` 파일을 다시 쓰는 것이므로, rehearsal·production에서는
+그 재작성이 host 변경 lock(3.z)을 잡는다(ADR-51 C-2). 재구축·M05·설치·다른 변경이 lock을
+쥔 동안에는 409 `MANAGER_MUTATION_ACTIVE`로 거절되고 `.env`는 그대로다 — 끝난 뒤 다시
+시도한다.
 
 `.env`가 root `0600`인데 backend가 비-root로 돌면 이 기능은 `ENV_NOT_WRITABLE`로
 거부한다. **권한을 완화하지 마라** — 그 권한이 이 파일의 유일한 보호다. backend를 해당
@@ -363,13 +364,26 @@ mutation은 Docker를 건드리기 전의 env-file 재검증에서 거부될 수
 
 ### 3.z host mutation lease 디렉터리는 부팅 시점에 만든다
 
-`KTDM_DEPLOYMENT_ENVIRONMENT=production`에서 **모든** Compose mutation은
-`/run/lock/kor-travel-docker-manager/global-mutation.lock` 하나를 지난다
-(`c6c_global_mutation_lock_path`). 비운영에서는 이 lease가 `$HOME/.local/state/...`로 간다.
+`KTDM_DEPLOYMENT_ENVIRONMENT`가 `production`이든 `rehearsal`이든 **모든** Manager mutation은
+host 변경 lock `/run/lock/kor-travel-docker-manager/global-mutation.lock`(G) 하나를
+지난다(`c6c_global_mutation_lock_path`, ADR-51 C-2). UI의 컨테이너 조작·설정·초기화,
+관리자 비밀번호 변경, `ktdctl compose-boundary` stage/retire/activate, `ktdctl pin`
+mutator, 재구축·M05·installer launcher가 전부 같은 lock이다(일부러 뺀 것 — 백업·offbox
+동기화·핀 요청 제안·airport 컨테이너 — 은 `docs/decisions.md` ADR-51 "C 범위"). 경합이면
+기다리지 않고 거절한다 — API는 409 `MANAGER_MUTATION_ACTIVE`, CLI는 종료 코드 2다.
+재구축(1~2시간)·M05(그보다 길다)·설치가 도는 동안 화면 변경이 전부 409인 것은 설계다.
+반대로 화면 요청·비밀번호 변경이 G를 몇 ms 쥔 바로 그 순간 시작한 launcher(chain17 등)는
+기다리지 않고 실패하므로 다시 돌린다.
+`$HOME/.local/state/...` 개발 lock과 `KTDM_C6C_DEPLOYMENT_LOCK` override는 비root 개발용
+`local`에만 남는다.
 
-**단, rebuild lease는 환경과 무관하다.** `pinned_runtime_rebuild_lock_path()`는 조건 없이
-`/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock`을 반환한다. rehearsal
-호스트도 이 디렉터리를 쓰므로 이 절은 비운영 호스트에도 적용된다.
+G를 잡는 backend는 root여야 한다(디렉터리 `0700 root:root`). 설치 뒤에는
+`sudo systemctl restart ktdm-backend`를 곧바로 한다 — 재기동 전의 backend는 rehearsal에서
+여전히 `$HOME` lock을 잡는다.
+
+재구축은 G 안에서 `pinned_runtime_rebuild_lock_path()`
+(`/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock`, P)를 하나 더 잡는다.
+rehearsal 호스트도 이 디렉터리를 쓰므로 이 절은 비운영 호스트에도 적용된다.
 
 Debian 계열의 `/run/lock`은 `1777` sticky다(n150 실측 `drwxrwxrwt root:root`). Manager가
 런타임에 이 디렉터리를 처음 만드는 구조라면, 재부팅 직후 비특권 로컬 사용자가 같은 이름을
@@ -595,9 +609,10 @@ canonical root `KOR_TRAVEL_CONCIERGE_*` 값을 사용한다. 이는 legacy UI so
 n150의 pinned rebuild 정본은 `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal`와
 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`을 함께 쓰므로, 이 상태에서는 deployment mode를 수동으로
 `production`으로 바꾸지 않는다. stage·retire는 이 exact rehearsal/rebuildable·PinVi production·Map principal
-필수 contract를 다시 확인하고, 다음 `rebuild-pinned`와 동일한 root-owned host lease로 직렬화한다. production
-mode라면 기존 fixed C6c global lock을 사용한다. 둘 이외의 mode/lifecycle과 caller-supplied project root는
-mutation 전에 거부한다.
+필수 contract를 다시 확인하고, production mode와 마찬가지로 host 변경 lock(3.z의 G)으로
+`rebuild-pinned`·pin 회전·M05·installer와 직렬화한다(ADR-51 C-2). 다른 변경이 G를 쥐고 있으면 기다리지 않고
+`cannot acquire the Manager mutation lock: ...`으로 종료 코드 2를 낸다. 둘 이외의 mode/lifecycle과
+caller-supplied project root는 mutation 전에 거부한다.
 
 stage 성공 뒤 root에서 아래 retire 공식 경로를 한 번 실행한다.
 

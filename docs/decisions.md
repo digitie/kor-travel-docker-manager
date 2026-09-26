@@ -3543,3 +3543,36 @@ doc-only ADR(이것과 Map ADR-102) → A(storage 영수증 없이 통과) → M
 현재 committed 세대 채택 — 추가 리셋 0회) → B3(v8·evidence 삭제) → C(락 통합) → D(permit mount
 제거, v6 쓰기 중단). 결정 2와 무관한 항목(설치기·소스 봉인·실패 출력·compose 규칙)은 그 뒤 각자.
 급한 Map 수정이 생기면 전환 전 구 모델로 리셋 포함 배포를 한 번 더 허용한다.
+
+### NOTE: C 범위 — 하나의 락에 있는 것과 일부러 뺀 것 (2026-09-27, C-2)
+
+락은 `/run/lock/kor-travel-docker-manager/global-mutation.lock`(G) 하나다. 모든 획득은
+`LOCK_EX|LOCK_NB`이고 기다리지 않는다 — launcher·CLI는 종료 코드 2(또는 non-zero), backend
+API는 409 `MANAGER_MUTATION_ACTIVE`. 예외는 비root 개발용 `local`의 `$HOME` 락 하나다.
+
+**G 위에 있는 것** (production·rehearsal 공통):
+
+- launcher: `run-pinned-rebuild-once`(재구축), `run-m05-isolated-e2e-once`(M05), trusted installer.
+- `ktdctl pin` mutator(rotate·rotate-pair·apply-pending·rollback·block·init …), `rebuild-pinned`.
+- `ktdctl compose-boundary` stage·retire·activate-concierge — C-2 전 rehearsal은 pinned lease
+  P만 잡았다.
+- backend API의 Manager 자기 프로젝트 컨테이너 조작·설정·초기화·compose 저장, frozen recovery —
+  C-2 전 rehearsal은 실행 사용자 `$HOME` 락을 잡고 있었다(모드 검사에서 거절되긴 했지만 락은
+  G와 무관했다).
+- 관리자 비밀번호 변경의 `.env` 단일 키 재작성 — retire가 lock 아래에서 읽은 바이트로 `.env`를
+  다시 쓰므로, 그 사이의 비밀번호 변경이 조용히 사라지는 lost update를 닫는다.
+
+재구축의 세 번째 획득(`.env`에서 유도한 락)은 C-2부터 G와 같은 key라 재진입 no-op이다. 파일 락은
+G와 P 두 개이고, P는 C-3에서 지운다.
+
+**일부러 G 밖에 둔 것** — Manager의 compose·`.env`·레지스트리·`/opt` 상태를 바꾸지 않거나
+제안에 그친다:
+
+- **백업**: standalone backup·gc·rehearse-restore는 역할별 `.backup.lock`을 그대로 쓴다. cron
+  (03:15·03:30·03:55 UTC)은 C의 영향을 받지 않는다. pinvi backup이나 rehearse-restore는 지금처럼
+  `--restart`와 겹칠 수 있다.
+- **offbox 동기화**.
+- **제안**: runtime-pin 요청 POST/DELETE와 `ktdctl pin clear-pending`. `apply-pending`이 G 안에서
+  다시 검사한다.
+- **airport 컨테이너**: 외부 프로젝트 `kor-travel-airport*`의 SDK start·stop·restart. 남의
+  compose를 바꾸지 않고 Manager 락이 지키는 대상도 아니다.
