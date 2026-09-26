@@ -204,7 +204,6 @@ _PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES = frozenset(
         "candidate_heads",
         "runtime_generation",
         "runtime_transaction",
-        "runtime_transaction_lock",
     }
 )
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
@@ -5010,7 +5009,6 @@ class ComposeService:
                     candidate.image_ids,
                     excluded_services=_PINNED_RUNTIME_ONESHOT_WRITERS,
                 )
-            with _pinned_runtime_prejournal_step("runtime_transaction_lock"):
             ensure_generation_references((candidate,), cwd=get_project_root())
             runtimes = database_runtimes_from_frozen_contract(
                 resolved=runtime_transaction.resolved,
