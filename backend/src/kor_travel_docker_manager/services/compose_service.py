@@ -66,6 +66,7 @@ from kor_travel_docker_manager.services.capabilities import (
 from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRole,
     DatabaseRuntime,
+    create_database_if_absent,
     database_runtimes_from_frozen_contract,
     ensure_map_application_database,
     initialize_application_300_dagster_metadata_database,
@@ -253,9 +254,9 @@ class _PinnedRuntimeJournalWatermark:
     """이 실행이 배포 상태를 ``in_progress``로 바꿨는지 기록한다(ADR-51).
 
     launcher(`run-pinned-rebuild-once`)는 이 판정 하나로 claim을 해제할지 정한다.
-    ``in_progress``를 쓰기 전의 실패는 아무것도 바꾸지 않았으므로 해제한다. 쓴 뒤의
-    실패도 이제 재시도할 수 있지만(모든 단계가 멱등이다) launcher의 attempt 원장은
-    감사 흔적으로 남긴다.
+    ``in_progress``를 쓰기 전의 실패는 **데이터를** 바꾸지 않았으므로 해제한다(DB 서버
+    기동·carry-over 기록·이미지 태그는 그 전에 일어날 수 있지만 모두 멱등이다). 쓴 뒤의
+    실패도 이제 재시도할 수 있지만 launcher의 attempt 원장은 감사 흔적으로 남긴다.
     """
 
     def __init__(self) -> None:
@@ -4859,20 +4860,35 @@ class ComposeService:
         images.update((name, slot_images[owner]) for name, owner in companions.items())
         return images
 
-    def rebuild_pinned_runtime(self, *, restart_reason: str | None = None) -> dict[str, Any]:
+    def rebuild_pinned_runtime(
+        self,
+        *,
+        restart_reason: str | None = None,
+        adopt_reason: str | None = None,
+    ) -> dict[str, Any]:
         """핀된 Map·PinVi pair를 **마이그레이션 전진**으로 배포한다(ADR-51).
 
         DB는 배포를 넘어 보존된다. 같은 pair를 다시 돌리면 빌드 없이 수렴만 하고, 새
         pair는 멱등 one-shot으로 head까지 올린다. DB를 지우는 길은 ``restart_reason``을
-        준 명시적 ``--restart`` 하나다.
+        준 명시적 ``--restart`` 하나다. ``adopt_reason``(``--adopt-live-databases``)은
+        지금 떠 있는 DB를 지우지 않고 새 identity 기준으로 받아들인다 — 백업 복원처럼
+        비파괴로 DB가 바뀌었을 때 ``--restart`` 말고 빠져나갈 길이다.
 
         얇은 래퍼는 한 가지만 한다 — 실패에 "이 실행이 배포 상태를 ``in_progress``로
         바꿨는가"를 붙인다. launcher는 그 분류로 claim 해제를 정한다.
         """
 
+        if restart_reason is not None and adopt_reason is not None:
+            raise DeploymentContractError(
+                "a deploy either restarts or adopts the live databases, not both"
+            )
         watermark = _PinnedRuntimeJournalWatermark()
         try:
-            return self._rebuild_pinned_runtime(watermark, restart_reason=restart_reason)
+            return self._rebuild_pinned_runtime(
+                watermark,
+                restart_reason=restart_reason,
+                adopt_reason=adopt_reason,
+            )
         except PinnedRuntimePrejournalFailure as exc:
             if watermark.reached():
                 _mark_pinned_runtime_journal_reached(exc)
@@ -4887,6 +4903,7 @@ class ComposeService:
         watermark: _PinnedRuntimeJournalWatermark,
         *,
         restart_reason: str | None,
+        adopt_reason: str | None,
     ) -> dict[str, Any]:
         """배포 본문. 분류는 호출자(래퍼)가 붙인다."""
 
@@ -4896,6 +4913,12 @@ class ComposeService:
             if restart_reason is None
             else DeployRestart(reason=restart_reason, at=_utc_now())
         )
+        adopted = (
+            None
+            if adopt_reason is None
+            else DeployRestart(reason=adopt_reason, at=_utc_now())
+        )
+        explicit = restart is not None or adopted is not None
         release: PinnedRuntimeRelease | None = None
         warnings: list[str] = []
 
@@ -5068,11 +5091,13 @@ class ComposeService:
                 environment=runtime_transaction.environment.effective,
             )
             expected_images = self._deployed_images(candidate, companions)
-            # 수렴 판정과 identity 기준선은 DB를 읽어야 한다. DB 서버를 띄우는 것은
-            # 데이터를 바꾸지 않으므로 `in_progress` 전에 둔다.
+            # 수렴 판정과 identity 기준선은 DB를 읽어야 한다. 여기서는 멈춰 있을 때만
+            # 띄운다 — 떠 있는 DB 컨테이너를 설정 drift 때문에 다시 만들지 않는다(그것은
+            # 전체 경로의 몫이다).
             self._start_pinned_runtime_databases(
                 runtime_transaction=runtime_transaction,
                 map_candidate=map_candidate,
+                recreate=False,
             )
 
             if previous is None:
@@ -5091,7 +5116,7 @@ class ComposeService:
                     write_deploy_status(status_path, previous)
 
             if (
-                restart is None
+                not explicit
                 and previous is not None
                 and previous.state == "committed"
                 and previous.map_revision == candidate.map_source_revision
@@ -5114,16 +5139,16 @@ class ComposeService:
                 )
 
             if (
-                restart is None
+                not explicit
                 and previous is not None
                 and previous.databases is not None
                 and self._observe_deployed_databases(runtimes) != dict(previous.databases)
             ):
-                # 지난 배포가 본 DB가 아니다(누가 지우거나 다시 만들었다). 무엇도 바꾸기
-                # 전에 멈춘다 — 이대로 올리면 모르는 DB 위에 migration을 쌓는다.
+                # 지난 배포가 본 DB가 아니다(누가 지우거나 다시 만들거나 복원했다). 무엇도
+                # 바꾸기 전에 멈춘다 — 이대로 올리면 모르는 DB 위에 migration을 쌓는다.
                 raise DeploymentContractError(
-                    "live databases differ from the last deploy; "
-                    "rebuild them explicitly with --restart"
+                    "live databases differ from the last deploy; accept them with "
+                    "--adopt-live-databases or rebuild them with --restart"
                 )
 
             from kor_travel_docker_manager.services.runtime_execution_registry import (
@@ -5139,12 +5164,14 @@ class ComposeService:
                 pinvi_revision=candidate.pinvi_source_revision,
                 pinset_sha256=candidate.pinset_sha256,
                 restart=restart,
+                adopted=adopted,
             )
             write_deploy_status(status_path, status)
             watermark.mark_reached()
             try:
                 committed = self._deploy_forward(
                     status=status,
+                    status_path=status_path,
                     restart=restart is not None,
                     candidate=candidate,
                     map_candidate=map_candidate,
@@ -5155,13 +5182,6 @@ class ComposeService:
                     state_paths=state_paths,
                     values=values,
                 )
-                # v6 manifest는 한 릴리스 동안 계속 쓴다 — M05 driver·routes·preflight가
-                # 아직 읽는다(ADR-51 D에서 멈춘다).
-                write_pinned_runtime_manifest(
-                    state_paths.manifest,
-                    PinnedRuntimeManifest(version=6, active_generation=candidate),
-                )
-                write_deploy_status(status_path, committed)
             except Exception:
                 try:
                     self._run_pinned_runtime_rebuild_compose(
@@ -5185,6 +5205,15 @@ class ComposeService:
                         "one-shot writer absence"
                     ) from cleanup_error
                 raise
+            # 여기서부터는 검증이 끝난 배포의 기록이다. 기록 쓰기가 실패해도(디스크 부족
+            # 등) 떠 있는 런타임을 내리지 않는다 — 상태는 in_progress로 남고 다음 실행이
+            # 처음부터 다시 돈다(멱등). v6 manifest는 한 릴리스 동안 계속 쓴다 — M05
+            # driver가 읽는다(ADR-51 D에서 멈춘다).
+            write_pinned_runtime_manifest(
+                state_paths.manifest,
+                PinnedRuntimeManifest(version=6, active_generation=candidate),
+            )
+            write_deploy_status(status_path, committed)
             # 이미지 보존 정리는 커밋 뒤에 한다. 실패해도 배포는 끝났다.
             try:
                 reconcile_generation_references((candidate,), cwd=get_project_root())
@@ -5207,24 +5236,41 @@ class ComposeService:
         *,
         runtime_transaction: ComposeTransactionSnapshot,
         map_candidate: MapApplicationCandidate,
+        recreate: bool,
     ) -> None:
-        """두 PostgreSQL을 frozen Compose로 health까지 띄우고 secret·이미지를 확인한다."""
+        """두 PostgreSQL을 health까지 보장하고 secret·이미지를 확인한다.
 
-        self._run_pinned_runtime_rebuild_compose(
-            [
-                "up",
-                "-d",
-                "--no-deps",
-                "--wait",
-                "--wait-timeout",
-                str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
-                "kor-travel-map-postgres",
-                "pinvi-postgres",
-            ],
-            transaction=runtime_transaction,
-        )
+        ``recreate=False``는 이미 준비된 컨테이너를 건드리지 않는다(수렴 판정 전).
+        ``recreate=True``는 frozen Compose로 ``up``해 설정 drift를 반영한다(전체 경로).
+        """
+
+        postgres = ("kor-travel-map-postgres", "pinvi-postgres")
+        ready = False
+        if not recreate:
+            try:
+                self._require_services_ready(
+                    postgres,
+                    transaction=runtime_transaction,
+                    frozen_recovery=True,
+                )
+                ready = True
+            except DeploymentContractError:
+                ready = False
+        if not ready:
+            self._run_pinned_runtime_rebuild_compose(
+                [
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    "--wait",
+                    "--wait-timeout",
+                    str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+                    *postgres,
+                ],
+                transaction=runtime_transaction,
+            )
         postgres_records = self._require_services_ready(
-            ("kor-travel-map-postgres", "pinvi-postgres"),
+            postgres,
             transaction=runtime_transaction,
             frozen_recovery=True,
         )
@@ -5313,6 +5359,7 @@ class ComposeService:
         self,
         *,
         status: DeployStatus,
+        status_path: Path,
         restart: bool,
         candidate: PinnedRuntimeGeneration,
         map_candidate: MapApplicationCandidate,
@@ -5362,8 +5409,19 @@ class ComposeService:
             all_one_shot_containers_absent=True,
         )
 
+        self._start_pinned_runtime_databases(
+            runtime_transaction=runtime_transaction,
+            map_candidate=map_candidate,
+            recreate=True,
+        )
         if restart:
             reset_databases_for_application_300(runtimes)
+            # 지운 **뒤에** 기준선을 비운다. 리셋 전에 죽으면 DB는 그대로이므로 다음 일반
+            # 실행이 여전히 옛 기준으로 확인해야 한다(B2 적대 리뷰).
+            status = replace(status, databases=None)
+            write_deploy_status(status_path, status)
+        # PinVi DB가 없으면(새 호스트·지워진 DB) Map을 건드리기 전에 만든다.
+        create_database_if_absent(runtimes[2])
 
         # Map application DB: 없으면 만들고 role bootstrap, 이미 bootstrap됐으면 그대로.
         ensure_map_application_database(

@@ -115,12 +115,19 @@ def test_unparsable_suffixes_are_ignored(tmp_path: Path, suffix: str) -> None:
 
 
 def test_the_attempt_limit_fails_closed(tmp_path: Path) -> None:
-    """상한은 후보 예산이 아니라 폭주 방어다 — 넘으면 거절한다."""
+    """상한은 후보 예산이 아니라 폭주 방어다 — 넘으면 거절한다.
 
-    names = [_PINSET] + [_PINSET + f"-{ordinal:02d}" for ordinal in range(1, 12)]
+    ADR-51 뒤 같은 pair를 다시 돌리는 것은 정상 수렴이라, 상한이 작으면 몇 주 안에 같은
+    pair가 영구히 막힌다. 그래서 하한도 함께 건다.
+    """
+
+    chooser = _chooser()
+    limit = chooser.__globals__["_LEDGER_CLAIM_ATTEMPT_LIMIT"]
+    assert limit >= 100
+    names = [_PINSET] + [_PINSET + f"-{ordinal:02d}" for ordinal in range(1, limit)]
     ledger = _ledger(tmp_path, *names)
     with pytest.raises(SystemExit) as captured:
-        _chooser()(str(ledger), _PINSET)
+        chooser(str(ledger), _PINSET)
     assert "attempts exceeded the limit" in str(captured.value)
 
 

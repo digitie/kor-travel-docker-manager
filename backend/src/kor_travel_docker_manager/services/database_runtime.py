@@ -471,6 +471,21 @@ def ensure_map_application_database(
     )
 
 
+def create_database_if_absent(runtime: DatabaseRuntime) -> bool:
+    """DB가 없을 때만 frozen 계약의 소유자로 만든다(PinVi는 ``template0``). 만들었으면 True.
+
+    마이그레이션 전진 배포의 일반 경로는 DB를 지우지 않는다. 그래도 새 호스트나 지워진
+    DB에서는 만들 길이 있어야 한다 — 없으면 Map을 이미 올린 뒤 PinVi bootstrap에서
+    실패해 전 서비스가 정지한다(B2 적대 리뷰).
+    """
+
+    _validate_runtime(runtime)
+    if read_database_identity(runtime) is not None:
+        return False
+    _recreate_empty_database_after_owner_preflight(runtime, existing_owner=None)
+    return True
+
+
 def read_database_identity(runtime: DatabaseRuntime) -> tuple[str, int, str] | None:
     """maintenance DB에서 (이름, oid, system identifier)를 읽는다. DB가 없으면 ``None``.
 

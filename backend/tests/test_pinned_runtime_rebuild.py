@@ -2406,6 +2406,7 @@ def _forward_harness(
         carry_over=Mock(return_value=carried),
         contract=Mock(),
         prerequisites=Mock(),
+        create_pinvi=Mock(return_value=False),
     )
 
     def run_compose(arguments: list[str], *, transaction: object) -> dict[str, object]:
@@ -2499,6 +2500,7 @@ def _forward_harness(
         "reconcile_generation_references": Mock(),
         "reconcile_candidate_build_references": Mock(),
         "carry_over_committed_generation": mocks.carry_over,
+        "create_database_if_absent": mocks.create_pinvi,
     }.items():
         monkeypatch.setattr(compose_service_module, name, replacement)
     service = ComposeService()
@@ -2874,3 +2876,167 @@ def test_admission_warnings_ride_the_result(
     result = harness.service.rebuild_pinned_runtime()
 
     assert result["warnings"] == ["the trusted execution binding is stale"]
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_outcome"),
+    (
+        # 수렴 조건의 항 하나씩. 하나라도 어긋나면 수렴이 아니라 전체 경로다.
+        ("heads", "deployed"),
+        ("images", "deployed"),
+        ("pinvi_revision", "deployed"),
+        ("in_progress", "deployed"),
+        ("none", "converged"),
+    ),
+)
+def test_every_term_of_the_convergence_condition_matters(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+    expected_outcome: str,
+) -> None:
+    candidate = _candidate_generation()
+    overrides: dict[str, Any] = {}
+    if change == "images":
+        images = ComposeService._deployed_images(candidate, _FORWARD_COMPANIONS)
+        images["pinvi-web"] = f"sha256:{321:064x}"
+        overrides["images"] = images
+    elif change == "pinvi_revision":
+        overrides["pinvi_revision"] = "1" * 40
+    elif change == "in_progress":
+        overrides.update(state="in_progress", committed_at=None)
+    previous = _committed_status(candidate, **overrides)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    if change == "heads":
+        harness.live["heads"]["pinvi"] = "older-pinvi-head"
+
+        def migrate(**_kwargs: object) -> None:
+            harness.live["heads"]["pinvi"] = candidate.pinvi_head
+
+        harness.mocks.pinvi_bootstrap.side_effect = migrate
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == expected_outcome
+    harness.mocks.reset.assert_not_called()
+
+
+def test_a_replaced_database_of_the_same_pair_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """같은 pair라도 DB가 바뀌었으면 수렴하지 않고 거부한다(수렴 조건의 identity 항)."""
+
+    candidate = _candidate_generation()
+    harness = _forward_harness(
+        monkeypatch, tmp_path, previous=_committed_status(candidate)
+    )
+    harness.live["identities"]["map_dagster"] = (
+        "kor_travel_map_dagster",
+        19999,
+        "7300000000000000001",
+    )
+
+    with pytest.raises(DeploymentContractError, match="--adopt-live-databases"):
+        harness.service.rebuild_pinned_runtime()
+
+    assert _mutating_operations(harness) == []
+
+
+def test_restart_bypasses_the_baseline_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _candidate_generation()
+    harness = _forward_harness(
+        monkeypatch, tmp_path, previous=_committed_status(candidate)
+    )
+    harness.live["identities"]["pinvi"] = ("pinvi", 29999, "7300000000000000002")
+
+    result = harness.service.rebuild_pinned_runtime(restart_reason="rebuild")
+
+    assert result["outcome"] == "deployed"
+    harness.mocks.reset.assert_called_once()
+
+
+def test_adopting_live_databases_rebaselines_without_a_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """백업 복원처럼 비파괴로 DB가 바뀌었을 때 `--restart` 말고 빠져나갈 길이다."""
+
+    candidate = _candidate_generation()
+    harness = _forward_harness(
+        monkeypatch, tmp_path, previous=_committed_status(candidate)
+    )
+    restored = ("pinvi", 29999, "7300000000000000002")
+    harness.live["identities"]["pinvi"] = restored
+
+    result = harness.service.rebuild_pinned_runtime(adopt_reason="restored from backup")
+
+    assert result["outcome"] == "deployed"
+    harness.mocks.reset.assert_not_called()
+    status = read_deploy_status(harness.status_path)
+    assert status is not None and status.state == "committed"
+    assert status.adopted is not None and status.adopted.reason == "restored from backup"
+    assert (status.databases or {})["pinvi"] == DeployedDatabase(*restored)
+
+
+def test_a_restart_that_dies_before_the_reset_keeps_the_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    harness.mocks.reset.side_effect = DeploymentContractError("owner differs")
+
+    with pytest.raises(DeploymentContractError):
+        harness.service.rebuild_pinned_runtime(restart_reason="rebuild")
+
+    status = read_deploy_status(harness.status_path)
+    assert status is not None and status.state == "in_progress"
+    # 지우지 못했으므로 다음 일반 실행은 여전히 옛 기준으로 확인해야 한다.
+    assert dict(status.databases or {}) == dict(previous.databases or {})
+
+
+def test_the_convergence_check_does_not_recreate_running_databases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _candidate_generation()
+    harness = _forward_harness(
+        monkeypatch, tmp_path, previous=_committed_status(candidate)
+    )
+
+    harness.service.rebuild_pinned_runtime()
+
+    assert not any(
+        operation[:1] == ("up",) and "kor-travel-map-postgres" in operation
+        for operation in harness.operations
+    )
+
+
+def test_an_absent_pinvi_database_is_created_before_the_map_migrates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    order: list[str] = []
+    harness.mocks.create_pinvi.side_effect = lambda runtime: order.append(runtime.role)
+    harness.mocks.ensure_map.side_effect = lambda *_args, **_kwargs: order.append("map")
+
+    harness.service.rebuild_pinned_runtime()
+
+    assert order == ["pinvi", "map"]
+
+
+def test_a_failed_bookkeeping_write_leaves_the_verified_runtime_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """디스크가 차서 기록을 못 써도 검증이 끝난 런타임을 내리지 않는다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.mocks.manifest_write.side_effect = DeploymentContractError("disk full")
+
+    with pytest.raises(DeploymentContractError, match="disk full"):
+        harness.service.rebuild_pinned_runtime()
+
+    stop = ("stop", *RUNTIME_SERVICES, *sorted(_FORWARD_COMPANIONS))
+    assert harness.operations.count(stop) == 1
+    status = read_deploy_status(harness.status_path)
+    assert status is not None and status.state == "in_progress"

@@ -326,19 +326,25 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
             )
             return 2
         restart = bool(getattr(args, "restart", False))
+        adopt = bool(getattr(args, "adopt_live_databases", False))
         reason = getattr(args, "reason", None)
-        if restart != (reason is not None):
+        if (restart and adopt) or ((restart or adopt) != (reason is not None)):
             print(
-                "pinvi-pair rebuild-pinned: --restart and --reason go together "
-                "(no mutation was attempted)",
+                "pinvi-pair rebuild-pinned: --reason goes with exactly one of "
+                "--restart or --adopt-live-databases (no mutation was attempted)",
                 file=sys.stderr,
             )
             return 2
-        result = (
-            compose_service.rebuild_pinned_runtime(restart_reason=reason)
-            if restart
-            else compose_service.rebuild_pinned_runtime()
-        )
+        if restart:
+            result = compose_service.rebuild_pinned_runtime(restart_reason=reason)
+        elif adopt:
+            result = compose_service.rebuild_pinned_runtime(adopt_reason=reason)
+        else:
+            result = compose_service.rebuild_pinned_runtime()
+        if not args.json:
+            # launcher는 --json으로 경고를 받는다. 사람이 직접 돌릴 때도 보여야 한다.
+            for warning in result.get("warnings", []):
+                print(f"warning: {warning}", file=sys.stderr)
     except PinnedRuntimePrejournalFailure as exc:
         # 봉인 단계는 전부 resume 분기보다 앞에서 돈다. journal이 이미 존재하는
         # 실행에서 봉인 단계가 실패하면 그 후보는 **이미 소비됐다** — 같은
@@ -1921,8 +1927,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Map·Dagster·PinVi DB를 지우고 빈 DB에서 다시 만듭니다(유일한 파괴 경로).",
     )
     pair_rebuild.add_argument(
+        "--adopt-live-databases",
+        action="store_true",
+        help=(
+            "지난 배포 뒤 DB가 비파괴로 바뀌었을 때(예: 백업 복원) 지금 DB를 지우지 않고 "
+            "새 기준으로 받아들입니다."
+        ),
+    )
+    pair_rebuild.add_argument(
         "--reason",
-        help="--restart의 사유(한 줄, 200자 이하). 배포 상태에 기록됩니다.",
+        help=(
+            "--restart 또는 --adopt-live-databases의 사유(한 줄, 200자 이하). "
+            "배포 상태에 기록됩니다."
+        ),
     )
     pair_rebuild.add_argument(
         "--json",

@@ -539,9 +539,11 @@ def test_public_generation_copy_fails_closed_when_all_public_artifacts_are_inval
     assert observed["journal"] is None
 
 
-def test_public_generation_copy_fails_closed_when_only_one_artifact_is_published(
+def test_public_generation_copy_is_the_manifest_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """ADR-51 뒤 배포는 v8 journal을 쓰지 않는다 — 커밋 때 쓰는 manifest 하나가 증거다."""
+
     state = tmp_path / "state"
     state.mkdir(mode=0o700)
     os.chmod(state, 0o700)
@@ -554,15 +556,36 @@ def test_public_generation_copy_fails_closed_when_only_one_artifact_is_published
 
     observed = read_published_pinned_runtime_generation()
 
+    assert observed["status"] == "ok"
+    assert observed["manifest"] is not None
+    assert observed["journal"] is None
+
+
+def test_public_generation_copy_without_a_manifest_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", _journal("b"))
+
+    observed = read_published_pinned_runtime_generation()
+
     assert observed["status"] == "unknown"
     assert observed["manifest"] is None
-    assert observed["journal"] is None
     assert observed["summary"]["state"] == "unknown"
 
 
-def test_public_generation_copy_rejects_mismatched_manifest_and_journal(
+def test_a_stale_legacy_journal_copy_is_ignored_not_fatal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """마이그레이션 전진 배포가 manifest를 새로 쓰면 옛 v8 공개 사본과 달라진다.
+
+    종전처럼 불일치를 `unverified`로 두면 전진 배포 한 번 뒤 `pin verify`가 영구히 1이 되고
+    그것을 요구하는 M05 하네스가 막힌다(B2 적대 리뷰 M1).
+    """
+
     state = tmp_path / "state"
     state.mkdir(mode=0o700)
     os.chmod(state, 0o700)
@@ -575,9 +598,9 @@ def test_public_generation_copy_rejects_mismatched_manifest_and_journal(
 
     observed = read_published_pinned_runtime_generation()
 
-    assert observed["status"] == "unverified"
-    assert observed["pinset_binding"]["status"] == "unknown"
-    assert observed["summary"]["state"] == "unverified"
+    assert observed["status"] == "ok"
+    assert observed["journal"] is None
+    assert observed["manifest"] is not None
 
 
 @pytest.mark.parametrize("unsafe", ["symlink", "writable"])

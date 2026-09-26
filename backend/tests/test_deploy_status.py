@@ -80,13 +80,47 @@ def test_begin_after_an_interrupted_run_keeps_its_baseline() -> None:
     assert _begin(interrupted).databases == _DATABASES
 
 
-def test_restart_clears_the_identity_baseline() -> None:
+def test_restart_keeps_the_baseline_until_the_reset_actually_happens() -> None:
+    """리셋 전에 죽으면 DB는 그대로다 — 다음 일반 실행이 여전히 옛 기준으로 확인해야 한다."""
+
     restart = DeployRestart(reason="rebuild from empty DBs", at="2026-09-26T02:00:00+00:00")
 
     status = _begin(_committed(), restart=restart)
 
-    assert status.databases is None
+    assert status.databases == _DATABASES
     assert status.restart == restart
+
+
+def test_adopting_the_live_databases_clears_the_baseline() -> None:
+    adopted = DeployRestart(reason="restored from backup", at="2026-09-26T02:00:00+00:00")
+
+    status = _begin(_committed(), adopted=adopted)
+
+    assert status.databases is None
+    assert status.adopted == adopted
+
+
+def test_a_deploy_cannot_both_restart_and_adopt() -> None:
+    record = DeployRestart(reason="x", at="2026-09-26T02:00:00+00:00")
+
+    with pytest.raises(DeploymentContractError, match="either restarts or adopts"):
+        _begin(_committed(), restart=record, adopted=record)
+
+
+def test_an_adoption_record_round_trips(tmp_path: Path) -> None:
+    adopted = DeployRestart(reason="restored from backup", at="2026-09-26T02:00:00+00:00")
+    status = commit_deploy(
+        _begin(_committed(), adopted=adopted),
+        committed_at="2026-09-26T03:00:00+00:00",
+        images=_IMAGES,
+        schema_heads=_HEADS,
+        databases=_DATABASES,
+    )
+    path = deploy_status_path(tmp_path)
+
+    write_deploy_status(path, status)
+
+    assert read_deploy_status(path) == status
 
 
 def test_only_an_in_progress_deploy_can_be_committed() -> None:
