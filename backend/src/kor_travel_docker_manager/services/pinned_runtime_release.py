@@ -88,7 +88,7 @@ def canonical_pinset_sha256(
     version: int,
     sources: tuple[PinnedRuntimeSourceSpec, ...],
 ) -> str:
-    """candidate generation과 durable journal이 공유하는 pinset identity."""
+    """candidate generation과 배포 기록(``deploy-status.json``)이 공유하는 pinset identity."""
 
     return hashlib.sha256(canonical_pinset_bytes(version=version, sources=sources)).hexdigest()
 

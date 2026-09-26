@@ -423,8 +423,6 @@ def test_create_rejects_forged_owner_private_state_root(tmp_path: Path) -> None:
         state_paths,
         state_root=forged_root,
         manifest=forged_root / "pinned-runtime-generation-v5.json",
-        journal=forged_root / "pinned-runtime-rebuild-v5.json",
-        tombstone_receipt=forged_root / "pinned-runtime-v5" / "legacy-tombstone-v5.json",
     )
 
     with pytest.raises(DeploymentContractError, match="canonical rebuildable state"):

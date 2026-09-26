@@ -91,7 +91,7 @@ class MaterializedRuntimeSource:
 
 @dataclass(frozen=True)
 class PinnedRuntimeSourceMaterialization:
-    """candidate build와 v5 journal이 공유하는 source pinset 결과."""
+    """candidate build와 배포 기록(``deploy-status.json``)이 공유하는 source pinset 결과."""
 
     release: PinnedRuntimeRelease
     sources: tuple[MaterializedRuntimeSource, ...]

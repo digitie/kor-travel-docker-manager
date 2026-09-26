@@ -255,8 +255,8 @@ fail-close한다. 따라서 파일을 편집해 임의 저장소를 가리키게
 
 ```bash
 ktdctl pin show [--json]     # 현재 pin·digest·회전 메타·차단 목록 (읽기 전용)
-ktdctl pin verify [--json]   # registry와 v6/v8 generation 공개 사본 strict 정합 (읽기 전용)
-ktdctl pin publish-generation --manifest <absolute-v6-path> --journal <absolute-v8-path> --confirm
+ktdctl pin verify [--json]   # registry와 v6 manifest generation 공개 사본 strict 정합 (읽기 전용)
+ktdctl pin publish-generation --manifest <absolute-v6-path> --confirm   # 잃은 공개 사본 복구 (root 전용)
 ktdctl pin init --confirm    # 호스트 최초 1회 (기본 seed: config/runtime-pins.seed.json)
 ktdctl pin rotate --role map|pinvi --revision <40-hex> --reason "..." --confirm
 ktdctl pin rotate-pair --map-revision <40-hex> --pinvi-revision <40-hex> --reason "..." --confirm
@@ -282,11 +282,12 @@ ktdctl pin clear-pending --request-id <id> --confirm
   registry 트리는 installer가 매 설치마다 `0700`으로 되돌려 비-root가 traverse할 수 없다.
   사본이 registry보다 오래되면 `stale`, 사본 없이 registry를 직접 읽었으면 `degraded`,
   둘 다 읽을 수 없으면 `unknown`으로 표시하고 값을 추측하지 않는다.
-- **generation 공개 계약**: v6 manifest·v8 journal은 root private state에 계속 두고,
-  writer와 root `pin publish-generation`만 같은 public 트리에 `0644` 원본 사본을 원자
-  기록한다. backend·Map·PinVi의 관측 정본은
-  `GET /api/v1/pinned-runtime/generation`이며, 사람이 읽는 summary·terminal은 API
-  envelope에만 둔다. raw 문서 키를 바꾸지 않는다.
+- **generation 공개 계약**: v6 manifest는 root private state에 계속 두고, 배포 커밋과
+  root `pin publish-generation`만 같은 public 트리에 `0644` 원본 사본을 원자 기록한다.
+  backend·Map·PinVi의 관측 정본은 `GET /api/v1/pinned-runtime/generation`이며, 사람이 읽는
+  summary와 registry pair 결박(`pinset_binding`)은 API envelope에만 둔다. raw 문서 키를
+  바꾸지 않는다. v8 journal은 ADR-51 B3부터 쓰지도 읽지도 않으며, 공개 트리에 남은 옛
+  `pinned-runtime-rebuild-v8.json`은 무시된다.
 - **재기동 불요**: 로드는 mtime·size·inode 스탬프로 캐시를 무효화하므로 pin 회전은
   실행 중 Manager에 즉시 반영된다.
 - **회전 이력과 롤백**: rotate는 digest를 자동 계산하고 이전 registry를
@@ -312,14 +313,14 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
   `ktdctl pin rotate-pair`로 새 Map·PinVi pinset을 만드는 것뿐이다(의도적으로 `pin unblock`은 없다).
 - M05처럼 Map·PinVi compatibility pair를 바꿀 때는 `ktdctl pin rotate-pair`만 사용한다.
   terminal current pinset의 role별 `pin rotate`는 intermediate tuple을 만들지 않도록 거부된다.
-- **phase 한정 차단** — 그 phase의 journal 재개만 금지한다. 기존 d9 admission과
-  동일한 의미이며 rebuild 시작 게이트는 관여하지 않는다.
+- **phase 한정 차단** — 그 pinset으로의 회전·rollback만 막는다. 옛 journal 재개 차단은
+  journal 재개와 함께 없어졌다(ADR-51 B3). rebuild 시작 게이트는 관여하지 않는다.
 - `pin rotate`/`pin rotate-pair --block-previous`는 직전 pinset을 terminal로 등재한다. 회전 사유가
   "직전 candidate가 실패로 끝났다"인 경우의 표준 사용법이다.
 - **차단 하한선은 코드가 소유한다.** registry가 손상되거나 오래된 사본으로 시딩돼도
   d9 계열 historical 차단은 유지된다 — 목록은 데이터, 하한선은 코드다.
 - `pin verify`는 현재 pinset이 재시도 금지 상태이거나 registry/generation 공개 사본이
-  incomplete·malformed·drift이면 비정상 종료한다. pair 회전 직후의 완전한 이전 generation은
+  없거나 손상됐거나 결박을 확인할 수 없으면(`unknown`) 비정상 종료한다. pair 회전 직후의 완전한 이전 generation은
   `pending_rebuild`로 알리되 current라고 부르지 않는다. digest가 맞다는 이유만으로 0을 반환하면
   운영자가 rebuild 직전에 잘못 안심하게 되기 때문이다.
 - 의도적으로 `pin unblock`은 제공하지 않는다. 해소 경로는 새 revision으로의 회전이다.
@@ -343,7 +344,7 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 | `POST` | `/api/v1/backups/{role}` | 백업 생성을 시작하고 `202` + job id를 돌려준다. 동시 실행은 `409` |
 | `GET` | `/api/v1/backups/{role}/jobs[/{job_id}]` | job 상태 폴링. `/jobs`는 새로고침 뒤 재접속용 최신 job |
 | `GET` | `/api/v1/runtime-pins` | pinned revision·pinset digest·회전 이력·차단 목록·대기 중인 회전 요청. registry 회전은 root `ktdctl pin rotate`/`pin rotate-pair`/`pin apply-pending` 전용이라 이 route는 registry를 쓰지 않는다 |
-| `GET` | `/api/v1/pinned-runtime/generation` | root가 발행한 v6 manifest·v8 rebuild journal 원본과 terminal·진행 요약. backend는 private state를 읽지 않으며, raw 문서 키를 바꾸지 않는다 |
+| `GET` | `/api/v1/pinned-runtime/generation` | root가 발행한 v6 manifest 원본과 current registry pair 결박(`match`·`pending_rebuild`·`unknown`)·요약. backend는 private state를 읽지 않으며, raw 문서 키를 바꾸지 않는다. 옛 `journal`·`terminal` 키는 ADR-51 B3에서 없어졌다 |
 | `POST/DELETE` | `/api/v1/runtime-pins/requests[/{id}]` | 회전 **요청** 기록·취소. 적용은 root `ktdctl pin apply-pending --expect-revision <40-hex> --confirm` 전용이다 |
 | `GET` | `/api/v1/deployment-readiness` | 재구축 사전 점검(관측 전용). 무엇도 pull하지 않으며 호스트를 읽지 못하면 `unknown` 행으로 떨어진다. 검사하지 않기로 **결정한** 항목은 `unavailable_checks`로 이유와 함께 노출한다. 검사 4종: Compose 단일 파일, 사이드카 필수 스크립트, 고정 PinVi revision의 역할 부트스트랩 계약, Map 후보 빌드의 고정 Python base image |
 | `GET` | `/api/v1/pinned-rebuild/preflight` | 재구축을 지금 시작할 수 있는지의 판정(관측 전용). registry뿐 아니라 공개 generation이 `match` 또는 회전 직후의 유효한 `pending_rebuild`인지 함께 요구한다. **실행 route가 아니다** — 재구축은 root를 요구하므로 payload는 차단 사유와 실행할 명령만 준다 |
@@ -616,76 +617,34 @@ Map UI runtime 인증의 `KOR_TRAVEL_MAP_UI_ADMIN_USERNAME`,
 같거나 그 일부여도 허용하지만, Map UI의 exact wiring/runtime equality와 Map UI 밖 username 환경변수 이름
 금지는 유지한다.
 
-### 7.7 F1D application `300` 비운영 runtime 재구축
+### 7.7 pinned runtime 배포 (ADR-51 마이그레이션 전진)
 
-새 Map·PinVi generation과 새 schema를 만드는 mutation은 격리된
-`rehearsal/rebuildable` 환경의 다음 명령 하나다.
+새 Map·PinVi generation을 배포하는 mutation은 격리된 `rehearsal/rebuildable` 환경의 다음 명령 하나다.
 
 ```bash
 sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
   pinvi-pair rebuild-pinned --confirm
 ```
 
-이 명령은 tracked Map·PinVi exact source pin과 Map application-300 paired candidate로 일곱 runtime
-image와 세 schema head를 먼저 attest한다. Map API·Dagster는 Map sealed builder가 같은 commit/tree에서
-만든 exact image ID를 쓰고, Manager는 Map UI와 PinVi API·Web·Dagster 네 image만 build한다. 그 뒤 Map
-application·Map Dagster·PinVi database를 drop/create한다.
+이 명령은 tracked Map·PinVi exact source pin과 Map paired candidate로 일곱 runtime image와 세 schema
+head를 먼저 attest한다. Map API·Dagster는 Map sealed builder가 같은 commit/tree에서 만든 exact image ID를
+쓰고, Manager는 Map UI와 PinVi API·Web·Dagster 네 image만 build한다. candidate가 준비되기 전에는 DB를
+건드리지 않는다.
 
-Map application은 과거 Alembic chain이나 restore를 replay하지 않는다. fresh DB identity를 고정하고
-root/finalize operation plan·fence·durable intent·result를 순서대로 검증한 뒤 application final permit을
-발행해 head `300`을 만든다. Dagster metadata는 별도 DB identity와 metadata permit을 사용하고 storage
-migration은 journal transaction ID를 operation ID로 쓰는 DB intent+receipt로 수렴한다. root/finalize의
-결과 없는 intent 재개는 append-only DB receipt를 먼저 복구하고, receipt 부재와 exact pre-state를 함께
-증명할 때만 같은 operation을 안전하게 재실행한다. Dagster 재개도 같은 operation ID로 receipt를
-복구·완결하며, web·daemon은 `--no-deps`로 기동해 migration을 암묵적으로 다시 실행하지 않는다. 이후
-PinVi bootstrap·서비스 readiness·F1J smoke를 순서대로 검증한다.
+DB는 배포를 넘어 보존된다. 영속 기록은 state root의 `deploy-status.json`(`in_progress`/`committed`)
+하나다. 같은 pair·image·DB identity·head면 빌드·migration·정지 없이 수렴만 한다(`outcome: converged`).
+새 pair는 `in_progress`를 쓴 뒤 없는 DB만 만들고, Map application schema·Dagster storage·PinVi admin
+bootstrap one-shot을 멱등으로 돌려 각 head를 Manager가 DB에서 직접 읽어 candidate와 대조한다. 전 서비스
+readiness·image·secret isolation과 C6c smoke가 통과하면 v6 manifest와 `committed`를 쓴다
+(`outcome: deployed`). 실패하면 runtime을 멈추고 상태를 `in_progress`로 남기며, 다음 실행이 처음부터
+다시 돈다. DB를 지우는 길은 `--restart --reason "..."` 하나이고, 백업 복원처럼 비파괴로 바뀐 DB는
+`--adopt-live-databases --reason "..."`로 새 기준으로 받아들인다. 순서 전체는
+[`prod-deployment.md` §8.1](prod-deployment.md)에 있다.
 
-기본 후보는 현재 pinset state root에서 root/finalize fence와 application/Dagster permit의 고정
-mount directory를 먼저 계산한다. 이 directory의 준비와 candidate volume graph 검증 외에는 source
-materialize·image build·journal·DB reset보다 먼저 발생하는 작업이 없다. 운영 `.env`에 pinset별
-artifact 경로를 따로 유지하거나 수동으로 주입해서는 안 된다.
-
-PinVi M05의 database role topology는 `pinvi-db-runtime-role` bootstrap one-shot이 한 번만
-만든다. PostgreSQL initial-superuser secret file은 PostgreSQL·DB 생성 one-shot·이 role one-shot만
-읽으며, normal PinVi API·Dagster에는 runtime application role DSN만, `pinvi-admin-bootstrap`에는
-migrator role DSN만 전달한다. initial superuser·runtime application·migrator credential 값도 서로 달라야
-한다. rebuild는 role one-shot을 명시적으로 open한 뒤 admin/schema bootstrap을 수행하고, 성공·실패 어느
-경우에도 같은 one-shot으로 migrator login을 seal한다. endpoint는 host network의
-`127.0.0.1:12800`으로 고정한다. source bootstrap script는 읽기 전용 bind에 실행 비트를 요구하지 않도록
-`sh`로 호출한다. 이 lifecycle 밖의 수동 Compose·SQL 실행은 허용하지 않는다.
-
-새 pinset candidate의 Map paired candidate·frozen Compose source contract·external readiness는 기존 DB를
-폐기하기 전에 확인한다. 반면 sealed topology verifier는 폐기 대상인 기존 catalog를 target-state로
-해석하지 않는다. PinVi DB drop/create만으로는 PostgreSQL cluster-global role catalog가 비워지지 않으므로,
-Manager는 reset intent를 journal에 fsync하고 새 DB identity를 결박한 root-owned `0600` permit을 발행한 뒤
-fresh-only exact four-role catalog reset one-shot을 실행한다. permit·empty target·foreign dependency·catalog lock
-검증 하나라도 실패하면 generic terminal receipt만 남기고 runtime을 정지한다. 이후 PinVi role open → admin/migration bootstrap → migrator seal과 exact
-PinVi schema head 확인을 마친 fresh DB에만 같은 one-shot을
-`PINVI_ROLE_TOPOLOGY_VERIFY_ONLY=1`·sealed migrator로 실행한다. verifier는 고정 schema의 canonical
-결과만 통과시키며, ordered fixed reason의 noncanonical·입력/endpoint/검증 불가·형식 불일치는 원문 출력
-없이 fail-close한다. 이 실패는 `pinvi_role_verify`의 비밀 비포함 terminal receipt로 v8 journal에 먼저
-기록하고 seven runtime을 정지하므로 같은 pinset은 재시도할 수 없다. verify-only를 지원하는 PinVi immutable
-revision과 함께만 이 gate를 배포하며, 기존 pinset이나 historical journal을 재시도·수정하지 않는다.
-
-`rebuild-pinned --confirm`은 fresh root `.env`에 위 topology의 여섯 role 값이 모두 **미선언**인 경우에만,
-trusted `/opt/kor-travel-docker-manager`의 Compose·`.env` pair를 caller path override 없이 고정하고, root-owned
-pinned-runtime host lease 안에서 exact rebuildable admission과 C6c token을 먼저 확인한 뒤 정해진 서로 다른 role명과
-무작위 runtime/migrator password를 `0600` root `.env`에 원자적으로 초기화한다. 한 값이라도 선언·공백·중복·
-불일치하거나 file identity가 바뀌면 기존 값을 채우거나 회전하지 않고 candidate/journal/runtime/DB mutation 전에
-fail-close한다. pinned root `.env`의 값은 dotenv/caller 환경 보간을 적용하지 않는 literal authority이며, 완전한
-기존 role 값은 같은 원문 여섯 값을 frozen Compose snapshot에 명시적으로 결박해 재사용만 한다. 원문 credential은
-Compose output, journal, CLI result, log에 넣지 않는다.
-
-current pinset의 `map_runtime_ready` v8 journal만 예외적으로 fresh role source를 재결박할 수 있다. 같은 root
-write에는 이전 environment SHA만 남긴 marker를 넣고, candidate raw/resolved Compose 검증 뒤 journal에 이전/현재
-environment SHA와 resolved Compose SHA를 포함한 단 한 번의 receipt를 추가한다. 다른 phase/digest 또는 이미
-재결박된 journal은 새 role credential을 쓰기 전에 거부하므로 기존 resume의 immutable candidate authority를
-약화하지 않는다.
-
-manifest는 v6, pinset별 resume journal/tombstone은 v8이다. final/committed resume은 일곱 실행 중
-container의 실제 image ID와 세 DB head를 generation에 다시 exact 대조한다. 실패와 재실행 모두 기존 DB,
-image, manifest를 복원하지 않는다. backup·scratch restore·이전 revision rollback은 release gate가 아니다.
-source/ETL 재적재는 committed 뒤의 별도 workflow다.
+PinVi는 geo 패턴처럼 scoped app role 하나가 자기 database를 소유한다(ADR-46). 종전의 M05 다중 role
+topology·catalog reset·role verify one-shot과 그것을 담던 v8 journal receipt는 없어졌다. v8 rebuild
+journal·tombstone 모델은 ADR-51 B3에서 코드째 지웠고, 호스트에 남은 v8 파일은 읽지 않는다. v6 manifest는
+step D까지 M05 driver가 읽으므로 커밋 때 계속 쓴다.
 
 rebuildable 환경에서는 cache-target integration이 완전히 inert여야 한다. Map principal registry는 `[]`,
 PinVi sync는 `false`, 관련 token·contract scalar는 비어 있고 consumer ID는 Compose 기본값이어야 한다.
@@ -697,10 +656,10 @@ backup/restore가 필요해지면 과거 pair/cache state와 독립된 새 primi
 
 ### 7.8 퇴역한 C7 v4 `pinvi-pair capture`
 
-> **실행 금지 · 역사 기록** — application `300`의 current authority는 seven-service v6
-> `pinned-runtime-generation`과 v8 rebuild journal뿐이다. `compatible-pair-v4.json`은
-> F1D legacy tombstone 대상이며, 이를 생성·갱신·attestation 입력으로 쓰는 절차는 현재
-> candidate를 증명하지 못한다.
+> **실행 금지 · 역사 기록** — application `300`의 current authority는 `deploy-status.json`과
+> seven-service v6 `pinned-runtime-generation`뿐이다. `compatible-pair-v4.json`은 legacy
+> artifact이며, 이를 생성·갱신·attestation 입력으로 쓰는 절차는 현재 candidate를 증명하지
+> 못한다.
 
 현재 Manager CLI에는 `pinvi-pair capture`가 없다. 설치본에 같은 이름의 하위 명령이
 보이면 과거 v4 설치본으로 간주한다. 그 명령은 `--help`를 포함해 실행하거나 검사 대상으로
@@ -711,8 +670,8 @@ backup/restore가 필요해지면 과거 pair/cache state와 독립된 새 primi
 거부되는지만 확인한다. 이 확인 전에는 rebuild, C7 attestation, consumer acceptance를
 재개하지 않는다.
 
-v4 artifact는 current input으로 재사용하지 않는다. rebuild가 남기는 v6 manifest, v8
-journal 및 legacy tombstone receipt만 현재 generation의 provenance로 사용한다.
+v4 artifact는 current input으로 재사용하지 않는다. 배포가 남기는 `deploy-status.json`과
+v6 manifest만 현재 generation의 provenance로 사용한다.
 
 ### 7.9 퇴역한 v4 compatible-pair 설계 (역사 기록 · 실행 금지)
 
@@ -752,8 +711,8 @@ payload를 읽어 자동 변환하지 않으며 symlink·비정규 파일·다�
 
 이하 v4 설명의 명령과 동작은 **역사 기록이며 실행하지 않는다**. 옛 parser에는
 `--verified-compatible`, `--build`, `--wait-timeout` 조합이 있었고 capture가 runtime을 중지·재생성했다.
-current CLI에는 capture parser나 v4 attestation 절차가 없으며, current authority는 §7.5가 가리키는
-v6 generation·v8 journal뿐이다.
+current CLI에는 capture parser나 v4 attestation 절차가 없으며, current authority는 §7.7이 가리키는
+`deploy-status.json`·v6 generation뿐이다.
 
 > **실행 금지** — 역사적 `deploy`의 정확한 명령 문자열은 복사·실행 위험 때문에 의도적으로
 > 기록하지 않는다. current authority는 §7.5의 `rebuild-pinned`뿐이며, 이 문단은 현재 운영

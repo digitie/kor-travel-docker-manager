@@ -345,29 +345,18 @@ _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE = {
 
 @dataclass(frozen=True)
 class _ComposeFailureDiagnostic:
-    """pinned runtime rebuild 실패 진단을 사람이 읽는 문구와 기계 판독 코드로 나눈다.
+    """pinned runtime rebuild 실패 진단 중 사람이 읽는 문구.
 
-    ``message_suffix``는 로그·CLI에 그대로 보이는 문구다(``"; pinvi_role:code"``
-    형태, 하위호환 유지). ``pinvi_role_code``는 그 문구를 나중에 다시 파싱하지 않고
-    바로 쓰는 구조화된 값이다 — 문구 조립 형식(괄호 위치 등)이 바뀌어도 lifecycle
-    분류가 조용히 깨지지 않게 한다.
+    ``message_suffix``는 로그·CLI에 그대로 보이는 문구다(``"; pinvi:code"`` 형태).
+    예전에는 PinVi role lifecycle 분류용 구조화 코드도 함께 실었지만, 그것을 읽던
+    v8 journal 차단 기록이 ADR-51 B3에서 사라져 문구만 남았다.
     """
 
     message_suffix: str
-    pinvi_role_code: str | None = None
 
 
 class PinnedRuntimeComposeFailure(DeploymentContractError):
-    """pinned runtime rebuild Compose 실행 실패. 진단 코드를 속성으로 전달한다.
-
-    ``_pinvi_lifecycle_diagnostic``는 이 속성을 우선 쓰고, 이 타입이 아니거나 속성이
-    없는 예외에 대해서만 메시지 재파싱으로 폴백한다 — 기존 경로를 깨지 않는 additive
-    변경이다.
-    """
-
-    def __init__(self, message: str, *, pinvi_role_diagnostic: str | None = None) -> None:
-        super().__init__(message)
-        self.pinvi_role_diagnostic = pinvi_role_diagnostic
+    """pinned runtime rebuild Compose 실행 실패."""
 
 
 # fresh Dagster DB의 PostgreSQL readiness window를 덮되 총 retry 대기는 58초를 넘지 않는다.
@@ -4295,7 +4284,6 @@ class ComposeService:
             "pinned runtime rebuild Compose "
             f"{compose_action} command failed "
             f"(exit {result['returncode']}{diagnostic.message_suffix})",
-            pinvi_role_diagnostic=diagnostic.pinvi_role_code,
         )
 
     @staticmethod
@@ -4314,12 +4302,7 @@ class ComposeService:
         args: Sequence[str],
         result: Mapping[str, Any],
     ) -> _ComposeFailureDiagnostic:
-        """허용된 one-shot typed error만 원문 없이 F1D 오류에 붙인다.
-
-        ``pinvi_role_code``는 pinvi_role 대상일 때만 채운다 — 그 값이
-        ``_pinvi_lifecycle_diagnostic``이 메시지를 재파싱하지 않고 바로 쓰는
-        구조화된 판정 결과다.
-        """
+        """허용된 one-shot typed error만 원문 없이 F1D 오류에 붙인다."""
 
         compose_action = ComposeService._pinned_runtime_compose_action(args)
         if compose_action != "run":
@@ -4366,11 +4349,8 @@ class ComposeService:
                             and _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE.get(code)
                             == phase
                         ):
-                            # M05 폐기로 role 코드 공간이 사라져 이제 이 속성을
-                            # 쓰는 것은 admin-bootstrap 하나뿐이다.
                             return _ComposeFailureDiagnostic(
                                 message_suffix=f"; pinvi:{code}",
-                                pinvi_role_code=code,
                             )
         return _ComposeFailureDiagnostic(message_suffix="")
 
@@ -4542,7 +4522,7 @@ class ComposeService:
         role 모델(M05)을 폐기하고 geo 패턴(scoped app role 하나가 자기 database를
         소유)으로 접으면서 열고 닫을 창 자체가 없어졌다 — role이 자기 database의
         owner라 DDL 권한을 상시 갖는다. 실패 분류도 함께 사라진다: open/seal 두
-        지점이 없으니 `_PinviRoleLifecycleError`로 감쌀 단계가 남지 않는다.
+        지점이 없으니 PinVi role lifecycle 오류로 감쌀 단계가 남지 않는다.
         """
 
         with pinvi_bootstrap_credential_file(
@@ -5486,7 +5466,6 @@ class ComposeService:
         run_pinvi_canonical_smoke(
             load_c6c_deployment_config_from_environment(values),
             cancel_probe_state=PinviCancelProbeState(transaction_id=status.run_id),
-            state_recorder=lambda _state: None,
         )
         compose_up(*_with_generation_companions(("pinvi-web", "pinvi-dagster"), companions))
         self._verify_pinned_runtime_services(

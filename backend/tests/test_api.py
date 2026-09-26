@@ -1757,14 +1757,16 @@ def test_get_pinned_runtime_generation_returns_public_contract_and_summary(mock_
         "status": "ok",
         "source": "published_copy",
         "manifest": {"version": 6, "active_generation": {"pinset_sha256": "a" * 64}},
-        "journal": {"version": 8, "phase": "committed", "candidate": {"pinset_sha256": "a" * 64}},
-        "terminal": None,
+        "pinset_binding": {
+            "status": "match",
+            "registry_pinset_sha256": "a" * 64,
+            "generation_pinset_sha256": "a" * 64,
+        },
         "summary": {
             "state": "committed",
             "text": "고정된 runtime 세대가 커밋되어 있습니다.",
             "next_action": "",
             "manifest_version": 6,
-            "journal_version": 8,
         },
     }
 

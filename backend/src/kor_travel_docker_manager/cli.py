@@ -43,7 +43,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     publish_pinned_runtime_generation,
     read_manifest,
     read_published_pinned_runtime_generation,
-    read_rebuild_journal,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     RUNTIME_SOURCE_ROLES,
@@ -697,8 +696,9 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
         generation_public_copy = "current"
     elif binding_status == "pending_rebuild":
         # pair를 회전한 직후의 last committed generation은 정상적으로 이전 pinset을
-        # 가리킨다. strict public documents가 모두 유효하다는 사실과 one-shot 전의
-        # 새 pair 상태를 구분해 보여 주되, 이를 current generation이라고 부르지 않는다.
+        # 가리킨다. v6 manifest 공개 사본이 유효하다는 사실과 배포 전의 새 pair 상태를
+        # 구분해 보여 주되, 이를 current generation이라고 부르지 않는다. manifest만 읽는
+        # 결박에는 옛 `drift`가 없으므로(ADR-51 B3) 나머지는 `unknown`뿐이다.
         generation_public_copy = "pending_rebuild"
     else:
         generation_public_copy = "invalid"
@@ -971,7 +971,11 @@ def _cmd_pin_block_execution(args: argparse.Namespace) -> int:
 
 
 def _cmd_pin_publish_generation(args: argparse.Namespace) -> int:
-    """root private state를 검증한 뒤 API용 public copy만 갱신한다."""
+    """root private v6 manifest를 검증한 뒤 API용 public copy만 갱신한다.
+
+    배포가 같은 pair로 수렴하면 manifest 쓰기 전에 끝나므로(ADR-51) 잃어버린 공개
+    사본을 되살리는 길은 이 명령뿐이다.
+    """
 
     if not args.confirm:
         print(
@@ -983,15 +987,13 @@ def _cmd_pin_publish_generation(args: argparse.Namespace) -> int:
         print("pin publish-generation requires root", file=sys.stderr)
         return 2
     manifest_path = Path(args.manifest)
-    journal_path = Path(args.journal)
-    if not manifest_path.is_absolute() or not journal_path.is_absolute():
-        print("manifest and journal paths must be absolute", file=sys.stderr)
+    if not manifest_path.is_absolute():
+        print("manifest path must be absolute", file=sys.stderr)
         return 2
     try:
         with _runtime_pin_mutation_lock():
             paths = publish_pinned_runtime_generation(
                 manifest=read_manifest(manifest_path),
-                journal=read_rebuild_journal(journal_path),
             )
     except DeploymentContractError as exc:
         print(str(exc), file=sys.stderr)
@@ -1003,7 +1005,6 @@ def _cmd_pin_publish_generation(args: argparse.Namespace) -> int:
     payload = {
         "status": "published" if published else "unverified",
         "manifest_public_path_name": paths.manifest.name,
-        "journal_public_path_name": paths.journal.name,
         "pinset_binding": binding_status,
     }
     if args.json:
@@ -2080,17 +2081,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     pin_publish_generation = pin_subparsers.add_parser(
         "publish-generation",
-        help="검증된 private manifest·journal을 API용 공개 사본으로 원자 복제합니다.",
+        help="검증된 private v6 manifest를 API용 공개 사본으로 원자 복제합니다.",
     )
     pin_publish_generation.add_argument(
         "--manifest",
         required=True,
         help="root-owned pinned-runtime-generation-v6.json의 절대 경로입니다.",
-    )
-    pin_publish_generation.add_argument(
-        "--journal",
-        required=True,
-        help="root-owned current pinned-runtime-rebuild-v8-<pinset>.json의 절대 경로입니다.",
     )
     pin_publish_generation.add_argument(
         "--confirm",

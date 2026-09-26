@@ -1,8 +1,9 @@
 """PinVi one-shot bootstrap의 transaction-scoped credential file 경계.
 
-credential은 v5 rebuild journal의 exact transaction UUID 아래에 하나만 만들 수
-있다. 일반 생성 경로는 다른 transaction의 artifact를 탐색하거나 정리하지 않으며,
-runner가 종료됐음을 확인한 호출자만 같은 transaction을 명시적으로 폐기한다.
+credential은 배포 한 번의 exact transaction UUID(``deploy-status.json``의 ``run_id``)
+아래에 하나만 만들 수 있다. 일반 생성 경로는 다른 transaction의 artifact를 탐색하거나
+정리하지 않으며, runner가 종료됐음을 확인한 호출자만 같은 transaction을 명시적으로
+폐기한다.
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ _EMAIL_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 class PinviBootstrapCredentialFile:
     """runner에 전달할 path와 cleanup용 private inode identity만 보관한다.
 
-    ``email``과 ``password``는 artifact에 저장하지 않아 repr·예외·journal을 통해
+    ``email``과 ``password``는 artifact에 저장하지 않아 repr·예외·배포 기록을 통해
     원문이 다시 노출될 수 없다.
     """
 
@@ -232,7 +233,7 @@ def retire_stale_pinvi_bootstrap_credential(
 
     이 함수는 runner liveness를 판단하지 않는다. 호출자는 먼저 frozen Compose
     project에서 `pinvi-admin-bootstrap` container가 없음을 확인해야 한다. 그 뒤에도
-    다른 transaction을 열거하거나 건드리지 않고, journal UUID 아래의 하나만
+    다른 transaction을 열거하거나 건드리지 않고, 그 transaction UUID 아래의 하나만
     inode/owner/mode를 검증한 다음 zeroize·unlink한다.
     """
 

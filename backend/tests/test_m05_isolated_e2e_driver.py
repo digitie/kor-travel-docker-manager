@@ -12,7 +12,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from types import MappingProxyType, ModuleType
+from types import MappingProxyType, ModuleType, SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
@@ -3481,6 +3481,130 @@ def test_preflight_reports_only_allowlisted_diagnostics(monkeypatch, capsys) -> 
     leaked = capsys.readouterr().out
     assert "/root/secret/path" not in leaked
     assert "pair_contract_invalid" in leaked
+
+
+def test_source_pair_preflight_binds_the_committed_v6_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_source_pair_preflight`의 v6 manifest 대조를 대역 없이 돌린다.
+
+    다른 M05 테스트는 전부 `_source_pair_preflight`를 통째로 대역한다. 그래서 v8
+    journal 모델을 지운 뒤(ADR-51 B3) private v6 manifest를 읽는 이 대조에는 테스트가
+    없었다. 여기서는 source 확보·pair 계약·admission만 대역하고 manifest는
+    `write_manifest`로 실제 파일을 써서 읽힌다. 세 거부 진단은 `_PAIR_DIAGNOSTICS`의
+    닫힌 어휘이고, 거부는 `_pair`(실행권 소비 전 단계)에 닿기 전에 일어나야 한다.
+    ADR-51 D가 이 대조를 `deploy-status.json`으로 옮길 때 이 테스트도 함께 바뀐다.
+    """
+
+    from kor_travel_docker_manager.services.pinned_runtime_generation import (
+        MapApplication300CandidateEvidence,
+        PinnedRuntimeGeneration,
+        PinnedRuntimeManifest,
+        write_manifest,
+    )
+
+    driver = _driver()
+    state_root = tmp_path / "state"
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "COMPOSE_PROJECT_NAME": "m05-preflight",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(state_root),
+    }
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+    monkeypatch.setattr(driver, "effective_environment", lambda _path: dict(values))
+    map_root = tmp_path / "map"
+    pinvi_root = tmp_path / "pinvi"
+    roots = {"map": map_root, "pinvi": pinvi_root}
+    materialized = SimpleNamespace(
+        source_for=lambda role: SimpleNamespace(root=roots[role], tree="b" * 40)
+    )
+    monkeypatch.setattr(
+        driver, "materialize_pinned_runtime_sources", lambda **_kwargs: materialized
+    )
+    derived_head = "0300_committed_head"
+    monkeypatch.setattr(driver, "_map_application_head", lambda _root: derived_head)
+    pair_calls: list[tuple[Path, Path]] = []
+    pair = object()
+
+    def fake_pair(pinvi: Path, map_: Path) -> tuple[object, str, str]:
+        pair_calls.append((pinvi, map_))
+        return pair, "c" * 64, "d" * 40
+
+    monkeypatch.setattr(driver, "_pair", fake_pair)
+    monkeypatch.setattr(
+        driver, "_assert_pinvi_manager_admission_contract", lambda _root: None
+    )
+
+    pinned = driver.PINNED_RUNTIME_RELEASE.pinset_sha256
+    image = "sha256:" + "a" * 64
+
+    def commit(*, pinset_sha256: str = pinned, head: str = derived_head) -> None:
+        generation = PinnedRuntimeGeneration(
+            map_api_image_id=image,
+            map_ui_image_id=image,
+            map_dagster_image_id=image,
+            map_dagster_daemon_image_id=image,
+            pinvi_api_image_id=image,
+            pinvi_web_image_id=image,
+            pinvi_dagster_image_id=image,
+            map_source_revision=driver.PINNED_RUNTIME_RELEASE.source_for("map").revision,
+            pinvi_source_revision=driver.PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
+            map_application_head=head,
+            map_dagster_head="dagster-1",
+            pinvi_head="pinvi-1",
+            pinset_sha256=pinset_sha256,
+            map_application_300_candidate_evidence=MapApplication300CandidateEvidence(
+                candidate_git_tree="4" * 40,
+                postgres_image_id=image,
+                dagster_config_sha256="5" * 64,
+            ),
+            recorded_at="2026-09-26T00:00:00+00:00",
+        )
+        write_manifest(
+            manifest_path, PinnedRuntimeManifest(version=6, active_generation=generation)
+        )
+
+    state_dir = state_root / "m05-preflight"
+    state_dir.mkdir(parents=True, mode=0o700)
+    os.chmod(state_dir, 0o700)
+    manifest_path = state_dir / "pinned-runtime-generation-v6.json"
+
+    def refusal() -> str | None:
+        with pytest.raises(driver._PhaseError) as caught:
+            driver._source_pair_preflight()
+        assert caught.value.phase == "pair_contract_invalid"
+        return caught.value.diagnostic
+
+    # 통과: 커밋된 manifest가 현재 release의 pinset과 파생 head를 그대로 담는다.
+    commit()
+    result = driver._source_pair_preflight()
+    assert result[:3] == (map_root, pinvi_root, pair)
+    assert result[5].manifest == manifest_path
+    assert pair_calls == [(pinvi_root, map_root)]
+
+    other_pinset = "0" * 64 if pinned != "0" * 64 else "1" * 64
+    diagnostics = {
+        "absent": "committed pinned-runtime generation manifest unavailable",
+        "pinset": "committed generation pinset differs from the current release",
+        "head": "derived application head differs from the committed generation",
+    }
+    assert set(diagnostics.values()) <= driver._PAIR_DIAGNOSTICS
+
+    manifest_path.unlink()
+    assert refusal() == diagnostics["absent"]
+
+    commit(pinset_sha256=other_pinset)
+    assert refusal() == diagnostics["pinset"]
+
+    commit(head="0299_older_head")
+    assert refusal() == diagnostics["head"]
+
+    # 거부는 모두 pair 계약 대조 전에 끝난다.
+    assert len(pair_calls) == 1
+
 
 
 def test_installer_executable_set_mirrors_the_git_index() -> None:

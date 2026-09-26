@@ -13,9 +13,11 @@ PinVi 구동에 필요한 프로젝트별 전용 PostgreSQL/PostGIS 4개, RustFS
 통합 `5432` instance는 없다.
 
 C6c production은 일반 runtime mutation을 차단하고, host-wide lock을 소유하는 pinned
-workflow만 Map·PinVi 일곱 runtime을 같은 generation으로 다룬다. 비운영 환경의 재구축은
-`pinvi-pair rebuild-pinned --confirm`으로 제한된다. application `300`의 running state
-authority는 v6 pinned generation과 v8 rebuild journal이고, **어느 source revision으로
+workflow만 Map·PinVi 일곱 runtime을 같은 generation으로 다룬다. 비운영 환경의 배포는
+`pinvi-pair rebuild-pinned --confirm`으로 제한된다(ADR-51 마이그레이션 전진 — DB 보존,
+파기는 `--restart`뿐). 배포 진행의 authority는 state root의 `deploy-status.json`이고, 커밋 때
+쓰는 v6 pinned generation manifest는 step D까지 M05 호환용으로 남는다(v8 rebuild journal은
+ADR-51 B3에서 지웠다). **어느 source revision으로
 재구축할지는 root 소유 runtime pin registry가 소유한다**(ADR-40). 설치본에
 `pinvi-pair capture`가 보이면 과거 v4 명령이므로 실행하지 말고, 정확한 merged trusted
 Manager release를 먼저 설치한다. 독립적인 `ktdctl db-backup`과 `GET /api/v1/backups`는
@@ -41,9 +43,9 @@ reference 가용성과 cleanup을 확인했다. T-037/038/039/040/041은
 현재 active release task는 T-VN-41-F1D-H300이다. Map은 이전 revision 복구와 in-place upgrade를
 사용하지 않고 application head `300`을 새 baseline으로 삼는다. exact Map commit의 sealed paired
 candidate가 API·Dagster image와 application contract를 제공하고, Manager는 Map UI와 PinVi
-API·Web·Dagster 네 image만 build한다. generation manifest는 v6, pinset별 resume journal은 v8이다.
-세 DB를 fresh recreate한 뒤 root/finalize fence·intent·result, application/metadata permit과 exact
-running image를 검증한다. 다음 gate는 전문 적대 리뷰 2건, n150 `rebuild-pinned --confirm`과
+API·Web·Dagster 네 image만 build한다. generation manifest는 v6이고 resume journal은 없다 —
+ADR-51 뒤 배포는 DB를 보존한 채 멱등 one-shot으로 head까지 전진하고 exact running image를
+검증한다(`--restart`만 세 DB를 새로 만든다). 다음 gate는 전문 적대 리뷰 2건, n150 `rebuild-pinned --confirm`과
 live UI/PinVi acceptance이며, **재구축 전에 `ktdctl pin verify`가 0을 반환해야 한다** —
 2026-08-28 기준 동봉 seed의 현재 pinset은 terminal이라 회전이 선행되어야 한다.
 
@@ -62,7 +64,7 @@ canonical scale/replica/container name은 exact singleton이어야 한다.
 transport를 올리고 이미지 간 정합성을 맞추는 구조도, 과결박 없이 단순하게 간다.**
 정본은 `docs/decisions.md` ADR-50, 실무 규칙은 `AGENTS.md` §과결박 금지.
 
-위 "프로젝트 현황"에 적힌 pinned generation · rebuild journal · runtime pin registry ·
+위 "프로젝트 현황"에 적힌 pinned generation · deploy status · runtime pin registry ·
 healthcheck fail-close 같은 기존 결박은 **현재 상태의 서술이지 확장하라는 지시가 아니다.**
 새 검사기·게이트·봉인·attestation을 더하는 방향이 아니라 걷어내는 방향이 기본값이다.
 단, 동작 중인 보장을 조용히 없애지 말고 무엇을 잃는지 밝히고 사용자 판단을 받는다.
