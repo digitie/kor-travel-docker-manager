@@ -5,7 +5,7 @@
 > `rebuild-pinned --restart --reason "..." --confirm` 하나다. 영속 상태는 state root의
 > `deploy-status.json`(in_progress/committed) 하나다. v8 journal은 쓰지도 읽지도 않으며
 > 그 모델 코드는 ADR-51 B3에서 지웠다 — 호스트에 남은 v8 파일은 무시된다. v6 manifest는
-> 커밋 때만 쓰이고 step D까지 on-disk·M05 호환을 위해 동결된다(§1-2).
+> 커밋 때만 쓰이고 D-2까지 on-disk 호환(D-1 이전 Manager로의 되돌림)을 위해 동결된다 — D-1부터 읽는 곳은 없다(§1-2).
 > 아래의 파기형·journal·resume 서술은 그 이전 설계의 기록이다.
 
 **대상 독자**: 이 저장소에서 작업하는 에이전트(Claude Code, Codex, Antigravity 등)와 운영자.

@@ -104,7 +104,7 @@ no-follow 검사로 함께 읽어 exact match할 때만 입력으로 쓴다.
 - PinVi admission·activation receipt와 Map attestation은 Map SHA, PinVi SHA, v5 source
   pinset, Manager SHA, v6 execution identity를 모두 exact 대조한다. 한 필드라도 다르면
   fail-close한다.
-- root `pin verify`는 범용 registry·execution·generation 정합만 판단한다. M05 launcher는 그 뒤
+- root `pin verify`는 범용 registry·execution 정합만 판단한다(ADR-51 D-1부터 generation은 보지 않고, M05 쌍 preflight가 커밋된 `deploy-status.json`을 본다). M05 launcher는 그 뒤
   output leaf·ledger claim 전에 integration adapter의 비소비 source-materialization pair preflight로 PinVi provenance의
   Map full revision과 admission contract를 대조한다. 이 consumer-specific 검사는 generic pin primitive에
   Map/PinVi business 규칙을 넣지 않으며, 불일치는 execution terminal을 소비하지 않는다.

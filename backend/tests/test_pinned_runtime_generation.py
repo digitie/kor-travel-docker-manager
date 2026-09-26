@@ -536,10 +536,11 @@ def test_v4_manifest_api_is_absent_and_only_tombstoned() -> None:
 
 
 def test_document_versions_are_frozen() -> None:
-    """manifest v6은 n150의 on-disk 파일과 M05 driver가 읽는 버전이다.
+    """manifest v6은 n150의 on-disk 파일 버전이다.
 
-    ADR-51 D에서 v6 쓰기가 멈출 때까지 바꾸지 않는다 — 바꾸면 호스트에 이미 있는
-    manifest를 읽지 못해 M05 preflight가 막힌다.
+    ADR-51 D-2에서 v6 쓰기가 멈출 때까지 바꾸지 않는다 — D-1 이전 Manager로 되돌리면 그
+    Manager의 M05 preflight가 호스트에 이미 있는 manifest를 읽지 못해 막힌다(D-1 이후의
+    M05는 `deploy-status.json`을 본다).
     """
 
     assert generation_module._MANIFEST_VERSION == 6

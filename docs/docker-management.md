@@ -646,7 +646,7 @@ readiness·image·secret isolation과 C6c smoke가 통과하면 v6 manifest와 `
 PinVi는 geo 패턴처럼 scoped app role 하나가 자기 database를 소유한다(ADR-46). 종전의 M05 다중 role
 topology·catalog reset·role verify one-shot과 그것을 담던 v8 journal receipt는 없어졌다. v8 rebuild
 journal·tombstone 모델은 ADR-51 B3에서 코드째 지웠고, 호스트에 남은 v8 파일은 읽지 않는다. v6 manifest는
-step D까지 M05 driver가 읽으므로 커밋 때 계속 쓴다.
+D-1부터 읽는 곳이 없고(M05는 `deploy-status.json`을 본다), D-1 이전 Manager로의 되돌림을 위해 D-2까지만 커밋 때 쓴다.
 
 rebuildable 환경에서는 cache-target integration이 완전히 inert여야 한다. Map principal registry는 `[]`,
 PinVi sync는 `false`, 관련 token·contract scalar는 비어 있고 consumer ID는 Compose 기본값이어야 한다.

@@ -5133,8 +5133,8 @@ class ComposeService:
                 raise
             # 여기서부터는 검증이 끝난 배포의 기록이다. 기록 쓰기가 실패해도(디스크 부족
             # 등) 떠 있는 런타임을 내리지 않는다 — 상태는 in_progress로 남고 다음 실행이
-            # 처음부터 다시 돈다(멱등). v6 manifest는 한 릴리스 동안 계속 쓴다 — M05
-            # driver가 읽는다(ADR-51 D에서 멈춘다).
+            # 처음부터 다시 돈다(멱등). v6 manifest는 이 릴리스에서 읽는 곳이 없다 — D-1
+            # 이전 Manager로 되돌릴 때를 위해서만 한 릴리스 더 쓴다(ADR-51 D-2에서 멈춘다).
             write_pinned_runtime_manifest(
                 state_paths.manifest,
                 PinnedRuntimeManifest(version=6, active_generation=candidate),
