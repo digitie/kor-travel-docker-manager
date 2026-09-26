@@ -901,24 +901,26 @@ def test_destructive_reset_refuses_cluster_maintenance_databases(
 def _ensure_harness(
     monkeypatch: pytest.MonkeyPatch, owner: str | None
 ) -> tuple[Mock, Mock, list[str]]:
-    runner = Mock(return_value=b"")
-    bootstrap = Mock()
+    """생성(createdb)과 bootstrap을 **한 기록**에 남겨 순서까지 단언할 수 있게 한다."""
+
+    events: list[str] = []
+    runner = Mock(side_effect=lambda arguments, *, label: events.append(label) or b"")
+    bootstrap = Mock(side_effect=lambda: events.append("bootstrap"))
     owners = [owner, None] if owner is None else [owner]
-    probes: list[str] = []
 
     def read_owner(runtime: DatabaseRuntime) -> str | None:
-        probes.append(runtime.role)
+        del runtime
         return owners.pop(0) if owners else None
 
     monkeypatch.setattr(database_runtime, "_read_database_owner", read_owner)
     monkeypatch.setattr(database_runtime, "_run_checked", runner)
-    return runner, bootstrap, probes
+    return runner, bootstrap, events
 
 
 def test_ensure_map_application_database_creates_then_bootstraps_an_absent_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runner, bootstrap, _ = _ensure_harness(monkeypatch, None)
+    runner, bootstrap, events = _ensure_harness(monkeypatch, None)
 
     outcome = ensure_map_application_database(
         _runtime("map_application"), run_role_bootstrap=bootstrap
@@ -928,7 +930,7 @@ def test_ensure_map_application_database_creates_then_bootstraps_an_absent_datab
     create = runner.call_args.args[0]
     assert "createdb" in create
     assert create[create.index("--template") + 1] == "template0"
-    bootstrap.assert_called_once_with()
+    assert events == ["map_application fresh 300 database create", "bootstrap"]
 
 
 def test_ensure_map_application_database_bootstraps_a_created_but_unbootstrapped_database(

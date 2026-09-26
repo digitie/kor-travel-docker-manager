@@ -4245,3 +4245,80 @@ def test_carry_over_without_legacy_files_is_a_full_path_not_an_error(tmp_path: P
         carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
         is None
     )
+
+
+def _write_other_pinset_journal(
+    state_root: Path,
+    journal: PinnedRuntimeRebuildJournal,
+    *,
+    created_at: str,
+) -> Path:
+    path = legacy_journal_file(state_root, pinset_sha256="f" * 64)
+    write_rebuild_journal(path, replace(journal, created_at=created_at))
+    return path
+
+
+def test_carry_over_refuses_when_a_later_rebuild_reset_the_databases(tmp_path: Path) -> None:
+    """manifest는 A를 가리키지만 그 뒤 B의 재구축이 DB를 지우고 멈췄다 — 라이브 DB는 B의
+    것이다. A의 identity를 기준선으로 넘기면 이후 모든 배포가 `--restart`로만 풀린다."""
+
+    state_root = tmp_path / "state"
+    _write_legacy_generation(state_root, _journal_at_runtime_phase("committed"))
+    _write_other_pinset_journal(
+        state_root,
+        _journal_at_application_300_phase("reset_intent_durable"),
+        created_at="2026-08-07T00:00:00+00:00",
+    )
+
+    assert (
+        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("other_phase", "created_at"),
+    (
+        # 더 이른 미완료 재구축(n150의 a7cc0414 같은 것) — 그 뒤 커밋이 DB를 다시 만들었다.
+        ("reset_intent_durable", "2026-08-05T00:00:00+00:00"),
+        # 더 늦지만 리셋 전에 멈춘 재구축 — DB를 건드리지 않았다.
+        ("candidate_attested", "2026-08-07T00:00:00+00:00"),
+    ),
+)
+def test_carry_over_ignores_rebuilds_that_did_not_replace_the_live_databases(
+    tmp_path: Path,
+    other_phase: RebuildPhase,
+    created_at: str,
+) -> None:
+    state_root = tmp_path / "state"
+    _write_legacy_generation(state_root, _journal_at_runtime_phase("committed"))
+    if other_phase == "reset_intent_durable":
+        other = _journal_at_application_300_phase("reset_intent_durable")
+    else:
+        other = new_candidate_journal(
+            candidate=_candidate_generation(),
+            environment_bytes=b"frozen-env\n",
+            compose_source_bytes=b"services: {}\n",
+            resolved_compose_sha256="c" * 64,
+            created_at="2026-08-06T00:00:00+00:00",
+        )
+    assert other.phase == other_phase
+    _write_other_pinset_journal(state_root, other, created_at=created_at)
+
+    assert (
+        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
+        is not None
+    )
+
+
+def test_carry_over_refuses_an_unreadable_journal(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    _write_legacy_generation(state_root, _journal_at_runtime_phase("committed"))
+    path = legacy_journal_file(state_root, pinset_sha256="f" * 64)
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0o600)
+
+    assert (
+        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
+        is None
+    )
