@@ -1,14 +1,14 @@
-"""GM-06 회귀: PinVi 진단이 메시지 재파싱이 아니라 타입 속성으로 전달된다.
+"""GM-06 회귀: PinVi one-shot의 typed error가 원문 없이 진단 문구로만 붙는다.
 
 이전에는 `_pinned_runtime_compose_failure_diagnostic`가 진단 코드를 예외 메시지에
-접미사로 심고 나중에 `str(error)`를 다시 파싱해 추출했다. 메시지 조립 형식이 바뀌면
-그 재파싱이 조용히 실패해 판정이 강등된다. `PinnedRuntimeComposeFailure`의 속성이
-그 재파싱을 대체한다.
+접미사로 심고 나중에 `str(error)`를 다시 파싱해 추출했다. 그 재파싱은 한때 구조화된
+속성으로 대체됐다.
 
-**이 파일의 대상이 한 번 바뀌었다.** 종전에는 M05 role one-shot의 코드 공간을
+**이 파일의 대상이 두 번 바뀌었다.** 종전에는 M05 role one-shot의 코드 공간을
 검사했는데, 그 모델을 폐기(geo 패턴 전환)하면서 role one-shot과 그 코드 공간이
-사라졌다. 남은 PinVi 타입 오류 생산자는 `pinvi-admin-bootstrap` 하나이고, 구조적
-전달이라는 원래 요지는 그대로 적용된다.
+사라졌다. 남은 PinVi 타입 오류 생산자는 `pinvi-admin-bootstrap` 하나다. 그 뒤
+구조화 속성을 읽던 v8 journal 차단 기록이 ADR-51 B3에서 사라져 속성도 지웠다 —
+이제 남은 계약은 허용된 payload만 고정 형식의 문구가 된다는 것이다.
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ def test_diagnostic_carries_admin_bootstrap_code_structurally() -> None:
         ["run", "--rm", _ADMIN_BOOTSTRAP], result
     )
     assert isinstance(diagnostic, _ComposeFailureDiagnostic)
-    assert diagnostic.pinvi_role_code == "migration_failed"
     assert diagnostic.message_suffix == "; pinvi:migration_failed"
 
 
@@ -44,7 +43,6 @@ def test_phase_must_match_the_declared_code() -> None:
     diagnostic = ComposeService._pinned_runtime_compose_failure_diagnostic(
         ["run", "--rm", _ADMIN_BOOTSTRAP], result
     )
-    assert diagnostic.pinvi_role_code is None
     assert diagnostic.message_suffix == ""
 
 
@@ -55,7 +53,6 @@ def test_unmatched_output_has_no_structured_code() -> None:
     diagnostic = ComposeService._pinned_runtime_compose_failure_diagnostic(
         ["run", "--rm", _ADMIN_BOOTSTRAP], result
     )
-    assert diagnostic.pinvi_role_code is None
     assert diagnostic.message_suffix == ""
 
 
@@ -64,5 +61,4 @@ def test_non_pinvi_target_has_no_structured_code() -> None:
     diagnostic = ComposeService._pinned_runtime_compose_failure_diagnostic(
         ["run", "--rm", "some-other-service"], result
     )
-    assert diagnostic.pinvi_role_code is None
     assert diagnostic.message_suffix == ""

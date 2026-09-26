@@ -3068,9 +3068,9 @@ class HttpProbeResponse:
 class PinviCancelProbeState:
     """한 runtime generation transaction의 C6c fixture cancel 상태.
 
-    ``transaction_id``는 Manager durable journal의 값이어야 한다. 기본값은 단위
-    검증과 non-F1D caller의 안전한 일회성 상태를 위한 것이며, F1D v6 resume 경로는
-    반드시 기존 journal의 transaction ID와 attempted high-watermark를 복원한다.
+    pinned runtime 배포에서 ``transaction_id``는 그 배포의 ``deploy-status.json``
+    ``run_id``다. 기본값은 단위 검증과 non-F1D caller의 안전한 일회성 상태를 위한
+    것이다. 재개 경로가 없으므로 attempted high-watermark는 한 실행 안에서만 산다.
     """
 
     transaction_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -3396,8 +3396,8 @@ def effective_environment(env_path: str) -> dict[str, str]:
 def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
     """legacy v4 tombstone 경로와 host-global lock을 함께 정한다.
 
-    첫 경로는 F1D legacy artifact 탐지·퇴역에만 남아 있으며 current v6/v8 rebuild
-    authority는 이를 읽거나 쓰지 않는다. 두 번째 lock 경로만 현재 Manager mutation
+    첫 경로는 legacy artifact 탐지에만 남아 있으며 현재 배포 기록(``deploy-status.json``·
+    v6 manifest)은 이를 읽거나 쓰지 않는다. 두 번째 lock 경로만 현재 Manager mutation
     serialization에 사용한다.
     """
 
@@ -5519,7 +5519,6 @@ def run_pinvi_canonical_smoke(
     config: C6cDeploymentConfig,
     *,
     cancel_probe_state: PinviCancelProbeState | None = None,
-    state_recorder: Callable[[PinviCancelProbeState], None] | None = None,
 ) -> list[dict[str, int | str]]:
     """PinVi admin session이 canonical Map read/cancel 계약을 보존하는지 검사한다."""
 
@@ -5544,8 +5543,6 @@ def run_pinvi_canonical_smoke(
             state.result = dict(fixture.canonical_unsafe_outcome)
         elif state.result != fixture.canonical_unsafe_outcome:
             raise DeploymentContractError("C6c fixture cancellation evidence drifted")
-    if state_recorder is not None:
-        state_recorder(state)
 
     opener = _cookie_opener(follow_redirects=False)
     login = _session_request(
@@ -5592,8 +5589,6 @@ def run_pinvi_canonical_smoke(
         if state.fixture is None or state.fixture.state != "armed":
             raise DeploymentContractError("C6c fixture is not armed for PinVi cancellation")
         state.attempted = True
-        if state_recorder is not None:
-            state_recorder(state)
         cancel = _session_request(
             opener,
             (
@@ -5652,8 +5647,6 @@ def run_pinvi_canonical_smoke(
             or state.fixture.canonical_unsafe_outcome != state.result
         ):
             raise DeploymentContractError("C6c fixture was not consumed by canonical cancellation")
-        if state_recorder is not None:
-            state_recorder(state)
     if not _validate_pinvi_cancel_probe_result(state.result):
         raise DeploymentContractError(
             "C6c cached PinVi cancel probe evidence is invalid"
@@ -5666,11 +5659,7 @@ def run_pinvi_canonical_smoke(
                 "C6c fixture finalization cannot be repeated after an uncertain result"
             )
         state.finalize_attempted = True
-        if state_recorder is not None:
-            state_recorder(state)
         _finalize_c6c_cancel_probe_fixture(config, state)
-        if state_recorder is not None:
-            state_recorder(state)
     elif state.fixture.state == "finalized" and not state.finalize_attempted:
         raise DeploymentContractError(
             "C6c finalized fixture has no durable finalization attempt"

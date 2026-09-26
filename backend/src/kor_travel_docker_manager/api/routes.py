@@ -400,12 +400,12 @@ def _runtime_pin_summary(
 
 @router.get("/pinned-runtime/generation")
 def get_pinned_runtime_generation():
-    """공개된 v6 manifest·v8 journal 원본과 안전한 요약을 조회한다.
+    """공개된 v6 manifest 원본과 registry pair 결박·안전한 요약을 조회한다.
 
     backend는 root-owned state를 읽지 않는다. root `ktdctl pin publish-generation`과
-    rebuild writer가 갱신하는 0644 public copy만 parser로 다시 검증해 반환한다.
-    manifest/journal JSON은 Map attestation의 exact-dict 계약이므로 summary 이외의
-    가공·필드 추가를 하지 않는다.
+    배포 커밋이 갱신하는 0644 public copy만 parser로 다시 검증해 반환한다. manifest
+    JSON은 원본 그대로 싣고, `pinset_binding`·`summary` 외에 가공·필드 추가를 하지 않는다.
+    옛 v8 journal 공개 사본은 ADR-51 B3부터 읽지 않는다.
     """
 
     return read_published_pinned_runtime_generation()

@@ -360,7 +360,7 @@ backend가 journal을 **항상 볼 수 있는 것은 아니다.** journal은 `re
 SSH에서 확인할 것:
 
 ```bash
-sudo ls -l ~root/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/pinned-runtime-rebuild-v8-*.json
+sudo cat ~root/.local/state/kor-travel-docker-manager/<COMPOSE_PROJECT_NAME>/deploy-status.json
 ```
 
 `.env`가 root `0600`인데 backend가 비-root로 돌면 이 기능은 `ENV_NOT_WRITABLE`로
@@ -635,13 +635,14 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
 retry 역시 pending stage가 없는지와 raw/resolved C6c 경계를 먼저 다시 확인하며, 수동 `docker compose`·legacy
 source restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다.
 
-## 8. F1D pinned runtime generation v6/journal v8 재구축
+## 8. pinned runtime 배포 (ADR-51 마이그레이션 전진)
 
-> 현재 rebuild protocol은 이전 compatible-pair, cache-target, standalone DB backup mutation과 Map UI 회전의
-> **공개 CLI 운영 경로**를 모두 퇴역시켰다. 과거 v1–v4 manifest·journal·backup은 실행 근거가 아니며,
-> 아래 비운영 `rebuild-pinned --confirm`만 새 generation을 만드는 정본이다.
+> 현재 배포 protocol은 이전 compatible-pair, cache-target, standalone DB backup mutation과 Map UI 회전의
+> **공개 CLI 운영 경로**를 모두 퇴역시켰다. 과거 v1–v4 manifest와 v5–v8 rebuild journal·tombstone은 실행
+> 근거가 아니며, 아래 비운영 `rebuild-pinned`만 generation을 배포하는 정본이다. 파기형 v8 journal·resume
+> 설계의 근거는 `docs/decisions.md` ADR-51과 `docs/journal.md`에 남아 있다.
 
-### 8.1 비운영 pinned runtime generation 재구축
+### 8.1 비운영 pinned runtime 배포
 
 실제 운영 환경에는 이 절을 적용하지 않는다. typed 환경 pair
 `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal` 및 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`를 frozen canonical
@@ -650,55 +651,48 @@ environment에서 함께 명시한 비운영 환경만 다음 command를 실행�
 mutation 전에 거부한다.
 
 ```bash
+# 일반 배포: DB를 보존하고 head까지 전진한다. 같은 pair면 수렴만 한다.
 sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
   pinvi-pair rebuild-pinned --confirm
+# 유일한 파기 경로: Map application·Map Dagster·PinVi DB를 지우고 빈 DB에서 다시 만든다.
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
+  pinvi-pair rebuild-pinned --restart --reason "<한 줄 사유>" --confirm
+# 복원 등으로 DB identity가 비파괴로 바뀌었을 때: 지금 떠 있는 DB를 새 기준으로 받아들인다.
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
+  pinvi-pair rebuild-pinned --adopt-live-databases --reason "<한 줄 사유>" --confirm
 ```
 
 이 command는 추적된 exact Map·PinVi commit만 Git archive build source로 쓰며 `.env` checkout HEAD,
 old image, old manifest를 candidate authority로 쓰지 않는다.
 
-다만 raw C6c prebuild transaction은 source materialize보다 먼저 canonical Compose의 read-only
-bind graph를 검사한다. 따라서 `PINVI_REPO_DIR`가 가리키는 **source-owner checkout**에는 현재
-pinset이 요구하는 `infra/postgres/bootstrap-pinvi-runtime-role.sh`가 regular file로 존재해야 한다.
-이 조건은 checkout HEAD를 candidate authority로 승격하지 않는다. 그것은 이후 root-owned exact
-source materialization이 계속 소유한다. command 전에 source owner는 canonical `origin`, clean worktree,
-그리고 Manager가 고정한 PinVi revision에서 이 tracked file이 worktree에 존재하는지만 확인한다.
-조건이 맞지 않으면 script를 복사하거나 Compose bind/Manager guard를 완화하지 말고, WIP를 파괴하지 않는
-clean approved release checkout으로 source deployment를 먼저 수렴한다. 그 뒤에만 아래 공식 command를
-한 번 실행한다.
+순서는 다음과 같다.
 
-fresh root `.env`에 PinVi runtime·schema owner·migration owner·migrator role의 여섯 값이 **모두
-미선언**이면, 이 명령은 caller의 `KOR_TRAVEL_DOCKER_MANAGER_*` 경로 override가 아니라 trusted
-`/opt/kor-travel-docker-manager`의 root-owned Compose·`.env` pair만 고정해 읽는다. root-owned
-pinned-runtime host lease 안에서 exact `rehearsal/rebuildable`·PinVi production·Map principal-required와
-모든 C6c operation token을 **쓰기 전에** 확인한 뒤에만 서로 다른 role명과 무작위 password를 원자적으로
-추가하고 `0600` mode를 유지한 새 environment snapshot을 잡는다. 일부 선언·공백·중복·역할/비밀번호 재사용·
-형식 오류·경로/파일 identity drift는 기존 값을 추측·덮어쓰기·회전하지 않고 candidate, journal, runtime, DB
-mutation 전에 거부한다. pinned root `.env` 값은 dotenv/caller 환경 보간을 적용하지 않는 literal authority이며,
-이미 완전한 여섯 값은 같은 원문을 frozen Compose snapshot에 명시적으로 결박해 재사용만 한다. credential 원문은
-CLI 결과·journal·log에 기록하지 않는다.
+1. **admission** — root, host-global mutation lock과 pinned rebuild lease 안에서 runtime pin registry
+   snapshot을 읽는다. 조건 없는 차단·낡은 execution 결박은 결과의 `warnings`에만 남고, 대기 중인 pair
+   회전 intent만 거부한다.
+2. **candidate** — exact source를 materialize하고, Map sealed builder image(pinset tag, 이미 있으면
+   재사용)와 Manager가 build하는 Map UI·PinVi image의 ID를 attest한다. 세 schema head(Map application·Map
+   Dagster·PinVi)는 candidate image에서 관측한다. 여기까지는 DB를 건드리지 않는다.
+3. **판정** — 두 PostgreSQL을 frozen Compose에 맞춰 기동한 뒤 state root의 `deploy-status.json`과
+   비교한다. `committed`이고 같은 pair·같은 image·같은 DB identity·같은 head면 빌드·migration·정지 없이
+   떠 있어야 할 것만 맞추고 끝난다(`outcome: converged`). 지난 배포가 본 DB identity와 지금 DB가 다르면
+   아무것도 바꾸기 전에 거부한다 — `--adopt-live-databases` 또는 `--restart`로만 넘어간다.
+4. **전진** — `deploy-status.json`을 `in_progress`로 쓰고 runtime과 one-shot writer를 멈춘다.
+   `--restart`면 여기서 세 DB를 지운다. 없는 DB만 만들고, Map application schema one-shot·Dagster storage
+   migration·PinVi admin bootstrap을 멱등으로 돌린 뒤 각 head를 Manager가 DB에서 직접 읽어 candidate
+   head와 대조한다. PinVi C6c canonical smoke와 전 서비스 readiness·image·secret isolation을 확인하면
+   v6 manifest를 쓰고 `deploy-status.json`을 `committed`로 바꾼다(`outcome: deployed`).
+5. **실패** — runtime과 one-shot writer를 멈추고 남은 PinVi bootstrap credential을 정리한 뒤 원래 오류를
+   낸다. DB는 자동으로 지우지 않는다. 상태는 `in_progress`로 남고 다음 실행이 처음부터 다시 돈다 —
+   모든 단계가 다시 돌려도 안전하다.
 
-현재 pinset의 v8 resume journal이 정확히 `map_runtime_ready`이고 여섯 값이 미선언이었던 경우는 예외적인
-공식 재개 경계다. 이 경우에만 `.env`에는 이전 environment SHA만을 담은 비밀 비포함 marker를 같은 원자 write로
-남기고, candidate raw/resolved Compose를 다시 검증한 뒤 journal에는 이전/현재 environment SHA와 이전/현재
-resolved Compose SHA를 모두 담은 단 한 번의 rebind receipt를 기록한다. 다른 phase·다른 digest·이미 rebind한
-journal은 쓰기 전에 거부한다. marker 또는 receipt는 credential 원문을 포함하지 않으며, write 직후 crash도 같은
-marker로 재개 판정을 다시 검증한다.
-먼저 Map 네 service와 PinVi 세 service의 immutable candidate image ID, source revision, Map application/Dagster와
-PinVi의 expected schema head를 owner-only journal에 고정한다. Map Dagster head는 source pin의 추정값이 아니라
-candidate Dagster image의 head-inspection command 출력으로 attest한다. candidate artifact 하나라도 없으면 database를
-건드리지 않는다.
+`deploy-status.json`이 없는 호스트는 기준선 없는 전체 경로를 한 번 돈다. state root에 남은 v6
+manifest·v8 journal·legacy tombstone은 넘겨받지도 고치지도 않는다(ADR-51 B3). 결과 JSON은
+launcher·`chain17`이 읽는 `success`·`phase`(항상 `committed`)·`pinset_sha256`·`schema_heads` 키를 유지한다.
 
-후속 phase에서만 Manager가 frozen resolved Compose의 Map application·Map Dagster·PinVi database identity를
-검증해 세 database를 새로 만든다. reset 직후 PinVi DB identity를 v8 journal에 기록하고, committed resume은
-Map application·Dagster metadata·PinVi 세 DB identity와 두 PostgreSQL container image를 다시 실측한다.
-Dagster metadata LOGIN role은 privilege/membership, connection limit, password expiry와 role/database-local
-setting 잔여가 canonical해야 permit을 발행한다. Map API entrypoint와 Map Dagster migration-only command가 candidate-attested
-각 head까지 migration을 적용·검증한다. Map Dagster command는 `dagster instance migrate` 후 strict single-row
-`public.alembic_version`을 같은 candidate image의 reported head와 대조한다. PinVi migration+admin credential-file one-shot CLI가 `pinvi_head`까지
-적용한 뒤 일곱 runtime을 같은 generation으로 기동한다. Map·PinVi Web·PinVi Dagster와 durable journal/log에는
-credential을 전달하거나 기록하지 않는다. F1J fixture smoke, authenticated UI contract, schema/image attestation이
-모두 성공하면 single active v6 generation manifest와 pinset별 v8 journal을 commit한다. 실패 뒤 재개할 때는
-durable phase와 exact DB/operation receipt만 사용하며 `databases_recreated` 이후 세 DB를 자동 reset하지 않는다.
-candidate runtime을 모두 중지한다. source/ETL 재적재는 committed
-뒤 별도 workflow다.
+v6 manifest(`pinned-runtime-generation-v6.json`)는 커밋 때만 쓰이며 step D까지 M05 driver가 읽는다.
+같은 pair 수렴은 manifest를 다시 쓰지 않으므로 공개 사본을 잃었으면 root가
+`ktdctl pin publish-generation --manifest <absolute-v6-path> --confirm`으로 되살린다. 호스트에 남은
+private `pinned-runtime-rebuild-v8-*.json`, `legacy-tombstone-v8-*.json`, v2–v7 artifact와 공개
+`pinned-runtime-rebuild-v8.json`은 아무것도 읽지 않으므로 손으로 지워도 되고 두어도 된다. **step D 전에는
+`pinned-runtime-generation-v6.json`을 지우지 않는다.** source/ETL 재적재는 committed 뒤 별도 workflow다.

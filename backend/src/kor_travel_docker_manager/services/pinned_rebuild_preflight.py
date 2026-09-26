@@ -108,10 +108,10 @@ def read_pinned_rebuild_preflight(*, force_refresh: bool = False) -> dict[str, A
                 )
             )
 
-    # 2. v6/v8 공개 세대가 현재 registry의 one-shot 계약과 정합한가. registry만
+    # 2. v6 공개 세대가 현재 registry의 one-shot 계약과 정합한가. registry만
     #    green이면 stale/partial generation을 무시하고 destructive command를 안내할 수
-    #    있다. rotation 직후의 strict old committed/unconditional-terminal generation은
-    #    `pending_rebuild`로 유효하지만, 그 외 partial·drift·unknown은 fail-close다.
+    #    있다. rotation 직후의 old committed generation은 `pending_rebuild`로 유효하지만,
+    #    사본이 없거나 결박을 확인할 수 없는 `unknown`은 fail-close다.
     try:
         generation = read_published_pinned_runtime_generation()
     except Exception as exc:  # noqa: BLE001 - 진단 route는 500이 되면 안 된다

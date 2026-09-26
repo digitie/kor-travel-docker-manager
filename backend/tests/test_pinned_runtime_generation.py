@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import hashlib
-import inspect
 import json
 import os
-import re
 import stat
-import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -19,38 +16,19 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     assert_compose_mutation_allowed,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    REBUILD_PHASES,
-    MapApplication300ApplicationDatabaseIdentity,
     MapApplication300CandidateEvidence,
-    MapApplication300DagsterMetadataDatabaseIdentity,
-    MapApplication300DagsterMetadataRoleAttributes,
-    MapApplication300ExecutionEvidence,
-    PinnedRuntimeCancelProbeOutcome,
-    PinnedRuntimeCancelProbeReceipt,
-    PinnedRuntimeDatabaseIdentity,
     PinnedRuntimeGeneration,
     PinnedRuntimeManifest,
-    PinnedRuntimeRebuildJournal,
-    PinviRoleCatalogResetReceipt,
-    PinviRoleLifecycleBlock,
-    RebuildPhase,
     ensure_pinned_runtime_state_directory,
-    f1d_legacy_artifact_paths,
     generation_from_payload,
     generation_logical_sha256,
-    journal_from_payload,
-    legacy_tombstone_receipt_path,
     load_deployment_mode,
     pinned_runtime_public_paths,
     pinned_runtime_state_paths,
     read_manifest,
     read_published_pinned_runtime_generation,
-    read_rebuild_journal,
-    rebuild_journal_sha256,
     require_rebuildable_mode,
-    retire_f1d_legacy_artifacts,
     write_manifest,
-    write_rebuild_journal,
 )
 
 _PINSET_SHA256 = "a" * 64
@@ -76,55 +54,6 @@ def _candidate_evidence(seed: str = "a") -> MapApplication300CandidateEvidence:
     )
 
 
-def _application_database_identity() -> MapApplication300ApplicationDatabaseIdentity:
-    return MapApplication300ApplicationDatabaseIdentity(
-        database_name="kor_travel_map",
-        database_oid=127001,
-        database_owner="ktm_feature_schema_owner",
-        postgres_system_identifier="7474747474747474747",
-    )
-
-
-def _application_create_database_identity() -> (
-    MapApplication300ApplicationDatabaseIdentity
-):
-    return MapApplication300ApplicationDatabaseIdentity(
-        database_name="kor_travel_map",
-        database_oid=127001,
-        database_owner="kor_travel_map",
-        postgres_system_identifier="7474747474747474747",
-    )
-
-
-def _pinvi_database_identity() -> PinnedRuntimeDatabaseIdentity:
-    return PinnedRuntimeDatabaseIdentity(
-        system_identifier="8585858585858585858",
-        name="pinvi",
-        oid=127003,
-        owner="pinvi",
-        login_role="pinvi",
-    )
-
-
-def _dagster_metadata_database_identity() -> MapApplication300DagsterMetadataDatabaseIdentity:
-    return MapApplication300DagsterMetadataDatabaseIdentity(
-        system_identifier="7474747474747474747",
-        name="kor_travel_map_dagster",
-        oid=127002,
-        owner="map_dagster_metadata",
-        login_role="map_dagster_metadata",
-        login_role_attributes=MapApplication300DagsterMetadataRoleAttributes(
-            superuser=False,
-            create_database=False,
-            create_role=False,
-            replication=False,
-            bypass_rls=False,
-            granted_role_count=0,
-            member_role_count=0,
-        ),
-    )
-
-
 def _generation(seed: str = "a") -> PinnedRuntimeGeneration:
     return PinnedRuntimeGeneration(
         map_api_image_id=_image_id(seed),
@@ -143,94 +72,6 @@ def _generation(seed: str = "a") -> PinnedRuntimeGeneration:
         map_application_300_candidate_evidence=_candidate_evidence(seed),
         recorded_at="2026-08-06T00:00:00+00:00",
     )
-
-
-def _journal(seed: str = "a") -> PinnedRuntimeRebuildJournal:
-    generation = _generation(seed)
-    return PinnedRuntimeRebuildJournal(
-        version=8,
-        transaction_id=str(uuid.uuid4()),
-        phase="candidate_attested",
-        candidate=generation,
-        map_application_300_candidate_evidence=(
-            generation.map_application_300_candidate_evidence
-        ),
-        environment_sha256=_digest("b"),
-        compose_sha256=_digest("c"),
-        resolved_compose_sha256=_digest("d"),
-        created_at="2026-08-06T00:00:00+00:00",
-    )
-
-
-def _copy_journal(
-    journal: PinnedRuntimeRebuildJournal,
-    *,
-    phase: RebuildPhase | None = None,
-    journal_generation: int | None = None,
-    map_application_300_candidate_evidence: (
-        MapApplication300CandidateEvidence | None
-    ) = None,
-    map_application_300_execution_evidence: (
-        MapApplication300ExecutionEvidence | None
-    ) = None,
-) -> PinnedRuntimeRebuildJournal:
-    return PinnedRuntimeRebuildJournal(
-        version=journal.version,
-        transaction_id=journal.transaction_id,
-        phase=journal.phase if phase is None else phase,
-        candidate=journal.candidate,
-        map_application_300_candidate_evidence=(
-            journal.map_application_300_candidate_evidence
-            if map_application_300_candidate_evidence is None
-            else map_application_300_candidate_evidence
-        ),
-        environment_sha256=journal.environment_sha256,
-        compose_sha256=journal.compose_sha256,
-        resolved_compose_sha256=journal.resolved_compose_sha256,
-        created_at=journal.created_at,
-        pinvi_database_identity=journal.pinvi_database_identity,
-        journal_generation=(
-            journal.journal_generation
-            if journal_generation is None
-            else journal_generation
-        ),
-        map_application_300_execution_evidence=(
-            journal.map_application_300_execution_evidence
-            if map_application_300_execution_evidence is None
-            else map_application_300_execution_evidence
-        ),
-        cancel_probe=journal.cancel_probe,
-    )
-
-
-def _journal_with_application_roles_ready() -> PinnedRuntimeRebuildJournal:
-    return (
-        _journal()
-        .transition("reset_intent_durable")
-        .with_databases_recreated(
-            pinvi_database_identity=_pinvi_database_identity()
-        )
-        .with_application_create_intent()
-        .with_application_created(
-            application_create_database_identity=(
-                _application_create_database_identity()
-            )
-        )
-        .with_application_bootstrap_intent()
-        .with_application_roles_ready(
-            application_database_identity=_application_database_identity()
-        )
-    )
-
-
-def _journal_with_map_application_ready() -> PinnedRuntimeRebuildJournal:
-    journal = _journal_with_application_roles_ready()
-    journal = journal.with_application_schema_ready(application_schema_head="400")
-    journal = journal.with_metadata_permit_ready(
-        dagster_metadata_database_identity=_dagster_metadata_database_identity(),
-        metadata_permit_sha256=_digest("9"),
-    )
-    return journal.with_map_application_ready()
 
 
 @pytest.mark.parametrize(
@@ -338,16 +179,7 @@ def test_pinned_runtime_state_paths_are_rebuildable_project_scoped(
 
     assert paths.state_root == tmp_path / "f1d-isolated"
     assert paths.manifest == paths.state_root / "pinned-runtime-generation-v6.json"
-    assert paths.journal == (
-        paths.state_root / f"pinned-runtime-rebuild-v8-{_PINSET_SHA256}.json"
-    )
-    assert paths.tombstone_receipt == legacy_tombstone_receipt_path(
-        paths.state_root,
-        pinset_sha256=_PINSET_SHA256,
-    )
-    assert paths.tombstone_receipt == (
-        paths.state_root / f"legacy-tombstone-v8-{_PINSET_SHA256}.json"
-    )
+    assert paths.pinset_sha256 == _PINSET_SHA256
     assert stat.S_IMODE(paths.state_root.stat().st_mode) == 0o700
 
 
@@ -373,26 +205,6 @@ def test_pinned_runtime_state_paths_reject_nonrebuildable_or_invalid_project(
             },
             pinset_sha256=_PINSET_SHA256,
         )
-
-
-def test_pinned_runtime_journal_and_tombstone_paths_are_pinset_scoped(
-    tmp_path: Path,
-) -> None:
-    values = {
-        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
-        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
-        "PINVI_ENVIRONMENT": "production",
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
-        "COMPOSE_PROJECT_NAME": "f1d-isolated",
-        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path),
-    }
-    previous = pinned_runtime_state_paths(values, pinset_sha256="a" * 64)
-    next_release = pinned_runtime_state_paths(values, pinset_sha256="b" * 64)
-
-    assert previous.state_root == next_release.state_root
-    assert previous.manifest == next_release.manifest
-    assert previous.journal != next_release.journal
-    assert previous.tombstone_receipt != next_release.tombstone_receipt
 
 
 def test_manifest_is_single_active_generation_without_rollback(tmp_path: Path) -> None:
@@ -478,26 +290,17 @@ def test_public_json_write_is_not_reported_as_failed_when_only_dir_fsync_fails(
     assert json.loads(paths.manifest.read_text(encoding="utf-8")) == manifest.to_payload()
 
 
-def test_rebuild_journal_requires_candidate_first_and_exact_phase_order(tmp_path: Path) -> None:
-    state = tmp_path / "state"
-    state.mkdir(mode=0o700)
-    os.chmod(state, 0o700)
-    journal = _journal()
-    path = state / "pinned-runtime-rebuild-v8.json"
-
-    write_rebuild_journal(path, journal)
-    restored = read_rebuild_journal(path)
-
-    assert restored == journal
-    assert restored.transition("reset_intent_durable").phase == "reset_intent_durable"
-    with pytest.raises(DeploymentContractError, match="phase transition"):
-        restored.transition("databases_recreated")
+_PUBLIC_ENVELOPE_KEYS = {"status", "source", "manifest", "pinset_binding", "summary"}
 
 
 def test_public_generation_copy_preserves_exact_raw_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """API 관측 사본은 Map attestation이 보는 v6/v8 dict를 바꾸면 안 된다."""
+    """API 관측 사본은 private v6 manifest dict를 바꾸면 안 된다.
+
+    envelope는 manifest 원문에 결박·요약만 더한다. 옛 `journal`·`terminal` 키와
+    `summary.journal_version`은 ADR-51 B3에서 사라졌다.
+    """
 
     state = tmp_path / "state"
     state.mkdir(mode=0o700)
@@ -505,23 +308,23 @@ def test_public_generation_copy_preserves_exact_raw_contract(
     public_root = tmp_path / "public"
     monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(public_root))
     manifest = PinnedRuntimeManifest(version=6, active_generation=_generation())
-    journal = _journal()
 
     write_manifest(state / "pinned-runtime-generation-v6.json", manifest)
-    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", journal)
 
     paths = pinned_runtime_public_paths()
     assert paths.manifest.parent == public_root
     assert paths.manifest.exists()
-    assert paths.journal.exists()
+    assert sorted(path.name for path in public_root.iterdir()) == [
+        "pinned-runtime-generation-v6.json"
+    ]
     if os.name != "nt":
         assert stat.S_IMODE(paths.manifest.stat().st_mode) == 0o644
-        assert stat.S_IMODE(paths.journal.stat().st_mode) == 0o644
     observed = read_published_pinned_runtime_generation()
     assert observed["status"] == "ok"
+    assert set(observed) == _PUBLIC_ENVELOPE_KEYS
     assert observed["manifest"] == manifest.to_payload()
-    assert observed["journal"] == journal.to_payload()
-    assert observed["summary"]["state"] == "unverified"
+    assert "journal_version" not in observed["summary"]
+    assert observed["summary"]["manifest_version"] == 6
 
 
 def test_public_generation_copy_fails_closed_when_all_public_artifacts_are_invalid(
@@ -536,7 +339,7 @@ def test_public_generation_copy_fails_closed_when_all_public_artifacts_are_inval
 
     assert observed["status"] == "unknown"
     assert observed["manifest"] is None
-    assert observed["journal"] is None
+    assert set(observed) == _PUBLIC_ENVELOPE_KEYS | {"detail"}
 
 
 def test_public_generation_copy_is_the_manifest_alone(
@@ -558,49 +361,57 @@ def test_public_generation_copy_is_the_manifest_alone(
 
     assert observed["status"] == "ok"
     assert observed["manifest"] is not None
-    assert observed["journal"] is None
+    assert "journal" not in observed
+    assert "terminal" not in observed
 
 
 def test_public_generation_copy_without_a_manifest_is_unknown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = tmp_path / "state"
-    state.mkdir(mode=0o700)
-    os.chmod(state, 0o700)
-    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
-    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", _journal("b"))
+    public_root = tmp_path / "public"
+    public_root.mkdir(mode=0o755)
+    os.chmod(public_root, 0o755)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(public_root))
 
     observed = read_published_pinned_runtime_generation()
 
     assert observed["status"] == "unknown"
     assert observed["manifest"] is None
+    assert observed["pinset_binding"]["status"] == "unknown"
     assert observed["summary"]["state"] == "unknown"
+    # 복구 안내는 manifest 하나만 요구한다 — 옛 `--journal` 인자는 없다.
+    assert "--journal" not in observed["summary"]["next_action"]
+    assert "--manifest" in observed["summary"]["next_action"]
 
 
 def test_a_stale_legacy_journal_copy_is_ignored_not_fatal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """마이그레이션 전진 배포가 manifest를 새로 쓰면 옛 v8 공개 사본과 달라진다.
+    """ADR-51 이전 배포가 남긴 공개 v8 journal 사본은 읽지도 고치지도 않는다.
 
-    종전처럼 불일치를 `unverified`로 두면 전진 배포 한 번 뒤 `pin verify`가 영구히 1이 되고
-    그것을 요구하는 M05 하네스가 막힌다(B2 적대 리뷰 M1).
+    n150의 공개 root에는 그 파일(`pinned-runtime-rebuild-v8.json`)이 아직 있다. reader가
+    그것을 열어 해석하면 옛 흐름의 불일치가 `pin verify`를 1로 만들고 그것을 요구하는
+    M05 하네스가 막힌다(B2 적대 리뷰 M1). 이제 reader는 manifest만 보므로 그 파일의
+    내용이 무엇이든 결과가 같아야 한다.
     """
 
     state = tmp_path / "state"
     state.mkdir(mode=0o700)
     os.chmod(state, 0o700)
-    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
-    write_manifest(
-        state / "pinned-runtime-generation-v6.json",
-        PinnedRuntimeManifest(version=6, active_generation=_generation("a")),
-    )
-    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", _journal("b"))
+    public_root = tmp_path / "public"
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(public_root))
+    manifest = PinnedRuntimeManifest(version=6, active_generation=_generation("a"))
+    write_manifest(state / "pinned-runtime-generation-v6.json", manifest)
+    stale = public_root / "pinned-runtime-rebuild-v8.json"
+    stale.write_bytes(b'{"version": 8}')
+    os.chmod(stale, 0o644)
 
     observed = read_published_pinned_runtime_generation()
 
     assert observed["status"] == "ok"
-    assert observed["journal"] is None
-    assert observed["manifest"] is not None
+    assert observed["manifest"] == manifest.to_payload()
+    assert "journal" not in observed
+    assert stale.read_bytes() == b'{"version": 8}'
 
 
 @pytest.mark.parametrize("unsafe", ["symlink", "writable"])
@@ -633,664 +444,74 @@ def test_public_generation_writer_rejects_an_unsafe_public_root(
 def test_public_generation_binding_distinguishes_current_pair_and_pending_rebuild(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = tmp_path / "state"
-    state.mkdir(mode=0o700)
-    os.chmod(state, 0o700)
-    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
-    manifest = PinnedRuntimeManifest(version=6, active_generation=_generation())
-    journal = _journal()
-    write_manifest(state / "pinned-runtime-generation-v6.json", manifest)
-    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", journal)
-    matching = {
-        "status": "ok",
-        "pinset_sha256": journal.candidate.pinset_sha256,
-        "sources": [
-            {"role": "map", "revision": journal.candidate.map_source_revision},
-            {"role": "pinvi", "revision": journal.candidate.pinvi_source_revision},
-        ],
-    }
-    monkeypatch.setattr(runtime_pin_registry, "read_published_runtime_pins", lambda: matching)
+    """manifest만 읽는 결박은 `match`·`pending_rebuild`·`unknown` 셋뿐이다.
 
-    assert read_published_pinned_runtime_generation()["pinset_binding"]["status"] == "match"
-
-    monkeypatch.setattr(
-        runtime_pin_registry,
-        "read_published_runtime_pins",
-        lambda: {**matching, "pinset_sha256": "f" * 64},
-    )
-    # 현재 journal은 committed가 아니므로 다른 pair는 정상 대기가 아니라 drift다.
-    assert read_published_pinned_runtime_generation()["pinset_binding"]["status"] == "drift"
-
-
-def test_terminal_generation_becomes_pending_after_atomic_pair_rotation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    state = tmp_path / "state"
-    state.mkdir(mode=0o700)
-    os.chmod(state, 0o700)
-    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
-    terminal_journal = (
-        _journal_with_map_application_ready()
-        .transition("map_dagster_storage_intent_durable")
-        .transition("map_dagster_ready")
-        .transition("map_runtime_ready")
-        .with_pinvi_role_lifecycle_block(
-            PinviRoleLifecycleBlock(
-                stage="pinvi_role_open",
-                code="role_topology_noncanonical",
-            )
-        )
-    )
-    write_manifest(
-        state / "pinned-runtime-generation-v6.json",
-        PinnedRuntimeManifest(version=6, active_generation=terminal_journal.candidate),
-    )
-    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", terminal_journal)
-    monkeypatch.setattr(
-        runtime_pin_registry,
-        "read_published_runtime_pins",
-        lambda: {
-            "status": "ok",
-            "pinset_sha256": _digest("f"),
-            "sources": [
-                {"role": "map", "revision": _revision("f")},
-                {"role": "pinvi", "revision": _revision("f")},
-            ],
-        },
-    )
-
-    observed = read_published_pinned_runtime_generation()
-
-    assert observed["status"] == "ok"
-    assert observed["pinset_binding"]["status"] == "pending_rebuild"
-    assert observed["summary"]["state"] == "pending_rebuild"
-
-
-def test_unconditionally_blocked_generation_becomes_pending_after_pair_rotation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """launcher/HTTP terminal은 role receipt 없이 registry exact block으로 보존된다."""
-
-    state = tmp_path / "state"
-    state.mkdir(mode=0o700)
-    os.chmod(state, 0o700)
-    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
-    terminal_journal = (
-        _journal_with_map_application_ready()
-        .transition("map_dagster_storage_intent_durable")
-        .transition("map_dagster_ready")
-        .transition("map_runtime_ready")
-    )
-    write_manifest(
-        state / "pinned-runtime-generation-v6.json",
-        PinnedRuntimeManifest(version=6, active_generation=terminal_journal.candidate),
-    )
-    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", terminal_journal)
-    monkeypatch.setattr(
-        runtime_pin_registry,
-        "read_published_runtime_pins",
-        lambda: {
-            "status": "ok",
-            "pinset_sha256": _digest("f"),
-            "sources": [
-                {"role": "map", "revision": _revision("f")},
-                {"role": "pinvi", "revision": _revision("f")},
-            ],
-            "blocked_pinsets": [
-                {
-                    "pinset_sha256": terminal_journal.candidate.pinset_sha256,
-                    "map_revision": terminal_journal.candidate.map_source_revision,
-                    "pinvi_revision": terminal_journal.candidate.pinvi_source_revision,
-                    "reason": "launcher safe result unavailable",
-                    "blocked_at": "2026-08-28T00:00:00Z",
-                    "phase": None,
-                }
-            ],
-        },
-    )
-
-    observed = read_published_pinned_runtime_generation()
-
-    assert observed["pinset_binding"]["status"] == "pending_rebuild"
-    assert observed["summary"]["state"] == "pending_rebuild"
-
-
-def test_phase_scoped_old_block_remains_generation_drift_after_pair_rotation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """특정 재개 차단은 모든 실행을 금지하지 않으므로 pending 근거가 아니다."""
-
-    state = tmp_path / "state"
-    state.mkdir(mode=0o700)
-    os.chmod(state, 0o700)
-    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
-    journal = _journal()
-    write_manifest(
-        state / "pinned-runtime-generation-v6.json",
-        PinnedRuntimeManifest(version=6, active_generation=journal.candidate),
-    )
-    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", journal)
-    monkeypatch.setattr(
-        runtime_pin_registry,
-        "read_published_runtime_pins",
-        lambda: {
-            "status": "ok",
-            "pinset_sha256": _digest("f"),
-            "sources": [
-                {"role": "map", "revision": _revision("f")},
-                {"role": "pinvi", "revision": _revision("f")},
-            ],
-            "blocked_pinsets": [
-                {
-                    "pinset_sha256": journal.candidate.pinset_sha256,
-                    "map_revision": journal.candidate.map_source_revision,
-                    "pinvi_revision": journal.candidate.pinvi_source_revision,
-                    "reason": "resume only",
-                    "blocked_at": "2026-08-28T00:00:00Z",
-                    "phase": "map_runtime_ready",
-                }
-            ],
-        },
-    )
-
-    assert read_published_pinned_runtime_generation()["pinset_binding"]["status"] == "drift"
-
-
-def test_rebuild_journal_application_300_phases_require_evidence_methods() -> None:
-    reset_intent = _journal().transition("reset_intent_durable")
-    with pytest.raises(DeploymentContractError, match="evidence-specific"):
-        reset_intent.transition("databases_recreated")
-    journal = reset_intent.with_databases_recreated(
-        pinvi_database_identity=_pinvi_database_identity()
-    )
-
-    assert journal.journal_generation == REBUILD_PHASES.index("databases_recreated")
-    with pytest.raises(DeploymentContractError, match="evidence-specific"):
-        journal.transition("application_create_intent_durable")
-
-    journal = journal.with_application_create_intent()
-    create_identity = _application_create_database_identity()
-    journal = journal.with_application_created(
-        application_create_database_identity=create_identity
-    )
-    journal = journal.with_application_bootstrap_intent()
-    application_identity = _application_database_identity()
-    journal = journal.with_application_roles_ready(
-        application_database_identity=application_identity
-    )
-    assert journal.phase == "application_roles_ready"
-    assert journal.journal_generation == REBUILD_PHASES.index("application_roles_ready")
-    assert (
-        journal.map_application_300_execution_evidence.application_database_identity
-        == application_identity
-    )
-    assert (
-        journal.map_application_300_execution_evidence.application_database_identity_sha256
-        == application_identity.sha256()
-    )
-
-    with pytest.raises(DeploymentContractError, match="phase transition"):
-        journal.transition("metadata_permit_ready")
-
-    with pytest.raises(DeploymentContractError, match="metadata permit is out of order"):
-        journal.with_metadata_permit_ready(
-            dagster_metadata_database_identity=_dagster_metadata_database_identity(),
-            metadata_permit_sha256=_digest("9"),
-        )
-    with pytest.raises(DeploymentContractError, match="evidence-specific"):
-        journal.transition("application_schema_ready")
-
-    # ADR-101: 여기 있던 여덟 전이가 하나가 됐다. 인자는 one-shot 뒤에 **관측한**
-    # `public.alembic_version` 값이다.
-    journal = journal.with_application_schema_ready(application_schema_head="400")
-    assert journal.phase == "application_schema_ready"
-    assert (
-        journal.map_application_300_execution_evidence.application_schema_head == "400"
-    )
-
-    # 관측은 다시 묶이지 않는다 — 같은 phase에서 다른 head를 주장할 수 없다.
-    with pytest.raises(DeploymentContractError, match="cannot be rebound"):
-        journal.map_application_300_execution_evidence.with_application_schema_head(
-            "401_other"
-        )
-
-    metadata_identity = _dagster_metadata_database_identity()
-    journal = journal.with_metadata_permit_ready(
-        dagster_metadata_database_identity=metadata_identity,
-        metadata_permit_sha256=_digest("9"),
-    )
-    assert (
-        journal.map_application_300_execution_evidence.dagster_metadata_database_identity
-        == metadata_identity
-    )
-    journal = journal.with_map_application_ready()
-
-    assert journal.phase == "map_application_ready"
-    assert journal.journal_generation == REBUILD_PHASES.index("map_application_ready")
-    journal = journal.transition("map_dagster_storage_intent_durable")
-    assert journal.phase == "map_dagster_storage_intent_durable"
-    assert journal.transition("map_dagster_ready").phase == "map_dagster_ready"
-
-
-def test_application_create_and_bootstrap_receipts_bind_one_database_identity() -> None:
-    journal = (
-        _journal()
-        .transition("reset_intent_durable")
-        .with_databases_recreated(
-            pinvi_database_identity=_pinvi_database_identity()
-        )
-        .with_application_create_intent()
-    )
-    created = journal.with_application_created(
-        application_create_database_identity=_application_create_database_identity()
-    )
-
-    restored = journal_from_payload(created.to_payload())
-    assert restored == created
-    assert restored.phase == "application_created"
-    assert (
-        restored.map_application_300_execution_evidence
-        .application_create_database_identity_sha256
-        == _application_create_database_identity().sha256()
-    )
-
-    bootstrap_intent = restored.with_application_bootstrap_intent()
-    changed_identity = MapApplication300ApplicationDatabaseIdentity(
-        database_name="kor_travel_map",
-        database_oid=127099,
-        database_owner="ktm_feature_schema_owner",
-        postgres_system_identifier="7474747474747474747",
-    )
-    with pytest.raises(DeploymentContractError, match="changed during role bootstrap"):
-        bootstrap_intent.with_application_roles_ready(
-            application_database_identity=changed_identity
-        )
-
-
-def test_rebuild_journal_rejects_skipped_phase_and_rebound_schema_head() -> None:
-    """건너뛰기와 재결박을 거부한다.
-
-    ADR-101 이전에는 이 자리에서 operation plan의 basis journal 결박(세대·sha)을
-    확인했다. 그 결박은 "영수증 파일을 어느 저널 상태에서 썼는가"를 되짚기 위한
-    것이었고, 파일이 사라지면서 되짚을 대상도 사라졌다.
-
-    남은 두 성질은 여전히 실질적이다 — phase를 건너뛰면 거부하고, 이미 적힌
-    관측값을 다른 값으로 덮으면 거부한다.
+    옛 `drift`는 진행 중인 journal이 있어야 성립했다. manifest는 커밋 때만 쓰이므로
+    registry와 다른 pair는 곧 "회전했고 아직 배포 전"이다 — `pin verify`가 이 결박
+    때문에 1로 끝나지 않아야 M05 하네스가 회전 직후에도 돈다.
     """
 
-    journal = _journal_with_application_roles_ready()
-
-    ready = journal.with_application_schema_ready(application_schema_head="400")
-    with pytest.raises(DeploymentContractError, match="schema readiness is out of order"):
-        ready.with_application_schema_ready(application_schema_head="400")
-
-    with pytest.raises(DeploymentContractError, match="metadata permit is out of order"):
-        journal.with_metadata_permit_ready(
-            dagster_metadata_database_identity=_dagster_metadata_database_identity(),
-            metadata_permit_sha256=_digest("9"),
-        )
-
-    with pytest.raises(DeploymentContractError, match="schema head is invalid"):
-        journal.with_application_schema_ready(application_schema_head="NOT A HEAD")
-
-
-def test_rebuild_journal_application_300_journal_generation_is_monotonic() -> None:
-    journal = _journal()
-    observed: list[int] = [journal.journal_generation]
-
-    journal = journal.transition("reset_intent_durable")
-    observed.append(journal.journal_generation)
-    journal = journal.with_databases_recreated(
-        pinvi_database_identity=_pinvi_database_identity()
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+    generation = _generation()
+    write_manifest(
+        state / "pinned-runtime-generation-v6.json",
+        PinnedRuntimeManifest(version=6, active_generation=generation),
     )
-    observed.append(journal.journal_generation)
-    journal = journal.with_application_create_intent()
-    observed.append(journal.journal_generation)
-    journal = journal.with_application_created(
-        application_create_database_identity=_application_create_database_identity()
-    )
-    observed.append(journal.journal_generation)
-    journal = journal.with_application_bootstrap_intent()
-    observed.append(journal.journal_generation)
-    journal = journal.with_application_roles_ready(
-        application_database_identity=_application_database_identity()
-    )
-    observed.append(journal.journal_generation)
-    journal = journal.with_application_schema_ready(application_schema_head="400")
-    observed.append(journal.journal_generation)
-    journal = journal.with_metadata_permit_ready(
-        dagster_metadata_database_identity=_dagster_metadata_database_identity(),
-        metadata_permit_sha256=_digest("9"),
-    )
-    observed.append(journal.journal_generation)
-    journal = journal.with_map_application_ready()
-    observed.append(journal.journal_generation)
-
-    assert observed == list(range(REBUILD_PHASES.index("map_application_ready") + 1))
-
-
-def test_rebuild_journal_application_300_rejects_missing_or_future_evidence() -> None:
-    base = _journal().transition("reset_intent_durable").with_databases_recreated(
-        pinvi_database_identity=_pinvi_database_identity()
-    )
-
-    with pytest.raises(DeploymentContractError, match="lacks required evidence"):
-        _copy_journal(
-            base,
-            phase="application_roles_ready",
-            journal_generation=REBUILD_PHASES.index("application_roles_ready"),
-            map_application_300_execution_evidence=MapApplication300ExecutionEvidence(),
-        )
-
-    roles_ready = _journal_with_application_roles_ready()
-    with pytest.raises(DeploymentContractError, match="future evidence"):
-        _copy_journal(
-            roles_ready,
-            map_application_300_execution_evidence=(
-                roles_ready.map_application_300_execution_evidence
-                .with_application_schema_head("400")
-            ),
-        )
-
-    with pytest.raises(DeploymentContractError, match="lacks required evidence"):
-        _copy_journal(
-            roles_ready,
-            phase="application_schema_ready",
-            journal_generation=REBUILD_PHASES.index("application_schema_ready"),
-        )
-
-
-def test_map_application_300_identity_sha_and_role_privileges_fail_closed() -> None:
-    application_identity = _application_database_identity()
-    with pytest.raises(DeploymentContractError, match="identity SHA differs"):
-        MapApplication300ExecutionEvidence(
-            application_database_identity=application_identity,
-            application_database_identity_sha256=_digest("e"),
-        )
-
-    with pytest.raises(DeploymentContractError, match="role is privileged"):
-        MapApplication300DagsterMetadataRoleAttributes(
-            superuser=True,
-            create_database=False,
-            create_role=False,
-            replication=False,
-            bypass_rls=False,
-            granted_role_count=0,
-            member_role_count=0,
-        )
-
-
-def test_rebuild_journal_binds_candidate_evidence_and_strict_payload() -> None:
-    journal = _journal_with_map_application_ready()
-    payload = journal.to_payload()
-
-    assert journal_from_payload(payload) == journal
-    assert journal.candidate.map_application_300_candidate_evidence.to_payload() == (
-        payload["map_application_300_candidate_evidence"]
-    )
-    execution_payload = payload["map_application_300_execution_evidence"]
-    assert isinstance(execution_payload, dict)
-    assert execution_payload["application_schema_head"] == "400"
-
-    with pytest.raises(DeploymentContractError, match="candidate evidence differs"):
-        _copy_journal(
-            journal,
-            map_application_300_candidate_evidence=_candidate_evidence("b"),
-        )
-
-    with pytest.raises(DeploymentContractError, match="payload is invalid"):
-        journal_from_payload({**payload, "extra": "nope"})
-    nested_extra = json.loads(json.dumps(payload))
-    nested_extra["map_application_300_execution_evidence"]["extra"] = "nope"
-    with pytest.raises(DeploymentContractError, match="execution evidence payload"):
-        journal_from_payload(nested_extra)
-
-
-def test_map_runtime_ready_journal_can_attest_one_role_credential_environment_rebind() -> None:
-    journal = (
-        _journal_with_map_application_ready()
-        .transition("map_dagster_storage_intent_durable")
-        .transition("map_dagster_ready")
-        .transition("map_runtime_ready")
-    )
-    rebound = journal.with_pinvi_role_credential_environment_rebind(
-        previous_environment_sha256=journal.environment_sha256,
-        compose_sha256=journal.compose_sha256,
-        current_environment_sha256=_digest("e"),
-        current_resolved_compose_sha256=_digest("f"),
-    )
-
-    assert rebound.journal_generation == journal.journal_generation + 1
-    assert rebound.environment_sha256 == _digest("e")
-    assert rebound.resolved_compose_sha256 == _digest("f")
-    receipt = rebound.pinvi_role_credential_environment_rebind
-    assert receipt is not None
-    assert receipt.previous_environment_sha256 == journal.environment_sha256
-    assert journal_from_payload(rebound.to_payload()) == rebound
-
-    legacy_payload = journal.to_payload()
-    legacy_payload.pop("pinvi_role_credential_environment_rebind")
-    assert journal_from_payload(legacy_payload) == journal
-
-    with pytest.raises(DeploymentContractError, match="not permitted"):
-        journal.with_pinvi_role_credential_environment_rebind(
-            previous_environment_sha256=_digest("0"),
-            compose_sha256=journal.compose_sha256,
-            current_environment_sha256=_digest("e"),
-            current_resolved_compose_sha256=_digest("f"),
-        )
-
-
-def test_map_runtime_ready_journal_can_record_one_role_topology_terminal_block() -> None:
-    journal = (
-        _journal_with_map_application_ready()
-        .transition("map_dagster_storage_intent_durable")
-        .transition("map_dagster_ready")
-        .transition("map_runtime_ready")
-    )
-    receipt = PinviRoleLifecycleBlock(
-        stage="pinvi_role_open",
-        code="role_topology_noncanonical",
-    )
-    blocked = journal.with_pinvi_role_lifecycle_block(receipt)
-
-    assert blocked.journal_generation == journal.journal_generation + 1
-    assert blocked.pinvi_role_lifecycle_block == receipt
-    assert journal_from_payload(blocked.to_payload()) == blocked
-
-    verifier_unavailable = journal.with_pinvi_role_lifecycle_block(
-        PinviRoleLifecycleBlock(
-            stage="pinvi_role_verify",
-            code="role_topology_unavailable",
-        )
-    )
-    assert journal_from_payload(verifier_unavailable.to_payload()) == verifier_unavailable
-
-    legacy_payload = journal.to_payload()
-    legacy_payload.pop("pinvi_role_credential_environment_rebind")
-    legacy_payload.pop("pinvi_role_lifecycle_block")
-    assert journal_from_payload(legacy_payload) == journal
-
-    rebind = journal.with_pinvi_role_credential_environment_rebind(
-        previous_environment_sha256=journal.environment_sha256,
-        compose_sha256=journal.compose_sha256,
-        current_environment_sha256=_digest("e"),
-        current_resolved_compose_sha256=_digest("f"),
-    )
-    both = rebind.with_pinvi_role_lifecycle_block(receipt)
-    assert journal_from_payload(both.to_payload()) == both
-
-    malformed_payload = blocked.to_payload()
-    malformed_payload["pinvi_role_lifecycle_block"] = {
-        "stage": "pinvi_admin_bootstrap",
-        "code": "role_topology_noncanonical",
+    matching: dict[str, object] = {
+        "status": "ok",
+        "pinset_sha256": generation.pinset_sha256,
+        "sources": [
+            {"role": "map", "revision": generation.map_source_revision},
+            {"role": "pinvi", "revision": generation.pinvi_source_revision},
+        ],
     }
-    with pytest.raises(DeploymentContractError, match="block payload"):
-        journal_from_payload(malformed_payload)
 
-    malformed_payload = blocked.to_payload()
-    malformed_payload["pinvi_role_lifecycle_block"] = {
-        "stage": "pinvi_role_open",
-        "code": "role_topology_unavailable",
+    def observe(registry: dict[str, object]) -> dict[str, Any]:
+        monkeypatch.setattr(
+            runtime_pin_registry, "read_published_runtime_pins", lambda: registry
+        )
+        return read_published_pinned_runtime_generation()
+
+    observed = observe(matching)
+    assert observed["pinset_binding"] == {
+        "status": "match",
+        "registry_pinset_sha256": generation.pinset_sha256,
+        "generation_pinset_sha256": generation.pinset_sha256,
     }
-    with pytest.raises(DeploymentContractError, match="block payload"):
-        journal_from_payload(malformed_payload)
+    assert observed["summary"]["state"] == "committed"
 
-    with pytest.raises(DeploymentContractError, match="not permitted"):
-        _journal_with_map_application_ready().with_pinvi_role_lifecycle_block(receipt)
-    with pytest.raises(DeploymentContractError, match="not permitted"):
-        blocked.with_pinvi_role_lifecycle_block(receipt)
-
-
-def test_fresh_role_catalog_reset_receipt_requires_database_to_runtime_order() -> None:
-    database_recreated = _journal().transition("reset_intent_durable").with_databases_recreated(
-        pinvi_database_identity=_pinvi_database_identity()
-    )
-    intent = database_recreated
-
-    assert intent.pinvi_role_catalog_reset == PinviRoleCatalogResetReceipt(state="intent")
-    assert journal_from_payload(intent.to_payload()) == intent
-    with pytest.raises(DeploymentContractError, match="completion is not permitted"):
-        intent.with_pinvi_role_catalog_reset_completed()
-
-    map_runtime_ready = (
-        _journal_with_map_application_ready()
-        .transition("map_dagster_storage_intent_durable")
-        .transition("map_dagster_ready")
-        .transition("map_runtime_ready")
-    )
-    resumed_intent = PinnedRuntimeRebuildJournal(
-        version=map_runtime_ready.version,
-        transaction_id=map_runtime_ready.transaction_id,
-        phase=map_runtime_ready.phase,
-        candidate=map_runtime_ready.candidate,
-        map_application_300_candidate_evidence=map_runtime_ready.map_application_300_candidate_evidence,
-        environment_sha256=map_runtime_ready.environment_sha256,
-        compose_sha256=map_runtime_ready.compose_sha256,
-        resolved_compose_sha256=map_runtime_ready.resolved_compose_sha256,
-        created_at=map_runtime_ready.created_at,
-        pinvi_database_identity=map_runtime_ready.pinvi_database_identity,
-        journal_generation=map_runtime_ready.journal_generation,
-        map_application_300_execution_evidence=map_runtime_ready.map_application_300_execution_evidence,
-        cancel_probe=map_runtime_ready.cancel_probe,
-        pinvi_role_catalog_reset=PinviRoleCatalogResetReceipt(state="intent"),
-    )
-    completed = resumed_intent.with_pinvi_role_catalog_reset_completed()
-
-    assert completed.pinvi_role_catalog_reset == PinviRoleCatalogResetReceipt(state="completed")
-    assert completed.journal_generation == resumed_intent.journal_generation + 1
-    assert journal_from_payload(completed.to_payload()) == completed
-
-    malformed_payload = intent.to_payload()
-    malformed_payload["pinvi_role_catalog_reset"] = {"state": "completed"}
-    with pytest.raises(DeploymentContractError, match="role catalog reset receipt"):
-        journal_from_payload(malformed_payload)
-
-
-def test_rebuild_journal_sha256_is_canonical_and_evidence_sensitive() -> None:
-    journal = _journal_with_map_application_ready()
-    expected = hashlib.sha256(
-        (
-            json.dumps(
-                journal.to_payload(),
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            + "\n"
-        ).encode("utf-8")
-    ).hexdigest()
-
-    assert rebuild_journal_sha256(journal) == expected
-    assert rebuild_journal_sha256(journal) == rebuild_journal_sha256(
-        journal_from_payload(journal.to_payload())
-    )
-
-    evidence = journal.map_application_300_execution_evidence
-    assert evidence.application_schema_head == "400"
-    with pytest.raises(DeploymentContractError, match="cannot be rebound"):
-        evidence.with_application_schema_head("401_other")
-
-
-def test_rebuild_journal_requires_durable_cancel_post_and_finalize_receipts() -> None:
-    receipt = PinnedRuntimeCancelProbeReceipt()
-    armed = receipt.transition(
-        "armed",
-        job_id=str(uuid.uuid4()),
-        fixture_created_at="2026-08-06T00:00:00+00:00",
-    )
-    attempted = armed.transition("cancel_post_attempted")
-    consumed = attempted.transition(
-        "consumed",
-        cancellation_id=str(uuid.uuid4()),
-        outcome=PinnedRuntimeCancelProbeOutcome(
-            name="pinvi_cancel_error",
-            status=409,
-            code="PIPELINE_CANCELLATION_UNSAFE",
-        ),
-        fixture_consumed_at="2026-08-06T00:01:00+00:00",
-    )
-    finalize_attempted = consumed.transition("finalize_post_attempted")
-    finalized = finalize_attempted.transition(
-        "finalized",
-        fixture_finalized_at="2026-08-06T00:02:00+00:00",
-    )
-
-    assert finalized.stage == "finalized"
-    with pytest.raises(DeploymentContractError, match="transition"):
-        armed.transition("consumed")
-
-
-@pytest.mark.parametrize(
-    ("consumed_at", "finalized_at"),
-    [
-        ("2026-08-06T00:00:00+00:00", "2026-08-06T00:02:00+00:00"),
-        ("2026-08-06T00:02:00+00:00", "2026-08-06T00:01:00+00:00"),
-    ],
-)
-def test_pinned_runtime_receipt_rejects_reversed_fixture_timestamps(
-    consumed_at: str,
-    finalized_at: str,
-) -> None:
-    with pytest.raises(DeploymentContractError, match="timestamp order"):
-        PinnedRuntimeCancelProbeReceipt(
-            stage="finalized",
-            job_id=str(uuid.uuid4()),
-            cancellation_id=str(uuid.uuid4()),
-            outcome=PinnedRuntimeCancelProbeOutcome(
-                name="pinvi_cancel_error",
-                status=409,
-                code="PIPELINE_CANCELLATION_UNSAFE",
-            ),
-            fixture_created_at="2026-08-06T00:01:00+00:00",
-            fixture_consumed_at=consumed_at,
-            fixture_finalized_at=finalized_at,
+    # 새 pair로 회전한 직후: 마지막 커밋 세대는 이전 pinset·revision을 가리킨다.
+    for rotated in (
+        {**matching, "pinset_sha256": "f" * 64},
+        {
+            **matching,
+            "sources": [
+                {"role": "map", "revision": "f" * 40},
+                {"role": "pinvi", "revision": generation.pinvi_source_revision},
+            ],
+        },
+    ):
+        observed = observe(rotated)
+        assert observed["pinset_binding"]["status"] == "pending_rebuild"
+        assert observed["pinset_binding"]["generation_pinset_sha256"] == (
+            generation.pinset_sha256
         )
+        assert observed["summary"]["state"] == "pending_rebuild"
 
-
-def test_rebuild_journal_rejects_fixture_timestamp_drift() -> None:
-    journal = _journal_with_map_application_ready()
-    journal = journal.transition("map_dagster_storage_intent_durable")
-    journal = journal.transition("map_dagster_ready")
-    journal = journal.transition("map_runtime_ready")
-    journal = journal.with_pinvi_role_catalog_reset_completed()
-    journal = journal.transition("pinvi_schema_ready")
-    journal = journal.transition("pinvi_api_ready")
-    armed = PinnedRuntimeCancelProbeReceipt().transition(
-        "armed",
-        job_id=str(uuid.uuid4()),
-        fixture_created_at="2026-08-06T00:00:00+00:00",
-    )
-    journal = journal.with_cancel_probe(armed)
-
-    with pytest.raises(DeploymentContractError, match="identity drifted"):
-        journal.with_cancel_probe(
-            PinnedRuntimeCancelProbeReceipt(
-                stage="cancel_post_attempted",
-                job_id=armed.job_id,
-                fixture_created_at="2026-08-06T00:00:01+00:00",
-            )
-        )
+    # registry를 믿을 수 없거나 모양이 틀리면 값을 추측하지 않는다.
+    for unreadable in (
+        {**matching, "status": "degraded"},
+        {"status": "unknown"},
+        {**matching, "sources": None},
+        {**matching, "pinset_sha256": None},
+    ):
+        observed = observe(unreadable)
+        assert observed["pinset_binding"]["status"] == "unknown"
+        assert observed["pinset_binding"]["registry_pinset_sha256"] is None
+        assert observed["summary"]["state"] == "unverified"
 
 
 def test_generation_logical_sha256_excludes_recording_timestamp() -> None:
@@ -1300,47 +521,6 @@ def test_generation_logical_sha256_excludes_recording_timestamp() -> None:
     )
 
     assert generation_logical_sha256(initial) == generation_logical_sha256(later)
-
-
-def test_legacy_tombstone_receipt_is_fsynced_before_allowlisted_unlink(
-    tmp_path: Path,
-) -> None:
-    state_root = tmp_path / "state"
-    state_root.mkdir(mode=0o700)
-    os.chmod(state_root, 0o700)
-    legacy = state_root / "compatible-pair-v4.json"
-    legacy.write_text('{"version":4}\n', encoding="utf-8")
-    os.chmod(legacy, 0o600)
-    transaction_id = str(uuid.uuid4())
-
-    receipt = retire_f1d_legacy_artifacts(
-        state_root=state_root,
-        transaction_id=transaction_id,
-        candidate=_generation(),
-        recorded_at="2026-08-06T00:00:00+00:00",
-    )
-
-    assert receipt.transaction_id == transaction_id
-    assert receipt.requested_paths == f1d_legacy_artifact_paths(
-        pinset_sha256=_generation().pinset_sha256
-    )
-    assert receipt.version == 8
-    assert tuple(entry.relative_path for entry in receipt.retired) == (
-        "compatible-pair-v4.json",
-    )
-    assert not legacy.exists()
-    stored = legacy_tombstone_receipt_path(
-        state_root,
-        pinset_sha256=_generation().pinset_sha256,
-    )
-    assert stored.exists()
-    assert stat.S_IMODE(stored.stat().st_mode) == 0o600
-    assert retire_f1d_legacy_artifacts(
-        state_root=state_root,
-        transaction_id=transaction_id,
-        candidate=_generation(),
-        recorded_at="2026-08-06T00:00:00+00:00",
-    ) == receipt
 
 
 def test_v4_manifest_api_is_absent_and_only_tombstoned() -> None:
@@ -1355,242 +535,11 @@ def test_v4_manifest_api_is_absent_and_only_tombstoned() -> None:
         assert not hasattr(c6c_deployment, name)
 
 
-def test_legacy_tombstone_rejects_artifact_that_appears_after_receipt(
-    tmp_path: Path,
-) -> None:
-    state_root = tmp_path / "state"
-    state_root.mkdir(mode=0o700)
-    os.chmod(state_root, 0o700)
-    transaction_id = str(uuid.uuid4())
-    retire_f1d_legacy_artifacts(
-        state_root=state_root,
-        transaction_id=transaction_id,
-        candidate=_generation(),
-        recorded_at="2026-08-06T00:00:00+00:00",
-    )
-    foreign = state_root / "cache-target-window-v1.json"
-    foreign.write_text("{}\n", encoding="utf-8")
-    os.chmod(foreign, 0o600)
-
-    with pytest.raises(DeploymentContractError, match="conflicts"):
-        retire_f1d_legacy_artifacts(
-            state_root=state_root,
-            transaction_id=transaction_id,
-            candidate=_generation(),
-            recorded_at="2026-08-06T00:00:00+00:00",
-        )
-
-
-def test_v8_tombstone_retires_v5_journal_without_reusing_v5_receipt(
-    tmp_path: Path,
-) -> None:
-    state_root = tmp_path / "state"
-    state_root.mkdir(mode=0o700)
-    os.chmod(state_root, 0o700)
-    old_journal = state_root / "pinned-runtime-rebuild-v5.json"
-    old_journal.write_text('{"version":5}\n', encoding="utf-8")
-    os.chmod(old_journal, 0o600)
-    old_receipt_directory = state_root / "pinned-runtime-v5"
-    old_receipt_directory.mkdir(mode=0o700)
-    os.chmod(old_receipt_directory, 0o700)
-    (old_receipt_directory / "legacy-tombstone-v5.json").write_text(
-        '{"historical":true}\n',
-        encoding="utf-8",
-    )
-    os.chmod(old_receipt_directory / "legacy-tombstone-v5.json", 0o600)
-
-    receipt = retire_f1d_legacy_artifacts(
-        state_root=state_root,
-        transaction_id=str(uuid.uuid4()),
-        candidate=_generation(),
-        recorded_at="2026-08-06T00:00:00+00:00",
-    )
-
-    assert not old_journal.exists()
-    assert receipt.version == 8
-    assert "pinned-runtime-rebuild-v5.json" in receipt.requested_paths
-    assert legacy_tombstone_receipt_path(
-        state_root,
-        pinset_sha256=_generation().pinset_sha256,
-    ).exists()
-
-
-def test_v8_tombstone_retires_static_v6_v7_journals_and_receipts(tmp_path: Path) -> None:
-    state_root = tmp_path / "state"
-    state_root.mkdir(mode=0o700)
-    os.chmod(state_root, 0o700)
-    old_journal = state_root / "pinned-runtime-rebuild-v6.json"
-    old_journal.write_text('{"version":6}\n', encoding="utf-8")
-    os.chmod(old_journal, 0o600)
-    old_receipt_directory = state_root / "pinned-runtime-v6"
-    old_receipt_directory.mkdir(mode=0o700)
-    os.chmod(old_receipt_directory, 0o700)
-    old_receipt = old_receipt_directory / "legacy-tombstone-v6.json"
-    old_receipt.write_text('{"version":6}\n', encoding="utf-8")
-    os.chmod(old_receipt, 0o600)
-    old_v7_journal = state_root / "pinned-runtime-rebuild-v7.json"
-    old_v7_journal.write_text('{"version":7}\n', encoding="utf-8")
-    os.chmod(old_v7_journal, 0o600)
-    old_v7_receipt_directory = state_root / "pinned-runtime-v7"
-    old_v7_receipt_directory.mkdir(mode=0o700)
-    os.chmod(old_v7_receipt_directory, 0o700)
-    old_v7_receipt = old_v7_receipt_directory / "legacy-tombstone-v7.json"
-    old_v7_receipt.write_text('{"version":7}\n', encoding="utf-8")
-    os.chmod(old_v7_receipt, 0o600)
-    old_v7_pinset_journal = (
-        state_root / f"pinned-runtime-rebuild-v7-{_generation().pinset_sha256}.json"
-    )
-    old_v7_pinset_journal.write_text('{"version":7,"pinset":true}\n', encoding="utf-8")
-    os.chmod(old_v7_pinset_journal, 0o600)
-    old_v7_pinset_receipt = (
-        state_root / f"legacy-tombstone-v7-{_generation().pinset_sha256}.json"
-    )
-    old_v7_pinset_receipt.write_text('{"version":7,"pinset":true}\n', encoding="utf-8")
-    os.chmod(old_v7_pinset_receipt, 0o600)
-
-    receipt = retire_f1d_legacy_artifacts(
-        state_root=state_root,
-        transaction_id=str(uuid.uuid4()),
-        candidate=_generation(),
-        recorded_at="2026-08-06T00:00:00+00:00",
-    )
-
-    assert not old_journal.exists()
-    assert not old_receipt.exists()
-    assert not old_v7_journal.exists()
-    assert not old_v7_receipt.exists()
-    assert not old_v7_pinset_journal.exists()
-    assert not old_v7_pinset_receipt.exists()
-    assert receipt.version == 8
-    assert {
-        "pinned-runtime-rebuild-v6.json",
-        "pinned-runtime-v6/legacy-tombstone-v6.json",
-        "pinned-runtime-rebuild-v7.json",
-        "pinned-runtime-v7/legacy-tombstone-v7.json",
-        f"pinned-runtime-rebuild-v7-{_generation().pinset_sha256}.json",
-        f"legacy-tombstone-v7-{_generation().pinset_sha256}.json",
-    } <= set(entry.relative_path for entry in receipt.retired)
-    assert legacy_tombstone_receipt_path(
-        state_root,
-        pinset_sha256=_generation().pinset_sha256,
-    ).exists()
-
-
-def test_legacy_tombstone_rejects_unsafe_artifact_before_receipt(tmp_path: Path) -> None:
-    state_root = tmp_path / "state"
-    state_root.mkdir(mode=0o700)
-    os.chmod(state_root, 0o700)
-    legacy = state_root / "compatible-pair-v4.json"
-    legacy.write_text("{}\n", encoding="utf-8")
-    os.chmod(legacy, 0o644)
-
-    with pytest.raises(DeploymentContractError, match="unsafe"):
-        retire_f1d_legacy_artifacts(
-            state_root=state_root,
-            transaction_id=str(uuid.uuid4()),
-            candidate=_generation(),
-            recorded_at="2026-08-06T00:00:00+00:00",
-        )
-
-    assert not legacy_tombstone_receipt_path(
-        state_root,
-        pinset_sha256=_generation().pinset_sha256,
-    ).exists()
-
-
-# --- 교차 저장소 계약 동결 (ADR-40 후속, docs/runtime-pin-registry.md §1-2) ------
-
-
-# kor-travel-map `scripts/lib/c7_prod_attestation.py`의 `_JOURNAL_KEYS`를 그대로 옮긴 것.
-# 그쪽은 `_exact_dict(value, set(_JOURNAL_KEYS))`로 **정확히 이 집합**을 요구한다.
-_MAP_ATTESTATION_JOURNAL_KEYS = {
-    "version",
-    "transaction_id",
-    "phase",
-    "candidate",
-    "map_application_300_candidate_evidence",
-    "environment_sha256",
-    "compose_sha256",
-    "resolved_compose_sha256",
-    "created_at",
-    "pinvi_database_identity",
-    "journal_generation",
-    "map_application_300_execution_evidence",
-    "cancel_probe",
-}
-
-# `journal_from_payload`가 optional로 허용하는, map이 모르는 확장 키.
-# 2026-08-28 현재 3종이다(PR #243이 `pinvi_role_catalog_reset`을 추가했다).
-_MANAGER_ONLY_JOURNAL_KEYS = {
-    "pinvi_role_credential_environment_rebind",
-    "pinvi_role_lifecycle_block",
-    "pinvi_role_catalog_reset",
-}
-
-
-def _declared_journal_payload_keys() -> set[str]:
-    source = inspect.getsource(PinnedRuntimeRebuildJournal.to_payload)
-    return set(re.findall(r'^\s{12}"([a-z0-9_]+)":', source, flags=re.MULTILINE))
-
-
-def test_rebuild_journal_required_keys_match_the_map_attestation_contract() -> None:
-    """v8 journal의 **필수** 키 집합은 이 저장소 혼자 정할 수 없다.
-
-    kor-travel-map의 `c7_prod_attestation.py`가 이 문서를 exact-dict로 검증한다.
-    필수 키가 늘거나 줄면 map의 production attestation이 통째로 fail-close하므로,
-    바꾸려면 map 저장소의 동시 PR이 전제다. 요약·번역·배지 같은 가공이 필요하면
-    문서가 아니라 **API 응답 envelope**에 넣는다.
-    """
-
-    parser_source = inspect.getsource(generation_module.journal_from_payload)
-    required_block = parser_source.split("optional_keys")[0]
-    required = set(re.findall(r'^\s{8}"([a-z0-9_]+)",', required_block, flags=re.MULTILINE))
-
-    assert required == _MAP_ATTESTATION_JOURNAL_KEYS, (
-        "v8 rebuild journal의 필수 키 집합이 map attestation의 _JOURNAL_KEYS와 갈라졌다. "
-        "map 동시 PR 없이는 바꿀 수 없다."
-    )
-
-
-def test_rebuild_journal_extension_keys_the_map_attestation_currently_rejects() -> None:
-    """**알려진 교차 저장소 괴리를 눈에 보이게 고정한다.**
-
-    `to_payload()`는 확장 키를 값이 ``None``일 때도 **항상** 내보내고
-    `write_rebuild_journal`은 그대로 기록한다. 그런데 map의 `_exact_dict`는 13키
-    정확 일치를 요구하므로, 지금 Manager가 쓰는 journal은 map의 production
-    attestation을 통과하지 못한다. 이 괴리는 v8 도입 이후 실재하는 상태다.
-
-    해소 경로는 오너가 정했다(2026-08-28, `docs/tasks.md`
-    JOURNAL-ATTESTATION-DRIFT): **pin 회전용 Map PR에 `_JOURNAL_KEYS` 3키 추가를
-    함께 넣는다.** 그 정렬을 확인하기 전에는 재구축을 실행하지 않는다 — 미루면
-    파괴적 재구축을 끝낸 뒤 attestation 실패로 발견된다.
-
-    이 테스트는 "괜찮다"고 말하지 않는다 — 괴리의 **범위가 넓어지지 않도록** 막는다.
-    확장 키가 늘면 여기서 먼저 걸리고, 그때는 Map 쪽 합의부터 해야 한다.
-    """
-
-    declared = _declared_journal_payload_keys()
-
-    assert declared == _MAP_ATTESTATION_JOURNAL_KEYS | _MANAGER_ONLY_JOURNAL_KEYS
-    assert declared - _MAP_ATTESTATION_JOURNAL_KEYS == _MANAGER_ONLY_JOURNAL_KEYS, (
-        "map이 모르는 journal 확장 키가 늘었다. 이미 attestation을 통과하지 못하는 "
-        "상태인데 괴리를 더 벌리는 변경이다 — map 동시 PR 없이 넣지 마라."
-    )
-
-
 def test_document_versions_are_frozen() -> None:
-    """manifest v6 / journal v8은 map attestation이 값으로 대조하는 버전이다."""
+    """manifest v6은 n150의 on-disk 파일과 M05 driver가 읽는 버전이다.
+
+    ADR-51 D에서 v6 쓰기가 멈출 때까지 바꾸지 않는다 — 바꾸면 호스트에 이미 있는
+    manifest를 읽지 못해 M05 preflight가 막힌다.
+    """
 
     assert generation_module._MANIFEST_VERSION == 6
-    assert generation_module._REBUILD_JOURNAL_VERSION == 8
-
-
-def test_rebuild_phase_vocabulary_is_frozen() -> None:
-    """phase는 journal 문서에 실려 나가므로 어휘 자체가 계약이다.
-
-    새 단계를 추가해야 하면 map 쪽이 그 값을 받아들이는지 먼저 확인해야 한다.
-    """
-
-    assert len(generation_module.REBUILD_PHASES) == 20
-    assert generation_module.REBUILD_PHASES[0] == "candidate_attested"
-    assert len(set(generation_module.REBUILD_PHASES)) == len(generation_module.REBUILD_PHASES)

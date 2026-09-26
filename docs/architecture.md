@@ -234,30 +234,25 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
      application-300 paired candidate의 image ID를 사용하며 Dagster web·daemon은 같은 image ID를 공유한다.
      Manager가 Compose로 build하는 대상은 Map UI와 PinVi API·Web·Dagster 네 개다. Map API smoke 뒤 나머지
      Map runtime과 PinVi runtime을 exact image ID로 재생성하고, Map 네 runtime과 PinVi 세 runtime의 OCI
-     revision 및 실제 container image를 generation과 다시 대조한다. manifest는 `PinnedRuntimeGeneration`
-     v6, resume journal은 pinset별 v8이며, 일곱 immutable image ID, 두 clean source revision, paired receipt,
-     application-300 contract, Map application/Dagster와 PinVi schema head를 active generation 하나에
-     결박한다. 이전 pair version과 rollback slot은 수용하지 않는다. 완전한 수렴이 불가능하면 일곱
-     runtime을 모두 중지해 혼합 generation 노출을 막는다.
-     비운영 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`에서 stale runtime/DB/state를 새 release pin으로
-     수렴할 유일한 경로는 root execution의 `sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm`이다. 이 command는 trusted source와
-     candidate resolved Compose security를 검증하고, 일곱 candidate image ID·세 expected schema head를
-     durable하게 고정한 뒤 Map application·Map Dagster·PinVi database만 새로 만든다. Map application은
-     과거 revision chain이나 restore를 사용하지 않고 paired contract의 head `300`을 root/finalize fence·intent·
-     result와 application final permit으로 만든다. application DB와 Dagster metadata DB의 system identifier·
-     name·OID·owner·login-role identity는 별도로 journal에 고정하며, metadata permit은 application identity와
-     candidate Dagster image/config/paired receipt를 함께 결박한다. Map Dagster head는 source revision 추정값이
-     아니라 candidate Dagster image가 직접 출력한 storage migration head다. storage migration은 journal
-     transaction ID를 operation ID로 쓰는 DB intent+append-only receipt v2이며, durable intent 재개에서도
-     같은 command가 receipt를 복구하거나 미완료 intent를 완결한다. operation ID·head·DB identity가
-     다르면 fail-close한다. 이후 Dagster web·daemon은 `--no-deps`로 기동해 migration의 암묵적 재실행을
-     막는다. PinVi
-     migration+credential-file one-shot CLI도 별도 DB head를 exact 대조한다. F1J fixture smoke는 Map runtime·PinVi API ready 뒤 같은
-     rebuild journal transaction ID로 실행하며, cancel/finalize POST 직전 attempted receipt를 fsync한다.
-     응답 유실 재개는 Map immutable fixture receipt만 읽고 POST를 재발행하지 않는다. security·UI auth는
-     그 contract verification 뒤 exact image에서 검증한다. old image, old manifest,
-     old DB와 backup은 candidate 또는 rollback authority가 아니다. candidate 실패는 old runtime 복원 대신
-     일곱 runtime 중지로 fail-close한다. canonical `.env`의 source checkout과 release-bound runtime contract 갱신은 별도 trusted
+     revision 및 실제 container image를 generation과 다시 대조한다. 영속 기록은 둘이다. state root의
+     `deploy-status.json`(`in_progress`/`committed`)이 배포 진행의 정본이고, 커밋 때 쓰는
+     `PinnedRuntimeGeneration` v6 manifest가 일곱 immutable image ID, 두 clean source revision,
+     application-300 candidate evidence, Map application/Dagster와 PinVi schema head를 active generation
+     하나에 결박한다(step D까지 M05 driver가 읽는다). 이전 pair version과 rollback slot은 수용하지 않는다.
+     완전한 수렴이 불가능하면 일곱 runtime을 모두 중지해 혼합 generation 노출을 막는다.
+     비운영 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`에서 runtime/DB를 새 release pin으로 수렴할 유일한
+     경로는 root execution의 `sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm`이다(ADR-51 마이그레이션 전진). 이 command는 trusted source와
+     candidate resolved Compose security를 검증하고 일곱 candidate image ID·세 expected schema head를
+     고정한 뒤, DB를 **보존한 채** 없는 DB만 만들고 멱등 one-shot으로 각 head까지 올린다. 같은 pair·image·
+     DB identity·head면 수렴만 하고, DB를 지우는 경로는 `--restart --reason` 하나다. Map Dagster head는
+     source revision 추정값이 아니라 candidate Dagster image가 직접 출력한 storage migration head이며, 세
+     head 모두 one-shot의 종료 코드가 아니라 Manager가 DB에서 직접 읽어 대조한다. Dagster web·daemon은
+     `--no-deps`로 기동해 migration의 암묵적 재실행을 막는다. F1J fixture smoke는 Map runtime·PinVi API
+     ready 뒤 그 배포의 `run_id`로 실행한다. security·UI auth는 그 contract verification 뒤 exact
+     image에서 검증한다. old image, old manifest, old DB와 backup은 candidate 또는 rollback authority가
+     아니다. 실패는 old runtime 복원 대신 일곱 runtime 중지로 fail-close하고, 다음 실행이 처음부터 다시
+     돈다. 파기형 v8 rebuild journal·resume 모델은 ADR-51 B3에서 코드째 지웠다.
+     canonical `.env`의 source checkout과 release-bound runtime contract 갱신은 별도 trusted
      pinned deployment input transaction이 소유한다. 이 installer는 user-owned checkout의 Git config를 root에서
      실행하지 않고 source-owner의 read-only origin identity와 code-owned canonical HTTPS URL을 exact 대조한다.
      root-owned bare staging repo가 tracked full SHA 하나만 sanitized fetch해 immutable detached worktree를

@@ -1042,8 +1042,6 @@ def test_pin_parser_registers_every_leaf_command():
                     "publish-generation",
                     "--manifest",
                     "/root/state/pinned-runtime-generation-v6.json",
-                    "--journal",
-                    "/root/state/pinned-runtime-rebuild-v8-a.json",
                 ],
                 "rotate": [
                     "pin",
@@ -1163,8 +1161,6 @@ def test_pin_publish_generation_refuses_without_confirm(capsys):
                 "publish-generation",
                 "--manifest",
                 "/root/state/pinned-runtime-generation-v6.json",
-                "--journal",
-                "/root/state/pinned-runtime-rebuild-v8-a.json",
             ]
         )
         == 2
@@ -1181,14 +1177,132 @@ def test_pin_publish_generation_requires_root(capsys):
                     "publish-generation",
                     "--manifest",
                     "/root/state/pinned-runtime-generation-v6.json",
-                    "--journal",
-                    "/root/state/pinned-runtime-rebuild-v8-a.json",
                     "--confirm",
                 ]
             )
             == 2
         )
     assert "root" in capsys.readouterr().err
+
+
+def test_pin_publish_generation_no_longer_accepts_a_journal():
+    """v8 journal 모델은 ADR-51 B3에서 지워졌다 — 공개 사본은 v6 manifest 하나다."""
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "pin",
+                "publish-generation",
+                "--manifest",
+                "/root/state/pinned-runtime-generation-v6.json",
+                "--journal",
+                "/root/state/pinned-runtime-rebuild-v8-a.json",
+                "--confirm",
+            ]
+        )
+
+
+def test_pin_publish_generation_republishes_the_manifest_and_reports_its_binding(
+    tmp_path, monkeypatch, capsys
+):
+    """같은 pair로 수렴하는 배포는 manifest를 다시 쓰지 않는다(ADR-51).
+
+    그래서 잃어버린 공개 사본을 되살리는 길은 이 명령뿐이다. 출력 키는 자동화가
+    읽으므로 고정한다 — 옛 `journal_public_path_name`은 없다.
+    """
+
+    from contextlib import nullcontext
+
+    from kor_travel_docker_manager.services import runtime_pin_registry
+    from kor_travel_docker_manager.services.pinned_runtime_generation import (
+        MapApplication300CandidateEvidence,
+        PinnedRuntimeGeneration,
+        PinnedRuntimeManifest,
+        write_manifest,
+    )
+
+    image = "sha256:" + "a" * 64
+    generation = PinnedRuntimeGeneration(
+        map_api_image_id=image,
+        map_ui_image_id=image,
+        map_dagster_image_id=image,
+        map_dagster_daemon_image_id=image,
+        pinvi_api_image_id=image,
+        pinvi_web_image_id=image,
+        pinvi_dagster_image_id=image,
+        map_source_revision="1" * 40,
+        pinvi_source_revision="2" * 40,
+        map_application_head="0084_c6c_cancel_probe_fixtures",
+        map_dagster_head="dagster-1",
+        pinvi_head="20260801_0050",
+        pinset_sha256="3" * 64,
+        map_application_300_candidate_evidence=MapApplication300CandidateEvidence(
+            candidate_git_tree="4" * 40,
+            postgres_image_id=image,
+            dagster_config_sha256="5" * 64,
+        ),
+        recorded_at="2026-09-26T00:00:00+00:00",
+    )
+    manifest = PinnedRuntimeManifest(version=6, active_generation=generation)
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    manifest_path = state / "pinned-runtime-generation-v6.json"
+    public_root = tmp_path / "public"
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(public_root))
+    write_manifest(manifest_path, manifest)
+    # 공개 사본을 잃은 상태에서 시작한다.
+    (public_root / "pinned-runtime-generation-v6.json").unlink()
+    registry = {
+        "status": "ok",
+        "pinset_sha256": generation.pinset_sha256,
+        "sources": [
+            {"role": "map", "revision": generation.map_source_revision},
+            {"role": "pinvi", "revision": generation.pinvi_source_revision},
+        ],
+    }
+    monkeypatch.setattr(runtime_pin_registry, "read_published_runtime_pins", lambda: registry)
+    argv = [
+        "pin",
+        "publish-generation",
+        "--manifest",
+        str(manifest_path),
+        "--confirm",
+        "--json",
+    ]
+
+    with (
+        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
+        patch(
+            "kor_travel_docker_manager.cli._runtime_pin_mutation_lock",
+            side_effect=lambda: nullcontext(),
+        ),
+    ):
+        assert main(argv) == 0
+        published = json.loads(capsys.readouterr().out)
+
+        # 회전 직후처럼 registry가 새 pair를 가리키면 사본은 쓰되 current라고 하지 않는다.
+        monkeypatch.setattr(
+            runtime_pin_registry,
+            "read_published_runtime_pins",
+            lambda: {**registry, "pinset_sha256": "f" * 64},
+        )
+        assert main(argv) == 1
+        pending = json.loads(capsys.readouterr().out)
+
+    assert published == {
+        "status": "published",
+        "manifest_public_path_name": "pinned-runtime-generation-v6.json",
+        "pinset_binding": "match",
+    }
+    assert pending == {
+        "status": "unverified",
+        "manifest_public_path_name": "pinned-runtime-generation-v6.json",
+        "pinset_binding": "pending_rebuild",
+    }
+    assert json.loads(
+        (public_root / "pinned-runtime-generation-v6.json").read_text(encoding="utf-8")
+    ) == manifest.to_payload()
 
 
 def test_pin_show_without_a_registry_fails_closed(pin_cli_env, capsys):

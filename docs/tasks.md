@@ -12,7 +12,7 @@
 - [/] Map/PinVi cross-repo live consumer acceptance — WebSocket/mutating loop·consumer reconciliation과 Manager manifest/journal을 실제 pair에서 교차 대조한다.
 - [/] standalone backup 운영 보강 — off-box 사본 자동화와 보존 정책을 완료한다.
 - [/] ktdctl UI migration — public generation 관측과 남은 M5~M7 UI 이관을, root CLI authority를 유지한 채 완료한다.
-- [/] journal/attestation drift — Manager generation receipt와 Map attestation의 execution binding field를 함께 정렬한다.
+- [x] journal/attestation drift — Manager generation receipt와 Map attestation의 execution binding field를 함께 정렬한다. **2026-09-26 닫음**: Map M2(#1272)가 `scripts/lib/c7_prod_attestation.py`를 지웠고(대체인 `c7_prod_runtime.py`는 Manager 파일을 읽지 않는다), Manager는 ADR-51 B3 PR-2에서 v8 journal 모델과 generation API의 `journal`·`terminal` 키를 지웠다 — 정렬할 두 쪽이 모두 없어졌다. 남은 것은 Map `docs/integration-map.md`와 PinVi `docs/runbooks/live-mutating-e2e.md`의 문서 drift(v8 exact-dict·`drift` 서술)뿐이고 그것은 각 저장소 몫이다.
 - [ ] **cron 트리(`/home/digitie/kor-travel-docker-manager`)를 `/opt` 배포와 동기화하는 정식 메커니즘이 없다** — 2026-09-20에 concierge 백업이 옛 instance(`:12600`)를 겨냥하던 구체적 증상은 `backend/src`를 `/opt`에서 `rsync -c`로 직접 맞춰 **즉시 수동 remediation했다**(`_ROLE_CONFIG["concierge"]`가 이제 `kor-travel-shared-postgres`를 가리키는 것을 editable-install에서 직접 import해 확인함). 그런데 **근본 원인은 남아 있다** — `install-ktdm-trusted-release`는 `APP_ROOT="/opt/kor-travel-docker-manager"`가 하드코딩돼 있어 cron 트리를 갱신할 수 없고, cron 트리 자체는 git repo도 아니라(`.git` 없음) 정식 갱신 경로가 전무하다. `/opt`가 다음에 또 릴리스되면 cron 트리는 다시 조용히 낡는다. 해제 조건: cron이 아예 `/opt` 트리를 (root 권한 경계를 지키며) 직접 쓰게 하거나, home 트리를 갱신하는 정식 sync 스텝을 trusted-release 절차에 넣는다.
 
 - [ ] non-root backend — root ownership을 유지하면서 service-group 접근 경계와 root/서비스 계정 mutation 검증을 완료한다.

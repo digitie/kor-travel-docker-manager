@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import inspect
 import json
 import os
@@ -47,25 +46,13 @@ from kor_travel_docker_manager.services.map_application_candidate import (
     MapApplicationCandidate,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    REBUILD_PHASES,
     RUNTIME_SERVICES,
-    MapApplication300ApplicationDatabaseIdentity,
-    MapApplication300DagsterMetadataDatabaseIdentity,
-    MapApplication300DagsterMetadataRoleAttributes,
-    PinnedRuntimeCancelProbeOutcome,
-    PinnedRuntimeCancelProbeReceipt,
-    PinnedRuntimeDatabaseIdentity,
     PinnedRuntimeGeneration,
     PinnedRuntimeManifest,
-    PinnedRuntimeRebuildJournal,
-    PinviRoleCatalogResetReceipt,
-    RebuildPhase,
     RuntimeService,
     manifest_from_payload,
     pinned_runtime_state_paths,
-    read_published_pinned_runtime_generation,
     write_manifest,
-    write_rebuild_journal,
 )
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     COMPOSE_BUILT_RUNTIME_SERVICES,
@@ -332,165 +319,6 @@ def _candidate_generation(
         map_dagster_head="map-dagster-head",
         pinvi_head="pinvi-head",
     )
-
-
-def _application_database_identity() -> MapApplication300ApplicationDatabaseIdentity:
-    return MapApplication300ApplicationDatabaseIdentity(
-        database_name="kor_travel_map",
-        database_oid=127001,
-        database_owner="ktm_feature_schema_owner",
-        postgres_system_identifier="7474747474747474747",
-    )
-
-
-def _application_create_database_identity() -> (
-    MapApplication300ApplicationDatabaseIdentity
-):
-    return MapApplication300ApplicationDatabaseIdentity(
-        database_name="kor_travel_map",
-        database_oid=127001,
-        database_owner="kor_travel_map",
-        postgres_system_identifier="7474747474747474747",
-    )
-
-
-def _pinvi_database_identity() -> PinnedRuntimeDatabaseIdentity:
-    return PinnedRuntimeDatabaseIdentity(
-        system_identifier="8585858585858585858",
-        name="pinvi",
-        oid=127003,
-        owner="pinvi",
-        login_role="pinvi",
-    )
-
-
-def _dagster_database_identity() -> MapApplication300DagsterMetadataDatabaseIdentity:
-    return MapApplication300DagsterMetadataDatabaseIdentity(
-        system_identifier="7474747474747474747",
-        name="kor_travel_map_dagster",
-        oid=127002,
-        owner="map_dagster_metadata",
-        login_role="map_dagster_metadata",
-        login_role_attributes=MapApplication300DagsterMetadataRoleAttributes(
-            superuser=False,
-            create_database=False,
-            create_role=False,
-            replication=False,
-            bypass_rls=False,
-            granted_role_count=0,
-            member_role_count=0,
-        ),
-    )
-
-
-def _journal_at_application_300_phase(
-    phase: RebuildPhase,
-    *,
-    sources: PinnedRuntimeSourceMaterialization | None = None,
-) -> PinnedRuntimeRebuildJournal:
-    # v8 journal 생성기는 지워졌다(ADR-51 B3). journal을 읽는 경로가 남아 있는 동안 그
-    # 회귀를 위해 생성기가 만들던 candidate_attested 값을 여기서 직접 만든다.
-    candidate = _candidate_generation(sources)
-    journal = PinnedRuntimeRebuildJournal(
-        version=8,
-        transaction_id=str(uuid.uuid4()),
-        phase="candidate_attested",
-        candidate=candidate,
-        map_application_300_candidate_evidence=(
-            candidate.map_application_300_candidate_evidence
-        ),
-        environment_sha256=hashlib.sha256(b"frozen-env\n").hexdigest(),
-        compose_sha256=hashlib.sha256(b"services: {}\n").hexdigest(),
-        resolved_compose_sha256="c" * 64,
-        created_at="2026-08-06T00:00:00+00:00",
-        journal_generation=0,
-    )
-    journal = journal.transition("reset_intent_durable")
-    if phase == "reset_intent_durable":
-        return journal
-    journal = journal.with_databases_recreated(
-        pinvi_database_identity=_pinvi_database_identity()
-    )
-    if phase == "databases_recreated":
-        return journal
-    journal = journal.with_application_create_intent()
-    if phase == "application_create_intent_durable":
-        return journal
-    journal = journal.with_application_created(
-        application_create_database_identity=_application_create_database_identity()
-    )
-    if phase == "application_created":
-        return journal
-    journal = journal.with_application_bootstrap_intent()
-    if phase == "application_bootstrap_intent_durable":
-        return journal
-    journal = journal.with_application_roles_ready(
-        application_database_identity=_application_database_identity()
-    )
-    if phase == "application_roles_ready":
-        return journal
-    journal = journal.with_application_schema_ready(application_schema_head="400")
-    if phase == "application_schema_ready":
-        return journal
-    journal = journal.with_metadata_permit_ready(
-        dagster_metadata_database_identity=_dagster_database_identity(),
-        metadata_permit_sha256="9" * 64,
-    )
-    if phase == "metadata_permit_ready":
-        return journal
-    journal = journal.with_map_application_ready()
-    if phase == "map_application_ready":
-        return journal
-    raise AssertionError(f"unsupported application-300 phase: {phase}")
-
-
-def _cancel_probe_receipts() -> tuple[PinnedRuntimeCancelProbeReceipt, ...]:
-    armed = PinnedRuntimeCancelProbeReceipt().transition(
-        "armed",
-        job_id="00000000-0000-0000-0000-000000000000",
-        fixture_created_at="2026-08-06T00:00:00+00:00",
-    )
-    attempted = armed.transition("cancel_post_attempted")
-    consumed = attempted.transition(
-        "consumed",
-        cancellation_id="11111111-1111-1111-1111-111111111111",
-        outcome=PinnedRuntimeCancelProbeOutcome(
-            name="pinvi_cancel_error",
-            status=409,
-            code="PIPELINE_CANCELLATION_UNSAFE",
-        ),
-        fixture_consumed_at="2026-08-06T00:01:00+00:00",
-    )
-    finalize_attempted = consumed.transition("finalize_post_attempted")
-    finalized = finalize_attempted.transition(
-        "finalized",
-        fixture_finalized_at="2026-08-06T00:02:00+00:00",
-    )
-    return armed, attempted, consumed, finalize_attempted, finalized
-
-
-def _journal_at_runtime_phase(
-    phase: RebuildPhase,
-    *,
-    sources: PinnedRuntimeSourceMaterialization | None = None,
-) -> PinnedRuntimeRebuildJournal:
-    journal = _journal_at_application_300_phase(
-        "map_application_ready", sources=sources
-    )
-    for next_phase in REBUILD_PHASES[
-        REBUILD_PHASES.index("map_application_ready") + 1 :
-        REBUILD_PHASES.index(phase) + 1
-    ]:
-        if next_phase == "pinvi_schema_ready" and (
-            journal.pinvi_role_catalog_reset
-            == PinviRoleCatalogResetReceipt(state="intent")
-        ):
-            journal = journal.with_pinvi_role_catalog_reset_completed()
-        if next_phase == "cancel_probe_finalized":
-            for receipt in _cancel_probe_receipts():
-                journal = journal.with_cancel_probe(receipt)
-        journal = journal.transition(next_phase)
-    return journal
 
 
 def _release_with_pinvi_revision(pinvi_revision: str) -> PinnedRuntimeRelease:
@@ -857,12 +685,12 @@ def test_runtime_container_image_mismatch_is_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
-    journal = _journal_at_runtime_phase("committed")
+    candidate = _candidate_generation()
     records = [
         {"Service": runtime_service, "Name": f"container-{runtime_service}"}
         for runtime_service in RUNTIME_SERVICES
     ]
-    observed = dict(journal.candidate.image_ids)
+    observed = dict(candidate.image_ids)
     observed["pinvi-web"] = f"sha256:{999:064x}"
     monkeypatch.setattr(
         service,
@@ -876,7 +704,7 @@ def test_runtime_container_image_mismatch_is_fail_closed(
     ):
         service._assert_pinned_runtime_container_images(
             records,
-            expected_images=ComposeService._deployed_images(journal.candidate, {}),
+            expected_images=ComposeService._deployed_images(candidate, {}),
         )
 
 
@@ -884,7 +712,7 @@ def test_runtime_companion_containers_are_bound_to_their_owner_slot_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
-    journal = _journal_at_runtime_phase("committed")
+    candidate = _candidate_generation()
     companions: dict[str, RuntimeService] = {
         "kor-travel-map-dagster-code-server": "kor-travel-map-dagster",
         "pinvi-dagster-daemon": "pinvi-dagster",
@@ -893,7 +721,7 @@ def test_runtime_companion_containers_are_bound_to_their_owner_slot_image(
         {"Service": name, "Name": f"container-{name}"}
         for name in (*RUNTIME_SERVICES, *companions)
     ]
-    slot_images = journal.candidate.image_ids
+    slot_images = candidate.image_ids
     observed: dict[str, str] = {
         **slot_images,
         **{name: slot_images[owner] for name, owner in companions.items()},
@@ -904,7 +732,7 @@ def test_runtime_companion_containers_are_bound_to_their_owner_slot_image(
         lambda container_name, *, label: observed[label],
     )
 
-    expected = ComposeService._deployed_images(journal.candidate, companions)
+    expected = ComposeService._deployed_images(candidate, companions)
     service._assert_pinned_runtime_container_images(records, expected_images=expected)
 
     observed["pinvi-dagster-daemon"] = f"sha256:{998:064x}"
@@ -1932,31 +1760,6 @@ def test_rebuild_timeouts_outlast_a_saturated_disk() -> None:
     assert module._COMPOSE_WAIT_TIMEOUT_SECONDS >= 3 * per_container
 
 
-def test_a_legacy_journal_stuck_at_manifest_committing_reads_as_committed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """옛 흐름은 `manifest_committing` 뒤에야 manifest를 쓴다. 같은 세대의 journal이 거기
-    멈춰 있으면 마지막 journal 전이 전에 죽은 커밋된 세대다 — 재개가 없어진 지금 그 journal을
-    믿으면 "재구축 진행 중"이 다음 새 pair까지 남는다(B2 적대 리뷰 2차)."""
-
-    state = tmp_path / "state"
-    state.mkdir(mode=0o700)
-    os.chmod(state, 0o700)
-    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
-    journal = _journal_at_runtime_phase("manifest_committing")
-    write_manifest(
-        state / "pinned-runtime-generation-v6.json",
-        PinnedRuntimeManifest(version=6, active_generation=journal.candidate),
-    )
-    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", journal)
-
-    observed = read_published_pinned_runtime_generation()
-
-    assert observed["status"] == "ok"
-    assert observed["journal"] is None
-    assert observed["summary"]["state"] != "rebuilding"
-
-
 # ── 마이그레이션 전진 배포(ADR-51 B2) ──────────────────────────────────────────
 
 _FORWARD_COMPANIONS: dict[str, RuntimeService] = {
@@ -2300,26 +2103,27 @@ def test_leftover_v6_v8_state_is_not_adopted_and_is_left_untouched(
 ) -> None:
     """``deploy-status.json``이 없으면 기준선 없는 전체 경로 한 번이다(ADR-51 B3).
 
-    옛 v6 manifest와 **커밋된** v8 journal — 옛 carry-over라면 넘겨받았을 세대 — 이
-    state root에 남아 있어도 넘겨받지 않는다(n150에는 그런 파일이 남아 있다). 넘겨받았다면
-    결과는 ``converged``이거나 journal의 DB identity로 거부였을 것이다(B3 적대 리뷰: 읽히지
-    않는 바이트를 심으면 옛 carry-over도 조용히 None이 되어 이 검사가 둘을 가르지 못했다).
-    여기서 v6 쓰기는 대역(``mocks.manifest_write``)이라 두 파일은 바이트 그대로 남아야 한다.
+    **지금 배포할 바로 그 세대**를 담은 유효한 v6 manifest와 옛 v8 journal 파일이 state
+    root에 남아 있어도 넘겨받지 않는다(n150에는 그런 파일이 남아 있다). manifest를
+    넘겨받았다면 같은 pair라 결과는 ``converged``였을 것이다 — manifest가 유효하므로
+    이 검사는 "읽지 못해서 안 넘겨받음"과 "넘겨받지 않음"을 가른다. v8 journal 모델은
+    B3에서 지워져 그 자리에는 원시 바이트만 심는다. 여기서 v6 쓰기는
+    대역(``mocks.manifest_write``)이라 두 파일은 바이트 그대로 남아야 한다.
     """
 
     monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
     harness = _forward_harness(monkeypatch, tmp_path)
     state_root = harness.status_path.parent
-    journal = _journal_at_runtime_phase("committed")
     manifest_path = state_root / "pinned-runtime-generation-v6.json"
     journal_path = (
-        state_root / f"pinned-runtime-rebuild-v8-{journal.candidate.pinset_sha256}.json"
+        state_root / f"pinned-runtime-rebuild-v8-{harness.candidate.pinset_sha256}.json"
     )
     write_manifest(
         manifest_path,
-        PinnedRuntimeManifest(version=6, active_generation=journal.candidate),
+        PinnedRuntimeManifest(version=6, active_generation=harness.candidate),
     )
-    write_rebuild_journal(journal_path, journal)
+    journal_path.write_bytes(b'{"version": 8}')
+    os.chmod(journal_path, 0o600)
     planted = {path: path.read_bytes() for path in (manifest_path, journal_path)}
 
     result = harness.service.rebuild_pinned_runtime()
