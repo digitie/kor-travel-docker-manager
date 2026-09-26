@@ -4,8 +4,8 @@
 > 멱등 one-shot으로 head까지 올린다. 같은 pair는 수렴만 하고, DB를 지우는 길은
 > `rebuild-pinned --restart --reason "..." --confirm` 하나다. 영속 상태는 state root의
 > `deploy-status.json`(in_progress/committed) 하나다. v8 journal은 쓰지도 읽지도 않으며
-> 그 모델 코드는 ADR-51 B3에서 지웠다 — 호스트에 남은 v8 파일은 무시된다. v6 manifest는
-> 커밋 때만 쓰이고 D-2까지 on-disk 호환(D-1 이전 Manager로의 되돌림)을 위해 동결된다 — D-1부터 읽는 곳은 없다(§1-2).
+> 그 모델 코드는 ADR-51 B3에서 지웠다 — 호스트에 남은 v8 파일은 무시된다. v6 manifest도
+> ADR-51 D-2부터 쓰지도 읽지도 않으며 그 모델 코드를 지웠다 — 호스트에 남은 v6 파일도 무시된다(§1-2).
 > 아래의 파기형·journal·resume 서술은 그 이전 설계의 기록이다.
 
 **대상 독자**: 이 저장소에서 작업하는 에이전트(Claude Code, Codex, Antigravity 등)와 운영자.
@@ -172,24 +172,29 @@ scoped 차단 후의 재실행이 파일명 충돌로 소각되지 않고, 재�
 회귀: `test_pinset_digest_algorithm_is_pinned_to_a_literal`(리터럴 고정),
 `test_pinset_digest_uses_stable_canonical_compact_json`(바이트 레이아웃 고정).
 
-### 1-2. generation manifest(v6) 문서에 키를 추가하지 마라
+### 1-2. `deploy-status.json`은 rebuild와 M05가 함께 읽는 on-disk 계약이다
 
-v6 manifest(`PinnedRuntimeManifest`·`PinnedRuntimeGeneration`)는 exact-key 문서다 —
-reader가 키 집합을 정확히 요구한다. n150에는 이미 이 형식의 private manifest가 있다.
-ADR-51 D-1부터 이 저장소의 reader는 그것을 읽지 않는다 — M05
-driver(`scripts/m05_isolated_e2e.py`의 `_source_pair_preflight`)는 committed pinset과 파생
-application head를 `deploy-status.json`과 대조한다. 그래도 커밋은 D-2 전까지 v6를 계속 쓰고,
-Manager를 D-1 아래로 되돌리면 그 release의 M05 driver·`pin verify`가 이 파일을 읽는다. 키가
-하나라도 늘거나 줄면 그 rollback이 막히므로 step D-2(v6 쓰기 중단)까지 **on-disk 호환을 위해**
-동결한다.
+`deploy-status.json`(`services/deploy_status.py`의 `DeployStatus`)은 exact-key·version 문서다 —
+reader가 키 집합과 `version`을 정확히 요구하고, 다르면 추측하지 않고 거부한다. 이 파일을 읽는
+곳은 둘이다. rebuild(`rebuild-pinned`)는 시작할 때 직전 배포를 읽어 수렴·재시도·DB 기준선을
+정하고, M05 driver(`scripts/m05_isolated_e2e.py`의 `_source_pair_preflight`)는 committed 여부·pinset·
+파생 application head를 대조한다. 키를 늘리거나 줄이려면 `_VERSION`을 올려야 한다. **옛 version을
+읽는 reader 없이 올리면 호스트에 이미 있는 파일을 읽지 못해 rebuild와 M05가 함께 멈춘다** —
+version을 올리는 변경은 옛 version reader(또는 명시적 이관)를 같은 PR에 둔다.
 
-예전의 동결 이유였던 Map `scripts/lib/c7_prod_attestation.py`의 exact-dict 검증은 Map
-M2(#1272)가 지워 더 이상 교차 저장소 계약이 아니다. 그 검증이 함께 보던 v8 rebuild journal은
-ADR-51 B3에서 모델 코드째 지웠다.
+v6 generation manifest의 스키마 동결은 끝났다. ADR-51 D-1에서 그 reader를 모두 옮기거나 지웠고,
+D-2에서 커밋의 v6 쓰기와 그 모델 코드(manifest 모델·공개 사본 발행)를 지웠다. 호스트에 남은
+`pinned-runtime-generation-v6.json`은 더는 갱신되지 않는다 — 그래서 D-2 이후 되돌릴 수 있는 가장
+낮은 Manager는 D-1이다. D-1 이전 release의 M05 driver는 그 옛 파일을 현재 pinset과 대조하므로 D-2
+이후 새 pair가 커밋되면 거부한다. 예전의 교차 저장소 동결 이유였던 Map
+`scripts/lib/c7_prod_attestation.py`의 exact-dict 검증은 Map M2(#1272)가 이미 지웠다.
 
-회귀: `test_document_versions_are_frozen`(버전 고정). M05의 배포 기록 대조와 네 거부 진단은
-`test_source_pair_preflight_binds_the_committed_deploy_status`가 결박한다 — 같은 디렉터리에 심은
-쓰레기 v6 파일이 판정을 바꾸지 않는다.
+회귀: `test_unknown_version_is_refused`(모르는 version 거부),
+`test_malformed_status_is_refused_not_guessed`(키가 모자란 문서 거부). M05의 배포 기록 대조와
+네 거부 진단은 `test_source_pair_preflight_binds_the_committed_deploy_status`가 결박한다 — 같은
+디렉터리에 심은 쓰레기 v6 파일이 판정을 바꾸지 않는다. 커밋이 v6 파일을 만들지 않는다는 것은
+`test_first_deploy_runs_the_idempotent_full_path_and_commits`가 state root에 파일이 없는 효과로
+확인한다.
 
 ### 1-3. canonical URL은 코드가 공급한다
 
@@ -238,7 +243,7 @@ registry는 root `0600`이다. UI에서 회전이 필요하면 **요청을 기�
 
 ### 1-7. 배포 상태에는 공개 view가 없다 — private state를 읽는 우회로를 만들지 마라
 
-`deploy-status.json`과 v6 manifest는 root 소유 private state(`0700` 디렉터리·`0600` 파일)에 남는다.
+`deploy-status.json`은 root 소유 private state(`0700` 디렉터리·`0600` 파일)에 남는다.
 backend가 그 경로를 직접 읽거나 권한을 완화해서는 안 된다. ADR-51 D-1에서 v6 공개 사본의
 reader를 전부 지웠고 대체하지 않았다 — `GET /api/v1/pinned-runtime/generation`, root
 `ktdctl pin publish-generation`, `pin verify`의 `generation_public_copy`·`generation_pinset_binding`
@@ -249,11 +254,12 @@ reader를 전부 지웠고 대체하지 않았다 — `GET /api/v1/pinned-runtim
 M05를 돌려도 되는지의 판정은 원문을 읽지 않는 두 gate(§단발 실행의 완료 판정)다. 비-root 관측이
 다시 필요해지면 두 번째 공개 사본이 아니라 ADR-41의 "소유자는 root, 접근만 그룹" 패턴으로 연다.
 
-커밋은 D-2 전까지 v6 manifest와 그 `0644` 공개 사본을 계속 쓰지만(Manager rollback 호환, §1-2)
-이 저장소의 어떤 reader도 그것을 읽지 않는다. 그 쓰기 경로가 남아 있는 동안 custom
-`KTDM_PINNED_RUNTIME_STATE_ROOT` 배포는 `KTDM_PINNED_RUNTIME_PUBLIC_ROOT`를 그대로 둔다 — 공개
-사본 쓰기가 실패하면 `deploy-status.json`이 `in_progress`에 남고 M05가 거부한다. 호스트에 남은
-공개 `pinned-runtime-generation-v6.json`·`pinned-runtime-rebuild-v8.json`은 무시된다.
+ADR-51 D-2에서 커밋의 v6 manifest 쓰기와 그 `0644` 공개 사본 발행도 지웠다(§1-2). 커밋이 남기는
+기록은 `deploy-status.json` 하나다. `KTDM_PINNED_RUNTIME_PUBLIC_ROOT`는 더 아무 의미가 없다 —
+`.env`에 남아 있어도 무해하다. 호스트에 남은 private·공개 `pinned-runtime-generation-v6.json`과
+공개 `pinned-runtime-rebuild-v8.json`은 무시되며, 지우는 것은 선택이다(`prod-deployment.md` 8.1).
+runtime-pins·runtime-executions 공개 사본이 쓰는 `/var/lib/kor-travel-docker-manager-public`
+자체는 그대로 둔다.
 
 ---
 
@@ -820,7 +826,8 @@ group-writable(`0770` 등)로 만들지 마라 — 무결성 검사가 그 디�
 
 ## 10. 이 영역을 고칠 때의 체크리스트
 
-- [ ] digest 직렬화 규칙(§1-1)과 v6 manifest 문서 스키마(§1-2)를 건드리지 않았다.
+- [ ] digest 직렬화 규칙(§1-1)을 건드리지 않았다. `deploy-status.json` 스키마(§1-2)를 바꿨다면
+      `_VERSION`을 올리고 옛 version reader(또는 명시적 이관)를 같은 PR에 뒀다.
 - [ ] 새 fail-close 경로가 예외를 **삼키지** 않는다(`except: return False` 금지).
 - [ ] 두 차단 술어(§3)를 목적에 맞게 골랐다.
 - [ ] backend가 registry를 쓰지 않는다(§1-4).

@@ -12,10 +12,9 @@ mkstemp 기반 atomic write와 디렉터리 fsync가 이 저장소에 여러 벌
 기존 호출부의 동작을 바꾸지 않는다 — 각자 인라인으로 하던 것을 여기서 한 번만
 하게 만들 뿐이다.
 
-범위를 의도적으로 좁혔다: `pinned_runtime_generation.py`의
-`_write_public_json`(dir_fd 상대 O_EXCL|O_NOFOLLOW + directory fd fsync)은 여기
-`atomic_write_json`보다 더 강한 보장을 가지므로 치환 대상에서 제외한다 — 억지로
-맞추면 그쪽을 하향 평준화하게 된다. admin_password_service·
+범위를 의도적으로 좁혔다. (당시 제외했던 `pinned_runtime_generation.py`의
+`_write_public_json` — dir_fd 상대 O_EXCL|O_NOFOLLOW + directory fd fsync — 은 v6
+manifest 공개 사본과 함께 ADR-51 D-2에서 지웠다.) admin_password_service·
 compose_service·pinvi_database_role_credentials·legacy_override_retirement·
 pinvi_bootstrap_credential의 나머지 mkstemp 자리도 각자 다른
 O_NOFOLLOW/소유권 정책을 갖고 있어(검증 노트가 4가지 혼재를 확인함) 이번 패스에서는

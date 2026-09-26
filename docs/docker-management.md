@@ -287,8 +287,9 @@ ktdctl pin clear-pending --request-id <id> --confirm
   `generation_*` 키, rebuild preflight의 generation 판정 — 는 지웠고 대체하지 않는다(기록된 손실).
   배포 완료는 root가 `deploy-status.json`·rebuild `result.json`으로 보고, M05 launcher는
   `pin verify`와 M05 driver `--preflight`(committed 배포 기록 대조)의 종료 코드로 판정한다.
-  커밋은 D-2 전까지 v6 manifest와 그 공개 사본을 계속 쓰지만 아무도 읽지 않으며, 공개 트리에
-  남은 옛 `pinned-runtime-rebuild-v8.json`도 무시된다.
+  커밋의 v6 manifest·공개 사본 쓰기도 ADR-51 D-2에서 지웠다. 공개 트리에 남은 옛
+  `pinned-runtime-generation-v6.json`·`pinned-runtime-rebuild-v8.json`은 무시된다(지우는 것은 선택 —
+  [`prod-deployment.md` §8.1](prod-deployment.md)).
 - **재기동 불요**: 로드는 mtime·size·inode 스탬프로 캐시를 무효화하므로 pin 회전은
   실행 중 Manager에 즉시 반영된다.
 - **회전 이력과 롤백**: rotate는 digest를 자동 계산하고 이전 registry를
@@ -637,7 +638,7 @@ DB는 배포를 넘어 보존된다. 영속 기록은 state root의 `deploy-stat
 하나다. 같은 pair·image·DB identity·head면 빌드·migration·정지 없이 수렴만 한다(`outcome: converged`).
 새 pair는 `in_progress`를 쓴 뒤 없는 DB만 만들고, Map application schema·Dagster storage·PinVi admin
 bootstrap one-shot을 멱등으로 돌려 각 head를 Manager가 DB에서 직접 읽어 candidate와 대조한다. 전 서비스
-readiness·image·secret isolation과 C6c smoke가 통과하면 v6 manifest와 `committed`를 쓴다
+readiness·image·secret isolation과 C6c smoke가 통과하면 `committed`를 쓴다
 (`outcome: deployed`). 실패하면 runtime을 멈추고 상태를 `in_progress`로 남기며, 다음 실행이 처음부터
 다시 돈다. DB를 지우는 길은 `--restart --reason "..."` 하나이고, 백업 복원처럼 비파괴로 바뀐 DB는
 `--adopt-live-databases --reason "..."`로 새 기준으로 받아들인다. 순서 전체는
@@ -646,7 +647,8 @@ readiness·image·secret isolation과 C6c smoke가 통과하면 v6 manifest와 `
 PinVi는 geo 패턴처럼 scoped app role 하나가 자기 database를 소유한다(ADR-46). 종전의 M05 다중 role
 topology·catalog reset·role verify one-shot과 그것을 담던 v8 journal receipt는 없어졌다. v8 rebuild
 journal·tombstone 모델은 ADR-51 B3에서 코드째 지웠고, 호스트에 남은 v8 파일은 읽지 않는다. v6 manifest는
-D-1부터 읽는 곳이 없고(M05는 `deploy-status.json`을 본다), D-1 이전 Manager로의 되돌림을 위해 D-2까지만 커밋 때 쓴다.
+D-1부터 읽는 곳이 없고(M05는 `deploy-status.json`을 본다) D-2에서 쓰기와 모델 코드를 지웠다 — 호스트에 남은
+v6 파일은 더는 갱신되지 않으므로 D-2 이후 되돌릴 수 있는 가장 낮은 Manager는 D-1이다.
 
 rebuildable 환경에서는 cache-target integration이 완전히 inert여야 한다. Map principal registry는 `[]`,
 PinVi sync는 `false`, 관련 token·contract scalar는 비어 있고 consumer ID는 Compose 기본값이어야 한다.
@@ -658,8 +660,8 @@ backup/restore가 필요해지면 과거 pair/cache state와 독립된 새 primi
 
 ### 7.8 퇴역한 C7 v4 `pinvi-pair capture`
 
-> **실행 금지 · 역사 기록** — application `300`의 current authority는 `deploy-status.json`과
-> seven-service v6 `pinned-runtime-generation`뿐이다. `compatible-pair-v4.json`은 legacy
+> **실행 금지 · 역사 기록** — application `300`의 current authority는 `deploy-status.json`
+> 뿐이다(v6 `pinned-runtime-generation`은 ADR-51 D-2에서 지웠다). `compatible-pair-v4.json`은 legacy
 > artifact이며, 이를 생성·갱신·attestation 입력으로 쓰는 절차는 현재 candidate를 증명하지
 > 못한다.
 
@@ -672,8 +674,8 @@ backup/restore가 필요해지면 과거 pair/cache state와 독립된 새 primi
 거부되는지만 확인한다. 이 확인 전에는 rebuild, C7 attestation, consumer acceptance를
 재개하지 않는다.
 
-v4 artifact는 current input으로 재사용하지 않는다. 배포가 남기는 `deploy-status.json`과
-v6 manifest만 현재 generation의 provenance로 사용한다.
+v4 artifact는 current input으로 재사용하지 않는다. 배포가 남기는 `deploy-status.json`만 현재
+generation의 provenance로 사용한다.
 
 ### 7.9 퇴역한 v4 compatible-pair 설계 (역사 기록 · 실행 금지)
 
@@ -714,7 +716,7 @@ payload를 읽어 자동 변환하지 않으며 symlink·비정규 파일·다�
 이하 v4 설명의 명령과 동작은 **역사 기록이며 실행하지 않는다**. 옛 parser에는
 `--verified-compatible`, `--build`, `--wait-timeout` 조합이 있었고 capture가 runtime을 중지·재생성했다.
 current CLI에는 capture parser나 v4 attestation 절차가 없으며, current authority는 §7.7이 가리키는
-`deploy-status.json`·v6 generation뿐이다.
+`deploy-status.json`뿐이다.
 
 > **실행 금지** — 역사적 `deploy`의 정확한 명령 문자열은 복사·실행 위험 때문에 의도적으로
 > 기록하지 않는다. current authority는 §7.7의 `rebuild-pinned`뿐이며, 이 문단은 현재 운영

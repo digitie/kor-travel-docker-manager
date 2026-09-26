@@ -234,11 +234,11 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
      application-300 paired candidate의 image ID를 사용하며 Dagster web·daemon은 같은 image ID를 공유한다.
      Manager가 Compose로 build하는 대상은 Map UI와 PinVi API·Web·Dagster 네 개다. Map API smoke 뒤 나머지
      Map runtime과 PinVi runtime을 exact image ID로 재생성하고, Map 네 runtime과 PinVi 세 runtime의 OCI
-     revision 및 실제 container image를 generation과 다시 대조한다. 영속 기록은 둘이다. state root의
-     `deploy-status.json`(`in_progress`/`committed`)이 배포 진행의 정본이고, 커밋 때 쓰는
-     `PinnedRuntimeGeneration` v6 manifest가 일곱 immutable image ID, 두 clean source revision,
-     application-300 candidate evidence, Map application/Dagster와 PinVi schema head를 active generation
-     하나에 결박한다(D-1부터 읽는 곳은 없고 D-1 이전 Manager로의 되돌림을 위해 D-2까지만 쓴다). 이전 pair version과 rollback slot은 수용하지 않는다.
+     revision 및 실제 container image를 generation과 다시 대조한다. 영속 기록은 state root의
+     `deploy-status.json`(`in_progress`/`committed`) 하나이고 배포 진행의 정본이다. committed 기록이
+     배포한 image ID, 두 source revision, pinset, Map application/Dagster와 PinVi schema head를 담으며
+     rebuild와 M05가 그것을 읽는다. `PinnedRuntimeGeneration`은 배포 중의 in-memory 모델일 뿐이고, 그
+     v6 manifest 쓰기는 ADR-51 D-2에서 코드째 지웠다. 이전 pair version과 rollback slot은 수용하지 않는다.
      완전한 수렴이 불가능하면 일곱 runtime을 모두 중지해 혼합 generation 노출을 막는다.
      비운영 `KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`에서 runtime/DB를 새 release pin으로 수렴할 유일한
      경로는 root execution의 `sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pinvi-pair rebuild-pinned --confirm`이다(ADR-51 마이그레이션 전진). 이 command는 trusted source와

@@ -694,7 +694,8 @@ old image, old manifest를 candidate authority로 쓰지 않는다.
    `--restart`면 여기서 세 DB를 지운다. 없는 DB만 만들고, Map application schema one-shot·Dagster storage
    migration·PinVi admin bootstrap을 멱등으로 돌린 뒤 각 head를 Manager가 DB에서 직접 읽어 candidate
    head와 대조한다. PinVi C6c canonical smoke와 전 서비스 readiness·image·secret isolation을 확인하면
-   v6 manifest를 쓰고 `deploy-status.json`을 `committed`로 바꾼다(`outcome: deployed`).
+   `deploy-status.json`을 `committed`로 바꾼다(`outcome: deployed`). 커밋이 남기는 기록은 이 파일
+   하나다 — v6 manifest는 ADR-51 D-2부터 쓰지 않는다.
 5. **실패** — runtime과 one-shot writer를 멈추고 남은 PinVi bootstrap credential을 정리한 뒤 원래 오류를
    낸다. DB는 자동으로 지우지 않는다. 상태는 `in_progress`로 남고 다음 실행이 처음부터 다시 돈다 —
    모든 단계가 다시 돌려도 안전하다.
@@ -703,11 +704,21 @@ old image, old manifest를 candidate authority로 쓰지 않는다.
 manifest·v8 journal·legacy tombstone은 넘겨받지도 고치지도 않는다(ADR-51 B3). 결과 JSON은
 launcher·`chain17`이 읽는 `success`·`phase`(항상 `committed`)·`pinset_sha256`·`schema_heads` 키를 유지한다.
 
-v6 manifest(`pinned-runtime-generation-v6.json`)는 D-2 전까지 커밋 때 계속 쓰이지만 ADR-51 D-1부터
-이 Manager의 어떤 reader도 읽지 않는다 — M05 driver는 committed `deploy-status.json`을 대조하고
+v6 manifest(`pinned-runtime-generation-v6.json`)는 ADR-51 D-1부터 이 Manager의 어떤 reader도 읽지
+않고, D-2부터는 커밋도 쓰지 않는다 — M05 driver는 committed `deploy-status.json`을 대조하고
 `in_progress`면 거부한다(실패한 배포 뒤에는 한 번 commit될 때까지 M05가 멈춘다). 배포 상태를 사람이
 보려면 `sudo -n cat <state_root>/deploy-status.json`이나 rebuild `result.json`을 읽는다 — 공개 view·
-`pin publish-generation`은 없어졌다. 호스트에 남은
-private `pinned-runtime-rebuild-v8-*.json`, `legacy-tombstone-v8-*.json`, v2–v7 artifact와 공개
-`pinned-runtime-rebuild-v8.json`은 아무것도 읽지 않으므로 손으로 지워도 되고 두어도 된다. **step D 전에는
-`pinned-runtime-generation-v6.json`을 지우지 않는다.** source/ETL 재적재는 committed 뒤 별도 workflow다.
+`pin publish-generation`은 없어졌다. `.env`의 `KTDM_PINNED_RUNTIME_PUBLIC_ROOT`는 더 아무 의미가
+없다(남아 있어도 무해). source/ETL 재적재는 committed 뒤 별도 workflow다.
+
+호스트에 남은 아래 파일은 아무것도 읽지도 쓰지도 않는다. 지우는 것은 **선택**이며, D-1 이전 Manager로
+되돌릴 일이 더는 없다고 판단한 뒤에만 한다(그 release의 M05 driver는 private v6 파일을 읽는다 —
+`runtime-pin-registry.md` §1-2). 두어도 판정은 바뀌지 않는다.
+
+- `<state_root>/pinned-runtime-generation-v6.json` (private)
+- `/var/lib/kor-travel-docker-manager-public/pinned-runtime-generation-v6.json` (공개)
+- `/var/lib/kor-travel-docker-manager-public/pinned-runtime-rebuild-v8.json` (공개)
+- private `pinned-runtime-rebuild-v8-*.json`, `legacy-tombstone-v8-*.json`, v2–v7 artifact
+
+`/var/lib/kor-travel-docker-manager-public` 디렉터리 자체는 지우지 않는다 — runtime-pins·
+runtime-executions 공개 사본이 그 안에 있다.

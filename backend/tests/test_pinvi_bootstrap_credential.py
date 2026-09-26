@@ -419,11 +419,7 @@ def test_create_rejects_forged_owner_private_state_root(tmp_path: Path) -> None:
     forged_root = tmp_path / "forged-private-root"
     forged_root.mkdir(mode=0o700)
     os.chmod(forged_root, 0o700)
-    forged = replace(
-        state_paths,
-        state_root=forged_root,
-        manifest=forged_root / "pinned-runtime-generation-v5.json",
-    )
+    forged = replace(state_paths, state_root=forged_root)
 
     with pytest.raises(DeploymentContractError, match="canonical rebuildable state"):
         create_pinvi_bootstrap_credential(
