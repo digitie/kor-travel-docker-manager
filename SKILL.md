@@ -97,7 +97,7 @@ docs/
 
 | 기능 | 레퍼런스 | 대표 함정 |
 |---|---|---|
-| Map·PinVi pin 고정과 재구축 게이트 | [`docs/runtime-pin-registry.md`](docs/runtime-pin-registry.md) | pinset digest 직렬화는 kor-travel-map과 공유하는 바이트 계약이다. v6 generation manifest 스키마는 n150의 기존 파일과 M05 driver가 읽으므로 step D까지 동결이다(v8 journal은 ADR-51 B3에서 지웠다). 키 추가·직렬화 변경 금지 |
+| Map·PinVi pin 고정과 재구축 게이트 | [`docs/runtime-pin-registry.md`](docs/runtime-pin-registry.md) | pinset digest 직렬화는 on-disk 바이트 계약이다(저장된 원장·보존 사본·코드 차단 목록·실행 원장·pinset별 상태와 이미지 태그가 모두 그 digest로 묶인다). v6 generation manifest 스키마는 n150의 기존 파일과 M05 driver가 읽으므로 step D까지 동결이다(v8 journal은 ADR-51 B3에서 지웠다). 키 추가·직렬화 변경 금지 |
 | UI에서의 pin 회전(2-step 요청) | [`docs/runtime-pin-registry.md` §7-1](docs/runtime-pin-registry.md) | 요청 파일은 제안일 뿐 pin이 아니다. 어떤 로드 경로에서도 `runtime_pin_request`를 import하면 안 되고, 그 사실을 회귀가 결박한다 |
 | 대시보드 화면 규약 | [`docs/dashboard-ui.md`](docs/dashboard-ui.md) | 오류는 `humanizeError`를 거치고 `alert()`는 금지다. `targets[].containers`는 `depends_on` 전이 폐포라 "첫 매치"로 그룹을 만들면 안 된다 |
 
@@ -114,7 +114,7 @@ docs/
 7. **target 순서 하드코딩 금지**: 새 Docker 의존성을 추가할 때는 `config/docker-targets.yml`의 `dependency_order`, `targets`, `init_steps`를 갱신하고 API/CLI가 같은 registry를 읽게 유지한다.
 8. **실행 위치 정책 위반 금지**: `git`, CodeGraph, 개발/검증/Docker/서버 명령은 Linux shell에서만 실행한다. Playwright E2E는 n150 Linux에서 우선 실행하고, 불가능한 경우에만 Windows 호스트를 예외로 사용한다.
 9. **`ruff format` 전체 실행 금지**: 이 저장소는 ruff-format 적용본이 아니다. 전체에 돌리면 무관한 파일 수천 줄이 재작성돼 리뷰가 불가능해진다. 린트는 `ruff check`만 쓴다.
-10. **교차 저장소 계약·on-disk 계약 무단 변경 금지**: pinset digest 직렬화는 kor-travel-map과 공유하는 값이라 바꾸려면 그 저장소의 동시 PR이 전제다. generation manifest(v6) 문서 스키마는 n150에 이미 있는 파일과 M05 driver가 읽으므로 step D(v6 쓰기 중단)까지 바꾸지 않는다 — 자세한 내용은 [`docs/runtime-pin-registry.md`](docs/runtime-pin-registry.md) 1절.
+10. **교차 저장소 계약·on-disk 계약 무단 변경 금지**: pinset digest 직렬화는 on-disk 계약이라 바꾸면 저장된 모든 원장·보존 사본·차단 목록·실행 원장·pinset별 상태가 읽히지 않는다(다른 저장소는 더 이 값을 다시 계산하지 않는다 — Map M2 #1272). generation manifest(v6) 문서 스키마는 n150에 이미 있는 파일과 M05 driver가 읽으므로 step D(v6 쓰기 중단)까지 바꾸지 않는다 — 자세한 내용은 [`docs/runtime-pin-registry.md`](docs/runtime-pin-registry.md) 1절.
 11. **fail-close 경로에서 예외 삼키기 금지**: 신뢰 판정을 하는 코드에서 `except: return False`/`pass`로 넘어가면 파일이 사라진 순간 보호가 통째로 열린다. 판정할 수 없으면 거부한다.
 
 ---

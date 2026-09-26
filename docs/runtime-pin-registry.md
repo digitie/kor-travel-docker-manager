@@ -153,13 +153,16 @@ scoped 차단 후의 재실행이 파일명 충돌로 소각되지 않고, 재�
 
 에이전트가 이 영역을 고칠 때 아래를 어기면 **운영 사고이거나 교차 저장소 계약 파손**이다.
 
-### 1-1. pinset digest의 바이트 계약은 kor-travel-map과 공유한다
+### 1-1. pinset digest의 바이트 계약은 on-disk 계약이다
 
 `canonical_pinset_bytes()` / `canonical_pinset_sha256()`
 (`services/pinned_runtime_release.py`)의 직렬화 규칙 — 정렬된 키, compact separator,
-`ensure_ascii=True`, `{"sources":[...],"version":5}` 형태 — 은
-kor-travel-map의 `scripts/lib/c7_prod_attestation.py`가 결박한 값과 일치해야 한다.
-**한 바이트도 바꾸지 마라.** 바꾸면 map의 production attestation이 전부 실패한다.
+`ensure_ascii=True`, `{"sources":[...],"version":5}` 형태 — 은 이미 디스크에 있는 값과
+일치해야 한다. **한 바이트도 바꾸지 마라.** `PinnedRuntimeRelease`와 원장 리더는 digest를
+다시 계산해 저장값과 다르면 거부하므로, 바꾸면 저장된 원장·`runtime-pins.<digest>.json`
+보존 사본·코드 차단 목록·실행 원장의 `source_pinset_sha256`·pinset별 상태와 이미지 태그가
+전부 읽히지 않는다. (종전에는 kor-travel-map의 attestation도 이 값을 결박했지만 Map M2
+#1272가 그 코드를 지웠다 — 이제 다른 저장소는 이 값을 다시 계산하지 않는다.)
 
 회귀: `test_pinset_digest_algorithm_is_pinned_to_a_literal`(리터럴 고정),
 `test_pinset_digest_uses_stable_canonical_compact_json`(바이트 레이아웃 고정).

@@ -715,7 +715,7 @@ current CLI에는 capture parser나 v4 attestation 절차가 없으며, current 
 `deploy-status.json`·v6 generation뿐이다.
 
 > **실행 금지** — 역사적 `deploy`의 정확한 명령 문자열은 복사·실행 위험 때문에 의도적으로
-> 기록하지 않는다. current authority는 §7.5의 `rebuild-pinned`뿐이며, 이 문단은 현재 운영
+> 기록하지 않는다. current authority는 §7.7의 `rebuild-pinned`뿐이며, 이 문단은 현재 운영
 > 절차가 아니다.
 
 kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행한다. 대상 마이그레이션이
@@ -790,7 +790,7 @@ contract·Map/PinVi canonical smoke·UI auth·runtime 검사를 다시 수행한
 runtime을 중지하고 명시적인 operator-required 상태로 끝낸다. legacy/과거 generation으로의 부분 fallback은 없다.
 
 > **실행 금지** — 역사적 `rollback`의 정확한 명령 문자열은 복사·실행 위험 때문에 의도적으로
-> 기록하지 않는다. current authority는 §7.5의 `rebuild-pinned`뿐이며, 이 문단은 현재 운영
+> 기록하지 않는다. current authority는 §7.7의 `rebuild-pinned`뿐이며, 이 문단은 현재 운영
 > 절차가 아니다.
 
 rollback 명령은 manifest의 다섯 image ID가 모두 로컬에 있는지 먼저 확인하고 단일 canonical
