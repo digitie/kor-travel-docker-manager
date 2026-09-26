@@ -2300,22 +2300,27 @@ def test_leftover_v6_v8_state_is_not_adopted_and_is_left_untouched(
 ) -> None:
     """``deploy-status.json``이 없으면 기준선 없는 전체 경로 한 번이다(ADR-51 B3).
 
-    옛 v6 manifest와 v8 journal이 state root에 남아 있어도 넘겨받지 않는다 — n150에는
-    그런 파일이 남아 있다. 내용은 일부러 어느 형식으로도 읽히지 않는 바이트다: 무엇이든
-    이것을 엄격히 읽으려 들면 배포가 거부된다. 여기서 v6 쓰기는 대역
-    (``mocks.manifest_write``)이라 두 파일은 바이트 그대로 남아야 한다.
+    옛 v6 manifest와 **커밋된** v8 journal — 옛 carry-over라면 넘겨받았을 세대 — 이
+    state root에 남아 있어도 넘겨받지 않는다(n150에는 그런 파일이 남아 있다). 넘겨받았다면
+    결과는 ``converged``이거나 journal의 DB identity로 거부였을 것이다(B3 적대 리뷰: 읽히지
+    않는 바이트를 심으면 옛 carry-over도 조용히 None이 되어 이 검사가 둘을 가르지 못했다).
+    여기서 v6 쓰기는 대역(``mocks.manifest_write``)이라 두 파일은 바이트 그대로 남아야 한다.
     """
 
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
     harness = _forward_harness(monkeypatch, tmp_path)
     state_root = harness.status_path.parent
-    journal_name = f"pinned-runtime-rebuild-v8-{harness.candidate.pinset_sha256}.json"
-    planted = {
-        state_root / "pinned-runtime-generation-v6.json": b"{}",
-        state_root / journal_name: b"{}",
-    }
-    for path, content in planted.items():
-        path.write_bytes(content)
-        path.chmod(0o600)
+    journal = _journal_at_runtime_phase("committed")
+    manifest_path = state_root / "pinned-runtime-generation-v6.json"
+    journal_path = (
+        state_root / f"pinned-runtime-rebuild-v8-{journal.candidate.pinset_sha256}.json"
+    )
+    write_manifest(
+        manifest_path,
+        PinnedRuntimeManifest(version=6, active_generation=journal.candidate),
+    )
+    write_rebuild_journal(journal_path, journal)
+    planted = {path: path.read_bytes() for path in (manifest_path, journal_path)}
 
     result = harness.service.rebuild_pinned_runtime()
 
