@@ -1719,21 +1719,19 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
     monkeypatch.setattr(
         driver,
         "_source_pair_preflight",
-        # `state_paths`/`values`/핀 tree도 함께 온다 — body가 일회용 실행 체크아웃을
-        # 만들 때 쓴다. 이 테스트는 그 생성을 스텁하므로 통과용 값이면 된다.
-        lambda: (tmp_path, tmp_path, _Pair(), "a" * 64, "b" * 40, object(), {}, "c" * 40),
+        lambda: (tmp_path, tmp_path, _Pair(), "a" * 64, "b" * 40),
     )
-    # 일회용 루트는 봉인 루트와 **달라야** 한다. 같은 값을 돌려주면 실행-루트 치환을
-    # 되돌려도 이 테스트가 통과한다(적대 리뷰 BLOCKER-2).
-    disposable_root = tmp_path / "pinvi-run"
-    disposable_root.mkdir()
-    monkeypatch.setattr(
-        driver, "materialize_disposable_run_worktree", lambda **_kwargs: disposable_root
-    )
-    monkeypatch.setattr(driver, "remove_disposable_run_worktree", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        driver, "assert_pinned_worktree_is_still_sealed", lambda **_kwargs: None
-    )
+    # body는 claim 전에 실행별 checkout 둘을 output leaf 안에 만든다(ADR-51 E-2).
+    checkouts: list[tuple[object, Path]] = []
+
+    def checkout(**kwargs: object) -> Path:
+        destination = kwargs["destination"]
+        assert isinstance(destination, Path)
+        destination.mkdir()
+        checkouts.append((kwargs["role"], destination))
+        return destination
+
+    monkeypatch.setattr(driver, "checkout_pinned_run_source", checkout)
     monkeypatch.setattr(
         driver, "build_m05_isolated_manager_admission", lambda **_kwargs: {}
     )
@@ -1767,6 +1765,10 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
     assert calls == ["blocked"]
     assert receipt["status"] == "blocked"
     assert receipt["phase"] == "ledger_claim"
+    assert checkouts == [
+        ("map", tmp_path / "runtime" / "map-src"),
+        ("pinvi", tmp_path / "runtime" / "pinvi-src"),
+    ]
     assert isinstance(compose_arguments["failure_evidence_path"], Path)
     assert compose_arguments["failure_evidence_path"].name == (
         "rendered-loopback-publish-error.json"
@@ -3598,7 +3600,7 @@ def test_source_pair_preflight_binds_the_committed_deploy_status(
     commit()
     result = driver._source_pair_preflight()
     assert result[:3] == (map_root, pinvi_root, pair)
-    assert result[5].state_root == state_dir
+    assert len(result) == 5
     assert pair_calls == [(pinvi_root, map_root)]
 
     other_pinset = "0" * 64 if pinned != "0" * 64 else "1" * 64
@@ -3722,10 +3724,9 @@ def test_pair_v2_anchors_every_surface_to_the_pinned_release(
         pinvi_root, map_root
     )
 
-    # fetch는 둘이다: 릴리스 revision과 service 표면의 릴리스 revision. 후자는
-    # 대조에 쓰이지 않고 **PinVi attestation이 읽을 수 있게** 보충하는 것이다
-    # (계약이 네 revision을 흩뿌리던 v1과 달리 흩어지지 않는다).
-    assert {args[-1] for args in fetches} == {pinned, _SERVICE_RELEASE_REVISION}
+    # preflight는 fetch하지 않는다(ADR-51 E-2) — PinVi attestation이 읽는 service 릴리스
+    # revision은 body의 실행별 Map checkout이 받아 온다. 그래서 preflight는 네트워크 없이 돈다.
+    assert fetches == []
     assert actual.map_full_openapi_sha256 == pair["map"]["full"]["openapi_sha256"]
     assert service_openapi_sha256 == pair["map"]["service"]["openapi_sha256"]
     # service 표면의 revision은 pin registry가 정하지 않는다. 그 값의 정본은 PinVi의

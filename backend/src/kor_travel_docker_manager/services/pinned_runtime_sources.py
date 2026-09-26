@@ -353,220 +353,49 @@ def _materialize_source(
     )
 
 
-def materialize_disposable_run_worktree(
+def checkout_pinned_run_source(
     *,
     release: PinnedRuntimeRelease,
-    state_paths: PinnedRuntimeStatePaths,
-    values: Mapping[str, str],
     role: RuntimeSourceRole,
-    expected_tree: str,
     destination: Path,
+    extra_revisions: Sequence[str] = (),
     runner: GitRunner = subprocess.run,
 ) -> Path:
-    """**쓰기가 허용된** 일회용 실행 체크아웃을 만든다.
+    """M05 실행 하나가 쓰는 핀 소스 checkout을 새로 만든다(ADR-51 E-2).
 
-    핀 source worktree는 불변으로 봉인된다(0555/0444). 그런데 격리 e2e는 그 트리를
-    컨테이너에 root RW로 마운트하고 그 안에서 `npm ci`와 Playwright를 돌린다 — root는
-    모드를 무시하므로 `apps/web/node_modules`가 실제로 쓰이고, Docker가 만드는
-    마운트포인트 3개가 0755 디렉터리로 남는다. 그러면 다음 preflight의
-    `_validate_immutable_tree`가 정당하게 거부해 **같은 pinset 재실행이 불가능해진다**
-    (2026-09-03·04 연속 재현).
-
-    그래서 실행은 봉인된 트리가 아니라 여기서 만드는 일회용 체크아웃에서 한다. 이
-    체크아웃은 **object store에서 재유도**된다 — 같은 bare 저장소, 같은 revision,
-    같은 tree object다. 디스크 사본이 아니므로 파일 모드나 잔여물을 물려받지 않고,
-    provenance는 아래 세 검사가 지탱한다: HEAD가 핀 revision일 것, tree object가
-    일치할 것, 체크아웃이 clean일 것.
-
-    불변 봉인은 **걸지 않는다.** 쓰기가 목적이기 때문이다. 대신 호출자가 실행 뒤
-    `summarize_disposable_run_worktree`로 무엇이 남았는지 증거를 남기고,
-    `remove_disposable_run_worktree`로 지운 뒤 봉인된 원본의 모드가 그대로인지
-    `assert_pinned_worktree_is_still_sealed`로 본다. 그 사후조건이 관측하는 것은
-    **엔트리 추가·삭제·모드 변경이 없었다**까지이며, root의 in-place 내용 변조는
-    잡지 못한다(2026-09-04 journal §1).
-
-    destination은 **실행마다 유일해야 한다.** 비정상 종료(SIGTERM/SIGHUP)로 cleanup이
-    건너뛰어지면 bare에 admin 엔트리가 남는데, 같은 경로를 재사용하면 다음
-    `worktree add`가 "missing but already registered"로 죽는다(적대 리뷰 #1 실측).
-
-    `npm ci`가 만드는 `node_modules`가 여기에 쌓이므로 destination 파티션은 수백 MB의
-    여유를 필요로 한다.
+    봉인 트리를 쓰지 않는다. canonical HTTPS에서 그 revision만 얕게 받아 detached로
+    checkout한다 — SHA가 곧 증명이다. archive가 아니라 checkout인 이유는 PinVi
+    attestation이 진짜 clean checkout(`--show-toplevel`, HEAD, `status`)과 service 릴리스
+    revision의 blob을 요구하기 때문이다. ``extra_revisions``는 그 blob을 읽을 commit이다.
+    ``destination``은 아직 없어야 하고, 실행의 output leaf 안에 둔다.
     """
 
-    _require_canonical_rebuildable_state_paths(
-        state_paths=state_paths,
-        values=values,
-        release=release,
-    )
-    paths = pinned_runtime_source_paths(state_paths=state_paths, release=release)
     source = _release_source(release, role)
-    bare = paths.bare_repository(role)
-    if not _path_exists(bare):
-        raise DeploymentContractError("pinned runtime source bare repository is missing")
-    if _path_exists(destination):
-        raise DeploymentContractError("disposable run worktree destination already exists")
-    _validate_private_directory(destination.parent, label="disposable run worktree parent")
-
-    # 기대 tree는 **호출자가 materialize된 핀 소스에서 그대로 가져온 값**이다.
-    # 같은 bare에서 다시 유도하면 git 결정성만 확인하는 자기참조가 되고 핀 트리와의
-    # 결박이 아니다(적대 리뷰 2026-09-04 #8).
-    expected_tree = _revision_output(expected_tree, label="disposable run worktree tree")
+    for revision in extra_revisions:
+        if _REVISION.fullmatch(revision) is None:
+            raise DeploymentContractError("pinned run source extra revision is invalid")
+    destination.mkdir(mode=0o700)
+    _run_root_git(["init", "-q", str(destination)], runner=runner)
     _run_root_git(
-        [
-            "--git-dir",
-            str(bare),
-            "worktree",
-            "add",
-            "--detach",
-            str(destination),
-            source.revision,
-        ],
-        runner=runner,
-    )
-    # Git은 private parent 아래에도 worktree root를 보통 0755로 만든다. 봉인된
-    # 트리와 달리 여기는 쓰기가 필요하므로 0700으로 좁히기만 한다.
-    try:
-        os.chmod(destination, 0o700)
-    except OSError as exc:
-        raise DeploymentContractError(
-            "disposable run worktree cannot be secured"
-        ) from exc
-    _validate_private_directory(destination, label="disposable run worktree")
-
-    revision = _revision_output(
-        _run_root_git(
-            ["-C", str(destination), "rev-parse", "--verify", "HEAD"],
-            runner=runner,
-        ).stdout,
-        label="disposable run worktree revision",
-    )
-    if revision != source.revision:
-        raise DeploymentContractError("disposable run worktree revision does not match the pin")
-    tree = _revision_output(
-        _run_root_git(
-            ["-C", str(destination), "rev-parse", "HEAD^{tree}"],
-            runner=runner,
-        ).stdout,
-        label="disposable run worktree tree",
-    )
-    if tree != expected_tree:
-        raise DeploymentContractError("disposable run worktree tree does not match the pin")
-    _assert_worktree_clean(target=destination, runner=runner)
-    return destination
-
-
-def remove_disposable_run_worktree(
-    *,
-    release: PinnedRuntimeRelease,
-    state_paths: PinnedRuntimeStatePaths,
-    values: Mapping[str, str],
-    role: RuntimeSourceRole,
-    destination: Path,
-    runner: GitRunner = subprocess.run,
-) -> None:
-    """일회용 실행 체크아웃을 Git-owned 제거로 지운다.
-
-    `git worktree remove`를 쓰는 이유는 admin 엔트리까지 함께 정리하기 위해서다 —
-    디렉터리만 지우면 bare 저장소에 stale 엔트리가 남고, 이 저장소는
-    `git worktree prune`을 운영 금지로 두고 있다.
-
-    **디렉터리가 이미 없어도 그냥 돌아가지 않는다.** 앞선 실행이 SIGTERM/SIGHUP으로
-    죽어 cleanup을 건너뛴 뒤 운영자가 경로만 지웠다면 등록만 남는데, 그 상태를 여기서
-    치우지 않으면 아무도 치울 수 없다. `worktree remove --force`는 경로가 사라진
-    엔트리도 지운다(2026-09-04 실측) — `prune` 없이 되돌릴 수 있다.
-
-    성공 판정은 exit code가 아니라 **등록이 실제로 사라졌는가**로 한다.
-    """
-
-    _require_canonical_rebuildable_state_paths(
-        state_paths=state_paths,
-        values=values,
-        release=release,
-    )
-    paths = pinned_runtime_source_paths(state_paths=state_paths, release=release)
-    bare = paths.bare_repository(role)
-    if _path_exists(destination):
-        # 형제 cleanup(`_cleanup_staging_worktree`)과 같은 봉쇄를 건다 — private
-        # parent 안의 현재 owner 디렉터리에만 `--force` 제거를 허용한다.
-        _validate_private_directory(destination.parent, label="disposable run worktree parent")
-        _reject_symlink_components(destination, label="disposable run worktree")
-    try:
-        _run_root_git(
-            ["--git-dir", str(bare), "worktree", "remove", "--force", str(destination)],
-            runner=runner,
-        )
-    except DeploymentContractError:
-        # 등록도 경로도 이미 없으면 git은 실패하지만 결과는 우리가 원하는 상태다.
-        if _is_registered_worktree(bare=bare, destination=destination, runner=runner):
-            raise
-        if _path_exists(destination):
-            raise
-    if _path_exists(destination):
-        raise DeploymentContractError("disposable run worktree removal is incomplete")
-    if _is_registered_worktree(bare=bare, destination=destination, runner=runner):
-        raise DeploymentContractError("disposable run worktree registration is still present")
-
-
-def summarize_disposable_run_worktree(
-    *,
-    destination: Path,
-    runner: GitRunner = subprocess.run,
-) -> dict[str, object]:
-    """삭제 **전에** 일회용 체크아웃에 무엇이 남았는지를 증거로 만든다.
-
-    봉인 트리를 실행에서 뺀 뒤로는, gitignore 경로(`node_modules/`, `test-results/`)
-    쓰기를 관측하던 유일한 탐지기(다음 preflight의 모드 검사)가 사라진다. 여기서
-    `--ignored=matching`까지 세어 두지 않으면 "실행이 무엇을 남겼는가"가 증거 없이
-    삭제된다(적대 리뷰 2026-09-04 #3).
-
-    경로 전체가 아니라 **repo-상대 최상위 이름**만 남긴다 — 진단에 필요한 만큼이고
-    호스트 경로는 담지 않는다.
-    """
-
-    status = _run_root_git(
         [
             "-C",
             str(destination),
-            "status",
-            "--porcelain=v1",
-            # **`-z`가 아니면 증거가 깨진다.** 기본 출력은 `core.quotePath` 때문에
-            # 비-ASCII 경로를 8진 이스케이프로 감싸고, 초판 파서는 그것을 풀지 못해
-            # 한글 파일명이 `í…`로 JSON에 실려 나갔다(pygit2 조사
-            # 2026-09-04 실측). NUL 구분 출력은 경로를 인용하지도 이스케이프하지도
-            # 않으므로 파싱 규칙 자체가 사라진다.
-            "-z",
-            "--untracked-files=all",
-            "--ignored=matching",
+            "fetch",
+            "-q",
+            "--depth",
+            "1",
+            "--no-tags",
+            source.canonical_url,
+            source.revision,
+            *extra_revisions,
         ],
         runner=runner,
-    ).stdout
-    tracked = untracked = ignored = 0
-    names: set[str] = set()
-    records = [record for record in status.split("\0") if record]
-    position = 0
-    while position < len(records):
-        record = records[position]
-        position += 1
-        if len(record) < 4:
-            continue
-        code, path = record[:2], record[3:]
-        if code == "!!":
-            ignored += 1
-        elif code == "??":
-            untracked += 1
-        else:
-            tracked += 1
-            if code[0] in {"R", "C"}:
-                # rename/copy는 **다음 레코드가 원본 경로**다. 건너뛰지 않으면 그
-                # 경로를 상태 코드로 읽어 이름 집합이 오염된다.
-                position += 1
-        names.add(path.split("/", 1)[0])
-    return {
-        "tracked_changes": tracked,
-        "untracked_entries": untracked,
-        "ignored_entries": ignored,
-        "top_level_names": sorted(names),
-    }
+    )
+    _run_root_git(
+        ["-C", str(destination), "checkout", "-q", "--detach", source.revision],
+        runner=runner,
+    )
+    return destination
 
 
 def _is_registered_worktree(
@@ -590,35 +419,6 @@ def _is_registered_worktree(
         if line.startswith("worktree ") and line[len("worktree ") :].strip() == wanted:
             return True
     return False
-
-
-def assert_pinned_worktree_is_still_sealed(
-    *,
-    release: PinnedRuntimeRelease,
-    state_paths: PinnedRuntimeStatePaths,
-    values: Mapping[str, str],
-    role: RuntimeSourceRole,
-) -> None:
-    """봉인된 source worktree의 **모드가** 실행 뒤에도 그대로인지 사후조건으로 본다.
-
-    일회용 체크아웃으로 옮긴 것이 효과가 있었는지를 관측으로 만든다. 이 검사가 없으면
-    "봉인 트리를 건드리지 않았다"는 주장이 다음 실행의 preflight에서야 드러나고, 그때는
-    이미 한 사이클을 태운 뒤다.
-
-    **한계를 분명히 한다.** `_validate_immutable_tree`는 모드·소유자·nlink 검사다.
-    root는 0444 파일을 모드 변경 없이 덮어쓰므로 in-place 내용 변조는 잡지 못한다
-    (2026-09-04 journal §1). 이 함수가 보증하는 것은 "엔트리가 추가·삭제되지 않았고
-    모드가 바뀌지 않았다"까지다.
-    """
-
-    _require_canonical_rebuildable_state_paths(
-        state_paths=state_paths,
-        values=values,
-        release=release,
-    )
-    paths = pinned_runtime_source_paths(state_paths=state_paths, release=release)
-    source = _release_source(release, role)
-    _validate_immutable_tree(paths.worktree(source))
 
 
 def _release_source(
