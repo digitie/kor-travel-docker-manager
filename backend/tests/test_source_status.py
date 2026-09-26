@@ -47,19 +47,30 @@ def test_provenance_missing_file_is_a_normal_outcome(tmp_path: Path) -> None:
     assert "설치 기록이 없습니다" in row["detail"]
 
 
-def test_provenance_reads_the_installer_files(tmp_path: Path) -> None:
+def test_provenance_reads_the_revision_file(tmp_path: Path) -> None:
     (tmp_path / ".ktdm-source-revision").write_text(MAP_REVISION + "\n", encoding="utf-8")
+
+    row = status.read_installer_provenance(root=tmp_path)
+
+    assert row["state"] == "recorded"
+    assert row["revision"] == MAP_REVISION
+    assert row["human"]["level"] == "ok"
+
+
+def test_provenance_ignores_a_retired_release_manifest(tmp_path: Path) -> None:
+    """release manifest는 ADR-51 D에서 퇴역했다 — 남아 있어도 판정과 응답에 쓰지 않는다.
+
+    옛 installer가 남긴 manifest가 다른 커밋을 가리켜도 revision 파일이 정본이고, uid/gid
+    같은 호스트 계정 배치는 응답에 실리지 않는다.
+    """
+
+    (tmp_path / ".ktdm-source-revision").write_text(MAP_REVISION, encoding="utf-8")
     (tmp_path / ".ktdm-release-manifest.json").write_text(
         json.dumps(
             {
-                "manager_source_revision": MAP_REVISION,
-                "installed_at": "2026-08-28T00:00:00Z",
+                "manager_source_revision": OTHER_REVISION,
                 "source_owner_uid": 0,
-                "source_owner_gid": 0,
                 "env_owner_uid": 1000,
-                "env_owner_gid": 1000,
-                "backend_distribution": "ktdm-1.0",
-                "backend_wheel_sha256": "b" * 64,
             }
         ),
         encoding="utf-8",
@@ -69,48 +80,10 @@ def test_provenance_reads_the_installer_files(tmp_path: Path) -> None:
 
     assert row["state"] == "recorded"
     assert row["revision"] == MAP_REVISION
-    assert row["manifest"]["backend_distribution"] == "ktdm-1.0"
-
-
-def test_provenance_never_echoes_host_account_layout(tmp_path: Path) -> None:
-    """uid/gid는 운영자에게 행동 지침을 주지 않으면서 공격자에게는 정보다."""
-
-    (tmp_path / ".ktdm-source-revision").write_text(MAP_REVISION, encoding="utf-8")
-    (tmp_path / ".ktdm-release-manifest.json").write_text(
-        json.dumps(
-            {
-                "manager_source_revision": MAP_REVISION,
-                "source_owner_uid": 0,
-                "env_owner_uid": 1000,
-                "env_owner_gid": 1000,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    row = status.read_installer_provenance(root=tmp_path)
-
     serialized = json.dumps(row, ensure_ascii=False)
-    assert "source_owner_uid" not in serialized
+    assert "manifest" not in serialized
+    assert OTHER_REVISION not in serialized
     assert "env_owner_uid" not in serialized
-
-
-def test_provenance_refuses_to_pick_a_winner_when_the_two_files_disagree(
-    tmp_path: Path,
-) -> None:
-    """부분 덮어쓰기를 의심해야 하는 상황에서 한쪽을 고르면 안 된다."""
-
-    (tmp_path / ".ktdm-source-revision").write_text(MAP_REVISION, encoding="utf-8")
-    (tmp_path / ".ktdm-release-manifest.json").write_text(
-        json.dumps({"manager_source_revision": OTHER_REVISION}), encoding="utf-8"
-    )
-
-    row = status.read_installer_provenance(root=tmp_path)
-
-    assert row["state"] == "inconsistent"
-    assert row["revision"] == MAP_REVISION
-    assert row["manifest_revision"] == OTHER_REVISION
-    assert row["human"]["level"] == "action_required"
 
 
 def test_provenance_rejects_a_malformed_revision(tmp_path: Path) -> None:

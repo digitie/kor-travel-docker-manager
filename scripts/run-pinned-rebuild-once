@@ -118,7 +118,6 @@ fi
 /usr/bin/install -d -o root -g root -m 0700 "${output_dir}"
 
 /usr/bin/python3 -I -S - "${expected_manager_revision}" <<'PY'
-import json
 import os
 import pathlib
 import re
@@ -150,24 +149,18 @@ def root_locked_regular(path: pathlib.Path, mode: int) -> str:
     finally:
         os.close(descriptor)
 
-root_metadata = root.lstat()
+# root는 현재 release를 가리키는 symlink다(ADR-51 D) — 따라가서 본다. revision 파일 하나가
+# 정본이다(release manifest 교차 대조는 걷어냈다).
+root_metadata = root.stat()
 if (
-    stat.S_ISLNK(root_metadata.st_mode)
-    or not stat.S_ISDIR(root_metadata.st_mode)
+    not stat.S_ISDIR(root_metadata.st_mode)
     or root_metadata.st_uid != 0
     or stat.S_IMODE(root_metadata.st_mode) & 0o022
 ):
     raise SystemExit("trusted Manager root is invalid")
 revision = root_locked_regular(root / ".ktdm-source-revision", 0o644)
-manifest_text = root_locked_regular(root / ".ktdm-release-manifest.json", 0o644)
 if re.fullmatch(r"[0-9a-f]{40}", revision) is None or revision != expected_revision:
     raise SystemExit("installed Manager source revision does not match expected revision")
-try:
-    manifest = json.loads(manifest_text)
-except json.JSONDecodeError as error:
-    raise SystemExit("trusted Manager release manifest is invalid") from error
-if not isinstance(manifest, dict) or manifest.get("manager_source_revision") != revision:
-    raise SystemExit("trusted Manager release manifest revision mismatch")
 PY
 
 # pinned revision은 코드 상수가 아니라 root 소유 registry가 소유한다(ADR-40).

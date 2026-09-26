@@ -1167,3 +1167,32 @@ def test_retire_legacy_override_rejects_unrecognized_override_without_mutation(
 
     assert root_env.read_bytes() == original_root
     assert override.exists()
+
+
+def test_project_context_follows_the_release_symlink_without_resolving_it(
+    tmp_path: Path,
+) -> None:
+    """설치 root는 현재 release를 가리키는 symlink다(ADR-51 D).
+
+    검사는 따라가서 하되 돌려주는 root는 풀지 않는다 — Compose cwd·`--file`·projection
+    임시 파일이 모두 이 경로를 쓰므로 풀린 release 경로가 들어가면 상대 bind가 거기
+    묶인다. override source 판정도 설치 root의 이름(`kor-travel-docker-manager`)을 본다.
+    """
+
+    release = tmp_path / "ktdm-release-a"
+    release.mkdir(mode=0o755)
+    release.chmod(0o755)
+    (release / ".env").write_text("COMPOSE_PROJECT_NAME=ktdm\n", encoding="utf-8")
+    (release / ".env").chmod(0o600)
+    (release / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (release / "docker-compose.yml").chmod(0o644)
+    link = tmp_path / "kor-travel-docker-manager"
+    link.symlink_to(release.name, target_is_directory=True)
+
+    context = retirement_module._prepare_project_context(
+        project_root=link, require_root=False
+    )
+
+    assert context.root == link
+    assert context.compose_path == link / "docker-compose.yml"
+    assert context.env_path == link / ".env"

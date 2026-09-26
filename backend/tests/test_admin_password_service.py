@@ -214,3 +214,22 @@ def test_new_password_policy(env_file: Path, new_password: str, code: str) -> No
 
     assert caught.value.code == code
     assert env_file.read_bytes() == before
+
+
+def test_an_env_behind_the_release_symlink_is_rewritten(
+    env_file: Path, tmp_path: Path
+) -> None:
+    """설치 root는 현재 release를 가리키는 symlink다(ADR-51 D) — `.env`의 부모 경로가
+    symlink라는 이유로 비밀번호 회전이 거부되면 안 된다."""
+
+    link = tmp_path / "kor-travel-docker-manager"
+    link.symlink_to(tmp_path, target_is_directory=True)
+
+    change_admin_password(
+        current_password=CURRENT, new_password=NEXT, env_path=link / ".env"
+    )
+
+    assert f"{ADMIN_PASSWORD_HASH_ENV}=placeholder" not in env_file.read_text(
+        encoding="utf-8"
+    )
+    assert link.is_symlink()

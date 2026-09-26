@@ -360,13 +360,16 @@ def _prepare_project_context(
     else:
         raw_root = project_root or Path(get_project_root())
     try:
-        raw_root_metadata = raw_root.lstat()
+        # 설치 root는 현재 release를 가리키는 symlink다(ADR-51 D). 따라가서 본다.
+        raw_root_metadata = raw_root.stat()
     except OSError as exc:
         raise LegacyOverrideRetirementError("required directory cannot be inspected") from exc
     if not stat.S_ISDIR(raw_root_metadata.st_mode):
         raise LegacyOverrideRetirementError("required directory has unsafe ownership or mode")
-    root = raw_root.resolve()
-    _assert_safe_directory(root, require_root=require_root)
+    _assert_safe_directory(raw_root.resolve(), require_root=require_root)
+    # 반환하는 root는 resolve하지 않는다 — Compose cwd·`--file`·projection 임시 파일이
+    # 모두 이 경로를 쓰므로, 풀린 release 경로가 들어가면 상대 bind가 거기 묶인다.
+    root = Path(os.path.abspath(raw_root))
     env_path = root / ".env"
     compose_path = root / "docker-compose.yml"
     _assert_safe_regular_file(env_path, require_root=require_root, exact_mode=0o600)

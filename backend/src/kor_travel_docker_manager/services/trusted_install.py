@@ -52,7 +52,7 @@ GLOBAL_MUTATION_LOCK_FD_ENV: Final = "KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD"
 
 
 def running_from_trusted_install_root() -> bool:
-    """trusted installer가 통째 교체하는 canonical execution root에서 도는가.
+    """trusted installer가 설치한 release(설치 root symlink 뒤)에서 도는가.
 
     셋 중 하나라도 참이면 참이다:
     1. 이 모듈 자신의 `__file__`이 trusted root 아래에 있다 — wheel 설치가
@@ -115,9 +115,10 @@ def trusted_pinned_runtime_project_root() -> Path:
     여기로 옮겼다(GM-09).
     """
 
-    raw_root = TRUSTED_INSTALL_ROOT
+    root = TRUSTED_INSTALL_ROOT
     try:
-        metadata = raw_root.lstat()
+        # 설치 root는 현재 release를 가리키는 symlink다(ADR-51 D). 따라가서 본다.
+        metadata = root.stat()
     except OSError as exc:
         raise DeploymentContractError(
             "trusted PinVi rebuild project root cannot be inspected"
@@ -130,7 +131,6 @@ def trusted_pinned_runtime_project_root() -> Path:
         raise DeploymentContractError(
             "trusted PinVi rebuild project root has unsafe ownership or mode"
         )
-    root = raw_root.resolve(strict=True)
-    if root != raw_root:
-        raise DeploymentContractError("trusted PinVi rebuild project root is not canonical")
+    # resolve하지 않은 경로를 돌려준다 — compose 프로젝트 디렉터리가 release 경로로
+    # 풀리면 상대 bind가 설치마다 바뀌고 지워질 release에 묶인다(ADR-51 D).
     return root
