@@ -5203,9 +5203,11 @@ class ComposeService:
 
         slot_images = journal.candidate.image_ids
         expected_images: dict[str, str] = {
-            **slot_images,
-            **{name: slot_images[owner] for name, owner in companions.items()},
+            str(service): image for service, image in slot_images.items()
         }
+        expected_images.update(
+            (name, slot_images[owner]) for name, owner in companions.items()
+        )
         if len(records) != len(expected_images):
             raise DeploymentContractError(
                 "pinned runtime container image evidence is incomplete"

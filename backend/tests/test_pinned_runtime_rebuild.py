@@ -9,7 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -3133,6 +3133,246 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         ) in operations
     database_reset.assert_not_called()
     create_database.assert_not_called()
+
+
+@pytest.mark.parametrize("fail_at_commit", (False, True))
+def test_generation_companions_ride_every_runtime_step_through_commit(
+    fail_at_commit: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """companion이 PinVi 기동·최종 readiness·이미지 결박·C6c 검사·실패 정리·
+    committed 재개에 전부 실리는지 본다.
+
+    t56e~t56h는 호출 하나에서 companion이 빠진 것만으로 Map code-server가 한 번도
+    뜨지 않았다. 호출처 하나를 지우면 이 테스트의 단언 하나가 깨져야 한다.
+    """
+
+    values = {
+        "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
+        "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
+        "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "metadata-password",
+        "COMPOSE_PROJECT_NAME": "f1d-companion-commit",
+        "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
+    }
+    journal = _journal_at_runtime_phase("cancel_probe_finalized")
+    image_ids = journal.candidate.image_ids
+    companion_owners = {
+        "kor-travel-map-dagster-code-server": "kor-travel-map-dagster",
+        "pinvi-dagster-code-server": "pinvi-dagster",
+        "pinvi-dagster-daemon": "pinvi-dagster",
+    }
+    resolved_services: dict[str, object] = {
+        name: {"image": image_ids[owner]} for name, owner in companion_owners.items()
+    }
+    # 같은 slot 이미지를 쓰는 one-shot writer는 companion이 아니다 — 장수 서비스로
+    # 기동되면 migration·bootstrap이 다시 돈다.
+    resolved_services.update(
+        {
+            "kor-travel-map-dagster-storage-migrate": {
+                "image": image_ids["kor-travel-map-dagster"]
+            },
+            "kor-travel-map-application-schema": {
+                "image": image_ids["kor-travel-map-api"]
+            },
+            "pinvi-admin-bootstrap": {"image": image_ids["pinvi-api"]},
+        }
+    )
+    transaction = SimpleNamespace(
+        environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
+        compose_source_bytes=b"services: {}\n",
+        resolved_document_hash="c" * 64,
+        resolved={"services": resolved_services},
+    )
+    state_paths = pinned_runtime_state_paths(
+        values,
+        pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+    )
+    state_paths.state_root.mkdir(parents=True, mode=0o700)
+    write_rebuild_journal(state_paths.journal, journal)
+    service = ComposeService()
+    map_candidate = _map_application_candidate()
+    operations: list[tuple[str, ...]] = []
+    readiness_requests: list[tuple[str, ...]] = []
+    image_labels: list[str] = []
+    inspected_services: list[tuple[str, ...]] = []
+    map_runtime, dagster_runtime, pinvi_runtime = object(), object(), object()
+    heads = {
+        map_runtime: journal.candidate.map_application_head,
+        dagster_runtime: journal.candidate.map_dagster_head,
+        pinvi_runtime: journal.candidate.pinvi_head,
+    }
+
+    def run_compose(
+        arguments: list[str],
+        *,
+        transaction: object,
+    ) -> dict[str, object]:
+        del transaction
+        operations.append(tuple(arguments))
+        return {"success": True, "stdout": ""}
+
+    def require_ready(
+        services: Sequence[str],
+        *,
+        transaction: object,
+        frozen_recovery: bool = False,
+    ) -> list[Mapping[str, Any]]:
+        del transaction, frozen_recovery
+        readiness_requests.append(tuple(services))
+        return [
+            {"Name": f"{name}-latest", "Service": name, "State": "running"}
+            for name in services
+        ]
+
+    def inspect_image(container_name: str, *, label: str) -> str:
+        del container_name
+        image_labels.append(label)
+        if label == "Map PostgreSQL":
+            return map_candidate.postgres_image_id
+        return image_ids[cast(Any, companion_owners.get(label, label))]
+
+    class _C6cConfig:
+        map_ui_container = "kor-travel-map-ui-latest"
+
+    def inspect_c6c(
+        config: object,
+        services: list[str],
+        *,
+        transaction: object,
+        frozen_recovery: bool = False,
+    ) -> dict[str, Mapping[str, Any]]:
+        del config, transaction, frozen_recovery
+        inspected_services.append(tuple(services))
+        return {_C6cConfig.map_ui_container: {}}
+
+    for name, replacement in {
+        "c6c_deployment_lock_from_environment": lambda: nullcontext(object()),
+        "_require_pinned_runtime_rebuild_root": lambda: None,
+        "_capture_compose_environment_snapshot": (
+            lambda *, environment_override: transaction.environment
+        ),
+        "_assert_transaction_matches_c6c_lock": Mock(),
+        "materialize_pinned_runtime_sources": lambda **_kwargs: _sources(),
+        "_build_map_application_300_images": Mock(),
+        "_load_application_300_candidate": Mock(return_value=map_candidate),
+        "ensure_generation_references": Mock(),
+        "retire_f1d_legacy_artifacts": Mock(),
+        "database_runtimes_from_frozen_contract": (
+            lambda **_kwargs: (map_runtime, dagster_runtime, pinvi_runtime)
+        ),
+        "validate_map_postgres_runtime_secret_isolation": Mock(),
+        "validate_pinvi_postgres_runtime_secret_isolation": Mock(),
+        "read_application_300_database_identity": Mock(
+            return_value=_runtime_application_database_identity()
+        ),
+        "read_pinned_database_identity": Mock(
+            return_value=_runtime_pinvi_database_identity()
+        ),
+        "reset_databases_for_application_300": Mock(),
+        "create_fresh_application_300_database": Mock(),
+        "publish_root_read_only_artifact": Mock(),
+        "read_application_300_dagster_metadata_identity": Mock(return_value=object()),
+        "_application_300_dagster_identities": Mock(
+            return_value=(object(), _dagster_database_identity())
+        ),
+        "build_dagster_metadata_permit": Mock(
+            return_value=SimpleNamespace(raw=b"metadata-permit", sha256="9" * 64)
+        ),
+        "read_database_schema_revision": lambda runtime: heads[runtime],
+        "C6cDeploymentConfig": _C6cConfig,
+        "load_c6c_deployment_config_from_environment": Mock(return_value=_C6cConfig()),
+        "validate_runtime_secret_isolation": Mock(),
+        "validate_current_map_ui_auth_runtime": Mock(),
+        "run_pinvi_canonical_smoke": Mock(
+            side_effect=AssertionError("finalized cancel probe must not rerun")
+        ),
+        "reconcile_generation_references": Mock(),
+        "reconcile_candidate_build_references": Mock(
+            side_effect=(
+                DeploymentContractError("stop at commit references")
+                if fail_at_commit
+                else None
+            )
+        ),
+    }.items():
+        monkeypatch.setattr(compose_service_module, name, replacement)
+    for name, replacement in {
+        "capture_transaction_unlocked": lambda **_kwargs: (transaction, None),
+        "_validate_pinned_runtime_candidate_build_contract": Mock(),
+        "_attest_pinned_runtime_candidate_images": Mock(),
+        "_retire_pinned_runtime_oneshot_writers": Mock(),
+        "_run_pinned_runtime_rebuild_compose": run_compose,
+        "_require_services_ready": require_ready,
+        "_inspect_container_runtime_config": Mock(return_value={}),
+        "_inspect_container_image_id": inspect_image,
+        "_inspect_c6c_runtime_configs": inspect_c6c,
+        "_assert_committed_postgres_images": Mock(),
+        "_assert_pinned_runtime_database_heads": Mock(),
+        "_assert_committed_application_database_identities": Mock(),
+    }.items():
+        monkeypatch.setattr(service, name, replacement)
+
+    companion_names = tuple(sorted(companion_owners))
+    stop = ("stop", *RUNTIME_SERVICES, *companion_names)
+    wait = ("up", "-d", "--no-deps", "--wait", "--wait-timeout", "300")
+    runtime_with_companions = (*RUNTIME_SERVICES, *companion_names)
+
+    if fail_at_commit:
+        with pytest.raises(DeploymentContractError, match="stop at commit references"):
+            service.rebuild_pinned_runtime()
+        # 기동 전 정지 한 번 + 실패 정리 정지 한 번. 정리에서 companion이 빠지면
+        # 실패한 세대의 code-server가 살아남는다.
+        assert operations.count(stop) == 2
+        return
+
+    service.rebuild_pinned_runtime()
+
+    assert read_rebuild_journal(state_paths.journal).phase == "committed"
+    assert operations.count(stop) == 1
+    assert (
+        *wait,
+        "kor-travel-map-dagster-code-server",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+    ) in operations
+    assert (
+        *wait,
+        "pinvi-dagster-code-server",
+        "pinvi-dagster-daemon",
+        "pinvi-web",
+        "pinvi-dagster",
+    ) in operations
+    # one-shot writer는 어떤 정지·기동 호출에도 companion으로 실리지 않는다.
+    assert not any(
+        writer in operation
+        for operation in operations
+        if operation[0] in {"stop", "up"}
+        for writer in (
+            "kor-travel-map-dagster-storage-migrate",
+            "kor-travel-map-application-schema",
+            "pinvi-admin-bootstrap",
+        )
+    )
+    assert runtime_with_companions in readiness_requests
+    assert set(companion_names) <= set(image_labels)
+    assert inspected_services == [runtime_with_companions]
+
+    # committed 재개도 같은 companion 집합을 readiness·이미지·C6c 검사에 싣는다.
+    readiness_requests.clear()
+    image_labels.clear()
+    inspected_services.clear()
+    operations.clear()
+
+    service.rebuild_pinned_runtime()
+
+    assert runtime_with_companions in readiness_requests
+    assert set(companion_names) <= set(image_labels)
+    assert inspected_services == [runtime_with_companions]
+    assert not any(operation[0] in {"stop", "up"} for operation in operations)
 
 
 def test_oneshot_writer_liveness_must_be_empty_before_database_reset(

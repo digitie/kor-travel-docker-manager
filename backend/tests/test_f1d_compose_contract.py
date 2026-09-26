@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -2228,6 +2229,66 @@ def test_every_real_compose_bind_is_declared_in_a_candidate_bind_allowlist() -> 
         "docker-compose.yml의 bind가 candidate baseline에 없다 — 이 상태로 배포하면 "
         f"Manager의 모든 compose mutation이 fail-close한다: {undeclared!r}"
     )
+
+
+# geo code-server는 아직 `-h 0.0.0.0`이다. 그 이미지의 workspace.yaml이 어느 host로
+# 붙는지 확인한 뒤 따로 닫는다 — 고쳐지면 아래 테스트가 이 예외부터 지우라고 빨개진다.
+_GRPC_WILDCARD_BIND_KNOWN = frozenset({"kor-travel-geo-dagster-code-server"})
+
+
+def _dagster_grpc_host(command: object) -> str | None | bool:
+    """`dagster api grpc` 명령이면 `-h` 값(없으면 None), 아니면 False."""
+
+    if isinstance(command, str):
+        words = shlex.split(command)
+    elif isinstance(command, list):
+        words = [str(word) for word in command]
+    else:
+        return False
+    for index in range(len(words) - 2):
+        if (
+            Path(words[index]).name == "dagster"
+            and words[index + 1 : index + 3] == ["api", "grpc"]
+        ):
+            for flag in ("-h", "--host"):
+                if flag in words[index + 3 :]:
+                    position = words.index(flag, index + 3)
+                    return words[position + 1] if position + 1 < len(words) else None
+            return None
+    return False
+
+
+def test_every_dagster_code_server_binds_loopback_only() -> None:
+    """무인증 gRPC code server는 host network에서 loopback에만 붙는다.
+
+    0.0.0.0이면 LAN 누구나 run을 띄울 수 있다. 서비스 이름이 아니라 **명령**으로
+    찾으므로 새 code-server를 등록해도 같은 규칙이 걸린다.
+    """
+
+    services = yaml.safe_load(_COMPOSE_PATH.read_text(encoding="utf-8"))["services"]
+    hosts = {
+        name: host
+        for name, service in services.items()
+        if (host := _dagster_grpc_host(service.get("command"))) is not False
+    }
+
+    # 검출기가 아무것도 못 보면 아래 단언은 항진이다 — 본 것에 하한을 건다.
+    assert {
+        "kor-travel-map-dagster-code-server",
+        "pinvi-dagster-code-server",
+    } <= set(hosts)
+    exposed = {
+        name: host
+        for name, host in hosts.items()
+        if host != "127.0.0.1" and name not in _GRPC_WILDCARD_BIND_KNOWN
+    }
+    assert not exposed, f"gRPC code server가 loopback 밖에 열린다: {exposed!r}"
+    fixed = {
+        name
+        for name in _GRPC_WILDCARD_BIND_KNOWN
+        if hosts.get(name) == "127.0.0.1" or name not in hosts
+    }
+    assert not fixed, f"알려진 예외가 해소됐다 — 목록에서 지운다: {sorted(fixed)!r}"
 
 
 # ── GM-17 A 적대 리뷰 H-1: 배포 경로가 **설정을 실제로 소비하는가** ──────────

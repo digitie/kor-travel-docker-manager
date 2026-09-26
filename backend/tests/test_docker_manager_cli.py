@@ -701,6 +701,41 @@ def test_cli_rebuild_pinned_runtime_reports_the_sealed_cause_with_env_secrets_re
     assert "<redacted>" in captured.err
 
 
+@patch("kor_travel_docker_manager.cli.compose_service")
+
+
+def test_cli_rebuild_pinned_runtime_redacts_process_environment_secrets(
+    mock_compose_service,
+    capsys,
+    tmp_path,
+    monkeypatch,
+):
+    """`.env`에 없고 프로세스 환경에만 있는 비밀도 원인 출력에서 가린다.
+
+    systemd unit·launcher가 넘긴 값은 `.env`를 거치지 않는다.
+    """
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("", encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_file))
+    monkeypatch.setenv("KTDM_LAUNCHER_API_TOKEN", "process-only-token-value")
+    try:
+        raise DeploymentContractError("saw process-only-token-value in argv")
+    except DeploymentContractError as cause:
+        failure = compose_service_module.PinnedRuntimePrejournalFailure(
+            "candidate_contract"
+        )
+        failure.__cause__ = cause
+    mock_compose_service.rebuild_pinned_runtime.side_effect = failure
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
+
+    captured = capsys.readouterr()
+    assert "in argv" in captured.err
+    assert "process-only-token-value" not in captured.err
+    assert "<redacted>" in captured.err
+
+
 @patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
 
 
