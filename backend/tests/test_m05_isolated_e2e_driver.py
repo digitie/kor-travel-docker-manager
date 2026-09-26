@@ -1721,14 +1721,15 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
         "_source_pair_preflight",
         lambda: (tmp_path, tmp_path, _Pair(), "a" * 64, "b" * 40),
     )
-    # body는 claim 전에 실행별 checkout 둘을 output leaf 안에 만든다(ADR-51 E-2).
-    checkouts: list[tuple[object, Path]] = []
+    # body는 claim 전에 실행별 checkout 둘을 output leaf 안에 만든다(ADR-51 E-2). Map checkout은
+    # PinVi attestation이 읽을 service 릴리스 revision(여기서는 "b"*40)도 함께 받아야 한다.
+    checkouts: list[tuple[object, Path, object]] = []
 
     def checkout(**kwargs: object) -> Path:
         destination = kwargs["destination"]
         assert isinstance(destination, Path)
         destination.mkdir()
-        checkouts.append((kwargs["role"], destination))
+        checkouts.append((kwargs["role"], destination, tuple(kwargs.get("extra_revisions", ()))))
         return destination
 
     monkeypatch.setattr(driver, "checkout_pinned_run_source", checkout)
@@ -1765,9 +1766,10 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
     assert calls == ["blocked"]
     assert receipt["status"] == "blocked"
     assert receipt["phase"] == "ledger_claim"
+    assert "b" * 40 != PINNED_RUNTIME_RELEASE.source_for("map").revision
     assert checkouts == [
-        ("map", tmp_path / "runtime" / "map-src"),
-        ("pinvi", tmp_path / "runtime" / "pinvi-src"),
+        ("map", tmp_path / "runtime" / "map-src", ("b" * 40,)),
+        ("pinvi", tmp_path / "runtime" / "pinvi-src", ()),
     ]
     assert isinstance(compose_arguments["failure_evidence_path"], Path)
     assert compose_arguments["failure_evidence_path"].name == (

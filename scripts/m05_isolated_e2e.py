@@ -4422,8 +4422,8 @@ def main(expected_revision: str, output: Path) -> int:
             "phase": "completed" if completed else phase,
             "driver_phase": driver_phase,
             "cleanup_failed": cleanup_failed,
-            # 일회용 체크아웃 제거 실패는 실행을 태우지 않는다. 그래도 조용히 넘기면
-            # output leaf에 PinVi 체크아웃 전체가 남은 것을 아무도 모른다.
+            # 실행별 소스 checkout 제거 실패는 실행을 태우지 않는다. 그래도 조용히 넘기면
+            # output leaf에 checkout 전체가 남은 것을 아무도 모른다(키 이름은 옛 그대로).
             "disposable_run_worktree_retained": run_worktree_retained,
             "pinset_sha256": PINNED_RUNTIME_RELEASE.pinset_sha256,
             "execution_identity_sha256": execution_identity,
