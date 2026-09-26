@@ -471,6 +471,45 @@ def ensure_map_application_database(
     )
 
 
+def read_database_identity(runtime: DatabaseRuntime) -> tuple[str, int, str] | None:
+    """maintenance DB에서 (이름, oid, system identifier)를 읽는다. DB가 없으면 ``None``.
+
+    마이그레이션 전진 배포는 이 셋으로 "지난 배포가 본 그 DB인가"를 잰다(ADR-51) —
+    누가 지우고 다시 만들면 oid가 바뀐다.
+    """
+
+    _validate_runtime(runtime)
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            "postgres",
+            "--command",
+            (
+                "SELECT datname, oid::bigint, "
+                "(SELECT system_identifier::text FROM pg_catalog.pg_control_system()) "
+                "FROM pg_catalog.pg_database "
+                f"WHERE datname = '{runtime.database_name}'"
+            ),
+        ],
+        label=f"{runtime.role} database identity",
+    ).decode("ascii").strip()
+    if not output:
+        return None
+    lines = output.splitlines()
+    fields = lines[0].split("|") if len(lines) == 1 else []
+    if len(fields) != 3 or fields[0] != runtime.database_name:
+        raise DeploymentContractError(f"{runtime.role} database identity output is invalid")
+    return (
+        fields[0],
+        _parse_positive_int(fields[1], f"{runtime.role} database oid"),
+        _parse_system_identifier(fields[2], f"{runtime.role} PostgreSQL system identifier"),
+    )
+
+
 def schema_revision_table_exists(runtime: DatabaseRuntime) -> bool:
     """role의 Alembic 표가 있는가 — 없으면 한 번도 migration되지 않은 빈 DB다(ADR-51).
 
