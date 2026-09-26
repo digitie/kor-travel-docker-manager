@@ -59,9 +59,27 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
+@pytest.fixture(scope="session")
+def _global_mutation_lock_root() -> Iterator[Path]:
+    """테스트별 lock 디렉터리를 담는 세션 디렉터리. 정리는 세션 끝에 한 번만 한다.
+
+    테스트마다 teardown에서 지우면, 같은 ``monkeypatch``로 ``os.open``을 가로챈 테스트의
+    대역이 아직 살아 있는 동안 ``shutil.rmtree``가 돌아 그 대역에 걸린다(teardown 순서상
+    autouse 픽스처의 뒷정리가 ``monkeypatch`` 원복보다 먼저다).
+    """
+
+    root = Path(tempfile.mkdtemp(prefix="ktdm-global-lock.", dir="/tmp"))
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 @pytest.fixture(autouse=True)
 def _isolated_global_mutation_lock(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    _global_mutation_lock_root: Path,
 ) -> Iterator[None]:
     """host 변경 lock ``G``를 테스트마다 자기 소유의 빈 ``0700`` 디렉터리로 옮긴다.
 
@@ -80,13 +98,10 @@ def _isolated_global_mutation_lock(
         return
     from kor_travel_docker_manager.services import c6c_deployment
 
-    directory = Path(tempfile.mkdtemp(prefix="ktdm-global-lock.", dir="/tmp"))
-    try:
-        os.chmod(directory, 0o700)
-        monkeypatch.setattr(
-            c6c_deployment, "_C6C_GLOBAL_MUTATION_LOCK", directory / "global-mutation.lock"
-        )
-        monkeypatch.setattr(c6c_deployment, "_GLOBAL_LOCK_OWNER_UID", os.geteuid())
-        yield
-    finally:
-        shutil.rmtree(directory, ignore_errors=True)
+    directory = Path(tempfile.mkdtemp(prefix="test.", dir=_global_mutation_lock_root))
+    os.chmod(directory, 0o700)
+    monkeypatch.setattr(
+        c6c_deployment, "_C6C_GLOBAL_MUTATION_LOCK", directory / "global-mutation.lock"
+    )
+    monkeypatch.setattr(c6c_deployment, "_GLOBAL_LOCK_OWNER_UID", os.geteuid())
+    yield
