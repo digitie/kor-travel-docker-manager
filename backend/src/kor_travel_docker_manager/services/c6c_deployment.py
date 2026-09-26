@@ -60,7 +60,6 @@ from kor_travel_docker_manager.services.trusted_install import (
     GLOBAL_MUTATION_LOCK_PATH,
     TRUSTED_INSTALL_ROOT,
     TRUSTED_STATE_ROOT,
-    require_pinned_runtime_rebuild_root,
 )
 
 _MAP_API_SERVICE = "kor-travel-map-api"
@@ -172,13 +171,6 @@ _C6C_GLOBAL_MUTATION_LOCK = GLOBAL_MUTATION_LOCK_PATH
 # 자기 소유의 tmp 디렉터리로 옮기면서 이 값만 자기 euid로 바꾼다 — 0600·nlink 1·
 # dev/ino·디렉터리 0700 검사는 그대로 돈다.
 _GLOBAL_LOCK_OWNER_UID: int = 0
-# F1D rebuild는 rehearsal에서도 root로만 실행하는 host-wide destructive operation이다.
-# 종전 C6c rehearsal lock은 실행 사용자 home 아래여서 서로 다른 launcher를 직렬화할 수
-# 없었으므로, build부터 final commit까지 이 고정 lease를 별도로 잡았다. ADR-51 C-2부터
-# rehearsal lock도 ``G``라 이 lease는 G 안에서만 잡히는 중복이다 — C-3에서 지운다.
-_PINNED_RUNTIME_REBUILD_LOCK = Path(
-    "/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock"
-)
 # GM-09: 경로 상수의 정본은 services/trusted_install.py다.
 _DEFAULT_C6C_PRODUCTION_STATE_ROOT = TRUSTED_STATE_ROOT
 _C6C_PRODUCTION_STATE_ROOT = _DEFAULT_C6C_PRODUCTION_STATE_ROOT
@@ -3308,39 +3300,6 @@ def manager_mutation_lock() -> AbstractContextManager[None]:
     return c6c_deployment_lock(str(_C6C_GLOBAL_MUTATION_LOCK))
 
 
-def pinned_runtime_rebuild_lock_path() -> str:
-    """root-only F1D rebuild가 공유하는 고정 host lease 경로를 반환한다."""
-
-    return str(_PINNED_RUNTIME_REBUILD_LOCK)
-
-
-def _require_pinned_runtime_rebuild_root() -> None:
-    """고정 host lease를 여는 주체도 root로 제한한다.
-
-    GM-09: 정본은 services/trusted_install.py다.
-    """
-
-    require_pinned_runtime_rebuild_root()
-
-
-@contextmanager
-def pinned_runtime_rebuild_lock() -> Iterator[None]:
-    """rehearsal user home과 무관하게 F1D rebuild를 host 단위로 직렬화한다.
-
-    호출자는 `rebuild_pinned_runtime()`의 root gate를 이미 통과해야 하며, 이 함수도
-    독립적으로 그 전제를 강제한다.
-    """
-
-    _require_pinned_runtime_rebuild_root()
-    # runtime pin rotate/block과 trusted installer도 global lease를 쓴다. rebuild가
-    # 별도 pinned lease만 잡으면 release snapshot과 v6 execution gate 사이에 rotate가
-    # 끼어 서로 다른 candidate를 검증·실행할 수 있다. global → pinned 순서를 모든
-    # destructive rebuild의 공통 ordering으로 고정한다.
-    with manager_mutation_lock():
-        with c6c_deployment_lock(pinned_runtime_rebuild_lock_path()):
-            yield
-
-
 def _prepare_c6c_lock_directory(path: Path) -> None:
     if path == _C6C_GLOBAL_MUTATION_LOCK.parent and os.geteuid() != _GLOBAL_LOCK_OWNER_UID:
         raise DeploymentContractError("the Manager mutation lock requires root")
@@ -3444,16 +3403,13 @@ def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
         "C6c deployment state directory",
     )
     manifest_override = values.get("KTDM_C6C_COMPATIBLE_PAIR_MANIFEST", "").strip()
-    lock_override = values.get("KTDM_C6C_DEPLOYMENT_LOCK", "").strip()
-    if production and (manifest_override or lock_override):
-        raise DeploymentContractError(
-            "production C6c manifest and global lock paths are fixed"
-        )
+    if production and manifest_override:
+        raise DeploymentContractError("production C6c manifest path is fixed")
     legacy_artifact = _canonical_absolute_path(
         manifest_override or str(state_dir / _LEGACY_PAIR_MANIFEST_FILENAME),
         "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
     )
-    lock = Path(c6c_global_mutation_lock_path(values))
+    lock = Path(manager_mutation_lock_path(values))
     if legacy_artifact == lock:
         raise DeploymentContractError("C6c manifest and lock paths must differ")
     return str(legacy_artifact), str(lock)
@@ -3529,38 +3485,28 @@ def _is_relative_to(path: Path, base: Path) -> bool:
     return True
 
 
-def c6c_global_mutation_lock_path(
-    environment: Mapping[str, str] | None = None,
-) -> str:
-    """모든 Compose mutation이 공유하는 `.env` 비의존 host-global lock.
+def manager_mutation_lock_path(values: Mapping[str, str]) -> str:
+    """주어진 ``.env`` 값이 가리키는 Manager 변경 lock 경로(ADR-51 C-3).
 
-    ADR-51 C-2: production과 rehearsal은 둘 다 host 변경 lock ``G`` 하나다. rehearsal의
-    UI mutator·frozen recovery·legacy retire가 실행 사용자 ``$HOME`` 아래 lock을 잡으면
-    launcher·pin 회전·installer와 직렬화되지 않는다. ``$HOME`` 개발 lock과
-    ``KTDM_C6C_DEPLOYMENT_LOCK`` override는 비root 개발용 ``local``에만 남는다.
+    ``local``만 비root 개발용 실행 사용자 ``$HOME`` 아래 lock이다. 그 밖의 모든 값 —
+    production·rehearsal뿐 아니라 미지정·미지의 모드도 — 은 host 변경 lock ``G``다
+    (fail closed: 모드를 빠뜨린 root 호스트가 launcher·pin 회전·installer와 갈라지지
+    않는다). 경로 override는 없다. 값은 호출자가 넘긴 매핑에서만 읽는다 — 프로세스
+    환경으로 채우지 않는다(ADR-41 교훈: 신뢰 결정의 입력을 프로세스 env에서 읽지 않는다).
     """
 
-    values = os.environ if environment is None else environment
-    default = (
-        Path.home()
-        / ".local"
-        / "state"
-        / "kor-travel-docker-manager"
-        / "global-mutation.lock"
-    )
-    override = values.get("KTDM_C6C_DEPLOYMENT_LOCK", "").strip()
-    process_mode = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
-    if override:
-        if process_mode != "local":
-            raise DeploymentContractError(
-                "production C6c global mutation lock path is fixed"
-            )
-        return str(
-            _canonical_absolute_path(override, "KTDM_C6C_DEPLOYMENT_LOCK")
-        )
-    if process_mode in {"production", "rehearsal"}:
+    mode = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
+    if mode != "local":
         return str(_C6C_GLOBAL_MUTATION_LOCK)
-    return str(default.resolve(strict=False))
+    return str(
+        (
+            Path.home()
+            / ".local"
+            / "state"
+            / "kor-travel-docker-manager"
+            / "global-mutation.lock"
+        ).resolve(strict=False)
+    )
 
 
 def _canonical_absolute_path(value: str, env_name: str) -> Path:

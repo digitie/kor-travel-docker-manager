@@ -16,8 +16,8 @@ registry는 동일 쌍 회전을 아예 거절하므로 탈출구가 "아무 커
 올린다"밖에 없었다(실측: classification `unclassified`, 즉 "무슨 일이 났는지
 모른다"가 영구 소각 사유가 됐다).
 
-파괴적 3-DB 재생성의 double-apply를 막는 것은 이 파일이 아니라 durable journal의
-phase 가드이고(`_pinned_runtime_reset_required`), 동시 실행은 전역 flock이 막는다.
+3-DB 재생성은 이 파일이 막는 것이 아니다 — ADR-51 뒤로는 `--restart`를 명시한 실행만
+DB를 지우고 그 밖의 배포는 멱등이다. 동시 실행은 전역 flock(G)이 막는다.
 그래서 원장은 감사 흔적만 맡고, 파일명이 attempt 차원을 갖는다 — 형제 M05
 launcher가 적대 리뷰 R1-S2에서 먼저 받은 개정과 같다. 여기서는 그 새 판정을
 launcher 본문에서 잘라내 **실제로 실행한다**(텍스트 단언이 아니라 동작).

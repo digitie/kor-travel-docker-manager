@@ -35,13 +35,13 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     assert_manager_mutation_allowed,
     assert_pinned_runtime_rebuild_allowed,
     c6c_deployment_lock,
-    c6c_global_mutation_lock_path,
     c6c_state_paths,
     compose_volume_graph_hash,
     derive_curation_service_principal_environment,
     inspect_c6c_image_source_revision,
     load_c6c_deployment_config_from_environment,
-    pinned_runtime_rebuild_lock,
+    manager_mutation_lock,
+    manager_mutation_lock_path,
     revalidate_candidate_system_bind_snapshots,
     run_pinvi_canonical_smoke,
     validate_c6c_build_source_wiring,
@@ -1102,32 +1102,22 @@ def _capture_c6c_deployment_lock_snapshot() -> C6cDeploymentLockSnapshot:
         raise ComposeCandidateContractError(
             "compose env-file appeared during lock path capture"
         )
-    lock_path = _c6c_lock_path_from_values(values)
+    # ADR-51 C-3: lock 경로는 `.env` 파일의 값으로 정한다. 종전에는 비운영 분기에서
+    # 파일에 없는 이름을 프로세스 환경으로 채웠다 — 신뢰 결정의 입력을 프로세스 env에서
+    # 읽지 않는다(ADR-41 교훈). 모드가 없으면 host 변경 lock ``G``다(fail closed).
+    # 단 프로세스 환경이 **명시적으로** local이 아니면 파일이 local이어도 ``G``다 — 파일만
+    # 고치고 재시작하지 않은 backend는 모드 검사를 프로세스 env(운영)로 하면서 lock은
+    # `$HOME`으로 잡아 "한 번에 한 mutator"가 깨진다. 이 분기는 더 엄격한 쪽으로만 간다.
+    lock_path = manager_mutation_lock_path(values)
+    process_mode = os.environ.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
+    if process_mode not in ("", "local"):
+        lock_path = manager_mutation_lock_path({"KTDM_DEPLOYMENT_ENVIRONMENT": process_mode})
     return C6cDeploymentLockSnapshot(
         lock_path=lock_path,
         env_path=env_path,
         env_file_identity=before,
         env_file_sha256=hashlib.sha256(raw).hexdigest(),
     )
-
-
-def _c6c_lock_path_from_values(env_values: Mapping[str, str]) -> str:
-    if env_values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower() == "production":
-        return c6c_state_paths(env_values)[1]
-
-    effective: dict[str, str] = dict(env_values)
-    for name in (
-        "KTDM_DEPLOYMENT_ENVIRONMENT",
-        "COMPOSE_PROJECT_NAME",
-        "KTDM_C6C_STATE_ROOT",
-        "KTDM_C6C_COMPATIBLE_PAIR_MANIFEST",
-        "KTDM_C6C_DEPLOYMENT_LOCK",
-    ):
-        if name not in effective and name in os.environ:
-            effective[name] = os.environ[name]
-    if effective:
-        return c6c_state_paths(effective)[1]
-    return c6c_global_mutation_lock_path({})
 
 
 def _revalidate_c6c_deployment_lock_snapshot(
@@ -1164,22 +1154,19 @@ def c6c_deployment_lock_from_environment() -> Iterator[C6cDeploymentLockSnapshot
 @contextmanager
 def _pinned_runtime_rebuild_environment_lock(
     *,
-    prewrite_admission: Callable[["ComposeEnvironmentSnapshot"], str | None],
-) -> Iterator[
-    tuple[C6cDeploymentLockSnapshot, "ComposeEnvironmentSnapshot", bool]
-]:
-    """fresh PinVi role credential을 포함한 rebuild 전용 lock/snapshot 순서.
+    prewrite_admission: Callable[["ComposeEnvironmentSnapshot"], None],
+) -> Iterator["ComposeEnvironmentSnapshot"]:
+    """rebuild 전용 lock/snapshot 순서(ADR-51 C-3).
 
-    먼저 root-owned pinned lease로 legacy stage/retire와 직렬화한다. trusted `/opt`
-    root `.env`만 process ambient 없이 frozen snapshot으로 읽고, non-mutating
-    admission을 통과해야 fresh role credential을 초기화할 수 있다.
+    host 변경 lock ``G`` 하나를 잡은 **뒤에** trusted `/opt` root `.env`만 process
+    ambient 없이 frozen snapshot으로 읽는다. lifecycle 게이트·token 검증·non-mutating
+    admission을 통과해야 본문으로 넘어가며, 본문 전체가 같은 ``G`` 안에서 돈다.
+    launcher가 물려준 G fd가 있으면 ``manager_mutation_lock()``이 그것을 검증해 쓴다.
     """
 
-    with pinned_runtime_rebuild_lock():
+    with manager_mutation_lock():
         with _pinned_runtime_prejournal_step("environment_admission"):
-            initial_environment_snapshot = (
-                _capture_pinned_runtime_rebuild_environment_snapshot()
-            )
+            environment_snapshot = _capture_pinned_runtime_rebuild_environment_snapshot()
         # 배포 lifecycle 게이트는 **봉인 밖**이다. 이 거부는 호스트 상태에서 유도한
         # 진단이 아니라 고정 정책 문장("rehearsal/rebuildable이 아니다")이라 비밀이
         # 없고, 운영자가 알아야 하는 유일한 정보가 그 문장 자체다. 이것까지
@@ -1188,35 +1175,18 @@ def _pinned_runtime_rebuild_environment_lock(
         # 다만 **봉인 여부와 소각 여부는 다른 질문**이다. 이 거부는 어떤 write보다
         # 먼저 일어나 후보를 소비하지 않으며, 그 사실은 여기서 선언하지 않는다 —
         # `rebuild_pinned_runtime`의 journal watermark가 관측으로 답한다.
-        assert_pinned_runtime_rebuild_allowed(
-            environment=initial_environment_snapshot.effective
-        )
+        assert_pinned_runtime_rebuild_allowed(environment=environment_snapshot.effective)
         with _pinned_runtime_prejournal_step("environment_admission"):
             validate_c6c_operation_tokens(
-                initial_environment_snapshot.effective,
+                environment_snapshot.effective,
                 require_nonempty=True,
             )
         # M05 폐기 전에는 여기서 Manager가 PinVi role 자격증명을 생성해 **루트
         # `.env`에 써 넣고** 그 위에서 두 번째 snapshot을 떴다. geo 패턴에서는
         # 자격증명이 하나뿐이고 그것은 운영자가 `.env`에 둔 `PINVI_APP_DB_PASSWORD`
         # 이므로, rebuild가 `.env`를 변형할 이유가 사라졌다 — snapshot도 하나다.
-        prewrite_admission(initial_environment_snapshot)
-        with _pinned_runtime_prejournal_step("environment_admission"):
-            current_environment_snapshot = initial_environment_snapshot
-            lock_snapshot = _c6c_deployment_lock_snapshot_from_environment(
-                current_environment_snapshot
-            )
-        # ADR-51 C-2: rehearsal `.env`의 lock 경로도 ``G``다. 위
-        # `pinned_runtime_rebuild_lock()`이 같은 key로 이미 잡았으므로 이 획득은 재진입
-        # no-op이다(`_HELD_DEPLOYMENT_LOCKS`) — 세 번째 파일 lock은 없다.
-        with c6c_deployment_lock(lock_snapshot.lock_path):
-            _revalidate_c6c_deployment_lock_snapshot(lock_snapshot)
-            yield (
-                lock_snapshot,
-                current_environment_snapshot,
-                initial_environment_snapshot.env_file_bytes
-                != current_environment_snapshot.env_file_bytes,
-            )
+        prewrite_admission(environment_snapshot)
+        yield environment_snapshot
 
 
 def _capture_pinned_runtime_rebuild_environment_snapshot(
@@ -1286,29 +1256,65 @@ def _c6c_deployment_lock_from_transaction(
         yield snapshot
 
 
+def _assert_env_file_evidence_matches(
+    environment_snapshot: "ComposeEnvironmentSnapshot",
+    *,
+    env_path: Path,
+    env_file_identity: ComposeEnvFileIdentity,
+    env_file_sha256: str,
+    reference: str,
+) -> None:
+    """transaction이 쓰는 `.env`가 기준 캡처와 같은 파일·identity·바이트인지 본다."""
+
+    if Path(environment_snapshot.env_path).resolve(strict=False) != env_path:
+        raise ComposeCandidateContractError(
+            f"compose transaction env-file path differs from {reference}"
+        )
+    if environment_snapshot.env_file_identity != env_file_identity:
+        raise ComposeCandidateContractError(
+            f"compose transaction env-file identity differs from {reference}"
+        )
+    if hashlib.sha256(environment_snapshot.env_file_bytes).hexdigest() != env_file_sha256:
+        raise ComposeCandidateContractError(
+            f"compose transaction env-file bytes differ from {reference}"
+        )
+
+
 def assert_environment_snapshot_matches_c6c_lock(
     environment_snapshot: "ComposeEnvironmentSnapshot",
     lock_snapshot: C6cDeploymentLockSnapshot,
 ) -> None:
-    transaction_env_path = Path(environment_snapshot.env_path).resolve(strict=False)
-    if transaction_env_path != lock_snapshot.env_path:
-        raise ComposeCandidateContractError(
-            "compose transaction env-file path differs from deployment lock snapshot"
-        )
-    if environment_snapshot.env_file_identity != lock_snapshot.env_file_identity:
-        raise ComposeCandidateContractError(
-            "compose transaction env-file identity differs from deployment lock snapshot"
-        )
-    if hashlib.sha256(environment_snapshot.env_file_bytes).hexdigest() != (
-        lock_snapshot.env_file_sha256
-    ):
-        raise ComposeCandidateContractError(
-            "compose transaction env-file bytes differ from deployment lock snapshot"
-        )
-    if c6c_state_paths(environment_snapshot.effective)[1] != lock_snapshot.lock_path:
-        raise ComposeCandidateContractError(
-            "compose transaction deployment lock differs from env-file snapshot"
-        )
+    # ADR-51 C-3: lock 경로 동등 검사는 지웠다. lock 경로는 이 `.env` 바이트만으로
+    # 정해지므로(`manager_mutation_lock_path`) 바이트 해시가 같으면 같은 lock이다.
+    # effective에 겹친 프로세스 환경은 lock 선택에 쓰지 않는다.
+    _assert_env_file_evidence_matches(
+        environment_snapshot,
+        env_path=lock_snapshot.env_path,
+        env_file_identity=lock_snapshot.env_file_identity,
+        env_file_sha256=lock_snapshot.env_file_sha256,
+        reference="deployment lock snapshot",
+    )
+
+
+def assert_transaction_matches_environment(
+    transaction: "ComposeTransactionSnapshot",
+    environment_snapshot: "ComposeEnvironmentSnapshot",
+) -> None:
+    """rebuild가 뜬 transaction이 ``G`` 안에서 캡처한 그 `.env`로 만들어졌는지 본다.
+
+    ADR-51 C-3에서 세 번째 lock과 그 lock snapshot이 사라졌으므로, 캡처와 사용 사이
+    `.env` 대조의 기준은 lock snapshot이 아니라 rebuild가 처음 캡처한 환경 snapshot이다.
+    디스크의 `.env` 재확인은 Docker 호출 직전
+    `_revalidate_mutation_single_file_boundary`가 따로 한다.
+    """
+
+    _assert_env_file_evidence_matches(
+        transaction.environment,
+        env_path=Path(environment_snapshot.env_path).resolve(strict=False),
+        env_file_identity=environment_snapshot.env_file_identity,
+        env_file_sha256=hashlib.sha256(environment_snapshot.env_file_bytes).hexdigest(),
+        reference="captured environment snapshot",
+    )
 
 
 def _assert_transaction_matches_c6c_lock(
@@ -2691,10 +2697,9 @@ class ComposeService:
         있어야 한다 — 이름의 "_unlocked"는 이 메서드 자신은 lock을 추가로 잡지
         않는다는 뜻이지, lock 없이 안전하다는 뜻이 아니다. 이 lock을 얻는 경로는
         하나가 아니다: `c6c_deployment_lock_from_environment()`가 가장 흔하지만,
-        `rebuild_pinned_runtime`처럼 `pinned_runtime_rebuild_lock()` 경로를 타는
-        호출자는 `_pinned_runtime_rebuild_environment_lock()` 안에서
-        `c6c_deployment_lock(lock_snapshot.lock_path)`를 직접 잡아 같은 flock에
-        도달한다 — 어느 경로든 "이 host의 c6c deployment lock을 쥔 채로"만
+        `rebuild_pinned_runtime`은 `_pinned_runtime_rebuild_environment_lock()`이
+        `manager_mutation_lock()`으로 host 변경 lock ``G``를 직접 잡아 같은 flock에
+        도달한다(ADR-51 C-3) — 어느 경로든 "이 host의 c6c deployment lock을 쥔 채로"만
         만족하면 된다. lock 없이 호출하면 동시 mutation과 경합해 읽은 compose
         원문이 곧바로 stale해질 수 있다."""
         if environment_snapshot is None:
@@ -4874,22 +4879,17 @@ class ComposeService:
 
         def prewrite_admission(
             environment_snapshot: ComposeEnvironmentSnapshot,
-        ) -> str | None:
+        ) -> None:
             nonlocal release
             del environment_snapshot
             # lock을 잡은 뒤 registry snapshot 하나를 만든다 — rotate가 두 read 사이에
             # 끼어 old release와 new 상태를 섞지 못하게 한다.
             release = current_pinned_runtime_release()
             warnings.extend(_pinned_runtime_admission_warnings(release.pinset_sha256))
-            return None
 
         with _pinned_runtime_rebuild_environment_lock(
             prewrite_admission=prewrite_admission
-        ) as (
-            lock_snapshot,
-            environment_snapshot,
-            _role_credentials_initialized,
-        ):
+        ) as environment_snapshot:
             if release is None:  # pragma: no cover - context contract 방어
                 raise DeploymentContractError("pinned runtime release snapshot is unavailable")
             values = environment_snapshot.effective
@@ -4916,7 +4916,9 @@ class ComposeService:
                     environment_override=dict(artifact_directories.compose_environment()),
                     environment_snapshot=environment_snapshot,
                 )
-                _assert_transaction_matches_c6c_lock(prebuild_transaction, lock_snapshot)
+                assert_transaction_matches_environment(
+                    prebuild_transaction, environment_snapshot
+                )
             with _pinned_runtime_prejournal_step("external_prerequisites"):
                 self._require_services_ready(
                     _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
@@ -4963,7 +4965,9 @@ class ComposeService:
                     environment_override=candidate_environment,
                     environment_snapshot=environment_snapshot,
                 )
-                _assert_transaction_matches_c6c_lock(candidate_transaction, lock_snapshot)
+                assert_transaction_matches_environment(
+                    candidate_transaction, environment_snapshot
+                )
             with _pinned_runtime_prejournal_step("candidate_contract"):
                 self._validate_pinned_runtime_candidate_build_contract(
                     candidate_transaction,
@@ -5034,7 +5038,9 @@ class ComposeService:
                     excluded_services=_PINNED_RUNTIME_ONESHOT_WRITERS,
                 )
             with _pinned_runtime_prejournal_step("runtime_transaction_lock"):
-                _assert_transaction_matches_c6c_lock(runtime_transaction, lock_snapshot)
+                assert_transaction_matches_environment(
+                    runtime_transaction, environment_snapshot
+                )
             ensure_generation_references((candidate,), cwd=get_project_root())
             runtimes = database_runtimes_from_frozen_contract(
                 resolved=runtime_transaction.resolved,

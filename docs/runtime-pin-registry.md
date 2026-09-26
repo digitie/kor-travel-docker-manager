@@ -657,7 +657,7 @@ vendored 스냅샷은 Map의 OpenAPI blob이 바뀌지 않았다면 손대지 �
 ```
 ktdctl pinvi-pair rebuild-pinned --confirm
   └─ _require_pinned_runtime_rebuild_root()            root 강제
-  └─ global mutation lock → pinned rebuild lock         rotate/block/install과 직렬화 (게이트보다 **앞**이다)
+  └─ host 변경 lock G (manager_mutation_lock)            rotate/block/install과 직렬화 (게이트보다 **앞**이다)
   └─ env snapshot · assert_pinned_runtime_rebuild_allowed · validate_c6c_operation_tokens
   └─ prewrite_admission:
        └─ current_pinned_runtime_release()             lock 안에서 registry snapshot 로드 (없으면 fail-close)
@@ -665,8 +665,8 @@ ktdctl pinvi-pair rebuild-pinned --confirm
   └─ (role credential 회전, source materialize, 후보 빌드, deploy-status in_progress, migration …)   ← 여기부터가 mutation
 ```
 
-★ 표시 지점이 게이트다. 게이트는 **두 host lease 안**에서 돌고(global mutation
-lock + pinned rebuild lease), env snapshot과 lifecycle 판정보다 뒤다 — 종전 이
+★ 표시 지점이 게이트다. 게이트는 **host 변경 lock G 안**에서 돌고(ADR-51 C-3 전에는
+pinned rebuild lease를 하나 더 잡았다), env snapshot과 lifecycle 판정보다 뒤다 — 종전 이
 문단은 "락 획득보다도 앞"이라고 적고 있었는데 사실이 아니었다. 게이트가 보장하는
 것은 **mutation보다 앞**이라는 것이다.
 

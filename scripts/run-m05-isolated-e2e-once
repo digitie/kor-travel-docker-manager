@@ -154,8 +154,9 @@ initial_snapshot="$(snapshot_runtime_pin)" || {
   echo "M05 runtime pin snapshot is invalid" >&2
   exit 1
 }
-# 외부 rotate-pair는 이 launcher의 lifetime lock에 막힌다 — ktdctl의
-# non-inherited 경로가 flock(LOCK_EX|LOCK_NB)로 거절한다(cli.py).
+# 외부 rotate-pair는 이 launcher의 lifetime lock에 막힌다 — fd를 물려받지 않은
+# ktdctl mutator는 `manager_mutation_lock()`(c6c_deployment.py)이 같은 G를
+# flock(LOCK_EX|LOCK_NB)로 잡으려다 거절된다.
 # 그래도 두 번째 검증 snapshot을 두는 이유는 회전 경합이 아니라, 이 창에서
 # 값이 흔들리면 그것 자체가 관측 이상이라는 것을 시작 시점에 못 박기 위함이다. A second verified
 # snapshot establishes the exact candidate owned by this one-shot; acceptance
@@ -333,9 +334,10 @@ if [[ "$post_observed" == 1 ]] &&
    { [[ "$post_snapshot" != "$initial_snapshot" ]] ||
      [[ "$post_execution_snapshot" != "$initial_execution_snapshot" ]]; }; then
   snapshot_changed=1
-  # launcher는 자기 수명 내내 host-global mutation lock을 쥐고 있고, ktdctl의
-  # non-inherited 경로는 flock(LOCK_EX|LOCK_NB)로 rotate-pair/rollback/block을
-  # 거절한다. 즉 이 창에서 **회전은 물리적으로 불가능하다** — 값 불일치는 회전이
+  # launcher는 자기 수명 내내 host-global mutation lock(G)을 쥐고 있고, fd를
+  # 물려받지 않은 ktdctl의 rotate-pair/rollback/block은 `manager_mutation_lock()`이
+  # 같은 G를 flock(LOCK_EX|LOCK_NB)로 잡으려다 거절된다. 즉 이 창에서 **회전은
+  # 물리적으로 불가능하다** — 값 불일치는 회전이
   # 아니라 또 다른 관측 이상이다. 그러니 이것도 receipt를 안 읽을 이유가 못 된다.
   echo "M05 runtime snapshot differs after the driver" >&2
 fi

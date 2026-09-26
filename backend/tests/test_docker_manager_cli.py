@@ -313,8 +313,12 @@ def test_compose_ensure_build_command(
     mock_run.return_value.returncode = 0
     mock_run.return_value.stdout = "started"
     mock_run.return_value.stderr = ""
-    lock_directory = Path("/tmp") / tmp_path.name
-    lock_directory.mkdir(mode=0o700, exist_ok=True)
+    # ADR-51 C-3: lock 경로 override는 없고 경로는 `.env` 값만으로 정한다. local `.env`가
+    # 고르는 `$HOME` 개발 lock을 Linux tmp 아래 home으로 옮긴다(drvfs는 0600을 못 지킨다).
+    lock_home = Path("/tmp") / tmp_path.name
+    lock_home.mkdir(mode=0o700, exist_ok=True)
+    env_path = tmp_path / ".env"
+    env_path.write_text("KTDM_DEPLOYMENT_ENVIRONMENT=local\n", encoding="utf-8")
 
     with patch.dict(
         os.environ,
@@ -322,7 +326,8 @@ def test_compose_ensure_build_command(
             "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
             "PINVI_ENVIRONMENT": "development",
             "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "false",
-            "KTDM_C6C_DEPLOYMENT_LOCK": str(lock_directory / "ensure.lock"),
+            "KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE": str(env_path),
+            "HOME": str(lock_home),
         },
     ):
         result = ComposeService().ensure_target("srv", build=True, recreate=True)

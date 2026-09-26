@@ -34,7 +34,7 @@ from kor_travel_docker_manager.services.auth_service import (
 )
 from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_deployment_lock,
-    c6c_global_mutation_lock_path,
+    manager_mutation_lock_path,
 )
 from kor_travel_docker_manager.services.compose_service import get_env_path
 from kor_travel_docker_manager.services.errors import ManagerMutationActiveError
@@ -253,17 +253,17 @@ def _rewrite_env_single_key_under_mutation_lock(path: Path, name: str, value: st
     legacy retire는 lock 아래에서 읽은 ``.env`` 바이트로 파일 전체를 다시 쓴다. 그 사이에
     끼어든 비밀번호 변경은 조용히 사라진다(lost update). 그래서 같은 lock을 잡는다.
 
-    lock 경로는 **다시 쓸 그 ``.env``의 값**에서 정한다 — rehearsal·production이면 host
-    변경 lock ``G``, local이면 실행 사용자 ``$HOME`` 아래 개발 lock이다. 프로세스 환경으로
-    채우지 않는다. 경합이면 409 ``MANAGER_MUTATION_ACTIVE``로 거절하고, 파일은 한 바이트도
-    바뀌지 않는다. 그 거절을 ``AdminPasswordError``로 올리는 이유: 이 route는 모든 거절을
+    lock 경로는 **다시 쓸 그 ``.env``의 값**에서 정한다 — local이면 실행 사용자 ``$HOME``
+    아래 개발 lock, 그 밖의 모드(미지정 포함, ADR-51 C-3)는 host 변경 lock ``G``다.
+    프로세스 환경으로 채우지 않는다. 경합이면 409 ``MANAGER_MUTATION_ACTIVE``로 거절하고,
+    파일은 한 바이트도 바뀌지 않는다. 그 거절을 ``AdminPasswordError``로 올리는 이유: 이 route는 모든 거절을
     감사에 남긴다(남지 않은 거절은 조사할 수 없다) — 맞는 자격증명으로 한 시도가 흔적 없이
     사라지면 안 된다(C-2 적대 리뷰).
     """
 
     text, identity = _read_env(path)
     try:
-        with c6c_deployment_lock(c6c_global_mutation_lock_path(_parse_dotenv(text))):
+        with c6c_deployment_lock(manager_mutation_lock_path(_parse_dotenv(text))):
             # lock 경로를 고른 뒤 잡기 전까지 `.env`가 바뀌었다면 그 선택은 낡았다.
             if _read_env(path)[1] != identity:
                 raise AdminPasswordError(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import inspect
 import json
 import os
@@ -10,7 +9,7 @@ import subprocess
 import tempfile
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -146,11 +145,6 @@ def _bypass_root_host_lease_in_nonroot_unit_process(
 ) -> None:
     """root 전용 host primitive는 별도 회귀 외에는 unit orchestration에서 격리한다."""
 
-    monkeypatch.setattr(
-        compose_service_module,
-        "pinned_runtime_rebuild_lock",
-        lambda: nullcontext(),
-    )
     # 이 모듈의 대형 orchestration fixture는 각 사례가 필요한 v5 source release를
     # 직접 주입한다. 실제 root registry/trusted Manager v6 snapshot은 만들지 않으므로
     # admission 판정은 여기서만 격리한다. 판정 자체는 ``test_runtime_pin_registry``가 소유한다.
@@ -169,20 +163,20 @@ def _bypass_root_host_lease_in_nonroot_unit_process(
             metadata_permit_directory=base / "dagster-storage-permit",
         ),
     )
-    # 각 orchestration 회귀는 그 이전/이후 phase만 격리한다. root `.env`를 실제로
-    # 바꾸는 fresh role credential 초기화는 전용 unit suite가 소유한다. admission과
-    # frozen snapshot 전달 순서는 production과 동일하게 유지한다.
+    # 각 orchestration 회귀는 그 이전/이후 phase만 격리한다. trusted `/opt` `.env` 대신
+    # 테스트 env를 캡처하고 lifecycle 게이트·token 검증은 건너뛰지만, lock(G 하나,
+    # ADR-51 C-3)·admission·frozen snapshot 전달 순서는 production과 동일하게 유지한다.
+    # G는 conftest가 테스트마다 tmp로 옮겨 둔다.
     @contextmanager
     def isolated_rebuild_environment_lock(*, prewrite_admission: Any) -> Any:
-        with compose_service_module.pinned_runtime_rebuild_lock():
+        with compose_service_module.manager_mutation_lock():
             snapshot = compose_service_module._capture_compose_environment_snapshot(
                 environment_override=None
             )
             # M05 폐기 전에는 여기서 role 자격증명이 이미 구성된 상태를 흉내 냈다.
             # 이제 rebuild가 `.env`에 자격증명을 쓰지 않으므로 흉내 낼 것이 없다.
             prewrite_admission(snapshot)
-            with compose_service_module.c6c_deployment_lock_from_environment() as lock:
-                yield lock, snapshot, False
+            yield snapshot
 
     monkeypatch.setattr(
         compose_service_module,
@@ -829,7 +823,7 @@ def test_rebuild_host_lease_blocks_before_source_or_database_mutation(
     )
     monkeypatch.setattr(
         compose_service_module,
-        "pinned_runtime_rebuild_lock",
+        "manager_mutation_lock",
         contended_rebuild_lease,
     )
     monkeypatch.setattr(
@@ -868,22 +862,9 @@ def test_rebuild_requires_all_operation_tokens_before_source_or_database_mutatio
         finally:
             lock_events.append("host-exit")
 
-    @contextmanager
-    def environment_lease() -> Any:
-        lock_events.append("environment-enter")
-        try:
-            yield object()
-        finally:
-            lock_events.append("environment-exit")
-
     monkeypatch.setattr(
         compose_service_module,
-        "c6c_deployment_lock_from_environment",
-        environment_lease,
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "pinned_runtime_rebuild_lock",
+        "manager_mutation_lock",
         host_lease,
     )
     monkeypatch.setattr(
@@ -908,12 +889,9 @@ def test_rebuild_requires_all_operation_tokens_before_source_or_database_mutatio
     assert captured.value.stage == "state_initialization"
     assert isinstance(captured.value.__cause__, DeploymentContractError)
 
-    assert lock_events == [
-        "host-enter",
-        "environment-enter",
-        "environment-exit",
-        "host-exit",
-    ]
+    # ADR-51 C-3: 재구축의 lock은 G 하나다(실제 파일 lock 목록은
+    # `test_global_mutation_lock_contention`의 (g)가 본다). 거부는 그 안에서 났다.
+    assert lock_events == ["host-enter", "host-exit"]
     materialize.assert_not_called()
 
 
@@ -1663,80 +1641,21 @@ def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
     )
 
 
-def test_pinned_runtime_rebuild_lease_path_is_fixed() -> None:
-    assert c6c_deployment.pinned_runtime_rebuild_lock_path() == (
-        "/run/lock/kor-travel-docker-manager/pinned-runtime-rebuild.lock"
-    )
-
-
-def test_pinned_runtime_rebuild_lease_uses_real_nonblocking_flock(
-    tmp_path: Path,
+def test_the_manager_mutation_lock_rejects_nonroot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    lock_path = tmp_path / "pinned-runtime-rebuild.lock"
-    monkeypatch.setattr(c6c_deployment, "_PINNED_RUNTIME_REBUILD_LOCK", lock_path)
-    monkeypatch.setattr(c6c_deployment, "_require_pinned_runtime_rebuild_root", lambda: None)
-    # NTFS drvfs는 mode를 0777로 보이게 한다. 이 회귀의 대상은 mode 정책이 아니라
-    # second holder가 실제 flock을 얻지 못하는지다.
-    monkeypatch.setattr(c6c_deployment, "_validate_c6c_lock_fd", lambda *_args, **_kwargs: None)
-    original_lock = c6c_deployment.c6c_deployment_lock
+    """재구축이 잡는 유일한 lock G도 root만 연다(ADR-51 C-3 — 별도 rebuild lease는 없다).
 
-    @contextmanager
-    def lock_without_global(path: str):
-        if path == str(c6c_deployment._C6C_GLOBAL_MUTATION_LOCK):
-            yield
-        else:
-            with original_lock(path):
-                yield
+    conftest가 소유자 seam을 실행 euid로 바꿔 두므로 운영 값(root)으로 되돌린다.
+    """
 
-    monkeypatch.setattr(c6c_deployment, "c6c_deployment_lock", lock_without_global)
-    holder = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
-    try:
-        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with pytest.raises(c6c_deployment.DeploymentContractError) as excinfo:
-            with c6c_deployment.pinned_runtime_rebuild_lock():
-                pass  # pragma: no cover - contended lock must not enter.
-    finally:
-        os.close(holder)
-
-    assert str(excinfo.value) == (
-        "another Manager mutation is already active; nothing was changed"
-    )
-    assert excinfo.value.code == "MANAGER_MUTATION_ACTIVE"
-
-
-def test_pinned_runtime_rebuild_lease_acquires_global_before_pinned(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """release/v6 snapshot과 rotate를 같은 lease ordering으로 직렬화한다."""
-
-    acquired: list[str] = []
-    monkeypatch.setattr(c6c_deployment, "_require_pinned_runtime_rebuild_root", lambda: None)
-
-    @contextmanager
-    def record_lock(path: str):
-        acquired.append(path)
-        yield
-
-    monkeypatch.setattr(c6c_deployment, "c6c_deployment_lock", record_lock)
-
-    with c6c_deployment.pinned_runtime_rebuild_lock():
-        pass
-
-    assert acquired == [
-        str(c6c_deployment._C6C_GLOBAL_MUTATION_LOCK),
-        c6c_deployment.pinned_runtime_rebuild_lock_path(),
-    ]
-
-
-def test_pinned_runtime_rebuild_lease_rejects_nonroot(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    monkeypatch.setattr(c6c_deployment, "_GLOBAL_LOCK_OWNER_UID", 0)
     monkeypatch.setattr(c6c_deployment.os, "geteuid", lambda: 1000)
 
     with pytest.raises(c6c_deployment.DeploymentContractError, match="requires root"):
-        with c6c_deployment.pinned_runtime_rebuild_lock():
+        with c6c_deployment.manager_mutation_lock():
             pass  # pragma: no cover - root gate must reject before entering.
+    assert not c6c_deployment._C6C_GLOBAL_MUTATION_LOCK.exists()
 
 
 def test_journal_watermark_reports_unreached_without_a_path() -> None:
@@ -1992,12 +1911,12 @@ def _forward_harness(
         runtime_execution_registry, "trusted_manager_source_revision", lambda: "e" * 40
     )
     for name, replacement in {
-        "c6c_deployment_lock_from_environment": lambda: nullcontext(object()),
         "_require_pinned_runtime_rebuild_root": lambda: None,
         "_capture_compose_environment_snapshot": (
             lambda *, environment_override: transaction.environment
         ),
-        "_assert_transaction_matches_c6c_lock": Mock(),
+        # 대역 transaction의 환경은 `.env` 증거(경로·identity)가 없는 SimpleNamespace다.
+        "assert_transaction_matches_environment": Mock(),
         "materialize_pinned_runtime_sources": mocks.materialize,
         "_ensure_map_application_300_python_base_images": Mock(),
         "_build_map_application_300_images": mocks.paired_builder,

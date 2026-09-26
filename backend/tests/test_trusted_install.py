@@ -61,27 +61,26 @@ def test_cli_and_c6c_reference_the_identical_lock_fd_env_name() -> None:
     )
 
 
-def test_compose_service_and_c6c_root_checks_delegate_to_the_shared_function(
+def test_compose_service_root_check_delegates_to_the_shared_function(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """리뷰 지적: 순환 import 우려는 지연 import로 이미 해소 가능했다(이 모듈이
     `registry.get_project_root`에 쓰는 것과 같은 패턴) — 그래서 2줄짜리 root 확인도
     통합했다. 실제 root 확인은 `os.geteuid()`를 함수가 정의된 trusted_install 모듈의
-    `os`에서 부르므로, 호출부(compose_service/c6c_deployment)가 아니라 그쪽을
-    패치해야 한다 — CI가 실제로 root로 도는 환경에서도 이 테스트가 흔들리지 않게
-    명시적으로 비-root euid를 강제한다.
+    `os`에서 부르므로, 호출부(compose_service)가 아니라 그쪽을 패치해야 한다 — CI가
+    실제로 root로 도는 환경에서도 이 테스트가 흔들리지 않게 명시적으로 비-root euid를
+    강제한다. c6c_deployment 쪽 사본은 그것을 쓰던 pinned rebuild lease와 함께 ADR-51
+    C-3에서 지웠다.
     """
 
     monkeypatch.setattr(trusted_install_module.os, "geteuid", lambda: 1000)
 
     with pytest.raises(DeploymentContractError, match="requires root execution") as compose_exc:
         compose_service._require_pinned_runtime_rebuild_root()
-    with pytest.raises(DeploymentContractError, match="requires root execution") as c6c_exc:
-        c6c_deployment._require_pinned_runtime_rebuild_root()
     with pytest.raises(DeploymentContractError, match="requires root execution") as shared_exc:
         require_pinned_runtime_rebuild_root()
 
-    assert str(compose_exc.value) == str(c6c_exc.value) == str(shared_exc.value)
+    assert str(compose_exc.value) == str(shared_exc.value)
 
 
 @pytest.mark.parametrize(

@@ -24,10 +24,10 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
     DeploymentContractError,
     c6c_deployment_lock,
-    c6c_global_mutation_lock_path,
     c6c_state_paths,
     ensure_c6c_state_directory,
     is_pbkdf2_sha256_password_hash,
+    manager_mutation_lock_path,
     validate_concierge_ui_canonical_compose_boundary,
 )
 from kor_travel_docker_manager.services.compose_service import get_project_root
@@ -388,7 +388,7 @@ def _select_lock_path(
     if require_root:
         deployment_environment = values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower()
         if deployment_environment == "production":
-            return c6c_global_mutation_lock_path(values)
+            return manager_mutation_lock_path(values)
         if deployment_environment == "rehearsal":
             required = {
                 "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
@@ -402,7 +402,7 @@ def _select_lock_path(
             # stage/retire는 pinned rebuild·pin 회전·M05·installer와 같은 host 변경 lock
             # ``G``를 쓴다(ADR-51 C-2). user-home rehearsal lock을 쓰면 다른 root launcher와
             # 직렬화되지 않아 C6c 경계를 우회한다.
-            return c6c_global_mutation_lock_path(values)
+            return manager_mutation_lock_path(values)
         raise LegacyOverrideRetirementError(
             "legacy override retirement requires production or canonical rehearsal/rebuildable environment"
         )
