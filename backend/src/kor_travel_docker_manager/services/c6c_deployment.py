@@ -2944,7 +2944,9 @@ def _assert_operator_bind_source_is_permitted(*, service: str, resolved_source: 
             f"compose candidate {service} bind source is the bind allowlist itself — "
             "인가하는 파일과 인가되는 것이 같아지면 경계가 아니다"
         )
-    backend_root = TRUSTED_INSTALL_ROOT / "backend"
+    # `resolved_source`는 풀린 경로다. 설치 root는 release symlink이므로 이쪽도 풀어야
+    # 비교가 성립한다 — 안 풀면 가드가 조용히 지나간다(ADR-51 D).
+    backend_root = TRUSTED_INSTALL_ROOT.resolve() / "backend"
     if resolved_source == backend_root or backend_root in resolved_source.parents:
         raise ComposeCandidateContractError(
             f"compose candidate {service} bind source exposes manager backend source: "

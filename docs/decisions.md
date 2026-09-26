@@ -3699,3 +3699,34 @@ Map이 M1(`51ee65d4c`, ADR-102)을 포함하는 것이다 — M1 이후 storage 
   (`prod-deployment.md` §8.1).
 - 교차 저장소: Map `docs/architecture/dagster-boundary.md`의 "Manager가 전환기 동안 permit 디렉터리를 계속
   마운트한다"는 서술이 더는 사실이 아니다 — Map 문서 PR만 필요하다(코드 변경 없음).
+
+### NOTE: D(설치기) I-1 — 설치 root symlink의 소비자를 먼저 옮겼다 (2026-09-27, I-1)
+
+잃는 보장 D(설치기)를 세 단계로 나눈다 — I-1 소비자 이전, 한 번뿐인 수동 레이아웃 전환, I-2 새
+설치기. D-1/D-2와 같은 순서다: 읽는 쪽을 먼저 옮기고 쓰는 쪽을 나중에 바꾼다. I-1은 옛 설치기로
+평평한 레이아웃에 설치되고, 거기서는 resolve와 lexical 경로가 같으므로 동작이 바뀌지 않는다.
+
+- **레이아웃 해석.** ADR의 "releases/와 symlink"는 `/opt/kor-travel-docker-manager` → 상대 symlink
+  `ktdm-release-<sha40>`, 실제 release는 `/opt/ktdm-release-<sha40>/`(root 0755)로 둔다. `/opt/.../releases/<sha>`
+  + `current`는 기각했다 — 안정 경로가 바뀌어 launcher 넷·systemd·Map 호스트 스크립트를 한 번에 고쳐야
+  하고 상대 bind 서비스가 한 번 재생성된다. release를 `/opt` 바로 아래에 두므로 resolve한 `..`와 lexical
+  `..`가 같은 `/opt`를 가리키고(형제 저장소 기본값 `../kor-travel-concierge` 등), `ktdm-release-`는
+  `kor-travel-docker-manager`와 문자열 접두가 겹치지 않는다. compose v5.2와 venv가 symlink 경로를 그대로
+  쓰는 것은 n150에서 실측했다(`--project-directory <link>` → bind source `<link>/cfg`, `sys.prefix` 유지).
+- **resolve하지 않는 자리**(compose 프로젝트 루트가 되는 경로): 재구축 root(`trusted_pinned_runtime_project_root`),
+  환경 snapshot의 compose·override 경로(frozen `config`의 `--project-directory`가 된다), canonical `up`의
+  `--project-directory`, legacy override retirement의 project context(Compose cwd·`--file`·projection 임시 파일).
+  하나라도 풀리면 상대 bind source가 `/opt/ktdm-release-<sha>`로 굳어 설치마다 컨테이너가 재생성되고 GC 뒤
+  재시작에서 깨진다. 비교하는 쪽은 양쪽을 다 푼다 — 재구축 경로 가드, operator bind의 backend 소스 가드
+  (한쪽만 풀던 것이라 symlink root에서 조용히 fail-open했다), candidate volume graph(원래 양쪽 다 풀었다).
+- **symlink를 따라가는 자리**: 재구축 root·legacy retirement의 디렉터리 검사, 관리자 비밀번호 `.env`의 부모
+  검사, M05 driver의 trusted release 검사. 옛 코드는 `lstat`로 symlink root를 거부했다.
+- **provenance는 `.ktdm-source-revision` 하나다.** `trusted_manager_source_revision`(rebind-execution),
+  `run-pinned-rebuild-once`, M05 driver, `source_status`가 release manifest를 읽지 않는다. 옛 설치기는 I-2까지
+  manifest를 계속 쓰지만 아무도 읽지 않는다. `source_status`의 `inconsistent` 상태와 `manifest` 필드가
+  없어졌다(UI는 쓰지 않았다).
+- **잃은 것**: 설치 root의 lstat 신원 확인(dev/ino·symlink 거부)과 revision·manifest 두 기록의 교차 대조 —
+  결정 3의 "root 소유 상태를 root로부터 지키는 검사"다. bind 가드의 resolve는 손실이 아니라 fail-open 수정이다.
+- **되돌림 하한**: I-1 이하 어디로든 옛 설치기로 되돌릴 수 있다(평평한 레이아웃). 레이아웃 전환 뒤에는 옛
+  설치기가 "canonical .env path" 검사로 해 없이 거부하므로, 그 아래로 가려면 전환을 먼저 되돌린다
+  (`prod-deployment.md`에 I-2와 함께 적는다).

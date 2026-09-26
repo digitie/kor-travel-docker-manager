@@ -516,7 +516,7 @@ def _project_root() -> Path:
 
 
 def _running_from_trusted_install_root() -> bool:
-    """trusted installer가 통째 교체하는 canonical execution root에서 도는가."""
+    """trusted installer가 설치한 release(설치 root symlink 뒤)에서 도는가."""
 
     return running_from_trusted_install_root()
 
@@ -524,8 +524,8 @@ def _running_from_trusted_install_root() -> bool:
 def runtime_pin_registry_path() -> Path:
     """registry 파일 경로.
 
-    **운영 기본값은 배포 트리 밖이다.** trusted installer는 canonical execution root를
-    staging→commit으로 통째 교체하므로 registry가 트리 안에 있으면 다음 release 설치가
+    **운영 기본값은 배포 트리 밖이다.** trusted installer는 설치할 때마다 새 release
+    디렉터리를 만들고 설치 root symlink를 넘기므로 registry가 트리 안에 있으면 다음 release 설치가
     회전 결과를 조용히 되돌린다 — 그 조용한 되돌림은 이 전환이 없애려던 실패 그
     자체다. 설치 root에서 도는 경우 env가 없어도 ``/var/lib/...`` 상태 디렉터리를
     기본값으로 쓰고, 저장소 안의 ``config/runtime-pins.json``은 개발 기본값이자
@@ -818,8 +818,8 @@ def _assert_registry_is_writable_target(path: Path) -> None:
 
     두 가지를 막는다.
 
-    1. **설치 트리 안에서의 회전.** trusted installer는 canonical execution root를
-       staging→commit으로 통째 교체하므로, 배포 트리 안의 registry에 회전하면 다음
+    1. **설치 트리 안에서의 회전.** trusted installer는 설치할 때마다 새 release
+       디렉터리로 설치 root symlink를 넘기므로, 배포 트리 안의 registry에 회전하면 다음
        release 설치가 그 결과를 조용히 되돌린다. 이 조용한 되돌림은 registry 전환이
        없애려던 실패 모드 그 자체라 fail-close한다.
     2. **그룹·타인 접근 가능한 운영 registry.** 회전 권한이 root 밖으로 새는 상태다.

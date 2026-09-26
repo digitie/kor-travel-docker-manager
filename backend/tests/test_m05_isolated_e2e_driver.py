@@ -4983,3 +4983,36 @@ def test_the_launcher_discards_driver_stdout_so_prints_are_not_a_channel() -> No
     invocation = launcher.index("m05_isolated_e2e.py")
     tail = launcher[invocation : launcher.index("driver_status=", invocation)]
     assert ">/dev/null 2>&1" in tail
+
+
+def test_trusted_release_follows_the_release_symlink_and_reads_one_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """설치 root는 현재 release를 가리키는 symlink다(ADR-51 D) — driver가 거부하면 안 된다.
+
+    release manifest는 퇴역했다. revision 파일 하나만 읽고, 그 값이 기대 revision과
+    다르면 여전히 `trusted_release_revision_mismatch`로 멈춘다. 대상 디렉터리는 root 소유
+    검사를 통과해야 하므로 root 소유 0755인 `/usr`를 쓰고, 파일 읽기만 대역으로 바꾼다.
+    """
+
+    driver = _driver()
+    expected = "a" * 40
+    install = tmp_path / "kor-travel-docker-manager"
+    install.symlink_to("/usr")
+    reads: list[Path] = []
+    installed = [expected]
+
+    def read_revision(path: Path, *, mode: int, encoding: str, limit: int) -> str:
+        del mode, encoding, limit
+        reads.append(path)
+        return installed[0] + "\n"
+
+    monkeypatch.setattr(driver, "_ROOT", install)
+    monkeypatch.setattr(driver, "_secure_read_root_file", read_revision)
+
+    driver._validate_trusted_release(expected)
+    assert reads == [install / ".ktdm-source-revision"]
+
+    installed[0] = "b" * 40
+    with pytest.raises(driver._PhaseError, match="trusted_release_revision_mismatch"):
+        driver._validate_trusted_release(expected)

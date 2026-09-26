@@ -93,7 +93,6 @@ _LEVEL_BY_STATE: Final[Mapping[str, str]] = {
     "dirty": "action_required",
     "drift": "action_required",
     "incomplete": "action_required",
-    "inconsistent": "action_required",
     "unknown": "unverified",
     "unverified_pin": "unverified",
 }
@@ -173,10 +172,11 @@ def _resolve_repository(env_name: str, default_relpath: str) -> Path:
 
 
 def read_installer_provenance(*, root: Path | None = None) -> dict[str, Any]:
-    """trusted installer가 이미 남기는 두 파일을 읽는다.
+    """trusted installer가 남기는 revision 파일을 읽는다.
 
     새 provenance를 **기록**하는 것이 아니라 **읽는** 것이다 — installer가 이미
-    root:root 0644로 쓰고 있어 비-root backend가 그대로 읽을 수 있다.
+    root:root 0644로 쓰고 있어 비-root backend가 그대로 읽을 수 있다. release manifest는
+    ADR-51 D에서 퇴역했다 — revision 파일 하나가 정본이다.
     """
 
     base = root or Path(get_project_root())
@@ -188,7 +188,6 @@ def read_installer_provenance(*, root: Path | None = None) -> dict[str, Any]:
         return {
             "state": "unknown",
             "revision": None,
-            "manifest": None,
             "detail": "이 배포본에는 설치 기록이 없습니다(직접 복사한 배포본일 수 있습니다).",
             "human": _humanize("unverified"),
         }
@@ -202,52 +201,9 @@ def read_installer_provenance(*, root: Path | None = None) -> dict[str, Any]:
         return _provenance_unreadable()
     if _REVISION.fullmatch(revision) is None:
         return _provenance_unreadable()
-
-    manifest_path = base / ".ktdm-release-manifest.json"
-    manifest: dict[str, Any] | None = None
-    try:
-        manifest_raw = manifest_path.read_bytes()[: _MAX_PROVENANCE_BYTES + 1]
-        if len(manifest_raw) <= _MAX_PROVENANCE_BYTES:
-            document = json.loads(manifest_raw.decode("utf-8"))
-            if isinstance(document, dict):
-                manifest = document
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        manifest = None
-
-    if manifest is None:
-        return {
-            "state": "recorded",
-            "revision": revision,
-            "manifest": None,
-            "detail": "설치 기록은 있으나 릴리스 매니페스트가 없습니다.",
-            "human": _humanize("ok"),
-        }
-    manifest_revision = manifest.get("manager_source_revision")
-    if manifest_revision != revision:
-        # 어느 쪽이 맞는지 고르지 않는다 — 부분 덮어쓰기를 의심해야 하는 상황이다.
-        return {
-            "state": "inconsistent",
-            "revision": revision,
-            "manifest_revision": (
-                manifest_revision if isinstance(manifest_revision, str) else None
-            ),
-            "manifest": None,
-            "detail": "설치 기록 두 파일이 서로 다른 커밋을 가리킵니다 — 부분 덮어쓰기 의심.",
-            "human": _humanize(
-                "action_required",
-                next_action="sudo -n backend/.venv/bin/ktdctl pin verify",
-            ),
-        }
-    # uid/gid는 의도적으로 버린다: 운영자에게 행동 지침을 주지 않으면서 공격자에게는
-    # 호스트 계정 배치를 알려 주는 값이다.
     return {
         "state": "recorded",
         "revision": revision,
-        "manifest": {
-            "installed_at": manifest.get("installed_at"),
-            "backend_distribution": manifest.get("backend_distribution"),
-            "backend_wheel_sha256": manifest.get("backend_wheel_sha256"),
-        },
         "detail": None,
         "human": _humanize("ok"),
     }
@@ -257,7 +213,6 @@ def _provenance_unreadable() -> dict[str, Any]:
     return {
         "state": "unknown",
         "revision": None,
-        "manifest": None,
         "detail": "설치 기록을 읽을 수 없거나 형식이 올바르지 않습니다.",
         "human": _humanize("unverified"),
     }

@@ -337,40 +337,20 @@ def _read_trusted_text(path: Path, *, expected_uid: int, expected_mode: int = 0o
 
 
 def trusted_manager_source_revision(*, install_root: Path = _TRUSTED_INSTALL_ROOT) -> str:
-    """clean trusted installation에서만 Manager revision을 읽는다.
+    """trusted installation의 Manager revision을 읽는다.
 
     CLI/환경 입력을 수용하지 않는다. 이 값은 execution rebind를 위한 freshness 권한이므로
-    root-owned install directory와 provenance 두 파일이 모두 exact contract를 만족해야 한다.
+    root 소유 0644 revision 파일 하나만 정본으로 읽는다. 설치 root는 현재 release를
+    가리키는 symlink이고, release manifest와의 교차 대조는 ADR-51 D에서 걷어냈다 —
+    둘 다 root가 쓰는 파일이라 root로부터 지키는 검사였다(결정 3).
     """
 
-    try:
-        root = install_root.lstat()
-    except OSError as exc:
-        raise RuntimeExecutionRegistryError("trusted Manager install root cannot be inspected") from exc
-    if (
-        install_root.is_symlink()
-        or not stat.S_ISDIR(root.st_mode)
-        or root.st_uid != 0
-        or stat.S_IMODE(root.st_mode) & 0o022
-    ):
-        raise RuntimeExecutionRegistryError("trusted Manager install root is unsafe")
-    revision = _revision(
+    return _revision(
         _read_trusted_text(
             install_root / ".ktdm-source-revision", expected_uid=0
         ).strip(),
         "trusted Manager source revision",
     )
-    try:
-        manifest = json.loads(
-            _read_trusted_text(
-                install_root / ".ktdm-release-manifest.json", expected_uid=0
-            )
-        )
-    except json.JSONDecodeError as exc:
-        raise RuntimeExecutionRegistryError("trusted Manager release manifest is invalid") from exc
-    if not isinstance(manifest, dict) or manifest.get("manager_source_revision") != revision:
-        raise RuntimeExecutionRegistryError("trusted Manager provenance revisions differ")
-    return revision
 
 
 def _insecure_mode_allowed() -> bool:

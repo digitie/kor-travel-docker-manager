@@ -74,7 +74,8 @@ def _parse_dotenv(text: str) -> dict[str, str]:
 
 def _assert_parent(parent: Path) -> None:
     try:
-        metadata = parent.lstat()
+        # 설치 root는 현재 release를 가리키는 symlink다(ADR-51 D). 따라가서 본다.
+        metadata = parent.stat()
     except OSError as exc:
         raise AdminPasswordError(
             "ENV_PARENT_UNSAFE", f".env 디렉터리를 확인할 수 없습니다: {parent}"

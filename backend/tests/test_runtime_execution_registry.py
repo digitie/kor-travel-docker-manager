@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -555,19 +556,49 @@ def test_same_target_rebind_recovers_after_the_public_copy_write_fails(
     assert verify_runtime_execution_registry()["execution_public_copy"] == "current"
 
 
-def test_trusted_manager_revision_requires_two_root_provenance_records(
+def test_trusted_manager_revision_reads_one_record_through_the_release_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """설치 root는 현재 release를 가리키는 symlink이고 revision 파일 하나가 정본이다(ADR-51 D).
+
+    옛 installer가 남긴 release manifest가 다른 커밋을 가리켜도 판정에 쓰지 않는다.
+    tmp_path는 root 소유가 아니므로 파일 소유자 기대값만 현재 사용자로 바꿔 읽는다.
+    """
+
+    release = tmp_path / "ktdm-release-a"
+    release.mkdir()
+    revision_file = release / ".ktdm-source-revision"
+    revision_file.write_text(_MANAGER_A + "\n", encoding="utf-8")
+    revision_file.chmod(0o644)
+    (release / ".ktdm-release-manifest.json").write_text(
+        '{"manager_source_revision":"' + _MANAGER_B + '"}', encoding="utf-8"
+    )
+    install = tmp_path / "install"
+    install.symlink_to(release.name)
+    real_read = execution_registry._read_trusted_text
+
+    def read_as_current_user(path: Path, *, expected_uid: int, expected_mode: int = 0o644) -> str:
+        assert expected_uid == 0
+        return real_read(path, expected_uid=os.getuid(), expected_mode=expected_mode)
+
+    monkeypatch.setattr(execution_registry, "_read_trusted_text", read_as_current_user)
+
+    assert trusted_manager_source_revision(install_root=install) == _MANAGER_A
+
+    revision_file.write_text("not-a-revision\n", encoding="utf-8")
+    with pytest.raises(RuntimeExecutionRegistryError, match="40-hex revision"):
+        trusted_manager_source_revision(install_root=install)
+
+
+def test_trusted_manager_revision_requires_a_root_owned_record(tmp_path: Path) -> None:
     install = tmp_path / "install"
     install.mkdir()
-    (install / ".ktdm-source-revision").write_text(_MANAGER_A, encoding="utf-8")
-    (install / ".ktdm-release-manifest.json").write_text(
-        '{"manager_source_revision":"' + _MANAGER_A + '"}', encoding="utf-8"
-    )
+    revision_file = install / ".ktdm-source-revision"
+    revision_file.write_text(_MANAGER_A, encoding="utf-8")
+    revision_file.chmod(0o644)
 
-    monkeypatch.setattr("os.geteuid", lambda: 0, raising=False)
-    # tmp_path는 root가 소유하지 않으므로 public function은 fail-close한다.
-    with pytest.raises(RuntimeExecutionRegistryError, match="install root is unsafe"):
+    # tmp_path의 파일은 root가 소유하지 않으므로 fail-close한다.
+    with pytest.raises(RuntimeExecutionRegistryError, match="provenance file is unsafe"):
         trusted_manager_source_revision(install_root=install)
 
 

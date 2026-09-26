@@ -232,3 +232,90 @@ def test_launcher_script_lock_fd_env_literal_matches_the_shared_constant(
         f"({GLOBAL_MUTATION_LOCK_FD_ENV})와 어긋났다 — CLI가 상속을 못 받아 직접"
         " 열기로 떨어진다(시끄러운 실패지만, 여전히 하나의 정본이어야 한다)."
     )
+
+
+# ---------------------------------------------------------------------------
+# ADR-51 D: 설치 root는 현재 release를 가리키는 symlink다
+# ---------------------------------------------------------------------------
+
+
+def _release_symlink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """trusted root를 root 소유 0755 디렉터리(`/usr`)를 가리키는 symlink로 바꾼다."""
+
+    link = tmp_path / "kor-travel-docker-manager"
+    link.symlink_to("/usr")
+    monkeypatch.setattr(trusted_install_module, "TRUSTED_INSTALL_ROOT", link)
+    for name in (
+        "KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT",
+        "KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE",
+        "KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE",
+        "KOR_TRAVEL_DOCKER_MANAGER_OVERRIDE_FILE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    return link
+
+
+def test_rebuild_root_follows_the_release_symlink_without_resolving_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rebuild root는 symlink를 따라가 검사하되, 돌려주는 경로는 풀지 않는다.
+
+    풀린 release 경로가 compose 프로젝트 디렉터리가 되면 상대 bind source가 설치마다
+    바뀌고 지워질 release에 묶인다.
+    """
+
+    link = _release_symlink(tmp_path, monkeypatch)
+
+    assert trusted_install_module.trusted_pinned_runtime_project_root() == link
+
+
+def test_rebuild_path_guard_accepts_the_symlink_root_the_ktdctl_wrapper_injects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    link = _release_symlink(tmp_path, monkeypatch)
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", str(link))
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(link / ".env"))
+
+    compose_service._assert_pinned_runtime_rebuild_execution_paths(link)
+
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", str(tmp_path))
+    with pytest.raises(DeploymentContractError, match="execution path is not trusted"):
+        compose_service._assert_pinned_runtime_rebuild_execution_paths(link)
+
+
+def test_rebuild_compose_project_directory_is_the_unresolved_install_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """frozen config와 canonical `up`이 쓰는 `--project-directory`가 symlink 경로 그대로다."""
+
+    link = _release_symlink(tmp_path, monkeypatch)
+
+    snapshot = compose_service._capture_pinned_runtime_rebuild_environment_snapshot()
+
+    assert snapshot.compose_path == str(link / "docker-compose.yml")
+    assert snapshot.override_path == str(link / "docker-compose.override.yml")
+    command = compose_service.ComposeService().build_command(
+        ["up", "--detach"],
+        canonical_single_file=True,
+        compose_path=snapshot.compose_path,
+    )
+    directory = command[command.index("--project-directory") + 1]
+    assert directory == str(link)
+
+
+def test_operator_bind_guard_sees_backend_source_behind_the_release_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bind source는 풀린 경로로 온다. 가드도 root를 풀어 비교해야 fail-open하지 않는다."""
+
+    _release_symlink(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        c6c_deployment, "TRUSTED_INSTALL_ROOT", trusted_install_module.TRUSTED_INSTALL_ROOT
+    )
+
+    with pytest.raises(
+        c6c_deployment.ComposeCandidateContractError, match="manager backend source"
+    ):
+        c6c_deployment._assert_operator_bind_source_is_permitted(
+            service="grafana", resolved_source=Path("/usr/backend/src")
+        )

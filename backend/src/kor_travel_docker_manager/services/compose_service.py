@@ -1212,9 +1212,10 @@ def _assert_pinned_runtime_rebuild_execution_paths(root: Path) -> None:
         if value is None or not value.strip():
             continue
         configured = Path(value)
+        # 양쪽 다 resolve한다 — root는 release symlink라 한쪽만 풀면 정당한 값이 거부된다.
         if (
             not configured.is_absolute()
-            or configured.resolve(strict=False) != expected_path
+            or configured.resolve(strict=False) != expected_path.resolve(strict=False)
         ):
             raise DeploymentContractError(
                 "pinned runtime rebuild execution path is not trusted"
@@ -1994,15 +1995,13 @@ def _capture_compose_environment_snapshot(
         if env_path is None
         else env_path.resolve(strict=False)
     )
-    compose_path = (
-        Path(get_compose_path()).resolve(strict=False)
-        if compose_path is None
-        else compose_path.resolve(strict=False)
+    # compose 경로는 resolve하지 않는다(ADR-51 D). 이 경로의 부모가 `--project-directory`가
+    # 되고, 풀린 release 경로가 들어가면 상대 bind source가 지워질 release에 묶인다.
+    compose_path = Path(
+        os.path.abspath(get_compose_path() if compose_path is None else compose_path)
     )
-    override_path = (
-        Path(get_override_path()).resolve(strict=False)
-        if override_path is None
-        else override_path.resolve(strict=False)
+    override_path = Path(
+        os.path.abspath(get_override_path() if override_path is None else override_path)
     )
     before = _env_file_identity(env_path)
     env_file_bytes = b""
@@ -2672,7 +2671,8 @@ class ComposeService:
                     "--env-file",
                     "/dev/null",
                     "--project-directory",
-                    str(Path(compose_path or get_compose_path()).resolve().parent),
+                    # resolve 금지 — 위 `_capture_compose_environment_snapshot`과 같은 이유.
+                    os.path.dirname(os.path.abspath(compose_path or get_compose_path())),
                     "-f",
                     "-",
                 ]

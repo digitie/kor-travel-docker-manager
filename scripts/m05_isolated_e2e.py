@@ -621,32 +621,22 @@ def _validate_trusted_release(expected: str) -> None:
         char not in "0123456789abcdef" for char in expected
     ):
         _fail("arguments_invalid")
-    root = _ROOT.lstat()
+    # _ROOT는 현재 release를 가리키는 symlink다(ADR-51 D). 따라가서 본다. revision 파일
+    # 하나가 정본이다 — release manifest 교차 대조는 root로부터 지키는 검사라 걷어냈다.
+    try:
+        root = _ROOT.stat()
+    except OSError:
+        _fail("trusted_release_invalid")
     if (
-        _ROOT.is_symlink()
-        or not stat.S_ISDIR(root.st_mode)
+        not stat.S_ISDIR(root.st_mode)
         or root.st_uid != 0
         or stat.S_IMODE(root.st_mode) & 0o022
     ):
         _fail("trusted_release_invalid")
-    revision_file = _ROOT / ".ktdm-source-revision"
-    manifest_file = _ROOT / ".ktdm-release-manifest.json"
     revision = _secure_read_root_file(
-        revision_file, mode=0o644, encoding="ascii", limit=128
+        _ROOT / ".ktdm-source-revision", mode=0o644, encoding="ascii", limit=128
     ).strip()
-    try:
-        manifest = json.loads(
-            _secure_read_root_file(
-                manifest_file, mode=0o644, encoding="utf-8", limit=1_000_000
-            )
-        )
-    except json.JSONDecodeError:
-        _fail("trusted_release_invalid")
-    if (
-        revision != expected
-        or not isinstance(manifest, dict)
-        or manifest.get("manager_source_revision") != expected
-    ):
+    if revision != expected:
         _fail("trusted_release_revision_mismatch")
 
 
