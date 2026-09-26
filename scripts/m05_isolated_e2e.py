@@ -2953,7 +2953,7 @@ def _map_application_head(map_root: Path) -> str:
     하나 더하면 `api-entrypoint.sh`가 head 불일치로 기동을 거부해, 이 harness는 **스키마가
     진화한 Map을 영원히 e2e할 수 없게** 된다.
 
-    이미지가 읽는 것과 **같은 파일**을 읽는다 — 이미지는 이 worktree에서 빌드되고,
+    이미지가 읽는 것과 **같은 파일**을 읽는다 — 이미지는 이 source 트리에서 빌드되고,
     `/usr/local/bin/ktm-application-schema`도 설치본의 같은 graph를 읽는다.
     """
     manifest = map_root / "src" / "kortravelmap" / "_application_migration_graph.json"

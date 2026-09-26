@@ -147,6 +147,8 @@ def prune_pinned_runtime_sources(
             continue
         try:
             if entry.is_dir() and not entry.is_symlink():
+                # 기록부터 지운다 — 삭제가 끊겨도 반쪽 트리는 기록 없는 디렉터리라 다시 만들어진다.
+                (entry / _SOURCE_RECORD_NAME).unlink(missing_ok=True)
                 shutil.rmtree(entry)
             else:
                 entry.unlink()
@@ -178,6 +180,9 @@ def _materialize_source(
         (partial / _SOURCE_RECORD_NAME).write_text(
             json.dumps(record, sort_keys=True) + "\n", encoding="utf-8"
         )
+        # 이름을 붙이기 전에 내용을 디스크에 둔다 — 이름이 붙은 트리는 git 없이 재사용되므로,
+        # 전원이 끊겨 빈 파일로 남은 트리가 다음 빌드의 context가 되면 안 된다.
+        os.sync()
         try:
             os.rename(partial, final)
         except OSError:
@@ -265,28 +270,36 @@ def _fetch_and_extract(
 
 
 def _read_source(final: Path, *, source: PinnedRuntimeSourceSpec) -> MaterializedRuntimeSource | None:
+    """이름 붙은 source를 읽는다. 없으면 ``None``.
+
+    기록이 없거나 읽히지 않거나 다른 revision을 가리키면 그 디렉터리를 지우고 ``None``을 돌려준다
+    — SHA로 이름 붙은 캐시일 뿐이라 다시 만드는 것이 언제나 안전하다(끊긴 GC, 손상된 기록).
+    """
+
     record_path = final / _SOURCE_RECORD_NAME
-    try:
-        raw = record_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        if final.exists():
-            raise DeploymentContractError("pinned runtime source record is missing") from None
-        return None
-    except OSError as exc:
-        raise DeploymentContractError("pinned runtime source record cannot be read") from exc
-    try:
-        record = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise DeploymentContractError("pinned runtime source record is invalid") from exc
     tree_root = final / _TREE_DIRECTORY_NAME
+    record: object
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if not final.exists():
+            return None
+        record = None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        record = None
     if (
         not isinstance(record, dict)
         or record.get("role") != source.role
         or record.get("revision") != source.revision
         or not isinstance(record.get("tree"), str)
+        or _REVISION.fullmatch(record["tree"]) is None
         or not tree_root.is_dir()
     ):
-        raise DeploymentContractError("pinned runtime source record is invalid")
+        try:
+            shutil.rmtree(final)
+        except OSError as exc:
+            raise DeploymentContractError("pinned runtime source cannot be replaced") from exc
+        return None
     return MaterializedRuntimeSource(
         role=source.role,
         root=tree_root,

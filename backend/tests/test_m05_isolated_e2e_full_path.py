@@ -1026,9 +1026,10 @@ class _FakeDockerHost:
         env: dict[str, str],
     ) -> str:
         assert args[1] == "-I"
-        # **봉인 트리가 아니라 일회용 체크아웃에서** 돈다. 러너는 저장소 루트를
-        # 컨테이너에 root RW로 마운트하므로, 봉인 트리를 주면 다음 preflight가 같은
-        # pinset 재실행을 거부한다(2026-09-03·04 연속 재현).
+        # **materialize된 source 트리가 아니라 실행별 checkout에서** 돈다. 러너는 저장소
+        # 루트를 컨테이너에 root RW로 마운트한다 — 재구축 source는 ADR-51 E-3부터 검증 없이
+        # 재사용되므로, 거기에 쓰면(`node_modules` 등) 다음 재구축의 build context로 조용히
+        # 흘러든다.
         assert self.pinvi_run_root is not None
         assert self.pinvi_run_root != self.pinvi_root
         assert args[2] == str(self.pinvi_run_root / "scripts/m05_activation_attestation.py")

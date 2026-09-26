@@ -93,7 +93,9 @@ def world(tmp_path: Path) -> Any:
     calls: list[dict[str, Any]] = []
 
     def runner(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        calls.append({"argv": list(argv), "env": dict(kwargs.get("env") or {})})
+        calls.append(
+            {"argv": list(argv), "env": dict(kwargs.get("env") or {}), "cwd": kwargs.get("cwd")}
+        )
         rewritten = [
             next(
                 (f"file://{origins[role]}" for role, url in _URLS.items() if part == url),
@@ -208,15 +210,37 @@ def test_a_failed_fetch_leaves_nothing_behind(world: Any) -> None:
     assert list(pinned_runtime_sources_directory(world.state_paths).iterdir()) == []
 
 
-def test_root_git_is_https_only_and_ignores_human_config(world: Any) -> None:
-    """비-root 사용자의 gitconfig(`insteadOf` 등)가 root git에 닿지 않는다."""
+_ROOT_GIT_ENVIRONMENT = {
+    "PATH": "/usr/bin:/bin",
+    "HOME": "/nonexistent",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ALLOW_PROTOCOL": "https",
+}
+
+
+def test_root_git_is_https_only_and_ignores_human_config(
+    world: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """비-root 사용자의 git 설정이 root git에 닿지 않는다 — 남긴 유일한 장치다(ADR-51 E-3).
+
+    호출자 환경에 `insteadOf`를 심어도 root git의 환경은 고정된 사전 그대로다.
+    """
+
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "url.file:///evil.insteadOf")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "https://github.com/")
+    monkeypatch.setenv("XDG_CONFIG_HOME", "/tmp/evil")
 
     _materialize(world)
 
     fetches = [call for call in world.calls if "fetch" in call["argv"]]
     assert len(fetches) == len(RUNTIME_SOURCE_ROLES)
     for call in world.calls:
-        argv, env = call["argv"], call["env"]
+        argv = call["argv"]
         assert argv[0] == "/usr/bin/git"
         for setting in (
             "core.hooksPath=/dev/null",
@@ -225,21 +249,33 @@ def test_root_git_is_https_only_and_ignores_human_config(world: Any) -> None:
             "credential.helper=",
         ):
             assert setting in argv
-        assert env["GIT_ALLOW_PROTOCOL"] == "https"
-        assert env["HOME"] == "/nonexistent"
-        assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
-        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert call["env"] == _ROOT_GIT_ENVIRONMENT
+        assert call["cwd"] == "/"
     for call, role in zip(fetches, RUNTIME_SOURCE_ROLES, strict=True):
         assert call["argv"][-2:] == [_URLS[role], world.revisions[role]]
         assert "--depth" in call["argv"]
 
 
-def test_a_tampered_source_record_is_refused(world: Any) -> None:
+@pytest.mark.parametrize("damage", ["wrong_revision", "empty_record", "missing_record"])
+def test_a_damaged_source_is_rebuilt(world: Any, damage: str) -> None:
+    """이름 붙은 source는 SHA로 이름 붙은 캐시다 — 기록이 손상됐거나(전원 차단, 끊긴 GC) 다른
+    revision을 가리키면 거부하지 않고 다시 만든다. 거부하면 수동 삭제 전까지 모든 재구축이 막힌다.
+    """
+
     sources = _materialize(world)
     record = sources.source_for("map").root.parent / "source.json"
-    payload = json.loads(record.read_text(encoding="utf-8"))
-    payload["revision"] = "f" * 40
-    record.write_text(json.dumps(payload), encoding="utf-8")
+    if damage == "wrong_revision":
+        payload = json.loads(record.read_text(encoding="utf-8"))
+        payload["revision"] = "f" * 40
+        record.write_text(json.dumps(payload), encoding="utf-8")
+    elif damage == "empty_record":
+        record.write_text("", encoding="utf-8")
+    else:
+        record.unlink()
+    world.calls.clear()
 
-    with pytest.raises(DeploymentContractError, match="source record is invalid"):
-        _materialize(world)
+    rebuilt = _materialize(world)
+
+    assert sum("fetch" in call["argv"] for call in world.calls) == 1
+    assert json.loads(record.read_text(encoding="utf-8"))["revision"] == world.revisions["map"]
+    assert rebuilt.source_for("map").tree == sources.source_for("map").tree
