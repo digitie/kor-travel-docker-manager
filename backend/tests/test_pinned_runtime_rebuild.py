@@ -3152,10 +3152,16 @@ def test_generation_companions_ride_every_runtime_step_through_commit(
         "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
         "KTDM_DEPLOYMENT_LIFECYCLE": "rebuildable",
         "PINVI_ENVIRONMENT": "production",
+        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
+        "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
+        "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "metadata-password",
         "COMPOSE_PROJECT_NAME": "f1d-companion-commit",
         "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
+        "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
+        "KTDM_C6C_PINVI_ADMIN_PASSWORD": "rebuild-admin-password",
     }
     journal = _journal_at_runtime_phase("cancel_probe_finalized")
     image_ids = journal.candidate.image_ids
