@@ -3598,3 +3598,35 @@ G와 P 두 개이고, P는 C-3에서 지운다.
 - root 요구는 재구축 입구의 root 검사와 G 디렉터리 소유자 검사가 그대로 맡는다.
 - C 밖에 남긴 것(D 이후): CLI의 terminal block 상속 fd 예외와 M05 launcher의 fd 전달,
   installer의 자체 lock 코드, ADR-41의 획득 뒤 재검사 정리.
+
+### NOTE: D-1 — v6 manifest의 reader를 옮기거나 지웠다 (2026-09-27, D-1)
+
+순서의 마지막 항목 D(permit mount 제거, v6 쓰기 중단)를 세 PR로 나눈다 — D-1 reader 이전·삭제,
+D-2 v6 쓰기와 v6 코드 삭제, D-3 permit mount 제거. 각 릴리스는 직전 릴리스 위에 설치되고, 직전
+릴리스로 되돌려 설치해도 동작한다. D-1은 v6 쓰기를 건드리지 않는다 — 커밋은 계속 쓰지만 아무도
+읽지 않는다.
+
+- **M05 driver는 `deploy-status.json`을 읽는다.** `_source_pair_preflight`가 private v6 manifest 대신
+  state root의 `deploy-status.json`을 읽고, 기록이 없거나 읽히지 않으면·`committed`가 아니면·pinset이
+  현재 release와 다르면·`schema_heads.map_application`이 materialize된 Map source에서 파생한 head와
+  다르면 실행권 소비 전에 `pair_contract_invalid`와 닫힌 어휘 진단 넷 중 하나로 거부한다. 읽기는
+  `materialize_pinned_runtime_sources` 뒤에 둔다 — 그 호출이 state root의 소유자·`0700`을 검증하고
+  `read_deploy_status`는 그것을 보지 않는다. `manager_revision`·image는 대조하지 않는다(Manager 설치는
+  재배포 없이 revision을 바꾸고, M05는 자기 이미지를 빌드한다). committed 배포에서는 옛 v6 대조와 같은
+  값을 본다 — 커밋이 두 파일에 같은 head를 쓴다.
+- **`in_progress`를 거부한다.** `begin_deploy`가 committed 기록을 덮어쓰므로, 실패한 배포(같은 pair
+  포함) 뒤에는 한 번 commit될 때까지 M05가 멈춘다. 의도된 fail-close다 — 옛 v6 대조는 마지막 커밋
+  세대만 보므로 그 뒤 실패한 배포를 몰랐다.
+- **지운 것, 대체 없음**: `GET /api/v1/pinned-runtime/generation`, root `ktdctl pin publish-generation`,
+  `pin verify`의 `generation_public_copy`·`generation_pinset_binding` 키와 그 exit-1 분기, rebuild
+  preflight §2(`GENERATION_UNVERIFIED`). `pin verify` 종료 코드는 pin registry·execution registry·회전
+  intent·runtime-pins 공개 사본만으로 정한다. preflight의 `can_start`는 §1 때문에 이미 늘 false였으므로
+  바뀌지 않는다.
+- **잃은 것(기록된 손실)**: 공개 generation view. 비-root backend·UI·Map·PinVi는 배포가 어디까지
+  끝났는지 볼 수 없고, root가 `deploy-status.json`·rebuild `result.json`을 읽는다. 다시 필요해지면 두
+  번째 공개 사본이 아니라 ADR-41의 "소유자는 root, 접근만 그룹" 패턴으로 연다.
+- **D-2까지 남긴 것**: 커밋의 v6 manifest·공개 사본 쓰기와 `pinned_runtime_generation.py`의 v6 함수(이제
+  테스트만 부른다). D-1 아래로 되돌린 Manager의 M05 driver·`pin verify`가 v6를 읽으므로 쓰기는 D-1
+  설치 뒤에 멈춘다(D-2). 순서를 뒤집으면 새 pair 배포 뒤 옛 M05가 "pinset differs"로 멈춘다.
+- 교차 저장소: Map `docs/integration-map.md`와 PinVi `docs/runbooks/live-mutating-e2e.md`의 generation
+  API 절차는 "`ktdctl pin verify` exit 0 + M05 launcher preflight 통과"로 바뀐다(문서 PR만, 코드 변경 없음).

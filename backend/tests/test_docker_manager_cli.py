@@ -1031,7 +1031,6 @@ def test_pin_parser_registers_every_leaf_command():
         "init",
         "show",
         "verify",
-        "publish-generation",
         "rotate",
         "rotate-pair",
         "block",
@@ -1042,12 +1041,6 @@ def test_pin_parser_registers_every_leaf_command():
                 "init": ["pin", "init", "--seed", "x"],
                 "show": ["pin", "show"],
                 "verify": ["pin", "verify"],
-                "publish-generation": [
-                    "pin",
-                    "publish-generation",
-                    "--manifest",
-                    "/root/state/pinned-runtime-generation-v6.json",
-                ],
                 "rotate": [
                     "pin",
                     "rotate",
@@ -1158,158 +1151,6 @@ def test_pin_mutations_refuse_without_confirm(argv, pin_cli_env, capsys):
     assert not pin_cli_env.exists()
 
 
-def test_pin_publish_generation_refuses_without_confirm(capsys):
-    assert (
-        main(
-            [
-                "pin",
-                "publish-generation",
-                "--manifest",
-                "/root/state/pinned-runtime-generation-v6.json",
-            ]
-        )
-        == 2
-    )
-    assert "--confirm" in capsys.readouterr().err
-
-
-def test_pin_publish_generation_requires_root(capsys):
-    with patch("kor_travel_docker_manager.cli._running_as_root", return_value=False):
-        assert (
-            main(
-                [
-                    "pin",
-                    "publish-generation",
-                    "--manifest",
-                    "/root/state/pinned-runtime-generation-v6.json",
-                    "--confirm",
-                ]
-            )
-            == 2
-        )
-    assert "root" in capsys.readouterr().err
-
-
-def test_pin_publish_generation_no_longer_accepts_a_journal():
-    """v8 journal 모델은 ADR-51 B3에서 지워졌다 — 공개 사본은 v6 manifest 하나다."""
-
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(
-            [
-                "pin",
-                "publish-generation",
-                "--manifest",
-                "/root/state/pinned-runtime-generation-v6.json",
-                "--journal",
-                "/root/state/pinned-runtime-rebuild-v8-a.json",
-                "--confirm",
-            ]
-        )
-
-
-def test_pin_publish_generation_republishes_the_manifest_and_reports_its_binding(
-    tmp_path, monkeypatch, capsys
-):
-    """같은 pair로 수렴하는 배포는 manifest를 다시 쓰지 않는다(ADR-51).
-
-    그래서 잃어버린 공개 사본을 되살리는 길은 이 명령뿐이다. 출력 키는 자동화가
-    읽으므로 고정한다 — 옛 `journal_public_path_name`은 없다.
-    """
-
-    from contextlib import nullcontext
-
-    from kor_travel_docker_manager.services import runtime_pin_registry
-    from kor_travel_docker_manager.services.pinned_runtime_generation import (
-        MapApplication300CandidateEvidence,
-        PinnedRuntimeGeneration,
-        PinnedRuntimeManifest,
-        write_manifest,
-    )
-
-    image = "sha256:" + "a" * 64
-    generation = PinnedRuntimeGeneration(
-        map_api_image_id=image,
-        map_ui_image_id=image,
-        map_dagster_image_id=image,
-        map_dagster_daemon_image_id=image,
-        pinvi_api_image_id=image,
-        pinvi_web_image_id=image,
-        pinvi_dagster_image_id=image,
-        map_source_revision="1" * 40,
-        pinvi_source_revision="2" * 40,
-        map_application_head="0084_c6c_cancel_probe_fixtures",
-        map_dagster_head="dagster-1",
-        pinvi_head="20260801_0050",
-        pinset_sha256="3" * 64,
-        map_application_300_candidate_evidence=MapApplication300CandidateEvidence(
-            candidate_git_tree="4" * 40,
-            postgres_image_id=image,
-            dagster_config_sha256="5" * 64,
-        ),
-        recorded_at="2026-09-26T00:00:00+00:00",
-    )
-    manifest = PinnedRuntimeManifest(version=6, active_generation=generation)
-    state = tmp_path / "state"
-    state.mkdir(mode=0o700)
-    os.chmod(state, 0o700)
-    manifest_path = state / "pinned-runtime-generation-v6.json"
-    public_root = tmp_path / "public"
-    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(public_root))
-    write_manifest(manifest_path, manifest)
-    # 공개 사본을 잃은 상태에서 시작한다.
-    (public_root / "pinned-runtime-generation-v6.json").unlink()
-    registry = {
-        "status": "ok",
-        "pinset_sha256": generation.pinset_sha256,
-        "sources": [
-            {"role": "map", "revision": generation.map_source_revision},
-            {"role": "pinvi", "revision": generation.pinvi_source_revision},
-        ],
-    }
-    monkeypatch.setattr(runtime_pin_registry, "read_published_runtime_pins", lambda: registry)
-    argv = [
-        "pin",
-        "publish-generation",
-        "--manifest",
-        str(manifest_path),
-        "--confirm",
-        "--json",
-    ]
-
-    with (
-        patch("kor_travel_docker_manager.cli._running_as_root", return_value=True),
-        patch(
-            "kor_travel_docker_manager.cli._runtime_pin_mutation_lock",
-            side_effect=lambda: nullcontext(),
-        ),
-    ):
-        assert main(argv) == 0
-        published = json.loads(capsys.readouterr().out)
-
-        # 회전 직후처럼 registry가 새 pair를 가리키면 사본은 쓰되 current라고 하지 않는다.
-        monkeypatch.setattr(
-            runtime_pin_registry,
-            "read_published_runtime_pins",
-            lambda: {**registry, "pinset_sha256": "f" * 64},
-        )
-        assert main(argv) == 1
-        pending = json.loads(capsys.readouterr().out)
-
-    assert published == {
-        "status": "published",
-        "manifest_public_path_name": "pinned-runtime-generation-v6.json",
-        "pinset_binding": "match",
-    }
-    assert pending == {
-        "status": "unverified",
-        "manifest_public_path_name": "pinned-runtime-generation-v6.json",
-        "pinset_binding": "pending_rebuild",
-    }
-    assert json.loads(
-        (public_root / "pinned-runtime-generation-v6.json").read_text(encoding="utf-8")
-    ) == manifest.to_payload()
-
-
 def test_pin_show_without_a_registry_fails_closed(pin_cli_env, capsys):
     assert main(["pin", "show"]) == 2
     assert "missing" in capsys.readouterr().err
@@ -1333,12 +1174,7 @@ def test_pin_init_refuses_to_overwrite_without_force(pin_cli_env, capsys):
     assert "refusing to overwrite" in capsys.readouterr().err
 
 
-def test_pin_show_and_verify_are_read_only_and_report_lifecycle(
-    pin_cli_env, capsys, tmp_path, monkeypatch
-):
-    # 공개 사본 경로를 격리한다. 기본값은 호스트 전역 `/var/lib/...-public`이라, 운영 사본이
-    # 있는 n150에서는 이 테스트가 호스트 상태에 따라 갈렸다.
-    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+def test_pin_show_and_verify_are_read_only_and_report_lifecycle(pin_cli_env, capsys):
     main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
     capsys.readouterr()
     before = pin_cli_env.read_bytes()
@@ -1347,13 +1183,13 @@ def test_pin_show_and_verify_are_read_only_and_report_lifecycle(
     show_output = capsys.readouterr().out
     assert '"blocked_pinsets"' in show_output
 
-    # generation public copy가 없으면 registry digest가 맞아도 verify는 비정상 종료한다.
-    # registry만 보고 0을 주면 M05 public generation gate가 반쪽 상태를 놓친다.
+    # execution registry가 없으면 registry digest가 맞아도 verify는 비정상 종료한다.
+    # v6 generation 공개 사본은 ADR-51 D-1부터 읽지도 보고하지도 않는다.
     verify_code = main(["pin", "verify", "--json"])
     verify_output = capsys.readouterr().out
     assert '"digest_recomputation": "ok"' in verify_output
     assert '"current_pinset_is_blocked"' in verify_output
-    assert '"generation_public_copy": "invalid"' in verify_output
+    assert '"generation_' not in verify_output
     assert verify_code == 1
     assert pin_cli_env.read_bytes() == before
 
@@ -1449,50 +1285,7 @@ def test_pin_init_json_failure_emits_status_failed_json_to_stdout(
 
 
 @patch("kor_travel_docker_manager.cli.verify_runtime_pin_registry")
-@patch("kor_travel_docker_manager.cli.read_published_pinned_runtime_generation")
-def test_pin_verify_allows_a_valid_terminal_generation_pending_new_pair(
-    generation_reader,
-    registry_verifier,
-    capsys,
-    monkeypatch,
-):
-    registry_verifier.return_value = {
-        "published_copy": "current",
-        "current_pinset_is_blocked": False,
-    }
-    generation_reader.return_value = {
-        "status": "ok",
-        "pinset_binding": {"status": "pending_rebuild"},
-    }
-    execution_registry = MagicMock()
-    execution_registry.current_matches.return_value = True
-    execution_registry.is_unconditionally_blocked_current.return_value = False
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.cli.load_runtime_execution_registry",
-        lambda: execution_registry,
-    )
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.cli.trusted_manager_source_revision",
-        lambda: "a" * 40,
-    )
-    monkeypatch.setattr(
-        "kor_travel_docker_manager.cli.verify_runtime_execution_registry",
-        lambda: {"execution_public_copy": "current"},
-    )
-
-    assert main(["pin", "verify", "--json"]) == 0
-
-    output = json.loads(capsys.readouterr().out)
-    assert output["generation_public_copy"] == "pending_rebuild"
-    assert output["generation_pinset_binding"] == "pending_rebuild"
-    assert output["execution_binding"] == "current"
-    assert output["execution_public_copy"] == "current"
-
-
-@patch("kor_travel_docker_manager.cli.verify_runtime_pin_registry")
-@patch("kor_travel_docker_manager.cli.read_published_pinned_runtime_generation")
 def test_pin_verify_allows_a_legacy_terminal_with_current_unblocked_execution(
-    generation_reader,
     registry_verifier,
     capsys,
     monkeypatch,
@@ -1500,10 +1293,6 @@ def test_pin_verify_allows_a_legacy_terminal_with_current_unblocked_execution(
     registry_verifier.return_value = {
         "published_copy": "current",
         "current_pinset_is_blocked": True,
-    }
-    generation_reader.return_value = {
-        "status": "ok",
-        "pinset_binding": {"status": "pending_rebuild"},
     }
     execution_registry = MagicMock()
     execution_registry.current_matches.return_value = True
@@ -1526,12 +1315,12 @@ def test_pin_verify_allows_a_legacy_terminal_with_current_unblocked_execution(
     assert output["current_pinset_is_blocked"] is True
     assert output["execution_binding"] == "current"
     assert output["current_execution_is_blocked"] is False
+    # v6 generation 공개 사본은 ADR-51 D-1부터 읽지 않는다 — 그 키도 보고하지 않는다.
+    assert not [key for key in output if key.startswith("generation_")]
 
 
 @patch("kor_travel_docker_manager.cli.verify_runtime_pin_registry")
-@patch("kor_travel_docker_manager.cli.read_published_pinned_runtime_generation")
 def test_pin_verify_guides_manager_drift_to_rebind_not_a_self_targeted_rollback(
-    generation_reader,
     registry_verifier,
     capsys,
     monkeypatch,
@@ -1546,7 +1335,6 @@ def test_pin_verify_guides_manager_drift_to_rebind_not_a_self_targeted_rollback(
         "published_copy": "current",
         "current_pinset_is_blocked": False,
     }
-    generation_reader.return_value = {"status": "ok", "pinset_binding": {"status": "match"}}
 
     pins = MagicMock()
     pins.pinset_sha256 = "a" * 64

@@ -40,6 +40,10 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
     effective_environment,
 )
+from kor_travel_docker_manager.services.deploy_status import (
+    deploy_status_path,
+    read_deploy_status,
+)
 from kor_travel_docker_manager.services.loopback_readiness import (
     LOOPBACK_HTTP_READINESS_ATTEMPTS,
     LOOPBACK_HTTP_READINESS_RETRY_SECONDS,
@@ -58,9 +62,6 @@ from kor_travel_docker_manager.services.m05_isolated_harness import (
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeStatePaths,
     pinned_runtime_state_paths,
-)
-from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    read_manifest as read_pinned_runtime_manifest,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     current_pinned_runtime_release,
@@ -1887,11 +1888,13 @@ _PAIR_DIAGNOSTICS: frozenset[str] = frozenset(
         "pair source blob digest differs from the pinned release",
         "Map service provenance contract is unreadable",
         "Map service release revision is not a 40-hex commit",
-        # `_source_pair_preflight`가 이미 쓰던 셋. 같은 phase를 내므로 같은
-        # 어휘에 들어와야 preflight가 이것도 내보인다.
-        "committed pinned-runtime generation manifest unavailable",
-        "committed generation pinset differs from the current release",
-        "derived application head differs from the committed generation",
+        # `_source_pair_preflight`가 committed `deploy-status.json`과 대조하며 내는
+        # 넷(ADR-51 D-1). 같은 phase를 내므로 같은 어휘에 들어와야 preflight가 이것도
+        # 내보인다.
+        "committed deploy status unavailable",
+        "last deploy did not commit; rerun the pinned rebuild",
+        "committed deploy pinset differs from the current release",
+        "derived application head differs from the committed deploy",
     }
 )
 
@@ -2174,32 +2177,49 @@ def _source_pair_preflight() -> tuple[
         sources.source_for("map").root,
         sources.source_for("pinvi").root,
     )
-    # 파생 head를 **committed generation manifest**와 exact 대조한다. 종전에는 이
-    # 대조가 사람의 선언(배리어 B1 "미반영 변경이 없을 것")이었고, harness는 manifest의
-    # `map_application_head`를 한 번도 읽지 않았다 — 유도값 자기무모순 검사뿐이었다.
+    # 파생 head를 **마지막 committed 배포**(`deploy-status.json`)와 exact 대조한다.
+    # 종전에는 이 대조가 사람의 선언(배리어 B1 "미반영 변경이 없을 것")이었고, harness는
+    # 배포 기록의 application head를 한 번도 읽지 않았다 — 유도값 자기무모순 검사뿐이었다.
     # 여기서 기계화하면 낡은 candidate는 실행권 소비 전에 fail-close하고, "미래에
     # 변경이 없을 것"이라는 검증 불가 조건이 필요 없어진다
     # (ktm-m03 docs/reports/map-stall-root-cause-2026-08-31.md §3 I-4).
     #
-    # image ID는 대조하지 않는다 — 이 harness는 materialize된 source에서 자체 build
-    # 하므로 committed generation의 image ID와 정당하게 다르다. OpenAPI는 아래
-    # `_pair`가 이미 pinned release의 digest와 exact 대조한다.
+    # 읽기는 반드시 `materialize_pinned_runtime_sources` **뒤에** 둔다. 그 호출이
+    # `ensure_pinned_runtime_state_directory`로 state root가 이 프로세스 소유의 0700인지
+    # 검증한다 — `read_deploy_status`는 owner·mode를 보지 않으므로, 순서를 바꾸면 검증
+    # 안 된 디렉터리의 파일을 믿게 된다.
+    #
+    # v6 generation manifest는 더 읽지 않는다(ADR-51 D-1). `in_progress`는 거부한다 —
+    # `begin_deploy`가 committed 기록을 덮어쓰므로, 실패한 배포 뒤에는 한 번 commit될
+    # 때까지 M05가 멈추는 것이 의도된 fail-close다.
+    #
+    # manager_revision·image ID는 대조하지 않는다 — Manager 설치는 재배포 없이 revision을
+    # 바꾸고, 이 harness는 materialize된 source에서 자체 build하므로 committed 배포의 image
+    # ID와 정당하게 다르다. OpenAPI는 아래 `_pair`가 이미 pinned release의 digest와 exact
+    # 대조한다.
     try:
-        committed = read_pinned_runtime_manifest(state_paths.manifest).active_generation
+        deployed = read_deploy_status(deploy_status_path(state_paths.state_root))
     except (DeploymentContractError, OSError):
+        deployed = None
+    if deployed is None:
         _fail(
             "pair_contract_invalid",
-            diagnostic="committed pinned-runtime generation manifest unavailable",
+            diagnostic="committed deploy status unavailable",
         )
-    if committed.pinset_sha256 != PINNED_RUNTIME_RELEASE.pinset_sha256:
+    if deployed.state != "committed":
         _fail(
             "pair_contract_invalid",
-            diagnostic="committed generation pinset differs from the current release",
+            diagnostic="last deploy did not commit; rerun the pinned rebuild",
         )
-    if committed.map_application_head != _map_application_head(map_root):
+    if deployed.pinset_sha256 != PINNED_RUNTIME_RELEASE.pinset_sha256:
         _fail(
             "pair_contract_invalid",
-            diagnostic="derived application head differs from the committed generation",
+            diagnostic="committed deploy pinset differs from the current release",
+        )
+    if deployed.schema_heads.get("map_application") != _map_application_head(map_root):
+        _fail(
+            "pair_contract_invalid",
+            diagnostic="derived application head differs from the committed deploy",
         )
     pair, service_openapi_sha256, service_source_revision = _pair(pinvi_root, map_root)
     _assert_pinvi_manager_admission_contract(pinvi_root)

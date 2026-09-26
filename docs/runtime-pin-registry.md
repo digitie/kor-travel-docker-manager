@@ -34,7 +34,7 @@ registry는 현재 pin뿐 아니라 **pinset의 생애 상태**(재시도 금지
 계약(무엇이 유효한가)  → 코드가 소유                → 코드를 고쳐야 바뀐다
 생애(실행해도 되는가)  → registry + 코드 하한선     → ktdctl pin block / rotate --block-previous
 제안(무엇을 바꾸고 싶은가) → 별도 요청 파일이 소유  → UI가 기록, root가 apply-pending (§7-1)
-관측(어디까지 이행됐나) → root 공개 사본이 소유     → GET /pinned-runtime/generation (§7-a)
+관측(어디까지 이행됐나) → root-only deploy-status.json → 공개 view 없음, root가 직접 읽는다 (§7-a)
 ```
 
 M05 isolated PinVi runtime을 기동할 때도 이 소유 경계를 우회하지 않는다. Manager root driver는
@@ -108,19 +108,21 @@ receipt는 단독으로 재실행 권한이나 성공 근거가 될 수 없고, 
 `run-pinned-rebuild-once`와 `run-m05-isolated-e2e-once`는 host-global mutation lock을 **먼저** 잡은 뒤
 실행권을 claim하고, 그 lock을 프로세스 수명 동안 보유한다. SSH client가 즉시 종료됐거나 출력 회수가 지연됐다는 사실은 실패·종료·차단의
 증거가 아니다. **별도 외부 호출은 lock이 보유된 동안** 같은 pinset의 rebuild/E2E 재실행과 모든 runtime
-pin 변경(`pin init`, `publish-generation`, `rotate`, `rotate-pair`, `apply-pending`, `rollback`, `block`)을
+pin 변경(`pin init`, `rotate`, `rotate-pair`, `apply-pending`, `rollback`, `block`)을
 하지 않고 안전한 lock 상태만 기다린다. 이 명령들은 lock이 보유된 동안 write 전에 코드로 거절된다(exit 2,
 `another Manager mutation is already active; nothing was changed`). lock 파일이 없으면(재부팅 직후) 먼저 온
 획득자가 root `0600`으로 만들어 잡으므로 lock 없이 진행하는 경로는 없다(ADR-51 C-1).
 launcher 자신은 검증한 driver 종료 뒤 상속 받은 같은 lock descriptor 안에서만 terminal block을 기록할 수 있다.
-외부 호출은 lock이 해제된 뒤에만 root `ktdctl pin verify --json`의 exact Map/PinVi/pinset,
-`published_copy=current`, generation binding `match`를 확인해 완료를 판정한다.
+외부 호출은 lock이 해제된 뒤에만 root `ktdctl pin verify --json`의 exact Map/PinVi/pinset과
+`published_copy=current`(exit 0), 그리고 root M05 driver `--preflight`의 exit 0을 확인해 완료를 판정한다.
+그 preflight가 private `deploy-status.json`이 현재 pinset으로 `committed`이고 파생 application head가
+같은지 대조한다. 옛 generation binding `match`는 ADR-51 D-1에서 없어졌다.
 
 **이 완료 판정 절차**는 private output leaf, `result.json`, stderr, HTTP·container·환경 원문을 읽지
-않는다 — 완료는 공개 gate로만 판정한다는 뜻이지 진단 일반의 원문 열람 금지가 아니다. 원문은 root 0600
+않는다 — 완료는 종료 코드와 고정 어휘 진단으로만 판정한다는 뜻이지 진단 일반의 원문 열람 금지가 아니다. 원문은 root 0600
 private leaf에 보존되며(launcher forensic capture 기본값), **공개 registry·tracked 문서·대화 기록으로
-옮기지 않는 것**이 규칙이다. 공개 gate가 `match`면 호출 결과와 무관하게 rebuild는 완료된 것이며, 그
-뒤에만 새 root-owned leaf에서 M04/M05 one-shot을 한 번 실행할 수 있다. `match` 전에는 terminal block을
+옮기지 않는 것**이 규칙이다. 두 gate가 통과하면 호출 결과와 무관하게 rebuild는 완료된 것이며, 그
+뒤에만 새 root-owned leaf에서 M04/M05 one-shot을 한 번 실행할 수 있다. gate 통과 전에는 terminal block을
 쓰지 않는다.
 
 terminal block의 효력은 **phase에 따라 다르다** (근본원인 감사 I-1 — 종전 문서는 "모든 terminal은 fresh
@@ -138,9 +140,10 @@ terminal 27개 중 acceptance 본문 도달 0건으로 후보 예산을 소진�
 만들지 않는다.** 삭제 경로가 생기는 순간 "이 원장은 삭제된 적 없다"를 다시는 주장할 수 없다.
 
 M05 one-shot launcher는 leaf와 one-shot ledger를 만들기 전에 M05 integration adapter의 비소비
-source-materialization pair preflight를 반드시 통과한다. 이 검사는 generic registry가 소유하지 않는 PinVi provenance의
+source-materialization pair preflight를 반드시 통과한다. 이 검사는 generic registry가 소유하지 않는 committed
+배포 기록(`deploy-status.json`의 state·pinset·application head, ADR-51 D-1), PinVi provenance의
 Map full revision·OpenAPI hash와 Manager-only admission contract만 대조한다. 따라서 `pin verify`가
-generic pin/execution/generation gate를 통과했어도, 문서 commit 등을 runtime Map revision으로 잘못 회전한
+generic pin/execution gate를 통과했어도, 끝나지 않은 배포나 문서 commit 등을 runtime Map revision으로 잘못 회전한
 pair는 E2E terminal이나 Compose mutation을 소비하지 않고 거부된다. pair가 통과한 뒤의 runtime failure만
 current v6 execution terminal로 기록한다. 단 one-shot ledger claim은 `O_EXCL` create 뒤 fsync 오류에도
 durable file을 남길 수 있으므로, claim 호출을 시작한 뒤의 오류는 성공 반환 여부와 무관하게 terminal로
@@ -172,19 +175,21 @@ scoped 차단 후의 재실행이 파일명 충돌로 소각되지 않고, 재�
 ### 1-2. generation manifest(v6) 문서에 키를 추가하지 마라
 
 v6 manifest(`PinnedRuntimeManifest`·`PinnedRuntimeGeneration`)는 exact-key 문서다 —
-reader가 키 집합을 정확히 요구한다. n150에는 이미 이 형식의 private manifest가 있고, M05
-driver(`scripts/m05_isolated_e2e.py`의 `_source_pair_preflight`)가 그것을 읽어 committed
-pinset과 파생 application head를 대조한다. 키가 하나라도 늘거나 줄면 호스트의 기존
-manifest를 읽지 못해 M05 preflight가 막힌다. 그래서 step D(v6 쓰기 중단, M05 대조를
-`deploy-status.json`으로 이전)까지 **on-disk·M05 호환을 위해** 동결한다. 가공(요약·번역·배지)이
-필요하면 **API 응답 envelope에만** 넣고 문서 자체는 그대로 통과시킨다.
+reader가 키 집합을 정확히 요구한다. n150에는 이미 이 형식의 private manifest가 있다.
+ADR-51 D-1부터 이 저장소의 reader는 그것을 읽지 않는다 — M05
+driver(`scripts/m05_isolated_e2e.py`의 `_source_pair_preflight`)는 committed pinset과 파생
+application head를 `deploy-status.json`과 대조한다. 그래도 커밋은 D-2 전까지 v6를 계속 쓰고,
+Manager를 D-1 아래로 되돌리면 그 release의 M05 driver·`pin verify`가 이 파일을 읽는다. 키가
+하나라도 늘거나 줄면 그 rollback이 막히므로 step D-2(v6 쓰기 중단)까지 **on-disk 호환을 위해**
+동결한다.
 
 예전의 동결 이유였던 Map `scripts/lib/c7_prod_attestation.py`의 exact-dict 검증은 Map
 M2(#1272)가 지워 더 이상 교차 저장소 계약이 아니다. 그 검증이 함께 보던 v8 rebuild journal은
 ADR-51 B3에서 모델 코드째 지웠다.
 
-회귀: `test_document_versions_are_frozen`(버전 고정),
-`test_source_pair_preflight_binds_the_committed_v6_manifest`(M05 대조와 세 거부 진단).
+회귀: `test_document_versions_are_frozen`(버전 고정). M05의 배포 기록 대조와 네 거부 진단은
+`test_source_pair_preflight_binds_the_committed_deploy_status`가 결박한다 — 같은 디렉터리에 심은
+쓰레기 v6 파일이 판정을 바꾸지 않는다.
 
 ### 1-3. canonical URL은 코드가 공급한다
 
@@ -231,32 +236,24 @@ registry는 root `0600`이다. UI에서 회전이 필요하면 **요청을 기�
 파일 부재·파싱 실패·digest 불일치·소유권 위반은 예외를 던진다. "값을 모르면 기본값으로
 진행"하는 경로를 만들면 안 된다. 조회 API도 값을 추측하지 않고 `unknown`을 반환한다.
 
-### 1-7. generation 공개 사본은 private state를 읽는 우회로가 아니다
+### 1-7. 배포 상태에는 공개 view가 없다 — private state를 읽는 우회로를 만들지 마라
 
-v6 manifest는 root 소유 private state(`0700` 디렉터리·`0600` 파일)에 남는다. backend가 그
-경로를 직접 읽거나 권한을 완화해서는 안 된다. `write_manifest`는 typed model 검증 뒤 **같은
-raw JSON**을 `0644` 공개 경로에 원자 복제한다. 배포는 커밋할 때만 manifest를 쓰고 같은 pair로
-수렴할 때는 쓰지 않으므로(ADR-51), 공개 사본을 잃었거나 기존 상태를 한 번 공개해야 할 때는
-root가 다음 명령을 쓴다 — 그 복구 경로는 이 명령뿐이다.
+`deploy-status.json`과 v6 manifest는 root 소유 private state(`0700` 디렉터리·`0600` 파일)에 남는다.
+backend가 그 경로를 직접 읽거나 권한을 완화해서는 안 된다. ADR-51 D-1에서 v6 공개 사본의
+reader를 전부 지웠고 대체하지 않았다 — `GET /api/v1/pinned-runtime/generation`, root
+`ktdctl pin publish-generation`, `pin verify`의 `generation_public_copy`·`generation_pinset_binding`
+키, rebuild preflight의 generation 판정(§2)이다. 공개 generation view는 **기록된 손실**이다.
 
-```bash
-sudo -n backend/.venv/bin/ktdctl pin publish-generation \
-  --manifest <root-owned-pinned-runtime-generation-v6.json> \
-  --confirm
-```
+사람이 배포 상태를 볼 때는 root가 직접 읽는다: `sudo -n cat <state_root>/deploy-status.json`(`state`·
+`pinset_sha256`·`schema_heads`)이나 rebuild `result.json`(`success`·`pinset_sha256`·`schema_heads`).
+M05를 돌려도 되는지의 판정은 원문을 읽지 않는 두 gate(§단발 실행의 완료 판정)다. 비-root 관측이
+다시 필요해지면 두 번째 공개 사본이 아니라 ADR-41의 "소유자는 root, 접근만 그룹" 패턴으로 연다.
 
-공개 파일은 private manifest와 같은 schema를 보존한다. public root 자체와 즉시
-부모는 root(개발에서는 실행 uid) 소유·group/other 비쓰기여야 하며, public root는 symlink
-없이 `0755`여야 한다. publisher는 같은 no-follow directory FD에서 검사·원자 교체한다.
-사람용 상태·registry pair 결박·다음 행동은 파일이 아니라
-`GET /api/v1/pinned-runtime/generation`의 envelope에만 있다. custom
-`KTDM_PINNED_RUNTIME_STATE_ROOT` 배포는 읽기 가능한 별도 절대 경로를
-`KTDM_PINNED_RUNTIME_PUBLIC_ROOT`로 함께 지정해야 하며, 위 소유권·권한 규칙을 만족하지
-않으면 publisher와 reader가 모두 fail-close한다.
-
-reader는 공개 root의 v6 manifest 하나만 연다. ADR-51 이전 배포가 남긴 공개
-`pinned-runtime-rebuild-v8.json`(n150에 아직 있다)은 읽지도 고치지도 않는다 — 회귀
-`test_a_stale_legacy_journal_copy_is_ignored_not_fatal`.
+커밋은 D-2 전까지 v6 manifest와 그 `0644` 공개 사본을 계속 쓰지만(Manager rollback 호환, §1-2)
+이 저장소의 어떤 reader도 그것을 읽지 않는다. 그 쓰기 경로가 남아 있는 동안 custom
+`KTDM_PINNED_RUNTIME_STATE_ROOT` 배포는 `KTDM_PINNED_RUNTIME_PUBLIC_ROOT`를 그대로 둔다 — 공개
+사본 쓰기가 실패하면 `deploy-status.json`이 `in_progress`에 남고 M05가 거부한다. 호스트에 남은
+공개 `pinned-runtime-generation-v6.json`·`pinned-runtime-rebuild-v8.json`은 무시된다.
 
 ---
 
@@ -376,8 +373,7 @@ d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정
 |---|---|---|
 | `pin init [--seed PATH] [--reason R] [--force] --confirm` | mutation | 호스트 최초 1회. `--seed` 기본값은 설치본의 `config/runtime-pins.seed.json`. 기존 파일이 있으면 `--force` 없이는 거부하고, `--force`여도 **이력·차단 목록을 승계하고 이전 상태를 digest 이름으로 보존**한다 |
 | `pin show [--json]` | 읽기 전용 | 현재 pin·digest·회전 메타·차단 목록·최근 이력. 현재 pinset이 조건 없이 차단됐으면 legacy source terminal임을 평문으로 경고하고, 현재 실행권은 `pin verify`로 확인하도록 안내한다 |
-| `pin verify [--json]` | 읽기 전용 | digest·canonical URL·registry 공개 사본과 v6 manifest generation 및 v6 execution 공개 사본의 strict parse를 함께 확인한다. 없거나 손상됐거나 registry와의 결박을 확인할 수 없는(`unknown`) generation, missing/stale execution, 또는 terminal current execution이면 exit 1이다. legacy v5 terminal은 exact current·미차단 v6 execution이 있을 때만 단독으로 exit 1 사유가 아니다. pair 회전 직후의 유효한 이전 committed generation은 `pending_rebuild`로 보고하되 current라고 부르지 않는다(exit 사유 아님). manifest만 읽으므로 옛 `drift`는 없다(ADR-51 B3) |
-| `pin publish-generation --manifest PATH --confirm` | mutation, **root 전용** | 검증된 private v6 manifest를 `0644` 공개 사본으로 원자 복제한 뒤 strict reader와 current registry pair까지 다시 검증한다(`match`가 아니면 exit 1). 경로는 절대 경로만 허용하며, API가 root state를 직접 읽는 우회로는 만들지 않는다. 같은 pair 수렴은 manifest를 다시 쓰지 않으므로 잃은 공개 사본의 유일한 복구 경로다 |
+| `pin verify [--json]` | 읽기 전용 | digest·canonical URL·registry 공개 사본과 v6 execution 공개 사본의 strict parse를 함께 확인한다. 종료 코드는 pin registry·execution registry·회전 intent·runtime-pins 공개 사본만으로 정한다 — execution binding이 current가 아니거나(missing·stale·`manager_drift`) 그 공개 사본이 current가 아니거나, current execution이 terminal이거나, pair 회전이 미완이거나, `published_copy`가 current가 아니면 exit 1이다. legacy v5 terminal은 exact current·미차단 v6 execution이 있을 때만 단독으로 exit 1 사유가 아니다. v6 generation 공개 사본은 ADR-51 D-1부터 읽지 않고 `generation_*` 키도 없다 — 배포 완료는 M05 driver `--preflight`가 `deploy-status.json`으로 판정한다 |
 | `pin rotate --role map\|pinvi --revision <40-hex> --reason R [--block-previous] --confirm` | mutation | digest 자동 계산, 이력에 `supersedes` 기록, 이전 파일을 `runtime-pins.<old-digest>.json`으로 보존, 공개 사본 갱신. 아무것도 바뀌지 않는 회전과 **차단된 pinset을 만들어 내는 회전은 거부** |
 | `pin block <pinset-sha256> --reason R [--map-revision] [--pinvi-revision] [--phase] --confirm` | mutation, **root 전용** | terminal 판정 pinset 등재. 현재 pinset이면 revision 인자 생략 가능, 다른 pinset이면 두 revision 필수 |
 | `pin rollback --to <pinset-sha256> --reason R --confirm` | mutation | 보존본으로 원복. **차단된 pinset으로는 원복하지 않는다** — 무제한 rollback은 교차 저장소의 "terminal 재시도 금지" 규약을 코드로 깨뜨리는 일이다 |
@@ -391,10 +387,9 @@ M05 one-shot 뒤 `pin verify --json`가 exit 1이고 `current_execution_is_block
 
 `GET /api/v1/pinned-rebuild/preflight`는 v5 source 상태와 무관하게 v6 execution의 private/public parity를
 비-root UI에서 증명할 수 없으므로 `can_start=false`와 `ktdctl pin verify`만 안내한다. 따라서 UI가 v6
-terminal을 보지 못하고 초록불을 주는 일이 없다. registry가 정상이어도 공개 generation이
-없거나 손상됐거나 결박이 `unknown`이면 같은 방식으로 `can_start=false`이고, 새 pair
-회전 직후의 strict `pending_rebuild`와 current `match`만
-preflight가 command를 제시할 수 있는 상태다.
+terminal을 보지 못하고 초록불을 주는 일이 없다. 공개 generation 판정(옛 §2,
+`GENERATION_UNVERIFIED`)은 ADR-51 D-1에서 지웠다 — 위 규칙 때문에 `can_start`는 이미 항상
+false였으므로 판정은 바뀌지 않는다.
 
 모든 runtime pin mutation은 같은 host-global mutation lock을 nonblocking으로 획득하고, 변경 대상의 읽기·
 검증·write·대기 요청 정리를 **한 lock 안에서** 끝낸다. 획득 경로는 pinned rebuild와 같은
@@ -479,38 +474,13 @@ pinset을 태워 놓고 "적용 안 됨"이라고 보고한다:
 
 ---
 
-## 7-a. API 계약 — `GET /api/v1/pinned-runtime/generation`
+## 7-a. (없어졌다) `GET /api/v1/pinned-runtime/generation`
 
-인증 필요(미인증 401). 이 route는 public copy만 다시 strict parse하며, private state
-경로·원문 오류·환경값은 반환하지 않는다.
-
-```jsonc
-{
-  "status": "ok" | "unknown",
-  "source": "published_copy",
-  "detail": "<unknown일 때만 — 고정 설명>",
-  "manifest": {"version": 6, "active_generation": {"...": "..."}} | null,
-  "pinset_binding": {"status": "match" | "pending_rebuild" | "unknown",
-                     "registry_pinset_sha256": "..." | null,
-                     "generation_pinset_sha256": "..." | null},
-  "summary": {
-    "state": "committed" | "pending_rebuild" | "unverified" | "unknown",
-    "text": "<한국어>", "next_action": "<SSH 명령 또는 빈 문자열>",
-    "manifest_version": 6 | null
-  }
-}
-```
-
-`manifest`는 그대로의 raw document이고, API는 v6 manifest 공개 사본 하나만 읽는다(ADR-51 B3).
-사본이 없거나 strict parse에 실패하면 `status=unknown`이며 raw 문서를 반환하지 않고,
-`summary.next_action`이 `ktdctl pin publish-generation --manifest <absolute-v6-path> --confirm`을
-안내한다. 옛 `journal`·`terminal` 키와 `summary.journal_version`은 없어졌다 — Map M2가
-attestation을 지웠고 Map·PinVi runbook은 `pinset_binding`만 읽는다.
-`pinset_binding`은 `GET /runtime-pins`의 current Map·PinVi pair와 비교한 결과다. manifest는
-커밋 때만 쓰이므로 둘이 같으면 `match`(`summary.state=committed`), 새 pair를 rotate한 직후처럼
-pair나 pinset이 다르면 무조건 `pending_rebuild`다. registry 공개 사본이 `ok`가 아니거나 모양이
-틀리면 값을 추측하지 않고 `unknown`(`summary.state=unverified`)으로 fail-close한다. 진행 중인
-journal이 없어졌으므로 옛 `drift`는 없다.
+ADR-51 D-1에서 이 route를 지웠고 대체하지 않는다 — 로그인한 요청에도 404다(회귀
+`test_pinned_runtime_generation_route_is_gone`). 공개 generation view는 기록된 손실이다. 배포 상태의
+관측은 §1-7이 정본이다: root가 `deploy-status.json`·rebuild `result.json`을 읽고, M05를 돌려도 되는지는
+`pin verify`와 M05 driver `--preflight`의 종료 코드로 판정한다. Map·PinVi runbook이 읽던
+`pinset_binding`(`match`·`pending_rebuild`) 절차는 같은 두 gate로 바뀐다.
 
 ---
 
