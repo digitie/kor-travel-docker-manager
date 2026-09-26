@@ -583,8 +583,13 @@ def test_e_the_admin_password_api_answers_409_and_leaves_the_env_bytes(
     assert response.json()["detail"] == {"code": "MANAGER_MUTATION_ACTIVE", "message": _BUSY}
     assert rehearsal_env.read_bytes() == before
     assert os.environ[ADMIN_PASSWORD_HASH_ENV] == current_hash
-    # 자격증명 추측이 아니다 — 로그인 실패 카운터(`event_type="login"`)에 합류하지 않는다.
-    assert all(call.kwargs.get("event_type") != "login" for call in audit.call_args_list)
+    # 자격증명 추측이 아니므로 로그인 실패 카운터에 합류하지 않지만, 맞는 자격증명으로 한
+    # 시도이므로 흔적은 남긴다 — 이 route의 다른 거절과 같이 admin_password/denied 한 줄
+    # (C-2 적대 리뷰: 종전 단언은 감사 호출이 0번이어도 통과했다).
+    assert [
+        (call.kwargs.get("event_type"), call.kwargs.get("outcome"), call.kwargs.get("reason"))
+        for call in audit.call_args_list
+    ] == [("admin_password", "denied", "manager_mutation_active")]
 
 
 @pytest.mark.parametrize(
