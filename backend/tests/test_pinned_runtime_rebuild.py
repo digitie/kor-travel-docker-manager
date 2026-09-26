@@ -451,40 +451,6 @@ def _dagster_database_identity() -> MapApplication300DagsterMetadataDatabaseIden
     )
 
 
-def _dagster_storage_receipt(
-    journal: PinnedRuntimeRebuildJournal,
-    candidate: MapApplicationCandidate,
-) -> dict[str, object]:
-    identity = (
-        journal.map_application_300_execution_evidence
-        .dagster_metadata_database_identity
-    )
-    permit_sha256 = (
-        journal.map_application_300_execution_evidence.metadata_permit_sha256
-    )
-    # 재개 phase가 `application_schema_ready`면 이 둘은 아직 저널에 없다 — 같은
-    # 실행에서 만들어지고, mock이 내는 값이 곧 production이 저널에 적을 값이다.
-    if identity is None:
-        identity = _dagster_database_identity()
-    if permit_sha256 is None:
-        permit_sha256 = "9" * 64
-    candidate_binding = f"{candidate.dagster_image_id}:{candidate.dagster_config_sha256}"
-    return {
-        "schema": "kor-travel-map.dagster-storage-migration.v3",
-        "status": "migrated",
-        "operation_id": journal.transaction_id,
-        "permit_sha256": permit_sha256,
-        "candidate_sha256": hashlib.sha256(candidate_binding.encode()).hexdigest(),
-        "head": journal.candidate.map_dagster_head,
-        "version_num": journal.candidate.map_dagster_head,
-        "database_name": identity.name,
-        "database_oid": str(identity.oid),
-        "database_owner": identity.owner,
-        "postgres_system_identifier": identity.system_identifier,
-        "catalog_sha256": "a" * 64,
-    }
-
-
 def _journal_at_application_300_phase(
     phase: RebuildPhase,
     *,
@@ -2001,6 +1967,52 @@ def test_rebuild_compose_error_ignores_malformed_diagnostic_code(
     assert secret not in str(captured.value)
 
 
+@pytest.mark.parametrize(
+    ("code", "exposed"),
+    (
+        # 옛 닫힌 목록에 없던 코드 — Map이 코드를 더해도 원인이 보여야 한다.
+        ("dagster_storage_permit_unavailable", True),
+        ("postgres://user:secret@host/db", False),
+        ("Dagster_Instance_Failed", False),
+        ("x" * 65, False),
+    ),
+)
+def test_rebuild_compose_error_exposes_map_storage_codes_by_shape(
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+    exposed: bool,
+) -> None:
+    service = ComposeService()
+    monkeypatch.setattr(
+        service,
+        "_run_frozen_recovery",
+        Mock(
+            return_value={
+                "success": False,
+                "returncode": 1,
+                "stdout": "",
+                "stderr": json.dumps(
+                    {
+                        "code": code,
+                        "schema": "kor-travel-map.dagster-storage-migration-error.v1",
+                    }
+                ),
+            }
+        ),
+    )
+
+    with pytest.raises(DeploymentContractError) as captured:
+        service._run_pinned_runtime_rebuild_compose(
+            ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
+            transaction=_opaque_transaction(),
+        )
+
+    message = str(captured.value)
+    assert (f"; {code})" in message) is exposed
+    if not exposed:
+        assert code not in message
+
+
 def test_rebuild_compose_error_exposes_only_allowlisted_pinvi_bootstrap_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2521,48 +2533,6 @@ def test_dagster_live_identity_preserves_login_and_inherit_attestation() -> None
     assert journal_identity.login_role_attributes.inherit is False
 
 
-def test_dagster_storage_v3_receipt_is_exactly_bound_to_journal() -> None:
-    journal = _journal_at_runtime_phase("map_dagster_storage_intent_durable")
-    candidate = _map_application_candidate()
-    receipt = _dagster_storage_receipt(journal, candidate)
-
-    compose_service_module._validate_map_dagster_storage_receipt(
-        receipt,
-        journal=journal,
-        candidate=candidate,
-    )
-
-    mutations = (
-        ("schema", "kor-travel-map.dagster-storage-migration.v2"),
-        ("permit_sha256", "0" * 64),
-        ("candidate_sha256", "0" * 64),
-        ("database_oid", 127002),
-        ("catalog_sha256", "short"),
-    )
-    for field, value in mutations:
-        changed = {**receipt, field: value}
-        with pytest.raises(DeploymentContractError, match="receipt differs"):
-            compose_service_module._validate_map_dagster_storage_receipt(
-                changed,
-                journal=journal,
-                candidate=candidate,
-            )
-    missing = dict(receipt)
-    missing.pop("catalog_sha256")
-    with pytest.raises(DeploymentContractError, match="receipt differs"):
-        compose_service_module._validate_map_dagster_storage_receipt(
-            missing,
-            journal=journal,
-            candidate=candidate,
-        )
-    with pytest.raises(DeploymentContractError, match="receipt differs"):
-        compose_service_module._validate_map_dagster_storage_receipt(
-            {**receipt, "unexpected": True},
-            journal=journal,
-            candidate=candidate,
-        )
-
-
 @pytest.mark.parametrize(
     ("can_login", "inherit"),
     ((False, False), (True, True)),
@@ -2821,21 +2791,9 @@ def test_application_300_one_shots_never_reexecute_after_durable_intent(
         transaction: object,
     ) -> dict[str, object]:
         del transaction
-        operation = tuple(arguments)
-        operations.append(operation)
-        if operation == (
-            "run",
-            "--rm",
-            "--no-deps",
-            "kor-travel-map-dagster-storage-migrate",
-        ):
-            return {
-                "success": True,
-                "stdout": json.dumps(
-                    _dagster_storage_receipt(journal, map_candidate),
-                    sort_keys=True,
-                ),
-            }
+        operations.append(tuple(arguments))
+        # storage one-shot도 영수증 없이 끝난다(Map M1 이후의 모양). 판정은 그 뒤
+        # Manager가 직접 읽는 head가 한다 — 아래 `uncertain` 기대가 그것이다.
         return {"success": True, "stdout": ""}
 
     monkeypatch.setattr(
