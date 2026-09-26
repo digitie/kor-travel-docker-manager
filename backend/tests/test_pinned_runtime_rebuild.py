@@ -74,6 +74,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     legacy_manifest_file,
     manifest_from_payload,
     pinned_runtime_state_paths,
+    read_published_pinned_runtime_generation,
     write_manifest,
     write_rebuild_journal,
 )
@@ -2096,6 +2097,31 @@ def _write_legacy_generation(
         legacy_journal_file(state_root, pinset_sha256=journal.candidate.pinset_sha256),
         journal,
     )
+
+
+def test_a_legacy_journal_stuck_at_manifest_committing_reads_as_committed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """옛 흐름은 `manifest_committing` 뒤에야 manifest를 쓴다. 같은 세대의 journal이 거기
+    멈춰 있으면 마지막 journal 전이 전에 죽은 커밋된 세대다 — 재개가 없어진 지금 그 journal을
+    믿으면 "재구축 진행 중"이 다음 새 pair까지 남는다(B2 적대 리뷰 2차)."""
+
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    os.chmod(state, 0o700)
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
+    journal = _journal_at_runtime_phase("manifest_committing")
+    write_manifest(
+        state / "pinned-runtime-generation-v6.json",
+        PinnedRuntimeManifest(version=6, active_generation=journal.candidate),
+    )
+    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", journal)
+
+    observed = read_published_pinned_runtime_generation()
+
+    assert observed["status"] == "ok"
+    assert observed["journal"] is None
+    assert observed["summary"]["state"] != "rebuilding"
 
 
 @pytest.mark.parametrize("phase", ("committed", "manifest_committing"))

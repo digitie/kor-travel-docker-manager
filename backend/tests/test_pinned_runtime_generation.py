@@ -603,29 +603,6 @@ def test_a_stale_legacy_journal_copy_is_ignored_not_fatal(
     assert observed["manifest"] is not None
 
 
-def test_an_uncommitted_legacy_journal_of_the_same_generation_is_ignored(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """옛 흐름이 manifest를 쓴 뒤 journal을 committed로 옮기기 전에 죽었다. 재개가 없어진
-    지금 그 journal을 믿으면 "재구축 진행 중"이 다음 새 pair까지 남는다."""
-
-    state = tmp_path / "state"
-    state.mkdir(mode=0o700)
-    os.chmod(state, 0o700)
-    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
-    write_manifest(
-        state / "pinned-runtime-generation-v6.json",
-        PinnedRuntimeManifest(version=6, active_generation=_generation("a")),
-    )
-    write_rebuild_journal(state / "pinned-runtime-rebuild-v8.json", _journal("a"))
-
-    observed = read_published_pinned_runtime_generation()
-
-    assert observed["status"] == "ok"
-    assert observed["journal"] is None
-    assert observed["summary"]["state"] != "rebuilding"
-
-
 @pytest.mark.parametrize("unsafe", ["symlink", "writable"])
 def test_public_generation_writer_rejects_an_unsafe_public_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe: str

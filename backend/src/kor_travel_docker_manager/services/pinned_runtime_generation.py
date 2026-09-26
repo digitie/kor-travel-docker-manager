@@ -2541,11 +2541,13 @@ def read_published_pinned_runtime_generation() -> dict[str, object]:
                 pinset_binding="unknown",
             ),
         }
-    # 같은 세대라도 커밋되지 않은 journal은 버린다 — 옛 흐름이 manifest를 쓴 뒤 journal을
-    # committed로 옮기기 전에 죽었으면, 재개가 없어진 지금은 그 "재구축 진행 중"이 다음
+    # 옛 흐름은 journal을 `manifest_committing`으로 옮긴 뒤에야 manifest를 쓴다. 같은 세대의
+    # journal이 거기 멈춰 있으면 manifest 쓰기까지 끝나고 마지막 journal 전이 전에 죽은
+    # 것이다 — 커밋된 세대다. 재개가 없어진 지금 그것을 믿으면 "재구축 진행 중"이 다음
     # 새 pair까지 남는다(B2 적대 리뷰 2차).
     if journal is not None and (
-        manifest.active_generation != journal.candidate or journal.phase != "committed"
+        manifest.active_generation != journal.candidate
+        or journal.phase == "manifest_committing"
     ):
         journal = None
 
