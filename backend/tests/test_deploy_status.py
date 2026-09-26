@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import stat
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.deploy_status import (
+    RESET_DONE_STEP,
     DeployedDatabase,
     DeployRestart,
     DeployStatus,
@@ -80,13 +82,102 @@ def test_begin_after_an_interrupted_run_keeps_its_baseline() -> None:
     assert _begin(interrupted).databases == _DATABASES
 
 
-def test_restart_clears_the_identity_baseline() -> None:
+def test_restart_keeps_the_baseline_until_the_reset_actually_happens() -> None:
+    """리셋 전에 죽으면 DB는 그대로다 — 다음 일반 실행이 여전히 옛 기준으로 확인해야 한다."""
+
     restart = DeployRestart(reason="rebuild from empty DBs", at="2026-09-26T02:00:00+00:00")
 
     status = _begin(_committed(), restart=restart)
 
-    assert status.databases is None
+    assert status.databases == _DATABASES
     assert status.restart == restart
+
+
+_RESTORED = {
+    **_DATABASES,
+    "pinvi": DeployedDatabase("pinvi", 29999, "7300000000000000002"),
+}
+
+
+def test_adopting_takes_the_live_databases_as_the_baseline() -> None:
+    """채택이 중간에 죽어도 다음 일반 실행이 **받아들인 그 DB**로 확인하도록 기준선을 남긴다."""
+
+    adopted = DeployRestart(reason="restored from backup", at="2026-09-26T02:00:00+00:00")
+
+    status = _begin(_committed(), adopted=adopted, adopted_databases=_RESTORED)
+
+    assert status.databases == _RESTORED
+    assert status.adopted == adopted
+
+
+def test_a_plain_rerun_of_an_interrupted_adoption_keeps_its_record_and_baseline() -> None:
+    adopted = DeployRestart(reason="restored from backup", at="2026-09-26T02:00:00+00:00")
+    interrupted = _begin(_committed(), adopted=adopted, adopted_databases=_RESTORED)
+
+    rerun = _begin(interrupted)
+
+    assert rerun.adopted == adopted
+    assert rerun.databases == _RESTORED
+
+
+def test_a_plain_rerun_keeps_the_restart_record_only_after_the_reset_happened() -> None:
+    restart = DeployRestart(reason="rebuild from empty DBs", at="2026-09-26T02:00:00+00:00")
+    before_reset = _begin(_committed(), restart=restart)
+    # 호출자가 리셋 뒤 쓰는 상태: 기준선을 비우고 리셋을 표시한다.
+    after_reset = replace(before_reset, databases=None, step=RESET_DONE_STEP)
+
+    assert _begin(before_reset).restart is None
+    rerun = _begin(after_reset)
+    assert rerun.restart == restart
+    # 이어서 끝내는 실행이 또 죽어도 다음 실행이 리셋 기록을 가져간다.
+    assert _begin(rerun).restart == restart
+
+
+def test_a_restart_without_a_baseline_that_died_before_the_reset_leaves_no_record() -> None:
+    """새 호스트처럼 기준선 없이 시작한 `--restart`: 기준선이 비었다는 것만으로는 리셋이
+    있었는지 알 수 없다(B2 적대 리뷰 3차)."""
+
+    restart = DeployRestart(reason="rebuild from empty DBs", at="2026-09-26T02:00:00+00:00")
+    before_reset = _begin(None, restart=restart)
+
+    assert before_reset.databases is None
+    assert _begin(before_reset).restart is None
+
+
+def test_a_new_deploy_after_a_commit_carries_no_explicit_record() -> None:
+    adopted = DeployRestart(reason="restored from backup", at="2026-09-26T02:00:00+00:00")
+    committed = commit_deploy(
+        _begin(_committed(), adopted=adopted, adopted_databases=_RESTORED),
+        committed_at="2026-09-26T03:00:00+00:00",
+        images=_IMAGES,
+        schema_heads=_HEADS,
+        databases=_RESTORED,
+    )
+
+    assert _begin(committed).adopted is None
+
+
+def test_a_deploy_cannot_both_restart_and_adopt() -> None:
+    record = DeployRestart(reason="x", at="2026-09-26T02:00:00+00:00")
+
+    with pytest.raises(DeploymentContractError, match="either restarts or adopts"):
+        _begin(_committed(), restart=record, adopted=record)
+
+
+def test_an_adoption_record_round_trips(tmp_path: Path) -> None:
+    adopted = DeployRestart(reason="restored from backup", at="2026-09-26T02:00:00+00:00")
+    status = commit_deploy(
+        _begin(_committed(), adopted=adopted),
+        committed_at="2026-09-26T03:00:00+00:00",
+        images=_IMAGES,
+        schema_heads=_HEADS,
+        databases=_DATABASES,
+    )
+    path = deploy_status_path(tmp_path)
+
+    write_deploy_status(path, status)
+
+    assert read_deploy_status(path) == status
 
 
 def test_only_an_in_progress_deploy_can_be_committed() -> None:

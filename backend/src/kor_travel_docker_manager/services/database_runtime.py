@@ -444,13 +444,35 @@ def ensure_map_application_database(
     소유자 하나로 세 경우를 가른다.
 
     - DB가 없다: ``template0``에서 만들고 role bootstrap one-shot을 돌린다.
-    - 아직 bootstrap 소유자(`runtime.owner_name`) 것이다: 만든 뒤 bootstrap 전에 죽은
-      경우다. bootstrap만 돌린다.
+    - 아직 bootstrap 소유자(`runtime.owner_name`) 것이고 `alembic_version`이 없다: 만든 뒤
+      bootstrap 전에 죽은 경우다. bootstrap만 돌린다.
     - schema owner 것이다: 이미 bootstrap된 운영 DB다. 아무것도 하지 않는다 — schema
       one-shot(`alembic upgrade head` + 권한 재조정)이 뒤따른다.
 
-    그 밖의 소유자는 거부한다. "비어 있는가" 판정은 Map의 bootstrap 스크립트가 스스로
-    한다(`alembic_version`·잔재가 있으면 첫 변경 전에 거부).
+    그 밖의 상태는 거부한다(``require_map_application_database_convergible``). 나머지
+    잔재 판정은 Map의 bootstrap 스크립트가 스스로 한다(첫 변경 전에 거부).
+    """
+
+    state = require_map_application_database_convergible(runtime)
+    if state == "absent":
+        create_fresh_application_300_database(runtime)
+        run_role_bootstrap()
+        return "created"
+    if state == "unbootstrapped":
+        run_role_bootstrap()
+        return "bootstrapped"
+    return "present"
+
+
+def require_map_application_database_convergible(
+    runtime: DatabaseRuntime,
+) -> Literal["absent", "unbootstrapped", "present"]:
+    """``ensure_map_application_database``가 갈 길을 읽기만으로 정하고, 못 가는 상태는 거부한다.
+
+    배포는 이것을 런타임을 멈추기 **전에** 한 번 부른다. bootstrap 소유자 것인데 이미
+    schema가 있는 DB(소유자 없이 복원된 백업 — ``createdb --owner`` + ``pg_restore``)는
+    fresh 전용 role bootstrap이 거부하므로, 멈춘 뒤에야 알면 재실행마다 같은 자리에서
+    런타임이 내려간 채 끝난다(B2 적대 리뷰 2차).
     """
 
     _validate_runtime(runtime)
@@ -458,16 +480,73 @@ def ensure_map_application_database(
         raise DeploymentContractError("Map application database role is invalid")
     owner = _read_database_owner(runtime)
     if owner is None:
-        create_fresh_application_300_database(runtime)
-        run_role_bootstrap()
-        return "created"
-    if owner == runtime.owner_name:
-        run_role_bootstrap()
-        return "bootstrapped"
+        return "absent"
     if owner == _MAP_SCHEMA_OWNER:
         return "present"
-    raise DeploymentContractError(
-        "map_application database owner differs from the frozen contract"
+    if owner != runtime.owner_name:
+        raise DeploymentContractError(
+            "map_application database owner differs from the frozen contract"
+        )
+    if schema_revision_table_exists(runtime):
+        raise DeploymentContractError(
+            "map_application database already has a schema but is still owned by the "
+            f"bootstrap owner; hand it over with ALTER DATABASE {runtime.database_name} "
+            f"OWNER TO {_MAP_SCHEMA_OWNER} and rerun"
+        )
+    return "unbootstrapped"
+
+
+def create_database_if_absent(runtime: DatabaseRuntime) -> bool:
+    """DB가 없을 때만 frozen 계약의 소유자로 만든다(PinVi는 ``template0``). 만들었으면 True.
+
+    마이그레이션 전진 배포의 일반 경로는 DB를 지우지 않는다. 그래도 새 호스트나 지워진
+    DB에서는 만들 길이 있어야 한다 — 없으면 Map을 이미 올린 뒤 PinVi bootstrap에서
+    실패해 전 서비스가 정지한다(B2 적대 리뷰).
+    """
+
+    _validate_runtime(runtime)
+    if read_database_identity(runtime) is not None:
+        return False
+    _recreate_empty_database_after_owner_preflight(runtime, existing_owner=None)
+    return True
+
+
+def read_database_identity(runtime: DatabaseRuntime) -> tuple[str, int, str] | None:
+    """maintenance DB에서 (이름, oid, system identifier)를 읽는다. DB가 없으면 ``None``.
+
+    마이그레이션 전진 배포는 이 셋으로 "지난 배포가 본 그 DB인가"를 잰다(ADR-51) —
+    누가 지우고 다시 만들면 oid가 바뀐다.
+    """
+
+    _validate_runtime(runtime)
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            "postgres",
+            "--command",
+            (
+                "SELECT datname, oid::bigint, "
+                "(SELECT system_identifier::text FROM pg_catalog.pg_control_system()) "
+                "FROM pg_catalog.pg_database "
+                f"WHERE datname = '{runtime.database_name}'"
+            ),
+        ],
+        label=f"{runtime.role} database identity",
+    ).decode("ascii").strip()
+    if not output:
+        return None
+    lines = output.splitlines()
+    fields = lines[0].split("|") if len(lines) == 1 else []
+    if len(fields) != 3 or fields[0] != runtime.database_name:
+        raise DeploymentContractError(f"{runtime.role} database identity output is invalid")
+    return (
+        fields[0],
+        _parse_positive_int(fields[1], f"{runtime.role} database oid"),
+        _parse_system_identifier(fields[2], f"{runtime.role} PostgreSQL system identifier"),
     )
 
 

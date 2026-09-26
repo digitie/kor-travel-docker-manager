@@ -2519,10 +2519,12 @@ def read_published_pinned_runtime_generation() -> dict[str, object]:
         else:
             journal = cast(PinnedRuntimeRebuildJournal, parsed)
 
-    # manifest와 journal은 같은 committed generation을 증명하는 한 쌍이다. 하나만
-    # 공개됐거나 한쪽이 깨졌다면 raw 한 조각을 API로 돌려 주지 않는다. 부분 사본을
-    # complete generation으로 오인하면 terminal pinset 재시도 gate가 무력화된다.
-    if manifest is None or journal is None:
+    # ADR-51 뒤 배포는 v8 journal을 쓰지 않고 v6 manifest만 **커밋 때** 쓴다. 그래서
+    # manifest 하나가 커밋된 세대의 증거이고, journal 공개 사본은 옛 흐름의 잔재다 —
+    # manifest와 다르면(마이그레이션 전진 배포가 한 번이라도 커밋했다) 무시한다. 종전처럼
+    # 둘의 불일치를 `unverified`로 두면 전진 배포 한 번 뒤 `pin verify`가 영구히 1이 되고
+    # 그것을 요구하는 M05 하네스가 막힌다(B2 적대 리뷰 M1).
+    if manifest is None:
         return {
             "status": "unknown",
             "source": "published_copy",
@@ -2539,24 +2541,15 @@ def read_published_pinned_runtime_generation() -> dict[str, object]:
                 pinset_binding="unknown",
             ),
         }
-
-    if manifest.active_generation != journal.candidate:
-        return {
-            "status": "unverified",
-            "source": "published_copy",
-            "detail": "published manifest and rebuild journal generation differ",
-            "manifest": manifest.to_payload(),
-            "journal": journal.to_payload(),
-            "pinset_binding": _published_generation_pinset_binding(
-                manifest=manifest, journal=journal
-            ),
-            "terminal": None,
-            "summary": _published_generation_summary(
-                manifest=manifest,
-                journal=journal,
-                pinset_binding="unknown",
-            ),
-        }
+    # 옛 흐름은 journal을 `manifest_committing`으로 옮긴 뒤에야 manifest를 쓴다. 같은 세대의
+    # journal이 거기 멈춰 있으면 manifest 쓰기까지 끝나고 마지막 journal 전이 전에 죽은
+    # 것이다 — 커밋된 세대다. 재개가 없어진 지금 그것을 믿으면 "재구축 진행 중"이 다음
+    # 새 pair까지 남는다(B2 적대 리뷰 2차).
+    if journal is not None and (
+        manifest.active_generation != journal.candidate
+        or journal.phase == "manifest_committing"
+    ):
+        journal = None
 
     pinset_binding = _published_generation_pinset_binding(
         manifest=manifest, journal=journal
@@ -2595,10 +2588,8 @@ def _published_generation_pinset_binding(
     journal이 다른 pair면 `drift`로 나눠 사람이 one-shot을 잘못 시작하지 않게 한다.
     """
 
-    if (
-        manifest is None
-        or journal is None
-        or manifest.active_generation != journal.candidate
+    if manifest is None or (
+        journal is not None and manifest.active_generation != journal.candidate
     ):
         return {
             "status": "unknown",
@@ -2648,16 +2639,15 @@ def _published_generation_pinset_binding(
             # strict public copy인 old committed 또는 exact unconditional terminal
             # generation만 pending으로 보존하고, partial·mismatched·phase-scoped block·
             # 현재 candidate의 비terminal 중단은 drift다.
+            # journal 없는 manifest는 커밋 때만 쓰이므로 곧 old committed다(ADR-51).
             "status": (
                 "pending_rebuild"
-                if journal is not None
-                and (
-                    journal.phase == "committed"
-                    or journal.pinvi_role_lifecycle_block is not None
-                    or _is_unconditionally_blocked_public_generation(
-                        payload=payload,
-                        generation=generation,
-                    )
+                if journal is None
+                or journal.phase == "committed"
+                or journal.pinvi_role_lifecycle_block is not None
+                or _is_unconditionally_blocked_public_generation(
+                    payload=payload,
+                    generation=generation,
                 )
                 else "drift"
             ),

@@ -1,5 +1,11 @@
 # Runtime pin registry — 에이전트 레퍼런스
 
+> **ADR-51(2026-09-26) 이후 배포는 마이그레이션 전진이다.** `rebuild-pinned`는 DB를 보존하고
+> 멱등 one-shot으로 head까지 올린다. 같은 pair는 수렴만 하고, DB를 지우는 길은
+> `rebuild-pinned --restart --reason "..." --confirm` 하나다. 영속 상태는 state root의
+> `deploy-status.json`(in_progress/committed) 하나이며 v8 journal은 더 쓰지 않는다.
+> 아래의 파기형·journal·resume 서술은 그 이전 설계의 기록이다.
+
 **대상 독자**: 이 저장소에서 작업하는 에이전트(Claude Code, Codex, Antigravity 등)와 운영자.
 **정본 관계**: 결정 근거는 [ADR-40](decisions.md), 운영 절차는
 [`prod-deployment.md` 2.1](prod-deployment.md), CLI/API 요약은
@@ -651,16 +657,14 @@ lock + pinned rebuild lease), env snapshot과 lifecycle 판정보다 뒤다 — 
 문단은 "락 획득보다도 앞"이라고 적고 있었는데 사실이 아니었다. 게이트가 보장하는
 것은 **mutation보다 앞**이라는 것이다.
 
-결박하는 회귀는 둘이다:
+**ADR-51 이후 이 게이트는 경고다**(`_pinned_runtime_admission_warnings`). 배포가 멱등이라
+막힌 pinset·낡은 실행 결박도 알고 다시 돌릴 수 있고, 경고는 결과의 `warnings`에 실린다.
+대기 중인 회전 intent만 여전히 거부한다. 결박하는 회귀:
 
-- `test_rebuild_refuses_a_blocked_pinset_before_touching_anything` — 실제
-  `rebuild_pinned_runtime()`을 호출해 `materialize.assert_not_called()`로 mutation
-  이전임을 건다(`lock_entered`는 lease **안**임을 함께 확인한다).
-- `test_terminal_block_refusal_does_not_release_a_consumed_candidate` — 관측이
-  게이트보다 먼저인지를 건다. 이 순서가 뒤집히면 게이트의 거절이 "도달한 적
-  없음"으로 분류돼 **소비된 후보의 claim이 해제**된다.
-
-이 호출들을 뒤로 옮기거나 지우면 두 테스트가 깨진다 — 깨지면 고치지 말고 되돌려라.
+- `test_a_blocked_pinset_no_longer_stops_the_deploy_at_admission` — 실제
+  `rebuild_pinned_runtime()`을 호출해 admission이 거부하지 않고 다음 단계까지 가는지 본다.
+- `test_admission_warns_about_an_unconditionally_blocked_pinset`,
+  `test_admission_warns_about_a_terminal_v6_execution` — 판정이 경고로 남는지 본다.
 
 ---
 

@@ -8,26 +8,15 @@
 그 모듈은 root 소유 설치본 ``.env``만 다루는 rebuild 전용 경로이고, 여기는 backend 실행
 사용자가 자기 ``.env``를 고치는 다른 경계다.
 
-**미종결 rebuild journal 가드가 왜 세 갈래인가**
+**재구축 가드**
 
-resume은 journal의 ``environment_sha256``을 현재 ``.env`` 바이트와 대조한다. 비밀번호를
-바꾸면 그 digest가 달라져 **진행 중이던 rebuild의 재개가 영구 차단된다.** 그래서 미종결
-journal이 있으면 막아야 하는데, backend가 그것을 **항상 볼 수 있는 것은 아니다**:
+종전 재구축은 journal에 ``.env`` 해시를 동결하고 재개 때 대조했으므로, 미종결 journal이
+있을 때 비밀번호를 바꾸면 그 재개가 영구 차단됐다. ADR-51 뒤 배포는 재개하지 않고 처음부터
+다시 돌며 ``.env``를 동결하지 않는다 — 막을 것이 없다. 판정은 두 가지만 남는다.
 
-journal은 ``rebuild-pinned``를 실행한 프로세스의 ``$HOME`` 아래 ``0700`` 디렉터리에 있고
-``rebuild-pinned``는 root를 요구한다. backend가 비-root로 돌면 ``Path.home()``이 달라 같은
-경로를 계산조차 못 하고, 계산해도 읽지 못한다. n150 운영 기동은 backend를 root 권한으로
-띄우므로 실제로는 탐지가 동작하지만, 그것은 **배포 구성의 우연**이지 코드가 보장하는
-성질이 아니다.
-
-따라서 "확인 불가"는 "안전"이 아니라 별도의 fail-close 상태로 다룬다:
-
-- ``not_rebuildable`` / ``no_journal`` — 통과. rebuild가 시작될 수도 재개될 수도 없거나,
-  미종결 journal이 실제로 없다.
-- ``unfinished_journal`` — **거부. 우회 경로 없음.** 증명된 사실이고, 증명됐다는 것은
-  재개가 실제로 걸려 있다는 뜻이다.
-- ``unverifiable`` / ``unknown`` — 명시적 승인 없이는 거부. 운영자가 SSH에서 확인한 뒤
-  책임지고 진행하는 경로만 남긴다.
+- ``not_rebuildable`` / ``no_journal`` — 통과.
+- ``unverifiable`` / ``unknown`` — ``.env``나 배포 모드를 읽지 못했다. 명시적 승인 없이는
+  거부한다(운영자가 SSH에서 확인한 뒤 책임지고 진행하는 경로만 남긴다).
 """
 
 from __future__ import annotations
@@ -51,10 +40,10 @@ from kor_travel_docker_manager.services.auth_service import (
 )
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.compose_service import get_env_path
+from kor_travel_docker_manager.services.deploy_status import DEPLOY_STATUS_FILENAME
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     load_deployment_mode,
     pinned_runtime_state_root,
-    read_rebuild_journal,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,7 +54,6 @@ _ALLOWED_ENV_KEYS: Final[frozenset[str]] = frozenset({ADMIN_PASSWORD_HASH_ENV})
 _MAX_ENV_BYTES: Final = 1_048_576
 _ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=")
 _ENCODED_HASH = re.compile(r"^pbkdf2_sha256:[0-9]{4,8}:[A-Za-z0-9_-]+:[A-Za-z0-9_-]+$")
-_JOURNAL_GLOB: Final = "pinned-runtime-rebuild-v8-*.json"
 MIN_NEW_PASSWORD_LENGTH: Final = 12
 
 
@@ -111,51 +99,18 @@ def pinned_rebuild_guard_state(*, env_path: Path | None = None) -> dict[str, Any
     except DeploymentContractError as exc:
         return _verdict("unknown", f"배포 모드를 판정할 수 없습니다: {exc}")
     if not mode.rebuildable:
-        # 이 모드에서는 journal이 만들어지지도 재개되지도 않는다 — 시작과 재개 모두
-        # `require_rebuildable_mode`를 지나므로 `.env` 변경이 무효화할 것이 없다.
         return _verdict(
             "not_rebuildable",
-            "이 배포 모드에서는 재구축이 시작되거나 재개될 수 없어, 비밀번호 변경이 "
-            "무효화할 재구축이 없습니다.",
+            "이 배포 모드에서는 재구축이 시작될 수 없어, 비밀번호 변경이 영향을 줄 "
+            "재구축이 없습니다.",
         )
-    try:
-        state_root = pinned_runtime_state_root(values)
-    except DeploymentContractError as exc:
-        return _verdict("unknown", f"재구축 상태 경로를 계산할 수 없습니다: {exc}")
-    try:
-        metadata = state_root.lstat()
-    except FileNotFoundError:
-        return _verdict("no_journal", "진행 중인 재구축 기록이 없습니다.")
-    except OSError as exc:
-        return _verdict("unverifiable", f"재구축 상태 디렉터리를 읽을 수 없습니다: {exc}")
-    euid = getattr(os, "geteuid", lambda: metadata.st_uid)()
-    if metadata.st_uid != euid or stat.S_IMODE(metadata.st_mode) != 0o700:
-        # 다른 사용자의 0700 디렉터리다. 못 읽는 것을 "없다"로 말하지 않는다.
-        return _verdict(
-            "unverifiable",
-            "재구축 기록이 다른 사용자 소유라 이 프로세스가 확인할 수 없습니다: "
-            f"{state_root}",
-        )
-    try:
-        journals = sorted(state_root.glob(_JOURNAL_GLOB))
-    except OSError as exc:
-        return _verdict("unverifiable", f"재구축 기록 목록을 읽을 수 없습니다: {exc}")
-    for journal_path in journals:
-        try:
-            journal = read_rebuild_journal(journal_path)
-        except (DeploymentContractError, OSError) as exc:
-            return _verdict(
-                "unverifiable",
-                f"재구축 기록을 해석할 수 없습니다({journal_path.name}): {exc}",
-            )
-        if journal.phase != "committed":
-            return _verdict(
-                "unfinished_journal",
-                f"미종결 재구축 기록이 있습니다({journal_path.name}, 단계 "
-                f"{journal.phase}). 지금 비밀번호를 바꾸면 그 재구축의 재개가 영구 "
-                "차단됩니다.",
-            )
-    return _verdict("no_journal", "미종결 재구축 기록이 없습니다.")
+    # ADR-51: 배포는 재개하지 않고 처음부터 다시 돈다. `.env`를 동결해 대조하던 journal이
+    # 없으므로 비밀번호를 바꿔도 막힐 재구축이 없다. (종전에는 버려진 미종결 journal
+    # 하나가 이 가드를 영구히 `unfinished_journal`로 묶었다.)
+    return _verdict(
+        "no_journal",
+        "배포는 재개하지 않고 처음부터 다시 돕니다 — 비밀번호 변경이 막을 재구축이 없습니다.",
+    )
 
 
 def _journal_check_command(env_path: Path | None = None) -> str:
@@ -172,7 +127,7 @@ def _journal_check_command(env_path: Path | None = None) -> str:
         state_root = pinned_runtime_state_root(_parse_dotenv(text))
     except (OSError, UnicodeDecodeError, DeploymentContractError):
         return "sudo -n backend/.venv/bin/ktdctl pin verify   # 경로를 해석하지 못했습니다"
-    return f"sudo ls -l {state_root}/{_JOURNAL_GLOB}"
+    return f"sudo cat {state_root}/{DEPLOY_STATUS_FILENAME}"
 
 
 def _verdict(verdict: str, detail: str, *, env_path: Path | None = None) -> dict[str, Any]:

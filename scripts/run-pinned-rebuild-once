@@ -199,10 +199,11 @@ revision = sys.argv[3]
 output_dir = sys.argv[4]
 
 
-#: 같은 pinset의 ledger claim 재시도 상한. **후보 예산이 아니라 폭주 방어**다 —
-#: 재실행 허용의 정본은 runtime pin/execution registry의 차단 목록과 journal의
-#: phase 가드가 갖는다(형제 `m05_isolated_harness.py`와 같은 근거).
-_LEDGER_CLAIM_ATTEMPT_LIMIT = 12
+#: 같은 pinset의 ledger claim 상한. **후보 예산이 아니라 폭주 방어**다. ADR-51 뒤 같은
+#: pair를 다시 돌리는 것은 정상 수렴이고 실패 뒤 재시도도 정상 복구 경로라, 12회
+#: 상한은 몇 주 안에 같은 pair를 영구히 막는다(탈출구가 새 커밋뿐인 상태의 재현).
+#: 사람이 루프를 알아챌 수 있을 만큼만 남긴다.
+_LEDGER_CLAIM_ATTEMPT_LIMIT = 500
 
 
 def next_claim_filename(directory_descriptor, pinset):

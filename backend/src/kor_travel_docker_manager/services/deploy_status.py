@@ -9,7 +9,8 @@ pinset별 journal·phase·receipt 대신 전역 파일 하나에 세 상태만 �
 
 ``databases``는 직전 committed 배포가 관측한 DB identity다. 배포 시작 전에 라이브 DB가 이것과
 다르면(누가 지우고 다시 만들었다) 아무것도 바꾸기 전에 거부한다. 명시적 ``--restart``만 이
-기준을 비운다. 비밀은 담지 않는다.
+기준을 지운 DB로 다시 잡고, 명시적 ``--adopt-live-databases``는 지금 떠 있는 DB를 새
+기준으로 받아들인다(백업 복원처럼 비파괴로 DB가 바뀐 경우). 비밀은 담지 않는다.
 """
 
 from __future__ import annotations
@@ -69,6 +70,7 @@ _FIELDS: Final = frozenset(
         "schema_heads",
         "databases",
         "restart",
+        "adopted",
         "carried_over_from",
     }
 )
@@ -110,7 +112,7 @@ class DeployedDatabase:
 
 @dataclass(frozen=True)
 class DeployRestart:
-    """명시적 ``--restart``의 기록. 사유는 사람이 쓴 한 줄이다."""
+    """명시적 결정(``--restart``·``--adopt-live-databases``)의 기록. 사유는 사람이 쓴 한 줄이다."""
 
     reason: str
     at: str
@@ -144,6 +146,7 @@ class DeployStatus:
     images: Mapping[str, str] = field(default_factory=dict)
     schema_heads: Mapping[str, str] = field(default_factory=dict)
     restart: DeployRestart | None = None
+    adopted: DeployRestart | None = None
     carried_over_from: str | None = None
 
     def __post_init__(self) -> None:
@@ -188,8 +191,11 @@ class DeployStatus:
             )
         ):
             raise DeploymentContractError("deploy status schema heads are invalid")
-        if self.restart is not None and not isinstance(self.restart, DeployRestart):
-            raise DeploymentContractError("deploy status restart record is invalid")
+        for record in (self.restart, self.adopted):
+            if record is not None and not isinstance(record, DeployRestart):
+                raise DeploymentContractError("deploy status restart record is invalid")
+        if self.restart is not None and self.adopted is not None:
+            raise DeploymentContractError("a deploy either restarts or adopts, not both")
         if self.state == "committed":
             if (
                 self.committed_at is None
@@ -226,8 +232,14 @@ class DeployStatus:
                 else {role: self.databases[role].to_payload() for role in _DATABASE_ROLES}
             ),
             "restart": None if self.restart is None else self.restart.to_payload(),
+            "adopted": None if self.adopted is None else self.adopted.to_payload(),
             "carried_over_from": self.carried_over_from,
         }
+
+
+#: ``--restart``의 리셋이 실제로 끝났다는 표시(``in_progress``의 ``step``). 이어서 끝내는 일반
+#: 실행이 리셋 기록을 가져갈지는 이것 하나로 정한다.
+RESET_DONE_STEP: Final = "reset"
 
 
 def _is_canonical_uuid(value: str) -> bool:
@@ -247,14 +259,37 @@ def begin_deploy(
     pinvi_revision: str,
     pinset_sha256: str,
     restart: DeployRestart | None = None,
+    adopted: DeployRestart | None = None,
+    adopted_databases: Mapping[DatabaseRole, DeployedDatabase] | None = None,
 ) -> DeployStatus:
     """첫 변경 직전에 쓸 ``in_progress``. identity 기준선은 직전 기록에서 물려받는다.
 
-    ``--restart``는 DB를 다시 만들 것이므로 기준선을 비운다. 직전 실행이 ``in_progress``로
-    죽었어도 그 기준선을 그대로 물려받는다 — 그 실행은 DB를 지우지 않았다(``--restart``가
-    아니었다면).
+    ``--restart``도 기준선을 **물려받는다** — 실제로 지운 **뒤에** 호출자가 비운다. 리셋 전에
+    죽으면 DB는 그대로이므로 다음 일반 실행이 여전히 그 기준으로 확인해야 한다.
+    ``--adopt-live-databases``는 지금 떠 있는 DB(``adopted_databases``)를 새 기준으로 삼는다.
+    직전 실행이 ``in_progress``로 죽었어도 기준선을 그대로 물려받는다.
+
+    명시적 결정(``--restart``·``--adopt-live-databases``)으로 시작한 배포가 끝나지 못하면,
+    그것을 이어서 끝내는 일반 실행이 그 기록을 가져간다. 리셋 기록은 리셋이 실제로 일어난
+    뒤(``step == RESET_DONE_STEP``)만 — 그 전에 죽었으면 리셋은 없었다. 기준선이 비었는지로
+    가르면 기준선 없이 시작한 ``--restart``(새 호스트)가 리셋 전에 죽어도 리셋으로 남는다.
     """
 
+    step: str | None = None
+    if adopted is not None:
+        databases = adopted_databases
+    else:
+        databases = None if previous is None else previous.databases
+    if (
+        restart is None
+        and adopted is None
+        and previous is not None
+        and previous.state == "in_progress"
+    ):
+        adopted = previous.adopted
+        if previous.step == RESET_DONE_STEP:
+            restart = previous.restart
+            step = RESET_DONE_STEP
     return DeployStatus(
         state="in_progress",
         run_id=run_id,
@@ -263,8 +298,10 @@ def begin_deploy(
         map_revision=map_revision,
         pinvi_revision=pinvi_revision,
         pinset_sha256=pinset_sha256,
-        databases=None if restart is not None or previous is None else previous.databases,
+        databases=databases,
+        step=step,
         restart=restart,
+        adopted=adopted,
     )
 
 
@@ -293,6 +330,7 @@ def commit_deploy(
         schema_heads=schema_heads,
         databases=databases,
         restart=status.restart,
+        adopted=status.adopted,
     )
 
 
@@ -466,10 +504,12 @@ def _status_from_payload(payload: object) -> DeployStatus:
                 oid=entry["oid"],
                 system_identifier=entry["system_identifier"],
             )
-    restart = None
-    if fields["restart"] is not None:
-        record = _exact_mapping(fields["restart"], {"reason", "at"})
-        restart = DeployRestart(reason=record["reason"], at=record["at"])
+    records: dict[str, DeployRestart | None] = {}
+    for name in ("restart", "adopted"):
+        records[name] = None
+        if fields[name] is not None:
+            record = _exact_mapping(fields[name], {"reason", "at"})
+            records[name] = DeployRestart(reason=record["reason"], at=record["at"])
     return DeployStatus(
         state=cast(DeployState, fields["state"]),
         run_id=fields["run_id"],
@@ -483,6 +523,7 @@ def _status_from_payload(payload: object) -> DeployStatus:
         images=_string_mapping(fields["images"]),
         schema_heads=_string_mapping(fields["schema_heads"]),
         databases=databases,
-        restart=restart,
+        restart=records["restart"],
+        adopted=records["adopted"],
         carried_over_from=fields["carried_over_from"],
     )

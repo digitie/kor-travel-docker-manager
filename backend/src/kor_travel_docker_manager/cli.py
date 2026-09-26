@@ -325,7 +325,26 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        result = compose_service.rebuild_pinned_runtime()
+        restart = bool(getattr(args, "restart", False))
+        adopt = bool(getattr(args, "adopt_live_databases", False))
+        reason = getattr(args, "reason", None)
+        if (restart and adopt) or ((restart or adopt) != (reason is not None)):
+            print(
+                "pinvi-pair rebuild-pinned: --reason goes with exactly one of "
+                "--restart or --adopt-live-databases (no mutation was attempted)",
+                file=sys.stderr,
+            )
+            return 2
+        if restart:
+            result = compose_service.rebuild_pinned_runtime(restart_reason=reason)
+        elif adopt:
+            result = compose_service.rebuild_pinned_runtime(adopt_reason=reason)
+        else:
+            result = compose_service.rebuild_pinned_runtime()
+        if not args.json:
+            # launcher는 --json으로 경고를 받는다. 사람이 직접 돌릴 때도 보여야 한다.
+            for warning in result.get("warnings", []):
+                print(f"warning: {warning}", file=sys.stderr)
     except PinnedRuntimePrejournalFailure as exc:
         # 봉인 단계는 전부 resume 분기보다 앞에서 돈다. journal이 이미 존재하는
         # 실행에서 봉인 단계가 실패하면 그 후보는 **이미 소비됐다** — 같은
@@ -733,8 +752,10 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
     exit_code = 0
     if report.get("current_pinset_is_blocked") and execution_binding != "current":
         print(
-            "현재 고정된 pinset은 재시도 금지 상태입니다 — rebuild-pinned가 거부됩니다. "
-            "'ktdctl pin rotate-pair'로 새 Map/PinVi pair를 고정하세요.",
+            "현재 고정된 pinset에 옛 재시도 금지 기록이 있습니다. ADR-51 뒤 "
+            "rebuild-pinned는 이 기록을 경고로만 남깁니다 — 이 종료 코드는 그 기록을 "
+            "게이트로 삼는 M05 하네스용입니다. M05에도 필요하면 'ktdctl pin rotate-pair'로 "
+            "새 pair를 고정하세요.",
             file=sys.stderr,
         )
         exit_code = 1
@@ -1892,12 +1913,35 @@ def build_parser() -> argparse.ArgumentParser:
     pair_subparsers = pinvi_pair.add_subparsers(dest="pair_action", required=True)
     pair_rebuild = pair_subparsers.add_parser(
         "rebuild-pinned",
-        help="고정 release candidate를 검증한 뒤 세 DB를 비우고 일곱 runtime을 재기동합니다.",
+        help=(
+            "고정 pair를 마이그레이션 전진으로 배포합니다(DB 보존). "
+            "--restart만 세 DB를 지우고 다시 만듭니다."
+        ),
     )
     pair_rebuild.add_argument(
         "--confirm",
         action="store_true",
-        help="세 Map·Dagster·PinVi DB를 파기형으로 재생성함을 확인합니다.",
+        help="배포(와 --restart면 DB 재생성)를 확인합니다.",
+    )
+    pair_rebuild.add_argument(
+        "--restart",
+        action="store_true",
+        help="Map·Dagster·PinVi DB를 지우고 빈 DB에서 다시 만듭니다(유일한 파괴 경로).",
+    )
+    pair_rebuild.add_argument(
+        "--adopt-live-databases",
+        action="store_true",
+        help=(
+            "지난 배포 뒤 DB가 비파괴로 바뀌었을 때(예: 백업 복원) 지금 DB를 지우지 않고 "
+            "새 기준으로 받아들입니다."
+        ),
+    )
+    pair_rebuild.add_argument(
+        "--reason",
+        help=(
+            "--restart 또는 --adopt-live-databases의 사유(한 줄, 200자 이하). "
+            "배포 상태에 기록됩니다."
+        ),
     )
     pair_rebuild.add_argument(
         "--json",

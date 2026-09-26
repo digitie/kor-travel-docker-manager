@@ -5,15 +5,17 @@ import re
 import stat
 import subprocess
 import tempfile
+import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from enum import StrEnum
 from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Final, Literal, cast
+from typing import Any, Final, cast
 
 import yaml
 from dotenv import dotenv_values
@@ -24,7 +26,6 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     _PINVI_ADMIN_BOOTSTRAP_SERVICE,
     _PINVI_API_SERVICE,
     C6cBuildProvenance,
-    C6cCancelProbeFixture,
     C6cDeploymentConfig,
     CandidateSystemBindSnapshot,
     PinviCancelProbeState,
@@ -63,23 +64,29 @@ from kor_travel_docker_manager.services.capabilities import (
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
 )
 from kor_travel_docker_manager.services.database_runtime import (
-    Application300DatabaseIdentity as RuntimeApplication300DatabaseIdentity,
-)
-from kor_travel_docker_manager.services.database_runtime import (
-    DagsterMetadataDatabaseIdentity as RuntimeDagsterMetadataDatabaseIdentity,
-)
-from kor_travel_docker_manager.services.database_runtime import (
+    DatabaseRole,
     DatabaseRuntime,
-    PinnedDatabaseIdentity,
-    create_fresh_application_300_database,
+    create_database_if_absent,
     database_runtimes_from_frozen_contract,
+    ensure_map_application_database,
     initialize_application_300_dagster_metadata_database,
-    inspect_application_300_bootstrap_state,
-    read_application_300_dagster_metadata_identity,
-    read_application_300_database_identity,
+    read_database_identity,
     read_database_schema_revision,
-    read_pinned_database_identity,
+    require_map_application_database_convergible,
     reset_databases_for_application_300,
+    schema_revision_table_exists,
+)
+from kor_travel_docker_manager.services.deploy_status import (
+    RESET_DONE_STEP,
+    DeployedDatabase,
+    DeployRestart,
+    DeployStatus,
+    begin_deploy,
+    carry_over_committed_generation,
+    commit_deploy,
+    deploy_status_path,
+    read_deploy_status,
+    write_deploy_status,
 )
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
@@ -90,48 +97,23 @@ from kor_travel_docker_manager.services.map_application_300 import (
     Application300Candidate as Application300ExecutionCandidate,
 )
 from kor_travel_docker_manager.services.map_application_300 import (
-    ApplicationDatabaseIdentity,
-    DagsterDatabaseIdentity,
-    DagsterLoginRoleAttributes,
-    DagsterStorageCandidate,
     MapApplication300ContractError,
-    build_dagster_metadata_permit,
-    publish_root_read_only_artifact,
 )
 from kor_travel_docker_manager.services.map_application_candidate import (
     MapApplicationCandidate,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    REBUILD_PHASES,
     RUNTIME_SERVICES,
-    MapApplication300ApplicationDatabaseIdentity,
-    MapApplication300DagsterMetadataDatabaseIdentity,
-    MapApplication300DagsterMetadataRoleAttributes,
-    PinnedRuntimeCancelProbeOutcome,
-    PinnedRuntimeCancelProbeReceipt,
-    PinnedRuntimeDatabaseIdentity,
+    PinnedRuntimeGeneration,
     PinnedRuntimeManifest,
-    PinnedRuntimeRebuildJournal,
     PinnedRuntimeStatePaths,
-    PinviRoleCatalogResetReceipt,
-    RebuildPhase,
     RuntimeService,
     ensure_pinned_runtime_state_directory,
     generation_logical_sha256,
     pinned_runtime_state_paths,
-    retire_f1d_legacy_artifacts,
-)
-from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    read_manifest as read_pinned_runtime_manifest,
-)
-from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    read_rebuild_journal as read_pinned_runtime_rebuild_journal,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     write_manifest as write_pinned_runtime_manifest,
-)
-from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    write_rebuild_journal as write_pinned_runtime_rebuild_journal,
 )
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     COMPOSE_BUILT_RUNTIME_SERVICES,
@@ -141,7 +123,6 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     generation_companion_services,
     generation_compose_environment,
     map_application_300_paired_build_image_names,
-    new_candidate_journal,
     parse_candidate_static_head,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
@@ -272,70 +253,22 @@ _PINNED_RUNTIME_PREJOURNAL_MARK = "_ktdm_pinned_runtime_failed_before_journal"
 
 
 class _PinnedRuntimeJournalWatermark:
-    """이 실행이 durable journal에 도달했는지 **관측**한다.
+    """이 실행이 배포 상태를 ``in_progress``로 바꿨는지 기록한다(ADR-51).
 
-    write 지점마다 손으로 표시하는 방식은 새 write가 생길 때마다 규율을 요구하고,
-    그 규율이 한 번 깨지면 조용히 **소비된 후보를 재시도 가능**으로 푼다 —
-    이 트랙에서 가장 피해야 할 방향이다. 대신 journal 경로를 알게 된 시점에
-    한 번 적어 두고 실패 시 그 파일의 존재를 본다. 누가 언제 썼든 관측이 답을
-    주므로, 앞으로 write가 늘어도 이 판정은 저절로 맞는다.
-
-    경로를 모른 채 닫혔다면 그 실행은 journal에 도달한 적이 없다 — host lease
-    경합, root 아님, lock 디렉터리 불안전, 배포 lifecycle 게이트 거부가 여기다.
-    `prewrite_admission`의 거절들은 **여기가 아니다** — 관측이 그보다 먼저
-    일어나므로 파일로 판정된다(적대 리뷰 m-3).
+    launcher(`run-pinned-rebuild-once`)는 이 판정 하나로 claim을 해제할지 정한다.
+    ``in_progress``를 쓰기 전의 실패는 **데이터를** 바꾸지 않았으므로 해제한다(DB 서버
+    기동·carry-over 기록·이미지 태그는 그 전에 일어날 수 있지만 모두 멱등이다). 쓴 뒤의
+    실패도 이제 재시도할 수 있지만 launcher의 attempt 원장은 감사 흔적으로 남긴다.
     """
 
     def __init__(self) -> None:
-        self.journal_path: Path | None = None
-        self.identified_without_a_path = False
+        self._reached = False
 
-    def observe(self, journal_path: Path) -> None:
-        """journal 경로가 확정되는 즉시 적어 둔다."""
-
-        self.journal_path = journal_path
-
-    def observe_unresolvable(self) -> None:
-        """pinset은 식별했는데 경로를 못 냈다 — 그때는 유지가 fail-safe다.
-
-        경로 계산(`pinned_runtime_state_paths`)은 lifecycle 4개 키만이 아니라
-        rebuildable cache-target 10개 · `COMPOSE_PROJECT_NAME` 정규식 ·
-        state root의 canonical 여부까지 본다. 그중 어느 것도 여기 도달하기
-        전에 검증되지 않는다 — 즉 `.env` 하나로 이 지점이 닫힐 수 있다.
-
-        그때 경로를 모른다고 해제하면, journal이 이미 있는 **소비된 후보**의
-        claim이 사라진다(적대 리뷰 MAJOR-3). pinset을 이미 식별한 이상
-        무엇이 걸려 있는지는 알므로, 불확실은 유지 쪽으로 접는다.
-
-        pinset을 식별하기 **전**(root 게이트·host lease 경합)은 그대로 해제다.
-        거기서는 걸려 있는 후보 자체가 없다 — 그게 이 트랙이 처음 닫은 소각
-        경로다.
-        """
-
-        self.identified_without_a_path = True
+    def mark_reached(self) -> None:
+        self._reached = True
 
     def reached(self) -> bool:
-        """journal이 존재하면 이 후보는 lifecycle에 들어간 것으로 본다.
-
-        판독 불가(`OSError`)는 `False`로 접지 않는다. 불확실할 때의 fail-safe는
-        claim 유지(= 소각)지 해제가 아니다 — 관측자의 불확실성이 후보를 살려
-        이중 실행을 열어서는 안 된다.
-        """
-
-        path = self.journal_path
-        if path is None:
-            return self.identified_without_a_path
-        try:
-            path.lstat()
-        except FileNotFoundError:
-            return False
-        except Exception:
-            # 소각 판정 술어는 **전역**이어야 한다. 여기서 예외가 나가면
-            # 그 예외가 원래 실패를 덮어 `--json` 계약(stdout에 JSON)을
-            # 깨고 진단이 통째로 사라진다(적대 리뷰 m-1). 판독 불가는
-            # 전부 도달로 본다 — 불확실할 때의 fail-safe는 claim 유지다.
-            return True
-        return True
+        return self._reached
 
 
 def _mark_pinned_runtime_prejournal(exc: DeploymentContractError) -> None:
@@ -399,127 +332,6 @@ _MAP_APPLICATION_300_RECEIPT_DIRECTORY = "map-application-300-candidate"
 _MAP_APPLICATION_300_ARTIFACT_DIRECTORY = "map-application-300-artifacts"
 _MAP_APPLICATION_300_POSTGRES_REFERENCE = "postgis/postgis:16-3.5-alpine"
 _ROLE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
-def _pinvi_cancel_probe_state_from_journal(
-    journal: PinnedRuntimeRebuildJournal,
-) -> PinviCancelProbeState:
-    """v6 secret-free receipt만으로 F1J helper의 resume state를 복원한다."""
-
-    receipt = journal.cancel_probe
-    if receipt.stage == "uninitialized":
-        return PinviCancelProbeState(transaction_id=journal.transaction_id)
-    if receipt.stage in {"armed", "cancel_post_attempted"}:
-        fixture = C6cCancelProbeFixture(
-            transaction_id=journal.transaction_id,
-            job_id=receipt.job_id or "",
-            state="armed",
-            cancellation_id=None,
-            canonical_unsafe_outcome=None,
-            created_at=receipt.fixture_created_at,
-        )
-        return PinviCancelProbeState(
-            transaction_id=journal.transaction_id,
-            fixture=fixture,
-            attempted=receipt.stage == "cancel_post_attempted",
-        )
-    outcome = receipt.outcome
-    if outcome is None:
-        raise DeploymentContractError("pinned runtime consumed cancel probe has no outcome")
-    fixture = C6cCancelProbeFixture(
-        transaction_id=journal.transaction_id,
-        job_id=receipt.job_id or "",
-        state="finalized" if receipt.stage == "finalized" else "consumed",
-        cancellation_id=receipt.cancellation_id,
-        canonical_unsafe_outcome=outcome.to_payload(),
-        created_at=receipt.fixture_created_at,
-        consumed_at=receipt.fixture_consumed_at,
-        finalized_at=receipt.fixture_finalized_at,
-    )
-    return PinviCancelProbeState(
-        transaction_id=journal.transaction_id,
-        fixture=fixture,
-        attempted=True,
-        finalize_attempted=receipt.stage in {"finalize_post_attempted", "finalized"},
-        result=outcome.to_payload(),
-    )
-
-
-def _cancel_probe_receipt_from_pinvi_state(
-    state: PinviCancelProbeState,
-) -> PinnedRuntimeCancelProbeReceipt:
-    """helper의 mutable state를 journal high-watermark 하나로 정규화한다."""
-
-    fixture = state.fixture
-    if fixture is None:
-        if state.attempted or state.finalize_attempted or state.result is not None:
-            raise DeploymentContractError("pinned runtime cancel probe state lacks fixture receipt")
-        return PinnedRuntimeCancelProbeReceipt()
-    if fixture.state == "armed":
-        if state.result is not None or state.finalize_attempted:
-            raise DeploymentContractError("armed cancel probe state has cancellation evidence")
-        return PinnedRuntimeCancelProbeReceipt(
-            stage="cancel_post_attempted" if state.attempted else "armed",
-            job_id=fixture.job_id,
-            fixture_created_at=fixture.created_at,
-        )
-    if (
-        fixture.cancellation_id is None
-        or fixture.canonical_unsafe_outcome is None
-        or not state.attempted
-    ):
-        raise DeploymentContractError("consumed cancel probe state is incomplete")
-    outcome_payload = fixture.canonical_unsafe_outcome
-    if (
-        set(outcome_payload) != {"name", "status", "code"}
-        or not isinstance(outcome_payload.get("name"), str)
-        or type(outcome_payload.get("status")) is not int
-        or not isinstance(outcome_payload.get("code"), str)
-    ):
-        raise DeploymentContractError("consumed cancel probe outcome is invalid")
-    outcome = PinnedRuntimeCancelProbeOutcome(
-        name=cast(Literal["pinvi_cancel_error"], outcome_payload["name"]),
-        status=cast(Literal[409], outcome_payload["status"]),
-        code=cast(
-            Literal["PIPELINE_CANCELLATION_UNSAFE"],
-            outcome_payload["code"],
-        ),
-    )
-    if state.result != outcome.to_payload():
-        raise DeploymentContractError("consumed cancel probe result differs from fixture")
-    if fixture.state == "consumed":
-        stage = "finalize_post_attempted" if state.finalize_attempted else "consumed"
-    elif fixture.state == "finalized":
-        if not state.finalize_attempted:
-            raise DeploymentContractError("finalized cancel probe has no durable attempt")
-        stage = "finalized"
-    else:
-        raise DeploymentContractError("cancel probe fixture state is invalid")
-    return PinnedRuntimeCancelProbeReceipt(
-        stage=cast(
-            Literal[
-                "consumed",
-                "finalize_post_attempted",
-                "finalized",
-            ],
-            stage,
-        ),
-        job_id=fixture.job_id,
-        cancellation_id=fixture.cancellation_id,
-        outcome=outcome,
-        fixture_created_at=fixture.created_at,
-        fixture_consumed_at=fixture.consumed_at,
-        fixture_finalized_at=fixture.finalized_at,
-    )
-
-
-def _pinned_runtime_reset_required(journal: PinnedRuntimeRebuildJournal) -> bool:
-    """같은 v8 transaction의 durable reset 경계에서만 DB reset을 허용한다.
-
-    ``databases_recreated`` 이후에는 fixture 상태와 관계없이 자동 reset을 금지한다.
-    application-300 root/finalize와 metadata identity는 journal의 exact DB identity에
-    결박되므로, 이후 checkpoint에서 DB를 다시 만들면 보존된 fence/permit이 무효가 된다.
-    """
-
-    return journal.phase in {"candidate_attested", "reset_intent_durable"}
 
 
 _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA = (
@@ -549,6 +361,8 @@ _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE = {
     "schema_version_unavailable": "schema_check",
     "static_head_unavailable": "migration",
 }
+
+
 @dataclass(frozen=True)
 class _ComposeFailureDiagnostic:
     """pinned runtime rebuild 실패 진단을 사람이 읽는 문구와 기계 판독 코드로 나눈다.
@@ -619,14 +433,19 @@ def _require_pinned_runtime_rebuild_root() -> None:
     require_pinned_runtime_rebuild_root()
 
 
-def _assert_pinset_is_not_permanently_blocked(pinset_sha256: str) -> None:
-    """legacy source terminal 또는 현재 v6 execution terminal을 mutation 전에 거부한다.
+def _pinned_runtime_admission_warnings(pinset_sha256: str) -> list[str]:
+    """배포 전 원장 판정. 막힌 pinset·낡은 실행 결박은 이제 **경고**다(ADR-51 B).
 
-    Map·PinVi 저장소는 "terminal candidate는 영구 재시도 금지"를 문서 규율로만
-    지켜 왔고 어긴 실행을 막는 기계 게이트가 없었다. v5 차단 목록은 source audit을
-    소유하고, 실제 재실행 판정은 결박된 v6 execution lifecycle이 소유한다.
+    종전에는 둘 다 영구 거부였고, Manager를 설치할 때마다 실행 결박이 낡아 새 Map 커밋 없이는
+    같은 pair를 다시 돌릴 수 없었다. 마이그레이션 전진에서는 모든 배포가 멱등이라 다시
+    돌려도 데이터를 잃지 않는다 — 운영자가 알고 재배포할 수 있게 경고로 남긴다. 대기 중인
+    회전 intent는 여전히 거부한다(원장이 두 쌍 사이에 있다).
     """
 
+    from kor_travel_docker_manager.services.runtime_execution_registry import (
+        load_runtime_execution_registry,
+        trusted_manager_source_revision,
+    )
     from kor_travel_docker_manager.services.runtime_pair_rotation import (
         require_no_pending_runtime_pair_rotation,
     )
@@ -635,39 +454,44 @@ def _assert_pinset_is_not_permanently_blocked(pinset_sha256: str) -> None:
     )
 
     require_no_pending_runtime_pair_rotation()
-
-    # release를 이미 registry에서 읽은 뒤이므로 여기서 실패하면 파일이 방금
-    # 사라진 것이다. 차단 판정을 못 하는 상태로 파괴적 작업을 진행하지 않는다.
     registry = load_runtime_pin_registry()
-
-    # v5 terminal은 source materialization의 감사 기록이며 Manager revision을 담지
-    # 않는다. 그러나 v5가 미차단이라고 v6 execution이 미차단이라는 뜻은 아니다.
-    # 따라서 모든 destructive rebuild는 exact trusted v6 binding과 그 terminal state를
-    # 확인한다. 이 gate를 legacy terminal일 때만 적용하면 실제 v6 one-shot terminal을
-    # 다음 rebuild가 우회할 수 있다.
-    from kor_travel_docker_manager.services.runtime_execution_registry import (
-        load_runtime_execution_registry,
-        trusted_manager_source_revision,
-    )
-
+    warnings: list[str] = []
+    if registry.is_unconditionally_blocked_pinset(pinset_sha256):
+        warnings.append("this pinset was previously judged terminal; deploying it again")
     try:
         execution = load_runtime_execution_registry()
-        execution_is_runnable = execution.current_matches(
+        runnable = execution.current_matches(
             pins=registry, manager_source_revision=trusted_manager_source_revision()
         ) and not execution.is_unconditionally_blocked_current()
     except DeploymentContractError:
-        execution_is_runnable = False
-    if not execution_is_runnable:
-        source_state = (
-            "legacy source pinset is terminal and "
-            if registry.is_unconditionally_blocked_pinset(pinset_sha256)
-            else ""
+        runnable = False
+    if not runnable:
+        warnings.append(
+            "the trusted execution binding is missing, stale, or terminal; "
+            "recorded for audit only"
         )
-        raise DeploymentContractError(
-            "pinned runtime rebuild is blocked: "
-            + source_state
-            + "the current trusted execution is missing, stale, or terminal"
+    return warnings
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _local_image_present(image: str) -> bool:
+    """이 태그가 로컬 image store에 있는가(pinset에 묶인 후보 태그의 재사용 판단)."""
+
+    try:
+        completed = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{.Id}}", image],
+            cwd="/",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=_PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS,
         )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeploymentContractError("candidate image store cannot be inspected") from exc
+    return completed.returncode == 0
 
 
 def get_compose_path() -> str:
@@ -2616,120 +2440,6 @@ def _application_300_execution_candidate(
         ) from exc
 
 
-def _application_300_database_identities(
-    identity: RuntimeApplication300DatabaseIdentity,
-) -> tuple[ApplicationDatabaseIdentity, MapApplication300ApplicationDatabaseIdentity]:
-    try:
-        contract_identity = ApplicationDatabaseIdentity(
-            name=identity.database_name,
-            oid=identity.database_oid,
-            owner=identity.database_owner,
-            system_identifier=identity.postgres_system_identifier,
-        )
-        journal_identity = _application_300_journal_database_identity(identity)
-    except (DeploymentContractError, MapApplication300ContractError) as exc:
-        raise DeploymentContractError(
-            "application 300 database identity is invalid"
-        ) from exc
-    return contract_identity, journal_identity
-
-
-def _application_300_journal_database_identity(
-    identity: RuntimeApplication300DatabaseIdentity,
-) -> MapApplication300ApplicationDatabaseIdentity:
-    """bootstrap 전·후 owner를 모두 보존할 수 있는 journal identity로 바꾼다."""
-
-    try:
-        return MapApplication300ApplicationDatabaseIdentity(
-            database_name=identity.database_name,
-            database_oid=identity.database_oid,
-            database_owner=identity.database_owner,
-            postgres_system_identifier=identity.postgres_system_identifier,
-        )
-    except DeploymentContractError as exc:
-        raise DeploymentContractError(
-            "application 300 journal database identity is invalid"
-        ) from exc
-
-
-def _pinned_runtime_journal_database_identity(
-    identity: PinnedDatabaseIdentity,
-) -> PinnedRuntimeDatabaseIdentity:
-    try:
-        return PinnedRuntimeDatabaseIdentity(
-            system_identifier=identity.system_identifier,
-            name=identity.name,
-            oid=identity.oid,
-            owner=identity.owner,
-            login_role=identity.login_role,
-        )
-    except DeploymentContractError as exc:
-        raise DeploymentContractError(
-            "pinned runtime database identity is invalid"
-        ) from exc
-
-
-def _application_300_dagster_identities(
-    identity: RuntimeDagsterMetadataDatabaseIdentity,
-) -> tuple[DagsterDatabaseIdentity, MapApplication300DagsterMetadataDatabaseIdentity]:
-    try:
-        contract_attributes = DagsterLoginRoleAttributes(
-            can_login=identity.login_role_attributes.can_login,
-            inherit=identity.login_role_attributes.inherit,
-            superuser=identity.login_role_attributes.superuser,
-            create_database=identity.login_role_attributes.create_database,
-            create_role=identity.login_role_attributes.create_role,
-            replication=identity.login_role_attributes.replication,
-            bypass_rls=identity.login_role_attributes.bypass_rls,
-            granted_role_count=identity.login_role_attributes.granted_role_count,
-            member_role_count=identity.login_role_attributes.member_role_count,
-            connection_limit=identity.login_role_attributes.connection_limit,
-            valid_until_is_null=identity.login_role_attributes.valid_until_is_null,
-            role_config_count=identity.login_role_attributes.role_config_count,
-            database_role_setting_count=(
-                identity.login_role_attributes.database_role_setting_count
-            ),
-        )
-        journal_attributes = MapApplication300DagsterMetadataRoleAttributes(
-            can_login=identity.login_role_attributes.can_login,
-            inherit=identity.login_role_attributes.inherit,
-            superuser=identity.login_role_attributes.superuser,
-            create_database=identity.login_role_attributes.create_database,
-            create_role=identity.login_role_attributes.create_role,
-            replication=identity.login_role_attributes.replication,
-            bypass_rls=identity.login_role_attributes.bypass_rls,
-            granted_role_count=identity.login_role_attributes.granted_role_count,
-            member_role_count=identity.login_role_attributes.member_role_count,
-            connection_limit=identity.login_role_attributes.connection_limit,
-            valid_until_is_null=identity.login_role_attributes.valid_until_is_null,
-            role_config_count=identity.login_role_attributes.role_config_count,
-            database_role_setting_count=(
-                identity.login_role_attributes.database_role_setting_count
-            ),
-        )
-        contract_identity = DagsterDatabaseIdentity(
-            system_identifier=identity.system_identifier,
-            name=identity.name,
-            oid=identity.oid,
-            owner=identity.owner,
-            login_role=identity.login_role,
-            login_role_attributes=contract_attributes,
-        )
-        journal_identity = MapApplication300DagsterMetadataDatabaseIdentity(
-            system_identifier=identity.system_identifier,
-            name=identity.name,
-            oid=identity.oid,
-            owner=identity.owner,
-            login_role=identity.login_role,
-            login_role_attributes=journal_attributes,
-        )
-    except (DeploymentContractError, MapApplication300ContractError) as exc:
-        raise DeploymentContractError(
-            "application 300 Dagster metadata identity is invalid"
-        ) from exc
-    return contract_identity, journal_identity
-
-
 def _build_map_application_300_images(
     *,
     sources: PinnedRuntimeSourceMaterialization,
@@ -2876,33 +2586,6 @@ def _load_application_300_candidate(
         dagster_image_id=_inspect_local_image_id(dagster_image),
         dagster_config_sha256=dagster_config_sha256,
         application_head=application_head,
-    )
-
-
-def _map_application_candidate_from_journal(
-    journal: PinnedRuntimeRebuildJournal,
-    *,
-    sources: PinnedRuntimeSourceMaterialization,
-) -> MapApplicationCandidate:
-    """resume 시 재빌드·재관측 대신 durable journal에 이미 적힌 값을 그대로 쓴다.
-
-    `docker buildx build`는 (다른 Manager 재빌드 스크립트들과 달리) 소스 commit이
-    같아도 byte-identical 이미지를 보장하지 않는다 — `pip install` 버전 해석,
-    레이어 타임스탬프 등이 재실행마다 미세하게 달라질 수 있다. resume에서 다시
-    빌드·관측하면 이미 durable하게 적힌 journal evidence와 새로 관측한 값이
-    갈릴 수 있고, 실제로 그렇게 갈리는 것이 관측됐다(2026-09-23). 이미지가 이미
-    태그돼 있으므로 다시 빌드할 이유가 없다 — journal이 정본이다.
-    """
-
-    evidence = journal.map_application_300_candidate_evidence
-    return MapApplicationCandidate(
-        candidate_commit=sources.source_for("map").revision,
-        candidate_git_tree=evidence.candidate_git_tree,
-        api_image_id=journal.candidate.map_api_image_id,
-        dagster_image_id=journal.candidate.map_dagster_image_id,
-        postgres_image_id=evidence.postgres_image_id,
-        dagster_config_sha256=evidence.dagster_config_sha256,
-        application_head=journal.candidate.map_application_head,
     )
 
 
@@ -4990,153 +4673,18 @@ class ComposeService:
             redacted = redacted.replace(credential, "<redacted>")
         return redacted
 
-    @staticmethod
-    def _assert_pinned_runtime_database_heads(
-        runtimes: Sequence[Any],
-        *,
-        journal: PinnedRuntimeRebuildJournal,
-    ) -> None:
-        if len(runtimes) != 3:
-            raise DeploymentContractError("pinned runtime database roles are incomplete")
-        expected = (
-            journal.candidate.map_application_head,
-            journal.candidate.map_dagster_head,
-            journal.candidate.pinvi_head,
-        )
-        if tuple(read_database_schema_revision(runtime) for runtime in runtimes) != expected:
-            raise DeploymentContractError(
-                "pinned runtime database schema differs from committed generation"
-            )
-
-    @staticmethod
-    def _assert_committed_application_database_identities(
-        runtimes: Sequence[Any],
-        *,
-        journal: PinnedRuntimeRebuildJournal,
-        metadata_user: str,
-    ) -> None:
-        """committed fast path에서도 application/Dagster DB identity를 재대조한다."""
-
-        if len(runtimes) != 3 or not metadata_user:
-            raise DeploymentContractError(
-                "pinned runtime committed database identity input is incomplete"
-            )
-        evidence = journal.map_application_300_execution_evidence
-        expected_application = evidence.application_database_identity
-        expected_dagster = evidence.dagster_metadata_database_identity
-        if expected_application is None or expected_dagster is None:
-            raise DeploymentContractError(
-                "pinned runtime committed database identity evidence is incomplete"
-            )
-        live_application = _application_300_journal_database_identity(
-            read_application_300_database_identity(runtimes[0])
-        )
-        if live_application != expected_application:
-            raise DeploymentContractError(
-                "Map application database identity differs from committed journal"
-            )
-        _contract_dagster, live_dagster = _application_300_dagster_identities(
-            read_application_300_dagster_metadata_identity(
-                runtimes[1],
-                metadata_user=metadata_user,
-            )
-        )
-        if live_dagster != expected_dagster:
-            raise DeploymentContractError(
-                "Map Dagster metadata identity differs from committed journal"
-            )
-        expected_pinvi = journal.pinvi_database_identity
-        if expected_pinvi is None:
-            raise DeploymentContractError(
-                "PinVi database identity evidence is incomplete"
-            )
-        live_pinvi = _pinned_runtime_journal_database_identity(
-            read_pinned_database_identity(runtimes[2])
-        )
-        if live_pinvi != expected_pinvi:
-            raise DeploymentContractError(
-                "PinVi database identity differs from committed journal"
-            )
-
-    def _assert_committed_postgres_images(
-        self,
-        records: Sequence[Mapping[str, Any]],
-        *,
-        transaction: ComposeTransactionSnapshot,
-        map_candidate: MapApplicationCandidate,
-    ) -> None:
-        """두 PostgreSQL container를 frozen Compose와 paired Map image에 결박한다."""
-
-        services = transaction.resolved.get("services")
-        if not isinstance(services, Mapping):
-            raise DeploymentContractError(
-                "pinned runtime resolved PostgreSQL services are invalid"
-            )
-        expected_records = {
-            "kor-travel-map-postgres": map_candidate.postgres_image_id,
-        }
-        pinvi_service = services.get("pinvi-postgres")
-        pinvi_reference = (
-            pinvi_service.get("image") if isinstance(pinvi_service, Mapping) else None
-        )
-        if (
-            not isinstance(pinvi_reference, str)
-            or re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", pinvi_reference) is None
-        ):
-            raise DeploymentContractError(
-                "PinVi PostgreSQL resolved image is not digest-pinned"
-            )
-        expected_records["pinvi-postgres"] = self._inspect_image_reference_id(
-            pinvi_reference,
-            label="PinVi PostgreSQL",
-        )
-        observed: dict[str, str] = {}
-        for record in records:
-            service = record.get("Service")
-            name = record.get("Name")
-            if (
-                not isinstance(service, str)
-                or service not in expected_records
-                or service in observed
-                or not isinstance(name, str)
-                or not name
-            ):
-                raise DeploymentContractError(
-                    "pinned runtime PostgreSQL container evidence is invalid"
-                )
-            observed[service] = self._inspect_container_image_id(
-                name,
-                label=service,
-            )
-        if set(observed) != set(expected_records):
-            raise DeploymentContractError(
-                "pinned runtime PostgreSQL container evidence is incomplete"
-            )
-        for service, expected_image in expected_records.items():
-            if observed[service] != expected_image:
-                raise DeploymentContractError(
-                    f"{service} runtime image differs from committed generation"
-                )
-
     def _assert_pinned_runtime_container_images(
         self,
         records: Sequence[Mapping[str, Any]],
         *,
-        journal: PinnedRuntimeRebuildJournal,
-        companions: Mapping[str, RuntimeService],
+        expected_images: Mapping[str, str],
     ) -> None:
-        """실행 중인 slot·companion container를 committed exact image에 결박한다.
+        """실행 중인 slot·companion container를 배포한 exact image에 결박한다.
 
-        companion은 자기 slot이 없으므로 owner slot의 이미지를 기대값으로 쓴다.
+        companion은 자기 slot이 없으므로 owner slot의 이미지가 기대값이다
+        (`_deployed_images`).
         """
 
-        slot_images = journal.candidate.image_ids
-        expected_images: dict[str, str] = {
-            str(service): image for service, image in slot_images.items()
-        }
-        expected_images.update(
-            (name, slot_images[owner]) for name, owner in companions.items()
-        )
         if len(records) != len(expected_images):
             raise DeploymentContractError(
                 "pinned runtime container image evidence is incomplete"
@@ -5252,229 +4800,98 @@ class ComposeService:
         )
 
     @staticmethod
-    def _assert_pinned_runtime_journal_matches_candidate_input(
-        journal: PinnedRuntimeRebuildJournal,
-        *,
-        release_pinset_sha256: str,
-        map_revision: str,
-        pinvi_revision: str,
-        environment_bytes: bytes,
-        compose_source_bytes: bytes,
-        resolved_compose_sha256: str,
-    ) -> None:
-        if (
-            journal.candidate.pinset_sha256 != release_pinset_sha256
-            or journal.candidate.map_source_revision != map_revision
-            or journal.candidate.pinvi_source_revision != pinvi_revision
-            or journal.environment_sha256 != hashlib.sha256(environment_bytes).hexdigest()
-            or journal.compose_sha256 != hashlib.sha256(compose_source_bytes).hexdigest()
-            or journal.resolved_compose_sha256 != resolved_compose_sha256
-        ):
-            raise DeploymentContractError(
-                "pinned runtime rebuild journal differs from frozen candidate input"
-            )
-
-    @staticmethod
-    def _assert_pinned_runtime_journal_matches_map_candidate(
-        journal: PinnedRuntimeRebuildJournal,
-        *,
-        map_candidate: MapApplicationCandidate,
-    ) -> None:
-        """resume receipt/image evidence must be the journal's exact Map pair."""
-
-        evidence = journal.map_application_300_candidate_evidence
-        if (
-            evidence.candidate_git_tree != map_candidate.candidate_git_tree
-            or evidence.postgres_image_id != map_candidate.postgres_image_id
-            or evidence.dagster_config_sha256 != map_candidate.dagster_config_sha256
-            or journal.candidate.map_api_image_id != map_candidate.api_image_id
-            or journal.candidate.map_dagster_image_id != map_candidate.dagster_image_id
-        ):
-            raise DeploymentContractError(
-                "pinned runtime journal differs from current Map paired candidate"
-            )
-
-    @staticmethod
     def _pinned_runtime_result(
-        journal: PinnedRuntimeRebuildJournal,
+        status: DeployStatus,
         *,
-        resumed: bool,
+        candidate: PinnedRuntimeGeneration,
+        outcome: str,
+        warnings: Sequence[str],
     ) -> dict[str, Any]:
+        """launcher·chain17이 읽는 결과. 키는 종전과 같다(``success``·``phase``·
+        ``pinset_sha256``·``schema_heads``) — ``phase``는 이제 ``committed`` 하나다."""
+
         return {
             "success": True,
             "returncode": 0,
-            "resumed": resumed,
-            "transaction_id": journal.transaction_id,
-            "phase": journal.phase,
-            "generation_sha256": generation_logical_sha256(journal.candidate),
-            "pinset_sha256": journal.candidate.pinset_sha256,
-            "schema_heads": dict(journal.candidate.schema_heads),
+            "resumed": False,
+            "outcome": outcome,
+            "transaction_id": status.run_id,
+            "phase": "committed",
+            "generation_sha256": generation_logical_sha256(candidate),
+            "pinset_sha256": candidate.pinset_sha256,
+            "schema_heads": dict(status.schema_heads),
+            "warnings": list(warnings),
         }
 
     @staticmethod
-    def _advance_pinned_runtime_journal(
-        journal: PinnedRuntimeRebuildJournal,
-        phase: RebuildPhase,
-    ) -> PinnedRuntimeRebuildJournal:
-        """resume의 high-watermark는 보존하고 아직 도달하지 않은 phase만 기록한다."""
+    def _observe_deployed_databases(
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+    ) -> dict[DatabaseRole, DeployedDatabase] | None:
+        """세 DB의 identity. 하나라도 없으면 ``None``."""
 
-        if journal.phase == phase:
-            return journal
-        # `transition` 자체가 enum order를 검증한다. 이미 더 먼 checkpoint이면
-        # 재개 과정의 read-only 검증만 허용하고 high-watermark를 되돌리지 않는다.
-        if REBUILD_PHASES.index(journal.phase) > REBUILD_PHASES.index(phase):
-            return journal
-        if REBUILD_PHASES.index(journal.phase) + 1 != REBUILD_PHASES.index(phase):
-            raise DeploymentContractError("pinned runtime rebuild phase is inconsistent")
-        return journal.transition(phase)
+        observed: dict[DatabaseRole, DeployedDatabase] = {}
+        for runtime in runtimes:
+            identity = read_database_identity(runtime)
+            if identity is None:
+                return None
+            observed[runtime.role] = DeployedDatabase(*identity)
+        return observed
 
-    def _converge_application_300_database_bootstrap(
+    @staticmethod
+    def _observe_schema_heads(
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+    ) -> dict[str, str] | None:
+        """세 DB의 Alembic head. 하나라도 읽을 수 없으면 ``None``."""
+
+        try:
+            return {
+                runtime.role: read_database_schema_revision(runtime) for runtime in runtimes
+            }
+        except DeploymentContractError:
+            return None
+
+    @staticmethod
+    def _deployed_images(
+        candidate: PinnedRuntimeGeneration,
+        companions: Mapping[str, RuntimeService],
+    ) -> dict[str, str]:
+        """slot은 자기 이미지, companion은 owner slot의 이미지다."""
+
+        slot_images = candidate.image_ids
+        images = {str(service): image for service, image in slot_images.items()}
+        images.update((name, slot_images[owner]) for name, owner in companions.items())
+        return images
+
+    def rebuild_pinned_runtime(
         self,
         *,
-        journal: PinnedRuntimeRebuildJournal,
-        runtime: DatabaseRuntime,
-        transaction: ComposeTransactionSnapshot,
-        journal_path: Path,
-    ) -> tuple[PinnedRuntimeRebuildJournal, ApplicationDatabaseIdentity]:
-        """createdb/bootstrap crash를 durable phase와 exact catalog로 수렴한다."""
+        restart_reason: str | None = None,
+        adopt_reason: str | None = None,
+    ) -> dict[str, Any]:
+        """핀된 Map·PinVi pair를 **마이그레이션 전진**으로 배포한다(ADR-51).
 
-        if journal.phase == "databases_recreated":
-            updated = journal.with_application_create_intent()
-            write_pinned_runtime_rebuild_journal(journal_path, updated)
-            journal = updated
+        DB는 배포를 넘어 보존된다. 같은 pair를 다시 돌리면 빌드 없이 수렴만 하고, 새
+        pair는 멱등 one-shot으로 head까지 올린다. DB를 지우는 길은 ``restart_reason``을
+        준 명시적 ``--restart`` 하나다. ``adopt_reason``(``--adopt-live-databases``)은
+        지금 떠 있는 DB를 지우지 않고 새 identity 기준으로 받아들인다 — 백업 복원처럼
+        비파괴로 DB가 바뀌었을 때 ``--restart`` 말고 빠져나갈 길이다.
 
-        if journal.phase == "application_create_intent_durable":
-            create_state = inspect_application_300_bootstrap_state(runtime)
-            if create_state == "absent":
-                create_fresh_application_300_database(runtime)
-                create_state = inspect_application_300_bootstrap_state(runtime)
-            if create_state != "virgin":
-                raise DeploymentContractError(
-                    "application 300 create result is not an exact virgin database"
-                )
-            runtime_create_identity = read_application_300_database_identity(runtime)
-            if runtime_create_identity.database_owner != runtime.owner_name:
-                raise DeploymentContractError(
-                    "application 300 create result owner differs from contract"
-                )
-            journal_create_identity = _application_300_journal_database_identity(
-                runtime_create_identity
-            )
-            updated = journal.with_application_created(
-                application_create_database_identity=journal_create_identity
-            )
-            write_pinned_runtime_rebuild_journal(journal_path, updated)
-            journal = updated
-
-        if journal.phase == "application_created":
-            if inspect_application_300_bootstrap_state(runtime) != "virgin":
-                raise DeploymentContractError(
-                    "application 300 database changed before role bootstrap intent"
-                )
-            runtime_create_identity = read_application_300_database_identity(runtime)
-            journal_create_identity = _application_300_journal_database_identity(
-                runtime_create_identity
-            )
-            if (
-                journal.map_application_300_execution_evidence
-                .application_create_database_identity
-                != journal_create_identity
-            ):
-                raise DeploymentContractError(
-                    "application 300 create result differs from journal"
-                )
-            updated = journal.with_application_bootstrap_intent()
-            write_pinned_runtime_rebuild_journal(journal_path, updated)
-            journal = updated
-
-        if journal.phase == "application_bootstrap_intent_durable":
-            bootstrap_state = inspect_application_300_bootstrap_state(runtime)
-            if bootstrap_state == "virgin":
-                self._run_pinned_runtime_rebuild_compose(
-                    [
-                        "--profile",
-                        "bootstrap",
-                        "run",
-                        "--rm",
-                        "--no-deps",
-                        "--env",
-                        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
-                        "kor-travel-map-db-role-bootstrap",
-                    ],
-                    transaction=transaction,
-                )
-                bootstrap_state = inspect_application_300_bootstrap_state(runtime)
-            if bootstrap_state != "exact_complete":
-                raise DeploymentContractError(
-                    "application 300 role bootstrap result is not exact"
-                )
-            runtime_application_identity = read_application_300_database_identity(
-                runtime
-            )
-            application_database, journal_application_database = (
-                _application_300_database_identities(runtime_application_identity)
-            )
-            updated = journal.with_application_roles_ready(
-                application_database_identity=journal_application_database
-            )
-            write_pinned_runtime_rebuild_journal(journal_path, updated)
-            return updated, application_database
-
-        runtime_application_identity = read_application_300_database_identity(runtime)
-        application_database, journal_application_database = (
-            _application_300_database_identities(runtime_application_identity)
-        )
-        expected_application_identity = (
-            journal.map_application_300_execution_evidence
-            .application_database_identity
-        )
-        if (
-            expected_application_identity is None
-            or expected_application_identity != journal_application_database
-        ):
-            raise DeploymentContractError(
-                "application 300 database identity differs from journal"
-            )
-        return journal, application_database
-
-    def rebuild_pinned_runtime(self) -> dict[str, Any]:
-        """application-300 paired candidate에 결박된 destructive rebuild를 실행한다.
-
-        얇은 래퍼는 한 가지만 한다 — 봉인되지 않은 실패에
-        "이 실행은 durable journal을 쓰지 않았다"를 붙인다.
-
-        launcher(`run-pinned-rebuild-once`)는 `ktdctl` 호출 **전에** claim을 쓰고,
-        result의 `classification` 하나로 그 claim을 해제할지 판정한다. 봉인
-        (`_pinned_runtime_prejournal_step`) 밖에서 새는 `DeploymentContractError`는
-        전부 `unclassified`로 접혔고, 그러면 아무것도 소비하지 않은 후보가
-        영구 거절돼 **회전 사이클 1회**(= Map+PinVi revision부터 다시)가 탄다.
-
-        그 봉인 밖 경로는 적지 않다 — host lease 획득 실패(**다른 배포가 lock을
-        잡고 있다** · root 아님 · lock 디렉터리 불안전), 배포 lifecycle 게이트
-        거부, candidate 준비 중 봉인 밖 문장들.
-
-        `prewrite_admission`의 거절은 이 목록에 **없다.** 관측이 그보다 먼저
-        일어나므로 파일로 판정된다 — journal이 있으면(= resume, 이미 소비됨)
-        유지, 없으면 해제. 그게 이 방식을 고른 이유다(적대 리뷰 M-1/m-3).
-
-        경계는 **journal이지 mutation이 아니다.** journal write 전에도 root
-        `.env` role credential 회전·source materialize·이미지 4개 빌드는 이미
-        일어난다. claim은 동시성 가드이자 감사 원장이고 재실행 권한의 정본은
-        runtime pin/execution registry라는 전제 위에서만 이 경계가 성립한다 —
-        `docs/runtime-pin-registry.md` §9.
-
-        문장마다 표시하는 대신 **관측**한다: journal 경로를 알게 되면 watermark에
-        적어 두고, 실패 시 그 파일의 존재를 본다. 앞으로 write가 늘어도 판정이
-        저절로 맞고, 열거를 유지할 규율이 필요 없다.
+        얇은 래퍼는 한 가지만 한다 — 실패에 "이 실행이 배포 상태를 ``in_progress``로
+        바꿨는가"를 붙인다. launcher는 그 분류로 claim 해제를 정한다.
         """
 
+        if restart_reason is not None and adopt_reason is not None:
+            raise DeploymentContractError(
+                "a deploy either restarts or adopts the live databases, not both"
+            )
         watermark = _PinnedRuntimeJournalWatermark()
         try:
-            return self._rebuild_pinned_runtime(watermark)
+            return self._rebuild_pinned_runtime(
+                watermark,
+                restart_reason=restart_reason,
+                adopt_reason=adopt_reason,
+            )
         except PinnedRuntimePrejournalFailure as exc:
-            # 봉인된 실패는 자기 **stage**를 들고 있지만 소각 판정은 들고 있지
-            # 않다. 봉인 단계는 전부 resume 분기보다 앞에서 돌므로, journal이
-            # 이미 있는 실행에서 봉인 단계가 실패하면 소비된 후보가 해제된다.
             if watermark.reached():
                 _mark_pinned_runtime_journal_reached(exc)
             raise
@@ -5484,50 +4901,38 @@ class ComposeService:
             raise
 
     def _rebuild_pinned_runtime(
-        self, watermark: _PinnedRuntimeJournalWatermark
+        self,
+        watermark: _PinnedRuntimeJournalWatermark,
+        *,
+        restart_reason: str | None,
+        adopt_reason: str | None,
     ) -> dict[str, Any]:
-        """rebuild 본문. 분류는 호출자(래퍼)가 관측으로 붙인다."""
+        """배포 본문. 분류는 호출자(래퍼)가 붙인다."""
 
         _require_pinned_runtime_rebuild_root()
+        restart = (
+            None
+            if restart_reason is None
+            else DeployRestart(reason=restart_reason, at=_utc_now())
+        )
+        adopted = (
+            None
+            if adopt_reason is None
+            else DeployRestart(reason=adopt_reason, at=_utc_now())
+        )
+        explicit = restart is not None or adopted is not None
         release: PinnedRuntimeRelease | None = None
-        resume_journal: PinnedRuntimeRebuildJournal | None = None
+        warnings: list[str] = []
 
         def prewrite_admission(
             environment_snapshot: ComposeEnvironmentSnapshot,
         ) -> str | None:
-            nonlocal release, resume_journal
-            # global mutation lock을 잡은 뒤 하나의 registry snapshot을 만들고 즉시
-            # source/v6 execution gate를 확인한다. rotate가 두 read 사이에 끼어 old
-            # release와 new execution을 섞는 TOCTOU를 막는다.
+            nonlocal release
+            del environment_snapshot
+            # lock을 잡은 뒤 registry snapshot 하나를 만든다 — rotate가 두 read 사이에
+            # 끼어 old release와 new 상태를 섞지 못하게 한다.
             release = current_pinned_runtime_release()
-            try:
-                state_paths = pinned_runtime_state_paths(
-                    environment_snapshot.effective,
-                    pinset_sha256=release.pinset_sha256,
-                )
-            except DeploymentContractError:
-                # 여기서부터 pinset은 식별됐다. 경로를 못 냈다는 이유로
-                # 해제하면 journal이 이미 있는 후보의 claim이 사라진다.
-                watermark.observe_unresolvable()
-                raise
-            # 관측을 **terminal block 게이트보다 먼저** 한다. 그 게이트는
-            # 바로 '이미 소비된 후보'를 거절하려고 있는데, 관측 전에 두면
-            # 그 거절이 `journal_path is None`(= 도달한 적 없음) 통에 담겨
-            # **소비된 후보의 claim을 해제**한다 — 정확히 반대 방향이다
-            # (적대 리뷰 M-1). 순서를 바꾸면 같은 거절이 파일 관측으로
-            # 판정된다: journal이 있으면 유지, 없으면(= 정말 소비 안 됨) 해제.
-            watermark.observe(state_paths.journal)
-            _assert_pinset_is_not_permanently_blocked(release.pinset_sha256)
-            try:
-                state_paths.journal.lstat()
-            except FileNotFoundError:
-                return None
-            resume_journal = read_pinned_runtime_rebuild_journal(state_paths.journal)
-            # M05 폐기 전에는 여기서 두 admission이 더 돌았다: durable role topology
-            # block 거절과 role credential rebind 판정. 전자는 reset 경로의 버그가
-            # 그대로 후보를 영구 차단하는 통로였고(오늘 실측), 후자는 `.env`에 role
-            # 자격증명을 심고 그 해시로 재개를 게이팅했다 — 둘 다 다중 role 모델과
-            # 함께 사라진다. 이제 rebind할 자격증명이 없으므로 항상 None이다.
+            warnings.extend(_pinned_runtime_admission_warnings(release.pinset_sha256))
             return None
 
         with _pinned_runtime_rebuild_environment_lock(
@@ -5539,15 +4944,11 @@ class ComposeService:
         ):
             if release is None:  # pragma: no cover - context contract 방어
                 raise DeploymentContractError("pinned runtime release snapshot is unavailable")
-            # application head 300은 paired receipt와 설치된 baseline contract가
-            # 정본이다. Dagster/PinVi head만 network-less candidate 명령으로 읽는다.
+            values = environment_snapshot.effective
             with _pinned_runtime_prejournal_step("state_initialization"):
-                validate_c6c_operation_tokens(
-                    environment_snapshot.effective,
-                    require_nonempty=True,
-                )
+                validate_c6c_operation_tokens(values, require_nonempty=True)
                 state_paths = pinned_runtime_state_paths(
-                    environment_snapshot.effective,
+                    values,
                     pinset_sha256=release.pinset_sha256,
                 )
                 ensure_pinned_runtime_state_directory(state_paths.state_root)
@@ -5555,20 +4956,19 @@ class ComposeService:
                     state_root=state_paths.state_root,
                     pinset_sha256=release.pinset_sha256,
                 )
+                # pinset별 permit 디렉터리는 계속 마운트한다. 새로 발급하지는 않는다 —
+                # M1 이전 Map 이미지로 이미 커밋된 세대가 자기 permit을 그대로 본다.
                 artifact_directories = MapApplication300ArtifactDirectories(
                     dagster_storage_permit=application_paths.metadata_permit_directory,
                 )
+                status_path = deploy_status_path(state_paths.state_root)
+                previous = read_deploy_status(status_path)
             with _pinned_runtime_prejournal_step("prebuild_snapshot"):
                 prebuild_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=dict(artifact_directories.compose_environment()),
                     environment_snapshot=environment_snapshot,
                 )
-                _assert_transaction_matches_c6c_lock(
-                    prebuild_transaction, lock_snapshot
-                )
-            # 외부 prerequisite는 source materialize, paired builder, image tag,
-            # receipt/journal write보다 먼저 확인한다. fixed artifact directory만
-            # base candidate가 volume graph를 검증할 수 있도록 먼저 준비한다.
+                _assert_transaction_matches_c6c_lock(prebuild_transaction, lock_snapshot)
             with _pinned_runtime_prejournal_step("external_prerequisites"):
                 self._require_services_ready(
                     _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
@@ -5579,169 +4979,102 @@ class ComposeService:
                 sources = materialize_pinned_runtime_sources(
                     release=release,
                     state_paths=state_paths,
-                    values=environment_snapshot.effective,
-                )
-            journal_exists = resume_journal is not None
-            with _pinned_runtime_prejournal_step("application_base_images"):
-                paired_build_images = map_application_300_paired_build_image_names(
-                    sources
+                    values=values,
                 )
             with _pinned_runtime_prejournal_step("application_base_images"):
+                paired_build_images = map_application_300_paired_build_image_names(sources)
                 _ensure_map_application_300_python_base_images(sources)
-            if not journal_exists:
-                with _pinned_runtime_prejournal_step("application_builder"):
+            with _pinned_runtime_prejournal_step("application_builder"):
+                # 이미지 태그는 pinset에 묶인다. 이미 있으면 같은 소스에서 나온 것이므로
+                # 다시 빌드하지 않는다 — 다시 빌드하면 재현되지 않는 digest가 나와 같은
+                # pair의 재실행이 "새 이미지"가 된다.
+                if not all(_local_image_present(ref) for ref in paired_build_images.values()):
                     _build_map_application_300_images(
                         sources=sources,
                         api_image=paired_build_images["kor-travel-map-api"],
                         dagster_image=paired_build_images["kor-travel-map-dagster"],
                     )
             with _pinned_runtime_prejournal_step("application_candidate"):
-                # resume이면 이미 durable하게 적힌 candidate를 그대로 쓴다 -- 다시
-                # 빌드·관측하면 재현되지 않는 이미지 digest 때문에 journal과 갈릴 수
-                # 있다(_map_application_candidate_from_journal의 docstring 참고).
-                map_candidate = (
-                    _map_application_candidate_from_journal(
-                        cast(PinnedRuntimeRebuildJournal, resume_journal),
-                        sources=sources,
-                    )
-                    if journal_exists
-                    else _load_application_300_candidate(
-                        sources=sources,
-                        api_image=paired_build_images["kor-travel-map-api"],
-                        dagster_image=paired_build_images["kor-travel-map-dagster"],
-                    )
+                map_candidate = _load_application_300_candidate(
+                    sources=sources,
+                    api_image=paired_build_images["kor-travel-map-api"],
+                    dagster_image=paired_build_images["kor-travel-map-dagster"],
                 )
-            with _pinned_runtime_prejournal_step("application_candidate"):
                 build = CandidateRuntimeBuild(
                     sources=sources,
                     map_application_candidate=map_candidate,
                 )
-                candidate_build_references = {
-                    **paired_build_images,
-                    **build.image_names,
-                }
+                candidate_build_references = {**paired_build_images, **build.image_names}
             candidate_environment = {
                 **build.compose_environment(),
                 **artifact_directories.compose_environment(),
-                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": (
-                    map_candidate.application_head
-                ),
+                "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": map_candidate.application_head,
             }
             with _pinned_runtime_prejournal_step("candidate_snapshot"):
                 candidate_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=candidate_environment,
                     environment_snapshot=environment_snapshot,
                 )
-                _assert_transaction_matches_c6c_lock(
-                    candidate_transaction, lock_snapshot
-                )
+                _assert_transaction_matches_c6c_lock(candidate_transaction, lock_snapshot)
             with _pinned_runtime_prejournal_step("candidate_contract"):
                 self._validate_pinned_runtime_candidate_build_contract(
                     candidate_transaction,
                     build=build,
                     environment_override=candidate_environment,
                 )
-            # Geo·Concierge·RustFS는 F1D가 소유하지 않는 선행 runtime이다. 후보를
-            # build하거나 journal을 쓰기 전에 frozen Compose의 read-only ``ps``로
-            # exact readiness를 증명하고, 부재/불건강이면 시작·변경 없이 닫는다.
-            with _pinned_runtime_prejournal_step("external_prerequisites"):
-                self._require_services_ready(
-                    _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
-                    transaction=candidate_transaction,
-                    frozen_recovery=True,
-                )
-            if journal_exists:
-                journal = cast(PinnedRuntimeRebuildJournal, resume_journal)
-                if journal.phase == "committed":
-                    manifest = read_pinned_runtime_manifest(state_paths.manifest)
-                    if manifest.active_generation != journal.candidate:
-                        raise DeploymentContractError(
-                            "pinned runtime manifest differs from committed journal"
-                        )
-                self._assert_pinned_runtime_journal_matches_map_candidate(
-                    journal,
-                    map_candidate=map_candidate,
-                )
-                self._attest_pinned_runtime_candidate_images(
-                    build=build,
-                    map_candidate=map_candidate,
-                )
-                ensure_generation_references((journal.candidate,), cwd=get_project_root())
-            else:
-                # 여기부터 journal write까지는 전부 journal 전이다. 종전에는
-                # 이 분기 전체가 봉인 밖이라, 30분짜리 후보 빌드가 한 번
-                # 실패하면 `unclassified`가 되고 launcher가 claim을 유지해
-                # **회전 사이클 1회**가 탔다(2026-09-02 `pinvi-web` exit 1).
-                #
-                # 네 단계를 각각 다른 stage로 둔다. 하나로 묶으면 다음 실행이
-                # 여전히 지점을 못 짚어 같은 값비싼 반복을 한 번 더 한다.
-                with _pinned_runtime_prejournal_step("candidate_compose_build"):
+            with _pinned_runtime_prejournal_step("candidate_compose_build"):
+                if not all(_local_image_present(ref) for ref in build.image_names.values()):
                     self._run_pinned_runtime_rebuild_compose(
                         ["build", *COMPOSE_BUILT_RUNTIME_SERVICES],
                         transaction=candidate_transaction,
                     )
-                with _pinned_runtime_prejournal_step("candidate_images"):
-                    image_ids = self._attest_pinned_runtime_candidate_images(
-                        build=build,
-                        map_candidate=map_candidate,
-                    )
-                with _pinned_runtime_prejournal_step("candidate_bootstrap_settings"):
-                    self._verify_pinned_runtime_pinvi_bootstrap_settings(
-                        transaction=candidate_transaction,
-                    )
-                with _pinned_runtime_prejournal_step("candidate_heads"):
-                    # Map application head는 후보를 빌드한 직후 이미 한 번 관측했다
-                    # (`_load_application_300_candidate`). 같은 이미지를 다시 돌려
-                    # 같은 값을 구하는 대신 그 결과를 그대로 쓴다.
-                    #
-                    # 나머지 두 static head 명령은 후보 이미지를 network-less로
-                    # 한 번씩 돌린다. 실패해도 journal 전이고 Compose·DB mutation 전이다.
-                    map_dagster_output = _run_pinned_runtime_static_command(
+            with _pinned_runtime_prejournal_step("candidate_images"):
+                image_ids = self._attest_pinned_runtime_candidate_images(
+                    build=build,
+                    map_candidate=map_candidate,
+                )
+            with _pinned_runtime_prejournal_step("candidate_bootstrap_settings"):
+                self._verify_pinned_runtime_pinvi_bootstrap_settings(
+                    transaction=candidate_transaction,
+                )
+            with _pinned_runtime_prejournal_step("candidate_heads"):
+                # Map application head는 `_load_application_300_candidate`가 이미 한 번
+                # 관측했다. 나머지 둘은 후보 이미지를 network-less로 한 번씩 돌린다.
+                map_dagster_head = parse_candidate_static_head(
+                    _run_pinned_runtime_static_command(
                         image_ids["kor-travel-map-dagster"],
                         ("head",),
                         label="Map Dagster",
                         entrypoint="/usr/local/bin/ktm-dagster-storage",
-                    )
-                    map_dagster_head = parse_candidate_static_head(
-                        map_dagster_output,
-                        schema="kor-travel-map.dagster-storage-head.v1",
-                        field="head",
-                    )
-                    pinvi_output = _run_pinned_runtime_static_command(
+                    ),
+                    schema="kor-travel-map.dagster-storage-head.v1",
+                    field="head",
+                )
+                pinvi_head = parse_candidate_static_head(
+                    _run_pinned_runtime_static_command(
                         image_ids["pinvi-api"],
                         ("pinvi-admin-bootstrap", "head"),
                         label="PinVi",
-                    )
-                    pinvi_head = parse_candidate_static_head(
-                        pinvi_output,
-                        schema="pinvi.candidate-head.v1",
-                        field="pinvi_head",
-                    )
-                    candidate = build_candidate_generation(
-                        sources=sources,
-                        map_application_candidate=map_candidate,
-                        image_ids=image_ids,
-                        map_dagster_head=map_dagster_head,
-                        pinvi_head=pinvi_head,
-                    )
-
-            with _pinned_runtime_prejournal_step("runtime_generation"):
-                candidate_generation = (
-                    journal.candidate if journal_exists else candidate
+                    ),
+                    schema="pinvi.candidate-head.v1",
+                    field="pinvi_head",
                 )
+                candidate = build_candidate_generation(
+                    sources=sources,
+                    map_application_candidate=map_candidate,
+                    image_ids=image_ids,
+                    map_dagster_head=map_dagster_head,
+                    pinvi_head=pinvi_head,
+                )
+            with _pinned_runtime_prejournal_step("runtime_generation"):
                 runtime_environment = {
                     **build.compose_environment(),
                     **generation_compose_environment(
-                        candidate_generation,
+                        candidate,
                         artifact_directories=artifact_directories,
                     ),
-                    "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": (
-                        candidate_generation.map_application_head
-                    ),
+                    "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": candidate.map_application_head,
                 }
-            # 이 둘을 한 stage로 묶지 않는다. capture는 compose 후보 계약
-            # 전체를 검증하고, assert는 lock snapshot과의 일치만 본다 —
-            # 원인이 전혀 달라서 묶으면 다음 실행이 여전히 지점을 못 짚는다.
             with _pinned_runtime_prejournal_step("runtime_transaction"):
                 runtime_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=runtime_environment,
@@ -5749,635 +5082,125 @@ class ComposeService:
                 )
                 companions = generation_companion_services(
                     runtime_transaction.resolved,
-                    candidate_generation.image_ids,
+                    candidate.image_ids,
                     excluded_services=_PINNED_RUNTIME_ONESHOT_WRITERS,
                 )
             with _pinned_runtime_prejournal_step("runtime_transaction_lock"):
-                _assert_transaction_matches_c6c_lock(
-                    runtime_transaction, lock_snapshot
-                )
-            if journal_exists:
-                current_environment_sha256 = hashlib.sha256(
-                    environment_snapshot.env_file_bytes
-                ).hexdigest()
-                if journal.environment_sha256 != current_environment_sha256:
-                    # 종전에는 여기서 `.env`에 심긴 rebind 스탬프를 요구했고, 그것이
-                    # 없으면 후보가 영구히 재개 불가였다 — Manager가 role 자격증명을
-                    # `.env`에 쓰던 시절의 provenance 요구다. 이제 rebuild가 `.env`를
-                    # 건드리지 않으므로 증명할 provenance가 없다. 전이 자체는 계속
-                    # journal에 남긴다(감사 흔적).
-                    journal = journal.with_pinvi_role_credential_environment_rebind(
-                        previous_environment_sha256=journal.environment_sha256,
-                        compose_sha256=hashlib.sha256(
-                            runtime_transaction.compose_source_bytes
-                        ).hexdigest(),
-                        current_environment_sha256=current_environment_sha256,
-                        current_resolved_compose_sha256=(
-                            runtime_transaction.resolved_document_hash
-                        ),
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, journal)
-                self._assert_pinned_runtime_journal_matches_candidate_input(
-                    journal,
-                    release_pinset_sha256=release.pinset_sha256,
-                    map_revision=release.source_for("map").revision,
-                    pinvi_revision=release.source_for("pinvi").revision,
-                    environment_bytes=environment_snapshot.env_file_bytes,
-                    compose_source_bytes=runtime_transaction.compose_source_bytes,
-                    resolved_compose_sha256=runtime_transaction.resolved_document_hash,
-                )
-            else:
-                journal = new_candidate_journal(
-                    candidate=candidate,
-                    environment_bytes=environment_snapshot.env_file_bytes,
-                    compose_source_bytes=runtime_transaction.compose_source_bytes,
-                    resolved_compose_sha256=runtime_transaction.resolved_document_hash,
-                )
-                write_pinned_runtime_rebuild_journal(state_paths.journal, journal)
-                ensure_generation_references((candidate,), cwd=get_project_root())
-
-            # legacy journal이 이미 남았더라도 tombstone write/unlink 사이의 crash 또는
-            # 검증 실패를 건너뛰면 안 된다. idempotent receipt 검증은 runtime/DB
-            # mutation 전에 매 실행한다.
-            retire_f1d_legacy_artifacts(
-                state_root=state_paths.state_root,
-                transaction_id=journal.transaction_id,
-                candidate=journal.candidate,
-                recorded_at=journal.created_at,
-            )
-
+                _assert_transaction_matches_c6c_lock(runtime_transaction, lock_snapshot)
+            ensure_generation_references((candidate,), cwd=get_project_root())
             runtimes = database_runtimes_from_frozen_contract(
                 resolved=runtime_transaction.resolved,
                 environment=runtime_transaction.environment.effective,
             )
-            resumed = journal_exists
-            if journal.phase == "committed":
-                runtime_records = self._require_services_ready(
-                    (*RUNTIME_SERVICES, *companions),
-                    transaction=runtime_transaction,
-                    frozen_recovery=True,
+            expected_images = self._deployed_images(candidate, companions)
+            # 수렴 판정과 identity 기준선은 **실제로 migration할 cluster**를 읽어야 한다.
+            # 그래서 두 PostgreSQL을 판정보다 먼저 frozen Compose에 맞춘다. 뒤로 미루면
+            # PGDATA·이미지가 바뀐 호스트에서 옛 컨테이너로 기준선을 통과한 뒤 전체 경로가
+            # 새 cluster로 다시 만들어 그것을 커밋했다(B2 적대 리뷰 2차).
+            self._start_pinned_runtime_databases(
+                runtime_transaction=runtime_transaction,
+                map_candidate=map_candidate,
+            )
+
+            if previous is None:
+                # 이 Manager의 첫 배포: 지금 떠 있는 v6/v8 세대를 리셋 없이 넘겨받는다.
+                # 맞지 않으면 None이고, 그 결과는 전체 경로 한 번이다.
+                from kor_travel_docker_manager.services.runtime_execution_registry import (
+                    trusted_manager_source_revision,
                 )
-                self._assert_pinned_runtime_container_images(
-                    runtime_records,
-                    journal=journal,
+
+                previous = carry_over_committed_generation(
+                    state_paths.state_root,
                     companions=companions,
+                    manager_revision=trusted_manager_source_revision(),
                 )
-                postgres_records = self._require_services_ready(
-                    ("kor-travel-map-postgres", "pinvi-postgres"),
-                    transaction=runtime_transaction,
-                    frozen_recovery=True,
+                if previous is not None:
+                    write_deploy_status(status_path, previous)
+
+            if (
+                not explicit
+                and previous is not None
+                and previous.state == "committed"
+                and previous.map_revision == candidate.map_source_revision
+                and previous.pinvi_revision == candidate.pinvi_source_revision
+                and dict(previous.images) == expected_images
+                and previous.databases is not None
+                and self._observe_deployed_databases(runtimes) == dict(previous.databases)
+                and self._observe_schema_heads(runtimes) == dict(previous.schema_heads)
+            ):
+                self._converge_committed_runtime(
+                    runtime_transaction=runtime_transaction,
+                    companions=companions,
+                    expected_images=expected_images,
                 )
-                self._assert_committed_postgres_images(
-                    postgres_records,
-                    transaction=runtime_transaction,
-                    map_candidate=map_candidate,
-                )
-                validate_map_postgres_runtime_secret_isolation(
-                    self._inspect_container_runtime_config(
-                        str(postgres_records[0]["Name"])
-                    )
-                )
-                validate_pinvi_postgres_runtime_secret_isolation(
-                    self._inspect_container_runtime_config(
-                        str(postgres_records[1]["Name"])
-                    )
-                )
-                self._retire_pinned_runtime_oneshot_writers(
-                    transaction=runtime_transaction,
-                )
-                reconcile_orphaned_pinvi_bootstrap_credentials(
-                    state_paths=state_paths,
-                    values=environment_snapshot.effective,
-                    global_mutation_lock_held=True,
-                    all_one_shot_containers_absent=True,
-                )
-                self._assert_pinned_runtime_database_heads(runtimes, journal=journal)
-                metadata_user = runtime_transaction.environment.effective.get(
-                    "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
-                )
-                if not isinstance(metadata_user, str):
-                    raise DeploymentContractError(
-                        "Map Dagster metadata user is unavailable"
-                    )
-                self._assert_committed_application_database_identities(
-                    runtimes,
-                    journal=journal,
-                    metadata_user=metadata_user,
-                )
-                config = load_c6c_deployment_config_from_environment(
-                    runtime_transaction.environment.effective
-                )
-                if isinstance(config, C6cDeploymentConfig):
-                    runtime_configs = self._inspect_c6c_runtime_configs(
-                        config,
-                        [*RUNTIME_SERVICES, *companions],
-                        transaction=runtime_transaction,
-                        frozen_recovery=True,
-                    )
-                    validate_runtime_secret_isolation(runtime_configs, config)
-                    validate_current_map_ui_auth_runtime(
-                        runtime_configs[config.map_ui_container],
-                        config,
-                    )
-                reconcile_generation_references(
-                    (journal.candidate,),
-                    cwd=get_project_root(),
-                )
-                reconcile_candidate_build_references(
+                # 커밋 직후의 보존 정리가 실패했거나 그 사이에 죽었으면 여기서 다시 한다 —
+                # 같은 pair의 재실행은 수렴만 하므로 다른 기회가 없다.
+                self._reconcile_pinned_runtime_image_retention(
+                    candidate,
                     candidate_build_references,
-                    journal.candidate,
-                    cwd=get_project_root(),
+                    warnings,
                 )
-                return self._pinned_runtime_result(journal, resumed=True)
+                return self._pinned_runtime_result(
+                    previous,
+                    candidate=candidate,
+                    outcome="converged",
+                    warnings=warnings,
+                )
+
+            if (
+                not explicit
+                and previous is not None
+                and previous.databases is not None
+                and self._observe_deployed_databases(runtimes) != dict(previous.databases)
+            ):
+                # 지난 배포가 본 DB가 아니다(누가 지우거나 다시 만들거나 복원했다). 무엇도
+                # 바꾸기 전에 멈춘다 — 이대로 올리면 모르는 DB 위에 migration을 쌓는다.
+                raise DeploymentContractError(
+                    "live databases differ from the last deploy; accept them with "
+                    "--adopt-live-databases or rebuild them with --restart"
+                )
+
+            if restart is None:
+                # 전체 경로가 Map DB 앞에서 거부할 상태라면 런타임을 멈추기 **전에** 거부한다.
+                require_map_application_database_convergible(runtimes[0])
+
+            from kor_travel_docker_manager.services.runtime_execution_registry import (
+                trusted_manager_source_revision,
+            )
+
+            status = begin_deploy(
+                previous,
+                run_id=str(uuid.uuid4()),
+                started_at=_utc_now(),
+                manager_revision=trusted_manager_source_revision(),
+                map_revision=candidate.map_source_revision,
+                pinvi_revision=candidate.pinvi_source_revision,
+                pinset_sha256=candidate.pinset_sha256,
+                restart=restart,
+                adopted=adopted,
+                # 채택은 지금 떠 있는 DB를 기준으로 삼는다. 중간에 죽어도 다음 일반 실행이
+                # 그 기준으로 확인한다(모두 있을 때만 — 하나라도 없으면 커밋 때 잡힌다).
+                adopted_databases=(
+                    self._observe_deployed_databases(runtimes)
+                    if adopted is not None
+                    else None
+                ),
+            )
+            write_deploy_status(status_path, status)
+            watermark.mark_reached()
             try:
-                if _pinned_runtime_reset_required(journal):
-                    updated = self._advance_pinned_runtime_journal(
-                        journal, "reset_intent_durable"
-                    )
-                    if updated != journal:
-                        write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                        journal = updated
-
-                # fixture receipt가 있는 resume도 Map/PinVi writer와 one-shot
-                # bootstrap을 정지·부재 검증한 뒤에만 controlled startup으로 간다.
-                # fixture outcome만 보존하며, live runtime/partial writer를
-                # 재사용하지는 않는다.
-                self._run_pinned_runtime_rebuild_compose(
-                    ["stop", *RUNTIME_SERVICES, *companions],
-                    transaction=runtime_transaction,
-                )
-                self._retire_pinned_runtime_oneshot_writers(
-                    transaction=runtime_transaction,
-                )
-                reconcile_orphaned_pinvi_bootstrap_credentials(
-                    state_paths=state_paths,
-                    values=environment_snapshot.effective,
-                    global_mutation_lock_held=True,
-                    all_one_shot_containers_absent=True,
-                )
-
-                # Map 두 DB runtime은 shared PostgreSQL이 아니라 #171 전용 instance에,
-                # PinVi DB는 별도 instance에 있다. reset 전에 두 PostgreSQL을 frozen
-                # Compose로 health까지 보장해 `docker exec`가 존재하지 않는 container를
-                # 향하거나 shared DB로 fallback하지 않게 한다.
-                self._run_pinned_runtime_rebuild_compose(
-                    [
-                        "up",
-                        "-d",
-                        "--no-deps",
-                        "--wait",
-                        "--wait-timeout",
-                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
-                        "kor-travel-map-postgres",
-                        "pinvi-postgres",
-                    ],
-                    transaction=runtime_transaction,
-                )
-                # raw/resolved Compose는 secret alias mount를 고정하지만, 실제
-                # long-lived container가 legacy password Env를 보존하지 않았는지도
-                # destructive DB reset 전에 Docker inspect로 fail-close한다.
-                map_postgres_records = self._require_services_ready(
-                    ("kor-travel-map-postgres", "pinvi-postgres"),
-                    transaction=runtime_transaction,
-                    frozen_recovery=True,
-                )
-                validate_map_postgres_runtime_secret_isolation(
-                    self._inspect_container_runtime_config(
-                        str(map_postgres_records[0]["Name"])
-                    )
-                )
-                validate_pinvi_postgres_runtime_secret_isolation(
-                    self._inspect_container_runtime_config(
-                        str(map_postgres_records[1]["Name"])
-                    )
-                )
-                observed_map_postgres_image = self._inspect_container_image_id(
-                    str(map_postgres_records[0]["Name"]),
-                    label="Map PostgreSQL",
-                )
-                if observed_map_postgres_image != map_candidate.postgres_image_id:
-                    raise DeploymentContractError(
-                        "Map PostgreSQL runtime image differs from paired candidate"
-                    )
-
-                reset_required = _pinned_runtime_reset_required(journal)
-                if reset_required:
-                    reset_databases_for_application_300(runtimes)
-                    pinvi_database_identity = _pinned_runtime_journal_database_identity(
-                        read_pinned_database_identity(runtimes[2])
-                    )
-                    updated = journal.with_databases_recreated(
-                        pinvi_database_identity=pinvi_database_identity
-                    )
-                    if updated != journal:
-                        write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                        journal = updated
-                else:
-                    expected_pinvi_database_identity = journal.pinvi_database_identity
-                    if expected_pinvi_database_identity is None:
-                        raise DeploymentContractError(
-                            "pinned runtime journal has no PinVi database identity"
-                        )
-                    live_pinvi_database_identity = (
-                        _pinned_runtime_journal_database_identity(
-                            read_pinned_database_identity(runtimes[2])
-                        )
-                    )
-                    if (
-                        live_pinvi_database_identity
-                        != expected_pinvi_database_identity
-                    ):
-                        raise DeploymentContractError(
-                            "PinVi database identity differs from rebuild journal"
-                        )
-
-                journal, application_database = (
-                    self._converge_application_300_database_bootstrap(
-                        journal=journal,
-                        runtime=runtimes[0],
-                        transaction=runtime_transaction,
-                        journal_path=state_paths.journal,
-                    )
-                )
-
-                if journal.phase == "application_roles_ready":
-                    # ADR-101: root migration과 finalize 두 one-shot이 하나가 됐다.
-                    # 그 안은 `alembic upgrade head` 뒤 런타임 권한 재조정 — 순서가
-                    # 계약이다(스키마가 없으면 GRANT할 relation이 없다).
-                    self._run_pinned_runtime_rebuild_compose(
-                        [
-                            "--profile",
-                            "bootstrap",
-                            "run",
-                            "--rm",
-                            "--no-deps",
-                            _MAP_APPLICATION_SCHEMA_SERVICE,
-                        ],
-                        transaction=runtime_transaction,
-                    )
-                    # 성공의 근거는 **종료 코드가 아니라 데이터베이스**다. 이 읽기는
-                    # Manager가 자기 admin 자격으로 하는 독립 관측이고, one-shot이
-                    # 조용히 아무것도 안 하고 0으로 끝나면 여기서 걸린다.
-                    observed_head = read_database_schema_revision(runtimes[0])
-                    if observed_head != journal.candidate.map_application_head:
-                        raise DeploymentContractError(
-                            "Map application schema differs from candidate head"
-                        )
-                    updated = journal.with_application_schema_ready(
-                        application_schema_head=observed_head
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-
-                metadata_user = runtime_transaction.environment.effective.get(
-                    "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
-                )
-                metadata_password = runtime_transaction.environment.effective.get(
-                    "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"
-                )
-                if not isinstance(metadata_user, str) or not isinstance(
-                    metadata_password, str
-                ):
-                    raise DeploymentContractError(
-                        "Map Dagster metadata credentials are unavailable"
-                    )
-                if journal.phase == "application_schema_ready":
-                    try:
-                        runtime_dagster_identity = (
-                            read_application_300_dagster_metadata_identity(
-                                runtimes[1],
-                                metadata_user=metadata_user,
-                            )
-                        )
-                    except DeploymentContractError:
-                        runtime_dagster_identity = (
-                            initialize_application_300_dagster_metadata_database(
-                                runtimes[1],
-                                metadata_user=metadata_user,
-                                metadata_password=metadata_password,
-                            )
-                        )
-                else:
-                    runtime_dagster_identity = (
-                        read_application_300_dagster_metadata_identity(
-                            runtimes[1],
-                            metadata_user=metadata_user,
-                        )
-                    )
-                dagster_database, journal_dagster_database = (
-                    _application_300_dagster_identities(runtime_dagster_identity)
-                )
-                dagster_storage_candidate = DagsterStorageCandidate(
-                    dagster_image_id=map_candidate.dagster_image_id,
-                    dagster_config_sha256=map_candidate.dagster_config_sha256,
-                )
-                try:
-                    metadata_permit = build_dagster_metadata_permit(
-                        candidate=dagster_storage_candidate,
-                        dagster_database=dagster_database,
-                        application_database=application_database,
-                        operation_id=journal.transaction_id,
-                    )
-                    publish_root_read_only_artifact(
-                        application_paths.metadata_permit,
-                        metadata_permit.raw,
-                    )
-                except MapApplication300ContractError as exc:
-                    raise DeploymentContractError(
-                        "Map Dagster metadata permit is invalid"
-                    ) from exc
-                if journal.phase == "application_schema_ready":
-                    updated = journal.with_metadata_permit_ready(
-                        dagster_metadata_database_identity=journal_dagster_database,
-                        metadata_permit_sha256=metadata_permit.sha256,
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                else:
-                    expected_dagster_identity = (
-                        journal.map_application_300_execution_evidence
-                        .dagster_metadata_database_identity
-                    )
-                    if (
-                        expected_dagster_identity != journal_dagster_database
-                        or journal.map_application_300_execution_evidence
-                        .metadata_permit_sha256
-                        != metadata_permit.sha256
-                    ):
-                        raise DeploymentContractError(
-                            "Map Dagster metadata permit differs from journal"
-                        )
-
-                self._run_pinned_runtime_rebuild_compose(
-                    [
-                        "up",
-                        "-d",
-                        "--no-deps",
-                        "--wait",
-                        "--wait-timeout",
-                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
-                        "kor-travel-map-api",
-                    ],
-                    transaction=runtime_transaction,
-                )
-                if (
-                    read_database_schema_revision(runtimes[0])
-                    != journal.candidate.map_application_head
-                ):
-                    raise DeploymentContractError(
-                        "Map application schema differs from candidate head"
-                    )
-                if journal.phase == "metadata_permit_ready":
-                    updated = journal.with_map_application_ready()
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-
-                if journal.phase == "map_application_ready":
-                    updated = self._advance_pinned_runtime_journal(
-                        journal,
-                        "map_dagster_storage_intent_durable",
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                if journal.phase == "map_dagster_storage_intent_durable":
-                    # 성공의 근거는 one-shot이 스스로 쓴 영수증이 아니라 Manager가 직접
-                    # 읽은 head다(ADR-51). 영수증은 Map 리비전마다 모양이 다르고, Map M1은
-                    # permit·outbox를 걷어내 영수증을 내지 않는다.
-                    self._run_pinned_runtime_rebuild_compose(
-                        [
-                            "run",
-                            "--rm",
-                            "--no-deps",
-                            "kor-travel-map-dagster-storage-migrate",
-                        ],
-                        transaction=runtime_transaction,
-                    )
-                    try:
-                        observed_dagster_head = read_database_schema_revision(
-                            runtimes[1]
-                        )
-                    except DeploymentContractError as exc:
-                        raise DeploymentContractError(
-                            "Map Dagster storage execution result is uncertain"
-                        ) from exc
-                    if observed_dagster_head != journal.candidate.map_dagster_head:
-                        raise DeploymentContractError(
-                            "Map Dagster storage execution result is uncertain"
-                        )
-                    updated = self._advance_pinned_runtime_journal(
-                        journal,
-                        "map_dagster_ready",
-                    )
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                elif (
-                    read_database_schema_revision(runtimes[1])
-                    != journal.candidate.map_dagster_head
-                ):
-                    raise DeploymentContractError(
-                        "Map Dagster schema differs from candidate head"
-                    )
-
-                self._run_pinned_runtime_rebuild_compose(
-                    [
-                        "up",
-                        "-d",
-                        "--no-deps",
-                        "--wait",
-                        "--wait-timeout",
-                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
-                        *_with_generation_companions(
-                            (
-                                "kor-travel-map-ui",
-                                "kor-travel-map-dagster",
-                                "kor-travel-map-dagster-daemon",
-                            ),
-                            companions,
-                        ),
-                    ],
-                    transaction=runtime_transaction,
-                )
-                updated = self._advance_pinned_runtime_journal(
-                    journal, "map_runtime_ready"
-                )
-                if updated != journal:
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                if journal.phase == "map_runtime_ready":
-                    # M05 폐기(geo 패턴 전환) 전에는 이 자리가 fresh role catalog
-                    # reset → migrator login open → bootstrap → seal → sealed
-                    # topology verifier의 다섯 단계였다. 그 단계들은 전부 "이
-                    # cluster는 PinVi 것뿐"을 증명하려고 존재했고, 공용 instance로
-                    # 옮긴 뒤에는 sibling 프로젝트의 role/database를 foreign으로
-                    # 판정해 구조적으로 통과할 수 없었다. 이제 scoped app role
-                    # 하나가 자기 database를 소유하므로 남는 것은 migration 실행과
-                    # 그 결과가 candidate head와 같은지 보는 것뿐이다.
-                    #
-                    # 예외 하나: 0101 migration의 fresh-install 경로는 pg_authid/
-                    # pg_database catalog lock을 요구하는데, 이건 database owner
-                    # 권한 밖이다(catalog는 database 소유물이 아니라 cluster
-                    # 전역). destructive reset이 매번 pinvi_internal schema를
-                    # 지우므로 이 fence 함수도 매번 다시 세운다.
-                    self._ensure_pinvi_fresh_migration_fence(
-                        values=environment_snapshot.effective
-                    )
-                    self._run_pinvi_admin_bootstrap(
-                        transaction=runtime_transaction,
-                        state_paths=state_paths,
-                        values=environment_snapshot.effective,
-                        transaction_id=journal.transaction_id,
-                    )
-                    # 저 다섯 단계가 사라질 때 `with_databases_recreated`가 찍는
-                    # `intent` receipt를 `completed`로 닫던 호출까지 같이 사라졌다.
-                    # journal은 `map_runtime_ready`에서는 `intent`를 허용하지만 그
-                    # 다음 phase부터는 거절하므로, 닫지 않으면 이 재구축은 여기서
-                    # 영구히 멈춘다. receipt를 아예 안 찍는 쪽은 안 된다 — 봉인된
-                    # journal에서 이 자리가 `null`이면 Map의 production attestation이
-                    # 거절한다.
-                    if journal.pinvi_role_catalog_reset == PinviRoleCatalogResetReceipt(
-                        state="intent"
-                    ):
-                        journal = journal.with_pinvi_role_catalog_reset_completed()
-                        write_pinned_runtime_rebuild_journal(
-                            state_paths.journal, journal
-                        )
-                if read_database_schema_revision(runtimes[2]) != journal.candidate.pinvi_head:
-                    raise DeploymentContractError("PinVi schema differs from candidate head")
-                updated = self._advance_pinned_runtime_journal(
-                    journal, "pinvi_schema_ready"
-                )
-                if updated != journal:
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                self._run_pinned_runtime_rebuild_compose(
-                    [
-                        "up",
-                        "-d",
-                        "--no-deps",
-                        "--wait",
-                        "--wait-timeout",
-                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
-                        "pinvi-api",
-                    ],
-                    transaction=runtime_transaction,
-                )
-                self._require_services_ready(
-                    ("pinvi-api",),
-                    transaction=runtime_transaction,
-                    frozen_recovery=True,
-                )
-                updated = self._advance_pinned_runtime_journal(journal, "pinvi_api_ready")
-                if updated != journal:
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                if REBUILD_PHASES.index(journal.phase) < REBUILD_PHASES.index(
-                    "cancel_probe_finalized"
-                ):
-                    config = load_c6c_deployment_config_from_environment(
-                        runtime_transaction.environment.effective
-                    )
-                    cancel_probe_state = _pinvi_cancel_probe_state_from_journal(journal)
-
-                    def record_cancel_probe_state(state: PinviCancelProbeState) -> None:
-                        nonlocal journal
-                        updated = journal.with_cancel_probe(
-                            _cancel_probe_receipt_from_pinvi_state(state)
-                        )
-                        if updated != journal:
-                            write_pinned_runtime_rebuild_journal(
-                                state_paths.journal,
-                                updated,
-                            )
-                            journal = updated
-
-                    run_pinvi_canonical_smoke(
-                        config,
-                        cancel_probe_state=cancel_probe_state,
-                        state_recorder=record_cancel_probe_state,
-                    )
-                    updated = self._advance_pinned_runtime_journal(
-                        journal,
-                        "cancel_probe_finalized",
-                    )
-                    if updated != journal:
-                        write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                        journal = updated
-                self._run_pinned_runtime_rebuild_compose(
-                    [
-                        "up",
-                        "-d",
-                        "--no-deps",
-                        "--wait",
-                        "--wait-timeout",
-                        str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
-                        *_with_generation_companions(
-                            ("pinvi-web", "pinvi-dagster"),
-                            companions,
-                        ),
-                    ],
-                    transaction=runtime_transaction,
-                )
-                runtime_records = self._require_services_ready(
-                    (*RUNTIME_SERVICES, *companions),
-                    transaction=runtime_transaction,
-                    frozen_recovery=True,
-                )
-                self._assert_pinned_runtime_container_images(
-                    runtime_records,
-                    journal=journal,
+                committed = self._deploy_forward(
+                    status=status,
+                    status_path=status_path,
+                    restart=restart is not None,
+                    candidate=candidate,
+                    runtimes=runtimes,
+                    runtime_transaction=runtime_transaction,
                     companions=companions,
+                    expected_images=expected_images,
+                    state_paths=state_paths,
+                    values=values,
                 )
-                config = load_c6c_deployment_config_from_environment(
-                    runtime_transaction.environment.effective
-                )
-                if isinstance(config, C6cDeploymentConfig):
-                    runtime_configs = self._inspect_c6c_runtime_configs(
-                        config,
-                        [*RUNTIME_SERVICES, *companions],
-                        transaction=runtime_transaction,
-                        frozen_recovery=True,
-                    )
-                    validate_runtime_secret_isolation(runtime_configs, config)
-                    validate_current_map_ui_auth_runtime(
-                        runtime_configs[config.map_ui_container],
-                        config,
-                    )
-                updated = self._advance_pinned_runtime_journal(
-                    journal, "pinvi_runtime_ready"
-                )
-                if updated != journal:
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                updated = self._advance_pinned_runtime_journal(
-                    journal, "contract_verified"
-                )
-                if updated != journal:
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                updated = self._advance_pinned_runtime_journal(
-                    journal, "manifest_committing"
-                )
-                if updated != journal:
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                write_pinned_runtime_manifest(
-                    state_paths.manifest,
-                    PinnedRuntimeManifest(version=6, active_generation=journal.candidate),
-                )
-                reconcile_generation_references(
-                    (journal.candidate,),
-                    cwd=get_project_root(),
-                )
-                reconcile_candidate_build_references(
-                    candidate_build_references,
-                    journal.candidate,
-                    cwd=get_project_root(),
-                )
-                updated = self._advance_pinned_runtime_journal(journal, "committed")
-                if updated != journal:
-                    write_pinned_runtime_rebuild_journal(state_paths.journal, updated)
-                    journal = updated
-                return self._pinned_runtime_result(journal, resumed=resumed)
             except Exception:
                 try:
                     self._run_pinned_runtime_rebuild_compose(
@@ -6389,15 +5212,349 @@ class ComposeService:
                     )
                     reconcile_orphaned_pinvi_bootstrap_credentials(
                         state_paths=state_paths,
-                        values=environment_snapshot.effective,
+                        values=values,
                         global_mutation_lock_held=True,
                         all_one_shot_containers_absent=True,
                     )
                 except Exception as cleanup_error:
+                    # 원래 오류는 이 예외의 __context__로 남는다 — CLI의 원인 출력이
+                    # 둘 다 보여 준다.
                     raise DeploymentContractError(
-                        "pinned runtime rebuild failure cleanup could not prove one-shot writer absence"
+                        "pinned runtime deploy failed and its cleanup could not prove "
+                        "one-shot writer absence"
                     ) from cleanup_error
                 raise
+            # 여기서부터는 검증이 끝난 배포의 기록이다. 기록 쓰기가 실패해도(디스크 부족
+            # 등) 떠 있는 런타임을 내리지 않는다 — 상태는 in_progress로 남고 다음 실행이
+            # 처음부터 다시 돈다(멱등). v6 manifest는 한 릴리스 동안 계속 쓴다 — M05
+            # driver가 읽는다(ADR-51 D에서 멈춘다).
+            write_pinned_runtime_manifest(
+                state_paths.manifest,
+                PinnedRuntimeManifest(version=6, active_generation=candidate),
+            )
+            write_deploy_status(status_path, committed)
+            self._reconcile_pinned_runtime_image_retention(
+                candidate,
+                candidate_build_references,
+                warnings,
+            )
+            return self._pinned_runtime_result(
+                committed,
+                candidate=candidate,
+                outcome="deployed",
+                warnings=warnings,
+            )
+
+    @staticmethod
+    def _reconcile_pinned_runtime_image_retention(
+        candidate: PinnedRuntimeGeneration,
+        candidate_build_references: Mapping[RuntimeService, str],
+        warnings: list[str],
+    ) -> None:
+        """이미지 보존 정리. 배포가 끝난 뒤의 일이라 실패는 경고로만 남긴다."""
+
+        try:
+            reconcile_generation_references((candidate,), cwd=get_project_root())
+            reconcile_candidate_build_references(
+                candidate_build_references,
+                candidate,
+                cwd=get_project_root(),
+            )
+        except (DeploymentContractError, OSError):
+            warnings.append("pinned runtime image retention could not be reconciled")
+
+    def _start_pinned_runtime_databases(
+        self,
+        *,
+        runtime_transaction: ComposeTransactionSnapshot,
+        map_candidate: MapApplicationCandidate,
+    ) -> None:
+        """두 PostgreSQL을 frozen Compose로 health까지 띄우고 secret·이미지를 확인한다.
+
+        ``up``은 설정이 같으면 무연산이고, 바뀌었으면(이미지·PGDATA·명령) 컨테이너를
+        다시 만든다 — 떠 있는 런타임 아래에서 DB가 한 번 재시작된다. 그 대가로 뒤따르는
+        identity 판정이 옛 컨테이너가 아니라 이번 배포가 쓸 cluster를 본다.
+        """
+
+        postgres = ("kor-travel-map-postgres", "pinvi-postgres")
+        self._run_pinned_runtime_rebuild_compose(
+            [
+                "up",
+                "-d",
+                "--no-deps",
+                "--wait",
+                "--wait-timeout",
+                str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+                *postgres,
+            ],
+            transaction=runtime_transaction,
+        )
+        postgres_records = self._require_services_ready(
+            postgres,
+            transaction=runtime_transaction,
+            frozen_recovery=True,
+        )
+        validate_map_postgres_runtime_secret_isolation(
+            self._inspect_container_runtime_config(str(postgres_records[0]["Name"]))
+        )
+        validate_pinvi_postgres_runtime_secret_isolation(
+            self._inspect_container_runtime_config(str(postgres_records[1]["Name"]))
+        )
+        if (
+            self._inspect_container_image_id(
+                str(postgres_records[0]["Name"]),
+                label="Map PostgreSQL",
+            )
+            != map_candidate.postgres_image_id
+        ):
+            raise DeploymentContractError(
+                "Map PostgreSQL runtime image differs from paired candidate"
+            )
+
+    def _converge_committed_runtime(
+        self,
+        *,
+        runtime_transaction: ComposeTransactionSnapshot,
+        companions: Mapping[str, RuntimeService],
+        expected_images: Mapping[str, str],
+    ) -> None:
+        """committed와 같은 pair: 빌드·migration 없이 떠 있어야 할 것만 맞춘다.
+
+        compose는 설정이 달라진 컨테이너만 다시 만든다. 이미지·설정이 같으면 무연산이다.
+        """
+
+        self._run_pinned_runtime_rebuild_compose(
+            [
+                "up",
+                "-d",
+                "--no-deps",
+                "--wait",
+                "--wait-timeout",
+                str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+                *_with_generation_companions(RUNTIME_SERVICES, companions),
+            ],
+            transaction=runtime_transaction,
+        )
+        self._verify_pinned_runtime_services(
+            runtime_transaction=runtime_transaction,
+            companions=companions,
+            expected_images=expected_images,
+        )
+
+    def _verify_pinned_runtime_services(
+        self,
+        *,
+        runtime_transaction: ComposeTransactionSnapshot,
+        companions: Mapping[str, RuntimeService],
+        expected_images: Mapping[str, str],
+    ) -> None:
+        """전 서비스 readiness·이미지·C6c secret isolation을 확인한다."""
+
+        runtime_records = self._require_services_ready(
+            (*RUNTIME_SERVICES, *companions),
+            transaction=runtime_transaction,
+            frozen_recovery=True,
+        )
+        self._assert_pinned_runtime_container_images(
+            runtime_records,
+            expected_images=expected_images,
+        )
+        config = load_c6c_deployment_config_from_environment(
+            runtime_transaction.environment.effective
+        )
+        if isinstance(config, C6cDeploymentConfig):
+            runtime_configs = self._inspect_c6c_runtime_configs(
+                config,
+                [*RUNTIME_SERVICES, *companions],
+                transaction=runtime_transaction,
+                frozen_recovery=True,
+            )
+            validate_runtime_secret_isolation(runtime_configs, config)
+            validate_current_map_ui_auth_runtime(
+                runtime_configs[config.map_ui_container],
+                config,
+            )
+
+    def _deploy_forward(
+        self,
+        *,
+        status: DeployStatus,
+        status_path: Path,
+        restart: bool,
+        candidate: PinnedRuntimeGeneration,
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+        runtime_transaction: ComposeTransactionSnapshot,
+        companions: Mapping[str, RuntimeService],
+        expected_images: Mapping[str, str],
+        state_paths: PinnedRuntimeStatePaths,
+        values: Mapping[str, str],
+    ) -> DeployStatus:
+        """``in_progress`` 이후의 전체 경로. 모든 단계는 다시 돌려도 안전하다."""
+
+        def compose_up(*services: str) -> None:
+            self._run_pinned_runtime_rebuild_compose(
+                [
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    "--wait",
+                    "--wait-timeout",
+                    str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+                    *services,
+                ],
+                transaction=runtime_transaction,
+            )
+
+        def require_head(runtime: DatabaseRuntime, expected: str, message: str) -> None:
+            try:
+                observed = read_database_schema_revision(runtime)
+            except DeploymentContractError as exc:
+                raise DeploymentContractError(message) from exc
+            if observed != expected:
+                raise DeploymentContractError(message)
+
+        # 살아 있는 writer·runtime을 먼저 멈춘다. crash 뒤 남은 `compose run` one-shot이
+        # 보존된 DB를 동시에 건드리지 못하게 하는 자리다 — 마이그레이션 전진에서 더
+        # 중요해진다.
+        self._run_pinned_runtime_rebuild_compose(
+            ["stop", *RUNTIME_SERVICES, *companions],
+            transaction=runtime_transaction,
+        )
+        self._retire_pinned_runtime_oneshot_writers(transaction=runtime_transaction)
+        reconcile_orphaned_pinvi_bootstrap_credentials(
+            state_paths=state_paths,
+            values=values,
+            global_mutation_lock_held=True,
+            all_one_shot_containers_absent=True,
+        )
+
+        # PostgreSQL은 판정 전에 이미 frozen Compose에 맞췄다. 여기서 다시 `up`하지 않는다 —
+        # 판정과 migration 사이에 cluster가 바뀔 자리를 만들지 않는다.
+        if restart:
+            reset_databases_for_application_300(runtimes)
+            # 지운 **뒤에** 기준선을 비우고 리셋을 표시한다. 리셋 전에 죽으면 DB는 그대로이므로
+            # 다음 일반 실행이 여전히 옛 기준으로 확인해야 하고, 리셋 기록도 가져가지 않는다.
+            status = replace(status, databases=None, step=RESET_DONE_STEP)
+            write_deploy_status(status_path, status)
+        # PinVi DB가 없으면(새 호스트·지워진 DB) Map을 건드리기 전에 만든다.
+        create_database_if_absent(runtimes[2])
+
+        # Map application DB: 없으면 만들고 role bootstrap, 이미 bootstrap됐으면 그대로.
+        ensure_map_application_database(
+            runtimes[0],
+            run_role_bootstrap=lambda: self._run_pinned_runtime_rebuild_compose(
+                [
+                    "--profile",
+                    "bootstrap",
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "--env",
+                    "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
+                    "kor-travel-map-db-role-bootstrap",
+                ],
+                transaction=runtime_transaction,
+            ),
+        )
+        # `alembic upgrade head` 뒤 런타임 권한 재조정. 이미 head면 무연산이다. 성공의
+        # 근거는 종료 코드가 아니라 Manager가 직접 읽은 head다.
+        self._run_pinned_runtime_rebuild_compose(
+            [
+                "--profile",
+                "bootstrap",
+                "run",
+                "--rm",
+                "--no-deps",
+                _MAP_APPLICATION_SCHEMA_SERVICE,
+            ],
+            transaction=runtime_transaction,
+        )
+        require_head(
+            runtimes[0],
+            candidate.map_application_head,
+            "Map application schema differs from candidate head",
+        )
+
+        # Dagster metadata DB: 없을 때만 role과 DB를 만든다.
+        if read_database_identity(runtimes[1]) is None:
+            metadata_user = values.get("KOR_TRAVEL_MAP_DAGSTER_METADATA_USER")
+            metadata_password = values.get("KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD")
+            if not isinstance(metadata_user, str) or not isinstance(metadata_password, str):
+                raise DeploymentContractError(
+                    "Map Dagster metadata credentials are unavailable"
+                )
+            initialize_application_300_dagster_metadata_database(
+                runtimes[1],
+                metadata_user=metadata_user,
+                metadata_password=metadata_password,
+            )
+
+        compose_up("kor-travel-map-api")
+        require_head(
+            runtimes[0],
+            candidate.map_application_head,
+            "Map application schema differs from candidate head",
+        )
+        self._run_pinned_runtime_rebuild_compose(
+            ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
+            transaction=runtime_transaction,
+        )
+        require_head(
+            runtimes[1],
+            candidate.map_dagster_head,
+            "Map Dagster storage execution result is uncertain",
+        )
+        compose_up(
+            *_with_generation_companions(
+                (
+                    "kor-travel-map-ui",
+                    "kor-travel-map-dagster",
+                    "kor-travel-map-dagster-daemon",
+                ),
+                companions,
+            )
+        )
+
+        # PinVi: 0101 fresh-install fence는 빈 DB에서만 필요하다(기존 DB에서는 0101이
+        # 다시 돌지 않는다). bootstrap은 `alembic upgrade head` 뒤 admin을 만들거나
+        # 고친다 — 둘 다 멱등이다.
+        if not schema_revision_table_exists(runtimes[2]):
+            self._ensure_pinvi_fresh_migration_fence(values=values)
+        self._run_pinvi_admin_bootstrap(
+            transaction=runtime_transaction,
+            state_paths=state_paths,
+            values=values,
+            transaction_id=status.run_id,
+        )
+        require_head(runtimes[2], candidate.pinvi_head, "PinVi schema differs from candidate head")
+        compose_up("pinvi-api")
+        self._require_services_ready(
+            ("pinvi-api",),
+            transaction=runtime_transaction,
+            frozen_recovery=True,
+        )
+        run_pinvi_canonical_smoke(
+            load_c6c_deployment_config_from_environment(values),
+            cancel_probe_state=PinviCancelProbeState(transaction_id=status.run_id),
+            state_recorder=lambda _state: None,
+        )
+        compose_up(*_with_generation_companions(("pinvi-web", "pinvi-dagster"), companions))
+        self._verify_pinned_runtime_services(
+            runtime_transaction=runtime_transaction,
+            companions=companions,
+            expected_images=expected_images,
+        )
+
+        databases = self._observe_deployed_databases(runtimes)
+        if databases is None:
+            raise DeploymentContractError("pinned runtime databases disappeared during deploy")
+        return commit_deploy(
+            status,
+            committed_at=_utc_now(),
+            images=expected_images,
+            schema_heads={str(role): head for role, head in candidate.schema_heads.items()},
+            databases=databases,
+        )
 
     @staticmethod
     def _inspect_image_source_revision(

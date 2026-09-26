@@ -899,7 +899,10 @@ def test_destructive_reset_refuses_cluster_maintenance_databases(
 
 
 def _ensure_harness(
-    monkeypatch: pytest.MonkeyPatch, owner: str | None
+    monkeypatch: pytest.MonkeyPatch,
+    owner: str | None,
+    *,
+    schema_table: bool = False,
 ) -> tuple[Mock, Mock, list[str]]:
     """생성(createdb)과 bootstrap을 **한 기록**에 남겨 순서까지 단언할 수 있게 한다."""
 
@@ -914,6 +917,9 @@ def _ensure_harness(
 
     monkeypatch.setattr(database_runtime, "_read_database_owner", read_owner)
     monkeypatch.setattr(database_runtime, "_run_checked", runner)
+    monkeypatch.setattr(
+        database_runtime, "schema_revision_table_exists", lambda _runtime: schema_table
+    )
     return runner, bootstrap, events
 
 
@@ -959,6 +965,50 @@ def test_ensure_map_application_database_leaves_a_bootstrapped_database_alone(
     assert outcome == "present"
     runner.assert_not_called()
     bootstrap.assert_not_called()
+
+
+def test_a_restored_database_still_owned_by_the_bootstrap_owner_is_refused_not_bootstrapped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``createdb --owner`` + ``pg_restore``로 복원한 DB다. fresh 전용 bootstrap은 이것을
+    거부하므로, 돌리기 전에 무엇을 하라는지와 함께 거부한다(B2 적대 리뷰 2차)."""
+
+    runner, bootstrap, _ = _ensure_harness(monkeypatch, "map_owner", schema_table=True)
+
+    with pytest.raises(DeploymentContractError, match="OWNER TO ktm_feature_schema_owner"):
+        ensure_map_application_database(
+            _runtime("map_application"), run_role_bootstrap=bootstrap
+        )
+
+    runner.assert_not_called()
+    bootstrap.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("owner", "schema_table", "expected"),
+    (
+        (None, False, "absent"),
+        ("map_owner", False, "unbootstrapped"),
+        ("ktm_feature_schema_owner", True, "present"),
+    ),
+)
+def test_the_convergibility_check_only_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    owner: str | None,
+    schema_table: bool,
+    expected: str,
+) -> None:
+    """배포는 런타임을 멈추기 전에 이것을 부른다 — 무엇도 만들거나 돌리지 않아야 한다."""
+
+    runner, _, _ = _ensure_harness(monkeypatch, owner, schema_table=schema_table)
+
+    assert (
+        database_runtime.require_map_application_database_convergible(
+            _runtime("map_application")
+        )
+        == expected
+    )
+    runner.assert_not_called()
 
 
 @pytest.mark.parametrize("role", ("map_dagster", "pinvi"))

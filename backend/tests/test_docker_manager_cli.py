@@ -1214,7 +1214,12 @@ def test_pin_init_refuses_to_overwrite_without_force(pin_cli_env, capsys):
     assert "refusing to overwrite" in capsys.readouterr().err
 
 
-def test_pin_show_and_verify_are_read_only_and_report_lifecycle(pin_cli_env, capsys):
+def test_pin_show_and_verify_are_read_only_and_report_lifecycle(
+    pin_cli_env, capsys, tmp_path, monkeypatch
+):
+    # 공개 사본 경로를 격리한다. 기본값은 호스트 전역 `/var/lib/...-public`이라, 운영 사본이
+    # 있는 n150에서는 이 테스트가 호스트 상태에 따라 갈렸다.
+    monkeypatch.setenv("KTDM_PINNED_RUNTIME_PUBLIC_ROOT", str(tmp_path / "public"))
     main(["pin", "init", "--seed", str(_seed_path()), "--confirm"])
     capsys.readouterr()
     before = pin_cli_env.read_bytes()
@@ -2706,3 +2711,109 @@ def test_targets_validate_coordinates_pass_when_they_exist(capsys, monkeypatch):
     assert main(["targets", "validate", "--check-coordinates"]) == 0
     assert capsys.readouterr().out.strip() == "OK"
 
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_rebuild_pinned_restart_requires_a_reason(mock_compose_service, capsys):
+    """`--restart`는 유일한 파괴 경로다 — 사유 없이는 시작하지 않는다(ADR-51)."""
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--restart"]) == 2
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--reason", "why"]) == 2
+
+    mock_compose_service.rebuild_pinned_runtime.assert_not_called()
+    assert main(
+        [
+            "pinvi-pair",
+            "rebuild-pinned",
+            "--confirm",
+            "--restart",
+            "--adopt-live-databases",
+            "--reason",
+            "why",
+        ]
+    ) == 2
+    mock_compose_service.rebuild_pinned_runtime.assert_not_called()
+    assert "exactly one of --restart or --adopt-live-databases" in capsys.readouterr().err
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_rebuild_pinned_passes_the_restart_reason(mock_compose_service, capsys):
+    mock_compose_service.rebuild_pinned_runtime.return_value = {
+        "success": True,
+        "returncode": 0,
+    }
+
+    assert (
+        main(
+            [
+                "pinvi-pair",
+                "rebuild-pinned",
+                "--confirm",
+                "--restart",
+                "--reason",
+                "rebuild from empty databases",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    mock_compose_service.rebuild_pinned_runtime.assert_called_once_with(
+        restart_reason="rebuild from empty databases"
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_rebuild_pinned_without_restart_never_asks_for_a_reset(
+    mock_compose_service, capsys
+):
+    mock_compose_service.rebuild_pinned_runtime.return_value = {
+        "success": True,
+        "returncode": 0,
+    }
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 0
+
+    mock_compose_service.rebuild_pinned_runtime.assert_called_once_with()
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_rebuild_pinned_passes_the_adoption_reason(mock_compose_service, capsys):
+    mock_compose_service.rebuild_pinned_runtime.return_value = {
+        "success": True,
+        "returncode": 0,
+    }
+
+    assert (
+        main(
+            [
+                "pinvi-pair",
+                "rebuild-pinned",
+                "--confirm",
+                "--adopt-live-databases",
+                "--reason",
+                "restored from backup",
+                "--json",
+            ]
+        )
+        == 0
+    )
+
+    mock_compose_service.rebuild_pinned_runtime.assert_called_once_with(
+        adopt_reason="restored from backup"
+    )
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+def test_cli_rebuild_pinned_shows_warnings_to_a_human(mock_compose_service, capsys):
+    """launcher는 --json으로 경고를 받는다. 사람이 직접 돌릴 때도 보여야 한다."""
+
+    mock_compose_service.rebuild_pinned_runtime.return_value = {
+        "success": True,
+        "returncode": 0,
+        "warnings": ["the trusted execution binding is stale"],
+    }
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm"]) == 0
+
+    assert "warning: the trusted execution binding is stale" in capsys.readouterr().err
