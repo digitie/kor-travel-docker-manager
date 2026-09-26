@@ -105,11 +105,13 @@ receipt는 단독으로 재실행 권한이나 성공 근거가 될 수 없고, 
 
 ### 단발 실행의 완료 판정
 
-`run-pinned-rebuild-once`와 `run-m05-isolated-e2e-once`는 실행권을 claim한 뒤 host-global mutation lock을
-프로세스 수명 동안 보유한다. SSH client가 즉시 종료됐거나 출력 회수가 지연됐다는 사실은 실패·종료·차단의
+`run-pinned-rebuild-once`와 `run-m05-isolated-e2e-once`는 host-global mutation lock을 **먼저** 잡은 뒤
+실행권을 claim하고, 그 lock을 프로세스 수명 동안 보유한다. SSH client가 즉시 종료됐거나 출력 회수가 지연됐다는 사실은 실패·종료·차단의
 증거가 아니다. **별도 외부 호출은 lock이 보유된 동안** 같은 pinset의 rebuild/E2E 재실행과 모든 runtime
 pin 변경(`pin init`, `publish-generation`, `rotate`, `rotate-pair`, `apply-pending`, `rollback`, `block`)을
-하지 않고 안전한 lock 상태만 기다린다. 이 명령들은 active lock이면 write 전에 코드로 거절된다.
+하지 않고 안전한 lock 상태만 기다린다. 이 명령들은 lock이 보유된 동안 write 전에 코드로 거절된다(exit 2,
+`another Manager mutation is already active; nothing was changed`). lock 파일이 없으면(재부팅 직후) 먼저 온
+획득자가 root `0600`으로 만들어 잡으므로 lock 없이 진행하는 경로는 없다(ADR-51 C-1).
 launcher 자신은 검증한 driver 종료 뒤 상속 받은 같은 lock descriptor 안에서만 terminal block을 기록할 수 있다.
 외부 호출은 lock이 해제된 뒤에만 root `ktdctl pin verify --json`의 exact Map/PinVi/pinset,
 `published_copy=current`, generation binding `match`를 확인해 완료를 판정한다.
@@ -395,8 +397,12 @@ terminal을 보지 못하고 초록불을 주는 일이 없다. registry가 정�
 preflight가 command를 제시할 수 있는 상태다.
 
 모든 runtime pin mutation은 같은 host-global mutation lock을 nonblocking으로 획득하고, 변경 대상의 읽기·
-검증·write·대기 요청 정리를 **한 lock 안에서** 끝낸다. 예외는 launcher가 검증한 상속 descriptor로 기록하는
-terminal fallback 하나뿐이다. 따라서 외부 관찰자는 lock 해제 뒤
+검증·write·대기 요청 정리를 **한 lock 안에서** 끝낸다. 획득 경로는 pinned rebuild와 같은
+`c6c_deployment.manager_mutation_lock()` 하나다 — CLI가 따로 여는 경로도, lock 파일이 없거나 비root라 열 수
+없을 때 lock 없이 진행하던 분기도 없다(ADR-51 C-1). 비root 실행은 `the Manager mutation lock requires root`로
+거절된다. 예외는 launcher가 검증한 상속 descriptor로 기록하는 terminal fallback(`pin block-execution`) 하나뿐이고,
+그 descriptor의 dev/ino·소유자·`0600`·nlink·재-flock 검증도 같은 경로가 한다. `pin clear-pending`은 제안만
+지우므로 lock을 잡지 않는다 — `apply-pending`이 lock 안에서 요청을 다시 읽는다. 따라서 외부 관찰자는 lock 해제 뒤
 `pin verify --json`만 읽어 완료를 판정하며, lock 보유 중 어떤 pin 명령도 retry·block·pair 교체에 쓰지 않는다.
 
 ### 6-1. 후보 동결과 문서 전용 변경

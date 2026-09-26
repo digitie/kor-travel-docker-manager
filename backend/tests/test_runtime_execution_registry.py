@@ -471,7 +471,9 @@ def test_pending_pair_rotation_refuses_a_different_target(
     )
     pair_rotation._atomic_write(transaction, pending.to_payload())
 
-    monkeypatch.setattr(cli, "_GLOBAL_MUTATION_LOCK_PATH", tmp_path / "missing.lock")
+    # lock은 실제로 잡힌다 — conftest가 G를 자기 소유 tmp로 옮겨 두었고, 파일이 없으면
+    # 첫 획득자가 만든다(ADR-51 C-1 전에는 "lock 파일 없음"이 lock 없이 통과하는 분기였다).
+    # durable intent 거부는 그 lock **안에서** 일어난다.
     with pytest.raises(RuntimePairRotationError, match="incomplete"):
         with cli._runtime_pin_mutation_lock():
             pass

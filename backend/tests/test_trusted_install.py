@@ -38,12 +38,19 @@ from kor_travel_docker_manager.services.trusted_install import (
 )
 
 
+@pytest.mark.real_global_mutation_lock
 def test_cli_and_c6c_reference_the_identical_lock_path_object() -> None:
-    """리터럴 두 벌이던 시절의 핵심 위험 — 같은 객체가 아니면 값이 갈릴 수 있다."""
+    """리터럴 두 벌이던 시절의 핵심 위험 — 같은 객체가 아니면 값이 갈릴 수 있다.
 
-    assert cli._GLOBAL_MUTATION_LOCK_PATH is GLOBAL_MUTATION_LOCK_PATH
+    ADR-51 C-1부터 cli.py에는 경로 사본 자체가 없다(`manager_mutation_lock()`으로만
+    잡는다). 그래서 남은 결박은 c6c 상수가 정본 객체라는 것과, 사본이 되살아나지
+    않았다는 것이다. conftest의 자동 tmp 격리는 이 테스트에서만 끈다.
+    """
+
     assert c6c_deployment._C6C_GLOBAL_MUTATION_LOCK is GLOBAL_MUTATION_LOCK_PATH
-    assert cli._GLOBAL_MUTATION_LOCK_PATH is c6c_deployment._C6C_GLOBAL_MUTATION_LOCK
+    assert c6c_deployment._GLOBAL_LOCK_OWNER_UID == 0
+    assert not hasattr(cli, "_GLOBAL_MUTATION_LOCK_PATH")
+    assert cli.manager_mutation_lock is c6c_deployment.manager_mutation_lock
 
 
 def test_cli_and_c6c_reference_the_identical_lock_fd_env_name() -> None:

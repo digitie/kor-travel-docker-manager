@@ -1699,7 +1699,10 @@ def test_pinned_runtime_rebuild_lease_uses_real_nonblocking_flock(
     finally:
         os.close(holder)
 
-    assert str(excinfo.value) == "another C6c compatible-pair operation is already active"
+    assert str(excinfo.value) == (
+        "another Manager mutation is already active; nothing was changed"
+    )
+    assert excinfo.value.code == "MANAGER_MUTATION_ACTIVE"
 
 
 def test_pinned_runtime_rebuild_lease_acquires_global_before_pinned(

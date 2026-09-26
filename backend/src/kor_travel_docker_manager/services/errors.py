@@ -23,6 +23,18 @@ class ComposeCandidateContractError(DeploymentContractError):
     code = "COMPOSE_CANDIDATE_PROTECTED_REFERENCE"
 
 
+class ManagerMutationActiveError(DeploymentContractError):
+    """다른 Manager mutation이 host 변경 lock을 쥐고 있어 기다리지 않고 거절했다.
+
+    ADR-51 C: 모든 획득 경로가 ``LOCK_EX|LOCK_NB``로 한 lock을 잡는다. 이 예외는 그
+    경합 **하나만** 뜻한다 — lock이 안전하지 않거나 열 수 없는 경우는 여전히 일반
+    ``DeploymentContractError``다. 아무것도 바꾸기 전에 던지므로 재시도해도 안전하다.
+    API는 ``code``를 실어 409로 내보낸다(``main._contract_error_detail``).
+    """
+
+    code = "MANAGER_MUTATION_ACTIVE"
+
+
 class ComposePostMutationContractError(DeploymentContractError):
     """mutation 성공 뒤 계약 drift가 발생해 복구 결과를 함께 보존한다."""
 

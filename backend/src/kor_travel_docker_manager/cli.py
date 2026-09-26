@@ -1,8 +1,6 @@
 import argparse
-import fcntl
 import json
 import os
-import stat
 import sys
 import time
 import traceback
@@ -15,6 +13,7 @@ from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
+    manager_mutation_lock,
 )
 from kor_travel_docker_manager.services.compose_service import (
     PinnedRuntimePrejournalFailure,
@@ -101,7 +100,6 @@ from kor_travel_docker_manager.services.standalone_backup import (
 )
 from kor_travel_docker_manager.services.trusted_install import (
     GLOBAL_MUTATION_LOCK_FD_ENV,
-    GLOBAL_MUTATION_LOCK_PATH,
 )
 
 
@@ -121,9 +119,9 @@ def _direct_ensure_aliases() -> set[str]:
     }
 
 
-# GM-09: c6c_deployment.py의 _C6C_GLOBAL_MUTATION_LOCK과 반드시 같은 파일을 가리켜야
-# pinned rebuild와 pin 회전이 서로 직렬화된다 — 정본은 services/trusted_install.py다.
-_GLOBAL_MUTATION_LOCK_PATH = GLOBAL_MUTATION_LOCK_PATH
+# GM-09: 정본은 services/trusted_install.py다. lock **경로**는 여기 두지 않는다 —
+# ADR-51 C-1부터 CLI는 `manager_mutation_lock()`으로만 잡으므로 경로 사본이 없다.
+# 남는 것은 launcher가 물려주는 FD env 이름뿐이다(상속 허용 정책에만 쓴다).
 _INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV = GLOBAL_MUTATION_LOCK_FD_ENV
 
 
@@ -1226,80 +1224,27 @@ def _runtime_pin_mutation_lock(
     모든 mutation을 거부한다. 예외는 동일 target을 끝까지 publish하는 recovery뿐이다 —
     ``rotate-pair``와 v6 host의 단일 role ``rotate``/``apply-pending``/``rollback``이
     해당하며, 그 target 대조는 transaction helper가 소유한다.
+
+    ADR-51 C-1: lock 획득은 ``manager_mutation_lock()`` 하나로만 한다. lock 파일이
+    없으면 그 경로가 만들어 잡으므로, 종전의 "파일이 없거나 비root라 열 수 없으면 lock
+    없이 진행" 분기는 없다. 상속 descriptor의 dev/ino·소유자·``0600``·nlink·재-flock
+    검증도 그 경로(``_verified_inherited_global_mutation_lock_fd``)가 한다. 여기 남는
+    것은 **어느 명령이 상속을 받을 수 있는가**라는 정책뿐이다.
     """
 
-    def reject_pending_pair_rotation() -> None:
-        if allow_pending_pair_recovery:
-            return
-        from kor_travel_docker_manager.services.runtime_pair_rotation import (
-            require_no_pending_runtime_pair_rotation,
-        )
+    if (
+        os.environ.get(_INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV, "")
+        and not allow_inherited_terminal_block
+    ):
+        raise DeploymentContractError("runtime pin mutation inherited lock is invalid")
+    with manager_mutation_lock():
+        if not allow_pending_pair_recovery:
+            from kor_travel_docker_manager.services.runtime_pair_rotation import (
+                require_no_pending_runtime_pair_rotation,
+            )
 
-        require_no_pending_runtime_pair_rotation()
-
-    inherited_text = os.environ.get(_INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV, "")
-    if inherited_text:
-        if not allow_inherited_terminal_block or not inherited_text.isdecimal():
-            raise DeploymentContractError("runtime pin mutation inherited lock is invalid")
-        descriptor = int(inherited_text)
-        try:
-            opened = os.fstat(descriptor)
-            named = _GLOBAL_MUTATION_LOCK_PATH.lstat()
-        except OSError as exc:
-            raise DeploymentContractError("runtime pin mutation inherited lock is invalid") from exc
-        if (
-            (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
-            or not stat.S_ISREG(opened.st_mode)
-            # `_cmd_pin_block` 자체가 root 전용이므로 production에서는 root FD만
-            # 수용한다. test/local에서는 실행 uid와의 동등성으로 같은 ownership
-            # invariant를 확인한다.
-            or opened.st_uid != os.geteuid()
-            or stat.S_IMODE(opened.st_mode) != 0o600
-            or opened.st_nlink != 1
-        ):
-            raise DeploymentContractError("runtime pin mutation inherited lock is unsafe")
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise DeploymentContractError("runtime pin mutation inherited lock is not held") from exc
-        reject_pending_pair_rotation()
+            require_no_pending_runtime_pair_rotation()
         yield
-        return
-
-    try:
-        descriptor = os.open(
-            _GLOBAL_MUTATION_LOCK_PATH,
-            os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW,
-        )
-    except FileNotFoundError:
-        # 개발·테스트처럼 launcher를 한 번도 실행하지 않은 환경에는 active global
-        # mutation이 없으므로, registry 자체의 root ownership gate에 맡긴다.
-        reject_pending_pair_rotation()
-        yield
-        return
-    except PermissionError:
-        # production lock directory는 root `0700`이다. 비root 개발 fixture는 registry를
-        # 임시 경로로 바꿔 검증하므로 이 host lock을 열 수 없고, 실제 production에서는
-        # 이어지는 root-owned registry write 자체가 거절된다. 따라서 권한 없는 개발
-        # 호출을 active mutation으로 오인하지 않는다.
-        if getattr(os, "geteuid", lambda: 1)() != 0:
-            reject_pending_pair_rotation()
-            yield
-            return
-        raise DeploymentContractError("runtime pin mutation lock is unavailable") from None
-    except OSError as exc:
-        raise DeploymentContractError("runtime pin mutation lock is unavailable") from exc
-    try:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise DeploymentContractError(
-                "runtime pin mutation is refused while a Manager mutation is active"
-            ) from exc
-        reject_pending_pair_rotation()
-        yield
-    finally:
-        os.close(descriptor)
 
 
 _ACTOR_LENGTH_LIMIT = 200

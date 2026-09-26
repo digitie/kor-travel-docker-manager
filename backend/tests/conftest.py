@@ -10,7 +10,9 @@ pinned revision은 이제 registry 파일에서 온다. 테스트 모듈 일부�
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -45,3 +47,61 @@ os.environ.setdefault(
     "KTDM_RUNTIME_PINS_PUBLIC_FILE",
     str(Path(tempfile.gettempdir()) / "ktdm-test-runtime-pins.json"),
 )
+
+_REAL_GLOBAL_MUTATION_LOCK_MARKER = "real_global_mutation_lock"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        f"{_REAL_GLOBAL_MUTATION_LOCK_MARKER}: 자동 tmp 격리 없이 실제 host 변경 lock "
+        "상수(`/run/lock/...`)와 root 소유자 값을 그대로 본다 — 상수 동일성 검사 전용",
+    )
+
+
+@pytest.fixture(scope="session")
+def _global_mutation_lock_root() -> Iterator[Path]:
+    """테스트별 lock 디렉터리를 담는 세션 디렉터리. 정리는 세션 끝에 한 번만 한다.
+
+    테스트마다 teardown에서 지우면, 같은 ``monkeypatch``로 ``os.open``을 가로챈 테스트의
+    대역이 아직 살아 있는 동안 ``shutil.rmtree``가 돌아 그 대역에 걸린다(teardown 순서상
+    autouse 픽스처의 뒷정리가 ``monkeypatch`` 원복보다 먼저다).
+    """
+
+    root = Path(tempfile.mkdtemp(prefix="ktdm-global-lock.", dir="/tmp"))
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_global_mutation_lock(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    _global_mutation_lock_root: Path,
+) -> Iterator[None]:
+    """host 변경 lock ``G``를 테스트마다 자기 소유의 빈 ``0700`` 디렉터리로 옮긴다.
+
+    ADR-51 C-1 전에는 CLI pin 테스트가 **환경의 우연**으로 통과했다 — CI에는
+    ``/run/lock/kor-travel-docker-manager``가 없어서(``FileNotFoundError``), n150
+    비root에서는 읽을 수 없어서(``PermissionError``) lock 없이 진행했다. 그 분기가
+    사라졌으므로 전제를 구성으로 만든다: 어느 호스트든 lock은 처음 온 획득자가 만든다.
+
+    ``/tmp``를 쓰는 이유: Windows 공유 마운트(drvfs)는 mode를 ``0777``로 보고해
+    ``0700``/``0600`` 검사를 만족할 수 없다. 소유자 기대값만 실행 euid로 바꾸고
+    나머지 검사(0600·nlink 1·dev/ino·디렉터리 0700)는 그대로 돈다.
+    """
+
+    if request.node.get_closest_marker(_REAL_GLOBAL_MUTATION_LOCK_MARKER) is not None:
+        yield
+        return
+    from kor_travel_docker_manager.services import c6c_deployment
+
+    directory = Path(tempfile.mkdtemp(prefix="test.", dir=_global_mutation_lock_root))
+    os.chmod(directory, 0o700)
+    monkeypatch.setattr(
+        c6c_deployment, "_C6C_GLOBAL_MUTATION_LOCK", directory / "global-mutation.lock"
+    )
+    monkeypatch.setattr(c6c_deployment, "_GLOBAL_LOCK_OWNER_UID", os.geteuid())
+    yield

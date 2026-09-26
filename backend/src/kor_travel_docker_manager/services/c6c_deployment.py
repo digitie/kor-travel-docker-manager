@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -42,6 +42,7 @@ from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
     DeploymentContractError,
+    ManagerMutationActiveError,
 )
 from kor_travel_docker_manager.services.loopback_readiness import (
     LOOPBACK_HTTP_READINESS_ATTEMPTS,
@@ -163,9 +164,14 @@ _MAP_RUNTIME_CONTAINERS = {
 # ADR-069 code-server는 generation slot이 아니라 companion이라 `_MAP_RUNTIME_SERVICES`
 # (mutation-identifier 분류용)에는 넣지 않지만, runtime secret isolation은 받는다.
 _MAP_DAGSTER_CODE_SERVER_CONTAINER = "kor-travel-map-dagster-code-server-latest"
-# GM-09: cli.py의 _GLOBAL_MUTATION_LOCK_PATH와 반드시 같은 파일을 가리켜야 pinned
-# rebuild와 pin 회전이 서로 직렬화된다 — 정본은 services/trusted_install.py다.
+# GM-09: 정본은 services/trusted_install.py다. ADR-51 C-1부터 cli.py는 경로 별칭을
+# 두지 않고 `manager_mutation_lock()`으로만 이 lock을 잡는다 — pinned rebuild와 pin
+# 회전이 서로 직렬화되는 근거가 이 한 이름이다.
 _C6C_GLOBAL_MUTATION_LOCK = GLOBAL_MUTATION_LOCK_PATH
+# 위 lock 디렉터리·파일의 기대 소유자. 운영에서는 항상 root(0)다. 테스트는 lock을
+# 자기 소유의 tmp 디렉터리로 옮기면서 이 값만 자기 euid로 바꾼다 — 0600·nlink 1·
+# dev/ino·디렉터리 0700 검사는 그대로 돈다.
+_GLOBAL_LOCK_OWNER_UID: int = 0
 # F1D rebuild는 rehearsal에서도 root로만 실행하는 host-wide destructive operation이다.
 # 일반 C6c rehearsal lock은 실행 사용자 home 아래여서 서로 다른 launcher를 직렬화할 수
 # 없으므로, build부터 final commit까지 이 고정 lease를 별도로 잡는다.
@@ -3235,8 +3241,10 @@ def c6c_deployment_lock(path: str) -> Iterator[None]:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
-            raise DeploymentContractError(
-                "another C6c compatible-pair operation is already active"
+            # 기다리지 않는다. 경합 하나만 전용 코드로 구분한다 — 안전하지 않은 lock은
+            # 위아래의 일반 DeploymentContractError로 남는다.
+            raise ManagerMutationActiveError(
+                "another Manager mutation is already active; nothing was changed"
             ) from exc
         _assert_locked_fd_still_owns_path(fd, lock_path)
         # 소유권·mode 계약도 다시 본다. 신원(inode)만 재대조하면, 잠그는 사이에 그
@@ -3287,6 +3295,18 @@ def _verified_inherited_global_mutation_lock_fd(lock_path: Path) -> int | None:
     return fd
 
 
+def manager_mutation_lock() -> AbstractContextManager[None]:
+    """host 변경 lock ``G`` 하나를 잡는 유일한 획득 경로(ADR-51 C).
+
+    CLI pin mutator와 pinned rebuild가 같은 이 함수를 지난다. lock 파일이 없으면 먼저
+    온 쪽이 ``O_CREAT|O_NOFOLLOW`` ``0600``으로 만들어 잡는다 — lock 없이 진행하는
+    경로는 없다. 경합이면 기다리지 않고 ``ManagerMutationActiveError``로 거절한다.
+    경로는 호출 시점에 읽는다(테스트가 모듈 상수를 tmp로 옮길 수 있도록).
+    """
+
+    return c6c_deployment_lock(str(_C6C_GLOBAL_MUTATION_LOCK))
+
+
 def pinned_runtime_rebuild_lock_path() -> str:
     """root-only F1D rebuild가 공유하는 고정 host lease 경로를 반환한다."""
 
@@ -3315,16 +3335,14 @@ def pinned_runtime_rebuild_lock() -> Iterator[None]:
     # 별도 pinned lease만 잡으면 release snapshot과 v6 execution gate 사이에 rotate가
     # 끼어 서로 다른 candidate를 검증·실행할 수 있다. global → pinned 순서를 모든
     # destructive rebuild의 공통 ordering으로 고정한다.
-    with c6c_deployment_lock(str(_C6C_GLOBAL_MUTATION_LOCK)):
+    with manager_mutation_lock():
         with c6c_deployment_lock(pinned_runtime_rebuild_lock_path()):
             yield
 
 
 def _prepare_c6c_lock_directory(path: Path) -> None:
-    if path == _C6C_GLOBAL_MUTATION_LOCK.parent and os.geteuid() != 0:
-        raise DeploymentContractError(
-            "production compatible-pair managed workflow requires root"
-        )
+    if path == _C6C_GLOBAL_MUTATION_LOCK.parent and os.geteuid() != _GLOBAL_LOCK_OWNER_UID:
+        raise DeploymentContractError("the Manager mutation lock requires root")
     # `/run/lock`은 `1777` sticky다. 런타임 최초 생성은 그래서 선점 창이고, 이 창은
     # 코드로 닫히지 않는다 — 부팅 시점에 이미 존재하게 만드는 것만이 닫는다
     # (`deploy/tmpfiles.d/kor-travel-docker-manager.conf`). 아래 `mkdir`은 그 유닛이
@@ -3334,7 +3352,7 @@ def _prepare_c6c_lock_directory(path: Path) -> None:
         st = path.lstat()
         if (
             not stat.S_ISDIR(st.st_mode)
-            or st.st_uid != 0
+            or st.st_uid != _GLOBAL_LOCK_OWNER_UID
             or stat.S_IMODE(st.st_mode) != 0o700
         ):
             raise DeploymentContractError("production C6c deployment lock directory is unsafe")
@@ -3367,7 +3385,7 @@ def _assert_locked_fd_still_owns_path(fd: int, lock_path: Path) -> None:
 
 def _validate_c6c_lock_fd(fd: int, *, production: bool) -> None:
     st = os.fstat(fd)
-    expected_uid = 0 if production else os.geteuid()
+    expected_uid = _GLOBAL_LOCK_OWNER_UID if production else os.geteuid()
     if (
         not stat.S_ISREG(st.st_mode)
         or st.st_nlink != 1
