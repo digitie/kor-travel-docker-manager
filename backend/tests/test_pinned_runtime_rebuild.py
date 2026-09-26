@@ -2388,6 +2388,10 @@ def _forward_harness(
             "pinvi": candidate.pinvi_head,
         },
         "pinvi_schema_table": True,
+        # 떠 있는 Map PostgreSQL 컨테이너의 이미지. `up`이 후보 이미지로 다시 만든다.
+        "map_postgres_image": map_candidate.postgres_image_id,
+        # PostgreSQL `up`이 일어날 때 부르는 hook(PGDATA가 바뀌어 cluster가 바뀌는 경우 등).
+        "on_postgres_up": None,
     }
     operations: list[tuple[str, ...]] = []
     readiness_requests: list[tuple[str, ...]] = []
@@ -2407,11 +2411,18 @@ def _forward_harness(
         contract=Mock(),
         prerequisites=Mock(),
         create_pinvi=Mock(return_value=False),
+        map_precheck=Mock(return_value="present"),
+        retention_generation=Mock(),
+        retention_candidate=Mock(),
     )
 
     def run_compose(arguments: list[str], *, transaction: object) -> dict[str, object]:
         del transaction
         operations.append(tuple(arguments))
+        if arguments[:1] == ["up"] and "kor-travel-map-postgres" in arguments:
+            live["map_postgres_image"] = map_candidate.postgres_image_id
+            if live["on_postgres_up"] is not None:
+                live["on_postgres_up"]()
         return {"success": True, "stdout": ""}
 
     def require_ready(
@@ -2433,7 +2444,7 @@ def _forward_harness(
         del container_name
         image_labels.append(label)
         if label == "Map PostgreSQL":
-            return map_candidate.postgres_image_id
+            return cast(str, live["map_postgres_image"])
         return image_ids[cast(Any, _FORWARD_COMPANIONS.get(label, label))]
 
     class _C6cConfig:
@@ -2497,10 +2508,11 @@ def _forward_harness(
         "validate_runtime_secret_isolation": Mock(),
         "validate_current_map_ui_auth_runtime": Mock(),
         "write_pinned_runtime_manifest": mocks.manifest_write,
-        "reconcile_generation_references": Mock(),
-        "reconcile_candidate_build_references": Mock(),
+        "reconcile_generation_references": mocks.retention_generation,
+        "reconcile_candidate_build_references": mocks.retention_candidate,
         "carry_over_committed_generation": mocks.carry_over,
         "create_database_if_absent": mocks.create_pinvi,
+        "require_map_application_database_convergible": mocks.map_precheck,
     }.items():
         monkeypatch.setattr(compose_service_module, name, replacement)
     service = ComposeService()
@@ -2996,20 +3008,189 @@ def test_a_restart_that_dies_before_the_reset_keeps_the_baseline(
     assert dict(status.databases or {}) == dict(previous.databases or {})
 
 
-def test_the_convergence_check_does_not_recreate_running_databases(
+def test_the_databases_are_brought_to_the_frozen_compose_before_any_judgment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PostgreSQL `up`은 수렴·identity 판정보다 먼저다(설정이 같으면 무연산이다)."""
+
+    candidate = _candidate_generation()
+    harness = _forward_harness(
+        monkeypatch, tmp_path, previous=_committed_status(candidate, map_revision="0" * 40)
+    )
+
+    harness.service.rebuild_pinned_runtime()
+
+    postgres_up = [
+        index
+        for index, operation in enumerate(harness.operations)
+        if operation[:1] == ("up",) and "kor-travel-map-postgres" in operation
+    ]
+    # 판정 전 한 번뿐이다. 전체 경로가 다시 `up`하면 판정과 migration 사이에 cluster가
+    # 바뀔 자리가 생긴다.
+    assert postgres_up == [0]
+
+
+@pytest.mark.parametrize("same_pair", (True, False))
+def test_a_cluster_swapped_by_the_postgres_up_is_refused_before_anything_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_pair: bool
+) -> None:
+    """PGDATA가 바뀐 호스트: 옛 컨테이너로 기준선을 통과한 뒤 새 cluster를 커밋하면 안 된다.
+
+    B2 적대 리뷰 2차(major). 판정 전에 `up`하므로 판정이 새 cluster를 본다.
+    """
+
+    candidate = _candidate_generation()
+    previous = _committed_status(
+        candidate, **({} if same_pair else {"map_revision": "0" * 40})
+    )
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+
+    def swap() -> None:
+        harness.live["identities"]["map_application"] = (
+            "kor_travel_map",
+            55555,
+            "7399999999999999999",
+        )
+
+    harness.live["on_postgres_up"] = swap
+
+    with pytest.raises(DeploymentContractError, match="--adopt-live-databases"):
+        harness.service.rebuild_pinned_runtime()
+
+    assert _mutating_operations(harness) == []
+    assert read_deploy_status(harness.status_path) == previous
+    harness.mocks.ensure_map.assert_not_called()
+
+
+def test_a_changed_map_postgres_image_is_recreated_not_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """떠 있는 Map PostgreSQL이 옛 이미지여도 `up`이 후보 이미지로 다시 만든다.
+
+    B2 적대 리뷰 2차(major): 준비된 컨테이너를 건너뛰면 이미지 대조가 모든 실행 —
+    `--restart`·`--adopt-live-databases`까지 — 을 같은 자리에서 영구히 거부했다.
+    """
+
+    candidate = _candidate_generation()
+    harness = _forward_harness(
+        monkeypatch, tmp_path, previous=_committed_status(candidate)
+    )
+    harness.live["map_postgres_image"] = f"sha256:{999:064x}"
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "converged"
+
+
+def test_a_map_database_the_bootstrap_would_refuse_is_refused_before_the_runtime_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate, map_revision="0" * 40)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    harness.mocks.map_precheck.side_effect = DeploymentContractError(
+        "map_application database already has a schema but is still owned by the "
+        "bootstrap owner"
+    )
+
+    with pytest.raises(DeploymentContractError, match="bootstrap owner") as captured:
+        harness.service.rebuild_pinned_runtime(adopt_reason="restored from backup")
+
+    assert _mutating_operations(harness) == []
+    assert read_deploy_status(harness.status_path) == previous
+    assert compose_service_module.pinned_runtime_failed_before_journal(captured.value)
+
+
+def test_restart_skips_the_map_database_precheck(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """리셋은 그 DB를 지운다 — 지울 DB의 소유 상태로 리셋을 막지 않는다."""
+
+    harness = _forward_harness(
+        monkeypatch, tmp_path, previous=_committed_status(_candidate_generation())
+    )
+    harness.mocks.map_precheck.side_effect = DeploymentContractError("bootstrap owner")
+
+    result = harness.service.rebuild_pinned_runtime(restart_reason="rebuild")
+
+    assert result["outcome"] == "deployed"
+    harness.mocks.map_precheck.assert_not_called()
+
+
+def test_an_interrupted_adoption_keeps_protecting_the_adopted_databases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B2 적대 리뷰 2차(minor): 채택이 중간에 죽으면 기준선이 비어 다음 일반 실행이 무엇이든
+    커밋했고, 채택 기록도 사라졌다."""
+
+    candidate = _candidate_generation()
+    harness = _forward_harness(
+        monkeypatch, tmp_path, previous=_committed_status(candidate)
+    )
+    restored = ("pinvi", 29999, "7300000000000000002")
+    harness.live["identities"]["pinvi"] = restored
+    harness.mocks.smoke.side_effect = DeploymentContractError("smoke failed")
+
+    with pytest.raises(DeploymentContractError, match="smoke failed"):
+        harness.service.rebuild_pinned_runtime(adopt_reason="restored from backup")
+
+    interrupted = read_deploy_status(harness.status_path)
+    assert interrupted is not None and interrupted.state == "in_progress"
+    assert (interrupted.databases or {})["pinvi"] == DeployedDatabase(*restored)
+
+    # 그사이 DB가 또 바뀌었다 — 일반 재실행은 거부한다.
+    harness.live["identities"]["pinvi"] = ("pinvi", 30001, "7300000000000000002")
+    with pytest.raises(DeploymentContractError, match="--adopt-live-databases"):
+        harness.service.rebuild_pinned_runtime()
+
+    # 되돌리면 일반 재실행이 채택 기록을 이어받아 끝낸다.
+    harness.live["identities"]["pinvi"] = restored
+    harness.mocks.smoke.side_effect = None
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "deployed"
+    committed = read_deploy_status(harness.status_path)
+    assert committed is not None and committed.state == "committed"
+    assert committed.adopted is not None
+    assert committed.adopted.reason == "restored from backup"
+
+
+def test_a_plain_rerun_after_the_reset_keeps_the_restart_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     candidate = _candidate_generation()
     harness = _forward_harness(
         monkeypatch, tmp_path, previous=_committed_status(candidate)
     )
+    harness.mocks.smoke.side_effect = DeploymentContractError("smoke failed")
 
+    with pytest.raises(DeploymentContractError, match="smoke failed"):
+        harness.service.rebuild_pinned_runtime(restart_reason="rebuild from empty")
+
+    harness.mocks.smoke.side_effect = None
     harness.service.rebuild_pinned_runtime()
 
-    assert not any(
-        operation[:1] == ("up",) and "kor-travel-map-postgres" in operation
-        for operation in harness.operations
+    committed = read_deploy_status(harness.status_path)
+    assert committed is not None and committed.state == "committed"
+    assert committed.restart is not None
+    assert committed.restart.reason == "rebuild from empty"
+    harness.mocks.reset.assert_called_once()
+
+
+def test_the_fast_path_retries_image_retention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """같은 pair의 재실행은 수렴만 한다 — 커밋 직후 정리가 실패했으면 다른 기회가 없다."""
+
+    harness = _forward_harness(
+        monkeypatch, tmp_path, previous=_committed_status(_candidate_generation())
     )
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "converged"
+    harness.mocks.retention_generation.assert_called_once()
+    harness.mocks.retention_candidate.assert_called_once()
 
 
 def test_an_absent_pinvi_database_is_created_before_the_map_migrates(

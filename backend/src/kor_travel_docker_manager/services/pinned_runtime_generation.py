@@ -2541,7 +2541,12 @@ def read_published_pinned_runtime_generation() -> dict[str, object]:
                 pinset_binding="unknown",
             ),
         }
-    if journal is not None and manifest.active_generation != journal.candidate:
+    # 같은 세대라도 커밋되지 않은 journal은 버린다 — 옛 흐름이 manifest를 쓴 뒤 journal을
+    # committed로 옮기기 전에 죽었으면, 재개가 없어진 지금은 그 "재구축 진행 중"이 다음
+    # 새 pair까지 남는다(B2 적대 리뷰 2차).
+    if journal is not None and (
+        manifest.active_generation != journal.candidate or journal.phase != "committed"
+    ):
         journal = None
 
     pinset_binding = _published_generation_pinset_binding(

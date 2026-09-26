@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import stat
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -91,13 +92,53 @@ def test_restart_keeps_the_baseline_until_the_reset_actually_happens() -> None:
     assert status.restart == restart
 
 
-def test_adopting_the_live_databases_clears_the_baseline() -> None:
+_RESTORED = {
+    **_DATABASES,
+    "pinvi": DeployedDatabase("pinvi", 29999, "7300000000000000002"),
+}
+
+
+def test_adopting_takes_the_live_databases_as_the_baseline() -> None:
+    """채택이 중간에 죽어도 다음 일반 실행이 **받아들인 그 DB**로 확인하도록 기준선을 남긴다."""
+
     adopted = DeployRestart(reason="restored from backup", at="2026-09-26T02:00:00+00:00")
 
-    status = _begin(_committed(), adopted=adopted)
+    status = _begin(_committed(), adopted=adopted, adopted_databases=_RESTORED)
 
-    assert status.databases is None
+    assert status.databases == _RESTORED
     assert status.adopted == adopted
+
+
+def test_a_plain_rerun_of_an_interrupted_adoption_keeps_its_record_and_baseline() -> None:
+    adopted = DeployRestart(reason="restored from backup", at="2026-09-26T02:00:00+00:00")
+    interrupted = _begin(_committed(), adopted=adopted, adopted_databases=_RESTORED)
+
+    rerun = _begin(interrupted)
+
+    assert rerun.adopted == adopted
+    assert rerun.databases == _RESTORED
+
+
+def test_a_plain_rerun_keeps_the_restart_record_only_after_the_reset_happened() -> None:
+    restart = DeployRestart(reason="rebuild from empty DBs", at="2026-09-26T02:00:00+00:00")
+    before_reset = _begin(_committed(), restart=restart)
+    after_reset = replace(before_reset, databases=None)  # 호출자가 리셋 뒤 비운 상태
+
+    assert _begin(before_reset).restart is None
+    assert _begin(after_reset).restart == restart
+
+
+def test_a_new_deploy_after_a_commit_carries_no_explicit_record() -> None:
+    adopted = DeployRestart(reason="restored from backup", at="2026-09-26T02:00:00+00:00")
+    committed = commit_deploy(
+        _begin(_committed(), adopted=adopted, adopted_databases=_RESTORED),
+        committed_at="2026-09-26T03:00:00+00:00",
+        images=_IMAGES,
+        schema_heads=_HEADS,
+        databases=_RESTORED,
+    )
+
+    assert _begin(committed).adopted is None
 
 
 def test_a_deploy_cannot_both_restart_and_adopt() -> None:

@@ -255,15 +255,32 @@ def begin_deploy(
     pinset_sha256: str,
     restart: DeployRestart | None = None,
     adopted: DeployRestart | None = None,
+    adopted_databases: Mapping[DatabaseRole, DeployedDatabase] | None = None,
 ) -> DeployStatus:
     """첫 변경 직전에 쓸 ``in_progress``. identity 기준선은 직전 기록에서 물려받는다.
 
     ``--restart``도 기준선을 **물려받는다** — 실제로 지운 **뒤에** 호출자가 비운다. 리셋 전에
     죽으면 DB는 그대로이므로 다음 일반 실행이 여전히 그 기준으로 확인해야 한다.
-    ``--adopt-live-databases``는 지금 떠 있는 DB를 받아들이므로 기준선을 비운다(커밋 때
-    새로 잡힌다). 직전 실행이 ``in_progress``로 죽었어도 기준선을 그대로 물려받는다.
+    ``--adopt-live-databases``는 지금 떠 있는 DB(``adopted_databases``)를 새 기준으로 삼는다.
+    직전 실행이 ``in_progress``로 죽었어도 기준선을 그대로 물려받는다.
+
+    명시적 결정(``--restart``·``--adopt-live-databases``)으로 시작한 배포가 끝나지 못하면,
+    그것을 이어서 끝내는 일반 실행이 그 기록을 가져간다. 리셋 기록은 리셋이 실제로 일어난
+    뒤(기준선이 비었을 때)만 — 그 전에 죽었으면 리셋은 없었다.
     """
 
+    if adopted is not None:
+        databases = adopted_databases
+    else:
+        databases = None if previous is None else previous.databases
+    if (
+        restart is None
+        and adopted is None
+        and previous is not None
+        and previous.state == "in_progress"
+    ):
+        adopted = previous.adopted
+        restart = previous.restart if previous.databases is None else None
     return DeployStatus(
         state="in_progress",
         run_id=run_id,
@@ -272,7 +289,7 @@ def begin_deploy(
         map_revision=map_revision,
         pinvi_revision=pinvi_revision,
         pinset_sha256=pinset_sha256,
-        databases=None if adopted is not None or previous is None else previous.databases,
+        databases=databases,
         restart=restart,
         adopted=adopted,
     )

@@ -444,13 +444,35 @@ def ensure_map_application_database(
     소유자 하나로 세 경우를 가른다.
 
     - DB가 없다: ``template0``에서 만들고 role bootstrap one-shot을 돌린다.
-    - 아직 bootstrap 소유자(`runtime.owner_name`) 것이다: 만든 뒤 bootstrap 전에 죽은
-      경우다. bootstrap만 돌린다.
+    - 아직 bootstrap 소유자(`runtime.owner_name`) 것이고 `alembic_version`이 없다: 만든 뒤
+      bootstrap 전에 죽은 경우다. bootstrap만 돌린다.
     - schema owner 것이다: 이미 bootstrap된 운영 DB다. 아무것도 하지 않는다 — schema
       one-shot(`alembic upgrade head` + 권한 재조정)이 뒤따른다.
 
-    그 밖의 소유자는 거부한다. "비어 있는가" 판정은 Map의 bootstrap 스크립트가 스스로
-    한다(`alembic_version`·잔재가 있으면 첫 변경 전에 거부).
+    그 밖의 상태는 거부한다(``require_map_application_database_convergible``). 나머지
+    잔재 판정은 Map의 bootstrap 스크립트가 스스로 한다(첫 변경 전에 거부).
+    """
+
+    state = require_map_application_database_convergible(runtime)
+    if state == "absent":
+        create_fresh_application_300_database(runtime)
+        run_role_bootstrap()
+        return "created"
+    if state == "unbootstrapped":
+        run_role_bootstrap()
+        return "bootstrapped"
+    return "present"
+
+
+def require_map_application_database_convergible(
+    runtime: DatabaseRuntime,
+) -> Literal["absent", "unbootstrapped", "present"]:
+    """``ensure_map_application_database``가 갈 길을 읽기만으로 정하고, 못 가는 상태는 거부한다.
+
+    배포는 이것을 런타임을 멈추기 **전에** 한 번 부른다. bootstrap 소유자 것인데 이미
+    schema가 있는 DB(소유자 없이 복원된 백업 — ``createdb --owner`` + ``pg_restore``)는
+    fresh 전용 role bootstrap이 거부하므로, 멈춘 뒤에야 알면 재실행마다 같은 자리에서
+    런타임이 내려간 채 끝난다(B2 적대 리뷰 2차).
     """
 
     _validate_runtime(runtime)
@@ -458,17 +480,20 @@ def ensure_map_application_database(
         raise DeploymentContractError("Map application database role is invalid")
     owner = _read_database_owner(runtime)
     if owner is None:
-        create_fresh_application_300_database(runtime)
-        run_role_bootstrap()
-        return "created"
-    if owner == runtime.owner_name:
-        run_role_bootstrap()
-        return "bootstrapped"
+        return "absent"
     if owner == _MAP_SCHEMA_OWNER:
         return "present"
-    raise DeploymentContractError(
-        "map_application database owner differs from the frozen contract"
-    )
+    if owner != runtime.owner_name:
+        raise DeploymentContractError(
+            "map_application database owner differs from the frozen contract"
+        )
+    if schema_revision_table_exists(runtime):
+        raise DeploymentContractError(
+            "map_application database already has a schema but is still owned by the "
+            f"bootstrap owner; hand it over with ALTER DATABASE {runtime.database_name} "
+            f"OWNER TO {_MAP_SCHEMA_OWNER} and rerun"
+        )
+    return "unbootstrapped"
 
 
 def create_database_if_absent(runtime: DatabaseRuntime) -> bool:

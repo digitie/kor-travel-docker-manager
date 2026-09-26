@@ -72,6 +72,7 @@ from kor_travel_docker_manager.services.database_runtime import (
     initialize_application_300_dagster_metadata_database,
     read_database_identity,
     read_database_schema_revision,
+    require_map_application_database_convergible,
     reset_databases_for_application_300,
     schema_revision_table_exists,
 )
@@ -5091,13 +5092,13 @@ class ComposeService:
                 environment=runtime_transaction.environment.effective,
             )
             expected_images = self._deployed_images(candidate, companions)
-            # 수렴 판정과 identity 기준선은 DB를 읽어야 한다. 여기서는 멈춰 있을 때만
-            # 띄운다 — 떠 있는 DB 컨테이너를 설정 drift 때문에 다시 만들지 않는다(그것은
-            # 전체 경로의 몫이다).
+            # 수렴 판정과 identity 기준선은 **실제로 migration할 cluster**를 읽어야 한다.
+            # 그래서 두 PostgreSQL을 판정보다 먼저 frozen Compose에 맞춘다. 뒤로 미루면
+            # PGDATA·이미지가 바뀐 호스트에서 옛 컨테이너로 기준선을 통과한 뒤 전체 경로가
+            # 새 cluster로 다시 만들어 그것을 커밋했다(B2 적대 리뷰 2차).
             self._start_pinned_runtime_databases(
                 runtime_transaction=runtime_transaction,
                 map_candidate=map_candidate,
-                recreate=False,
             )
 
             if previous is None:
@@ -5131,6 +5132,13 @@ class ComposeService:
                     companions=companions,
                     expected_images=expected_images,
                 )
+                # 커밋 직후의 보존 정리가 실패했거나 그 사이에 죽었으면 여기서 다시 한다 —
+                # 같은 pair의 재실행은 수렴만 하므로 다른 기회가 없다.
+                self._reconcile_pinned_runtime_image_retention(
+                    candidate,
+                    candidate_build_references,
+                    warnings,
+                )
                 return self._pinned_runtime_result(
                     previous,
                     candidate=candidate,
@@ -5151,6 +5159,10 @@ class ComposeService:
                     "--adopt-live-databases or rebuild them with --restart"
                 )
 
+            if restart is None:
+                # 전체 경로가 Map DB 앞에서 거부할 상태라면 런타임을 멈추기 **전에** 거부한다.
+                require_map_application_database_convergible(runtimes[0])
+
             from kor_travel_docker_manager.services.runtime_execution_registry import (
                 trusted_manager_source_revision,
             )
@@ -5165,6 +5177,13 @@ class ComposeService:
                 pinset_sha256=candidate.pinset_sha256,
                 restart=restart,
                 adopted=adopted,
+                # 채택은 지금 떠 있는 DB를 기준으로 삼는다. 중간에 죽어도 다음 일반 실행이
+                # 그 기준으로 확인한다(모두 있을 때만 — 하나라도 없으면 커밋 때 잡힌다).
+                adopted_databases=(
+                    self._observe_deployed_databases(runtimes)
+                    if adopted is not None
+                    else None
+                ),
             )
             write_deploy_status(status_path, status)
             watermark.mark_reached()
@@ -5174,7 +5193,6 @@ class ComposeService:
                     status_path=status_path,
                     restart=restart is not None,
                     candidate=candidate,
-                    map_candidate=map_candidate,
                     runtimes=runtimes,
                     runtime_transaction=runtime_transaction,
                     companions=companions,
@@ -5214,16 +5232,11 @@ class ComposeService:
                 PinnedRuntimeManifest(version=6, active_generation=candidate),
             )
             write_deploy_status(status_path, committed)
-            # 이미지 보존 정리는 커밋 뒤에 한다. 실패해도 배포는 끝났다.
-            try:
-                reconcile_generation_references((candidate,), cwd=get_project_root())
-                reconcile_candidate_build_references(
-                    candidate_build_references,
-                    candidate,
-                    cwd=get_project_root(),
-                )
-            except (DeploymentContractError, OSError):
-                warnings.append("pinned runtime image retention could not be reconciled")
+            self._reconcile_pinned_runtime_image_retention(
+                candidate,
+                candidate_build_references,
+                warnings,
+            )
             return self._pinned_runtime_result(
                 committed,
                 candidate=candidate,
@@ -5231,44 +5244,50 @@ class ComposeService:
                 warnings=warnings,
             )
 
+    @staticmethod
+    def _reconcile_pinned_runtime_image_retention(
+        candidate: PinnedRuntimeGeneration,
+        candidate_build_references: Mapping[RuntimeService, str],
+        warnings: list[str],
+    ) -> None:
+        """이미지 보존 정리. 배포가 끝난 뒤의 일이라 실패는 경고로만 남긴다."""
+
+        try:
+            reconcile_generation_references((candidate,), cwd=get_project_root())
+            reconcile_candidate_build_references(
+                candidate_build_references,
+                candidate,
+                cwd=get_project_root(),
+            )
+        except (DeploymentContractError, OSError):
+            warnings.append("pinned runtime image retention could not be reconciled")
+
     def _start_pinned_runtime_databases(
         self,
         *,
         runtime_transaction: ComposeTransactionSnapshot,
         map_candidate: MapApplicationCandidate,
-        recreate: bool,
     ) -> None:
-        """두 PostgreSQL을 health까지 보장하고 secret·이미지를 확인한다.
+        """두 PostgreSQL을 frozen Compose로 health까지 띄우고 secret·이미지를 확인한다.
 
-        ``recreate=False``는 이미 준비된 컨테이너를 건드리지 않는다(수렴 판정 전).
-        ``recreate=True``는 frozen Compose로 ``up``해 설정 drift를 반영한다(전체 경로).
+        ``up``은 설정이 같으면 무연산이고, 바뀌었으면(이미지·PGDATA·명령) 컨테이너를
+        다시 만든다 — 떠 있는 런타임 아래에서 DB가 한 번 재시작된다. 그 대가로 뒤따르는
+        identity 판정이 옛 컨테이너가 아니라 이번 배포가 쓸 cluster를 본다.
         """
 
         postgres = ("kor-travel-map-postgres", "pinvi-postgres")
-        ready = False
-        if not recreate:
-            try:
-                self._require_services_ready(
-                    postgres,
-                    transaction=runtime_transaction,
-                    frozen_recovery=True,
-                )
-                ready = True
-            except DeploymentContractError:
-                ready = False
-        if not ready:
-            self._run_pinned_runtime_rebuild_compose(
-                [
-                    "up",
-                    "-d",
-                    "--no-deps",
-                    "--wait",
-                    "--wait-timeout",
-                    str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
-                    *postgres,
-                ],
-                transaction=runtime_transaction,
-            )
+        self._run_pinned_runtime_rebuild_compose(
+            [
+                "up",
+                "-d",
+                "--no-deps",
+                "--wait",
+                "--wait-timeout",
+                str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+                *postgres,
+            ],
+            transaction=runtime_transaction,
+        )
         postgres_records = self._require_services_ready(
             postgres,
             transaction=runtime_transaction,
@@ -5362,7 +5381,6 @@ class ComposeService:
         status_path: Path,
         restart: bool,
         candidate: PinnedRuntimeGeneration,
-        map_candidate: MapApplicationCandidate,
         runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
         runtime_transaction: ComposeTransactionSnapshot,
         companions: Mapping[str, RuntimeService],
@@ -5409,11 +5427,8 @@ class ComposeService:
             all_one_shot_containers_absent=True,
         )
 
-        self._start_pinned_runtime_databases(
-            runtime_transaction=runtime_transaction,
-            map_candidate=map_candidate,
-            recreate=True,
-        )
+        # PostgreSQL은 판정 전에 이미 frozen Compose에 맞췄다. 여기서 다시 `up`하지 않는다 —
+        # 판정과 migration 사이에 cluster가 바뀔 자리를 만들지 않는다.
         if restart:
             reset_databases_for_application_300(runtimes)
             # 지운 **뒤에** 기준선을 비운다. 리셋 전에 죽으면 DB는 그대로이므로 다음 일반
