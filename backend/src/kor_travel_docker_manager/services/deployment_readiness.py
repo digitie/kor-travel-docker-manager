@@ -24,8 +24,11 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from io import StringIO
 from pathlib import Path
 from typing import Any, Final, Literal
+
+from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
@@ -36,6 +39,10 @@ from kor_travel_docker_manager.services.compose_service import (
     get_env_path,
     get_override_path,
     map_application_300_python_base_references_from_root,
+)
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    DeploymentMode,
+    load_deployment_mode,
 )
 from kor_travel_docker_manager.services.postgres_hba_posture import read_posture
 from kor_travel_docker_manager.services.runtime_pin_registry import (
@@ -310,6 +317,24 @@ def _effective_values() -> dict[str, str] | None:
         # 무관한 `.env` 결함(예: 다른 계약의 principal 쌍) 하나가 사전 점검 전체를
         # 500으로 만들면 안 된다. 근거가 없으면 unknown으로 떨어뜨린다.
         return None
+
+
+def read_deployment_mode() -> DeploymentMode:
+    """``.env``가 고정한 배포 모드. 재구축 판정(``pinned_rebuild_preflight``)이 읽는다.
+
+    이 모듈의 다른 관측과 달리 **예외를 던진다** — 호출자가 "재구축할 수 없는 모드"
+    (차단)와 "모드를 읽지 못함"(확인 불가)을 구분해야 하기 때문이다. Compose 우선순위를
+    겹치지 않고 ``.env`` 파일만 보간 없이 읽는다 — backend 프로세스의 env는 root가 돌리는
+    재구축의 근거가 아니다.
+    """
+
+    text = Path(get_env_path()).read_bytes().decode("utf-8")
+    values = {
+        name: value
+        for name, value in dotenv_values(stream=StringIO(text), interpolate=False).items()
+        if value is not None
+    }
+    return load_deployment_mode(values)
 
 
 def _compose_directory() -> Path:

@@ -3,7 +3,6 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Copy, EyeOff, KeyRound, RefreshCw, Trash2, X } from 'lucide-react';
 import {
-  AdminPasswordPreflight,
   LoginAuditEvent,
   PublicApiKeyCreateResponse,
   PublicApiKeySummary,
@@ -12,12 +11,9 @@ import {
   postJson,
 } from '@/lib/api';
 import { HumanError, humanizeError } from '@/lib/errors';
-import CopyableCommand from './CopyableCommand';
 import InlineError from './InlineError';
 
 const MIN_PASSWORD_LENGTH = 12;
-/** 서버가 이 문구를 요구하지는 않는다. 화면이 "무심코 진행"을 막는 마찰이다. */
-const ACKNOWLEDGEMENT_PHRASE = '재구축 무효화 동의';
 
 
 type PublicKeyState = {
@@ -40,10 +36,8 @@ type PasswordState = {
   current: string;
   next: string;
   confirm: string;
-  typedAcknowledgement: string;
   message: string | null;
   error: string | null;
-  preflight: AdminPasswordPreflight | null;
 };
 
 export default function AdminSettingsPanel({ onClose }: { onClose: () => void }) {
@@ -61,10 +55,8 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
     current: '',
     next: '',
     confirm: '',
-    typedAcknowledgement: '',
     message: null,
     error: null,
-    preflight: null,
   });
   const dialogRef = useRef<HTMLDivElement>(null);
 
@@ -102,33 +94,12 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
     }
   }, []);
 
-  // 폼을 그리기 전에 가드 상태를 먼저 읽는다 — 눌러 본 뒤에야 거부를 알게 하지 않는다.
-  const loadPasswordPreflight = useCallback(async () => {
-    try {
-      patchPasswordState({
-        preflight: await apiJson<AdminPasswordPreflight>(
-          '/api/v1/admin/password/preflight'
-        ),
-      });
-    } catch (error) {
-      patchPasswordState({ error: humanizeError(error, '재구축 상태 확인').title });
-    }
-  }, [patchPasswordState]);
-
   useEffect(() => {
     void loadPublicKeys();
     void loadAuditEvents();
-    void loadPasswordPreflight();
-  }, [loadAuditEvents, loadPublicKeys, loadPasswordPreflight]);
+  }, [loadAuditEvents, loadPublicKeys]);
 
-  const preflight = passwordState.preflight;
-  const journalBlocks = preflight?.verdict === 'unfinished_journal';
-  const needsAcknowledgement = preflight?.requires_acknowledgement === true;
-  const acknowledged =
-    !needsAcknowledgement || passwordState.typedAcknowledgement === ACKNOWLEDGEMENT_PHRASE;
   const passwordReady =
-    !journalBlocks &&
-    acknowledged &&
     passwordState.next.length >= MIN_PASSWORD_LENGTH &&
     passwordState.next === passwordState.confirm &&
     passwordState.next !== passwordState.current &&
@@ -140,17 +111,15 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
       if (!passwordReady || passwordState.busy) return;
       patchPasswordState({ busy: true, message: null, error: null });
       try {
-        await postJson<{ ok: true; guard: string }>('/api/v1/admin/password', {
+        await postJson<{ ok: true }>('/api/v1/admin/password', {
           current_password: passwordState.current,
           new_password: passwordState.next,
-          acknowledge_pinned_rebuild_invalidation: needsAcknowledgement,
         });
         patchPasswordState({
           busy: false,
           current: '',
           next: '',
           confirm: '',
-          typedAcknowledgement: '',
           message:
             '비밀번호를 변경했습니다. 다음 로그인부터 새 비밀번호를 사용합니다. ' +
             '세션 검증은 비밀번호 해시를 보지 않으므로 이미 열려 있던 세션은 ' +
@@ -159,20 +128,12 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
         });
         // 감사 행이 변경의 눈에 보이는 증거다.
         await loadAuditEvents();
-        await loadPasswordPreflight();
       } catch (error) {
         const humanized = humanizeError(error, '비밀번호 변경');
         patchPasswordState({ busy: false, error: `${humanized.title} ${humanized.hint}` });
       }
     },
-    [
-      loadAuditEvents,
-      loadPasswordPreflight,
-      needsAcknowledgement,
-      passwordReady,
-      passwordState,
-      patchPasswordState,
-    ]
+    [loadAuditEvents, passwordReady, passwordState, patchPasswordState]
   );
 
   // 모달 접근성: 열릴 때 초기 포커스를 패널로 옮기고, Escape 키로 닫는다.
@@ -474,55 +435,6 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
             </div>
           </div>
 
-          {journalBlocks ? (
-            <div className="rounded-card border border-danger p-3 mb-3" role="alert">
-              <p className="text-sm font-semibold text-danger">
-                지금은 비밀번호를 바꿀 수 없습니다.
-              </p>
-              <p className="text-xs text-secondary mt-1">{preflight?.detail}</p>
-              <p className="text-xs text-secondary mt-1">
-                재구축이 끝나거나 정리된 뒤에 다시 시도하세요. 이 판정은 우회할 수 없습니다.
-              </p>
-              {/* 실제로 조치해야 하는 쪽에 확인 경로가 없으면 "기다리라"는 말만 남는다. */}
-              {preflight?.check_command ? (
-                <CopyableCommand command={preflight.check_command} />
-              ) : null}
-              <button
-                className="ops-button mt-2"
-                onClick={() => void loadPasswordPreflight()}
-                type="button"
-              >
-                다시 확인
-              </button>
-            </div>
-          ) : null}
-
-          {needsAcknowledgement ? (
-            <div className="rounded-card border border-line p-3 mb-3">
-              <p className="text-sm font-semibold text-strong">
-                진행 중인 재구축이 있는지 확인할 수 없습니다.
-              </p>
-              <p className="text-xs text-secondary mt-1">
-                {preflight?.detail} 진행 중인 재구축이 있다면 이 변경으로 그 재구축의 재개가
-                영구 차단됩니다. SSH에서 아래를 확인한 뒤 진행하세요.
-              </p>
-              {preflight?.check_command ? (
-                <CopyableCommand command={preflight.check_command} />
-              ) : null}
-              <label className="block text-xs text-secondary mt-3">
-                확인했다면 <span className="font-semibold">{ACKNOWLEDGEMENT_PHRASE}</span>를
-                그대로 입력하세요.
-                <input
-                  className="ops-input mt-1"
-                  onChange={(event) =>
-                    patchPasswordState({ typedAcknowledgement: event.target.value })
-                  }
-                  value={passwordState.typedAcknowledgement}
-                />
-              </label>
-            </div>
-          ) : null}
-
           <form className="space-y-3 max-w-md" onSubmit={changePassword}>
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-secondary" htmlFor="current-password">
@@ -531,7 +443,6 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
               <input
                 autoComplete="current-password"
                 className="ops-input"
-                disabled={journalBlocks}
                 id="current-password"
                 onChange={(event) => patchPasswordState({ current: event.target.value })}
                 type="password"
@@ -545,7 +456,6 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
               <input
                 autoComplete="new-password"
                 className="ops-input"
-                disabled={journalBlocks}
                 id="new-password"
                 onChange={(event) => patchPasswordState({ next: event.target.value })}
                 type="password"
@@ -559,7 +469,6 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
               <input
                 autoComplete="new-password"
                 className="ops-input"
-                disabled={journalBlocks}
                 id="confirm-password"
                 onChange={(event) => patchPasswordState({ confirm: event.target.value })}
                 type="password"

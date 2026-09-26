@@ -104,14 +104,6 @@ const CODE_MESSAGES: Record<string, { title: string; hint: string }> = {
     title: '새 비밀번호가 현재 비밀번호와 같습니다.',
     hint: '다른 값을 입력하세요.',
   },
-  PINNED_REBUILD_JOURNAL_UNFINISHED: {
-    title: '진행 중인 재구축이 있어 비밀번호를 바꿀 수 없습니다.',
-    hint: '지금 바꾸면 그 재구축의 재개가 영구 차단됩니다. 재구축이 끝나거나 정리된 뒤에 다시 시도하세요.',
-  },
-  PINNED_REBUILD_JOURNAL_UNVERIFIABLE: {
-    title: '진행 중인 재구축이 있는지 확인할 수 없습니다.',
-    hint: 'SSH에서 확인한 뒤 명시 문구를 입력해야 진행할 수 있습니다.',
-  },
   ENV_NOT_WRITABLE: {
     title: '`.env`를 이 프로세스가 쓸 수 없습니다.',
     hint: '권한을 완화하지 마세요. backend를 해당 소유자 권한으로 재기동하거나 SSH에서 해시를 직접 교체합니다.',

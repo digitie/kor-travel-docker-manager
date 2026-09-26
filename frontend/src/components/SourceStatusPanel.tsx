@@ -289,10 +289,12 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
           ) : (
           <>
             {/* 버튼을 두지 않는 것은 누락이 아니라 설계다. 재구축은 root를 요구하고
-                세 개 DB를 파기하므로, HTTP 요청 하나가 그것을 시작할 수 있게 만들면
-                경계가 사라진다. 화면은 판정하고, 실행은 사람이 SSH에서 한다. */}
+                고정 pair 전체를 다시 배포하므로(`--restart`면 세 개 DB까지 지운다), HTTP
+                요청 하나가 그것을 시작할 수 있게 만들면 경계가 사라진다. 화면은 판정하고,
+                실행은 사람이 SSH에서 한다. */}
             <p className="text-xs text-secondary mb-2">
-              재구축은 되돌릴 수 없고 세 개의 데이터베이스를 새로 만듭니다. 이 화면은
+              재구축은 고정된 버전 세트 전체를 다시 배포합니다(데이터베이스는 보존하며,
+              `--restart`를 붙일 때만 세 개의 데이터베이스를 새로 만듭니다). 이 화면은
               지금 실행해도 되는지만 판정하고, 실행은 SSH에서 직접 합니다.
             </p>
             <div
@@ -336,19 +338,6 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
                 </ul>
               ) : null}
 
-              {rebuild.warnings.length > 0 ? (
-                <div className="mt-3 rounded-card border border-warn p-2">
-                  <p className="text-xs font-semibold text-strong">먼저 알아 둘 것</p>
-                  <ul className="mt-1 space-y-1">
-                    {rebuild.warnings.map((finding: RebuildFinding) => (
-                      <li className="text-xs text-strong break-all" key={finding.code}>
-                        · {finding.text}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-
               {rebuild.unverified.length > 0 ? (
                 <ul className="mt-3 space-y-1">
                   <li className="text-xs font-semibold text-secondary">확인하지 못한 것</li>
@@ -370,9 +359,7 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
                 hint={
                   rebuild.summary.state === 'ok'
                     ? '이 명령을 SSH에서 실행하면 재구축이 시작됩니다.'
-                    : rebuild.summary.state === 'attention'
-                      ? '위 내용을 읽은 뒤에 실행하세요 — 새로 시작하지 않을 수 있습니다.'
-                      : '⛔ 위 항목을 해소하기 전에는 실행하지 마세요. 지금 실행하면 실패하거나 거부됩니다.'
+                    : '⛔ 위 항목을 해소하기 전에는 실행하지 마세요. 지금 실행하면 실패하거나 거부됩니다.'
                 }
               />
               <p className="text-xs text-secondary mt-2">

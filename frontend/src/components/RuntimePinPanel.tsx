@@ -442,8 +442,9 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                   재시도가 금지된 버전 세트
                 </h3>
                 <p className="text-xs text-secondary mb-2">
-                  과거에 재구축이 실패로 종료된 조합입니다. 관리도구가 이 조합의 재실행을
-                  자동으로 거부합니다.
+                  과거에 재구축이 실패로 종료된 조합입니다. 관리도구는 이 조합으로 바꾸거나
+                  되돌리는 것을 거부하지만, 이미 고정된 조합의 재구축은 막지 않고 경고로
+                  남깁니다.
                 </p>
                 <ul className="space-y-2">
                   {lifecycle.blocked_pinsets.map((entry) => (
@@ -451,7 +452,6 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                       <p className="text-xs font-semibold text-strong break-all">
                         {short(entry.pinset_sha256)}
                         {entry.pinset_sha256 === pins?.pinset_sha256 ? ' · 현재 고정된 세트' : ''}
-                        {entry.phase ? ` · ${entry.phase} 단계 한정` : ''}
                       </p>
                       <p className="text-xs text-secondary mt-1">{entry.reason}</p>
                     </li>

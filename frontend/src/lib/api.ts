@@ -267,22 +267,6 @@ export type OffboxSyncStatusResponse = {
   configured: boolean;
 };
 
-/** `GET /api/v1/admin/password/preflight`.
- *
- * `unfinished_journal`은 **우회 경로가 없는** 거부다(증명된 사실이고, 증명됐다는 것은
- * 재개가 실제로 걸려 있다는 뜻이다). `unverifiable`/`unknown`은 backend가 root의 0700
- * 디렉터리를 읽지 못한 상태이며, "못 봤다"를 "안전"으로 읽지 않으려고 명시 승인을
- * 요구한다. */
-export type AdminPasswordPreflight = {
-  verdict: 'not_rebuildable' | 'no_journal' | 'unfinished_journal' | 'unverifiable' | 'unknown';
-  detail: string;
-  requires_acknowledgement: boolean;
-  blocking: boolean;
-  /** 서버가 실제 경로로 만들어 준 확인 명령. 화면이 placeholder를 넣으면 붙여넣었을 때
-   * 없는 경로를 조회해 "journal 없음 = 안전"으로 오독하게 된다. */
-  check_command: string;
-};
-
 export type HumanVerdict = {
   level: 'ok' | 'action_required' | 'unverified';
   text: string;
@@ -375,21 +359,19 @@ export type RebuildFinding = {
 
 /** `GET /api/v1/pinned-rebuild/preflight`.
  *
- * **실행 버튼이 아니다.** `rebuild-pinned`는 root를 요구하고 3개 DB를 파기하므로,
- * 화면은 "지금 눌러도 되는가"만 판정하고 실행은 SSH에 남긴다. `can_start`가 true여도
- * 화면이 실행하지 않는다 — payload가 주는 것은 명령 문자열뿐이다. */
+ * **실행 버튼이 아니다.** `rebuild-pinned`는 root를 요구하고 고정 pair 전체를 다시
+ * 배포하므로(`--restart`면 3개 DB까지 지운다), 화면은 "지금 눌러도 되는가"만 판정하고
+ * 실행은 SSH에 남긴다. `can_start`가 true여도 화면이 실행하지 않는다 — payload가 주는
+ * 것은 명령 문자열뿐이다. */
 export type PinnedRebuildPreflight = {
   schema: string;
   collected_at: string;
   can_start: boolean;
   pinset_sha256: string | null;
   blockers: RebuildFinding[];
-  warnings: RebuildFinding[];
   unverified: RebuildFinding[];
   command: string;
-  /** `attention`은 차단은 아니지만 초록불도 아니다 — 읽고 나서 실행해야 한다
-   * (예: 미종결 journal이 있어 새로 시작하지 않고 재개한다). */
-  summary: { state: 'ok' | 'attention' | 'blocked' | 'unverified'; text: string };
+  summary: { state: 'ok' | 'blocked' | 'unverified'; text: string };
 };
 
 export type DiskUsageRow = {
@@ -426,8 +408,9 @@ export type RuntimePinSource = {
   revision: string;
 };
 
-/** terminal(재시도 금지) 판정을 받은 candidate pinset. `phase`가 있으면 그 상태의
- * 재개만 막고, 없으면 그 pinset의 모든 실행을 막는다. */
+/** terminal 판정을 받은 candidate pinset(감사 기록). 이 pinset으로의 회전·되돌리기는
+ * 거부되지만, 이미 고정된 pinset의 재구축은 막지 않고 경고로 남긴다(ADR-51).
+ * `phase`는 옛 journal 재개 단계의 기록이라 화면이 쓰지 않는다. */
 export type BlockedPinset = {
   pinset_sha256: string;
   map_revision: string;
@@ -480,7 +463,6 @@ export type RuntimePinsResponse = {
   pending_request?: RuntimePinRequestSummary | null;
   lifecycle?: {
     current_pinset_is_blocked: boolean;
-    current_pinset_has_phase_scoped_block?: boolean;
     blocked_pinsets: BlockedPinset[];
     history: RuntimePinRotation[];
   };

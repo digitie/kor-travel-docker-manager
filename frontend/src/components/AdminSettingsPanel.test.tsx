@@ -3,12 +3,7 @@ import { cleanup, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { renderWithQueryClient } from '@/test-utils';
-import {
-  ApiError,
-  AdminPasswordPreflight,
-  LoginAuditEvent,
-  PublicApiKeySummary,
-} from '@/lib/api';
+import { ApiError, LoginAuditEvent, PublicApiKeySummary } from '@/lib/api';
 import AdminSettingsPanel from './AdminSettingsPanel';
 
 // 이 컴포넌트는 react-query를 쓰지 않고 apiJson/postJson/deleteJson을 직접 호출해
@@ -31,14 +26,6 @@ import { apiJson, postJson } from '@/lib/api';
 const mockedApiJson = vi.mocked(apiJson);
 const mockedPostJson = vi.mocked(postJson);
 
-const PREFLIGHT_OK: AdminPasswordPreflight = {
-  verdict: 'no_journal',
-  detail: '',
-  requires_acknowledgement: false,
-  blocking: false,
-  check_command: '',
-};
-
 const KEY_ITEM: PublicApiKeySummary = {
   public_api_key_id: 'k1',
   label: '테스트 키',
@@ -47,12 +34,11 @@ const KEY_ITEM: PublicApiKeySummary = {
   created_at: '2026-08-01T00:00:00Z',
 };
 
-/** 공개 키/로그인 기록/비밀번호 preflight 세 GET을 각자 지정된 결과로 흘려보내는
- * 기본 라우터. 개별 테스트가 특정 경로만 override한다. */
+/** 공개 키/로그인 기록 두 GET을 각자 지정된 결과로 흘려보내는 기본 라우터. 개별
+ * 테스트가 특정 경로만 override한다. */
 function routeApiJson(overrides: {
   publicKeys?: () => Promise<PublicApiKeySummary[]>;
   auditEvents?: () => Promise<LoginAuditEvent[]>;
-  preflight?: () => Promise<AdminPasswordPreflight>;
 }) {
   mockedApiJson.mockImplementation((path: unknown) => {
     const p = String(path);
@@ -61,9 +47,6 @@ function routeApiJson(overrides: {
     }
     if (p.startsWith('/api/v1/admin/login-audit-events')) {
       return (overrides.auditEvents ?? (() => Promise.resolve([])))();
-    }
-    if (p === '/api/v1/admin/password/preflight') {
-      return (overrides.preflight ?? (() => Promise.resolve(PREFLIGHT_OK)))();
     }
     return Promise.reject(new Error(`unexpected path: ${p}`));
   });
@@ -131,10 +114,8 @@ describe('AdminSettingsPanel — 오류 표시 분기', () => {
 
     renderWithQueryClient(<AdminSettingsPanel onClose={() => {}} />);
 
-    // preflight 로드를 기다린다 — 로드 전에는 acknowledged 계산이 preflight=null 기준이라
-    // (needsAcknowledgement가 항상 false) 버튼이 우연히 활성화될 수 있어 이 테스트의
-    // 전제(preflight가 실제로 반영된 상태)를 흐린다.
-    await waitFor(() => expect(mockedApiJson).toHaveBeenCalledWith('/api/v1/admin/password/preflight'));
+    // 최초 로드가 끝난 상태에서 시작한다 — 로드 중 상태 갱신과 입력이 섞이지 않게 한다.
+    await screen.findByText('등록된 공개 API 키가 없습니다.');
 
     await user.type(screen.getByLabelText('현재 비밀번호'), 'old-password-1');
     await user.type(screen.getByLabelText(/새 비밀번호 \(\d+자 이상\)/), 'new-password-123');
@@ -152,5 +133,29 @@ describe('AdminSettingsPanel — 오류 표시 분기', () => {
     // 렌더해 role="alert"가 붙는다. 비밀번호 섹션은 그 경로를 타지 않는다는 것을
     // "이 화면에 alert가 하나도 없다"로 확인한다.
     expect(screen.queryAllByRole('alert')).toHaveLength(0);
+  });
+
+  it('비밀번호 변경은 재구축 가드 조회·승인 입력 없이 두 필드만 보낸다 (ADR-51 B3)', async () => {
+    routeApiJson({});
+    mockedPostJson.mockResolvedValue({ ok: true });
+    const user = userEvent.setup();
+
+    renderWithQueryClient(<AdminSettingsPanel onClose={() => {}} />);
+    await screen.findByText('등록된 공개 API 키가 없습니다.');
+
+    await user.type(screen.getByLabelText('현재 비밀번호'), 'old-password-1');
+    await user.type(screen.getByLabelText(/새 비밀번호 \(\d+자 이상\)/), 'new-password-123');
+    await user.type(screen.getByLabelText('새 비밀번호 확인'), 'new-password-123');
+    await user.click(screen.getByRole('button', { name: '비밀번호 변경' }));
+
+    await screen.findByText(/비밀번호를 변경했습니다/);
+    // backend가 지운 필드(`acknowledge_pinned_rebuild_invalidation`)를 보내지 않는다.
+    expect(mockedPostJson).toHaveBeenCalledWith('/api/v1/admin/password', {
+      current_password: 'old-password-1',
+      new_password: 'new-password-123',
+    });
+    // backend가 지운 route를 부르지 않는다.
+    const calledPaths = mockedApiJson.mock.calls.map(([path]) => String(path));
+    expect(calledPaths).not.toContain('/api/v1/admin/password/preflight');
   });
 });

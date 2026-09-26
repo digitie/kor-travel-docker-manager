@@ -1,40 +1,26 @@
 """관리자 비밀번호 회전 계약 테스트 (KUM-M10).
 
-여기서 지키려는 것은 둘이다. (1) `.env`에서 **정확히 한 키만** 바뀐다 — 이 함수가
+여기서 지키려는 것은 `.env`에서 **정확히 한 키만** 바뀐다는 것이다 — 이 함수가
 임의 key=value 쓰기로 자라면 그 순간 `.env` 전체가 HTTP로 편집 가능해진다.
-(2) 진행 중인 재구축을 무효화할 수 있을 때는 막되, **못 봤다는 것을 안전으로 읽지
-않는다** — journal은 root의 0700 디렉터리에 있어 backend가 늘 볼 수 있는 것이 아니다.
-
-실제 미종결 journal을 만들려면 파괴적 재구축을 돌려야 하므로 그 경로는 mock으로
-대체한다(저널에 명시).
+(재구축 journal 가드는 ADR-51 B3에서 지웠다 — 배포가 재개하지 않으므로 막을 것이 없다.)
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from kor_travel_docker_manager.services import admin_password_service as service
 from kor_travel_docker_manager.services.admin_password_service import (
     ADMIN_PASSWORD_HASH_ENV,
     AdminPasswordError,
     change_admin_password,
-    pinned_rebuild_guard_state,
 )
 from kor_travel_docker_manager.services.auth_service import hash_password_for_env
 
 CURRENT = "current-password-1234"
 NEXT = "brand-new-password-5678"
-
-_REBUILDABLE_ENV = """KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal
-KTDM_DEPLOYMENT_LIFECYCLE=rebuildable
-PINVI_ENVIRONMENT=production
-KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=true
-COMPOSE_PROJECT_NAME=kor-travel-docker-manager
-"""
 
 
 @pytest.fixture
@@ -51,17 +37,6 @@ def env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("KTDM_ADMIN_USERNAME", "admin")
     monkeypatch.setenv(ADMIN_PASSWORD_HASH_ENV, hash_password_for_env(CURRENT))
     monkeypatch.setenv("KTDM_SESSION_SECRET", "test-session-secret-minimum-32-bytes-value")
-    # 기본은 "막을 것이 없음" — 가드 자체는 별도 테스트에서 다룬다.
-    monkeypatch.setattr(
-        service,
-        "pinned_rebuild_guard_state",
-        lambda **_: {
-            "verdict": "no_journal",
-            "detail": "",
-            "requires_acknowledgement": False,
-            "blocking": False,
-        },
-    )
     return path
 
 
@@ -172,113 +147,3 @@ def test_new_password_policy(env_file: Path, new_password: str, code: str) -> No
 
     assert caught.value.code == code
     assert env_file.read_bytes() == before
-
-
-# --- 미종결 rebuild journal 가드 ---------------------------------------------
-
-
-def _guard(verdict: str) -> dict[str, Any]:
-    return {
-        "verdict": verdict,
-        "detail": "테스트",
-        "requires_acknowledgement": verdict in {"unverifiable", "unknown"},
-        "blocking": verdict == "unfinished_journal",
-    }
-
-
-def test_a_proven_unfinished_journal_has_no_override(
-    env_file: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """증명됐다는 것은 재개가 실제로 걸려 있다는 뜻이다 — 승인으로도 뚫리지 않는다."""
-
-    monkeypatch.setattr(
-        service, "pinned_rebuild_guard_state", lambda **_: _guard("unfinished_journal")
-    )
-    before = env_file.read_bytes()
-
-    with pytest.raises(AdminPasswordError) as caught:
-        change_admin_password(
-            current_password=CURRENT,
-            new_password=NEXT,
-            acknowledge_pinned_rebuild_invalidation=True,
-            env_path=env_file,
-        )
-
-    assert caught.value.code == "PINNED_REBUILD_JOURNAL_UNFINISHED"
-    assert env_file.read_bytes() == before
-
-
-@pytest.mark.parametrize("verdict", ["unverifiable", "unknown"])
-def test_an_unverifiable_guard_requires_an_explicit_acknowledgement(
-    env_file: Path, monkeypatch: pytest.MonkeyPatch, verdict: str
-) -> None:
-    """'못 봤다'는 '안전'이 아니다."""
-
-    monkeypatch.setattr(service, "pinned_rebuild_guard_state", lambda **_: _guard(verdict))
-
-    with pytest.raises(AdminPasswordError) as caught:
-        change_admin_password(
-            current_password=CURRENT, new_password=NEXT, env_path=env_file
-        )
-    assert caught.value.code == "PINNED_REBUILD_JOURNAL_UNVERIFIABLE"
-
-    result = change_admin_password(
-        current_password=CURRENT,
-        new_password=NEXT,
-        acknowledge_pinned_rebuild_invalidation=True,
-        env_path=env_file,
-    )
-    assert result["guard"] == verdict
-    assert result["acknowledged"] is True
-
-
-def test_a_non_rebuildable_mode_needs_no_acknowledgement(tmp_path: Path) -> None:
-    """이 모드에서는 journal이 만들어지지도 재개되지도 않는다."""
-
-    path = tmp_path / ".env"
-    path.write_text(
-        "KTDM_DEPLOYMENT_ENVIRONMENT=local\nKTDM_DEPLOYMENT_LIFECYCLE=development\n"
-        "PINVI_ENVIRONMENT=development\n"
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=false\n",
-        encoding="utf-8",
-    )
-
-    state = pinned_rebuild_guard_state(env_path=path)
-
-    assert state["verdict"] == "not_rebuildable"
-    assert state["requires_acknowledgement"] is False
-    assert state["blocking"] is False
-
-
-def test_an_absent_state_root_reads_as_no_journal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = tmp_path / ".env"
-    path.write_text(_REBUILDABLE_ENV, encoding="utf-8")
-    monkeypatch.setattr(
-        service, "pinned_runtime_state_root", lambda values: tmp_path / "absent"
-    )
-
-    assert pinned_rebuild_guard_state(env_path=path)["verdict"] == "no_journal"
-
-
-def test_a_leftover_unfinished_journal_no_longer_blocks_the_password(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """ADR-51: 배포는 재개하지 않으므로 `.env`를 바꿔도 막힐 재구축이 없다.
-
-    종전에는 버려진 미종결 journal 하나(n150의 a7cc0414)가 이 가드를 영구히 묶었다.
-    """
-
-    path = tmp_path / ".env"
-    path.write_text(_REBUILDABLE_ENV, encoding="utf-8")
-    state_root = tmp_path / "state"
-    state_root.mkdir(mode=0o700)
-    (state_root / "pinned-runtime-rebuild-v8-abc.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(service, "pinned_runtime_state_root", lambda values: state_root)
-
-    state = pinned_rebuild_guard_state(env_path=path)
-
-    assert state["verdict"] == "no_journal"
-    assert state["blocking"] is False
-    assert state["requires_acknowledgement"] is False

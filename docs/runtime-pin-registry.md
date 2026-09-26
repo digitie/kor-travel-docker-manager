@@ -444,9 +444,8 @@ pinset을 태워 놓고 "적용 안 됨"이라고 보고한다:
   "pins": { "release_version": 5, "pinset_sha256": "...", "sources": [...],
             "rotated_at": "...", "rotated_by": "...", "reason": "..." },   // unknown이면 null
   "lifecycle": {
-    "current_pinset_is_blocked": false,              // phase 없는 차단만 계수
-    "current_pinset_has_phase_scoped_block": false,  // phase 한정은 별도 필드
-    "blocked_pinsets": [...],
+    "current_pinset_is_blocked": false,              // phase 없는 차단만 계수(재구축은 경고만)
+    "blocked_pinsets": [...],                        // phase 한정 항목은 감사 기록으로만 싣는다
     "history": [...]
   },
   "pending_request": null | {                        // §7-1. 없으면 null

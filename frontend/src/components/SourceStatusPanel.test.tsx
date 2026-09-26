@@ -56,7 +56,6 @@ const REBUILD_PREFLIGHT_OK: PinnedRebuildPreflight = {
   can_start: true,
   pinset_sha256: 'deadbeef',
   blockers: [],
-  warnings: [],
   unverified: [],
   command: 'pinvi-pair rebuild-pinned --confirm',
   summary: { state: 'ok', text: '지금 실행해도 됩니다' },
