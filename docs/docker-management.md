@@ -917,7 +917,7 @@ mutation mutex는 `local`이 아닌 모든 모드(production·rehearsal·미지�
 state가 아니라 host 하나의 고정 경로
 `/run/lock/kor-travel-docker-manager/global-mutation.lock`(root `0600`, 디렉터리 `0700 root:root`)을 사용한다
 (ADR-51 C-2·C-3). 비root 개발용 `local`만 실행 사용자 `$HOME/.local/state/kor-travel-docker-manager/` 아래 lock을
-쓴다. 경로는 `.env` 값만으로 정하며 프로세스 환경으로 채우지 않고, override는 없다. 경합이면 기다리지 않고
+쓴다. 경로는 `.env` 파일 값으로 정하며 프로세스 환경으로 채우지 않고(단 프로세스 모드가 명시적으로 local이 아니면 G — 더 엄격하게만), override는 없다. 경합이면 기다리지 않고
 409 `MANAGER_MUTATION_ACTIVE`로 거절한다. lock 안에서 manifest 경로, root `.env`,
 canonical compose byte/mode와 external `env_file` 입력을 한 번만 capture한다. `env_file`은 list의 exact
 `{path, required, format}` mapping만 허용하며 각 regular file의 존재 여부·byte·device/inode/mode/uid/gid를

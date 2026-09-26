@@ -3586,11 +3586,15 @@ G와 P 두 개이고, P는 C-3에서 지운다.
 
 - pinned lease P(`pinned-runtime-rebuild.lock`)와 그 획득 함수를 지웠다. 재구축은 G를 한 번
   잡고(launcher가 물려준 fd면 검증해 그대로 쓴다) 그 안에서 `.env`를 캡처·검증하고 본문을 돈다.
-  세 번째 획득과 그 lock snapshot도 없다 — 캡처와 사용 사이 `.env` 대조는 캡처한 환경
-  snapshot을 기준으로 한다.
+  세 번째 획득과 그 lock snapshot도 없다. 캡처 뒤 `.env`의 디스크 재확인은 하지 않는다 — 재구축
+  본문은 캡처한 snapshot(동결된 Compose 문서와 그 effective 값)으로만 돌고, 본문 내내 쥔 G가
+  Manager의 모든 `.env` 쓰기를 막는다(C-3 적대 리뷰: 대신 둔 대조가 같은 객체끼리 비교해 실패할 수
+  없었으므로 지웠다).
 - 경로 유도는 `manager_mutation_lock_path`: `local`만 `$HOME` 개발 락이고, 미지정·미지의 모드를
-  포함한 나머지는 전부 G다(fail closed). `KTDM_C6C_DEPLOYMENT_LOCK` override를 지웠고, 경로는
-  `.env` 값만으로 정한다 — 프로세스 환경으로 채우지 않는다(ADR-41의 교훈).
+  포함한 나머지는 전부 G다(fail closed). `KTDM_C6C_DEPLOYMENT_LOCK` override를 지웠다. 경로는
+  `.env` 파일 값으로 정하고 프로세스 환경으로 **채우지** 않는다(ADR-41의 교훈). 단 프로세스 환경의
+  `KTDM_DEPLOYMENT_ENVIRONMENT`가 명시적으로 local이 아니면 파일이 local이어도 G다 — 프로세스
+  환경은 락을 **더 엄격하게만** 바꾼다(파일만 고치고 재시작하지 않은 backend).
 - root 요구는 재구축 입구의 root 검사와 G 디렉터리 소유자 검사가 그대로 맡는다.
 - C 밖에 남긴 것(D 이후): CLI의 terminal block 상속 fd 예외와 M05 launcher의 fd 전달,
   installer의 자체 lock 코드, ADR-41의 획득 뒤 재검사 정리.

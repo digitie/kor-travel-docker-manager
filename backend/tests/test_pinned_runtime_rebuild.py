@@ -1916,7 +1916,6 @@ def _forward_harness(
             lambda *, environment_override: transaction.environment
         ),
         # 대역 transaction의 환경은 `.env` 증거(경로·identity)가 없는 SimpleNamespace다.
-        "assert_transaction_matches_environment": Mock(),
         "materialize_pinned_runtime_sources": mocks.materialize,
         "_ensure_map_application_300_python_base_images": Mock(),
         "_build_map_application_300_images": mocks.paired_builder,

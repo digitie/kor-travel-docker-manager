@@ -1296,27 +1296,6 @@ def assert_environment_snapshot_matches_c6c_lock(
     )
 
 
-def assert_transaction_matches_environment(
-    transaction: "ComposeTransactionSnapshot",
-    environment_snapshot: "ComposeEnvironmentSnapshot",
-) -> None:
-    """rebuild가 뜬 transaction이 ``G`` 안에서 캡처한 그 `.env`로 만들어졌는지 본다.
-
-    ADR-51 C-3에서 세 번째 lock과 그 lock snapshot이 사라졌으므로, 캡처와 사용 사이
-    `.env` 대조의 기준은 lock snapshot이 아니라 rebuild가 처음 캡처한 환경 snapshot이다.
-    디스크의 `.env` 재확인은 Docker 호출 직전
-    `_revalidate_mutation_single_file_boundary`가 따로 한다.
-    """
-
-    _assert_env_file_evidence_matches(
-        transaction.environment,
-        env_path=Path(environment_snapshot.env_path).resolve(strict=False),
-        env_file_identity=environment_snapshot.env_file_identity,
-        env_file_sha256=hashlib.sha256(environment_snapshot.env_file_bytes).hexdigest(),
-        reference="captured environment snapshot",
-    )
-
-
 def _assert_transaction_matches_c6c_lock(
     transaction: "ComposeTransactionSnapshot",
     lock_snapshot: C6cDeploymentLockSnapshot,
@@ -4916,9 +4895,6 @@ class ComposeService:
                     environment_override=dict(artifact_directories.compose_environment()),
                     environment_snapshot=environment_snapshot,
                 )
-                assert_transaction_matches_environment(
-                    prebuild_transaction, environment_snapshot
-                )
             with _pinned_runtime_prejournal_step("external_prerequisites"):
                 self._require_services_ready(
                     _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
@@ -4964,9 +4940,6 @@ class ComposeService:
                 candidate_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=candidate_environment,
                     environment_snapshot=environment_snapshot,
-                )
-                assert_transaction_matches_environment(
-                    candidate_transaction, environment_snapshot
                 )
             with _pinned_runtime_prejournal_step("candidate_contract"):
                 self._validate_pinned_runtime_candidate_build_contract(
@@ -5038,9 +5011,6 @@ class ComposeService:
                     excluded_services=_PINNED_RUNTIME_ONESHOT_WRITERS,
                 )
             with _pinned_runtime_prejournal_step("runtime_transaction_lock"):
-                assert_transaction_matches_environment(
-                    runtime_transaction, environment_snapshot
-                )
             ensure_generation_references((candidate,), cwd=get_project_root())
             runtimes = database_runtimes_from_frozen_contract(
                 resolved=runtime_transaction.resolved,

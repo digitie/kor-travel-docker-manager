@@ -367,8 +367,8 @@ ADR-51 B3에서 지웠다. 다만 `.env` 파일을 다시 쓰는 것이므로, r
 `KTDM_DEPLOYMENT_ENVIRONMENT`가 `local`이 아니면(`production`·`rehearsal`·미지정 모두)
 **모든** Manager mutation은 host 변경 lock
 `/run/lock/kor-travel-docker-manager/global-mutation.lock`(G) 하나를 지난다
-(`manager_mutation_lock_path`, ADR-51 C-2·C-3). 경로는 `.env` 값만으로 정하고 프로세스
-환경으로 채우지 않는다. UI의 컨테이너 조작·설정·초기화,
+(`manager_mutation_lock_path`, ADR-51 C-2·C-3). 경로는 `.env` 파일 값으로 정하고 프로세스
+환경으로 채우지 않는다 — 단 프로세스 환경의 모드가 명시적으로 local이 아니면 G다(더 엄격하게만). UI의 컨테이너 조작·설정·초기화,
 관리자 비밀번호 변경, `ktdctl compose-boundary` stage/retire/activate, `ktdctl pin`
 mutator, 재구축·M05·installer launcher가 전부 같은 lock이다(일부러 뺀 것 — 백업·offbox
 동기화·핀 요청 제안·airport 컨테이너 — 은 `docs/decisions.md` ADR-51 "C 범위"). 경합이면
@@ -635,7 +635,7 @@ candidate의 아직 준비되지 않은 explicit credential guard가 Concierge �
 projection은 trusted canonical source에서 매번 만들고 즉시 제거하며, caller/home source가 경로나 내용을 지정할 수 없다.
 성공한 경우에만 **같은
 protected state filesystem 안에서** pending directory를 owner-only archive로 rename한다. canonical
-rehearsal/rebuildable에서는 pinned-runtime rebuild host lease(production에서는 fixed C6c global mutation lock)를
+rehearsal/rebuildable과 production 모두 Manager 변경 락 G(`global-mutation.lock`)를
 계속 보유한 채 API/MCP/scheduler/UI 정확한 네 service만 canonical single-file source로 force-recreate한다.
 production의 일반 `ensure`는 허용되지 않으므로 이 단계에 사용하지 않는다. archive 뒤 재생성이 실패하면 root
 `.env`와 archive는 의도적으로 유지된다. 원인을 해소한 뒤 아래 Manager retry만 사용한다.
