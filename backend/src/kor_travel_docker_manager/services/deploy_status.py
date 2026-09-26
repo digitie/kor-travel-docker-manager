@@ -237,6 +237,11 @@ class DeployStatus:
         }
 
 
+#: ``--restart``의 리셋이 실제로 끝났다는 표시(``in_progress``의 ``step``). 이어서 끝내는 일반
+#: 실행이 리셋 기록을 가져갈지는 이것 하나로 정한다.
+RESET_DONE_STEP: Final = "reset"
+
+
 def _is_canonical_uuid(value: str) -> bool:
     try:
         return str(uuid.UUID(value)) == value
@@ -266,9 +271,11 @@ def begin_deploy(
 
     명시적 결정(``--restart``·``--adopt-live-databases``)으로 시작한 배포가 끝나지 못하면,
     그것을 이어서 끝내는 일반 실행이 그 기록을 가져간다. 리셋 기록은 리셋이 실제로 일어난
-    뒤(기준선이 비었을 때)만 — 그 전에 죽었으면 리셋은 없었다.
+    뒤(``step == RESET_DONE_STEP``)만 — 그 전에 죽었으면 리셋은 없었다. 기준선이 비었는지로
+    가르면 기준선 없이 시작한 ``--restart``(새 호스트)가 리셋 전에 죽어도 리셋으로 남는다.
     """
 
+    step: str | None = None
     if adopted is not None:
         databases = adopted_databases
     else:
@@ -280,7 +287,9 @@ def begin_deploy(
         and previous.state == "in_progress"
     ):
         adopted = previous.adopted
-        restart = previous.restart if previous.databases is None else None
+        if previous.step == RESET_DONE_STEP:
+            restart = previous.restart
+            step = RESET_DONE_STEP
     return DeployStatus(
         state="in_progress",
         run_id=run_id,
@@ -290,6 +299,7 @@ def begin_deploy(
         pinvi_revision=pinvi_revision,
         pinset_sha256=pinset_sha256,
         databases=databases,
+        step=step,
         restart=restart,
         adopted=adopted,
     )

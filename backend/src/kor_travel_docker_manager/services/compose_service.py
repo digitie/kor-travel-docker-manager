@@ -77,6 +77,7 @@ from kor_travel_docker_manager.services.database_runtime import (
     schema_revision_table_exists,
 )
 from kor_travel_docker_manager.services.deploy_status import (
+    RESET_DONE_STEP,
     DeployedDatabase,
     DeployRestart,
     DeployStatus,
@@ -5431,9 +5432,9 @@ class ComposeService:
         # 판정과 migration 사이에 cluster가 바뀔 자리를 만들지 않는다.
         if restart:
             reset_databases_for_application_300(runtimes)
-            # 지운 **뒤에** 기준선을 비운다. 리셋 전에 죽으면 DB는 그대로이므로 다음 일반
-            # 실행이 여전히 옛 기준으로 확인해야 한다(B2 적대 리뷰).
-            status = replace(status, databases=None)
+            # 지운 **뒤에** 기준선을 비우고 리셋을 표시한다. 리셋 전에 죽으면 DB는 그대로이므로
+            # 다음 일반 실행이 여전히 옛 기준으로 확인해야 하고, 리셋 기록도 가져가지 않는다.
+            status = replace(status, databases=None, step=RESET_DONE_STEP)
             write_deploy_status(status_path, status)
         # PinVi DB가 없으면(새 호스트·지워진 DB) Map을 건드리기 전에 만든다.
         create_database_if_absent(runtimes[2])

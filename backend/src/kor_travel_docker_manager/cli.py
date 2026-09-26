@@ -752,10 +752,10 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
     exit_code = 0
     if report.get("current_pinset_is_blocked") and execution_binding != "current":
         print(
-            "현재 고정된 pinset에 옛 재시도 금지 기록이 있습니다. rebuild-pinned는 "
-            "경고만 남기고 진행합니다(ADR-51) — 이 종료 코드는 그 기록을 게이트로 삼는 "
-            "M05 하네스용입니다. M05에도 필요하면 'ktdctl pin rotate-pair'로 새 pair를 "
-            "고정하세요.",
+            "현재 고정된 pinset에 옛 재시도 금지 기록이 있습니다. ADR-51 뒤 "
+            "rebuild-pinned는 이 기록을 경고로만 남깁니다 — 이 종료 코드는 그 기록을 "
+            "게이트로 삼는 M05 하네스용입니다. M05에도 필요하면 'ktdctl pin rotate-pair'로 "
+            "새 pair를 고정하세요.",
             file=sys.stderr,
         )
         exit_code = 1
@@ -821,14 +821,6 @@ def _cmd_pin_verify(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         exit_code = 1
-    if exit_code:
-        # ADR-51 뒤 rebuild-pinned는 차단 기록·execution 결박을 요구하지 않는다(경고만).
-        # 아래 종료 코드는 그것을 요구하는 M05 하네스의 게이트다.
-        print(
-            "note: rebuild-pinned proceeds with these as warnings (ADR-51); this exit "
-            "code gates execution-bound runs such as M05",
-            file=sys.stderr,
-        )
     if pending_rotation is not None:
         print(
             "runtime pair rotation is incomplete; resume the same root 'ktdctl pin "

@@ -10,6 +10,7 @@ import pytest
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.deploy_status import (
+    RESET_DONE_STEP,
     DeployedDatabase,
     DeployRestart,
     DeployStatus,
@@ -122,10 +123,25 @@ def test_a_plain_rerun_of_an_interrupted_adoption_keeps_its_record_and_baseline(
 def test_a_plain_rerun_keeps_the_restart_record_only_after_the_reset_happened() -> None:
     restart = DeployRestart(reason="rebuild from empty DBs", at="2026-09-26T02:00:00+00:00")
     before_reset = _begin(_committed(), restart=restart)
-    after_reset = replace(before_reset, databases=None)  # 호출자가 리셋 뒤 비운 상태
+    # 호출자가 리셋 뒤 쓰는 상태: 기준선을 비우고 리셋을 표시한다.
+    after_reset = replace(before_reset, databases=None, step=RESET_DONE_STEP)
 
     assert _begin(before_reset).restart is None
-    assert _begin(after_reset).restart == restart
+    rerun = _begin(after_reset)
+    assert rerun.restart == restart
+    # 이어서 끝내는 실행이 또 죽어도 다음 실행이 리셋 기록을 가져간다.
+    assert _begin(rerun).restart == restart
+
+
+def test_a_restart_without_a_baseline_that_died_before_the_reset_leaves_no_record() -> None:
+    """새 호스트처럼 기준선 없이 시작한 `--restart`: 기준선이 비었다는 것만으로는 리셋이
+    있었는지 알 수 없다(B2 적대 리뷰 3차)."""
+
+    restart = DeployRestart(reason="rebuild from empty DBs", at="2026-09-26T02:00:00+00:00")
+    before_reset = _begin(None, restart=restart)
+
+    assert before_reset.databases is None
+    assert _begin(before_reset).restart is None
 
 
 def test_a_new_deploy_after_a_commit_carries_no_explicit_record() -> None:

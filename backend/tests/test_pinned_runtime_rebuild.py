@@ -3203,6 +3203,37 @@ def test_a_plain_rerun_after_the_reset_keeps_the_restart_record(
     harness.mocks.reset.assert_called_once()
 
 
+def test_a_restart_on_a_host_without_a_baseline_that_dies_before_the_reset_is_not_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """기준선 없이(새 호스트·carry-over 없음) 시작한 `--restart`가 리셋 전에 죽었다. 이어서
+    끝내는 일반 실행은 옛 DB를 전진시켰을 뿐이다 — 리셋 기록을 남기면 거짓이다(B2 적대 리뷰 3차)."""
+
+    harness = _forward_harness(monkeypatch, tmp_path)
+    original = harness.service._run_pinned_runtime_rebuild_compose
+
+    def fail_first_stop(arguments: list[str], *, transaction: object) -> dict[str, object]:
+        if arguments[:1] == ["stop"] and not any(
+            operation[:1] == ("stop",) for operation in harness.operations
+        ):
+            harness.operations.append(tuple(arguments))
+            raise DeploymentContractError("stop failed")
+        return original(arguments, transaction=transaction)
+
+    monkeypatch.setattr(harness.service, "_run_pinned_runtime_rebuild_compose", fail_first_stop)
+
+    with pytest.raises(DeploymentContractError):
+        harness.service.rebuild_pinned_runtime(restart_reason="rebuild from empty")
+
+    harness.mocks.reset.assert_not_called()
+    harness.service.rebuild_pinned_runtime()
+
+    committed = read_deploy_status(harness.status_path)
+    assert committed is not None and committed.state == "committed"
+    assert committed.restart is None
+    harness.mocks.reset.assert_not_called()
+
+
 def test_the_fast_path_retries_image_retention(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
