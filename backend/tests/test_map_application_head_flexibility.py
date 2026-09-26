@@ -14,9 +14,10 @@ installed graph의 head 하나(``/usr/local/bin/ktm-application-schema head``)�
 
 ## 무엇이 여전히 고정인가
 
-``300``은 **baseline root**로만 남는다 -- ``0236 → 300`` handoff의 목적지이자
-"Dagster metadata DB는 application raw revision을 갖지 않는다"는 격리 선언이 가리키는
-역사적 좌표다. 그것은 head가 아니고, migration이 쌓여도 움직이지 않는다.
+없다. ``300``은 한때 **baseline root** 상수로 남아 있었다 -- ``0236 → 300`` handoff의
+목적지이자 "Dagster metadata DB는 application raw revision을 갖지 않는다"는 격리 선언이
+가리키는 역사적 좌표였다. 그 상수를 선언한 모듈은 죽은 코드로 지워졌고(ADR-51 B3),
+그래서 면제 목록도 비어 있다.
 """
 
 from __future__ import annotations
@@ -25,10 +26,6 @@ import re
 from pathlib import Path
 
 import pytest
-
-from kor_travel_docker_manager.services.map_application_300 import (
-    BASELINE_ROOT_REVISION,
-)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _BACKEND_SRC = _REPO_ROOT / "backend" / "src" / "kor_travel_docker_manager"
@@ -45,12 +42,7 @@ _ENV_ASSIGNMENT = re.compile(
     r"KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD\s*[=:]\s*[\"']?300"
 )
 
-_EXEMPT: dict[str, str] = {
-    "map_application_300.py": (
-        "`BASELINE_ROOT_REVISION` 선언. `0236 → 300` handoff의 stamp 목적지이자 "
-        "Dagster metadata 격리 선언이 가리키는 역사적 좌표이며 head가 아니다."
-    ),
-}
+_EXEMPT: dict[str, str] = {}
 """head 리터럴이 **정당한** 파일과 사유.
 
 사유 없는 면제는 두지 않는다. 여기 이름을 더하는 것은 "이 파일의 `300`은 head가 아니라
@@ -158,8 +150,3 @@ def test_every_exemption_is_alive_reasoned_and_needed() -> None:
 def test_the_rule_catches_every_shape_that_bypassed_the_old_one(line: str) -> None:
     """적대 리뷰가 실행으로 뚫은 형태를 되짚는다."""
     assert _QUOTED.search(line) or _ENV_ASSIGNMENT.search(line)
-
-
-def test_baseline_root_stays_pinned() -> None:
-    """baseline root는 반대로 **움직이면 안 된다.**"""
-    assert BASELINE_ROOT_REVISION == "300"

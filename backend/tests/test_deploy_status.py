@@ -180,6 +180,31 @@ def test_an_adoption_record_round_trips(tmp_path: Path) -> None:
     assert read_deploy_status(path) == status
 
 
+@pytest.mark.parametrize("carried_over_from", ("v6+v8:" + "e" * 64, None))
+def test_the_carried_over_from_key_round_trips(
+    tmp_path: Path, carried_over_from: str | None
+) -> None:
+    """v6/v8 넘겨받기는 없어졌지만(ADR-51 B3) 이 키는 파일 계약이다.
+
+    지금 호스트의 파일은 모두 이 키를 갖고 있고(n150은 ``null``), 읽기는 키 집합을 정확히
+    요구한다. 키를 "정리"하면 모든 배포가 첫 읽기에서 멈춘다 — 지우려면 ``_VERSION``을
+    올려야 한다.
+    """
+
+    payload = _committed().to_payload()
+    payload["carried_over_from"] = carried_over_from
+    path = deploy_status_path(tmp_path)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    status = read_deploy_status(path)
+
+    assert status is not None
+    assert status.carried_over_from == carried_over_from
+    write_deploy_status(path, status)
+    assert json.loads(path.read_text(encoding="utf-8")) == payload
+    assert read_deploy_status(path) == status
+
+
 def test_only_an_in_progress_deploy_can_be_committed() -> None:
     with pytest.raises(DeploymentContractError, match="only an in-progress"):
         commit_deploy(

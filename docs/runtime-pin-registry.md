@@ -281,8 +281,8 @@ sudo -n backend/.venv/bin/ktdctl pin publish-generation \
   피하려 값을 복제했고 `test_supported_release_version_mirror_matches_the_release_module`이
   동일성을 고정한다).
 - `pinset_sha256`과 **각 `blocked_pinsets[]` 항목의 digest**를 자기 revision으로
-  재계산 대조한다. 차단 항목의 digest가 어긋나면 그 항목은 어떤 journal에도 매치하지
-  않아 "차단했다고 기록됐지만 아무것도 막지 못하는" 조용한 무력화가 된다.
+  재계산 대조한다. 차단 항목의 digest가 어긋나면 기록한 pair(revision)와 판정하는
+  pair(digest)가 달라 "그것을 차단했다"는 기록이 조용히 거짓이 된다.
 - `history`는 500건 초과 시 오래된 것부터 버린다(감사 기록). **`blocked_pinsets`는
   절대 버리지 않는다** — 초과는 fail-close다(가장 오래된 terminal이 조용히 빠지면
   그 candidate가 다시 실행 가능해진다).
@@ -293,19 +293,22 @@ sudo -n backend/.venv/bin/ktdctl pin publish-generation \
 
 | 종류 | `phase` | 무엇을 막나 | 누가 판정하나 |
 |---|---|---|---|
-| **조건 없는 차단** | 없음 | 그 pinset의 **legacy source 실행** | `compose_service._assert_pinset_is_not_permanently_blocked` (모든 rebuild에서 current v6 execution 결박·terminal을 확인하고, legacy terminal은 추가 감사 근거로 쓴다) |
-| **phase 한정 차단** | 있음 | 그 phase 상태의 **journal 재개만** | `pinned_runtime_release.is_blocked_pinset_retry` → resume admission |
+| **조건 없는 차단** | 없음 | 그 pinset의 **legacy source 실행** | `compose_service._pinned_runtime_admission_warnings` (모든 rebuild에서 current v6 execution 결박·terminal을 확인한다 — ADR-51 B 이후 거부가 아니라 경고) |
+| **phase 한정 차단** | 있음 | 그 pinset으로의 **회전·rollback만** — 옛 journal 재개 차단은 journal 재개와 함께 없어졌다(ADR-51 B3). 항목은 파싱·보존만 한다 | `is_blocked_pinset` (회전·rollback 게이트) |
 
 두 술어를 섞으면 안 된다:
 - `is_unconditionally_blocked_pinset(digest)` — `phase is None` 항목만 본다. **시작
   게이트와 API의 `current_pinset_is_blocked`가 쓰는 술어.**
 - `is_blocked_pinset(digest)` — phase 무관. **회전·rollback이 "차단된 곳으로 가지
   않는다"를 판정할 때만** 쓴다(그 판단에는 phase가 의미 없다).
-- `blocked_entry_for(...)` — journal 식별자 4종(pinset+map rev+pinvi rev+phase)으로
-  매치. resume admission이 쓴다.
+
+journal 식별자 4종(pinset+map rev+pinvi rev+phase)으로 매치하던 재개 판정은 ADR-51
+B3에서 지웠다 — 배포는 재개하지 않고 처음부터 다시 돈다.
 
 d9 계열 historical 항목이 phase 한정인 이유: 그 candidate의 **특정 중단 지점 재개만**
-막던 원래 의미를 보존하기 위해서다. 시작 게이트가 여기까지 막으면 과차단이 된다.
+막던 원래 의미를 보존하기 위해서다. 재개가 없어진 지금은 회전·rollback 대상에서만 빠지고,
+시작 게이트가 여기까지 막으면 과차단이 된다. seed와 n150 registry는 여전히
+`phase='map_runtime_ready'`를 저장하므로 필드와 파싱은 남긴다.
 
 ---
 
@@ -644,11 +647,7 @@ ktdctl pinvi-pair rebuild-pinned --confirm
   └─ env snapshot · assert_pinned_runtime_rebuild_allowed · validate_c6c_operation_tokens
   └─ prewrite_admission:
        └─ current_pinned_runtime_release()             lock 안에서 registry snapshot 로드 (없으면 fail-close)
-       └─ pinned_runtime_state_paths() → watermark.observe()   소각 판정의 관측 지점
-       └─ _assert_pinset_is_not_permanently_blocked(digest) ★ 같은 snapshot의 current v6 execution을 검증하고, 없거나 terminal이면 거부; legacy terminal은 추가 감사 근거
-       └─ resume journal이 있으면
-            _assert_pinvi_role_lifecycle_block_admission()
-              └─ is_blocked_pinset_retry(...)          ★ phase 한정 차단 판정
+       └─ _pinned_runtime_admission_warnings(digest)   ★ 조건 없는 차단·낡거나 terminal인 v6 execution 결박은 경고, 대기 중인 회전 intent만 거부
   └─ (role credential 회전, source materialize, 후보 빌드, DB reset …)   ← 여기부터가 mutation
 ```
 
