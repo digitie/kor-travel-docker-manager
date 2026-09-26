@@ -341,6 +341,26 @@ def pinned_runtime_manifest_path(values: Mapping[str, str]) -> Path:
     return pinned_runtime_state_root(values) / _MANIFEST_FILENAME
 
 
+def legacy_manifest_file(state_root: Path) -> Path:
+    """v6 manifest 경로 — deploy-status carry-over 전용(ADR-51). v6가 사라지면 지운다."""
+
+    return state_root / _MANIFEST_FILENAME
+
+
+def legacy_journal_file(state_root: Path, *, pinset_sha256: str) -> Path:
+    """그 pinset의 v8 journal 경로 — deploy-status carry-over 전용(ADR-51)."""
+
+    if _SHA256.fullmatch(pinset_sha256) is None:
+        raise DeploymentContractError("pinned runtime state pinset digest is invalid")
+    return state_root / f"{_JOURNAL_FILENAME_PREFIX}{pinset_sha256}.json"
+
+
+def legacy_journal_files(state_root: Path) -> list[Path]:
+    """state root에 남은 모든 pinset의 v8 journal — carry-over 전용(ADR-51)."""
+
+    return sorted(state_root.glob(f"{_JOURNAL_FILENAME_PREFIX}*.json"))
+
+
 def pinned_runtime_state_paths(
     values: Mapping[str, str],
     *,

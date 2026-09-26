@@ -43,6 +43,10 @@ from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRuntime,
     PinnedDatabaseIdentity,
 )
+from kor_travel_docker_manager.services.deploy_status import (
+    DeployedDatabase,
+    carry_over_committed_generation,
+)
 from kor_travel_docker_manager.services.map_application_candidate import (
     MapApplicationCandidate,
 )
@@ -61,9 +65,12 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinviRoleCatalogResetReceipt,
     RebuildPhase,
     RuntimeService,
+    legacy_journal_file,
+    legacy_manifest_file,
     manifest_from_payload,
     pinned_runtime_state_paths,
     read_rebuild_journal,
+    write_manifest,
     write_rebuild_journal,
 )
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
@@ -4147,3 +4154,171 @@ def test_rebuild_timeouts_outlast_a_saturated_disk() -> None:
     assert module._PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS >= 2 * per_container
     assert module._ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS >= 2 * per_container
     assert module._COMPOSE_WAIT_TIMEOUT_SECONDS >= 3 * per_container
+
+
+def _write_legacy_generation(
+    state_root: Path,
+    journal: PinnedRuntimeRebuildJournal,
+    *,
+    manifest_generation: PinnedRuntimeGeneration | None = None,
+) -> None:
+    state_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    write_manifest(
+        legacy_manifest_file(state_root),
+        PinnedRuntimeManifest(
+            version=6,
+            active_generation=manifest_generation or journal.candidate,
+        ),
+    )
+    write_rebuild_journal(
+        legacy_journal_file(state_root, pinset_sha256=journal.candidate.pinset_sha256),
+        journal,
+    )
+
+
+@pytest.mark.parametrize("phase", ("committed", "manifest_committing"))
+def test_carry_over_adopts_the_live_committed_generation(
+    tmp_path: Path,
+    phase: RebuildPhase,
+) -> None:
+    """첫 마이그레이션 전진 배포는 지금 떠 있는 세대를 리셋 없이 넘겨받는다(ADR-51 B1)."""
+
+    state_root = tmp_path / "state"
+    journal = _journal_at_runtime_phase(phase)
+    _write_legacy_generation(state_root, journal)
+
+    status = carry_over_committed_generation(
+        state_root,
+        companions={"kor-travel-map-dagster-code-server": "kor-travel-map-dagster"},
+        manager_revision="e" * 40,
+    )
+
+    assert status is not None
+    assert status.state == "committed"
+    assert status.pinset_sha256 == journal.candidate.pinset_sha256
+    assert status.images["kor-travel-map-dagster-code-server"] == (
+        journal.candidate.image_ids["kor-travel-map-dagster"]
+    )
+    assert set(status.images) == {*RUNTIME_SERVICES, "kor-travel-map-dagster-code-server"}
+    assert dict(status.schema_heads) == dict(journal.candidate.schema_heads)
+    evidence = journal.map_application_300_execution_evidence
+    application = evidence.application_database_identity
+    assert application is not None
+    assert status.databases is not None
+    assert status.databases["map_application"] == DeployedDatabase(
+        application.database_name,
+        application.database_oid,
+        application.postgres_system_identifier,
+    )
+    assert journal.pinvi_database_identity is not None
+    assert status.databases["pinvi"].oid == journal.pinvi_database_identity.oid
+    assert status.carried_over_from == f"v6+v8:{journal.candidate.pinset_sha256}"
+
+
+def test_carry_over_refuses_an_unfinished_generation(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    _write_legacy_generation(state_root, _journal_at_runtime_phase("pinvi_api_ready"))
+
+    assert (
+        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
+        is None
+    )
+
+
+def test_carry_over_refuses_a_journal_for_another_generation(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    journal = _journal_at_runtime_phase("committed")
+    other = replace(journal.candidate, recorded_at="2026-08-07T00:00:00+00:00")
+    _write_legacy_generation(state_root, journal, manifest_generation=other)
+
+    assert (
+        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
+        is None
+    )
+
+
+def test_carry_over_without_legacy_files_is_a_full_path_not_an_error(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o700)
+
+    assert (
+        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
+        is None
+    )
+
+
+def _write_other_pinset_journal(
+    state_root: Path,
+    journal: PinnedRuntimeRebuildJournal,
+    *,
+    created_at: str,
+) -> Path:
+    path = legacy_journal_file(state_root, pinset_sha256="f" * 64)
+    write_rebuild_journal(path, replace(journal, created_at=created_at))
+    return path
+
+
+def test_carry_over_refuses_when_a_later_rebuild_reset_the_databases(tmp_path: Path) -> None:
+    """manifest는 A를 가리키지만 그 뒤 B의 재구축이 DB를 지우고 멈췄다 — 라이브 DB는 B의
+    것이다. A의 identity를 기준선으로 넘기면 이후 모든 배포가 `--restart`로만 풀린다."""
+
+    state_root = tmp_path / "state"
+    _write_legacy_generation(state_root, _journal_at_runtime_phase("committed"))
+    _write_other_pinset_journal(
+        state_root,
+        _journal_at_application_300_phase("reset_intent_durable"),
+        created_at="2026-08-07T00:00:00+00:00",
+    )
+
+    assert (
+        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("other_phase", "created_at"),
+    (
+        # 더 이른 미완료 재구축(n150의 a7cc0414 같은 것) — 그 뒤 커밋이 DB를 다시 만들었다.
+        ("reset_intent_durable", "2026-08-05T00:00:00+00:00"),
+        # 더 늦지만 리셋 전에 멈춘 재구축 — DB를 건드리지 않았다.
+        ("candidate_attested", "2026-08-07T00:00:00+00:00"),
+    ),
+)
+def test_carry_over_ignores_rebuilds_that_did_not_replace_the_live_databases(
+    tmp_path: Path,
+    other_phase: RebuildPhase,
+    created_at: str,
+) -> None:
+    state_root = tmp_path / "state"
+    _write_legacy_generation(state_root, _journal_at_runtime_phase("committed"))
+    if other_phase == "reset_intent_durable":
+        other = _journal_at_application_300_phase("reset_intent_durable")
+    else:
+        other = new_candidate_journal(
+            candidate=_candidate_generation(),
+            environment_bytes=b"frozen-env\n",
+            compose_source_bytes=b"services: {}\n",
+            resolved_compose_sha256="c" * 64,
+            created_at="2026-08-06T00:00:00+00:00",
+        )
+    assert other.phase == other_phase
+    _write_other_pinset_journal(state_root, other, created_at=created_at)
+
+    assert (
+        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
+        is not None
+    )
+
+
+def test_carry_over_refuses_an_unreadable_journal(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    _write_legacy_generation(state_root, _journal_at_runtime_phase("committed"))
+    path = legacy_journal_file(state_root, pinset_sha256="f" * 64)
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0o600)
+
+    assert (
+        carry_over_committed_generation(state_root, companions={}, manager_revision="e" * 40)
+        is None
+    )

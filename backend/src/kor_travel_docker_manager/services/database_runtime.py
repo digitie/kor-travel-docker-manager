@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import re
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Final, Literal
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 
 DatabaseRole = Literal["map_application", "map_dagster", "pinvi"]
+MapApplicationEnsureOutcome = Literal["created", "bootstrapped", "present"]
 Application300BootstrapState = Literal[
     "absent",
     "virgin",
@@ -61,7 +62,7 @@ _ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str, str]] = {
 
 #: **절대 파기할 수 없는 database 이름.**
 #:
-#: `recreate_empty_database`는 `runtime.database_name`을 그대로 `dropdb --force`의
+#: 파괴 경로(`reset_databases_for_application_300`)는 `runtime.database_name`을 그대로 `dropdb --force`의
 #: 인자로 넘긴다. 그 이름의 유일한 출처는 운영자 `.env`이고, 유일한 필터는
 #: `_DATABASE_IDENTIFIER` 정규식이었다. 바로 앞의 owner preflight가 "현재 소유자가
 #: 이 role의 허용 소유자 집합에 있을 것"을 요구하므로 형제 프로젝트의 운영 DB는
@@ -313,14 +314,18 @@ def database_runtimes_from_frozen_contract(
     return runtimes[0], runtimes[1], runtimes[2]
 
 
-def recreate_empty_database(runtime: DatabaseRuntime) -> None:
-    """계약상 owner가 맞는 하나의 DB만 파기 후 같은 owner로 다시 만든다."""
+def _require_destructible_name(runtime: DatabaseRuntime) -> None:
+    """**파괴 직전의 이름 울타리.**
 
-    _validate_runtime(runtime)
-    _recreate_empty_database_after_owner_preflight(
-        runtime,
-        existing_owner=_read_database_owner(runtime),
-    )
+    `_validate_runtime`이 아니라 파괴 경로에만 둔다 — 읽기 경로(schema revision·
+    identity)는 이름에 무관해야 하고, 위험한 것은 drop이다.
+    """
+
+    if (
+        runtime.database_name in _UNDROPPABLE_DATABASES
+        or runtime.database_name.startswith("template")
+    ):
+        raise DeploymentContractError("pinned runtime database name is not destructible")
 
 
 def _recreate_empty_database_after_owner_preflight(
@@ -331,15 +336,7 @@ def _recreate_empty_database_after_owner_preflight(
     """사전 owner 검증이 끝난 하나의 DB를 파기·재생성한다."""
 
     _validate_runtime(runtime)
-    # **파괴 직전의 이름 울타리.** `_validate_runtime`이 아니라 여기 둔다 — 읽기
-    # 경로(schema revision·identity)는 이름에 무관해야 하고, 위험한 것은 이 함수
-    # 하나다. 세 진입점(recreate_empty_database·recreate_empty_databases·
-    # reset_databases_for_application_300)이 전부 여기로 모인다.
-    if (
-        runtime.database_name in _UNDROPPABLE_DATABASES
-        or runtime.database_name.startswith("template")
-    ):
-        raise DeploymentContractError("pinned runtime database name is not destructible")
+    _require_destructible_name(runtime)
     if existing_owner is not None:
         if existing_owner not in _permitted_existing_owners(runtime):
             raise DeploymentContractError(
@@ -370,34 +367,6 @@ def _recreate_empty_database_after_owner_preflight(
     )
 
 
-def recreate_empty_databases(
-    runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
-) -> None:
-    """Map application·Dagster·PinVi DB를 canonical 순서로 함께 다시 만든다."""
-
-    if tuple(runtime.role for runtime in runtimes) != (
-        "map_application",
-        "map_dagster",
-        "pinvi",
-    ):
-        raise DeploymentContractError("pinned runtime database roles are invalid")
-    for runtime in runtimes:
-        _validate_runtime(runtime)
-    existing_owners = tuple(_read_database_owner(runtime) for runtime in runtimes)
-    for runtime, existing_owner in zip(runtimes, existing_owners, strict=True):
-        if existing_owner is not None and existing_owner not in _permitted_existing_owners(
-            runtime
-        ):
-            raise DeploymentContractError(
-                f"{runtime.role} database owner differs from the frozen contract"
-            )
-    for runtime, existing_owner in zip(runtimes, existing_owners, strict=True):
-        _recreate_empty_database_after_owner_preflight(
-            runtime,
-            existing_owner=existing_owner,
-        )
-
-
 def reset_databases_for_application_300(
     runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
 ) -> None:
@@ -416,6 +385,10 @@ def reset_databases_for_application_300(
         raise DeploymentContractError("pinned runtime database roles are invalid")
     for runtime in runtimes:
         _validate_runtime(runtime)
+        # 세 DB 모두 **첫 drop 전에** 본다. 종전에는 이 울타리가 PinVi 재생성 안에만
+        # 있어서 Map 두 DB는 울타리 없이 drop됐고, PinVi 이름이 막혀도 Map은 이미
+        # 지워진 뒤였다.
+        _require_destructible_name(runtime)
     existing_owners = tuple(_read_database_owner(runtime) for runtime in runtimes)
     for runtime, existing_owner in zip(runtimes, existing_owners, strict=True):
         if existing_owner is not None and existing_owner not in _permitted_existing_owners(
@@ -459,6 +432,67 @@ def create_fresh_application_300_database(runtime: DatabaseRuntime) -> None:
         ],
         label="map_application fresh 300 database create",
     )
+
+
+def ensure_map_application_database(
+    runtime: DatabaseRuntime,
+    *,
+    run_role_bootstrap: Callable[[], None],
+) -> MapApplicationEnsureOutcome:
+    """마이그레이션 전진 배포에서 Map application DB를 한 번에 맞는 상태로 수렴한다(ADR-51).
+
+    소유자 하나로 세 경우를 가른다.
+
+    - DB가 없다: ``template0``에서 만들고 role bootstrap one-shot을 돌린다.
+    - 아직 bootstrap 소유자(`runtime.owner_name`) 것이다: 만든 뒤 bootstrap 전에 죽은
+      경우다. bootstrap만 돌린다.
+    - schema owner 것이다: 이미 bootstrap된 운영 DB다. 아무것도 하지 않는다 — schema
+      one-shot(`alembic upgrade head` + 권한 재조정)이 뒤따른다.
+
+    그 밖의 소유자는 거부한다. "비어 있는가" 판정은 Map의 bootstrap 스크립트가 스스로
+    한다(`alembic_version`·잔재가 있으면 첫 변경 전에 거부).
+    """
+
+    _validate_runtime(runtime)
+    if runtime.role != "map_application":
+        raise DeploymentContractError("Map application database role is invalid")
+    owner = _read_database_owner(runtime)
+    if owner is None:
+        create_fresh_application_300_database(runtime)
+        run_role_bootstrap()
+        return "created"
+    if owner == runtime.owner_name:
+        run_role_bootstrap()
+        return "bootstrapped"
+    if owner == _MAP_SCHEMA_OWNER:
+        return "present"
+    raise DeploymentContractError(
+        "map_application database owner differs from the frozen contract"
+    )
+
+
+def schema_revision_table_exists(runtime: DatabaseRuntime) -> bool:
+    """role의 Alembic 표가 있는가 — 없으면 한 번도 migration되지 않은 빈 DB다(ADR-51).
+
+    PinVi의 fresh-install fence처럼 **빈 DB에서만** 필요한 단계를 고를 때 쓴다.
+    """
+
+    _validate_runtime(runtime)
+    schema_name, table_name = _SCHEMA_REVISION_LOCATION[runtime.role]
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            runtime.database_name,
+            "--command",
+            f"SELECT to_regclass('\"{schema_name}\".\"{table_name}\"') IS NOT NULL",
+        ],
+        label=f"{runtime.role} schema revision table",
+    ).decode("ascii").strip()
+    return _parse_psql_bool(output, f"{runtime.role} schema revision table")
 
 
 def inspect_application_300_bootstrap_state(
@@ -933,170 +967,6 @@ def read_database_schema_revision(runtime: DatabaseRuntime) -> str:
     if len(lines) != 1 or not _SCHEMA_REVISION.fullmatch(lines[0]):
         raise DeploymentContractError(f"{runtime.role} schema revision output is invalid")
     return lines[0]
-
-
-def assert_map_database_principal_bootstrap(
-    runtime: DatabaseRuntime,
-    dagster_runtime: DatabaseRuntime,
-    dagster_metadata_user: str | None,
-) -> None:
-    """Map bootstrap의 역할·소유권·ACL 경계를 catalog에서 fail-close 검증한다.
-
-    upstream bootstrap은 PostgreSQL 16 membership option, schema/object ownership,
-    runtime ACL revoke를 모두 신뢰 경계로 정의한다. role 존재 여부만 확인하면
-    checkpoint 뒤의 drift를 정상 bootstrap으로 오인할 수 있으므로, F1D resume은
-    이 전체 catalog 상태를 매번 확인한다.
-    """
-
-    _validate_runtime(runtime)
-    _validate_runtime(dagster_runtime)
-    if runtime.role != "map_application" or dagster_runtime.role != "map_dagster":
-        raise DeploymentContractError("Map principal assertion requires Map databases")
-    if runtime.container_name != dagster_runtime.container_name:
-        raise DeploymentContractError("Map principal assertion requires one PostgreSQL container")
-    if runtime.admin_name != dagster_runtime.admin_name:
-        raise DeploymentContractError("Map principal assertion requires one PostgreSQL admin")
-    if (
-        not isinstance(dagster_metadata_user, str)
-        or not _DATABASE_IDENTIFIER.fullmatch(dagster_metadata_user)
-        or dagster_metadata_user in (*_MAP_REQUIRED_GROUP_ROLES, *_MAP_REQUIRED_LOGIN_ROLES)
-    ):
-        raise DeploymentContractError("Map Dagster metadata role is invalid")
-
-    expected_roles = (*_MAP_REQUIRED_GROUP_ROLES, *_MAP_REQUIRED_LOGIN_ROLES)
-    expected_values = ", ".join(f"('{role}')" for role in expected_roles)
-    expected_names = ", ".join(f"'{role}'" for role in expected_roles)
-    future_phase_names = ", ".join(f"'{role}'" for role in _MAP_FUTURE_PHASE_ROLES)
-    group_names = ", ".join(f"'{role}'" for role in _MAP_REQUIRED_GROUP_ROLES)
-    login_names = ", ".join(f"'{role}'" for role in _MAP_REQUIRED_LOGIN_ROLES)
-    # ADR-100: runtime 권한을 지니는 principal은 group `ktm_feature_runtime`과 그것을
-    # 상속하는 단일 LOGIN 둘뿐이다.
-    runtime_principal_names = ", ".join(
-        f"'{role}'" for role in ("ktm_feature_runtime", _MAP_SERVICE_LOGIN)
-    )
-    query = (
-        f"WITH expected(role_name) AS (VALUES {expected_values}), "
-        "expected_membership(member_name, role_name, inherit_option, set_option) AS "
-        "(VALUES "
-        "('ktm_feature_service', 'ktm_curation_admin_executor', TRUE, FALSE), "
-        "('ktm_feature_service', 'ktm_curation_provider_executor', TRUE, FALSE), "
-        "('ktm_feature_service', 'ktm_feature_runtime', TRUE, FALSE), "
-        "('ktm_feature_service', 'ktm_feature_schema_owner', FALSE, TRUE), "
-        "('ktm_feature_schema_owner', 'ktm_feature_state_procedure_owner', FALSE, TRUE), "
-        "('ktm_feature_schema_owner', 'ktm_feature_audit_writer', FALSE, TRUE), "
-        "('ktm_feature_schema_owner', 'ktm_curation_command_owner', FALSE, TRUE), "
-        "('ktm_feature_schema_owner', 'ktm_curation_audit_writer', FALSE, TRUE)) "
-        "SELECT CASE WHEN "
-        "(SELECT pg_get_userbyid(datdba) FROM pg_database "
-        f"WHERE datname = '{runtime.database_name}') = '{_MAP_SCHEMA_OWNER}' "
-        "AND (SELECT pg_get_userbyid(datdba) FROM pg_database "
-        f"WHERE datname = '{dagster_runtime.database_name}') = '{dagster_metadata_user}' "
-        "AND NOT EXISTS (SELECT 1 FROM expected LEFT JOIN pg_roles "
-        "ON rolname = expected.role_name WHERE rolname IS NULL) "
-        "AND NOT EXISTS (SELECT 1 FROM pg_roles "
-        f"WHERE rolname IN ({expected_names}) "
-        "AND (rolsuper OR rolcreatedb OR rolcreaterole OR rolbypassrls OR rolreplication)) "
-        "AND NOT EXISTS (SELECT 1 FROM pg_roles "
-        f"WHERE rolname IN ({group_names}) AND (rolcanlogin OR rolinherit)) "
-        "AND NOT EXISTS (SELECT 1 FROM pg_roles "
-        f"WHERE rolname IN ({login_names}, '{dagster_metadata_user}') "
-        "AND (NOT rolcanlogin OR rolinherit)) "
-        "AND NOT EXISTS (SELECT 1 FROM expected_membership expected "
-        "LEFT JOIN pg_roles member_role ON member_role.rolname = expected.member_name "
-        "LEFT JOIN pg_roles granted_role ON granted_role.rolname = expected.role_name "
-        "LEFT JOIN pg_auth_members membership ON membership.member = member_role.oid "
-        "AND membership.roleid = granted_role.oid "
-        "WHERE membership.member IS NULL "
-        "OR membership.admin_option "
-        "OR membership.inherit_option IS DISTINCT FROM expected.inherit_option "
-        "OR membership.set_option IS DISTINCT FROM expected.set_option) "
-        "AND NOT EXISTS (SELECT 1 FROM pg_auth_members membership "
-        "JOIN pg_roles member_role ON member_role.oid = membership.member "
-        "LEFT JOIN expected_membership expected ON expected.member_name = member_role.rolname "
-        "AND expected.role_name = pg_get_userbyid(membership.roleid) "
-        f"WHERE member_role.rolname IN ({expected_names}, '{dagster_metadata_user}') "
-        f"AND pg_get_userbyid(membership.roleid) NOT IN ({future_phase_names}) "
-        "AND expected.member_name IS NULL) "
-        "AND NOT EXISTS (SELECT 1 FROM pg_auth_members membership "
-        "JOIN pg_roles member_role ON member_role.oid = membership.member "
-        "JOIN pg_roles granted_role ON granted_role.oid = membership.roleid "
-        "LEFT JOIN expected_membership expected ON expected.member_name "
-        "= pg_get_userbyid(membership.member) "
-        "AND expected.role_name = granted_role.rolname "
-        f"WHERE granted_role.rolname IN ({expected_names}) "
-        f"AND member_role.rolname NOT IN ({future_phase_names}) "
-        "AND expected.member_name IS NULL) "
-        "AND (SELECT count(*) FROM pg_namespace namespace "
-        "JOIN pg_roles owner_role ON owner_role.oid = namespace.nspowner "
-        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops', 'x_extension') "
-        f"AND owner_role.rolname = '{_MAP_SCHEMA_OWNER}') = 4 "
-        "AND NOT EXISTS (SELECT 1 FROM pg_class relation "
-        "JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace "
-        "JOIN pg_roles owner_role ON owner_role.oid = relation.relowner "
-        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
-        "AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f') "
-        f"AND owner_role.rolname <> '{_MAP_SCHEMA_OWNER}') "
-        "AND NOT EXISTS (SELECT 1 FROM pg_proc procedure "
-        "JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace "
-        "JOIN pg_roles owner_role ON owner_role.oid = procedure.proowner "
-        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
-        f"AND owner_role.rolname <> '{_MAP_SCHEMA_OWNER}') "
-        # `public.alembic_version`은 위 세 schema 밖이라 sweep에서도, 이 assertion
-        # 에서도 오래 비어 있었다. 실데이터를 덤프/복원한 DB에서는 이 테이블이 구
-        # superuser 소유로 남고, ADR-090 경로(migrator LOGIN -> SET ROLE schema
-        # owner)가 첫 `SELECT version_num`에서 42501로 죽는다 — 단 한 revision도
-        # 적용되지 못한다. fresh DB에서는 테이블 자체가 없어 무증상이었다.
-        # 존재하면 반드시 schema owner여야 한다(없는 것은 fresh DB의 정상 상태).
-        "AND NOT EXISTS (SELECT 1 FROM pg_class relation "
-        "JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace "
-        "JOIN pg_roles owner_role ON owner_role.oid = relation.relowner "
-        "WHERE namespace.nspname = 'public' AND relation.relname = 'alembic_version' "
-        f"AND owner_role.rolname <> '{_MAP_SCHEMA_OWNER}') "
-        "AND NOT EXISTS (SELECT 1 FROM pg_type data_type "
-        "JOIN pg_namespace namespace ON namespace.oid = data_type.typnamespace "
-        "JOIN pg_roles owner_role ON owner_role.oid = data_type.typowner "
-        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
-        "AND data_type.typtype IN ('b', 'c', 'd', 'e', 'r') "
-        "AND data_type.typelem = 0 AND data_type.typrelid = 0 "
-        f"AND owner_role.rolname <> '{_MAP_SCHEMA_OWNER}') "
-        "AND (SELECT count(*) FROM pg_extension extension "
-        "JOIN pg_namespace namespace ON namespace.oid = extension.extnamespace "
-        "WHERE extension.extname IN ('postgis', 'pg_trgm', 'pgcrypto') "
-        "AND namespace.nspname = 'x_extension') = 3 "
-        "AND NOT EXISTS (SELECT 1 FROM pg_namespace namespace "
-        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
-        "AND (NOT has_schema_privilege('ktm_feature_runtime', namespace.oid, 'USAGE') "
-        "OR has_schema_privilege('ktm_feature_runtime', namespace.oid, 'CREATE'))) "
-        "AND NOT EXISTS (SELECT 1 FROM pg_class relation "
-        "JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace "
-        "CROSS JOIN LATERAL aclexplode(relation.relacl) privilege "
-        "WHERE namespace.nspname IN ('feature', 'provider_sync', 'ops') "
-        "AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'f') "
-        "AND (privilege.grantee = 0 OR privilege.grantee IN (SELECT oid FROM pg_roles "
-        f"WHERE rolname IN ({runtime_principal_names})))) "
-        "AND NOT EXISTS (SELECT 1 FROM pg_default_acl default_acl "
-        "CROSS JOIN LATERAL aclexplode(default_acl.defaclacl) privilege "
-        "WHERE default_acl.defaclrole = (SELECT oid FROM pg_roles "
-        f"WHERE rolname = '{_MAP_SCHEMA_OWNER}') "
-        "AND (privilege.grantee = 0 OR privilege.grantee IN (SELECT oid FROM pg_roles "
-        f"WHERE rolname IN ({runtime_principal_names})))) "
-        "THEN 'ok' ELSE 'invalid' END"
-    )
-    output = _run_checked(
-        [
-            *_database_admin_command(runtime, "psql"),
-            "--no-psqlrc",
-            "--tuples-only",
-            "--no-align",
-            "--dbname",
-            runtime.database_name,
-            "--command",
-            query,
-        ],
-        label="Map principal bootstrap assertion",
-    ).decode("ascii").strip()
-    if output != "ok":
-        raise DeploymentContractError("Map principal bootstrap assertion failed")
 
 
 def _read_database_owner(runtime: DatabaseRuntime) -> str | None:
