@@ -1813,21 +1813,6 @@ def _prepare_candidate_transaction(
         "KOR_TRAVEL_MAP_API_IMAGE",
         f"sha256:{'1' * 64}",
     )
-    fixed_directories = {
-        "KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR": (
-            tmp_path / "map-application-fresh-migrate-fence"
-        ),
-        "KOR_TRAVEL_MAP_APPLICATION_FRESH_FINALIZE_FENCE_DIR": (
-            tmp_path / "map-application-fresh-finalize-fence"
-        ),
-        "KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR": (
-            tmp_path / "map-application-final-permit"
-        ),
-        "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": (tmp_path / "map-dagster-storage-permit"),
-    }
-    for name, directory in fixed_directories.items():
-        directory.mkdir(mode=0o755)
-        monkeypatch.setenv(name, str(directory))
     monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_DB", "kor_travel_map")
     monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB", "kor_travel_map_dagster")
     monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_USER", "test_map_admin")

@@ -860,22 +860,6 @@ compose_binds:
     - container_path: "/var/lib/postgresql/data"
       read_only: false
       source: "${KOR_TRAVEL_GEO_PGDATA:-/home/digitie/kor-travel-geo-data/pgdata-final-20260529}"
-  kor-travel-map-dagster:
-    - container_path: "/run/kor-travel-map-dagster-storage-permit"
-      read_only: true
-      source: "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}"
-  kor-travel-map-dagster-code-server:
-    - container_path: "/run/kor-travel-map-dagster-storage-permit"
-      read_only: true
-      source: "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}"
-  kor-travel-map-dagster-daemon:
-    - container_path: "/run/kor-travel-map-dagster-storage-permit"
-      read_only: true
-      source: "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}"
-  kor-travel-map-dagster-storage-migrate:
-    - container_path: "/run/kor-travel-map-dagster-storage-permit"
-      read_only: true
-      source: "${KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR:?}"
   kor-travel-map-db-role-bootstrap:
     - container_path: "/usr/local/bin/postgres-role-bootstrap"
       read_only: true

@@ -3718,7 +3718,6 @@ def main(expected_revision: str, output: Path) -> int:
                     f"KOR_TRAVEL_MAP_RUSTFS_CONSOLE_PORT={ports['map_rustfs_console']}",
                     f"KOR_TRAVEL_MAP_MOIS_SOURCE_DB_VOLUME={plan.map_project}-mois",
                     f"KOR_TRAVEL_MAP_RUSTFS_VOLUME={plan.map_project}-rustfs",
-                    f"KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_VOLUME={plan.map_project}-application-final-permit",
                     f"KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_VOLUME={plan.map_project}-dagster-storage-permit",
                     f"KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET={map_secret}",
                     f"KOR_TRAVEL_MAP_API_SERVICE_TOKEN={_random_secret()}",

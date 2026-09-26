@@ -11,7 +11,6 @@ import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -240,61 +239,20 @@ class CandidateRuntimeBuild:
                 require_immutable=False,
             )
         )
-        candidate = self.map_application_candidate
-        values.update(
-            {
-                "KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID": candidate.postgres_image_id,
-                "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256": (
-                    candidate.dagster_config_sha256
-                ),
-            }
+        values["KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID"] = (
+            self.map_application_candidate.postgres_image_id
         )
         return MappingProxyType(values)
 
 
-@dataclass(frozen=True)
-class MapApplication300ArtifactDirectories:
-    """Map runtime이 읽는 fixed-mount host 디렉터리.
-
-    ADR-101 이전에는 넷이었다 — fence 둘, application final permit, storage permit.
-    fence 둘은 삭제된 one-shot 실행파일이 읽던 것이고, final permit은 그것을 읽던
-    `docker/application-schema-final-permit.py`가 rev 400 스쿼시에서 사라졌다.
-    남은 하나는 Map의 `dagster-storage-migrate.py`가 실제로 읽는다.
-    """
-
-    dagster_storage_permit: Path
-
-    def __post_init__(self) -> None:
-        path = self.dagster_storage_permit
-        if not isinstance(path, Path):
-            raise DeploymentContractError(
-                "Map application 300 artifact directory is invalid"
-            )
-        if not path.is_absolute() or path != path.resolve(strict=False):
-            raise DeploymentContractError(
-                "Map application 300 artifact directory is invalid"
-            )
-
-    @property
-    def paths(self) -> tuple[Path, ...]:
-        return (self.dagster_storage_permit,)
-
-    def compose_environment(self) -> Mapping[str, str]:
-        return MappingProxyType(
-            {
-                "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PERMIT_DIR": str(
-                    self.dagster_storage_permit
-                ),
-            }
-        )
-
-
 def generation_compose_environment(
     generation: PinnedRuntimeGeneration,
-    *,
-    artifact_directories: MapApplication300ArtifactDirectories,
 ) -> Mapping[str, str]:
-    """attested image·paired receipt·fixed artifact만 주는 runtime override."""
+    """attested image와 Map PostgreSQL image ID만 주는 runtime override.
+
+    ADR-51 D-3에서 Dagster storage permit 디렉터리와 `..._STORAGE_CONFIG_SHA256`을
+    뺐다 — M1 이후 Map storage one-shot은 둘 다 읽지 않는다.
+    """
 
     values = dict(
         _runtime_image_environment(
@@ -303,15 +261,7 @@ def generation_compose_environment(
         )
     )
     evidence = generation.map_application_300_candidate_evidence
-    values.update(
-        {
-            "KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID": evidence.postgres_image_id,
-            "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256": (
-                evidence.dagster_config_sha256
-            ),
-            **artifact_directories.compose_environment(),
-        }
-    )
+    values["KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID"] = evidence.postgres_image_id
     return MappingProxyType(values)
 
 
