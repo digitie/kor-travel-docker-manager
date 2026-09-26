@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
@@ -9,17 +10,16 @@ from kor_travel_docker_manager.services.c6c_deployment import DeploymentContract
 from kor_travel_docker_manager.services.database_runtime import (
     DagsterMetadataRoleAttributes,
     DatabaseRuntime,
-    assert_map_database_principal_bootstrap,
     create_fresh_application_300_database,
     database_runtimes_from_frozen_contract,
+    ensure_map_application_database,
     initialize_application_300_dagster_metadata_database,
     inspect_application_300_bootstrap_state,
     read_application_300_dagster_metadata_identity,
     read_application_300_database_identity,
     read_database_schema_revision,
-    recreate_empty_database,
-    recreate_empty_databases,
     reset_databases_for_application_300,
+    schema_revision_table_exists,
 )
 
 
@@ -212,66 +212,7 @@ def test_database_runtime_rejects_invalid_frozen_port(port_value: str) -> None:
         )
 
 
-def test_recreate_empty_databases_uses_only_canonical_frozen_roles(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[list[str], str]] = []
-
-    def run_checked(arguments: list[str], *, label: str) -> bytes:
-        calls.append((arguments, label))
-        return b""
-
-    runtimes = (_runtime("map_application"), _runtime("map_dagster"), _runtime("pinvi"))
-    monkeypatch.setattr(
-        database_runtime,
-        "_read_database_owner",
-        Mock(side_effect=lambda runtime: runtime.owner_name),
-    )
-    monkeypatch.setattr(database_runtime, "_run_checked", Mock(side_effect=run_checked))
-
-    recreate_empty_databases(runtimes)
-
-    assert [label for _, label in calls] == [
-        "map_application database destructive drop",
-        "map_application database destructive create",
-        "map_dagster database destructive drop",
-        "map_dagster database destructive create",
-        "pinvi database destructive drop",
-        "pinvi database destructive create",
-    ]
-    assert [
-        next(command for command in ("dropdb", "createdb", "psql") if command in arguments)
-        for arguments, _ in calls
-    ] == [
-        "dropdb",
-        "createdb",
-        "dropdb",
-        "createdb",
-        "dropdb",
-        "createdb",
-    ]
-    assert all(arguments[arguments.index("--user") + 1] == "postgres" for arguments, _ in calls)
-    assert all("--port" in arguments for arguments, _ in calls)
-    assert [
-        arguments[arguments.index("--port") + 1]
-        for arguments, _ in calls
-    ] == ["12700", "12700", "12700", "12700", "11000", "11000"]
-    create_commands = {
-        label: arguments
-        for arguments, label in calls
-        if "createdb" in arguments
-    }
-    assert "--template" not in create_commands[
-        "map_application database destructive create"
-    ]
-    assert "--template" not in create_commands["map_dagster database destructive create"]
-    assert create_commands["pinvi database destructive create"][
-        create_commands["pinvi database destructive create"].index("--template") + 1
-    ] == "template0"
-    assert all("password" not in " ".join(arguments).lower() for arguments, _ in calls)
-
-
-def test_recreate_empty_databases_preflights_all_owners_before_drop(
+def test_application_300_reset_preflights_all_owners_before_drop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtimes = (_runtime("map_application"), _runtime("map_dagster"), _runtime("pinvi"))
@@ -288,7 +229,7 @@ def test_recreate_empty_databases_preflights_all_owners_before_drop(
     monkeypatch.setattr(database_runtime, "_run_checked", runner)
 
     with pytest.raises(DeploymentContractError, match="owner probe failed"):
-        recreate_empty_databases(runtimes)
+        reset_databases_for_application_300(runtimes)
 
     assert owner_probes == ["map_application", "map_dagster"]
     runner.assert_not_called()
@@ -326,6 +267,14 @@ def test_application_300_reset_leaves_map_databases_absent_and_recreates_pinvi(
     assert sum("createdb" in arguments for arguments, _ in calls) == 1
     assert "createdb" in calls[-1][0]
     assert calls[-1][0][calls[-1][0].index("--template") + 1] == "template0"
+    assert all(arguments[arguments.index("--user") + 1] == "postgres" for arguments, _ in calls)
+    assert [arguments[arguments.index("--port") + 1] for arguments, _ in calls] == [
+        "12700",
+        "12700",
+        "11000",
+        "11000",
+    ]
+    assert all("password" not in " ".join(arguments).lower() for arguments, _ in calls)
 
 
 def test_fresh_application_300_database_requires_absence_and_template0(
@@ -803,118 +752,62 @@ def test_dagster_metadata_database_init_requires_frozen_metadata_owner() -> None
         )
 
 
-def test_recreate_empty_database_refuses_foreign_owned_database(
+@pytest.mark.parametrize("foreign_role", ("map_application", "map_dagster", "pinvi"))
+def test_application_300_reset_refuses_a_foreign_owned_database(
     monkeypatch: pytest.MonkeyPatch,
+    foreign_role: database_runtime.DatabaseRole,
 ) -> None:
     runner = Mock()
-    monkeypatch.setattr(database_runtime, "_read_database_owner", Mock(return_value="foreign"))
+    monkeypatch.setattr(
+        database_runtime,
+        "_read_database_owner",
+        Mock(
+            side_effect=lambda runtime: (
+                "foreign" if runtime.role == foreign_role else runtime.owner_name
+            )
+        ),
+    )
     monkeypatch.setattr(database_runtime, "_run_checked", runner)
 
     with pytest.raises(DeploymentContractError, match="owner differs"):
-        recreate_empty_database(_runtime("pinvi"))
+        reset_databases_for_application_300(
+            (_runtime("map_application"), _runtime("map_dagster"), _runtime("pinvi"))
+        )
 
     runner.assert_not_called()
 
 
-def test_recreate_empty_map_database_accepts_bootstrap_schema_owner(
+def test_application_300_reset_accepts_the_bootstrapped_schema_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = Mock(return_value=b"")
     monkeypatch.setattr(
         database_runtime,
         "_read_database_owner",
-        Mock(return_value="ktm_feature_schema_owner"),
+        Mock(
+            side_effect=lambda runtime: (
+                "ktm_feature_schema_owner"
+                if runtime.role == "map_application"
+                else runtime.owner_name
+            )
+        ),
     )
     monkeypatch.setattr(database_runtime, "_run_checked", runner)
 
-    recreate_empty_database(_runtime("map_application"))
-
-    assert [call.kwargs["label"] for call in runner.call_args_list] == [
-        "map_application database destructive drop",
-        "map_application database destructive create",
-    ]
-
-
-def test_map_principal_bootstrap_assertion_requires_exact_catalog_result(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runner = Mock(return_value=b"ok\n")
-    monkeypatch.setattr(database_runtime, "_run_checked", runner)
-
-    assert_map_database_principal_bootstrap(
-        _runtime("map_application"),
-        _runtime("map_dagster"),
-        "map_dagster_metadata",
+    reset_databases_for_application_300(
+        (_runtime("map_application"), _runtime("map_dagster"), _runtime("pinvi"))
     )
 
-    command = runner.call_args.args[0]
-    assert command[command.index("--dbname") + 1] == "map_app"
-    assert "ktm_feature_schema_owner" in command[-1]
-    # ADR-100: application LOGIN은 `ktm_feature_service` 하나다. 종전의
-    # `ktm_feature_api_runtime`을 계속 단언하면, 이 검사는 Map의 bootstrap이 더는
-    # 만들지 않는 role을 요구하는 쿼리를 초록으로 지키게 된다.
-    assert "ktm_feature_service" in command[-1]
-    assert "ktm_feature_api_runtime" not in command[-1]
-    assert "ktm_curation_command_owner" in command[-1]
-    assert "ktm_curation_admin_executor" in command[-1]
-    assert "pg_auth_members" in command[-1]
-    assert "pg_default_acl" in command[-1]
-    assert "map_dagster_metadata" in command[-1]
-    assert "granted_role.rolname" in command[-1]
-    # PostgreSQL roles survive the three-DB recreation.  Memberships owned by
-    # later M01~M05 phases are valid cluster residue at this legacy checkpoint
-    # and are checked by their own phase bootstrap assertions.
-    assert "pg_get_userbyid(membership.roleid) NOT IN" in command[-1]
-    assert "member_role.rolname NOT IN" in command[-1]
-    assert "JOIN pg_roles member_role ON member_role.oid = membership.member" in command[-1]
-    for future_role in (
-        "ktm_manual_feature_procedure_owner",
-        "ktm_manual_feature_admin_executor",
-        "ktm_feature_create_provider_executor",
-        "ktm_feature_request_procedure_owner",
-        "ktm_feature_request_service_executor",
-        "ktm_feature_request_admin_executor",
-        "ktm_manual_provider_dedup_procedure_owner",
-        "ktm_manual_provider_dedup_detector_executor",
-        "ktm_manual_provider_dedup_admin_executor",
-        "ktm_feature_reference_reconciliation_service_executor",
-    ):
-        assert future_role in command[-1]
-    assert "privilege.grantee = 0" in command[-1]
-    # 실데이터 덤프/복원 경로(#171)에서 이 테이블 소유권이 넘어가지 않으면
-    # migrator가 첫 `SELECT version_num`에서 42501로 죽는다. fresh DB에서는
-    # 테이블이 없어 무증상이라 assertion이 직접 봐야 한다.
-    assert "relation.relname = 'alembic_version'" in command[-1]
-    assert "namespace.nspname = 'public'" in command[-1]
+    assert runner.call_args_list[0].kwargs["label"] == (
+        "map_application database destructive drop"
+    )
 
 
-def test_map_principal_bootstrap_assertion_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(database_runtime, "_run_checked", Mock(return_value=b"invalid\n"))
-
-    with pytest.raises(DeploymentContractError, match="bootstrap assertion failed"):
-        assert_map_database_principal_bootstrap(
-            _runtime("map_application"),
-            _runtime("map_dagster"),
-            "map_dagster_metadata",
-        )
-
-
-def test_map_principal_bootstrap_assertion_rejects_metadata_role_collision() -> None:
-    with pytest.raises(DeploymentContractError, match="metadata role is invalid"):
-        assert_map_database_principal_bootstrap(
-            _runtime("map_application"),
-            _runtime("map_dagster"),
-            "ktm_feature_runtime",
-        )
-
-
-def test_recreate_empty_databases_requires_three_canonical_roles() -> None:
+def test_application_300_reset_requires_three_canonical_roles() -> None:
     runtime = _runtime("pinvi")
 
     with pytest.raises(DeploymentContractError, match="database roles"):
-        recreate_empty_databases((runtime, runtime, runtime))
+        reset_databases_for_application_300((runtime, runtime, runtime))
 
 
 @pytest.mark.parametrize(
@@ -958,12 +851,15 @@ def test_schema_revision_rejects_ambiguous_rows(
         read_database_schema_revision(_runtime("map_application"))
 
 
+@pytest.mark.parametrize("reserved_role", ("map_application", "map_dagster", "pinvi"))
 @pytest.mark.parametrize(
     "reserved",
     ["postgres", "template0", "template1", "template_postgis"],
 )
 def test_destructive_reset_refuses_cluster_maintenance_databases(
-    monkeypatch: pytest.MonkeyPatch, reserved: str
+    monkeypatch: pytest.MonkeyPatch,
+    reserved: str,
+    reserved_role: database_runtime.DatabaseRole,
 ) -> None:
     """공용 instance로 옮긴 뒤 남는 유일한 오조준 대상은 유지보수 DB다.
 
@@ -972,16 +868,16 @@ def test_destructive_reset_refuses_cluster_maintenance_databases(
     role 소유라 이미 막힌다. 그런데 유지보수 DB는 bootstrap owner 소유라 그
     preflight를 통과해 버리고, PinVi가 전용 instance에 있을 때와 달리 이제 그
     실수는 네 프로젝트의 관리 경로를 한 번에 없앤다.
+
+    울타리는 **첫 drop 전에** 세 DB 모두에 걸린다 — 종전에는 PinVi 재생성 안에만
+    있어서 Map 두 DB는 울타리 없이 지워졌다.
     """
 
-    runtime = DatabaseRuntime(
-        role="pinvi",
-        container_name="shared-postgres-production",
-        port=11000,
-        database_name=reserved,
-        owner_name="pin_owner",
-        admin_name="cluster_admin",
-    )
+    def runtime(role: database_runtime.DatabaseRole) -> DatabaseRuntime:
+        base = _runtime(role)
+        return replace(base, database_name=reserved) if role == reserved_role else base
+
+    runtimes = (runtime("map_application"), runtime("map_dagster"), runtime("pinvi"))
     commands: list[list[str]] = []
 
     def _record(command, *, label):  # noqa: ANN001, ANN202
@@ -990,11 +886,129 @@ def test_destructive_reset_refuses_cluster_maintenance_databases(
 
     # owner preflight 자체는 읽기다 — 그것까지 막으면 울타리가 아니라 읽기 실패를
     # 보게 된다. 소유자는 허용 집합과 일치시켜, 막는 것이 **이름**임을 고정한다.
-    monkeypatch.setattr(database_runtime, "_read_database_owner", lambda runtime: "pin_owner")
+    monkeypatch.setattr(
+        database_runtime, "_read_database_owner", lambda runtime: runtime.owner_name
+    )
     monkeypatch.setattr(database_runtime, "_run_checked", _record)
 
     with pytest.raises(DeploymentContractError, match="is not destructible"):
-        recreate_empty_database(runtime)
+        reset_databases_for_application_300(runtimes)
 
     assert not any("dropdb" in token for command in commands for token in command)
     assert commands == []
+
+
+def _ensure_harness(
+    monkeypatch: pytest.MonkeyPatch, owner: str | None
+) -> tuple[Mock, Mock, list[str]]:
+    runner = Mock(return_value=b"")
+    bootstrap = Mock()
+    owners = [owner, None] if owner is None else [owner]
+    probes: list[str] = []
+
+    def read_owner(runtime: DatabaseRuntime) -> str | None:
+        probes.append(runtime.role)
+        return owners.pop(0) if owners else None
+
+    monkeypatch.setattr(database_runtime, "_read_database_owner", read_owner)
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+    return runner, bootstrap, probes
+
+
+def test_ensure_map_application_database_creates_then_bootstraps_an_absent_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner, bootstrap, _ = _ensure_harness(monkeypatch, None)
+
+    outcome = ensure_map_application_database(
+        _runtime("map_application"), run_role_bootstrap=bootstrap
+    )
+
+    assert outcome == "created"
+    create = runner.call_args.args[0]
+    assert "createdb" in create
+    assert create[create.index("--template") + 1] == "template0"
+    bootstrap.assert_called_once_with()
+
+
+def test_ensure_map_application_database_bootstraps_a_created_but_unbootstrapped_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner, bootstrap, _ = _ensure_harness(monkeypatch, "map_owner")
+
+    outcome = ensure_map_application_database(
+        _runtime("map_application"), run_role_bootstrap=bootstrap
+    )
+
+    assert outcome == "bootstrapped"
+    runner.assert_not_called()
+    bootstrap.assert_called_once_with()
+
+
+def test_ensure_map_application_database_leaves_a_bootstrapped_database_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner, bootstrap, _ = _ensure_harness(monkeypatch, "ktm_feature_schema_owner")
+
+    outcome = ensure_map_application_database(
+        _runtime("map_application"), run_role_bootstrap=bootstrap
+    )
+
+    assert outcome == "present"
+    runner.assert_not_called()
+    bootstrap.assert_not_called()
+
+
+@pytest.mark.parametrize("role", ("map_dagster", "pinvi"))
+def test_ensure_map_application_database_refuses_other_roles(
+    role: database_runtime.DatabaseRole,
+) -> None:
+    with pytest.raises(DeploymentContractError, match="role is invalid"):
+        ensure_map_application_database(_runtime(role), run_role_bootstrap=Mock())
+
+
+def test_ensure_map_application_database_refuses_a_foreign_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner, bootstrap, _ = _ensure_harness(monkeypatch, "someone_else")
+
+    with pytest.raises(DeploymentContractError, match="owner differs"):
+        ensure_map_application_database(
+            _runtime("map_application"), run_role_bootstrap=bootstrap
+        )
+
+    runner.assert_not_called()
+    bootstrap.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("role", "table", "output", "expected"),
+    (
+        ("pinvi", '\'"app"."alembic_version"\'', b"f\n", False),
+        ("pinvi", '\'"app"."alembic_version"\'', b"t\n", True),
+        ("map_dagster", '\'"public"."alembic_version"\'', b"t\n", True),
+    ),
+)
+def test_schema_revision_table_exists_reads_the_role_table(
+    monkeypatch: pytest.MonkeyPatch,
+    role: database_runtime.DatabaseRole,
+    table: str,
+    output: bytes,
+    expected: bool,
+) -> None:
+    runner = Mock(return_value=output)
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+
+    assert schema_revision_table_exists(_runtime(role)) is expected
+    command = runner.call_args.args[0]
+    assert command[-1] == f"SELECT to_regclass({table}) IS NOT NULL"
+    assert command[command.index("--dbname") + 1] == _runtime(role).database_name
+
+
+def test_schema_revision_table_exists_rejects_ambiguous_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(database_runtime, "_run_checked", Mock(return_value=b"yes\n"))
+
+    with pytest.raises(DeploymentContractError, match="output is invalid"):
+        schema_revision_table_exists(_runtime("pinvi"))
