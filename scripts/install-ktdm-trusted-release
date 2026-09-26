@@ -52,6 +52,7 @@ SRC="${SRC:-${PWD}}"
   || die "offline wheelhouse has entries not owned by root or writable by others: ${WHEELHOUSE}"
 
 # >>> G — Manager의 host 변경 lock(ADR-51 C). 이 프로세스가 끝날 때까지 쥔다.
+[[ ! -L "${LOCK_DIR}" ]] || die "global mutation lock directory is a symlink: ${LOCK_DIR}"
 install -d -o root -g root -m 0700 "${LOCK_DIR}"
 [[ ! -L "${LOCK}" ]] || die "global mutation lock is a symlink: ${LOCK}"
 # 없던 lock 파일은 0600으로 만들어야 한다 — 다른 획득자가 0600·nlink 1을 요구한다.
@@ -78,7 +79,8 @@ git_src cat-file -e "${SHA}^{commit}" 2>/dev/null || die "revision ${SHA} is not
 
 NAME="ktdm-release-${SHA}"
 REL="/opt/${NAME}"
-PREV="$(readlink "${APP}")"
+# basename — 손으로 만든 절대 symlink여도 아래 비교·GC가 같은 이름을 본다.
+PREV="$(basename -- "$(readlink -- "${APP}")")"
 if [[ "$(cat "${REL}/.ktdm-source-revision" 2>/dev/null)" != "${SHA}" ]]; then
   [[ "${PREV}" != "${NAME}" ]] || die "the active release has no revision marker: ${REL}"
   rm -rf -- "${REL}"
