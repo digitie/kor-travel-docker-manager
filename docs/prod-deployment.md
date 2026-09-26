@@ -183,8 +183,11 @@ execution을 다시 거부한다.
 ## 3. 신뢰된 운영 설치와 백엔드 (FastAPI, uvicorn :12901)
 
 운영 설치는 외부 `get-pip.py`와 비고정 `pip install -e .`를 쓰지 않는다. 운영 호스트에 설치할
-**머지된 commit**을 가진 source clone과 root 소유 오프라인 wheelhouse(§3.1)를 두고, 그 clone의
-`scripts/install-ktdm-trusted-release`를 root로 실행한다(ADR-51 D).
+**머지된 commit**을 가진 **root 소유** source clone과 root 소유 오프라인 wheelhouse(§3.1)를 두고, 그
+clone의 `scripts/install-ktdm-trusted-release`를 root로 실행한다(ADR-51 D). clone이 root 소유여야 하는
+이유: root가 실행하는 installer와 release가 되는 archive가 다른 계정의 쓰기 아래에 있으면, 그 계정
+(예: 공개 트래픽을 받는 `ktdm-frontend`의 실행 계정)이 다음 설치를 가져간다. installer는 root 소유가
+아닌 clone을 거부한다.
 
 설치 root `/opt/kor-travel-docker-manager`는 현재 release를 가리키는 **상대 symlink**이고, release는
 `/opt/ktdm-release-<sha40>/`(root 0755)다. 경로 문자열이 그대로라 launcher·systemd·Map 호스트
@@ -204,24 +207,27 @@ installer가 하는 일은 이것뿐이다(순서대로).
    (같은 sha 재설치·롤백).
 4. 지금의 `.env`를 새 release로 복사한다(root 0600). 모든 `.env` 쓰기는 G 아래에 있다.
 5. release의 tmpfiles 유닛(§3.z), backend 유닛, frontend 유닛(`.env`의 `KTDM_FRONTEND_*`, §4),
-   백업 logrotate(`KTDM_BACKUP_ROOT`, §3.x)를 설치하고 enable한다. 여기까지 어디서 실패해도 live는
-   그대로다.
-6. `ktdm-backend`를 멈추고 symlink를 넘기고 다시 띄운 뒤 `/health`를 60초 기다린다. 멈춘 뒤 넘기는
-   이유는 실행 중인 backend가 새 release의 모듈을 섞어 읽지 않게 하려는 것이다. 프론트엔드는
-   재기동하지 않는다(§4).
+   백업 logrotate(`KTDM_BACKUP_ROOT`, §3.x)를 설치하고 enable한다. 키가 없으면 그 항목을 건너뛰고
+   stderr에 한 줄 남긴다(frontend 키가 없으면 이미 있던 frontend 유닛은 disable·삭제한다). 값이 틀리면
+   (root 계정, 안전하지 않은 경로, root 소유가 아닌 npm, 없는 디렉터리·그룹) 설치를 멈춘다. 여기까지
+   어디서 실패해도 설치 root와 도는 backend는 그대로다 — 단 `/etc`의 유닛·tmpfiles·logrotate는 이미 새
+   release의 것일 수 있다.
+6. `ktdm-backend`를 멈추고 symlink를 넘기고 다시 띄운 뒤, **그 유닛의 프로세스**가 `/health` 200을
+   내는지 60초 기다린다. 멈춘 뒤 넘기는 이유는 실행 중인 backend가 새 release의 모듈을 섞어 읽지 않게
+   하려는 것이다. 프론트엔드는 재기동하지 않는다(§4).
 7. 건강하면 새 release와 직전 release만 남기고 다른 `/opt/ktdm-release-*`를 지운다.
 
 ```bash
 SHA=<exact-40-hex-merged-commit>
-CLONE=/home/<operator>/ktdm-release-${SHA:0:7}        # 운영자 소유 clone
-[ -d "$CLONE/.git" ] || git clone -q --no-checkout \
+CLONE=/var/lib/kor-travel-docker-manager/src          # root 소유 clone (상위가 root 0700)
+sudo test -d "$CLONE/.git" || sudo git clone -q --no-checkout \
   https://github.com/digitie/kor-travel-docker-manager.git "$CLONE"
-git -C "$CLONE" fetch -q origin && git -C "$CLONE" checkout -q -f "$SHA"
+sudo git -C "$CLONE" fetch -q origin && sudo git -C "$CLONE" checkout -q -f "$SHA"
 sudo "$CLONE/scripts/install-ktdm-trusted-release" --expected-source-revision "$SHA" "$CLONE"
 ```
 
 실행되는 installer는 clone 작업 트리의 것이다 — 설치할 commit을 checkout한 뒤 그 installer를
-돌린다. 기본 wheelhouse는 `/var/lib/kor-travel-docker-manager/wheelhouse`이고, 다른 경로는
+돌린다. installer는 `cd /`로 시작하므로 어디서 실행해도 현재 디렉터리의 파일을 읽지 않는다. 기본 wheelhouse는 `/var/lib/kor-travel-docker-manager/wheelhouse`이고, 다른 경로는
 `--wheelhouse`로 준다. root 소유가 아니거나 group/other 쓰기가 가능한 항목이 하나라도 있으면
 거부한다. `--restart-backend`·`--allow-live`는 받되 무시한다(백엔드는 항상 재기동한다).
 `--env-file`은 없어졌다.
@@ -239,10 +245,13 @@ sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin verify; echo $?
 
 **롤백은 옛 sha를 다시 설치하는 것이다.** 지금 clone의 installer로 옛 sha를 설치한다. 직전 release는
 남아 있으므로 빌드 없이 표식을 재사용하고, 지금의 `.env`를 앞으로 복사하고, 그 release의 유닛을
-다시 설치한다.
+다시 설치한다. 실행 레지스트리도 옛 revision으로 다시 묶는다.
 
 ```bash
 sudo "$CLONE/scripts/install-ktdm-trusted-release" --expected-source-revision "$OLD_SHA" "$CLONE"
+sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin rebind-execution \
+  --expected-manager-revision "$OLD_SHA" --reason "manager rollback to $OLD_SHA" --confirm
+sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin verify; echo $?   # 0
 ```
 
 - **손으로 symlink를 넘기지 않는다.** 옛 release의 `.env` 사본에는 그 설치 때의 비밀·관리자 해시가
@@ -252,26 +261,32 @@ sudo "$CLONE/scripts/install-ktdm-trusted-release" --expected-source-revision "$
   내려가려면 §3.0의 역전환을 먼저 한다.
 
 **크래시 복구 상태기계는 없다.** revision 표식을 마지막에 쓰므로 표식 없는 release는 미완이고 다음
-실행이 지우고 다시 만든다. flip 전에 멈추면 live는 그대로이고, 같은 명령을 다시 돌리면 된다. flip
-뒤 `/health`가 오지 않으면 installer는 롤백 명령을 출력하고 종료 코드 1로 끝난다.
+실행이 지우고 다시 만든다. flip 전에 멈추면 설치 root와 도는 backend는 그대로이고, 같은 명령을
+다시 돌리면 된다. flip 뒤 backend가 뜨지 않거나 `/health`가 오지 않으면 installer는 롤백 명령을
+출력하고 종료 코드 1로 끝난다.
 
 ### 3.0 한 번뿐인 레이아웃 전환 (평평한 설치본 → release symlink)
 
 새 installer는 `/opt/kor-travel-docker-manager`가 symlink가 아니면 거부한다. 옛 installer가 만든
 평평한 설치본은 아래 수동 절차로 **한 번** 옮긴다. 전제는 설치본이 I-1(ADR-51 D의 소비자 이전)
-이상이라는 것이다 — I-1 전 코드는 symlink 설치 root를 거부한다.
+이상이라는 것이다 — I-1 전 코드는 symlink 설치 root를 거부한다. 검사 하나라도 실패하면 아무것도
+바꾸지 않고 멈춘다(`set -euo pipefail`).
 
 ```bash
-SHA=$(sudo cat /opt/kor-travel-docker-manager/.ktdm-source-revision)
-sudo test ! -e /var/lib/kor-travel-docker-manager/trusted-release-transaction.json
-test ! -e /opt/.kor-travel-docker-manager.stage -a ! -e /opt/.kor-travel-docker-manager.rollback
-test -d /opt/kor-travel-docker-manager -a ! -L /opt/kor-travel-docker-manager -a ! -e "/opt/ktdm-release-$SHA"
-sudo systemctl stop ktdm-backend
-sudo bash -euc 'umask 077; exec 9>>/run/lock/kor-travel-docker-manager/global-mutation.lock; umask 022
-  flock -n 9
-  mv -T /opt/kor-travel-docker-manager "/opt/ktdm-release-$1"
-  ln -s "ktdm-release-$1" /opt/kor-travel-docker-manager' _ "$SHA"
-sudo systemctl start ktdm-backend
+sudo bash -euo pipefail -c '
+K=/opt/kor-travel-docker-manager
+SHA=$(cat "$K/.ktdm-source-revision")
+[[ $SHA =~ ^[0-9a-f]{40}$ ]]
+[[ ! -e /var/lib/kor-travel-docker-manager/trusted-release-transaction.json ]]
+[[ ! -e /opt/.kor-travel-docker-manager.stage && ! -e /opt/.kor-travel-docker-manager.rollback ]]
+[[ -d $K && ! -L $K && ! -e /opt/ktdm-release-$SHA ]]
+umask 077; exec 9>>/run/lock/kor-travel-docker-manager/global-mutation.lock; umask 022
+flock -n 9
+systemctl stop ktdm-backend
+mv -T "$K" "/opt/ktdm-release-$SHA"
+ln -s "ktdm-release-$SHA" "$K"
+systemctl start ktdm-backend
+readlink "$K"'
 ```
 
 - `umask 077`은 필수다. 재부팅 뒤 lock 파일이 없을 때 0644로 생기면 다른 획득자가 0600·nlink 1이
@@ -284,12 +299,26 @@ sudo systemctl start ktdm-backend
 역전환(평평한 설치본으로 되돌리기 — 옛 installer로 I-1 아래로 내려갈 때만):
 
 ```bash
-sudo systemctl stop ktdm-backend
-sudo bash -euc 'umask 077; exec 9>>/run/lock/kor-travel-docker-manager/global-mutation.lock; umask 022
-  flock -n 9
-  T=$(readlink /opt/kor-travel-docker-manager); rm /opt/kor-travel-docker-manager
-  mv -T "/opt/$T" /opt/kor-travel-docker-manager'
-sudo systemctl start ktdm-backend
+sudo bash -euo pipefail -c '
+K=/opt/kor-travel-docker-manager
+T=$(basename "$(readlink "$K")")
+[[ $T =~ ^ktdm-release-[0-9a-f]{40}$ && -d /opt/$T ]]
+umask 077; exec 9>>/run/lock/kor-travel-docker-manager/global-mutation.lock; umask 022
+flock -n 9
+systemctl stop ktdm-backend
+rm "$K"
+mv -T "/opt/$T" "$K"
+systemctl start ktdm-backend'
+```
+
+**새 호스트(설치본이 아직 없다)**: installer는 설치 root symlink와 그 뒤의 `.env`를 전제한다. 빈
+시작 release를 하나 만들어 준비한 `.env`를 넣고 가리킨 뒤 installer를 돌린다. 첫 설치가 끝나면
+`ktdm-release-bootstrap`이 "직전 release"로 남고 다음 설치의 GC가 지운다(그 사이 롤백 대상은 없다).
+
+```bash
+sudo install -d -o root -g root -m 0755 /opt/ktdm-release-bootstrap
+sudo install -o root -g root -m 0600 <prepared-.env> /opt/ktdm-release-bootstrap/.env
+sudo ln -s ktdm-release-bootstrap /opt/kor-travel-docker-manager
 ```
 
 ### 3.1 Debian `poetry-core` build dependency를 포함한 wheelhouse 발행
@@ -379,7 +408,10 @@ wheel을 인터넷에서 내려받거나, home/user-writable 경로에서 복사
 수정해서는 안 된다. `dpkg --verify` 실패, package metadata 불일치, source/destination 권한 drift도
 모두 installer 재시도보다 먼저 해결해야 할 fail-close 조건이다.
 
-새 destination을 발행했으면 installer에 `--wheelhouse "${WHEELHOUSE_DESTINATION}"`로 넘긴다.
+원본 wheelhouse는 poetry-core wheel이 **없는** root 소유 디렉터리여야 한다(도구가 원본에 poetry-core가
+있으면 섞이지 않게 멈춘다). 발행된 wheelhouse에서 다시 만들 때는 `poetry_core-*.whl`을 뺀 사본을 root
+소유 0755 디렉터리로 만들어 원본으로 준다. 새 destination을 발행했으면 installer에
+`--wheelhouse "${WHEELHOUSE_DESTINATION}"`로 넘긴다.
 
 ### 3.2 백엔드 서비스
 
@@ -559,7 +591,10 @@ sudo systemctl restart ktdm-frontend
 
 프론트엔드 유닛은 계정명·경로가 host 민감 정보라 템플릿
 (`deploy/systemd/ktdm-frontend.service.template`)이며, installer가 root 소유 `.env`의
-아래 키로 렌더링해 설치한다. 두 필수 키가 없으면 유닛을 건너뛰고 경고만 남긴다.
+아래 키로 렌더링해 설치한다. 두 필수 키가 없으면 유닛을 설치하지 않고(이미 있던 유닛은 disable·삭제)
+stderr에 한 줄 남긴다. 값이 틀리면(root 계정, 안전하지 않은 경로, root 소유가 아닌 npm) 설치가
+flip 전에 멈춘다. npm은 root 소유여야 한다 — 다른 계정 소유면 그 계정 침해가 이 서비스 계정 실행으로
+이어진다.
 
 ```bash
 # .env (root 0600)

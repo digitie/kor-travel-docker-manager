@@ -1348,7 +1348,7 @@ Map 원장 `T-VN-H49-{GEO-DAGSTER,CONCIERGE,PINVI}`의 마지막 해제 조건�
 - `crontab -l`(root) → `no crontab for root`
 - backup systemd timer 없음(`dpkg-db-backup.timer`는 Debian 자체 기능이다)
 - `/etc/logrotate.d/`에 kor-travel 항목 없음 — `/opt/kor-travel-docker-manager/.env`에
-  `KTDM_BACKUP_ROOT`가 없어 trusted installer의 `install_backup_logrotate()`가 skip됐다
+  `KTDM_BACKUP_ROOT`가 없어 trusted installer의 백업 logrotate 설치가 건너뛰어졌다
 - 백업이 있는 role은 `map_application` 1건, `map_dagster` 1건, `pinvi` 2건뿐이고
   전부 수동 생성분이다
 

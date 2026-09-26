@@ -112,7 +112,8 @@ def _parse_arguments(argv: list[str] | None) -> argparse.Namespace:
         description="Debian poetry-core로 root-owned offline wheelhouse를 발행한다."
     )
     # 기본값이 없다. 옛 installer가 설치본 안에 남기던 `.wheelhouse`는 ADR-51 D(I-2)부터
-    # 만들어지지 않는다 — 운영자가 root 소유 원본을 명시한다(보통 이미 발행된 wheelhouse).
+    # 만들어지지 않는다 — 운영자가 poetry-core wheel이 없는 root 소유 원본을 명시한다(예:
+    # 발행된 wheelhouse에서 `poetry_core-*.whl`을 뺀 사본, `docs/prod-deployment.md` §3.1).
     parser.add_argument(
         "--source-wheelhouse",
         type=Path,

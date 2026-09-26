@@ -2,18 +2,19 @@
 # Manager trusted release installer (ADR-51 D).
 #
 # 정확한 커밋 하나를 `/opt/ktdm-release-<sha>/`로 만들고 설치 root
-# `/opt/kor-travel-docker-manager`(상대 symlink)를 그쪽으로 넘긴다. release는 source clone의
-# `git archive <sha>`, venv는 오프라인 wheelhouse로 만든다. 배포 `.env`는 앞으로 복사하고,
-# 백엔드는 항상 stop → flip → start 한다. 직전 release 하나를 남긴다.
+# `/opt/kor-travel-docker-manager`(상대 symlink)를 그쪽으로 넘긴다. release는 root 소유 source
+# clone의 `git archive <sha>`, venv는 오프라인 wheelhouse로 만든다. 배포 `.env`는 앞으로
+# 복사하고, 백엔드는 항상 stop → flip → start 한다. 직전 release 하나를 남긴다.
 #
 # 복구 상태기계는 없다. revision 표식(`.ktdm-source-revision`)은 마지막에 쓰므로 표식 없는
 # release는 미완이고 처음부터 다시 만든다 — 같은 sha를 다시 돌리는 것이 복구다. flip 전에
-# 죽으면 live는 그대로다. 롤백은 옛 sha를 다시 설치하는 것이다. 손으로 symlink를 넘기지 않는다
-# — 옛 release의 `.env` 사본에는 옛 비밀·관리자 해시가 들어 있다.
+# 죽으면 설치 root와 도는 backend는 그대로다(단 /etc의 유닛은 이미 새 release의 것일 수 있다).
+# 롤백은 옛 sha를 다시 설치하는 것이다. 손으로 symlink를 넘기지 않는다 — 옛 release의 `.env`
+# 사본에는 옛 비밀·관리자 해시가 들어 있다.
 #
 # usage: install-ktdm-trusted-release --expected-source-revision SHA [--wheelhouse DIR] [SOURCE_CLONE]
-#   SOURCE_CLONE 기본값은 현재 디렉터리다. --restart-backend·--allow-live는 받되 무시한다
-#   (백엔드는 항상 재기동한다).
+#   SOURCE_CLONE은 root 소유 clone이다(기본값은 현재 디렉터리). --restart-backend·--allow-live는
+#   받되 무시한다(백엔드는 항상 재기동한다).
 set -euo pipefail
 umask 022
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -31,21 +32,24 @@ die() { echo "$1" >&2; exit 126; }
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
-    --expected-source-revision) shift; SHA="${1:-}" ;;
-    --wheelhouse) shift; WHEELHOUSE="${1:-}" ;;
+    --expected-source-revision) [[ "$#" -ge 2 ]] || die "$1 requires a value"; SHA="$2"; shift ;;
+    --wheelhouse) [[ "$#" -ge 2 ]] || die "$1 requires a value"; WHEELHOUSE="$2"; shift ;;
     --restart-backend|--allow-live) ;;
-    -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) die "unknown option: $1" ;;
     *) [[ -z "${SRC}" ]] || die "source clone was given more than once"; SRC="$1" ;;
   esac
   shift
 done
-SRC="${SRC:-${PWD}}"
-
-[[ "$(id -u)" == "0" ]] || die "trusted release install must run as root"
 [[ "${SHA}" =~ ^[0-9a-f]{40}$ ]] || die "--expected-source-revision must be a full 40-hex revision"
-[[ -e "${SRC}/.git" ]] || die "source clone is missing: ${SRC}"
-[[ -L "${APP}" ]] || die "${APP} is not a release symlink; do the one-time layout switch first (docs/prod-deployment.md §3.0)"
+[[ "$(id -u)" == "0" ]] || die "trusted release install must run as root"
+SRC="$(cd -- "${SRC:-${PWD}}" 2>/dev/null && pwd -P)" || die "source clone is missing"
+# 아래는 cwd에 의존하지 않는다 — root python이 운영자 디렉터리의 모듈을 import하지 않게 한다.
+cd /
+# root가 실행하는 코드와 archive가 다른 계정의 쓰기 아래에 있으면 그 계정이 다음 설치를 가져간다.
+[[ -e "${SRC}/.git" && "$(stat -c '%u' "${SRC}")" == "0" ]] \
+  || die "source clone must be a root-owned git clone (docs/prod-deployment.md §3): ${SRC}"
+[[ -L "${APP}" ]] || die "${APP} is not a release symlink; see docs/prod-deployment.md §3.0"
 # wheelhouse는 root pip이 먹는 유일한 비git 입력이다. 다른 주체가 wheel을 넣을 수 없어야 한다.
 [[ -d "${WHEELHOUSE}" && ! -L "${WHEELHOUSE}" ]] || die "offline wheelhouse is missing: ${WHEELHOUSE}"
 [[ -z "$(find "${WHEELHOUSE}" \( ! -uid 0 -o -perm /022 \) -print -quit)" ]] \
@@ -54,7 +58,7 @@ SRC="${SRC:-${PWD}}"
 # >>> G — Manager의 host 변경 lock(ADR-51 C). 이 프로세스가 끝날 때까지 쥔다.
 [[ ! -L "${LOCK_DIR}" ]] || die "global mutation lock directory is a symlink: ${LOCK_DIR}"
 install -d -o root -g root -m 0700 "${LOCK_DIR}"
-[[ ! -L "${LOCK}" ]] || die "global mutation lock is a symlink: ${LOCK}"
+[[ ! -L "${LOCK}" && ( ! -e "${LOCK}" || -f "${LOCK}" ) ]] || die "global mutation lock is not a regular file: ${LOCK}"
 # 없던 lock 파일은 0600으로 만들어야 한다 — 다른 획득자가 0600·nlink 1을 요구한다.
 umask 077
 exec 9>>"${LOCK}"
@@ -73,8 +77,7 @@ else
   install -d -o root -g root -m 0700 "${REQUEST_ROOT}"
 fi
 
-# root git은 남의 저장소를 거부하므로 clone 소유자로 읽는다. lock fd는 물려주지 않는다.
-git_src() { sudo -H -u "#$(stat -c '%u' "${SRC}")" -- git -C "${SRC}" "$@" 9>&-; }
+git_src() { git --no-replace-objects -C "${SRC}" "$@" 9>&-; }
 git_src cat-file -e "${SHA}^{commit}" 2>/dev/null || die "revision ${SHA} is not in ${SRC}; fetch it first"
 
 NAME="ktdm-release-${SHA}"
@@ -85,10 +88,12 @@ if [[ "$(cat "${REL}/.ktdm-source-revision" 2>/dev/null)" != "${SHA}" ]]; then
   [[ "${PREV}" != "${NAME}" ]] || die "the active release has no revision marker: ${REL}"
   rm -rf -- "${REL}"
   install -d -o root -g root -m 0755 "${REL}"
+  # >>> extract
   git_src archive --format=tar "${SHA}" | tar -x --no-same-owner -C "${REL}"
   # archive의 mode에는 tar.umask(기본 002)가 들어간다. 실행 비트는 git index가 정본이다.
   chmod -R go-w "${REL}"
-  python3 -m venv "${REL}/backend/.venv"
+  # <<< extract
+  python3 -I -m venv "${REL}/backend/.venv"
   "${REL}/backend/.venv/bin/python" -I -m pip install -q --no-index \
     --find-links "${WHEELHOUSE}" "${REL}/backend"
   # ktdctl은 설치 root 경로로 돈다 — sys.prefix와 project root가 release 경로로 풀리면
@@ -106,7 +111,7 @@ fi
 # 모든 `.env` 쓰기는 G 아래에 있다(ADR-51 C-2) — 여기서 복사한 것이 곧 live 값이다.
 [[ "${PREV}" == "${NAME}" ]] || cp -p -- "${APP}/.env" "${REL}/.env"
 
-# host 파일은 release에서 설치한다. 실패하면 flip 전에 멈추므로 live는 그대로다.
+# host 파일은 release에서 설치한다. 여기서 실패하면 설치 root와 도는 backend는 그대로다.
 install -T -o root -g root -m 0644 -- "${REL}/deploy/tmpfiles.d/kor-travel-docker-manager.conf" \
   /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
@@ -135,10 +140,13 @@ if [[ -n "${f_user}" && -n "${f_dir}" ]]; then
     -e "s|__KTDM_FRONTEND_NPM__|${f_npm}|g" "${REL}/deploy/systemd/ktdm-frontend.service.template" \
     > /etc/systemd/system/ktdm-frontend.service
   units+=(ktdm-frontend.service)
-elif [[ -e /etc/systemd/system/ktdm-frontend.service ]]; then
-  # 키가 없다는 것은 이 방식으로 돌리지 않는다는 뜻이다 — 옛 계정·경로로 부팅마다 뜨지 않게 한다.
-  systemctl disable ktdm-frontend.service
-  rm -f -- /etc/systemd/system/ktdm-frontend.service
+else
+  echo "KTDM_FRONTEND_SERVICE_USER/KTDM_FRONTEND_APP_DIR are not set; no frontend unit" >&2
+  if [[ -e /etc/systemd/system/ktdm-frontend.service ]]; then
+    # 키가 없다는 것은 이 방식으로 돌리지 않는다는 뜻이다 — 옛 계정·경로로 부팅마다 뜨지 않게 한다.
+    systemctl disable ktdm-frontend.service
+    rm -f -- /etc/systemd/system/ktdm-frontend.service
+  fi
 fi
 b_root="$(env_value KTDM_BACKUP_ROOT)"
 if [[ -n "${b_root}" ]]; then
@@ -148,6 +156,8 @@ if [[ -n "${b_root}" ]]; then
     && getent group "${b_group}" >/dev/null || die "KTDM_BACKUP_ROOT/KTDM_BACKUP_SHARED_GROUP are invalid"
   sed -e "s|__KTDM_BACKUP_ROOT__|${b_root}|g" -e "s|__KTDM_BACKUP_GROUP__|${b_group}|g" \
     "${REL}/deploy/logrotate.d/kor-travel-docker-manager.template" > /etc/logrotate.d/kor-travel-docker-manager
+else
+  echo "KTDM_BACKUP_ROOT is not set; no backup log rotation" >&2
 fi
 systemctl daemon-reload
 systemctl enable "${units[@]}"
@@ -156,9 +166,13 @@ systemctl enable "${units[@]}"
 systemctl stop ktdm-backend.service
 ln -sfn "${NAME}" "${APP}.new"
 mv -T "${APP}.new" "${APP}"
-systemctl start ktdm-backend.service
+systemctl start ktdm-backend.service || true
+# 성공은 /health 200이 **이 유닛의** 프로세스에서 온 것이다 — 재기동 틈에 포트를 차지한 남의
+# 프로세스를 새 release로 오인하면 GC까지 돈다.
 for _ in $(seq 60); do
-  if curl -fsS -o /dev/null http://127.0.0.1:12901/health; then
+  pid="$(systemctl show -p MainPID --value ktdm-backend.service)"
+  if curl -fsS -o /dev/null http://127.0.0.1:12901/health \
+    && ss -Hltnp 'sport = :12901' | grep -q "pid=${pid},"; then
     echo "installed ${SHA} (previous: ${PREV#ktdm-release-})"
     if [[ "${PREV}" != "${NAME}" ]]; then
       for old in /opt/ktdm-release-*; do
@@ -169,6 +183,7 @@ for _ in $(seq 60); do
   fi
   sleep 1
 done
-echo "ktdm-backend did not become healthy on ${SHA}; roll back by reinstalling the previous release:" >&2
+echo "ktdm-backend did not become healthy on ${SHA} (systemctl status ktdm-backend);" >&2
+echo "roll back by reinstalling the previous release:" >&2
 echo "  sudo ${SRC}/scripts/install-ktdm-trusted-release --expected-source-revision ${PREV#ktdm-release-} ${SRC}" >&2
 exit 1

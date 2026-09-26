@@ -11,8 +11,8 @@
 # 순서로 재기동한다 — 실행 중인 backend가 새 release의 모듈을 섞어 읽지 않게 멈춘 뒤 넘긴다.
 #
 # root 실행은 현행 계약이다(ADR-41; 전용 계정 전환은 NONROOT-BACKEND 태스크).
-# 표준 출력은 journald로 가고, 백엔드 자체의 월간 로테이션 파일 로그
-# (backend/logs/)는 그대로 유지된다.
+# 표준 출력은 journald로 가고(정본), 백엔드 자체의 월간 로테이션 파일 로그(backend/logs/)는
+# release 안에 있어 그 release가 GC될 때 함께 지워진다.
 
 [Unit]
 Description=kor-travel-docker-manager backend (FastAPI :12901)

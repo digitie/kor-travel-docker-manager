@@ -30,17 +30,24 @@ def test_installer_parses() -> None:
     subprocess.run(["bash", "-n", str(_INSTALLER)], check=True)
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root would proceed past the root check")
-def test_the_helper_arguments_reach_the_root_check() -> None:
+def test_the_helper_arguments_are_accepted() -> None:
     """n150 헬퍼는 `--restart-backend --expected-source-revision SHA CLONE`을 넘긴다.
 
-    옛 옵션이 'unknown option'으로 죽으면 새 설치기의 첫 실행이 헬퍼에서 막힌다.
+    옛 옵션이 'unknown option'으로 죽으면 새 설치기의 첫 실행이 헬퍼에서 막힌다. 인자 검사는
+    root 검사보다 먼저 하므로, 틀린 revision을 주면 실행 계정과 무관하게 그 자리에서 멈춘다.
     """
 
-    completed = _run("--restart-backend", "--expected-source-revision", "a" * 40, "/tmp")
+    completed = _run("--restart-backend", "--allow-live", "--expected-source-revision", "x", "/tmp")
 
     assert completed.returncode == 126
-    assert "must run as root" in completed.stderr
+    assert "must be a full 40-hex revision" in completed.stderr
+
+
+def test_an_option_without_its_value_is_refused() -> None:
+    completed = _run("--expected-source-revision")
+
+    assert completed.returncode == 126
+    assert "--expected-source-revision requires a value" in completed.stderr
 
 
 def test_retired_options_are_refused() -> None:
@@ -147,3 +154,75 @@ def test_root_launchers_are_executable_in_the_git_index() -> None:
         "rotate-pinned-pair",
     ):
         assert modes.get(name) == "100755", name
+
+
+def test_a_symlinked_lock_directory_is_refused(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    lock_dir = tmp_path / "lock"
+    lock_dir.symlink_to(real)
+
+    completed = subprocess.run(
+        ["bash", "-c", _lock_block(lock_dir)], capture_output=True, text=True, check=False
+    )
+
+    assert completed.returncode == 126
+    assert "lock directory is a symlink" in completed.stderr
+
+
+def test_a_planted_fifo_is_refused_instead_of_hanging(tmp_path: Path) -> None:
+    """lock 자리에 FIFO가 있으면 `>>` 열기가 영원히 막힌다 — 열기 전에 거부해야 한다."""
+
+    lock_dir = tmp_path / "lock"
+    lock_dir.mkdir(mode=0o700)
+    os.mkfifo(lock_dir / "global-mutation.lock")
+
+    completed = subprocess.run(
+        ["bash", "-c", _lock_block(lock_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert completed.returncode == 126
+    assert "not a regular file" in completed.stderr
+
+
+def _extract_block() -> str:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    return text[text.index("# >>> extract") : text.index("# <<< extract")]
+
+
+def test_the_release_keeps_index_exec_bits_and_drops_group_other_write(tmp_path: Path) -> None:
+    """release는 `git archive`를 그대로 풀고 group/other 쓰기만 지운다(ADR-51 D).
+
+    `tar.umask=0`과 `umask 000`으로 archive의 world-writable mode가 그대로 풀리는 최악의 경우를
+    만든다 — 옛 설치기가 모든 mode를 0644로 눕혔던 이유다. 설치기의 추출 구간을 그대로 돌린다.
+    """
+
+    release = tmp_path / "release"
+    release.mkdir()
+    script = (
+        "set -euo pipefail\n"
+        "umask 000\n"
+        f'git_src() {{ git -C "{_ROOT}" -c tar.umask=0 "$@" scripts deploy; }}\n'
+        "SHA=HEAD\n"
+        f'REL="{release}"\n' + _extract_block()
+    )
+
+    subprocess.run(["bash", "-c", script], check=True)
+
+    extracted = list(release.rglob("*"))
+    assert len(extracted) > 10
+    for path in extracted:
+        assert not stat.S_IMODE(path.lstat().st_mode) & 0o022, path
+    for name in (
+        "install-ktdm-trusted-release",
+        "run-pinned-rebuild-once",
+        "run-m05-isolated-e2e-once",
+        "rotate-pinned-pair",
+    ):
+        assert stat.S_IMODE((release / "scripts" / name).stat().st_mode) == 0o755, name
+    unit = release / "deploy" / "systemd" / "ktdm-backend.service"
+    assert stat.S_IMODE(unit.stat().st_mode) == 0o644

@@ -3734,14 +3734,15 @@ Map이 M1(`51ee65d4c`, ADR-102)을 포함하는 것이다 — M1 이후 storage 
 
 ### NOTE: D(설치기) I-2 — 설치기를 release 디렉터리와 symlink로 다시 썼다, D 완료 (2026-09-27, I-2)
 
-I-1과 한 번뿐인 레이아웃 전환(`prod-deployment.md` §3.0) 뒤에 설치기를 다시 썼다. 1,887줄이 172줄(주석·빈
-줄 제외 131줄)이 됐다.
+I-1과 한 번뿐인 레이아웃 전환(`prod-deployment.md` §3.0) 뒤에 설치기를 다시 썼다. 1,887줄이 189줄(주석·빈
+줄 제외 142줄)이 됐다.
 
-- **하는 일**: G를 잡는다 → clone에 그 commit이 있는지 본다 → `/opt/ktdm-release-<sha>`에 revision 표식이
+- **하는 일**: root 소유 clone인지 보고 `cd /` → G를 잡는다 → clone에 그 commit이 있는지 본다 → `/opt/ktdm-release-<sha>`에 revision 표식이
   없으면 `git archive <sha>`를 풀고 `chmod -R go-w`, 오프라인 wheelhouse로 venv, `ktdctl` wrapper(설치 root
   경로 shebang + `KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT`), import 확인, 마지막에 표식 → 지금 `.env`를 복사 →
   tmpfiles·backend·frontend 유닛·logrotate를 그 release에서 설치 → backend stop → symlink flip → start →
-  `/health` 60초 → 직전 release 하나만 남기고 GC. flip 전 실패는 live를 건드리지 않는다.
+  **그 유닛의 MainPID가 12901을 듣고** `/health` 200을 내는지 60초 → 직전 release 하나만 남기고 GC. flip 전
+  실패는 설치 root와 도는 backend를 건드리지 않는다(`/etc`의 유닛은 이미 새 release의 것일 수 있다).
 - **롤백은 옛 sha 재설치다.** 표식이 있는 release는 빌드 없이 재사용하고 지금 `.env`를 앞으로 복사한다. 손으로
   symlink를 넘기면 옛 `.env` 사본(옛 비밀·관리자 해시)이 살아나므로 문서로 금지한다. `.env`를 공유 symlink로
   두지 않은 이유는 관리자 비밀번호 재작성(`O_NOFOLLOW`), legacy retirement(`nlink 1`·`0600`), 재구축의
@@ -3761,7 +3762,12 @@ I-1과 한 번뿐인 레이아웃 전환(`prod-deployment.md` §3.0) 뒤에 설�
   `systemd-analyze verify` 필터, lease 디렉터리 감사(결정 3), 0755 `chmod` 목록과 `bindings.md` B-1(git index가
   유일한 정본이 됐다), clean checkout 검사(`archive <sha>`라 결과와 무관), 설치본 안의 `.wheelhouse` 산출물 —
   그래서 `provision-ktdm-offline-wheelhouse.py`의 `--source-wheelhouse`는 이제 필수다.
-- **남긴 것**: G(`umask 077`로 만들고 `0:600:1` 확인, 경합이면 종료 코드 2), state·request 디렉터리(request
+- **새로 요구하는 것(적대 리뷰)**: source clone이 root 소유여야 한다. 옛 문서는 hash 대조로 root staging한
+  installer만 실행하라고 했지만 실제 운영은 운영자 clone에서 바로 돌렸고, 그 계정(공개 트래픽을 받는
+  `ktdm-frontend`의 실행 계정과 같다)이 다음 설치를 가져갈 수 있었다. root clone이면 git도 root로 돈다(옛
+  `sudo -u <clone owner>`가 없어졌다). 성공 판정은 포트를 차지한 남의 프로세스를 새 release로 오인하지 않게
+  MainPID의 listener를 본다.
+- **남긴 것**: G(`umask 077`로 만들고 `0:600:1` 확인, 일반 파일이 아니면 열기 전에 거부, 경합이면 종료 코드 2), state·request 디렉터리(request
   소유권은 처음에만 정한다), 정확한 sha, 오프라인 wheelhouse(root 소유·group/other 쓰기 금지 한 줄), `ktdctl`
   wrapper, tmpfiles(ADR-41 결정 1)·systemd·logrotate와 그 `.env` 값 검증(비root 계정, 안전한 절대 경로).
 - **바뀐 운영 성질**: G를 설치 내내(빌드 포함 1~2분) 쥔다 — 그동안 재구축·M05·UI mutation이 거절되고, 반대도
