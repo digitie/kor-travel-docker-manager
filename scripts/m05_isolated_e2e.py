@@ -87,6 +87,25 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     load_runtime_pin_registry,
     runtime_pin_registry_path,
 )
+from kor_travel_docker_manager.services.secret_scrub import scrub_failure_text
+
+
+def _scrubbed_excepthook(kind: type[BaseException], value: BaseException, tb: Any) -> None:
+    """잡지 않은 예외(모듈 로드 중 실패 포함)도 가린 traceback으로 낸다(ADR-51 잃는 보장 G-3).
+
+    아래 상수가 아직 없을 수 있어 경로를 직접 쓰고 생성 비밀은 있으면 쓴다.
+    """
+
+    text = "".join(traceback.format_exception(kind, value, tb))
+    generated = globals().get("_GENERATED_SECRETS", ())
+    print(
+        scrub_failure_text(text, Path("/opt/kor-travel-docker-manager/.env"), generated),
+        file=sys.stderr,
+    )
+
+
+if __name__ == "__main__":
+    sys.excepthook = _scrubbed_excepthook
 
 # pinned revision은 코드 상수가 아니라 root 소유 registry가 소유한다(ADR-40).
 # 이 드라이버는 한 번의 격리 실행 전체가 같은 pinset에 결박돼야 하므로 모듈 로드
@@ -99,8 +118,8 @@ _LEDGER = Path("/var/lib/kor-travel-docker-manager/m05-isolated-once")
 _REVISION_LENGTH = 40
 _RENDERED_PORT_EVIDENCE_LIMIT = 16
 _SAFE_PORT_PROTOCOLS = frozenset({"tcp", "udp", "sctp"})
-_FORENSIC_CAPTURE_ENV = "KTDM_M05_FORENSIC_CAPTURE"
-_FORENSIC_CAPTURE_LIMIT = 256 * 1024
+#: 실패 텍스트에 싣는 스트림당 끝부분 상한. 캡처는 항상 켜져 있다(ADR-51 잃는 보장 G-3).
+_OUTPUT_TAIL_LIMIT = 256 * 1024
 # PinVi reconciliation worker의 폴링 주기(초). driver가 PinVi에 주입하는 값과
 # receipt 대기 창을 **같은 상수**에서 파생시킨다 — 두 곳에 따로 적으면 창이
 # 주기보다 짧아져 receipt가 아직 없는 순간에 단발 실패한다(정합성 스윕 high).
@@ -121,13 +140,6 @@ _PLAYWRIGHT_RUNNER_IMAGE = "mcr.microsoft.com/playwright@sha256:eff16c30e6f3f4af
 # Compose config은 trusted input이라도 외부 CLI 출력이다. JSON parser에 넘기는
 # 원문은 이 상한만 보관하고, 초과분도 끝까지 drain해 child pipe를 막지 않는다.
 _COMPOSE_CONFIG_OUTPUT_LIMIT = 256 * 1024
-_RAW_ENV_NAMES = (
-    "M05_MAP_ADMIN_PROXY_SECRET",
-    "M05_PINVI_EMAIL",
-    "M05_PINVI_PASSWORD",
-    "PINVI_M04_LIVE_EMAIL",
-    "PINVI_M04_LIVE_PASSWORD",
-)
 _PINVI_MANAGER_ADMISSION_FILES = (
     "scripts/docker-app.sh",
     "scripts/m05_isolated_manager_admission.py",
@@ -156,33 +168,6 @@ _SAFE_SUBPROCESS_ENV = {
 # Root driver가 host loopback에만 연결할 때에도 ambient HTTP(S)_PROXY를 신뢰하지
 # 않는다. PinVi cookie opener도 아래와 같은 proxy-free opener를 명시적으로 만든다.
 _LOOPBACK_OPENER = build_opener(ProxyHandler({}))
-_MAP_FRESH_INIT_EXIT_DIAGNOSTICS = {
-    41: "migrator_dsn_missing",
-    42: "image_alembic_root_invalid",
-    43: "migrator_session_unverifiable",
-    44: "migrator_identity_invalid",
-    45: "pre_root_state_invalid",
-    46: "alembic_root_result_invalid",
-    47: "alembic_command_failed",
-    48: "alembic_runtime_contract_failed",
-    49: "database_statement_failed",
-    50: "runtime_privilege_reconciliation_failed",
-    51: "fresh_destination_contract_invalid",
-    52: "alembic_runtime_configuration_invalid",
-    53: "baseline_reference_invalid",
-    54: "schema_lineage_invalid",
-    55: "metadata_contract_invalid",
-    127: "unclassified",
-}
-# result.json의 map_fresh_init_reason은 **닫힌 어휘**다 — launcher receipt
-# 검증기가 FRESH_INIT_REASONS로 대조하고, 벗어나면 ValueError로 떨어져 claim
-# 전 실패도 무조건 소각으로 승격된다(full-path 시뮬레이션 적발). 그런데
-# _fail(diagnostic=...)은 사람이 읽는 자유형 문자열도 싣는다. 어휘는 여기서
-# 한 번만 선언하고(위 exit map에서 파생), 그 밖의 값은 이 필드에 싣지 않는다.
-# unclassified로 수렴시키지 않는 이유: 그 값은 "fresh-init runner가 미상 exit
-# code로 죽었다"는 **다른 사실**을 뜻해서, playwright 버전 불일치 같은 무관한
-# 진단에 붙이면 receipt가 거짓을 주장한다. 원문은 root 0600 forensic leaf로.
-_MAP_FRESH_INIT_REASONS = frozenset(_MAP_FRESH_INIT_EXIT_DIAGNOSTICS.values())
 # terminal pinset registry는 비-root도 읽는 감사 표면이다. driver의 예외 원문을
 # reason에 흘리지 않고, 다음 immutable candidate의 보정 범위만 나타내는 고정 phase만
 # 허용한다. 이 집합 밖의 값은 가장 좁은 안전 진단으로 수렴한다.
@@ -693,82 +678,57 @@ def _command(
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
     capture: bool = False,
-    failure_exit_diagnostics: dict[int, str] | None = None,
-    capture_failure_stderr: bool = False,
     capture_output_limit: int | None = None,
 ) -> str:
+    """외부 명령 하나를 돌린다. 실패하면 stderr와 stdout 끝부분을 싣고 끝난다.
+
+    ADR-51 잃는 보장 G-3: 캡처는 **항상** 켜져 있다. 예전에는 opt-in forensic 플래그가 있어야
+    stderr가 남았고, 원인 없는 `runtime_command_failed`가 격리 실행을 통째로 태웠다(e2e6/e2e7).
+    호출자가 stdout을 원하지 않아도 끝부분은 받는다 — Playwright 같은 러너는 어느 단언이
+    깨졌는지를 stdout에 낸다(e2e22). 호출자가 받는 stdout은 데이터(설정 문서 등)라 실패에
+    싣지 않는다. 가림은 실패 텍스트를 내는 한 곳(`_emit_failure`)이 한다.
+    """
+
     child_env = dict(_SAFE_SUBPROCESS_ENV)
     if env is not None:
         child_env.update(env)
-    # forensic 모드에서는 **모든** 외부 명령 실패가 stderr 증거를 남길 수 있어야
-    # 한다. e2e6/e2e7에서 evidence 없는 runtime_command_failed가 반복돼 원인
-    # 규명에 격리 run을 회당 통으로 태웠다 — 호출부가 opt-in한 곳만 증거를
-    # 남기는 설계는 이 harness의 실패 표면 전체를 덮지 못한다.
-    forensic_capture = os.environ.get(_FORENSIC_CAPTURE_ENV) == "1"
-    # 증거로만 쓰는 stdout 포획. 호출부가 capture를 요구하지 않았어도 forensic
-    # 모드에서는 실패한 명령의 stdout을 남겨야 한다 — 2026-09-03 e2e22가
-    # `M04 live UI command exited with 1`만 남기고 1시간 39분을 태웠다. Playwright는
-    # **어느 spec의 어떤 단언이 깨졌는지를 stdout으로** 내는데 하네스는 stderr만
-    # 잡았고, 남은 stderr에는 npm의 lifecycle 오류밖에 없었다.
-    evidence_stdout = forensic_capture and not capture
-    if capture_failure_stderr or forensic_capture or capture_output_limit is not None:
-        stdout, returncode, stderr, stdout_bytes, stdout_truncated = _run_with_bounded_output(
-            args,
-            cwd=cwd,
-            env=child_env,
-            capture=capture or evidence_stdout,
-            capture_stderr=capture_failure_stderr or forensic_capture,
-            stdout_limit=(
-                capture_output_limit
-                if capture_output_limit is not None
-                else (_FORENSIC_CAPTURE_LIMIT if evidence_stdout else None)
-            ),
-        )
-        if evidence_stdout:
-            # 반환값의 의미는 종전 그대로 둔다 — 호출부는 capture를 요구하지
-            # 않았다. 증거는 stdout_bytes로만 흐른다.
-            stdout = ""
-            if capture_output_limit is None:
-                # 증거용 상한은 **실패 사유가 아니다.** 이것을 아래
-                # `runtime_command_output_too_large`로 흘리면 출력이 큰 성공
-                # 명령이 실패로 뒤집힌다.
-                stdout_truncated = False
-    else:
-        completed = subprocess.run(
-            list(args),
-            cwd=str(cwd) if cwd is not None else "/",
-            env=child_env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            text=True,
-        )
-        stdout = completed.stdout if capture else ""
-        returncode = completed.returncode
-        stderr = None
-        stdout_bytes = None
-        stdout_truncated = False
+    stdout, returncode, stderr, stdout_truncated = _run_with_bounded_output(
+        args,
+        cwd=cwd,
+        env=child_env,
+        keep_stdout_tail=not capture,
+        stdout_limit=capture_output_limit,
+    )
     if returncode != 0:
-        diagnostic = (
-            failure_exit_diagnostics.get(returncode)
-            if failure_exit_diagnostics is not None
-            else None
-        )
         _fail(
             "runtime_command_failed",
-            diagnostic=diagnostic,
             returncode=returncode,
             stderr=stderr,
-            stdout=stdout_bytes,
+            stdout=None if capture else stdout,
         )
     if stdout_truncated:
         _fail(
             "runtime_command_output_too_large",
-            stdout=stdout_bytes,
+            diagnostic=f"stdout exceeded {capture_output_limit} bytes",
             stdout_truncated=True,
         )
-    return stdout
+    return stdout.decode("utf-8", errors="replace") if capture else ""
+
+
+def _tail_ring(buffer: bytearray, chunk: bytes, *, limit: int) -> bool:
+    """끝 ``limit`` 바이트만 남긴다. 앞을 버렸으면 True."""
+
+    buffer.extend(chunk)
+    overflow = len(buffer) - limit
+    if overflow > 0:
+        del buffer[:overflow]
+        return True
+    return False
+
+
+def _clipped_tail(buffer: bytearray, *, dropped: bool) -> bytes:
+    # 잘린 첫 줄은 버린다 — 비밀 값의 뒷조각만 남으면 스크러버가 알아보지 못한다.
+    return bytes(buffer).partition(b"\n")[2] if dropped else bytes(buffer)
 
 
 def _run_with_bounded_output(
@@ -776,56 +736,64 @@ def _run_with_bounded_output(
     *,
     cwd: Path | None,
     env: dict[str, str],
-    capture: bool,
-    capture_stderr: bool,
+    keep_stdout_tail: bool,
     stdout_limit: int | None,
-) -> tuple[str, int, bytes | None, bytes | None, bool]:
-    """Bound captured child streams while draining every byte needed to avoid pipe stalls."""
+) -> tuple[bytes, int, bytes, bool]:
+    """두 스트림을 끝까지 drain하며 상한만 남긴다(파이프가 막히지 않는다).
+
+    stderr와 증거용 stdout(``keep_stdout_tail``)은 **끝** ``_OUTPUT_TAIL_LIMIT`` 바이트를
+    남긴다 — 원인은 대개 마지막 줄이다. 데이터 stdout은 앞에서부터 ``stdout_limit``까지
+    받고, 넘치면 truncated를 알린다(JSON 문서는 앞부터 읽어야 한다).
+    """
 
     process = subprocess.Popen(
         list(args),
         cwd=str(cwd) if cwd is not None else "/",
         env=env,
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-        stderr=subprocess.PIPE if capture_stderr else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     captured_stderr = bytearray()
+    stderr_dropped = False
 
     def drain_stderr() -> None:
+        nonlocal stderr_dropped
         assert process.stderr is not None
         while chunk := process.stderr.read(65_536):
-            remaining = _FORENSIC_CAPTURE_LIMIT - len(captured_stderr)
-            if remaining > 0:
-                captured_stderr.extend(chunk[:remaining])
+            stderr_dropped |= _tail_ring(captured_stderr, chunk, limit=_OUTPUT_TAIL_LIMIT)
 
-    reader = (
-        threading.Thread(target=drain_stderr, daemon=True) if capture_stderr else None
-    )
-    if reader is not None:
-        reader.start()
+    reader = threading.Thread(target=drain_stderr, daemon=True)
+    reader.start()
     captured_stdout = bytearray()
+    stdout_dropped = False
     stdout_truncated = False
-    if capture:
-        assert process.stdout is not None
-        while chunk := process.stdout.read(65_536):
-            if stdout_limit is None:
-                captured_stdout.extend(chunk)
-                continue
-            remaining = stdout_limit - len(captured_stdout)
-            if remaining > 0:
-                captured_stdout.extend(chunk[:remaining])
-            if len(chunk) > remaining:
-                stdout_truncated = True
-        stdout_bytes: bytes | None = bytes(captured_stdout)
-        stdout = stdout_bytes.decode("utf-8", errors="replace")
-    else:
-        stdout = ""
-        stdout_bytes = None
+    assert process.stdout is not None
+    while chunk := process.stdout.read(65_536):
+        if keep_stdout_tail:
+            stdout_dropped |= _tail_ring(captured_stdout, chunk, limit=_OUTPUT_TAIL_LIMIT)
+            continue
+        if stdout_limit is None:
+            captured_stdout.extend(chunk)
+            continue
+        remaining = stdout_limit - len(captured_stdout)
+        if remaining > 0:
+            captured_stdout.extend(chunk[:remaining])
+        if len(chunk) > remaining:
+            stdout_truncated = True
     returncode = process.wait()
-    if reader is not None:
-        reader.join()
-    return stdout, returncode, bytes(captured_stderr) if capture_stderr else None, stdout_bytes, stdout_truncated
+    reader.join()
+    stdout = (
+        _clipped_tail(captured_stdout, dropped=stdout_dropped)
+        if keep_stdout_tail
+        else bytes(captured_stdout)
+    )
+    return (
+        stdout,
+        returncode,
+        _clipped_tail(captured_stderr, dropped=stderr_dropped),
+        stdout_truncated,
+    )
 
 
 def _compose(
@@ -836,11 +804,9 @@ def _compose(
     files: tuple[Path, ...],
     arguments: tuple[str, ...],
     capture: bool = False,
+    capture_output_limit: int | None = None,
     environment: dict[str, str] | None = None,
     failure_phase: str | None = None,
-    failure_exit_diagnostics: dict[int, str] | None = None,
-    failure_evidence_path: Path | None = None,
-    output_evidence_path: Path | None = None,
 ) -> str:
     command = [
         "/usr/bin/docker",
@@ -859,31 +825,9 @@ def _compose(
             cwd=root,
             env=environment,
             capture=capture,
-            failure_exit_diagnostics=failure_exit_diagnostics,
-            capture_failure_stderr=(
-                failure_evidence_path is not None
-                and os.environ.get(_FORENSIC_CAPTURE_ENV) == "1"
-            ),
-            capture_output_limit=(
-                _COMPOSE_CONFIG_OUTPUT_LIMIT if output_evidence_path is not None else None
-            ),
+            capture_output_limit=capture_output_limit,
         )
     except _PhaseError as error:
-        if failure_evidence_path is not None and error.phase == "runtime_command_failed":
-            _write_compose_failure_evidence(
-                failure_evidence_path,
-                returncode=error.returncode,
-                stderr=error.stderr,
-            )
-        if (
-            output_evidence_path is not None
-            and error.phase == "runtime_command_output_too_large"
-        ):
-            _write_compose_output_evidence(
-                output_evidence_path,
-                output=error.stdout or b"",
-                truncated=error.stdout_truncated,
-            )
         if failure_phase is not None and error.phase in {
             "runtime_command_failed",
             "runtime_command_output_too_large",
@@ -893,136 +837,55 @@ def _compose(
                 diagnostic=error.diagnostic,
                 returncode=error.returncode,
                 stderr=error.stderr,
-                # 증거 stdout을 여기서 떨어뜨리면 바깥 handler가 쓸 것이 없다.
                 stdout=error.stdout,
+                stdout_truncated=error.stdout_truncated,
             )
         raise
 
 
-def _scrub_forensic_bytes(raw: bytes) -> bytes:
-    """캡처 바이트에서 raw 비밀값 자체를 제거한다(적대 리뷰 R1-S9).
+#: 이 실행이 만든 비밀. `_random_secret`이 만들 때 스스로 올린다 — 목록을 따로 두면
+#: 새 비밀이 빠진다(옛 레지스트리는 열한 개를 놓쳤다).
+_GENERATED_SECRETS: list[str] = []
 
-    크기 제한은 유출 총량만 줄일 뿐 내용을 방어하지 못한다 — 자식 프로세스가
-    비밀값을 stderr/stdout에 에코하면 opt-in forensic leaf(0600 root)에 그대로
-    남는다. 여기서 _RAW_ENV_NAMES의 현재 값을 마커로 치환한다. 8바이트 미만
-    값은 치환하지 않는다(우연 일치로 출력이 훼손되는 것 방지 — 실제 비밀은
-    전부 생성 토큰이라 그보다 길다).
+
+def _scrub(text: str) -> str:
+    """Manager `.env`·프로세스 환경·이 실행이 만든 비밀을 가린다(ADR-51 잃는 보장 G)."""
+
+    return scrub_failure_text(text, _ROOT / ".env", _GENERATED_SECRETS)
+
+
+def _output_section(label: str, raw: bytes | None) -> str:
+    text = raw.decode("utf-8", errors="replace").strip() if raw else ""
+    return f"\n--- {label} (tail) ---\n{text}" if text else ""
+
+
+def _failure_text(error: BaseException, *, progress_phase: str) -> str:
+    """실패 하나를 사람이 읽는 텍스트 하나로 모은다. 가리기 전 원문이다."""
+
+    lines = [f"M05 isolated run failed during {progress_phase}"]
+    if isinstance(error, _PhaseError):
+        lines.append(f"phase: {error.phase}")
+        if error.diagnostic:
+            lines.append(f"diagnostic: {error.diagnostic}")
+        if error.returncode is not None:
+            lines.append(f"returncode: {error.returncode}")
+    text = "\n".join(lines)
+    if isinstance(error, _PhaseError):
+        text += _output_section("stderr", error.stderr)
+        text += _output_section("stdout", error.stdout)
+    return text + "\n" + "".join(traceback.format_exception(error))
+
+
+def _emit_failure(error: BaseException, *, progress_phase: str) -> None:
+    """가린 실패 텍스트를 stderr에 한 번 낸다. launcher가 root 0600 `stderr.log`로 받는다.
+
+    이 출력이 실패해도 receipt와 phase는 바뀌지 않는다.
     """
 
-    for name in _RAW_ENV_NAMES:
-        value = os.environ.get(name)
-        if value and len(value) >= 8:
-            raw = raw.replace(
-                value.encode("utf-8"), b"[scrubbed:" + name.encode("ascii") + b"]"
-            )
-    # 이 harness의 비밀 대부분은 os.environ이 아니라 `env=` kwarg 딕셔너리로만
-    # 자식에게 전달된다(적대 리뷰: environ 기반 scrub은 프로덕션에서 no-op였다).
-    # 비밀을 만들어 넘기는 지점이 여기 레지스트리에 등록한다.
-    for name, value in _FORENSIC_SCRUB_VALUES.items():
-        if value and len(value) >= 8:
-            raw = raw.replace(
-                value.encode("utf-8"), b"[scrubbed:" + name.encode("ascii") + b"]"
-            )
-    return raw
-
-
-_FORENSIC_SCRUB_VALUES: dict[str, str] = {}
-
-
-def _register_forensic_scrub_environment(environment: dict[str, str]) -> None:
-    """`env=` kwarg로 자식에게 넘기는 _RAW_ENV_NAMES 비밀값을 scrub 대상에 올린다."""
-
-    for name in _RAW_ENV_NAMES:
-        value = environment.get(name)
-        if value:
-            _FORENSIC_SCRUB_VALUES[name] = value
-
-
-def _register_forensic_scrub_secrets(secrets_by_name: dict[str, str]) -> None:
-    """생성 즉시 호출한다 — 등록이 늦으면 이른 phase에서 scrub이 항등이 된다.
-
-    env dict 등록과 달리 필터가 없다: 여기 들어오는 것은 전부 이 run이 만든
-    비밀이다(식별자/URL 같은 진단 가치 있는 값은 넣지 않는다).
-    """
-
-    for name, value in secrets_by_name.items():
-        if value:
-            _FORENSIC_SCRUB_VALUES[name] = value
-
-
-def _write_compose_failure_evidence(
-    path: Path, *, returncode: int | None, stderr: bytes | None
-) -> None:
-    """Persist fixed failure metadata; raw stderr requires an explicit root forensic opt-in."""
-
-    if not isinstance(returncode, int) or returncode < 1 or returncode > 255:
-        safe_returncode: int | None = None
-    else:
-        safe_returncode = returncode
-    _write_private_json(
-        path,
-        {"kind": "compose_config", "returncode": safe_returncode, "version": 1},
-    )
-    if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1" or stderr is None:
-        return
-    _write_private_bytes(
-        path.with_suffix(".stderr"), _scrub_forensic_bytes(stderr)[:_FORENSIC_CAPTURE_LIMIT] or b"\n"
-    )
-
-
-def _write_command_failure_evidence(
-    path: Path,
-    *,
-    returncode: int | None,
-    stderr: bytes | None,
-    stdout: bytes | None = None,
-) -> None:
-    """Persist a bounded generic external-command receipt without command or env disclosure.
-
-    stderr뿐 아니라 **stdout도** 남긴다. 많은 러너가 진짜 진단을 stdout으로 낸다 —
-    Playwright는 어느 spec의 어떤 단언이 깨졌는지를 거기 쓰고, stderr에는 npm의
-    lifecycle 오류만 남는다. 2026-09-03 e2e22가 그래서 1시간 39분을 태우고
-    "UI 명령이 1로 끝났다"만 남겼다. 두 스트림 모두 같은 scrub과 같은 상한을
-    지나고 root 0600 leaf를 벗어나지 않는다.
-    """
-
-    if not isinstance(returncode, int) or returncode < 1 or returncode > 255:
-        safe_returncode: int | None = None
-    else:
-        safe_returncode = returncode
-    _write_private_json(
-        path,
-        {"kind": "runtime_command", "returncode": safe_returncode, "version": 1},
-    )
-    if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1":
-        return
-    for suffix, raw in ((".stderr", stderr), (".stdout", stdout)):
-        if raw is None:
-            continue
-        _write_private_bytes(
-            path.with_suffix(suffix),
-            _scrub_forensic_bytes(raw)[:_FORENSIC_CAPTURE_LIMIT] or b"\n",
-        )
-
-
-def _write_compose_output_evidence(
-    path: Path, *, output: str | bytes, truncated: bool = False
-) -> None:
-    """Keep a fixed parse-failure marker; raw successful-command output remains opt-in only."""
-
-    _write_private_json(
-        path,
-        {
-            "kind": "compose_config_output",
-            "truncated": truncated,
-            "version": 1,
-        },
-    )
-    if os.environ.get(_FORENSIC_CAPTURE_ENV) != "1":
-        return
-    raw = output if isinstance(output, bytes) else output.encode("utf-8", errors="replace")
-    raw = _scrub_forensic_bytes(raw)[:_FORENSIC_CAPTURE_LIMIT]
-    _write_private_bytes(path.with_suffix(".stdout"), raw or b"\n")
+    try:
+        print(_scrub(_failure_text(error, progress_phase=progress_phase)), file=sys.stderr, flush=True)
+    except Exception:  # noqa: BLE001, S110 - diagnostics must not change the receipt
+        pass
 
 
 def _unlink_private(path: Path) -> None:
@@ -1166,7 +1029,9 @@ def _cleanup_temporary_resources(
 
 
 def _random_secret() -> str:
-    return secrets.token_urlsafe(36)
+    value = secrets.token_urlsafe(36)
+    _GENERATED_SECRETS.append(value)
+    return value
 
 
 def _pbkdf2_password_hash(value: str) -> str:
@@ -1178,87 +1043,6 @@ def _pbkdf2_password_hash(value: str) -> str:
     digest = hashlib.pbkdf2_hmac("sha256", value.encode("utf-8"), salt, 310_000)
     encode = lambda raw: base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
     return f"pbkdf2_sha256$310000${encode(salt)}${encode(digest)}"
-
-
-def _map_fresh_init_diagnostic_runner() -> str:
-    """Map source 오류를 원문 없이 고정 종료 코드로만 분류하는 one-shot runner."""
-
-    error_codes = {
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN is required": 41,
-        "installed application Alembic root is unavailable": 42,
-        "installed active Alembic graph head is not exactly 300": 42,
-        "fresh 300 migration cannot verify migrator session": 43,
-        "fresh 300 migration must connect as restricted migrator": 44,
-        "fresh 300 migration requires no existing public.alembic_version table": 45,
-        "fresh 300 pre-root state cannot be attested": 45,
-        "fresh 300 pre-root state is not exact": 45,
-        "fresh 300 migration did not produce exact raw revision 300": 46,
-        "fresh 300 migration destination facet does not match baseline": 46,
-    }
-    runtime_error_codes = {
-        "fresh 300 destination reference manifest is invalid": 51,
-        "fresh 300 destination artifact map is invalid": 51,
-        "fresh 300 destination facet SQL is invalid": 51,
-        "fresh 300 destination facet does not match immutable reference": 51,
-        "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE must be exactly true or false": 52,
-        "Alembic external connection must be a SQLAlchemy Connection": 52,
-        "300_schema_baseline is forward-only — older Alembic lineages are unsupported": 54,
-    }
-    return "\n".join(
-        (
-            "import asyncio",
-            "import runpy",
-            "module = runpy.run_path(",
-            "    '/usr/local/bin/ktm-application-schema-fresh-300',",
-            "    run_name='m05_map_fresh_init_diagnostic',",
-            ")",
-            "try:",
-            "    if module['_parse_args'](['migrate']) != ('migrate', None):",
-            "        raise SystemExit(127)",
-            "    asyncio.run(module['_migrate']())",
-            "except module['FreshMigrationError'] as error:",
-            f"    raise SystemExit({error_codes!r}.get(str(error), 127))",
-            "except BaseException as error:",
-            "    identity = (type(error).__module__, type(error).__name__)",
-            "    codes = {",
-            "        ('kortravelmap.infra.runtime_privileges',",
-            "         'RuntimePrivilegeReconciliationError'): 50,",
-            "        ('alembic.util.exc', 'CommandError'): 47,",
-            "        ('sqlalchemy.exc', 'OperationalError'): 49,",
-            "        ('sqlalchemy.exc', 'ProgrammingError'): 49,",
-            "        ('sqlalchemy.exc', 'SQLAlchemyError'): 49,",
-            "    }",
-            "    if identity == ('builtins', 'RuntimeError'):",
-            "        message = str(error)",
-            f"        runtime_codes = {runtime_error_codes!r}",
-            "        if message in runtime_codes:",
-            "            raise SystemExit(runtime_codes[message])",
-            "        if message.startswith('300 baseline reference') or message.startswith(",
-            "            '300 baseline application-',",
-            "        ):",
-            "            raise SystemExit(53)",
-            "        if message.startswith('0236-to-300 ') or message.startswith(",
-            "            '0236 application schema',",
-            "        ) or message.startswith('generic Alembic stamp'):",
-            "            raise SystemExit(54)",
-            "        if message.startswith('application metadata maps') or message.startswith(",
-            "            'alembic unmapped-table exclusions',",
-            "        ):",
-            "            raise SystemExit(55)",
-            "        raise SystemExit(48)",
-            "    raise SystemExit(codes.get(identity, 127))",
-        )
-    )
-
-
-def _map_fresh_init_diagnostic_entrypoint() -> str:
-    encoded = base64.b64encode(
-        _map_fresh_init_diagnostic_runner().encode("utf-8")
-    ).decode("ascii")
-    return (
-        "import base64; exec(compile(base64.b64decode("
-        f"{encoded!r}), '<m05-map-fresh-init>', 'exec'))"
-    )
 
 
 def _free_ports(transaction: str) -> dict[str, int]:
@@ -1416,17 +1200,23 @@ def _http_json(
         with request_opener(request, timeout=10) as response:
             raw = response.read(2_000_000)
     except HTTPError as error:
-        # HTTP status와 loopback transport 오류를 같은 원문 없는 enum으로 합치면
-        # 다음 one-shot 후보가 어느 startup 경계를 보정해야 하는지 알 수 없다.
-        # 404("아직 없음")는 호출자가 요청할 때만 별도 enum으로 분리한다 —
-        # 그래야 대기 루프가 404만 재시도하고 401/403/5xx는 즉시 종료한다.
+        # HTTP status와 loopback transport 오류를 같은 enum으로 합치면 다음 one-shot
+        # 후보가 어느 startup 경계를 보정해야 하는지 알 수 없다. 404("아직 없음")는
+        # 호출자가 요청할 때만 별도 enum으로 분리한다 — 그래야 대기 루프가 404만 재시도하고
+        # 401/403/5xx는 즉시 종료한다. status와 짧은 body는 실패 텍스트(stderr)에만 간다 —
+        # receipt에는 phase만 실린다(ADR-51 잃는 보장 G-3).
         if not_found_phase is not None and error.code == 404:
             _fail(not_found_phase)
-        _fail(http_error_phase or failure_phase)
-    except (OSError, URLError):
-        # 원문 HTTP status/body/socket error는 receipt에 기록하지 않는다. 대신 caller가
-        # 고정 enum을 주면 다음 immutable candidate의 보정 범위만 식별할 수 있다.
-        _fail(failure_phase)
+        try:
+            body_head = error.read(512).decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 - the status alone still says enough
+            body_head = ""
+        _fail(
+            http_error_phase or failure_phase,
+            diagnostic=f"HTTP {error.code} from {parsed.path}: {body_head}".rstrip(": "),
+        )
+    except (OSError, URLError) as error:
+        _fail(failure_phase, diagnostic=f"{parsed.path}: {error}")
     try:
         value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -1791,56 +1581,13 @@ def _canonical_json(value: object) -> bytes:
     ).encode("utf-8")
 
 
-# `pair_contract_invalid`를 내는 지점이 15곳인데 전부 진단 없이 같은 문자열만
-# 냈다. 2026-09-02에 그 때문에 실패 지점을 traceback으로 역추적해야 했다 —
-# 71분짜리 rebuild를 태운 **뒤에** 몇 초 만에 거부당하고도 이유를 몰랐다.
-#
-# 이 트랙의 확립된 절차대로 원문을 노출하는 대신 **비밀 없는 고정 어휘**를 둔다.
-# 값은 전부 이 파일이 쓴 상수라 호스트 상태·경로·비밀을 담지 않는다.
-#: preflight가 stdout으로 낼 수 있는 source-materialization 문구의 접두.
-#:
-#: `pinned_runtime_sources`의 `DeploymentContractError`는 전부 이 접두로 시작하는
-#: **컴파일 시점 리터럴**이다 — 호스트 상태나 경로가 섞일 수 없다. 문구를 열거하지
-#: 않고 접두로 거르므로, 새 문구가 생겨도 이 상수가 뒤처지지 않는다.
-_SOURCE_DIAGNOSTIC_PREFIX = "pinned runtime source "
-
-#: 소비된 identity로 다시 부를 때 내는 고정 진단. 값이 이 파일의 상수라 호스트 상태나
-#: 비밀이 섞일 수 없다 — 어휘 규약(위 주석) 그대로다.
+# `pair_contract_invalid`를 내는 지점은 전부 diagnostic으로 이유를 싣는다. 예전에는 닫힌
+# 어휘로 거른 값만 preflight가 냈다 — ADR-51 잃는 보장 G-3부터는 가린 첫 줄을 낸다.
+#: 소비된 identity로 다시 부를 때 내는 진단.
 _CONSUMED_DIAGNOSTIC = (
     "execution identity already consumed by a completed acceptance run;"
     " rotate or rebind the runtime pair to obtain a new identity"
 )
-
-_PAIR_DIAGNOSTICS: frozenset[str] = frozenset(
-    {
-        "pair contract is unreadable",
-        "pair contract envelope schema is invalid",
-        "pair entry schema is invalid",
-        "pair digest field is not sha256",
-        "pair source blob is unreadable at the contract revision",
-        "pair source blob is not canonical json",
-        "pair source canonical digest differs from the contract",
-        "pair service entry is invalid",
-        "pair contract version is unsupported",
-        "pair source blob digest differs from the pinned release",
-        "Map service provenance contract is unreadable",
-        "Map service release revision is not a 40-hex commit",
-        # `_source_pair_preflight`가 committed `deploy-status.json`과 대조하며 내는
-        # 넷(ADR-51 D-1). 같은 phase를 내므로 같은 어휘에 들어와야 preflight가 이것도
-        # 내보인다.
-        "committed deploy status unavailable",
-        "last deploy did not commit; rerun the pinned rebuild",
-        "committed deploy pinset differs from the current release",
-        "derived application head differs from the committed deploy",
-    }
-)
-
-#: preflight가 stdout으로 **내보내도 되는** 진단 전체.
-#:
-#: `_PAIR_DIAGNOSTICS`에 소비 진단을 섞지 않는다 — 그 집합은 이름 그대로 pair 실패
-#: 어휘이고, "그 안의 모든 문자열이 실제로 발신된다"를 기존 테스트가 양방향으로
-#: 결박한다. 다른 phase의 진단을 넣으면 그 결박이 거짓이 된다.
-_SAFE_DIAGNOSTICS: frozenset[str] = _PAIR_DIAGNOSTICS | frozenset({_CONSUMED_DIAGNOSTIC})
 
 
 def _sha256_text(value: object) -> str:
@@ -2095,12 +1842,15 @@ def _source_pair_preflight() -> tuple[
     # 대조한다.
     try:
         deployed = read_deploy_status(deploy_status_path(state_paths.state_root))
-    except (DeploymentContractError, OSError):
-        deployed = None
+    except (DeploymentContractError, OSError) as error:
+        _fail(
+            "pair_contract_invalid",
+            diagnostic=f"committed deploy status unavailable: {error}",
+        )
     if deployed is None:
         _fail(
             "pair_contract_invalid",
-            diagnostic="committed deploy status unavailable",
+            diagnostic="committed deploy status unavailable: no deploy has been recorded",
         )
     if deployed.state != "committed":
         _fail(
@@ -2177,12 +1927,14 @@ def _rotation_pair_digests(mapping: object, *, map_revision: str) -> int:
                     env=_SAFE_SUBPROCESS_ENV,
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                     check=False,
                 )
                 if blob.returncode != 0:
+                    cause = _preflight_line(blob.stderr.decode("utf-8", errors="replace"))
                     print(
-                        f"rotation Map surface is unreadable at the target revision: {name}",
+                        f"rotation Map surface is unreadable at the target revision: {name}"
+                        + (f" ({cause})" if cause else ""),
                         flush=True,
                     )
                     return 1
@@ -2873,14 +2625,11 @@ def verify_leaf(leaf: Path) -> int:
 def preflight(expected_revision: str) -> int:
     """launcher용 비소비 source-materialization preflight; terminal/ledger를 쓰지 않는다.
 
-    거부 이유를 **stdout으로 낸다.** 종전에는 phase도 diagnostic도 전부 삼키고
-    exit 1만 냈다 — 2026-09-02에 그 때문에 71분짜리 rebuild를 태운 뒤 몇 초 만에
-    거부당하고도 이유를 몰라 traceback으로 역추적해야 했다.
-
-    내보내는 값은 **닫힌 어휘로 걸러서** 낸다. 이 경로는 아직 output leaf가 없어
-    forensic scrub 채널을 못 쓰고(leaf는 launcher가 preflight **뒤에** 만든다),
-    stdout은 launcher가 받는 자리다. allowlist 밖의 문자열은 phase만 낸다 —
-    호스트 상태나 경로가 섞여 나가는 경로를 열지 않는다.
+    거부 이유를 **stdout 한 줄로** 낸다. 종전에는 phase도 diagnostic도 삼키고 exit 1만 냈다가
+    (2026-09-02, 71분짜리 rebuild 뒤 이유 모를 거부), 닫힌 어휘로 거른 값만 냈다(e2e23은 그
+    어휘 밖이라 계측 스크립트를 따로 붙였다). ADR-51 잃는 보장 G-3부터는 어떤 예외든 가린
+    첫 줄을 낸다 — launcher가 이 줄을 journald로 옮기므로 요약만 낸다. 둘째 줄부터는 명령과
+    원문 tail이다.
     """
 
     try:
@@ -2888,31 +2637,24 @@ def preflight(expected_revision: str) -> int:
         _assert_current_m05_execution_is_runnable(expected_revision)
         _source_pair_preflight()
     except _PhaseError as error:
-        detail = error.diagnostic if error.diagnostic in _SAFE_DIAGNOSTICS else None
-        print(error.phase if detail is None else f"{error.phase}: {detail}", flush=True)
-        return 1
-    except (OSError, RuntimeError, ValueError) as error:
-        # 종전에는 여기서 exit 1만 냈다. launcher는 그래서
-        # `M05 isolated source pair preflight is not runnable:` 뒤에 **빈칸**을
-        # 찍었고, 2026-09-03 e2e23이 그 침묵 때문에 계측 스크립트를 따로 붙여서야
-        # 원인(`pinned runtime source worktree is unsafe`)을 알 수 있었다 —
-        # 이 함수의 독스트링이 "거부 이유를 stdout으로 낸다"고 약속하는데도.
-        #
-        # 내용은 여전히 닫아 둔다. 예외 **타입 이름**은 호스트 상태를 담지 않으므로
-        # 항상 낼 수 있고, 메시지는 Manager 자신이 쓴 고정 문구일 때만 낸다 —
-        # `pinned runtime source `로 시작하는 문자열은 `pinned_runtime_sources`의
-        # 리터럴에만 쓰이고 **첫 줄**은 상수다 — 둘째 줄부터는 명령과 원문 tail(ADR-51
-        # G-2)이라 경로가 섞이므로 첫 줄만 낸다. 문구를 **열거하지 않으므로** 새 문구가
-        # 생겨도 드리프트하지 않는다(AGENTS.md DO NOT 15).
-        message = str(error).partition("\n")[0]
-        detail = message if message.startswith(_SOURCE_DIAGNOSTIC_PREFIX) else None
         print(
-            f"source_materialization: {type(error).__name__}"
-            + (f": {detail}" if detail is not None else ""),
+            error.phase
+            if not error.diagnostic
+            else f"{error.phase}: {_preflight_line(error.diagnostic)}",
+            flush=True,
+        )
+        return 1
+    except Exception as error:  # noqa: BLE001 - every refusal says why, in one scrubbed line
+        print(
+            f"source_materialization: {type(error).__name__}: {_preflight_line(str(error))}",
             flush=True,
         )
         return 1
     return 0
+
+
+def _preflight_line(text: str) -> str:
+    return _scrub(text.strip().partition("\n")[0])
 
 
 def _pinvi_manager_admission_environment(
@@ -3220,7 +2962,6 @@ def _assert_rendered_loopback_tcp_publish(
     container_port: int,
     host_port: int,
     evidence_path: Path | None = None,
-    parse_failure_evidence_path: Path | None = None,
 ) -> None:
     """Fail before ledger claim when Compose cannot render the required loopback publish."""
 
@@ -3229,10 +2970,15 @@ def _assert_rendered_loopback_tcp_publish(
         services = value["services"]
         item = services[service]
         ports = item["ports"]
-    except (KeyError, TypeError, json.JSONDecodeError):
-        if parse_failure_evidence_path is not None:
-            _write_compose_output_evidence(parse_failure_evidence_path, output=rendered)
-        _fail("runtime_loopback_publish_config_invalid")
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        # 렌더된 문서는 비밀이 보간된 설정이라 싣지 않는다 — 크기와 어디서 깨졌는지만.
+        _fail(
+            "runtime_loopback_publish_config_invalid",
+            diagnostic=(
+                f"rendered config ({len(rendered)} chars) has no {service}.ports: "
+                f"{type(error).__name__}"
+            ),
+        )
     if not isinstance(ports, list) or not all(isinstance(port, Mapping) for port in ports):
         _fail("runtime_loopback_publish_config_invalid")
     safe_ports = _safe_rendered_port_evidence(ports)
@@ -3403,7 +3149,6 @@ def main(expected_revision: str, output: Path) -> int:
     ).execution_identity_sha256
     plan: M05IsolatedHarnessPlan | None = None
     claim_attempted = False
-    failure_diagnostic: str | None = None
     map_cleanup: _CleanupProject | None = None
     pinvi_cleanup: _CleanupProject | None = None
     private_files: tuple[Path, ...] = ()
@@ -3516,19 +3261,6 @@ def main(expected_revision: str, output: Path) -> int:
         )
         manual_feature_token = _random_secret()
         admin_password = _random_secret()
-        # 비밀은 생성 즉시 scrub 레지스트리에 올린다 — 등록이 body 진입 이후로
-        # 미뤄지면 admission~pinvi_runtime 구간에서 scrub이 항등함수가 되어,
-        # forensic 주석이 주장하는 통제가 그 구간에 존재하지 않는다(적대 리뷰).
-        _register_forensic_scrub_secrets(
-            {
-                "M05_MAP_ADMIN_PROXY_SECRET": map_secret,
-                "M05_FEATURE_REQUEST_TOKEN": feature_request_token,
-                "M05_RECONCILIATION_READ_TOKEN": read_token,
-                "M05_RECONCILIATION_ACK_TOKEN": ack_token,
-                "M05_MANUAL_FEATURE_TOKEN": manual_feature_token,
-                "M05_PINVI_PASSWORD": admin_password,
-            }
-        )
         bootstrap_email = f"m05-{transaction[:12]}@example.com"
         _write_private_json(
             bootstrap, {"email": bootstrap_email, "password": admin_password}
@@ -3550,15 +3282,6 @@ def main(expected_revision: str, output: Path) -> int:
             _random_secret(),
             _random_secret(),
             _random_secret(),
-        )
-        _register_forensic_scrub_secrets(
-            {
-                "MAP_POSTGRES_PASSWORD": password,
-                "MAP_MIGRATOR_PASSWORD": migrator_password,
-                "MAP_API_RUNTIME_PASSWORD": api_password,
-                "MAP_DAGSTER_RUNTIME_PASSWORD": dagster_password,
-                "MAP_DAGSTER_METADATA_PASSWORD": metadata_password,
-            }
         )
         map_bootstrap_dsn = (
             f"postgresql://kor_travel_map:{password}@postgres:5432/kor_travel_map"
@@ -3630,13 +3353,6 @@ def main(expected_revision: str, output: Path) -> int:
         # API에는 digest capability만, frontend에는 raw manual-create credential만 전달한다.
         map_override_lines = [
             "services:",
-            "  db-application-schema-fresh-300:",
-            "    entrypoint:",
-            "      - /usr/local/bin/python",
-            "      - -I",
-            "      - -c",
-            "      - >-",
-            f"        {_map_fresh_init_diagnostic_entrypoint()}",
             "  api:",
             "    env_file: !reset []",
             "    labels:",
@@ -3697,15 +3413,13 @@ def main(expected_revision: str, output: Path) -> int:
                 files=map_files,
                 arguments=("config", "--format", "json"),
                 capture=True,
+                capture_output_limit=_COMPOSE_CONFIG_OUTPUT_LIMIT,
                 failure_phase="runtime_loopback_publish_config_invalid",
-                failure_evidence_path=runtime / "rendered-loopback-publish-error.json",
-                output_evidence_path=runtime / "rendered-loopback-publish-output.json",
             ),
             service="api",
             container_port=13701,
             host_port=ports["map_api"],
             evidence_path=runtime / "rendered-loopback-publish.json",
-            parse_failure_evidence_path=runtime / "rendered-loopback-publish-output.json",
         )
         # source pair와 rendered runtime topology가 정합할 때만 one-shot ledger를
         # 소비한다. O_EXCL create 뒤 write/fsync 실패도 execution을 소비한 것으로 본다.
@@ -3862,7 +3576,6 @@ def main(expected_revision: str, output: Path) -> int:
                 "db-application-schema-fresh-300",
             ),
             failure_phase="map_fresh_init_failed",
-            failure_exit_diagnostics=_MAP_FRESH_INIT_EXIT_DIAGNOSTICS,
         )
         _compose(
             root=map_root,
@@ -3880,7 +3593,6 @@ def main(expected_revision: str, output: Path) -> int:
                 "frontend",
             ),
             failure_phase="map_application_start_failed",
-            failure_evidence_path=runtime / "map-application-up-error.json",
         )
         # ``docker compose up --wait``가 container health를 돌려도 host publish
         # binding은 별도 runtime 경계다. HTTP retry보다 먼저 generic binding을
@@ -3964,23 +3676,12 @@ def main(expected_revision: str, output: Path) -> int:
             compose_extra_file=pinvi_override,
         )
         for action in ("build", "up"):
-            try:
-                _command(
-                    str(pinvi_root / "scripts/docker-app.sh"),
-                    action,
-                    cwd=pinvi_root,
-                    env=environment,
-                    capture_failure_stderr=os.environ.get(_FORENSIC_CAPTURE_ENV) == "1",
-                )
-            except _PhaseError as error:
-                if error.phase == "runtime_command_failed":
-                    _write_command_failure_evidence(
-                        runtime / f"pinvi-runtime-{action}-error.json",
-                        returncode=error.returncode,
-                        stderr=error.stderr,
-                        stdout=error.stdout,
-                    )
-                raise
+            _command(
+                str(pinvi_root / "scripts/docker-app.sh"),
+                action,
+                cwd=pinvi_root,
+                env=environment,
+            )
         # 종전의 `up --force-recreate app-api app-web` 재기동은 제거했다:
         # docker-app.sh up이 이미 같은 override 세트로 기동·health까지 확인하고,
         # 재기동은 startup preflight의 Map lease를 두 번째로 소비해 첫 lease와의
@@ -4083,7 +3784,6 @@ def main(expected_revision: str, output: Path) -> int:
             "PINVI_M04_LIVE_EMAIL": bootstrap_email,
             "PINVI_M04_LIVE_PASSWORD": admin_password,
         }
-        _register_forensic_scrub_environment(m04_environment)
         _command(
             sys.executable,
             "-I",
@@ -4176,7 +3876,6 @@ def main(expected_revision: str, output: Path) -> int:
             "PINVI_M05_LIVE_REPLACEMENT_FEATURE_ID": fixture["provider_feature_id"],
             "PINVI_M05_LIVE_IMPACT_COUNT": str(impact_count),
         }
-        _register_forensic_scrub_environment(m05_environment)
         _command(
             sys.executable,
             "-I",
@@ -4279,71 +3978,15 @@ def main(expected_revision: str, output: Path) -> int:
         }
         completed = True
     except _PhaseError as error:
-        # 파일명은 실패 순간의 **진행 phase**(pinvi_runtime 등)에서 딴다 —
-        # error.phase는 대부분 runtime_command_failed 상수라 무정보다(적대 리뷰).
-        progress_phase = phase
+        # 텍스트는 실패 순간의 **진행 phase**(pinvi_runtime 등)를 말한다 — error.phase는
+        # 대부분 runtime_command_failed 상수라 무정보다(적대 리뷰).
+        _emit_failure(error, progress_phase=phase)
         phase = error.phase
-        failure_diagnostic = error.diagnostic
-        if os.environ.get(_FORENSIC_CAPTURE_ENV) == "1" and (
-            error.stderr or error.returncode is not None
-        ):
-            # 증거 기록 실패가 결과/phase를 바꾸면 안 된다. output leaf는
-            # launcher가 root 0700으로 만들었으므로 초기 실패에도 존재한다.
-            # returncode만 있는 실패도 고정 영수증은 남긴다(.stderr는
-            # _write_command_failure_evidence가 forensic 게이트로 분리).
-            try:
-                _write_command_failure_evidence(
-                    output
-                    / f"failed-{_public_terminal_phase(progress_phase)}-command.json",
-                    returncode=error.returncode,
-                    # scrub은 evidence writer 내부에서 수행된다.
-                    stderr=error.stderr,
-                    # 러너의 진짜 진단은 대개 stdout에 있다(Playwright 등).
-                    stdout=error.stdout,
-                )
-            except Exception:  # noqa: BLE001, S110 - evidence-only boundary
-                pass
-        if (
-            os.environ.get(_FORENSIC_CAPTURE_ENV) == "1"
-            and failure_diagnostic is not None
-            and failure_diagnostic not in _MAP_FRESH_INIT_REASONS
-        ):
-            # receipt에는 어휘 내 값만 실리므로 어휘 밖 원문은 여기서만 남긴다.
-            try:
-                _write_private_bytes(
-                    output
-                    / f"failed-{_public_terminal_phase(progress_phase)}-diagnostic.txt",
-                    _scrub_forensic_bytes(failure_diagnostic.encode("utf-8"))[
-                        :_FORENSIC_CAPTURE_LIMIT
-                    ]
-                    or b"\n",
-                )
-            except Exception:  # noqa: BLE001, S110 - evidence-only boundary
-                pass
-    # 이 boundary 밖으로 예외가 새면 launcher는 raw driver output 없이 결과 부재만
-    # 관측한다. 예상하지 못한 ordinary exception도 현재 allowlist 실행 경계로만
-    # 수렴하므로, raw detail 없이 다음 immutable candidate의 보정 범위를 좁힐 수 있다.
-    # BaseException은 잡지 않아 root 운영자가 중단 신호를 보낼 수 있게 둔다.
-    except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
-        # ordinary exception은 traceback이 통째로 사라져 phase 이름 하나로
-        # 원인을 재구성해야 했다(e2e9 실측: pinvi_runtime 구간 어딘가의
-        # 익명 예외에 격리 run 1회 소모). forensic 모드에서는 root 0600
-        # leaf에 traceback을 남긴다 — receipt/공개 표면에는 여전히 phase만
-        # 실린다. 통제의 실체(적대 리뷰가 교정): (1) leaf 자체가 root 0600,
-        # (2) format_exc는 frame locals를 싣지 않는다, (3) scrub은 생성
-        # 즉시 등록된 비밀(_register_forensic_scrub_secrets)에만 기여한다.
-        if os.environ.get(_FORENSIC_CAPTURE_ENV) == "1":
-            try:
-                _write_private_bytes(
-                    output
-                    / f"failed-{_public_terminal_phase(phase)}-exception.txt",
-                    _scrub_forensic_bytes(
-                        traceback.format_exc().encode("utf-8")
-                    )[:_FORENSIC_CAPTURE_LIMIT]
-                    or b"\n",
-                )
-            except Exception:  # noqa: BLE001, S110 - evidence-only boundary
-                pass
+    # 이 boundary 밖으로 예외가 새면 launcher는 결과 부재만 관측한다. 예상하지 못한
+    # ordinary exception도 가린 traceback 하나를 stderr에 남기고 현재 allowlist 실행 경계로
+    # 수렴한다. BaseException은 잡지 않아 root 운영자가 중단 신호를 보낼 수 있게 둔다.
+    except Exception as error:  # noqa: BLE001 - fixed terminal receipt boundary
+        _emit_failure(error, progress_phase=phase)
         phase = _public_terminal_phase(phase)
     finally:
         (
@@ -4415,8 +4058,6 @@ def main(expected_revision: str, output: Path) -> int:
                 # 아무 데도 닿지 않는다 — "조용히 넘기지 않는다"가 거짓이 된다.
                 # 그래서 receipt와 같은 방식으로 **durable marker**를 남긴다.
                 _write_consume_failure_marker(expected_revision, execution_identity)
-        for name in _RAW_ENV_NAMES:
-            os.environ.pop(name, None)
         result: dict[str, object] = {
             "harness": _HARNESS_NAME,
             "manager_source_revision": expected_revision,
@@ -4442,14 +4083,6 @@ def main(expected_revision: str, output: Path) -> int:
             # launcher_safe_result_unavailable로 지워졌다(적대 리뷰 MAJOR-1).
             **(result_hashes if completed else {}),
         }
-        # 어휘뿐 아니라 **phase**로도 잠근다. diagnostic은 _command/_compose의
-        # 범용 채널이라, 다른 호출부가 겹치는 단어를 쓰는 exit map을 넘기는 순간
-        # 무관한 실패에 fresh-init 사유가 붙는다(적대 리뷰 MAJOR-2).
-        if (
-            driver_phase == "map_fresh_init_failed"
-            and failure_diagnostic in _MAP_FRESH_INIT_REASONS
-        ):
-            result["map_fresh_init_reason"] = failure_diagnostic
         try:
             _write_private_json(output / "result.json", result)
         except (OSError, _PhaseError):

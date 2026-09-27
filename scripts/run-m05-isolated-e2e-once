@@ -2,39 +2,16 @@
 # M05 disposable bridge runtime을 정확히 한 번만 실행하는 root launcher.
 set -euo pipefail
 
-# 기본값은 **보존**이다. 27개 terminal 중 4개 candidate를 태운 원인(Compose
-# `ports: !reset` 한 줄)은 stderr 한 번이면 즉시 보였을 값이었고, 발견 수단도 root
-# forensic의 rendered config 열람이었다 — 관측 결핍이 후보 예산을 소비했다
-# (ktm-m03 docs/reports/map-stall-root-cause-2026-08-31.md §3 I-2, 적대 검증 CONFIRMED).
-# 보존 대상은 이미 bounded-drain한 stderr뿐이고 root 0600 leaf를 벗어나지 않는다 —
-# 공개 registry·tracked 문서·대화 기록으로 옮기지 않는 것이 규칙이다.
-forensic_capture=1
-if [[ "$#" == 3 && "$1" == "--forensic-capture" ]]; then
-  # 종전 opt-in 인자는 호환으로 유지한다(이미 기본값).
-  forensic_capture=1
-  shift
-elif [[ "$#" == 3 && "$1" == "--no-forensic-capture" ]]; then
-  forensic_capture=0
-  shift
-fi
+# 실패 원인은 driver가 가린 텍스트 하나로 stderr에 낸다(ADR-51 잃는 보장 G-3). 이 launcher는
+# 그것을 output leaf의 root 0600 `stderr.log`로 받는다 — 예전의 opt-in forensic 플래그와
+# 파일별 증거 leaf는 없다. 공개 registry·tracked 문서·대화 기록으로 옮기지 않는 것이 규칙이다.
 if [[ "$#" != 2 ]]; then
-  echo "usage: run-m05-isolated-e2e-once [--forensic-capture|--no-forensic-capture] EXPECTED_MANAGER_SOURCE_REVISION ROOT_OWNED_OUTPUT_DIRECTORY" >&2
+  echo "usage: run-m05-isolated-e2e-once EXPECTED_MANAGER_SOURCE_REVISION ROOT_OWNED_OUTPUT_DIRECTORY" >&2
   exit 2
 fi
 if [[ "$(id -u)" != 0 ]]; then
   echo "M05 isolated launcher must run as root" >&2
   exit 2
-fi
-if (( forensic_capture )); then
-  # 캡처 leaf는 stderr(.stderr)뿐 아니라 compose config stdout(.stdout)도 포함한다.
-  # 전부 root 0600이며, driver가 _RAW_ENV_NAMES 비밀값을 내용-scrub한 뒤에만 남는다
-  # (R1-S9). raw 그대로의 유출 경로가 아니다 — 하지만 tracked 문서/대화로 옮기지 말 것.
-  export KTDM_M05_FORENSIC_CAPTURE=1
-  launcher_arguments=(--forensic-capture "$@")
-else
-  # opt-out 시에는 호출 shell의 우연한 환경값이 raw retention을 켜지 못하게 한다.
-  unset KTDM_M05_FORENSIC_CAPTURE
-  launcher_arguments=("$@")
 fi
 expected_revision="$1"
 output_dir="$2"
@@ -45,7 +22,7 @@ fi
 
 # rebuild one-shot과 동일한 host-global lock을 process lifetime 전체에 보존한다.
 if [[ -z "${KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD:-}" ]]; then
-  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "${launcher_arguments[@]}" <<'PY'
+  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "$@" <<'PY'
 import fcntl
 import os
 from pathlib import Path
@@ -146,7 +123,7 @@ for expected_length, item in ((64, pinset), (40, map_revision), (40, pinvi_revis
 print(pinset, map_revision, pinvi_revision)
 '
 }
-if ! "$ktdctl" pin verify --json >/dev/null 2>&1; then
+if ! "$ktdctl" pin verify --json >/dev/null; then
   echo "M05 runtime execution registry is not runnable" >&2
   exit 1
 fi
@@ -187,7 +164,7 @@ initial_execution_snapshot="$(snapshot_runtime_execution)" || {
   echo "M05 runtime execution snapshot is invalid" >&2
   exit 1
 }
-if ! "$ktdctl" pin verify --json >/dev/null 2>&1; then
+if ! "$ktdctl" pin verify --json >/dev/null; then
   echo "M05 runtime execution registry is not runnable" >&2
   exit 1
 fi
@@ -211,18 +188,16 @@ if [[ "$initial_execution_pinset" != "$initial_pinset" || "$initial_execution_re
 fi
 # Map/PinVi integration provenance는 generic pin registry가 아니라 M05 adapter가 소유한다.
 # 이를 one-shot ledger/output leaf 전에 검사해 잘못 회전한 source pair가 execution terminal을
-# 소비하지 않게 한다. stderr 원문은 기존 launcher 경계와 같이 보관하지 않는다.
-# driver가 stdout에 내는 **닫힌 어휘** 거부 사유는 받는다 — 자유 문자열이 아니라
-# driver가 allowlist로 거른 값이다. 종전에는 그것마저 버려서 이 거부가 어디서
-# 났는지 알 방법이 없었다: 2026-09-02에 71분짜리 rebuild를 태운 뒤 이 한 줄에
-# 막히고도 이유를 몰라 traceback으로 역추적해야 했다.
+# 소비하지 않게 한다. driver는 거부 사유를 가린 한 줄로 stdout에 낸다 — 종전에는 그것마저
+# 버려서(2026-09-02, 71분짜리 rebuild 뒤 이유 모를 거부) traceback으로 역추적해야 했다.
+# driver가 모듈 로드 중에 죽으면 가린 traceback이 stderr로 온다 — 그대로 통과시킨다.
 # `set -e` 아래서는 실패한 명령 치환이 대입 자리에서 곧바로 스크립트를 죽여
 # 메시지를 잃는다. 포착을 위해 그 구간만 연다.
 set +e
 preflight_detail="$(
   /opt/kor-travel-docker-manager/backend/.venv/bin/python -I \
     /opt/kor-travel-docker-manager/scripts/m05_isolated_e2e.py \
-    --preflight "$expected_revision" 2>/dev/null
+    --preflight "$expected_revision"
 )"
 preflight_status="$?"
 set -e
@@ -287,17 +262,19 @@ if not any(
 ' "$initial_execution" "$initial_pinset" "$expected_revision"
 }
 install -d -o root -g root -m 0700 "$output_dir"
+# driver의 가린 실패 텍스트를 받는 자리. 먼저 root 0600으로 만들고 이어 쓴다.
+install -o root -g root -m 0600 /dev/null "$output_dir/stderr.log"
 
 set +e
 /opt/kor-travel-docker-manager/backend/.venv/bin/python -I \
   /opt/kor-travel-docker-manager/scripts/m05_isolated_e2e.py \
-  "$expected_revision" "$output_dir" >/dev/null 2>&1
+  "$expected_revision" "$output_dir" >/dev/null 2>>"$output_dir/stderr.log"
 driver_status="$?"
 set -e
 
-# Driver가 terminal block까지 남기기 전에 interpreter/결과 쓰기 경계에서 끝나도, 원문
-# stderr를 보관하거나 재시도 근거로 쓰지 않는다. 고정 schema·snapshot·종료값이 모두
-# 일치한 `result.json`만 수용한다. launcher fallback가 있으면 그 파일이 언제나 권위다.
+# stdout은 계속 버린다 — driver의 print는 채널이 아니다(소비 실패는 durable marker로 남긴다).
+# stderr.log는 진단일 뿐 재시도 근거가 아니다. 고정 schema·snapshot·종료값이 모두 일치한
+# `result.json`만 수용한다. launcher fallback가 있으면 그 파일이 언제나 권위다.
 result_path="$output_dir/result.json"
 launcher_result_path="$output_dir/launcher-result.json"
 # 관측 실패와 registry 회전을 같은 값으로 접으면 **관측자의 딸꾹질이 피관측자를
@@ -447,11 +424,6 @@ PREFLIGHT_REJECTED_PHASES = frozenset(
         "trusted_release_revision_mismatch",
     }
 )
-# launcher는 범용 one-shot runner다 — tenant의 migration 어휘를 알 필요가 없고,
-# 알면 그 목록이 tenant 쪽 목록과 갈라지는 순간 정상 receipt가 소각된다(적대 리뷰).
-# 실제 안전 속성은 "raw driver 출력이 아니라 불투명한 소문자 토큰"이라는 **모양**뿐이다.
-# 생성되는 비밀은 모두 token_urlsafe/token_hex라 이 모양에 걸리지 않는다.
-DIAGNOSTIC_TOKEN = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 HEX = frozenset("0123456789abcdef")
 try:
     metadata = path.lstat()
@@ -516,9 +488,6 @@ try:
             "m04_attestation_sha256", "m05_attestation_sha256",
             "runtime_provenance_sha256",
         }
-    if "map_fresh_init_reason" in value:
-        expected_keys.add("map_fresh_init_reason")
-    reason = value.get("map_fresh_init_reason")
     degraded = (
         set(value) != expected_keys
         or value.get("phase") not in PHASES
@@ -527,9 +496,6 @@ try:
         # 일회용 체크아웃이 남았다는 사실은 실행을 태우지 않는다(핀 상태를 오염시키지
         # 못하는 output leaf 안의 사본이다). 그래도 receipt에는 있어야 한다.
         or not isinstance(value.get("disposable_run_worktree_retained"), bool)
-        or (reason is not None and (
-            not isinstance(reason, str) or DIAGNOSTIC_TOKEN.fullmatch(reason) is None
-        ))
         or (
             value["status"] == "preflight_rejected"
             and (
@@ -607,7 +573,7 @@ esac
 # idempotent다. trusted 현재 binding이 snapshot에서 달라지면 CLI가 fail-close한다.
 set +e
 "$ktdctl" pin block-execution \
-  --reason 'M05 isolated launcher safe result unavailable' --confirm >/dev/null 2>&1
+  --reason 'M05 isolated launcher safe result unavailable' --confirm >/dev/null
 block_write_status="$?"
 set -e
 if [[ "$block_write_status" != 0 ]]; then
@@ -658,7 +624,7 @@ payload = (
             # 두 파일이 서로 다른 스키마를
             # 주장하고, launcher가 관측한 적 없는 phase를 주장하는 셈이었다.
             # 범용 runner가 tenant 어휘를 발명하는 것은 방금 제거한 결함과 같은
-            # 계열이므로(DIAGNOSTIC_TOKEN 주석 참조) phase 키를 아예 뺀다.
+            # 계열이므로 phase 키를 아예 뺀다.
             "cleanup_failed": True,
             "harness": "m05-isolated-launcher-fallback-v1",
             "launcher_outcome": "safe_result_unavailable",
