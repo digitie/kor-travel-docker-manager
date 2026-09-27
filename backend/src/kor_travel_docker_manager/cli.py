@@ -9,8 +9,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from dotenv import dotenv_values
-
 from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
     manager_mutation_lock,
@@ -22,10 +20,7 @@ from kor_travel_docker_manager.services.compose_service import (
     pinned_runtime_failed_before_journal,
     pinned_runtime_journal_was_reached,
 )
-from kor_travel_docker_manager.services.docker_service import (
-    docker_service,
-    redact_secret_text,
-)
+from kor_travel_docker_manager.services.docker_service import docker_service
 from kor_travel_docker_manager.services.legacy_override_retirement import (
     LegacyOverrideRetirementError,
     activate_canonical_concierge,
@@ -83,6 +78,12 @@ from kor_travel_docker_manager.services.runtime_pin_request import (
     read_runtime_pin_request,
     runtime_pin_request_path,
 )
+from kor_travel_docker_manager.services.secret_scrub import (
+    load_secret_environment,
+    redact_secret_text,
+    scrub_failure_structure,
+    scrub_failure_text,
+)
 from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
     StandaloneBackupError,
@@ -120,7 +121,15 @@ def _direct_ensure_aliases() -> set[str]:
 _INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV = GLOBAL_MUTATION_LOCK_FD_ENV
 
 
+def _scrubbed_process_result(result: dict[str, Any]) -> dict[str, Any]:
+    """명령 결과 전체(stdout·stderr·명령·중첩 결과)의 비밀을 가린다 — 원인 문구는 그대로 보인다."""
+
+    scrubbed = scrub_failure_structure(result, get_env_path())
+    return scrubbed if isinstance(scrubbed, dict) else result
+
+
 def _emit_process_result(result: dict[str, Any], *, json_output: bool = False) -> int:
+    result = _scrubbed_process_result(result)
     if json_output:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
@@ -160,7 +169,7 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
     try:
         config = load_targets_config()
     except TARGETS_CONFIG_ERRORS as exc:
-        print(str(exc), file=sys.stderr)
+        print(scrub_failure_text(str(exc), get_env_path()), file=sys.stderr)
         return 1
 
     # 좌표가 **실재하는지**는 여기서만, 그리고 **요청받았을 때만** 본다.
@@ -255,6 +264,8 @@ def _cmd_action(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    # 없는 컨테이너를 만드는 경로는 compose 출력을 error·stdout·stderr에 싣는다.
+    result = _scrubbed_process_result(result)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif result.get("success"):
@@ -285,27 +296,20 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
-def _emit_redacted_failure_detail(exc: BaseException) -> None:
-    """실패 원문(예외 체인 전체)을 `.env` 비밀을 가린 채 stderr로 낸다.
+def _emit_failure_detail(exc: BaseException, *, label: str = "failure detail") -> None:
+    """실패 원문(예외 체인 전체)을 비밀을 가린 채 stderr로 낸다(ADR-51 잃는 보장 G).
 
-    JSON 결과는 stage 한 단어만 싣는다. 원문이 없으면 원인을 찾으려고 파괴적 재구축을
-    계측한 채 다시 돌려야 했다. launcher는 stderr를 root 0600 run 디렉터리에 남긴다.
+    원문이 없으면 원인을 찾으려고 파괴적 재구축을 계측한 채 다시 돌려야 했다. launcher는
+    stderr를 root 0600 run 디렉터리에 남긴다. `.env`를 읽지 못하면 원문 대신 그 사실만 낸다.
     """
 
     try:
-        environment = {**os.environ, **dotenv_values(get_env_path())}
+        environment = load_secret_environment(get_env_path())
     except (OSError, UnicodeError):
-        print(
-            "pinned runtime failure detail withheld: .env could not be read for redaction",
-            file=sys.stderr,
-        )
+        print(f"{label} withheld: .env could not be read for redaction", file=sys.stderr)
         return
     detail = "".join(traceback.format_exception(exc))
-    print(
-        "pinned runtime failure detail (redacted):\n"
-        + redact_secret_text(detail, environment),
-        file=sys.stderr,
-    )
+    print(f"{label} (redacted):\n" + redact_secret_text(detail, environment), file=sys.stderr)
 
 
 def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
@@ -362,7 +366,7 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
                 "pinned runtime candidate preparation failed: " + exc.stage,
                 file=sys.stderr,
             )
-        _emit_redacted_failure_detail(exc)
+        _emit_failure_detail(exc, label="pinned runtime failure detail")
         return 2
     except DeploymentContractError as exc:
         # 봉인 밖 실패는 원문을 보존하되(운영자가 이유를 봐야 한다)
@@ -381,10 +385,20 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
                 ),
             }
             print(json.dumps(payload, ensure_ascii=False, indent=2))
-        _emit_redacted_failure_detail(exc)
+        _emit_failure_detail(exc, label="pinned runtime failure detail")
         return 2
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - every failure leaves a JSON verdict and a scrubbed cause
+        # 어느 분류에도 들지 않는 실패도 launcher가 읽을 JSON 판정과 가린 원문을 남긴다. 종전에는
+        # ValueError 원문을 가리지 않은 채 찍었고, 그 밖의 예외는 가리지 않은 traceback이었다.
+        if args.json:
+            print(
+                json.dumps(
+                    {"status": "failed", "classification": "unclassified"},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        _emit_failure_detail(exc, label="pinned runtime failure detail")
         return 2
     return _emit_process_result(result, json_output=args.json)
 
@@ -2180,8 +2194,13 @@ def main(argv: list[str] | None = None) -> int:
         # bare `ValueError`는 여전히 각 `_cmd_*`의 기존 로컬 `except
         # ValueError`가 그대로 처리한다(이 부분은 이 커밋 이전부터 있던
         # 동작이라 손대지 않았다).
-        print(str(exc), file=sys.stderr)
+        print(scrub_failure_text(str(exc), get_env_path()), file=sys.stderr)
         sys.exit(1)
+    except Exception as exc:  # noqa: BLE001 - last output boundary: never an unscrubbed traceback
+        # 명령 처리기가 잡지 않은 예외는 Python 기본 traceback으로 나가 비밀을 싣고 갔다. 같은 원문을
+        # 가린 채 내고 같은 종료 코드(1)로 끝낸다.
+        _emit_failure_detail(exc)
+        return 1
 
 
 if __name__ == "__main__":

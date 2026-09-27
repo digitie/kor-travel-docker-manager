@@ -2737,13 +2737,11 @@ class ComposeService:
         transaction: ComposeTransactionSnapshot,
         capture_output: bool = True,
         mutation_capability: object | None = None,
-        redact_config: C6cDeploymentConfig | None = None,
     ) -> dict[str, Any]:
         return self.run(
             args,
             capture_output=capture_output,
             mutation_capability=mutation_capability,
-            redact_config=redact_config,
             transaction=transaction,
             _frozen_recovery_capability=_TRUSTED_FROZEN_RECOVERY_CAPABILITY,
         )
@@ -2755,7 +2753,6 @@ class ComposeService:
         capture_output: bool = True,
         environment: Mapping[str, str] | None = None,
         mutation_capability: object | None = None,
-        redact_config: C6cDeploymentConfig | None = None,
         expected_system_bind_snapshots: tuple[
             CandidateSystemBindSnapshot, ...
         ] | None = None,
@@ -2818,7 +2815,6 @@ class ComposeService:
                         args,
                         capture_output=capture_output,
                         environment=None,
-                        redact_config=redact_config,
                         expected_system_bind_snapshots=(
                             transaction.system_bind_snapshots
                         ),
@@ -2929,7 +2925,6 @@ class ComposeService:
                     args,
                     capture_output=capture_output,
                     environment=environment,
-                    redact_config=redact_config,
                     expected_system_bind_snapshots=snapshots,
                     expected_compose_source_bytes=compose_source_bytes,
                     environment_snapshot=environment_snapshot,
@@ -2940,7 +2935,6 @@ class ComposeService:
             args,
             capture_output=capture_output,
             environment=environment,
-            redact_config=redact_config,
             expected_system_bind_snapshots=None,
             expected_compose_source_bytes=None,
             environment_snapshot=None,
@@ -3252,7 +3246,6 @@ class ComposeService:
         *,
         capture_output: bool,
         environment: Mapping[str, str] | None,
-        redact_config: C6cDeploymentConfig | None,
         expected_system_bind_snapshots: tuple[
             CandidateSystemBindSnapshot, ...
         ] | None,
@@ -3371,9 +3364,6 @@ class ComposeService:
 
         stdout = completed.stdout if capture_output else ""
         stderr = completed.stderr if capture_output else ""
-        if redact_config is not None:
-            stdout = self._redact_c6c_output(stdout, redact_config)
-            stderr = self._redact_c6c_output(stderr, redact_config)
         return {
             "success": completed.returncode == 0,
             "returncode": completed.returncode,
@@ -4422,32 +4412,6 @@ class ComposeService:
                 f"{label} runtime image ID is not immutable"
             )
         return image_id
-
-    @staticmethod
-    def _redact_c6c_output(text: str, config: C6cDeploymentConfig) -> str:
-        credentials = (
-            config.read_token,
-            config.cancel_token,
-            config.fixture_token,
-            config.map_ui_password_hash,
-            config.map_ui_session_secret,
-            config.map_admin_proxy_secret,
-            config.map_service_token,
-            config.map_cursor_signing_secret,
-            config.feature_create_token,
-            config.feature_create_token_digest,
-            config.smoke.map_ui_password,
-            config.smoke.pinvi_admin_email,
-            config.smoke.pinvi_admin_password,
-            config.contract_generation,
-        )
-        redacted = text
-        for credential in sorted(
-            (value for value in credentials if value),
-            key=lambda value: (-len(value), value),
-        ):
-            redacted = redacted.replace(credential, "<redacted>")
-        return redacted
 
     def _assert_pinned_runtime_container_images(
         self,

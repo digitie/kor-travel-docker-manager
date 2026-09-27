@@ -46,6 +46,11 @@ from kor_travel_docker_manager.services.registry import (
     external_project_for_container,
     get_project_root,
 )
+from kor_travel_docker_manager.services.secret_scrub import (
+    URL_USERINFO_RE,
+    is_sensitive_key,
+    redact_value_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -363,66 +368,10 @@ def save_compose_config(config: dict[str, Any]) -> None:
         )
 
 
-# inspect 응답의 env·label에서 가릴 key 조각.
-#
-# `API_KEY`는 `ACCESS_KEY`에 걸리지 않는다. 이 저장소만 해도 provider API 키가 여럿 있어
-# (`KOR_TRAVEL_MAP_OPINET_API_KEY`, `KOR_TRAVEL_MAP_KREX_*_API_KEY`,
-# `KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY`, `KOR_TRAVEL_GEO_VWORLD_API_KEY`)
-# 빠뜨리면 그대로 노출된다. T-012가 inspect를 대시보드 UI에 연결하면서 이 경로가
-# API/CLI 뿐 아니라 브라우저 한 번의 클릭으로 열리게 됐다.
-#
-# 과다 redaction은 안전한 방향이므로(값을 못 보는 불편) 의심스러우면 포함한다.
-# 예: `..._API_KEY_CACHE_TTL_S`(숫자)나 공개용 `NEXT_PUBLIC_*_API_KEY`도 함께 가려진다.
-SENSITIVE_KEY_PARTS = (
-    "PASSWORD",
-    "PASSWD",
-    "SECRET",
-    "TOKEN",
-    "ACCESS_KEY",
-    "PRIVATE_KEY",
-    "API_KEY",
-    "APIKEY",
-    "CREDENTIAL",
-)
-
-
-# key 이름만 보는 방식은 값 안에 박힌 credential을 못 잡는다. DSN/URL은 이름이
-# `..._PG_DSN`·`..._DATABASE_URL`처럼 위 목록에 걸리지 않으면서 값에
-# `postgresql+asyncpg://user:password@host/db` 형태로 비밀번호를 담는다.
-#
-# key 전체를 가리는 대신 userinfo의 비밀번호 구간만 치환한다. `..._BASE_URL`,
-# `..._ENDPOINT_URL`처럼 비밀이 아닌 URL은 그대로 읽을 수 있어야 패널이 쓸모 있다.
-_URL_USERINFO_RE = re.compile(
-    r"(?P<scheme>[a-zA-Z][a-zA-Z0-9+.\-]*://)(?P<user>[^:/?#@\s]+):(?P<password>[^@/?#\s]+)@"
-)
-
-
-def _is_sensitive_key(key: str) -> bool:
-    upper_key = key.upper()
-    return any(part in upper_key for part in SENSITIVE_KEY_PARTS)
-
-
-def _redact_value_credentials(value: str) -> str:
-    """값 안의 `scheme://user:password@` 비밀번호 구간을 가린다."""
-    return _URL_USERINFO_RE.sub(
-        lambda m: f"{m.group('scheme')}{m.group('user')}:<redacted>@", value
-    )
-
-
-def redact_secret_text(text: str, environment: Mapping[str, str | None]) -> str:
-    """임의 텍스트에서 민감 key로 선언된 값 전부와 URL userinfo 비밀번호를 가린다."""
-    secrets = sorted(
-        {
-            value
-            for key, value in environment.items()
-            if value and len(value) >= 4 and _is_sensitive_key(key)
-        },
-        key=len,
-        reverse=True,
-    )
-    for secret in secrets:
-        text = text.replace(secret, "<redacted>")
-    return _redact_value_credentials(text)
+# 비밀 가림 규칙의 정본은 `services/secret_scrub.py` 하나다(ADR-51 잃는 보장 G). inspect 응답의
+# env·label, UI compose 검증, 실패 출력이 모두 같은 규칙을 쓴다.
+_is_sensitive_key = is_sensitive_key
+_redact_value_credentials = redact_value_credentials
 
 
 def _redact_env_pair(raw_pair: str) -> str:
@@ -572,7 +521,7 @@ def _value_has_literal_url_credential(value: str) -> bool:
     이 함수는 값을 그대로(어떤 `${...}` 블록 안에 있든) 스캔한다. baseline과 완전히
     같은 값만 `validate_env_entry`에서 예외로 통과시킨다.
     """
-    for match in _URL_USERINFO_RE.finditer(value):
+    for match in URL_USERINFO_RE.finditer(value):
         if not _INTERPOLATED_VALUE_RE.match(match.group("password")):
             return True
     return False

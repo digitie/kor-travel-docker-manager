@@ -1,6 +1,6 @@
-// 백엔드 kor_travel_docker_manager.services.docker_service의 검증 규칙을 그대로
-// 반영한다(제출 전 즉시 피드백용). 서버가 최종 게이트이므로 여기서 어긋나도 보안
-// 문제는 아니며, 최악의 경우 UX 품질만 낮아진다.
+// 백엔드 검증 규칙을 그대로 반영한다(제출 전 즉시 피드백용). 민감 key 조각의 정본은
+// kor_travel_docker_manager.services.secret_scrub.SENSITIVE_KEY_PARTS다. 서버가 최종 게이트이므로
+// 여기서 어긋나도 보안 문제는 아니며, 최악의 경우 UX 품질만 낮아진다.
 
 const SENSITIVE_KEY_PARTS = [
   'PASSWORD',
@@ -11,6 +11,7 @@ const SENSITIVE_KEY_PARTS = [
   'PRIVATE_KEY',
   'API_KEY',
   'APIKEY',
+  'SERVICE_KEY',
   'CREDENTIAL',
 ];
 
