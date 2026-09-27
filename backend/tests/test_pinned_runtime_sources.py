@@ -198,7 +198,7 @@ def test_prune_keeps_the_current_pair_and_removes_the_rest(world: Any) -> None:
 def test_a_failed_fetch_leaves_nothing_behind(world: Any) -> None:
     def failing(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         if "fetch" in argv:
-            return subprocess.CompletedProcess(argv, 128, stdout="", stderr="fatal: secret path")
+            return subprocess.CompletedProcess(argv, 128, stdout="", stderr="fatal: bad object")
         return world.runner(argv, **kwargs)
 
     with pytest.raises(DeploymentContractError) as raised:
@@ -206,7 +206,11 @@ def test_a_failed_fetch_leaves_nothing_behind(world: Any) -> None:
             release=world.release, state_paths=world.state_paths, runner=failing
         )
 
-    assert str(raised.value) == "pinned runtime source Git operation failed"
+    # ADR-51 잃는 보장 G-2: git의 원인 문구를 싣는다(가림은 출력 경계의 몫).
+    message = str(raised.value)
+    assert message.startswith("pinned runtime source Git operation failed: git ")
+    assert "fetch" in message and "(exit 128)" in message
+    assert message.endswith("fatal: bad object")
     assert list(pinned_runtime_sources_directory(world.state_paths).iterdir()) == []
 
 

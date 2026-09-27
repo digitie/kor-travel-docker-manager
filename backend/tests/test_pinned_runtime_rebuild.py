@@ -516,7 +516,12 @@ def test_map_application_300_python_base_images_pull_and_reinspect_missing_base(
     ]
     for invocation in runner.call_args_list:
         assert invocation.kwargs["stdout"] is subprocess.DEVNULL
-        assert invocation.kwargs["stderr"] is subprocess.DEVNULL
+    # 존재 확인 inspect의 실패는 예상된 분기라 버리고, pull·재확인의 stderr는 실패에 싣는다.
+    assert [invocation.kwargs["stderr"] for invocation in runner.call_args_list] == [
+        subprocess.DEVNULL,
+        subprocess.PIPE,
+        subprocess.PIPE,
+    ]
 
 
 def test_map_application_300_python_base_images_reject_invalid_source_contract(
@@ -1192,7 +1197,7 @@ def test_application_image_build_failure_carries_the_buildx_tail(
     assert runner.call_args.kwargs["capture_output"] is True
 
 
-def test_base_image_pull_failure_carries_the_registry_answer(
+def test_map_application_300_python_base_images_pull_failure_carries_the_registry_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reference = "python@sha256:" + "b" * 64
