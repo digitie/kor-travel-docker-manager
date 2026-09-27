@@ -1410,13 +1410,11 @@ def _approve_map_request(
 def _resolve_manual_feature_text_id(
     *, admin_url: str, proxy_secret: str, feature_uuid: str
 ) -> str:
-    """승인 응답의 UUID(T-VN-32C 정본)를 opaque TEXT feature_id로 해석한다.
+    """승인한 수동 Feature의 creation-provenance를 읽어 참조를 확정한다.
 
-    dedup 프로시저·reconciliation feed는 feature.features.feature_id(TEXT)를
-    기대하는데 승인/생성 응답은 UUID를 싣는다 — 이 불일치가 e2e15에서
-    'candidate Feature proof is not eligible'(NOT FOUND)로 드러났다. M02
-    creation-provenance 리더가 두 식별자를 최상위에 함께 실으므로 그것으로
-    해석하고, UUID 결박(feature_uuid == 요청 UUID)도 함께 검증한다.
+    Map T-VN-39 뒤 `feature_id`는 정본 uuid이고 `feature_uuid`와 같다 — 결과는 승인 응답의 uuid 그대로다
+    (옛 Map은 opaque TEXT를 돌려줘 e2e15가 여기서 해석했다). provenance가 그 Feature를 가리키는지(uuid
+    결박)를 함께 검증한다.
     """
 
     value = _data(
@@ -1509,9 +1507,8 @@ def _seed_pinvi_feature_reference(
     본문이 한 줄도 실행되지 않은 채 게이트가 green이 난다. 즉 배관이 도는 것만
     증명하고 "사용자 참조를 고쳐 쓴다"는 M05의 존재 이유는 증명하지 못한다.
 
-    일부러 **일상적인 사용자 경로**(POST /v1/trips → POST .../pois)를 쓴다.
-    그 경로는 `feature_uuid`를 채우지 않으므로, 리바인드가 legacy 축만 있는
-    행을 처리하고 두 축을 함께 복구하는지까지 같이 증명된다.
+    일부러 **일상적인 사용자 경로**(POST /v1/trips → POST .../pois)를 쓴다. 그 경로는 `feature_id`
+    하나만 싣는다(Map T-VN-39 뒤 그 값이 정본 uuid다) — 리바인드는 그 참조를 이벤트의 uuid로 찾는다.
 
     돌려주는 값은 심은 참조 수 — 호출자가 receipt의 impact_count와 대조한다.
     """
@@ -3256,7 +3253,9 @@ def main(expected_revision: str, output: Path, *, rehearse: bool = False) -> int
 
     예행은 claim 전 단계(소스 pair·admission·Map/PinVi compose 렌더·fresh-init 파생·Playwright runner)를 모두
     돌고 ledger claim **직전에** 멈춘다. claim·block·소비가 없고 receipt는 `result.json`이 아니라
-    `rehearsal.json`이다 — launcher를 거치지 않고 root가 직접 돌린다.
+    `rehearsal.json`이다 — launcher를 거치지 않고 root가 직접 돌린다. output 루트는 예행 전용으로 쓴다
+    (`runtime/`이 남으므로 같은 경로를 launcher에 주면 claim 전에 거부된다). claim 뒤 구간(이미지 빌드,
+    fresh-init 사슬, API 기동, fixture)은 예행이 보지 않는다.
     """
 
     phase = "admission"

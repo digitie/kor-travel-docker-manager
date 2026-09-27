@@ -71,7 +71,8 @@ PLAYWRIGHT_PINNED_VERSION = "1.62.1"
 #: 요청 승인으로 만든 수동 Feature에는 legacy alias가 없고, provider Feature의 `make_feature_id` 텍스트는
 #: alias일 뿐이다(fixture가 정본 키로 풀어 돌려준다).
 MANUAL_FEATURE_UUID = "9f1d4d2e-5b0c-4f6a-9d3b-1a2c3d4e5f60"
-PROVIDER_FEATURE_LEGACY_ALIAS = "f_global_01070300_p_0123456789abcdef"
+#: `make_feature_id`의 실제 모양(`f_<bjd|global>_<kind 1자>_<16hex>`).
+PROVIDER_FEATURE_LEGACY_ALIAS = "f_global_p_0123456789abcdef"
 PROVIDER_FEATURE_UUID = "60718293-a4b5-4c6d-8e9f-0a1b2c3d4e5f"
 CASE_ID = "1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d"
 RESOLUTION_ID = "2c3d4e5f-6071-4b8c-9dae-1f2a3b4c5d6e"
