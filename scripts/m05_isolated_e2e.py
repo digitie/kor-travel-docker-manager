@@ -86,7 +86,10 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     load_runtime_pin_registry,
     runtime_pin_registry_path,
 )
-from kor_travel_docker_manager.services.secret_scrub import is_sensitive_key, scrub_failure_text
+from kor_travel_docker_manager.services.secret_scrub import (
+    is_sensitive_key,
+    scrub_failure_text,
+)
 
 
 def _scrubbed_excepthook(kind: type[BaseException], value: BaseException, tb: Any) -> None:
