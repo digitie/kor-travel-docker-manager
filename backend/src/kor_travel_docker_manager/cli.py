@@ -14,11 +14,9 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     manager_mutation_lock,
 )
 from kor_travel_docker_manager.services.compose_service import (
-    PinnedRuntimePrejournalFailure,
     compose_service,
     get_env_path,
-    pinned_runtime_failed_before_journal,
-    pinned_runtime_journal_was_reached,
+    rebuild_failure_stage,
 )
 from kor_travel_docker_manager.services.docker_service import docker_service
 from kor_travel_docker_manager.services.legacy_override_retirement import (
@@ -341,63 +339,16 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
             # launcher는 --json으로 경고를 받는다. 사람이 직접 돌릴 때도 보여야 한다.
             for warning in result.get("warnings", []):
                 print(f"warning: {warning}", file=sys.stderr)
-    except PinnedRuntimePrejournalFailure as exc:
-        # 봉인 단계는 전부 resume 분기보다 앞에서 돈다. journal이 이미 존재하는
-        # 실행에서 봉인 단계가 실패하면 그 후보는 **이미 소비됐다** — 같은
-        # `prejournal_failure`로 내면 launcher가 그 claim을 해제한다.
-        payload = {
-            "status": "failed",
-            "classification": (
-                "postjournal_failure"
-                if pinned_runtime_journal_was_reached(exc)
-                else "prejournal_failure"
-            ),
-            "stage": exc.stage,
-        }
-        # 후보 Compose 빌드는 서비스가 넷이다. 값은 고정 목록에서만 나오므로
-        # 원문 노출이 아니고, 이것이 없으면 다음 실행이 어느 서비스인지 모른 채
-        # 같은 30분을 다시 쓴다.
-        if exc.service is not None:
-            payload["service"] = exc.service
-        if args.json:
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
-        else:
-            print(
-                "pinned runtime candidate preparation failed: " + exc.stage,
-                file=sys.stderr,
-            )
-        _emit_failure_detail(exc, label="pinned runtime failure detail")
-        return 2
-    except DeploymentContractError as exc:
-        # 봉인 밖 실패는 원문을 보존하되(운영자가 이유를 봐야 한다)
-        # "이 실행은 journal을 쓰지 않았다"는 사실까지 잃지는 않는다. 그 사실이
-        # `unclassified`로 접히면 launcher가 소비하지 않은 후보를 태운다.
-        # 원문은 여전히 JSON에 넣지 않는다 — 노출 계약은 그대로다.
-        if args.json:
-            # stage는 넣지 않는다. 봉인된 실패만 자기 stage를 갖고, 여기 오는 것들은
-            # 봉인 밖이라 안전한 고정 어휘가 없다 — 없는 정밀도를 지어내지 않는다.
-            payload = {
-                "status": "failed",
-                "classification": (
-                    "prejournal_failure"
-                    if pinned_runtime_failed_before_journal(exc)
-                    else "unclassified"
-                ),
-            }
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
-        _emit_failure_detail(exc, label="pinned runtime failure detail")
-        return 2
     except Exception as exc:  # noqa: BLE001 - every failure leaves a JSON verdict and a scrubbed cause
-        # 어느 분류에도 들지 않는 실패도 launcher가 읽을 JSON 판정과 가린 원문을 남긴다. 종전에는
-        # ValueError 원문을 가리지 않은 채 찍었고, 그 밖의 예외는 가리지 않은 traceback이었다.
+        # 실패는 하나의 모양이다(ADR-51 잃는 보장 G). JSON은 판정과, 단계 안에서 났으면 그
+        # 단계 이름만 싣는다. 원인은 가린 원문 traceback으로 stderr에 간다 — launcher가
+        # root 0600 stderr.log에 남긴다. 봉인·journal 전후 분류·claim 해제는 사라졌다.
         if args.json:
-            print(
-                json.dumps(
-                    {"status": "failed", "classification": "unclassified"},
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
+            payload = {"status": "failed"}
+            stage = rebuild_failure_stage(exc)
+            if stage is not None:
+                payload["stage"] = stage
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
         _emit_failure_detail(exc, label="pinned runtime failure detail")
         return 2
     return _emit_process_result(result, json_output=args.json)
@@ -540,14 +491,10 @@ def _print_pin_command_failure(detail: str, *, json_output: bool) -> None:
     낸다")을 init/show/verify/rotate/rotate-pair/block/rollback/apply-pending도
     지키게 한다 — 그러지 않으면 실패 시 stdout이 비어 `| jq`가 죽는다.
 
-    여기서 넘기는 detail은 전부 이 모듈이나 pin registry 계열 서비스가 조립한
-    안전한 문구다 — pinvi-pair rebuild의 unclassified contract 오류(원문
-    subprocess 출력을 감쌀 수 있음)와 달리 raw 텍스트를 그대로 노출해도 비밀이
-    새지 않는다. 그 다른 경로의 "노출 안 함" 계약은
-    test_cli_rebuild_pinned_runtime_hides_unclassified_contract_error_in_json이
-    지키므로 여기서 건드리지 않는다.
+    detail은 명령 원문 tail을 실을 수 있어(ADR-51 잃는 보장 G) 두 출력 모두 가린다.
     """
 
+    detail = scrub_failure_text(detail, get_env_path())
     if json_output:
         print(json.dumps({"status": "failed", "detail": detail}, ensure_ascii=False))
     print(detail, file=sys.stderr)

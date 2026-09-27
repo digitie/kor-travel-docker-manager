@@ -55,3 +55,29 @@ class ComposePostMutationContractError(DeploymentContractError):
         self.recovery_succeeded = recovery_succeeded
         self.recovery_error = recovery_error
         self.restoration = restoration
+
+
+#: 실패한 명령 출력 한 스트림에서 메시지에 싣는 최대 바이트. 원인 문구는 대개 마지막 줄이다.
+COMMAND_OUTPUT_TAIL_BYTES = 16 * 1024
+
+
+def command_output_tail(label: str, output: str | bytes | None) -> str:
+    """실패한 명령 출력의 끝부분을 예외 메시지 뒤에 붙일 꼴로 돌려준다. 비었으면 ``""``.
+
+    원문을 그대로 싣는다(ADR-51 잃는 보장 G). 비밀은 출력 경계(CLI·API·M05)의 스크러버
+    하나가 가린다 — 여기서 가리면 가림 규칙이 두 벌이 된다. 설정을 통째로 내는 stdout
+    (`compose config`)처럼 원인이 아니라 데이터인 스트림은 호출자가 넘기지 않는다.
+    """
+
+    if output is None:
+        return ""
+    raw = output.encode("utf-8", errors="replace") if isinstance(output, str) else output
+    raw = raw.strip()
+    if not raw:
+        return ""
+    clipped = len(raw) > COMMAND_OUTPUT_TAIL_BYTES
+    if clipped:
+        # 자른 첫 줄은 버린다 — 비밀 값의 뒷조각만 남으면 스크러버가 알아보지 못한다.
+        raw = raw[-COMMAND_OUTPUT_TAIL_BYTES:].partition(b"\n")[2]
+    text = raw.decode("utf-8", errors="replace")
+    return f"\n--- {label}{' (last 16 KiB)' if clipped else ''} ---\n{text}"

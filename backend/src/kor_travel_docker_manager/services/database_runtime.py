@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Final, Literal
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.errors import command_output_tail
 
 DatabaseRole = Literal["map_application", "map_dagster", "pinvi"]
 MapApplicationEnsureOutcome = Literal["created", "bootstrapped", "present"]
@@ -989,7 +990,11 @@ def _run_checked(arguments: list[str], *, label: str) -> bytes:
     except (OSError, subprocess.SubprocessError) as exc:
         raise DeploymentContractError(f"{label} could not run") from exc
     if completed.returncode != 0 or completed.stderr:
-        raise DeploymentContractError(f"{label} failed")
+        # stderr만 싣는다(ADR-51 잃는 보장 G). stdout은 조회 결과라 원인이 아니다.
+        raise DeploymentContractError(
+            f"{label} failed (exit {completed.returncode})"
+            + command_output_tail("stderr", completed.stderr)
+        )
     if not isinstance(completed.stdout, bytes):
         raise DeploymentContractError(f"{label} produced invalid output")
     return completed.stdout
@@ -1012,7 +1017,11 @@ def _run_checked_with_input(
     except (OSError, subprocess.SubprocessError) as exc:
         raise DeploymentContractError(f"{label} could not run") from exc
     if completed.returncode != 0 or completed.stderr:
-        raise DeploymentContractError(f"{label} failed")
+        # stderr만 싣는다(ADR-51 잃는 보장 G). stdout은 조회 결과라 원인이 아니다.
+        raise DeploymentContractError(
+            f"{label} failed (exit {completed.returncode})"
+            + command_output_tail("stderr", completed.stderr)
+        )
     if not isinstance(completed.stdout, bytes):
         raise DeploymentContractError(f"{label} produced invalid output")
     return completed.stdout

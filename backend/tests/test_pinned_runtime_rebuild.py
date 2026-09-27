@@ -774,11 +774,10 @@ def test_rebuild_requires_all_operation_tokens_before_source_or_database_mutatio
         materialize,
     )
 
-    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
+    with pytest.raises(DeploymentContractError) as captured:
         ComposeService().rebuild_pinned_runtime()
 
-    assert captured.value.stage == "state_initialization"
-    assert isinstance(captured.value.__cause__, DeploymentContractError)
+    assert compose_service_module.rebuild_failure_stage(captured.value) == "state_initialization"
 
     # ADR-51 C-3: 재구축의 lock은 G 하나다(실제 파일 lock 목록은
     # `test_global_mutation_lock_contention`의 (g)가 본다). 거부는 그 안에서 났다.
@@ -881,8 +880,11 @@ def test_frozen_compose_resolution_preserves_contract_error(
         lambda command, **_kwargs: subprocess.CompletedProcess(
             command,
             1,
-            stdout="",
-            stderr="candidate failed",
+            stdout="resolved-config-stdout-marker",
+            stderr=(
+                'required variable KTDM_PROBE is missing a value: '
+                "KTDM_PROBE must be explicitly set"
+            ),
         ),
     )
 
@@ -898,8 +900,11 @@ def test_frozen_compose_resolution_preserves_contract_error(
             external_input_snapshot=cast(Any, object()),
         )
 
-    assert str(captured.value) == "compose candidate resolution failed"
-    assert "candidate failed" not in str(captured.value)
+    # ADR-51 잃는 보장 G: `${X:?}` 문구가 곧 원인이다. stdout은 보간된 설정 문서라 싣지 않는다.
+    message = str(captured.value)
+    assert message.startswith("compose candidate resolution failed")
+    assert "KTDM_PROBE must be explicitly set" in message
+    assert "resolved-config-stdout-marker" not in message
 
 
 def test_compose_resolution_override_replaces_a_blank_ambient_value(
@@ -984,11 +989,12 @@ def test_compose_resolution_override_replaces_a_blank_ambient_value(
     assert all(volume["read_only"] is True for volume in volumes)
 
 
-def test_rebuild_compose_error_names_the_failed_action(
+def test_rebuild_compose_error_carries_the_command_and_its_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """one-shot `run` 실패는 명령·종료값·stderr·stdout 끝부분을 그대로 싣는다(ADR-51 G)."""
+
     service = ComposeService()
-    secret = "test-compose-output-token-must-not-leak"
     monkeypatch.setattr(
         service,
         "_run_frozen_recovery",
@@ -996,27 +1002,56 @@ def test_rebuild_compose_error_names_the_failed_action(
             return_value={
                 "success": False,
                 "returncode": 23,
-                "stdout": secret,
-                "stderr": (
-                    secret
-                    + "\n"
-                    + '{"code":"dagster_instance_migrate_failed",'
-                    + '"schema":"kor-travel-map.dagster-storage-migration-error.v1"}'
-                ),
+                "stdout": "alembic.util.exc.CommandError: Can't locate revision 0412",
+                "stderr": 'kor-travel-map-dagster-storage-migrate-1 | {"code":"x"}',
             }
         ),
     )
 
-    with pytest.raises(
-        DeploymentContractError,
-        match=r"Compose run command failed \(exit 23; dagster_instance_migrate_failed\)",
-    ) as captured:
+    with pytest.raises(DeploymentContractError) as captured:
         service._run_pinned_runtime_rebuild_compose(
             ["run", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
             transaction=_opaque_transaction(),
         )
 
-    assert secret not in str(captured.value)
+    message = str(captured.value)
+    assert message.startswith(
+        "pinned runtime rebuild Compose run --no-deps "
+        "kor-travel-map-dagster-storage-migrate failed (exit 23)"
+    )
+    assert 'storage-migrate-1 | {"code":"x"}' in message
+    assert "Can't locate revision 0412" in message
+
+
+def test_rebuild_compose_error_leaves_out_data_stdout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`run`이 아닌 명령의 stdout은 원인이 아니라 데이터다 — 싣지 않는다."""
+
+    service = ComposeService()
+    monkeypatch.setattr(
+        service,
+        "_run_frozen_recovery",
+        Mock(
+            return_value={
+                "success": False,
+                "returncode": 1,
+                "stdout": '[{"Name":"data-stdout-marker"}]',
+                "stderr": "service pinvi-web failed to build: exit code 1",
+            }
+        ),
+    )
+
+    with pytest.raises(DeploymentContractError) as captured:
+        service._run_pinned_runtime_rebuild_compose(
+            ["build", "pinvi-web"],
+            transaction=_opaque_transaction(),
+        )
+
+    message = str(captured.value)
+    assert "Compose build pinvi-web failed (exit 1)" in message
+    assert "service pinvi-web failed to build" in message
+    assert "data-stdout-marker" not in message
 
 
 def test_rebuild_candidate_builds_only_manager_services_sequentially(
@@ -1077,7 +1112,7 @@ def test_rebuild_never_retries_a_failed_dagster_storage_migration(
     )
     monkeypatch.setattr(service, "_run_frozen_recovery", run)
 
-    with pytest.raises(DeploymentContractError, match="Compose run command failed"):
+    with pytest.raises(DeploymentContractError, match=r"Compose run .* failed \(exit 1\)"):
         service._run_pinned_runtime_rebuild_compose(
             ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
             transaction=_opaque_transaction(),
@@ -1092,355 +1127,101 @@ def test_rebuild_compose_runner_has_no_retryable_argument() -> None:
     ).parameters
 
     assert "retryable" not in parameters
+    # typed 진단 추출은 ADR-51 G-2에서 원문 tail로 바뀌었다 — 끄고 켤 스위치가 없다.
+    assert "allow_typed_error_diagnostic" not in parameters
 
 
-def test_rebuild_one_shot_failure_exposes_only_allowlisted_diagnostic(
+def test_static_command_failure_carries_both_streams(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = ComposeService()
-    secret = "test-retry-output-must-not-leak"
-    run = Mock(
-        return_value={
-            "success": False,
-            "returncode": 1,
-            "stdout": secret,
-            "stderr": (
-                secret
-                + "\n"
-                + '{"code":"dagster_instance_migrate_failed",'
-                + '"schema":"kor-travel-map.dagster-storage-migration-error.v1"}'
-            ),
-        }
+    runner = Mock(
+        return_value=SimpleNamespace(
+            returncode=1,
+            stdout="partial-static-output",
+            stderr="exec /usr/local/bin/ktm-dagster-storage: no such file or directory",
+        )
     )
-    monkeypatch.setattr(service, "_run_frozen_recovery", run)
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
 
-    with pytest.raises(
-        DeploymentContractError,
-        match=r"Compose run command failed \(exit 1; dagster_instance_migrate_failed\)",
-    ) as captured:
-        service._run_pinned_runtime_rebuild_compose(
-            ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
-            transaction=_opaque_transaction(),
+    with pytest.raises(DeploymentContractError) as captured:
+        compose_service_module._run_pinned_runtime_static_command(
+            f"sha256:{'a' * 64}",
+            ("head",),
+            label="Map Dagster",
+            entrypoint="/usr/local/bin/ktm-dagster-storage",
         )
 
-    run.assert_called_once()
-    assert secret not in str(captured.value)
+    message = str(captured.value)
+    assert message.startswith("Map Dagster candidate static inspection failed (exit 1)")
+    assert "no such file or directory" in message
+    assert "partial-static-output" in message
 
 
-def test_rebuild_compose_error_ignores_malformed_diagnostic_code(
+def test_application_image_build_failure_carries_the_buildx_tail(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = ComposeService()
-    secret = "test-malformed-diagnostic-must-not-leak"
-    monkeypatch.setattr(
-        service,
-        "_run_frozen_recovery",
-        Mock(
-            return_value={
-                "success": False,
-                "returncode": 23,
-                "stdout": secret,
-                "stderr": json.dumps(
-                    {
-                        "code": ["dagster_instance_migrate_failed"],
-                        "schema": "kor-travel-map.dagster-storage-migration-error.v1",
-                    }
-                ),
-            }
-        ),
-    )
+    """buildx 출력을 버리던 자리다 — 실패한 단계가 메시지에 보여야 한다."""
 
-    with pytest.raises(
-        DeploymentContractError,
-        match=r"Compose run command failed \(exit 23\)",
-    ) as captured:
-        service._run_pinned_runtime_rebuild_compose(
-            ["run", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
-            transaction=_opaque_transaction(),
+    runner = Mock(
+        return_value=subprocess.CompletedProcess(
+            ["docker"],
+            1,
+            stdout=b"",
+            stderr=b"#12 ERROR: failed to solve: process \"/bin/sh -c uv sync\" exit code 2",
         )
-
-    assert secret not in str(captured.value)
-
-
-@pytest.mark.parametrize(
-    ("code", "exposed"),
-    (
-        # 옛 닫힌 목록에 없던 코드 — Map이 코드를 더해도 원인이 보여야 한다.
-        ("dagster_storage_permit_unavailable", True),
-        ("postgres://user:secret@host/db", False),
-        ("Dagster_Instance_Failed", False),
-        ("x" * 65, False),
-    ),
-)
-def test_rebuild_compose_error_exposes_map_storage_codes_by_shape(
-    monkeypatch: pytest.MonkeyPatch,
-    code: str,
-    exposed: bool,
-) -> None:
-    service = ComposeService()
-    monkeypatch.setattr(
-        service,
-        "_run_frozen_recovery",
-        Mock(
-            return_value={
-                "success": False,
-                "returncode": 1,
-                "stdout": "",
-                "stderr": json.dumps(
-                    {
-                        "code": code,
-                        "schema": "kor-travel-map.dagster-storage-migration-error.v1",
-                    }
-                ),
-            }
+    )
+    monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
+    sources = cast(
+        Any,
+        SimpleNamespace(
+            source_for=lambda _role: SimpleNamespace(root=tmp_path, revision="a" * 40)
         ),
     )
 
     with pytest.raises(DeploymentContractError) as captured:
-        service._run_pinned_runtime_rebuild_compose(
-            ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
-            transaction=_opaque_transaction(),
+        compose_service_module._build_map_application_300_images(
+            sources=sources,
+            api_image="ktm-api:probe",
+            dagster_image="ktm-dagster:probe",
         )
 
     message = str(captured.value)
-    assert (f"; {code})" in message) is exposed
-    if not exposed:
-        assert code not in message
+    assert "application 300 image build failed (docker/api.Dockerfile, exit 1)" in message
+    assert "failed to solve" in message
+    assert runner.call_args.kwargs["capture_output"] is True
 
 
-def test_rebuild_compose_error_exposes_only_allowlisted_pinvi_bootstrap_code(
+def test_base_image_pull_failure_carries_the_registry_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    service = ComposeService()
-    secret = "test-pinvi-bootstrap-diagnostic-must-not-leak"
+    reference = "python@sha256:" + "b" * 64
+    calls: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(command)
+        if command[1] == "pull":
+            return subprocess.CompletedProcess(
+                command, 1, stdout=b"", stderr=b"toomanyrequests: You have reached your pull rate limit"
+            )
+        return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(compose_service_module.subprocess, "run", run)
     monkeypatch.setattr(
-        service,
-        "_run_frozen_recovery",
-        Mock(
-            return_value={
-                "success": False,
-                "returncode": 1,
-                "stdout": secret,
-                "stderr": (
-                    secret
-                    + "\n"
-                    + 'pinvi-admin-bootstrap-1  | {"error_code":"credential_file_owner_mismatch",'
-                    + '"phase":"credential_file"}'
-                ),
-            }
-        ),
+        compose_service_module,
+        "_map_application_300_python_base_references",
+        lambda _sources: (reference,),
     )
 
-    with pytest.raises(
-        DeploymentContractError,
-        match=r"Compose run command failed \(exit 1; pinvi:credential_file_owner_mismatch\)",
-    ) as captured:
-        service._run_pinned_runtime_rebuild_compose(
-            [
-                "--profile",
-                "bootstrap",
-                "run",
-                "--rm",
-                "--no-deps",
-                "-v",
-                "/run/manager/credential.json:/run/pinvi/bootstrap-admin.json:ro",
-                "-e",
-                "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE=/run/pinvi/bootstrap-admin.json",
-                "pinvi-admin-bootstrap",
-            ],
-            transaction=_opaque_transaction(),
+    with pytest.raises(DeploymentContractError) as captured:
+        compose_service_module._ensure_map_application_300_python_base_images(
+            cast(Any, object())
         )
 
-    assert secret not in str(captured.value)
-
-
-@pytest.mark.parametrize(
-    "stderr",
-    (
-        '{"error_code":"credential_file_owner_mismatch",'
-        '"phase":"credential_file","extra":"ignored"}',
-        '{"code":"dagster_instance_migrate_failed",'
-        '"schema":"kor-travel-map.dagster-storage-migration-error.v1"}',
-        '{"error_code":"credential_file_owner_mismatch",'
-        '"error_code":"internal_error","phase":"runtime"}',
-    ),
-)
-def test_rebuild_compose_error_rejects_noncanonical_pinvi_diagnostics(
-    monkeypatch: pytest.MonkeyPatch,
-    stderr: str,
-) -> None:
-    service = ComposeService()
-    secret = "test-pinvi-noncanonical-diagnostic-must-not-leak"
-    monkeypatch.setattr(
-        service,
-        "_run_frozen_recovery",
-        Mock(
-            return_value={
-                "success": False,
-                "returncode": 1,
-                "stdout": secret,
-                "stderr": stderr,
-            }
-        ),
-    )
-
-    with pytest.raises(
-        DeploymentContractError,
-        match=r"Compose run command failed \(exit 1\)",
-    ) as captured:
-        service._run_pinned_runtime_rebuild_compose(
-            ["run", "--rm", "--no-deps", "pinvi-admin-bootstrap"],
-            transaction=_opaque_transaction(),
-        )
-
-    assert secret not in str(captured.value)
-
-
-@pytest.mark.parametrize(
-    "stderr",
-    (
-        'untrusted-log | {"error_code":"credential_file_owner_mismatch",'
-        '"phase":"credential_file"}',
-        '123 | {"error_code":"credential_file_owner_mismatch",'
-        '"phase":"credential_file"}',
-        'pinvi-admin-bootstrap-run | {"error_code":"credential_file_owner_mismatch",'
-        '"phase":"credential_file"}',
-        'kor-travel-map-dagster-storage-migrate-1 | '
-        '{"error_code":"credential_file_owner_mismatch","phase":"credential_file"}',
-        'pinvi-admin-bootstrap-1 | {"error_code":"credential_file_owner_mismatch",'
-        '"error_code":"internal_error","phase":"runtime"}',
-    ),
-)
-def test_rebuild_compose_error_rejects_untrusted_pinvi_compose_prefix(
-    monkeypatch: pytest.MonkeyPatch,
-    stderr: str,
-) -> None:
-    service = ComposeService()
-    secret = "test-pinvi-prefix-spoof-must-not-leak"
-    monkeypatch.setattr(
-        service,
-        "_run_frozen_recovery",
-        Mock(
-            return_value={
-                "success": False,
-                "returncode": 1,
-                "stdout": secret,
-                "stderr": stderr,
-            }
-        ),
-    )
-
-    with pytest.raises(
-        DeploymentContractError,
-        match=r"Compose run command failed \(exit 1\)",
-    ) as captured:
-        service._run_pinned_runtime_rebuild_compose(
-            ["run", "--rm", "--no-deps", "pinvi-admin-bootstrap"],
-            transaction=_opaque_transaction(),
-        )
-
-    assert secret not in str(captured.value)
-
-
-def test_rebuild_compose_error_accepts_map_compose_prefix(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    monkeypatch.setattr(
-        service,
-        "_run_frozen_recovery",
-        Mock(
-            return_value={
-                "success": False,
-                "returncode": 1,
-                "stdout": "",
-                "stderr": (
-                    'kor-travel-map-dagster-storage-migrate-1 | '
-                    '{"code":"dagster_instance_migrate_failed",'
-                    '"schema":"kor-travel-map.dagster-storage-migration-error.v1"}'
-                ),
-            }
-        ),
-    )
-
-    with pytest.raises(
-        DeploymentContractError,
-        match=r"Compose run command failed \(exit 1; dagster_instance_migrate_failed\)",
-    ):
-        service._run_pinned_runtime_rebuild_compose(
-            ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
-            transaction=_opaque_transaction(),
-        )
-
-
-def test_rebuild_compose_error_rejects_pinvi_payload_for_map_migration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    secret = "test-map-cross-payload-must-not-leak"
-    monkeypatch.setattr(
-        service,
-        "_run_frozen_recovery",
-        Mock(
-            return_value={
-                "success": False,
-                "returncode": 1,
-                "stdout": secret,
-                "stderr": json.dumps(
-                    {
-                        "error_code": "credential_file_owner_mismatch",
-                        "phase": "credential_file",
-                    }
-                ),
-            }
-        ),
-    )
-
-    with pytest.raises(
-        DeploymentContractError,
-        match=r"Compose run command failed \(exit 1\)",
-    ) as captured:
-        service._run_pinned_runtime_rebuild_compose(
-            ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
-            transaction=_opaque_transaction(),
-        )
-
-    assert secret not in str(captured.value)
-
-
-def test_rebuild_compose_error_ignores_pinvi_code_with_wrong_phase(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = ComposeService()
-    secret = "test-pinvi-malformed-diagnostic-must-not-leak"
-    monkeypatch.setattr(
-        service,
-        "_run_frozen_recovery",
-        Mock(
-            return_value={
-                "success": False,
-                "returncode": 1,
-                "stdout": secret,
-                "stderr": json.dumps(
-                    {
-                        "error_code": "credential_file_owner_mismatch",
-                        "phase": "runtime",
-                    }
-                ),
-            }
-        ),
-    )
-
-    with pytest.raises(
-        DeploymentContractError,
-        match=r"Compose run command failed \(exit 1\)",
-    ) as captured:
-        service._run_pinned_runtime_rebuild_compose(
-            ["run", "--rm", "--no-deps", "pinvi-admin-bootstrap"],
-            transaction=_opaque_transaction(),
-        )
-
-    assert secret not in str(captured.value)
+    message = str(captured.value)
+    assert reference in message
+    assert "pull rate limit" in message
+    assert [command[1] for command in calls] == ["image", "pull"]
 
 
 def test_static_command_can_bypass_a_sealed_image_entrypoint(
@@ -1541,16 +1322,6 @@ def test_the_manager_mutation_lock_rejects_nonroot(
         with c6c_deployment.manager_mutation_lock():
             pass  # pragma: no cover - root gate must reject before entering.
     assert not c6c_deployment._C6C_GLOBAL_MUTATION_LOCK.exists()
-
-
-def test_journal_watermark_reports_unreached_without_a_path() -> None:
-    """경로를 모른 채 닫혔다면 그 실행은 journal에 도달한 적이 없다.
-
-    host lease 경합·root 아님·lifecycle 게이트 거부가 전부 여기다 — 종전에는
-    `unclassified`로 접혀 흔한 lock 경합 한 번이 회전 사이클 1회를 태웠다.
-    """
-
-    assert compose_service_module._PinnedRuntimeJournalWatermark().reached() is False
 
 
 def test_rebuild_timeouts_outlast_a_saturated_disk() -> None:
@@ -2018,8 +1789,8 @@ def test_a_replaced_database_is_refused_before_anything_changes(
 
     assert _mutating_operations(harness) == []
     assert read_deploy_status(harness.status_path) == previous
-    # in_progress 전의 거부다 — launcher는 claim을 해제한다.
-    assert compose_service_module.pinned_runtime_failed_before_journal(captured.value)
+    # 단계 밖(런타임 transaction 뒤)의 거부다 — JSON에 stage가 없다.
+    assert compose_service_module.rebuild_failure_stage(captured.value) is None
 
 
 def test_restart_resets_once_and_rebaselines_the_identities(
@@ -2074,8 +1845,8 @@ def test_a_failure_after_in_progress_cleans_up_and_the_rerun_finishes_without_re
     status = read_deploy_status(harness.status_path)
     assert status is not None and status.state == "in_progress"
     assert dict(status.databases or {}) == _deployed_databases()
-    # in_progress를 쓴 뒤의 실패다 — prejournal로 표시하지 않는다.
-    assert not compose_service_module.pinned_runtime_failed_before_journal(captured.value)
+    # in_progress를 쓴 뒤의 실패는 단계 밖이다.
+    assert compose_service_module.rebuild_failure_stage(captured.value) is None
 
     harness.live["heads"]["map_dagster"] = candidate.map_dagster_head
     harness.operations.clear()
@@ -2172,7 +1943,7 @@ def test_existing_candidate_images_are_not_rebuilt(
     assert not any(operation[0] == "build" for operation in harness.operations)
 
 
-def test_a_candidate_compose_build_failure_is_sealed_with_its_own_stage(
+def test_a_candidate_compose_build_failure_names_its_own_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     harness = _forward_harness(monkeypatch, tmp_path, images_present=False)
@@ -2188,12 +1959,12 @@ def test_a_candidate_compose_build_failure_is_sealed_with_its_own_stage(
 
     monkeypatch.setattr(harness.service, "_run_pinned_runtime_rebuild_compose", run_compose)
 
-    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
+    with pytest.raises(DeploymentContractError) as captured:
         harness.service.rebuild_pinned_runtime()
 
-    assert captured.value.stage == "candidate_compose_build"
-    assert "Compose build command failed" in str(captured.value.__cause__)
-    assert not compose_service_module.pinned_runtime_journal_was_reached(captured.value)
+    assert compose_service_module.rebuild_failure_stage(captured.value) == "candidate_compose_build"
+    # 원래 예외가 그대로 올라온다 — 봉인 문구로 바뀌지 않는다.
+    assert "Compose build command failed" in str(captured.value)
     assert read_deploy_status(harness.status_path) is None
     harness.mocks.reset.assert_not_called()
 
@@ -2204,10 +1975,10 @@ def test_a_candidate_contract_refusal_precedes_any_runtime_change(
     harness = _forward_harness(monkeypatch, tmp_path)
     harness.mocks.contract.side_effect = DeploymentContractError("candidate contract refused")
 
-    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
+    with pytest.raises(DeploymentContractError, match="candidate contract refused") as captured:
         harness.service.rebuild_pinned_runtime()
 
-    assert captured.value.stage == "candidate_contract"
+    assert compose_service_module.rebuild_failure_stage(captured.value) == "candidate_contract"
     assert harness.operations == []
     assert read_deploy_status(harness.status_path) is None
 
@@ -2218,10 +1989,10 @@ def test_external_prerequisites_are_checked_before_sources_are_materialized(
     harness = _forward_harness(monkeypatch, tmp_path)
     harness.mocks.prerequisites.side_effect = DeploymentContractError("geo is not ready")
 
-    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as captured:
+    with pytest.raises(DeploymentContractError, match="geo is not ready") as captured:
         harness.service.rebuild_pinned_runtime()
 
-    assert captured.value.stage == "external_prerequisites"
+    assert compose_service_module.rebuild_failure_stage(captured.value) == "external_prerequisites"
     harness.mocks.materialize.assert_not_called()
     assert harness.operations == []
 
@@ -2449,7 +2220,7 @@ def test_a_map_database_the_bootstrap_would_refuse_is_refused_before_the_runtime
 
     assert _mutating_operations(harness) == []
     assert read_deploy_status(harness.status_path) == previous
-    assert compose_service_module.pinned_runtime_failed_before_journal(captured.value)
+    assert compose_service_module.rebuild_failure_stage(captured.value) is None
 
 
 def test_restart_skips_the_map_database_precheck(

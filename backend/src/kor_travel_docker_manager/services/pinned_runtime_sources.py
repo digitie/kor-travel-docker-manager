@@ -29,6 +29,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.errors import command_output_tail
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
     PinnedRuntimeStatePaths,
     ensure_pinned_runtime_state_directory,
@@ -389,7 +390,12 @@ def _run_root_git(
         env=_root_git_environment(),
     )
     if completed.returncode != 0:
-        raise DeploymentContractError("pinned runtime source Git operation failed")
+        # 원인 원문을 싣는다(ADR-51 잃는 보장 G). URL userinfo는 출력 경계 스크러버가 가린다.
+        raise DeploymentContractError(
+            f"pinned runtime source Git operation failed: git {' '.join(arguments)} "
+            f"(exit {completed.returncode})"
+            + command_output_tail("stderr", completed.stderr)
+        )
     return completed
 
 

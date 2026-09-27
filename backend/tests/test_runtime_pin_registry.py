@@ -747,12 +747,11 @@ def test_a_blocked_pinset_no_longer_stops_the_deploy_at_admission(
         Mock(side_effect=DeploymentContractError("stop after admission")),
     )
 
-    with pytest.raises(compose_service_module.PinnedRuntimePrejournalFailure) as raised:
+    with pytest.raises(DeploymentContractError, match="stop after admission") as raised:
         compose_service_module.ComposeService().rebuild_pinned_runtime()
 
     # admission이 아니라 그다음 단계(state_initialization)에서 멈췄다.
-    assert raised.value.stage == "state_initialization"
-    assert "stop after admission" in str(raised.value.__cause__)
+    assert compose_service_module.rebuild_failure_stage(raised.value) == "state_initialization"
 
     materialize.assert_not_called()
     assert lock_entered
