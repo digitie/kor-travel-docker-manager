@@ -118,10 +118,10 @@ launcher 자신은 검증한 driver 종료 뒤 상속 받은 같은 lock descrip
 그 preflight가 private `deploy-status.json`이 현재 pinset으로 `committed`이고 파생 application head가
 같은지 대조한다. 옛 generation binding `match`는 ADR-51 D-1에서 없어졌다.
 
-**이 완료 판정 절차**는 private output leaf, `result.json`, stderr, HTTP·container·환경 원문을 읽지
-않는다 — 완료는 종료 코드와 고정 어휘 진단으로만 판정한다는 뜻이지 진단 일반의 원문 열람 금지가 아니다. 원문은 root 0600
-private leaf에 보존되며(launcher forensic capture 기본값), **공개 registry·tracked 문서·대화 기록으로
-옮기지 않는 것**이 규칙이다. 두 gate가 통과하면 호출 결과와 무관하게 rebuild는 완료된 것이며, 그
+**이 완료 판정 절차**는 private output leaf, `result.json`, stderr를 읽지 않는다 — 완료는 종료 코드로만
+판정한다는 뜻이다. 실패 원인은 root 0600 private leaf의 `stderr.log`에 비밀을 가린 원문으로 있고(§9,
+ADR-51 잃는 보장 G) 그것을 읽는 것이 진단의 첫 단계다. 다만 **공개 registry·tracked 문서·대화 기록으로
+옮기지 않는 것**이 규칙이다 — 스크러버가 못 가리는 모양이 남는다. 두 gate가 통과하면 호출 결과와 무관하게 rebuild는 완료된 것이며, 그
 뒤에만 새 root-owned leaf에서 M04/M05 one-shot을 한 번 실행할 수 있다. gate 통과 전에는 terminal block을
 쓰지 않는다.
 
@@ -663,76 +663,36 @@ pinned rebuild lease를 하나 더 잡았다), env snapshot과 lifecycle 판정�
 
 ## 9. 흔한 상황별 대응
 
-### "pinned rebuild candidate was already claimed"
+### "pinned rebuild가 실패했습니다"
 
 `run-pinned-rebuild-once`는 `ktdctl`을 부르기 **전에**
-`/var/lib/kor-travel-docker-manager/pinned-rebuild-once/<pinset>`에 `O_EXCL` claim을
-쓴다. 이 원장은 **append-only 감사 기록이자 동시성 가드**이지 재실행 권한의 정본이
-아니다 — 재실행 허용의 정본은 runtime pin/execution registry가 갖는다(§단발 실행의
-완료 판정). M05 트랙이 I-1 감사로 같은 개정을 먼저 받았고(ledger 파일명 ordinal),
-rebuild 쪽은 그 개정을 뒤늦게 받는다.
+`/var/lib/kor-travel-docker-manager/pinned-rebuild-once/<pinset>[-NN]`에 claim을 쓴다. 이 원장은
+**감사 기록**이다. 같은 pinset의 재실행은 다음 ordinal을 받으므로 claim이 재실행을 막지 않고,
+해제할 일도 없다 — ADR-51 G-2에서 해제 경로(`<pinset>.prejournal-NN` 개명, `claim-released`
+마커, `classification`)를 지웠다. 옛 호스트에 남은 그 파일들은 무해한 기록이다. 동시 실행은
+전역 lock G가 막는다.
 
-**durable journal 이전에 닫힌 실행은 claim이 해제된다.** CLI가 result에
-`classification: prejournal_failure`를 명시하면(= 이번 실행이 journal을 쓰지 않았다)
-launcher가 claim을 `<pinset>.prejournal-NN`으로 **개명**하고(삭제하지 않는다 — 원장은
-보존된다) `output_dir/claim-released` 마커(root 0600)를 남긴다. 시도 상한은 **5회**다
-— 1회가 1~2시간 + 이미지 4개 풀 빌드이고 그 잔여물을 수거하는 job이 없다.
+실패하면 이 순서로 본다.
 
-이 상태에서 할 일:
+1. **`output_dir/stderr.log`를 먼저 읽는다.** 원인 원문이 들어 있다 — 예외 체인 전체와, 실패한
+   명령의 stderr 끝부분(최대 16 KiB, one-shot `run`은 stdout도). `.env`와 프로세스 환경의 비밀은
+   가려져 있다. `.env`를 읽지 못했으면 원문 대신 그 사실 한 줄만 있다. root 0600이다.
+2. `result.json`은 `{"status": "failed", "stage": …}`다. `stage`는 실패가 난 재구축 단계 이름이다
+   (`environment_admission` … `runtime_transaction`). 단계 밖에서 났으면 키가 없다 — root 확인,
+   lock G 경합, lifecycle 게이트, registry 읽기(`prewrite_admission`), 런타임 transaction 뒤의
+   배포 본문. 후보 Compose 빌드 넷 중 어느 서비스인지는
+   stderr.log의 명령(`Compose build <service> failed`)이 말한다.
+3. 원인을 고친 뒤 **같은 pinset을 새 output leaf로 다시 돌린다.** 배포는 마이그레이션 전진이라
+   멱등이다 — 회전(`rotate-pair`)은 필요 없다. 재시도가 쌓이면 이전 output leaf와 dangling 후보
+   이미지를 정리한다(디스크가 차면 그 자체가 다음 실패가 된다).
 
-1. `output_dir/claim-released`가 있으면 **같은 pinset을 새 output leaf로 재실행한다.**
-   회전(`rotate-pair`)은 필요 없다.
-2. 재실행 전에 이전 output leaf와 dangling candidate 이미지를 정리한다. 재시도가
-   누적되면 디스크가 차고, 디스크가 차면 그 자체가 다음 prejournal 실패를 만든다.
-3. `result.json`의 `stage`로 원인을 좁힌다. `application_base_images`/
-   `application_builder`는 대개 네트워크(레지스트리 rate limit·DNS)이고,
-   `candidate_compose_build`는 후보 이미지 빌드 자체다.
-
-   `stage`가 `candidate_compose_build`면 `service`가 넷 중 어느 빌드가 죽었는지
-   말해 준다. 값은 `COMPOSE_BUILT_RUNTIME_SERVICES`에서만 나온다.
-
-   **`stage`가 없으면** 봉인 밖에서 닫힌 것이다. 그 경우 `--json`은 원문을
-   내지 않으므로 stdout·stderr 어디에도 진단이 없다 — `stderr.log`가 0바이트인
-   것이 정상이다.
-
-   > **원문을 얻으려고 `ktdctl pinvi-pair rebuild-pinned --confirm`을 플래그 없이
-   > 돌리지 마라.** 그건 진단이 아니라 **전체 destructive rebuild 재시도**다 —
-   > host lease를 다시 잡고, root `.env`의 PinVi role credential을 회전시키고,
-   > 후보 이미지를 다시 빌드하고, 통과하면 journal을 쓰고 DB를 리셋한다.
-   > 그러면서 **원장에 claim을 남기지 않아** append-only 감사 기록에 구멍을
-   > 낸다(이 절 앞머리의 보증이 깨진다). 부득이 돌려야 한다면 launcher를
-   > 통하거나, 최소한 실행 전에 claim을 수동으로 기록한다.
-   >
-   > 봉인 밖 실패가 반복되면 원문을 캐는 대신 **그 구간을 봉인해 고정 어휘를
-   > 넓히는 것**이 이 트랙의 절차다. 그래야 다음 실행이 값비싼 반복 없이
-   > 지점을 짚는다.
-4. 마커가 **없으면** 해제되지 않은 것이다 — 이번 실행이 durable journal 이후까지
-   갔거나, 소비 여부를 증명하지 못했다는 뜻이다. 그때만 아래 회전 절차로 간다.
-
-> `prejournal_failure`는 "이번 실행이 durable journal을 쓰지 않았다"는 뜻이지
-> "후보가 소비된 적 없다"가 아니다. resume 실행도 이 분류를 낼 수 있으므로,
-> 직접 `ktdctl pinvi-pair rebuild-pinned`를 돌린 적이 있다면 journal 상태를 먼저 본다.
+> 원문을 얻으려고 launcher를 우회해 `ktdctl pinvi-pair rebuild-pinned --confirm`을 직접 돌리지
+> 마라. 그건 진단이 아니라 배포 재시도이고 원장에 claim을 남기지 않는다. 원문은 이미
+> stderr.log에 있다.
 >
-> 그 판정은 이제 선언이 아니라 **관측**이다. 다만 관측이 성립한 실패에만
-> 적용된다 — journal 경로를 알아낸 뒤(`prewrite_admission`의
-> `pinned_runtime_state_paths`) 닫힌 실행만 파일 존재로 판정된다. 그보다
-> 앞에서 닫힌 실행(root 게이트 · host lease 경합 · env snapshot · lifecycle
-> 게이트)은 journal이 있어도 `prejournal_failure`를 낸다. 거기서는 아직
-> 어느 후보가 걸려 있는지조차 확정되지 않았고, 그 구간의 무조건 소각이
-> 이 트랙이 처음 닫은 결함이다.
->
-> pinset을 식별한 **뒤** 경로 계산이 실패하면(잘못된 `.env` 하나로 가능하다)
-> 해제하지 않는다 — 그때는 무엇이 걸려 있는지 알면서 상태를 모르는 것이라
-> 불확실을 유지 쪽으로 접는다.
->
-> journal이 이미 있는 상태에서 **봉인된** 실패가 나면 `postjournal_failure`이고
-> launcher는 claim을 유지한다. 봉인은 **메시지 정책**이고 관측은 **소각
-> 정책**이라 서로 다른 질문이다.
->
-> 경계는 journal이지 mutation이 아니다. journal write 전에도 root `.env`
-> role credential 회전·source materialize·후보 이미지 빌드는 이미 일어난다.
-> claim이 동시성 가드이자 감사 원장이고 재실행 권한의 정본은 runtime
-> pin/execution registry라는 전제 위에서만 이 경계가 성립한다.
+> 스크러버가 못 가리는 모양이 남는다(ADR-51 잃는 보장 G): `.env`·환경에 없는 비밀, 이름이 목록에
+> 걸리지 않는 key의 값, 변형된 값(JSON escape·percent-encoding·base64·compose `$$`), 4자 미만
+> 값. 그래서 stderr.log는 root 0600 leaf 밖으로 옮기지 않는다.
 
 ### "rebuild-pinned가 거부됩니다"
 

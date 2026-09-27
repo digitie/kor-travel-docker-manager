@@ -1,12 +1,11 @@
-"""`run-pinned-rebuild-once`의 소각 결정 표면 회귀 테스트.
+"""`run-pinned-rebuild-once`의 실행 이후 구간 회귀 테스트.
 
-이 launcher는 `ktdctl` 실행 **전에** `O_EXCL` claim을 쓰고, 실패하면 같은 pinset
-재실행이 영구 거절된다 — 즉 rebuild 실패 = 회전 사이클 1회 손실(새 Map+PinVi
-revision부터 다시). 그런데 이 파일을 **실제로 실행하는 테스트가 0건**이었다
-(적대 감사).
+launcher는 `ktdctl` 실행 전에 감사용 claim을 쓴다. ADR-51 뒤로 같은 pinset의 재실행은
+다음 ordinal을 받으므로 claim을 해제할 일이 없다(G-2에서 해제 경로를 지웠다). 남은 일은
+result·stderr를 root 0600으로 옮기고 자식 종료값을 그대로 전달하는 것이다.
 
-여기서는 launcher tail(실행 이후 구간)을 잘라내 스텁 `ktdctl`과 함께 진짜 bash로
-돌린다. 텍스트 단언이 아니라 **동작**을 본다.
+launcher tail을 잘라내 스텁 `ktdctl`과 함께 진짜 bash로 돌린다. 텍스트 단언이 아니라
+**동작**을 본다.
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ import pytest
 
 _LAUNCHER = Path(__file__).resolve().parents[2] / "scripts/run-pinned-rebuild-once"
 
-# durable journal 이전에 fail-close하는 stage — compose_service의 정본과 같아야 한다.
 def _tail(launcher: str) -> str:
     start = launcher.index('result_tmp="${output_dir}/.result.json.tmp"')
     return launcher[start:]
@@ -87,81 +85,43 @@ def _run_tail(
     return completed, claim
 
 
-def test_prejournal_failure_releases_the_claim_for_retry(tmp_path: Path) -> None:
-    """CLI가 "아무것도 소비하지 않았다"를 명시하면 재시도를 허용해야 한다.
-
-    종전에는 launcher가 `result.json`을 dict인지만 보고 버려서, `docker pull` 한
-    번의 rate limit(`application_base_images`)이나 빌드 중 DNS 순간 장애
-    (`application_builder`)가 회전 사이클 1회를 태웠다.
-    """
-
-    completed, claim = _run_tail(
-        tmp_path,
-        child_status=2,
-        result={
-            "status": "failed",
-            "classification": "prejournal_failure",
-            "stage": "application_base_images",
-        },
-    )
-
-    assert completed.returncode == 2, completed.stderr
-    assert not claim.exists(), "claim이 그대로면 같은 pinset 재실행이 영구 거절된다"
-    released = list(claim.parent.glob(claim.name + ".prejournal-*"))
-    assert len(released) == 1, "해제는 삭제가 아니라 개명이어야 한다(원장 보존)"
-    marker = tmp_path / "out" / "claim-released"
-    assert marker.is_file(), "해제 사실이 output leaf에서 판독 가능해야 한다"
-    assert oct(marker.stat().st_mode)[-3:] == "600"
-    assert "may be retried" in completed.stderr
-
-
 @pytest.mark.parametrize(
     ("label", "child_status", "result"),
     [
-        ("post_journal_failure", 1, {"status": "failed"}),
-        ("unknown_classification", 2, {"status": "failed", "classification": "other"}),
-        # 봉인된 실패라도 journal이 이미 있으면 CLI가 이 값을 낸다. launcher는
-        # `prejournal_failure`에서만 해제하므로 여기서도 유지여야 한다.
+        # 옛 CLI가 내던 해제 신호다. 새 launcher는 이것도 claim을 건드리지 않는다.
         (
-            "postjournal_failure",
+            "legacy_prejournal_payload",
             2,
             {
                 "status": "failed",
-                "classification": "postjournal_failure",
-                "stage": "external_prerequisites",
+                "classification": "prejournal_failure",
+                "stage": "application_base_images",
             },
         ),
+        ("staged_failure", 2, {"status": "failed", "stage": "candidate_compose_build"}),
+        ("unstaged_failure", 2, {"status": "failed"}),
         ("unparseable", 2, None),
-        # 아래 셋은 해제 술어의 각 연접을 단독으로 판별한다 — 하나만 지워도
-        # 잡히도록(적대 리뷰 M-2: 종전 표는 전부 다른 이유로 먼저 걸러졌다).
-        (
-            "status_not_failed",
-            2,
-            {"status": "succeeded", "classification": "prejournal_failure"},
-        ),
-        (
-            "classification_unclassified",
-            2,
-            {"status": "failed", "classification": "unclassified"},
-        ),
-        (
-            "matching_payload_wrong_exit",
-            3,
-            {"status": "failed", "classification": "prejournal_failure"},
-        ),
         ("success", 0, {"status": "succeeded"}),
     ],
 )
-def test_claim_is_kept_without_positive_evidence(
+def test_the_claim_is_never_released(
     tmp_path: Path, label: str, child_status: int, result: object
 ) -> None:
-    """양성 증거가 없으면 소각(=claim 유지)이 기본값이다 — 과도 완화 방지 가드."""
+    """결과가 무엇이든 claim은 그 자리에 남고 해제 흔적도 없다(ADR-51 G-2).
+
+    같은 pinset 재실행은 다음 ordinal을 받으므로 해제가 필요 없다. 원인은 stderr.log에 있다.
+    """
 
     completed, claim = _run_tail(tmp_path, child_status=child_status, result=result)
 
     assert completed.returncode == child_status, completed.stderr
     assert claim.exists(), label
-    assert not list(claim.parent.glob(claim.name + ".prejournal-*")), label
+    assert sorted(item.name for item in claim.parent.iterdir()) == [claim.name], label
+    assert not (tmp_path / "out" / "claim-released").exists(), label
+    result_path = tmp_path / "out" / "result.json"
+    assert result_path.is_file(), label
+    assert oct(result_path.stat().st_mode)[-3:] == "600", label
+    assert oct((tmp_path / "out" / "stderr.log").stat().st_mode)[-3:] == "600", label
 
 
 @pytest.mark.parametrize("child_status", [126, 127, 137, 143])
@@ -182,8 +142,8 @@ def test_child_exit_status_survives_an_unreadable_result(
     assert "not a JSON object" in completed.stderr
 
 
-def test_burn_decision_commands_use_absolute_paths() -> None:
-    """소각·신뢰 판정을 PATH에 맡기지 않는다(형제 launcher와 대칭)."""
+def test_launcher_commands_use_absolute_paths() -> None:
+    """claim·결과 처리를 PATH에 맡기지 않는다(형제 launcher와 대칭)."""
 
     launcher = _LAUNCHER.read_text(encoding="utf-8")
     import re
@@ -191,39 +151,6 @@ def test_burn_decision_commands_use_absolute_paths() -> None:
     for command in ("python3", "install", "chown", "chmod", "mv", "id", "stat"):
         bare = re.search(r"(?m)(^|[^/\w])" + command + r"[ ]-", launcher)
         assert bare is None, f"{command}가 PATH에 의존한다: {bare.group(0) if bare else ''}"
-
-
-def test_repeated_prejournal_failures_preserve_every_record(tmp_path: Path) -> None:
-    """두 번째 prejournal 실패가 첫 기록을 덮어쓰면 안 된다.
-
-    `os.rename`은 POSIX에서 대상을 **조용히 덮어쓴다** — `FileExistsError`로 빈
-    슬롯을 찾는 형태는 동작하지 않는다(실측 확인). 원장은 "이 pinset이 몇 번
-    시도됐는가"의 유일한 증거이므로 기록을 잃으면 감사가 무너진다.
-    """
-
-    pinset = "b" * 64
-    prejournal = {
-        "status": "failed",
-        "classification": "prejournal_failure",
-        "stage": "application_builder",
-    }
-
-    first, claim = _run_tail(tmp_path, child_status=2, result=prejournal, pinset=pinset)
-    assert first.returncode == 2, first.stderr
-    ledger = claim.parent
-    assert sorted(item.name for item in ledger.iterdir()) == [f"{pinset}.prejournal-01"]
-
-    # 같은 원장에 두 번째 시도를 얹는다(새 claim을 쓰고 다시 실패).
-    claim.write_text("{}" + chr(10), encoding="utf-8")
-    second_output = tmp_path / "out2"
-    second_output.mkdir()
-    second, _claim = _run_tail(
-        tmp_path, child_status=2, result=prejournal, pinset=pinset, output_name="out2"
-    )
-    assert second.returncode == 2, second.stderr
-
-    records = sorted(item.name for item in ledger.iterdir())
-    assert records == [f"{pinset}.prejournal-01", f"{pinset}.prejournal-02"], records
 
 
 @pytest.mark.parametrize("body", [None, [1, 2, 3]])

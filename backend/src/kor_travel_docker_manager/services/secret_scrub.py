@@ -8,9 +8,12 @@
 2. 값 안의 URL userinfo 비밀번호(`scheme://user:password@`). DSN 이름은 위 목록에 걸리지 않는다.
 3. 호출자가 넘기는 추가 값(M05가 실행마다 만드는 비밀처럼 `.env`에 없는 것).
 
-원천은 프로세스 환경과 `.env`다. `.env`를 읽지 못하면 원문을 내지 않는다. 이 규칙에 걸리지 않는
-비밀 — `.env`·환경에 없거나, 이름이 목록에 걸리지 않거나, 변형(JSON escape, percent-encoding, base64,
-compose `$$`)되었거나, 4자 미만인 값 — 은 빠져나갈 수 있다. 그것이 잃는 보장 G의 남은 모양이다.
+원천은 프로세스 환경과 `.env`다. 한 key가 여러 값을 가질 수 있어 모두 가린다 — compose는 프로세스
+환경을 `.env`보다 앞세우고, 재구축은 `.env`를 보간하지 않은 원문으로 읽는다. `.env`를 읽지 못하면 원문을
+내지 않는다. 이 규칙에 걸리지 않는 비밀 — `.env`·환경에 없거나, 이름이 목록에 걸리지 않거나, 변형(JSON
+escape, percent-encoding, base64, compose `$$`)되었거나, 잘린 조각(psql이 긴 문장을 줄여 되풀이하는
+`LINE 1: ...`, tail 경계에서 잘린 여러 줄 값)이거나, 4자 미만인 값 — 은 빠져나갈 수 있다. 그것이 잃는
+보장 G의 남은 모양이다.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import os
 import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from typing import TypeAlias
 
 from dotenv import dotenv_values
 
@@ -48,6 +52,9 @@ URL_USERINFO_RE = re.compile(
 )
 _MINIMUM_SECRET_LENGTH = 4
 
+#: 가릴 원천. key 하나가 여러 값을 가질 수 있어(`load_secret_environment`) 쌍의 목록도 받는다.
+SecretEnvironment: TypeAlias = Mapping[str, str | None] | list[tuple[str, str | None]]
+
 
 def is_sensitive_key(key: str) -> bool:
     upper_key = key.upper()
@@ -64,14 +71,15 @@ def redact_value_credentials(value: str) -> str:
 
 def redact_secret_text(
     text: str,
-    environment: Mapping[str, str | None],
+    environment: SecretEnvironment,
     extra_values: Iterable[str] = (),
 ) -> str:
     """임의 텍스트에서 비밀 값과 URL userinfo 비밀번호를 가린다(규칙은 모듈 docstring)."""
 
+    pairs = environment.items() if isinstance(environment, Mapping) else environment
     candidates = {
         value
-        for key, value in environment.items()
+        for key, value in pairs
         if value and len(value) >= _MINIMUM_SECRET_LENGTH and is_sensitive_key(key)
     }
     candidates.update(
@@ -83,22 +91,33 @@ def redact_secret_text(
     return redact_value_credentials(text)
 
 
-def load_secret_environment(env_path: str | Path) -> dict[str, str | None]:
-    """프로세스 환경과 `.env`를 합친다.
+def load_secret_environment(env_path: str | Path) -> list[tuple[str, str | None]]:
+    """프로세스 환경과 `.env`의 key·값 쌍을 **합치지 않고** 모은다.
+
+    합치면 한쪽 값이 사라진다. compose는 프로세스 환경을 앞세우고 스크러버가 `.env`를 앞세우면, 둘이
+    다를 때 compose가 실제로 쓴 값이 가려지지 않는다. `.env`는 보간한 값(`A_PASSWORD=${B}`)과 원문을
+    둘 다 본다 — 재구축은 보간하지 않은 원문을 psql·컨테이너에 넘긴다(적대 리뷰 G-2 F2·F3).
 
     `.env`가 없으면 가릴 것도 없다(개발 checkout). 있는데 읽지 못하면(권한, 인코딩) 예외를 그대로
-    올린다 — 호출자는 원문을 내지 않는다. 보간된 값도 함께 본다(`A_PASSWORD=${B}`).
+    올린다 — 호출자는 원문을 내지 않는다.
     """
 
-    return {**os.environ, **dotenv_values(env_path)}
+    return [
+        *os.environ.items(),
+        *dotenv_values(env_path).items(),
+        *dotenv_values(env_path, interpolate=False).items(),
+    ]
 
 
-_WITHHELD = "failure detail withheld: .env could not be read for redaction"
+_WITHHELD = (
+    "failure detail withheld: .env could not be read for redaction "
+    "(run as a user who can read it, usually root, to see the cause)"
+)
 
 
 def redact_structure(
     value: object,
-    environment: Mapping[str, str | None],
+    environment: SecretEnvironment,
     extra_values: Iterable[str] = (),
 ) -> object:
     """dict·list·tuple 안의 모든 문자열 잎을 가린다. 모양(키·중첩)은 그대로 둔다."""

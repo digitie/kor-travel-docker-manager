@@ -91,6 +91,7 @@ from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
     DeploymentContractError,
+    command_output_tail,
 )
 from kor_travel_docker_manager.services.map_application_candidate import (
     MapApplicationCandidate,
@@ -174,216 +175,46 @@ _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
     "kor-travel-geo-api",
     "kor-travel-concierge-api",
 )
-_PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES = frozenset(
-    {
-        "environment_admission",
-        "state_initialization",
-        "prebuild_snapshot",
-        "external_prerequisites",
-        "source_materialization",
-        "application_base_images",
-        "application_builder",
-        "application_candidate",
-        "candidate_snapshot",
-        "candidate_contract",
-        # journal 직전 runtime transaction 구간. 종전에는 봉인 밖이라 여기서
-        # 닫히면 result가 `unclassified`가 되고, `--json`은 원문을 내지 않아
-        # **어디에도 진단이 남지 않았다**(2026-09-02 rebuild: 29분 실행,
-        # stderr 0바이트). 이 트랙의 확립된 절차대로 원문을 노출하는 대신
-        # 비밀 없는 고정 어휘를 넓혀 다음 실행이 지점을 특정하게 한다.
-        # fresh candidate 빌드 구간. 이 흐름에서 가장 오래 걸리고 가장 잘
-        # 실패하는 곳인데 봉인 밖이었다 — 2026-09-02 rebuild가 `pinvi-web`
-        # 빌드에서 exit 1로 닫히고 `unclassified`가 돼 회전 사이클 1회를 태웠다.
-        "candidate_compose_build",
-        "candidate_images",
-        "candidate_bootstrap_settings",
-        "candidate_heads",
-        "runtime_generation",
-        "runtime_transaction",
-    }
-)
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
 # profile을 해석 단계에서 빼면 `run --profile bootstrap`가 같은 문서에서 service를 찾지 못한다.
 _FROZEN_COMPOSE_PROFILES = ("bootstrap",)
 
 
-class PinnedRuntimePrejournalFailure(DeploymentContractError):
-    """journal 전 후보 준비 실패를 비밀 없는 고정 단계로 전달한다."""
-
-    def __init__(self, stage: str, service: str | None = None) -> None:
-        if stage not in _PINNED_RUNTIME_PREJOURNAL_FAILURE_STAGES:
-            raise ValueError("pinned runtime pre-journal failure stage is invalid")
-        # 후보 Compose 빌드는 서비스가 넷이고 각각 다른 이유로 죽는다.
-        # stage 하나로 접으면 다음 실행이 여전히 어느 서비스인지 모른 채
-        # 30분을 다시 쓴다. 값은 `COMPOSE_BUILT_RUNTIME_SERVICES` 안에서만
-        # 나오므로 비밀이 없다 — 자유 문자열을 여는 것이 아니다.
-        if service is not None and service not in COMPOSE_BUILT_RUNTIME_SERVICES:
-            raise ValueError("pinned runtime compose build service is invalid")
-        self.stage = stage
-        self.service = service
-        super().__init__("pinned runtime candidate preparation failed")
-
-
-_PINNED_RUNTIME_PREJOURNAL_MARK = "_ktdm_pinned_runtime_failed_before_journal"
-
-
-class _PinnedRuntimeJournalWatermark:
-    """이 실행이 배포 상태를 ``in_progress``로 바꿨는지 기록한다(ADR-51).
-
-    launcher(`run-pinned-rebuild-once`)는 이 판정 하나로 claim을 해제할지 정한다.
-    ``in_progress``를 쓰기 전의 실패는 **데이터를** 바꾸지 않았으므로 해제한다(DB 서버
-    기동·이미지 태그는 그 전에 일어날 수 있지만 모두 멱등이다). 쓴 뒤의
-    실패도 이제 재시도할 수 있지만 launcher의 attempt 원장은 감사 흔적으로 남긴다.
-    """
-
-    def __init__(self) -> None:
-        self._reached = False
-
-    def mark_reached(self) -> None:
-        self._reached = True
-
-    def reached(self) -> bool:
-        return self._reached
-
-
-def _mark_pinned_runtime_prejournal(exc: DeploymentContractError) -> None:
-    """예외를 **바꾸지 않고** "이 실행은 journal을 쓰지 않았다"만 붙인다.
-
-    타입·메시지·traceback이 그대로라 상위 `except` 절이 하나도 달라지지 않고,
-    비-JSON 경로의 원문 출력도 그대로다. 달라지는 것은 JSON classification 하나다.
-    """
-
-    setattr(exc, _PINNED_RUNTIME_PREJOURNAL_MARK, True)
-
-
-def pinned_runtime_failed_before_journal(exc: BaseException) -> bool:
-    """봉인하지 않은 실패가 journal 전이었는지 읽는다."""
-
-    return getattr(exc, _PINNED_RUNTIME_PREJOURNAL_MARK, False) is True
-
-
-_PINNED_RUNTIME_JOURNAL_REACHED_MARK = "_ktdm_pinned_runtime_journal_reached"
-
-
-def _mark_pinned_runtime_journal_reached(exc: DeploymentContractError) -> None:
-    """봉인된 실패에도 관측 결과를 싣는다.
-
-    **봉인은 메시지 정책이고 watermark는 소각 정책이다 — 다른 질문이다.**
-    종전에는 봉인된 실패가 무조건 `prejournal_failure`였다. 그런데 봉인 단계는
-    전부 resume 분기보다 **앞**에서 돌기 때문에, journal이 이미 존재하는
-    resume 실행에서 봉인 단계가 실패하면 — 예: rustfs가 불건강해
-    `external_prerequisites`가 거절 — **이미 DB를 리셋하고 compose를 적용한**
-    후보의 claim이 해제됐다(적대 리뷰 M-2).
-    """
-
-    setattr(exc, _PINNED_RUNTIME_JOURNAL_REACHED_MARK, True)
-
-
-def pinned_runtime_journal_was_reached(exc: BaseException) -> bool:
-    """봉인된 실패 시점에 journal이 이미 존재했는지 읽는다."""
-
-    return getattr(exc, _PINNED_RUNTIME_JOURNAL_REACHED_MARK, False) is True
-
-
-_PINNED_RUNTIME_COMPOSE_SERVICE_MARK = "_ktdm_pinned_runtime_compose_service"
+_REBUILD_STAGE_ATTRIBUTE = "_ktdm_rebuild_stage"
 
 
 @contextmanager
-def _pinned_runtime_prejournal_step(stage: str) -> Iterator[None]:
-    """journal 전 ``DeploymentContractError``를 safe stage로 봉인한다."""
+def _rebuild_stage(stage: str) -> Iterator[None]:
+    """실패한 재구축 단계 이름을 예외에 붙이고 **원래 예외를 그대로** 다시 던진다.
+
+    ADR-51 잃는 보장 G: 예전에는 이 자리가 원인을 고정 문구 하나로 봉인했다. 이제 타입·
+    메시지·traceback은 바뀌지 않고 단계 이름만 더해진다. 가장 안쪽 단계가 이긴다.
+    """
 
     try:
         yield
-    except PinnedRuntimePrejournalFailure:
+    except Exception as exc:
+        if rebuild_failure_stage(exc) is None:
+            try:
+                setattr(exc, _REBUILD_STAGE_ATTRIBUTE, stage)
+            except (AttributeError, TypeError):  # pragma: no cover - 속성을 못 받는 예외
+                pass
         raise
-    except DeploymentContractError as exc:
-        service = getattr(exc, _PINNED_RUNTIME_COMPOSE_SERVICE_MARK, None)
-        if service not in COMPOSE_BUILT_RUNTIME_SERVICES:
-            service = None
-        raise PinnedRuntimePrejournalFailure(stage, service) from exc
+
+
+def rebuild_failure_stage(exc: BaseException) -> str | None:
+    """재구축 실패가 난 단계 이름. 단계 밖(journal 뒤 배포 본문 등)이면 ``None``."""
+
+    stage = getattr(exc, _REBUILD_STAGE_ATTRIBUTE, None)
+    return stage if isinstance(stage, str) else None
 
 
 _MAP_APPLICATION_300_POSTGRES_REFERENCE = "postgis/postgis:16-3.5-alpine"
 _ROLE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
-_MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA = (
-    "kor-travel-map.dagster-storage-migration-error.v1"
-)
-# 닫힌 코드 목록이 아니라 모양만 본다(ADR-51 G). 목록이면 Map이 코드를 더하거나 빼는
-# 리비전마다 Manager가 새 원인을 조용히 삼킨다. 모양 검사는 값이 섞여 드는 것만 막는다.
-_MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODE = re.compile(r"[a-z][a-z0-9_]{0,63}")
-_PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE = {
-    "alembic_config_missing": "migration",
-    "credential_file_changed": "credential_file",
-    "credential_file_env_missing": "credential_file",
-    "credential_file_json_invalid": "credential_file",
-    "credential_file_link_count_invalid": "credential_file",
-    "credential_file_missing": "credential_file",
-    "credential_file_mode_invalid": "credential_file",
-    "credential_file_not_regular": "credential_file",
-    "credential_file_owner_mismatch": "credential_file",
-    "credential_file_path_invalid": "credential_file",
-    "credential_file_size_invalid": "credential_file",
-    "credential_file_unavailable": "credential_file",
-    "internal_error": "runtime",
-    "invalid_arguments": "startup",
-    "migration_failed": "migration",
-    "schema_revision_mismatch": "schema_check",
-    "schema_version_invalid": "schema_check",
-    "schema_version_unavailable": "schema_check",
-    "static_head_unavailable": "migration",
-}
-
-
-@dataclass(frozen=True)
-class _ComposeFailureDiagnostic:
-    """pinned runtime rebuild 실패 진단 중 사람이 읽는 문구.
-
-    ``message_suffix``는 로그·CLI에 그대로 보이는 문구다(``"; pinvi:code"`` 형태).
-    예전에는 PinVi role lifecycle 분류용 구조화 코드도 함께 실었지만, 그것을 읽던
-    v8 journal 차단 기록이 ADR-51 B3에서 사라져 문구만 남았다.
-    """
-
-    message_suffix: str
-
-
 class PinnedRuntimeComposeFailure(DeploymentContractError):
     """pinned runtime rebuild Compose 실행 실패."""
-
-
-# fresh Dagster DB의 PostgreSQL readiness window를 덮되 총 retry 대기는 58초를 넘지 않는다.
-
-
-def _json_object_without_duplicate_keys(
-    pairs: list[tuple[str, Any]],
-) -> dict[str, Any]:
-    """typed one-shot error envelope의 중복 JSON key를 fail-close한다."""
-
-    payload: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in payload:
-            raise ValueError("duplicate JSON object key")
-        payload[key] = value
-    return payload
-
-
-def _compose_prefixed_typed_error_candidate(line: str, *, target: str) -> str | None:
-    """정확한 Compose service attach prefix 뒤의 JSON 한 줄만 반환한다."""
-
-    prefix, separator, candidate = line.partition(" | ")
-    if not separator:
-        return None
-    normalized_prefix = prefix.strip()
-    if normalized_prefix == target:
-        return candidate
-    replica_prefix = f"{target}-"
-    if not normalized_prefix.startswith(replica_prefix):
-        return None
-    replica_suffix = normalized_prefix.removeprefix(replica_prefix)
-    if replica_suffix and replica_suffix.isdecimal():
-        return candidate
-    return None
 
 
 def _require_pinned_runtime_rebuild_root() -> None:
@@ -1108,18 +939,11 @@ def _pinned_runtime_rebuild_environment_lock(
     """
 
     with manager_mutation_lock():
-        with _pinned_runtime_prejournal_step("environment_admission"):
+        with _rebuild_stage("environment_admission"):
             environment_snapshot = _capture_pinned_runtime_rebuild_environment_snapshot()
-        # 배포 lifecycle 게이트는 **봉인 밖**이다. 이 거부는 호스트 상태에서 유도한
-        # 진단이 아니라 고정 정책 문장("rehearsal/rebuildable이 아니다")이라 비밀이
-        # 없고, 운영자가 알아야 하는 유일한 정보가 그 문장 자체다. 이것까지
-        # "candidate preparation failed"로 봉인하면 왜 거부됐는지 알 방법이 사라진다.
-        #
-        # 다만 **봉인 여부와 소각 여부는 다른 질문**이다. 이 거부는 어떤 write보다
-        # 먼저 일어나 후보를 소비하지 않으며, 그 사실은 여기서 선언하지 않는다 —
-        # `rebuild_pinned_runtime`의 journal watermark가 관측으로 답한다.
+        # 배포 lifecycle 게이트는 단계 밖이다 — 거부 문장 자체가 운영자가 알아야 할 전부다.
         assert_pinned_runtime_rebuild_allowed(environment=environment_snapshot.effective)
-        with _pinned_runtime_prejournal_step("environment_admission"):
+        with _rebuild_stage("environment_admission"):
             validate_c6c_operation_tokens(
                 environment_snapshot.effective,
                 require_nonempty=True,
@@ -2104,18 +1928,10 @@ def _validate_c6c_wait_timeout(wait_timeout: int) -> None:
         )
 
 
-# issue #109: `kor-travel-map-api`의 entrypoint는 기동마다 무조건 `alembic upgrade
-# head`를 실행한다. floating tag(`latest-main`)로 배포된 이미지가 pin보다 오래
-# 빌드된 채였고, 그 이미지의 alembic head(0072)까지만 prod schema가 조용히
-# 올라가 공개 표면이 0이 됐다(issue #109). candidate image 자체를 절대 기동하지
-# 않고 `alembic heads`만 읽어(DB에 아무 것도 하지 않는 static inspection) operator가
-# 명시한 기대 head와 다르면 배포를 시작하기 전에 fail-close한다.
-#
-# 이 두 타임아웃은 멈춤 감지용이지 성능 예산이 아니다. n150은 SATA SSD가 92% 차서 IO
+# 이 타임아웃은 멈춤 감지용이지 성능 예산이 아니다. n150은 SATA SSD가 92% 차서 IO
 # 압력 `full`이 상시 50~60%이고, 2026-09-26 실측에서 `docker run --rm /bin/true` 하나가
 # 112초, `ktm-application-schema head`가 74초 걸렸다 — 60초였을 때 t57a가 명령은
 # 정상인데 타임아웃으로 죽었다.
-_ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS = 600
 _PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 600
 #: compose `--wait-timeout` 초. **정수**로 둔다 — head는 revision 문자열이라
 #: 형이 다르고, 이 파일에 따옴표 두른 숫자가 남지 않아 head 리터럴 게이트가
@@ -2126,68 +1942,6 @@ _PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 600
 _COMPOSE_WAIT_TIMEOUT_SECONDS: Final = 900
 
 
-def _validate_expected_alembic_head(expected_alembic_head: str) -> None:
-    if (
-        not expected_alembic_head
-        or expected_alembic_head != expected_alembic_head.strip()
-        or "\n" in expected_alembic_head
-        or "\r" in expected_alembic_head
-        or len(expected_alembic_head) > 128
-    ):
-        raise DeploymentContractError("expected alembic head is invalid")
-
-
-def _assert_candidate_image_alembic_head(
-    image: str,
-    *,
-    expected_alembic_head: str,
-    label: str,
-) -> None:
-    """candidate `image`를 기동하지 않고 `alembic heads`만 정적으로 읽어 비교한다.
-
-    DB에 연결하지 않는 `--entrypoint sh ... alembic heads`만 실행하므로 실제
-    migration은 절대 실행되지 않는다. 여러 head(merge 누락 등)나 예상과 다른 head,
-    실행 자체의 실패는 모두 배포를 막는 동일한 fail-close 사유다. raw stdout/stderr는
-    노출하지 않는다 — 어느 head들이 나왔는지는 운영 감사에 필요하지 않고, 이미지
-    내부 경로/의존성 정보를 노출할 수 있다.
-    """
-
-    try:
-        completed = subprocess.run(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "--entrypoint",
-                "sh",
-                image,
-                "-c",
-                "cd /app && alembic heads",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise DeploymentContractError(
-            f"{label} candidate image alembic head could not be inspected"
-        ) from exc
-    if completed.returncode != 0:
-        raise DeploymentContractError(
-            f"{label} candidate image alembic head inspection failed"
-        )
-    heads = [
-        line.split()[0]
-        for line in completed.stdout.splitlines()
-        if line.strip() and "(head)" in line
-    ]
-    if len(heads) != 1 or heads[0] != expected_alembic_head:
-        raise DeploymentContractError(
-            f"{label} candidate image alembic head differs from the expected head"
-        )
-
-
 def _run_pinned_runtime_static_command(
     image_id: str,
     command: Sequence[str],
@@ -2195,7 +1949,7 @@ def _run_pinned_runtime_static_command(
     label: str,
     entrypoint: str | None = None,
 ) -> str:
-    """candidate artifact를 network 없이 검사하고 raw output은 호출자만 파싱한다."""
+    """candidate artifact를 network 없이 검사한다. 성공 출력은 호출자가 파싱한다."""
 
     if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
         raise DeploymentContractError(f"{label} candidate image ID is invalid")
@@ -2221,7 +1975,11 @@ def _run_pinned_runtime_static_command(
             f"{label} candidate static inspection could not start"
         ) from exc
     if completed.returncode != 0 or len(completed.stdout) > 1024 or completed.stderr:
-        raise DeploymentContractError(f"{label} candidate static inspection failed")
+        raise DeploymentContractError(
+            f"{label} candidate static inspection failed (exit {completed.returncode})"
+            + command_output_tail("stderr", completed.stderr)
+            + command_output_tail("stdout", completed.stdout)
+        )
     return completed.stdout
 
 
@@ -2263,8 +2021,7 @@ def _build_map_application_300_images(
                 ],
                 cwd="/",
                 env=builder_environment,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                capture_output=True,
                 check=False,
                 timeout=3600,
             )
@@ -2273,8 +2030,10 @@ def _build_map_application_300_images(
                 "application 300 image build could not start"
             ) from exc
         if completed.returncode != 0:
+            # buildx는 진행과 오류를 stderr로 낸다 — 끝부분에 실패한 단계가 있다.
             raise DeploymentContractError(
-                f"application 300 image build failed ({dockerfile})"
+                f"application 300 image build failed ({dockerfile}, exit {completed.returncode})"
+                + command_output_tail("stderr", completed.stderr)
             )
 
 
@@ -2283,8 +2042,7 @@ def _inspect_local_image_id(image: str) -> str:
         completed = subprocess.run(
             ["docker", "image", "inspect", "--format", "{{.Id}}", image],
             cwd="/",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
             check=False,
             timeout=30,
         )
@@ -2295,7 +2053,8 @@ def _inspect_local_image_id(image: str) -> str:
     image_id = completed.stdout.decode("ascii", errors="replace").strip()
     if completed.returncode != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
         raise DeploymentContractError(
-            "application 300 image cannot be inspected"
+            f"application 300 image {image} cannot be inspected"
+            + command_output_tail("stderr", completed.stderr)
         )
     return image_id
 
@@ -2322,7 +2081,7 @@ def _resolve_map_postgres_image_id() -> str:
                 ["docker", "pull", _MAP_APPLICATION_300_POSTGRES_REFERENCE],
                 cwd="/",
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 check=False,
                 timeout=900,
             )
@@ -2331,7 +2090,10 @@ def _resolve_map_postgres_image_id() -> str:
                 "Map PostgreSQL candidate image is unavailable"
             ) from exc
         if pulled.returncode != 0:
-            raise DeploymentContractError("Map PostgreSQL candidate image is unavailable")
+            raise DeploymentContractError(
+                "Map PostgreSQL candidate image is unavailable"
+                + command_output_tail("docker pull stderr", pulled.stderr)
+            )
         return _inspect_local_image_id(_MAP_APPLICATION_300_POSTGRES_REFERENCE)
     image_id = completed.stdout.decode("ascii", errors="replace").strip()
     if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
@@ -2466,7 +2228,7 @@ def _ensure_map_application_300_python_base_images(
                 ["docker", "pull", image_reference],
                 cwd="/",
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 check=False,
                 timeout=900,
             )
@@ -2476,14 +2238,15 @@ def _ensure_map_application_300_python_base_images(
             ) from exc
         if pulled.returncode != 0:
             raise DeploymentContractError(
-                "Map application immutable base image is unavailable"
+                f"Map application immutable base image {image_reference} is unavailable"
+                + command_output_tail("docker pull stderr", pulled.stderr)
             )
         try:
             verified = subprocess.run(
                 ["docker", "image", "inspect", image_reference],
                 cwd="/",
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 check=False,
                 timeout=60,
             )
@@ -2493,7 +2256,8 @@ def _ensure_map_application_300_python_base_images(
             ) from exc
         if verified.returncode != 0:
             raise DeploymentContractError(
-                "Map application immutable base image is unavailable"
+                f"Map application immutable base image {image_reference} is unavailable "
+                "after pull" + command_output_tail("stderr", verified.stderr)
             )
 
 
@@ -3212,8 +2976,10 @@ class ComposeService:
                 environment_override=environment_override,
             )
             if completed.returncode != 0:
+                # stderr만 싣는다 — stdout은 비밀이 보간된 설정 문서 자체다.
                 raise ComposeCandidateContractError(
                     "compose candidate resolution failed"
+                    + command_output_tail("stderr", completed.stderr)
                 )
             try:
                 resolved = json.loads(completed.stdout)
@@ -4052,7 +3818,6 @@ class ComposeService:
         *,
         transaction: ComposeTransactionSnapshot,
         capture_output: bool = True,
-        allow_typed_error_diagnostic: bool = True,
     ) -> dict[str, Any]:
         compose_action = self._pinned_runtime_compose_action(args)
         if compose_action in {"run", "up"} and "--no-deps" not in args:
@@ -4072,21 +3837,12 @@ class ComposeService:
         ):
             build_result: dict[str, Any] = {}
             for service in COMPOSE_BUILT_RUNTIME_SERVICES:
-                try:
-                    build_result = self._run_pinned_runtime_rebuild_compose(
-                        ["build", service],
-                        transaction=transaction,
-                        capture_output=capture_output,
-                        allow_typed_error_diagnostic=allow_typed_error_diagnostic,
-                    )
-                except DeploymentContractError as exc:
-                    # fan-out은 여기 한 곳에만 있다. 실패한 서비스를 여기서 실어
-                    # 보내지 않으면 봉인이 result를 `candidate_compose_build`까지만
-                    # 말하게 만들고, 다음 실행이 넷 중 어느 것인지 모른 채 같은
-                    # 30분을 다시 쓴다(적대 리뷰 MINOR-10). 값은 이 고정 목록에서만
-                    # 나오므로 자유 문자열을 여는 것이 아니다.
-                    setattr(exc, _PINNED_RUNTIME_COMPOSE_SERVICE_MARK, service)
-                    raise
+                # 실패 메시지의 명령(`build <service>`)이 어느 서비스인지 말한다.
+                build_result = self._run_pinned_runtime_rebuild_compose(
+                    ["build", service],
+                    transaction=transaction,
+                    capture_output=capture_output,
+                )
             return build_result
         result = self._run_frozen_recovery(
             args,
@@ -4096,15 +3852,15 @@ class ComposeService:
         )
         if result["success"]:
             return result
-        diagnostic = (
-            self._pinned_runtime_compose_failure_diagnostic(args, result)
-            if allow_typed_error_diagnostic
-            else _ComposeFailureDiagnostic(message_suffix="")
-        )
+        # 원인 원문을 싣는다(ADR-51 잃는 보장 G). one-shot `run`은 원인(migration
+        # traceback, typed error JSON)을 컨테이너 stdout으로도 낸다. 그 밖의 명령의
+        # stdout은 원인이 아니라 데이터(`ps --format json`)라 싣지 않는다.
+        tail = command_output_tail("stderr", result.get("stderr"))
+        if compose_action == "run":
+            tail += command_output_tail("stdout", result.get("stdout"))
         raise PinnedRuntimeComposeFailure(
-            "pinned runtime rebuild Compose "
-            f"{compose_action} command failed "
-            f"(exit {result['returncode']}{diagnostic.message_suffix})",
+            f"pinned runtime rebuild Compose {' '.join(args)} failed "
+            f"(exit {result['returncode']}){tail}"
         )
 
     @staticmethod
@@ -4117,63 +3873,6 @@ class ComposeService:
             ),
             "unknown",
         )
-
-    @staticmethod
-    def _pinned_runtime_compose_failure_diagnostic(
-        args: Sequence[str],
-        result: Mapping[str, Any],
-    ) -> _ComposeFailureDiagnostic:
-        """허용된 one-shot typed error만 원문 없이 F1D 오류에 붙인다."""
-
-        compose_action = ComposeService._pinned_runtime_compose_action(args)
-        if compose_action != "run":
-            return _ComposeFailureDiagnostic(message_suffix="")
-        target = args[-1] if args else ""
-        for stream_name in ("stderr", "stdout"):
-            output = result.get(stream_name)
-            if not isinstance(output, str):
-                continue
-            for line in output.splitlines():
-                candidates: tuple[str, ...] = (line,)
-                prefixed = _compose_prefixed_typed_error_candidate(line, target=target)
-                if prefixed is not None:
-                    candidates += (prefixed,)
-                for candidate in candidates:
-                    try:
-                        payload = json.loads(
-                            candidate,
-                            object_pairs_hook=_json_object_without_duplicate_keys,
-                        )
-                    except (json.JSONDecodeError, ValueError):
-                        continue
-                    if not isinstance(payload, Mapping):
-                        continue
-                    if target == "kor-travel-map-dagster-storage-migrate":
-                        code = payload.get("code")
-                        if (
-                            set(payload) == {"code", "schema"}
-                            and payload.get("schema")
-                            == _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_SCHEMA
-                            and isinstance(code, str)
-                            and _MAP_DAGSTER_STORAGE_MIGRATION_ERROR_CODE.fullmatch(code)
-                            is not None
-                        ):
-                            return _ComposeFailureDiagnostic(message_suffix=f"; {code}")
-                        continue
-                    if target == "pinvi-admin-bootstrap":
-                        code = payload.get("error_code")
-                        phase = payload.get("phase")
-                        if (
-                            set(payload) == {"error_code", "phase"}
-                            and isinstance(code, str)
-                            and isinstance(phase, str)
-                            and _PINVI_ADMIN_BOOTSTRAP_ERROR_PHASE_BY_CODE.get(code)
-                            == phase
-                        ):
-                            return _ComposeFailureDiagnostic(
-                                message_suffix=f"; pinvi:{code}",
-                            )
-        return _ComposeFailureDiagnostic(message_suffix="")
 
     def _retire_pinned_runtime_oneshot_writers(
         self,
@@ -4315,7 +4014,7 @@ class ComposeService:
                 input=script.encode("utf-8"),
                 cwd="/",
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 check=False,
                 timeout=30,
             )
@@ -4325,7 +4024,9 @@ class ComposeService:
             ) from exc
         if completed.returncode != 0:
             raise DeploymentContractError(
-                "PinVi fresh migration fence could not be established"
+                "PinVi fresh migration fence could not be established "
+                f"(psql exit {completed.returncode})"
+                + command_output_tail("psql stderr", completed.stderr)
             )
 
     def _run_pinvi_admin_bootstrap(
@@ -4616,39 +4317,14 @@ class ComposeService:
         지금 떠 있는 DB를 지우지 않고 새 identity 기준으로 받아들인다 — 백업 복원처럼
         비파괴로 DB가 바뀌었을 때 ``--restart`` 말고 빠져나갈 길이다.
 
-        얇은 래퍼는 한 가지만 한다 — 실패에 "이 실행이 배포 상태를 ``in_progress``로
-        바꿨는가"를 붙인다. launcher는 그 분류로 claim 해제를 정한다.
+        실패는 원래 예외 그대로 올라간다. 단계 안에서 났으면 그 이름이 붙는다
+        (``rebuild_failure_stage``) — CLI가 JSON 판정에 싣는다.
         """
 
         if restart_reason is not None and adopt_reason is not None:
             raise DeploymentContractError(
                 "a deploy either restarts or adopts the live databases, not both"
             )
-        watermark = _PinnedRuntimeJournalWatermark()
-        try:
-            return self._rebuild_pinned_runtime(
-                watermark,
-                restart_reason=restart_reason,
-                adopt_reason=adopt_reason,
-            )
-        except PinnedRuntimePrejournalFailure as exc:
-            if watermark.reached():
-                _mark_pinned_runtime_journal_reached(exc)
-            raise
-        except DeploymentContractError as exc:
-            if not watermark.reached():
-                _mark_pinned_runtime_prejournal(exc)
-            raise
-
-    def _rebuild_pinned_runtime(
-        self,
-        watermark: _PinnedRuntimeJournalWatermark,
-        *,
-        restart_reason: str | None,
-        adopt_reason: str | None,
-    ) -> dict[str, Any]:
-        """배포 본문. 분류는 호출자(래퍼)가 붙인다."""
-
         _require_pinned_runtime_rebuild_root()
         restart = (
             None
@@ -4680,7 +4356,7 @@ class ComposeService:
             if release is None:  # pragma: no cover - context contract 방어
                 raise DeploymentContractError("pinned runtime release snapshot is unavailable")
             values = environment_snapshot.effective
-            with _pinned_runtime_prejournal_step("state_initialization"):
+            with _rebuild_stage("state_initialization"):
                 validate_c6c_operation_tokens(values, require_nonempty=True)
                 state_paths = pinned_runtime_state_paths(
                     values,
@@ -4689,27 +4365,27 @@ class ComposeService:
                 ensure_pinned_runtime_state_directory(state_paths.state_root)
                 status_path = deploy_status_path(state_paths.state_root)
                 previous = read_deploy_status(status_path)
-            with _pinned_runtime_prejournal_step("prebuild_snapshot"):
+            with _rebuild_stage("prebuild_snapshot"):
                 prebuild_transaction, _ = self.capture_transaction_unlocked(
                     environment_snapshot=environment_snapshot,
                 )
-            with _pinned_runtime_prejournal_step("external_prerequisites"):
+            with _rebuild_stage("external_prerequisites"):
                 self._require_services_ready(
                     _PINNED_RUNTIME_EXTERNAL_PREREQUISITES,
                     transaction=prebuild_transaction,
                     frozen_recovery=True,
                 )
-            with _pinned_runtime_prejournal_step("source_materialization"):
+            with _rebuild_stage("source_materialization"):
                 sources = materialize_pinned_runtime_sources(
                     release=release,
                     state_paths=state_paths,
                 )
                 # 이번 pair가 쓰지 않는 옛 revision·끊긴 시도를 지운다(G 안, 실패해도 배포는 계속).
                 prune_pinned_runtime_sources(state_paths, keep=sources)
-            with _pinned_runtime_prejournal_step("application_base_images"):
+            with _rebuild_stage("application_base_images"):
                 paired_build_images = map_application_300_paired_build_image_names(sources)
                 _ensure_map_application_300_python_base_images(sources)
-            with _pinned_runtime_prejournal_step("application_builder"):
+            with _rebuild_stage("application_builder"):
                 # 이미지 태그는 pinset에 묶인다. 이미 있으면 같은 소스에서 나온 것이므로
                 # 다시 빌드하지 않는다 — 다시 빌드하면 재현되지 않는 digest가 나와 같은
                 # pair의 재실행이 "새 이미지"가 된다.
@@ -4719,7 +4395,7 @@ class ComposeService:
                         api_image=paired_build_images["kor-travel-map-api"],
                         dagster_image=paired_build_images["kor-travel-map-dagster"],
                     )
-            with _pinned_runtime_prejournal_step("application_candidate"):
+            with _rebuild_stage("application_candidate"):
                 map_candidate = _load_application_300_candidate(
                     sources=sources,
                     api_image=paired_build_images["kor-travel-map-api"],
@@ -4734,33 +4410,33 @@ class ComposeService:
                 **build.compose_environment(),
                 "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": map_candidate.application_head,
             }
-            with _pinned_runtime_prejournal_step("candidate_snapshot"):
+            with _rebuild_stage("candidate_snapshot"):
                 candidate_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=candidate_environment,
                     environment_snapshot=environment_snapshot,
                 )
-            with _pinned_runtime_prejournal_step("candidate_contract"):
+            with _rebuild_stage("candidate_contract"):
                 self._validate_pinned_runtime_candidate_build_contract(
                     candidate_transaction,
                     build=build,
                     environment_override=candidate_environment,
                 )
-            with _pinned_runtime_prejournal_step("candidate_compose_build"):
+            with _rebuild_stage("candidate_compose_build"):
                 if not all(_local_image_present(ref) for ref in build.image_names.values()):
                     self._run_pinned_runtime_rebuild_compose(
                         ["build", *COMPOSE_BUILT_RUNTIME_SERVICES],
                         transaction=candidate_transaction,
                     )
-            with _pinned_runtime_prejournal_step("candidate_images"):
+            with _rebuild_stage("candidate_images"):
                 image_ids = self._attest_pinned_runtime_candidate_images(
                     build=build,
                     map_candidate=map_candidate,
                 )
-            with _pinned_runtime_prejournal_step("candidate_bootstrap_settings"):
+            with _rebuild_stage("candidate_bootstrap_settings"):
                 self._verify_pinned_runtime_pinvi_bootstrap_settings(
                     transaction=candidate_transaction,
                 )
-            with _pinned_runtime_prejournal_step("candidate_heads"):
+            with _rebuild_stage("candidate_heads"):
                 # Map application head는 `_load_application_300_candidate`가 이미 한 번
                 # 관측했다. 나머지 둘은 후보 이미지를 network-less로 한 번씩 돌린다.
                 map_dagster_head = parse_candidate_static_head(
@@ -4789,13 +4465,13 @@ class ComposeService:
                     map_dagster_head=map_dagster_head,
                     pinvi_head=pinvi_head,
                 )
-            with _pinned_runtime_prejournal_step("runtime_generation"):
+            with _rebuild_stage("runtime_generation"):
                 runtime_environment = {
                     **build.compose_environment(),
                     **generation_compose_environment(candidate),
                     "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": candidate.map_application_head,
                 }
-            with _pinned_runtime_prejournal_step("runtime_transaction"):
+            with _rebuild_stage("runtime_transaction"):
                 runtime_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=runtime_environment,
                     environment_snapshot=environment_snapshot,
@@ -4890,7 +4566,6 @@ class ComposeService:
                 ),
             )
             write_deploy_status(status_path, status)
-            watermark.mark_reached()
             try:
                 committed = self._deploy_forward(
                     status=status,

@@ -2901,9 +2901,10 @@ def preflight(expected_revision: str) -> int:
         # 내용은 여전히 닫아 둔다. 예외 **타입 이름**은 호스트 상태를 담지 않으므로
         # 항상 낼 수 있고, 메시지는 Manager 자신이 쓴 고정 문구일 때만 낸다 —
         # `pinned runtime source `로 시작하는 문자열은 `pinned_runtime_sources`의
-        # 리터럴에만 쓰이고 그 뒤도 상수다. 문구를 **열거하지 않으므로** 새 문구가
+        # 리터럴에만 쓰이고 **첫 줄**은 상수다 — 둘째 줄부터는 명령과 원문 tail(ADR-51
+        # G-2)이라 경로가 섞이므로 첫 줄만 낸다. 문구를 **열거하지 않으므로** 새 문구가
         # 생겨도 드리프트하지 않는다(AGENTS.md DO NOT 15).
-        message = str(error)
+        message = str(error).partition("\n")[0]
         detail = message if message.startswith(_SOURCE_DIAGNOSTIC_PREFIX) else None
         print(
             f"source_materialization: {type(error).__name__}"

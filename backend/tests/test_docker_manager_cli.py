@@ -13,7 +13,7 @@ from kor_travel_docker_manager.services import compose_service as compose_servic
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.compose_service import (
     ComposeService,
-    PinnedRuntimePrejournalFailure,
+    PinnedRuntimeComposeFailure,
     ValidatedComposeCandidate,
 )
 from kor_travel_docker_manager.services.docker_service import (
@@ -519,33 +519,66 @@ def test_cli_rebuilds_pinned_runtime(mock_compose_service):
     mock_compose_service.rebuild_pinned_runtime.assert_called_once_with()
 
 
+def _staged(exc: BaseException, stage: str) -> BaseException:
+    """재구축 본문이 하듯 단계 안에서 예외를 던져 단계 이름을 붙인다."""
+
+    try:
+        with compose_service_module._rebuild_stage(stage):
+            raise exc
+    except BaseException as staged:  # noqa: BLE001 - 붙은 예외를 돌려준다
+        return staged
+    raise AssertionError("stage did not re-raise")  # pragma: no cover
+
+
 @patch("kor_travel_docker_manager.cli.compose_service")
 
 
-def test_cli_rebuild_pinned_runtime_emits_safe_prejournal_failure_json(
+def test_cli_rebuild_pinned_runtime_names_the_failed_stage_in_json(
     mock_compose_service,
     capsys,
 ):
-    mock_compose_service.rebuild_pinned_runtime.side_effect = PinnedRuntimePrejournalFailure(
-        "application_builder"
+    """JSON은 판정과 단계 이름만 싣고, 원인 원문은 stderr로 간다(ADR-51 잃는 보장 G)."""
+
+    mock_compose_service.rebuild_pinned_runtime.side_effect = _staged(
+        DeploymentContractError("application 300 image build failed (docker/api.Dockerfile)"),
+        "application_builder",
     )
 
     assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
 
-    assert json.loads(capsys.readouterr().out) == {
-        "status": "failed",
-        "classification": "prejournal_failure",
-        "stage": "application_builder",
-    }
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"status": "failed", "stage": "application_builder"}
+    assert "application 300 image build failed (docker/api.Dockerfile)" in captured.err
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
 
 
-def test_cli_rebuild_pinned_runtime_keeps_json_fixed_and_writes_the_cause_to_stderr(
+def test_cli_rebuild_pinned_runtime_names_the_failed_stage_without_json(
     mock_compose_service,
     capsys,
 ):
+    mock_compose_service.rebuild_pinned_runtime.side_effect = _staged(
+        DeploymentContractError("geo is not ready"), "external_prerequisites"
+    )
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm"]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "pinned runtime rebuild failed at stage external_prerequisites" in captured.err
+    assert "geo is not ready" in captured.err
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+
+
+def test_cli_rebuild_pinned_runtime_omits_the_stage_outside_the_stages(
+    mock_compose_service,
+    capsys,
+):
+    """단계 밖(journal 뒤 배포 본문, lifecycle 게이트)의 실패는 stage 키가 없다."""
+
     mock_compose_service.rebuild_pinned_runtime.side_effect = DeploymentContractError(
         "unexpected contract detail"
     )
@@ -553,10 +586,7 @@ def test_cli_rebuild_pinned_runtime_keeps_json_fixed_and_writes_the_cause_to_std
     assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
 
     captured = capsys.readouterr()
-    assert json.loads(captured.out) == {
-        "status": "failed",
-        "classification": "unclassified",
-    }
+    assert json.loads(captured.out) == {"status": "failed"}
     assert "unexpected contract detail" not in captured.out
     assert "unexpected contract detail" in captured.err
 
@@ -564,29 +594,32 @@ def test_cli_rebuild_pinned_runtime_keeps_json_fixed_and_writes_the_cause_to_std
 @patch("kor_travel_docker_manager.cli.compose_service")
 
 
-def test_cli_rebuild_pinned_runtime_reports_a_sealed_postjournal_failure(
+def test_cli_rebuild_pinned_runtime_reports_an_os_error_inside_a_stage(
     mock_compose_service,
     capsys,
+    tmp_path,
+    monkeypatch,
 ):
-    """봉인된 실패라도 journal이 이미 있으면 재시도 가능으로 내면 안 된다.
+    """계약 오류가 아닌 예외(OSError)도 같은 모양이다 — 단계 이름과 가린 원문.
 
-    launcher는 `prejournal_failure`에서만 claim을 해제한다. 그 값이 나가면
-    이미 DB를 리셋한 후보가 원장에서 빠진다.
+    봉인 시절에는 `DeploymentContractError`만 단계를 얻었다. 디스크가 찬 호스트의
+    OSError는 `unclassified`로 접혀 어디서 났는지조차 남지 않았다.
     """
 
-    failure = compose_service_module.PinnedRuntimePrejournalFailure(
-        "external_prerequisites"
+    env_file = tmp_path / ".env"
+    env_file.write_text("KTDM_C6C_PINVI_ADMIN_PASSWORD=os-error-secret-value\n", encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_file))
+    mock_compose_service.rebuild_pinned_runtime.side_effect = _staged(
+        OSError(28, "No space left on device near os-error-secret-value"),
+        "source_materialization",
     )
-    compose_service_module._mark_pinned_runtime_journal_reached(failure)
-    mock_compose_service.rebuild_pinned_runtime.side_effect = failure
 
     assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
 
-    assert json.loads(capsys.readouterr().out) == {
-        "status": "failed",
-        "classification": "postjournal_failure",
-        "stage": "external_prerequisites",
-    }
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"status": "failed", "stage": "source_materialization"}
+    assert "No space left on device" in captured.err
+    assert "os-error-secret-value" not in captured.out + captured.err
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
@@ -596,51 +629,25 @@ def test_cli_rebuild_pinned_runtime_names_the_failing_compose_service(
     mock_compose_service,
     capsys,
 ):
-    """후보 빌드는 서비스가 넷이다 — 어느 것인지 없으면 30분을 다시 쓴다."""
+    """후보 빌드는 서비스가 넷이다 — 실패 메시지의 명령이 어느 것인지 말한다."""
 
-    mock_compose_service.rebuild_pinned_runtime.side_effect = (
-        compose_service_module.PinnedRuntimePrejournalFailure(
-            "candidate_compose_build", "pinvi-web"
-        )
+    mock_compose_service.rebuild_pinned_runtime.side_effect = _staged(
+        PinnedRuntimeComposeFailure(
+            "pinned runtime rebuild Compose build pinvi-web failed (exit 1)"
+            "\n--- stderr ---\nfailed to solve: pnpm install exited 1"
+        ),
+        "candidate_compose_build",
     )
-
-    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
-
-    assert json.loads(capsys.readouterr().out) == {
-        "status": "failed",
-        "classification": "prejournal_failure",
-        "stage": "candidate_compose_build",
-        "service": "pinvi-web",
-    }
-
-
-@patch("kor_travel_docker_manager.cli.compose_service")
-
-
-def test_cli_rebuild_pinned_runtime_marks_a_prejournal_contract_failure(
-    mock_compose_service,
-    capsys,
-):
-    """봉인 밖 admission 거부도 "journal을 쓰지 않았다"까지는 잃지 않는다.
-
-    launcher는 `classification`만 보고 claim 해제를 판단한다. 이 거부가
-    `unclassified`로 접히면 아무것도 소비하지 않은 pinset이 탄다.
-    JSON 모양은 launcher 계약이라 그대로 두고, 원문은 가린 채 stderr로 간다.
-    """
-
-    failure = DeploymentContractError("unexpected contract detail")
-    compose_service_module._mark_pinned_runtime_prejournal(failure)
-    mock_compose_service.rebuild_pinned_runtime.side_effect = failure
 
     assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
 
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {
         "status": "failed",
-        "classification": "prejournal_failure",
+        "stage": "candidate_compose_build",
     }
-    assert "unexpected contract detail" not in captured.out
-    assert "unexpected contract detail" in captured.err
+    assert "Compose build pinvi-web failed (exit 1)" in captured.err
+    assert "failed to solve: pnpm install exited 1" in captured.err
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
@@ -650,27 +657,29 @@ def test_cli_rebuild_pinned_runtime_keeps_the_message_outside_json(
     mock_compose_service,
     capsys,
 ):
-    """비-JSON 경로의 원문 출력은 그대로다 — disclosure는 봉인이 아니다."""
+    """비-JSON 경로는 stdout에 아무것도 내지 않고 원문을 stderr에 낸다."""
 
-    failure = DeploymentContractError("pinned runtime rebuild requires rehearsal")
-    compose_service_module._mark_pinned_runtime_prejournal(failure)
-    mock_compose_service.rebuild_pinned_runtime.side_effect = failure
+    mock_compose_service.rebuild_pinned_runtime.side_effect = DeploymentContractError(
+        "pinned runtime rebuild requires rehearsal"
+    )
 
     assert main(["pinvi-pair", "rebuild-pinned", "--confirm"]) == 2
 
-    assert "requires rehearsal" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "requires rehearsal" in captured.err
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
 
 
-def test_cli_rebuild_pinned_runtime_reports_the_sealed_cause_with_env_secrets_redacted(
+def test_cli_rebuild_pinned_runtime_reports_the_cause_with_env_secrets_redacted(
     mock_compose_service,
     capsys,
     tmp_path,
     monkeypatch,
 ):
-    """봉인된 stage 실패도 원인 원문(예외 체인)을 stderr에 남기되 `.env` 비밀은 가린다."""
+    """단계 실패의 원인 원문(예외 체인)을 stderr에 남기되 `.env` 비밀은 가린다."""
 
     env_file = tmp_path / ".env"
     env_file.write_text(
@@ -686,24 +695,52 @@ def test_cli_rebuild_pinned_runtime_reports_the_sealed_cause_with_env_secrets_re
             "postgresql://ktm:dsn-secret-value@127.0.0.1:12700/db"
         )
     except DeploymentContractError as cause:
-        failure = compose_service_module.PinnedRuntimePrejournalFailure(
-            "candidate_contract"
-        )
+        failure = DeploymentContractError("candidate contract rejected")
         failure.__cause__ = cause
-    mock_compose_service.rebuild_pinned_runtime.side_effect = failure
+    mock_compose_service.rebuild_pinned_runtime.side_effect = _staged(
+        failure, "candidate_contract"
+    )
 
     assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
 
     captured = capsys.readouterr()
-    assert json.loads(captured.out) == {
-        "status": "failed",
-        "classification": "prejournal_failure",
-        "stage": "candidate_contract",
-    }
+    assert json.loads(captured.out) == {"status": "failed", "stage": "candidate_contract"}
     assert "protected wiring count is invalid" in captured.err
     assert "pinvi-admin-secret-value" not in captured.err
     assert "dsn-secret-value" not in captured.err
     assert "<redacted>" in captured.err
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+
+
+def test_cli_rebuild_pinned_runtime_redacts_a_psql_quoted_secret_in_a_tail(
+    mock_compose_service,
+    capsys,
+    tmp_path,
+    monkeypatch,
+):
+    """psql은 실패한 문장을 `LINE 1:`로 되풀이한다 — SQL 리터럴의 `''` 변형도 가린다."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "PINVI_APP_DB_PASSWORD=\"pa'ss-quoted-secret\"\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_file))
+    mock_compose_service.rebuild_pinned_runtime.side_effect = _staged(
+        DeploymentContractError(
+            "PinVi fresh migration fence could not be established (psql exit 3)"
+            "\n--- psql stderr ---\nERROR:  syntax error at or near \"x\"\n"
+            "LINE 1: ALTER ROLE pinvi PASSWORD 'pa''ss-quoted-secret' x"
+        ),
+        "runtime_transaction",
+    )
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
+
+    captured = capsys.readouterr()
+    assert "syntax error at or near" in captured.err
+    assert "quoted-secret" not in captured.out + captured.err
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
@@ -724,14 +761,10 @@ def test_cli_rebuild_pinned_runtime_redacts_process_environment_secrets(
     env_file.write_text("", encoding="utf-8")
     monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_file))
     monkeypatch.setenv("KTDM_LAUNCHER_API_TOKEN", "process-only-token-value")
-    try:
-        raise DeploymentContractError("saw process-only-token-value in argv")
-    except DeploymentContractError as cause:
-        failure = compose_service_module.PinnedRuntimePrejournalFailure(
-            "candidate_contract"
-        )
-        failure.__cause__ = cause
-    mock_compose_service.rebuild_pinned_runtime.side_effect = failure
+    mock_compose_service.rebuild_pinned_runtime.side_effect = _staged(
+        DeploymentContractError("saw process-only-token-value in argv"),
+        "candidate_contract",
+    )
 
     assert main(["pinvi-pair", "rebuild-pinned", "--confirm", "--json"]) == 2
 

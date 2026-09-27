@@ -127,10 +127,11 @@ KOR_TRAVEL_MAP_PG_DSN=postgresql+asyncpg://ktm_feature_service:<같은 값>@127.
 `prewrite_admission` 주석). 그 전까지는 Manager가 넣었으므로 운영자가 신경 쓸 일이
 아니었고, 사라진 뒤에도 이 문서가 그것을 이어받지 못했다.
 
-두 값이 없으면 재구축은 **`prejournal_failure` / stage `prebuild_snapshot`** 으로
-죽는다. compose가 `${KOR_TRAVEL_MAP_PG_DSN:?...}`를 쓰므로 resolved 문서를 만드는
-단계에서 막히는 것인데, 봉인된 실패는 stage 한 단어만 남기므로 원인이 보이지 않는다
-(2026-09-23 실측). `.env`에 키가 있는지부터 본다:
+두 값이 없으면 재구축은 **stage `prebuild_snapshot`** 에서 죽는다. compose가
+`${KOR_TRAVEL_MAP_PG_DSN:?...}`를 쓰므로 resolved 문서를 만드는 단계에서 막힌다.
+2026-09-23에는 봉인된 실패가 stage 한 단어만 남겨 원인이 보이지 않았다. ADR-51 G-2부터는
+output leaf의 `stderr.log`에 compose의 `required variable ... is missing a value` 문구가
+그대로 남는다. 그 문구가 보이거나 확인이 필요하면 `.env`에 키가 있는지 본다:
 
 ```bash
 for k in KOR_TRAVEL_MAP_SERVICE_PASSWORD KOR_TRAVEL_MAP_PG_DSN; do
