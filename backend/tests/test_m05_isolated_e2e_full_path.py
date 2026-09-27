@@ -67,9 +67,11 @@ PLAYWRIGHT_PINNED_VERSION = "1.62.1"
 #: 승인 응답(UUID 정본)과 M02 creation-provenance의 opaque TEXT feature_id는
 #: **다른 값**이다. e2e15는 이 둘을 같은 것으로 취급해 dedup 프로시저의 NOT FOUND를
 #: eligibility 위반으로 위장하게 만들었다.
+#: Map T-VN-39 뒤 Feature의 정본 키는 uuid다. 승인·provenance·case·결정·이벤트 응답이 전부 uuid를 싣는다.
+#: 요청 승인으로 만든 수동 Feature에는 legacy alias가 없고, provider Feature의 `make_feature_id` 텍스트는
+#: alias일 뿐이다(fixture가 정본 키로 풀어 돌려준다).
 MANUAL_FEATURE_UUID = "9f1d4d2e-5b0c-4f6a-9d3b-1a2c3d4e5f60"
-MANUAL_FEATURE_TEXT_ID = "manual:m05-isolated:0001"
-PROVIDER_FEATURE_ID = "kto-festival:2026:0007"
+PROVIDER_FEATURE_LEGACY_ALIAS = "f_global_01070300_p_0123456789abcdef"
 PROVIDER_FEATURE_UUID = "60718293-a4b5-4c6d-8e9f-0a1b2c3d4e5f"
 CASE_ID = "1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d"
 RESOLUTION_ID = "2c3d4e5f-6071-4b8c-9dae-1f2a3b4c5d6e"
@@ -179,15 +181,26 @@ def _merge(base: object, overlay: object) -> object:
     return overlay
 
 
-_VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+_VARIABLE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])([^}]*))?\}")
+
+
+class _ComposeRenderError(Exception):
+    """compose가 렌더를 거부하는 경우(없는 파일, 값 없는 `${X:?}`)."""
+
+
+def _substitute(match: re.Match[str], environment: dict[str, str]) -> str:
+    name, operator, argument = match.group(1), match.group(2), match.group(3) or ""
+    value = environment.get(name)
+    if operator in {":?", "?"} and (value is None or (operator == ":?" and value == "")):
+        raise _ComposeRenderError(f"required variable {name} is missing a value: {argument}")
+    if operator in {":-", "-"} and (value is None or (operator == ":-" and value == "")):
+        return argument
+    return value or ""
 
 
 def _interpolate(value: object, environment: dict[str, str]) -> object:
     if isinstance(value, str):
-        return _VARIABLE.sub(
-            lambda match: environment.get(match.group(1)) or (match.group(2) or ""),
-            value,
-        )
+        return _VARIABLE.sub(lambda match: _substitute(match, environment), value)
     if isinstance(value, dict):
         return {key: _interpolate(item, environment) for key, item in value.items()}
     if isinstance(value, list):
@@ -244,6 +257,8 @@ class _ComposeModel:
     ) -> None:
         document: Any = {}
         for item in files:
+            if not item.is_file():
+                raise _ComposeRenderError(f"open {item}: no such file or directory")
             loaded = yaml.load(item.read_text(encoding="utf-8"), Loader=_ComposeLoader)
             document = _merge(document, loaded or {})
         document = _interpolate(document, environment)
@@ -394,8 +409,14 @@ class _FakeDockerHost:
         self.counter += 1
         return _hex64(*parts, str(self.counter))
 
-    def _model(self, project: str, env_file: Path, files: tuple[Path, ...]) -> _ComposeModel:
-        return _ComposeModel(project=project, files=files, environment=_read_env_file(env_file))
+    def _model(
+        self, driver: ModuleType, project: str, env_file: Path, files: tuple[Path, ...]
+    ) -> _ComposeModel:
+        try:
+            return _ComposeModel(project=project, files=files, environment=_read_env_file(env_file))
+        except _ComposeRenderError as error:
+            # compose가 렌더를 거부하면 명령이 0이 아닌 코드로 끝난다 — 가짜도 같게 끝난다.
+            self._fail(driver, 1, str(error))
 
     @staticmethod
     def _revision_label(environment: dict[str, str]) -> str:
@@ -638,19 +659,19 @@ class _FakeDockerHost:
             self._fail(driver, 125, f"Unable to find image '{reference}' locally")
         manual_feature_id = rest[-1]
         self.fixture_arguments.append(manual_feature_id)
-        # e2e15: dedup 프로시저는 opaque TEXT feature_id를 기대한다. UUID를 받으면
-        # 후보 Feature 증명을 찾지 못해 NOT FOUND가 eligibility 위반으로 위장된다.
-        if manual_feature_id != MANUAL_FEATURE_TEXT_ID:
+        # 수동 Feature는 정본 uuid 하나뿐이다 — fixture는 그것을 정본 키로 풀어 uuid procedure에 넘긴다.
+        if manual_feature_id != MANUAL_FEATURE_UUID:
             self._fail(
                 driver,
                 1,
-                "ManualProviderDedupError: candidate Feature proof is not eligible",
+                "UnresolvedFeatureRefError: 입력이 가리키는 Feature를 정본 키로 풀지 못했습니다",
             )
         return json.dumps(
             {
                 "case_id": CASE_ID,
-                "manual_feature_id": manual_feature_id,
-                "provider_feature_id": PROVIDER_FEATURE_ID,
+                "manual_feature_id": MANUAL_FEATURE_UUID,
+                "provider_feature_id": PROVIDER_FEATURE_UUID,
+                "provider_feature_ref": PROVIDER_FEATURE_LEGACY_ALIAS,
             }
         )
 
@@ -680,7 +701,7 @@ class _FakeDockerHost:
                 index += 1
         assert project and env_file is not None and files
         assert cwd is not None and Path(cwd).is_dir()
-        model = self._model(project, env_file, tuple(files))
+        model = self._model(driver, project, env_file, tuple(files))
         environment = _read_env_file(env_file)
         tag = "map" if project.startswith("m05i-map-") else "pinvi"
         suffix = "{" + ",".join(sorted(profiles)) + "}" if profiles else ""
@@ -723,6 +744,11 @@ class _FakeDockerHost:
                         "networks": service.get("networks"),
                         "labels": service.get("labels", {}),
                         "profiles": service.get("profiles", []),
+                        **(
+                            {"depends_on": service["depends_on"]}
+                            if service.get("depends_on")
+                            else {}
+                        ),
                     }
                     for name, service in model.visible(profiles).items()
                 },
@@ -981,7 +1007,7 @@ class _FakeDockerHost:
         if extra:
             files.append(Path(extra))
         project = env["PINVI_DOCKER_PROJECT"]
-        model = self._model(project, env_file, tuple(files))
+        model = self._model(driver, project, env_file, tuple(files))
         environment = _read_env_file(env_file)
         # 이미지는 실행별 checkout에서 빌드한다 — preflight 트리가 build context면 안 된다.
         for key in ("PINVI_API_BUILD_CONTEXT", "PINVI_APP_BUILD_CONTEXT"):
@@ -1153,9 +1179,9 @@ class _FakeHttpService:
             "event_sequence": 1,
             "event_sha256": "a" * 64,
             "action": "rebind",
-            "old_feature_id": MANUAL_FEATURE_TEXT_ID,
+            "old_feature_id": MANUAL_FEATURE_UUID,
             "old_feature_uuid": MANUAL_FEATURE_UUID,
-            "replacement_feature_id": PROVIDER_FEATURE_ID,
+            "replacement_feature_id": PROVIDER_FEATURE_UUID,
             "replacement_feature_uuid": PROVIDER_FEATURE_UUID,
             "impact_root_sha256": "b" * 64,
             "impact_count": IMPACT_COUNT,
@@ -1240,10 +1266,10 @@ class _FakeHttpService:
         if path == f"/v1/admin/features/{MANUAL_FEATURE_UUID}/creation-provenance":
             self.timeline.append("map:creation-provenance")
             assert self.approved, "creation-provenance는 승인 이후에만 조회한다"
-            # M02 provenance는 opaque TEXT feature_id와 UUID를 함께 싣는다.
+            # T-VN-39 뒤 provenance의 feature_id는 정본 uuid다(feature_uuid와 같다).
             return _envelope(
                 {
-                    "feature_id": MANUAL_FEATURE_TEXT_ID,
+                    "feature_id": MANUAL_FEATURE_UUID,
                     "feature_uuid": MANUAL_FEATURE_UUID,
                     "claim": {
                         "feature_id": MANUAL_FEATURE_UUID,
@@ -1261,7 +1287,7 @@ class _FakeHttpService:
                         "creator_principal_id": "admin:m05-isolated-harness",
                         "created_by_actor": "m05-isolated-harness",
                         "created_at": "2026-09-01T00:00:01Z",
-                        "invoker_role": "ktm_feature_api_runtime",
+                        "invoker_role": "ktm_feature_service",
                         "procedure_definer": "ktm_feature_owner",
                     },
                 }
@@ -1276,12 +1302,12 @@ class _FakeHttpService:
                     "created_at": "2026-09-01T00:00:02Z",
                     "evidence_fingerprint": "d" * 64,
                     "manual_feature": {
-                        "feature_id": MANUAL_FEATURE_TEXT_ID,
+                        "feature_id": MANUAL_FEATURE_UUID,
                         "feature_uuid": MANUAL_FEATURE_UUID,
                         "row_revision": 1,
                     },
                     "provider_feature": {
-                        "feature_id": PROVIDER_FEATURE_ID,
+                        "feature_id": PROVIDER_FEATURE_UUID,
                         "feature_uuid": PROVIDER_FEATURE_UUID,
                         "row_revision": 1,
                     },
@@ -1299,7 +1325,7 @@ class _FakeHttpService:
                 "expected_case_fingerprint": "d" * 64,
                 "expected_manual_row_revision": 1,
                 "expected_provider_row_revision": 1,
-                "survivor_feature_id": PROVIDER_FEATURE_ID,
+                "survivor_feature_id": PROVIDER_FEATURE_UUID,
                 "reason": "M05 isolated signed E2E rebind",
             }
             self.decided = True
@@ -1308,7 +1334,7 @@ class _FakeHttpService:
                     "outcome": "merged",
                     "resolution_id": RESOLUTION_ID,
                     "event_id": EVENT_ID,
-                    "manual_feature_id": MANUAL_FEATURE_TEXT_ID,
+                    "manual_feature_id": MANUAL_FEATURE_UUID,
                     "manual_feature_row_revision": 2,
                 }
             )
@@ -1421,18 +1447,45 @@ services:
       - "127.0.0.1:${KOR_TRAVEL_MAP_RUSTFS_API_PORT}:9000"
   rustfs-init:
     image: rustfs/rustfs:1.0
-  db-application-schema-fresh-300:
+  # b4fbde1e(Map ADR-100/101): fresh-init은 네 단계 사슬이고 끝은 `db-application-schema-fresh`다.
+  db-application-create-fresh-300:
+    profiles:
+      - fresh-init
+    image: postgis/postgis:17-3.5
+    depends_on:
+      - postgres
+  db-role-bootstrap-300:
+    profiles:
+      - fresh-init
+    image: postgis/postgis:17-3.5
+    depends_on:
+      - db-application-create-fresh-300
+    environment:
+      KOR_TRAVEL_MAP_SERVICE_PASSWORD: ${KOR_TRAVEL_MAP_SERVICE_PASSWORD:-}
+  dagster-db-init-fresh-300:
+    profiles:
+      - fresh-init
+    image: postgis/postgis:17-3.5
+    depends_on:
+      - db-role-bootstrap-300
+  db-application-schema-fresh:
     profiles:
       - fresh-init
     build:
       context: .
       dockerfile: docker/api.Dockerfile
+    depends_on:
+      - dagster-db-init-fresh-300
+    environment:
+      KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
   api:
     build:
       context: .
       dockerfile: docker/api.Dockerfile
     env_file:
       - .env
+    environment:
+      KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
     ports:
       - "127.0.0.1:${KOR_TRAVEL_MAP_ADMIN_WEB_PORT}:13701"
     networks:
@@ -1446,20 +1499,11 @@ services:
     networks:
       default: {}
   dagster:
-    profiles:
-      - etl
     build:
       context: .
       dockerfile: docker/dagster.Dockerfile
 volumes:
   map-postgres: {}
-"""
-
-_MAP_COMPOSE_LOCAL_DEV = """
-services:
-  api:
-    environment:
-      KOR_TRAVEL_MAP_API_PROFILE: local-dev
 """
 
 _PINVI_COMPOSE = """
@@ -1498,9 +1542,6 @@ def _materialise_sources(root: Path) -> tuple[Path, Path]:
     pinvi_root = root / "pinvi"
     (map_root / "src/kortravelmap").mkdir(parents=True)
     (map_root / "docker-compose.yml").write_text(_MAP_COMPOSE, encoding="utf-8")
-    (map_root / "docker-compose.local-dev.yml").write_text(
-        _MAP_COMPOSE_LOCAL_DEV, encoding="utf-8"
-    )
     (map_root / "src/kortravelmap/_application_migration_graph.json").write_text(
         json.dumps(
             {
@@ -1845,7 +1886,7 @@ def test_full_happy_path_calls_external_commands_in_the_expected_order(
         # Map runtime
         "compose:map:config-profiles",
         "compose:map:up[postgres]",
-        "compose:map:run[db-application-schema-fresh-300]{fresh-init}",
+        "compose:map:run[db-application-schema-fresh]{fresh-init}",
         "compose:map:up[rustfs,rustfs-init,api,frontend]",
         "compose:map:ps[api]",
         "compose:map:ps[frontend]",
@@ -1868,7 +1909,7 @@ def test_full_happy_path_calls_external_commands_in_the_expected_order(
         "attest:live",
         # cleanup — 모델의 전체 프로파일을 켜고 down한다(e2e6)
         "compose:pinvi:down{etl}",
-        "compose:map:down{etl,fresh-init}",
+        "compose:map:down{fresh-init}",
     ]
 
 
@@ -2143,40 +2184,26 @@ def test_regression_e2e13_runner_digest_must_match_the_pinned_lockfile(
     assert "ledger-claim" not in harness.host.timeline
 
 
-def test_regression_e2e15_dedup_needs_the_opaque_text_feature_id(
-    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+def test_the_dedup_fixture_receives_the_manual_features_canonical_uuid(
+    harness: _Harness,
 ) -> None:
-    """e2e15: 승인 UUID를 그대로 dedup 프로시저에 넘기면 NOT FOUND가 난다."""
+    """Map T-VN-39 뒤 수동 Feature의 참조는 정본 uuid 하나다 — fixture가 그것을 받는다."""
 
-    monkeypatch.setattr(
-        harness.driver,
-        "_resolve_manual_feature_text_id",
-        lambda *, admin_url, proxy_secret, feature_uuid: feature_uuid,
-    )
-
-    assert harness.run() == 1
+    assert harness.run() == 0
     assert harness.host.fixture_arguments == [MANUAL_FEATURE_UUID]
-    result = harness.result
-    assert result["phase"] == "runtime_command_failed"
-    assert result["driver_phase"] == "runtime_command_failed"
 
 
-def test_regression_live_attestation_identity_must_be_the_text_feature_id(
+def test_regression_live_attestation_replacement_must_be_the_provider_uuid(
     harness_factory: Callable[..., _Harness],
 ) -> None:
-    """적대 리뷰: PinVi attestation은 local receipt의 TEXT feature_id와 결박된다.
-
-    dedup fixture는 TEXT id로 성공해도, live attestation env에 승인 UUID를 실으면
-    receipt와 identity가 어긋나 본문에서 소각된다.
-    """
+    """PinVi receipt의 replacement_feature_id는 Map 이벤트의 정본 uuid다 — legacy alias를 실으면 본문에서 소각된다."""
 
     harness = harness_factory(
-        '"PINVI_M05_LIVE_OLD_FEATURE_ID": manual_feature_id,',
-        '"PINVI_M05_LIVE_OLD_FEATURE_ID": manual_feature_uuid,',
+        '"PINVI_M05_LIVE_REPLACEMENT_FEATURE_ID": fixture["provider_feature_id"],',
+        '"PINVI_M05_LIVE_REPLACEMENT_FEATURE_ID": fixture["provider_feature_ref"],',
     )
 
     assert harness.run() == 1
-    assert harness.host.fixture_arguments == [MANUAL_FEATURE_TEXT_ID]
     result = harness.result
     assert result["phase"] == "runtime_command_failed"
     assert "attest:live" in harness.host.timeline
@@ -2335,7 +2362,7 @@ def test_seeded_reference_is_created_before_the_map_decision(harness: _Harness) 
         for item in harness.http.requests
         if item["path"].endswith("/pois") and item["method"] == "POST"
     )
-    assert seed["body"]["feature_id"] == MANUAL_FEATURE_TEXT_ID
+    assert seed["body"]["feature_id"] == MANUAL_FEATURE_UUID
     assert "feature_uuid" not in seed["body"]
 
 
@@ -2409,19 +2436,71 @@ def test_a_failure_echoing_every_written_env_file_leaks_no_sensitive_value(
     assert leaked == []
 
 
-def test_a_pinned_map_without_the_fresh_init_service_is_rejected_before_the_claim(
-    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        # 끝이 둘: 사슬의 한 고리를 끊는다.
+        ("""    depends_on:
+      - db-role-bootstrap-300
+""", ""),
+        # 끝이 없다: fresh-init 구성원이 하나도 없다.
+        ("""      - fresh-init
+""", """      - never-used
+"""),
+    ],
+    ids=["two-terminals", "no-members"],
+)
+def test_a_map_whose_fresh_init_chain_has_no_single_end_is_rejected_before_the_claim(
+    harness_factory: Callable[..., _Harness],
+    monkeypatch: pytest.MonkeyPatch,
+    old: str,
+    new: str,
 ) -> None:
-    """fresh-init은 claim 뒤에 돈다 — 서비스가 없으면 실행권을 쓰기 **전에** 멈춰야 한다.
+    """fresh-init은 claim 뒤에 돈다 — 돌릴 끝 서비스를 claim **전에** 렌더 모델에서 정해야 한다.
 
-    옛 진단 entrypoint override는 없는 서비스에 얹혀 compose가 거부했고, 그것이 우연히 claim 전
-    검사였다. override를 걷으면서 그 검사를 명시했다(ADR-51 G-3 적대 리뷰).
+    옛 진단 entrypoint override가 없는 서비스에 얹혀 compose가 거부하던 것이 우연한 claim 전 검사였다.
     """
 
-    monkeypatch.setattr(harness.driver, "_MAP_FRESH_INIT_SERVICE", "db-application-schema-fresh")
+    module = sys.modules[__name__]
+    monkeypatch.setattr(module, "_MAP_COMPOSE", module._MAP_COMPOSE.replace(old, new))
+    harness = harness_factory()
 
     assert harness.run() == 1
     result = harness.result
     assert result["status"] == "preflight_rejected"
     assert result["phase"] == "runtime_setup_map_config"
+    assert "ledger-claim" not in harness.host.timeline
+
+
+def test_the_deleted_local_dev_overlay_is_a_pre_claim_rejection(
+    harness_factory: Callable[..., _Harness],
+) -> None:
+    """Map #1259가 `docker-compose.local-dev.yml`을 지웠다. 그 파일을 다시 넘기면 compose가 거부하고,
+    그것은 claim **전**이어야 한다 — 2026-09-27 실제 실행이 이 자리에서 멈췄다."""
+
+    harness = harness_factory(
+        'map_files = (map_root / "docker-compose.yml", map_override)',
+        'map_files = (map_root / "docker-compose.yml", map_root / "docker-compose.local-dev.yml", map_override)',
+    )
+
+    assert harness.run() == 1
+    result = harness.result
+    assert result["status"] == "preflight_rejected"
+    assert result["phase"] == "runtime_loopback_publish_config_invalid"
+    assert "ledger-claim" not in harness.host.timeline
+
+
+def test_a_missing_service_dsn_is_a_pre_claim_rejection(
+    harness_factory: Callable[..., _Harness],
+) -> None:
+    """핀된 Map은 `KOR_TRAVEL_MAP_PG_DSN`을 `:?`로 요구한다 — 빠지면 claim 전 렌더에서 멈춘다."""
+
+    harness = harness_factory(
+        '                    f"KOR_TRAVEL_MAP_PG_DSN={map_service_dsn}",\n',
+        "",
+    )
+
+    assert harness.run() == 1
+    result = harness.result
+    assert result["status"] == "preflight_rejected"
     assert "ledger-claim" not in harness.host.timeline

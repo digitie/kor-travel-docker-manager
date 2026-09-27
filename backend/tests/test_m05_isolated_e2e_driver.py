@@ -1277,7 +1277,7 @@ def test_the_driver_scrubs_manager_env_secrets(tmp_path: Path) -> None:
     assert "manager-env-token-4411" not in driver._scrub("saw manager-env-token-4411")
 
 
-def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:
+def test_fixture_uses_only_the_service_role_dsn_and_provider_contract() -> None:
     fixture = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_fixture.py").read_text(
         encoding="utf-8"
     )
@@ -1291,6 +1291,13 @@ def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:
     assert "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN" not in fixture
     assert "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN" not in fixture_env
     assert "KOR_TRAVEL_MAP_PG_DSN" in fixture_env
+    # Map ADR-100: role은 `ktm_feature_service` 하나다. 옛 role 이름이 남으면 claim 뒤에 죽는다.
+    for retired in ("ktm_feature_dagster_runtime", "ktm_feature_migrator", "ktm_feature_api_runtime"):
+        assert retired not in fixture, retired
+        assert retired not in driver_source, retired
+    assert "map_service_dsn" in fixture_env
+    assert "provider_natural_key=" in fixture
+    assert "CAST(:manual_feature_id AS uuid)" in fixture
     assert "assert_runtime_db_privilege_boundary" in fixture
     assert "AsyncKorTravelMapClient" in fixture
     assert "SET LOCAL ROLE" not in fixture
@@ -1557,7 +1564,7 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
         driver, "_assert_rendered_loopback_tcp_publish", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
-        driver, "_assert_rendered_service_present", lambda *_args, **_kwargs: None
+        driver, "_profile_terminal_service", lambda *_args, **_kwargs: "db-application-schema-fresh"
     )
     monkeypatch.setattr(
         driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False, False)
