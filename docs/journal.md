@@ -7217,3 +7217,31 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
   exit 1이었다.
 - **짝**: Map `fix/rustfs-init-curl`, PinVi `fix/rustfs-init-curl`. M05는 핀된 pair의 compose를
   돌리므로 두 저장소 머지 뒤 새 pair로 회전해야 다시 돈다.
+
+## 2026-09-27 — Dagster healthcheck 폭주를 끝냈다: 셸 래퍼, deadline 없는 CLI, 거두지 않는 PID 1
+
+- **발견**: M05 격리 실행이 n150 과부하 속에서 연달아 멈췄다. load는 57~137까지 올랐다.
+  원인은 Manager가 띄우는 Dagster 스택 넷(Map·PinVi·geo·weather)의 healthcheck였다.
+  - code-server는 `dagster api grpc-health-check`(Map·geo는 10초마다), daemon은 `CMD-SHELL dagster-daemon liveness-check`를
+    돌렸다. 둘 다 매번 dagster를 import한다(유휴 2초 안팎).
+  - 적대 리뷰가 메커니즘을 바로잡았다. docker는 컨테이너마다 probe를 하나씩만 돌린다. 쌓인 것은 `CMD-SHELL` 래퍼의
+    고아다. timeout 때 `sh`만 죽고 Python은 계속 돌며, PID 1(dagster)은 그것을 거두지 않는다. 그래서 좀비가 565개 있었다
+    (geo code-server 261, geo daemon 85, weather 78, PinVi 25, Map 20). exec 형식 컨테이너에는 0개였다.
+  - CLI probe에는 deadline이 없다. weather code-server는 2026-09-26 04:39 DB 접속 오류 뒤 gRPC가 멈춰 있었다.
+    probe가 2,915회 연속 실패했고, 1시간 넘게 산 probe 프로세스가 쌓여 있었다. 그 사이 weather 수집이 사실상 멈췄다.
+- **변경(#426, `7bda04db`)**:
+  - code-server는 같은 gRPC health 호출(`DagsterApi` → SERVING)을 dagster import 없이 `grpc_health`로 직접 부른다(`python -I`,
+    deadline 8초, 0.5~0.9초). 30초 간격에 180초 기동 창, `start_interval` 5초.
+  - daemon은 `liveness-check`를 exec 형식으로 120초/60초 간격에 retries 2로 돌린다.
+    `tolerance + interval × retries = 300 + 240초`다.
+  - webserver 검사는 exec 형식으로 바꿨다.
+  - 12개 서비스 모두 `init: true`다.
+  - `test_dagster_daemon_liveness_contract.py`가 exec 형식, `init`, gRPC health 호출, `interval × retries ≤ tolerance`를
+    command에서 유도한 서비스마다 요구한다. main에 대고 돌리면 29건이 빨갛다.
+- **반영**:
+  - Map·PinVi는 설치 → rebind → 같은 pair 수렴(`converged`)으로 반영했다.
+  - geo·weather는 호스트에서 `-p kor-travel-docker-manager --project-directory /opt/kor-travel-docker-manager`를 명시하고
+    `up -d --no-deps --no-build --wait`로 반영했다(먼저 `--dry-run`).
+  - weather는 code-server를 먼저, healthy 뒤 webserver·daemon 순으로 했다.
+- **결과**: 좀비 565 → 40(남은 것은 비-Dagster·airport), 동시 probe 47 → 1, weather code-server 복구(수집 재개).
+- **짝**: Map #1284(Map 자체 compose에 같은 계약). airport(transport) 스택은 그 저장소에서 따로 한다.
