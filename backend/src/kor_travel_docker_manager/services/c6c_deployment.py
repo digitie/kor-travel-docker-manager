@@ -40,6 +40,7 @@ from kor_travel_docker_manager.services.capabilities import (
 )
 from kor_travel_docker_manager.services.compose_references import (
     assert_protected_references_are_derived,
+    assert_resolved_secret_values_stay_at_reference_sites,
     secret_values_for,
 )
 from kor_travel_docker_manager.services.errors import (
@@ -501,15 +502,8 @@ _OPS_ENV_NAMES = frozenset(
 )
 #: PinVi DSN을 조립하는 서비스와, 그때 쓰는 자격증명 쌍.
 #:
-#: **이 선언 하나에서 canonical 값과 허용 경로를 둘 다 유도한다.** 종전에는 같은
-#: 사실을 `_PINVI_DATABASE_URL_RAW_VALUES`와 `_PINVI_DATABASE_URL_ALLOWED_PATHS`가
-#: 따로 들고 있었고, 서비스를 하나 더해도 한쪽만 바뀌면 조용히 어긋났다.
-#:
-#: 2026-09-19에 정확히 그렇게 깨졌다 — #356이 `pinvi-dagster-daemon`을, #358이
-#: `pinvi-dagster-code-server`를 더하면서 compose에는 DSN을 넣었지만 이 계약에는
-#: 등록하지 않았다. 그 결과 **핀 재구축 전부**가 `prebuild_snapshot`에서
-#: `compose candidate leaks a protected C6c reference`로 죽었고, 러너가 사유를
-#: 봉인해 원인이 보이지 않았다(#318과 같은 부류의 재발).
+#: canonical 값은 이 선언에서 유도한다. 보호 참조가 놓일 수 있는 자리는 표가 아니라 설치된 릴리스
+#: compose에서 파생한다(ADR-51 결정 5) — 서비스를 더해도 등록할 곳이 없다.
 _PINVI_DSN_SERVICE_CREDENTIALS: Final = (
     (_PINVI_API_SERVICE, _PINVI_APP_DB_USER_ENV, _PINVI_APP_DB_PASSWORD_ENV),
     (_PINVI_DAGSTER_SERVICE, _PINVI_APP_DB_USER_ENV, _PINVI_APP_DB_PASSWORD_ENV),
@@ -621,12 +615,7 @@ _MAP_DATABASE_CANONICAL_ENV_VALUES = {
         "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
         "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
     ),
-    # ADR-100 superset window. 이 두 항목은 compose에 방금 추가한 키의 **정확한**
-    # 리터럴이며, allowed_paths가 이 dict에서만 파생되므로(`:978`이
-    # `_CANDIDATE_CANONICAL_API_ENV_VALUES`로 흡수) 여기 등록이
-    # `_DATABASE_SECRET_ENV_NAMES` 등록보다 먼저여야 한다. 순서를 뒤집으면
-    # prebuild_snapshot이 "compose candidate leaks a protected C6c reference"로
-    # 모든 pinned rebuild를 죽인다.
+    # ADR-100 superset window. 이 두 항목은 compose에 방금 추가한 키의 **정확한** 리터럴이다.
     (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_SERVICE_PASSWORD"): (
         "${KOR_TRAVEL_MAP_SERVICE_PASSWORD:?"
         "KOR_TRAVEL_MAP_SERVICE_PASSWORD must be explicitly set}"
@@ -2298,10 +2287,6 @@ def _validate_map_postgres_password_declaration(document: Mapping[str, Any]) -> 
     이 블록을 (A) 안에 두었고, 그래서 (A)의 docstring("소유자 배선만 묻는다")이
     거짓이었다(적대 리뷰 2026-09-17 M2).
 
-    떼어내야 하는 실질적 이유가 있다. `_DATABASE_ALLOWED_NON_ENV_PATHS`가
-    `("secrets", <이 secret>, "environment")` 경로를 전역 보호 이름 스캔에서
-    **무조건 면제**하는데, 그 면제의 정당화가 "이 검사가 그 경로를 소유한다"였다.
-    S4가 (A)를 끄면 면제만 남고 주인이 사라진다.
     """
 
     secrets = document.get("secrets")
@@ -2312,48 +2297,6 @@ def _validate_map_postgres_password_declaration(document: Mapping[str, Any]) -> 
         "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"
     ):
         raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
-
-
-def _authorized_map_postgres_password_reference(
-    document: Mapping[str, Any],
-) -> object | None:
-    """소유자가 **인가받은** secret reference. 소유자가 없거나 모양이 아니면 `None`.
-
-    이 함수는 **아무것도 거부하지 않는다** — 판정은 호출부의 일이다. 여기서 예외를
-    던지면 "소유자가 없다"와 "소유자 배선이 틀렸다"가 다시 한 덩어리가 되고, 그 둘을
-    떼어내는 것이 GM-17 B S2의 전부다.
-
-    `None`은 **공집합**을 뜻한다: 소유자가 없는 문서에서는 이 secret을 가리키는
-    **모든** 참조가 무단이다. 그 방향이 안전한 쪽이다 — 소유자가 사라졌다고 해서
-    남의 소비가 인가되지는 않는다.
-
-    **모양까지 검증한다**(적대 리뷰 2026-09-17 M1 정정). 첫 판은 소유자의
-    `secrets[0]`을 검증 없이 돌려줬고, 그래서 이름이 거짓이었다 — "인가받은"이
-    아니라 "소유자가 선언한"이었다. 그 상태로는 (B)가 **단독으로 안전하지 않다**:
-    소유자가 secret을 임의 target이나 짧은 문법으로 마운트해도 (B)는 고무도장을
-    찍고, 인가 판정은 여전히 (A)에 기생한다. S4의 scope 축이
-    `declared OR witnessed`인 이상 "(A)는 꺼졌는데 소유자는 문서에 남아 있는"
-    형상이 **설계상 가능**하므로, 그 기생을 여기서 끊는다.
-    """
-
-    services = document.get("services")
-    if not isinstance(services, Mapping):
-        return None
-    postgres = services.get(_MAP_POSTGRES_SERVICE)
-    if not isinstance(postgres, Mapping):
-        return None
-    references = postgres.get("secrets")
-    if not isinstance(references, list) or len(references) != 1:
-        return None
-    reference = references[0]
-    if (
-        not isinstance(reference, Mapping)
-        or reference.get("source") != _MAP_POSTGRES_PASSWORD_SECRET
-        or reference.get("target") != _MAP_POSTGRES_PASSWORD_SECRET
-    ):
-        # 소유자가 선언했더라도 **exact target**이 아니면 인가하지 않는다.
-        return None
-    return reference
 
 
 def _validate_map_postgres_password_owner_wiring(document: Mapping[str, Any]) -> None:
@@ -2432,30 +2375,6 @@ def _pinvi_postgres_password_reference_is_valid(reference: object) -> bool:
         and reference.get("target")
         in {_PINVI_POSTGRES_PASSWORD_SECRET, _PINVI_POSTGRES_PASSWORD_FILE}
     )
-
-
-def _authorized_pinvi_postgres_password_reference(
-    document: Mapping[str, Any],
-) -> object | None:
-    """소유자가 인가받은 참조. 소유자가 없거나 모양이 아니면 `None`(= 공집합).
-
-    **모양까지 본다.** (A)의 지역 변수를 빌리면 (A)를 끄는 순간 소비자 스캔이 함께
-    무너진다 — 그것이 S2에서 적대 리뷰가 실측한 실패다.
-    """
-
-    services = document.get("services")
-    if not isinstance(services, Mapping):
-        return None
-    postgres = services.get(_PINVI_POSTGRES_SERVICE)
-    if not isinstance(postgres, Mapping):
-        return None
-    references = postgres.get("secrets")
-    if not isinstance(references, list) or len(references) != 1:
-        return None
-    reference = references[0]
-    if not _pinvi_postgres_password_reference_is_valid(reference):
-        return None
-    return reference
 
 
 def _validate_pinvi_postgres_password_owner_wiring(document: Mapping[str, Any]) -> None:
@@ -4343,8 +4262,13 @@ def validate_resolved_compose_candidate_protected_values(
             )
 
     # 보호 참조와 파일 내용은 raw 단계가 설치된 릴리스 compose에서 파생한 규칙으로 봤다(ADR-51 결정 5).
-    # resolved 그래프는 그 참조를 보간한 결과라, 여기서 값을 다시 스캔하거나 배선을 `.env`와 다시 대조하면
-    # 결정적인 보간을 두 번 증명하는 것이다(결정 3). bind snapshot은 raw 단계와 같아야 한다(호출자가 본다).
+    # 배선을 `.env`와 다시 대조하지 않는다 — 보간은 raw 검사와 같은 env로 돈다(결정 3). 대신 비밀 **값**이
+    # 원본의 보호 참조 자리에만 있는지 본다: raw 파서와 compose가 다르게 읽거나 보간 시점에 파일 내용이
+    # 들어오는 경우(`label_file` 등)의 백스톱이다. bind source 내용은 raw 단계가 같은 allowlist 경로로 봤다.
+    if compose_path is not None:
+        assert_resolved_secret_values_stay_at_reference_sites(
+            resolved, compose_path=compose_path, environment=environment
+        )
     _validate_candidate_external_resource_references(
         resolved,
         services=services,

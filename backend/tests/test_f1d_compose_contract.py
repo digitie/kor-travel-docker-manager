@@ -2967,27 +2967,6 @@ def test_sole_consumer_scan_rejects_a_foreign_consumer(
         )
 
 
-def test_authorized_reference_is_empty_without_an_owner() -> None:
-    """인가 집합은 소유자에서만 나온다 — 없으면 공집합(`None`)이다.
-
-    이 파생이 (A)의 지역 변수를 빌리지 않는다는 것이 S2의 전부다. 빌려 쓰면 (A)를
-    끄는 순간 (B)가 함께 무너진다.
-    """
-
-    derive = c6c_deployment_module._authorized_map_postgres_password_reference
-    assert derive(_document_with_foreign_consumer(include_owner=False)) is None
-    assert derive(_document_with_foreign_consumer(include_owner=True)) == {
-        "source": _MAP_PASSWORD_SECRET,
-        "target": _MAP_PASSWORD_SECRET,
-    }
-    # 소유자가 참조를 둘 들고 있으면 "유일"이 성립하지 않으므로 인가하지 않는다.
-    two_references = _document_with_foreign_consumer(include_owner=True)
-    owner = two_references["services"]["kor-travel-map-postgres"]  # type: ignore[index]
-    assert isinstance(owner, dict)
-    owner["secrets"] = [*owner["secrets"], {"source": "other", "target": "other"}]
-    assert derive(two_references) is None
-
-
 def test_owner_wiring_is_skipped_only_when_the_owner_is_absent() -> None:
     """(A)는 소유자가 없을 때만 조용하다 — 있으면 종전처럼 배선을 따진다.
 
@@ -3070,7 +3049,6 @@ def test_the_global_invariants_are_not_inside_the_family_validator() -> None:
         c6c_deployment_module._validate_map_postgres_password_owner_wiring
     )
     for forbidden in (
-        "_assert_map_postgres_password_sole_consumer",
         "_validate_map_postgres_password_declaration",
     ):
         assert forbidden not in wiring_source, (
@@ -3193,35 +3171,6 @@ def test_entry_point_runs_the_consumer_scan_for_a_valid_owner(tmp_path: Path) ->
             root_env_path=str(root_env),
             environment=environment,
         )
-
-
-def test_authorized_reference_requires_the_exact_shape() -> None:
-    """인가 파생은 **모양까지** 본다 (적대 리뷰 M1).
-
-    첫 판은 소유자의 `secrets[0]`을 검증 없이 돌려줬고, 그래서 이름이 거짓이었다 —
-    "인가받은"이 아니라 "소유자가 선언한"이었다. 진입점 경로로는 (A)가 같은 것을
-    확인하므로 이 결함이 보이지 않는다(실측: 모양 검증을 지워도 전체 스위트 초록).
-    그래서 파생을 **직접** 태운다.
-    """
-
-    derive = c6c_deployment_module._authorized_map_postgres_password_reference
-
-    def owner_with(reference: object) -> dict[str, object]:
-        return {
-            "services": {"kor-travel-map-postgres": {"secrets": [reference]}}
-        }
-
-    good = {"source": _MAP_PASSWORD_SECRET, "target": _MAP_PASSWORD_SECRET}
-    assert derive(owner_with(good)) == good
-
-    for label, bad in {
-        "짧은 문법": _MAP_PASSWORD_SECRET,
-        "target 어긋남": {**good, "target": "elsewhere"},
-        "source 어긋남": {**good, "source": "other-secret"},
-        "target 없음": {"source": _MAP_PASSWORD_SECRET},
-        "참조가 리스트": [good],
-    }.items():
-        assert derive(owner_with(bad)) is None, f"{label}: 인가하면 안 된다"
 
 
 # ── GM-17 B · S3-a: PinVi postgres 신원을 db-init 게이트에서 떼어낸다 ────
@@ -3557,38 +3506,6 @@ def test_pinvi_entry_point_checks_the_secret_declaration(tmp_path: Path) -> None
         )
 
 
-def test_pinvi_authorized_reference_requires_a_valid_shape() -> None:
-    """인가 파생은 **모양까지** 본다 — PinVi는 Map보다 느슨해서 더 중요하다.
-
-    PinVi 소유자 참조는 짧은 문법과 **두 가지 target**을 허용한다. 그래서 파생을
-    무검증으로 두면 Map보다 위험하다(S2 적대 리뷰 M1을 여기서는 처음부터 적용했다).
-    """
-
-    derive = c6c_deployment_module._authorized_pinvi_postgres_password_reference
-
-    def owner_with(reference: object) -> dict[str, object]:
-        return {"services": {"pinvi-postgres": {"secrets": [reference]}}}
-
-    # 허용되는 세 모양
-    assert derive(owner_with(_PINVI_PASSWORD_SECRET)) == _PINVI_PASSWORD_SECRET
-    for target in (_PINVI_PASSWORD_SECRET, f"/run/secrets/{_PINVI_PASSWORD_SECRET}"):
-        reference = {"source": _PINVI_PASSWORD_SECRET, "target": target}
-        assert derive(owner_with(reference)) == reference
-
-    # 거부되는 모양들
-    for label, bad in {
-        "target 어긋남": {"source": _PINVI_PASSWORD_SECRET, "target": "elsewhere"},
-        "source 어긋남": {"source": "other", "target": _PINVI_PASSWORD_SECRET},
-        "target 없음": {"source": _PINVI_PASSWORD_SECRET},
-        "참조가 리스트": [{"source": _PINVI_PASSWORD_SECRET}],
-        "다른 secret 이름": "some-other-secret",
-    }.items():
-        assert derive(owner_with(bad)) is None, f"{label}: 인가하면 안 된다"
-
-    assert derive({"services": {}}) is None
-    assert derive({"services": {"pinvi-postgres": {"secrets": []}}}) is None
-
-
 def test_pinvi_global_invariants_are_not_inside_the_family_validator() -> None:
     """전역 불변식 둘은 PinVi family validator **밖**에 있어야 한다.
 
@@ -3602,7 +3519,6 @@ def test_pinvi_global_invariants_are_not_inside_the_family_validator() -> None:
         c6c_deployment_module._validate_pinvi_postgres_password_owner_wiring
     )
     for forbidden in (
-        "_assert_pinvi_postgres_password_sole_consumer",
         "_validate_pinvi_postgres_password_declaration",
     ):
         assert forbidden not in wiring_source, (

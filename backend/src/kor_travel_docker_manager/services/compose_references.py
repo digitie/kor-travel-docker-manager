@@ -17,9 +17,11 @@ env key, 서비스의 다른 필드, 최상위 항목)에서 참조하는 **보�
 
 from __future__ import annotations
 
+import string
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 import yaml
 
@@ -30,6 +32,9 @@ from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_d
 RELEASE_COMPOSE_NAME = ".ktdm-release-compose.yml"
 _RELEASE_MARKER = ".ktdm-source-revision"
 _MINIMUM_SECRET_LENGTH = 4
+#: compose 변수 이름에 쓰이는 글자. `str.isalnum()`은 비ASCII 글자도 받아 `$DSNé`를 다른 이름으로 읽었다 —
+#: compose는 `DSN`을 치환하고 `é`를 글자로 남긴다(적대 리뷰 D5 P-2 H-1).
+_NAME_CHARACTERS = frozenset(string.ascii_letters + string.digits + "_")
 
 #: 참조가 놓인 자리. 서비스 env는 key까지, 서비스의 다른 필드는 필드까지, 최상위 항목은 이름까지 본다 —
 #: 목록 순서를 바꿨다고 자리가 달라지면 안 된다.
@@ -64,7 +69,7 @@ def variable_names(text: str) -> set[str]:
             continue
         start = index + 2 if following == "{" else index + 1
         end = start
-        while end < len(text) and (text[end] == "_" or text[end].isalnum()):
+        while end < len(text) and text[end] in _NAME_CHARACTERS:
             end += 1
         name = text[start:end]
         if name and not name[0].isdigit():
@@ -197,7 +202,9 @@ def _is_protected(name: str, environment: Mapping[str, str], secret_set: set[str
     if name.startswith("env_file:") or is_sensitive_key(name):
         return True
     value = environment.get(name) or ""
-    return any(secret in value for secret in secret_set)
+    # DSN은 비밀번호를 percent-encoding으로 담을 수 있다 — 풀어서도 본다.
+    candidates = (value, unquote(value))
+    return any(secret in text for text in candidates for secret in secret_set)
 
 
 def _describe(site: Site) -> str:
@@ -227,6 +234,54 @@ def secret_values_for(*, compose_path: str | Path, environment: Mapping[str, str
 
     reference_text, _reference = _load_reference(compose_path)
     return tuple(sorted(secret_values(environment, reference_text=reference_text), key=len, reverse=True))
+
+
+def _site_of(path: tuple[str, ...]) -> Site:
+    if path[:1] == ("services",) and len(path) >= 3:
+        if path[2] == "environment" and len(path) >= 4:
+            return path[:4]
+        return path[:3]
+    return path[:2]
+
+
+def assert_resolved_secret_values_stay_at_reference_sites(
+    resolved: Mapping[str, Any],
+    *,
+    compose_path: str | Path,
+    environment: Mapping[str, str],
+) -> None:
+    """resolved 문서에서 `.env` 비밀 값은 원본이 보호 변수를 참조하는 자리에만 나타난다.
+
+    raw 규칙의 백스톱이다. raw 파서가 compose와 다르게 읽거나(이름 글자), 보간 시점에 파일 내용이 들어오면
+    (`label_file`, `format: raw`를 뗀 `env_file`) raw 문서만 보는 규칙은 그것을 못 본다. 원본에 `env_file`이 있는
+    서비스의 env key는 파일이 채우므로 예외다. compose의 resolved 출력은 `$`를 `$$`로 쓴다.
+    """
+
+    reference_text, reference = _load_reference(compose_path)
+    secret_set = secret_values(environment, reference_text=reference_text)
+    if not secret_set:
+        return
+    references = compose_references(reference)
+    allowed = {
+        site
+        for site, names in references.items()
+        if any(_is_protected(name, environment, secret_set) for name in names)
+    }
+    env_file_services = {
+        site[1] for site in references if site[:1] == ("services",) and site[2:3] == ("env_file",)
+    }
+    needles = {form for secret in secret_set for form in (secret, secret.replace("$", "$$"))}
+    for path, scalar in _sited_scalars(resolved):
+        if not any(needle in scalar for needle in needles):
+            continue
+        site = _site_of(path)
+        if site in allowed or (
+            site[:1] == ("services",) and site[2:3] == ("environment",) and site[1] in env_file_services
+        ):
+            continue
+        raise ComposeCandidateContractError(
+            f"resolved compose candidate carries a protected C6c value at {_describe(site)}"
+        )
 
 
 def assert_protected_references_are_derived(
