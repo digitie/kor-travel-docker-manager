@@ -1019,70 +1019,9 @@ def _fake_ss(busy: set[int], probed: list[int]) -> Callable[..., str]:
     return fake_command
 
 
-def test_every_run_gets_the_same_ports_when_they_are_free(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """포트는 이미지 빌드 입력이다 — transaction이 달라도 실행마다 같은 포트여야 한다.
-
-    Map frontend와 PinVi web은 host 포트를 NEXT_PUBLIC_* 빌드 인자로 굽는다. 예전 driver는
-    탐색 시작점을 transaction에서 뽑아 매 실행이 두 web 이미지의 BuildKit 캐시를 놓쳤고,
-    PinVi web의 수 GB node_modules 층 재수출이 n150에서 20-120분을 먹었다(2026-09-27).
-    함수 인자가 아니라 **main이 실제로 고른 포트**에 결박한다 — transaction은 main이 만든
-    진짜 값이고, receipt에서 읽어 서로 다름을 확인한다(값을 스텁하지 않는다).
-    """
-
-    driver = _driver()
-    identity = ExecutionIdentityV6.build(
-        source_pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
-        manager_source_revision="a" * 40,
-    ).execution_identity_sha256
-    _patch_ephemeral_range(monkeypatch, driver, "32768\t60999\n")
-    monkeypatch.setattr(driver, "_validate_trusted_release", lambda _expected: None)
-    monkeypatch.setattr(
-        driver,
-        "_assert_current_m05_execution_is_runnable",
-        lambda _expected: SimpleNamespace(
-            current=SimpleNamespace(execution_identity_sha256=identity)
-        ),
-    )
-    monkeypatch.setattr(driver, "_root_directory", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(driver, "_LEDGER", tmp_path / "ledger")
-    monkeypatch.setattr(
-        driver, "_source_pair_preflight", lambda: (tmp_path, tmp_path, None, "", "")
-    )
-    monkeypatch.setattr(driver, "_map_application_head", lambda _root: "head")
-
-    def stop_before_checkout(**_kwargs: object) -> Path:
-        # 포트 선택 바로 다음의 첫 외부 작업(실행별 git checkout) 앞에서 멈춘다.
-        raise RuntimeError("stop after port selection")
-
-    monkeypatch.setattr(driver, "checkout_pinned_run_source", stop_before_checkout)
-    monkeypatch.setattr(
-        driver,
-        "_block_terminal_m05_execution",
-        lambda *_args, **_kwargs: pytest.fail("a preclaim stop must not block execution"),
-    )
-
-    runs: list[tuple[str, list[int]]] = []
-    previous_umask = os.umask(0o077)
-    try:
-        for name in ("first", "second"):
-            probed: list[int] = []
-            monkeypatch.setattr(driver, "_command", _fake_ss(set(), probed))
-            output = tmp_path / name
-            output.mkdir()
-            assert driver.main("a" * 40, output) == 1
-            receipt = json.loads((output / "result.json").read_text(encoding="utf-8"))
-            assert receipt["status"] == "preflight_rejected"
-            runs.append((receipt["transaction_id"], probed))
-    finally:
-        os.umask(previous_umask)
-
-    (first_transaction, first_ports), (second_transaction, second_ports) = runs
-    assert first_transaction != second_transaction
-    assert len(first_ports) == len(set(first_ports)) == 13
-    assert sorted(second_ports) == sorted(first_ports)
-    assert all(20000 <= port < 30000 for port in first_ports)
+# 실행마다 같은 포트(→ 같은 빌드 입력)인지는 여기서 포트 목록으로 보지 않는다. 빌드 명령이
+# 받은 입력에 결박한 full_path 테스트가 본다:
+# test_m05_isolated_e2e_full_path.py::test_two_runs_hand_every_image_build_the_same_inputs
 
 
 def test_free_ports_skip_busy_windows_deterministically(

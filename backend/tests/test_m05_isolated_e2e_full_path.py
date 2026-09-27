@@ -373,6 +373,8 @@ class _FakeDockerHost:
         self.image_id_references: list[str] = []
         #: 컨테이너는 cleanup에서 사라지므로 생성 시점 사실을 따로 보존한다.
         self.created: list[dict[str, Any]] = []
+        #: 이미지 빌드가 받은 입력, 빌드 순서대로(`_record_build`).
+        self.builds: list[dict[str, Any]] = []
         self.saw_unbound_expose_metadata = False
         self.counter = 0
         # 회귀 재현용 스위치
@@ -896,10 +898,35 @@ class _FakeDockerHost:
             if name not in visible:
                 self._fail(driver, 1, f"no such service: {name}")
         self._ensure_networks(model)
+        if build:
+            for name in wanted:
+                self._record_build(model, name, environment, tag=tag)
         for name in wanted:
             if not self._has_container(model.project, name):
                 self._create_container(model, name, environment, build=build)
         return ""
+
+    def _record_build(
+        self, model: _ComposeModel, service_name: str, environment: dict[str, str], *, tag: str
+    ) -> None:
+        """빌드가 받은 입력을 남긴다 — compose 보간 환경과 렌더된 build 절(``context`` 제외).
+
+        context **경로**는 실행별 checkout이라 실행마다 다르지만 BuildKit 층 캐시 키는 경로가
+        아니라 내용이다. 경로 말고 build 절에 남는 것(override가 더한 ``args`` 등)은 비교 대상이다.
+        """
+
+        build = model.services[service_name].get("build")
+        if not build:
+            return
+        rendered = build if isinstance(build, dict) else {"context": build}
+        self.builds.append(
+            {
+                "tag": tag,
+                "service": service_name,
+                "environment": dict(environment),
+                "build": {key: value for key, value in rendered.items() if key != "context"},
+            }
+        )
 
     def _compose_run(
         self,
@@ -1015,8 +1042,10 @@ class _FakeDockerHost:
             assert environment.get(key) == str(self.pinvi_run_root), key
         self._ensure_networks(model)
         if action == "build":
-            for _name, service in model.visible(()).items():
+            for name, service in model.visible(()).items():
                 if service.get("build"):
+                    # compose는 셸 환경을 env 파일보다 먼저 본다 — driver가 넘긴 env가 위에 온다.
+                    self._record_build(model, name, {**environment, **env}, tag="pinvi")
                     self._ensure_image(
                         str(service["image"]), revision=self._revision_label(environment)
                     )
@@ -1967,6 +1996,87 @@ def test_full_happy_path_publishes_only_non_ephemeral_loopback_ports(
     assert all(20000 <= port < 30000 for port in published)
     # HTTP로 실제 도달한 포트도 같은 대역이어야 한다.
     assert (harness.http.map_ports | harness.http.pinvi_ports) <= published
+
+
+#: 핀 compose의 ``build.args``가 보간하는 env 이름 — 이 값들이 이미지 층에 들어간다.
+#: Map ``docker-compose.yml``(api·frontend·dagster)과 PinVi ``infra/docker-compose.app.yml``
+#: (app-api·app-web·app-dagster) 기준이다. ``NEXT_PUBLIC_*``은 이름이 아니라 접두사로 전부 센다.
+_BUILD_ARG_ENV_KEYS = frozenset(
+    {
+        "KOR_TRAVEL_MAP_GIT_COMMIT",
+        "KOR_TRAVEL_MAP_API_PORT",
+        "KOR_TRAVEL_MAP_DAGSTER_PORT",
+        "KOR_TRAVEL_GEO_VWORLD_API_KEY",
+        "VWORLD_API_KEY",
+        "PINVI_SOURCE_REVISION",
+        "PINVI_ENVIRONMENT",
+        "PINVI_API_PORT",
+        "PINVI_GRAFANA_PORT",
+    }
+)
+
+
+def _build_inputs(
+    host: _FakeDockerHost,
+) -> list[tuple[str, str, dict[str, str], dict[str, Any]]]:
+    return [
+        (
+            record["tag"],
+            record["service"],
+            {
+                key: value
+                for key, value in record["environment"].items()
+                if key.startswith("NEXT_PUBLIC_") or key in _BUILD_ARG_ENV_KEYS
+            },
+            record["build"],
+        )
+        for record in host.builds
+    ]
+
+
+def test_two_runs_hand_every_image_build_the_same_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """transaction이 달라도 이미지 빌드 입력은 같아야 한다 — 그래야 BuildKit 캐시가 산다.
+
+    Map frontend와 PinVi web은 host 포트를 ``NEXT_PUBLIC_*`` 빌드 인자로 굽는다. 예전 driver는
+    포트 탐색 시작점을 transaction에서 뽑아 두 web 이미지가 매 실행 캐시를 놓쳤고, PinVi web의
+    수 GB node_modules 층 재수출이 n150에서 20-120분을 먹었다(2026-09-27 p2-p7). 고른 포트가
+    아니라 **빌드 명령이 받은 입력**에 결박한다 — env 파일(+ driver가 넘긴 셸 env)과 렌더된
+    build 절. 포트가 아닌 실행별 값(transaction, network 주소)이 빌드 인자로 새도 여기서 깨진다.
+    """
+
+    runs: list[_Harness] = []
+    previous_umask = os.umask(0o077)
+    try:
+        for name in ("first", "second"):
+            harness = _build_harness(tmp_path / name, monkeypatch, ())
+            assert harness.run() == 0
+            runs.append(harness)
+    finally:
+        os.umask(previous_umask)
+    first, second = runs
+
+    # 서로 다른 두 실행이다 — 같은 입력을 두 번 본 것이 아니다(비밀·project 이름은 실행마다 새 값).
+    assert first.result["transaction_id"] != second.result["transaction_id"]
+    for left, right in zip(first.host.builds, second.host.builds, strict=True):
+        assert left["environment"] != right["environment"]
+
+    first_inputs = _build_inputs(first.host)
+    # 하한: 두 web 이미지가 빌드됐고, 포트를 굽는 입력을 실제로 봤다.
+    seen = {(tag, service): set(values) for tag, service, values, _build in first_inputs}
+    assert {
+        "NEXT_PUBLIC_KOR_TRAVEL_MAP_API",
+        "KOR_TRAVEL_MAP_DAGSTER_PORT",
+        "KOR_TRAVEL_MAP_GIT_COMMIT",
+    } <= seen[("map", "frontend")]
+    assert {
+        "NEXT_PUBLIC_PINVI_API_URL",
+        "PINVI_API_PORT",
+        "PINVI_GRAFANA_PORT",
+        "PINVI_SOURCE_REVISION",
+    } <= seen[("pinvi", "app-web")]
+    assert _build_inputs(second.host) == first_inputs
 
 
 def test_full_happy_path_applies_the_static_bridge_topology(harness: _Harness) -> None:

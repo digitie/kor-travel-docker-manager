@@ -1106,7 +1106,13 @@ def _pbkdf2_password_hash(value: str) -> str:
 
 
 #: host publish 포트 탐색의 **고정** 시작점(아래 `_free_ports` 주석).
-_PORT_SCAN_BASE = 20000
+#:
+#: 값 28629는 2026-09-27 p7(transaction 7cb6f355)이 쓴 창이다. 같은 핀(Map a18d9274·
+#: PinVi fd07903f)으로 끝까지 export된 두 web 이미지가 그 창의 포트를 굽고 있고(PinVi web:
+#: API 28634 = +5, Grafana 28641 = +12) n150 BuildKit에 그 사슬이 남아 있다. 그래서 이 값이면
+#: 고정 뒤 첫 실행부터 캐시를 쓴다 — 다른 값이면 첫 실행이 PinVi web node_modules 층을 부하
+#: 속에서 한 번 더 내보낸다. 값 자체에 다른 뜻은 없다. 30000 아래로 105개 창(첫 창 + 대체 104).
+_PORT_SCAN_BASE = 28629
 
 
 def _free_ports() -> dict[str, int]:
