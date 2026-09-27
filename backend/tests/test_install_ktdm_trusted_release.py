@@ -224,3 +224,14 @@ def test_the_release_keeps_index_exec_bits_and_drops_group_other_write(tmp_path:
         assert stat.S_IMODE((release / "scripts" / name).stat().st_mode) == 0o755, name
     unit = release / "deploy" / "systemd" / "ktdm-backend.service"
     assert stat.S_IMODE(unit.stat().st_mode) == 0o644
+
+
+def test_the_release_keeps_a_read_only_reference_compose_before_its_marker() -> None:
+    """UI는 docker-compose.yml을 제자리에서 고친다 — C6c 보호 참조의 원본은 설치기가 남긴 사본이다
+    (ADR-51 결정 5). 사본은 revision 마커보다 먼저 쓴다: 마커가 있으면 사본도 있다."""
+
+    text = _INSTALLER.read_text(encoding="utf-8")
+    copy_line = 'install -o root -g root -m 0444 "${REL}/docker-compose.yml" "${REL}/.ktdm-release-compose.yml"'
+
+    assert text.index("# <<< extract") < text.index(copy_line)
+    assert text.index(copy_line) < text.index('> "${REL}/.ktdm-source-revision"')
