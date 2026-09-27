@@ -3946,14 +3946,15 @@ git을 부르지 않는다. `pinned_runtime_sources.py`는 754줄에서 401줄�
 
 ### NOTE: 결정 5 P-1 — C6c 보호 참조를 설치된 릴리스 compose에서 파생한다 (2026-09-27, D5 P-1)
 
-- **원본**: 설치기가 release에 `docker-compose.yml`의 읽기 전용 사본 `.ktdm-release-compose.yml`(0444)을 revision 마커보다
-  먼저 남긴다. UI는 `docker-compose.yml`을 제자리에서 고치므로 그것은 원본이 될 수 없다. release(마커가 있는 디렉터리)에
-  사본이 없으면 거부한다. 개발 checkout에서는 compose 파일 자체가 원본이다.
+- **원본**: 설치기가 설치할 때마다 git에서 `docker-compose.yml`을 읽어 release에 읽기 전용 사본 `.ktdm-release-compose.yml`(0444)로
+  쓴다(추출 분기 밖 — 같은 revision을 다시 설치하면 빠진 사본이 복구된다). UI는 `docker-compose.yml`을 제자리에서 고치므로 그것은
+  원본이 될 수 없다. release(마커가 있는 디렉터리)에 사본이 없으면 거부한다. 개발 checkout에서는 compose 파일 자체가 원본이다.
 - **규칙**(`services/compose_references.py`): 자리(서비스 env key, 서비스의 다른 필드, 최상위 항목)마다 후보가 참조하는
   보호 변수는 원본이 같은 자리에서 참조하는 것의 부분집합이어야 한다. 보호 변수는 이름이 민감하거나(`is_sensitive_key`)
   값이 `.env` 비밀을 **담는** 변수다(DSN). `.env` 비밀은 민감한 이름의 값 중 4자 이상이고, 숫자·불리언이 아니며, 원본
-  텍스트에 없는 값이다(원본 기본값 `admin`은 비밀이 아니다). secret mount는 그 secret의 `environment:` 변수를, `env_file`은
-  언제나 보호된 참조로 센다. 비밀 값이 글자 그대로 들어 있어도 거부한다.
+  텍스트에 없는 값이다(원본 기본값 `admin`은 비밀이 아니다). secret·config mount는 그 항목의 `environment:` 변수를, 값 없는
+  env key(`KEY:`, 목록의 `KEY`)는 같은 이름의 변수를(compose가 환경에서 끌어온다), `env_file`은 언제나 보호된 참조로 센다.
+  비밀 값이 글자 그대로 들어 있어도 자리를 밝혀 거부한다.
 - **P-1은 병행**이다. raw 검증기의 리터럴 표 검사가 먼저 자기 문구로 거부하고, 파생 규칙은 그 뒤에 돈다. 표가 놓친 것이
   여기서 잡힌다 — 공유 PostgreSQL 비밀(`KOR_TRAVEL_SHARED_POSTGRES_PASSWORD`)과 geo·concierge·weather·transport 비밀은
   어느 표에도 없어서 다른 서비스로 옮겨도 통과했다. P-2에서 표를 지우고 P-3에서 문서를 고친다.

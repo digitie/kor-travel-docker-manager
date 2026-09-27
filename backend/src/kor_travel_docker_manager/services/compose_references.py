@@ -7,7 +7,8 @@ env key, 서비스의 다른 필드, 최상위 항목)에서 참조하는 **보�
 - 보호 변수: 이름이 민감하거나(`is_sensitive_key`) 값이 `.env` 비밀을 **담는** 변수(DSN처럼).
 - `.env` 비밀: 민감한 이름의 값 중 4자 이상이고 원본 compose 텍스트에 나타나지 않는 값. 원본에 적힌
   기본값(`${X:-admin}`)이 비밀로 취급되면 설치된 compose 자체가 거부된다.
-- 서비스의 secret mount는 그 secret의 `environment:` 변수를 참조한 것으로, `env_file` 항목은 언제나
+- 서비스의 secret·config mount는 그 항목의 `environment:` 변수를 참조한 것으로, 값 없는 env key(`KEY:`,
+  목록의 `KEY`)는 같은 이름의 변수를 참조한 것으로(compose가 환경에서 끌어온다), `env_file` 항목은 언제나
   보호된 참조로 센다.
 
 원본은 설치기가 release에 남기는 `.ktdm-release-compose.yml`이다(UI는 `docker-compose.yml`을 제자리에서
@@ -43,7 +44,7 @@ def reference_compose_path(compose_path: str | Path) -> Path:
     if (root / _RELEASE_MARKER).exists():
         raise ComposeCandidateContractError(
             "the installed Manager release has no reference compose "
-            f"({RELEASE_COMPOSE_NAME}); reinstall the release"
+            f"({RELEASE_COMPOSE_NAME}); rerun the installer for this revision — it rewrites the copy from git"
         )
     return Path(compose_path)
 
@@ -84,17 +85,35 @@ def _scalars(value: Any) -> Iterable[str]:
         yield value
 
 
-def _environment_items(value: Any) -> Iterable[tuple[str, str]]:
+def _sited_scalars(value: Any, site: Site = ()) -> Iterable[tuple[Site, str]]:
     if isinstance(value, Mapping):
         for key, item in value.items():
-            yield str(key), "" if item is None else str(item)
+            yield (*site, str(key)), str(key)
+            yield from _sited_scalars(item, (*site, str(key)))
     elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _sited_scalars(item, (*site, str(index)))
+    elif isinstance(value, str):
+        yield site, value
+
+
+def _environment_references(value: Any) -> Iterable[tuple[str, set[str]]]:
+    """env key마다 참조하는 변수. 값이 없으면(`KEY:`·목록의 `KEY`) compose가 같은 이름을 환경에서 끌어온다."""
+
+    if isinstance(value, Mapping):
+        pairs = [(str(key), None if item is None else str(item)) for key, item in value.items()]
+    elif isinstance(value, list):
+        pairs = []
         for entry in value:
-            key, _separator, item = str(entry).partition("=")
-            yield key, item
+            key, separator, item = str(entry).partition("=")
+            pairs.append((key, item if separator else None))
+    else:
+        return
+    for key, item in pairs:
+        yield key, variable_names(key) | ({key} if item is None else variable_names(item))
 
 
-def _secret_aliases(value: Any) -> Iterable[str]:
+def _mount_aliases(value: Any) -> Iterable[str]:
     for entry in value if isinstance(value, list) else [value]:
         if isinstance(entry, str):
             yield entry
@@ -120,8 +139,11 @@ def compose_references(document: Mapping[str, Any]) -> dict[Site, set[str]]:
         if collected:
             references.setdefault(site, set()).update(collected)
 
-    top_level_secrets = document.get("secrets")
-    secrets = top_level_secrets if isinstance(top_level_secrets, Mapping) else {}
+    mountable = {
+        section: block
+        for section in ("secrets", "configs")
+        if isinstance(block := document.get(section), Mapping)
+    }
     services = document.get("services")
     for service, service_document in (services if isinstance(services, Mapping) else {}).items():
         if not isinstance(service_document, Mapping):
@@ -129,12 +151,12 @@ def compose_references(document: Mapping[str, Any]) -> dict[Site, set[str]]:
         for field, value in service_document.items():
             site: Site = ("services", str(service), str(field))
             if field == "environment":
-                for key, item in _environment_items(value):
-                    add((*site, key), variable_names(key) | variable_names(item))
+                for key, names in _environment_references(value):
+                    add((*site, key), names)
                 continue
-            if field == "secrets":
-                for alias in _secret_aliases(value):
-                    declared = secrets.get(alias)
+            if field in mountable:
+                for alias in _mount_aliases(value):
+                    declared = mountable[field].get(alias)
                     if isinstance(declared, Mapping) and isinstance(declared.get("environment"), str):
                         add(site, {declared["environment"]})
             if field == "env_file":
@@ -213,8 +235,8 @@ def assert_protected_references_are_derived(
                 "compose candidate leaks a protected C6c reference: "
                 f"{_describe(site)} -> {', '.join(added)}"
             )
-    for scalar in _scalars(candidate):
+    for site, scalar in _sited_scalars(candidate):
         if any(secret in scalar for secret in secret_set):
             raise ComposeCandidateContractError(
-                "compose candidate carries a protected C6c value literally"
+                f"compose candidate carries a protected C6c value literally at {_describe(site)}"
             )

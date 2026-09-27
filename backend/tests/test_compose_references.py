@@ -193,3 +193,45 @@ def test_numeric_values_under_sensitive_names_are_not_secrets() -> None:
     candidate["services"]["grafana"]["environment"]["GF_TIMEOUT"] = "3600"
 
     _check(candidate)
+
+
+@pytest.mark.parametrize(
+    "form",
+    ["mapping", "list"],
+)
+def test_an_env_key_without_a_value_references_its_own_name(form: str) -> None:
+    """`KEY:`·목록의 `KEY`는 compose가 같은 이름을 환경에서 끌어온다 — DSN을 흘리는 길이다(적대 리뷰)."""
+
+    candidate = _candidate()
+    grafana = candidate["services"]["grafana"]
+    if form == "mapping":
+        grafana["environment"]["KOR_TRAVEL_MAP_PG_DSN"] = None
+    else:
+        grafana["environment"] = [f"{key}={value}" for key, value in grafana["environment"].items()]
+        grafana["environment"].append("KOR_TRAVEL_MAP_PG_DSN")
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="grafana.environment.KOR_TRAVEL_MAP_PG_DSN -> KOR_TRAVEL_MAP_PG_DSN",
+    ):
+        _check(candidate)
+
+
+def test_a_config_mount_counts_like_a_secret_mount() -> None:
+    candidate = _candidate()
+    candidate.setdefault("configs", {})["leak"] = {"environment": "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD"}
+    candidate["services"]["grafana"]["configs"] = ["leak"]
+
+    with pytest.raises(ComposeCandidateContractError, match="KOR_TRAVEL_SHARED_POSTGRES_PASSWORD"):
+        _check(candidate)
+
+
+def test_the_literal_value_refusal_names_its_site() -> None:
+    environment = _environment()
+    candidate = _candidate()
+    candidate["services"]["grafana"]["environment"]["GF_EXTRA"] = environment[
+        "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD"
+    ]
+
+    with pytest.raises(ComposeCandidateContractError, match="literally at grafana.environment.GF_EXTRA"):
+        _check(candidate)
