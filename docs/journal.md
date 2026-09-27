@@ -7245,3 +7245,33 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
   - weather는 code-server를 먼저, healthy 뒤 webserver·daemon 순으로 했다.
 - **결과**: 좀비 565 → 40(남은 것은 비-Dagster·airport), 동시 probe 47 → 1, weather code-server 복구(수집 재개).
 - **짝**: Map #1284(Map 자체 compose에 같은 계약). airport(transport) 스택은 그 저장소에서 따로 한다.
+
+## 2026-09-28 — M05 격리 실행의 host 포트를 고정해 web 이미지 빌드 캐시를 살린다
+
+- **발견(n150, 2026-09-27)**: `_free_ports`가 탐색 시작점을 transaction에서 뽑아 실행마다 포트가 달랐다.
+  그런데 포트는 빌드 입력이다. Map frontend는 `NEXT_PUBLIC_KOR_TRAVEL_MAP_API`(map_api)와
+  `NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL`(compose가 `KOR_TRAVEL_MAP_DAGSTER_PORT`에서 파생)을,
+  PinVi web은 `NEXT_PUBLIC_PINVI_API_URL`과 `NEXT_PUBLIC_GRAFANA_URL`(`PINVI_GRAFANA_PORT`에서 파생)을
+  빌드 인자로 굽는다. 그래서 두 web 이미지는 매 실행 BuildKit 캐시를 놓쳤다. PinVi web은 수 GB
+  node_modules 층을 단일 스레드 gzip으로 다시 내보내느라 20-120분을 썼다. p2-p7은 그 언저리에서 죽었다
+  (commit deadline, BuildKit session healthcheck 사망, 빌드가 더한 부하 속 healthcheck 창 초과).
+  포트와 무관한 Map API·PinVi API 이미지는 같은 실행에서 캐시로 3-10초였다.
+- **변경**: 탐색 시작점을 `_PORT_SCAN_BASE = 20000`으로 고정하고 `transaction` 인자를 없앴다. ephemeral
+  하한 가드(<= 29999면 닫힘), 포트별 `ss -H -ltn` 검사, 사용 중이면 다음 13포트 창으로 넘어가는 탐색,
+  30000 미만 상한, `ports_unavailable`은 그대로다. M05 실행은 launcher의 host-global mutation lock으로
+  직렬화되므로 고정 창을 실행끼리 다투지 않는다. 앞 창이 쓰이고 있으면 그 실행만 캐시를 놓친다.
+- **감사(핀 pair Map `a18d9274`·PinVi `fd07903f`의 compose를 n150에서 `docker compose config`로 렌더,
+  비밀은 매 실행 새 값)**: 두 실행 사이에 달라지는 빌드 인자는 위 네 개뿐이었고, 고정 뒤에는 0개다.
+  - 비밀은 어느 빌드 인자에도 닿지 않는다. 빌드 인자는 Map `KOR_TRAVEL_MAP_GIT_COMMIT`(핀),
+    PinVi `PINVI_SOURCE_REVISION`(핀)·`PINVI_BUILD_ENVIRONMENT=isolated`와 상수 기본값뿐이다.
+  - 빌드 컨텍스트 경로는 실행마다 다르지만 내용은 같다. Map은 실행별 checkout(`runtime/map-src`)이다.
+    driver는 그 안에 아무것도 쓰지 않는다(env·override·admission은 형제 `runtime/`). `.git/`·`.env*`는
+    `.dockerignore`가 뺀다. PinVi는 `docker-app.sh`가 핀 revision을 `git archive`해 mktemp 디렉터리에 푼다.
+  - 실행마다 다른 것은 이름뿐이다. project·image 이름과 compose가 붙이는 이미지 label
+    `com.docker.compose.project`가 그렇다. label은 이미지 config(ID)만 바꾸고 층 캐시 키는 바꾸지 않는다.
+    서비스 `labels`(transaction 등)는 컨테이너 label이지 build label이 아니다.
+- **테스트**: `test_every_run_gets_the_same_ports_when_they_are_free`는 `main`을 두 번 포트 선택 직후까지
+  돌린다. receipt의 transaction이 서로 다름을 확인하고, 실제로 `ss`로 확인한 포트가 같아야 한다.
+  origin/main driver에 대고 돌리면 빨갛다(transaction마다 창이 달라 두 포트 목록이 어긋난다). 사용 중 창 건너뛰기의 결정성,
+  ephemeral 가드(20000·29999·빈 값·숫자 아님·읽기 실패), 30000 상한(모든 창 사용 중 → 30000 아래 창만
+  다 보고 닫힘)도 고정했다.

@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import MappingProxyType, ModuleType, SimpleNamespace
 from urllib.error import HTTPError, URLError
@@ -981,35 +982,180 @@ def test_root_launcher_accepts_every_runtime_setup_subphase() -> None:
     assert 'entry.get("execution_identity_sha256") == execution' in any_block
 
 
-def test_free_ports_never_walk_into_the_ephemeral_range(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """busy window가 쌓여도 탐색은 30000 아래에 머물거나 ports_unavailable로 닫힌다.
+_EPHEMERAL_RANGE_PATH = "/proc/sys/net/ipv4/ip_local_port_range"
 
-    상한 가드(>= 30000 break)를 65535로 되돌리는 회귀는 이 테스트만 잡는다 —
-    기본 happy-path 테스트는 offset 0에서 끝나 가드를 한 번도 실행하지 않는다.
+
+def _patch_ephemeral_range(
+    monkeypatch: pytest.MonkeyPatch, driver: ModuleType, text: str | None
+) -> None:
+    """driver가 읽는 ephemeral 대역만 바꾼다. ``None``은 읽기 실패(OSError)다."""
+
+    real = Path
+
+    class _Range:
+        def read_text(self, encoding: str = "utf-8") -> str:
+            del encoding
+            if text is None:
+                raise OSError("unreadable")
+            return text
+
+    def factory(*args: object) -> object:
+        if args and str(args[0]) == _EPHEMERAL_RANGE_PATH:
+            return _Range()
+        return real(*args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(driver, "Path", factory)
+
+
+def _fake_ss(busy: set[int], probed: list[int]) -> Callable[..., str]:
+    """`ss -H -ltn "sport = :<port>"`만 받는 가짜. ``busy``의 포트만 listening으로 답한다."""
+
+    def fake_command(*args: str, **_kwargs: object) -> str:
+        assert args[:3] == ("/usr/bin/ss", "-H", "-ltn"), args
+        port = int(args[3].removeprefix("sport = :"))
+        probed.append(port)
+        return f"LISTEN 0 4096 127.0.0.1:{port} 0.0.0.0:*\n" if port in busy else ""
+
+    return fake_command
+
+
+def test_every_run_gets_the_same_ports_when_they_are_free(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """포트는 이미지 빌드 입력이다 — transaction이 달라도 실행마다 같은 포트여야 한다.
+
+    Map frontend와 PinVi web은 host 포트를 NEXT_PUBLIC_* 빌드 인자로 굽는다. 예전 driver는
+    탐색 시작점을 transaction에서 뽑아 매 실행이 두 web 이미지의 BuildKit 캐시를 놓쳤고,
+    PinVi web의 수 GB node_modules 층 재수출이 n150에서 20-120분을 먹었다(2026-09-27).
+    함수 인자가 아니라 **main이 실제로 고른 포트**에 결박한다 — transaction은 main이 만든
+    진짜 값이고, receipt에서 읽어 서로 다름을 확인한다(값을 스텁하지 않는다).
     """
 
     driver = _driver()
-    busy_windows = 40
+    identity = ExecutionIdentityV6.build(
+        source_pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
+        manager_source_revision="a" * 40,
+    ).execution_identity_sha256
+    _patch_ephemeral_range(monkeypatch, driver, "32768\t60999\n")
+    monkeypatch.setattr(driver, "_validate_trusted_release", lambda _expected: None)
+    monkeypatch.setattr(
+        driver,
+        "_assert_current_m05_execution_is_runnable",
+        lambda _expected: SimpleNamespace(
+            current=SimpleNamespace(execution_identity_sha256=identity)
+        ),
+    )
+    monkeypatch.setattr(driver, "_root_directory", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(driver, "_LEDGER", tmp_path / "ledger")
+    monkeypatch.setattr(
+        driver, "_source_pair_preflight", lambda: (tmp_path, tmp_path, None, "", "")
+    )
+    monkeypatch.setattr(driver, "_map_application_head", lambda _root: "head")
 
-    calls = {"count": 0}
+    def stop_before_checkout(**_kwargs: object) -> Path:
+        # 포트 선택 바로 다음의 첫 외부 작업(실행별 git checkout) 앞에서 멈춘다.
+        raise RuntimeError("stop after port selection")
 
-    def fake_command(*args: str, **_kwargs: object) -> str:
-        calls["count"] += 1
-        # 앞쪽 busy_windows개 window(각 13포트)는 전부 사용 중으로 답한다.
-        if calls["count"] <= busy_windows * 13:
-            return "LISTEN 0 128 127.0.0.1:x"
-        return ""
+    monkeypatch.setattr(driver, "checkout_pinned_run_source", stop_before_checkout)
+    monkeypatch.setattr(
+        driver,
+        "_block_terminal_m05_execution",
+        lambda *_args, **_kwargs: pytest.fail("a preclaim stop must not block execution"),
+    )
 
-    monkeypatch.setattr(driver, "_command", fake_command)
-
+    runs: list[tuple[str, list[int]]] = []
+    previous_umask = os.umask(0o077)
     try:
-        ports = driver._free_ports("f" * 32)
-    except driver._PhaseError as error:
-        assert error.phase == "ports_unavailable"
-    else:
-        assert all(20000 <= port < 30000 for port in ports.values())
+        for name in ("first", "second"):
+            probed: list[int] = []
+            monkeypatch.setattr(driver, "_command", _fake_ss(set(), probed))
+            output = tmp_path / name
+            output.mkdir()
+            assert driver.main("a" * 40, output) == 1
+            receipt = json.loads((output / "result.json").read_text(encoding="utf-8"))
+            assert receipt["status"] == "preflight_rejected"
+            runs.append((receipt["transaction_id"], probed))
+    finally:
+        os.umask(previous_umask)
+
+    (first_transaction, first_ports), (second_transaction, second_ports) = runs
+    assert first_transaction != second_transaction
+    assert len(first_ports) == len(set(first_ports)) == 13
+    assert sorted(second_ports) == sorted(first_ports)
+    assert all(20000 <= port < 30000 for port in first_ports)
+
+
+def test_free_ports_skip_busy_windows_deterministically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """앞 창에 사용 중 포트가 있으면 다음 창으로 넘어가고, 같은 상태면 늘 같은 창이다."""
+
+    driver = _driver()
+    _patch_ephemeral_range(monkeypatch, driver, "32768\t60999\n")
+    monkeypatch.setattr(driver, "_command", _fake_ss(set(), []))
+    free = driver._free_ports()
+    window = len(free)
+    assert sorted(free.values()) == list(
+        range(driver._PORT_SCAN_BASE, driver._PORT_SCAN_BASE + window)
+    )
+
+    # 첫 창과 둘째 창에 하나씩 — 셋째 창이 나와야 한다.
+    busy = {free["pinvi_web"], free["map_dagster"] + window}
+    chosen: list[dict[str, int]] = []
+    for _ in range(2):
+        monkeypatch.setattr(driver, "_command", _fake_ss(busy, []))
+        chosen.append(driver._free_ports())
+
+    assert chosen[0] == chosen[1]
+    assert chosen[0] == {name: port + 2 * window for name, port in free.items()}
+    assert not busy & set(chosen[0].values())
+
+
+@pytest.mark.parametrize(
+    "proc_range",
+    ["20000\t60999\n", "29999\t60999\n", "", "not-a-number 60999\n", None],
+)
+def test_free_ports_ephemeral_guard_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, proc_range: str | None
+) -> None:
+    """ephemeral 하한이 publish 대역(<= 29999)에 닿거나 읽히지 않으면 탐색 전에 닫는다."""
+
+    driver = _driver()
+    probed: list[int] = []
+    _patch_ephemeral_range(monkeypatch, driver, proc_range)
+    monkeypatch.setattr(driver, "_command", _fake_ss(set(), probed))
+
+    with pytest.raises(driver._PhaseError) as caught:
+        driver._free_ports()
+
+    assert caught.value.phase == "ports_unavailable"
+    assert probed == []
+
+
+def test_free_ports_never_walk_into_the_ephemeral_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """모든 창이 사용 중이면 30000 아래 창만 다 본 뒤 ports_unavailable로 닫힌다.
+
+    상한 가드(>= 30000 break)를 65535로 되돌리는 회귀는 이 테스트만 잡는다 —
+    happy-path 테스트는 첫 창에서 끝나 가드를 한 번도 실행하지 않는다.
+    """
+
+    driver = _driver()
+    base = driver._PORT_SCAN_BASE
+    probed: list[int] = []
+    # 하한 30000은 가드의 경계다 — 통과해야 한다.
+    _patch_ephemeral_range(monkeypatch, driver, "30000\t60999\n")
+    monkeypatch.setattr(driver, "_command", _fake_ss(set(range(base, 65536)), probed))
+
+    with pytest.raises(driver._PhaseError) as caught:
+        driver._free_ports()
+
+    assert caught.value.phase == "ports_unavailable"
+    assert probed and max(probed) < 30000
+    # 13포트 창 중 30000 아래에 들어가는 창은 전부 한 번 이상 확인했다.
+    fitting_windows = len(range(base, 30000 - 12, 13))
+    assert {(port - base) // 13 for port in probed} == set(range(fitting_windows))
 
 
 def test_free_ports_uses_the_standard_ss_binary(
@@ -1024,7 +1170,7 @@ def test_free_ports_uses_the_standard_ss_binary(
 
     monkeypatch.setattr(driver, "_command", fake_command)
 
-    ports = driver._free_ports("a" * 32)
+    ports = driver._free_ports()
 
     # 전 포트가 비-ephemeral 대역(20000-29999)이어야 한다 — ephemeral 대역은
     # listening 검사(ss -ltn)를 통과해도 outbound 선점으로 bind가 깨진다.

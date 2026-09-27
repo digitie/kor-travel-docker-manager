@@ -1105,7 +1105,22 @@ def _pbkdf2_password_hash(value: str) -> str:
     return f"pbkdf2_sha256$310000${encode(salt)}${encode(digest)}"
 
 
-def _free_ports(transaction: str) -> dict[str, int]:
+#: host publish 포트 탐색의 **고정** 시작점(아래 `_free_ports` 주석).
+_PORT_SCAN_BASE = 20000
+
+
+def _free_ports() -> dict[str, int]:
+    # 포트는 이미지 빌드 입력이다. Map frontend는 NEXT_PUBLIC_KOR_TRAVEL_MAP_API(map_api)와
+    # NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL(compose가 map_dagster에서 파생)을, PinVi web은
+    # NEXT_PUBLIC_PINVI_API_URL(pinvi_api)과 NEXT_PUBLIC_GRAFANA_URL(pinvi_grafana에서 파생)을
+    # 빌드 인자로 번들에 굽는다. 예전 시작점은 transaction에서 뽑아 실행마다 달랐고, 그래서
+    # 두 web 이미지는 매번 BuildKit 캐시를 놓쳤다 — PinVi web은 수 GB node_modules 층을
+    # 단일 스레드 gzip으로 다시 내보내느라 디스크가 막힌 n150에서 20-120분을 썼고, p2-p7이
+    # 그 빌드와 빌드가 더한 부하로 죽었다(2026-09-27 실측; 포트와 무관한 API 이미지는 캐시로
+    # 3-10초). 그래서 시작점을 고정해 비어 있으면 매번 같은 포트가 나오게 한다. M05 실행은
+    # launcher의 host-global mutation lock으로 직렬화되므로 실행끼리 창을 다투지 않는다. 앞 창이
+    # 쓰이고 있으면 아래 offset 탐색이 다음 창으로 넘어간다 — 그 실행만 캐시를 놓친다.
+    #
     # host publish 포트는 kernel ephemeral 대역(기본 32768-60999) **밖**에서 고른다.
     # 아래 ss -ltn 가용성 검사는 listening 소켓만 보므로, ephemeral 대역 안의
     # 포트는 검사 통과 후 임의 outbound 연결이 로컬 포트로 선점해 Docker publish
@@ -1127,7 +1142,6 @@ def _free_ports(transaction: str) -> dict[str, int]:
         _fail("ports_unavailable")
     if ephemeral_low <= 29999:
         _fail("ports_unavailable")
-    base = 20000 + (int(transaction[:8], 16) % 9000)
     names = (
         "map_api",
         "map_dagster",
@@ -1145,7 +1159,8 @@ def _free_ports(transaction: str) -> dict[str, int]:
     )
     for offset in range(1000):
         ports = {
-            name: base + offset * len(names) + index for index, name in enumerate(names)
+            name: _PORT_SCAN_BASE + offset * len(names) + index
+            for index, name in enumerate(names)
         }
         if max(ports.values()) >= 30000:
             break
@@ -3319,7 +3334,7 @@ def main(expected_revision: str, output: Path, *, rehearse: bool = False) -> int
         # 어느 안전 경계를 보정해야 하는지 알 수 없다. 아래 단계명은 raw exception,
         # 경로, secret을 싣지 않는 allowlist receipt일 뿐 동일 pinset 재시도 권한은 아니다.
         phase = "runtime_setup_ports"
-        ports = _free_ports(transaction)
+        ports = _free_ports()
         phase = "runtime_setup_workspace"
         runtime = output / "runtime"
         runtime.mkdir(mode=0o700)
