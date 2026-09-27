@@ -1469,26 +1469,33 @@ def _seed_m05_provider_fixture(
     try:
         value = json.loads(raw)
     except json.JSONDecodeError:
-        _fail("m05_fixture_invalid")
+        _fail("m05_fixture_invalid", diagnostic="fixture stdout is not JSON")
+    # Map T-VN-39 뒤 두 Feature 참조는 정본 uuid다. provider의 `make_feature_id` 텍스트(alias)도 싣는다.
     if not isinstance(value, dict) or set(value) != {
         "case_id",
         "manual_feature_id",
         "provider_feature_id",
+        "provider_feature_ref",
     }:
-        _fail("m05_fixture_invalid")
-    try:
-        uuid.UUID(str(value["case_id"]))
-    except (TypeError, ValueError):
-        _fail("m05_fixture_invalid")
+        _fail(
+            "m05_fixture_invalid",
+            diagnostic=f"fixture keys {sorted(value) if isinstance(value, dict) else type(value).__name__}",
+        )
+    for key in ("case_id", "provider_feature_id"):
+        try:
+            uuid.UUID(str(value[key]))
+        except (TypeError, ValueError):
+            _fail("m05_fixture_invalid", diagnostic=f"fixture {key} is not a uuid")
     if value.get("manual_feature_id") != manual_feature_id:
-        _fail("m05_fixture_invalid")
-    provider_id = value.get("provider_feature_id")
-    if not isinstance(provider_id, str) or not provider_id:
-        _fail("m05_fixture_invalid")
+        _fail("m05_fixture_invalid", diagnostic="fixture resolved a different manual feature")
+    provider_ref = value.get("provider_feature_ref")
+    if not isinstance(provider_ref, str) or not provider_ref:
+        _fail("m05_fixture_invalid", diagnostic="fixture provider_feature_ref is empty")
     return {
         "case_id": str(value["case_id"]),
         "manual_feature_id": manual_feature_id,
-        "provider_feature_id": provider_id,
+        "provider_feature_id": str(value["provider_feature_id"]),
+        "provider_feature_ref": provider_ref,
     }
 
 

@@ -22,7 +22,11 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from kortravelmap.client import AsyncKorTravelMapClient
-from kortravelmap.core.ids import make_feature_id, make_payload_hash, make_source_record_key
+from kortravelmap.core.ids import (
+    make_feature_id,
+    make_payload_hash,
+    make_source_record_key,
+)
 from kortravelmap.dto import (
     Coordinate,
     Feature,
