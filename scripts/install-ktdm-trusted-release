@@ -93,6 +93,8 @@ if [[ "$(cat "${REL}/.ktdm-source-revision" 2>/dev/null)" != "${SHA}" ]]; then
   # archive의 mode에는 tar.umask(기본 002)가 들어간다. 실행 비트는 git index가 정본이다.
   chmod -R go-w "${REL}"
   # <<< extract
+  # UI는 docker-compose.yml을 제자리에서 고친다. C6c 보호 참조의 원본(ADR-51 결정 5)은 이 사본이다.
+  install -o root -g root -m 0444 "${REL}/docker-compose.yml" "${REL}/.ktdm-release-compose.yml"
   python3 -I -m venv "${REL}/backend/.venv"
   "${REL}/backend/.venv/bin/python" -I -m pip install -q --no-index \
     --find-links "${WHEELHOUSE}" "${REL}/backend"

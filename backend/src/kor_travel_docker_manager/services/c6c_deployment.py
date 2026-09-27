@@ -38,6 +38,9 @@ from kor_travel_docker_manager.services.capabilities import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
 )
+from kor_travel_docker_manager.services.compose_references import (
+    assert_protected_references_are_derived,
+)
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
@@ -4998,6 +5001,10 @@ def validate_compose_candidate_protected_values(
             "compose candidate service is missing or invalid: "
             + _describe_candidate_service_key(service_name)
         )
+    # ADR-51 결정 5: 보호 참조는 설치된 릴리스 compose에서 파생한다. P-1은 아래 리터럴 표 검사와 함께 돈다.
+    assert_protected_references_are_derived(
+        candidate, compose_path=compose_path, environment=environment
+    )
     # ── Map superuser password : **family scope 밖의 전역 불변식** ──────────
     # 이 두 줄은 아래 여섯 family validator와 **다른 층**이다. S4가 family scope로
     # 아래 블록을 게이팅하더라도 이 둘은 그대로 돈다 — 그것이 요점이다.
