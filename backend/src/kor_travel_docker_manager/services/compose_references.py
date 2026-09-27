@@ -204,14 +204,7 @@ def _describe(site: Site) -> str:
     return ".".join(site[1:] if site[:1] == ("services",) else site)
 
 
-def assert_protected_references_are_derived(
-    candidate: Mapping[str, Any],
-    *,
-    compose_path: str | Path,
-    environment: Mapping[str, str],
-) -> None:
-    """후보의 보호 참조가 원본 compose 참조의 부분집합이고, 비밀 값이 글자 그대로 들어 있지 않은지 본다."""
-
+def _load_reference(compose_path: str | Path) -> tuple[str, Mapping[str, Any]]:
     reference_path = reference_compose_path(compose_path)
     try:
         reference_text = reference_path.read_text(encoding="utf-8")
@@ -222,6 +215,39 @@ def assert_protected_references_are_derived(
         ) from error
     if not isinstance(reference, Mapping):
         raise ComposeCandidateContractError(f"the reference compose is not a mapping: {reference_path}")
+    return reference_text, reference
+
+
+def protected_names_and_values(
+    *,
+    compose_path: str | Path,
+    environment: Mapping[str, str],
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    """bind source·`env_file` **내용** 스캔이 찾을 보호 변수 이름과 `.env` 비밀 값.
+
+    이름은 원본이 어디서든 참조하는 보호 변수다. 리터럴 이름 표를 대신한다(ADR-51 결정 5).
+    """
+
+    reference_text, reference = _load_reference(compose_path)
+    secret_set = secret_values(environment, reference_text=reference_text)
+    names = frozenset(
+        name
+        for referenced in compose_references(reference).values()
+        for name in referenced
+        if not name.startswith("env_file:") and _is_protected(name, environment, secret_set)
+    )
+    return names, tuple(sorted(secret_set, key=len, reverse=True))
+
+
+def assert_protected_references_are_derived(
+    candidate: Mapping[str, Any],
+    *,
+    compose_path: str | Path,
+    environment: Mapping[str, str],
+) -> None:
+    """후보의 보호 참조가 원본 compose 참조의 부분집합이고, 비밀 값이 글자 그대로 들어 있지 않은지 본다."""
+
+    reference_text, reference = _load_reference(compose_path)
     secret_set = secret_values(environment, reference_text=reference_text)
     allowed = compose_references(reference)
     for site, names in sorted(compose_references(candidate).items()):

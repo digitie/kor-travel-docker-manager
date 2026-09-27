@@ -40,6 +40,7 @@ from kor_travel_docker_manager.services.capabilities import (
 )
 from kor_travel_docker_manager.services.compose_references import (
     assert_protected_references_are_derived,
+    protected_names_and_values,
 )
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
@@ -410,9 +411,6 @@ _CURATION_PRINCIPAL_DIGEST_ENV_NAMES = frozenset(
         _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV,
     }
 )
-_CURATION_PRINCIPAL_ENV_NAMES = (
-    _CURATION_PRINCIPAL_RAW_ENV_NAMES | _CURATION_PRINCIPAL_DIGEST_ENV_NAMES
-)
 _MAP_PUBLISHED_EXAMPLE_SECRET_VALUES = {
     _MAP_ADMIN_PROXY_ENV: "local-map-admin-proxy-secret-change-me",
     _MAP_SERVICE_TOKEN_ENV: "local-map-service-token-change-me-now",
@@ -429,32 +427,6 @@ _MAP_PRODUCTION_API_LITERAL_VALUES = {
 }
 _MAP_PRODUCTION_API_LITERAL_ENV_NAMES = frozenset(
     _MAP_PRODUCTION_API_LITERAL_VALUES
-)
-_DATABASE_SECRET_ENV_NAMES = frozenset(
-    {
-        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
-        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
-        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
-        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD",
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
-        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
-        "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
-        # ADR-100 superset window. 이 두 이름은 `_MAP_DATABASE_CANONICAL_ENV_VALUES`에
-        # **먼저** 등록한 뒤에만 여기 들어올 수 있다 — allowed_paths가 그 dict에서만
-        # 파생되므로, 경로 없이 이름을 보호하면 prebuild_snapshot이 모든 pinned
-        # rebuild를 "leaks a protected C6c reference"로 죽인다.
-        #
-        # `KOR_TRAVEL_MAP_PG_DSN`은 지금까지 이 집합에 없었고, 값이 보호 대상 DSN과
-        # 같다는 사실로만 **간접 보호**되고 있었다. Map이 그 값을 정본으로 쓰기
-        # 시작했으므로 이름으로 보호해야 한다.
-        "KOR_TRAVEL_MAP_SERVICE_PASSWORD",
-        "KOR_TRAVEL_MAP_PG_DSN",
-        "PINVI_POSTGRES_PASSWORD",
-        _PINVI_APP_DB_PASSWORD_ENV,
-    }
 )
 _CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
     {
@@ -528,132 +500,6 @@ _OPS_ENV_NAMES = frozenset(
         _PINVI_CANCEL_ENV,
     }
 )
-_CANDIDATE_ALLOWED_API_ENV_SOURCES = {
-    (_MAP_API_SERVICE, _MAP_READ_ENV): _MAP_READ_ENV,
-    (_MAP_API_SERVICE, _MAP_CANCEL_ENV): _MAP_CANCEL_ENV,
-    (_MAP_API_SERVICE, _MAP_FIXTURE_ENV): _MAP_FIXTURE_ENV,
-    (_MAP_API_SERVICE, _MAP_REQUIRED_ENV): _MAP_REQUIRED_ENV,
-    (_PINVI_API_SERVICE, _PINVI_READ_ENV): _MAP_READ_ENV,
-    (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): _MAP_CANCEL_ENV,
-    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_READ_ENV): _MAP_READ_ENV,
-    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_CANCEL_ENV): _MAP_CANCEL_ENV,
-    (_MAP_UI_SERVICE, _MAP_UI_USERNAME_ENV): _MAP_UI_USERNAME_ENV,
-    (_MAP_UI_SERVICE, _MAP_UI_PASSWORD_HASH_ENV): _MAP_UI_PASSWORD_HASH_ENV,
-    (_MAP_UI_SERVICE, _MAP_UI_SESSION_SECRET_ENV): _MAP_UI_SESSION_SECRET_ENV,
-    (_MAP_API_SERVICE, _MAP_ADMIN_PROXY_ENV): _MAP_ADMIN_PROXY_ENV,
-    (_MAP_UI_SERVICE, _MAP_ADMIN_PROXY_ENV): _MAP_ADMIN_PROXY_ENV,
-    (_MAP_API_SERVICE, _MAP_SERVICE_TOKEN_ENV): _MAP_SERVICE_TOKEN_ENV,
-    (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (_MAP_CURSOR_SIGNING_SECRET_ENV),
-    (_MAP_API_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): _MAP_GEO_API_KEY_SOURCE_ENV,
-    (_MAP_UI_SERVICE, _MAP_UI_GEO_API_KEY_ENV): _MAP_GEO_API_KEY_SOURCE_ENV,
-    (_MAP_DAGSTER_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (_MAP_GEO_API_KEY_SOURCE_ENV),
-    (_MAP_DAGSTER_CODE_SERVER_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (
-        _MAP_GEO_API_KEY_SOURCE_ENV
-    ),
-    (_MAP_DAGSTER_DAEMON_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (_MAP_GEO_API_KEY_SOURCE_ENV),
-    (_MAP_API_SERVICE, _MAP_CURATION_SNAPSHOT_DIGEST_ENV): (_MAP_CURATION_SNAPSHOT_DIGEST_ENV),
-    (_MAP_API_SERVICE, _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV): (
-        _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV
-    ),
-    (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV): (
-        _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV
-    ),
-    (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_ENABLED_ENV): (_MAP_FEATURE_CREATE_ENABLED_ENV),
-    # ADR-100 + ADR-101: one-shot도 단일 LOGIN의 DSN 하나만 받는다. 두 service를
-    # 합치면서 네 항목이 같은 키로 겹쳤고, 값도 퇴역 이름을 가리키고 있었다.
-    (_MAP_APPLICATION_SCHEMA_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): "KOR_TRAVEL_MAP_PG_DSN",
-    # `KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE`은 여기 없다. 이 값은 호스트 env에서
-    # 오지 않고 compose가 `"true"`로 **직접 적는** 고정 리터럴이다 — 출처 매핑에 넣으면
-    # 검증기가 없는 호스트 변수를 찾아 항상 거부한다. 고정값 계약은 아래
-    # `_MAP_DATABASE_CANONICAL_ENV_VALUES` 쪽이 담당한다.
-    (_MAP_UI_SERVICE, _MAP_FEATURE_CREATE_TOKEN_ENV): (_MAP_FEATURE_CREATE_TOKEN_ENV),
-    (_PINVI_API_SERVICE, _PINVI_CURATION_SNAPSHOT_ENV): (_PINVI_CURATION_SNAPSHOT_ENV),
-    (_PINVI_API_SERVICE, _PINVI_CUTOVER_MAPPING_ENV): (_PINVI_CUTOVER_MAPPING_ENV),
-    (_MAP_POSTGRES_SERVICE, "POSTGRES_USER"): "KOR_TRAVEL_MAP_POSTGRES_USER",
-    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
-        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"
-    ),
-    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"): (
-        "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"
-    ),
-    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"): (
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"): (
-        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE"): (
-        "KOR_TRAVEL_MAP_POSTGRES_DB"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_DB"): ("KOR_TRAVEL_MAP_POSTGRES_DB"),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_USER"): (
-        "KOR_TRAVEL_MAP_POSTGRES_USER"
-    ),
-    # ADR-100 superset window — each maps to itself, same as the six names below.
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_SERVICE_PASSWORD"): (
-        "KOR_TRAVEL_MAP_SERVICE_PASSWORD"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
-        "KOR_TRAVEL_MAP_PG_DSN"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"): (
-        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"): (
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD"): (
-        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"): (
-        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"): (
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"): (
-        "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"): (
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
-        "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
-    ),
-    (_MAP_DAGSTER_DB_INIT_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"
-    ),
-    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"): ("KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN"),
-    # ADR-100: 런타임도 migration도 같은 단일 LOGIN이므로 DSN 이름이 하나다.
-    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): "KOR_TRAVEL_MAP_PG_DSN",
-    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): ("KOR_TRAVEL_MAP_DAGSTER_PG_URL"),
-    (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
-        "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
-    ),
-    (_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
-        "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
-    ),
-    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
-    ),
-    (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"): (
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN"
-    ),
-    (_MAP_DAGSTER_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): "KOR_TRAVEL_MAP_PG_DSN",
-    (_MAP_DAGSTER_DAEMON_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): "KOR_TRAVEL_MAP_PG_DSN",
-}
-_CANDIDATE_SOURCE_DEFAULT_VALUES = {
-    _MAP_FEATURE_CREATE_ENABLED_ENV: "false",
-    "PINVI_DB_PORT": str(_PINVI_DEDICATED_POSTGRES_PORT),
-    "PINVI_POSTGRES_DB": "pinvi",
-    "PINVI_POSTGRES_USER": "pinvi",
-}
 #: PinVi DSN을 조립하는 서비스와, 그때 쓰는 자격증명 쌍.
 #:
 #: **이 선언 하나에서 canonical 값과 허용 경로를 둘 다 유도한다.** 종전에는 같은
@@ -730,16 +576,6 @@ _PINVI_DAGSTER_PG_URL_RAW_VALUES = {
     for service_name in _PINVI_DAGSTER_PG_URL_SERVICES
 }
 
-#: 보호 이름 스캔에서 면제할 경로. **위 두 dict에서 유도한다** — 새 서비스를
-#: 어느 한쪽에 더하면 면제도 같이 따라온다.
-_PINVI_DATABASE_URL_ALLOWED_PATHS = frozenset(
-    ("services", service_name, "environment", env_name)
-    for raw_values, env_name in (
-        (_PINVI_DATABASE_URL_RAW_VALUES, _PINVI_DATABASE_URL_ENV),
-        (_PINVI_DAGSTER_PG_URL_RAW_VALUES, _PINVI_DAGSTER_PG_URL_ENV),
-    )
-    for service_name in raw_values
-)
 
 
 _MAP_DATABASE_CANONICAL_ENV_VALUES = {
@@ -891,34 +727,6 @@ _MAP_DATABASE_CANONICAL_ENV_VALUES = {
         "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE",
     ): "true",
 }
-_DATABASE_ALLOWED_NON_ENV_PATHS = frozenset(
-    {
-        (
-            "services",
-            _MAP_DAGSTER_DB_INIT_SERVICE,
-            "command",
-            "0",
-        ),
-        (
-            "secrets",
-            _MAP_POSTGRES_PASSWORD_SECRET,
-            "environment",
-        ),
-        # geo 패턴 전환: PinVi의 app role 비밀번호도 secret file로 들어온다. 이
-        # 경로를 등록하지 않으면 보호 이름 전역 스캔이 leak으로 판정해 **모든 핀
-        # 재구축**이 prebuild_snapshot에서 막힌다(정적 검사가 같은 집합을 본다).
-        (
-            "secrets",
-            _PINVI_SHARED_APP_PASSWORD_SECRET,
-            "environment",
-        ),
-        (
-            "secrets",
-            _PINVI_POSTGRES_PASSWORD_SECRET,
-            "environment",
-        ),
-    }
-)
 _CANDIDATE_CANONICAL_API_ENV_VALUES = {
     (_MAP_API_SERVICE, _MAP_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
     (_MAP_API_SERVICE, _MAP_CANCEL_ENV): "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}",
@@ -1087,18 +895,6 @@ def assert_contract_locked_env_unchanged(
         )
 
 
-_CANDIDATE_PROTECTED_VALUE_ENV_NAMES = (
-    (_OPS_ENV_NAMES - {_MAP_REQUIRED_ENV})
-    | _MANAGER_ONLY_CREDENTIAL_NAMES
-    | _MAP_PRODUCTION_SECRET_ENV_NAMES
-    | _DATABASE_SECRET_ENV_NAMES
-    | _CURATION_PRINCIPAL_ENV_NAMES
-    | _MAP_FEATURE_CREATE_ENV_NAMES
-    | {
-        _MAP_UI_PASSWORD_HASH_ENV,
-        _MAP_UI_SESSION_SECRET_ENV,
-    }
-)
 
 
 def _validate_map_database_dsn_identities(environment: Mapping[str, str]) -> None:
@@ -2608,71 +2404,6 @@ def _validate_map_postgres_password_owner_wiring(document: Mapping[str, Any]) ->
         raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
 
 
-def _assert_map_postgres_password_sole_consumer(document: Mapping[str, Any]) -> None:
-    """(B) 유일 소비자 — 문서의 **아무** 서비스도 이 secret을 alias로 가져가지 못한다.
-
-    Compose secret file은 값이 `Config.Env`에 드러나지 않아도 mount한 container는
-    읽을 수 있다. 따라서 initial superuser credential은 PostgreSQL entrypoint의 exact
-    target 한 곳만 소비할 수 있고, API/Dagster/PinVi one-shot을 포함한 다른 service의
-    alias reference는 mutation 전에 거부한다.
-
-    **이 검사는 조건부가 되어서는 안 된다.** 소유자 서비스의 존재와 무관한 전역
-    불변식이고, 이것이 꺼지면 남는 그물이 없다 — 감사가 실측했다: 전역 보호 이름
-    스캔은 alias를 잡지 못하고(소문자·하이픈 vs 대문자·언더스코어라 substring이
-    아니다), external-resource 검사는 그 alias를 **무조건 면제**하며, runtime 검사는
-    소비자를 보지 않는다.
-
-    인가 집합은 `_authorized_map_postgres_password_reference`가 문서에서 **독립으로**
-    파생한다 — (A)의 지역 변수를 빌려 쓰면 (A)를 끄는 순간 이 검사도 함께 무너진다.
-    소유자가 없으면 인가 집합은 **공집합**이다.
-
-    **`authorized is None` 논리합은 오늘 판정을 바꾸지 않는다**(적대 리뷰 2026-09-17 —
-    1,782개 문서 × 두 진입 형상에서 그것을 지운 변이와 한 칸도 다르지 않았고, 논리합의
-    다른 두 항도 각각 지워도 스위트가 초록이었다). 오늘 남의 소비를 실제로 거부하는
-    것은 `service_name != _MAP_POSTGRES_SERVICE`다.
-
-    그래도 셋 다 남긴다. S4가 소유자-이름 결합을 느슨하게 하는 순간 나머지 둘이
-    **처음으로 하중을 받는다.** 다만 그것이 지금 일을 하고 있다고 **주장하지는
-    않는다** — 그 주장이 리뷰가 정정한 것이다.
-    """
-
-    services = document.get("services")
-    if not isinstance(services, Mapping):
-        raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
-    authorized = _authorized_map_postgres_password_reference(document)
-
-    for service_name, service in services.items():
-        if not isinstance(service, Mapping):
-            raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
-        candidate_references = service.get("secrets")
-        if candidate_references is None:
-            continue
-        if not isinstance(candidate_references, list):
-            raise ComposeCandidateContractError("Map PostgreSQL password secret is invalid")
-        for candidate_reference in candidate_references:
-            source_name: object
-            if isinstance(candidate_reference, str):
-                source_name = candidate_reference
-            elif isinstance(candidate_reference, Mapping):
-                source_name = candidate_reference.get("source")
-            else:
-                raise ComposeCandidateContractError(
-                    "Map PostgreSQL password secret is invalid"
-                )
-            if source_name != _MAP_POSTGRES_PASSWORD_SECRET:
-                continue
-            if (
-                authorized is None
-                or service_name != _MAP_POSTGRES_SERVICE
-                or candidate_reference != authorized
-            ):
-                raise ComposeCandidateContractError(
-                    "Map PostgreSQL password secret has an unauthorized consumer"
-                )
-
-
-
-
 def _validate_pinvi_postgres_password_declaration(document: Mapping[str, Any]) -> None:
     """최상위 `secrets` 절이 PinVi password를 올바른 env로 선언하는가 — **전역**.
 
@@ -2758,70 +2489,6 @@ def _validate_pinvi_postgres_password_owner_wiring(document: Mapping[str, Any]) 
         raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
     if not _pinvi_postgres_password_reference_is_valid(references[0]):
         raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
-
-
-def _assert_pinvi_postgres_password_sole_consumer(document: Mapping[str, Any]) -> None:
-    """(B) 유일 소비자 — 인가된 셋 말고는 이 secret을 가져갈 수 없다.
-
-    인가 집합이 셋이다: 소유자(`pinvi-postgres`)는 **파생**, `pinvi-db-init`과
-    `pinvi-db-runtime-role`은 **리터럴**이다. 리터럴 둘은 소유자와 무관하므로 소유자가
-    없어도 그대로 유효하다 — 그 사실이 이 스캔을 소유자로부터 독립시킨다.
-
-    **이 검사는 조건부가 되어서는 안 된다.** Map 쪽에서 적대 리뷰가 실측했듯, 이것이
-    꺼지면 전역 이름 스캔도 external-resource 검사도 alias 마운트를 잡지 못한다.
-
-    소유자 분기의 `reference is None`은 **오늘 판정을 바꾸지 않는다**(변이 실측: 그 절을
-    지워도 전부 초록). 그 분기에 도달하려면 소유자가 존재해야 하고, 모양이 유효하면
-    파생은 `None`이 아니며, 모양이 유효하지 않으면 파생이 `None`이 되는데 그때는
-    `candidate_reference != None`이 항상 참이라 어차피 거부된다. Map 쪽과 같은 구조이고
-    같은 이유로 남긴다 — S4가 소유자-이름 결합을 느슨하게 하면 그때 하중을 받는다.
-    **지금 일하고 있다고 주장하지는 않는다.**
-    """
-
-    services = document.get("services")
-    if not isinstance(services, Mapping):
-        raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
-    reference = _authorized_pinvi_postgres_password_reference(document)
-
-    for service_name, service in services.items():
-        if not isinstance(service, Mapping):
-            raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
-        candidate_references = service.get("secrets")
-        if candidate_references is None:
-            continue
-        if not isinstance(candidate_references, list):
-            raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
-        for candidate_reference in candidate_references:
-            source_name: object
-            if isinstance(candidate_reference, str):
-                source_name = candidate_reference
-            elif isinstance(candidate_reference, Mapping):
-                source_name = candidate_reference.get("source")
-            else:
-                raise ComposeCandidateContractError("PinVi PostgreSQL password secret is invalid")
-            if source_name != _PINVI_POSTGRES_PASSWORD_SECRET:
-                continue
-            if service_name == _PINVI_POSTGRES_SERVICE:
-                if reference is None or candidate_reference != reference:
-                    raise ComposeCandidateContractError(
-                        "PinVi PostgreSQL password secret has an unauthorized consumer"
-                    )
-            elif service_name == _PINVI_DB_INIT_SERVICE and candidate_reference in (
-                _PINVI_POSTGRES_PASSWORD_SECRET,
-                {
-                    "source": _PINVI_POSTGRES_PASSWORD_SECRET,
-                    "target": _PINVI_POSTGRES_PASSWORD_SECRET,
-                },
-                {
-                    "source": _PINVI_POSTGRES_PASSWORD_SECRET,
-                    "target": _PINVI_POSTGRES_PASSWORD_FILE,
-                },
-            ):
-                continue
-            else:
-                raise ComposeCandidateContractError(
-                    "PinVi PostgreSQL password secret has an unauthorized consumer"
-                )
 
 
 _C6C_RUNTIME_IDENTIFIERS = frozenset(
@@ -4558,10 +4225,8 @@ def validate_resolved_compose_candidate_protected_values(
     _assert_canonical_postgres_initdb_args(resolved)
     _validate_map_postgres_password_declaration(resolved)
     _validate_map_postgres_password_owner_wiring(resolved)
-    _assert_map_postgres_password_sole_consumer(resolved)
     _validate_pinvi_postgres_password_declaration(resolved)
     _validate_pinvi_postgres_password_owner_wiring(resolved)
-    _assert_pinvi_postgres_password_sole_consumer(resolved)
     # GM-17 B S3-c — 종전 한 줄을 둘로 편다. **자리는 그대로다**(감사 실측:
     # 제자리 분할은 396형상에서 메시지 변경 0칸, Map DSN 자리로 올리면 46칸이
     # 바뀌고 그중 일부는 S1의 "부재를 부재라고 말하기"를 되돌린다).
@@ -4598,32 +4263,6 @@ def validate_resolved_compose_candidate_protected_values(
     _assert_postgres_cluster_runtime_is_canonical(resolved)
     _validate_concierge_ui_canonical_contract(services, environment, resolved=True)
     _validate_map_application_300_images(services)
-
-    protected_names = (
-        _OPS_ENV_NAMES
-        | _MANAGER_ONLY_CREDENTIAL_NAMES
-        | _MAP_UI_AUTH_ENV_NAMES
-        | _MAP_PRODUCTION_SECRET_ENV_NAMES
-        | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
-        | _DATABASE_SECRET_ENV_NAMES
-        | _CURATION_PRINCIPAL_ENV_NAMES
-        | _MAP_FEATURE_CREATE_CONTROL_ENV_NAMES
-    )
-    protected_values = (
-        *(
-            _compose_resolved_escaped_value(value)
-            for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
-            if (value := environment.get(name, ""))
-        ),
-    )
-    allowed_paths = (
-        {
-            ("services", service_name, "environment", target_name)
-            for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
-        }
-        | _DATABASE_ALLOWED_NON_ENV_PATHS
-        | _PINVI_DATABASE_URL_ALLOWED_PATHS
-    )
 
     for service_name in (
         _MAP_API_SERVICE,
@@ -4705,49 +4344,20 @@ def validate_resolved_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 "resolved compose candidate Map API must use the immutable image entrypoint and command"
             )
-        for allowed_service, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES:
-            if allowed_service != service_name:
-                continue
-            actual = service_environment.get(target_name)
-            source_name = _CANDIDATE_ALLOWED_API_ENV_SOURCES.get((allowed_service, target_name))
-            if source_name is not None:
-                source_value = environment.get(
-                    source_name,
-                    _CANDIDATE_SOURCE_DEFAULT_VALUES.get(source_name, ""),
-                )
-                expected = _compose_resolved_escaped_value(source_value)
-            else:
-                expected = _CANDIDATE_CANONICAL_API_ENV_VALUES[(allowed_service, target_name)]
-            if not isinstance(actual, str) or not hmac.compare_digest(actual, expected):
-                raise ComposeCandidateContractError(
-                    f"resolved compose candidate {service_name}.{target_name} wiring is invalid"
-                )
         if service_name == _MAP_UI_SERVICE and not _map_ui_auth_values_are_valid(environment):
             raise ComposeCandidateContractError(
                 "resolved compose candidate Map UI authentication is invalid"
             )
-        if _env_file_entries(service.get("env_file")):
-            raise ComposeCandidateContractError(
-                f"resolved compose candidate forbids env_file on {service_name}"
-            )
 
-    for path, scalar in _walk_scalars(resolved):
-        if path in allowed_paths or (path[-1:] == ("<key>",) and path[:-1] in allowed_paths):
-            continue
-        text = "" if scalar is None else str(scalar)
-        if any(name in text for name in protected_names) or any(
-            value in text for value in protected_values
-        ):
-            raise ComposeCandidateContractError(
-                "resolved compose candidate leaks a protected C6c reference"
-            )
-
+    # 보호 참조와 파일 내용은 raw 단계가 설치된 릴리스 compose에서 파생한 규칙으로 봤다(ADR-51 결정 5).
+    # resolved 그래프는 그 참조를 보간한 결과라, 여기서 값을 다시 스캔하거나 배선을 `.env`와 다시 대조하면
+    # 결정적인 보간을 두 번 증명하는 것이다(결정 3). bind snapshot은 raw 단계와 같아야 한다(호출자가 본다).
     _validate_candidate_external_resource_references(
         resolved,
         services=services,
         environment=environment,
-        protected_names=protected_names,
-        protected_values=protected_values,
+        protected_names=frozenset(),
+        protected_values=(),
     )
     compose_directory: Path | None = None
     root_env: Path | None = None
@@ -4765,8 +4375,8 @@ def validate_resolved_compose_candidate_protected_values(
         compose_directory=compose_directory,
         root_env=root_env,
         environment=environment,
-        protected_names=protected_names,
-        protected_values=protected_values,
+        protected_names=frozenset(),
+        protected_values=(),
         resolved_document=True,
     )
 
@@ -5028,10 +4638,8 @@ def validate_compose_candidate_protected_values(
     _assert_canonical_postgres_initdb_args(candidate)
     _validate_map_postgres_password_declaration(candidate)
     _validate_map_postgres_password_owner_wiring(candidate)
-    _assert_map_postgres_password_sole_consumer(candidate)
     _validate_pinvi_postgres_password_declaration(candidate)
     _validate_pinvi_postgres_password_owner_wiring(candidate)
-    _assert_pinvi_postgres_password_sole_consumer(candidate)
     # GM-17 B S3-c — 종전 한 줄을 둘로 편다. **자리는 그대로다**(감사 실측:
     # 제자리 분할은 396형상에서 메시지 변경 0칸, Map DSN 자리로 올리면 46칸이
     # 바뀌고 그중 일부는 S1의 "부재를 부재라고 말하기"를 되돌린다).
@@ -5069,30 +4677,9 @@ def validate_compose_candidate_protected_values(
     _validate_concierge_ui_canonical_contract(services, environment, resolved=False)
     _validate_map_application_300_images(services)
 
-    protected_names = (
-        _OPS_ENV_NAMES
-        | _MANAGER_ONLY_CREDENTIAL_NAMES
-        | _MAP_UI_AUTH_ENV_NAMES
-        | _MAP_PRODUCTION_SECRET_ENV_NAMES
-        | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
-        | _DATABASE_SECRET_ENV_NAMES
-        | _CURATION_PRINCIPAL_ENV_NAMES
-        | _MAP_FEATURE_CREATE_CONTROL_ENV_NAMES
-    )
-    protected_values = (
-        *(
-            value
-            for name in _CANDIDATE_PROTECTED_VALUE_ENV_NAMES
-            if (value := environment.get(name, ""))
-        ),
-    )
-    allowed_paths = (
-        {
-            ("services", service_name, "environment", target_name)
-            for service_name, target_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
-        }
-        | _DATABASE_ALLOWED_NON_ENV_PATHS
-        | _PINVI_DATABASE_URL_ALLOWED_PATHS
+    # bind source·env_file **내용**이 찾을 보호 이름과 값은 설치된 릴리스 compose에서 파생한다(ADR-51 결정 5).
+    protected_names, protected_values = protected_names_and_values(
+        compose_path=compose_path, environment=environment
     )
 
     for service_name in (
@@ -5182,21 +4769,6 @@ def validate_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 "compose candidate Map UI authentication is invalid"
             )
-        if _env_file_entries(service.get("env_file")):
-            raise ComposeCandidateContractError(
-                f"compose candidate forbids env_file on {service_name}"
-            )
-
-    for path, scalar in _walk_scalars(candidate):
-        if path in allowed_paths:
-            continue
-        if path[-1:] == ("<key>",) and path[:-1] in allowed_paths:
-            continue
-        text = "" if scalar is None else str(scalar)
-        if any(name in text for name in protected_names) or any(
-            value in text for value in protected_values
-        ):
-            raise ComposeCandidateContractError("compose candidate leaks a protected C6c reference")
 
     try:
         compose_directory = Path(compose_path).resolve().parent
@@ -5277,8 +4849,8 @@ def validate_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 f"compose candidate top-level {collection_name} file resources are unsupported"
             )
-    # ADR-51 결정 5: 보호 참조는 설치된 릴리스 compose에서 파생한다. P-1에서는 리터럴 표 검사 **뒤에**
-    # 돌아 그 검사들이 먼저 자기 문구로 거부하고, 표가 놓친 것(공유 PostgreSQL 비밀 등)만 여기서 잡힌다.
+    # ADR-51 결정 5: 보호 참조는 설치된 릴리스 compose에서 파생한다 — 서비스 env key·다른 필드·최상위
+    # 항목마다 후보의 보호 참조가 원본의 부분집합이어야 하고, `env_file`과 secret·config mount도 여기서 본다.
     assert_protected_references_are_derived(
         candidate, compose_path=compose_path, environment=environment
     )
