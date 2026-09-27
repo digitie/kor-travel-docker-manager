@@ -4767,6 +4767,13 @@ def validate_compose_candidate_protected_values(
                 "compose candidate Map UI authentication is invalid"
             )
 
+    # ADR-51 결정 5: 보호 참조는 설치된 릴리스 compose에서 파생한다 — 서비스 env key·다른 필드·최상위
+    # 항목마다 후보의 보호 참조가 원본의 부분집합이어야 하고, `env_file`과 secret·config mount도 여기서 본다.
+    # 옛 리터럴 이름 스캔의 자리다(bind·env_file 내용 검사보다 앞).
+    assert_protected_references_are_derived(
+        candidate, compose_path=compose_path, environment=environment
+    )
+
     try:
         compose_directory = Path(compose_path).resolve().parent
         root_env = Path(root_env_path).resolve()
@@ -4844,11 +4851,6 @@ def validate_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 f"compose candidate top-level {collection_name} file resources are unsupported"
             )
-    # ADR-51 결정 5: 보호 참조는 설치된 릴리스 compose에서 파생한다 — 서비스 env key·다른 필드·최상위
-    # 항목마다 후보의 보호 참조가 원본의 부분집합이어야 하고, `env_file`과 secret·config mount도 여기서 본다.
-    assert_protected_references_are_derived(
-        candidate, compose_path=compose_path, environment=environment
-    )
     return system_bind_snapshots
 
 
