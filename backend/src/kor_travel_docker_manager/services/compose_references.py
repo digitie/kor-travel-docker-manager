@@ -218,25 +218,15 @@ def _load_reference(compose_path: str | Path) -> tuple[str, Mapping[str, Any]]:
     return reference_text, reference
 
 
-def protected_names_and_values(
-    *,
-    compose_path: str | Path,
-    environment: Mapping[str, str],
-) -> tuple[frozenset[str], tuple[str, ...]]:
-    """bind source·`env_file` **내용** 스캔이 찾을 보호 변수 이름과 `.env` 비밀 값.
+def secret_values_for(*, compose_path: str | Path, environment: Mapping[str, str]) -> tuple[str, ...]:
+    """bind source·`env_file` **내용** 스캔이 찾을 `.env` 비밀 값(긴 것부터).
 
-    이름은 원본이 어디서든 참조하는 보호 변수다. 리터럴 이름 표를 대신한다(ADR-51 결정 5).
+    원본 compose 텍스트에 적힌 값은 비밀이 아니다(`secret_values`). 이름은 찾지 않는다 — 파일이 변수
+    이름을 적는 것은 누출이 아니다.
     """
 
-    reference_text, reference = _load_reference(compose_path)
-    secret_set = secret_values(environment, reference_text=reference_text)
-    names = frozenset(
-        name
-        for referenced in compose_references(reference).values()
-        for name in referenced
-        if not name.startswith("env_file:") and _is_protected(name, environment, secret_set)
-    )
-    return names, tuple(sorted(secret_set, key=len, reverse=True))
+    reference_text, _reference = _load_reference(compose_path)
+    return tuple(sorted(secret_values(environment, reference_text=reference_text), key=len, reverse=True))
 
 
 def assert_protected_references_are_derived(

@@ -40,7 +40,7 @@ from kor_travel_docker_manager.services.capabilities import (
 )
 from kor_travel_docker_manager.services.compose_references import (
     assert_protected_references_are_derived,
-    protected_names_and_values,
+    secret_values_for,
 )
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
@@ -2543,12 +2543,6 @@ _CANDIDATE_ALLOWED_SYSTEM_BINDS = {
     ("cadvisor", "/sys", True): "/sys",
     ("cadvisor", "/var/run/docker.sock", True): "/var/run/docker.sock",
 }
-_MAP_ROLE_BOOTSTRAP_SOURCE_TARGETS = frozenset(
-    {
-        "/usr/local/bin/postgres-role-bootstrap",
-        "/usr/local/lib/kor-travel-map/database-credential-preflight.sh",
-    }
-)
 #: operator bind의 host source가 **절대 될 수 없는** 자리. GM-17 A 적대 리뷰가
 #: 찾은 구멍이다 — allowlist가 설정으로 나온 뒤 `source: "/etc"` 한 줄이면 production
 #: 컨테이너가 host `/etc`를 쓰기 가능으로 얻는다. 종전 manager 가드는 manager 파일의
@@ -4372,7 +4366,6 @@ def validate_resolved_compose_candidate_protected_values(
         compose_directory=compose_directory,
         root_env=root_env,
         environment=environment,
-        protected_names=frozenset(),
         protected_values=(),
         resolved_document=True,
     )
@@ -4674,10 +4667,8 @@ def validate_compose_candidate_protected_values(
     _validate_concierge_ui_canonical_contract(services, environment, resolved=False)
     _validate_map_application_300_images(services)
 
-    # bind source·env_file **내용**이 찾을 보호 이름과 값은 설치된 릴리스 compose에서 파생한다(ADR-51 결정 5).
-    protected_names, protected_values = protected_names_and_values(
-        compose_path=compose_path, environment=environment
-    )
+    # bind source·env_file **내용**이 찾을 `.env` 비밀 값은 설치된 릴리스 compose 기준으로 고른다(ADR-51 결정 5).
+    protected_values = secret_values_for(compose_path=compose_path, environment=environment)
 
     for service_name in (
         _MAP_API_SERVICE,
@@ -4793,7 +4784,6 @@ def validate_compose_candidate_protected_values(
         compose_directory=compose_directory,
         root_env=root_env,
         environment=environment,
-        protected_names=protected_names,
         protected_values=protected_values,
         allow_undeclared_named_volumes=not require_api_wiring,
     )
@@ -4828,11 +4818,7 @@ def validate_compose_candidate_protected_values(
                 ) from exc
             for key, raw_value in env_values.items():
                 text = "" if raw_value is None else str(raw_value)
-                if (
-                    any(name in str(key) for name in protected_names)
-                    or any(name in text for name in protected_names)
-                    or any(value in text for value in protected_values)
-                ):
+                if any(value in text for value in protected_values):
                     raise ComposeCandidateContractError(
                         f"compose candidate env_file leaks C6c data for {service_name}"
                     )
@@ -7286,7 +7272,6 @@ def _validate_candidate_volume_graph(
     compose_directory: Path | None,
     root_env: Path | None,
     environment: Mapping[str, str],
-    protected_names: frozenset[str],
     protected_values: tuple[str, ...],
     allow_undeclared_named_volumes: bool = False,
     resolved_document: bool = False,
@@ -7420,22 +7405,10 @@ def _validate_candidate_volume_graph(
                     raise ComposeCandidateContractError(
                         f"compose candidate cannot validate {service_name} bind source"
                     ) from exc
-                if (
-                    str(service_name) == _MAP_DB_ROLE_BOOTSTRAP_SERVICE
-                    and mount.target in _MAP_ROLE_BOOTSTRAP_SOURCE_TARGETS
-                ):
-                    # Map release source가 소유한 정본 bootstrap과 credential preflight
-                    # helper는 role/password env identifier를 선언한다. candidate
-                    # source staging/provenance가 이 exact bind를 동결하므로 protected
-                    # identifier 이름은 허용하되 실제 protected 값은 계속 거절한다.
-                    if any(value in source_text for value in protected_values):
-                        raise ComposeCandidateContractError(
-                            f"compose candidate {service_name} bind source leaks C6c data"
-                        )
-                    continue
-                if any(name in source_text for name in protected_names) or any(
-                    value in source_text for value in protected_values
-                ):
+                # 파일이 변수 **이름**을 적는 것은 누출이 아니다 — 스크립트는 자기가 쓰는 env 이름을 적는다.
+                # 컨테이너가 그 값을 받는지는 파생 참조 규칙이 본다. 여기서는 `.env` 비밀 **값**만 찾는다
+                # (ADR-51 결정 5 — 옛 Map role bootstrap 면제가 규칙이 됐다).
+                if any(value in source_text for value in protected_values):
                     raise ComposeCandidateContractError(
                         f"compose candidate {service_name} bind source leaks C6c data"
                     )
