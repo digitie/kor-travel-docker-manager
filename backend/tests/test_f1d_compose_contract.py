@@ -6311,12 +6311,16 @@ def test_the_raw_validator_applies_the_derived_protected_reference_rule(tmp_path
         environment=environment,
     )
     leaking = deepcopy(candidate)
-    grafana = leaking["services"]["grafana"]  # type: ignore[index]
-    grafana.setdefault("environment", {})["KTDM_PROBE"] = "${KOR_TRAVEL_SHARED_POSTGRES_PASSWORD}"
+    map_api = leaking["services"]["kor-travel-map-api"]  # type: ignore[index]
+    environment_block = map_api.setdefault("environment", {})
+    if isinstance(environment_block, list):
+        environment_block.append("KTDM_PROBE=${KOR_TRAVEL_SHARED_POSTGRES_PASSWORD}")
+    else:
+        environment_block["KTDM_PROBE"] = "${KOR_TRAVEL_SHARED_POSTGRES_PASSWORD}"
 
     with pytest.raises(
         ComposeCandidateContractError,
-        match="grafana.environment.KTDM_PROBE -> KOR_TRAVEL_SHARED_POSTGRES_PASSWORD",
+        match="kor-travel-map-api.environment.KTDM_PROBE -> KOR_TRAVEL_SHARED_POSTGRES_PASSWORD",
     ):
         validate_compose_candidate_protected_values(
             leaking,
