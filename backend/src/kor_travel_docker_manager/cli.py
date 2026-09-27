@@ -81,6 +81,7 @@ from kor_travel_docker_manager.services.runtime_pin_request import (
 from kor_travel_docker_manager.services.secret_scrub import (
     load_secret_environment,
     redact_secret_text,
+    scrub_failure_structure,
     scrub_failure_text,
 )
 from kor_travel_docker_manager.services.standalone_backup import (
@@ -121,26 +122,10 @@ _INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV = GLOBAL_MUTATION_LOCK_FD_ENV
 
 
 def _scrubbed_process_result(result: dict[str, Any]) -> dict[str, Any]:
-    """compose 출력(stdout·stderr)의 비밀을 가린다 — 실패한 명령의 원문은 그대로 보인다."""
+    """명령 결과 전체(stdout·stderr·명령·중첩 결과)의 비밀을 가린다 — 원인 문구는 그대로 보인다."""
 
-    if not any(isinstance(result.get(key), str) and result.get(key) for key in ("stdout", "stderr")):
-        return result
-    try:
-        environment = load_secret_environment(get_env_path())
-    except (OSError, UnicodeError):
-        withheld = "output withheld: .env could not be read for redaction"
-        return {
-            **result,
-            **{key: withheld for key in ("stdout", "stderr") if result.get(key)},
-        }
-    return {
-        **result,
-        **{
-            key: redact_secret_text(value, environment)
-            for key in ("stdout", "stderr")
-            if isinstance(value := result.get(key), str)
-        },
-    }
+    scrubbed = scrub_failure_structure(result, get_env_path())
+    return scrubbed if isinstance(scrubbed, dict) else result
 
 
 def _emit_process_result(result: dict[str, Any], *, json_output: bool = False) -> int:
@@ -279,6 +264,8 @@ def _cmd_action(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    # 없는 컨테이너를 만드는 경로는 compose 출력을 error·stdout·stderr에 싣는다.
+    result = _scrubbed_process_result(result)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     elif result.get("success"):

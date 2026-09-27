@@ -3855,12 +3855,18 @@ git을 부르지 않는다. `pinned_runtime_sources.py`는 754줄에서 401줄�
 출력 경계, G-2 재구축 경로의 봉인 해체(원문 tail), G-3 M05 채널 하나. 새 원문을 열기 전에 오늘의 누출부터 막는다.
 
 - **스크러버 하나**: `services/secret_scrub.py`. 규칙은 민감한 key 이름의 값(길이 4 이상, `SERVICE_KEY` 추가, SQL
-  `''` 변형 포함), 값 안의 URL userinfo 비밀번호, 호출자가 넘기는 추가 값이다. 원천은 프로세스 환경과 `.env`이고,
-  `.env`를 읽지 못하면 원문 대신 그 사실만 낸다. inspect 응답·UI compose 검증(`docker_service`)도 같은 규칙을 쓴다.
-- **출력 경계 셋**: CLI stderr(재구축 실패 원문, 모든 명령의 마지막 catch-all, compose 명령 출력), API 오류 본문
-  (계약 오류 세 핸들러, ensure 500의 stderr·명령), M05 driver(G-3). 원인 문구는 그대로 보이고 비밀만 가린다.
-- **오늘 막은 누출 둘**: 재구축 CLI의 `ValueError` 원문(가리지 않고 찍었다), 명령 처리기가 잡지 않은 예외의 Python
-  기본 traceback(가리지 않은 채 stderr·launcher 로그로 갔다). 둘 다 이제 가린 원문과 JSON 판정을 남긴다.
+  `''` 변형 포함), 값 안의 URL userinfo 비밀번호, 호출자가 넘기는 추가 값(M05 생성 비밀 — G-3)이다. 원천은 프로세스
+  환경과 `.env`다. `.env`가 없으면 프로세스 환경만 가리고, 있는데 읽지 못하면 원문 대신 그 사실만 낸다. 문자열만이
+  아니라 dict·list 구조를 모양째 가린다. inspect 응답·UI compose 검증(`docker_service`)과 프런트엔드 사전 검증 목록
+  (`configValidation.ts`, 일치를 테스트가 본다)도 같은 조각 목록을 쓴다 — `*_SERVICE_KEY`는 이제 inspect에서 가려지고
+  UI에서 리터럴 값 저장이 거부된다(`${VAR:-}` 보간은 그대로 통과).
+- **출력 경계**: CLI stderr(재구축 실패 원문, 모든 명령의 마지막 catch-all, targets config 한 줄, compose 명령 결과와
+  `action` 결과 전체), API 오류 본문(계약 오류 세 핸들러 — post-mutation의 `restoration` 포함, ensure 500, 컨테이너
+  config·reset·action 500), M05 driver(G-3). 원인 문구는 그대로 보이고 비밀만 가린다.
+- **오늘 막은 누출**: 재구축 CLI의 `ValueError` 원문, 명령 처리기가 잡지 않은 예외의 Python 기본 traceback, targets
+  config 분기의 `OSError` 원문(그 분기가 `OSError`를 잡으므로 처리기의 아무 `OSError`나 가리지 않은 채 찍혔다),
+  post-mutation `restoration`과 컨테이너 설정 실패 본문의 compose 출력. 재구축 경로는 JSON 판정도 남긴다. 그 밖의
+  잡지 않은 예외는 가린 traceback과 종료 코드 1이다(Python 기본값과 같다).
 - **지운 것**: 쓰이지 않던 `_redact_c6c_output`·`redact_config` 경로.
 - **남는 누출 부류(기록)**: 규칙에 걸리지 않는 비밀 — `.env`·환경에 없는 값, 목록에 걸리지 않는 key 이름, 변형된
   형태(JSON escape, percent-encoding, base64, compose `$$`), 4자 미만 값. #399부터 같았다.

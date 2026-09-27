@@ -43,7 +43,10 @@ from kor_travel_docker_manager.services.metrics_service import metrics_service
 from kor_travel_docker_manager.services.public_api_key_service import (
     PUBLIC_API_KEY_QUERY_PARAM,
 )
-from kor_travel_docker_manager.services.secret_scrub import scrub_failure_text
+from kor_travel_docker_manager.services.secret_scrub import (
+    scrub_failure_structure,
+    scrub_failure_text,
+)
 from kor_travel_docker_manager.services.secure_state_file import env_flag
 
 # 프로젝트 루트 .env(gitignore 대상)에서 prod 공개 주소/CORS 설정을 읽어온다.
@@ -288,6 +291,12 @@ def _scrubbed(text: object) -> str:
     return scrub_failure_text(str(text), get_env_path())
 
 
+def _scrubbed_detail(detail: object) -> object:
+    """오류 본문 구조 전체(`restoration`의 compose 출력 포함)를 한 번에 가린다."""
+
+    return scrub_failure_structure(detail, get_env_path())
+
+
 def _candidate_contract_detail(error: ComposeCandidateContractError) -> dict:
     return {
         "code": error.code,
@@ -298,21 +307,21 @@ def _candidate_contract_detail(error: ComposeCandidateContractError) -> dict:
 
 
 def _post_mutation_contract_detail(error: ComposePostMutationContractError) -> dict:
+    """원문 구조다 — 핸들러가 `_scrubbed_detail`로 통째로 가려 내보낸다."""
+
     original_code = getattr(error.original_error, "code", None)
     return {
         "code": error.code,
-        "message": _scrubbed(error),
+        "message": str(error),
         "stage": "post_mutation_recovery",
         "mutation_applied": True,
         "original_error": {
             "code": original_code,
-            "message": _scrubbed(error.original_error),
+            "message": str(error.original_error),
         },
         "recovery_attempted": error.recovery_attempted,
         "recovery_succeeded": error.recovery_succeeded,
-        "recovery_error": (
-            None if error.recovery_error is None else _scrubbed(error.recovery_error)
-        ),
+        "recovery_error": error.recovery_error,
         "restoration": error.restoration,
     }
 
@@ -336,7 +345,7 @@ async def _handle_post_mutation_contract_error(
     return JSONResponse(
         status_code=500,
         content={
-            "detail": _post_mutation_contract_detail(exc),
+            "detail": _scrubbed_detail(_post_mutation_contract_detail(exc)),
             "request_id": current_request_id(),
         },
     )

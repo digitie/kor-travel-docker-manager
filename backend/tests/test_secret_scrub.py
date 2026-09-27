@@ -123,6 +123,9 @@ def test_no_rebuild_failure_output_carries_a_planted_secret(
     assert status == 2
     _assert_scrubbed(captured.out + captured.err)
     assert type(failure).__name__ in captured.err
+    if failure.__cause__ is not None:
+        # 예외 체인 전체가 남는다 — 바깥 문구만이 아니라 원인의 문구도(비밀은 가린 채).
+        assert f"inner cause names {REDACTED}" in captured.err
     if json_output:
         assert '"status": "failed"' in captured.out
 
@@ -168,15 +171,54 @@ def test_a_targets_config_failure_is_scrubbed(
     _assert_scrubbed(captured.out + captured.err)
 
 
-def test_compose_process_output_is_scrubbed(planted: Path, capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize("json_output", [False, True])
+def test_compose_process_output_is_scrubbed(
+    planted: Path, capsys: pytest.CaptureFixture[str], json_output: bool
+) -> None:
     cli._emit_process_result(
         {
             "returncode": 1,
             "stdout": f"started with {_ENV_TOKEN}",
             "stderr": f"error: required variable {_ENV_SERVICE_KEY} is missing",
-        }
+            "init_results": [{"stderr": f"nested {_PROCESS_SECRET}"}],
+        },
+        json_output=json_output,
     )
 
     captured = capsys.readouterr()
-    assert "required variable" in captured.err
+    assert f"started with {REDACTED}" in captured.out
+    assert f"required variable {REDACTED} is missing" in captured.out + captured.err
     _assert_scrubbed(captured.out + captured.err)
+
+
+def test_the_minimum_length_is_four() -> None:
+    environment = {"SHORT_TOKEN": "abc", "LONG_TOKEN": "wxyz"}
+
+    assert redact_secret_text("abc wxyz", environment) == f"abc {REDACTED}"
+
+
+def test_nested_structures_keep_their_shape() -> None:
+    from kor_travel_docker_manager.services.secret_scrub import redact_structure
+
+    environment = {"A_TOKEN": "s3cret-value"}
+    value = {"command": [["docker", "run", "--token=s3cret-value"]], "returncode": 1}
+
+    assert redact_structure(value, environment) == {
+        "command": [["docker", "run", f"--token={REDACTED}"]],
+        "returncode": 1,
+    }
+
+
+def test_the_frontend_mirror_lists_the_same_key_parts() -> None:
+    """UI 사전 검증은 서버 규칙을 흉내 낸다 — 조각 목록이 어긋나면 서버 422를 보고서야 안다."""
+
+    import re
+
+    from kor_travel_docker_manager.services.secret_scrub import SENSITIVE_KEY_PARTS
+
+    source = (
+        Path(__file__).resolve().parents[2] / "frontend" / "src" / "lib" / "configValidation.ts"
+    ).read_text(encoding="utf-8")
+    block = re.search(r"const SENSITIVE_KEY_PARTS = \[(.*?)\];", source, re.DOTALL)
+    assert block is not None
+    assert tuple(re.findall(r"'([A-Z_]+)'", block.group(1))) == SENSITIVE_KEY_PARTS

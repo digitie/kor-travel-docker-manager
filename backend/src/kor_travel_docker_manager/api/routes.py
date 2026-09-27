@@ -55,7 +55,7 @@ from kor_travel_docker_manager.services.runtime_pin_request import (
     utc_timestamp,
     write_runtime_pin_request,
 )
-from kor_travel_docker_manager.services.secret_scrub import scrub_failure_text
+from kor_travel_docker_manager.services.secret_scrub import scrub_failure_structure
 from kor_travel_docker_manager.services.source_status import collect_source_status
 from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
@@ -118,7 +118,7 @@ class RuntimePinRotationRequestBody(BaseModel):
         return text
 
 
-def _config_failure_detail(result: dict[str, Any]) -> dict[str, Any]:
+def _config_failure_detail(result: dict[str, Any]) -> Any:
     detail = {
         "message": result.get("error"),
         "restoration": result.get("restoration"),
@@ -126,7 +126,8 @@ def _config_failure_detail(result: dict[str, Any]) -> dict[str, Any]:
     for field in ("command", "returncode", "stdout", "stderr"):
         if field in result:
             detail[field] = result.get(field)
-    return detail
+    # compose 출력과 명령은 보간된 값을 담을 수 있다 — 구조째 비밀만 가린다(ADR-51 잃는 보장 G).
+    return scrub_failure_structure(detail, get_env_path())
 
 
 @router.get("/targets")
@@ -718,23 +719,17 @@ def ensure_target(target: str, payload: EnsureTargetRequest):
         raise HTTPException(status_code=404, detail=str(e)) from e
 
     if not result.get("success"):
-        # compose stderr와 명령은 보간된 값을 담을 수 있다 — 비밀만 가려 원인을 보인다.
-        env_path = get_env_path()
-        stderr = result.get("stderr")
-        command = result.get("command")
-        if stderr is not None:
-            stderr = scrub_failure_text(str(stderr), env_path)
-        if isinstance(command, list):
-            command = [scrub_failure_text(str(part), env_path) for part in command]
-        elif command is not None:
-            command = scrub_failure_text(str(command), env_path)
+        # compose stderr와 명령(argv 목록의 목록)은 보간된 값을 담을 수 있다 — 모양은 두고 비밀만 가린다.
         raise HTTPException(
             status_code=500,
-            detail={
-                "message": "docker compose ensure failed",
-                "stderr": stderr,
-                "command": command,
-            },
+            detail=scrub_failure_structure(
+                {
+                    "message": "docker compose ensure failed",
+                    "stderr": result.get("stderr"),
+                    "command": result.get("command"),
+                },
+                get_env_path(),
+            ),
         )
 
     return result

@@ -93,6 +93,53 @@ def load_secret_environment(env_path: str | Path) -> dict[str, str | None]:
     return {**os.environ, **dotenv_values(env_path)}
 
 
+_WITHHELD = "failure detail withheld: .env could not be read for redaction"
+
+
+def redact_structure(
+    value: object,
+    environment: Mapping[str, str | None],
+    extra_values: Iterable[str] = (),
+) -> object:
+    """dict·list·tuple 안의 모든 문자열 잎을 가린다. 모양(키·중첩)은 그대로 둔다."""
+
+    extras = tuple(extra_values)
+    if isinstance(value, str):
+        return redact_secret_text(value, environment, extras)
+    if isinstance(value, Mapping):
+        return {key: redact_structure(item, environment, extras) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [redact_structure(item, environment, extras) for item in value]
+    return value
+
+
+def scrub_failure_structure(
+    value: object,
+    env_path: str | Path,
+    extra_values: Iterable[str] = (),
+) -> object:
+    """오류 본문·명령 결과 같은 구조 전체를 한 번 읽은 환경으로 가린다.
+
+    `.env`를 읽지 못하면 문자열 잎마다 원문 대신 그 사실을 둔다(모양은 유지).
+    """
+
+    try:
+        environment = load_secret_environment(env_path)
+    except (OSError, UnicodeError):
+        return _withhold_structure(value)
+    return redact_structure(value, environment, extra_values)
+
+
+def _withhold_structure(value: object) -> object:
+    if isinstance(value, str):
+        return _WITHHELD
+    if isinstance(value, Mapping):
+        return {key: _withhold_structure(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_withhold_structure(item) for item in value]
+    return value
+
+
 def scrub_failure_text(
     text: str,
     env_path: str | Path,
@@ -103,5 +150,5 @@ def scrub_failure_text(
     try:
         environment = load_secret_environment(env_path)
     except (OSError, UnicodeError):
-        return "failure detail withheld: .env could not be read for redaction"
+        return _WITHHELD
     return redact_secret_text(text, environment, extra_values)

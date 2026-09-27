@@ -2600,18 +2600,35 @@ def test_api_error_bodies_are_scrubbed(mock_compose_service, tmp_path, monkeypat
         "compose candidate resolution failed near planted-api-token-31c7"
     )
     conflict = client.post("/api/v1/targets/storage/ensure", json={})
+    mock_compose_service.ensure_target.side_effect = ComposePostMutationContractError(
+        ComposeCandidateContractError("drift near planted-api-token-31c7"),
+        recovery_attempted=True,
+        recovery_succeeded=False,
+        recovery_error="up failed: planted-api-svc-key-8e20",
+        restoration={
+            "stderr": "up failed: planted-api-svc-key-8e20",
+            "command": ["docker", "compose", "up", "--token=planted-api-token-31c7"],
+        },
+    )
+    recovery = client.post("/api/v1/targets/storage/ensure", json={})
     mock_compose_service.ensure_target.side_effect = None
     mock_compose_service.ensure_target.return_value = {
         "success": False,
         "returncode": 1,
         "stderr": "error: required variable planted-api-svc-key-8e20 is missing",
-        "command": ["docker", "compose", "up", "--token=planted-api-token-31c7"],
+        "command": [["docker", "compose", "up", "--token=planted-api-token-31c7"]],
     }
     failure = client.post("/api/v1/targets/storage/ensure", json={})
 
     assert conflict.status_code == 409
     assert "compose candidate resolution failed" in conflict.text
+    assert recovery.status_code == 500
+    assert recovery.json()["detail"]["restoration"]["stderr"] == "up failed: <redacted>"
     assert failure.status_code == 500
     assert "required variable" in failure.text
+    # argv 목록의 목록이라는 모양은 그대로다.
+    assert failure.json()["detail"]["command"] == [
+        ["docker", "compose", "up", "--token=<redacted>"]
+    ]
     for secret in ("planted-api-token-31c7", "planted-api-svc-key-8e20"):
-        assert secret not in conflict.text + failure.text
+        assert secret not in conflict.text + recovery.text + failure.text
