@@ -156,12 +156,17 @@ def compose_references(document: Mapping[str, Any]) -> dict[Site, set[str]]:
 
 
 def secret_values(environment: Mapping[str, str], *, reference_text: str) -> set[str]:
+    """`.env` 비밀. 불리언·숫자는 이름이 민감해도 비밀이 아니다 — `..._TOKEN_TTL_S=3600`이 비밀이면
+    모든 `3600`이 거부된다."""
+
     return {
         value
         for key, value in environment.items()
         if value
         and len(value) >= _MINIMUM_SECRET_LENGTH
         and is_sensitive_key(key)
+        and value.lower() not in {"true", "false"}
+        and not value.isdigit()
         and value not in reference_text
     }
 

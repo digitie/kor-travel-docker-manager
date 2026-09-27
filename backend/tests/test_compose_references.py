@@ -36,9 +36,10 @@ def _environment() -> dict[str, str]:
         if not name.startswith("env_file:")
     }
     # DSN은 이름이 민감하지 않아도 비밀을 담는다.
-    environment["KOR_TRAVEL_MAP_PG_DSN"] = (
-        "postgresql+asyncpg://ktm:" + environment["KOR_TRAVEL_MAP_SERVICE_PASSWORD"] + "@db/ktm"
-    )
+    environment["KOR_TRAVEL_MAP_SERVICE_PASSWORD"] = "secret-dsn-password-4411"
+    environment["KOR_TRAVEL_MAP_PG_DSN"] = "postgresql+asyncpg://ktm:secret-dsn-password-4411@db/ktm"
+    # 이름이 민감해도 숫자는 비밀이 아니다.
+    environment["KTDM_TEST_TOKEN_TTL_SECONDS"] = "3600"
     # 원본에 기본값으로 적힌 값은 비밀로 치지 않는다(`${GRAFANA_ADMIN_PASSWORD:-admin}`).
     environment["GRAFANA_ADMIN_PASSWORD"] = "admin"
     return environment
@@ -185,3 +186,10 @@ def test_a_development_checkout_uses_the_compose_file_itself(tmp_path: Path) -> 
     compose.write_text(_TEXT, encoding="utf-8")
 
     assert reference_compose_path(compose) == compose
+
+
+def test_numeric_values_under_sensitive_names_are_not_secrets() -> None:
+    candidate = _candidate()
+    candidate["services"]["grafana"]["environment"]["GF_TIMEOUT"] = "3600"
+
+    _check(candidate)
