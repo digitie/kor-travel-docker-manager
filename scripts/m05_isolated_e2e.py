@@ -128,9 +128,13 @@ _RENDERED_PORT_EVIDENCE_LIMIT = 16
 _SAFE_PORT_PROTOCOLS = frozenset({"tcp", "udp", "sctp"})
 #: 실패 텍스트에 싣는 스트림당 끝부분 상한. 캡처는 항상 켜져 있다(ADR-51 잃는 보장 G-3).
 _OUTPUT_TAIL_LIMIT = 256 * 1024
-#: 핀된 Map이 제공하는 fresh-init one-shot. claim 전 검사와 본문 실행이 같은 이름을 쓴다.
+#: 핀된 Map의 fresh-init one-shot profile. 실행할 서비스 이름은 이 profile의 렌더 모델에서 파생한다 —
+#: Map ADR-101이 `db-application-schema-fresh-300`을 `db-application-schema-fresh`로 바꾼 것처럼 이름은 바뀐다.
 _MAP_FRESH_INIT_PROFILE = "fresh-init"
-_MAP_FRESH_INIT_SERVICE = "db-application-schema-fresh-300"
+#: Map ADR-100의 단일 LOGIN role. migration·API·Dagster가 모두 이 role 하나로 붙는다.
+_MAP_SERVICE_LOGIN = "ktm_feature_service"
+#: compose가 argv로 되먹는 이름(profile·service)의 모양.
+_COMPOSE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 # PinVi reconciliation worker의 폴링 주기(초). driver가 PinVi에 주입하는 값과
 # receipt 대기 창을 **같은 상수**에서 파생시킨다 — 두 곳에 따로 적으면 창이
 # 주기보다 짧아져 receipt가 아직 없는 순간에 단발 실패한다(정합성 스윕 high).
@@ -282,6 +286,10 @@ class _PhaseError(RuntimeError):
         self.stderr = stderr
         self.stdout = stdout
         self.stdout_truncated = stdout_truncated
+
+
+class _RehearsalComplete(Exception):
+    """예행(`--rehearse`)이 claim 직전까지 모든 claim 전 단계를 통과했다."""
 
 
 def _fail(
@@ -2876,7 +2884,7 @@ def _compose_model_profiles(
     # 파생값이 argv(--profile <값>)로 되먹혀지므로 whitelist 투영을 거친다 —
     # rendered port 규약과 동일 원칙(적대 리뷰).
     for profile in profiles:
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", profile):
+        if not _COMPOSE_NAME.fullmatch(profile):
             _fail("runtime_inspect_invalid")
     return profiles
 
@@ -3029,8 +3037,12 @@ def _safe_rendered_port_evidence(ports: list[Mapping[str, Any]]) -> tuple[dict[s
     )
 
 
-def _assert_rendered_service_present(rendered: str, *, service: str, profile: str) -> None:
-    """claim 뒤에 돌릴 one-shot이 렌더된 compose에 있는지 claim 전에 본다."""
+def _profile_terminal_service(rendered: str, *, profile: str) -> str:
+    """profile 구성원 중 다른 구성원이 의존하지 않는 **끝** 서비스 하나를 렌더 모델에서 고른다.
+
+    Map fresh-init은 `create → role bootstrap → dagster db init → schema` 사슬이고, 돌릴 것은 그 끝이다
+    (의존이 앞 단계를 차례로 띄운다). 이름을 리터럴로 들면 Map이 이름을 바꿀 때마다 실행권을 태운다.
+    """
 
     try:
         services = json.loads(rendered)["services"]
@@ -3039,11 +3051,28 @@ def _assert_rendered_service_present(rendered: str, *, service: str, profile: st
             "runtime_setup_map_config",
             diagnostic=f"rendered config ({len(rendered)} chars) has no services: {type(error).__name__}",
         )
-    if not isinstance(services, Mapping) or service not in services:
+    if not isinstance(services, Mapping):
+        _fail("runtime_setup_map_config", diagnostic="rendered config services is not a mapping")
+    members = {
+        str(name): service
+        for name, service in services.items()
+        if isinstance(service, Mapping) and profile in (service.get("profiles") or ())
+    }
+    depended = {
+        str(dependency)
+        for service in members.values()
+        for dependency in (service.get("depends_on") or ())
+    }
+    terminals = sorted(name for name in members if name not in depended)
+    if len(terminals) != 1 or not _COMPOSE_NAME.fullmatch(terminals[0]):
         _fail(
             "runtime_setup_map_config",
-            diagnostic=f"the pinned Map compose has no {service} service in profile {profile}",
+            diagnostic=(
+                f"the pinned Map compose profile {profile} must end in exactly one service; "
+                f"found {terminals or 'none'} among {sorted(members) or 'no members'}"
+            ),
         )
+    return terminals[0]
 
 
 def _assert_rendered_loopback_tcp_publish(
@@ -3215,9 +3244,17 @@ def driver_exit_code(*, completed: bool, receipt_write_failed: bool) -> int:
     return 0 if completed and not receipt_write_failed else 1
 
 
-def main(expected_revision: str, output: Path) -> int:
+def main(expected_revision: str, output: Path, *, rehearse: bool = False) -> int:
+    """격리 M04/M05 한 번. ``rehearse``는 실행권을 쓰지 않는 예행이다.
+
+    예행은 claim 전 단계(소스 pair·admission·Map/PinVi compose 렌더·fresh-init 파생·Playwright runner)를 모두
+    돌고 ledger claim **직전에** 멈춘다. claim·block·소비가 없고 receipt는 `result.json`이 아니라
+    `rehearsal.json`이다 — launcher를 거치지 않고 root가 직접 돌린다.
+    """
+
     phase = "admission"
     completed = False
+    rehearsed = False
     #: 본문(m04_m05_e2e) 진입 여부 — 진입 이후의 모든 실패는 무조건 소각한다
     #: (one-shot: 본문은 정확히 한 번. 적대 리뷰 R1-S4/R2-S4).
     body_entered = False
@@ -3374,14 +3411,13 @@ def main(expected_revision: str, output: Path) -> int:
         phase = "runtime_setup_map_config"
         password = _random_secret()
         token_sha = lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest()
-        migrator_password, api_password, dagster_password, metadata_password = (
-            _random_secret(),
-            _random_secret(),
-            _random_secret(),
-            _random_secret(),
-        )
+        service_password, metadata_password = _random_secret(), _random_secret()
         map_bootstrap_dsn = (
             f"postgresql://kor_travel_map:{password}@postgres:5432/kor_travel_map"
+        )
+        map_service_dsn = (
+            f"postgresql+asyncpg://{_MAP_SERVICE_LOGIN}:{service_password}"
+            "@postgres:5432/kor_travel_map"
         )
         ui_hash = _pbkdf2_password_hash(_random_secret()).replace("$", "$$")
         _write_env_file(
@@ -3394,15 +3430,10 @@ def main(expected_revision: str, output: Path) -> int:
                     f"KOR_TRAVEL_MAP_POSTGRES_PASSWORD={password}",
                     "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE=kor_travel_map",
                     f"KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN={map_bootstrap_dsn}",
-                    f"KOR_TRAVEL_MAP_MIGRATOR_PASSWORD={migrator_password}",
-                    f"KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD={api_password}",
-                    f"KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD={dagster_password}",
+                    f"KOR_TRAVEL_MAP_SERVICE_PASSWORD={service_password}",
                     "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER=kor_travel_map_dagster",
                     f"KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD={metadata_password}",
-                    f"KOR_TRAVEL_MAP_MIGRATOR_PG_DSN=postgresql+asyncpg://ktm_feature_migrator:{migrator_password}@postgres:5432/kor_travel_map",
-                    f"KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN=postgresql+asyncpg://ktm_feature_api_runtime:{api_password}@postgres:5432/kor_travel_map",
-                    f"KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN=postgresql+asyncpg://ktm_feature_dagster_runtime:{dagster_password}@postgres:5432/kor_travel_map",
-                    f"KOR_TRAVEL_MAP_PG_DSN=postgresql+asyncpg://ktm_feature_dagster_runtime:{dagster_password}@postgres:5432/kor_travel_map",
+                    f"KOR_TRAVEL_MAP_PG_DSN={map_service_dsn}",
                     f"KOR_TRAVEL_MAP_DOCKER_DAGSTER_PG_URL=postgresql://kor_travel_map_dagster:{metadata_password}@postgres:5432/kor_travel_map_dagster",
                     f"KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD={map_application_head}",
                     "KOR_TRAVEL_MAP_API_PROFILE=local-dev",
@@ -3439,14 +3470,9 @@ def main(expected_revision: str, output: Path) -> int:
             )
             + "\n",
         )
-        # generic Map API image에서 실행하는 fixture에는 ordinary Dagster runtime
-        # credential만 넣는다. bootstrap/migrator owner DSN은 전달하지 않는다.
-        _write_env_file(
-            fixture_env,
-            "KOR_TRAVEL_MAP_PG_DSN="
-            f"postgresql+asyncpg://ktm_feature_dagster_runtime:{dagster_password}"
-            "@postgres:5432/kor_travel_map\n",
-        )
+        # generic Map API image에서 실행하는 fixture에는 서비스 role DSN만 넣는다(Map ADR-100 — role은
+        # 하나다). bootstrap owner DSN은 전달하지 않는다.
+        _write_env_file(fixture_env, f"KOR_TRAVEL_MAP_PG_DSN={map_service_dsn}\n")
         # API에는 digest capability만, frontend에는 raw manual-create credential만 전달한다.
         map_override_lines = [
             "services:",
@@ -3494,11 +3520,8 @@ def main(expected_revision: str, output: Path) -> int:
             *[f"      {key}: {value}" for key, value in plan.labels.items()],
         ]
         _write_private_text(map_override, "\n".join(map_override_lines) + "\n")
-        map_files = (
-            map_root / "docker-compose.yml",
-            map_root / "docker-compose.local-dev.yml",
-            map_override,
-        )
+        # Map #1259가 `docker-compose.local-dev.yml`을 지웠다 — 본 compose와 이 실행의 override뿐이다.
+        map_files = (map_root / "docker-compose.yml", map_override)
         # Compose topology는 Docker mutation 전에 정적으로 판정할 수 있다. 이 단계가
         # 실패하면 private setup만 cleanup하고 execution ledger를 소비하지 않는다.
         phase = "runtime_loopback_publish_config_invalid"
@@ -3518,9 +3541,8 @@ def main(expected_revision: str, output: Path) -> int:
             host_port=ports["map_api"],
             evidence_path=runtime / "rendered-loopback-publish.json",
         )
-        # fresh-init one-shot은 claim **뒤에** 돈다. 그 서비스가 핀된 Map compose에 없으면 claim 전에
-        # 멈춘다 — 옛 진단 entrypoint override가 우연히 하던 검사(없는 서비스에 override를 얹으면
-        # compose가 거부했다)를 명시한다(ADR-51 G-3 적대 리뷰).
+        # fresh-init one-shot은 claim **뒤에** 돈다. 무엇을 돌릴지는 claim 전에 렌더 모델에서 정한다 —
+        # profile 구성원 중 아무도 의존하지 않는 끝 서비스 하나. 없거나 여럿이면 claim 전에 멈춘다.
         phase = "runtime_setup_map_config"
         fresh_init_rendered = _compose(
             root=map_root,
@@ -3532,10 +3554,8 @@ def main(expected_revision: str, output: Path) -> int:
             capture_output_limit=_COMPOSE_CONFIG_OUTPUT_LIMIT,
             failure_phase="runtime_setup_map_config",
         )
-        _assert_rendered_service_present(
-            fresh_init_rendered,
-            service=_MAP_FRESH_INIT_SERVICE,
-            profile=_MAP_FRESH_INIT_PROFILE,
+        map_fresh_init_service = _profile_terminal_service(
+            fresh_init_rendered, profile=_MAP_FRESH_INIT_PROFILE
         )
         # source pair와 rendered runtime topology가 정합할 때만 one-shot ledger를
         # 소비한다. O_EXCL create 뒤 write/fsync 실패도 execution을 소비한 것으로 본다.
@@ -3551,6 +3571,8 @@ def main(expected_revision: str, output: Path) -> int:
         except _PhaseError:
             _command("/usr/bin/docker", "pull", _PLAYWRIGHT_RUNNER_IMAGE)
         _assert_playwright_runner_matches_pinned_source(pinvi_root)
+        if rehearse:
+            raise _RehearsalComplete
         phase = "ledger_claim"
         claim_attempted = True
         claim_m05_isolated_harness_ledger(ledger_root=_LEDGER, plan=plan)
@@ -3689,7 +3711,7 @@ def main(expected_revision: str, output: Path) -> int:
                 _MAP_FRESH_INIT_PROFILE,
                 "run",
                 "--rm",
-                _MAP_FRESH_INIT_SERVICE,
+                map_fresh_init_service,
             ),
             failure_phase="map_fresh_init_failed",
         )
@@ -4093,6 +4115,9 @@ def main(expected_revision: str, output: Path) -> int:
             ).hexdigest(),
         }
         completed = True
+    except _RehearsalComplete:
+        rehearsed = True
+        phase = "rehearsed"
     except _PhaseError as error:
         # 텍스트는 실패 순간의 **진행 phase**(pinvi_runtime 등)를 말한다 — error.phase는
         # 대부분 runtime_command_failed 상수라 무정보다(적대 리뷰).
@@ -4201,8 +4226,11 @@ def main(expected_revision: str, output: Path) -> int:
             # launcher_safe_result_unavailable로 지워졌다(적대 리뷰 MAJOR-1).
             **(result_hashes if completed else {}),
         }
+        if rehearse:
+            # 예행의 기록은 launcher receipt가 아니다 — 이름과 status로 구분한다.
+            result["status"] = "rehearsed" if rehearsed and not cleanup_failed else "rehearsal_failed"
         try:
-            _write_private_json(output / "result.json", result)
+            _write_private_json(output / ("rehearsal.json" if rehearse else "result.json"), result)
         except (OSError, _PhaseError):
             receipt_write_failed = True
     # `finally` 안에서 return하면 **전파 중인 BaseException을 삼킨다.** 위
@@ -4211,6 +4239,8 @@ def main(expected_revision: str, output: Path) -> int:
     # 중단 신호를 보낼 수 있게" 일부러 안 잡은 바로 그 신호다. return을
     # finally 밖으로 빼서 중단이 계속 전파되게 둔다. (Python 3.14가
     # SyntaxWarning으로 이 결함을 매 실행마다 알리고 있었다.)
+    if rehearse:
+        return 0 if rehearsed and not cleanup_failed and not receipt_write_failed else 1
     return driver_exit_code(
         completed=completed, receipt_write_failed=receipt_write_failed
     )
@@ -4225,6 +4255,8 @@ if __name__ == "__main__":
         raise SystemExit(rotation_preflight(sys.argv[2], sys.argv[3]))
     if len(sys.argv) == 3 and sys.argv[1] == "--verify-leaf":
         raise SystemExit(verify_leaf(Path(sys.argv[2])))
+    if len(sys.argv) == 4 and sys.argv[1] == "--rehearse":
+        raise SystemExit(main(sys.argv[2], Path(sys.argv[3]), rehearse=True))
     if len(sys.argv) != 3:
         raise SystemExit(2)
     raise SystemExit(main(sys.argv[1], Path(sys.argv[2])))
