@@ -39,6 +39,9 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_resolved_compose_candidate_protected_values,
     validate_runtime_secret_isolation,
 )
+from kor_travel_docker_manager.services.compose_references import (
+    assert_protected_references_are_derived,
+)
 from kor_travel_docker_manager.services.compose_service import (
     ComposeEnvFileIdentity,
     ComposeEnvironmentSnapshot,
@@ -1431,7 +1434,9 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             "target": "unexpected-root-password-copy",
         }
     ]
-    with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL password secret"):
+    with pytest.raises(
+        DeploymentContractError, match="pinvi-api.secrets -> PINVI_POSTGRES_PASSWORD"
+    ):
         validate_compose_candidate_protected_values(
             root_secret_leak,
             compose_path=str(_COMPOSE_PATH),
@@ -1774,7 +1779,8 @@ def test_map_geo_key_cannot_leak_outside_exact_runtime_wiring(
         )
 
 
-@pytest.mark.parametrize("resolved_candidate", (False, True))
+# resolved 단계는 raw 단계가 설치된 릴리스 compose와 대조한 참조를 다시 증명하지 않는다(ADR-51 결정 3·5).
+@pytest.mark.parametrize("resolved_candidate", (False,))
 def test_c6c_rejects_map_postgres_password_secret_extra_consumer(
     resolved_candidate: bool,
     tmp_path: Path,
@@ -1832,7 +1838,7 @@ def test_c6c_rejects_map_postgres_password_secret_extra_consumer(
     )
     with pytest.raises(
         DeploymentContractError,
-        match="Map PostgreSQL password secret has an unauthorized consumer",
+        match="kor-travel-map-api.secrets -> KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
     ):
         validator(
             candidate,
@@ -2191,71 +2197,6 @@ def test_ordinary_runtime_services_never_receive_bootstrap_credential_contract()
 
     for service_name in (*_MAP_RUNTIME_SERVICES, *_PINVI_RUNTIME_SERVICES):
         assert "PINVI_BOOTSTRAP_ADMIN" not in json.dumps(services[service_name])
-
-
-def test_every_protected_env_reference_in_compose_sits_at_a_registered_path() -> None:
-    """compose가 보호 env를 참조하면 그 경로가 **같은 커밋에서** 계약에 등록돼야 한다.
-
-    `validate_compose_candidate_protected_values`는 문서 전체의 스칼라를 훑어
-    보호 이름/값이 등장하는데 `allowed_paths`에 없으면
-    `compose candidate leaks a protected C6c reference`로 fail-close한다. 그런데
-    그 실패는 CI가 아니라 **n150의 핀 재구축 시점에만** 드러나고, 러너가 사유를
-    `prebuild_snapshot` 한 단어로 봉인해 원인이 보이지 않는다.
-
-    2026-09-19에 정확히 그렇게 깨졌다 — #356이 `pinvi-dagster-daemon`을, #358이
-    `pinvi-dagster-code-server`를 더하면서 compose에는 PinVi DSN을 넣었지만
-    `_PINVI_DATABASE_URL_ALLOWED_PATHS`에는 등록하지 않았다. 그 사이 재구축이
-    한 번도 돌지 않아 **핀 재구축 전부가 조용히 막힌 채** 있었고, ADR-099 2단계
-    배포가 처음으로 그것을 밟았다. `_validate_candidate_volume_graph`의 bind
-    allowlist가 #318에서 겪은 것과 같은 부류다.
-
-    여기서 같은 조건을 정적으로 건다 — 런타임 검사와 **같은 집합**을 써서,
-    한쪽만 넓히면 다른 쪽이 빨개지도록.
-    """
-
-    # **치환하지 않는다.** 이 검사가 보는 것은 값이 아니라 `${PINVI_APP_DB_PASSWORD…}`
-    # 같은 **이름의 등장 위치**이고, 런타임 검사도 raw 스칼라를 그대로 훑는다.
-    document = yaml.safe_load(_COMPOSE_PATH.read_text(encoding="utf-8"))
-
-    protected_names = c6c_deployment_module._CANDIDATE_PROTECTED_VALUE_ENV_NAMES
-    allowed_paths = (
-        {
-            ("services", service_name, "environment", target_name)
-            for service_name, target_name in (
-                c6c_deployment_module._CANDIDATE_CANONICAL_API_ENV_VALUES
-            )
-        }
-        | c6c_deployment_module._DATABASE_ALLOWED_NON_ENV_PATHS
-        | c6c_deployment_module._PINVI_DATABASE_URL_ALLOWED_PATHS
-    )
-
-    unregistered: list[tuple[str, tuple[str, ...]]] = []
-    seen = 0
-    for path, scalar in c6c_deployment_module._walk_scalars(document):
-        value = "" if scalar is None else str(scalar)
-        names = sorted(name for name in protected_names if name in value)
-        if not names:
-            continue
-        seen += 1
-        if path in allowed_paths:
-            continue
-        if path[-1:] == ("<key>",) and path[:-1] in allowed_paths:
-            continue
-        # 값이 아니라 **이름**만 보여준다. 값은 자격증명일 수 있다.
-        unregistered.append((names[0], path))
-
-    assert seen >= 5, (
-        f"보호 env를 참조하는 스칼라를 {seen}개만 찾았다 — `_walk_scalars`나 보호 "
-        "집합이 바뀌었으면 이 검사는 항진명제가 된다."
-    )
-    assert not unregistered, (
-        "compose가 보호 C6c 참조를 등록되지 않은 경로에서 쓴다 — 이 상태로는 "
-        "**모든 핀 재구축**이 prebuild_snapshot에서 fail-close한다: "
-        + ", ".join(
-            f"{name} @ {'.'.join(str(part) for part in path)}"
-            for name, path in unregistered
-        )
-    )
 
 
 def test_every_real_compose_bind_is_declared_in_a_candidate_bind_allowlist() -> None:
@@ -3018,9 +2959,12 @@ def test_sole_consumer_scan_rejects_a_foreign_consumer(
         include_owner=include_owner, shorthand=shorthand
     )
     with pytest.raises(
-        ComposeCandidateContractError, match="unauthorized consumer"
+        ComposeCandidateContractError,
+        match="some-other-service.secrets -> KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
     ):
-        c6c_deployment_module._assert_map_postgres_password_sole_consumer(document)
+        assert_protected_references_are_derived(
+            document, compose_path=_COMPOSE_PATH, environment={}
+        )
 
 
 def test_authorized_reference_is_empty_without_an_owner() -> None:
@@ -3135,65 +3079,6 @@ def test_the_global_invariants_are_not_inside_the_family_validator() -> None:
         )
 
 
-def test_entry_points_keep_the_consumer_scan_when_the_required_set_shrinks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**S4를 오늘 시뮬레이션한다.** required 집합이 줄어도 소비자 스캔은 살아 있는가.
-
-    적대 리뷰 둘이 각각 이 PR의 실질적 구멍을 찾았다. S2 검사들은 전부 private 합성
-    함수를 태우는데, **S4가 게이트를 넣을 자리는 공개 진입점의 호출부**다. 거기에
-    순진한 S4를 넣자 S2 검사 6건이 전부 초록이었고 무단 소비자가 실제로 통과했다.
-    빨개진 넷은 S1의 required-set 골든 핀뿐인데, 그 핀의 docstring은 S4 저자에게
-    **리터럴을 갱신하라고 지시한다** — 지시를 정당하게 따르면 그물이 사라진다.
-
-    그래서 이 검사는 **S4가 바꿀 바로 그것을 오늘 바꿔 본다**: required 집합에서
-    소유자를 빼고(= S4의 절반), 완전한 후보에서 소유자만 지운 뒤 진입점에 태운다.
-    진입점이 여전히 무단 소비자로 거부해야 한다.
-
-    최소 문서로는 안 된다 — 진입점은 required-set과 모양 검사를 지난 뒤 전역 블록과
-    family validator를 도는데, 최소 문서는 그 전에 다른 이유로 죽는다.
-    """
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    monkeypatch.setattr(
-        c6c_deployment_module,
-        "_CANDIDATE_REQUIRED_PROTECTED_SERVICES",
-        frozenset(
-            name
-            for name in c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
-            if name != "kor-travel-map-postgres"
-        ),
-    )
-
-    for shorthand in (False, True):
-        shaped = _shape_without(candidate, ("kor-travel-map-postgres",))
-        services = shaped["services"]
-        assert isinstance(services, dict)
-        services["some-other-service"] = {
-            "image": "example:latest",
-            "secrets": [
-                _MAP_PASSWORD_SECRET
-                if shorthand
-                else {
-                    "source": _MAP_PASSWORD_SECRET,
-                    "target": _MAP_PASSWORD_SECRET,
-                }
-            ],
-        }
-        with pytest.raises(
-            ComposeCandidateContractError, match="unauthorized consumer"
-        ) as rejection:
-            validate_compose_candidate_protected_values(
-                shaped,
-                compose_path=str(_COMPOSE_PATH),
-                root_env_path=str(root_env),
-                environment=environment,
-            )
-        assert "unauthorized consumer" in str(rejection.value), (
-            f"shorthand={shorthand}: {rejection.value}"
-        )
-
-
 def test_owner_must_mount_the_secret_at_the_exact_target(tmp_path: Path) -> None:
     """소유자는 secret을 **exact target**에 마운트해야 한다 (적대 리뷰 M1/F-3).
 
@@ -3299,7 +3184,8 @@ def test_entry_point_runs_the_consumer_scan_for_a_valid_owner(tmp_path: Path) ->
     }
 
     with pytest.raises(
-        ComposeCandidateContractError, match="unauthorized consumer"
+        ComposeCandidateContractError,
+        match="some-other-service.secrets -> KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
     ):
         validate_compose_candidate_protected_values(
             shaped,
@@ -3615,9 +3501,12 @@ def test_pinvi_sole_consumer_scan_rejects_a_foreign_consumer(
         include_owner=include_owner, shorthand=shorthand
     )
     with pytest.raises(
-        ComposeCandidateContractError, match="unauthorized consumer"
+        ComposeCandidateContractError,
+        match="some-other-service.secrets -> PINVI_POSTGRES_PASSWORD",
     ):
-        c6c_deployment_module._assert_pinvi_postgres_password_sole_consumer(document)
+        assert_protected_references_are_derived(
+            document, compose_path=_COMPOSE_PATH, environment={}
+        )
 
 
 def test_pinvi_entry_point_runs_the_consumer_scan(tmp_path: Path) -> None:
@@ -3636,7 +3525,8 @@ def test_pinvi_entry_point_runs_the_consumer_scan(tmp_path: Path) -> None:
     }
 
     with pytest.raises(
-        ComposeCandidateContractError, match="unauthorized consumer"
+        ComposeCandidateContractError,
+        match="some-other-service.secrets -> PINVI_POSTGRES_PASSWORD",
     ):
         validate_compose_candidate_protected_values(
             shaped,
@@ -3728,78 +3618,6 @@ def test_pinvi_global_invariants_are_not_inside_the_family_validator() -> None:
 #
 # 그리고 `..._not_inside_the_family_validator`는 **이름에 결박**돼 있어 인라인 한 번에
 # 뚫린다(리뷰 H-3). 이름 grep은 싸니까 두되, 아래가 **효과**를 센다.
-
-
-def test_pinvi_entry_points_keep_the_global_checks_when_the_owner_is_out_of_scope(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**S4를 오늘 시뮬레이션한다** — PinVi 소유자가 scope 밖이어도 전역 둘이 산다.
-
-    Map에는 S2가 같은 검사를 넣었고(적대 리뷰가 두 번 뚫은 뒤에), PinVi에는 빠져
-    있었다. 이 검사 하나가 리뷰가 보고한 생존 변이 일곱(전역 둘 게이팅·인라인·간접
-    호출, 소유자 배선의 핵심 검사 셋)을 한꺼번에 덮는다.
-    """
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    for name in ("_CANDIDATE_REQUIRED_PROTECTED_SERVICES", "_CANDIDATE_KNOWN_SERVICE_NAMES"):
-        monkeypatch.setattr(
-            c6c_deployment_module,
-            name,
-            frozenset(
-                value
-                for value in getattr(c6c_deployment_module, name)
-                if not value.startswith("pinvi-")
-            ),
-        )
-
-    base = _shape_without(
-        candidate,
-        ("pinvi-postgres", "pinvi-db-init", "pinvi-db-runtime-role", "pinvi-api"),
-    )
-
-    # (1) 무단 소비자는 소유자가 없어도 거부된다 — 두 문법 모두.
-    for shorthand in (False, True):
-        shaped = deepcopy(base)
-        services = shaped["services"]
-        assert isinstance(services, dict)
-        assert "pinvi-postgres" not in services
-        services["zz-thief"] = {
-            "image": "example:latest",
-            "secrets": [
-                "pinvi-postgres-password"
-                if shorthand
-                else {
-                    "source": "pinvi-postgres-password",
-                    "target": "pinvi-postgres-password",
-                }
-            ],
-        }
-        with pytest.raises(
-            ComposeCandidateContractError, match="unauthorized consumer"
-        ) as rejection:
-            validate_compose_candidate_protected_values(
-                shaped,
-                compose_path=str(_COMPOSE_PATH),
-                root_env_path=str(root_env),
-                environment=environment,
-            )
-        assert "unauthorized consumer" in str(rejection.value), f"shorthand={shorthand}"
-
-    # (2) 선언이 틀리면 소유자가 없어도 거부된다.
-    shaped = deepcopy(base)
-    secrets = shaped["secrets"]
-    assert isinstance(secrets, dict)
-    secrets["pinvi-postgres-password"] = {"environment": "WRONG_ENV"}
-    with pytest.raises(
-        ComposeCandidateContractError,
-        match="PinVi PostgreSQL password secret is invalid",
-    ):
-        validate_compose_candidate_protected_values(
-            shaped,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
 
 
 def test_pinvi_owner_must_receive_the_password_only_through_the_secret_file(
