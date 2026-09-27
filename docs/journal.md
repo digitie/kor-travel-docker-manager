@@ -7194,3 +7194,26 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
 - **다음 작업**:
   - Manager 변경을 n150 배포 트리에 반영해 db-init과 RustFS bucket 성공을 확인한 뒤,
     transport 저장소의 cutover receipt·배포·live E2E를 실행한다.
+
+## 2026-09-27 — rustfs-init이 minio/mc 없이 버킷을 만든다
+
+- **발견**: M05 port(#424) 뒤 첫 실제 격리 실행(`/root/m05-once-p1`)이 claim 뒤
+  `map_application_start_failed`로 BLOCKED됐다. stderr는
+  `pull access denied for minio/mc, repository does not exist`였다. Docker Hub의
+  `minio/mc`·`minio/minio` 저장소가 사라졌다(n150에서 Hub API 404). Map·PinVi·Manager 세
+  compose가 모두 이 이미지로 버킷을 만들고 있었다. PinVi는 digest로 핀했지만 저장소가 없으면
+  digest도 받을 수 없다.
+- **Manager 쪽 영향**: `rustfs-init`은 rustfs 컨테이너를 재생성할 때마다
+  `docker_service`가 `run --rm rustfs-init`으로 돌린다. 이 실패는 mutation 롤백으로 이어진다.
+  n150에는 `minio/mc` 이미지가 남아 있지 않아(2026-09-27 확인) 다음 rustfs 재생성이 곧 이
+  실패였다.
+- **변경**: `rustfs-init` 이미지를 `rustfs` 서비스와 같은 `rustfs/rustfs:latest`로 바꿨다.
+  `scripts/ensure-rustfs-buckets.sh`는 그 이미지에 든 curl(8.19)의 `--aws-sigv4`로
+  `PUT /<bucket>`을 보낸다. 접속 실패·5xx만 기동 대기로 재시도한다(`RUSTFS_WAIT_RETRIES`, 기본 60).
+  4xx는 HTTP 코드와 S3 오류 본문을 남기고 바로 실패한다. 이미 있는 버킷은 200(RustFS) 또는
+  409 `BucketAlreadyOwnedByYou`(S3)로 성공이다.
+- **실측(n150, 일회용 RustFS)**: 6개 버킷 생성은 기동 중에 시작해도 exit 0이었고 재실행도 exit 0이었다.
+  틀린 비밀번호는 403 `SignatureDoesNotMatch`로 exit 1, 접속할 곳이 없으면 재시도 뒤 HTTP 000으로
+  exit 1이었다.
+- **짝**: Map `fix/rustfs-init-curl`, PinVi `fix/rustfs-init-curl`. M05는 핀된 pair의 compose를
+  돌리므로 두 저장소 머지 뒤 새 pair로 회전해야 다시 돈다.
