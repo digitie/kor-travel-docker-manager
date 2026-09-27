@@ -1403,6 +1403,9 @@ services:
     - kortravelmap.dagster.definitions
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-map-dagster-code-server-latest}
     restart: unless-stopped
+    # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
+    # 컨테이너들에 좀비 565개가 쌓여 있었다.
+    init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-map-postgres:
@@ -1449,19 +1452,20 @@ services:
       KOR_TRAVEL_MAP_KREX_GO_API_KEY: ${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}}
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
     healthcheck:
+      # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
+      # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
+      # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
       test:
       - CMD
-      - dagster
-      - api
-      - grpc-health-check
-      - -h
-      - 127.0.0.1
-      - -p
-      - ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT:-12703}
-      interval: 10s
-      timeout: 5s
-      retries: 20
+      - python
+      - -c
+      - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
+      - '${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT:-12703}'
+      interval: 30s
+      timeout: 10s
+      retries: 5
       start_period: 30s
+      start_interval: 5s
   kor-travel-map-dagster:
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
     command:
@@ -1474,6 +1478,9 @@ services:
     - ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER:-kor-travel-map-dagster-latest}
     restart: unless-stopped
+    # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
+    # 컨테이너들에 좀비 565개가 쌓여 있었다.
+    init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-map-postgres:
@@ -1590,6 +1597,9 @@ services:
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_DAEMON_CONTAINER:-kor-travel-map-dagster-daemon-latest}
     restart: unless-stopped
+    # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
+    # 컨테이너들에 좀비 565개가 쌓여 있었다.
+    init: true
     # **회수 기제가 살아 있는지 본다.**
     #
     # `run_monitoring`(프로세스가 사라진 run을 회수)과 queued run dequeue는 전부 이
@@ -1617,11 +1627,16 @@ services:
     # heartbeat는 metadata DB에 있어 이 검사는 DB까지 왕복한다. interval을 web(10s)
     # 보다 길게 두고 start_period로 기동 창(code location 로딩 포함)을 준다.
     healthcheck:
-      test: ["CMD-SHELL", "dagster-daemon liveness-check"]
-      interval: 30s
-      timeout: 10s
+      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). 매번 dagster를 import하므로
+      # (유휴 2.3초, 부하 때 10초를 넘긴다) 짧은 주기·짧은 timeout이면 probe가 겹쳐 쌓인다 — 2026-09-27
+      # n150 load 137의 한 원인. 겹치지 않게 주기를 길게, timeout을 넉넉히 둔다. 끼인 스레드를 알아채는
+      # 지연은 주기가 아니라 DAGSTER_DAEMON_HEARTBEAT_TOLERANCE가 정한다. exec 형식이라 셸 래퍼가 없다.
+      test: ["CMD", "dagster-daemon", "liveness-check"]
+      interval: 120s
+      timeout: 60s
       retries: 3
       start_period: 90s
+      start_interval: 15s
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       # daemon도 web readiness의 transitive 의존만 믿지 않는다. candidate
@@ -1843,6 +1858,9 @@ services:
         PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
     container_name: ${PINVI_DAGSTER_CODE_SERVER_CONTAINER:-pinvi-dagster-code-server-latest}
     restart: unless-stopped
+    # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
+    # 컨테이너들에 좀비 565개가 쌓여 있었다.
+    init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       pinvi-postgres:
@@ -1878,21 +1896,20 @@ services:
       # dagster-postgres는 psycopg2(동기)를 쓰므로 `+asyncpg`를 붙이면 안 된다.
       PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}
     healthcheck:
-      # dagster 자신의 grpc health protocol — 프로세스 존재가 아니라 gRPC
-      # 서버가 실제로 응답하는지를 본다.
+      # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
+      # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
+      # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
       test:
       - CMD
-      - dagster
-      - api
-      - grpc-health-check
-      - -h
-      - 127.0.0.1
-      - -p
+      - python
+      - -c
+      - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
       - '${PINVI_DAGSTER_CODE_SERVER_PORT:-12803}'
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 30s
+      start_interval: 5s
   pinvi-dagster:
     image: ${PINVI_DAGSTER_IMAGE:-pinvi-dagster:latest-main}
     build:
@@ -1903,6 +1920,9 @@ services:
         PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
     container_name: ${PINVI_DAGSTER_CONTAINER:-pinvi-dagster-latest}
     restart: unless-stopped
+    # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
+    # 컨테이너들에 좀비 565개가 쌓여 있었다.
+    init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       pinvi-postgres:
@@ -1966,6 +1986,9 @@ services:
     image: ${PINVI_DAGSTER_IMAGE:-pinvi-dagster:latest-main}
     container_name: ${PINVI_DAGSTER_DAEMON_CONTAINER:-pinvi-dagster-daemon-latest}
     restart: unless-stopped
+    # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
+    # 컨테이너들에 좀비 565개가 쌓여 있었다.
+    init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       pinvi-postgres:
@@ -2040,15 +2063,16 @@ services:
       # 없지만, webserver와 같은 이유로 컷오버 직후에는 제거하지 않는다.
       PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}
     healthcheck:
-      # dagster의 정식 판정. required daemon 전부의 heartbeat 신선도를 보고
-      # 하나라도 낡으면 exit 1이다 — 프로세스 존재만 보는 pgrep류와 다르다.
-      test:
-      - CMD-SHELL
-      - dagster-daemon liveness-check
-      interval: 30s
-      timeout: 10s
+      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). 매번 dagster를 import하므로
+      # (유휴 2.3초, 부하 때 10초를 넘긴다) 짧은 주기·짧은 timeout이면 probe가 겹쳐 쌓인다 — 2026-09-27
+      # n150 load 137의 한 원인. 겹치지 않게 주기를 길게, timeout을 넉넉히 둔다. 끼인 스레드를 알아채는
+      # 지연은 주기가 아니라 DAGSTER_DAEMON_HEARTBEAT_TOLERANCE가 정한다. exec 형식이라 셸 래퍼가 없다.
+      test: ["CMD", "dagster-daemon", "liveness-check"]
+      interval: 120s
+      timeout: 60s
       retries: 3
       start_period: 90s
+      start_interval: 15s
   prometheus:
     image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.1}
     container_name: ${PROMETHEUS_CONTAINER:-kor-travel-prometheus}
@@ -2162,6 +2186,9 @@ services:
       dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
     container_name: ${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-geo-dagster-code-server-latest}
     restart: unless-stopped
+    # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
+    # 컨테이너들에 좀비 565개가 쌓여 있었다.
+    init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       # 옛 전용 instance는 롤백 안전망으로 계속 띄워 두므로(ADR-45) 의존성도
@@ -2215,11 +2242,20 @@ services:
     volumes:
     - ${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}:/app/data/backups
     healthcheck:
-      test: ["CMD-SHELL", "dagster api grpc-health-check -p ${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_PORT:-12503}"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
+      # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
+      # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
+      # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
+      test:
+      - CMD
+      - python
+      - -c
+      - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
+      - '${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_PORT:-12503}'
+      interval: 30s
+      timeout: 10s
+      retries: 5
       start_period: 30s
+      start_interval: 5s
   kor-travel-geo-dagster:
     image: ${KOR_TRAVEL_GEO_DAGSTER_IMAGE:-kor-travel-geo-dagster:latest-main}
     build:
@@ -2227,6 +2263,9 @@ services:
       dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
     container_name: ${KOR_TRAVEL_GEO_DAGSTER_CONTAINER:-kor-travel-geo-dagster-latest}
     restart: unless-stopped
+    # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
+    # 컨테이너들에 좀비 565개가 쌓여 있었다.
+    init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       # 옛 전용 instance는 롤백 안전망으로 계속 띄워 두므로(ADR-45) 의존성도
@@ -2302,6 +2341,9 @@ services:
       dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
     container_name: ${KOR_TRAVEL_GEO_DAGSTER_DAEMON_CONTAINER:-kor-travel-geo-dagster-daemon-latest}
     restart: unless-stopped
+    # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
+    # 컨테이너들에 좀비 565개가 쌓여 있었다.
+    init: true
     # **회수 기제가 살아 있는지 본다.**
     #
     # `run_monitoring`(프로세스가 사라진 run을 회수)과 queued run dequeue는 전부 이
@@ -2329,11 +2371,16 @@ services:
     # heartbeat는 metadata DB에 있어 이 검사는 DB까지 왕복한다. interval을 web(10s)
     # 보다 길게 두고 start_period로 기동 창(code location 로딩 포함)을 준다.
     healthcheck:
-      test: ["CMD-SHELL", "dagster-daemon liveness-check"]
-      interval: 30s
-      timeout: 10s
+      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). 매번 dagster를 import하므로
+      # (유휴 2.3초, 부하 때 10초를 넘긴다) 짧은 주기·짧은 timeout이면 probe가 겹쳐 쌓인다 — 2026-09-27
+      # n150 load 137의 한 원인. 겹치지 않게 주기를 길게, timeout을 넉넉히 둔다. 끼인 스레드를 알아채는
+      # 지연은 주기가 아니라 DAGSTER_DAEMON_HEARTBEAT_TOLERANCE가 정한다. exec 형식이라 셸 래퍼가 없다.
+      test: ["CMD", "dagster-daemon", "liveness-check"]
+      interval: 120s
+      timeout: 60s
       retries: 3
       start_period: 90s
+      start_interval: 15s
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       # 옛 전용 instance는 롤백 안전망으로 계속 띄워 두므로(ADR-45) 의존성도
@@ -2519,6 +2566,9 @@ services:
         GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-unknown}
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-weather-dagster-code-server-latest}
     restart: unless-stopped
+    # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
+    # 컨테이너들에 좀비 565개가 쌓여 있었다.
+    init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-shared-postgres:
@@ -2596,11 +2646,20 @@ services:
     oom_score_adj: -500
     pids_limit: 2048
     healthcheck:
-      test: ["CMD", "dagster", "api", "grpc-health-check", "-h", "127.0.0.1", "-p", "14106"]
+      # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
+      # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
+      # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
+      test:
+      - CMD
+      - python
+      - -c
+      - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
+      - '14106'
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 30s
+      start_interval: 5s
 
   kor-travel-weather-dagster-webserver:
     image: ${KOR_TRAVEL_WEATHER_DAGSTER_IMAGE:-kor-travel-weather-dagster:latest-main}
@@ -2612,6 +2671,9 @@ services:
         GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-unknown}
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-weather-dagster-webserver-latest}
     restart: unless-stopped
+    # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
+    # 컨테이너들에 좀비 565개가 쌓여 있었다.
+    init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-shared-postgres:
@@ -2694,6 +2756,9 @@ services:
     image: ${KOR_TRAVEL_WEATHER_DAGSTER_IMAGE:-kor-travel-weather-dagster:latest-main}
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_DAEMON_CONTAINER:-kor-travel-weather-dagster-daemon-latest}
     restart: unless-stopped
+    # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
+    # 컨테이너들에 좀비 565개가 쌓여 있었다.
+    init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-shared-postgres:
@@ -2754,11 +2819,16 @@ services:
     mem_reservation: 512m
     mem_swappiness: 10
     healthcheck:
-      test: ["CMD-SHELL", "dagster-daemon liveness-check"]
-      interval: 30s
-      timeout: 10s
+      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). 매번 dagster를 import하므로
+      # (유휴 2.3초, 부하 때 10초를 넘긴다) 짧은 주기·짧은 timeout이면 probe가 겹쳐 쌓인다 — 2026-09-27
+      # n150 load 137의 한 원인. 겹치지 않게 주기를 길게, timeout을 넉넉히 둔다. 끼인 스레드를 알아채는
+      # 지연은 주기가 아니라 DAGSTER_DAEMON_HEARTBEAT_TOLERANCE가 정한다. exec 형식이라 셸 래퍼가 없다.
+      test: ["CMD", "dagster-daemon", "liveness-check"]
+      interval: 120s
+      timeout: 60s
       retries: 5
       start_period: 60s
+      start_interval: 15s
 
   kor-travel-weather-dagster-gateway:
     image: ${KOR_TRAVEL_WEATHER_DAGSTER_GATEWAY_IMAGE:-kor-travel-weather-dagster-gateway:latest-main}
