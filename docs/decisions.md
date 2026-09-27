@@ -3968,7 +3968,10 @@ git을 부르지 않는다. `pinned_runtime_sources.py`는 754줄에서 401줄�
   스칼라 스캔·배선의 `.env` 재대조(`_CANDIDATE_ALLOWED_API_ENV_SOURCES`·`_CANDIDATE_SOURCE_DEFAULT_VALUES`)·`env_file`
   목록도 지웠다 — resolved 문서는 raw가 원본과 대조한 참조를 보간한 결과라 다시 증명하지 않는다(결정 3).
 - **대신**: 파생 규칙이 옛 이름 스캔의 자리(bind·env_file 내용 검사보다 앞)에서 돈다. bind source·`env_file` 내용 스캔은
-  남기되 찾는 이름·값을 원본에서 파생한다(`protected_names_and_values`) — 원본이 참조하는 보호 변수와 `.env` 비밀이다.
+  남기되 `.env` 비밀 **값**만 찾는다(`secret_values_for`). 파일이 변수 이름을 적는 것은 누출이 아니다 — 스크립트는 자기가
+  쓰는 env 이름을 적고, 컨테이너가 그 값을 받는지는 파생 참조 규칙이 본다. 옛 Map role bootstrap 면제
+  (`_MAP_ROLE_BOOTSTRAP_SOURCE_TARGETS`)가 규칙이 됐다. 이름까지 찾게 두면 파생 이름 집합이 넓어져 운영 compose의
+  `rustfs-init` bind 파일이 거부됐다(n150 미리보기에서 잡았다 — 배포 전부를 막았을 것이다).
 - **남긴 것**: 값을 잠그는 것 — `_CANDIDATE_CANONICAL_API_ENV_VALUES`(raw 배선의 정확한 값), 필수 서비스 집합, UI의
   계약 잠금(`_CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE`). 실행 중 재증명(결정 3 범위)과 Map 저장소 compose 검사
   (`_MAP_SOURCE_PROTECTED_ENV_VALUES`)는 이 결정 밖이다.

@@ -4816,7 +4816,7 @@ def validate_compose_candidate_protected_values(
                 raise ComposeCandidateContractError(
                     f"compose candidate cannot validate env_file for {service_name}"
                 ) from exc
-            for key, raw_value in env_values.items():
+            for raw_value in env_values.values():
                 text = "" if raw_value is None else str(raw_value)
                 if any(value in text for value in protected_values):
                     raise ComposeCandidateContractError(
