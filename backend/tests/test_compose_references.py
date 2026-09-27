@@ -16,6 +16,7 @@ import yaml
 from kor_travel_docker_manager.services.compose_references import (
     RELEASE_COMPOSE_NAME,
     assert_protected_references_are_derived,
+    assert_resolved_secret_values_stay_at_reference_sites,
     compose_references,
     reference_compose_path,
     variable_names,
@@ -235,3 +236,81 @@ def test_the_literal_value_refusal_names_its_site() -> None:
 
     with pytest.raises(ComposeCandidateContractError, match="literally at grafana.environment.GF_EXTRA"):
         _check(candidate)
+
+
+def test_a_name_stops_at_the_first_non_ascii_character() -> None:
+    """compose는 `$DSN\u00e9`에서 `DSN`을 치환하고 글자를 남긴다 — 규칙도 같게 읽어야 한다(적대 리뷰 H-1)."""
+
+    assert variable_names("$KOR_TRAVEL_MAP_PG_DSN\u00e9") == {"KOR_TRAVEL_MAP_PG_DSN"}
+    candidate = _candidate()
+    candidate["services"]["grafana"]["environment"]["X"] = "$KOR_TRAVEL_MAP_PG_DSN\u00e9"
+
+    with pytest.raises(ComposeCandidateContractError, match="grafana.environment.X -> KOR_TRAVEL_MAP_PG_DSN"):
+        _check(candidate)
+
+
+def test_a_percent_encoded_dsn_is_still_protected() -> None:
+    environment = _environment()
+    environment["KOR_TRAVEL_MAP_PG_DSN"] = "postgresql://ktm:secret%2Ddsn%2Dpassword%2D4411@db/ktm"
+    candidate = _candidate()
+    candidate["services"]["grafana"]["environment"]["LEAK"] = "${KOR_TRAVEL_MAP_PG_DSN}"
+
+    with pytest.raises(ComposeCandidateContractError, match="KOR_TRAVEL_MAP_PG_DSN"):
+        assert_protected_references_are_derived(
+            candidate, compose_path=_COMPOSE, environment=environment
+        )
+
+
+def _resolved_with(site_update: dict[str, Any]) -> dict[str, Any]:
+    resolved = _candidate()
+    for service, fields in site_update.items():
+        resolved["services"][service].update(fields)
+    return resolved
+
+
+def test_the_resolved_backstop_accepts_secrets_at_their_reference_sites() -> None:
+    environment = _environment()
+    resolved = _candidate()
+    resolved["services"]["kor-travel-map-api"]["environment"] = {
+        "KOR_TRAVEL_MAP_PG_DSN": environment["KOR_TRAVEL_MAP_PG_DSN"]
+    }
+
+    assert_resolved_secret_values_stay_at_reference_sites(
+        resolved, compose_path=_COMPOSE, environment=environment
+    )
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"labels": {"leak": "{secret}"}},
+        {"environment": {"GF_EXTRA": "{secret}"}},
+    ],
+    ids=["label_file", "parser-disagreement"],
+)
+def test_the_resolved_backstop_rejects_a_secret_value_elsewhere(fields: dict[str, Any]) -> None:
+    """`label_file`이나 파서 불일치로 들어온 값은 raw 규칙이 못 본다 — resolved 문서에서 잡는다."""
+
+    environment = _environment()
+    secret = environment["KOR_TRAVEL_SHARED_POSTGRES_PASSWORD"]
+    rendered = {
+        field: {key: value.format(secret=secret) for key, value in block.items()}
+        for field, block in fields.items()
+    }
+    resolved = _resolved_with({"grafana": rendered})
+
+    with pytest.raises(ComposeCandidateContractError, match="carries a protected C6c value at grafana"):
+        assert_resolved_secret_values_stay_at_reference_sites(
+            resolved, compose_path=_COMPOSE, environment=environment
+        )
+
+
+def test_the_resolved_backstop_sees_compose_dollar_escaping() -> None:
+    environment = _environment()
+    environment["KOR_TRAVEL_SHARED_POSTGRES_PASSWORD"] = "secret-with-$-dollar-7731"
+    resolved = _resolved_with({"grafana": {"labels": {"leak": "secret-with-$$-dollar-7731"}}})
+
+    with pytest.raises(ComposeCandidateContractError, match="grafana.labels"):
+        assert_resolved_secret_values_stay_at_reference_sites(
+            resolved, compose_path=_COMPOSE, environment=environment
+        )

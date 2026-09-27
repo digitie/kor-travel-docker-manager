@@ -3958,3 +3958,23 @@ git을 부르지 않는다. `pinned_runtime_sources.py`는 754줄에서 401줄�
 - **P-1은 병행**이다. raw 검증기의 리터럴 표 검사가 먼저 자기 문구로 거부하고, 파생 규칙은 그 뒤에 돈다. 표가 놓친 것이
   여기서 잡힌다 — 공유 PostgreSQL 비밀(`KOR_TRAVEL_SHARED_POSTGRES_PASSWORD`)과 geo·concierge·weather·transport 비밀은
   어느 표에도 없어서 다른 서비스로 옮겨도 통과했다. P-2에서 표를 지우고 P-3에서 문서를 고친다.
+
+### NOTE: 결정 5 P-2 — 리터럴 보호 참조 표를 지웠다 (2026-09-27, D5 P-2)
+
+- **지운 것**: raw 검증기의 이름·값 스칼라 스캔과 그 허용 경로 표(`_DATABASE_ALLOWED_NON_ENV_PATHS`,
+  `_PINVI_DATABASE_URL_ALLOWED_PATHS`), 값 표(`_CANDIDATE_PROTECTED_VALUE_ENV_NAMES`), 이름 합집합에만 쓰이던
+  `_DATABASE_SECRET_ENV_NAMES`·`_CURATION_PRINCIPAL_ENV_NAMES`, 13개 서비스 `env_file` 금지 목록, Map·PinVi PostgreSQL
+  password secret의 sole-consumer 스캔, secret·config `environment:` 이름 스캔과 그 하드코딩 면제 셋. resolved 검증기의
+  스칼라 스캔·배선의 `.env` 재대조(`_CANDIDATE_ALLOWED_API_ENV_SOURCES`·`_CANDIDATE_SOURCE_DEFAULT_VALUES`)·`env_file`
+  목록도 지웠다 — resolved 문서는 raw가 원본과 대조한 참조를 보간한 결과라 다시 증명하지 않는다(결정 3).
+- **대신**: 파생 규칙이 옛 이름 스캔의 자리(bind·env_file 내용 검사보다 앞)에서 돈다. bind source·`env_file` 내용 스캔은
+  남기되 `.env` 비밀 **값**만 찾는다(`secret_values_for`). 파일이 변수 이름을 적는 것은 누출이 아니다 — 스크립트는 자기가
+  쓰는 env 이름을 적고, 컨테이너가 그 값을 받는지는 파생 참조 규칙이 본다. 옛 Map role bootstrap 면제
+  (`_MAP_ROLE_BOOTSTRAP_SOURCE_TARGETS`)가 규칙이 됐다. 이름까지 찾게 두면 파생 이름 집합이 넓어져 운영 compose의
+  `rustfs-init` bind 파일이 거부됐다(n150 미리보기에서 잡았다 — 배포 전부를 막았을 것이다).
+- **남긴 것**: 값을 잠그는 것 — `_CANDIDATE_CANONICAL_API_ENV_VALUES`(raw 배선의 정확한 값), 필수 서비스 집합, UI의
+  계약 잠금(`_CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE`). 실행 중 재증명(결정 3 범위)과 Map 저장소 compose 검사
+  (`_MAP_SOURCE_PROTECTED_ENV_VALUES`)는 이 결정 밖이다.
+- **테스트**: 표 등록을 강제하던 테스트와 S4(family 게이트가 소비자 스캔을 건너뛸 수 있다) 가정 테스트 둘을 지웠다 —
+  파생 규칙은 진입점의 무조건 호출 하나이고, 진입점 테스트가 그것을 결박한다. sole-consumer 테스트는 같은 문서를
+  파생 규칙에 태운다.

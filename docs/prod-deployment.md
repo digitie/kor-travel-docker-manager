@@ -206,7 +206,10 @@ installer가 하는 일은 이것뿐이다(순서대로).
    쓰기를 지운다(실행 비트는 git index 그대로). wheelhouse로 venv를 만들고 `ktdctl` wrapper를 쓰고
    import를 확인한 뒤 **마지막에** `.ktdm-source-revision`을 쓴다. 표식이 있으면 그대로 다시 쓴다
    (같은 sha 재설치·롤백).
-4. 지금의 `.env`를 새 release로 복사한다(root 0600). 모든 `.env` 쓰기는 G 아래에 있다.
+4. git에서 `docker-compose.yml`을 읽어 release에 읽기 전용 사본 `.ktdm-release-compose.yml`(0444)을 쓴다 —
+   C6c 보호 참조의 원본이다(ADR-51 결정 5). 표식 유무와 관계없이 매번 쓰므로 같은 sha 재설치가 빠진 사본을
+   복구한다. UI가 고친 `docker-compose.yml`은 새 release에 넘어가지 않는다 — 설치마다 git 원본으로 돌아간다.
+   그다음 지금의 `.env`를 새 release로 복사한다(root 0600). 모든 `.env` 쓰기는 G 아래에 있다.
 5. release의 tmpfiles 유닛(§3.z), backend 유닛, frontend 유닛(`.env`의 `KTDM_FRONTEND_*`, §4),
    백업 logrotate(`KTDM_BACKUP_ROOT`, §3.x)를 설치하고 enable한다. 키가 없으면 그 항목을 건너뛰고
    stderr에 한 줄 남긴다(frontend 키가 없으면 이미 있던 frontend 유닛은 disable·삭제한다). 값이 틀리면

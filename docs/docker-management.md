@@ -898,10 +898,14 @@ config/runtime 복원 실패 응답은 `returncode`, `stdout`, `stderr`, `error`
 전달한다.
 
 일반 non-API container config update/reset과 미생성 start-create뿐 아니라 generic ensure/up/create/recreate도
-수정하거나 실행할 service만 검사하지 않는다. mutation 전에 raw와 Docker Compose resolved 문서의 전체 graph를
-검사한다. 범위에는 모든 service 필드와 top-level `secrets`, `configs`, `x-*` extension, service의
-secret/config mount·reference가 포함된다. 실제 존재하는 non-root `env_file`과 top-level secret/config 외부
-파일 내용도 보호 이름·현재 값이 없는지 확인한다.
+수정하거나 실행할 service만 검사하지 않는다. mutation 전에 raw 문서 전체를 설치된 릴리스 compose
+(`.ktdm-release-compose.yml`, installer가 git에서 쓴 읽기 전용 사본)와 대조한다(ADR-51 결정 5). 서비스 env
+key·서비스의 다른 필드·top-level 항목마다 후보가 참조하는 **보호 변수**는 원본의 같은 자리가 참조하는 것의
+부분집합이어야 한다. 보호 변수는 이름이 민감하거나 값이 `.env` 비밀을 담는 변수다. secret·config mount는 그
+항목의 `environment:` 변수를, 값 없는 env key는 같은 이름의 변수를, `env_file`은 언제나 보호된 참조로 센다.
+비밀 값이 글자 그대로 들어 있어도 거부한다. 실제 존재하는 non-root `env_file`과 bind source 파일 내용에는
+원본이 참조하는 보호 이름과 `.env` 비밀 값이 없어야 한다. resolved 문서는 그 참조를 보간한 결과라 다시
+스캔하지 않는다.
 
 mutation source는 단일 canonical compose 파일이다. top-level `include`, service `extends`, process의
 `COMPOSE_FILE`, `KOR_TRAVEL_DOCKER_MANAGER_OVERRIDE_FILE`, 실제 존재하는 `docker-compose.override.yml` 중
