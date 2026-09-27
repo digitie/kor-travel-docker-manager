@@ -2509,7 +2509,7 @@ def test_a_missing_service_dsn_is_a_pre_claim_rejection(
 def test_a_rehearsal_runs_every_pre_claim_step_and_consumes_nothing(harness: _Harness) -> None:
     """`--rehearse`는 claim 직전에 멈춘다 — claim·block·소비가 없고 receipt는 `rehearsal.json`이다."""
 
-    assert harness.driver.main(MANUAL_FEATURE_UUID and MANAGER_REVISION, harness.output, rehearse=True) == 0
+    assert harness.driver.main(MANAGER_REVISION, harness.output, rehearse=True) == 0
 
     rehearsal = json.loads((harness.output / "rehearsal.json").read_text(encoding="utf-8"))
     assert rehearsal["status"] == "rehearsed"
