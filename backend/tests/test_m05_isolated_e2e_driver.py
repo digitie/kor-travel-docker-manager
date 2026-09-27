@@ -891,7 +891,7 @@ def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_
         'install -o root -g root -m 0600 /dev/null "$output_dir/stderr.log"'
     ) < driver_run.index('2>>"$output_dir/stderr.log"')
     # launcher 뒤쪽은 stderr.log를 재시도 근거로 읽지 않는다.
-    assert "stderr.log" not in launcher[launcher.index("driver_status=") :]
+    assert '"$output_dir/stderr.log"' not in launcher[launcher.index("driver_status=") :]
     block_start = launcher.index("has_unconditional_terminal_execution_block() {")
     block_end = launcher.index('install -d -o root -g root -m 0700 "$output_dir"')
     block_check = launcher[block_start:block_end]
@@ -1285,7 +1285,7 @@ def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:
     driver_source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
         encoding="utf-8"
     )
-    fixture_env_start = driver_source.index("_write_private_text(\n            fixture_env,")
+    fixture_env_start = driver_source.index("_write_env_file(\n            fixture_env,")
     fixture_env_end = driver_source.index("        # API에는", fixture_env_start)
     fixture_env = driver_source[fixture_env_start:fixture_env_end]
 
@@ -1365,7 +1365,7 @@ def test_isolated_pinvi_api_uses_the_private_map_network_not_host_loopback() -> 
     source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
         encoding="utf-8"
     )
-    pinvi_env_start = source.index("_write_private_text(\n            pinvi_env,")
+    pinvi_env_start = source.index("_write_env_file(\n            pinvi_env,")
     pinvi_env_end = source.index("        pinvi_override_lines =", pinvi_env_start)
     pinvi_env = source[pinvi_env_start:pinvi_env_end]
     override_start = source.index("        pinvi_override_lines =", pinvi_env_end)
@@ -1835,8 +1835,10 @@ def _failing_main(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     error: BaseException,
+    driver: ModuleType | None = None,
 ) -> ModuleType:
-    driver = _driver()
+    # 예외를 만든 driver와 같은 모듈이어야 한다 — 새로 로드하면 `_PhaseError`가 다른 클래스다.
+    driver = driver or _driver()
 
     def refuse(_expected: str) -> None:
         raise error
@@ -1889,7 +1891,7 @@ def test_a_phase_error_raised_while_handling_another_keeps_both_causes(
             driver._fail("runtime_setup_workspace", diagnostic="workspace could not be created")
         except driver._PhaseError as caught:
             error = caught
-    _failing_main(tmp_path, monkeypatch, error)
+    _failing_main(tmp_path, monkeypatch, error, driver)
 
     err = capsys.readouterr().err
     assert "phase: runtime_setup_workspace" in err
@@ -2656,6 +2658,7 @@ def _rotation_map_blobs(
     class _Result:
         returncode = 0 if readable else 128
         stdout = _ROTATION_MAP_BLOB if readable else b""
+        stderr = b"" if readable else b"fatal: path 'openapi.json' does not exist"
 
     class _Subprocess:
         PIPE = -1
@@ -2782,6 +2785,8 @@ def test_rotation_preflight_refuses_v2_when_the_target_map_surface_is_unreadable
 
     assert status == 1
     assert "unreadable" in out
+    # git이 말한 이유를 같은 줄에 싣는다(ADR-51 잃는 보장 G-3) — 예전에는 stderr를 버렸다.
+    assert "does not exist" in out
 
 
 def test_rotation_preflight_refuses_v2_with_a_non_sha256_surface_digest(

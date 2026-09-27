@@ -7,7 +7,6 @@ Manager release에서만 ``run-m05-isolated-e2e-once``를 통해 실행한다.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import ipaddress
 import json
