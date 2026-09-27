@@ -317,32 +317,56 @@ def _seconds(value: object) -> float:
 
 
 #: `dagster-daemon liveness-check` 1회 비용의 n150 실측(유휴 2.3초, 부하 57에서 10초 초과).
-#: timeout이 이보다 짧으면 probe가 끝나기 전에 잘리고, 주기가 timeout보다 짧으면 겹친다.
+#: timeout이 이보다 짧으면 부하 때 멀쩡한 daemon이 unhealthy로 보인다.
 _DAEMON_PROBE_MIN_TIMEOUT_SECONDS = 30.0
 
 
 @pytest.mark.parametrize("service_name", sorted(_daemon_services()))
-def test_every_dagster_daemon_probe_cannot_overlap_itself(service_name: str) -> None:
-    """dagster를 import하는 probe는 한 번에 하나만 돈다.
+def test_every_dagster_daemon_probe_survives_load_and_reports_in_time(service_name: str) -> None:
+    """probe는 부하를 견디되, 끼인 스레드를 늦게 보고하지 않는다.
 
-    끼인 스레드를 알아채는 지연은 주기가 아니라 `DAGSTER_DAEMON_HEARTBEAT_TOLERANCE`가 정한다
-    (위 계약). 그러니 주기를 줄여 얻는 것은 없고, 짧은 주기·짧은 timeout은 부하 때 probe를 쌓는다.
+    끼인 스레드는 `tolerance + interval × retries` 안에 unhealthy로 보인다. 앞쪽은 위 계약이
+    300초로 묶는다. 뒤쪽(주기 × retries)이 그보다 길면 probe 설정이 그 상한을 무색하게 만든다
+    (적대 리뷰: 120초 × 5회 = 600초였다).
     """
-    healthcheck = _daemon_services()[service_name].get("healthcheck") or {}
+    service = _daemon_services()[service_name]
+    healthcheck = service.get("healthcheck") or {}
     timeout = _seconds(healthcheck.get("timeout", "30s"))
     interval = _seconds(healthcheck.get("interval", "30s"))
+    retries = int(healthcheck.get("retries", 3))
     assert timeout >= _DAEMON_PROBE_MIN_TIMEOUT_SECONDS, (
         f"`{service_name}`의 liveness probe timeout이 {timeout:g}초다 — probe 1회가 부하 때 10초를 "
-        "넘기므로 잘리고, 잘린 Python은 고아가 된다."
+        "넘기므로 멀쩡한 daemon이 unhealthy로 보인다."
     )
-    assert interval > timeout, (
-        f"`{service_name}`의 주기({interval:g}초)가 timeout({timeout:g}초)보다 길지 않다 — "
-        "느린 probe가 끝나기 전에 다음 probe가 뜬다."
+    raw = str((service.get("environment") or {}).get(_TOLERANCE_ENV))
+    tolerance = int(raw.split(":-", maxsplit=1)[1].rstrip("}") if ":-" in raw else raw)
+    assert interval * retries <= tolerance, (
+        f"`{service_name}`의 주기 × retries({interval:g}초 × {retries})가 heartbeat tolerance"
+        f"({tolerance}초)를 넘는다 — 끼인 스레드 보고가 그만큼 더 늦는다."
     )
+
+
+def _probe(service: dict[str, Any]) -> list[str]:
+    test = (service.get("healthcheck") or {}).get("test")
+    return list(test) if isinstance(test, list) else [str(test)]
 
 
 def _dagster_services() -> dict[str, dict[str, Any]]:
     return {**_daemon_services(), **_webserver_services(), **_code_server_services()}
+
+
+@pytest.mark.parametrize("service_name", sorted(_dagster_services()))
+def test_every_dagster_probe_runs_without_a_shell(service_name: str) -> None:
+    """probe가 쌓인 실제 경로는 셸 래퍼다(적대 리뷰, n150 실측).
+
+    docker는 컨테이너마다 probe를 하나씩만 돌린다. 그런데 `CMD-SHELL`은 timeout 때 `sh`만 죽이고,
+    그 아래 Python은 고아로 계속 돈다. 2026-09-27 n150에서 CMD-SHELL probe를 쓰던 컨테이너에는
+    좀비가 20~261개 있었고, exec 형식 컨테이너에는 0개였다.
+    """
+    probe = _probe(_dagster_services()[service_name])
+    assert probe and probe[0] == "CMD", (
+        f"`{service_name}`의 healthcheck가 exec 형식(`CMD`)이 아니다: {probe[:2]}."
+    )
 
 
 @pytest.mark.parametrize("service_name", sorted(_dagster_services()))

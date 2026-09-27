@@ -1458,13 +1458,15 @@ services:
       test:
       - CMD
       - python
+      - -I
       - -c
       - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
       - '${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT:-12703}'
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
+      start_period: 180s
       start_interval: 5s
   kor-travel-map-dagster:
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
@@ -1564,10 +1566,14 @@ services:
     ports:
     - ${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}:${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
     healthcheck:
+      # exec 형식 — timeout 때 셸 래퍼만 죽고 Python이 고아로 남지 않는다.
       test:
-      - CMD-SHELL
+      - CMD
+      - python
+      - -I
+      - -c
       - >-
-        python -c "import os, json, urllib.request as u; p = os.environ.get('KOR_TRAVEL_MAP_DAGSTER_PORT', '12702'); q = json.dumps({'query': '{repositoriesOrError{__typename}}'}).encode(); r = u.urlopen(u.Request('http://127.0.0.1:%s/graphql' % p, data=q, headers={'Content-Type': 'application/json'}), timeout=5); d = json.load(r); t = d.get('data', {}).get('repositoriesOrError', {}).get('__typename'); raise SystemExit(0 if t == 'RepositoryConnection' else 'code location not loaded: %s' % t)"
+        import os, json, urllib.request as u; p = os.environ.get('KOR_TRAVEL_MAP_DAGSTER_PORT', '12702'); q = json.dumps({'query': '{repositoriesOrError{__typename}}'}).encode(); r = u.urlopen(u.Request('http://127.0.0.1:%s/graphql' % p, data=q, headers={'Content-Type': 'application/json'}), timeout=5); d = json.load(r); t = d.get('data', {}).get('repositoriesOrError', {}).get('__typename'); raise SystemExit(0 if t == 'RepositoryConnection' else 'code location not loaded: %s' % t)
       interval: 10s
       timeout: 5s
       retries: 20
@@ -1627,14 +1633,14 @@ services:
     # heartbeat는 metadata DB에 있어 이 검사는 DB까지 왕복한다. interval을 web(10s)
     # 보다 길게 두고 start_period로 기동 창(code location 로딩 포함)을 준다.
     healthcheck:
-      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). 매번 dagster를 import하므로
-      # (유휴 2.3초, 부하 때 10초를 넘긴다) 짧은 주기·짧은 timeout이면 probe가 겹쳐 쌓인다 — 2026-09-27
-      # n150 load 137의 한 원인. 겹치지 않게 주기를 길게, timeout을 넉넉히 둔다. 끼인 스레드를 알아채는
-      # 지연은 주기가 아니라 DAGSTER_DAEMON_HEARTBEAT_TOLERANCE가 정한다. exec 형식이라 셸 래퍼가 없다.
+      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). 매번 dagster를 import한다(유휴 2.3초,
+      # 부하 때 10초 초과). exec 형식이라 timeout 때 셸 래퍼만 죽고 Python이 고아로 남는 일이 없다 — 2026-09-27
+      # n150에서 그 고아들이 쌓여 load 137을 만들었다. 끼인 스레드는 heartbeat tolerance + 주기 × retries
+      # 안에 unhealthy로 보인다. 그 뒤쪽 합(240초)을 tolerance(300초) 아래로 둔다.
       test: ["CMD", "dagster-daemon", "liveness-check"]
       interval: 120s
       timeout: 60s
-      retries: 3
+      retries: 2
       start_period: 90s
       start_interval: 15s
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -1902,13 +1908,15 @@ services:
       test:
       - CMD
       - python
+      - -I
       - -c
       - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
       - '${PINVI_DAGSTER_CODE_SERVER_PORT:-12803}'
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
+      start_period: 180s
       start_interval: 5s
   pinvi-dagster:
     image: ${PINVI_DAGSTER_IMAGE:-pinvi-dagster:latest-main}
@@ -1965,10 +1973,14 @@ services:
     ports:
     - ${PINVI_DAGSTER_PORT:-12802}:${PINVI_DAGSTER_PORT:-12802}
     healthcheck:
+      # exec 형식 — timeout 때 셸 래퍼만 죽고 Python이 고아로 남지 않는다.
       test:
-      - CMD-SHELL
+      - CMD
+      - python
+      - -I
+      - -c
       - >-
-        python -c "import os, json, urllib.request as u; p = os.environ.get('PINVI_DAGSTER_PORT', '12802'); q = json.dumps({'query': '{repositoriesOrError{__typename}}'}).encode(); r = u.urlopen(u.Request('http://127.0.0.1:%s/graphql' % p, data=q, headers={'Content-Type': 'application/json'}), timeout=5); d = json.load(r); t = d.get('data', {}).get('repositoriesOrError', {}).get('__typename'); raise SystemExit(0 if t == 'RepositoryConnection' else 'code location not loaded: %s' % t)"
+        import os, json, urllib.request as u; p = os.environ.get('PINVI_DAGSTER_PORT', '12802'); q = json.dumps({'query': '{repositoriesOrError{__typename}}'}).encode(); r = u.urlopen(u.Request('http://127.0.0.1:%s/graphql' % p, data=q, headers={'Content-Type': 'application/json'}), timeout=5); d = json.load(r); t = d.get('data', {}).get('repositoriesOrError', {}).get('__typename'); raise SystemExit(0 if t == 'RepositoryConnection' else 'code location not loaded: %s' % t)
       interval: 10s
       timeout: 5s
       retries: 20
@@ -2063,14 +2075,14 @@ services:
       # 없지만, webserver와 같은 이유로 컷오버 직후에는 제거하지 않는다.
       PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}
     healthcheck:
-      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). 매번 dagster를 import하므로
-      # (유휴 2.3초, 부하 때 10초를 넘긴다) 짧은 주기·짧은 timeout이면 probe가 겹쳐 쌓인다 — 2026-09-27
-      # n150 load 137의 한 원인. 겹치지 않게 주기를 길게, timeout을 넉넉히 둔다. 끼인 스레드를 알아채는
-      # 지연은 주기가 아니라 DAGSTER_DAEMON_HEARTBEAT_TOLERANCE가 정한다. exec 형식이라 셸 래퍼가 없다.
+      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). 매번 dagster를 import한다(유휴 2.3초,
+      # 부하 때 10초 초과). exec 형식이라 timeout 때 셸 래퍼만 죽고 Python이 고아로 남는 일이 없다 — 2026-09-27
+      # n150에서 그 고아들이 쌓여 load 137을 만들었다. 끼인 스레드는 heartbeat tolerance + 주기 × retries
+      # 안에 unhealthy로 보인다. 그 뒤쪽 합(240초)을 tolerance(300초) 아래로 둔다.
       test: ["CMD", "dagster-daemon", "liveness-check"]
       interval: 120s
       timeout: 60s
-      retries: 3
+      retries: 2
       start_period: 90s
       start_interval: 15s
   prometheus:
@@ -2248,13 +2260,15 @@ services:
       test:
       - CMD
       - python
+      - -I
       - -c
       - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
       - '${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_PORT:-12503}'
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
+      start_period: 180s
       start_interval: 5s
   kor-travel-geo-dagster:
     image: ${KOR_TRAVEL_GEO_DAGSTER_IMAGE:-kor-travel-geo-dagster:latest-main}
@@ -2326,10 +2340,14 @@ services:
     ports:
     - ${KOR_TRAVEL_GEO_DAGSTER_PORT:-12502}:${KOR_TRAVEL_GEO_DAGSTER_PORT:-12502}
     healthcheck:
+      # exec 형식 — timeout 때 셸 래퍼만 죽고 Python이 고아로 남지 않는다.
       test:
-      - CMD-SHELL
+      - CMD
+      - python
+      - -I
+      - -c
       - >-
-        python -c "import os, json, urllib.request as u; p = os.environ.get('KTG_DAGSTER_PORT', '12502'); q = json.dumps({'query': '{repositoriesOrError{__typename}}'}).encode(); r = u.urlopen(u.Request('http://127.0.0.1:%s/graphql' % p, data=q, headers={'Content-Type': 'application/json'}), timeout=5); d = json.load(r); t = d.get('data', {}).get('repositoriesOrError', {}).get('__typename'); raise SystemExit(0 if t == 'RepositoryConnection' else 'code location not loaded: %s' % t)"
+        import os, json, urllib.request as u; p = os.environ.get('KTG_DAGSTER_PORT', '12502'); q = json.dumps({'query': '{repositoriesOrError{__typename}}'}).encode(); r = u.urlopen(u.Request('http://127.0.0.1:%s/graphql' % p, data=q, headers={'Content-Type': 'application/json'}), timeout=5); d = json.load(r); t = d.get('data', {}).get('repositoriesOrError', {}).get('__typename'); raise SystemExit(0 if t == 'RepositoryConnection' else 'code location not loaded: %s' % t)
       interval: 10s
       timeout: 5s
       retries: 20
@@ -2371,14 +2389,14 @@ services:
     # heartbeat는 metadata DB에 있어 이 검사는 DB까지 왕복한다. interval을 web(10s)
     # 보다 길게 두고 start_period로 기동 창(code location 로딩 포함)을 준다.
     healthcheck:
-      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). 매번 dagster를 import하므로
-      # (유휴 2.3초, 부하 때 10초를 넘긴다) 짧은 주기·짧은 timeout이면 probe가 겹쳐 쌓인다 — 2026-09-27
-      # n150 load 137의 한 원인. 겹치지 않게 주기를 길게, timeout을 넉넉히 둔다. 끼인 스레드를 알아채는
-      # 지연은 주기가 아니라 DAGSTER_DAEMON_HEARTBEAT_TOLERANCE가 정한다. exec 형식이라 셸 래퍼가 없다.
+      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). 매번 dagster를 import한다(유휴 2.3초,
+      # 부하 때 10초 초과). exec 형식이라 timeout 때 셸 래퍼만 죽고 Python이 고아로 남는 일이 없다 — 2026-09-27
+      # n150에서 그 고아들이 쌓여 load 137을 만들었다. 끼인 스레드는 heartbeat tolerance + 주기 × retries
+      # 안에 unhealthy로 보인다. 그 뒤쪽 합(240초)을 tolerance(300초) 아래로 둔다.
       test: ["CMD", "dagster-daemon", "liveness-check"]
       interval: 120s
       timeout: 60s
-      retries: 3
+      retries: 2
       start_period: 90s
       start_interval: 15s
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -2652,13 +2670,15 @@ services:
       test:
       - CMD
       - python
+      - -I
       - -c
       - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
       - '14106'
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 30s
+      # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
+      start_period: 180s
       start_interval: 5s
 
   kor-travel-weather-dagster-webserver:
@@ -2743,10 +2763,14 @@ services:
     # 200이다 — GraphQL로 실제 code location이 로드됐는지 묻는다(geo/map/pinvi와
     # 같은 패턴, docker-compose.yml의 다른 dagster-webserver 블록 참고).
     healthcheck:
+      # exec 형식 — timeout 때 셸 래퍼만 죽고 Python이 고아로 남지 않는다.
       test:
-      - CMD-SHELL
+      - CMD
+      - python
+      - -I
+      - -c
       - >-
-        python -c "import json, urllib.request as u; q = json.dumps({'query': '{repositoriesOrError{__typename}}'}).encode(); r = u.urlopen(u.Request('http://127.0.0.1:14107/graphql', data=q, headers={'Content-Type': 'application/json'}), timeout=5); d = json.load(r); t = d.get('data', {}).get('repositoriesOrError', {}).get('__typename'); raise SystemExit(0 if t == 'RepositoryConnection' else 'code location not loaded: %s' % t)"
+        import json, urllib.request as u; q = json.dumps({'query': '{repositoriesOrError{__typename}}'}).encode(); r = u.urlopen(u.Request('http://127.0.0.1:14107/graphql', data=q, headers={'Content-Type': 'application/json'}), timeout=5); d = json.load(r); t = d.get('data', {}).get('repositoriesOrError', {}).get('__typename'); raise SystemExit(0 if t == 'RepositoryConnection' else 'code location not loaded: %s' % t)
       interval: 15s
       timeout: 5s
       retries: 8
@@ -2819,14 +2843,14 @@ services:
     mem_reservation: 512m
     mem_swappiness: 10
     healthcheck:
-      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). 매번 dagster를 import하므로
-      # (유휴 2.3초, 부하 때 10초를 넘긴다) 짧은 주기·짧은 timeout이면 probe가 겹쳐 쌓인다 — 2026-09-27
-      # n150 load 137의 한 원인. 겹치지 않게 주기를 길게, timeout을 넉넉히 둔다. 끼인 스레드를 알아채는
-      # 지연은 주기가 아니라 DAGSTER_DAEMON_HEARTBEAT_TOLERANCE가 정한다. exec 형식이라 셸 래퍼가 없다.
+      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). 매번 dagster를 import한다(유휴 2.3초,
+      # 부하 때 10초 초과). exec 형식이라 timeout 때 셸 래퍼만 죽고 Python이 고아로 남는 일이 없다 — 2026-09-27
+      # n150에서 그 고아들이 쌓여 load 137을 만들었다. 끼인 스레드는 heartbeat tolerance + 주기 × retries
+      # 안에 unhealthy로 보인다. 그 뒤쪽 합(240초)을 tolerance(300초) 아래로 둔다.
       test: ["CMD", "dagster-daemon", "liveness-check"]
       interval: 120s
       timeout: 60s
-      retries: 5
+      retries: 2
       start_period: 60s
       start_interval: 15s
 
