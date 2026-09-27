@@ -222,3 +222,62 @@ def test_the_frontend_mirror_lists_the_same_key_parts() -> None:
     block = re.search(r"const SENSITIVE_KEY_PARTS = \[(.*?)\];", source, re.DOTALL)
     assert block is not None
     assert tuple(re.findall(r"'([A-Z_]+)'", block.group(1))) == SENSITIVE_KEY_PARTS
+
+
+# --------------------------------------------------------------------------- G-2 적대 리뷰
+
+
+def test_a_key_set_in_both_process_and_env_file_is_scrubbed_in_both_forms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """compose는 프로세스 환경을, 스크러버는 `.env`를 앞세웠다 — 둘이 다르면 한쪽이 빠져나갔다."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("KTDM_DUAL_PASSWORD=env-file-value-1234\n", encoding="utf-8")
+    monkeypatch.setenv("KTDM_DUAL_PASSWORD", "process-value-5678")
+
+    scrubbed = scrub_failure_text("saw process-value-5678 and env-file-value-1234", env_file)
+
+    assert "process-value-5678" not in scrubbed
+    assert "env-file-value-1234" not in scrubbed
+
+
+def test_an_env_file_value_is_scrubbed_in_its_raw_uninterpolated_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """재구축은 `.env`를 보간하지 않은 원문으로 psql·컨테이너에 넘긴다 — 원문 형태도 가린다."""
+
+    monkeypatch.delenv("KTDM_HOLE", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("KTDM_RAW_PASSWORD=pre${KTDM_HOLE}post-9d21\n", encoding="utf-8")
+
+    scrubbed = scrub_failure_text("LINE 1: PASSWORD 'pre${KTDM_HOLE}post-9d21'", env_file)
+
+    assert "post-9d21" not in scrubbed
+
+
+def test_a_cli_action_contract_error_carrying_a_compose_tail_is_scrubbed(
+    planted: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`ComposeCandidateContractError`는 `ValueError`다 — `action`·`ensure`가 문구를 그대로 찍었다."""
+
+    tail = f"compose candidate resolution failed\n--- stderr ---\ninvalid value {_ENV_TOKEN}"
+    with patch.object(
+        cli.docker_service, "control_container", side_effect=ValueError(tail)
+    ):
+        status = cli.main(["action", "kor-travel-map-api", "start"])
+
+    captured = capsys.readouterr()
+    assert status == 2
+    assert "compose candidate resolution failed" in captured.err
+    _assert_scrubbed(captured.out + captured.err)
+
+
+def test_every_cli_exception_print_goes_through_the_scrubber() -> None:
+    """예외 문구를 그대로 찍는 자리가 다시 생기면 새 compose tail이 가리지 않은 채 나간다."""
+
+    source = Path(cli.__file__).read_text(encoding="utf-8")
+
+    assert "print(str(exc)" not in source
+    assert '"detail": str(exc)' not in source
