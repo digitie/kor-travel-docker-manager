@@ -2504,3 +2504,22 @@ def test_a_missing_service_dsn_is_a_pre_claim_rejection(
     result = harness.result
     assert result["status"] == "preflight_rejected"
     assert "ledger-claim" not in harness.host.timeline
+
+
+def test_a_rehearsal_runs_every_pre_claim_step_and_consumes_nothing(harness: _Harness) -> None:
+    """`--rehearse`는 claim 직전에 멈춘다 — claim·block·소비가 없고 receipt는 `rehearsal.json`이다."""
+
+    assert harness.driver.main(MANUAL_FEATURE_UUID and MANAGER_REVISION, harness.output, rehearse=True) == 0
+
+    rehearsal = json.loads((harness.output / "rehearsal.json").read_text(encoding="utf-8"))
+    assert rehearsal["status"] == "rehearsed"
+    assert rehearsal["phase"] == "rehearsed"
+    assert not (harness.output / "result.json").exists()
+    assert not (harness.output / "claimed").exists()
+    timeline = harness.host.timeline
+    assert "ledger-claim" not in timeline
+    # claim 전 단계는 모두 돌았다: 렌더된 topology, fresh-init 파생, Playwright runner 확인.
+    assert "compose:map:config-json" in timeline
+    assert "compose:map:config-json{fresh-init}" in timeline
+    assert "run:playwright-info" in timeline
+    assert harness.claims == []

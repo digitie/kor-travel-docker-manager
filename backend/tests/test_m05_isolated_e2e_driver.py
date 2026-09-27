@@ -1284,8 +1284,8 @@ def test_fixture_uses_only_the_service_role_dsn_and_provider_contract() -> None:
     driver_source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
         encoding="utf-8"
     )
-    fixture_env_start = driver_source.index("_write_env_file(\n            fixture_env,")
-    fixture_env_end = driver_source.index("        # API에는", fixture_env_start)
+    fixture_env_start = driver_source.index("_write_env_file(fixture_env,")
+    fixture_env_end = driver_source.index("\n", fixture_env_start)
     fixture_env = driver_source[fixture_env_start:fixture_env_end]
 
     assert "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN" not in fixture
