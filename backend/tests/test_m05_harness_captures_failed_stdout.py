@@ -1,4 +1,4 @@
-"""실패한 외부 명령의 **stdout**도 증거로 남는지 본다.
+"""실패한 외부 명령의 **stdout**도 실패 텍스트에 남는지 본다.
 
 하네스는 실패 명령의 stderr만 잡았다. 그런데 많은 러너는 진짜 진단을 stdout으로
 낸다 — Playwright는 어느 spec의 어떤 단언이 깨졌는지를 거기 쓰고, stderr에는
@@ -9,15 +9,15 @@ npm의 lifecycle 오류(`command failed`, `code 1`)만 남는다.
 어느 테스트가 왜 깨졌는지는 통째로 사라졌고, 다음 시도는 눈을 가린 채 같은
 1.5시간을 다시 써야 했다.
 
-여기서는 텍스트가 아니라 **동작**을 본다 — 진짜 하위 프로세스를 실패시키고
-증거 leaf를 읽는다.
+ADR-51 잃는 보장 G-3부터 캡처는 항상 켜져 있고, 두 스트림은 가린 실패 텍스트 하나로
+stderr에 간다(launcher가 root 0600 `stderr.log`로 받는다). 여기서는 텍스트가 아니라
+**동작**을 본다 — 진짜 하위 프로세스를 실패시킨다.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import os
-import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -27,7 +27,7 @@ import pytest
 _HARNESS = Path(__file__).resolve().parents[2] / "scripts" / "m05_isolated_e2e.py"
 
 pytestmark = pytest.mark.skipif(
-    not hasattr(os, "getuid"), reason="증거 leaf는 root 소유 POSIX 파일을 요구한다"
+    not hasattr(os, "getuid"), reason="driver는 POSIX 프로세스 모델을 전제한다"
 )
 
 
@@ -36,15 +36,13 @@ def _harness() -> Any:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module._SECRET_ENV_FILE = Path("/nonexistent/m05-driver-test.env")
     return module
 
 
-def test_a_failing_command_carries_its_stdout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`_command`가 실패하면 stdout 바이트가 예외에 실려야 한다."""
+def test_a_failing_command_carries_its_stdout_without_any_flag() -> None:
+    """`_command`가 실패하면 stdout 바이트가 예외에 실려야 한다 — 환경 변수 없이."""
     module = _harness()
-    monkeypatch.setenv(module._FORENSIC_CAPTURE_ENV, "1")
 
     with pytest.raises(module._PhaseError) as raised:
         module._command(
@@ -59,60 +57,45 @@ def test_a_failing_command_carries_its_stdout(
     assert b"the assertion that broke" in error.stdout
 
 
-def test_evidence_leaf_records_both_streams(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """증거 writer가 두 스트림을 같은 규칙으로 남긴다."""
+def test_the_failure_text_carries_both_streams() -> None:
+    """실패 텍스트 하나가 두 스트림을 같은 규칙으로 싣는다."""
     module = _harness()
-    monkeypatch.setenv(module._FORENSIC_CAPTURE_ENV, "1")
 
-    receipt = tmp_path / "failed-thing-command.json"
-    module._write_command_failure_evidence(
-        receipt,
-        returncode=3,
-        stderr=b"npm lifecycle noise",
-        stdout=b"the assertion that broke",
-    )
-    assert receipt.exists()
-    stdout_leaf = receipt.with_suffix(".stdout")
-    stderr_leaf = receipt.with_suffix(".stderr")
-    assert b"the assertion that broke" in stdout_leaf.read_bytes()
-    assert b"npm lifecycle noise" in stderr_leaf.read_bytes()
-    for leaf in (stdout_leaf, stderr_leaf):
-        assert stat.S_IMODE(leaf.lstat().st_mode) == 0o600, leaf
+    with pytest.raises(module._PhaseError) as raised:
+        module._command(
+            sys.executable,
+            "-c",
+            "import sys; print('the assertion that broke');"
+            " print('npm lifecycle noise', file=sys.stderr); sys.exit(3)",
+        )
+    text = module._failure_text(raised.value, progress_phase="m04_attestation")
+
+    assert text.startswith("M05 isolated run failed during m04_attestation")
+    assert "--- stderr (tail) ---\nnpm lifecycle noise" in text
+    assert "--- stdout (tail) ---\nthe assertion that broke" in text
 
 
-def test_forensic_capture_off_writes_neither_stream(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """opt-in 경계는 그대로다 — forensic이 아니면 원문을 남기지 않는다."""
+def test_the_tail_keeps_the_last_line_of_a_huge_output() -> None:
+    """앞 256 KiB가 아니라 끝을 남긴다 — 깨진 단언은 출력의 마지막에 있다."""
     module = _harness()
-    monkeypatch.delenv(module._FORENSIC_CAPTURE_ENV, raising=False)
+    limit = module._OUTPUT_TAIL_LIMIT
 
-    receipt = tmp_path / "failed-thing-command.json"
-    module._write_command_failure_evidence(
-        receipt, returncode=3, stderr=b"noise", stdout=b"detail"
-    )
-    assert receipt.exists()
-    assert not receipt.with_suffix(".stdout").exists()
-    assert not receipt.with_suffix(".stderr").exists()
+    with pytest.raises(module._PhaseError) as raised:
+        module._command(
+            sys.executable,
+            "-c",
+            f"import sys; print('x' * {limit * 2}); print('FAILED spec: the last line'); sys.exit(1)",
+        )
+    stdout = raised.value.stdout
+    assert stdout is not None
+    assert len(stdout) <= limit
+    assert stdout.rstrip().endswith(b"FAILED spec: the last line")
 
 
-def test_evidence_capture_never_turns_a_large_success_into_a_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """증거용 상한은 실패 사유가 아니다.
-
-    forensic 모드에서 stdout을 잡되, 그 상한을 넘겼다고
-    `runtime_command_output_too_large`로 뒤집으면 출력이 큰 성공 명령이 실패한다.
-    """
+def test_a_large_successful_output_is_never_a_failure() -> None:
+    """캡처 상한은 실패 사유가 아니다 — 출력이 큰 성공 명령이 뒤집히면 안 된다."""
     module = _harness()
-    monkeypatch.setenv(module._FORENSIC_CAPTURE_ENV, "1")
-    monkeypatch.setattr(module, "_FORENSIC_CAPTURE_LIMIT", 64)
 
-    # 상한보다 큰 출력을 내고 **성공**하는 명령.
-    module._command(
-        sys.executable,
-        "-c",
-        "print('x' * 4096)",
-    )
+    assert module._command(
+        sys.executable, "-c", f"print('x' * {module._OUTPUT_TAIL_LIMIT * 2})"
+    ) == ""

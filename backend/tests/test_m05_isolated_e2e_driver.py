@@ -37,6 +37,9 @@ def _driver() -> ModuleType:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # 호스트의 Manager `.env`는 비-root가 읽지 못한다 — 테스트는 프로세스 환경과 생성 비밀만으로
+    # 가린다. `.env`를 보는 테스트는 이 값을 직접 바꾼다.
+    module._SECRET_ENV_FILE = Path("/nonexistent/m05-driver-test.env")
     return module
 
 
@@ -376,40 +379,25 @@ def test_rendered_loopback_publish_keeps_only_safe_port_evidence(tmp_path: Path)
     }
 
 
-def test_rendered_loopback_publish_parse_failure_keeps_only_opt_in_bounded_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_rendered_loopback_publish_parse_failure_names_the_shape_not_the_document(
+    tmp_path: Path,
 ) -> None:
-    driver = _driver()
-    safe = tmp_path / "parse.json"
-    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
-        driver._assert_rendered_loopback_tcp_publish(
-            "not-json",
-            service="api",
-            container_port=13701,
-            host_port=31337,
-            parse_failure_evidence_path=safe,
-        )
-    assert json.loads(safe.read_text(encoding="utf-8")) == {
-        "kind": "compose_config_output",
-        "truncated": False,
-        "version": 1,
-    }
-    assert not safe.with_suffix(".stdout").exists()
+    """렌더된 문서는 비밀이 보간된 설정이다 — 크기와 깨진 자리만 말하고 내용은 싣지 않는다."""
 
-    monkeypatch.setenv(driver._FORENSIC_CAPTURE_ENV, "1")
-    forensic = tmp_path / "forensic.json"
-    oversized = "x" * (driver._FORENSIC_CAPTURE_LIMIT + 1)
-    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
+    driver = _driver()
+    rendered = '{"services": {"api": {"environment": {"TOKEN": "interpolated-value-77"}}}}'
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid") as error:
         driver._assert_rendered_loopback_tcp_publish(
-            oversized,
+            rendered,
             service="api",
             container_port=13701,
             host_port=31337,
-            parse_failure_evidence_path=forensic,
         )
-    assert forensic.with_suffix(".stdout").read_bytes() == (
-        b"x" * driver._FORENSIC_CAPTURE_LIMIT
-    )
+
+    diagnostic = error.value.diagnostic or ""
+    assert f"({len(rendered)} chars)" in diagnostic
+    assert "api.ports" in diagnostic
+    assert "interpolated-value-77" not in diagnostic
 
 
 def test_rendered_loopback_publish_evidence_drops_unknown_or_invalid_values(
@@ -847,71 +835,39 @@ def test_root_launcher_checks_registry_before_creating_an_output_leaf() -> None:
         encoding="utf-8"
     )
 
-    assert launcher.index('"$ktdctl" pin verify --json >/dev/null 2>&1') < launcher.index(
+    assert launcher.index('"$ktdctl" pin verify --json >/dev/null;') < launcher.index(
         'install -d -o root -g root -m 0700 "$output_dir"'
     )
 
 
-def test_root_launcher_defaults_to_forensic_capture_with_explicit_opt_out() -> None:
-    """원문 보존이 기본값이다 — 관측 결핍이 후보 예산을 소비했다(감사 I-2).
+def test_root_launcher_has_no_forensic_switch() -> None:
+    """캡처는 항상 켜져 있다 — 끌 스위치도, 환경 변수도 없다(ADR-51 잃는 보장 G-3)."""
 
-    4개 candidate를 태운 `ports: !reset`은 stderr 한 번이면 즉시 보였을 값이었다.
-    보존 대상은 bounded stderr뿐이고 root 0600 leaf를 벗어나지 않으며, 끄는 것은
-    caller environment가 아니라 명시 launcher argument로만 가능하다.
-    """
     launcher = (Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once").read_text(
         encoding="utf-8"
     )
 
-    # 열 0의 대입만 기본값이다 — 들여쓰기된 호환 분기(`  forensic_capture=1`)와
-    # 구분하지 않으면 기본값을 0으로 되돌려도 이 단언이 통과한다.
-    assert "\nforensic_capture=1\n" in launcher, "기본값이 보존이어야 한다"
-    assert "\nforensic_capture=0\n" not in launcher
-    assert '"$1" == "--no-forensic-capture"' in launcher, "명시 opt-out이 있어야 한다"
-    assert "export KTDM_M05_FORENSIC_CAPTURE=1" in launcher
-    assert "unset KTDM_M05_FORENSIC_CAPTURE" in launcher
-    assert '"${launcher_arguments[@]}"' in launcher
+    assert "KTDM_M05_FORENSIC_CAPTURE" not in launcher
+    assert "--no-forensic-capture" not in launcher
 
 
-def test_root_launcher_forensic_default_is_behavioral_not_textual() -> None:
-    """launcher를 실제 실행(bash -x)해 기본값 대입을 트레이스로 확인한다(R2-S9).
+def test_root_launcher_rejects_the_retired_forensic_flag_as_usage() -> None:
+    """옛 플래그를 넘기면 조용히 무시하지 않고 usage로 멈춘다(root 검사보다 먼저)."""
 
-    문구 단언은 주석/데드 브랜치로 우회된다 — 여기서는 non-root 실행의 실제
-    트레이스에서 `forensic_capture=1`(기본) / `=0`(--no-forensic-capture)을 본다.
-    non-root라서 launcher는 root 검사에서 exit 2로 멈춘다(driver 실행 없음).
-    """
-    if os.name != "posix" or os.geteuid() == 0:
-        pytest.skip("non-root POSIX에서만 안전하게 실행할 수 있다")
+    if os.name != "posix":
+        pytest.skip("POSIX bash로만 실행할 수 있다")
     launcher_path = Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once"
 
-    default_run = subprocess.run(
-        ["bash", "-x", str(launcher_path), "a" * 40, "/nonexistent-m05-out"],
+    run = subprocess.run(
+        ["bash", str(launcher_path), "--forensic-capture", "a" * 40, "/nonexistent-m05-out"],
         capture_output=True,
         text=True,
         timeout=30,
         check=False,
     )
-    assert default_run.returncode == 2
-    assert "must run as root" in default_run.stderr
-    assert "+ forensic_capture=1" in default_run.stderr
-    assert "+ forensic_capture=0" not in default_run.stderr
 
-    opt_out_run = subprocess.run(
-        [
-            "bash",
-            "-x",
-            str(launcher_path),
-            "--no-forensic-capture",
-            "a" * 40,
-            "/nonexistent-m05-out",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-    assert opt_out_run.returncode == 2
-    assert "+ forensic_capture=0" in opt_out_run.stderr
+    assert run.returncode == 2
+    assert "usage: run-m05-isolated-e2e-once EXPECTED_MANAGER_SOURCE_REVISION" in run.stderr
 
 
 def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_unavailable() -> None:
@@ -927,8 +883,14 @@ def test_root_launcher_blocks_and_writes_a_fixed_envelope_when_driver_result_is_
     assert "launcher_safe_result_unavailable" not in launcher
     assert '"$ktdctl" pin block-execution' in launcher
     assert "launcher-result.json" in launcher
-    assert ">/dev/null 2>&1" in launcher[launcher.index("m05_isolated_e2e.py") :]
-    assert "stderr.log" not in launcher[launcher.index("driver_status=") :]
+    driver_run = launcher[launcher.index('install -d -o root -g root -m 0700 "$output_dir"') :]
+    # stderr.log는 driver보다 먼저 root 0600으로 만들고, driver는 이어 쓴다 — 기본 umask로
+    # 만들어진 0644 파일이 한순간도 없다.
+    assert driver_run.index(
+        'install -o root -g root -m 0600 /dev/null "$output_dir/stderr.log"'
+    ) < driver_run.index('2>>"$output_dir/stderr.log"')
+    # launcher 뒤쪽은 stderr.log를 재시도 근거로 읽지 않는다.
+    assert '"$output_dir/stderr.log"' not in launcher[launcher.index("driver_status=") :]
     block_start = launcher.index("has_unconditional_terminal_execution_block() {")
     block_end = launcher.index('install -d -o root -g root -m 0700 "$output_dir"')
     block_check = launcher[block_start:block_end]
@@ -1144,317 +1106,175 @@ def test_compose_records_the_supplied_fixed_failure_phase(
     assert error.value.diagnostic is None
 
 
-def test_compose_preserves_only_the_fixed_exit_diagnostic(
+class _FakeProcess:
+    """`subprocess.Popen` 대역. 두 스트림은 바이트 버퍼다."""
+
+    def __init__(self, *, stdout: bytes = b"", stderr: bytes = b"", returncode: int = 0) -> None:
+        self.stdout = io.BytesIO(stdout)
+        self.stderr = io.BytesIO(stderr)
+        self._returncode = returncode
+
+    def wait(self) -> int:
+        return self._returncode
+
+
+def _popen_returning(
+    monkeypatch: pytest.MonkeyPatch, driver: ModuleType, **process: object
+) -> list[dict[str, object]]:
+    calls: list[dict[str, object]] = []
+
+    def popen(_args: object, **kwargs: object) -> _FakeProcess:
+        calls.append(kwargs)
+        return _FakeProcess(**process)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(driver.subprocess, "Popen", popen)
+    return calls
+
+
+def _compose_config(driver: ModuleType, tmp_path: Path) -> str:
+    return driver._compose(
+        root=tmp_path,
+        project="m05i-map",
+        env_file=tmp_path / "map.env",
+        files=(tmp_path / "docker-compose.yml",),
+        arguments=("config", "--format", "json"),
+        capture=True,
+        capture_output_limit=driver._COMPOSE_CONFIG_OUTPUT_LIMIT,
+        failure_phase="runtime_loopback_publish_config_invalid",
+    )
+
+
+def test_a_failed_command_always_carries_both_streams(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """플래그 없이도 실패한 명령의 stderr와 stdout 끝부분이 남는다(ADR-51 잃는 보장 G-3).
+
+    e2e22는 Playwright가 stdout에 낸 깨진 단언을 버리고 "UI 명령이 1로 끝났다"만 남겼다.
+    """
+
     driver = _driver()
-
-    def fail_command(*_args: str, **_kwargs: object) -> str:
-        raise driver._PhaseError(
-            "runtime_command_failed", diagnostic="pre_root_state_invalid"
-        )
-
-    monkeypatch.setattr(driver, "_command", fail_command)
-
-    with pytest.raises(driver._PhaseError, match="map_fresh_init_failed") as error:
-        driver._compose(
-            root=tmp_path,
-            project="m05i-map",
-            env_file=tmp_path / "map.env",
-            files=(tmp_path / "docker-compose.yml",),
-            arguments=("run", "db-application-schema-fresh-300"),
-            failure_phase="map_fresh_init_failed",
-            failure_exit_diagnostics={45: "pre_root_state_invalid"},
-        )
-
-    assert error.value.diagnostic == "pre_root_state_invalid"
-
-
-def test_command_accepts_only_a_declared_failure_exit_diagnostic(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    driver = _driver()
-
-    monkeypatch.setattr(
-        driver.subprocess,
-        "run",
-        lambda args, **_kwargs: subprocess.CompletedProcess(args, 45),
+    calls = _popen_returning(
+        monkeypatch,
+        driver,
+        stdout=b"1 failed: m05 live spec",
+        stderr=b"npm ERR! lifecycle",
+        returncode=1,
     )
 
     with pytest.raises(driver._PhaseError, match="runtime_command_failed") as error:
-        driver._command(
-            "/usr/bin/false", failure_exit_diagnostics={45: "pre_root_state_invalid"}
-        )
+        driver._command("/usr/bin/npx", "playwright", "test", cwd=tmp_path)
 
-    assert error.value.diagnostic == "pre_root_state_invalid"
+    assert error.value.returncode == 1
+    assert error.value.stderr == b"npm ERR! lifecycle"
+    assert error.value.stdout == b"1 failed: m05 live spec"
+    assert calls[0]["stdout"] is subprocess.PIPE
+    assert calls[0]["stderr"] is subprocess.PIPE
 
 
-def test_compose_config_failure_evidence_is_safe_by_default_and_forensic_on_opt_in(
+def test_a_captured_data_stdout_is_not_carried_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """호출자가 받는 stdout은 데이터(비밀이 보간된 compose config)다 — 실패에 싣지 않는다."""
+
     driver = _driver()
-
-    monkeypatch.setattr(
-        driver.subprocess,
-        "run",
-        lambda args, **_kwargs: subprocess.CompletedProcess(
-            args, 2, stdout="", stderr="exact compose parser failure\n"
-        ),
+    _popen_returning(
+        monkeypatch,
+        driver,
+        stdout=b'{"services": {"api": {"environment": {"P": "interpolated"}}}}',
+        stderr=b"required variable KTDM_X is missing a value",
+        returncode=2,
     )
-    safe = tmp_path / "safe.json"
-    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
-        driver._compose(
-            root=tmp_path,
-            project="m05i-map",
-            env_file=tmp_path / "map.env",
-            files=(tmp_path / "docker-compose.yml",),
-            arguments=("config", "--format", "json"),
-            failure_phase="runtime_loopback_publish_config_invalid",
-            failure_evidence_path=safe,
-        )
-    assert json.loads(safe.read_text(encoding="utf-8")) == {
-        "kind": "compose_config",
-        "returncode": 2,
-        "version": 1,
-    }
-    assert not safe.with_suffix(".stderr").exists()
 
-    monkeypatch.setenv(driver._FORENSIC_CAPTURE_ENV, "1")
-    oversized_stderr = b"x" * (driver._FORENSIC_CAPTURE_LIMIT + 1)
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid") as error:
+        _compose_config(driver, tmp_path)
 
-    class FailedCompose:
-        stdout = io.BytesIO(b"")
-        stderr = io.BytesIO(oversized_stderr)
-
-        def wait(self) -> int:
-            return 2
-
-    monkeypatch.setattr(driver.subprocess, "Popen", lambda *_args, **_kwargs: FailedCompose())
-    forensic = tmp_path / "forensic.json"
-    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
-        driver._compose(
-            root=tmp_path,
-            project="m05i-map",
-            env_file=tmp_path / "map.env",
-            files=(tmp_path / "docker-compose.yml",),
-            arguments=("config", "--format", "json"),
-            failure_phase="runtime_loopback_publish_config_invalid",
-            failure_evidence_path=forensic,
-        )
-    assert forensic.with_suffix(".stderr").read_bytes() == b"x" * driver._FORENSIC_CAPTURE_LIMIT
+    assert error.value.returncode == 2
+    assert error.value.stderr == b"required variable KTDM_X is missing a value"
+    assert error.value.stdout is None
 
 
 def test_compose_config_output_is_stream_bounded_and_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """넘친 설정 문서는 크기만 말하고 내용은 남기지 않는다."""
+
     driver = _driver()
-    oversized_stdout = b"x" * (driver._COMPOSE_CONFIG_OUTPUT_LIMIT + 1)
-
-    class OversizedCompose:
-        def __init__(self) -> None:
-            self.stdout = io.BytesIO(oversized_stdout)
-
-        def wait(self) -> int:
-            return 0
-
-    monkeypatch.setattr(
-        driver.subprocess, "Popen", lambda *_args, **_kwargs: OversizedCompose()
-    )
-    safe = tmp_path / "oversized.json"
-    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
-        driver._compose(
-            root=tmp_path,
-            project="m05i-map",
-            env_file=tmp_path / "map.env",
-            files=(tmp_path / "docker-compose.yml",),
-            arguments=("config", "--format", "json"),
-            capture=True,
-            failure_phase="runtime_loopback_publish_config_invalid",
-            output_evidence_path=safe,
-        )
-    assert json.loads(safe.read_text(encoding="utf-8")) == {
-        "kind": "compose_config_output",
-        "truncated": True,
-        "version": 1,
-    }
-    assert not safe.with_suffix(".stdout").exists()
-
-    monkeypatch.setenv(driver._FORENSIC_CAPTURE_ENV, "1")
-    forensic = tmp_path / "oversized-forensic.json"
-    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
-        driver._compose(
-            root=tmp_path,
-            project="m05i-map",
-            env_file=tmp_path / "map.env",
-            files=(tmp_path / "docker-compose.yml",),
-            arguments=("config", "--format", "json"),
-            capture=True,
-            failure_phase="runtime_loopback_publish_config_invalid",
-            output_evidence_path=forensic,
-        )
-    assert forensic.with_suffix(".stdout").read_bytes() == (
-        b"x" * driver._FORENSIC_CAPTURE_LIMIT
+    _popen_returning(
+        monkeypatch, driver, stdout=b"x" * (driver._COMPOSE_CONFIG_OUTPUT_LIMIT + 1)
     )
 
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid") as error:
+        _compose_config(driver, tmp_path)
 
-def test_nonzero_compose_config_keeps_exit_evidence_when_stdout_is_oversized(
+    assert error.value.stdout_truncated is True
+    assert error.value.stdout is None
+    assert str(driver._COMPOSE_CONFIG_OUTPUT_LIMIT) in (error.value.diagnostic or "")
+
+
+def test_a_failed_compose_config_reports_its_exit_even_when_stdout_is_oversized(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     driver = _driver()
-
-    class FailedOversizedCompose:
-        def __init__(self) -> None:
-            self.stdout = io.BytesIO(b"x" * (driver._COMPOSE_CONFIG_OUTPUT_LIMIT + 1))
-
-        def wait(self) -> int:
-            return 2
-
-    monkeypatch.setattr(
-        driver.subprocess, "Popen", lambda *_args, **_kwargs: FailedOversizedCompose()
-    )
-    command_evidence = tmp_path / "command.json"
-    output_evidence = tmp_path / "output.json"
-    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid"):
-        driver._compose(
-            root=tmp_path,
-            project="m05i-map",
-            env_file=tmp_path / "map.env",
-            files=(tmp_path / "docker-compose.yml",),
-            arguments=("config", "--format", "json"),
-            capture=True,
-            failure_phase="runtime_loopback_publish_config_invalid",
-            failure_evidence_path=command_evidence,
-            output_evidence_path=output_evidence,
-        )
-    assert json.loads(command_evidence.read_text(encoding="utf-8")) == {
-        "kind": "compose_config",
-        "returncode": 2,
-        "version": 1,
-    }
-    assert not output_evidence.exists()
-
-
-def test_generic_command_failure_evidence_is_safe_by_default_and_bounded_on_opt_in(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    driver = _driver()
-    safe = tmp_path / "command.json"
-    driver._write_command_failure_evidence(
-        safe, returncode=17, stderr=b"private command error"
-    )
-    assert json.loads(safe.read_text(encoding="utf-8")) == {
-        "kind": "runtime_command",
-        "returncode": 17,
-        "version": 1,
-    }
-    assert not safe.with_suffix(".stderr").exists()
-
-    monkeypatch.setenv(driver._FORENSIC_CAPTURE_ENV, "1")
-    forensic = tmp_path / "command-forensic.json"
-    driver._write_command_failure_evidence(
-        forensic,
-        returncode=17,
-        stderr=b"x" * (driver._FORENSIC_CAPTURE_LIMIT + 1),
-    )
-    assert forensic.with_suffix(".stderr").read_bytes() == (
-        b"x" * driver._FORENSIC_CAPTURE_LIMIT
-    )
-
-
-def test_forensic_capture_scrubs_raw_secret_values(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """opt-in 캡처 leaf에도 raw 비밀값은 남지 않는다(R1-S9 content-scrub).
-
-    자식 프로세스가 비밀값을 stderr/stdout에 에코해도 _RAW_ENV_NAMES의 현재
-    값은 마커로 치환된다. 크기 제한은 총량 방어일 뿐 내용 방어가 아니다.
-    """
-    driver = _driver()
-    secret = "raw-secret-value-0123456789abcdef"
-    monkeypatch.setenv("M05_PINVI_PASSWORD", secret)
-    monkeypatch.setenv(driver._FORENSIC_CAPTURE_ENV, "1")
-
-    stderr_leaf = tmp_path / "command.json"
-    driver._write_command_failure_evidence(
-        stderr_leaf,
-        returncode=17,
-        stderr=b"login failed for " + secret.encode() + b" retrying",
-    )
-    captured = stderr_leaf.with_suffix(".stderr").read_bytes()
-    assert secret.encode() not in captured
-    assert b"[scrubbed:M05_PINVI_PASSWORD]" in captured
-
-    stdout_leaf = tmp_path / "compose-output.json"
-    driver._write_compose_output_evidence(
-        stdout_leaf, output="services: {password: " + secret + "}"
-    )
-    captured_out = stdout_leaf.with_suffix(".stdout").read_bytes()
-    assert secret.encode() not in captured_out
-    assert b"[scrubbed:M05_PINVI_PASSWORD]" in captured_out
-
-    # 8바이트 미만 값은 우연 일치 훼손을 피하기 위해 치환하지 않는다.
-    monkeypatch.setenv("M05_PINVI_EMAIL", "a@b.c")
-    tiny = tmp_path / "tiny.json"
-    driver._write_command_failure_evidence(tiny, returncode=3, stderr=b"a@b.c seen")
-    assert tiny.with_suffix(".stderr").read_bytes() == b"a@b.c seen"
-
-
-def test_map_fresh_diagnostic_runner_uses_exit_codes_without_output() -> None:
-    driver = _driver()
-
-    runner = driver._map_fresh_init_diagnostic_runner()
-    entrypoint = driver._map_fresh_init_diagnostic_entrypoint()
-
-    assert "print(" not in runner
-    assert "sys.stderr" not in runner
-    assert "FreshMigrationError" in runner
-    assert "RuntimePrivilegeReconciliationError" in runner
-    assert "SQLAlchemyError" in runner
-    assert "CommandError" in runner
-    assert "baseline_reference_invalid" not in runner
-    assert "fresh 300 destination reference manifest is invalid" in runner
-    assert "raise SystemExit" in runner
-    assert "base64.b64decode" in entrypoint
-
-
-def _map_fresh_runner_exit_code(
-    driver: ModuleType, monkeypatch: pytest.MonkeyPatch, error: BaseException
-) -> int:
-    class FreshMigrationError(RuntimeError):
-        pass
-
-    async def migrate() -> None:
-        raise error
-
-    fake_runpy = ModuleType("runpy")
-    fake_runpy.run_path = lambda *_args, **_kwargs: {
-        "FreshMigrationError": FreshMigrationError,
-        "_migrate": migrate,
-        "_parse_args": lambda _arguments: ("migrate", None),
-    }
-    monkeypatch.setitem(sys.modules, "runpy", fake_runpy)
-
-    with pytest.raises(SystemExit) as stopped:
-        exec(compile(driver._map_fresh_init_diagnostic_runner(), "<runner>", "exec"))
-
-    assert isinstance(stopped.value.code, int)
-    return stopped.value.code
-
-
-def test_map_fresh_diagnostic_runner_maps_exact_prefix_and_unknown_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    driver = _driver()
-
-    assert _map_fresh_runner_exit_code(
-        driver,
+    _popen_returning(
         monkeypatch,
-        RuntimeError("fresh 300 destination reference manifest is invalid"),
-    ) == 51
-    assert _map_fresh_runner_exit_code(
-        driver, monkeypatch, RuntimeError("unlisted Map runtime failure")
-    ) == 48
-    assert _map_fresh_runner_exit_code(driver, monkeypatch, ValueError("ignored")) == 127
+        driver,
+        stdout=b"x" * (driver._COMPOSE_CONFIG_OUTPUT_LIMIT + 1),
+        returncode=2,
+    )
+
+    with pytest.raises(driver._PhaseError, match="runtime_loopback_publish_config_invalid") as error:
+        _compose_config(driver, tmp_path)
+
+    assert error.value.returncode == 2
+    assert error.value.stdout_truncated is False
+
+
+def test_stderr_keeps_the_end_and_drops_the_cut_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    """원인은 대개 마지막 줄이다 — 앞 256 KiB가 아니라 끝을 남기고, 잘린 첫 줄은 버린다."""
+
+    driver = _driver()
+    _popen_returning(
+        monkeypatch,
+        driver,
+        stderr=b"first line\n" + b"x" * driver._OUTPUT_TAIL_LIMIT + b"\nlast line: the cause",
+        returncode=1,
+    )
+
+    with pytest.raises(driver._PhaseError) as error:
+        driver._command("/usr/bin/false")
+
+    assert error.value.stderr == b"last line: the cause"
+
+
+def test_a_large_successful_output_is_not_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """회귀 가드: 캡처가 항상 켜진 뒤에도 끝부분 상한은 실패 사유가 아니다."""
+
+    driver = _driver()
+    _popen_returning(monkeypatch, driver, stdout=b"y" * (driver._OUTPUT_TAIL_LIMIT * 2))
+
+    assert driver._command("/usr/bin/true") == ""
+
+
+def test_generated_secrets_register_themselves_and_are_scrubbed() -> None:
+    """목록이 아니라 생성에 결박한다 — 옛 레지스트리는 이 실행이 만든 비밀 열한 개를 놓쳤다."""
+
+    driver = _driver()
+    first, second = driver._random_secret(), driver._random_secret()
+
+    scrubbed = driver._scrub(f"login failed for {first}; dsn postgresql://u:{second}@h/db")
+
+    assert first not in scrubbed
+    assert second not in scrubbed
+    assert "login failed for" in scrubbed
+
+
+def test_the_driver_scrubs_manager_env_secrets(tmp_path: Path) -> None:
+    driver = _driver()
+    env_file = tmp_path / ".env"
+    env_file.write_text("KOR_TRAVEL_MAP_API_SERVICE_TOKEN=manager-env-token-4411\n", encoding="utf-8")
+    driver._SECRET_ENV_FILE = env_file
+
+    assert "manager-env-token-4411" not in driver._scrub("saw manager-env-token-4411")
 
 
 def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:
@@ -1464,7 +1284,7 @@ def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:
     driver_source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
         encoding="utf-8"
     )
-    fixture_env_start = driver_source.index("_write_private_text(\n            fixture_env,")
+    fixture_env_start = driver_source.index("_write_env_file(\n            fixture_env,")
     fixture_env_end = driver_source.index("        # API에는", fixture_env_start)
     fixture_env = driver_source[fixture_env_start:fixture_env_end]
 
@@ -1475,16 +1295,6 @@ def test_fixture_uses_only_dagster_runtime_dsn_and_provider_contract() -> None:
     assert "AsyncKorTravelMapClient" in fixture
     assert "SET LOCAL ROLE" not in fixture
     assert "INSERT INTO" not in fixture
-
-
-def test_pinvi_runtime_command_uses_bounded_generic_failure_evidence() -> None:
-    source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert 'for action in ("build", "up"):' in source
-    assert 'runtime / f"pinvi-runtime-{action}-error.json"' in source
-    assert "_write_command_failure_evidence(" in source
 
 
 def test_manager_does_not_require_pinvi_crypto_dependency() -> None:
@@ -1554,7 +1364,7 @@ def test_isolated_pinvi_api_uses_the_private_map_network_not_host_loopback() -> 
     source = (Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py").read_text(
         encoding="utf-8"
     )
-    pinvi_env_start = source.index("_write_private_text(\n            pinvi_env,")
+    pinvi_env_start = source.index("_write_env_file(\n            pinvi_env,")
     pinvi_env_end = source.index("        pinvi_override_lines =", pinvi_env_start)
     pinvi_env = source[pinvi_env_start:pinvi_env_end]
     override_start = source.index("        pinvi_override_lines =", pinvi_env_end)
@@ -1747,6 +1557,9 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
         driver, "_assert_rendered_loopback_tcp_publish", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
+        driver, "_assert_rendered_service_present", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
         driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False, False)
     )
     monkeypatch.setattr(
@@ -1771,10 +1584,7 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
         ("map", tmp_path / "runtime" / "map-src", ("b" * 40,)),
         ("pinvi", tmp_path / "runtime" / "pinvi-src", ()),
     ]
-    assert isinstance(compose_arguments["failure_evidence_path"], Path)
-    assert compose_arguments["failure_evidence_path"].name == (
-        "rendered-loopback-publish-error.json"
-    )
+    assert compose_arguments["capture_output_limit"] == driver._COMPOSE_CONFIG_OUTPUT_LIMIT
 
 
 def test_manager_writes_and_passes_the_private_pinvi_admission_not_an_environment_marker() -> None:
@@ -1860,8 +1670,8 @@ def test_driver_result_keys_match_the_launcher_expected_keys() -> None:
         for line in base_block.splitlines()
         if line.strip().startswith('"') and '":' in line
     }
-    # 조건부 키: map_fresh_init_reason(진단), result_hashes(passed 3종).
-    assert 'result["map_fresh_init_reason"]' in driver_source
+    # 조건부 키는 result_hashes(passed 3종)뿐이다. 진단은 receipt가 아니라 stderr.log에 간다.
+    assert 'result["map_fresh_init_reason"]' not in driver_source
 
     base_open = launcher.index("expected_keys = {")
     launcher_base = launcher[base_open : launcher.index("}", base_open) + 1]
@@ -1877,9 +1687,8 @@ def test_driver_result_keys_match_the_launcher_expected_keys() -> None:
 def test_compose_failure_phase_forwards_command_stderr_and_returncode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """failure_phase 재-fail이 stderr/returncode를 버리면 forensic 일반 증거가
-    정확히 가장 실패 확률 높은 compose 경로(postgres/fresh-init)에서 침묵한다
-    (적대 리뷰 major)."""
+    """failure_phase 재-fail이 stderr/returncode를 버리면 실패 텍스트가 정확히 가장 실패
+    확률 높은 compose 경로(postgres/fresh-init)에서 침묵한다(적대 리뷰 major)."""
 
     driver = _driver()
 
@@ -1903,35 +1712,16 @@ def test_compose_failure_phase_forwards_command_stderr_and_returncode(
     assert caught.value.stderr == b"compose boom"
 
 
-def test_forensic_mode_captures_stderr_without_per_call_opt_in(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """forensic env가 켜지면 opt-in 없는 _command 실패도 stderr를 싣는다."""
+def test_a_real_failing_command_leaves_its_stderr_without_any_flag() -> None:
+    """실제 프로세스로 본다 — 환경 변수 없이 opt-in 없는 _command 실패도 stderr를 싣는다."""
 
     driver = _driver()
-    monkeypatch.setenv("KTDM_M05_FORENSIC_CAPTURE", "1")
     with pytest.raises(driver._PhaseError) as caught:
         driver._command("/usr/bin/bash", "-c", "echo boom-evidence >&2; exit 3")
     assert caught.value.phase == "runtime_command_failed"
     assert caught.value.returncode == 3
     assert caught.value.stderr is not None
     assert b"boom-evidence" in caught.value.stderr
-
-
-def test_scrub_registry_covers_env_kwarg_secrets(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """os.environ에 없는 env-kwarg 비밀도 레지스트리 경유로 scrub된다
-    (적대 리뷰: environ 기반 scrub은 프로덕션에서 no-op였다)."""
-
-    driver = _driver()
-    secret = "registry-secret-0123456789abcdef"
-    monkeypatch.delenv("M05_PINVI_PASSWORD", raising=False)
-    monkeypatch.setattr(driver, "_FORENSIC_SCRUB_VALUES", {}, raising=True)
-    driver._register_forensic_scrub_environment({"M05_PINVI_PASSWORD": secret})
-    scrubbed = driver._scrub_forensic_bytes(b"prefix " + secret.encode() + b" suffix")
-    assert secret.encode() not in scrubbed
-    assert b"[scrubbed:M05_PINVI_PASSWORD]" in scrubbed
 
 
 def test_rendered_service_images_use_explicit_image_or_compose_default(
@@ -2043,59 +1833,114 @@ def test_compose_model_profiles_are_derived_not_hardcoded(
     assert 'pinvi_files, ("etl",)' not in source
     assert source.count("_compose_model_profiles(") >= 3
 
-def _exception_sink_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, forensic: bool
-) -> Path:
-    driver = _driver()
-    if forensic:
-        monkeypatch.setenv("KTDM_M05_FORENSIC_CAPTURE", "1")
-    else:
-        monkeypatch.delenv("KTDM_M05_FORENSIC_CAPTURE", raising=False)
-    monkeypatch.setattr(
-        driver,
-        "_validate_trusted_release",
-        lambda _expected: (_ for _ in ()).throw(ValueError("boom-ordinary")),
-    )
+def _failing_main(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: BaseException,
+    driver: ModuleType | None = None,
+) -> ModuleType:
+    # 예외를 만든 driver와 같은 모듈이어야 한다 — 새로 로드하면 `_PhaseError`가 다른 클래스다.
+    driver = driver or _driver()
+
+    def refuse(_expected: str) -> None:
+        raise error
+
+    monkeypatch.setattr(driver, "_validate_trusted_release", refuse)
     monkeypatch.setattr(
         driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False, False)
     )
-    monkeypatch.setattr(
-        driver, "_block_terminal_m05_execution", lambda *_a, **_k: True
-    )
+    monkeypatch.setattr(driver, "_block_terminal_m05_execution", lambda *_a, **_k: True)
     assert driver.main("a" * 40, tmp_path) == 1
-    return tmp_path / "failed-admission-exception.txt"
+    return driver
 
 
-def test_ordinary_exception_leaves_forensic_traceback_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_an_ordinary_exception_leaves_one_scrubbed_traceback_on_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """e2e9 클래스: 익명 ordinary exception도 forensic leaf에 traceback을 남긴다.
+    """e2e9 클래스: 익명 ordinary exception도 원인을 남긴다 — 플래그 없이, 가린 채로.
 
-    파일명은 raw phase가 아니라 public phase 매핑이고, receipt에는 여전히
-    phase만 실린다."""
+    receipt에는 여전히 phase만 실리고, 증거 파일은 따로 없다.
+    """
 
-    evidence = _exception_sink_run(tmp_path, monkeypatch, forensic=True)
-    assert evidence.exists()
-    text = evidence.read_bytes()
-    assert b"boom-ordinary" in text
-    assert b"Traceback" in text
+    monkeypatch.setenv("KTDM_TEST_M05_PASSWORD", "process-secret-9921")
+    _failing_main(tmp_path, monkeypatch, ValueError("boom-ordinary near process-secret-9921"))
+
+    err = capsys.readouterr().err
+    assert "M05 isolated run failed during admission" in err
+    assert "Traceback" in err
+    assert "ValueError: boom-ordinary near" in err
+    assert "process-secret-9921" not in err
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
     assert receipt["phase"] == "admission"
     assert "traceback" not in json.dumps(receipt).lower()
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["result.json"]
 
 
-def test_ordinary_exception_without_forensic_leaves_no_traceback_leaf(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_phase_error_raised_while_handling_another_keeps_both_causes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    evidence = _exception_sink_run(tmp_path, monkeypatch, forensic=False)
-    assert not evidence.exists()
+    """`except` 안에서 난 _PhaseError도 원래 예외 문구가 남아야 한다(`__context__`)."""
+
+    driver = _driver()
+    try:
+        raise OSError("original cause: disk quota exceeded")
+    except OSError:
+        try:
+            driver._fail("runtime_setup_workspace", diagnostic="workspace could not be created")
+        except driver._PhaseError as caught:
+            error = caught
+    _failing_main(tmp_path, monkeypatch, error, driver)
+
+    err = capsys.readouterr().err
+    assert "phase: runtime_setup_workspace" in err
+    assert "diagnostic: workspace could not be created" in err
+    assert "original cause: disk quota exceeded" in err
 
 
-def test_traceback_evidence_write_failure_does_not_change_the_receipt(
+def test_a_failed_command_text_carries_both_stream_tails_and_hides_generated_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    driver = _driver()
+    secret = driver._random_secret()
+    error = driver._PhaseError(
+        "map_application_start_failed",
+        returncode=1,
+        stderr=f"container api exited: bad password {secret}".encode(),
+        stdout=b"alembic: Can't locate revision 0412",
+    )
+
+    def refuse(_expected: str) -> None:
+        raise error
+
+    monkeypatch.setattr(driver, "_validate_trusted_release", refuse)
+    monkeypatch.setattr(
+        driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False, False)
+    )
+    monkeypatch.setattr(driver, "_block_terminal_m05_execution", lambda *_a, **_k: True)
+    assert driver.main("a" * 40, tmp_path) == 1
+
+    err = capsys.readouterr().err
+    assert "returncode: 1" in err
+    assert "--- stderr (tail) ---\ncontainer api exited: bad password <redacted>" in err
+    assert "--- stdout (tail) ---\nalembic: Can't locate revision 0412" in err
+    assert secret not in err
+
+
+def test_a_failure_text_that_cannot_be_written_does_not_change_the_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     driver = _driver()
-    monkeypatch.setenv("KTDM_M05_FORENSIC_CAPTURE", "1")
+
+    def broken_scrub(_text: str) -> str:
+        raise OSError("stderr is gone")
+
+    monkeypatch.setattr(driver, "_scrub", broken_scrub)
     monkeypatch.setattr(
         driver,
         "_validate_trusted_release",
@@ -2104,20 +1949,8 @@ def test_traceback_evidence_write_failure_does_not_change_the_receipt(
     monkeypatch.setattr(
         driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False, False)
     )
-    monkeypatch.setattr(
-        driver, "_block_terminal_m05_execution", lambda *_a, **_k: True
-    )
-    original_writer = driver._write_private_bytes
-
-    def failing_evidence_writer(path: Path, raw: bytes) -> None:
-        # traceback leaf 기록만 실패시키고 receipt(result.json) 기록은 살린다.
-        if path.name.endswith("-exception.txt"):
-            raise OSError("disk")
-        original_writer(path, raw)
-
-    monkeypatch.setattr(driver, "_write_private_bytes", failing_evidence_writer)
+    monkeypatch.setattr(driver, "_block_terminal_m05_execution", lambda *_a, **_k: True)
     assert driver.main("a" * 40, tmp_path) == 1
-    assert not (tmp_path / "failed-admission-exception.txt").exists()
     receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
     assert receipt["phase"] == "admission"
 
@@ -2346,34 +2179,6 @@ def test_free_form_diagnostic_is_omitted_from_the_receipt(
     assert "map_fresh_init_reason" not in receipt
     assert receipt["phase"] == "source_materialization"
     assert _validate_receipt(result_path, driver_status=1) == 4
-
-
-def test_fresh_init_reason_is_only_carried_for_a_fresh_init_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """어휘 안의 단어라도 fresh-init 실패가 아니면 싣지 않는다.
-
-    diagnostic은 _command/_compose의 **범용** 채널이라, 다른 호출부가 겹치는
-    단어를 쓰는 exit map을 넘기는 순간 무관한 실패에 fresh-init 사유가 붙는다
-    (적대 리뷰 MAJOR-2)."""
-
-    driver = _driver()
-    monkeypatch.setattr(
-        driver,
-        "_validate_trusted_release",
-        lambda _expected: (_ for _ in ()).throw(
-            driver._PhaseError("source_materialization", diagnostic="alembic_command_failed")
-        ),
-    )
-    monkeypatch.setattr(
-        driver,
-        "_block_terminal_m05_execution",
-        lambda *_a, **_k: pytest.fail("preclaim failure must not block execution"),
-    )
-    assert driver.main("a" * 40, tmp_path) == 1
-
-    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
-    assert "map_fresh_init_reason" not in receipt
 
 
 _LAUNCHER_PATH = Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once"
@@ -2827,6 +2632,7 @@ def _rotation_map_blobs(
     class _Result:
         returncode = 0 if readable else 128
         stdout = _ROTATION_MAP_BLOB if readable else b""
+        stderr = b"" if readable else b"fatal: path 'openapi.json' does not exist"
 
     class _Subprocess:
         PIPE = -1
@@ -2953,6 +2759,8 @@ def test_rotation_preflight_refuses_v2_when_the_target_map_surface_is_unreadable
 
     assert status == 1
     assert "unreadable" in out
+    # git이 말한 이유를 같은 줄에 싣는다(ADR-51 잃는 보장 G-3) — 예전에는 stderr를 버렸다.
+    assert "does not exist" in out
 
 
 def test_rotation_preflight_refuses_v2_with_a_non_sha256_surface_digest(
@@ -3411,11 +3219,9 @@ def test_verify_leaf_recomputes_the_hash_chain(
     assert driver.verify_leaf(leaf) == 1
     assert "runtime/m05/attestation.json" in capsys.readouterr().out
 
-def test_pair_failures_carry_a_closed_vocabulary_diagnostic() -> None:
-    """`pair_contract_invalid` 15곳이 전부 진단 없이 같은 문자열만 냈다.
-
-    2026-09-02에 그 때문에 실패 지점을 traceback으로 역추적해야 했다. 진단은
-    닫힌 어휘여야 한다 — 자유 문자열을 열면 호스트 상태가 새는 경로가 된다.
+def test_every_pair_failure_carries_a_diagnostic() -> None:
+    """`pair_contract_invalid`는 전부 이유를 싣는다 — 2026-09-02에 진단 없는 같은 문자열 15곳을
+    traceback으로 역추적했다. 닫힌 어휘는 ADR-51 잃는 보장 G-3에서 걷었다(가림은 출력 경계가 한다).
     """
 
     import re
@@ -3425,66 +3231,54 @@ def test_pair_failures_carry_a_closed_vocabulary_diagnostic() -> None:
         Path(__file__).resolve().parents[2] / "scripts/m05_isolated_e2e.py"
     ).read_text(encoding="utf-8")
 
-    bare = re.findall(r'_fail\("pair_contract_invalid"\)', source)
-    assert not bare, "진단 없는 pair_contract_invalid가 남아 있다"
-
-    used = set(
-        re.findall(
-            r'_fail\(\s*"pair_contract_invalid",\s*diagnostic="([^"]+)"',
-            source,
-        )
-    ) | set(
-        re.findall(
-            r'"pair_contract_invalid",\s*\n\s*diagnostic="([^"]+)",',
-            source,
-        )
-    )
-    assert used, "진단 문자열을 하나도 찾지 못했다 — 이 검사가 공허해졌다"
-    assert used <= driver._PAIR_DIAGNOSTICS
-
-    # 어휘가 **한 방향으로만** 검사되면 죽은 항목이 쌓인다. v1 분기를 걷은 뒤
-    # 실제로 넷이 죽어 있었다(`T-VN-PAIR-V2` §7). allowlist의 모든 항목이 이
-    # 파일 어딘가에서 실제로 발신되는지도 함께 본다.
-    start = source.index("_PAIR_DIAGNOSTICS")
-    end = source.index("\n)\n", start) + 3
-    body = source[:start] + source[end:]
-    dead = {value for value in driver._PAIR_DIAGNOSTICS if f'"{value}"' not in body}
-    assert not dead, f"발신되지 않는 진단 어휘가 남아 있다: {sorted(dead)}"
+    assert not re.findall(r'_fail\("pair_contract_invalid"\)', source)
+    assert not hasattr(driver, "_PAIR_DIAGNOSTICS")
+    assert not hasattr(driver, "_SAFE_DIAGNOSTICS")
 
 
-def test_preflight_reports_only_allowlisted_diagnostics(monkeypatch, capsys) -> None:
-    """진단은 내되 allowlist 밖 문자열은 phase만 낸다.
+def test_preflight_prints_any_refusal_as_one_scrubbed_line(monkeypatch, capsys) -> None:
+    """어휘 밖 문구도 낸다 — 가린 **첫 줄**만. launcher가 이 줄을 journald로 옮긴다.
 
-    이 경로는 아직 output leaf가 없어 forensic scrub 채널을 쓸 수 없다
-    (leaf는 launcher가 preflight **뒤에** 만든다). 그래서 노출은 닫힌 어휘로만
-    한다 — 그러지 않으면 호스트 상태가 launcher stderr로 나간다.
+    예전에는 allowlist 밖이면 phase만 냈고, e2e23은 그 침묵 때문에 계측 스크립트를 따로 붙였다.
     """
 
     driver = _driver()
+    monkeypatch.setenv("KTDM_TEST_PREFLIGHT_TOKEN", "preflight-secret-5150")
 
-    def allowed() -> None:
+    def refusal() -> None:
         driver._fail(
             "pair_contract_invalid",
-            diagnostic="pair source blob digest differs from the pinned release",
+            diagnostic=(
+                "committed deploy status unavailable: permission denied near "
+                "preflight-secret-5150\nsecond line with /root/host/path"
+            ),
         )
 
-    def leaky() -> None:
-        driver._fail("pair_contract_invalid", diagnostic="/root/secret/path")
-
     monkeypatch.setattr(driver, "_validate_trusted_release", lambda _r: None)
-    monkeypatch.setattr(
-        driver, "_assert_current_m05_execution_is_runnable", lambda _r: None
+    monkeypatch.setattr(driver, "_assert_current_m05_execution_is_runnable", lambda _r: None)
+    monkeypatch.setattr(driver, "_source_pair_preflight", refusal)
+
+    assert driver.preflight("a" * 40) == 1
+    printed = capsys.readouterr().out.strip()
+    assert printed == (
+        "pair_contract_invalid: committed deploy status unavailable: "
+        "permission denied near <redacted>"
     )
 
-    monkeypatch.setattr(driver, "_source_pair_preflight", allowed)
-    assert driver.preflight("a" * 40) == 1
-    assert "pair source blob digest differs" in capsys.readouterr().out
 
-    monkeypatch.setattr(driver, "_source_pair_preflight", leaky)
+def test_preflight_names_an_unexpected_exception_type_and_its_scrubbed_message(
+    monkeypatch, capsys
+) -> None:
+    driver = _driver()
+    monkeypatch.setattr(driver, "_validate_trusted_release", lambda _r: None)
+    monkeypatch.setattr(driver, "_assert_current_m05_execution_is_runnable", lambda _r: None)
+
+    def broken() -> None:
+        raise KeyError("services")
+
+    monkeypatch.setattr(driver, "_source_pair_preflight", broken)
     assert driver.preflight("a" * 40) == 1
-    leaked = capsys.readouterr().out
-    assert "/root/secret/path" not in leaked
-    assert "pair_contract_invalid" in leaked
+    assert capsys.readouterr().out.strip() == "source_materialization: KeyError: 'services'"
 
 
 def test_source_pair_preflight_binds_the_committed_deploy_status(
@@ -3607,18 +3401,20 @@ def test_source_pair_preflight_binds_the_committed_deploy_status(
 
     other_pinset = "0" * 64 if pinned != "0" * 64 else "1" * 64
     diagnostics = {
-        "unavailable": "committed deploy status unavailable",
         "in_progress": "last deploy did not commit; rerun the pinned rebuild",
         "pinset": "committed deploy pinset differs from the current release",
         "head": "derived application head differs from the committed deploy",
     }
-    assert set(diagnostics.values()) <= driver._PAIR_DIAGNOSTICS
 
     status_path.unlink()
-    assert refusal() == diagnostics["unavailable"]
+    assert refusal() == "committed deploy status unavailable: no deploy has been recorded"
 
+    # 읽지 못한 이유를 싣는다(ADR-51 잃는 보장 G-3) — 예전에는 "unavailable" 한 단어였다.
     status_path.write_bytes(b"{not json")
-    assert refusal() == diagnostics["unavailable"]
+    unreadable = refusal()
+    assert unreadable is not None
+    assert unreadable.startswith("committed deploy status unavailable: ")
+    assert unreadable != "committed deploy status unavailable: no deploy has been recorded"
 
     # `begin_deploy`만 쓴 기록 — 배포가 시작됐다가 끝나지 못했다.
     write_deploy_status(status_path, begin())
@@ -4800,7 +4596,7 @@ def test_main_consumes_the_execution_only_on_the_success_branch() -> None:
     consume_call = source.index(
         "consume_current_m05_execution(", success_branch
     )
-    end_of_finally = source.index('for name in _RAW_ENV_NAMES:', success_branch)
+    end_of_finally = source.index("result: dict[str, object] = {", success_branch)
 
     # 성공 분기 **안에** 있어야 한다.
     assert success_branch < consume_call < end_of_finally
@@ -4866,11 +4662,6 @@ def test_the_consumed_rejection_names_the_recovery_path(
     diagnostic = refused.value.diagnostic
     assert diagnostic == driver._CONSUMED_DIAGNOSTIC
     assert "rotate or rebind" in diagnostic
-    # 닫힌 어휘에 있어야 preflight가 실제로 내보인다 — 없으면 조용히 삼켜진다.
-    # `_PAIR_DIAGNOSTICS`가 아니라 상위 집합이다: 그쪽은 pair 실패 전용이고,
-    # 그 안의 모든 문자열이 발신된다는 것을 별도 테스트가 양방향으로 결박한다.
-    assert diagnostic in driver._SAFE_DIAGNOSTICS
-    assert diagnostic not in driver._PAIR_DIAGNOSTICS
 
 
 def test_a_failed_consume_record_leaves_a_durable_marker(
@@ -4878,7 +4669,7 @@ def test_a_failed_consume_record_leaves_a_durable_marker(
 ) -> None:
     """소비 기록 실패를 print로 말하면 운영에서는 **아무 데도 닿지 않는다.**
 
-    launcher가 드라이버를 `>/dev/null 2>&1`로 부른다(run-m05-isolated-e2e-once). 그러면
+    launcher가 드라이버의 stdout을 `/dev/null`로 보낸다(run-m05-isolated-e2e-once). 그러면
     "소비됐다"와 "기록에 실패했다"가 같아 보이고, 그 identity가 실제로는 재실행 가능한
     채로 남는다. receipt와 같은 방식으로 durable하게 남긴다.
     """
@@ -4912,7 +4703,7 @@ def test_the_consume_failure_path_writes_the_marker_not_a_print() -> None:
     ).read_text(encoding="utf-8")
 
     guard = source.index("if not execution_consumed:")
-    end_of_block = source.index("for name in _RAW_ENV_NAMES:", guard)
+    end_of_block = source.index("result: dict[str, object] = {", guard)
     block = source[guard:end_of_block]
 
     assert "_write_consume_failure_marker(" in block
@@ -4931,9 +4722,10 @@ def test_the_launcher_discards_driver_stdout_so_prints_are_not_a_channel() -> No
     launcher = (
         Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once"
     ).read_text(encoding="utf-8")
-    invocation = launcher.index("m05_isolated_e2e.py")
+    invocation = launcher.index('"$expected_revision" "$output_dir"')
     tail = launcher[invocation : launcher.index("driver_status=", invocation)]
-    assert ">/dev/null 2>&1" in tail
+    # stdout은 버리고 stderr는 가린 실패 텍스트 전용 root 0600 파일로 받는다(ADR-51 G-3).
+    assert '>/dev/null 2>>"$output_dir/stderr.log"' in tail
 
 
 def test_trusted_release_follows_the_release_symlink_and_reads_one_revision(
@@ -4981,3 +4773,102 @@ def test_trusted_release_behind_the_symlink_must_still_be_root_locked(
 
     with pytest.raises(driver._PhaseError, match="trusted_release_invalid"):
         driver._validate_trusted_release("a" * 40)
+
+
+def test_a_single_line_over_the_tail_is_named_not_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    driver = _driver()
+    _popen_returning(
+        monkeypatch, driver, stderr=b"z" * (driver._OUTPUT_TAIL_LIMIT * 2), returncode=1
+    )
+
+    with pytest.raises(driver._PhaseError) as error:
+        driver._command("/usr/bin/false")
+
+    assert error.value.stderr == b"(the last line exceeds the 256 KiB tail and was omitted)"
+
+
+def test_boolean_env_values_are_not_registered_as_secrets(tmp_path: Path) -> None:
+    """`..._API_KEY_REQUIRED=false`를 올리면 실패 텍스트의 모든 false가 가려진다(적대 리뷰)."""
+
+    driver = _driver()
+    driver._write_env_file(
+        tmp_path / "map.env",
+        "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED=false\n"
+        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN_TTL_SECONDS=3600\n"
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH=pbkdf2$$310000$$salt$$digest\n",
+    )
+
+    scrubbed = driver._scrub("Expected: false after 3600s; hash pbkdf2$310000$salt$digest")
+    assert "Expected: false after 3600s" in scrubbed
+    assert "pbkdf2$310000$salt$digest" not in scrubbed
+
+
+def test_a_cleanup_failure_says_why(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """통과한 본문도 cleanup 실패로 소각된다 — 원인이 가장 필요한 자리다(적대 리뷰 G-3)."""
+
+    driver = _driver()
+
+    def failing_down(*_args: str, **_kwargs: object) -> str:
+        raise driver._PhaseError(
+            "runtime_command_failed", returncode=1, stderr=b"volume m05i_pgdata is in use"
+        )
+
+    monkeypatch.setattr(driver, "_command", failing_down)
+    cleanup_failed, unexpected, _retained = driver._cleanup_temporary_resources(
+        map_cleanup=(tmp_path, "m05i-map-" + "a" * 32, tmp_path / "map.env", (tmp_path / "c.yml",), ()),
+        pinvi_cleanup=None,
+        private_files=(),
+    )
+
+    assert cleanup_failed is True
+    assert unexpected is False
+    err = capsys.readouterr().err
+    assert "M05 isolated run failed during cleanup" in err
+    assert "phase: runtime_cleanup_failed" in err
+    assert "volume m05i_pgdata is in use" in err
+
+
+def test_the_rotation_preflight_says_why_a_fetch_failed(monkeypatch, capsys) -> None:
+    driver = _driver()
+
+    def command(*args: str, **_kwargs: object) -> str:
+        if "fetch" in args:
+            raise driver._PhaseError(
+                "runtime_command_failed",
+                returncode=128,
+                stderr=b"remote: Repository not found.\nfatal: couldn't find remote ref " + b"a" * 40,
+            )
+        return ""
+
+    monkeypatch.setattr(driver, "_command", command)
+
+    assert driver.rotation_preflight("a" * 40, "b" * 40) == 1
+    out = capsys.readouterr().out
+    assert "unreadable at the target revision" in out
+    assert "couldn't find remote ref" in out
+
+
+def test_a_cut_http_error_body_does_not_end_in_a_token_fragment(monkeypatch) -> None:
+    driver = _driver()
+    secret = driver._random_secret()
+    body = b'{"detail":[{"input":{"password":"' + b"x" * 470 + secret.encode() + b'"}}]}'
+
+    def opener(_request: object, timeout: int) -> object:
+        del timeout
+        raise HTTPError("http://127.0.0.1:1/api/auth/login", 422, "Unprocessable", {}, io.BytesIO(body))
+
+    with pytest.raises(driver._PhaseError) as error:
+        driver._http_json(
+            "http://127.0.0.1:18000/api/auth/login",
+            headers={},
+            opener=SimpleNamespace(open=opener),
+        )
+
+    diagnostic = error.value.diagnostic or ""
+    assert diagnostic.startswith("HTTP 422 from /api/auth/login: ")
+    assert secret[:8] not in diagnostic
+    assert diagnostic.endswith("…")

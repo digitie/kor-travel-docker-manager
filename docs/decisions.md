@@ -3905,3 +3905,41 @@ git을 부르지 않는다. `pinned_runtime_sources.py`는 754줄에서 401줄�
 - **남는 누출 부류(기록)**: G-1과 같다. 여기에 더해 one-shot 컨테이너가 자격증명을 변형해(JSON escape 등) stdout에
   찍으면 tail에 남는다. 잘린 조각도 남는다 — psql은 긴 문장을 약 60열로 줄여 `LINE 1: ...`로 되풀이하고, 여러 줄
   값(PEM)은 tail 경계에서 잘릴 수 있다. 16 KiB를 넘는 한 줄은 싣지 않고 그 사실만 적는다. tail은 root 0600 `stderr.log`와 409 API 본문(G-1 경계에서 가림)으로만 나간다.
+
+### NOTE: 잃는 보장 G(실패 출력) G-3 — M05는 항상 캡처하고 채널이 하나다, G 완료 (2026-09-27, G-3)
+
+- **항상 캡처**: `KTDM_M05_FORENSIC_CAPTURE`·`--forensic-capture`/`--no-forensic-capture`·파일별 증거 leaf
+  (`failed-*-command.json/.stderr/.stdout`, `*-exception.txt`, compose config 증거) 없음. `_command`는 모든 외부 명령의
+  두 스트림을 받아 스트림마다 끝 256 KiB만 남긴다(ring, 잘린 첫 줄은 버린다). 호출자가 받는 stdout은 데이터라
+  실패에 싣지 않는다(`compose config`는 크기와 넘침 사실만).
+- **채널 하나**: 실패하면 진행 phase·phase·diagnostic·종료값·두 스트림 끝부분·traceback(`__context__` 포함)을 한 텍스트로
+  모아 가린 뒤 stderr로 낸다. launcher는 그것을 output leaf의 root 0600 `stderr.log`(driver보다 먼저 만든다)로 받는다.
+  잡지 않은 예외(모듈 로드 중 포함)는 가린 excepthook이 낸다. receipt(`result.json`)에는 여전히 phase만 실린다.
+- **생성 비밀은 생성 시 등록**: `_random_secret`이 스스로 가림 대상에 오르고, `_write_env_file`이 자식에게 넘기는 env 파일의
+  민감 값(파생 해시·compose `$$` 형태 포함)을 올린다. `_RAW_ENV_NAMES`·`_register_forensic_scrub_*` 목록은 열한 개를
+  놓쳤다. 가림은 Manager의 스크러버 하나(`scrub_failure_text`)다.
+- **닫힌 어휘 삭제**: `_SOURCE_DIAGNOSTIC_PREFIX`·`_PAIR_DIAGNOSTICS`·`_SAFE_DIAGNOSTICS`, fresh-init 진단 runner(Map
+  오류 문구를 종료 코드로 바꾸던 entrypoint override)·`_MAP_FRESH_INIT_EXIT_DIAGNOSTICS`, receipt의
+  `map_fresh_init_reason`과 launcher의 `DIAGNOSTIC_TOKEN`. Map fresh-init은 자기 entrypoint로 돌고 원문이 tail에 남는다.
+  preflight·rotation preflight는 어떤 거부든 가린 첫 줄을 낸다. deploy-status를 읽지 못한 이유, rotation `git show`의
+  stderr, HTTP status와 짧은 body도 diagnostic에 실린다(stderr.log에만 가고 receipt에는 가지 않는다).
+- **launcher**: `pin verify`·`block-execution`의 stderr를 버리지 않는다. preflight stderr도 통과시킨다.
+- **G 완료 — 가린 원문이 나가는 채널**: rebuild leaf와 M05 leaf의 `stderr.log`(root 0600), preflight·rotation preflight 한 줄,
+  CLI stderr와 `--json` `detail`, API 오류 본문. 닫힌 채 남는 것: receipt·registry·result.json 스키마(phase 어휘와 key 집합은
+  launcher 계약이다), consume-failure marker.
+- **스크러버 규칙**: 민감한 key 이름의 값(4자 이상, SQL `''` 변형 포함), URL userinfo 비밀번호, 호출자 추가 값. 원천은 합치지
+  않은 key·값 쌍 — 프로세스 환경, 보간한 `.env`, 보간하지 않은 `.env`, (M05) 생성 비밀과 env 파일 값.
+- **남는 누출 부류**: 원천에 없는 값, 목록에 걸리지 않는 key 이름의 값, 변형(JSON escape·percent·base64), 잘린 조각(psql
+  `LINE 1:` 60열 절단, tail 경계의 여러 줄 값), 4자 미만.
+- **적대 리뷰 반영**:
+  - fresh-init 진단 override가 없는 서비스에 얹혀 compose가 거부하던 것이 우연한 claim 전 검사였다. 그래서
+    `--profile fresh-init config`에 그 서비스가 있는지 claim 전에 명시적으로 본다(`runtime_setup_map_config`).
+  - `finally`의 cleanup·terminal block·소비 기록 실패도 실패 텍스트를 낸다. 통과한 본문을 소각하는 자리라서다.
+  - 256 KiB를 넘는 한 줄은 그렇다고 적는다. `true`/`false`/숫자 env 값은 가림 대상이 아니다.
+  - rotation preflight의 git 실패는 stderr 마지막 줄을 붙인다. 잘린 HTTP body는 토큰 조각을 버린다.
+  - Ed25519 개인키 본문도 가림 대상이다. excepthook이 실패하면 원문 대신 고정 한 줄을 낸다.
+- **남는 것(기록)**: 자식이 만든 비밀(PinVi `docker-app.sh`의 일회용 migrator 비밀번호, 로그인 세션 JWT)은 어느 원천에도
+  없다. preflight 한 줄이 journald로 가므로 저엔트로피 `.env` 값은 `<redacted>` 자리로 드러날 수 있다(가림 오라클).
+  driver는 `/opt/kor-travel-docker-manager/.env`만 본다 — 없으면 조용히 프로세스 환경으로만 가린다.
+- **다음**: fresh-init 서비스 이름(`db-application-schema-fresh-300` → 핀된 Map의 `db-application-schema-fresh`)과 ADR-100/101
+  role 변경은 M05 포팅 PR에서 한다. 그 전까지 핀된 Map으로는 M05가 claim 전에 `runtime_setup_map_config`로 멈춘다.

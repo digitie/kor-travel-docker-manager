@@ -107,6 +107,8 @@ def _driver(*mutations: str) -> ModuleType:
     module = ModuleType("m05_isolated_e2e_driver")
     module.__file__ = str(_DRIVER_PATH)
     exec(compile(source, str(_DRIVER_PATH), "exec"), module.__dict__)  # noqa: S102
+    # 호스트의 Manager `.env`는 비-root가 읽지 못한다 — 가림은 프로세스 환경과 이 실행의 값으로 한다.
+    module._SECRET_ENV_FILE = Path("/nonexistent/m05-driver-test.env")
     return module
 
 
@@ -381,17 +383,9 @@ class _FakeDockerHost:
 
     # -- 공통 --------------------------------------------------------------
 
-    def _fail(
-        self,
-        driver: ModuleType,
-        returncode: int,
-        message: str,
-        diagnostics: dict[int, str] | None = None,
-    ) -> Any:
-        diagnostic = diagnostics.get(returncode) if diagnostics else None
+    def _fail(self, driver: ModuleType, returncode: int, message: str) -> Any:
         raise driver._PhaseError(
             "runtime_command_failed",
-            diagnostic=diagnostic,
             returncode=returncode,
             stderr=message.encode("utf-8"),
         )
@@ -433,8 +427,6 @@ class _FakeDockerHost:
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
         capture: bool = False,
-        failure_exit_diagnostics: dict[int, str] | None = None,
-        capture_failure_stderr: bool = False,
         capture_output_limit: int | None = None,
     ) -> str:
         try:
@@ -444,8 +436,6 @@ class _FakeDockerHost:
                 cwd=cwd,
                 env=env,
                 capture=capture,
-                failure_exit_diagnostics=failure_exit_diagnostics,
-                capture_failure_stderr=capture_failure_stderr,
                 capture_output_limit=capture_output_limit,
             )
         except (driver._PhaseError, _HarnessBug):
@@ -461,11 +451,9 @@ class _FakeDockerHost:
         cwd: Path | None,
         env: dict[str, str] | None,
         capture: bool,
-        failure_exit_diagnostics: dict[int, str] | None,
-        capture_failure_stderr: bool,
         capture_output_limit: int | None,
     ) -> str:
-        del capture, capture_failure_stderr, capture_output_limit
+        del capture, capture_output_limit
         self.calls.append(
             {
                 "args": tuple(args),
@@ -481,9 +469,7 @@ class _FakeDockerHost:
         if head == "/usr/bin/git":
             return ""
         if head == "/usr/bin/docker":
-            return self._docker(
-                driver, args, cwd=cwd, env=env or {}, diagnostics=failure_exit_diagnostics
-            )
+            return self._docker(driver, args, cwd=cwd, env=env or {})
         if head.endswith("scripts/docker-app.sh"):
             return self._docker_app(driver, args, env=env or {}, script=Path(head))
         if head == sys.executable:
@@ -511,9 +497,8 @@ class _FakeDockerHost:
         *,
         cwd: Path | None,
         env: dict[str, str],
-        diagnostics: dict[int, str] | None,
     ) -> str:
-        del env, diagnostics
+        del env
         verb = args[1]
         if verb == "compose":
             return self._compose(driver, args[2:], cwd=cwd)
@@ -1852,8 +1837,9 @@ def test_full_happy_path_calls_external_commands_in_the_expected_order(
     assert harness.run() == 0
 
     assert harness.host.timeline == [
-        # 실행권 소비 전: rendered topology + runner digest 정합만 확인한다.
+        # 실행권 소비 전: rendered topology·fresh-init 서비스 존재·runner digest 정합만 확인한다.
         "compose:map:config-json",
+        "compose:map:config-json{fresh-init}",
         "run:playwright-info",
         "ledger-claim",
         # Map runtime
@@ -2373,3 +2359,69 @@ def test_the_harness_default_receipt_is_not_vacuous() -> None:
     fake attestation이 실패한다.)"""
 
     assert IMPACT_COUNT >= 1
+
+
+def test_a_failure_echoing_every_written_env_file_leaks_no_sensitive_value(
+    harness: _Harness,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """효과에 결박한다 — driver가 **실제로 쓴** env 파일의 민감 값 전부가 실패 텍스트에 없어야 한다.
+
+    생성 비밀 목록을 흉내 내지 않는다. 옛 scrub 레지스트리는 이 실행이 만든 비밀 열한 개를
+    놓쳤다(ADR-51 잃는 보장 G-3). 자식이 받은 env를 통째로 stderr에 에코하는 최악의 경우를 만든다.
+    """
+
+    from kor_travel_docker_manager.services.secret_scrub import is_sensitive_key
+
+    driver = harness.driver
+    written: dict[str, str] = {}
+
+    def echoing_docker_app(*_args: object, **_kwargs: object) -> str:
+        for path in sorted((harness.output / "runtime").glob("*.env")):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                key, separator, value = line.partition("=")
+                if separator and value:
+                    written[f"{path.name}:{key}"] = value
+        raise driver._PhaseError(
+            "runtime_command_failed",
+            returncode=1,
+            stderr="\n".join(f"{key}={value}" for key, value in written.items()).encode(),
+        )
+
+    monkeypatch.setattr(harness.host, "_docker_app", echoing_docker_app)
+
+    assert harness.run() == 1
+    err = capsys.readouterr().err
+    # 불리언·숫자는 이름이 민감해도 비밀일 수 없다(`..._API_KEY_REQUIRED=false`) — driver도 올리지 않는다.
+    sensitive = {
+        key: value
+        for key, value in written.items()
+        if is_sensitive_key(key.partition(":")[2])
+        and len(value) >= 4
+        and value.lower() not in {"true", "false"}
+        and not value.isdigit()
+    }
+    # 하한은 **본 것**에 건다 — 파일을 못 읽었으면 이 검사는 공허하다.
+    assert len(sensitive) >= 10, sorted(sensitive)
+    assert "M05 isolated run failed during pinvi_runtime" in err
+    leaked = sorted(key for key, value in sensitive.items() if value in err)
+    assert leaked == []
+
+
+def test_a_pinned_map_without_the_fresh_init_service_is_rejected_before_the_claim(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fresh-init은 claim 뒤에 돈다 — 서비스가 없으면 실행권을 쓰기 **전에** 멈춰야 한다.
+
+    옛 진단 entrypoint override는 없는 서비스에 얹혀 compose가 거부했고, 그것이 우연히 claim 전
+    검사였다. override를 걷으면서 그 검사를 명시했다(ADR-51 G-3 적대 리뷰).
+    """
+
+    monkeypatch.setattr(harness.driver, "_MAP_FRESH_INIT_SERVICE", "db-application-schema-fresh")
+
+    assert harness.run() == 1
+    result = harness.result
+    assert result["status"] == "preflight_rejected"
+    assert result["phase"] == "runtime_setup_map_config"
+    assert "ledger-claim" not in harness.host.timeline

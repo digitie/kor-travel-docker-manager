@@ -44,14 +44,11 @@ ADR-51 D(I-2)에서 사본이 없어졌다. 새 installer는 archive mode를 눕
 지우므로(`chmod -R go-w`) 실행 비트는 git index 그대로 설치본에 간다 — 정본 하나만 남았다.
 index에서 launcher 넷이 `100755`인지는 `test_root_launchers_are_executable_in_the_git_index`가 본다.
 
-### B-2. `pair_contract_invalid`의 진단 어휘
+### B-2. (해제) `pair_contract_invalid`의 진단 어휘
 
-- **정본**: `scripts/m05_isolated_e2e.py`의 `_PAIR_DIAGNOSTICS`
-- **사본**: 15곳의 `_fail("pair_contract_invalid", diagnostic=...)` 호출부
-- **사본이 필요한 이유**: 각 호출부가 자기 문맥의 문구를 골라야 하고, 그 값이
-  launcher stderr로 나가므로 자유 문자열을 열 수 없다.
-- **결박**: `test_pair_failures_carry_a_closed_vocabulary_diagnostic`
-  (진단 없는 호출 0건 + 쓰인 문자열이 어휘의 부분집합)
+ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어떤 diagnostic이든 가린 첫 줄을 내므로
+사본이 필요 없다. 진단 없는 `pair_contract_invalid` 호출이 0건인지만
+`test_every_pair_failure_carries_a_diagnostic`이 본다.
 
 ### B-3. M05 harness의 2-role 고정
 

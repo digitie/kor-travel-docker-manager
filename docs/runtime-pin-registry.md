@@ -75,11 +75,13 @@ console, PinVi API/Web/RustFS/console/Dagster 및 observability profile의 cAdvi
 terminal phase를 `completed` 외 exact 같은 집합으로 수용한다. 이 동등성은 source literal AST 회귀로 고정하므로,
 새 driver phase는 launcher contract를 함께 바꾸지 않으면 CI에서 거부된다.
 
-기본 launcher는 raw command output을 보존하지 않는다. root operator가 원인 분석을 명시적으로 승인한 때만
-`run-m05-isolated-e2e-once --forensic-capture <Manager SHA> <새 root-owned leaf>`를 사용한다. 이 옵션은
-호출 shell에 우연히 남은 환경변수를 무시하고 launcher가 직접 bounded capture를 켜며, 이미 cap을 적용한 최대
-256 KiB stderr만 private leaf에 남긴다. 이 artifact는 registry·public receipt·tracked 문서의 입력이 아니며
-same execution의 재시도 권한도 만들지 않는다.
+실패 원인은 output leaf의 root 0600 `stderr.log` 하나에 남는다(ADR-51 잃는 보장 G-3). driver는 모든 외부
+명령의 stderr와 stdout을 항상 받아 스트림마다 끝 256 KiB만 남기고, 실패하면 진행 phase·phase·diagnostic·
+종료값·두 스트림 끝부분·traceback을 한 텍스트로 모아 비밀을 가린 뒤 stderr로 낸다. 가리는 원천은 Manager
+`.env`, 프로세스 환경, 이 실행이 만든 비밀, driver가 쓴 env 파일의 민감 값이다. 예전의 `--forensic-capture`
+플래그와 파일별 증거 leaf는 없어졌다. 옛 플래그를 넘기면 usage로 멈춘다. `stderr.log`는 registry·public
+receipt·tracked 문서의 입력이 아니며 same execution의 재시도 권한도 만들지 않는다. preflight 거부는 가린
+첫 줄만 launcher stderr(journald)로 간다.
 `blocked` receipt는 exact source revision·launch 전후 같은 snapshot·고정 schema를 모두 만족해도, root registry가
 같은 pinset·Map·PinVi revision에 결박된 block 기록(scoped든 무조건이든)을 확인할 때만 launcher가 보존한다
 (R1-S1 — 무조건 기록만 인정하면 launcher가 모든 인프라 실패를 fallback에서 무조건 차단으로 승격해 phase-scoped
