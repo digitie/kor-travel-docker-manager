@@ -678,8 +678,9 @@ pinned rebuild lease를 하나 더 잡았다), env snapshot과 lifecycle 판정�
    명령의 stderr 끝부분(최대 16 KiB, one-shot `run`은 stdout도). `.env`와 프로세스 환경의 비밀은
    가려져 있다. `.env`를 읽지 못했으면 원문 대신 그 사실 한 줄만 있다. root 0600이다.
 2. `result.json`은 `{"status": "failed", "stage": …}`다. `stage`는 실패가 난 재구축 단계 이름이다
-   (`environment_admission` … `runtime_transaction`). 단계 밖 — 런타임 transaction 뒤의 배포
-   본문, lifecycle 게이트 — 에서 났으면 키가 없다. 후보 Compose 빌드 넷 중 어느 서비스인지는
+   (`environment_admission` … `runtime_transaction`). 단계 밖에서 났으면 키가 없다 — root 확인,
+   lock G 경합, lifecycle 게이트, registry 읽기(`prewrite_admission`), 런타임 transaction 뒤의
+   배포 본문. 후보 Compose 빌드 넷 중 어느 서비스인지는
    stderr.log의 명령(`Compose build <service> failed`)이 말한다.
 3. 원인을 고친 뒤 **같은 pinset을 새 output leaf로 다시 돌린다.** 배포는 마이그레이션 전진이라
    멱등이다 — 회전(`rotate-pair`)은 필요 없다. 재시도가 쌓이면 이전 output leaf와 dangling 후보

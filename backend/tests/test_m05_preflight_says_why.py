@@ -105,3 +105,26 @@ def test_the_prefix_matches_the_manager_source_literals() -> None:
         / "pinned_runtime_sources.py"
     ).read_text(encoding="utf-8")
     assert f'DeploymentContractError("{module._SOURCE_DIAGNOSTIC_PREFIX}' in sources
+
+
+def test_only_the_constant_first_line_of_a_source_message_is_printed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """ADR-51 G-2부터 source 문구 둘째 줄에 명령(경로)과 git 원문 tail이 붙는다 — 첫 줄만 낸다."""
+    module = _harness()
+    _refusing_preflight(
+        module,
+        monkeypatch,
+        RuntimeError(
+            "pinned runtime source Git operation failed (exit 128)\n--- command ---\n"
+            "git --git-dir /var/lib/kor-travel-docker-manager/state/repo.git fetch\n"
+            "--- stderr ---\nfatal: unable to access host-detail"
+        ),
+    )
+
+    assert module.preflight("a" * 40) == 1
+    printed = capsys.readouterr().out.strip()
+    assert printed == (
+        "source_materialization: RuntimeError: "
+        "pinned runtime source Git operation failed (exit 128)"
+    )

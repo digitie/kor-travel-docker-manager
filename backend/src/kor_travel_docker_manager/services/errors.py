@@ -79,5 +79,7 @@ def command_output_tail(label: str, output: str | bytes | None) -> str:
     if clipped:
         # 자른 첫 줄은 버린다 — 비밀 값의 뒷조각만 남으면 스크러버가 알아보지 못한다.
         raw = raw[-COMMAND_OUTPUT_TAIL_BYTES:].partition(b"\n")[2]
+        if not raw:
+            return f"\n--- {label}: last line exceeds 16 KiB, omitted ---"
     text = raw.decode("utf-8", errors="replace")
     return f"\n--- {label}{' (last 16 KiB)' if clipped else ''} ---\n{text}"

@@ -1928,18 +1928,10 @@ def _validate_c6c_wait_timeout(wait_timeout: int) -> None:
         )
 
 
-# issue #109: `kor-travel-map-api`의 entrypoint는 기동마다 무조건 `alembic upgrade
-# head`를 실행한다. floating tag(`latest-main`)로 배포된 이미지가 pin보다 오래
-# 빌드된 채였고, 그 이미지의 alembic head(0072)까지만 prod schema가 조용히
-# 올라가 공개 표면이 0이 됐다(issue #109). candidate image 자체를 절대 기동하지
-# 않고 `alembic heads`만 읽어(DB에 아무 것도 하지 않는 static inspection) operator가
-# 명시한 기대 head와 다르면 배포를 시작하기 전에 fail-close한다.
-#
-# 이 두 타임아웃은 멈춤 감지용이지 성능 예산이 아니다. n150은 SATA SSD가 92% 차서 IO
+# 이 타임아웃은 멈춤 감지용이지 성능 예산이 아니다. n150은 SATA SSD가 92% 차서 IO
 # 압력 `full`이 상시 50~60%이고, 2026-09-26 실측에서 `docker run --rm /bin/true` 하나가
 # 112초, `ktm-application-schema head`가 74초 걸렸다 — 60초였을 때 t57a가 명령은
 # 정상인데 타임아웃으로 죽었다.
-_ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS = 600
 _PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 600
 #: compose `--wait-timeout` 초. **정수**로 둔다 — head는 revision 문자열이라
 #: 형이 다르고, 이 파일에 따옴표 두른 숫자가 남지 않아 head 리터럴 게이트가
@@ -1948,70 +1940,6 @@ _PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 600
 #: ADR-069 뒤 Map은 code-server → webserver → daemon이 `service_healthy`로 **직렬**
 #: 기동한다. 위 실측대로 컨테이너 하나가 뜨는 데만 1~2분이 걸리므로 300초는 부족하다.
 _COMPOSE_WAIT_TIMEOUT_SECONDS: Final = 900
-
-
-def _validate_expected_alembic_head(expected_alembic_head: str) -> None:
-    if (
-        not expected_alembic_head
-        or expected_alembic_head != expected_alembic_head.strip()
-        or "\n" in expected_alembic_head
-        or "\r" in expected_alembic_head
-        or len(expected_alembic_head) > 128
-    ):
-        raise DeploymentContractError("expected alembic head is invalid")
-
-
-def _assert_candidate_image_alembic_head(
-    image: str,
-    *,
-    expected_alembic_head: str,
-    label: str,
-) -> None:
-    """candidate `image`를 기동하지 않고 `alembic heads`만 정적으로 읽어 비교한다.
-
-    DB에 연결하지 않는 `--entrypoint sh ... alembic heads`만 실행하므로 실제
-    migration은 절대 실행되지 않는다. 여러 head(merge 누락 등)나 예상과 다른 head,
-    실행 자체의 실패는 모두 배포를 막는 동일한 fail-close 사유다. 실패에는 출력 원문을
-    싣는다(ADR-51 잃는 보장 G) — 어느 head가 나왔는지가 곧 원인이다.
-    """
-
-    try:
-        completed = subprocess.run(
-            [
-                "docker",
-                "run",
-                "--rm",
-                "--entrypoint",
-                "sh",
-                image,
-                "-c",
-                "cd /app && alembic heads",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=_ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise DeploymentContractError(
-            f"{label} candidate image alembic head could not be inspected"
-        ) from exc
-    if completed.returncode != 0:
-        raise DeploymentContractError(
-            f"{label} candidate image alembic head inspection failed "
-            f"(exit {completed.returncode})"
-            + command_output_tail("stderr", completed.stderr)
-        )
-    heads = [
-        line.split()[0]
-        for line in completed.stdout.splitlines()
-        if line.strip() and "(head)" in line
-    ]
-    if len(heads) != 1 or heads[0] != expected_alembic_head:
-        raise DeploymentContractError(
-            f"{label} candidate image alembic head differs from the expected head "
-            f"{expected_alembic_head!r}" + command_output_tail("stdout", completed.stdout)
-        )
 
 
 def _run_pinned_runtime_static_command(

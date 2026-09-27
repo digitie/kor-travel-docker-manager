@@ -390,10 +390,11 @@ def _run_root_git(
         env=_root_git_environment(),
     )
     if completed.returncode != 0:
-        # 원인 원문을 싣는다(ADR-51 잃는 보장 G). URL userinfo는 출력 경계 스크러버가 가린다.
+        # 원인 원문을 싣는다(ADR-51 잃는 보장 G). 첫 줄은 상수로 둔다 — M05 preflight가
+        # `pinned runtime source ` 문구의 첫 줄만 stdout에 낸다. 명령(경로 포함)은 그 아래다.
         raise DeploymentContractError(
-            f"pinned runtime source Git operation failed: git {' '.join(arguments)} "
-            f"(exit {completed.returncode})"
+            f"pinned runtime source Git operation failed (exit {completed.returncode})"
+            f"\n--- command ---\ngit {' '.join(arguments)}"
             + command_output_tail("stderr", completed.stderr)
         )
     return completed

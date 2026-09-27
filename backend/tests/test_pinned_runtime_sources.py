@@ -208,8 +208,8 @@ def test_a_failed_fetch_leaves_nothing_behind(world: Any) -> None:
 
     # ADR-51 잃는 보장 G-2: git의 원인 문구를 싣는다(가림은 출력 경계의 몫).
     message = str(raised.value)
-    assert message.startswith("pinned runtime source Git operation failed: git ")
-    assert "fetch" in message and "(exit 128)" in message
+    assert message.startswith("pinned runtime source Git operation failed (exit 128)\n")
+    assert " fetch " in message
     assert message.endswith("fatal: bad object")
     assert list(pinned_runtime_sources_directory(world.state_paths).iterdir()) == []
 

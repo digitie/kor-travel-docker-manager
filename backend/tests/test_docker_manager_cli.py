@@ -554,6 +554,25 @@ def test_cli_rebuild_pinned_runtime_names_the_failed_stage_in_json(
 @patch("kor_travel_docker_manager.cli.compose_service")
 
 
+def test_cli_rebuild_pinned_runtime_names_the_failed_stage_without_json(
+    mock_compose_service,
+    capsys,
+):
+    mock_compose_service.rebuild_pinned_runtime.side_effect = _staged(
+        DeploymentContractError("geo is not ready"), "external_prerequisites"
+    )
+
+    assert main(["pinvi-pair", "rebuild-pinned", "--confirm"]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "pinned runtime rebuild failed at stage external_prerequisites" in captured.err
+    assert "geo is not ready" in captured.err
+
+
+@patch("kor_travel_docker_manager.cli.compose_service")
+
+
 def test_cli_rebuild_pinned_runtime_omits_the_stage_outside_the_stages(
     mock_compose_service,
     capsys,

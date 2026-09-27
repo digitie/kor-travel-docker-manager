@@ -1339,7 +1339,6 @@ def test_rebuild_timeouts_outlast_a_saturated_disk() -> None:
     per_container = 112 + 74
     module = compose_service_module
     assert module._PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS >= 2 * per_container
-    assert module._ALEMBIC_HEAD_INSPECTION_TIMEOUT_SECONDS >= 2 * per_container
     assert module._COMPOSE_WAIT_TIMEOUT_SECONDS >= 3 * per_container
 
 

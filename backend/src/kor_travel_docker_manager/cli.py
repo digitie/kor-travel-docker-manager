@@ -318,7 +318,11 @@ def _emit_failure_detail(exc: BaseException, *, label: str = "failure detail") -
     try:
         environment = load_secret_environment(get_env_path())
     except (OSError, UnicodeError):
-        print(f"{label} withheld: .env could not be read for redaction", file=sys.stderr)
+        print(
+            f"{label} withheld: .env could not be read for redaction "
+            "(run as a user who can read it, usually root, to see the cause)",
+            file=sys.stderr,
+        )
         return
     detail = "".join(traceback.format_exception(exc))
     print(f"{label} (redacted):\n" + redact_secret_text(detail, environment), file=sys.stderr)
@@ -357,12 +361,14 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
         # 실패는 하나의 모양이다(ADR-51 잃는 보장 G). JSON은 판정과, 단계 안에서 났으면 그
         # 단계 이름만 싣는다. 원인은 가린 원문 traceback으로 stderr에 간다 — launcher가
         # root 0600 stderr.log에 남긴다. 봉인·journal 전후 분류·claim 해제는 사라졌다.
+        stage = rebuild_failure_stage(exc)
         if args.json:
             payload = {"status": "failed"}
-            stage = rebuild_failure_stage(exc)
             if stage is not None:
                 payload["stage"] = stage
             print(json.dumps(payload, ensure_ascii=False, indent=2))
+        elif stage is not None:
+            print(f"pinned runtime rebuild failed at stage {stage}", file=sys.stderr)
         _emit_failure_detail(exc, label="pinned runtime failure detail")
         return 2
     return _emit_process_result(result, json_output=args.json)

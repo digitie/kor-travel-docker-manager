@@ -49,6 +49,12 @@ def test_long_output_keeps_the_end_and_drops_the_cut_line() -> None:
     assert "head line" not in tail
 
 
+def test_a_single_line_over_the_limit_is_named_not_cut() -> None:
+    tail = command_output_tail("stdout", "y" * (COMMAND_OUTPUT_TAIL_BYTES + 10))
+
+    assert tail == "\n--- stdout: last line exceeds 16 KiB, omitted ---"
+
+
 def test_a_root_git_failure_carries_the_command_and_stderr() -> None:
     def runner(arguments: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(
@@ -65,9 +71,10 @@ def test_a_root_git_failure_carries_the_command_and_stderr() -> None:
         )
 
     message = str(captured.value)
-    assert "git --git-dir /tmp/repo.git fetch" in message
-    assert "(exit 128)" in message
-    assert "not our ref" in message
+    first, _, rest = message.partition("\n")
+    assert first == "pinned runtime source Git operation failed (exit 128)"
+    assert "git --git-dir /tmp/repo.git fetch" in rest
+    assert "not our ref" in rest
 
 
 def test_a_checked_database_command_carries_stderr_not_stdout(

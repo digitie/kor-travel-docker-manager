@@ -3886,14 +3886,22 @@ git을 부르지 않는다. `pinned_runtime_sources.py`는 754줄에서 401줄�
   뒷조각만 남으면 스크러버가 알아보지 못한다). Compose 명령 실패는 `pinned runtime rebuild Compose <args> failed
   (exit N)`에 stderr를, one-shot `run`이면 stdout도 붙인다(다른 명령의 stdout은 데이터라 싣지 않는다). `compose
   config`는 stderr만 — stdout은 비밀이 보간된 설정 문서 자체다. 같은 helper를 buildx(DEVNULL → capture), base
-  image pull·inspect, 정적 head 명령, alembic heads, PinVi fence psql, `database_runtime._run_checked*`(stderr만),
-  root git에 붙였다.
+  image pull·inspect, 정적 head 명령, PinVi fence psql, `database_runtime._run_checked*`(stderr만), root git에
+  붙였다. root git 실패는 첫 줄을 상수로 두고 명령(경로)을 그 아래에 둔다 — M05 preflight는 그 첫 줄만 낸다.
+  호출자가 없던 `alembic heads` 검사는 지웠다.
 - **CLI**: 실패 분기가 하나다. `--json`은 `{"status": "failed", "stage": …}`(단계 밖이면 `stage` 없음) —
   `classification`과 `service`는 사라졌다. 원인은 가린 traceback으로 stderr에 간다. `pin` 계열 실패 문구도
   같은 스크러버를 지난다(원문 tail을 실을 수 있다).
 - **launcher**: `run-pinned-rebuild-once`의 claim 해제(`<pinset>.prejournal-NN` 개명, 시도 상한 5, `claim-released`
   마커)를 지웠다. claim은 감사 기록일 뿐이고 같은 pinset의 재실행은 다음 ordinal을 받는다. 옛 호스트의
   `.prejournal-NN` 파일은 ordinal 계산에 들어가지 않는 무해한 기록이다.
+- **CLI가 예외 문구를 그대로 찍는 자리를 없앴다**(적대 리뷰): 계약 오류(`ComposeCandidateContractError`는
+  `ValueError`)가 compose tail을 싣게 되자 `action`·`ensure`의 `print(str(exc))`가 가리지 않은 채 냈다. 모든 예외
+  출력과 JSON `detail`이 한 helper(`_scrubbed_message`)를 지나고, 테스트가 원문 출력 자리의 부재를 본다.
+  `--json`이 아니면 실패 단계를 한 줄로 낸다. `.env`를 읽지 못한 사용자에게는 root로 다시 돌리라고 말한다.
+- **스크러버 원천**(적대 리뷰): 합치지 않고 key·값 쌍을 모은다 — 프로세스 환경, 보간한 `.env`, 보간하지 않은
+  `.env` 원문. compose는 프로세스 환경을 앞세우고 재구축은 원문을 넘기므로, 합치면 실제로 쓰인 값이 빠졌다.
 - **잃는 것**: result.json의 journal 전후 분류. 그 분류를 읽던 소비자는 이 launcher의 해제 판정 하나였다.
 - **남는 누출 부류(기록)**: G-1과 같다. 여기에 더해 one-shot 컨테이너가 자격증명을 변형해(JSON escape 등) stdout에
-  찍으면 tail에 남는다. tail은 root 0600 `stderr.log`와 409 API 본문(G-1 경계에서 가림)으로만 나간다.
+  찍으면 tail에 남는다. 잘린 조각도 남는다 — psql은 긴 문장을 약 60열로 줄여 `LINE 1: ...`로 되풀이하고, 여러 줄
+  값(PEM)은 tail 경계에서 잘릴 수 있다. 16 KiB를 넘는 한 줄은 싣지 않고 그 사실만 적는다. tail은 root 0600 `stderr.log`와 409 API 본문(G-1 경계에서 가림)으로만 나간다.

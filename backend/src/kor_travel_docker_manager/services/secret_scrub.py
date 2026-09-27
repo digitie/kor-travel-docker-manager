@@ -109,7 +109,10 @@ def load_secret_environment(env_path: str | Path) -> list[tuple[str, str | None]
     ]
 
 
-_WITHHELD = "failure detail withheld: .env could not be read for redaction"
+_WITHHELD = (
+    "failure detail withheld: .env could not be read for redaction "
+    "(run as a user who can read it, usually root, to see the cause)"
+)
 
 
 def redact_structure(
