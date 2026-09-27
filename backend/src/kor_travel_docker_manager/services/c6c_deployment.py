@@ -5001,10 +5001,6 @@ def validate_compose_candidate_protected_values(
             "compose candidate service is missing or invalid: "
             + _describe_candidate_service_key(service_name)
         )
-    # ADR-51 결정 5: 보호 참조는 설치된 릴리스 compose에서 파생한다. P-1은 아래 리터럴 표 검사와 함께 돈다.
-    assert_protected_references_are_derived(
-        candidate, compose_path=compose_path, environment=environment
-    )
     # ── Map superuser password : **family scope 밖의 전역 불변식** ──────────
     # 이 두 줄은 아래 여섯 family validator와 **다른 층**이다. S4가 family scope로
     # 아래 블록을 게이팅하더라도 이 둘은 그대로 돈다 — 그것이 요점이다.
@@ -5281,6 +5277,11 @@ def validate_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 f"compose candidate top-level {collection_name} file resources are unsupported"
             )
+    # ADR-51 결정 5: 보호 참조는 설치된 릴리스 compose에서 파생한다. P-1에서는 리터럴 표 검사 **뒤에**
+    # 돌아 그 검사들이 먼저 자기 문구로 거부하고, 표가 놓친 것(공유 PostgreSQL 비밀 등)만 여기서 잡힌다.
+    assert_protected_references_are_derived(
+        candidate, compose_path=compose_path, environment=environment
+    )
     return system_bind_snapshots
 
 
