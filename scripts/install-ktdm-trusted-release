@@ -111,6 +111,11 @@ EOF
     -c 'import kor_travel_docker_manager.cli'
   printf '%s\n' "${SHA}" > "${REL}/.ktdm-source-revision"
 fi
+# UI는 docker-compose.yml을 제자리에서 고친다. C6c 보호 참조의 원본(ADR-51 결정 5)은 git에서 매번 다시
+# 쓰는 이 사본이다 — 같은 revision을 다시 설치해도(추출을 건너뛰어도) 빠진 사본이 복구된다.
+git_src show "${SHA}:docker-compose.yml" > "${REL}/.ktdm-release-compose.yml.tmp"
+chmod 0444 "${REL}/.ktdm-release-compose.yml.tmp"
+mv -f -- "${REL}/.ktdm-release-compose.yml.tmp" "${REL}/.ktdm-release-compose.yml"
 # 모든 `.env` 쓰기는 G 아래에 있다(ADR-51 C-2) — 여기서 복사한 것이 곧 live 값이다.
 [[ "${PREV}" == "${NAME}" ]] || cp -p -- "${APP}/.env" "${REL}/.env"
 

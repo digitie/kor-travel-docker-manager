@@ -224,3 +224,50 @@ def test_the_release_keeps_index_exec_bits_and_drops_group_other_write(tmp_path:
         assert stat.S_IMODE((release / "scripts" / name).stat().st_mode) == 0o755, name
     unit = release / "deploy" / "systemd" / "ktdm-backend.service"
     assert stat.S_IMODE(unit.stat().st_mode) == 0o644
+
+
+def _reference_copy_block() -> str:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    start = text.index("# UI는 docker-compose.yml을 제자리에서 고친다.")
+    end = text.index("# 모든 `.env` 쓰기는 G 아래에 있다", start)
+    return text[start:end]
+
+
+def test_every_install_rewrites_the_read_only_reference_compose_from_git(tmp_path: Path) -> None:
+    """UI는 docker-compose.yml을 제자리에서 고친다 — C6c 보호 참조의 원본은 git에서 쓴 사본이다
+    (ADR-51 결정 5). 추출 분기 **밖**에서 매번 쓴다: 같은 revision을 다시 설치하면 추출을 건너뛰므로,
+    분기 안에만 있으면 빠진 사본이 영영 복구되지 않는다. UI가 고친 파일이 아니라 git에서 쓴다."""
+
+    release = tmp_path / "release"
+    release.mkdir()
+    # UI가 고친 compose — 사본의 원천이 되면 안 된다.
+    (release / "docker-compose.yml").write_text("services: {edited: {}}\n", encoding="utf-8")
+    script = (
+        "set -euo pipefail\n"
+        f'git_src() {{ git -C "{_ROOT}" "$@"; }}\n'
+        "SHA=HEAD\n"
+        f'REL="{release}"\n' + _reference_copy_block()
+    )
+
+    for _ in range(2):  # 두 번째는 이미 있는 읽기 전용 사본을 덮어쓴다(같은 revision 재설치)
+        subprocess.run(["bash", "-c", script], check=True)
+
+    copy = release / ".ktdm-release-compose.yml"
+    expected = subprocess.run(
+        ["git", "-C", str(_ROOT), "show", "HEAD:docker-compose.yml"],
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert copy.read_bytes() == expected
+    assert stat.S_IMODE(copy.stat().st_mode) == 0o444
+    assert not (release / ".ktdm-release-compose.yml.tmp").exists()
+
+
+def test_the_reference_copy_is_written_outside_the_extraction_branch() -> None:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    marker = text.index('> "${REL}/.ktdm-source-revision"')
+    branch_end = text.index("\nfi\n", marker)
+    copy = text.index("# UI는 docker-compose.yml을 제자리에서 고친다.")
+    switch = text.index('ln -sfn "${NAME}" "${APP}.new"')
+
+    assert branch_end < copy < switch

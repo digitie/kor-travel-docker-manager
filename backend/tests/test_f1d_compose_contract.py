@@ -6298,3 +6298,33 @@ def test_removing_the_loopback_binding_entirely_is_refused(tmp_path: Path) -> No
             environment=environment,
         )
 
+
+
+def test_the_raw_validator_applies_the_derived_protected_reference_rule(tmp_path: Path) -> None:
+    """ADR-51 결정 5 P-1: 리터럴 표가 놓친 공유 비밀 참조를 raw 검증기가 거부한다 — 배선을 잰다."""
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    validate_compose_candidate_protected_values(
+        candidate,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+        environment=environment,
+    )
+    leaking = deepcopy(candidate)
+    map_api = leaking["services"]["kor-travel-map-api"]  # type: ignore[index]
+    environment_block = map_api.setdefault("environment", {})
+    if isinstance(environment_block, list):
+        environment_block.append("KTDM_PROBE=${KOR_TRAVEL_SHARED_POSTGRES_PASSWORD}")
+    else:
+        environment_block["KTDM_PROBE"] = "${KOR_TRAVEL_SHARED_POSTGRES_PASSWORD}"
+
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match="kor-travel-map-api.environment.KTDM_PROBE -> KOR_TRAVEL_SHARED_POSTGRES_PASSWORD",
+    ):
+        validate_compose_candidate_protected_values(
+            leaking,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )

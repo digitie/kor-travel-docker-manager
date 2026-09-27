@@ -38,6 +38,9 @@ from kor_travel_docker_manager.services.capabilities import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
 )
+from kor_travel_docker_manager.services.compose_references import (
+    assert_protected_references_are_derived,
+)
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
@@ -5274,6 +5277,11 @@ def validate_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 f"compose candidate top-level {collection_name} file resources are unsupported"
             )
+    # ADR-51 결정 5: 보호 참조는 설치된 릴리스 compose에서 파생한다. P-1에서는 리터럴 표 검사 **뒤에**
+    # 돌아 그 검사들이 먼저 자기 문구로 거부하고, 표가 놓친 것(공유 PostgreSQL 비밀 등)만 여기서 잡힌다.
+    assert_protected_references_are_derived(
+        candidate, compose_path=compose_path, environment=environment
+    )
     return system_bind_snapshots
 
 
