@@ -102,7 +102,6 @@ _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _PINVI_DB_INIT_SERVICE = "pinvi-db-init"
 _PINVI_POSTGRES_PASSWORD_SECRET = "pinvi-postgres-password"
-_PINVI_SHARED_APP_PASSWORD_SECRET = "pinvi-shared-app-password"
 _PINVI_POSTGRES_PASSWORD_FILE = f"/run/secrets/{_PINVI_POSTGRES_PASSWORD_SECRET}"
 #: 두 PostgreSQL이 **같은** 초기화 인증 인자를 쓴다. 공유 상수로 두는 이유는 한쪽만
 #: 바뀌는 것을 막기 위해서다 — 2026-09-17 감사가 실측했듯 Map 쪽은 이 값이 계약에
@@ -4356,8 +4355,6 @@ def validate_resolved_compose_candidate_protected_values(
         resolved,
         services=services,
         environment=environment,
-        protected_names=frozenset(),
-        protected_values=(),
     )
     compose_directory: Path | None = None
     root_env: Path | None = None
@@ -4781,8 +4778,6 @@ def validate_compose_candidate_protected_values(
         candidate,
         services=services,
         environment=environment,
-        protected_names=protected_names,
-        protected_values=protected_values,
     )
     # (GM-17 B S1) 같은 함수 앞머리에서 이미 같은 인자로 불렀다 — 중복 제거.
     system_bind_snapshots = _validate_candidate_volume_graph(
@@ -7833,9 +7828,12 @@ def _validate_candidate_external_resource_references(
     *,
     services: Mapping[str, Any],
     environment: Mapping[str, str],
-    protected_names: frozenset[str],
-    protected_values: tuple[str, ...],
 ) -> None:
+    """secret·config 선언의 모양과 external alias의 소비를 본다.
+
+    `environment:`가 어느 변수를 가리켜도 되는지는 여기서 보지 않는다 — 설치된 릴리스 compose의 같은 자리와
+    대조하는 파생 규칙이 본다(ADR-51 결정 5). 종전의 이름 스캔은 정상 선언 셋만 하드코딩으로 면제했다.
+    """
     for collection_name in ("secrets", "configs"):
         collection = document.get(collection_name)
         if collection is None:
@@ -7854,40 +7852,9 @@ def _validate_candidate_external_resource_references(
                     raise ComposeCandidateContractError(
                         f"compose candidate {collection_name}.{alias} environment is invalid"
                     )
-                environment_value = environment.get(environment_name)
-                if environment_value is None:
+                if environment.get(environment_name) is None:
                     raise ComposeCandidateContractError(
                         f"compose candidate {collection_name}.{alias} environment is unresolved"
-                    )
-                is_map_postgres_password_secret = (
-                    collection_name == "secrets"
-                    and alias == _MAP_POSTGRES_PASSWORD_SECRET
-                    and environment_name == "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"
-                )
-                is_pinvi_postgres_password_secret = (
-                    collection_name == "secrets"
-                    and alias == _PINVI_POSTGRES_PASSWORD_SECRET
-                    and environment_name == "PINVI_POSTGRES_PASSWORD"
-                )
-                # geo 패턴 전환: PinVi의 app role 비밀번호도 secret file로 선언된다
-                # (`pinvi-shared-app-password` -> `PINVI_APP_DB_PASSWORD`) — 위 둘과
-                # 같은 근거로 면제한다: **이 선언 자체가 보호 이름을 담을 자격이 있는
-                # secret alias**이고, 값이 아니라 이름의 등장만 본다.
-                is_pinvi_shared_app_password_secret = (
-                    collection_name == "secrets"
-                    and alias == _PINVI_SHARED_APP_PASSWORD_SECRET
-                    and environment_name == _PINVI_APP_DB_PASSWORD_ENV
-                )
-                if not (
-                    is_map_postgres_password_secret
-                    or is_pinvi_postgres_password_secret
-                    or is_pinvi_shared_app_password_secret
-                ) and (
-                    any(name in environment_name for name in protected_names)
-                    or any(value in environment_value for value in protected_values)
-                ):
-                    raise ComposeCandidateContractError(
-                        f"compose candidate {collection_name}.{alias} environment leaks C6c data"
                     )
             external = source.get("external")
             is_external = external is not None and external is not False
