@@ -9,9 +9,8 @@
 (당시 문구 `pinned runtime source worktree is unsafe` — 앞선 실행이 불변 핀 소스 트리에
 `node_modules`를 쓴 것)를 알 수 있었다. 그 왕복이 한 사이클을 더 썼다.
 
-내용은 여전히 닫아 둔다. 예외 **타입 이름**은 호스트 상태를 담지 않으므로 항상
-낼 수 있고, 메시지는 Manager 자신이 쓴 고정 문구일 때만 낸다. 문구를 열거하지
-않고 접두로 거르므로 새 문구가 생겨도 드리프트하지 않는다.
+ADR-51 잃는 보장 G-3부터는 닫힌 어휘로 거르지 않는다. 어떤 예외든 타입 이름과 **가린
+첫 줄**을 낸다 — launcher가 이 줄을 journald로 옮기므로 요약만 낸다.
 """
 
 from __future__ import annotations
@@ -30,6 +29,7 @@ def _harness() -> Any:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module._SECRET_ENV_FILE = Path("/nonexistent/m05-driver-test.env")
     return module
 
 
@@ -50,7 +50,7 @@ def _refusing_preflight(
 def test_a_contract_refusal_names_its_reason(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Manager 자신이 쓴 고정 문구는 그대로 낸다."""
+    """Manager가 쓴 문구를 그대로 낸다."""
     module = _harness()
     _refusing_preflight(
         module, monkeypatch, RuntimeError("pinned runtime source Git operation failed")
@@ -62,21 +62,23 @@ def test_a_contract_refusal_names_its_reason(
     assert "pinned runtime source Git operation failed" in printed
 
 
-def test_an_unknown_message_still_names_the_exception_type(
+def test_an_unknown_message_is_printed_scrubbed(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """모르는 문구는 내지 않되 **침묵하지도 않는다.**"""
+    """어휘 밖 문구도 낸다(e2e23은 그 침묵으로 죽었다) — 비밀만 가리고."""
     module = _harness()
+    monkeypatch.setenv("KTDM_TEST_PREFLIGHT_SECRET", "preflight-secret-0042")
     _refusing_preflight(
-        module, monkeypatch, OSError("/home/someone/secret-path/state is missing")
+        module,
+        monkeypatch,
+        OSError("/home/someone/state is missing near preflight-secret-0042"),
     )
 
     assert module.preflight("a" * 40) == 1
     printed = capsys.readouterr().out.strip()
-    assert printed.startswith("source_materialization: OSError")
-    # 호스트 경로는 나가지 않는다.
-    assert "/home/" not in printed
-    assert "secret-path" not in printed
+    assert printed == (
+        "source_materialization: OSError: /home/someone/state is missing near <redacted>"
+    )
 
 
 def test_the_refusal_is_never_silent(
@@ -94,20 +96,7 @@ def test_the_refusal_is_never_silent(
         assert capsys.readouterr().out.strip() != "", type(error).__name__
 
 
-def test_the_prefix_matches_the_manager_source_literals() -> None:
-    """접두가 실제 문구들과 맞는지 확인한다 — 틀리면 게이트가 공허해진다."""
-    module = _harness()
-    sources = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "kor_travel_docker_manager"
-        / "services"
-        / "pinned_runtime_sources.py"
-    ).read_text(encoding="utf-8")
-    assert f'DeploymentContractError("{module._SOURCE_DIAGNOSTIC_PREFIX}' in sources
-
-
-def test_only_the_constant_first_line_of_a_source_message_is_printed(
+def test_only_the_first_line_of_a_multi_line_message_is_printed(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """ADR-51 G-2부터 source 문구 둘째 줄에 명령(경로)과 git 원문 tail이 붙는다 — 첫 줄만 낸다."""

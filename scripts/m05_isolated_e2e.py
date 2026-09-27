@@ -87,19 +87,19 @@ from kor_travel_docker_manager.services.runtime_pin_registry import (
     load_runtime_pin_registry,
     runtime_pin_registry_path,
 )
-from kor_travel_docker_manager.services.secret_scrub import scrub_failure_text
+from kor_travel_docker_manager.services.secret_scrub import is_sensitive_key, scrub_failure_text
 
 
 def _scrubbed_excepthook(kind: type[BaseException], value: BaseException, tb: Any) -> None:
     """잡지 않은 예외(모듈 로드 중 실패 포함)도 가린 traceback으로 낸다(ADR-51 잃는 보장 G-3).
 
-    아래 상수가 아직 없을 수 있어 경로를 직접 쓰고 생성 비밀은 있으면 쓴다.
+    아래 상수가 아직 없을 수 있어(모듈 로드 중 실패) 있으면 쓰고 없으면 기본값을 쓴다.
     """
 
     text = "".join(traceback.format_exception(kind, value, tb))
-    generated = globals().get("_GENERATED_SECRETS", ())
+    env_file = globals().get("_SECRET_ENV_FILE", Path("/opt/kor-travel-docker-manager/.env"))
     print(
-        scrub_failure_text(text, Path("/opt/kor-travel-docker-manager/.env"), generated),
+        scrub_failure_text(text, env_file, globals().get("_GENERATED_SECRETS", ())),
         file=sys.stderr,
     )
 
@@ -114,6 +114,8 @@ PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
 _CleanupProject = tuple[Path, str, Path, tuple[Path, ...], tuple[str, ...]]
 
 _ROOT = Path("/opt/kor-travel-docker-manager")
+#: 실패 텍스트를 가릴 때 읽는 Manager `.env`(driver는 root로 돈다).
+_SECRET_ENV_FILE = _ROOT / ".env"
 _LEDGER = Path("/var/lib/kor-travel-docker-manager/m05-isolated-once")
 _REVISION_LENGTH = 40
 _RENDERED_PORT_EVIDENCE_LIMIT = 16
@@ -673,6 +675,20 @@ def _write_private_text(path: Path, value: str) -> None:
     _write_private_bytes(path, value.encode("utf-8"))
 
 
+def _write_env_file(path: Path, text: str) -> None:
+    """자식에게 넘기는 env 파일을 쓰고, 그 안의 민감한 값을 실패 텍스트 가림 대상에 올린다.
+
+    생성 비밀은 `_random_secret`이 이미 올린다. 여기서는 파일에 **실제로 적힌 형태**를 올린다 —
+    파생값(비밀번호 해시)과 compose `$$` escape는 원래 값과 모양이 다르다(ADR-51 잃는 보장 G-3).
+    """
+
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and value and is_sensitive_key(key.strip()):
+            _GENERATED_SECRETS.extend({value, value.replace("$$", "$")})
+    _write_private_text(path, text)
+
+
 def _command(
     *args: str,
     cwd: Path | None = None,
@@ -851,7 +867,7 @@ _GENERATED_SECRETS: list[str] = []
 def _scrub(text: str) -> str:
     """Manager `.env`·프로세스 환경·이 실행이 만든 비밀을 가린다(ADR-51 잃는 보장 G)."""
 
-    return scrub_failure_text(text, _ROOT / ".env", _GENERATED_SECRETS)
+    return scrub_failure_text(text, _SECRET_ENV_FILE, _GENERATED_SECRETS)
 
 
 def _output_section(label: str, raw: bytes | None) -> str:
@@ -1926,8 +1942,7 @@ def _rotation_pair_digests(mapping: object, *, map_revision: str) -> int:
                     cwd="/",
                     env=_SAFE_SUBPROCESS_ENV,
                     stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    capture_output=True,
                     check=False,
                 )
                 if blob.returncode != 0:
@@ -3287,7 +3302,7 @@ def main(expected_revision: str, output: Path) -> int:
             f"postgresql://kor_travel_map:{password}@postgres:5432/kor_travel_map"
         )
         ui_hash = _pbkdf2_password_hash(_random_secret()).replace("$", "$$")
-        _write_private_text(
+        _write_env_file(
             map_env,
             "\n".join(
                 (
@@ -3344,7 +3359,7 @@ def main(expected_revision: str, output: Path) -> int:
         )
         # generic Map API image에서 실행하는 fixture에는 ordinary Dagster runtime
         # credential만 넣는다. bootstrap/migrator owner DSN은 전달하지 않는다.
-        _write_private_text(
+        _write_env_file(
             fixture_env,
             "KOR_TRAVEL_MAP_PG_DSN="
             f"postgresql+asyncpg://ktm_feature_dagster_runtime:{dagster_password}"
@@ -3446,7 +3461,7 @@ def main(expected_revision: str, output: Path) -> int:
         # 못 해, 전자는 헛소각되고 후자는 재실행돼 본문이 두 번 돈다(적대 리뷰).
         _write_private_bytes(output / "claimed", b"1\n")
         phase = "runtime_setup_pinvi_config"
-        _write_private_text(
+        _write_env_file(
             pinvi_env,
             "\n".join(
                 (
@@ -4053,9 +4068,9 @@ def main(expected_revision: str, output: Path) -> int:
                 # 강제하므로(`set(value) != expected_keys` → degraded → 무조건 소각)
                 # 그 계약을 건드리면 통과한 실행이 타 버린다.
                 #
-                # print도 안 된다. 운영 경로에서 launcher가 드라이버를
-                # `>/dev/null 2>&1`로 부르므로(run-m05-isolated-e2e-once) 그 문장은
-                # 아무 데도 닿지 않는다 — "조용히 넘기지 않는다"가 거짓이 된다.
+                # print도 안 된다. 운영 경로에서 launcher가 드라이버의 stdout을
+                # `/dev/null`로 보내므로(run-m05-isolated-e2e-once; stderr는 실패 텍스트
+                # 전용이다) 그 문장은 아무 데도 닿지 않는다.
                 # 그래서 receipt와 같은 방식으로 **durable marker**를 남긴다.
                 _write_consume_failure_marker(expected_revision, execution_identity)
         result: dict[str, object] = {
