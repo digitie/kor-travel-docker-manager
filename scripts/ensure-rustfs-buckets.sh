@@ -14,13 +14,14 @@ retries="${RUSTFS_WAIT_RETRIES:-60}"
 response=/tmp/rustfs-init.out
 
 # minio/mc는 Docker Hub에서 사라졌다(2026-09-27) — rustfs 이미지에 든 curl의 SigV4로 버킷을 만든다.
-# 접속 실패·5xx만 기동 대기로 보고 재시도한다. 인증·이름 같은 4xx는 바로 실패한다 — 이미 있는
+# 접속 실패·5xx만 기동 대기로 보고 재시도한다(RustFS는 health가 200이 된 뒤에도 잠시 `503 waiting
+# for storage_quorum`을 돌려준다). 인증·이름 같은 4xx는 바로 실패한다 — 이미 있는
 # bucket은 200(RustFS) 또는 409 BucketAlreadyOwnedByYou(S3)로 멱등이다.
 ensure_bucket() {
   i=0
   while :; do
     rm -f "$response"
-    code=$(curl -sS -o "$response" -w '%{http_code}' --aws-sigv4 aws:amz:us-east-1:s3 \
+    code=$(curl -sS --connect-timeout 5 --max-time 30 -o "$response" -w '%{http_code}' --aws-sigv4 aws:amz:us-east-1:s3 \
       --user "$access_key:$secret_key" -X PUT "$endpoint/$1") || code=000
     case "$code" in
       200) return 0 ;;
