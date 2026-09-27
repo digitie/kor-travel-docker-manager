@@ -10,19 +10,35 @@ endpoint="${RUSTFS_ENDPOINT:-http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101
 access_key="${RUSTFS_ACCESS_KEY:-rustfsadmin}"
 secret_key="${RUSTFS_SECRET_KEY:-rustfsadmin}"
 
-i=0
-while [ "$i" -lt "${RUSTFS_WAIT_RETRIES:-60}" ]; do
-  if mc alias set local "$endpoint" "$access_key" "$secret_key" >/dev/null 2>&1; then
-    break
-  fi
-  i=$((i + 1))
-  sleep 2
-done
+retries="${RUSTFS_WAIT_RETRIES:-60}"
+response=/tmp/rustfs-init.out
 
-if [ "$i" -ge "${RUSTFS_WAIT_RETRIES:-60}" ]; then
-  echo "rustfs did not become ready in time: $endpoint" >&2
-  exit 1
-fi
+# minio/mc는 Docker Hub에서 사라졌다(2026-09-27) — rustfs 이미지에 든 curl의 SigV4로 버킷을 만든다.
+# 접속 실패·5xx만 기동 대기로 보고 재시도한다(RustFS는 health가 200이 된 뒤에도 잠시 `503 waiting
+# for storage_quorum`을 돌려준다). 인증·이름 같은 4xx는 바로 실패한다 — 이미 있는
+# bucket은 200(RustFS) 또는 409 BucketAlreadyOwnedByYou(S3)로 멱등이다.
+ensure_bucket() {
+  i=0
+  while :; do
+    rm -f "$response"
+    code=$(curl -sS --connect-timeout 5 --max-time 30 -o "$response" -w '%{http_code}' --aws-sigv4 aws:amz:us-east-1:s3 \
+      --user "$access_key:$secret_key" -X PUT "$endpoint/$1") || code=000
+    case "$code" in
+      200) return 0 ;;
+      409) grep -q BucketAlreadyOwnedByYou "$response" && return 0 ;;
+      000|5??)
+        i=$((i + 1))
+        if [ "$i" -lt "$retries" ]; then
+          sleep 2
+          continue
+        fi
+        ;;
+    esac
+    echo "rustfs bucket $1: HTTP $code from $endpoint" >&2
+    if [ -s "$response" ]; then cat "$response" >&2; echo >&2; fi
+    return 1
+  done
+}
 
 for bucket in \
   "${PINVI_RUSTFS_BUCKET:-pinvi-media}" \
@@ -35,7 +51,7 @@ for bucket in \
     log "ensuring bucket: $bucket"
     # 이미 존재하는 bucket만 멱등으로 허용한다. 인증·연결·권한 같은 실패를
     # `|| true`로 삼키면 init one-shot이 성공한 것처럼 보인다.
-    mc mb --ignore-existing "local/$bucket" >/dev/null
+    ensure_bucket "$bucket"
   fi
 done
 

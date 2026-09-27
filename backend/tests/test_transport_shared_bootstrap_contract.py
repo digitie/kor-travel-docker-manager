@@ -77,7 +77,7 @@ def test_transport_raw_bucket_is_provisioned_and_documented() -> None:
         encoding="utf-8"
     )
     assert '"${KOR_TRAVEL_TRANSPORT_RUSTFS_BUCKET:-kor-travel-transport-raw}"' in bucket_script
-    assert 'mc mb --ignore-existing "local/$bucket"' in bucket_script
+    assert 'ensure_bucket "$bucket"' in bucket_script
 
     env_example = (_ROOT / ".env.example").read_text(encoding="utf-8")
     assert "KOR_TRAVEL_TRANSPORT_SHARED_APP_USER=" not in env_example
