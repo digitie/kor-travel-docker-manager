@@ -2393,10 +2393,14 @@ def test_a_failure_echoing_every_written_env_file_leaks_no_sensitive_value(
 
     assert harness.run() == 1
     err = capsys.readouterr().err
+    # 불리언·숫자는 이름이 민감해도 비밀일 수 없다(`..._API_KEY_REQUIRED=false`) — driver도 올리지 않는다.
     sensitive = {
         key: value
         for key, value in written.items()
-        if is_sensitive_key(key.partition(":")[2]) and len(value) >= 4
+        if is_sensitive_key(key.partition(":")[2])
+        and len(value) >= 4
+        and value.lower() not in {"true", "false"}
+        and not value.isdigit()
     }
     # 하한은 **본 것**에 건다 — 파일을 못 읽었으면 이 검사는 공허하다.
     assert len(sensitive) >= 10, sorted(sensitive)
