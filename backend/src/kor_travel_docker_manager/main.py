@@ -43,6 +43,7 @@ from kor_travel_docker_manager.services.metrics_service import metrics_service
 from kor_travel_docker_manager.services.public_api_key_service import (
     PUBLIC_API_KEY_QUERY_PARAM,
 )
+from kor_travel_docker_manager.services.secret_scrub import scrub_failure_text
 from kor_travel_docker_manager.services.secure_state_file import env_flag
 
 # 프로젝트 루트 .env(gitignore 대상)에서 prod 공개 주소/CORS 설정을 읽어온다.
@@ -281,10 +282,16 @@ app.include_router(container_router, prefix="/api/v1", tags=["containers"])
 app.include_router(ws_router, prefix="/api/v1", tags=["websocket"])
 
 
+def _scrubbed(text: object) -> str:
+    """오류 본문은 브라우저까지 간다 — 원인 문구는 그대로, 비밀만 가린다(ADR-51 잃는 보장 G)."""
+
+    return scrub_failure_text(str(text), get_env_path())
+
+
 def _candidate_contract_detail(error: ComposeCandidateContractError) -> dict:
     return {
         "code": error.code,
-        "message": str(error),
+        "message": _scrubbed(error),
         "stage": "candidate_validation",
         "mutation_applied": False,
     }
@@ -294,16 +301,18 @@ def _post_mutation_contract_detail(error: ComposePostMutationContractError) -> d
     original_code = getattr(error.original_error, "code", None)
     return {
         "code": error.code,
-        "message": str(error),
+        "message": _scrubbed(error),
         "stage": "post_mutation_recovery",
         "mutation_applied": True,
         "original_error": {
             "code": original_code,
-            "message": str(error.original_error),
+            "message": _scrubbed(error.original_error),
         },
         "recovery_attempted": error.recovery_attempted,
         "recovery_succeeded": error.recovery_succeeded,
-        "recovery_error": error.recovery_error,
+        "recovery_error": (
+            None if error.recovery_error is None else _scrubbed(error.recovery_error)
+        ),
         "restoration": error.restoration,
     }
 
@@ -360,8 +369,8 @@ def _contract_error_detail(exc: Exception) -> dict[str, str] | str:
 
     code = getattr(exc, "code", None)
     if isinstance(code, str) and code:
-        return {"code": code, "message": str(exc)}
-    return str(exc)
+        return {"code": code, "message": _scrubbed(exc)}
+    return _scrubbed(exc)
 
 
 @app.exception_handler(DeploymentContractError)

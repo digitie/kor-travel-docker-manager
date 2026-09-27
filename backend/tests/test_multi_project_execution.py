@@ -350,7 +350,6 @@ def test_the_unlocked_layer_is_the_last_net(
             ["up", "-d"],
             capture_output=True,
             environment=None,
-            redact_config=None,
             expected_system_bind_snapshots=(),
             expected_compose_source_bytes=None,
             environment_snapshot=None,
@@ -441,7 +440,6 @@ def test_the_environment_argument_does_not_reopen_full_inheritance(
         # 결과를 내서 "명시 인자가 위에 덮인다"가 검사되지 않는다(적대 리뷰
         # 2026-09-18 E-M09: 순서를 뒤집는 변이가 살아남았다).
         environment={"TMPDIR": "/explicit"},
-        redact_config=None,
         expected_system_bind_snapshots=None,
         expected_compose_source_bytes=None,
         environment_snapshot=None,
@@ -523,7 +521,6 @@ def test_each_mutation_input_alone_trips_the_last_net(
     base = {
         "capture_output": True,
         "environment": None,
-        "redact_config": None,
         "expected_system_bind_snapshots": None,
         "expected_compose_source_bytes": None,
         "environment_snapshot": None,
@@ -552,7 +549,6 @@ def test_the_last_net_also_reads_the_command(
             ["down", "-v"],
             capture_output=True,
             environment=None,
-            redact_config=None,
             expected_system_bind_snapshots=None,
             expected_compose_source_bytes=None,
             environment_snapshot=None,

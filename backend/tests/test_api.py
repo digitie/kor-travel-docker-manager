@@ -2582,3 +2582,36 @@ def test_get_disk_usage_requires_authentication():
     response = client.get("/api/v1/system/disk-usage")
 
     assert response.status_code == 401
+
+
+@patch("kor_travel_docker_manager.api.routes.compose_service")
+def test_api_error_bodies_are_scrubbed(mock_compose_service, tmp_path, monkeypatch):
+    """오류 본문은 브라우저까지 간다 — 원인은 보이고 심은 비밀은 없다(ADR-51 잃는 보장 G)."""
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN=planted-api-token-31c7\n"
+        "KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY=planted-api-svc-key-8e20\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(env_file))
+    login_client()
+    mock_compose_service.ensure_target.side_effect = ComposeCandidateContractError(
+        "compose candidate resolution failed near planted-api-token-31c7"
+    )
+    conflict = client.post("/api/v1/targets/storage/ensure", json={})
+    mock_compose_service.ensure_target.side_effect = None
+    mock_compose_service.ensure_target.return_value = {
+        "success": False,
+        "returncode": 1,
+        "stderr": "error: required variable planted-api-svc-key-8e20 is missing",
+        "command": ["docker", "compose", "up", "--token=planted-api-token-31c7"],
+    }
+    failure = client.post("/api/v1/targets/storage/ensure", json={})
+
+    assert conflict.status_code == 409
+    assert "compose candidate resolution failed" in conflict.text
+    assert failure.status_code == 500
+    assert "required variable" in failure.text
+    for secret in ("planted-api-token-31c7", "planted-api-svc-key-8e20"):
+        assert secret not in conflict.text + failure.text

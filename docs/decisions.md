@@ -3848,3 +3848,19 @@ git을 부르지 않는다. `pinned_runtime_sources.py`는 754줄에서 401줄�
 - **되돌림 하한**: 조건부로 I-1 그대로다. `<state_root>/pinned-runtime-sources-v5/`와 `.env`의 두 checkout을 그대로
   두면 옛 release는 봉인 트리를 오프라인으로 재검증하고, 없으면 네트워크로 다시 만든다. 새 레이아웃은 옛
   release가 읽지 않으므로 무해하다. v5 디렉터리 삭제는 선택이다(`prod-deployment.md` §8.1).
+
+### NOTE: 잃는 보장 G(실패 출력) G-1 — 스크러버 하나와 출력 경계 (2026-09-27, G-1)
+
+이 NOTE의 "G"는 잃는 보장 G(실패 출력)다 — C NOTE의 전역 락 G와 다르다. G를 세 PR로 나눈다 — G-1 스크러버와
+출력 경계, G-2 재구축 경로의 봉인 해체(원문 tail), G-3 M05 채널 하나. 새 원문을 열기 전에 오늘의 누출부터 막는다.
+
+- **스크러버 하나**: `services/secret_scrub.py`. 규칙은 민감한 key 이름의 값(길이 4 이상, `SERVICE_KEY` 추가, SQL
+  `''` 변형 포함), 값 안의 URL userinfo 비밀번호, 호출자가 넘기는 추가 값이다. 원천은 프로세스 환경과 `.env`이고,
+  `.env`를 읽지 못하면 원문 대신 그 사실만 낸다. inspect 응답·UI compose 검증(`docker_service`)도 같은 규칙을 쓴다.
+- **출력 경계 셋**: CLI stderr(재구축 실패 원문, 모든 명령의 마지막 catch-all, compose 명령 출력), API 오류 본문
+  (계약 오류 세 핸들러, ensure 500의 stderr·명령), M05 driver(G-3). 원인 문구는 그대로 보이고 비밀만 가린다.
+- **오늘 막은 누출 둘**: 재구축 CLI의 `ValueError` 원문(가리지 않고 찍었다), 명령 처리기가 잡지 않은 예외의 Python
+  기본 traceback(가리지 않은 채 stderr·launcher 로그로 갔다). 둘 다 이제 가린 원문과 JSON 판정을 남긴다.
+- **지운 것**: 쓰이지 않던 `_redact_c6c_output`·`redact_config` 경로.
+- **남는 누출 부류(기록)**: 규칙에 걸리지 않는 비밀 — `.env`·환경에 없는 값, 목록에 걸리지 않는 key 이름, 변형된
+  형태(JSON escape, percent-encoding, base64, compose `$$`), 4자 미만 값. #399부터 같았다.
