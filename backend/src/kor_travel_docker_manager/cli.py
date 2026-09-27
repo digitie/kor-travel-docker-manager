@@ -81,6 +81,7 @@ from kor_travel_docker_manager.services.runtime_pin_request import (
 from kor_travel_docker_manager.services.secret_scrub import (
     load_secret_environment,
     redact_secret_text,
+    scrub_failure_text,
 )
 from kor_travel_docker_manager.services.standalone_backup import (
     BACKUP_ROLES,
@@ -183,7 +184,7 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
     try:
         config = load_targets_config()
     except TARGETS_CONFIG_ERRORS as exc:
-        print(str(exc), file=sys.stderr)
+        print(scrub_failure_text(str(exc), get_env_path()), file=sys.stderr)
         return 1
 
     # 좌표가 **실재하는지**는 여기서만, 그리고 **요청받았을 때만** 본다.
@@ -2206,7 +2207,7 @@ def main(argv: list[str] | None = None) -> int:
         # bare `ValueError`는 여전히 각 `_cmd_*`의 기존 로컬 `except
         # ValueError`가 그대로 처리한다(이 부분은 이 커밋 이전부터 있던
         # 동작이라 손대지 않았다).
-        print(str(exc), file=sys.stderr)
+        print(scrub_failure_text(str(exc), get_env_path()), file=sys.stderr)
         sys.exit(1)
     except Exception as exc:  # noqa: BLE001 - last output boundary: never an unscrubbed traceback
         # 명령 처리기가 잡지 않은 예외는 Python 기본 traceback으로 나가 비밀을 싣고 갔다. 같은 원문을

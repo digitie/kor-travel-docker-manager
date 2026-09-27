@@ -2424,6 +2424,7 @@ def test_real_subprocess_prints_exactly_one_clean_stderr_line_for_broken_config(
 
 def test_main_does_not_swallow_unrelated_bare_value_error(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """적대적 리뷰 2건(item2-targets-validate 재검토)이 독립적으로 짚은 결함:
     `main()`의 outer `except`가 bare `ValueError`를 통째로 잡던 시절에는,
@@ -2442,8 +2443,12 @@ def test_main_does_not_swallow_unrelated_bare_value_error(
 
     monkeypatch.setattr(cli_module, "_cmd_targets_list", _boom)
 
-    with pytest.raises(ValueError, match="internal invariant broke, not a config typo"):
-        main(["targets", "list"])
+    # ADR-51 잃는 보장 G-1부터 잡지 않은 예외는 가린 traceback으로 끝난다 — config 오류인 척하는
+    # 한 줄이 아니라 예외 타입과 원래 stack이 그대로 보여야 한다.
+    assert main(["targets", "list"]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" in err
+    assert "ValueError: internal invariant broke, not a config typo" in err
 
 
 def test_cli_targets_validate_prints_ok_on_success(

@@ -80,10 +80,10 @@ def test_extra_values_are_scrubbed_too() -> None:
 
 
 def test_an_unreadable_env_withholds_the_text(tmp_path: Path) -> None:
-    directory = tmp_path / "not-a-file"
-    directory.mkdir()
+    unreadable = tmp_path / ".env"
+    unreadable.write_bytes(b"KOR_TRAVEL_MAP_API_SERVICE_TOKEN=\xff\xfe\n")
 
-    scrubbed = scrub_failure_text(f"cause {_ENV_TOKEN}", directory)
+    scrubbed = scrub_failure_text(f"cause {_ENV_TOKEN}", unreadable)
 
     assert _ENV_TOKEN not in scrubbed
     assert "withheld" in scrubbed
@@ -135,7 +135,7 @@ def test_an_unhandled_command_failure_is_scrubbed(
     """명령 처리기가 잡지 않은 예외도 가린 원문으로 끝난다 — 기본 traceback이 비밀을 싣고 가지 않는다."""
 
     def broken(_args: object) -> int:
-        raise OSError(f"disk says no to {_ENV_TOKEN}")
+        raise RuntimeError(f"invariant broke near {_ENV_TOKEN}")
 
     monkeypatch.setattr(cli, "_cmd_targets_list", broken)
 
@@ -143,7 +143,28 @@ def test_an_unhandled_command_failure_is_scrubbed(
 
     captured = capsys.readouterr()
     assert status == 1
-    assert "disk says no" in captured.err
+    assert "RuntimeError: invariant broke near" in captured.err
+    _assert_scrubbed(captured.out + captured.err)
+
+
+def test_a_targets_config_failure_is_scrubbed(
+    planted: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config 읽기 실패(OSError·YAML)는 한 줄로 끝나되 그 한 줄도 가린다."""
+
+    def broken(_args: object) -> int:
+        raise OSError(f"cannot read targets near {_ENV_SERVICE_KEY}")
+
+    monkeypatch.setattr(cli, "_cmd_targets_list", broken)
+
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["targets", "list"])
+
+    captured = capsys.readouterr()
+    assert exited.value.code == 1
+    assert "cannot read targets" in captured.err
     _assert_scrubbed(captured.out + captured.err)
 
 
