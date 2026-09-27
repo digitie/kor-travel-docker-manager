@@ -98,12 +98,16 @@ def _scrubbed_excepthook(kind: type[BaseException], value: BaseException, tb: An
     아래 상수가 아직 없을 수 있어(모듈 로드 중 실패) 있으면 쓰고 없으면 기본값을 쓴다.
     """
 
-    text = "".join(traceback.format_exception(kind, value, tb))
-    env_file = globals().get("_SECRET_ENV_FILE", Path("/opt/kor-travel-docker-manager/.env"))
-    print(
-        scrub_failure_text(text, env_file, globals().get("_GENERATED_SECRETS", ())),
-        file=sys.stderr,
-    )
+    try:
+        text = "".join(traceback.format_exception(kind, value, tb))
+        env_file = globals().get("_SECRET_ENV_FILE", Path("/opt/kor-travel-docker-manager/.env"))
+        print(
+            scrub_failure_text(text, env_file, globals().get("_GENERATED_SECRETS", ())),
+            file=sys.stderr,
+        )
+    except BaseException:  # noqa: BLE001 - never fall back to the unscrubbed traceback
+        # 훅이 죽으면 CPython은 **원문** traceback을 찍는다. 고정 한 줄로 대신한다.
+        print(f"M05 driver failed: {kind.__name__} (detail withheld)", file=sys.stderr)
 
 
 if __name__ == "__main__":
@@ -124,6 +128,9 @@ _RENDERED_PORT_EVIDENCE_LIMIT = 16
 _SAFE_PORT_PROTOCOLS = frozenset({"tcp", "udp", "sctp"})
 #: 실패 텍스트에 싣는 스트림당 끝부분 상한. 캡처는 항상 켜져 있다(ADR-51 잃는 보장 G-3).
 _OUTPUT_TAIL_LIMIT = 256 * 1024
+#: 핀된 Map이 제공하는 fresh-init one-shot. claim 전 검사와 본문 실행이 같은 이름을 쓴다.
+_MAP_FRESH_INIT_PROFILE = "fresh-init"
+_MAP_FRESH_INIT_SERVICE = "db-application-schema-fresh-300"
 # PinVi reconciliation worker의 폴링 주기(초). driver가 PinVi에 주입하는 값과
 # receipt 대기 창을 **같은 상수**에서 파생시킨다 — 두 곳에 따로 적으면 창이
 # 주기보다 짧아져 receipt가 아직 없는 순간에 단발 실패한다(정합성 스윕 high).
@@ -686,7 +693,13 @@ def _write_env_file(path: Path, text: str) -> None:
 
     for line in text.splitlines():
         key, separator, value = line.partition("=")
-        if separator and value and is_sensitive_key(key.strip()):
+        # `..._API_KEY_REQUIRED=false`의 `false`를 올리면 실패 텍스트의 모든 false가 가려진다.
+        if (
+            separator
+            and is_sensitive_key(key.strip())
+            and value.lower() not in {"", "true", "false"}
+            and not value.isdigit()
+        ):
             _GENERATED_SECRETS.extend({value, value.replace("$$", "$")})
     _write_private_text(path, text)
 
@@ -746,7 +759,10 @@ def _tail_ring(buffer: bytearray, chunk: bytes, *, limit: int) -> bool:
 
 def _clipped_tail(buffer: bytearray, *, dropped: bool) -> bytes:
     # 잘린 첫 줄은 버린다 — 비밀 값의 뒷조각만 남으면 스크러버가 알아보지 못한다.
-    return bytes(buffer).partition(b"\n")[2] if dropped else bytes(buffer)
+    if not dropped:
+        return bytes(buffer)
+    rest = bytes(buffer).partition(b"\n")[2]
+    return rest or b"(the last line exceeds the 256 KiB tail and was omitted)"
 
 
 def _run_with_bounded_output(
@@ -961,8 +977,14 @@ def _cleanup_project(
             files=files,
             arguments=(*profile_arguments, "down", "--volumes", "--remove-orphans"),
         )
-    except _PhaseError:
-        _fail("runtime_cleanup_failed")
+    except _PhaseError as error:
+        _fail(
+            "runtime_cleanup_failed",
+            diagnostic=f"compose down failed for {project}",
+            returncode=error.returncode,
+            stderr=error.stderr,
+            stdout=error.stdout,
+        )
     remaining = _command(
         "/usr/bin/docker",
         "ps",
@@ -991,7 +1013,13 @@ def _cleanup_project(
         capture=True,
     ).strip()
     if remaining or networks or volumes:
-        _fail("runtime_cleanup_failed")
+        _fail(
+            "runtime_cleanup_failed",
+            diagnostic=(
+                f"{project} left containers={remaining.split()} "
+                f"networks={networks.split()} volumes={volumes.split()}"
+            ),
+        )
 
 
 def _cleanup_temporary_resources(
@@ -1013,6 +1041,7 @@ def _cleanup_temporary_resources(
     for cleanup in (pinvi_cleanup, map_cleanup):
         if cleanup is None:
             continue
+        # cleanup 실패는 통과한 본문도 소각한다 — 원인이 가장 필요한 자리라 실패 텍스트를 낸다.
         try:
             _cleanup_project(
                 root=cleanup[0],
@@ -1021,23 +1050,28 @@ def _cleanup_temporary_resources(
                 files=cleanup[3],
                 profiles=cleanup[4],
             )
-        except _PhaseError:
+        except _PhaseError as error:
+            _emit_failure(error, progress_phase="cleanup")
             cleanup_failed = True
-        except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+        except Exception as error:  # noqa: BLE001 - fixed terminal receipt boundary
+            _emit_failure(error, progress_phase="cleanup")
             unexpected_failure = True
     for path in private_files:
         try:
             _unlink_private(path)
-        except _PhaseError:
+        except _PhaseError as error:
+            _emit_failure(error, progress_phase="cleanup")
             cleanup_failed = True
-        except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+        except Exception as error:  # noqa: BLE001 - fixed terminal receipt boundary
+            _emit_failure(error, progress_phase="cleanup")
             unexpected_failure = True
     for checkout in run_checkouts:
         try:
             shutil.rmtree(checkout)
         except FileNotFoundError:
             pass
-        except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+        except Exception as error:  # noqa: BLE001 - fixed terminal receipt boundary
+            _emit_failure(error, progress_phase="cleanup")
             # **`cleanup_failed`로 올리지 않는다.** 이 디렉터리는 output leaf 안의
             # 실행별 사본이고 핀 상태를 오염시키지 못한다. 그런데 한때 EBUSY(컨테이너
             # tmpfs 마운트 잔존) 하나로 통과한 1.5시간짜리 실행을 blocked로 뒤집고
@@ -1226,9 +1260,13 @@ def _http_json(
         if not_found_phase is not None and error.code == 404:
             _fail(not_found_phase)
         try:
-            body_head = error.read(512).decode("utf-8", errors="replace")
+            raw_body = error.read(513)
         except Exception:  # noqa: BLE001 - the status alone still says enough
-            body_head = ""
+            raw_body = b""
+        body_head = raw_body[:512].decode("utf-8", errors="replace")
+        if len(raw_body) > 512:
+            # 잘린 끝이 토큰 조각이면 스크러버가 알아보지 못한다 — 토큰 문자 꼬리를 버린다.
+            body_head = re.sub(r"[A-Za-z0-9_\-]+$", "", body_head) + "…"
         _fail(
             http_error_phase or failure_phase,
             diagnostic=f"HTTP {error.code} from {parsed.path}: {body_head}".rstrip(": "),
@@ -1965,8 +2003,12 @@ def _rotation_pair_digests(mapping: object, *, map_revision: str) -> int:
                         flush=True,
                     )
                     return 1
-    except (_PhaseError, OSError, RuntimeError, ValueError):
-        print("rotation Map source is unreadable at the target revision", flush=True)
+    except (_PhaseError, OSError, RuntimeError, ValueError) as error:
+        print(
+            "rotation Map source is unreadable at the target revision"
+            + _rotation_cause(error),
+            flush=True,
+        )
         return 1
     return 0
 
@@ -2018,8 +2060,12 @@ def rotation_preflight(map_revision: str, pinvi_revision: str) -> int:
                 f"{pinvi_revision}:{_PAIR_CONTRACT_PATH}",
                 capture=True,
             )
-    except (_PhaseError, OSError, RuntimeError, ValueError):
-        print("rotation pair contract is unreadable at the target revision", flush=True)
+    except (_PhaseError, OSError, RuntimeError, ValueError) as error:
+        print(
+            "rotation pair contract is unreadable at the target revision"
+            + _rotation_cause(error),
+            flush=True,
+        )
         return 1
     try:
         contract = json.loads(raw)
@@ -2674,6 +2720,17 @@ def _preflight_line(text: str) -> str:
     return _scrub(text.strip().partition("\n")[0])
 
 
+def _rotation_cause(error: BaseException) -> str:
+    """거부 줄 끝에 붙일 원인. 실패한 git 명령이면 stderr 마지막 줄, 아니면 예외 문구."""
+
+    if isinstance(error, _PhaseError) and error.stderr:
+        lines = error.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        cause = _preflight_line(lines[-1]) if lines else ""
+    else:
+        cause = _preflight_line(str(error))
+    return f" ({cause})" if cause else ""
+
+
 def _pinvi_manager_admission_environment(
     *,
     env_file: Path,
@@ -2970,6 +3027,23 @@ def _safe_rendered_port_evidence(ports: list[Mapping[str, Any]]) -> tuple[dict[s
         }
         for port in ports[:_RENDERED_PORT_EVIDENCE_LIMIT]
     )
+
+
+def _assert_rendered_service_present(rendered: str, *, service: str, profile: str) -> None:
+    """claim 뒤에 돌릴 one-shot이 렌더된 compose에 있는지 claim 전에 본다."""
+
+    try:
+        services = json.loads(rendered)["services"]
+    except (KeyError, TypeError, json.JSONDecodeError) as error:
+        _fail(
+            "runtime_setup_map_config",
+            diagnostic=f"rendered config ({len(rendered)} chars) has no services: {type(error).__name__}",
+        )
+    if not isinstance(services, Mapping) or service not in services:
+        _fail(
+            "runtime_setup_map_config",
+            diagnostic=f"the pinned Map compose has no {service} service in profile {profile}",
+        )
 
 
 def _assert_rendered_loopback_tcp_publish(
@@ -3291,6 +3365,12 @@ def main(expected_revision: str, output: Path) -> int:
             str(private_key),
         )
         _root_file(private_key, mode=0o600)
+        # PEM 본문 줄도 가림 대상에 올린다 — 자식이 키 파일을 에코하는 실패를 막는다.
+        _GENERATED_SECRETS.extend(
+            line
+            for line in private_key.read_text(encoding="ascii").splitlines()
+            if line and not line.startswith("-----")
+        )
         phase = "runtime_setup_map_config"
         password = _random_secret()
         token_sha = lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest()
@@ -3437,6 +3517,25 @@ def main(expected_revision: str, output: Path) -> int:
             container_port=13701,
             host_port=ports["map_api"],
             evidence_path=runtime / "rendered-loopback-publish.json",
+        )
+        # fresh-init one-shot은 claim **뒤에** 돈다. 그 서비스가 핀된 Map compose에 없으면 claim 전에
+        # 멈춘다 — 옛 진단 entrypoint override가 우연히 하던 검사(없는 서비스에 override를 얹으면
+        # compose가 거부했다)를 명시한다(ADR-51 G-3 적대 리뷰).
+        phase = "runtime_setup_map_config"
+        fresh_init_rendered = _compose(
+            root=map_root,
+            project=plan.map_project,
+            env_file=map_env,
+            files=map_files,
+            arguments=("--profile", _MAP_FRESH_INIT_PROFILE, "config", "--format", "json"),
+            capture=True,
+            capture_output_limit=_COMPOSE_CONFIG_OUTPUT_LIMIT,
+            failure_phase="runtime_setup_map_config",
+        )
+        _assert_rendered_service_present(
+            fresh_init_rendered,
+            service=_MAP_FRESH_INIT_SERVICE,
+            profile=_MAP_FRESH_INIT_PROFILE,
         )
         # source pair와 rendered runtime topology가 정합할 때만 one-shot ledger를
         # 소비한다. O_EXCL create 뒤 write/fsync 실패도 execution을 소비한 것으로 본다.
@@ -3587,10 +3686,10 @@ def main(expected_revision: str, output: Path) -> int:
             files=map_files,
             arguments=(
                 "--profile",
-                "fresh-init",
+                _MAP_FRESH_INIT_PROFILE,
                 "run",
                 "--rm",
-                "db-application-schema-fresh-300",
+                _MAP_FRESH_INIT_SERVICE,
             ),
             failure_phase="map_fresh_init_failed",
         )
@@ -4046,7 +4145,8 @@ def main(expected_revision: str, output: Path) -> int:
                     expected_manager_revision=expected_revision,
                     force_unconditional=body_entered,
                 )
-            except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+            except Exception as error:  # noqa: BLE001 - fixed terminal receipt boundary
+                _emit_failure(error, progress_phase="terminal_block")
                 pinset_blocked = False
             if not pinset_blocked:
                 phase = "runtime_execution_block_failed"
@@ -4063,7 +4163,8 @@ def main(expected_revision: str, output: Path) -> int:
                 execution_consumed = consume_current_m05_execution(
                     expected_manager_revision=expected_revision
                 )
-            except Exception:  # noqa: BLE001 - fixed terminal receipt boundary
+            except Exception as error:  # noqa: BLE001 - fixed terminal receipt boundary
+                _emit_failure(error, progress_phase="execution_consume")
                 execution_consumed = False
             if not execution_consumed:
                 # `result.json`에 키를 더하지 않는다 — 런처가 키 집합을 **정확히**

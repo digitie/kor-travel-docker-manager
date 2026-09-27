@@ -1837,8 +1837,9 @@ def test_full_happy_path_calls_external_commands_in_the_expected_order(
     assert harness.run() == 0
 
     assert harness.host.timeline == [
-        # 실행권 소비 전: rendered topology + runner digest 정합만 확인한다.
+        # 실행권 소비 전: rendered topology·fresh-init 서비스 존재·runner digest 정합만 확인한다.
         "compose:map:config-json",
+        "compose:map:config-json{fresh-init}",
         "run:playwright-info",
         "ledger-claim",
         # Map runtime
@@ -2402,3 +2403,21 @@ def test_a_failure_echoing_every_written_env_file_leaks_no_sensitive_value(
     assert "M05 isolated run failed during pinvi_runtime" in err
     leaked = sorted(key for key, value in sensitive.items() if value in err)
     assert leaked == []
+
+
+def test_a_pinned_map_without_the_fresh_init_service_is_rejected_before_the_claim(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fresh-init은 claim 뒤에 돈다 — 서비스가 없으면 실행권을 쓰기 **전에** 멈춰야 한다.
+
+    옛 진단 entrypoint override는 없는 서비스에 얹혀 compose가 거부했고, 그것이 우연히 claim 전
+    검사였다. override를 걷으면서 그 검사를 명시했다(ADR-51 G-3 적대 리뷰).
+    """
+
+    monkeypatch.setattr(harness.driver, "_MAP_FRESH_INIT_SERVICE", "db-application-schema-fresh")
+
+    assert harness.run() == 1
+    result = harness.result
+    assert result["status"] == "preflight_rejected"
+    assert result["phase"] == "runtime_setup_map_config"
+    assert "ledger-claim" not in harness.host.timeline

@@ -3931,5 +3931,15 @@ git을 부르지 않는다. `pinned_runtime_sources.py`는 754줄에서 401줄�
   않은 key·값 쌍 — 프로세스 환경, 보간한 `.env`, 보간하지 않은 `.env`, (M05) 생성 비밀과 env 파일 값.
 - **남는 누출 부류**: 원천에 없는 값, 목록에 걸리지 않는 key 이름의 값, 변형(JSON escape·percent·base64), 잘린 조각(psql
   `LINE 1:` 60열 절단, tail 경계의 여러 줄 값), 4자 미만.
+- **적대 리뷰 반영**:
+  - fresh-init 진단 override가 없는 서비스에 얹혀 compose가 거부하던 것이 우연한 claim 전 검사였다. 그래서
+    `--profile fresh-init config`에 그 서비스가 있는지 claim 전에 명시적으로 본다(`runtime_setup_map_config`).
+  - `finally`의 cleanup·terminal block·소비 기록 실패도 실패 텍스트를 낸다. 통과한 본문을 소각하는 자리라서다.
+  - 256 KiB를 넘는 한 줄은 그렇다고 적는다. `true`/`false`/숫자 env 값은 가림 대상이 아니다.
+  - rotation preflight의 git 실패는 stderr 마지막 줄을 붙인다. 잘린 HTTP body는 토큰 조각을 버린다.
+  - Ed25519 개인키 본문도 가림 대상이다. excepthook이 실패하면 원문 대신 고정 한 줄을 낸다.
+- **남는 것(기록)**: 자식이 만든 비밀(PinVi `docker-app.sh`의 일회용 migrator 비밀번호, 로그인 세션 JWT)은 어느 원천에도
+  없다. preflight 한 줄이 journald로 가므로 저엔트로피 `.env` 값은 `<redacted>` 자리로 드러날 수 있다(가림 오라클).
+  driver는 `/opt/kor-travel-docker-manager/.env`만 본다 — 없으면 조용히 프로세스 환경으로만 가린다.
 - **다음**: fresh-init 서비스 이름(`db-application-schema-fresh-300` → 핀된 Map의 `db-application-schema-fresh`)과 ADR-100/101
-  role 변경은 M05 포팅 PR에서 한다.
+  role 변경은 M05 포팅 PR에서 한다. 그 전까지 핀된 Map으로는 M05가 claim 전에 `runtime_setup_map_config`로 멈춘다.

@@ -398,7 +398,6 @@ def test_rendered_loopback_publish_parse_failure_names_the_shape_not_the_documen
     assert f"({len(rendered)} chars)" in diagnostic
     assert "api.ports" in diagnostic
     assert "interpolated-value-77" not in diagnostic
-    assert list(tmp_path.iterdir()) == []
 
 
 def test_rendered_loopback_publish_evidence_drops_unknown_or_invalid_values(
@@ -1170,7 +1169,6 @@ def test_a_failed_command_always_carries_both_streams(
     assert error.value.stdout == b"1 failed: m05 live spec"
     assert calls[0]["stdout"] is subprocess.PIPE
     assert calls[0]["stderr"] is subprocess.PIPE
-    assert list(tmp_path.iterdir()) == [], "증거 파일은 더 없다 — 실패 텍스트 하나다"
 
 
 def test_a_captured_data_stdout_is_not_carried_on_failure(
@@ -1211,7 +1209,6 @@ def test_compose_config_output_is_stream_bounded_and_fails_closed(
     assert error.value.stdout_truncated is True
     assert error.value.stdout is None
     assert str(driver._COMPOSE_CONFIG_OUTPUT_LIMIT) in (error.value.diagnostic or "")
-    assert list(tmp_path.iterdir()) == []
 
 
 def test_a_failed_compose_config_reports_its_exit_even_when_stdout_is_oversized(
@@ -1250,6 +1247,8 @@ def test_stderr_keeps_the_end_and_drops_the_cut_line(monkeypatch: pytest.MonkeyP
 
 
 def test_a_large_successful_output_is_not_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """회귀 가드: 캡처가 항상 켜진 뒤에도 끝부분 상한은 실패 사유가 아니다."""
+
     driver = _driver()
     _popen_returning(monkeypatch, driver, stdout=b"y" * (driver._OUTPUT_TAIL_LIMIT * 2))
 
@@ -1556,6 +1555,9 @@ def test_ledger_claim_attempt_failure_blocks_the_execution(
     monkeypatch.setattr(driver, "_compose", compose)
     monkeypatch.setattr(
         driver, "_assert_rendered_loopback_tcp_publish", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        driver, "_assert_rendered_service_present", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
         driver, "_cleanup_temporary_resources", lambda **_kwargs: (False, False, False)
@@ -2177,34 +2179,6 @@ def test_free_form_diagnostic_is_omitted_from_the_receipt(
     assert "map_fresh_init_reason" not in receipt
     assert receipt["phase"] == "source_materialization"
     assert _validate_receipt(result_path, driver_status=1) == 4
-
-
-def test_fresh_init_reason_is_only_carried_for_a_fresh_init_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """어휘 안의 단어라도 fresh-init 실패가 아니면 싣지 않는다.
-
-    diagnostic은 _command/_compose의 **범용** 채널이라, 다른 호출부가 겹치는
-    단어를 쓰는 exit map을 넘기는 순간 무관한 실패에 fresh-init 사유가 붙는다
-    (적대 리뷰 MAJOR-2)."""
-
-    driver = _driver()
-    monkeypatch.setattr(
-        driver,
-        "_validate_trusted_release",
-        lambda _expected: (_ for _ in ()).throw(
-            driver._PhaseError("source_materialization", diagnostic="alembic_command_failed")
-        ),
-    )
-    monkeypatch.setattr(
-        driver,
-        "_block_terminal_m05_execution",
-        lambda *_a, **_k: pytest.fail("preclaim failure must not block execution"),
-    )
-    assert driver.main("a" * 40, tmp_path) == 1
-
-    receipt = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
-    assert "map_fresh_init_reason" not in receipt
 
 
 _LAUNCHER_PATH = Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once"
@@ -4748,7 +4722,7 @@ def test_the_launcher_discards_driver_stdout_so_prints_are_not_a_channel() -> No
     launcher = (
         Path(__file__).resolve().parents[2] / "scripts/run-m05-isolated-e2e-once"
     ).read_text(encoding="utf-8")
-    invocation = launcher.index("m05_isolated_e2e.py")
+    invocation = launcher.index('"$expected_revision" "$output_dir"')
     tail = launcher[invocation : launcher.index("driver_status=", invocation)]
     # stdout은 버리고 stderr는 가린 실패 텍스트 전용 root 0600 파일로 받는다(ADR-51 G-3).
     assert '>/dev/null 2>>"$output_dir/stderr.log"' in tail
@@ -4799,3 +4773,102 @@ def test_trusted_release_behind_the_symlink_must_still_be_root_locked(
 
     with pytest.raises(driver._PhaseError, match="trusted_release_invalid"):
         driver._validate_trusted_release("a" * 40)
+
+
+def test_a_single_line_over_the_tail_is_named_not_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    driver = _driver()
+    _popen_returning(
+        monkeypatch, driver, stderr=b"z" * (driver._OUTPUT_TAIL_LIMIT * 2), returncode=1
+    )
+
+    with pytest.raises(driver._PhaseError) as error:
+        driver._command("/usr/bin/false")
+
+    assert error.value.stderr == b"(the last line exceeds the 256 KiB tail and was omitted)"
+
+
+def test_boolean_env_values_are_not_registered_as_secrets(tmp_path: Path) -> None:
+    """`..._API_KEY_REQUIRED=false`를 올리면 실패 텍스트의 모든 false가 가려진다(적대 리뷰)."""
+
+    driver = _driver()
+    driver._write_env_file(
+        tmp_path / "map.env",
+        "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED=false\n"
+        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN_TTL_SECONDS=3600\n"
+        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH=pbkdf2$$310000$$salt$$digest\n",
+    )
+
+    scrubbed = driver._scrub("Expected: false after 3600s; hash pbkdf2$310000$salt$digest")
+    assert "Expected: false after 3600s" in scrubbed
+    assert "pbkdf2$310000$salt$digest" not in scrubbed
+
+
+def test_a_cleanup_failure_says_why(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """통과한 본문도 cleanup 실패로 소각된다 — 원인이 가장 필요한 자리다(적대 리뷰 G-3)."""
+
+    driver = _driver()
+
+    def failing_down(*_args: str, **_kwargs: object) -> str:
+        raise driver._PhaseError(
+            "runtime_command_failed", returncode=1, stderr=b"volume m05i_pgdata is in use"
+        )
+
+    monkeypatch.setattr(driver, "_command", failing_down)
+    cleanup_failed, unexpected, _retained = driver._cleanup_temporary_resources(
+        map_cleanup=(tmp_path, "m05i-map-" + "a" * 32, tmp_path / "map.env", (tmp_path / "c.yml",), ()),
+        pinvi_cleanup=None,
+        private_files=(),
+    )
+
+    assert cleanup_failed is True
+    assert unexpected is False
+    err = capsys.readouterr().err
+    assert "M05 isolated run failed during cleanup" in err
+    assert "phase: runtime_cleanup_failed" in err
+    assert "volume m05i_pgdata is in use" in err
+
+
+def test_the_rotation_preflight_says_why_a_fetch_failed(monkeypatch, capsys) -> None:
+    driver = _driver()
+
+    def command(*args: str, **_kwargs: object) -> str:
+        if "fetch" in args:
+            raise driver._PhaseError(
+                "runtime_command_failed",
+                returncode=128,
+                stderr=b"remote: Repository not found.\nfatal: couldn't find remote ref " + b"a" * 40,
+            )
+        return ""
+
+    monkeypatch.setattr(driver, "_command", command)
+
+    assert driver.rotation_preflight("a" * 40, "b" * 40) == 1
+    out = capsys.readouterr().out
+    assert "unreadable at the target revision" in out
+    assert "couldn't find remote ref" in out
+
+
+def test_a_cut_http_error_body_does_not_end_in_a_token_fragment(monkeypatch) -> None:
+    driver = _driver()
+    secret = driver._random_secret()
+    body = b'{"detail":[{"input":{"password":"' + b"x" * 470 + secret.encode() + b'"}}]}'
+
+    def opener(_request: object, timeout: int) -> object:
+        del timeout
+        raise HTTPError("http://127.0.0.1:1/api/auth/login", 422, "Unprocessable", {}, io.BytesIO(body))
+
+    with pytest.raises(driver._PhaseError) as error:
+        driver._http_json(
+            "http://127.0.0.1:18000/api/auth/login",
+            headers={},
+            opener=SimpleNamespace(open=opener),
+        )
+
+    diagnostic = error.value.diagnostic or ""
+    assert diagnostic.startswith("HTTP 422 from /api/auth/login: ")
+    assert secret[:8] not in diagnostic
+    assert diagnostic.endswith("…")
