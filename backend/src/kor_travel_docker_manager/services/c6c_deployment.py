@@ -924,6 +924,9 @@ def _validate_map_database_dsn_identities(environment: Mapping[str, str]) -> Non
         or not application_database
         or not dagster_database
         or application_database == dagster_database
+        # Map bootstrap one-shot의 규칙(`database-credential-preflight.sh`)을 비춘다. 그쪽은
+        # 재구축의 DB 초기화 **뒤에** 돌므로, 어긋난 쌍은 여기서 어떤 단계보다 먼저 거부한다.
+        or metadata_user != dagster_database
     ):
         raise ComposeCandidateContractError("Map database DSN identity is invalid")
     for name, scheme, expected_user, expected_database in identities:

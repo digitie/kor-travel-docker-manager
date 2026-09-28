@@ -294,7 +294,7 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD": "map-contract-migrator-password",
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD": "map-contract-api-password",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD": "map-contract-dagster-password",
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_contract_dagster_metadata",
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_contract_dagster",
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "map-contract-dagster-metadata-password",
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
             "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
@@ -315,7 +315,7 @@ def _compose_contract_environment() -> dict[str, str]:
             "127.0.0.1:12700/map_contract"
         ),
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
-            "postgresql://map_contract_dagster_metadata:map-contract-dagster-metadata-password@"
+            "postgresql://map_contract_dagster:map-contract-dagster-metadata-password@"
             "127.0.0.1:12700/map_contract_dagster"
         ),
         "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": ("pbkdf2_sha256$100000$test-salt$test-digest"),
@@ -638,7 +638,7 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
         "DAGSTER_DISABLE_TELEMETRY": "yes",
         "DAGSTER_HOME": "/opt/dagster/dagster_home",
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
-            "postgresql://map_contract_dagster_metadata:map-contract-dagster-metadata-password@"
+            "postgresql://map_contract_dagster:map-contract-dagster-metadata-password@"
             "127.0.0.1:12700/map_contract_dagster"
         ),
     }
@@ -5346,3 +5346,24 @@ def test_the_raw_validator_applies_the_derived_protected_reference_rule(tmp_path
             root_env_path=str(root_env),
             environment=environment,
         )
+
+
+def test_map_metadata_user_must_equal_the_dagster_database_name() -> None:
+    """Map bootstrap one-shot의 규칙을 재구축 **전에** 비춘다(M1 b2).
+
+    Map은 `KOR_TRAVEL_MAP_DAGSTER_METADATA_USER == KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB`를
+    bootstrap one-shot 안에서만 강제한다 — 재구축의 DB 초기화 뒤다. 그 사이 어긋난 쌍은 R2의
+    소유자 집합을 넓힌다. DSN은 일관되게 바꿔, 막는 것이 이 규칙임을 고정한다.
+    """
+
+    environment = _compose_contract_environment()
+    c6c_deployment_module._validate_map_database_dsn_identities(environment)
+
+    environment["KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"] = "map_contract_metadata"
+    environment["KOR_TRAVEL_MAP_DAGSTER_PG_URL"] = (
+        "postgresql://map_contract_metadata:map-contract-dagster-metadata-password@"
+        "127.0.0.1:12700/map_contract_dagster"
+    )
+
+    with pytest.raises(DeploymentContractError, match="Map database DSN identity is invalid"):
+        c6c_deployment_module._validate_map_database_dsn_identities(environment)
