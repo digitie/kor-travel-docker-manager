@@ -67,7 +67,12 @@ _ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str, str]] = {
 #: 경로를 한 번에 없앤다. 이름을 프로젝트별 allowlist로 묶지 않는 이유는 그것이
 #: 운영 DB 이름을 테스트까지 전파시켜 합성 이름을 못 쓰게 만들기 때문이다 —
 #: 막아야 할 것은 예약어 쪽이다.
-_UNDROPPABLE_DATABASES: Final = frozenset({"postgres", "template0", "template1"})
+#:
+#: **수렴(ensure) 경로에도 같은 울타리를 건다.** 공용 instance의 `postgres`는 instance
+#: admin 소유이고 `alembic_version`이 없다 — `KOR_TRAVEL_MAP_POSTGRES_DB`가 잘못 박히면
+#: ensure 경로가 그것을 "bootstrap 전에 죽은 Map DB"로 읽고 role bootstrap을 돌린다.
+#: 지금 그것을 막는 것은 Map bootstrap 스크립트의 fresh 검사 하나뿐이었다.
+_RESERVED_DATABASES: Final = frozenset({"postgres", "template0", "template1"})
 _ROLE_PORT_CONFIG: dict[DatabaseRole, tuple[str, int]] = {
     "map_application": ("KOR_TRAVEL_MAP_POSTGRES_PORT", 12700),
     "map_dagster": ("KOR_TRAVEL_MAP_POSTGRES_PORT", 12700),
@@ -132,6 +137,9 @@ class _DagsterMetadataRolePreflight:
     can_login: bool
     inherit: bool
     attributes: DagsterMetadataRoleAttributes
+    #: 이 role이 소유한 DB 수와 `pg_shdepend` 참조 행 수. 둘 다 0이어야 남은 role이다(R2).
+    owned_database_count: int
+    shared_dependency_count: int
 
 
 def database_runtimes_from_frozen_contract(
@@ -214,18 +222,20 @@ def database_runtimes_from_frozen_contract(
     return runtimes[0], runtimes[1], runtimes[2]
 
 
-def _require_destructible_name(runtime: DatabaseRuntime) -> None:
-    """**파괴 직전의 이름 울타리.**
+def _require_tenant_database_name(runtime: DatabaseRuntime) -> None:
+    """**파괴·수렴 직전의 이름 울타리.** cluster 유지보수 DB와 template은 tenant DB가 아니다.
 
-    `_validate_runtime`이 아니라 파괴 경로에만 둔다 — 읽기 경로(schema revision·
-    identity)는 이름에 무관해야 하고, 위험한 것은 drop이다.
+    `_validate_runtime`이 아니라 바꾸는 경로에만 둔다 — 읽기 경로(schema revision·
+    identity)는 이름에 무관해야 하고, 위험한 것은 drop·bootstrap·권한 변경이다.
     """
 
     if (
-        runtime.database_name in _UNDROPPABLE_DATABASES
+        runtime.database_name in _RESERVED_DATABASES
         or runtime.database_name.startswith("template")
     ):
-        raise DeploymentContractError("pinned runtime database name is not destructible")
+        raise DeploymentContractError(
+            "pinned runtime database name is a reserved cluster database"
+        )
 
 
 def _recreate_empty_database_after_owner_preflight(
@@ -236,7 +246,7 @@ def _recreate_empty_database_after_owner_preflight(
     """사전 owner 검증이 끝난 하나의 DB를 파기·재생성한다."""
 
     _validate_runtime(runtime)
-    _require_destructible_name(runtime)
+    _require_tenant_database_name(runtime)
     if existing_owner is not None:
         if existing_owner not in _permitted_existing_owners(runtime):
             raise DeploymentContractError(
@@ -288,7 +298,7 @@ def reset_databases_for_application_300(
         # 세 DB 모두 **첫 drop 전에** 본다. 종전에는 이 울타리가 PinVi 재생성 안에만
         # 있어서 Map 두 DB는 울타리 없이 drop됐고, PinVi 이름이 막혀도 Map은 이미
         # 지워진 뒤였다.
-        _require_destructible_name(runtime)
+        _require_tenant_database_name(runtime)
     existing_owners = tuple(_read_database_owner(runtime) for runtime in runtimes)
     for runtime, existing_owner in zip(runtimes, existing_owners, strict=True):
         if existing_owner is not None and existing_owner not in _permitted_existing_owners(
@@ -296,6 +306,19 @@ def reset_databases_for_application_300(
         ):
             raise DeploymentContractError(
                 f"{runtime.role} database owner differs from the frozen contract"
+            )
+    # Map drop 소유자는 Map 쌍 밖의 DB를 소유하지 않아야 한다(R2). 소유자 집합은 대상을
+    # 가리키는 바로 그 `.env` 값에서 오므로, 공용 instance에서는 다른 tenant의 login이
+    # 일관되게 잘못 박히면 그대로 통과한다(예: metadata user·Dagster DB 이름에 PinVi의
+    # login·DB). 이름 목록 대신 live 소유 관계로 막는다. PinVi에는 걸지 않는다 — PinVi
+    # app role은 이 재구축 밖의 `pinvi_dagster`를 정당하게 소유한다.
+    map_databases = frozenset(runtime.database_name for runtime in runtimes[:2])
+    for runtime, existing_owner in zip(runtimes[:2], existing_owners[:2], strict=True):
+        if existing_owner is None:
+            continue
+        if not _read_databases_owned_by(runtime, existing_owner) <= map_databases:
+            raise DeploymentContractError(
+                f"{runtime.role} database owner also owns a database outside the Map pair"
             )
     for runtime, existing_owner in zip(runtimes[:2], existing_owners[:2], strict=True):
         if existing_owner is not None:
@@ -378,6 +401,7 @@ def require_map_application_database_convergible(
     _validate_runtime(runtime)
     if runtime.role != "map_application":
         raise DeploymentContractError("Map application database role is invalid")
+    _require_tenant_database_name(runtime)
     owner = _read_database_owner(runtime)
     if owner is None:
         return "absent"
@@ -388,10 +412,14 @@ def require_map_application_database_convergible(
             "map_application database owner differs from the frozen contract"
         )
     if schema_revision_table_exists(runtime):
+        # 공용 instance에서는 bootstrap 소유자(instance admin) 것인 같은 이름의 DB가 Map의
+        # 것이라는 보장이 없다 — 넘기기 전에 확인하라고 말한다.
         raise DeploymentContractError(
             "map_application database already has a schema but is still owned by the "
-            f"bootstrap owner; hand it over with ALTER DATABASE {runtime.database_name} "
-            f"OWNER TO {_MAP_SCHEMA_OWNER} and rerun"
+            f"bootstrap owner; verify it is Map's database (its public.alembic_version is "
+            f"a Map head) before handing it over with ALTER DATABASE {runtime.database_name} "
+            f"OWNER TO {_MAP_SCHEMA_OWNER} or dropping it by hand, then rerun "
+            "(docs/docker-management.md §7.7 'R2 거부')"
         )
     return "unbootstrapped"
 
@@ -405,6 +433,7 @@ def create_database_if_absent(runtime: DatabaseRuntime) -> bool:
     """
 
     _validate_runtime(runtime)
+    _require_tenant_database_name(runtime)
     if read_database_identity(runtime) is not None:
         return False
     _recreate_empty_database_after_owner_preflight(runtime, existing_owner=None)
@@ -625,6 +654,36 @@ def _read_database_owner(runtime: DatabaseRuntime) -> str | None:
     return output
 
 
+def _read_databases_owned_by(runtime: DatabaseRuntime, owner: str) -> frozenset[str]:
+    """``owner``가 이 instance에서 소유한 DB 이름들(maintenance DB에서 읽는다).
+
+    한 줄에 이름 하나다. 줄바꿈을 품은 이름은 조각으로 읽혀 Map 쌍의 부분집합이 될 수 없으므로
+    거부 쪽으로 떨어진다.
+    """
+
+    _validate_runtime(runtime)
+    if not _DATABASE_IDENTIFIER.fullmatch(owner):
+        raise DeploymentContractError(f"{runtime.role} database owner is invalid")
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            "postgres",
+            "--command",
+            (
+                "SELECT datname FROM pg_catalog.pg_database WHERE datdba = "
+                "(SELECT oid FROM pg_catalog.pg_roles "
+                f"WHERE rolname = '{owner}')"
+            ),
+        ],
+        label=f"{runtime.role} database owner's databases",
+    ).decode("utf-8").strip()
+    return frozenset(line for line in output.splitlines() if line)
+
+
 def _read_dagster_metadata_role_preflight(
     runtime: DatabaseRuntime,
     metadata_user: str,
@@ -649,7 +708,15 @@ def _read_dagster_metadata_role_preflight(
                 "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
                 "WHERE membership.member = role.oid), "
                 "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
-                "WHERE membership.roleid = role.oid) "
+                "WHERE membership.roleid = role.oid), "
+                # R2: 남은 metadata role은 DB가 사라지면 아무것도 소유하지 않는다(소유 DB와
+                # 그 DB 안 객체의 행이 함께 사라진다). 무언가를 소유한 login은 남은 role이
+                # 아니라 다른 tenant의 login이다 — 그 password를 돌리면 안 된다.
+                "(SELECT count(*)::bigint FROM pg_catalog.pg_database owned "
+                "WHERE owned.datdba = role.oid), "
+                "(SELECT count(*)::bigint FROM pg_catalog.pg_shdepend dependency "
+                "WHERE dependency.refclassid = 'pg_catalog.pg_authid'::regclass "
+                "AND dependency.refobjid = role.oid) "
                 "FROM pg_catalog.pg_roles AS role "
                 f"WHERE role.rolname = '{metadata_user}'"
             ),
@@ -662,11 +729,17 @@ def _read_dagster_metadata_role_preflight(
     if len(lines) != 1:
         raise DeploymentContractError("Map Dagster metadata role output is invalid")
     fields = lines[0].split("|")
-    if len(fields) != 13:
+    if len(fields) != 15:
         raise DeploymentContractError("Map Dagster metadata role output is invalid")
     return _DagsterMetadataRolePreflight(
         can_login=_parse_psql_bool(fields[0], "Map Dagster metadata role login"),
         inherit=_parse_psql_bool(fields[1], "Map Dagster metadata role inherit"),
+        owned_database_count=_parse_non_negative_int(
+            fields[13], "Map Dagster metadata role owned database count"
+        ),
+        shared_dependency_count=_parse_non_negative_int(
+            fields[14], "Map Dagster metadata role shared dependency count"
+        ),
         attributes=DagsterMetadataRoleAttributes(
             superuser=_parse_psql_bool(fields[2], "Map Dagster metadata role superuser"),
             create_database=_parse_psql_bool(
@@ -727,6 +800,8 @@ def _assert_dagster_metadata_role_can_rotate_password_only(
         or attributes.database_role_setting_count != 0
         or attributes.granted_role_count != 0
         or attributes.member_role_count != 0
+        or role.owned_database_count != 0
+        or role.shared_dependency_count != 0
     ):
         raise DeploymentContractError("Map Dagster metadata role is unsafe")
 
@@ -855,11 +930,20 @@ def _parse_dagster_metadata_database_identity(
 
 
 def _permitted_existing_owners(runtime: DatabaseRuntime) -> frozenset[str]:
-    """Map bootstrap 뒤 ownership만 다음 destructive reset에서 추가로 수용한다."""
+    """destructive reset이 지워도 되는 기존 소유자. **instance admin은 절대 들지 않는다.**
+
+    Map bootstrap 뒤 ownership만 추가로 수용한다. admin을 빼는 이유(R2): 공용 instance의
+    admin은 `postgres`·template·다른 tenant가 반쯤 만든 DB를 소유한다. admin 소유 DB는
+    이 재구축이 만든 것이라는 증거가 없으므로 지우지 않는다 — 전용 instance에서도 Map
+    bootstrap 소유자가 admin이라, 반쯤 만든 Map DB는 `--restart`가 지우지 않고 거부한다
+    (fail-closed, 손으로 지우는 절차는 docs/docker-management.md §7.7 'R2 거부').
+    """
 
     if runtime.role == "map_application":
-        return frozenset({runtime.owner_name, _MAP_SCHEMA_OWNER})
-    return frozenset({runtime.owner_name, *runtime.additional_owner_names})
+        owners = frozenset({runtime.owner_name, _MAP_SCHEMA_OWNER})
+    else:
+        owners = frozenset({runtime.owner_name, *runtime.additional_owner_names})
+    return owners - {runtime.admin_name}
 
 
 def _validate_runtime(runtime: DatabaseRuntime) -> None:
