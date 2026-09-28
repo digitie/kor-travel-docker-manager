@@ -136,6 +136,11 @@ instance 안에서도 ADR-37의 교훈(role·ACL은 database가 아니라 cluste
 프로젝트마다 자기 database에만 권한을 갖는 전용 role을 쓴다 — cluster 관리자 계정은 앱에
 노출하지 않는다.
 
+**튜닝 (ADR-53 D4).** 공용 instance는 Map의 튜닝(`shared_buffers=1GB`, `work_mem=64MB`,
+autoprewarm 등)으로 돈다. 포트는 그대로 `11000`이고, 값은 compose `command:`의 리터럴이
+정본이다 — 전부 cluster 전역이라 바꾸면 모든 테넌트가 재기동을 겪는다. 목록은
+[`platform-topology.md`](platform-topology.md) §7.
+
 **옛 전용 instance의 퇴역(2026-09-28).** geo(`kor-travel-geo-postgres`, `:12500`)·
 concierge(`kor-travel-concierge-postgres`, `:12600`)·PinVi(`pinvi-postgres`, `:12800`)는
 cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실측으로 모든 서비스의 DSN이

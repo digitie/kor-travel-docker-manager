@@ -195,6 +195,15 @@ Dagster 스토리지 `dagster_shared` · 공용 webserver/daemon · 프로젝트
 여전히 계획이다 — `dagster_shared`도 `11001`/`11002`도 **아직 없다**. 다른 프로젝트가 5단계를 먼저 밟는 절차는
 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)가 갖는다.
 
+**공용 instance의 튜닝은 Map의 값이다(ADR-53 D4).** Map의 두 DB가 이리로 오기 전에
+instance를 한 번 재기동해 Map이 전용 instance에서 쓰던 값을 올린다 — `pg_prewarm`
+(autoprewarm, database를 가리지 않는다) + `pg_stat_statements`, `shared_buffers=1GB`,
+`work_mem=64MB`, `maintenance_work_mem=256MB`, `effective_cache_size=1536MB`, `max_wal_size=2GB`.
+값은 compose `command:`의 리터럴이 정본이고 `ALTER SYSTEM`은 쓰지 않는다. 병렬 hash의 DSM을
+위해 `shm_size: 1gb`를 두고, 이미지는 그날 실행 중이던 digest로 고정한다(교체가 아니다).
+종료 checkpoint의 grace는 ADR-52의 `stop_grace_period: 300s`가 D4의 요구(≥120초)를 이미
+넘는다. 전부 cluster 전역이라 한 테넌트를 위한 변경이 **모든 테넌트의 재기동**이다.
+
 **PinVi의 `pinvi_dagster`는 2단계(`dagster_shared`)가 아니다.** 그 데이터베이스를
 **PinVi 전용으로 유지한 채** 물리적으로 공용 instance로 옮긴 것뿐이다 — concierge의
 `kor_travel_concierge`처럼 5단계(애플리케이션 DB급 이사)의 연장이지, 여러 프로젝트가

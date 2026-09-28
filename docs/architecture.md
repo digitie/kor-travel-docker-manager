@@ -134,8 +134,9 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
 `kor-travel-docker-manager`가 관리하는 Docker 컨테이너 정의는 다음과 같다.
 
 1. **PostgreSQL / PostGIS 2개**:
-   - 공용 instance `kor-travel-shared-postgres`(`postgis/postgis:16-3.5`, `127.0.0.1:11000`,
-     ADR-44~47): concierge·geo·PinVi·weather·transport가 각자 app role 하나와 자기 database
+   - 공용 instance `kor-travel-shared-postgres`(`postgis/postgis:16-3.5`를 digest로 고정,
+     `127.0.0.1:11000`, ADR-44~47, init·probe는 ADR-52, 튜닝은 ADR-53 D4): concierge·geo·PinVi·
+     weather·transport가 각자 app role 하나와 자기 database
      (앱 + Dagster 메타)를 쓴다. cluster 관리자(`shared_admin`) password는
      `POSTGRES_PASSWORD_FILE` secret으로 주고 앱에는 주입하지 않는다. geo의
      `KOR_TRAVEL_GEO_DOCKER_PG_DSN`/`KOR_TRAVEL_GEO_DAGSTER_PG_URL`은 기본값 없이 fail-close로
