@@ -3314,12 +3314,26 @@ class ComposeService:
         **모든** 서비스로 읽는다)이다. 명시 mutation의 목록은 비지 않으므로 ``[]``와 섞이지 않는다.
         """
 
+        return ComposeService._parse_compose_mutation(args)[0]
+
+    @staticmethod
+    def _parse_compose_mutation(
+        args: Sequence[str],
+    ) -> tuple[list[str] | None, frozenset[str]]:
+        """``_compose_mutation_scope``의 범위와, 명시 mutation에서 compose가 **플래그로 읽은** 명령 옵션.
+
+        `--no-deps`·`--remove-orphans`는 argv 어디에 있느냐가 아니라 compose가 그것을 플래그로
+        읽었느냐로 센다. `run SERVICE` 뒤는 컨테이너 argv이고, 값을 받는 옵션의 값 자리도 플래그가
+        아니다 — `run … SERVICE --no-deps`는 의존성을 끌어온다(적대 리뷰 2026-09-29). 범위가
+        ``None``이거나 ``[]``이면 플래그는 비어 있다.
+        """
+
         runtime_identifiers = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
         if not args:
-            return None
+            return None, frozenset()
         command_index = ComposeService._compose_command_index(args)
         if command_index is None:
-            return None
+            return None, frozenset()
         command = args[command_index]
         if command == "config":
             read_options_with_value = {"--format", "--hash"}
@@ -3348,10 +3362,10 @@ class ComposeService:
                     or item.startswith("--output=")
                     or (item.startswith("-o") and item != "-o")
                 ):
-                    return None
+                    return None, frozenset()
                 if item in read_options_with_value:
                     if index + 1 >= len(config_items):
-                        return None
+                        return None, frozenset()
                     skip_next = True
                     continue
                 inline_read_option = next(
@@ -3364,11 +3378,11 @@ class ComposeService:
                 )
                 if inline_read_option is not None:
                     if not item.partition("=")[2]:
-                        return None
+                        return None, frozenset()
                     continue
                 if item not in read_flags:
-                    return None
-            return []
+                    return None, frozenset()
+            return [], frozenset()
         read_only = {
             "events",
             "images",
@@ -3381,17 +3395,17 @@ class ComposeService:
             "version",
         }
         if command in read_only:
-            return []
+            return [], frozenset()
         if command == "wait":
             if any(
                 item == "--down-project" or item.startswith("--down-project=")
                 for item in args
             ):
-                return None
+                return None, frozenset()
             wait_items = args[command_index + 1 :]
             if any(item.startswith("-") for item in wait_items):
-                return None
-            return []
+                return None, frozenset()
+            return [], frozenset()
         mutation_commands = {
             "build",
             "cp",
@@ -3413,7 +3427,7 @@ class ComposeService:
             "watch",
         }
         if command not in mutation_commands:
-            return None
+            return None, frozenset()
         options_with_value = {
             "--attach",
             "--build-arg",
@@ -3485,6 +3499,7 @@ class ComposeService:
         options_with_value.update(command_options_with_value.get(command, set()))
         flag_options.update(command_flags.get(command, set()))
         explicit_services: list[str] = []
+        parsed_flags: set[str] = set()
         skip_next = False
         items = list(args[command_index + 1 :])
         for index, item in enumerate(items):
@@ -3500,16 +3515,16 @@ class ComposeService:
             if item == "--scale" and index + 1 < len(items):
                 service = items[index + 1].partition("=")[0]
                 if not service:
-                    return None
+                    return None, frozenset()
                 explicit_services.append(service)
                 skip_next = True
                 continue
             if item == "--scale":
-                return None
+                return None, frozenset()
             if item.startswith("--scale="):
                 service = item.removeprefix("--scale=").partition("=")[0]
                 if not service:
-                    return None
+                    return None, frozenset()
                 explicit_services.append(service)
                 continue
             if command == "scale" and "=" in item and not item.startswith("-"):
@@ -3517,7 +3532,7 @@ class ComposeService:
                 continue
             if item in options_with_value:
                 if index + 1 >= len(items):
-                    return None
+                    return None, frozenset()
                 skip_next = True
                 continue
             inline_value_option = next(
@@ -3531,11 +3546,12 @@ class ComposeService:
             )
             if inline_value_option is not None:
                 if not item.partition("=")[2]:
-                    return None
+                    return None, frozenset()
                 continue
             if item.startswith("-"):
                 if item not in flag_options:
-                    return None
+                    return None, frozenset()
+                parsed_flags.add(item)
                 continue
             explicit_services.append(item)
         if explicit_services:
@@ -3544,7 +3560,7 @@ class ComposeService:
                 for item in tuple(explicit_services)
                 if ":" in item
             )
-            if command in {"up", "create", "restart", "watch"} and "--no-deps" not in args:
+            if command in {"up", "create", "restart", "watch"} and "--no-deps" not in parsed_flags:
                 api_dependencies = {
                     "kor-travel-map-ui": "kor-travel-map-api",
                     "kor-travel-map-dagster": "kor-travel-map-api",
@@ -3557,11 +3573,11 @@ class ComposeService:
                     for service in tuple(explicit_services)
                     if service in api_dependencies
                 )
-            if "--remove-orphans" in args:
+            if "--remove-orphans" in parsed_flags:
                 explicit_services.extend(runtime_identifiers)
-            return explicit_services
+            return explicit_services, frozenset(parsed_flags)
         # down/rm --all/unknown command/option parse failure may affect either API.
-        return None
+        return None, frozenset()
 
     def ensure_target(
         self,
@@ -3891,7 +3907,16 @@ class ComposeService:
         capture_output: bool = True,
     ) -> dict[str, Any]:
         compose_action = self._pinned_runtime_compose_action(args)
-        if compose_action in {"run", "up"} and "--no-deps" not in args:
+        # compose가 플래그로 읽은 `--no-deps`만 센다(`run SERVICE` 뒤 컨테이너 argv는 아니다).
+        # 서비스를 말하지 않거나 해석할 수 없는 호출은 아래 R3가 거부한다.
+        command_index = self._compose_command_index(args)
+        scope, flags = self._parse_compose_mutation(args)
+        if (
+            scope
+            and command_index is not None
+            and args[command_index] in {"run", "up"}
+            and "--no-deps" not in flags
+        ):
             raise DeploymentContractError(
                 "pinned runtime rebuild Compose startup requires --no-deps"
             )
@@ -3947,7 +3972,7 @@ class ComposeService:
         모든 tenant가 끊긴다. 그래서 재구축의 모든 compose 호출이 지나는 이 한 자리에서, 무엇을
         바꾸는지 서비스 이름으로 말할 수 없는 mutation(명시 서비스 없음·해석 불가)을 거부하고,
         명시 식별자 가운데 PostgreSQL 서버가 `_PINNED_RUNTIME_DATABASE_SERVICES` 밖에 있으면
-        거부한다. mutation 분류와 식별자는 기존 해석기(`_compose_mutation_scope`)가, PostgreSQL
+        거부한다. mutation 분류와 식별자는 기존 해석기(`_parse_compose_mutation`)가, PostgreSQL
         서버 판정은 C6c(`postgres_server_services`)가 소유한다 — 이름 목록이 없다.
 
         **compose가 실제로 닿는 것을 센다.** 이름 붙은 서비스만 보면 `create pinvi-api`가
@@ -3956,16 +3981,18 @@ class ComposeService:
         오면 frozen resolved 문서의 `depends_on` closure를 범위에 넣는다 — resolved 문서는 links·
         `network_mode: service:`·`volumes_from`도 `depends_on`으로 정규화해 담는다. 이름 없는
         컨테이너를 지우는 `--remove-orphans`와, 서비스 목록을 읽을 수 없는 문서는 거부한다.
+        두 플래그는 compose가 플래그로 읽은 것만 센다(``_parse_compose_mutation``) — `run SERVICE`
+        뒤의 컨테이너 argv에 같은 글자가 있어도 compose는 의존성을 끌어온다.
         """
 
-        scope = ComposeService._compose_mutation_scope(args)
+        scope, flags = ComposeService._parse_compose_mutation(args)
         if scope is None:
             raise DeploymentContractError(
                 "pinned runtime rebuild Compose mutation must name its services explicitly"
             )
         if not scope:
             return
-        if "--remove-orphans" in args:
+        if "--remove-orphans" in flags:
             raise DeploymentContractError(
                 "pinned runtime rebuild Compose must not remove orphan containers"
             )
@@ -3975,7 +4002,7 @@ class ComposeService:
         if (
             command_index is not None
             and args[command_index] in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES
-            and "--no-deps" not in args
+            and "--no-deps" not in flags
         ):
             touched |= _compose_dependency_closure(transaction.resolved, touched)
         foreign = sorted((postgres & touched) - set(_PINNED_RUNTIME_DATABASE_SERVICES))

@@ -1110,6 +1110,67 @@ def test_rebuild_startup_rejects_implicit_compose_dependencies(
     runner.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        # `run SERVICE` 뒤는 컨테이너 argv다 — compose는 의존성을 끌어온다.
+        [
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "pinvi-admin-bootstrap",
+            "pinvi-admin-bootstrap",
+            "--no-deps",
+        ],
+        # 값을 받는 옵션의 값 자리다(`-e --no-deps`는 환경 변수 이름이다).
+        ["run", "--rm", "-e", "--no-deps", "pinvi-admin-bootstrap"],
+    ),
+    ids=("after-the-service", "option-value"),
+)
+def test_rebuild_startup_counts_only_the_no_deps_compose_parses_as_a_flag(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """argv 어딘가의 `--no-deps` 글자가 아니라 compose가 플래그로 읽은 것만 센다(적대 리뷰 2026-09-29)."""
+
+    service = ComposeService()
+    runner = Mock()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    assert "--no-deps" in arguments
+    with pytest.raises(DeploymentContractError, match="requires --no-deps"):
+        service._run_pinned_runtime_rebuild_compose(
+            arguments,
+            transaction=_opaque_transaction(),
+        )
+
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "services", "flags"),
+    (
+        (
+            ["run", "--rm", "pinvi-api", "sh", "--no-deps", "--remove-orphans"],
+            ["pinvi-api"],
+            {"--rm"},
+        ),
+        (["run", "--rm", "-e", "--no-deps", "pinvi-api"], ["pinvi-api"], {"--rm"}),
+        # `run` 밖에서는 서비스 뒤의 플래그도 compose 플래그다.
+        (["up", "-d", "pinvi-api", "--no-deps"], ["pinvi-api"], {"-d", "--no-deps"}),
+        (["ps", "--no-deps"], [], set()),
+        (["down", "--no-deps"], None, set()),
+    ),
+)
+def test_compose_mutation_parse_reports_the_flags_compose_reads(
+    arguments: list[str],
+    services: list[str] | None,
+    flags: set[str],
+) -> None:
+    assert ComposeService._parse_compose_mutation(arguments) == (services, frozenset(flags))
+
+
 def test_rebuild_never_retries_a_failed_dagster_storage_migration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2623,6 +2684,42 @@ def test_rebuild_compose_allows_dependents_when_compose_does_not_reach_their_dep
     )
 
     runner.assert_called_once()
+
+
+def test_r3_counts_only_the_no_deps_compose_parses_as_a_flag() -> None:
+    """R3 자체도 argv 글자가 아니라 compose가 읽은 플래그로 판정한다 — startup gate와 독립으로.
+
+    `run --rm pinvi-api pinvi-api --no-deps`에서 `--no-deps`는 컨테이너 argv다. compose는 PinVi API의
+    `depends_on`(공용 instance)을 만들고, drift됐으면 다시 만든다(적대 리뷰 2026-09-29, n150 재현).
+    """
+
+    with pytest.raises(
+        DeploymentContractError, match="outside its dedicated set: kor-travel-shared-postgres"
+    ):
+        ComposeService._require_rebuild_compose_spares_foreign_postgres(
+            ["--profile", "bootstrap", "run", "--rm", "pinvi-api", "pinvi-api", "--no-deps"],
+            transaction=_transaction_with_dependents(),
+        )
+    # 대조군: 같은 호출에서 `--no-deps`가 compose 옵션 자리에 있으면 통과한다.
+    ComposeService._require_rebuild_compose_spares_foreign_postgres(
+        ["--profile", "bootstrap", "run", "--rm", "--no-deps", "pinvi-api", "pinvi-api"],
+        transaction=_transaction_with_dependents(),
+    )
+
+
+def test_r3_refuses_remove_orphans_only_where_compose_reads_it() -> None:
+    """`--remove-orphans`도 compose가 플래그로 읽을 때만 이름 없는 컨테이너를 지운다."""
+
+    with pytest.raises(DeploymentContractError, match="must not remove orphan containers"):
+        ComposeService._require_rebuild_compose_spares_foreign_postgres(
+            ["up", "-d", "--no-deps", "kor-travel-map-api", "--remove-orphans"],
+            transaction=_transaction_with_dependents(),
+        )
+    # `run SERVICE` 뒤의 같은 글자는 컨테이너 argv다 — compose는 orphan을 지우지 않는다.
+    ComposeService._require_rebuild_compose_spares_foreign_postgres(
+        ["run", "--rm", "--no-deps", "kor-travel-map-api", "echo", "--remove-orphans"],
+        transaction=_transaction_with_dependents(),
+    )
 
 
 @pytest.mark.parametrize(
