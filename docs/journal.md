@@ -7920,3 +7920,36 @@ M1(`fix/rebuild-tenant-fences`) 리뷰의 MED 셋과 값싼 LOW를 고쳤다. �
   단언은 해석기를 다시 쓰지 않고 argv 낱말을 본다. `_SHARED_IMAGE` 중복은 MT가 compose에 digest를 핀한 뒤 렌더된
   서비스에서 읽게 바꾼다.
 - 아직: rename PR이 머지되지 않아 리베이스 전이다. 리베이스 뒤 gate 켠 n150 실행을 다시 하고 수를 PR 본문에 싣는다.
+
+## 2026-09-28 — M1을 #432·#433 위로 리베이스하고, 이동의 ADR 번호를 ADR-53으로 고쳤다
+
+- `fix/rebuild-tenant-fences`(`aa04fcb`, 밑 `5b99322`)를 main `0fe0d97`로 옮겼다. 그 사이에 #432(외부 target
+  `airport` → `transport` 개명)와 #433(ADR-52: 공용 instance의 `init`·exec probe·grace)이 들어왔다.
+  - 텍스트 충돌은 `docs/journal.md` 끝의 추가 하나뿐이었다. 둘 다 두고 #432·#433 항목 뒤에 M1 항목을 이었다.
+  - 겹친 나머지 넷(`c6c_deployment.py`·`test_f1d_compose_contract.py`는 #433, `docker-management.md`·
+    `tasks.md`는 #432)은 hunk가 달라 자동으로 합쳐졌다. M1 diff에는 `airport`가 없다.
+  - range-diff로 보면 커밋 13개 중 9개는 내용이 같다. 나머지 넷은 번호 고침(셋)과 journal 문맥(하나)만
+    다르다.
+- **ADR-52는 #433의 것이다. 이 이동의 Manager ADR은 ADR-53이다.** 이 번호를 쓴 자리 넷을 각 줄을 넣은
+  커밋 안에서 고쳤다: launcher 테스트의 사유 문자열, `docker-management.md`와 journal의 "남은 위험" 두 줄,
+  `13dec2e`의 커밋 메시지. 트리에 남은 `ADR-52`는 전부 #433의 것이다.
+- **테스트(n150, `629b6a7`, `/tmp/wf19-m1-prep-629b6a7`)**:
+  - gate 켠 전체 스위트(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, 새 `git clone`, consolidation venv): **2197 passed,
+    2 skipped**(root 전용 M05 ledger 둘), 5m28s. docker 통합 21건(실 PostgreSQL 17, compose 3, readiness 1)이
+    모두 통과했고 `ktdm-it-*` 잔재는 0이다.
+  - `/tmp/b3-test.sh`: ruff 0.16.4 깨끗, **2197 passed, 2 skipped**.
+  - GitHub CI(dispatch 36450493686): 백엔드 2176 passed, 23 skipped(통합은 gate 없이 skip), 프론트엔드 green.
+  - 수집 수는 main `0fe0d97` 2067 → 2199다. 새 사례는 132개다.
+- **빨강 확인(`0fe0d97` 코드)**: M1이 바꾼 테스트 파일 일곱은 HEAD로 두고, 나머지 파일은 모두 `0fe0d97`로 되돌려 돌렸다.
+  - 새 132 중 **109 red**, 23 green. green은 모두 대조군이거나 회귀 가드다:
+    - R2 대조군 3: Map 쌍만 소유한 owner의 drop, T-R2b, T-R2c.
+    - R3 허용 사례 10.
+    - compose 특성 테스트 3(T-R3·T-R3c·T-R3d). 이들은 Manager 코드를 import하지 않는다.
+    - launcher 회귀 가드 7: 인자 둘의 argv 1, `--restart` 거부 6.
+  - M1이 고친 기존 테스트 19도 빨갛다: 예약 이름 문구 12, metadata preflight의 새 필드 6, reset 호출 순서 1.
+    나머지 기존 테스트 443은 초록이다. 따라서 harness 변경은 그 테스트들의 단언을 바꾸지 않았다.
+  - 옛 코드에 없는 이름 때문에 빨강 실행에는 shim 둘이 필요했다.
+    - harness의 `monkeypatch.setattr` 두 곳(module·service)에 `raising=False`를 붙였다.
+    - 통합 파일의 `ensure_map_databases_isolated` import는 `getattr(…, None)`으로 바꿨다.
+    - shim이 없으면 통합 파일의 수집 오류 하나에서 멈춘다. 처음에는 service 쪽 한 곳만 풀었는데, 그때는 기존
+      harness 테스트 37이 patch 대상이 없다는 이유로 빨갰다. 두 곳을 다 풀자 그 37개는 초록이 됐다.
