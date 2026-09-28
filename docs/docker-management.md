@@ -1005,7 +1005,8 @@ pinvi 쪽은 아무도 쓰지 않는 동결 사본을 떴다). Map 둘은 전용
 
 transport(공용 instance `:11000`)는 2026-09-27 손으로 뜬 dump가 **1,011,308,463 B·약 9분**이다
 (`kor_travel_transport` 약 13 GB, `kor_travel_transport_dagster` 약 112 MB). 2026-09-28 n150
-여유는 약 83.9 GB이고, 백업 root·Docker 쓰기 층·공용 instance PGDATA가 **한 파일시스템**이다.
+여유는 04:00 UTC 81.5 GB(19,898,003 블록 x 4 KiB, 그보다 이른 실측은 83.9 GB — 하루 안에도 몇 GB씩
+움직인다)이고, 백업 root·Docker 쓰기 층·공용 instance PGDATA가 **한 파일시스템**이다.
 
 ### 뜨는 법
 
