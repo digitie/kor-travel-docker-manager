@@ -302,8 +302,11 @@ containers:
     role: transport-backend
     display_name: Kor Travel Transport 백엔드
     connection: "http://127.0.0.1:14001"
+    # host network다 — 운영 overlay(`docker-compose.shared.yml`)가 `network_mode: host`와
+    # `ports: !reset []`를 걸어 uvicorn이 호스트 14001에 직접 listen한다(PortBindings 없음,
+    # 2026-09-28 n150 실측). base compose의 `14001:8000` 매핑은 운영에서 쓰이지 않는다.
     expected_ports:
-      - "14001:8000"
+      - "14001:14001"
   kor-travel-transport-frontend:
     name: kor-travel-transport-frontend-1
     compose_service: frontend
@@ -311,8 +314,9 @@ containers:
     role: transport-frontend
     display_name: Kor Travel Transport 프런트엔드
     connection: "http://127.0.0.1:14002"
+    # backend와 같이 host network다(next가 호스트 14002에 직접 listen한다).
     expected_ports:
-      - "14002:3000"
+      - "14002:14002"
 
 targets:
   storage:
@@ -356,6 +360,9 @@ targets:
     init_steps: []
 
   cadv:
+    # 이 대역은 이름뿐이다 — cAdvisor는 ADR-48로 12103에 있다. 대역 안 12301·12302·12305는
+    # Manager에 등록되지 않은 외부 compose 프로젝트 `kor-travel-transport-admin`이 쓴다
+    # (0.0.0.0 listen, 2026-09-28 n150 실측). 여기에 포트를 새로 배정하지 않는다(ports.md).
     port_band: "12300-12399"
     depends_on: [gra]
     display_name: cAdvisor Exporter
@@ -596,6 +603,11 @@ targets:
     # 이 target의 옛 이름(`airport`)과 옛 compose 프로젝트 이름은 별칭으로 남기지
     # 않는다(2026-09-28 소유자 결정) — 옛 이름을 쓰는 호출이 남아 있으면 조용히
     # 통하는 대신 `unknown target`으로 드러난다.
+    # 운영 배포는 `docker-compose.yml` + `docker-compose.shared.yml`(`--env-file
+    # .env.server14`)로 올라간다(컨테이너의 compose label 실측). 아래 `config_files`가
+    # base 하나뿐인 것은 의도다 — shared overlay는 `${…:?}` 필수 보간이라 env 파일 없이
+    # 열면 실패하고, `ps`·`logs`는 base만으로 같은 컨테이너를 찾는다. overlay를 더하는
+    # 일은 transport ADR-010 후속(별도 설계)이다.
     external_project:
       project: kor-travel-transport
       working_dir: /home/digitie/apps/kor-travel-transport
