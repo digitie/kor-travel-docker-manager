@@ -438,7 +438,7 @@ nohup setsid env PYTHONPATH=src .venv/bin/python \
   > /tmp/ktdm_backend.log 2>&1 &
 ```
 
-### 3.x 백업 산출물을 UI와 cron이 공유할 때 (두 계정이 같은 root를 쓰면 필수)
+### 3.x 백업 산출물을 UI와 cron이 공유할 때 (선택 — UI에서도 만들 때만)
 
 `POST /api/v1/backups/{role}`이 생기면서 백업을 만드는 주체가 UI와 cron 둘이 된다. 두
 주체가 서로의 산출물을 읽고 지우려면 **디렉터리** 쓰기 권한이 필요하다(unlink는 파일이
@@ -465,8 +465,9 @@ sudo find "$KTDM_BACKUP_ROOT" -type f -exec chmod 0640 {} +
 선언하지 않으면 UI 생성(`POST /api/v1/backups/{role}`)은 backend 계정이 그 role 디렉터리(없으면
 그 부모)의 주인일 때만 된다. 다른 계정(cron)의 디렉터리면 409로 거부한다 — UI가 쓴 `0600`
 산출물을 그 계정이 읽지도 치우지도 못해 주기 백업이 깨지기 때문이다. backend와 cron이 다른 계정으로
-같은 `KTDM_BACKUP_ROOT`를 쓰는 호스트(n150)에서는 이 절이 선택이 아니다 — 순서는
-`docs/docker-management.md` "transport 주기 백업 — 실패를 누가 보는가".
+같은 `KTDM_BACKUP_ROOT`를 쓰는 호스트(n150)에서 UI로도 만들고 싶을 때 이 절을 한다. 하지 않으면 UI
+생성만 거절되고 cron은 그대로다 — n150은 하지 않는다. 순서는 `docs/docker-management.md` "transport
+주기 백업 — 실패를 누가 보는가".
 
 ### 3.y 관리자 비밀번호 변경
 

@@ -7594,11 +7594,14 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
      `transport`. 검증은 "transport 백업을 Manager standalone role로 접었다" 항목의 4(`instance`, `sha256sum -c`,
      `restore-plan`, `transport_dagster`는
      `rehearse-restore`). `stat -c '%U:%G %a %n'`로 두 role 디렉터리와 `.backup.lock`이 digitie 소유인지 본다.
-  3. G lock 아래에서 **한 번에**: 공유 그룹(`ktdm-backup`, digitie 가입, `/home/digitie/backups` 아래 `chgrp -R` +
-     디렉터리 `2770` + 파일 `0640`), live `.env`에 `KTDM_BACKUP_ROOT=/home/digitie/backups`·
-     `KTDM_BACKUP_SHARED_GROUP=ktdm-backup`, digitie crontab에 환경 줄 하나(파일 경유, 정확히 한 줄 추가), 그리고
-     머지 커밋 설치(`~/install-mgr.sh <sha>` → rebind → verify).
+  3. G lock 아래에서 live `.env`에 `KTDM_BACKUP_ROOT=/home/digitie/backups` 한 줄, 그리고 머지 커밋 설치
+     (`~/install-mgr.sh <sha>` → rebind → verify). 공유 그룹은 하지 않는다 — 아래 "단순화".
   4. `/etc/logrotate.d/kor-travel-docker-manager`가 생겼는지, Dashboard 배지가 2의 dump를 보는지 확인한다.
   5. crontab에 두 줄(16:50 UTC daily keep 7, 17:15 UTC `*/3` keep 3)을 파일 경유로 덧붙인다.
   6. 두 role이 **cron으로** 검증된 dump를 하나씩 남긴 뒤에만 transport 저장소의 cron 줄을 파일 경유로(정확히 한 줄)
      걷어낸다.
+- **단순화(머지 전, 소유자 원칙 "결박을 쌓지 말 것")**: 409 가드가 생긴 뒤에는 공유 그룹이 cron의 안전에 필요하지
+  않다 — 없으면 UI 생성만 거절되고 cron은 그대로다. 그래서 n150 절차의 3단계는 `.env` 한 줄 + 설치만 하고, 공유
+  그룹(`chgrp -R`·`2770`·crontab 환경 줄)은 UI에서도 만들고 싶을 때의 선택으로 되돌렸다. installer는 그룹이 없으면
+  logrotate를 `su root root`로 렌더링하고, cron 계정 소유 `0700` 디렉터리의 `<role>.log`는 그대로 돈다.
+  `docker-management.md`·`prod-deployment.md` §3.x·wrapper 헤더를 같이 고쳤다.
