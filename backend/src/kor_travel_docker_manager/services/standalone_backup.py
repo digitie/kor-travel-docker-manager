@@ -1727,6 +1727,11 @@ def _disk_reserve_bytes(max_wal_bytes: int) -> int:
 
     `max_wal_bytes`는 백업하는 그 instance에서 방금 읽은 값이다 — compose나 `.env`에서
     추측하지 않는다.
+
+    **덮는 것은 dump를 뜨는 그 instance의 WAL뿐이다.** 같은 장치의 다른 PostgreSQL instance
+    WAL은 세지 않는다. n150에서 그런 instance는 M2가 퇴역시킬 Map 전용 instance(`:12700`,
+    `max_wal_size` 2GB) 하나라, 그때까지 공용 instance 백업의 예약분은 두 instance WAL 합보다
+    작다 — 고정 2 GiB보다는 낫고, 이동 뒤에는 한 instance만 남는 일시적 틈이다.
     """
 
     return max(_DISK_RESERVE_FLOOR_BYTES, max_wal_bytes + _DISK_RESERVE_WAL_HEADROOM_BYTES)
@@ -1775,6 +1780,9 @@ def _require_free_space(
     `expected_dump_bytes`(운영자 값)가 있으면 추정 대신 그것을 쓴다 — 확인은 그대로 한다.
     """
 
+    # 예약분의 재료는 추정 방식과 상관없이 **한 번, 한 자리에서** 읽는다 — 운영자 값 경로
+    # (geo 첫 백업의 비상 경로, 디스크가 가장 빠듯한 때)만 WAL을 빠뜨리는 갈래가 생기지 않게.
+    max_wal_bytes = _query_max_wal_bytes(container_name, port, admin_name)
     if expected_dump_bytes is not None:
         # CLI는 같은 사실을 stderr에 따로 찍는다(로깅 설정이 없는 CLI에서 WARNING은
         # lastResort로 한 번 더 찍혀 두 줄이 된다) — 여기서는 설정된 로그용으로 info.
@@ -1787,18 +1795,12 @@ def _require_free_space(
         estimate, basis = expected_dump_bytes, (
             f"the operator set --expected-dump-bytes {expected_dump_bytes}"
         )
-        max_wal_bytes = _query_max_wal_bytes(container_name, port, admin_name)
     else:
-        # database 크기와 `max_wal_size`를 **한 번의** exec로 읽는다 — 예약분 때문에 매 백업이
-        # exec를 하나 더 치르지 않는다(n150 부하에서 exec 한 번이 30초 timeout에 닿는다).
-        db_size_bytes, max_wal_bytes = _query_db_size_and_max_wal_bytes(
-            container_name, port, admin_name, database_name
-        )
         estimate, basis = _expected_dump_bytes(
             root,
             role,
             (container_name, database_name),
-            db_size_bytes=db_size_bytes,
+            db_size_bytes=_query_db_size(container_name, port, admin_name, database_name),
             table_bytes=lambda: _query_table_bytes(
                 container_name, port, admin_name, database_name
             ),
@@ -1827,14 +1829,15 @@ def _require_rehearsal_space(
     필요량 = 원본 database 크기(scratch DB가 그만큼 자란다) + dump 사본(컨테이너 `/tmp`)
     + 그 instance의 `max_wal_size`(pg_restore와 인덱스 생성이 쌓는 WAL) + 예약분(create와
     같은 식). 셋 다 같은 파일시스템이라는 전제는 `create`와 같다(n150 실측) — 백업 root의
-    여유로 잰다. create보다 위험한 작업이다: transport 리허설은 공용 instance PGDATA 안에 약
-    13 GB를 만든다.
+    여유로 잰다. create보다 위험한 작업이다: transport 리허설은 공용 instance PGDATA 안에
+    원본 database 크기만큼을 만든다. 값은 전부 manifest와 살아있는 instance에서 오고, 이 함수에
+    크기 리터럴은 없다.
 
     **WAL을 두 번 센다 — 일부러 보수적이다.** pg_wal은 누가 쓰든 한 `max_wal_size`(soft)로
     묶이므로 엄밀히는 한 번이면 된다. 그래도 리허설의 WAL 항과 예약분의 WAL 몫을 따로 둔다:
     scratch DB와 원본이 같은 PGDATA이고, 모자라서 멈추는 쪽은 리허설이 아니라 모든 테넌트의
-    DB다. 거부는 시작 전이고 잃는 것은 리허설 한 번뿐이다(D4 뒤 transport는 한 번 세면 약
-    18.4 GB, 두 번 세면 약 19.4 GB — 2026-09-28 n150 여유는 약 122 GB).
+    DB다. 거부는 시작 전이고 잃는 것은 리허설 한 번뿐이다(D4 뒤 transport는 원본 15.3 GB·
+    dump 1.01 GB일 때 한 번 세면 약 19.6 GB, 두 번 세면 약 21.7 GB — 2026-09-29 n150 실측).
     """
 
     wal_bytes = _query_max_wal_bytes(container_name, port, admin_name)
@@ -1902,51 +1905,6 @@ def _query_table_bytes(
             f"{database_name} table size query returned an unexpected value"
         )
     return int(output)
-
-
-def _query_db_size_and_max_wal_bytes(
-    container_name: str, port: int, admin_name: str, database_name: str
-) -> tuple[int, int]:
-    """`_query_db_size`와 `_query_max_wal_bytes`를 **한 exec**로 — 백업의 여유 확인용.
-
-    접속 자리(`--dbname postgres`)는 `_query_db_size`와 같다 — 예약분 때문에 새로 요구하는
-    것이 없다.
-    """
-
-    if not _DATABASE_IDENTIFIER.fullmatch(database_name):
-        raise StandaloneBackupError("database name is invalid")
-    output = _run_checked(
-        [
-            "docker",
-            "exec",
-            "--user",
-            "postgres",
-            container_name,
-            "psql",
-            "--username",
-            admin_name,
-            "--port",
-            str(port),
-            "--dbname",
-            "postgres",
-            "--no-psqlrc",
-            "--tuples-only",
-            "--no-align",
-            "--field-separator",
-            " ",
-            "--command",
-            f"SELECT pg_database_size('{database_name}'), "
-            "pg_size_bytes(current_setting('max_wal_size'))",
-        ],
-        label=f"{database_name} size and max_wal_size query",
-        timeout=30,
-    ).decode("ascii", "replace")
-    values = output.split()
-    if len(values) != 2 or not all(value.isdigit() for value in values):
-        raise StandaloneBackupError(
-            f"{database_name} size and max_wal_size query returned an unexpected value"
-        )
-    return int(values[0]), int(values[1])
 
 
 def _query_max_wal_bytes(container_name: str, port: int, admin_name: str) -> int:

@@ -47,7 +47,7 @@ def _fake_time(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _happy_run_checked():
+def _happy_run_checked(max_wal_bytes: int = int(_MAX_WAL_OUTPUT)):
     def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
         if arguments[:2] == ["docker", "inspect"] and "Cmd" in arguments[3]:
             return _CMD_JSON
@@ -62,17 +62,13 @@ def _happy_run_checked():
         if arguments[:2] == ["docker", "cp"]:
             Path(arguments[-1]).write_bytes(b"fake dump contents")
             return b""
-        if "max_wal_size" in " ".join(arguments) and "pg_database_size" in " ".join(
-            arguments
-        ):
-            return b"12345 " + _MAX_WAL_OUTPUT
         if "pg_database_size" in " ".join(arguments):
             return b"12345\n"
         if "pg_table_size" in " ".join(arguments):
             return b"6789\n"
-        # `--expected-dump-bytes`가 있으면 크기 질의 없이 `max_wal_size`만 읽는다.
+        # 예약분의 재료 — 추정 방식(`--expected-dump-bytes` 여부)과 상관없이 한 번 읽는다.
         if "max_wal_size" in " ".join(arguments):
-            return _MAX_WAL_OUTPUT
+            return f"{max_wal_bytes}\n".encode("ascii")
         raise AssertionError(f"unexpected _run_checked command: {arguments}")
 
     return run_checked
@@ -188,10 +184,8 @@ def test_create_standalone_backup_rejects_empty_dump_file(
             return b"POSTGRES_USER=pinvi\n"
         if "pg_stat_activity" in " ".join(arguments):
             return b"0\n"
-        if "max_wal_size" in " ".join(arguments) and "pg_database_size" in " ".join(
-            arguments
-        ):
-            return b"12345 " + _MAX_WAL_OUTPUT
+        if "max_wal_size" in " ".join(arguments):
+            return _MAX_WAL_OUTPUT
         if "pg_database_size" in " ".join(arguments):
             return b"12345\n"
         if "pg_table_size" in " ".join(arguments):
@@ -228,10 +222,8 @@ def test_create_standalone_backup_attempts_container_cleanup_even_on_copy_failur
             return b"POSTGRES_USER=kor_travel_map\n"
         if "pg_stat_activity" in " ".join(arguments):
             return b"0\n"
-        if "max_wal_size" in " ".join(arguments) and "pg_database_size" in " ".join(
-            arguments
-        ):
-            return b"12345 " + _MAX_WAL_OUTPUT
+        if "max_wal_size" in " ".join(arguments):
+            return _MAX_WAL_OUTPUT
         if "pg_database_size" in " ".join(arguments):
             return b"12345\n"
         if "pg_table_size" in " ".join(arguments):
@@ -639,11 +631,7 @@ def test_transport_roles_dump_their_database_on_the_shared_instance(
     before_dump = commands[:pg_dump_index]
     size_queries = [command for command in before_dump if "pg_database_size" in " ".join(command)]
     assert len(size_queries) == 1
-    # 같은 질의가 예약분용 `max_wal_size`도 읽는다(exec 한 번).
-    assert size_queries[0][-1] == (
-        f"SELECT pg_database_size('{database_name}'), "
-        "pg_size_bytes(current_setting('max_wal_size'))"
-    )
+    assert size_queries[0][-1] == f"SELECT pg_database_size('{database_name}')"
     # 첫 실행이라 테이블 크기도 묻는다 — pg_class는 database마다 따로라 그 database에 붙는다.
     table_queries = [command for command in before_dump if "pg_table_size" in " ".join(command)]
     assert len(table_queries) == 1
@@ -718,7 +706,11 @@ def test_required_space_is_twice_the_dump_plus_the_reserve() -> None:
     assert _required(1_011_308_463) == 2 * 1_011_308_463 + _reserve()
 
 
-@pytest.mark.parametrize(
+#: 살아있는 `max_wal_size` → 기대 예약분(리터럴 — 기대값을 검사 대상 코드로 계산하지 않는다).
+#: 예약분을 쓰는 세 자리(create의 추정 경로·`--expected-dump-bytes` 경로·rehearse-restore)가 모두
+#: 이 표로 돈다. 1GB(D4 이전)에서는 예약분이 하한 2 GiB와 같아 유도와 고정 상수를 가르지 못한다 —
+#: 2GB(D4 뒤, 예약분 3 GiB)가 그 둘을 가르는 경우다.
+_RESERVE_CASES = pytest.mark.parametrize(
     ("max_wal_bytes", "reserve"),
     [
         # D4 튜닝 뒤 공용 instance(2GB): 고정 2 GiB는 WAL 상한보다 작다.
@@ -729,6 +721,9 @@ def test_required_space_is_twice_the_dump_plus_the_reserve() -> None:
         pytest.param(512 * 1024**2, 2 * 1024**3, id="max_wal_size-512MB"),
     ],
 )
+
+
+@_RESERVE_CASES
 def test_disk_reserve_covers_live_max_wal_size(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, max_wal_bytes: int, reserve: int
 ) -> None:
@@ -736,20 +731,12 @@ def test_disk_reserve_covers_live_max_wal_size(
 
     백업 root·Docker 쓰기 층·공용 PGDATA가 한 디스크다. 고정 2 GiB는 `max_wal_size`가
     1GB일 때의 근거였고 D4가 2GB로 올리면 WAL 자리를 백업이 먹는다. 값은 dump를 뜨는
-    **그 instance**에 묻는다 — compose나 `.env`를 추측하지 않는다. 그리고 database 크기와
-    **같은 exec**로 묻는다: 예약분 때문에 매 백업이 exec를 하나 더 치르지 않는다.
+    **그 instance**에 묻는다 — compose나 `.env`를 추측하지 않는다.
     """
 
     root = tmp_path / "transport"
     _fake_time(monkeypatch)
-    happy = _happy_run_checked()
-
-    def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
-        if "max_wal_size" in " ".join(arguments):
-            return f"12345 {max_wal_bytes}\n".encode("ascii")
-        return happy(arguments, label=label, timeout=timeout)
-
-    recorder = Mock(side_effect=run_checked)
+    recorder = Mock(side_effect=_happy_run_checked(max_wal_bytes))
     monkeypatch.setattr(standalone_backup, "_run_checked", recorder)
     subprocess_run = _happy_subprocess_run()
     monkeypatch.setattr(standalone_backup.subprocess, "run", subprocess_run)
@@ -763,13 +750,13 @@ def test_disk_reserve_covers_live_max_wal_size(
 
     assert f"{required} B" in str(excinfo.value)
     assert f"max_wal_size {max_wal_bytes} B" in str(excinfo.value)
-    size_queries = [
+    # dump를 뜨는 그 instance(컨테이너·포트·admin)에 한 번 묻는다.
+    wal_queries = [
         call.args[0]
         for call in recorder.call_args_list
-        if "pg_database_size" in " ".join(call.args[0])
-        or "max_wal_size" in " ".join(call.args[0])
+        if "max_wal_size" in " ".join(call.args[0])
     ]
-    assert size_queries == [
+    assert wal_queries == [
         [
             "docker",
             "exec",
@@ -786,11 +773,8 @@ def test_disk_reserve_covers_live_max_wal_size(
             "--no-psqlrc",
             "--tuples-only",
             "--no-align",
-            "--field-separator",
-            " ",
             "--command",
-            "SELECT pg_database_size('kor_travel_transport'), "
-            "pg_size_bytes(current_setting('max_wal_size'))",
+            "SELECT pg_size_bytes(current_setting('max_wal_size'))",
         ]
     ]
     assert not any("pg_dump" in call.args[0] for call in recorder.call_args_list)
@@ -802,24 +786,32 @@ def test_disk_reserve_covers_live_max_wal_size(
     assert manifest.backup_filename == "transport-1000.dump"
 
 
-def test_an_unreadable_size_and_wal_answer_refuses_before_pg_dump(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("expected_dump_bytes", [None, 6_000_000_000])
+def test_an_unreadable_max_wal_answer_refuses_before_pg_dump(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, expected_dump_bytes: int | None
 ) -> None:
-    """두 값 중 하나라도 못 읽으면 예약분을 모르는 것이다 — 추측하지 않고 시작하지 않는다."""
+    """`max_wal_size`를 못 읽으면 예약분을 모르는 것이다 — 추측하지 않고 시작하지 않는다.
+
+    운영자 값(`--expected-dump-bytes`)도 이 질의를 건너뛰지 않는다.
+    """
 
     happy = _happy_run_checked()
 
     def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
         if "max_wal_size" in " ".join(arguments):
-            return b"12345\n"
+            return b"1GB\n"
         return happy(arguments, label=label, timeout=timeout)
 
     recorder = Mock(side_effect=run_checked)
     monkeypatch.setattr(standalone_backup, "_run_checked", recorder)
     _fake_time(monkeypatch)
 
-    with pytest.raises(StandaloneBackupError, match="size and max_wal_size query"):
-        create_standalone_backup("transport", backup_root=tmp_path / "transport")
+    with pytest.raises(StandaloneBackupError, match="max_wal_size query returned an unexpected"):
+        create_standalone_backup(
+            "transport",
+            backup_root=tmp_path / "transport",
+            expected_dump_bytes=expected_dump_bytes,
+        )
     assert not any("pg_dump" in call.args[0] for call in recorder.call_args_list)
 
 
@@ -936,19 +928,28 @@ def test_create_refuses_before_pg_dump_when_the_disk_is_too_full(
     assert manifest.backup_filename == "transport-1000.dump"
 
 
+@_RESERVE_CASES
 def test_an_operator_expected_dump_size_replaces_the_estimate_but_keeps_the_check(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    max_wal_bytes: int,
+    reserve: int,
 ) -> None:
-    """`--expected-dump-bytes`는 추정만 바꾼다. 필요량은 여전히 2배 + 예약분이고 남는다."""
+    """`--expected-dump-bytes`는 추정만 바꾼다. 필요량은 여전히 2배 + 예약분이고 남는다.
+
+    geo 첫 백업의 비상 경로라 디스크가 가장 빠듯한 때다 — 예약분도 추정 경로와 같이 살아있는
+    `max_wal_size`에서 나와야 한다. 그것을 가르는 것은 2GB 경우다(`_RESERVE_CASES`).
+    """
 
     root = tmp_path / "geo"
     _fake_time(monkeypatch)
-    run_checked = Mock(side_effect=_happy_run_checked())
+    run_checked = Mock(side_effect=_happy_run_checked(max_wal_bytes))
     monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
     subprocess_run = _happy_subprocess_run()
     monkeypatch.setattr(standalone_backup.subprocess, "run", subprocess_run)
     override = 6_000_000_000
-    required = 2 * override + _reserve()
+    required = 2 * override + reserve
     disk_usage = Mock(return_value=Mock(free=required - 1))
     monkeypatch.setattr(shutil, "disk_usage", disk_usage)
 
@@ -958,10 +959,12 @@ def test_an_operator_expected_dump_size_replaces_the_estimate_but_keeps_the_chec
 
     assert f"{required} B" in str(excinfo.value)
     assert "--expected-dump-bytes 6000000000" in str(excinfo.value)
+    assert f"max_wal_size {max_wal_bytes} B" in str(excinfo.value)
     assert "6000000000" in caplog.text
-    # 운영자 값이 있으면 추정용 질의를 하지 않는다.
+    # 운영자 값이 있으면 추정용 질의를 하지 않는다 — 예약분의 `max_wal_size`만 한 번 묻는다.
     commands = [" ".join(call.args[0]) for call in run_checked.call_args_list]
     assert not any("pg_database_size" in command or "pg_table_size" in command for command in commands)
+    assert sum("max_wal_size" in command for command in commands) == 1
     subprocess_run.assert_not_called()
 
     disk_usage.return_value = Mock(free=required)
@@ -1477,6 +1480,7 @@ def _rehearsal_probes(
     restored_head: str | None = "0001_head",
     restored_size: int = 12345,
     catalog_digests: tuple[str | None, str | None] = ("cat-same", "cat-same"),
+    max_wal_bytes: int = 1024**3,
 ) -> list[list[str]]:
     """createdb/pg_restore/cleanup을 가짜로 응답하고, cleanup 호출을 기록한다."""
 
@@ -1501,7 +1505,7 @@ def _rehearsal_probes(
     def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
         REHEARSAL_COMMANDS.append(list(arguments))
         if "max_wal_size" in " ".join(arguments):
-            return b"1073741824\n"
+            return f"{max_wal_bytes}\n".encode("ascii")
         if arguments[:2] == ["docker", "cp"]:
             return b""
         if "chown" in arguments:
@@ -1550,24 +1554,23 @@ def test_rehearse_standalone_restore_confirms_a_healthy_backup(
     assert any("rm" in call for call in cleanup_calls)
 
 
+@_RESERVE_CASES
 def test_rehearse_restore_refuses_before_copy_in_when_the_disk_is_too_full(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, max_wal_bytes: int, reserve: int
 ) -> None:
     """scratch DB는 대상과 같은 PGDATA에 원본만큼 자란다 — 공용 instance의 디스크를 채우면
-    다섯 프로젝트의 DB가 멈춘다. 모자라면 dump를 넣지도, DB를 만들지도 않는다."""
+    다섯 프로젝트의 DB가 멈춘다. 모자라면 dump를 넣지도, DB를 만들지도 않는다.
+
+    예약분은 create와 같은 식으로 살아있는 `max_wal_size`에서 나온다 — 고정 하한과 그것을
+    가르는 것은 2GB 경우다(`_RESERVE_CASES`)."""
 
     root = tmp_path / "geo"
     root.mkdir()
     _seed_backup(root, "geo", 1000, b"dump-bytes")
-    _rehearsal_probes(monkeypatch)
-    # manifest db_size_bytes 100 + dump 10 B + max_wal_size 1 GiB(가짜) + 예약분(같은
-    # max_wal_size에서 유도 — WAL을 두 번 세는 것은 일부러다, `_require_rehearsal_space`).
-    required = (
-        100
-        + len(b"dump-bytes")
-        + 1024**3
-        + standalone_backup._disk_reserve_bytes(1024**3)
-    )
+    _rehearsal_probes(monkeypatch, max_wal_bytes=max_wal_bytes)
+    # manifest db_size_bytes 100 + dump 10 B + max_wal_size(가짜) + 예약분(같은 max_wal_size에서
+    # 유도 — WAL을 두 번 세는 것은 일부러다, `_require_rehearsal_space`).
+    required = 100 + len(b"dump-bytes") + max_wal_bytes + reserve
     disk_usage = Mock(return_value=Mock(free=required - 1))
     monkeypatch.setattr(shutil, "disk_usage", disk_usage)
 
