@@ -13,6 +13,7 @@ import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Final, Literal
+from urllib.parse import unquote, urlsplit
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.errors import command_output_tail
@@ -438,6 +439,181 @@ def create_database_if_absent(runtime: DatabaseRuntime) -> bool:
         return False
     _recreate_empty_database_after_owner_preflight(runtime, existing_owner=None)
     return True
+
+
+def map_application_connection_cap(usable: int) -> int:
+    """non-superuser가 쓸 수 있는 슬롯 수 ``usable``에서 Map application DB의 연결 상한을 낸다(D5).
+
+    ``floor(0.4 × usable)``, 최소 1. 공용 instance에서 Map의 최악(API·code-server·run
+    프로세스마다 풀)이 다른 tenant의 슬롯을 다 먹지 않게 묶는다. 0.4가 유일한 정책
+    숫자다 — 72 h 관측에서 `too many connections for database`가 보이면 여기만 올린다.
+    정수 산술이라 부동소수 경계가 없다.
+    """
+
+    if isinstance(usable, bool) or not isinstance(usable, int) or usable < 1:
+        raise DeploymentContractError("PostgreSQL usable connection slots are invalid")
+    return max(1, usable * 2 // 5)
+
+
+def map_application_login(environment: Mapping[str, str]) -> str:
+    """frozen env ``KOR_TRAVEL_MAP_PG_DSN``의 login — Map application DB에 CONNECT를 받는 유일한 login."""
+
+    try:
+        username = urlsplit(environment.get("KOR_TRAVEL_MAP_PG_DSN", "")).username
+    except ValueError as exc:
+        raise DeploymentContractError("Map application login is invalid") from exc
+    login = unquote(username or "")
+    if not _DATABASE_IDENTIFIER.fullmatch(login):
+        raise DeploymentContractError("Map application login is invalid")
+    return login
+
+
+def ensure_map_databases_isolated(
+    app: DatabaseRuntime,
+    dagster: DatabaseRuntime,
+    *,
+    login: str,
+) -> None:
+    """Map 두 DB를 PUBLIC에 닫고 app DB에 login CONNECT와 연결 상한을 건 뒤 **읽어서** 확인한다(R4).
+
+    공용 instance의 DB 단위 CONNECT는 다른 모든 tenant에서 Manager가 소유한다(db-init
+    one-shot). Map DB만 기본값(PUBLIC CONNECT)으로 남으면 같은 instance의 모든 login이
+    Map DB에 붙을 수 있다. app DB의 login(`ktm_feature_service`)은 소유 role을
+    ``INHERIT FALSE``로 들고 있어 소유자 권한으로는 붙지 못하므로 명시적으로 준다. Dagster
+    DB는 소유자(metadata user)가 CTc를 그대로 갖는다. 상한은 같은 instance에서 live로 읽은
+    슬롯에서 유도한다(``map_application_connection_cap``) — superuser는 상한을 받지 않는다.
+
+    fresh bootstrap은 ``datacl IS NULL``·template1과 같은 ``datconnlimit``을 요구하므로 반드시
+    bootstrap **뒤에** 부른다. 멱등이다 — 같은 입력으로 다시 부르면 ACL이 바뀌지 않는다.
+    PinVi DB는 건드리지 않는다.
+    """
+
+    _validate_runtime(app)
+    _validate_runtime(dagster)
+    if app.role != "map_application" or dagster.role != "map_dagster":
+        raise DeploymentContractError("Map database isolation roles are invalid")
+    if (app.container_name, app.port, app.admin_name) != (
+        dagster.container_name,
+        dagster.port,
+        dagster.admin_name,
+    ):
+        raise DeploymentContractError("Map databases must share one PostgreSQL instance")
+    _require_tenant_database_name(app)
+    _require_tenant_database_name(dagster)
+    if len(dagster.additional_owner_names) != 1:
+        raise DeploymentContractError("Map Dagster metadata role is not frozen")
+    (metadata_user,) = dagster.additional_owner_names
+    if not _DATABASE_IDENTIFIER.fullmatch(login):
+        raise DeploymentContractError("Map application login is invalid")
+    cap = map_application_connection_cap(_read_usable_connection_slots(app))
+    app_database = _sql_identifier(app.database_name)
+    dagster_database = _sql_identifier(dagster.database_name)
+    sql = (
+        f"REVOKE CONNECT ON DATABASE {app_database} FROM PUBLIC;\n"
+        f"GRANT CONNECT ON DATABASE {app_database} TO {_sql_identifier(login)};\n"
+        f"REVOKE CONNECT ON DATABASE {dagster_database} FROM PUBLIC;\n"
+        f"ALTER DATABASE {app_database} CONNECTION LIMIT {cap};\n"
+    )
+    _run_checked_with_input(
+        [
+            *_database_admin_interactive_command(app, "psql"),
+            "--no-psqlrc",
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--single-transaction",
+            "--dbname",
+            "postgres",
+        ],
+        input_bytes=sql.encode("ascii"),
+        label="Map database isolation",
+    )
+    _require_database_isolated(app, login=login, connection_limit=cap)
+    _require_database_isolated(dagster, login=metadata_user, connection_limit=None)
+
+
+def _read_usable_connection_slots(runtime: DatabaseRuntime) -> int:
+    """non-superuser 슬롯 = ``max_connections − superuser_reserved − reserved``(live)."""
+
+    _validate_runtime(runtime)
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            "postgres",
+            "--command",
+            (
+                "SELECT pg_catalog.current_setting('max_connections')::integer "
+                "- pg_catalog.current_setting('superuser_reserved_connections')::integer "
+                # PostgreSQL 16부터 있다. 없는 판에서는 0이다.
+                "- COALESCE(pg_catalog.current_setting('reserved_connections', true), '0')"
+                "::integer"
+            ),
+        ],
+        label=f"{runtime.role} usable connection slots",
+    ).decode("ascii").strip()
+    return _parse_positive_int(output, "PostgreSQL usable connection slots")
+
+
+def _require_database_isolated(
+    runtime: DatabaseRuntime,
+    *,
+    login: str,
+    connection_limit: int | None,
+) -> None:
+    """ACL이 있고, PUBLIC CONNECT가 없고, CONNECT 가능한 non-superuser login이 정확히 ``login``이다.
+
+    ACL 술어만으로는 role membership으로 얻는 CONNECT를 놓친다 — 그래서
+    ``has_database_privilege``로 login 집합 전체를 잰다.
+    """
+
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            "postgres",
+            "--command",
+            (
+                "SELECT database_row.datacl IS NOT NULL, "
+                "EXISTS (SELECT 1 FROM pg_catalog.aclexplode(database_row.datacl) AS entry "
+                "WHERE entry.grantee = 0 AND entry.privilege_type = 'CONNECT'), "
+                "database_row.datconnlimit, "
+                "COALESCE((SELECT pg_catalog.array_agg(role.rolname::text ORDER BY role.rolname) "
+                "FROM pg_catalog.pg_roles AS role "
+                "WHERE role.rolcanlogin AND NOT role.rolsuper "
+                "AND pg_catalog.has_database_privilege(role.oid, database_row.oid, 'CONNECT')), "
+                f"ARRAY[]::text[]) = ARRAY['{login}']::text[] "
+                "FROM pg_catalog.pg_database AS database_row "
+                f"WHERE database_row.datname = '{runtime.database_name}'"
+            ),
+        ],
+        label=f"{runtime.role} database isolation read-back",
+    ).decode("ascii").strip()
+    fields = output.split("|") if output and "\n" not in output else []
+    if len(fields) != 4:
+        raise DeploymentContractError(f"{runtime.role} database isolation output is invalid")
+    acl_present = _parse_psql_bool(fields[0], f"{runtime.role} database ACL")
+    public_connect = _parse_psql_bool(fields[1], f"{runtime.role} database PUBLIC CONNECT")
+    observed_limit = _parse_connection_limit(
+        fields[2], f"{runtime.role} database connection limit"
+    )
+    only_login = _parse_psql_bool(fields[3], f"{runtime.role} database CONNECT logins")
+    if (
+        not acl_present
+        or public_connect
+        or not only_login
+        or (connection_limit is not None and observed_limit != connection_limit)
+    ):
+        raise DeploymentContractError(
+            f"{runtime.role} database is not isolated after the grant "
+            f"(acl={acl_present}, public_connect={public_connect}, "
+            f"connect_logins_exact={only_login}, connection_limit={observed_limit})"
+        )
 
 
 def read_database_identity(runtime: DatabaseRuntime) -> tuple[str, int, str] | None:

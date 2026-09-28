@@ -1308,3 +1308,154 @@ def test_the_schema_bearing_admin_owned_database_hint_asks_to_verify_it_is_maps(
     assert "verify it is Map's database (its public.alembic_version is a Map head)" in message
     assert "dropping it by hand" in message
     assert "docs/docker-management.md" in message
+
+
+def _isolation_runtimes() -> tuple[DatabaseRuntime, DatabaseRuntime]:
+    return _dedicated_shape("map_application"), _dedicated_shape("map_dagster")
+
+
+def _isolation_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    usable: str = "97",
+    readback: dict[str, str] | None = None,
+) -> tuple[list[tuple[str, list[str]]], list[bytes]]:
+    reads: list[tuple[str, list[str]]] = []
+    scripts: list[bytes] = []
+    answers = readback or {"map_app": "t|f|38|t", "map_dagster": "t|f|-1|t"}
+
+    def run_checked(arguments: list[str], *, label: str) -> bytes:
+        reads.append((label, list(arguments)))
+        if label.endswith("usable connection slots"):
+            return f"{usable}\n".encode()
+        database = arguments[-1].rsplit("datname = '", 1)[1].split("'", 1)[0]
+        return f"{answers[database]}\n".encode()
+
+    def run_with_input(arguments: list[str], *, input_bytes: bytes, label: str) -> bytes:
+        assert label == "Map database isolation"
+        assert arguments[arguments.index("--dbname") + 1] == "postgres"
+        assert "--single-transaction" in arguments
+        assert arguments[arguments.index("--set") + 1] == "ON_ERROR_STOP=1"
+        scripts.append(input_bytes)
+        return b""
+
+    monkeypatch.setattr(database_runtime, "_run_checked", run_checked)
+    monkeypatch.setattr(database_runtime, "_run_checked_with_input", run_with_input)
+    return reads, scripts
+
+
+def test_isolation_sql_names_only_map_databases_and_the_dsn_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads, scripts = _isolation_harness(monkeypatch)
+    login = database_runtime.map_application_login(
+        {
+            "KOR_TRAVEL_MAP_PG_DSN": (
+                "postgresql+asyncpg://ktm_feature_service:secret@127.0.0.1:12700/map_app"
+            )
+        }
+    )
+
+    database_runtime.ensure_map_databases_isolated(*_isolation_runtimes(), login=login)
+
+    assert login == "ktm_feature_service"
+    assert scripts == [
+        b'REVOKE CONNECT ON DATABASE "map_app" FROM PUBLIC;\n'
+        b'GRANT CONNECT ON DATABASE "map_app" TO "ktm_feature_service";\n'
+        b'REVOKE CONNECT ON DATABASE "map_dagster" FROM PUBLIC;\n'
+        b'ALTER DATABASE "map_app" CONNECTION LIMIT 38;\n'
+    ]
+    assert [label for label, _ in reads] == [
+        "map_application usable connection slots",
+        "map_application database isolation read-back",
+        "map_dagster database isolation read-back",
+    ]
+    # 읽기는 exact login 집합을 묻는다 — app은 DSN login, Dagster는 metadata user.
+    assert "ARRAY['ktm_feature_service']::text[]" in reads[1][1][-1]
+    assert "ARRAY['map_dagster_metadata']::text[]" in reads[2][1][-1]
+    assert "pinvi" not in b"".join(scripts).decode() + "".join(r[1][-1] for r in reads)
+
+
+@pytest.mark.parametrize(
+    ("database", "answer"),
+    (
+        ("map_app", "t|t|38|t"),
+        ("map_app", "f|f|38|t"),
+        ("map_app", "t|f|38|f"),
+        ("map_app", "t|f|-1|t"),
+        ("map_dagster", "t|t|-1|t"),
+        ("map_dagster", "t|f|-1|f"),
+    ),
+    ids=[
+        "app-public-connect",
+        "app-null-acl",
+        "app-extra-login",
+        "app-no-cap",
+        "dagster-public-connect",
+        "dagster-extra-login",
+    ],
+)
+def test_isolation_readback_rejects_public_connect(
+    monkeypatch: pytest.MonkeyPatch,
+    database: str,
+    answer: str,
+) -> None:
+    readback = {"map_app": "t|f|38|t", "map_dagster": "t|f|-1|t", database: answer}
+    _isolation_harness(monkeypatch, readback=readback)
+
+    with pytest.raises(DeploymentContractError, match="not isolated after the grant"):
+        database_runtime.ensure_map_databases_isolated(
+            *_isolation_runtimes(), login="ktm_feature_service"
+        )
+
+
+@pytest.mark.parametrize(
+    ("usable", "cap"),
+    ((97, 38), (100, 40), (7, 2), (5, 2), (2, 1), (1, 1)),
+)
+def test_connection_cap_is_forty_percent_of_usable_slots(usable: int, cap: int) -> None:
+    assert database_runtime.map_application_connection_cap(usable) == cap
+
+
+@pytest.mark.parametrize("usable", (0, -3, True))
+def test_connection_cap_rejects_no_usable_slots(usable: int) -> None:
+    with pytest.raises(DeploymentContractError, match="usable connection slots"):
+        database_runtime.map_application_connection_cap(usable)
+
+
+def test_isolation_cap_is_derived_from_the_live_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, scripts = _isolation_harness(
+        monkeypatch, usable="47", readback={"map_app": "t|f|18|t", "map_dagster": "t|f|-1|t"}
+    )
+
+    database_runtime.ensure_map_databases_isolated(
+        *_isolation_runtimes(), login="ktm_feature_service"
+    )
+
+    assert scripts[0].endswith(b'ALTER DATABASE "map_app" CONNECTION LIMIT 18;\n')
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    (
+        "",
+        "postgresql+asyncpg://127.0.0.1:12700/map_app",
+        "postgresql+asyncpg://Bad-Login:x@127.0.0.1:12700/map_app",
+        "postgresql+asyncpg://a%27b:x@127.0.0.1:12700/map_app",
+    ),
+)
+def test_map_application_login_requires_an_identifier(dsn: str) -> None:
+    with pytest.raises(DeploymentContractError, match="Map application login is invalid"):
+        database_runtime.map_application_login({"KOR_TRAVEL_MAP_PG_DSN": dsn})
+
+
+def test_isolation_refuses_runtimes_on_two_instances(monkeypatch: pytest.MonkeyPatch) -> None:
+    reads, scripts = _isolation_harness(monkeypatch)
+    app, dagster = _isolation_runtimes()
+
+    with pytest.raises(DeploymentContractError, match="share one PostgreSQL instance"):
+        database_runtime.ensure_map_databases_isolated(
+            app, replace(dagster, port=11000), login="ktm_feature_service"
+        )
+
+    assert reads == [] and scripts == []

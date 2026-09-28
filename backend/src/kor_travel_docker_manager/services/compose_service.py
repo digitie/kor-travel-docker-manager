@@ -70,7 +70,9 @@ from kor_travel_docker_manager.services.database_runtime import (
     create_database_if_absent,
     database_runtimes_from_frozen_contract,
     ensure_map_application_database,
+    ensure_map_databases_isolated,
     initialize_application_300_dagster_metadata_database,
+    map_application_login,
     read_database_identity,
     read_database_schema_revision,
     require_map_application_database_convergible,
@@ -4540,6 +4542,8 @@ class ComposeService:
                 resolved=runtime_transaction.resolved,
                 environment=runtime_transaction.environment.effective,
             )
+            # R4가 Map application DB에 CONNECT를 줄 login. 멈추기 전에 유도해 둔다.
+            map_login = map_application_login(runtime_transaction.environment.effective)
             expected_images = self._deployed_images(candidate, companions)
             # 수렴 판정과 identity 기준선은 **실제로 migration할 cluster**를 읽어야 한다.
             # 그래서 두 PostgreSQL을 판정보다 먼저 frozen Compose에 맞춘다. 뒤로 미루면
@@ -4565,6 +4569,8 @@ class ComposeService:
                     runtime_transaction=runtime_transaction,
                     companions=companions,
                     expected_images=expected_images,
+                    runtimes=runtimes,
+                    map_login=map_login,
                 )
                 # 커밋 직후의 보존 정리가 실패했거나 그 사이에 죽었으면 여기서 다시 한다 —
                 # 같은 pair의 재실행은 수렴만 하므로 다른 기회가 없다.
@@ -4632,6 +4638,7 @@ class ComposeService:
                     expected_images=expected_images,
                     state_paths=state_paths,
                     values=values,
+                    map_login=map_login,
                 )
             except Exception:
                 try:
@@ -4747,12 +4754,17 @@ class ComposeService:
         runtime_transaction: ComposeTransactionSnapshot,
         companions: Mapping[str, RuntimeService],
         expected_images: Mapping[str, str],
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+        map_login: str,
     ) -> None:
         """committed와 같은 pair: 빌드·migration 없이 떠 있어야 할 것만 맞춘다.
 
         compose는 설정이 달라진 컨테이너만 다시 만든다. 이미지·설정이 같으면 무연산이다.
+        Map DB 격리·연결 상한(R4)은 `up` 전에 다시 건다 — 같은 pair 수렴만으로 적용되고,
+        이미 맞으면 멱등이다.
         """
 
+        ensure_map_databases_isolated(runtimes[0], runtimes[1], login=map_login)
         self._run_pinned_runtime_rebuild_compose(
             [
                 "up",
@@ -4818,6 +4830,7 @@ class ComposeService:
         expected_images: Mapping[str, str],
         state_paths: PinnedRuntimeStatePaths,
         values: Mapping[str, str],
+        map_login: str,
     ) -> DeployStatus:
         """``in_progress`` 이후의 전체 경로. 모든 단계는 다시 돌려도 안전하다."""
 
@@ -4919,6 +4932,9 @@ class ComposeService:
                 metadata_password=metadata_password,
             )
 
+        # 두 Map DB를 PUBLIC에 닫고 app DB에 login CONNECT·연결 상한을 건다(R4). fresh
+        # bootstrap은 기본 ACL을 요구하므로 bootstrap 뒤, Map이 처음 연결하기 전이다.
+        ensure_map_databases_isolated(runtimes[0], runtimes[1], login=map_login)
         compose_up("kor-travel-map-api")
         require_head(
             runtimes[0],

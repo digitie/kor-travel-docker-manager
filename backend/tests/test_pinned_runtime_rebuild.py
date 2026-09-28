@@ -1372,6 +1372,9 @@ _LIVE_IDENTITIES: dict[str, tuple[str, int, str]] = {
 }
 
 
+_ISOLATION = "ensure-map-databases-isolated"
+
+
 def _forward_runtimes() -> tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime]:
     def runtime(role: Any, name: str, container: str, port: int) -> DatabaseRuntime:
         return DatabaseRuntime(
@@ -1440,6 +1443,10 @@ def _forward_harness(
         "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "metadata-password",
+        "KOR_TRAVEL_MAP_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_service:service-password@127.0.0.1:12700/"
+            "kor_travel_map"
+        ),
         "COMPOSE_PROJECT_NAME": "f1d-migrate-forward",
         "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
         "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
@@ -1555,6 +1562,12 @@ def _forward_harness(
         inspected_services.append(tuple(services))
         return {_C6cConfig.map_ui_container: {}}
 
+    def isolate(app: DatabaseRuntime, dagster: DatabaseRuntime, *, login: str) -> None:
+        # DB 권한 변경도 순서를 단언할 수 있게 compose 호출과 같은 기록에 남긴다.
+        operations.append(
+            (_ISOLATION, app.database_name, dagster.database_name, login)
+        )
+
     def read_identity(runtime: DatabaseRuntime) -> tuple[str, int, str] | None:
         identities = cast(dict[str, Any], live["identities"])
         return cast("tuple[str, int, str] | None", identities.get(runtime.role))
@@ -1594,6 +1607,7 @@ def _forward_harness(
         "ensure_map_application_database": mocks.ensure_map,
         "initialize_application_300_dagster_metadata_database": mocks.dagster_init,
         "reset_databases_for_application_300": mocks.reset,
+        "ensure_map_databases_isolated": isolate,
         "reconcile_orphaned_pinvi_bootstrap_credentials": Mock(),
         "run_pinvi_canonical_smoke": mocks.smoke,
         "C6cDeploymentConfig": _C6cConfig,
@@ -2621,3 +2635,71 @@ def test_full_rebuild_never_mutates_a_postgres_service_outside_the_dedicated_set
         assert scope is not None, operation
         named |= set(scope) & postgres
     assert named <= dedicated, sorted(named - dedicated)
+
+
+def test_converge_applies_isolation_before_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """같은 pair 수렴 한 번으로 R4(PUBLIC 차단·login CONNECT·연결 상한)가 live에 걸린다."""
+
+    candidate = _candidate_generation()
+    harness = _forward_harness(monkeypatch, tmp_path, previous=_committed_status(candidate))
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "converged"
+    isolation = [
+        index for index, operation in enumerate(harness.operations) if operation[0] == _ISOLATION
+    ]
+    runtime_up = [
+        index
+        for index, operation in enumerate(harness.operations)
+        if operation[0] == "up" and "kor-travel-map-api" in operation
+    ]
+    assert len(isolation) == 1 and len(runtime_up) == 1
+    assert isolation[0] < runtime_up[0]
+    assert harness.operations[isolation[0]] == (
+        _ISOLATION,
+        "kor_travel_map",
+        "kor_travel_map_dagster",
+        "ktm_feature_service",
+    )
+
+
+def test_deploy_applies_isolation_after_the_bootstrap_and_before_the_map_api_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fresh bootstrap은 기본 ACL(`datacl IS NULL`)을 요구한다 — 격리는 그 뒤, Map이 붙기 전이다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.mocks.ensure_map.side_effect = lambda *_args, **_kwargs: (
+        harness.operations.append(("ensure-map-application-database",)) or "created"
+    )
+
+    harness.service.rebuild_pinned_runtime()
+
+    names = [operation[0] for operation in harness.operations]
+    isolation = names.index(_ISOLATION)
+    assert names.count(_ISOLATION) == 1
+    assert names.index("ensure-map-application-database") < isolation
+    assert harness.operations.index(_SCHEMA_RUN) < isolation
+    api_up = next(
+        index
+        for index, operation in enumerate(harness.operations)
+        if operation[0] == "up" and "kor-travel-map-api" in operation
+    )
+    assert isolation < api_up
+
+
+def test_a_malformed_map_login_is_refused_before_anything_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.transaction.environment.effective["KOR_TRAVEL_MAP_PG_DSN"] = (
+        "postgresql+asyncpg://127.0.0.1:12700/kor_travel_map"
+    )
+
+    with pytest.raises(DeploymentContractError, match="Map application login is invalid"):
+        harness.service.rebuild_pinned_runtime()
+
+    assert harness.operations == []
