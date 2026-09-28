@@ -43,6 +43,7 @@ from kor_travel_docker_manager.services.registry import (
     MANAGED_CONTAINERS,
     external_project_for_container,
 )
+from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CONCIERGE_BASE_URL_ENV = "${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}"
@@ -1174,8 +1175,10 @@ def test_update_container_config_switches_to_compose_networks_when_requested(
 
 
 def _real_compose_config() -> dict[str, object]:
+    # 중복 키를 거부한다 — `safe_load`는 뒤엣값으로 조용히 덮어써서 `docker compose config`가
+    # 거부하는 파일을 이 가드들이 초록으로 읽는다.
     compose_path = _ROOT / "docker-compose.yml"
-    return yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+    return load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
 
 
 def _real_ports_and_env() -> tuple[list[str], list[tuple[str, str]]]:
