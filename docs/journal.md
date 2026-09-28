@@ -7404,3 +7404,212 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
      정의한다 — 먼저 지우면 롤백이 `PinVi database URL identity is invalid`로 죽는다.
   8. `geo` role(`kor_travel_geo` 약 35 GB)은 다섯 프로젝트가 쓰는 공용 instance를 뜨므로 조용한 시간에만
      손으로 돌린다.
+
+## 2026-09-28 — transport 백업을 Manager standalone role로 접었다
+
+- **오너 결정(2026-09-28)**: transport 스택의 백업을 Manager의 standalone `db-backup` role로 옮긴다.
+- **실측(n150, 읽기 전용 — `ls`/`stat`/`docker ps`만)**:
+  - transport 저장소의 자체 cron(`0 18 */3 * * .../kor-travel-airport/scripts/n150-backup-cron.sh`, API
+    `POST /v1/admin/backups`)이 남긴 마지막 자동 dump는 `parking-radar-20260905T230044Z.dump`(13.5 MB)다.
+    그 뒤로 `/home/digitie/apps/kor-travel-airport/backups/`에는 2026-09-27에 손으로 뜬
+    `pre-kric-20260927T055443Z.dump`(1,011,308,463 B, 약 9분)와 그 전 시도의 `.incomplete`(342 MB)뿐이다.
+    `kor_travel_transport_dagster`는 백업이 아예 없었다.
+  - `/`·`/home`·`/home/digitie/backups`·`/var/lib/docker`·`/home/digitie/kor-travel-shared-data`가 모두 같은
+    장치(`stat -c %d` 64512)다. 백업 root, pg_dump가 먼저 쓰는 컨테이너 `/tmp`(Docker 쓰기 층), 공용
+    instance PGDATA가 한 디스크를 나눠 쓴다. 여유는 20,473,664 블록 × 4 KiB ≈ 83.9 GB(전체 약 500 GB).
+  - `~/backups/geo`는 비어 있다(#429 절차대로 옛 instance dump를 `legacy/`로 옮겼다). `geo_dagster`·
+    `concierge`·`pinvi`는 2026-09-28 03:05~03:15에 공용 instance에서 새로 떴다.
+- **전제 정정**: 지시가 든 `BACKUP_COMMAND_TIMEOUT_SECONDS`·`MAX_BACKUP_BYTES`(2 GiB)는 Manager에 없다.
+  transport 앱(`backend/app/services/backup_restore.py`, compose 기본 120초)의 한도다. Manager `create`에는
+  기본 14,400초 timeout(API는 60~86,400초) 하나만 있었고 크기 상한도 디스크 확인도 없었다. 120초로는
+  9분짜리 transport dump를 뜰 수 없다 — 자체 cron이 멈춘 원인 후보지만 그쪽 로그를 보지 않았으므로
+  확정하지 않는다.
+- **변경**:
+  - `standalone_backup`: `transport`(`kor_travel_transport`)·`transport_dagster`(`kor_travel_transport_dagster`).
+    둘 다 `kor-travel-shared-postgres`를 뜨고 `KOR_TRAVEL_SHARED_POSTGRES_CONTAINER` override를 따른다 —
+    #429가 `geo_dagster`·`concierge`·`pinvi`에 준 모양 그대로이고, manifest는
+    `kor-travel-shared-postgres:127.0.0.1:<포트>/<db>`다. DB 이름은 compose의
+    `kor-travel-shared-db-init-transport`가 literal로 고정한 값이다.
+  - `database_runtime._ROLE_CONFIG`는 건드리지 않았다. v5 재구축이 **파기·재생성하는** DB 목록이라 거기
+    넣으면 재구축이 transport DB를 지운다. #429도 이 파일을 바꾸지 않았다.
+  - **디스크 여유, role마다**: `create`가 pg_dump 전에 `필요량 = 2 x 예상 dump + 2 GiB`를 확인하고 모자라면
+    시작하지 않는다(`StandaloneBackupInsufficientSpaceError`, CLI exit 2). 예상 dump는 같은 자리(컨테이너·
+    database)에서 뜬 최신 dump를 DB 증가율만큼 키운 값, 그런 dump가 없으면 live DB 크기다. 2배는 컨테이너
+    `/tmp`와 host 사본이 복사가 끝날 때까지 함께 있어서다. 예약분 2 GiB는 공용 instance `max_wal_size`(1GB)
+    위의 여유다. 전역 상한 하나를 두지 않은 이유: dump 크기가 role마다 만 배 넘게 달라(pinvi 수백 KB ~
+    geo 4.7 GB), 큰 role에 맞춘 값은 디스크가 빠듯할 때 작은 role까지 막고 작은 role에 맞춘 값은 큰 role을
+    지키지 못한다. 필요량은 설정 숫자가 아니라 role의 database에서 나오므로 DB가 자라도 낡지 않는다.
+  - timeout은 그대로 뒀다. 멈춘 명령의 상한이지 자원 가드가 아니고, 가장 큰 geo(880초)와 transport(약 9분)
+    모두 기본 4시간 안이다.
+  - `scripts/run-standalone-backup.sh` 허용 목록에 두 role을 넣고 헤더에 권장 crontab 줄을 적었다
+    (`transport_dagster` 매일 18:10 UTC keep 7, `transport` `*/3` 18:30 UTC keep 3). 프론트 신선도 표가 그
+    주기를 미러링한다(72 h / 24 h). transport 생성 확인 문구에 약 9분을 적었다.
+  - 문서: `docker-management.md`(role 표, 디스크 여유 절, 백업 없는 DB 목록, transport 실측·cron),
+    `shared-postgres-onboarding.md` §6.4(주기 대상, `database_runtime`에 넣지 말 것, 프론트 표).
+- **geo 판정 — 고칠 것이 없었다**: timeout 880초 ≪ 14,400초. 새 디스크 확인에서 첫 실행(이 자리의 geo dump
+  없음)은 2 × 약 35 GB + 2 GiB ≈ 72 GB로 n150 여유 83.9 GB 안이다(35 GiB로 잡아도 77 GB). 한 번 뜬 뒤에는
+  2 × 4.7 GB + 2 GiB ≈ 11.5 GB다. 여유가 72 GB 아래일 때 geo를 처음 뜨면 거부되고 문구에 필요량·여유·근거가
+  찍힌다. geo는 여전히 수동 전용이다.
+- **테스트**:
+  - 새 단언: transport 둘이 공용 instance의 자기 DB를 실제로 뜬다(pg_dump 인자·manifest `instance`), 디스크
+    산술(첫 실행 상한, DB 증가 비례, 같은 자리의 최신 dump만, 읽지 못하는 manifest는 건너뜀, geo와 작은 role의
+    숫자), 모자라면 pg_dump 전에 거부하고 아무것도 남기지 않음(정확히 필요량이면 진행), 가짜 `ktdctl`을 끼워
+    wrapper를 **실행해** 모든 role에 대해 무엇을 불렀는지(`test_run_standalone_backup_wrapper.py`).
+    `test_compose_model_references`는 `BACKUP_ROLES`를 파라미터로 받아 두 role을 자동으로 본다(초록).
+  - **origin/main에서 빨갛다**: origin/main 코드 + 새 테스트(대상 네 파일)는 14 failed / 191 passed, 이 브랜치는
+    207 passed. 첫판은 autouse fixture가 `standalone_backup.shutil`을 거쳐 패치해서, `shutil`을 import하지 않는
+    origin/main에서는 파일 전체가 setup ERROR로 무너져 **어느 단언이 깨지는지를 가렸다** — `shutil`을 직접
+    패치하도록 고쳤다.
+  - n150 전체 스위트(ruff 0.16.4 포함)는 `df0f5be`에서 2037 passed, 2 skipped다(#429의 2014에서 새 단언과
+    `BACKUP_ROLES` 파라미터 증가분만큼 늘었다). `ktdm-readiness-*` 잔여 컨테이너는 없었다.
+- **운영 절차(설치 뒤, 운영자)**:
+  1. PR을 CI green으로 머지하고 main의 머지 커밋만 설치한다(`~/install-mgr.sh <sha>` → rebind → verify).
+  2. cron 사본 `/home/digitie/kor-travel-docker-manager`를 설치본과 맞춘다 — `backend/src`(그 안에서만
+     `--delete`), `scripts/run-standalone-backup.sh`(실행 비트 유지). `config/`의 나머지는 건드리지 않는다.
+  3. 여유 확인: `transport` 첫 실행은 약 28 GB(2 × 13 GB + 2 GiB)가 필요하다.
+  4. 한 번씩 손으로(조용한 시간, `transport_dagster` 먼저) wrapper를 돌리고 확인한다: `db-backup list <role>
+     --json`의 `instance`가 `kor-travel-shared-postgres:127.0.0.1:11000/<db>`, `sha256sum -c`, `restore-plan`
+     exit 0. `transport_dagster`는 `rehearse-restore`까지(`verified: true`). `transport`의 리허설은 약 14 GB를
+     더 쓰므로 선택이고 `df`를 먼저 본다.
+  5. digitie crontab에 두 줄을 **덧붙인다**(`CRON_TZ=UTC` 아래, 기존 줄과 같은 `KTDM_BACKUP_ROOT` 접두).
+  6. 두 role이 검증된 dump를 하나씩 남긴 **뒤에만** transport 저장소의 cron 줄(`n150-backup-cron.sh`)을
+     걷어낸다. 그 저장소의 `docs/architecture/backup-restore.md` "자동 백업" 절은 그 저장소 후속으로 고친다.
+
+## 2026-09-28 — transport 백업 role 리뷰 반영(geo 첫 실행 상한, 리허설 디스크, 실패 탐지 경로)
+
+- 적대 리뷰(origin/main...`222aa67`)가 blocking MED 둘과 LOW 여섯을 냈다. **위 항목의 "geo 판정 — 고칠 것이
+  없었다", 권장 cron 시각(18:10/18:30 UTC), 운영 절차는 이 항목이 대체한다.** n150에서는 이번에도 `ls`·`stat`만
+  썼다(운영 DB 질의·crontab·`.env` 읽기 없음).
+- **MED 1 — geo가 새 디스크 가드에 곧 막힐 자리였다.** `~/backups/geo`가 비어 있어(#429가 옛 dump를 `legacy/`로
+  옮겼다) geo `create`는 매번 첫 실행 상한 2 × `pg_database_size` + 2 GiB를 탔다. 위 항목은 그것을 "≈ 72 GB"로
+  적었지만 72는 GiB였다 — **77.3 GB**. 04:00 UTC n150 여유는 19,898,003 블록 × 4 KiB = **81.5 GB**(`stat -f`)라
+  차이가 약 4.2 GB였고, transport 보존분(약 3 GB)이 쌓이면 1 GB 남짓, geo DB가 1 GB 자랄 때마다 필요량은 2 GB씩
+  는다. 위 항목의 테스트는 83.9 GB라는 낡은 스냅숏을 상수와 비교해 "geo는 들어간다"는 거짓 안심을 줬다(지웠다).
+  - 고침: 첫 실행 추정 = **min(1.25 × Σ`pg_table_size`(relkind `r`·`m`), `pg_database_size`)**. custom format
+    dump에는 인덱스 페이지가 없다. 테이블 질의는 **그 role의 database에 붙어서**(`--dbname`) 한다 — `pg_class`는
+    database마다 따로다. min이라 옛 상한보다 커지는 일은 없다(리뷰가 권한 1.25 × 테이블 단독은 인덱스가 거의
+    없는 database에서 옛 상한보다 커질 수 있어 min으로 묶었다).
+  - `db-backup create --expected-dump-bytes N`: 추정만 바꾸고 확인은 남긴다(2N + 2 GiB). CLI가 stderr(cron
+    로그)에 찍고 거부 문구에도 남는다. 0·음수·비정수는 argparse가 거부한다.
+  - geo의 테이블 합은 재지 않았다(운영 DB에 질의하지 않는다는 이번 작업 규칙). `docker-management.md`에
+    운영자용 읽기 전용 질의와 비상 시 `--expected-dump-bytes 6000000000`(필요량 약 14.1 GB)을 적었다.
+- **MED 2 — transport 실패가 여전히 조용할 자리였다.** 새 신선도 배지(72 h/24 h)가 유일한 제품 안의 탐지인데
+  배지는 backend가 읽는 root를 본다. backend는 `.env`의 `KTDM_BACKUP_ROOT`로 root를 정하고, n150에는
+  `/etc/logrotate.d/kor-travel-docker-manager`가 없다(`stat`로 확인 — installer가 같은 키로 렌더링하고 없으면
+  건너뛴다). backend는 `User=` 없는 유닛이라 root로 돌아 `/root/backups`를 읽고 cron은 `/home/digitie/backups`에
+  쓴다 — 배지는 cron dump를 못 보고 `<role>.log`는 로테이션되지 않는다. 위 항목의 운영 절차가 "logrotate가 이미
+  덮는다"고 적은 것은 틀렸다.
+  - 고침(문서·wrapper 헤더): 키가 없으면 로테이션도 배지도 없다고 적었다. 해소 순서(G lock 아래 `.env`에 키
+    추가 → 설치 → 배지 확인, 공유 그룹 없이 UI에서 백업을 만들지 말 것 — root 0600 manifest가 digitie cron의
+    gc를 막는다)와 cron과 같은 root를 준 CLI 신선도 확인을 적었다. 코드 후속(목록 응답·배지에 backend가 읽은
+    root 경로 싣기)은 `docker-management.md` "아직 안 된 것"에 남겼다.
+- **LOW**:
+  - 주기: 18:30 UTC는 03:30 KST로 transport의 `bus_reference_collection_job`과 정확히 겹쳤다. `transport_dagster`
+    16:50 UTC(01:50 KST), `transport` 17:15 UTC `*/3`(02:15 KST)로 옮겼다 — transport Dagster의 매시 :00,
+    03:00·03:30, ferry :45(4시간마다)를 피한다(`kor-travel-transport` `definitions.py` 로컬 체크아웃에서 확인).
+  - `rehearse-restore`도 copy-in·`createdb` **전에** 잰다: manifest의 database 크기 + dump + 그 instance의
+    `max_wal_size`(`pg_size_bytes(current_setting(...))`로 질의) + 2 GiB. 모자라면 아무것도 만들지 않는다.
+  - UTF-8이 아닌 manifest가 `UnicodeDecodeError`(ValueError)로 새어 create를 pg_dump 전에 traceback으로 죽였다 —
+    `_read_manifest`가 `StandaloneBackupError`로 바꾼다(목록의 `unreadable` 행으로도 격하된다).
+  - 테스트: transport role 테스트가 pg_dump 전 크기 질의가 `pg_database_size('<role db>')` 하나이고 테이블 질의가
+    `--dbname <role db>`인지 결박한다. 가짜는 어떤 이름에도 숫자를 돌려줘, 전에는 `postgres`를 재도 초록이었다.
+  - crontab을 고치는 운영 절차는 파일로 떠서 비어 있지 않은지·정확히 한 줄(추가는 두 줄)이 바뀌는지 확인한 뒤
+    설치한다(`crontab -l | … | crontab -`은 `crontab -l`이 실패하면 빈 crontab을 설치한다).
+  - transport 수동 복원 절차를 적었다: 공용 instance에서 superuser로 `pg_restore --clean --if-exists
+    --single-transaction --exit-on-error`, `--no-owner`·`--no-acl` 없이(소유자 `kor_travel_transport_app`과 GRANT가
+    돌아온다). transport 앱의 복원 API는 이름 패턴(`parking-radar-*.dump`)·2 GiB·기본 120초 timeout 때문에 이
+    dump를 쓸 수 없다. n150에서 실행해 보지는 않았다.
+- 거부한 리뷰 항목은 없다.
+- 리뷰가 적은 concierge 이상(브랜치 결함 아님)을 `ls`로 재확인했다: `concierge.log` mtime 03:30:34 UTC,
+  `~/backups/concierge` 디렉터리 mtime 03:05:23, 최신 dump는 03:05 수동분이다 — 03:30 cron 실행이 dump를 남기지
+  않았다. 로그 내용은 읽지 않았다. 운영 절차의 0단계로 넣었다.
+- **테스트(n150)**:
+  - `9a7b75a`에서 ruff 0.16.4(CI 명령) 초록, 대상 여섯 파일(`test_standalone_backup`·`test_docker_manager_cli`·
+    `test_run_standalone_backup_wrapper`·`test_api`·`test_compose_model_references`·
+    `test_cron_executed_scripts_are_executable`) 356 passed.
+  - 빨강 확인: 직전 head `222aa67` 코드 + 이번 테스트는 16 failed / 215 passed — transport role 테스트(pg_dump 전
+    테이블 질의가 없다), 경계 테스트(첫 실행 추정이 DB 크기라 정확히 필요한 여유에서도 거부), 리허설 디스크, UTF-8이
+    아닌 manifest, override 모두 빨갛다. origin/main(`88599eb`) 코드 + 브랜치 테스트는 23 failed / 321 passed.
+  - 전체 스위트(`/tmp/b3-test.sh`, `9a7b75a`): **2047 passed, 2 skipped**(2m47s). `ktdm-readiness-*` 잔여 컨테이너
+    0개. 이 항목 뒤의 커밋은 문서만 바꾼다.
+- **운영 절차(설치 뒤, 운영자)** — 위 항목의 1~6을 대체한다. 명령은 `docker-management.md`의 "transport 주기
+  백업 — 실패를 누가 보는가"·"transport 복원" 절에 있고, 순서는 이렇다:
+  0. `concierge.log`의 03:30 실행을 먼저 읽는다. `.env`에 `KTDM_BACKUP_ROOT`가 없는지 개수만 센다.
+  1. CI green으로 머지하고, **설치 전에** G lock 아래에서 live `.env`에 `KTDM_BACKUP_ROOT=/home/digitie/backups`를
+     덧붙인 뒤 머지 커밋을 설치한다(`~/install-mgr.sh <sha>` → rebind → verify). logrotate 파일이 생겼는지 본다.
+  2. cron 사본의 `backend/src`와 wrapper를 설치본과 맞춘다.
+  3. Dashboard 배지가 cron dump를 보는지 확인한다. 공유 그룹 없이 UI에서 백업을 만들지 않는다.
+  4. `transport_dagster` → `transport` 순으로 wrapper를 한 번씩 손으로 돌려 검증한다.
+  5. crontab에 두 줄(16:50 UTC daily keep 7, 17:15 UTC `*/3` keep 3)을 파일 경유로 덧붙인다.
+  6. 두 role이 **cron으로** 검증된 dump를 하나씩 남긴 뒤에만 transport 저장소의 cron 줄을 파일 경유로(정확히 한 줄)
+     걷어낸다.
+
+## 2026-09-28 — transport 백업 운영 절차 리뷰 반영(UI 생성 한 번이 cron을 깨는 자리)
+
+- 적대 리뷰(`222aa67..e323695`)가 MED 하나를 냈다(HIGH 없음). **위 항목의 운영 절차(0~6)는 이 항목이
+  대체한다.** 코드 쪽(첫 실행 추정, 리허설 가드, override, UTF-8이 아닌 manifest, wrapper, cron 시각)은 리뷰가
+  확인했고 LOW 넷은 올리지 않았다.
+- **MED — 운영 절차가 UI 생성 한 번으로 cron을 깨는 창을 열었다.** 1단계는 공유 그룹도, transport role 디렉터리도
+  없는 상태에서 live `.env`에 `KTDM_BACKUP_ROOT=/home/digitie/backups`를 넣었고, 막는 것은 3단계의 문장("공유
+  그룹 없이 UI에서 만들지 않는다")뿐이었다. Dashboard는 `BACKUP_ROLES` 전부에 생성 버튼을 두고 backend는 root로
+  돈다. 공유 그룹 없이 root backend가 digitie cron의 root에 쓰면:
+  - role 디렉터리가 **없을 때**(transport 둘 — 리뷰 시점 06:05 UTC n150에 없었다): backend가 그것과
+    `.backup.lock`을 `root:root 0700`/`0600`으로 만든다. 그 뒤 digitie cron은 매번 `_prepare_backup_root`의
+    `os.chmod`에서 EPERM이다. typed 오류가 아닌 `PermissionError`라 CLI는 traceback으로 끝나고 그 role은 다시
+    떠지지 않는다. 배지는 UI dump 덕에 90시간 초록이다.
+  - **있을 때**(`geo_dagster`·`concierge`·`pinvi`): root `0600` manifest를 digitie `gc`가 읽지 못해 그 role 전체를
+    매번 exit 2로 거부한다. create는 성공해 배지는 초록인 채 보존 정리만 멈추고, dump가 공용 instance PGDATA와 같은
+    파일시스템(리뷰의 `stat` 실측)에 쌓인다.
+  - 위 항목의 경고는 둘째 경로만 적었다 — 새 두 role이 정확히 첫째 경로다.
+- **고침(코드)**: `POST /api/v1/backups/{role}`이 job을 띄우기 전에 `ui_backup_owner_conflict(role)`을 본다.
+  `KTDM_BACKUP_SHARED_GROUP`이 없고 backend의 euid가 role 디렉터리(없으면 그 부모)의 소유자와 다르면 409와 이유
+  (경로, 두 uid, 공유 그룹 절, 그 uid로 도는 CLI 대안)를 돌려준다. 공유 그룹이 있으면 건너뛴다 — 그 전제(setgid·
+  그룹)는 create가 이미 확인한다. 둘 다 없으면 이 프로세스가 만들므로 막지 않고, `stat`이 실패하면 판정하지 않고
+  create의 오류에 맡긴다. CLI는 그대로다 — cron과 손 실행은 그 디렉터리의 주인 계정으로 도는 것이 전제다.
+- **고침(문서)**: `docker-management.md` "transport 주기 백업 — 실패를 누가 보는가"의 순서를 바꾸고 두 경로를 모두
+  적었다. `prod-deployment.md` §3.x는 두 계정이 같은 root를 쓰면 필수라고 제목부터 적었다. wrapper 헤더도 같다.
+  - 리뷰가 적지 않은 것 하나를 더 찾았다: **`ktdctl`은 `.env`를 읽지 않는다**(backend만 `load_dotenv`). 공유 그룹을
+    `.env`에만 넣으면 cron은 `0700` 정책으로 돌아 다음 실행이 role 디렉터리를 `os.chmod(…, 0o700)`으로 되돌려
+    setgid를 벗기고, 그 뒤 UI 생성이 `not a shared setgid directory`로 거부된다. crontab 환경 줄 하나
+    (`KTDM_BACKUP_SHARED_GROUP=ktdm-backup`, 백업 줄 위)를 절차와 두 문서에 넣었다.
+- **테스트(n150)**:
+  - 새 단언(`test_api.py`): 다른 계정 소유의 role 디렉터리에는 409이고 job도 파일도 없다, role 디렉터리가 없고 부모가
+    다른 계정 것이면 409이고 디렉터리를 만들지 않는다, 공유 그룹이 선언됐거나 root·부모가 모두 없으면 202로 돈다.
+    소유자는 chown(root 전용) 대신 euid를 바꿔 흉내낸다. 기존 `POST` 테스트 넷은 이 테스트 계정 소유의 임시
+    root(`owned_backup_root`)를 쓴다 — 없으면 판정이 실행 계정의 진짜 `~/backups`에 결박된다.
+  - 빨강 확인: 직전 head `e323695`의 `backend/src` + 이번 테스트는 거부 둘이 빨갛다(`test_api.py -k backup`에서
+    2 failed / 15 passed). 202 쪽 둘은 과잉 거부를 막는 단언이라 옛 코드에서도 초록이다.
+  - `e3035dc`에서 ruff 0.16.4(CI 명령) 초록, 대상 여섯 파일 360 passed. 첫 실행 한 번은
+    `test_a_failed_backup_job_reports_the_failure_instead_of_vanishing` 1 failed였고 그 뒤 같은 명령 세 번,
+    `test_api.py` 단독, 그 테스트 단독 모두 초록이었다 — 재현되지 않았다. 원문을 남기지 못해 원인은 확정하지 않는다.
+    이번 확인은 job 제출 **전에** 돌아 그 테스트의 job 수명과 겹치지 않는다.
+  - 전체 스위트(`/tmp/b3-test.sh`, `e3035dc`): **2051 passed, 2 skipped**(4m30s, 새 단언 넷만큼 늘었다).
+    `ktdm-readiness-*` 잔여 컨테이너 0개. 이 항목 뒤의 커밋은 문서만 바꾼다.
+- **운영 절차(머지 뒤, 운영자)** — 위 항목의 0~6을 대체한다. 명령은 `docker-management.md`의 같은 절에 있다:
+  0. `concierge.log`의 03:30 실행을 먼저 읽는다. `.env`에 `KTDM_BACKUP_ROOT`·`KTDM_BACKUP_SHARED_GROUP`가 없는지
+     개수만 센다.
+  1. CI green으로 머지한다. cron 사본의 `backend/src`(그 안에서만 `--delete`)·`config/docker-targets.yml`·wrapper
+     (실행 비트 유지)를 **머지 커밋에서** 맞춘다 — 설치 전이라 설치본은 아직 옛 release다.
+  2. 여유를 보고(`transport` 첫 실행 최대 약 28 GB) **digitie로** wrapper를 손으로 돌린다 — `transport_dagster` →
+     `transport`. 검증은 "transport 백업을 Manager standalone role로 접었다" 항목의 4(`instance`, `sha256sum -c`,
+     `restore-plan`, `transport_dagster`는
+     `rehearse-restore`). `stat -c '%U:%G %a %n'`로 두 role 디렉터리와 `.backup.lock`이 digitie 소유인지 본다.
+  3. 머지 커밋을 `.env` 그대로 설치·확인한 뒤, G lock 아래에서 live `.env`에 `KTDM_BACKUP_ROOT=/home/digitie/backups`
+     한 줄을 넣고 같은 커밋을 다시 설치한다(아래 MED-2). 공유 그룹은 하지 않는다 — 아래 "단순화".
+  4. `/etc/logrotate.d/kor-travel-docker-manager`가 생겼는지, Dashboard 배지가 2의 dump를 보는지 확인한다.
+  5. crontab에 두 줄(16:50 UTC daily keep 7, 17:15 UTC `*/3` keep 3)을 파일 경유로 덧붙인다.
+  6. 두 role이 **cron으로** 검증된 dump를 하나씩 남긴 뒤에만 transport 저장소의 cron 줄을 파일 경유로(정확히 한 줄)
+     걷어낸다.
+- **단순화(머지 전, 소유자 원칙 "결박을 쌓지 말 것")**: 409 가드가 생긴 뒤에는 공유 그룹이 cron의 안전에 필요하지
+  않다 — 없으면 UI 생성만 거절되고 cron은 그대로다. 그래서 n150 절차의 3단계는 `.env` 한 줄 + 설치만 하고, 공유
+  그룹(`chgrp -R`·`2770`·crontab 환경 줄)은 UI에서도 만들고 싶을 때의 선택으로 되돌렸다. installer는 그룹이 없으면
+  logrotate를 `su root root`로 렌더링하고, cron 계정 소유 `0700` 디렉터리의 `<role>.log`는 그대로 돈다.
+  `docker-management.md`·`prod-deployment.md` §3.x·wrapper 헤더를 같이 고쳤다.
+- **적대 리뷰(`e3236951..2e99ae11`, MED 2·HIGH 0) 반영**:
+  - MED-1: 공유 그룹이 선언되면 가드가 통째로 빠졌다. role 디렉터리가 없을 때 root backend가 그것을 만들면 주인이
+    root라 cron 계정은 mode를 고칠 수 없고, crontab에 그룹 값이 빠지면(절반만 한 설정, 나중의 단순화) 첫 cron 실행이
+    EPERM이다. 이제 공유 그룹은 **이미 있는** role 디렉터리만 면제하고, 없으면 그룹과 무관하게 부모 소유자와
+    비교한다(409 메시지는 그 uid로 `ktdctl db-backup create <role>`을 안내). 새 테스트가 옛 코드에서 빨갛다.
+  - MED-2: 절차가 가드 설치 **전에** `.env`를 바꿨다. 설치가 실패해 옛 release로 되돌리면 installer가 그 `.env`를
+    가드 없는 release에 복사한다. 이제 3) `.env` 그대로 설치·확인 → 4) G lock 아래 `.env` 한 줄 + 같은 커밋 재설치.
+    가드 이전 release로 되돌릴 때는 `KTDM_BACKUP_ROOT`를 먼저 뺀다.

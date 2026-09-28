@@ -29,12 +29,14 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import re
+import shutil
 import stat
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -51,6 +53,8 @@ BackupRole = Literal[
     "map_application",
     "map_dagster",
     "pinvi",
+    "transport",
+    "transport_dagster",
 ]
 
 BACKUP_ROLES: tuple[BackupRole, ...] = (
@@ -60,6 +64,8 @@ BACKUP_ROLES: tuple[BackupRole, ...] = (
     "map_application",
     "map_dagster",
     "pinvi",
+    "transport",
+    "transport_dagster",
 )
 
 _CONTAINER_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
@@ -112,7 +118,41 @@ _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
         "kor-travel-shared-postgres",
         "pinvi",
     ),
+    # 2026-09-28 오너 결정: transport 스택의 백업을 Manager로 접는다. transport 저장소의
+    # 자체 cron(`POST /v1/admin/backups`)은 2026-09-05 뒤로 dump를 하나도 남기지 않았고
+    # Dagster metadata DB는 백업 자체가 없었다. 두 DB 이름은 compose의
+    # `kor-travel-shared-db-init-transport`가 env override 없이 literal로 고정한다.
+    "transport": (
+        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
+        "kor-travel-shared-postgres",
+        "kor_travel_transport",
+    ),
+    "transport_dagster": (
+        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
+        "kor-travel-shared-postgres",
+        "kor_travel_transport_dagster",
+    ),
 }
+
+#: 백업을 뜬 뒤에도 백업 root의 파일시스템에 남겨 두는 최소 여유(바이트).
+#:
+#: n150에서는 백업 root, Docker 쓰기 층(pg_dump가 컨테이너 `/tmp`에 먼저 쓰는 자리),
+#: 공용 instance의 PGDATA가 **한 파일시스템**이다(2026-09-28 `stat -c %d` 실측, 전부 같은
+#: 장치). 백업이 그 디스크를 채우면 다섯 프로젝트의 DB가 WAL을 쓰지 못해 멈춘다. 2 GiB는
+#: 공용 instance의 `max_wal_size`(1GB)보다 넉넉한 값이다.
+_DISK_RESERVE_BYTES = 2 * 1024**3
+
+#: 첫 dump(이 자리에서 뜬 dump가 아직 없을 때)의 크기 상한 = 이 배수 x database의 **테이블**
+#: 크기 합(`pg_table_size`: heap·TOAST·FSM·VM, 인덱스 제외).
+#:
+#: custom format dump에는 인덱스 페이지가 없다(인덱스는 정의 한 줄이고 복원 때 다시 만든다).
+#: `pg_database_size`(인덱스 포함)만으로 상한을 잡으면 인덱스가 큰 database는 필요량이 부풀어
+#: 멀쩡한 백업을 거부한다 — geo(database 약 35 GiB, dump 약 4.7 GB)의 첫 실행이
+#: 2 x 35 GiB + 2 GiB = 72 GiB(77.3 GB)를 요구했고, 2026-09-28 n150 여유(81.5 GB)와 약 4 GB
+#: 차이였다. 1.25는 행이 COPY 텍스트가 되며 커질 수 있는 몫(bytea·geometry는 hex로 두 배가
+#: 되고 `--compress=6`이 대부분 되돌린다)을 덮는다. 테이블 크기에는 튜플 헤더·빈 공간·dead
+#: tuple이 들어 있어 실제 dump보다 거의 항상 크다.
+_FIRST_DUMP_TABLE_FACTOR = 1.25
 
 
 class StandaloneBackupError(RuntimeError):
@@ -134,6 +174,15 @@ class StandaloneBackupInProgressError(StandaloneBackupError):
     쥔 프로세스가 재기동으로 죽으면 커널이 lock을 즉시 풀어주지만, 컨테이너 안의
     pg_dump 자체는 `docker exec`가 timeout을 전파하지 않아 서버 쪽에서 계속 돈다
     (진행 상황은 create_standalone_backup의 docstring 참고)."""
+
+
+class StandaloneBackupInsufficientSpaceError(StandaloneBackupError):
+    """여유 공간이 모자라 이 role의 dump(`create`)나 복원 리허설(`rehearse-restore`)을
+    시작하지 않았다.
+
+    판정은 pg_dump·scratch DB 생성을 **시작하기 전에** 한다 — 도중에 디스크가 차면 같은
+    파일시스템의 PostgreSQL이 먼저 죽는다. 필요량은 role마다 다르고 그 role의 database와
+    manifest에서 파생한다(`_require_free_space`·`_require_rehearsal_space`)."""
 
 
 @dataclass(frozen=True)
@@ -300,16 +349,73 @@ def _assert_shared_group_effective(
     )
 
 
+def ui_backup_owner_conflict(role: BackupRole) -> str | None:
+    """UI(backend)가 만들면 다른 계정의 주기 백업을 깨는 자리인지. 깨면 그 이유를 돌려준다.
+
+    공유 그룹이 없으면 산출물은 만든 계정만 읽고 지우는 `0700`/`0600`이다. n150처럼
+    backend가 root로 돌고 cron이 다른 계정으로 같은 root에 쓰면 UI 생성 한 번이 cron을
+    깨는데, 두 경우 모두 신선도 배지에는 드러나지 않는다:
+
+    - role 디렉터리가 아직 없으면 backend가 그것과 `.backup.lock`을 root `0700`/`0600`으로
+      만든다. 그 뒤 cron의 매 실행이 `_prepare_backup_root`의 `chmod`에서 EPERM으로 죽는다
+      (그 role의 cron 백업이 영영 멈추고, 배지는 UI dump 덕에 한동안 초록이다).
+    - 있으면 root `0600` manifest가 생겨 cron의 `gc`가 그 role 전체를 거부한다 — create는
+      계속 성공해 배지는 초록인데 보존 정리만 멈추고 dump가 쌓인다.
+
+    그래서 이 프로세스의 euid가 role 디렉터리의 소유자와 같을 때만 만든다. 공유 그룹은
+    **이미 있는** role 디렉터리만 면제한다 — 그때의 전제(setgid·그룹)는 create가 확인한다.
+    role 디렉터리가 없으면 공유 그룹과 무관하게 부모의 소유자와 같을 때만 만든다: 이
+    프로세스가 만든 디렉터리의 주인은 이 프로세스이고, 다른 계정의 cron은 그 mode를 고칠 수
+    없다(crontab에 공유 그룹 값이 빠지면 첫 cron 실행이 `chmod`에서 EPERM이다). 그래서 role의
+    첫 백업은 cron 계정이 만든다. 부모도 없으면 이 프로세스가 둘 다 만들므로 막지 않는다.
+    `stat` 자체가 실패하면(권한 등) 판정하지 않고 create가 자기 오류를 내게 둔다. CLI는 이
+    확인을 하지 않는다 — cron과 손 실행은 그 디렉터리의 주인 계정으로 도는 것이 전제다.
+    """
+
+    shared_group = bool(os.environ.get(BACKUP_SHARED_GROUP_ENV, "").strip())
+    root = _resolve_backup_root(role, None)
+    for directory in (root, root.parent):
+        try:
+            owner = directory.stat().st_uid
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        euid = os.geteuid()
+        if owner == euid:
+            return None
+        if directory != root:
+            return (
+                f"refusing to create the first {role} backup here: {root} does not exist yet "
+                f"and its parent {directory} belongs to uid {owner}, but this backend runs as "
+                f"uid {euid}. The role directory and its lock would belong to uid {euid}, and "
+                f"uid {owner}'s cron backup could not fix their mode. Make the first backup "
+                f"as uid {owner}: `KTDM_BACKUP_ROOT={root.parent} ktdctl db-backup create {role}`."
+            )
+        if shared_group:
+            return None
+        return (
+            f"refusing to create a {role} backup here: {directory} belongs to uid {owner} "
+            f"but this backend runs as uid {euid}, and {BACKUP_SHARED_GROUP_ENV} is not set. "
+            f"The dump and manifest would be 0600 files of uid {euid} that uid {owner}'s "
+            f"cron backup can neither read nor clean up — its gc would refuse this role. "
+            f"Set up the shared group first (docs/prod-deployment.md §3.x), or run "
+            f"`KTDM_BACKUP_ROOT={root.parent} ktdctl db-backup create {role}` as uid {owner}."
+        )
+    return None
+
+
 def create_standalone_backup(
     role: BackupRole,
     *,
     backup_root: Path | None = None,
     timeout: int = 14_400,
+    expected_dump_bytes: int | None = None,
 ) -> BackupManifest:
     """`role`의 앱 DB를 `pg_dump -Fc`로 컨테이너 안에 뜬 뒤 host로 복사한다.
 
-    geo(33GB급)처럼 큰 인스턴스는 기본 timeout(4시간)으로도 부족할 수 있다 —
-    호출자가 `timeout`을 넉넉히 늘려야 한다. **timeout에 걸리면 로컬 `docker exec`
+    가장 큰 geo(database 약 35 GB, dump 약 4.7 GB)도 실측 880초라 기본 timeout(4시간)
+    안이다. 그보다 느린 환경이면 호출자가 `timeout`을 늘린다. **timeout에 걸리면 로컬 `docker exec`
     client만 중단되고 컨테이너 안의 `pg_dump`는 서버 쪽에서 계속 실행된다**(docker
     exec는 timeout을 안쪽 프로세스로 전파하지 않는다) — 같은 role을 바로 재시도하면
     두 pg_dump가 동시에 돌아 DB에 이중 부하가 걸릴 수 있으므로, 같은 role의 동시
@@ -317,8 +423,22 @@ def create_standalone_backup(
     못한다** — backend가 pg_dump 도중 재기동되면 락은 즉시 풀리지만 컨테이너
     안의 pg_dump는 계속 돈다. 그래서 락을 잡은 뒤에도 `pg_stat_activity`로
     실제 실행 중인 pg_dump가 있는지 한 번 더 확인한다(`GM-13`).
+
+    **디스크 여유는 시작 전에 role마다 따로 잰다**(`_required_free_bytes`). 전역 상한
+    하나를 두지 않는다 — dump 크기가 role마다 만 배 넘게 다르고(pinvi 수백 KB, transport
+    약 1 GB, geo 약 4.7 GB) 그 크기는 설정 숫자가 아니라 role의 database가 정한다. 큰
+    role에 맞춘 전역 값은 디스크가 빠듯할 때 수백 KB짜리 백업까지 막고, 작은 role에 맞춘
+    값은 큰 role이 디스크를 채우는 것을 막지 못한다. timeout은 멈춘 명령의 상한일 뿐 자원
+    가드가 아니라서 role별로 나누지 않는다.
+
+    `expected_dump_bytes`는 운영자가 dump 크기 추정을 직접 대는 자리다(CLI
+    `--expected-dump-bytes`). 확인 자체는 끄지 않는다 — 필요량은 여전히 2배 + 예약분이고,
+    쓴 값은 로그와 거부 문구에 남는다. 이 자리에서 뜬 dump가 아직 없어 상한이 보수적일 때
+    (예: 옛 dump를 `legacy/`로 옮긴 직후의 geo) 비상 백업을 막지 않으려고 둔다.
     """
 
+    if expected_dump_bytes is not None and expected_dump_bytes <= 0:
+        raise StandaloneBackupError("expected_dump_bytes must be a positive byte count")
     container_name, database_name = _role_config(role)
     port = _discover_port(container_name)
     admin_name = _discover_admin_role(container_name)
@@ -335,6 +455,15 @@ def create_standalone_backup(
                 "lost track of the job; wait for the existing pg_dump to finish "
                 "instead of starting a second one against the same database"
             )
+        _require_free_space(
+            role,
+            root,
+            container_name=container_name,
+            port=port,
+            admin_name=admin_name,
+            database_name=database_name,
+            expected_dump_bytes=expected_dump_bytes,
+        )
         created_at_unix = int(time.time())
         filename = f"{role}-{created_at_unix}.dump"
         dest_path = root / filename
@@ -952,6 +1081,9 @@ def rehearse_standalone_restore(
     TOC 적용이 실제로 끝까지 갔는지(exit code)와 schema revision·DB 크기가 말이 되는지
     확인한 뒤, 결과와 무관하게 scratch DB와 그 안의 dump 사본을 지운다.
 
+    시작 전에 여유 공간을 잰다(`_require_rehearsal_space`) — 모자라면 아무것도 만들지 않고
+    `StandaloneBackupInsufficientSpaceError`다.
+
     `create_standalone_backup`과 같은 한계를 공유한다 — **timeout에 걸리면 로컬
     `docker exec` client만 중단되고 컨테이너 안의 `pg_restore`는 서버 쪽에서 계속
     실행될 수 있다**(docker exec는 timeout을 안쪽 프로세스로 전파하지 않는다). 이
@@ -1013,6 +1145,16 @@ def rehearse_standalone_restore(
     started = time.monotonic()
 
     with _role_lock(root, label="rehearsal"):
+        # copy-in·createdb **전에** 잰다. scratch DB는 대상과 같은 PGDATA에 원본 database만큼
+        # 자라고, 그동안 WAL도 쌓인다 — 디스크를 채우면 같은 instance의 모든 DB가 멈춘다.
+        _require_rehearsal_space(
+            role,
+            root,
+            plan.manifest,
+            container_name=container_name,
+            port=port,
+            admin_name=admin_name,
+        )
         try:
             _run_checked(
                 ["docker", "cp", plan.dump_path, f"{container_name}:{container_dump_path}"],
@@ -1506,6 +1648,263 @@ def _pg_dump_already_running(
     return int(output) > 0
 
 
+def _expected_dump_bytes(
+    root: Path,
+    role: BackupRole,
+    source: tuple[str, str],
+    *,
+    db_size_bytes: int,
+    table_bytes: Callable[[], int],
+) -> tuple[int, str]:
+    """이번 dump 크기의 추정치와 그 근거 문장.
+
+    이 role이 **지금 뜨는 자리**(`source` = 컨테이너·database)에서 뜬 가장 최근 dump가
+    있으면 그 크기를 database가 그 뒤로 커진 비율만큼 키운다 — dump 크기는 database
+    크기에 비례한다(n150 실측 압축비 7~13%). 한 번 성공하면 그다음부터는 실제 크기에서
+    출발한다.
+
+    그런 dump가 없으면(첫 실행) 두 상한 중 **작은 쪽**을 쓴다:
+
+    - `_FIRST_DUMP_TABLE_FACTOR` x 테이블 크기 합(`table_bytes`) — dump에 없는 인덱스를
+      세지 않는다. 인덱스가 큰 database(geo)에서 이쪽이 훨씬 작다.
+    - live database 크기 — `--compress=6` custom format dump가 database보다 커진 적은
+      실측에 없다. 인덱스가 거의 없는 database에서는 이쪽이 작다.
+
+    `table_bytes`는 첫 실행에만 부른다 — 이미 뜬 dump가 있으면 묻지 않는다.
+
+    동시에 도는 **다른** role의 백업은 계산에 넣지 않는다 — 각자 시작 시점의 여유만 본다.
+    큰 role끼리는 cron 시각을 겹치지 않게 둔다.
+
+    읽지 못하는 manifest는 건너뛴다. 추정이 보수적인 상한으로 떨어질 뿐이고, 손상된
+    manifest 하나가 새 백업을 막아서는 안 된다(목록과 gc가 그것을 따로 알린다).
+    """
+
+    latest: BackupManifest | None = None
+    try:
+        manifest_paths = sorted(root.glob("*.manifest"))
+    except OSError:
+        manifest_paths = []
+    for path in manifest_paths:
+        try:
+            manifest = _read_manifest(path, expected_role=role)
+        except StandaloneBackupError:
+            continue
+        if (
+            _manifest_source(manifest) != source
+            or manifest.byte_size <= 0
+            or manifest.db_size_bytes <= 0
+        ):
+            continue
+        if latest is None or manifest.created_at_unix > latest.created_at_unix:
+            latest = manifest
+    if latest is None:
+        tables = table_bytes()
+        table_bound = math.ceil(tables * _FIRST_DUMP_TABLE_FACTOR)
+        if table_bound < db_size_bytes:
+            return table_bound, (
+                f"no earlier dump of {source[1]} to scale from, so {_FIRST_DUMP_TABLE_FACTOR} x "
+                f"its table data {_human_bytes(tables)} bounds the dump (indexes are not "
+                f"dumped; the whole database is {_human_bytes(db_size_bytes)})"
+            )
+        return db_size_bytes, (
+            f"no earlier dump of {source[1]} to scale from, so the live database size "
+            f"{_human_bytes(db_size_bytes)} bounds the dump"
+        )
+    growth = max(1.0, db_size_bytes / latest.db_size_bytes)
+    return math.ceil(latest.byte_size * growth), (
+        f"{latest.backup_filename} was {_human_bytes(latest.byte_size)} when the database "
+        f"was {_human_bytes(latest.db_size_bytes)}; it is {_human_bytes(db_size_bytes)} now"
+    )
+
+
+def _required_free_bytes(estimate: int, basis: str) -> tuple[int, str]:
+    """dump 한 번에 필요한 백업 root의 여유 공간과 그 근거 문장.
+
+    pg_dump는 컨테이너 `/tmp`(Docker 쓰기 층)에 먼저 쓰고, 그것을 host로 복사한 뒤에야
+    지운다 — 복사가 끝날 때까지 **두 벌**이 동시에 디스크에 있다. n150처럼 한
+    파일시스템이면 이 계산이 정확하다. Docker 쓰기 층이 다른 파일시스템인 호스트에서는
+    백업 root 쪽은 보수적이 되고 Docker 쪽은 이 확인이 보지 않는다. 여기에
+    `_DISK_RESERVE_BYTES`를 더한다.
+    """
+
+    return 2 * estimate + _DISK_RESERVE_BYTES, (
+        f"2 x the expected dump {_human_bytes(estimate)} because the dump is staged in the "
+        f"container and then copied here, plus a {_human_bytes(_DISK_RESERVE_BYTES)} reserve; "
+        f"{basis}"
+    )
+
+
+def _require_free_space(
+    role: BackupRole,
+    root: Path,
+    *,
+    container_name: str,
+    port: int,
+    admin_name: str,
+    database_name: str,
+    expected_dump_bytes: int | None = None,
+) -> None:
+    """pg_dump를 시작하기 **전에** 이 role에 필요한 여유 공간을 확인한다.
+
+    판정이 보수적으로 빗나가도 결과는 "시작하지 않았다"뿐이다. 반대로 확인 없이
+    시작해 디스크를 채우면 같은 파일시스템의 PostgreSQL이 먼저 죽는다.
+    `expected_dump_bytes`(운영자 값)가 있으면 추정 대신 그것을 쓴다 — 확인은 그대로 한다.
+    """
+
+    if expected_dump_bytes is not None:
+        # CLI는 같은 사실을 stderr에 따로 찍는다(로깅 설정이 없는 CLI에서 WARNING은
+        # lastResort로 한 번 더 찍혀 두 줄이 된다) — 여기서는 설정된 로그용으로 info.
+        _logger.info(
+            "%s backup: the operator set the expected dump size to %d bytes "
+            "(--expected-dump-bytes); the free-space check uses it instead of the estimate",
+            role,
+            expected_dump_bytes,
+        )
+        estimate, basis = expected_dump_bytes, (
+            f"the operator set --expected-dump-bytes {expected_dump_bytes}"
+        )
+    else:
+        estimate, basis = _expected_dump_bytes(
+            root,
+            role,
+            (container_name, database_name),
+            db_size_bytes=_query_db_size(container_name, port, admin_name, database_name),
+            table_bytes=lambda: _query_table_bytes(
+                container_name, port, admin_name, database_name
+            ),
+        )
+    required, reason = _required_free_bytes(estimate, basis)
+    free = _free_bytes(role, root)
+    if free < required:
+        raise StandaloneBackupInsufficientSpaceError(
+            f"{role} backup was not started: it needs {_human_bytes(required)} free on the "
+            f"filesystem of {root} and {_human_bytes(free)} is free ({reason}). Free space "
+            "there and retry, or pass --expected-dump-bytes if you know the dump is smaller"
+        )
+
+
+def _require_rehearsal_space(
+    role: BackupRole,
+    root: Path,
+    manifest: BackupManifest,
+    *,
+    container_name: str,
+    port: int,
+    admin_name: str,
+) -> None:
+    """복원 리허설을 시작하기 **전에**(copy-in·createdb 전) 여유 공간을 확인한다.
+
+    필요량 = 원본 database 크기(scratch DB가 그만큼 자란다) + dump 사본(컨테이너 `/tmp`)
+    + 그 instance의 `max_wal_size`(pg_restore와 인덱스 생성이 쌓는 WAL) + 예약분. 셋 다
+    같은 파일시스템이라는 전제는 `create`와 같다(n150 실측) — 백업 root의 여유로 잰다.
+    create보다 위험한 작업이다: transport 리허설은 공용 instance PGDATA 안에 약 13 GB를
+    만든다.
+    """
+
+    wal_bytes = _query_max_wal_bytes(container_name, port, admin_name)
+    required = manifest.db_size_bytes + manifest.byte_size + wal_bytes + _DISK_RESERVE_BYTES
+    free = _free_bytes(role, root)
+    if free < required:
+        raise StandaloneBackupInsufficientSpaceError(
+            f"{role} restore rehearsal was not started: it needs {_human_bytes(required)} free "
+            f"on the filesystem of {root} and {_human_bytes(free)} is free (the scratch "
+            f"database grows to the source size {_human_bytes(manifest.db_size_bytes)}, plus "
+            f"the dump copy {_human_bytes(manifest.byte_size)}, max_wal_size "
+            f"{_human_bytes(wal_bytes)} and a {_human_bytes(_DISK_RESERVE_BYTES)} reserve). "
+            "Free space there and retry"
+        )
+
+
+def _free_bytes(role: BackupRole, root: Path) -> int:
+    try:
+        return shutil.disk_usage(root).free
+    except OSError as exc:
+        raise StandaloneBackupError(
+            f"{role} backup cannot read the free space of {root}: {exc.strerror}"
+        ) from exc
+
+
+def _query_table_bytes(
+    container_name: str, port: int, admin_name: str, database_name: str
+) -> int:
+    """`database_name` 안 테이블(`r`)·materialized view(`m`)의 `pg_table_size` 합.
+
+    `pg_class`는 database마다 따로라 **그 database에 붙어서**(`--dbname`) 묻는다 —
+    `postgres`에 붙으면 전혀 다른 카탈로그를 센다. TOAST는 부모의 `pg_table_size`에
+    들어 있으므로 따로 세지 않는다(두 번 세게 된다). 인덱스는 넣지 않는다.
+    """
+
+    if not _DATABASE_IDENTIFIER.fullmatch(database_name):
+        raise StandaloneBackupError("database name is invalid")
+    output = _run_checked(
+        [
+            "docker",
+            "exec",
+            "--user",
+            "postgres",
+            container_name,
+            "psql",
+            "--username",
+            admin_name,
+            "--port",
+            str(port),
+            "--dbname",
+            database_name,
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--command",
+            "SELECT COALESCE(sum(pg_table_size(oid)), 0)::bigint FROM pg_class "
+            "WHERE relkind IN ('r', 'm')",
+        ],
+        label=f"{database_name} table size query",
+        timeout=60,
+    ).decode("ascii", "replace").strip()
+    if not output.isdigit():
+        raise StandaloneBackupError(
+            f"{database_name} table size query returned an unexpected value"
+        )
+    return int(output)
+
+
+def _query_max_wal_bytes(container_name: str, port: int, admin_name: str) -> int:
+    output = _run_checked(
+        [
+            "docker",
+            "exec",
+            "--user",
+            "postgres",
+            container_name,
+            "psql",
+            "--username",
+            admin_name,
+            "--port",
+            str(port),
+            "--dbname",
+            "postgres",
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--command",
+            "SELECT pg_size_bytes(current_setting('max_wal_size'))",
+        ],
+        label=f"{container_name} max_wal_size query",
+        timeout=30,
+    ).decode("ascii", "replace").strip()
+    if not output.isdigit():
+        raise StandaloneBackupError(
+            f"{container_name} max_wal_size query returned an unexpected value"
+        )
+    return int(output)
+
+
+def _human_bytes(value: int) -> str:
+    """오류 문구용. 정확한 바이트 수와 GiB를 함께 적는다 — 둘 중 하나만 있으면 운영자가
+    `df` 출력과 대조하기 어렵다."""
+
+    return f"{value} B ({value / 1024**3:.2f} GiB)"
+
+
 #: 복원된 DB가 **원본과 같은 소유권·권한·routine 보안 속성**을 갖는지 재는 지문.
 #:
 #: 리허설은 지금까지 "pg_restore가 exit 0이고 alembic head와 크기가 말이 된다"까지만
@@ -1680,7 +2079,10 @@ def _read_manifest(
 ) -> BackupManifest:
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # UnicodeDecodeError는 ValueError다 — 따로 잡지 않으면 UTF-8이 아닌 manifest 하나가
+        # typed error가 아니라 traceback으로 새어 나가 create까지 pg_dump 전에 죽인다
+        # (CLI는 StandaloneBackupError만 잡는다).
         raise StandaloneBackupError(f"manifest is unreadable: {manifest_path.name}") from exc
     try:
         role = data["role"]

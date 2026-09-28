@@ -425,9 +425,28 @@ def _cmd_activate_canonical_concierge(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_db_backup_create(args: argparse.Namespace) -> int:
+def _positive_int(raw: str) -> int:
     try:
-        manifest = create_standalone_backup(args.role, timeout=args.timeout)
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"not an integer: {raw!r}") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive integer: {raw!r}")
+    return value
+
+
+def _cmd_db_backup_create(args: argparse.Namespace) -> int:
+    if args.expected_dump_bytes is not None:
+        # 디스크 확인의 추정을 사람이 바꿨다는 사실은 cron 로그에도 남아야 한다.
+        print(
+            f"{args.role}: free-space check uses --expected-dump-bytes "
+            f"{args.expected_dump_bytes} instead of the estimate",
+            file=sys.stderr,
+        )
+    try:
+        manifest = create_standalone_backup(
+            args.role, timeout=args.timeout, expected_dump_bytes=args.expected_dump_bytes
+        )
     except StandaloneBackupError as exc:
         _print_scrubbed_error(exc)
         return 2
@@ -2044,6 +2063,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=14_400,
         help="pg_dump/copy-out 제한 시간(초). geo처럼 큰 인스턴스는 늘려야 합니다.",
+    )
+    db_backup_create.add_argument(
+        "--expected-dump-bytes",
+        type=_positive_int,
+        default=None,
+        help=(
+            "디스크 여유 확인에 쓸 dump 크기(바이트)를 직접 준다. 필요량은 여전히 "
+            "2배 + 2 GiB 예약분이다. 이 자리에서 뜬 dump가 없어 추정이 보수적일 때(비상 백업) 쓴다."
+        ),
     )
     db_backup_create.add_argument("--json", action="store_true")
     db_backup_create.set_defaults(func=_cmd_db_backup_create)

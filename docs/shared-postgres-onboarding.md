@@ -297,11 +297,11 @@ GRANT  CONNECT ON DATABASE <app DB>       TO <app_user>;
 
 | 프로젝트/role | 일상 백업 주인 | 근거 |
 |---|---|---|
-| `concierge` · `pinvi` · `geo_dagster` | **Manager cron** (`scripts/run-standalone-backup.sh`) | wrapper의 `case "$ROLE" in geo_dagster|concierge|pinvi)` 허용 목록 |
+| `concierge` · `pinvi` · `geo_dagster` · `transport` · `transport_dagster` | **Manager cron** (`scripts/run-standalone-backup.sh`) | wrapper의 `case "$ROLE" in geo_dagster|concierge|pinvi|transport|transport_dagster)` 허용 목록. transport 둘은 2026-09-28 오너 결정으로 transport 저장소의 자체 cron을 대신한다 |
 | **`geo` (application DB, 32 GB)** | **프로젝트 자체 스케줄 백업** — Manager가 아니다 | wrapper가 `geo`를 **명시적으로 거부**한다(`exit 2`). 헤더: "geo application DB role은 kor-travel-geo 앱 레벨 스케줄 백업이 정본이므로 cron에 넣지 않는다". compose도 geo 앱이 자체 `db_backup`을 돌린다고 적는다(33 GB DB에 아카이브 약 4.7 GB) |
 | `map_application` · `map_dagster` | cron 대상 아님 (#148 정책과 중복) | 같은 wrapper 헤더 |
 
-일상 백업 role은 설정 파일이 아니라 **코드에 박힌 고정 집합**이다(`geo` / `geo_dagster` / `concierge` / `map_application` / `map_dagster` / `pinvi`). 네 프로젝트 백업을 붙이려면 Manager 저장소 PR로 다음을 함께 고친다:
+일상 백업 role은 설정 파일이 아니라 **코드에 박힌 고정 집합**이다(`geo` / `geo_dagster` / `concierge` / `map_application` / `map_dagster` / `pinvi` / `transport` / `transport_dagster`). 새 프로젝트 백업을 붙이려면 Manager 저장소 PR로 다음을 함께 고친다(주기 백업 대상이면 프론트 `BackupHistoryPanel.tsx`의 `EXPECTED_INTERVAL_HOURS`도 — cron 주기를 미러링한다). **`database_runtime._ROLE_CONFIG`에는 넣지 않는다** — 그것은 v5 재구축이 파기·재생성하는 DB 목록이다:
 
 | 자리 | 파일 | 빠뜨리면 |
 |---|---|---|
