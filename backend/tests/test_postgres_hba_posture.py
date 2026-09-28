@@ -255,8 +255,8 @@ def test_a_manager_violation_outranks_an_external_one() -> None:
         [
             _probe(rules=(_rule(auth_method="trust"),)),
             _probe(
-                container_id="kor-travel-airport-postgresql",
-                external_project="kor-travel-airport-db",
+                container_id="kor-travel-test-sibling-postgresql",
+                external_project="kor-travel-test-sibling-db",
                 rules=(_rule(auth_method="trust"),),
             ),
         ]

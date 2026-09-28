@@ -83,20 +83,20 @@ def test_manager_targets_are_untouched_by_the_new_model() -> None:
 
 
 def test_a_multi_project_target_produces_one_group_per_project(
-    airport_with_legacy_db: None,
+    sibling_projects: None,
 ) -> None:
-    """(합성) `airport`가 **두 프로젝트**에 걸치면 묶음도 둘이고 의존성 순서를 지킨다.
+    """(합성) target이 **두 프로젝트**에 걸치면 묶음도 둘이고 의존성 순서를 지킨다.
 
     이것이 단일 프로젝트 전제를 깨는 자리다. 평평한 목록(`services_for_target`)은
     `['postgres', 'backend', 'frontend']`를 돌려주는데, 그것을 한 번의 compose
-    호출로 보내면 `postgres`가 `kor-travel-airport` 프로젝트에 없어서 죽는다.
+    호출로 보내면 `postgres`가 `kor-travel-test-sibling` 프로젝트에 없어서 죽는다.
     """
 
-    groups = service_groups_for_target("airport")
+    groups = service_groups_for_target("test-sibling")
     assert [group.project_label for group in groups] == [
-        "kor-travel-airport-db",
-        "kor-travel-airport",
-    ], "airport-db가 airport보다 먼저 와야 한다(depends_on)"
+        "kor-travel-test-sibling-db",
+        "kor-travel-test-sibling",
+    ], "test-sibling-db가 test-sibling보다 먼저 와야 한다(depends_on)"
     assert [list(group.services) for group in groups] == [
         ["postgres"],
         ["backend", "frontend"],
@@ -110,7 +110,7 @@ def test_weather_is_one_group_with_both_compose_files(
 
     weather는 2026-09-20(ADR-47)부터 Manager internal target이라 "한 프로젝트,
     compose 파일 둘"(n150 HAProxy 오버레이)의 실제 사례가 저장소에 더 이상 없다
-    — airport는 대신 "target 하나, 프로젝트 둘"이라는 다른 축이다
+    — "target 하나, 프로젝트 둘"은 다른 축이다
     (`test_a_multi_project_target_produces_one_group_per_project`). 이 메커니즘
     자체는 여전히 유효한 기능(다른 프로젝트가 다시 쓸 수 있다)이라
     `weather_as_external` fixture로 weather의 옛 좌표를 합성 복원해 계속 태운다.
@@ -266,15 +266,16 @@ def test_ensure_target_still_works_for_manager_targets() -> None:
 
 
 def test_logs_scopes_to_the_named_targets_own_project(
-    airport_with_legacy_db: None,
+    sibling_projects: None,
 ) -> None:
     """여러 프로젝트의 로그를 한 스트림으로 합칠 수 없다 — **지목한 쪽**을 쓴다.
 
     첫 판은 그럴 때 거부하면서 "한 프로젝트의 target을 고르라"고 안내했다. 그 조언은
-    `airport`에 대해 **따를 수 없었다** — `depends_on: [airport-db]` 때문에 의존
-    폐포가 항상 두 프로젝트에 걸치고, `airport`이 자기 서비스를 가리키는 유일한
-    이름이기 때문이다(적대 리뷰 2026-09-18). 즉 새로 등록한 headline target 둘 중
-    하나가 자기 로그를 볼 방법이 없었다.
+    당시의 실제 외부 target(앱이 자기 전용 DB target에 `depends_on`으로 매달린 형태)에
+    대해 **따를 수 없었다** — 의존 폐포가 항상 두 프로젝트에 걸치고, 앱 target 이름이
+    자기 서비스를 가리키는 유일한 이름이기 때문이다(적대 리뷰 2026-09-18). 즉 새로
+    등록한 headline target 둘 중 하나가 자기 로그를 볼 방법이 없었다. 지금은 합성
+    쌍(`test-sibling` → `test-sibling-db`)이 같은 형태를 센다.
 
     빠진 프로젝트는 **조용히 버리지 않는다** — 조용한 생략이 원래 거부의 이유였다.
     """
@@ -282,12 +283,12 @@ def test_logs_scopes_to_the_named_targets_own_project(
     service = ComposeService()
     with mock.patch.object(compose_service_module.subprocess, "run") as runner:
         runner.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        result = service.logs("airport", tail=5)
+        result = service.logs("test-sibling", tail=5)
 
     assert result["services"] == ["backend", "frontend"]
-    assert result["omitted_projects"] == ["kor-travel-airport-db"]
+    assert result["omitted_projects"] == ["kor-travel-test-sibling-db"]
     command = runner.call_args.args[0]
-    assert command[command.index("-p") + 1] == "kor-travel-airport"
+    assert command[command.index("-p") + 1] == "kor-travel-test-sibling"
 
 
 def test_logs_of_a_manager_target_omits_nothing() -> None:
@@ -339,9 +340,9 @@ def _config_with_external(external: Any) -> dict[str, Any]:
 #: weather가 2026-09-20(ADR-47)까지 실제로 갖고 있던 external_project 좌표 —
 #: **한 프로젝트, compose 파일 둘**(n150 HAProxy 오버레이)의 유일한 실제 사례였다.
 #: weather가 Manager internal target으로 바뀌며 저장소에 이 정확한 형태가 더 이상
-#: 없다 — airport/airport-db는 여전히 외부지만 둘 다 "프로젝트당 파일 하나"이고,
-#: airport는 대신 "target 하나, 프로젝트 둘"이라는 **다른** 축을 이미 별도로
-#: 증명한다(`test_a_multi_project_target_produces_one_group_per_project`). "한
+#: 없다 — 남은 실제 외부 target과 합성 쌍(conftest의 `test-sibling`/`test-sibling-db`)은
+#: 모두 "프로젝트당 파일 하나"이고, 합성 쌍은 대신 "target 하나, 프로젝트 둘"이라는
+#: **다른** 축을 별도로 증명한다(`test_a_multi_project_target_produces_one_group_per_project`). "한
 #: 프로젝트, 파일 여럿" 자체는 여전히 유효한 Manager 기능(n150의 실제 오버레이
 #: 패턴, 다른 프로젝트가 다시 쓸 수 있다)이므로, 그 경로를 실제 코드로 계속
 #: 태우기 위해 weather의 옛 좌표를 합성으로 복원한다.
