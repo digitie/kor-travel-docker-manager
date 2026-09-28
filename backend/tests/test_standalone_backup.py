@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 from pathlib import Path
 from unittest.mock import Mock
@@ -33,9 +34,7 @@ def _ample_disk(monkeypatch: pytest.MonkeyPatch) -> None:
     """디스크 여유 가드는 아래 전용 테스트가 본다. 나머지 테스트가 이 머신의 실제 여유
     (CI runner의 `/tmp`는 우리가 정하지 않는다)에 기대지 않도록 넉넉한 값을 준다."""
 
-    monkeypatch.setattr(
-        standalone_backup.shutil, "disk_usage", Mock(return_value=Mock(free=1 << 50))
-    )
+    monkeypatch.setattr(shutil, "disk_usage", Mock(return_value=Mock(free=1 << 50)))
 
 
 def _fake_time(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -727,7 +726,7 @@ def test_create_refuses_before_pg_dump_when_the_disk_is_too_full(
     # fake database 12345 B → 필요량 = 2 x 12345 + 예약분. 1 B 모자라게 준다.
     required = 2 * 12345 + standalone_backup._DISK_RESERVE_BYTES
     disk_usage = Mock(return_value=Mock(free=required - 1))
-    monkeypatch.setattr(standalone_backup.shutil, "disk_usage", disk_usage)
+    monkeypatch.setattr(shutil, "disk_usage", disk_usage)
 
     with pytest.raises(standalone_backup.StandaloneBackupInsufficientSpaceError) as excinfo:
         create_standalone_backup("transport", backup_root=root)

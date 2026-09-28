@@ -1120,18 +1120,23 @@ ktdctl db-backup rehearse-restore concierge [--file <name>] [--timeout <초>] [-
 ```
 필요량 = 2 x 예상 dump + 2 GiB 예약분
 예상 dump = 이 자리(컨테이너·database)에서 뜬 가장 최근 dump x max(1, 지금 DB 크기 / 그때 DB 크기)
-          = (그런 dump가 없으면) 지금 DB 크기 — custom format dump는 DB보다 크지 않다
+          = (그런 dump가 없으면) 지금 DB 크기 — 압축 dump가 DB보다 커진 적은 실측에 없다(7~13%)
 ```
 
 - **2배인 이유**: pg_dump는 컨테이너 `/tmp`(Docker 쓰기 층)에 먼저 쓰고 host로 복사한 뒤에야
   지운다. 복사가 끝날 때까지 두 벌이 있다. n150은 백업 root·Docker 쓰기 층·공용 instance
-  PGDATA가 한 파일시스템이라 이 계산이 정확하다(다른 파일시스템이면 보수적이다).
+  PGDATA가 한 파일시스템이라 이 계산이 정확하다. Docker 쓰기 층이 **다른** 파일시스템인
+  호스트에서는 백업 root 쪽은 보수적이 되고, Docker 쪽은 이 확인이 보지 않는다.
 - **예약분 2 GiB**: 백업이 끝난 뒤에도 남겨 둘 몫이다. 공용 instance의 `max_wal_size`(1GB)보다
   넉넉하다 — 디스크가 차면 다섯 프로젝트의 DB가 WAL을 못 써서 멈춘다.
 - **timeout은 role별로 나누지 않는다.** 멈춘 명령의 상한(기본 4시간)이지 자원 가드가 아니다.
   가장 큰 geo도 실측 880초, transport는 약 9분이다.
 - 읽지 못하는 manifest는 추정에서 건너뛴다(상한 쪽으로 떨어질 뿐, 새 백업을 막지 않는다).
   다른 자리에서 뜬 dump는 다른 데이터라 추정에 쓰지 않는다.
+- 동시에 도는 **다른** role의 백업은 계산에 넣지 않는다(각자 시작 시점의 여유만 본다).
+  큰 role끼리는 cron 시각을 겹치지 않게 둔다.
+- `rehearse-restore`에는 이 확인이 없다. scratch DB는 원본 database만큼 PGDATA를 쓴다
+  (`transport`는 약 13 GB + dump 사본 약 1 GB) — 돌리기 전에 `df`로 직접 본다.
 
 | role | 첫 실행(뜬 dump 없음) | 한 번 뜬 뒤 |
 |---|---|---|
