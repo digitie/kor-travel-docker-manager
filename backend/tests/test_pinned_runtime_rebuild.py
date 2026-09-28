@@ -354,6 +354,39 @@ def test_compose_run_mutation_scope_stops_at_the_service_name() -> None:
     ) == ["kor-travel-map-migration-boundary"]
 
 
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        pytest.param(["run", "--rm", "pinvi-web", "true"], ["pinvi-web", "pinvi-api"], id="run"),
+        pytest.param(
+            ["run", "--rm", "--no-deps", "pinvi-web", "true"], ["pinvi-web"], id="run-no-deps"
+        ),
+        # 컨테이너 argv의 `--no-deps`는 compose 플래그가 아니다 — compose는 의존성을 띄운다.
+        pytest.param(
+            ["run", "--rm", "pinvi-web", "tool", "--no-deps"],
+            ["pinvi-web", "pinvi-api"],
+            id="run-argv-no-deps",
+        ),
+        pytest.param(
+            ["up", "-d", "kor-travel-map-ui"], ["kor-travel-map-ui", "kor-travel-map-api"], id="up"
+        ),
+        pytest.param(
+            ["up", "-d", "--no-deps", "kor-travel-map-ui"], ["kor-travel-map-ui"], id="up-no-deps"
+        ),
+    ],
+)
+def test_compose_mutation_scope_counts_the_dependencies_compose_reaches(
+    args: list[str], expected: list[str]
+) -> None:
+    """`--no-deps` 없는 `run`도 명시 서비스의 `depends_on`을 만들고, drift된 것은 다시 만든다.
+
+    n150 Compose v5.2.0 실측: `run --rm <dependent>`가 drift된 의존 PostgreSQL을 재생성했다.
+    범위 해석기가 `run`을 빼면 그 명령이 실제로 바꾸는 것보다 좁게 보고한다.
+    """
+
+    assert ComposeService._compose_mutation_identifiers(args) == expected
+
+
 def test_materialized_compose_escapes_environment_dollars_without_changing_commands() -> None:
     resolved: dict[str, Any] = {
         "services": {
