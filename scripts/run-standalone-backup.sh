@@ -15,8 +15,11 @@
 # installer는 .env만 읽는다. **.env에 그 키가 없으면 로테이션이 없고**(installer가 경고 한
 # 줄만 남긴다), backend(UI)도 cron과 다른 root(backend 계정의 `~/backups`)를 읽어 신선도
 # 배지가 cron dump를 보지 못한다 — 2026-09-28 n150이 그 상태다(docs/docker-management.md
-# "PostgreSQL 백업" 참고). 공유 백업 디렉터리(chgrp+2770)를 쓰면 .env에
-# KTDM_BACKUP_SHARED_GROUP도 선언해야 logrotate가 group-writable 부모를 거부하지 않는다.
+# "PostgreSQL 백업" 참고). 공유 백업 디렉터리(chgrp+2770)를 쓰면 KTDM_BACKUP_SHARED_GROUP을
+# **두 곳에** 선언한다: .env(backend, 그리고 logrotate가 group-writable 부모를 거부하지 않게)와
+# 이 crontab(CRON_TZ=UTC 아래 환경 줄 `KTDM_BACKUP_SHARED_GROUP=<group>` — ktdctl은 .env를 읽지
+# 않는다). backend와 cron이 다른 계정으로 같은 root를 쓰면(n150) 공유 그룹은 필수다 — 없으면
+# UI 생성이 cron의 role 디렉터리를 망가뜨리지 않도록 409로 거부된다.
 # crontab이 가리키는 체크아웃은 설치본(/opt)과 별개다 — 설치 뒤 backend/src·
 # config/docker-targets.yml·이 파일을 함께 맞춘다(docs/docker-management.md "PostgreSQL 백업").
 # 다음 줄을 crontab에 한 번 넣어 host timezone과 무관하게 UTC로 고정한다:

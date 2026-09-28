@@ -62,6 +62,7 @@ from kor_travel_docker_manager.services.standalone_backup import (
     StandaloneBackupError,
     create_standalone_backup,
     list_standalone_backups_for_display,
+    ui_backup_owner_conflict,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,9 +221,17 @@ async def post_backup(
     The audit write happens *after* the job is already submitted and running — if it
     fails, the backup itself is unaffected, so this does not fail the request (GM-14):
     a 500 here would make the caller think the backup never started when it already
-    has."""
+    has.
+
+    Without `KTDM_BACKUP_SHARED_GROUP`, a backup this process writes is private to its
+    uid. When another account (the cron user) owns the role directory — or its parent,
+    before the first backup — that write breaks the account's periodic backup, so the
+    request is refused with 409 before any job starts (`ui_backup_owner_conflict`)."""
     if role not in BACKUP_ROLES:
         raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")
+    owner_conflict = ui_backup_owner_conflict(role)
+    if owner_conflict is not None:
+        raise HTTPException(status_code=409, detail=owner_conflict)
 
     timeout_seconds = payload.timeout_seconds
 

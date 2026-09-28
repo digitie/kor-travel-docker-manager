@@ -1313,6 +1313,15 @@ sudo find "$KTDM_BACKUP_ROOT" -type f -exec chmod 0640 {} +
 먹지 않아 산출물이 다른 그룹에 떨어지면 그 dump를 **지우고** 실패한다 — 목록에는 보이는데
 아무도 못 읽는 백업은 "백업이 있다"는 거짓 안전감만 만든다.
 
+값은 **양쪽에** 있어야 한다. backend는 `.env`를 읽지만 `ktdctl`은 읽지 않으므로 cron에는 crontab의
+환경 줄(`KTDM_BACKUP_SHARED_GROUP=ktdm-backup`, 백업 줄 위)로 준다. cron에만 없으면 cron의 다음
+실행이 role 디렉터리를 `0700`으로 되돌려 setgid를 벗기고 UI 생성이 거부된다.
+
+선언하지 않은 설치본에서는 `POST /api/v1/backups/{role}`이 backend의 euid와 role 디렉터리(없으면
+그 부모)의 소유자를 비교해, 다르면 job을 시작하지 않고 409로 거부한다. 그 자리에 UI가 쓰면 다른
+계정의 cron이 그 산출물을 읽지도 치우지도 못해서다 — 경로 둘은 아래 "transport 주기 백업 — 실패를
+누가 보는가"에 있다.
+
 #### job 폴링의 단일 프로세스 전제
 
 `POST`가 돌려주는 job id는 **프로세스 메모리**에 있다. uvicorn을 `--workers 2` 이상으로
@@ -1389,16 +1398,49 @@ n150에는 MTA가 없어 cron 출력은 `<root>/<role>.log`에만 남는다 — 
 (installer는 같은 키로 그것을 렌더링하고, 키가 없으면 건너뛴다 — 아래 2026-09-07 기록도 그 키가
 `.env`에 없다고 적는다). backend는 `ktdm-backend.service`에 `User=`가 없어 root로 돈다. 그래서
 backend는 `/root/backups/<role>`을 읽고 cron은 `/home/digitie/backups/<role>`에 쓴다 — **배지가
-cron dump를 보지 못해 "없음"으로 남고**, `<role>.log`는 로테이션되지 않는다. 고치는 순서:
+cron dump를 보지 못해 "없음"으로 남고**, `<role>.log`는 로테이션되지 않는다.
 
-1. host mutation lock(G, `/run/lock/kor-travel-docker-manager/global-mutation.lock`) 아래에서 live
-   `.env`에 `KTDM_BACKUP_ROOT=/home/digitie/backups`를 넣고, 그다음 trusted installer로 설치한다
-   (installer가 `.env`를 새 release로 복사하고 logrotate를 렌더링하고 backend를 재기동한다).
-2. Dashboard "백업 이력"(또는 로그인 세션의 `GET /api/v1/backups?role=transport`)에 cron이 만든
-   manifest가 보이는지 확인한다.
-3. **공유 그룹 없이 UI에서 백업을 만들지 않는다.** backend가 root라 UI가 만든 dump·manifest는
-   `root 0600`이 되고, cron(digitie)의 `gc`는 그 manifest를 읽지 못해 그 role의 gc 전체를 거부한다.
-   UI에서도 만들려면 먼저 `docs/prod-deployment.md` §3.x(`KTDM_BACKUP_SHARED_GROUP`)를 한다.
+고치는 순서 — **cron 계정이 role 디렉터리를 먼저 갖고, `.env`의 root 변경과 공유 그룹은 한
+단계에서** 한다. backend가 cron의 root를 보기 시작한 순간부터 UI "만들기" 한 번이 cron을 깰 수
+있어서다(아래 "UI 생성이 cron을 깨는 두 경로"):
+
+1. 머지 커밋의 `backend/src`·`config/docker-targets.yml`·`scripts/run-standalone-backup.sh`로 cron
+   사본을 맞춘다. 설치 **전**이므로 설치본이 아니라 그 커밋의 사본에서 가져온다 — 나머지 규칙은 위
+   "cron은 crontab 줄이 가리키는 체크아웃" 문단과 같다.
+2. **digitie로** wrapper를 한 번씩 손으로 돌린다 — `transport_dagster` → `transport`(검증 항목은
+   `docs/journal.md`의 운영 절차). 그러면 `/home/digitie/backups/transport{,_dagster}`와 그 안의
+   `.backup.lock`이 digitie 소유로 생긴다. `stat -c '%U:%G %a %n'`으로 확인한다. `.env`는 아직 그대로라
+   이 사이의 UI 생성은 backend의 `/root/backups`에 떨어지고 cron과 무관하다.
+3. host mutation lock(G, `/run/lock/kor-travel-docker-manager/global-mutation.lock`) 아래에서 **한 번에**:
+   - 공유 그룹을 만든다(`docs/prod-deployment.md` §3.x, 아래 "공유 그룹(setgid)"): `ktdm-backup`
+     그룹, digitie를 그 그룹에(root backend는 DAC를 넘으므로 없어도 되지만 §3.x대로 넣어도 된다),
+     `/home/digitie/backups` 아래 `chgrp -R` + 디렉터리 `2770` + 파일 `0640`.
+   - live `.env`에 `KTDM_BACKUP_ROOT=/home/digitie/backups`와 `KTDM_BACKUP_SHARED_GROUP=ktdm-backup`
+     두 줄을 넣는다.
+   - digitie crontab의 백업 줄 **위**(`CRON_TZ=UTC` 옆)에 `KTDM_BACKUP_SHARED_GROUP=ktdm-backup` 한 줄을
+     넣는다 — 파일로 떠서 비어 있지 않은지·정확히 한 줄이 추가되는지 확인한 뒤 설치한다. `ktdctl`은
+     `.env`를 읽지 않는다. cron에 이 값이 없으면 cron의 다음 실행이 role 디렉터리를 `0700`으로 되돌려
+     setgid를 벗기고, 그 뒤 UI 생성이 `not a shared setgid directory`로 거부된다.
+   - 그다음 머지 커밋을 설치한다(`~/install-mgr.sh <sha>` → rebind → verify). installer가 `.env`를 새
+     release로 복사하고 logrotate를 `su root ktdm-backup`으로 렌더링하고 backend를 재기동한다.
+4. Dashboard "백업 이력"(또는 로그인 세션의 `GET /api/v1/backups?role=transport`)에 2의 manifest가
+   보이는지, `/etc/logrotate.d/kor-travel-docker-manager`가 생겼는지 확인한다.
+
+**UI 생성이 cron을 깨는 두 경로** — 공유 그룹이 없고 root backend와 digitie cron이 같은 root를 볼 때:
+
+- role 디렉터리가 **없으면**(첫 cron 실행 전의 transport 둘) backend가 그것과 `.backup.lock`을
+  `root:root 0700`/`0600`으로 만든다. 그 뒤 cron의 매 실행이 `_prepare_backup_root`의 `chmod`에서
+  EPERM으로 죽는다(typed 오류가 아닌 `PermissionError`라 CLI는 traceback으로 끝난다). 그 role은 다시는
+  cron으로 떠지지 않는데, 배지는 UI dump 덕에 transport 기준 90시간 동안 초록이다.
+- **있으면**(`geo_dagster`·`concierge`·`pinvi`) root `0600` manifest가 생기고, cron의 `gc`는 그것을 읽지
+  못해 그 role의 gc 전체를 매번 exit 2로 거부한다. create는 계속 성공해 배지는 초록인 채 보존 정리만
+  멈추고, dump가 공용 instance PGDATA와 같은 파일시스템에 끝없이 쌓인다.
+
+그래서 `POST /api/v1/backups/{role}`는 공유 그룹이 선언되지 않았을 때 backend의 euid가 role
+디렉터리(없으면 그 부모)의 소유자와 다르면 job을 시작하지 않고 **409**와 이유를 돌려준다. 3을
+빠뜨리거나 반쯤 하면 UI 생성이 거절될 뿐 cron은 깨지지 않는다. 공유 그룹이 선언돼 있으면 이 확인은
+건너뛴다 — 그때의 전제(setgid·그룹)는 create가 따로 확인한다. CLI는 이 확인을 하지 않는다 — cron과
+손 실행은 그 디렉터리의 주인 계정으로 도는 것이 전제다.
 
 그 전까지(그리고 그 뒤에도 손으로) 신선도는 cron과 **같은 root**를 준 CLI로 본다:
 

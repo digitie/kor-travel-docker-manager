@@ -1965,6 +1965,21 @@ def clean_job_runner():
         pass
 
 
+@pytest.fixture
+def owned_backup_root(tmp_path, monkeypatch):
+    """백업 root를 이 테스트 계정 소유의 빈 디렉터리로 둔다.
+
+    `POST`는 job을 띄우기 전에 role 디렉터리(없으면 그 부모)의 소유자를 본다. 이게 없으면
+    그 판정이 실행 계정의 진짜 `~/backups`에 결박된다 — 호스트마다 결과가 갈린다.
+    """
+
+    root = tmp_path / "backups"
+    root.mkdir()
+    monkeypatch.setenv("KTDM_BACKUP_ROOT", str(root))
+    monkeypatch.delenv("KTDM_BACKUP_SHARED_GROUP", raising=False)
+    return root
+
+
 def _await_job(role: str, job_id: str) -> dict:
     for _ in range(200):
         body = client.get(f"/api/v1/backups/{role}/jobs/{job_id}").json()
@@ -1975,7 +1990,9 @@ def _await_job(role: str, job_id: str) -> dict:
 
 
 @patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
-def test_post_backup_returns_202_and_a_job_that_finishes(mock_create, clean_job_runner):
+def test_post_backup_returns_202_and_a_job_that_finishes(
+    mock_create, clean_job_runner, owned_backup_root
+):
     """4시간짜리 dump를 HTTP 요청 수명에 묶을 수 없다."""
 
     login_client()
@@ -1999,7 +2016,7 @@ def test_post_backup_returns_202_and_a_job_that_finishes(mock_create, clean_job_
 @patch("kor_travel_docker_manager.api.routes.record_login_audit_event")
 @patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
 def test_post_backup_records_the_audit_event_off_the_event_loop_thread(
-    mock_create, mock_audit, clean_job_runner
+    mock_create, mock_audit, clean_job_runner, owned_backup_root
 ):
     """GM-14: 이 감사 기록은 asyncio.to_thread로 내려야 한다 — 그냥 동기 호출로
     두면 이 async 핸들러가 event loop 스레드 위에서 직접 블로킹 DB 쓰기를
@@ -2038,7 +2055,7 @@ def test_post_backup_records_the_audit_event_off_the_event_loop_thread(
 @patch("kor_travel_docker_manager.api.routes.record_login_audit_event")
 @patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
 def test_post_backup_still_returns_202_when_the_audit_write_fails(
-    mock_create, mock_audit, clean_job_runner
+    mock_create, mock_audit, clean_job_runner, owned_backup_root
 ):
     """GM-14: 감사 기록은 job이 이미 시작된 *뒤*에 남긴다 — 그 기록이 실패해도
     백업 자체는 멀쩡히 도는데 이걸 500으로 보고하면 클라이언트가 '시작 안 됐다'고
@@ -2061,7 +2078,7 @@ def test_post_backup_still_returns_202_when_the_audit_write_fails(
 
 @patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
 def test_a_failed_backup_job_reports_the_failure_instead_of_vanishing(
-    mock_create, clean_job_runner
+    mock_create, clean_job_runner, owned_backup_root
 ):
     login_client()
     mock_create.side_effect = StandaloneBackupError("pg_dump produced an empty file")
@@ -2071,6 +2088,87 @@ def test_a_failed_backup_job_reports_the_failure_instead_of_vanishing(
 
     assert finished["state"] == "failed"
     assert "empty file" in finished["error"]
+
+
+def _run_as_another_uid(monkeypatch, directory):
+    """이 프로세스가 `directory` 주인과 다른 계정인 척한다(n150: root backend, digitie cron).
+
+    chown은 root만 되므로 소유자 대신 euid를 바꾼다. 판정은 둘의 비교 하나라 같은 결과다.
+    """
+
+    foreign_euid = directory.stat().st_uid + 1
+    monkeypatch.setattr(os, "geteuid", lambda: foreign_euid)
+    return foreign_euid
+
+
+@patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
+def test_post_backup_refuses_a_role_directory_another_account_owns(
+    mock_create, clean_job_runner, owned_backup_root, monkeypatch
+):
+    """공유 그룹 없이 root backend가 cron 계정의 role 디렉터리에 쓰면 root `0600` manifest가
+    생기고, cron의 gc는 그것을 읽지 못해 그 role 전체를 거부한다 — create는 계속 성공해
+    신선도 배지는 초록인데 보존 정리만 멈춘다. job이 시작되기 전에 409로 막아야 한다."""
+
+    login_client()
+    role_directory = owned_backup_root / "concierge"
+    role_directory.mkdir()
+    owner = role_directory.stat().st_uid
+    foreign_euid = _run_as_another_uid(monkeypatch, role_directory)
+
+    response = client.post("/api/v1/backups/concierge", json={"timeout_seconds": 60})
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert str(role_directory) in detail
+    assert f"uid {owner}" in detail and f"uid {foreign_euid}" in detail
+    assert "KTDM_BACKUP_SHARED_GROUP" in detail
+    mock_create.assert_not_called()
+    assert client.get("/api/v1/backups/concierge/jobs").json() == {"job": None}
+    assert list(role_directory.iterdir()) == []
+
+
+@patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
+def test_post_backup_refuses_to_create_a_role_directory_under_another_accounts_root(
+    mock_create, clean_job_runner, owned_backup_root, monkeypatch
+):
+    """transport 둘의 경우다: cron이 아직 한 번도 돌지 않아 role 디렉터리가 없다. root
+    backend가 그것과 `.backup.lock`을 root `0700`/`0600`으로 만들면 그 뒤 cron의 매 실행이
+    `chmod`에서 EPERM으로 죽는다. 부모의 주인을 보고 막는다."""
+
+    login_client()
+    _run_as_another_uid(monkeypatch, owned_backup_root)
+
+    response = client.post("/api/v1/backups/transport", json={"timeout_seconds": 60})
+
+    assert response.status_code == 409
+    assert str(owned_backup_root) in response.json()["detail"]
+    mock_create.assert_not_called()
+    assert not (owned_backup_root / "transport").exists()
+
+
+@pytest.mark.parametrize("scenario", ["shared_group_declared", "nothing_exists_yet"])
+@patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
+def test_post_backup_does_not_refuse_where_no_other_account_is_harmed(
+    mock_create, scenario, clean_job_runner, owned_backup_root, monkeypatch
+):
+    """공유 그룹이 있으면 산출물이 `0640`·setgid 그룹이라 두 계정이 함께 쓴다. root도 부모도
+    아직 없으면 이 프로세스가 둘 다 만든다 — 어느 쪽도 막을 이유가 없다."""
+
+    login_client()
+    manifest = Mock()
+    manifest.to_json.return_value = {"role": "transport", "backup_filename": "transport-1.dump"}
+    mock_create.return_value = manifest
+    _run_as_another_uid(monkeypatch, owned_backup_root)
+    if scenario == "shared_group_declared":
+        monkeypatch.setenv("KTDM_BACKUP_SHARED_GROUP", "ktdm-backup")
+    else:
+        monkeypatch.setenv("KTDM_BACKUP_ROOT", str(owned_backup_root / "not-yet" / "backups"))
+
+    response = client.post("/api/v1/backups/transport", json={"timeout_seconds": 60})
+
+    assert response.status_code == 202
+    assert _await_job("transport", response.json()["job_id"])["state"] == "succeeded"
+    mock_create.assert_called_once_with("transport", timeout=60)
 
 
 def test_backup_job_lookup_rejects_an_unknown_role_and_id(clean_job_runner):

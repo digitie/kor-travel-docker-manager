@@ -349,6 +349,50 @@ def _assert_shared_group_effective(
     )
 
 
+def ui_backup_owner_conflict(role: BackupRole) -> str | None:
+    """UI(backend)가 만들면 다른 계정의 주기 백업을 깨는 자리인지. 깨면 그 이유를 돌려준다.
+
+    공유 그룹이 없으면 산출물은 만든 계정만 읽고 지우는 `0700`/`0600`이다. n150처럼
+    backend가 root로 돌고 cron이 다른 계정으로 같은 root에 쓰면 UI 생성 한 번이 cron을
+    깨는데, 두 경우 모두 신선도 배지에는 드러나지 않는다:
+
+    - role 디렉터리가 아직 없으면 backend가 그것과 `.backup.lock`을 root `0700`/`0600`으로
+      만든다. 그 뒤 cron의 매 실행이 `_prepare_backup_root`의 `chmod`에서 EPERM으로 죽는다
+      (그 role의 cron 백업이 영영 멈추고, 배지는 UI dump 덕에 한동안 초록이다).
+    - 있으면 root `0600` manifest가 생겨 cron의 `gc`가 그 role 전체를 거부한다 — create는
+      계속 성공해 배지는 초록인데 보존 정리만 멈추고 dump가 쌓인다.
+
+    그래서 공유 그룹이 없을 때는 이 프로세스의 euid가 role 디렉터리(없으면 그 부모)의
+    소유자와 같을 때만 만든다. 둘 다 없으면 이 프로세스가 둘 다 만들므로 막지 않는다.
+    `stat` 자체가 실패하면(권한 등) 판정하지 않고 create가 자기 오류를 내게 둔다. CLI는 이
+    확인을 하지 않는다 — cron과 손 실행은 그 디렉터리의 주인 계정으로 도는 것이 전제다.
+    """
+
+    if os.environ.get(BACKUP_SHARED_GROUP_ENV, "").strip():
+        return None
+    root = _resolve_backup_root(role, None)
+    for directory in (root, root.parent):
+        try:
+            owner = directory.stat().st_uid
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        euid = os.geteuid()
+        if owner == euid:
+            return None
+        return (
+            f"refusing to create a {role} backup here: {directory} belongs to uid {owner} "
+            f"but this backend runs as uid {euid}, and {BACKUP_SHARED_GROUP_ENV} is not set. "
+            f"The dump and manifest would be 0600 files of uid {euid} that uid {owner}'s "
+            f"cron backup can neither read nor clean up — its gc would refuse this role, or, "
+            f"when this request creates the role directory, every later cron run would fail "
+            f"to chmod it. Set up the shared group first (docs/prod-deployment.md §3.x), or "
+            f"run `ktdctl db-backup create {role}` as uid {owner}."
+        )
+    return None
+
+
 def create_standalone_backup(
     role: BackupRole,
     *,
