@@ -81,7 +81,7 @@ Kor Travel/PinVi 계열 전체 포트 정책과 관련 로컬 레포 조사 결�
 **다른 프로젝트에서 이 플랫폼을 참조한다면** 먼저 [플랫폼 전체 구조](docs/platform-topology.md)를 읽어 주세요 — 소유 경계(내부 target vs 외부 target), 등록되는 자리, 데이터·제어 평면의 현재 배치,
 자격증명 배선 규약, 새 프로젝트 합류 절차가 한 장에 있습니다.
 
-정지/재시작은 같은 CLI에서 수행합니다.
+정지/재시작은 같은 CLI에서 수행합니다. 컨테이너의 `stop_grace_period`만큼 정상 종료를 기다립니다(공용 PostgreSQL은 300초).
 
 ```bash
 poetry run ktdctl action kor-travel-geo-api restart

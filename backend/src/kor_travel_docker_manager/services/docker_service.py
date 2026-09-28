@@ -298,11 +298,15 @@ def _atomic_write(path: str, payload: bytes, *, mode: int | None = None) -> None
 def _single_service_recreate_args(svc_name: str) -> list[str]:
     """설정 변경·reset·없는 컨테이너 시작·그 복구가 쓰는 **한 서비스** 재생성 argv.
 
-    `--no-deps`가 요점이다. 없으면 compose가 `depends_on`을 따라가 config hash가 어긋난
-    의존 서비스까지 재생성한다 — 공용 PostgreSQL에 기대는 서비스(geo·concierge·PinVi·
-    weather·db-init 등 스무 개) 하나의 env를 고치면, 공용 instance의 정의가 바뀐 설치와
-    그 재기동 사이에서는 공용 instance가 CHECKPOINT도 창 확인도 없이 재생성되고 모든
-    테넌트가 재시작한다(n150 Compose v5.2.0 실측). 의존 서비스는 이 경로의 몫이 아니다.
+    `--no-deps`가 요점이다. compose `up`은 `--no-deps`가 없으면 `depends_on`을 전이적으로
+    따라가 config hash가 어긋난 의존 서비스까지 재생성한다. 그러면 공용 PostgreSQL에 직접이든
+    다른 서비스를 거쳐서든 기대는 서비스 하나의 env를 고칠 때, 공용 instance의 정의가 바뀐
+    설치와 그 계획 재기동 사이라면 공용 instance가 CHECKPOINT도 창 확인도 없이 재생성되고
+    모든 테넌트가 재시작할 수 있다.
+
+    대가: compose는 의존 서비스를 만들지도, 시작하지도, healthy를 기다리지도 않고 one-shot
+    (db-init·migrate)도 다시 돌리지 않는다. 의존 서비스는 이 경로의 몫이 아니다 — 먼저 따로
+    올린다.
     """
 
     return ["up", "-d", "--force-recreate", "--no-deps", svc_name]
@@ -941,11 +945,12 @@ class DockerService:
             elif action in {"stop", "restart"}:
                 # 컨테이너 자신의 grace(compose `stop_grace_period` → `Config.StopTimeout`)를
                 # 그대로 넘긴다. docker-py의 `restart()`는 인자가 없으면 **항상** `t=10`을
-                # 보내고, `stop()`은 `t`를 빼지만 HTTP read timeout은 10초만 늘린다 — 긴
-                # grace를 선언한 공용 instance가 10초 뒤 SIGKILL을 받거나(다음 기동이 crash
-                # recovery), 정상 종료가 client timeout으로 보고됐다. 명시하면 docker-py가
-                # read timeout도 같은 만큼 늘린다. grace를 선언하지 않은 컨테이너는 지금까지와
-                # 같다(인자 없음).
+                # 보내므로 긴 grace를 선언한 컨테이너(공용 instance)에도 10초 뒤 SIGKILL을
+                # 보낸다(다음 기동이 crash recovery). `stop()`은 `t`를 빼서 dockerd가
+                # 컨테이너의 grace를 쓰지만 HTTP read timeout은 10초만 늘리므로, 그보다 긴
+                # 정상 종료는 client timeout으로 보고될 수 있었다. 명시하면 docker-py가 read
+                # timeout도 같은 만큼 늘린다. grace를 선언하지 않은 컨테이너는 지금까지와
+                # 같다(인자 없음). 0도 선언이다 — 참/거짓이 아니라 `None`으로 가른다.
                 grace = container.attrs["Config"].get("StopTimeout")
                 stop_kwargs: dict[str, int] = {} if grace is None else {"timeout": grace}
                 if action == "stop":
