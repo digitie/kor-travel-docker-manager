@@ -4,14 +4,15 @@ Manager의 target 모델은 지금까지 **단일 프로젝트·단일 compose �
 `services_for_target`이 평평한 서비스 목록을 돌려주고, 그것이 Manager 자신의
 `docker-compose.yml`에 대한 **한 번의** `docker compose` 호출로 들어갔다.
 
-형제 프로젝트는 그 전제 밖이다(n150 실측):
+형제 프로젝트는 그 전제 밖이었다(등록 당시 n150 실측): 한 프로젝트가 compose 파일
+둘을 쓰거나(weather: `compose.yaml` + `deploy/compose.n150.yaml`), 한 target이 compose
+프로젝트 둘에 걸쳤다(당시 airport 앱과 그 전용 DB — 같은 디렉터리의
+`docker-compose.yml`과 `docker-compose.db.yml`).
 
-    kor-travel-weather      compose.yaml + deploy/compose.n150.yaml   (파일 둘)
-    kor-travel-airport      docker-compose.yml
-    kor-travel-airport-db   docker-compose.db.yml                      (프로젝트 둘)
-
-(weather는 2026-09-20에 internal target이 됐고, airport-db는 2026-09-28에 인스턴스가
-사라져 설정에서 빠졌다 — 두 축은 conftest의 합성 fixture로 계속 실제 코드를 태운다.)
+(weather는 2026-09-20에 internal target이 됐고, 그 전용 DB는 2026-09-28에 인스턴스가
+사라져 설정에서 빠졌다 — 두 축은 합성 fixture(`weather_as_external`, conftest의
+`sibling_projects`)로 계속 실제 코드를 태운다. 같은 날 남은 외부 target의 배포
+identity가 `transport`로 바뀌었고, 옛 이름은 별칭으로 남기지 않았다.)
 
 그래서 target이 자기 프로젝트를 선언할 수 있게 했다. **선언이 없으면 오늘과 똑같이
 Manager 자신의 프로젝트**이고, 기존 target의 동작은 한 글자도 바뀌지 않는다.
@@ -56,15 +57,94 @@ def test_external_targets_declare_the_measured_project_coordinates() -> None:
     프로젝트에 명령을 보내거나 `no configuration file provided`로 죽는다.
 
     weather는 2026-09-20(ADR-47)부터 Manager internal target이라 이 실측
-    좌표가 없고, airport-db는 2026-09-28에 인스턴스가 사라져 설정에서 빠졌다 —
-    남은 외부 target 하나(airport)만 센다.
+    좌표가 없고, 외부 전용 DB target은 2026-09-28에 인스턴스가 사라져 설정에서
+    빠졌다 — 남은 외부 target 하나(`transport`)만 센다. 그 좌표는 transport
+    저장소의 cutover(compose 프로젝트·배포 디렉터리 개명) 뒤의 값이다.
     """
 
-    assert external_project_for_target("airport") == ExternalProject(
-        project="kor-travel-airport",
-        working_dir="/home/digitie/apps/kor-travel-airport",
+    assert external_project_for_target("transport") == ExternalProject(
+        project="kor-travel-transport",
+        working_dir="/home/digitie/apps/kor-travel-transport",
         config_files=("docker-compose.yml",),
     )
+
+
+def test_the_transport_target_declares_its_containers_under_the_new_names() -> None:
+    """개명한 target이 자기 컨테이너를 **새 이름 그대로** 가리킨다.
+
+    컨테이너 id·실제 이름·역할은 `control_container`가 Docker SDK로 잡는 이름이고
+    대시보드가 그리는 이름이다. 좌표만 바꾸고 이것을 두면 수명주기 조작이 없는
+    컨테이너를 찾는다.
+    """
+
+    assert registry_module.resolve_target_name("kor-travel-transport") == "transport"
+    assert registry_module.get_target("transport")["containers"] == [
+        "kor-travel-transport-backend",
+        "kor-travel-transport-frontend",
+    ]
+    declared = {
+        container_id: (spec["name"], spec["external_project"], spec["role"])
+        for container_id, spec in registry_module.MANAGED_CONTAINERS.items()
+        if spec.get("external_project")
+    }
+    assert declared == {
+        "kor-travel-transport-backend": (
+            "kor-travel-transport-backend-1",
+            "kor-travel-transport",
+            "transport-backend",
+        ),
+        "kor-travel-transport-frontend": (
+            "kor-travel-transport-frontend-1",
+            "kor-travel-transport",
+            "transport-frontend",
+        ),
+    }
+
+
+#: 2026-09-28 개명 전의 배포 identity. 소유자 결정으로 별칭을 남기지 않았다.
+_OLD_TARGET_NAMES = ("airport", "kor-travel-airport")
+_OLD_PROJECT_PREFIX = "kor-travel-airport"
+_OLD_WORKING_DIR = "/home/digitie/apps/kor-travel-airport"
+
+
+def test_the_old_airport_identity_resolves_nowhere() -> None:
+    """옛 이름은 target으로도, 별칭으로도, 컨테이너로도 풀리지 않는다.
+
+    옛 이름이 조용히 남으면 그것을 쓰는 스크립트·손에 익은 명령이 계속 통해서,
+    사라진 compose 프로젝트(`-p <옛 이름>`)를 조회하거나 이미 없는 컨테이너 이름을
+    Docker SDK에 넘기는 것이 **개명 뒤에야** 드러난다. 여기서는 공개 해석 경로
+    (`resolve_target_name`·`is_known_target`·`TARGET_ALIASES`)와 컨테이너 등록
+    (id·실제 이름·소속 프로젝트), target 좌표를 전부 본다.
+    """
+
+    for old in _OLD_TARGET_NAMES:
+        assert not registry_module.is_known_target(old), old
+        assert old not in registry_module.TARGET_ALIASES, old
+        with pytest.raises(ValueError, match=f"^unknown target: {old}$"):
+            registry_module.resolve_target_name(old)
+
+    external_containers: list[str] = []
+    for container_id, spec in registry_module.MANAGED_CONTAINERS.items():
+        for value in (container_id, spec["name"], spec.get("external_project") or ""):
+            assert not value.startswith(_OLD_PROJECT_PREFIX), (container_id, value)
+        if spec.get("external_project"):
+            external_containers.append(container_id)
+
+    external_targets: list[str] = []
+    for target_name in sorted(set(registry_module.TARGET_ALIASES.values())):
+        external = external_project_for_target(target_name)
+        if external is None:
+            continue
+        external_targets.append(target_name)
+        assert not external.project.startswith(_OLD_PROJECT_PREFIX), target_name
+        assert external.working_dir != _OLD_WORKING_DIR, target_name
+
+    # 하한은 **본 것**에 건다 — 순회가 비면 위의 부정 단언은 전부 공허하게 참이다.
+    assert external_targets == ["transport"]
+    assert external_containers == [
+        "kor-travel-transport-backend",
+        "kor-travel-transport-frontend",
+    ]
 
 
 def test_manager_targets_are_untouched_by_the_new_model() -> None:
@@ -83,20 +163,20 @@ def test_manager_targets_are_untouched_by_the_new_model() -> None:
 
 
 def test_a_multi_project_target_produces_one_group_per_project(
-    airport_with_legacy_db: None,
+    sibling_projects: None,
 ) -> None:
-    """(합성) `airport`가 **두 프로젝트**에 걸치면 묶음도 둘이고 의존성 순서를 지킨다.
+    """(합성) target이 **두 프로젝트**에 걸치면 묶음도 둘이고 의존성 순서를 지킨다.
 
     이것이 단일 프로젝트 전제를 깨는 자리다. 평평한 목록(`services_for_target`)은
     `['postgres', 'backend', 'frontend']`를 돌려주는데, 그것을 한 번의 compose
-    호출로 보내면 `postgres`가 `kor-travel-airport` 프로젝트에 없어서 죽는다.
+    호출로 보내면 `postgres`가 `kor-travel-test-sibling` 프로젝트에 없어서 죽는다.
     """
 
-    groups = service_groups_for_target("airport")
+    groups = service_groups_for_target("test-sibling")
     assert [group.project_label for group in groups] == [
-        "kor-travel-airport-db",
-        "kor-travel-airport",
-    ], "airport-db가 airport보다 먼저 와야 한다(depends_on)"
+        "kor-travel-test-sibling-db",
+        "kor-travel-test-sibling",
+    ], "test-sibling-db가 test-sibling보다 먼저 와야 한다(depends_on)"
     assert [list(group.services) for group in groups] == [
         ["postgres"],
         ["backend", "frontend"],
@@ -110,7 +190,7 @@ def test_weather_is_one_group_with_both_compose_files(
 
     weather는 2026-09-20(ADR-47)부터 Manager internal target이라 "한 프로젝트,
     compose 파일 둘"(n150 HAProxy 오버레이)의 실제 사례가 저장소에 더 이상 없다
-    — airport는 대신 "target 하나, 프로젝트 둘"이라는 다른 축이다
+    — "target 하나, 프로젝트 둘"은 다른 축이다
     (`test_a_multi_project_target_produces_one_group_per_project`). 이 메커니즘
     자체는 여전히 유효한 기능(다른 프로젝트가 다시 쓸 수 있다)이라
     `weather_as_external` fixture로 weather의 옛 좌표를 합성 복원해 계속 태운다.
@@ -226,7 +306,7 @@ def test_single_file_boundary_is_refused_for_an_external_project(
 # ── C6c 계약 경로는 외부를 거부한다 ──────────────────────────────────────
 
 
-@pytest.mark.parametrize("target", ["airport"])
+@pytest.mark.parametrize("target", ["transport"])
 def test_ensure_target_refuses_external_projects(target: str) -> None:
     """`ensure`는 Manager 자신의 후보만 다룬다.
 
@@ -235,18 +315,23 @@ def test_ensure_target_refuses_external_projects(target: str) -> None:
     이 저장소가 아니다. 수명주기는 `control_container`(Docker SDK)가 다루고, 배포는
     각 저장소가 계속 소유한다.
 
-    이 검사가 없으면 `ensure airport`가 Manager의 compose에 대고 airport 서비스
+    이 검사가 없으면 `ensure transport`가 Manager의 compose에 대고 transport 서비스
     이름을 찾다가 `no such service`로 죽는다 — 원인을 말하지 않는 실패다.
 
     weather는 2026-09-20(ADR-47)부터 Manager internal target이라 이 parametrize
     에서 뺐다 — `ensure weather`는 이제 정당하게 (외부 거부가 아닌) 다른 배포
-    계약 게이트를 탄다. 남은 airport 하나로도 "외부는 거부된다"는 실제
-    메커니즘이 충분히 증명된다.
+    계약 게이트를 탄다. 남은 실제 외부 target 하나(`transport`)로도 "외부는
+    거부된다"는 실제 메커니즘이 충분히 증명된다.
     """
 
     service = ComposeService()
-    with pytest.raises(DeploymentContractError, match="external compose project"):
+    with pytest.raises(DeploymentContractError) as rejection:
         service.ensure_target(target)
+    assert str(rejection.value) == (
+        f"target '{target}' belongs to an external compose project; "
+        "ensure is only for the Manager's own project — use container "
+        "start/stop/restart, or deploy from that project's repository"
+    )
 
 
 def test_ensure_target_still_works_for_manager_targets() -> None:
@@ -266,15 +351,16 @@ def test_ensure_target_still_works_for_manager_targets() -> None:
 
 
 def test_logs_scopes_to_the_named_targets_own_project(
-    airport_with_legacy_db: None,
+    sibling_projects: None,
 ) -> None:
     """여러 프로젝트의 로그를 한 스트림으로 합칠 수 없다 — **지목한 쪽**을 쓴다.
 
     첫 판은 그럴 때 거부하면서 "한 프로젝트의 target을 고르라"고 안내했다. 그 조언은
-    `airport`에 대해 **따를 수 없었다** — `depends_on: [airport-db]` 때문에 의존
-    폐포가 항상 두 프로젝트에 걸치고, `airport`이 자기 서비스를 가리키는 유일한
-    이름이기 때문이다(적대 리뷰 2026-09-18). 즉 새로 등록한 headline target 둘 중
-    하나가 자기 로그를 볼 방법이 없었다.
+    당시의 실제 외부 target(앱이 자기 전용 DB target에 `depends_on`으로 매달린 형태)에
+    대해 **따를 수 없었다** — 의존 폐포가 항상 두 프로젝트에 걸치고, 앱 target 이름이
+    자기 서비스를 가리키는 유일한 이름이기 때문이다(적대 리뷰 2026-09-18). 즉 새로
+    등록한 headline target 둘 중 하나가 자기 로그를 볼 방법이 없었다. 지금은 합성
+    쌍(`test-sibling` → `test-sibling-db`)이 같은 형태를 센다.
 
     빠진 프로젝트는 **조용히 버리지 않는다** — 조용한 생략이 원래 거부의 이유였다.
     """
@@ -282,12 +368,12 @@ def test_logs_scopes_to_the_named_targets_own_project(
     service = ComposeService()
     with mock.patch.object(compose_service_module.subprocess, "run") as runner:
         runner.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        result = service.logs("airport", tail=5)
+        result = service.logs("test-sibling", tail=5)
 
     assert result["services"] == ["backend", "frontend"]
-    assert result["omitted_projects"] == ["kor-travel-airport-db"]
+    assert result["omitted_projects"] == ["kor-travel-test-sibling-db"]
     command = runner.call_args.args[0]
-    assert command[command.index("-p") + 1] == "kor-travel-airport"
+    assert command[command.index("-p") + 1] == "kor-travel-test-sibling"
 
 
 def test_logs_of_a_manager_target_omits_nothing() -> None:
@@ -308,8 +394,8 @@ def test_container_scoped_logs_resolve_their_owning_project() -> None:
     assert external_project_for_container("kor-travel-weather-api") == (
         external_project_for_target("weather")
     )
-    assert external_project_for_container("kor-travel-airport-backend") == (
-        external_project_for_target("airport")
+    assert external_project_for_container("kor-travel-transport-backend") == (
+        external_project_for_target("transport")
     )
     # Manager 자신의 컨테이너는 외부가 아니다.
     assert external_project_for_container("kor-travel-map-postgresql") is None
@@ -339,9 +425,9 @@ def _config_with_external(external: Any) -> dict[str, Any]:
 #: weather가 2026-09-20(ADR-47)까지 실제로 갖고 있던 external_project 좌표 —
 #: **한 프로젝트, compose 파일 둘**(n150 HAProxy 오버레이)의 유일한 실제 사례였다.
 #: weather가 Manager internal target으로 바뀌며 저장소에 이 정확한 형태가 더 이상
-#: 없다 — airport/airport-db는 여전히 외부지만 둘 다 "프로젝트당 파일 하나"이고,
-#: airport는 대신 "target 하나, 프로젝트 둘"이라는 **다른** 축을 이미 별도로
-#: 증명한다(`test_a_multi_project_target_produces_one_group_per_project`). "한
+#: 없다 — 남은 실제 외부 target과 합성 쌍(conftest의 `test-sibling`/`test-sibling-db`)은
+#: 모두 "프로젝트당 파일 하나"이고, 합성 쌍은 대신 "target 하나, 프로젝트 둘"이라는
+#: **다른** 축을 별도로 증명한다(`test_a_multi_project_target_produces_one_group_per_project`). "한
 #: 프로젝트, 파일 여럿" 자체는 여전히 유효한 Manager 기능(n150의 실제 오버레이
 #: 패턴, 다른 프로젝트가 다시 쓸 수 있다)이므로, 그 경로를 실제 코드로 계속
 #: 태우기 위해 weather의 옛 좌표를 합성으로 복원한다.

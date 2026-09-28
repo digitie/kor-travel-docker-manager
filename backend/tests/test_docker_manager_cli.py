@@ -2641,13 +2641,16 @@ def test_cli_logs_reports_contract_errors_without_a_traceback(
     """
 
     mock_compose_service.logs.side_effect = DeploymentContractError("nope")
-    assert main(["logs", "airport"]) == 2
+    assert main(["logs", "test-sibling"]) == 2
     assert "nope" in capsys.readouterr().err
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
 def test_cli_logs_says_which_projects_it_left_out(mock_compose_service, capsys):
-    """보여 주지 않은 것을 **말한다** — 조용한 생략이 원래 거부의 이유였다."""
+    """보여 주지 않은 것을 **말한다** — 조용한 생략이 원래 거부의 이유였다.
+
+    `compose_service`가 대역이라 target 이름은 합성이다(CLI는 이름을 그대로 넘긴다).
+    """
 
     mock_compose_service.logs.return_value = {
         "success": True,
@@ -2655,10 +2658,14 @@ def test_cli_logs_says_which_projects_it_left_out(mock_compose_service, capsys):
         "command": ["docker", "compose", "logs"],
         "stdout": "",
         "stderr": "",
-        "omitted_projects": ["kor-travel-airport-db"],
+        "omitted_projects": ["kor-travel-test-sibling-db"],
     }
-    assert main(["logs", "airport"]) == 0
-    assert "kor-travel-airport-db" in capsys.readouterr().err
+    assert main(["logs", "test-sibling"]) == 0
+    assert mock_compose_service.logs.call_args.args == ("test-sibling",)
+    assert capsys.readouterr().err.splitlines()[0] == (
+        "note: kor-travel-test-sibling-db 프로젝트의 로그는 포함하지 않았습니다 "
+        "(한 스트림으로 합칠 수 없습니다). 그 target을 따로 지정하세요."
+    )
 
 
 def test_targets_validate_does_not_require_sibling_repositories(capsys):
@@ -2682,11 +2689,15 @@ def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch):
     monkeypatch.setattr(_Path, "is_dir", lambda self: False)
     assert main(["targets", "validate", "--check-coordinates"]) == 1
     captured = capsys.readouterr()
-    assert "declared external coordinates do not exist here" in captured.err
     # weather는 2026-09-20(ADR-47)부터 internal target이라 더 이상 external
-    # coordinate를 선언하지 않는다 — 남은 external target(airport-db/airport)만으로도
-    # 이 메커니즘이 실제로 동작함을 증명하기에 충분하다.
-    assert "kor-travel-airport" in captured.err
+    # coordinate를 선언하지 않는다 — 남은 external target(`transport`) 하나만으로도
+    # 이 메커니즘이 실제로 동작함을 증명하기에 충분하다. 줄 전체를 대조한다 —
+    # 부분 문자열이면 옛 좌표(개명 전 디렉터리)가 남아도 통과한다.
+    assert captured.err.splitlines() == [
+        "declared external coordinates do not exist here:",
+        "  targets.transport.external_project.working_dir: "
+        "/home/digitie/apps/kor-travel-transport",
+    ]
 
 
 def test_targets_validate_coordinates_pass_when_they_exist(capsys, monkeypatch):

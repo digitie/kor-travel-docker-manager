@@ -14,8 +14,9 @@ Manager는 그 값을 자기 compose에 곧장 조회했다. 그래서 겹치는
 
 weather는 2026-09-20(ADR-47)부터 Manager internal target이라(자기 `prometheus`도
 `kor-travel-weather-prometheus`로 개명) 이 정확한 실제 사례는 저장소에서 사라졌다.
-아래 테스트들은 `colliding_external_container` fixture로 같은 이름 충돌을 airport
-아래에 합성해 재현한다 — 메커니즘 자체는 이름이 실재하든 합성이든 똑같이 유효하다.
+아래 테스트들은 `colliding_external_container` fixture로 같은 이름 충돌을 합성 외부
+target(conftest의 `test-sibling`) 아래에 재현한다 — 메커니즘 자체는 이름이 실재하든
+합성이든 똑같이 유효하다.
 
 Docker SDK 경로(start/stop/restart)는 compose 프로젝트와 무관하므로 막지 않는다 —
 외부 컨테이너도 이름으로 껐다 켤 수 있어야 하고 그것이 이 기능의 값어치다. 막는
@@ -132,19 +133,22 @@ def manager_compose(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 #: 실제로 제공하던 유일한 사례 — "외부 target의 compose_service 이름이 Manager 자신의
 #: 서비스 이름과 정확히 겹친다" — 를 대신한다. weather가 internal target으로 바뀌며
 #: (그리고 자기 `prometheus`도 `kor-travel-weather-prometheus`로 개명하며) 그 실제
-#: 사례가 저장소에서 사라졌다 — 남은 외부 target(airport/airport-db)의 실제
-#: compose_service 이름(`postgres`/`backend`/`frontend`) 중에는 Manager 서비스와
-#: 겹치는 것이 하나도 없다(실측). 이 파일의 목적(C-3 회귀: 이름이 겹치면 목록·변경·
-#: 없는 것 start 세 경로가 한꺼번에 틀어진다) 자체는 이름이 실재하든 합성이든
-#: 똑같이 유효하므로, 진짜 외부 프로젝트(airport) 아래에 이름만 겹치는 컨테이너
-#: 하나를 더해 그 시나리오를 계속 실제 코드 경로로 태운다.
+#: 사례가 저장소에서 사라졌다 — 남은 실제 외부 target의 compose_service 이름
+#: (`backend`/`frontend`) 중에는 Manager 서비스와 겹치는 것이 하나도 없다(실측). 이
+#: 파일의 목적(C-3 회귀: 이름이 겹치면 목록·변경·없는 것 start 세 경로가 한꺼번에
+#: 틀어진다) 자체는 이름이 실재하든 합성이든 똑같이 유효하므로, 합성 외부 target
+#: (conftest의 `test-sibling`) 아래에 이름만 겹치는 컨테이너 하나를 더해 그 시나리오를
+#: 계속 실제 코드 경로로 태운다.
 _COLLISION_CONTAINER_ID = "kor-travel-test-collision-prometheus"
 _COLLISION_CONTAINER_NAME = f"{_COLLISION_CONTAINER_ID}-1"
 
 
 @pytest.fixture
-def colliding_external_container(monkeypatch: pytest.MonkeyPatch) -> str:
-    """`load_targets_config()`가 반환하는 실제 설정에 합성 충돌 컨테이너를 얹는다.
+def colliding_external_container(
+    monkeypatch: pytest.MonkeyPatch,
+    add_sibling_projects: Callable[[dict[str, Any]], dict[str, Any]],
+) -> str:
+    """실제 설정에 합성 외부 target 쌍과 합성 충돌 컨테이너를 얹어 로드 경로에 끼운다.
 
     `MANAGED_CONTAINERS`/`external_project_for_container`/`_targets()`는 전부
     `_LazyMapping`으로 `load_targets_config()`를 접근할 때마다 다시 부른다
@@ -153,21 +157,21 @@ def colliding_external_container(monkeypatch: pytest.MonkeyPatch) -> str:
     `docker_service.py`와 `registry.py` 양쪽이 일관되게 새 값을 본다.
     """
 
-    config = _real_config()
+    config = add_sibling_projects(_real_config())
     config["containers"][_COLLISION_CONTAINER_ID] = {
         "name": _COLLISION_CONTAINER_NAME,
         "compose_service": "prometheus",
-        "external_project": "kor-travel-airport",
+        "external_project": "kor-travel-test-sibling",
         "role": "test-collision-prometheus",
         "display_name": "Test Collision Prometheus",
         "connection": "http://127.0.0.1:19999",
         "expected_ports": [],
     }
-    config["targets"]["airport"] = {
-        **config["targets"]["airport"],
-        "services": [*config["targets"]["airport"]["services"], "prometheus"],
+    config["targets"]["test-sibling"] = {
+        **config["targets"]["test-sibling"],
+        "services": [*config["targets"]["test-sibling"]["services"], "prometheus"],
         "containers": [
-            *config["targets"]["airport"]["containers"],
+            *config["targets"]["test-sibling"]["containers"],
             _COLLISION_CONTAINER_ID,
         ],
     }
@@ -219,7 +223,7 @@ def test_compose_mutation_is_refused_for_an_external_container(
     한 자리에 두는 것이 요점이라, 이 검사도 그 한 자리를 본다.
     """
 
-    with pytest.raises(ExternalContainerMutationError, match="kor-travel-airport"):
+    with pytest.raises(ExternalContainerMutationError) as rejection:
         DockerService()._update_container_config_unlocked(
             colliding_external_container,
             ["14104:9090"],
@@ -228,6 +232,11 @@ def test_compose_mutation_is_refused_for_an_external_container(
             [],
             environment_snapshot=None,  # type: ignore[arg-type]
         )
+    assert str(rejection.value) == (
+        "container 'kor-travel-test-collision-prometheus' belongs to external compose "
+        "project 'kor-travel-test-sibling'; the Manager does not edit another "
+        "project's compose file"
+    )
 
 
 def test_starting_a_missing_external_container_does_not_recreate_a_manager_service(
@@ -310,7 +319,11 @@ def test_manager_containers_still_reach_the_compose_recreate_path(
 def test_lifecycle_actions_stay_available_for_external_containers(
     action: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """SDK 경로는 compose 프로젝트와 무관하다 — 여기까지 막으면 기능이 사라진다."""
+    """SDK 경로는 compose 프로젝트와 무관하다 — 여기까지 막으면 기능이 사라진다.
+
+    실제 등록된 외부 컨테이너로 센다 — SDK에 넘어가는 이름이 등록된 실제 컨테이너
+    이름(`kor-travel-transport-backend-1`)인지도 함께 본다.
+    """
 
     performed: list[str] = []
 
@@ -323,7 +336,7 @@ def test_lifecycle_actions_stay_available_for_external_containers(
 
     class _Containers:
         def get(self, name: str) -> Any:
-            assert name == "kor-travel-airport-backend-1"
+            assert name == "kor-travel-transport-backend-1"
             return _Container()
 
     class _Client:
@@ -331,7 +344,7 @@ def test_lifecycle_actions_stay_available_for_external_containers(
 
     monkeypatch.setattr(DockerService, "_get_client", lambda self: _Client())
     result = DockerService()._control_container_unlocked(
-        "kor-travel-airport-backend",
+        "kor-travel-transport-backend",
         action,
         environment_snapshot=None,  # type: ignore[arg-type]
     )
@@ -373,13 +386,19 @@ def test_container_declaring_an_undeclared_project_is_rejected() -> None:
         _validate(config)
 
 
-def test_a_manager_container_cannot_be_tagged_with_an_external_project() -> None:
-    """소속이 선언과 어긋나면 어느 프로젝트의 것인지가 두 곳에서 갈린다."""
+def test_a_manager_container_cannot_be_tagged_with_an_external_project(
+    add_sibling_projects: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    """소속이 선언과 어긋나면 어느 프로젝트의 것인지가 두 곳에서 갈린다.
 
-    config = _real_config()
+    선언된 외부 프로젝트여야 이 검사에 닿는다 — 선언되지 않은 이름이면 앞의 "no target
+    declares project"가 먼저 잡는다. 그래서 합성 외부 target 쌍을 얹는다.
+    """
+
+    config = add_sibling_projects(_real_config())
     config["containers"]["prometheus"] = {
         **config["containers"]["prometheus"],
-        "external_project": "kor-travel-airport",
+        "external_project": "kor-travel-test-sibling",
     }
     with pytest.raises(TargetsConfigError, match="belongs to project"):
         _validate(config)
@@ -395,21 +414,24 @@ def test_container_external_project_must_be_a_string() -> None:
         _validate(config)
 
 
-def test_external_target_must_list_the_services_its_containers_name() -> None:
+def test_external_target_must_list_the_services_its_containers_name(
+    add_sibling_projects: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
     """외부 target의 `services`는 저장소 밖 compose와 대조할 수 없다 — 선언끼리 묶는다.
 
     이 결박이 없으면 외부 target의 `services`가 **아무것과도** 대조되지 않는다.
     적대 리뷰는 (당시 외부 target이던) weather target에 Manager 서비스 이름과
     존재하지 않는 이름을 넣어도 무결성 검사가 하나도 빨개지지 않는 것을 실측했다
-    — weather는 2026-09-20(ADR-47)부터 internal target이라 이제 airport로
-    같은 것을 증명한다(여전히 외부 target).
+    — weather는 2026-09-20(ADR-47)부터 internal target이라 이제 합성 외부 target
+    (`test-sibling`)으로 같은 것을 증명한다.
     """
 
-    config = _real_config()
-    airport = config["targets"]["airport"]
-    config["targets"]["airport"] = {
-        **airport,
-        "services": [name for name in airport["services"] if name != "frontend"],
+    config = add_sibling_projects(_real_config())
+    _validate(config)  # 합성 설정 자체는 통과해야 아래 거부가 뜻이 있다.
+    sibling = config["targets"]["test-sibling"]
+    config["targets"]["test-sibling"] = {
+        **sibling,
+        "services": [name for name in sibling["services"] if name != "frontend"],
     }
     with pytest.raises(TargetsConfigError, match="the target does not list"):
         _validate(config)
@@ -429,22 +451,22 @@ def test_one_shot_services_need_no_container_registration() -> None:
 
 
 def test_the_same_project_cannot_be_declared_with_two_coordinates(
-    legacy_airport_db: Callable[[dict[str, Any]], dict[str, Any]],
+    add_sibling_projects: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> None:
     """묶음 키는 좌표 전체인데 컨테이너 소유 해석은 **이름**으로 첫 매치를 고른다.
 
     둘이 갈리면 컨테이너가 어느 좌표에 속하는지가 파일 순서로 정해진다. 외부 target이
-    둘 있어야 성립하는 물음이라(2026-09-28부터 실제 외부 target은 airport 하나다)
-    옛 `airport-db`를 합성으로 얹는다.
+    둘 있어야 성립하는 물음이라(2026-09-28부터 실제 외부 target은 하나다) 합성 외부
+    target 쌍을 얹는다.
     """
 
-    config = legacy_airport_db(_real_config())
+    config = add_sibling_projects(_real_config())
     _validate(config)  # 합성 설정 자체는 통과해야 아래 거부가 뜻이 있다.
-    config["targets"]["airport"] = {
-        **config["targets"]["airport"],
+    config["targets"]["test-sibling"] = {
+        **config["targets"]["test-sibling"],
         "external_project": {
-            "project": "kor-travel-airport-db",
-            "working_dir": "/home/digitie/apps/kor-travel-airport",
+            "project": "kor-travel-test-sibling-db",
+            "working_dir": "/srv/kor-travel-test-sibling",
             "config_files": ["docker-compose.yml"],
         },
     }
@@ -452,20 +474,23 @@ def test_the_same_project_cannot_be_declared_with_two_coordinates(
         _validate(config)
 
 
-def test_a_manager_target_cannot_depend_on_an_external_target() -> None:
+def test_a_manager_target_cannot_depend_on_an_external_target(
+    add_sibling_projects: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
     """의존 한 줄이 **Manager target의** 배포를 막는다. 메시지는 Manager를 탓한다.
 
-    `ensure`는 의존 폐포를 보고 거부하므로, `map`에 `depends_on: [airport]`를 더하면
+    `ensure`는 의존 폐포를 보고 거부하므로, `map`에 외부 target 의존을 더하면
     `ensure map`이 "target 'map' belongs to an external compose project"로 죽는다.
     원인을 찾기 아주 어려운 모양이라 선언 시점에 막는다(weather는 2026-09-20
-    ADR-47부터 internal target이라 이 예시로 더 이상 쓸 수 없다 — airport가
-    여전히 외부다).
+    ADR-47부터 internal target이라 이 예시로 더 이상 쓸 수 없다 — 합성 외부 target
+    `test-sibling`으로 센다).
     """
 
-    config = _real_config()
+    config = add_sibling_projects(_real_config())
+    _validate(config)  # 합성 설정 자체는 통과해야 아래 거부가 뜻이 있다.
     config["targets"]["map"] = {
         **config["targets"]["map"],
-        "depends_on": [*config["targets"]["map"]["depends_on"], "airport"],
+        "depends_on": [*config["targets"]["map"]["depends_on"], "test-sibling"],
     }
     with pytest.raises(TargetsConfigError, match="can no longer be deployed"):
         _validate(config)
@@ -490,37 +515,41 @@ def test_all_must_include_every_manager_target() -> None:
         _validate(config)
 
 
-def test_all_cannot_reach_an_external_target() -> None:
+def test_all_cannot_reach_an_external_target(
+    add_sibling_projects: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
     """반대쪽은 **M-4 검사 하나**가 막는다 — `all`은 Manager target이기 때문이다.
 
     같은 규칙을 `all` 전용으로 한 번 더 쓰면 한쪽을 지워도 아무 검사가 빨개지지
     않는다. 그래서 자리를 하나로 두고, 이 검사가 그 자리를 가리킨다.
     """
 
-    config = _real_config()
+    config = add_sibling_projects(_real_config())
     config["targets"]["all"] = {
         **config["targets"]["all"],
-        "include": [*config["targets"]["all"]["include"], "airport"],
+        "include": [*config["targets"]["all"]["include"], "test-sibling"],
     }
     with pytest.raises(TargetsConfigError, match="can no longer be deployed"):
         _validate(config)
 
 
-def test_duplicate_config_files_are_rejected() -> None:
+def test_duplicate_config_files_are_rejected(
+    add_sibling_projects: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
     """compose는 `-f`를 순서대로 병합한다 — 같은 파일을 두 번 적으면 뒤엣것이 이긴다.
 
-    airport로 센다(weather는 2026-09-20 ADR-47부터 internal target이라
-    `external_project`를 target에만 더하면 weather 자신의 컨테이너들 — 전부
+    합성 외부 target `test-sibling`으로 센다(weather는 2026-09-20 ADR-47부터 internal
+    target이라 `external_project`를 target에만 더하면 weather 자신의 컨테이너들 — 전부
     `external_project`가 없는 Manager 소유 — 과 즉시 소속이 어긋나 이 검사가
-    보려는 것(중복 파일)에 닿기 전에 "belongs to project"로 먼저 죽는다. airport는
+    보려는 것(중복 파일)에 닿기 전에 "belongs to project"로 먼저 죽는다. 합성 쌍은
     target·컨테이너 양쪽이 이미 일관되게 외부라 안전하다).
     """
 
-    config = _real_config()
-    config["targets"]["airport"] = {
-        **config["targets"]["airport"],
+    config = add_sibling_projects(_real_config())
+    config["targets"]["test-sibling"] = {
+        **config["targets"]["test-sibling"],
         "external_project": {
-            **config["targets"]["airport"]["external_project"],
+            **config["targets"]["test-sibling"]["external_project"],
             "config_files": ["docker-compose.yml", "docker-compose.yml"],
         },
     }
@@ -528,24 +557,27 @@ def test_duplicate_config_files_are_rejected() -> None:
         _validate(config)
 
 
-def test_a_dotted_prefix_is_not_a_path_escape() -> None:
+def test_a_dotted_prefix_is_not_a_path_escape(
+    add_sibling_projects: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
     """`startswith("..")`는 `..hidden/compose.yml`을 거부하는 오탐이었다.
 
     경로 **구성요소**로 봐야 한다. 오탐은 조용하지 않지만, 정당한 선언을 막는다.
-    airport로 센다(이유는 `test_duplicate_config_files_are_rejected` 참고).
+    합성 외부 target `test-sibling`으로 센다(이유는
+    `test_duplicate_config_files_are_rejected` 참고).
     """
 
-    config = _real_config()
-    config["targets"]["airport"] = {
-        **config["targets"]["airport"],
+    config = add_sibling_projects(_real_config())
+    config["targets"]["test-sibling"] = {
+        **config["targets"]["test-sibling"],
         "external_project": {
-            **config["targets"]["airport"]["external_project"],
+            **config["targets"]["test-sibling"]["external_project"],
             "config_files": ["..hidden/compose.yml"],
         },
     }
     _validate(config)
 
-    config["targets"]["airport"]["external_project"]["config_files"] = [
+    config["targets"]["test-sibling"]["external_project"]["config_files"] = [
         "sub/../../outside.yml"
     ]
     with pytest.raises(TargetsConfigError, match="stay inside"):
@@ -574,7 +606,7 @@ def test_lifecycle_actions_work_through_the_public_entry_point(
 
     class _Containers:
         def get(self, name: str) -> Any:
-            assert name == "kor-travel-airport-backend-1"
+            assert name == "kor-travel-transport-backend-1"
             return _Container()
 
     class _Client:
@@ -583,7 +615,7 @@ def test_lifecycle_actions_work_through_the_public_entry_point(
     monkeypatch.setattr(DockerService, "_get_client", lambda self: _Client())
     monkeypatch.delenv("KTDM_DEPLOYMENT_ENVIRONMENT", raising=False)
 
-    result = DockerService().control_container("kor-travel-airport-backend", "restart")
+    result = DockerService().control_container("kor-travel-transport-backend", "restart")
     assert result["success"] is True
     assert performed == ["restart"]
 
@@ -609,10 +641,10 @@ def test_config_routes_refuse_external_before_taking_the_deployment_lock(
     with pytest.raises(ExternalContainerMutationError):
         if method == "update":
             service.update_container_config(
-                "kor-travel-airport-backend", ["14104:9090"], {}, [], []
+                "kor-travel-transport-backend", ["14104:9090"], {}, [], []
             )
         else:
-            service.reset_container_config("kor-travel-airport-backend")
+            service.reset_container_config("kor-travel-transport-backend")
 
 
 def test_the_read_only_boundary_carries_its_own_error_code() -> None:
@@ -642,7 +674,7 @@ def test_the_status_payload_names_the_owning_project(
     )
     entries = {entry["id"]: entry for entry in DockerService().get_containers_status()}
     assert entries[colliding_external_container]["external_project"] == (
-        "kor-travel-airport"
+        "kor-travel-test-sibling"
     )
     assert entries["prometheus"]["external_project"] is None
 
@@ -752,20 +784,22 @@ def test_a_manager_target_can_opt_out_of_all() -> None:
     _validate(config)
 
 
-def test_a_normalized_path_escape_is_still_refused() -> None:
+def test_a_normalized_path_escape_is_still_refused(
+    add_sibling_projects: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
     """경로 **구성요소** 검사만이 잡는 형태를 센다.
 
     첫 판의 검사는 탈출 케이스로 `sub/../../outside.yml`을 썼는데 그것은 정규화 검사가
     먼저 잡는다 — 구성요소 검사를 지워도 초록이었다. 이미 정규화된 탈출
-    (`../outside.yml`)이 그 절만이 잡는 형태다. airport로 센다(이유는
-    `test_duplicate_config_files_are_rejected` 참고).
+    (`../outside.yml`)이 그 절만이 잡는 형태다. 합성 외부 target `test-sibling`으로
+    센다(이유는 `test_duplicate_config_files_are_rejected` 참고).
     """
 
-    config = _real_config()
-    config["targets"]["airport"] = {
-        **config["targets"]["airport"],
+    config = add_sibling_projects(_real_config())
+    config["targets"]["test-sibling"] = {
+        **config["targets"]["test-sibling"],
         "external_project": {
-            **config["targets"]["airport"]["external_project"],
+            **config["targets"]["test-sibling"]["external_project"],
             "config_files": ["../outside.yml"],
         },
     }
@@ -850,20 +884,24 @@ def test_excluded_from_all_must_be_a_boolean(value: object) -> None:
         _validate(config)
 
 
-def test_an_external_target_cannot_hold_a_manager_container() -> None:
+def test_an_external_target_cannot_hold_a_manager_container(
+    add_sibling_projects: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
     """소속 대조의 **반대 방향**.
 
     H-1을 검증기로 옮기면서 한 방향만 검사가 따라왔다 — 대조에 `is not None`을 더해
     Manager 컨테이너 쪽만 남기는 변이가 살아남았다(적대 리뷰 2026-09-18 E-M55).
     지워진 옛 assert는 두 방향을 다 봤다(weather는 2026-09-20 ADR-47부터
-    internal target이라 이 예시로 더 이상 쓸 수 없다 — airport가 여전히 외부다).
+    internal target이라 이 예시로 더 이상 쓸 수 없다 — 합성 외부 target
+    `test-sibling`으로 센다).
     """
 
-    config = _real_config()
-    airport = config["targets"]["airport"]
-    config["targets"]["airport"] = {
-        **airport,
-        "containers": [*airport["containers"], "prometheus"],
+    config = add_sibling_projects(_real_config())
+    _validate(config)  # 합성 설정 자체는 통과해야 아래 거부가 뜻이 있다.
+    sibling = config["targets"]["test-sibling"]
+    config["targets"]["test-sibling"] = {
+        **sibling,
+        "containers": [*sibling["containers"], "prometheus"],
     }
     with pytest.raises(TargetsConfigError, match="belongs to project"):
         _validate(config)
@@ -943,9 +981,9 @@ _COLLISION_SENTINEL = "__COLLISION__"
 @pytest.mark.parametrize(
     "container_id",
     [
-        pytest.param("kor-travel-airport-frontend", id="name-differs"),
+        pytest.param("kor-travel-transport-frontend", id="name-differs"),
         pytest.param(_COLLISION_SENTINEL, id="name-collides"),
-        pytest.param("kor-travel-airport-backend", id="airport"),
+        pytest.param("kor-travel-transport-backend", id="transport"),
     ],
 )
 def test_reset_reaches_the_guard_for_every_external_container(
@@ -975,12 +1013,18 @@ def test_reset_reaches_the_guard_for_every_external_container(
         DockerService().reset_container_config(container_id)
 
 
-def test_the_external_boundary_maps_to_409_with_its_code() -> None:
+def test_the_external_boundary_maps_to_409_with_its_code(
+    manager_compose: dict[str, Any],
+) -> None:
     """앱에 **등록된 핸들러**를 태워 status와 code를 함께 센다.
 
     첫 판 검사는 `_contract_error_detail`을 직접 불러서 핸들러 배선을 보지 않았다.
     전체 HTTP 스택은 이 파일의 대상이 아니다(origin 가드 + 세션 쿠키 하네스가 필요하고
     그것은 `test_api.py`가 갖고 있다) — 대신 **핸들러 선택과 그 응답**을 센다.
+
+    예외는 손으로 만들지 않고 실제 등록된 외부 컨테이너의 `reset`에서 받는다. 그래서
+    화면이 받는 문구가 **정확히** 무엇인지 — 컨테이너 id와 소속 compose 프로젝트
+    이름까지 — 여기서 결박된다.
     """
 
     import asyncio
@@ -994,15 +1038,19 @@ def test_the_external_boundary_maps_to_409_with_its_code() -> None:
             handler = candidate
     assert handler is not None, "DeploymentContractError 핸들러가 등록돼 있어야 한다"
 
-    error = ExternalContainerMutationError(
-        "container 'kor-travel-airport-backend' belongs to external compose project "
-        "'kor-travel-airport'"
-    )
-    response = asyncio.run(handler(None, error))
+    with pytest.raises(ExternalContainerMutationError) as rejection:
+        DockerService().reset_container_config("kor-travel-transport-backend")
+    response = asyncio.run(handler(None, rejection.value))
     assert response.status_code == 409
     payload = json.loads(response.body)
-    assert payload["detail"]["code"] == "EXTERNAL_PROJECT_READ_ONLY", payload
-    assert "kor-travel-airport" in payload["detail"]["message"]
+    assert payload["detail"] == {
+        "code": "EXTERNAL_PROJECT_READ_ONLY",
+        "message": (
+            "container 'kor-travel-transport-backend' belongs to external compose "
+            "project 'kor-travel-transport'; the Manager does not edit another "
+            "project's compose file"
+        ),
+    }, payload
 
 
 # ── 라운드 5: 내가 라운드 4에서 만든 표면 둘 ────────────────────────────

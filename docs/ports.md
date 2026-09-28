@@ -37,7 +37,7 @@
 | `pinvi` | `12800-12899` | API `12801`, Dagster webserver `12802`, Dagster code-server(gRPC, PinVi ADR-069) `12803`, Web UI `12805` (DB는 공용 `11000`) | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
 | `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Prometheus `14104`, Web `14105` | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
-| `airport` | `14001-14099` | Backend `14001`, Frontend `14002` (DB는 공용 `11000`의 `kor_travel_transport`) | `kor-travel-airport` (외부 프로젝트) |
+| `transport` | `14001-14099` | Backend `14001`, Frontend `14002`, Dagster 게이트웨이 `14003`·webserver `14004`·code-server(gRPC) `14005`(셋 다 loopback, Manager 미등록 컨테이너) (DB는 공용 `11000`의 `kor_travel_transport`) | `kor-travel-transport` (외부 프로젝트) |
 
 ### `gra`/`cadv`/`prom`의 대역 예외 (ADR-48)
 
@@ -49,10 +49,17 @@ target 이름이 가리키는 100단위 대역(`12200-12299`/`12300-12399`/`1240
 (`gra`/`cadv`/`prom`)과 `config/docker-targets.yml`의 키는 바뀌지 않았고 포트만
 옮겼다. 근거·배경은 `docs/decisions.md` ADR-48(ADR-10의 포트 배정 부분을 supersede).
 
+**`cadv` 대역은 비어 있지 않다.** Manager에 등록되지 않은 외부 compose 프로젝트
+`kor-travel-transport-admin`(transport 저장소의 `docker-compose.transport-admin.yml`)이
+이 대역 안의 `12301`(API 게이트웨이)·`12302`(Dagster 게이트웨이)·`12305`(관리 웹)를
+`0.0.0.0`에서 listen한다(2026-09-28 n150 `ss -ltn` 실측). Manager는 이 프로젝트를 모르므로
+포트 충돌을 알려 주지 않는다 — `12300-12399`에 새 포트를 배정하지 않는다.
+
 ### 외부 프로젝트 대역 (`14000-14099`)
 
-위 target(`airport`)은 **compose 정본이 이 저장소 밖**에 있다
-(`external_project` 선언). 등록의 뜻은 좁다:
+위 target(`transport`)은 **compose 정본이 이 저장소 밖**에 있다
+(`external_project` 선언 — compose 프로젝트 `kor-travel-transport`, 배포 사본
+`/home/digitie/apps/kor-travel-transport`). 등록의 뜻은 좁다:
 
 - Manager가 **상태를 보고**(`status`) **컨테이너 수명주기를 다룬다**
   (`start`/`stop`/`restart` — `control_container`가 Docker SDK로 컨테이너를 직접
@@ -61,11 +68,17 @@ target 이름이 가리키는 100단위 대역(`12200-12299`/`12300-12399`/`1240
   C6c 계약 기계(보호값 스캔·볼륨 그래프·단일파일 경계·핀셋)는 Manager 자신의 후보를
   전제하고, 형제 프로젝트의 compose는 그 계약을 받은 적이 없다.
 
-2026-09-28까지는 `airport-db`(`docker-compose.db.yml`, 프로젝트 `kor-travel-airport-db`,
-:14000)도 등록돼 있었고 `airport`이 그것에 `depends_on`으로 매달려 `status airport`가 두
-프로젝트를 순서대로 조회했다. 그 instance가 n150에서 사라지고 transport가 공용
-instance(`:11000`)로 옮겨 target을 뺐다. 의존 폐포가 두 compose 프로젝트에 걸치는
-기능 자체는 코드에 남아 있고, 테스트가 옛 `airport-db`를 합성으로 얹어 그 경로를 태운다.
+이 target은 2026-09-28까지 `airport`였다(compose 프로젝트와 배포 디렉터리도 그 이름).
+transport 저장소가 배포 identity를 `transport`로 바꾸면서 Manager도 target 키·컨테이너
+id·실제 컨테이너 이름(`kor-travel-transport-<서비스>-1`)을 함께 바꿨다. 옛 이름은
+별칭으로 남기지 않았다 — 옛 이름을 쓰는 호출은 `unknown target`으로 드러난다. 공항 주차
+기능 자체는 그대로다(바뀐 것은 배포 이름뿐이다).
+
+같은 날까지는 전용 DB target(`docker-compose.db.yml`, :14000)도 등록돼 있었고 앱 target이
+그것에 `depends_on`으로 매달려 `status`가 두 프로젝트를 순서대로 조회했다. 그 instance가
+n150에서 사라지고 transport가 공용 instance(`:11000`)로 옮겨 target을 뺐다. 의존 폐포가
+두 compose 프로젝트에 걸치는 기능 자체는 코드에 남아 있고, 테스트가 합성 외부 target
+쌍(`test-sibling` → `test-sibling-db`)으로 그 경로를 태운다.
 
 호출은 **그 프로젝트의 `working_dir`에서** 돈다. compose가 `-f`를 푸는 기준은
 `--project-directory`가 아니라 **cwd**라서, Manager 루트에서 돌리면
@@ -130,7 +143,7 @@ cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실�
 하나였다. 그래서 그 셋과 one-shot(`kor-travel-concierge-db-init`·`pinvi-db-init`·
 `kor-travel-geo-dagster-db-init`)을 compose·targets·백업·C6c 계약에서 뺐다. 데이터
 디렉터리는 호스트에 그대로 둔다. weather는 Manager가 관리하는 전용 instance를 가진 적이
-없고, 옛 airport 전용 DB(`:14000`)도 이미 사라졌다.
+없고, 옛 transport(당시 이름 airport) 전용 DB(`:14000`)도 이미 사라졌다.
 
 ## 변경 절차
 

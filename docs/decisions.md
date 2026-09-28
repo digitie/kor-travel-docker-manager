@@ -3577,8 +3577,13 @@ G와 P 두 개이고, P는 C-3에서 지운다.
 - **offbox 동기화**.
 - **제안**: runtime-pin 요청 POST/DELETE와 `ktdctl pin clear-pending`. `apply-pending`이 G 안에서
   다시 검사한다.
-- **airport 컨테이너**: 외부 프로젝트 `kor-travel-airport*`의 SDK start·stop·restart. 남의
-  compose를 바꾸지 않고 Manager 락이 지키는 대상도 아니다.
+- **transport 컨테이너**: 외부 target `transport`, 정확히 compose 프로젝트
+  `kor-travel-transport`에 등록된 컨테이너(`kor-travel-transport-backend-1`·`-frontend-1`)의
+  SDK start·stop·restart. 남의 compose를 바꾸지 않고 Manager 락이 지키는 대상도 아니다.
+  이름 접두사로 넓히지 않는다 — 같은 저장소의 별도 compose 프로젝트
+  `kor-travel-transport-admin`은 Manager에 등록되지 않았고 이 범위에 없다. (2026-09-28 개정:
+  처음 이 줄은 개명 전 이름의 접두사 glob으로 적혀 있었다 — target이 `airport`에서
+  `transport`로 바뀌면서 정확한 프로젝트 이름으로 좁혔다.)
 
 ### NOTE: C 완료 — 락을 줄였다 (2026-09-27, C-3)
 

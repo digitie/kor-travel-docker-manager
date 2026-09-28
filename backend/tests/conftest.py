@@ -109,70 +109,111 @@ def _isolated_global_mutation_lock(
     yield
 
 
-#: `airport-db`가 2026-09-28까지 `config/docker-targets.yml`에 실제로 갖고 있던
-#: 선언이다. 그 형제 DB 인스턴스(`kor-travel-airport-db-postgres-1`, :14000)는 n150에서
-#: 이미 사라졌고 transport는 공용 instance(:11000)를 쓴다 — 그래서 정본 설정에서 뺐다.
-#: 그런데 그것이 저장소의 **유일한 "target 하나, 프로젝트 둘"** 실례였다
-#: (`airport` → `airport-db`). 그 기능 자체(의존 폐포가 두 compose 프로젝트에 걸치는
-#: 경우의 묶음·실행·로그 경계)는 여전히 코드에 있으므로, weather의 옛 좌표를
-#: 합성으로 복원하는 `weather_as_external`과 같은 원리로 이 선언을 합성 복원해 그
-#: 경로를 계속 실제 코드로 태운다.
-_LEGACY_AIRPORT_DB_TARGET: dict[str, object] = {
-    "external_project": {
-        "project": "kor-travel-airport-db",
-        "working_dir": "/home/digitie/apps/kor-travel-airport",
-        "config_files": ["docker-compose.db.yml"],
+#: 합성 외부 target 쌍 — 멀티프로젝트 메커니즘(묶음·실행·로그 경계·선언 검증기)을
+#: **실제 외부 target의 이름에 기대지 않고** 태운다.
+#:
+#: 이 자리에는 원래 실제 선언이 있었다. 2026-09-28까지 외부 target 하나가 그 전용 DB
+#: target에 `depends_on`으로 매달려 있었고, 그것이 저장소의 유일한 "target 하나,
+#: 프로젝트 둘" 실례였다. DB instance가 사라져 그 선언을 뺐고(#429), 같은 날 남은 외부
+#: target의 배포 identity도 `transport`로 바뀌었다. 검사가 실제 이름을 예시로 쓰면 이름이
+#: 바뀔 때마다 메커니즘 검사까지 함께 고쳐야 한다. 그래서 메커니즘은 이 합성 쌍으로 세고,
+#: 실제 선언은 그 선언을 직접 겨냥한 검사(`test_multi_project_targets.py`의 좌표·옛 이름
+#: 부재 검사, 실제 컨테이너의 수명주기·guard 검사)만 센다.
+#:
+#: 형태는 옛 실례를 그대로 따른다 — 같은 디렉터리에 compose 파일이 둘이고 파일마다
+#: 프로젝트가 다르며, 앱 쪽이 DB 쪽에 의존한다.
+_SIBLING_WORKING_DIR = "/srv/kor-travel-test-sibling"
+_SIBLING_TARGETS: dict[str, dict[str, object]] = {
+    "test-sibling-db": {
+        "external_project": {
+            "project": "kor-travel-test-sibling-db",
+            "working_dir": _SIBLING_WORKING_DIR,
+            "config_files": ["docker-compose.db.yml"],
+        },
+        "port_band": "19000-19000",
+        "depends_on": [],
+        "display_name": "Test Sibling DB",
+        "description": "(합성) 외부 target 쌍의 의존 쪽 — 같은 디렉터리의 두 번째 compose 프로젝트.",
+        "aliases": [],
+        "services": ["postgres"],
+        "runtime_services": ["postgres"],
+        "containers": ["kor-travel-test-sibling-postgresql"],
     },
-    "port_band": "14000-14000",
-    "depends_on": [],
-    "display_name": "Kor Travel Airport DB",
-    "description": "(합성) 2026-09-28 이전의 Kor Travel Airport 전용 PostgreSQL target.",
-    "aliases": ["airport-postgresql", "airport-postgres"],
-    "services": ["postgres"],
-    "runtime_services": ["postgres"],
-    "containers": ["kor-travel-airport-postgresql"],
+    "test-sibling": {
+        "external_project": {
+            "project": "kor-travel-test-sibling",
+            "working_dir": _SIBLING_WORKING_DIR,
+            "config_files": ["docker-compose.yml"],
+        },
+        "port_band": "19001-19099",
+        "depends_on": ["test-sibling-db"],
+        "display_name": "Test Sibling",
+        "description": "(합성) 외부 target — 멀티프로젝트 메커니즘 검사 전용.",
+        "aliases": [],
+        "services": ["backend", "frontend"],
+        "runtime_services": ["backend", "frontend"],
+        "containers": ["kor-travel-test-sibling-backend", "kor-travel-test-sibling-frontend"],
+    },
 }
-_LEGACY_AIRPORT_DB_CONTAINER: dict[str, object] = {
-    "name": "kor-travel-airport-db-postgres-1",
-    "compose_service": "postgres",
-    "external_project": "kor-travel-airport-db",
-    "role": "airport-postgresql",
-    "display_name": "Kor Travel Airport 전용 PostgreSQL",
-    "connection": "postgresql://127.0.0.1:14000",
-    "expected_ports": ["14000:5432"],
+_SIBLING_CONTAINERS: dict[str, dict[str, object]] = {
+    "kor-travel-test-sibling-postgresql": {
+        "name": "kor-travel-test-sibling-db-postgres-1",
+        "compose_service": "postgres",
+        "external_project": "kor-travel-test-sibling-db",
+        "role": "test-sibling-postgresql",
+        "display_name": "Test Sibling PostgreSQL",
+        "connection": "postgresql://127.0.0.1:19000",
+        "expected_ports": ["19000:5432"],
+    },
+    "kor-travel-test-sibling-backend": {
+        "name": "kor-travel-test-sibling-backend-1",
+        "compose_service": "backend",
+        "external_project": "kor-travel-test-sibling",
+        "role": "test-sibling-backend",
+        "display_name": "Test Sibling Backend",
+        "connection": "http://127.0.0.1:19001",
+        "expected_ports": ["19001:8000"],
+    },
+    "kor-travel-test-sibling-frontend": {
+        "name": "kor-travel-test-sibling-frontend-1",
+        "compose_service": "frontend",
+        "external_project": "kor-travel-test-sibling",
+        "role": "test-sibling-frontend",
+        "display_name": "Test Sibling Frontend",
+        "connection": "http://127.0.0.1:19002",
+        "expected_ports": ["19002:3000"],
+    },
 }
 
 
-def _with_legacy_airport_db(config: dict[str, Any]) -> dict[str, Any]:
-    """설정 사본에 옛 `airport-db` target·컨테이너를 얹고 `airport`가 그것에 의존하게 한다."""
+def _with_sibling_projects(config: dict[str, Any]) -> dict[str, Any]:
+    """설정 사본에 합성 외부 target 쌍(`test-sibling` → `test-sibling-db`)을 얹는다.
+
+    `dependency_order`에 둘 다 넣는다. 빠지면 `target_sequence_for_target`이 폐포를
+    같은 키(`len(order)`)로 정렬해 두 묶음의 순서가 set 순회 순서에 맡겨진다.
+    """
 
     config = copy.deepcopy(dict(config))
-    order = list(config["dependency_order"])
-    order.insert(order.index("airport"), "airport-db")
-    config["dependency_order"] = order
-    config["targets"] = dict(config["targets"])
-    config["targets"]["airport-db"] = copy.deepcopy(_LEGACY_AIRPORT_DB_TARGET)
-    config["targets"]["airport"] = {
-        **config["targets"]["airport"],
-        "depends_on": ["airport-db"],
-    }
-    config["containers"] = dict(config["containers"])
-    config["containers"]["kor-travel-airport-postgresql"] = copy.deepcopy(
-        _LEGACY_AIRPORT_DB_CONTAINER
-    )
+    config["dependency_order"] = [
+        *config["dependency_order"],
+        "test-sibling-db",
+        "test-sibling",
+    ]
+    config["targets"] = {**config["targets"], **copy.deepcopy(_SIBLING_TARGETS)}
+    config["containers"] = {**config["containers"], **copy.deepcopy(_SIBLING_CONTAINERS)}
     return config
 
 
 @pytest.fixture
-def legacy_airport_db() -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """설정 dict를 받아 옛 `airport-db`를 얹은 사본을 돌려주는 함수."""
+def add_sibling_projects() -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """설정 dict를 받아 합성 외부 target 쌍을 얹은 사본을 돌려주는 함수."""
 
-    return _with_legacy_airport_db
+    return _with_sibling_projects
 
 
 @pytest.fixture
-def airport_with_legacy_db(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`registry.load_targets_config()` 자체를 옛 `airport-db`가 있는 설정으로 갈아 끼운다.
+def sibling_projects(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`registry.load_targets_config()` 자체를 합성 외부 target 쌍이 있는 설정으로 갈아 끼운다.
 
     `MANAGED_CONTAINERS`/`_targets()` 등은 `_LazyMapping`으로 접근할 때마다 이 함수를
     다시 부르므로 patch 하나로 `registry.py`와 그 소비자가 일관되게 새 값을 본다.
@@ -183,8 +224,8 @@ def airport_with_legacy_db(monkeypatch: pytest.MonkeyPatch) -> None:
 
     registry_module.load_targets_config.cache_clear()
     try:
-        config = _with_legacy_airport_db(dict(registry_module.load_targets_config()))
+        config = _with_sibling_projects(dict(registry_module.load_targets_config()))
     finally:
         registry_module.load_targets_config.cache_clear()
-    registry_module._validate_targets_config(copy.deepcopy(config), label="<legacy airport-db>")
+    registry_module._validate_targets_config(copy.deepcopy(config), label="<sibling projects>")
     monkeypatch.setattr(registry_module, "load_targets_config", lambda: config)

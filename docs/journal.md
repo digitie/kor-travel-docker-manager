@@ -7613,3 +7613,111 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
   - MED-2: 절차가 가드 설치 **전에** `.env`를 바꿨다. 설치가 실패해 옛 release로 되돌리면 installer가 그 `.env`를
     가드 없는 release에 복사한다. 이제 3) `.env` 그대로 설치·확인 → 4) G lock 아래 `.env` 한 줄 + 같은 커밋 재설치.
     가드 이전 release로 되돌릴 때는 `KTDM_BACKUP_ROOT`를 먼저 뺀다.
+
+## 2026-09-28 — 외부 target `airport`를 `transport`로 개명했다(Manager 쪽)
+
+- **배경**: 소유자 지시로 형제 프로젝트의 배포 identity를 airport에서 transport로 바꾼다. 도메인(공항
+  주차)은 그대로다. transport 저장소의 cutover — compose 프로젝트 `kor-travel-airport` →
+  `kor-travel-transport`, 배포 사본 `/home/digitie/apps/kor-travel-airport` →
+  `/home/digitie/apps/kor-travel-transport`, 컨테이너 `kor-travel-airport-<svc>-1` →
+  `kor-travel-transport-<svc>-1` — 가 먼저 나가고, 이 Manager 릴리스는 그 창 **직후에** 머지·설치한다.
+  옛 이름 `airport`·`kor-travel-airport`는 별칭으로 남기지 않는다(소유자 결정). 먼저 설치하면 Manager가
+  아직 없는 컨테이너·디렉터리를 보고, 늦으면 옛 Manager가 사라진 것을 본다 — 어느 쪽이든 깨지는 것은
+  상태 화면·수명주기 조작이고 transport 서비스 자체는 아니다.
+- **변경**:
+  - `config/docker-targets.yml`(한 커밋 — 검증기가 컨테이너의 `external_project`와 target 프로젝트의
+    일치를 강제한다): `dependency_order`와 target 키, 좌표(`kor-travel-transport`,
+    `/home/digitie/apps/kor-travel-transport`, `config_files` 그대로), `display_name`, description(공용
+    instance의 `kor_travel_transport`), aliases `[kor-travel-transport]`, 컨테이너 둘(id·실제 이름·role·
+    display_name). 포트 번호는 그대로다(선언 형태는 아래 리뷰 후속). #429가 뺀 전용 DB target·그 postgres 컨테이너·`depends_on`은 되살리지
+    않았다.
+  - `docker-compose.yml`의 transport 배포 사본 경로 주석, `registry.py`의 `ServiceGroup` 예시.
+  - 문서: `ports.md`, `platform-topology.md`(설정 예시를 새 이름으로), `decisions.md` ADR-51
+    "C 범위"(접두사 glob을 정확한 프로젝트 `kor-travel-transport`로 좁히고 같은 저장소의 별도 compose
+    프로젝트 `kor-travel-transport-admin`은 범위 밖이라고 적었다), `prod-deployment.md`,
+    `shared-postgres-onboarding.md`, `tasks.md`(순서 계약을 열린 항목으로).
+- **테스트 구조**: 멀티프로젝트 메커니즘 검사가 실제 외부 target을 예시로 쓰고 있었다 — 묶음·실행·로그
+  검사는 그 위에 얹은 합성 옛 DB target을, 검증기·이름 충돌 검사는 그 선언을 직접 고쳐 썼다. 이름이
+  바뀌면 메커니즘 검사까지 따라 흔들린다. conftest에 합성 외부 target 쌍(`test-sibling` →
+  `test-sibling-db`, 같은 디렉터리의 compose 프로젝트 둘 — 옛 실례와 같은 형태)을 두고 메커니즘은 그것으로
+  센다. 새 이름을 따르는 것은 실제 선언을 겨냥한 검사뿐이다: 측정 좌표, `ensure` 거부, 컨테이너발 로그의
+  소속 해석, 실제 컨테이너의 SDK 수명주기(실제 이름)와 config/reset guard, 409 핸들러,
+  `--check-coordinates`.
+  - 부분 문자열 검사를 정확한 값으로 바꿨다: `ensure` 거부 문구, 외부 변경 거부 문구, CLI의 생략 프로젝트
+    안내 줄, `--check-coordinates`의 stderr 두 줄, `# project=` 헤더 둘과 그 순서. 409 검사는 손으로 만든
+    예외 대신 실제 `reset` guard가 던진 예외를 받아 payload 전체를 대조한다.
+  - 새 검사: `test_the_transport_target_declares_its_containers_under_the_new_names`,
+    `test_the_old_airport_identity_resolves_nowhere`(target·별칭·컨테이너 id·실제 이름·소속 프로젝트·
+    `working_dir`를 공개 해석 경로로 본다. 순회가 비면 부정 단언이 공허하므로 본 외부 target·컨테이너 목록에
+    하한을 건다).
+- **검증(n150, 아카이브 사본)**:
+  - 대상 7개 파일: 리베이스 전 브랜치 `465eb49` 332 passed. origin/main `88599eb`의 코드·설정에 이 브랜치의 테스트만
+    얹으면 14 failed — 새 검사 둘, 측정 좌표, `ensure` 거부, 컨테이너발 로그 소속, SDK 수명주기 셋,
+    config/reset guard 둘, reset guard 둘(`name-differs`·`transport`), 409, `--check-coordinates`.
+  - 전체 스위트(`b3-test.sh`, 리베이스 전 `b2c88cc`, ruff 0.16.4 `All checks passed!`): 1회차 2 failed, 2017 passed,
+    2 skipped — `test_api.py::test_post_backup_returns_202_and_a_job_that_finishes`(`'failed' ==
+    'succeeded'`)와 `test_compose_readiness_integration.py::test_canonical_compose_readiness_matches_real_runtime`
+    (`docker compose ... up --detach --pull never` 30초 timeout). 2회차 1 failed, 2018 passed, 2 skipped —
+    `test_api.py::test_a_failed_backup_job_reports_the_failure_instead_of_vanishing`. 둘 다 부하 속
+    타이밍이다(다른 세션의 전체 스위트와 겹쳐 load 6.7~8.7). 두 1회차 실패는 브랜치·main 사본에서 따로
+    돌리면 둘 다 통과했고, `test_api.py -k backup` 15회 반복은 main 6/15·브랜치 4/15로 같은 backup job
+    검사가 흔들렸다 — 이 변경 이전부터 있는 flake다.
+- **게이트**: `git grep -n "kor-travel-airport\|'airport'\|\bairport:"`의 히트는 이 journal의 역사 기록,
+  새 부재 검사의 상수 셋, #430이 더한 `test_standalone_backup.py`의 합성 "다른 instance" 문자열 하나(개명
+  전 전용 DB 컨테이너 이름을 흉내 낸 백업 manifest 값 — target을 가리키지 않는다)뿐이다. 코드의 과거 실측
+  주석(`compose_service.py`의 2026-09-18 실례, `postgres_hba_posture.py`의 전용 DB `Cmd` 실측)과
+  journal·tasks-done·ADR 서술의 과거 사실은 그대로 뒀다. 이 grep은 **리베이스할 때마다 다시 돌린다** — 한 번
+  깨끗했다는 것은 그 뒤에 올라온 변경을 보증하지 않는다(아래 #430이 실례다).
+- **리뷰 후속(같은 날, 적대 리뷰 MED 1·LOW 4)**:
+  - **#430 위로 리베이스했다.** 첫 판은 "`feat/transport-backup-roles`와는 문서만 겹친다"고 적었다. 틀렸다
+    — `backend/tests/test_docker_manager_cli.py`도 겹쳤고(자동 병합), 충돌은 `docs/journal.md` 하나였다. 더
+    큰 것은 그 브랜치가 **새로 적은** 줄이다. `docker-management.md` "transport 복원" 3단계가 쓰기 주체를
+    멈출 자리로 개명 전 배포 사본 경로를 가리켰다. cutover 뒤 그 자리에서 `docker compose ... stop`을 치면
+    이미 은퇴한 옛 프로젝트를 멈추고도 성공으로 끝나고, 새 프로젝트의 진짜 쓰기 주체는 한 트랜잭션
+    superuser 복원 내내 계속 쓴다 — "쓰기 주체를 멈췄다"는 전제가 조용히 깨진다. 새 디렉터리와
+    `--project-name kor-travel-transport`를 적은 정확한 `stop` 명령, 멈춘 뒤 네 서비스가 `docker ps`에 없는지
+    보는 확인으로 고쳤다. 그 사이 그 브랜치가 #430(`68cc1a9`)으로 main에 들어와 리베이스는 main 위로 했다.
+  - **`expected_ports`를 실측으로 고쳤다.** transport backend·frontend는 `network_mode: host`,
+    PortBindings 없음이다(n150 `docker inspect` 실측 — 운영 overlay `docker-compose.shared.yml`이
+    `ports: !reset []`을 걸고 uvicorn·next가 호스트 14001·14002에 직접 listen한다). 선언 `14001:8000`·
+    `14002:3000`은 운영에서 쓰이지 않는 base compose의 bridge 매핑이었고, 대시보드는 바인딩이 없으면
+    `expected_ports`를 대신 보여 주므로(`DashboardClient.tsx`) 없는 매핑을 보여 줬다. 다른 host-network
+    컨테이너처럼 `14001:14001`·`14002:14002`로 선언한다. 첫 판은 거꾸로 `platform-topology.md` 예시
+    (`14001:14001`)를 틀린 선언 쪽으로 "바로잡았다"고 적었는데 예시가 맞았다 — 예시는 되돌리고 무엇을 위한
+    선언인지 적었다. target 주석에는 `config_files`가 base 하나뿐인 이유를 적었다(shared overlay는 `${…:?}`
+    필수 보간이라 env 파일 없이 열면 실패하고, `ps`·`logs`는 base만으로 같은 컨테이너를 찾는다 — 리뷰가
+    n150에서 읽기 전용 `ps`로 확인했다). overlay를 더하는 일은 transport ADR-010 후속이다.
+  - **`ports.md`**: transport 행에 Dagster 게이트웨이 `14003`·webserver `14004`·code-server `14005`(loopback,
+    Manager 미등록 컨테이너)를 적었다. 미등록 외부 프로젝트 `kor-travel-transport-admin`이 이름뿐인 `cadv`
+    대역 안의 `12301`·`12302`·`12305`를 `0.0.0.0`에서 쓴다(`ss -ltn` 실측) — `ports.md`와 `cadv` target
+    주석에 적었다. Manager는 그 프로젝트를 모르므로 거기 새 포트를 배정해도 충돌을 알려 주지 않는다.
+  - **순서 계약에 되돌리기와 머지 시점을 더했다**(`tasks.md`). transport runbook은 72시간 안의 `rollback`에서
+    Manager를 스냅숏의 이전 sha로 다시 설치하라고 한다 — 그러지 않으면 되살아난 옛 컨테이너가 상태 화면·
+    수명주기 조작에서 사라진다. 그 사이 다른 Manager PR이 들어왔으면 이 개명만 revert한 release를 설치한다.
+    그리고 창이 끝나기 전에는 main에 머지하지 않는다 — 머지해 두면 다른 세션의 main sha 설치가 개명을 먼저
+    내보내고, 그것을 막는 장치는 없다.
+  - **메트릭 이력은 끊긴다 — 받아들인다.** 리뷰가 설치본(`ktdm-release-88599eb9`)의 런타임 상태를 읽기
+    전용으로 훑었다. 결정을 내리는 상태(`/var/lib/kor-travel-docker-manager{,-public,-requests}`, 락 디렉터리,
+    Grafana DB, Prometheus 설정 — 규칙·알림 없음)에는 airport 키가 없다. 조용히 잃는 것은 둘이다. 메트릭
+    sqlite는 행을 `container_id`로 키하므로 transport 두 카드의 CPU·메모리 이력은 설치 시점부터 새로
+    시작하고, 옛 id의 행(`kor-travel-airport-backend` 11,115·`-frontend` 11,275, #429가 뺀 전용 DB
+    컨테이너 8,387)은 30일 정리(`cleanup_old_metrics(days=30)`)가 지울 때까지 고아로 남는다. `/metrics`의
+    `ktdm_container_*` 계열은 `container_id`·`container_name`·`role` 라벨이 바뀌어 Prometheus 이력이
+    갈라진다. 그 계열을 쓰는 대시보드·알림은 없으므로 깨지는 것은 없다. 연속성이 필요하면 설치 때
+    `UPDATE metrics SET container_id='kor-travel-transport-backend' WHERE
+    container_id='kor-travel-airport-backend'`(frontend도 같게)를 한 번 돌리면 되지만, 하지 않는다.
+  - 검증(n150, 아카이브 사본, 리베이스 뒤 `8b93eb6`): 대상 9개 파일(멀티프로젝트 셋, CLI, 전역 락 경합,
+    hba posture, targets 설정, standalone backup, Prometheus 메트릭) 430 passed. 전체 스위트(`b3-test.sh`,
+    ruff 0.16.4 `All checks passed!`): 2 failed, 2052 passed, 2 skipped —
+    `test_api.py::test_post_backup_does_not_refuse_where_no_other_account_is_harmed[nothing_exists_yet]`(#430의
+    backup job 검사, `'failed' == 'succeeded'`)와
+    `test_compose_readiness_integration.py::test_canonical_compose_readiness_matches_real_runtime`(compose `up`
+    30초 timeout — 같은 날 다른 세션의 전체 실행에서도 실패, load 11~13). compose readiness는 따로 돌리면
+    브랜치·main(`68cc1a9`) 사본 모두 통과했다. backup job 검사는 main 사본에서도 같은 모양으로 실패한다 — 그
+    검사만 따로 13회는 브랜치 1·main 2 실패, `test_api.py -k backup` 18회는 브랜치 4·main 5 실패였고, 실패한
+    job의 `error`는 역할과 무관하게(`geo`·`transport`) job runner의 `cancelled`였다 — 위 1회차와 같은 기존
+    flake다.
+    이번 후속은 새 검사를 더하지 않았다 — `expected_ports`는 표시 선언이라 값에 검사를 결박하지 않는다.
+- **남은 것**: 설치 뒤 호스트에서 `ktdctl targets validate --check-coordinates`가 `OK`인지, cron 사본의
+  `config/docker-targets.yml`을 설치본과 맞췄는지 본다. 머지는 transport 창이 끝난 뒤다. 다시 리베이스하면
+  gate grep을 다시 돌린다.

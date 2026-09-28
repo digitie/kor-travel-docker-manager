@@ -90,7 +90,7 @@ concierge cutover는 **2026-09-19/20에 이미 끝났다**(실행 기록은 kor-
 | 앱의 DSN 배선(env 변수 이름·기본값) | **너 + Manager** | 변수 이름은 네가 정하고(단 §6.6 — 이미 배포된 이름은 바꾸지 않는다), compose 자리는 Manager가 만든다 |
 | 옛 instance 폐기 시점 | **너** | 아무도 안 정해 뒀다. 네가 종료 조건을 정의해야 한다 |
 
-내부 target(`geo`/`conc`/`map`/`pinvi`)은 Manager가 `ensure`로 배포하고, 외부 target(`weather`/`airport`)은 상태 조회·수명주기만 한다. 그러나 **공용 instance는 어느 쪽이든 Manager 소유**이므로, weather 같은 외부 프로젝트도 role/database를 얻으려면 db-init one-shot이 **Manager compose에** 들어가야 한다.
+내부 target(`geo`/`conc`/`map`/`pinvi`/`weather` — weather는 ADR-47로 2026-09-20부터 내부)은 Manager가 `ensure`로 배포하고, 외부 target(`transport`, 2026-09-28까지 이름은 `airport`)은 상태 조회·수명주기만 한다. 그러나 **공용 instance는 어느 쪽이든 Manager 소유**이므로, transport 같은 외부 프로젝트도 role/database를 얻으려면 db-init one-shot이 **Manager compose에** 들어가야 한다(`kor-travel-shared-db-init-transport`).
 
 ---
 

@@ -498,7 +498,7 @@ ADR-51 B3에서 지웠다. 다만 `.env` 파일을 다시 쓰는 것이므로, r
 환경으로 채우지 않는다 — 단 프로세스 환경의 모드가 명시적으로 local이 아니면 G다(더 엄격하게만). UI의 컨테이너 조작·설정·초기화,
 관리자 비밀번호 변경, `ktdctl compose-boundary` stage/retire/activate, `ktdctl pin`
 mutator, 재구축·M05·installer launcher가 전부 같은 lock이다(일부러 뺀 것 — 백업·offbox
-동기화·핀 요청 제안·airport 컨테이너 — 은 `docs/decisions.md` ADR-51 "C 범위"). 경합이면
+동기화·핀 요청 제안·transport 컨테이너 — 은 `docs/decisions.md` ADR-51 "C 범위"). 경합이면
 기다리지 않고 거절한다 — API는 409 `MANAGER_MUTATION_ACTIVE`, CLI는 종료 코드 2다.
 재구축(1~2시간)·M05(그보다 길다)·설치가 도는 동안 화면 변경이 전부 409인 것은 설계다.
 반대로 화면 요청·비밀번호 변경이 G를 몇 ms 쥔 바로 그 순간 시작한 launcher(chain17 등)는

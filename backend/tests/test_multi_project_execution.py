@@ -62,9 +62,10 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> _Capture:
 #: weather가 2026-09-20(ADR-47)까지 실제로 갖고 있던 external_project 좌표 — 이
 #: 파일의 "실행되는 명령" 계약을 태우는 유일한 실제 사례였다(한 프로젝트, compose
 #: 파일 둘, n150 HAProxy 오버레이). weather가 Manager internal target으로 바뀌며
-#: 저장소에 이 정확한 형태가 더 이상 없다 — 남은 외부 target(airport/airport-db)은
-#: "target 하나, 프로젝트 둘"이라는 다른 축을 이미 `test_a_two_project_target_runs_once_per_project`
-#: 등에서 증명한다. "한 프로젝트, 파일 여럿" 자체는 여전히 유효한 Manager
+#: 저장소에 이 정확한 형태가 더 이상 없다 — 합성 외부 target 쌍(conftest의
+#: `sibling_projects`)은 "target 하나, 프로젝트 둘"이라는 다른 축을
+#: `test_a_two_project_target_runs_once_per_project` 등에서 증명한다. "한 프로젝트, 파일
+#: 여럿" 자체는 여전히 유효한 Manager
 #: 기능이므로, weather의 옛 좌표를 합성으로 복원해 그 경로를 계속 실제 코드로
 #: 태운다(`test_multi_project_targets.py`의 같은 이름 fixture와 같은 원리).
 _WEATHER_LEGACY_EXTERNAL_PROJECT = {
@@ -118,8 +119,9 @@ def test_status_of_an_external_target_runs_in_that_projects_directory(
 
     `-p`·`--project-directory`·`-f` 셋을 다 붙여도 cwd가 Manager 루트면 compose는
     `-f compose.yaml`을 **Manager 저장소 안에서** 찾는다. weather는 그 이름이 없어
-    "no configuration file provided"로 죽고, airport은 이름이 있어 **Manager 자신의
-    docker-compose.yml**을 남의 프로젝트 이름으로 연다 — 후자가 더 나쁘다.
+    "no configuration file provided"로 죽고, `docker-compose.yml`을 쓰는 외부 프로젝트는
+    이름이 있어 **Manager 자신의 docker-compose.yml**을 남의 프로젝트 이름으로 연다 —
+    후자가 더 나쁘다.
     """
 
     ComposeService().status_target("weather")
@@ -175,17 +177,17 @@ def test_manager_status_is_unchanged(captured: _Capture) -> None:
 
 
 def test_a_two_project_target_runs_once_per_project(
-    captured: _Capture, airport_with_legacy_db: None
+    captured: _Capture, sibling_projects: None
 ) -> None:
-    """(합성) `airport`이 `airport-db`에 의존하면 — 두 프로젝트, 두 호출, 각자의 cwd."""
+    """(합성) `test-sibling`이 `test-sibling-db`에 의존하면 — 두 프로젝트, 두 호출, 각자의 cwd."""
 
-    ComposeService().status_target("airport")
+    ComposeService().status_target("test-sibling")
 
     assert len(captured.calls) == 2, captured.calls
     projects = [_flag_values(call["command"], "-p")[0] for call in captured.calls]
-    assert projects == ["kor-travel-airport-db", "kor-travel-airport"]
+    assert projects == ["kor-travel-test-sibling-db", "kor-travel-test-sibling"]
     for call in captured.calls:
-        assert call["cwd"] == "/home/digitie/apps/kor-travel-airport"
+        assert call["cwd"] == "/srv/kor-travel-test-sibling"
     assert _flag_values(captured.calls[0]["command"], "-f") == ["docker-compose.db.yml"]
     assert _flag_values(captured.calls[1]["command"], "-f") == ["docker-compose.yml"]
 
@@ -456,22 +458,28 @@ def test_the_environment_argument_does_not_reopen_full_inheritance(
 
 
 def test_the_group_label_names_the_project(
-    captured: _Capture, airport_with_legacy_db: None
+    captured: _Capture, sibling_projects: None
 ) -> None:
     """묶음 라벨이 **실제로 쓰인다**.
 
     `ServiceGroup.project_label` 속성은 검사됐지만 그 **사용처**는 아니어서, 라벨을
-    리터럴로 바꿔도 전부 초록이었다. 그러면 `ktdctl status airport --json`의 두 묶음과
-    `# project=` 헤더가 전부 오표기돼도 아무도 모른다 — 그 dict의 docstring은
+    리터럴로 바꿔도 전부 초록이었다. 그러면 `ktdctl status <두 프로젝트 target> --json`의
+    두 묶음과 `# project=` 헤더가 전부 오표기돼도 아무도 모른다 — 그 dict의 docstring은
     "소비자가 `groups`를 읽게 한다"고 말한다.
     """
 
-    result = ComposeService().status_target("airport")
+    result = ComposeService().status_target("test-sibling")
     assert [group["project"] for group in result["groups"]] == [
-        "kor-travel-airport-db",
-        "kor-travel-airport",
+        "kor-travel-test-sibling-db",
+        "kor-travel-test-sibling",
     ]
-    assert "# project=kor-travel-airport-db" in result["stdout"]
+    headers = [
+        line for line in result["stdout"].splitlines() if line.startswith("# project=")
+    ]
+    assert headers == [
+        "# project=kor-travel-test-sibling-db",
+        "# project=kor-travel-test-sibling",
+    ]
 
 
 def test_a_missing_working_directory_says_so(
@@ -566,7 +574,7 @@ def test_the_last_net_also_reads_the_command(
 def test_logs_does_not_fall_back_to_the_manager_project(
     captured: _Capture,
     monkeypatch: pytest.MonkeyPatch,
-    airport_with_legacy_db: None,
+    sibling_projects: None,
 ) -> None:
     """**fail-open을 막는다.**
 
@@ -584,14 +592,14 @@ def test_logs_does_not_fall_back_to_the_manager_project(
             group
             for group in original(target, runtime_only=runtime_only)
             if group.external is not None
-            and group.external.project == "kor-travel-airport-db"
+            and group.external.project == "kor-travel-test-sibling-db"
         ]
 
     monkeypatch.setattr(
         compose_module, "service_groups_for_target", only_dependencies
     )
     with pytest.raises(DeploymentContractError, match="declares no runtime services"):
-        ComposeService().logs("airport", tail=3)
+        ComposeService().logs("test-sibling", tail=3)
     assert captured.calls == [], "Manager 프로젝트에 빈 명령을 돌리지 않는다"
 
 

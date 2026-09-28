@@ -442,7 +442,7 @@ _REHEARSAL_VALUES = {
     "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "true",
 }
 # 실제 target이고 `external_project`가 없다 — Manager 자신의 Compose 프로젝트 소유라
-# lock을 지난다. 형제 프로젝트 컨테이너(airport)는 lock 없이 SDK로 가므로 쓰면 안 된다.
+# lock을 지난다. 형제 프로젝트 컨테이너(transport)는 lock 없이 SDK로 가므로 쓰면 안 된다.
 _MANAGER_OWNED_TARGET = "kor-travel-shared-postgresql"
 _CURRENT_PASSWORD = "current-password-1234"
 
