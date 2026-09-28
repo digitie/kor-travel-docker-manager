@@ -328,10 +328,16 @@ def test_lifecycle_actions_stay_available_for_external_containers(
     performed: list[str] = []
 
     class _Container:
-        def stop(self) -> None:
+        # docker-py `Container`처럼 inspect 결과를 든다 — stop/restart가 그 안의
+        # `StopTimeout`을 읽는다(grace가 없는 컨테이너는 인자 없이 부른다).
+        attrs: dict[str, Any] = {"Config": {}}
+
+        def stop(self, **kwargs: Any) -> None:
+            assert kwargs == {}
             performed.append("stop")
 
-        def restart(self) -> None:
+        def restart(self, **kwargs: Any) -> None:
+            assert kwargs == {}
             performed.append("restart")
 
     class _Containers:
@@ -601,7 +607,10 @@ def test_lifecycle_actions_work_through_the_public_entry_point(
     performed: list[str] = []
 
     class _Container:
-        def restart(self) -> None:
+        attrs: dict[str, Any] = {"Config": {}}
+
+        def restart(self, **kwargs: Any) -> None:
+            assert kwargs == {}
             performed.append("restart")
 
     class _Containers:

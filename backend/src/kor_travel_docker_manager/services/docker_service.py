@@ -925,10 +925,20 @@ class DockerService:
 
             if action == "start":
                 container.start()
-            elif action == "stop":
-                container.stop()
-            elif action == "restart":
-                container.restart()
+            elif action in {"stop", "restart"}:
+                # 컨테이너 자신의 grace(compose `stop_grace_period` → `Config.StopTimeout`)를
+                # 그대로 넘긴다. docker-py의 `restart()`는 인자가 없으면 **항상** `t=10`을
+                # 보내고, `stop()`은 `t`를 빼지만 HTTP read timeout은 10초만 늘린다 — 긴
+                # grace를 선언한 공용 instance가 10초 뒤 SIGKILL을 받거나(다음 기동이 crash
+                # recovery), 정상 종료가 client timeout으로 보고됐다. 명시하면 docker-py가
+                # read timeout도 같은 만큼 늘린다. grace를 선언하지 않은 컨테이너는 지금까지와
+                # 같다(인자 없음).
+                grace = container.attrs["Config"].get("StopTimeout")
+                stop_kwargs: dict[str, int] = {} if grace is None else {"timeout": grace}
+                if action == "stop":
+                    container.stop(**stop_kwargs)
+                else:
+                    container.restart(**stop_kwargs)
             return {"success": True, "message": f"Successfully performed '{action}' on {cname}."}
         except NotFound:
             if action == "start":

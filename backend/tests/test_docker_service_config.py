@@ -2628,3 +2628,84 @@ def test_all_docker_mutation_entries_bind_transaction_to_selected_c6c_lock(
         mutation(service)
 
     mismatch.assert_called_once_with(snapshot, lock_snapshot)
+
+
+# ── Manager의 컨테이너 stop/restart는 컨테이너 자신의 grace를 따른다 ─────────
+#
+# docker-py의 `restart()`는 인자가 없으면 **항상** `t=10`을 보낸다. 그래서 공용 instance에
+# `stop_grace_period`를 줘도 대시보드의 재시작 버튼은 10초 뒤 SIGKILL을 보냈다.
+
+#: 어떤 값이든 docker-py 기본 10초만 아니면 된다 — 배포된 grace를 흉내내지 않는다(그 값은
+#: compose가 정본이고 `test_shared_postgres_runtime_contract.py`가 하한을 본다).
+_DECLARED_STOP_TIMEOUT = 247
+
+
+class _RecordingContainer:
+    """docker-py `Container`의 이 경로가 쓰는 면만: `attrs`(inspect)와 stop/restart."""
+
+    def __init__(self, config: dict[str, object]) -> None:
+        self.attrs: dict[str, object] = {"Config": config}
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def start(self, **kwargs: object) -> None:
+        self.calls.append(("start", kwargs))
+
+    def stop(self, **kwargs: object) -> None:
+        self.calls.append(("stop", kwargs))
+
+    def restart(self, **kwargs: object) -> None:
+        self.calls.append(("restart", kwargs))
+
+
+def _control_with(
+    monkeypatch: pytest.MonkeyPatch, container: _RecordingContainer, action: str
+) -> dict[str, object]:
+    client = Mock()
+    client.containers.get.return_value = container
+    service = DockerService()
+    monkeypatch.setattr(service, "_get_client", lambda: client)
+    result = service._control_container_unlocked(
+        "kor-travel-shared-postgresql", action, environment_snapshot=None
+    )
+    client.containers.get.assert_called_once_with("kor-travel-shared-postgres")
+    return result
+
+
+@pytest.mark.parametrize("action", ["stop", "restart"])
+def test_restart_passes_the_container_stop_timeout(
+    monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    """`Config.StopTimeout`(compose `stop_grace_period`)가 그대로 `timeout`이 된다."""
+
+    container = _RecordingContainer(
+        {"Image": "postgis/postgis", "StopTimeout": _DECLARED_STOP_TIMEOUT}
+    )
+
+    result = _control_with(monkeypatch, container, action)
+
+    assert result["success"] is True
+    assert container.calls == [(action, {"timeout": _DECLARED_STOP_TIMEOUT})]
+
+
+@pytest.mark.parametrize("action", ["stop", "restart"])
+def test_restart_without_stop_timeout_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    """grace를 선언하지 않은 컨테이너는 docker-py 기본 동작 그대로다(인자 없음)."""
+
+    container = _RecordingContainer({"Image": "rustfs/rustfs"})
+
+    result = _control_with(monkeypatch, container, action)
+
+    assert result["success"] is True
+    assert container.calls == [(action, {})]
+
+
+def test_start_ignores_the_stop_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    container = _RecordingContainer({"StopTimeout": _DECLARED_STOP_TIMEOUT})
+
+    result = _control_with(monkeypatch, container, "start")
+
+    assert result["success"] is True
+    assert container.calls == [("start", {})]
+
