@@ -1836,8 +1836,8 @@ def _require_rehearsal_space(
     **WAL을 두 번 센다 — 일부러 보수적이다.** pg_wal은 누가 쓰든 한 `max_wal_size`(soft)로
     묶이므로 엄밀히는 한 번이면 된다. 그래도 리허설의 WAL 항과 예약분의 WAL 몫을 따로 둔다:
     scratch DB와 원본이 같은 PGDATA이고, 모자라서 멈추는 쪽은 리허설이 아니라 모든 테넌트의
-    DB다. 거부는 시작 전이고 잃는 것은 리허설 한 번뿐이다(D4 뒤 transport는 원본 15.3 GB·
-    dump 1.01 GB일 때 한 번 세면 약 19.6 GB, 두 번 세면 약 21.7 GB — 2026-09-29 n150 실측).
+    DB다. 거부는 시작 전이고 잃는 것은 리허설 한 번뿐이다(D4 뒤 transport는 원본 15.4 GB·
+    dump 1.01 GB일 때 한 번 세면 약 19.6 GB, 두 번 세면 약 21.8 GB — 2026-09-29 n150 실측).
     """
 
     wal_bytes = _query_max_wal_bytes(container_name, port, admin_name)

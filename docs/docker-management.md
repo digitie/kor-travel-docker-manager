@@ -1289,15 +1289,15 @@ ktdctl db-backup rehearse-restore concierge [--file <name>] [--timeout <초>] [-
   (scratch DB가 그만큼 자란다) + dump 크기(컨테이너 `/tmp` 사본) + 그 instance의 `max_wal_size`
   (pg_restore·인덱스 생성이 쌓는 WAL) + 예약분(create와 같은 식). scratch DB는 원본과 **같은
   PGDATA**에 생기므로 create보다 위험하다. 값은 전부 manifest와 살아있는 instance에서 나온다 —
-  예: `transport`(2026-09-29 n150 실측 `pg_database_size` 15.3 GB, 마지막 dump 1.01 GB)는 D4 뒤
-  15.3 GB + 1.01 GB + 2 GiB + 3 GiB ≈ 21.7 GB다. **WAL을 두 번 센다 — 일부러 보수적이다.** pg_wal은
+  예: `transport`(2026-09-29 n150 실측 `pg_database_size` 15.4 GB, 마지막 dump 1.01 GB)는 D4 뒤
+  15.4 GB + 1.01 GB + 2 GiB + 3 GiB ≈ 21.8 GB다. **WAL을 두 번 센다 — 일부러 보수적이다.** pg_wal은
   누가 쓰든 한 `max_wal_size`(soft)로 묶이므로 엄밀히는 한 번이면 되지만(같은 예에서 약 19.6 GB),
   모자라서 멈추는 쪽이 리허설이 아니라 같은 PGDATA의 모든 테넌트라 여유를 더 둔다. 거부는 시작 전이다.
 
 | role | 첫 실행(이 자리에서 뜬 dump 없음) | 한 번 뜬 뒤 |
 |---|---|---|
 | `geo` | 2 x min(1.25 x 테이블 합, 약 35 GiB) + 3 GiB — 최대 73 GiB(78.4 GB), 인덱스만큼 작다 | 2 x 4.7 GB + 3 GiB ≈ 12.6 GB |
-| `transport` | 최대 2 x DB 크기 + 3 GiB(2026-09-29 15.3 GB로 ≈ 33.9 GB) | 2 x 1.01 GB + 3 GiB ≈ 5.2 GB |
+| `transport` | 최대 2 x DB 크기 + 3 GiB(2026-09-29 15.4 GB로 ≈ 34.0 GB) | 2 x 1.01 GB + 3 GiB ≈ 5.2 GB |
 | `transport_dagster` | 최대 2 x 약 112 MB + 3 GiB ≈ 3.4 GB | 더 작다 |
 | `pinvi`·`concierge`·`geo_dagster` | — | 예약분 + 수 MB |
 
@@ -1618,7 +1618,7 @@ instance에서 superuser로 직접 복원한다. Manager dump는 superuser가 �
 1. 고를 dump를 검증한다: 그 role 디렉터리에서 `sha256sum -c <name>.sha256`,
    `ktdctl db-backup restore-plan transport --file <name>`, 여유가 되면 `rehearse-restore`.
 2. 여유를 본다. 한 트랜잭션이라 커밋 전까지 옛 표와 새 표가 함께 있다 — database 크기 + dump +
-   `max_wal_size` + 예약분(리허설과 같은 식 — D4 뒤 transport는 2026-09-29 실측으로 약 21.7 GB) 이상이어야 한다.
+   `max_wal_size` + 예약분(리허설과 같은 식 — D4 뒤 transport는 2026-09-29 실측으로 약 21.8 GB) 이상이어야 한다.
 3. transport의 쓰기 주체(API, Dagster webserver·daemon·code-server)를 멈춘다. Manager가 띄우는
    것이 아니다 — transport 자신의 배포 사본(`/home/digitie/apps/kor-travel-transport/`, compose
    프로젝트 `kor-travel-transport`)이 띄운다. 프로젝트 이름을 명시한다 — 디렉터리 이름에 맡기면
