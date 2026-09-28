@@ -1018,6 +1018,25 @@ def test_cli_db_backup_gc_reports_orphans_separately(
     assert "geo-2000.dump" in output
 
 
+@patch("kor_travel_docker_manager.cli.gc_standalone_backups")
+
+
+def test_cli_db_backup_gc_reports_dumps_kept_from_another_instance(
+    mock_gc, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """회전하지 않은 옛 instance의 dump는 cron 로그에 매번 보여야 사람이 옮긴다."""
+
+    from kor_travel_docker_manager.services.standalone_backup import GcOutcome
+
+    mock_gc.return_value = GcOutcome(
+        deleted=(), orphans_removed=(), other_instance_kept=("pinvi-100.dump",)
+    )
+
+    assert main(["db-backup", "gc", "pinvi", "--keep", "7"]) == 0
+
+    assert "kept 1 dump(s) taken from another instance" in capsys.readouterr().out
+
+
 # --- ktdctl pin (KUM-M1·M2) ---------------------------------------------------
 
 

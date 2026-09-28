@@ -116,13 +116,13 @@ concierge cutover는 **2026-09-19/20에 이미 끝났다**(실행 기록은 kor-
 
 ### 3.1 P2가 가장 위험한 한 줄이다
 
-concierge 선례에서 compose는 세 자리(api·mcp·scheduler)에 이런 모양을 갖는다:
+concierge 선례에서 compose는 세 자리(api·mcp·scheduler)에 이런 모양을 가졌다(2026-09-28까지):
 
 ```
 DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-<옛 instance를 가리키는 기본값>}
 ```
 
-그리고 **옛 instance는 롤백 안전망으로 계속 healthy하게 떠 있다.** 즉 호스트 `.env`에서 그 변수가 빠지거나 이름이 바뀌면, 스택은 오류 없이 기동해서 **조용히 폐기된 DB에 쓰기 시작한다.** 이 DSN을 검증하는 테스트·validator는 Manager 저장소에 0건이다.
+그리고 **옛 instance는 롤백 안전망으로 계속 healthy하게 떠 있었다.** 즉 호스트 `.env`에서 그 변수가 빠지거나 이름이 바뀌면, 스택은 오류 없이 기동해서 **조용히 폐기된 DB에 쓰기 시작했을 것이다.** 이 DSN을 검증하는 테스트·validator는 Manager 저장소에 0건이다. 옛 instance를 뺀 2026-09-28부터 concierge도 아래 (a)다.
 
 네 프로젝트가 같은 패턴을 복제한다면 셋 중 하나를 골라라.
 

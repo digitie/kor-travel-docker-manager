@@ -116,32 +116,38 @@ concierge `:12600`·PinVi `:12800`)를 Manager compose에서 뺐다 — 그날 n
 
 ## 5. 지금의 제어 평면 — Dagster
 
-**`pinvi`·`geo`·`weather`가 §7 1단계(code-server 분리)를 충족한 프로젝트다.**
+**Dagster를 쓰는 다섯 프로젝트(`pinvi`·`geo`·`weather`·`map`·transport)가 모두 §7
+1단계(code-server 분리)를 충족했다.** code-server는 **프로젝트마다 하나씩 따로** 돈다 —
+프로젝트끼리 합치지 않고, 합칠 계획도 없다(§7 "왜 code-server만 나뉘는가"). 공유하기로 한
+것은 webserver/daemon과 메타DB(`dagster_shared`)이고, 그것은 아직 없다(§7 2~4단계).
 pinvi/geo는 2026-09-19(서로 다른 PR이 거의 동시에 착지 — PinVi ADR-069/PR
 `digitie/pinvi#559`+`#358`, geo는 PR #357), weather는 원래 external target 때부터
 분리돼 있었고(참조 구현 `kor-travel-weather` PR #61) 2026-09-20 ADR-47로 Manager
 internal target이 되며 `network_mode: host`로도 옮겨왔다 — 지금은 pinvi/geo와 같은
-접속 방식(서비스명 DNS가 아니라 loopback, 아래 참고)을 쓴다. `map`/`conc`의
-webserver/daemon은 여전히 각자 `-m <모듈>`로 코드를 **in-process로 직접 로드**한다.
+접속 방식(서비스명 DNS가 아니라 loopback, 아래 참고)을 쓴다. `map`은 2026-09-25
+(#397, ADR-069 짝)에 같은 형태가 됐다. transport는 외부 프로젝트라 자기 저장소의 배포
+사본이 webserver·daemon·code-server를 띄운다(n150 `kor-travel-airport-dagster-*`).
+`conc`는 Dagster를 쓰지 않는다. 2026-09-28 n150 실측으로 code-server 다섯 개가 모두
+떠 있었다.
 
 | 프로젝트 | webserver | daemon | code-server(gRPC) | 코드 로드 방식 |
 |---|---|---|---|---|
 | `pinvi` | `pinvi-dagster` `12802` | `pinvi-dagster-daemon` (포트 없음) | `pinvi-dagster-code-server` `12803` | webserver/daemon → `-w workspace.yaml`(grpc_server), code-server만 `-m pinvi.etl.definitions` |
 | `geo` | `kor-travel-geo-dagster` `12502` | `kor-travel-geo-dagster-daemon`(포트 없음) | `kor-travel-geo-dagster-code-server` `12503` | PR #357 — pinvi와 같은 3-분리 형태(상세는 그 PR 참조, 이 문서는 표만 갱신) |
-| `map` | `kor-travel-map-dagster` `12702` | `kor-travel-map-dagster-daemon` (포트 없음) | 없음 | `-m kortravelmap.dagster.definitions` |
+| `map` | `kor-travel-map-dagster` `12702` | `kor-travel-map-dagster-daemon` (포트 없음) | `kor-travel-map-dagster-code-server` `12703`(loopback 전용) | #397 — webserver/daemon → `-w workspace.yaml`(grpc_server), code-server만 `-m kortravelmap.dagster.definitions` |
 | `weather` | `kor-travel-weather-dagster-webserver` 내부 전용 `14107` + 게이트웨이(Basic Auth) `14102` | `kor-travel-weather-dagster-daemon` (포트 없음) | `kor-travel-weather-dagster-code-server` `14106`(loopback 전용, 무인증) | ADR-47 — Manager 소유, webserver/daemon → `-w workspace.yaml`(grpc_server, Manager 소유 오버라이드가 `host: dagster-code-server`를 `127.0.0.1`로 재작성), code-server만 `-m kortravelweather_dagster.definitions` |
+| transport(`airport`, 외부) | 그 저장소 compose | 그 저장소 compose | `kor-travel-airport-dagster-code-server-1` | 그 저장소가 소유한다 — Manager compose에는 없다 |
 | `conc` | 없음 | — | 없음 | — |
 
-> **접속 방식**: pinvi·geo·weather 모두 이 저장소의 compose가 강제하는
+> **접속 방식**: pinvi·geo·weather·map 모두 이 저장소의 compose가 강제하는
 > `network_mode: host`라 `workspace.yaml`이 서비스명이 아니라 `host: 127.0.0.1`을
 > 쓴다(PinVi ADR-069 §결정 2가 먼저 정한 패턴, geo는 PR #357, weather는 ADR-47 —
 > weather는 처음엔 자체 bridge network + 서비스명 DNS를 시도했다가 internal target
-> 전환과 함께 이 패턴으로 옮겨왔다). `map`/`conc`가 나중에 1단계를 밟을 때도 같은
-> 이유로 loopback을 써야 한다.
+> 전환과 함께 이 패턴으로 옮겨왔다).
 
 이 배치의 결과가 §7 전환의 전제다: **공유 webserver/daemon으로 가려면 모든 프로젝트가
-먼저 code-server를 분리해야 한다.** `pinvi`·`geo`·`weather`가 그 1단계를 밟았고,
-나머지(`map`/`conc`)는 아직이다.
+먼저 code-server를 분리해야 한다.** Dagster를 쓰는 다섯 프로젝트가 모두 그 1단계를
+밟았다. 다음 차단 요인은 §7의 "공유의 전제 둘"(같은 인스턴스 스토리지, dagster 버전 호환)이다.
 
 ---
 
@@ -182,9 +188,9 @@ instance `kor-travel-shared-postgres`(`:11000`)에 `kor_travel_concierge`(ADR-44
 보존 없이 fresh 구성), `kor_travel_weather`+`kor_travel_weather_dagster`(ADR-47),
 `kor_travel_transport`+`kor_travel_transport_dagster`가 활성이다(2026-09-28 n150 실측: 해당
 서비스의 DSN이 전부 `:11000`). 옛 전용 인스턴스는 같은 날 Manager compose에서 뺐다(§4).
-1~4단계(code-server 분리 · 공유 Dagster 스토리지 `dagster_shared` · 공용
-webserver/daemon · 프로젝트별 daemon 철거)는 여전히 계획이다 — `dagster_shared`도
-`11001`/`11002`도 **아직 없다**. 다른 프로젝트가 5단계를 먼저 밟는 절차는
+1단계(code-server 분리)도 Dagster를 쓰는 다섯 프로젝트가 모두 밟았다(§5). 2~4단계(공유
+Dagster 스토리지 `dagster_shared` · 공용 webserver/daemon · 프로젝트별 daemon 철거)는
+여전히 계획이다 — `dagster_shared`도 `11001`/`11002`도 **아직 없다**. 다른 프로젝트가 5단계를 먼저 밟는 절차는
 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)가 갖는다.
 
 **PinVi의 `pinvi_dagster`는 2단계(`dagster_shared`)가 아니다.** 그 데이터베이스를
@@ -222,7 +228,7 @@ code-server (dagster api grpc)  ← 프로젝트별 분리 유지, 각자 포트
 **선행 작업 순서.** 각 단계는 다음 단계의 전제다.
 
 1. 프로젝트마다 `dagster api grpc` code-server를 **별도 서비스로 분리**한다
-   (지금은 하나도 분리돼 있지 않다). 이 단계까지는 기존 webserver/daemon을 그대로 둔다.
+   (2026-09-25 Map을 끝으로 다섯 프로젝트 모두 완료, §5). 이 단계까지는 기존 webserver/daemon을 그대로 둔다.
 2. 공유 인스턴스 스토리지(`11000`/`dagster_shared`)를 세우고, 각 프로젝트의 Dagster
    메타DB를 그리로 옮긴다.
 3. 공유 `workspace.yaml`에 프로젝트별 `grpc_server`를 나열하고, 공유 webserver(`11002`)

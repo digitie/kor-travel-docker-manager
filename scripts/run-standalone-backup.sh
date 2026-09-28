@@ -10,6 +10,8 @@
 # 원하면 KTDM_BACKUP_ROOT를 **crontab 라인뿐 아니라 .env에도** 선언해야 한다 —
 # installer는 .env만 읽는다. 공유 백업 디렉터리(chgrp+2770)를 쓰면 .env에
 # KTDM_BACKUP_SHARED_GROUP도 선언해야 logrotate가 group-writable 부모를 거부하지 않는다.
+# crontab이 가리키는 체크아웃은 설치본(/opt)과 별개다 — 설치 뒤 backend/src·
+# config/docker-targets.yml·이 파일을 함께 맞춘다(docs/docker-management.md "PostgreSQL 백업").
 # 다음 줄을 crontab에 한 번 넣어 host timezone과 무관하게 UTC로 고정한다:
 #   CRON_TZ=UTC
 #   15 3 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh geo_dagster 4 >>/absolute/backup/root/geo_dagster.log 2>&1

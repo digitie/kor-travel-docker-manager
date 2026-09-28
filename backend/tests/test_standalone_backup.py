@@ -744,7 +744,13 @@ def test_restore_plan_refuses_when_there_is_nothing_to_restore(tmp_path: Path) -
         plan_standalone_restore("geo", backup_root=root)
 
 
-def _manifest_payload(role: str, created_at: int, backup_filename: str) -> dict[str, object]:
+def _manifest_payload(
+    role: str, created_at: int, backup_filename: str, *, instance: str | None = None
+) -> dict[str, object]:
+    if instance is None:
+        # 기본은 그 role이 **지금** 뜨는 자리다 — 모델에서 읽는다.
+        container_name, database_name = standalone_backup._role_config(role)
+        instance = f"{container_name}:127.0.0.1:12345/{database_name}"
     return {
         "role": role,
         "created_at_unix": created_at,
@@ -752,11 +758,69 @@ def _manifest_payload(role: str, created_at: int, backup_filename: str) -> dict[
         "byte_size": 10,
         "sha256": "a" * 64,
         "backup_filename": backup_filename,
-        "instance": "container:127.0.0.1:12345/db",
+        "instance": instance,
         "db_size_bytes": 100,
         "toc_entry_count": 2,
         "alembic_head": "0001_head",
     }
+
+
+def test_gc_rotates_only_dumps_of_the_instance_the_role_dumps_now(tmp_path: Path) -> None:
+    """role이 instance를 옮긴 뒤 옛 instance의 dump는 회전에 끼지 않는다.
+
+    옛 dump를 새 dump와 한 줄로 세우면 새 dump가 keep개 쌓이는 순간 옛 데이터의
+    유일한 사본이 지워진다(2026-09-28 PinVi 옛 전용 instance의 dump 7개).
+    """
+
+    root = tmp_path / "pinvi"
+    root.mkdir()
+    old_instance = "retired-postgres:127.0.0.1:12800/pinvi"
+    for created_at in (100, 200):
+        name = f"pinvi-{created_at}.dump"
+        (root / name).write_bytes(b"old")
+        (root / name.replace(".dump", ".manifest")).write_text(
+            json.dumps(_manifest_payload("pinvi", created_at, name, instance=old_instance)),
+            encoding="utf-8",
+        )
+    for created_at in (1000, 2000, 3000):
+        name = f"pinvi-{created_at}.dump"
+        (root / name).write_bytes(b"new")
+        (root / name.replace(".dump", ".manifest")).write_text(
+            json.dumps(_manifest_payload("pinvi", created_at, name)), encoding="utf-8"
+        )
+
+    outcome = gc_standalone_backups("pinvi", keep=2, backup_root=root)
+
+    assert outcome.deleted == ("pinvi-1000.dump",)
+    assert outcome.other_instance_kept == ("pinvi-100.dump", "pinvi-200.dump")
+    assert outcome.orphans_removed == ()
+    assert {p.name for p in root.glob("*.dump")} == {
+        "pinvi-100.dump",
+        "pinvi-200.dump",
+        "pinvi-2000.dump",
+        "pinvi-3000.dump",
+    }
+
+
+def test_restore_plan_blocks_a_dump_taken_from_another_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """무결성이 멀쩡해도 다른 instance의 dump는 다른 데이터다 — 복원하면 바꿔치기다."""
+
+    root = tmp_path / "pinvi"
+    root.mkdir()
+    name = _seed_backup(root, "pinvi", 1000, b"dump-bytes")
+    manifest_path = root / "pinvi-1000.manifest"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["instance"] = "retired-postgres:127.0.0.1:12800/pinvi"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    _plan_probes(monkeypatch, live_head="0001_head")
+
+    plan = plan_standalone_restore("pinvi", backup_root=root)
+
+    assert plan.backup_filename == name
+    assert plan.restorable is False
+    assert [f.code for f in plan.findings if f.blocking] == ["INSTANCE_MISMATCH"]
 
 
 def test_gc_binds_manifest_content_to_its_own_filename(tmp_path: Path) -> None:

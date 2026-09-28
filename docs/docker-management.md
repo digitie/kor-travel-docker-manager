@@ -127,7 +127,7 @@ storage -> gra -> cadv -> prom ─┬─ geo ──┐
                                 └─ conc ──┴─> map -> pinvi
 ```
 
-핵심 의존: `geo`와 `conc`는 모두 `prom`에만 의존하며 서로 독립이다(**concierge는 geo에 의존하지 않는다**). `map`은 `geo`와 `conc` 모두에 의존하고, `pinvi`는 `map`에 의존한다. 예를 들어 `ktdctl conc`는 `db, storage, gra, cadv, prom, conc`만 실행하고(geo 제외), `ktdctl map`은 `db, storage, gra, cadv, prom, geo, conc, map`을 실행한다. 새 의존성은 `targets.<id>.depends_on`으로 선언한다.
+핵심 의존: `geo`와 `conc`는 모두 `prom`에만 의존하며 서로 독립이다(**concierge는 geo에 의존하지 않는다**). `map`은 `geo`와 `conc` 모두에 의존하고, `pinvi`는 `map`에 의존한다. 예를 들어 `ktdctl conc`는 `storage, gra, cadv, prom, conc`만 실행하고(geo 제외), `ktdctl map`은 `storage, gra, cadv, prom, geo, conc, map`을 실행한다. 새 의존성은 `targets.<id>.depends_on`으로 선언한다.
 
 **`docker-targets.yml` 편집 후 재기동 전 검증(GM-11, docker-targets.yml 스키마 검증
 잔여로 갱신)**: `registry.load_targets_config()`는 컨테이너 필수 필드·`depends_on`/
@@ -213,7 +213,6 @@ profile로도 피할 수 없다(비활성 profile의 서비스도 interpolate �
 ```bash
 ktdctl targets list
 ktdctl targets validate
-ktdctl db --build
 ktdctl storage
 ktdctl geo --recreate
 ktdctl conc --build
@@ -1033,6 +1032,13 @@ ktdctl db-backup create pinvi --timeout 14400
 포트와 user는 코드가 들고 있지 않다 — `db-backup`이 떠 있는 컨테이너의 `-p` 인자와
 `POSTGRES_USER`에서 읽는다(위 값은 기본 설정 기준).
 
+**공용 instance의 role은 다섯 프로젝트가 같이 쓰는 cluster를 뜬다.** n150의 부하는 CPU가
+아니라 디스크 대기다. `geo`(`kor_travel_geo` 약 35 GB, dump 4.7 GB·약 15분)는 조용한 시간에만
+수동으로 뜨고, `rehearse-restore`도 같은 cluster 안에 scratch DB를 만든다는 점을 알고 돌린다.
+공용 instance에서 **백업 role이 없는** DB도 있다 — `pinvi_dagster`, `kor_travel_weather`·
+`kor_travel_weather_dagster`, `kor_travel_transport`·`kor_travel_transport_dagster`. 이 저장소가
+그 넷의 백업을 만들지 않는다는 뜻이다(2026-09-28 기준, 이 변경 전부터 그랬다).
+
 ### 산출물 3종 세트
 
 dump 하나만 두지 않는다. **`.sha256`과 `.manifest`가 없으면 "복원 가능한 백업"이 아니라
@@ -1112,7 +1118,10 @@ journal). `restore-plan`을 먼저 만든 이유는, 목록에 백업이 보이�
 - live schema revision과 백업 시점 revision이 같은가.
 - 어느 컨테이너가 영향을 받는가.
 
-차단(`DUMP_MISSING`·`SIZE_MISMATCH`·`SHA256_MISMATCH`·`INSTANCE_UNREACHABLE`)과 참고
+- dump를 뜬 자리(manifest의 `instance`에서 컨테이너와 database)가 이 role이 지금 뜨는
+  자리와 같은가. 다르면 무결성이 멀쩡해도 **다른 데이터**다(`INSTANCE_MISMATCH`).
+
+차단(`DUMP_MISSING`·`SIZE_MISMATCH`·`SHA256_MISMATCH`·`INSTANCE_MISMATCH`·`INSTANCE_UNREACHABLE`)과 참고
 (`HEAD_MISMATCH`·`LIVE_HEAD_UNKNOWN`·`MANIFEST_HEAD_UNKNOWN`)를 구분한다. schema revision
 불일치는 **차단이 아니다** — 복원 자체는 가능하고, 코드가 기대하는 schema보다 과거로
 간다는 사실을 알고 결정하는 것이 사람의 몫이다. 차단 요인이 있으면 exit 1이라 스크립트
@@ -1182,6 +1191,19 @@ geo application DB는 위 앱 레벨 백업이 정본이다. 운영자가 장애
 `scripts/run-standalone-backup.sh <role> <keep>`을 cron/systemd timer에 건다.
 `geo` role은 앱 레벨 백업과 중복되므로 이 wrapper의 주기 실행 예시에서 제외한다. 같은 role의 동시 실행은 `~/backups/<role>/
 .backup.lock`(`flock`)으로 막는다.
+
+`gc --keep N`은 이 role이 **지금 뜨는 자리**(컨테이너와 database)의 dump끼리만 세서 최신 N개를
+남긴다. 다른 자리에서 뜬 dump(role이 instance를 옮기기 전의 것)는 지우지 않고 매번
+`kept N dump(s) taken from another instance`로 알린다. 한 줄로 세면 새 dump가 N개 쌓이는 순간
+옛 데이터의 유일한 사본이 조용히 사라진다(2026-09-28 PinVi 옛 전용 instance의 dump 7개가
+그랬을 것이다). 옮길지 지울지는 사람이 정한다 — 보관은 `~/backups/legacy/` 아래가 관례다.
+
+cron은 crontab 줄이 가리키는 체크아웃의 wrapper와 `ktdctl`을 부른다. 설치본(`/opt`)을
+갱신해도 그 체크아웃은 그대로다. n150에서는 `/home/digitie/kor-travel-docker-manager`(git이
+아닌 사본)이고, 설치 뒤 `backend/src`·`config/docker-targets.yml`·
+`scripts/run-standalone-backup.sh`를 설치본과 **함께** 맞춰야 한다(2026-09-20에 `backend/src`만
+맞춰 `compose_binds 절이 없다`로 매일 실패했다). 그 사본의 `config/`에는 떠 있는
+Prometheus/Grafana가 마운트하는 파일도 있으므로 `config/` 전체를 덮거나 `--delete`로 맞추지 않는다.
 
 Manager backend가 root service로 실행되고 operator가 별도 계정으로 CLI를 실행하는
 환경에서는 두 프로세스가 `Path.home()`을 서로 다르게 해석한다. 따라서 백업 root는

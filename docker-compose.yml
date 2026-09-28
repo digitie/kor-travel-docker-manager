@@ -594,7 +594,7 @@ services:
       rustfs:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://${KOR_TRAVEL_CONCIERGE_SHARED_APP_USER:-kor_travel_concierge_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_CONCIERGE_SHARED_DB:-kor_travel_concierge}}
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
       # UI BFF와 backend admin proxy는 같은 Manager root authority만 사용한다.
       KTC_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET:?KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET must be explicitly set}
       NEXT_PUBLIC_API_BASE_URL: http://localhost:${KOR_TRAVEL_CONCIERGE_API_PORT:-12601}
@@ -652,7 +652,7 @@ services:
       kor-travel-concierge-api:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://${KOR_TRAVEL_CONCIERGE_SHARED_APP_USER:-kor_travel_concierge_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_CONCIERGE_SHARED_DB:-kor_travel_concierge}}
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
@@ -689,7 +689,7 @@ services:
       kor-travel-concierge-api:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-postgresql+asyncpg://${KOR_TRAVEL_CONCIERGE_SHARED_APP_USER:-kor_travel_concierge_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_CONCIERGE_SHARED_DB:-kor_travel_concierge}}
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}

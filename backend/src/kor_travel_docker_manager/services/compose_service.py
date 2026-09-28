@@ -22,6 +22,7 @@ from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MAP_APPLICATION_SCHEMA_SERVICE,
+    _MAP_POSTGRES_SERVICE,
     _MAP_RUNTIME_SERVICES,
     _PINVI_ADMIN_BOOTSTRAP_SERVICE,
     _PINVI_API_SERVICE,
@@ -173,6 +174,9 @@ _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
     "kor-travel-geo-api",
     "kor-travel-concierge-api",
 )
+#: 재구축이 health까지 띄우고 secret·이미지를 확인하는 PostgreSQL. 공용 instance는 다른
+#: 프로젝트도 쓰므로 여기 없다(`_start_pinned_runtime_databases`).
+_PINNED_RUNTIME_DATABASE_SERVICES = (_MAP_POSTGRES_SERVICE,)
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
 # profile을 해석 단계에서 빼면 `run --profile bootstrap`가 같은 문서에서 service를 찾지 못한다.
 _FROZEN_COMPOSE_PROFILES = ("bootstrap",)
@@ -4653,7 +4657,7 @@ class ComposeService:
         띄웠는데, 그것은 PinVi가 더 이상 접속하지 않는 롤백 사본이었다.
         """
 
-        postgres = ("kor-travel-map-postgres",)
+        postgres = _PINNED_RUNTIME_DATABASE_SERVICES
         self._run_pinned_runtime_rebuild_compose(
             [
                 "up",

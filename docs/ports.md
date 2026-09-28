@@ -106,6 +106,8 @@ Geo Dagster webserver는 registry의 일반 runtime 표에는 없는 보조 서�
 code-server(`12803`, PinVi ADR-069)도 daemon과 같은 내부 전용이다 — webserver/daemon만
 gRPC로 접속하고, 외부에는 열지 않는다. weather의 Dagster code-server(`14106`)/webserver
 (`14107`, ADR-47로 재배치)도 같은 이유로 loopback 전용이다 — gateway(`14102`)만 외부에 연다.
+Map Dagster code-server(`12703`, #397)도 `-h 127.0.0.1` loopback 전용이다. Geo Dagster
+code-server는 `12503`이다.
 
 ## PostgreSQL instance 경계
 

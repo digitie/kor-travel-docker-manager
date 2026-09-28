@@ -152,8 +152,14 @@ def test_services_the_code_names_are_defined() -> None:
     def references() -> Iterator[tuple[str, str]]:
         for name in c6c_deployment_module._CANDIDATE_KNOWN_SERVICE_NAMES:
             yield "c6c._CANDIDATE_KNOWN_SERVICE_NAMES", name
-        for name in compose_service_module._PINNED_RUNTIME_ONESHOT_WRITERS:
-            yield "compose_service._PINNED_RUNTIME_ONESHOT_WRITERS", name
+        for field in (
+            "_PINNED_RUNTIME_ONESHOT_WRITERS",
+            "_PINNED_RUNTIME_EXTERNAL_PREREQUISITES",
+            "_PINNED_RUNTIME_DATABASE_SERVICES",
+            "RUNTIME_SERVICES",
+        ):
+            for name in getattr(compose_service_module, field):
+                yield f"compose_service.{field}", name
         for role, spec in database_runtime_module._ROLE_CONFIG.items():
             yield f"database_runtime._ROLE_CONFIG.{role}", spec[-1]
 

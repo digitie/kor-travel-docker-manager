@@ -488,6 +488,12 @@ def _cmd_db_backup_gc(args: argparse.Namespace) -> int:
             f"removed {len(outcome.orphans_removed)} orphaned dump(s) left by an interrupted "
             f"backup: {', '.join(outcome.orphans_removed)}"
         )
+    # 다른 instance에서 뜬 dump는 회전하지 않는다. 매번 보여 줘야 사람이 옮긴다.
+    if outcome.other_instance_kept:
+        print(
+            f"kept {len(outcome.other_instance_kept)} dump(s) taken from another instance "
+            f"(not rotated; archive them by hand): {', '.join(outcome.other_instance_kept)}"
+        )
     if outcome.total == 0:
         print("nothing to delete")
     return 0
