@@ -461,6 +461,29 @@ def test_isolation_refuses_a_login_outside_the_map_owner_and_changes_nothing(
     assert {name: _datacl(cluster, name) for name in watched} == before
 
 
+def test_isolation_refuses_an_application_database_outside_the_map_owner(cluster: str) -> None:
+    """app DB 이름과 login이 한 tenant의 DB·소유 login으로 함께 박혀도 그 DB를 바꾸지 않는다.
+
+    login이 그 DB 소유자 자신이면 member 검사는 지난다(role은 자기 자신의 member다). 종전에는 그
+    DB에 CONNECT를 주고 **연결 상한**까지 걸었다 — read-back이 같은 잘못된 이름과 비교했다.
+    """
+
+    _seed_map_pair(cluster)
+    before = _datacl(cluster, "foreign_db")
+    app, dagster, _ = _runtimes(cluster, app="foreign_db")
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=re.escape(
+            f"map_application database foreign_db is not owned by {_SCHEMA_OWNER} "
+            "(owner=foreign_app)"
+        ),
+    ):
+        ensure_map_databases_isolated(app, dagster, login="foreign_app")
+
+    assert _datacl(cluster, "foreign_db") == before
+
+
 @pytest.mark.parametrize(
     ("dagster_name", "metadata", "message"),
     [
