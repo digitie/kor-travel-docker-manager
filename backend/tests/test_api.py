@@ -986,8 +986,7 @@ def test_get_targets():
     response = client.get("/api/v1/targets")
     assert response.status_code == 200
     data = response.json()
-    assert [target["id"] for target in data[:9]] == [
-        "db",
+    assert [target["id"] for target in data[:8]] == [
         "storage",
         "gra",
         "cadv",
@@ -997,8 +996,7 @@ def test_get_targets():
         "map",
         "pinvi",
     ]
-    assert data[8]["resolved_sequence"] == [
-        "db",
+    assert data[7]["resolved_sequence"] == [
         "storage",
         "gra",
         "cadv",
@@ -1008,8 +1006,7 @@ def test_get_targets():
         "map",
         "pinvi",
     ]
-    assert data[8]["resolved_services"] == [
-        "kor-travel-geo-postgres",
+    assert data[7]["resolved_services"] == [
         "rustfs",
         "grafana",
         "cadvisor",
@@ -1021,7 +1018,6 @@ def test_get_targets():
         "kor-travel-geo-dagster",
         "kor-travel-geo-dagster-daemon",
         "kor-travel-geo-dagster-code-server",
-        "kor-travel-concierge-postgres",
         # kor-travel-shared-postgres는 geo target에서 이미 나왔으므로(ADR-45) 여기서는
         # dedupe로 빠진다 — services_for_target()이 첫 등장만 남긴다.
         "kor-travel-shared-db-init-concierge",
@@ -1035,7 +1031,6 @@ def test_get_targets():
         "kor-travel-map-dagster",
         "kor-travel-map-dagster-code-server",
         "kor-travel-map-dagster-daemon",
-        "pinvi-postgres",
         "kor-travel-shared-db-init-pinvi",
         "pinvi-api",
         "pinvi-web",
@@ -1043,7 +1038,7 @@ def test_get_targets():
         "pinvi-dagster",
         "pinvi-dagster-daemon",
     ]
-    assert data[4]["resolved_services"][-3:] == ["grafana", "cadvisor", "prometheus"]
+    assert data[3]["resolved_services"][-3:] == ["grafana", "cadvisor", "prometheus"]
     assert any(target["id"] == "all" for target in data)
 
 

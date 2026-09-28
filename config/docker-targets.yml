@@ -4,7 +4,6 @@ version: 1
 # 유일한 정본은 docs/ports.md다.
 
 dependency_order:
-  - db
   - storage
   - gra
   - cadv
@@ -16,18 +15,9 @@ dependency_order:
   - weather
   # 형제 프로젝트(외부 compose). Manager 자신의 프로젝트보다 뒤에 둔다 — 기동
   # 순서상 앞의 것들에 의존하지 않고, `all`에서 마지막에 오는 것이 읽기 쉽다.
-  - airport-db
   - airport
 
 containers:
-  kor-travel-geo-postgresql:
-    name: kor-travel-geo-postgres
-    compose_service: kor-travel-geo-postgres
-    role: postgresql
-    display_name: Kor Travel Geo 전용 PostgreSQL / PostGIS
-    connection: "postgresql://127.0.0.1:12500 (DBs: kor_travel_geo, kor_travel_geo_dagster)"
-    expected_ports:
-      - "12500:12500"
   kor-travel-map-postgresql:
     name: kor-travel-map-postgres
     compose_service: kor-travel-map-postgres
@@ -36,28 +26,12 @@ containers:
     connection: "postgresql://127.0.0.1:12700 (DBs: kor_travel_map, kor_travel_map_dagster)"
     expected_ports:
       - "12700:12700"
-  kor-travel-concierge-postgresql:
-    name: kor-travel-concierge-postgres
-    compose_service: kor-travel-concierge-postgres
-    role: concierge-postgresql
-    display_name: Kor Travel Concierge 전용 PostgreSQL / PostGIS
-    connection: "postgresql://127.0.0.1:12600 (DBs: kor_travel_concierge)"
-    expected_ports:
-      - "12600:12600"
-  pinvi-postgresql:
-    name: pinvi-postgres
-    compose_service: pinvi-postgres
-    role: pinvi-postgresql
-    display_name: PinVi 전용 PostgreSQL / PostGIS
-    connection: "postgresql://127.0.0.1:12800 (DBs: pinvi)"
-    expected_ports:
-      - "12800:12800"
   kor-travel-shared-postgresql:
     name: kor-travel-shared-postgres
     compose_service: kor-travel-shared-postgres
     role: shared-postgresql
     display_name: 공용 제어 평면 PostgreSQL / PostGIS (platform-topology.md §7)
-    connection: "postgresql://127.0.0.1:11000 (DBs: kor_travel_concierge)"
+    connection: "postgresql://127.0.0.1:11000 (geo·concierge·PinVi·weather·transport)"
     expected_ports:
       - "11000:11000"
   rustfs:
@@ -259,8 +233,7 @@ containers:
   # kor-travel-weather-db는 삭제됐다(replaced, not renamed) — weather 전용 db는
   # internal target 전환(ADR-47)으로 은퇴했다. 앱 데이터는 kor-travel-shared-postgres
   # 위의 kor_travel_weather database로 fresh 이전한다(데이터 보존 없음, PinVi
-  # ADR-46과 같은 패턴). concierge/geo/map/pinvi처럼 weather도 Manager 소유
-  # 전용 postgres 컨테이너를 새로 갖지 않는다 — 그런 게 있었던 적도 없다.
+  # ADR-46과 같은 패턴). Manager 소유 전용 postgres 컨테이너는 map 하나뿐이다.
   kor-travel-weather-api:
     name: kor-travel-weather-api-latest
     compose_service: kor-travel-weather-api
@@ -322,15 +295,6 @@ containers:
     connection: "http://127.0.0.1:14104"
     expected_ports:
       - "14104:14104"
-  kor-travel-airport-postgresql:
-    name: kor-travel-airport-db-postgres-1
-    compose_service: postgres
-    external_project: kor-travel-airport-db
-    role: airport-postgresql
-    display_name: Kor Travel Airport 전용 PostgreSQL
-    connection: "postgresql://127.0.0.1:14000"
-    expected_ports:
-      - "14000:5432"
   kor-travel-airport-backend:
     name: kor-travel-airport-backend-1
     compose_service: backend
@@ -351,44 +315,9 @@ containers:
       - "14002:3000"
 
 targets:
-  db:
-    # 대역은 `12000-12099` 그대로 둔다. 이 target이 실제로 가리키는 것은 geo
-    # 인스턴스(:12500)지만, `geo` target이 이미 `12500-12599`를 갖고 있어 여기에
-    # 같은 값을 넣으면 두 target이 한 대역을 주장한다. ADR-37과 `docs/ports.md`가
-    # 이 자리를 "폐지된 통합 instance의 자리"로 적어 뒀으므로 그쪽을 정본으로 따른다.
-    port_band: "12000-12099"
-    depends_on: []
-    display_name: Kor Travel Geo DB
-    # 2026-08-17(ADR-37) 이전에는 이 target이 네 프로젝트의 DB를 다 담은 "통합 DB"였다.
-    # 지금은 프로젝트마다 전용 instance를 쓰므로 이 target이 가리키는 것은 geo
-    # 인스턴스 하나뿐이다. 나머지 셋은 각자 target(conc/map/pinvi)이 자기 postgres를
-    # `services` 맨 앞에 갖는다. `db`라는 id와 `postgresql` alias는 손에 익은 이름이라
-    # 남겨두되, 통합을 뜻하던 `shared-postgresql`은 뺐다 — 가리키는 것이 없다.
-    description: Kor Travel Geo 전용 PostgreSQL/PostGIS 인스턴스(:12500)입니다. 예전 통합 DB의 자리입니다.
-    aliases:
-      - postgresql
-      - postgres
-      - database
-      - geo-postgresql
-    services:
-      - kor-travel-geo-postgres
-    runtime_services:
-      - kor-travel-geo-postgres
-    containers:
-      - kor-travel-geo-postgresql
-    init_steps:
-      - name: db-schema-recovery
-        description: kor-travel-geo database와 extension, schema grant를 idempotent 방식으로 보정합니다. 다른 프로젝트의 role·DB는 건드리지 않습니다(ADR-37).
-        command:
-          - exec
-          - -T
-          - kor-travel-geo-postgres
-          - sh
-          - /opt/kor-travel-docker-manager/ensure-kor-travel-geo-db.sh
-
   storage:
     port_band: "12100-12199"
-    depends_on: [db]
+    depends_on: []
     display_name: 통합 RustFS
     description: Kor Travel/PinVi 미디어와 원천 데이터를 저장하는 S3 호환 오브젝트 스토리지입니다.
     aliases:
@@ -470,14 +399,8 @@ targets:
       - kor-travel-geo-api
       - geocoder
       - reverse-geocoder
-    # geo는 ADR-45에 따라 공용 instance(kor-travel-shared-postgres, :11000)로
-    # 이전 중이다 — 이 커밋 시점에는 role/database 생성 코드만 있고, 실제 data
-    # cutover(KTG_PG_DSN/KTG_DAGSTER_PG_URL 전환)는 별도 배포 단계에서 수행한다.
-    # 구 전용 instance(kor-travel-geo-postgres, :12500)는 데이터를 삭제하지 않고
-    # 롤백 안전망으로 그대로 두며, 이 target이 계속 관리한다(ensure/stop/restart가
-    # 둘 다 건강하게 유지한다) — cutover가 끝나면 KTG_PG_DSN/KTG_DAGSTER_PG_URL만
-    # 새 instance를 가리키게 되고, 구 instance는 이 target 밖에서 별도로
-    # 폐기되기 전까지 여기 남는다.
+    # geo는 ADR-45에 따라 공용 instance(kor-travel-shared-postgres, :11000)를 쓴다.
+    # 구 전용 instance(:12500)는 2026-09-28에 Manager에서 뺐다.
     services:
       - kor-travel-shared-postgres
       - kor-travel-shared-db-init-geo
@@ -493,7 +416,6 @@ targets:
       - kor-travel-geo-dagster-daemon
       - kor-travel-geo-dagster-code-server
     containers:
-      - kor-travel-geo-postgresql
       - kor-travel-shared-postgresql
       - rustfs
       - kor-travel-geo-api
@@ -501,15 +423,7 @@ targets:
       - kor-travel-geo-dagster
       - kor-travel-geo-dagster-daemon
       - kor-travel-geo-dagster-code-server
-    init_steps:
-      - name: geo-source-verification
-        description: /data/juso 마운트와 T-027 계열 핵심 적재 테이블을 검증합니다.
-        command:
-          - exec
-          - -T
-          - kor-travel-geo-postgres
-          - sh
-          - /opt/kor-travel-docker-manager/verify-kor-travel-geo-source.sh
+    init_steps: []
 
   conc:
     port_band: "12600-12699"
@@ -522,12 +436,8 @@ targets:
       - agent
       - conc
     # concierge는 platform-topology.md §7에 따라 공용 instance(kor-travel-shared-postgres,
-    # :11000)로 이전했다. 구 전용 instance(kor-travel-concierge-postgres, :12600)는
-    # 데이터를 삭제하지 않고 롤백 안전망으로 그대로 두며, 이 target이 계속 관리한다
-    # (ensure/stop/restart가 둘 다 건강하게 유지한다) — DATABASE_URL만 새 instance를
-    # 가리키고, 구 instance는 이 target 밖에서 별도로 폐기되기 전까지 여기 남는다.
+    # :11000)를 쓴다. 구 전용 instance(:12600)는 2026-09-28에 Manager에서 뺐다.
     services:
-      - kor-travel-concierge-postgres
       - kor-travel-shared-postgres
       - kor-travel-shared-db-init-concierge
       - kor-travel-concierge-api
@@ -540,8 +450,6 @@ targets:
       - kor-travel-concierge-scheduler
       - kor-travel-concierge-ui
     containers:
-      - kor-travel-geo-postgresql
-      - kor-travel-concierge-postgresql
       - kor-travel-shared-postgresql
       - rustfs
       - kor-travel-concierge-api
@@ -573,8 +481,6 @@ targets:
       - kor-travel-map-dagster-code-server
       - kor-travel-map-dagster-daemon
     containers:
-      - kor-travel-geo-postgresql
-      - kor-travel-concierge-postgresql
       - kor-travel-shared-postgresql
       - kor-travel-map-postgresql
       - rustfs
@@ -602,13 +508,9 @@ targets:
       - pinvi
       - pinvi-api
       - pinvi-web
-    # ADR-46 — PinVi 앱/Dagster DSN은 공용 instance(kor-travel-shared-postgres, :11000)로
-    # 이전했다. 구 전용 instance(pinvi-postgres, :12800)는 데이터를 삭제하지 않고
-    # 롤백 안전망으로 그대로 두며, 이 target이 계속 관리한다(ensure/stop/restart가
-    # 둘 다 건강하게 유지한다) — DATABASE_URL/PINVI_DAGSTER_PG_URL만 새 instance를
-    # 가리키고, 구 instance는 이 target 밖에서 별도로 폐기되기 전까지 여기 남는다.
+    # ADR-46 — PinVi 앱/Dagster DSN은 공용 instance(kor-travel-shared-postgres, :11000)를
+    # 쓴다. 구 전용 instance(:12800)는 2026-09-28에 Manager에서 뺐다.
     services:
-      - pinvi-postgres
       - kor-travel-shared-postgres
       - kor-travel-shared-db-init-pinvi
       - pinvi-api
@@ -623,11 +525,8 @@ targets:
       - pinvi-dagster
       - pinvi-dagster-daemon
     containers:
-      - kor-travel-geo-postgresql
-      - kor-travel-concierge-postgresql
       - kor-travel-shared-postgresql
       - kor-travel-map-postgresql
-      - pinvi-postgresql
       - rustfs
       - kor-travel-geo-api
       - kor-travel-geo-ui
@@ -653,7 +552,6 @@ targets:
     aliases:
       - default
     include:
-      - db
       - storage
       - gra
       - cadv
@@ -666,11 +564,8 @@ targets:
     services: []
     runtime_services: []
     containers:
-      - kor-travel-geo-postgresql
-      - kor-travel-concierge-postgresql
       - kor-travel-shared-postgresql
       - kor-travel-map-postgresql
-      - pinvi-postgresql
       - rustfs
       - grafana
       - cadvisor
@@ -693,40 +588,20 @@ targets:
       - pinvi-dagster-daemon
     init_steps: []
 
-  airport-db:
-    # 형제 프로젝트다 — compose 정본이 이 저장소 밖에 있고, 배포는 각 저장소가
-    # 계속 소유한다. Manager는 상태를 보고 컨테이너 수명주기(start/stop/restart)만
-    # 다룬다. `control_container`가 Docker SDK로 컨테이너를 직접 잡으므로 그 축은
-    # compose 프로젝트와 무관하게 이미 동작한다.
-    external_project:
-      project: kor-travel-airport-db
-      working_dir: /home/digitie/apps/kor-travel-airport
-      config_files:
-        - docker-compose.db.yml
-    port_band: "14000-14000"
-    depends_on: []
-    display_name: Kor Travel Airport DB
-    description: Kor Travel Airport 전용 PostgreSQL 인스턴스(:14000)입니다. compose 정본은 apps/kor-travel-airport/docker-compose.db.yml입니다.
-    aliases:
-      - airport-postgresql
-      - airport-postgres
-    services:
-      - postgres
-    runtime_services:
-      - postgres
-    containers:
-      - kor-travel-airport-postgresql
-
   airport:
+    # 형제 프로젝트다 — compose 정본이 이 저장소 밖에 있고, 배포는 그 저장소가
+    # 계속 소유한다. Manager는 상태를 보고 컨테이너 수명주기(start/stop/restart)만
+    # 다룬다. DB는 공용 instance(kor-travel-shared-postgres, :11000)의
+    # kor_travel_transport database다 — 옛 전용 DB target(airport-db)은 2026-09-28에 뺐다.
     external_project:
       project: kor-travel-airport
       working_dir: /home/digitie/apps/kor-travel-airport
       config_files:
         - docker-compose.yml
     port_band: "14001-14099"
-    depends_on: [airport-db]
+    depends_on: []
     display_name: Kor Travel Airport
-    description: 공항 정보 서비스입니다. 백엔드(:14001)와 프런트엔드(:14002)로 구성되며 전용 DB target(airport-db)에 의존합니다.
+    description: 공항 정보 서비스입니다. 백엔드(:14001)와 프런트엔드(:14002)로 구성되며 DB는 공용 instance(:11000)에 있습니다.
     aliases:
       - kor-travel-airport
     services:
@@ -821,10 +696,6 @@ compose_binds:
     - container_path: "/var/lib/grafana"
       read_only: false
       source: "${GRAFANA_DATA_DIR:-/home/digitie/kor-travel-geo-data/grafana}"
-  kor-travel-concierge-postgres:
-    - container_path: "/var/lib/postgresql/data"
-      read_only: false
-      source: "${KOR_TRAVEL_CONCIERGE_PGDATA:-/home/digitie/kor-travel-concierge-data/pgdata}"
   kor-travel-geo-api:
     - container_path: "/app/data/backups"
       read_only: false
@@ -844,22 +715,6 @@ compose_binds:
     - container_path: "/app/data/backups"
       read_only: false
       source: "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
-  kor-travel-geo-postgres:
-    - container_path: "/data/juso"
-      read_only: true
-      source: "${KOR_TRAVEL_GEO_JUSO_DATA:-/mnt/f/dev/kor-travel-geo/data/juso}"
-    - container_path: "/docker-entrypoint-initdb.d/010-ensure-kor-travel-geo-db.sh"
-      read_only: true
-      source: "./scripts/ensure-kor-travel-geo-db.sh"
-    - container_path: "/opt/kor-travel-docker-manager/ensure-kor-travel-geo-db.sh"
-      read_only: true
-      source: "./scripts/ensure-kor-travel-geo-db.sh"
-    - container_path: "/opt/kor-travel-docker-manager/verify-kor-travel-geo-source.sh"
-      read_only: true
-      source: "./scripts/verify-kor-travel-geo-source.sh"
-    - container_path: "/var/lib/postgresql/data"
-      read_only: false
-      source: "${KOR_TRAVEL_GEO_PGDATA:-/home/digitie/kor-travel-geo-data/pgdata-final-20260529}"
   kor-travel-map-db-role-bootstrap:
     - container_path: "/usr/local/bin/postgres-role-bootstrap"
       read_only: true
@@ -907,10 +762,6 @@ compose_binds:
     - container_path: "/prometheus"
       read_only: false
       source: "${KOR_TRAVEL_WEATHER_PROMETHEUS_DATA_DIR:-/home/digitie/kor-travel-weather-data/prometheus}"
-  pinvi-postgres:
-    - container_path: "/var/lib/postgresql/data"
-      read_only: false
-      source: "${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}"
   prometheus:
     - container_path: "/etc/prometheus/prometheus.yml"
       read_only: true

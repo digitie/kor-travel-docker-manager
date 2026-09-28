@@ -49,7 +49,6 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_compose_candidate_protected_values,
     validate_current_map_ui_auth_runtime,
     validate_map_postgres_runtime_secret_isolation,
-    validate_pinvi_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
     validate_runtime_secret_isolation,
@@ -151,7 +150,6 @@ from kor_travel_docker_manager.services.yaml_strict import (
 )
 
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
-    "pinvi-db-init",
     "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
     _MAP_APPLICATION_SCHEMA_SERVICE,
@@ -3883,7 +3881,7 @@ class ComposeService:
 
         `docker compose run --rm`의 Manager process가 강제 종료되면 Docker
         container가 계속 DB에 연결할 수 있다. 동일 frozen project/service label로만
-        stop+remove한 뒤 `ps --all`에서 exact seven service가 사라진 것을 확인한다.
+        stop+remove한 뒤 `ps --all`에서 그 서비스들이 전부 사라진 것을 확인한다.
         어느 단계라도 불명확하면 DB reset 전에 fail-close한다.
         """
 
@@ -4643,14 +4641,19 @@ class ComposeService:
         runtime_transaction: ComposeTransactionSnapshot,
         map_candidate: MapApplicationCandidate,
     ) -> None:
-        """두 PostgreSQL을 frozen Compose로 health까지 띄우고 secret·이미지를 확인한다.
+        """Map PostgreSQL을 frozen Compose로 health까지 띄우고 secret·이미지를 확인한다.
 
         ``up``은 설정이 같으면 무연산이고, 바뀌었으면(이미지·PGDATA·명령) 컨테이너를
         다시 만든다 — 떠 있는 런타임 아래에서 DB가 한 번 재시작된다. 그 대가로 뒤따르는
         identity 판정이 옛 컨테이너가 아니라 이번 배포가 쓸 cluster를 본다.
+
+        PinVi DB는 공용 instance(`kor-travel-shared-postgres`)에 있다. 그 instance는
+        다른 프로젝트도 쓰므로 이 경로가 다시 만들지 않는다(다른 모든 호출처럼
+        `--no-deps`). 2026-09-28까지는 여기서 옛 전용 instance(`pinvi-postgres`)를 함께
+        띄웠는데, 그것은 PinVi가 더 이상 접속하지 않는 롤백 사본이었다.
         """
 
-        postgres = ("kor-travel-map-postgres", "pinvi-postgres")
+        postgres = ("kor-travel-map-postgres",)
         self._run_pinned_runtime_rebuild_compose(
             [
                 "up",
@@ -4670,9 +4673,6 @@ class ComposeService:
         )
         validate_map_postgres_runtime_secret_isolation(
             self._inspect_container_runtime_config(str(postgres_records[0]["Name"]))
-        )
-        validate_pinvi_postgres_runtime_secret_isolation(
-            self._inspect_container_runtime_config(str(postgres_records[1]["Name"]))
         )
         if (
             self._inspect_container_image_id(
@@ -5152,10 +5152,10 @@ class ComposeService:
             groups = service_groups_for_target(name, runtime_only=True)
             # **지목한 target 자신의 프로젝트로 좁힌다.** 여러 프로젝트의 로그를 한
             # 스트림으로 합칠 수는 없는데, 첫 판은 그럴 때 "한 프로젝트의 target을
-            # 고르라"며 거부했다. 그 조언은 `airport`에 대해 **따를 수 없었다** —
-            # `depends_on: [airport-db]` 때문에 의존 폐포가 **항상** 두 프로젝트에
-            # 걸치고, `airport`이 자기 서비스를 가리키는 유일한 이름이기 때문이다
-            # (적대 리뷰 2026-09-18 F3).
+            # 고르라"며 거부했다. 그 조언은 의존 폐포가 **항상** 두 프로젝트에 걸치는
+            # 외부 target에 대해 **따를 수 없었다** — 그 target 이름이 자기 서비스를
+            # 가리키는 유일한 이름이기 때문이다(적대 리뷰 2026-09-18 F3, 당시 실례는
+            # `airport` → `airport-db`였다).
             #
             # Manager target은 폐포 전체가 같은 프로젝트(`None`)라 **한 글자도 바뀌지
             # 않는다.** 빠진 프로젝트는 조용히 버리지 않고 결과에 실어 호출자가 알린다

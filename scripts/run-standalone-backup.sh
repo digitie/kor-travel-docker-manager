@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
-# issue #148/#177: 전용 PostgreSQL 인스턴스의 standalone 백업 wrapper.
+# issue #148/#177: PostgreSQL database별 standalone 백업 wrapper. geo_dagster·concierge·
+# pinvi는 공용 instance(kor-travel-shared-postgres)에 있다(2026-09-28부터 그쪽을 뜬다).
 # geo application DB role은 kor-travel-geo 앱 레벨 스케줄 백업이 정본이므로
 # cron/systemd timer에 넣지 않는다. geo_dagster metadata DB는 별도 백업 대상으로 남긴다.
 # cron/systemd timer에서는 H49가 승인한 세 role만 부른다. Map application/Dagster와

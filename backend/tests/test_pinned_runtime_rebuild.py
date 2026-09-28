@@ -1286,7 +1286,6 @@ def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
 
     assert [command[2] for command in operations] == ["rm", "ps"]
     expected_writers = (
-        "pinvi-db-init",
         "kor-travel-map-dagster-db-init",
         "kor-travel-map-db-role-bootstrap",
         "kor-travel-map-application-schema",
@@ -1587,7 +1586,6 @@ def _forward_harness(
         "ensure_generation_references": Mock(),
         "database_runtimes_from_frozen_contract": lambda **_kwargs: runtimes,
         "validate_map_postgres_runtime_secret_isolation": Mock(),
-        "validate_pinvi_postgres_runtime_secret_isolation": Mock(),
         "read_database_identity": read_identity,
         "read_database_schema_revision": read_head,
         "schema_revision_table_exists": lambda _runtime: live["pinvi_schema_table"],
@@ -1645,7 +1643,7 @@ def _mutating_operations(harness: SimpleNamespace) -> list[tuple[str, ...]]:
         for operation in harness.operations
         if not (
             operation[:1] == ("up",)
-            and operation[-2:] == ("kor-travel-map-postgres", "pinvi-postgres")
+            and operation[-1:] == ("kor-travel-map-postgres",)
         )
     ]
 

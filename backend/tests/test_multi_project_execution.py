@@ -174,8 +174,10 @@ def test_manager_status_is_unchanged(captured: _Capture) -> None:
     assert "--project-directory" not in call["command"]
 
 
-def test_a_two_project_target_runs_once_per_project(captured: _Capture) -> None:
-    """`airport`은 `airport-db`에 의존한다 — 두 프로젝트, 두 호출, 각자의 cwd."""
+def test_a_two_project_target_runs_once_per_project(
+    captured: _Capture, airport_with_legacy_db: None
+) -> None:
+    """(합성) `airport`이 `airport-db`에 의존하면 — 두 프로젝트, 두 호출, 각자의 cwd."""
 
     ComposeService().status_target("airport")
 
@@ -453,7 +455,9 @@ def test_the_environment_argument_does_not_reopen_full_inheritance(
     assert env["TMPDIR"] == "/explicit", "명시 인자는 좁힌 것 **위에** 덮인다"
 
 
-def test_the_group_label_names_the_project(captured: _Capture) -> None:
+def test_the_group_label_names_the_project(
+    captured: _Capture, airport_with_legacy_db: None
+) -> None:
     """묶음 라벨이 **실제로 쓰인다**.
 
     `ServiceGroup.project_label` 속성은 검사됐지만 그 **사용처**는 아니어서, 라벨을
@@ -560,7 +564,9 @@ def test_the_last_net_also_reads_the_command(
 
 
 def test_logs_does_not_fall_back_to_the_manager_project(
-    captured: _Capture, monkeypatch: pytest.MonkeyPatch
+    captured: _Capture,
+    monkeypatch: pytest.MonkeyPatch,
+    airport_with_legacy_db: None,
 ) -> None:
     """**fail-open을 막는다.**
 

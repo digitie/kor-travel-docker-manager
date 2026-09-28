@@ -34,7 +34,6 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_compose_candidate_protected_values,
     validate_concierge_ui_canonical_compose_boundary,
     validate_map_postgres_runtime_secret_isolation,
-    validate_pinvi_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
     validate_runtime_secret_isolation,
@@ -91,9 +90,6 @@ _PINVI_BOOTSTRAP_MAP_ENVIRONMENT = frozenset(
         "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN",
         "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN",
     }
-)
-_PINVI_POSTGRES_IMAGE = (
-    "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
 )
 _FEATURE_CREATE_TOKEN = "manual-feature-create-contract-token-0000"
 _MAP_API_IMAGE_ID = f"sha256:{'1' * 64}"
@@ -251,26 +247,11 @@ def test_map_runtime_requires_the_image_entrypoint_and_empty_command(
         validate_runtime_secret_isolation(broken, config)
 
 
-def test_pinvi_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
-    assert load_compose_bind_allowlist()[
-        ("pinvi-postgres", "/var/lib/postgresql/data", False)
-    ] == "${PINVI_PGDATA:-/home/digitie/pinvi-data/pgdata}"
-
-
-def test_concierge_postgres_data_bind_is_in_canonical_candidate_allowlist() -> None:
-    assert load_compose_bind_allowlist()[
-        ("kor-travel-concierge-postgres", "/var/lib/postgresql/data", False)
-    ] == (
-        "${KOR_TRAVEL_CONCIERGE_PGDATA:-/home/digitie/kor-travel-concierge-data/pgdata}"
-    )
-
-
 def _shared_postgres_contract_pgdata() -> str:
     """ADR-46 — kor-travel-shared-postgres resolved bind이 요구하는, 실제로 존재하는 경로.
 
-    `PINVI_PGDATA`(362행)는 이미 존재하는 checkout 디렉터리를 우연히 재사용하는
-    기존 관행이다. 여기서는 그 관행에 기대지 않고 직접 만든다 — 이 값이 없는
-    환경(CI 등)에서도 안전하다.
+    이미 존재하는 checkout 디렉터리를 우연히 재사용하지 않고 직접 만든다 — 이 값이
+    없는 환경(CI 등)에서도 안전하다.
     """
 
     path = Path(tempfile.gettempdir()) / "ktdm-shared-postgres-contract-pgdata"
@@ -354,16 +335,12 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARDED_IPS": "false",
         "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS": "https://concierge.example.test",
         "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL": "",
-        "PINVI_PGDATA": "/mnt/f/dev/kor-travel-map-codex",
         "PINVI_POSTGRES_DB": "pinvi",
-        "PINVI_POSTGRES_USER": "pinvi_contract_root",
-        "PINVI_POSTGRES_PASSWORD": "pinvi-contract-postgres-password",
         "PINVI_APP_DB_USER": "pinvi_contract_app",
         "PINVI_APP_DB_PASSWORD": "pinvi-contract-app-password",
         "PINVI_ENVIRONMENT": "production",
         # ADR-46 — PinVi 앱/Dagster DSN이 실제로 접속하는 공용 instance의 cluster
-        # 관리자 비밀번호. `kor-travel-shared-db-init-pinvi`/`pinvi-shared-db-runtime-role`
-        # 둘 다 이 secret을 참조한다.
+        # 관리자 비밀번호. `kor-travel-shared-db-init-pinvi`가 이 secret을 참조한다.
         "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD": "shared-contract-postgres-password",
     }
 
@@ -406,15 +383,12 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
         assert isinstance(depends_on, dict)
         for dependency in depends_on:
             if dependency not in services:
-                # DB service는 F1D target identity의 일부이므로 실제 Compose 정의를
-                # 유지한다. 나머지 dependency의 실행 내용은 이 계약의 대상이 아니다.
-                # ADR-46 — 공용 instance 두 서비스도 같은 이유로 실제 정의가 필요하다:
-                # `kor-travel-shared-postgres`는 `_declared_postgres_compose_services()`에
-                # 등록돼 있어(config/docker-targets.yml), alpine stub으로 두면
-                # POSTGRES_INITDB_ARGS가 없다며 전역 술어가 거부한다.
+                # PinVi DB(공용 instance) 두 서비스는 F1D target identity의 일부이므로
+                # 실제 Compose 정의를 유지한다. 나머지 dependency의 실행 내용은 이 계약의
+                # 대상이 아니다. `kor-travel-shared-postgres`는
+                # `_declared_postgres_compose_services()`에 등록돼 있어(config/docker-targets.yml),
+                # alpine stub으로 두면 POSTGRES_INITDB_ARGS가 없다며 전역 술어가 거부한다.
                 if dependency in {
-                    "pinvi-postgres",
-                    "pinvi-db-init",
                     "kor-travel-shared-postgres",
                     "kor-travel-shared-db-init-pinvi",
                 }:
@@ -426,7 +400,6 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
     fragment: dict[str, object] = {"services": services}
     if (
         "kor-travel-map-postgres" in services
-        or "pinvi-postgres" in services
         or "kor-travel-shared-postgres" in services
         or "kor-travel-shared-db-init-pinvi" in services
     ):
@@ -436,10 +409,6 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
         if "kor-travel-map-postgres" in services:
             fragment["secrets"]["kor-travel-map-postgres-password"] = deepcopy(
                 source_secrets["kor-travel-map-postgres-password"]
-            )
-        if "pinvi-postgres" in services:
-            fragment["secrets"]["pinvi-postgres-password"] = deepcopy(
-                source_secrets["pinvi-postgres-password"]
             )
         if "kor-travel-shared-postgres" in services:
             fragment["secrets"]["kor-travel-shared-postgres-password"] = deepcopy(
@@ -1147,8 +1116,6 @@ def _bootstrap_candidate(tmp_path: Path) -> tuple[dict[str, object], dict[str, s
     )
     environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
     pinvi_source = tmp_path / "pinvi-source"
-    pinvi_pgdata = tmp_path / "pinvi-pgdata"
-    pinvi_pgdata.mkdir()
     role_bootstrap_script = pinvi_source / "infra" / "postgres" / "bootstrap-pinvi-runtime-role.sh"
     role_bootstrap_script.parent.mkdir(parents=True)
     role_bootstrap_script.write_text(
@@ -1156,7 +1123,6 @@ def _bootstrap_candidate(tmp_path: Path) -> tuple[dict[str, object], dict[str, s
         encoding="utf-8",
     )
     environment["PINVI_REPO_DIR"] = str(pinvi_source)
-    environment["PINVI_PGDATA"] = str(pinvi_pgdata)
 
     return candidate, environment, root_env
 
@@ -1173,7 +1139,6 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     pinvi_source = Path(environment["PINVI_REPO_DIR"])
     credential_preflight = map_source / "scripts" / "database-credential-preflight.sh"
     map_pgdata = Path(environment["KOR_TRAVEL_MAP_PGDATA"])
-    pinvi_pgdata = Path(environment["PINVI_PGDATA"])
     raw_snapshots = validate_compose_candidate_protected_values(
         candidate,
         compose_path=str(_COMPOSE_PATH),
@@ -1244,10 +1209,9 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         environment_update={
             "KOR_TRAVEL_MAP_PGDATA": str(map_pgdata),
             "KOR_TRAVEL_MAP_REPO_DIR": str(map_source),
-                "PINVI_REPO_DIR": str(pinvi_source),
-                "PINVI_PGDATA": str(pinvi_pgdata),
-            },
-        )
+            "PINVI_REPO_DIR": str(pinvi_source),
+        },
+    )
     assert (
         validate_resolved_compose_candidate_protected_values(
             resolved,
@@ -1289,18 +1253,6 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
         )
-
-    empty_tuning_environment = dict(environment)
-    empty_tuning_environment["PINVI_POSTGRES_SHARED_BUFFERS"] = ""
-    assert (
-        validate_resolved_compose_candidate_protected_values(
-            resolved,
-            environment=empty_tuning_environment,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-        )
-        == raw_snapshots
-    )
 
     drifted = deepcopy(resolved)
     drifted_services = drifted["services"]
@@ -1366,18 +1318,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     # admin-bootstrap이 app runtime과 같은 자격증명을 쓰는 것이 정상이다 — 그
     # 거부를 검사하는 것은 더 이상 맞지 않는다.
 
-    wrong_pinvi_port = dict(environment)
-    wrong_pinvi_port["PINVI_DB_PORT"] = "12900"
-    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
-        validate_compose_candidate_protected_values(
-            candidate,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=wrong_pinvi_port,
-        )
-
-    # ADR-46 — 앱/Dagster DSN이 실제로 접속하는 공용 instance 포트도 같은 자리에서
-    # 독립적으로 고정된다.
+    # ADR-46 — 앱/Dagster DSN이 실제로 접속하는 공용 instance 포트가 고정된다.
     wrong_pinvi_shared_port = dict(environment)
     wrong_pinvi_shared_port["KOR_TRAVEL_SHARED_DB_PORT"] = "12900"
     with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
@@ -1388,40 +1329,10 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             environment=wrong_pinvi_shared_port,
         )
 
-    runtime_uses_root_password = dict(environment)
-    runtime_uses_root_password["PINVI_APP_DB_PASSWORD"] = runtime_uses_root_password[
-        "PINVI_POSTGRES_PASSWORD"
-    ]
-    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
-        validate_compose_candidate_protected_values(
-            candidate,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=runtime_uses_root_password,
-        )
-    resolved_runtime_uses_root_password = deepcopy(resolved)
-    resolved_runtime_uses_root_services = resolved_runtime_uses_root_password["services"]
-    assert isinstance(resolved_runtime_uses_root_services, dict)
-    resolved_runtime_api = resolved_runtime_uses_root_services["pinvi-api"]
-    assert isinstance(resolved_runtime_api, dict)
-    resolved_runtime_api_environment = resolved_runtime_api["environment"]
-    assert isinstance(resolved_runtime_api_environment, dict)
-    resolved_runtime_api_environment["PINVI_DATABASE_URL"] = (
-        "postgresql+asyncpg://pinvi_contract_app:pinvi-contract-postgres-password@"
-        "127.0.0.1:11000/pinvi"
-    )
-    with pytest.raises(DeploymentContractError, match="PinVi database URL identity"):
-        validate_resolved_compose_candidate_protected_values(
-            resolved_runtime_uses_root_password,
-            environment=runtime_uses_root_password,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-        )
-
-    # M05 폐기(geo 패턴 전환) 전에는 여기서 migrator/schema-owner/migration-owner
-    # 이름·비밀번호 충돌과 migrator=root 재사용을 각각 거부했다. 그 role들이
-    # 전부 사라졌으므로 남는 것은 app role과 root의 구분뿐이다(바로 위
-    # runtime_uses_root_password가 그것을 본다).
+    # M05 폐기(geo 패턴 전환) 전에는 migrator/schema-owner/migration-owner 이름·
+    # 비밀번호 충돌과 migrator=root 재사용을 각각 거부했다. 2026-09-28까지는 app role과
+    # 전용 instance superuser(`PINVI_POSTGRES_PASSWORD`)의 구분도 봤는데, 그 instance를
+    # compose에서 빼면서 그 superuser도 사라졌다.
 
     root_secret_leak = deepcopy(candidate)
     root_secret_services = root_secret_leak["services"]
@@ -1430,12 +1341,13 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert isinstance(root_secret_api, dict)
     root_secret_api["secrets"] = [
         {
-            "source": "pinvi-postgres-password",
+            "source": "kor-travel-shared-postgres-password",
             "target": "unexpected-root-password-copy",
         }
     ]
     with pytest.raises(
-        DeploymentContractError, match="pinvi-api.secrets -> PINVI_POSTGRES_PASSWORD"
+        DeploymentContractError,
+        match="pinvi-api.secrets -> KOR_TRAVEL_SHARED_POSTGRES_PASSWORD",
     ):
         validate_compose_candidate_protected_values(
             root_secret_leak,
@@ -1444,214 +1356,47 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             environment=environment,
         )
 
-    pinvi_literal = deepcopy(candidate)
-    pinvi_literal_services = pinvi_literal["services"]
-    assert isinstance(pinvi_literal_services, dict)
-    pinvi_postgres = pinvi_literal_services["pinvi-postgres"]
-    assert isinstance(pinvi_postgres, dict)
-    pinvi_postgres_environment = pinvi_postgres["environment"]
-    assert isinstance(pinvi_postgres_environment, dict)
-    pinvi_postgres_environment["POSTGRES_PASSWORD"] = "attacker-literal"
-    with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL password"):
-        validate_compose_candidate_protected_values(
-            pinvi_literal,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-
-    pinvi_db_init_drift = deepcopy(candidate)
-    pinvi_db_init_services = pinvi_db_init_drift["services"]
-    assert isinstance(pinvi_db_init_services, dict)
-    pinvi_db_init = pinvi_db_init_services["pinvi-db-init"]
-    assert isinstance(pinvi_db_init, dict)
-    pinvi_db_init_environment = pinvi_db_init["environment"]
-    assert isinstance(pinvi_db_init_environment, dict)
-    pinvi_db_init_environment["PGPORT"] = "12900"
-    with pytest.raises(DeploymentContractError, match="database init identity"):
-        validate_compose_candidate_protected_values(
-            pinvi_db_init_drift,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-
-    for environment_name, drifted_value in (
-        ("POSTGRES_USER", "${PINVI_POSTGRES_USER:-wrong_admin}"),
-        ("POSTGRES_DB", "${PINVI_POSTGRES_BOOTSTRAP_DB:-wrong_bootstrap}"),
-    ):
-        pinvi_postgres_drift = deepcopy(candidate)
-        pinvi_postgres_services = pinvi_postgres_drift["services"]
-        assert isinstance(pinvi_postgres_services, dict)
-        pinvi_postgres = pinvi_postgres_services["pinvi-postgres"]
-        assert isinstance(pinvi_postgres, dict)
-        pinvi_postgres_environment = pinvi_postgres["environment"]
-        assert isinstance(pinvi_postgres_environment, dict)
-        pinvi_postgres_environment[environment_name] = drifted_value
-        with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
-            validate_compose_candidate_protected_values(
-                pinvi_postgres_drift,
-                compose_path=str(_COMPOSE_PATH),
-                root_env_path=str(root_env),
-                environment=environment,
-            )
-
-    pinvi_postgres_command_drift = deepcopy(candidate)
-    pinvi_postgres_command_services = pinvi_postgres_command_drift["services"]
-    assert isinstance(pinvi_postgres_command_services, dict)
-    pinvi_postgres_command = pinvi_postgres_command_services["pinvi-postgres"]
-    assert isinstance(pinvi_postgres_command, dict)
-    pinvi_postgres_command_values = pinvi_postgres_command["command"]
-    assert isinstance(pinvi_postgres_command_values, list)
-    pinvi_postgres_command_values[4] = "${PINVI_DB_PORT:-12900}"
-    with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
-        validate_compose_candidate_protected_values(
-            pinvi_postgres_command_drift,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-
-    for appended_tokens in (
-        ["-p", "${PINVI_DB_PORT:-12900}"],
-        ["-c", "listen_addresses=0.0.0.0"],
-        ["-c", "shared_buffers=attacker"],
-    ):
-        pinvi_postgres_override = deepcopy(candidate)
-        pinvi_postgres_override_services = pinvi_postgres_override["services"]
-        assert isinstance(pinvi_postgres_override_services, dict)
-        pinvi_postgres_override_service = pinvi_postgres_override_services["pinvi-postgres"]
-        assert isinstance(pinvi_postgres_override_service, dict)
-        pinvi_postgres_override_command = pinvi_postgres_override_service["command"]
-        assert isinstance(pinvi_postgres_override_command, list)
-        pinvi_postgres_override_command.extend(appended_tokens)
-        with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
-            validate_compose_candidate_protected_values(
-                pinvi_postgres_override,
-                compose_path=str(_COMPOSE_PATH),
-                root_env_path=str(root_env),
-                environment=environment,
-            )
-
-    for service_name, error_message in (
-        ("pinvi-postgres", "PinVi PostgreSQL image provenance"),
-        ("pinvi-db-init", "PinVi database init image provenance"),
-    ):
-        pinvi_image_drift = deepcopy(candidate)
-        pinvi_image_services = pinvi_image_drift["services"]
-        assert isinstance(pinvi_image_services, dict)
-        pinvi_image_services[service_name]["image"] = "attacker.invalid/postgis:latest"
-        with pytest.raises(DeploymentContractError, match=error_message):
-            validate_compose_candidate_protected_values(
-                pinvi_image_drift,
-                compose_path=str(_COMPOSE_PATH),
-                root_env_path=str(root_env),
-                environment=environment,
-            )
-
     for initdb_args in (
         "--auth-host=trust",
         "--auth-host=scram-sha-256 --auth-local=trust",
         "",
     ):
-        pinvi_initdb_drift = deepcopy(candidate)
-        pinvi_initdb_services = pinvi_initdb_drift["services"]
-        assert isinstance(pinvi_initdb_services, dict)
-        pinvi_initdb_postgres = pinvi_initdb_services["pinvi-postgres"]
-        assert isinstance(pinvi_initdb_postgres, dict)
-        pinvi_initdb_environment = pinvi_initdb_postgres["environment"]
-        assert isinstance(pinvi_initdb_environment, dict)
-        pinvi_initdb_environment["POSTGRES_INITDB_ARGS"] = initdb_args
-        # 이 값의 주인은 이제 전역 술어다 — 서비스를 열거하는 방식이 저장소의
+        shared_initdb_drift = deepcopy(candidate)
+        shared_initdb_services = shared_initdb_drift["services"]
+        assert isinstance(shared_initdb_services, dict)
+        shared_initdb_postgres = shared_initdb_services["kor-travel-shared-postgres"]
+        assert isinstance(shared_initdb_postgres, dict)
+        shared_initdb_environment = shared_initdb_postgres["environment"]
+        assert isinstance(shared_initdb_environment, dict)
+        shared_initdb_environment["POSTGRES_INITDB_ARGS"] = initdb_args
+        # 이 값의 주인은 전역 술어다 — 서비스를 열거하는 방식이 당시 저장소의
         # PostgreSQL 넷 중 둘(geo·concierge)을 빠뜨렸던 것이 적대 리뷰 2026-09-18 F1.
         with pytest.raises(DeploymentContractError, match="non-canonical POSTGRES_INITDB_ARGS"):
             validate_compose_candidate_protected_values(
-                pinvi_initdb_drift,
+                shared_initdb_drift,
                 compose_path=str(_COMPOSE_PATH),
                 root_env_path=str(root_env),
                 environment=environment,
             )
 
-    for service_name, error_message in (
-        ("pinvi-postgres", "PinVi PostgreSQL image provenance"),
-        ("pinvi-db-init", "PinVi database init image provenance"),
-    ):
-        pinvi_resolved_image_drift = deepcopy(resolved)
-        pinvi_resolved_image_services = pinvi_resolved_image_drift["services"]
-        assert isinstance(pinvi_resolved_image_services, dict)
-        pinvi_resolved_image_service = pinvi_resolved_image_services[service_name]
-        assert isinstance(pinvi_resolved_image_service, dict)
-        pinvi_resolved_image_service["image"] = "attacker.invalid/postgis:latest"
-        with pytest.raises(DeploymentContractError, match=error_message):
-            validate_resolved_compose_candidate_protected_values(
-                pinvi_resolved_image_drift,
-                environment=environment,
-                compose_path=str(_COMPOSE_PATH),
-                root_env_path=str(root_env),
-            )
-
-    pinvi_resolved_command_drift = deepcopy(resolved)
-    pinvi_resolved_command_services = pinvi_resolved_command_drift["services"]
-    assert isinstance(pinvi_resolved_command_services, dict)
-    pinvi_resolved_command_service = pinvi_resolved_command_services["pinvi-postgres"]
-    assert isinstance(pinvi_resolved_command_service, dict)
-    pinvi_resolved_command = pinvi_resolved_command_service["command"]
-    assert isinstance(pinvi_resolved_command, list)
-    pinvi_resolved_command.extend(["-p", "12900"])
-    with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
-        validate_resolved_compose_candidate_protected_values(
-            pinvi_resolved_command_drift,
-            environment=environment,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-        )
-
-    pinvi_resolved_initdb_drift = deepcopy(resolved)
-    pinvi_resolved_initdb_services = pinvi_resolved_initdb_drift["services"]
-    assert isinstance(pinvi_resolved_initdb_services, dict)
-    pinvi_resolved_initdb_postgres = pinvi_resolved_initdb_services["pinvi-postgres"]
-    assert isinstance(pinvi_resolved_initdb_postgres, dict)
-    pinvi_resolved_initdb_environment = pinvi_resolved_initdb_postgres["environment"]
-    assert isinstance(pinvi_resolved_initdb_environment, dict)
+    shared_resolved_initdb_drift = deepcopy(resolved)
+    shared_resolved_initdb_services = shared_resolved_initdb_drift["services"]
+    assert isinstance(shared_resolved_initdb_services, dict)
+    shared_resolved_initdb_postgres = shared_resolved_initdb_services[
+        "kor-travel-shared-postgres"
+    ]
+    assert isinstance(shared_resolved_initdb_postgres, dict)
+    shared_resolved_initdb_environment = shared_resolved_initdb_postgres["environment"]
+    assert isinstance(shared_resolved_initdb_environment, dict)
     for initdb_args in ("--auth-host=trust", ""):
-        pinvi_resolved_initdb_environment["POSTGRES_INITDB_ARGS"] = initdb_args
+        shared_resolved_initdb_environment["POSTGRES_INITDB_ARGS"] = initdb_args
         with pytest.raises(DeploymentContractError, match="non-canonical POSTGRES_INITDB_ARGS"):
             validate_resolved_compose_candidate_protected_values(
-                pinvi_resolved_initdb_drift,
+                shared_resolved_initdb_drift,
                 environment=environment,
                 compose_path=str(_COMPOSE_PATH),
                 root_env_path=str(root_env),
             )
-
-    pinvi_db_init_command_drift = deepcopy(candidate)
-    pinvi_db_init_command_services = pinvi_db_init_command_drift["services"]
-    assert isinstance(pinvi_db_init_command_services, dict)
-    pinvi_db_init_command_service = pinvi_db_init_command_services["pinvi-db-init"]
-    assert isinstance(pinvi_db_init_command_service, dict)
-    pinvi_db_init_command_service["command"] = ["sh", "-ec", "createdb pinvi"]
-    with pytest.raises(DeploymentContractError, match="database init command"):
-        validate_compose_candidate_protected_values(
-            pinvi_db_init_command_drift,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-
-    pinvi_resolved_identity_drift = deepcopy(resolved)
-    pinvi_resolved_services = pinvi_resolved_identity_drift["services"]
-    assert isinstance(pinvi_resolved_services, dict)
-    pinvi_resolved_postgres = pinvi_resolved_services["pinvi-postgres"]
-    assert isinstance(pinvi_resolved_postgres, dict)
-    pinvi_resolved_environment = pinvi_resolved_postgres["environment"]
-    assert isinstance(pinvi_resolved_environment, dict)
-    pinvi_resolved_environment["POSTGRES_USER"] = "wrong_admin"
-    with pytest.raises(DeploymentContractError, match="PinVi PostgreSQL identity"):
-        validate_resolved_compose_candidate_protected_values(
-            pinvi_resolved_identity_drift,
-            environment=environment,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-        )
 
     services = resolved["services"]
     assert isinstance(services, dict)
@@ -1796,12 +1541,6 @@ def test_c6c_rejects_map_postgres_password_secret_extra_consumer(
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
-        # GM-17 B S1: required-set 검사가 이제 소비자 스캔보다 **먼저** 돈다. 이
-        # fragment는 종전에 required 서비스 둘을 빼고도 "무단 소비자" 오류에 도달했는데,
-        # 지금은 부재가 먼저 보고된다(그것이 S1의 목적이다). 이 검사의 의도는 무단
-        # 소비자 거부이므로 fragment를 완전하게 만들어 그 의도를 보존한다.
-        "pinvi-postgres",
-        "pinvi-db-init",
     )
     candidate = (
         _resolved_compose(*service_names)
@@ -1878,31 +1617,6 @@ def test_map_postgres_runtime_password_secret_isolation_requires_file_only() -> 
         match="password file wiring is invalid",
     ):
         validate_map_postgres_runtime_secret_isolation({"Env": []})
-
-
-def test_pinvi_postgres_runtime_password_secret_isolation_requires_file_only() -> None:
-    validate_pinvi_postgres_runtime_secret_isolation(
-        {"Env": ["POSTGRES_PASSWORD_FILE=/run/secrets/pinvi-postgres-password"]}
-    )
-
-    with pytest.raises(
-        DeploymentContractError,
-        match="exposes the initial superuser password",
-    ):
-        validate_pinvi_postgres_runtime_secret_isolation(
-            {
-                "Env": [
-                    "POSTGRES_PASSWORD=literal-password",
-                    "POSTGRES_PASSWORD_FILE=/run/secrets/pinvi-postgres-password",
-                ]
-            }
-        )
-
-    with pytest.raises(
-        DeploymentContractError,
-        match="password file wiring is invalid",
-    ):
-        validate_pinvi_postgres_runtime_secret_isolation({"Env": []})
 
 
 def test_c6c_rejects_map_bootstrap_dsn_outside_dedicated_instance_before_mutation(
@@ -2486,19 +2200,17 @@ _REQUIRED_SERVICES_GOLDEN: tuple[str, ...] = (
     "kor-travel-map-ui",
     "pinvi-admin-bootstrap",
     "pinvi-api",
-    "pinvi-postgres",
 )
 
-#: required 집합 **밖**이지만 15개 소비자 루프에는 있는 이름. 이 비대칭이 실질 15의
-#: 정체다 — `frozenset` 14 + `_validate_pinvi_db_init_presence`의 별도 강제.
-#: 코드 주석이 한동안 "15개 전부 required-set이 보증한다"고 잘못 적고 있었다.
-_NON_REQUIRED_LOOP_SERVICE = "pinvi-db-init"
+# 2026-09-28: `pinvi-postgres`가 required 집합에서, `pinvi-db-init`(required 밖이지만
+# 소비자 루프에 있던 유일한 이름)이 루프에서 빠졌다 — 둘 다 옛 전용 instance와 함께
+# compose에서 사라졌다. 이제 루프의 이름은 required 집합과 정확히 같다.
 
 _ABSENCE_MATRIX_SERVICES = {
     "map_core": ("kor-travel-map-api", "kor-travel-map-postgres", "kor-travel-map-ui"),
     "map_oneshots": _MAP_DATABASE_ONESHOT_SERVICES,
-    "pinvi_core": ("pinvi-api", "pinvi-postgres"),
-    "pinvi_oneshots": ("pinvi-db-init", "pinvi-admin-bootstrap"),
+    "pinvi_core": ("pinvi-api",),
+    "pinvi_oneshots": ("pinvi-admin-bootstrap",),
 }
 
 
@@ -2571,7 +2283,6 @@ def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
                 "KOR_TRAVEL_MAP_PGDATA",
                 "KOR_TRAVEL_MAP_REPO_DIR",
                 "PINVI_REPO_DIR",
-                "PINVI_PGDATA",
             )
         },
     )
@@ -2583,22 +2294,14 @@ def test_required_protected_service_set_is_pinned() -> None:
     S4는 이 집합을 좁히는 일이고, 그 diff가 리뷰에 보이게 만드는 것이 S0의 전부다.
     집합을 프로덕션 상수에서 파생해 비교하면 항진명제가 되므로 리터럴로 적는다.
 
-    `pinvi-db-init`이 여기 **없다**는 것도 함께 박는다. 15개 소비자 루프에는 있으나
-    required 집합에는 없고, 그 보증의 출처는 `_validate_pinvi_db_init_presence`다 —
-    S3가 바로 그 함수를 이분할한다.
     """
 
-    assert len(_REQUIRED_SERVICES_GOLDEN) == 12
+    assert len(_REQUIRED_SERVICES_GOLDEN) == 11
     assert set(_REQUIRED_SERVICES_GOLDEN) == set(
         c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
     ), (
         "required 집합이 바뀌었다 — S4라면 이 리터럴을 갱신하고 "
         "PR 본문에 어느 서비스를 왜 뺐는지 열거하라"
-    )
-    assert _NON_REQUIRED_LOOP_SERVICE not in _REQUIRED_SERVICES_GOLDEN
-    assert (
-        _NON_REQUIRED_LOOP_SERVICE
-        not in c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
     )
 
 
@@ -2606,10 +2309,7 @@ def test_required_protected_service_set_is_pinned() -> None:
 #: 이 목록은 S4가 줄이지 않는다 — 줄이면 그 서비스의 행이 표에서 통째로 사라져
 #: 다시 눈이 먼다. required 집합이 좁아져도 **행은 남고 이유만 바뀐다**, 그것이
 #: 보여야 할 diff다.
-_PROTECTED_LOOP_SERVICES_GOLDEN: tuple[str, ...] = (
-    *_REQUIRED_SERVICES_GOLDEN,
-    _NON_REQUIRED_LOOP_SERVICE,
-)
+_PROTECTED_LOOP_SERVICES_GOLDEN: tuple[str, ...] = (*_REQUIRED_SERVICES_GOLDEN,)
 
 #: 서비스 **하나만** 지웠을 때의 거부 이유. 키는 `<서비스>/<진입점>`.
 #: 값이 바뀌면 그것이 곧 S4의 폭발 반경이다 — PR 본문에 옮겨 적어라.
@@ -2633,17 +2333,6 @@ _SINGLE_ABSENCE_GOLDEN: dict[str, str] = {
         )
         for name in _REQUIRED_SERVICES_GOLDEN
     },
-    # `pinvi-db-init`은 required 집합 밖이라 **부재를 부재라고 말하지 않는다.**
-    # `_validate_pinvi_db_init_presence`가 먼저 걸러서 정체성 오류로 보고한다.
-    # S1 커밋과 `docs/tasks.md`가 "absent_* → missing required protected services"라고
-    # 단정했는데 14개 중 이 하나에서 거짓이었다(적대 리뷰 2026-09-17). 표에 그
-    # 예외를 **적어서** 남긴다 — 숨기면 S3가 그 함수를 이분할할 때 아무도 모른다.
-    "pinvi-db-init/raw": (
-        "ComposeCandidateContractError: PinVi database init identity is invalid"
-    ),
-    "pinvi-db-init/resolved": (
-        "ComposeCandidateContractError: PinVi database init identity is invalid"
-    ),
 }
 
 
@@ -2692,9 +2381,8 @@ def _golden_diff(observed: dict[str, str], golden: dict[str, str]) -> str:
 #: 묶음 부재 + `null` 형상. 서비스별 표가 못 보는 **상호작용**(둘 이상이 함께 빠질 때
 #: 어느 이름이 먼저 보고되는가)과 `null` 경로를 덮는다.
 #:
-#: `absent_pinvi_oneshots`가 서비스 **둘**을 지우는데 이름은 **하나**만 댄다는 점에
-#: 주목하라 — `pinvi-db-init`이 required 집합 밖이라서다. 첫 판의 표는 이 비대칭을
-#: 드러내지 못했다.
+#: (2026-09-28까지 `absent_pinvi_oneshots`는 서비스 **둘**을 지우고 이름은 **하나**만
+#: 댔다 — `pinvi-db-init`이 required 집합 밖이었다. 그 one-shot이 사라져 비대칭도 없다.)
 _SHAPE_GOLDEN: dict[str, str] = {
     "all_present/raw": "PASS",
     "all_present/resolved": "PASS",
@@ -2722,11 +2410,11 @@ _SHAPE_GOLDEN: dict[str, str] = {
     ),
     "absent_pinvi_core/raw": (
         "ComposeCandidateContractError: compose candidate is missing required "
-        "protected services: pinvi-api, pinvi-postgres"
+        "protected services: pinvi-api"
     ),
     "absent_pinvi_core/resolved": (
         "ComposeCandidateContractError: resolved compose candidate is missing "
-        "required protected services: pinvi-api, pinvi-postgres"
+        "required protected services: pinvi-api"
     ),
     "absent_pinvi_oneshots/raw": (
         "ComposeCandidateContractError: compose candidate is missing required "
@@ -3173,464 +2861,10 @@ def test_entry_point_runs_the_consumer_scan_for_a_valid_owner(tmp_path: Path) ->
         )
 
 
-# ── GM-17 B · S3-a: PinVi postgres 신원을 db-init 게이트에서 떼어낸다 ────
-#
-# 종전 `_validate_pinvi_db_init_identity`는 맨 앞에서 `pinvi-db-init` 부재를 즉시
-# 거부한 뒤, 같은 함수 안에서 `pinvi-postgres`의 image·environment·**command**를
-# 검사했다. 그 command 배열이 `listen_addresses=127.0.0.1`을 강제하는
-# **저장소에서 유일한 자리**다(`backend/src` 전역 1건).
-#
-# 그래서 S4가 그 함수를 db-init 존재로 게이팅하면 PostgreSQL의 loopback 결박이
-# 통째로 사라진다. 네트워크 노출 통제라 S2의 secret 소비자 스캔보다 결과가 나쁘다.
-
-
-def _s4_without_pinvi_oneshots(
-    monkeypatch: pytest.MonkeyPatch, document: dict[str, object]
-) -> dict[str, object]:
-    """S4가 PinVi one-shot을 scope에서 뺀 상태를 흉내낸다.
-
-    **문서에서도 db-init을 뺀다.** 전용 validator만 no-op으로 만들고 문서에 서비스를
-    남겨 두면 시뮬레이션이 가짜가 된다 — 변이로 확인했다: `pinvi-postgres` 신원 검사를
-    db-init 존재로 게이팅해도 검사가 **전부 초록**이었다(게이트 조건이 여전히 참이라).
-    S4가 실제로 만드는 형상은 서비스가 사라진 상태다.
-    """
-
-    monkeypatch.setattr(
-        c6c_deployment_module,
-        "_validate_pinvi_db_init_presence",
-        lambda services, environment: ({}, {}, ("", "", "", "")),
-    )
-    monkeypatch.setattr(
-        c6c_deployment_module,
-        "_validate_pinvi_db_init_command",
-        lambda service, service_environment, expected, *, resolved: None,
-    )
-    monkeypatch.setattr(
-        c6c_deployment_module,
-        "_CANDIDATE_REQUIRED_PROTECTED_SERVICES",
-        frozenset(
-            name
-            for name in c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
-            if not name.startswith("pinvi-")
-        ),
-    )
-    # **required 목록은 두 곳이다.** frozenset만 패치하면 하드코딩 15개 소비자 루프가
-    # 여전히 부재를 거부해서, 시뮬레이션이 목표 지점에 닿기도 전에 막힌다(적대 리뷰
-    # 2026-09-17 L-2). `docs/tasks.md`가 "S4는 둘 다 풀어야 한다"고 적어 둔 그 루프다.
-    monkeypatch.setattr(
-        c6c_deployment_module,
-        "_CANDIDATE_KNOWN_SERVICE_NAMES",
-        frozenset(
-            name
-            for name in c6c_deployment_module._CANDIDATE_KNOWN_SERVICE_NAMES
-            if not name.startswith("pinvi-")
-        ),
-    )
-    return _shape_without(document, ("pinvi-db-init",))
-
-
-def test_loopback_binding_survives_when_db_init_is_out_of_scope(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """**S3-a의 핵심.** db-init이 scope 밖이어도 loopback 결박은 남는다.
-
-    `listen_addresses=127.0.0.1`은 저장소에서 이 command 배열 한 곳에만 있다. 종전
-    구조에서는 그것이 db-init 게이트 뒤에 있었으므로, S4가 PinVi one-shot을 빼는
-    순간 PostgreSQL이 모든 인터페이스에 바인딩해도 아무도 막지 못했다.
-
-    이 검사는 진입점을 태운다 — db-init 전용 검사를 no-op으로 만든 뒤
-    `pinvi-postgres`의 바인딩을 열어 보고, 여전히 거부되는지 본다.
-    """
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    shaped = _s4_without_pinvi_oneshots(monkeypatch, deepcopy(candidate))
-    services = shaped["services"]
-    assert isinstance(services, dict)
-    assert "pinvi-db-init" not in services, "시뮬레이션이 db-init을 실제로 빼야 한다"
-    postgres = services["pinvi-postgres"]
-    assert isinstance(postgres, dict)
-    command = postgres["command"]
-    assert isinstance(command, list)
-    assert "listen_addresses=127.0.0.1" in command, "전제가 깨졌다 — 결박 문자열이 없다"
-    postgres["command"] = [
-        "listen_addresses=*" if item == "listen_addresses=127.0.0.1" else item
-        for item in command
-    ]
-
-    with pytest.raises(
-        ComposeCandidateContractError, match="PinVi PostgreSQL identity is invalid"
-    ):
-        validate_compose_candidate_protected_values(
-            shaped,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-
-
-def test_postgres_image_provenance_survives_when_db_init_is_out_of_scope(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """같은 이유로 `pinvi-postgres`의 image provenance도 남는다."""
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    shaped = _s4_without_pinvi_oneshots(monkeypatch, deepcopy(candidate))
-    services = shaped["services"]
-    assert isinstance(services, dict)
-    assert "pinvi-db-init" not in services, "시뮬레이션이 db-init을 실제로 빼야 한다"
-    postgres = services["pinvi-postgres"]
-    assert isinstance(postgres, dict)
-    postgres["image"] = "postgres:16"
-
-    with pytest.raises(
-        ComposeCandidateContractError,
-        match="PinVi PostgreSQL image provenance is invalid",
-    ):
-        validate_compose_candidate_protected_values(
-            shaped,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-
-
-def test_the_loopback_binding_has_two_load_bearing_homes(tmp_path: Path) -> None:
-    """`listen_addresses` 강제의 **자리와 개수**를 결박한다.
-
-    S3-a 때는 한 곳뿐이었다 — PinVi의 신원 검사가 command 배열을 exact-match 하는
-    자리다. 그것이 저장소의 네 PostgreSQL 중 **하나만** 지킨다는 것이 오래된 열린
-    항목이었고, 적대 리뷰 2026-09-18이 실측으로 확인했다(map은 `listen_addresses=*`로
-    바꿔도 통과했다).
-
-    그래서 두 번째 자리를 **의도적으로** 만들었다: postgres 서버를 효과로 식별하는
-    전역 바닥이다. 둘은 일이 다르고 **둘 다 결박돼 있다** —
-
-      전역 바닥을 지우면  geo·concierge·map의 loopback 강제가 사라진다
-      PinVi 쪽을 지우면   exact-match가 느슨해진다
-
-    "중복은 결박을 없앤다"는 이 저장소의 교훈이 여기에는 적용되지 않는다 — 그 교훈의
-    조건은 "어느 쪽을 지워도 아무 검사가 빨개지지 않는다"인데, 그것이 성립하지 않는다.
-
-    **AST 리터럴 개수로 세지 않는다.** 전역 바닥이 값을 부분으로 나눠 표현하게 되면서
-    리터럴 수가 자리 수와 갈렸다 — 그때 개수 세기는 결박이 아니라 잡음이 된다
-    (`detector-floors-count-what-was-seen`). **효과로 센다.**
-    """
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-
-    # (1) PinVi 쪽 — exact-match가 자기 문구로 먼저 말한다.
-    pinvi_shaped = deepcopy(candidate)
-    pinvi_services = pinvi_shaped["services"]
-    assert isinstance(pinvi_services, dict)
-    pinvi_postgres = pinvi_services["pinvi-postgres"]
-    assert isinstance(pinvi_postgres, dict)
-    pinvi_command = list(pinvi_postgres["command"])
-    pinvi_command[pinvi_command.index("listen_addresses=127.0.0.1")] = (
-        "listen_addresses=*"
-    )
-    pinvi_postgres["command"] = pinvi_command
-    with pytest.raises(
-        ComposeCandidateContractError, match="PinVi PostgreSQL identity is invalid"
-    ):
-        validate_compose_candidate_protected_values(
-            pinvi_shaped,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-
-    # (2) 전역 바닥 — PinVi가 보지 않는 서비스를 자기 문구로 거부한다.
-    map_shaped = deepcopy(candidate)
-    map_services = map_shaped["services"]
-    assert isinstance(map_services, dict)
-    map_postgres = map_services["kor-travel-map-postgres"]
-    assert isinstance(map_postgres, dict)
-    map_command = list(map_postgres["command"])
-    map_command[map_command.index("listen_addresses=127.0.0.1")] = "listen_addresses=*"
-    map_postgres["command"] = map_command
-    with pytest.raises(ComposeCandidateContractError, match="loopback binding"):
-        validate_compose_candidate_protected_values(
-            map_shaped,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-
-
-def test_db_init_image_check_is_conditional_but_still_runs_today(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """db-init image 검사는 존재-조건부지만 **오늘은 항상 돈다**.
-
-    그 한 줄은 db-init의 image를 보는데 자리가 두 postgres 검사 **사이**라, 옮기면
-    두 결함이 동시에 있는 문서의 문구가 바뀐다. 그래서 자리를 두고 조건만 걸었다.
-    이 검사가 "조건을 걸었다"가 "그냥 껐다"로 미끄러지지 않게 한다.
-    """
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    shaped = deepcopy(candidate)
-    services = shaped["services"]
-    assert isinstance(services, dict)
-    db_init = services["pinvi-db-init"]
-    assert isinstance(db_init, dict)
-    db_init["image"] = "postgres:16"
-
-    with pytest.raises(
-        ComposeCandidateContractError,
-        match="PinVi database init image provenance is invalid",
-    ):
-        validate_compose_candidate_protected_values(
-            shaped,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-
-    # db-init이 아예 없으면 물을 대상이 없다 — 조용히 지나간다(S4 이후의 형상).
-    without = _s4_without_pinvi_oneshots(monkeypatch, shaped)
-    c6c_deployment_module._validate_pinvi_postgres_identity(
-        without["services"], environment, resolved=False
-    )
-
-
-# ── GM-17 B · S3-b: PinVi password validator 삼분할 ──────────────────────
-#
-# Map(S2)과 같은 모양이되 인가 집합이 셋이다 — 소유자(`pinvi-postgres`)는 파생,
-# `pinvi-db-init`·`pinvi-db-runtime-role`은 리터럴이다. 리터럴 둘은 소유자와 무관하므로
-# 소유자가 없어도 유효하고, 그 사실이 스캔을 소유자로부터 독립시킨다.
-#
-# S2에서 적대 리뷰가 실제로 뚫은 것만 골라 결박한다: 진입점 결박, 파생의 모양 검증,
-# 짧은 문법 축.
-
-_PINVI_PASSWORD_SECRET = "pinvi-postgres-password"
-
-
-def _pinvi_document_with_foreign_consumer(
-    *, include_owner: bool, shorthand: bool = False
-) -> dict[str, object]:
-    """PinVi password secret을 **인가되지 않은 서비스**가 가져가는 문서."""
-
-    foreign_reference: object = (
-        _PINVI_PASSWORD_SECRET
-        if shorthand
-        else {"source": _PINVI_PASSWORD_SECRET, "target": _PINVI_PASSWORD_SECRET}
-    )
-    services: dict[str, object] = {
-        "some-other-service": {
-            "image": "example:latest",
-            "secrets": [foreign_reference],
-        }
-    }
-    if include_owner:
-        services["pinvi-postgres"] = {
-            "image": "postgis:latest",
-            "environment": {
-                "POSTGRES_PASSWORD_FILE": f"/run/secrets/{_PINVI_PASSWORD_SECRET}"
-            },
-            "secrets": [
-                {"source": _PINVI_PASSWORD_SECRET, "target": _PINVI_PASSWORD_SECRET}
-            ],
-        }
-    return {
-        "secrets": {
-            _PINVI_PASSWORD_SECRET: {"environment": "PINVI_POSTGRES_PASSWORD"}
-        },
-        "services": services,
-    }
-
-
-@pytest.mark.parametrize("shorthand", [False, True], ids=["long", "shorthand"])
-@pytest.mark.parametrize("include_owner", [True, False], ids=["owner", "no-owner"])
-def test_pinvi_sole_consumer_scan_rejects_a_foreign_consumer(
-    include_owner: bool, shorthand: bool
-) -> None:
-    """인가되지 않은 소비자는 **두 문법 모두** 거부된다 — 소유자 유무와 무관하게."""
-
-    document = _pinvi_document_with_foreign_consumer(
-        include_owner=include_owner, shorthand=shorthand
-    )
-    with pytest.raises(
-        ComposeCandidateContractError,
-        match="some-other-service.secrets -> PINVI_POSTGRES_PASSWORD",
-    ):
-        assert_protected_references_are_derived(
-            document, compose_path=_COMPOSE_PATH, environment={}
-        )
-
-
-def test_pinvi_entry_point_runs_the_consumer_scan(tmp_path: Path) -> None:
-    """소비자 스캔이 **진입점에서** 실제로 불린다.
-
-    S2에서 배운 것: 쪼갠 함수를 직접 태우는 검사만으로는 호출부의 게이팅을 잡지 못한다.
-    """
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    shaped = deepcopy(candidate)
-    services = shaped["services"]
-    assert isinstance(services, dict)
-    services["some-other-service"] = {
-        "image": "example:latest",
-        "secrets": [_PINVI_PASSWORD_SECRET],
-    }
-
-    with pytest.raises(
-        ComposeCandidateContractError,
-        match="some-other-service.secrets -> PINVI_POSTGRES_PASSWORD",
-    ):
-        validate_compose_candidate_protected_values(
-            shaped,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-
-
-def test_pinvi_entry_point_checks_the_secret_declaration(tmp_path: Path) -> None:
-    """선언 검사가 **진입점에서** 실제로 불린다."""
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    shaped = deepcopy(candidate)
-    secrets = shaped["secrets"]
-    assert isinstance(secrets, dict)
-    secrets[_PINVI_PASSWORD_SECRET] = {"environment": "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"}
-
-    with pytest.raises(
-        ComposeCandidateContractError,
-        match="PinVi PostgreSQL password secret is invalid",
-    ):
-        validate_compose_candidate_protected_values(
-            shaped,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-
-
-def test_pinvi_global_invariants_are_not_inside_the_family_validator() -> None:
-    """전역 불변식 둘은 PinVi family validator **밖**에 있어야 한다.
-
-    S2에서 이 자리를 두 번 틀렸다 — 처음에는 validator 안에 두었고, 다음에는 이중화해서
-    어느 쪽을 지워도 아무 검사가 빨개지지 않았다. 자리가 하나여야 결박이 성립한다.
-    """
-
-    import inspect
-
-    wiring_source = inspect.getsource(
-        c6c_deployment_module._validate_pinvi_postgres_password_owner_wiring
-    )
-    for forbidden in (
-        "_validate_pinvi_postgres_password_declaration",
-    ):
-        assert forbidden not in wiring_source, (
-            f"전역 불변식 {forbidden}이 family validator 안으로 들어왔다"
-        )
-
-
-# ── S3 적대 리뷰 반영: PinVi에도 Map(S2)의 결박을 건다 ───────────────────
-#
-# 리뷰가 실측했다 — "Map(S2)과 같은 배치다"는 **코드 배치에 대해서만** 참이었고
-# **검증에 대해서는 거짓**이었다. S2가 Map에 넣은 네 검사가 PinVi에 복제되지 않아,
-# PinVi 전역 둘을 게이팅하거나 owner gate 뒤로 인라인하는 변이 넷이 전부 초록이었다.
-#
-# 그리고 `..._not_inside_the_family_validator`는 **이름에 결박**돼 있어 인라인 한 번에
-# 뚫린다(리뷰 H-3). 이름 grep은 싸니까 두되, 아래가 **효과**를 센다.
-
-
-def test_pinvi_owner_must_receive_the_password_only_through_the_secret_file(
-    tmp_path: Path,
-) -> None:
-    """소유자 배선의 **핵심 셋**을 센다 (적대 리뷰 M-2).
-
-    함수 docstring이 "`pinvi-postgres`가 secret file로만 password를 받는가"라고
-    선언하는데, 그 문장을 실현하는 세 줄을 지워도 1,721건이 전부 초록이었다.
-    Map에는 S2가 같은 검사를 넣었고 PinVi에는 빠져 있었다.
-    """
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-
-    def reject(mutate: object, expected: str) -> None:
-        shaped = deepcopy(candidate)
-        services = shaped["services"]
-        assert isinstance(services, dict)
-        owner = services["pinvi-postgres"]
-        assert isinstance(owner, dict)
-        mutate(owner)  # type: ignore[operator]
-        with pytest.raises(ComposeCandidateContractError) as rejection:
-            validate_compose_candidate_protected_values(
-                shaped,
-                compose_path=str(_COMPOSE_PATH),
-                root_env_path=str(root_env),
-                environment=environment,
-            )
-        assert expected in str(rejection.value), f"{expected} 기대, 실제 {rejection.value}"
-
-    message = "PinVi PostgreSQL password secret is invalid"
-    # PASSWORD_FILE을 Map secret으로 돌려놓기 / 삭제
-    reject(
-        lambda owner: owner["environment"].__setitem__(
-            "POSTGRES_PASSWORD_FILE", "/run/secrets/kor-travel-map-postgres-password"
-        ),
-        message,
-    )
-    reject(lambda owner: owner["environment"].pop("POSTGRES_PASSWORD_FILE"), message)
-    # 참조를 두 번 마운트 / 모양이 어긋난 참조
-    reject(
-        lambda owner: owner.__setitem__(
-            "secrets", [*owner["secrets"], {"source": "pinvi-postgres-password"}]
-        ),
-        message,
-    )
-    reject(
-        lambda owner: owner.__setitem__(
-            "secrets", [{"source": "pinvi-postgres-password", "target": "/elsewhere"}]
-        ),
-        message,
-    )
-
-
-def test_entrypoint_override_cannot_defeat_the_loopback_binding(tmp_path: Path) -> None:
-    """**command를 한 글자도 안 바꾸고** loopback을 무력화하는 경로를 막는다 (리뷰 M-1).
-
-    Compose에서 `entrypoint`를 주면 `command` 배열은 그 entrypoint의 **인자**가 된다.
-    즉 고정된 command 검사를 전부 통과하면서 실제로는 다른 명령이 돈다. 그 유일한
-    방어가 `entrypoint not in (None, [])` 한 줄인데 **지워도 1,721건이 전부 초록**이었다.
-
-    S3-a가 그 줄을 "loopback을 지키는 함수"로 옮겨 서사의 무게를 실었으므로, 검사도
-    함께 옮긴다 — `test_loopback_binding_survives_...`가 command만 변조하는 한
-    그 검사가 초록이라는 사실은 "결박이 살아 있다"를 뜻하지 않는다.
-    """
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-
-    for service, expected in (
-        ("pinvi-postgres", "PinVi PostgreSQL identity is invalid"),
-        ("pinvi-db-init", "PinVi database init command is invalid"),
-    ):
-        shaped = deepcopy(candidate)
-        services = shaped["services"]
-        assert isinstance(services, dict)
-        target = services[service]
-        assert isinstance(target, dict)
-        before = deepcopy(target.get("command"))
-        target["entrypoint"] = ["sh", "-ec", "exec postgres -c listen_addresses=*"]
-        assert target.get("command") == before, "command는 건드리지 않는다 — 그것이 요점이다"
-
-        with pytest.raises(ComposeCandidateContractError) as rejection:
-            validate_compose_candidate_protected_values(
-                shaped,
-                compose_path=str(_COMPOSE_PATH),
-                root_env_path=str(root_env),
-                environment=environment,
-            )
-        assert expected in str(rejection.value), (
-            f"{service}: entrypoint 우회가 거부되지 않았다 — {rejection.value}"
-        )
-
-
 # ── PostgreSQL 인증 우회 두 경로 ─────────────────────────────────────────
 #
-# 2026-09-17 감사가 Map↔PinVi 60필드를 전수로 재서 찾았다. Map postgres에는 PinVi의
-# `_validate_pinvi_postgres_identity`에 해당하는 **서비스 신원 validator가 없어서**
+# 2026-09-17 감사가 Map↔PinVi 60필드를 전수로 재서 찾았다. Map postgres에는 당시
+# PinVi 전용 instance의 신원 검사에 해당하는 **서비스 신원 validator가 없어서**
 # image·command(`listen_addresses` 포함)·entrypoint·`POSTGRES_INITDB_ARGS`가 통째로
 # 무검사였다. 그리고 `POSTGRES_HOST_AUTH_METHOD`는 **양쪽 모두** 무검사였다 — 계약
 # 기계가 값-동등 비교라 "키가 추가됐다"를 표현하지 못하기 때문이다.
@@ -3641,15 +2875,16 @@ def test_entrypoint_override_cannot_defeat_the_loopback_binding(tmp_path: Path) 
 
 @pytest.mark.parametrize(
     "service",
-    ["kor-travel-map-postgres", "pinvi-postgres"],
+    ["kor-travel-map-postgres", "kor-travel-shared-postgres"],
 )
 def test_initdb_trust_auth_is_rejected_for_both_postgres_services(
     service: str, tmp_path: Path
 ) -> None:
     """`POSTGRES_INITDB_ARGS=--auth-host=trust`는 **양쪽 다** 거부된다.
 
-    종전에는 Map 쪽만 통과했다(raw·resolved·UI 저장 경로 전부). PinVi에는 신원
-    validator가 그 값을 강제하는데 Map에는 대응물이 없었고, 계약표에도 없었다.
+    종전에는 Map 쪽만 통과했다(raw·resolved·UI 저장 경로 전부). 당시 PinVi 전용
+    instance에는 신원 validator가 있었는데 Map에는 대응물이 없었고, 계약표에도 없었다.
+    지금 저장소의 두 PostgreSQL(Map 전용·공용)을 센다.
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
@@ -3679,7 +2914,7 @@ def test_initdb_trust_auth_is_rejected_for_both_postgres_services(
 
 @pytest.mark.parametrize(
     "service",
-    ["kor-travel-map-postgres", "pinvi-postgres", "kor-travel-map-api"],
+    ["kor-travel-map-postgres", "kor-travel-shared-postgres", "kor-travel-map-api"],
 )
 def test_host_auth_method_override_is_rejected_anywhere(
     service: str, tmp_path: Path
@@ -3941,9 +3176,10 @@ def test_each_configured_axis_alone_puts_the_api_under_contract(
 # ── GM-17 B · S3-c: PinVi DSN의 전역 env 불변식을 떼어낸다 ───────────────
 #
 # `_validate_pinvi_database_url_identities`의 앞 절반은 **서비스와 무관한 env
-# 불변식**이었다 — `PINVI_DB_PORT == 12800` 고정, role 이름 5자 상호 상이성과 정규식,
-# root/app/migrator password 3자 상호 비동일. 뒤 절반만 `services`를 보고, 그쪽은 이미
-# 존재-조건부였다(`.get()` + `continue`).
+# 불변식**이었다 — 당시 `PINVI_DB_PORT == 12800` 고정, role 이름 상호 상이성과 정규식,
+# password 상호 비동일(2026-09-28 전용 instance 퇴역 뒤로는 공용 포트 핀과 app role
+# 모양만 남았다). 뒤 절반만 `services`를 보고, 그쪽은 이미 존재-조건부였다
+# (`.get()` + `continue`).
 #
 # 둘이 한 함수에 있어서 S4가 이 호출을 family scope로 게이팅하면 앞 절반까지 함께
 # 꺼진다 — S3-a가 loopback 결박에 대해 고친 것과 같은 모양이다. 비대칭이 결정적이었다:
@@ -3981,9 +3217,7 @@ def _s4_without_pinvi_services(
     return _shape_without(
         document,
         (
-            "pinvi-postgres",
             "pinvi-api",
-            "pinvi-db-init",
             "pinvi-admin-bootstrap",
             # ADR-46 — pinvi-api/pinvi-admin-bootstrap의 depends_on을 통해서만 이
             # 최소 fragment에 들어온다. 그 둘을 지우면 이 두 서비스도 pinvi
@@ -3998,23 +3232,13 @@ def _s4_without_pinvi_services(
     ("label", "mutation", "expected_error"),
     [
         (
-            "전용 instance 포트 핀",
-            {"PINVI_DB_PORT": "12900"},
-            "PinVi database URL identity is invalid",
-        ),
-        (
-            "Map 대역 탈취(전용 instance)",
-            {"PINVI_DB_PORT": "12700"},
-            "PinVi database URL identity is invalid",
-        ),
-        (
             "공용 instance 포트 핀",
-            {"KOR_TRAVEL_SHARED_DB_PORT": "12800"},
+            {"KOR_TRAVEL_SHARED_DB_PORT": "12900"},
             "PinVi database URL identity is invalid",
         ),
         (
-            "role 이름 충돌(root=app)",
-            {"PINVI_APP_DB_USER": "__ROOT_USER__"},
+            "Map 대역 탈취(공용 instance)",
+            {"KOR_TRAVEL_SHARED_DB_PORT": "12700"},
             "PinVi database URL identity is invalid",
         ),
         (
@@ -4023,8 +3247,8 @@ def _s4_without_pinvi_services(
             "PinVi database URL identity is invalid",
         ),
         (
-            "password 3자 비동일(root=app)",
-            {"PINVI_APP_DB_PASSWORD": "__ROOT__"},
+            "빈 app password",
+            {"PINVI_APP_DB_PASSWORD": ""},
             "PinVi database URL identity is invalid",
         ),
     ],
@@ -4038,32 +3262,17 @@ def test_pinvi_database_env_invariants_survive_without_the_services(
 ) -> None:
     """**S3-c의 핵심.** PinVi 서비스가 scope 밖이어도 env 불변식은 남는다.
 
-    ADR-46 이후 포트 핀은 둘이다 — `PINVI_DB_PORT == 12800`(전용 instance 자신의
-    listen 포트)과 `KOR_TRAVEL_SHARED_DB_PORT == 11000`(앱/Dagster DSN이 실제로
-    접속하는 공용 instance 포트). 둘 다 `_validate_pinvi_database_url_environment`
-    **한 함수**가 계속 쥔다 — `_validate_pinvi_postgres_identity`/
-    `_validate_pinvi_db_init_presence`는 `PINVI_DB_PORT`를 환경에서 그대로 파생해
-    resolved 후보와 자기-일관성만 볼 뿐, `.env` 자체의 드리프트는 못 잡는다. 감사가
-    구체적 피해를 지목했다 — 전용 instance 포트가 `12700`이면 두 PostgreSQL이 모두
-    `network_mode: host`로 127.0.0.1:12700을 잡는 후보가 통과하고(**Map 전용 대역
-    탈취**), 저장소에 host 포트 충돌 검사는 없다.
-
-    role 이름의 owner 쌍(`PINVI_APP_SCHEMA_OWNER`/`PINVI_MIGRATION_OWNER`)도 중요하다 —
-    그 둘은 **어느 DSN에도 나타나지 않으므로** per-service DSN 비교가 구조적으로 볼 수
-    없다. 전역 절반이 유일한 자리다.
+    포트 핀은 `KOR_TRAVEL_SHARED_DB_PORT == 11000`(앱/Dagster DSN이 실제로 접속하는
+    공용 instance 포트) 하나다 — 2026-09-28까지 함께 쥐던 전용 instance 포트
+    (`PINVI_DB_PORT == 12800`)는 그 instance와 함께 사라졌다. 감사가 지목한 피해는
+    그대로다 — 포트가 `12700`이면 PinVi DSN이 Map 전용 instance를 겨냥하는 후보가
+    통과하고(**Map 전용 대역 탈취**), 저장소에 host 포트 충돌 검사는 없다.
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
     shaped = _s4_without_pinvi_services(monkeypatch, deepcopy(candidate))
 
-    mutated_environment = dict(environment)
-    for name, value in mutation.items():
-        if value == "__ROOT__":
-            mutated_environment[name] = mutated_environment["PINVI_POSTGRES_PASSWORD"]
-        elif value == "__ROOT_USER__":
-            mutated_environment[name] = mutated_environment["PINVI_POSTGRES_USER"]
-        else:
-            mutated_environment[name] = value
+    mutated_environment = {**environment, **mutation}
 
     with pytest.raises(ComposeCandidateContractError, match=expected_error):
         validate_compose_candidate_protected_values(
@@ -4109,13 +3318,12 @@ def test_the_port_pin_is_still_enforced_with_every_service_present(
 ) -> None:
     """게이팅 없이도 포트 핀이 돈다 — 분리가 기존 강제를 잃지 않았다는 증거.
 
-    ADR-46 이후에도 `PINVI_DB_PORT == 12800`은 `_validate_pinvi_database_url_environment`
-    (전역 절반)가 계속 쥔다 — 공용 instance 포트(`KOR_TRAVEL_SHARED_DB_PORT`)가
-    새로 생겼을 뿐, 전용 instance 포트 핀은 그대로다.
+    공용 instance 포트 핀(`KOR_TRAVEL_SHARED_DB_PORT == 11000`)은
+    `_validate_pinvi_database_url_environment`(전역 절반)가 쥔다.
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    mutated_environment = {**environment, "PINVI_DB_PORT": "12900"}
+    mutated_environment = {**environment, "KOR_TRAVEL_SHARED_DB_PORT": "12900"}
     with pytest.raises(
         ComposeCandidateContractError, match="PinVi database URL identity is invalid"
     ):
@@ -4158,7 +3366,7 @@ def test_the_service_half_stays_gateable_and_still_runs_today(tmp_path: Path) ->
 #
 # 적대 리뷰 2026-09-18이 세 가지를 실측했다.
 #
-# **F1** 저장소 compose에 `POSTGRES_INITDB_ARGS` 리터럴이 네 곳(geo·concierge·pinvi·
+# **F1** 당시 저장소 compose에 `POSTGRES_INITDB_ARGS` 리터럴이 네 곳(geo·concierge·pinvi·
 # map)인데 2026-09-17 수정은 계약표로 막았고 **계약표는 서비스를 열거한다.**
 # `kor-travel-geo-postgres`·`kor-travel-concierge-postgres`는 계약표에도 validator
 # 에도 UI 잠금에도 없었고, `--auth-host=trust`가 raw·resolved·UI 저장 **세 진입점
@@ -4208,7 +3416,6 @@ def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
                 "KOR_TRAVEL_MAP_PGDATA",
                 "KOR_TRAVEL_MAP_REPO_DIR",
                 "PINVI_REPO_DIR",
-                "PINVI_PGDATA",
             )
         },
     )
@@ -4216,16 +3423,17 @@ def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
 
 @pytest.mark.parametrize(
     "service_name",
-    ["kor-travel-geo-postgres", "kor-travel-concierge-postgres", "rustfs"],
+    ["kor-travel-shared-postgres", "rustfs"],
 )
 def test_non_canonical_initdb_args_are_rejected_on_any_service(
     tmp_path: Path, service_name: str
 ) -> None:
     """**계약표 밖의 서비스도** 정본 값에 묶인다.
 
-    셋 중 앞의 둘은 정본 compose의 실재하는 PostgreSQL이고 계약표에 없었다.
-    세 번째는 postgres조차 아닌 서비스다 — 술어가 **이름을 보지 않는다**는 것을
-    센다. 이름에 결박하면 다섯째 postgres에서 같은 실수를 반복한다.
+    앞의 것은 정본 compose의 실재하는 PostgreSQL이고 계약표에 없다(당시에는
+    geo·concierge 전용 instance가 그 자리였다). 뒤의 것은 postgres조차 아닌
+    서비스다 — 술어가 **이름을 보지 않는다**는 것을 센다. 이름에 결박하면 다음
+    postgres에서 같은 실수를 반복한다.
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
@@ -4260,7 +3468,7 @@ def test_non_canonical_initdb_args_are_rejected_on_the_resolved_entry_point(
     resolved = _bootstrap_resolved(environment)
     services = resolved["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = _service_with_environment(
+    services["kor-travel-shared-postgres"] = _service_with_environment(
         {"POSTGRES_INITDB_ARGS": "--auth-host=trust"}
     )
 
@@ -4284,7 +3492,7 @@ def test_the_forbidden_auth_key_is_rejected_on_the_resolved_entry_point(
     resolved = _bootstrap_resolved(environment)
     services = resolved["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = _service_with_environment(
+    services["kor-travel-shared-postgres"] = _service_with_environment(
         {"POSTGRES_HOST_AUTH_METHOD": "trust"}
     )
 
@@ -4326,7 +3534,7 @@ def test_list_form_environment_does_not_escape_the_global_predicates(
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = _service_with_environment([entry])
+    services["kor-travel-shared-postgres"] = _service_with_environment([entry])
 
     with pytest.raises(ComposeCandidateContractError, match=message):
         validate_compose_candidate_protected_values(
@@ -4350,7 +3558,7 @@ def test_the_forbidden_auth_key_is_banned_by_name_not_by_value(tmp_path: Path) -
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = _service_with_environment(
+    services["kor-travel-shared-postgres"] = _service_with_environment(
         {"POSTGRES_HOST_AUTH_METHOD": "scram-sha-256"}
     )
 
@@ -4428,11 +3636,11 @@ def test_the_initdb_rule_has_exactly_one_home(
 ) -> None:
     """값 고정의 주인은 전역 술어 **하나**다.
 
-    2026-09-17에는 PinVi의 `_validate_pinvi_postgres_identity`가 같은 규칙을 자기
+    2026-09-17에는 옛 PinVi 전용 instance의 신원 검사가 같은 규칙을 자기
     exact-match dict에 들고 있었다. 두 자리에 같은 규칙이 있으면 한쪽을 지워도 아무
     검사가 빨개지지 않는다 — 이 저장소가 S2에서 실제로 겪은 일이다.
 
-    **이름이 아니라 효과로 센다.** 전역 술어를 no-op으로 만든 뒤 PinVi postgres의
+    **이름이 아니라 효과로 센다.** 전역 술어를 no-op으로 만든 뒤 공용 postgres의
     initdb를 망가뜨린다. 두 번째 자리가 있으면 그래도 거부되고, 이 검사가 빨개진다.
 
     **이 검사는 심층 방어를 금지한다.** 언젠가 의도적으로 두 번째 자리를 두기로
@@ -4449,7 +3657,7 @@ def test_the_initdb_rule_has_exactly_one_home(
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    postgres = services["pinvi-postgres"]
+    postgres = services["kor-travel-shared-postgres"]
     assert isinstance(postgres, dict)
     postgres_environment = postgres["environment"]
     assert isinstance(postgres_environment, dict)
@@ -4481,16 +3689,14 @@ def test_the_initdb_rule_has_exactly_one_home(
 def test_the_ui_save_path_locks_initdb_args_for_every_service() -> None:
     """세 번째 진입점 — **UI 저장**도 서비스 이름을 보지 않는다.
 
-    종전 규칙은 `service_name == "pinvi-postgres"`였고, 그래서 geo·concierge의
+    종전 규칙은 `service_name == "pinvi-postgres"`였고, 그래서 당시 geo·concierge의
     PostgreSQL은 이 화면에서 인증을 자유롭게 끌 수 있었다. 적대 리뷰 2026-09-18이
     raw·resolved와 함께 이 경로도 통과하는 것을 실측했다.
     """
 
     for service_name in (
-        "kor-travel-geo-postgres",
-        "kor-travel-concierge-postgres",
+        "kor-travel-shared-postgres",
         "kor-travel-map-postgres",
-        "pinvi-postgres",
     ):
         with pytest.raises(
             ContainerConfigValidationError, match="initdb authentication policy"
@@ -4518,7 +3724,7 @@ def test_the_ui_save_path_refuses_to_add_the_forbidden_auth_key() -> None:
             env={"POSTGRES_HOST_AUTH_METHOD": "trust"},
             networks=[],
             baseline_env={},
-            service_name="kor-travel-geo-postgres",
+            service_name="kor-travel-shared-postgres",
         )
 
 
@@ -4772,7 +3978,7 @@ def _cluster_service(**extra: object) -> dict[str, object]:
 
 @pytest.mark.parametrize(
     "service_name",
-    ["kor-travel-geo-postgres", "kor-travel-concierge-postgres", "some-future-database"],
+    ["kor-travel-shared-postgres", "some-future-database"],
 )
 def test_omitting_initdb_args_is_rejected(tmp_path: Path, service_name: str) -> None:
     """**부재가 곧 `trust`다.** 값을 막고 삭제를 열어 두면 더 짧은 payload가 생길 뿐이다."""
@@ -4804,7 +4010,7 @@ def test_omitting_initdb_args_is_rejected_on_the_resolved_entry_point(
     resolved = _bootstrap_resolved(environment)
     services = resolved["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = {
+    services["kor-travel-shared-postgres"] = {
         "image": "postgres:16",
         "environment": {"POSTGRES_PASSWORD": "x"},
     }
@@ -4827,7 +4033,7 @@ def test_deleting_initdb_args_is_rejected_at_the_ui_save_path() -> None:
             env={},
             networks=[],
             baseline_env={"POSTGRES_INITDB_ARGS": "--auth-host=scram-sha-256"},
-            service_name="kor-travel-geo-postgres",
+            service_name="kor-travel-shared-postgres",
         )
 
 
@@ -4843,7 +4049,7 @@ def test_the_canonical_value_survives_incidental_whitespace() -> None:
         env={"POSTGRES_INITDB_ARGS": "  --auth-host=scram-sha-256 "},
         networks=[],
         baseline_env={"POSTGRES_INITDB_ARGS": "--auth-host=scram-sha-256"},
-        service_name="kor-travel-geo-postgres",
+        service_name="kor-travel-shared-postgres",
     )
 
 
@@ -4859,7 +4065,7 @@ def test_the_forbidden_key_may_stay_if_it_was_already_there() -> None:
         env={"POSTGRES_HOST_AUTH_METHOD": "trust"},
         networks=[],
         baseline_env={"POSTGRES_HOST_AUTH_METHOD": "trust"},
-        service_name="kor-travel-geo-postgres",
+        service_name="kor-travel-shared-postgres",
     )
 
 
@@ -4874,8 +4080,8 @@ def test_relocating_the_data_directory_is_rejected(tmp_path: Path) -> None:
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = _cluster_service()
-    environment_map = services["kor-travel-geo-postgres"]["environment"]
+    services["kor-travel-shared-postgres"] = _cluster_service()
+    environment_map = services["kor-travel-shared-postgres"]["environment"]
     assert isinstance(environment_map, dict)
     environment_map["PGDATA"] = "/var/lib/postgresql/data/fresh"
 
@@ -4900,7 +4106,7 @@ def test_env_file_on_a_cluster_service_is_rejected(tmp_path: Path) -> None:
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = _cluster_service(env_file=["./pg.env"])
+    services["kor-travel-shared-postgres"] = _cluster_service(env_file=["./pg.env"])
 
     with pytest.raises(
         ComposeCandidateContractError, match="forbids env_file on a PostgreSQL service"
@@ -4964,7 +4170,7 @@ def test_the_rejection_names_the_service_it_rejected(tmp_path: Path) -> None:
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    services["kor-travel-concierge-postgres"] = _service_with_environment(
+    services["kor-travel-shared-postgres"] = _service_with_environment(
         {"POSTGRES_INITDB_ARGS": "--auth-host=trust"}
     )
 
@@ -4975,7 +4181,7 @@ def test_the_rejection_names_the_service_it_rejected(tmp_path: Path) -> None:
             root_env_path=str(root_env),
             environment=environment,
         )
-    assert "kor-travel-concierge-postgres" in str(rejection.value)
+    assert "kor-travel-shared-postgres" in str(rejection.value)
 
 
 def test_a_null_mapping_value_is_not_a_canonical_value(tmp_path: Path) -> None:
@@ -4990,7 +4196,7 @@ def test_a_null_mapping_value_is_not_a_canonical_value(tmp_path: Path) -> None:
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = _service_with_environment(
+    services["kor-travel-shared-postgres"] = _service_with_environment(
         {"POSTGRES_INITDB_ARGS": None}
     )
 
@@ -5073,7 +4279,7 @@ def test_a_cluster_service_cannot_take_privileged_shapes(
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = _cluster_service(**mutation)
+    services["kor-travel-shared-postgres"] = _cluster_service(**mutation)
 
     with pytest.raises(ComposeCandidateContractError, match=message):
         validate_compose_candidate_protected_values(
@@ -5118,7 +4324,7 @@ def test_a_runtime_setting_cannot_replace_the_authentication_policy(
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = _cluster_service(
+    services["kor-travel-shared-postgres"] = _cluster_service(
         command=["postgres", "-c", "listen_addresses=127.0.0.1", *fragment]
     )
 
@@ -5166,7 +4372,7 @@ def test_a_cluster_service_keeps_the_loopback_binding(
         shaped_service.pop("command")
     else:
         shaped_service["command"] = command
-    services["kor-travel-geo-postgres"] = shaped_service
+    services["kor-travel-shared-postgres"] = shaped_service
 
     with pytest.raises(ComposeCandidateContractError, match=message):
         validate_compose_candidate_protected_values(
@@ -5218,7 +4424,7 @@ def test_sourcing_initdb_args_from_a_file_is_rejected(tmp_path: Path) -> None:
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = {
+    services["kor-travel-shared-postgres"] = {
         "image": "postgres:16",
         "command": ["postgres", "-c", "listen_addresses=127.0.0.1"],
         "environment": {
@@ -5260,7 +4466,7 @@ def test_an_unreadable_environment_shape_is_rejected(
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = {
+    services["kor-travel-shared-postgres"] = {
         "image": "postgres:16",
         "environment": environment,
     }
@@ -5286,7 +4492,7 @@ def test_relocating_the_cluster_is_rejected_at_the_ui_save_path() -> None:
             env={"PGDATA": "/var/lib/postgresql/data/fresh"},
             networks=[],
             baseline_env={},
-            service_name="kor-travel-geo-postgres",
+            service_name="kor-travel-shared-postgres",
         )
 
 
@@ -5342,7 +4548,7 @@ def test_deleting_the_environment_does_not_hide_a_postgres_server(
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    services["kor-travel-geo-postgres"] = {
+    services["kor-travel-shared-postgres"] = {
         "image": "postgres:16",
         "command": ["postgres", "-c", "listen_addresses=0.0.0.0"],
     }
@@ -5360,7 +4566,7 @@ def test_deleting_the_environment_does_not_hide_a_postgres_server(
         )
 
     # INITDB_ARGS를 되돌려 놓아도 loopback 축이 남는다.
-    services["kor-travel-geo-postgres"] = {
+    services["kor-travel-shared-postgres"] = {
         "image": "postgres:16",
         "command": ["postgres", "-c", "listen_addresses=0.0.0.0"],
         "environment": {"POSTGRES_INITDB_ARGS": "--auth-host=scram-sha-256"},
@@ -5561,10 +4767,7 @@ def test_the_declared_set_comes_from_the_trusted_document() -> None:
     declared = c6c_deployment_module._declared_postgres_compose_services()
     assert declared == frozenset(
         {
-            "kor-travel-geo-postgres",
-            "kor-travel-concierge-postgres",
             "kor-travel-map-postgres",
-            "pinvi-postgres",
             "kor-travel-shared-postgres",
         }
     ), declared
@@ -5783,23 +4986,6 @@ def test_the_new_predicates_survive_a_shrunken_required_set(
                 if "postgres" not in value
             ),
         )
-    # PinVi family validator들도 함께 끈다 — S4가 scope에서 빼는 것이 바로 그것들이고,
-    # 켜 두면 서비스 부재를 먼저 말해서 이 검사가 목표 지점에 닿지 못한다.
-    monkeypatch.setattr(
-        c6c_deployment_module,
-        "_validate_pinvi_db_init_presence",
-        lambda services, environment: ({}, {}, ("", "", "", "")),
-    )
-    monkeypatch.setattr(
-        c6c_deployment_module,
-        "_validate_pinvi_db_init_command",
-        lambda service, service_environment, expected, *, resolved: None,
-    )
-    monkeypatch.setattr(
-        c6c_deployment_module,
-        "_validate_pinvi_postgres_identity",
-        lambda services, environment, *, resolved: None,
-    )
     services = shaped["services"]
     assert isinstance(services, dict)
     assert not any("postgres" in name for name in services), sorted(services)

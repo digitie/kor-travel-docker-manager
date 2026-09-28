@@ -1,8 +1,10 @@
-"""전용 PostgreSQL 인스턴스별 독립 백업 (issue #177).
+"""PostgreSQL database별 독립 백업 (issue #177).
 
 ADR-37 4-instance 분리(geo/concierge/map/pinvi) 뒤에도 백업 주체는 map 하나뿐이었다.
-이 모듈은 v5 rebuild의 cache-target/compatible-pair 기계와 완전히 무관하게, 네
-인스턴스 각각을 `docker exec` + `pg_dump`로 독립 백업한다.
+이 모듈은 v5 rebuild의 cache-target/compatible-pair 기계와 완전히 무관하게, role마다
+그 database가 **지금 사는** instance를 `docker exec` + `pg_dump`로 독립 백업한다 —
+Map 둘은 전용 instance(`kor-travel-map-postgres`), 나머지는 공용 instance
+(`kor-travel-shared-postgres`)다.
 
 산출물은 `docs/docker-management.md`의 "3종 세트" 관례를 따른다 —
 `<role>-<ts>.dump` · `<role>-<ts>.dump.sha256`(`sha256sum -c` 그대로 먹는 형태) ·
@@ -70,17 +72,26 @@ _logger = logging.getLogger(__name__)
 BACKUP_SHARED_GROUP_ENV = "KTDM_BACKUP_SHARED_GROUP"
 
 # (container_env, container_default, database_name). container_default는
-# config/docker-targets.yml의 4-instance 계약과 같은 이름이다. docker-compose.yml이
-# concierge/map/pinvi 컨테이너 이름을 env override로 허용하므로(geo만 리터럴 고정)
-# 같은 override를 여기서도 존중한다 — 안 그러면 override된 스택에서 엉뚱한(또는
-# 존재하지 않는) 컨테이너를 겨냥해 fail-close로 조용히 실패한다. 포트는 여기 두지
-# 않는다 — 실제 기동 인자에서 읽는다.
+# docker-compose.yml의 컨테이너 이름과 같다. compose가 컨테이너 이름을 env override로
+# 허용하므로 같은 override를 여기서도 존중한다 — 안 그러면 override된 스택에서
+# 엉뚱한(또는 존재하지 않는) 컨테이너를 겨냥해 fail-close로 조용히 실패한다. 포트는
+# 여기 두지 않는다 — 실제 기동 인자에서 읽는다.
+#
+# geo(ADR-45)·concierge(ADR-44)·PinVi(ADR-46)는 공용 instance로 옮겼다. 2026-09-28까지
+# geo 둘과 pinvi는 옛 전용 instance(`kor-travel-geo-postgres`/`pinvi-postgres`)를
+# 겨냥했는데, geo 쪽은 컨테이너가 이미 없었고 pinvi 쪽은 아무도 쓰지 않는 동결 롤백
+# 사본이었다 — 주기 백업이 실패하거나 낡은 데이터를 떴다.
 _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
-    "geo": (None, "kor-travel-geo-postgres", "kor_travel_geo"),
-    "geo_dagster": (None, "kor-travel-geo-postgres", "kor_travel_geo_dagster"),
-    # ADR-44(2026-09-19/20)로 concierge를 공용 instance(kor-travel-shared-postgres)로
-    # cutover했다. 옛 kor-travel-concierge-postgres는 롤백 안전망으로 계속 떠 있지만
-    # 더 이상 쓰기 대상이 아니므로, 일상 백업은 활성 instance를 겨냥해야 한다.
+    "geo": (
+        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
+        "kor-travel-shared-postgres",
+        "kor_travel_geo",
+    ),
+    "geo_dagster": (
+        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
+        "kor-travel-shared-postgres",
+        "kor_travel_geo_dagster",
+    ),
     "concierge": (
         "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
         "kor-travel-shared-postgres",
@@ -96,7 +107,11 @@ _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
         "kor-travel-map-postgres",
         "kor_travel_map_dagster",
     ),
-    "pinvi": ("PINVI_POSTGRES_CONTAINER", "pinvi-postgres", "pinvi"),
+    "pinvi": (
+        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
+        "kor-travel-shared-postgres",
+        "pinvi",
+    ),
 }
 
 

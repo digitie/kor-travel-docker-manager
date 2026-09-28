@@ -21,10 +21,10 @@ from kor_travel_docker_manager.services.standalone_backup import (
     rehearse_standalone_restore,
 )
 
-_CMD_JSON = json.dumps(["postgres", "-p", "12500", "-c", "listen_addresses=127.0.0.1"]).encode(
+_CMD_JSON = json.dumps(["postgres", "-p", "11000", "-c", "listen_addresses=127.0.0.1"]).encode(
     "utf-8"
 )
-_ENV_OUTPUT = b"POSTGRES_USER=addr\nPOSTGRES_DB=kor_travel_geo\n"
+_ENV_OUTPUT = b"POSTGRES_USER=shared_admin\nPOSTGRES_DB=postgres\n"
 _TOC_OUTPUT = b";\n; Archive created ...\n;\n1; 2615 SCHEMA public\n2; 1259 TABLE t\n"
 
 
@@ -91,12 +91,12 @@ def test_create_standalone_backup_happy_path(
         "exec",
         "--user",
         "postgres",
-        "kor-travel-geo-postgres",
+        "kor-travel-shared-postgres",
         "pg_dump",
         "--username",
-        "addr",
+        "shared_admin",
         "--port",
-        "12500",
+        "11000",
         "--dbname",
         "kor_travel_geo",
         "--format=custom",
@@ -108,7 +108,7 @@ def test_create_standalone_backup_happy_path(
     assert toc_call.args[0] == [
         "docker",
         "exec",
-        "kor-travel-geo-postgres",
+        "kor-travel-shared-postgres",
         "pg_restore",
         "--list",
         "/tmp/geo-1000.dump",
@@ -117,7 +117,7 @@ def test_create_standalone_backup_happy_path(
     assert cp_call.args[0] == [
         "docker",
         "cp",
-        "kor-travel-geo-postgres:/tmp/geo-1000.dump",
+        "kor-travel-shared-postgres:/tmp/geo-1000.dump",
         str(root / ".geo-1000.dump.copying"),
     ]
 
@@ -126,7 +126,7 @@ def test_create_standalone_backup_happy_path(
     assert manifest.duration_sec == pytest.approx(0.879)
     assert manifest.backup_filename == "geo-1000.dump"
     assert manifest.byte_size == len(b"fake dump contents")
-    assert manifest.instance == "kor-travel-geo-postgres:127.0.0.1:12500/kor_travel_geo"
+    assert manifest.instance == "kor-travel-shared-postgres:127.0.0.1:11000/kor_travel_geo"
     assert manifest.db_size_bytes == 12345
     assert manifest.toc_entry_count == 2
     assert manifest.alembic_head == "0099_abcdef"
@@ -528,9 +528,12 @@ def test_role_lock_releases_after_context_exits(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("role", "env_var", "expected"),
     [
+        ("geo", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "geo-override"),
+        ("geo_dagster", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "geo-dagster-override"),
         ("concierge", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "concierge-override"),
         ("map_application", "KOR_TRAVEL_MAP_POSTGRES_CONTAINER", "map-override"),
-        ("pinvi", "PINVI_POSTGRES_CONTAINER", "pinvi-override"),
+        ("map_dagster", "KOR_TRAVEL_MAP_POSTGRES_CONTAINER", "map-dagster-override"),
+        ("pinvi", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "pinvi-override"),
     ],
 )
 def test_role_config_respects_container_name_override(
@@ -539,14 +542,6 @@ def test_role_config_respects_container_name_override(
     monkeypatch.setenv(env_var, expected)
     container_name, _ = standalone_backup._role_config(role)
     assert container_name == expected
-
-
-def test_role_config_geo_ignores_env_since_compose_hardcodes_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("KOR_TRAVEL_GEO_POSTGRES_CONTAINER", "should-be-ignored")
-    container_name, _ = standalone_backup._role_config("geo")
-    assert container_name == "kor-travel-geo-postgres"
 
 
 def test_backup_roles_cover_four_instances() -> None:
@@ -606,7 +601,7 @@ def test_restore_plan_confirms_a_healthy_backup(
     assert plan.restorable is True
     assert plan.backup_filename == "geo-1000.dump"
     assert plan.live_alembic_head == "0001_head"
-    assert plan.containers == ("kor-travel-geo-postgres",)
+    assert plan.containers == ("kor-travel-shared-postgres",)
     # 계획은 아무것도 바꾸지 않는다.
     assert {path.name: path.read_bytes() for path in root.iterdir()} == before
 
