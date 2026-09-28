@@ -2146,23 +2146,49 @@ def test_post_backup_refuses_to_create_a_role_directory_under_another_accounts_r
     assert not (owned_backup_root / "transport").exists()
 
 
+@patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
+def test_post_backup_refuses_a_first_backup_under_another_accounts_root_even_with_a_shared_group(
+    mock_create, clean_job_runner, owned_backup_root, monkeypatch
+):
+    """공유 그룹이 선언돼 있어도 role 디렉터리를 이 프로세스가 처음 만들면 그 주인은 이
+    프로세스다. cron 계정은 그 mode를 고칠 수 없어서, crontab에 공유 그룹 값이 빠진 순간(절반만
+    한 설정, 나중의 "단순화") 첫 cron 실행이 `chmod`에서 EPERM으로 죽는다. 그룹은 이미 있는
+    role 디렉터리만 면제한다."""
+
+    login_client()
+    owner = owned_backup_root.stat().st_uid
+    _run_as_another_uid(monkeypatch, owned_backup_root)
+    monkeypatch.setenv("KTDM_BACKUP_SHARED_GROUP", "ktdm-backup")
+
+    response = client.post("/api/v1/backups/transport", json={"timeout_seconds": 60})
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert str(owned_backup_root / "transport") in detail
+    assert "`ktdctl db-backup create transport`" in detail and f"uid {owner}" in detail
+    mock_create.assert_not_called()
+    assert not (owned_backup_root / "transport").exists()
+
+
 @pytest.mark.parametrize("scenario", ["shared_group_declared", "nothing_exists_yet"])
 @patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
 def test_post_backup_does_not_refuse_where_no_other_account_is_harmed(
     mock_create, scenario, clean_job_runner, owned_backup_root, monkeypatch
 ):
-    """공유 그룹이 있으면 산출물이 `0640`·setgid 그룹이라 두 계정이 함께 쓴다. root도 부모도
-    아직 없으면 이 프로세스가 둘 다 만든다 — 어느 쪽도 막을 이유가 없다."""
+    """공유 그룹이 있으면 이미 있는 role 디렉터리의 산출물이 `0640`·setgid 그룹이라 두 계정이
+    함께 쓴다. root도 부모도 아직 없으면 이 프로세스가 둘 다 만든다 — 어느 쪽도 막을 이유가
+    없다."""
 
     login_client()
     manifest = Mock()
     manifest.to_json.return_value = {"role": "transport", "backup_filename": "transport-1.dump"}
     mock_create.return_value = manifest
-    _run_as_another_uid(monkeypatch, owned_backup_root)
     if scenario == "shared_group_declared":
+        (owned_backup_root / "transport").mkdir()
         monkeypatch.setenv("KTDM_BACKUP_SHARED_GROUP", "ktdm-backup")
     else:
         monkeypatch.setenv("KTDM_BACKUP_ROOT", str(owned_backup_root / "not-yet" / "backups"))
+    _run_as_another_uid(monkeypatch, owned_backup_root)
 
     response = client.post("/api/v1/backups/transport", json={"timeout_seconds": 60})
 

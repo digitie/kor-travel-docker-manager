@@ -362,14 +362,17 @@ def ui_backup_owner_conflict(role: BackupRole) -> str | None:
     - 있으면 root `0600` manifest가 생겨 cron의 `gc`가 그 role 전체를 거부한다 — create는
       계속 성공해 배지는 초록인데 보존 정리만 멈추고 dump가 쌓인다.
 
-    그래서 공유 그룹이 없을 때는 이 프로세스의 euid가 role 디렉터리(없으면 그 부모)의
-    소유자와 같을 때만 만든다. 둘 다 없으면 이 프로세스가 둘 다 만들므로 막지 않는다.
+    그래서 이 프로세스의 euid가 role 디렉터리의 소유자와 같을 때만 만든다. 공유 그룹은
+    **이미 있는** role 디렉터리만 면제한다 — 그때의 전제(setgid·그룹)는 create가 확인한다.
+    role 디렉터리가 없으면 공유 그룹과 무관하게 부모의 소유자와 같을 때만 만든다: 이
+    프로세스가 만든 디렉터리의 주인은 이 프로세스이고, 다른 계정의 cron은 그 mode를 고칠 수
+    없다(crontab에 공유 그룹 값이 빠지면 첫 cron 실행이 `chmod`에서 EPERM이다). 그래서 role의
+    첫 백업은 cron 계정이 만든다. 부모도 없으면 이 프로세스가 둘 다 만들므로 막지 않는다.
     `stat` 자체가 실패하면(권한 등) 판정하지 않고 create가 자기 오류를 내게 둔다. CLI는 이
     확인을 하지 않는다 — cron과 손 실행은 그 디렉터리의 주인 계정으로 도는 것이 전제다.
     """
 
-    if os.environ.get(BACKUP_SHARED_GROUP_ENV, "").strip():
-        return None
+    shared_group = bool(os.environ.get(BACKUP_SHARED_GROUP_ENV, "").strip())
     root = _resolve_backup_root(role, None)
     for directory in (root, root.parent):
         try:
@@ -380,6 +383,16 @@ def ui_backup_owner_conflict(role: BackupRole) -> str | None:
             return None
         euid = os.geteuid()
         if owner == euid:
+            return None
+        if directory != root:
+            return (
+                f"refusing to create the first {role} backup here: {root} does not exist yet "
+                f"and its parent {directory} belongs to uid {owner}, but this backend runs as "
+                f"uid {euid}. The role directory and its lock would belong to uid {euid}, and "
+                f"uid {owner}'s cron backup could not fix their mode. Make the first backup "
+                f"as uid {owner}: `ktdctl db-backup create {role}`."
+            )
+        if shared_group:
             return None
         return (
             f"refusing to create a {role} backup here: {directory} belongs to uid {owner} "

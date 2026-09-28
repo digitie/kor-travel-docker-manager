@@ -7594,8 +7594,8 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
      `transport`. 검증은 "transport 백업을 Manager standalone role로 접었다" 항목의 4(`instance`, `sha256sum -c`,
      `restore-plan`, `transport_dagster`는
      `rehearse-restore`). `stat -c '%U:%G %a %n'`로 두 role 디렉터리와 `.backup.lock`이 digitie 소유인지 본다.
-  3. G lock 아래에서 live `.env`에 `KTDM_BACKUP_ROOT=/home/digitie/backups` 한 줄, 그리고 머지 커밋 설치
-     (`~/install-mgr.sh <sha>` → rebind → verify). 공유 그룹은 하지 않는다 — 아래 "단순화".
+  3. 머지 커밋을 `.env` 그대로 설치·확인한 뒤, G lock 아래에서 live `.env`에 `KTDM_BACKUP_ROOT=/home/digitie/backups`
+     한 줄을 넣고 같은 커밋을 다시 설치한다(아래 MED-2). 공유 그룹은 하지 않는다 — 아래 "단순화".
   4. `/etc/logrotate.d/kor-travel-docker-manager`가 생겼는지, Dashboard 배지가 2의 dump를 보는지 확인한다.
   5. crontab에 두 줄(16:50 UTC daily keep 7, 17:15 UTC `*/3` keep 3)을 파일 경유로 덧붙인다.
   6. 두 role이 **cron으로** 검증된 dump를 하나씩 남긴 뒤에만 transport 저장소의 cron 줄을 파일 경유로(정확히 한 줄)
@@ -7605,3 +7605,11 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
   그룹(`chgrp -R`·`2770`·crontab 환경 줄)은 UI에서도 만들고 싶을 때의 선택으로 되돌렸다. installer는 그룹이 없으면
   logrotate를 `su root root`로 렌더링하고, cron 계정 소유 `0700` 디렉터리의 `<role>.log`는 그대로 돈다.
   `docker-management.md`·`prod-deployment.md` §3.x·wrapper 헤더를 같이 고쳤다.
+- **적대 리뷰(`e3236951..2e99ae11`, MED 2·HIGH 0) 반영**:
+  - MED-1: 공유 그룹이 선언되면 가드가 통째로 빠졌다. role 디렉터리가 없을 때 root backend가 그것을 만들면 주인이
+    root라 cron 계정은 mode를 고칠 수 없고, crontab에 그룹 값이 빠지면(절반만 한 설정, 나중의 단순화) 첫 cron 실행이
+    EPERM이다. 이제 공유 그룹은 **이미 있는** role 디렉터리만 면제하고, 없으면 그룹과 무관하게 부모 소유자와
+    비교한다(409 메시지는 그 uid로 `ktdctl db-backup create <role>`을 안내). 새 테스트가 옛 코드에서 빨갛다.
+  - MED-2: 절차가 가드 설치 **전에** `.env`를 바꿨다. 설치가 실패해 옛 release로 되돌리면 installer가 그 `.env`를
+    가드 없는 release에 복사한다. 이제 3) `.env` 그대로 설치·확인 → 4) G lock 아래 `.env` 한 줄 + 같은 커밋 재설치.
+    가드 이전 release로 되돌릴 때는 `KTDM_BACKUP_ROOT`를 먼저 뺀다.
