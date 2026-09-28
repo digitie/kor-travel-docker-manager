@@ -8052,3 +8052,63 @@ Map의 두 DB를 공용 instance로 옮기는 결정(오너 결정 C, ADR-53)의
 - **남은 것**: M1이 `0fe0d97` 위로 올라오면 그 위로 다시 올리고, §1.6 실 PostgreSQL 테스트를 포함한 gated
   실행을 다시 돈다. 전체 스위트·gated 실행의 최종 수치는 PR 본문에 적는다. 머지는 창 안에서, PR head와 머지
   SHA의 `git diff --stat`이 비었는지 확인한 뒤다.
+
+## 2026-09-29 — MT 리뷰 수정: M1 위로 재기반, recreate 위험의 경계, 예약분 테스트의 판별력
+
+MT(ADR-53 D4)의 적대 리뷰 MED 2건·LOW 14건을 반영했다. 이 브랜치는 여전히 **창 안에서만** 머지·설치한다.
+
+- **M1 위로 올렸다**(`origin/fix/rebuild-tenant-fences` `b690967`, 스펙 §1.0의 rename → M1 → MT → M2 사슬).
+  충돌은 이 파일 하나였다(두 항목을 다 둠). 두 fix 커밋(`fix(docker): …`)의 patch-id는 분리 브랜치
+  `fix/container-grace-no-deps`의 `2c44450`·`e201804`와 같다 — 그 브랜치가 merge나 rebase-merge로 먼저
+  들어가면 다음 rebase가 알아서 떨어뜨리고, squash면 손으로 뺀다(그 뒤 이 항목과 그 브랜치의 journal이 다시
+  겹친다).
+- **MED — recreate 위험의 경계가 좁았다.** ADR-53의 받아들인 위험·helper docstring·스펙의 A1/T-R 공지가
+  "`--no-deps` 없는 `up`"만 적었다. n150 Compose v5.2.0에서는 `run --rm <의존 서비스>`도 drift된 의존을
+  재생성한다(리뷰 실측). 공용 instance를 `depends_on`하는 서비스에는 db-init one-shot과 `pinvi-admin-bootstrap`도
+  있고, onboarding §7.3은 db-init 재실행을 자가치유로 권한다 — Manager 코드가 아니라 사람·에이전트의 명령이
+  남은 길이다. 그래서 ADR-53·docstring·스펙(§0.4·A1·T-R)이 `up`·`run`(`--no-deps` 없이)과 `create`(그 플래그가
+  없다)를 모두 적고, 공지가 drift guard의 MATCH까지 db-init 재실행도 동결한다. 서비스 개수는 적지 않는다
+  (리뷰가 센 것은 19였고, 테넌트가 늘 때마다 바뀐다).
+  - 범위 해석기(`_compose_mutation_scope`)는 의존성까지 닿는 명령을 M1의 `_COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES`
+    하나로 본다 — `run`(과 `start`·`scale`)이 들어간다. `--no-deps`는 compose 옵션 자리에서만 센다: `run
+    SERVICE` 뒤 컨테이너 argv의 같은 글자는 compose 플래그가 아니다. M1의 R3 chokepoint는 아직
+    `"--no-deps" not in args`다 — 그 argv 철자의 틈은 M1 몫으로 남긴다(재구축의 argv는 고정이라 오늘 닿지 않는다).
+  - 대시보드의 한 서비스 재생성이 `--no-deps`가 되면서 바뀐 동작(의존 서비스를 띄우지도 기다리지도 않고
+    one-shot을 다시 돌리지 않는다)을 ADR-53 결정 4와 docker-management.md의 대시보드 절에 적었다.
+- **MED — 예약분 테스트가 유도를 가르지 못했다.** 유도하는 세 자리 중 `--expected-dump-bytes` 경로와
+  rehearse-restore의 테스트가 가짜 `max_wal_size` 1 GiB를 썼고, 그 값에서는 유도값 = 하한 2 GiB라 고정
+  상수로 되돌려도 초록이었다(리뷰 변이 둘 다 93/93 통과). 세 테스트가 한 표 `_RESERVE_CASES`(2GB → 3 GiB,
+  1GB → 2 GiB, 512MB → 2 GiB, 기대값은 리터럴)로 돈다. 그리고 `_require_free_space`가 `max_wal_size`를 분기
+  **앞에서 한 번** 읽는다 — geo 첫 백업의 비상 경로(디스크가 가장 빠듯한 때)만 WAL을 빠뜨리는 갈래가
+  구조로 없어졌다. 크기와 WAL을 한 exec로 읽던 세 번째 psql argv 사본(`_query_db_size_and_max_wal_bytes`)은
+  지웠다: 운영자 값 경로와 manifest용 크기 질의 때문에 절약이 이미 부분적이었고, 대가는 백업마다 30초 상한
+  exec 하나다.
+- **LOW**:
+  - ADR-53 상태 줄이 결정마다 효력을 갖는 PR을 적는다(4 = MT, 3의 울타리 = M1, 1·2·5와 3의 공용 instance
+    부분 = M2). ADR-35·37의 supersede 표시는 그것을 사실로 만드는 M2가 단다.
+  - 격리 실행 테스트는 이제 Manager의 정지 경로(`_control_container_unlocked`)로 실제 docker-py 컨테이너를
+    멈춘다 — daemon이 보고한 `Config.StopTimeout`이 `timeout`으로 닿는지 본다. Docker probe의
+    `OSError`/`TimeoutExpired`는 `test_compose_readiness_integration.py`의 gate helper로 skip/fail한다(gate 0에서
+    ERROR가 아니다). M1의 두 통합 파일은 아직 gate helper 사본을 따로 든다(M1 몫).
+  - 중복 테스트(`test_config_recreate_and_its_restore_never_recreate_dependencies`)를 지우고 그 두 단언을
+    `test_config_recreate_failure_restores_exact_file_and_runtime`에 옮겼다. duration 파서는 compose가 실제로
+    쓰는 `5m0s`에 결박했다.
+  - `_disk_reserve_bytes`는 dump를 뜨는 그 instance의 WAL만 덮는다고 적었다(M2가 Map 전용 instance를 퇴역시킬
+    때까지의 일시적 틈). docker-management.md의 수치는 `2N + 예약분`(D4 뒤 3 GiB)으로: geo 비상 백업 약
+    15.2 GB, 그 뒤 약 12.6 GB. transport는 n150 읽기 전용 실측(`pg_database_size` 15,405,461,987 B)으로
+    리허설·복원 약 21.8 GB(WAL을 한 번 세면 약 19.6 GB), 첫 실행 상한 약 34.0 GB.
+  - onboarding §1.1의 튜닝 행은 그 전 기록 그대로 되돌렸다(머리말이 D4 값을 갖는다).
+  - rehearse-restore가 WAL을 두 번 세는 것은 그대로 둔다 — 일부러 보수적이고 docstring에 근거가 있다.
+- **n150 실행**(모두 `/tmp`, 운영 컨테이너는 읽기 한 번 — transport 크기):
+  - 빨강 확인: 해석기 새 테스트를 리뷰 전 `compose_service.py`(`b814370`)에서 돌리면 2/5(`run`,
+    `run-argv-no-deps`). 예약분 변이 — 운영자 값 경로가 WAL을 0으로 → 3/3(2GB는 필요량으로, 나머지는 거부 문구의
+    `max_wal_size`로), rehearse-restore가 하한만 → 1/3(2GB만 — 이 경우가 없으면 초록이다, 리뷰가 본 그대로),
+    대조군 추정 경로가 WAL을 0으로 → 3/3. 한 서비스 재생성에서 `--no-deps`를 빼면 3건(옮긴 단언 포함). Manager
+    정지 경로가 timeout을 넘기지 않으면 격리 실행 테스트가 `assert [{}] == [{'timeout': 300.0}]`로 빨갛다.
+    `PATH`에 docker가 없을 때 gate 0: 새 파일 1 skipped, 리뷰 전 파일 1 error(`FileNotFoundError`); gate 1은
+    새 파일도 1 error(의도한 gate 실패).
+  - 대상 8파일 633 passed(`4f81ba4`). gated(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, 새 `git clone`, M1의 두 통합
+    파일 포함) 22 passed(`4f81ba4`), fixture 잔여 없음. 전체 스위트(`b3-test.sh`, `2b349a8`): ruff 0.16.4 통과,
+    2220 passed, 2 skipped. 그 뒤의 커밋은 이 journal뿐이다.
+- **남은 것**: M1이 더 바뀌면 다시 올린다. 분리 브랜치가 먼저 머지되면 그 머지 위로 올린다(위). PR 본문에 위
+  수치를 옮기고, 머지는 창 안에서 PR head와 머지 SHA의 `git diff --stat`이 비었는지 확인한 뒤다.
