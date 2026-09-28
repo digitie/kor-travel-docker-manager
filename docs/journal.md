@@ -7809,3 +7809,60 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
     `Config.StopTimeout=null`이다(09-29 확인). 이 변경 뒤에도 대시보드·CLI의 stop/restart는 docker 기본 10초
     뒤 SIGKILL이다 — 이 변경이 만든 것은 아니다. 퇴역할 때까지 대시보드·CLI로 멈추지 않는다
     (`docs/docker-management.md` §7). grace를 주는 것은 compose 변경이라 별도 변경이다.
+
+## 2026-09-28 — Map DB 이동 M1: 재구축의 tenant 울타리와 launcher의 adopt 통과
+
+소유자 결정 C(Map의 두 DB를 공용 instance로)의 첫 PR이다. 오늘 topology(Map 전용 12700)에서도 안전하게
+먼저 들어가는 것만 담았다 — 공용 instance 튜닝(MT)과 이동(M2)은 창 안에서만 머지한다.
+
+- **launcher**(`scripts/run-pinned-rebuild-once`): `SHA OUT [--adopt-live-databases REASON]`. 이동은 같은 pair의
+  재구축이라 새 DB identity를 받아들이는 adopt가 필요한데 launcher가 인자 둘만 받았다. REASON은 한 줄 1~200자
+  printable이고 `-`로 시작하지 않는다(argparse가 옵션으로 읽는다) — lock·claim·출력 디렉터리보다 먼저 본다.
+  `--restart`는 넘기지 않는다. 인자 둘의 argv는 그대로다.
+- **R2 소유자**: instance admin은 어떤 drop의 허용 소유자도 아니다. Map drop 소유자는 첫 drop 전에 Map 쌍 밖의
+  DB를 소유하지 않아야 한다(live `datdba`). Dagster metadata role의 password 회전은 그 role이 DB도
+  `pg_shdepend` 행도 소유하지 않을 때만 한다. 공용 instance에서는 모든 tenant login이 후보라, 일관되게 잘못 박힌
+  metadata user·Dagster DB 이름 한 쌍이 PinVi의 password를 돌리거나 `pinvi_dagster`를 지울 수 있었다(스펙 §1.1 b).
+  C6c는 `KOR_TRAVEL_MAP_DAGSTER_METADATA_USER == KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB`를 재구축 전에 요구한다.
+  - 부수 효과(의도): 12700에서 `ktm_feature_schema_owner`가 잔재 `ktm_40b`·`ktm_gcverify`도 소유하므로 거기서
+    `--restart`는 이제 거부한다. 이 계획은 `--restart`를 쓰지 않는다.
+- **이름 울타리**: `postgres`·`template*`을 수렴 경로·`create_database_if_absent`·격리에서도 거부한다(공용
+  instance의 `postgres`는 admin 소유에 `alembic_version`이 없어 "bootstrap 전 Map DB"로 읽힌다).
+- **R3 chokepoint**: 재구축의 모든 compose 호출이 지나는 `_run_pinned_runtime_rebuild_compose`에서 서비스를
+  명시하지 않은 mutation과, 전용 집합(`_PINNED_RUNTIME_DATABASE_SERVICES`) 밖의 PostgreSQL 서버(declared ∪
+  witnessed, 새 공개 helper `postgres_server_services`)를 거부한다. 해석기는 기존 것을 `_compose_mutation_scope`로
+  나눠 재사용했다.
+- **R4**: 배포(bootstrap 뒤, Map API 전)와 같은 pair 수렴(`up` 전)마다 두 Map DB에서 PUBLIC CONNECT를 걷고,
+  app DB에 `KOR_TRAVEL_MAP_PG_DSN` login CONNECT와 `CONNECTION LIMIT floor(0.4 × usable)`를 건 뒤 읽어서
+  확인한다(login 집합은 `has_database_privilege`로 — membership으로 얻는 CONNECT까지 잡는다).
+  - 12700 읽기 전용 실측(10:24Z, `BEGIN READ ONLY`): 두 DB 모두 `datacl` NULL·`datconnlimit` −1, non-superuser
+    LOGIN은 `kor_travel_map_dagster`·`krtour_map`·`ktm_feature_service`, app DB 소유자를 상속하는 login 0,
+    Dagster DB 소유자를 상속하는 login은 그 자신뿐, `max_connections` 100·superuser 예약 3·예약 0 → usable 97,
+    상한 38. 설치 뒤 같은 pair 수렴의 read-back이 통과할 모양이다. `krtour_map`은 두 DB의 CONNECT를 잃는다(스펙이
+    받아들였다).
+- **실 PostgreSQL 통합 테스트**(§1.6): 공용 instance와 같은 digest 이미지, `--network none`, S1 모양(Map 소유자
+  = instance admin). T-R2a~d, T-NAME, T-R4, T-R4i, T-CAP과 membership read-back. compose 쪽 T-R3/T-R3c는
+  `--no-deps`가 drift된 PostgreSQL을 한 번도 멈추지 않는 것과, 없으면 compose가 그것을 다시 만드는 것(§0.4의
+  위험)을 실제로 보인다.
+- **테스트(n150)**:
+  - 커밋마다(`7d247d8`~`d4d1ce4`) launcher·`database_runtime`·재구축 단위 파일이 초록이다(165/165/183/213/238).
+  - gate 켠 전체 스위트(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, `bd4aade`의 새 clone, n150 venv): **2154 passed,
+    2 skipped**(root 전용 M05 ledger 둘), 8m12s. ruff 0.16.4 깨끗. 수집 수는 main `5b99322` 2054 → 2156, 새 사례
+    102(단위 91, 통합 11).
+    - 먼저 `git archive` 사본에서 돌린 같은 스위트는 5 failed였다: 넷은 git index가 있어야 하는 테스트(실행 비트,
+      installer의 `git show`)라 clone에서 14 passed, 하나는 기존 `test_compose_readiness_integration`이 부하
+      14~18에서 compose 30초 예산을 넘긴 것이다(재실행 31.6초 통과). 그 실행이 남긴 `Created` 컨테이너 셋은
+      지웠다 — 이전 실행(다른 PID 넷)의 `ktdm-readiness-*` 잔재 12개는 내 것이 아니라 그대로 뒀다.
+  - 빨강 확인(새 테스트를 `5b99322` 코드에): 단위 91 중 **79 red**, 12 green — launcher 회귀 가드 7(인자 둘의 argv,
+    `--restart` 거부 모양 6), R3 허용 사례 4, R2 대조군 1. 통합 11 중 **7 red**(T-R2a·T-R2d·T-NAME·T-R4·T-R4i·
+    membership·T-CAP), 4 green — T-R2b·T-R2c는 기존 울타리의 대조군, T-R3·T-R3c는 compose 자체의 동작이다.
+    harness가 새 patch 대상(`ensure_map_databases_isolated`)을 허용하게 하면 기존 harness 테스트 70개는
+    `5b99322`에서 전부 초록이다 — harness 변경이 그들의 단언을 바꾸지 않았다.
+  - 변이 11개가 각자의 탐지기를 빨갛게 했다: chokepoint 끔(21), 공용 instance `up` 주입(4 — chokepoint 켬·끔 둘 다,
+    끔일 때는 테스트 자신의 독립 단언이 잡는다), 수렴·배포의 격리 호출 제거(각 1), admin 차감 제거(6), 배타성 제거(2),
+    회전 소유 검사 제거(3), ensure 이름 울타리 제거(4), read-back login 집합 끔(2), launcher 사유 검증 끔(8).
+- **스펙과 다른 점**: R3는 스펙의 열 가지 동작 대신 해석기가 read-only가 아니라고 분류하는 **모든** 명령과 해석
+  불가 명령에 건다(두 번째 목록을 두지 않는다). launcher는 `-`로 시작하는 사유도 거부한다. C6c 규칙을 넣으며
+  `.env.example`과 두 계약 fixture의 metadata user를 Dagster DB 이름에 맞췄다. 통합 fixture는 PGDATA를 tmpfs에
+  두고 `max_connections`로 상한 helper의 입력을 정한다.
+- `/tmp/b3-test.sh`는 다른 세션의 Map pytest 때문에 BUSY로 재시도 중이었다 — 위의 clone 실행이 같은 스위트다.
