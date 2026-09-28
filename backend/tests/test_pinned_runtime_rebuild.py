@@ -189,7 +189,9 @@ def _sources() -> PinnedRuntimeSourceMaterialization:
 
 
 def _opaque_transaction() -> Any:
-    return object()
+    # 재구축 compose 실행기는 R3 chokepoint에서 resolved 문서의 PostgreSQL 서버만 본다.
+    # 그 밖은 여전히 불투명하다.
+    return SimpleNamespace(resolved={"services": {}})
 
 
 def _sources_for(release: PinnedRuntimeRelease) -> PinnedRuntimeSourceMaterialization:
@@ -1622,6 +1624,7 @@ def _forward_harness(
         monkeypatch.setattr(service, name, replacement)
     return SimpleNamespace(
         service=service,
+        transaction=transaction,
         candidate=candidate,
         runtimes=runtimes,
         status_path=status_path,
@@ -2387,3 +2390,234 @@ def test_a_failed_bookkeeping_write_leaves_the_verified_runtime_up(
     assert harness.operations.count(stop) == 1
     status = read_deploy_status(harness.status_path)
     assert status is not None and status.state == "in_progress"
+
+
+# --- M1 R3: 재구축은 전용 집합 밖의 PostgreSQL 서버를 바꾸지 않는다 ----------------------------
+
+
+def _transaction_with_postgres(**extra: Mapping[str, Any]) -> Any:
+    """n150처럼 두 PostgreSQL 서버(공용·Map 전용)를 담은 frozen 문서."""
+
+    return SimpleNamespace(
+        resolved={
+            "services": {
+                "kor-travel-shared-postgres": {"command": ["postgres", "-p", "11000"]},
+                "kor-travel-map-postgres": {"command": ["postgres", "-p", "12700"]},
+                "kor-travel-map-api": {"image": "sha256:" + "1" * 64},
+                **extra,
+            }
+        }
+    )
+
+
+def _succeeding_recovery() -> Mock:
+    return Mock(return_value={"success": True, "returncode": 0, "stdout": "", "stderr": ""})
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        *(
+            [action, *(["--no-deps"] if action in {"up", "run"} else []), "kor-travel-shared-postgres"]
+            for action in (
+                "up",
+                "run",
+                "create",
+                "start",
+                "restart",
+                "stop",
+                "kill",
+                "rm",
+                "down",
+                "pause",
+            )
+        ),
+        ["--profile", "bootstrap", "rm", "-f", "-s", "kor-travel-shared-postgres"],
+        ["up", "-d", "--no-deps", "--wait", "kor-travel-map-api", "kor-travel-shared-postgres"],
+    ],
+    ids=lambda arguments: " ".join(arguments),
+)
+def test_rebuild_compose_refuses_mutating_a_shared_postgres_service(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(
+        DeploymentContractError, match="outside its dedicated set: kor-travel-shared-postgres"
+    ):
+        service._run_pinned_runtime_rebuild_compose(
+            arguments, transaction=_transaction_with_postgres()
+        )
+
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["ps", "--format", "json", "kor-travel-shared-postgres"],
+        ["--profile", "bootstrap", "ps", "--all", "--format", "json", "kor-travel-shared-postgres"],
+        # 전용 집합(M1에서는 Map 전용 instance)은 재구축이 health까지 띄운다.
+        ["up", "-d", "--no-deps", "--wait", "kor-travel-map-postgres"],
+        ["stop", "kor-travel-map-api"],
+    ],
+    ids=lambda arguments: " ".join(arguments),
+)
+def test_rebuild_compose_allows_reads_and_the_dedicated_set(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    service._run_pinned_runtime_rebuild_compose(
+        arguments, transaction=_transaction_with_postgres()
+    )
+
+    runner.assert_called_once()
+
+
+def test_rebuild_compose_refuses_a_witnessed_postgres_server_that_is_not_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """이름 목록이 없다 — 문서가 서버 실행 형태를 드러내면 이름이 무엇이든 PostgreSQL이다."""
+
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(DeploymentContractError, match="dedicated set: sidecar-db"):
+        service._run_pinned_runtime_rebuild_compose(
+            ["stop", "sidecar-db"],
+            transaction=_transaction_with_postgres(
+                **{"sidecar-db": {"command": "sh -c 'exec /usr/lib/postgresql/16/bin/postgres'"}}
+            ),
+        )
+
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["stop"],
+        ["down"],
+        ["up", "-d", "--no-deps"],
+        ["rm", "-f", "-s"],
+        ["restart"],
+        ["--profile", "bootstrap", "kill"],
+        ["frobnicate", "kor-travel-map-api"],
+        ["--bogus-flag", "stop", "kor-travel-map-api"],
+    ],
+    ids=lambda arguments: " ".join(arguments),
+)
+def test_rebuild_compose_refuses_a_mutating_call_without_explicit_services(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """서비스를 말하지 않는 mutation은 compose가 **모든** 서비스로 읽는다 — 공용 instance 포함."""
+
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(DeploymentContractError, match="must name its services explicitly"):
+        service._run_pinned_runtime_rebuild_compose(
+            arguments, transaction=_transaction_with_postgres()
+        )
+
+    runner.assert_not_called()
+
+
+def test_postgres_server_services_is_declared_or_witnessed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        c6c_deployment,
+        "_declared_postgres_compose_services",
+        lambda: frozenset({"declared-db", "declared-but-absent"}),
+    )
+
+    assert c6c_deployment.postgres_server_services(
+        {
+            "services": {
+                "declared-db": {"image": "anything"},
+                "witnessed-db": {"command": "sh -c 'exec postgres -p 1'"},
+                "env-db": {"environment": {"POSTGRES_PASSWORD_FILE": "/run/secrets/x"}},
+                "app": {"command": ["uvicorn", "app:api"]},
+                # psql 클라이언트의 DB 이름 `postgres`는 서버가 아니다.
+                "client": {"command": ["psql", "-d", "postgres"]},
+            }
+        }
+    ) == {"declared-db", "witnessed-db", "env-db"}
+
+
+@pytest.mark.parametrize("scenario", ("first_deploy", "same_pair", "new_pair", "restart"))
+def test_full_rebuild_never_mutates_a_postgres_service_outside_the_dedicated_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
+) -> None:
+    """재구축 전체를 대역으로 끝까지 돌리고, Docker에 닿은 **모든** compose argv를 본다.
+
+    chokepoint(`_run_pinned_runtime_rebuild_compose`)는 진짜를 쓴다 — Docker 직전의
+    `_run_frozen_recovery`만 기록기로 바꾼다. 단언은 chokepoint와 독립이다: 기록된 argv를
+    같은 해석기로 다시 읽어 이름 붙은 PostgreSQL 서버가 전용 집합의 부분집합인지 본다. M1의
+    전용 집합은 Map 전용 instance 하나이고, M2가 그것을 비우면 같은 단언이 "어떤
+    PostgreSQL 서버도 이름으로 불리지 않는다"가 된다.
+    """
+
+    candidate = _candidate_generation()
+    previous = {
+        "first_deploy": None,
+        "same_pair": _committed_status(candidate),
+        "new_pair": _committed_status(candidate, map_revision="0" * 40),
+        "restart": _committed_status(candidate, map_revision="0" * 40),
+    }[scenario]
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    harness.transaction.resolved["services"].update(
+        {
+            "kor-travel-shared-postgres": {"command": ["postgres", "-p", "11000"]},
+            "kor-travel-map-postgres": {"command": ["postgres", "-p", "12700"]},
+        }
+    )
+    recorded: list[tuple[str, ...]] = []
+
+    def recover(
+        arguments: Sequence[str],
+        *,
+        transaction: object,
+        mutation_capability: object,
+        capture_output: bool = True,
+    ) -> dict[str, Any]:
+        del transaction, mutation_capability, capture_output
+        recorded.append(tuple(arguments))
+        return {"success": True, "returncode": 0, "stdout": "", "stderr": ""}
+
+    # harness가 대역으로 바꾼 compose 실행기를 걷어 진짜 chokepoint를 태운다.
+    monkeypatch.delattr(harness.service, "_run_pinned_runtime_rebuild_compose")
+    monkeypatch.setattr(harness.service, "_run_frozen_recovery", recover)
+
+    if scenario == "restart":
+        harness.service.rebuild_pinned_runtime(restart_reason="R3 end-to-end")
+    else:
+        harness.service.rebuild_pinned_runtime()
+
+    postgres = c6c_deployment.postgres_server_services(harness.transaction.resolved)
+    assert postgres == {"kor-travel-shared-postgres", "kor-travel-map-postgres"}
+    dedicated = set(compose_service_module._PINNED_RUNTIME_DATABASE_SERVICES)
+    mutations = [
+        operation
+        for operation in recorded
+        if ComposeService._compose_mutation_scope(operation) != []
+    ]
+    # 탐지기가 공허하지 않다: 재구축의 mutation이 실제로 기록됐다.
+    assert any(operation[0] == "up" for operation in mutations)
+    named: set[str] = set()
+    for operation in mutations:
+        scope = ComposeService._compose_mutation_scope(operation)
+        assert scope is not None, operation
+        named |= set(scope) & postgres
+    assert named <= dedicated, sorted(named - dedicated)

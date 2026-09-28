@@ -43,6 +43,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     load_c6c_deployment_config_from_environment,
     manager_mutation_lock,
     manager_mutation_lock_path,
+    postgres_server_services,
     revalidate_candidate_system_bind_snapshots,
     run_pinvi_canonical_smoke,
     validate_c6c_build_source_wiring,
@@ -3194,11 +3195,28 @@ class ComposeService:
 
     @staticmethod
     def _compose_mutation_identifiers(args: Sequence[str]) -> list[str]:
-        """Compose 명령을 read-only allowlist로 분류하고 mutation 대상을 보수적으로 찾는다."""
+        """Compose 명령을 read-only allowlist로 분류하고 mutation 대상을 보수적으로 찾는다.
+
+        명시 서비스가 없거나 해석할 수 없는 mutation은 두 API 전부에 닿는다고 본다.
+        """
+
+        scope = ComposeService._compose_mutation_scope(args)
+        if scope is None:
+            return [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
+        return scope
+
+    @staticmethod
+    def _compose_mutation_scope(args: Sequence[str]) -> list[str] | None:
+        """read-only면 ``[]``, 명시 서비스가 있는 mutation이면 그 식별자, 그 밖은 ``None``.
+
+        ``None``은 "이 호출이 무엇을 바꾸는지 서비스 이름으로 말할 수 없다"는 뜻이다 — 인자가
+        없거나, 해석에 실패했거나, 모르는 명령이거나, 서비스를 명시하지 않은 mutation(compose가
+        **모든** 서비스로 읽는다)이다. 명시 mutation의 목록은 비지 않으므로 ``[]``와 섞이지 않는다.
+        """
 
         runtime_identifiers = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
         if not args:
-            return runtime_identifiers
+            return None
         global_options_with_value = {
             "--ansi",
             "--env-file",
@@ -3227,7 +3245,7 @@ class ComposeService:
                 continue
             if item in global_options_with_value:
                 if index + 1 >= len(args):
-                    return runtime_identifiers
+                    return None
                 skip_next = True
                 continue
             inline_global_option = next(
@@ -3241,16 +3259,16 @@ class ComposeService:
             )
             if inline_global_option is not None:
                 if not item.partition("=")[2]:
-                    return runtime_identifiers
+                    return None
                 continue
             if item.startswith("-"):
                 if item not in global_flags:
-                    return runtime_identifiers
+                    return None
                 continue
             command_index = index
             break
         if command_index is None:
-            return runtime_identifiers
+            return None
         command = args[command_index]
         if command == "config":
             read_options_with_value = {"--format", "--hash"}
@@ -3279,10 +3297,10 @@ class ComposeService:
                     or item.startswith("--output=")
                     or (item.startswith("-o") and item != "-o")
                 ):
-                    return runtime_identifiers
+                    return None
                 if item in read_options_with_value:
                     if index + 1 >= len(config_items):
-                        return runtime_identifiers
+                        return None
                     skip_next = True
                     continue
                 inline_read_option = next(
@@ -3295,10 +3313,10 @@ class ComposeService:
                 )
                 if inline_read_option is not None:
                     if not item.partition("=")[2]:
-                        return runtime_identifiers
+                        return None
                     continue
                 if item not in read_flags:
-                    return runtime_identifiers
+                    return None
             return []
         read_only = {
             "events",
@@ -3318,10 +3336,10 @@ class ComposeService:
                 item == "--down-project" or item.startswith("--down-project=")
                 for item in args
             ):
-                return runtime_identifiers
+                return None
             wait_items = args[command_index + 1 :]
             if any(item.startswith("-") for item in wait_items):
-                return runtime_identifiers
+                return None
             return []
         mutation_commands = {
             "build",
@@ -3344,7 +3362,7 @@ class ComposeService:
             "watch",
         }
         if command not in mutation_commands:
-            return runtime_identifiers
+            return None
         options_with_value = {
             "--attach",
             "--build-arg",
@@ -3431,16 +3449,16 @@ class ComposeService:
             if item == "--scale" and index + 1 < len(items):
                 service = items[index + 1].partition("=")[0]
                 if not service:
-                    return runtime_identifiers
+                    return None
                 explicit_services.append(service)
                 skip_next = True
                 continue
             if item == "--scale":
-                return runtime_identifiers
+                return None
             if item.startswith("--scale="):
                 service = item.removeprefix("--scale=").partition("=")[0]
                 if not service:
-                    return runtime_identifiers
+                    return None
                 explicit_services.append(service)
                 continue
             if command == "scale" and "=" in item and not item.startswith("-"):
@@ -3448,7 +3466,7 @@ class ComposeService:
                 continue
             if item in options_with_value:
                 if index + 1 >= len(items):
-                    return runtime_identifiers
+                    return None
                 skip_next = True
                 continue
             inline_value_option = next(
@@ -3462,11 +3480,11 @@ class ComposeService:
             )
             if inline_value_option is not None:
                 if not item.partition("=")[2]:
-                    return runtime_identifiers
+                    return None
                 continue
             if item.startswith("-"):
                 if item not in flag_options:
-                    return runtime_identifiers
+                    return None
                 continue
             explicit_services.append(item)
         if explicit_services:
@@ -3492,7 +3510,7 @@ class ComposeService:
                 explicit_services.extend(runtime_identifiers)
             return explicit_services
         # down/rm --all/unknown command/option parse failure may affect either API.
-        return runtime_identifiers
+        return None
 
     def ensure_target(
         self,
@@ -3826,6 +3844,7 @@ class ComposeService:
             raise DeploymentContractError(
                 "pinned runtime rebuild Compose startup requires --no-deps"
             )
+        self._require_rebuild_compose_spares_foreign_postgres(args, transaction=transaction)
         # Compose turns a multi-target build into one BuildKit bake request.  On
         # the small n150 host that request opens several frontend sessions at
         # once; a second build (for example an unrelated tvnm05 build) can then
@@ -3864,6 +3883,39 @@ class ComposeService:
             f"pinned runtime rebuild Compose {' '.join(args)} failed "
             f"(exit {result['returncode']}){tail}"
         )
+
+    @staticmethod
+    def _require_rebuild_compose_spares_foreign_postgres(
+        args: Sequence[str],
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        """재구축은 자기 전용 집합 밖의 PostgreSQL 서버 서비스를 바꾸지 않는다(R3 chokepoint).
+
+        공용 instance는 모든 tenant가 같이 쓴다. 그 컨테이너를 재구축이 멈추거나 다시 만들면
+        모든 tenant가 끊긴다. 그래서 재구축의 모든 compose 호출이 지나는 이 한 자리에서, 무엇을
+        바꾸는지 서비스 이름으로 말할 수 없는 mutation(명시 서비스 없음·해석 불가)을 거부하고,
+        명시 식별자 가운데 PostgreSQL 서버가 `_PINNED_RUNTIME_DATABASE_SERVICES` 밖에 있으면
+        거부한다. mutation 분류와 식별자는 기존 해석기(`_compose_mutation_scope`)가, PostgreSQL
+        서버 판정은 C6c(`postgres_server_services`)가 소유한다 — 이름 목록이 없다.
+        """
+
+        scope = ComposeService._compose_mutation_scope(args)
+        if scope is None:
+            raise DeploymentContractError(
+                "pinned runtime rebuild Compose mutation must name its services explicitly"
+            )
+        if not scope:
+            return
+        foreign = sorted(
+            (postgres_server_services(transaction.resolved) & set(scope))
+            - set(_PINNED_RUNTIME_DATABASE_SERVICES)
+        )
+        if foreign:
+            raise DeploymentContractError(
+                "pinned runtime rebuild must not mutate a PostgreSQL service outside its "
+                f"dedicated set: {', '.join(foreign)}"
+            )
 
     @staticmethod
     def _pinned_runtime_compose_action(args: Sequence[str]) -> str:

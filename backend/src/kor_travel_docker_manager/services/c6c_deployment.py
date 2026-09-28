@@ -1546,6 +1546,29 @@ def _service_witnesses_a_postgres_server(
     return any(name in declared_env for name in _POSTGRES_CLUSTER_INIT_ENV_NAMES)
 
 
+def postgres_server_services(resolved: Mapping[str, Any]) -> frozenset[str]:
+    """이 resolved 문서에서 PostgreSQL **서버**인 compose 서비스 = declared ∪ witnessed.
+
+    이름을 들지 않는다. declared는 신뢰된 `config/docker-targets.yml`의 role에서, witnessed는
+    문서가 스스로 드러내는 서버 실행 형태에서 온다(`_service_witnesses_a_postgres_server`).
+    문서에 없는 declared 이름은 뺀다 — compose가 그 서비스를 다룰 수 없다.
+    """
+
+    services = resolved.get("services")
+    if not isinstance(services, Mapping):
+        return frozenset()
+    declared = _declared_postgres_compose_services()
+    found: set[str] = set()
+    for service_name, service in services.items():
+        if not isinstance(service_name, str) or not isinstance(service, Mapping):
+            continue
+        if service_name in declared or _service_witnesses_a_postgres_server(
+            service, dict(_service_environment_items(service))
+        ):
+            found.add(service_name)
+    return frozenset(found)
+
+
 #: 클러스터 서비스의 `healthcheck` payload에 나타나는 **프로그램 자리**. 정본 넷을
 #: 실측해 얻었다 — `pg_isready`, 그리고 map이 쓰는 `test "$(cat /proc/1/comm)" = postgres`.
 #:
