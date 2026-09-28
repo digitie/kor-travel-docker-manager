@@ -7329,6 +7329,9 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
     superuser 리터럴을 공용 instance의 app role로 바꾼 첫판은 비밀번호가 없어 인증에서 기동 뒤에
     죽는 기본값이었다(적대 리뷰). n150은 `.env`로 값을 준다 — 떠 있는 concierge 셋의 DSN이
     `kor_travel_concierge_app:<비밀번호>@127.0.0.1:11000`이다(읽기 전용 inspect, 비밀번호는 보지 않음).
+    `test_f1d_compose_contract`의 합성 env에 그 키가 없어 concierge api를 resolve하는 검사 하나가
+    `required variable ... is missing`으로 빨갛게 됐다 — `:?`가 실제로 걸린다는 증거이고, 합성 env에
+    키를 더했다.
   - `.env.example`에서 옛 instance만 읽던 키를 뺐다. 예시 DSN은 공용 instance 형태로 바꿨다.
   - `docs/ports.md`·`platform-topology.md`·`docker-management.md`·`shared-postgres-onboarding.md`·
     `architecture.md`·`dev-environment.md`·`README.md`를 현재 토폴로지로 맞췄다.
@@ -7380,8 +7383,8 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
      `pg_restore --list`로 읽히는지 확인한다.
   3. 같은 곳으로 옛 instance 출처의 dump 세트(`<role>-*.dump`·`.dump.sha256`·`.manifest`)를 옮긴다 —
      `pinvi` 7개·`geo_dagster` 5개·`concierge` 7개·`geo` 1개. 새 `gc`는 그것들을 지우지 않지만, 옮기지
-     않으면 cron 로그가 매일 `kept N dump(s) taken from another instance`를 찍고 `restore-plan`의 최신
-     후보가 옛 dump가 된다.
+     않으면 cron 로그가 매일 `kept N dump(s) taken from another instance`를 찍고, 첫 새 dump 전까지는
+     `restore-plan`의 기본 후보가 옛 dump다(`INSTANCE_MISMATCH`로 차단된다).
   4. `.env`에 `KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL`이 있는지 확인한다(이제 필수 — 없으면 모든
      compose 명령이 실패한다). 설치 → rebind → verify. 릴리스에서 `docker compose config -q`가 통과하는지
      본다(orphan 경고는 `config`가 아니라 `up`/`down`만 낸다).

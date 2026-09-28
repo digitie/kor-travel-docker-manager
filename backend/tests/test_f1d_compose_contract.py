@@ -335,6 +335,11 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_CONCIERGE_UI_TRUST_FORWARDED_IPS": "false",
         "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS": "https://concierge.example.test",
         "KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL": "",
+        # 2026-09-28부터 기본값이 없다(`:?`) — 비밀번호 없는 기본값은 인증에서 죽었다.
+        "KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL": (
+            "postgresql+asyncpg://kor_travel_concierge_app:concierge-contract-app-password@"
+            "127.0.0.1:11000/kor_travel_concierge"
+        ),
         "PINVI_POSTGRES_DB": "pinvi",
         "PINVI_APP_DB_USER": "pinvi_contract_app",
         "PINVI_APP_DB_PASSWORD": "pinvi-contract-app-password",
