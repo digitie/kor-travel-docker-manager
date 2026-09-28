@@ -292,6 +292,8 @@ def test_two_argument_form_is_unchanged(tmp_path: Path) -> None:
     "reason",
     [
         "",
+        " ",
+        "   ",
         "two\nlines",
         "carriage\rreturn",
         "tab\there",
@@ -300,7 +302,18 @@ def test_two_argument_form_is_unchanged(tmp_path: Path) -> None:
         "--restart",
         "-x",
     ],
-    ids=["empty", "multiline", "cr", "tab", "escape", "overlong", "restart-flag", "dash"],
+    ids=[
+        "empty",
+        "whitespace-only",
+        "spaces-only",
+        "multiline",
+        "cr",
+        "tab",
+        "escape",
+        "overlong",
+        "restart-flag",
+        "dash",
+    ],
 )
 def test_adopt_reason_rejects_multiline_control_and_overlong(
     tmp_path: Path, reason: str
