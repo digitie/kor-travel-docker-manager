@@ -7245,3 +7245,46 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
   - weather는 code-server를 먼저, healthy 뒤 webserver·daemon 순으로 했다.
 - **결과**: 좀비 565 → 40(남은 것은 비-Dagster·airport), 동시 probe 47 → 1, weather code-server 복구(수집 재개).
 - **짝**: Map #1284(Map 자체 compose에 같은 계약). airport(transport) 스택은 그 저장소에서 따로 한다.
+
+## 2026-09-28 — M05 격리 실행의 host 포트를 고정해 web 이미지 빌드 캐시를 살린다
+
+- **발견(n150, 2026-09-27)**: `_free_ports`가 탐색 시작점을 transaction에서 뽑아 실행마다 포트가 달랐다.
+  그런데 포트는 빌드 입력이다. Map frontend는 `NEXT_PUBLIC_KOR_TRAVEL_MAP_API`(map_api)와
+  `NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL`(compose가 `KOR_TRAVEL_MAP_DAGSTER_PORT`에서 파생)을,
+  PinVi web은 `NEXT_PUBLIC_PINVI_API_URL`과 `NEXT_PUBLIC_GRAFANA_URL`(`PINVI_GRAFANA_PORT`에서 파생)을
+  빌드 인자로 굽는다. 그래서 두 web 이미지는 매 실행 BuildKit 캐시를 놓쳤다. PinVi web은 수 GB
+  node_modules 층을 단일 스레드 gzip으로 다시 내보내느라 20-120분을 썼다. p2-p7은 그 언저리에서 죽었다
+  (commit deadline, BuildKit session healthcheck 사망, 빌드가 더한 부하 속 healthcheck 창 초과).
+  포트와 무관한 Map API·PinVi API 이미지는 같은 실행에서 캐시로 3-10초였다.
+- **변경**: 탐색 시작점을 `_PORT_SCAN_BASE = 28629`로 고정하고 `transaction` 인자를 없앴다. ephemeral
+  하한 가드(<= 29999면 닫힘), 포트별 `ss -H -ltn` 검사, 사용 중이면 다음 13포트 창으로 넘어가는 탐색,
+  30000 미만 상한, `ports_unavailable`은 그대로다. M05 실행은 launcher의 host-global mutation lock으로
+  직렬화되므로 고정 창을 실행끼리 다투지 않는다. 앞 창이 쓰이고 있으면 그 실행만 캐시를 놓친다.
+  - 28629는 p7(transaction `7cb6f355`)의 창이다. 같은 핀으로 끝까지 export된 이미지가 n150에 남아 있다
+    (PinVi web `5ad448e8` 22:01:42, Map frontend `ce948a62` 19:56:57). PinVi web 이력에
+    `NEXT_PUBLIC_PINVI_API_URL=…:28634`(+5)·`NEXT_PUBLIC_GRAFANA_URL=…:28641`(+12)이 찍혀 있다.
+    20000이었다면 고정 뒤 첫 실행이 어느 실행도 쓴 적 없는 창이라 PinVi web 층을 부하 속에서 한 번 더
+    내보냈다(적대 리뷰). 30000 아래 창은 105개(첫 창 + 대체 104)다.
+  - 한계: n150 BuildKit 캐시는 GC 예약 하한(43.77 GiB)에 붙어 있어 새 빌드마다 LRU 축출이 돈다. 사이에
+    낀 prod 재구축·D2 사이클이 web 사슬을 밀어낼 수 있다 — "한 번 빌드하면 계속 재사용"은 그 사슬이 최근
+    사용 쪽에 남아 있는 동안만이다.
+- **감사(핀 pair Map `a18d9274`·PinVi `fd07903f`의 compose를 n150에서 `docker compose config`로 렌더,
+  비밀은 매 실행 새 값)**: 두 실행 사이에 달라지는 빌드 인자는 위 네 개뿐이었고, 고정 뒤에는 0개다.
+  - 비밀은 어느 빌드 인자에도 닿지 않는다. 빌드 인자는 Map `KOR_TRAVEL_MAP_GIT_COMMIT`(핀),
+    PinVi `PINVI_SOURCE_REVISION`(핀)·`PINVI_BUILD_ENVIRONMENT=isolated`와 상수 기본값뿐이다.
+  - 빌드 컨텍스트 경로는 실행마다 다르지만 내용은 같다. Map은 실행별 checkout(`runtime/map-src`)이다.
+    driver는 그 안에 아무것도 쓰지 않는다(env·override·admission은 형제 `runtime/`). `.git/`·`.env*`는
+    `.dockerignore`가 뺀다. PinVi는 `docker-app.sh`가 핀 revision을 `git archive`해 mktemp 디렉터리에 푼다.
+  - 실행마다 다른 것은 이름뿐이다. project·image 이름과 compose가 붙이는 이미지 label
+    `com.docker.compose.project`가 그렇다. label은 이미지 config(ID)만 바꾸고 층 캐시 키는 바꾸지 않는다.
+    서비스 `labels`(transaction 등)는 컨테이너 label이지 build label이 아니다.
+- **테스트**: `test_two_runs_hand_every_image_build_the_same_inputs`(full_path)는 가짜 docker 호스트로
+  `main`을 두 번 끝까지 돌리고, **빌드 명령이 받은 입력**을 비교한다. Map `compose up --build`와 PinVi
+  `docker-app.sh build`·`compose up --build` 순간의 env 파일(+ driver가 넘긴 셸 env)을 핀 compose
+  `build.args`가 보간하는 이름(`NEXT_PUBLIC_*` 전부, 포트·revision 키)으로 투영하고, 렌더된 build 절은
+  context 경로만 빼고 본다. transaction이 다르고 전체 env(비밀·project 이름)가 다르다는 것, 두 web 이미지와
+  그 포트 키를 실제로 봤다는 것도 확인한다. 그래서 포트가 아닌 실행별 값(transaction, network 주소)이
+  빌드 인자로 새는 회귀도 잡는다. origin/main driver에 대고 돌리면 빨갛다(`NEXT_PUBLIC_KOR_TRAVEL_MAP_API`
+  등이 실행마다 다르다). 적대 리뷰가 지적한 첫판(`ss`가 확인한 포트 목록 비교)은 env 파일이 쓰이기 전에
+  멈춰 빌드 입력을 보지 못해 걷어냈다. 사용 중 창 건너뛰기의 결정성, ephemeral 가드(20000·29999·빈 값·
+  숫자 아님·읽기 실패), 30000 상한(모든 창 사용 중 → 30000 아래 창만 다 보고 닫힘)도 고정했다.
