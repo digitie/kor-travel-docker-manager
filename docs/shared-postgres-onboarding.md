@@ -272,7 +272,7 @@ GRANT  CONNECT ON DATABASE <app DB>       TO <app_user>;
 | C6 | secret은 **반드시 env provider**. `file:` 금지 | 후보/resolved 양쪽 계약이 명시적으로 거부 → 배포 차단 |
 | C7 | 앱 컨테이너에는 secret을 **마운트하지 않는다**(비밀번호는 DSN env로만) | 선례와 어긋나고, 비밀번호 보관처가 하나 더 늘어난다 |
 | C8 | override 파일(`docker-compose.override.yml`)로 시도하지 않는다 | 그 파일이 **존재하는 것만으로** deployment readiness가 `missing`으로 떨어져 승인된 재구축 전체가 막힌다 |
-| C9 | **튜닝·연결 상한 변경은 합류 PR과 분리한다** | 공용 서비스 `command:`의 튜닝 값(compose 리터럴이 정본, ADR-53 D4)과 `max_connections`는 **cluster 전역 단일값**이라 테넌트별로 나눌 수 없고, 반영하려면 **공용 postgres 재기동 = 이미 live인 모든 테넌트의 다운타임**이 따른다. 별개 배포 창에서, 기존 테넌트에 공지하고 한다. 재기동은 `stop_grace_period`(ADR-52, 300s) 안에 종료 checkpoint를 끝내야 crash recovery 없이 뜬다 — Manager의 컨테이너 stop/restart는 그 값을 따르고, 계획된 재기동은 수동 `CHECKPOINT` 뒤 `docker stop --time 300`을 쓴다. 공용 서비스의 `/dev/shm`은 `shm_size: 1gb`다(ADR-53 D4 — ADR-52가 옛 geo 전용 instance와 같은 512mb로 올렸고, 그전 64MB에서 병렬 질의가 `could not resize shared memory segment`로 죽었다). 더 필요하면 이것도 cluster 전역 값이다 |
+| C9 | **튜닝·연결 상한 변경은 합류 PR과 분리한다** | 공용 서비스 `command:`의 튜닝 값(compose 리터럴이 정본, ADR-53 D4)과 `max_connections`는 **cluster 전역 단일값**이라 테넌트별로 나눌 수 없고, 반영하려면 **공용 postgres 재기동 = 이미 live인 모든 테넌트의 다운타임**이 따른다. 별개 배포 창에서, 기존 테넌트에 공지하고 한다. 재기동은 `stop_grace_period`(ADR-52, 300s) 안에 종료 checkpoint를 끝내야 crash recovery 없이 뜬다 — Manager의 컨테이너 stop/restart는 그 값을 따르고(#434), 계획된 재기동은 수동 `CHECKPOINT` 뒤 `docker stop --time 300`을 쓴다. 공용 서비스의 `/dev/shm`은 `shm_size: 1gb`다(ADR-53 D4 — ADR-52가 옛 geo 전용 instance와 같은 512mb로 올렸고, 그전 64MB에서 병렬 질의가 `could not resize shared memory segment`로 죽었다). 더 필요하면 이것도 cluster 전역 값이다 |
 
 ### 6.2 `config/docker-targets.yml`
 

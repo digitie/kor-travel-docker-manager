@@ -41,7 +41,7 @@ services:
     # 2026-09-25 08:03 `systemctl restart docker`가 그렇게 unclean stop을 만들었고
     # 재기동이 crash recovery(73GB fsync)로 이어졌다. D4(ADR-53)는 1GB `shared_buffers`의
     # 종료 checkpoint를 위해 120초 이상을 요구한다 — 이 값이 그것을 넘는다. Manager의
-    # 컨테이너 stop/restart도 이 값(`Config.StopTimeout`)을 그대로 넘긴다.
+    # 컨테이너 stop/restart도 이 값(`Config.StopTimeout`)을 그대로 넘긴다(#434).
     stop_grace_period: 300s
     # docker 기본 /dev/shm 64MB는 병렬 질의의 dynamic shared memory가 넘친다(09-22
     # "could not resize shared memory segment" 실측). D4의 64MB `work_mem`에서는 병렬

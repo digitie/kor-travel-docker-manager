@@ -4063,7 +4063,7 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
 
 ## ADR-53: Map의 두 DB를 공용 instance로 옮긴다 — ADR-35의 Map principal 경계를 이 topology에서 supersede
 
-- 상태: accepted — 효력은 PR마다 다르다. 결정 4(튜닝·grace 전달·`--no-deps`·백업 예약분)는 MT와
+- 상태: accepted — 효력은 PR마다 다르다. 결정 4(튜닝·백업 예약분)는 MT와
   함께 생긴다. 결정 3의 울타리(R2·R3·R4)는 M1이 만들고, 결정 1·2·5와 결정 3이 공용 instance에 걸리는
   것은 M2(이동)와 함께다. M2가 설치되기 전이나 창에서 되돌려진 뒤에는 1~3·5가 아직 사실이 아니다.
   ADR-35·ADR-37의 "ADR-53이 일부 supersede" 표시는 그것을 사실로 만드는 M2가 단다.
@@ -4086,13 +4086,10 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
    고정(이미지 교체 아님). `ALTER SYSTEM`은 쓰지 않는다 — 값은 compose `command:`가 정본이다.
    - 종료 checkpoint의 grace는 D4가 120초 이상을 요구한다. ADR-52의 `stop_grace_period: 300s`가 이미 그것을
      넘으므로 이 ADR은 값을 바꾸지 않는다. `init: true`와 exec probe도 ADR-52의 것이다.
-   - Manager의 컨테이너 stop/restart는 컨테이너의 `Config.StopTimeout`을 docker에 그대로 넘긴다(docker-py의
-     `restart()`는 인자가 없으면 항상 10초였다).
-   - Manager의 설정 변경·reset·없는 컨테이너 시작과 그 복구는 한 서비스만 `--no-deps`로 재생성한다 — 공용
-     instance의 정의가 바뀐 설치와 그 재기동 사이에 의존 서비스 하나를 고쳐도 공용 instance를 끌고 가지 않는다.
-     그 대가로 이 동작들은 의존 서비스를 시작하지도 `service_healthy`를 기다리지도 않고, one-shot(db-init·
-     migrate)을 다시 돌리지도 않는다. 멈춘 의존 서비스는 운영자가 먼저 띄우고, one-shot은 공용 instance의
-     config hash가 MATCH일 때 `--no-deps`로 따로 돌린다.
+   - Manager의 컨테이너 stop/restart가 그 grace(`Config.StopTimeout`)를 docker에 넘기는 것과, 대시보드의 한
+     서비스 재생성(설정 변경·reset·없는 컨테이너 시작과 그 복구)이 `--no-deps`인 것은 이 ADR의 결정이 아니다 —
+     compose 정의를 바꾸지 않아 이 결정의 창을 기다릴 이유가 없어 떼어 낸 #434의 것이다(n150에 `6af5dd1`로
+     설치됨, `docs/docker-management.md` §7).
    - 백업의 디스크 예약분은 살아있는 `max_wal_size`에서 유도한다: max(2 GiB, `max_wal_size` + 1 GiB).
 5. ADR-100 superset 창을 닫는다.
 
@@ -4114,7 +4111,7 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
 - 이 결정의 compose 변경을 설치하는 순간 공용 서비스의 compose config hash가 실행 중 컨테이너와 달라진다.
   그 사이에 공용 instance를 `depends_on`하는 **어떤** 서비스(db-init one-shot 포함)든 `--no-deps` 없는
   `up`·`run`(`run --rm` 포함)이나 `create`(그 플래그가 없다)가 하나라도 돌면 compose가 공용 instance를
-  재생성한다(n150 Compose v5.2.0 실측). Manager의 한 서비스 재생성은 `--no-deps`라 이 길이 아니지만,
+  재생성한다(n150 Compose v5.2.0 실측). Manager의 한 서비스 재생성은 #434 뒤로 `--no-deps`라 이 길이 아니지만,
   사람·에이전트의 명령과 db-init 재실행(onboarding §7.3이 자가치유로 권하는 것)은 코드가 막지 못한다. 그래서
   설치 직후 계획된 재기동까지 한 창에서 가고, 창의 공지가 drift guard가 MATCH를 찍을 때까지 그것들을 동결한다
   (되돌림 T-R에서 옛 정의를 설치한 뒤에도 같다).
