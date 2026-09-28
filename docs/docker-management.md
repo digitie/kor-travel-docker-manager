@@ -654,6 +654,48 @@ readiness·image·secret isolation과 C6c smoke가 통과하면 `committed`를 �
 `--adopt-live-databases --reason "..."`로 새 기준으로 받아들인다. 순서 전체는
 [`prod-deployment.md` §8.1](prod-deployment.md)에 있다.
 
+n150에서는 이 명령을 root launcher로 한 번 돌린다(전역 mutation lock·원장 claim·root 0600 결과).
+
+```bash
+sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
+  [--adopt-live-databases REASON]
+```
+
+- 인자는 둘 또는 넷이다. 선택 쌍은 정확히 `--adopt-live-databases REASON` 하나이고, launcher는 그것을
+  `ktdctl … --json` 뒤에 `--adopt-live-databases --reason REASON`으로 붙인다. 둘인 형태의 argv는 바뀌지 않았다.
+- REASON은 한 줄, 1~200자의 printable 문자이고 `-`로 시작하지 않는다. lock·claim·출력 디렉터리보다 **먼저**
+  검증한다 — 거부된 사유는 원장에 아무것도 남기지 않는다.
+- `--restart`는 launcher로 넘길 수 없다. 세 DB를 지우는 유일한 길이라 `ktdctl`을 직접, 일부러 부를 때만 탄다.
+
+재구축의 tenant 울타리(M1). 모두 이름 목록 없이 frozen 계약과 live 상태에서 유도한다.
+
+- **R2 소유자**: instance admin은 어떤 drop의 허용 소유자도 아니다. Map drop 소유자는 Map 쌍 밖의 DB를 소유하지
+  않아야 한다(live `pg_database.datdba`). Dagster metadata role의 password 회전은 그 role이 DB도, `pg_shdepend`
+  행도 소유하지 않을 때만 한다 — 무언가를 소유한 login은 남은 role이 아니라 다른 tenant의 login이다. C6c는
+  `KOR_TRAVEL_MAP_DAGSTER_METADATA_USER == KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB`를 재구축 전에 요구한다(Map
+  bootstrap의 같은 규칙은 DB 초기화 뒤에야 돈다).
+- **이름**: `postgres`·`template*`은 drop뿐 아니라 수렴(ensure)·DB 생성·격리 경로에서도 거부한다.
+- **R3 chokepoint**: 재구축의 모든 compose 호출은 `_run_pinned_runtime_rebuild_compose`를 지난다. 서비스를 명시하지
+  않은 mutation은 거부하고, 명시 식별자 가운데 PostgreSQL 서버(declared ∪ witnessed)가 전용 집합 밖이면 거부한다.
+- **R4 격리·연결 상한**: 배포(bootstrap 뒤, Map API 기동 전)와 같은 pair 수렴(`up` 전)마다 두 Map DB에서 PUBLIC
+  CONNECT를 걷고, app DB에 `KOR_TRAVEL_MAP_PG_DSN` login의 CONNECT와
+  `CONNECTION LIMIT floor(0.4 × (max_connections − superuser_reserved − reserved))`(live)를 건 뒤 읽어서 확인한다.
+  CONNECT 가능한 non-superuser login은 app DB에서 그 login 하나, Dagster DB에서 metadata user 하나여야 한다.
+  superuser는 상한을 받지 않는다. PinVi DB는 건드리지 않는다.
+
+**R2 거부 — admin 소유 Map DB가 있어 배포가 멈출 때.** 반쯤 만든(instance admin 소유) Map DB는 `--restart`도
+지우지 않는다(fail-closed). 울타리를 넓히지 말고 다음 순서로 한다.
+
+1. 먼저 `--restart`가 아닌 **일반 또는 adopt** launcher를 돌린다. 수렴 경로가 bootstrap 전 DB에 fresh
+   bootstrap을 다시 돌린다.
+2. bootstrap이 fresh가 아니라고 거부하면 그 instance에서 `datname`이 Map 이름이고 소유자가 instance admin인지,
+   `SELECT count(*) FROM pg_stat_activity WHERE datname = '<Map DB>'`가 0인지 본다. 스키마가
+   `{public, feature, provider_sync, ops, x_extension}`의 부분집합인지 본다. 그 DB에 `public.alembic_version`이
+   있으면 그 값이 Map head인지 확인한다 — 공용 instance에서는 같은 이름의 admin 소유 DB가 Map의 것이라는 보장이
+   없다.
+3. 그때만 손으로 지운다: `docker exec --user postgres <instance> dropdb --username <admin> --port <p> --force
+   <Map DB>`. 그리고 launcher를 일반으로 다시 돌린다.
+
 PinVi는 geo 패턴처럼 scoped app role 하나가 자기 database를 소유한다(ADR-46). 종전의 M05 다중 role
 topology·catalog reset·role verify one-shot과 그것을 담던 v8 journal receipt는 없어졌다. v8 rebuild
 journal·tombstone 모델은 ADR-51 B3에서 코드째 지웠고, 호스트에 남은 v8 파일은 읽지 않는다. v6 manifest는

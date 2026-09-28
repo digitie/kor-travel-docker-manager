@@ -5,6 +5,7 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
+- [/] Map DB를 공용 instance로 옮긴다(소유자 결정 C, 2026-09-28). **M1** `fix/rebuild-tenant-fences` — launcher의 `--adopt-live-databases` 통과, R2 소유자 울타리, 이름 울타리, R3 chokepoint, R4 격리·연결 상한, 실 PostgreSQL 통합 테스트. 머지·설치 뒤 같은 pair 수렴 한 번이 12700에 R4와 상한을 건다. **MT**(공용 instance 튜닝)와 **M2**(topology 이동)는 승인·CI green 상태로 두고 창 안에서 설치 직전에만 머지한다 — 미설치 MT·M2가 main에 있으면 누구의 설치든 공용 instance 재생성을 무장하거나 Map/PinVi 재구축을 막는다.
 - [/] M05 execution identity v6 — v5 Map·PinVi source pinset은 보존하고 trusted Manager revision을 포함한 v6 execution identity를 registry·`ktdctl`·one-shot ledger·terminal block에 연결하며, M05 provenance preflight와 모든 mutation을 봉인하는 durable `rotate-pair` recovery가 partial/stale binding 없이 새 pair를 만든다.
 - [/] M05 sibling contract — PinVi isolated admission/activation과 Map attestation이 Map SHA·PinVi SHA·v5 pinset·Manager SHA·v6 execution identity를 exact 대조하도록 함께 이행한다.
 - [/] M05 terminal forensic — every terminal one-shot의 raw E2E output·HTTP·container·환경·private receipt를 완주 전까지 gitignored local analysis에 상세 기록하고, tracked 문서·commit·push에는 넣지 않는다.
