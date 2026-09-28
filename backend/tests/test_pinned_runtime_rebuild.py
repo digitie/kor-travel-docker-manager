@@ -1574,6 +1574,9 @@ def _forward_harness(
         prerequisites=Mock(),
         create_pinvi=Mock(return_value=False),
         map_precheck=Mock(return_value="present"),
+        # 멈추기 전의 읽기 전용 판정(`--restart`의 R2, 일반·adopt 경로의 R4 전제).
+        reset_preflight=Mock(),
+        isolation_preflight=Mock(),
         retention_generation=Mock(),
         retention_candidate=Mock(),
     )
@@ -1679,6 +1682,8 @@ def _forward_harness(
         "reconcile_candidate_build_references": mocks.retention_candidate,
         "create_database_if_absent": mocks.create_pinvi,
         "require_map_application_database_convergible": mocks.map_precheck,
+        "require_databases_resettable": mocks.reset_preflight,
+        "require_map_databases_isolatable": mocks.isolation_preflight,
     }.items():
         monkeypatch.setattr(compose_service_module, name, replacement)
     service = ComposeService()
@@ -2317,6 +2322,86 @@ def test_restart_skips_the_map_database_precheck(
 
     assert result["outcome"] == "deployed"
     harness.mocks.map_precheck.assert_not_called()
+    harness.mocks.isolation_preflight.assert_not_called()
+    harness.mocks.reset_preflight.assert_called_once_with(harness.runtimes)
+
+
+def test_a_restart_the_r2_fence_would_refuse_is_refused_before_the_runtime_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """오늘 전용 instance의 `--restart`: schema owner가 다른 DB도 소유해 R2가 거부한다.
+
+    종전에는 그 거부가 Map·PinVi를 멈춘 뒤 리셋 안에서 났고, pair가 내려간 채 남았다(적대 리뷰
+    2026-09-29). 리셋 대역도 같은 판정으로 거부하게 두어, 거부가 **어디서** 나는지를 본다.
+    """
+
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    refusal = DeploymentContractError(
+        "map_application database owner also owns a database outside the Map pair"
+    )
+    harness.mocks.reset_preflight.side_effect = refusal
+    harness.mocks.reset.side_effect = refusal
+
+    with pytest.raises(DeploymentContractError, match="outside the Map pair"):
+        harness.service.rebuild_pinned_runtime(restart_reason="rebuild")
+
+    assert _mutating_operations(harness) == []
+    harness.mocks.reset.assert_not_called()
+    assert read_deploy_status(harness.status_path) == previous
+
+
+@pytest.mark.parametrize("adopt_reason", (None, "restored from backup"), ids=("new-pair", "adopt"))
+def test_an_isolation_precondition_refusal_comes_before_the_runtime_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adopt_reason: str | None
+) -> None:
+    """R4의 live 전제 거부(예: DSN login이 Map schema owner의 member가 아니다)는 멈추기 전에 난다.
+
+    종전에는 런타임을 멈추고 Map schema를 올린 뒤 R4 transaction 안에서 났다(적대 리뷰 2026-09-29).
+    R4 대역도 같은 판정으로 거부하게 두어, 거부가 **어디서** 나는지를 본다.
+    """
+
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate, map_revision="0" * 40)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    refusal = DeploymentContractError(
+        "Map application login ktm_rotated is not a non-superuser LOGIN member of "
+        "ktm_feature_schema_owner"
+    )
+    harness.mocks.isolation_preflight.side_effect = refusal
+    monkeypatch.setattr(
+        compose_service_module, "ensure_map_databases_isolated", Mock(side_effect=refusal)
+    )
+
+    with pytest.raises(DeploymentContractError, match="not a non-superuser LOGIN member"):
+        harness.service.rebuild_pinned_runtime(adopt_reason=adopt_reason)
+
+    assert _mutating_operations(harness) == []
+    harness.mocks.ensure_map.assert_not_called()
+    assert read_deploy_status(harness.status_path) == previous
+    harness.mocks.isolation_preflight.assert_called_once_with(
+        harness.runtimes[0], harness.runtimes[1], login="ktm_feature_service"
+    )
+
+
+@pytest.mark.parametrize(
+    ("state", "preflighted"),
+    (("present", True), ("unbootstrapped", False), ("absent", False)),
+)
+def test_the_isolation_preflight_reads_only_a_handed_over_application_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str, preflighted: bool
+) -> None:
+    """없거나 bootstrap 전인 app DB는 전체 경로가 R4 전에 만든다 — 그 전제를 미리 보면 거짓 거부다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.mocks.map_precheck.return_value = state
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "deployed"
+    assert harness.mocks.isolation_preflight.called is preflighted
+    harness.mocks.reset_preflight.assert_not_called()
 
 
 def test_an_interrupted_adoption_keeps_protecting_the_adopted_databases(

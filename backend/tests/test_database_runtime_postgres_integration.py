@@ -641,3 +641,72 @@ def test_cap_applies_to_the_login_not_the_admin(cluster: str) -> None:
             except subprocess.TimeoutExpired:
                 holder.kill()
                 holder.wait(timeout=30)
+
+
+# --- preflight: the same refusals before the pair stops ----------------------------------------
+
+
+def test_reset_preflight_refuses_before_any_drop_and_only_reads(cluster: str) -> None:
+    """`--restart`의 R2를 멈추기 전에 읽기만으로 판정한다(적대 리뷰 2026-09-29).
+
+    오늘 n150 전용 instance의 모양: schema owner가 Map 쌍 밖의 남은 DB도 소유한다. 통과하는 입력에서도
+    preflight는 아무것도 지우지 않는다 — 대조군이 탐지기(oid)가 움직이지 않음을 본다.
+    """
+
+    _seed_map_pair(cluster)
+    _admin(
+        cluster,
+        "CREATE ROLE pinvi_app LOGIN;\nCREATE DATABASE pinvi OWNER pinvi_app;\n"
+        f"CREATE DATABASE foreign_dagster OWNER {_SCHEMA_OWNER};\n",
+    )
+    before = _database_oids(cluster)
+
+    with pytest.raises(DeploymentContractError, match="outside the Map pair"):
+        database_runtime.require_databases_resettable(_runtimes(cluster))
+    assert _database_oids(cluster) == before
+
+    _admin(cluster, "DROP DATABASE foreign_dagster;\n")
+    before = _database_oids(cluster)
+    database_runtime.require_databases_resettable(_runtimes(cluster))
+    assert _database_oids(cluster) == before
+
+
+@pytest.mark.parametrize(
+    ("login", "dagster_name", "metadata", "message"),
+    [
+        (
+            "foreign_app",
+            "kor_travel_map_dagster",
+            _METADATA,
+            f"login foreign_app is not a non-superuser LOGIN member of {_SCHEMA_OWNER}",
+        ),
+        (
+            _LOGIN,
+            "foreign_dagster",
+            "foreign_app",
+            re.escape("Dagster metadata user foreign_app also owns {foreign_db}"),
+        ),
+    ],
+    ids=["login-outside-the-map-owner", "metadata-user-owns-another-db"],
+)
+def test_isolation_preflight_refuses_what_isolation_refuses_and_changes_nothing(
+    cluster: str, login: str, dagster_name: str, metadata: str, message: str
+) -> None:
+    """R4의 live 전제를 멈추기 전에 READ ONLY로 판정한다 — 같은 거부, 바뀌는 것 없음."""
+
+    _seed_map_pair(cluster)
+    _admin(cluster, "CREATE DATABASE foreign_dagster OWNER foreign_app;\n")
+    watched = ("kor_travel_map", "kor_travel_map_dagster", "foreign_dagster", "foreign_db")
+    before = {name: _datacl(cluster, name) for name in watched}
+    app, dagster, _ = _runtimes(cluster, dagster=dagster_name, metadata=metadata)
+
+    with pytest.raises(DeploymentContractError, match=message):
+        database_runtime.require_map_databases_isolatable(app, dagster, login=login)
+    with pytest.raises(DeploymentContractError, match=message):
+        ensure_map_databases_isolated(app, dagster, login=login)
+
+    # 대조군: 격리가 통과할 입력이면 preflight도 통과하고, 여전히 아무것도 바꾸지 않는다.
+    app, dagster, _ = _runtimes(cluster)
+    database_runtime.require_map_databases_isolatable(app, dagster, login=_LOGIN)
+    assert {name: _datacl(cluster, name) for name in watched} == before
+    assert _connect(cluster, "foreign_app", "kor_travel_map").returncode == 0

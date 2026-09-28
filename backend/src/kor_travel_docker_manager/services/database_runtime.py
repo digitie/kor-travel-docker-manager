@@ -288,6 +288,42 @@ def reset_databases_for_application_300(
     DB를 미리 만들면 virgin-root 및 sealed metadata permit 계약을 우회한다.
     """
 
+    existing_owners = _read_resettable_owners(runtimes)
+    for runtime, existing_owner in zip(runtimes[:2], existing_owners[:2], strict=True):
+        if existing_owner is not None:
+            _run_checked(
+                [
+                    *_database_admin_command(runtime, "dropdb"),
+                    "--force",
+                    runtime.database_name,
+                ],
+                label=f"{runtime.role} database destructive drop",
+            )
+    _recreate_empty_database_after_owner_preflight(
+        runtimes[2],
+        existing_owner=existing_owners[2],
+    )
+
+
+def require_databases_resettable(
+    runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+) -> None:
+    """``reset_databases_for_application_300``이 거부할 상태를 **읽기만으로** 먼저 거부한다(R2).
+
+    전체 배포 경로는 리셋 전에 Map·PinVi 런타임을 멈춘다. 이름·소유자·배타성 거부가 그 뒤에야
+    나면 pair가 내려간 채 남는다 — 오늘 전용 instance에서는 schema owner가 다른 DB도 소유하므로
+    `--restart`가 매번 그랬다(적대 리뷰 2026-09-29). 그래서 배포는 멈추기 **전에** 같은 판정
+    (``_read_resettable_owners``)을 한 번 돌린다. 결박은 여전히 drop 직전의 같은 판정이다.
+    """
+
+    _read_resettable_owners(runtimes)
+
+
+def _read_resettable_owners(
+    runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+) -> tuple[str | None, ...]:
+    """리셋의 R2 판정(이름·허용 소유자·Map 소유자 배타성). 아무것도 바꾸지 않고 기존 소유자를 낸다."""
+
     if tuple(runtime.role for runtime in runtimes) != (
         "map_application",
         "map_dagster",
@@ -321,20 +357,7 @@ def reset_databases_for_application_300(
             raise DeploymentContractError(
                 f"{runtime.role} database owner also owns a database outside the Map pair"
             )
-    for runtime, existing_owner in zip(runtimes[:2], existing_owners[:2], strict=True):
-        if existing_owner is not None:
-            _run_checked(
-                [
-                    *_database_admin_command(runtime, "dropdb"),
-                    "--force",
-                    runtime.database_name,
-                ],
-                label=f"{runtime.role} database destructive drop",
-            )
-    _recreate_empty_database_after_owner_preflight(
-        runtimes[2],
-        existing_owner=existing_owners[2],
-    )
+    return existing_owners
 
 
 def create_fresh_application_300_database(runtime: DatabaseRuntime) -> None:
@@ -505,23 +528,7 @@ def ensure_map_databases_isolated(
     PinVi DB는 건드리지 않는다.
     """
 
-    _validate_runtime(app)
-    _validate_runtime(dagster)
-    if app.role != "map_application" or dagster.role != "map_dagster":
-        raise DeploymentContractError("Map database isolation roles are invalid")
-    if (app.container_name, app.port, app.admin_name) != (
-        dagster.container_name,
-        dagster.port,
-        dagster.admin_name,
-    ):
-        raise DeploymentContractError("Map databases must share one PostgreSQL instance")
-    _require_tenant_database_name(app)
-    _require_tenant_database_name(dagster)
-    if len(dagster.additional_owner_names) != 1:
-        raise DeploymentContractError("Map Dagster metadata role is not frozen")
-    (metadata_user,) = dagster.additional_owner_names
-    if not _DATABASE_IDENTIFIER.fullmatch(login):
-        raise DeploymentContractError("Map application login is invalid")
+    metadata_user = _map_isolation_metadata_user(app, dagster, login=login)
     cap = map_application_connection_cap(_read_usable_connection_slots(app))
     app_database = _sql_identifier(app.database_name)
     dagster_database = _sql_identifier(dagster.database_name)
@@ -548,6 +555,77 @@ def ensure_map_databases_isolated(
         input_bytes=sql.encode("ascii"),
         label="Map database isolation",
     )
+
+
+def require_map_databases_isolatable(
+    app: DatabaseRuntime,
+    dagster: DatabaseRuntime,
+    *,
+    login: str,
+) -> None:
+    """R4의 live 전제(``_map_isolation_precondition_sql``)를 **읽기만으로** 먼저 판정한다.
+
+    전체 배포 경로는 R4 전에 Map·PinVi 런타임을 멈추고 Map schema를 head로 올린다. 전제 거부가
+    그 뒤에야 나면 pair가 내려간 채 남는다(적대 리뷰 2026-09-29 — 예: `KOR_TRAVEL_MAP_PG_DSN`을
+    Map의 member가 아닌 login으로 바꾼 뒤의 새 pair). 넘겨받은 app DB의 소유자와 login의
+    membership, 이미 있는 Dagster DB의 소유자·배타성은 그 경로가 R4 전에 바꾸지 않는다 — role
+    bootstrap은 fresh DB에서만 돌고, Dagster init은 DB가 없을 때만 돈다. 그래서 같은 DO 블록을
+    ``READ ONLY`` transaction에서 멈추기 **전에** 돌려 같은 거부를 앞당긴다. 결박은 여전히
+    ``ensure_map_databases_isolated``의 transaction 안 판정이다.
+
+    app DB가 schema owner 것일 때(``require_map_application_database_convergible``이
+    ``present``)만 부른다. Dagster DB가 없으면 판정하지 않는다 — init이 만든 뒤 R4가 판정한다.
+    """
+
+    metadata_user = _map_isolation_metadata_user(app, dagster, login=login)
+    if _read_database_owner(dagster) is None:
+        return
+    _run_checked_with_input(
+        [
+            *_database_admin_interactive_command(app, "psql"),
+            "--no-psqlrc",
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--single-transaction",
+            "--dbname",
+            "postgres",
+        ],
+        input_bytes=(
+            "SET TRANSACTION READ ONLY;\n"
+            + _map_isolation_precondition_sql(
+                app, dagster, login=login, metadata_user=metadata_user
+            )
+        ).encode("ascii"),
+        label="Map database isolation preflight",
+    )
+
+
+def _map_isolation_metadata_user(
+    app: DatabaseRuntime,
+    dagster: DatabaseRuntime,
+    *,
+    login: str,
+) -> str:
+    """R4 입력(두 Map runtime·login)을 확인하고 frozen metadata user를 낸다. 아무것도 읽지 않는다."""
+
+    _validate_runtime(app)
+    _validate_runtime(dagster)
+    if app.role != "map_application" or dagster.role != "map_dagster":
+        raise DeploymentContractError("Map database isolation roles are invalid")
+    if (app.container_name, app.port, app.admin_name) != (
+        dagster.container_name,
+        dagster.port,
+        dagster.admin_name,
+    ):
+        raise DeploymentContractError("Map databases must share one PostgreSQL instance")
+    _require_tenant_database_name(app)
+    _require_tenant_database_name(dagster)
+    if len(dagster.additional_owner_names) != 1:
+        raise DeploymentContractError("Map Dagster metadata role is not frozen")
+    (metadata_user,) = dagster.additional_owner_names
+    if not _DATABASE_IDENTIFIER.fullmatch(login):
+        raise DeploymentContractError("Map application login is invalid")
+    return metadata_user
 
 
 def _map_isolation_precondition_sql(

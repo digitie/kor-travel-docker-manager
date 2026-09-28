@@ -1444,3 +1444,204 @@ def test_isolation_refuses_runtimes_on_two_instances(monkeypatch: pytest.MonkeyP
         )
 
     assert reads == [] and scripts == []
+
+
+_ISOLATION_ENTRY_POINTS = {
+    "isolate": database_runtime.ensure_map_databases_isolated,
+    "preflight": database_runtime.require_map_databases_isolatable,
+}
+
+
+def _silent_runners(monkeypatch: pytest.MonkeyPatch) -> tuple[Mock, Mock]:
+    """어떤 PostgreSQL 명령도 돌면 안 되는 경우의 기록기(읽기·스크립트 모두)."""
+
+    reads, scripts = Mock(return_value=b"97\n"), Mock(return_value=b"")
+    monkeypatch.setattr(database_runtime, "_run_checked", reads)
+    monkeypatch.setattr(database_runtime, "_run_checked_with_input", scripts)
+    return reads, scripts
+
+
+@pytest.mark.parametrize("entry_point", tuple(_ISOLATION_ENTRY_POINTS))
+@pytest.mark.parametrize("role", ("map_application", "map_dagster"))
+@pytest.mark.parametrize("reserved", ("postgres", "template0", "template1", "template_postgis"))
+def test_isolation_refuses_reserved_database_names_before_any_command(
+    monkeypatch: pytest.MonkeyPatch, entry_point: str, role: str, reserved: str
+) -> None:
+    """R4도 권한을 바꾸는 경로다 — 이름 울타리가 live 전제보다 먼저, 명령 하나 없이 거부한다."""
+
+    reads, scripts = _silent_runners(monkeypatch)
+    app, dagster = _isolation_runtimes()
+    if role == "map_application":
+        app = replace(app, database_name=reserved)
+    else:
+        dagster = replace(dagster, database_name=reserved)
+
+    with pytest.raises(DeploymentContractError, match="reserved cluster database"):
+        _ISOLATION_ENTRY_POINTS[entry_point](app, dagster, login="ktm_feature_service")
+
+    reads.assert_not_called()
+    scripts.assert_not_called()
+
+
+@pytest.mark.parametrize("entry_point", tuple(_ISOLATION_ENTRY_POINTS))
+@pytest.mark.parametrize(
+    "metadata_users",
+    (frozenset(), frozenset({"map_dagster_metadata", "other_metadata"})),
+    ids=("none", "two"),
+)
+def test_isolation_refuses_a_dagster_runtime_without_exactly_one_metadata_user(
+    monkeypatch: pytest.MonkeyPatch, entry_point: str, metadata_users: frozenset[str]
+) -> None:
+    """Dagster DB의 CONNECT를 받을 login은 frozen metadata user **하나**다 — 고르지 않고 거부한다."""
+
+    reads, scripts = _silent_runners(monkeypatch)
+    app, dagster = _isolation_runtimes()
+
+    with pytest.raises(DeploymentContractError, match="metadata role is not frozen"):
+        _ISOLATION_ENTRY_POINTS[entry_point](
+            app,
+            replace(dagster, additional_owner_names=metadata_users),
+            login="ktm_feature_service",
+        )
+
+    reads.assert_not_called()
+    scripts.assert_not_called()
+
+
+def _preflight_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    dagster_owner: str | None,
+) -> tuple[list[str], list[tuple[list[str], str, bytes]]]:
+    """owner 읽기는 ``dagster_owner``로 답하고, 스크립트는 인자·label·본문을 남긴다."""
+
+    owner_reads: list[str] = []
+    scripts: list[tuple[list[str], str, bytes]] = []
+
+    def read_owner(runtime: DatabaseRuntime) -> str | None:
+        owner_reads.append(runtime.role)
+        return dagster_owner if runtime.role == "map_dagster" else "ktm_feature_schema_owner"
+
+    def run_with_input(arguments: list[str], *, input_bytes: bytes, label: str) -> bytes:
+        scripts.append((list(arguments), label, input_bytes))
+        return b""
+
+    monkeypatch.setattr(database_runtime, "_read_database_owner", read_owner)
+    monkeypatch.setattr(
+        database_runtime, "_run_checked", Mock(side_effect=AssertionError("no other read"))
+    )
+    monkeypatch.setattr(database_runtime, "_run_checked_with_input", run_with_input)
+    return owner_reads, scripts
+
+
+def test_isolation_preflight_runs_the_same_precondition_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """멈추기 전의 판정은 R4 transaction의 **바로 그** 전제 블록이고, 그것만 READ ONLY로 돈다."""
+
+    _, preflight_scripts = _preflight_harness(monkeypatch, dagster_owner="map_dagster_metadata")
+
+    database_runtime.require_map_databases_isolatable(
+        *_isolation_runtimes(), login="ktm_feature_service"
+    )
+
+    ((arguments, label, body),) = preflight_scripts
+    script = body.decode("ascii")
+    assert label == "Map database isolation preflight"
+    assert "--single-transaction" in arguments
+    assert arguments[arguments.index("--set") + 1] == "ON_ERROR_STOP=1"
+    assert arguments[arguments.index("--dbname") + 1] == "postgres"
+    assert script.startswith("SET TRANSACTION READ ONLY;\n")
+    for mutation in ("REVOKE", "GRANT", "ALTER", "$r4_converge$", "$r4_readback$"):
+        assert mutation not in script, mutation
+    # 결박하는 R4 transaction의 전제와 글자까지 같다 — 정본은 하나다.
+    _, isolation_scripts = _isolation_harness(monkeypatch)
+    database_runtime.ensure_map_databases_isolated(
+        *_isolation_runtimes(), login="ktm_feature_service"
+    )
+    (isolation,) = (item.decode("ascii") for item in isolation_scripts)
+    assert _do_block(script, "r4_precondition") == _do_block(isolation, "r4_precondition")
+    assert len(_do_block(script, "r4_precondition")) == 1
+
+
+def test_isolation_preflight_leaves_an_absent_dagster_database_to_the_bound_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dagster DB가 없으면 init이 만든 뒤 R4 transaction이 판정한다 — 미리 보면 거짓 거부다."""
+
+    owner_reads, scripts = _preflight_harness(monkeypatch, dagster_owner=None)
+
+    database_runtime.require_map_databases_isolatable(
+        *_isolation_runtimes(), login="ktm_feature_service"
+    )
+
+    assert owner_reads == ["map_dagster"]
+    assert scripts == []
+
+
+@pytest.mark.parametrize(
+    ("owners", "owned", "message"),
+    (
+        (
+            {"map_application": "cluster_admin", "map_dagster": None, "pinvi": None},
+            {},
+            "map_application database owner differs",
+        ),
+        (
+            {
+                "map_application": "ktm_feature_schema_owner",
+                "map_dagster": "map_dagster_metadata",
+                "pinvi": "pin_owner",
+            },
+            {
+                # 오늘 n150 전용 instance의 모양: schema owner가 남은 검증 DB도 소유한다.
+                "ktm_feature_schema_owner": "map_app\nktm_40b\nktm_gcverify\n",
+                "map_dagster_metadata": "map_dagster\n",
+            },
+            "outside the Map pair",
+        ),
+    ),
+    ids=("admin-owned", "schema-owner-owns-leftovers"),
+)
+def test_resettable_preflight_refuses_what_the_reset_refuses_and_only_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    owners: dict[str, str | None],
+    owned: dict[str, str],
+    message: str,
+) -> None:
+    runtimes = (_dedicated_shape("map_application"), _metadata_runtime(), _runtime("pinvi"))
+    commands = _record_commands(monkeypatch, owners=owners, owned=owned)
+
+    with pytest.raises(DeploymentContractError, match=message):
+        database_runtime.require_databases_resettable(runtimes)
+    with pytest.raises(DeploymentContractError, match=message):
+        reset_databases_for_application_300(runtimes)
+
+    assert _dropped(commands) == []
+    assert not any("createdb" in command for command in commands)
+
+
+def test_resettable_preflight_passes_a_resettable_pair_without_dropping_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """대조군 — 같은 대역에서 리셋은 지우고, preflight는 읽기만 한다."""
+
+    runtimes = (_runtime("map_application"), _metadata_runtime(), _runtime("pinvi"))
+    commands = _record_commands(
+        monkeypatch,
+        owners={
+            "map_application": "ktm_feature_schema_owner",
+            "map_dagster": "map_dagster_metadata",
+            "pinvi": "pin_owner",
+        },
+        owned={
+            "ktm_feature_schema_owner": "map_app\n",
+            "map_dagster_metadata": "map_dagster\n",
+        },
+    )
+
+    database_runtime.require_databases_resettable(runtimes)
+
+    assert commands and all("psql" in command for command in commands)
+    reset_databases_for_application_300(runtimes)
+    assert _dropped(commands) == ["map_app", "map_dagster", "pin_app"]

@@ -75,7 +75,9 @@ from kor_travel_docker_manager.services.database_runtime import (
     map_application_login,
     read_database_identity,
     read_database_schema_revision,
+    require_databases_resettable,
     require_map_application_database_convergible,
+    require_map_databases_isolatable,
     reset_databases_for_application_300,
     schema_revision_table_exists,
 )
@@ -4692,9 +4694,15 @@ class ComposeService:
                     "--adopt-live-databases or rebuild them with --restart"
                 )
 
-            if restart is None:
-                # 전체 경로가 Map DB 앞에서 거부할 상태라면 런타임을 멈추기 **전에** 거부한다.
-                require_map_application_database_convergible(runtimes[0])
+            # 전체 경로가 DB 앞에서 거부할 상태라면 런타임을 멈추기 **전에** 읽기만으로 거부한다.
+            # 결박은 각 단계 안의 같은 판정이다 — 여기서는 멈춘 뒤의 거부를 앞당길 뿐이다.
+            if restart is not None:
+                # `--restart`의 R2(이름·허용 소유자·Map 소유자 배타성).
+                require_databases_resettable(runtimes)
+            elif require_map_application_database_convergible(runtimes[0]) == "present":
+                # R4의 live 전제. 넘겨받은 app DB와 이미 있는 Dagster DB를 전체 경로는 R4 전에
+                # 바꾸지 않는다(없거나 bootstrap 전인 DB는 만든 뒤 R4가 판정한다).
+                require_map_databases_isolatable(runtimes[0], runtimes[1], login=map_login)
 
             from kor_travel_docker_manager.services.runtime_execution_registry import (
                 trusted_manager_source_revision,
