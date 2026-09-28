@@ -17,7 +17,8 @@
 그래서 정본 서비스에서 실행 형태(image·init·command·healthcheck·stop_grace_period·shm_size)를
 그대로 가져오고, 호스트에 닿는 것(PGDATA bind·secret·host network·포트)만 뺀 격리 프로젝트로
 띄운다. 기대값도 전부 정본 compose에서 읽는다 — 이 파일에 배포값 리터럴은 없다. gate
-(`KTDM_REQUIRE_DOCKER_INTEGRATION`)는 `test_compose_readiness_integration.py`와 같다.
+(`KTDM_REQUIRE_DOCKER_INTEGRATION`)는 `test_compose_readiness_integration.py`의 것을 그대로
+가져다 쓴다(0은 skip, 1은 Docker를 못 쓰면 실패).
 """
 
 from __future__ import annotations
@@ -29,13 +30,17 @@ import subprocess
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+import docker
 import pytest
 import yaml
+from test_compose_readiness_integration import _unavailable_docker_fixture
 from test_shared_postgres_runtime_contract import _bytes, _seconds, _service
 
-_REQUIRED_GATE_ENV = "KTDM_REQUIRE_DOCKER_INTEGRATION"
+from kor_travel_docker_manager.services.docker_service import DockerService
+
 #: 정본에서 그대로 가져오는 실행 형태. 빠진 키는 옮기지 않는다(변경 전 compose에서도 돈다).
 _CARRIED_KEYS = ("image", "init", "command", "healthcheck", "stop_grace_period", "shm_size")
 #: 격리 netns 안의 포트. command와 probe가 같은 변수에서 읽으므로 둘이 함께 바뀐다.
@@ -44,13 +49,6 @@ _ISOLATED_PORT = "15436"
 _TIMEOUT = 180
 #: 정지 명령은 컨테이너 자신의 grace만큼 기다릴 수 있다 — 그 위에 두는 여유.
 _STOP_TIMEOUT_MARGIN = 30
-
-
-def _required_docker_gate() -> bool:
-    value = os.environ.get(_REQUIRED_GATE_ENV, "0").strip()
-    if value not in {"0", "1"}:
-        pytest.fail(f"{_REQUIRED_GATE_ENV}는 0 또는 1이어야 함")
-    return value == "1"
 
 
 def _run(
@@ -115,13 +113,19 @@ def _remove_project_residue(project: str) -> int:
 def isolated_shared_postgres(tmp_path: Path) -> Iterator[str]:
     service = _fixture_service()
     image = service["image"]
-    docker_ok = _run("docker", "compose", "version").returncode == 0
-    image_ok = docker_ok and _run("docker", "image", "inspect", image).returncode == 0
-    if not image_ok:
-        reason = f"Docker Compose 또는 로컬 이미지 {image}를 쓸 수 없음(pull하지 않는다)"
-        if _required_docker_gate():
-            pytest.fail(reason)
-        pytest.skip(f"{reason}; 필수 gate는 {_REQUIRED_GATE_ENV}=1로 실행")
+    # docker CLI가 없거나(OSError) daemon이 응답하지 않아도(TimeoutExpired) gate 0이면 skip이다 —
+    # ERROR로 새면 gate 0의 약속이 깨진다.
+    try:
+        available = (
+            _run("docker", "compose", "version").returncode == 0
+            and _run("docker", "image", "inspect", image).returncode == 0
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        available = False
+    if not available:
+        _unavailable_docker_fixture(
+            f"Docker Compose 또는 로컬 이미지 {image}를 쓸 수 없음(pull하지 않는다)"
+        )
 
     compose_path = tmp_path / "compose.yml"
     compose_path.write_text(
@@ -242,6 +246,7 @@ def _autoprewarm_leaders(container: str) -> int:
 
 def test_the_shared_postgres_runs_its_canonical_shape_in_the_pinned_image(
     isolated_shared_postgres: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     container = isolated_shared_postgres
     source = _service()
@@ -297,12 +302,34 @@ def test_the_shared_postgres_runs_its_canonical_shape_in_the_pinned_image(
     pid, parent = postmaster.stdout.split()
     assert pid != "1" and parent == "1", postmaster.stdout
 
+    # 정지는 Manager의 컨테이너 정지 경로(`_control_container_unlocked`, 대시보드의 stop)로
+    # 한다 — 실제 daemon의 inspect가 grace를 `Config.StopTimeout`에 보고하고, 그 값이 docker-py를
+    # 거쳐 daemon에 `t`로 닿는다. 이름만 격리 컨테이너로 돌리고 호출은 그대로 통과시킨다.
+    real = docker.from_env().containers.get(container)
+    sent: list[dict[str, Any]] = []
+    real_stop = real.stop
+
+    def recording_stop(**kwargs: Any) -> None:
+        sent.append(kwargs)
+        real_stop(**kwargs)
+
+    monkeypatch.setattr(real, "stop", recording_stop)
+    manager = DockerService()
+    monkeypatch.setattr(
+        manager,
+        "_get_client",
+        lambda: SimpleNamespace(containers=SimpleNamespace(get=lambda _name: real)),
+    )
+
     # docker-init이 stop signal을 postmaster에 넘긴다 — grace 안의 깨끗한 종료다. signal이
     # 닿지 않으면 docker가 grace를 다 기다린 뒤 SIGKILL한다(exit 137, 종료 로그 없음).
     started = time.monotonic()
-    stopped = _run("docker", "stop", container, timeout=grace + _STOP_TIMEOUT_MARGIN)
+    stopped = manager._control_container_unlocked(
+        "kor-travel-shared-postgresql", "stop", environment_snapshot=None
+    )
     elapsed = time.monotonic() - started
-    assert stopped.returncode == 0, stopped.stderr
+    assert stopped["success"] is True, stopped
+    assert sent == [{"timeout": grace}]
     assert _inspect(container)["State"]["ExitCode"] == 0
     logs = _run("docker", "logs", container)
     assert "database system is shut down" in logs.stdout + logs.stderr

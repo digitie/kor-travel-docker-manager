@@ -191,6 +191,8 @@ def test_the_compose_duration_and_size_parsers_read_what_compose_writes() -> Non
     assert _seconds("300s") == 300
     assert _seconds("5m") == 300
     assert _seconds("1m30s") == 90
+    # `docker compose config`(n150 v5.2.0, 운영 env)는 `300s`를 이 모양으로 다시 쓴다.
+    assert _seconds("5m0s") == 300
     assert _seconds("119s") < _MIN_STOP_GRACE_SECONDS
     assert _bytes("1gb") == _MIN_SHM_BYTES
     assert _bytes("1g") == _MIN_SHM_BYTES
