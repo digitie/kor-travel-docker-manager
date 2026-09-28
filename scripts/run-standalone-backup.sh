@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
-# issue #148/#177: 전용 PostgreSQL 인스턴스의 standalone 백업 wrapper.
+# issue #148/#177: PostgreSQL database별 standalone 백업 wrapper. geo_dagster·concierge·
+# pinvi는 공용 instance(kor-travel-shared-postgres)에 있다(2026-09-28부터 그쪽을 뜬다).
 # geo application DB role은 kor-travel-geo 앱 레벨 스케줄 백업이 정본이므로
 # cron/systemd timer에 넣지 않는다. geo_dagster metadata DB는 별도 백업 대상으로 남긴다.
 # cron/systemd timer에서는 H49가 승인한 세 role만 부른다. Map application/Dagster와
@@ -9,6 +10,8 @@
 # 원하면 KTDM_BACKUP_ROOT를 **crontab 라인뿐 아니라 .env에도** 선언해야 한다 —
 # installer는 .env만 읽는다. 공유 백업 디렉터리(chgrp+2770)를 쓰면 .env에
 # KTDM_BACKUP_SHARED_GROUP도 선언해야 logrotate가 group-writable 부모를 거부하지 않는다.
+# crontab이 가리키는 체크아웃은 설치본(/opt)과 별개다 — 설치 뒤 backend/src·
+# config/docker-targets.yml·이 파일을 함께 맞춘다(docs/docker-management.md "PostgreSQL 백업").
 # 다음 줄을 crontab에 한 번 넣어 host timezone과 무관하게 UTC로 고정한다:
 #   CRON_TZ=UTC
 #   15 3 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh geo_dagster 4 >>/absolute/backup/root/geo_dagster.log 2>&1

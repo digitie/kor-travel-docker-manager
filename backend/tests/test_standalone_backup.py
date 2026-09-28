@@ -21,10 +21,10 @@ from kor_travel_docker_manager.services.standalone_backup import (
     rehearse_standalone_restore,
 )
 
-_CMD_JSON = json.dumps(["postgres", "-p", "12500", "-c", "listen_addresses=127.0.0.1"]).encode(
+_CMD_JSON = json.dumps(["postgres", "-p", "11000", "-c", "listen_addresses=127.0.0.1"]).encode(
     "utf-8"
 )
-_ENV_OUTPUT = b"POSTGRES_USER=addr\nPOSTGRES_DB=kor_travel_geo\n"
+_ENV_OUTPUT = b"POSTGRES_USER=shared_admin\nPOSTGRES_DB=postgres\n"
 _TOC_OUTPUT = b";\n; Archive created ...\n;\n1; 2615 SCHEMA public\n2; 1259 TABLE t\n"
 
 
@@ -91,12 +91,12 @@ def test_create_standalone_backup_happy_path(
         "exec",
         "--user",
         "postgres",
-        "kor-travel-geo-postgres",
+        "kor-travel-shared-postgres",
         "pg_dump",
         "--username",
-        "addr",
+        "shared_admin",
         "--port",
-        "12500",
+        "11000",
         "--dbname",
         "kor_travel_geo",
         "--format=custom",
@@ -108,7 +108,7 @@ def test_create_standalone_backup_happy_path(
     assert toc_call.args[0] == [
         "docker",
         "exec",
-        "kor-travel-geo-postgres",
+        "kor-travel-shared-postgres",
         "pg_restore",
         "--list",
         "/tmp/geo-1000.dump",
@@ -117,7 +117,7 @@ def test_create_standalone_backup_happy_path(
     assert cp_call.args[0] == [
         "docker",
         "cp",
-        "kor-travel-geo-postgres:/tmp/geo-1000.dump",
+        "kor-travel-shared-postgres:/tmp/geo-1000.dump",
         str(root / ".geo-1000.dump.copying"),
     ]
 
@@ -126,7 +126,7 @@ def test_create_standalone_backup_happy_path(
     assert manifest.duration_sec == pytest.approx(0.879)
     assert manifest.backup_filename == "geo-1000.dump"
     assert manifest.byte_size == len(b"fake dump contents")
-    assert manifest.instance == "kor-travel-geo-postgres:127.0.0.1:12500/kor_travel_geo"
+    assert manifest.instance == "kor-travel-shared-postgres:127.0.0.1:11000/kor_travel_geo"
     assert manifest.db_size_bytes == 12345
     assert manifest.toc_entry_count == 2
     assert manifest.alembic_head == "0099_abcdef"
@@ -528,9 +528,12 @@ def test_role_lock_releases_after_context_exits(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("role", "env_var", "expected"),
     [
+        ("geo", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "geo-override"),
+        ("geo_dagster", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "geo-dagster-override"),
         ("concierge", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "concierge-override"),
         ("map_application", "KOR_TRAVEL_MAP_POSTGRES_CONTAINER", "map-override"),
-        ("pinvi", "PINVI_POSTGRES_CONTAINER", "pinvi-override"),
+        ("map_dagster", "KOR_TRAVEL_MAP_POSTGRES_CONTAINER", "map-dagster-override"),
+        ("pinvi", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "pinvi-override"),
     ],
 )
 def test_role_config_respects_container_name_override(
@@ -539,14 +542,6 @@ def test_role_config_respects_container_name_override(
     monkeypatch.setenv(env_var, expected)
     container_name, _ = standalone_backup._role_config(role)
     assert container_name == expected
-
-
-def test_role_config_geo_ignores_env_since_compose_hardcodes_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("KOR_TRAVEL_GEO_POSTGRES_CONTAINER", "should-be-ignored")
-    container_name, _ = standalone_backup._role_config("geo")
-    assert container_name == "kor-travel-geo-postgres"
 
 
 def test_backup_roles_cover_four_instances() -> None:
@@ -606,7 +601,7 @@ def test_restore_plan_confirms_a_healthy_backup(
     assert plan.restorable is True
     assert plan.backup_filename == "geo-1000.dump"
     assert plan.live_alembic_head == "0001_head"
-    assert plan.containers == ("kor-travel-geo-postgres",)
+    assert plan.containers == ("kor-travel-shared-postgres",)
     # 계획은 아무것도 바꾸지 않는다.
     assert {path.name: path.read_bytes() for path in root.iterdir()} == before
 
@@ -749,7 +744,13 @@ def test_restore_plan_refuses_when_there_is_nothing_to_restore(tmp_path: Path) -
         plan_standalone_restore("geo", backup_root=root)
 
 
-def _manifest_payload(role: str, created_at: int, backup_filename: str) -> dict[str, object]:
+def _manifest_payload(
+    role: str, created_at: int, backup_filename: str, *, instance: str | None = None
+) -> dict[str, object]:
+    if instance is None:
+        # 기본은 그 role이 **지금** 뜨는 자리다 — 모델에서 읽는다.
+        container_name, database_name = standalone_backup._role_config(role)
+        instance = f"{container_name}:127.0.0.1:12345/{database_name}"
     return {
         "role": role,
         "created_at_unix": created_at,
@@ -757,11 +758,69 @@ def _manifest_payload(role: str, created_at: int, backup_filename: str) -> dict[
         "byte_size": 10,
         "sha256": "a" * 64,
         "backup_filename": backup_filename,
-        "instance": "container:127.0.0.1:12345/db",
+        "instance": instance,
         "db_size_bytes": 100,
         "toc_entry_count": 2,
         "alembic_head": "0001_head",
     }
+
+
+def test_gc_rotates_only_dumps_of_the_instance_the_role_dumps_now(tmp_path: Path) -> None:
+    """role이 instance를 옮긴 뒤 옛 instance의 dump는 회전에 끼지 않는다.
+
+    옛 dump를 새 dump와 한 줄로 세우면 새 dump가 keep개 쌓이는 순간 옛 데이터의
+    유일한 사본이 지워진다(2026-09-28 PinVi 옛 전용 instance의 dump 7개).
+    """
+
+    root = tmp_path / "pinvi"
+    root.mkdir()
+    old_instance = "retired-postgres:127.0.0.1:12800/pinvi"
+    for created_at in (100, 200):
+        name = f"pinvi-{created_at}.dump"
+        (root / name).write_bytes(b"old")
+        (root / name.replace(".dump", ".manifest")).write_text(
+            json.dumps(_manifest_payload("pinvi", created_at, name, instance=old_instance)),
+            encoding="utf-8",
+        )
+    for created_at in (1000, 2000, 3000):
+        name = f"pinvi-{created_at}.dump"
+        (root / name).write_bytes(b"new")
+        (root / name.replace(".dump", ".manifest")).write_text(
+            json.dumps(_manifest_payload("pinvi", created_at, name)), encoding="utf-8"
+        )
+
+    outcome = gc_standalone_backups("pinvi", keep=2, backup_root=root)
+
+    assert outcome.deleted == ("pinvi-1000.dump",)
+    assert outcome.other_instance_kept == ("pinvi-100.dump", "pinvi-200.dump")
+    assert outcome.orphans_removed == ()
+    assert {p.name for p in root.glob("*.dump")} == {
+        "pinvi-100.dump",
+        "pinvi-200.dump",
+        "pinvi-2000.dump",
+        "pinvi-3000.dump",
+    }
+
+
+def test_restore_plan_blocks_a_dump_taken_from_another_instance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """무결성이 멀쩡해도 다른 instance의 dump는 다른 데이터다 — 복원하면 바꿔치기다."""
+
+    root = tmp_path / "pinvi"
+    root.mkdir()
+    name = _seed_backup(root, "pinvi", 1000, b"dump-bytes")
+    manifest_path = root / "pinvi-1000.manifest"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["instance"] = "retired-postgres:127.0.0.1:12800/pinvi"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    _plan_probes(monkeypatch, live_head="0001_head")
+
+    plan = plan_standalone_restore("pinvi", backup_root=root)
+
+    assert plan.backup_filename == name
+    assert plan.restorable is False
+    assert [f.code for f in plan.findings if f.blocking] == ["INSTANCE_MISMATCH"]
 
 
 def test_gc_binds_manifest_content_to_its_own_filename(tmp_path: Path) -> None:

@@ -72,9 +72,6 @@ _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
 _MAP_APPLICATION_SCHEMA_SERVICE = "kor-travel-map-application-schema"
-_PINVI_POSTGRES_SERVICE = "pinvi-postgres"
-_PINVI_DB_INIT_SERVICE = "pinvi-db-init"
-_PINVI_DB_RUNTIME_ROLE_SERVICE = "pinvi-db-runtime-role"
 _PINVI_API_SERVICE = "pinvi-api"
 _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 _OPS_READ_SOURCE = "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
@@ -135,10 +132,7 @@ _MAP_UI_GEO_API_KEY_SOURCE = (
     "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY:?"
     "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY must be explicitly set}"
 )
-_PINVI_POSTGRES_IMAGE = (
-    "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
-)
-_PINVI_POSTGRES_INITDB_ARGS = "--auth-host=scram-sha-256"
+_POSTGRES_INITDB_ARGS = "--auth-host=scram-sha-256"
 
 
 def _compose_success(command: list[str] | None = None) -> dict[str, object]:
@@ -166,11 +160,7 @@ def _config_transaction(
         effective={
             "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
             "PINVI_ENVIRONMENT": "development",
-            "PINVI_POSTGRES_PASSWORD": "pinvi-contract-password",
-            "PINVI_DB_PORT": "12800",
-            "PINVI_POSTGRES_USER": "pinvi",
             "PINVI_POSTGRES_DB": "pinvi",
-            "PINVI_POSTGRES_BOOTSTRAP_DB": "pinvi_bootstrap",
             "PINVI_DAGSTER_DB": "pinvi_dagster",
             "PINVI_APP_DB_USER": "pinvi_runtime",
             "PINVI_APP_DB_PASSWORD": "pinvi-runtime-password",
@@ -367,81 +357,6 @@ def _compose_with_canonical_c6c_services(
                 "/usr/local/bin/python -I -m kortravelmap.infra.runtime_privileges\n"
             ],
         },
-        _PINVI_POSTGRES_SERVICE: {
-            "image": _PINVI_POSTGRES_IMAGE,
-            "container_name": "pinvi-postgres",
-            "network_mode": "host",
-            "environment": {
-                "PINVI_CONTRACT_FIXTURE": "fixture",
-                "POSTGRES_USER": "${PINVI_POSTGRES_USER:-pinvi}",
-                "POSTGRES_PASSWORD_FILE": "/run/secrets/pinvi-postgres-password",
-                "POSTGRES_DB": "${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}",
-                "POSTGRES_INITDB_ARGS": _PINVI_POSTGRES_INITDB_ARGS,
-            },
-            "command": [
-                "postgres",
-                "-c",
-                "listen_addresses=127.0.0.1",
-                "-p",
-                "${PINVI_DB_PORT:-12800}",
-                "-c",
-                "shared_preload_libraries=pg_stat_statements",
-                "-c",
-                "shared_buffers=${PINVI_POSTGRES_SHARED_BUFFERS:-128MB}",
-                "-c",
-                "work_mem=${PINVI_POSTGRES_WORK_MEM:-16MB}",
-                "-c",
-                "maintenance_work_mem=${PINVI_POSTGRES_MAINTENANCE_WORK_MEM:-128MB}",
-                "-c",
-                "effective_cache_size=${PINVI_POSTGRES_EFFECTIVE_CACHE_SIZE:-512MB}",
-                "-c",
-                "random_page_cost=${PINVI_POSTGRES_RANDOM_PAGE_COST:-1.1}",
-                "-c",
-                "max_wal_size=${PINVI_POSTGRES_MAX_WAL_SIZE:-1GB}",
-                "-c",
-                "pg_stat_statements.track=all",
-                "-c",
-                "pg_stat_statements.max=10000",
-            ],
-            "secrets": [
-                {
-                    "source": "pinvi-postgres-password",
-                    "target": "/run/secrets/pinvi-postgres-password",
-                }
-            ],
-        },
-        _PINVI_DB_INIT_SERVICE: {
-            "image": _PINVI_POSTGRES_IMAGE,
-            "network_mode": "host",
-            "environment": {
-                "PGHOST": "127.0.0.1",
-                "PGPORT": "${PINVI_DB_PORT:-12800}",
-                "PGUSER": "${PINVI_POSTGRES_USER:-pinvi}",
-                "PGDATABASE": "${PINVI_POSTGRES_BOOTSTRAP_DB:-pinvi_bootstrap}",
-                "PINVI_POSTGRES_DB": "${PINVI_POSTGRES_DB:-pinvi}",
-                "PINVI_DAGSTER_DB": "${PINVI_DAGSTER_DB:-pinvi_dagster}",
-                "PINVI_DAGSTER_DB_OWNER": (
-                    "${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}"
-                ),
-            },
-            "secrets": ["pinvi-postgres-password"],
-            "command": [
-                "sh",
-                "-ec",
-                'PGPASSWORD="$$(cat /run/secrets/pinvi-postgres-password)"\n'
-                "export PGPASSWORD\n"
-                "if psql -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='$$PINVI_POSTGRES_DB'\" | grep -q 1; then\n"
-                '  echo "database $$PINVI_POSTGRES_DB already exists"\n'
-                "else\n"
-                '  createdb "$$PINVI_POSTGRES_DB"\n'
-                "fi\n"
-                "if psql -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='$$PINVI_DAGSTER_DB'\" | grep -q 1; then\n"
-                '  echo "database $$PINVI_DAGSTER_DB already exists"\n'
-                "else\n"
-                '  createdb -O "$$PINVI_DAGSTER_DB_OWNER" "$$PINVI_DAGSTER_DB"\n'
-                "fi\n",
-            ],
-        },
         _MAP_API_SERVICE: {
             "image": "fixture.invalid/kor-travel-map-api:test",
             "container_name": "kor-travel-map-api-latest",
@@ -589,7 +504,6 @@ def _compose_with_canonical_c6c_services(
         "services": protected_services,
         "secrets": {
             "kor-travel-map-postgres-password": {"environment": "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"},
-            "pinvi-postgres-password": {"environment": "PINVI_POSTGRES_PASSWORD"},
         },
     }
 
@@ -601,7 +515,7 @@ def test_nontrivial_config_change_runs_candidate_transaction(
     compose_path = tmp_path / "docker-compose.yml"
     original_config: dict[str, object] = {
         "services": {
-                "kor-travel-geo-postgres": {
+                "kor-travel-shared-postgres": {
                     "image": "postgres:16",
                     "environment": {"POSTGRES_DB": "before"},
                     "volumes": [],
@@ -635,7 +549,7 @@ def test_nontrivial_config_change_runs_candidate_transaction(
     monkeypatch.setattr(compose_service_runtime, "run", forward)
 
     result = DockerService()._update_container_config_unlocked(
-        "kor-travel-geo-postgresql",
+        "kor-travel-shared-postgresql",
         ["5432:5432"],
         {"POSTGRES_DB": "after"},
         [],
@@ -657,7 +571,7 @@ def test_locked_config_transaction_revalidates_secret_semantics(
     compose_path = tmp_path / "docker-compose.yml"
     current_config: dict[str, object] = {
         "services": {
-            "kor-travel-geo-postgres": {
+            "kor-travel-shared-postgres": {
                 "image": "postgres:16",
                 "environment": {
                     "DATABASE_PASSWORD": "${DATABASE_PASSWORD}",
@@ -687,7 +601,7 @@ def test_locked_config_transaction_revalidates_secret_semantics(
     )
 
     result = DockerService()._update_container_config_unlocked(
-        "kor-travel-geo-postgresql",
+        "kor-travel-shared-postgresql",
         [],
         {"DATABASE_PASSWORD": "new-literal-secret"},
         [],
@@ -708,7 +622,7 @@ def test_candidate_failure_restores_exact_baseline_transaction(
     compose_path = tmp_path / "docker-compose.yml"
     original_config: dict[str, object] = {
         "services": {
-                "kor-travel-geo-postgres": {
+                "kor-travel-shared-postgres": {
                     "image": "postgres:16",
                     "environment": {"POSTGRES_DB": "before"},
                     "volumes": [],
@@ -751,7 +665,7 @@ def test_candidate_failure_restores_exact_baseline_transaction(
     )
 
     result = DockerService()._update_container_config_unlocked(
-        "kor-travel-geo-postgresql",
+        "kor-travel-shared-postgresql",
         ["5432:5432"],
         {"POSTGRES_DB": "after"},
         [],
@@ -1209,7 +1123,7 @@ def test_update_container_config_switches_to_compose_networks_when_requested(
 ) -> None:
     compose_config: dict[str, object] = {
         "services": {
-            "kor-travel-geo-postgres": {
+            "kor-travel-shared-postgres": {
                 "image": "postgis/postgis:16-3.5",
                 "network_mode": "${KTDM_DOCKER_NETWORK_MODE:-host}",
                 "volumes": ["pgdata:/var/lib/postgresql/data"],
@@ -1237,7 +1151,7 @@ def test_update_container_config_switches_to_compose_networks_when_requested(
     compose_run.return_value = _compose_success()
 
     result = service.update_container_config(
-        "kor-travel-geo-postgresql",
+        "kor-travel-shared-postgresql",
         ["5432:5432"],
         {"POSTGRES_DB": "kor_travel_geo"},
         ["pgdata:/var/lib/postgresql/data"],
@@ -1246,12 +1160,12 @@ def test_update_container_config_switches_to_compose_networks_when_requested(
 
     assert result["success"] is True
     saved_service = yaml.safe_load(compose_path.read_text(encoding="utf-8"))["services"][
-        "kor-travel-geo-postgres"
+        "kor-travel-shared-postgres"
     ]
     assert saved_service["networks"] == ["default"]
     assert "network_mode" not in saved_service
     assert compose_run.call_args.args == (
-        ["up", "-d", "--force-recreate", "kor-travel-geo-postgres"],
+        ["up", "-d", "--force-recreate", "kor-travel-shared-postgres"],
     )
 
 
@@ -1590,7 +1504,7 @@ def test_validate_container_config_update_checks_ports_env_and_networks() -> Non
     "value",
     ["--auth-host=trust", "--auth-host=scram-sha-256 --auth-local=trust"],
 )
-def test_validate_container_config_update_rejects_pinvi_initdb_auth_drift(
+def test_validate_container_config_update_rejects_postgres_initdb_auth_drift(
     value: str,
 ) -> None:
     with pytest.raises(
@@ -1601,8 +1515,8 @@ def test_validate_container_config_update_rejects_pinvi_initdb_auth_drift(
             ports=[],
             env={"POSTGRES_INITDB_ARGS": value},
             networks=[],
-            baseline_env={"POSTGRES_INITDB_ARGS": _PINVI_POSTGRES_INITDB_ARGS},
-            service_name="pinvi-postgres",
+            baseline_env={"POSTGRES_INITDB_ARGS": _POSTGRES_INITDB_ARGS},
+            service_name="kor-travel-shared-postgres",
         )
 
 
@@ -1676,7 +1590,7 @@ def test_config_update_refuses_to_add_a_contract_locked_env() -> None:
         )
 
 
-def test_config_update_refuses_to_delete_the_pinvi_initdb_policy() -> None:
+def test_config_update_refuses_to_delete_the_postgres_initdb_policy() -> None:
     """기존 initdb 가드는 `in env`라 삭제를 통과시켰다 — 같은 구멍을 남기지 않는다."""
 
     with pytest.raises(ContainerConfigValidationError):
@@ -1684,8 +1598,8 @@ def test_config_update_refuses_to_delete_the_pinvi_initdb_policy() -> None:
             ports=[],
             env={},
             networks=[],
-            baseline_env={"POSTGRES_INITDB_ARGS": _PINVI_POSTGRES_INITDB_ARGS},
-            service_name="pinvi-postgres",
+            baseline_env={"POSTGRES_INITDB_ARGS": _POSTGRES_INITDB_ARGS},
+            service_name="kor-travel-shared-postgres",
         )
 
 
@@ -1817,7 +1731,6 @@ def _prepare_candidate_transaction(
     monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB", "kor_travel_map_dagster")
     monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_USER", "test_map_admin")
     monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_PASSWORD", "test-map-postgres-password")
-    monkeypatch.setenv("PINVI_POSTGRES_PASSWORD", "pinvi-contract-password")
     monkeypatch.setenv("PINVI_APP_DB_USER", "pinvi_runtime")
     monkeypatch.setenv("PINVI_APP_DB_PASSWORD", "pinvi-runtime-password")
     monkeypatch.setenv("PINVI_APP_SCHEMA_OWNER", "pinvi_application_owner")
@@ -1915,7 +1828,7 @@ def _assert_rejection_names_both_families(
     message = str(rejection.value)
     for family, representative in (
         ("Map", "kor-travel-map-ui"),
-        ("PinVi", "pinvi-postgres"),
+        ("PinVi", "pinvi-api"),
     ):
         assert representative in message, (
             f"{family} family가 부재 보고에서 사라졌다 — GM-17 B S4의 완화라면 "

@@ -92,13 +92,11 @@
 - TestClient는 pre-accept close와 accept-then-close를 모두 같은 `WebSocketDisconnect(4401)`로
   보고하므로 계약 회귀는 `backend/tests/test_ws_contract.py`의 ASGI 메시지 시퀀스로 고정한다.
 
-현재 registry가 관리하는 런타임 컨테이너는 다음 21개다. dev 기본 네트워크는 host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)이며, 포트 NAT가 없으므로 각 컨테이너는 호스트 정규 포트에 직접 바인딩한다(컨테이너 내부 포트 = 호스트 포트). 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다.
+현재 registry가 관리하는 주요 런타임 컨테이너는 다음과 같다(전체 목록은 `config/docker-targets.yml`의 `containers:`). dev 기본 네트워크는 host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)이며, 포트 NAT가 없으므로 각 컨테이너는 호스트 정규 포트에 직접 바인딩한다(컨테이너 내부 포트 = 호스트 포트). 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다.
 
 | 컨테이너 ID | Docker 컨테이너 | 역할 | 포트(host=container) |
 |---|---|---|---|
-| `kor-travel-geo-postgresql` | `kor-travel-geo-postgres` | Kor Travel Geo 전용 PostgreSQL / PostGIS (`kor_travel_geo`, `kor_travel_geo_dagster`) | `12500` |
-| `kor-travel-concierge-postgresql` | `kor-travel-concierge-postgres` | Kor Travel Concierge 전용 (`kor_travel_concierge`) | `12600` |
-| `pinvi-postgresql` | `pinvi-postgres` | PinVi 전용 (`pinvi`) | `12800` |
+| `kor-travel-shared-postgresql` | `kor-travel-shared-postgres` | 공용 PostgreSQL / PostGIS (geo·concierge·PinVi·weather·transport의 app·Dagster DB) | `11000` |
 | `rustfs` | `kor-travel-rustfs` | Kor Travel/PinVi 계열 미디어 및 원천 데이터용 S3 호환 오브젝트 스토리지 | `12101`, `12105` |
 | `grafana` | `kor-travel-grafana` | 다른 앱과도 공통 연계하는 Grafana 시각화 도구 | `12104`(ADR-48) |
 | `cadvisor` | `kor-travel-cadvisor` | Docker 컨테이너 리소스 메트릭을 노출하는 cAdvisor Exporter | `12103`(ADR-48) |
@@ -125,11 +123,11 @@
 UI/API/CLI는 Docker service 이름을 직접 외우지 않고 앱 관점 target을 사용한다. 공식 target 정의와 의존 관계는 `config/docker-targets.yml`에서 읽는다. 의존 관계는 각 target의 `depends_on`으로 표현되는 **DAG**이며, `ktdctl <target>`은 해당 target의 transitive 의존 폐포를 위상정렬 순서로 실행한다(`dependency_order`는 표시/결정적 정렬용 linearization).
 
 ```text
-db -> storage -> gra -> cadv -> prom ─┬─ geo ──┐
-                                      └─ conc ──┴─> map -> pinvi
+storage -> gra -> cadv -> prom ─┬─ geo ──┐
+                                └─ conc ──┴─> map -> pinvi
 ```
 
-핵심 의존: `geo`와 `conc`는 모두 `prom`에만 의존하며 서로 독립이다(**concierge는 geo에 의존하지 않는다**). `map`은 `geo`와 `conc` 모두에 의존하고, `pinvi`는 `map`에 의존한다. 예를 들어 `ktdctl conc`는 `db, storage, gra, cadv, prom, conc`만 실행하고(geo 제외), `ktdctl map`은 `db, storage, gra, cadv, prom, geo, conc, map`을 실행한다. 새 의존성은 `targets.<id>.depends_on`으로 선언한다.
+핵심 의존: `geo`와 `conc`는 모두 `prom`에만 의존하며 서로 독립이다(**concierge는 geo에 의존하지 않는다**). `map`은 `geo`와 `conc` 모두에 의존하고, `pinvi`는 `map`에 의존한다. 예를 들어 `ktdctl conc`는 `storage, gra, cadv, prom, conc`만 실행하고(geo 제외), `ktdctl map`은 `storage, gra, cadv, prom, geo, conc, map`을 실행한다. 새 의존성은 `targets.<id>.depends_on`으로 선언한다.
 
 **`docker-targets.yml` 편집 후 재기동 전 검증(GM-11, docker-targets.yml 스키마 검증
 잔여로 갱신)**: `registry.load_targets_config()`는 컨테이너 필수 필드·`depends_on`/
@@ -165,8 +163,7 @@ KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE=/path/to/edited/docker-targets.yml \
 
 | 공식 별칭 | 의미 | 누적 실행 범위 | 대표 별칭 |
 |---|---|---|---|
-| `db` | Kor Travel Geo DB | geo 전용 PostgreSQL/PostGIS(:12500) 실행 및 DB/extension/schema grant 복구. 다른 프로젝트 DB는 각 target이 소유한다(ADR-37) | `postgresql`, `postgres`, `database` |
-| `storage` | 통합 RustFS | `db` + RustFS 실행 및 bucket 복구 | `rustfs`, `s3`, `object-storage` |
+| `storage` | 통합 RustFS | RustFS 실행 및 bucket 복구 | `rustfs`, `s3`, `object-storage` |
 | `gra` | 공용 Grafana | `storage` + Grafana Web UI 실행 | `grafana`, `dashboard`, `visualization` |
 | `cadv` | cAdvisor Exporter | `gra` + cAdvisor Exporter 실행 | `cadvisor`, `exporter`, `metrics-exporter` |
 | `prom` | Prometheus | `cadv` + Prometheus 실행 | `prometheus`, `metrics`, `monitoring` |
@@ -174,11 +171,11 @@ KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE=/path/to/edited/docker-targets.yml \
 | `conc` | Kor Travel Concierge | `prom` + `kor-travel-concierge` API/MCP/Scheduler/Web UI 실행 (geo 비의존) | `kor-travel-concierge`, `concierge`, `agent` |
 | `map` | Kor Travel Map | `geo`+`conc` + `kor-travel-map` API/Dagster/Web UI 실행 | `kor-travel-map`, `krtour-map`, `python-krtour-map` |
 | `pinvi` | PinVi | `map` + PinVi API/Dagster/Web UI 실행 | `srv`, `main`, `pinvi` |
-| `all` | 전체 | `db`부터 `pinvi`까지 전체 순서 | `default` |
+| `all` | 전체 | `storage`부터 `pinvi`·`weather`까지 전체 순서 | `default` |
 
 `geo` 이후 앱 target은 모두 실제 앱 컨테이너를 이 저장소 compose에서 빌드하고 실행한다. `main`은 독립 target이 아니라 `pinvi`의 호환 별칭이며, 새 자동화에서는 짧은 별칭 `srv`를 사용한다.
 
-로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `db` 대역 `12000-12099`는 폐지된 통합 instance의 자리라 비어 있다 — PostgreSQL은 프로젝트마다 전용 instance이고 포트는 각 대역의 `x00`(`12500`/`12600`/`12700`/`12800`, ADR-37)이다. `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `gra`는 Grafana `12104`, `cadv`는 cAdvisor `12103`, `prom`은 Prometheus `12102`를 사용한다(ADR-48로 `storage` 대역 안으로 재배치, 자신의 100단위 대역이 아니다 — `docs/ports.md` 참고). `geo` 대역의 `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `conc` 대역은 `12601`/`12602`/`12605`, `map` 대역은 `12701`/`12702`/`12705`, `pinvi` 대역은 `12801`(API)/`12802`(Dagster)/`12805`(Web)를 사용한다. `kor-travel-docker-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
+로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `12000-12099` 대역은 비어 있다(폐지된 통합 instance와, 2026-09-28 폐지한 `db` target의 자리). PostgreSQL은 Map 전용 instance(`12700`, ADR-37)와 나머지 프로젝트의 공용 instance(`11000`, ADR-44~47) 둘이다. `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `gra`는 Grafana `12104`, `cadv`는 cAdvisor `12103`, `prom`은 Prometheus `12102`를 사용한다(ADR-48로 `storage` 대역 안으로 재배치, 자신의 100단위 대역이 아니다 — `docs/ports.md` 참고). `geo` 대역의 `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `conc` 대역은 `12601`/`12602`/`12605`, `map` 대역은 `12701`/`12702`/`12705`, `pinvi` 대역은 `12801`(API)/`12802`(Dagster)/`12805`(Web)를 사용한다. `kor-travel-docker-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
 
 ### 3.1 `.env` 완전성 — 한 target만 써도 전체 필수 변수가 다 있어야 한다
 
@@ -199,13 +196,11 @@ profile로도 피할 수 없다(비활성 profile의 서비스도 interpolate �
 
 | 단계 | 실행 조건 | 스크립트 | 역할 |
 |---|---|---|---|
-| DB 복구 | `db` 이상 | `scripts/ensure-kor-travel-geo-db.sh` | Geo 전용 PostgreSQL readiness 대기, `kor_travel_geo` database와 PostGIS/pg_stat_statements/schema grant만 보정. 다른 프로젝트의 role·database는 건드리지 않음 |
 | RustFS 복구 | `storage` 이상 | `scripts/ensure-rustfs-buckets.sh` | RustFS health 대기 후 `pinvi-media`, `kor-travel-geo`, `kor-travel-concierge`, `krtour-map`, `krtour-uploads` bucket 생성 |
-| Geo 원천 검증 | `geo` 이상 | `scripts/verify-kor-travel-geo-source.sh` | `/data/juso` 마운트와 `load_manifest`, `tl_juso_text`, `mv_geocode_target` 적재 상태 확인 |
 
-`geo` target은 compose에서 `kor-travel-geo-api`, `kor-travel-geo-ui`를 실행하고, dev 기본 host 네트워크에서 API 컨테이너는 `127.0.0.1:12500`(geo 전용 PostgreSQL)과 `127.0.0.1:12101`(RustFS)을 사용한다. 대시보드와 CLI는 registry에 등록된 컨테이너 이름(`kor-travel-geo-api-latest`, `kor-travel-geo-ui-latest`)을 같은 Docker 대상으로 사용한다.
+`geo` target은 compose에서 `kor-travel-geo-api`, `kor-travel-geo-ui`를 실행하고, dev 기본 host 네트워크에서 API 컨테이너는 `127.0.0.1:11000`(공용 PostgreSQL)과 `127.0.0.1:12101`(RustFS)을 사용한다. 대시보드와 CLI는 registry에 등록된 컨테이너 이름(`kor-travel-geo-api-latest`, `kor-travel-geo-ui-latest`)을 같은 Docker 대상으로 사용한다.
 
-`geo` 검증은 원천 DB가 비어 있거나 핵심 테이블이 없으면 기본적으로 실패한다. 전체 적재는 무겁고 `kor-travel-geo`의 도메인 로더가 책임지는 작업이므로, manager는 자동 전체 적재 대신 명확한 실패 메시지와 복구 지침을 출력한다. 비어 있는 DB를 의도적으로 허용해야 하는 경우에만 `.env`에서 `KOR_TRAVEL_GEO_STRICT_SOURCE_CHECK=0`으로 낮춘다.
+2026-09-28까지는 `db`의 DB 복구(`scripts/ensure-kor-travel-geo-db.sh`)와 `geo`의 원천 검증(`scripts/verify-kor-travel-geo-source.sh`)이 여기 있었다. 둘 다 옛 geo 전용 instance(`:12500`) **안에서** 도는 스크립트라 그 instance와 함께 뺐다. geo의 database·role은 `kor-travel-shared-db-init-geo`가 공용 instance에 만들고, 원천 데이터 적재 상태는 `kor-travel-geo`가 책임진다.
 
 ---
 
@@ -218,7 +213,6 @@ profile로도 피할 수 없다(비활성 profile의 서비스도 interpolate �
 ```bash
 ktdctl targets list
 ktdctl targets validate
-ktdctl db --build
 ktdctl storage
 ktdctl geo --recreate
 ktdctl conc --build
@@ -235,8 +229,8 @@ ktdctl prom
 ktdctl status srv
 ktdctl ensure geo --build
 ktdctl logs storage --follow
-ktdctl action kor-travel-geo-postgresql restart
-ktdctl inspect kor-travel-geo-postgresql --json
+ktdctl action kor-travel-geo-api restart
+ktdctl inspect kor-travel-shared-postgresql --json
 ```
 
 다른 Kor Travel/PinVi 저장소에서는 개발 서버 시작 전에 필요한 target만 호출한다.
@@ -382,7 +376,7 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 - `docker compose` 실행은 반드시 문자열 shell이 아니라 인자 배열로 수행한다.
 - inspect와 로그 출력에서 secret 성격의 environment 값은 redaction한다.
 - compose 파일은 구조 설정을 저장하고, 비밀번호와 API key는 `.env` 또는 `.env.local`에 둔다.
-- 포트 `12500`, `12600`, `12700`, `12800`, `12101`, `12102`, `12103`, `12104`, `12105`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12802`, `12805`, `12901`, `12905`는 Kor Travel/PinVi 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다(Prometheus/cAdvisor/Grafana는 2026-09-21 ADR-48로 `12401`/`12301`/`12205`에서 `12102`/`12103`/`12104`로 재배치됐다).
+- 포트 `11000`, `12700`, `12101`, `12102`, `12103`, `12104`, `12105`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12802`, `12805`, `12901`, `12905`는 Kor Travel/PinVi 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다(Prometheus/cAdvisor/Grafana는 2026-09-21 ADR-48로 `12401`/`12301`/`12205`에서 `12102`/`12103`/`12104`로 재배치됐다).
 
 ### 7.1 작업이 만든 컨테이너는 그 작업이 끝날 때 정리한다
 
@@ -987,10 +981,15 @@ cAdvisor는 더 이상 `/:/rootfs`, `/var/run`, `/var/lib/docker`, `/dev/disk`�
 `--docker_only=true`와 read-only `/var/run/docker.sock`, `/sys`, `/dev/kmsg` device를 사용해 container CPU·memory·I/O 지표를
 노출한다. host root filesystem/disk inventory는 제공하지 않지만 manager 대시보드의 Docker SDK 기반 container
 상태·stats와 Prometheus의 container metric 수집은 유지한다.
-## PostgreSQL 백업 (ADR-37 이후 4개 인스턴스)
+## PostgreSQL 백업
 
 2026-08-17 전용 instance 분리(ADR-37)로 백업 주체가 **넷**이 됐다. 그전까지 절차가 있던
-것은 map 하나뿐이었고 geo는 **33GB인데 백업이 0건**이었다(#177).
+것은 map 하나뿐이었고 geo는 **33GB인데 백업이 0건**이었다(#177). 그 뒤 geo·concierge·
+PinVi가 공용 instance(`kor-travel-shared-postgres`, `:11000`)로 옮겼고, 2026-09-28부터
+`db-backup`의 `geo`·`geo_dagster`·`concierge`·`pinvi` role은 그 instance를 뜬다(그 전에는
+geo 둘과 pinvi가 옛 전용 instance를 겨냥했다 — geo 쪽은 컨테이너가 이미 없어 실패했고,
+pinvi 쪽은 아무도 쓰지 않는 동결 사본을 떴다). Map 둘은 전용 instance 그대로다.
+아래 실측 표는 분리 직후(2026-08-17)의 기록이다.
 
 ### 실측 (2026-08-17, n150)
 
@@ -1021,12 +1020,24 @@ ktdctl db-backup create map_dagster --timeout 14400
 ktdctl db-backup create pinvi --timeout 14400
 ```
 
-| 인스턴스 | 컨테이너 | 포트 | user | database |
+| role | 컨테이너 | 포트 | user | database |
 |---|---|---|---|---|
-| geo | `kor-travel-geo-postgres` | 12500 | `addr` | `kor_travel_geo` |
-| concierge | `kor-travel-concierge-postgres` | 12600 | `addr` | `kor_travel_concierge` |
-| map | `kor-travel-map-postgres` | 12700 | `kor_travel_map` | `kor_travel_map` |
-| pinvi | `pinvi-postgres` | 12800 | `pinvi` | `pinvi` |
+| geo | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_geo` |
+| geo_dagster | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_geo_dagster` |
+| concierge | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_concierge` |
+| map_application | `kor-travel-map-postgres` | 12700 | `kor_travel_map` | `kor_travel_map` |
+| map_dagster | `kor-travel-map-postgres` | 12700 | `kor_travel_map` | `kor_travel_map_dagster` |
+| pinvi | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `pinvi` |
+
+포트와 user는 코드가 들고 있지 않다 — `db-backup`이 떠 있는 컨테이너의 `-p` 인자와
+`POSTGRES_USER`에서 읽는다(위 값은 기본 설정 기준).
+
+**공용 instance의 role은 다섯 프로젝트가 같이 쓰는 cluster를 뜬다.** n150의 부하는 CPU가
+아니라 디스크 대기다. `geo`(`kor_travel_geo` 약 35 GB, dump 4.7 GB·약 15분)는 조용한 시간에만
+수동으로 뜨고, `rehearse-restore`도 같은 cluster 안에 scratch DB를 만든다는 점을 알고 돌린다.
+공용 instance에서 **백업 role이 없는** DB도 있다 — `pinvi_dagster`, `kor_travel_weather`·
+`kor_travel_weather_dagster`, `kor_travel_transport`·`kor_travel_transport_dagster`. 이 저장소가
+그 넷의 백업을 만들지 않는다는 뜻이다(2026-09-28 기준, 이 변경 전부터 그랬다).
 
 ### 산출물 3종 세트
 
@@ -1107,7 +1118,10 @@ journal). `restore-plan`을 먼저 만든 이유는, 목록에 백업이 보이�
 - live schema revision과 백업 시점 revision이 같은가.
 - 어느 컨테이너가 영향을 받는가.
 
-차단(`DUMP_MISSING`·`SIZE_MISMATCH`·`SHA256_MISMATCH`·`INSTANCE_UNREACHABLE`)과 참고
+- dump를 뜬 자리(manifest의 `instance`에서 컨테이너와 database)가 이 role이 지금 뜨는
+  자리와 같은가. 다르면 무결성이 멀쩡해도 **다른 데이터**다(`INSTANCE_MISMATCH`).
+
+차단(`DUMP_MISSING`·`SIZE_MISMATCH`·`SHA256_MISMATCH`·`INSTANCE_MISMATCH`·`INSTANCE_UNREACHABLE`)과 참고
 (`HEAD_MISMATCH`·`LIVE_HEAD_UNKNOWN`·`MANIFEST_HEAD_UNKNOWN`)를 구분한다. schema revision
 불일치는 **차단이 아니다** — 복원 자체는 가능하고, 코드가 기대하는 schema보다 과거로
 간다는 사실을 알고 결정하는 것이 사람의 몫이다. 차단 요인이 있으면 exit 1이라 스크립트
@@ -1177,6 +1191,19 @@ geo application DB는 위 앱 레벨 백업이 정본이다. 운영자가 장애
 `scripts/run-standalone-backup.sh <role> <keep>`을 cron/systemd timer에 건다.
 `geo` role은 앱 레벨 백업과 중복되므로 이 wrapper의 주기 실행 예시에서 제외한다. 같은 role의 동시 실행은 `~/backups/<role>/
 .backup.lock`(`flock`)으로 막는다.
+
+`gc --keep N`은 이 role이 **지금 뜨는 자리**(컨테이너와 database)의 dump끼리만 세서 최신 N개를
+남긴다. 다른 자리에서 뜬 dump(role이 instance를 옮기기 전의 것)는 지우지 않고 매번
+`kept N dump(s) taken from another instance`로 알린다. 한 줄로 세면 새 dump가 N개 쌓이는 순간
+옛 데이터의 유일한 사본이 조용히 사라진다(2026-09-28 PinVi 옛 전용 instance의 dump 7개가
+그랬을 것이다). 옮길지 지울지는 사람이 정한다 — 보관은 `~/backups/legacy/` 아래가 관례다.
+
+cron은 crontab 줄이 가리키는 체크아웃의 wrapper와 `ktdctl`을 부른다. 설치본(`/opt`)을
+갱신해도 그 체크아웃은 그대로다. n150에서는 `/home/digitie/kor-travel-docker-manager`(git이
+아닌 사본)이고, 설치 뒤 `backend/src`·`config/docker-targets.yml`·
+`scripts/run-standalone-backup.sh`를 설치본과 **함께** 맞춰야 한다(2026-09-20에 `backend/src`만
+맞춰 `compose_binds 절이 없다`로 매일 실패했다). 그 사본의 `config/`에는 떠 있는
+Prometheus/Grafana가 마운트하는 파일도 있으므로 `config/` 전체를 덮거나 `--delete`로 맞추지 않는다.
 
 Manager backend가 root service로 실행되고 operator가 별도 계정으로 CLI를 실행하는
 환경에서는 두 프로세스가 `Path.home()`을 서로 다르게 해석한다. 따라서 백업 root는

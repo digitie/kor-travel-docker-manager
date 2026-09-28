@@ -10,6 +10,9 @@ Manager의 target 모델은 지금까지 **단일 프로젝트·단일 compose �
     kor-travel-airport      docker-compose.yml
     kor-travel-airport-db   docker-compose.db.yml                      (프로젝트 둘)
 
+(weather는 2026-09-20에 internal target이 됐고, airport-db는 2026-09-28에 인스턴스가
+사라져 설정에서 빠졌다 — 두 축은 conftest의 합성 fixture로 계속 실제 코드를 태운다.)
+
 그래서 target이 자기 프로젝트를 선언할 수 있게 했다. **선언이 없으면 오늘과 똑같이
 Manager 자신의 프로젝트**이고, 기존 target의 동작은 한 글자도 바뀌지 않는다.
 
@@ -53,18 +56,14 @@ def test_external_targets_declare_the_measured_project_coordinates() -> None:
     프로젝트에 명령을 보내거나 `no configuration file provided`로 죽는다.
 
     weather는 2026-09-20(ADR-47)부터 Manager internal target이라 이 실측
-    좌표가 없다 — 남은 외부 target 둘(airport/airport-db)만 센다.
+    좌표가 없고, airport-db는 2026-09-28에 인스턴스가 사라져 설정에서 빠졌다 —
+    남은 외부 target 하나(airport)만 센다.
     """
 
     assert external_project_for_target("airport") == ExternalProject(
         project="kor-travel-airport",
         working_dir="/home/digitie/apps/kor-travel-airport",
         config_files=("docker-compose.yml",),
-    )
-    assert external_project_for_target("airport-db") == ExternalProject(
-        project="kor-travel-airport-db",
-        working_dir="/home/digitie/apps/kor-travel-airport",
-        config_files=("docker-compose.db.yml",),
     )
 
 
@@ -74,17 +73,19 @@ def test_manager_targets_are_untouched_by_the_new_model() -> None:
     이 검사가 없으면 새 모델이 기존 target에 스며들어도 아무도 모른다.
     """
 
-    for target in ("db", "storage", "geo", "conc", "map", "pinvi", "all"):
+    for target in ("storage", "geo", "conc", "map", "pinvi", "all"):
         assert external_project_for_target(target) is None, target
-    for target in ("db", "storage", "geo", "conc", "map", "pinvi"):
+    for target in ("storage", "geo", "conc", "map", "pinvi"):
         assert target_is_external(target) is False, target
 
 
 # ── 그룹핑: 평평한 목록으로는 표현할 수 없는 것 ──────────────────────────
 
 
-def test_a_multi_project_target_produces_one_group_per_project() -> None:
-    """`airport`는 **두 프로젝트**에 걸친다 — 묶음도 둘이고 의존성 순서를 지킨다.
+def test_a_multi_project_target_produces_one_group_per_project(
+    airport_with_legacy_db: None,
+) -> None:
+    """(합성) `airport`가 **두 프로젝트**에 걸치면 묶음도 둘이고 의존성 순서를 지킨다.
 
     이것이 단일 프로젝트 전제를 깨는 자리다. 평평한 목록(`services_for_target`)은
     `['postgres', 'backend', 'frontend']`를 돌려주는데, 그것을 한 번의 compose
@@ -225,7 +226,7 @@ def test_single_file_boundary_is_refused_for_an_external_project(
 # ── C6c 계약 경로는 외부를 거부한다 ──────────────────────────────────────
 
 
-@pytest.mark.parametrize("target", ["airport", "airport-db"])
+@pytest.mark.parametrize("target", ["airport"])
 def test_ensure_target_refuses_external_projects(target: str) -> None:
     """`ensure`는 Manager 자신의 후보만 다룬다.
 
@@ -239,8 +240,8 @@ def test_ensure_target_refuses_external_projects(target: str) -> None:
 
     weather는 2026-09-20(ADR-47)부터 Manager internal target이라 이 parametrize
     에서 뺐다 — `ensure weather`는 이제 정당하게 (외부 거부가 아닌) 다른 배포
-    계약 게이트를 탄다. 남은 airport/airport-db 둘만으로도 "외부는 거부된다"는
-    실제 메커니즘이 충분히 증명된다.
+    계약 게이트를 탄다. 남은 airport 하나로도 "외부는 거부된다"는 실제
+    메커니즘이 충분히 증명된다.
     """
 
     service = ComposeService()
@@ -264,7 +265,9 @@ def test_ensure_target_still_works_for_manager_targets() -> None:
 # ── 로그: 프로젝트를 하나로 좁혀야 한다 ──────────────────────────────────
 
 
-def test_logs_scopes_to_the_named_targets_own_project() -> None:
+def test_logs_scopes_to_the_named_targets_own_project(
+    airport_with_legacy_db: None,
+) -> None:
     """여러 프로젝트의 로그를 한 스트림으로 합칠 수 없다 — **지목한 쪽**을 쓴다.
 
     첫 판은 그럴 때 거부하면서 "한 프로젝트의 target을 고르라"고 안내했다. 그 조언은
@@ -305,8 +308,8 @@ def test_container_scoped_logs_resolve_their_owning_project() -> None:
     assert external_project_for_container("kor-travel-weather-api") == (
         external_project_for_target("weather")
     )
-    assert external_project_for_container("kor-travel-airport-postgresql") == (
-        external_project_for_target("airport-db")
+    assert external_project_for_container("kor-travel-airport-backend") == (
+        external_project_for_target("airport")
     )
     # Manager 자신의 컨테이너는 외부가 아니다.
     assert external_project_for_container("kor-travel-map-postgresql") is None

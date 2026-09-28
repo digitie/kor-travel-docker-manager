@@ -44,7 +44,6 @@ def test_registry_resolves_application_targets_to_shared_services():
 
     assert target["id"] == "pinvi"
     assert target_sequence_for_target("srv") == [
-        "db",
         "storage",
         "gra",
         "cadv",
@@ -55,7 +54,6 @@ def test_registry_resolves_application_targets_to_shared_services():
         "pinvi",
     ]
     assert services_for_target("srv") == [
-        "kor-travel-geo-postgres",
         "rustfs",
         "grafana",
         "cadvisor",
@@ -67,7 +65,6 @@ def test_registry_resolves_application_targets_to_shared_services():
         "kor-travel-geo-dagster",
         "kor-travel-geo-dagster-daemon",
         "kor-travel-geo-dagster-code-server",
-        "kor-travel-concierge-postgres",
         # kor-travel-shared-postgres는 geo target에서 이미 나왔으므로(ADR-45) 여기서는
         # dedupe로 빠진다.
         "kor-travel-shared-db-init-concierge",
@@ -81,7 +78,6 @@ def test_registry_resolves_application_targets_to_shared_services():
         "kor-travel-map-dagster",
         "kor-travel-map-dagster-code-server",
         "kor-travel-map-dagster-daemon",
-        "pinvi-postgres",
         "kor-travel-shared-db-init-pinvi",
         "pinvi-api",
         "pinvi-web",
@@ -90,7 +86,6 @@ def test_registry_resolves_application_targets_to_shared_services():
         "pinvi-dagster-daemon",
     ]
     assert runtime_services_for_target("srv") == [
-        "kor-travel-geo-postgres",
         "rustfs",
         "grafana",
         "cadvisor",
@@ -116,14 +111,11 @@ def test_registry_resolves_application_targets_to_shared_services():
         "pinvi-dagster-daemon",
     ]
     assert [step["name"] for step in init_steps_for_target("srv")] == [
-        "db-schema-recovery",
         "rustfs-bucket-recovery",
-        "geo-source-verification",
     ]
 
 
 def test_short_aliases_resolve_dependency_order():
-    assert get_target("db")["id"] == "db"
     assert get_target("storage")["id"] == "storage"
     assert get_target("geo")["id"] == "geo"
     assert get_target("kor-travel-geo")["id"] == "geo"
@@ -144,7 +136,6 @@ def test_short_aliases_resolve_dependency_order():
     assert get_target("metrics")["id"] == "prom"
     # concierge는 geo에 의존하지 않는다(prometheus 다음 별도 분기).
     assert target_sequence_for_target("conc") == [
-        "db",
         "storage",
         "gra",
         "cadv",
@@ -152,7 +143,6 @@ def test_short_aliases_resolve_dependency_order():
         "conc",
     ]
     assert target_sequence_for_target("map") == [
-        "db",
         "storage",
         "gra",
         "cadv",
@@ -162,7 +152,6 @@ def test_short_aliases_resolve_dependency_order():
         "map",
     ]
     assert target_sequence_for_target("srv") == [
-        "db",
         "storage",
         "gra",
         "cadv",
@@ -173,7 +162,6 @@ def test_short_aliases_resolve_dependency_order():
         "pinvi",
     ]
     assert services_for_target("geo") == [
-        "kor-travel-geo-postgres",
         "rustfs",
         "grafana",
         "cadvisor",
@@ -334,7 +322,6 @@ def test_compose_ensure_build_command(
 
     assert result["success"] is True
     assert result["services"] == [
-        "kor-travel-geo-postgres",
         "rustfs",
         "grafana",
         "cadvisor",
@@ -346,7 +333,6 @@ def test_compose_ensure_build_command(
         "kor-travel-geo-dagster",
         "kor-travel-geo-dagster-daemon",
         "kor-travel-geo-dagster-code-server",
-        "kor-travel-concierge-postgres",
         "kor-travel-shared-db-init-concierge",
         "kor-travel-concierge-api",
         "kor-travel-concierge-mcp",
@@ -358,7 +344,6 @@ def test_compose_ensure_build_command(
         "kor-travel-map-dagster",
         "kor-travel-map-dagster-code-server",
         "kor-travel-map-dagster-daemon",
-        "pinvi-postgres",
         "kor-travel-shared-db-init-pinvi",
         "pinvi-api",
         "pinvi-web",
@@ -367,7 +352,6 @@ def test_compose_ensure_build_command(
         "pinvi-dagster-daemon",
     ]
     assert result["target_sequence"] == [
-        "db",
         "storage",
         "gra",
         "cadv",
@@ -382,7 +366,6 @@ def test_compose_ensure_build_command(
     assert "up" in up_command
     assert "--build" in up_command
     assert "--force-recreate" in up_command
-    assert "kor-travel-geo-postgres" in up_command
     assert "grafana" in up_command
     assert "cadvisor" in up_command
     assert "prometheus" in up_command
@@ -391,7 +374,9 @@ def test_compose_ensure_build_command(
     assert "kor-travel-concierge-api" in up_command
     assert "kor-travel-map-api" in up_command
     assert "pinvi-api" in up_command
-    assert mock_run.call_count == 4
+    # up 한 번 + init step 하나(rustfs-bucket-recovery). 2026-09-28까지는 옛 geo 전용
+    # instance의 init step 둘(db-schema-recovery·geo-source-verification)이 더 있었다.
+    assert mock_run.call_count == 2
 
 
 @patch("kor_travel_docker_manager.cli.compose_service")
@@ -442,9 +427,9 @@ def test_cli_direct_alias_runs_ensure(mock_compose_service):
         "stderr": "",
     }
 
-    assert main(["db", "--build"]) == 0
+    assert main(["storage", "--build"]) == 0
     mock_compose_service.ensure_target.assert_called_once_with(
-        "db",
+        "storage",
         build=True,
         recreate=False,
         capture_output=True,
@@ -1031,6 +1016,25 @@ def test_cli_db_backup_gc_reports_orphans_separately(
     assert "deleted 1 backup(s)" in output
     assert "removed 1 orphaned dump(s)" in output
     assert "geo-2000.dump" in output
+
+
+@patch("kor_travel_docker_manager.cli.gc_standalone_backups")
+
+
+def test_cli_db_backup_gc_reports_dumps_kept_from_another_instance(
+    mock_gc, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """회전하지 않은 옛 instance의 dump는 cron 로그에 매번 보여야 사람이 옮긴다."""
+
+    from kor_travel_docker_manager.services.standalone_backup import GcOutcome
+
+    mock_gc.return_value = GcOutcome(
+        deleted=(), orphans_removed=(), other_instance_kept=("pinvi-100.dump",)
+    )
+
+    assert main(["db-backup", "gc", "pinvi", "--keep", "7"]) == 0
+
+    assert "kept 1 dump(s) taken from another instance" in capsys.readouterr().out
 
 
 # --- ktdctl pin (KUM-M1·M2) ---------------------------------------------------

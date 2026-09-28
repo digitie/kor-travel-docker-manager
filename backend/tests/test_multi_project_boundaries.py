@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -427,13 +428,18 @@ def test_one_shot_services_need_no_container_registration() -> None:
     _validate(config)
 
 
-def test_the_same_project_cannot_be_declared_with_two_coordinates() -> None:
+def test_the_same_project_cannot_be_declared_with_two_coordinates(
+    legacy_airport_db: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
     """묶음 키는 좌표 전체인데 컨테이너 소유 해석은 **이름**으로 첫 매치를 고른다.
 
-    둘이 갈리면 컨테이너가 어느 좌표에 속하는지가 파일 순서로 정해진다.
+    둘이 갈리면 컨테이너가 어느 좌표에 속하는지가 파일 순서로 정해진다. 외부 target이
+    둘 있어야 성립하는 물음이라(2026-09-28부터 실제 외부 target은 airport 하나다)
+    옛 `airport-db`를 합성으로 얹는다.
     """
 
-    config = _real_config()
+    config = legacy_airport_db(_real_config())
+    _validate(config)  # 합성 설정 자체는 통과해야 아래 거부가 뜻이 있다.
     config["targets"]["airport"] = {
         **config["targets"]["airport"],
         "external_project": {
@@ -937,7 +943,7 @@ _COLLISION_SENTINEL = "__COLLISION__"
 @pytest.mark.parametrize(
     "container_id",
     [
-        pytest.param("kor-travel-airport-postgresql", id="name-differs"),
+        pytest.param("kor-travel-airport-frontend", id="name-differs"),
         pytest.param(_COLLISION_SENTINEL, id="name-collides"),
         pytest.param("kor-travel-airport-backend", id="airport"),
     ],

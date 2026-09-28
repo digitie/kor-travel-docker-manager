@@ -9,11 +9,13 @@ pinned revision은 이제 registry 파일에서 온다. 테스트 모듈 일부�
 
 from __future__ import annotations
 
+import copy
 import os
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -105,3 +107,84 @@ def _isolated_global_mutation_lock(
     )
     monkeypatch.setattr(c6c_deployment, "_GLOBAL_LOCK_OWNER_UID", os.geteuid())
     yield
+
+
+#: `airport-db`가 2026-09-28까지 `config/docker-targets.yml`에 실제로 갖고 있던
+#: 선언이다. 그 형제 DB 인스턴스(`kor-travel-airport-db-postgres-1`, :14000)는 n150에서
+#: 이미 사라졌고 transport는 공용 instance(:11000)를 쓴다 — 그래서 정본 설정에서 뺐다.
+#: 그런데 그것이 저장소의 **유일한 "target 하나, 프로젝트 둘"** 실례였다
+#: (`airport` → `airport-db`). 그 기능 자체(의존 폐포가 두 compose 프로젝트에 걸치는
+#: 경우의 묶음·실행·로그 경계)는 여전히 코드에 있으므로, weather의 옛 좌표를
+#: 합성으로 복원하는 `weather_as_external`과 같은 원리로 이 선언을 합성 복원해 그
+#: 경로를 계속 실제 코드로 태운다.
+_LEGACY_AIRPORT_DB_TARGET: dict[str, object] = {
+    "external_project": {
+        "project": "kor-travel-airport-db",
+        "working_dir": "/home/digitie/apps/kor-travel-airport",
+        "config_files": ["docker-compose.db.yml"],
+    },
+    "port_band": "14000-14000",
+    "depends_on": [],
+    "display_name": "Kor Travel Airport DB",
+    "description": "(합성) 2026-09-28 이전의 Kor Travel Airport 전용 PostgreSQL target.",
+    "aliases": ["airport-postgresql", "airport-postgres"],
+    "services": ["postgres"],
+    "runtime_services": ["postgres"],
+    "containers": ["kor-travel-airport-postgresql"],
+}
+_LEGACY_AIRPORT_DB_CONTAINER: dict[str, object] = {
+    "name": "kor-travel-airport-db-postgres-1",
+    "compose_service": "postgres",
+    "external_project": "kor-travel-airport-db",
+    "role": "airport-postgresql",
+    "display_name": "Kor Travel Airport 전용 PostgreSQL",
+    "connection": "postgresql://127.0.0.1:14000",
+    "expected_ports": ["14000:5432"],
+}
+
+
+def _with_legacy_airport_db(config: dict[str, Any]) -> dict[str, Any]:
+    """설정 사본에 옛 `airport-db` target·컨테이너를 얹고 `airport`가 그것에 의존하게 한다."""
+
+    config = copy.deepcopy(dict(config))
+    order = list(config["dependency_order"])
+    order.insert(order.index("airport"), "airport-db")
+    config["dependency_order"] = order
+    config["targets"] = dict(config["targets"])
+    config["targets"]["airport-db"] = copy.deepcopy(_LEGACY_AIRPORT_DB_TARGET)
+    config["targets"]["airport"] = {
+        **config["targets"]["airport"],
+        "depends_on": ["airport-db"],
+    }
+    config["containers"] = dict(config["containers"])
+    config["containers"]["kor-travel-airport-postgresql"] = copy.deepcopy(
+        _LEGACY_AIRPORT_DB_CONTAINER
+    )
+    return config
+
+
+@pytest.fixture
+def legacy_airport_db() -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """설정 dict를 받아 옛 `airport-db`를 얹은 사본을 돌려주는 함수."""
+
+    return _with_legacy_airport_db
+
+
+@pytest.fixture
+def airport_with_legacy_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`registry.load_targets_config()` 자체를 옛 `airport-db`가 있는 설정으로 갈아 끼운다.
+
+    `MANAGED_CONTAINERS`/`_targets()` 등은 `_LazyMapping`으로 접근할 때마다 이 함수를
+    다시 부르므로 patch 하나로 `registry.py`와 그 소비자가 일관되게 새 값을 본다.
+    합성 설정도 실제 무결성 검사를 통과해야 한다 — 통과하지 못하면 검사가 헛돈다.
+    """
+
+    from kor_travel_docker_manager.services import registry as registry_module
+
+    registry_module.load_targets_config.cache_clear()
+    try:
+        config = _with_legacy_airport_db(dict(registry_module.load_targets_config()))
+    finally:
+        registry_module.load_targets_config.cache_clear()
+    registry_module._validate_targets_config(copy.deepcopy(config), label="<legacy airport-db>")
+    monkeypatch.setattr(registry_module, "load_targets_config", lambda: config)

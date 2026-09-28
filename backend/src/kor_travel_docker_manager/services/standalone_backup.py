@@ -1,8 +1,10 @@
-"""전용 PostgreSQL 인스턴스별 독립 백업 (issue #177).
+"""PostgreSQL database별 독립 백업 (issue #177).
 
 ADR-37 4-instance 분리(geo/concierge/map/pinvi) 뒤에도 백업 주체는 map 하나뿐이었다.
-이 모듈은 v5 rebuild의 cache-target/compatible-pair 기계와 완전히 무관하게, 네
-인스턴스 각각을 `docker exec` + `pg_dump`로 독립 백업한다.
+이 모듈은 v5 rebuild의 cache-target/compatible-pair 기계와 완전히 무관하게, role마다
+그 database가 **지금 사는** instance를 `docker exec` + `pg_dump`로 독립 백업한다 —
+Map 둘은 전용 instance(`kor-travel-map-postgres`), 나머지는 공용 instance
+(`kor-travel-shared-postgres`)다.
 
 산출물은 `docs/docker-management.md`의 "3종 세트" 관례를 따른다 —
 `<role>-<ts>.dump` · `<role>-<ts>.dump.sha256`(`sha256sum -c` 그대로 먹는 형태) ·
@@ -70,17 +72,26 @@ _logger = logging.getLogger(__name__)
 BACKUP_SHARED_GROUP_ENV = "KTDM_BACKUP_SHARED_GROUP"
 
 # (container_env, container_default, database_name). container_default는
-# config/docker-targets.yml의 4-instance 계약과 같은 이름이다. docker-compose.yml이
-# concierge/map/pinvi 컨테이너 이름을 env override로 허용하므로(geo만 리터럴 고정)
-# 같은 override를 여기서도 존중한다 — 안 그러면 override된 스택에서 엉뚱한(또는
-# 존재하지 않는) 컨테이너를 겨냥해 fail-close로 조용히 실패한다. 포트는 여기 두지
-# 않는다 — 실제 기동 인자에서 읽는다.
+# docker-compose.yml의 컨테이너 이름과 같다. compose가 컨테이너 이름을 env override로
+# 허용하므로 같은 override를 여기서도 존중한다 — 안 그러면 override된 스택에서
+# 엉뚱한(또는 존재하지 않는) 컨테이너를 겨냥해 fail-close로 조용히 실패한다. 포트는
+# 여기 두지 않는다 — 실제 기동 인자에서 읽는다.
+#
+# geo(ADR-45)·concierge(ADR-44)·PinVi(ADR-46)는 공용 instance로 옮겼다. 2026-09-28까지
+# geo 둘과 pinvi는 옛 전용 instance(`kor-travel-geo-postgres`/`pinvi-postgres`)를
+# 겨냥했는데, geo 쪽은 컨테이너가 이미 없었고 pinvi 쪽은 아무도 쓰지 않는 동결 롤백
+# 사본이었다 — 주기 백업이 실패하거나 낡은 데이터를 떴다.
 _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
-    "geo": (None, "kor-travel-geo-postgres", "kor_travel_geo"),
-    "geo_dagster": (None, "kor-travel-geo-postgres", "kor_travel_geo_dagster"),
-    # ADR-44(2026-09-19/20)로 concierge를 공용 instance(kor-travel-shared-postgres)로
-    # cutover했다. 옛 kor-travel-concierge-postgres는 롤백 안전망으로 계속 떠 있지만
-    # 더 이상 쓰기 대상이 아니므로, 일상 백업은 활성 instance를 겨냥해야 한다.
+    "geo": (
+        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
+        "kor-travel-shared-postgres",
+        "kor_travel_geo",
+    ),
+    "geo_dagster": (
+        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
+        "kor-travel-shared-postgres",
+        "kor_travel_geo_dagster",
+    ),
     "concierge": (
         "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
         "kor-travel-shared-postgres",
@@ -96,7 +107,11 @@ _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
         "kor-travel-map-postgres",
         "kor_travel_map_dagster",
     ),
-    "pinvi": ("PINVI_POSTGRES_CONTAINER", "pinvi-postgres", "pinvi"),
+    "pinvi": (
+        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
+        "kor-travel-shared-postgres",
+        "pinvi",
+    ),
 }
 
 
@@ -155,11 +170,13 @@ class GcOutcome:
 
     ``deleted``는 "최신 keep개만 남긴다"는 정책의 결과이고, ``orphans_removed``는
     중단된 create가 남긴 복원 불가능한 dump다. 둘을 한 목록으로 합치면 운영자가
-    "왜 예상보다 많이 지워졌나"를 알 수 없다.
+    "왜 예상보다 많이 지워졌나"를 알 수 없다. ``other_instance_kept``는 이 role이 지금
+    뜨는 instance가 아닌 곳에서 뜬 dump다 — 회전 대상이 아니라 그대로 두었다.
     """
 
     deleted: tuple[str, ...]
     orphans_removed: tuple[str, ...]
+    other_instance_kept: tuple[str, ...] = ()
 
     @property
     def total(self) -> int:
@@ -169,6 +186,7 @@ class GcOutcome:
         return {
             "deleted": list(self.deleted),
             "orphans_removed": list(self.orphans_removed),
+            "other_instance_kept": list(self.other_instance_kept),
         }
 
 
@@ -502,6 +520,12 @@ def gc_standalone_backups(
     **create와 같은 role lock 아래에서 실행한다.** 락이 없으면 진행 중인 백업
     (geo는 실측 20분 이상)의 산출물을 지울 수 있다 — dump는 manifest보다 먼저
     쓰이므로 그 창에서는 orphan과 구분되지 않는다.
+
+    **회전은 이 role이 지금 뜨는 instance의 dump끼리만 센다.** role이 다른 instance로
+    옮겨 간 뒤 옛 instance의 dump를 새 dump와 한 줄로 세우면, 새 dump가 keep개 쌓이는
+    순간 옛 데이터의 유일한 사본이 조용히 지워진다(2026-09-28 PinVi: 옛
+    `pinvi-postgres`의 dump 7개가 그 데이터의 유일한 백업이었다). 그런 dump는 지우지
+    않고 ``other_instance_kept``로 알린다 — 옮기거나 지우는 것은 사람의 몫이다.
     """
 
     if keep < 1:
@@ -509,10 +533,15 @@ def gc_standalone_backups(
     root = _resolve_backup_root(role, backup_root)
     if not root.is_dir():
         return GcOutcome(deleted=(), orphans_removed=())
+    source = _role_config(role)
     with _role_lock(root):
         manifests = list_standalone_backups(role, backup_root=backup_root)
+        current = [item for item in manifests if _manifest_source(item) == source]
+        other_instance = tuple(
+            item.backup_filename for item in manifests if _manifest_source(item) != source
+        )
         deleted: list[str] = []
-        for manifest in manifests[: max(len(manifests) - keep, 0)]:
+        for manifest in current[: max(len(current) - keep, 0)]:
             _unlink_backup_set(root, manifest.backup_filename)
             deleted.append(manifest.backup_filename)
         # manifest가 없는 dump는 목록에도 안 잡히고 복원 경로도 없다(무결성 메타가
@@ -524,7 +553,22 @@ def gc_standalone_backups(
                 continue
             _unlink_backup_set(root, dump.name)
             orphans.append(dump.name)
-    return GcOutcome(deleted=tuple(deleted), orphans_removed=tuple(orphans))
+    return GcOutcome(
+        deleted=tuple(deleted),
+        orphans_removed=tuple(orphans),
+        other_instance_kept=other_instance,
+    )
+
+
+def _manifest_source(manifest: BackupManifest) -> tuple[str, str]:
+    """manifest가 기록한 출처 `(컨테이너, database)`. `_role_config`와 같은 모양이다.
+
+    `instance`는 `_finish_standalone_backup`이 쓰는 `<컨테이너>:127.0.0.1:<포트>/<database>`다.
+    포트는 비교하지 않는다 — 같은 컨테이너의 포트는 설정으로 바뀌어도 데이터는 같다.
+    """
+
+    container_name, _, rest = manifest.instance.partition(":")
+    return container_name, rest.rpartition("/")[2]
 
 
 def _unlink_backup_set(root: Path, backup_filename: str) -> None:
@@ -619,6 +663,18 @@ def plan_standalone_restore(
     findings: list[RestorePlanFinding] = []
     observed_sha256: str | None = None
     observed_byte_size: int | None = None
+
+    # 다른 instance에서 뜬 dump는 무결성이 멀쩡해도 **다른 데이터**다. role이 instance를
+    # 옮긴 뒤 남은 옛 dump로 지금 DB를 덮으면 되돌리는 것이 아니라 바꿔치는 것이다.
+    if _manifest_source(manifest) != (container_name, database_name):
+        findings.append(
+            RestorePlanFinding(
+                "INSTANCE_MISMATCH",
+                f"이 백업은 다른 인스턴스에서 떴습니다({manifest.instance}). 지금 이 "
+                f"role의 DB는 {container_name}의 {database_name}입니다.",
+                True,
+            )
+        )
 
     if not dump_path.is_file():
         findings.append(
