@@ -189,7 +189,9 @@ def _sources() -> PinnedRuntimeSourceMaterialization:
 
 
 def _opaque_transaction() -> Any:
-    return object()
+    # 재구축 compose 실행기는 R3 chokepoint에서 resolved 문서의 PostgreSQL 서버만 본다.
+    # 그 밖은 여전히 불투명하다.
+    return SimpleNamespace(resolved={"services": {}})
 
 
 def _sources_for(release: PinnedRuntimeRelease) -> PinnedRuntimeSourceMaterialization:
@@ -1108,6 +1110,67 @@ def test_rebuild_startup_rejects_implicit_compose_dependencies(
     runner.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        # `run SERVICE` 뒤는 컨테이너 argv다 — compose는 의존성을 끌어온다.
+        [
+            "--profile",
+            "bootstrap",
+            "run",
+            "--rm",
+            "pinvi-admin-bootstrap",
+            "pinvi-admin-bootstrap",
+            "--no-deps",
+        ],
+        # 값을 받는 옵션의 값 자리다(`-e --no-deps`는 환경 변수 이름이다).
+        ["run", "--rm", "-e", "--no-deps", "pinvi-admin-bootstrap"],
+    ),
+    ids=("after-the-service", "option-value"),
+)
+def test_rebuild_startup_counts_only_the_no_deps_compose_parses_as_a_flag(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """argv 어딘가의 `--no-deps` 글자가 아니라 compose가 플래그로 읽은 것만 센다(적대 리뷰 2026-09-29)."""
+
+    service = ComposeService()
+    runner = Mock()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    assert "--no-deps" in arguments
+    with pytest.raises(DeploymentContractError, match="requires --no-deps"):
+        service._run_pinned_runtime_rebuild_compose(
+            arguments,
+            transaction=_opaque_transaction(),
+        )
+
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "services", "flags"),
+    (
+        (
+            ["run", "--rm", "pinvi-api", "sh", "--no-deps", "--remove-orphans"],
+            ["pinvi-api"],
+            {"--rm"},
+        ),
+        (["run", "--rm", "-e", "--no-deps", "pinvi-api"], ["pinvi-api"], {"--rm"}),
+        # `run` 밖에서는 서비스 뒤의 플래그도 compose 플래그다.
+        (["up", "-d", "pinvi-api", "--no-deps"], ["pinvi-api"], {"-d", "--no-deps"}),
+        (["ps", "--no-deps"], [], set()),
+        (["down", "--no-deps"], None, set()),
+    ),
+)
+def test_compose_mutation_parse_reports_the_flags_compose_reads(
+    arguments: list[str],
+    services: list[str] | None,
+    flags: set[str],
+) -> None:
+    assert ComposeService._parse_compose_mutation(arguments) == (services, frozenset(flags))
+
+
 def test_rebuild_never_retries_a_failed_dagster_storage_migration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1370,6 +1433,9 @@ _LIVE_IDENTITIES: dict[str, tuple[str, int, str]] = {
 }
 
 
+_ISOLATION = "ensure-map-databases-isolated"
+
+
 def _forward_runtimes() -> tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime]:
     def runtime(role: Any, name: str, container: str, port: int) -> DatabaseRuntime:
         return DatabaseRuntime(
@@ -1438,6 +1504,10 @@ def _forward_harness(
         "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "metadata-password",
+        "KOR_TRAVEL_MAP_PG_DSN": (
+            "postgresql+asyncpg://ktm_feature_service:service-password@127.0.0.1:12700/"
+            "kor_travel_map"
+        ),
         "COMPOSE_PROJECT_NAME": "f1d-migrate-forward",
         "KTDM_PINNED_RUNTIME_STATE_ROOT": str(tmp_path / "state"),
         "KTDM_C6C_PINVI_ADMIN_EMAIL": "admin@example.test",
@@ -1504,6 +1574,9 @@ def _forward_harness(
         prerequisites=Mock(),
         create_pinvi=Mock(return_value=False),
         map_precheck=Mock(return_value="present"),
+        # 멈추기 전의 읽기 전용 판정(`--restart`의 R2, 일반·adopt 경로의 R4 전제).
+        reset_preflight=Mock(),
+        isolation_preflight=Mock(),
         retention_generation=Mock(),
         retention_candidate=Mock(),
     )
@@ -1553,6 +1626,12 @@ def _forward_harness(
         inspected_services.append(tuple(services))
         return {_C6cConfig.map_ui_container: {}}
 
+    def isolate(app: DatabaseRuntime, dagster: DatabaseRuntime, *, login: str) -> None:
+        # DB 권한 변경도 순서를 단언할 수 있게 compose 호출과 같은 기록에 남긴다.
+        operations.append(
+            (_ISOLATION, app.database_name, dagster.database_name, login)
+        )
+
     def read_identity(runtime: DatabaseRuntime) -> tuple[str, int, str] | None:
         identities = cast(dict[str, Any], live["identities"])
         return cast("tuple[str, int, str] | None", identities.get(runtime.role))
@@ -1592,6 +1671,7 @@ def _forward_harness(
         "ensure_map_application_database": mocks.ensure_map,
         "initialize_application_300_dagster_metadata_database": mocks.dagster_init,
         "reset_databases_for_application_300": mocks.reset,
+        "ensure_map_databases_isolated": isolate,
         "reconcile_orphaned_pinvi_bootstrap_credentials": Mock(),
         "run_pinvi_canonical_smoke": mocks.smoke,
         "C6cDeploymentConfig": _C6cConfig,
@@ -1602,6 +1682,8 @@ def _forward_harness(
         "reconcile_candidate_build_references": mocks.retention_candidate,
         "create_database_if_absent": mocks.create_pinvi,
         "require_map_application_database_convergible": mocks.map_precheck,
+        "require_databases_resettable": mocks.reset_preflight,
+        "require_map_databases_isolatable": mocks.isolation_preflight,
     }.items():
         monkeypatch.setattr(compose_service_module, name, replacement)
     service = ComposeService()
@@ -1622,6 +1704,7 @@ def _forward_harness(
         monkeypatch.setattr(service, name, replacement)
     return SimpleNamespace(
         service=service,
+        transaction=transaction,
         candidate=candidate,
         runtimes=runtimes,
         status_path=status_path,
@@ -2239,6 +2322,86 @@ def test_restart_skips_the_map_database_precheck(
 
     assert result["outcome"] == "deployed"
     harness.mocks.map_precheck.assert_not_called()
+    harness.mocks.isolation_preflight.assert_not_called()
+    harness.mocks.reset_preflight.assert_called_once_with(harness.runtimes)
+
+
+def test_a_restart_the_r2_fence_would_refuse_is_refused_before_the_runtime_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """오늘 전용 instance의 `--restart`: schema owner가 다른 DB도 소유해 R2가 거부한다.
+
+    종전에는 그 거부가 Map·PinVi를 멈춘 뒤 리셋 안에서 났고, pair가 내려간 채 남았다(적대 리뷰
+    2026-09-29). 리셋 대역도 같은 판정으로 거부하게 두어, 거부가 **어디서** 나는지를 본다.
+    """
+
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    refusal = DeploymentContractError(
+        "map_application database owner also owns a database outside the Map pair"
+    )
+    harness.mocks.reset_preflight.side_effect = refusal
+    harness.mocks.reset.side_effect = refusal
+
+    with pytest.raises(DeploymentContractError, match="outside the Map pair"):
+        harness.service.rebuild_pinned_runtime(restart_reason="rebuild")
+
+    assert _mutating_operations(harness) == []
+    harness.mocks.reset.assert_not_called()
+    assert read_deploy_status(harness.status_path) == previous
+
+
+@pytest.mark.parametrize("adopt_reason", (None, "restored from backup"), ids=("new-pair", "adopt"))
+def test_an_isolation_precondition_refusal_comes_before_the_runtime_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adopt_reason: str | None
+) -> None:
+    """R4의 live 전제 거부(예: DSN login이 Map schema owner의 member가 아니다)는 멈추기 전에 난다.
+
+    종전에는 런타임을 멈추고 Map schema를 올린 뒤 R4 transaction 안에서 났다(적대 리뷰 2026-09-29).
+    R4 대역도 같은 판정으로 거부하게 두어, 거부가 **어디서** 나는지를 본다.
+    """
+
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate, map_revision="0" * 40)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    refusal = DeploymentContractError(
+        "Map application login ktm_rotated is not a non-superuser LOGIN member of "
+        "ktm_feature_schema_owner"
+    )
+    harness.mocks.isolation_preflight.side_effect = refusal
+    monkeypatch.setattr(
+        compose_service_module, "ensure_map_databases_isolated", Mock(side_effect=refusal)
+    )
+
+    with pytest.raises(DeploymentContractError, match="not a non-superuser LOGIN member"):
+        harness.service.rebuild_pinned_runtime(adopt_reason=adopt_reason)
+
+    assert _mutating_operations(harness) == []
+    harness.mocks.ensure_map.assert_not_called()
+    assert read_deploy_status(harness.status_path) == previous
+    harness.mocks.isolation_preflight.assert_called_once_with(
+        harness.runtimes[0], harness.runtimes[1], login="ktm_feature_service"
+    )
+
+
+@pytest.mark.parametrize(
+    ("state", "preflighted"),
+    (("present", True), ("unbootstrapped", False), ("absent", False)),
+)
+def test_the_isolation_preflight_reads_only_a_handed_over_application_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str, preflighted: bool
+) -> None:
+    """없거나 bootstrap 전인 app DB는 전체 경로가 R4 전에 만든다 — 그 전제를 미리 보면 거짓 거부다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.mocks.map_precheck.return_value = state
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "deployed"
+    assert harness.mocks.isolation_preflight.called is preflighted
+    harness.mocks.reset_preflight.assert_not_called()
 
 
 def test_an_interrupted_adoption_keeps_protecting_the_adopted_databases(
@@ -2387,3 +2550,458 @@ def test_a_failed_bookkeeping_write_leaves_the_verified_runtime_up(
     assert harness.operations.count(stop) == 1
     status = read_deploy_status(harness.status_path)
     assert status is not None and status.state == "in_progress"
+
+
+# --- M1 R3: 재구축은 전용 집합 밖의 PostgreSQL 서버를 바꾸지 않는다 ----------------------------
+
+
+def _transaction_with_postgres(**extra: Mapping[str, Any]) -> Any:
+    """n150처럼 두 PostgreSQL 서버(공용·Map 전용)를 담은 frozen 문서."""
+
+    return SimpleNamespace(
+        resolved={
+            "services": {
+                "kor-travel-shared-postgres": {"command": ["postgres", "-p", "11000"]},
+                "kor-travel-map-postgres": {"command": ["postgres", "-p", "12700"]},
+                "kor-travel-map-api": {"image": "sha256:" + "1" * 64},
+                **extra,
+            }
+        }
+    )
+
+
+def _succeeding_recovery() -> Mock:
+    return Mock(return_value={"success": True, "returncode": 0, "stdout": "", "stderr": ""})
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        *(
+            [action, *(["--no-deps"] if action in {"up", "run"} else []), "kor-travel-shared-postgres"]
+            for action in (
+                "up",
+                "run",
+                "create",
+                "start",
+                "restart",
+                "stop",
+                "kill",
+                "rm",
+                "down",
+                "pause",
+            )
+        ),
+        ["--profile", "bootstrap", "rm", "-f", "-s", "kor-travel-shared-postgres"],
+        ["up", "-d", "--no-deps", "--wait", "kor-travel-map-api", "kor-travel-shared-postgres"],
+    ],
+    ids=lambda arguments: " ".join(arguments),
+)
+def test_rebuild_compose_refuses_mutating_a_shared_postgres_service(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(
+        DeploymentContractError, match="outside its dedicated set: kor-travel-shared-postgres"
+    ):
+        service._run_pinned_runtime_rebuild_compose(
+            arguments, transaction=_transaction_with_postgres()
+        )
+
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["ps", "--format", "json", "kor-travel-shared-postgres"],
+        ["--profile", "bootstrap", "ps", "--all", "--format", "json", "kor-travel-shared-postgres"],
+        # 전용 집합(M1에서는 Map 전용 instance)은 재구축이 health까지 띄운다.
+        ["up", "-d", "--no-deps", "--wait", "kor-travel-map-postgres"],
+        ["stop", "kor-travel-map-api"],
+    ],
+    ids=lambda arguments: " ".join(arguments),
+)
+def test_rebuild_compose_allows_reads_and_the_dedicated_set(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    service._run_pinned_runtime_rebuild_compose(
+        arguments, transaction=_transaction_with_postgres()
+    )
+
+    runner.assert_called_once()
+
+
+def test_rebuild_compose_refuses_a_witnessed_postgres_server_that_is_not_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """이름 목록이 없다 — 문서가 서버 실행 형태를 드러내면 이름이 무엇이든 PostgreSQL이다."""
+
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(DeploymentContractError, match="dedicated set: sidecar-db"):
+        service._run_pinned_runtime_rebuild_compose(
+            ["stop", "sidecar-db"],
+            transaction=_transaction_with_postgres(
+                **{"sidecar-db": {"command": "sh -c 'exec /usr/lib/postgresql/16/bin/postgres'"}}
+            ),
+        )
+
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["stop"],
+        ["down"],
+        ["up", "-d", "--no-deps"],
+        ["rm", "-f", "-s"],
+        ["restart"],
+        ["--profile", "bootstrap", "kill"],
+        ["frobnicate", "kor-travel-map-api"],
+        ["--bogus-flag", "stop", "kor-travel-map-api"],
+    ],
+    ids=lambda arguments: " ".join(arguments),
+)
+def test_rebuild_compose_refuses_a_mutating_call_without_explicit_services(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """서비스를 말하지 않는 mutation은 compose가 **모든** 서비스로 읽는다 — 공용 instance 포함."""
+
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(DeploymentContractError, match="must name its services explicitly"):
+        service._run_pinned_runtime_rebuild_compose(
+            arguments, transaction=_transaction_with_postgres()
+        )
+
+    runner.assert_not_called()
+
+
+def _transaction_with_dependents() -> Any:
+    """n150의 의존 그래프 모양: PinVi API는 공용 instance에, Map API는 geo API를 거쳐 그것에 의존한다."""
+
+    healthy = {"condition": "service_healthy", "required": True}
+    return _transaction_with_postgres(
+        **{
+            "pinvi-api": {"depends_on": {"kor-travel-shared-postgres": healthy}},
+            "kor-travel-geo-api": {"depends_on": {"kor-travel-shared-postgres": healthy}},
+            "kor-travel-map-api": {"depends_on": {"kor-travel-geo-api": healthy}},
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["create", "pinvi-api"],
+        # 이름 붙은 것은 Map API뿐이지만 closure가 geo API를 거쳐 공용 instance에 닿는다.
+        ["create", "kor-travel-map-api"],
+        ["start", "pinvi-api"],
+        ["restart", "pinvi-api"],
+        ["scale", "pinvi-api=1"],
+        ["watch", "pinvi-api"],
+    ],
+    ids=lambda arguments: " ".join(arguments),
+)
+def test_rebuild_compose_refuses_a_call_whose_dependencies_reach_a_shared_postgres(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """compose가 **실제로 닿는 것**을 센다. `create`에는 `--no-deps`가 없고, drift된 의존
+    PostgreSQL을 다시 만든다(n150 Compose v5.2.0 실측) — 이름 붙은 서비스만 보면 통과한다.
+    """
+
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(
+        DeploymentContractError, match="outside its dedicated set: kor-travel-shared-postgres"
+    ):
+        service._run_pinned_runtime_rebuild_compose(
+            arguments, transaction=_transaction_with_dependents()
+        )
+
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["restart", "--no-deps", "pinvi-api"],
+        ["scale", "--no-deps", "pinvi-api=1"],
+        ["up", "-d", "--no-deps", "--wait", "kor-travel-map-api"],
+        # 의존성 쪽으로 번지지 않는 명령이다.
+        ["stop", "pinvi-api"],
+        ["--profile", "bootstrap", "rm", "-f", "-s", "kor-travel-map-api"],
+        ["build", "kor-travel-map-api"],
+    ],
+    ids=lambda arguments: " ".join(arguments),
+)
+def test_rebuild_compose_allows_dependents_when_compose_does_not_reach_their_dependencies(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """위 거부의 대조군 — 같은 의존 그래프에서 `--no-deps`거나 의존성으로 번지지 않으면 통과한다."""
+
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    service._run_pinned_runtime_rebuild_compose(
+        arguments, transaction=_transaction_with_dependents()
+    )
+
+    runner.assert_called_once()
+
+
+def test_r3_counts_only_the_no_deps_compose_parses_as_a_flag() -> None:
+    """R3 자체도 argv 글자가 아니라 compose가 읽은 플래그로 판정한다 — startup gate와 독립으로.
+
+    `run --rm pinvi-api pinvi-api --no-deps`에서 `--no-deps`는 컨테이너 argv다. compose는 PinVi API의
+    `depends_on`(공용 instance)을 만들고, drift됐으면 다시 만든다(적대 리뷰 2026-09-29, n150 재현).
+    """
+
+    with pytest.raises(
+        DeploymentContractError, match="outside its dedicated set: kor-travel-shared-postgres"
+    ):
+        ComposeService._require_rebuild_compose_spares_foreign_postgres(
+            ["--profile", "bootstrap", "run", "--rm", "pinvi-api", "pinvi-api", "--no-deps"],
+            transaction=_transaction_with_dependents(),
+        )
+    # 대조군: 같은 호출에서 `--no-deps`가 compose 옵션 자리에 있으면 통과한다.
+    ComposeService._require_rebuild_compose_spares_foreign_postgres(
+        ["--profile", "bootstrap", "run", "--rm", "--no-deps", "pinvi-api", "pinvi-api"],
+        transaction=_transaction_with_dependents(),
+    )
+
+
+def test_r3_refuses_remove_orphans_only_where_compose_reads_it() -> None:
+    """`--remove-orphans`도 compose가 플래그로 읽을 때만 이름 없는 컨테이너를 지운다."""
+
+    with pytest.raises(DeploymentContractError, match="must not remove orphan containers"):
+        ComposeService._require_rebuild_compose_spares_foreign_postgres(
+            ["up", "-d", "--no-deps", "kor-travel-map-api", "--remove-orphans"],
+            transaction=_transaction_with_dependents(),
+        )
+    # `run SERVICE` 뒤의 같은 글자는 컨테이너 argv다 — compose는 orphan을 지우지 않는다.
+    ComposeService._require_rebuild_compose_spares_foreign_postgres(
+        ["run", "--rm", "--no-deps", "kor-travel-map-api", "echo", "--remove-orphans"],
+        transaction=_transaction_with_dependents(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "transaction", "message"),
+    [
+        (
+            ["up", "-d", "--no-deps", "--remove-orphans", "kor-travel-map-api"],
+            _transaction_with_postgres(),
+            "must not remove orphan containers",
+        ),
+        (
+            ["stop", "kor-travel-map-api"],
+            SimpleNamespace(resolved={"services": None}),
+            "services mapping is unreadable",
+        ),
+        (
+            ["create", "pinvi-api"],
+            _transaction_with_postgres(
+                **{"pinvi-api": {"depends_on": "kor-travel-shared-postgres"}}
+            ),
+            "pinvi-api depends_on is unreadable",
+        ),
+    ],
+    ids=["remove-orphans", "no-services-mapping", "unreadable-depends-on"],
+)
+def test_rebuild_compose_refuses_what_it_cannot_classify(
+    arguments: list[str],
+    transaction: Any,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """분류할 수 없으면 통과가 아니라 거부다 — 이름 없는 orphan 제거, 읽을 수 없는 문서·의존성."""
+
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(DeploymentContractError, match=message):
+        service._run_pinned_runtime_rebuild_compose(arguments, transaction=transaction)
+
+    runner.assert_not_called()
+
+
+def test_postgres_server_services_is_declared_or_witnessed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        c6c_deployment,
+        "_declared_postgres_compose_services",
+        lambda: frozenset({"declared-db", "declared-but-absent"}),
+    )
+
+    assert c6c_deployment.postgres_server_services(
+        {
+            "services": {
+                "declared-db": {"image": "anything"},
+                "witnessed-db": {"command": "sh -c 'exec postgres -p 1'"},
+                "env-db": {"environment": {"POSTGRES_PASSWORD_FILE": "/run/secrets/x"}},
+                "app": {"command": ["uvicorn", "app:api"]},
+                # psql 클라이언트의 DB 이름 `postgres`는 서버가 아니다.
+                "client": {"command": ["psql", "-d", "postgres"]},
+            }
+        }
+    ) == {"declared-db", "witnessed-db", "env-db"}
+
+
+@pytest.mark.parametrize("scenario", ("first_deploy", "same_pair", "new_pair", "restart"))
+def test_full_rebuild_never_mutates_a_postgres_service_outside_the_dedicated_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
+) -> None:
+    """재구축 전체를 대역으로 끝까지 돌리고, Docker에 닿은 **모든** compose argv를 본다.
+
+    chokepoint(`_run_pinned_runtime_rebuild_compose`)는 진짜를 쓴다 — Docker 직전의
+    `_run_frozen_recovery`만 기록기로 바꾼다. 단언은 chokepoint와 **해석기 모두와** 독립이다:
+    기록된 argv의 낱말에서 PostgreSQL 서버 이름을 찾고(읽기 호출 포함), 의존성으로 번질 수 있는
+    명령 낱말이 든 argv가 모두 `--no-deps`를 다는지 본다. M1의 전용 집합은 Map 전용 instance
+    하나이고, M2가 그것을 비우면 같은 단언이 "어떤 PostgreSQL 서버도 이름으로 불리지 않는다"가
+    된다.
+    """
+
+    candidate = _candidate_generation()
+    previous = {
+        "first_deploy": None,
+        "same_pair": _committed_status(candidate),
+        "new_pair": _committed_status(candidate, map_revision="0" * 40),
+        "restart": _committed_status(candidate, map_revision="0" * 40),
+    }[scenario]
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    harness.transaction.resolved["services"].update(
+        {
+            "kor-travel-shared-postgres": {"command": ["postgres", "-p", "11000"]},
+            "kor-travel-map-postgres": {"command": ["postgres", "-p", "12700"]},
+        }
+    )
+    recorded: list[tuple[str, ...]] = []
+
+    def recover(
+        arguments: Sequence[str],
+        *,
+        transaction: object,
+        mutation_capability: object,
+        capture_output: bool = True,
+    ) -> dict[str, Any]:
+        del transaction, mutation_capability, capture_output
+        recorded.append(tuple(arguments))
+        return {"success": True, "returncode": 0, "stdout": "", "stderr": ""}
+
+    # harness가 대역으로 바꾼 compose 실행기를 걷어 진짜 chokepoint를 태운다.
+    monkeypatch.delattr(harness.service, "_run_pinned_runtime_rebuild_compose")
+    monkeypatch.setattr(harness.service, "_run_frozen_recovery", recover)
+
+    if scenario == "restart":
+        harness.service.rebuild_pinned_runtime(restart_reason="R3 end-to-end")
+    else:
+        harness.service.rebuild_pinned_runtime()
+
+    postgres = c6c_deployment.postgres_server_services(harness.transaction.resolved)
+    assert postgres == {"kor-travel-shared-postgres", "kor-travel-map-postgres"}
+    dedicated = set(compose_service_module._PINNED_RUNTIME_DATABASE_SERVICES)
+    # 탐지기가 공허하지 않다: 재구축의 mutation이 실제로 기록됐다.
+    assert any(operation[0] == "up" for operation in recorded)
+    named = {token for operation in recorded for token in operation} & postgres
+    assert named <= dedicated, sorted(named - dedicated)
+    starters = [
+        operation
+        for operation in recorded
+        if {"create", "restart", "run", "scale", "start", "up", "watch"} & set(operation)
+    ]
+    assert starters
+    assert all("--no-deps" in operation for operation in starters), [
+        operation for operation in starters if "--no-deps" not in operation
+    ]
+
+
+def test_converge_applies_isolation_before_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """같은 pair 수렴 한 번으로 R4(PUBLIC 차단·login CONNECT·연결 상한)가 live에 걸린다."""
+
+    candidate = _candidate_generation()
+    harness = _forward_harness(monkeypatch, tmp_path, previous=_committed_status(candidate))
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "converged"
+    isolation = [
+        index for index, operation in enumerate(harness.operations) if operation[0] == _ISOLATION
+    ]
+    runtime_up = [
+        index
+        for index, operation in enumerate(harness.operations)
+        if operation[0] == "up" and "kor-travel-map-api" in operation
+    ]
+    assert len(isolation) == 1 and len(runtime_up) == 1
+    assert isolation[0] < runtime_up[0]
+    assert harness.operations[isolation[0]] == (
+        _ISOLATION,
+        "kor_travel_map",
+        "kor_travel_map_dagster",
+        "ktm_feature_service",
+    )
+
+
+def test_deploy_applies_isolation_after_the_bootstrap_and_before_the_map_api_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """fresh bootstrap은 기본 ACL(`datacl IS NULL`)을 요구한다 — 격리는 그 뒤, Map이 붙기 전이다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.mocks.ensure_map.side_effect = lambda *_args, **_kwargs: (
+        harness.operations.append(("ensure-map-application-database",)) or "created"
+    )
+
+    harness.service.rebuild_pinned_runtime()
+
+    names = [operation[0] for operation in harness.operations]
+    isolation = names.index(_ISOLATION)
+    assert names.count(_ISOLATION) == 1
+    assert names.index("ensure-map-application-database") < isolation
+    assert harness.operations.index(_SCHEMA_RUN) < isolation
+    api_up = next(
+        index
+        for index, operation in enumerate(harness.operations)
+        if operation[0] == "up" and "kor-travel-map-api" in operation
+    )
+    assert isolation < api_up
+
+
+def test_a_malformed_map_login_is_refused_before_anything_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.transaction.environment.effective["KOR_TRAVEL_MAP_PG_DSN"] = (
+        "postgresql+asyncpg://127.0.0.1:12700/kor_travel_map"
+    )
+
+    with pytest.raises(DeploymentContractError, match="Map application login is invalid"):
+        harness.service.rebuild_pinned_runtime()
+
+    assert harness.operations == []

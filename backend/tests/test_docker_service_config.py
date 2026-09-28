@@ -1759,7 +1759,7 @@ def _prepare_candidate_transaction(
     monkeypatch.setenv("KOR_TRAVEL_MAP_MIGRATOR_PASSWORD", "test-map-migrator")
     monkeypatch.setenv("KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD", "test-map-api-runtime")
     monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD", "test-map-dagster-runtime")
-    monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_METADATA_USER", "test_map_dagster_metadata")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_METADATA_USER", "kor_travel_map_dagster")
     monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD", "test-map-dagster-metadata")
     monkeypatch.setenv(
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
@@ -1775,7 +1775,7 @@ def _prepare_candidate_transaction(
     )
     monkeypatch.setenv(
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
-        "postgresql://test_map_dagster_metadata:test-map-dagster-metadata@127.0.0.1:12700/kor_travel_map_dagster",
+        "postgresql://kor_travel_map_dagster:test-map-dagster-metadata@127.0.0.1:12700/kor_travel_map_dagster",
     )
     # ADR-100 superset window — distinct from the other three, so the Map preflight's
     # pairwise-distinctness check stays satisfiable in this fixture too.

@@ -43,6 +43,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     load_c6c_deployment_config_from_environment,
     manager_mutation_lock,
     manager_mutation_lock_path,
+    postgres_server_services,
     revalidate_candidate_system_bind_snapshots,
     run_pinvi_canonical_smoke,
     validate_c6c_build_source_wiring,
@@ -69,10 +70,14 @@ from kor_travel_docker_manager.services.database_runtime import (
     create_database_if_absent,
     database_runtimes_from_frozen_contract,
     ensure_map_application_database,
+    ensure_map_databases_isolated,
     initialize_application_300_dagster_metadata_database,
+    map_application_login,
     read_database_identity,
     read_database_schema_revision,
+    require_databases_resettable,
     require_map_application_database_convergible,
+    require_map_databases_isolatable,
     reset_databases_for_application_300,
     schema_revision_table_exists,
 )
@@ -177,6 +182,48 @@ _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
 #: 재구축이 health까지 띄우고 secret·이미지를 확인하는 PostgreSQL. 공용 instance는 다른
 #: 프로젝트도 쓰므로 여기 없다(`_start_pinned_runtime_databases`).
 _PINNED_RUNTIME_DATABASE_SERVICES = (_MAP_POSTGRES_SERVICE,)
+#: 명시 서비스의 `depends_on`까지 만들거나 다시 만들거나 시작할 수 있는 compose 명령. `--no-deps`가
+#: 없으면 R3 chokepoint가 그 의존성 closure를 범위에 넣는다. `--no-deps`를 받는 명령(up·run·
+#: restart·scale)과, 그 플래그 없이 의존성을 끌어오는 명령(create는 n150 Compose v5.2.0에 그
+#: 플래그가 없다 — drift된 의존 PostgreSQL을 다시 만든다, start·watch)이다. stop·rm·kill·pause·
+#: down은 의존성 쪽으로 번지지 않고, build·pull·push는 컨테이너를 바꾸지 않는다.
+_COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES: Final = frozenset(
+    {"create", "restart", "run", "scale", "start", "up", "watch"}
+)
+
+
+def _compose_dependency_closure(
+    resolved: Mapping[str, Any],
+    roots: set[str],
+) -> set[str]:
+    """``roots``와, resolved 문서의 `depends_on`을 따라 그것들이 끌어오는 서비스 전체.
+
+    문서에 없는 이름(`cp`의 `SERVICE:PATH` 조각 등)은 뿌리로만 남는다. `depends_on`을 읽을 수
+    없으면 closure를 모르므로 거부한다.
+    """
+
+    services = resolved.get("services")
+    if not isinstance(services, Mapping):
+        raise DeploymentContractError("compose services mapping is unreadable")
+    reached: set[str] = set()
+    pending = list(roots)
+    while pending:
+        name = pending.pop()
+        if name in reached:
+            continue
+        reached.add(name)
+        service = services.get(name)
+        if not isinstance(service, Mapping):
+            continue
+        dependencies = service.get("depends_on") or {}
+        if not isinstance(dependencies, Mapping | list | tuple) or not all(
+            isinstance(dependency, str) for dependency in dependencies
+        ):
+            raise DeploymentContractError(f"compose service {name} depends_on is unreadable")
+        pending.extend(dependencies)
+    return reached
+
+
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
 # profile을 해석 단계에서 빼면 `run --profile bootstrap`가 같은 문서에서 service를 찾지 못한다.
 _FROZEN_COMPOSE_PROFILES = ("bootstrap",)
@@ -3194,11 +3241,20 @@ class ComposeService:
 
     @staticmethod
     def _compose_mutation_identifiers(args: Sequence[str]) -> list[str]:
-        """Compose 명령을 read-only allowlist로 분류하고 mutation 대상을 보수적으로 찾는다."""
+        """Compose 명령을 read-only allowlist로 분류하고 mutation 대상을 보수적으로 찾는다.
 
-        runtime_identifiers = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
-        if not args:
-            return runtime_identifiers
+        명시 서비스가 없거나 해석할 수 없는 mutation은 두 API 전부에 닿는다고 본다.
+        """
+
+        scope = ComposeService._compose_mutation_scope(args)
+        if scope is None:
+            return [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
+        return scope
+
+    @staticmethod
+    def _compose_command_index(args: Sequence[str]) -> int | None:
+        """전역 옵션을 건너뛴 compose 하위 명령의 위치. 전역 옵션을 해석할 수 없으면 ``None``."""
+
         global_options_with_value = {
             "--ansi",
             "--env-file",
@@ -3227,7 +3283,7 @@ class ComposeService:
                 continue
             if item in global_options_with_value:
                 if index + 1 >= len(args):
-                    return runtime_identifiers
+                    return None
                 skip_next = True
                 continue
             inline_global_option = next(
@@ -3241,16 +3297,45 @@ class ComposeService:
             )
             if inline_global_option is not None:
                 if not item.partition("=")[2]:
-                    return runtime_identifiers
+                    return None
                 continue
             if item.startswith("-"):
                 if item not in global_flags:
-                    return runtime_identifiers
+                    return None
                 continue
             command_index = index
             break
+        return command_index
+
+    @staticmethod
+    def _compose_mutation_scope(args: Sequence[str]) -> list[str] | None:
+        """read-only면 ``[]``, 명시 서비스가 있는 mutation이면 그 식별자, 그 밖은 ``None``.
+
+        ``None``은 "이 호출이 무엇을 바꾸는지 서비스 이름으로 말할 수 없다"는 뜻이다 — 인자가
+        없거나, 해석에 실패했거나, 모르는 명령이거나, 서비스를 명시하지 않은 mutation(compose가
+        **모든** 서비스로 읽는다)이다. 명시 mutation의 목록은 비지 않으므로 ``[]``와 섞이지 않는다.
+        """
+
+        return ComposeService._parse_compose_mutation(args)[0]
+
+    @staticmethod
+    def _parse_compose_mutation(
+        args: Sequence[str],
+    ) -> tuple[list[str] | None, frozenset[str]]:
+        """``_compose_mutation_scope``의 범위와, 명시 mutation에서 compose가 **플래그로 읽은** 명령 옵션.
+
+        `--no-deps`·`--remove-orphans`는 argv 어디에 있느냐가 아니라 compose가 그것을 플래그로
+        읽었느냐로 센다. `run SERVICE` 뒤는 컨테이너 argv이고, 값을 받는 옵션의 값 자리도 플래그가
+        아니다 — `run … SERVICE --no-deps`는 의존성을 끌어온다(적대 리뷰 2026-09-29). 범위가
+        ``None``이거나 ``[]``이면 플래그는 비어 있다.
+        """
+
+        runtime_identifiers = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
+        if not args:
+            return None, frozenset()
+        command_index = ComposeService._compose_command_index(args)
         if command_index is None:
-            return runtime_identifiers
+            return None, frozenset()
         command = args[command_index]
         if command == "config":
             read_options_with_value = {"--format", "--hash"}
@@ -3279,10 +3364,10 @@ class ComposeService:
                     or item.startswith("--output=")
                     or (item.startswith("-o") and item != "-o")
                 ):
-                    return runtime_identifiers
+                    return None, frozenset()
                 if item in read_options_with_value:
                     if index + 1 >= len(config_items):
-                        return runtime_identifiers
+                        return None, frozenset()
                     skip_next = True
                     continue
                 inline_read_option = next(
@@ -3295,11 +3380,11 @@ class ComposeService:
                 )
                 if inline_read_option is not None:
                     if not item.partition("=")[2]:
-                        return runtime_identifiers
+                        return None, frozenset()
                     continue
                 if item not in read_flags:
-                    return runtime_identifiers
-            return []
+                    return None, frozenset()
+            return [], frozenset()
         read_only = {
             "events",
             "images",
@@ -3312,17 +3397,17 @@ class ComposeService:
             "version",
         }
         if command in read_only:
-            return []
+            return [], frozenset()
         if command == "wait":
             if any(
                 item == "--down-project" or item.startswith("--down-project=")
                 for item in args
             ):
-                return runtime_identifiers
+                return None, frozenset()
             wait_items = args[command_index + 1 :]
             if any(item.startswith("-") for item in wait_items):
-                return runtime_identifiers
-            return []
+                return None, frozenset()
+            return [], frozenset()
         mutation_commands = {
             "build",
             "cp",
@@ -3344,7 +3429,7 @@ class ComposeService:
             "watch",
         }
         if command not in mutation_commands:
-            return runtime_identifiers
+            return None, frozenset()
         options_with_value = {
             "--attach",
             "--build-arg",
@@ -3416,6 +3501,7 @@ class ComposeService:
         options_with_value.update(command_options_with_value.get(command, set()))
         flag_options.update(command_flags.get(command, set()))
         explicit_services: list[str] = []
+        parsed_flags: set[str] = set()
         skip_next = False
         items = list(args[command_index + 1 :])
         for index, item in enumerate(items):
@@ -3431,16 +3517,16 @@ class ComposeService:
             if item == "--scale" and index + 1 < len(items):
                 service = items[index + 1].partition("=")[0]
                 if not service:
-                    return runtime_identifiers
+                    return None, frozenset()
                 explicit_services.append(service)
                 skip_next = True
                 continue
             if item == "--scale":
-                return runtime_identifiers
+                return None, frozenset()
             if item.startswith("--scale="):
                 service = item.removeprefix("--scale=").partition("=")[0]
                 if not service:
-                    return runtime_identifiers
+                    return None, frozenset()
                 explicit_services.append(service)
                 continue
             if command == "scale" and "=" in item and not item.startswith("-"):
@@ -3448,7 +3534,7 @@ class ComposeService:
                 continue
             if item in options_with_value:
                 if index + 1 >= len(items):
-                    return runtime_identifiers
+                    return None, frozenset()
                 skip_next = True
                 continue
             inline_value_option = next(
@@ -3462,11 +3548,12 @@ class ComposeService:
             )
             if inline_value_option is not None:
                 if not item.partition("=")[2]:
-                    return runtime_identifiers
+                    return None, frozenset()
                 continue
             if item.startswith("-"):
                 if item not in flag_options:
-                    return runtime_identifiers
+                    return None, frozenset()
+                parsed_flags.add(item)
                 continue
             explicit_services.append(item)
         if explicit_services:
@@ -3475,7 +3562,7 @@ class ComposeService:
                 for item in tuple(explicit_services)
                 if ":" in item
             )
-            if command in {"up", "create", "restart", "watch"} and "--no-deps" not in args:
+            if command in {"up", "create", "restart", "watch"} and "--no-deps" not in parsed_flags:
                 api_dependencies = {
                     "kor-travel-map-ui": "kor-travel-map-api",
                     "kor-travel-map-dagster": "kor-travel-map-api",
@@ -3488,11 +3575,11 @@ class ComposeService:
                     for service in tuple(explicit_services)
                     if service in api_dependencies
                 )
-            if "--remove-orphans" in args:
+            if "--remove-orphans" in parsed_flags:
                 explicit_services.extend(runtime_identifiers)
-            return explicit_services
+            return explicit_services, frozenset(parsed_flags)
         # down/rm --all/unknown command/option parse failure may affect either API.
-        return runtime_identifiers
+        return None, frozenset()
 
     def ensure_target(
         self,
@@ -3822,10 +3909,20 @@ class ComposeService:
         capture_output: bool = True,
     ) -> dict[str, Any]:
         compose_action = self._pinned_runtime_compose_action(args)
-        if compose_action in {"run", "up"} and "--no-deps" not in args:
+        # compose가 플래그로 읽은 `--no-deps`만 센다(`run SERVICE` 뒤 컨테이너 argv는 아니다).
+        # 서비스를 말하지 않거나 해석할 수 없는 호출은 아래 R3가 거부한다.
+        command_index = self._compose_command_index(args)
+        scope, flags = self._parse_compose_mutation(args)
+        if (
+            scope
+            and command_index is not None
+            and args[command_index] in {"run", "up"}
+            and "--no-deps" not in flags
+        ):
             raise DeploymentContractError(
                 "pinned runtime rebuild Compose startup requires --no-deps"
             )
+        self._require_rebuild_compose_spares_foreign_postgres(args, transaction=transaction)
         # Compose turns a multi-target build into one BuildKit bake request.  On
         # the small n150 host that request opens several frontend sessions at
         # once; a second build (for example an unrelated tvnm05 build) can then
@@ -3864,6 +3961,58 @@ class ComposeService:
             f"pinned runtime rebuild Compose {' '.join(args)} failed "
             f"(exit {result['returncode']}){tail}"
         )
+
+    @staticmethod
+    def _require_rebuild_compose_spares_foreign_postgres(
+        args: Sequence[str],
+        *,
+        transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        """재구축은 자기 전용 집합 밖의 PostgreSQL 서버 서비스를 바꾸지 않는다(R3 chokepoint).
+
+        공용 instance는 모든 tenant가 같이 쓴다. 그 컨테이너를 재구축이 멈추거나 다시 만들면
+        모든 tenant가 끊긴다. 그래서 재구축의 모든 compose 호출이 지나는 이 한 자리에서, 무엇을
+        바꾸는지 서비스 이름으로 말할 수 없는 mutation(명시 서비스 없음·해석 불가)을 거부하고,
+        명시 식별자 가운데 PostgreSQL 서버가 `_PINNED_RUNTIME_DATABASE_SERVICES` 밖에 있으면
+        거부한다. mutation 분류와 식별자는 기존 해석기(`_parse_compose_mutation`)가, PostgreSQL
+        서버 판정은 C6c(`postgres_server_services`)가 소유한다 — 이름 목록이 없다.
+
+        **compose가 실제로 닿는 것을 센다.** 이름 붙은 서비스만 보면 `create pinvi-api`가
+        통과하고, compose는 drift된 공용 instance를 의존성으로 다시 만든다(n150 실측). 그래서
+        의존성으로 번지는 명령(`_COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES`)이 `--no-deps` 없이
+        오면 frozen resolved 문서의 `depends_on` closure를 범위에 넣는다 — resolved 문서는 links·
+        `network_mode: service:`·`volumes_from`도 `depends_on`으로 정규화해 담는다. 이름 없는
+        컨테이너를 지우는 `--remove-orphans`와, 서비스 목록을 읽을 수 없는 문서는 거부한다.
+        두 플래그는 compose가 플래그로 읽은 것만 센다(``_parse_compose_mutation``) — `run SERVICE`
+        뒤의 컨테이너 argv에 같은 글자가 있어도 compose는 의존성을 끌어온다.
+        """
+
+        scope, flags = ComposeService._parse_compose_mutation(args)
+        if scope is None:
+            raise DeploymentContractError(
+                "pinned runtime rebuild Compose mutation must name its services explicitly"
+            )
+        if not scope:
+            return
+        if "--remove-orphans" in flags:
+            raise DeploymentContractError(
+                "pinned runtime rebuild Compose must not remove orphan containers"
+            )
+        postgres = postgres_server_services(transaction.resolved)
+        touched = set(scope)
+        command_index = ComposeService._compose_command_index(args)
+        if (
+            command_index is not None
+            and args[command_index] in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES
+            and "--no-deps" not in flags
+        ):
+            touched |= _compose_dependency_closure(transaction.resolved, touched)
+        foreign = sorted((postgres & touched) - set(_PINNED_RUNTIME_DATABASE_SERVICES))
+        if foreign:
+            raise DeploymentContractError(
+                "pinned runtime rebuild must not mutate a PostgreSQL service outside its "
+                f"dedicated set: {', '.join(foreign)}"
+            )
 
     @staticmethod
     def _pinned_runtime_compose_action(args: Sequence[str]) -> str:
@@ -4488,6 +4637,8 @@ class ComposeService:
                 resolved=runtime_transaction.resolved,
                 environment=runtime_transaction.environment.effective,
             )
+            # R4가 Map application DB에 CONNECT를 줄 login. 멈추기 전에 유도해 둔다.
+            map_login = map_application_login(runtime_transaction.environment.effective)
             expected_images = self._deployed_images(candidate, companions)
             # 수렴 판정과 identity 기준선은 **실제로 migration할 cluster**를 읽어야 한다.
             # 그래서 두 PostgreSQL을 판정보다 먼저 frozen Compose에 맞춘다. 뒤로 미루면
@@ -4513,6 +4664,8 @@ class ComposeService:
                     runtime_transaction=runtime_transaction,
                     companions=companions,
                     expected_images=expected_images,
+                    runtimes=runtimes,
+                    map_login=map_login,
                 )
                 # 커밋 직후의 보존 정리가 실패했거나 그 사이에 죽었으면 여기서 다시 한다 —
                 # 같은 pair의 재실행은 수렴만 하므로 다른 기회가 없다.
@@ -4541,9 +4694,15 @@ class ComposeService:
                     "--adopt-live-databases or rebuild them with --restart"
                 )
 
-            if restart is None:
-                # 전체 경로가 Map DB 앞에서 거부할 상태라면 런타임을 멈추기 **전에** 거부한다.
-                require_map_application_database_convergible(runtimes[0])
+            # 전체 경로가 DB 앞에서 거부할 상태라면 런타임을 멈추기 **전에** 읽기만으로 거부한다.
+            # 결박은 각 단계 안의 같은 판정이다 — 여기서는 멈춘 뒤의 거부를 앞당길 뿐이다.
+            if restart is not None:
+                # `--restart`의 R2(이름·허용 소유자·Map 소유자 배타성).
+                require_databases_resettable(runtimes)
+            elif require_map_application_database_convergible(runtimes[0]) == "present":
+                # R4의 live 전제. 넘겨받은 app DB와 이미 있는 Dagster DB를 전체 경로는 R4 전에
+                # 바꾸지 않는다(없거나 bootstrap 전인 DB는 만든 뒤 R4가 판정한다).
+                require_map_databases_isolatable(runtimes[0], runtimes[1], login=map_login)
 
             from kor_travel_docker_manager.services.runtime_execution_registry import (
                 trusted_manager_source_revision,
@@ -4580,6 +4739,7 @@ class ComposeService:
                     expected_images=expected_images,
                     state_paths=state_paths,
                     values=values,
+                    map_login=map_login,
                 )
             except Exception:
                 try:
@@ -4695,12 +4855,17 @@ class ComposeService:
         runtime_transaction: ComposeTransactionSnapshot,
         companions: Mapping[str, RuntimeService],
         expected_images: Mapping[str, str],
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+        map_login: str,
     ) -> None:
         """committed와 같은 pair: 빌드·migration 없이 떠 있어야 할 것만 맞춘다.
 
         compose는 설정이 달라진 컨테이너만 다시 만든다. 이미지·설정이 같으면 무연산이다.
+        Map DB 격리·연결 상한(R4)은 `up` 전에 다시 건다 — 같은 pair 수렴만으로 적용되고,
+        이미 맞으면 멱등이다.
         """
 
+        ensure_map_databases_isolated(runtimes[0], runtimes[1], login=map_login)
         self._run_pinned_runtime_rebuild_compose(
             [
                 "up",
@@ -4766,6 +4931,7 @@ class ComposeService:
         expected_images: Mapping[str, str],
         state_paths: PinnedRuntimeStatePaths,
         values: Mapping[str, str],
+        map_login: str,
     ) -> DeployStatus:
         """``in_progress`` 이후의 전체 경로. 모든 단계는 다시 돌려도 안전하다."""
 
@@ -4867,6 +5033,9 @@ class ComposeService:
                 metadata_password=metadata_password,
             )
 
+        # 두 Map DB를 PUBLIC에 닫고 app DB에 login CONNECT·연결 상한을 건다(R4). fresh
+        # bootstrap은 기본 ACL을 요구하므로 bootstrap 뒤, Map이 처음 연결하기 전이다.
+        ensure_map_databases_isolated(runtimes[0], runtimes[1], login=map_login)
         compose_up("kor-travel-map-api")
         require_head(
             runtimes[0],

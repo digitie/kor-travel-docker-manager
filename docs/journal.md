@@ -7809,3 +7809,197 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
     `Config.StopTimeout=null`이다(09-29 확인). 이 변경 뒤에도 대시보드·CLI의 stop/restart는 docker 기본 10초
     뒤 SIGKILL이다 — 이 변경이 만든 것은 아니다. 퇴역할 때까지 대시보드·CLI로 멈추지 않는다
     (`docs/docker-management.md` §7). grace를 주는 것은 compose 변경이라 별도 변경이다.
+
+## 2026-09-28 — Map DB 이동 M1: 재구축의 tenant 울타리와 launcher의 adopt 통과
+
+소유자 결정 C(Map의 두 DB를 공용 instance로)의 첫 PR이다. 오늘 topology(Map 전용 12700)에서도 안전하게
+먼저 들어가는 것만 담았다 — 공용 instance 튜닝(MT)과 이동(M2)은 창 안에서만 머지한다.
+
+- **launcher**(`scripts/run-pinned-rebuild-once`): `SHA OUT [--adopt-live-databases REASON]`. 이동은 같은 pair의
+  재구축이라 새 DB identity를 받아들이는 adopt가 필요한데 launcher가 인자 둘만 받았다. REASON은 한 줄 1~200자
+  printable이고 `-`로 시작하지 않는다(argparse가 옵션으로 읽는다) — lock·claim·출력 디렉터리보다 먼저 본다.
+  `--restart`는 넘기지 않는다. 인자 둘의 argv는 그대로다.
+- **R2 소유자**: instance admin은 어떤 drop의 허용 소유자도 아니다. Map drop 소유자는 첫 drop 전에 Map 쌍 밖의
+  DB를 소유하지 않아야 한다(live `datdba`). Dagster metadata role의 password 회전은 그 role이 DB도
+  `pg_shdepend` 행도 소유하지 않을 때만 한다. 공용 instance에서는 모든 tenant login이 후보라, 일관되게 잘못 박힌
+  metadata user·Dagster DB 이름 한 쌍이 PinVi의 password를 돌리거나 `pinvi_dagster`를 지울 수 있었다(스펙 §1.1 b).
+  C6c는 `KOR_TRAVEL_MAP_DAGSTER_METADATA_USER == KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB`를 재구축 전에 요구한다.
+  - 부수 효과(의도): 12700에서 `ktm_feature_schema_owner`가 잔재 `ktm_40b`·`ktm_gcverify`도 소유하므로 거기서
+    `--restart`는 이제 거부한다. 이 계획은 `--restart`를 쓰지 않는다.
+- **이름 울타리**: `postgres`·`template*`을 수렴 경로·`create_database_if_absent`·격리에서도 거부한다(공용
+  instance의 `postgres`는 admin 소유에 `alembic_version`이 없어 "bootstrap 전 Map DB"로 읽힌다).
+- **R3 chokepoint**: 재구축의 모든 compose 호출이 지나는 `_run_pinned_runtime_rebuild_compose`에서 서비스를
+  명시하지 않은 mutation과, 전용 집합(`_PINNED_RUNTIME_DATABASE_SERVICES`) 밖의 PostgreSQL 서버(declared ∪
+  witnessed, 새 공개 helper `postgres_server_services`)를 거부한다. 해석기는 기존 것을 `_compose_mutation_scope`로
+  나눠 재사용했다.
+- **R4**: 배포(bootstrap 뒤, Map API 전)와 같은 pair 수렴(`up` 전)마다 두 Map DB에서 PUBLIC CONNECT를 걷고,
+  app DB에 `KOR_TRAVEL_MAP_PG_DSN` login CONNECT와 `CONNECTION LIMIT floor(0.4 × usable)`를 건 뒤 읽어서
+  확인한다(login 집합은 `has_database_privilege`로 — membership으로 얻는 CONNECT까지 잡는다).
+  - 12700 읽기 전용 실측(10:24Z, `BEGIN READ ONLY`): 두 DB 모두 `datacl` NULL·`datconnlimit` −1, non-superuser
+    LOGIN은 `kor_travel_map_dagster`·`krtour_map`·`ktm_feature_service`, app DB 소유자를 상속하는 login 0,
+    Dagster DB 소유자를 상속하는 login은 그 자신뿐, `max_connections` 100·superuser 예약 3·예약 0 → usable 97,
+    상한 38. 설치 뒤 같은 pair 수렴의 read-back이 통과할 모양이다. `krtour_map`은 두 DB의 CONNECT를 잃는다(스펙이
+    받아들였다).
+- **실 PostgreSQL 통합 테스트**(§1.6): 공용 instance와 같은 digest 이미지, `--network none`, S1 모양(Map 소유자
+  = instance admin). T-R2a~d, T-NAME, T-R4, T-R4i, T-CAP과 membership read-back. compose 쪽 T-R3/T-R3c는
+  `--no-deps`가 drift된 PostgreSQL을 한 번도 멈추지 않는 것과, 없으면 compose가 그것을 다시 만드는 것(§0.4의
+  위험)을 실제로 보인다.
+- **테스트(n150)**:
+  - 커밋마다(`7d247d8`~`d4d1ce4`) launcher·`database_runtime`·재구축 단위 파일이 초록이다(165/165/183/213/238).
+  - gate 켠 전체 스위트(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, `bd4aade`의 새 clone, n150 venv): **2154 passed,
+    2 skipped**(root 전용 M05 ledger 둘), 8m12s. ruff 0.16.4 깨끗. 수집 수는 main `5b99322` 2054 → 2156, 새 사례
+    102(단위 91, 통합 11).
+    - 먼저 `git archive` 사본에서 돌린 같은 스위트는 5 failed였다: 넷은 git index가 있어야 하는 테스트(실행 비트,
+      installer의 `git show`)라 clone에서 14 passed, 하나는 기존 `test_compose_readiness_integration`이 부하
+      14~18에서 compose 30초 예산을 넘긴 것이다(재실행 31.6초 통과). 그 실행이 남긴 `Created` 컨테이너 셋은
+      지웠다 — 이전 실행(다른 PID 넷)의 `ktdm-readiness-*` 잔재 12개는 내 것이 아니라 그대로 뒀다.
+  - 빨강 확인(새 테스트를 `5b99322` 코드에): 단위 91 중 **79 red**, 12 green — launcher 회귀 가드 7(인자 둘의 argv,
+    `--restart` 거부 모양 6), R3 허용 사례 4, R2 대조군 1. 통합 11 중 **7 red**(T-R2a·T-R2d·T-NAME·T-R4·T-R4i·
+    membership·T-CAP), 4 green — T-R2b·T-R2c는 기존 울타리의 대조군, T-R3·T-R3c는 compose 자체의 동작이다.
+    harness가 새 patch 대상(`ensure_map_databases_isolated`)을 허용하게 하면 기존 harness 테스트 70개는
+    `5b99322`에서 전부 초록이다 — harness 변경이 그들의 단언을 바꾸지 않았다.
+  - 변이 11개가 각자의 탐지기를 빨갛게 했다: chokepoint 끔(21), 공용 instance `up` 주입(4 — chokepoint 켬·끔 둘 다,
+    끔일 때는 테스트 자신의 독립 단언이 잡는다), 수렴·배포의 격리 호출 제거(각 1), admin 차감 제거(6), 배타성 제거(2),
+    회전 소유 검사 제거(3), ensure 이름 울타리 제거(4), read-back login 집합 끔(2), launcher 사유 검증 끔(8).
+- **스펙과 다른 점**: R3는 스펙의 열 가지 동작 대신 해석기가 read-only가 아니라고 분류하는 **모든** 명령과 해석
+  불가 명령에 건다(두 번째 목록을 두지 않는다). launcher는 `-`로 시작하는 사유도 거부한다. C6c 규칙을 넣으며
+  `.env.example`과 두 계약 fixture의 metadata user를 Dagster DB 이름에 맞췄다. 통합 fixture는 PGDATA를 tmpfs에
+  두고 `max_connections`로 상한 helper의 입력을 정한다.
+- `/tmp/b3-test.sh`는 다른 세션의 Map pytest 때문에 BUSY로 재시도 중이었다 — 위의 clone 실행이 같은 스위트다.
+
+## 2026-09-28 — M1 적대 리뷰 수정: R4를 live role 그래프에, R3를 compose가 닿는 범위에
+
+M1(`fix/rebuild-tenant-fences`) 리뷰의 MED 셋과 값싼 LOW를 고쳤다. 코드는 `86cf82d`·`714b24c`·`b6ac031`, 문서
+`13dec2e`.
+
+- **R4(MED 둘)**: `ensure_map_databases_isolated`는 env에서만 온 이름에 grant한 뒤 같은 env 값과 비교하는
+  read-back으로 확인했다 — 일관되게 잘못 박힌 env를 그대로 승인했다(리뷰 실측: 다른 login에 Map DB CONNECT,
+  다른 tenant DB의 PUBLIC CONNECT 회수). 이제 한 `--single-transaction` 스크립트다.
+  - 바꾸기 전 DO 전제: app DB 소유자 = `ktm_feature_schema_owner`, login은 LOGIN·non-superuser이고 그 소유자의
+    member(Map bootstrap이 service login에 schema owner를 `INHERIT FALSE`로 준다), Dagster DB 소유자 = frozen
+    metadata user이고 그 user는 다른 DB를 소유하지 않는다.
+  - app DB의 명시 CONNECT 가운데 소유자·login 밖의 grantee는 ACL에서 유도해 걷는다(수렴 — 옛 login·손 grant 하나가
+    이후 모든 수렴·배포를 막던 LOW). Dagster DB는 소유자 이름으로만 결박되므로 PUBLIC만 걷는다.
+  - read-back은 같은 transaction의 DO 블록이다. 거부하면 GRANT·REVOKE·상한이 함께 롤백되고, 문구에 login 집합이
+    실린다. commit 뒤의 Python read-back은 지웠다.
+  - C6c는 `KOR_TRAVEL_MAP_PG_DSN`을 형제 다섯처럼 결박한다(`postgresql+asyncpg`, `127.0.0.1`, Map 포트, app DB)
+    — login은 bootstrap·metadata user·Map principal이 아니어야 한다. b2 규칙은 자기 문구를 갖는다.
+- **R3(MED)**: chokepoint가 이름 붙은 서비스만 셌다. `create`는 `--no-deps`가 없고 drift된 의존 PostgreSQL을 다시
+  만든다. 이제 의존성으로 번지는 명령(`create`·`start`·`restart`·`scale`·`watch`·`up`·`run`)이 `--no-deps` 없이
+  오면 frozen resolved 문서의 `depends_on` closure를 범위에 넣는다. `--remove-orphans`와 읽을 수 없는 문서
+  (`services`·`depends_on`)는 거부한다 — `postgres_server_services`는 빈 집합 대신 거부한다.
+- **launcher**: 공백만인 사유를 lock 전에 거부한다(CLI `not reason.strip()`와 같게).
+- **문서**: §7.7에 "R4 거부" runbook(진단 쿼리·되돌리는 SQL), R2 runbook의 스키마 목록은 Map bootstrap을
+  가리키게, 받아들인 남은 위험(아래)을 적었다.
+- **남은 위험(M2가 ADR-53에 옮긴다)** — 앞 항목의 "foreign login은 거부된다"는 오늘 인벤토리에서만 참이다.
+  - 자기 이름의 DB **하나만** 소유한 다른 tenant login은 metadata user·Dagster DB 이름으로 일관되게 박히면 R2
+    배타성과 R4 전제를 지난다 — `--restart`는 그 DB를 지우고, adopt·기록 없는 배포의 R4는 그 DB의 PUBLIC CONNECT를
+    걷는다. 공용 instance에는 그런 login이 없다(12:02Z 읽기 전용 실측: login 다섯 모두 `*_app`/
+    `pinvi_application_runtime`, 자기 이름의 DB 없음). Manager가 기록한 DB identity에 결박하는 수정은 기록이 없는
+    정당한 `--restart`(첫 배포, DB 없는 adopt)를 막고 PinVi drop 의미도 바꿔서 이번에는 하지 않았다.
+  - PinVi drop 소유자에는 배타성이 없다 — M1 이전부터 있던 `--restart` 위험이다.
+- **12700 수렴 전제 실측(12:02Z, 읽기 전용)**: `kor_travel_map` 소유자 `ktm_feature_schema_owner`,
+  `ktm_feature_service`는 그 member(`pg_has_role … MEMBER` = t), `kor_travel_map_dagster`는 자기 DB만 소유,
+  두 DB `datacl` NULL. live Map API의 `KOR_TRAVEL_MAP_PG_DSN` 모양은 `postgresql+asyncpg`·`127.0.0.1:12700`·
+  `ktm_feature_service`·`/kor_travel_map`(값은 출력하지 않았다) — 설치 뒤 같은 pair 수렴이 새 전제와 C6c를 통과할
+  모양이다.
+- **테스트(n150, 14:02~14:36Z, `/tmp/m1fix-c-13dec2e`)**:
+  - 표적 6 파일, gate=1, `13dec2e` 코드: **482 passed**, 0 failed, 0 skipped.
+  - 빨강 확인(같은 테스트를 `6c77c9b` 코드에): **32 failed**, 450 passed. 새·바뀐 테스트 44 가운데 32가 빨강 —
+    R4 통합 8/8, R4 단위 2, R3 거부 9, C6c 11(b2 문구 1, service DSN 10), launcher 2. 초록 12는 대조군(허용 6,
+    disjoint 1), 재구축 argv 전체 검사 4(재구축의 호출은 바뀌지 않았다), compose 특성 T-R3d 1(Manager 코드를
+    import하지 않는다).
+  - 변이 11개가 모두 각자의 탐지기를 빨갛게 했다: read-back PUBLIC 열(`grantee = 0`→4294967295, 1), member 검사
+    (2), app 소유자(1), Dagster 소유자(1), Dagster 배타성(1), 수렴(1), closure(6), orphans(1), 빈 services(1),
+    service DSN(10), launcher strip(2).
+  - `/tmp/b3-test.sh`: ruff 0.16.4 깨끗, **2184 passed, 2 skipped**.
+  - gate 켠 전체 스위트(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, 공유 checkout `13dec2e`): **2184 passed, 2 skipped**
+    (root 전용 M05 ledger 둘), 실 PostgreSQL·compose 통합 20건 통과, `ktdm-it-*` 잔재 0.
+  - GitHub CI(dispatch 36421529963, `13dec2e`): 백엔드 2163 passed, 23 skipped(통합은 gate 없이 skip).
+- 테스트 대역 정리: 공허한 이름 서로소 단언을 뺐고, T-R3/T-R3c는 compose 특성 테스트로 표시했으며, R3 end-to-end
+  단언은 해석기를 다시 쓰지 않고 argv 낱말을 본다. `_SHARED_IMAGE` 중복은 MT가 compose에 digest를 핀한 뒤 렌더된
+  서비스에서 읽게 바꾼다.
+- 아직: rename PR이 머지되지 않아 리베이스 전이다. 리베이스 뒤 gate 켠 n150 실행을 다시 하고 수를 PR 본문에 싣는다.
+
+## 2026-09-28 — M1을 #432·#433 위로 리베이스하고, 이동의 ADR 번호를 ADR-53으로 고쳤다
+
+- `fix/rebuild-tenant-fences`(`aa04fcb`, 밑 `5b99322`)를 main `0fe0d97`로 옮겼다. 그 사이에 #432(외부 target
+  `airport` → `transport` 개명)와 #433(ADR-52: 공용 instance의 `init`·exec probe·grace)이 들어왔다.
+  - 텍스트 충돌은 `docs/journal.md` 끝의 추가 하나뿐이었다. 둘 다 두고 #432·#433 항목 뒤에 M1 항목을 이었다.
+  - 겹친 나머지 넷(`c6c_deployment.py`·`test_f1d_compose_contract.py`는 #433, `docker-management.md`·
+    `tasks.md`는 #432)은 hunk가 달라 자동으로 합쳐졌다. M1 diff에는 `airport`가 없다.
+  - range-diff로 보면 커밋 13개 중 9개는 내용이 같다. 나머지 넷은 번호 고침(셋)과 journal 문맥(하나)만
+    다르다.
+- **ADR-52는 #433의 것이다. 이 이동의 Manager ADR은 ADR-53이다.** 이 번호를 쓴 자리 넷을 각 줄을 넣은
+  커밋 안에서 고쳤다: launcher 테스트의 사유 문자열, `docker-management.md`와 journal의 "남은 위험" 두 줄,
+  `13dec2e`의 커밋 메시지. 트리에 남은 `ADR-52`는 전부 #433의 것이다.
+- **테스트(n150, `629b6a7`, `/tmp/wf19-m1-prep-629b6a7`)**:
+  - gate 켠 전체 스위트(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, 새 `git clone`, consolidation venv): **2197 passed,
+    2 skipped**(root 전용 M05 ledger 둘), 5m28s. docker 통합 21건(실 PostgreSQL 17, compose 3, readiness 1)이
+    모두 통과했고 `ktdm-it-*` 잔재는 0이다.
+  - `/tmp/b3-test.sh`: ruff 0.16.4 깨끗, **2197 passed, 2 skipped**.
+  - GitHub CI(dispatch 36450493686): 백엔드 2176 passed, 23 skipped(통합은 gate 없이 skip), 프론트엔드 green.
+  - 수집 수는 main `0fe0d97` 2067 → 2199다. 새 사례는 132개다.
+- **빨강 확인(`0fe0d97` 코드)**: M1이 바꾼 테스트 파일 일곱은 HEAD로 두고, 나머지 파일은 모두 `0fe0d97`로 되돌려 돌렸다.
+  - 새 132 중 **109 red**, 23 green. green은 모두 대조군이거나 회귀 가드다:
+    - R2 대조군 3: Map 쌍만 소유한 owner의 drop, T-R2b, T-R2c.
+    - R3 허용 사례 10.
+    - compose 특성 테스트 3(T-R3·T-R3c·T-R3d). 이들은 Manager 코드를 import하지 않는다.
+    - launcher 회귀 가드 7: 인자 둘의 argv 1, `--restart` 거부 6.
+  - M1이 고친 기존 테스트 19도 빨갛다: 예약 이름 문구 12, metadata preflight의 새 필드 6, reset 호출 순서 1.
+    나머지 기존 테스트 443은 초록이다. 따라서 harness 변경은 그 테스트들의 단언을 바꾸지 않았다.
+  - 옛 코드에 없는 이름 때문에 빨강 실행에는 shim 둘이 필요했다.
+    - harness의 `monkeypatch.setattr` 두 곳(module·service)에 `raising=False`를 붙였다.
+    - 통합 파일의 `ensure_map_databases_isolated` import는 `getattr(…, None)`으로 바꿨다.
+    - shim이 없으면 통합 파일의 수집 오류 하나에서 멈춘다. 처음에는 service 쪽 한 곳만 풀었는데, 그때는 기존
+      harness 테스트 37이 patch 대상이 없다는 이유로 빨갰다. 두 곳을 다 풀자 그 37개는 초록이 됐다.
+
+## 2026-09-29 — M1 리뷰 2차 LOW: 거부를 멈추기 전으로, `--no-deps`는 compose가 읽은 것만
+
+M1 리뷰 2차(`b690967`)는 HIGH·MED 없이 LOW 여섯을 냈다. 값싸고 분명한 넷을 고쳤고, 하나는 문서로, 하나는
+고치지 않았다.
+
+- **멈추기 전 preflight(LOW 1·6)**: 전체 배포 경로는 R2·R4 전에 Map·PinVi를 멈춘다(`_deploy_forward`의 `stop`).
+  그 뒤의 거부는 pair를 내린 채 남겼다 — 오늘 12700의 `--restart`는 schema owner가 잔재 `ktm_40b`·`ktm_gcverify`도
+  소유해 매번 그랬고, DSN login을 Map의 member가 아닌 것으로 바꾼 뒤의 새 pair도 Map schema를 올린 뒤에 멈췄다.
+  - `--restart`: `require_databases_resettable`이 리셋의 R2 판정(이름·허용 소유자·Map 소유자 배타성)을 읽기만으로
+    `begin_deploy` 전에 돌린다. 판정 코드는 `_read_resettable_owners` 하나이고 리셋이 drop 직전에 다시 부른다(결박).
+  - 일반·adopt: app DB가 `present`(schema owner 소유)면 `require_map_databases_isolatable`이 R4 transaction의 **바로
+    그** DO 전제 블록을 `SET TRANSACTION READ ONLY`로 먼저 돌린다(Dagster DB가 있을 때). 전체 경로는 그 둘의
+    소유자와 login membership을 R4 전에 바꾸지 않는다 — Map의 membership `GRANT`는 fresh bootstrap
+    (`docker/postgres-role-bootstrap.sh`)에만 있고 `runtime_privileges`는 객체 권한만 준다. 없거나 bootstrap 전인
+    DB는 미리 보면 거짓 거부라 만든 뒤 transaction 안에서만 판정한다. 같은 pair 수렴은 아무것도 멈추지 않아
+    preflight가 없다.
+- **R3 우회(LOW 2)**: `--no-deps`·`--remove-orphans`를 argv 전체에서 찾았다. `run SERVICE` 뒤는 컨테이너 argv이고
+  `-e --no-deps`의 뒤쪽은 옵션 값이라 compose는 의존성을 끌어온다. 해석기(`_parse_compose_mutation`)가 범위와 함께
+  **플래그로 읽은** 명령 옵션을 내고, R3·`up`/`run`의 `--no-deps` 요구·해석기 자신의 API 의존성 확장이 모두 그것을
+  본다. startup gate는 첫 일치 낱말 대신 해석기의 명령 위치를 쓴다.
+- **격리의 두 guard(LOW 4)**: 지우지 않고 테스트를 달았다. 이름 울타리는 "권한을 바꾸는 경로에 둔다"는 이 모듈의
+  규칙이고, metadata user 개수 검사가 없으면 풀기(`(x,) = …`)가 `ValueError`로 샌다. 검사는 격리와 preflight가 함께
+  쓰는 `_map_isolation_metadata_user`로 옮겼다.
+- **상한 관찰(LOW 3, 문서)**: §7.7 R4에 설치 뒤 첫 수렴의 상한 38 관찰 항목(로그의
+  `too many connections for database`, `numbackends`, 되돌리기와 소유자 결정 D5)을 적었다.
+- **고치지 않음(LOW 5)**: R3의 `depends_on` closure를 "`--no-deps` 필수 + `create` 거부" 규칙으로 바꾸는 단순화.
+  closure는 compose가 실제로 닿는 것에 결박하고(변이로 빨강 확인됨), MT가 같은 집합
+  (`_COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES`)을 쓴다. 이득은 30줄이고, 재구축이 보내는 호출에서 판정은 같다.
+- **MT 리베이스에 미치는 것**: MT(`feat/shared-instance-tuning`의 `2883068`)는 같은 해석기 줄에 자기 `no_deps`
+  변수를 넣었다. 다음 리베이스에서 그 hunk는 충돌한다 — MT의 명령 집합(`_COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES`)과
+  M1의 `parsed_flags`를 함께 두면 된다(MT의 `no_deps`는 `"--no-deps" in parsed_flags`와 같다).
+- **테스트(n150, `24f3315`)**:
+  - 표적 8 파일(`database_runtime`·재구축·통합 둘·launcher·F1D 계약·multi-project·docker config), gate=1, 패치한
+    `b690967` 사본(`/tmp/wf19-m1-fix-b690967`): 첫 실행 **1 failed**, 662 passed — startup gate가 서비스 없는
+    `up -d --no-deps`를 R3보다 먼저 "requires --no-deps"로 거부해 문구가 바뀌었다. 서비스를 말하지 않는 호출은 R3에
+    맡기도록 고친 뒤 **663 passed**, 0 failed. 그 사본과 push한 트리는 `.ruff_cache` 말고 같다(`diff -r`).
+  - 새 사례는 43개다(단위 40, 실 PostgreSQL 통합 3). 수집 수 2199 → 2242.
+  - 빨강 확인: 변이 11개가 모두 각자의 탐지기를 빨갛게 했다 — preflight 호출 제거(5), R2 preflight 무연산(4), R4
+    preflight 무연산(13), READ ONLY 제거(1), Dagster 부재 무시(1), 격리 이름 울타리 제거(16), metadata user 하나
+    검사를 `sorted(…)[0]`로(4), startup gate·R3의 `--no-deps`를 argv 전체로(2·1), R3 `--remove-orphans`를 argv
+    전체로(1), 해석기가 플래그를 모으지 않음(4). 복원 뒤 같은 44개는 초록이다. 새 43 가운데 39가 적어도 한 변이에서
+    빨갛고, 초록으로 남은 넷은 대조군이다(`ps`·`down` 해석, bootstrap 전·부재 app DB에서 preflight를 부르지 않음).
+    바꾼 기존 테스트 하나(`test_restart_skips_the_map_database_precheck`)도 빨갛다.
+  - 중간 커밋 `0be1ad9`(해석기만): 재구축·multi-project 두 파일 **153 passed**.
+  - gate 켠 전체 스위트(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, `24f3315`의 새 `git clone`, consolidation venv):
+    **2240 passed, 2 skipped**(root 전용 M05 ledger 둘), 5m49s, `ktdm-it-*` 잔재 0.
+  - `/tmp/b3-test.sh`: ruff 0.16.4 깨끗, **2240 passed, 2 skipped**, 5m12s.
+  - GitHub CI(dispatch 36459717650, `24f3315`): 백엔드 **2216 passed, 26 skipped**(통합은 gate 없이 skip),
+    프론트엔드 green.

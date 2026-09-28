@@ -257,6 +257,9 @@ def test_application_300_reset_leaves_map_databases_absent_and_recreates_pinvi(
     reset_databases_for_application_300(runtimes)
 
     assert [label for _, label in calls] == [
+        # R2: Map drop 소유자가 Map 쌍 밖의 DB를 소유하지 않는지 **첫 drop 전에** 읽는다.
+        "map_application database owner's databases",
+        "map_dagster database owner's databases",
         "map_application database destructive drop",
         "map_dagster database destructive drop",
         "pinvi database destructive drop",
@@ -267,6 +270,8 @@ def test_application_300_reset_leaves_map_databases_absent_and_recreates_pinvi(
     assert calls[-1][0][calls[-1][0].index("--template") + 1] == "template0"
     assert all(arguments[arguments.index("--user") + 1] == "postgres" for arguments, _ in calls)
     assert [arguments[arguments.index("--port") + 1] for arguments, _ in calls] == [
+        "12700",
+        "12700",
         "12700",
         "12700",
         "11000",
@@ -454,6 +459,8 @@ def test_dagster_metadata_database_init_refuses_unsafe_existing_role_before_muta
             return_value=database_runtime._DagsterMetadataRolePreflight(
                 can_login=True,
                 inherit=False,
+                owned_database_count=0,
+                shared_dependency_count=0,
                 attributes=DagsterMetadataRoleAttributes(
                     superuser=False,
                     create_database=False,
@@ -525,6 +532,8 @@ def test_dagster_metadata_database_init_rotates_only_password_for_safe_role(
                 can_login=True,
                 inherit=False,
                 attributes=expected_identity.login_role_attributes,
+                owned_database_count=0,
+                shared_dependency_count=0,
             )
         ),
     )
@@ -700,9 +709,12 @@ def test_application_300_reset_accepts_the_bootstrapped_schema_owner(
         (_runtime("map_application"), _runtime("map_dagster"), _runtime("pinvi"))
     )
 
-    assert runner.call_args_list[0].kwargs["label"] == (
-        "map_application database destructive drop"
-    )
+    drops = [
+        call.kwargs["label"]
+        for call in runner.call_args_list
+        if call.kwargs["label"].endswith("destructive drop")
+    ]
+    assert drops[0] == "map_application database destructive drop"
 
 
 def test_application_300_reset_requires_three_canonical_roles() -> None:
@@ -793,7 +805,7 @@ def test_destructive_reset_refuses_cluster_maintenance_databases(
     )
     monkeypatch.setattr(database_runtime, "_run_checked", _record)
 
-    with pytest.raises(DeploymentContractError, match="is not destructible"):
+    with pytest.raises(DeploymentContractError, match="reserved cluster database"):
         reset_databases_for_application_300(runtimes)
 
     assert not any("dropdb" in token for command in commands for token in command)
@@ -966,3 +978,670 @@ def test_schema_revision_table_exists_rejects_ambiguous_output(
 
     with pytest.raises(DeploymentContractError, match="output is invalid"):
         schema_revision_table_exists(_runtime("pinvi"))
+
+
+# --- M1: tenant fences (R2 owner, name fence, R4 isolation) -------------------------------
+
+
+def _dedicated_shape(role: database_runtime.DatabaseRole) -> DatabaseRuntime:
+    """Map bootstrap 소유자가 instance admin인 모양 — 오늘 전용 instance, M2 뒤 공용 instance."""
+
+    base = _metadata_runtime() if role == "map_dagster" else _runtime(role)
+    return replace(base, owner_name="cluster_admin")
+
+
+def _record_commands(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    owners: dict[str, str | None],
+    owned: dict[str, str] | None = None,
+) -> list[list[str]]:
+    """owner 읽기는 ``owners``로, 소유 DB 읽기는 ``owned``(owner→줄)로 답하고 모든 명령을 남긴다."""
+
+    commands: list[list[str]] = []
+
+    def run_checked(arguments: list[str], *, label: str) -> bytes:
+        commands.append(list(arguments))
+        if label.endswith("owner's databases"):
+            owner = arguments[-1].rsplit("rolname = '", 1)[1].split("'", 1)[0]
+            return (owned or {}).get(owner, "").encode("utf-8")
+        return b""
+
+    monkeypatch.setattr(
+        database_runtime, "_read_database_owner", lambda runtime: owners[runtime.role]
+    )
+    monkeypatch.setattr(database_runtime, "_run_checked", run_checked)
+    return commands
+
+
+def _dropped(commands: list[list[str]]) -> list[str]:
+    return [command[-1] for command in commands if "dropdb" in command]
+
+
+def test_reset_refuses_an_admin_owned_map_database_and_drops_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """반쯤 만든(admin 소유) Map DB는 이 재구축이 만든 것이라는 증거가 없다 — 지우지 않는다."""
+
+    runtimes = (
+        _dedicated_shape("map_application"),
+        _dedicated_shape("map_dagster"),
+        _runtime("pinvi"),
+    )
+    commands = _record_commands(
+        monkeypatch,
+        owners={"map_application": "cluster_admin", "map_dagster": None, "pinvi": None},
+    )
+
+    with pytest.raises(DeploymentContractError, match="map_application database owner differs"):
+        reset_databases_for_application_300(runtimes)
+
+    assert _dropped(commands) == []
+    assert not any("createdb" in command for command in commands)
+
+
+def test_recreate_refuses_an_admin_owned_pinvi_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`PINVI_APP_DB_USER`가 instance admin으로 잘못 박혀도 admin 소유 DB는 지우지 않는다."""
+
+    pinvi = replace(_runtime("pinvi"), owner_name="cluster_admin")
+    direct = _record_commands(
+        monkeypatch, owners={"map_application": None, "map_dagster": None, "pinvi": None}
+    )
+    with pytest.raises(DeploymentContractError, match="pinvi database owner differs"):
+        database_runtime._recreate_empty_database_after_owner_preflight(
+            pinvi, existing_owner="cluster_admin"
+        )
+    assert direct == []
+
+    through_reset = _record_commands(
+        monkeypatch,
+        owners={"map_application": None, "map_dagster": None, "pinvi": "cluster_admin"},
+    )
+    with pytest.raises(DeploymentContractError, match="pinvi database owner differs"):
+        reset_databases_for_application_300(
+            (_runtime("map_application"), _runtime("map_dagster"), pinvi)
+        )
+    assert through_reset == []
+
+
+@pytest.mark.parametrize("role", ("map_application", "map_dagster", "pinvi"))
+def test_permitted_owner_sets_never_contain_the_instance_admin(
+    role: database_runtime.DatabaseRole,
+) -> None:
+    runtime = replace(
+        _dedicated_shape(role),
+        additional_owner_names=frozenset({"cluster_admin", "map_dagster_metadata"})
+        if role == "map_dagster"
+        else frozenset(),
+    )
+
+    permitted = database_runtime._permitted_existing_owners(runtime)
+
+    assert runtime.admin_name not in permitted
+    # 빼는 것은 admin 하나뿐이다 — 나머지 허용 소유자는 그대로 남는다.
+    expected = {
+        "map_application": {"ktm_feature_schema_owner"},
+        "map_dagster": {"map_dagster_metadata"},
+        "pinvi": set(),
+    }[role]
+    assert permitted == expected
+
+
+def test_map_owner_sets_are_disjoint_from_pinvi_and_foreign_owners() -> None:
+    """n150 모양으로 frozen 계약에서 유도한 세 허용 집합. Map 쪽은 PinVi와 두 instance admin과 겹치지 않는다.
+
+    Map app과 Dagster는 구성상 `owner_name`을 공유하므로 "세 runtime 모두 서로소"는 불가능하다.
+    다른 tenant login과의 서로소는 여기서 이름으로 보지 않는다 — 이 env에 없는 이름은 겹칠 수 없어
+    공허하다. 그 경계는 live 소유 관계(배타성·회전 preflight)와 실 PostgreSQL T-R2d가 본다.
+    """
+
+    map_application, map_dagster, pinvi = database_runtimes_from_frozen_contract(
+        resolved={
+            "services": {
+                "kor-travel-map-postgres": {
+                    "container_name": "kor-travel-map-postgres",
+                    "environment": {"POSTGRES_USER": "kor_travel_map"},
+                },
+                "kor-travel-shared-postgres": {
+                    "container_name": "kor-travel-shared-postgresql",
+                    "environment": {"POSTGRES_USER": "shared_admin"},
+                },
+            }
+        },
+        environment={
+            "KOR_TRAVEL_MAP_POSTGRES_DB": "kor_travel_map",
+            "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "kor_travel_map_dagster",
+            "KOR_TRAVEL_MAP_POSTGRES_USER": "kor_travel_map",
+            "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "kor_travel_map_dagster",
+            "PINVI_POSTGRES_DB": "pinvi",
+            "PINVI_APP_DB_USER": "pinvi_application_runtime",
+        },
+    )
+    permitted = database_runtime._permitted_existing_owners
+    # 두 instance admin은 frozen 문서의 `POSTGRES_USER`에서 온다 — 허용 집합에서 빠져야 한다.
+    admins = {map_application.admin_name, pinvi.admin_name}
+
+    assert admins == {"kor_travel_map", "shared_admin"}
+    assert permitted(map_application) == {"ktm_feature_schema_owner"}
+    assert permitted(map_dagster) == {"kor_travel_map_dagster"}
+    assert permitted(pinvi) == {"pinvi_application_runtime"}
+    for runtime in (map_application, map_dagster):
+        assert permitted(runtime).isdisjoint(permitted(pinvi) | admins)
+    assert permitted(pinvi).isdisjoint(admins)
+
+
+def test_reset_refuses_a_map_owner_that_owns_a_foreign_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """metadata user·Dagster DB 이름이 다른 tenant의 login·DB로 일관되게 잘못 박힌 경우다."""
+
+    runtimes = (_runtime("map_application"), _metadata_runtime(), _runtime("pinvi"))
+    commands = _record_commands(
+        monkeypatch,
+        owners={
+            "map_application": "ktm_feature_schema_owner",
+            "map_dagster": "map_dagster_metadata",
+            "pinvi": "pin_owner",
+        },
+        owned={
+            "ktm_feature_schema_owner": "map_app\n",
+            "map_dagster_metadata": "map_dagster\npin_dagster\n",
+        },
+    )
+
+    with pytest.raises(DeploymentContractError, match="outside the Map pair"):
+        reset_databases_for_application_300(runtimes)
+
+    assert _dropped(commands) == []
+    assert not any("createdb" in command for command in commands)
+
+
+def test_reset_drops_map_owners_that_own_only_the_map_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """위 거부의 대조군 — 같은 대역에서 Map 쌍만 소유하면 지운다."""
+
+    runtimes = (_runtime("map_application"), _metadata_runtime(), _runtime("pinvi"))
+    commands = _record_commands(
+        monkeypatch,
+        owners={
+            "map_application": "ktm_feature_schema_owner",
+            "map_dagster": "map_dagster_metadata",
+            "pinvi": "pin_owner",
+        },
+        owned={
+            "ktm_feature_schema_owner": "map_app\n",
+            "map_dagster_metadata": "map_dagster\n",
+        },
+    )
+
+    reset_databases_for_application_300(runtimes)
+
+    assert _dropped(commands) == ["map_app", "map_dagster", "pin_app"]
+
+
+def _preflight_output(owned_databases: int, shared_dependencies: int) -> bytes:
+    return f"t|f|f|f|f|f|f|-1|t|0|0|0|0|{owned_databases}|{shared_dependencies}\n".encode()
+
+
+@pytest.mark.parametrize(
+    ("owned_databases", "shared_dependencies"),
+    ((2, 150), (1, 1), (0, 43)),
+    ids=["tenant-login", "owns-one-database", "owns-objects-only"],
+)
+def test_rotate_preflight_refuses_a_role_that_owns_a_database_or_objects(
+    monkeypatch: pytest.MonkeyPatch,
+    owned_databases: int,
+    shared_dependencies: int,
+) -> None:
+    """속성 검사를 다 통과하는 다른 tenant의 login(`LOGIN NOINHERIT`, 멤버십 없음)이다."""
+
+    mutation = Mock()
+    monkeypatch.setattr(database_runtime, "_read_database_owner", Mock(return_value=None))
+    monkeypatch.setattr(
+        database_runtime,
+        "_run_checked",
+        Mock(return_value=_preflight_output(owned_databases, shared_dependencies)),
+    )
+    monkeypatch.setattr(database_runtime, "_run_checked_with_input", mutation)
+
+    with pytest.raises(DeploymentContractError, match="role is unsafe"):
+        initialize_application_300_dagster_metadata_database(
+            _metadata_runtime(),
+            metadata_user="map_dagster_metadata",
+            metadata_password="metadata-secret",
+        )
+
+    mutation.assert_not_called()
+
+
+def test_rotate_preflight_accepts_a_leftover_role_that_owns_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rotations: list[str] = []
+    outputs = iter((_preflight_output(0, 0), b""))
+    monkeypatch.setattr(database_runtime, "_read_database_owner", Mock(return_value=None))
+    monkeypatch.setattr(
+        database_runtime, "_run_checked", Mock(side_effect=lambda *_a, **_k: next(outputs))
+    )
+    monkeypatch.setattr(
+        database_runtime,
+        "_run_checked_with_input",
+        Mock(side_effect=lambda *_a, label, **_k: rotations.append(label) or b""),
+    )
+    monkeypatch.setattr(
+        database_runtime, "read_application_300_dagster_metadata_identity", Mock()
+    )
+
+    initialize_application_300_dagster_metadata_database(
+        _metadata_runtime(),
+        metadata_user="map_dagster_metadata",
+        metadata_password="metadata-secret",
+    )
+
+    assert rotations == ["Map Dagster metadata role password rotate"]
+
+
+def test_rotate_preflight_reads_owned_databases_and_shared_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = Mock(return_value=_preflight_output(0, 0))
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+
+    preflight = database_runtime._read_dagster_metadata_role_preflight(
+        _metadata_runtime(), "map_dagster_metadata"
+    )
+
+    assert preflight is not None
+    assert (preflight.owned_database_count, preflight.shared_dependency_count) == (0, 0)
+    query = runner.call_args.args[0][-1]
+    assert "pg_catalog.pg_database owned WHERE owned.datdba = role.oid" in query
+    assert "dependency.refclassid = 'pg_catalog.pg_authid'::regclass" in query
+    assert "dependency.refobjid = role.oid" in query
+
+
+@pytest.mark.parametrize(
+    "reserved", ["postgres", "template0", "template1", "template_postgis"]
+)
+def test_convergible_rejects_reserved_database_names(
+    monkeypatch: pytest.MonkeyPatch,
+    reserved: str,
+) -> None:
+    """공용 instance의 `postgres`는 admin 소유에 `alembic_version`이 없다 — "bootstrap 전" Map DB로 읽힌다."""
+
+    owner_reads = Mock(return_value="cluster_admin")
+    runner = Mock(return_value=b"f\n")
+    bootstrap = Mock()
+    monkeypatch.setattr(database_runtime, "_read_database_owner", owner_reads)
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+    runtime = replace(_dedicated_shape("map_application"), database_name=reserved)
+
+    with pytest.raises(DeploymentContractError, match="reserved cluster database"):
+        database_runtime.require_map_application_database_convergible(runtime)
+    with pytest.raises(DeploymentContractError, match="reserved cluster database"):
+        ensure_map_application_database(runtime, run_role_bootstrap=bootstrap)
+    with pytest.raises(DeploymentContractError, match="reserved cluster database"):
+        database_runtime.create_database_if_absent(replace(_runtime("pinvi"), database_name=reserved))
+
+    owner_reads.assert_not_called()
+    runner.assert_not_called()
+    bootstrap.assert_not_called()
+
+
+def test_the_schema_bearing_admin_owned_database_hint_asks_to_verify_it_is_maps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ensure_harness(monkeypatch, "map_owner", schema_table=True)
+
+    with pytest.raises(DeploymentContractError) as captured:
+        database_runtime.require_map_application_database_convergible(
+            _runtime("map_application")
+        )
+
+    message = str(captured.value)
+    assert "verify it is Map's database (its public.alembic_version is a Map head)" in message
+    assert "dropping it by hand" in message
+    assert "docs/docker-management.md" in message
+
+
+def _isolation_runtimes() -> tuple[DatabaseRuntime, DatabaseRuntime]:
+    return _dedicated_shape("map_application"), _dedicated_shape("map_dagster")
+
+
+def _isolation_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    usable: str = "97",
+) -> tuple[list[tuple[str, list[str]]], list[bytes]]:
+    """슬롯 읽기만 답한다. 전제·수렴·read-back은 모두 한 transaction 스크립트 안에 있어야 한다."""
+
+    reads: list[tuple[str, list[str]]] = []
+    scripts: list[bytes] = []
+
+    def run_checked(arguments: list[str], *, label: str) -> bytes:
+        reads.append((label, list(arguments)))
+        assert label.endswith("usable connection slots"), label
+        return f"{usable}\n".encode()
+
+    def run_with_input(arguments: list[str], *, input_bytes: bytes, label: str) -> bytes:
+        assert label == "Map database isolation"
+        assert arguments[arguments.index("--dbname") + 1] == "postgres"
+        assert "--single-transaction" in arguments
+        assert arguments[arguments.index("--set") + 1] == "ON_ERROR_STOP=1"
+        scripts.append(input_bytes)
+        return b""
+
+    monkeypatch.setattr(database_runtime, "_run_checked", run_checked)
+    monkeypatch.setattr(database_runtime, "_run_checked_with_input", run_with_input)
+    return reads, scripts
+
+
+def _do_block(script: str, tag: str) -> list[str]:
+    """``DO $tag$ … $tag$;`` 블록들의 본문."""
+
+    return [part.split(f"${tag}$;", 1)[0] for part in script.split(f"DO ${tag}$")[1:]]
+
+
+def test_isolation_sql_names_only_map_databases_and_the_dsn_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads, scripts = _isolation_harness(monkeypatch)
+    login = database_runtime.map_application_login(
+        {
+            "KOR_TRAVEL_MAP_PG_DSN": (
+                "postgresql+asyncpg://ktm_feature_service:secret@127.0.0.1:12700/map_app"
+            )
+        }
+    )
+
+    database_runtime.ensure_map_databases_isolated(*_isolation_runtimes(), login=login)
+
+    assert login == "ktm_feature_service"
+    (script,) = (item.decode("ascii") for item in scripts)
+    # 한 transaction 안의 순서: live 결박 → 바꾸기 → 같은 transaction의 read-back.
+    statements = [
+        "DO $r4_precondition$",
+        'REVOKE CONNECT ON DATABASE "map_app" FROM PUBLIC;',
+        "DO $r4_converge$",
+        'GRANT CONNECT ON DATABASE "map_app" TO "ktm_feature_service";',
+        'REVOKE CONNECT ON DATABASE "map_dagster" FROM PUBLIC;',
+        'ALTER DATABASE "map_app" CONNECTION LIMIT 38;',
+        "DO $r4_readback$",
+    ]
+    positions = [script.index(statement) for statement in statements]
+    assert positions == sorted(positions)
+    (precondition,) = _do_block(script, "r4_precondition")
+    assert "WHERE datname = 'map_app'" in precondition
+    assert "<> 'ktm_feature_schema_owner'" in precondition
+    assert "role.rolname = 'ktm_feature_service'" in precondition
+    assert "pg_catalog.pg_has_role(role.oid, app_owner, 'MEMBER')" in precondition
+    assert "WHERE datname = 'map_dagster'" in precondition
+    assert "<> 'map_dagster_metadata'" in precondition
+    # 수렴은 app DB 하나에만 — Dagster DB는 소유자 이름으로만 결박되므로 PUBLIC만 걷는다.
+    (converge,) = _do_block(script, "r4_converge")
+    assert "database_row.datname = 'map_app'" in converge
+    assert "<> 'ktm_feature_service'" in converge
+    app_readback, dagster_readback = _do_block(script, "r4_readback")
+    assert "WHERE datname = 'map_app'" in app_readback
+    assert "ARRAY['ktm_feature_service']::text[]" in app_readback
+    assert "datconnlimit <> 38" in app_readback
+    assert "WHERE datname = 'map_dagster'" in dagster_readback
+    assert "ARRAY['map_dagster_metadata']::text[]" in dagster_readback
+    assert "datconnlimit <>" not in dagster_readback
+    assert "pinvi" not in script
+    # commit 뒤의 읽기가 없다 — 거부는 transaction 안에서 나고 전체가 롤백된다.
+    assert [label for label, _ in reads] == ["map_application usable connection slots"]
+
+
+@pytest.mark.parametrize(
+    ("usable", "cap"),
+    ((97, 38), (100, 40), (7, 2), (5, 2), (2, 1), (1, 1)),
+)
+def test_connection_cap_is_forty_percent_of_usable_slots(usable: int, cap: int) -> None:
+    assert database_runtime.map_application_connection_cap(usable) == cap
+
+
+@pytest.mark.parametrize("usable", (0, -3, True))
+def test_connection_cap_rejects_no_usable_slots(usable: int) -> None:
+    with pytest.raises(DeploymentContractError, match="usable connection slots"):
+        database_runtime.map_application_connection_cap(usable)
+
+
+def test_isolation_cap_is_derived_from_the_live_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, scripts = _isolation_harness(monkeypatch, usable="47")
+
+    database_runtime.ensure_map_databases_isolated(
+        *_isolation_runtimes(), login="ktm_feature_service"
+    )
+
+    assert b'ALTER DATABASE "map_app" CONNECTION LIMIT 18;\n' in scripts[0]
+    assert b"datconnlimit <> 18" in scripts[0]
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    (
+        "",
+        "postgresql+asyncpg://127.0.0.1:12700/map_app",
+        "postgresql+asyncpg://Bad-Login:x@127.0.0.1:12700/map_app",
+        "postgresql+asyncpg://a%27b:x@127.0.0.1:12700/map_app",
+    ),
+)
+def test_map_application_login_requires_an_identifier(dsn: str) -> None:
+    with pytest.raises(DeploymentContractError, match="Map application login is invalid"):
+        database_runtime.map_application_login({"KOR_TRAVEL_MAP_PG_DSN": dsn})
+
+
+def test_isolation_refuses_runtimes_on_two_instances(monkeypatch: pytest.MonkeyPatch) -> None:
+    reads, scripts = _isolation_harness(monkeypatch)
+    app, dagster = _isolation_runtimes()
+
+    with pytest.raises(DeploymentContractError, match="share one PostgreSQL instance"):
+        database_runtime.ensure_map_databases_isolated(
+            app, replace(dagster, port=11000), login="ktm_feature_service"
+        )
+
+    assert reads == [] and scripts == []
+
+
+_ISOLATION_ENTRY_POINTS = {
+    "isolate": database_runtime.ensure_map_databases_isolated,
+    "preflight": database_runtime.require_map_databases_isolatable,
+}
+
+
+def _silent_runners(monkeypatch: pytest.MonkeyPatch) -> tuple[Mock, Mock]:
+    """어떤 PostgreSQL 명령도 돌면 안 되는 경우의 기록기(읽기·스크립트 모두)."""
+
+    reads, scripts = Mock(return_value=b"97\n"), Mock(return_value=b"")
+    monkeypatch.setattr(database_runtime, "_run_checked", reads)
+    monkeypatch.setattr(database_runtime, "_run_checked_with_input", scripts)
+    return reads, scripts
+
+
+@pytest.mark.parametrize("entry_point", tuple(_ISOLATION_ENTRY_POINTS))
+@pytest.mark.parametrize("role", ("map_application", "map_dagster"))
+@pytest.mark.parametrize("reserved", ("postgres", "template0", "template1", "template_postgis"))
+def test_isolation_refuses_reserved_database_names_before_any_command(
+    monkeypatch: pytest.MonkeyPatch, entry_point: str, role: str, reserved: str
+) -> None:
+    """R4도 권한을 바꾸는 경로다 — 이름 울타리가 live 전제보다 먼저, 명령 하나 없이 거부한다."""
+
+    reads, scripts = _silent_runners(monkeypatch)
+    app, dagster = _isolation_runtimes()
+    if role == "map_application":
+        app = replace(app, database_name=reserved)
+    else:
+        dagster = replace(dagster, database_name=reserved)
+
+    with pytest.raises(DeploymentContractError, match="reserved cluster database"):
+        _ISOLATION_ENTRY_POINTS[entry_point](app, dagster, login="ktm_feature_service")
+
+    reads.assert_not_called()
+    scripts.assert_not_called()
+
+
+@pytest.mark.parametrize("entry_point", tuple(_ISOLATION_ENTRY_POINTS))
+@pytest.mark.parametrize(
+    "metadata_users",
+    (frozenset(), frozenset({"map_dagster_metadata", "other_metadata"})),
+    ids=("none", "two"),
+)
+def test_isolation_refuses_a_dagster_runtime_without_exactly_one_metadata_user(
+    monkeypatch: pytest.MonkeyPatch, entry_point: str, metadata_users: frozenset[str]
+) -> None:
+    """Dagster DB의 CONNECT를 받을 login은 frozen metadata user **하나**다 — 고르지 않고 거부한다."""
+
+    reads, scripts = _silent_runners(monkeypatch)
+    app, dagster = _isolation_runtimes()
+
+    with pytest.raises(DeploymentContractError, match="metadata role is not frozen"):
+        _ISOLATION_ENTRY_POINTS[entry_point](
+            app,
+            replace(dagster, additional_owner_names=metadata_users),
+            login="ktm_feature_service",
+        )
+
+    reads.assert_not_called()
+    scripts.assert_not_called()
+
+
+def _preflight_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    dagster_owner: str | None,
+) -> tuple[list[str], list[tuple[list[str], str, bytes]]]:
+    """owner 읽기는 ``dagster_owner``로 답하고, 스크립트는 인자·label·본문을 남긴다."""
+
+    owner_reads: list[str] = []
+    scripts: list[tuple[list[str], str, bytes]] = []
+
+    def read_owner(runtime: DatabaseRuntime) -> str | None:
+        owner_reads.append(runtime.role)
+        return dagster_owner if runtime.role == "map_dagster" else "ktm_feature_schema_owner"
+
+    def run_with_input(arguments: list[str], *, input_bytes: bytes, label: str) -> bytes:
+        scripts.append((list(arguments), label, input_bytes))
+        return b""
+
+    monkeypatch.setattr(database_runtime, "_read_database_owner", read_owner)
+    monkeypatch.setattr(
+        database_runtime, "_run_checked", Mock(side_effect=AssertionError("no other read"))
+    )
+    monkeypatch.setattr(database_runtime, "_run_checked_with_input", run_with_input)
+    return owner_reads, scripts
+
+
+def test_isolation_preflight_runs_the_same_precondition_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """멈추기 전의 판정은 R4 transaction의 **바로 그** 전제 블록이고, 그것만 READ ONLY로 돈다."""
+
+    _, preflight_scripts = _preflight_harness(monkeypatch, dagster_owner="map_dagster_metadata")
+
+    database_runtime.require_map_databases_isolatable(
+        *_isolation_runtimes(), login="ktm_feature_service"
+    )
+
+    ((arguments, label, body),) = preflight_scripts
+    script = body.decode("ascii")
+    assert label == "Map database isolation preflight"
+    assert "--single-transaction" in arguments
+    assert arguments[arguments.index("--set") + 1] == "ON_ERROR_STOP=1"
+    assert arguments[arguments.index("--dbname") + 1] == "postgres"
+    assert script.startswith("SET TRANSACTION READ ONLY;\n")
+    for mutation in ("REVOKE", "GRANT", "ALTER", "$r4_converge$", "$r4_readback$"):
+        assert mutation not in script, mutation
+    # 결박하는 R4 transaction의 전제와 글자까지 같다 — 정본은 하나다.
+    _, isolation_scripts = _isolation_harness(monkeypatch)
+    database_runtime.ensure_map_databases_isolated(
+        *_isolation_runtimes(), login="ktm_feature_service"
+    )
+    (isolation,) = (item.decode("ascii") for item in isolation_scripts)
+    assert _do_block(script, "r4_precondition") == _do_block(isolation, "r4_precondition")
+    assert len(_do_block(script, "r4_precondition")) == 1
+
+
+def test_isolation_preflight_leaves_an_absent_dagster_database_to_the_bound_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dagster DB가 없으면 init이 만든 뒤 R4 transaction이 판정한다 — 미리 보면 거짓 거부다."""
+
+    owner_reads, scripts = _preflight_harness(monkeypatch, dagster_owner=None)
+
+    database_runtime.require_map_databases_isolatable(
+        *_isolation_runtimes(), login="ktm_feature_service"
+    )
+
+    assert owner_reads == ["map_dagster"]
+    assert scripts == []
+
+
+@pytest.mark.parametrize(
+    ("owners", "owned", "message"),
+    (
+        (
+            {"map_application": "cluster_admin", "map_dagster": None, "pinvi": None},
+            {},
+            "map_application database owner differs",
+        ),
+        (
+            {
+                "map_application": "ktm_feature_schema_owner",
+                "map_dagster": "map_dagster_metadata",
+                "pinvi": "pin_owner",
+            },
+            {
+                # 오늘 n150 전용 instance의 모양: schema owner가 남은 검증 DB도 소유한다.
+                "ktm_feature_schema_owner": "map_app\nktm_40b\nktm_gcverify\n",
+                "map_dagster_metadata": "map_dagster\n",
+            },
+            "outside the Map pair",
+        ),
+    ),
+    ids=("admin-owned", "schema-owner-owns-leftovers"),
+)
+def test_resettable_preflight_refuses_what_the_reset_refuses_and_only_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    owners: dict[str, str | None],
+    owned: dict[str, str],
+    message: str,
+) -> None:
+    runtimes = (_dedicated_shape("map_application"), _metadata_runtime(), _runtime("pinvi"))
+    commands = _record_commands(monkeypatch, owners=owners, owned=owned)
+
+    with pytest.raises(DeploymentContractError, match=message):
+        database_runtime.require_databases_resettable(runtimes)
+    with pytest.raises(DeploymentContractError, match=message):
+        reset_databases_for_application_300(runtimes)
+
+    assert _dropped(commands) == []
+    assert not any("createdb" in command for command in commands)
+
+
+def test_resettable_preflight_passes_a_resettable_pair_without_dropping_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """대조군 — 같은 대역에서 리셋은 지우고, preflight는 읽기만 한다."""
+
+    runtimes = (_runtime("map_application"), _metadata_runtime(), _runtime("pinvi"))
+    commands = _record_commands(
+        monkeypatch,
+        owners={
+            "map_application": "ktm_feature_schema_owner",
+            "map_dagster": "map_dagster_metadata",
+            "pinvi": "pin_owner",
+        },
+        owned={
+            "ktm_feature_schema_owner": "map_app\n",
+            "map_dagster_metadata": "map_dagster\n",
+        },
+    )
+
+    database_runtime.require_databases_resettable(runtimes)
+
+    assert commands and all("psql" in command for command in commands)
+    reset_databases_for_application_300(runtimes)
+    assert _dropped(commands) == ["map_app", "map_dagster", "pin_app"]

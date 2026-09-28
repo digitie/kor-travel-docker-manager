@@ -13,6 +13,7 @@ import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Final, Literal
+from urllib.parse import unquote, urlsplit
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.errors import command_output_tail
@@ -67,7 +68,12 @@ _ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str, str]] = {
 #: 경로를 한 번에 없앤다. 이름을 프로젝트별 allowlist로 묶지 않는 이유는 그것이
 #: 운영 DB 이름을 테스트까지 전파시켜 합성 이름을 못 쓰게 만들기 때문이다 —
 #: 막아야 할 것은 예약어 쪽이다.
-_UNDROPPABLE_DATABASES: Final = frozenset({"postgres", "template0", "template1"})
+#:
+#: **수렴(ensure) 경로에도 같은 울타리를 건다.** 공용 instance의 `postgres`는 instance
+#: admin 소유이고 `alembic_version`이 없다 — `KOR_TRAVEL_MAP_POSTGRES_DB`가 잘못 박히면
+#: ensure 경로가 그것을 "bootstrap 전에 죽은 Map DB"로 읽고 role bootstrap을 돌린다.
+#: 지금 그것을 막는 것은 Map bootstrap 스크립트의 fresh 검사 하나뿐이었다.
+_RESERVED_DATABASES: Final = frozenset({"postgres", "template0", "template1"})
 _ROLE_PORT_CONFIG: dict[DatabaseRole, tuple[str, int]] = {
     "map_application": ("KOR_TRAVEL_MAP_POSTGRES_PORT", 12700),
     "map_dagster": ("KOR_TRAVEL_MAP_POSTGRES_PORT", 12700),
@@ -132,6 +138,9 @@ class _DagsterMetadataRolePreflight:
     can_login: bool
     inherit: bool
     attributes: DagsterMetadataRoleAttributes
+    #: 이 role이 소유한 DB 수와 `pg_shdepend` 참조 행 수. 둘 다 0이어야 남은 role이다(R2).
+    owned_database_count: int
+    shared_dependency_count: int
 
 
 def database_runtimes_from_frozen_contract(
@@ -214,18 +223,20 @@ def database_runtimes_from_frozen_contract(
     return runtimes[0], runtimes[1], runtimes[2]
 
 
-def _require_destructible_name(runtime: DatabaseRuntime) -> None:
-    """**파괴 직전의 이름 울타리.**
+def _require_tenant_database_name(runtime: DatabaseRuntime) -> None:
+    """**파괴·수렴 직전의 이름 울타리.** cluster 유지보수 DB와 template은 tenant DB가 아니다.
 
-    `_validate_runtime`이 아니라 파괴 경로에만 둔다 — 읽기 경로(schema revision·
-    identity)는 이름에 무관해야 하고, 위험한 것은 drop이다.
+    `_validate_runtime`이 아니라 바꾸는 경로에만 둔다 — 읽기 경로(schema revision·
+    identity)는 이름에 무관해야 하고, 위험한 것은 drop·bootstrap·권한 변경이다.
     """
 
     if (
-        runtime.database_name in _UNDROPPABLE_DATABASES
+        runtime.database_name in _RESERVED_DATABASES
         or runtime.database_name.startswith("template")
     ):
-        raise DeploymentContractError("pinned runtime database name is not destructible")
+        raise DeploymentContractError(
+            "pinned runtime database name is a reserved cluster database"
+        )
 
 
 def _recreate_empty_database_after_owner_preflight(
@@ -236,7 +247,7 @@ def _recreate_empty_database_after_owner_preflight(
     """사전 owner 검증이 끝난 하나의 DB를 파기·재생성한다."""
 
     _validate_runtime(runtime)
-    _require_destructible_name(runtime)
+    _require_tenant_database_name(runtime)
     if existing_owner is not None:
         if existing_owner not in _permitted_existing_owners(runtime):
             raise DeploymentContractError(
@@ -277,26 +288,7 @@ def reset_databases_for_application_300(
     DB를 미리 만들면 virgin-root 및 sealed metadata permit 계약을 우회한다.
     """
 
-    if tuple(runtime.role for runtime in runtimes) != (
-        "map_application",
-        "map_dagster",
-        "pinvi",
-    ):
-        raise DeploymentContractError("pinned runtime database roles are invalid")
-    for runtime in runtimes:
-        _validate_runtime(runtime)
-        # 세 DB 모두 **첫 drop 전에** 본다. 종전에는 이 울타리가 PinVi 재생성 안에만
-        # 있어서 Map 두 DB는 울타리 없이 drop됐고, PinVi 이름이 막혀도 Map은 이미
-        # 지워진 뒤였다.
-        _require_destructible_name(runtime)
-    existing_owners = tuple(_read_database_owner(runtime) for runtime in runtimes)
-    for runtime, existing_owner in zip(runtimes, existing_owners, strict=True):
-        if existing_owner is not None and existing_owner not in _permitted_existing_owners(
-            runtime
-        ):
-            raise DeploymentContractError(
-                f"{runtime.role} database owner differs from the frozen contract"
-            )
+    existing_owners = _read_resettable_owners(runtimes)
     for runtime, existing_owner in zip(runtimes[:2], existing_owners[:2], strict=True):
         if existing_owner is not None:
             _run_checked(
@@ -311,6 +303,61 @@ def reset_databases_for_application_300(
         runtimes[2],
         existing_owner=existing_owners[2],
     )
+
+
+def require_databases_resettable(
+    runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+) -> None:
+    """``reset_databases_for_application_300``이 거부할 상태를 **읽기만으로** 먼저 거부한다(R2).
+
+    전체 배포 경로는 리셋 전에 Map·PinVi 런타임을 멈춘다. 이름·소유자·배타성 거부가 그 뒤에야
+    나면 pair가 내려간 채 남는다 — 오늘 전용 instance에서는 schema owner가 다른 DB도 소유하므로
+    `--restart`가 매번 그랬다(적대 리뷰 2026-09-29). 그래서 배포는 멈추기 **전에** 같은 판정
+    (``_read_resettable_owners``)을 한 번 돌린다. 결박은 여전히 drop 직전의 같은 판정이다.
+    """
+
+    _read_resettable_owners(runtimes)
+
+
+def _read_resettable_owners(
+    runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+) -> tuple[str | None, ...]:
+    """리셋의 R2 판정(이름·허용 소유자·Map 소유자 배타성). 아무것도 바꾸지 않고 기존 소유자를 낸다."""
+
+    if tuple(runtime.role for runtime in runtimes) != (
+        "map_application",
+        "map_dagster",
+        "pinvi",
+    ):
+        raise DeploymentContractError("pinned runtime database roles are invalid")
+    for runtime in runtimes:
+        _validate_runtime(runtime)
+        # 세 DB 모두 **첫 drop 전에** 본다. 종전에는 이 울타리가 PinVi 재생성 안에만
+        # 있어서 Map 두 DB는 울타리 없이 drop됐고, PinVi 이름이 막혀도 Map은 이미
+        # 지워진 뒤였다.
+        _require_tenant_database_name(runtime)
+    existing_owners = tuple(_read_database_owner(runtime) for runtime in runtimes)
+    for runtime, existing_owner in zip(runtimes, existing_owners, strict=True):
+        if existing_owner is not None and existing_owner not in _permitted_existing_owners(
+            runtime
+        ):
+            raise DeploymentContractError(
+                f"{runtime.role} database owner differs from the frozen contract"
+            )
+    # Map drop 소유자는 Map 쌍 밖의 DB를 소유하지 않아야 한다(R2). 소유자 집합은 대상을
+    # 가리키는 바로 그 `.env` 값에서 오므로, 공용 instance에서는 다른 tenant의 login이
+    # 일관되게 잘못 박히면 그대로 통과한다(예: metadata user·Dagster DB 이름에 PinVi의
+    # login·DB). 이름 목록 대신 live 소유 관계로 막는다. PinVi에는 걸지 않는다 — PinVi
+    # app role은 이 재구축 밖의 `pinvi_dagster`를 정당하게 소유한다.
+    map_databases = frozenset(runtime.database_name for runtime in runtimes[:2])
+    for runtime, existing_owner in zip(runtimes[:2], existing_owners[:2], strict=True):
+        if existing_owner is None:
+            continue
+        if not _read_databases_owned_by(runtime, existing_owner) <= map_databases:
+            raise DeploymentContractError(
+                f"{runtime.role} database owner also owns a database outside the Map pair"
+            )
+    return existing_owners
 
 
 def create_fresh_application_300_database(runtime: DatabaseRuntime) -> None:
@@ -378,6 +425,7 @@ def require_map_application_database_convergible(
     _validate_runtime(runtime)
     if runtime.role != "map_application":
         raise DeploymentContractError("Map application database role is invalid")
+    _require_tenant_database_name(runtime)
     owner = _read_database_owner(runtime)
     if owner is None:
         return "absent"
@@ -388,10 +436,14 @@ def require_map_application_database_convergible(
             "map_application database owner differs from the frozen contract"
         )
     if schema_revision_table_exists(runtime):
+        # 공용 instance에서는 bootstrap 소유자(instance admin) 것인 같은 이름의 DB가 Map의
+        # 것이라는 보장이 없다 — 넘기기 전에 확인하라고 말한다.
         raise DeploymentContractError(
             "map_application database already has a schema but is still owned by the "
-            f"bootstrap owner; hand it over with ALTER DATABASE {runtime.database_name} "
-            f"OWNER TO {_MAP_SCHEMA_OWNER} and rerun"
+            f"bootstrap owner; verify it is Map's database (its public.alembic_version is "
+            f"a Map head) before handing it over with ALTER DATABASE {runtime.database_name} "
+            f"OWNER TO {_MAP_SCHEMA_OWNER} or dropping it by hand, then rerun "
+            "(docs/docker-management.md §7.7 'R2 거부')"
         )
     return "unbootstrapped"
 
@@ -405,10 +457,343 @@ def create_database_if_absent(runtime: DatabaseRuntime) -> bool:
     """
 
     _validate_runtime(runtime)
+    _require_tenant_database_name(runtime)
     if read_database_identity(runtime) is not None:
         return False
     _recreate_empty_database_after_owner_preflight(runtime, existing_owner=None)
     return True
+
+
+def map_application_connection_cap(usable: int) -> int:
+    """non-superuser가 쓸 수 있는 슬롯 수 ``usable``에서 Map application DB의 연결 상한을 낸다(D5).
+
+    ``floor(0.4 × usable)``, 최소 1. 공용 instance에서 Map의 최악(API·code-server·run
+    프로세스마다 풀)이 다른 tenant의 슬롯을 다 먹지 않게 묶는다. 0.4가 유일한 정책
+    숫자다 — 72 h 관측에서 `too many connections for database`가 보이면 여기만 올린다.
+    정수 산술이라 부동소수 경계가 없다.
+    """
+
+    if isinstance(usable, bool) or not isinstance(usable, int) or usable < 1:
+        raise DeploymentContractError("PostgreSQL usable connection slots are invalid")
+    return max(1, usable * 2 // 5)
+
+
+def map_application_login(environment: Mapping[str, str]) -> str:
+    """frozen env ``KOR_TRAVEL_MAP_PG_DSN``의 login — Map application DB에 CONNECT를 받는 유일한 login.
+
+    이름은 env에서만 온다. C6c가 그 DSN의 endpoint·DB와 login의 자리(Map principal이 아님)를
+    결박하고, 그것이 정말 Map의 login인지는 R4가 live role 그래프로 확인한다
+    (``ensure_map_databases_isolated``).
+    """
+
+    try:
+        username = urlsplit(environment.get("KOR_TRAVEL_MAP_PG_DSN", "")).username
+    except ValueError as exc:
+        raise DeploymentContractError("Map application login is invalid") from exc
+    login = unquote(username or "")
+    if not _DATABASE_IDENTIFIER.fullmatch(login):
+        raise DeploymentContractError("Map application login is invalid")
+    return login
+
+
+def ensure_map_databases_isolated(
+    app: DatabaseRuntime,
+    dagster: DatabaseRuntime,
+    *,
+    login: str,
+) -> None:
+    """Map 두 DB를 PUBLIC에 닫고 app DB에 login CONNECT와 연결 상한을 건 뒤 **읽어서** 확인한다(R4).
+
+    공용 instance의 DB 단위 CONNECT는 다른 모든 tenant에서 Manager가 소유한다(db-init
+    one-shot). Map DB만 기본값(PUBLIC CONNECT)으로 남으면 같은 instance의 모든 login이
+    Map DB에 붙을 수 있다. app DB의 login(`ktm_feature_service`)은 소유 role을
+    ``INHERIT FALSE``로 들고 있어 소유자 권한으로는 붙지 못하므로 명시적으로 준다. Dagster
+    DB는 소유자(metadata user)가 CTc를 그대로 갖는다. 상한은 같은 instance에서 live로 읽은
+    슬롯에서 유도한다(``map_application_connection_cap``) — superuser는 상한을 받지 않는다.
+
+    **env가 아니라 live 그래프에 결박한다.** 이름은 모두 `.env`에서 온다. 일관되게 잘못 박힌
+    env는 그 자신과 비교하는 read-back을 그대로 통과한다 — 다른 tenant의 login에 Map DB CONNECT를
+    주거나, 다른 tenant DB의 PUBLIC CONNECT를 걷는다(적대 리뷰 2026-09-28 실측). 그래서 한
+    transaction(``--single-transaction``) 안에서 바꾸기 **전에** live 소유·role 그래프를 확인하고
+    (``_map_isolation_precondition_sql``), 바꾼 **뒤** 같은 transaction에서 다시 읽는다
+    (``_map_isolation_readback_sql``). 어느 쪽이 거부해도 GRANT·REVOKE·상한이 함께 롤백된다 —
+    거부가 반쯤 바뀐 ACL을 남기지 않는다.
+
+    app DB의 명시 CONNECT 가운데 소유자·login 밖의 것은 걷는다(``_revoke_stray_connect_sql``).
+    옛 login·손으로 준 grant 하나가 이후 모든 수렴·배포를 막지 않게 하는 수렴이다. Dagster DB에는
+    걸지 않는다 — 그 DB는 소유자 이름으로만 결박되므로 거기서는 바꾸는 범위를 PUBLIC에 둔다.
+
+    fresh bootstrap은 ``datacl IS NULL``·template1과 같은 ``datconnlimit``을 요구하므로 반드시
+    bootstrap **뒤에** 부른다. 멱등이다 — 같은 입력으로 다시 부르면 ACL이 바뀌지 않는다.
+    PinVi DB는 건드리지 않는다.
+    """
+
+    metadata_user = _map_isolation_metadata_user(app, dagster, login=login)
+    cap = map_application_connection_cap(_read_usable_connection_slots(app))
+    app_database = _sql_identifier(app.database_name)
+    dagster_database = _sql_identifier(dagster.database_name)
+    sql = (
+        _map_isolation_precondition_sql(app, dagster, login=login, metadata_user=metadata_user)
+        + f"REVOKE CONNECT ON DATABASE {app_database} FROM PUBLIC;\n"
+        + _revoke_stray_connect_sql(app, keep=login)
+        + f"GRANT CONNECT ON DATABASE {app_database} TO {_sql_identifier(login)};\n"
+        + f"REVOKE CONNECT ON DATABASE {dagster_database} FROM PUBLIC;\n"
+        + f"ALTER DATABASE {app_database} CONNECTION LIMIT {cap};\n"
+        + _map_isolation_readback_sql(app, login=login, connection_limit=cap)
+        + _map_isolation_readback_sql(dagster, login=metadata_user, connection_limit=None)
+    )
+    _run_checked_with_input(
+        [
+            *_database_admin_interactive_command(app, "psql"),
+            "--no-psqlrc",
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--single-transaction",
+            "--dbname",
+            "postgres",
+        ],
+        input_bytes=sql.encode("ascii"),
+        label="Map database isolation",
+    )
+
+
+def require_map_databases_isolatable(
+    app: DatabaseRuntime,
+    dagster: DatabaseRuntime,
+    *,
+    login: str,
+) -> None:
+    """R4의 live 전제(``_map_isolation_precondition_sql``)를 **읽기만으로** 먼저 판정한다.
+
+    전체 배포 경로는 R4 전에 Map·PinVi 런타임을 멈추고 Map schema를 head로 올린다. 전제 거부가
+    그 뒤에야 나면 pair가 내려간 채 남는다(적대 리뷰 2026-09-29 — 예: `KOR_TRAVEL_MAP_PG_DSN`을
+    Map의 member가 아닌 login으로 바꾼 뒤의 새 pair). 넘겨받은 app DB의 소유자와 login의
+    membership, 이미 있는 Dagster DB의 소유자·배타성은 그 경로가 R4 전에 바꾸지 않는다 — role
+    bootstrap은 fresh DB에서만 돌고, Dagster init은 DB가 없을 때만 돈다. 그래서 같은 DO 블록을
+    ``READ ONLY`` transaction에서 멈추기 **전에** 돌려 같은 거부를 앞당긴다. 결박은 여전히
+    ``ensure_map_databases_isolated``의 transaction 안 판정이다.
+
+    app DB가 schema owner 것일 때(``require_map_application_database_convergible``이
+    ``present``)만 부른다. Dagster DB가 없으면 판정하지 않는다 — init이 만든 뒤 R4가 판정한다.
+    """
+
+    metadata_user = _map_isolation_metadata_user(app, dagster, login=login)
+    if _read_database_owner(dagster) is None:
+        return
+    _run_checked_with_input(
+        [
+            *_database_admin_interactive_command(app, "psql"),
+            "--no-psqlrc",
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--single-transaction",
+            "--dbname",
+            "postgres",
+        ],
+        input_bytes=(
+            "SET TRANSACTION READ ONLY;\n"
+            + _map_isolation_precondition_sql(
+                app, dagster, login=login, metadata_user=metadata_user
+            )
+        ).encode("ascii"),
+        label="Map database isolation preflight",
+    )
+
+
+def _map_isolation_metadata_user(
+    app: DatabaseRuntime,
+    dagster: DatabaseRuntime,
+    *,
+    login: str,
+) -> str:
+    """R4 입력(두 Map runtime·login)을 확인하고 frozen metadata user를 낸다. 아무것도 읽지 않는다."""
+
+    _validate_runtime(app)
+    _validate_runtime(dagster)
+    if app.role != "map_application" or dagster.role != "map_dagster":
+        raise DeploymentContractError("Map database isolation roles are invalid")
+    if (app.container_name, app.port, app.admin_name) != (
+        dagster.container_name,
+        dagster.port,
+        dagster.admin_name,
+    ):
+        raise DeploymentContractError("Map databases must share one PostgreSQL instance")
+    _require_tenant_database_name(app)
+    _require_tenant_database_name(dagster)
+    if len(dagster.additional_owner_names) != 1:
+        raise DeploymentContractError("Map Dagster metadata role is not frozen")
+    (metadata_user,) = dagster.additional_owner_names
+    if not _DATABASE_IDENTIFIER.fullmatch(login):
+        raise DeploymentContractError("Map application login is invalid")
+    return metadata_user
+
+
+def _map_isolation_precondition_sql(
+    app: DatabaseRuntime,
+    dagster: DatabaseRuntime,
+    *,
+    login: str,
+    metadata_user: str,
+) -> str:
+    """R4가 무엇이든 바꾸기 **전에** live 소유·role 그래프를 확인하는 DO 블록(거부는 RAISE → 롤백).
+
+    - app DB는 Map schema owner 소유다 — ensure 경로가 이미 요구하는 넘겨받음 그대로다.
+    - login은 LOGIN이고 superuser가 아니며 그 소유자의 member다. Map bootstrap이 service login에
+      schema owner를 ``INHERIT FALSE``로 주는 불변식이다. 다른 tenant의 login은 Map schema owner의
+      member가 아니므로 이름 목록 없이 갈린다.
+    - Dagster DB는 frozen metadata user 소유이고, 그 user는 다른 DB를 소유하지 않는다(R2 배타성과
+      같은 모양). C6c의 metadata user = Dagster DB 이름 규칙과 함께, 자기 이름이 아닌 DB를 소유하는
+      tenant login(PinVi처럼 둘을 가진 것 포함)을 막는다. 자기 이름의 DB **하나만** 가진 다른 tenant
+      login은 이 그래프로 Map의 것과 갈리지 않는다 — 남은 위험으로 문서에 적었다(§7.7).
+    """
+
+    return (
+        "DO $r4_precondition$\n"
+        "DECLARE\n"
+        "    app_owner oid;\n"
+        "    dagster_owner oid;\n"
+        "    other_databases text[];\n"
+        "BEGIN\n"
+        "    SELECT datdba INTO app_owner FROM pg_catalog.pg_database\n"
+        f"        WHERE datname = '{app.database_name}';\n"
+        "    IF app_owner IS NULL\n"
+        f"        OR pg_catalog.pg_get_userbyid(app_owner) <> '{_MAP_SCHEMA_OWNER}' THEN\n"
+        f"        RAISE EXCEPTION 'map_application database {app.database_name} is not owned by "
+        f"{_MAP_SCHEMA_OWNER} (owner=%)', pg_catalog.pg_get_userbyid(app_owner);\n"
+        "    END IF;\n"
+        "    IF NOT EXISTS (\n"
+        "        SELECT 1 FROM pg_catalog.pg_roles AS role\n"
+        f"        WHERE role.rolname = '{login}' AND role.rolcanlogin AND NOT role.rolsuper\n"
+        "          AND pg_catalog.pg_has_role(role.oid, app_owner, 'MEMBER')\n"
+        "    ) THEN\n"
+        f"        RAISE EXCEPTION 'Map application login {login} is not a non-superuser "
+        f"LOGIN member of {_MAP_SCHEMA_OWNER}';\n"
+        "    END IF;\n"
+        "    SELECT datdba INTO dagster_owner FROM pg_catalog.pg_database\n"
+        f"        WHERE datname = '{dagster.database_name}';\n"
+        "    IF dagster_owner IS NULL\n"
+        f"        OR pg_catalog.pg_get_userbyid(dagster_owner) <> '{metadata_user}' THEN\n"
+        f"        RAISE EXCEPTION 'map_dagster database {dagster.database_name} is not owned by "
+        f"the Dagster metadata user {metadata_user} (owner=%)', "
+        "pg_catalog.pg_get_userbyid(dagster_owner);\n"
+        "    END IF;\n"
+        "    SELECT pg_catalog.array_agg(datname::text ORDER BY datname) INTO other_databases\n"
+        "        FROM pg_catalog.pg_database\n"
+        f"        WHERE datdba = dagster_owner AND datname <> '{dagster.database_name}';\n"
+        "    IF other_databases IS NOT NULL THEN\n"
+        f"        RAISE EXCEPTION 'Dagster metadata user {metadata_user} also owns %', "
+        "other_databases;\n"
+        "    END IF;\n"
+        "END\n"
+        "$r4_precondition$;\n"
+    )
+
+
+def _revoke_stray_connect_sql(runtime: DatabaseRuntime, *, keep: str) -> str:
+    """이 DB의 명시 CONNECT 가운데 소유자·``keep``·PUBLIC 밖의 grantee에서 CONNECT를 걷는 DO 블록.
+
+    이름 목록이 없다 — ACL에서 유도한다. superuser의 REVOKE는 소유자가 준 grant만 걷는다. 다른
+    grantor가 grant option으로 준 것은 남고, 뒤따르는 read-back이 그것을 잡아 전체를 롤백한다.
+    """
+
+    return (
+        "DO $r4_converge$\n"
+        "DECLARE\n"
+        "    stray text;\n"
+        "BEGIN\n"
+        "    FOR stray IN\n"
+        "        SELECT DISTINCT pg_catalog.pg_get_userbyid(entry.grantee)\n"
+        "        FROM pg_catalog.pg_database AS database_row\n"
+        "        CROSS JOIN LATERAL pg_catalog.aclexplode(database_row.datacl) AS entry\n"
+        f"        WHERE database_row.datname = '{runtime.database_name}'\n"
+        "          AND entry.privilege_type = 'CONNECT'\n"
+        "          AND entry.grantee <> 0\n"
+        "          AND entry.grantee <> database_row.datdba\n"
+        f"          AND pg_catalog.pg_get_userbyid(entry.grantee) <> '{keep}'\n"
+        "    LOOP\n"
+        "        EXECUTE pg_catalog.format(\n"
+        f"            'REVOKE CONNECT ON DATABASE %I FROM %I', '{runtime.database_name}', stray\n"
+        "        );\n"
+        "    END LOOP;\n"
+        "END\n"
+        "$r4_converge$;\n"
+    )
+
+
+def _map_isolation_readback_sql(
+    runtime: DatabaseRuntime,
+    *,
+    login: str,
+    connection_limit: int | None,
+) -> str:
+    """같은 transaction 안의 read-back DO 블록. 어긋나면 RAISE → 앞선 GRANT·REVOKE·상한이 롤백된다.
+
+    ACL이 있고, PUBLIC CONNECT가 없고, CONNECT 가능한 non-superuser login이 정확히 ``login``이며,
+    상한이 주어졌으면 그 값이다. ACL 술어만으로는 role membership으로 얻는 CONNECT를 놓친다 —
+    그래서 ``has_database_privilege``로 login 집합 전체를 재고, 거부 문구에 그 집합을 싣는다(role
+    이름은 비밀이 아니다).
+    """
+
+    limit_mismatch = (
+        ""
+        if connection_limit is None
+        else f"\n        OR database_row.datconnlimit <> {connection_limit}"
+    )
+    return (
+        "DO $r4_readback$\n"
+        "DECLARE\n"
+        "    database_row pg_catalog.pg_database%ROWTYPE;\n"
+        "    public_connect boolean;\n"
+        "    connect_logins text[];\n"
+        "BEGIN\n"
+        "    SELECT * INTO STRICT database_row FROM pg_catalog.pg_database\n"
+        f"        WHERE datname = '{runtime.database_name}';\n"
+        "    public_connect := EXISTS (\n"
+        "        SELECT 1 FROM pg_catalog.aclexplode(database_row.datacl) AS entry\n"
+        "        WHERE entry.grantee = 0 AND entry.privilege_type = 'CONNECT'\n"
+        "    );\n"
+        "    connect_logins := COALESCE((\n"
+        "        SELECT pg_catalog.array_agg(role.rolname::text ORDER BY role.rolname)\n"
+        "        FROM pg_catalog.pg_roles AS role\n"
+        "        WHERE role.rolcanlogin AND NOT role.rolsuper\n"
+        "          AND pg_catalog.has_database_privilege(role.oid, database_row.oid, 'CONNECT')\n"
+        "    ), ARRAY[]::text[]);\n"
+        "    IF database_row.datacl IS NULL OR public_connect\n"
+        f"        OR connect_logins <> ARRAY['{login}']::text[]{limit_mismatch} THEN\n"
+        f"        RAISE EXCEPTION '{runtime.role} database is not isolated after the grant "
+        "(acl=%, public_connect=%, connect_logins=%, connection_limit=%)', "
+        "database_row.datacl IS NOT NULL, public_connect, connect_logins, "
+        "database_row.datconnlimit;\n"
+        "    END IF;\n"
+        "END\n"
+        "$r4_readback$;\n"
+    )
+
+
+def _read_usable_connection_slots(runtime: DatabaseRuntime) -> int:
+    """non-superuser 슬롯 = ``max_connections − superuser_reserved − reserved``(live)."""
+
+    _validate_runtime(runtime)
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            "postgres",
+            "--command",
+            (
+                "SELECT pg_catalog.current_setting('max_connections')::integer "
+                "- pg_catalog.current_setting('superuser_reserved_connections')::integer "
+                # PostgreSQL 16부터 있다. 없는 판에서는 0이다.
+                "- COALESCE(pg_catalog.current_setting('reserved_connections', true), '0')"
+                "::integer"
+            ),
+        ],
+        label=f"{runtime.role} usable connection slots",
+    ).decode("ascii").strip()
+    return _parse_positive_int(output, "PostgreSQL usable connection slots")
 
 
 def read_database_identity(runtime: DatabaseRuntime) -> tuple[str, int, str] | None:
@@ -625,6 +1010,36 @@ def _read_database_owner(runtime: DatabaseRuntime) -> str | None:
     return output
 
 
+def _read_databases_owned_by(runtime: DatabaseRuntime, owner: str) -> frozenset[str]:
+    """``owner``가 이 instance에서 소유한 DB 이름들(maintenance DB에서 읽는다).
+
+    한 줄에 이름 하나다. 줄바꿈을 품은 이름은 조각으로 읽혀 Map 쌍의 부분집합이 될 수 없으므로
+    거부 쪽으로 떨어진다.
+    """
+
+    _validate_runtime(runtime)
+    if not _DATABASE_IDENTIFIER.fullmatch(owner):
+        raise DeploymentContractError(f"{runtime.role} database owner is invalid")
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            "postgres",
+            "--command",
+            (
+                "SELECT datname FROM pg_catalog.pg_database WHERE datdba = "
+                "(SELECT oid FROM pg_catalog.pg_roles "
+                f"WHERE rolname = '{owner}')"
+            ),
+        ],
+        label=f"{runtime.role} database owner's databases",
+    ).decode("utf-8").strip()
+    return frozenset(line for line in output.splitlines() if line)
+
+
 def _read_dagster_metadata_role_preflight(
     runtime: DatabaseRuntime,
     metadata_user: str,
@@ -649,7 +1064,15 @@ def _read_dagster_metadata_role_preflight(
                 "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
                 "WHERE membership.member = role.oid), "
                 "(SELECT count(*)::bigint FROM pg_catalog.pg_auth_members membership "
-                "WHERE membership.roleid = role.oid) "
+                "WHERE membership.roleid = role.oid), "
+                # R2: 남은 metadata role은 DB가 사라지면 아무것도 소유하지 않는다(소유 DB와
+                # 그 DB 안 객체의 행이 함께 사라진다). 무언가를 소유한 login은 남은 role이
+                # 아니라 다른 tenant의 login이다 — 그 password를 돌리면 안 된다.
+                "(SELECT count(*)::bigint FROM pg_catalog.pg_database owned "
+                "WHERE owned.datdba = role.oid), "
+                "(SELECT count(*)::bigint FROM pg_catalog.pg_shdepend dependency "
+                "WHERE dependency.refclassid = 'pg_catalog.pg_authid'::regclass "
+                "AND dependency.refobjid = role.oid) "
                 "FROM pg_catalog.pg_roles AS role "
                 f"WHERE role.rolname = '{metadata_user}'"
             ),
@@ -662,11 +1085,17 @@ def _read_dagster_metadata_role_preflight(
     if len(lines) != 1:
         raise DeploymentContractError("Map Dagster metadata role output is invalid")
     fields = lines[0].split("|")
-    if len(fields) != 13:
+    if len(fields) != 15:
         raise DeploymentContractError("Map Dagster metadata role output is invalid")
     return _DagsterMetadataRolePreflight(
         can_login=_parse_psql_bool(fields[0], "Map Dagster metadata role login"),
         inherit=_parse_psql_bool(fields[1], "Map Dagster metadata role inherit"),
+        owned_database_count=_parse_non_negative_int(
+            fields[13], "Map Dagster metadata role owned database count"
+        ),
+        shared_dependency_count=_parse_non_negative_int(
+            fields[14], "Map Dagster metadata role shared dependency count"
+        ),
         attributes=DagsterMetadataRoleAttributes(
             superuser=_parse_psql_bool(fields[2], "Map Dagster metadata role superuser"),
             create_database=_parse_psql_bool(
@@ -727,6 +1156,8 @@ def _assert_dagster_metadata_role_can_rotate_password_only(
         or attributes.database_role_setting_count != 0
         or attributes.granted_role_count != 0
         or attributes.member_role_count != 0
+        or role.owned_database_count != 0
+        or role.shared_dependency_count != 0
     ):
         raise DeploymentContractError("Map Dagster metadata role is unsafe")
 
@@ -855,11 +1286,20 @@ def _parse_dagster_metadata_database_identity(
 
 
 def _permitted_existing_owners(runtime: DatabaseRuntime) -> frozenset[str]:
-    """Map bootstrap 뒤 ownership만 다음 destructive reset에서 추가로 수용한다."""
+    """destructive reset이 지워도 되는 기존 소유자. **instance admin은 절대 들지 않는다.**
+
+    Map bootstrap 뒤 ownership만 추가로 수용한다. admin을 빼는 이유(R2): 공용 instance의
+    admin은 `postgres`·template·다른 tenant가 반쯤 만든 DB를 소유한다. admin 소유 DB는
+    이 재구축이 만든 것이라는 증거가 없으므로 지우지 않는다 — 전용 instance에서도 Map
+    bootstrap 소유자가 admin이라, 반쯤 만든 Map DB는 `--restart`가 지우지 않고 거부한다
+    (fail-closed, 손으로 지우는 절차는 docs/docker-management.md §7.7 'R2 거부').
+    """
 
     if runtime.role == "map_application":
-        return frozenset({runtime.owner_name, _MAP_SCHEMA_OWNER})
-    return frozenset({runtime.owner_name, *runtime.additional_owner_names})
+        owners = frozenset({runtime.owner_name, _MAP_SCHEMA_OWNER})
+    else:
+        owners = frozenset({runtime.owner_name, *runtime.additional_owner_names})
+    return owners - {runtime.admin_name}
 
 
 def _validate_runtime(runtime: DatabaseRuntime) -> None:

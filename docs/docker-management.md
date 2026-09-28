@@ -654,6 +654,119 @@ readiness·image·secret isolation과 C6c smoke가 통과하면 `committed`를 �
 `--adopt-live-databases --reason "..."`로 새 기준으로 받아들인다. 순서 전체는
 [`prod-deployment.md` §8.1](prod-deployment.md)에 있다.
 
+n150에서는 이 명령을 root launcher로 한 번 돌린다(전역 mutation lock·원장 claim·root 0600 결과).
+
+```bash
+sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
+  [--adopt-live-databases REASON]
+```
+
+- 인자는 둘 또는 넷이다. 선택 쌍은 정확히 `--adopt-live-databases REASON` 하나이고, launcher는 그것을
+  `ktdctl … --json` 뒤에 `--adopt-live-databases --reason REASON`으로 붙인다. 둘인 형태의 argv는 바뀌지 않았다.
+- REASON은 한 줄, 1~200자의 printable 문자이고 공백만이 아니며 `-`로 시작하지 않는다(CLI 규칙과 같다).
+  lock·claim·출력 디렉터리보다 **먼저**
+  검증한다 — 거부된 사유는 원장에 아무것도 남기지 않는다.
+- `--restart`는 launcher로 넘길 수 없다. 세 DB를 지우는 유일한 길이라 `ktdctl`을 직접, 일부러 부를 때만 탄다.
+
+재구축의 tenant 울타리(M1). 모두 이름 목록 없이 frozen 계약과 live 상태에서 유도한다.
+
+- **R2 소유자**: instance admin은 어떤 drop의 허용 소유자도 아니다. Map drop 소유자는 Map 쌍 밖의 DB를 소유하지
+  않아야 한다(live `pg_database.datdba`). Dagster metadata role의 password 회전은 그 role이 DB도, `pg_shdepend`
+  행도 소유하지 않을 때만 한다 — 무언가를 소유한 login은 남은 role이 아니다. C6c는
+  `KOR_TRAVEL_MAP_DAGSTER_METADATA_USER == KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB`를 재구축 전에 요구한다(Map
+  bootstrap의 같은 규칙은 DB 초기화 뒤에야 돈다).
+  - `--restart`는 이 판정(이름·허용 소유자·배타성)을 Map·PinVi를 멈추기 **전에** 읽기만으로 한 번 돌리고
+    (`require_databases_resettable`), drop 직전에 같은 판정을 다시 돌린다(결박). 거부가 pair를 내린 채 남기지 않는다.
+  - **남은 위험(받아들임, M2가 ADR-53에 옮긴다).** 이 울타리는 env 이름을 live 소유 관계로 좁힐 뿐, Manager가 기록한
+    identity에 결박하지 않는다. (1) 자기 이름의 DB **하나만** 소유한 다른 tenant login(Map의
+    `<x>_dagster` 모양)은 metadata user·Dagster DB 이름으로 일관되게 박히면 배타성 검사를 지나고, 그 상태에서
+    `--restart`는 그 DB를 지운다. 2026-09-28 공용 instance에는 그런 login이 없다(모든 login이 `*_app`이고 자기
+    이름의 DB가 없다). (2) PinVi drop 소유자에는 배타성을 걸지 않으므로, `PINVI_POSTGRES_DB`·`PINVI_APP_DB_USER`를
+    다른 tenant의 DB·login으로 박은 `--restart`는 그 DB를 지우고 다시 만든다(M1 이전부터 있던 위험). 둘 다
+    `--restart`만의 위험이고, launcher는 `--restart`를 넘기지 않는다. (3) (1)의 모양이면 adopt와 기록된 DB
+    identity가 없는 배포(첫 배포 등)의 R4도 그 DB를 Map Dagster DB로 읽어 PUBLIC CONNECT를 걷는다(그 밖은 바꾸지
+    않는다). 같은 pair 수렴과 기록이 있는 일반 배포는 `deploy-status.json`의 DB identity가 live와 같을 때만 R4에
+    닿으므로 이 경로가 없다.
+- **이름**: `postgres`·`template*`은 drop뿐 아니라 수렴(ensure)·DB 생성·격리 경로에서도 거부한다.
+- **R3 chokepoint**: 재구축의 모든 compose 호출은 `_run_pinned_runtime_rebuild_compose`를 지난다. 서비스를 명시하지
+  않은 mutation은 거부하고, compose가 **실제로 닿는** 서비스 가운데 PostgreSQL 서버(declared ∪ witnessed)가 전용
+  집합 밖이면 거부한다. 닿는 서비스는 명시 식별자에, 의존성으로 번지는 명령(`create`·`start`·`restart`·`scale`·
+  `watch`·`up`·`run`)이 `--no-deps` 없이 오면 frozen resolved 문서의 `depends_on` closure를 더한 것이다 — `create`는
+  그 플래그가 없고 drift된 의존 PostgreSQL을 다시 만든다(n150 Compose v5.2.0). 이름 없는 컨테이너를 지우는
+  `--remove-orphans`와, 서비스 목록·`depends_on`을 읽을 수 없는 문서도 거부한다(분류 못 하면 통과가 아니다).
+  `--no-deps`·`--remove-orphans`는 compose가 **플래그로 읽은** 것만 센다(R3와 `up`·`run`의 `--no-deps` 요구 둘 다).
+  `run SERVICE` 뒤는 컨테이너 argv이고 `-e --no-deps`의 뒤쪽은 옵션 값이다 — 거기 있는 같은 글자로는 compose가
+  의존성을 끌어온다.
+- **R4 격리·연결 상한**: 배포(bootstrap 뒤, Map API 기동 전)와 같은 pair 수렴(`up` 전)마다 두 Map DB에서 PUBLIC
+  CONNECT를 걷고, app DB에 `KOR_TRAVEL_MAP_PG_DSN` login의 CONNECT와
+  `CONNECTION LIMIT floor(0.4 × (max_connections − superuser_reserved − reserved))`(live)를 건 뒤 읽어서 확인한다.
+  CONNECT 가능한 non-superuser login은 app DB에서 그 login 하나, Dagster DB에서 metadata user 하나여야 한다.
+  superuser는 상한을 받지 않는다. PinVi DB는 건드리지 않는다.
+  - 전부 **한 transaction**이다. 바꾸기 전에 live 그래프에 결박한다: app DB 소유자가 `ktm_feature_schema_owner`,
+    login은 LOGIN·non-superuser이고 그 소유자의 member(Map bootstrap이 service login에 schema owner를
+    `INHERIT FALSE`로 준다), Dagster DB 소유자가 metadata user이고 그 user는 다른 DB를 소유하지 않는다. read-back도
+    같은 transaction 안이라, 어느 쪽이 거부해도 GRANT·REVOKE·상한이 함께 롤백된다.
+  - 배포(새 pair·adopt)는 R4 전에 런타임을 멈추고 Map schema를 올린다. 그래서 넘겨받은(schema owner 소유) app DB와
+    이미 있는 Dagster DB면 **멈추기 전에** 같은 전제 블록을 `READ ONLY` transaction으로 먼저 돌린다
+    (`require_map_databases_isolatable`, label `Map database isolation preflight`). 전체 경로는 그 둘의 소유자와
+    login membership을 R4 전에 바꾸지 않는다(role bootstrap은 fresh DB에서만, Dagster init은 DB가 없을 때만 돈다).
+    없거나 bootstrap 전인 DB는 만든 뒤 transaction 안에서만 판정한다. 같은 pair 수렴은 R4를 `up` 전에 걸고 아무것도
+    멈추지 않으므로 preflight가 없다.
+  - app DB의 명시 CONNECT 가운데 소유자·login 밖의 것(옛 login, 손으로 준 grant)은 걷는다 — 거부가 아니라
+    수렴이다. Dagster DB는 소유자 이름으로만 결박되므로 PUBLIC만 걷고, 남은 명시 grantee는 거부로 드러난다.
+  - C6c는 `KOR_TRAVEL_MAP_PG_DSN`을 형제 DSN처럼 결박한다(`postgresql+asyncpg`, `127.0.0.1`, Map 포트, Map app DB).
+    login은 bootstrap user·metadata user·Map principal이 아니어야 한다.
+  - **관찰(M1 설치 뒤)**: 첫 같은 pair 수렴이 12700에 상한 38을 건다(`max_connections` 100 − superuser 예약 3 − 예약
+    0 = 97). 12700에는 지킬 다른 tenant가 없고, Map의 최악(Dagster `max_concurrent_runs` 10, 엔진마다 풀 5 + overflow
+    10)은 38보다 크다. 평시 `ktm_feature_service` 세션은 9~11이다. 다음 무거운 Dagster 창까지 Map PostgreSQL 로그의
+    `too many connections for database "kor_travel_map"`과 `pg_stat_database.numbackends`(`kor_travel_map`)를 본다.
+    걸리면 아래 되돌리기의 `CONNECTION LIMIT -1`로 풀고 — 다음 수렴·배포가 다시 걸므로 그 전에 — M2 전에 소유자와
+    비율(`map_application_connection_cap`의 0.4, 소유자 결정 D5)을 다시 정한다.
+
+**R2 거부 — admin 소유 Map DB가 있어 배포가 멈출 때.** 반쯤 만든(instance admin 소유) Map DB는 `--restart`도
+지우지 않는다(fail-closed). `--restart`의 R2 거부는 Map·PinVi를 멈추기 **전에** 난다(읽기 전용 preflight) — 예를
+들어 12700에서는 `ktm_feature_schema_owner`가 잔재 `ktm_40b`·`ktm_gcverify`도 소유하므로 `--restart`가
+`outside the Map pair`로 거부되지만 pair는 떠 있는 그대로다. 울타리를 넓히지 말고 다음 순서로 한다.
+
+1. 먼저 `--restart`가 아닌 **일반 또는 adopt** launcher를 돌린다. 수렴 경로가 bootstrap 전 DB에 fresh
+   bootstrap을 다시 돌린다.
+2. bootstrap이 fresh가 아니라고 거부하면 그 instance에서 `datname`이 Map 이름이고 소유자가 instance admin인지,
+   `SELECT count(*) FROM pg_stat_activity WHERE datname = '<Map DB>'`가 0인지 본다. 스키마가 Map bootstrap이 만드는
+   집합(정본은 Map `docker/postgres-role-bootstrap.sh`의 `CREATE SCHEMA … AUTHORIZATION` 줄과 `public`)의
+   부분집합인지 본다 — 목록을 여기 베끼지 않는다. 그 DB에 `public.alembic_version`이 있으면 그 값이 Map head인지
+   확인한다 — 공용 instance에서는 같은 이름의 admin 소유 DB가 Map의 것이라는 보장이 없다.
+3. 그때만 손으로 지운다: `docker exec --user postgres <instance> dropdb --username <admin> --port <p> --force
+   <Map DB>`. 그리고 launcher를 일반으로 다시 돌린다.
+
+**R4 거부 — 격리가 `Map database isolation failed`로 멈출 때.** 거부는 transaction 안에서 나므로 ACL·상한은 호출
+전 그대로다. stderr의 PostgreSQL `ERROR:` 줄이 이유를 말한다. `Map database isolation preflight failed`면 같은 전제가
+멈추기 전에 거부한 것이다 — 런타임은 떠 있고 아무것도 바뀌지 않았다. 아래 첫 두 항목의 이유와 처리가 같다.
+
+- `… is not owned by ktm_feature_schema_owner` / `… is not owned by the Dagster metadata user …` / `… also owns …`:
+  env의 DB 이름·metadata user가 이 instance의 Map DB를 가리키지 않는다. `.env`를 고친다 — 울타리를 넓히지 않는다.
+- `login … is not a non-superuser LOGIN member of ktm_feature_schema_owner`: `KOR_TRAVEL_MAP_PG_DSN`의 login이 Map
+  service login이 아니다. `.env`를 고친다.
+- `… is not isolated after the grant (acl=…, public_connect=…, connect_logins={…}, connection_limit=…)`: 목록에
+  나온 login이 소유자가 준 grant가 아닌 경로로 CONNECT를 얻는다 — role membership, 또는 다른 grantor가 grant
+  option으로 준 grant. 다음으로 찾는다(읽기 전용).
+
+  ```sql
+  SELECT r.rolname,
+         (SELECT array_agg(g.rolname) FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid
+           WHERE m.member = r.oid) AS member_of
+    FROM pg_roles r
+   WHERE r.rolcanlogin AND NOT r.rolsuper
+     AND has_database_privilege(r.oid, '<Map DB>', 'CONNECT');
+  SELECT a.grantor::regrole, a.grantee, a.privilege_type, a.is_grantable
+    FROM pg_database d, aclexplode(d.datacl) a WHERE d.datname = '<Map DB>';
+  ```
+
+  그 경로를 손으로 걷고(`REVOKE <role> FROM <login>`, 또는 그 grantor로 `SET ROLE` 뒤 `REVOKE CONNECT …`)
+  launcher를 다시 돌린다.
+- **되돌리기**(R4를 풀어야 할 때, 그 instance의 admin으로): `GRANT CONNECT ON DATABASE <app DB> TO PUBLIC;
+  GRANT CONNECT ON DATABASE <Dagster DB> TO PUBLIC; ALTER DATABASE <app DB> CONNECTION LIMIT -1;` 다음 수렴·배포가
+  다시 건다.
+
 PinVi는 geo 패턴처럼 scoped app role 하나가 자기 database를 소유한다(ADR-46). 종전의 M05 다중 role
 topology·catalog reset·role verify one-shot과 그것을 담던 v8 journal receipt는 없어졌다. v8 rebuild
 journal·tombstone 모델은 ADR-51 B3에서 코드째 지웠고, 호스트에 남은 v8 파일은 읽지 않는다. v6 manifest는
