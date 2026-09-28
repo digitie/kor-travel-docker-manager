@@ -1090,9 +1090,11 @@ def test_permitted_owner_sets_never_contain_the_instance_admin(
 
 
 def test_map_owner_sets_are_disjoint_from_pinvi_and_foreign_owners() -> None:
-    """n150 모양으로 frozen 계약에서 유도한 세 허용 집합. Map 쪽은 PinVi·admin·다른 tenant와 겹치지 않는다.
+    """n150 모양으로 frozen 계약에서 유도한 세 허용 집합. Map 쪽은 PinVi와 두 instance admin과 겹치지 않는다.
 
     Map app과 Dagster는 구성상 `owner_name`을 공유하므로 "세 runtime 모두 서로소"는 불가능하다.
+    다른 tenant login과의 서로소는 여기서 이름으로 보지 않는다 — 이 env에 없는 이름은 겹칠 수 없어
+    공허하다. 그 경계는 live 소유 관계(배타성·회전 preflight)와 실 PostgreSQL T-R2d가 본다.
     """
 
     map_application, map_dagster, pinvi = database_runtimes_from_frozen_contract(
@@ -1118,22 +1120,16 @@ def test_map_owner_sets_are_disjoint_from_pinvi_and_foreign_owners() -> None:
         },
     )
     permitted = database_runtime._permitted_existing_owners
-    foreign = {
-        # 재구축 밖의 DB를 소유하는 principal: 두 instance admin과 다른 tenant의 login.
-        "kor_travel_map",
-        "shared_admin",
-        "geo_app",
-        "concierge_app",
-        "transport_app",
-    }
+    # 두 instance admin은 frozen 문서의 `POSTGRES_USER`에서 온다 — 허용 집합에서 빠져야 한다.
+    admins = {map_application.admin_name, pinvi.admin_name}
 
+    assert admins == {"kor_travel_map", "shared_admin"}
     assert permitted(map_application) == {"ktm_feature_schema_owner"}
     assert permitted(map_dagster) == {"kor_travel_map_dagster"}
     assert permitted(pinvi) == {"pinvi_application_runtime"}
     for runtime in (map_application, map_dagster):
-        assert permitted(runtime).isdisjoint(permitted(pinvi))
-        assert permitted(runtime).isdisjoint(foreign)
-    assert permitted(pinvi).isdisjoint(foreign)
+        assert permitted(runtime).isdisjoint(permitted(pinvi) | admins)
+    assert permitted(pinvi).isdisjoint(admins)
 
 
 def test_reset_refuses_a_map_owner_that_owns_a_foreign_database(
@@ -1318,18 +1314,16 @@ def _isolation_harness(
     monkeypatch: pytest.MonkeyPatch,
     *,
     usable: str = "97",
-    readback: dict[str, str] | None = None,
 ) -> tuple[list[tuple[str, list[str]]], list[bytes]]:
+    """슬롯 읽기만 답한다. 전제·수렴·read-back은 모두 한 transaction 스크립트 안에 있어야 한다."""
+
     reads: list[tuple[str, list[str]]] = []
     scripts: list[bytes] = []
-    answers = readback or {"map_app": "t|f|38|t", "map_dagster": "t|f|-1|t"}
 
     def run_checked(arguments: list[str], *, label: str) -> bytes:
         reads.append((label, list(arguments)))
-        if label.endswith("usable connection slots"):
-            return f"{usable}\n".encode()
-        database = arguments[-1].rsplit("datname = '", 1)[1].split("'", 1)[0]
-        return f"{answers[database]}\n".encode()
+        assert label.endswith("usable connection slots"), label
+        return f"{usable}\n".encode()
 
     def run_with_input(arguments: list[str], *, input_bytes: bytes, label: str) -> bytes:
         assert label == "Map database isolation"
@@ -1342,6 +1336,12 @@ def _isolation_harness(
     monkeypatch.setattr(database_runtime, "_run_checked", run_checked)
     monkeypatch.setattr(database_runtime, "_run_checked_with_input", run_with_input)
     return reads, scripts
+
+
+def _do_block(script: str, tag: str) -> list[str]:
+    """``DO $tag$ … $tag$;`` 블록들의 본문."""
+
+    return [part.split(f"${tag}$;", 1)[0] for part in script.split(f"DO ${tag}$")[1:]]
 
 
 def test_isolation_sql_names_only_map_databases_and_the_dsn_login(
@@ -1359,54 +1359,40 @@ def test_isolation_sql_names_only_map_databases_and_the_dsn_login(
     database_runtime.ensure_map_databases_isolated(*_isolation_runtimes(), login=login)
 
     assert login == "ktm_feature_service"
-    assert scripts == [
-        b'REVOKE CONNECT ON DATABASE "map_app" FROM PUBLIC;\n'
-        b'GRANT CONNECT ON DATABASE "map_app" TO "ktm_feature_service";\n'
-        b'REVOKE CONNECT ON DATABASE "map_dagster" FROM PUBLIC;\n'
-        b'ALTER DATABASE "map_app" CONNECTION LIMIT 38;\n'
+    (script,) = (item.decode("ascii") for item in scripts)
+    # 한 transaction 안의 순서: live 결박 → 바꾸기 → 같은 transaction의 read-back.
+    statements = [
+        "DO $r4_precondition$",
+        'REVOKE CONNECT ON DATABASE "map_app" FROM PUBLIC;',
+        "DO $r4_converge$",
+        'GRANT CONNECT ON DATABASE "map_app" TO "ktm_feature_service";',
+        'REVOKE CONNECT ON DATABASE "map_dagster" FROM PUBLIC;',
+        'ALTER DATABASE "map_app" CONNECTION LIMIT 38;',
+        "DO $r4_readback$",
     ]
-    assert [label for label, _ in reads] == [
-        "map_application usable connection slots",
-        "map_application database isolation read-back",
-        "map_dagster database isolation read-back",
-    ]
-    # 읽기는 exact login 집합을 묻는다 — app은 DSN login, Dagster는 metadata user.
-    assert "ARRAY['ktm_feature_service']::text[]" in reads[1][1][-1]
-    assert "ARRAY['map_dagster_metadata']::text[]" in reads[2][1][-1]
-    assert "pinvi" not in b"".join(scripts).decode() + "".join(r[1][-1] for r in reads)
-
-
-@pytest.mark.parametrize(
-    ("database", "answer"),
-    (
-        ("map_app", "t|t|38|t"),
-        ("map_app", "f|f|38|t"),
-        ("map_app", "t|f|38|f"),
-        ("map_app", "t|f|-1|t"),
-        ("map_dagster", "t|t|-1|t"),
-        ("map_dagster", "t|f|-1|f"),
-    ),
-    ids=[
-        "app-public-connect",
-        "app-null-acl",
-        "app-extra-login",
-        "app-no-cap",
-        "dagster-public-connect",
-        "dagster-extra-login",
-    ],
-)
-def test_isolation_readback_rejects_public_connect(
-    monkeypatch: pytest.MonkeyPatch,
-    database: str,
-    answer: str,
-) -> None:
-    readback = {"map_app": "t|f|38|t", "map_dagster": "t|f|-1|t", database: answer}
-    _isolation_harness(monkeypatch, readback=readback)
-
-    with pytest.raises(DeploymentContractError, match="not isolated after the grant"):
-        database_runtime.ensure_map_databases_isolated(
-            *_isolation_runtimes(), login="ktm_feature_service"
-        )
+    positions = [script.index(statement) for statement in statements]
+    assert positions == sorted(positions)
+    (precondition,) = _do_block(script, "r4_precondition")
+    assert "WHERE datname = 'map_app'" in precondition
+    assert "<> 'ktm_feature_schema_owner'" in precondition
+    assert "role.rolname = 'ktm_feature_service'" in precondition
+    assert "pg_catalog.pg_has_role(role.oid, app_owner, 'MEMBER')" in precondition
+    assert "WHERE datname = 'map_dagster'" in precondition
+    assert "<> 'map_dagster_metadata'" in precondition
+    # 수렴은 app DB 하나에만 — Dagster DB는 소유자 이름으로만 결박되므로 PUBLIC만 걷는다.
+    (converge,) = _do_block(script, "r4_converge")
+    assert "database_row.datname = 'map_app'" in converge
+    assert "<> 'ktm_feature_service'" in converge
+    app_readback, dagster_readback = _do_block(script, "r4_readback")
+    assert "WHERE datname = 'map_app'" in app_readback
+    assert "ARRAY['ktm_feature_service']::text[]" in app_readback
+    assert "datconnlimit <> 38" in app_readback
+    assert "WHERE datname = 'map_dagster'" in dagster_readback
+    assert "ARRAY['map_dagster_metadata']::text[]" in dagster_readback
+    assert "datconnlimit <>" not in dagster_readback
+    assert "pinvi" not in script
+    # commit 뒤의 읽기가 없다 — 거부는 transaction 안에서 나고 전체가 롤백된다.
+    assert [label for label, _ in reads] == ["map_application usable connection slots"]
 
 
 @pytest.mark.parametrize(
@@ -1424,15 +1410,14 @@ def test_connection_cap_rejects_no_usable_slots(usable: int) -> None:
 
 
 def test_isolation_cap_is_derived_from_the_live_slots(monkeypatch: pytest.MonkeyPatch) -> None:
-    _, scripts = _isolation_harness(
-        monkeypatch, usable="47", readback={"map_app": "t|f|18|t", "map_dagster": "t|f|-1|t"}
-    )
+    _, scripts = _isolation_harness(monkeypatch, usable="47")
 
     database_runtime.ensure_map_databases_isolated(
         *_isolation_runtimes(), login="ktm_feature_service"
     )
 
-    assert scripts[0].endswith(b'ALTER DATABASE "map_app" CONNECTION LIMIT 18;\n')
+    assert b'ALTER DATABASE "map_app" CONNECTION LIMIT 18;\n' in scripts[0]
+    assert b"datconnlimit <> 18" in scripts[0]
 
 
 @pytest.mark.parametrize(

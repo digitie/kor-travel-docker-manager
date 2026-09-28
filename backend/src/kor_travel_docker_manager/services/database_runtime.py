@@ -456,7 +456,12 @@ def map_application_connection_cap(usable: int) -> int:
 
 
 def map_application_login(environment: Mapping[str, str]) -> str:
-    """frozen env ``KOR_TRAVEL_MAP_PG_DSN``의 login — Map application DB에 CONNECT를 받는 유일한 login."""
+    """frozen env ``KOR_TRAVEL_MAP_PG_DSN``의 login — Map application DB에 CONNECT를 받는 유일한 login.
+
+    이름은 env에서만 온다. C6c가 그 DSN의 endpoint·DB와 login의 자리(Map principal이 아님)를
+    결박하고, 그것이 정말 Map의 login인지는 R4가 live role 그래프로 확인한다
+    (``ensure_map_databases_isolated``).
+    """
 
     try:
         username = urlsplit(environment.get("KOR_TRAVEL_MAP_PG_DSN", "")).username
@@ -482,6 +487,18 @@ def ensure_map_databases_isolated(
     ``INHERIT FALSE``로 들고 있어 소유자 권한으로는 붙지 못하므로 명시적으로 준다. Dagster
     DB는 소유자(metadata user)가 CTc를 그대로 갖는다. 상한은 같은 instance에서 live로 읽은
     슬롯에서 유도한다(``map_application_connection_cap``) — superuser는 상한을 받지 않는다.
+
+    **env가 아니라 live 그래프에 결박한다.** 이름은 모두 `.env`에서 온다. 일관되게 잘못 박힌
+    env는 그 자신과 비교하는 read-back을 그대로 통과한다 — 다른 tenant의 login에 Map DB CONNECT를
+    주거나, 다른 tenant DB의 PUBLIC CONNECT를 걷는다(적대 리뷰 2026-09-28 실측). 그래서 한
+    transaction(``--single-transaction``) 안에서 바꾸기 **전에** live 소유·role 그래프를 확인하고
+    (``_map_isolation_precondition_sql``), 바꾼 **뒤** 같은 transaction에서 다시 읽는다
+    (``_map_isolation_readback_sql``). 어느 쪽이 거부해도 GRANT·REVOKE·상한이 함께 롤백된다 —
+    거부가 반쯤 바뀐 ACL을 남기지 않는다.
+
+    app DB의 명시 CONNECT 가운데 소유자·login 밖의 것은 걷는다(``_revoke_stray_connect_sql``).
+    옛 login·손으로 준 grant 하나가 이후 모든 수렴·배포를 막지 않게 하는 수렴이다. Dagster DB에는
+    걸지 않는다 — 그 DB는 소유자 이름으로만 결박되므로 거기서는 바꾸는 범위를 PUBLIC에 둔다.
 
     fresh bootstrap은 ``datacl IS NULL``·template1과 같은 ``datconnlimit``을 요구하므로 반드시
     bootstrap **뒤에** 부른다. 멱등이다 — 같은 입력으로 다시 부르면 ACL이 바뀌지 않는다.
@@ -509,10 +526,14 @@ def ensure_map_databases_isolated(
     app_database = _sql_identifier(app.database_name)
     dagster_database = _sql_identifier(dagster.database_name)
     sql = (
-        f"REVOKE CONNECT ON DATABASE {app_database} FROM PUBLIC;\n"
-        f"GRANT CONNECT ON DATABASE {app_database} TO {_sql_identifier(login)};\n"
-        f"REVOKE CONNECT ON DATABASE {dagster_database} FROM PUBLIC;\n"
-        f"ALTER DATABASE {app_database} CONNECTION LIMIT {cap};\n"
+        _map_isolation_precondition_sql(app, dagster, login=login, metadata_user=metadata_user)
+        + f"REVOKE CONNECT ON DATABASE {app_database} FROM PUBLIC;\n"
+        + _revoke_stray_connect_sql(app, keep=login)
+        + f"GRANT CONNECT ON DATABASE {app_database} TO {_sql_identifier(login)};\n"
+        + f"REVOKE CONNECT ON DATABASE {dagster_database} FROM PUBLIC;\n"
+        + f"ALTER DATABASE {app_database} CONNECTION LIMIT {cap};\n"
+        + _map_isolation_readback_sql(app, login=login, connection_limit=cap)
+        + _map_isolation_readback_sql(dagster, login=metadata_user, connection_limit=None)
     )
     _run_checked_with_input(
         [
@@ -527,8 +548,148 @@ def ensure_map_databases_isolated(
         input_bytes=sql.encode("ascii"),
         label="Map database isolation",
     )
-    _require_database_isolated(app, login=login, connection_limit=cap)
-    _require_database_isolated(dagster, login=metadata_user, connection_limit=None)
+
+
+def _map_isolation_precondition_sql(
+    app: DatabaseRuntime,
+    dagster: DatabaseRuntime,
+    *,
+    login: str,
+    metadata_user: str,
+) -> str:
+    """R4가 무엇이든 바꾸기 **전에** live 소유·role 그래프를 확인하는 DO 블록(거부는 RAISE → 롤백).
+
+    - app DB는 Map schema owner 소유다 — ensure 경로가 이미 요구하는 넘겨받음 그대로다.
+    - login은 LOGIN이고 superuser가 아니며 그 소유자의 member다. Map bootstrap이 service login에
+      schema owner를 ``INHERIT FALSE``로 주는 불변식이다. 다른 tenant의 login은 Map schema owner의
+      member가 아니므로 이름 목록 없이 갈린다.
+    - Dagster DB는 frozen metadata user 소유이고, 그 user는 다른 DB를 소유하지 않는다(R2 배타성과
+      같은 모양). C6c의 metadata user = Dagster DB 이름 규칙과 함께, 자기 이름이 아닌 DB를 소유하는
+      tenant login(PinVi처럼 둘을 가진 것 포함)을 막는다. 자기 이름의 DB **하나만** 가진 다른 tenant
+      login은 이 그래프로 Map의 것과 갈리지 않는다 — 남은 위험으로 문서에 적었다(§7.7).
+    """
+
+    return (
+        "DO $r4_precondition$\n"
+        "DECLARE\n"
+        "    app_owner oid;\n"
+        "    dagster_owner oid;\n"
+        "    other_databases text[];\n"
+        "BEGIN\n"
+        "    SELECT datdba INTO app_owner FROM pg_catalog.pg_database\n"
+        f"        WHERE datname = '{app.database_name}';\n"
+        "    IF app_owner IS NULL\n"
+        f"        OR pg_catalog.pg_get_userbyid(app_owner) <> '{_MAP_SCHEMA_OWNER}' THEN\n"
+        f"        RAISE EXCEPTION 'map_application database {app.database_name} is not owned by "
+        f"{_MAP_SCHEMA_OWNER} (owner=%)', pg_catalog.pg_get_userbyid(app_owner);\n"
+        "    END IF;\n"
+        "    IF NOT EXISTS (\n"
+        "        SELECT 1 FROM pg_catalog.pg_roles AS role\n"
+        f"        WHERE role.rolname = '{login}' AND role.rolcanlogin AND NOT role.rolsuper\n"
+        "          AND pg_catalog.pg_has_role(role.oid, app_owner, 'MEMBER')\n"
+        "    ) THEN\n"
+        f"        RAISE EXCEPTION 'Map application login {login} is not a non-superuser "
+        f"LOGIN member of {_MAP_SCHEMA_OWNER}';\n"
+        "    END IF;\n"
+        "    SELECT datdba INTO dagster_owner FROM pg_catalog.pg_database\n"
+        f"        WHERE datname = '{dagster.database_name}';\n"
+        "    IF dagster_owner IS NULL\n"
+        f"        OR pg_catalog.pg_get_userbyid(dagster_owner) <> '{metadata_user}' THEN\n"
+        f"        RAISE EXCEPTION 'map_dagster database {dagster.database_name} is not owned by "
+        f"the Dagster metadata user {metadata_user} (owner=%)', "
+        "pg_catalog.pg_get_userbyid(dagster_owner);\n"
+        "    END IF;\n"
+        "    SELECT pg_catalog.array_agg(datname::text ORDER BY datname) INTO other_databases\n"
+        "        FROM pg_catalog.pg_database\n"
+        f"        WHERE datdba = dagster_owner AND datname <> '{dagster.database_name}';\n"
+        "    IF other_databases IS NOT NULL THEN\n"
+        f"        RAISE EXCEPTION 'Dagster metadata user {metadata_user} also owns %', "
+        "other_databases;\n"
+        "    END IF;\n"
+        "END\n"
+        "$r4_precondition$;\n"
+    )
+
+
+def _revoke_stray_connect_sql(runtime: DatabaseRuntime, *, keep: str) -> str:
+    """이 DB의 명시 CONNECT 가운데 소유자·``keep``·PUBLIC 밖의 grantee에서 CONNECT를 걷는 DO 블록.
+
+    이름 목록이 없다 — ACL에서 유도한다. superuser의 REVOKE는 소유자가 준 grant만 걷는다. 다른
+    grantor가 grant option으로 준 것은 남고, 뒤따르는 read-back이 그것을 잡아 전체를 롤백한다.
+    """
+
+    return (
+        "DO $r4_converge$\n"
+        "DECLARE\n"
+        "    stray text;\n"
+        "BEGIN\n"
+        "    FOR stray IN\n"
+        "        SELECT DISTINCT pg_catalog.pg_get_userbyid(entry.grantee)\n"
+        "        FROM pg_catalog.pg_database AS database_row\n"
+        "        CROSS JOIN LATERAL pg_catalog.aclexplode(database_row.datacl) AS entry\n"
+        f"        WHERE database_row.datname = '{runtime.database_name}'\n"
+        "          AND entry.privilege_type = 'CONNECT'\n"
+        "          AND entry.grantee <> 0\n"
+        "          AND entry.grantee <> database_row.datdba\n"
+        f"          AND pg_catalog.pg_get_userbyid(entry.grantee) <> '{keep}'\n"
+        "    LOOP\n"
+        "        EXECUTE pg_catalog.format(\n"
+        f"            'REVOKE CONNECT ON DATABASE %I FROM %I', '{runtime.database_name}', stray\n"
+        "        );\n"
+        "    END LOOP;\n"
+        "END\n"
+        "$r4_converge$;\n"
+    )
+
+
+def _map_isolation_readback_sql(
+    runtime: DatabaseRuntime,
+    *,
+    login: str,
+    connection_limit: int | None,
+) -> str:
+    """같은 transaction 안의 read-back DO 블록. 어긋나면 RAISE → 앞선 GRANT·REVOKE·상한이 롤백된다.
+
+    ACL이 있고, PUBLIC CONNECT가 없고, CONNECT 가능한 non-superuser login이 정확히 ``login``이며,
+    상한이 주어졌으면 그 값이다. ACL 술어만으로는 role membership으로 얻는 CONNECT를 놓친다 —
+    그래서 ``has_database_privilege``로 login 집합 전체를 재고, 거부 문구에 그 집합을 싣는다(role
+    이름은 비밀이 아니다).
+    """
+
+    limit_mismatch = (
+        ""
+        if connection_limit is None
+        else f"\n        OR database_row.datconnlimit <> {connection_limit}"
+    )
+    return (
+        "DO $r4_readback$\n"
+        "DECLARE\n"
+        "    database_row pg_catalog.pg_database%ROWTYPE;\n"
+        "    public_connect boolean;\n"
+        "    connect_logins text[];\n"
+        "BEGIN\n"
+        "    SELECT * INTO STRICT database_row FROM pg_catalog.pg_database\n"
+        f"        WHERE datname = '{runtime.database_name}';\n"
+        "    public_connect := EXISTS (\n"
+        "        SELECT 1 FROM pg_catalog.aclexplode(database_row.datacl) AS entry\n"
+        "        WHERE entry.grantee = 0 AND entry.privilege_type = 'CONNECT'\n"
+        "    );\n"
+        "    connect_logins := COALESCE((\n"
+        "        SELECT pg_catalog.array_agg(role.rolname::text ORDER BY role.rolname)\n"
+        "        FROM pg_catalog.pg_roles AS role\n"
+        "        WHERE role.rolcanlogin AND NOT role.rolsuper\n"
+        "          AND pg_catalog.has_database_privilege(role.oid, database_row.oid, 'CONNECT')\n"
+        "    ), ARRAY[]::text[]);\n"
+        "    IF database_row.datacl IS NULL OR public_connect\n"
+        f"        OR connect_logins <> ARRAY['{login}']::text[]{limit_mismatch} THEN\n"
+        f"        RAISE EXCEPTION '{runtime.role} database is not isolated after the grant "
+        "(acl=%, public_connect=%, connect_logins=%, connection_limit=%)', "
+        "database_row.datacl IS NOT NULL, public_connect, connect_logins, "
+        "database_row.datconnlimit;\n"
+        "    END IF;\n"
+        "END\n"
+        "$r4_readback$;\n"
+    )
 
 
 def _read_usable_connection_slots(runtime: DatabaseRuntime) -> int:
@@ -555,65 +716,6 @@ def _read_usable_connection_slots(runtime: DatabaseRuntime) -> int:
         label=f"{runtime.role} usable connection slots",
     ).decode("ascii").strip()
     return _parse_positive_int(output, "PostgreSQL usable connection slots")
-
-
-def _require_database_isolated(
-    runtime: DatabaseRuntime,
-    *,
-    login: str,
-    connection_limit: int | None,
-) -> None:
-    """ACL이 있고, PUBLIC CONNECT가 없고, CONNECT 가능한 non-superuser login이 정확히 ``login``이다.
-
-    ACL 술어만으로는 role membership으로 얻는 CONNECT를 놓친다 — 그래서
-    ``has_database_privilege``로 login 집합 전체를 잰다.
-    """
-
-    output = _run_checked(
-        [
-            *_database_admin_command(runtime, "psql"),
-            "--no-psqlrc",
-            "--tuples-only",
-            "--no-align",
-            "--dbname",
-            "postgres",
-            "--command",
-            (
-                "SELECT database_row.datacl IS NOT NULL, "
-                "EXISTS (SELECT 1 FROM pg_catalog.aclexplode(database_row.datacl) AS entry "
-                "WHERE entry.grantee = 0 AND entry.privilege_type = 'CONNECT'), "
-                "database_row.datconnlimit, "
-                "COALESCE((SELECT pg_catalog.array_agg(role.rolname::text ORDER BY role.rolname) "
-                "FROM pg_catalog.pg_roles AS role "
-                "WHERE role.rolcanlogin AND NOT role.rolsuper "
-                "AND pg_catalog.has_database_privilege(role.oid, database_row.oid, 'CONNECT')), "
-                f"ARRAY[]::text[]) = ARRAY['{login}']::text[] "
-                "FROM pg_catalog.pg_database AS database_row "
-                f"WHERE database_row.datname = '{runtime.database_name}'"
-            ),
-        ],
-        label=f"{runtime.role} database isolation read-back",
-    ).decode("ascii").strip()
-    fields = output.split("|") if output and "\n" not in output else []
-    if len(fields) != 4:
-        raise DeploymentContractError(f"{runtime.role} database isolation output is invalid")
-    acl_present = _parse_psql_bool(fields[0], f"{runtime.role} database ACL")
-    public_connect = _parse_psql_bool(fields[1], f"{runtime.role} database PUBLIC CONNECT")
-    observed_limit = _parse_connection_limit(
-        fields[2], f"{runtime.role} database connection limit"
-    )
-    only_login = _parse_psql_bool(fields[3], f"{runtime.role} database CONNECT logins")
-    if (
-        not acl_present
-        or public_connect
-        or not only_login
-        or (connection_limit is not None and observed_limit != connection_limit)
-    ):
-        raise DeploymentContractError(
-            f"{runtime.role} database is not isolated after the grant "
-            f"(acl={acl_present}, public_connect={public_connect}, "
-            f"connect_logins_exact={only_login}, connection_limit={observed_limit})"
-        )
 
 
 def read_database_identity(runtime: DatabaseRuntime) -> tuple[str, int, str] | None:

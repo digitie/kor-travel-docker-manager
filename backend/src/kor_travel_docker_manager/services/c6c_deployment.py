@@ -924,11 +924,20 @@ def _validate_map_database_dsn_identities(environment: Mapping[str, str]) -> Non
         or not application_database
         or not dagster_database
         or application_database == dagster_database
-        # Map bootstrap one-shot의 규칙(`database-credential-preflight.sh`)을 비춘다. 그쪽은
-        # 재구축의 DB 초기화 **뒤에** 돌므로, 어긋난 쌍은 여기서 어떤 단계보다 먼저 거부한다.
-        or metadata_user != dagster_database
     ):
         raise ComposeCandidateContractError("Map database DSN identity is invalid")
+    if metadata_user != dagster_database:
+        # Map bootstrap one-shot의 규칙(`database-credential-preflight.sh`)을 비춘다. 그쪽은
+        # 재구축의 DB 초기화 **뒤에** 돌므로, 어긋난 쌍은 여기서 어떤 단계보다 먼저 거부한다.
+        raise ComposeCandidateContractError(
+            "Map Dagster metadata user must equal the Dagster database name"
+        )
+    _validate_map_service_login_dsn(
+        environment,
+        port=port,
+        application_database=application_database,
+        reserved_users=frozenset(expected_users | required_principals),
+    )
     for name, scheme, expected_user, expected_database in identities:
         value = environment.get(name, "")
         try:
@@ -944,6 +953,41 @@ def _validate_map_database_dsn_identities(environment: Mapping[str, str]) -> Non
             or parsed.path != f"/{expected_database}"
         ):
             raise ComposeCandidateContractError("Map database DSN identity is invalid")
+
+
+def _validate_map_service_login_dsn(
+    environment: Mapping[str, str],
+    *,
+    port: int,
+    application_database: str,
+    reserved_users: frozenset[str],
+) -> None:
+    """`KOR_TRAVEL_MAP_PG_DSN`을 형제 DSN처럼 결박한다 — R4가 app DB CONNECT를 주는 login이다.
+
+    endpoint·DB는 형제와 같다. login은 이름으로 고정하지 않는다(Map이 소유한다). 다만 bootstrap
+    user·metadata user·Map principal 자리는 아니어야 한다 — service login은 schema owner를
+    ``INHERIT FALSE``로 드는 별도 role이다. 그것이 정말 Map의 login인지는 R4가 live role
+    그래프로 확인한다. credential은 비교하거나 오류에 넣지 않는다.
+    """
+
+    try:
+        parsed = urlsplit(environment.get("KOR_TRAVEL_MAP_PG_DSN", ""))
+        parsed_port = parsed.port
+    except ValueError as exc:
+        raise ComposeCandidateContractError("Map database DSN identity is invalid") from exc
+    if (
+        parsed.scheme != "postgresql+asyncpg"
+        or parsed.hostname != "127.0.0.1"
+        or parsed_port != port
+        or parsed.path != f"/{application_database}"
+    ):
+        raise ComposeCandidateContractError("Map database DSN identity is invalid")
+    login = unquote(parsed.username or "")
+    if not login or login in reserved_users:
+        raise ComposeCandidateContractError(
+            "Map application login must be a service login outside the Map bootstrap, "
+            "metadata and principal roles"
+        )
 
 
 @dataclass(frozen=True)
@@ -1552,11 +1596,14 @@ def postgres_server_services(resolved: Mapping[str, Any]) -> frozenset[str]:
     이름을 들지 않는다. declared는 신뢰된 `config/docker-targets.yml`의 role에서, witnessed는
     문서가 스스로 드러내는 서버 실행 형태에서 온다(`_service_witnesses_a_postgres_server`).
     문서에 없는 declared 이름은 뺀다 — compose가 그 서비스를 다룰 수 없다.
+
+    서비스 목록을 읽을 수 없으면 빈 집합이 아니라 거부다 — 빈 집합은 "PostgreSQL 없음"으로
+    읽혀 이것에 기대는 울타리(R3)를 조용히 끈다.
     """
 
     services = resolved.get("services")
     if not isinstance(services, Mapping):
-        return frozenset()
+        raise DeploymentContractError("compose services mapping is unreadable")
     declared = _declared_postgres_compose_services()
     found: set[str] = set()
     for service_name, service in services.items():

@@ -5365,5 +5365,78 @@ def test_map_metadata_user_must_equal_the_dagster_database_name() -> None:
         "127.0.0.1:12700/map_contract_dagster"
     )
 
-    with pytest.raises(DeploymentContractError, match="Map database DSN identity is invalid"):
+    with pytest.raises(
+        DeploymentContractError,
+        match="Map Dagster metadata user must equal the Dagster database name",
+    ):
+        c6c_deployment_module._validate_map_database_dsn_identities(environment)
+
+
+_SERVICE_DSN_PASSWORD = "map-contract-service-password"
+
+
+@pytest.mark.parametrize(
+    ("service_dsn", "message"),
+    [
+        (
+            f"postgresql://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@127.0.0.1:12700/map_contract",
+            "Map database DSN identity is invalid",
+        ),
+        (
+            f"postgresql+asyncpg://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@db:12700/map_contract",
+            "Map database DSN identity is invalid",
+        ),
+        (
+            f"postgresql+asyncpg://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@127.0.0.1:11000/map_contract",
+            "Map database DSN identity is invalid",
+        ),
+        (
+            f"postgresql+asyncpg://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@127.0.0.1:12700/pinvi",
+            "Map database DSN identity is invalid",
+        ),
+        (
+            "postgresql+asyncpg://127.0.0.1:12700/map_contract",
+            "Map application login must be a service login",
+        ),
+        *(
+            (
+                f"postgresql+asyncpg://{user}:{_SERVICE_DSN_PASSWORD}@127.0.0.1:12700/map_contract",
+                "Map application login must be a service login",
+            )
+            for user in (
+                "map_contract_admin",
+                "map_contract_dagster",
+                "ktm_feature_schema_owner",
+                "ktm_feature_migrator",
+                "ktm_feature_runtime",
+            )
+        ),
+    ],
+    ids=[
+        "scheme",
+        "host",
+        "port",
+        "database",
+        "no-login",
+        "bootstrap-user",
+        "metadata-user",
+        "schema-owner",
+        "migrator",
+        "runtime-principal",
+    ],
+)
+def test_map_service_login_dsn_is_bound_like_its_siblings(
+    service_dsn: str, message: str
+) -> None:
+    """R4가 app DB CONNECT를 주는 login의 DSN이다(M1 리뷰). 형제 DSN처럼 endpoint·DB를 결박하고,
+    login은 bootstrap·metadata·Map principal 자리가 아니어야 한다. 그것이 Map의 login인지는 R4가
+    live role 그래프로 본다.
+    """
+
+    environment = _compose_contract_environment()
+    c6c_deployment_module._validate_map_database_dsn_identities(environment)
+
+    environment["KOR_TRAVEL_MAP_PG_DSN"] = service_dsn
+
+    with pytest.raises(DeploymentContractError, match=message):
         c6c_deployment_module._validate_map_database_dsn_identities(environment)

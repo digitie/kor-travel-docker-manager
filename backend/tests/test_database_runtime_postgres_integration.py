@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import secrets
 import subprocess
 import time
@@ -47,7 +48,8 @@ _METADATA = "kor_travel_map_dagster"
 _MAX_CONNECTIONS = 10
 _SUPERUSER_RESERVED = 3
 _TEST_DATABASES = ("kor_travel_map", "kor_travel_map_dagster", "pinvi", "foreign_dagster")
-_TEST_ROLES = (_METADATA, "pinvi_app", _LOGIN)
+_OLD_LOGIN = "it_old_login"
+_TEST_ROLES = (_METADATA, "pinvi_app", _LOGIN, _OLD_LOGIN)
 
 
 def _docker(*arguments: str, timeout: int = 120, **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -432,6 +434,137 @@ def test_isolation_readback_catches_connect_through_membership(cluster: str) -> 
             ensure_map_databases_isolated(app, dagster, login=_LOGIN)
     finally:
         _admin(cluster, f"REVOKE {_LOGIN} FROM foreign_app;\n")
+
+
+@pytest.mark.parametrize("login", ["foreign_app", _ADMIN, _METADATA])
+def test_isolation_refuses_a_login_outside_the_map_owner_and_changes_nothing(
+    cluster: str, login: str
+) -> None:
+    """DSN에 다른 login이 박혀도 Map DB CONNECT를 주지 않는다(리뷰 MED a).
+
+    종전에는 그 login에 grant한 뒤 **그 login 자신과** 비교하는 read-back이 통과했다(다른 tenant
+    login이 Map DB에 붙었다). 이제 login은 LOGIN·non-superuser이고 Map schema owner의 member여야
+    한다 — `foreign_app`은 member가 아니고, admin은 superuser이고, metadata user도 member가 아니다.
+    """
+
+    _seed_map_pair(cluster)
+    watched = ("kor_travel_map", "kor_travel_map_dagster", "foreign_db")
+    before = {name: _datacl(cluster, name) for name in watched}
+    app, dagster, _ = _runtimes(cluster)
+
+    with pytest.raises(
+        DeploymentContractError,
+        match=f"login {login} is not a non-superuser LOGIN member of {_SCHEMA_OWNER}",
+    ):
+        ensure_map_databases_isolated(app, dagster, login=login)
+
+    assert {name: _datacl(cluster, name) for name in watched} == before
+
+
+@pytest.mark.parametrize(
+    ("dagster_name", "metadata", "message"),
+    [
+        (
+            "foreign_dagster",
+            _METADATA,
+            re.escape(
+                "map_dagster database foreign_dagster is not owned by the Dagster metadata "
+                f"user {_METADATA} (owner=foreign_app)"
+            ),
+        ),
+        (
+            "foreign_dagster",
+            "foreign_app",
+            re.escape("Dagster metadata user foreign_app also owns {foreign_db}"),
+        ),
+    ],
+    ids=["foreign-owned-dagster-db", "metadata-user-owns-another-db"],
+)
+def test_isolation_refuses_a_dagster_database_outside_the_metadata_identity(
+    cluster: str, dagster_name: str, metadata: str, message: str
+) -> None:
+    """Dagster DB 이름·metadata user가 다른 tenant 것으로 박혀도 그 DB의 ACL을 바꾸지 않는다(리뷰 MED b).
+
+    종전에는 소유자를 보지 않고 PUBLIC CONNECT를 걷었다. 둘째 사례는 metadata user = 소유자라서
+    소유자 검사를 지나지만, 그 login이 다른 DB도 소유하므로 Map의 metadata user일 수 없다.
+    """
+
+    _seed_map_pair(cluster)
+    _admin(cluster, "CREATE DATABASE foreign_dagster OWNER foreign_app;\n")
+    watched = ("kor_travel_map", "foreign_dagster", "foreign_db")
+    before = {name: _datacl(cluster, name) for name in watched}
+    app, dagster, _ = _runtimes(cluster, dagster=dagster_name, metadata=metadata)
+
+    with pytest.raises(DeploymentContractError, match=message):
+        ensure_map_databases_isolated(app, dagster, login=_LOGIN)
+
+    assert {name: _datacl(cluster, name) for name in watched} == before
+
+
+def test_a_refused_readback_rolls_back_every_change(cluster: str) -> None:
+    """같은 transaction의 read-back이 거부하면 REVOKE·GRANT·상한이 하나도 남지 않는다.
+
+    PUBLIC CONNECT를 소유자가 아닌 grantor가 주면(여기서는 login이 grant option으로) 소유자 자격의
+    REVOKE가 그것을 걷지 못한다. 다른 non-superuser LOGIN을 모두 내려 CONNECT 가능한 login 집합이
+    정확히 {login}이 되게 했으므로, 이 거부를 내는 것은 read-back의 **PUBLIC CONNECT 열 하나**다 —
+    그 열을 끄는 변이(`entry.grantee = 0` → 4294967295)가 이 테스트를 빨갛게 한다.
+    """
+
+    _seed_map_pair(cluster)
+    _admin(
+        cluster,
+        f"GRANT CONNECT ON DATABASE kor_travel_map TO {_LOGIN} WITH GRANT OPTION;\n"
+        f"SET ROLE {_LOGIN};\n"
+        "GRANT CONNECT ON DATABASE kor_travel_map TO PUBLIC;\n"
+        "RESET ROLE;\n"
+        f"ALTER ROLE {_METADATA} NOLOGIN;\n"
+        "ALTER ROLE foreign_app NOLOGIN;\n",
+    )
+    watched = ("kor_travel_map", "kor_travel_map_dagster")
+    before = {name: _datacl(cluster, name) for name in watched}
+    app, dagster, _ = _runtimes(cluster)
+
+    try:
+        with pytest.raises(
+            DeploymentContractError,
+            match=re.escape(
+                "map_application database is not isolated after the grant (acl=t, "
+                f"public_connect=t, connect_logins={{{_LOGIN}}}, connection_limit=2)"
+            ),
+        ):
+            ensure_map_databases_isolated(app, dagster, login=_LOGIN)
+        assert {name: _datacl(cluster, name) for name in watched} == before
+    finally:
+        _admin(cluster, "ALTER ROLE foreign_app LOGIN;\n")
+
+
+def test_isolation_converges_stray_connect_grants_on_the_app_database(cluster: str) -> None:
+    """이름이 바뀐 옛 service login과 손으로 준 grant가 남아도 다음 격리가 걷는다 — 거부가 아니라 수렴.
+
+    종전에는 read-back이 그 grantee들 때문에 매번 거부해 이후 모든 수렴·배포가 멈췄다(리뷰 LOW).
+    """
+
+    _seed_map_pair(cluster)
+    _admin(
+        cluster,
+        f"CREATE ROLE {_OLD_LOGIN} LOGIN NOINHERIT;\n"
+        f"GRANT {_SCHEMA_OWNER} TO {_OLD_LOGIN} WITH INHERIT FALSE;\n",
+    )
+    app, dagster, _ = _runtimes(cluster)
+    ensure_map_databases_isolated(app, dagster, login=_OLD_LOGIN)
+    _admin(cluster, "GRANT CONNECT ON DATABASE kor_travel_map TO foreign_app;\n")
+    for user in (_OLD_LOGIN, "foreign_app"):
+        assert _connect(cluster, user, "kor_travel_map").returncode == 0, user
+    foreign_acl = _datacl(cluster, "foreign_db")
+
+    ensure_map_databases_isolated(app, dagster, login=_LOGIN)
+
+    for user in (_OLD_LOGIN, "foreign_app"):
+        denied = _connect(cluster, user, "kor_travel_map")
+        assert denied.returncode != 0, user
+        assert "permission denied for database" in denied.stderr, user
+    assert _connect(cluster, _LOGIN, "kor_travel_map").returncode == 0
+    assert _datacl(cluster, "foreign_db") == foreign_acl
 
 
 def test_cap_applies_to_the_login_not_the_admin(cluster: str) -> None:

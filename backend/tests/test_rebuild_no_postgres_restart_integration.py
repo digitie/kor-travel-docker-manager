@@ -5,6 +5,11 @@ release(MT)는 설치 직후 계획된 재생성으로 이 전제에 기댄다. 
 컨테이너의 config hash가 어긋나고, 그 뒤 `--no-deps` 없는 `up`이 의존 서비스를 부르면 compose는
 그 PostgreSQL을 **다시 만든다** — 모든 tenant가 끊긴다(T-R3c가 그 위험을 기록한다).
 
+**Compose 특성 기록(characterisation) 테스트다.** Manager 코드를 import하지 않으므로 Manager
+회귀로는 빨갛게 되지 않는다 — Manager 쪽 탐지기는 `test_pinned_runtime_rebuild.py`의 R3 사례다.
+여기서 고정하는 것은 그 탐지기가 기대는 compose의 동작(그리고 Compose 판이 바뀌면 그 전제가
+깨졌는지)이다.
+
 gate `KTDM_REQUIRE_DOCKER_INTEGRATION`: 0이면 Docker가 없을 때 skip, 1이면 실패.
 """
 
@@ -206,7 +211,7 @@ def drifted_project(tmp_path: Path) -> Iterator[_Project]:
 def test_no_deps_up_of_a_dependent_leaves_a_drifted_postgres_alone(
     drifted_project: _Project,
 ) -> None:
-    """T-R3: `--no-deps`면 dependent만 다시 만들고, drift된 PostgreSQL은 한 번도 멈추지 않는다."""
+    """T-R3(compose 특성): `--no-deps`면 dependent만 다시 만들고, drift된 PostgreSQL은 한 번도 멈추지 않는다."""
 
     before = drifted_project.postgres_identity()
     app_before = drifted_project.container_id("app")
@@ -221,7 +226,7 @@ def test_no_deps_up_of_a_dependent_leaves_a_drifted_postgres_alone(
 
 
 def test_up_without_no_deps_recreates_the_drifted_postgres(drifted_project: _Project) -> None:
-    """T-R3c: 대조군 — `--no-deps`가 없으면 compose가 drift된 의존 PostgreSQL을 다시 만든다."""
+    """T-R3c(compose 특성): 대조군 — `--no-deps`가 없으면 compose가 drift된 의존 PostgreSQL을 다시 만든다."""
 
     before = drifted_project.postgres_identity()
 
@@ -230,3 +235,16 @@ def test_up_without_no_deps_recreates_the_drifted_postgres(drifted_project: _Pro
     assert up.returncode == 0, up.stderr
     assert drifted_project.container_id("pg") != before[0]
     assert not drifted_project.config_drifted("pg")
+
+
+def test_create_of_a_dependent_recreates_the_drifted_postgres(drifted_project: _Project) -> None:
+    """T-R3d(compose 특성): `create`에는 `--no-deps`가 없고, dependent를 만들며 drift된 의존
+    PostgreSQL을 다시 만든다. R3 chokepoint가 `create`에 `depends_on` closure를 거는 전제다.
+    """
+
+    before = drifted_project.postgres_identity()
+
+    created = drifted_project.compose("create", "app")
+
+    assert created.returncode == 0, created.stderr
+    assert drifted_project.container_id("pg") != before[0]

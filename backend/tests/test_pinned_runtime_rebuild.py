@@ -2547,6 +2547,125 @@ def test_rebuild_compose_refuses_a_mutating_call_without_explicit_services(
     runner.assert_not_called()
 
 
+def _transaction_with_dependents() -> Any:
+    """n150의 의존 그래프 모양: PinVi API는 공용 instance에, Map API는 geo API를 거쳐 그것에 의존한다."""
+
+    healthy = {"condition": "service_healthy", "required": True}
+    return _transaction_with_postgres(
+        **{
+            "pinvi-api": {"depends_on": {"kor-travel-shared-postgres": healthy}},
+            "kor-travel-geo-api": {"depends_on": {"kor-travel-shared-postgres": healthy}},
+            "kor-travel-map-api": {"depends_on": {"kor-travel-geo-api": healthy}},
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["create", "pinvi-api"],
+        # 이름 붙은 것은 Map API뿐이지만 closure가 geo API를 거쳐 공용 instance에 닿는다.
+        ["create", "kor-travel-map-api"],
+        ["start", "pinvi-api"],
+        ["restart", "pinvi-api"],
+        ["scale", "pinvi-api=1"],
+        ["watch", "pinvi-api"],
+    ],
+    ids=lambda arguments: " ".join(arguments),
+)
+def test_rebuild_compose_refuses_a_call_whose_dependencies_reach_a_shared_postgres(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """compose가 **실제로 닿는 것**을 센다. `create`에는 `--no-deps`가 없고, drift된 의존
+    PostgreSQL을 다시 만든다(n150 Compose v5.2.0 실측) — 이름 붙은 서비스만 보면 통과한다.
+    """
+
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(
+        DeploymentContractError, match="outside its dedicated set: kor-travel-shared-postgres"
+    ):
+        service._run_pinned_runtime_rebuild_compose(
+            arguments, transaction=_transaction_with_dependents()
+        )
+
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["restart", "--no-deps", "pinvi-api"],
+        ["scale", "--no-deps", "pinvi-api=1"],
+        ["up", "-d", "--no-deps", "--wait", "kor-travel-map-api"],
+        # 의존성 쪽으로 번지지 않는 명령이다.
+        ["stop", "pinvi-api"],
+        ["--profile", "bootstrap", "rm", "-f", "-s", "kor-travel-map-api"],
+        ["build", "kor-travel-map-api"],
+    ],
+    ids=lambda arguments: " ".join(arguments),
+)
+def test_rebuild_compose_allows_dependents_when_compose_does_not_reach_their_dependencies(
+    arguments: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """위 거부의 대조군 — 같은 의존 그래프에서 `--no-deps`거나 의존성으로 번지지 않으면 통과한다."""
+
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    service._run_pinned_runtime_rebuild_compose(
+        arguments, transaction=_transaction_with_dependents()
+    )
+
+    runner.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "transaction", "message"),
+    [
+        (
+            ["up", "-d", "--no-deps", "--remove-orphans", "kor-travel-map-api"],
+            _transaction_with_postgres(),
+            "must not remove orphan containers",
+        ),
+        (
+            ["stop", "kor-travel-map-api"],
+            SimpleNamespace(resolved={"services": None}),
+            "services mapping is unreadable",
+        ),
+        (
+            ["create", "pinvi-api"],
+            _transaction_with_postgres(
+                **{"pinvi-api": {"depends_on": "kor-travel-shared-postgres"}}
+            ),
+            "pinvi-api depends_on is unreadable",
+        ),
+    ],
+    ids=["remove-orphans", "no-services-mapping", "unreadable-depends-on"],
+)
+def test_rebuild_compose_refuses_what_it_cannot_classify(
+    arguments: list[str],
+    transaction: Any,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """분류할 수 없으면 통과가 아니라 거부다 — 이름 없는 orphan 제거, 읽을 수 없는 문서·의존성."""
+
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(DeploymentContractError, match=message):
+        service._run_pinned_runtime_rebuild_compose(arguments, transaction=transaction)
+
+    runner.assert_not_called()
+
+
 def test_postgres_server_services_is_declared_or_witnessed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2577,10 +2696,11 @@ def test_full_rebuild_never_mutates_a_postgres_service_outside_the_dedicated_set
     """재구축 전체를 대역으로 끝까지 돌리고, Docker에 닿은 **모든** compose argv를 본다.
 
     chokepoint(`_run_pinned_runtime_rebuild_compose`)는 진짜를 쓴다 — Docker 직전의
-    `_run_frozen_recovery`만 기록기로 바꾼다. 단언은 chokepoint와 독립이다: 기록된 argv를
-    같은 해석기로 다시 읽어 이름 붙은 PostgreSQL 서버가 전용 집합의 부분집합인지 본다. M1의
-    전용 집합은 Map 전용 instance 하나이고, M2가 그것을 비우면 같은 단언이 "어떤
-    PostgreSQL 서버도 이름으로 불리지 않는다"가 된다.
+    `_run_frozen_recovery`만 기록기로 바꾼다. 단언은 chokepoint와 **해석기 모두와** 독립이다:
+    기록된 argv의 낱말에서 PostgreSQL 서버 이름을 찾고(읽기 호출 포함), 의존성으로 번질 수 있는
+    명령 낱말이 든 argv가 모두 `--no-deps`를 다는지 본다. M1의 전용 집합은 Map 전용 instance
+    하나이고, M2가 그것을 비우면 같은 단언이 "어떤 PostgreSQL 서버도 이름으로 불리지 않는다"가
+    된다.
     """
 
     candidate = _candidate_generation()
@@ -2622,19 +2742,19 @@ def test_full_rebuild_never_mutates_a_postgres_service_outside_the_dedicated_set
     postgres = c6c_deployment.postgres_server_services(harness.transaction.resolved)
     assert postgres == {"kor-travel-shared-postgres", "kor-travel-map-postgres"}
     dedicated = set(compose_service_module._PINNED_RUNTIME_DATABASE_SERVICES)
-    mutations = [
+    # 탐지기가 공허하지 않다: 재구축의 mutation이 실제로 기록됐다.
+    assert any(operation[0] == "up" for operation in recorded)
+    named = {token for operation in recorded for token in operation} & postgres
+    assert named <= dedicated, sorted(named - dedicated)
+    starters = [
         operation
         for operation in recorded
-        if ComposeService._compose_mutation_scope(operation) != []
+        if {"create", "restart", "run", "scale", "start", "up", "watch"} & set(operation)
     ]
-    # 탐지기가 공허하지 않다: 재구축의 mutation이 실제로 기록됐다.
-    assert any(operation[0] == "up" for operation in mutations)
-    named: set[str] = set()
-    for operation in mutations:
-        scope = ComposeService._compose_mutation_scope(operation)
-        assert scope is not None, operation
-        named |= set(scope) & postgres
-    assert named <= dedicated, sorted(named - dedicated)
+    assert starters
+    assert all("--no-deps" in operation for operation in starters), [
+        operation for operation in starters if "--no-deps" not in operation
+    ]
 
 
 def test_converge_applies_isolation_before_up(

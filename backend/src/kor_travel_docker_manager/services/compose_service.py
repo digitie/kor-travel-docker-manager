@@ -180,6 +180,48 @@ _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
 #: 재구축이 health까지 띄우고 secret·이미지를 확인하는 PostgreSQL. 공용 instance는 다른
 #: 프로젝트도 쓰므로 여기 없다(`_start_pinned_runtime_databases`).
 _PINNED_RUNTIME_DATABASE_SERVICES = (_MAP_POSTGRES_SERVICE,)
+#: 명시 서비스의 `depends_on`까지 만들거나 다시 만들거나 시작할 수 있는 compose 명령. `--no-deps`가
+#: 없으면 R3 chokepoint가 그 의존성 closure를 범위에 넣는다. `--no-deps`를 받는 명령(up·run·
+#: restart·scale)과, 그 플래그 없이 의존성을 끌어오는 명령(create는 n150 Compose v5.2.0에 그
+#: 플래그가 없다 — drift된 의존 PostgreSQL을 다시 만든다, start·watch)이다. stop·rm·kill·pause·
+#: down은 의존성 쪽으로 번지지 않고, build·pull·push는 컨테이너를 바꾸지 않는다.
+_COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES: Final = frozenset(
+    {"create", "restart", "run", "scale", "start", "up", "watch"}
+)
+
+
+def _compose_dependency_closure(
+    resolved: Mapping[str, Any],
+    roots: set[str],
+) -> set[str]:
+    """``roots``와, resolved 문서의 `depends_on`을 따라 그것들이 끌어오는 서비스 전체.
+
+    문서에 없는 이름(`cp`의 `SERVICE:PATH` 조각 등)은 뿌리로만 남는다. `depends_on`을 읽을 수
+    없으면 closure를 모르므로 거부한다.
+    """
+
+    services = resolved.get("services")
+    if not isinstance(services, Mapping):
+        raise DeploymentContractError("compose services mapping is unreadable")
+    reached: set[str] = set()
+    pending = list(roots)
+    while pending:
+        name = pending.pop()
+        if name in reached:
+            continue
+        reached.add(name)
+        service = services.get(name)
+        if not isinstance(service, Mapping):
+            continue
+        dependencies = service.get("depends_on") or {}
+        if not isinstance(dependencies, Mapping | list | tuple) or not all(
+            isinstance(dependency, str) for dependency in dependencies
+        ):
+            raise DeploymentContractError(f"compose service {name} depends_on is unreadable")
+        pending.extend(dependencies)
+    return reached
+
+
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
 # profile을 해석 단계에서 빼면 `run --profile bootstrap`가 같은 문서에서 service를 찾지 못한다.
 _FROZEN_COMPOSE_PROFILES = ("bootstrap",)
@@ -3208,17 +3250,9 @@ class ComposeService:
         return scope
 
     @staticmethod
-    def _compose_mutation_scope(args: Sequence[str]) -> list[str] | None:
-        """read-only면 ``[]``, 명시 서비스가 있는 mutation이면 그 식별자, 그 밖은 ``None``.
+    def _compose_command_index(args: Sequence[str]) -> int | None:
+        """전역 옵션을 건너뛴 compose 하위 명령의 위치. 전역 옵션을 해석할 수 없으면 ``None``."""
 
-        ``None``은 "이 호출이 무엇을 바꾸는지 서비스 이름으로 말할 수 없다"는 뜻이다 — 인자가
-        없거나, 해석에 실패했거나, 모르는 명령이거나, 서비스를 명시하지 않은 mutation(compose가
-        **모든** 서비스로 읽는다)이다. 명시 mutation의 목록은 비지 않으므로 ``[]``와 섞이지 않는다.
-        """
-
-        runtime_identifiers = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
-        if not args:
-            return None
         global_options_with_value = {
             "--ansi",
             "--env-file",
@@ -3269,6 +3303,21 @@ class ComposeService:
                 continue
             command_index = index
             break
+        return command_index
+
+    @staticmethod
+    def _compose_mutation_scope(args: Sequence[str]) -> list[str] | None:
+        """read-only면 ``[]``, 명시 서비스가 있는 mutation이면 그 식별자, 그 밖은 ``None``.
+
+        ``None``은 "이 호출이 무엇을 바꾸는지 서비스 이름으로 말할 수 없다"는 뜻이다 — 인자가
+        없거나, 해석에 실패했거나, 모르는 명령이거나, 서비스를 명시하지 않은 mutation(compose가
+        **모든** 서비스로 읽는다)이다. 명시 mutation의 목록은 비지 않으므로 ``[]``와 섞이지 않는다.
+        """
+
+        runtime_identifiers = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
+        if not args:
+            return None
+        command_index = ComposeService._compose_command_index(args)
         if command_index is None:
             return None
         command = args[command_index]
@@ -3900,6 +3949,13 @@ class ComposeService:
         명시 식별자 가운데 PostgreSQL 서버가 `_PINNED_RUNTIME_DATABASE_SERVICES` 밖에 있으면
         거부한다. mutation 분류와 식별자는 기존 해석기(`_compose_mutation_scope`)가, PostgreSQL
         서버 판정은 C6c(`postgres_server_services`)가 소유한다 — 이름 목록이 없다.
+
+        **compose가 실제로 닿는 것을 센다.** 이름 붙은 서비스만 보면 `create pinvi-api`가
+        통과하고, compose는 drift된 공용 instance를 의존성으로 다시 만든다(n150 실측). 그래서
+        의존성으로 번지는 명령(`_COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES`)이 `--no-deps` 없이
+        오면 frozen resolved 문서의 `depends_on` closure를 범위에 넣는다 — resolved 문서는 links·
+        `network_mode: service:`·`volumes_from`도 `depends_on`으로 정규화해 담는다. 이름 없는
+        컨테이너를 지우는 `--remove-orphans`와, 서비스 목록을 읽을 수 없는 문서는 거부한다.
         """
 
         scope = ComposeService._compose_mutation_scope(args)
@@ -3909,10 +3965,20 @@ class ComposeService:
             )
         if not scope:
             return
-        foreign = sorted(
-            (postgres_server_services(transaction.resolved) & set(scope))
-            - set(_PINNED_RUNTIME_DATABASE_SERVICES)
-        )
+        if "--remove-orphans" in args:
+            raise DeploymentContractError(
+                "pinned runtime rebuild Compose must not remove orphan containers"
+            )
+        postgres = postgres_server_services(transaction.resolved)
+        touched = set(scope)
+        command_index = ComposeService._compose_command_index(args)
+        if (
+            command_index is not None
+            and args[command_index] in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES
+            and "--no-deps" not in args
+        ):
+            touched |= _compose_dependency_closure(transaction.resolved, touched)
+        foreign = sorted((postgres & touched) - set(_PINNED_RUNTIME_DATABASE_SERVICES))
         if foreign:
             raise DeploymentContractError(
                 "pinned runtime rebuild must not mutate a PostgreSQL service outside its "
