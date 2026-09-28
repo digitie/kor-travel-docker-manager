@@ -64,7 +64,8 @@ containers:                      # 컨테이너 한 대 = 한 항목
     role: transport-backend
     display_name: Kor Travel Transport 백엔드
     connection: "http://127.0.0.1:14001"
-    expected_ports: ["14001:8000"]        # 실측과 대조되는 선언(host:container)
+    expected_ports: ["14001:14001"]       # host:container. 실제 바인딩이 없을 때(host network)
+                                          # 대시보드가 대신 보여 주는 선언이라 host network면 둘이 같다
 
 targets:                          # 사람이 다루는 단위 = 한 프로젝트(또는 그 일부)
   transport:

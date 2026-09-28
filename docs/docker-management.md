@@ -1477,7 +1477,20 @@ instance에서 superuser로 직접 복원한다. Manager dump는 superuser가 �
 2. 여유를 본다. 한 트랜잭션이라 커밋 전까지 옛 표와 새 표가 함께 있다 — database 크기 + dump +
    `max_wal_size` + 2 GiB(리허설과 같은 식, transport 약 17 GB) 이상이어야 한다.
 3. transport의 쓰기 주체(API, Dagster webserver·daemon·code-server)를 멈춘다. Manager가 띄우는
-   것이 아니다 — transport 자신의 배포 사본(`/home/digitie/apps/kor-travel-airport/`)이 띄운다.
+   것이 아니다 — transport 자신의 배포 사본(`/home/digitie/apps/kor-travel-transport/`, compose
+   프로젝트 `kor-travel-transport`)이 띄운다. 프로젝트 이름을 명시한다 — 디렉터리 이름에 맡기면
+   개명(2026-09-28) 전 배포 디렉터리에서 이미 은퇴한 옛 프로젝트를 멈추고도 성공으로 끝나고,
+   진짜 쓰기 주체는 복원 내내 계속 쓴다. 멈춘 뒤 넷이 목록에 없는지 본다:
+
+   ```bash
+   cd /home/digitie/apps/kor-travel-transport
+   docker compose --project-name kor-travel-transport --env-file .env.server14 \
+     -f docker-compose.yml -f docker-compose.shared.yml \
+     stop backend dagster-webserver dagster-daemon dagster-code-server
+   docker ps --filter label=com.docker.compose.project=kor-travel-transport \
+     --format '{{.Names}} {{.Label "com.docker.compose.service"}}'   # 위 네 서비스가 없어야 한다
+   ```
+
 4. dump를 컨테이너로 넣고 소유권을 넘긴다(`docker cp`는 host의 `0600` 소유권을 보존한다):
 
    ```bash
@@ -1496,7 +1509,7 @@ instance에서 superuser로 직접 복원한다. Manager dump는 superuser가 �
    ```
 
 6. `docker exec kor-travel-shared-postgres rm -f /tmp/restore-transport.dump`, 쓰기 주체를 다시
-   띄우고 앱 health와 alembic head를 확인한다.
+   띄우고(3의 명령에서 `stop`을 `start`로) 앱 health와 alembic head를 확인한다.
 
 `transport_dagster`도 같다(`--dbname kor_travel_transport_dagster`, Dagster webserver·daemon을 멈춘
 뒤). `--clean`은 dump에 있는 객체만 지운다 — dump 뒤에 새로 생긴 표는 남는다. **이 절차는 n150에서

@@ -37,7 +37,7 @@
 | `pinvi` | `12800-12899` | API `12801`, Dagster webserver `12802`, Dagster code-server(gRPC, PinVi ADR-069) `12803`, Web UI `12805` (DB는 공용 `11000`) | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
 | `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Prometheus `14104`, Web `14105` | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
-| `transport` | `14001-14099` | Backend `14001`, Frontend `14002` (DB는 공용 `11000`의 `kor_travel_transport`) | `kor-travel-transport` (외부 프로젝트) |
+| `transport` | `14001-14099` | Backend `14001`, Frontend `14002`, Dagster 게이트웨이 `14003`·webserver `14004`·code-server(gRPC) `14005`(셋 다 loopback, Manager 미등록 컨테이너) (DB는 공용 `11000`의 `kor_travel_transport`) | `kor-travel-transport` (외부 프로젝트) |
 
 ### `gra`/`cadv`/`prom`의 대역 예외 (ADR-48)
 
@@ -48,6 +48,12 @@ target 이름이 가리키는 100단위 대역(`12200-12299`/`12300-12399`/`1240
 대역"이라는 §기본 규칙 전제는 이 세 target에 더 이상 성립하지 않는다 — target 이름
 (`gra`/`cadv`/`prom`)과 `config/docker-targets.yml`의 키는 바뀌지 않았고 포트만
 옮겼다. 근거·배경은 `docs/decisions.md` ADR-48(ADR-10의 포트 배정 부분을 supersede).
+
+**`cadv` 대역은 비어 있지 않다.** Manager에 등록되지 않은 외부 compose 프로젝트
+`kor-travel-transport-admin`(transport 저장소의 `docker-compose.transport-admin.yml`)이
+이 대역 안의 `12301`(API 게이트웨이)·`12302`(Dagster 게이트웨이)·`12305`(관리 웹)를
+`0.0.0.0`에서 listen한다(2026-09-28 n150 `ss -ltn` 실측). Manager는 이 프로젝트를 모르므로
+포트 충돌을 알려 주지 않는다 — `12300-12399`에 새 포트를 배정하지 않는다.
 
 ### 외부 프로젝트 대역 (`14000-14099`)
 
