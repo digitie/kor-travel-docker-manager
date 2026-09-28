@@ -1,7 +1,7 @@
 # platform-topology.md — 플랫폼 전체 구조 (다른 프로젝트를 위한 참조)
 
 이 문서의 독자는 **Manager가 아닌 프로젝트**다. `kor-travel-map`·`kor-travel-geo`·
-`kor-travel-concierge`·`pinvi`·`kor-travel-airport`·`kor-travel-weather`, 그리고 앞으로
+`kor-travel-concierge`·`pinvi`·`kor-travel-transport`·`kor-travel-weather`, 그리고 앞으로
 합류할 프로젝트가 "내가 이 플랫폼에서 어디에 서 있고, 무엇을 내가 소유하며, 무엇을
 Manager에게 맡기는가"를 여기서 읽는다.
 
@@ -32,7 +32,7 @@ Manager에게 맡기는가"를 여기서 읽는다.
 | | 내부 target | 외부 target (`external_project`) |
 |---|---|---|
 | compose 정본 | **Manager의 `docker-compose.yml`** | **그 프로젝트 저장소** |
-| 예 | `geo` · `conc` · `map` · `pinvi` · `weather`(ADR-47, 2026-09-20까지는 외부였다) | `airport`(2026-09-28까지 `airport-db`도 있었다) |
+| 예 | `geo` · `conc` · `map` · `pinvi` · `weather`(ADR-47, 2026-09-20까지는 외부였다) | `transport`(2026-09-28까지 이름이 `airport`였고, 그때까지 전용 DB target도 있었다) |
 | Manager가 하는 일 | 상태 조회 + 수명주기 + **배포(`ensure`)** | 상태 조회 + 수명주기 **만** |
 | `ktdctl ensure` | 가능 | **거부한다** |
 | 배포 소유자 | Manager | 그 저장소 |
@@ -57,17 +57,17 @@ C6c 계약 기계(보호값 스캔·볼륨 그래프·단일파일 경계·핀�
 
 ```yaml
 containers:                      # 컨테이너 한 대 = 한 항목
-  kor-travel-airport-backend:
-    name: kor-travel-airport-backend-1  # 실제 컨테이너 이름
-    compose_service: backend            # 그 프로젝트 compose에서의 서비스 이름
-    external_project: kor-travel-airport  # ← 있으면 외부, 없으면 Manager 소유
-    role: airport-backend
-    display_name: Kor Travel Airport Backend
+  kor-travel-transport-backend:
+    name: kor-travel-transport-backend-1  # 실제 컨테이너 이름
+    compose_service: backend              # 그 프로젝트 compose에서의 서비스 이름
+    external_project: kor-travel-transport  # ← 있으면 외부, 없으면 Manager 소유
+    role: transport-backend
+    display_name: Kor Travel Transport 백엔드
     connection: "http://127.0.0.1:14001"
-    expected_ports: ["14001:14001"]     # 실측과 대조되는 선언
+    expected_ports: ["14001:8000"]        # 실측과 대조되는 선언(host:container)
 
 targets:                          # 사람이 다루는 단위 = 한 프로젝트(또는 그 일부)
-  airport:
+  transport:
     port_band: "14001-14099"
     depends_on: [...]
     aliases: [...]                # 손에 익은 이름들
@@ -126,7 +126,8 @@ pinvi/geo는 2026-09-19(서로 다른 PR이 거의 동시에 착지 — PinVi AD
 internal target이 되며 `network_mode: host`로도 옮겨왔다 — 지금은 pinvi/geo와 같은
 접속 방식(서비스명 DNS가 아니라 loopback, 아래 참고)을 쓴다. `map`은 2026-09-25
 (#397, ADR-069 짝)에 같은 형태가 됐다. transport는 외부 프로젝트라 자기 저장소의 배포
-사본이 webserver·daemon·code-server를 띄운다(n150 `kor-travel-airport-dagster-*`).
+사본이 webserver·daemon·code-server를 띄운다(n150 `kor-travel-transport-dagster-*` — 이름은 그
+저장소의 compose 프로젝트 이름을 따른다).
 `conc`는 Dagster를 쓰지 않는다. 2026-09-28 n150 실측으로 code-server 다섯 개가 모두
 떠 있었다.
 
@@ -136,7 +137,7 @@ internal target이 되며 `network_mode: host`로도 옮겨왔다 — 지금은 
 | `geo` | `kor-travel-geo-dagster` `12502` | `kor-travel-geo-dagster-daemon`(포트 없음) | `kor-travel-geo-dagster-code-server` `12503` | PR #357 — pinvi와 같은 3-분리 형태(상세는 그 PR 참조, 이 문서는 표만 갱신) |
 | `map` | `kor-travel-map-dagster` `12702` | `kor-travel-map-dagster-daemon` (포트 없음) | `kor-travel-map-dagster-code-server` `12703`(loopback 전용) | #397 — webserver/daemon → `-w workspace.yaml`(grpc_server), code-server만 `-m kortravelmap.dagster.definitions` |
 | `weather` | `kor-travel-weather-dagster-webserver` 내부 전용 `14107` + 게이트웨이(Basic Auth) `14102` | `kor-travel-weather-dagster-daemon` (포트 없음) | `kor-travel-weather-dagster-code-server` `14106`(loopback 전용, 무인증) | ADR-47 — Manager 소유, webserver/daemon → `-w workspace.yaml`(grpc_server, Manager 소유 오버라이드가 `host: dagster-code-server`를 `127.0.0.1`로 재작성), code-server만 `-m kortravelweather_dagster.definitions` |
-| transport(`airport`, 외부) | 그 저장소 compose | 그 저장소 compose | `kor-travel-airport-dagster-code-server-1` | 그 저장소가 소유한다 — Manager compose에는 없다 |
+| `transport`(외부) | 그 저장소 compose | 그 저장소 compose | `kor-travel-transport-dagster-code-server-1` | 그 저장소가 소유한다 — Manager compose에는 없다 |
 | `conc` | 없음 | — | 없음 | — |
 
 > **접속 방식**: pinvi·geo·weather·map 모두 이 저장소의 compose가 강제하는
@@ -253,7 +254,8 @@ code-server (dagster api grpc)  ← 프로젝트별 분리 유지, 각자 포트
 1. **대역을 고른다.** [`ports.md`](ports.md)의 규칙을 따른다 — 100 단위 대역,
    PostgreSQL `+0`, API `+1`, 추가 서비스 `+2`부터, Web UI `+5`. 외부 프로젝트는
    `14000-14099`(weather가 2026-09-20 ADR-47로 internal target이 되며 이 대역을
-   떠났고, airport-db는 2026-09-28에 target에서 빠졌다 — 남은 것은 airport뿐이다).
+   떠났고, transport의 전용 DB target은 2026-09-28에 빠졌다 — 남은 것은 `transport`
+   (같은 날 `airport`에서 개명)뿐이다).
 2. **소유 방식을 정한다.** compose를 Manager에 둘 것인가(내부), 자기 저장소에 둘
    것인가(외부). 배포를 Manager에게 맡길 생각이 없다면 외부가 맞다.
 3. **`config/docker-targets.yml`에 등록한다.** 외부면 컨테이너마다
