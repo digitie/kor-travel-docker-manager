@@ -1003,6 +1003,10 @@ pinvi 쪽은 아무도 쓰지 않는 동결 사본을 떴다). Map 둘은 전용
 **재보기 전에는 "geo를 매일 뜨는 게 현실적인가"에 답할 수 없었다.** 15분/4.4GB면
 일 1회가 현실적이고, 7세대를 남겨도 31GB라 현재 여유(118GB) 안이다.
 
+transport(공용 instance `:11000`)는 2026-09-27 손으로 뜬 dump가 **1,011,308,463 B·약 9분**이다
+(`kor_travel_transport` 약 13 GB, `kor_travel_transport_dagster` 약 112 MB). 2026-09-28 n150
+여유는 약 83.9 GB이고, 백업 root·Docker 쓰기 층·공용 instance PGDATA가 **한 파일시스템**이다.
+
 ### 뜨는 법
 
 host network라 **`-p`가 필수**다. 빠뜨리면 컨테이너 기본값 `5432`를 찾는데 그 포트를
@@ -1018,6 +1022,8 @@ ktdctl db-backup create concierge --timeout 14400
 ktdctl db-backup create map_application --timeout 14400
 ktdctl db-backup create map_dagster --timeout 14400
 ktdctl db-backup create pinvi --timeout 14400
+ktdctl db-backup create transport --timeout 14400
+ktdctl db-backup create transport_dagster --timeout 14400
 ```
 
 | role | 컨테이너 | 포트 | user | database |
@@ -1028,6 +1034,8 @@ ktdctl db-backup create pinvi --timeout 14400
 | map_application | `kor-travel-map-postgres` | 12700 | `kor_travel_map` | `kor_travel_map` |
 | map_dagster | `kor-travel-map-postgres` | 12700 | `kor_travel_map` | `kor_travel_map_dagster` |
 | pinvi | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `pinvi` |
+| transport | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_transport` |
+| transport_dagster | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_transport_dagster` |
 
 포트와 user는 코드가 들고 있지 않다 — `db-backup`이 떠 있는 컨테이너의 `-p` 인자와
 `POSTGRES_USER`에서 읽는다(위 값은 기본 설정 기준).
@@ -1036,8 +1044,10 @@ ktdctl db-backup create pinvi --timeout 14400
 아니라 디스크 대기다. `geo`(`kor_travel_geo` 약 35 GB, dump 4.7 GB·약 15분)는 조용한 시간에만
 수동으로 뜨고, `rehearse-restore`도 같은 cluster 안에 scratch DB를 만든다는 점을 알고 돌린다.
 공용 instance에서 **백업 role이 없는** DB도 있다 — `pinvi_dagster`, `kor_travel_weather`·
-`kor_travel_weather_dagster`, `kor_travel_transport`·`kor_travel_transport_dagster`. 이 저장소가
-그 넷의 백업을 만들지 않는다는 뜻이다(2026-09-28 기준, 이 변경 전부터 그랬다).
+`kor_travel_weather_dagster`. 이 저장소가 그 셋의 백업을 만들지 않는다는 뜻이다. transport 둘은
+2026-09-28 오너 결정으로 `transport`·`transport_dagster` role이 됐다 — transport 저장소의 자체
+cron(`POST /v1/admin/backups`)은 2026-09-05 뒤로 dump를 하나도 남기지 않았고, Dagster metadata
+DB는 백업이 아예 없었다.
 
 ### 산출물 3종 세트
 
@@ -1086,8 +1096,8 @@ migration을 태운다. 빈 PGDATA에서 시작할 때 superuser 확장이 먼�
 > **중복(2×4.7 GB/일)**이므로 application DB role인 `geo`에서는 수동 비상 백업으로만 사용한다.
 > `geo_dagster`는 별도 metadata DB라 standalone 주기 백업 대상으로 남긴다.
 
-위 "뜨는 법" 수작업을 대체하는 CLI다. 여섯 role(`geo`/`geo_dagster`/`concierge`/
-`map_application`/`map_dagster`/`pinvi`)을 지원하고, 포트·admin role 이름을
+위 "뜨는 법" 수작업을 대체하는 CLI다. 여덟 role(`geo`/`geo_dagster`/`concierge`/
+`map_application`/`map_dagster`/`pinvi`/`transport`/`transport_dagster`)을 지원하고, 포트·admin role 이름을
 하드코딩하지 않고 살아있는 컨테이너(`docker inspect`)에서 읽는다 — `.env`가
 기본 포트를 덮어썼거나 role 이름이 프로젝트마다 달라도 항상 실제 기동값과
 일치한다. 연결은 TCP가 아니라 `docker exec --user postgres` + unix socket이라
@@ -1100,6 +1110,38 @@ ktdctl db-backup gc concierge --keep 7
 ktdctl db-backup restore-plan concierge [--file <name>] [--json]      # 읽기 전용
 ktdctl db-backup rehearse-restore concierge [--file <name>] [--timeout <초>] [--json]
 ```
+
+#### 디스크 여유 — `create`는 시작 전에 role마다 확인한다
+
+`create`는 pg_dump를 **시작하기 전에** 백업 root 파일시스템의 여유를 재고, 모자라면 아무것도
+시작하지 않고 거부한다(CLI exit 2, `StandaloneBackupInsufficientSpaceError`). 필요량은 전역 상수가
+아니라 **그 role의 database**에서 나온다:
+
+```
+필요량 = 2 x 예상 dump + 2 GiB 예약분
+예상 dump = 이 자리(컨테이너·database)에서 뜬 가장 최근 dump x max(1, 지금 DB 크기 / 그때 DB 크기)
+          = (그런 dump가 없으면) 지금 DB 크기 — custom format dump는 DB보다 크지 않다
+```
+
+- **2배인 이유**: pg_dump는 컨테이너 `/tmp`(Docker 쓰기 층)에 먼저 쓰고 host로 복사한 뒤에야
+  지운다. 복사가 끝날 때까지 두 벌이 있다. n150은 백업 root·Docker 쓰기 층·공용 instance
+  PGDATA가 한 파일시스템이라 이 계산이 정확하다(다른 파일시스템이면 보수적이다).
+- **예약분 2 GiB**: 백업이 끝난 뒤에도 남겨 둘 몫이다. 공용 instance의 `max_wal_size`(1GB)보다
+  넉넉하다 — 디스크가 차면 다섯 프로젝트의 DB가 WAL을 못 써서 멈춘다.
+- **timeout은 role별로 나누지 않는다.** 멈춘 명령의 상한(기본 4시간)이지 자원 가드가 아니다.
+  가장 큰 geo도 실측 880초, transport는 약 9분이다.
+- 읽지 못하는 manifest는 추정에서 건너뛴다(상한 쪽으로 떨어질 뿐, 새 백업을 막지 않는다).
+  다른 자리에서 뜬 dump는 다른 데이터라 추정에 쓰지 않는다.
+
+| role | 첫 실행(뜬 dump 없음) | 한 번 뜬 뒤 |
+|---|---|---|
+| `geo` | 2 x 약 35 GB + 2 GiB ≈ 72 GB | 2 x 4.7 GB + 2 GiB ≈ 11.5 GB |
+| `transport` | 2 x 약 13 GB + 2 GiB ≈ 28 GB | 2 x 1.01 GB + 2 GiB ≈ 4.2 GB |
+| `transport_dagster` | 2 x 약 112 MB + 2 GiB ≈ 2.4 GB | 더 작다 |
+| `pinvi`·`concierge`·`geo_dagster` | — | 예약분 + 수 MB |
+
+n150 여유(2026-09-28 약 83.9 GB)에서는 geo 첫 실행까지 통과한다. 여유가 72 GB 아래로 내려간
+뒤 geo를 처음 뜨려고 하면 거부된다 — 문구에 필요량·여유·근거가 모두 찍힌다.
 
 #### `restore-plan` — 복원하기 전에 "복원할 수 있는가"를 먼저 묻는다
 
@@ -1279,6 +1321,12 @@ legacy triplet 격리는 role lock을 잡은 뒤 다음 순서로 한다.
 keep 4/7/7). geo application은 앱 레벨
 백업이 정본이고 Map application/Dagster 주기화는 kor-travel-map #148 정책이므로
 이 wrapper에 넣지 않았다.
+
+2026-09-28부터 wrapper가 `transport`·`transport_dagster`도 받는다. 권장 주기(UTC, 한국 새벽):
+`transport_dagster`는 매일 18:10(keep 7), `transport`는 3일마다 18:30(`*/3`, keep 3 — dump 약
+1 GB라 세 벌 약 3 GB). transport 저장소의 자체 cron 줄(18:00 UTC)은 두 role이 검증된 dump를
+하나씩 남긴 **뒤에** 걷어낸다. 그 사이 둘이 겹치면 Manager 쪽이 `pg_stat_activity`에서 같은 DB의
+pg_dump를 보고 시작하지 않는다(`already running`, exit 2).
 
 읽기 전용 `GET /api/v1/backups?role=<role>`도 있다 — Dashboard "백업 이력" 패널이
 쓴다. 생성·GC는 CLI 전용이며 API에 노출하지 않는다(이 저장소의 표준 mutation

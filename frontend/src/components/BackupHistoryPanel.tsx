@@ -28,14 +28,16 @@ import InlineError from './InlineError';
 // `GET /api/v1/backups`의 `roles` 필드로 온다 — 여기서 하드코딩하면 새 role 추가 시
 // 백엔드는 이미 인식하는데 이 select/생성 버튼만 조용히 못 보게 된다.
 
-// scripts/run-standalone-backup.sh가 확정한 cron 주기(하루 1회). 나머지 role은 그
-// wrapper의 대상이 아니므로 배지를 달지 않는다 — 없는 기대치로 경고를 만들지 않는다.
-// 이 정책은 config에서 파생할 수 없다(cron wrapper의 하드코딩된 대상 목록을 그대로
-// 미러링한 것) — role 목록 자체와 달리 이 표는 의도적으로 남겨둔다.
+// scripts/run-standalone-backup.sh가 확정한 cron 주기(하루 1회, transport만 3일에 1회).
+// 나머지 role은 그 wrapper의 대상이 아니므로 배지를 달지 않는다 — 없는 기대치로 경고를
+// 만들지 않는다. 이 정책은 config에서 파생할 수 없다(cron wrapper의 하드코딩된 대상
+// 목록을 그대로 미러링한 것) — role 목록 자체와 달리 이 표는 의도적으로 남겨둔다.
 const EXPECTED_INTERVAL_HOURS: Partial<Record<string, number>> = {
   geo_dagster: 24,
   concierge: 24,
   pinvi: 24,
+  transport: 72,
+  transport_dagster: 24,
 };
 const FRESHNESS_WARN_MULTIPLIER = 1.25;
 
@@ -47,6 +49,9 @@ function durationWarning(role: string): string {
   const tail = '브라우저를 닫아도 진행됩니다. 상한은 4시간입니다.';
   if (role === 'geo') {
     return `geo는 수 시간이 걸릴 수 있습니다(실측 879초~22분). ${tail}`;
+  }
+  if (role === 'transport') {
+    return `transport는 약 9분이 걸립니다(dump 약 1 GB). ${tail}`;
   }
   return `${role} 백업을 시작합니다. ${tail}`;
 }

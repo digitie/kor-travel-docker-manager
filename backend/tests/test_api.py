@@ -1376,7 +1376,7 @@ def test_get_backups_lists_all_roles_when_role_is_omitted(mock_list):
 
     assert response.status_code == 200
     data = response.json()
-    assert len(data["backups"]) == 6
+    assert len(data["backups"]) == 8
     assert {backup["role"] for backup in data["backups"]} == {
         "geo",
         "geo_dagster",
@@ -1384,6 +1384,8 @@ def test_get_backups_lists_all_roles_when_role_is_omitted(mock_list):
         "map_application",
         "map_dagster",
         "pinvi",
+        "transport",
+        "transport_dagster",
     }
     # GM-18: 프론트가 select/생성 버튼 role 목록을 하드코딩하지 않고 여기서 파생할 수
     # 있도록, 응답이 canonical 목록을 함께 실어야 한다.
