@@ -466,8 +466,9 @@ sudo find "$KTDM_BACKUP_ROOT" -type f -exec chmod 0640 {} +
 그 부모)의 주인일 때만 된다. 다른 계정(cron)의 디렉터리면 409로 거부한다 — UI가 쓴 `0600`
 산출물을 그 계정이 읽지도 치우지도 못해 주기 백업이 깨지기 때문이다. backend와 cron이 다른 계정으로
 같은 `KTDM_BACKUP_ROOT`를 쓰는 호스트(n150)에서 UI로도 만들고 싶을 때 이 절을 한다. 하지 않으면 UI
-생성만 거절되고 cron은 그대로다 — n150은 하지 않는다. 순서는 `docs/docker-management.md` "transport
-주기 백업 — 실패를 누가 보는가".
+생성만 거절되고 cron은 그대로다 — n150은 하지 않는다. 해도 role의 **첫** 백업(role 디렉터리가 아직 없을 때)은
+UI에서 409다 — 그 디렉터리는 cron 계정이 만들어야 한다. cron 계정도 그룹에 넣는다(빠지면 UI가 만든 manifest를
+cron의 `gc`가 읽지 못한다). 순서는 `docs/docker-management.md` "transport 주기 백업 — 실패를 누가 보는가".
 
 ### 3.y 관리자 비밀번호 변경
 

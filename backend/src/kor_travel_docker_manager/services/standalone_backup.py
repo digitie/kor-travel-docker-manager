@@ -390,7 +390,7 @@ def ui_backup_owner_conflict(role: BackupRole) -> str | None:
                 f"and its parent {directory} belongs to uid {owner}, but this backend runs as "
                 f"uid {euid}. The role directory and its lock would belong to uid {euid}, and "
                 f"uid {owner}'s cron backup could not fix their mode. Make the first backup "
-                f"as uid {owner}: `ktdctl db-backup create {role}`."
+                f"as uid {owner}: `KTDM_BACKUP_ROOT={root.parent} ktdctl db-backup create {role}`."
             )
         if shared_group:
             return None
@@ -398,10 +398,9 @@ def ui_backup_owner_conflict(role: BackupRole) -> str | None:
             f"refusing to create a {role} backup here: {directory} belongs to uid {owner} "
             f"but this backend runs as uid {euid}, and {BACKUP_SHARED_GROUP_ENV} is not set. "
             f"The dump and manifest would be 0600 files of uid {euid} that uid {owner}'s "
-            f"cron backup can neither read nor clean up — its gc would refuse this role, or, "
-            f"when this request creates the role directory, every later cron run would fail "
-            f"to chmod it. Set up the shared group first (docs/prod-deployment.md §3.x), or "
-            f"run `ktdctl db-backup create {role}` as uid {owner}."
+            f"cron backup can neither read nor clean up — its gc would refuse this role. "
+            f"Set up the shared group first (docs/prod-deployment.md §3.x), or run "
+            f"`KTDM_BACKUP_ROOT={root.parent} ktdctl db-backup create {role}` as uid {owner}."
         )
     return None
 

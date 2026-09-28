@@ -2122,6 +2122,7 @@ def test_post_backup_refuses_a_role_directory_another_account_owns(
     assert str(role_directory) in detail
     assert f"uid {owner}" in detail and f"uid {foreign_euid}" in detail
     assert "KTDM_BACKUP_SHARED_GROUP" in detail
+    assert f"`KTDM_BACKUP_ROOT={owned_backup_root} ktdctl db-backup create concierge`" in detail
     mock_create.assert_not_called()
     assert client.get("/api/v1/backups/concierge/jobs").json() == {"job": None}
     assert list(role_directory.iterdir()) == []
@@ -2165,7 +2166,8 @@ def test_post_backup_refuses_a_first_backup_under_another_accounts_root_even_wit
     assert response.status_code == 409
     detail = response.json()["detail"]
     assert str(owned_backup_root / "transport") in detail
-    assert "`ktdctl db-backup create transport`" in detail and f"uid {owner}" in detail
+    assert f"`KTDM_BACKUP_ROOT={owned_backup_root} ktdctl db-backup create transport`" in detail
+    assert f"uid {owner}" in detail
     mock_create.assert_not_called()
     assert not (owned_backup_root / "transport").exists()
 

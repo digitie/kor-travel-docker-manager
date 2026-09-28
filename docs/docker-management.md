@@ -1415,8 +1415,9 @@ cron의 root를 보기 시작하면 UI "만들기"가 cron의 자리에 쓰게 �
 3. 머지 커밋을 **`.env`를 그대로 둔 채** 설치하고 확인한다(`~/install-mgr.sh <sha>` → rebind → verify).
    이제 가드가 떠 있고 backend는 아직 `/root/backups`를 본다.
 4. host mutation lock(G, `/run/lock/kor-travel-docker-manager/global-mutation.lock`) 아래에서 live `.env`에
-   `KTDM_BACKUP_ROOT=/home/digitie/backups` 한 줄을 넣고 **같은 커밋을 다시** 설치한다. installer가 `.env`를
-   release로 복사하고 logrotate를 `su root root`로 렌더링하고 backend를 재기동한다. 이제 root backend는
+   `KTDM_BACKUP_ROOT=/home/digitie/backups` 한 줄을 넣고 **같은 커밋을 다시** 설치한다. 같은 release라
+   installer는 `.env` 복사를 건너뛰고(live `.env`가 곧 그 release의 것이다) logrotate를 `su root root`로
+   렌더링하고 backend를 재기동한다. 이제 root backend는
    cron의 root를 읽고(DAC를 넘는다), UI "만들기"는 cron 계정의 role 디렉터리마다 409로 거절된다 — cron은
    그대로다. 순서가 이래야 하는 이유: `.env`를 먼저 바꾸고 설치가 실패해 옛 release로 되돌리면, installer가
    그 `.env`를 **가드가 없는** release에 복사해 UI 생성 한 번이 cron을 깨는 상태가 된다. 가드 이전의 release로
@@ -1445,8 +1446,10 @@ cron의 root를 보기 시작하면 UI "만들기"가 cron의 자리에 쓰게 �
 않고 **409**와 이유를 돌려준다. 공유 그룹은 **이미 있는** role 디렉터리만 면제한다 — 그때의 전제(setgid·
 그룹)는 create가 따로 확인한다. role 디렉터리가 **없으면** 공유 그룹과 무관하게 부모의 소유자와 비교한다:
 backend가 만든 디렉터리의 주인은 backend라 cron 계정이 그 mode를 고칠 수 없고, crontab에 공유 그룹 값이
-빠지는 순간 첫 cron 실행이 EPERM이다. **role의 첫 백업은 cron 계정이 만든다.** 공유 그룹을 하지 않거나
-반쯤 하면 UI 생성이 거절될 뿐 cron은 깨지지 않는다. CLI는 이 확인을 하지 않는다 — cron과
+빠지는 순간 첫 cron 실행이 EPERM이다. **role의 첫 백업은 cron 계정이 만든다.** 공유 그룹을 아예 하지
+않으면 UI 생성이 거절될 뿐 cron은 깨지지 않는다. 반쯤 하면 예외가 하나 있다 — cron 계정을 그 그룹에 넣지
+않으면 UI가 만든 `root:ktdm-backup 0640` manifest를 cron의 `gc`가 읽지 못한다. 그래서 공유 그룹은 전부 하거나
+전혀 하지 않는다. CLI는 이 확인을 하지 않는다 — cron과
 손 실행은 그 디렉터리의 주인 계정으로 도는 것이 전제다.
 
 그 전까지(그리고 그 뒤에도 손으로) 신선도는 cron과 **같은 root**를 준 CLI로 본다:
