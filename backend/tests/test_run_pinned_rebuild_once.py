@@ -169,3 +169,179 @@ def test_successful_child_with_an_unreadable_result_fails_closed(
 
     assert completed.returncode == 1, completed.stderr
     assert "not a JSON object" in completed.stderr
+
+
+# --- `--adopt-live-databases REASON` 통과(M1 a) ------------------------------------------
+#
+# launcher 앞머리(인자·사유 검증)와 꼬리(ktdctl 실행)를 이어 붙여 진짜 bash로 돌린다. 사이의
+# root·설치본·원장 구간은 호스트 전제라 건너뛴다. ktdctl 자리에는 argv를 NUL로 기록하는 스텁을
+# 넣는다 — 텍스트가 아니라 **실제로 넘어간 argv**를 본다.
+
+_ROOT_CHECK = 'if [[ "$(/usr/bin/id -u)" != "0" ]]; then'
+_KTDCTL = "/opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl"
+_LOCK_EXEC = '  exec /usr/bin/python3 -I -S - "${BASH_SOURCE[0]}" "$@" <<\'PY\''
+_REVISION = "a" * 40
+
+
+def _recorded_ktdctl_argv(
+    tmp_path: Path, *arguments: str
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    launcher = _LAUNCHER.read_text(encoding="utf-8")
+    head = launcher[: launcher.index(_ROOT_CHECK)]
+    tail = _tail(launcher)
+    assert tail.count(_KTDCTL) == 1
+    tail = tail.replace(_KTDCTL, '/usr/bin/bash "$KTDCTL_RECORDER"')
+    tail = tail.replace('/usr/bin/chown root:root "${result_tmp}" "${stderr_path}"', "true")
+    recorder = tmp_path / "ktdctl-recorder"
+    argv_path = tmp_path / "argv.bin"
+    # `/tmp`가 noexec일 수 있어 실행 비트 대신 bash로 부른다.
+    recorder.write_text(
+        'printf "%s\\0" "$@" >"$ARGV_OUT"\n' "printf '{}'\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "out"
+    output.mkdir()
+    script = tmp_path / "head-tail.sh"
+    script.write_text(
+        head + 'output_dir="$OUT"\n' 'touch "$output_dir/stderr.log"\n' + tail,
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["bash", str(script), *arguments],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env={
+            **os.environ,
+            "OUT": str(output),
+            "KTDCTL_RECORDER": str(recorder),
+            "ARGV_OUT": str(argv_path),
+        },
+    )
+    argv = argv_path.read_bytes().split(b"\0")[:-1] if argv_path.exists() else []
+    return completed, [item.decode("utf-8") for item in argv]
+
+
+def _run_until_the_lock(
+    tmp_path: Path, *arguments: str
+) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+    """launcher 원문을 lock 직전까지 **root인 척** 돌린다. lock에 닿으면 표식을 남기고 97로 끝난다.
+
+    root 검사만 무력화한다 — 비-root 테스트에서 root 검사가 먼저 exit 2를 내면 사유 검증이
+    lock보다 앞선지 뒤선지 구분되지 않는다(탐지기가 초록으로 공허해진다).
+    """
+
+    launcher = _LAUNCHER.read_text(encoding="utf-8")
+    assert launcher.count(_ROOT_CHECK) == 1
+    assert launcher.count(_LOCK_EXEC) == 1
+    marker = tmp_path / "lock-taken"
+    script = tmp_path / "until-lock.sh"
+    script.write_text(
+        launcher.replace(_ROOT_CHECK, "if false; then").replace(
+            _LOCK_EXEC, '  touch "$LOCK_MARKER"; exit 97\n  : <<\'PY\''
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "never-created"
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key != "KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD"
+    }
+    completed = subprocess.run(
+        ["bash", str(script), _REVISION, str(output), *arguments],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env={**environment, "LOCK_MARKER": str(marker)},
+    )
+    return completed, marker, output
+
+
+def test_adopt_pass_through_reaches_ktdctl_with_reason(tmp_path: Path) -> None:
+    reason = "Map DB를 공용 instance로 옮긴다 (ADR-53)"
+
+    completed, argv = _recorded_ktdctl_argv(
+        tmp_path, _REVISION, str(tmp_path / "out"), "--adopt-live-databases", reason
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert argv == [
+        "pinvi-pair",
+        "rebuild-pinned",
+        "--confirm",
+        "--json",
+        "--adopt-live-databases",
+        "--reason",
+        reason,
+    ]
+
+
+def test_two_argument_form_is_unchanged(tmp_path: Path) -> None:
+    completed, argv = _recorded_ktdctl_argv(tmp_path, _REVISION, str(tmp_path / "out"))
+
+    assert completed.returncode == 0, completed.stderr
+    assert b"\0".join(item.encode() for item in argv) == (
+        b"pinvi-pair\0rebuild-pinned\0--confirm\0--json"
+    )
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "",
+        "two\nlines",
+        "carriage\rreturn",
+        "tab\there",
+        "escape\x1b[31m",
+        "x" * 201,
+        "--restart",
+        "-x",
+    ],
+    ids=["empty", "multiline", "cr", "tab", "escape", "overlong", "restart-flag", "dash"],
+)
+def test_adopt_reason_rejects_multiline_control_and_overlong(
+    tmp_path: Path, reason: str
+) -> None:
+    completed, marker, output = _run_until_the_lock(tmp_path, "--adopt-live-databases", reason)
+
+    assert completed.returncode == 2, completed.stderr
+    assert "adopt reason must be" in completed.stderr
+    assert not marker.exists()
+    assert not output.exists()
+
+
+def test_a_valid_adopt_reason_reaches_the_lock(tmp_path: Path) -> None:
+    """위 거부 검사의 대조군이다 — 같은 대역이 유효한 사유로는 lock에 닿는다(200자 경계 포함)."""
+
+    completed, marker, output = _run_until_the_lock(
+        tmp_path, "--adopt-live-databases", "가" * 200
+    )
+
+    assert completed.returncode == 97, completed.stderr
+    assert marker.exists()
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("--restart", "move"),
+        ("--restart",),
+        ("--adopt-live-databases",),
+        ("--adopt-live-databases", "move", "--restart"),
+        ("--adopt-live-databases", "move", "--restart", "again"),
+        ("--reason", "move"),
+    ],
+)
+def test_restart_is_not_accepted_by_the_launcher(
+    tmp_path: Path, arguments: tuple[str, ...]
+) -> None:
+    completed, marker, output = _run_until_the_lock(tmp_path, *arguments)
+
+    assert completed.returncode == 2, completed.stderr
+    assert completed.stderr.startswith("usage: run-pinned-rebuild-once")
+    assert not marker.exists()
+    assert not output.exists()

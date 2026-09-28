@@ -2,9 +2,35 @@
 # n150 pinned rebuild의 구조화된 결과를 durable하게 보존하는 단발 launcher.
 set -euo pipefail
 
-if [[ "$#" -ne 2 ]]; then
-  echo "usage: run-pinned-rebuild-once EXPECTED_MANAGER_SOURCE_REVISION ROOT_OWNED_OUTPUT_DIRECTORY" >&2
+usage="usage: run-pinned-rebuild-once EXPECTED_MANAGER_SOURCE_REVISION ROOT_OWNED_OUTPUT_DIRECTORY [--adopt-live-databases REASON]"
+if [[ "$#" -ne 2 && "$#" -ne 4 ]]; then
+  echo "${usage}" >&2
   exit 2
+fi
+
+# ktdctl에 넘길 선택 인자는 `--adopt-live-databases REASON` 한 쌍뿐이다. `--restart`는 세 DB를
+# 지우는 유일한 길이라 launcher로 넘기지 않는다 — 사람이 ktdctl을 직접, 일부러 부를 때만 탄다.
+# 사유는 lock·claim·출력 디렉터리보다 **먼저** 검증한다: ktdctl이 거부할 사유로 원장에 claim을
+# 남기고 끝나지 않게, CLI 규칙(한 줄, 1~200자)과 같게 보되 제어 문자와 `-` 시작은 여기서 막는다
+# (`-`로 시작하면 argparse가 `--reason`의 값이 아니라 옵션으로 읽는다).
+rebuild_arguments=()
+if [[ "$#" -eq 4 ]]; then
+  if [[ "$3" != "--adopt-live-databases" ]]; then
+    echo "${usage}" >&2
+    exit 2
+  fi
+  if ! /usr/bin/python3 -I -S - "$4" <<'PY'
+import sys
+
+reason = sys.argv[1]
+if not (0 < len(reason) <= 200 and reason.isprintable() and not reason.startswith("-")):
+    raise SystemExit(1)
+PY
+  then
+    echo "adopt reason must be one line of 1-200 printable characters not starting with '-'" >&2
+    exit 2
+  fi
+  rebuild_arguments=(--adopt-live-databases --reason "$4")
 fi
 
 if [[ "$(/usr/bin/id -u)" != "0" ]]; then
@@ -288,7 +314,8 @@ stderr_path="${output_dir}/stderr.log"
 
 set +e
 /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
-  pinvi-pair rebuild-pinned --confirm --json >"${result_tmp}" 2>"${stderr_path}"
+  pinvi-pair rebuild-pinned --confirm --json ${rebuild_arguments[@]+"${rebuild_arguments[@]}"} \
+  >"${result_tmp}" 2>"${stderr_path}"
 status="$?"
 set -e
 
