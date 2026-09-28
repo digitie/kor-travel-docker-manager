@@ -8132,3 +8132,29 @@ MT(ADR-53 D4)의 적대 리뷰 MED 2건·LOW 14건을 반영했다. 이 브랜�
   -t 3`, `timeout: 10s`), `stop_grace_period: 300s`를 그대로 갖고, MT의 튜닝 `command`(`-c` 10개, 튜닝 값에
   `${KOR_TRAVEL_SHARED_POSTGRES_*}` 없음), digest 핀, `shm_size: 1gb`를 더한다. 대조군: `stop_grace_period`
   한 줄을 복제하면 같은 로더가 `ConstructorError`로 거부한다.
+- **n150 실행**(모두 `/tmp`, 운영 컨테이너·DB는 건드리지 않았다. chain17 t64a가 끝난 21:29Z 뒤, `6453239`):
+  - gated 전체 스위트(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, 새 `git clone`, consolidation venv): **2266 passed,
+    2 skipped**(root 전용 M05 ledger 둘), 0 failed, 9m51s. `ktdm-it-*`·`ktdm-sharedpg-*` 잔재 0.
+  - `/tmp/b3-test.sh`: ruff 0.16.4 깨끗. 전체 pytest는 세 번 모두 **1 failed, 2265 passed, 2 skipped**였다. 실패는
+    셋 다 main의 `test_compose_readiness_integration.py::test_canonical_compose_readiness_matches_real_runtime`이
+    docker 호출의 30초 subprocess timeout에 걸린 것이다(한 번은 `docker stop`, 두 번은 `docker compose up`; load
+    6~19, 실행 시간 6m39s·18m52s·11m48s). 환경으로 판정한다: MT가 건드리지 않는 파일이고, 같은 head의 gated
+    실행에서는 초록이었고, 같은 부하에서 그 테스트 하나를 떼어 돌리면 main `6af5dd1`에서도 빨갛다(MT 두 번·main
+    한 번, 모두 1 failed).
+  - **빨강 확인(새 테스트 대 main)**: 새 `git clone`에서 테스트가 아닌 경로 10개(`backend/src`의 두 파일, compose,
+    docs)를 `6af5dd1`로 되돌리고 MT가 바꾼 테스트 다섯 파일을 gate=1로 돌렸다 → **18 failed, 341 passed**. main
+    대비 새 테스트 id 20개 중 **14개가 빨갛다**:
+    - 범위 해석기 2/5 — `run`, `run-argv-no-deps`. `up`·`up-no-deps`·`run-no-deps`는 대조군이라 main에서도
+      초록이다.
+    - compose 계약 2/3 — 튜닝 `command`, digest 핀. duration·크기 파서 테스트는 테스트 자신의 파서를 보므로
+      main에서도 초록이다.
+    - gated 격리 실행 1/1.
+    - 백업 9/11 — 예약분 3, 운영자 값 경로 3, 못 읽는 답 2, rehearse-restore 2GB 1. rehearse-restore의 1GB·512MB는
+      유도값이 하한 2 GiB와 같아 main에서도 초록이고, 2GB 경우가 그 둘을 가른다.
+    - 바뀐 기존 테스트 4개도 빨갛다(shm ≥ 1 GiB 하나, 백업 필요량 셋). 사라진 id 2개는 parametrize로 바뀐 두
+      백업 테스트다.
+    - `test_docker_service_config.py`의 중복 키 로더는 main에도 중복 키가 없어 초록이다. 이것은 가드이고, 빨강은
+      앞 항목의 변이(9/10)가 보였다.
+  - 잔재: b3 두 번과 떼어 돌린 readiness 실행 세 번이 남긴 `ktdm-readiness-*` 컨테이너 15개를 지웠다. 셋 다
+    `Created`였고, 일부는 client 시한이 지난 뒤 daemon이 만든 것이다. 09-28 08:05의
+    `ktdm-readiness-2020836-readine0_default` 네트워크는 이 작업의 것이 아니어서 두었다.
