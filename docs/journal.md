@@ -7613,3 +7613,60 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
   - MED-2: 절차가 가드 설치 **전에** `.env`를 바꿨다. 설치가 실패해 옛 release로 되돌리면 installer가 그 `.env`를
     가드 없는 release에 복사한다. 이제 3) `.env` 그대로 설치·확인 → 4) G lock 아래 `.env` 한 줄 + 같은 커밋 재설치.
     가드 이전 release로 되돌릴 때는 `KTDM_BACKUP_ROOT`를 먼저 뺀다.
+
+## 2026-09-28 — 외부 target `airport`를 `transport`로 개명했다(Manager 쪽)
+
+- **배경**: 소유자 지시로 형제 프로젝트의 배포 identity를 airport에서 transport로 바꾼다. 도메인(공항
+  주차)은 그대로다. transport 저장소의 cutover — compose 프로젝트 `kor-travel-airport` →
+  `kor-travel-transport`, 배포 사본 `/home/digitie/apps/kor-travel-airport` →
+  `/home/digitie/apps/kor-travel-transport`, 컨테이너 `kor-travel-airport-<svc>-1` →
+  `kor-travel-transport-<svc>-1` — 가 먼저 나가고, 이 Manager 릴리스는 그 창 **직후에** 머지·설치한다.
+  옛 이름 `airport`·`kor-travel-airport`는 별칭으로 남기지 않는다(소유자 결정). 먼저 설치하면 Manager가
+  아직 없는 컨테이너·디렉터리를 보고, 늦으면 옛 Manager가 사라진 것을 본다 — 어느 쪽이든 깨지는 것은
+  상태 화면·수명주기 조작이고 transport 서비스 자체는 아니다.
+- **변경**:
+  - `config/docker-targets.yml`(한 커밋 — 검증기가 컨테이너의 `external_project`와 target 프로젝트의
+    일치를 강제한다): `dependency_order`와 target 키, 좌표(`kor-travel-transport`,
+    `/home/digitie/apps/kor-travel-transport`, `config_files` 그대로), `display_name`, description(공용
+    instance의 `kor_travel_transport`), aliases `[kor-travel-transport]`, 컨테이너 둘(id·실제 이름·role·
+    display_name). 포트는 그대로다. #429가 뺀 전용 DB target·그 postgres 컨테이너·`depends_on`은 되살리지
+    않았다.
+  - `docker-compose.yml`의 transport 배포 사본 경로 주석, `registry.py`의 `ServiceGroup` 예시.
+  - 문서: `ports.md`, `platform-topology.md`(설정 예시의 `expected_ports`가 실제 선언과 달라
+    `14001:14001`이었다 — `14001:8000`으로 바로잡았다), `decisions.md` ADR-51 "C 범위"(접두사 glob을 정확한
+    프로젝트 `kor-travel-transport`로 좁히고 같은 저장소의 별도 compose 프로젝트
+    `kor-travel-transport-admin`은 범위 밖이라고 적었다), `prod-deployment.md`,
+    `shared-postgres-onboarding.md`, `tasks.md`(순서 계약을 열린 항목으로).
+- **테스트 구조**: 멀티프로젝트 메커니즘 검사가 실제 외부 target을 예시로 쓰고 있었다 — 묶음·실행·로그
+  검사는 그 위에 얹은 합성 옛 DB target을, 검증기·이름 충돌 검사는 그 선언을 직접 고쳐 썼다. 이름이
+  바뀌면 메커니즘 검사까지 따라 흔들린다. conftest에 합성 외부 target 쌍(`test-sibling` →
+  `test-sibling-db`, 같은 디렉터리의 compose 프로젝트 둘 — 옛 실례와 같은 형태)을 두고 메커니즘은 그것으로
+  센다. 새 이름을 따르는 것은 실제 선언을 겨냥한 검사뿐이다: 측정 좌표, `ensure` 거부, 컨테이너발 로그의
+  소속 해석, 실제 컨테이너의 SDK 수명주기(실제 이름)와 config/reset guard, 409 핸들러,
+  `--check-coordinates`.
+  - 부분 문자열 검사를 정확한 값으로 바꿨다: `ensure` 거부 문구, 외부 변경 거부 문구, CLI의 생략 프로젝트
+    안내 줄, `--check-coordinates`의 stderr 두 줄, `# project=` 헤더 둘과 그 순서. 409 검사는 손으로 만든
+    예외 대신 실제 `reset` guard가 던진 예외를 받아 payload 전체를 대조한다.
+  - 새 검사: `test_the_transport_target_declares_its_containers_under_the_new_names`,
+    `test_the_old_airport_identity_resolves_nowhere`(target·별칭·컨테이너 id·실제 이름·소속 프로젝트·
+    `working_dir`를 공개 해석 경로로 본다. 순회가 비면 부정 단언이 공허하므로 본 외부 target·컨테이너 목록에
+    하한을 건다).
+- **검증(n150, 아카이브 사본)**:
+  - 대상 7개 파일: 브랜치 `465eb49` 332 passed. origin/main `88599eb`의 코드·설정에 이 브랜치의 테스트만
+    얹으면 14 failed — 새 검사 둘, 측정 좌표, `ensure` 거부, 컨테이너발 로그 소속, SDK 수명주기 셋,
+    config/reset guard 둘, reset guard 둘(`name-differs`·`transport`), 409, `--check-coordinates`.
+  - 전체 스위트(`b3-test.sh`, `b2c88cc`, ruff 0.16.4 `All checks passed!`): 1회차 2 failed, 2017 passed,
+    2 skipped — `test_api.py::test_post_backup_returns_202_and_a_job_that_finishes`(`'failed' ==
+    'succeeded'`)와 `test_compose_readiness_integration.py::test_canonical_compose_readiness_matches_real_runtime`
+    (`docker compose ... up --detach --pull never` 30초 timeout). 2회차 1 failed, 2018 passed, 2 skipped —
+    `test_api.py::test_a_failed_backup_job_reports_the_failure_instead_of_vanishing`. 둘 다 부하 속
+    타이밍이다(다른 세션의 전체 스위트와 겹쳐 load 6.7~8.7). 두 1회차 실패는 브랜치·main 사본에서 따로
+    돌리면 둘 다 통과했고, `test_api.py -k backup` 15회 반복은 main 6/15·브랜치 4/15로 같은 backup job
+    검사가 흔들렸다 — 이 변경 이전부터 있는 flake다.
+- **게이트**: `git grep -n "kor-travel-airport\|'airport'\|\bairport:"`의 히트는 이 journal의 역사 기록과
+  새 부재 검사의 상수 셋뿐이다. 코드의 과거 실측 주석(`compose_service.py`의 2026-09-18 실례,
+  `postgres_hba_posture.py`의 전용 DB `Cmd` 실측)과 journal·tasks-done·ADR 서술의 과거 사실은 그대로 뒀다.
+- **남은 것**: 설치 뒤 호스트에서 `ktdctl targets validate --check-coordinates`가 `OK`인지, cron 사본의
+  `config/docker-targets.yml`을 설치본과 맞췄는지 본다. `feat/transport-backup-roles`(백업 role
+  `transport`/`transport_dagster` — target이 아니다)와는 문서만 겹친다. 그 브랜치가 먼저 머지되면 이
+  브랜치를 그 위로 리베이스한다.
