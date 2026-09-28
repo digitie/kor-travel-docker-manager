@@ -5,6 +5,7 @@ import time
 import uuid
 from unittest.mock import Mock, patch
 
+import anyio.from_thread
 import pytest
 from fastapi import HTTPException, WebSocketDisconnect
 from fastapi.testclient import TestClient
@@ -1946,23 +1947,46 @@ def test_admin_password_routes_require_authentication():
 
 
 @pytest.fixture
-def clean_job_runner():
-    """모듈 싱글턴이므로 남은 running 기록이 다음 테스트의 submit을 막는다."""
+def clean_job_runner(monkeypatch):
+    """모듈 싱글턴이므로 남은 running 기록이 다음 테스트의 submit을 막는다.
+
+    그리고 요청들이 **event loop 하나**를 함께 쓰게 한다. `with` 없이 쓴 `TestClient`는
+    요청마다 loop를 새로 띄우고 응답을 돌려준 뒤 닫는데, 닫을 때 `asyncio.Runner.close`가
+    남은 task를 모두 취소한다. job은 POST를 처리한 그 loop의 task이므로, mock dump가 끝나
+    결과가 넘어가기 전에 loop가 닫히면 `failed`/`cancelled`로 끝났다 — 부하에 따라 갈리는
+    경주였다. 운영 uvicorn은 loop 하나가 프로세스 수명 내내 살아 있어 이 취소가 없다.
+    `with client:`로 잡지 않는 것은 lifespan까지 떠서 메트릭 수집기가 호스트 docker를
+    부르기 때문이다.
+
+    그러면 job은 요청보다, 그리고 테스트의 `@patch`보다도 오래 살 수 있다. patch는 테스트
+    함수가 끝나면 풀리므로, 결과를 기다리지 않은 job은 그 뒤 진짜 `create_standalone_backup`에
+    닿아 이 호스트의 DB 컨테이너에 `docker exec`를 붙인다(n150에서 실제로 닿았다). 그 자리를
+    막아 두고 거기 닿은 job은 실패로 드러낸다 — job을 띄운 테스트는 `_await_job`으로 끝을 본다.
+    """
 
     from kor_travel_docker_manager.services.job_runner import job_runner
 
+    outlived = []
+
+    def _outlived_its_test(role, **_kwargs):
+        outlived.append(role)
+        raise AssertionError(f"a {role} backup job outlived its test's mock")
+
+    monkeypatch.setattr(
+        "kor_travel_docker_manager.api.routes.create_standalone_backup", _outlived_its_test
+    )
     job_runner.reset()
-    yield job_runner
-    for _ in range(200):
-        if job_runner.latest(kind="db_backup_create", key="geo") is None:
-            break
-        if job_runner.latest(kind="db_backup_create", key="geo").state != "running":
-            break
-        time.sleep(0.05)
-    try:
-        job_runner.reset()
-    except RuntimeError:
-        pass
+    with anyio.from_thread.start_blocking_portal(**client.async_backend) as portal:
+        client.portal = portal
+        try:
+            yield job_runner
+            # 운영 lifespan과 같은 배수다.
+            portal.call(job_runner.shutdown)
+        finally:
+            client.portal = None
+    # loop가 닫히며 남은 task는 모두 끝났다(취소도 `failed`로 기록된다) — running은 없다.
+    job_runner.reset()
+    assert outlived == [], "a test that starts a backup job must wait for it (`_await_job`)"
 
 
 @pytest.fixture
@@ -2050,6 +2074,7 @@ def test_post_backup_records_the_audit_event_off_the_event_loop_thread(
 
     assert response.status_code == 202
     assert ran_without_a_running_loop is True
+    _await_job("geo", response.json()["job_id"])
 
 
 @patch("kor_travel_docker_manager.api.routes.record_login_audit_event")
@@ -2074,6 +2099,7 @@ def test_post_backup_still_returns_202_when_the_audit_write_fails(
     assert started["state"] == "running"
     assert "failed to record" in started["audit_warning"]
     mock_audit.assert_called_once()
+    assert _await_job("geo", started["job_id"])["state"] == "succeeded"
 
 
 @patch("kor_travel_docker_manager.api.routes.create_standalone_backup")
