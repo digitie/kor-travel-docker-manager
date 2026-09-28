@@ -1978,6 +1978,10 @@ def clean_job_runner(monkeypatch):
     job_runner.reset()
     with anyio.from_thread.start_blocking_portal(**client.async_backend) as portal:
         client.portal = portal
+        # TestClient 내부(`portal`/`_portal_factory`)에 기댄다 — 버전이 바뀌어 미리 둔 portal을
+        # 무시하면 요청마다 loop가 다시 생겨 경주가 소리 없이 돌아온다. 여기서 먼저 멈춘다.
+        with client._portal_factory() as used:
+            assert used is portal, "TestClient no longer reuses a preset portal"
         try:
             yield job_runner
             # 운영 lifespan과 같은 배수다.
@@ -2005,6 +2009,7 @@ def owned_backup_root(tmp_path, monkeypatch):
 
 
 def _await_job(role: str, job_id: str) -> dict:
+    assert client.portal is not None, "a test that starts a backup job needs clean_job_runner"
     for _ in range(200):
         body = client.get(f"/api/v1/backups/{role}/jobs/{job_id}").json()
         if body["state"] != "running":
@@ -2074,7 +2079,7 @@ def test_post_backup_records_the_audit_event_off_the_event_loop_thread(
 
     assert response.status_code == 202
     assert ran_without_a_running_loop is True
-    _await_job("geo", response.json()["job_id"])
+    assert _await_job("geo", response.json()["job_id"])["state"] == "succeeded"
 
 
 @patch("kor_travel_docker_manager.api.routes.record_login_audit_event")
