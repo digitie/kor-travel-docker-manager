@@ -1296,7 +1296,9 @@ def _normalize_postgres_setting_name(name: str) -> str:
 
 
 #: 정본 compose의 PostgreSQL 서버 넷이 쓰는 **최상위 키 전부**(실측 2026-09-18).
-#: `shm_size`는 하나만 쓰지만 정당하므로 포함한다.
+#: `shm_size`는 하나만 쓰지만 정당하므로 포함한다. `init`·`stop_grace_period`는
+#: ADR-52(2026-09-28)로 공용 instance가 쓴다 — 둘 다 권한을 넓히지 않는다(init은
+#: PID 1에 docker-init을 둘 뿐이고, grace는 종료 대기 시간이다).
 #:
 #: **금지 목록이 아니라 허용 목록이다.** 앞선 세 라운드가 같은 병으로 뚫렸다 —
 #: `entrypoint`·`privileged`·`user`·`cap_add`·`pid`를 막았더니 `devices: /dev/sda`가
@@ -1313,11 +1315,13 @@ _POSTGRES_ALLOWED_SERVICE_KEYS: Final = frozenset(
         "environment",
         "healthcheck",
         "image",
+        "init",
         "network_mode",
         "ports",
         "restart",
         "secrets",
         "shm_size",
+        "stop_grace_period",
         "volumes",
     }
 )
@@ -1584,16 +1588,24 @@ def _assert_postgres_healthcheck_is_canonical(
     if test is None:
         return
     tokens = test if isinstance(test, list) else [test]
-    payload_words: list[str] = []
-    for index, token in enumerate(tokens):
+    for token in tokens:
         if not isinstance(token, str):
             raise ComposeCandidateContractError(
                 "compose candidate PostgreSQL healthcheck is not a string command: "
                 + _describe_candidate_service_key(service_name)
             )
-        if index == 0 and token in {"CMD", "CMD-SHELL", "NONE"}:
-            continue
-        payload_words.extend(_shell_program_positions(token))
+    payload_words: list[str] = []
+    if tokens and tokens[0] == "CMD":
+        # exec 형식: 프로그램 자리는 argv[1] 하나뿐이다. 나머지는 그 프로그램의 인자이고
+        # 어떤 셸도 그것을 해석하지 않으므로 다른 프로그램을 띄울 수 없다 — 인자를
+        # 셸 payload로 읽으면 `-h`·`127.0.0.1`이 "프로그램"으로 오판돼 정본 exec
+        # probe(ADR-52)가 거부된다.
+        payload_words = [PurePosixPath(tokens[1]).name] if len(tokens) > 1 else [""]
+    else:
+        for index, token in enumerate(tokens):
+            if index == 0 and token in {"CMD-SHELL", "NONE"}:
+                continue
+            payload_words.extend(_shell_program_positions(token))
     for name in payload_words:
         if name not in _POSTGRES_HEALTHCHECK_PROGRAMS:
             raise ComposeCandidateContractError(
@@ -1608,7 +1620,7 @@ def _assert_one_postgres_cluster_runtime(
     """PostgreSQL 서버의 **형태 전체**를 허용 목록으로 묶는다.
 
     금지 목록은 세 라운드 연속으로 뒤처졌다 — 매번 내가 놓친 철자·키가 우회로였다.
-    정본 넷의 형태는 좁고 고정적이므로(최상위 키 11개, GUC 12개 + `-p`) 방향을
+    정본 넷의 형태는 좁고 고정적이므로(최상위 키 13개, GUC 12개 + `-p`) 방향을
     뒤집으면 **모르는 것이 하나라도 있으면 거부**가 되고, 다음 compose 스펙이나
     postgres 버전이 무엇을 추가해도 fail-close다.
     """

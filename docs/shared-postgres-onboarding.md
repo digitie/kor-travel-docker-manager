@@ -39,7 +39,7 @@
 | pgdata | 호스트 bind `/home/digitie/kor-travel-shared-data/pgdata` (0700, uid 999) |
 | 정식 입주 프로젝트 | **concierge 하나뿐** — `kor_travel_concierge` (81 MB, owner `kor_travel_concierge_app`) |
 | 연결 상한 | `max_connections=100` (기본값 — 공용 서비스 `command:`에 이 줄 자체가 없다). 2026-09-20 03:2x UTC 기준 사용 16 |
-| 튜닝 | `shared_buffers=128MB` / `work_mem=16MB` / `maintenance_work_mem=128MB` / `effective_cache_size=512MB` / `max_wal_size=1GB` — 전부 `KOR_TRAVEL_SHARED_POSTGRES_*` env 템플릿이고 **cluster 전역 단일값**이다(테넌트별로 나눌 수 없다). `shm_size` 설정은 **없다** |
+| 튜닝 | `shared_buffers=128MB` / `work_mem=16MB` / `maintenance_work_mem=128MB` / `effective_cache_size=512MB` / `max_wal_size=1GB` — 전부 `KOR_TRAVEL_SHARED_POSTGRES_*` env 템플릿이고 **cluster 전역 단일값**이다(테넌트별로 나눌 수 없다). `shm_size: 512mb`(ADR-52 — 그전에는 docker 기본 64MB였다). 컨테이너는 `init: true`(PID 1 = docker-init)이고 healthcheck는 exec 형식 `pg_isready -t 3`, `stop_grace_period: 300s`다 |
 | prod 배포 트리 | `/opt/kor-travel-docker-manager` — 스택이 실제로 뜨는 곳이다(컨테이너 라벨 `com.docker.compose.project.config_files`가 이 경로를 가리킨다). `docker-compose.yml`·`config/docker-targets.yml`·`standalone_backup.py` md5가 `origin/main`과 정확히 일치 |
 | ⚠️ prod 백업 cron이 도는 트리 | **다른 사본이다.** `digitie` crontab이 `/home/digitie/kor-travel-docker-manager/scripts/run-standalone-backup.sh`를 부르고, 그 스크립트가 고르는 `backend/ktd_venv`는 같은 트리의 `backend/src`를 editable로 가리킨다. 그 트리는 #363을 못 받아 **아직 옛 instance를 겨냥한다**(venv python으로 확인: `_ROLE_CONFIG["concierge"] == ('KOR_TRAVEL_CONCIERGE_POSTGRES_CONTAINER', 'kor-travel-concierge-postgres', 'kor_travel_concierge')`). 최근 manifest `concierge-*.manifest`의 `"instance"`가 `kor-travel-concierge-postgres:127.0.0.1:12600/kor_travel_concierge`로 그 사실을 그대로 적는다 |
 
@@ -262,7 +262,7 @@ GRANT  CONNECT ON DATABASE <app DB>       TO <app_user>;
 | C6 | secret은 **반드시 env provider**. `file:` 금지 | 후보/resolved 양쪽 계약이 명시적으로 거부 → 배포 차단 |
 | C7 | 앱 컨테이너에는 secret을 **마운트하지 않는다**(비밀번호는 DSN env로만) | 선례와 어긋나고, 비밀번호 보관처가 하나 더 늘어난다 |
 | C8 | override 파일(`docker-compose.override.yml`)로 시도하지 않는다 | 그 파일이 **존재하는 것만으로** deployment readiness가 `missing`으로 떨어져 승인된 재구축 전체가 막힌다 |
-| C9 | **튜닝·연결 상한 변경은 합류 PR과 분리한다** | `KOR_TRAVEL_SHARED_POSTGRES_*`와 `max_connections`는 **cluster 전역 단일값**이라 테넌트별로 나눌 수 없고, 반영하려면 **공용 postgres 재기동 = 이미 live인 기존 테넌트(현재 concierge)의 다운타임**이 따른다. 별개 배포 창에서, 기존 테넌트에 공지하고 한다. ⚠️ 공용 서비스에는 `shm_size` 설정이 **없다**(기본 `/dev/shm` 64MB) — 큰 DB의 병렬 질의가 `could not resize shared memory segment`로 죽는 자리이고, geo 전용 instance는 같은 자리에 `shm_size: 512mb`를 두고 있다 |
+| C9 | **튜닝·연결 상한 변경은 합류 PR과 분리한다** | `KOR_TRAVEL_SHARED_POSTGRES_*`와 `max_connections`는 **cluster 전역 단일값**이라 테넌트별로 나눌 수 없고, 반영하려면 **공용 postgres 재기동 = 이미 live인 기존 테넌트(현재 concierge)의 다운타임**이 따른다. 별개 배포 창에서, 기존 테넌트에 공지하고 한다. 공용 서비스의 `/dev/shm`은 `shm_size: 512mb`다(ADR-52, 옛 geo 전용 instance와 같은 값 — 그전 64MB에서 병렬 질의가 `could not resize shared memory segment`로 죽었다). 더 필요하면 이것도 cluster 전역 값이다 |
 
 ### 6.2 `config/docker-targets.yml`
 
@@ -539,7 +539,7 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
 | Alembic head | `version_num` |
 | advisory lock 사용처 | 파일:줄 전수 목록, 세션/트랜잭션 구분 |
 | 예상 최대 연결 수 | 풀 크기 × 프로세스 수. **분모는 `max_connections=100`(cluster 전역)** — 남은 예산 안에 드는지 함께 적는다 |
-| **필요한 튜닝값 + 기존 테넌트에 미치는 영향** | `shared_buffers`/`work_mem` 등. **`shm_size` 요구 여부를 반드시 적는다**(현재 공용 서비스에는 설정이 없어 `/dev/shm` 기본 64MB다). 이 값들은 cluster 전역이고 반영에 **공용 instance 재기동 = 기존 테넌트 다운타임**이 따른다(§6.1 C9) |
+| **필요한 튜닝값 + 기존 테넌트에 미치는 영향** | `shared_buffers`/`work_mem` 등. **`shm_size` 요구 여부를 반드시 적는다**(현재 공용 서비스는 `shm_size: 512mb`다, ADR-52). 이 값들은 cluster 전역이고 반영에 **공용 instance 재기동 = 기존 테넌트 다운타임**이 따른다(§6.1 C9) |
 | `init_steps` 유무 | 있으면 그 step이 어느 컨테이너에 `exec`하고 어떤 bind를 요구하는지(§6.2 T7) |
 | 백업 role 필요 여부 | 필요하면 role 이름 제안. **현재 cutover 직전 백업의 주인이 누구인지도 함께**(§6.4) |
 | Dagster 메타DB 유무 | 있으면 별도 database/role/password를 쓴다. transport는 `kor_travel_transport_dagster` / `kor_travel_transport_dagster_app`으로 provision한다. **이미 공용 instance에 흔적이 있으면 그 사실을 적는다**(§10.1) |
