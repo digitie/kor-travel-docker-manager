@@ -7543,3 +7543,62 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
   5. crontab에 두 줄(16:50 UTC daily keep 7, 17:15 UTC `*/3` keep 3)을 파일 경유로 덧붙인다.
   6. 두 role이 **cron으로** 검증된 dump를 하나씩 남긴 뒤에만 transport 저장소의 cron 줄을 파일 경유로(정확히 한 줄)
      걷어낸다.
+
+## 2026-09-28 — transport 백업 운영 절차 리뷰 반영(UI 생성 한 번이 cron을 깨는 자리)
+
+- 적대 리뷰(`222aa67..e323695`)가 MED 하나를 냈다(HIGH 없음). **위 항목의 운영 절차(0~6)는 이 항목이
+  대체한다.** 코드 쪽(첫 실행 추정, 리허설 가드, override, UTF-8이 아닌 manifest, wrapper, cron 시각)은 리뷰가
+  확인했고 LOW 넷은 올리지 않았다.
+- **MED — 운영 절차가 UI 생성 한 번으로 cron을 깨는 창을 열었다.** 1단계는 공유 그룹도, transport role 디렉터리도
+  없는 상태에서 live `.env`에 `KTDM_BACKUP_ROOT=/home/digitie/backups`를 넣었고, 막는 것은 3단계의 문장("공유
+  그룹 없이 UI에서 만들지 않는다")뿐이었다. Dashboard는 `BACKUP_ROLES` 전부에 생성 버튼을 두고 backend는 root로
+  돈다. 공유 그룹 없이 root backend가 digitie cron의 root에 쓰면:
+  - role 디렉터리가 **없을 때**(transport 둘 — 리뷰 시점 06:05 UTC n150에 없었다): backend가 그것과
+    `.backup.lock`을 `root:root 0700`/`0600`으로 만든다. 그 뒤 digitie cron은 매번 `_prepare_backup_root`의
+    `os.chmod`에서 EPERM이다. typed 오류가 아닌 `PermissionError`라 CLI는 traceback으로 끝나고 그 role은 다시
+    떠지지 않는다. 배지는 UI dump 덕에 90시간 초록이다.
+  - **있을 때**(`geo_dagster`·`concierge`·`pinvi`): root `0600` manifest를 digitie `gc`가 읽지 못해 그 role 전체를
+    매번 exit 2로 거부한다. create는 성공해 배지는 초록인 채 보존 정리만 멈추고, dump가 공용 instance PGDATA와 같은
+    파일시스템(리뷰의 `stat` 실측)에 쌓인다.
+  - 위 항목의 경고는 둘째 경로만 적었다 — 새 두 role이 정확히 첫째 경로다.
+- **고침(코드)**: `POST /api/v1/backups/{role}`이 job을 띄우기 전에 `ui_backup_owner_conflict(role)`을 본다.
+  `KTDM_BACKUP_SHARED_GROUP`이 없고 backend의 euid가 role 디렉터리(없으면 그 부모)의 소유자와 다르면 409와 이유
+  (경로, 두 uid, 공유 그룹 절, 그 uid로 도는 CLI 대안)를 돌려준다. 공유 그룹이 있으면 건너뛴다 — 그 전제(setgid·
+  그룹)는 create가 이미 확인한다. 둘 다 없으면 이 프로세스가 만들므로 막지 않고, `stat`이 실패하면 판정하지 않고
+  create의 오류에 맡긴다. CLI는 그대로다 — cron과 손 실행은 그 디렉터리의 주인 계정으로 도는 것이 전제다.
+- **고침(문서)**: `docker-management.md` "transport 주기 백업 — 실패를 누가 보는가"의 순서를 바꾸고 두 경로를 모두
+  적었다. `prod-deployment.md` §3.x는 두 계정이 같은 root를 쓰면 필수라고 제목부터 적었다. wrapper 헤더도 같다.
+  - 리뷰가 적지 않은 것 하나를 더 찾았다: **`ktdctl`은 `.env`를 읽지 않는다**(backend만 `load_dotenv`). 공유 그룹을
+    `.env`에만 넣으면 cron은 `0700` 정책으로 돌아 다음 실행이 role 디렉터리를 `os.chmod(…, 0o700)`으로 되돌려
+    setgid를 벗기고, 그 뒤 UI 생성이 `not a shared setgid directory`로 거부된다. crontab 환경 줄 하나
+    (`KTDM_BACKUP_SHARED_GROUP=ktdm-backup`, 백업 줄 위)를 절차와 두 문서에 넣었다.
+- **테스트(n150)**:
+  - 새 단언(`test_api.py`): 다른 계정 소유의 role 디렉터리에는 409이고 job도 파일도 없다, role 디렉터리가 없고 부모가
+    다른 계정 것이면 409이고 디렉터리를 만들지 않는다, 공유 그룹이 선언됐거나 root·부모가 모두 없으면 202로 돈다.
+    소유자는 chown(root 전용) 대신 euid를 바꿔 흉내낸다. 기존 `POST` 테스트 넷은 이 테스트 계정 소유의 임시
+    root(`owned_backup_root`)를 쓴다 — 없으면 판정이 실행 계정의 진짜 `~/backups`에 결박된다.
+  - 빨강 확인: 직전 head `e323695`의 `backend/src` + 이번 테스트는 거부 둘이 빨갛다(`test_api.py -k backup`에서
+    2 failed / 15 passed). 202 쪽 둘은 과잉 거부를 막는 단언이라 옛 코드에서도 초록이다.
+  - `e3035dc`에서 ruff 0.16.4(CI 명령) 초록, 대상 여섯 파일 360 passed. 첫 실행 한 번은
+    `test_a_failed_backup_job_reports_the_failure_instead_of_vanishing` 1 failed였고 그 뒤 같은 명령 세 번,
+    `test_api.py` 단독, 그 테스트 단독 모두 초록이었다 — 재현되지 않았다. 원문을 남기지 못해 원인은 확정하지 않는다.
+    이번 확인은 job 제출 **전에** 돌아 그 테스트의 job 수명과 겹치지 않는다.
+  - 전체 스위트(`/tmp/b3-test.sh`, `e3035dc`): **2051 passed, 2 skipped**(4m30s, 새 단언 넷만큼 늘었다).
+    `ktdm-readiness-*` 잔여 컨테이너 0개. 이 항목 뒤의 커밋은 문서만 바꾼다.
+- **운영 절차(머지 뒤, 운영자)** — 위 항목의 0~6을 대체한다. 명령은 `docker-management.md`의 같은 절에 있다:
+  0. `concierge.log`의 03:30 실행을 먼저 읽는다. `.env`에 `KTDM_BACKUP_ROOT`·`KTDM_BACKUP_SHARED_GROUP`가 없는지
+     개수만 센다.
+  1. CI green으로 머지한다. cron 사본의 `backend/src`(그 안에서만 `--delete`)·`config/docker-targets.yml`·wrapper
+     (실행 비트 유지)를 **머지 커밋에서** 맞춘다 — 설치 전이라 설치본은 아직 옛 release다.
+  2. 여유를 보고(`transport` 첫 실행 최대 약 28 GB) **digitie로** wrapper를 손으로 돌린다 — `transport_dagster` →
+     `transport`. 검증은 "transport 백업을 Manager standalone role로 접었다" 항목의 4(`instance`, `sha256sum -c`,
+     `restore-plan`, `transport_dagster`는
+     `rehearse-restore`). `stat -c '%U:%G %a %n'`로 두 role 디렉터리와 `.backup.lock`이 digitie 소유인지 본다.
+  3. G lock 아래에서 **한 번에**: 공유 그룹(`ktdm-backup`, digitie 가입, `/home/digitie/backups` 아래 `chgrp -R` +
+     디렉터리 `2770` + 파일 `0640`), live `.env`에 `KTDM_BACKUP_ROOT=/home/digitie/backups`·
+     `KTDM_BACKUP_SHARED_GROUP=ktdm-backup`, digitie crontab에 환경 줄 하나(파일 경유, 정확히 한 줄 추가), 그리고
+     머지 커밋 설치(`~/install-mgr.sh <sha>` → rebind → verify).
+  4. `/etc/logrotate.d/kor-travel-docker-manager`가 생겼는지, Dashboard 배지가 2의 dump를 보는지 확인한다.
+  5. crontab에 두 줄(16:50 UTC daily keep 7, 17:15 UTC `*/3` keep 3)을 파일 경유로 덧붙인다.
+  6. 두 role이 **cron으로** 검증된 dump를 하나씩 남긴 뒤에만 transport 저장소의 cron 줄을 파일 경유로(정확히 한 줄)
+     걷어낸다.
