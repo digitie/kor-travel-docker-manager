@@ -824,7 +824,8 @@ runtime과 manifest가 서로 다른 pair로 갈라지지 않게 한다.
 
 대시보드의 일반 container config 변경·reset·미생성 start fallback도 같은 host lock과 공통 mode 계약을
 사용한다. 그 재생성과 복구 재생성은 그 서비스 하나만 `--no-deps`로 한다 — 의존 서비스와 one-shot(db-init,
-migrate)은 시작·재생성·재실행하지 않으므로 운영자가 따로 올린다(§7). compose 파일을 바꾼 뒤 service recreate 또는 RustFS init이 실패하면 원본 byte와 file mode를
+migrate)은 시작·재생성·재실행하지 않으므로 운영자가 따로 올린다(§7).
+compose 파일을 바꾼 뒤 service recreate 또는 RustFS init이 실패하면 원본 byte와 file mode를
 원자 복원하고 기존 설정으로 service를 다시 recreate한다. 복원 결과의 config/runtime 성공 여부는 API
 500 응답의 `detail.restoration.config_restored`와 `runtime_restored`에 분리해 남기며, 실패한 candidate
 설정을 파일에 방치하지 않는다. 첫 Docker mutation이 성공한 뒤 다음 command의 preflight에서 snapshot이나
