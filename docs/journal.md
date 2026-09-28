@@ -7288,3 +7288,68 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
   등이 실행마다 다르다). 적대 리뷰가 지적한 첫판(`ss`가 확인한 포트 목록 비교)은 env 파일이 쓰이기 전에
   멈춰 빌드 입력을 보지 못해 걷어냈다. 사용 중 창 건너뛰기의 결정성, ephemeral 가드(20000·29999·빈 값·
   숫자 아님·읽기 실패), 30000 상한(모든 창 사용 중 → 30000 아래 창만 다 보고 닫힘)도 고정했다.
+
+## 2026-09-28 — 옛 geo·concierge·PinVi 전용 PostgreSQL을 Manager에서 퇴역시켰다
+
+- **실측(n150, 읽기 전용)**: 떠 있는 PostgreSQL은 `kor-travel-shared-postgres`(:11000)·
+  `kor-travel-map-postgres`(:12700)·`pinvi-postgres`(:12800) 셋뿐이었다. geo·concierge 전용
+  instance와 airport DB(`kor-travel-airport-db-postgres-1`)는 이미 없었다. geo·weather·
+  concierge·PinVi·transport의 DSN은 전부 `127.0.0.1:11000`을 가리켰고, `:12700`을 쓰는 것은
+  Map API와 Map Dagster 셋뿐이었다. `pinvi-postgres`는 ADR-46 이전의 동결 롤백 사본으로
+  client 접속이 0이었다. 설치본(`/opt` → `e25f105`) compose에는 퇴역할 서비스 정의 여섯이
+  그대로 있었다.
+- **문제**: Manager는 그 instance들을 "롤백 안전망"이라며 계속 정의하고 띄우고 의존하고
+  백업했다. `kor-travel-geo-api`와 geo Dagster 셋은 `kor-travel-geo-postgres`에, concierge-api는
+  옛 instance와 그 db-init에, PinVi 넷은 `pinvi-postgres`·`pinvi-db-init`에 `depends_on`으로
+  걸려 있었다. 재구축(`rebuild-pinned`)은 매번 `pinvi-postgres`를 띄웠다. 주기 백업의
+  `geo_dagster`는 없는 컨테이너를 겨냥해 실패할 자리였고 `pinvi`는 동결 사본을 떴다.
+- **변경**:
+  - compose에서 `kor-travel-geo-postgres`·`kor-travel-concierge-postgres`·`pinvi-postgres`·
+    `kor-travel-concierge-db-init`·`pinvi-db-init`·`kor-travel-geo-dagster-db-init`을 뺐다.
+    `geo-dagster-db-init`은 옛 geo instance(:12500)에 `kor_travel_geo_dagster`를 만들던
+    one-shot이다. 공용 instance에는 `kor-travel-shared-db-init-geo`가 이미 그 DB를 만든다.
+    그 셋의 superuser secret과, 거기로 가던 `depends_on` 간선도 모두 뺐다.
+  - `config/docker-targets.yml`: 컨테이너 넷(`kor-travel-airport-postgresql` 포함), target
+    `db`(서비스는 geo instance 하나)·`airport-db`, geo/conc/map/pinvi/all의 옛 멤버,
+    `geo-source-verification` init step, `compose_binds` 셋을 뺐다. `storage`와 `airport`는
+    더 이상 없는 target에 의존하지 않는다.
+  - `scripts/ensure-kor-travel-geo-db.sh`·`scripts/verify-kor-travel-geo-source.sh`를 지웠다.
+    둘 다 옛 geo instance **안에** 마운트돼 돌던 스크립트다. 검증 스크립트의 테스트도 함께 지웠다.
+  - C6c 계약에서 `pinvi-postgres`/`pinvi-db-init`의 신원·이미지·command·superuser secret 검사,
+    그 컨테이너의 런타임 secret 격리 검사를 뺐다. PinVi env 불변식에서는
+    `PINVI_DB_PORT`·`PINVI_POSTGRES_USER`·`PINVI_POSTGRES_PASSWORD`를 뺐다. loopback 결박과 initdb
+    규칙은 전역 술어가 모든 선언·목격된 PostgreSQL에 대해 계속 본다. 이름으로 아는 서비스
+    목록에서도 옛 geo/concierge를 뺐다.
+  - 재구축은 이제 Map PostgreSQL만 띄운다. 제거하는 one-shot 목록에서 `pinvi-db-init`을 뺐다.
+    그대로 두면 새 compose에서 `no such service`로 죽는다. 공용 instance는 다른 프로젝트도 쓰므로
+    이 경로가 다시 만들지 않는다(다른 호출과 같이 `--no-deps`).
+  - `ktdctl db-backup`: `geo`·`geo_dagster`·`pinvi`가 `kor-travel-shared-postgres`를 뜬다(override는
+    `KOR_TRAVEL_SHARED_POSTGRES_CONTAINER`). `map_application`/`map_dagster`는 그대로다.
+  - concierge `DATABASE_URL` 기본값이 `:12600`의 superuser 리터럴 대신 공용 instance의 app role을
+    가리킨다. 실제 DSN은 여전히 `.env`에서 온다.
+  - `.env.example`에서 옛 instance만 읽던 키를 뺐다. 예시 DSN은 공용 instance 형태로 바꿨다.
+  - `docs/ports.md`·`platform-topology.md`·`docker-management.md`·`shared-postgres-onboarding.md`·
+    `architecture.md`·`dev-environment.md`·`README.md`를 현재 토폴로지로 맞췄다.
+    `docs/tasks.md`에서 대상 코드가 사라진 GM-17 B 후속 셋을 닫았다.
+- **Map은 그대로다**: `kor-travel-map-postgres`(:12700)와 그 one-shot·DSN·백업 role은 건드리지 않았다.
+- **테스트**:
+  - 옛 서비스를 고정하던 검사를 갱신했다. f1d 골든 테이블에서 required 집합은 12→11이고, 소비자
+    루프의 예외(`pinvi-db-init`)가 사라졌다. PinVi 전용 instance의 신원·secret 검사도 지웠다.
+    전역 술어의 표본은 옛 geo/concierge 대신 공용 instance다.
+  - 다중 프로젝트 경로(`airport`→`airport-db`)는 conftest의 합성 fixture로 계속 태운다.
+    weather의 옛 좌표를 복원하는 기존 방식과 같다.
+  - 새 `test_compose_model_references.py`는 참조를 모델에서 읽어 compose가 정의하는 서비스와
+    대조한다. `depends_on` 간선, Manager target의 `services`/`runtime_services`/init step 서비스,
+    컨테이너의 `compose_service`, `compose_binds`, 백업 role의 컨테이너(와 이름 override 변수),
+    C6c가 이름으로 아는 서비스, 재구축 one-shot 목록, 배포 DB 서비스가 대상이다.
+    origin/main 그대로에서는 초록이다(main은 옛 서비스를 아직 정의한다). origin/main에서 옛 서비스
+    정의만 지운 사본에서는 6건이 빨갛다(간선 17, target 쪽 12, 백업 role 3, 코드 이름 5).
+  - n150 전체 스위트(ruff 0.16.4 포함)는 `0bc1223`에서 2014 passed, 2 skipped다. 새 compose는 더미
+    env로 `docker compose config -q`를 통과한다. 렌더 결과에 옛 이름과 포트가 0건이고, concierge
+    기본 DSN은 `kor_travel_concierge_app@127.0.0.1:11000/kor_travel_concierge`로 풀린다.
+- **배포 뒤 운영자 몫**: 설치 → rebind 뒤 `pinvi-postgres`를 stop·rm한다. compose는 그때까지 그것을
+  orphan으로 경고만 한다. 데이터 디렉터리 `/home/digitie/pinvi-data/pgdata`,
+  `/home/digitie/kor-travel-geo-data/pgdata-final-20260529`, `/home/digitie/kor-travel-concierge-data/pgdata`는
+  지우지 않는다. 호스트 `.env`의 옛 키(`KOR_TRAVEL_GEO_POSTGRES_PASSWORD`·
+  `KOR_TRAVEL_CONCIERGE_POSTGRES_PASSWORD`·`PINVI_POSTGRES_PASSWORD`·`PINVI_DB_PORT` 등)는 이제
+  아무도 읽지 않는다. 남아 있어도 무해하다.

@@ -35,7 +35,7 @@ graph TD
 
     subgraph Infrastructure [Docker Daemon / Host]
         D_Sock[docker.sock / Named Pipe]
-        C_PG[전용 PostgreSQL 4개: 12500/12600/12700/12800]
+        C_PG[PostgreSQL 2개: Map 전용 12700 · 공용 11000]
         C_RFS[RustFS Container]
         C_GEO_API[kor-travel-geo-api-latest/kor-travel-geo API]
         C_GEO_UI[kor-travel-geo-ui-latest/kor-travel-geo Web UI]
@@ -81,10 +81,10 @@ graph TD
 - **역할**: 개발환경에서 의존 Docker를 앱 관점 target으로 실행한다.
 - **실행 방식**: `docker compose`를 문자열 shell이 아닌 인자 배열로 실행한다.
 - **지원 옵션**: `ensure`에서 `--build`, `--force-recreate`를 전달할 수 있다.
-- **공유 target**: API와 Python CLI가 같은 registry(`db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `all`)를 사용한다.
+- **공유 target**: API와 Python CLI가 같은 registry(`storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `weather`, `all`)를 사용한다.
 - **설정 파일**: target 정의, alias, 의존 순서, 초기화 단계는 `config/docker-targets.yml`에서 읽는다.
-- **의존 순서**: 기본 결정적 순서는 `db -> storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi`이며, 실제 실행 범위는 `depends_on` DAG의 전이 폐포를 위상정렬한다. `geo`와 `conc`는 서로 독립이고 `map`이 두 target 모두에 의존한다.
-- **초기화 단계**: `db`는 Geo 전용 database/extension/schema grant를 복구하고, `storage`는 RustFS bucket을 복구하며, `geo`는 원천 DB 적재 상태를 검증한다. Concierge·PinVi database 생성은 각 Compose one-shot이, Map·PinVi schema bootstrap은 pinned rebuild workflow가 소유한다.
+- **의존 순서**: 기본 결정적 순서는 `storage -> gra -> cadv -> prom -> geo -> conc -> map -> pinvi -> weather`이며, 실제 실행 범위는 `depends_on` DAG의 전이 폐포를 위상정렬한다. `geo`와 `conc`는 서로 독립이고 `map`이 두 target 모두에 의존한다.
+- **초기화 단계**: `storage`는 RustFS bucket을 복구한다. geo·Concierge·PinVi·weather·transport의 role·database 생성은 공용 instance의 각 `kor-travel-shared-db-init-*` one-shot이, Map·PinVi schema bootstrap은 pinned rebuild workflow가 소유한다(옛 `db` target의 geo DB 복구와 `geo`의 원천 검증은 2026-09-28에 옛 geo 전용 instance와 함께 뺐다).
 - **배포 readiness**: compatible-pair transaction에 고정된 canonical resolved Compose를 정본으로
   service별 readiness를 파생한다. 활성 healthcheck가 있으면 `running + healthy`, 없거나 명시적으로
   비활성화됐으면 `running`을 요구한다. `ps --all`의 service별 record는 정확히 하나여야 하고
@@ -133,19 +133,16 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
 
 `kor-travel-docker-manager`가 관리하는 Docker 컨테이너 정의는 다음과 같다.
 
-1. **프로젝트별 전용 PostgreSQL / PostGIS 4개** (ADR-37):
-   - 컨테이너: `kor-travel-geo-postgres`
-   - 이미지: `postgis/postgis:16-3.5`
-   - 목적: Geo instance는 `kor_travel_geo`, `kor_travel_geo_dagster`만 보유한다. Concierge, Map, PinVi는 각각 별도 instance와 database를 사용한다.
-   - 포트: `12500`(loopback 전용). host network라 `-p`가 곧 호스트 포트다.
-   - DSN 형태: `postgresql+psycopg://<user>:<password>@127.0.0.1:12500/kor_travel_geo`. superuser
-     password는 `POSTGRES_PASSWORD_FILE` secret으로 주고, `KOR_TRAVEL_GEO_DOCKER_PG_DSN`/
-     `KOR_TRAVEL_GEO_DAGSTER_PG_URL`은 기본값 없이 fail-close로 요구한다(issue #178).
-   - 나머지 셋은 `kor-travel-concierge-postgres`:12600 ·
-     `kor-travel-map-postgres`:12700 · `pinvi-postgres`:12800이다.
-   - PinVi의 `pinvi-postgres`와 `pinvi-db-init`은 다음 immutable PostGIS digest를 공유한다:
-     `postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40`.
-   - 기본 pgdata: `KOR_TRAVEL_GEO_PGDATA=/home/digitie/kor-travel-geo-data/pgdata-final-20260529`.
+1. **PostgreSQL / PostGIS 2개**:
+   - 공용 instance `kor-travel-shared-postgres`(`postgis/postgis:16-3.5`, `127.0.0.1:11000`,
+     ADR-44~47): concierge·geo·PinVi·weather·transport가 각자 app role 하나와 자기 database
+     (앱 + Dagster 메타)를 쓴다. cluster 관리자(`shared_admin`) password는
+     `POSTGRES_PASSWORD_FILE` secret으로 주고 앱에는 주입하지 않는다. geo의
+     `KOR_TRAVEL_GEO_DOCKER_PG_DSN`/`KOR_TRAVEL_GEO_DAGSTER_PG_URL`은 기본값 없이 fail-close로
+     요구한다(issue #178). 기본 pgdata: `KOR_TRAVEL_SHARED_PGDATA=/home/digitie/kor-travel-shared-data/pgdata`.
+   - Map 전용 instance `kor-travel-map-postgres`(`127.0.0.1:12700`, ADR-37): 아래 9번.
+   - 둘 다 loopback 전용이고 host network라 `-p`가 곧 호스트 포트다. 옛 전용 instance
+     (geo `:12500`·concierge `:12600`·PinVi `:12800`)는 2026-09-28에 compose에서 뺐다.
 2. **RustFS**:
    - 컨테이너: `kor-travel-rustfs`
    - 이미지: `rustfs/rustfs:latest`
@@ -185,7 +182,7 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
    - 목적: 지오코딩/리버스 지오코딩 REST API 제공.
    - host 포트: `12501`.
    - 컨테이너 내부 포트: `12501`.
-   - 내부 의존성: `127.0.0.1:12500`(Geo 전용 PostgreSQL), `127.0.0.1:12101`(RustFS).
+   - 내부 의존성: `127.0.0.1:11000`(공용 PostgreSQL), `127.0.0.1:12101`(RustFS).
    - 기본 source data mount: `KOR_TRAVEL_GEO_APP_DATA_DIR=/mnt/f/dev/kor-travel-geo/data` -> `/data:ro`.
 7. **kor-travel-geo Web UI**:
    - 컨테이너: `kor-travel-geo-ui-latest`
@@ -199,7 +196,7 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
    - compose service: `kor-travel-concierge-api`, `kor-travel-concierge-mcp`, `kor-travel-concierge-scheduler`, `kor-travel-concierge-ui`
    - 목적: 여행 concierge provider, MCP HTTP, scheduler, Web UI 제공.
    - host 포트: API `12601`, MCP `12602`, Web UI `12605`.
-   - 내부 의존성: `127.0.0.1:12600`(Concierge 전용 PostgreSQL), `127.0.0.1:12101`(RustFS). Geo에는 의존하지 않는다.
+   - 내부 의존성: `127.0.0.1:11000`(공용 PostgreSQL), `127.0.0.1:12101`(RustFS). Geo에는 의존하지 않는다.
 9. **kor-travel-map 전용 PostgreSQL / API / Dagster / Web UI**:
    - DB 컨테이너: `kor-travel-map-postgres` (`127.0.0.1:12700`, Map application·Dagster metadata 전용).
    - 런타임 컨테이너: `kor-travel-map-api-latest`, `kor-travel-map-dagster-latest`, `kor-travel-map-dagster-daemon-latest`, `kor-travel-map-ui-latest`
@@ -215,7 +212,7 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
    - host 포트: API `12801`, Dagster `12802`, Web UI `12805`.
    - Dagster image 계약: `DAGSTER_HOME=/opt/pinvi/.dagster`, code location
      `pinvi.etl.definitions`를 사용한다.
-   - 내부 의존성: host network의 `127.0.0.1:12800`(PinVi 전용 PostgreSQL), `127.0.0.1:12101`,
+   - 내부 의존성: host network의 `127.0.0.1:11000`(공용 PostgreSQL), `127.0.0.1:12101`,
      `127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}`.
    - worker 수: PinVi 실시간 WebSocket broadcast broker는 shared broker 도입 전까지 process-local이므로 `PINVI_API_WORKERS=1`을 기본값으로 둔다. worker를 2 이상으로 올리려면 PinVi 쪽 broadcast broker가 프로세스 간 전달을 지원해야 한다.
    - public URL/CORS: dev 기본값은 `http://127.0.0.1:12801`/로컬 Web origin이며, prod에서는 gitignore된 `.env`의 `PINVI_PUBLIC_API_URL`과 `PINVI_CORS_ALLOWED_ORIGINS`로 공개 API 주소와 Web origin을 주입한다.
@@ -274,6 +271,6 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
      cAdvisor mount는 RO `/sys`와 Docker socket exact set만 허용한다. 첫 mutation 성공 뒤 후속 preflight
      drift가 발생하면 원래 오류를 보존한 typed 500과 함께 compose/runtime 복구 결과를 반환한다.
 
-`kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi는 더 이상 자체 저장소의 Docker compose 또는 RustFS 구동 스크립트로 PostgreSQL/RustFS 생명주기를 직접 관리하지 않는다. `geo`, `conc`, `map`, `pinvi` target은 각 앱 컨테이너를 manager에서 함께 빌드하고 실행한다. 로컬에서 해당 인프라를 실행하거나 재시작할 때는 이 저장소의 `ktdctl` CLI, 대시보드/API를 사용한다. 공식 CLI target은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`이며, `srv`와 `main`은 `pinvi`를 가리키는 별칭이다. `config/docker-targets.yml`에서 순서와 포함 서비스를 확장한다.
+`kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi는 더 이상 자체 저장소의 Docker compose 또는 RustFS 구동 스크립트로 PostgreSQL/RustFS 생명주기를 직접 관리하지 않는다. `geo`, `conc`, `map`, `pinvi` target은 각 앱 컨테이너를 manager에서 함께 빌드하고 실행한다. 로컬에서 해당 인프라를 실행하거나 재시작할 때는 이 저장소의 `ktdctl` CLI, 대시보드/API를 사용한다. 공식 CLI target은 `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `weather`이며, `srv`와 `main`은 `pinvi`를 가리키는 별칭이다. `config/docker-targets.yml`에서 순서와 포함 서비스를 확장한다.
 
-로컬 host 포트 정책은 `docs/ports.md`를 기준으로 한다. PostgreSQL은 프로젝트마다 전용 instance이고 포트는 각 대역의 `x00`이다 — geo `12500`, concierge `12600`, map `12700`, pinvi `12800`(ADR-37). 넷 다 loopback 전용이고 `5432`를 듣는 것은 없다. RustFS는 `storage` 대역(`12100-12199`), Grafana는 `gra` 대역(`12200-12299`), cAdvisor는 `cadv` 대역(`12300-12399`), Prometheus는 `prom` 대역(`12400-12499`), `kor-travel-geo`는 `geo` 대역(`12500-12599`), `kor-travel-concierge`는 `conc` 대역(`12600-12699`), `kor-travel-map`은 `map` 대역(`12700-12799`), PinVi는 `pinvi` 대역(`12800-12899`), `kor-travel-docker-manager` 자체 API/Web은 `12900-12999` 대역을 사용한다.
+로컬 host 포트 정책은 `docs/ports.md`를 기준으로 한다. PostgreSQL은 Map 전용 instance(`12700`, ADR-37)와 나머지 프로젝트의 공용 instance(`11000`, ADR-44~47) 둘이다. 둘 다 loopback 전용이고 `5432`를 듣는 것은 없다. RustFS는 `storage` 대역(`12100-12199`), Grafana는 `gra` 대역(`12200-12299`), cAdvisor는 `cadv` 대역(`12300-12399`), Prometheus는 `prom` 대역(`12400-12499`), `kor-travel-geo`는 `geo` 대역(`12500-12599`), `kor-travel-concierge`는 `conc` 대역(`12600-12699`), `kor-travel-map`은 `map` 대역(`12700-12799`), PinVi는 `pinvi` 대역(`12800-12899`), `kor-travel-docker-manager` 자체 API/Web은 `12900-12999` 대역을 사용한다.

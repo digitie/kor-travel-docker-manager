@@ -1,5 +1,17 @@
 # 공용 제어 평면 PostgreSQL(:11000) 온보딩
 
+> **2026-09-28 현황.** concierge·geo·PinVi·weather·transport가 이 instance에 있고, 전용
+> instance는 Map(`kor-travel-map-postgres`, `:12700`) 하나다. 옛 전용 instance(geo `:12500`·
+> concierge `:12600`·PinVi `:12800`)와 그 one-shot(`kor-travel-concierge-db-init`·
+> `pinvi-db-init`·`kor-travel-geo-dagster-db-init`)은 Manager의 compose·targets·백업·C6c
+> 계약에서 빠졌다 — 그날 n150 실측으로 모든 해당 서비스의 DSN이 `:11000`을 가리켰고, 남은
+> 옛 instance는 접속 0인 `pinvi-postgres` 하나였다. 데이터 디렉터리는 호스트에 그대로 둔다.
+> 아래 §1 이하의 표와 "롤백 안전망" 서술은 **2026-09-20 실측 기준의 기록**이다. 합류
+> 절차(§3 이후)는 그대로 유효하다. 합류 뒤 옛 instance를 퇴역시킬 때는 compose 서비스만
+> 지우지 말고 그 이름을 든 자리(`depends_on`·target·`compose_binds`·`init_steps`·백업
+> role·C6c 계약)를 같은 커밋에서 함께 옮긴다 — `backend/tests/test_compose_model_references.py`가
+> 그 참조들을 모델에서 읽어 compose와 대조한다.
+
 ## 이 문서는 누구를 위한 것인가
 
 이 문서는 **kor-travel-docker-manager 저장소를 모르는 다른 저장소의 작업자**(geo · concierge · weather · transport, 그리고 앞으로 합류할 프로젝트)를 위한 것이다. n150 prod에는 프로젝트별 전용 PostgreSQL instance와 별개로, 여러 프로젝트가 database 단위로 나눠 쓰는 **공용 제어 평면 instance(`127.0.0.1:11000`)** 가 이미 떠 있다. 여기 합류하려면 Manager 저장소에서 바뀌어야 하는 것(compose·target 등록·secret·백업 role)과 **네 저장소에서 미리 끝낼 수 있는 것**(연결 파라미터화·Alembic head 고정·확장 목록 확정·데이터 규모 실측·advisory lock 점검)이 갈린다. 이 문서는 그 경계를 긋고, 네가 Manager PR을 기다리지 않고 **지금 당장 시작할 수 있는 일**을 앞쪽에 둔다. 이 문서가 다루지 않는 것은 "네 프로젝트가 언제 이전하는가"다 — 그것은 아직 아무 문서도 정하지 않았다(§10).
@@ -208,7 +220,7 @@ ALTER/CREATE ROLE <app_user> WITH LOGIN PASSWORD '<secret>' NOSUPERUSER NOCREATE
 
 ADR-37이 기록한 사고의 **직접 원인**은 `scripts/ensure-kor-travel-geo-db.sh` 하나였다. 그 스크립트는 한 cluster 안에서 `pinvi` role과 `pinvi`·`kor_travel_concierge`·`krtour_map` database를 만들고 owner와 광범위한 grant를 재적용했다. 결과적으로 통합 instance는 "database만 나눠 쓰는" 형태가 아니라 **모든 프로젝트가 서로의 principal namespace를 공유하는** 형태였고, Map을 전용 instance로 뺀 뒤에도 통합 instance에 `ktm_` role 7개가 남아 Map migrator credential로 33 GB `kor_travel_geo`에 실제로 접속됐다(`CONNECTED as ktm_feature_migrator`).
 
-더 나쁜 것은 재발 구조였다. 그 스크립트는 **복구 실행 때마다 그 구조를 조용히 되살릴 수 있었다** — ADR-37의 표현으로 "그대로 두면 복구 실행이 이 ADR을 되돌린다". 그래서 그대로 두지 않았다: 오늘 `scripts/ensure-kor-travel-geo-db.sh` 129행이 "ADR-37 — pinvi/concierge role·database는 여기서 만들지 않는다"이고 다중 프로젝트 프로비저닝은 잘려 나가 geo 전용이 됐다. 금지의 이유는 미관이 아니다. **다중-프로젝트 프로비저닝 스크립트는 격리를 되돌리는 재실행 가능한 기계**가 되기 때문이고, 그 논지는 스크립트를 고친 지금도 그대로다.
+더 나쁜 것은 재발 구조였다. 그 스크립트는 **복구 실행 때마다 그 구조를 조용히 되살릴 수 있었다** — ADR-37의 표현으로 "그대로 두면 복구 실행이 이 ADR을 되돌린다". 그래서 그대로 두지 않았다: `scripts/ensure-kor-travel-geo-db.sh` 129행이 "ADR-37 — pinvi/concierge role·database는 여기서 만들지 않는다"가 됐고 다중 프로젝트 프로비저닝은 잘려 나가 geo 전용이 됐다(그 스크립트는 옛 geo 전용 instance와 함께 2026-09-28에 삭제됐다). 금지의 이유는 미관이 아니다. **다중-프로젝트 프로비저닝 스크립트는 격리를 되돌리는 재실행 가능한 기계**가 되기 때문이고, 그 논지는 스크립트를 고친 지금도 그대로다.
 
 그리고 그 계열의 SQL 원본 **`scripts/init-kor-travel-geo.sql`은 아직 저장소에 추적된 채 남아 있다** — `CREATE DATABASE pinvi; CREATE DATABASE krtour_map; CREATE DATABASE kor_travel_concierge; CREATE USER pinvi WITH PASSWORD ...`를 평문 비밀번호와 함께 담고 있고, 지금은 어디에도 마운트되지 않는다. 파일 이름이 `geo`를 달고 있어 geo 세션에게 재사용 유혹이 가장 큰 자리다. **어떤 instance의 `initdb.d`에도 다시 걸지 마라.**
 
@@ -262,7 +274,7 @@ GRANT  CONNECT ON DATABASE <app DB>       TO <app_user>;
 | T4 | 공용 container 항목의 `connection` 문자열에 네 database 이름 추가 | 표시상 누락(기능 영향 없음) |
 | T5 | db-init one-shot은 `containers:`·`runtime_services:`에 **넣지 않는다** | one-shot의 정상 상태는 `exited(0)`이므로 대시보드에 상시 비정상 카드로 남고, `runtime_services:`에 넣으면 status가 항상 실패 |
 | T6 | 새 host bind를 들고 온다면 `compose_binds:` allowlist에 등재. **자료구조는 `compose 서비스 이름 → {container_path, read_only, source} 목록`이다.** `source`에는 compose 원문을 그대로(`${VAR:-default}` 포함) 옮겨 적는다 — 전개된 값을 적으면 대조가 어긋난다 | `compose candidate <svc> bind is not in the canonical baseline`으로 **배포 전체 거부**(GM-17 보안 경계). 공용 instance pgdata는 이미 등재돼 있으니 bind를 안 쓰면 이 절은 대개 건드릴 일이 없다 — **단, T7처럼 `init_steps`가 DB 컨테이너 안에서 파일을 읽는 경우는 예외다** |
-| T7 | **`init_steps` 재지정.** target이 `init_steps`를 선언하면 그 `exec` 대상 컨테이너가 cutover 후에도 옳은 instance를 가리키는지 **같은 커밋에서** 고친다 | 빠뜨리면 (i) 옛 DB를 검증해 **거짓 초록**을 내거나, (ii) 옛 instance를 내리는 순간 `ensure <target>`이 **통째로 실패**한다. 실물: `geo` target이 `init_steps: geo-source-verification`을 선언하고 `ensure geo`가 `up -d` 뒤 `compose exec -T kor-travel-geo-postgres sh /opt/.../verify-kor-travel-geo-source.sh`를 돌린다 |
+| T7 | **`init_steps` 재지정.** target이 `init_steps`를 선언하면 그 `exec` 대상 컨테이너가 cutover 후에도 옳은 instance를 가리키는지 **같은 커밋에서** 고친다 | 빠뜨리면 (i) 옛 DB를 검증해 **거짓 초록**을 내거나, (ii) 옛 instance를 내리는 순간 `ensure <target>`이 **통째로 실패**한다. 실물(2026-09-28까지): `geo` target이 `init_steps: geo-source-verification`을 선언하고 `ensure geo`가 `up -d` 뒤 `compose exec -T kor-travel-geo-postgres sh /opt/.../verify-kor-travel-geo-source.sh`를 돌렸다 — 옛 instance 퇴역 때 그 step을 함께 뺐다 |
 | T8 | 새 PostgreSQL 서버를 세우는 경우 `role:`이 `-postgresql`로 끝나야 한다 | `undeclared PostgreSQL server`로 거부. `role: db`로 위장해도 witnessed 축이 잡는다. (공용 instance에 합류만 한다면 **새 컨테이너를 만들지 않으므로** 해당 없음) |
 
 ### 6.3 코드·테스트·문서

@@ -51,13 +51,13 @@ poetry run ktdctl srv --build
 poetry run ktdctl geo --build
 ```
 
-공식 target은 `db`, `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `all`이며, `srv`와 `main`은 `pinvi`, `default`는 `all`을 가리키는 별칭입니다. `config/docker-targets.yml`의 `dependency_order`는 결정적 표시 순서이고, 실제 실행 범위는 각 target의 `depends_on` DAG 전이 폐포를 따른다. 따라서 `conc`는 `geo`에 의존하지 않고, `map`이 `geo`와 `conc` 모두에 의존한다.
+공식 target은 `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `weather`, `all`이며, `srv`와 `main`은 `pinvi`, `default`는 `all`을 가리키는 별칭입니다. `config/docker-targets.yml`의 `dependency_order`는 결정적 표시 순서이고, 실제 실행 범위는 각 target의 `depends_on` DAG 전이 폐포를 따른다. 따라서 `conc`는 `geo`에 의존하지 않고, `map`이 `geo`와 `conc` 모두에 의존한다.
 
 기본 접속 정보는 다음과 같습니다.
 
 | 대상 | Host 포트 | 접속 정보 |
 |------|-----------|-----------|
-| PostgreSQL / PostGIS (프로젝트별 전용 4개, ADR-37) | `12500` · `12600` · `12700` · `12800` | `kor-travel-geo-postgres`(`kor_travel_geo`) · `kor-travel-concierge-postgres`(`kor_travel_concierge`) · `kor-travel-map-postgres`(`kor_travel_map`) · `pinvi-postgres`(`pinvi`). 넷 다 loopback 전용이고 `5432`는 쓰지 않는다 |
+| PostgreSQL / PostGIS 2개 | `11000` · `12700` | 공용 `kor-travel-shared-postgres`(concierge·geo·PinVi·weather·transport, ADR-44~47) · Map 전용 `kor-travel-map-postgres`(`kor_travel_map`, ADR-37). 둘 다 loopback 전용이고 `5432`는 쓰지 않는다. 옛 전용 instance(`12500`·`12600`·`12800`)는 2026-09-28에 뺐다 |
 | RustFS S3 API | `12101` | `http://127.0.0.1:12101` |
 | RustFS console | `12105` | `http://127.0.0.1:12105/rustfs/console/` |
 | Grafana Web UI | `12104`(ADR-48) | `http://127.0.0.1:12104` |
