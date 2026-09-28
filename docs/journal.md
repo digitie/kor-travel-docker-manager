@@ -7866,3 +7866,57 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
   `.env.example`과 두 계약 fixture의 metadata user를 Dagster DB 이름에 맞췄다. 통합 fixture는 PGDATA를 tmpfs에
   두고 `max_connections`로 상한 helper의 입력을 정한다.
 - `/tmp/b3-test.sh`는 다른 세션의 Map pytest 때문에 BUSY로 재시도 중이었다 — 위의 clone 실행이 같은 스위트다.
+
+## 2026-09-28 — M1 적대 리뷰 수정: R4를 live role 그래프에, R3를 compose가 닿는 범위에
+
+M1(`fix/rebuild-tenant-fences`) 리뷰의 MED 셋과 값싼 LOW를 고쳤다. 코드는 `86cf82d`·`714b24c`·`b6ac031`, 문서
+`13dec2e`.
+
+- **R4(MED 둘)**: `ensure_map_databases_isolated`는 env에서만 온 이름에 grant한 뒤 같은 env 값과 비교하는
+  read-back으로 확인했다 — 일관되게 잘못 박힌 env를 그대로 승인했다(리뷰 실측: 다른 login에 Map DB CONNECT,
+  다른 tenant DB의 PUBLIC CONNECT 회수). 이제 한 `--single-transaction` 스크립트다.
+  - 바꾸기 전 DO 전제: app DB 소유자 = `ktm_feature_schema_owner`, login은 LOGIN·non-superuser이고 그 소유자의
+    member(Map bootstrap이 service login에 schema owner를 `INHERIT FALSE`로 준다), Dagster DB 소유자 = frozen
+    metadata user이고 그 user는 다른 DB를 소유하지 않는다.
+  - app DB의 명시 CONNECT 가운데 소유자·login 밖의 grantee는 ACL에서 유도해 걷는다(수렴 — 옛 login·손 grant 하나가
+    이후 모든 수렴·배포를 막던 LOW). Dagster DB는 소유자 이름으로만 결박되므로 PUBLIC만 걷는다.
+  - read-back은 같은 transaction의 DO 블록이다. 거부하면 GRANT·REVOKE·상한이 함께 롤백되고, 문구에 login 집합이
+    실린다. commit 뒤의 Python read-back은 지웠다.
+  - C6c는 `KOR_TRAVEL_MAP_PG_DSN`을 형제 다섯처럼 결박한다(`postgresql+asyncpg`, `127.0.0.1`, Map 포트, app DB)
+    — login은 bootstrap·metadata user·Map principal이 아니어야 한다. b2 규칙은 자기 문구를 갖는다.
+- **R3(MED)**: chokepoint가 이름 붙은 서비스만 셌다. `create`는 `--no-deps`가 없고 drift된 의존 PostgreSQL을 다시
+  만든다. 이제 의존성으로 번지는 명령(`create`·`start`·`restart`·`scale`·`watch`·`up`·`run`)이 `--no-deps` 없이
+  오면 frozen resolved 문서의 `depends_on` closure를 범위에 넣는다. `--remove-orphans`와 읽을 수 없는 문서
+  (`services`·`depends_on`)는 거부한다 — `postgres_server_services`는 빈 집합 대신 거부한다.
+- **launcher**: 공백만인 사유를 lock 전에 거부한다(CLI `not reason.strip()`와 같게).
+- **문서**: §7.7에 "R4 거부" runbook(진단 쿼리·되돌리는 SQL), R2 runbook의 스키마 목록은 Map bootstrap을
+  가리키게, 받아들인 남은 위험(아래)을 적었다.
+- **남은 위험(M2가 ADR-53에 옮긴다)** — 앞 항목의 "foreign login은 거부된다"는 오늘 인벤토리에서만 참이다.
+  - 자기 이름의 DB **하나만** 소유한 다른 tenant login은 metadata user·Dagster DB 이름으로 일관되게 박히면 R2
+    배타성과 R4 전제를 지난다 — `--restart`는 그 DB를 지우고, adopt·기록 없는 배포의 R4는 그 DB의 PUBLIC CONNECT를
+    걷는다. 공용 instance에는 그런 login이 없다(12:02Z 읽기 전용 실측: login 다섯 모두 `*_app`/
+    `pinvi_application_runtime`, 자기 이름의 DB 없음). Manager가 기록한 DB identity에 결박하는 수정은 기록이 없는
+    정당한 `--restart`(첫 배포, DB 없는 adopt)를 막고 PinVi drop 의미도 바꿔서 이번에는 하지 않았다.
+  - PinVi drop 소유자에는 배타성이 없다 — M1 이전부터 있던 `--restart` 위험이다.
+- **12700 수렴 전제 실측(12:02Z, 읽기 전용)**: `kor_travel_map` 소유자 `ktm_feature_schema_owner`,
+  `ktm_feature_service`는 그 member(`pg_has_role … MEMBER` = t), `kor_travel_map_dagster`는 자기 DB만 소유,
+  두 DB `datacl` NULL. live Map API의 `KOR_TRAVEL_MAP_PG_DSN` 모양은 `postgresql+asyncpg`·`127.0.0.1:12700`·
+  `ktm_feature_service`·`/kor_travel_map`(값은 출력하지 않았다) — 설치 뒤 같은 pair 수렴이 새 전제와 C6c를 통과할
+  모양이다.
+- **테스트(n150, 14:02~14:36Z, `/tmp/m1fix-c-13dec2e`)**:
+  - 표적 6 파일, gate=1, `13dec2e` 코드: **482 passed**, 0 failed, 0 skipped.
+  - 빨강 확인(같은 테스트를 `6c77c9b` 코드에): **32 failed**, 450 passed. 새·바뀐 테스트 44 가운데 32가 빨강 —
+    R4 통합 8/8, R4 단위 2, R3 거부 9, C6c 11(b2 문구 1, service DSN 10), launcher 2. 초록 12는 대조군(허용 6,
+    disjoint 1), 재구축 argv 전체 검사 4(재구축의 호출은 바뀌지 않았다), compose 특성 T-R3d 1(Manager 코드를
+    import하지 않는다).
+  - 변이 11개가 모두 각자의 탐지기를 빨갛게 했다: read-back PUBLIC 열(`grantee = 0`→4294967295, 1), member 검사
+    (2), app 소유자(1), Dagster 소유자(1), Dagster 배타성(1), 수렴(1), closure(6), orphans(1), 빈 services(1),
+    service DSN(10), launcher strip(2).
+  - `/tmp/b3-test.sh`: ruff 0.16.4 깨끗, **2184 passed, 2 skipped**.
+  - gate 켠 전체 스위트(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, 공유 checkout `13dec2e`): **2184 passed, 2 skipped**
+    (root 전용 M05 ledger 둘), 실 PostgreSQL·compose 통합 20건 통과, `ktdm-it-*` 잔재 0.
+  - GitHub CI(dispatch 36421529963, `13dec2e`): 백엔드 2163 passed, 23 skipped(통합은 gate 없이 skip).
+- 테스트 대역 정리: 공허한 이름 서로소 단언을 뺐고, T-R3/T-R3c는 compose 특성 테스트로 표시했으며, R3 end-to-end
+  단언은 해석기를 다시 쓰지 않고 argv 낱말을 본다. `_SHARED_IMAGE` 중복은 MT가 compose에 digest를 핀한 뒤 렌더된
+  서비스에서 읽게 바꾼다.
+- 아직: rename PR이 머지되지 않아 리베이스 전이다. 리베이스 뒤 gate 켠 n150 실행을 다시 하고 수를 PR 본문에 싣는다.
