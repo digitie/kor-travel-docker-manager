@@ -331,9 +331,9 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 | `POST` | `/api/v1/targets/{target}/ensure` | target 서비스를 `docker compose up -d`로 실행하고 초기화 단계 수행 |
 | `GET` | `/api/v1/containers` | 관리 컨테이너 상태 목록 |
 | `GET` | `/api/v1/containers/{container_id}/inspect` | Docker inspect 핵심 정보의 redacted 요약 |
-| `POST` | `/api/v1/containers/{container_id}/action` | `start`, `stop`, `restart` |
-| `POST` | `/api/v1/containers/{container_id}/config` | compose 파라미터 저장 및 재생성 |
-| `POST` | `/api/v1/containers/{container_id}/reset` | 허용된 개발 lifecycle에서 기본 설정으로 복구 및 재생성 |
+| `POST` | `/api/v1/containers/{container_id}/action` | `start`, `stop`, `restart` — stop/restart는 컨테이너의 `stop_grace_period`까지 기다린다(§7) |
+| `POST` | `/api/v1/containers/{container_id}/config` | compose 파라미터 저장 및 그 서비스만 재생성(`--no-deps`, §7) |
+| `POST` | `/api/v1/containers/{container_id}/reset` | 허용된 개발 lifecycle에서 기본 설정으로 복구 및 그 서비스만 재생성(`--no-deps`, §7) |
 | `GET` | `/api/v1/containers/{container_id}/logs` | 최근 로그 |
 | `GET` | `/api/v1/containers/{container_id}/metrics` | 최근 메트릭 이력 |
 | `POST` | `/api/v1/auth/login`, `/api/v1/auth/logout` | 관리자 세션 로그인·로그아웃 |
@@ -376,6 +376,21 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
 - `docker compose` 실행은 반드시 문자열 shell이 아니라 인자 배열로 수행한다.
 - inspect와 로그 출력에서 secret 성격의 environment 값은 redaction한다.
 - compose 파일은 구조 설정을 저장하고, 비밀번호와 API key는 `.env` 또는 `.env.local`에 둔다.
+- 대시보드의 config 변경·reset·없는 컨테이너의 start는 그 서비스 하나만
+  `up -d --force-recreate --no-deps <svc>`로 재생성한다. compose는 의존 서비스를 만들거나 시작하거나
+  healthy를 기다리지 않고, config hash가 어긋난 의존 서비스(예: 정의가 바뀐 Manager를 설치한 뒤 재기동
+  전의 공용 PostgreSQL)도 재생성하지 않으며, one-shot 의존(`kor-travel-shared-db-init-*`,
+  `kor-travel-weather-migrate`)도 다시 돌리지 않는다. 의존 서비스는 먼저 따로 올린다(production에서는
+  호스트에서). compose가 0으로 끝나면 API도 성공을 보고하므로, 공용 PostgreSQL이 내려간 채 테넌트
+  컨테이너를 시작하면 DB 없이 뜬 컨테이너가 남는다.
+- `stop`/`restart`(`ktdctl action <id> stop|restart`, `POST /api/v1/containers/{container_id}/action`)는
+  컨테이너 자신의 grace(compose `stop_grace_period` → `Config.StopTimeout`, 공용 PostgreSQL은 ADR-52의
+  300초)를 docker에 `timeout`으로 넘긴다. Manager가 소유한 컨테이너면 그 시간 내내 host 변경 lock을
+  쥐고, 이 lock은 기다리지 않으므로 그 사이의 rebuild·install·대시보드 변경은 곧바로 거부된다
+  (`another Manager mutation is already active`). grace를 선언하지 않은 컨테이너는 docker 기본 10초 뒤
+  SIGKILL이다. 전용 Map instance(`kor-travel-map-postgresql`)가 그렇다 — 공용 instance로 옮겨 퇴역하기
+  전까지는 대시보드·CLI로 stop/restart하지 말고, 호스트에서 `CHECKPOINT` 뒤 `docker stop --time <초>`로
+  멈춘다.
 - 포트 `11000`, `12700`, `12101`, `12102`, `12103`, `12104`, `12105`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12802`, `12805`, `12901`, `12905`는 Kor Travel/PinVi 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다(Prometheus/cAdvisor/Grafana는 2026-09-21 ADR-48로 `12401`/`12301`/`12205`에서 `12102`/`12103`/`12104`로 재배치됐다).
 
 ### 7.1 작업이 만든 컨테이너는 그 작업이 끝날 때 정리한다
@@ -808,7 +823,9 @@ fsync, 원자 replace, 부모 디렉터리 fsync 순서이며 마지막 fsync �
 runtime과 manifest가 서로 다른 pair로 갈라지지 않게 한다.
 
 대시보드의 일반 container config 변경·reset·미생성 start fallback도 같은 host lock과 공통 mode 계약을
-사용한다. compose 파일을 바꾼 뒤 service recreate 또는 RustFS init이 실패하면 원본 byte와 file mode를
+사용한다. 그 재생성과 복구 재생성은 그 서비스 하나만 `--no-deps`로 한다 — 의존 서비스와 one-shot(db-init,
+migrate)은 시작·재생성·재실행하지 않으므로 운영자가 따로 올린다(§7).
+compose 파일을 바꾼 뒤 service recreate 또는 RustFS init이 실패하면 원본 byte와 file mode를
 원자 복원하고 기존 설정으로 service를 다시 recreate한다. 복원 결과의 config/runtime 성공 여부는 API
 500 응답의 `detail.restoration.config_restored`와 `runtime_restored`에 분리해 남기며, 실패한 candidate
 설정을 파일에 방치하지 않는다. 첫 Docker mutation이 성공한 뒤 다음 command의 preflight에서 snapshot이나

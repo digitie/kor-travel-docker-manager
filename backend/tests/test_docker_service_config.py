@@ -39,6 +39,10 @@ from kor_travel_docker_manager.services.docker_service import (
     validate_network_name,
     validate_port_mapping,
 )
+from kor_travel_docker_manager.services.registry import (
+    MANAGED_CONTAINERS,
+    external_project_for_container,
+)
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CONCIERGE_BASE_URL_ENV = "${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}"
@@ -1109,7 +1113,7 @@ def test_update_container_config_recreates_with_compose_and_preserves_host_netwo
     assert saved_service["network_mode"] == "${KTDM_DOCKER_NETWORK_MODE:-host}"
     assert "networks" not in saved_service
     assert compose_run.call_args_list[0].args == (
-        ["up", "-d", "--force-recreate", "rustfs"],
+        ["up", "-d", "--force-recreate", "--no-deps", "rustfs"],
     )
     assert compose_run.call_args_list[0].kwargs["capture_output"] is True
     assert compose_run.call_args_list[0].kwargs["mutation_capability"] is not None
@@ -1165,7 +1169,7 @@ def test_update_container_config_switches_to_compose_networks_when_requested(
     assert saved_service["networks"] == ["default"]
     assert "network_mode" not in saved_service
     assert compose_run.call_args.args == (
-        ["up", "-d", "--force-recreate", "kor-travel-shared-postgres"],
+        ["up", "-d", "--force-recreate", "--no-deps", "kor-travel-shared-postgres"],
     )
 
 
@@ -2434,6 +2438,11 @@ def test_config_recreate_failure_restores_exact_file_and_runtime(
     }
     assert compose_run.call_count == 1
     frozen_recovery.assert_called_once()
+    # 정방향 재생성과 그 복구는 같은 한 서비스 argv다 — 둘 다 `--no-deps`가 있어야 config
+    # hash가 어긋난 의존 서비스(공용 PostgreSQL 등)를 compose가 함께 재생성하지 않는다.
+    assert frozen_recovery.call_args.args == compose_run.call_args_list[0].args == (
+        ["up", "-d", "--force-recreate", "--no-deps", "rustfs"],
+    )
 
 
 def test_config_runtime_restore_failure_preserves_compose_diagnostics(
@@ -2628,3 +2637,156 @@ def test_all_docker_mutation_entries_bind_transaction_to_selected_c6c_lock(
         mutation(service)
 
     mismatch.assert_called_once_with(snapshot, lock_snapshot)
+
+
+# ── Manager의 컨테이너 stop/restart는 컨테이너 자신의 grace를 따른다 ─────────
+#
+# docker-py의 `restart()`는 인자가 없으면 **항상** `t=10`을 보낸다. 그래서 공용 instance에
+# `stop_grace_period`를 줘도, 인자 없이 부르면 대시보드의 재시작 버튼은 10초 뒤 SIGKILL을
+# 보낸다.
+
+#: 어떤 값이든 docker-py 기본 10초만 아니면 된다 — 배포된 grace를 흉내내지 않는다(그 값은
+#: compose가 정본이고 `test_shared_postgres_runtime_contract.py`가 하한을 본다).
+_DECLARED_STOP_TIMEOUT = 247
+
+#: `0`도 선언이다(`stop_grace_period: 0s`, 곧바로 SIGKILL). 참/거짓으로 가르면 docker-py
+#: 기본 10초로 바뀐다 — 그 변형을 잡는 값이다.
+_DECLARED_STOP_TIMEOUTS = (_DECLARED_STOP_TIMEOUT, 0)
+
+
+class _RecordingContainer:
+    """docker-py `Container`의 이 경로가 쓰는 면만: `attrs`(inspect)와 stop/restart."""
+
+    def __init__(self, config: dict[str, object]) -> None:
+        self.attrs: dict[str, object] = {"Config": config}
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def start(self, **kwargs: object) -> None:
+        self.calls.append(("start", kwargs))
+
+    def stop(self, **kwargs: object) -> None:
+        self.calls.append(("stop", kwargs))
+
+    def restart(self, **kwargs: object) -> None:
+        self.calls.append(("restart", kwargs))
+
+
+def _manager_owned_container() -> tuple[str, str]:
+    """Manager 자신의 compose가 소유한 관리 컨테이너 하나의 (id, 컨테이너 이름).
+
+    grace는 컨테이너에서 파생하므로 어느 컨테이너든 같다. 이름을 박지 않는다 — target
+    이름 바꾸기가 이름과 무관한 이 검사들을 깨면 안 된다. 외부 컨테이너는 고르지 않는다:
+    그 공개 진입점은 c6c lock을 지나지 않는다.
+    """
+
+    for container_id in sorted(MANAGED_CONTAINERS):
+        if external_project_for_container(container_id) is None:
+            return container_id, str(MANAGED_CONTAINERS[container_id]["name"])
+    raise AssertionError("Manager가 소유한 관리 컨테이너가 하나도 없다")
+
+
+def _recording_client(
+    monkeypatch: pytest.MonkeyPatch, service: DockerService, container: _RecordingContainer
+) -> Mock:
+    client = Mock()
+    client.containers.get.return_value = container
+    monkeypatch.setattr(service, "_get_client", lambda: client)
+    return client
+
+
+def _control_with(
+    monkeypatch: pytest.MonkeyPatch, container: _RecordingContainer, action: str
+) -> dict[str, object]:
+    container_id, container_name = _manager_owned_container()
+    service = DockerService()
+    client = _recording_client(monkeypatch, service, container)
+    result = service._control_container_unlocked(
+        container_id, action, environment_snapshot=None
+    )
+    client.containers.get.assert_called_once_with(container_name)
+    return result
+
+
+@pytest.mark.parametrize("grace", _DECLARED_STOP_TIMEOUTS)
+@pytest.mark.parametrize("action", ["stop", "restart"])
+def test_restart_passes_the_container_stop_timeout(
+    monkeypatch: pytest.MonkeyPatch, action: str, grace: int
+) -> None:
+    """`Config.StopTimeout`(compose `stop_grace_period`)가 그대로 `timeout`이 된다."""
+
+    container = _RecordingContainer({"Image": "postgis/postgis", "StopTimeout": grace})
+
+    result = _control_with(monkeypatch, container, action)
+
+    assert result["success"] is True
+    assert container.calls == [(action, {"timeout": grace})]
+
+
+@pytest.mark.parametrize("action", ["stop", "restart"])
+def test_restart_without_stop_timeout_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    """grace를 선언하지 않은 컨테이너는 docker-py 기본 동작 그대로다(인자 없음)."""
+
+    container = _RecordingContainer({"Image": "rustfs/rustfs"})
+
+    result = _control_with(monkeypatch, container, action)
+
+    assert result["success"] is True
+    assert container.calls == [(action, {})]
+
+
+def test_start_ignores_the_stop_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`start`에는 grace가 없다 — docker-py `start()`는 인자를 받으면 거부한다.
+
+    grace를 고치기 전 코드에서도 초록인 회귀 방지 검사다. grace 전달을 `start`까지
+    넓히는 변경만 잡는다.
+    """
+
+    container = _RecordingContainer({"StopTimeout": _DECLARED_STOP_TIMEOUT})
+
+    result = _control_with(monkeypatch, container, "start")
+
+    assert result["success"] is True
+    assert container.calls == [("start", {})]
+
+
+def test_public_restart_of_a_manager_owned_container_passes_its_stop_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**공개 진입점에서도** grace가 `timeout`으로 닿는다.
+
+    Manager가 소유한 컨테이너의 `control_container`는 `_unlocked` 층 위에서 c6c lock과
+    mutation 환경 계약을 지난다. 위 검사들은 `_unlocked`만 태우므로, 그 위층이 다른 길로
+    새거나 인자를 잃어도 초록이다 — 외부 컨테이너 수명주기에서 이미 겪은 사각이다
+    (`test_lifecycle_actions_work_through_the_public_entry_point`).
+    """
+
+    container_id, container_name = _manager_owned_container()
+    service = DockerService()
+    container = _RecordingContainer({"StopTimeout": _DECLARED_STOP_TIMEOUT})
+    client = _recording_client(monkeypatch, service, container)
+    lock_snapshot = object()
+    lock = Mock(return_value=nullcontext(lock_snapshot))
+    monkeypatch.setattr(
+        docker_service_module, "c6c_deployment_lock_from_environment", lock
+    )
+    lock_binding = Mock()
+    monkeypatch.setattr(
+        docker_service_module,
+        "assert_environment_snapshot_matches_c6c_lock",
+        lock_binding,
+    )
+    mutation_allowed = Mock(return_value="local")
+    monkeypatch.setattr(
+        docker_service_module, "assert_manager_mutation_allowed", mutation_allowed
+    )
+
+    result = service.control_container(container_id, "restart")
+
+    assert result["success"] is True
+    assert container.calls == [("restart", {"timeout": _DECLARED_STOP_TIMEOUT})]
+    client.containers.get.assert_called_once_with(container_name)
+    lock.assert_called_once()
+    assert lock_binding.call_args.args[1] is lock_snapshot
+    mutation_allowed.assert_called_once()

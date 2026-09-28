@@ -7742,3 +7742,70 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
 - **반영(이 PR 머지 뒤)**: 공용 instance 재생성이 필요하다 — 모든 테넌트가 짧게 끊긴다. geo 세션이 geo MV
   refresh가 끝난 뒤, 에이전트 빌드가 없는 시각에 한다. 재생성 전 `docker events ... event=exec_die`로
   고아 출처를 한 번 확인한다.
+
+## 2026-09-29 — 대시보드의 stop/restart가 grace를 따르고, 한 서비스 재생성이 의존 서비스를 건드리지 않는다
+
+- **배경**: Map DB를 공용 instance로 옮기는 작업(그 ADR은 튜닝 PR MT가 추가한다)에서 MT에 들어 있던 두
+  수정을 떼어 먼저 낸다. 둘 다 compose 정의를 바꾸지 않아 설치해도 공용 instance의 재생성을 무장하지 않고,
+  **지금** n150에 살아 있는 위험을 닫는다 — MT의 창을 기다릴 이유가 없다. n150은 Manager `0fe0d97`이고 공용
+  instance는 ADR-52 설정(`stop_grace_period: 300s`)으로 09-28 13:10:57Z에 재생성돼 `Config.StopTimeout=300`이다.
+- **위험 1 — 10초 SIGKILL**: `_control_container_unlocked`가 `container.restart()`·`container.stop()`을 인자
+  없이 불렀다. n150에 설치된 docker-py 7.2.0은 `restart(self, container, timeout=10)`이라 **항상** `t=10`을
+  보낸다. 그래서 대시보드·CLI(`action <id> restart`)의 재시작은 ADR-52의 300초를 무시하고 공용 postmaster에
+  10초 뒤 SIGKILL을 보낸다 — shutdown checkpoint가 느린 날이면 다음 기동이 모든 테넌트의 crash recovery다.
+  공용 instance에서 실제로 그런 재시작이 있었는지는 확인하지 않았다 — 코드의 동작을 적은 것이다.
+  `stop()`은 `t`를 빼서 dockerd가 컨테이너의 300초를 쓰지만 docker-py의 HTTP read timeout(기본 60초)은
+  10초만 늘리므로, 70초를 넘는 정상 종료는 client timeout 실패로 보고될 수 있었다.
+  - **변경**: 컨테이너 자신의 `Config.StopTimeout`(compose `stop_grace_period`)을 읽어 있으면
+    `timeout=`으로 넘긴다(`0`도 선언이다 — `None`으로 가른다). docker-py가 read timeout도 같은 만큼 늘린다.
+    grace를 선언하지 않은 컨테이너는 예전과 같이 인자 없이 부른다. 리터럴 없음, 컨테이너에서 파생한다.
+  - **대가(동작 변화)**: Manager가 소유한 컨테이너의 stop/restart는 그 grace(공용 instance 300초) 내내
+    host 변경 lock을 쥔다. lock은 기다리지 않으므로(`LOCK_NB`, 설치 스크립트도 `flock -n`) 그 사이의
+    rebuild·install·대시보드 변경은 곧바로 거부된다 — 예전에는 restart가 약 10초, stop이 최대 70초였다.
+- **위험 2 — 의존 서비스 재생성**: 설정 변경(`POST /containers/{id}/config`), reset
+  (`POST /containers/{id}/reset`), 없는 컨테이너의 시작은 모두 `_update_container_config_unlocked`에서
+  `up -d --force-recreate <svc>`를 돌렸고, 그 실패 뒤 복구(`_restore_compose_transaction`)도 같은 argv였다.
+  compose `up`은 `--no-deps`가 없으면 `depends_on`을 전이적으로 따라가 config hash가 어긋난 의존 서비스까지
+  재생성한다. `0fe0d97` compose에서 공용 instance에 `depends_on`으로 직접 기대는 서비스는 20개(one-shot
+  일곱 — db-init 다섯·`kor-travel-weather-migrate`·`pinvi-admin-bootstrap` — 와 geo·concierge·PinVi·weather
+  서비스)이고, 다른 서비스를 거쳐 기대는 것까지 33개다(concierge ui·mcp·scheduler, geo ui, pinvi-web,
+  weather web·gateway·prometheus, Map api·ui와 Dagster 셋). 공용 instance의 정의를 바꾸는 Manager를 설치한 뒤
+  계획 재기동까지의 사이에 그중 하나의 env를 고치면 공용 instance가 CHECKPOINT도 실행·시각 확인도 없이
+  재생성되고 모든 테넌트가 재시작할 수 있었다.
+  - **변경**: 두 자리가 한 helper `_single_service_recreate_args`로 argv를 만들고, 그것이 `--no-deps`를
+    넣는다. target 단위 `ensure`(`compose_service.py`)는 production에서 거부되고 rebuild는 이미
+    `--no-deps`를 강제하므로 손대지 않았다.
+  - **대가(동작 변화)**: compose는 의존 서비스를 만들거나 시작하거나 healthy를 기다리지 않고, one-shot도
+    다시 돌리지 않는다. compose가 0으로 끝나면 API도 성공을 보고하므로, 공용 instance가 내려간 채 없는
+    테넌트 컨테이너를 시작하면 DB 없이 뜬 컨테이너가 남는다. 의존 서비스는 운영자가 먼저 따로 올린다.
+    `docs/docker-management.md` §7과 API 표에 적었다.
+  - **효과의 증거**: 이 브랜치의 검사는 argv만 본다. compose가 `--no-deps`로 어긋난 의존 서비스를 그대로
+    두는 효과는 리뷰가 n150 Compose v5.2.0 scratch project에서 손으로 확인했다(`--no-deps`: 의존 서비스의
+    ID·StartedAt 불변 / 대조군: 의존 서비스 재생성과 one-shot 재실행). 기계 검사는 M1의 T-R3/T-R3c가 싣는다.
+- **테스트**: `test_docker_service_config.py`에 `test_restart_passes_the_container_stop_timeout`
+  (stop·restart × StopTimeout 247·0), `test_restart_without_stop_timeout_is_unchanged[stop|restart]`,
+  `test_start_ignores_the_stop_timeout`, `test_public_restart_of_a_manager_owned_container_passes_its_stop_timeout`
+  (공개 `control_container`가 c6c lock과 mutation 환경 계약을 지난 뒤에도 `timeout`이 닿는다). 컨테이너 id와
+  이름은 `MANAGED_CONTAINERS`에서 Manager 소유 컨테이너를 골라 쓴다(target 이름 바꾸기가 이름과 무관한 검사를
+  깨지 않게). 복구 argv는 main의 `test_config_recreate_failure_restores_exact_file_and_runtime`에 단언 하나로
+  더했다 — 정방향과 복구가 같은 `--no-deps` argv다. 옛 argv를 박던 두 테스트는 `--no-deps`를 기대하고,
+  `test_multi_project_boundaries.py`의 두 수명주기 fake는 실제 docker-py `Container`처럼 `attrs`를 들고 인자
+  없이 불리는지 본다.
+  - **red-check(n150, 선택 14건)**: 브랜치 14 passed. main의 `docker_service.py`로 되돌리면
+    8 failed(argv 두 건, 복구 검사, grace 네 건, 공개 진입점). 변형마다: 복구 argv만 `--no-deps`를 빼면 1 failed,
+    정방향만 빼면 3 failed, `if grace` 참/거짓 판정은 2 failed(StopTimeout 0 두 건), `restart()`만 인자를 빼면
+    3 failed, grace 없는 컨테이너에 `timeout=10`을 넘기면 5 failed(`…_is_unchanged` 두 건과 수명주기 fake 세
+    건), `start()`에도 grace를 넘기면 1 failed, 공개 `control_container`가 Manager 소유 컨테이너의 restart를
+    `_unlocked`를 거치지 않고 인자 없이 부르면 1 failed(공개 진입점 검사만 — `_unlocked` 검사들은 초록).
+    `test_start_ignores_the_stop_timeout`은 main에서도 초록이다 — grace 수정을 잡는 검출기가 아니라 `start()`
+    확장을 막는 회귀 방지다.
+- **남은 것**:
+  - MT에는 튜닝 `command`, 이미지 digest 핀, `shm_size` 1gb, 백업 disk reserve와 그 문서·ADR이 남는다. 이
+    브랜치가 머지되면 MT를 리베이스한다 — 같은 두 커밋이 빈 커밋으로 빠지는지 보고, journal 끝 append 충돌을
+    풀고, MT의 journal·ADR에서 grace 전달과 `--no-deps`를 MT 몫으로 적은 줄을 지워 이 변경을 가리킨다. 설치
+    뒤에는 spec의 머리말·§0.4·§1.2(f)와 §4.3/§4.5의 동결(공용 instance의 config hash가 어긋난 동안 config
+    변경·reset·없는 컨테이너 start 금지)을 "이 변경으로 닫힘, 설치 sha"로 고친다.
+  - 전용 Map instance `kor-travel-map-postgres`는 compose에 `stop_grace_period`가 없어 n150에서
+    `Config.StopTimeout=null`이다(09-29 확인). 이 변경 뒤에도 대시보드·CLI의 stop/restart는 docker 기본 10초
+    뒤 SIGKILL이다 — 이 변경이 만든 것은 아니다. 퇴역할 때까지 대시보드·CLI로 멈추지 않는다
+    (`docs/docker-management.md` §7). grace를 주는 것은 compose 변경이라 별도 변경이다.
