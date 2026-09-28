@@ -8003,3 +8003,52 @@ M1 리뷰 2차(`b690967`)는 HIGH·MED 없이 LOW 여섯을 냈다. 값싸고 �
   - `/tmp/b3-test.sh`: ruff 0.16.4 깨끗, **2240 passed, 2 skipped**, 5m12s.
   - GitHub CI(dispatch 36459717650, `24f3315`): 백엔드 **2216 passed, 26 skipped**(통합은 gate 없이 skip),
     프론트엔드 green.
+
+## 2026-09-28 — 공용 instance를 Map의 튜닝으로 (MT, ADR-53 D4) — main(#432·#433) 위로 다시 세움
+
+Map의 두 DB를 공용 instance로 옮기는 결정(오너 결정 C, ADR-53)의 튜닝 PR이다. 이 브랜치는 **창 안에서만**
+머지·설치한다 — 설치하는 순간 공용 서비스의 compose config hash가 실행 중 컨테이너와 달라져, `--no-deps` 없는
+`up` 한 번이 공용 instance를 recreate한다(모든 테넌트 재기동). 그래서 main에 설치되지 않은 채로 두지 않는다.
+
+- **다시 세운 이유(적대 리뷰)**: 첫 판(`66e3f06`)은 `5b99322` 위였고, 그 사이 main에 #432(airport → transport
+  개명)와 #433(ADR-52: `init: true`, exec probe `-t 3`/timeout 10초, `stop_grace_period: 300s`, `shm_size: 512mb`,
+  C6c exec 파서)이 들어가 n150에 설치됐다(공용 instance 13:10:57Z 재생성). 첫 판은 다섯 파일에서 충돌했고,
+  `docker-compose.yml`은 충돌 표시 **밖에서** `init`·`stop_grace_period`·`shm_size`를 두 벌 남겼다 — `safe_load`는
+  뒤엣값(300s·512mb)을 조용히 읽고 `docker compose config`는 파일을 거부한다. 같은 번호 ADR-52도 두 개가 됐다.
+  그래서 첫 판을 되살리지 않고 `0fe0d97` 위에 새로 세웠다: #433의 init·probe·grace·C6c 파서·ADR-52는 그대로
+  두고, 첫 판의 init/probe 커밋(`7814218`·`66e3f06`)과 중복 테스트·ADR 문구는 버렸다. `c6c_deployment.py`
+  diff는 없다. 이 결정의 ADR은 **ADR-53**이다.
+- **compose**(`kor-travel-shared-postgres`): 튜닝 `command:`(`pg_prewarm,pg_stat_statements` preload,
+  `pg_prewarm.autoprewarm=on`, `shared_buffers=1GB`, `work_mem=64MB`, `maintenance_work_mem=256MB`,
+  `effective_cache_size=1536MB`, `random_page_cost=1.1`, `max_wal_size=2GB`), `${KOR_TRAVEL_SHARED_POSTGRES_*}`
+  우회 제거, 이미지 digest 고정, `shm_size` 512mb → 1gb. grace 300s는 D4의 ≥120초를 이미 넘어 그대로다.
+  `docker compose config -q`(v5.1.4, 모든 `:?` 변수를 채운 env) 통과, 공용 서비스 config hash는 main과 다르다
+  (의도된 무장).
+- **Manager 컨테이너 stop/restart**: 컨테이너의 `Config.StopTimeout`을 그대로 `timeout`으로 넘긴다 — docker-py
+  `restart()`는 인자가 없으면 항상 `t=10`이라, 오늘(StopTimeout=300) 대시보드 재시작이 느린 종료 checkpoint를
+  10초 뒤 SIGKILL로 끊는다.
+- **한 서비스 재생성에 `--no-deps`**: 설정 변경·reset·없는 컨테이너 시작과 그 복구가 `up -d --force-recreate <svc>`를
+  `--no-deps` 없이 돌렸다. 공용 instance에 기대는 서비스가 스무 개라, 설치와 재기동 사이에 그중 하나의 env만
+  고쳐도 공용 instance가 CHECKPOINT·창 확인 없이 재생성됐을 것이다. 두 자리를 한 helper로 모았다.
+- 위 두 커밋(`fix(docker): …`)은 compose를 바꾸지 않아 recreate를 무장하지 않는다 — 창을 기다리지 않고 따로
+  머지·설치할 수 있게 `fix/container-grace-no-deps` 브랜치(main 위, 같은 두 커밋)로도 올렸다. 나눌지는 오너 몫이다.
+- **백업 예약분**: max(2 GiB, 살아있는 `max_wal_size` + 1 GiB). `create`는 그 값을 이미 하던 database 크기
+  질의와 **같은 exec**로 읽는다(새 exec·새 DB 의존 없음, `--expected-dump-bytes`면 `max_wal_size`만). 읽지 못하면
+  pg_dump 전에 거부한다. `rehearse-restore`는 WAL을 두 번 센다 — 일부러 보수적이라고 docstring과
+  docker-management.md에 적었다.
+- **테스트**: 튜닝·digest·shm ≥ 1 GiB·grace ≥ 120초·probe timeout ≥ 2×`-t`·파서는 main의
+  `test_shared_postgres_runtime_contract.py` 한 파일(서비스 로더·duration/크기 파서 하나)에 둔다. 로더는 중복 키를
+  거부한다(`yaml_strict`) — `_real_compose_config`도 같다. 격리 실행 테스트
+  `test_shared_postgres_runtime_integration.py`(gate `KTDM_REQUIRE_DOCKER_INTEGRATION`)는 기대값을 전부 compose에서
+  읽는다: probe로 healthy, 모든 `-c` 값이 `pg_settings`에서 `command line`으로, autoprewarm leader, PID 1 =
+  docker-init, StopTimeout·ShmSize = 파싱한 grace·shm, grace 안의 깨끗한 정지.
+- **빨강 확인(n150, git-archive 사본, 테스트는 새 것·src와 compose는 `0fe0d97`)**: compose 계약 3/8(튜닝·digest·
+  shm), Docker 서비스 5/8(StopTimeout 전달 2, `--no-deps` 기록 1, 기존 argv 고정 2), 백업 11/11(단언에서 6 —
+  예약분 3·못 읽는 답 1·transport 크기 질의 2, 새 helper API가 없어서 5), gated 격리 실행 1/1(튜닝 값
+  read-back에서). 대상 테스트 7파일은 새 head에서 482 passed, ruff(0.16.4) 통과. 옛 코드에서도 초록인 가드는 변이로 빨갛게 만들었다: grace 119s → 1/1,
+  probe timeout 5s → 1/1, 중복 키 한 줄 → 9/10, 크기 파서 단위 → 2/2, 항상 timeout → 2/2, start에 timeout →
+  1/1, 복구 argv에서 `--no-deps` 빼기 → 1/1, 예약분 headroom 빼기 → 1/3(2GB 경우만 — 나머지는 하한이 지배).
+  lifecycle fake 3건은 옛 코드에서도 초록이다(인자 없이 부르는지 보는 것이라 당연).
+- **남은 것**: M1이 `0fe0d97` 위로 올라오면 그 위로 다시 올리고, §1.6 실 PostgreSQL 테스트를 포함한 gated
+  실행을 다시 돈다. 전체 스위트·gated 실행의 최종 수치는 PR 본문에 적는다. 머지는 창 안에서, PR head와 머지
+  SHA의 `git diff --stat`이 비었는지 확인한 뒤다.
