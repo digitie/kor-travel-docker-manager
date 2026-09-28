@@ -907,7 +907,7 @@ def test_cli_db_backup_create_invokes_service_and_prints_summary(
 
     assert main(["db-backup", "create", "geo"]) == 0
 
-    mock_create.assert_called_once_with("geo", timeout=14_400)
+    mock_create.assert_called_once_with("geo", timeout=14_400, expected_dump_bytes=None)
     out = capsys.readouterr().out
     assert "geo-1000.dump" in out
     assert "4096 bytes" in out
@@ -934,7 +934,46 @@ def test_cli_db_backup_create_passes_custom_timeout(mock_create) -> None:
 
     assert main(["db-backup", "create", "geo", "--timeout", "60"]) == 0
 
-    mock_create.assert_called_once_with("geo", timeout=60)
+    mock_create.assert_called_once_with("geo", timeout=60, expected_dump_bytes=None)
+
+
+@patch("kor_travel_docker_manager.cli.create_standalone_backup")
+
+
+def test_cli_db_backup_create_passes_and_announces_the_expected_dump_override(
+    mock_create, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """디스크 확인의 추정을 사람이 바꾼 사실은 서비스에 전달되고 stderr(cron 로그)에 남는다."""
+
+    from kor_travel_docker_manager.services.standalone_backup import BackupManifest
+
+    mock_create.return_value = BackupManifest(
+        role="geo",
+        created_at_unix=1000,
+        duration_sec=1.0,
+        byte_size=1,
+        sha256="a" * 64,
+        backup_filename="geo-1000.dump",
+        instance="c:127.0.0.1:12500/db",
+        db_size_bytes=1,
+        toc_entry_count=1,
+        alembic_head=None,
+    )
+
+    assert main(["db-backup", "create", "geo", "--expected-dump-bytes", "6000000000"]) == 0
+
+    mock_create.assert_called_once_with("geo", timeout=14_400, expected_dump_bytes=6_000_000_000)
+    assert "--expected-dump-bytes 6000000000" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "5GB"])
+@patch("kor_travel_docker_manager.cli.create_standalone_backup")
+def test_cli_db_backup_create_rejects_a_non_positive_expected_dump_size(
+    mock_create, value: str
+) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        main(["db-backup", "create", "geo", "--expected-dump-bytes", value])
+    mock_create.assert_not_called()
 
 
 @patch("kor_travel_docker_manager.cli.create_standalone_backup")

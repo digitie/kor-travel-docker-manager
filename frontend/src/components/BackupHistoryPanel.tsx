@@ -32,6 +32,8 @@ import InlineError from './InlineError';
 // 나머지 role은 그 wrapper의 대상이 아니므로 배지를 달지 않는다 — 없는 기대치로 경고를
 // 만들지 않는다. 이 정책은 config에서 파생할 수 없다(cron wrapper의 하드코딩된 대상
 // 목록을 그대로 미러링한 것) — role 목록 자체와 달리 이 표는 의도적으로 남겨둔다.
+// 배지가 cron dump를 보려면 backend의 KTDM_BACKUP_ROOT(.env)가 crontab의 것과 같아야 한다 —
+// 없으면 backend 계정의 ~/backups를 읽어 배지가 계속 "없음"이다(docs/docker-management.md).
 const EXPECTED_INTERVAL_HOURS: Partial<Record<string, number>> = {
   geo_dagster: 24,
   concierge: 24,

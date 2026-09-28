@@ -1111,7 +1111,7 @@ ktdctl db-backup restore-plan concierge [--file <name>] [--json]      # 읽기 �
 ktdctl db-backup rehearse-restore concierge [--file <name>] [--timeout <초>] [--json]
 ```
 
-#### 디스크 여유 — `create`는 시작 전에 role마다 확인한다
+#### 디스크 여유 — `create`·`rehearse-restore`는 시작 전에 role마다 확인한다
 
 `create`는 pg_dump를 **시작하기 전에** 백업 root 파일시스템의 여유를 재고, 모자라면 아무것도
 시작하지 않고 거부한다(CLI exit 2, `StandaloneBackupInsufficientSpaceError`). 필요량은 전역 상수가
@@ -1120,33 +1120,60 @@ ktdctl db-backup rehearse-restore concierge [--file <name>] [--timeout <초>] [-
 ```
 필요량 = 2 x 예상 dump + 2 GiB 예약분
 예상 dump = 이 자리(컨테이너·database)에서 뜬 가장 최근 dump x max(1, 지금 DB 크기 / 그때 DB 크기)
-          = (그런 dump가 없으면) 지금 DB 크기 — 압축 dump가 DB보다 커진 적은 실측에 없다(7~13%)
+          = (그런 dump가 없으면) min(1.25 x 테이블 크기 합, 지금 DB 크기)
+            테이블 크기 합 = 그 database의 sum(pg_table_size) (relkind r·m, 인덱스 제외)
+          = (운영자가 --expected-dump-bytes N을 주면) N
 ```
 
 - **2배인 이유**: pg_dump는 컨테이너 `/tmp`(Docker 쓰기 층)에 먼저 쓰고 host로 복사한 뒤에야
   지운다. 복사가 끝날 때까지 두 벌이 있다. n150은 백업 root·Docker 쓰기 층·공용 instance
   PGDATA가 한 파일시스템이라 이 계산이 정확하다. Docker 쓰기 층이 **다른** 파일시스템인
   호스트에서는 백업 root 쪽은 보수적이 되고, Docker 쪽은 이 확인이 보지 않는다.
+- **첫 실행 상한에서 인덱스를 빼는 이유**: custom format dump에는 인덱스 페이지가 없다(정의
+  한 줄뿐이고 복원 때 다시 만든다). DB 크기로만 잡으면 인덱스가 큰 database(geo)는 필요량이
+  부풀어 멀쩡한 백업을 거부한다. 1.25는 행이 COPY 텍스트가 되며 커질 수 있는 몫이다
+  (bytea·geometry는 hex로 두 배, `--compress=6`이 대부분 되돌린다). 인덱스가 거의 없는
+  database에서는 DB 크기 쪽이 작으므로 둘 중 작은 것을 쓴다. 테이블 크기는 첫 실행에만
+  그 database에 붙어서(`--dbname <db>`) 묻는다.
 - **예약분 2 GiB**: 백업이 끝난 뒤에도 남겨 둘 몫이다. 공용 instance의 `max_wal_size`(1GB)보다
   넉넉하다 — 디스크가 차면 다섯 프로젝트의 DB가 WAL을 못 써서 멈춘다.
+- **`--expected-dump-bytes N`**: 추정만 운영자 값으로 바꾼다. 확인은 끄지 않는다(필요량
+  2N + 2 GiB). 쓴 값은 stderr(cron 로그)와 거부 문구에 남는다. 이 자리에서 뜬
+  dump가 없어 상한이 보수적일 때의 비상 백업용이다.
 - **timeout은 role별로 나누지 않는다.** 멈춘 명령의 상한(기본 4시간)이지 자원 가드가 아니다.
   가장 큰 geo도 실측 880초, transport는 약 9분이다.
-- 읽지 못하는 manifest는 추정에서 건너뛴다(상한 쪽으로 떨어질 뿐, 새 백업을 막지 않는다).
-  다른 자리에서 뜬 dump는 다른 데이터라 추정에 쓰지 않는다.
+- 읽지 못하는 manifest(JSON이 아니거나 UTF-8이 아닌 것)는 추정에서 건너뛴다(상한 쪽으로 떨어질
+  뿐, 새 백업을 막지 않는다). 다른 자리에서 뜬 dump는 다른 데이터라 추정에 쓰지 않는다.
 - 동시에 도는 **다른** role의 백업은 계산에 넣지 않는다(각자 시작 시점의 여유만 본다).
   큰 role끼리는 cron 시각을 겹치지 않게 둔다.
-- `rehearse-restore`에는 이 확인이 없다. scratch DB는 원본 database만큼 PGDATA를 쓴다
-  (`transport`는 약 13 GB + dump 사본 약 1 GB) — 돌리기 전에 `df`로 직접 본다.
+- **`rehearse-restore`도 copy-in·`createdb` 전에 잰다.** 필요량 = manifest의 database 크기
+  (scratch DB가 그만큼 자란다) + dump 크기(컨테이너 `/tmp` 사본) + 그 instance의 `max_wal_size`
+  (pg_restore·인덱스 생성이 쌓는 WAL) + 2 GiB. scratch DB는 원본과 **같은 PGDATA**에 생기므로
+  create보다 위험하다 — `transport`는 약 13 GB + 1 GB + 1 GB + 2 GiB ≈ 17 GB다.
 
-| role | 첫 실행(뜬 dump 없음) | 한 번 뜬 뒤 |
+| role | 첫 실행(이 자리에서 뜬 dump 없음) | 한 번 뜬 뒤 |
 |---|---|---|
-| `geo` | 2 x 약 35 GB + 2 GiB ≈ 72 GB | 2 x 4.7 GB + 2 GiB ≈ 11.5 GB |
-| `transport` | 2 x 약 13 GB + 2 GiB ≈ 28 GB | 2 x 1.01 GB + 2 GiB ≈ 4.2 GB |
-| `transport_dagster` | 2 x 약 112 MB + 2 GiB ≈ 2.4 GB | 더 작다 |
+| `geo` | 2 x min(1.25 x 테이블 합, 약 35 GiB) + 2 GiB — 최대 72 GiB(77.3 GB), 인덱스만큼 작다 | 2 x 4.7 GB + 2 GiB ≈ 11.5 GB |
+| `transport` | 최대 2 x 약 13 GB + 2 GiB ≈ 28 GB | 2 x 1.01 GB + 2 GiB ≈ 4.2 GB |
+| `transport_dagster` | 최대 2 x 약 112 MB + 2 GiB ≈ 2.4 GB | 더 작다 |
 | `pinvi`·`concierge`·`geo_dagster` | — | 예약분 + 수 MB |
 
-n150 여유(2026-09-28 약 83.9 GB)에서는 geo 첫 실행까지 통과한다. 여유가 72 GB 아래로 내려간
-뒤 geo를 처음 뜨려고 하면 거부된다 — 문구에 필요량·여유·근거가 모두 찍힌다.
+**geo는 지금 첫 실행 상태다.** #429가 옛 instance의 dump를 `legacy/`로 옮겨 `~/backups/geo`가
+비어 있다. 이전 판은 geo 첫 실행 필요량을 "≈ 72 GB"로 적었는데 그 72는 **GiB**다 — 77.3 GB.
+2026-09-28 04:00 UTC n150 여유는 19,898,003 블록 x 4 KiB = 81.5 GB였으므로 옛 상한(DB 크기)으로는
+**약 4.2 GB 차이**였고, transport 보존분(약 3 GB)이 쌓이면 1 GB 남짓이 된다. geo DB가 1 GB 자랄
+때마다 옛 상한은 2 GB 는다 — 곧 geo 비상 백업이 거부될 자리였다. 그래서 첫 실행 상한에서 인덱스를
+뺐다. geo의 테이블 합은 n150에서 재지 않았다(운영 DB에 질의하지 않았다). 운영자가 재려면:
+
+```bash
+docker exec --user postgres kor-travel-shared-postgres psql --username shared_admin --port 11000 \
+  --dbname kor_travel_geo --no-psqlrc -tAc \
+  "SELECT pg_size_pretty(sum(pg_table_size(oid))) FROM pg_class WHERE relkind IN ('r','m')"
+```
+
+그래도 모자라면 `--expected-dump-bytes`로 뜬다 — 옛 geo dump가 약 4.7 GB였으므로
+`ktdctl db-backup create geo --expected-dump-bytes 6000000000`이면 필요량이 약 14.1 GB다. 한 번
+뜨고 나면 그다음부터는 그 dump 크기(약 11.5 GB)에서 출발한다.
 
 #### `restore-plan` — 복원하기 전에 "복원할 수 있는가"를 먼저 묻는다
 
@@ -1327,11 +1354,15 @@ keep 4/7/7). geo application은 앱 레벨
 백업이 정본이고 Map application/Dagster 주기화는 kor-travel-map #148 정책이므로
 이 wrapper에 넣지 않았다.
 
-2026-09-28부터 wrapper가 `transport`·`transport_dagster`도 받는다. 권장 주기(UTC, 한국 새벽):
-`transport_dagster`는 매일 18:10(keep 7), `transport`는 3일마다 18:30(`*/3`, keep 3 — dump 약
-1 GB라 세 벌 약 3 GB). transport 저장소의 자체 cron 줄(18:00 UTC)은 두 role이 검증된 dump를
-하나씩 남긴 **뒤에** 걷어낸다. 그 사이 둘이 겹치면 Manager 쪽이 `pg_stat_activity`에서 같은 DB의
-pg_dump를 보고 시작하지 않는다(`already running`, exit 2).
+2026-09-28부터 wrapper가 `transport`·`transport_dagster`도 받는다. 권장 주기(UTC):
+`transport_dagster`는 매일 16:50(01:50 KST, keep 7), `transport`는 3일마다 17:15(`*/3`, 02:15 KST,
+keep 3 — dump 약 1 GB라 세 벌 약 3 GB). **transport 자신의 Dagster job을 피한 자리다**
+(`kor-travel-transport` `backend/app/dagster/definitions.py`, Asia/Seoul): 매시 :00(KRIC 시간표),
+00·08·16시 :00(유가), 03:00(rail·maritime reference), 03:30(bus reference), 4시간마다 :45(ferry),
+5분마다(airport·highway — 가볍다). 첫 판이 권했던 18:30 UTC는 03:30 KST라 bus reference와 정확히
+겹쳤다. transport 저장소의 자체 cron 줄(18:00 UTC)은 두 role이 검증된 dump를 하나씩 남긴 **뒤에**
+걷어낸다. 그 사이 둘이 같은 DB에서 겹치면 Manager 쪽이 `pg_stat_activity`에서 pg_dump를 보고
+시작하지 않는다(`already running`, exit 2).
 
 읽기 전용 `GET /api/v1/backups?role=<role>`도 있다 — Dashboard "백업 이력" 패널이
 쓴다. 생성·GC는 CLI 전용이며 API에 노출하지 않는다(이 저장소의 표준 mutation
@@ -1345,6 +1376,78 @@ pg_dump를 보고 시작하지 않는다(`already running`, exit 2).
 아래에서도 `pg_stat_activity`를 먼저 물어 같은 role의 DB에 이미 pg_dump가
 돌고 있으면 새 pg_dump를 시작하지 않고 거부한다 — role lock(파일 기반)은
 backend 재기동에서 살아남지 못하지만 컨테이너 안 pg_dump는 계속 돌 수 있어서다.
+
+#### transport 주기 백업 — 실패를 누가 보는가
+
+n150에는 MTA가 없어 cron 출력은 `<root>/<role>.log`에만 남는다 — transport 저장소의 자체 cron이
+2026-09-05 뒤로 아무도 모르게 멈춘 이유가 이것이다. 제품 안의 탐지는 Dashboard "백업 이력" 패널의
+신선도 배지(transport 72 h, 나머지 주기 role 24 h, 1.25배를 넘으면 경고)뿐인데, 배지는 **backend가
+읽는 root**를 본다. backend는 `.env`의 `KTDM_BACKUP_ROOT`를 쓰고, 없으면 자기 계정의 `~/backups`다.
+
+2026-09-28 n150에서는 그 둘이 갈라져 있다. `/etc/logrotate.d/kor-travel-docker-manager`가 없다
+(installer는 같은 키로 그것을 렌더링하고, 키가 없으면 건너뛴다 — 아래 2026-09-07 기록도 그 키가
+`.env`에 없다고 적는다). backend는 `ktdm-backend.service`에 `User=`가 없어 root로 돈다. 그래서
+backend는 `/root/backups/<role>`을 읽고 cron은 `/home/digitie/backups/<role>`에 쓴다 — **배지가
+cron dump를 보지 못해 "없음"으로 남고**, `<role>.log`는 로테이션되지 않는다. 고치는 순서:
+
+1. host mutation lock(G, `/run/lock/kor-travel-docker-manager/global-mutation.lock`) 아래에서 live
+   `.env`에 `KTDM_BACKUP_ROOT=/home/digitie/backups`를 넣고, 그다음 trusted installer로 설치한다
+   (installer가 `.env`를 새 release로 복사하고 logrotate를 렌더링하고 backend를 재기동한다).
+2. Dashboard "백업 이력"(또는 로그인 세션의 `GET /api/v1/backups?role=transport`)에 cron이 만든
+   manifest가 보이는지 확인한다.
+3. **공유 그룹 없이 UI에서 백업을 만들지 않는다.** backend가 root라 UI가 만든 dump·manifest는
+   `root 0600`이 되고, cron(digitie)의 `gc`는 그 manifest를 읽지 못해 그 role의 gc 전체를 거부한다.
+   UI에서도 만들려면 먼저 `docs/prod-deployment.md` §3.x(`KTDM_BACKUP_SHARED_GROUP`)를 한다.
+
+그 전까지(그리고 그 뒤에도 손으로) 신선도는 cron과 **같은 root**를 준 CLI로 본다:
+
+```bash
+KTDM_BACKUP_ROOT=/home/digitie/backups \
+  /home/digitie/kor-travel-docker-manager/backend/ktd_venv/bin/ktdctl db-backup list transport --json
+```
+
+가장 큰 `created_at_unix`가 90시간(transport)·30시간(transport_dagster)보다 오래됐으면
+`/home/digitie/backups/<role>.log`의 마지막 실행을 읽는다.
+
+#### transport 복원 — 손으로, 공용 instance에서 superuser로
+
+Manager에는 운영 DB를 덮어쓰는 복원 명령이 없다(아래 "아직 안 된 것"). transport 앱의 자체 복원
+API도 이 dump를 받지 않는다 — 그 앱의 백업 디렉터리만 읽고 `parking-radar-*.dump` 이름만 받으며
+(`BACKUP_NAME_PATTERN`), 2 GiB가 넘는 파일을 거부하고(`MAX_BACKUP_BYTES`), 명령 timeout 기본값이
+120초(`BACKUP_COMMAND_TIMEOUT_SECONDS`)라 13 GB DB의 복원이 그 안에 끝나지 않는다. 그래서 공용
+instance에서 superuser로 직접 복원한다. Manager dump는 superuser가 소유권·ACL을 담아 떴으므로
+(`--no-owner` 없음) 같은 instance에 superuser로 복원하면 소유자(`kor_travel_transport_app`)와 GRANT가
+그대로 돌아온다 — `rehearse-restore`의 카탈로그 지문 대조가 scratch DB에서 바로 그것을 증명한다.
+
+1. 고를 dump를 검증한다: 그 role 디렉터리에서 `sha256sum -c <name>.sha256`,
+   `ktdctl db-backup restore-plan transport --file <name>`, 여유가 되면 `rehearse-restore`.
+2. 여유를 본다. 한 트랜잭션이라 커밋 전까지 옛 표와 새 표가 함께 있다 — database 크기 + dump +
+   `max_wal_size` + 2 GiB(리허설과 같은 식, transport 약 17 GB) 이상이어야 한다.
+3. transport의 쓰기 주체(API, Dagster webserver·daemon·code-server)를 멈춘다. Manager가 띄우는
+   것이 아니다 — transport 자신의 배포 사본(`/home/digitie/apps/kor-travel-airport/`)이 띄운다.
+4. dump를 컨테이너로 넣고 소유권을 넘긴다(`docker cp`는 host의 `0600` 소유권을 보존한다):
+
+   ```bash
+   docker cp /home/digitie/backups/transport/<name> kor-travel-shared-postgres:/tmp/restore-transport.dump
+   docker exec --user root kor-travel-shared-postgres chown postgres:postgres /tmp/restore-transport.dump
+   ```
+
+5. 한 트랜잭션으로 복원한다 — 실패하면 아무것도 바뀌지 않는다. `--no-owner`·`--no-acl`을 붙이지
+   않는다(붙이면 다시 만든 객체가 전부 `shared_admin` 소유·GRANT 없음이 되어 앱 role이 자기 표를
+   못 쓴다):
+
+   ```bash
+   docker exec --user postgres kor-travel-shared-postgres pg_restore --username shared_admin \
+     --port 11000 --dbname kor_travel_transport --clean --if-exists --single-transaction \
+     --exit-on-error /tmp/restore-transport.dump
+   ```
+
+6. `docker exec kor-travel-shared-postgres rm -f /tmp/restore-transport.dump`, 쓰기 주체를 다시
+   띄우고 앱 health와 alembic head를 확인한다.
+
+`transport_dagster`도 같다(`--dbname kor_travel_transport_dagster`, Dagster webserver·daemon을 멈춘
+뒤). `--clean`은 dump에 있는 객체만 지운다 — dump 뒤에 새로 생긴 표는 남는다. **이 절차는 n150에서
+아직 실행해 보지 않았다** — 증명된 것은 scratch DB 리허설까지다.
 
 #### `offbox-sync` — 백업과 pin registry 보존본을 원격 호스트로 옮기고 재검증한다 (GM-08)
 
@@ -1392,6 +1495,12 @@ sudo -n backend/.venv/bin/ktdctl offbox-sync status --json   # root 불필요, �
   (`docs/general-mgmt-audit.md` GM-07 검증 노트). map은 여전히 kor-travel-map
   `docs/backup-restore.md` §8.1 수동 절차가 정본이고, geo·concierge·pinvi는 각
   프로젝트 alembic migration을 타야 한다(§ "복원" 참고).
+- **backend와 cron의 백업 root가 n150에서 갈라져 있다(2026-09-28).** live `.env`에
+  `KTDM_BACKUP_ROOT`가 없어 root로 도는 backend는 `/root/backups`를, cron은
+  `/home/digitie/backups`를 쓴다 — 신선도 배지가 cron dump를 못 보고 cron 로그가 로테이션되지
+  않는다. 운영 쪽 해소는 위 "transport 주기 백업 — 실패를 누가 보는가"의 순서다. 코드 쪽 후속:
+  지금 화면은 backend가 **어느 root를** 읽었는지 말하지 않아, 배지가 "없음"일 때 "백업이 안
+  돈다"와 "다른 곳을 본다"를 구별할 수 없다 — 목록 응답과 배지에 그 경로를 싣는 것이 후속이다.
 - **off-box 동기화를 실제로 cron/systemd timer에 거는 것은 운영자 몫이다.**
   `scripts/run-offbox-sync.sh` wrapper와 목적지 env 관례는 있지만, 이 저장소는
   어떤 host에도 자동으로 걸지 않는다 — 설정 없이는 아무 일도 일어나지 않으므로,

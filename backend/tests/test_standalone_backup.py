@@ -62,6 +62,8 @@ def _happy_run_checked():
             return b""
         if "pg_database_size" in " ".join(arguments):
             return b"12345\n"
+        if "pg_table_size" in " ".join(arguments):
+            return b"6789\n"
         raise AssertionError(f"unexpected _run_checked command: {arguments}")
 
     return run_checked
@@ -179,6 +181,8 @@ def test_create_standalone_backup_rejects_empty_dump_file(
             return b"0\n"
         if "pg_database_size" in " ".join(arguments):
             return b"12345\n"
+        if "pg_table_size" in " ".join(arguments):
+            return b"6789\n"
         if "pg_dump" in arguments:
             return b""
         if "pg_restore" in arguments:
@@ -213,6 +217,8 @@ def test_create_standalone_backup_attempts_container_cleanup_even_on_copy_failur
             return b"0\n"
         if "pg_database_size" in " ".join(arguments):
             return b"12345\n"
+        if "pg_table_size" in " ".join(arguments):
+            return b"6789\n"
         if "pg_dump" in arguments:
             return b""
         if "pg_restore" in arguments:
@@ -603,13 +609,25 @@ def test_transport_roles_dump_their_database_on_the_shared_instance(
 
     manifest = create_standalone_backup(role, backup_root=root)  # type: ignore[arg-type]
 
-    pg_dump_call = next(
-        call for call in run_checked.call_args_list if "pg_dump" in call.args[0]
-    )
-    assert pg_dump_call.args[0][4] == "kor-travel-shared-postgres"
-    assert pg_dump_call.args[0][pg_dump_call.args[0].index("--dbname") + 1] == database_name
+    commands = [call.args[0] for call in run_checked.call_args_list]
+    pg_dump_index = next(index for index, command in enumerate(commands) if "pg_dump" in command)
+    pg_dump_command = commands[pg_dump_index]
+    assert pg_dump_command[4] == "kor-travel-shared-postgres"
+    assert pg_dump_command[pg_dump_command.index("--dbname") + 1] == database_name
     assert manifest.instance == f"kor-travel-shared-postgres:127.0.0.1:11000/{database_name}"
     assert (root / f"{role}-1000.dump").is_file()
+
+    # 디스크 확인이 **이 role의 database**를 잰다. 가짜는 어떤 이름에도 숫자를 돌려주므로,
+    # 크기 질의가 엉뚱한 database(예: `postgres`)를 재도 위 단언은 전부 초록이다.
+    before_dump = commands[:pg_dump_index]
+    size_queries = [command for command in before_dump if "pg_database_size" in " ".join(command)]
+    assert len(size_queries) == 1
+    assert size_queries[0][-1] == f"SELECT pg_database_size('{database_name}')"
+    # 첫 실행이라 테이블 크기도 묻는다 — pg_class는 database마다 따로라 그 database에 붙는다.
+    table_queries = [command for command in before_dump if "pg_table_size" in " ".join(command)]
+    assert len(table_queries) == 1
+    assert table_queries[0][table_queries[0].index("--dbname") + 1] == database_name
+    assert table_queries[0][4] == "kor-travel-shared-postgres"
 
 
 # --- 디스크 여유(시작 전, role마다) ---------------------------------------------
@@ -636,38 +654,69 @@ def _seed_sized_manifest(
     (root / f"{role}-{created_at}.manifest").write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _required(root: Path, role: str, db_size_bytes: int) -> int:
-    source = standalone_backup._role_config(role)  # type: ignore[arg-type]
-    required, _reason = standalone_backup._required_free_bytes(
-        role,  # type: ignore[arg-type]
+def _estimate(
+    root: Path,
+    role: str,
+    db_size_bytes: int,
+    table_bytes: int | None = None,
+) -> int:
+    """`table_bytes`가 None이면 테이블 크기를 묻는 순간 실패한다 — 이미 뜬 dump가 있는
+    자리에서는 그 질의가 필요 없어야 한다."""
+
+    def ask_tables() -> int:
+        if table_bytes is None:
+            raise AssertionError("table sizes must not be queried when a dump exists")
+        return table_bytes
+
+    estimate, _basis = standalone_backup._expected_dump_bytes(
         root,
-        source=source,
+        role,  # type: ignore[arg-type]
+        standalone_backup._role_config(role),  # type: ignore[arg-type]
         db_size_bytes=db_size_bytes,
+        table_bytes=ask_tables,
     )
+    return estimate
+
+
+def _required(estimate: int) -> int:
+    required, _reason = standalone_backup._required_free_bytes(estimate, "basis")
     return required
 
 
-def test_first_backup_of_a_role_is_bounded_by_the_live_database_size(tmp_path: Path) -> None:
-    """이 database를 뜬 적이 없으면 dump가 database보다 클 수 없다는 상한만 믿는다."""
+def test_required_space_is_twice_the_dump_plus_the_reserve() -> None:
+    """컨테이너 `/tmp`와 host 사본이 복사가 끝날 때까지 함께 있다 — 두 벌 + 예약분."""
 
-    reserve = standalone_backup._DISK_RESERVE_BYTES
-    assert _required(tmp_path / "transport", "transport", 13 * _GIB) == 2 * 13 * _GIB + reserve
+    assert _required(1_011_308_463) == 2 * 1_011_308_463 + standalone_backup._DISK_RESERVE_BYTES
+
+
+def test_first_backup_is_bounded_by_table_data_not_by_indexes(tmp_path: Path) -> None:
+    """이 database를 뜬 적이 없으면 dump에 들어가는 것(테이블)만으로 상한을 잡는다.
+
+    인덱스는 dump에 정의 한 줄로만 들어간다. database 크기로 잡으면 인덱스가 큰 database는
+    필요량이 부풀어 멀쩡한 백업을 거부한다. 아래 숫자는 크기 비율의 예시다(측정값 아님).
+    """
+
+    factor = standalone_backup._FIRST_DUMP_TABLE_FACTOR
+    # 인덱스가 database의 60%인 경우: 35 GiB 중 테이블 14 GiB → 1.25 x 14 GiB.
+    assert _estimate(tmp_path / "geo", "geo", 35 * _GIB, 14 * _GIB) == int(factor * 14 * _GIB)
+    # 인덱스가 거의 없어 1.25 x 테이블이 database보다 크면 database 크기가 상한이다.
+    assert _estimate(tmp_path / "transport", "transport", 13 * _GIB, 12 * _GIB) == 13 * _GIB
 
 
 def test_later_backups_scale_the_last_dump_by_database_growth(tmp_path: Path) -> None:
-    """한 번 뜨고 나면 실제 dump 크기에서 출발해 database가 커진 만큼만 키운다."""
+    """한 번 뜨고 나면 실제 dump 크기에서 출발해 database가 커진 만큼만 키운다.
+    테이블 크기는 다시 묻지 않는다(`_estimate`가 table_bytes=None으로 그것을 강제한다)."""
 
     root = tmp_path / "transport"
     # n150 수동 dump(2026-09-27): 1,011,308,463 B. 그때 database 약 13 GB.
     _seed_sized_manifest(root, "transport", 1000, byte_size=1_011_308_463, db_size_bytes=13 * _GIB)
-    reserve = standalone_backup._DISK_RESERVE_BYTES
     # database가 그대로면 dump도 그대로.
-    assert _required(root, "transport", 13 * _GIB) == 2 * 1_011_308_463 + reserve
+    assert _estimate(root, "transport", 13 * _GIB) == 1_011_308_463
     # database가 14/13배가 되면 dump 추정도 14/13배.
     grown = -(-1_011_308_463 * 14 // 13)
-    assert abs(_required(root, "transport", 14 * _GIB) - (2 * grown + reserve)) <= 2
+    assert abs(_estimate(root, "transport", 14 * _GIB) - grown) <= 1
     # database가 줄었다고 추정을 줄이지 않는다(마지막 dump가 하한).
-    assert _required(root, "transport", 6 * _GIB) == 2 * 1_011_308_463 + reserve
+    assert _estimate(root, "transport", 6 * _GIB) == 1_011_308_463
 
 
 def test_disk_estimate_uses_the_newest_dump_of_the_current_database_only(tmp_path: Path) -> None:
@@ -683,33 +732,40 @@ def test_disk_estimate_uses_the_newest_dump_of_the_current_database_only(tmp_pat
         db_size_bytes=13 * _GIB,
         instance="kor-travel-airport-db-postgres-1:127.0.0.1:5432/kor_travel_transport",
     )
-    # 읽지 못하는 manifest 하나가 새 백업을 막지 않는다 — 건너뛴다.
+    # 읽지 못하는 manifest 하나가 새 백업을 막지 않는다 — 건너뛴다. JSON이 아닌 것과
+    # UTF-8이 아닌 것(UnicodeDecodeError는 ValueError다) 둘 다.
     (root / "transport-4000.manifest").write_text("{not json", encoding="utf-8")
-    reserve = standalone_backup._DISK_RESERVE_BYTES
-    assert _required(root, "transport", 13 * _GIB) == 2 * 1000 * 1024**2 + reserve
+    (root / "transport-5000.manifest").write_bytes(b'{"role": "transport\xff\xfe"}')
+    assert _estimate(root, "transport", 13 * _GIB) == 1000 * 1024**2
 
 
-def test_geo_and_small_roles_get_their_own_disk_requirement(tmp_path: Path) -> None:
-    """geo(database 약 35 GB, dump 약 4.7 GB)가 이 가드에 막히지 않고, 작은 role은 여전히
-    자기 크기만큼만 요구받는지 숫자로 고정한다. n150 여유는 2026-09-28 실측 약 83.9 GB다."""
+def test_a_non_utf8_manifest_is_a_typed_error_not_a_traceback(tmp_path: Path) -> None:
+    """CLI는 StandaloneBackupError만 잡는다 — 그 밖의 예외는 traceback으로 create를 죽인다."""
 
-    n150_free = 20_473_664 * 4096
-    reserve = standalone_backup._DISK_RESERVE_BYTES
-    geo_db = 35 * _GIB
-    # 첫 실행(이 자리에서 뜬 geo dump 없음): database 크기가 상한 → 약 72 GB, n150 여유 안.
-    first = _required(tmp_path / "geo", "geo", geo_db)
-    assert first == 2 * geo_db + reserve
-    assert first < n150_free
-    # 한 번 뜬 뒤: 4.7 GB dump에서 출발 → 약 11.4 GB.
-    _seed_sized_manifest(
-        tmp_path / "geo", "geo", 1000, byte_size=4_710_000_000, db_size_bytes=geo_db
-    )
-    assert _required(tmp_path / "geo", "geo", geo_db) == 2 * 4_710_000_000 + reserve
-    # 작은 role은 geo에 맞춘 값을 물려받지 않는다: pinvi dump 384 KB → 예약분 + 768 KB.
+    root = tmp_path / "transport"
+    root.mkdir()
+    (root / "transport-5000.manifest").write_bytes(b"\xff\xfe\x00garbage")
+
+    with pytest.raises(StandaloneBackupError, match="manifest is unreadable"):
+        standalone_backup._read_manifest(root / "transport-5000.manifest")
+    rows = list_standalone_backups_for_display("transport", backup_root=root)
+    assert rows == [
+        {
+            "state": "unreadable",
+            "filename": "transport-5000.manifest",
+            "reason": "manifest is unreadable: transport-5000.manifest",
+        }
+    ]
+
+
+def test_small_roles_do_not_inherit_a_large_roles_requirement(tmp_path: Path) -> None:
+    """작은 role은 자기 dump만큼만 요구받는다: pinvi dump 384 KB → 예약분 + 768 KB."""
+
     _seed_sized_manifest(
         tmp_path / "pinvi", "pinvi", 1000, byte_size=384_332, db_size_bytes=12_000_000
     )
-    assert _required(tmp_path / "pinvi", "pinvi", 12_000_000) == 2 * 384_332 + reserve
+    estimate = _estimate(tmp_path / "pinvi", "pinvi", 12_000_000)
+    assert _required(estimate) == 2 * 384_332 + standalone_backup._DISK_RESERVE_BYTES
 
 
 def test_create_refuses_before_pg_dump_when_the_disk_is_too_full(
@@ -723,8 +779,9 @@ def test_create_refuses_before_pg_dump_when_the_disk_is_too_full(
     monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
     subprocess_run = _happy_subprocess_run()
     monkeypatch.setattr(standalone_backup.subprocess, "run", subprocess_run)
-    # fake database 12345 B → 필요량 = 2 x 12345 + 예약분. 1 B 모자라게 준다.
-    required = 2 * 12345 + standalone_backup._DISK_RESERVE_BYTES
+    # fake database 12345 B, 테이블 6789 B → 첫 실행 추정 = ceil(1.25 x 6789) = 8487 B
+    # (database 크기보다 작다). 필요량 = 2 x 8487 + 예약분. 1 B 모자라게 준다.
+    required = 2 * 8487 + standalone_backup._DISK_RESERVE_BYTES
     disk_usage = Mock(return_value=Mock(free=required - 1))
     monkeypatch.setattr(shutil, "disk_usage", disk_usage)
 
@@ -743,6 +800,64 @@ def test_create_refuses_before_pg_dump_when_the_disk_is_too_full(
     disk_usage.return_value = Mock(free=required)
     manifest = create_standalone_backup("transport", backup_root=root)
     assert manifest.backup_filename == "transport-1000.dump"
+
+
+def test_an_operator_expected_dump_size_replaces_the_estimate_but_keeps_the_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`--expected-dump-bytes`는 추정만 바꾼다. 필요량은 여전히 2배 + 예약분이고 남는다."""
+
+    root = tmp_path / "geo"
+    _fake_time(monkeypatch)
+    run_checked = Mock(side_effect=_happy_run_checked())
+    monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
+    subprocess_run = _happy_subprocess_run()
+    monkeypatch.setattr(standalone_backup.subprocess, "run", subprocess_run)
+    override = 6_000_000_000
+    required = 2 * override + standalone_backup._DISK_RESERVE_BYTES
+    disk_usage = Mock(return_value=Mock(free=required - 1))
+    monkeypatch.setattr(shutil, "disk_usage", disk_usage)
+
+    with caplog.at_level("INFO", logger=standalone_backup.__name__):
+        with pytest.raises(standalone_backup.StandaloneBackupInsufficientSpaceError) as excinfo:
+            create_standalone_backup("geo", backup_root=root, expected_dump_bytes=override)
+
+    assert f"{required} B" in str(excinfo.value)
+    assert "--expected-dump-bytes 6000000000" in str(excinfo.value)
+    assert "6000000000" in caplog.text
+    # 운영자 값이 있으면 추정용 질의를 하지 않는다.
+    commands = [" ".join(call.args[0]) for call in run_checked.call_args_list]
+    assert not any("pg_database_size" in command or "pg_table_size" in command for command in commands)
+    subprocess_run.assert_not_called()
+
+    disk_usage.return_value = Mock(free=required)
+    manifest = create_standalone_backup("geo", backup_root=root, expected_dump_bytes=override)
+    assert manifest.backup_filename == "geo-1000.dump"
+
+
+def test_an_expected_dump_size_must_be_positive(tmp_path: Path) -> None:
+    with pytest.raises(StandaloneBackupError, match="positive"):
+        create_standalone_backup("geo", backup_root=tmp_path / "geo", expected_dump_bytes=0)
+
+
+def test_query_table_bytes_connects_to_the_database_it_measures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_checked = Mock(return_value=b"4242\n")
+    monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
+
+    assert (
+        standalone_backup._query_table_bytes("kor-travel-shared-postgres", 11000, "admin", "kor_travel_geo")
+        == 4242
+    )
+    command = run_checked.call_args.args[0]
+    assert command[command.index("--dbname") + 1] == "kor_travel_geo"
+    sql = command[-1]
+    assert "pg_table_size" in sql
+    # 인덱스(`i`)와 TOAST(`t`, 부모의 pg_table_size에 이미 들어 있다)는 세지 않는다.
+    assert "relkind IN ('r', 'm')" in sql
+    with pytest.raises(StandaloneBackupError, match="invalid"):
+        standalone_backup._query_table_bytes("c", 1, "admin", "Bad-Name")
 
 
 # --- 복원 계획(KUM-M13, 읽기 전용) --------------------------------------------
@@ -1251,6 +1366,8 @@ def _rehearsal_probes(
 
     def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
         REHEARSAL_COMMANDS.append(list(arguments))
+        if "max_wal_size" in " ".join(arguments):
+            return b"1073741824\n"
         if arguments[:2] == ["docker", "cp"]:
             return b""
         if "chown" in arguments:
@@ -1297,6 +1414,35 @@ def test_rehearse_standalone_restore_confirms_a_healthy_backup(
     # scratch DB는 항상 지운다 — dropdb가 실제로 호출됐는지 확인한다.
     assert any("dropdb" in call for call in cleanup_calls)
     assert any("rm" in call for call in cleanup_calls)
+
+
+def test_rehearse_restore_refuses_before_copy_in_when_the_disk_is_too_full(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """scratch DB는 대상과 같은 PGDATA에 원본만큼 자란다 — 공용 instance의 디스크를 채우면
+    다섯 프로젝트의 DB가 멈춘다. 모자라면 dump를 넣지도, DB를 만들지도 않는다."""
+
+    root = tmp_path / "geo"
+    root.mkdir()
+    _seed_backup(root, "geo", 1000, b"dump-bytes")
+    _rehearsal_probes(monkeypatch)
+    # manifest db_size_bytes 100 + dump 10 B + max_wal_size 1 GiB(가짜) + 예약분.
+    required = 100 + len(b"dump-bytes") + 1024**3 + standalone_backup._DISK_RESERVE_BYTES
+    disk_usage = Mock(return_value=Mock(free=required - 1))
+    monkeypatch.setattr(shutil, "disk_usage", disk_usage)
+
+    with pytest.raises(standalone_backup.StandaloneBackupInsufficientSpaceError) as excinfo:
+        rehearse_standalone_restore("geo", backup_root=root)
+
+    assert disk_usage.call_args.args[0] == root
+    assert f"{required} B" in str(excinfo.value)
+    assert "max_wal_size" in str(excinfo.value)
+    # 크기 질의 말고는 아무것도 하지 않았다 — copy-in·chown·createdb·pg_restore 없음.
+    assert len(REHEARSAL_COMMANDS) == 1
+    assert "max_wal_size" in " ".join(REHEARSAL_COMMANDS[0])
+
+    disk_usage.return_value = Mock(free=required)
+    assert rehearse_standalone_restore("geo", backup_root=root).verified is True
 
 
 def test_rehearse_restore_hands_the_dump_over_before_restoring_it(
@@ -1420,6 +1566,8 @@ def test_rehearse_standalone_restore_always_drops_the_scratch_database(
     monkeypatch.setattr(standalone_backup, "_discover_admin_role", lambda name: "addr")
 
     def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
+        if "max_wal_size" in " ".join(arguments):
+            return b"1073741824\n"
         if arguments[:2] == ["docker", "cp"]:
             return b""
         raise StandaloneBackupError("createdb exploded")
@@ -1502,6 +1650,8 @@ def test_rehearse_standalone_restore_surfaces_a_cleanup_failure_without_hiding_i
     )
 
     def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
+        if "max_wal_size" in " ".join(arguments):
+            return b"1073741824\n"
         return b""
 
     monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
