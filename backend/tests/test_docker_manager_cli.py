@@ -2689,11 +2689,15 @@ def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch):
     monkeypatch.setattr(_Path, "is_dir", lambda self: False)
     assert main(["targets", "validate", "--check-coordinates"]) == 1
     captured = capsys.readouterr()
-    assert "declared external coordinates do not exist here" in captured.err
     # weather는 2026-09-20(ADR-47)부터 internal target이라 더 이상 external
-    # coordinate를 선언하지 않는다 — 남은 external target(airport-db/airport)만으로도
-    # 이 메커니즘이 실제로 동작함을 증명하기에 충분하다.
-    assert "kor-travel-airport" in captured.err
+    # coordinate를 선언하지 않는다 — 남은 external target(`transport`) 하나만으로도
+    # 이 메커니즘이 실제로 동작함을 증명하기에 충분하다. 줄 전체를 대조한다 —
+    # 부분 문자열이면 옛 좌표(개명 전 디렉터리)가 남아도 통과한다.
+    assert captured.err.splitlines() == [
+        "declared external coordinates do not exist here:",
+        "  targets.transport.external_project.working_dir: "
+        "/home/digitie/apps/kor-travel-transport",
+    ]
 
 
 def test_targets_validate_coordinates_pass_when_they_exist(capsys, monkeypatch):

@@ -65,7 +65,8 @@ class ServiceGroup:
     """한 번의 `docker compose` 호출로 다룰 수 있는 서비스 묶음.
 
     `external`이 `None`이면 Manager 자신의 프로젝트다. target이 여러 프로젝트에
-    걸치면(예: `airport`가 `airport-db`에 의존) 묶음이 여럿 나오고, 호출하는 쪽이
+    걸치면(예: 외부 앱 target이 같은 디렉터리의 다른 compose 프로젝트인 DB target에
+    의존 — 2026-09-28 전의 `airport` → `airport-db`) 묶음이 여럿 나오고, 호출하는 쪽이
     **묶음마다 한 번씩** 명령을 돌려야 한다 — 그것이 단일 프로젝트 전제를 깨는
     지점이고, 평평한 이름 목록으로는 표현할 수 없다.
     """

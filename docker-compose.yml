@@ -338,7 +338,7 @@ services:
   # kor-travel-transport-release-*/scripts/deploy-server14.sh:111). 별도 role을
   # 유지할 기술적 근거가 없었다. 실제 소비 컨테이너(dagster webserver/daemon/
   # code-server)는 Manager가 아니라 transport 자신의 배포 사본
-  # (/home/digitie/apps/kor-travel-airport/, .env.server14)이 띄운다 — 거기 있는
+  # (/home/digitie/apps/kor-travel-transport/, .env.server14)이 띄운다 — 거기 있는
   # DAGSTER_POSTGRES_URL도 이 통합에 맞춰 함께 바꿔야 한다(Manager 쪽만 바꾸면
   # 소비 컨테이너는 여전히 예전 role로 붙는다).
   kor-travel-shared-db-init-transport:

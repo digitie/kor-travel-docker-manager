@@ -319,7 +319,11 @@ def test_manager_containers_still_reach_the_compose_recreate_path(
 def test_lifecycle_actions_stay_available_for_external_containers(
     action: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """SDK 경로는 compose 프로젝트와 무관하다 — 여기까지 막으면 기능이 사라진다."""
+    """SDK 경로는 compose 프로젝트와 무관하다 — 여기까지 막으면 기능이 사라진다.
+
+    실제 등록된 외부 컨테이너로 센다 — SDK에 넘어가는 이름이 등록된 실제 컨테이너
+    이름(`kor-travel-transport-backend-1`)인지도 함께 본다.
+    """
 
     performed: list[str] = []
 
@@ -332,7 +336,7 @@ def test_lifecycle_actions_stay_available_for_external_containers(
 
     class _Containers:
         def get(self, name: str) -> Any:
-            assert name == "kor-travel-airport-backend-1"
+            assert name == "kor-travel-transport-backend-1"
             return _Container()
 
     class _Client:
@@ -340,7 +344,7 @@ def test_lifecycle_actions_stay_available_for_external_containers(
 
     monkeypatch.setattr(DockerService, "_get_client", lambda self: _Client())
     result = DockerService()._control_container_unlocked(
-        "kor-travel-airport-backend",
+        "kor-travel-transport-backend",
         action,
         environment_snapshot=None,  # type: ignore[arg-type]
     )
@@ -602,7 +606,7 @@ def test_lifecycle_actions_work_through_the_public_entry_point(
 
     class _Containers:
         def get(self, name: str) -> Any:
-            assert name == "kor-travel-airport-backend-1"
+            assert name == "kor-travel-transport-backend-1"
             return _Container()
 
     class _Client:
@@ -611,7 +615,7 @@ def test_lifecycle_actions_work_through_the_public_entry_point(
     monkeypatch.setattr(DockerService, "_get_client", lambda self: _Client())
     monkeypatch.delenv("KTDM_DEPLOYMENT_ENVIRONMENT", raising=False)
 
-    result = DockerService().control_container("kor-travel-airport-backend", "restart")
+    result = DockerService().control_container("kor-travel-transport-backend", "restart")
     assert result["success"] is True
     assert performed == ["restart"]
 
@@ -637,10 +641,10 @@ def test_config_routes_refuse_external_before_taking_the_deployment_lock(
     with pytest.raises(ExternalContainerMutationError):
         if method == "update":
             service.update_container_config(
-                "kor-travel-airport-backend", ["14104:9090"], {}, [], []
+                "kor-travel-transport-backend", ["14104:9090"], {}, [], []
             )
         else:
-            service.reset_container_config("kor-travel-airport-backend")
+            service.reset_container_config("kor-travel-transport-backend")
 
 
 def test_the_read_only_boundary_carries_its_own_error_code() -> None:
@@ -977,9 +981,9 @@ _COLLISION_SENTINEL = "__COLLISION__"
 @pytest.mark.parametrize(
     "container_id",
     [
-        pytest.param("kor-travel-airport-frontend", id="name-differs"),
+        pytest.param("kor-travel-transport-frontend", id="name-differs"),
         pytest.param(_COLLISION_SENTINEL, id="name-collides"),
-        pytest.param("kor-travel-airport-backend", id="airport"),
+        pytest.param("kor-travel-transport-backend", id="transport"),
     ],
 )
 def test_reset_reaches_the_guard_for_every_external_container(
@@ -1009,12 +1013,18 @@ def test_reset_reaches_the_guard_for_every_external_container(
         DockerService().reset_container_config(container_id)
 
 
-def test_the_external_boundary_maps_to_409_with_its_code() -> None:
+def test_the_external_boundary_maps_to_409_with_its_code(
+    manager_compose: dict[str, Any],
+) -> None:
     """앱에 **등록된 핸들러**를 태워 status와 code를 함께 센다.
 
     첫 판 검사는 `_contract_error_detail`을 직접 불러서 핸들러 배선을 보지 않았다.
     전체 HTTP 스택은 이 파일의 대상이 아니다(origin 가드 + 세션 쿠키 하네스가 필요하고
     그것은 `test_api.py`가 갖고 있다) — 대신 **핸들러 선택과 그 응답**을 센다.
+
+    예외는 손으로 만들지 않고 실제 등록된 외부 컨테이너의 `reset`에서 받는다. 그래서
+    화면이 받는 문구가 **정확히** 무엇인지 — 컨테이너 id와 소속 compose 프로젝트
+    이름까지 — 여기서 결박된다.
     """
 
     import asyncio
@@ -1028,15 +1038,19 @@ def test_the_external_boundary_maps_to_409_with_its_code() -> None:
             handler = candidate
     assert handler is not None, "DeploymentContractError 핸들러가 등록돼 있어야 한다"
 
-    error = ExternalContainerMutationError(
-        "container 'kor-travel-airport-backend' belongs to external compose project "
-        "'kor-travel-airport'"
-    )
-    response = asyncio.run(handler(None, error))
+    with pytest.raises(ExternalContainerMutationError) as rejection:
+        DockerService().reset_container_config("kor-travel-transport-backend")
+    response = asyncio.run(handler(None, rejection.value))
     assert response.status_code == 409
     payload = json.loads(response.body)
-    assert payload["detail"]["code"] == "EXTERNAL_PROJECT_READ_ONLY", payload
-    assert "kor-travel-airport" in payload["detail"]["message"]
+    assert payload["detail"] == {
+        "code": "EXTERNAL_PROJECT_READ_ONLY",
+        "message": (
+            "container 'kor-travel-transport-backend' belongs to external compose "
+            "project 'kor-travel-transport'; the Manager does not edit another "
+            "project's compose file"
+        ),
+    }, payload
 
 
 # ── 라운드 5: 내가 라운드 4에서 만든 표면 둘 ────────────────────────────

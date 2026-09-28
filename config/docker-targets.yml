@@ -15,7 +15,7 @@ dependency_order:
   - weather
   # 형제 프로젝트(외부 compose). Manager 자신의 프로젝트보다 뒤에 둔다 — 기동
   # 순서상 앞의 것들에 의존하지 않고, `all`에서 마지막에 오는 것이 읽기 쉽다.
-  - airport
+  - transport
 
 containers:
   kor-travel-map-postgresql:
@@ -295,21 +295,21 @@ containers:
     connection: "http://127.0.0.1:14104"
     expected_ports:
       - "14104:14104"
-  kor-travel-airport-backend:
-    name: kor-travel-airport-backend-1
+  kor-travel-transport-backend:
+    name: kor-travel-transport-backend-1
     compose_service: backend
-    external_project: kor-travel-airport
-    role: airport-backend
-    display_name: Kor Travel Airport 백엔드
+    external_project: kor-travel-transport
+    role: transport-backend
+    display_name: Kor Travel Transport 백엔드
     connection: "http://127.0.0.1:14001"
     expected_ports:
       - "14001:8000"
-  kor-travel-airport-frontend:
-    name: kor-travel-airport-frontend-1
+  kor-travel-transport-frontend:
+    name: kor-travel-transport-frontend-1
     compose_service: frontend
-    external_project: kor-travel-airport
-    role: airport-frontend
-    display_name: Kor Travel Airport 프런트엔드
+    external_project: kor-travel-transport
+    role: transport-frontend
+    display_name: Kor Travel Transport 프런트엔드
     connection: "http://127.0.0.1:14002"
     expected_ports:
       - "14002:3000"
@@ -588,22 +588,25 @@ targets:
       - pinvi-dagster-daemon
     init_steps: []
 
-  airport:
-    # 형제 프로젝트다 — compose 정본이 이 저장소 밖에 있고, 배포는 그 저장소가
-    # 계속 소유한다. Manager는 상태를 보고 컨테이너 수명주기(start/stop/restart)만
-    # 다룬다. DB는 공용 instance(kor-travel-shared-postgres, :11000)의
-    # kor_travel_transport database다 — 옛 전용 DB target(airport-db)은 2026-09-28에 뺐다.
+  transport:
+    # 형제 프로젝트다 — compose 정본이 이 저장소 밖(kor-travel-transport 저장소)에
+    # 있고, 배포는 그 저장소가 계속 소유한다. Manager는 상태를 보고 컨테이너
+    # 수명주기(start/stop/restart)만 다룬다. DB는 공용 instance
+    # (kor-travel-shared-postgres, :11000)의 kor_travel_transport database다.
+    # 이 target의 옛 이름(`airport`)과 옛 compose 프로젝트 이름은 별칭으로 남기지
+    # 않는다(2026-09-28 소유자 결정) — 옛 이름을 쓰는 호출이 남아 있으면 조용히
+    # 통하는 대신 `unknown target`으로 드러난다.
     external_project:
-      project: kor-travel-airport
-      working_dir: /home/digitie/apps/kor-travel-airport
+      project: kor-travel-transport
+      working_dir: /home/digitie/apps/kor-travel-transport
       config_files:
         - docker-compose.yml
     port_band: "14001-14099"
     depends_on: []
-    display_name: Kor Travel Airport
-    description: 공항 정보 서비스입니다. 백엔드(:14001)와 프런트엔드(:14002)로 구성되며 DB는 공용 instance(:11000)에 있습니다.
+    display_name: Kor Travel Transport
+    description: 통합 교통정보 서비스입니다(공항 주차 현황 등). 백엔드(:14001)와 프런트엔드(:14002)로 구성되며 DB는 공용 instance(:11000)의 kor_travel_transport database에 있습니다.
     aliases:
-      - kor-travel-airport
+      - kor-travel-transport
     services:
       - backend
       - frontend
@@ -611,8 +614,8 @@ targets:
       - backend
       - frontend
     containers:
-      - kor-travel-airport-backend
-      - kor-travel-airport-frontend
+      - kor-travel-transport-backend
+      - kor-travel-transport-frontend
 
   weather:
     port_band: "14100-14199"
