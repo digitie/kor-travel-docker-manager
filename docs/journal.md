@@ -8105,3 +8105,30 @@ MT(ADR-53 D4)의 적대 리뷰 MED 2건·LOW 14건을 반영했다. 이 브랜�
     2220 passed, 2 skipped. 그 뒤의 커밋은 이 journal뿐이다.
 - **남은 것**: M1이 더 바뀌면 다시 올린다. 분리 브랜치는 #434로 머지됐고 MT는 그 위로 올렸다(아래). PR 본문에 위
   수치를 옮기고, 머지는 창 안에서 PR head와 머지 SHA의 `git diff --stat`이 비었는지 확인한 뒤다.
+
+## 2026-09-29 — MT를 main `6af5dd1`(#434·#435) 위로 다시 올렸다
+
+- **바탕**: main이 `0fe0d97`에서 `6af5dd1`로 움직였고 n150에 설치됐다 — #434(컨테이너 stop/restart의 grace 전달과
+  한 서비스 재생성의 `--no-deps`, MT에서 떼어 낸 것)와 #435(M1). 둘 다 squash 머지라 MT에 든 커밋들과 patch-id가
+  같지 않아 rebase가 스스로 떨어뜨리지 못한다. 그래서 `git rebase --onto origin/main 0f22094`로 M1 브랜치의
+  14커밋(#435에 들어감)과 떼어 낸 두 커밋(`f2db08e`·`0f22094`, #434에 들어감)을 명시적으로 빼고 MT 자신의
+  10커밋만 옮겼다. 두 커밋의 내용이 #434에 다 있다는 것은 옮긴 뒤 MT의 main 대비 diff에 `docker_service.py`와
+  `test_multi_project_boundaries.py`가 없고 `test_docker_service_config.py`는 `yaml_strict` 로더 5줄뿐인 것으로
+  확인했다.
+- **충돌 풀이**:
+  - `test_docker_service_config.py` import: main의 `registry` import와 MT의 `yaml_strict` import를 둘 다 둔다.
+  - `journal.md`: main의 항목(M1 리뷰 2차)을 먼저, MT의 두 항목을 그 뒤에 둔다.
+  - `compose_service.py` 범위 해석기: MT의 `no_deps` 변수를 버리고 M1의 `parsed_flags`(compose가 플래그로 읽은
+    것)로 센다. 명령 집합은 main의 `_COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES` 하나다. MT가 main에 더하는 것은
+    API 의존성 확장이 `{"up", "create", "restart", "watch"}` 대신 그 집합을 쓰는 조건 한 줄과 주석뿐이다
+    (`run`·`start`·`scale`이 들어간다).
+  - `4820eed`의 `--no-deps` 복구 argv 단언·중복 테스트 삭제와 `4f81ba4`의 helper docstring·docker-management.md
+    대시보드 문단은 #434가 이미 main에 둔 것이라 main 쪽을 택했다. 두 커밋 메시지도 그만큼 줄였다.
+- **ADR-53·journal**: grace 전달과 `--no-deps`를 MT(결정 4) 몫으로 적은 줄을 지우고 #434를 가리킨다. ADR-53 상태
+  줄의 결정 4는 이제 튜닝과 백업 예약분이다. compose 주석과 onboarding C9의 "Manager의 stop/restart가 grace를
+  따른다"는 사실 서술이라 지우지 않고 `(#434)`를 달았다.
+- **compose 검사**: Manager의 `yaml_strict` 로더(`load_yaml_rejecting_duplicate_keys`)로 `docker-compose.yml`을
+  읽으면 중복 키 없이 서비스 44개다. `kor-travel-shared-postgres`는 #433의 `init: true`, exec probe(`pg_isready …
+  -t 3`, `timeout: 10s`), `stop_grace_period: 300s`를 그대로 갖고, MT의 튜닝 `command`(`-c` 10개, 튜닝 값에
+  `${KOR_TRAVEL_SHARED_POSTGRES_*}` 없음), digest 핀, `shm_size: 1gb`를 더한다. 대조군: `stop_grace_period`
+  한 줄을 복제하면 같은 로더가 `ConstructorError`로 거부한다.
