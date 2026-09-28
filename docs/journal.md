@@ -7953,3 +7953,53 @@ M1(`fix/rebuild-tenant-fences`) 리뷰의 MED 셋과 값싼 LOW를 고쳤다. �
     - 통합 파일의 `ensure_map_databases_isolated` import는 `getattr(…, None)`으로 바꿨다.
     - shim이 없으면 통합 파일의 수집 오류 하나에서 멈춘다. 처음에는 service 쪽 한 곳만 풀었는데, 그때는 기존
       harness 테스트 37이 patch 대상이 없다는 이유로 빨갰다. 두 곳을 다 풀자 그 37개는 초록이 됐다.
+
+## 2026-09-29 — M1 리뷰 2차 LOW: 거부를 멈추기 전으로, `--no-deps`는 compose가 읽은 것만
+
+M1 리뷰 2차(`b690967`)는 HIGH·MED 없이 LOW 여섯을 냈다. 값싸고 분명한 넷을 고쳤고, 하나는 문서로, 하나는
+고치지 않았다.
+
+- **멈추기 전 preflight(LOW 1·6)**: 전체 배포 경로는 R2·R4 전에 Map·PinVi를 멈춘다(`_deploy_forward`의 `stop`).
+  그 뒤의 거부는 pair를 내린 채 남겼다 — 오늘 12700의 `--restart`는 schema owner가 잔재 `ktm_40b`·`ktm_gcverify`도
+  소유해 매번 그랬고, DSN login을 Map의 member가 아닌 것으로 바꾼 뒤의 새 pair도 Map schema를 올린 뒤에 멈췄다.
+  - `--restart`: `require_databases_resettable`이 리셋의 R2 판정(이름·허용 소유자·Map 소유자 배타성)을 읽기만으로
+    `begin_deploy` 전에 돌린다. 판정 코드는 `_read_resettable_owners` 하나이고 리셋이 drop 직전에 다시 부른다(결박).
+  - 일반·adopt: app DB가 `present`(schema owner 소유)면 `require_map_databases_isolatable`이 R4 transaction의 **바로
+    그** DO 전제 블록을 `SET TRANSACTION READ ONLY`로 먼저 돌린다(Dagster DB가 있을 때). 전체 경로는 그 둘의
+    소유자와 login membership을 R4 전에 바꾸지 않는다 — Map의 membership `GRANT`는 fresh bootstrap
+    (`docker/postgres-role-bootstrap.sh`)에만 있고 `runtime_privileges`는 객체 권한만 준다. 없거나 bootstrap 전인
+    DB는 미리 보면 거짓 거부라 만든 뒤 transaction 안에서만 판정한다. 같은 pair 수렴은 아무것도 멈추지 않아
+    preflight가 없다.
+- **R3 우회(LOW 2)**: `--no-deps`·`--remove-orphans`를 argv 전체에서 찾았다. `run SERVICE` 뒤는 컨테이너 argv이고
+  `-e --no-deps`의 뒤쪽은 옵션 값이라 compose는 의존성을 끌어온다. 해석기(`_parse_compose_mutation`)가 범위와 함께
+  **플래그로 읽은** 명령 옵션을 내고, R3·`up`/`run`의 `--no-deps` 요구·해석기 자신의 API 의존성 확장이 모두 그것을
+  본다. startup gate는 첫 일치 낱말 대신 해석기의 명령 위치를 쓴다.
+- **격리의 두 guard(LOW 4)**: 지우지 않고 테스트를 달았다. 이름 울타리는 "권한을 바꾸는 경로에 둔다"는 이 모듈의
+  규칙이고, metadata user 개수 검사가 없으면 풀기(`(x,) = …`)가 `ValueError`로 샌다. 검사는 격리와 preflight가 함께
+  쓰는 `_map_isolation_metadata_user`로 옮겼다.
+- **상한 관찰(LOW 3, 문서)**: §7.7 R4에 설치 뒤 첫 수렴의 상한 38 관찰 항목(로그의
+  `too many connections for database`, `numbackends`, 되돌리기와 소유자 결정 D5)을 적었다.
+- **고치지 않음(LOW 5)**: R3의 `depends_on` closure를 "`--no-deps` 필수 + `create` 거부" 규칙으로 바꾸는 단순화.
+  closure는 compose가 실제로 닿는 것에 결박하고(변이로 빨강 확인됨), MT가 같은 집합
+  (`_COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES`)을 쓴다. 이득은 30줄이고, 재구축이 보내는 호출에서 판정은 같다.
+- **MT 리베이스에 미치는 것**: MT(`feat/shared-instance-tuning`의 `2883068`)는 같은 해석기 줄에 자기 `no_deps`
+  변수를 넣었다. 다음 리베이스에서 그 hunk는 충돌한다 — MT의 명령 집합(`_COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES`)과
+  M1의 `parsed_flags`를 함께 두면 된다(MT의 `no_deps`는 `"--no-deps" in parsed_flags`와 같다).
+- **테스트(n150, `24f3315`)**:
+  - 표적 8 파일(`database_runtime`·재구축·통합 둘·launcher·F1D 계약·multi-project·docker config), gate=1, 패치한
+    `b690967` 사본(`/tmp/wf19-m1-fix-b690967`): 첫 실행 **1 failed**, 662 passed — startup gate가 서비스 없는
+    `up -d --no-deps`를 R3보다 먼저 "requires --no-deps"로 거부해 문구가 바뀌었다. 서비스를 말하지 않는 호출은 R3에
+    맡기도록 고친 뒤 **663 passed**, 0 failed. 그 사본과 push한 트리는 `.ruff_cache` 말고 같다(`diff -r`).
+  - 새 사례는 43개다(단위 40, 실 PostgreSQL 통합 3). 수집 수 2199 → 2242.
+  - 빨강 확인: 변이 11개가 모두 각자의 탐지기를 빨갛게 했다 — preflight 호출 제거(5), R2 preflight 무연산(4), R4
+    preflight 무연산(13), READ ONLY 제거(1), Dagster 부재 무시(1), 격리 이름 울타리 제거(16), metadata user 하나
+    검사를 `sorted(…)[0]`로(4), startup gate·R3의 `--no-deps`를 argv 전체로(2·1), R3 `--remove-orphans`를 argv
+    전체로(1), 해석기가 플래그를 모으지 않음(4). 복원 뒤 같은 44개는 초록이다. 새 43 가운데 39가 적어도 한 변이에서
+    빨갛고, 초록으로 남은 넷은 대조군이다(`ps`·`down` 해석, bootstrap 전·부재 app DB에서 preflight를 부르지 않음).
+    바꾼 기존 테스트 하나(`test_restart_skips_the_map_database_precheck`)도 빨갛다.
+  - 중간 커밋 `0be1ad9`(해석기만): 재구축·multi-project 두 파일 **153 passed**.
+  - gate 켠 전체 스위트(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, `24f3315`의 새 `git clone`, consolidation venv):
+    **2240 passed, 2 skipped**(root 전용 M05 ledger 둘), 5m49s, `ktdm-it-*` 잔재 0.
+  - `/tmp/b3-test.sh`: ruff 0.16.4 깨끗, **2240 passed, 2 skipped**, 5m12s.
+  - GitHub CI(dispatch 36459717650, `24f3315`): 백엔드 **2216 passed, 26 skipped**(통합은 gate 없이 skip),
+    프론트엔드 green.
