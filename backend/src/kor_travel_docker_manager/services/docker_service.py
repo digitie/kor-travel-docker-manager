@@ -295,6 +295,19 @@ def _atomic_write(path: str, payload: bytes, *, mode: int | None = None) -> None
                 pass
 
 
+def _single_service_recreate_args(svc_name: str) -> list[str]:
+    """설정 변경·reset·없는 컨테이너 시작·그 복구가 쓰는 **한 서비스** 재생성 argv.
+
+    `--no-deps`가 요점이다. 없으면 compose가 `depends_on`을 따라가 config hash가 어긋난
+    의존 서비스까지 재생성한다 — 공용 PostgreSQL에 기대는 서비스(geo·concierge·PinVi·
+    weather·db-init 등 스무 개) 하나의 env를 고치면, 공용 instance의 정의가 바뀐 설치와
+    그 재기동 사이에서는 공용 instance가 CHECKPOINT도 창 확인도 없이 재생성되고 모든
+    테넌트가 재시작한다(n150 Compose v5.2.0 실측). 의존 서비스는 이 경로의 몫이 아니다.
+    """
+
+    return ["up", "-d", "--force-recreate", "--no-deps", svc_name]
+
+
 def _save_compose_config_unlocked(
     config: dict[str, Any],
     *,
@@ -1317,7 +1330,7 @@ class DockerService:
             logger.info(f"Updated docker-compose.yml for service {svc_name}.")
 
             recreate_result = compose_service.run(
-                ["up", "-d", "--force-recreate", svc_name],
+                _single_service_recreate_args(svc_name),
                 capture_output=True,
                 mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
                 expected_system_bind_snapshots=validation.system_bind_snapshots,
@@ -1502,7 +1515,7 @@ class DockerService:
                     "compose restoration has no baseline transaction"
                 )
             recreate_result = compose_service._run_frozen_recovery(
-                ["up", "-d", "--force-recreate", svc_name],
+                _single_service_recreate_args(svc_name),
                 capture_output=True,
                 mutation_capability=_MANAGED_COMPOSE_MUTATION_CAPABILITY,
                 transaction=transaction,

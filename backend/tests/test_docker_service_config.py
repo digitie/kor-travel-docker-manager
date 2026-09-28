@@ -1109,7 +1109,7 @@ def test_update_container_config_recreates_with_compose_and_preserves_host_netwo
     assert saved_service["network_mode"] == "${KTDM_DOCKER_NETWORK_MODE:-host}"
     assert "networks" not in saved_service
     assert compose_run.call_args_list[0].args == (
-        ["up", "-d", "--force-recreate", "rustfs"],
+        ["up", "-d", "--force-recreate", "--no-deps", "rustfs"],
     )
     assert compose_run.call_args_list[0].kwargs["capture_output"] is True
     assert compose_run.call_args_list[0].kwargs["mutation_capability"] is not None
@@ -1165,7 +1165,7 @@ def test_update_container_config_switches_to_compose_networks_when_requested(
     assert saved_service["networks"] == ["default"]
     assert "network_mode" not in saved_service
     assert compose_run.call_args.args == (
-        ["up", "-d", "--force-recreate", "kor-travel-shared-postgres"],
+        ["up", "-d", "--force-recreate", "--no-deps", "kor-travel-shared-postgres"],
     )
 
 
@@ -2709,3 +2709,80 @@ def test_start_ignores_the_stop_timeout(monkeypatch: pytest.MonkeyPatch) -> None
     assert result["success"] is True
     assert container.calls == [("start", {})]
 
+
+# ── 한 서비스 재생성은 그 서비스의 의존 서비스를 재생성하지 않는다 ─────────────
+
+
+def test_config_recreate_and_its_restore_never_recreate_dependencies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """설정 변경의 재생성과 그 실패 뒤 복구, 두 argv에 모두 `--no-deps`가 있다.
+
+    reset과 없는 컨테이너의 시작도 같은 두 자리를 지난다. `--no-deps`가 없으면 compose가
+    `depends_on`을 따라가 config hash가 어긋난 의존 서비스까지 재생성한다 — 공용
+    PostgreSQL의 정의가 바뀐 Manager를 설치한 뒤 그 재기동까지의 사이에 공용 instance에
+    기대는 서비스 하나의 env를 고치면, 공용 instance가 CHECKPOINT도 창 확인도 없이
+    재생성되고 모든 테넌트가 재시작한다(n150 Compose v5.2.0 실측).
+    """
+
+    original = (
+        b"services:\n"
+        b"  rustfs:\n"
+        b"    image: rustfs/rustfs:latest\n"
+        b"    environment:\n"
+        b"      ORIGINAL: exact-format-preserved\n"
+        b"    volumes:\n"
+        b"    - rustfs:/data\n"
+    )
+    compose_config = yaml.safe_load(original.decode("utf-8"))
+    service, compose_path, compose_run = _prepare_candidate_transaction(
+        tmp_path, monkeypatch, compose_config
+    )
+    compose_path.write_bytes(original)
+    compose_path.chmod(0o640)
+    baseline, baseline_validation = _config_transaction(compose_path, compose_config)
+    baseline = replace(
+        baseline,
+        compose_source_bytes=original,
+        compose_source_mode=0o640,
+    )
+    baseline_validation = replace(
+        baseline_validation,
+        transaction_snapshot=baseline,
+    )
+    monkeypatch.setattr(
+        compose_service_runtime,
+        "capture_transaction_unlocked",
+        Mock(return_value=(baseline, baseline_validation)),
+    )
+    monkeypatch.setattr(
+        compose_service_runtime,
+        "capture_candidate_transaction_unlocked",
+        _candidate_capture_for(compose_path),
+    )
+    compose_run.return_value = {
+        **_compose_success(),
+        "success": False,
+        "returncode": 1,
+        "stderr": "candidate recreate failed",
+    }
+    frozen_recovery = Mock(return_value=_compose_success())
+    monkeypatch.setattr(
+        compose_service_runtime,
+        "_run_frozen_recovery",
+        frozen_recovery,
+    )
+
+    result = service.update_container_config(
+        "rustfs",
+        ["12101:12101"],
+        {"CHANGED": "yes"},
+        ["rustfs:/data"],
+        [],
+    )
+
+    assert result["success"] is False
+    expected = ["up", "-d", "--force-recreate", "--no-deps", "rustfs"]
+    assert compose_run.call_args_list[0].args == (expected,)
+    assert frozen_recovery.call_args.args == (expected,)
