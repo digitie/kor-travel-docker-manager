@@ -7742,3 +7742,40 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
 - **반영(이 PR 머지 뒤)**: 공용 instance 재생성이 필요하다 — 모든 테넌트가 짧게 끊긴다. geo 세션이 geo MV
   refresh가 끝난 뒤, 에이전트 빌드가 없는 시각에 한다. 재생성 전 `docker events ... event=exec_die`로
   고아 출처를 한 번 확인한다.
+
+## 2026-09-29 — 대시보드의 stop/restart가 grace를 따르고, 한 서비스 재생성이 의존 서비스를 건드리지 않는다
+
+- **배경**: Map DB를 공용 instance로 옮기는 작업(ADR-53)의 튜닝 PR(MT)에 들어 있던 두 수정을 떼어 먼저
+  낸다. 둘 다 compose 정의를 바꾸지 않아 설치해도 공용 instance의 재생성을 무장하지 않고, **지금** n150에
+  살아 있는 위험을 닫는다 — MT의 창을 기다릴 이유가 없다. n150은 Manager `0fe0d97`이고 공용 instance는
+  ADR-52 설정(`stop_grace_period: 300s`)으로 09-28 13:10:57Z에 재생성돼 `Config.StopTimeout=300`이다.
+- **위험 1 — 10초 SIGKILL**: `_control_container_unlocked`가 `container.restart()`·`container.stop()`을 인자
+  없이 불렀다. n150에 설치된 docker-py 7.2.0은 `restart(self, container, timeout=10)`이라 **항상** `t=10`을
+  보낸다. 대시보드·CLI(`action <id> restart`)의 재시작은 ADR-52의 300초를 무시하고 공용 postmaster를 10초 뒤 SIGKILL했을
+  것이다 — shutdown checkpoint가 느린 날이면 다음 기동이 모든 테넌트의 crash recovery다. `stop()`은 `t`를
+  빼서 dockerd가 컨테이너의 300초를 쓰지만 HTTP read timeout은 10초만 늘려, 정상 종료가 client timeout
+  실패로 보고됐다.
+  - **변경**: 컨테이너 자신의 `Config.StopTimeout`(compose `stop_grace_period`)을 읽어 있으면
+    `timeout=`으로 넘긴다. docker-py가 read timeout도 같은 만큼 늘린다. grace를 선언하지 않은 컨테이너는
+    예전과 같이 인자 없이 부른다. 리터럴 없음, 컨테이너에서 파생한다.
+- **위험 2 — 의존 서비스 재생성**: 설정 변경(`POST /containers/{id}/config`), reset
+  (`POST /containers/{id}/reset`), 없는 컨테이너의 시작은 모두 `_update_container_config_unlocked`에서
+  `up -d --force-recreate <svc>`를 돌렸고, 그 실패 뒤 복구(`_restore_compose_transaction`)도 같은 argv였다.
+  `--no-deps`가 없으면 Compose(n150 v5.2.0)가 `depends_on`을 따라가 config hash가 어긋난 의존 서비스까지
+  재생성한다. 공용 instance에 기대는 서비스는 스무 개다(db-init 다섯, geo·concierge·PinVi·weather). 공용
+  instance의 정의를 바꾸는 Manager를 설치한 뒤 계획 재기동까지의 사이에 그중 하나의 env를 고치면 공용
+  instance가 CHECKPOINT도 실행·시각 확인도 없이 재생성되고 모든 테넌트가 재시작한다.
+  - **변경**: 두 자리가 한 helper `_single_service_recreate_args`로 argv를 만들고, 그것이 `--no-deps`를
+    넣는다. 의존 서비스는 이 경로의 몫이 아니다. target 단위 `ensure`(`compose_service.py`)는 production에서
+    거부되고 rebuild는 이미 `--no-deps`를 강제하므로 손대지 않았다.
+- **테스트**: `test_docker_service_config.py`에 `test_restart_passes_the_container_stop_timeout[stop|restart]`,
+  `test_restart_without_stop_timeout_is_unchanged[stop|restart]`, `test_start_ignores_the_stop_timeout`,
+  `test_config_recreate_and_its_restore_never_recreate_dependencies`(정방향과 복구 argv 둘 다). 옛 argv를
+  박던 두 테스트는 `--no-deps`를 기대하고, `test_multi_project_boundaries.py`의 두 수명주기 fake는 실제
+  docker-py `Container`처럼 `attrs`를 들고 인자 없이 불리는지 본다.
+  - **red-check(n150, 선택 11건)**: 브랜치 11 passed. main의 `docker_service.py`로 되돌리면 5 failed(argv 두
+    건, grace 두 건, 새 재생성 검사). 복구 argv만 `--no-deps`를 빼면 1 failed, `restart()`만 인자를 빼면
+    1 failed, grace 없는 컨테이너에 `timeout=10`을 넘기면 5 failed(`…_is_unchanged` 두 건과 수명주기 fake 세
+    건). 각 검사가 제 자리에서 빨개진다.
+- **남은 것**: MT에는 튜닝 `command`, 이미지 digest 핀, `shm_size` 1gb, 백업 disk reserve와 그 문서·ADR이
+  남는다.
