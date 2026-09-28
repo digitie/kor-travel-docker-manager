@@ -3983,3 +3983,80 @@ git을 부르지 않는다. `pinned_runtime_sources.py`는 754줄에서 401줄�
 - **테스트**: 표 등록을 강제하던 테스트와 S4(family 게이트가 소비자 스캔을 건너뛸 수 있다) 가정 테스트 둘을 지웠다 —
   파생 규칙은 진입점의 무조건 호출 하나이고, 진입점 테스트가 그것을 결박한다. sole-consumer 테스트는 같은 문서를
   파생 규칙에 태운다.
+
+## ADR-52: 공용 PostgreSQL instance는 PID 1에 init을 두고, healthcheck는 exec 형식으로 binary를 직접 부른다
+
+- 상태: accepted
+- 날짜: 2026-09-28
+- 결정자: 사용자("PR + 즉시 배포" — init: true·exec healthcheck·stop_grace_period·shm_size 승인), Claude
+- 관련: ADR-44·45(공용 instance), #426(Dagster 서비스에 같은 처방), `docs/shared-postgres-onboarding.md`
+
+### 컨텍스트
+
+`kor-travel-shared-postgres`가 2026-09-25 11:20, 09-25 21:00, 09-26 04:32, 09-27 08:32,
+09-28 03:28(UTC)에 "server process (PID N) exited with exit code 2" → "terminating any other
+active server processes" → crash recovery를 겪었다. recovery는 `recovery_init_sync_method=fsync`로
+73GB PGDATA를 훑고 end-of-recovery checkpoint까지 가서 매번 3~11분 걸렸고, 그동안 concierge·PinVi·
+weather·transport·geo 전 테넌트가 "database system is in recovery mode"를 받았다.
+
+조사로 확인한 것(kor-travel-geo 세션의 읽기 전용 조사, 적대 검증 포함):
+
+- 죽은 다섯 PID는 로그를 한 줄도 남기지 않았고 `DETAIL: Failed process was running`도 없다 —
+  **backend가 아니다.** OOM·signal·PANIC·JIT·`/dev/shm` 오류도 그 시각에 없다.
+- PG16 postmaster의 `CleanupBackend`(postmaster.c)는 거둔 자식이 0·1 외의 코드로 끝나면
+  BackendList를 보기 **전에** `HandleChildCrash`를 부른다. postmaster가 컨테이너 PID 1이면
+  (`HostConfig.Init` 없음) docker exec·healthcheck가 남긴 고아가 전부 그것의 자식이 된다.
+- healthcheck가 `CMD-SHELL pg_isready ...`(timeout 5초)였다. 이미지의 dash는 명령을 exec하지
+  않고 fork하고, `pg_isready`는 Debian의 Perl `pg_wrapper`를 거친다. 호스트 I/O stall(consumer
+  SATA SSD 86% 사용, 에이전트 빌드가 겹친 시각)로 probe가 timeout되면 docker는 `sh`만 죽이고,
+  고아가 된 `pg_isready`는 서버가 응답하지 않아 exit 2(`PQPING_NO_RESPONSE`)로 끝난다.
+- 같은 기계(셸 래퍼 + 거두지 않는 PID 1)가 #426에서 Dagster 서비스에 좀비 565개를 쌓았다.
+- 09-25 08:03의 unclean stop은 별개다 — `systemctl restart docker`가 docker 기본 10초 뒤
+  postgres를 SIGKILL했다(`stop_grace_period` 없음).
+- `shm_size`가 없어 `/dev/shm`이 docker 기본 64MB다. 옛 geo 전용 instance는 512mb였고, 09-22에
+  "could not resize shared memory segment"가 한 번 있었다.
+
+고아의 출처(healthcheck냐 사람·에이전트의 `docker exec sh -c psql`이냐)는 PID 수준으로 증명하지
+못했다 — docker가 probe timeout kill을 debug 레벨에서만 남긴다. 그래서 두 출처를 **모두** 막는다.
+
+### 결정
+
+`kor-travel-shared-postgres`에:
+
+1. `init: true` — PID 1은 docker-init이고, 어떤 경로로 생긴 고아든 그것이 거둔다. postmaster는 그
+   종료 코드를 보지 않는다. image의 `STOPSIGNAL SIGINT`(fast shutdown)는 docker-init이 그대로 전달한다.
+2. healthcheck를 exec 형식으로 바꾸고 binary의 절대 경로(`/usr/lib/postgresql/16/bin/pg_isready`)를
+   부른다 — 중간 셸도 Perl wrapper도 없으므로 timeout 때 죽는 것은 probe 자신이다. `-t 3`을 명시하고
+   docker `timeout`을 10초로 벌려 probe가 먼저 끝나게 한다.
+3. `stop_grace_period: 300s` — fast shutdown의 checkpoint를 기다린다.
+4. `shm_size: 512mb` — 병렬 질의의 dynamic shared memory 자리.
+
+C6c 서버 형태 계약(`_POSTGRES_ALLOWED_SERVICE_KEYS`)에 `init`·`stop_grace_period`를 더하고, healthcheck
+프로그램 검사가 exec 형식에서는 argv[1]만 프로그램 자리로 보게 고쳤다. 예전 검사는 argv 전체를
+셸 payload로 읽어 `-h`·`127.0.0.1`을 "비정본 프로그램"으로 거부했다 — 그대로 두면 이 변경이 배포
+전체를 막는다. 허용 프로그램 집합(`pg_isready`·`test`·`cat`)은 그대로고, exec 형식의 `sh`·`env`·`psql`도
+여전히 거부된다.
+
+### 근거
+
+#426이 Dagster 12개 서비스에 같은 두 처방(exec 형식 + `init: true`)을 적용해 좀비 565 → 40을
+실측했다. PostgreSQL에서는 고아가 좀비로 끝나지 않고 클러스터 전체 재시작이 된다는 점만 다르다.
+map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로 **postmaster가 PID 1임을
+전제**하므로 이 ADR의 범위 밖이다(그쪽은 kor-travel-map 소유의 compose 계약과 함께 바꿔야 한다).
+
+### 결과
+
+- `docker-compose.yml`: 위 네 가지.
+- `c6c_deployment.py`: 허용 키 두 개, exec 형식 healthcheck 파서.
+- 테스트: `test_shared_postgres_runtime_contract.py`(init·exec probe·`-t` < timeout·grace·shm 결박),
+  `test_f1d_compose_contract.py`(exec 형식으로도 임의 프로그램 거부, 인자 있는 exec probe 통과,
+  정본 공용 instance 형태 통과).
+- 반영에는 컨테이너 재생성이 필요하다 — 모든 테넌트가 짧게(정상 종료 1~2분) 끊긴다. 에이전트 빌드가
+  돌지 않는 시각에, 테넌트에 알리고 한다.
+
+### 확인하지 않은 것
+
+- 고아의 정확한 출처(healthcheck vs 수동 exec). 반영 전에 `docker events --filter
+  container=kor-travel-shared-postgres --filter event=exec_die`를 걸어 두면 다음 사건의 출처가 남는다.
+- 반영 뒤 일주일(에이전트 빌드가 포함된)에 exit-code-2 crash가 없는지.
+- `recovery_init_sync_method=syncfs`(recovery 시간 단축)와 `shared_buffers` 재조정은 별개 결정으로 남겼다.

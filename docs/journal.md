@@ -7721,3 +7721,24 @@ Map `053904ce…`·PinVi `1b29bfea…`·Manager `8f41a9bd…`를 `rotate-pair`�
 - **남은 것**: 설치 뒤 호스트에서 `ktdctl targets validate --check-coordinates`가 `OK`인지, cron 사본의
   `config/docker-targets.yml`을 설치본과 맞췄는지 본다. 머지는 transport 창이 끝난 뒤다. 다시 리베이스하면
   gate grep을 다시 돌린다.
+
+## 2026-09-28 — 공용 PostgreSQL이 자기 고아 때문에 다섯 번 crash recovery했다 (ADR-52)
+
+- **발견(kor-travel-geo 세션, 읽기 전용 조사 + 적대 검증)**: geo admin UI가 "KTG_PG_DSN 확인" 503을
+  보이는 것을 쫓다가, `kor-travel-shared-postgres`가 09-25~28에 다섯 번 "server process (PID N) exited
+  with exit code 2"로 crash recovery한 것을 찾았다. 매번 전 테넌트가 3~11분 끊겼다.
+  - 죽은 PID는 로그를 남긴 적 없는 비-backend였다. PG16 `CleanupBackend`는 거둔 자식이 0·1 외 코드면
+    BackendList 조회 전에 `HandleChildCrash`를 부르고, postmaster가 PID 1이라(`init` 없음) exec·healthcheck
+    고아가 전부 그것의 자식이다.
+  - healthcheck는 `CMD-SHELL pg_isready`(timeout 5초)였다. dash가 fork하고 `pg_isready`는 Perl
+    `pg_wrapper`다. 호스트 stall로 timeout되면 `sh`만 죽고 고아 `pg_isready`가 exit 2로 끝난다 — #426의
+    Dagster 좀비와 같은 기계인데, PostgreSQL에서는 클러스터 전체 재시작이 된다.
+  - 09-25 08:03 unclean stop은 `systemctl restart docker`가 docker 기본 10초로 SIGKILL한 별개 사건이다.
+- **변경**: `init: true`, exec 형식 probe(`/usr/lib/postgresql/16/bin/pg_isready -t 3`, docker timeout 10초),
+  `stop_grace_period: 300s`, `shm_size: 512mb`. C6c 서버 형태 계약에 `init`·`stop_grace_period`를 더하고,
+  healthcheck 프로그램 검사가 exec 형식에서 argv[1]만 보게 고쳤다 — 예전 검사는 인자 `-h`까지
+  "비정본 프로그램"으로 거부해 이 변경이 배포를 막았을 것이다. 새 계약 테스트
+  `test_shared_postgres_runtime_contract.py`, F1D 테스트 셋.
+- **반영(이 PR 머지 뒤)**: 공용 instance 재생성이 필요하다 — 모든 테넌트가 짧게 끊긴다. geo 세션이 geo MV
+  refresh가 끝난 뒤, 에이전트 빌드가 없는 시각에 한다. 재생성 전 `docker events ... event=exec_die`로
+  고아 출처를 한 번 확인한다.

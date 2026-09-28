@@ -5197,6 +5197,99 @@ def test_the_canonical_healthchecks_still_pass(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "test",
+    [
+        pytest.param(
+            ["CMD", "psql", "-U", "postgres", "-c", "ALTER ROLE postgres PASSWORD 'pwned'"],
+            id="exec-psql",
+        ),
+        pytest.param(["CMD", "/bin/sh", "-c", "psql -c 'SELECT 1'"], id="exec-shell"),
+        pytest.param(["CMD", "/usr/bin/env", "psql"], id="exec-env"),
+        pytest.param(["CMD"], id="exec-without-program"),
+    ],
+)
+def test_an_exec_healthcheck_cannot_run_an_arbitrary_program(
+    tmp_path: Path, test: list[str]
+) -> None:
+    """exec 형식(`CMD`)도 같은 허용 목록을 받는다 — 프로그램 자리가 argv[1]일 뿐이다.
+
+    ADR-52가 공용 instance의 probe를 exec 형식으로 바꾸면서 검사기가 argv 전체를
+    셸 payload로 읽던 것을 argv[1]만 보게 고쳤다. 좁힌 곳이 넓어지지 않았음을 여기서
+    잰다 — 셸·`env`·`psql`은 exec 형식으로도 여전히 거부된다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    postgres = services["kor-travel-map-postgres"]
+    assert isinstance(postgres, dict)
+    postgres["healthcheck"] = {"test": test, "interval": "10s"}
+
+    with pytest.raises(
+        ComposeCandidateContractError, match="healthcheck runs a non-canonical program"
+    ):
+        validate_compose_candidate_protected_values(
+            shaped,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_an_exec_pg_isready_probe_with_arguments_passes(tmp_path: Path) -> None:
+    """exec 형식 probe의 **인자**는 프로그램 자리가 아니다.
+
+    예전 검사기는 argv의 모든 원소를 셸 payload로 읽어 `-h`·`127.0.0.1`을
+    "비정본 프로그램"으로 거부했다 — ADR-52의 exec probe가 배포 전체를 막을 뻔한 자리다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    shaped = deepcopy(candidate)
+    services = shaped["services"]
+    assert isinstance(services, dict)
+    postgres = services["kor-travel-map-postgres"]
+    assert isinstance(postgres, dict)
+    postgres["healthcheck"] = {
+        "test": [
+            "CMD",
+            "/usr/lib/postgresql/16/bin/pg_isready",
+            "-h",
+            "127.0.0.1",
+            "-p",
+            "12700",
+            "-t",
+            "3",
+        ],
+        "interval": "10s",
+    }
+    validate_compose_candidate_protected_values(
+        shaped,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+        environment=environment,
+    )
+
+
+def test_the_canonical_shared_postgres_runtime_shape_passes() -> None:
+    """정본 공용 instance의 `init`·`stop_grace_period`·exec probe가 서버 형태 계약을 통과한다.
+
+    전제를 먼저 단언한다 — 정본이 그 모양을 담지 않으면 이 검사는 아무것도 재지 않는다.
+    """
+
+    services = _source_compose()["services"]
+    assert isinstance(services, dict)
+    shared = services["kor-travel-shared-postgres"]
+    assert isinstance(shared, dict)
+    assert shared.get("init") is True, "전제: 정본 공용 instance에 init: true가 있다"
+    assert "stop_grace_period" in shared, "전제: 정본 공용 instance에 stop_grace_period가 있다"
+    assert shared["healthcheck"]["test"][0] == "CMD", "전제: 정본 probe가 exec 형식이다"
+    c6c_deployment_module._assert_one_postgres_cluster_runtime(
+        "kor-travel-shared-postgres", shared, declared=True
+    )
+
+
 def test_removing_the_loopback_binding_entirely_is_refused(tmp_path: Path) -> None:
     """규칙의 **절반**("아예 없다")을 아무 검사도 세지 않았다.
 
