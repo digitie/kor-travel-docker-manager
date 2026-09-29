@@ -1220,8 +1220,9 @@ migration을 태운다. 빈 PGDATA에서 시작할 때 superuser 확장이 먼�
 > **geo는 앱 레벨 백업이 정본이다(2026-08-18).** kor-travel-geo에는 T-228~244·T-290g의 완결된 백업 체계
 > (`db_backup` Dagster job → pg_dump 디렉터리 + zstd `.tar.zst`, manifest·sha256·verify·restore drill·hot-swap·
 > retention janitor, admin UI 카탈로그)가 있고, prod에서는 `.env`의 `KOR_TRAVEL_GEO_BACKUP_SCHEDULE_ENABLED=true`
-> (+`_INTERVAL_HOURS=24`, `_ARTIFACT_TTL_DAYS=7`, `_RETENTION_KEEP_MIN=3`)를 준다. 첫 자동 백업은
-> 2026-08-18T00:15Z에 4.71 GB로 성공했다(`KOR_TRAVEL_GEO_BACKUP_DIR`). 단, 매일 실행과 bounded
+> (+`_INTERVAL_HOURS=336`, `_ARTIFACT_TTL_DAYS=7`, `_RETENTION_KEEP_MIN=3`)를 준다 — 주기는 2026-09-29
+> 오너 결정으로 24h에서 2주(336h)로 바꿨고, keep_min 하한 덕에 최신 3본(약 6주)이 남는다. 첫 자동 백업은
+> 2026-08-18T00:15Z에 4.71 GB로 성공했다(`KOR_TRAVEL_GEO_BACKUP_DIR`). 단, 주기 실행과 bounded
 > retention은 Dagster `scheduled_backup`(*/15 run-due)과 `backup_retention_janitor_daily`(06:00)가
 > 모두 RUNNING이고 최근 run이 성공해야 성립한다. `ktdctl db-backup`을 geo에도 주기 실행하면
 > **중복(2×4.7 GB/일)**이므로 application DB role인 `geo`에서는 수동 비상 백업으로만 사용한다.
