@@ -2070,7 +2070,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "디스크 여유 확인에 쓸 dump 크기(바이트)를 직접 준다. 필요량은 여전히 "
-            "2배 + 2 GiB 예약분이다. 이 자리에서 뜬 dump가 없어 추정이 보수적일 때(비상 백업) 쓴다."
+            "2배 + 예약분(max(2 GiB, 그 instance의 살아있는 max_wal_size + 1 GiB))이다. "
+            "이 자리에서 뜬 dump가 없어 추정이 보수적일 때(비상 백업) 쓴다."
         ),
     )
     db_backup_create.add_argument("--json", action="store_true")

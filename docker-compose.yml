@@ -46,7 +46,8 @@ services:
     # docker 기본 /dev/shm 64MB는 병렬 질의의 dynamic shared memory가 넘친다(09-22
     # "could not resize shared memory segment" 실측). D4의 64MB `work_mem`에서는 병렬
     # hash 하나가 `work_mem × hash_mem_multiplier(2) × (workers+1)`까지 자라므로 1gb로
-    # 둔다(오너 결정, ADR-53). tmpfs라 segment가 있는 동안만 RAM을 쓴다.
+    # 둔다(오너 결정, ADR-53). tmpfs라 segment가 있는 동안만 RAM을 쓴다. 512mb·16MB 때보다
+    # 여유는 절반이다 — 위험을 줄일 뿐 없애지 않는다. 새 DSM 오류가 2gb로 올릴 신호다(ADR-53).
     shm_size: 1gb
     environment:
       POSTGRES_USER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
@@ -67,10 +68,12 @@ services:
     - listen_addresses=127.0.0.1
     - -p
     - ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
-    # - pg_prewarm: autoprewarm은 buffer 목록을 **database를 가리지 않고** dump하고, 재기동
-    #   때 database마다 worker 하나로 다시 읽는다. 라이브러리의 C 코드가 도는 것이라 다른
-    #   테넌트 DB에 `CREATE EXTENSION pg_prewarm`을 하지 않는다. `template0`의 worker가
-    #   `exit code 1`로 끝나는 로그는 정상이다(접속 불가 DB).
+    # - pg_prewarm: autoprewarm은 buffer 목록을 **database를 가리지 않고** dump한다. 재기동
+    #   때는 DB OID 순으로 database마다 worker 하나씩 다시 읽고, free buffer가 바닥나면 거기서
+    #   멈춘다 — 가장 나중에 만든 DB(Map이 오면 Map의 둘)가 마지막이고 못 올라올 수도 있다
+    #   (ADR-53 결정 4, best effort). 라이브러리의 C 코드가 도는 것이라 다른 테넌트 DB에
+    #   `CREATE EXTENSION pg_prewarm`을 하지 않는다. `template0`의 worker가 `exit code 1`로
+    #   끝나는 로그는 정상이다(접속 불가 DB).
     # - pg_stat_statements: 공용 instance가 원래 쓰던 것.
     - -c
     - shared_preload_libraries=pg_prewarm,pg_stat_statements
