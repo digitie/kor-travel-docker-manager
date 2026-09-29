@@ -30,6 +30,7 @@ from typing import Any, Final, Literal
 
 from dotenv import dotenv_values
 
+from kor_travel_docker_manager.services import postgres_connect_posture
 from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
     effective_environment,
@@ -44,7 +45,6 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     DeploymentMode,
     load_deployment_mode,
 )
-from kor_travel_docker_manager.services import postgres_connect_posture
 from kor_travel_docker_manager.services.postgres_hba_posture import read_posture
 from kor_travel_docker_manager.services.runtime_pin_registry import (
     read_published_runtime_pins,
