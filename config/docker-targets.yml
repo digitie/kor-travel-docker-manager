@@ -13,6 +13,9 @@ dependency_order:
   - map
   - pinvi
   - weather
+  # 공용 Dagster 제어 평면(platform-topology.md §7). stage 2에서는 storage만 있다 —
+  # `all`에서 빠진다(아래 target 주석).
+  - dagster
   # 형제 프로젝트(외부 compose). Manager 자신의 프로젝트보다 뒤에 둔다 — 기동
   # 순서상 앞의 것들에 의존하지 않고, `all`에서 마지막에 오는 것이 읽기 쉽다.
   - transport
@@ -23,7 +26,7 @@ containers:
     compose_service: kor-travel-shared-postgres
     role: shared-postgresql
     display_name: 공용 제어 평면 PostgreSQL / PostGIS (platform-topology.md §7)
-    connection: "postgresql://127.0.0.1:11000 (geo·concierge·Map·PinVi·weather·transport)"
+    connection: "postgresql://127.0.0.1:11000 (geo·concierge·Map·PinVi·weather·transport·공용 Dagster)"
     expected_ports:
       - "11000:11000"
   rustfs:
@@ -660,6 +663,50 @@ targets:
       - kor-travel-weather-dagster-gateway
       - kor-travel-weather-prometheus
 
+  dagster:
+    # 공용 Dagster 제어 평면(platform-topology.md §7, dagster-shared-plan §4). stage 2에는
+    # 공용 instance 위의 `dagster_shared` DB·role과 그 storage schema만 있다 — 두 one-shot뿐이고
+    # 상시 서비스가 없어 `runtime_services`가 비었다. 아직 아무것도 이 instance를 쓰지 않는다.
+    #
+    # `all`에서 뺀다: stage 2의 준비는 창에서 명시적으로 한다(`ensure dagster`). stage 3이
+    # 공용 webserver(`127.0.0.1:11002`)·daemon(포트 없음)·gateway(11001)를 더할 때 `all`에
+    # 넣는다.
+    excluded_from_all: true
+    depends_on: []
+    display_name: 공용 Dagster 제어 평면
+    description: 공용 PostgreSQL instance(:11000)의 dagster_shared DB와 그 storage schema입니다. stage 2에서는 DB·role·schema만 준비하고, 공용 webserver·daemon은 stage 3에서 더합니다.
+    aliases:
+      - dagster-shared
+      - dagster-control-plane
+    # `up -d`가 받는 것은 공용 instance뿐이다(정의가 그대로라 재생성되지 않는다 — compose config
+    # hash가 같다). 두 one-shot은 여기 두지 않는다: `up -d`는 one-shot의 종료 코드를 보지 않아
+    # 실패한 migrate가 성공한 ensure로 보이고, 아래 init step과 겹쳐 두 번 돈다.
+    services:
+      - kor-travel-shared-postgres
+    # 두 one-shot은 restart=no라 정상 상태가 exited(0)다 — runtime 목록에 두지 않는다(T5).
+    runtime_services: []
+    containers:
+      - kor-travel-shared-postgresql
+    # one-shot은 init step으로 **차례대로** 돈다 — 각 `run`의 종료 코드가 ensure를 가른다(rustfs-init
+    # 선례). `--no-deps`: 의존(공용 instance·db-init)을 `run`이 다시 끌어오지 않는다 — 공용
+    # instance는 위 `up -d`가, db-init의 완료는 앞 step이 보장한다. 호스트 이미지가 없으면(tag가 내용
+    # 해시라 내용이 바뀌면 없다) `run`이 build context에서 만든다.
+    init_steps:
+      - name: dagster-shared-db-init
+        description: 공용 instance에 dagster_shared role·DB를 만들고 CONNECT를 소유 role에게만 남깁니다.
+        command:
+          - run
+          - --rm
+          - --no-deps
+          - kor-travel-shared-db-init-dagster
+      - name: dagster-shared-storage-migrate
+        description: dagster_shared의 storage schema를 만들거나 head까지 올립니다.
+        command:
+          - run
+          - --rm
+          - --no-deps
+          - kor-travel-dagster-storage-migrate
+
 # ── compose bind allowlist (GM-17 본작업 A) ─────────────────────────────
 #
 # production compose candidate에서 **허용되는 host bind의 정본**이다. 종전에는
@@ -722,6 +769,10 @@ compose_binds:
     - container_path: "/app/data/backups"
       read_only: false
       source: "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
+  kor-travel-dagster-storage-migrate:
+    - container_path: "/opt/dagster/dagster_home/dagster.yaml"
+      read_only: true
+      source: "./config/dagster-shared/dagster.yaml"
   kor-travel-map-db-role-bootstrap:
     - container_path: "/usr/local/bin/postgres-role-bootstrap"
       read_only: true

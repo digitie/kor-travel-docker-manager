@@ -4,6 +4,19 @@ name: kor-travel-docker-manager
 # 호스트 정규 포트(12xxx)에 직접 바인딩하고, 서비스 간 참조는 127.0.0.1:<포트>를 사용한다.
 # (KTDM_DOCKER_NETWORK_MODE=bridge 로 바꾸려면 서비스 간 hostname을 컨테이너명으로 되돌려야 한다.)
 
+# 공용 Dagster instance(`dagster_shared`, platform-topology.md §7)의 metadata URL — 정의는 여기
+# 하나다. 공용 `config/dagster-shared/dagster.yaml`이 이 env 이름을 읽고, 이 앵커를 병합하는
+# 서비스만 그 URL을 갖는다(stage 2: storage migrate one-shot. stage 3: 공용 webserver·daemon과
+# 합류한 code-server). 호스트 서비스에는 이것 말고 앱 비밀을 넣지 않는다.
+#
+# - `postgresql+psycopg2://`를 명시한다. geo·transport code-server의 SQLAlchemy 2.1은 맨
+#   `postgresql://`에서 psycopg v3를 골라 dagster-postgres가 깨진다.
+# - role·database 이름은 `kor-travel-shared-db-init-dagster`의 literal과 같아야 한다 —
+#   `backend/tests/test_dagster_shared_config.py`가 둘(과 백업 role)을 대조한다.
+# - 비밀번호가 URL에 그대로 들어가므로 URI unreserved 문자만 쓴다(db-init이 거부한다).
+x-dagster-shared-control-env: &dagster-shared-control-env
+  KOR_TRAVEL_DAGSTER_SHARED_PG_URL: postgresql+psycopg2://kor_travel_dagster_shared_app:${KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/dagster_shared
+
 services:
   # platform-topology.md §7(2026-09-19 결정)의 공용 제어 평면 instance. concierge·geo·
   # PinVi·weather·transport가 여기 산다 — 프로젝트마다 role+database만 만드는 별도
@@ -465,6 +478,138 @@ services:
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB\" TO \"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER\""
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER\""
+
+  # 공용 Dagster instance의 metadata DB(`dagster_shared`)와 그 소유 role 하나만 만든다
+  # (platform-topology.md §7 2단계, dagster-shared-plan §4). 어느 프로젝트의 것도 아니므로
+  # 프로젝트 db-init에 얹지 않고 자기 one-shot을 갖는다(onboarding §5.1 규칙 3).
+  #
+  # 이름은 literal이다(transport와 같은 이유) — `x-dagster-shared-control-env`의 URL과
+  # 백업 role `dagster_shared`가 같은 이름을 가리켜야 하고, env override로 한쪽만 바꾸면
+  # 다른 DB를 겨냥한다. 세 자리는 `backend/tests/test_dagster_shared_config.py`가 대조한다.
+  #
+  # **공용 instance의 정의는 건드리지 않는다.** 이 one-shot이 더해져도
+  # `kor-travel-shared-postgres`의 compose config hash는 그대로다(`depends_on`은 의존하는
+  # 쪽에 적힌다) — 이 설치가 공용 instance의 재생성을 걸어 두지 않는다. 재실행은
+  # onboarding §7.3대로 `--no-deps`로, drift guard가 MATCH일 때만 한다.
+  kor-travel-shared-db-init-dagster:
+    image: postgis/postgis:16-3.5
+    container_name: ${KOR_TRAVEL_SHARED_DB_INIT_DAGSTER_CONTAINER:-kor-travel-shared-db-init-dagster}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
+      PGUSER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
+      PGDATABASE: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
+      KOR_TRAVEL_DAGSTER_SHARED_DB: dagster_shared
+      KOR_TRAVEL_DAGSTER_SHARED_APP_USER: kor_travel_dagster_shared_app
+    secrets:
+    - source: kor-travel-shared-postgres-password
+      target: /run/secrets/kor-travel-shared-postgres-password
+    - source: kor-travel-dagster-shared-app-password
+      target: /run/secrets/kor-travel-dagster-shared-app-password
+    # 다른 db-init과 같은 규칙: `|| true`로 삼키지 않는다(C3), role은
+    # NOSUPERUSER/NOCREATEDB/NOCREATEROLE, 재실행하면 비밀번호를 최신 secret으로 맞춘다.
+    # 이 role은 공용 instance의 가장 넓은 소비자다 — 합류한 code-server·webserver·daemon이 모두
+    # 이 자격증명으로 붙는다. 그래서 속성은 CREATE와 ALTER 양쪽에 **전부** 적고(재실행이 드리프트를
+    # 되돌린다) NOREPLICATION·NOBYPASSRLS까지 닫는다. role 소속은 0이어야 한다 — 누가 다른 role을
+    # GRANT해 두었으면 그 권한이 조용히 따라오므로 여기서 멈춘다.
+    # CONNECTION LIMIT 30: 공용 plane 전체(webserver·daemon·code-server 넷의 run worker, 전역 run
+    # 상한 12)가 여는 연결의 상한이다. 한 테넌트의 연결 누수가 공용 instance의 `max_connections`를
+    # 먹어 다른 테넌트의 앱 DB 접속을 막지 못하게 한다. 3단계 전환 전에 실측으로 다시 잰다
+    # (platform-topology.md §7 3단계 게이트).
+    # 비밀번호는 명령줄이 아니라 psql 변수로 넘긴다(transport와 같다). 이미 있던 DB의
+    # owner가 다르면 멈춘다 — 소유권은 createdb 때만 걸리므로(onboarding §7.3) 재실행이
+    # 고치지 못한다.
+    # 맨 앞의 준비 대기: `ensure dagster`는 이 one-shot을 `run --rm --no-deps`로 돌리므로 위
+    # `depends_on`(service_healthy)을 compose가 보지 않는다. 앞선 `up -d`는 공용 instance를
+    # 띄우기만 하고 healthy를 기다리지 않는다 — cold start면 첫 psql이 아직 안 뜬 서버를 친다.
+    # 그래서 여기서 `pg_isready`를 2초 간격 60번(약 120초)까지 기다리고, 끝내 안 뜨면 멈춘다.
+    command:
+    - sh
+    - -ec
+    - |
+      tries=0
+      until pg_isready -q; do
+        tries=$$((tries + 1))
+        if [ "$$tries" -ge 60 ]; then
+          echo "shared postgres at $$PGHOST:$$PGPORT is not accepting connections after ~120s; aborting dagster db-init" >&2
+          exit 1
+        fi
+        sleep 2
+      done
+      PGPASSWORD="$$(cat /run/secrets/kor-travel-shared-postgres-password)"
+      export PGPASSWORD
+      APP_PASSWORD="$$(cat /run/secrets/kor-travel-dagster-shared-app-password)"
+      # 비밀번호는 metadata URL(`x-dagster-shared-control-env`)에 그대로 들어간다. 빈 값이나
+      # URL 예약 문자는 여기서 멈춘다 — 통과시키면 role은 만들어지고 URL만 깨진다.
+      case "$$APP_PASSWORD" in
+        ''|*[!A-Za-z0-9._~-]*)
+          echo "kor-travel-dagster-shared-app-password must be non-empty URI-unreserved characters" >&2
+          exit 1
+          ;;
+      esac
+
+      if psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER'" | grep -q 1; then
+        echo "role $$KOR_TRAVEL_DAGSTER_SHARED_APP_USER already exists"
+        printf '%s\n' "ALTER ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 30" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
+      else
+        printf '%s\n' "CREATE ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 30" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
+      fi
+      if psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_DAGSTER_SHARED_DB'" | grep -q 1; then
+        echo "database $$KOR_TRAVEL_DAGSTER_SHARED_DB already exists"
+      else
+        createdb -O "$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER" "$$KOR_TRAVEL_DAGSTER_SHARED_DB"
+      fi
+      test "$$(psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -qAt -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$$KOR_TRAVEL_DAGSTER_SHARED_DB'")" = "$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER"
+      # role 소속 0 — 이 role이 다른 role의 권한을 물려받지 않는다.
+      test "$$(psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -qAt -c "SELECT count(*) FROM pg_auth_members WHERE member = (SELECT oid FROM pg_roles WHERE rolname = '$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER')")" = 0 || {
+        echo "role $$KOR_TRAVEL_DAGSTER_SHARED_APP_USER is a member of another role; revoke it first" >&2
+        exit 1
+      }
+
+      # PUBLIC CONNECT 걷어내기(onboarding §5.3, C2) — bootstrap DB와 이 DB, 그리고 이 DB는
+      # 소유 role에게만 되돌려준다.
+      psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -c "REVOKE CONNECT ON DATABASE \"$$PGDATABASE\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_DAGSTER_SHARED_DB\" FROM PUBLIC"
+      psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\""
+
+  # 공용 Dagster instance의 storage schema를 만들고 올리는 one-shot(`dagster instance migrate`).
+  # 이미지는 Manager가 소유하는 공용 호스트 이미지다(`docker/dagster-host/`, 해시 잠금 설치).
+  # 빈 DB면 schema를 만들고, 있으면 head까지 올린다 — 멱등이라 매 배포에 돈다. 무엇을 하는지는
+  # `docker/dagster-host/storage-migrate.py` 머리에 적었다.
+  #
+  # `ensure dagster`는 이 one-shot과 db-init을 `up -d`가 아니라 init step(`run --rm --no-deps`)으로
+  # 돌린다 — `up -d`는 one-shot의 종료 코드를 보지 않아 실패한 migrate가 성공한 ensure로 보인다
+  # (`config/docker-targets.yml`의 `dagster` target).
+  #
+  # 이미지 tag는 **내용 해시**다 — `latest-main`처럼 움직이는 이름이면 옛 이미지가 새 잠금본 행세를
+  # 하고, 두 호스트가 같은 tag로 다른 내용을 가진다. 값은 build context에서 이미지에 들어가는 세
+  # 파일의 해시이고(재현: `cd docker/dagster-host && sha256sum Dockerfile requirements.txt
+  # storage-migrate.py | sha256sum | cut -c1-16`, Linux coreutils), 셋 중 하나를 고치면 이 tag를
+  # 바꿔야 한다 — `backend/tests/test_dagster_shared_config.py`가 대조한다. 새 tag는 호스트에 없으므로
+  # 다음 `run`이 build context에서 만든다. env override는 두지 않는다(정본이 둘이 된다).
+  kor-travel-dagster-storage-migrate:
+    image: kor-travel-dagster-host:75f02d642f06bcbd
+    build:
+      context: ./docker/dagster-host
+    container_name: ${KOR_TRAVEL_DAGSTER_STORAGE_MIGRATE_CONTAINER:-kor-travel-dagster-storage-migrate}
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    restart: "no"
+    depends_on:
+      kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-shared-db-init-dagster:
+        condition: service_completed_successfully
+    command: ["/usr/local/bin/kor-travel-dagster-storage-migrate"]
+    environment:
+      <<: *dagster-shared-control-env
+      DAGSTER_HOME: /opt/dagster/dagster_home
+    volumes:
+    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
 
   rustfs:
     image: rustfs/rustfs:latest
@@ -2533,5 +2678,7 @@ secrets:
     environment: KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD
   kor-travel-transport-shared-app-password:
     environment: KOR_TRAVEL_TRANSPORT_SHARED_APP_PASSWORD
+  kor-travel-dagster-shared-app-password:
+    environment: KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD
   kor-travel-weather-metrics-token:
     environment: KOR_TRAVEL_WEATHER_METRICS_TOKEN

@@ -54,6 +54,7 @@ BackupRole = Literal[
     "pinvi",
     "transport",
     "transport_dagster",
+    "dagster_shared",
 ]
 
 BACKUP_ROLES: tuple[BackupRole, ...] = (
@@ -65,6 +66,7 @@ BACKUP_ROLES: tuple[BackupRole, ...] = (
     "pinvi",
     "transport",
     "transport_dagster",
+    "dagster_shared",
 )
 
 _CONTAINER_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
@@ -131,6 +133,14 @@ _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
         "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
         "kor-travel-shared-postgres",
         "kor_travel_transport_dagster",
+    ),
+    # 공용 Dagster instance의 metadata DB(platform-topology.md §7). 이름은 compose의
+    # `kor-travel-shared-db-init-dagster`가 literal로 만든다 —
+    # `test_dagster_shared_config.py`가 그것과 이 값을 대조한다.
+    "dagster_shared": (
+        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
+        "kor-travel-shared-postgres",
+        "dagster_shared",
     ),
 }
 

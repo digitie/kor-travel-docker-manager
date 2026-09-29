@@ -30,6 +30,7 @@ from typing import Any, Final, Literal
 
 from dotenv import dotenv_values
 
+from kor_travel_docker_manager.services import postgres_connect_posture
 from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
     effective_environment,
@@ -101,6 +102,7 @@ _CHECK_LABELS: Final = {
     "map_python_base_images": "Map 후보 빌드의 고정 Python base image",
     "login_rate_limit_proxy": "로그인 rate limit 프록시 신뢰 경계",
     "postgres_hba_posture": "살아있는 PostgreSQL pg_hba의 TCP trust 부재",
+    "postgres_public_connect": "PUBLIC에게 CONNECT를 주는 database 부재",
 }
 
 _CHECK_ORDER: Final = (
@@ -113,6 +115,7 @@ _CHECK_ORDER: Final = (
     # 새 행을 더하면서 함께 등재한다(둘 다 등재하지 않으면 UI가 코드 경로 둘을 갖는다).
     "login_rate_limit_proxy",
     "postgres_hba_posture",
+    "postgres_public_connect",
 )
 
 _UNAVAILABLE_CHECKS: Final = (
@@ -930,6 +933,24 @@ def _check_postgres_hba_posture() -> ReadinessCheck:
     )
 
 
+def _check_postgres_public_connect() -> ReadinessCheck:
+    """살아있는 PostgreSQL에서 PUBLIC에게 CONNECT를 주는 non-template database를 나열한다.
+
+    공용 instance에서는 합류한 모든 role이 그런 DB에 붙는다(적대 리뷰 2026-09-30 M4 — n150의
+    `pinvi`). 발견은 `warn`이다 — 막지 않는다. 판정은 `postgres_connect_posture.decide`가 한다.
+    """
+
+    verdict = postgres_connect_posture.read_posture()
+    return ReadinessCheck(
+        id="postgres_public_connect",
+        state=verdict.state,
+        label_ko=_CHECK_LABELS["postgres_public_connect"],
+        detail=verdict.detail,
+        source="docker_cli",
+        evidence=dict(verdict.evidence),
+    )
+
+
 def _probe_deployment_readiness() -> dict[str, Any]:
     values = _effective_values()
     checks = [
@@ -939,6 +960,7 @@ def _probe_deployment_readiness() -> dict[str, Any]:
         _check_map_python_base_images(values),
         _check_login_rate_limit_proxy(values),
         _check_postgres_hba_posture(),
+        _check_postgres_public_connect(),
     ]
     return {
         "schema": DEPLOYMENT_READINESS_SCHEMA,

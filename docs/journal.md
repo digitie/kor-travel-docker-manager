@@ -8302,3 +8302,117 @@ dev-environment.md는 #437과 겹치는 줄이 없어 충돌이 없었다.
   sha256 OK). 11:33Z 완료.
 - 이전 직후 40-monitor: 0 ALARM 0 WARN — 크래시 표지 0, client 26/97, Map 상한 미도달, DSM 0, checkpoint write 최대 270 s,
   swap-in·OOM 없음, prewarm leader 1, Map run 32 SUCCESS, heartbeat 정상, 모든 백업 로그 정상.
+
+## 2026-09-29 — 공용 Dagster 제어 평면 2단계: `dagster_shared` 스토리지(아무도 쓰지 않는다)
+
+platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/dagster-shared-storage`, 계획
+`F:\dev\handoff\dagster-shared-plan.md` §5 2단계·§8). webserver·daemon·gateway는 없다(3단계). 운영 중인
+서비스의 정의는 하나도 바뀌지 않는다.
+
+- **db-init** `kor-travel-shared-db-init-dagster`: 공용 instance에 role `kor_travel_dagster_shared_app`과
+  DB `dagster_shared`. 다른 db-init과 같은 모양(scoped role, owner 확인, PUBLIC CONNECT 회수, 비밀번호는 psql
+  변수)에 하나를 더했다 — 비밀번호가 metadata URL에 그대로 들어가므로 빈 값이나 URI 예약 문자는 role을 만들기
+  전에 거부한다. 이름은 transport처럼 literal이다.
+- **secret** `kor-travel-dagster-shared-app-password`(`KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD`). `:?`로 요구되므로
+  **설치 전에 n150 `.env`에 먼저 넣는다**(onboarding §6.5 — 없으면 이 compose의 모든 명령이 죽는다).
+- **URL 앵커** `x-dagster-shared-control-env`: `KOR_TRAVEL_DAGSTER_SHARED_PG_URL`의 유일한 정의,
+  `postgresql+psycopg2://` 명시. 이 저장소의 첫 YAML 앵커다(Manager의 중복 키 거부 로더가 merge를 받는 것도 확인).
+- **호스트 이미지** `docker/dagster-host/`: `python:3.12-slim` digest 고정, `requirements.in`의 정확 핀(dagster 가족
+  1.13.24, dagster-postgres 0.29.24, SQLAlchemy 2.0.54, psycopg2-binary 2.9.13, pydantic 2.13.5, grpcio 1.84.0)에서
+  만든 해시 잠금본만 `--require-hashes --no-deps --only-binary=:all:`로 설치하고 `pip check`한다. 비-root(uid 10001),
+  쓰기는 `/opt/dagster/state`뿐. build context는 그 디렉터리 하나다(저장소 전체를 보내지 않는다).
+- **storage migrate** `kor-travel-dagster-storage-migrate`: 공용 설정이 `should_autocreate_tables: false`라
+  `dagster instance migrate`만으로는 빈 DB에 table이 생기지 않는다. 그래서 같은 `dagster.yaml`을 autocreate만 켠
+  채 Dagster 자신의 storage 생성자로 bootstrap한 뒤 원래 설정으로 `dagster instance migrate`를 exec한다.
+  `dagster.yaml`이 없거나(Dagster가 SQLite로 조용히 떨어진다) storage가 PostgreSQL이 아니면 거부한다.
+- **공용 `config/dagster-shared/dagster.yaml`**: storage는 앵커 env, QueuedRunCoordinator(기본값 — `pools`와 함께면
+  `run_coordinator`의 상한은 Dagster가 거부한다) 전역 12(D3), `.dagster/repository` location 상한 넷(각 10)과 오늘의
+  Map 4·weather 3 tag 상한, `run_queue` 재시도 3, Map의 run_monitoring·retention, schedule·sensor 스레드 4,
+  로컬 쓰기 `/opt/dagster/state`, telemetry off.
+- **target** `dagster`(별칭 `dagster-shared`·`dagster-control-plane`): 두 one-shot, runtime 없음, 3단계까지
+  `excluded_from_all`. `compose_binds`에 설정 파일 mount.
+- **백업 role** `dagster_shared`: `_ROLE_CONFIG`·cron wrapper 허용 목록·UI 신선도 표(24h). crontab 줄은 설치 뒤.
+- **공용 instance를 재생성하지 않는다.** n150에서 설치본(`3b282a7`) compose와 이 브랜치 compose를 같은 `.env`로
+  `docker compose config --hash '*'`: 기존 39개 서비스의 hash가 전부 같고 새 것은 둘뿐이다.
+  `kor-travel-shared-postgres`는 `3aaa6fe2…`로 실행 중 컨테이너의 `config-hash` 라벨과 같다.
+- **테스트**: `test_dagster_shared_config.py`(선언끼리 — 앵커 URL·instance 설정의 env·db-init literal·백업
+  database·compose code-server의 `-m`과 location 상한, 해시 잠금), `test_dagster_shared_storage_integration.py`
+  (gated — 정본 build context에서 격리 태그로 이미지를 만들고, 고정된 공용 PostgreSQL 이미지 위에서 db-init·migrate를
+  두 번 돌려 owner·CONNECT·alembic head·table 소유·Dagster가 읽은 설정·URL 비밀번호 거부를 본다. 이미지와
+  compose 잔재는 지운다).
+  - n150 대상 10파일 gate=1(`a73a069`의 새 clone, consolidation venv): **599 passed**, 잔재 0.
+  - 빨강 확인(버리는 clone에 변이 하나씩, gate=1) 13/13 빨강: URL 스킴 `postgresql://`, autocreate 켬, geo 상한 삭제,
+    백업 DB 오타, URL DB 오타, db-init REVOKE 삭제, `--require-hashes` 삭제, 하한 핀, runtime에 one-shot, wrapper
+    허용 목록(각 단위 1~2 failed), 그리고 gated 셋 — migrate를 맨 `dagster instance migrate`로(bootstrap 없이),
+    db-init REVOKE 삭제, 비밀번호 거부 삭제(각 1 failed).
+  - 전체: gated 전체 스위트(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, `de57f2a`의 새 clone, consolidation venv)
+    **2371 passed, 2 skipped**, 잔재 0. `/tmp/b3-test.sh`는 같은 head에서 ruff 깨끗, **1 failed**(이 브랜치의 통합
+    테스트 — 격리 PostgreSQL의 initdb 임시 서버가 `pg_ctl` 기본 60초 안에 종료 checkpoint를 못 끝내 exit 1, load 12)였다.
+    fixture에 `PGCTLTIMEOUT=300`을 준 `6b420e9`에서 b3 **2371 passed, 2 skipped**, gated 세 파일 12 passed.
+- 문서: platform-topology §7(포트 D2 — gateway `11001`·webserver `127.0.0.1:11002`·daemon 포트 없음, 이력 새로
+  시작 D1, transport는 나중에 합류, D3~D6), ports.md(`11001`/`11002` 예약, `dagster_shared`), onboarding·
+  docker-management의 백업 표, tasks.md.
+- **남은 것**: 적대 리뷰, PR·머지, `.env` 선행 추가 → 설치 → 창에서 `ktdctl ensure dagster` → 검증 넷(alembic
+  head·owner·PUBLIC CONNECT·백업 산출물) → crontab. 3단계의 ADR은 그때 쓴다(계획 3.5).
+
+## 2026-09-30 — 공용 Dagster 2단계: 적대 리뷰 수정(상한이 실제로 물게, one-shot이 ensure를 가르게, 설치 preflight)
+
+브랜치 `feat/dagster-shared-storage`. 운영 서비스 정의는 여전히 하나도 바뀌지 않는다.
+
+- **H1 — location 상한이 아무것도 막지 않았다.** `.dagster/repository`는 `DagsterRun.tags_for_storage()`가
+  run_tags 표에만 쓰고, queue daemon은 `get_run_records()`의 `record.dagster_run.tags`(run_body)를 센다.
+  Dagster 1.13.24 소스 확인: `RunDomain.create_run`이 `remote_job_origin`이 있으면 `dagster/code_location`을
+  run 본문 tags에 넣고(사용자 tag를 덮어쓴다), queue로 오는 경로는 전부 그것을 준다 — scheduler
+  `create_run`, sensor, GraphQL `create_valid_pipeline_run`(launchpad·asset Materialize `__ASSET_JOB`),
+  `submit_asset_runs`(asset backfill), `job_backfill`, `create_reexecuted_run`(UI·자동 재실행). n150
+  GraphQL `Run.tags` 실측도 `dagster/code_location=kortravelmap.dagster.definitions`(geo도 같다). 상한 key를
+  `dagster/code_location`, 값은 location 이름(= code-server `-m` 모듈)으로 바꿨다. 파싱 대조(항진명제)를 효과
+  테스트로 갈음: 격리 PostgreSQL instance에서 Dagster 자신의 `create_run`으로 한 location에 STARTED 10개 +
+  QUEUED 1, 다른 location에 QUEUED 1을 만들고 daemon의 `_get_runs_to_dequeue`를 돌린다 — 11번째는 남고
+  다른 location은 나간다. 대조군(옛 key)은 막지 않는다. 3단계 합류 조건(workspace `location_name` = 모듈)과
+  전환 판정 SQL은 platform-topology §7.
+- **M1** 설치기 preflight: `.env` 복사 뒤·host 쓰기와 flip 전에 `docker compose --env-file ${REL}/.env config
+  --quiet`, 실패면 exit 126, 오류에서는 compose가 참조하는 변수 이름만 싣는다. n150 실측(읽기 전용, sudo):
+  설치본 compose + live `.env` rc=0, 이 브랜치 compose + live `.env` rc=1 `KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD`.
+  onboarding §6.5 정정 — Compose v5.2.0에서 `secrets: environment:`만으로는 빈 변수가 `config`·`ps`를
+  죽이지 않고(실측), 전역으로 만드는 것은 `${…:?}`다.
+- **M2** `dagster_shared` cron 줄은 설치본 wrapper `/opt/kor-travel-docker-manager/scripts/run-standalone-backup.sh`.
+  옛 사본(`/home/digitie/kor-travel-docker-manager`)의 허용 목록에는 이 role이 없다(n150 확인). 설치본
+  `ktdctl db-backup list`가 cron 계정으로 도는 것을 실측했다. 2단계 검증은 그 경로를 cron 계정으로.
+- **M3** target `dagster`: `services`는 공용 instance 하나, db-init과 storage migrate는 init step
+  (`run --rm --no-deps`)으로 차례대로 — 각 종료 코드가 ensure를 가른다.
+- **M4** readiness `postgres_public_connect`(warn): PUBLIC이 CONNECT를 가진 non-template DB(NULL `datacl`의
+  기본 ACL 포함). n150 공용 instance에서는 `pinvi`(owner `pinvi_application_runtime`) 하나 — 걷는 것은 PinVi의
+  변경이다(onboarding §5.3). 격리 fixture에 기본 ACL DB를 하나 더 두고 새 role이 붙고 TEMP를 만들지만 table은
+  못 읽고 `public`에 못 만든다, 걷힌 bootstrap DB에는 못 붙는다를 고정했다.
+- **M5** 호스트 이미지 tag = Dockerfile·requirements.txt·storage-migrate.py의 내용 해시(`75f02d642f06bcbd`),
+  env override 없음. 테스트가 Dockerfile의 COPY 원천까지 해시 집합으로 결박한다.
+- LOW: role에 NOREPLICATION·NOBYPASSRLS·CONNECTION LIMIT 30(CREATE·ALTER 둘 다), role 소속 0이 아니면 db-init이
+  멈춘다, 두 one-shot을 계약 오류가 이름으로 부른다, migrate docstring 정정(`instance migrate`는 alembic만이 아니다,
+  생성자는 주 table이 없을 때만 만든다), dagster.yaml에 retention은 tick뿐이라는 주석.
+- **재생성 없음**(n150, 설치본 `3b282a7` vs 이 브랜치, 같은 live `.env`, `config --hash '*'`): 기존 39개 전부
+  같고 새 것은 둘(`kor-travel-shared-db-init-dagster`·`kor-travel-dagster-storage-migrate`),
+  `kor-travel-shared-postgres` `3aaa6fe2…` = 실행 중 컨테이너의 `config-hash` 라벨.
+- **테스트**(n150, `02099d0`): 빨강 확인 14/14 빨강(버리는 사본에 변이 하나씩) — 단위 11(상한 key 되돌림, one-shot을
+  `up`으로, migrate step 삭제, preflight를 `config`가 아닌 명령으로, preflight 원문 에코, 기본 ACL 빠진 SQL,
+  warn→missing, 이미지 tag `latest-main`, ALTER 속성 삭제, nameable 삭제, 소속 검사 삭제)과 gated 3(옛 key로
+  11번째 run이 나간다, 기본 ACL 빠진 SQL이 `acl_probe`를 놓친다, CREATE 속성 삭제). `/tmp/b3-test.sh`: ruff 깨끗,
+  **2389 passed, 2 skipped**. gated 전체(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, 새 clone): **2389 passed, 2 skipped**,
+  잔재 0.
+
+## 2026-09-30 — 공용 Dagster 2단계: 재리뷰 LOW 셋(cold start 대기, COPY/ADD 추출, 3단계 게이트)
+
+적대 재리뷰가 브랜치를 통과시키며 남긴 LOW 셋을 닫았다.
+
+- **cold start**: `ensure dagster`는 db-init을 `run --rm --no-deps`로 돌려 compose가 `depends_on`
+  (service_healthy)을 보지 않고, 앞선 `up -d`도 healthy를 기다리지 않는다. db-init 스크립트 맨 앞에서
+  `pg_isready`를 2초 간격 60번(약 120초) 기다리고, 끝내 안 뜨면 메시지와 함께 exit 1. `up -d --wait`는
+  target의 `services`(up) 경로를 바꿔야 해서 고르지 않았다 — 스크립트 안의 대기가 더 좁다. 테스트는 실제
+  스크립트를 stub `pg_isready`·`sleep`·`cat`·`psql`로 돌린다(포기 시 psql·secret 읽기 0회, 세 번째 probe에서
+  뜨면 다음 명령으로 진행).
+- **COPY 원천 추출**: `ADD`·소문자·`\` 줄 이음을 읽고, 못 읽는 형식(JSON 배열, heredoc, `--from`, escape
+  지시자)은 건너뛰지 않고 멈춘다.
+- **3단계 게이트**(platform-topology §7): G3-a 연결 상한 30을 전역 run 12가 찬 상태에서 실측(NullPool),
+  G3-b 공용 `workspace.yaml`의 `location_name` ↔ `dagster/code_location` 상한 결박 테스트를 그 파일과 함께.
+- **테스트**(n150, `fc555a8`): 빨강 확인 — db-init을 부모 커밋의 스크립트로 되돌리면 대기 테스트 둘 빨강,
+  옛 추출기로 되돌리면 추출 테스트 빨강. `/tmp/b3-test.sh`: ruff 0.16.4 깨끗, **2392 passed, 2 skipped**.

@@ -4,7 +4,8 @@
 # geo application DB role은 kor-travel-geo 앱 레벨 스케줄 백업이 정본이므로
 # cron/systemd timer에 넣지 않는다. geo_dagster metadata DB는 별도 백업 대상으로 남긴다.
 # cron/systemd timer에서는 H49가 승인한 세 role과, 2026-09-28 오너 결정으로 transport
-# 저장소의 자체 cron을 대신하는 transport 둘만 부른다. Map application/Dagster와
+# 저장소의 자체 cron을 대신하는 transport 둘, 그리고 공용 Dagster instance의 metadata DB
+# `dagster_shared`(platform-topology.md §7 — stage 4의 전제가 이 백업 7일 연속 초록이다)만 부른다. Map application/Dagster와
 # geo application은 각각 #148 정책·geo 앱 백업과 중복되므로 이 wrapper의 주기 대상이 아니다.
 # transport application DB(약 13 GB, dump 약 1 GB·약 9분)는 3일마다 02:15 KST(17:15 UTC)에
 # 뜬다 — transport 자신의 Dagster job(매시 :00, 03:00·03:30 KST reference, ferry :45)을 피한 자리다.
@@ -29,6 +30,13 @@
 #   55 3 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh pinvi 7 >>/absolute/backup/root/pinvi.log 2>&1
 #   50 16 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh transport_dagster 7 >>/absolute/backup/root/transport_dagster.log 2>&1
 #   15 17 */3 * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh transport 3 >>/absolute/backup/root/transport.log 2>&1
+# `dagster_shared`는 **설치본 경로**로 건다 — 위 줄들이 가리키는 옛 사본(n150의
+# /home/digitie/kor-travel-docker-manager, git이 아니다)의 허용 목록에는 이 role이 없어 exit 2로
+# 조용히 끝난다. 설치본은 trusted install이 매번 git에서 다시 쓰므로 따로 맞출 것이 없다(설치본의
+# ktdctl은 비-root cron 계정으로 돈다 — 2026-09-30 n150 `db-backup list` 실측):
+#   40 3 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /opt/kor-travel-docker-manager/scripts/run-standalone-backup.sh dagster_shared 7 >>/absolute/backup/root/dagster_shared.log 2>&1
+# 2단계 검증은 이 줄의 명령을 **cron 계정으로, 같은 경로·같은 env로** 한 번 손으로 돌리는 것이다 —
+# 다른 경로의 wrapper로 검증하면 cron이 실제로 부르는 트리를 보지 않은 것이다.
 set -eu
 
 ROLE="${1:?usage: run-standalone-backup.sh <role> <keep>}"
@@ -38,7 +46,7 @@ PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 KTDCTL="${KTDCTL:-$PROJECT_ROOT/backend/.venv/bin/ktdctl}"
 
 case "$ROLE" in
-  geo_dagster|concierge|pinvi|transport|transport_dagster) ;;
+  geo_dagster|concierge|pinvi|transport|transport_dagster|dagster_shared) ;;
   *)
     printf 'periodic standalone backup is not enabled for role: %s\n' "$ROLE" >&2
     exit 2

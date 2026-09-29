@@ -409,6 +409,8 @@ _CANDIDATE_NAMEABLE_SERVICE_NAMES: Final = frozenset(
     {
         "kor-travel-shared-postgres",
         "kor-travel-shared-db-init-pinvi",
+        "kor-travel-shared-db-init-dagster",
+        "kor-travel-dagster-storage-migrate",
     }
 )
 _CANDIDATE_KNOWN_SERVICE_NAMES = (

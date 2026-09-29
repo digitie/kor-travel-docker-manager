@@ -1191,6 +1191,7 @@ ktdctl db-backup create transport_dagster --timeout 14400
 | pinvi | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `pinvi` |
 | transport | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_transport` |
 | transport_dagster | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_transport_dagster` |
+| dagster_shared | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `dagster_shared` |
 
 포트와 user는 코드가 들고 있지 않다 — `db-backup`이 떠 있는 컨테이너의 `-p` 인자와
 `POSTGRES_USER`에서 읽는다(위 값은 기본 설정 기준).
@@ -1446,6 +1447,14 @@ cron은 crontab 줄이 가리키는 체크아웃의 wrapper와 `ktdctl`을 부�
 `scripts/run-standalone-backup.sh`를 설치본과 **함께** 맞춰야 한다(2026-09-20에 `backend/src`만
 맞춰 `compose_binds 절이 없다`로 매일 실패했다). 그 사본의 `config/`에는 떠 있는
 Prometheus/Grafana가 마운트하는 파일도 있으므로 `config/` 전체를 덮거나 `--delete`로 맞추지 않는다.
+
+**`dagster_shared`는 그 사본을 쓰지 않는다.** 그 줄은 처음부터 설치본 경로
+`/opt/kor-travel-docker-manager/scripts/run-standalone-backup.sh`로 건다 — 옛 사본의 허용 목록에는
+이 role이 없어 exit 2로 끝나고, 설치본은 trusted install이 git에서 매번 다시 쓰므로 맞출 것이 없다.
+설치본의 `ktdctl`은 비-root cron 계정(`digitie`)으로 돈다(2026-09-30 n150 실측: 같은 경로의
+`db-backup list concierge`). 2단계 검증은 crontab 줄의 명령을 cron 계정으로 **같은 경로·같은 env로**
+한 번 돌리는 것이다(줄은 wrapper 머리). 나머지 다섯 줄을 설치본으로 옮기는 것은 별도 과제다
+(tasks.md "crontab이 개발 체크아웃을 실행한다").
 
 Manager backend가 root service로 실행되고 operator가 별도 계정으로 CLI를 실행하는
 환경에서는 두 프로세스가 `Path.home()`을 서로 다르게 해석한다. 따라서 백업 root는

@@ -14,6 +14,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parents[2]
 _INSTALLER = _ROOT / "scripts" / "install-ktdm-trusted-release"
 
@@ -271,3 +273,111 @@ def test_the_reference_copy_is_written_outside_the_extraction_branch() -> None:
     switch = text.index('ln -sfn "${NAME}" "${APP}.new"')
 
     assert branch_end < copy < switch
+
+
+def _preflight_block() -> str:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    return text[text.index("# >>> preflight") : text.index("# <<< preflight")]
+
+
+def _run_preflight(
+    release: Path, *, path_prefix: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    script = (
+        "set -euo pipefail\n"
+        'die() { echo "$1" >&2; exit 126; }\n'
+        f'REL="{release}"\n' + _preflight_block() + "echo PASSED\n"
+    )
+    environment = dict(os.environ)
+    if path_prefix is not None:
+        environment["PATH"] = f"{path_prefix}:{environment['PATH']}"
+    return subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=False, env=environment
+    )
+
+
+def _release_with(tmp_path: Path, env_text: str) -> Path:
+    release = tmp_path / "release"
+    release.mkdir()
+    (release / "docker-compose.yml").write_text(
+        "name: preflight-probe\n"
+        "x-url: &url\n"
+        "  URL: postgresql://app:${PREFLIGHT_NEEDED:?set PREFLIGHT_NEEDED in .env}@h/db\n"
+        "services:\n"
+        "  one:\n"
+        "    image: busybox\n"
+        "    environment:\n"
+        "      <<: *url\n"
+        "      OTHER: ${PREFLIGHT_OTHER:-x}\n",
+        encoding="utf-8",
+    )
+    (release / ".env").write_text(env_text, encoding="utf-8")
+    return release
+
+
+def _compose_available() -> bool:
+    try:
+        return (
+            subprocess.run(
+                ["docker", "compose", "version"], capture_output=True, check=False, timeout=30
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+@pytest.mark.skipif(not _compose_available(), reason="docker compose가 없다")
+def test_the_preflight_refuses_a_release_whose_compose_the_env_cannot_resolve(
+    tmp_path: Path,
+) -> None:
+    """새 `${X:?}`가 `.env`에 없으면 flip 전에 멈춘다 — 넘기면 모든 compose 명령이 죽는다(M1)."""
+
+    missing = _run_preflight(_release_with(tmp_path, "PREFLIGHT_OTHER=hunter2\n"))
+
+    assert missing.returncode == 126, missing.stderr
+    assert "not flipping" in missing.stderr
+    assert "PREFLIGHT_NEEDED" in missing.stderr
+    assert "PASSED" not in missing.stdout
+
+
+@pytest.mark.skipif(not _compose_available(), reason="docker compose가 없다")
+def test_the_preflight_passes_when_the_env_resolves_the_compose(tmp_path: Path) -> None:
+    present = _run_preflight(_release_with(tmp_path, "PREFLIGHT_NEEDED=value\n"))
+
+    assert present.returncode == 0, present.stderr
+    assert present.stdout.strip() == "PASSED"
+
+
+def test_the_preflight_names_only_compose_variables_never_values(tmp_path: Path) -> None:
+    """compose 오류 문구에 값이 섞여도 설치기 stderr에는 compose가 참조하는 변수 이름만 남는다."""
+
+    release = _release_with(tmp_path, "PREFLIGHT_NEEDED=s3cr3t-value\n")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        "#!/bin/sh\n"
+        "echo 'error: PREFLIGHT_NEEDED resolved to s3cr3t-value near UNRELATED_WORD' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+
+    refused = _run_preflight(release, path_prefix=fake_bin)
+
+    assert refused.returncode == 126
+    assert "PREFLIGHT_NEEDED" in refused.stderr
+    assert "s3cr3t" not in refused.stderr
+    assert "UNRELATED_WORD" not in refused.stderr
+
+
+def test_the_preflight_runs_after_the_env_copy_and_before_anything_is_flipped() -> None:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    env_copy = text.index('cp -p -- "${APP}/.env" "${REL}/.env"')
+    preflight = text.index("# >>> preflight")
+    first_host_write = text.index("install -T -o root -g root")
+    flip = text.index('ln -sfn "${NAME}" "${APP}.new"')
+
+    assert env_copy < preflight < first_host_write < flip
+    assert "--env-file \"${REL}/.env\" config --quiet" in _preflight_block()

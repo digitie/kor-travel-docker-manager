@@ -1,0 +1,141 @@
+# 공용 Dagster instance 정의 — 하나뿐이다(platform-topology.md §7, dagster-shared-plan §4).
+#
+# stage 2에서는 storage migrate one-shot만 이 파일을 읽는다. stage 3부터 공용 webserver·
+# daemon과 합류한 모든 code-server가 **같은 이 파일**을 `$DAGSTER_HOME/dagster.yaml`로
+# 읽기 전용으로 붙인다. run worker는 code-server 안에서 돌고 호출자의 InstanceRef(이
+# 파일의 원문)로 instance를 다시 만든다 — 그래서 아래 `env:`와 경로는 **code-server
+# 안에서** 풀린다. 새 설정을 더할 때 그것을 기억한다.
+#
+# 여기 있는 것은 전부 instance 전역이다. daemon 하나가 모든 location에 같은 값을 쓴다.
+# 테넌트별 의도는 tag(`dagster/code_location`, 테넌트 이름공간 tag, `dagster/max_runtime`)로만
+# 말한다.
+
+telemetry:
+  enabled: false
+
+storage:
+  postgres:
+    # 값은 compose의 `x-dagster-shared-control-env` 앵커 하나가 만든다 —
+    # `postgresql+psycopg2://`를 명시한다. geo·transport code-server는 SQLAlchemy 2.1이라
+    # 맨 `postgresql://`이면 psycopg v3를 골라 dagster-postgres가 깨진다.
+    postgres_url:
+      env: KOR_TRAVEL_DAGSTER_SHARED_PG_URL
+    # schema는 storage migrate one-shot만 만든다. runtime process가 빠진 table을 암묵
+    # 생성하면 불완전한 migrate가 가려진다(Map ADR-102의 교훈).
+    should_autocreate_tables: false
+
+# 로컬 쓰기는 전부 `/opt/dagster/state`로 간다. 선언하지 않으면 Dagster는
+# `$DAGSTER_HOME/storage`를 쓰는데, 그 경로는 run worker가 도는 **code-server 안에서**
+# 풀리고 비-root 이미지에서는 쓸 수 없다(Map 2026-09-11 `PermissionError` 실측).
+# 합류하는 code-server는 이 경로를 쓸 수 있어야 한다(stage 3 합류 조건).
+local_artifact_storage:
+  module: dagster._core.storage.root
+  class: LocalArtifactStorage
+  config:
+    base_dir: /opt/dagster/state/artifacts
+
+# D5: 로그 표시는 오늘과 같다 — compute log는 run이 도는 컨테이너의 로컬 파일이다.
+compute_logs:
+  module: dagster._core.storage.local_compute_log_manager
+  class: LocalComputeLogManager
+  config:
+    base_dir: /opt/dagster/state/compute_logs
+
+# run coordinator는 QueuedRunCoordinator다(Dagster 기본값). 상한은 `run_coordinator`가
+# 아니라 여기 둔다 — `pools`가 선언된 상태에서 `run_coordinator`의 상한과는 상호 배타라
+# Dagster가 `DagsterInvalidConfigError`로 거부한다(Map `docker/dagster.yaml`의 1차 시안).
+concurrency:
+  # pool 이름공간은 instance 전역이다 — `default_limit`이 모든 테넌트의 모든 pool에 걸린다.
+  # 그래서 pool 이름은 테넌트 접두를 단다(합류 조건). 값은 Map의 것이다.
+  pools:
+    default_limit: 1
+    granularity: run
+  runs:
+    # D3: 호스트 보호 상한이다. 테넌트 손잡이가 아니다 — 테넌트 상한은 아래 tag로 준다.
+    # n150의 부하는 CPU가 아니라 디스크 대기다. 근거 없이 올리지 않는다.
+    max_concurrent_runs: 12
+    tag_concurrency_limits:
+      # 테넌트별 상한 — 오늘 각 instance의 상한 그대로다(D3). key는 `dagster/code_location`이다.
+      #
+      # **`.dagster/repository`로 걸면 아무것도 막지 않는다.** 그 tag는 `DagsterRun.tags_for_storage()`가
+      # run_tags 표에만 쓰고 run 본문(run_body)의 tags에는 없다. queue daemon은 in-progress run을
+      # `get_run_records()`로 읽어 `record.dagster_run.tags`(본문)를 세므로 그 상한은 영원히 0을
+      # 센다(2026-09-30 적대 리뷰 H1). `dagster/code_location`은 Dagster 1.13.24의
+      # `RunDomain.create_run`이 `remote_job_origin`이 있을 때 본문 tags에 직접 넣는다(사용자 tag를
+      # 덮어쓴다). queue에 들어오는 경로는 전부 `remote_job_origin`을 준다 — schedule·sensor,
+      # UI launchpad·asset Materialize(`__ASSET_JOB`, GraphQL `create_valid_pipeline_run`), job·asset
+      # backfill, 재실행(UI·자동 재실행 모두 `create_reexecuted_run`).
+      #
+      # 값은 location 이름이다. 각 code-server command의 `-m` 모듈과 같고(오늘 네 instance의 실측
+      # location 이름), 3단계의 공용 `workspace.yaml`은 그 이름을 `location_name`으로 준다(합류 조건).
+      # `backend/tests/test_dagster_shared_config.py`가 compose의 code-server와 이 목록을 대조하고,
+      # `test_dagster_shared_storage_integration.py`가 실제 queue daemon의 dequeue로 상한이 무는지 본다.
+      - key: dagster/code_location
+        value: kortravelmap.dagster.definitions
+        limit: 10
+      - key: dagster/code_location
+        value: pinvi.etl.definitions
+        limit: 10
+      - key: dagster/code_location
+        value: kortravelgeo_dagster.definitions
+        limit: 10
+      - key: dagster/code_location
+        value: kortravelweather_dagster.definitions
+        limit: 10
+      # 테넌트 안의 상한 — 오늘 값 그대로다. key가 이미 테넌트 이름공간이라 겹치지 않는다.
+      # Map: value 없이 key만 — 그 key를 가진 in-progress run 전체를 센다(Map
+      # `docker/dagster.yaml`: 관리자 요청 worker class 전체를 4로 묶는다).
+      - key: kor_travel_map.feature_update_request_id
+        limit: 4
+      # weather: 외부 provider 수집 job이 슬롯을 다 먹지 못하게 한다(weather `deploy/dagster.yaml`).
+      - key: kortravelweather/run_group
+        value: external_weather
+        limit: 3
+
+# code-server가 재시작하는 동안 꺼낸 run을 실패로 만들지 않는다 — 공용 daemon 하나가
+# 여러 location을 보므로 한 location의 재시작이 흔하다.
+run_queue:
+  max_user_code_failure_retries: 3
+  user_code_failure_retry_delay: 60
+
+# Map의 값이다(가장 촘촘한 polling). 전역 상한과 다른 테넌트는 자기 job에
+# `dagster/max_runtime` tag를 단다(PinVi 3600, weather 57600).
+run_monitoring:
+  enabled: true
+  start_timeout_seconds: 600
+  cancel_timeout_seconds: 600
+  max_runtime_seconds: 21600
+  max_resume_run_attempts: 0
+  poll_interval_seconds: 15
+
+# 한 location이 멈춰도 다른 location의 schedule·sensor 평가를 굶기지 않는다.
+schedules:
+  use_threads: true
+  num_workers: 4
+sensors:
+  use_threads: true
+  num_workers: 4
+
+# Map의 값이다. bare int는 status 넷 전부에 걸려 sensor SKIPPED(기본 7일)를 늘리므로
+# sensor는 status별로 준다(Map `docker/dagster.yaml`의 실측 근거).
+#
+# **tick만 지운다.** Dagster의 `retention`은 schedule·sensor tick 보존만 다룬다 — run·event_log에는
+# 보존 설정이 없어 `dagster_shared`의 runs·event_logs는 지우지 않는 한 계속 자란다(네 테넌트가
+# 한 DB에 쌓는다). 정리는 별도 과제이고, 그때까지 크기는 백업 manifest의 `db_size_bytes`로 본다.
+retention:
+  schedule:
+    purge_after_days: 14
+  sensor:
+    purge_after_days:
+      skipped: 7
+      success: 14
+      started: 14
+      failure: 30
+
+# Map의 두 logger를 event stream에 결선한다. 다른 테넌트에는 그 이름의 logger가 없어
+# 무해하다.
+python_logs:
+  managed_python_loggers:
+    - kortravelmap.dagster.provider_fetchers
+    - kortravelmap.dagster.resources
+  python_log_level: WARNING
