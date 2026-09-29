@@ -2814,3 +2814,98 @@ def test_cli_rebuild_pinned_shows_warnings_to_a_human(mock_compose_service, caps
     assert main(["pinvi-pair", "rebuild-pinned", "--confirm"]) == 0
 
     assert "warning: the trusted execution binding is stale" in capsys.readouterr().err
+
+
+def _ensure_dagster_with(tmp_path: Path, failing_service: str | None) -> tuple[dict, list[list[str]]]:
+    """`ensure dagster`를 실제 ComposeService로 돌린다 — compose 호출만 가짜다.
+
+    `failing_service`를 argv에 담은 compose 호출은 exit 3으로 끝난다.
+    """
+
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *args, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append(list(argv))
+        completed = MagicMock()
+        completed.returncode = 3 if failing_service and failing_service in argv else 0
+        completed.stdout = ""
+        completed.stderr = "boom" if completed.returncode else ""
+        return completed
+
+    lock_home = Path("/tmp") / tmp_path.name
+    lock_home.mkdir(mode=0o700, exist_ok=True)
+    env_path = tmp_path / ".env"
+    env_path.write_text("KTDM_DEPLOYMENT_ENVIRONMENT=local\n", encoding="utf-8")
+    with (
+        patch.object(
+            ComposeService,
+            "_validate_current_compose_candidate_unlocked",
+            return_value=ValidatedComposeCandidate(
+                resolved={},
+                system_bind_snapshots=(),
+                raw_volume_graph_hash="raw-stable",
+                resolved_volume_graph_hash="resolved-stable",
+            ),
+        ),
+        patch(
+            "kor_travel_docker_manager.services.compose_service.subprocess.run",
+            side_effect=fake_run,
+        ),
+        patch(
+            "kor_travel_docker_manager.services.compose_service.os.path.exists",
+            return_value=False,
+        ),
+        patch.dict(
+            os.environ,
+            {
+                "KTDM_DEPLOYMENT_ENVIRONMENT": "local",
+                "PINVI_ENVIRONMENT": "development",
+                "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED": "false",
+                "KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE": str(env_path),
+                "HOME": str(lock_home),
+            },
+        ),
+    ):
+        result = ComposeService().ensure_target("dagster")
+    return result, calls
+
+
+def _compose_tail(argv: list[str]) -> list[str]:
+    """`docker compose [전역 옵션] <명령> ...`에서 명령부터."""
+
+    for command in ("up", "run"):
+        if command in argv:
+            return argv[argv.index(command) :]
+    raise AssertionError(argv)
+
+
+def test_ensure_dagster_runs_the_one_shots_as_gating_init_steps(tmp_path: Path) -> None:
+    """두 one-shot은 `up -d`가 아니라 `run --rm --no-deps`로 차례대로 돌고, 둘 다 성공해야 성공이다."""
+
+    result, calls = _ensure_dagster_with(tmp_path, failing_service=None)
+
+    assert result["success"] is True
+    assert [_compose_tail(argv) for argv in calls] == [
+        ["up", "-d", "kor-travel-shared-postgres"],
+        ["run", "--rm", "--no-deps", "kor-travel-shared-db-init-dagster"],
+        ["run", "--rm", "--no-deps", "kor-travel-dagster-storage-migrate"],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failing", "ran"),
+    [
+        ("kor-travel-shared-db-init-dagster", 2),
+        ("kor-travel-dagster-storage-migrate", 3),
+    ],
+)
+def test_a_failed_dagster_one_shot_fails_ensure(tmp_path: Path, failing: str, ran: int) -> None:
+    """`up -d`로 띄우면 one-shot의 종료 코드가 사라진다 — init step은 그것을 ensure의 결과로 올린다."""
+
+    result, calls = _ensure_dagster_with(tmp_path, failing_service=failing)
+
+    assert result["success"] is False
+    assert result["returncode"] == 3
+    assert result["init_results"][-1]["returncode"] == 3
+    # db-init이 실패하면 migrate는 돌지 않는다.
+    assert len(calls) == ran
