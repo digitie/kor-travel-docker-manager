@@ -8345,6 +8345,10 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
     백업 DB 오타, URL DB 오타, db-init REVOKE 삭제, `--require-hashes` 삭제, 하한 핀, runtime에 one-shot, wrapper
     허용 목록(각 단위 1~2 failed), 그리고 gated 셋 — migrate를 맨 `dagster instance migrate`로(bootstrap 없이),
     db-init REVOKE 삭제, 비밀번호 거부 삭제(각 1 failed).
+  - 전체: gated 전체 스위트(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, `de57f2a`의 새 clone, consolidation venv)
+    **2371 passed, 2 skipped**, 잔재 0. `/tmp/b3-test.sh`는 같은 head에서 ruff 깨끗, **1 failed**(이 브랜치의 통합
+    테스트 — 격리 PostgreSQL의 initdb 임시 서버가 `pg_ctl` 기본 60초 안에 종료 checkpoint를 못 끝내 exit 1, load 12)였다.
+    fixture에 `PGCTLTIMEOUT=300`을 준 `6b420e9`에서 b3 **2371 passed, 2 skipped**, gated 세 파일 12 passed.
 - 문서: platform-topology §7(포트 D2 — gateway `11001`·webserver `127.0.0.1:11002`·daemon 포트 없음, 이력 새로
   시작 D1, transport는 나중에 합류, D3~D6), ports.md(`11001`/`11002` 예약, `dagster_shared`), onboarding·
   docker-management의 백업 표, tasks.md.
