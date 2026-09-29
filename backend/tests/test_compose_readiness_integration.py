@@ -24,6 +24,11 @@ _FIXTURE_IMAGE = (
 _REQUIRED_GATE_ENV = "KTDM_REQUIRE_DOCKER_INTEGRATION"
 
 
+# n150은 디스크 대기로 load가 10~20까지 오른다. 그때 fixture 컨테이너의 `docker stop`(기본 유예 10초)이나
+# `compose up`이 30초를 넘겨 이 테스트만 거짓 실패했다(2026-09-28~29 MT 실행 3/3, 단독 재실행은 통과).
+_DOCKER_TIMEOUT_SECONDS = 120
+
+
 def _docker_compose(
     compose_path: Path,
     project_name: str,
@@ -42,7 +47,7 @@ def _docker_compose(
         text=True,
         capture_output=True,
         check=False,
-        timeout=30,
+        timeout=_DOCKER_TIMEOUT_SECONDS,
     )
 
 
@@ -52,7 +57,7 @@ def _docker(*arguments: str) -> subprocess.CompletedProcess[str]:
         text=True,
         capture_output=True,
         check=False,
-        timeout=30,
+        timeout=_DOCKER_TIMEOUT_SECONDS,
     )
 
 
