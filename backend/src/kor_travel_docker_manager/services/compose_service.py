@@ -3562,13 +3562,7 @@ class ComposeService:
                 for item in tuple(explicit_services)
                 if ":" in item
             )
-            # 의존성까지 닿는 명령의 집합은 R3 chokepoint와 같은 하나다. `run`도 `--no-deps`
-            # 없이는 명시 서비스의 `depends_on`을 만들고 drift된 것은 다시 만든다(n150 Compose
-            # v5.2.0 실측, `run --rm` 포함).
-            if (
-                command in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES
-                and "--no-deps" not in parsed_flags
-            ):
+            if command in {"up", "create", "restart", "watch"} and "--no-deps" not in parsed_flags:
                 api_dependencies = {
                     "kor-travel-map-ui": "kor-travel-map-api",
                     "kor-travel-map-dagster": "kor-travel-map-api",

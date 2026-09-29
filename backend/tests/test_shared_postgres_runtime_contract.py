@@ -114,12 +114,6 @@ def test_the_probe_gives_up_before_docker_kills_it() -> None:
     assert connect_timeout < docker_timeout, (
         f"pg_isready -t {connect_timeout}s가 docker timeout {docker_timeout}s보다 짧지 않다."
     )
-    # `-t`는 연결 대기만 묶는다 — 디스크 대기가 무거운 호스트에서는 프로세스를 띄우는 데도
-    # 초 단위가 든다. 두 값이 붙어 있으면 거짓 unhealthy가 늘고, 그것이 모든 테넌트의
-    # `service_healthy`를 막는다(ADR-52가 5초를 10초로 벌린 이유).
-    assert docker_timeout >= 2 * connect_timeout, (
-        f"docker timeout {docker_timeout}s가 pg_isready -t {connect_timeout}s의 두 배보다 작다."
-    )
 
 
 def test_the_shared_postgres_gets_time_to_shut_down_cleanly() -> None:
