@@ -234,6 +234,8 @@ def _runtimes(
     ) -> DatabaseRuntime:
         return DatabaseRuntime(
             role=role,
+            # compose 서비스 이름은 readiness에만 쓰인다 — 이 파일은 컨테이너에 직접 붙는다.
+            service_name="it-postgres",
             container_name=container,
             port=_PORT,
             database_name=name,
@@ -697,3 +699,81 @@ def test_isolation_preflight_refuses_what_isolation_refuses_and_changes_nothing(
     database_runtime.require_map_databases_isolatable(app, dagster, login=_LOGIN)
     assert {name: _datacl(cluster, name) for name in watched} == before
     assert _connect(cluster, "foreign_app", "kor_travel_map").returncode == 0
+
+
+# ── T-S1(M2): Map bootstrap admin의 pre-stop 판정을 진짜 instance에서 ─────────────────────
+
+_S1_ENVIRONMENT = {
+    "IT_ADMIN_PASSWORD": "it-admin-password-0123456789-abcdef",
+    "KOR_TRAVEL_MAP_SERVICE_PASSWORD": "it-map-service-password-0123456789-ab",
+    "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "it-map-metadata-password-0123456789-a",
+}
+
+
+def _s1_resolved() -> dict[str, object]:
+    """admin secret을 `POSTGRES_PASSWORD_FILE` → secrets[] → 최상위 `environment`로 유도할 수 있는 문서."""
+
+    return {
+        "services": {
+            "it-postgres": {
+                "environment": {
+                    "POSTGRES_USER": _ADMIN,
+                    "POSTGRES_PASSWORD_FILE": "/run/secrets/it-admin",
+                },
+                "secrets": [{"source": "it-admin", "target": "/run/secrets/it-admin"}],
+            }
+        },
+        "secrets": {"it-admin": {"environment": "IT_ADMIN_PASSWORD"}},
+    }
+
+
+def _admin_ready(runtime: DatabaseRuntime) -> None:
+    database_runtime.require_map_bootstrap_admin_ready(
+        runtime, resolved=_s1_resolved(), environment=_S1_ENVIRONMENT
+    )
+
+
+def test_bootstrap_admin_readiness_reads_the_live_instance(cluster: str) -> None:
+    """T-S1: 멈추기 전의 S1 판정이 진짜 instance에서 돌고, Map bootstrap이 거부할 것을 거부한다.
+
+    공용 이미지는 `postgis`·`pg_prewarm`을 제공하고 `it_admin`은 superuser다 — 통과한다. cluster 전역
+    role setting(`ALTER ROLE ALL SET`, `ktm_*` role의 database 0 setting)을 걸면 거부하고, 걷으면 다시
+    통과한다. superuser가 아닌 admin도 거부한다. 판정은 아무것도 바꾸지 않는다.
+    """
+
+    runtime = _runtimes(cluster)[0]
+    oids = _database_oids(cluster)
+    _admin_ready(runtime)
+
+    _admin(cluster, "ALTER ROLE ALL SET work_mem = '4MB';\n")
+    try:
+        with pytest.raises(DeploymentContractError, match="cluster-wide role settings"):
+            _admin_ready(runtime)
+    finally:
+        _admin(cluster, "ALTER ROLE ALL RESET work_mem;\n")
+    _admin_ready(runtime)
+
+    _admin(cluster, "CREATE ROLE ktm_it_probe NOLOGIN;\nALTER ROLE ktm_it_probe SET work_mem = '4MB';\n")
+    try:
+        with pytest.raises(DeploymentContractError, match="cluster-wide role settings"):
+            _admin_ready(runtime)
+    finally:
+        _admin(cluster, "DROP ROLE ktm_it_probe;\n")
+
+    _admin(cluster, "CREATE ROLE it_plain LOGIN;\n")
+    try:
+        plain = DatabaseRuntime(
+            role="map_application",
+            service_name="it-postgres",
+            container_name=cluster,
+            port=_PORT,
+            database_name="kor_travel_map",
+            owner_name="it_plain",
+            admin_name="it_plain",
+        )
+        with pytest.raises(DeploymentContractError, match="must be a superuser"):
+            _admin_ready(plain)
+    finally:
+        _admin(cluster, "DROP ROLE it_plain;\n")
+
+    assert _database_oids(cluster) == oids

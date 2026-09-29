@@ -20,18 +20,24 @@ from kor_travel_docker_manager.services.database_runtime import (
     schema_revision_table_exists,
 )
 
+#: 합성 포트 — 운영 포트 리터럴을 쓰지 않는다. instance는 이 포트를 `-p`로 듣는 서버에서 유도된다.
+_MAP_PORT = 15101
+_PINVI_PORT = 15102
+
 
 def _runtime(role: database_runtime.DatabaseRole) -> DatabaseRuntime:
+    pinvi = role == "pinvi"
     return DatabaseRuntime(
         role=role,
+        service_name="pg-pinvi" if pinvi else "pg-map",
         container_name="postgres-rehearsal",
-        port=11000 if role == "pinvi" else 12700,
+        port=_PINVI_PORT if pinvi else _MAP_PORT,
         database_name={
             "map_application": "map_app",
             "map_dagster": "map_dagster",
             "pinvi": "pin_app",
         }[role],
-        owner_name="pin_owner" if role == "pinvi" else "map_owner",
+        owner_name="pin_owner" if pinvi else "map_owner",
         admin_name="cluster_admin",
     )
 
@@ -39,8 +45,9 @@ def _runtime(role: database_runtime.DatabaseRole) -> DatabaseRuntime:
 def _metadata_runtime() -> DatabaseRuntime:
     return DatabaseRuntime(
         role="map_dagster",
+        service_name="pg-map",
         container_name="postgres-rehearsal",
-        port=12700,
+        port=_MAP_PORT,
         database_name="map_dagster",
         owner_name="map_owner",
         admin_name="cluster_admin",
@@ -48,37 +55,79 @@ def _metadata_runtime() -> DatabaseRuntime:
     )
 
 
-def test_database_runtime_identity_comes_from_frozen_contract() -> None:
+def _postgres_server(container: str, port: int, admin: str | None) -> dict[str, object]:
+    """PostgreSQL 서버 서비스 하나(C6c가 `command`로 목격하는 모양). admin이 None이면 env가 비었다."""
+
+    return {
+        "container_name": container,
+        "command": ["postgres", "-c", "listen_addresses=127.0.0.1", "-p", str(port)],
+        "environment": {} if admin is None else {"POSTGRES_USER": admin},
+    }
+
+
+def _frozen_resolved(
+    servers: dict[str, tuple[int, str | None]],
+    *,
+    pinvi_port: int,
+) -> dict[str, object]:
+    """합성 서버들 + `pinvi-api`의 resolved `PINVI_DATABASE_URL`(그 포트로)."""
+
+    services: dict[str, object] = {
+        name: _postgres_server(f"{name}-container", port, admin)
+        for name, (port, admin) in servers.items()
+    }
+    services["pinvi-api"] = {
+        "environment": {
+            "PINVI_DATABASE_URL": (
+                f"postgresql+asyncpg://pin_owner:pin-password@127.0.0.1:{pinvi_port}/pin_app"
+            )
+        }
+    }
+    return {"services": services}
+
+
+def _frozen_environment(*, map_port: int, dagster_port: int | None = None, **values: str) -> dict[str, str]:
+    environment = {
+        "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
+        "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
+        "PINVI_POSTGRES_DB": "pin_app",
+        "PINVI_APP_DB_USER": "pin_owner",
+        **values,
+    }
+    database = environment["KOR_TRAVEL_MAP_POSTGRES_DB"]
+    dagster = environment["KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"]
+    metadata = environment["KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"]
+    environment.setdefault(
+        "KOR_TRAVEL_MAP_PG_DSN",
+        f"postgresql+asyncpg://ktm_feature_service:s@127.0.0.1:{map_port}/{database}",
+    )
+    environment.setdefault(
+        "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+        f"postgresql://{metadata}:m@127.0.0.1:{dagster_port or map_port}/{dagster}",
+    )
+    return environment
+
+
+def test_map_and_pinvi_derive_one_shared_instance_from_dsn_ports() -> None:
+    """ADR-53: 세 DB의 DSN이 같은 포트면 셋 다 그 포트를 듣는 **한** 서버에 산다."""
+
     runtimes = database_runtimes_from_frozen_contract(
-        resolved={
-            "services": {
-                "kor-travel-geo-postgres": {
-                    "container_name": "geo-postgres-production",
-                    "environment": {"POSTGRES_USER": "cluster_admin"},
-                },
-                "kor-travel-map-postgres": {
-                    "container_name": "map-postgres-production",
-                    "environment": {"POSTGRES_USER": "map_cluster_admin"},
-                },
-                "kor-travel-shared-postgres": {
-                    "container_name": "shared-postgres-production",
-                    "environment": {"POSTGRES_USER": "pin_cluster_admin"},
-                },
-            }
-        },
-        environment={
-            "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
-            "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
-            "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
-            "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
-            "PINVI_POSTGRES_DB": "pin_app",
-            "PINVI_APP_DB_USER": "pin_owner",
-        },
+        resolved=_frozen_resolved(
+            {
+                "pg-shared": (_MAP_PORT, "shared_admin"),
+                # 다른 포트의 서버는 끌려오지 않는다.
+                "pg-other": (_PINVI_PORT, "other_admin"),
+            },
+            pinvi_port=_MAP_PORT,
+        ),
+        environment=_frozen_environment(map_port=_MAP_PORT),
     )
 
     assert [
         (
             runtime.role,
+            runtime.service_name,
             runtime.container_name,
             runtime.port,
             runtime.database_name,
@@ -87,126 +136,136 @@ def test_database_runtime_identity_comes_from_frozen_contract() -> None:
         )
         for runtime in runtimes
     ] == [
-        ("map_application", "map-postgres-production", 12700, "map_app", "map_owner", "map_cluster_admin"),
-        ("map_dagster", "map-postgres-production", 12700, "map_dagster", "map_owner", "map_cluster_admin"),
-        ("pinvi", "shared-postgres-production", 11000, "pin_app", "pin_owner", "pin_cluster_admin"),
+        ("map_application", "pg-shared", "pg-shared-container", _MAP_PORT, "map_app", "shared_admin", "shared_admin"),
+        ("map_dagster", "pg-shared", "pg-shared-container", _MAP_PORT, "map_dagster", "shared_admin", "shared_admin"),
+        ("pinvi", "pg-shared", "pg-shared-container", _MAP_PORT, "pin_app", "pin_owner", "shared_admin"),
     ]
-    assert {runtime.container_name for runtime in runtimes} == {
-        "map-postgres-production",
-        "shared-postgres-production",
-    }
     assert runtimes[1].additional_owner_names == frozenset({"map_dagster_metadata"})
 
 
-def test_database_runtime_rejects_pinvi_container_alias() -> None:
-    with pytest.raises(DeploymentContractError, match="distinct frozen PostgreSQL container"):
+def test_database_runtime_identity_comes_from_frozen_contract() -> None:
+    """포트가 다르면 instance도 다르다 — 이름이 아니라 포트가 instance를 고른다."""
+
+    map_application, map_dagster, pinvi = database_runtimes_from_frozen_contract(
+        resolved=_frozen_resolved(
+            {"pg-a": (_MAP_PORT, "a_admin"), "pg-b": (_PINVI_PORT, "b_admin")},
+            pinvi_port=_PINVI_PORT,
+        ),
+        environment=_frozen_environment(map_port=_MAP_PORT),
+    )
+
+    assert (map_application.service_name, map_application.admin_name) == ("pg-a", "a_admin")
+    assert (map_dagster.service_name, map_dagster.port) == ("pg-a", _MAP_PORT)
+    assert (pinvi.service_name, pinvi.container_name, pinvi.port, pinvi.admin_name) == (
+        "pg-b",
+        "pg-b-container",
+        _PINVI_PORT,
+        "b_admin",
+    )
+
+
+def test_map_owner_is_the_instance_admin() -> None:
+    """S1: Map fresh bootstrap은 instance의 기존 admin으로 돈다 — env의 Map superuser는 없다."""
+
+    map_application, map_dagster, _pinvi = database_runtimes_from_frozen_contract(
+        resolved=_frozen_resolved({"pg-shared": (_MAP_PORT, "shared_admin")}, pinvi_port=_MAP_PORT),
+        # 퇴역한 키가 남아 있어도 소유자를 바꾸지 못한다.
+        environment=_frozen_environment(
+            map_port=_MAP_PORT, KOR_TRAVEL_MAP_POSTGRES_USER="kor_travel_map"
+        ),
+    )
+
+    assert map_application.owner_name == map_application.admin_name == "shared_admin"
+    assert map_dagster.owner_name == map_dagster.admin_name == "shared_admin"
+    # R2: admin은 절대 파기 소유자가 아니다.
+    assert "shared_admin" not in database_runtime._permitted_existing_owners(map_application)
+    assert "shared_admin" not in database_runtime._permitted_existing_owners(map_dagster)
+
+
+@pytest.mark.parametrize(
+    ("servers", "match"),
+    (
+        # 0: DSN 포트를 듣는 서버가 없다(퇴역 instance의 포트가 남은 env).
+        ({"pg-shared": (_PINVI_PORT, "shared_admin")}, r"found 0"),
+        # 2: 같은 포트를 두 서버가 말한다 — 어느 cluster인지 모른다.
+        (
+            {"pg-a": (_MAP_PORT, "a_admin"), "pg-b": (_MAP_PORT, "b_admin")},
+            r"found 2",
+        ),
+    ),
+)
+def test_instance_derivation_requires_exactly_one_postgres_service_per_port(
+    servers: dict[str, tuple[int, str | None]],
+    match: str,
+) -> None:
+    with pytest.raises(DeploymentContractError, match=match):
         database_runtimes_from_frozen_contract(
-            resolved={
-                "services": {
-                    "kor-travel-map-postgres": {
-                        "container_name": "map-postgres-production",
-                        "environment": {"POSTGRES_USER": "map_cluster_admin"},
-                    },
-                    "kor-travel-shared-postgres": {
-                        "container_name": "map-postgres-production",
-                        "environment": {"POSTGRES_USER": "pin_cluster_admin"},
-                    },
-                }
-            },
-            environment={
-                "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
-                "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
-                "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
-                "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
-                "PINVI_POSTGRES_DB": "pin_app",
-                "KOR_TRAVEL_SHARED_POSTGRES_USER": "pin_owner",
-            },
+            resolved=_frozen_resolved(servers, pinvi_port=_PINVI_PORT),
+            environment=_frozen_environment(map_port=_MAP_PORT),
+        )
+
+
+def test_instance_derivation_ignores_a_non_postgres_service_on_the_port() -> None:
+    """같은 `-p`를 든 비-PostgreSQL 서비스는 instance 후보가 아니다(C6c 서버 판정)."""
+
+    resolved = _frozen_resolved({"pg-shared": (_MAP_PORT, "shared_admin")}, pinvi_port=_MAP_PORT)
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    services["proxy"] = {"container_name": "proxy", "command": ["socat", "-p", str(_MAP_PORT)]}
+
+    runtimes = database_runtimes_from_frozen_contract(
+        resolved=resolved, environment=_frozen_environment(map_port=_MAP_PORT)
+    )
+
+    assert {runtime.service_name for runtime in runtimes} == {"pg-shared"}
+
+
+def test_map_dsns_must_share_one_authority() -> None:
+    with pytest.raises(DeploymentContractError, match="share one PostgreSQL authority"):
+        database_runtimes_from_frozen_contract(
+            resolved=_frozen_resolved(
+                {"pg-a": (_MAP_PORT, "a_admin"), "pg-b": (_PINVI_PORT, "b_admin")},
+                pinvi_port=_PINVI_PORT,
+            ),
+            environment=_frozen_environment(map_port=_MAP_PORT, dagster_port=_PINVI_PORT),
+        )
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    (
+        "",
+        "postgresql+asyncpg://ktm_feature_service:s@localhost:15101/map_app",
+        "postgresql+asyncpg://ktm_feature_service:s@127.0.0.1/map_app",
+        "postgresql+asyncpg://ktm_feature_service:s@127.0.0.1:not-a-port/map_app",
+    ),
+)
+def test_database_runtime_rejects_an_invalid_dsn_authority(dsn: str) -> None:
+    with pytest.raises(DeploymentContractError, match="authority"):
+        database_runtimes_from_frozen_contract(
+            resolved=_frozen_resolved({"pg-shared": (_MAP_PORT, "shared_admin")}, pinvi_port=_MAP_PORT),
+            environment=_frozen_environment(
+                map_port=_MAP_PORT,
+                KOR_TRAVEL_MAP_PG_DSN=dsn,
+                KOR_TRAVEL_MAP_DAGSTER_PG_URL=dsn,
+            ),
         )
 
 
 def test_database_runtime_rejects_database_name_alias() -> None:
     with pytest.raises(DeploymentContractError, match="distinct frozen database names"):
         database_runtimes_from_frozen_contract(
-            resolved={
-                "services": {
-                    "kor-travel-map-postgres": {
-                        "container_name": "map-postgres-production",
-                        "environment": {"POSTGRES_USER": "map_cluster_admin"},
-                    },
-                    "kor-travel-shared-postgres": {
-                        "container_name": "shared-postgres-production",
-                        "environment": {"POSTGRES_USER": "pin_cluster_admin"},
-                    },
-                }
-            },
-            environment={
-                "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
-                "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
-                "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
-                "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
-                "PINVI_POSTGRES_DB": "map_app",
-                "KOR_TRAVEL_SHARED_POSTGRES_USER": "pin_owner",
-            },
+            resolved=_frozen_resolved({"pg-shared": (_MAP_PORT, "shared_admin")}, pinvi_port=_MAP_PORT),
+            environment=_frozen_environment(map_port=_MAP_PORT, PINVI_POSTGRES_DB="map_app"),
         )
 
 
-@pytest.mark.parametrize(
-    "postgres_environment",
-    [{}, {"POSTGRES_USER": ""}, {"POSTGRES_USER": "cluster-admin"}],
-)
-def test_database_runtime_rejects_invalid_frozen_admin_role(
-    postgres_environment: object,
-) -> None:
+@pytest.mark.parametrize("admin", [None, "", "cluster-admin"])
+def test_database_runtime_rejects_invalid_frozen_admin_role(admin: str | None) -> None:
     with pytest.raises(DeploymentContractError, match="admin role"):
         database_runtimes_from_frozen_contract(
-            resolved={
-                "services": {
-                    "kor-travel-geo-postgres": {
-                        "container_name": "postgres-production",
-                        "environment": {"POSTGRES_USER": "geo_admin"},
-                    },
-                    "kor-travel-map-postgres": {
-                        "container_name": "map-postgres-production",
-                        "environment": {"POSTGRES_USER": "map_cluster_admin"},
-                    },
-                    "kor-travel-shared-postgres": {
-                        "container_name": "shared-postgres-production",
-                        "environment": postgres_environment,
-                    },
-                }
-            },
-            environment={"KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata"},
-        )
-
-
-@pytest.mark.parametrize(
-    "port_value",
-    ["", "not-a-port", "0", "65536"],
-)
-def test_database_runtime_rejects_invalid_frozen_port(port_value: str) -> None:
-    with pytest.raises(DeploymentContractError, match="PostgreSQL port is invalid"):
-        database_runtimes_from_frozen_contract(
-            resolved={
-                "services": {
-                    "kor-travel-map-postgres": {
-                        "container_name": "map-postgres-production",
-                        "environment": {"POSTGRES_USER": "map_cluster_admin"},
-                    },
-                    "kor-travel-shared-postgres": {
-                        "container_name": "shared-postgres-production",
-                        "environment": {"POSTGRES_USER": "pin_cluster_admin"},
-                    },
-                }
-            },
-            environment={
-                "KOR_TRAVEL_MAP_POSTGRES_DB": "map_app",
-                "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_dagster",
-                "KOR_TRAVEL_MAP_POSTGRES_USER": "map_owner",
-                "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
-                "PINVI_POSTGRES_DB": "pin_app",
-                "KOR_TRAVEL_SHARED_POSTGRES_USER": "pin_owner",
-                "KOR_TRAVEL_SHARED_DB_PORT": port_value,
-            },
+            resolved=_frozen_resolved({"pg-shared": (_MAP_PORT, admin)}, pinvi_port=_MAP_PORT),
+            environment=_frozen_environment(map_port=_MAP_PORT),
         )
 
 
@@ -270,12 +329,8 @@ def test_application_300_reset_leaves_map_databases_absent_and_recreates_pinvi(
     assert calls[-1][0][calls[-1][0].index("--template") + 1] == "template0"
     assert all(arguments[arguments.index("--user") + 1] == "postgres" for arguments, _ in calls)
     assert [arguments[arguments.index("--port") + 1] for arguments, _ in calls] == [
-        "12700",
-        "12700",
-        "12700",
-        "12700",
-        "11000",
-        "11000",
+        *[str(_MAP_PORT)] * 4,
+        *[str(_PINVI_PORT)] * 2,
     ]
     assert all("password" not in " ".join(arguments).lower() for arguments, _ in calls)
 
@@ -1090,40 +1145,30 @@ def test_permitted_owner_sets_never_contain_the_instance_admin(
 
 
 def test_map_owner_sets_are_disjoint_from_pinvi_and_foreign_owners() -> None:
-    """n150 모양으로 frozen 계약에서 유도한 세 허용 집합. Map 쪽은 PinVi와 두 instance admin과 겹치지 않는다.
+    """n150 모양(ADR-53: 세 DB가 공용 instance 하나)으로 frozen 계약에서 유도한 세 허용 집합.
 
-    Map app과 Dagster는 구성상 `owner_name`을 공유하므로 "세 runtime 모두 서로소"는 불가능하다.
-    다른 tenant login과의 서로소는 여기서 이름으로 보지 않는다 — 이 env에 없는 이름은 겹칠 수 없어
-    공허하다. 그 경계는 live 소유 관계(배타성·회전 preflight)와 실 PostgreSQL T-R2d가 본다.
+    Map app과 Dagster는 구성상 `owner_name`(= instance admin, S1)을 공유하므로 "세 runtime 모두
+    서로소"는 불가능하다. Map 쪽은 PinVi의 허용 집합과 instance admin과 겹치지 않는다. 다른 tenant
+    login과의 서로소는 여기서 이름으로 보지 않는다 — 이 env에 없는 이름은 겹칠 수 없어 공허하다.
+    그 경계는 live 소유 관계(배타성·회전 preflight)와 실 PostgreSQL T-R2d가 본다.
     """
 
     map_application, map_dagster, pinvi = database_runtimes_from_frozen_contract(
-        resolved={
-            "services": {
-                "kor-travel-map-postgres": {
-                    "container_name": "kor-travel-map-postgres",
-                    "environment": {"POSTGRES_USER": "kor_travel_map"},
-                },
-                "kor-travel-shared-postgres": {
-                    "container_name": "kor-travel-shared-postgresql",
-                    "environment": {"POSTGRES_USER": "shared_admin"},
-                },
-            }
-        },
-        environment={
-            "KOR_TRAVEL_MAP_POSTGRES_DB": "kor_travel_map",
-            "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "kor_travel_map_dagster",
-            "KOR_TRAVEL_MAP_POSTGRES_USER": "kor_travel_map",
-            "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "kor_travel_map_dagster",
-            "PINVI_POSTGRES_DB": "pinvi",
-            "PINVI_APP_DB_USER": "pinvi_application_runtime",
-        },
+        resolved=_frozen_resolved({"pg-shared": (_MAP_PORT, "shared_admin")}, pinvi_port=_MAP_PORT),
+        environment=_frozen_environment(
+            map_port=_MAP_PORT,
+            KOR_TRAVEL_MAP_POSTGRES_DB="kor_travel_map",
+            KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB="kor_travel_map_dagster",
+            KOR_TRAVEL_MAP_DAGSTER_METADATA_USER="kor_travel_map_dagster",
+            PINVI_POSTGRES_DB="pinvi",
+            PINVI_APP_DB_USER="pinvi_application_runtime",
+        ),
     )
     permitted = database_runtime._permitted_existing_owners
-    # 두 instance admin은 frozen 문서의 `POSTGRES_USER`에서 온다 — 허용 집합에서 빠져야 한다.
-    admins = {map_application.admin_name, pinvi.admin_name}
+    # instance admin은 frozen 문서의 `POSTGRES_USER`에서 온다 — 허용 집합에서 빠져야 한다.
+    admins = {runtime.admin_name for runtime in (map_application, map_dagster, pinvi)}
 
-    assert admins == {"kor_travel_map", "shared_admin"}
+    assert admins == {"shared_admin"}
     assert permitted(map_application) == {"ktm_feature_schema_owner"}
     assert permitted(map_dagster) == {"kor_travel_map_dagster"}
     assert permitted(pinvi) == {"pinvi_application_runtime"}
@@ -1351,7 +1396,7 @@ def test_isolation_sql_names_only_map_databases_and_the_dsn_login(
     login = database_runtime.map_application_login(
         {
             "KOR_TRAVEL_MAP_PG_DSN": (
-                "postgresql+asyncpg://ktm_feature_service:secret@127.0.0.1:12700/map_app"
+                "postgresql+asyncpg://ktm_feature_service:secret@127.0.0.1:15101/map_app"
             )
         }
     )
@@ -1424,9 +1469,9 @@ def test_isolation_cap_is_derived_from_the_live_slots(monkeypatch: pytest.Monkey
     "dsn",
     (
         "",
-        "postgresql+asyncpg://127.0.0.1:12700/map_app",
-        "postgresql+asyncpg://Bad-Login:x@127.0.0.1:12700/map_app",
-        "postgresql+asyncpg://a%27b:x@127.0.0.1:12700/map_app",
+        "postgresql+asyncpg://127.0.0.1:15101/map_app",
+        "postgresql+asyncpg://Bad-Login:x@127.0.0.1:15101/map_app",
+        "postgresql+asyncpg://a%27b:x@127.0.0.1:15101/map_app",
     ),
 )
 def test_map_application_login_requires_an_identifier(dsn: str) -> None:
@@ -1440,7 +1485,7 @@ def test_isolation_refuses_runtimes_on_two_instances(monkeypatch: pytest.MonkeyP
 
     with pytest.raises(DeploymentContractError, match="share one PostgreSQL instance"):
         database_runtime.ensure_map_databases_isolated(
-            app, replace(dagster, port=11000), login="ktm_feature_service"
+            app, replace(dagster, port=_PINVI_PORT), login="ktm_feature_service"
         )
 
     assert reads == [] and scripts == []
@@ -1645,3 +1690,166 @@ def test_resettable_preflight_passes_a_resettable_pair_without_dropping_it(
     assert commands and all("psql" in command for command in commands)
     reset_databases_for_application_300(runtimes)
     assert _dropped(commands) == ["map_app", "map_dagster", "pin_app"]
+
+
+# ── ADR-53 S1: Map bootstrap admin의 pre-stop 판정 ─────────────────────────────────────────
+
+_ADMIN_PASSWORD = "shared-admin-password-0123456789-abcdef"
+
+
+def _admin_ready_resolved() -> dict[str, object]:
+    """admin secret을 `POSTGRES_PASSWORD_FILE` → secrets[] → 최상위 `environment`로 유도할 수 있는 문서."""
+
+    server = _postgres_server("pg-shared-container", _MAP_PORT, "cluster_admin")
+    server["environment"] = {
+        "POSTGRES_USER": "cluster_admin",
+        "POSTGRES_PASSWORD_FILE": "/run/secrets/shared-admin-password",
+    }
+    server["secrets"] = [{"source": "shared-admin-password", "target": "/run/secrets/shared-admin-password"}]
+    return {
+        "services": {"pg-map": server},
+        "secrets": {"shared-admin-password": {"environment": "SHARED_ADMIN_PASSWORD"}},
+    }
+
+
+def _admin_ready_environment(**overrides: str) -> dict[str, str]:
+    return {
+        "SHARED_ADMIN_PASSWORD": _ADMIN_PASSWORD,
+        "KOR_TRAVEL_MAP_SERVICE_PASSWORD": "map-service-password-0123456789-abcdef",
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "map-dagster-password-0123456789-abcde",
+        **overrides,
+    }
+
+
+def _admin_runtime() -> DatabaseRuntime:
+    """S1 모양 — Map 앱 DB 소유자가 instance admin이다."""
+
+    return replace(_runtime("map_application"), owner_name="cluster_admin")
+
+
+def _admin_ready_runner(monkeypatch: pytest.MonkeyPatch, output: bytes) -> Mock:
+    runner = Mock(return_value=output)
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+    return runner
+
+
+def test_admin_ready_check_accepts_a_ready_instance_and_only_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _admin_ready_runner(monkeypatch, b"t|0|2\n")
+
+    database_runtime.require_map_bootstrap_admin_ready(
+        _admin_runtime(),
+        resolved=_admin_ready_resolved(),
+        environment=_admin_ready_environment(),
+    )
+
+    (call,) = runner.call_args_list
+    arguments = call.args[0]
+    assert arguments[:5] == ["docker", "exec", "--user", "postgres", "postgres-rehearsal"]
+    assert arguments[arguments.index("--username") + 1] == "cluster_admin"
+    assert arguments[arguments.index("--port") + 1] == str(_MAP_PORT)
+    query = arguments[arguments.index("--command") + 1]
+    assert query.startswith("SELECT ")
+    for fragment in (
+        "rolsuper",
+        "setting_row.setdatabase = 0",
+        "setting_row.setrole = 0",
+        "role.rolname = current_user",
+        "LIKE 'ktm\\_%' ESCAPE '\\'",
+        "'postgis'",
+        "'pg_prewarm'",
+    ):
+        assert fragment in query
+    assert _ADMIN_PASSWORD not in " ".join(arguments)
+
+
+@pytest.mark.parametrize(
+    ("output", "match"),
+    (
+        (b"f|0|2\n", "must be a superuser"),
+        (b"t|1|2\n", "cluster-wide role settings"),
+        (b"t|0|1\n", "lacks an extension"),
+        (b"t|0\n", "output is invalid"),
+        (b"t|0|2\nt|0|2\n", "output is invalid"),
+    ),
+)
+def test_admin_ready_check_refuses_each_instance_precondition(
+    monkeypatch: pytest.MonkeyPatch,
+    output: bytes,
+    match: str,
+) -> None:
+    _admin_ready_runner(monkeypatch, output)
+
+    with pytest.raises(DeploymentContractError, match=match):
+        database_runtime.require_map_bootstrap_admin_ready(
+            _admin_runtime(),
+            resolved=_admin_ready_resolved(),
+            environment=_admin_ready_environment(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    (
+        ({"SHARED_ADMIN_PASSWORD": "short"}, "32..256 URI-unreserved"),
+        ({"SHARED_ADMIN_PASSWORD": "x" * 257}, "32..256 URI-unreserved"),
+        ({"SHARED_ADMIN_PASSWORD": "has a space but is long enough 0123456"}, "32..256 URI-unreserved"),
+        ({"SHARED_ADMIN_PASSWORD": ""}, "32..256 URI-unreserved"),
+        ({"KOR_TRAVEL_MAP_SERVICE_PASSWORD": _ADMIN_PASSWORD}, "must differ"),
+        ({"KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": _ADMIN_PASSWORD}, "must differ"),
+    ),
+)
+def test_admin_ready_check_refuses_an_unusable_admin_password_before_any_command(
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, str],
+    match: str,
+) -> None:
+    runner = _admin_ready_runner(monkeypatch, b"t|0|2\n")
+
+    with pytest.raises(DeploymentContractError, match=match) as raised:
+        database_runtime.require_map_bootstrap_admin_ready(
+            _admin_runtime(),
+            resolved=_admin_ready_resolved(),
+            environment=_admin_ready_environment(**overrides),
+        )
+
+    runner.assert_not_called()
+    # 값은 거부 문구에 실리지 않는다 — 변수 이름만 말한다.
+    assert "SHARED_ADMIN_PASSWORD" in str(raised.value)
+    for value in overrides.values():
+        if value:
+            assert value not in str(raised.value)
+
+
+def test_admin_ready_check_derives_the_secret_from_the_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """admin password 변수는 이름 목록이 아니라 그 instance의 secret에서 온다 — 끊기면 거부한다."""
+
+    runner = _admin_ready_runner(monkeypatch, b"t|0|2\n")
+    resolved = _admin_ready_resolved()
+    services = resolved["services"]
+    assert isinstance(services, dict)
+    services["pg-map"]["secrets"] = []
+
+    with pytest.raises(DeploymentContractError, match="admin secret is not derivable"):
+        database_runtime.require_map_bootstrap_admin_ready(
+            _admin_runtime(),
+            resolved=resolved,
+            environment=_admin_ready_environment(),
+        )
+    runner.assert_not_called()
+
+
+def test_admin_ready_check_requires_the_s1_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner = _admin_ready_runner(monkeypatch, b"t|0|2\n")
+
+    for runtime in (_runtime("map_application"), _runtime("pinvi")):
+        with pytest.raises(DeploymentContractError, match="owned by the instance admin"):
+            database_runtime.require_map_bootstrap_admin_ready(
+                runtime,
+                resolved=_admin_ready_resolved(),
+                environment=_admin_ready_environment(),
+            )
+    runner.assert_not_called()

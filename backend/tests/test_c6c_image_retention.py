@@ -35,7 +35,6 @@ def _image(character: str) -> str:
 def _candidate_evidence(seed: str) -> MapApplication300CandidateEvidence:
     return MapApplication300CandidateEvidence(
         candidate_git_tree=seed * 40,
-        postgres_image_id=_image(seed),
         dagster_config_sha256=seed * 64,
     )
 

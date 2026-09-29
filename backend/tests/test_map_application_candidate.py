@@ -9,9 +9,13 @@ ADR-101 이전에는 이 모듈이 sealed receipt를 파싱하는 450줄짜리 �
 
 from __future__ import annotations
 
+from dataclasses import fields
+
 from kor_travel_docker_manager.services.map_application_candidate import (
-    POSTGRES_IMAGE_ID,
     MapApplicationCandidate,
+)
+from kor_travel_docker_manager.services.pinned_runtime_generation import (
+    MapApplication300CandidateEvidence,
 )
 
 _COMMIT = "1" * 40
@@ -43,13 +47,25 @@ def test_candidate_carries_the_build_and_observation_fields() -> None:
 
 
 def test_candidate_defaults_to_managers_own_fixed_constants() -> None:
-    """postgres/argv 값은 Manager 자신의 상수다 -- receipt가 준 적이 없었다."""
+    """argv 값은 Manager 자신의 상수다 -- receipt가 준 적이 없었다."""
 
     candidate = _candidate()
-    assert candidate.postgres_image_id == POSTGRES_IMAGE_ID
     assert candidate.webserver_argv[0] == "/usr/local/bin/dagster-webserver"
     assert candidate.daemon_argv[0] == "/usr/local/bin/dagster-daemon"
     assert candidate.storage_migration_argv == (
         "/usr/local/bin/ktm-dagster-storage",
         "migrate",
     )
+
+
+def test_candidate_evidence_has_no_postgres_image() -> None:
+    """ADR-53: Map DB는 공용 instance에 산다 — PostgreSQL 이미지는 후보도 증거도 아니다.
+
+    그 이미지는 Manager compose가 digest로 고정하고, 재구축은 instance를 readiness로만 본다.
+    후보에 이미지가 남아 있으면 재구축이 그것을 compose에 주입해(`…_POSTGRES_IMAGE_ID`) 쓰지 않는
+    값이 generation identity를 바꾼다.
+    """
+
+    for dataclass_type in (MapApplicationCandidate, MapApplication300CandidateEvidence):
+        names = {field.name for field in fields(dataclass_type)}
+        assert not {name for name in names if "postgres" in name}, dataclass_type

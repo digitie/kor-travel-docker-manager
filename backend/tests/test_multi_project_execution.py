@@ -504,14 +504,14 @@ def test_container_scoped_logs_translate_manager_ids_too(captured: _Capture) -> 
     """**컨테이너 id는 compose service 이름이 아니다.**
 
     첫 판은 외부 컨테이너만 번역하고 Manager 컨테이너는 id를 그대로 넘겼다 —
-    `kor-travel-map-postgresql`(서비스는 `kor-travel-map-postgres`)처럼 둘이 다른
+    `kor-travel-shared-postgresql`(서비스는 `kor-travel-shared-postgres`)처럼 둘이 다른
     이름 넷에서 `no such service`다. 선재 결함이지만 같은 함수의 한쪽 분기만 고쳐
     비대칭이 남아 있었다.
     """
 
-    ComposeService().logs("kor-travel-map-postgresql", tail=3)
+    ComposeService().logs("kor-travel-shared-postgresql", tail=3)
     command = captured.only["command"]
-    assert command[-1] == "kor-travel-map-postgres"
+    assert command[-1] == "kor-travel-shared-postgres"
 
 
 @pytest.mark.parametrize(

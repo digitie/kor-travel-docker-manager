@@ -22,10 +22,11 @@ from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MAP_APPLICATION_SCHEMA_SERVICE,
-    _MAP_POSTGRES_SERVICE,
     _MAP_RUNTIME_SERVICES,
     _PINVI_ADMIN_BOOTSTRAP_SERVICE,
     _PINVI_API_SERVICE,
+    MAP_BOOTSTRAP_ADMIN_USER_ENV,
+    MAP_BOOTSTRAP_PORT_ENV,
     C6cBuildProvenance,
     C6cDeploymentConfig,
     CandidateSystemBindSnapshot,
@@ -50,7 +51,6 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_c6c_operation_tokens,
     validate_compose_candidate_protected_values,
     validate_current_map_ui_auth_runtime,
-    validate_map_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
     validate_runtime_secret_isolation,
@@ -77,6 +77,7 @@ from kor_travel_docker_manager.services.database_runtime import (
     read_database_schema_revision,
     require_databases_resettable,
     require_map_application_database_convergible,
+    require_map_bootstrap_admin_ready,
     require_map_databases_isolatable,
     reset_databases_for_application_300,
     schema_revision_table_exists,
@@ -156,7 +157,6 @@ from kor_travel_docker_manager.services.yaml_strict import (
 )
 
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
-    "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
     _MAP_APPLICATION_SCHEMA_SERVICE,
     "kor-travel-map-dagster-storage-migrate",
@@ -179,9 +179,6 @@ _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
     "kor-travel-geo-api",
     "kor-travel-concierge-api",
 )
-#: 재구축이 health까지 띄우고 secret·이미지를 확인하는 PostgreSQL. 공용 instance는 다른
-#: 프로젝트도 쓰므로 여기 없다(`_start_pinned_runtime_databases`).
-_PINNED_RUNTIME_DATABASE_SERVICES = (_MAP_POSTGRES_SERVICE,)
 #: 명시 서비스의 `depends_on`까지 만들거나 다시 만들거나 시작할 수 있는 compose 명령. `--no-deps`가
 #: 없으면 R3 chokepoint가 그 의존성 closure를 범위에 넣는다. `--no-deps`를 받는 명령(up·run·
 #: restart·scale)과, 그 플래그 없이 의존성을 끌어오는 명령(create는 n150 Compose v5.2.0에 그
@@ -258,7 +255,6 @@ def rebuild_failure_stage(exc: BaseException) -> str | None:
     return stage if isinstance(stage, str) else None
 
 
-_MAP_APPLICATION_300_POSTGRES_REFERENCE = "postgis/postgis:16-3.5-alpine"
 _ROLE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 
 
@@ -2108,48 +2104,6 @@ def _inspect_local_image_id(image: str) -> str:
     return image_id
 
 
-def _resolve_map_postgres_image_id() -> str:
-    """참조 이미지를 pull-if-missing 뒤 content-addressed id로 관측한다."""
-
-    try:
-        completed = subprocess.run(
-            ["docker", "image", "inspect", "--format", "{{.Id}}", _MAP_APPLICATION_300_POSTGRES_REFERENCE],
-            cwd="/",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise DeploymentContractError(
-            "Map PostgreSQL candidate image cannot be inspected"
-        ) from exc
-    if completed.returncode != 0:
-        try:
-            pulled = subprocess.run(
-                ["docker", "pull", _MAP_APPLICATION_300_POSTGRES_REFERENCE],
-                cwd="/",
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                check=False,
-                timeout=900,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise DeploymentContractError(
-                "Map PostgreSQL candidate image is unavailable"
-            ) from exc
-        if pulled.returncode != 0:
-            raise DeploymentContractError(
-                "Map PostgreSQL candidate image is unavailable"
-                + command_output_tail("docker pull stderr", pulled.stderr)
-            )
-        return _inspect_local_image_id(_MAP_APPLICATION_300_POSTGRES_REFERENCE)
-    image_id = completed.stdout.decode("ascii", errors="replace").strip()
-    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
-        raise DeploymentContractError("Map PostgreSQL candidate image cannot be inspected")
-    return image_id
-
-
 def _load_application_300_candidate(
     *,
     sources: PinnedRuntimeSourceMaterialization,
@@ -2175,7 +2129,6 @@ def _load_application_300_candidate(
         field="head",
     )
     return MapApplicationCandidate(
-        postgres_image_id=_resolve_map_postgres_image_id(),
         candidate_commit=map_source.revision,
         candidate_git_tree=map_source.tree,
         api_image_id=api_image_id,
@@ -3968,14 +3921,16 @@ class ComposeService:
         *,
         transaction: ComposeTransactionSnapshot,
     ) -> None:
-        """재구축은 자기 전용 집합 밖의 PostgreSQL 서버 서비스를 바꾸지 않는다(R3 chokepoint).
+        """재구축은 PostgreSQL 서버 서비스를 **하나도** 바꾸지 않는다(R3 chokepoint, ADR-53).
 
-        공용 instance는 모든 tenant가 같이 쓴다. 그 컨테이너를 재구축이 멈추거나 다시 만들면
-        모든 tenant가 끊긴다. 그래서 재구축의 모든 compose 호출이 지나는 이 한 자리에서, 무엇을
-        바꾸는지 서비스 이름으로 말할 수 없는 mutation(명시 서비스 없음·해석 불가)을 거부하고,
-        명시 식별자 가운데 PostgreSQL 서버가 `_PINNED_RUNTIME_DATABASE_SERVICES` 밖에 있으면
-        거부한다. mutation 분류와 식별자는 기존 해석기(`_parse_compose_mutation`)가, PostgreSQL
-        서버 판정은 C6c(`postgres_server_services`)가 소유한다 — 이름 목록이 없다.
+        Map·PinVi DB는 모든 tenant가 같이 쓰는 공용 instance에 산다. 그 컨테이너를 재구축이
+        멈추거나 다시 만들면 모든 tenant가 끊긴다 — 재구축은 instance를 readiness로만 본다
+        (`_require_pinned_runtime_database_instances_ready`). 그래서 재구축의 모든 compose 호출이
+        지나는 이 한 자리에서, 무엇을 바꾸는지 서비스 이름으로 말할 수 없는 mutation(명시 서비스
+        없음·해석 불가)을 거부하고, 명시 식별자 가운데 PostgreSQL 서버가 있으면 거부한다. M1까지는
+        Map 전용 instance 하나가 예외였고, 그 예외가 사라져 울타리가 절대가 됐다. mutation 분류와
+        식별자는 기존 해석기(`_parse_compose_mutation`)가, PostgreSQL 서버 판정은
+        C6c(`postgres_server_services`)가 소유한다 — 이름 목록이 없다.
 
         **compose가 실제로 닿는 것을 센다.** 이름 붙은 서비스만 보면 `create pinvi-api`가
         통과하고, compose는 drift된 공용 instance를 의존성으로 다시 만든다(n150 실측). 그래서
@@ -4007,11 +3962,11 @@ class ComposeService:
             and "--no-deps" not in flags
         ):
             touched |= _compose_dependency_closure(transaction.resolved, touched)
-        foreign = sorted((postgres & touched) - set(_PINNED_RUNTIME_DATABASE_SERVICES))
+        foreign = sorted(postgres & touched)
         if foreign:
             raise DeploymentContractError(
-                "pinned runtime rebuild must not mutate a PostgreSQL service outside its "
-                f"dedicated set: {', '.join(foreign)}"
+                "pinned runtime rebuild must not mutate a PostgreSQL service: "
+                f"{', '.join(foreign)}"
             )
 
     @staticmethod
@@ -4640,13 +4595,12 @@ class ComposeService:
             # R4가 Map application DB에 CONNECT를 줄 login. 멈추기 전에 유도해 둔다.
             map_login = map_application_login(runtime_transaction.environment.effective)
             expected_images = self._deployed_images(candidate, companions)
-            # 수렴 판정과 identity 기준선은 **실제로 migration할 cluster**를 읽어야 한다.
-            # 그래서 두 PostgreSQL을 판정보다 먼저 frozen Compose에 맞춘다. 뒤로 미루면
-            # PGDATA·이미지가 바뀐 호스트에서 옛 컨테이너로 기준선을 통과한 뒤 전체 경로가
-            # 새 cluster로 다시 만들어 그것을 커밋했다(B2 적대 리뷰 2차).
-            self._start_pinned_runtime_databases(
-                runtime_transaction=runtime_transaction,
-                map_candidate=map_candidate,
+            # 수렴 판정과 identity 기준선은 **실제로 migration할 cluster**를 읽어야 한다. 그
+            # cluster는 공용 instance이고 재구축이 띄우거나 다시 만들지 않는다(R3) — 판정 전에
+            # frozen Compose의 그 컨테이너가 떠 있고 healthy인지만 본다.
+            self._require_pinned_runtime_database_instances_ready(
+                runtimes,
+                transaction=runtime_transaction,
             )
 
             if (
@@ -4697,12 +4651,25 @@ class ComposeService:
             # 전체 경로가 DB 앞에서 거부할 상태라면 런타임을 멈추기 **전에** 읽기만으로 거부한다.
             # 결박은 각 단계 안의 같은 판정이다 — 여기서는 멈춘 뒤의 거부를 앞당길 뿐이다.
             if restart is not None:
-                # `--restart`의 R2(이름·허용 소유자·Map 소유자 배타성).
+                # `--restart`의 R2(이름·허용 소유자·Map 소유자 배타성). 리셋 뒤에는 Map fresh
+                # bootstrap이 instance admin으로 돈다(S1).
                 require_databases_resettable(runtimes)
+                require_map_bootstrap_admin_ready(
+                    runtimes[0],
+                    resolved=runtime_transaction.resolved,
+                    environment=runtime_transaction.environment.effective,
+                )
             elif require_map_application_database_convergible(runtimes[0]) == "present":
                 # R4의 live 전제. 넘겨받은 app DB와 이미 있는 Dagster DB를 전체 경로는 R4 전에
                 # 바꾸지 않는다(없거나 bootstrap 전인 DB는 만든 뒤 R4가 판정한다).
                 require_map_databases_isolatable(runtimes[0], runtimes[1], login=map_login)
+            else:
+                # 앱 DB가 없거나 bootstrap 전이다 — role bootstrap이 instance admin으로 돈다(S1).
+                require_map_bootstrap_admin_ready(
+                    runtimes[0],
+                    resolved=runtime_transaction.resolved,
+                    environment=runtime_transaction.environment.effective,
+                )
 
             from kor_travel_docker_manager.services.runtime_execution_registry import (
                 trusted_manager_source_revision,
@@ -4799,55 +4766,25 @@ class ComposeService:
         except (DeploymentContractError, OSError):
             warnings.append("pinned runtime image retention could not be reconciled")
 
-    def _start_pinned_runtime_databases(
+    def _require_pinned_runtime_database_instances_ready(
         self,
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
         *,
-        runtime_transaction: ComposeTransactionSnapshot,
-        map_candidate: MapApplicationCandidate,
+        transaction: ComposeTransactionSnapshot,
     ) -> None:
-        """Map PostgreSQL을 frozen Compose로 health까지 띄우고 secret·이미지를 확인한다.
+        """세 DB가 사는 PostgreSQL instance가 떠 있고 healthy인지 **보기만** 한다(ADR-53).
 
-        ``up``은 설정이 같으면 무연산이고, 바뀌었으면(이미지·PGDATA·명령) 컨테이너를
-        다시 만든다 — 떠 있는 런타임 아래에서 DB가 한 번 재시작된다. 그 대가로 뒤따르는
-        identity 판정이 옛 컨테이너가 아니라 이번 배포가 쓸 cluster를 본다.
-
-        PinVi DB는 공용 instance(`kor-travel-shared-postgres`)에 있다. 그 instance는
-        다른 프로젝트도 쓰므로 이 경로가 다시 만들지 않는다(다른 모든 호출처럼
-        `--no-deps`). 2026-09-28까지는 여기서 옛 전용 instance(`pinvi-postgres`)를 함께
-        띄웠는데, 그것은 PinVi가 더 이상 접속하지 않는 롤백 사본이었다.
+        instance는 DSN 포트에서 유도했다(`database_runtimes_from_frozen_contract`). 공용
+        instance는 모든 tenant가 쓰므로 재구축이 `up`·재생성·재시작하지 않는다(R3) — `compose
+        ps`로 running·healthy·컨테이너 이름만 확인한다. 이미지·설정은 그 instance의 소유자
+        (Manager 설치·배포 창)가 맞춘다.
         """
 
-        postgres = _PINNED_RUNTIME_DATABASE_SERVICES
-        self._run_pinned_runtime_rebuild_compose(
-            [
-                "up",
-                "-d",
-                "--no-deps",
-                "--wait",
-                "--wait-timeout",
-                str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
-                *postgres,
-            ],
-            transaction=runtime_transaction,
-        )
-        postgres_records = self._require_services_ready(
-            postgres,
-            transaction=runtime_transaction,
+        self._require_services_ready(
+            tuple(dict.fromkeys(runtime.service_name for runtime in runtimes)),
+            transaction=transaction,
             frozen_recovery=True,
         )
-        validate_map_postgres_runtime_secret_isolation(
-            self._inspect_container_runtime_config(str(postgres_records[0]["Name"]))
-        )
-        if (
-            self._inspect_container_image_id(
-                str(postgres_records[0]["Name"]),
-                label="Map PostgreSQL",
-            )
-            != map_candidate.postgres_image_id
-        ):
-            raise DeploymentContractError(
-                "Map PostgreSQL runtime image differs from paired candidate"
-            )
 
     def _converge_committed_runtime(
         self,
@@ -4972,8 +4909,8 @@ class ComposeService:
             all_one_shot_containers_absent=True,
         )
 
-        # PostgreSQL은 판정 전에 이미 frozen Compose에 맞췄다. 여기서 다시 `up`하지 않는다 —
-        # 판정과 migration 사이에 cluster가 바뀔 자리를 만들지 않는다.
+        # PostgreSQL instance는 판정 전에 readiness만 봤다. 재구축은 그것을 띄우거나 다시 만들지
+        # 않는다(R3) — 판정과 migration 사이에 cluster가 바뀔 자리를 만들지 않는다.
         if restart:
             reset_databases_for_application_300(runtimes)
             # 지운 **뒤에** 기준선을 비우고 리셋을 표시한다. 리셋 전에 죽으면 DB는 그대로이므로
@@ -4984,6 +4921,10 @@ class ComposeService:
         create_database_if_absent(runtimes[2])
 
         # Map application DB: 없으면 만들고 role bootstrap, 이미 bootstrap됐으면 그대로.
+        # instance admin 이름·포트는 비밀이 아니다 — 앱 DB runtime에서 유도해 실행 시점 `-e`로
+        # 준다(compose가 공용 instance의 보간식을 두 번 적지 않게). admin password는 one-shot이
+        # 그 instance의 secret file에서 스스로 읽는다(ADR-53 S1) — Manager argv에도, 어느 Map
+        # 런타임에도 들어가지 않는다.
         ensure_map_application_database(
             runtimes[0],
             run_role_bootstrap=lambda: self._run_pinned_runtime_rebuild_compose(
@@ -4993,8 +4934,10 @@ class ComposeService:
                     "run",
                     "--rm",
                     "--no-deps",
-                    "--env",
-                    "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
+                    "-e",
+                    f"{MAP_BOOTSTRAP_ADMIN_USER_ENV}={runtimes[0].admin_name}",
+                    "-e",
+                    f"{MAP_BOOTSTRAP_PORT_ENV}={runtimes[0].port}",
                     "kor-travel-map-db-role-bootstrap",
                 ],
                 transaction=runtime_transaction,
@@ -5371,9 +5314,10 @@ class ComposeService:
                 )
         elif name in MANAGED_CONTAINERS:
             # **컨테이너 id는 compose service 이름이 아니다.** 첫 판은 외부 컨테이너만
-            # 번역하고 Manager 컨테이너는 id를 그대로 넘겼다 — `kor-travel-map-postgresql`
-            # 처럼 둘이 다른 이름 넷에서 `no such service`다(적대 리뷰 2026-09-18 B-F12,
-            # 선재 결함). 번역은 소속과 무관하므로 양쪽에 똑같이 한다.
+            # 번역하고 Manager 컨테이너는 id를 그대로 넘겼다 — `kor-travel-shared-postgresql`
+            # (서비스는 `kor-travel-shared-postgres`)처럼 둘이 다른 이름에서 `no such
+            # service`다(적대 리뷰 2026-09-18 B-F12, 선재 결함). 번역은 소속과 무관하므로
+            # 양쪽에 똑같이 한다.
             external = external_project_for_container(name)
             services = [container_id_to_compose_service(name)]
         else:

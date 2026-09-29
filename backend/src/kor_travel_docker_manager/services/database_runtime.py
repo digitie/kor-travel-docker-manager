@@ -4,6 +4,9 @@
 유도한다. 이 모듈은 백업·복원·진단 상태를 알지 못한다. v5 rebuild는 서비스가
 모두 멈춘 뒤 이 경계로 세 DB를 파기하고, 각 이미지의 bootstrap/migration으로
 데이터를 다시 만든다.
+
+세 DB가 어느 PostgreSQL instance에 사는지는 이름이 아니라 **DSN 포트**에서 유도한다
+(ADR-53): 그 포트를 `-p`로 듣는 PostgreSQL 서버 서비스가 정확히 하나여야 한다.
 """
 
 from __future__ import annotations
@@ -15,7 +18,13 @@ from dataclasses import dataclass
 from typing import Final, Literal
 from urllib.parse import unquote, urlsplit
 
-from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.c6c_deployment import (
+    _PINVI_API_SERVICE,
+    _PINVI_DATABASE_URL_ENV,
+    DeploymentContractError,
+    postgres_admin_secret,
+    postgres_server_services_on_port,
+)
 from kor_travel_docker_manager.services.errors import command_output_tail
 
 DatabaseRole = Literal["map_application", "map_dagster", "pinvi"]
@@ -24,21 +33,13 @@ MapApplicationEnsureOutcome = Literal["created", "bootstrapped", "present"]
 _DATABASE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _CONTAINER_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
 _SCHEMA_REVISION = re.compile(r"^[0-9a-z][0-9a-z_.-]{0,127}$")
-_ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str, str]] = {
-    "map_application": (
-        "KOR_TRAVEL_MAP_POSTGRES_DB",
-        "kor_travel_map",
-        "KOR_TRAVEL_MAP_POSTGRES_USER",
-        "kor_travel_map",
-        "kor-travel-map-postgres",
-    ),
-    "map_dagster": (
-        "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB",
-        "kor_travel_map_dagster",
-        "KOR_TRAVEL_MAP_POSTGRES_USER",
-        "kor_travel_map",
-        "kor-travel-map-postgres",
-    ),
+#: role마다 (DB 이름 env, 기본값, 소유자 env·기본값). 소유자가 ``None``이면 **그 instance의
+#: admin**이다(ADR-53 S1) — Map fresh bootstrap은 instance의 기존 admin으로 돌고, bootstrap이
+#: 끝나면 앱 DB를 schema owner에게 넘긴다. 전용 Map superuser(`KOR_TRAVEL_MAP_POSTGRES_USER`)는
+#: 퇴역했다.
+_ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, tuple[str, str] | None]] = {
+    "map_application": ("KOR_TRAVEL_MAP_POSTGRES_DB", "kor_travel_map", None),
+    "map_dagster": ("KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB", "kor_travel_map_dagster", None),
     # ADR-46: PinVi의 application DB는 공용 제어 평면 instance에 있고, **소유자는
     # 그 project의 app role이다** — geo/concierge/weather와 같은 모양이다.
     #
@@ -46,13 +47,7 @@ _ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str, str]] = {
     # role 모델(M05)이 "runtime role은 database owner일 수 없다"를 세 곳에서 강제했기
     # 때문이다. 그 모델을 폐기하면서 그 제약도 함께 사라졌다 — 이제 role 하나가 자기
     # database를 소유하고, 그래서 migration이 별도 권한 창 없이 DDL을 실행한다.
-    "pinvi": (
-        "PINVI_POSTGRES_DB",
-        "pinvi",
-        "PINVI_APP_DB_USER",
-        "pinvi_app",
-        "kor-travel-shared-postgres",
-    ),
+    "pinvi": ("PINVI_POSTGRES_DB", "pinvi", ("PINVI_APP_DB_USER", "pinvi_app")),
 }
 
 #: **절대 파기할 수 없는 database 이름.**
@@ -74,11 +69,6 @@ _ROLE_CONFIG: dict[DatabaseRole, tuple[str, str, str, str, str]] = {
 #: ensure 경로가 그것을 "bootstrap 전에 죽은 Map DB"로 읽고 role bootstrap을 돌린다.
 #: 지금 그것을 막는 것은 Map bootstrap 스크립트의 fresh 검사 하나뿐이었다.
 _RESERVED_DATABASES: Final = frozenset({"postgres", "template0", "template1"})
-_ROLE_PORT_CONFIG: dict[DatabaseRole, tuple[str, int]] = {
-    "map_application": ("KOR_TRAVEL_MAP_POSTGRES_PORT", 12700),
-    "map_dagster": ("KOR_TRAVEL_MAP_POSTGRES_PORT", 12700),
-    "pinvi": ("KOR_TRAVEL_SHARED_DB_PORT", 11000),
-}
 _SCHEMA_REVISION_LOCATION: dict[DatabaseRole, tuple[str, str]] = {
     "map_application": ("public", "alembic_version"),
     "map_dagster": ("public", "alembic_version"),
@@ -92,6 +82,8 @@ class DatabaseRuntime:
     """동결된 Compose 계약에서 얻은 하나의 PostgreSQL database identity."""
 
     role: DatabaseRole
+    #: DB가 사는 PostgreSQL 서버의 compose 서비스 — readiness를 이 이름으로 본다.
+    service_name: str
     container_name: str
     port: int
     database_name: str
@@ -143,49 +135,116 @@ class _DagsterMetadataRolePreflight:
     shared_dependency_count: int
 
 
+@dataclass(frozen=True)
+class _PostgresInstance:
+    """DSN 포트에서 유도한 PostgreSQL 서버 하나(서비스·컨테이너·admin·포트)."""
+
+    service_name: str
+    container_name: str
+    admin_name: str
+    port: int
+
+
+def _dsn_authority(dsn: object, *, label: str) -> tuple[str, int]:
+    """DSN의 (host, port). host는 `127.0.0.1`이어야 한다 — 모든 instance가 loopback만 듣는다."""
+
+    try:
+        parsed = urlsplit(dsn if isinstance(dsn, str) else "")
+        host, port = parsed.hostname, parsed.port
+    except ValueError as exc:
+        raise DeploymentContractError(f"{label} database DSN authority is invalid") from exc
+    if host != "127.0.0.1" or port is None or not 1 <= port <= 65535:
+        raise DeploymentContractError(f"{label} database DSN authority is invalid")
+    return host, port
+
+
+def _instance_for_dsn(
+    resolved: Mapping[str, object],
+    dsn: object,
+    *,
+    label: str,
+) -> _PostgresInstance:
+    """DSN이 가리키는 PostgreSQL instance를 frozen resolved 문서에서 유도한다(ADR-53).
+
+    그 포트를 `-p`로 듣는 PostgreSQL 서버 서비스(C6c `postgres_server_services_on_port` — 서버
+    판정과 명령 파서가 C6c의 것 하나다)가 **정확히 하나**여야 한다. 없으면 DSN이 이 compose 밖을
+    가리키고, 둘이면 어느 cluster인지 말할 수 없다. 컨테이너 이름과 admin(`POSTGRES_USER`)은 그
+    서비스에서 읽는다 — 이름·포트 리터럴이 없다.
+    """
+
+    _host, port = _dsn_authority(dsn, label=label)
+    matches = postgres_server_services_on_port(resolved, port)
+    if len(matches) != 1:
+        raise DeploymentContractError(
+            f"{label} database DSN port must be served by exactly one PostgreSQL "
+            f"service (found {len(matches)})"
+        )
+    services = resolved.get("services")
+    postgres = services.get(matches[0]) if isinstance(services, Mapping) else None
+    container_name = postgres.get("container_name") if isinstance(postgres, Mapping) else None
+    if not isinstance(container_name, str) or not _CONTAINER_NAME.fullmatch(container_name):
+        raise DeploymentContractError(f"{label} PostgreSQL container identity is invalid")
+    postgres_environment = postgres.get("environment") if isinstance(postgres, Mapping) else None
+    admin_name = (
+        postgres_environment.get("POSTGRES_USER")
+        if isinstance(postgres_environment, Mapping)
+        else None
+    )
+    if not isinstance(admin_name, str) or not _DATABASE_IDENTIFIER.fullmatch(admin_name):
+        raise DeploymentContractError(f"{label} PostgreSQL admin role is invalid")
+    return _PostgresInstance(
+        service_name=matches[0],
+        container_name=container_name,
+        admin_name=admin_name,
+        port=port,
+    )
+
+
 def database_runtimes_from_frozen_contract(
     *,
     resolved: Mapping[str, object],
     environment: Mapping[str, str],
 ) -> tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime]:
-    """동결된 resolved Compose와 env에서 v5의 canonical 세 DB를 유도한다."""
+    """동결된 resolved Compose와 env에서 v5의 canonical 세 DB를 유도한다.
+
+    instance는 DSN에서 온다 — Map 둘은 `KOR_TRAVEL_MAP_PG_DSN`(Dagster URL은 같은 authority여야
+    한다), PinVi는 `pinvi-api`의 resolved `PINVI_DATABASE_URL`이다. Map 소유자는 그 instance의
+    admin이다(S1). 세 DB가 한 instance에 있어도 된다 — 이름이 서로 다르기만 하면 된다.
+    """
 
     services = resolved.get("services")
     if not isinstance(services, Mapping):
         raise DeploymentContractError("pinned runtime Compose services are invalid")
 
-    runtimes: list[DatabaseRuntime] = []
-    for role, (
-        database_env,
-        database_default,
-        owner_env,
-        owner_default,
-        postgres_service,
-    ) in _ROLE_CONFIG.items():
-        postgres = services.get(postgres_service)
-        container_name = postgres.get("container_name") if isinstance(postgres, Mapping) else None
-        if not isinstance(container_name, str) or not _CONTAINER_NAME.fullmatch(container_name):
-            raise DeploymentContractError(
-                f"{role} PostgreSQL container identity is invalid"
-            )
-        postgres_environment = postgres.get("environment") if isinstance(postgres, Mapping) else None
-        admin_name = (
-            postgres_environment.get("POSTGRES_USER")
-            if isinstance(postgres_environment, Mapping)
-            else None
+    map_dsn = environment.get("KOR_TRAVEL_MAP_PG_DSN", "")
+    if _dsn_authority(
+        environment.get("KOR_TRAVEL_MAP_DAGSTER_PG_URL", ""), label="Map Dagster"
+    ) != _dsn_authority(map_dsn, label="Map"):
+        raise DeploymentContractError(
+            "Map application and Dagster DSNs must share one PostgreSQL authority"
         )
-        if not isinstance(admin_name, str) or not _DATABASE_IDENTIFIER.fullmatch(admin_name):
-            raise DeploymentContractError(f"{role} PostgreSQL admin role is invalid")
-        port_env, port_default = _ROLE_PORT_CONFIG[role]
-        port_text = environment.get(port_env, str(port_default))
-        try:
-            port = int(port_text)
-        except (TypeError, ValueError) as exc:
-            raise DeploymentContractError(f"{role} PostgreSQL port is invalid") from exc
-        if not 1 <= port <= 65535:
-            raise DeploymentContractError(f"{role} PostgreSQL port is invalid")
+    pinvi_api = services.get(_PINVI_API_SERVICE)
+    pinvi_environment = pinvi_api.get("environment") if isinstance(pinvi_api, Mapping) else None
+    pinvi_dsn = (
+        pinvi_environment.get(_PINVI_DATABASE_URL_ENV)
+        if isinstance(pinvi_environment, Mapping)
+        else None
+    )
+    instances: dict[DatabaseRole, _PostgresInstance] = {
+        "map_application": _instance_for_dsn(resolved, map_dsn, label="Map"),
+        "pinvi": _instance_for_dsn(resolved, pinvi_dsn, label="PinVi"),
+    }
+    instances["map_dagster"] = instances["map_application"]
+
+    runtimes: list[DatabaseRuntime] = []
+    for role, (database_env, database_default, owner_config) in _ROLE_CONFIG.items():
+        instance = instances[role]
         database_name = environment.get(database_env, database_default)
-        owner_name = environment.get(owner_env, owner_default)
+        owner_name = (
+            instance.admin_name
+            if owner_config is None
+            else environment.get(owner_config[0], owner_config[1])
+        )
         if not _DATABASE_IDENTIFIER.fullmatch(database_name):
             raise DeploymentContractError(f"{role} database name is invalid")
         if not _DATABASE_IDENTIFIER.fullmatch(owner_name):
@@ -199,22 +258,14 @@ def database_runtimes_from_frozen_contract(
         runtimes.append(
             DatabaseRuntime(
                 role=role,
-                container_name=container_name,
-                port=port,
+                service_name=instance.service_name,
+                container_name=instance.container_name,
+                port=instance.port,
                 database_name=database_name,
                 owner_name=owner_name,
-                admin_name=admin_name,
+                admin_name=instance.admin_name,
                 additional_owner_names=additional_owner_names,
             )
-        )
-    map_application, map_dagster, pinvi = runtimes
-    if map_application.container_name != map_dagster.container_name:
-        raise DeploymentContractError(
-            "Map application and Dagster databases must share the frozen PostgreSQL container"
-        )
-    if pinvi.container_name == map_application.container_name:
-        raise DeploymentContractError(
-            "PinVi database must use a distinct frozen PostgreSQL container"
         )
     if len({runtime.database_name for runtime in runtimes}) != len(runtimes):
         raise DeploymentContractError(
@@ -448,6 +499,100 @@ def require_map_application_database_convergible(
     return "unbootstrapped"
 
 
+#: Map `scripts/database-credential-preflight.sh`가 bootstrap password에 요구하는 모양의 거울.
+_MAP_BOOTSTRAP_PASSWORD = re.compile(r"^[A-Za-z0-9._~-]{32,256}$")
+#: Map fresh bootstrap이 instance에 요구하는 extension(Map `postgres-role-bootstrap.sh`).
+_MAP_BOOTSTRAP_EXTENSIONS: Final = ("postgis", "pg_prewarm")
+
+
+def require_map_bootstrap_admin_ready(
+    runtime: DatabaseRuntime,
+    *,
+    resolved: Mapping[str, object],
+    environment: Mapping[str, str],
+) -> None:
+    """Map fresh bootstrap이 instance admin으로 돌 수 있는지 **읽기만으로** 먼저 판정한다(ADR-53 S1).
+
+    bootstrap one-shot은 Map·PinVi 런타임을 멈춘 **뒤에** 돈다. S1 고유의 실패(admin이 superuser가
+    아니다, 거부될 role setting이 있다, extension이 없다, password 모양이 틀렸다)가 그때야 나면
+    pair가 내려간 채 남는다. 그래서 bootstrap이 돌 때(앱 DB가 없거나 bootstrap 전이거나
+    `--restart`) 멈추기 전에 한 번 본다:
+
+    - socket으로 붙은 admin(`current_user`)이 superuser다.
+    - database 0에 role 0·`current_user`·`ktm\\_%` role의 `pg_db_role_setting` 행이 없다.
+    - `postgis`·`pg_prewarm`이 `pg_available_extensions`에 있다.
+    - instance admin password(그 instance의 secret이 가리키는 `.env` 변수에서 읽는다)가 32–256자의
+      URI-unreserved 문자이고 Map service·Dagster metadata password와 다르다. 비교만 한다 —
+      값은 어디에도 싣지 않는다.
+
+    Map의 스크립트가 여전히 정본이다. 이것은 그 규칙을 **멈추기 전에** 비출 뿐이고, 스크립트가
+    더 엄격해지면 one-shot이 오늘처럼 거부한다.
+    """
+
+    _validate_runtime(runtime)
+    if runtime.role != "map_application" or runtime.owner_name != runtime.admin_name:
+        raise DeploymentContractError("Map bootstrap runtime must be owned by the instance admin")
+    secret = postgres_admin_secret(resolved, runtime.service_name)
+    password = environment.get(secret.environment, "")
+    if not _MAP_BOOTSTRAP_PASSWORD.fullmatch(password):
+        raise DeploymentContractError(
+            f"instance admin password ({secret.environment}) must be 32..256 URI-unreserved "
+            "characters for the Map bootstrap"
+        )
+    if password in {
+        environment.get("KOR_TRAVEL_MAP_SERVICE_PASSWORD"),
+        environment.get("KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"),
+    }:
+        raise DeploymentContractError(
+            f"instance admin password ({secret.environment}) must differ from the Map service "
+            "and Dagster metadata passwords"
+        )
+    extensions = ", ".join(f"'{name}'" for name in _MAP_BOOTSTRAP_EXTENSIONS)
+    output = _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--tuples-only",
+            "--no-align",
+            "--dbname",
+            "postgres",
+            "--command",
+            (
+                "SELECT "
+                "(SELECT role.rolsuper FROM pg_catalog.pg_roles AS role "
+                "WHERE role.rolname = current_user), "
+                "(SELECT count(*)::bigint FROM pg_catalog.pg_db_role_setting AS setting_row "
+                "WHERE setting_row.setdatabase = 0 AND (setting_row.setrole = 0 "
+                "OR setting_row.setrole IN (SELECT role.oid FROM pg_catalog.pg_roles AS role "
+                "WHERE role.rolname = current_user OR role.rolname LIKE 'ktm\\_%' ESCAPE '\\'))), "
+                "(SELECT count(DISTINCT extension.name)::bigint "
+                "FROM pg_catalog.pg_available_extensions AS extension "
+                f"WHERE extension.name IN ({extensions}))"
+            ),
+        ],
+        label="Map bootstrap admin readiness",
+    ).decode("ascii").strip()
+    fields = output.split("|") if len(output.splitlines()) == 1 else []
+    if len(fields) != 3:
+        raise DeploymentContractError("Map bootstrap admin readiness output is invalid")
+    if not _parse_psql_bool(fields[0], "Map bootstrap admin superuser"):
+        raise DeploymentContractError(
+            "the instance admin must be a superuser for the Map bootstrap"
+        )
+    if _parse_non_negative_int(fields[1], "Map bootstrap role settings") != 0:
+        raise DeploymentContractError(
+            "the instance has cluster-wide role settings the Map bootstrap refuses "
+            "(ALTER ROLE ALL/<admin>/ktm_* SET)"
+        )
+    if _parse_non_negative_int(fields[2], "Map bootstrap extensions") != len(
+        _MAP_BOOTSTRAP_EXTENSIONS
+    ):
+        raise DeploymentContractError(
+            "the instance lacks an extension the Map bootstrap requires "
+            f"({', '.join(_MAP_BOOTSTRAP_EXTENSIONS)})"
+        )
+
+
 def create_database_if_absent(runtime: DatabaseRuntime) -> bool:
     """DB가 없을 때만 frozen 계약의 소유자로 만든다(PinVi는 ``template0``). 만들었으면 True.
 
@@ -612,7 +757,8 @@ def _map_isolation_metadata_user(
     _validate_runtime(dagster)
     if app.role != "map_application" or dagster.role != "map_dagster":
         raise DeploymentContractError("Map database isolation roles are invalid")
-    if (app.container_name, app.port, app.admin_name) != (
+    if (app.service_name, app.container_name, app.port, app.admin_name) != (
+        dagster.service_name,
         dagster.container_name,
         dagster.port,
         dagster.admin_name,
@@ -1305,6 +1451,8 @@ def _permitted_existing_owners(runtime: DatabaseRuntime) -> frozenset[str]:
 def _validate_runtime(runtime: DatabaseRuntime) -> None:
     if runtime.role not in _ROLE_CONFIG:
         raise DeploymentContractError("pinned runtime database role is invalid")
+    if not _CONTAINER_NAME.fullmatch(runtime.service_name):
+        raise DeploymentContractError("pinned runtime database service is invalid")
     if not _CONTAINER_NAME.fullmatch(runtime.container_name):
         raise DeploymentContractError("pinned runtime database container is invalid")
     if not 1 <= runtime.port <= 65535:

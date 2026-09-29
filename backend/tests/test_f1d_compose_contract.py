@@ -33,13 +33,9 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     derive_curation_service_principal_environment,
     validate_compose_candidate_protected_values,
     validate_concierge_ui_canonical_compose_boundary,
-    validate_map_postgres_runtime_secret_isolation,
     validate_resolved_c6c_build_provenance,
     validate_resolved_compose_candidate_protected_values,
     validate_runtime_secret_isolation,
-)
-from kor_travel_docker_manager.services.compose_references import (
-    assert_protected_references_are_derived,
 )
 from kor_travel_docker_manager.services.compose_service import (
     ComposeEnvFileIdentity,
@@ -78,7 +74,6 @@ _MAP_RUNTIME_SERVICES = (
     "kor-travel-map-dagster-daemon",
 )
 _MAP_DATABASE_ONESHOT_SERVICES = (
-    "kor-travel-map-dagster-db-init",
     "kor-travel-map-db-role-bootstrap",
     "kor-travel-map-application-schema",
     "kor-travel-map-dagster-storage-migrate",
@@ -94,7 +89,6 @@ _PINVI_BOOTSTRAP_MAP_ENVIRONMENT = frozenset(
 _FEATURE_CREATE_TOKEN = "manual-feature-create-contract-token-0000"
 _MAP_API_IMAGE_ID = f"sha256:{'1' * 64}"
 _MAP_DAGSTER_IMAGE_ID = f"sha256:{'2' * 64}"
-_MAP_POSTGRES_IMAGE_ID = f"sha256:{'3' * 64}"
 
 
 def _runtime_secret_config() -> SimpleNamespace:
@@ -281,42 +275,21 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
         "KOR_TRAVEL_MAP_API_IMAGE": _MAP_API_IMAGE_ID,
         "KOR_TRAVEL_MAP_DAGSTER_IMAGE": _MAP_DAGSTER_IMAGE_ID,
-        "KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID": _MAP_POSTGRES_IMAGE_ID,
         "KOR_TRAVEL_MAP_DAGSTER_STORAGE_PAIRED_RECEIPT_SHA256": "4" * 64,
         "KOR_TRAVEL_MAP_POSTGRES_DB": "map_contract",
         "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": "map_contract_dagster",
-        "KOR_TRAVEL_MAP_POSTGRES_USER": "map_contract_admin",
-        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD": "map-contract-postgres-password",
-        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN": (
-            "postgresql://map_contract_admin:map-contract-postgres-password@"
-            "127.0.0.1:12700/map_contract"
-        ),
-        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD": "map-contract-migrator-password",
-        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD": "map-contract-api-password",
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD": "map-contract-dagster-password",
+        # ADR-53: Map DB는 공용 instance에 산다 — DSN 포트는 그 instance의 `-p`(기본 11000)다.
+        # Map 전용 superuser·bootstrap DSN·ADR-100 superset 키는 없다(S1, D10).
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_contract_dagster",
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "map-contract-dagster-metadata-password",
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": (
-            "postgresql+asyncpg://ktm_feature_migrator:map-contract-migrator-password@"
-            "127.0.0.1:12700/map_contract"
-        ),
-        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN": (
-            "postgresql+asyncpg://ktm_feature_api_runtime:map-contract-api-password@"
-            "127.0.0.1:12700/map_contract"
-        ),
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (
-            "postgresql+asyncpg://ktm_feature_dagster_runtime:map-contract-dagster-password@"
-            "127.0.0.1:12700/map_contract"
-        ),
-        # ADR-100 superset window — the collapsed pair the Map bootstrap now requires.
         "KOR_TRAVEL_MAP_SERVICE_PASSWORD": "map-contract-service-password",
         "KOR_TRAVEL_MAP_PG_DSN": (
             "postgresql+asyncpg://ktm_feature_service:map-contract-service-password@"
-            "127.0.0.1:12700/map_contract"
+            "127.0.0.1:11000/map_contract"
         ),
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
             "postgresql://map_contract_dagster:map-contract-dagster-metadata-password@"
-            "127.0.0.1:12700/map_contract_dagster"
+            "127.0.0.1:11000/map_contract_dagster"
         ),
         "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH": ("pbkdf2_sha256$100000$test-salt$test-digest"),
         "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME": "admin",
@@ -365,7 +338,6 @@ def _map_application_candidate(
         candidate_git_tree=map_source.tree,
         api_image_id=_MAP_API_IMAGE_ID,
         dagster_image_id=_MAP_DAGSTER_IMAGE_ID,
-        postgres_image_id=_MAP_POSTGRES_IMAGE_ID,
         dagster_config_sha256="b" * 64,
         application_head="300",
     )
@@ -404,17 +376,12 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
 
     fragment: dict[str, object] = {"services": services}
     if (
-        "kor-travel-map-postgres" in services
-        or "kor-travel-shared-postgres" in services
+        "kor-travel-shared-postgres" in services
         or "kor-travel-shared-db-init-pinvi" in services
     ):
         source_secrets = _source_compose().get("secrets")
         assert isinstance(source_secrets, dict)
         fragment["secrets"] = {}
-        if "kor-travel-map-postgres" in services:
-            fragment["secrets"]["kor-travel-map-postgres-password"] = deepcopy(
-                source_secrets["kor-travel-map-postgres-password"]
-            )
         if "kor-travel-shared-postgres" in services:
             fragment["secrets"]["kor-travel-shared-postgres-password"] = deepcopy(
                 source_secrets["kor-travel-shared-postgres-password"]
@@ -601,23 +568,6 @@ def test_concierge_ui_canonical_contract_matches_raw_and_resolved_compose() -> N
         )
 
 
-def test_map_dagster_db_init_passes_conninfo_as_psql_dbname() -> None:
-    service = _source_compose()["services"]["kor-travel-map-dagster-db-init"]
-    assert isinstance(service, dict)
-    command = service["command"]
-    assert isinstance(command, list)
-    assert len(command) == 1
-    script = command[0]
-    assert isinstance(script, str)
-    assert (
-        'psql --dbname "$$KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN" '
-        "--set ON_ERROR_STOP=1"
-    ) in script
-    assert (
-        'psql "$$KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN" --dbname postgres'
-    ) not in script
-
-
 def test_resolved_map_dagster_services_require_candidate_storage_migration() -> None:
     resolved = _resolved_compose(
         "kor-travel-map-api",
@@ -639,10 +589,10 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
         "DAGSTER_HOME": "/opt/dagster/dagster_home",
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
             "postgresql://map_contract_dagster:map-contract-dagster-metadata-password@"
-            "127.0.0.1:12700/map_contract_dagster"
+            "127.0.0.1:11000/map_contract_dagster"
         ),
     }
-    assert migration["depends_on"]["kor-travel-map-postgres"]["condition"] == (
+    assert migration["depends_on"]["kor-travel-shared-postgres"]["condition"] == (
         "service_healthy"
     )
     assert migration["extra_hosts"] == ["host.docker.internal=host-gateway"]
@@ -735,7 +685,11 @@ def _assert_map_permit_is_gone(
         f"compose만 {sorted(binds - allowed)}, allowlist만 {sorted(allowed - binds)}"
     )
     # 대조가 항진이 아니게 — allowlist에 오른 Map bind를 실제로 봤어야 한다.
-    assert ("kor-travel-map-postgres", "/var/lib/postgresql/data", False) in binds
+    assert (
+        "kor-travel-map-db-role-bootstrap",
+        "/usr/local/bin/postgres-role-bootstrap",
+        True,
+    ) in binds
 
 
 def test_map_services_carry_no_dagster_storage_permit_in_source_compose() -> None:
@@ -1091,7 +1045,7 @@ def _bootstrap_candidate(tmp_path: Path) -> tuple[dict[str, object], dict[str, s
     root_env = tmp_path / ".env"
     root_env.write_text("\n", encoding="utf-8")
     candidate = _compose_fragment(
-        "kor-travel-map-postgres",
+        "kor-travel-shared-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
@@ -1203,7 +1157,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             environment=environment,
         )
     resolved = _resolved_compose(
-        "kor-travel-map-postgres",
+        "kor-travel-shared-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
@@ -1299,7 +1253,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         == raw_snapshots
     )
 
-    for leaked_password in ("wrong-password", environment["KOR_TRAVEL_MAP_POSTGRES_PASSWORD"]):
+    for leaked_password in ("wrong-password", environment["KOR_TRAVEL_SHARED_POSTGRES_PASSWORD"]):
         leaked = deepcopy(resolved)
         leaked_services = leaked["services"]
         assert isinstance(leaked_services, dict)
@@ -1350,9 +1304,11 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
             "target": "unexpected-root-password-copy",
         }
     ]
+    # ADR-53: 이 거부의 주인은 이제 모든 서버의 admin secret에서 유도하는 전역 규칙이다 —
+    # 파생 보호 참조 규칙(`… -> KOR_TRAVEL_SHARED_POSTGRES_PASSWORD`)보다 앞에 선다.
     with pytest.raises(
         DeploymentContractError,
-        match="pinvi-api.secrets -> KOR_TRAVEL_SHARED_POSTGRES_PASSWORD",
+        match="admin secret of PostgreSQL instance kor-travel-shared-postgres .*: pinvi-api",
     ):
         validate_compose_candidate_protected_values(
             root_secret_leak,
@@ -1405,18 +1361,14 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
 
     services = resolved["services"]
     assert isinstance(services, dict)
-    map_postgres_environment = services["kor-travel-map-postgres"]["environment"]
-    assert isinstance(map_postgres_environment, dict)
-    assert map_postgres_environment["POSTGRES_PASSWORD_FILE"] == (
-        "/run/secrets/kor-travel-map-postgres-password"
-    )
-    assert "POSTGRES_PASSWORD" not in map_postgres_environment
-    assert services["kor-travel-map-postgres"]["secrets"] == [
+    # ADR-53 S1: Map bootstrap one-shot이 공용 instance의 admin secret을 파일로 받는다.
+    assert services["kor-travel-map-db-role-bootstrap"]["secrets"] == [
         {
-            "source": "kor-travel-map-postgres-password",
-            "target": "kor-travel-map-postgres-password",
+            "source": "kor-travel-shared-postgres-password",
+            "target": "/run/secrets/kor-travel-shared-postgres-password",
         }
     ]
+    assert services["kor-travel-map-db-role-bootstrap"]["entrypoint"] == ["/bin/sh", "-ec"]
     bootstrap_environment = services["pinvi-admin-bootstrap"]["environment"]
     assert isinstance(bootstrap_environment, dict)
     assert _PINVI_BOOTSTRAP_MAP_ENVIRONMENT.issubset(bootstrap_environment)
@@ -1439,33 +1391,31 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
     assert isinstance(map_dagster_environment, dict)
     assert isinstance(map_bootstrap_environment, dict)
     assert isinstance(map_schema_environment, dict)
-    assert "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN" not in map_api_environment
-    assert "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN" in map_api_environment
-    assert "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN" not in map_api_environment
-    assert {
-        "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
-    }.issubset(map_dagster_environment)
-    assert not {
+    # D10: ADR-100 superset 창을 닫았다 — 세 퇴역 DSN·password는 어느 Map 서비스에도 없다.
+    retired = {
         "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
-        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
-        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD",
-    }.intersection(map_api_environment | map_dagster_environment)
-    assert map_bootstrap_environment["KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_ENABLED"] == "true"
-    assert {
-        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+        "KOR_TRAVEL_MAP_POSTGRES_USER",
+        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
         "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
         "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
         "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
         "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
-        # ADR-100: the bootstrap one-shot cannot run without these two.
-        "KOR_TRAVEL_MAP_SERVICE_PASSWORD",
-        "KOR_TRAVEL_MAP_PG_DSN",
-    }.issubset(map_bootstrap_environment)
+    }
+    assert "KOR_TRAVEL_MAP_DAGSTER_PG_URL" in map_dagster_environment
+    assert not retired.intersection(
+        map_api_environment | map_dagster_environment | map_bootstrap_environment
+    )
+    assert "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD" not in (
+        map_api_environment | map_dagster_environment
+    )
+    assert "KTDM_MAP_BOOTSTRAP_PGPORT" not in map_bootstrap_environment
+    assert map_bootstrap_environment["KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_ENABLED"] == "true"
+    # ADR-100: the bootstrap one-shot cannot run without these two.
+    assert {"KOR_TRAVEL_MAP_SERVICE_PASSWORD", "KOR_TRAVEL_MAP_PG_DSN"}.issubset(
+        map_bootstrap_environment
+    )
     # ADR-101: root migration과 finalize 두 one-shot이 하나가 됐다. 이 계약은 그
     # 하나가 **정확히 네 키**만 받는다고 적는다 — 프로파일, 이미지 신원, 단일 LOGIN의
     # DSN, 그리고 migration 전용 schema-owner 스위치. `KOR_TRAVEL_MAP_MIGRATOR_PG_DSN`이
@@ -1475,7 +1425,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         "KOR_TRAVEL_MAP_APPLICATION_SCHEMA_IMAGE_ID": f"sha256:{'1' * 64}",
         "KOR_TRAVEL_MAP_PG_DSN": (
             "postgresql+asyncpg://ktm_feature_service:map-contract-service-password@"
-            "127.0.0.1:12700/map_contract"
+            "127.0.0.1:11000/map_contract"
         ),
         "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE": "true",
     }
@@ -1493,7 +1443,7 @@ def test_map_geo_key_cannot_leak_outside_exact_runtime_wiring(
     leaked_name: str,
 ) -> None:
     candidate = _compose_fragment(
-        "kor-travel-map-postgres",
+        "kor-travel-shared-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
@@ -1529,182 +1479,156 @@ def test_map_geo_key_cannot_leak_outside_exact_runtime_wiring(
         )
 
 
-# resolved 단계는 raw 단계가 설치된 릴리스 compose와 대조한 참조를 다시 증명하지 않는다(ADR-51 결정 3·5).
-@pytest.mark.parametrize("resolved_candidate", (False,))
-def test_c6c_rejects_map_postgres_password_secret_extra_consumer(
-    resolved_candidate: bool,
-    tmp_path: Path,
-) -> None:
-    """initial-superuser secret file은 PostgreSQL entrypoint만 읽을 수 있다."""
+def test_c6c_rejects_the_instance_admin_secret_on_a_map_runtime(tmp_path: Path) -> None:
+    """cluster admin secret file은 그 instance와 one-shot만 읽는다(ADR-53, 파생 규칙).
 
-    service_names = (
-        "kor-travel-map-postgres",
-        "kor-travel-map-api",
-        "kor-travel-map-ui",
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
-        *_MAP_DATABASE_ONESHOT_SERVICES,
-        "pinvi-api",
-        "pinvi-admin-bootstrap",
-    )
-    candidate = (
-        _resolved_compose(*service_names)
-        if resolved_candidate
-        else _compose_fragment(*service_names)
-    )
+    옛 검사는 Map superuser secret을 이름으로 지켰다. 그 secret은 Map 전용 instance와 함께
+    퇴역했고, 같은 성질을 이제 모든 서버의 admin secret에서 유도한 규칙이 진다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
     services = candidate["services"]
     assert isinstance(services, dict)
     map_api = services["kor-travel-map-api"]
     assert isinstance(map_api, dict)
     map_api["secrets"] = [
         {
-            "source": "kor-travel-map-postgres-password",
+            "source": "kor-travel-shared-postgres-password",
             "target": "unexpected-password-copy",
         }
     ]
 
-    environment = _compose_contract_environment()
-    root_env = tmp_path / ".env"
-    root_env.write_text("\n", encoding="utf-8")
-    map_pgdata = tmp_path / "map-pgdata"
-    map_pgdata.mkdir()
-    environment["KOR_TRAVEL_MAP_PGDATA"] = str(map_pgdata)
-    map_source = tmp_path / "map-source"
-    bootstrap_script = map_source / "docker" / "postgres-role-bootstrap.sh"
-    bootstrap_script.parent.mkdir(parents=True)
-    bootstrap_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
-
-    validator = (
-        validate_resolved_compose_candidate_protected_values
-        if resolved_candidate
-        else validate_compose_candidate_protected_values
-    )
     with pytest.raises(
-        DeploymentContractError,
-        match="kor-travel-map-api.secrets -> KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
+        ComposeCandidateContractError,
+        match="admin secret of PostgreSQL instance kor-travel-shared-postgres .*: kor-travel-map-api",
     ):
-        validator(
-            candidate,
-            environment=environment,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-        )
-
-
-def test_map_postgres_runtime_password_secret_isolation_requires_file_only() -> None:
-    """F1D는 실제 PostgreSQL inspect Env에서도 password 노출을 fail-close한다."""
-
-    validate_map_postgres_runtime_secret_isolation(
-        {
-            "Env": [
-                "POSTGRES_DB=kor_travel_map",
-                "POSTGRES_PASSWORD_FILE=/run/secrets/kor-travel-map-postgres-password",
-            ]
-        }
-    )
-
-    with pytest.raises(
-        DeploymentContractError,
-        match="exposes the initial superuser password",
-    ):
-        validate_map_postgres_runtime_secret_isolation(
-            {
-                "Env": [
-                    "POSTGRES_PASSWORD=legacy-password",
-                    "POSTGRES_PASSWORD_FILE=/run/secrets/kor-travel-map-postgres-password",
-                ]
-            }
-        )
-
-    with pytest.raises(
-        DeploymentContractError,
-        match="password file wiring is invalid",
-    ):
-        validate_map_postgres_runtime_secret_isolation({"Env": []})
-
-
-def test_c6c_rejects_map_bootstrap_dsn_outside_dedicated_instance_before_mutation(
-    tmp_path: Path,
-) -> None:
-    """bootstrap one-shot이 shared 5432를 건드리기 전에 endpoint drift를 차단한다."""
-
-    candidate = _compose_fragment(
-        "kor-travel-map-postgres",
-        "kor-travel-map-api",
-        "kor-travel-map-ui",
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
-        *_MAP_DATABASE_ONESHOT_SERVICES,
-        "pinvi-api",
-        "pinvi-admin-bootstrap",
-    )
-    environment = _compose_contract_environment()
-    environment["KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"] = (
-        "postgresql://map_contract_admin:map-contract-postgres-password@"
-        "127.0.0.1:5432/map_contract"
-    )
-    root_env = tmp_path / ".env"
-    root_env.write_text("\n", encoding="utf-8")
-    map_pgdata = tmp_path / "map-pgdata"
-    map_pgdata.mkdir()
-    environment["KOR_TRAVEL_MAP_PGDATA"] = str(map_pgdata)
-    map_source = tmp_path / "map-source"
-    bootstrap_script = map_source / "docker" / "postgres-role-bootstrap.sh"
-    bootstrap_script.parent.mkdir(parents=True)
-    bootstrap_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
-
-    with pytest.raises(DeploymentContractError, match="Map database DSN identity is invalid"):
         validate_compose_candidate_protected_values(
             candidate,
+            environment=environment,
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
-            environment=environment,
         )
 
 
-def test_c6c_rejects_map_database_port_override(
-    tmp_path: Path,
-) -> None:
-    """Map 전용 DB 포트는 loopback `12700` 계약값으로 고정한다.
+def test_required_set_no_longer_contains_a_map_postgres_service() -> None:
+    """ADR-53: Map 전용 instance·그 Dagster db-init·Map superuser secret이 정본에서 사라졌다."""
 
-    ADR-35가 정한 것은 "전용 instance의 loopback 고정"이고, 번호는 ADR-047 대역
-    규칙(각 프로젝트 100번대의 x00)에 따라 2026-08-17에 `12703` -> `12700`으로 옮겼다.
-    이 테스트의 픽스처가 옛 번호에 머물면 **테스트는 초록인데 prod 배포가 막힌다** —
-    실제로 그 상태였다.
+    required = c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
+    source = _source_compose()
+    services = source["services"]
+    assert isinstance(services, dict)
+    postgres = c6c_deployment_module.postgres_server_services(source)
+
+    # 전제: 탐지기가 서버를 실제로 본다.
+    assert postgres == {"kor-travel-shared-postgres"}
+    assert not postgres & required
+    for retired in ("kor-travel-map-postgres", "kor-travel-map-dagster-db-init"):
+        assert retired not in required
+        assert retired not in services
+    assert "kor-travel-map-postgres-password" not in source["secrets"]
+    assert not hasattr(c6c_deployment_module, "_MAP_POSTGRES_SERVICE")
+    assert not hasattr(c6c_deployment_module, "validate_map_postgres_runtime_secret_isolation")
+
+
+def test_no_compose_reference_to_kor_travel_map_postgres_password() -> None:
+    """`KOR_TRAVEL_MAP_POSTGRES_PASSWORD`는 `.env`에서 오지 않는다 — one-shot 셸이 만든다(S1).
+
+    compose가 보간하는 참조(`${…}`·값 없는 key·secret `environment:`)로는 어디에도 없고,
+    bootstrap one-shot의 셸 안에서만(`$$` escape) 그 이름에 값을 넣는다.
     """
 
-    candidate = _compose_fragment(
-        "kor-travel-map-postgres",
-        "kor-travel-map-api",
-        "kor-travel-map-ui",
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
-        *_MAP_DATABASE_ONESHOT_SERVICES,
-        "pinvi-api",
-        "pinvi-admin-bootstrap",
-    )
-    environment = _compose_contract_environment()
-    environment["KOR_TRAVEL_MAP_POSTGRES_PORT"] = "15432"
-    root_env = tmp_path / ".env"
-    root_env.write_text("\n", encoding="utf-8")
-    map_pgdata = tmp_path / "map-pgdata"
-    map_pgdata.mkdir()
-    environment["KOR_TRAVEL_MAP_PGDATA"] = str(map_pgdata)
-    map_source = tmp_path / "map-source"
-    bootstrap_script = map_source / "docker" / "postgres-role-bootstrap.sh"
-    bootstrap_script.parent.mkdir(parents=True)
-    bootstrap_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    environment["KOR_TRAVEL_MAP_REPO_DIR"] = str(map_source)
+    from kor_travel_docker_manager.services.compose_references import compose_references
 
-    with pytest.raises(DeploymentContractError, match="Map database DSN identity is invalid"):
-        validate_compose_candidate_protected_values(
-            candidate,
+    source = _source_compose()
+    referenced = {
+        name for names in compose_references(source).values() for name in names
+    }
+    for retired in (
+        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
+        "KOR_TRAVEL_MAP_POSTGRES_USER",
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+        "KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID",
+        "KOR_TRAVEL_MAP_POSTGRES_PORT",
+        "KTDM_MAP_BOOTSTRAP_PGPORT",
+    ):
+        assert retired not in referenced, retired
+    # 대조군: 탐지기가 공허하지 않다 — 공용 admin password는 secret으로 참조된다.
+    assert "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD" in referenced
+    script = source["services"]["kor-travel-map-db-role-bootstrap"]["command"][0]
+    assert 'KOR_TRAVEL_MAP_POSTGRES_PASSWORD="$$(cat ' in script
+
+
+def test_map_dsns_must_point_at_the_one_declared_postgres_port(tmp_path: Path) -> None:
+    """Map DSN 포트는 **정확히 하나의** PostgreSQL 서버의 `-p`여야 한다(resolved 경로).
+
+    퇴역 instance의 12700이 `.env`에 남으면 그 포트를 듣는 서버가 없다 — 거부한다. raw 경로는
+    `-p`를 보간할 수 없으므로 모양만 본다.
+    """
+
+    _candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    resolved = _bootstrap_resolved(environment)
+    validate_resolved_compose_candidate_protected_values(
+        resolved,
+        environment=environment,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+    )
+
+    moved = dict(environment)
+    for name in ("KOR_TRAVEL_MAP_PG_DSN", "KOR_TRAVEL_MAP_DAGSTER_PG_URL"):
+        assert "@127.0.0.1:11000/" in moved[name]
+        moved[name] = moved[name].replace("@127.0.0.1:11000/", "@127.0.0.1:12700/")
+
+    # raw: 모양만 — 포트가 어느 서버의 것인지는 모른다.
+    c6c_deployment_module._validate_map_database_dsn_identities(moved)
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match=r"exactly one PostgreSQL server service \(found 0\)",
+    ):
+        validate_resolved_compose_candidate_protected_values(
+            resolved,
+            environment=moved,
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
-            environment=environment,
         )
+
+    doubled = deepcopy(resolved)
+    doubled_services = doubled["services"]
+    assert isinstance(doubled_services, dict)
+    doubled_services["another-postgres"] = deepcopy(
+        doubled_services["kor-travel-shared-postgres"]
+    )
+    with pytest.raises(
+        ComposeCandidateContractError,
+        match=r"exactly one PostgreSQL server service \(found 2\)",
+    ):
+        c6c_deployment_module._validate_map_database_dsn_instance(environment, resolved=doubled)
+
+
+def test_retired_adr100_dsns_are_not_required() -> None:
+    """D10: ADR-100 superset 창을 닫았다 — 세 퇴역 DSN·password 없이 계약이 통과한다."""
+
+    retired = {
+        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
+        "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD",
+        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
+        "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
+        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+    }
+    environment = _compose_contract_environment()
+    assert not retired & set(environment), "전제: 계약 env에 퇴역 키가 없다"
+
+    c6c_deployment_module._validate_map_database_dsn_identities(environment)
+
+    canonical_names = {
+        name for _service, name in c6c_deployment_module._MAP_DATABASE_CANONICAL_ENV_VALUES
+    }
+    assert not retired & canonical_names
+    for name, service in _source_compose()["services"].items():
+        environment_names = set(service.get("environment") or {})
+        assert not retired & environment_names, name
 
 
 def test_c6c_rejects_resolved_map_database_bridge_network(
@@ -1713,7 +1637,7 @@ def test_c6c_rejects_resolved_map_database_bridge_network(
     """loopback dedicated DSN은 host-network runtime에서만 유효하다."""
 
     resolved = _resolved_compose(
-        "kor-travel-map-postgres",
+        "kor-travel-shared-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
@@ -2033,7 +1957,8 @@ def test_every_dagster_code_server_binds_loopback_only() -> None:
 # 갈아끼우고 **실제 배포 검증 진입점**이 그 변화를 보는지 단언한다. 상수 부활,
 # import 끊김, 로더 우회 어느 쪽이든 빨개진다.
 
-_MAP_PGDATA_BIND_KEY = ("kor-travel-map-postgres", "/var/lib/postgresql/data", False)
+#: ADR-53 뒤 Map DB가 사는 공용 instance의 PGDATA bind.
+_MAP_PGDATA_BIND_KEY = ("kor-travel-shared-postgres", "/var/lib/postgresql/data", False)
 
 
 def _patched_allowlist(
@@ -2097,7 +2022,7 @@ def test_deployment_validation_rejects_a_forbidden_host_source(
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
     services = candidate["services"]
     assert isinstance(services, dict)
-    service = services["kor-travel-map-postgres"]
+    service = services["kor-travel-shared-postgres"]
     assert isinstance(service, dict)
     service["volumes"] = ["/etc:/var/lib/postgresql/data"]
 
@@ -2128,7 +2053,7 @@ def test_deployment_validation_rejects_binding_the_allowlist_itself(
     targets_config = registry_module.get_targets_config_path()
     services = candidate["services"]
     assert isinstance(services, dict)
-    service = services["kor-travel-map-postgres"]
+    service = services["kor-travel-shared-postgres"]
     assert isinstance(service, dict)
     service["volumes"] = [f"{targets_config}:/var/lib/postgresql/data"]
 
@@ -2198,10 +2123,8 @@ _REQUIRED_SERVICES_GOLDEN: tuple[str, ...] = (
     "kor-travel-map-application-schema",
     "kor-travel-map-dagster",
     "kor-travel-map-dagster-daemon",
-    "kor-travel-map-dagster-db-init",
     "kor-travel-map-dagster-storage-migrate",
     "kor-travel-map-db-role-bootstrap",
-    "kor-travel-map-postgres",
     "kor-travel-map-ui",
     "pinvi-admin-bootstrap",
     "pinvi-api",
@@ -2212,7 +2135,7 @@ _REQUIRED_SERVICES_GOLDEN: tuple[str, ...] = (
 # compose에서 사라졌다. 이제 루프의 이름은 required 집합과 정확히 같다.
 
 _ABSENCE_MATRIX_SERVICES = {
-    "map_core": ("kor-travel-map-api", "kor-travel-map-postgres", "kor-travel-map-ui"),
+    "map_core": ("kor-travel-map-api", "kor-travel-map-ui"),
     "map_oneshots": _MAP_DATABASE_ONESHOT_SERVICES,
     "pinvi_core": ("pinvi-api",),
     "pinvi_oneshots": ("pinvi-admin-bootstrap",),
@@ -2274,7 +2197,7 @@ def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
     """
 
     return _resolved_compose(
-        "kor-travel-map-postgres",
+        "kor-travel-shared-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
@@ -2301,7 +2224,7 @@ def test_required_protected_service_set_is_pinned() -> None:
 
     """
 
-    assert len(_REQUIRED_SERVICES_GOLDEN) == 11
+    assert len(_REQUIRED_SERVICES_GOLDEN) == 9
     assert set(_REQUIRED_SERVICES_GOLDEN) == set(
         c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
     ), (
@@ -2393,24 +2316,20 @@ _SHAPE_GOLDEN: dict[str, str] = {
     "all_present/resolved": "PASS",
     "absent_map_core/raw": (
         "ComposeCandidateContractError: compose candidate is missing required "
-        "protected services: kor-travel-map-api, kor-travel-map-postgres, "
-        "kor-travel-map-ui"
+        "protected services: kor-travel-map-api, kor-travel-map-ui"
     ),
     "absent_map_core/resolved": (
         "ComposeCandidateContractError: resolved compose candidate is missing "
-        "required protected services: kor-travel-map-api, kor-travel-map-postgres, "
-        "kor-travel-map-ui"
+        "required protected services: kor-travel-map-api, kor-travel-map-ui"
     ),
     "absent_map_oneshots/raw": (
         "ComposeCandidateContractError: compose candidate is missing required "
         "protected services: kor-travel-map-application-schema, "
-        "kor-travel-map-dagster-db-init, "
         "kor-travel-map-dagster-storage-migrate, kor-travel-map-db-role-bootstrap"
     ),
     "absent_map_oneshots/resolved": (
         "ComposeCandidateContractError: resolved compose candidate is missing "
         "required protected services: kor-travel-map-application-schema, "
-        "kor-travel-map-dagster-db-init, "
         "kor-travel-map-dagster-storage-migrate, kor-travel-map-db-role-bootstrap"
     ),
     "absent_pinvi_core/raw": (
@@ -2497,10 +2416,10 @@ def test_absence_is_reported_as_absence(tmp_path: Path) -> None:
         (validate_resolved_compose_candidate_protected_values, resolved, "resolved"),
     ):
         verdict = _verdict(
-            entry, _shape_without(base, ("kor-travel-map-postgres",)), environment, root_env
+            entry, _shape_without(base, ("kor-travel-map-db-role-bootstrap",)), environment, root_env
         )
         assert "missing required protected services" in verdict, f"{label}: {verdict}"
-        assert "kor-travel-map-postgres" in verdict, (
+        assert "kor-travel-map-db-role-bootstrap" in verdict, (
             f"{label}: 무엇이 빠졌는지 말하지 않는다: {verdict}"
         )
 
@@ -2548,7 +2467,7 @@ def test_unknown_service_key_is_not_echoed_into_the_contract_error(
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    secret_shaped_key = environment["KOR_TRAVEL_MAP_POSTGRES_PASSWORD"]
+    secret_shaped_key = environment["KOR_TRAVEL_SHARED_POSTGRES_PASSWORD"]
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
@@ -2573,297 +2492,444 @@ def test_unknown_service_key_is_not_echoed_into_the_contract_error(
     assert "pinvi-api" in known, known
 
 
-# ── GM-17 B · S2: Map password validator 이분할 ──────────────────────────
+# ── ADR-53: instance admin secret은 이름이 아니라 모든 서버에서 유도한다 ─────────────────
 #
-# 감사가 찾은 함정은 이렇다 — `_validate_map_postgres_password_secret`이 두 가지를
-# 한 함수에 담고 있어서, S4가 서비스 부재 시 **함수째** 건너뛰면 둘 다 꺼진다.
-#
-#   (A) 소유자 배선 — `kor-travel-map-postgres`가 secret file로만 password를 받는가.
-#       소유자의 존재를 전제하므로 부재 시 건너뛰어도 된다.
-#   (B) 유일 소비자 스캔 — 문서의 **아무** 서비스도 그 secret을 alias로 가져가지
-#       못한다. 소유자와 무관한 전역 불변식이라 **절대 꺼지면 안 된다.**
-#
-# (B)가 꺼지면 남는 그물이 없다(감사 실측): 전역 보호 이름 스캔은 alias를 substring으로
-# 잡지 못하고, external-resource 검사는 그 alias를 무조건 면제하며, runtime 검사는
-# 소비자를 보지 않는다.
-#
-# 아래 검사들은 **분리가 실재하는지**를 묻는다. 오늘 공개 진입점으로는 소유자 부재에
-# 도달할 수 없으므로(required-set이 먼저 막는다) 쪼갠 함수를 직접 태운다 — 그것이
-# 요점이다. S4가 그 문을 여는 날 이 검사들이 이미 자리를 지키고 있어야 한다.
+# 옛 S2 — Map superuser password의 (A) 소유자 배선과 (B) 유일 소비자 스캔 — 는 Map 전용
+# instance와 함께 퇴역했다. (B)가 지키던 성질("cluster admin secret은 그 instance만 든다")은
+# 이제 **모든** PostgreSQL 서버에 대해 한 규칙(`_assert_instance_admin_secret_holders`)이
+# 진다: 서버는 declared ∪ witnessed이고, secret은 `POSTGRES_PASSWORD_FILE`에서 유도한다.
+# 그 secret을 드는 서비스는 instance 자신이거나, pinned runtime(과 그 이미지)이 아닌
+# `restart: "no"` one-shot이어야 한다. S2가 배운 것은 그대로다 — 이 규칙은 family 블록 밖의
+# 전역 불변식이고, 어떤 서비스의 존재에도 게이팅되지 않는다.
 
-_MAP_PASSWORD_SECRET = "kor-travel-map-postgres-password"
+_ADMIN_PASSWORD_VALUE = "x-admin-password-0123456789-abcdefgh"
 
 
-def _document_with_foreign_consumer(
-    *, include_owner: bool, shorthand: bool = False
-) -> dict[str, object]:
-    """Map password secret을 **남의 서비스**가 가져가는 문서.
+def _admin_secret_document(**extra_services: object) -> dict[str, Any]:
+    """합성 서버 `db-x`(secret `x-admin` → `X_ADMIN_PASSWORD`)와 runtime 하나를 담은 문서."""
 
-    `include_owner=False`는 S4 이후의 형상이다 — Map family가 scope 밖이라 소유자
-    서비스가 아예 없는데, 누군가는 여전히 그 secret을 마운트하려 한다.
-
-    `shorthand=True`는 **짧은 문법**(`secrets: ["<이름>"]`)이다. Compose에서 가장 싼
-    마운트 표기인데 첫 판의 검사는 긴 문법만 만들었다(적대 리뷰 2026-09-17 M3).
-    코드는 두 문법을 다 처리하지만 **아무도 그것을 지키지 않았다** — 짧은 문법 처리를
-    `continue`로 바꾸는 변이가 전체 스위트 1700건을 그대로 통과했다.
-    """
-
-    foreign_reference: object = (
-        _MAP_PASSWORD_SECRET
-        if shorthand
-        else {"source": _MAP_PASSWORD_SECRET, "target": _MAP_PASSWORD_SECRET}
-    )
-    services: dict[str, object] = {
-        "some-other-service": {
-            "image": "example:latest",
-            "secrets": [foreign_reference],
-        }
-    }
-    if include_owner:
-        services["kor-travel-map-postgres"] = {
-            "image": "postgis:latest",
-            "environment": {
-                "POSTGRES_PASSWORD_FILE": f"/run/secrets/{_MAP_PASSWORD_SECRET}"
-            },
-            "secrets": [
-                {"source": _MAP_PASSWORD_SECRET, "target": _MAP_PASSWORD_SECRET}
-            ],
-        }
     return {
-        "secrets": {
-            _MAP_PASSWORD_SECRET: {"environment": "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"}
+        "secrets": {"x-admin": {"environment": "X_ADMIN_PASSWORD"}},
+        "services": {
+            "db-x": {
+                "command": ["postgres", "-p", "15101"],
+                "environment": {
+                    "POSTGRES_USER": "x_admin",
+                    "POSTGRES_PASSWORD_FILE": "/run/secrets/x-admin",
+                },
+                "secrets": ["x-admin"],
+            },
+            "kor-travel-map-api": {"image": "map-api:1", "restart": "unless-stopped"},
+            **extra_services,
         },
-        "services": services,
     }
 
 
-@pytest.mark.parametrize("shorthand", [False, True], ids=["long", "shorthand"])
-@pytest.mark.parametrize("include_owner", [True, False], ids=["owner", "no-owner"])
-def test_sole_consumer_scan_rejects_a_foreign_consumer(
-    include_owner: bool, shorthand: bool
-) -> None:
-    """남의 소비는 **두 문법 모두** 거부된다 — 소유자 유무와 무관하게.
-
-    짧은 문법 축은 적대 리뷰 2026-09-17 M3이 추가시켰다: 코드는 처리하는데 검사가
-    없어서, 짧은 문법 처리를 `continue`로 바꾸는 변이가 스위트 전체를 통과했다.
-    """
-
-    document = _document_with_foreign_consumer(
-        include_owner=include_owner, shorthand=shorthand
+def _hold(document: dict[str, Any], *, resolved: bool = False) -> None:
+    c6c_deployment_module._assert_instance_admin_secret_holders(
+        document,
+        environment={"X_ADMIN_PASSWORD": _ADMIN_PASSWORD_VALUE},
+        resolved=resolved,
     )
+
+
+def test_the_instance_itself_holds_its_admin_secret() -> None:
+    _hold(_admin_secret_document())
+    _hold(_admin_secret_document(), resolved=True)
+
+
+@pytest.mark.parametrize(
+    ("holder", "resolved"),
+    [
+        pytest.param(
+            {"image": "app:1", "secrets": [{"source": "x-admin", "target": "copy"}]},
+            False,
+            id="long-running-long-syntax",
+        ),
+        pytest.param({"image": "app:1", "secrets": ["x-admin"]}, False, id="short-syntax"),
+        pytest.param(
+            {"image": "app:1", "environment": {"PW": "${X_ADMIN_PASSWORD}"}},
+            False,
+            id="raw-env-reference",
+        ),
+        pytest.param(
+            {"image": "app:1", "environment": ["X_ADMIN_PASSWORD"]},
+            False,
+            id="bare-env-key",
+        ),
+        pytest.param(
+            {"image": "app:1", "environment": {"DSN": f"postgresql://x:{_ADMIN_PASSWORD_VALUE}@h/d"}},
+            True,
+            id="resolved-env-value",
+        ),
+        pytest.param(
+            # restart: no여도 pinned runtime 서비스 이름이면 안 된다.
+            {"image": "pinvi:1", "restart": "no", "secrets": ["x-admin"]},
+            False,
+            id="runtime-name-as-one-shot",
+        ),
+    ],
+)
+def test_admin_secret_rule_derives_the_secret_not_a_name(
+    holder: dict[str, Any], resolved: bool
+) -> None:
+    name = "pinvi-api" if holder.get("restart") == "no" else "some-app"
     with pytest.raises(
         ComposeCandidateContractError,
-        match="some-other-service.secrets -> KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
-    ):
-        assert_protected_references_are_derived(
-            document, compose_path=_COMPOSE_PATH, environment={}
-        )
+        match="hands the admin secret of PostgreSQL instance",
+    ) as refusal:
+        _hold(_admin_secret_document(**{name: holder}), resolved=resolved)
+    # 계약이 아는 이름만 지목한다 — 모르는 서비스 키는 sha8로 가린다(`_describe_candidate_service_key`).
+    if name == "pinvi-api":
+        assert str(refusal.value).endswith(": pinvi-api")
 
 
-def test_owner_wiring_is_skipped_only_when_the_owner_is_absent() -> None:
-    """(A)는 소유자가 없을 때만 조용하다 — 있으면 종전처럼 배선을 따진다.
-
-    이 검사가 없으면 "조건부로 만든다"가 "그냥 끈다"로 조용히 미끄러질 수 있다.
-    """
-
-    wiring = c6c_deployment_module._validate_map_postgres_password_owner_wiring
-
-    # 소유자 부재 → 조용히 통과(판정할 대상이 없다).
-    wiring(_document_with_foreign_consumer(include_owner=False))
-
-    # 소유자 존재 + 배선 파손(`POSTGRES_PASSWORD`가 환경으로 샌다) → 거부.
-    leaking = _document_with_foreign_consumer(include_owner=True)
-    owner = leaking["services"]["kor-travel-map-postgres"]  # type: ignore[index]
-    assert isinstance(owner, dict)
-    environment = owner["environment"]
-    assert isinstance(environment, dict)
-    environment["POSTGRES_PASSWORD"] = "leaked"
-    with pytest.raises(
-        ComposeCandidateContractError, match="leaks to container environment"
-    ):
-        wiring(leaking)
+def test_a_one_shot_may_hold_the_admin_secret_unless_it_shares_a_runtime_image() -> None:
+    one_shot = {"image": "psql:16", "restart": "no", "secrets": ["x-admin"]}
+    _hold(_admin_secret_document(**{"db-init-x": one_shot}))
+    # 대조: 같은 one-shot이 runtime 이미지를 쓰면(generation companion·그 이미지의 one-shot) 거부.
+    same_image = {**one_shot, "image": "map-api:1"}
+    with pytest.raises(ComposeCandidateContractError, match="hands the admin secret"):
+        _hold(_admin_secret_document(**{"db-init-x": same_image}))
+    long_running = {**one_shot, "restart": "unless-stopped"}
+    with pytest.raises(ComposeCandidateContractError, match="hands the admin secret"):
+        _hold(_admin_secret_document(**{"db-init-x": long_running}))
 
 
-def test_wiring_is_reported_before_consumers_at_the_entry_point(
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(lambda server: server["environment"].pop("POSTGRES_PASSWORD_FILE"), id="no-file"),
+        pytest.param(lambda server: server.update(secrets=[]), id="no-mount"),
+        pytest.param(
+            lambda server: server.update(secrets=[{"source": "x-admin", "target": "/elsewhere"}]),
+            id="mount-elsewhere",
+        ),
+    ],
+)
+def test_a_server_whose_admin_secret_is_not_derivable_is_refused(mutation: Any) -> None:
+    """규칙을 적용할 수 없는 서버를 건너뛰면 그것이 곧 우회로다."""
+
+    document = _admin_secret_document()
+    mutation(document["services"]["db-x"])
+    with pytest.raises(ComposeCandidateContractError, match="admin secret is not derivable"):
+        _hold(document)
+
+
+def test_instance_admin_secret_is_held_only_by_the_instance_and_one_shots(
     tmp_path: Path,
 ) -> None:
-    """배선 오류와 무단 소비자가 동시에 있으면 **배선이 먼저** 보고된다.
+    """정본 후보(raw·resolved)에서 규칙을 진입점으로 센다.
 
-    이것이 S2의 "동작 변경 0"을 지키는 제약이다. 전역 소비자 스캔을 family 블록
-    **앞**에 두면 이 문서의 문구가 "...unauthorized consumer"로 바뀐다 — 판정은
-    같지만 진단이 달라지므로 종전과 다르다. 그래서 전역 블록을 family 블록 **뒤**에
-    두었고, 이 검사가 그 배치를 결박한다.
+    정본의 holder는 공용 instance와 그 one-shot(Map role bootstrap 포함)뿐이라 통과한다. 여기에
+    long-running 서비스, `restart: "no"`를 단 runtime 서비스, resolved env의 password 값을 얹으면
+    두 진입점 모두 거부한다.
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    shaped = deepcopy(candidate)
-    services = shaped["services"]
-    assert isinstance(services, dict)
-    owner = services["kor-travel-map-postgres"]
-    assert isinstance(owner, dict)
-    owner_environment = owner["environment"]
-    assert isinstance(owner_environment, dict)
-    owner_environment["POSTGRES_PASSWORD"] = "leaked"
-    services["some-other-service"] = {
-        "image": "example:latest",
-        "secrets": [{"source": _MAP_PASSWORD_SECRET, "target": _MAP_PASSWORD_SECRET}],
-    }
-
-    with pytest.raises(
-        ComposeCandidateContractError, match="leaks to container environment"
-    ):
-        validate_compose_candidate_protected_values(
-            shaped,
+    resolved = _bootstrap_resolved(environment)
+    entries = (
+        (validate_compose_candidate_protected_values, candidate),
+        (validate_resolved_compose_candidate_protected_values, resolved),
+    )
+    for entry, base in entries:
+        entry(
+            base,
+            environment=environment,
             compose_path=str(_COMPOSE_PATH),
             root_env_path=str(root_env),
+        )
+        other = deepcopy(base)
+        other["services"]["some-other-service"] = {
+            "image": "example:latest",
+            "secrets": [
+                {
+                    "source": "kor-travel-shared-postgres-password",
+                    "target": "/run/secrets/kor-travel-shared-postgres-password",
+                }
+            ],
+        }
+        runtime_one_shot = deepcopy(base)
+        runtime_service = runtime_one_shot["services"]["kor-travel-map-api"]
+        runtime_service["restart"] = "no"
+        runtime_service["secrets"] = [
+            {
+                "source": "kor-travel-shared-postgres-password",
+                "target": "/run/secrets/kor-travel-shared-postgres-password",
+            }
+        ]
+        for shaped, holder in (
+            # 모르는 서비스 키는 sha8로 가려진다 — 이름 대신 표식을 본다.
+            (other, "unrecognized service key sha256:"),
+            (runtime_one_shot, ": kor-travel-map-api"),
+        ):
+            with pytest.raises(
+                ComposeCandidateContractError,
+                match=f"admin secret of PostgreSQL instance kor-travel-shared-postgres .*{holder}",
+            ):
+                entry(
+                    shaped,
+                    environment=environment,
+                    compose_path=str(_COMPOSE_PATH),
+                    root_env_path=str(root_env),
+                )
+
+    leaked = deepcopy(resolved)
+    leaked["services"]["pinvi-api"]["environment"]["PINVI_PROBE"] = environment[
+        "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD"
+    ]
+    with pytest.raises(ComposeCandidateContractError, match=": pinvi-api"):
+        validate_resolved_compose_candidate_protected_values(
+            leaked,
             environment=environment,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
         )
 
 
-def test_the_global_invariants_are_not_inside_the_family_validator() -> None:
-    """전역 불변식 둘은 family validator **밖**에 있어야 한다 — 자리 자체를 결박한다.
+# ── ADR-53 S1: Map role bootstrap one-shot의 실행 표면 ─────────────────────────────────
 
-    적대 리뷰 둘이 각각 같은 구멍을 찾았다: 첫 판은 선언 검사와 소비자 스캔을 Map
-    validator **안**에 두었고, 그래서 진입점의 호출부를 소유자 존재로 감싸는 순진한
-    S4가 전체 스위트를 통과시키면서 무단 소비자를 실제로 통과시켰다.
 
-    그 뒤 이중화(합성 wrapper 안에도, 진입점에도)를 시도했는데 그것도 틀렸다 —
-    둘 중 하나를 지우는 변이가 **아무 검사도** 빨갛게 만들지 못했다. 이중화는
-    방어처럼 보이지만 검사 불가능한 방어다.
+def _bootstrap_service(document: dict[str, Any]) -> dict[str, Any]:
+    service = document["services"]["kor-travel-map-db-role-bootstrap"]
+    assert isinstance(service, dict)
+    return service
 
-    그래서 자리를 **하나**로 만들었다: family 블록은 (A)만 부르고, 전역 불변식 둘은
-    진입점의 전역 블록에만 산다. 이 검사는 그 구조를 직접 확인한다 — (A)가 전역
-    불변식을 부르면 자리가 둘로 늘어난 것이므로 빨개진다.
-    """
 
-    import inspect
-
-    wiring_source = inspect.getsource(
-        c6c_deployment_module._validate_map_postgres_password_owner_wiring
+def _check_bootstrap(
+    document: dict[str, Any], environment: dict[str, str], *, resolved: bool
+) -> None:
+    c6c_deployment_module._validate_map_db_role_bootstrap_service(
+        "kor-travel-map-db-role-bootstrap",
+        _bootstrap_service(document),
+        document=document,
+        environment=environment,
+        resolved=resolved,
     )
-    for forbidden in (
-        "_validate_map_postgres_password_declaration",
-    ):
-        assert forbidden not in wiring_source, (
-            f"전역 불변식 {forbidden}이 family validator 안으로 들어왔다 — 자리가 둘이 되면"
-            " 하나를 지우는 변이를 아무 검사도 잡지 못한다"
+
+
+def _bootstrap_documents(tmp_path: Path) -> tuple[dict[str, str], tuple[tuple[dict[str, Any], bool], ...]]:
+    candidate, environment, _root_env = _bootstrap_candidate(tmp_path)
+    resolved = _bootstrap_resolved(environment)
+    return environment, ((candidate, False), (resolved, True))
+
+
+def test_the_canonical_bootstrap_one_shot_is_the_s1_shape(tmp_path: Path) -> None:
+    """정본의 네 줄·secret·mount가 계약과 같다 — resolved도 `$$`를 그대로 낸다(실측)."""
+
+    environment, documents = _bootstrap_documents(tmp_path)
+    for document, resolved in documents:
+        _check_bootstrap(document, environment, resolved=resolved)
+        script = _bootstrap_service(document)["command"][0]
+        assert tuple(line.strip() for line in script.strip().splitlines()) == (
+            c6c_deployment_module.map_db_role_bootstrap_script_lines(
+                "/run/secrets/kor-travel-shared-postgres-password"
+            )
         )
 
 
-def test_owner_must_mount_the_secret_at_the_exact_target(tmp_path: Path) -> None:
-    """소유자는 secret을 **exact target**에 마운트해야 한다 (적대 리뷰 M1/F-3).
+@pytest.mark.parametrize(
+    "edit",
+    [
+        pytest.param(lambda lines: lines[:-1], id="drop-exec"),
+        pytest.param(lambda lines: [*lines, "id"], id="append-line"),
+        pytest.param(
+            lambda lines: [lines[0].replace("/run/secrets/", "/tmp/"), *lines[1:]],
+            id="cat-path",
+        ),
+        pytest.param(
+            lambda lines: [*lines[:3], lines[3].replace("exec /bin/sh", "exec /bin/sh -x")],
+            id="exec-flag",
+        ),
+        pytest.param(
+            lambda lines: [lines[0], lines[1].replace("127.0.0.1", "0.0.0.0"), *lines[2:]],
+            id="dsn-host",
+        ),
+    ],
+)
+def test_map_bootstrap_one_shot_rejects_a_changed_script_line(tmp_path: Path, edit: Any) -> None:
+    environment, documents = _bootstrap_documents(tmp_path)
+    for document, resolved in documents:
+        service = _bootstrap_service(document)
+        lines = [line.strip() for line in service["command"][0].strip().splitlines()]
+        service["command"] = ["\n".join(edit(lines)) + "\n"]
+        with pytest.raises(ComposeCandidateContractError, match="command is invalid"):
+            _check_bootstrap(document, environment, resolved=resolved)
 
-    **선재 공백**이었다: (A)의 `source`/`target` 검사를 지워도 backend 1,700건이 전부
-    통과하는데 게이트의 판정은 실제로 바뀐다 — 소유자가 superuser secret을 임의 alias
-    target에 마운트하거나 짧은 문법으로 target을 생략해도 통과하게 된다. main도 같아
-    회귀는 아니지만, S2가 그 위험을 올렸다: 이제 인가 집합 파생이 그 참조를 (B)에
-    넘긴다. 그래서 파생에도 모양 검증을 넣고, 그 불변식을 여기서 처음으로 센다.
+
+def test_map_bootstrap_one_shot_cat_path_is_its_own_secret_target(tmp_path: Path) -> None:
+    """`cat` 경로는 리터럴이 아니라 그 one-shot의 secret target이다 — 둘이 함께 움직여야 한다."""
+
+    environment, documents = _bootstrap_documents(tmp_path)
+    for document, resolved in documents:
+        service = _bootstrap_service(document)
+        moved = deepcopy(document)
+        moved_service = _bootstrap_service(moved)
+        moved_service["secrets"] = [
+            {"source": "kor-travel-shared-postgres-password", "target": "/run/secrets/boot-admin"}
+        ]
+        # target만 옮기면 `cat`이 다른 파일을 읽는다 — 거부.
+        with pytest.raises(ComposeCandidateContractError, match="command is invalid"):
+            _check_bootstrap(moved, environment, resolved=resolved)
+        # 둘을 함께 옮기면 통과한다(대조군).
+        moved_service["command"] = [
+            service["command"][0].replace(
+                "/run/secrets/kor-travel-shared-postgres-password", "/run/secrets/boot-admin"
+            )
+        ]
+        _check_bootstrap(moved, environment, resolved=resolved)
+
+
+def test_map_bootstrap_one_shot_rejects_a_second_secret_or_mount(tmp_path: Path) -> None:
+    environment, documents = _bootstrap_documents(tmp_path)
+    for document, resolved in documents:
+        second_secret = deepcopy(document)
+        _bootstrap_service(second_secret)["secrets"].append(
+            {"source": "pinvi-shared-app-password", "target": "/run/secrets/pinvi"}
+        )
+        with pytest.raises(ComposeCandidateContractError, match="exactly one secret"):
+            _check_bootstrap(second_secret, environment, resolved=resolved)
+
+        third_mount = deepcopy(document)
+        volumes = _bootstrap_service(third_mount)["volumes"]
+        volumes.append(deepcopy(volumes[0]))
+        with pytest.raises(ComposeCandidateContractError, match="mounts are invalid"):
+            _check_bootstrap(third_mount, environment, resolved=resolved)
+
+        writable = deepcopy(document)
+        volumes = _bootstrap_service(writable)["volumes"]
+        if resolved:
+            volumes[0]["read_only"] = False
+        else:
+            volumes[0] = volumes[0].removesuffix(":ro")
+        with pytest.raises(ComposeCandidateContractError, match="mounts are invalid"):
+            _check_bootstrap(writable, environment, resolved=resolved)
+
+        swapped = deepcopy(document)
+        volumes = _bootstrap_service(swapped)["volumes"]
+        volumes[0], volumes[1] = volumes[1], volumes[0]
+        with pytest.raises(ComposeCandidateContractError, match="mounts are invalid"):
+            _check_bootstrap(swapped, environment, resolved=resolved)
+
+
+def test_map_bootstrap_one_shot_rejects_a_secret_of_another_instance() -> None:
+    """resolved 경로는 Map DSN 포트의 instance에서 secret을 유도한다 — 다른 instance의 것은 거부.
+
+    raw 경로는 `-p`를 보간할 수 없으므로 "어떤 서버의 admin secret"까지만 본다(대조군).
     """
+
+    lines = c6c_deployment_module.map_db_role_bootstrap_script_lines("/run/secrets/b-admin")
+    document: dict[str, Any] = {
+        "secrets": {
+            "a-admin": {"environment": "A_ADMIN_PASSWORD"},
+            "b-admin": {"environment": "B_ADMIN_PASSWORD"},
+        },
+        "services": {
+            name: {
+                "command": ["postgres", "-p", port],
+                "environment": {"POSTGRES_USER": f"{name}_admin", "POSTGRES_PASSWORD_FILE": f"/run/secrets/{name}-admin"},
+                "secrets": [f"{name}-admin"],
+            }
+            for name, port in (("a", "15101"), ("b", "15102"))
+        },
+    }
+    service = {
+        "profiles": ["bootstrap"],
+        "image": "postgres:16-alpine",
+        "restart": "no",
+        "entrypoint": ["/bin/sh", "-ec"],
+        "command": ["\n".join(lines) + "\n"],
+        "secrets": [{"source": "b-admin", "target": "/run/secrets/b-admin"}],
+        "volumes": [
+            {
+                "type": "bind",
+                "source": f"/src/map/{relative}",
+                "target": target,
+                "read_only": True,
+            }
+            for relative, target in c6c_deployment_module._MAP_DB_ROLE_BOOTSTRAP_MOUNTS
+        ],
+        "environment": {},
+    }
+    document["services"]["kor-travel-map-db-role-bootstrap"] = service
+    environment = {
+        "KOR_TRAVEL_MAP_PG_DSN": "postgresql+asyncpg://ktm_feature_service:s@127.0.0.1:15101/m"
+    }
+
+    with pytest.raises(ComposeCandidateContractError, match="admin secret of the instance on the Map DSN port"):
+        c6c_deployment_module._validate_map_db_role_bootstrap_service(
+            "kor-travel-map-db-role-bootstrap", service, document=document, environment=environment, resolved=True
+        )
+    # 같은 문서에서 DSN이 b를 가리키면 통과한다.
+    c6c_deployment_module._validate_map_db_role_bootstrap_service(
+        "kor-travel-map-db-role-bootstrap",
+        service,
+        document=document,
+        environment={"KOR_TRAVEL_MAP_PG_DSN": environment["KOR_TRAVEL_MAP_PG_DSN"].replace("15101", "15102")},
+        resolved=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "KOR_TRAVEL_MAP_POSTGRES_USER",
+        "KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
+        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
+        "KTDM_MAP_BOOTSTRAP_PGPORT",
+    ],
+)
+def test_map_bootstrap_one_shot_rejects_run_time_keys_in_compose(tmp_path: Path, name: str) -> None:
+    """admin 이름·포트는 Manager의 실행 시점 `-e`, password·DSN은 one-shot 셸이 만든다 — compose env에는 없다."""
+
+    environment, documents = _bootstrap_documents(tmp_path)
+    for document, resolved in documents:
+        shaped = deepcopy(document)
+        _bootstrap_service(shaped)["environment"][name] = "anything"
+        with pytest.raises(ComposeCandidateContractError, match=f"run-time values: {name}"):
+            _check_bootstrap(shaped, environment, resolved=resolved)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "match"),
+    [
+        ("ports", ["15432:15432"], "keys outside its contract: ports"),
+        ("working_dir", "/tmp", "keys outside its contract: working_dir"),
+        ("restart", "unless-stopped", "lifecycle is invalid"),
+        ("profiles", [], "lifecycle is invalid"),
+        ("entrypoint", ["/bin/sh", "-c"], "entrypoint is invalid"),
+    ],
+)
+def test_map_bootstrap_one_shot_rejects_a_changed_surface(
+    tmp_path: Path, key: str, value: object, match: str
+) -> None:
+    environment, documents = _bootstrap_documents(tmp_path)
+    for document, resolved in documents:
+        shaped = deepcopy(document)
+        _bootstrap_service(shaped)[key] = value
+        with pytest.raises(ComposeCandidateContractError, match=match):
+            _check_bootstrap(shaped, environment, resolved=resolved)
+
+
+def test_the_entry_points_run_the_bootstrap_one_shot_contract(tmp_path: Path) -> None:
+    """직접 호출 검사만 두면 진입점의 호출을 지우는 변이를 잡지 못한다 — 두 진입점을 태운다."""
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    services = candidate["services"]
-    assert isinstance(services, dict)
-    owner = services["kor-travel-map-postgres"]
-    assert isinstance(owner, dict)
-    references = owner["secrets"]
-    assert isinstance(references, list) and len(references) == 1
-    authorized = references[0]
-    assert isinstance(authorized, dict)
-
-    for label, replacement in {
-        "alias target": [{**authorized, "target": "some-other-target"}],
-        "short syntax (target 생략)": [authorized["source"]],
-        "traversal-looking target": [{**authorized, "target": "../escaped"}],
-    }.items():
-        shaped = deepcopy(candidate)
-        shaped_services = shaped["services"]
-        assert isinstance(shaped_services, dict)
-        shaped_owner = shaped_services["kor-travel-map-postgres"]
-        assert isinstance(shaped_owner, dict)
-        shaped_owner["secrets"] = replacement
-        with pytest.raises(ComposeCandidateContractError) as rejection:
-            validate_compose_candidate_protected_values(
+    resolved = _bootstrap_resolved(environment)
+    for entry, base in (
+        (validate_compose_candidate_protected_values, candidate),
+        (validate_resolved_compose_candidate_protected_values, resolved),
+    ):
+        shaped = deepcopy(base)
+        service = _bootstrap_service(shaped)
+        service["command"] = [service["command"][0] + "id\n"]
+        with pytest.raises(ComposeCandidateContractError, match="Map role bootstrap service command is invalid"):
+            entry(
                 shaped,
+                environment=environment,
                 compose_path=str(_COMPOSE_PATH),
                 root_env_path=str(root_env),
-                environment=environment,
             )
-        assert "Map PostgreSQL password secret is invalid" in str(rejection.value), (
-            f"{label}: 소유자의 어긋난 마운트가 거부되지 않았다 — {rejection.value}"
-        )
-
-
-def test_the_secret_declaration_is_checked_without_the_owner(tmp_path: Path) -> None:
-    """최상위 `secrets` 선언 검사는 **소유자와 무관**하다 (적대 리뷰 M2).
-
-    첫 판은 이 블록을 (A) 안에 두었고 그래서 (A)의 docstring이 거짓이었다 — 최상위
-    선언은 소유자 서비스에 관한 물음이 아니라 문서 전역의 성질이다. 게다가
-    `_DATABASE_ALLOWED_NON_ENV_PATHS`가 그 경로를 전역 스캔에서 **무조건 면제**하는
-    근거가 "이 검사가 그 경로를 소유한다"였으므로, S4가 (A)를 끄면 면제만 남는다.
-    """
-
-    document = _document_with_foreign_consumer(include_owner=False)
-    secrets = document["secrets"]
-    assert isinstance(secrets, dict)
-    secrets[_MAP_PASSWORD_SECRET] = {"environment": "PINVI_POSTGRES_PASSWORD"}
-
-    with pytest.raises(
-        ComposeCandidateContractError, match="Map PostgreSQL password secret is invalid"
-    ):
-        c6c_deployment_module._validate_map_postgres_password_declaration(document)
-
-
-def test_entry_point_checks_the_secret_declaration(tmp_path: Path) -> None:
-    """선언 검사가 **진입점에서** 실제로 불린다.
-
-    직접 호출 검사만 두면 진입점의 호출을 지우는 변이를 잡지 못한다(실측: 그 상태에서
-    전체 스위트가 초록이었다). 진입점을 태워 호출 자체를 결박한다.
-    """
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    shaped = deepcopy(candidate)
-    secrets = shaped["secrets"]
-    assert isinstance(secrets, dict)
-    secrets[_MAP_PASSWORD_SECRET] = {"environment": "PINVI_POSTGRES_PASSWORD"}
-
-    with pytest.raises(
-        ComposeCandidateContractError, match="Map PostgreSQL password secret is invalid"
-    ):
-        validate_compose_candidate_protected_values(
-            shaped,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
-
-
-def test_entry_point_runs_the_consumer_scan_for_a_valid_owner(tmp_path: Path) -> None:
-    """소비자 스캔이 **진입점에서** 실제로 불린다 — 소유자가 멀쩡할 때도.
-
-    `..._when_the_required_set_shrinks`는 required 집합을 patch하므로, 진입점의 전역
-    호출을 지우는 변이를 그것만으로는 못 잡는다((A) 안의 경로로 대체될 수 있었다).
-    여기서는 patch 없이, 소유자가 정상인 후보에 남의 소비자만 얹어 진입점을 태운다.
-    """
-
-    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
-    shaped = deepcopy(candidate)
-    services = shaped["services"]
-    assert isinstance(services, dict)
-    services["some-other-service"] = {
-        "image": "example:latest",
-        "secrets": [_MAP_PASSWORD_SECRET],
-    }
-
-    with pytest.raises(
-        ComposeCandidateContractError,
-        match="some-other-service.secrets -> KOR_TRAVEL_MAP_POSTGRES_PASSWORD",
-    ):
-        validate_compose_candidate_protected_values(
-            shaped,
-            compose_path=str(_COMPOSE_PATH),
-            root_env_path=str(root_env),
-            environment=environment,
-        )
 
 
 # ── PostgreSQL 인증 우회 두 경로 ─────────────────────────────────────────
@@ -2880,7 +2946,7 @@ def test_entry_point_runs_the_consumer_scan_for_a_valid_owner(tmp_path: Path) ->
 
 @pytest.mark.parametrize(
     "service",
-    ["kor-travel-map-postgres", "kor-travel-shared-postgres"],
+    ["kor-travel-shared-postgres"],
 )
 def test_initdb_trust_auth_is_rejected_for_both_postgres_services(
     service: str, tmp_path: Path
@@ -2919,7 +2985,7 @@ def test_initdb_trust_auth_is_rejected_for_both_postgres_services(
 
 @pytest.mark.parametrize(
     "service",
-    ["kor-travel-map-postgres", "kor-travel-shared-postgres", "kor-travel-map-api"],
+    ["kor-travel-shared-postgres", "kor-travel-map-db-role-bootstrap", "kor-travel-map-api"],
 )
 def test_host_auth_method_override_is_rejected_anywhere(
     service: str, tmp_path: Path
@@ -2969,16 +3035,11 @@ def test_the_two_postgres_services_share_one_initdb_contract() -> None:
     # `_PINVI_POSTGRES_INITDB_ARGS`는 제거했다 — 값 고정의 자리가 전역 술어 하나로
     # 옮겨간 뒤로 아무도 읽지 않는 죽은 별칭이었다(적대 리뷰 2026-09-18 라운드4 F13).
     assert not hasattr(c6c_deployment_module, "_PINVI_POSTGRES_INITDB_ARGS")
-    assert (
-        c6c_deployment_module._MAP_DATABASE_CANONICAL_ENV_VALUES[
-            ("kor-travel-map-postgres", "POSTGRES_INITDB_ARGS")
-        ]
-        == canonical
-    )
-    # UI 저장 경로의 잠금이 같은 dict에서 파생되는지도 센다 — 계약표에 넣은 효과가
-    # 검증 경로에만 머무르지 않는다는 것이 이 수정의 절반이다.
-    locked = c6c_deployment_module._CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE
-    assert "POSTGRES_INITDB_ARGS" in locked["kor-travel-map-postgres"]
+    # ADR-53 뒤 정본 compose의 PostgreSQL 서버는 공용 instance 하나다 — 그 값도 같은 상수다.
+    # (Map 전용 instance의 계약표 행은 그 instance와 함께 빠졌다. UI 저장 경로는 서비스 이름과
+    # 무관한 전역 술어가 잠근다 — `test_the_ui_save_path_locks_initdb_args_for_every_service`.)
+    shared = _source_compose()["services"]["kor-travel-shared-postgres"]
+    assert shared["environment"]["POSTGRES_INITDB_ARGS"] == canonical
 
 
 # ── Concierge UI 게이트가 API 계약을 함께 끄던 것 ────────────────────────
@@ -3407,7 +3468,7 @@ def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
     """
 
     return _resolved_compose(
-        "kor-travel-map-postgres",
+        "kor-travel-shared-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster",
@@ -3701,7 +3762,8 @@ def test_the_ui_save_path_locks_initdb_args_for_every_service() -> None:
 
     for service_name in (
         "kor-travel-shared-postgres",
-        "kor-travel-map-postgres",
+        # 이름 목록이 아니다 — 모르는 이름의 서비스도 같은 잠금을 받는다.
+        "some-future-postgres",
     ):
         with pytest.raises(
             ContainerConfigValidationError, match="initdb authentication policy"
@@ -4392,15 +4454,15 @@ def test_the_map_postgres_loopback_binding_is_now_enforced(tmp_path: Path) -> No
     """이름을 지목한 회귀 검사.
 
     `docs/tasks.md`의 오래된 열린 항목이다 — "Map에는 `command` 검사가 아예 없다".
-    PinVi는 `listen_addresses=*`로 바꾸면 거부하는데 Map은 통과했다. 그 비대칭이
-    닫혔는지 **Map 이름으로** 확인한다.
+    PinVi는 `listen_addresses=*`로 바꾸면 거부하는데 Map은 통과했다. ADR-53부터 Map DB는
+    공용 instance에 산다 — 그 instance의 결박을 확인한다.
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    postgres = services["kor-travel-map-postgres"]
+    postgres = services["kor-travel-shared-postgres"]
     assert isinstance(postgres, dict)
     command = list(postgres["command"])
     command[command.index("listen_addresses=127.0.0.1")] = "listen_addresses=*"
@@ -4524,7 +4586,7 @@ def test_an_appended_listen_addresses_cannot_widen_the_binding(
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    postgres = services["kor-travel-map-postgres"]
+    postgres = services["kor-travel-shared-postgres"]
     assert isinstance(postgres, dict)
     postgres["command"] = [*postgres["command"], *extra]
 
@@ -4635,7 +4697,7 @@ def test_the_runtime_predicate_runs_on_the_resolved_entry_point(tmp_path: Path) 
     resolved = _bootstrap_resolved(environment)
     services = resolved["services"]
     assert isinstance(services, dict)
-    postgres = services["kor-travel-map-postgres"]
+    postgres = services["kor-travel-shared-postgres"]
     assert isinstance(postgres, dict)
     postgres["command"] = [*postgres["command"], "-c", "hba_file=/tmp/evil.conf"]
 
@@ -4675,7 +4737,7 @@ def test_every_spelling_that_widens_the_binding_is_refused(
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    postgres = services["kor-travel-map-postgres"]
+    postgres = services["kor-travel-shared-postgres"]
     assert isinstance(postgres, dict)
     postgres["command"] = [*postgres["command"], *fragment]
 
@@ -4715,7 +4777,7 @@ def test_an_unknown_command_token_is_refused(
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    postgres = services["kor-travel-map-postgres"]
+    postgres = services["kor-travel-shared-postgres"]
     assert isinstance(postgres, dict)
     postgres["command"] = [*postgres["command"], *fragment]
 
@@ -4770,12 +4832,8 @@ def test_the_declared_set_comes_from_the_trusted_document() -> None:
     """
 
     declared = c6c_deployment_module._declared_postgres_compose_services()
-    assert declared == frozenset(
-        {
-            "kor-travel-map-postgres",
-            "kor-travel-shared-postgres",
-        }
-    ), declared
+    # ADR-53: Map 전용 instance가 퇴역해 선언된 서버는 공용 instance 하나다.
+    assert declared == frozenset({"kor-travel-shared-postgres"}), declared
 
 
 #: 정본 특권 예외 서비스의 이미지. 예외는 이름만으로 성립하지 않는다.
@@ -4976,7 +5034,7 @@ def test_the_new_predicates_survive_a_shrunken_required_set(
     # 함께 뺀다. Map postgres도 문서에서 지워 "아는 postgres가 하나도 없는" 형상을
     # 만든다.
     shaped = _s4_without_pinvi_services(monkeypatch, candidate)
-    shaped = _shape_without(shaped, ("kor-travel-map-postgres",))
+    shaped = _shape_without(shaped, ("kor-travel-shared-postgres",))
     # required 집합에서도 뺀다 — S4가 실제로 만드는 형상이 그것이다.
     for name in (
         "_CANDIDATE_REQUIRED_PROTECTED_SERVICES",
@@ -5161,7 +5219,7 @@ def test_a_healthcheck_cannot_run_an_arbitrary_program(
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    postgres = services["kor-travel-map-postgres"]
+    postgres = services["kor-travel-shared-postgres"]
     assert isinstance(postgres, dict)
     postgres["healthcheck"] = {"test": ["CMD-SHELL", payload], "interval": "10s"}
 
@@ -5177,16 +5235,15 @@ def test_a_healthcheck_cannot_run_an_arbitrary_program(
 
 
 def test_the_canonical_healthchecks_still_pass(tmp_path: Path) -> None:
-    """정본 넷의 healthcheck는 그대로 통과한다 — 좁히기가 넓어지면 여기가 잡는다.
+    """정본 healthcheck는 그대로 통과한다 — 좁히기가 넓어지면 여기가 잡는다.
 
-    map은 `test "$(cat /proc/1/comm)" = postgres && pg_isready …`이므로 프로그램 자리가
-    셋이다(`test`·`cat`·`pg_isready`).
+    ADR-53 뒤 정본 서버는 공용 instance 하나이고, 그 probe는 exec 형식 `pg_isready`다.
     """
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
     services = candidate["services"]
     assert isinstance(services, dict)
-    postgres = services["kor-travel-map-postgres"]
+    postgres = services["kor-travel-shared-postgres"]
     assert isinstance(postgres, dict)
     assert "healthcheck" in postgres, "전제: 정본 fragment가 healthcheck를 담는다"
     validate_compose_candidate_protected_values(
@@ -5223,7 +5280,7 @@ def test_an_exec_healthcheck_cannot_run_an_arbitrary_program(
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    postgres = services["kor-travel-map-postgres"]
+    postgres = services["kor-travel-shared-postgres"]
     assert isinstance(postgres, dict)
     postgres["healthcheck"] = {"test": test, "interval": "10s"}
 
@@ -5249,7 +5306,7 @@ def test_an_exec_pg_isready_probe_with_arguments_passes(tmp_path: Path) -> None:
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    postgres = services["kor-travel-map-postgres"]
+    postgres = services["kor-travel-shared-postgres"]
     assert isinstance(postgres, dict)
     postgres["healthcheck"] = {
         "test": [
@@ -5258,7 +5315,7 @@ def test_an_exec_pg_isready_probe_with_arguments_passes(tmp_path: Path) -> None:
             "-h",
             "127.0.0.1",
             "-p",
-            "12700",
+            "11000",
             "-t",
             "3",
         ],
@@ -5301,7 +5358,7 @@ def test_removing_the_loopback_binding_entirely_is_refused(tmp_path: Path) -> No
     shaped = deepcopy(candidate)
     services = shaped["services"]
     assert isinstance(services, dict)
-    postgres = services["kor-travel-map-postgres"]
+    postgres = services["kor-travel-shared-postgres"]
     assert isinstance(postgres, dict)
     command = list(postgres["command"])
     index = command.index("listen_addresses=127.0.0.1")
@@ -5331,14 +5388,16 @@ def test_the_raw_validator_applies_the_derived_protected_reference_rule(tmp_path
     leaking = deepcopy(candidate)
     map_api = leaking["services"]["kor-travel-map-api"]  # type: ignore[index]
     environment_block = map_api.setdefault("environment", {})
+    # instance admin password는 ADR-53의 admin secret 규칙이 이 규칙보다 먼저 거부한다 — 배선을
+    # 재려면 admin secret이 아닌 공유 비밀을 쓴다.
     if isinstance(environment_block, list):
-        environment_block.append("KTDM_PROBE=${KOR_TRAVEL_SHARED_POSTGRES_PASSWORD}")
+        environment_block.append("KTDM_PROBE=${PINVI_APP_DB_PASSWORD}")
     else:
-        environment_block["KTDM_PROBE"] = "${KOR_TRAVEL_SHARED_POSTGRES_PASSWORD}"
+        environment_block["KTDM_PROBE"] = "${PINVI_APP_DB_PASSWORD}"
 
     with pytest.raises(
         ComposeCandidateContractError,
-        match="kor-travel-map-api.environment.KTDM_PROBE -> KOR_TRAVEL_SHARED_POSTGRES_PASSWORD",
+        match="kor-travel-map-api.environment.KTDM_PROBE -> PINVI_APP_DB_PASSWORD",
     ):
         validate_compose_candidate_protected_values(
             leaking,
@@ -5362,7 +5421,7 @@ def test_map_metadata_user_must_equal_the_dagster_database_name() -> None:
     environment["KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"] = "map_contract_metadata"
     environment["KOR_TRAVEL_MAP_DAGSTER_PG_URL"] = (
         "postgresql://map_contract_metadata:map-contract-dagster-metadata-password@"
-        "127.0.0.1:12700/map_contract_dagster"
+        "127.0.0.1:11000/map_contract_dagster"
     )
 
     with pytest.raises(
@@ -5379,58 +5438,45 @@ _SERVICE_DSN_PASSWORD = "map-contract-service-password"
     ("service_dsn", "message"),
     [
         (
-            f"postgresql://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@127.0.0.1:12700/map_contract",
+            f"postgresql://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@127.0.0.1:11000/map_contract",
             "Map database DSN identity is invalid",
         ),
         (
-            f"postgresql+asyncpg://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@db:12700/map_contract",
+            f"postgresql+asyncpg://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@db:11000/map_contract",
             "Map database DSN identity is invalid",
         ),
         (
-            f"postgresql+asyncpg://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@127.0.0.1:11000/map_contract",
+            f"postgresql+asyncpg://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@127.0.0.1:12900/map_contract",
+            "Map database DSNs must share one PostgreSQL instance",
+        ),
+        (
+            f"postgresql+asyncpg://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@127.0.0.1:11000/pinvi",
             "Map database DSN identity is invalid",
         ),
         (
-            f"postgresql+asyncpg://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@127.0.0.1:12700/pinvi",
+            f"postgresql+asyncpg://ktm_feature_service:{_SERVICE_DSN_PASSWORD}@127.0.0.1:11000/map_contract?sslmode=disable",
             "Map database DSN identity is invalid",
         ),
         (
-            "postgresql+asyncpg://127.0.0.1:12700/map_contract",
+            "postgresql+asyncpg://127.0.0.1:11000/map_contract",
             "Map application login must be a service login",
         ),
-        *(
-            (
-                f"postgresql+asyncpg://{user}:{_SERVICE_DSN_PASSWORD}@127.0.0.1:12700/map_contract",
-                "Map application login must be a service login",
-            )
-            for user in (
-                "map_contract_admin",
-                "map_contract_dagster",
-                "ktm_feature_schema_owner",
-                "ktm_feature_migrator",
-                "ktm_feature_runtime",
-            )
+        (
+            f"postgresql+asyncpg://map_contract_dagster:{_SERVICE_DSN_PASSWORD}@127.0.0.1:11000/map_contract",
+            "Map application login must be a service login",
         ),
     ],
-    ids=[
-        "scheme",
-        "host",
-        "port",
-        "database",
-        "no-login",
-        "bootstrap-user",
-        "metadata-user",
-        "schema-owner",
-        "migrator",
-        "runtime-principal",
-    ],
+    ids=["scheme", "host", "port", "database", "query", "no-login", "metadata-user"],
 )
 def test_map_service_login_dsn_is_bound_like_its_siblings(
     service_dsn: str, message: str
 ) -> None:
-    """R4가 app DB CONNECT를 주는 login의 DSN이다(M1 리뷰). 형제 DSN처럼 endpoint·DB를 결박하고,
-    login은 bootstrap·metadata·Map principal 자리가 아니어야 한다. 그것이 Map의 login인지는 R4가
-    live role 그래프로 본다.
+    """R4가 app DB CONNECT를 주는 login의 DSN이다(M1 리뷰). 형제 DSN처럼 endpoint·DB를 결박한다.
+
+    login은 이름으로 고정하지 않는다(Map이 소유한다). metadata user·instance admin 자리가 아니면
+    되고, 그것이 정말 Map의 login인지는 R4가 live role 그래프로 본다 — schema owner의 LOGIN
+    member가 아니면 멈추기 전에(`require_map_databases_isolatable`), 그리고 바꾸는 transaction
+    안에서 거부한다. ADR-100 principal 이름 목록은 D10으로 C6c에서 빠졌다.
     """
 
     environment = _compose_contract_environment()
@@ -5440,3 +5486,57 @@ def test_map_service_login_dsn_is_bound_like_its_siblings(
 
     with pytest.raises(DeploymentContractError, match=message):
         c6c_deployment_module._validate_map_database_dsn_identities(environment)
+
+
+def _one_server_document(admin: str = "shared_admin", port: str = "11000") -> dict[str, Any]:
+    return {
+        "services": {
+            "pg": {
+                "command": ["postgres", "-c", "listen_addresses=127.0.0.1", "-p", port],
+                "environment": {"POSTGRES_USER": admin},
+            }
+        }
+    }
+
+
+def test_map_login_must_not_be_the_instance_admin_on_the_resolved_path() -> None:
+    """instance admin은 resolved 문서의 그 서버 `POSTGRES_USER`에서 온다 — raw는 모른다(대조군)."""
+
+    environment = _compose_contract_environment()
+    environment["KOR_TRAVEL_MAP_PG_DSN"] = (
+        f"postgresql+asyncpg://shared_admin:{_SERVICE_DSN_PASSWORD}@127.0.0.1:11000/map_contract"
+    )
+
+    c6c_deployment_module._validate_map_database_dsn_identities(environment)
+    with pytest.raises(DeploymentContractError, match="Map application login must be a service login"):
+        c6c_deployment_module._validate_map_database_dsn_instance(
+            environment, resolved=_one_server_document()
+        )
+    # 대조군: admin이 다른 이름이면 같은 login이 통과한다.
+    c6c_deployment_module._validate_map_database_dsn_instance(
+        environment, resolved=_one_server_document(admin="other_admin")
+    )
+
+
+@pytest.mark.parametrize(
+    ("metadata_user", "resolved"),
+    [("ktm_feature_dagster", False), ("shared_admin", True)],
+    ids=["map-principal", "instance-admin"],
+)
+def test_map_metadata_user_is_not_a_map_principal_or_the_instance_admin(
+    metadata_user: str, resolved: bool
+) -> None:
+    environment = _compose_contract_environment()
+    environment["KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"] = metadata_user
+    environment["KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"] = metadata_user
+    environment["KOR_TRAVEL_MAP_DAGSTER_PG_URL"] = (
+        f"postgresql://{metadata_user}:m@127.0.0.1:11000/{metadata_user}"
+    )
+
+    with pytest.raises(DeploymentContractError, match="Map database DSN identity is invalid"):
+        if resolved:
+            c6c_deployment_module._validate_map_database_dsn_instance(
+                environment, resolved=_one_server_document()
+            )
+        else:
+            c6c_deployment_module._validate_map_database_dsn_identities(environment)

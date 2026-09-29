@@ -77,7 +77,6 @@ def _validate_map_application_candidate(
         for image_id in (
             candidate.api_image_id,
             candidate.dagster_image_id,
-            candidate.postgres_image_id,
         )
     ):
         raise DeploymentContractError("Map application 300 candidate image ID is invalid")
@@ -88,7 +87,6 @@ def _candidate_evidence(
 ) -> MapApplication300CandidateEvidence:
     return MapApplication300CandidateEvidence(
         candidate_git_tree=candidate.candidate_git_tree,
-        postgres_image_id=candidate.postgres_image_id,
         dagster_config_sha256=candidate.dagster_config_sha256,
     )
 
@@ -239,30 +237,22 @@ class CandidateRuntimeBuild:
                 require_immutable=False,
             )
         )
-        values["KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID"] = (
-            self.map_application_candidate.postgres_image_id
-        )
         return MappingProxyType(values)
 
 
 def generation_compose_environment(
     generation: PinnedRuntimeGeneration,
 ) -> Mapping[str, str]:
-    """attested image와 Map PostgreSQL image ID만 주는 runtime override.
+    """attested image만 주는 runtime override.
 
     ADR-51 D-3에서 Dagster storage permit 디렉터리와 `..._STORAGE_CONFIG_SHA256`을
     뺐다 — M1 이후 Map storage one-shot은 둘 다 읽지 않는다.
     """
 
-    values = dict(
-        _runtime_image_environment(
-            generation.image_ids,
-            require_immutable=True,
-        )
+    return _runtime_image_environment(
+        generation.image_ids,
+        require_immutable=True,
     )
-    evidence = generation.map_application_300_candidate_evidence
-    values["KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID"] = evidence.postgres_image_id
-    return MappingProxyType(values)
 
 
 def parse_candidate_static_head(
