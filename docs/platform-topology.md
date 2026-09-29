@@ -109,6 +109,13 @@ ADR-53으로 공용 인스턴스로 옮겨, 이제 Manager의 PostgreSQL은 공�
 2026-09-19 PinVi PR #558/#356으로 pinvi도 합류). 이것이 §7의 전환에서 갈라지는
 지점이다.
 
+**퇴역 목록(보존물)** — 인스턴스 컨테이너는 지우고 데이터·되돌리기 재료는 남긴다.
+
+| 옛 인스턴스 | 제거일 | 보존한 것 |
+|---|---|---|
+| `pinvi-postgres`(`:12800`) | 2026-09-28 | 데이터 디렉터리 `/home/digitie/pinvi-data/pgdata` |
+| `kor-travel-map-postgres`(`:12700`) | 2026-09-29(ADR-53 이전 직후, 소유자 지시로 72시간 관찰 전 제거) | PGDATA `/home/digitie/kor-travel-map-data/pgdata`(이전 전 `kor_travel_map`·`kor_travel_map_dagster`와 검증 잔여 `ktm_40b`·`ktm_bootstrap`·`ktm_gcverify`·`ktm_gcverify_dagster`), 이미지 `sha256:69ee0897…`(로컬 태그 `ktm-retired/postgis:16.15-3.5.7-alpine`, tar `/root/map-db-move-20260929/postgis-16.15-3.5.7-alpine.tar`, pull 참조 `postgis/postgis@sha256:69ee08977169aa2bbdcfb5db9b54eaaf1907d4cc91b5b78f7dc00cd7951cfd90`), 창 증거 `/root/map-db-move-20260929/`(감사 dump·로그·스냅숏, 되돌리기에 필요한 옛 superuser 값이 든 `.env` 사본). 되돌리기는 `30-rollback.sh move-after-acceptance` |
+
 `12000-12099` 대역은 비어 있다 — 폐지된 통합 인스턴스와, 그 뒤 geo 인스턴스(`12500`)만
 가리키던 `db` target(2026-09-28 폐지)의 자리였다. 새 프로젝트가 `db`라는 이름을
 재사용하면 안 된다.
