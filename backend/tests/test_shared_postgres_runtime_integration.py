@@ -37,14 +37,20 @@ import docker
 import pytest
 import yaml
 from test_compose_readiness_integration import _unavailable_docker_fixture
-from test_shared_postgres_runtime_contract import _bytes, _seconds, _service
+from test_shared_postgres_runtime_contract import _SERVICE, _bytes, _seconds, _service
 
+from kor_travel_docker_manager.services import docker_service as docker_service_module
 from kor_travel_docker_manager.services.docker_service import DockerService
+from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS
 
 #: 정본에서 그대로 가져오는 실행 형태. 빠진 키는 옮기지 않는다(변경 전 compose에서도 돈다).
 _CARRIED_KEYS = ("image", "init", "command", "healthcheck", "stop_grace_period", "shm_size")
 #: 격리 netns 안의 포트. command와 probe가 같은 변수에서 읽으므로 둘이 함께 바뀐다.
 _ISOLATED_PORT = "15436"
+#: 격리 compose 프로젝트 이름의 머리. 정지 경로가 풀 수 있는 이름은 이것으로 시작해야 한다.
+_PROJECT_PREFIX = "ktdm-sharedpg-"
+#: 정지 경로에 넘기는 throwaway registry 키 — 운영 키가 아니다.
+_ISOLATED_KEY = "ktdm-it-sharedpg"
 #: 정지를 뺀 docker 명령 하나의 상한(n150 부하에서 `docker create` 한 번이 27.8초였다).
 _TIMEOUT = 180
 #: 정지 명령은 컨테이너 자신의 grace만큼 기다릴 수 있다 — 그 위에 두는 여유.
@@ -131,7 +137,7 @@ def isolated_shared_postgres(tmp_path: Path) -> Iterator[str]:
     compose_path.write_text(
         yaml.safe_dump({"services": {"pg": service}}, sort_keys=False), encoding="utf-8"
     )
-    project = f"ktdm-sharedpg-{os.getpid()}-{tmp_path.name[-8:]}".lower()
+    project = f"{_PROJECT_PREFIX}{os.getpid()}-{tmp_path.name[-8:]}".lower()
     env = {**os.environ, "KOR_TRAVEL_SHARED_DB_PORT": _ISOLATED_PORT}
     compose = ("docker", "compose", "--file", str(compose_path), "--project-name", project)
     stop_timeout = _seconds(service["stop_grace_period"]) + _STOP_TIMEOUT_MARGIN
@@ -304,7 +310,31 @@ def test_the_shared_postgres_runs_its_canonical_shape_in_the_pinned_image(
 
     # 정지는 Manager의 컨테이너 정지 경로(`_control_container_unlocked`, 대시보드의 stop)로
     # 한다 — 실제 daemon의 inspect가 grace를 `Config.StopTimeout`에 보고하고, 그 값이 docker-py를
-    # 거쳐 daemon에 `t`로 닿는다. 이름만 격리 컨테이너로 돌리고 호출은 그대로 통과시킨다.
+    # 거쳐 daemon에 `t`로 닿는다.
+    #
+    # **이름부터 격리 컨테이너로만 풀리게 한다.** 이 테스트는 n150(운영)에서 머지 gate로 돈다.
+    # 운영 registry 키를 넘기면 그 이름은 운영 공용 instance이고, 격리를 지키는 것이
+    # `_get_client` 패치 하나뿐이다 — 메서드가 client를 다른 길로 얻게 바뀌는 순간 운영 공용
+    # instance를 grace 300초로 멈춘다(사용자 정지는 `unless-stopped`가 되살리지 않는다). 그래서
+    # docker_service가 보는 registry를 throwaway 키 **하나뿐인** 사본으로 갈아 끼우고(운영 키는
+    # 아예 풀리지 않는다) 그 키의 이름을 격리 컨테이너로 둔다. fake client도 받은 이름을 확인한다.
+    # 패치가 우회돼도 닿을 수 있는 것은 격리 컨테이너뿐이다.
+    isolated_name = str(details["Name"]).lstrip("/")
+    project = details["Config"]["Labels"]["com.docker.compose.project"]
+    shared_keys = [
+        key for key, spec in MANAGED_CONTAINERS.items() if spec.get("compose_service") == _SERVICE
+    ]
+    assert len(shared_keys) == 1, shared_keys
+    shared_spec = MANAGED_CONTAINERS[shared_keys[0]]
+    assert project.startswith(_PROJECT_PREFIX), project
+    assert isolated_name.startswith(f"{project}-"), isolated_name
+    assert isolated_name != shared_spec["name"], isolated_name
+    monkeypatch.setattr(
+        docker_service_module,
+        "MANAGED_CONTAINERS",
+        {_ISOLATED_KEY: {**shared_spec, "name": isolated_name}},
+    )
+
     real = docker.from_env().containers.get(container)
     sent: list[dict[str, Any]] = []
     real_stop = real.stop
@@ -313,21 +343,29 @@ def test_the_shared_postgres_runs_its_canonical_shape_in_the_pinned_image(
         sent.append(kwargs)
         real_stop(**kwargs)
 
+    asked: list[str] = []
+
+    def isolated_container(name: str) -> Any:
+        asked.append(name)
+        assert name == isolated_name, f"격리 밖의 컨테이너 이름을 찾았다: {name}"
+        return real
+
     monkeypatch.setattr(real, "stop", recording_stop)
     manager = DockerService()
     monkeypatch.setattr(
         manager,
         "_get_client",
-        lambda: SimpleNamespace(containers=SimpleNamespace(get=lambda _name: real)),
+        lambda: SimpleNamespace(containers=SimpleNamespace(get=isolated_container)),
     )
 
     # docker-init이 stop signal을 postmaster에 넘긴다 — grace 안의 깨끗한 종료다. signal이
     # 닿지 않으면 docker가 grace를 다 기다린 뒤 SIGKILL한다(exit 137, 종료 로그 없음).
     started = time.monotonic()
     stopped = manager._control_container_unlocked(
-        "kor-travel-shared-postgresql", "stop", environment_snapshot=None
+        _ISOLATED_KEY, "stop", environment_snapshot=None
     )
     elapsed = time.monotonic() - started
+    assert asked == [isolated_name]
     assert stopped["success"] is True, stopped
     assert sent == [{"timeout": grace}]
     assert _inspect(container)["State"]["ExitCode"] == 0
