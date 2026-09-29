@@ -11,6 +11,10 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import hmac
 import re
 import subprocess
 from collections.abc import Callable, Mapping
@@ -21,8 +25,12 @@ from urllib.parse import unquote, urlsplit
 from kor_travel_docker_manager.services.c6c_deployment import (
     _PINVI_API_SERVICE,
     _PINVI_DATABASE_URL_ENV,
+    MAP_PRINCIPAL_PREFIX,
+    POSTGRES_IDENTIFIER,
     DeploymentContractError,
+    loopback_dsn_authority,
     postgres_admin_secret,
+    postgres_server_admin_name,
     postgres_server_services_on_port,
 )
 from kor_travel_docker_manager.services.errors import command_output_tail
@@ -30,7 +38,8 @@ from kor_travel_docker_manager.services.errors import command_output_tail
 DatabaseRole = Literal["map_application", "map_dagster", "pinvi"]
 MapApplicationEnsureOutcome = Literal["created", "bootstrapped", "present"]
 
-_DATABASE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+#: role·database 이름의 모양 — C6c의 것 하나다(instance admin 이름을 두 모듈이 같게 읽는다).
+_DATABASE_IDENTIFIER = POSTGRES_IDENTIFIER
 _CONTAINER_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
 _SCHEMA_REVISION = re.compile(r"^[0-9a-z][0-9a-z_.-]{0,127}$")
 #: role마다 (DB 이름 env, 기본값, 소유자 env·기본값). 소유자가 ``None``이면 **그 instance의
@@ -146,16 +155,15 @@ class _PostgresInstance:
 
 
 def _dsn_authority(dsn: object, *, label: str) -> tuple[str, int]:
-    """DSN의 (host, port). host는 `127.0.0.1`이어야 한다 — 모든 instance가 loopback만 듣는다."""
+    """DSN의 (host, port). host는 `127.0.0.1`이어야 한다 — 모든 instance가 loopback만 듣는다.
 
-    try:
-        parsed = urlsplit(dsn if isinstance(dsn, str) else "")
-        host, port = parsed.hostname, parsed.port
-    except ValueError as exc:
-        raise DeploymentContractError(f"{label} database DSN authority is invalid") from exc
-    if host != "127.0.0.1" or port is None or not 1 <= port <= 65535:
+    판정은 C6c의 `loopback_dsn_authority` 하나다.
+    """
+
+    authority = loopback_dsn_authority(dsn)
+    if authority is None:
         raise DeploymentContractError(f"{label} database DSN authority is invalid")
-    return host, port
+    return authority
 
 
 def _instance_for_dsn(
@@ -184,13 +192,10 @@ def _instance_for_dsn(
     container_name = postgres.get("container_name") if isinstance(postgres, Mapping) else None
     if not isinstance(container_name, str) or not _CONTAINER_NAME.fullmatch(container_name):
         raise DeploymentContractError(f"{label} PostgreSQL container identity is invalid")
-    postgres_environment = postgres.get("environment") if isinstance(postgres, Mapping) else None
-    admin_name = (
-        postgres_environment.get("POSTGRES_USER")
-        if isinstance(postgres_environment, Mapping)
-        else None
-    )
-    if not isinstance(admin_name, str) or not _DATABASE_IDENTIFIER.fullmatch(admin_name):
+    # admin은 C6c가 Map DSN 검사에서 읽는 것과 같은 helper로 읽는다 — 술어가 둘이면 C6c가 받은
+    # 이름을 여기서 (멈춘 뒤에) 거부하게 된다.
+    admin_name = postgres_server_admin_name(resolved, matches[0])
+    if admin_name is None:
         raise DeploymentContractError(f"{label} PostgreSQL admin role is invalid")
     return _PostgresInstance(
         service_name=matches[0],
@@ -503,6 +508,45 @@ def require_map_application_database_convergible(
 _MAP_BOOTSTRAP_PASSWORD = re.compile(r"^[A-Za-z0-9._~-]{32,256}$")
 #: Map fresh bootstrap이 instance에 요구하는 extension(Map `postgres-role-bootstrap.sh`).
 _MAP_BOOTSTRAP_EXTENSIONS: Final = ("postgis", "pg_prewarm")
+#: PostgreSQL `pg_authid.rolpassword`의 SCRAM-SHA-256 verifier:
+#: `SCRAM-SHA-256$<iterations>:<salt>$<StoredKey>:<ServerKey>`(base64).
+_SCRAM_VERIFIER = re.compile(
+    r"SCRAM-SHA-256\$(?P<iterations>[1-9][0-9]{0,9}):(?P<salt>[A-Za-z0-9+/]+={0,2})"
+    r"\$(?P<stored_key>[A-Za-z0-9+/]+={0,2}):(?P<server_key>[A-Za-z0-9+/]+={0,2})"
+)
+#: 판정이 계산을 끝낼 수 있는 상한(기본 4096). 그보다 큰 verifier는 판정하지 않고 거부한다.
+_SCRAM_MAX_ITERATIONS: Final = 10_000_000
+
+
+def _scram_verifier_accepts(verifier: str, password: str) -> bool:
+    """SCRAM-SHA-256 verifier가 ``password``를 받는가 — 네트워크·argv 없이 프로세스 안에서.
+
+    RFC 5802/7677: SaltedPassword = PBKDF2-HMAC-SHA256(password, salt, i), ClientKey =
+    HMAC(SaltedPassword, "Client Key"), StoredKey = SHA256(ClientKey). PostgreSQL은 password에
+    SASLprep을 거는데, 이 판정을 부르는 자리는 URI-unreserved ASCII만 받으므로 그대로다. 두 값은
+    비교만 하고 어디에도 싣지 않는다. 읽을 수 없는 verifier는 받지 않는다(거부 쪽).
+    """
+
+    match = _SCRAM_VERIFIER.fullmatch(verifier)
+    if match is None or int(match["iterations"]) > _SCRAM_MAX_ITERATIONS:
+        return False
+    try:
+        salt = base64.b64decode(match["salt"], validate=True)
+        stored_key = base64.b64decode(match["stored_key"], validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    salted = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, int(match["iterations"])
+    )
+    client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    return hmac.compare_digest(hashlib.sha256(client_key).digest(), stored_key)
+
+
+def _sql_like_prefix(prefix: str) -> str:
+    """``prefix``로 시작하는 이름의 LIKE 패턴(escape 문자 `\\`). `_`·`%`는 글자 그대로다."""
+
+    escaped = prefix.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
+    return f"{escaped}%"
 
 
 def require_map_bootstrap_admin_ready(
@@ -524,6 +568,10 @@ def require_map_bootstrap_admin_ready(
     - instance admin password(그 instance의 secret이 가리키는 `.env` 변수에서 읽는다)가 32–256자의
       URI-unreserved 문자이고 Map service·Dagster metadata password와 다르다. 비교만 한다 —
       값은 어디에도 싣지 않는다.
+    - 그 password가 admin의 **살아있는** SCRAM-SHA-256 verifier에 맞는다. 평상시에 그 password로
+      TCP 인증하는 것은 없다(Manager·백업·이 판정은 socket trust) — `ALTER ROLE` 회전이나 `.env`
+      편집으로 둘이 어긋나면 창의 B9에서야 bootstrap이 "30초 안에 접속을 받지 않음"으로 멈춘 뒤
+      실패한다. verifier는 같은 socket 경로로 읽고 프로세스 안에서만 비교한다.
 
     Map의 스크립트가 여전히 정본이다. 이것은 그 규칙을 **멈추기 전에** 비출 뿐이고, 스크립트가
     더 엄격해지면 one-shot이 오늘처럼 거부한다.
@@ -548,6 +596,7 @@ def require_map_bootstrap_admin_ready(
             "and Dagster metadata passwords"
         )
     extensions = ", ".join(f"'{name}'" for name in _MAP_BOOTSTRAP_EXTENSIONS)
+    map_principals = _sql_like_prefix(MAP_PRINCIPAL_PREFIX)
     output = _run_checked(
         [
             *_database_admin_command(runtime, "psql"),
@@ -564,7 +613,8 @@ def require_map_bootstrap_admin_ready(
                 "(SELECT count(*)::bigint FROM pg_catalog.pg_db_role_setting AS setting_row "
                 "WHERE setting_row.setdatabase = 0 AND (setting_row.setrole = 0 "
                 "OR setting_row.setrole IN (SELECT role.oid FROM pg_catalog.pg_roles AS role "
-                "WHERE role.rolname = current_user OR role.rolname LIKE 'ktm\\_%' ESCAPE '\\'))), "
+                "WHERE role.rolname = current_user "
+                f"OR role.rolname LIKE '{map_principals}' ESCAPE '\\'))), "
                 "(SELECT count(DISTINCT extension.name)::bigint "
                 "FROM pg_catalog.pg_available_extensions AS extension "
                 f"WHERE extension.name IN ({extensions}))"
@@ -591,6 +641,56 @@ def require_map_bootstrap_admin_ready(
             "the instance lacks an extension the Map bootstrap requires "
             f"({', '.join(_MAP_BOOTSTRAP_EXTENSIONS)})"
         )
+    # superuser만 `pg_authid`를 읽는다 — 그래서 superuser임을 확인한 **뒤** 따로 읽는다(한 질의에
+    # 넣으면 superuser가 아닌 admin에게 권한 오류가 나 위의 거부 문구를 가린다).
+    verifier_lines = (
+        _run_checked(
+            [
+                *_database_admin_command(runtime, "psql"),
+                "--no-psqlrc",
+                "--tuples-only",
+                "--no-align",
+                "--dbname",
+                "postgres",
+                "--command",
+                "SELECT COALESCE(authid.rolpassword, '') FROM pg_catalog.pg_authid AS authid "
+                "WHERE authid.rolname = current_user",
+            ],
+            label="Map bootstrap admin password verifier",
+        )
+        .decode("ascii", errors="replace")
+        .strip()
+        .splitlines()
+    )
+    verifier = verifier_lines[0] if len(verifier_lines) == 1 else ""
+    if not _scram_verifier_accepts(verifier, password):
+        # verifier도 password도 문구에 넣지 않는다 — 어느 변수인지만 말한다.
+        raise DeploymentContractError(
+            f"instance admin password ({secret.environment}) does not match the instance "
+            "admin's live SCRAM-SHA-256 verifier; the Map bootstrap could not authenticate"
+        )
+
+
+def require_map_dagster_metadata_initializable(runtime: DatabaseRuntime) -> None:
+    """Dagster metadata DB가 없을 때 init이 거부할 role을 **읽기만으로** 멈추기 전에 거부한다.
+
+    init(`initialize_application_300_dagster_metadata_database`)은 DB가 없을 때만 돌고, 이미 있는
+    metadata role은 아무것도 소유하지 않을 때만 password를 돌린다(R2). 공용 instance에서는 다른
+    tenant의 login(예: 아무것도 소유하지 않는 transport의 NOLOGIN role, PinVi role)도 후보다 —
+    그런 이름을 metadata user·Dagster DB 이름으로 박은 `.env`는 C6c를 지나고, 거부가 Map bootstrap·
+    alembic **뒤에** 나면 Map·PinVi가 내려간 채 남는다. 그래서 같은 판정을 먼저 돌린다. DB가
+    있으면 판정하지 않는다(init이 돌지 않는다). `--restart`는 DB를 지운 뒤 판정하므로 부르지 않는다.
+    """
+
+    if len(runtime.additional_owner_names) != 1:
+        raise DeploymentContractError("Map Dagster metadata role is not frozen")
+    (metadata_user,) = runtime.additional_owner_names
+    _validate_dagster_metadata_runtime(runtime, metadata_user)
+    if _read_database_owner(runtime) is not None:
+        return
+    role_preflight = _read_dagster_metadata_role_preflight(runtime, metadata_user)
+    if role_preflight is not None:
+        _assert_dagster_metadata_role_can_rotate_password_only(role_preflight)
 
 
 def create_database_if_absent(runtime: DatabaseRuntime) -> bool:
@@ -671,6 +771,9 @@ def ensure_map_databases_isolated(
     fresh bootstrap은 ``datacl IS NULL``·template1과 같은 ``datconnlimit``을 요구하므로 반드시
     bootstrap **뒤에** 부른다. 멱등이다 — 같은 입력으로 다시 부르면 ACL이 바뀌지 않는다.
     PinVi DB는 건드리지 않는다.
+
+    REVOKE는 연결할 때만 검사되므로, read-back이 통과한 뒤 같은 transaction의 끝에서 두 Map DB에
+    붙어 있지만 이제 CONNECT가 없는 client 세션을 끝낸다(``_terminate_sessions_without_connect_sql``).
     """
 
     metadata_user = _map_isolation_metadata_user(app, dagster, login=login)
@@ -686,6 +789,7 @@ def ensure_map_databases_isolated(
         + f"ALTER DATABASE {app_database} CONNECTION LIMIT {cap};\n"
         + _map_isolation_readback_sql(app, login=login, connection_limit=cap)
         + _map_isolation_readback_sql(dagster, login=metadata_user, connection_limit=None)
+        + _terminate_sessions_without_connect_sql(app, dagster)
     )
     _run_checked_with_input(
         [
@@ -916,6 +1020,29 @@ def _map_isolation_readback_sql(
     )
 
 
+def _terminate_sessions_without_connect_sql(
+    app: DatabaseRuntime, dagster: DatabaseRuntime
+) -> str:
+    """두 Map DB에 붙어 있으나 이제 CONNECT가 없는 client 세션을 끝낸다(R4 transaction의 끝).
+
+    REVOKE CONNECT는 **연결할 때만** 검사된다. 앱 DB는 createdb부터 R4까지(bootstrap·alembic·
+    Dagster init, 몇 분) PUBLIC CONNECT이므로, 그 사이 붙은 다른 tenant login의 세션은 R4 뒤에도
+    살아 연결 상한을 먹는다. 같은 transaction이 방금 바꾼 ACL로 판정한다(`has_database_privilege`는
+    membership까지 센다) — Map login·metadata user·superuser는 남는다. 거부할 수 있는 모든 검사
+    (read-back) **뒤에** 두어, 거부된 R4는 아무 세션도 끊지 않는다.
+    """
+
+    return (
+        "SELECT pg_catalog.pg_terminate_backend(activity.pid)\n"
+        "    FROM pg_catalog.pg_stat_activity AS activity\n"
+        "    WHERE activity.backend_type = 'client backend'\n"
+        f"      AND activity.datname IN ('{app.database_name}', '{dagster.database_name}')\n"
+        "      AND NOT pg_catalog.has_database_privilege(\n"
+        "          activity.usesysid, activity.datid, 'CONNECT'\n"
+        "      );\n"
+    )
+
+
 def _read_usable_connection_slots(runtime: DatabaseRuntime) -> int:
     """non-superuser 슬롯 = ``max_connections − superuser_reserved − reserved``(live)."""
 
@@ -1053,6 +1180,23 @@ def initialize_application_300_dagster_metadata_database(
             runtime.database_name,
         ],
         label="Map Dagster metadata database create",
+    )
+    # `createdb`는 PUBLIC CONNECT(`datacl` NULL)로 만든다. 공용 instance에서는 R4까지 모든 tenant
+    # login이 이 DB에 붙을 수 있다 — 소유자(metadata user)는 CTc를 그대로 가지므로 바로 닫는다.
+    # R4가 같은 것을 다시 하고 읽어서 확인한다(멱등). 앱 DB는 이렇게 할 수 없다: Map의 fresh
+    # bootstrap이 `datacl IS NULL`을 요구한다(ADR-53 받아들인 위험).
+    _run_checked(
+        [
+            *_database_admin_command(runtime, "psql"),
+            "--no-psqlrc",
+            "--set",
+            "ON_ERROR_STOP=1",
+            "--dbname",
+            "postgres",
+            "--command",
+            f"REVOKE CONNECT ON DATABASE {_sql_identifier(runtime.database_name)} FROM PUBLIC",
+        ],
+        label="Map Dagster metadata database close to PUBLIC",
     )
     return read_application_300_dagster_metadata_identity(
         runtime,

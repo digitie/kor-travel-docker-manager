@@ -1582,6 +1582,8 @@ def _forward_harness(
         isolation_preflight=Mock(),
         # S1: bootstrap이 돌 때 instance admin을 멈추기 전에 판정한다.
         admin_preflight=Mock(),
+        # Dagster metadata DB가 없을 때 init이 거부할 role을 멈추기 전에 판정한다.
+        dagster_preflight=Mock(),
         retention_generation=Mock(),
         retention_candidate=Mock(),
     )
@@ -1688,6 +1690,7 @@ def _forward_harness(
         "require_databases_resettable": mocks.reset_preflight,
         "require_map_databases_isolatable": mocks.isolation_preflight,
         "require_map_bootstrap_admin_ready": mocks.admin_preflight,
+        "require_map_dagster_metadata_initializable": mocks.dagster_preflight,
     }.items():
         monkeypatch.setattr(compose_service_module, name, replacement)
     service = ComposeService()
@@ -2877,11 +2880,10 @@ def test_rebuild_compose_refuses_even_the_retired_dedicated_instance(
         )
 
     runner.assert_not_called()
-    assert not hasattr(compose_service_module, "_PINNED_RUNTIME_DATABASE_SERVICES")
 
 
 @pytest.mark.parametrize("scenario", ("first_deploy", "same_pair", "new_pair", "restart"))
-def test_full_rebuild_never_mutates_a_postgres_service_outside_the_dedicated_set(
+def test_full_rebuild_never_names_a_postgres_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
     """재구축 전체를 대역으로 끝까지 돌리고, Docker에 닿은 **모든** compose argv를 본다.
@@ -3019,6 +3021,15 @@ def test_a_malformed_map_login_is_refused_before_anything_stops(
 # --- ADR-53 S1: bootstrap은 instance admin으로, 판정은 멈추기 전에 ---------------------------------
 
 _SHARED_ADMIN_PASSWORD = "shared-admin-password-0123456789-abcdef"
+#: PostgreSQL 16이 `_SHARED_ADMIN_PASSWORD`로 만든 진짜 verifier(test_database_runtime.py와 같다).
+_SHARED_ADMIN_VERIFIER = (
+    "SCRAM-SHA-256$4096:YtxppmrpF2qWtqnoXM/7/g==$MKxyZdyNGGUPggov7ygSmRWUC/cNH8b7fKdl9GXL3qI="
+    ":H+sCke8S9deqymWjIMFhKyQN9vPTRqbdM7XYVmpjQjA="
+)
+
+
+def _s1_output(head: str) -> bytes:
+    return f"{head}\n".encode("ascii")
 
 
 def _with_real_admin_preflight(
@@ -3049,7 +3060,8 @@ def _with_real_admin_preflight(
             "KOR_TRAVEL_MAP_SERVICE_PASSWORD": "map-service-password-0123456789-abcdef",
         }
     )
-    reads = Mock(return_value=output)
+    # 첫 읽기는 superuser·role setting·extension, 둘째는 admin의 `pg_authid` verifier다.
+    reads = Mock(side_effect=[output, f"{_SHARED_ADMIN_VERIFIER}\n".encode("ascii")])
     monkeypatch.setattr(database_runtime_module, "_run_checked", reads)
     monkeypatch.setattr(
         compose_service_module,
@@ -3062,13 +3074,22 @@ def _with_real_admin_preflight(
 @pytest.mark.parametrize(
     ("output", "password", "match"),
     (
-        (b"f|0|2\n", _SHARED_ADMIN_PASSWORD, "must be a superuser"),
-        (b"t|2|2\n", _SHARED_ADMIN_PASSWORD, "cluster-wide role settings"),
-        (b"t|0|1\n", _SHARED_ADMIN_PASSWORD, "lacks an extension"),
-        (b"t|0|2\n", "too-short", "32..256 URI-unreserved"),
-        (b"t|0|2\n", "map-service-password-0123456789-abcdef", "must differ"),
+        (_s1_output("f|0|2"), _SHARED_ADMIN_PASSWORD, "must be a superuser"),
+        (_s1_output("t|2|2"), _SHARED_ADMIN_PASSWORD, "cluster-wide role settings"),
+        (_s1_output("t|0|1"), _SHARED_ADMIN_PASSWORD, "lacks an extension"),
+        (_s1_output("t|0|2"), "too-short", "32..256 URI-unreserved"),
+        (_s1_output("t|0|2"), "map-service-password-0123456789-abcdef", "must differ"),
+        # `.env`의 password가 모양은 맞지만 admin의 live verifier와 다르다(회전·편집 drift).
+        (_s1_output("t|0|2"), "rotated-admin-password-0123456789-abcdef", "live SCRAM"),
     ),
-    ids=("superuser", "role-settings", "extension", "password-shape", "password-distinct"),
+    ids=(
+        "superuser",
+        "role-settings",
+        "extension",
+        "password-shape",
+        "password-distinct",
+        "password-drift",
+    ),
 )
 def test_an_s1_refusal_comes_before_the_runtime_stops(
     tmp_path: Path,
@@ -3159,7 +3180,25 @@ def test_bootstrap_one_shot_gets_the_derived_admin_and_port_and_no_password_env(
     """
 
     harness = _forward_harness(monkeypatch, tmp_path)
+    # instance의 admin secret을 frozen 문서에서 **유도할 수 있게** 둔다(서버의
+    # `POSTGRES_PASSWORD_FILE` → secrets[] → `SHARED_PW`). 그래야 password를 `-e`로 넘기는
+    # 회귀가 실제로 값을 argv에 올릴 수 있고, 아래 단언이 그것을 잡는다.
+    harness.transaction.resolved["services"][_FORWARD_INSTANCE] = {
+        "command": ["postgres", "-p", str(_FORWARD_PORT)],
+        "environment": {
+            "POSTGRES_USER": _FORWARD_ADMIN,
+            "POSTGRES_PASSWORD_FILE": "/run/secrets/shared-pw",
+        },
+        "secrets": [{"source": "shared-pw", "target": "/run/secrets/shared-pw"}],
+    }
+    harness.transaction.resolved["secrets"] = {"shared-pw": {"environment": "SHARED_PW"}}
     harness.transaction.environment.effective["SHARED_PW"] = _SHARED_ADMIN_PASSWORD
+    assert (
+        c6c_deployment.postgres_admin_secret(
+            harness.transaction.resolved, _FORWARD_INSTANCE
+        ).environment
+        == "SHARED_PW"
+    )
     harness.runtimes = (
         replace(harness.runtimes[0], admin_name="derived_admin", owner_name="derived_admin", port=15432),
         *harness.runtimes[1:],
@@ -3198,6 +3237,97 @@ def test_bootstrap_one_shot_gets_the_derived_admin_and_port_and_no_password_env(
         "kor-travel-map-db-role-bootstrap",
     )
     tokens = " ".join(token for operation in harness.operations for token in operation)
-    assert "PASSWORD" not in " ".join(bootstrap)
     assert "--env" not in bootstrap
     assert _SHARED_ADMIN_PASSWORD not in tokens
+    assert "SHARED_PW" not in tokens
+    # 어떤 호출의 어떤 `-e NAME=VALUE`도 admin password를 싣지 않는다.
+    passed = [
+        operation[index + 1]
+        for operation in harness.operations
+        for index, token in enumerate(operation[:-1])
+        if token in {"-e", "--env"}
+    ]
+    assert passed and not any(_SHARED_ADMIN_PASSWORD in value for value in passed)
+
+
+@pytest.mark.parametrize(
+    ("state", "restart", "checked"),
+    (
+        ("present", False, True),
+        ("absent", False, True),
+        ("unbootstrapped", False, True),
+        # 리셋은 Dagster DB를 지운 뒤 init이 판정한다 — 지우기 전에는 그 role이 DB를 소유한다.
+        ("present", True, False),
+    ),
+)
+def test_the_dagster_metadata_preflight_runs_before_the_stop_unless_restarting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+    restart: bool,
+    checked: bool,
+) -> None:
+    harness = _forward_harness(
+        monkeypatch,
+        tmp_path,
+        previous=_committed_status(_candidate_generation(), map_revision="0" * 40),
+    )
+    harness.mocks.map_precheck.return_value = state
+
+    result = harness.service.rebuild_pinned_runtime(
+        **({"restart_reason": "rebuild"} if restart else {})
+    )
+
+    assert result["outcome"] == "deployed"
+    if checked:
+        harness.mocks.dagster_preflight.assert_called_once_with(harness.runtimes[1])
+    else:
+        harness.mocks.dagster_preflight.assert_not_called()
+
+
+def test_a_foreign_dagster_metadata_role_is_refused_before_the_runtime_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """공용 instance의 다른 tenant role을 metadata user로 박은 `.env`(C6c는 이름 규칙만 본다).
+
+    init(R2)의 거부가 Map bootstrap·alembic 뒤에야 나면 Map·PinVi가 내려간 채 남는다. 진짜 판정을
+    태운다(psql만 대역): Dagster DB는 없고, 그 이름의 role은 NOLOGIN이며 아무것도 소유하지 않는다 —
+    2026-09-29 공용 instance의 `kor_travel_transport_dagster_app` 모양이다.
+    """
+
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate, map_revision="0" * 40)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    harness.mocks.map_precheck.return_value = "absent"
+    runtimes = (
+        harness.runtimes[0],
+        replace(
+            harness.runtimes[1],
+            additional_owner_names=frozenset({"kor_travel_transport_dagster_app"}),
+        ),
+        harness.runtimes[2],
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "database_runtimes_from_frozen_contract",
+        lambda **_kwargs: runtimes,
+    )
+    monkeypatch.setattr(database_runtime_module, "_read_database_owner", Mock(return_value=None))
+    reads = Mock(return_value=b"f|f|f|f|f|f|f|-1|t|0|0|0|0|0|0\n")
+    monkeypatch.setattr(database_runtime_module, "_run_checked", reads)
+    monkeypatch.setattr(
+        compose_service_module,
+        "require_map_dagster_metadata_initializable",
+        database_runtime_module.require_map_dagster_metadata_initializable,
+    )
+
+    with pytest.raises(DeploymentContractError, match="role is unsafe"):
+        harness.service.rebuild_pinned_runtime()
+
+    assert not any(operation[0] == "stop" for operation in harness.operations)
+    assert _mutating_operations(harness) == []
+    harness.mocks.ensure_map.assert_not_called()
+    harness.mocks.dagster_init.assert_not_called()
+    assert read_deploy_status(harness.status_path) == previous
+    (call,) = reads.call_args_list
+    assert call.kwargs["label"] == "Map Dagster metadata role preflight"

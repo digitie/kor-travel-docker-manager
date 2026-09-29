@@ -625,12 +625,17 @@ def test_dagster_metadata_database_init_rotates_only_password_for_safe_role(
     assert b"LOGIN" not in role_sql
     assert b"NOINHERIT" not in role_sql
     assert [label for _, label in createdb_calls] == [
-        "Map Dagster metadata database create"
+        "Map Dagster metadata database create",
+        "Map Dagster metadata database close to PUBLIC",
     ]
     createdb = createdb_calls[0][0]
     assert createdb[createdb.index("--maintenance-db") + 1] == "postgres"
     assert createdb[createdb.index("--template") + 1] == "template0"
     assert createdb[createdb.index("--owner") + 1] == "map_dagster_metadata"
+    # createdb는 PUBLIC CONNECT로 만든다 — R4를 기다리지 않고 바로 닫는다(소유자는 CTc를 가진다).
+    close = createdb_calls[1][0]
+    assert close[close.index("--dbname") + 1] == "postgres"
+    assert close[-1] == 'REVOKE CONNECT ON DATABASE "map_dagster" FROM PUBLIC'
 
 
 def test_dagster_metadata_database_init_creates_absent_role_with_template0_db(
@@ -707,6 +712,8 @@ def test_dagster_metadata_database_init_creates_absent_role_with_template0_db(
     ]
     assert createdb_calls[0][createdb_calls[0].index("--template") + 1] == "template0"
     assert createdb_calls[0][createdb_calls[0].index("--maintenance-db") + 1] == "postgres"
+    assert len(createdb_calls) == 2
+    assert createdb_calls[1][-1] == 'REVOKE CONNECT ON DATABASE "map_dagster" FROM PUBLIC'
 
 
 def test_dagster_metadata_database_init_requires_frozen_metadata_owner() -> None:
@@ -1266,7 +1273,7 @@ def test_rotate_preflight_accepts_a_leftover_role_that_owns_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     rotations: list[str] = []
-    outputs = iter((_preflight_output(0, 0), b""))
+    outputs = iter((_preflight_output(0, 0), b"", b""))
     monkeypatch.setattr(database_runtime, "_read_database_owner", Mock(return_value=None))
     monkeypatch.setattr(
         database_runtime, "_run_checked", Mock(side_effect=lambda *_a, **_k: next(outputs))
@@ -1414,9 +1421,17 @@ def test_isolation_sql_names_only_map_databases_and_the_dsn_login(
         'REVOKE CONNECT ON DATABASE "map_dagster" FROM PUBLIC;',
         'ALTER DATABASE "map_app" CONNECTION LIMIT 38;',
         "DO $r4_readback$",
+        "SELECT pg_catalog.pg_terminate_backend(activity.pid)",
     ]
     positions = [script.index(statement) for statement in statements]
     assert positions == sorted(positions)
+    # 세션 정리는 거부할 수 있는 모든 검사 **뒤다** — 거부된 R4는 아무 세션도 끊지 않는다.
+    cleanup = script[script.index("pg_terminate_backend"):]
+    assert script.rindex("$r4_readback$;") < script.index("pg_terminate_backend")
+    assert "activity.backend_type = 'client backend'" in cleanup
+    assert "activity.datname IN ('map_app', 'map_dagster')" in cleanup
+    assert "NOT pg_catalog.has_database_privilege(" in cleanup
+    assert "activity.usesysid, activity.datid, 'CONNECT'" in cleanup
     (precondition,) = _do_block(script, "r4_precondition")
     assert "WHERE datname = 'map_app'" in precondition
     assert "<> 'ktm_feature_schema_owner'" in precondition
@@ -1695,6 +1710,13 @@ def test_resettable_preflight_passes_a_resettable_pair_without_dropping_it(
 # ── ADR-53 S1: Map bootstrap admin의 pre-stop 판정 ─────────────────────────────────────────
 
 _ADMIN_PASSWORD = "shared-admin-password-0123456789-abcdef"
+#: PostgreSQL 16이 `_ADMIN_PASSWORD`로 만든 **진짜** SCRAM-SHA-256 verifier다(2026-09-29 n150의
+#: 버리는 컨테이너에서 `CREATE ROLE … PASSWORD` 뒤 `pg_authid.rolpassword`로 읽었다). 구현과 같은
+#: 식으로 만든 기대값이면 판정이 틀려도 초록이 된다.
+_ADMIN_VERIFIER = (
+    "SCRAM-SHA-256$4096:YtxppmrpF2qWtqnoXM/7/g==$MKxyZdyNGGUPggov7ygSmRWUC/cNH8b7fKdl9GXL3qI="
+    ":H+sCke8S9deqymWjIMFhKyQN9vPTRqbdM7XYVmpjQjA="
+)
 
 
 def _admin_ready_resolved() -> dict[str, object]:
@@ -1727,8 +1749,12 @@ def _admin_runtime() -> DatabaseRuntime:
     return replace(_runtime("map_application"), owner_name="cluster_admin")
 
 
-def _admin_ready_runner(monkeypatch: pytest.MonkeyPatch, output: bytes) -> Mock:
-    runner = Mock(return_value=output)
+def _admin_ready_runner(
+    monkeypatch: pytest.MonkeyPatch, output: bytes, *, verifier: str = _ADMIN_VERIFIER
+) -> Mock:
+    """첫 읽기는 superuser·role setting·extension, 둘째 읽기는 admin의 `pg_authid` verifier다."""
+
+    runner = Mock(side_effect=[output, f"{verifier}\n".encode("ascii")])
     monkeypatch.setattr(database_runtime, "_run_checked", runner)
     return runner
 
@@ -1744,7 +1770,7 @@ def test_admin_ready_check_accepts_a_ready_instance_and_only_reads(
         environment=_admin_ready_environment(),
     )
 
-    (call,) = runner.call_args_list
+    call, verifier_call = runner.call_args_list
     arguments = call.args[0]
     assert arguments[:5] == ["docker", "exec", "--user", "postgres", "postgres-rehearsal"]
     assert arguments[arguments.index("--username") + 1] == "cluster_admin"
@@ -1761,25 +1787,47 @@ def test_admin_ready_check_accepts_a_ready_instance_and_only_reads(
         "'pg_prewarm'",
     ):
         assert fragment in query
+    assert "pg_authid" not in query
     assert _ADMIN_PASSWORD not in " ".join(arguments)
+    # verifier는 superuser임을 확인한 뒤 같은 socket 경로로 따로 읽는다.
+    verifier_arguments = verifier_call.args[0]
+    assert verifier_arguments[:5] == arguments[:5]
+    verifier_query = verifier_arguments[verifier_arguments.index("--command") + 1]
+    assert "FROM pg_catalog.pg_authid AS authid" in verifier_query
+    assert "authid.rolname = current_user" in verifier_query
+    assert _ADMIN_PASSWORD not in " ".join(verifier_arguments)
 
 
 @pytest.mark.parametrize(
-    ("output", "match"),
+    ("output", "verifier", "match"),
     (
-        (b"f|0|2\n", "must be a superuser"),
-        (b"t|1|2\n", "cluster-wide role settings"),
-        (b"t|0|1\n", "lacks an extension"),
-        (b"t|0\n", "output is invalid"),
-        (b"t|0|2\nt|0|2\n", "output is invalid"),
+        (b"f|0|2\n", _ADMIN_VERIFIER, "must be a superuser"),
+        (b"t|1|2\n", _ADMIN_VERIFIER, "cluster-wide role settings"),
+        (b"t|0|1\n", _ADMIN_VERIFIER, "lacks an extension"),
+        (b"t|0\n", _ADMIN_VERIFIER, "output is invalid"),
+        (b"t|0|2\nt|0|2\n", _ADMIN_VERIFIER, "output is invalid"),
+        # admin의 live verifier가 `.env`의 password와 다르다(ALTER ROLE 회전·`.env` 편집).
+        (
+            b"t|0|2\n",
+            _ADMIN_VERIFIER.replace("MKxyZ", "NKxyZ"),
+            "does not match the instance admin's live SCRAM",
+        ),
+        (b"t|0|2\n", "", "does not match the instance admin's live SCRAM"),
+        (b"t|0|2\n", "md5" + "0" * 32, "does not match the instance admin's live SCRAM"),
+        (
+            b"t|0|2\n",
+            _ADMIN_VERIFIER + "\n" + _ADMIN_VERIFIER,
+            "does not match the instance admin's live SCRAM",
+        ),
     ),
 )
 def test_admin_ready_check_refuses_each_instance_precondition(
     monkeypatch: pytest.MonkeyPatch,
     output: bytes,
+    verifier: str,
     match: str,
 ) -> None:
-    _admin_ready_runner(monkeypatch, output)
+    _admin_ready_runner(monkeypatch, output, verifier=verifier)
 
     with pytest.raises(DeploymentContractError, match=match):
         database_runtime.require_map_bootstrap_admin_ready(
@@ -1853,3 +1901,91 @@ def test_admin_ready_check_requires_the_s1_shape(monkeypatch: pytest.MonkeyPatch
                 environment=_admin_ready_environment(),
             )
     runner.assert_not_called()
+
+
+def test_scram_check_matches_a_verifier_postgresql_made() -> None:
+    """판정의 기대값은 구현이 아니라 PostgreSQL이 만든 verifier다 — 같은 식의 대역은 틀려도 초록이다."""
+
+    accepts = database_runtime._scram_verifier_accepts
+    assert accepts(_ADMIN_VERIFIER, _ADMIN_PASSWORD) is True
+    assert accepts(_ADMIN_VERIFIER, _ADMIN_PASSWORD[:-1] + "g") is False
+    # PostgreSQL이 받지 않거나 판정할 수 없는 모양은 모두 "맞지 않음"이다(거부 쪽).
+    for verifier in (
+        "",
+        "md5" + "0" * 32,
+        _ADMIN_VERIFIER.replace("SCRAM-SHA-256", "SCRAM-SHA-1"),
+        _ADMIN_VERIFIER.replace("$4096:", "$0:"),
+        _ADMIN_VERIFIER.replace("$4096:", "$10000001:"),
+        _ADMIN_VERIFIER.replace("YtxppmrpF2qWtqnoXM/7/g==", "not base64!"),
+        _ADMIN_VERIFIER + "\n",
+    ):
+        assert accepts(verifier, _ADMIN_PASSWORD) is False, verifier
+
+
+def test_the_map_principal_pattern_comes_from_the_c6c_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S1 판정의 LIKE 패턴은 C6c의 Map principal 접두 하나에서 온다 — `_`는 글자 그대로다."""
+
+    assert database_runtime._sql_like_prefix("ktm_") == "ktm\\_%"
+    assert database_runtime._sql_like_prefix("a%b\\") == "a\\%b\\\\%"
+    runner = _admin_ready_runner(monkeypatch, b"t|0|2\n")
+    monkeypatch.setattr(database_runtime, "MAP_PRINCIPAL_PREFIX", "zz_")
+
+    database_runtime.require_map_bootstrap_admin_ready(
+        _admin_runtime(),
+        resolved=_admin_ready_resolved(),
+        environment=_admin_ready_environment(),
+    )
+
+    query = runner.call_args_list[0].args[0][-1]
+    assert "LIKE 'zz\\_%' ESCAPE '\\'" in query
+    assert "ktm" not in query
+
+
+def test_dagster_metadata_preflight_refuses_a_foreign_login_and_only_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """공용 instance에서 metadata user 자리에 박힌 다른 tenant의 login — 멈추기 전에 init과 같이 거부."""
+
+    runner = Mock(return_value=_preflight_output(2, 150))
+    mutation = Mock()
+    monkeypatch.setattr(database_runtime, "_read_database_owner", Mock(return_value=None))
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+    monkeypatch.setattr(database_runtime, "_run_checked_with_input", mutation)
+
+    with pytest.raises(DeploymentContractError, match="role is unsafe"):
+        database_runtime.require_map_dagster_metadata_initializable(_metadata_runtime())
+
+    mutation.assert_not_called()
+    (call,) = runner.call_args_list
+    assert call.kwargs["label"] == "Map Dagster metadata role preflight"
+
+
+@pytest.mark.parametrize(
+    ("owner", "preflight", "reads"),
+    (
+        ("map_dagster_metadata", None, 0),
+        (None, b"", 1),
+        (None, _preflight_output(0, 0), 1),
+    ),
+    ids=("database-present", "role-absent", "leftover-role"),
+)
+def test_dagster_metadata_preflight_passes_what_init_would_accept(
+    monkeypatch: pytest.MonkeyPatch,
+    owner: str | None,
+    preflight: bytes | None,
+    reads: int,
+) -> None:
+    runner = Mock(return_value=preflight)
+    monkeypatch.setattr(database_runtime, "_read_database_owner", Mock(return_value=owner))
+    monkeypatch.setattr(database_runtime, "_run_checked", runner)
+
+    database_runtime.require_map_dagster_metadata_initializable(_metadata_runtime())
+
+    assert runner.call_count == reads
+
+
+def test_dagster_metadata_preflight_requires_a_frozen_metadata_user() -> None:
+    with pytest.raises(DeploymentContractError, match="not frozen"):
+        database_runtime.require_map_dagster_metadata_initializable(_runtime("map_dagster"))

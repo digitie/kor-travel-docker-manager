@@ -78,6 +78,7 @@ from kor_travel_docker_manager.services.database_runtime import (
     require_databases_resettable,
     require_map_application_database_convergible,
     require_map_bootstrap_admin_ready,
+    require_map_dagster_metadata_initializable,
     require_map_databases_isolatable,
     reset_databases_for_application_300,
     schema_revision_table_exists,
@@ -4670,6 +4671,11 @@ class ComposeService:
                     resolved=runtime_transaction.resolved,
                     environment=runtime_transaction.environment.effective,
                 )
+            if restart is None:
+                # Dagster metadata DB가 없으면 init이 role을 만들거나 password를 돌린다. 공용
+                # instance에서는 다른 tenant의 role도 그 이름의 후보다 — init의 거부(R2)를 멈추기
+                # 전으로 당긴다. `--restart`는 DB를 지운 뒤에 판정한다.
+                require_map_dagster_metadata_initializable(runtimes[1])
 
             from kor_travel_docker_manager.services.runtime_execution_registry import (
                 trusted_manager_source_revision,
