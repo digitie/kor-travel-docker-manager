@@ -8399,3 +8399,20 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
   11번째 run이 나간다, 기본 ACL 빠진 SQL이 `acl_probe`를 놓친다, CREATE 속성 삭제). `/tmp/b3-test.sh`: ruff 깨끗,
   **2389 passed, 2 skipped**. gated 전체(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, 새 clone): **2389 passed, 2 skipped**,
   잔재 0.
+
+## 2026-09-30 — 공용 Dagster 2단계: 재리뷰 LOW 셋(cold start 대기, COPY/ADD 추출, 3단계 게이트)
+
+적대 재리뷰가 브랜치를 통과시키며 남긴 LOW 셋을 닫았다.
+
+- **cold start**: `ensure dagster`는 db-init을 `run --rm --no-deps`로 돌려 compose가 `depends_on`
+  (service_healthy)을 보지 않고, 앞선 `up -d`도 healthy를 기다리지 않는다. db-init 스크립트 맨 앞에서
+  `pg_isready`를 2초 간격 60번(약 120초) 기다리고, 끝내 안 뜨면 메시지와 함께 exit 1. `up -d --wait`는
+  target의 `services`(up) 경로를 바꿔야 해서 고르지 않았다 — 스크립트 안의 대기가 더 좁다. 테스트는 실제
+  스크립트를 stub `pg_isready`·`sleep`·`cat`·`psql`로 돌린다(포기 시 psql·secret 읽기 0회, 세 번째 probe에서
+  뜨면 다음 명령으로 진행).
+- **COPY 원천 추출**: `ADD`·소문자·`\` 줄 이음을 읽고, 못 읽는 형식(JSON 배열, heredoc, `--from`, escape
+  지시자)은 건너뛰지 않고 멈춘다.
+- **3단계 게이트**(platform-topology §7): G3-a 연결 상한 30을 전역 run 12가 찬 상태에서 실측(NullPool),
+  G3-b 공용 `workspace.yaml`의 `location_name` ↔ `dagster/code_location` 상한 결박 테스트를 그 파일과 함께.
+- **테스트**(n150, `fc555a8`): 빨강 확인 — db-init을 부모 커밋의 스크립트로 되돌리면 대기 테스트 둘 빨강,
+  옛 추출기로 되돌리면 추출 테스트 빨강. `/tmp/b3-test.sh`: ruff 0.16.4 깨끗, **2392 passed, 2 skipped**.
