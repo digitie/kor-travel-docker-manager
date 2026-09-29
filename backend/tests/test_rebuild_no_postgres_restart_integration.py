@@ -24,27 +24,14 @@ from pathlib import Path
 
 import pytest
 import yaml
+from test_compose_readiness_integration import _required_docker_gate, _unavailable_docker_fixture
+from test_shared_postgres_runtime_contract import _service
 
-#: 공용 instance(`kor-travel-shared-postgres`)가 도는 바로 그 이미지다(2026-09-28 n150 실측).
-_SHARED_IMAGE = (
-    "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
-)
-_REQUIRED_GATE_ENV = "KTDM_REQUIRE_DOCKER_INTEGRATION"
+#: 공용 instance(`kor-travel-shared-postgres`)가 도는 바로 그 이미지다 — 정본 compose의 digest
+#: 핀에서 읽는다. 사본을 두면 compose의 digest를 올린 뒤에도 이 파일은 옛 이미지를 시험한다.
+_SHARED_IMAGE: str = _service()["image"]
 _PORT = 15433
 _ADMIN = "it_admin"
-
-
-def _required_docker_gate() -> bool:
-    value = os.environ.get(_REQUIRED_GATE_ENV, "0").strip()
-    if value not in {"0", "1"}:
-        pytest.fail(f"{_REQUIRED_GATE_ENV}는 0 또는 1이어야 함")
-    return value == "1"
-
-
-def _unavailable(reason: str) -> None:
-    if _required_docker_gate():
-        pytest.fail(reason)
-    pytest.skip(f"{reason}; 필수 gate는 {_REQUIRED_GATE_ENV}=1로 실행")
 
 
 def _docker(*arguments: str, timeout: int = 120) -> subprocess.CompletedProcess[str]:
@@ -58,13 +45,13 @@ def _require_shared_image() -> None:
         try:
             completed = _docker(*command)
         except (OSError, subprocess.TimeoutExpired):
-            _unavailable("로컬 Docker Compose를 사용할 수 없음")
+            _unavailable_docker_fixture("로컬 Docker Compose를 사용할 수 없음")
         if completed.returncode != 0:
-            _unavailable("로컬 Docker Compose를 사용할 수 없음")
+            _unavailable_docker_fixture("로컬 Docker Compose를 사용할 수 없음")
     if _docker("image", "inspect", _SHARED_IMAGE).returncode == 0:
         return
     if not _required_docker_gate():
-        _unavailable(f"pull 없는 로컬 {_SHARED_IMAGE}를 사용할 수 없음")
+        _unavailable_docker_fixture(f"pull 없는 로컬 {_SHARED_IMAGE}를 사용할 수 없음")
     pull = _docker("pull", _SHARED_IMAGE, timeout=600)
     if pull.returncode != 0:
         pytest.fail(f"공용 PostgreSQL 이미지 pull 실패: {pull.stderr.strip()}")
@@ -248,3 +235,35 @@ def test_create_of_a_dependent_recreates_the_drifted_postgres(drifted_project: _
 
     assert created.returncode == 0, created.stderr
     assert drifted_project.container_id("pg") != before[0]
+
+
+def test_run_without_no_deps_recreates_the_drifted_postgres(drifted_project: _Project) -> None:
+    """T-R3e(compose 특성): `run --rm <dependent>`도 `--no-deps` 없이는 drift된 의존 PostgreSQL을
+    다시 만든다. ADR-53의 받아들인 위험과 창의 A1/T-R 동결(손으로 돌리는 `run`·db-init 재실행)이
+    기대는 측정이다 — Compose 판이 이것을 바꾸면 동결 범위의 근거도 다시 봐야 한다.
+    """
+
+    before = drifted_project.postgres_identity()
+
+    ran = drifted_project.compose("run", "--rm", "--no-TTY", "--entrypoint", "true", "app")
+
+    assert ran.returncode == 0, ran.stderr
+    assert drifted_project.container_id("pg") != before[0]
+    assert not drifted_project.config_drifted("pg")
+
+
+def test_run_with_no_deps_leaves_the_drifted_postgres_alone(drifted_project: _Project) -> None:
+    """T-R3f(compose 특성): 대조군 — `run --rm --no-deps`는 drift된 PostgreSQL을 한 번도 멈추지 않는다.
+
+    재구축의 one-shot(`run --rm --no-deps …`)이 기대는 동작이다.
+    """
+
+    before = drifted_project.postgres_identity()
+
+    ran = drifted_project.compose(
+        "run", "--rm", "--no-TTY", "--no-deps", "--entrypoint", "true", "app"
+    )
+
+    assert ran.returncode == 0, ran.stderr
+    assert drifted_project.postgres_identity() == before
+    assert drifted_project.config_drifted("pg")
