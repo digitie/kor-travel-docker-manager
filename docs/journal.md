@@ -8284,3 +8284,21 @@ dev-environment.md는 #437과 겹치는 줄이 없어 충돌이 없었다.
   - SCRAM 판정을 "항상 맞다"로 바꾸면 drift 검출 넷(단위 4 — 다른 verifier·빈 값·md5·두 줄), PostgreSQL verifier
     단위 1, 재구축의 `password-drift` 1, gated 2가 빨갛다(8 failed).
   - 전체 스위트와 gated 전체 실행은 verify 단계의 몫이다. 그 수치와 CI run ID·`headSha`는 PR 본문에 적는다.
+
+## 2026-09-29 — Map DB 공용 instance 이전 창 실행(ADR-53)
+
+- 운영 스크립트(`/root/map-db-move-20260929/bin/`, 원본 `F:\dev\handoff\window\`, 해시는 README 목록과 일치)로 돌렸다.
+  소유자 지시: 다른 테넌트 일정은 고려하지 않는다 → Part A의 weather STARTED run 4개를 `ACCEPT_RUN_IDS`로 넘겼다.
+- T0 prechecks 0 FAIL(PREV_SHA `6af5dd1`). #438 MT 머지 `0811a68b` → 10:20:05Z 설치 → **Part A** 10:25Z 공용 재생성
+  (CHECKPOINT·`stop --time 300`·`up --no-deps`): 모든 `-c` read-back, init(PID 1 docker-init), StopTimeout 300, shm 1GB,
+  exec probe, drift MATCH, autoprewarm leader 1, 크래시 복구 없는 시작. A7 20분 게이트 통과(크래시 0·DSM 0, tenant
+  컨테이너·엔드포인트 A0과 같음). 첫 `autoprewarm.blocks` 2.9 MB.
+- **Part B** fence 10:48~10:55Z: daemon 먼저, Map run 대기, 나머지 정지, 감사 dump 둘(12700, sha256 검증, `audit/`에 roles.sql·
+  126개 테이블 행 수), CHECKPOINT 뒤 12700 `stop --time 120`(clean shutdown, 컨테이너 보존).
+- #439 M2 머지 `3b282a7a` → 설치 → `env`(G 아래 `.env`: Map DSN 둘 11000으로, 은퇴 키 삭제; rebind·pin verify 0·S-SYNC·
+  drift MATCH; /root 스크립트가 핀된 Map과 일치) → `rebuild` TAG mv1: deploy-status 대조로 adopt 선택, 3분, `deployed`,
+  heads map_application 400·map_dagster 29b539ebc72a·pinvi 불변 → `verify` V1~V7 0 FAIL 0 WARN(새 metadata DB run 14
+  SUCCESS) → `chain16` V8(ACL 40/40, D1 11, D2 passed) → `backup` V9(manifest `kor-travel-shared-postgres:127.0.0.1:11000/…`,
+  sha256 OK). 11:33Z 완료.
+- 이전 직후 40-monitor: 0 ALARM 0 WARN — 크래시 표지 0, client 26/97, Map 상한 미도달, DSM 0, checkpoint write 최대 270 s,
+  swap-in·OOM 없음, prewarm leader 1, Map run 32 SUCCESS, heartbeat 정상, 모든 백업 로그 정상.
