@@ -119,6 +119,10 @@ def isolated_plane(tmp_path: Path) -> Iterator[_Plane]:
     canonical = _canonical()
     services = canonical["services"]
     postgres = _fixture_service()
+    # 이미지 entrypoint가 initdb 뒤 임시 서버를 `pg_ctl stop`으로 내린다 — 기본 대기 60초는 n150의
+    # 디스크 대기 속에서 종료 checkpoint를 못 기다려 컨테이너가 exit 1로 끝난다(2026-09-29 실측,
+    # load 12). 서버가 아니라 pg_ctl만 읽는 값이라 정본의 실행 형태는 그대로다.
+    postgres["environment"]["PGCTLTIMEOUT"] = "300"
     try:
         available = (
             _run("docker", "compose", "version").returncode == 0
