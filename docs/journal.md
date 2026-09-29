@@ -8158,3 +8158,62 @@ MT(ADR-53 D4)의 적대 리뷰 MED 2건·LOW 14건을 반영했다. 이 브랜�
   - 잔재: b3 두 번과 떼어 돌린 readiness 실행 세 번이 남긴 `ktdm-readiness-*` 컨테이너 15개를 지웠다. 셋 다
     `Created`였고, 일부는 client 시한이 지난 뒤 daemon이 만든 것이다. 09-28 08:05의
     `ktdm-readiness-2020836-readine0_default` 네트워크는 이 작업의 것이 아니어서 두었다.
+
+## 2026-09-29 — MT 리뷰 3차: 운영 이름에 닿지 않는 정지 시험, prewarm·DSM의 정직한 서술, 범위 해석기 hunk 철회
+
+MT(ADR-53 D4)의 세 번째 적대 리뷰 MED 3건(그중 둘은 같은 것)·LOW 12건 가운데 MT 몫을 반영했다. 이 브랜치는
+여전히 **창 안에서만** 머지·설치한다.
+
+- **바탕**: main이 `c66ec1c`에서 `24f6c57`로 움직였다 — #436(문서)·#437(`.env.example`·dev-environment.md, geo
+  Dagster URL 드라이버). 둘 다 MT가 건드리지 않는 파일이라 충돌 없이 다시 올렸다. 위 항목들이 적은 `6af5dd1`·
+  `6453239`·`289cdfa`는 그 전 head다.
+- **MED — 격리 정지 시험이 운영 이름으로 풀렸다.** `test_shared_postgres_runtime_integration.py`는 Manager의 정지
+  경로를 운영 registry 키(`kor-travel-shared-postgresql`)로 불렀고, 그 이름은 운영 공용 instance다. 격리를 지키는
+  것은 `_get_client` 패치 하나뿐이라, 메서드가 client를 다른 길(`docker.from_env()`·캐시된 client)로 얻게 바뀌면
+  n150(운영, 머지 gate가 도는 곳)에서 운영 공용 instance를 300초 grace로 멈춘다(사용자 정지는
+  `unless-stopped`가 되살리지 않는다). 이제 docker_service가 보는 registry를 throwaway 키(`ktdm-it-sharedpg`)
+  **하나뿐인** 사본으로 갈아 끼우고 그 이름을 격리 컨테이너로 둔다 — 운영 키는 아예 풀리지 않는다. 격리 이름이
+  fixture의 compose 프로젝트(`ktdm-sharedpg-…`)로 시작하고 공용 서비스의 registry 이름과 다른지 먼저 단언하고,
+  fake client의 `get`도 받은 이름을 확인한다. (리뷰가 제안한 `monkeypatch.setitem(registry.MANAGED_CONTAINERS, …)`
+  은 쓸 수 없다 — `MANAGED_CONTAINERS`는 쓰기 없는 `_LazyMapping`이다.)
+- **MED — prewarm은 모든 DB를 덮지 않는다.** dump는 덮지만 reload는 DB OID 순이고 free buffer가 바닥나면 멈춘다
+  (REL_16_STABLE `autoprewarm.c`: `apw_compare_blockinfo` 정렬, `apw_load_buffers`의 `!have_free_buffer()`,
+  worker 루프의 같은 조건). 1GB dump는 NBuffers에 가깝고 재기동 중 다시 붙는 테넌트가 free buffer를 쓴다 — OID가
+  가장 큰 DB, M2 뒤에는 Map의 둘이 마지막이고 못 올라올 수 있다. ADR-53 결정 4, compose 주석,
+  platform-topology.md를 고쳤다. 감시(runbook A7i·§4.7)는 기동마다 `autoprewarm successfully prewarmed N of M`을
+  기록하고 큰 부족을 발견으로 친다. per-DB 단계는 두지 않는다(D4 범위).
+- **LOW 반영**:
+  - 범위 해석기 hunk와 그 테스트를 **철회**했다(`compose_service.py`·`test_pinned_runtime_rebuild.py`는 main과
+    같다). 식별자 목록은 비었는지로만 쓰이고, 의존성 범위는 M1의 R3가 frozen resolved 문서의 `depends_on`
+    closure로 본다. 그 hunk가 넓힌 것은 손으로 쓴 한 단계 API 대응표였고, 테스트 이름은 compose가 닿는 것을
+    센다고 했지만 `run --rm pinvi-web`에서 compose는 공용 instance·db-init·map-api 등까지 닿는다. 그래서 앞
+    항목들의 "범위 해석기가 `run`을 센다"는 이제 사실이 아니다 — `run`의 위험은 R3·재구축의 `--no-deps`·손 명령
+    동결이 덮는다.
+  - `run` 특성 시험 두 개(T-R3e/f): `run --rm <dependent>`는 `--no-deps` 없이 drift된 의존 PostgreSQL을 다시
+    만들고, `--no-deps`면 그대로 둔다. 창의 동결과 ADR-53의 위험이 기대는 측정이다.
+  - M1의 두 실 PostgreSQL 파일이 따로 들던 `_SHARED_IMAGE` digest 사본을 정본 compose의 핀에서 읽는다(계약
+    파일의 로더). gate helper 사본도 readiness 파일의 것(`_required_docker_gate`·`_unavailable_docker_fixture`)으로
+    합쳤다.
+  - probe의 `docker timeout ≥ 2×-t` 단언을 뺐다 — D4가 아니고 ADR-52의 다음 조정을 묶는 결박이다.
+  - ADR-53 받아들인 위험: #433 대비 DSM 여유가 절반(병렬 hash 노드 상한 96MB → 384MB, shm 512mb → 1gb, 약 5.3 →
+    2.7개)이고 autoprewarm leader가 worker 한 칸(7 → 6)을 쓴다 — 위험을 **줄일 뿐 없애지 않는다**. 72시간 안의 새
+    DSM 오류는 hard alarm이고 미리 합의한 후속은 `shm_size: 2gb`다. `max_wal_size=2GB`는 crash replay를 약 두 배까지
+    늘리고 90초 `TimeoutStopSec` 안에 내려야 할 dirty set을 키운다 — drop-in은 MT와 함께 하기를 권한다.
+  - 공용 서비스 **자신**의 대시보드·CLI 설정 변경·reset도 동결한다(`--no-deps`는 이름 붙은 서비스의 재생성을
+    막지 않는다). stop/restart는 재생성이 아니라 허용한다. ADR-53 문장을 고쳤다.
+  - `ktdctl db-backup create --expected-dump-bytes`의 도움말이 예약분을 고정 2 GiB로 적었다 — max(2 GiB, 그
+    instance의 살아있는 `max_wal_size` + 1 GiB)로.
+- **MT 몫이 아닌 것**: `/opt/.env`의 UI admin password hash 네 개에 든 `$`가 보간되는 문제는 MT 밖이라 오너에게
+  넘긴다(runbook §4.8). CI 증거·머지 동결·B5/B6 절차는 runbook(§1.0·§4.3·§4.4)에 적었다.
+- **n150 실행**(모두 `/tmp`, 운영 컨테이너·DB는 읽기만 — `postgres:16-alpine`·공용 postgis 이미지 inspect):
+  - 대상 8파일(계약·격리 실행·T-R3 특성·실 PostgreSQL·재구축·백업·CLI·docker_service 설정), gate=1,
+    `git archive`한 `19adc54` 트리: **521 passed**, fixture 잔재 없음. ruff 0.16.4 통과. 부하(load 12~14, 다른
+    세션의 transport `up --build`) 때문에 16분 16초였다.
+  - 빨강 확인(버리는 사본에 변이, gate=1): 세 테스트 모두 빨갛다(3 failed).
+    - 정지 경로가 `_get_client` 대신 `docker.from_env()`로 client를 얻게 바꾸면 격리 정지 시험이
+      `assert [] == ['ktdm-sharedpg-…-pg-1']`로 빨갛다 — 패치가 우회돼도 이름은 격리 컨테이너로만 풀려 그 컨테이너만
+      멈췄고, 운영 공용 instance의 `Id`·`StartedAt`(`2026-09-28T13:10:57Z`)·상태는 실행 전후가 같았다.
+    - `run` 특성 시험에 `--no-deps`를 붙이면 T-R3e가 `pg` 컨테이너 ID 동일로, 빼면 T-R3f가 다시 만들어진 `pg`에
+      접속하지 못해(새 컨테이너가 아직 기동 중) 빨갛다.
+    - 변이 없는 같은 세 테스트는 3 passed(8분 31초).
+  - 전체 스위트와 gated 전체 실행은 verify 단계의 몫이다. 그 수치와 CI run ID·`headSha`는 PR 본문에 적는다.

@@ -4133,8 +4133,9 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
   모자라면 마지막으로 할당한 질의 하나가 ENOSPC(`posix_fallocate`) 오류로 끝난다 — crash는 아니다.
   autoprewarm leader는 `max_worker_processes`(8, 기본값 실측) 한 칸을 상주로 쓴다. 그래서 병렬 worker로 쓸
   칸은 7에서 6이 된다. #433 재생성 뒤 약 18시간(512mb·16MB) DSM 오류는 0건이었다(2026-09-29 리뷰 실측, 그
-  전 64MB·16MB에서는 18건). **72시간 감시에서 새 DSM 오류는 hard alarm이다.** 미리 합의한 후속은 `shm_size: 2gb`다. 오늘의 비율을
-  되찾고, tmpfs라 segment가 있는 동안만 RAM을 쓴다. 공지한 창에서 재생성한다. D4 자체는 다시 열지 않는다.
+  전 64MB·16MB에서는 18건). **72시간 감시에서 새 DSM 오류는 hard alarm이다.** 미리 합의한 후속은
+  `shm_size: 2gb`다. 오늘의 비율을 되찾고, tmpfs라 segment가 있는 동안만 RAM을 쓴다. 공지한 창에서
+  재생성한다. D4 자체는 다시 열지 않는다.
 - `max_wal_size=2GB`는 두 비용을 키운다. 2026-09-29 리뷰 실측으로 #433 재생성 뒤 checkpoint 225번 중 57번이
   1GB의 WAL로 시작됐고, 최근 timed checkpoint 거리는 450–525MB였다. (1) WAL이 많은 부하에서는 crash
   recovery의 replay가 약 두 배까지 길어질 수 있다. 공용 instance의 09-25~28 crash-restart 다섯 번은 각각
