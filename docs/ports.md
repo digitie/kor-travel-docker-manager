@@ -8,9 +8,9 @@
 
 - 로컬 서비스 포트는 `12000`부터 시작하고 target마다 100 단위 대역을 배정한다.
 - 일반 API는 대역의 `+1`, 추가 서비스 포트는 `+2`부터, Web UI는 `+5`를 사용한다.
-- PostgreSQL 전용 instance는 Map 하나이고 대역의 `+0`(`12700`)을 쓴다(ADR-37). 나머지
-  프로젝트는 아래 `11000` 공용 instance를 쓴다. 통합 `5432` instance는 폐지되었으며 이
-  저장소의 현재 Compose는 `5432`를 listen하지 않는다.
+- PostgreSQL은 아래 `11000` 공용 instance 하나다(Map도 ADR-53으로 옮겼다). 대역의 `+0`
+  (예: Map `12700`)은 옛 전용 instance의 자리였고 지금은 비어 있다. 통합 `5432` instance는
+  폐지되었으며 이 저장소의 현재 Compose는 `5432`를 listen하지 않는다.
 - Manager 자체 포트는 별도 `12900-12999` 대역을 사용한다.
 - `11000`은 `12000`대 target별 100단위 대역과 별개인 공용 제어 평면 PostgreSQL
   instance(`kor-travel-shared-postgres`, platform-topology.md §7) 전용 포트다.
@@ -33,7 +33,7 @@
 | `prom` | `12400-12499` | HTTP `12102`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | Prometheus |
 | `geo` | `12500-12599` | API `12501`, Dagster `12502`, Web UI `12505` (DB는 공용 `11000`) | `kor-travel-geo` |
 | `conc` | `12600-12699` | API `12601`, MCP `12602`, Web UI `12605` (DB는 공용 `11000`) | `kor-travel-concierge` |
-| `map` | `12700-12799` | PostgreSQL `12700`, API `12701`, Dagster `12702`, Web UI `12705` | `kor-travel-map` |
+| `map` | `12700-12799` | API `12701`, Dagster `12702`, Web UI `12705`(`12700`은 퇴역한 전용 PostgreSQL의 자리, ADR-53) | `kor-travel-map` |
 | `pinvi` | `12800-12899` | API `12801`, Dagster webserver `12802`, Dagster code-server(gRPC, PinVi ADR-069) `12803`, Web UI `12805` (DB는 공용 `11000`) | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
 | `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Prometheus `14104`, Web `14105` | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
@@ -126,11 +126,10 @@ code-server는 `12503`이다.
 
 | 인스턴스 | 포트 | 데이터베이스 |
 |---|---:|---|
-| `kor-travel-map-postgres` | `12700` | `kor_travel_map`, `kor_travel_map_dagster` |
-| `kor-travel-shared-postgres` | `11000` | `kor_travel_concierge`(ADR-44), `kor_travel_geo`+`kor_travel_geo_dagster`(ADR-45), `pinvi`+`pinvi_dagster`(ADR-46), `kor_travel_weather`+`kor_travel_weather_dagster`(ADR-47), `kor_travel_transport`+`kor_travel_transport_dagster` — 프로젝트마다 자기 두 database를 소유하는 app role 하나. 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) |
+| `kor-travel-shared-postgres` | `11000` | `kor_travel_map`+`kor_travel_map_dagster`(ADR-53), `kor_travel_concierge`(ADR-44), `kor_travel_geo`+`kor_travel_geo_dagster`(ADR-45), `pinvi`+`pinvi_dagster`(ADR-46), `kor_travel_weather`+`kor_travel_weather_dagster`(ADR-47), `kor_travel_transport`+`kor_travel_transport_dagster` — 프로젝트마다 자기 두 database를 소유하는 app role 하나. 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) |
 
-두 instance 모두 loopback 전용이다. Map database provisioning은 Map의 one-shot과 pinned
-workflow가 자기 instance에서 수행하고, 나머지 프로젝트는 각자의
+loopback 전용이다. Map database provisioning은 pinned workflow가 이 instance의 admin으로
+Map one-shot을 돌려 수행하고(ADR-53 S1 — Map은 db-init이 없다), 나머지 프로젝트는 각자의
 `kor-travel-shared-db-init-*` one-shot이 공용 instance에서 role·database를 만든다. 공용
 instance 안에서도 ADR-37의 교훈(role·ACL은 database가 아니라 cluster 전역)을 지켜,
 프로젝트마다 자기 database에만 권한을 갖는 전용 role을 쓴다 — cluster 관리자 계정은 앱에

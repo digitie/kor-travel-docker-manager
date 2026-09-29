@@ -1813,7 +1813,8 @@ endpoint/generation이 없거나 PinVi provenance·Map artifact·pin이 서로 �
 
 ## ADR-35: Map ADR-090 principal은 전용 PostgreSQL instance에서만 bootstrap한다
 
-- 상태: superseded (ADR-37, 2026-08-17; Map principal 경계 원칙은 유지)
+- 상태: superseded (ADR-37, 2026-08-17; Map principal 경계 원칙은 유지 — 그 원칙도 ADR-53이
+  공용 instance topology에서 supersede한다, 2026-09-29 M2)
 - 날짜: 2026-08-12
 - 결정자: 사용자, Codex
 - 관련: #171, ADR-5, ADR-9, ADR-16, ADR-34, Map ADR-090
@@ -1913,7 +1914,8 @@ hex, 임의 shadow/radius, `transition-all`, 의미 없는 gradient/glass, 고�
 ## ADR-37: PostgreSQL은 프로젝트마다 전용 instance를 쓰고 DB 포트는 대역의 `x00`이다
 
 - 상태: accepted (concierge 범위는 ADR-44로 2026-09-19 일부 superseded — geo/map/pinvi는
-  이 ADR 그대로 유지)
+  이 ADR 그대로 유지. geo는 ADR-45, PinVi는 ADR-46, Map 전용 instance는 ADR-53(2026-09-29 M2)이
+  각각 공용 instance로 supersede했다 — 이제 전용 instance가 남은 Manager 프로젝트는 없다)
 - 날짜: 2026-08-17
 - 결정자: 사용자, Claude
 - 관련: #176, ADR-35, ADR-5, ADR-16, Map ADR-090, `docs/ports.md`, `AGENTS.md` 룰 4·9
@@ -4065,8 +4067,10 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
 
 - 상태: accepted — 효력은 PR마다 다르다. 결정 4(튜닝·백업 예약분)는 MT와
   함께 생긴다. 결정 3의 울타리(R2·R3·R4)는 M1이 만들고, 결정 1·2·5와 결정 3이 공용 instance에 걸리는
-  것은 M2(이동)와 함께다. M2가 설치되기 전이나 창에서 되돌려진 뒤에는 1~3·5가 아직 사실이 아니다.
-  ADR-35·ADR-37의 "ADR-53이 일부 supersede" 표시는 그것을 사실로 만드는 M2가 단다.
+  것은 M2(이동, `feat/map-db-shared-instance`)와 함께다 — M2가 코드·compose·문서를 그 모양으로 바꾸고,
+  그것이 **사실이 되는 것은 창(runbook §4.4 B5)에서 M2를 설치하고 B9 adopt 재구축이 커밋할 때**다.
+  설치 전이나 창에서 되돌려진 뒤에는 1~3·5가 n150에서 아직 사실이 아니다. ADR-35·ADR-37의 supersede
+  표시는 M2가 달았다.
 - 날짜: 2026-09-28
 - 결정자: 사용자(오너 결정 C와 하위 결정 D1~D10), Claude
 - supersedes: ADR-35 "Map principal 경계 원칙은 유지"(이 topology 한정), ADR-37의 Map 전용 instance 부분
@@ -4100,6 +4104,33 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
    - 백업의 디스크 예약분은 살아있는 `max_wal_size`에서 유도한다: max(2 GiB, `max_wal_size` + 1 GiB).
 5. ADR-100 superset 창을 닫는다.
 
+### 구현(M2)
+- **instance는 DSN 포트에서 유도한다.** Map은 `KOR_TRAVEL_MAP_PG_DSN`(Dagster URL은 같은 authority),
+  PinVi는 `pinvi-api`의 resolved `PINVI_DATABASE_URL`이다. 그 포트를 `-p`로 듣는 PostgreSQL 서버 서비스
+  (declared ∪ witnessed, C6c 파서)가 **정확히 하나**여야 한다 — 이름·포트 리터럴이 없다
+  (`database_runtime._instance_for_dsn`, C6c `_validate_map_database_dsn_instance`). Map DB 소유자는 그
+  instance의 admin(`POSTGRES_USER`)이다(S1). 옛 "PinVi는 다른 컨테이너여야 한다" 검사는 지웠다.
+- 재구축은 instance를 `compose ps`로만 본다(running·healthy·컨테이너 이름). `up`·이미지 대조·Map
+  PostgreSQL secret 격리 검사와 후보의 `postgres_image_id`는 사라졌다. R3 울타리의 예외 집합(M1까지 Map
+  전용 instance 하나)이 비어 **절대**가 됐다 — 재구축은 PostgreSQL 서버 서비스를 이름으로 부르지 않는다.
+- **멈추기 전의 S1 판정**(`require_map_bootstrap_admin_ready`): bootstrap이 돌 때(앱 DB 없음·bootstrap
+  전·`--restart`) admin이 superuser인지, database 0에 role 0·admin·`ktm_%`의 role setting이 없는지,
+  `postgis`·`pg_prewarm`이 있는지, admin password(그 instance의 secret이 가리키는 변수)가 32–256자
+  URI-unreserved이고 Map service·metadata password와 다른지 읽기만으로 본다. Map 스크립트가 여전히 정본이다.
+- bootstrap one-shot은 `-e KOR_TRAVEL_MAP_POSTGRES_USER=<admin> -e KTDM_MAP_BOOTSTRAP_PGPORT=<port>`(runtime에서
+  유도)를 받고, instance의 admin secret file을 `cat`해 DSN을 **셸 안에서** 만든다(T-SECRET 통과, §1.3(d)
+  주 변형). C6c가 entrypoint·네 줄(`cat` 경로 = 자기 secret target)·secret 하나(Map DSN 포트 instance의
+  admin secret)·`:ro` mount 둘·profile·restart·키 허용 목록·실행 시점 키 부재를 고정한다. compose가 보간하는
+  `$$`를 `docker compose config`도 `$$`로 내므로(n150 Compose v5.2.0 실측) raw·resolved가 같은 네 줄이다.
+- **admin secret 규칙은 이름이 아니라 모든 서버에서 유도한다**(`_assert_instance_admin_secret_holders`):
+  서버의 `POSTGRES_PASSWORD_FILE` → `secrets[]` → 최상위 `secrets.<source>.environment`. 그 secret을
+  마운트하거나 그 변수(resolved에서는 그 값)를 env에 드는 서비스는 instance 자신이거나, pinned runtime·그
+  이미지가 아닌 `restart: "no"` one-shot이어야 한다. admin secret을 유도할 수 없는 서버는 거부한다.
+  Map superuser secret을 이름으로 지키던 두 검사(소유자 배선·유일 소비자 스캔)를 대신한다.
+- 백업 role `map_application`·`map_dagster`는 공용 컨테이너를 겨냥한다(포트·admin은 살아있는 컨테이너에서).
+- Map DSN의 login은 이름으로 고정하지 않는다(M1과 같다) — C6c는 metadata user·instance admin 자리만 막고,
+  그것이 Map의 login인지는 R4가 live role 그래프로 본다. D10으로 ADR-100 principal 이름 목록도 C6c에서 빠졌다.
+
 ### 받아들인 위험
 - 공용 admin은 모든 tenant에 닿는 superuser다. Map의 pinned bootstrap 스크립트가 fresh bootstrap마다
   그 권한으로 돈다. 그동안 admin 비밀번호가 psql 인자로 호스트 프로세스 표에 보인다(n150에서는 root 동등 주체만).
@@ -4109,6 +4140,14 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
   `ALTER ROLE ALL SET`이 생기면 다음 Map fresh bootstrap이 거부된다(재구축은 멈추기 전에 거부한다).
 - `ktdctl pinvi-pair rebuild-pinned --restart`는 공용 instance에서 Map 두 DB와 PinVi DB를 지운다. launcher만
   그것을 넘기지 않는다.
+- R2 울타리는 env 이름을 live 소유 관계로 좁힐 뿐, Manager가 기록한 DB identity에 결박하지 않는다(M1이 적고 M2가
+  여기로 옮겼다, `docs/docker-management.md` §7.7): (1) 자기 이름의 DB **하나만** 소유한 다른 tenant login이
+  metadata user·Dagster DB 이름으로 일관되게 박히면 배타성 검사를 지나고 `--restart`가 그 DB를 지운다 — 기록된
+  identity가 없는 배포의 R4도 그 DB의 PUBLIC CONNECT를 걷는다. (2) PinVi drop 소유자에는 배타성을 걸지 않는다.
+  2026-09-28 공용 instance에는 (1)의 모양인 login이 없다.
+- Map DSN login은 이름으로 고정하지 않는다(M1과 같다). D10으로 C6c의 ADR-100 principal 이름 목록이 빠져, 그
+  이름(예: `ktm_feature_runtime`)을 login으로 박은 `.env`는 C6c가 아니라 R4의 live 판정(멈추기 전 preflight, 앱 DB가
+  이미 있을 때)과 Map bootstrap의 preflight(앱 DB가 없을 때 — 멈춘 뒤)가 거부한다.
 - Map ops/audit 행과 Dagster 이력, 그리고 비-ops 행 일부(`feature_state_transitions` 25 등)와 설정성 행
   (`curated_*`·`provider_sync`, loader가 다시 쓸 때까지)을 잃는다(감사 dump·옛 PGDATA 보존).
   `pinvi`·`template_postgis`의 PUBLIC CONNECT는 남는다(후속).

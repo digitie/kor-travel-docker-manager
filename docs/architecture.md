@@ -35,7 +35,7 @@ graph TD
 
     subgraph Infrastructure [Docker Daemon / Host]
         D_Sock[docker.sock / Named Pipe]
-        C_PG[PostgreSQL 2개: Map 전용 12700 · 공용 11000]
+        C_PG[PostgreSQL: 공용 11000]
         C_RFS[RustFS Container]
         C_GEO_API[kor-travel-geo-api-latest/kor-travel-geo API]
         C_GEO_UI[kor-travel-geo-ui-latest/kor-travel-geo Web UI]
@@ -141,9 +141,10 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
      `POSTGRES_PASSWORD_FILE` secret으로 주고 앱에는 주입하지 않는다. geo의
      `KOR_TRAVEL_GEO_DOCKER_PG_DSN`/`KOR_TRAVEL_GEO_DAGSTER_PG_URL`은 기본값 없이 fail-close로
      요구한다(issue #178). 기본 pgdata: `KOR_TRAVEL_SHARED_PGDATA=/home/digitie/kor-travel-shared-data/pgdata`.
-   - Map 전용 instance `kor-travel-map-postgres`(`127.0.0.1:12700`, ADR-37): 아래 9번.
-   - 둘 다 loopback 전용이고 host network라 `-p`가 곧 호스트 포트다. 옛 전용 instance
-     (geo `:12500`·concierge `:12600`·PinVi `:12800`)는 2026-09-28에 compose에서 뺐다.
+   - Map의 두 DB(`kor_travel_map`·`kor_travel_map_dagster`)도 여기 산다(ADR-53, 아래 9번).
+   - loopback 전용이고 host network라 `-p`가 곧 호스트 포트다. 옛 전용 instance
+     (geo `:12500`·concierge `:12600`·PinVi `:12800`)는 2026-09-28에, Map 전용 `:12700`은
+     ADR-53 이전 창에서 compose에서 뺐다.
 2. **RustFS**:
    - 컨테이너: `kor-travel-rustfs`
    - 이미지: `rustfs/rustfs:latest`
@@ -198,14 +199,14 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
    - 목적: 여행 concierge provider, MCP HTTP, scheduler, Web UI 제공.
    - host 포트: API `12601`, MCP `12602`, Web UI `12605`.
    - 내부 의존성: `127.0.0.1:11000`(공용 PostgreSQL), `127.0.0.1:12101`(RustFS). Geo에는 의존하지 않는다.
-9. **kor-travel-map 전용 PostgreSQL / API / Dagster / Web UI**:
-   - DB 컨테이너: `kor-travel-map-postgres` (`127.0.0.1:12700`, Map application·Dagster metadata 전용).
+9. **kor-travel-map API / Dagster / Web UI**:
+   - DB: 공용 instance `kor-travel-shared-postgres`(`127.0.0.1:11000`)의 `kor_travel_map`·`kor_travel_map_dagster`(ADR-53).
    - 런타임 컨테이너: `kor-travel-map-api-latest`, `kor-travel-map-dagster-latest`, `kor-travel-map-dagster-daemon-latest`, `kor-travel-map-ui-latest`
-   - compose service: `kor-travel-map-postgres`, `kor-travel-map-api`, `kor-travel-map-dagster`, `kor-travel-map-dagster-daemon`, `kor-travel-map-ui`
+   - compose service: `kor-travel-map-api`, `kor-travel-map-dagster`, `kor-travel-map-dagster-daemon`, `kor-travel-map-ui`(DB는 `kor-travel-shared-postgres`)
    - 목적: 지도 feature admin API, Dagster workflow, admin Web UI 제공.
    - host 포트: API `12701`, Dagster `12702`, Web UI `12705`.
-   - 내부 의존성: 전용 PostgreSQL `127.0.0.1:12700`, RustFS `127.0.0.1:12101`, `kor-travel-geo-api:12501`, `kor-travel-concierge-api:12601`.
-   - ADR-090 principal bootstrap은 dedicated DB만 대상으로 하는 F1D one-shot 단계다. normal Map runtime에는 bootstrap superuser DSN·role password를 주입하지 않는다.
+   - 내부 의존성: 공용 PostgreSQL `127.0.0.1:11000`, RustFS `127.0.0.1:12101`, `kor-travel-geo-api:12501`, `kor-travel-concierge-api:12601`.
+   - Map fresh bootstrap은 재구축의 one-shot이 **그 instance의 admin**으로 돈다(ADR-53 S1): admin 이름·포트는 실행 시점 `-e`, password는 instance의 secret file이다. normal Map runtime에는 bootstrap DSN·admin password를 주입하지 않는다.
 10. **PinVi API / Dagster / Web UI**:
    - 컨테이너: `pinvi-api-latest`, `pinvi-dagster-latest`, `pinvi-web-latest`
    - compose service: `pinvi-api`, `pinvi-dagster`, `pinvi-web`
@@ -274,4 +275,4 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
 
 `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi는 더 이상 자체 저장소의 Docker compose 또는 RustFS 구동 스크립트로 PostgreSQL/RustFS 생명주기를 직접 관리하지 않는다. `geo`, `conc`, `map`, `pinvi` target은 각 앱 컨테이너를 manager에서 함께 빌드하고 실행한다. 로컬에서 해당 인프라를 실행하거나 재시작할 때는 이 저장소의 `ktdctl` CLI, 대시보드/API를 사용한다. 공식 CLI target은 `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `weather`이며, `srv`와 `main`은 `pinvi`를 가리키는 별칭이다. `config/docker-targets.yml`에서 순서와 포함 서비스를 확장한다.
 
-로컬 host 포트 정책은 `docs/ports.md`를 기준으로 한다. PostgreSQL은 Map 전용 instance(`12700`, ADR-37)와 나머지 프로젝트의 공용 instance(`11000`, ADR-44~47) 둘이다. 둘 다 loopback 전용이고 `5432`를 듣는 것은 없다. RustFS는 `storage` 대역(`12100-12199`), Grafana는 `gra` 대역(`12200-12299`), cAdvisor는 `cadv` 대역(`12300-12399`), Prometheus는 `prom` 대역(`12400-12499`), `kor-travel-geo`는 `geo` 대역(`12500-12599`), `kor-travel-concierge`는 `conc` 대역(`12600-12699`), `kor-travel-map`은 `map` 대역(`12700-12799`), PinVi는 `pinvi` 대역(`12800-12899`), `kor-travel-docker-manager` 자체 API/Web은 `12900-12999` 대역을 사용한다.
+로컬 host 포트 정책은 `docs/ports.md`를 기준으로 한다. PostgreSQL은 공용 instance(`11000`, ADR-44~47·ADR-53) 하나다. loopback 전용이고 `5432`를 듣는 것은 없다. RustFS는 `storage` 대역(`12100-12199`), Grafana는 `gra` 대역(`12200-12299`), cAdvisor는 `cadv` 대역(`12300-12399`), Prometheus는 `prom` 대역(`12400-12499`), `kor-travel-geo`는 `geo` 대역(`12500-12599`), `kor-travel-concierge`는 `conc` 대역(`12600-12699`), `kor-travel-map`은 `map` 대역(`12700-12799`), PinVi는 `pinvi` 대역(`12800-12899`), `kor-travel-docker-manager` 자체 API/Web은 `12900-12999` 대역을 사용한다.

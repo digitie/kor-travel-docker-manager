@@ -98,12 +98,12 @@ target 단위로만 남아 있다.
 공용 instance(`:11000`, §7 5단계)로 옮겼고, 2026-09-28에 옛 전용 인스턴스(geo `:12500`·
 concierge `:12600`·PinVi `:12800`)를 Manager compose에서 뺐다 — 그날 n150 실측으로 모든
 서비스의 DSN이 `:11000`(Map만 `:12700`)을 가리켰고, 남아 있던 옛 인스턴스는 접속 0인
-`pinvi-postgres` 하나였다. 옛 데이터 디렉터리는 호스트에 그대로 둔다.
+`pinvi-postgres` 하나였다. 옛 데이터 디렉터리는 호스트에 그대로 둔다. Map의 두 DB도
+ADR-53으로 공용 인스턴스로 옮겨, 이제 Manager의 PostgreSQL은 공용 하나다.
 
 | 인스턴스 | 포트 | 소유 | 담긴 DB |
 |---|---:|---|---|
-| `kor-travel-map-postgres` | `12700` | Manager compose | `kor_travel_map`, `kor_travel_map_dagster` |
-| `kor-travel-shared-postgres` | `11000` | Manager compose | `kor_travel_concierge`(ADR-44), `kor_travel_geo`+`kor_travel_geo_dagster`(ADR-45), `pinvi`+`pinvi_dagster`(ADR-46), `kor_travel_weather`+`kor_travel_weather_dagster`(ADR-47), `kor_travel_transport`+`kor_travel_transport_dagster` — 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) |
+| `kor-travel-shared-postgres` | `11000` | Manager compose | `kor_travel_map`+`kor_travel_map_dagster`(ADR-53), `kor_travel_concierge`(ADR-44), `kor_travel_geo`+`kor_travel_geo_dagster`(ADR-45), `pinvi`+`pinvi_dagster`(ADR-46), `kor_travel_weather`+`kor_travel_weather_dagster`(ADR-47), `kor_travel_transport`+`kor_travel_transport_dagster` — 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) |
 
 **애플리케이션 DB와 Dagster 메타DB가 같은 인스턴스 안에 나란히 있다**(geo·map·pinvi,
 2026-09-19 PinVi PR #558/#356으로 pinvi도 합류). 이것이 §7의 전환에서 갈라지는

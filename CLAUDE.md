@@ -4,13 +4,14 @@
 
 ## 프로젝트 현황 (2026-08-25)
 
-PinVi 구동에 필요한 프로젝트별 전용 PostgreSQL/PostGIS 4개, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
+PinVi 구동에 필요한 공용 PostgreSQL/PostGIS instance, RustFS, `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi Docker 컨테이너 구동 관리 및 상태 모니터링 관리 소프트웨어다.
 현재 FastAPI API, Next.js 대시보드, Python CLI, 설정 파일 기반 Docker target registry가 구현되어 있다.
 
 현재 코드에는 FastAPI API, Next.js 대시보드, `ktdctl` CLI, 설정 파일 기반 target registry,
-전용 PostgreSQL 4개와 RustFS를 포함한 Compose 관리가 구현되어 있다. PostgreSQL은 Geo
-`12500`, Concierge `12600`, Map `12700`, PinVi `12800`의 loopback 전용 instance를 사용하며
-통합 `5432` instance는 없다.
+공용 PostgreSQL instance와 RustFS를 포함한 Compose 관리가 구현되어 있다. PostgreSQL은
+loopback 전용 공용 instance `kor-travel-shared-postgres`(`11000`) 하나이고 Geo·Concierge·
+Map(ADR-53)·PinVi·weather·transport가 그 안의 자기 database를 쓴다. 옛 프로젝트별 전용
+instance(`12500`/`12600`/`12700`/`12800`)는 퇴역했고 통합 `5432` instance도 없다.
 
 C6c production은 일반 runtime mutation을 차단하고, host-wide lock을 소유하는 pinned
 workflow만 Map·PinVi 일곱 runtime을 같은 generation으로 다룬다. 비운영 환경의 배포는

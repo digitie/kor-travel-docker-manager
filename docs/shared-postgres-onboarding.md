@@ -1,7 +1,9 @@
 # 공용 제어 평면 PostgreSQL(:11000) 온보딩
 
-> **2026-09-28 현황.** concierge·geo·PinVi·weather·transport가 이 instance에 있고, 전용
-> instance는 Map(`kor-travel-map-postgres`, `:12700`) 하나다. 옛 전용 instance(geo `:12500`·
+> **현황(ADR-53 M2 설치 뒤).** concierge·geo·Map·PinVi·weather·transport가 이 instance에 있고
+> 전용 instance는 없다 — Map 전용(`:12700`)은 ADR-53 이동 창에서 퇴역했다(PGDATA는 롤백용 보존).
+> Map은 db-init이 없다: 재구축이 이 instance의 admin으로 Map fresh bootstrap one-shot을 돌린다.
+> 2026-09-28에는 옛 전용 instance(geo `:12500`·
 > concierge `:12600`·PinVi `:12800`)와 그 one-shot(`kor-travel-concierge-db-init`·
 > `pinvi-db-init`·`kor-travel-geo-dagster-db-init`)은 Manager의 compose·targets·백업·C6c
 > 계약에서 빠졌다 — 그날 n150 실측으로 모든 해당 서비스의 DSN이 `:11000`을 가리켰고, 남은
@@ -63,7 +65,7 @@ concierge cutover는 **2026-09-19/20에 이미 끝났다**(실행 기록은 kor-
 |---|---|
 | 공용 Dagster 스토리지 `dagster_shared` | **없다.** compose에도 live에도 없다 |
 | 공용 Dagster webserver(`11002`) / daemon(`11001`) | **없다.** `docker-compose.yml`에 서비스 0건, n150에 컨테이너 0건. (`docs/platform-topology.md` §7(176·181·182·195·203·205·206행)에는 **계획으로** 등장한다 — 저장소 grep은 0건이 아니다) |
-| geo / map / pinvi의 공용 instance 이전 | **없다.** 셋 다 ADR-37의 전용 instance 그대로 |
+| geo / map / pinvi의 공용 instance 이전 | **끝났다**(geo ADR-45, PinVi ADR-46, Map ADR-53). 아래 행과 이 절의 나머지는 2026-09-19 기록이다 |
 | geo/map/pinvi용 role·database | 정식 경로로 만들어진 것은 **없다** (§10.1 예외 주의) |
 | weather/transport용 role·database | Manager compose의 각 `kor-travel-shared-db-init-<project>` one-shot이 정식 경로다. 실제 n150 실행 여부는 배포 영수증·컨테이너 상태로 따로 확인해야 한다 |
 | `ktdctl db-backup`의 실제 복원 명령 | **없다.** 백업·리허설 복원만 있다 |
@@ -151,7 +153,7 @@ DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-<옛 instance를 가�
 | shared `:11000` | `kor_travel_concierge` | 81 MB | 앱 데이터 — cutover 완료 |
 | concierge `:12600` (옛) | `kor_travel_concierge` 83 MB / `ktc_bootstrap` 19 MB / `postgres` 7.2 MB / `p2_proof_ktc` 7.2 MB | — | **한 행에 세 분류가 다 있다**: 앱 데이터(첫째) / bootstrap(`ktc_bootstrap`·`postgres`) / 잔해(`p2_proof_ktc`). P8의 연습 예제로 쓰라 |
 | geo `:12500` | `kor_travel_geo` **32 GB** / `kor_travel_geo_dagster` 92 MB | — | 자릿수가 다르다 |
-| map `:12700` | `kor_travel_map` 26 MB / `kor_travel_map_dagster` **7.2 MB** / 잔해 4종(`ktm_40b`·`ktm_bootstrap`·`ktm_gcverify`·`ktm_gcverify_dagster` 9.0 MB) | — | ⚠️ 9.0 MB짜리는 `ktm_map_dagster`가 아니라 잔해 `ktm_gcverify_dagster`다 — 이 둘을 뒤바꾸기 쉽다 |
+| map `:12700`(옛, ADR-53으로 퇴역) | `kor_travel_map` 26 MB / `kor_travel_map_dagster` **7.2 MB** / 잔해 4종(`ktm_40b`·`ktm_bootstrap`·`ktm_gcverify`·`ktm_gcverify_dagster` 9.0 MB) | — | ⚠️ 9.0 MB짜리는 `ktm_map_dagster`가 아니라 잔해 `ktm_gcverify_dagster`다 — 이 둘을 뒤바꾸기 쉽다 |
 | pinvi `:12800` | `pinvi` **7.2 MB** / `pinvi_bootstrap` 7.4 MB | — | `pinvi_dagster`는 **존재하지 않는다**(문서와 불일치) |
 
 덤프 시간 실측: concierge는 `pg_dump -Fc --compress=6`이 **2초**, geo는 2026-08-17 기준 **4.4 GB / 879초**였다. concierge가 "가장 쉬운 사례"였고, geo의 hard cutover 다운타임은 덤프+복원+검증으로 **시간 단위**로 잡아야 한다.
