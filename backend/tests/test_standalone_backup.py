@@ -568,6 +568,7 @@ def test_role_lock_releases_after_context_exits(tmp_path: Path) -> None:
             "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
             "transport-dagster-override",
         ),
+        ("dagster_shared", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "dagster-shared-override"),
     ],
 )
 def test_role_config_respects_container_name_override(
@@ -588,6 +589,7 @@ def test_backup_roles_cover_four_instances() -> None:
         "pinvi",
         "transport",
         "transport_dagster",
+        "dagster_shared",
     }
 
 
@@ -619,6 +621,8 @@ def test_map_roles_resolve_to_the_shared_container(monkeypatch: pytest.MonkeyPat
         # ADR-53: Map 둘도 같은 자리를 **실제로** 뜬다.
         ("map_application", "kor_travel_map"),
         ("map_dagster", "kor_travel_map_dagster"),
+        # 공용 Dagster instance의 metadata DB(platform-topology.md §7).
+        ("dagster_shared", "dagster_shared"),
     ],
 )
 def test_transport_roles_dump_their_database_on_the_shared_instance(

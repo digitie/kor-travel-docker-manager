@@ -1,0 +1,16 @@
+# 공용 Dagster 호스트(webserver·daemon·storage migrate) 이미지의 최상위 핀.
+# 목표 버전 집합(dagster-shared-plan §3)을 **정확히** 적는다 — 하한이 아니다.
+# requirements.txt는 이 파일에서 해시까지 고정한 잠금본이다(재생성 명령은 그 파일 머리).
+dagster==1.13.24
+dagster-webserver==1.13.24
+dagster-graphql==1.13.24
+dagster-pipes==1.13.24
+dagster-shared==1.13.24
+dagster-postgres==0.29.24
+psycopg2-binary==2.9.13
+SQLAlchemy==2.0.54
+pydantic==2.13.5
+pydantic-core==2.46.5
+grpcio==1.84.0
+grpcio-health-checking==1.81.1
+protobuf==6.33.6

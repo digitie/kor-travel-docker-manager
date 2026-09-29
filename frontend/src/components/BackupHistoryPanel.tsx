@@ -40,6 +40,7 @@ const EXPECTED_INTERVAL_HOURS: Partial<Record<string, number>> = {
   pinvi: 24,
   transport: 72,
   transport_dagster: 24,
+  dagster_shared: 24,
 };
 const FRESHNESS_WARN_MULTIPLIER = 1.25;
 
