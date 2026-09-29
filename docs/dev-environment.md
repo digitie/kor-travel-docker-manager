@@ -59,7 +59,7 @@ DOCKER_HOST=unix:///var/run/docker.sock
 # ⚠️ 5432로 두지 마라 — 이 저장소의 compose는 5432를 듣지 않는다.
 KOR_TRAVEL_GEO_SHARED_APP_PASSWORD=change-me-geo-shared-app-password
 KOR_TRAVEL_GEO_DOCKER_PG_DSN=postgresql+psycopg://kor_travel_geo_app:change-me-geo-shared-app-password@127.0.0.1:11000/kor_travel_geo
-KOR_TRAVEL_GEO_DAGSTER_PG_URL=postgresql://kor_travel_geo_app:change-me-geo-shared-app-password@127.0.0.1:11000/kor_travel_geo_dagster
+KOR_TRAVEL_GEO_DAGSTER_PG_URL=postgresql+psycopg2://kor_travel_geo_app:change-me-geo-shared-app-password@127.0.0.1:11000/kor_travel_geo_dagster
 ```
 
 ### 2.2.1 반드시 있어야 하는 값 (없으면 compose 전체가 죽는다)
