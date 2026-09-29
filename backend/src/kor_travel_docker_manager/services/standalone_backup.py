@@ -134,13 +134,18 @@ _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
     ),
 }
 
-#: 백업을 뜬 뒤에도 백업 root의 파일시스템에 남겨 두는 최소 여유(바이트).
+#: 백업을 뜬 뒤에도 백업 root의 파일시스템에 남겨 두는 최소 여유(바이트)의 **하한**.
 #:
 #: n150에서는 백업 root, Docker 쓰기 층(pg_dump가 컨테이너 `/tmp`에 먼저 쓰는 자리),
 #: 공용 instance의 PGDATA가 **한 파일시스템**이다(2026-09-28 `stat -c %d` 실측, 전부 같은
-#: 장치). 백업이 그 디스크를 채우면 다섯 프로젝트의 DB가 WAL을 쓰지 못해 멈춘다. 2 GiB는
-#: 공용 instance의 `max_wal_size`(1GB)보다 넉넉한 값이다.
-_DISK_RESERVE_BYTES = 2 * 1024**3
+#: 장치). 백업이 그 디스크를 채우면 다섯 프로젝트의 DB가 WAL을 쓰지 못해 멈춘다. 그래서
+#: 예약분은 그 instance의 WAL 상한을 덮어야 한다 — 고정 2 GiB는 공용 instance의
+#: `max_wal_size`가 1GB일 때의 근거였고, D4 튜닝(ADR-53)이 2GB로 올리면서 성립하지 않게 됐다.
+#: 실제 예약분은 `_disk_reserve_bytes`가 **살아있는** `max_wal_size`에서 유도한다.
+_DISK_RESERVE_FLOOR_BYTES = 2 * 1024**3
+#: 살아있는 `max_wal_size` 위에 더 남기는 몫. `max_wal_size`는 soft limit이라 checkpoint
+#: 사이에 넘을 수 있고, 같은 디스크의 다른 쓰기도 있다.
+_DISK_RESERVE_WAL_HEADROOM_BYTES = 1024**3
 
 #: 첫 dump(이 자리에서 뜬 dump가 아직 없을 때)의 크기 상한 = 이 배수 x database의 **테이블**
 #: 크기 합(`pg_table_size`: heap·TOAST·FSM·VM, 인덱스 제외).
@@ -1717,19 +1722,43 @@ def _expected_dump_bytes(
     )
 
 
-def _required_free_bytes(estimate: int, basis: str) -> tuple[int, str]:
+def _disk_reserve_bytes(max_wal_bytes: int) -> int:
+    """작업 뒤에도 남겨 둘 여유 = max(하한 2 GiB, 살아있는 `max_wal_size` + 1 GiB).
+
+    `max_wal_bytes`는 백업하는 그 instance에서 방금 읽은 값이다 — compose나 `.env`에서
+    추측하지 않는다.
+
+    **덮는 것은 dump를 뜨는 그 instance의 WAL뿐이다.** 같은 장치의 다른 PostgreSQL instance
+    WAL은 세지 않는다. n150에서 그런 instance는 M2가 퇴역시킬 Map 전용 instance(`:12700`,
+    `max_wal_size` 2GB) 하나라, 그때까지 공용 instance 백업의 예약분은 두 instance WAL 합보다
+    작다 — 고정 2 GiB보다는 낫고, 이동 뒤에는 한 instance만 남는 일시적 틈이다.
+    """
+
+    return max(_DISK_RESERVE_FLOOR_BYTES, max_wal_bytes + _DISK_RESERVE_WAL_HEADROOM_BYTES)
+
+
+def _describe_disk_reserve(reserve: int, max_wal_bytes: int) -> str:
+    return (
+        f"a {_human_bytes(reserve)} reserve (the larger of "
+        f"{_human_bytes(_DISK_RESERVE_FLOOR_BYTES)} and the live max_wal_size "
+        f"{_human_bytes(max_wal_bytes)} + {_human_bytes(_DISK_RESERVE_WAL_HEADROOM_BYTES)})"
+    )
+
+
+def _required_free_bytes(estimate: int, basis: str, *, max_wal_bytes: int) -> tuple[int, str]:
     """dump 한 번에 필요한 백업 root의 여유 공간과 그 근거 문장.
 
     pg_dump는 컨테이너 `/tmp`(Docker 쓰기 층)에 먼저 쓰고, 그것을 host로 복사한 뒤에야
     지운다 — 복사가 끝날 때까지 **두 벌**이 동시에 디스크에 있다. n150처럼 한
     파일시스템이면 이 계산이 정확하다. Docker 쓰기 층이 다른 파일시스템인 호스트에서는
     백업 root 쪽은 보수적이 되고 Docker 쪽은 이 확인이 보지 않는다. 여기에
-    `_DISK_RESERVE_BYTES`를 더한다.
+    `_disk_reserve_bytes`(살아있는 `max_wal_size`에서 유도)를 더한다.
     """
 
-    return 2 * estimate + _DISK_RESERVE_BYTES, (
+    reserve = _disk_reserve_bytes(max_wal_bytes)
+    return 2 * estimate + reserve, (
         f"2 x the expected dump {_human_bytes(estimate)} because the dump is staged in the "
-        f"container and then copied here, plus a {_human_bytes(_DISK_RESERVE_BYTES)} reserve; "
+        f"container and then copied here, plus {_describe_disk_reserve(reserve, max_wal_bytes)}; "
         f"{basis}"
     )
 
@@ -1751,6 +1780,9 @@ def _require_free_space(
     `expected_dump_bytes`(운영자 값)가 있으면 추정 대신 그것을 쓴다 — 확인은 그대로 한다.
     """
 
+    # 예약분의 재료는 추정 방식과 상관없이 **한 번, 한 자리에서** 읽는다 — 운영자 값 경로
+    # (geo 첫 백업의 비상 경로, 디스크가 가장 빠듯한 때)만 WAL을 빠뜨리는 갈래가 생기지 않게.
+    max_wal_bytes = _query_max_wal_bytes(container_name, port, admin_name)
     if expected_dump_bytes is not None:
         # CLI는 같은 사실을 stderr에 따로 찍는다(로깅 설정이 없는 CLI에서 WARNING은
         # lastResort로 한 번 더 찍혀 두 줄이 된다) — 여기서는 설정된 로그용으로 info.
@@ -1773,7 +1805,7 @@ def _require_free_space(
                 container_name, port, admin_name, database_name
             ),
         )
-    required, reason = _required_free_bytes(estimate, basis)
+    required, reason = _required_free_bytes(estimate, basis, max_wal_bytes=max_wal_bytes)
     free = _free_bytes(role, root)
     if free < required:
         raise StandaloneBackupInsufficientSpaceError(
@@ -1795,14 +1827,22 @@ def _require_rehearsal_space(
     """복원 리허설을 시작하기 **전에**(copy-in·createdb 전) 여유 공간을 확인한다.
 
     필요량 = 원본 database 크기(scratch DB가 그만큼 자란다) + dump 사본(컨테이너 `/tmp`)
-    + 그 instance의 `max_wal_size`(pg_restore와 인덱스 생성이 쌓는 WAL) + 예약분. 셋 다
-    같은 파일시스템이라는 전제는 `create`와 같다(n150 실측) — 백업 root의 여유로 잰다.
-    create보다 위험한 작업이다: transport 리허설은 공용 instance PGDATA 안에 약 13 GB를
-    만든다.
+    + 그 instance의 `max_wal_size`(pg_restore와 인덱스 생성이 쌓는 WAL) + 예약분(create와
+    같은 식). 셋 다 같은 파일시스템이라는 전제는 `create`와 같다(n150 실측) — 백업 root의
+    여유로 잰다. create보다 위험한 작업이다: transport 리허설은 공용 instance PGDATA 안에
+    원본 database 크기만큼을 만든다. 값은 전부 manifest와 살아있는 instance에서 오고, 이 함수에
+    크기 리터럴은 없다.
+
+    **WAL을 두 번 센다 — 일부러 보수적이다.** pg_wal은 누가 쓰든 한 `max_wal_size`(soft)로
+    묶이므로 엄밀히는 한 번이면 된다. 그래도 리허설의 WAL 항과 예약분의 WAL 몫을 따로 둔다:
+    scratch DB와 원본이 같은 PGDATA이고, 모자라서 멈추는 쪽은 리허설이 아니라 모든 테넌트의
+    DB다. 거부는 시작 전이고 잃는 것은 리허설 한 번뿐이다(D4 뒤 transport는 원본 15.4 GB·
+    dump 1.01 GB일 때 한 번 세면 약 19.6 GB, 두 번 세면 약 21.8 GB — 2026-09-29 n150 실측).
     """
 
     wal_bytes = _query_max_wal_bytes(container_name, port, admin_name)
-    required = manifest.db_size_bytes + manifest.byte_size + wal_bytes + _DISK_RESERVE_BYTES
+    reserve = _disk_reserve_bytes(wal_bytes)
+    required = manifest.db_size_bytes + manifest.byte_size + wal_bytes + reserve
     free = _free_bytes(role, root)
     if free < required:
         raise StandaloneBackupInsufficientSpaceError(
@@ -1810,7 +1850,7 @@ def _require_rehearsal_space(
             f"on the filesystem of {root} and {_human_bytes(free)} is free (the scratch "
             f"database grows to the source size {_human_bytes(manifest.db_size_bytes)}, plus "
             f"the dump copy {_human_bytes(manifest.byte_size)}, max_wal_size "
-            f"{_human_bytes(wal_bytes)} and a {_human_bytes(_DISK_RESERVE_BYTES)} reserve). "
+            f"{_human_bytes(wal_bytes)} and {_describe_disk_reserve(reserve, wal_bytes)}). "
             "Free space there and retry"
         )
 

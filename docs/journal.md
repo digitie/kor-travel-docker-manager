@@ -8003,3 +8003,217 @@ M1 리뷰 2차(`b690967`)는 HIGH·MED 없이 LOW 여섯을 냈다. 값싸고 �
   - `/tmp/b3-test.sh`: ruff 0.16.4 깨끗, **2240 passed, 2 skipped**, 5m12s.
   - GitHub CI(dispatch 36459717650, `24f3315`): 백엔드 **2216 passed, 26 skipped**(통합은 gate 없이 skip),
     프론트엔드 green.
+
+## 2026-09-28 — 공용 instance를 Map의 튜닝으로 (MT, ADR-53 D4) — main(#432·#433) 위로 다시 세움
+
+Map의 두 DB를 공용 instance로 옮기는 결정(오너 결정 C, ADR-53)의 튜닝 PR이다. 이 브랜치는 **창 안에서만**
+머지·설치한다 — 설치하는 순간 공용 서비스의 compose config hash가 실행 중 컨테이너와 달라져, `--no-deps` 없는
+`up` 한 번이 공용 instance를 recreate한다(모든 테넌트 재기동). 그래서 main에 설치되지 않은 채로 두지 않는다.
+
+- **다시 세운 이유(적대 리뷰)**: 첫 판(`66e3f06`)은 `5b99322` 위였고, 그 사이 main에 #432(airport → transport
+  개명)와 #433(ADR-52: `init: true`, exec probe `-t 3`/timeout 10초, `stop_grace_period: 300s`, `shm_size: 512mb`,
+  C6c exec 파서)이 들어가 n150에 설치됐다(공용 instance 13:10:57Z 재생성). 첫 판은 다섯 파일에서 충돌했고,
+  `docker-compose.yml`은 충돌 표시 **밖에서** `init`·`stop_grace_period`·`shm_size`를 두 벌 남겼다 — `safe_load`는
+  뒤엣값(300s·512mb)을 조용히 읽고 `docker compose config`는 파일을 거부한다. 같은 번호 ADR-52도 두 개가 됐다.
+  그래서 첫 판을 되살리지 않고 `0fe0d97` 위에 새로 세웠다: #433의 init·probe·grace·C6c 파서·ADR-52는 그대로
+  두고, 첫 판의 init/probe 커밋(`7814218`·`66e3f06`)과 중복 테스트·ADR 문구는 버렸다. `c6c_deployment.py`
+  diff는 없다. 이 결정의 ADR은 **ADR-53**이다.
+- **compose**(`kor-travel-shared-postgres`): 튜닝 `command:`(`pg_prewarm,pg_stat_statements` preload,
+  `pg_prewarm.autoprewarm=on`, `shared_buffers=1GB`, `work_mem=64MB`, `maintenance_work_mem=256MB`,
+  `effective_cache_size=1536MB`, `random_page_cost=1.1`, `max_wal_size=2GB`), `${KOR_TRAVEL_SHARED_POSTGRES_*}`
+  우회 제거, 이미지 digest 고정, `shm_size` 512mb → 1gb. grace 300s는 D4의 ≥120초를 이미 넘어 그대로다.
+  `docker compose config -q`(v5.1.4, 모든 `:?` 변수를 채운 env) 통과, 공용 서비스 config hash는 main과 다르다
+  (의도된 무장).
+- **컨테이너 stop/restart의 grace 전달과 한 서비스 재생성의 `--no-deps`는 이 브랜치의 몫이 아니다.** 처음에는
+  여기 있었지만 compose를 바꾸지 않아 recreate를 무장하지 않으므로 떼어 냈고, **#434**로 머지돼 n150에
+  `6af5dd1`로 설치됐다(위 2026-09-29 "대시보드의 stop/restart가 grace를 따르고…" 항목). MT는 그 위로 다시
+  올렸다(아래 2026-09-29 재기반 항목).
+- **백업 예약분**: max(2 GiB, 살아있는 `max_wal_size` + 1 GiB). `create`는 그 값을 이미 하던 database 크기
+  질의와 **같은 exec**로 읽는다(새 exec·새 DB 의존 없음, `--expected-dump-bytes`면 `max_wal_size`만). 읽지 못하면
+  pg_dump 전에 거부한다. `rehearse-restore`는 WAL을 두 번 센다 — 일부러 보수적이라고 docstring과
+  docker-management.md에 적었다.
+- **테스트**: 튜닝·digest·shm ≥ 1 GiB·grace ≥ 120초·probe timeout ≥ 2×`-t`·파서는 main의
+  `test_shared_postgres_runtime_contract.py` 한 파일(서비스 로더·duration/크기 파서 하나)에 둔다. 로더는 중복 키를
+  거부한다(`yaml_strict`) — `_real_compose_config`도 같다. 격리 실행 테스트
+  `test_shared_postgres_runtime_integration.py`(gate `KTDM_REQUIRE_DOCKER_INTEGRATION`)는 기대값을 전부 compose에서
+  읽는다: probe로 healthy, 모든 `-c` 값이 `pg_settings`에서 `command line`으로, autoprewarm leader, PID 1 =
+  docker-init, StopTimeout·ShmSize = 파싱한 grace·shm, grace 안의 깨끗한 정지.
+- **빨강 확인(n150, git-archive 사본, 테스트는 새 것·src와 compose는 `0fe0d97`)**: compose 계약 3/8(튜닝·digest·
+  shm), 백업 11/11(단언에서 6 —
+  예약분 3·못 읽는 답 1·transport 크기 질의 2, 새 helper API가 없어서 5), gated 격리 실행 1/1(튜닝 값
+  read-back에서). 대상 테스트 7파일은 새 head에서 482 passed, ruff(0.16.4) 통과. 옛 코드에서도 초록인 가드는 변이로 빨갛게 만들었다: grace 119s → 1/1,
+  probe timeout 5s → 1/1, 중복 키 한 줄 → 9/10, 크기 파서 단위 → 2/2, 예약분 headroom 빼기 → 1/3(2GB 경우만 —
+  나머지는 하한이 지배). grace 전달·`--no-deps`의 빨강 확인은 #434 항목에 있다. 482 passed는 그때 이 브랜치에
+  함께 있던 그 두 수정의 테스트를 포함한 수다.
+- **남은 것**: M1이 `0fe0d97` 위로 올라오면 그 위로 다시 올리고, §1.6 실 PostgreSQL 테스트를 포함한 gated
+  실행을 다시 돈다. 전체 스위트·gated 실행의 최종 수치는 PR 본문에 적는다. 머지는 창 안에서, PR head와 머지
+  SHA의 `git diff --stat`이 비었는지 확인한 뒤다.
+
+## 2026-09-29 — MT 리뷰 수정: M1 위로 재기반, recreate 위험의 경계, 예약분 테스트의 판별력
+
+MT(ADR-53 D4)의 적대 리뷰 MED 2건·LOW 14건을 반영했다. 이 브랜치는 여전히 **창 안에서만** 머지·설치한다.
+
+- **M1 위로 올렸다**(`origin/fix/rebuild-tenant-fences` `b690967`, 스펙 §1.0의 rename → M1 → MT → M2 사슬).
+  충돌은 이 파일 하나였다(두 항목을 다 둠). 그때 함께 있던 두 fix 커밋(`fix(docker): …`)은 #434로 squash
+  머지돼 다음 재기반에서 손으로 뺐다(아래 2026-09-29 재기반 항목).
+- **MED — recreate 위험의 경계가 좁았다.** ADR-53의 받아들인 위험·helper docstring·스펙의 A1/T-R 공지가
+  "`--no-deps` 없는 `up`"만 적었다. n150 Compose v5.2.0에서는 `run --rm <의존 서비스>`도 drift된 의존을
+  재생성한다(리뷰 실측). 공용 instance를 `depends_on`하는 서비스에는 db-init one-shot과 `pinvi-admin-bootstrap`도
+  있고, onboarding §7.3은 db-init 재실행을 자가치유로 권한다 — Manager 코드가 아니라 사람·에이전트의 명령이
+  남은 길이다. 그래서 ADR-53·스펙(§0.4·A1·T-R)이 `up`·`run`(`--no-deps` 없이)과 `create`(그 플래그가
+  없다)를 모두 적고, 공지가 drift guard의 MATCH까지 db-init 재실행도 동결한다. 서비스 개수는 적지 않는다
+  (리뷰가 센 것은 19였고, 테넌트가 늘 때마다 바뀐다).
+  - 범위 해석기(`_compose_mutation_scope`)는 의존성까지 닿는 명령을 M1의 `_COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES`
+    하나로 본다 — `run`(과 `start`·`scale`)이 들어간다. `--no-deps`는 compose가 플래그로 읽은 것만 센다: `run
+    SERVICE` 뒤 컨테이너 argv의 같은 글자는 compose 플래그가 아니다. 그 판정은 M1(#435)의 `parsed_flags` 하나이고
+    R3 chokepoint도 같은 것을 본다.
+  - 대시보드의 한 서비스 재생성이 `--no-deps`가 되면서 바뀐 동작(의존 서비스를 띄우지도 기다리지도 않고
+    one-shot을 다시 돌리지 않는다)은 #434가 docker-management.md §7과 helper docstring에 적었다.
+- **MED — 예약분 테스트가 유도를 가르지 못했다.** 유도하는 세 자리 중 `--expected-dump-bytes` 경로와
+  rehearse-restore의 테스트가 가짜 `max_wal_size` 1 GiB를 썼고, 그 값에서는 유도값 = 하한 2 GiB라 고정
+  상수로 되돌려도 초록이었다(리뷰 변이 둘 다 93/93 통과). 세 테스트가 한 표 `_RESERVE_CASES`(2GB → 3 GiB,
+  1GB → 2 GiB, 512MB → 2 GiB, 기대값은 리터럴)로 돈다. 그리고 `_require_free_space`가 `max_wal_size`를 분기
+  **앞에서 한 번** 읽는다 — geo 첫 백업의 비상 경로(디스크가 가장 빠듯한 때)만 WAL을 빠뜨리는 갈래가
+  구조로 없어졌다. 크기와 WAL을 한 exec로 읽던 세 번째 psql argv 사본(`_query_db_size_and_max_wal_bytes`)은
+  지웠다: 운영자 값 경로와 manifest용 크기 질의 때문에 절약이 이미 부분적이었고, 대가는 백업마다 30초 상한
+  exec 하나다.
+- **LOW**:
+  - ADR-53 상태 줄이 결정마다 효력을 갖는 PR을 적는다(4 = MT, 3의 울타리 = M1, 1·2·5와 3의 공용 instance
+    부분 = M2). ADR-35·37의 supersede 표시는 그것을 사실로 만드는 M2가 단다.
+  - 격리 실행 테스트는 이제 Manager의 정지 경로(`_control_container_unlocked`)로 실제 docker-py 컨테이너를
+    멈춘다 — daemon이 보고한 `Config.StopTimeout`이 `timeout`으로 닿는지 본다. Docker probe의
+    `OSError`/`TimeoutExpired`는 `test_compose_readiness_integration.py`의 gate helper로 skip/fail한다(gate 0에서
+    ERROR가 아니다). M1의 두 통합 파일은 아직 gate helper 사본을 따로 든다(M1 몫).
+  - duration 파서는 compose가 실제로 쓰는 `5m0s`에 결박했다. (`--no-deps` 복구 argv 단언과 중복 테스트 정리는
+    #434의 것이다.)
+  - `_disk_reserve_bytes`는 dump를 뜨는 그 instance의 WAL만 덮는다고 적었다(M2가 Map 전용 instance를 퇴역시킬
+    때까지의 일시적 틈). docker-management.md의 수치는 `2N + 예약분`(D4 뒤 3 GiB)으로: geo 비상 백업 약
+    15.2 GB, 그 뒤 약 12.6 GB. transport는 n150 읽기 전용 실측(`pg_database_size` 15,405,461,987 B)으로
+    리허설·복원 약 21.8 GB(WAL을 한 번 세면 약 19.6 GB), 첫 실행 상한 약 34.0 GB.
+  - onboarding §1.1의 튜닝 행은 그 전 기록 그대로 되돌렸다(머리말이 D4 값을 갖는다).
+  - rehearse-restore가 WAL을 두 번 세는 것은 그대로 둔다 — 일부러 보수적이고 docstring에 근거가 있다.
+- **n150 실행**(모두 `/tmp`, 운영 컨테이너는 읽기 한 번 — transport 크기):
+  - 빨강 확인: 해석기 새 테스트를 리뷰 전 `compose_service.py`(`b814370`)에서 돌리면 2/5(`run`,
+    `run-argv-no-deps`). 예약분 변이 — 운영자 값 경로가 WAL을 0으로 → 3/3(2GB는 필요량으로, 나머지는 거부 문구의
+    `max_wal_size`로), rehearse-restore가 하한만 → 1/3(2GB만 — 이 경우가 없으면 초록이다, 리뷰가 본 그대로),
+    대조군 추정 경로가 WAL을 0으로 → 3/3. (한 서비스 재생성의 `--no-deps` 변이는 #434 항목에 있다.) Manager
+    정지 경로(#434)가 timeout을 넘기지 않으면 격리 실행 테스트가 `assert [{}] == [{'timeout': 300.0}]`로 빨갛다.
+    `PATH`에 docker가 없을 때 gate 0: 새 파일 1 skipped, 리뷰 전 파일 1 error(`FileNotFoundError`); gate 1은
+    새 파일도 1 error(의도한 gate 실패).
+  - 대상 8파일 633 passed(`4f81ba4`). gated(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, 새 `git clone`, M1의 두 통합
+    파일 포함) 22 passed(`4f81ba4`), fixture 잔여 없음. 전체 스위트(`b3-test.sh`, `2b349a8`): ruff 0.16.4 통과,
+    2220 passed, 2 skipped. 그 뒤의 커밋은 이 journal뿐이다.
+- **남은 것**: M1이 더 바뀌면 다시 올린다. 분리 브랜치는 #434로 머지됐고 MT는 그 위로 올렸다(아래). PR 본문에 위
+  수치를 옮기고, 머지는 창 안에서 PR head와 머지 SHA의 `git diff --stat`이 비었는지 확인한 뒤다.
+
+## 2026-09-29 — MT를 main `6af5dd1`(#434·#435) 위로 다시 올렸다
+
+- **바탕**: main이 `0fe0d97`에서 `6af5dd1`로 움직였고 n150에 설치됐다 — #434(컨테이너 stop/restart의 grace 전달과
+  한 서비스 재생성의 `--no-deps`, MT에서 떼어 낸 것)와 #435(M1). 둘 다 squash 머지라 MT에 든 커밋들과 patch-id가
+  같지 않아 rebase가 스스로 떨어뜨리지 못한다. 그래서 `git rebase --onto origin/main 0f22094`로 M1 브랜치의
+  14커밋(#435에 들어감)과 떼어 낸 두 커밋(`f2db08e`·`0f22094`, #434에 들어감)을 명시적으로 빼고 MT 자신의
+  10커밋만 옮겼다. 두 커밋의 내용이 #434에 다 있다는 것은 옮긴 뒤 MT의 main 대비 diff에 `docker_service.py`와
+  `test_multi_project_boundaries.py`가 없고 `test_docker_service_config.py`는 `yaml_strict` 로더 5줄뿐인 것으로
+  확인했다.
+- **충돌 풀이**:
+  - `test_docker_service_config.py` import: main의 `registry` import와 MT의 `yaml_strict` import를 둘 다 둔다.
+  - `journal.md`: main의 항목(M1 리뷰 2차)을 먼저, MT의 두 항목을 그 뒤에 둔다.
+  - `compose_service.py` 범위 해석기: MT의 `no_deps` 변수를 버리고 M1의 `parsed_flags`(compose가 플래그로 읽은
+    것)로 센다. 명령 집합은 main의 `_COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES` 하나다. MT가 main에 더하는 것은
+    API 의존성 확장이 `{"up", "create", "restart", "watch"}` 대신 그 집합을 쓰는 조건 한 줄과 주석뿐이다
+    (`run`·`start`·`scale`이 들어간다).
+  - `4820eed`의 `--no-deps` 복구 argv 단언·중복 테스트 삭제와 `4f81ba4`의 helper docstring·docker-management.md
+    대시보드 문단은 #434가 이미 main에 둔 것이라 main 쪽을 택했다. 두 커밋 메시지도 그만큼 줄였다.
+- **ADR-53·journal**: grace 전달과 `--no-deps`를 MT(결정 4) 몫으로 적은 줄을 지우고 #434를 가리킨다. ADR-53 상태
+  줄의 결정 4는 이제 튜닝과 백업 예약분이다. compose 주석과 onboarding C9의 "Manager의 stop/restart가 grace를
+  따른다"는 사실 서술이라 지우지 않고 `(#434)`를 달았다.
+- **compose 검사**: Manager의 `yaml_strict` 로더(`load_yaml_rejecting_duplicate_keys`)로 `docker-compose.yml`을
+  읽으면 중복 키 없이 서비스 44개다. `kor-travel-shared-postgres`는 #433의 `init: true`, exec probe(`pg_isready …
+  -t 3`, `timeout: 10s`), `stop_grace_period: 300s`를 그대로 갖고, MT의 튜닝 `command`(`-c` 10개, 튜닝 값에
+  `${KOR_TRAVEL_SHARED_POSTGRES_*}` 없음), digest 핀, `shm_size: 1gb`를 더한다. 대조군: `stop_grace_period`
+  한 줄을 복제하면 같은 로더가 `ConstructorError`로 거부한다.
+- **n150 실행**(모두 `/tmp`, 운영 컨테이너·DB는 건드리지 않았다. chain17 t64a가 끝난 21:29Z 뒤, `6453239`):
+  - gated 전체 스위트(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, 새 `git clone`, consolidation venv): **2266 passed,
+    2 skipped**(root 전용 M05 ledger 둘), 0 failed, 9m51s. `ktdm-it-*`·`ktdm-sharedpg-*` 잔재 0.
+  - `/tmp/b3-test.sh`: ruff 0.16.4 깨끗. 전체 pytest는 세 번 모두 **1 failed, 2265 passed, 2 skipped**였다. 실패는
+    셋 다 main의 `test_compose_readiness_integration.py::test_canonical_compose_readiness_matches_real_runtime`이
+    docker 호출의 30초 subprocess timeout에 걸린 것이다(한 번은 `docker stop`, 두 번은 `docker compose up`; load
+    6~19, 실행 시간 6m39s·18m52s·11m48s). 환경으로 판정한다: MT가 건드리지 않는 파일이고, 같은 head의 gated
+    실행에서는 초록이었고, 같은 부하에서 그 테스트 하나를 떼어 돌리면 main `6af5dd1`에서도 빨갛다(MT 두 번·main
+    한 번, 모두 1 failed).
+  - **빨강 확인(새 테스트 대 main)**: 새 `git clone`에서 테스트가 아닌 경로 10개(`backend/src`의 두 파일, compose,
+    docs)를 `6af5dd1`로 되돌리고 MT가 바꾼 테스트 다섯 파일을 gate=1로 돌렸다 → **18 failed, 341 passed**. main
+    대비 새 테스트 id 20개 중 **14개가 빨갛다**:
+    - 범위 해석기 2/5 — `run`, `run-argv-no-deps`. `up`·`up-no-deps`·`run-no-deps`는 대조군이라 main에서도
+      초록이다.
+    - compose 계약 2/3 — 튜닝 `command`, digest 핀. duration·크기 파서 테스트는 테스트 자신의 파서를 보므로
+      main에서도 초록이다.
+    - gated 격리 실행 1/1.
+    - 백업 9/11 — 예약분 3, 운영자 값 경로 3, 못 읽는 답 2, rehearse-restore 2GB 1. rehearse-restore의 1GB·512MB는
+      유도값이 하한 2 GiB와 같아 main에서도 초록이고, 2GB 경우가 그 둘을 가른다.
+    - 바뀐 기존 테스트 4개도 빨갛다(shm ≥ 1 GiB 하나, 백업 필요량 셋). 사라진 id 2개는 parametrize로 바뀐 두
+      백업 테스트다.
+    - `test_docker_service_config.py`의 중복 키 로더는 main에도 중복 키가 없어 초록이다. 이것은 가드이고, 빨강은
+      앞 항목의 변이(9/10)가 보였다.
+  - 잔재: b3 두 번과 떼어 돌린 readiness 실행 세 번이 남긴 `ktdm-readiness-*` 컨테이너 15개를 지웠다. 셋 다
+    `Created`였고, 일부는 client 시한이 지난 뒤 daemon이 만든 것이다. 09-28 08:05의
+    `ktdm-readiness-2020836-readine0_default` 네트워크는 이 작업의 것이 아니어서 두었다.
+
+## 2026-09-29 — MT 리뷰 3차: 운영 이름에 닿지 않는 정지 시험, prewarm·DSM의 정직한 서술, 범위 해석기 hunk 철회
+
+MT(ADR-53 D4)의 세 번째 적대 리뷰 MED 3건(그중 둘은 같은 것)·LOW 12건 가운데 MT 몫을 반영했다. 이 브랜치는
+여전히 **창 안에서만** 머지·설치한다.
+
+- **바탕**: main이 `c66ec1c`에서 `24f6c57`로 움직였다 — #436(문서)·#437(`.env.example`·dev-environment.md, geo
+  Dagster URL 드라이버). 둘 다 MT가 건드리지 않는 파일이라 충돌 없이 다시 올렸다. 위 항목들이 적은 `6af5dd1`·
+  `6453239`·`289cdfa`는 그 전 head다.
+- **MED — 격리 정지 시험이 운영 이름으로 풀렸다.** `test_shared_postgres_runtime_integration.py`는 Manager의 정지
+  경로를 운영 registry 키(`kor-travel-shared-postgresql`)로 불렀고, 그 이름은 운영 공용 instance다. 격리를 지키는
+  것은 `_get_client` 패치 하나뿐이라, 메서드가 client를 다른 길(`docker.from_env()`·캐시된 client)로 얻게 바뀌면
+  n150(운영, 머지 gate가 도는 곳)에서 운영 공용 instance를 300초 grace로 멈춘다(사용자 정지는
+  `unless-stopped`가 되살리지 않는다). 이제 docker_service가 보는 registry를 throwaway 키(`ktdm-it-sharedpg`)
+  **하나뿐인** 사본으로 갈아 끼우고 그 이름을 격리 컨테이너로 둔다 — 운영 키는 아예 풀리지 않는다. 격리 이름이
+  fixture의 compose 프로젝트(`ktdm-sharedpg-…`)로 시작하고 공용 서비스의 registry 이름과 다른지 먼저 단언하고,
+  fake client의 `get`도 받은 이름을 확인한다. (리뷰가 제안한 `monkeypatch.setitem(registry.MANAGED_CONTAINERS, …)`
+  은 쓸 수 없다 — `MANAGED_CONTAINERS`는 쓰기 없는 `_LazyMapping`이다.)
+- **MED — prewarm은 모든 DB를 덮지 않는다.** dump는 덮지만 reload는 DB OID 순이고 free buffer가 바닥나면 멈춘다
+  (REL_16_STABLE `autoprewarm.c`: `apw_compare_blockinfo` 정렬, `apw_load_buffers`의 `!have_free_buffer()`,
+  worker 루프의 같은 조건). 1GB dump는 NBuffers에 가깝고 재기동 중 다시 붙는 테넌트가 free buffer를 쓴다 — OID가
+  가장 큰 DB, M2 뒤에는 Map의 둘이 마지막이고 못 올라올 수 있다. ADR-53 결정 4, compose 주석,
+  platform-topology.md를 고쳤다. 감시(runbook A7i·§4.7)는 기동마다 `autoprewarm successfully prewarmed N of M`을
+  기록하고 큰 부족을 발견으로 친다. per-DB 단계는 두지 않는다(D4 범위).
+- **LOW 반영**:
+  - 범위 해석기 hunk와 그 테스트를 **철회**했다(`compose_service.py`·`test_pinned_runtime_rebuild.py`는 main과
+    같다). 식별자 목록은 비었는지로만 쓰이고, 의존성 범위는 M1의 R3가 frozen resolved 문서의 `depends_on`
+    closure로 본다. 그 hunk가 넓힌 것은 손으로 쓴 한 단계 API 대응표였고, 테스트 이름은 compose가 닿는 것을
+    센다고 했지만 `run --rm pinvi-web`에서 compose는 공용 instance·db-init·map-api 등까지 닿는다. 그래서 앞
+    항목들의 "범위 해석기가 `run`을 센다"는 이제 사실이 아니다 — `run`의 위험은 R3·재구축의 `--no-deps`·손 명령
+    동결이 덮는다.
+  - `run` 특성 시험 두 개(T-R3e/f): `run --rm <dependent>`는 `--no-deps` 없이 drift된 의존 PostgreSQL을 다시
+    만들고, `--no-deps`면 그대로 둔다. 창의 동결과 ADR-53의 위험이 기대는 측정이다.
+  - M1의 두 실 PostgreSQL 파일이 따로 들던 `_SHARED_IMAGE` digest 사본을 정본 compose의 핀에서 읽는다(계약
+    파일의 로더). gate helper 사본도 readiness 파일의 것(`_required_docker_gate`·`_unavailable_docker_fixture`)으로
+    합쳤다.
+  - probe의 `docker timeout ≥ 2×-t` 단언을 뺐다 — D4가 아니고 ADR-52의 다음 조정을 묶는 결박이다.
+  - ADR-53 받아들인 위험: #433 대비 DSM 여유가 절반(병렬 hash 노드 상한 96MB → 384MB, shm 512mb → 1gb, 약 5.3 →
+    2.7개)이고 autoprewarm leader가 worker 한 칸(7 → 6)을 쓴다 — 위험을 **줄일 뿐 없애지 않는다**. 72시간 안의 새
+    DSM 오류는 hard alarm이고 미리 합의한 후속은 `shm_size: 2gb`다. `max_wal_size=2GB`는 crash replay를 약 두 배까지
+    늘리고 90초 `TimeoutStopSec` 안에 내려야 할 dirty set을 키운다 — drop-in은 MT와 함께 하기를 권한다.
+  - 공용 서비스 **자신**의 대시보드·CLI 설정 변경·reset도 동결한다(`--no-deps`는 이름 붙은 서비스의 재생성을
+    막지 않는다). stop/restart는 재생성이 아니라 허용한다. ADR-53 문장을 고쳤다.
+  - `ktdctl db-backup create --expected-dump-bytes`의 도움말이 예약분을 고정 2 GiB로 적었다 — max(2 GiB, 그
+    instance의 살아있는 `max_wal_size` + 1 GiB)로.
+- **MT 몫이 아닌 것**: `/opt/.env`의 UI admin password hash 네 개에 든 `$`가 보간되는 문제는 MT 밖이라 오너에게
+  넘긴다(runbook §4.8). CI 증거·머지 동결·B5/B6 절차는 runbook(§1.0·§4.3·§4.4)에 적었다.
+- **n150 실행**(모두 `/tmp`, 운영 컨테이너·DB는 읽기만 — `postgres:16-alpine`·공용 postgis 이미지 inspect):
+  - 대상 8파일(계약·격리 실행·T-R3 특성·실 PostgreSQL·재구축·백업·CLI·docker_service 설정), gate=1,
+    `git archive`한 `19adc54` 트리: **521 passed**, fixture 잔재 없음. ruff 0.16.4 통과. 부하(load 12~14, 다른
+    세션의 transport `up --build`) 때문에 16분 16초였다.
+  - 빨강 확인(버리는 사본에 변이, gate=1): 세 테스트 모두 빨갛다(3 failed).
+    - 정지 경로가 `_get_client` 대신 `docker.from_env()`로 client를 얻게 바꾸면 격리 정지 시험이
+      `assert [] == ['ktdm-sharedpg-…-pg-1']`로 빨갛다 — 패치가 우회돼도 이름은 격리 컨테이너로만 풀려 그 컨테이너만
+      멈췄고, 운영 공용 instance의 `Id`·`StartedAt`(`2026-09-28T13:10:57Z`)·상태는 실행 전후가 같았다.
+    - `run` 특성 시험에 `--no-deps`를 붙이면 T-R3e가 `pg` 컨테이너 ID 동일로, 빼면 T-R3f가 다시 만들어진 `pg`에
+      접속하지 못해(새 컨테이너가 아직 기동 중) 빨갛다.
+    - 변이 없는 같은 세 테스트는 3 passed(8분 31초).
+  - 전체 스위트와 gated 전체 실행은 verify 단계의 몫이다. 그 수치와 CI run ID·`headSha`는 PR 본문에 적는다.

@@ -22,6 +22,8 @@ from collections.abc import Iterator
 from unittest.mock import Mock
 
 import pytest
+from test_compose_readiness_integration import _required_docker_gate, _unavailable_docker_fixture
+from test_shared_postgres_runtime_contract import _service
 
 from kor_travel_docker_manager.services import database_runtime
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
@@ -33,11 +35,9 @@ from kor_travel_docker_manager.services.database_runtime import (
     reset_databases_for_application_300,
 )
 
-#: 공용 instance(`kor-travel-shared-postgres`)가 도는 바로 그 이미지다(2026-09-28 n150 실측).
-_SHARED_IMAGE = (
-    "postgis/postgis@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40"
-)
-_REQUIRED_GATE_ENV = "KTDM_REQUIRE_DOCKER_INTEGRATION"
+#: 공용 instance(`kor-travel-shared-postgres`)가 도는 바로 그 이미지다 — 정본 compose의 digest
+#: 핀에서 읽는다. 사본을 두면 compose의 digest를 올린 뒤에도 이 파일은 옛 이미지를 시험한다.
+_SHARED_IMAGE: str = _service()["image"]
 _ADMIN = "it_admin"
 _PORT = 15432
 _SCHEMA_OWNER = "ktm_feature_schema_owner"
@@ -63,30 +63,17 @@ def _docker(*arguments: str, timeout: int = 120, **kwargs: object) -> subprocess
     )
 
 
-def _required_docker_gate() -> bool:
-    value = os.environ.get(_REQUIRED_GATE_ENV, "0").strip()
-    if value not in {"0", "1"}:
-        pytest.fail(f"{_REQUIRED_GATE_ENV}는 0 또는 1이어야 함")
-    return value == "1"
-
-
-def _unavailable(reason: str) -> None:
-    if _required_docker_gate():
-        pytest.fail(reason)
-    pytest.skip(f"{reason}; 필수 gate는 {_REQUIRED_GATE_ENV}=1로 실행")
-
-
 def _require_shared_image() -> None:
     try:
         info = _docker("info")
     except (OSError, subprocess.TimeoutExpired):
-        _unavailable("Docker를 사용할 수 없음")
+        _unavailable_docker_fixture("Docker를 사용할 수 없음")
     if info.returncode != 0:
-        _unavailable("Docker를 사용할 수 없음")
+        _unavailable_docker_fixture("Docker를 사용할 수 없음")
     if _docker("image", "inspect", _SHARED_IMAGE).returncode == 0:
         return
     if not _required_docker_gate():
-        _unavailable(f"pull 없는 로컬 {_SHARED_IMAGE}를 사용할 수 없음")
+        _unavailable_docker_fixture(f"pull 없는 로컬 {_SHARED_IMAGE}를 사용할 수 없음")
     pull = _docker("pull", _SHARED_IMAGE, timeout=600)
     if pull.returncode != 0:
         pytest.fail(f"공용 PostgreSQL 이미지 pull 실패: {pull.stderr.strip()}")

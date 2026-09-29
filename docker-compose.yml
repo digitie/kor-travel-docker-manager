@@ -12,8 +12,19 @@ services:
   # 사고(ADR-37)의 직접 원인이었다. 전용 instance는 Map(`kor-travel-map-postgres`,
   # :12700) 하나만 남았다. geo(:12500)·concierge(:12600)·PinVi(:12800) 전용 instance는
   # 2026-09-28에 이 파일에서 뺐다 — 데이터 디렉터리는 호스트에 그대로 둔다.
+  #
+  # 튜닝은 Map의 값이다(ADR-53, D4) — Map DB가 이리로 오면서 Map이 요구하던 64MB
+  # `work_mem`과 autoprewarm을 이 instance가 진다. 값은 **이 파일이 정본**이다. 예전의
+  # `${KOR_TRAVEL_SHARED_POSTGRES_*:-…}` 우회로는 뺐다(n150 `.env`에 그 override가
+  # 0줄이었다). 모두 cluster 전역이라 바꾸면 **모든 테넌트가 재기동**을 겪는다 — 별개
+  # 배포 창에서, 공지하고 바꾼다(shared-postgres-onboarding.md §6.1 C9).
+  #
+  # 이미지는 digest로 고정한다. 태그·실행 중 `.Image`·`RepoDigests`가 2026-09-28에 모두
+  # 이 digest였으므로 이미지 교체가 아니다. 태그만 두면 recreate나 `docker pull` 한 번이
+  # 모든 테넌트의 PostgreSQL·PostGIS·glibc를 조용히 바꾼다. db-init one-shot은 psql
+  # 클라이언트라 태그를 그대로 둔다.
   kor-travel-shared-postgres:
-    image: postgis/postgis:16-3.5
+    image: postgis/postgis:16-3.5@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40
     container_name: ${KOR_TRAVEL_SHARED_POSTGRES_CONTAINER:-kor-travel-shared-postgres}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -28,11 +39,16 @@ services:
     init: true
     # docker 기본 10초는 부하 중 fast shutdown의 checkpoint를 못 기다리고 SIGKILL한다 —
     # 2026-09-25 08:03 `systemctl restart docker`가 그렇게 unclean stop을 만들었고
-    # 재기동이 crash recovery(73GB fsync)로 이어졌다.
+    # 재기동이 crash recovery(73GB fsync)로 이어졌다. D4(ADR-53)는 1GB `shared_buffers`의
+    # 종료 checkpoint를 위해 120초 이상을 요구한다 — 이 값이 그것을 넘는다. Manager의
+    # 컨테이너 stop/restart도 이 값(`Config.StopTimeout`)을 그대로 넘긴다(#434).
     stop_grace_period: 300s
     # docker 기본 /dev/shm 64MB는 병렬 질의의 dynamic shared memory가 넘친다(09-22
-    # "could not resize shared memory segment" 실측). 옛 geo 전용 instance와 같은 값.
-    shm_size: 512mb
+    # "could not resize shared memory segment" 실측). D4의 64MB `work_mem`에서는 병렬
+    # hash 하나가 `work_mem × hash_mem_multiplier(2) × (workers+1)`까지 자라므로 1gb로
+    # 둔다(오너 결정, ADR-53). tmpfs라 segment가 있는 동안만 RAM을 쓴다. 512mb·16MB 때보다
+    # 여유는 절반이다 — 위험을 줄일 뿐 없애지 않는다. 새 DSM 오류가 2gb로 올릴 신호다(ADR-53).
+    shm_size: 1gb
     environment:
       POSTGRES_USER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
       # cluster 관리용 계정이다 — 앱에는 절대 주입하지 않는다. 앱은 아래
@@ -52,20 +68,29 @@ services:
     - listen_addresses=127.0.0.1
     - -p
     - ${KOR_TRAVEL_SHARED_DB_PORT:-11000}
+    # - pg_prewarm: autoprewarm은 buffer 목록을 **database를 가리지 않고** dump한다. 재기동
+    #   때는 DB OID 순으로 database마다 worker 하나씩 다시 읽고, free buffer가 바닥나면 거기서
+    #   멈춘다 — 가장 나중에 만든 DB(Map이 오면 Map의 둘)가 마지막이고 못 올라올 수도 있다
+    #   (ADR-53 결정 4, best effort). 라이브러리의 C 코드가 도는 것이라 다른 테넌트 DB에
+    #   `CREATE EXTENSION pg_prewarm`을 하지 않는다. `template0`의 worker가 `exit code 1`로
+    #   끝나는 로그는 정상이다(접속 불가 DB).
+    # - pg_stat_statements: 공용 instance가 원래 쓰던 것.
     - -c
-    - shared_preload_libraries=pg_stat_statements
+    - shared_preload_libraries=pg_prewarm,pg_stat_statements
     - -c
-    - shared_buffers=${KOR_TRAVEL_SHARED_POSTGRES_SHARED_BUFFERS:-128MB}
+    - pg_prewarm.autoprewarm=on
     - -c
-    - work_mem=${KOR_TRAVEL_SHARED_POSTGRES_WORK_MEM:-16MB}
+    - shared_buffers=1GB
     - -c
-    - maintenance_work_mem=${KOR_TRAVEL_SHARED_POSTGRES_MAINTENANCE_WORK_MEM:-128MB}
+    - work_mem=64MB
     - -c
-    - effective_cache_size=${KOR_TRAVEL_SHARED_POSTGRES_EFFECTIVE_CACHE_SIZE:-512MB}
+    - maintenance_work_mem=256MB
     - -c
-    - random_page_cost=${KOR_TRAVEL_SHARED_POSTGRES_RANDOM_PAGE_COST:-1.1}
+    - effective_cache_size=1536MB
     - -c
-    - max_wal_size=${KOR_TRAVEL_SHARED_POSTGRES_MAX_WAL_SIZE:-1GB}
+    - random_page_cost=1.1
+    - -c
+    - max_wal_size=2GB
     - -c
     - pg_stat_statements.track=all
     - -c

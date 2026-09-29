@@ -4060,3 +4060,86 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
   container=kor-travel-shared-postgres --filter event=exec_die`를 걸어 두면 다음 사건의 출처가 남는다.
 - 반영 뒤 일주일(에이전트 빌드가 포함된)에 exit-code-2 crash가 없는지.
 - `recovery_init_sync_method=syncfs`(recovery 시간 단축)와 `shared_buffers` 재조정은 별개 결정으로 남겼다.
+
+## ADR-53: Map의 두 DB를 공용 instance로 옮긴다 — ADR-35의 Map principal 경계를 이 topology에서 supersede
+
+- 상태: accepted — 효력은 PR마다 다르다. 결정 4(튜닝·백업 예약분)는 MT와
+  함께 생긴다. 결정 3의 울타리(R2·R3·R4)는 M1이 만들고, 결정 1·2·5와 결정 3이 공용 instance에 걸리는
+  것은 M2(이동)와 함께다. M2가 설치되기 전이나 창에서 되돌려진 뒤에는 1~3·5가 아직 사실이 아니다.
+  ADR-35·ADR-37의 "ADR-53이 일부 supersede" 표시는 그것을 사실로 만드는 M2가 단다.
+- 날짜: 2026-09-28
+- 결정자: 사용자(오너 결정 C와 하위 결정 D1~D10), Claude
+- supersedes: ADR-35 "Map principal 경계 원칙은 유지"(이 topology 한정), ADR-37의 Map 전용 instance 부분
+- 관련: ADR-44~47, ADR-50, ADR-51, ADR-52(공용 instance의 init·exec probe·grace), Map ADR-103
+
+### 결정
+1. `kor_travel_map`·`kor_travel_map_dagster`는 `kor-travel-shared-postgres`에 산다. 전용
+   `kor-travel-map-postgres`는 퇴역하고 PGDATA는 보존한다(롤백용).
+2. Map fresh bootstrap은 **그 instance의 기존 admin**(`POSTGRES_USER`)으로, 그 admin secret을 **one-shot
+   안에서만 실행 시점에** 읽어 돈다. 새 superuser·새 영속 DSN·Map env 키는 없다. Map 런타임은 받지 않는다.
+3. 재구축은 공용 instance를 readiness로만 본다(up·recreate·restart 금지, R3). instance admin 소유 DB, 그리고
+   소유자가 Map 두 DB 밖의 DB도 소유한 DB는 파기 대상이 아니다(R2). Dagster metadata role 비밀번호 회전은 그 role이
+   아무것도 소유하지 않을 때만 한다. Map DB는 PUBLIC CONNECT를 닫고 앱 DB에 연결 상한 floor(0.4×usable)을 건다(R4).
+4. 공용 instance를 Map의 튜닝(D4)으로 한 번 재기동한다: `pg_prewarm`(autoprewarm — 아래) +
+   `pg_stat_statements`, `shared_buffers=1GB`, `work_mem=64MB`, `maintenance_work_mem=256MB`,
+   `effective_cache_size=1536MB`, `random_page_cost=1.1`, `max_wal_size=2GB`, `shm_size: 1gb`, 현재 이미지 digest
+   고정(이미지 교체 아님). `ALTER SYSTEM`은 쓰지 않는다 — 값은 compose `command:`가 정본이다.
+   - autoprewarm은 **dump만** 모든 database를 덮는다(유효한 buffer 전부를 DB OID와 함께 적는다). reload는
+     보장이 아니다: 파일을 DB OID 순으로 정렬해 database마다 worker 하나를 차례로 띄우고, free buffer가
+     바닥나면 다음 worker를 띄우지 않으며 worker 안에서도 거기서 멈춘다(PostgreSQL `REL_16_STABLE`
+     `autoprewarm.c`의 `apw_load_buffers`·`autoprewarm_database_main`). 1GB dump는 NBuffers에 가깝고, 그동안
+     다시 붙는 테넌트가 free buffer를 쓴다. 그래서 OID가 가장 큰 — 가장 나중에 만든 — DB가 마지막에 올라오고
+     아예 못 올라올 수 있다. M2 뒤에는 그것이 prewarm을 요구한 Map의 두 DB다. per-DB 단계는 두지 않는다
+     (오너 결정 D4의 범위). 기동마다 `autoprewarm successfully prewarmed N of M` 줄이 실제 적재량이다.
+   - 종료 checkpoint의 grace는 D4가 120초 이상을 요구한다. ADR-52의 `stop_grace_period: 300s`가 이미 그것을
+     넘으므로 이 ADR은 값을 바꾸지 않는다. `init: true`와 exec probe도 ADR-52의 것이다.
+   - Manager의 컨테이너 stop/restart가 그 grace(`Config.StopTimeout`)를 docker에 넘기는 것과, 대시보드의 한
+     서비스 재생성(설정 변경·reset·없는 컨테이너 시작과 그 복구)이 `--no-deps`인 것은 이 ADR의 결정이 아니다 —
+     compose 정의를 바꾸지 않아 이 결정의 창을 기다릴 이유가 없어 떼어 낸 #434의 것이다(n150에 `6af5dd1`로
+     설치됨, `docs/docker-management.md` §7).
+   - 백업의 디스크 예약분은 살아있는 `max_wal_size`에서 유도한다: max(2 GiB, `max_wal_size` + 1 GiB).
+5. ADR-100 superset 창을 닫는다.
+
+### 받아들인 위험
+- 공용 admin은 모든 tenant에 닿는 superuser다. Map의 pinned bootstrap 스크립트가 fresh bootstrap마다
+  그 권한으로 돈다. 그동안 admin 비밀번호가 psql 인자로 호스트 프로세스 표에 보인다(n150에서는 root 동등 주체만).
+- 공용 instance 장애가 Map 장애가 된다(2026-09-25~28 crash-restart 5회 — ADR-52가 원인으로 본 probe 고아를
+  init·exec probe로 닫았고, 재기동 뒤 72시간 감시가 그것을 확인한다).
+- Map의 `ktm_*` role 이름·membership 그래프가 cluster 전역을 점유한다. `ALTER ROLE <admin> SET`·
+  `ALTER ROLE ALL SET`이 생기면 다음 Map fresh bootstrap이 거부된다(재구축은 멈추기 전에 거부한다).
+- `ktdctl pinvi-pair rebuild-pinned --restart`는 공용 instance에서 Map 두 DB와 PinVi DB를 지운다. launcher만
+  그것을 넘기지 않는다.
+- Map ops/audit 행과 Dagster 이력, 그리고 비-ops 행 일부(`feature_state_transitions` 25 등)와 설정성 행
+  (`curated_*`·`provider_sync`, loader가 다시 쓸 때까지)을 잃는다(감사 dump·옛 PGDATA 보존).
+  `pinvi`·`template_postgis`의 PUBLIC CONNECT는 남는다(후속).
+- 튜닝은 cluster 전역이다: 64MB `work_mem`의 무거운 꼬리는 page cache를 밀어내고 swap에 닿을 수 있다(실측
+  부하에서는 수용 가능, 72시간 감시 항목). dockerd 자체가 멈출 때는 systemd `TimeoutStopSec`(n150 90초)가
+  300초 grace보다 먼저 끝난다(호스트 후속).
+- 이 결정의 compose 변경을 설치하는 순간 공용 서비스의 compose config hash가 실행 중 컨테이너와 달라진다.
+  그 사이에 공용 instance를 `depends_on`하는 **어떤** 서비스(db-init one-shot 포함)든 `--no-deps` 없는
+  `up`·`run`(`run --rm` 포함)이나 `create`(그 플래그가 없다)가 하나라도 돌면 compose가 공용 instance를
+  재생성한다(n150 Compose v5.2.0 실측). Manager의 한 서비스 재생성은 #434 뒤로 `--no-deps`라 의존 서비스를
+  거쳐서는 이 길이 아니다. 그러나 `--no-deps`는 **공용 서비스 자신**을 재생성하는 것은 막지 않는다 — 공용
+  컨테이너(`kor-travel-shared-postgresql`)의 대시보드·CLI 설정 변경과 reset은 그것을 설치된 새 정의로 다시
+  만든다. 창의 게이트(Q-RUNS·HH:25–40·`CHECKPOINT`·로그 보존) 밖에서 모든 테넌트가 계획에 없이 재기동된다.
+  사람·에이전트의 명령과 db-init 재실행(onboarding §7.3이 자가치유로 권하는 것)도 코드가 막지 못한다. 그래서
+  설치 직후 계획된 재기동까지 한 창에서 가고, 창의 공지가 drift guard가 MATCH를 찍을 때까지 그것들 — 공용
+  컨테이너 자신의 설정 변경·reset 포함 — 을 동결한다(되돌림 T-R에서 옛 정의를 설치한 뒤에도 같다). 재생성이
+  아닌 stop/restart(`control_container`)는 동결하지 않는다.
+- **지금 도는 #433 상태 대비** 이 튜닝은 dynamic shared memory(DSM)의 여유를 **줄인다 — 없애지 않는다.**
+  병렬 hash 한 노드의 DSM 상한은 `work_mem × hash_mem_multiplier(2) × (max_parallel_workers_per_gather(2) + 1)`로
+  96MB에서 384MB로 네 배가 되고, `/dev/shm`은 512mb에서 1gb로 두 배다. 동시에 최대로 자란 병렬 hash를 담는
+  여유는 약 5.3개에서 약 2.7개로 절반이 된다. 여러 병렬 hash 노드를 가진 질의 하나가 1GB 가까이 쓸 수 있다.
+  모자라면 마지막으로 할당한 질의 하나가 ENOSPC(`posix_fallocate`) 오류로 끝난다 — crash는 아니다.
+  autoprewarm leader는 `max_worker_processes`(8, 기본값 실측) 한 칸을 상주로 쓴다. 그래서 병렬 worker로 쓸
+  칸은 7에서 6이 된다. #433 재생성 뒤 약 18시간(512mb·16MB) DSM 오류는 0건이었다(2026-09-29 리뷰 실측, 그
+  전 64MB·16MB에서는 18건). **72시간 감시에서 새 DSM 오류는 hard alarm이다.** 미리 합의한 후속은
+  `shm_size: 2gb`다. 오늘의 비율을 되찾고, tmpfs라 segment가 있는 동안만 RAM을 쓴다. 공지한 창에서
+  재생성한다. D4 자체는 다시 열지 않는다.
+- `max_wal_size=2GB`는 두 비용을 키운다. 2026-09-29 리뷰 실측으로 #433 재생성 뒤 checkpoint 225번 중 57번이
+  1GB의 WAL로 시작됐고, 최근 timed checkpoint 거리는 450–525MB였다. (1) WAL이 많은 부하에서는 crash
+  recovery의 replay가 약 두 배까지 길어질 수 있다. 공용 instance의 09-25~28 crash-restart 다섯 번은 각각
+  1–7분이었다. (2) 종료 때 내려야 할 dirty set의 상한이 128MB에서 1GB로 커진다. 그런데 dockerd의
+  `TimeoutStopSec`는 90초 그대로다. 그래서 daemon이 거는 정지(재부팅·패키지 재시작)가 공용 instance를
+  SIGKILL하고 crash recovery로 이어질 가능성이 커진다. docker.service `TimeoutStopSec=300` drop-in(호스트
+  후속, 오너 결정)은 이 튜닝 **뒤가 아니라 함께** 하기를 권한다.
