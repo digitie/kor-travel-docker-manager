@@ -19,6 +19,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     ComposePostMutationContractError,
     DeploymentContractError,
     compose_volume_graph_hash,
+    map_db_role_bootstrap_script_lines,
 )
 from kor_travel_docker_manager.services.compose_service import (
     ComposeEnvFileIdentity,
@@ -70,11 +71,11 @@ _MAP_INGESTION_SERVICES = (
 _MAP_API_SERVICE = "kor-travel-map-api"
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _CONCIERGE_UI_SERVICE = "kor-travel-concierge-ui"
-_MAP_POSTGRES_SERVICE = "kor-travel-map-postgres"
+#: ADR-53: Map DB는 공용 instance에 산다 — 그 instance가 이 fixture의 PostgreSQL 서버다.
+_SHARED_POSTGRES_SERVICE = "kor-travel-shared-postgres"
 _MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
 _MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
 _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
-_MAP_DAGSTER_DB_INIT_SERVICE = "kor-travel-map-dagster-db-init"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
 _MAP_APPLICATION_SCHEMA_SERVICE = "kor-travel-map-application-schema"
 _PINVI_API_SERVICE = "pinvi-api"
@@ -210,13 +211,6 @@ def _candidate_capture_for(compose_path: Path):  # type: ignore[no-untyped-def]
 def _compose_with_canonical_c6c_services(
     services: dict[str, object],
 ) -> dict[str, object]:
-    bootstrap_dsn = (
-        "${KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN:?KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN must be explicitly set}"
-    )
-    dagster_runtime_dsn = (
-        "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN:?"
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN must be explicitly set}"
-    )
     #: ADR-100 이후 런타임이 실제로 접속하는 DSN. 세 per-role 이름이 하나로 합쳐졌다.
     service_dsn = (
         "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
@@ -228,65 +222,38 @@ def _compose_with_canonical_c6c_services(
         "${KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD:?"
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD must be explicitly set}"
     )
-    migrator_dsn = (
-        "${KOR_TRAVEL_MAP_MIGRATOR_PG_DSN:?KOR_TRAVEL_MAP_MIGRATOR_PG_DSN must be explicitly set}"
-    )
     protected_services: dict[str, object] = {
-        _MAP_POSTGRES_SERVICE: {
+        _SHARED_POSTGRES_SERVICE: {
             "image": "fixture.invalid/postgis:test",
-            "container_name": "kor-travel-map-postgres",
+            "container_name": "kor-travel-shared-postgres",
             "network_mode": "host",
-            # 정본과 같은 loopback 결박. 2026-09-18에 그 강제가 네 PostgreSQL 전부로
-            # 넓어지면서 fixture도 정본과 같아져야 한다 — 종전에는 PinVi 하나만
-            # 보고 있어서 Map은 `listen_addresses=*`로 바꿔도 통과했다. S1에서 한
-            # 것과 같은 처방이다(검사를 약하게 하지 않고 fragment를 완전하게).
-            "command": ["postgres", "-c", "listen_addresses=127.0.0.1"],
+            # 정본과 같은 loopback 결박과 `-p`. ADR-53부터 Map DB의 instance는 DSN 포트를 `-p`로
+            # 듣는 서버에서 유도된다 — fixture도 정본처럼 포트를 말해야 한다.
+            "command": [
+                "postgres",
+                "-c",
+                "listen_addresses=127.0.0.1",
+                "-p",
+                "${KOR_TRAVEL_SHARED_DB_PORT:-11000}",
+            ],
             "environment": {
-                "POSTGRES_DB": "postgres",
-                "POSTGRES_USER": (
-                    "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
-                    "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
-                ),
-                "POSTGRES_PASSWORD_FILE": "/run/secrets/kor-travel-map-postgres-password",
-                # 정본 compose와 같은 값. 2026-09-17에 이 키가 Map 계약표에
-                # 들어오면서 fixture도 정본과 같아져야 한다 — 종전에는 Map 쪽에만
-                # 이 강제가 없어서 `--auth-host=trust`가 세 층을 전부 통과했다.
+                "POSTGRES_USER": "${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}",
+                "POSTGRES_PASSWORD_FILE": "/run/secrets/kor-travel-shared-postgres-password",
+                "POSTGRES_DB": "${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}",
+                # 정본 compose와 같은 값(전역 initdb 술어가 모든 서버에 요구한다).
                 "POSTGRES_INITDB_ARGS": "--auth-host=scram-sha-256",
             },
-            "secrets": [
-                {
-                    "source": "kor-travel-map-postgres-password",
-                    "target": "kor-travel-map-postgres-password",
-                }
-            ],
-        },
-        _MAP_DAGSTER_DB_INIT_SERVICE: {
-            "image": "fixture.invalid/postgres:test",
-            "network_mode": "host",
-            "environment": {
-                "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN": bootstrap_dsn,
-                "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": (
-                    "${KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB:?"
-                    "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB must be explicitly set}"
-                ),
-                "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": (
-                    "${KOR_TRAVEL_MAP_DAGSTER_METADATA_USER:?"
-                    "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER must be explicitly set}"
-                ),
-                "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": metadata_password,
-            },
-            "command": ['psql "$KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN"'],
+            "secrets": ["kor-travel-shared-postgres-password"],
         },
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE: {
-            "image": "fixture.invalid/postgres:test",
+            # 정본과 같은 S1 모양(ADR-53): instance admin secret을 파일로 받아 DSN을 셸 안에서 만든다.
+            # C6c가 entrypoint·네 줄·secret·두 mount·profile·restart를 고정한다.
+            "profiles": ["bootstrap"],
+            # admin secret을 받는 이미지는 digest로 고정한다(C6c가 요구한다).
+            "image": "fixture.invalid/postgres:test@sha256:" + "0" * 64,
+            "restart": "no",
             "network_mode": "host",
-            # 정본과 같이 **자기 entrypoint로 one-shot을 돌린다.** 2026-09-18에 postgres
-            # 서버 식별이 "무엇을 실행하는가"로 바뀌면서, PostgreSQL 이미지에 command도
-            # entrypoint도 없으면 서버로 판정된다 — fixture가 정본과 달라서 이 one-shot이
-            # 서버로 오인됐다. 검사를 약하게 하지 않고 fragment를 완전하게 한다(S1 처방).
-            "entrypoint": ["/bin/sh", "/usr/local/bin/postgres-role-bootstrap"],
             "environment": {
-                "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN": bootstrap_dsn,
                 "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE": (
                     "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
                     "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
@@ -295,12 +262,8 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
                     "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
                 ),
-                "KOR_TRAVEL_MAP_POSTGRES_USER": (
-                    "${KOR_TRAVEL_MAP_POSTGRES_USER:?"
-                    "KOR_TRAVEL_MAP_POSTGRES_USER must be explicitly set}"
-                ),
-                # ADR-100 superset window — mirrors docker-compose.yml exactly; the
-                # raw layer compares these literals with hmac.compare_digest.
+                # mirrors docker-compose.yml exactly; the raw layer compares these literals
+                # with hmac.compare_digest.
                 "KOR_TRAVEL_MAP_SERVICE_PASSWORD": (
                     "${KOR_TRAVEL_MAP_SERVICE_PASSWORD:?"
                     "KOR_TRAVEL_MAP_SERVICE_PASSWORD must be explicitly set}"
@@ -309,24 +272,6 @@ def _compose_with_canonical_c6c_services(
                     "${KOR_TRAVEL_MAP_PG_DSN:?"
                     "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
                 ),
-                "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD": (
-                    "${KOR_TRAVEL_MAP_MIGRATOR_PASSWORD:?"
-                    "KOR_TRAVEL_MAP_MIGRATOR_PASSWORD must be explicitly set}"
-                ),
-                "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD": (
-                    "${KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD:?"
-                    "KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD must be explicitly set}"
-                ),
-                "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD": (
-                    "${KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD:?"
-                    "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD must be explicitly set}"
-                ),
-                "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN": migrator_dsn,
-                "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN": (
-                    "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
-                    "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
-                ),
-                "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": dagster_runtime_dsn,
                 "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB": (
                     "${KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB:?"
                     "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB must be explicitly set}"
@@ -338,6 +283,27 @@ def _compose_with_canonical_c6c_services(
                 "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": metadata_password,
                 "KOR_TRAVEL_MAP_DAGSTER_PG_URL": dagster_pg_url,
             },
+            "secrets": [
+                {
+                    "source": "kor-travel-shared-postgres-password",
+                    "target": "/run/secrets/kor-travel-shared-postgres-password",
+                }
+            ],
+            "volumes": [
+                "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/docker/postgres-role-bootstrap.sh"
+                ":/usr/local/bin/postgres-role-bootstrap:ro",
+                "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/scripts/database-credential-preflight.sh"
+                ":/usr/local/lib/kor-travel-map/database-credential-preflight.sh:ro",
+            ],
+            "entrypoint": ["/bin/sh", "-ec"],
+            "command": [
+                "\n".join(
+                    map_db_role_bootstrap_script_lines(
+                        "/run/secrets/kor-travel-shared-postgres-password"
+                    )
+                )
+                + "\n"
+            ],
         },
         # ADR-101: root migration과 finalize 두 one-shot이 하나로 접혔다. 이 fixture는
         # compose 문서의 사본이므로 같은 형상을 든다 — 고정 실행기(`sh -c`)와 검사
@@ -399,10 +365,6 @@ def _compose_with_canonical_c6c_services(
                 "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED": (
                     "${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}"
                 ),
-                "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN": (
-                    "${KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN:?"
-                    "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN must be explicitly set}"
-                ),
                 # ADR-100: 런타임도 migration도 같은 단일 LOGIN이므로 DSN 이름이
                 # 하나다. 이 fixture는 compose 배선의 사본이고, 계약과 함께 움직인다.
                 "KOR_TRAVEL_MAP_PG_DSN": (
@@ -426,7 +388,6 @@ def _compose_with_canonical_c6c_services(
                     "KOR_TRAVEL_MAP_DAGSTER_PG_URL": dagster_pg_url,
                     **(
                         {
-                            "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN": (dagster_runtime_dsn),
                             # ADR-100: Dagster runtime도 단일 LOGIN의 DSN을 쓴다.
                             "KOR_TRAVEL_MAP_PG_DSN": service_dsn,
                             "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": (_MAP_GEO_API_KEY_SOURCE),
@@ -508,7 +469,9 @@ def _compose_with_canonical_c6c_services(
     return {
         "services": protected_services,
         "secrets": {
-            "kor-travel-map-postgres-password": {"environment": "KOR_TRAVEL_MAP_POSTGRES_PASSWORD"},
+            "kor-travel-shared-postgres-password": {
+                "environment": "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD"
+            },
         },
     }
 
@@ -1736,8 +1699,16 @@ def _prepare_candidate_transaction(
     )
     monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_DB", "kor_travel_map")
     monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB", "kor_travel_map_dagster")
-    monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_USER", "test_map_admin")
-    monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_PASSWORD", "test-map-postgres-password")
+    # ADR-53: Map DB는 공용 instance에 산다 — 그 admin secret이 Map bootstrap one-shot에 붙는다.
+    monkeypatch.setenv(
+        "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD", "test-shared-postgres-password-0123456789"
+    )
+    map_source = tmp_path / "map-source"
+    for relative in ("docker/postgres-role-bootstrap.sh", "scripts/database-credential-preflight.sh"):
+        script = map_source / relative
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    monkeypatch.setenv("KOR_TRAVEL_MAP_REPO_DIR", str(map_source))
     monkeypatch.setenv("PINVI_APP_DB_USER", "pinvi_runtime")
     monkeypatch.setenv("PINVI_APP_DB_PASSWORD", "pinvi-runtime-password")
     monkeypatch.setenv("PINVI_APP_SCHEMA_OWNER", "pinvi_application_owner")
@@ -1755,37 +1726,18 @@ def _prepare_candidate_transaction(
         encoding="utf-8",
     )
     monkeypatch.setenv("PINVI_REPO_DIR", str(pinvi_role_script.parents[2]))
-    monkeypatch.setenv(
-        "KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
-        "postgresql://test_map_admin:test-map-postgres-password@127.0.0.1:12700/kor_travel_map",
-    )
-    monkeypatch.setenv("KOR_TRAVEL_MAP_MIGRATOR_PASSWORD", "test-map-migrator")
-    monkeypatch.setenv("KOR_TRAVEL_MAP_API_RUNTIME_PASSWORD", "test-map-api-runtime")
-    monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD", "test-map-dagster-runtime")
     monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_METADATA_USER", "kor_travel_map_dagster")
     monkeypatch.setenv("KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD", "test-map-dagster-metadata")
     monkeypatch.setenv(
-        "KOR_TRAVEL_MAP_MIGRATOR_PG_DSN",
-        "postgresql+asyncpg://ktm_feature_migrator:test-map-migrator@127.0.0.1:12700/kor_travel_map",
-    )
-    monkeypatch.setenv(
-        "KOR_TRAVEL_MAP_API_RUNTIME_PG_DSN",
-        "postgresql+asyncpg://ktm_feature_api_runtime:test-map-api-runtime@127.0.0.1:12700/kor_travel_map",
-    )
-    monkeypatch.setenv(
-        "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
-        "postgresql+asyncpg://ktm_feature_dagster_runtime:test-map-dagster-runtime@127.0.0.1:12700/kor_travel_map",
-    )
-    monkeypatch.setenv(
         "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
-        "postgresql://kor_travel_map_dagster:test-map-dagster-metadata@127.0.0.1:12700/kor_travel_map_dagster",
+        "postgresql://kor_travel_map_dagster:test-map-dagster-metadata@127.0.0.1:11000/kor_travel_map_dagster",
     )
-    # ADR-100 superset window — distinct from the other three, so the Map preflight's
+    # ADR-100: distinct from the metadata password, so the Map preflight's
     # pairwise-distinctness check stays satisfiable in this fixture too.
     monkeypatch.setenv("KOR_TRAVEL_MAP_SERVICE_PASSWORD", "test-map-service")
     monkeypatch.setenv(
         "KOR_TRAVEL_MAP_PG_DSN",
-        "postgresql+asyncpg://ktm_feature_service:test-map-service@127.0.0.1:12700/kor_travel_map",
+        "postgresql+asyncpg://ktm_feature_service:test-map-service@127.0.0.1:11000/kor_travel_map",
     )
     compose_path = tmp_path / "docker-compose.yml"
     compose_path.write_text(yaml.safe_dump(compose_config, sort_keys=False), encoding="utf-8")

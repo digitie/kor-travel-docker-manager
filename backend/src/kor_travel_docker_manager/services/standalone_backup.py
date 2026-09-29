@@ -3,17 +3,16 @@
 ADR-37 4-instance 분리(geo/concierge/map/pinvi) 뒤에도 백업 주체는 map 하나뿐이었다.
 이 모듈은 v5 rebuild의 cache-target/compatible-pair 기계와 완전히 무관하게, role마다
 그 database가 **지금 사는** instance를 `docker exec` + `pg_dump`로 독립 백업한다 —
-Map 둘은 전용 instance(`kor-travel-map-postgres`), 나머지는 공용 instance
-(`kor-travel-shared-postgres`)다.
+ADR-53부터 모든 role이 공용 instance(`kor-travel-shared-postgres`)에 산다(Map의 전용
+instance는 퇴역했다).
 
 산출물은 `docs/docker-management.md`의 "3종 세트" 관례를 따른다 —
 `<role>-<ts>.dump` · `<role>-<ts>.dump.sha256`(`sha256sum -c` 그대로 먹는 형태) ·
 `<role>-<ts>.manifest`.
 
 포트·admin role 이름은 하드코딩하지 않고 살아있는 컨테이너에서 읽는다
-(`_discover_port`/`_discover_admin_role`) — `.env`가 기본 포트를 덮어썼거나
-role 이름이 프로젝트마다 달라도(예: map은 `KOR_TRAVEL_MAP_POSTGRES_USER`에
-기본값이 없다) 항상 실제 기동값과 일치한다. host network + 프로젝트별 포트라
+(`_discover_port`/`_discover_admin_role`) — `.env`가 기본 포트나 admin 이름을
+덮어써도 항상 실제 기동값과 일치한다. host network + instance별 포트라
 `--port`를 빠뜨리면 컨테이너 기본값 5432를 찾아 조용히 실패한다.
 
 connection은 TCP가 아니라 `docker exec --user postgres` + unix socket을 쓴다 —
@@ -83,10 +82,11 @@ BACKUP_SHARED_GROUP_ENV = "KTDM_BACKUP_SHARED_GROUP"
 # 엉뚱한(또는 존재하지 않는) 컨테이너를 겨냥해 fail-close로 조용히 실패한다. 포트는
 # 여기 두지 않는다 — 실제 기동 인자에서 읽는다.
 #
-# geo(ADR-45)·concierge(ADR-44)·PinVi(ADR-46)는 공용 instance로 옮겼다. 2026-09-28까지
-# geo 둘과 pinvi는 옛 전용 instance(`kor-travel-geo-postgres`/`pinvi-postgres`)를
+# geo(ADR-45)·concierge(ADR-44)·PinVi(ADR-46)·Map(ADR-53)은 공용 instance로 옮겼다.
+# 2026-09-28까지 geo 둘과 pinvi는 옛 전용 instance(`kor-travel-geo-postgres`/`pinvi-postgres`)를
 # 겨냥했는데, geo 쪽은 컨테이너가 이미 없었고 pinvi 쪽은 아무도 쓰지 않는 동결 롤백
-# 사본이었다 — 주기 백업이 실패하거나 낡은 데이터를 떴다.
+# 사본이었다 — 주기 백업이 실패하거나 낡은 데이터를 떴다. Map 둘도 이전 창(M2)에서 같은
+# 자리로 옮겼다 — 옛 전용 instance는 멈춘 채 롤백용으로 남는다.
 _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
     "geo": (
         "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
@@ -104,13 +104,13 @@ _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
         "kor_travel_concierge",
     ),
     "map_application": (
-        "KOR_TRAVEL_MAP_POSTGRES_CONTAINER",
-        "kor-travel-map-postgres",
+        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
+        "kor-travel-shared-postgres",
         "kor_travel_map",
     ),
     "map_dagster": (
-        "KOR_TRAVEL_MAP_POSTGRES_CONTAINER",
-        "kor-travel-map-postgres",
+        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
+        "kor-travel-shared-postgres",
         "kor_travel_map_dagster",
     ),
     "pinvi": (
@@ -1729,9 +1729,8 @@ def _disk_reserve_bytes(max_wal_bytes: int) -> int:
     추측하지 않는다.
 
     **덮는 것은 dump를 뜨는 그 instance의 WAL뿐이다.** 같은 장치의 다른 PostgreSQL instance
-    WAL은 세지 않는다. n150에서 그런 instance는 M2가 퇴역시킬 Map 전용 instance(`:12700`,
-    `max_wal_size` 2GB) 하나라, 그때까지 공용 instance 백업의 예약분은 두 instance WAL 합보다
-    작다 — 고정 2 GiB보다는 낫고, 이동 뒤에는 한 instance만 남는 일시적 틈이다.
+    WAL은 세지 않는다. ADR-53으로 Map 전용 instance가 퇴역한 뒤 n150에는 Manager가 관리하는
+    instance가 공용 하나뿐이다 — 멈춘 롤백 사본은 WAL을 쓰지 않는다.
     """
 
     return max(_DISK_RESERVE_FLOOR_BYTES, max_wal_bytes + _DISK_RESERVE_WAL_HEADROOM_BYTES)

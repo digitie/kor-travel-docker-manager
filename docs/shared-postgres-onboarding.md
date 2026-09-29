@@ -1,7 +1,9 @@
 # 공용 제어 평면 PostgreSQL(:11000) 온보딩
 
-> **2026-09-28 현황.** concierge·geo·PinVi·weather·transport가 이 instance에 있고, 전용
-> instance는 Map(`kor-travel-map-postgres`, `:12700`) 하나다. 옛 전용 instance(geo `:12500`·
+> **현황(ADR-53 M2 설치 뒤).** concierge·geo·Map·PinVi·weather·transport가 이 instance에 있고
+> 전용 instance는 없다 — Map 전용(`:12700`)은 ADR-53 이동 창에서 퇴역했다(PGDATA는 롤백용 보존).
+> Map은 db-init이 없다: 재구축이 이 instance의 admin으로 Map fresh bootstrap one-shot을 돌린다.
+> 2026-09-28에는 옛 전용 instance(geo `:12500`·
 > concierge `:12600`·PinVi `:12800`)와 그 one-shot(`kor-travel-concierge-db-init`·
 > `pinvi-db-init`·`kor-travel-geo-dagster-db-init`)은 Manager의 compose·targets·백업·C6c
 > 계약에서 빠졌다 — 그날 n150 실측으로 모든 해당 서비스의 DSN이 `:11000`을 가리켰고, 남은
@@ -63,7 +65,7 @@ concierge cutover는 **2026-09-19/20에 이미 끝났다**(실행 기록은 kor-
 |---|---|
 | 공용 Dagster 스토리지 `dagster_shared` | **없다.** compose에도 live에도 없다 |
 | 공용 Dagster webserver(`11002`) / daemon(`11001`) | **없다.** `docker-compose.yml`에 서비스 0건, n150에 컨테이너 0건. (`docs/platform-topology.md` §7(176·181·182·195·203·205·206행)에는 **계획으로** 등장한다 — 저장소 grep은 0건이 아니다) |
-| geo / map / pinvi의 공용 instance 이전 | **없다.** 셋 다 ADR-37의 전용 instance 그대로 |
+| geo / map / pinvi의 공용 instance 이전 | **끝났다**(geo ADR-45, PinVi ADR-46, Map ADR-53). 아래 행과 이 절의 나머지는 2026-09-19 기록이다 |
 | geo/map/pinvi용 role·database | 정식 경로로 만들어진 것은 **없다** (§10.1 예외 주의) |
 | weather/transport용 role·database | Manager compose의 각 `kor-travel-shared-db-init-<project>` one-shot이 정식 경로다. 실제 n150 실행 여부는 배포 영수증·컨테이너 상태로 따로 확인해야 한다 |
 | `ktdctl db-backup`의 실제 복원 명령 | **없다.** 백업·리허설 복원만 있다 |
@@ -151,7 +153,7 @@ DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:-<옛 instance를 가�
 | shared `:11000` | `kor_travel_concierge` | 81 MB | 앱 데이터 — cutover 완료 |
 | concierge `:12600` (옛) | `kor_travel_concierge` 83 MB / `ktc_bootstrap` 19 MB / `postgres` 7.2 MB / `p2_proof_ktc` 7.2 MB | — | **한 행에 세 분류가 다 있다**: 앱 데이터(첫째) / bootstrap(`ktc_bootstrap`·`postgres`) / 잔해(`p2_proof_ktc`). P8의 연습 예제로 쓰라 |
 | geo `:12500` | `kor_travel_geo` **32 GB** / `kor_travel_geo_dagster` 92 MB | — | 자릿수가 다르다 |
-| map `:12700` | `kor_travel_map` 26 MB / `kor_travel_map_dagster` **7.2 MB** / 잔해 4종(`ktm_40b`·`ktm_bootstrap`·`ktm_gcverify`·`ktm_gcverify_dagster` 9.0 MB) | — | ⚠️ 9.0 MB짜리는 `ktm_map_dagster`가 아니라 잔해 `ktm_gcverify_dagster`다 — 이 둘을 뒤바꾸기 쉽다 |
+| map `:12700`(옛, ADR-53으로 퇴역) | `kor_travel_map` 26 MB / `kor_travel_map_dagster` **7.2 MB** / 잔해 4종(`ktm_40b`·`ktm_bootstrap`·`ktm_gcverify`·`ktm_gcverify_dagster` 9.0 MB) | — | ⚠️ 9.0 MB짜리는 `ktm_map_dagster`가 아니라 잔해 `ktm_gcverify_dagster`다 — 이 둘을 뒤바꾸기 쉽다 |
 | pinvi `:12800` | `pinvi` **7.2 MB** / `pinvi_bootstrap` 7.4 MB | — | `pinvi_dagster`는 **존재하지 않는다**(문서와 불일치) |
 
 덤프 시간 실측: concierge는 `pg_dump -Fc --compress=6`이 **2초**, geo는 2026-08-17 기준 **4.4 GB / 879초**였다. concierge가 "가장 쉬운 사례"였고, geo의 hard cutover 다운타임은 덤프+복원+검증으로 **시간 단위**로 잡아야 한다.
@@ -273,6 +275,7 @@ GRANT  CONNECT ON DATABASE <app DB>       TO <app_user>;
 | C7 | 앱 컨테이너에는 secret을 **마운트하지 않는다**(비밀번호는 DSN env로만) | 선례와 어긋나고, 비밀번호 보관처가 하나 더 늘어난다 |
 | C8 | override 파일(`docker-compose.override.yml`)로 시도하지 않는다 | 그 파일이 **존재하는 것만으로** deployment readiness가 `missing`으로 떨어져 승인된 재구축 전체가 막힌다 |
 | C9 | **튜닝·연결 상한 변경은 합류 PR과 분리한다** | 공용 서비스 `command:`의 튜닝 값(compose 리터럴이 정본, ADR-53 D4)과 `max_connections`는 **cluster 전역 단일값**이라 테넌트별로 나눌 수 없고, 반영하려면 **공용 postgres 재기동 = 이미 live인 모든 테넌트의 다운타임**이 따른다. 별개 배포 창에서, 기존 테넌트에 공지하고 한다. 재기동은 `stop_grace_period`(ADR-52, 300s) 안에 종료 checkpoint를 끝내야 crash recovery 없이 뜬다 — Manager의 컨테이너 stop/restart는 그 값을 따르고(#434), 계획된 재기동은 수동 `CHECKPOINT` 뒤 `docker stop --time 300`을 쓴다. 공용 서비스의 `/dev/shm`은 `shm_size: 1gb`다(ADR-53 D4 — ADR-52가 옛 geo 전용 instance와 같은 512mb로 올렸고, 그전 64MB에서 병렬 질의가 `could not resize shared memory segment`로 죽었다). 더 필요하면 이것도 cluster 전역 값이다 |
+| C10 | **합류는 양방향 결합이다** — 네 부하가 공유 postmaster 안에서 돈다 | 공용 instance 장애가 네 장애가 되는 것만이 아니다. 네 backend 하나가 OOM으로 죽거나 segfault하면 postmaster가 **모든 테넌트**를 crash-restart한다(컨테이너 메모리 상한 없음). 무거운 bulk load·큰 집계·새 확장은 합류 PR에 적고 기존 테넌트에 알린다(ADR-53 — Map이 그 예다). 네 서비스가 공용 instance를 `depends_on`하면 drift 동안의 손 명령 재생성 위험(§7.3)도 그만큼 넓어진다(Map 합류로 20 → 25개) |
 
 ### 6.2 `config/docker-targets.yml`
 
@@ -454,6 +457,8 @@ docker exec --user postgres <공용 컨테이너> \
 ### 7.3 소유권의 빈틈 (멱등성이 안 덮는 곳)
 
 db-init 재실행이 자가치유하는 것은 **role 속성·비밀번호·확장·CONNECT ACL**뿐이다. 소유권은 `createdb` 시점에만 적용되므로, **DB가 이미 존재하면 `-O`가 다시 걸리지 않는다.** role을 지웠다 다시 만들거나 DB를 수동으로 만든 뒤 one-shot을 돌리면 "소유자 불일치"가 조용히 남는다.
+
+⚠️ **재실행은 반드시 `--no-deps`로, drift guard가 MATCH일 때만.** 공용 서비스의 정의를 바꾸는 Manager release가 설치되고 계획된 재생성이 아직이면(config hash 불일치), `--no-deps` 없는 `docker compose run`/`up`이나 `create` 하나가 공용 instance를 **재생성**한다 — 모든 테넌트 재기동이다(ADR-53, n150 Compose v5.2.0 실측). 공용 instance를 `depends_on`하는 서비스가 많을수록(Map 합류 뒤 25개) 이 길도 넓다.
 
 따라서 소유권은 **두 층에서** 본다.
 

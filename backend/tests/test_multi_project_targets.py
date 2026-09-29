@@ -398,7 +398,7 @@ def test_container_scoped_logs_resolve_their_owning_project() -> None:
         external_project_for_target("transport")
     )
     # Manager 자신의 컨테이너는 외부가 아니다.
-    assert external_project_for_container("kor-travel-map-postgresql") is None
+    assert external_project_for_container("kor-travel-shared-postgresql") is None
 
 
 # ── 스키마 검증: 오타가 조용히 통과하지 않는다 ───────────────────────────

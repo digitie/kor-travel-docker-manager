@@ -40,7 +40,6 @@ def _image_id(seed: str) -> str:
 def _candidate_evidence(seed: str = "a") -> MapApplication300CandidateEvidence:
     return MapApplication300CandidateEvidence(
         candidate_git_tree=_revision(seed),
-        postgres_image_id=_image_id(seed),
         dagster_config_sha256=_digest(seed),
     )
 

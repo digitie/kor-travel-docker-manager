@@ -57,7 +57,7 @@ poetry run ktdctl geo --build
 
 | 대상 | Host 포트 | 접속 정보 |
 |------|-----------|-----------|
-| PostgreSQL / PostGIS 2개 | `11000` · `12700` | 공용 `kor-travel-shared-postgres`(concierge·geo·PinVi·weather·transport, ADR-44~47) · Map 전용 `kor-travel-map-postgres`(`kor_travel_map`, ADR-37). 둘 다 loopback 전용이고 `5432`는 쓰지 않는다. 옛 전용 instance(`12500`·`12600`·`12800`)는 2026-09-28에 뺐다 |
+| PostgreSQL / PostGIS | `11000` | 공용 `kor-travel-shared-postgres`(concierge·geo·Map·PinVi·weather·transport, ADR-44~47·ADR-53). loopback 전용이고 `5432`는 쓰지 않는다. 옛 전용 instance(`12500`·`12600`·`12800`)는 2026-09-28에, Map 전용(`12700`)은 ADR-53 이전 창에서 뺐다 |
 | RustFS S3 API | `12101` | `http://127.0.0.1:12101` |
 | RustFS console | `12105` | `http://127.0.0.1:12105/rustfs/console/` |
 | Grafana Web UI | `12104`(ADR-48) | `http://127.0.0.1:12104` |

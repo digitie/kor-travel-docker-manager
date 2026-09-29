@@ -39,6 +39,9 @@ from kor_travel_docker_manager.services.database_runtime import (
 #: 핀에서 읽는다. 사본을 두면 compose의 digest를 올린 뒤에도 이 파일은 옛 이미지를 시험한다.
 _SHARED_IMAGE: str = _service()["image"]
 _ADMIN = "it_admin"
+#: fixture admin의 password. S1 판정이 `.env` 값을 admin의 live SCRAM verifier와 대조하므로 이
+#: 파일이 값을 안다. Map bootstrap 규칙(32–256자 URI-unreserved)에 맞는 모양이다. 출력하지 않는다.
+_ADMIN_PASSWORD = secrets.token_urlsafe(32)
 _PORT = 15432
 _SCHEMA_OWNER = "ktm_feature_schema_owner"
 _LOGIN = "it_map_login"
@@ -49,7 +52,7 @@ _MAX_CONNECTIONS = 10
 _SUPERUSER_RESERVED = 3
 _TEST_DATABASES = ("kor_travel_map", "kor_travel_map_dagster", "pinvi", "foreign_dagster")
 _OLD_LOGIN = "it_old_login"
-_TEST_ROLES = (_METADATA, "pinvi_app", _LOGIN, _OLD_LOGIN)
+_TEST_ROLES = (_METADATA, "pinvi_app", _LOGIN, _OLD_LOGIN, "it_scram")
 
 
 def _docker(*arguments: str, timeout: int = 120, **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -171,7 +174,7 @@ def cluster() -> Iterator[str]:
         f"max_connections={_MAX_CONNECTIONS}",
         "-c",
         f"superuser_reserved_connections={_SUPERUSER_RESERVED}",
-        env={**os.environ, "POSTGRES_PASSWORD": secrets.token_urlsafe(32)},
+        env={**os.environ, "POSTGRES_PASSWORD": _ADMIN_PASSWORD},
     )
     try:
         assert started.returncode == 0, started.stderr
@@ -234,6 +237,8 @@ def _runtimes(
     ) -> DatabaseRuntime:
         return DatabaseRuntime(
             role=role,
+            # compose 서비스 이름은 readiness에만 쓰인다 — 이 파일은 컨테이너에 직접 붙는다.
+            service_name="it-postgres",
             container_name=container,
             port=_PORT,
             database_name=name,
@@ -697,3 +702,172 @@ def test_isolation_preflight_refuses_what_isolation_refuses_and_changes_nothing(
     database_runtime.require_map_databases_isolatable(app, dagster, login=_LOGIN)
     assert {name: _datacl(cluster, name) for name in watched} == before
     assert _connect(cluster, "foreign_app", "kor_travel_map").returncode == 0
+
+
+# ── T-S1(M2): Map bootstrap admin의 pre-stop 판정을 진짜 instance에서 ─────────────────────
+
+_S1_ENVIRONMENT = {
+    "IT_ADMIN_PASSWORD": _ADMIN_PASSWORD,
+    "KOR_TRAVEL_MAP_SERVICE_PASSWORD": "it-map-service-password-0123456789-ab",
+    "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "it-map-metadata-password-0123456789-a",
+}
+
+
+def _s1_resolved() -> dict[str, object]:
+    """admin secret을 `POSTGRES_PASSWORD_FILE` → secrets[] → 최상위 `environment`로 유도할 수 있는 문서."""
+
+    return {
+        "services": {
+            "it-postgres": {
+                "environment": {
+                    "POSTGRES_USER": _ADMIN,
+                    "POSTGRES_PASSWORD_FILE": "/run/secrets/it-admin",
+                },
+                "secrets": [{"source": "it-admin", "target": "/run/secrets/it-admin"}],
+            }
+        },
+        "secrets": {"it-admin": {"environment": "IT_ADMIN_PASSWORD"}},
+    }
+
+
+def _admin_ready(runtime: DatabaseRuntime) -> None:
+    database_runtime.require_map_bootstrap_admin_ready(
+        runtime, resolved=_s1_resolved(), environment=_S1_ENVIRONMENT
+    )
+
+
+def test_bootstrap_admin_readiness_reads_the_live_instance(cluster: str) -> None:
+    """T-S1: 멈추기 전의 S1 판정이 진짜 instance에서 돌고, Map bootstrap이 거부할 것을 거부한다.
+
+    공용 이미지는 `postgis`·`pg_prewarm`을 제공하고 `it_admin`은 superuser다 — 통과한다. cluster 전역
+    role setting(`ALTER ROLE ALL SET`, `ktm_*` role의 database 0 setting)을 걸면 거부하고, 걷으면 다시
+    통과한다. superuser가 아닌 admin도 거부한다. 판정은 아무것도 바꾸지 않는다.
+    """
+
+    runtime = _runtimes(cluster)[0]
+    oids = _database_oids(cluster)
+    _admin_ready(runtime)
+
+    # `.env`의 admin password가 live verifier와 어긋나면(ALTER ROLE 회전·`.env` 편집) 멈추기 전에
+    # 거부한다 — 되돌리면 다시 통과한다.
+    _admin(cluster, f"ALTER ROLE {_ADMIN} PASSWORD '{secrets.token_urlsafe(32)}';\n")
+    try:
+        with pytest.raises(DeploymentContractError, match="live SCRAM-SHA-256 verifier") as raised:
+            _admin_ready(runtime)
+        assert _ADMIN_PASSWORD not in str(raised.value)
+    finally:
+        _admin(cluster, f"ALTER ROLE {_ADMIN} PASSWORD '{_ADMIN_PASSWORD}';\n")
+    _admin_ready(runtime)
+
+    _admin(cluster, "ALTER ROLE ALL SET work_mem = '4MB';\n")
+    try:
+        with pytest.raises(DeploymentContractError, match="cluster-wide role settings"):
+            _admin_ready(runtime)
+    finally:
+        _admin(cluster, "ALTER ROLE ALL RESET work_mem;\n")
+    _admin_ready(runtime)
+
+    _admin(cluster, "CREATE ROLE ktm_it_probe NOLOGIN;\nALTER ROLE ktm_it_probe SET work_mem = '4MB';\n")
+    try:
+        with pytest.raises(DeploymentContractError, match="cluster-wide role settings"):
+            _admin_ready(runtime)
+    finally:
+        _admin(cluster, "DROP ROLE ktm_it_probe;\n")
+
+    _admin(cluster, "CREATE ROLE it_plain LOGIN;\n")
+    try:
+        plain = DatabaseRuntime(
+            role="map_application",
+            service_name="it-postgres",
+            container_name=cluster,
+            port=_PORT,
+            database_name="kor_travel_map",
+            owner_name="it_plain",
+            admin_name="it_plain",
+        )
+        with pytest.raises(DeploymentContractError, match="must be a superuser"):
+            _admin_ready(plain)
+    finally:
+        _admin(cluster, "DROP ROLE it_plain;\n")
+
+    assert _database_oids(cluster) == oids
+
+
+def test_scram_check_agrees_with_this_postgresql(cluster: str) -> None:
+    """판정의 식이 공용 instance와 같은 이미지의 verifier와 맞는다 — 맞는 password만 받는다."""
+
+    password = secrets.token_urlsafe(32)
+    _admin(cluster, f"CREATE ROLE it_scram LOGIN PASSWORD '{password}';\n")
+    verifier = _admin(
+        cluster, "SELECT rolpassword FROM pg_catalog.pg_authid WHERE rolname = 'it_scram'"
+    )
+
+    assert database_runtime._scram_verifier_accepts(verifier, password)
+    other = password[:-1] + ("A" if password[-1] != "A" else "B")
+    assert not database_runtime._scram_verifier_accepts(verifier, other)
+
+
+def _sessions(container: str, user: str, database: str) -> int:
+    return int(
+        _admin(
+            container,
+            "SELECT count(*) FROM pg_catalog.pg_stat_activity "
+            f"WHERE usename = '{user}' AND datname = '{database}'",
+        )
+    )
+
+
+def _hold_session(container: str, user: str, database: str) -> subprocess.Popen[str]:
+    """``user``로 ``database``에 붙어 머무는 세션(bootstrap·alembic 동안의 PUBLIC 창에 붙은 것)."""
+
+    session = subprocess.Popen(
+        [
+            "docker", "exec", "--user", "postgres", container,
+            "psql", "--no-psqlrc", "--username", user, "--port", str(_PORT),
+            "--dbname", database, "--command", "SELECT pg_catalog.pg_sleep(120)",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    deadline = time.monotonic() + 60
+    while _sessions(container, user, database) != 1:
+        if session.poll() is not None or time.monotonic() > deadline:
+            session.kill()
+            pytest.fail(f"{user} 세션이 {database}에 붙지 않음")
+        time.sleep(0.5)
+    return session
+
+
+def test_isolation_ends_sessions_that_no_longer_have_connect(cluster: str) -> None:
+    """REVOKE CONNECT는 연결할 때만 검사된다 — PUBLIC 창에 붙은 다른 tenant 세션을 R4가 끝낸다.
+
+    대조군: CONNECT를 받는 Map login의 세션은 그대로다(판정이 권한을 본다는 증거).
+    """
+
+    _seed_map_pair(cluster)
+    foreign = _hold_session(cluster, "foreign_app", "kor_travel_map")
+    login = _hold_session(cluster, _LOGIN, "kor_travel_map")
+    try:
+        app, dagster, _ = _runtimes(cluster)
+
+        ensure_map_databases_isolated(app, dagster, login=_LOGIN)
+
+        _, stderr = foreign.communicate(timeout=60)
+        assert foreign.returncode != 0
+        assert "terminating connection due to administrator command" in stderr
+        assert _sessions(cluster, "foreign_app", "kor_travel_map") == 0
+        assert _sessions(cluster, _LOGIN, "kor_travel_map") == 1
+        assert login.poll() is None
+    finally:
+        _admin(
+            cluster,
+            "SELECT pg_catalog.pg_terminate_backend(pid) FROM pg_catalog.pg_stat_activity "
+            f"WHERE usename IN ('foreign_app', '{_LOGIN}') AND datname = 'kor_travel_map'",
+        )
+        for session in (foreign, login):
+            try:
+                session.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                session.kill()
+                session.communicate()

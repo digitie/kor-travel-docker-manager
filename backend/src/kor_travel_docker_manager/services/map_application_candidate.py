@@ -5,7 +5,8 @@ receipt를 쓰던 실행파일이 Map에서 삭제됐으므로, Manager가 직�
 (`docker buildx build`), 빌드 결과를 관측해서(`docker image inspect`, 이미 있는
 `ktm-application-schema head` 명령) 이 값을 채운다 — 검증할 외부 산출물이 없다.
 
-argv·postgres 참조 이미지는 Manager 자신의 고정 상수다.
+argv는 Manager 자신의 고정 상수다. PostgreSQL 이미지는 후보가 아니다 — Map DB는 공용
+instance에 살고, 그 이미지는 Manager compose가 digest로 고정한다(ADR-53).
 """
 
 from __future__ import annotations
@@ -36,9 +37,6 @@ DAEMON_ARGV: Final = (
 )
 STORAGE_MIGRATION_ARGV: Final = ("/usr/local/bin/ktm-dagster-storage", "migrate")
 
-#: Map application 300 DB가 쓰는 PostGIS 참조 이미지.
-POSTGRES_IMAGE_ID: Final = "postgis/postgis:16-3.5-alpine"
-
 
 @dataclass(frozen=True)
 class MapApplicationCandidate:
@@ -50,7 +48,6 @@ class MapApplicationCandidate:
     dagster_image_id: str
     dagster_config_sha256: str
     application_head: str
-    postgres_image_id: str = POSTGRES_IMAGE_ID
     webserver_argv: tuple[str, ...] = WEBSERVER_ARGV
     daemon_argv: tuple[str, ...] = DAEMON_ARGV
     storage_migration_argv: tuple[str, ...] = STORAGE_MIGRATION_ARGV

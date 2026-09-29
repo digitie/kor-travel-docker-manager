@@ -115,11 +115,16 @@ release 설치가 회전 결과를 조용히 되돌리기 때문이다.
 ADR-100이 Map의 LOGIN role 셋(`ktm_feature_migrator` / `ktm_feature_api_runtime` /
 `ktm_feature_dagster_runtime`)을 `ktm_feature_service` 하나로 합쳤다. 새 compose는 그
 하나의 자격증명 쌍을 **모든** Map service에 먹인다 — db-role-bootstrap,
-application-schema one-shot, api, dagster, dagster-daemon.
+application-schema one-shot, api, dagster, dagster-daemon. 옛 세 이름의 superset 창은
+ADR-53(D10)으로 닫았다 — `KOR_TRAVEL_MAP_{MIGRATOR,API_RUNTIME,DAGSTER_RUNTIME}_{PG_DSN,PASSWORD}`는
+어느 service도 받지 않는다. DSN 포트는 공용 instance의 `-p`(`KOR_TRAVEL_SHARED_DB_PORT`, 기본 11000)이고
+C6c가 "정확히 하나의 PostgreSQL 서버의 `-p`"로 확인한다(ADR-53). Map fresh bootstrap은 그 instance의
+admin으로 돈다 — Map 전용 superuser·bootstrap DSN 키(`KOR_TRAVEL_MAP_POSTGRES_{USER,PASSWORD}`·
+`KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN`)는 없다.
 
 ```
 KOR_TRAVEL_MAP_SERVICE_PASSWORD=<48자 영숫자>
-KOR_TRAVEL_MAP_PG_DSN=postgresql+asyncpg://ktm_feature_service:<같은 값>@127.0.0.1:12700/kor_travel_map
+KOR_TRAVEL_MAP_PG_DSN=postgresql+asyncpg://ktm_feature_service:<같은 값>@127.0.0.1:<KOR_TRAVEL_SHARED_DB_PORT>/kor_travel_map
 ```
 
 **Manager는 이 값을 만들지 않는다.** M05를 폐기하면서 `.env`에 role 자격증명을 심고 그
@@ -140,8 +145,9 @@ done
 ```
 
 특수문자 없는 영숫자를 쓴다 — DSN에 그대로 들어가므로 URL 인코딩이 필요해지면 두 값이
-갈릴 수 있다. 값을 바꿀 때는 `.env`를 먼저 백업하고(`cp -a`), `journal`이 없는 시점에만
-바꾼다: `map_runtime_ready` 이후에 `.env`가 바뀌면 그 pinset은 영구 재개 불가가 된다.
+갈릴 수 있다. 값을 바꿀 때는 `.env`를 먼저 백업하고(`cp -a`) 바꾼다. (예전 이 자리의 "`journal`이
+없는 시점에만" 경고는 v8 journal 시절의 것이다 — ADR-51 B3에서 journal이 사라져 더는 해당하지
+않는다. 배포는 매번 멱등이다.)
 
 퇴역한 키 셋(`KOR_TRAVEL_MAP_APPLICATION_FRESH_MIGRATE_FENCE_DIR`,
 `..._FRESH_FINALIZE_FENCE_DIR`, `KOR_TRAVEL_MAP_APPLICATION_FINAL_PERMIT_DIR`)은

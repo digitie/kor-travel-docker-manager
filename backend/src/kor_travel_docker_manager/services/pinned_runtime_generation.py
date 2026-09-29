@@ -297,7 +297,6 @@ class MapApplication300CandidateEvidence:
     """fresh application 300 candidate build/runtime contract evidence."""
 
     candidate_git_tree: str
-    postgres_image_id: str
     dagster_config_sha256: str
 
     def __post_init__(self) -> None:
@@ -309,15 +308,10 @@ class MapApplication300CandidateEvidence:
             raise DeploymentContractError(
                 "Map application 300 candidate git tree is invalid"
             )
-        if _IMAGE_ID.fullmatch(self.postgres_image_id) is None:
-            raise DeploymentContractError(
-                "Map application 300 candidate PostgreSQL image ID is invalid"
-            )
 
     def to_payload(self) -> dict[str, str]:
         return {
             "candidate_git_tree": self.candidate_git_tree,
-            "postgres_image_id": self.postgres_image_id,
             "dagster_config_sha256": self.dagster_config_sha256,
         }
 

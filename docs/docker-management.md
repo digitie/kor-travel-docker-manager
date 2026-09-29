@@ -107,7 +107,6 @@
 | `kor-travel-concierge-mcp` | `kor-travel-concierge-mcp-latest` | `kor-travel-concierge` MCP HTTP | `12602` |
 | `kor-travel-concierge-scheduler` | `kor-travel-concierge-scheduler-latest` | `kor-travel-concierge` scheduler | 내부 실행 |
 | `kor-travel-concierge-ui` | `kor-travel-concierge-ui-latest` | `kor-travel-concierge` Web UI | `12605` |
-| `kor-travel-map-postgresql` | `kor-travel-map-postgres` | Map application·Dagster metadata 전용 PostgreSQL / PostGIS | `12700` |
 | `kor-travel-map-api` | `kor-travel-map-api-latest` | `kor-travel-map` admin API | `12701` |
 | `kor-travel-map-dagster` | `kor-travel-map-dagster-latest` | `kor-travel-map` Dagster Webserver | `12702` |
 | `kor-travel-map-dagster-daemon` | `kor-travel-map-dagster-daemon-latest` | `kor-travel-map` Dagster daemon | 내부 실행 |
@@ -175,7 +174,7 @@ KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE=/path/to/edited/docker-targets.yml \
 
 `geo` 이후 앱 target은 모두 실제 앱 컨테이너를 이 저장소 compose에서 빌드하고 실행한다. `main`은 독립 target이 아니라 `pinvi`의 호환 별칭이며, 새 자동화에서는 짧은 별칭 `srv`를 사용한다.
 
-로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `12000-12099` 대역은 비어 있다(폐지된 통합 instance와, 2026-09-28 폐지한 `db` target의 자리). PostgreSQL은 Map 전용 instance(`12700`, ADR-37)와 나머지 프로젝트의 공용 instance(`11000`, ADR-44~47) 둘이다. `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `gra`는 Grafana `12104`, `cadv`는 cAdvisor `12103`, `prom`은 Prometheus `12102`를 사용한다(ADR-48로 `storage` 대역 안으로 재배치, 자신의 100단위 대역이 아니다 — `docs/ports.md` 참고). `geo` 대역의 `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `conc` 대역은 `12601`/`12602`/`12605`, `map` 대역은 `12701`/`12702`/`12705`, `pinvi` 대역은 `12801`(API)/`12802`(Dagster)/`12805`(Web)를 사용한다. `kor-travel-docker-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
+로컬 host 포트는 `docs/ports.md`의 정책을 따른다. `12000-12099` 대역은 비어 있다(폐지된 통합 instance와, 2026-09-28 폐지한 `db` target의 자리). PostgreSQL은 공용 instance(`11000`, ADR-44~47·ADR-53) 하나다 — Map의 두 DB도 거기 산다. `storage` 대역의 RustFS는 S3 API `12101`, console `12105`를 사용한다. `gra`는 Grafana `12104`, `cadv`는 cAdvisor `12103`, `prom`은 Prometheus `12102`를 사용한다(ADR-48로 `storage` 대역 안으로 재배치, 자신의 100단위 대역이 아니다 — `docs/ports.md` 참고). `geo` 대역의 `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `conc` 대역은 `12601`/`12602`/`12605`, `map` 대역은 `12701`/`12702`/`12705`, `pinvi` 대역은 `12801`(API)/`12802`(Dagster)/`12805`(Web)를 사용한다. `kor-travel-docker-manager` 자체 Backend API와 Dashboard Web은 dependency 변화에 흔들리지 않도록 `12901`, `12905`를 사용한다.
 
 ### 3.1 `.env` 완전성 — 한 target만 써도 전체 필수 변수가 다 있어야 한다
 
@@ -388,10 +387,9 @@ registry는 현재 pin뿐 아니라 **재시도가 금지된 pinset 목록**(`bl
   300초)를 docker에 `timeout`으로 넘긴다. Manager가 소유한 컨테이너면 그 시간 내내 host 변경 lock을
   쥐고, 이 lock은 기다리지 않으므로 그 사이의 rebuild·install·대시보드 변경은 곧바로 거부된다
   (`another Manager mutation is already active`). grace를 선언하지 않은 컨테이너는 docker 기본 10초 뒤
-  SIGKILL이다. 전용 Map instance(`kor-travel-map-postgresql`)가 그렇다 — 공용 instance로 옮겨 퇴역하기
-  전까지는 대시보드·CLI로 stop/restart하지 말고, 호스트에서 `CHECKPOINT` 뒤 `docker stop --time <초>`로
-  멈춘다.
-- 포트 `11000`, `12700`, `12101`, `12102`, `12103`, `12104`, `12105`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12802`, `12805`, `12901`, `12905`는 Kor Travel/PinVi 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다(Prometheus/cAdvisor/Grafana는 2026-09-21 ADR-48로 `12401`/`12301`/`12205`에서 `12102`/`12103`/`12104`로 재배치됐다).
+  SIGKILL이다. ADR-53으로 Map 전용 instance가 퇴역해, Manager가 관리하는 PostgreSQL은 grace를 선언한
+  공용 instance 하나다.
+- 포트 `11000`, `12101`, `12102`, `12103`, `12104`, `12105`, `12501`, `12505`, `12601`, `12602`, `12605`, `12701`, `12702`, `12705`, `12801`, `12802`, `12805`, `12901`, `12905`는 Kor Travel/PinVi 계열 프로젝트가 공용으로 사용하므로 임의 변경하지 않는다(Prometheus/cAdvisor/Grafana는 2026-09-21 ADR-48로 `12401`/`12301`/`12205`에서 `12102`/`12103`/`12104`로 재배치됐다).
 
 ### 7.1 작업이 만든 컨테이너는 그 작업이 끝날 때 정리한다
 
@@ -677,7 +675,7 @@ sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
   bootstrap의 같은 규칙은 DB 초기화 뒤에야 돈다).
   - `--restart`는 이 판정(이름·허용 소유자·배타성)을 Map·PinVi를 멈추기 **전에** 읽기만으로 한 번 돌리고
     (`require_databases_resettable`), drop 직전에 같은 판정을 다시 돌린다(결박). 거부가 pair를 내린 채 남기지 않는다.
-  - **남은 위험(받아들임, M2가 ADR-53에 옮긴다).** 이 울타리는 env 이름을 live 소유 관계로 좁힐 뿐, Manager가 기록한
+  - **남은 위험(받아들임, ADR-53 받아들인 위험에 옮겼다).** 이 울타리는 env 이름을 live 소유 관계로 좁힐 뿐, Manager가 기록한
     identity에 결박하지 않는다. (1) 자기 이름의 DB **하나만** 소유한 다른 tenant login(Map의
     `<x>_dagster` 모양)은 metadata user·Dagster DB 이름으로 일관되게 박히면 배타성 검사를 지나고, 그 상태에서
     `--restart`는 그 DB를 지운다. 2026-09-28 공용 instance에는 그런 login이 없다(모든 login이 `*_app`이고 자기
@@ -688,9 +686,27 @@ sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
     않는다). 같은 pair 수렴과 기록이 있는 일반 배포는 `deploy-status.json`의 DB identity가 live와 같을 때만 R4에
     닿으므로 이 경로가 없다.
 - **이름**: `postgres`·`template*`은 drop뿐 아니라 수렴(ensure)·DB 생성·격리 경로에서도 거부한다.
+- **instance(ADR-53)**: 세 DB의 instance는 이름이 아니라 DSN 포트에서 유도한다 — Map은 `KOR_TRAVEL_MAP_PG_DSN`
+  (Dagster URL과 같은 authority), PinVi는 `pinvi-api`의 resolved `PINVI_DATABASE_URL`. 그 포트를 `-p`로 듣는
+  PostgreSQL 서버 서비스가 정확히 하나여야 한다. 재구축은 그 instance를 `compose ps`로만 본다(running·healthy·
+  컨테이너 이름) — 띄우지도, 다시 만들지도 않는다. 멈춰 있으면 거부하고 아무것도 바꾸지 않는다.
+- **S1 bootstrap(ADR-53)**: Map fresh bootstrap은 그 instance의 admin으로 돈다. bootstrap이 돌 때(앱 DB가 없거나
+  bootstrap 전이거나 `--restart`) Map·PinVi를 멈추기 **전에** 읽기만으로 판정한다(`require_map_bootstrap_admin_ready`):
+  admin이 superuser, database 0에 role 0·admin·`ktm_%` role setting 없음, `postgis`·`pg_prewarm` 있음, admin
+  password(그 instance의 secret이 가리키는 `.env` 변수)가 32–256자 URI-unreserved이고 Map service·metadata
+  password와 다르며, admin의 **살아있는** SCRAM-SHA-256 verifier에 맞음(socket으로 `pg_authid`를 읽어 프로세스
+  안에서 비교 — 평상시에 그 password로 TCP 인증하는 것이 없어 회전·편집 drift가 창에서야 드러나기 때문이다).
+  Dagster metadata DB가 없으면(`--restart` 제외) init이 거부할 role(아무것도 소유하지 않는 LOGIN NOINHERIT이 아닌
+  것)도 같은 자리에서 거부한다(`require_map_dagster_metadata_initializable`). one-shot은 `-e
+  KOR_TRAVEL_MAP_POSTGRES_USER=<admin> -e KTDM_MAP_BOOTSTRAP_PGPORT=<port>`를 받고 password는 instance secret
+  file에서 스스로 읽어 DSN을 셸 안에서 만든다 — argv·Map 런타임에 password가 없다. 단 Map 스크립트가 DSN을
+  `psql` 인자로 넘기므로 bootstrap 동안 호스트 프로세스 표에는 보인다. n150의 `/proc`은 `hidepid` 없이 붙어
+  있어 root만이 아니라 **호스트 PID namespace의 모든 프로세스**(권한 없는 시스템 daemon 포함)가 읽는다 —
+  후속은 `/proc` `hidepid=2`(모니터링용 gid 포함)와 Map의 `PGPASSFILE`이다. one-shot의 이미지는 digest로,
+  env 키는 계약표 행으로, mount는 `config/docker-targets.yml`의 `compose_binds`로 C6c가 고정한다.
 - **R3 chokepoint**: 재구축의 모든 compose 호출은 `_run_pinned_runtime_rebuild_compose`를 지난다. 서비스를 명시하지
-  않은 mutation은 거부하고, compose가 **실제로 닿는** 서비스 가운데 PostgreSQL 서버(declared ∪ witnessed)가 전용
-  집합 밖이면 거부한다. 닿는 서비스는 명시 식별자에, 의존성으로 번지는 명령(`create`·`start`·`restart`·`scale`·
+  않은 mutation은 거부하고, compose가 **실제로 닿는** 서비스 가운데 PostgreSQL 서버(declared ∪ witnessed)가 있으면
+  거부한다(M1까지의 예외 — Map 전용 instance — 는 ADR-53으로 사라져 울타리가 절대다). 닿는 서비스는 명시 식별자에, 의존성으로 번지는 명령(`create`·`start`·`restart`·`scale`·
   `watch`·`up`·`run`)이 `--no-deps` 없이 오면 frozen resolved 문서의 `depends_on` closure를 더한 것이다 — `create`는
   그 플래그가 없고 drift된 의존 PostgreSQL을 다시 만든다(n150 Compose v5.2.0). 이름 없는 컨테이너를 지우는
   `--remove-orphans`와, 서비스 목록·`depends_on`을 읽을 수 없는 문서도 거부한다(분류 못 하면 통과가 아니다).
@@ -714,8 +730,15 @@ sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
     멈추지 않으므로 preflight가 없다.
   - app DB의 명시 CONNECT 가운데 소유자·login 밖의 것(옛 login, 손으로 준 grant)은 걷는다 — 거부가 아니라
     수렴이다. Dagster DB는 소유자 이름으로만 결박되므로 PUBLIC만 걷고, 남은 명시 grantee는 거부로 드러난다.
-  - C6c는 `KOR_TRAVEL_MAP_PG_DSN`을 형제 DSN처럼 결박한다(`postgresql+asyncpg`, `127.0.0.1`, Map 포트, Map app DB).
-    login은 bootstrap user·metadata user·Map principal이 아니어야 한다.
+  - REVOKE CONNECT는 **연결할 때만** 검사된다. 공용 instance에서 app DB는 createdb부터 R4까지(bootstrap·alembic·
+    Dagster init, 몇 분) PUBLIC CONNECT다 — Map fresh bootstrap이 `datacl IS NULL`을 요구하므로 먼저 닫을 수 없다.
+    그래서 read-back이 통과한 뒤 같은 transaction의 끝에서 두 Map DB에 붙어 있지만 이제 CONNECT가 없는 client
+    세션을 끝낸다(`pg_terminate_backend`, 판정은 방금 바꾼 ACL의 `has_database_privilege` — Map login·metadata
+    user·superuser는 남는다). Dagster DB는 init이 `createdb` 직후 PUBLIC CONNECT를 닫는다(ADR-53 M2).
+  - C6c는 `KOR_TRAVEL_MAP_PG_DSN`을 형제 DSN처럼 결박한다(`postgresql+asyncpg`, `127.0.0.1`, Dagster URL과 같은
+    포트, Map app DB). ADR-53(M2)부터 그 포트는 resolved 문서에서 **정확히 하나의** PostgreSQL 서버의 `-p`여야 하고
+    (instance는 이름이 아니라 포트에서 유도한다), login은 metadata user·그 instance의 admin이 아니어야 한다. login
+    이름은 고정하지 않는다 — 그것이 Map의 login인지는 R4가 live role 그래프로 본다.
   - **관찰(M1 설치 뒤)**: 첫 같은 pair 수렴이 12700에 상한 38을 건다(`max_connections` 100 − superuser 예약 3 − 예약
     0 = 97). 12700에는 지킬 다른 tenant가 없고, Map의 최악(Dagster `max_concurrent_runs` 10, 엔진마다 풀 5 + overflow
     10)은 38보다 크다. 평시 `ktm_feature_service` 세션은 9~11이다. 다음 무거운 Dagster 창까지 Map PostgreSQL 로그의
@@ -1118,7 +1141,8 @@ cAdvisor는 더 이상 `/:/rootfs`, `/var/run`, `/var/lib/docker`, `/dev/disk`�
 PinVi가 공용 instance(`kor-travel-shared-postgres`, `:11000`)로 옮겼고, 2026-09-28부터
 `db-backup`의 `geo`·`geo_dagster`·`concierge`·`pinvi` role은 그 instance를 뜬다(그 전에는
 geo 둘과 pinvi가 옛 전용 instance를 겨냥했다 — geo 쪽은 컨테이너가 이미 없어 실패했고,
-pinvi 쪽은 아무도 쓰지 않는 동결 사본을 떴다). Map 둘은 전용 instance 그대로다.
+pinvi 쪽은 아무도 쓰지 않는 동결 사본을 떴다). Map 둘(`map_application`·`map_dagster`)도 ADR-53으로
+같은 instance를 뜬다 — 이동 창에서 옛 전용 instance의 마지막 dump는 감사용으로 따로 보관한다.
 아래 실측 표는 분리 직후(2026-08-17)의 기록이다.
 
 ### 실측 (2026-08-17, n150)
@@ -1162,8 +1186,8 @@ ktdctl db-backup create transport_dagster --timeout 14400
 | geo | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_geo` |
 | geo_dagster | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_geo_dagster` |
 | concierge | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_concierge` |
-| map_application | `kor-travel-map-postgres` | 12700 | `kor_travel_map` | `kor_travel_map` |
-| map_dagster | `kor-travel-map-postgres` | 12700 | `kor_travel_map` | `kor_travel_map_dagster` |
+| map_application | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_map` |
+| map_dagster | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_map_dagster` |
 | pinvi | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `pinvi` |
 | transport | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_transport` |
 | transport_dagster | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_transport_dagster` |
@@ -1274,8 +1298,8 @@ ktdctl db-backup rehearse-restore concierge [--file <name>] [--timeout <초>] [-
   시작 전에 한 번(`docker exec … psql --dbname postgres`) 읽고, 못 읽으면 pg_dump 전에 거부한다. 고정
   2 GiB였을 때의 근거("공용 instance `max_wal_size` 1GB보다 넉넉하다")는 D4 튜닝(ADR-53)이
   2GB로 올리면서 깨진다 — 튜닝 뒤 공용 instance의 예약분은 3 GiB다(값은 매번 살아있는
-  instance에서 읽는다). 덮는 것은 **그 instance의** WAL뿐이다: M2가 Map 전용 instance(`:12700`,
-  `max_wal_size` 2GB)를 퇴역시킬 때까지는 같은 장치의 그 WAL을 세지 않는다(일시적 틈).
+  instance에서 읽는다). 덮는 것은 **그 instance의** WAL뿐이다 — ADR-53(M2)으로 Map 전용 instance가
+  퇴역한 뒤 Manager가 관리하는 instance는 공용 하나다.
 - **`--expected-dump-bytes N`**: 추정만 운영자 값으로 바꾼다. 확인은 끄지 않는다(필요량
   2N + 예약분). 쓴 값은 stderr(cron 로그)와 거부 문구에 남는다. 이 자리에서 뜬
   dump가 없어 상한이 보수적일 때의 비상 백업용이다.

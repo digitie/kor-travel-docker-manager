@@ -155,12 +155,14 @@ def test_services_the_code_names_are_defined() -> None:
         for field in (
             "_PINNED_RUNTIME_ONESHOT_WRITERS",
             "_PINNED_RUNTIME_EXTERNAL_PREREQUISITES",
-            "_PINNED_RUNTIME_DATABASE_SERVICES",
             "RUNTIME_SERVICES",
         ):
             for name in getattr(compose_service_module, field):
                 yield f"compose_service.{field}", name
+        # ADR-53: 세 DB의 PostgreSQL 서비스는 이름이 아니라 DSN 포트에서 유도한다 — 코드에 이름이 없다.
         for role, spec in database_runtime_module._ROLE_CONFIG.items():
-            yield f"database_runtime._ROLE_CONFIG.{role}", spec[-1]
+            assert not any(
+                isinstance(item, str) and item in services for item in spec
+            ), (role, spec)
 
     assert _dangling(references(), services) == []

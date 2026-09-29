@@ -21,6 +21,7 @@ import yaml
 
 from kor_travel_docker_manager.services import c6c_deployment, runtime_pin_registry
 from kor_travel_docker_manager.services import compose_service as compose_service_module
+from kor_travel_docker_manager.services import database_runtime as database_runtime_module
 from kor_travel_docker_manager.services import (
     pinned_runtime_rebuild as pinned_runtime_rebuild_module,
 )
@@ -244,7 +245,6 @@ def _map_application_candidate(
     *,
     api_image_id: str = f"sha256:{101:064x}",
     dagster_image_id: str = f"sha256:{102:064x}",
-    postgres_image_id: str = f"sha256:{103:064x}",
 ) -> MapApplicationCandidate:
     materialized = sources or _sources()
     return MapApplicationCandidate(
@@ -252,7 +252,6 @@ def _map_application_candidate(
         candidate_git_tree=materialized.source_for("map").tree,
         api_image_id=api_image_id,
         dagster_image_id=dagster_image_id,
-        postgres_image_id=postgres_image_id,
         dagster_config_sha256="b" * 64,
         application_head="300",
     )
@@ -333,7 +332,8 @@ def test_candidate_build_uses_private_deterministic_tags_and_staged_sources() ->
     assert environment["KOR_TRAVEL_MAP_API_IMAGE"] == candidate.api_image_id
     assert environment["KOR_TRAVEL_MAP_DAGSTER_IMAGE"] == candidate.dagster_image_id
     assert "KOR_TRAVEL_MAP_DAGSTER_DAEMON_IMAGE" not in environment
-    assert environment["KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID"] == candidate.postgres_image_id
+    # ADR-53: Map DB는 공용 instance에 산다 — 재구축은 PostgreSQL 이미지를 주입하지 않는다.
+    assert not [name for name in environment if "POSTGRES" in name]
     # ADR-51 D-3: M1 이후 Map storage one-shot은 config sha를 읽지 않는다.
     assert "KOR_TRAVEL_MAP_DAGSTER_STORAGE_CONFIG_SHA256" not in environment
 
@@ -436,9 +436,7 @@ def test_candidate_generation_binds_all_runtime_inputs() -> None:
     assert runtime_environment["KOR_TRAVEL_MAP_API_IMAGE"] == paired.api_image_id
     assert runtime_environment["KOR_TRAVEL_MAP_DAGSTER_IMAGE"] == paired.dagster_image_id
     assert "KOR_TRAVEL_MAP_DAGSTER_DAEMON_IMAGE" not in runtime_environment
-    assert runtime_environment["KOR_TRAVEL_MAP_POSTGRES_IMAGE_ID"] == (
-        paired.postgres_image_id
-    )
+    assert not [name for name in runtime_environment if "POSTGRES" in name]
     # ADR-51 D-3: permit 디렉터리와 config sha는 runtime override에서 빠졌다.
     assert not [
         name
@@ -650,7 +648,7 @@ def test_generation_companions_are_non_slot_services_sharing_a_slot_image() -> N
             "kor-travel-map-dagster-storage-migrate": {"image": dagster_image},
             "pinvi-dagster-daemon": {"image": image_ids["pinvi-dagster"]},
             "prometheus": {"image": "prom/prometheus:v2.53.1"},
-            "kor-travel-map-postgres": {"image": image_ids["kor-travel-map-api"] + "x"},
+            "kor-travel-shared-postgres": {"image": image_ids["kor-travel-map-api"] + "x"},
         }
     }
 
@@ -1349,7 +1347,6 @@ def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
 
     assert [command[2] for command in operations] == ["rm", "ps"]
     expected_writers = (
-        "kor-travel-map-dagster-db-init",
         "kor-travel-map-db-role-bootstrap",
         "kor-travel-map-application-schema",
         "kor-travel-map-dagster-storage-migrate",
@@ -1436,21 +1433,29 @@ _LIVE_IDENTITIES: dict[str, tuple[str, int, str]] = {
 _ISOLATION = "ensure-map-databases-isolated"
 
 
+#: ADR-53 모양 — 세 DB가 공용 instance 하나에 산다.
+_FORWARD_INSTANCE = "kor-travel-shared-postgres"
+_FORWARD_PORT = 11000
+_FORWARD_ADMIN = "cluster_admin"
+
+
 def _forward_runtimes() -> tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime]:
-    def runtime(role: Any, name: str, container: str, port: int) -> DatabaseRuntime:
+    def runtime(role: Any, name: str) -> DatabaseRuntime:
         return DatabaseRuntime(
             role=role,
-            container_name=container,
-            port=port,
+            service_name=_FORWARD_INSTANCE,
+            container_name="shared-postgres",
+            port=_FORWARD_PORT,
             database_name=name,
-            owner_name="pinvi_app" if role == "pinvi" else "map_owner",
-            admin_name="cluster_admin",
+            # S1: Map 소유자는 instance admin이다.
+            owner_name="pinvi_app" if role == "pinvi" else _FORWARD_ADMIN,
+            admin_name=_FORWARD_ADMIN,
         )
 
     return (
-        runtime("map_application", "kor_travel_map", "map-postgres", 12700),
-        runtime("map_dagster", "kor_travel_map_dagster", "map-postgres", 12700),
-        runtime("pinvi", "pinvi", "shared-postgres", 11000),
+        runtime("map_application", "kor_travel_map"),
+        runtime("map_dagster", "kor_travel_map_dagster"),
+        runtime("pinvi", "pinvi"),
     )
 
 
@@ -1505,7 +1510,7 @@ def _forward_harness(
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "metadata-password",
         "KOR_TRAVEL_MAP_PG_DSN": (
-            "postgresql+asyncpg://ktm_feature_service:service-password@127.0.0.1:12700/"
+            f"postgresql+asyncpg://ktm_feature_service:service-password@127.0.0.1:{_FORWARD_PORT}/"
             "kor_travel_map"
         ),
         "COMPOSE_PROJECT_NAME": "f1d-migrate-forward",
@@ -1552,10 +1557,8 @@ def _forward_harness(
             "pinvi": candidate.pinvi_head,
         },
         "pinvi_schema_table": True,
-        # 떠 있는 Map PostgreSQL 컨테이너의 이미지. `up`이 후보 이미지로 다시 만든다.
-        "map_postgres_image": map_candidate.postgres_image_id,
-        # PostgreSQL `up`이 일어날 때 부르는 hook(PGDATA가 바뀌어 cluster가 바뀌는 경우 등).
-        "on_postgres_up": None,
+        # readiness가 거부할 서비스(ADR-53: instance는 readiness로만 본다).
+        "not_ready": set(),
     }
     operations: list[tuple[str, ...]] = []
     readiness_requests: list[tuple[str, ...]] = []
@@ -1577,6 +1580,10 @@ def _forward_harness(
         # 멈추기 전의 읽기 전용 판정(`--restart`의 R2, 일반·adopt 경로의 R4 전제).
         reset_preflight=Mock(),
         isolation_preflight=Mock(),
+        # S1: bootstrap이 돌 때 instance admin을 멈추기 전에 판정한다.
+        admin_preflight=Mock(),
+        # Dagster metadata DB가 없을 때 init이 거부할 role을 멈추기 전에 판정한다.
+        dagster_preflight=Mock(),
         retention_generation=Mock(),
         retention_candidate=Mock(),
     )
@@ -1584,10 +1591,6 @@ def _forward_harness(
     def run_compose(arguments: list[str], *, transaction: object) -> dict[str, object]:
         del transaction
         operations.append(tuple(arguments))
-        if arguments[:1] == ["up"] and "kor-travel-map-postgres" in arguments:
-            live["map_postgres_image"] = map_candidate.postgres_image_id
-            if live["on_postgres_up"] is not None:
-                live["on_postgres_up"]()
         return {"success": True, "stdout": ""}
 
     def require_ready(
@@ -1600,6 +1603,11 @@ def _forward_harness(
         readiness_requests.append(tuple(services))
         if tuple(services) == compose_service_module._PINNED_RUNTIME_EXTERNAL_PREREQUISITES:
             mocks.prerequisites()
+        not_ready = sorted(set(services) & cast(set[str], live["not_ready"]))
+        if not_ready:
+            raise DeploymentContractError(
+                "mandatory services do not satisfy canonical readiness: " + ", ".join(not_ready)
+            )
         return [
             {"Name": f"{name}-latest", "Service": name, "State": "running"}
             for name in services
@@ -1608,8 +1616,6 @@ def _forward_harness(
     def inspect_image(container_name: str, *, label: str) -> str:
         del container_name
         image_labels.append(label)
-        if label == "Map PostgreSQL":
-            return cast(str, live["map_postgres_image"])
         return image_ids[cast(Any, _FORWARD_COMPANIONS.get(label, label))]
 
     class _C6cConfig:
@@ -1664,7 +1670,6 @@ def _forward_harness(
         "build_candidate_generation": lambda **_kwargs: candidate,
         "ensure_generation_references": Mock(),
         "database_runtimes_from_frozen_contract": lambda **_kwargs: runtimes,
-        "validate_map_postgres_runtime_secret_isolation": Mock(),
         "read_database_identity": read_identity,
         "read_database_schema_revision": read_head,
         "schema_revision_table_exists": lambda _runtime: live["pinvi_schema_table"],
@@ -1684,6 +1689,8 @@ def _forward_harness(
         "require_map_application_database_convergible": mocks.map_precheck,
         "require_databases_resettable": mocks.reset_preflight,
         "require_map_databases_isolatable": mocks.isolation_preflight,
+        "require_map_bootstrap_admin_ready": mocks.admin_preflight,
+        "require_map_dagster_metadata_initializable": mocks.dagster_preflight,
     }.items():
         monkeypatch.setattr(compose_service_module, name, replacement)
     service = ComposeService()
@@ -1719,16 +1726,12 @@ def _forward_harness(
 
 
 def _mutating_operations(harness: SimpleNamespace) -> list[tuple[str, ...]]:
-    """DB 서버 기동 말고 무언가를 바꾸는 compose 호출."""
+    """무언가를 바꾸는 호출(compose·DB 권한). readiness 읽기는 따로 기록된다.
 
-    return [
-        operation
-        for operation in harness.operations
-        if not (
-            operation[:1] == ("up",)
-            and operation[-1:] == ("kor-travel-map-postgres",)
-        )
-    ]
+    ADR-53부터 재구축은 PostgreSQL 서버를 띄우지 않는다 — 기록된 호출이 전부 변경이다.
+    """
+
+    return list(harness.operations)
 
 
 def test_first_deploy_runs_the_idempotent_full_path_and_commits(
@@ -2215,78 +2218,65 @@ def test_a_restart_that_dies_before_the_reset_keeps_the_baseline(
     assert dict(status.databases or {}) == dict(previous.databases or {})
 
 
-def test_the_databases_are_brought_to_the_frozen_compose_before_any_judgment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("scenario", ("first_deploy", "same_pair", "new_pair", "restart"))
+def test_rebuild_checks_shared_instance_readiness_without_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
-    """PostgreSQL `up`은 수렴·identity 판정보다 먼저다(설정이 같으면 무연산이다)."""
+    """ADR-53: 세 DB의 instance는 readiness로만 본다 — `up`·재생성·재시작이 없다(R3).
 
-    candidate = _candidate_generation()
-    harness = _forward_harness(
-        monkeypatch, tmp_path, previous=_committed_status(candidate, map_revision="0" * 40)
-    )
-
-    harness.service.rebuild_pinned_runtime()
-
-    postgres_up = [
-        index
-        for index, operation in enumerate(harness.operations)
-        if operation[:1] == ("up",) and "kor-travel-map-postgres" in operation
-    ]
-    # 판정 전 한 번뿐이다. 전체 경로가 다시 `up`하면 판정과 migration 사이에 cluster가
-    # 바뀔 자리가 생긴다.
-    assert postgres_up == [0]
-
-
-@pytest.mark.parametrize("same_pair", (True, False))
-def test_a_cluster_swapped_by_the_postgres_up_is_refused_before_anything_changes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_pair: bool
-) -> None:
-    """PGDATA가 바뀐 호스트: 옛 컨테이너로 기준선을 통과한 뒤 새 cluster를 커밋하면 안 된다.
-
-    B2 적대 리뷰 2차(major). 판정 전에 `up`하므로 판정이 새 cluster를 본다.
+    readiness는 수렴·identity 판정보다 먼저이고, 요청하는 서비스는 runtime들이 DSN에서 유도한
+    instance(중복 없이)다. 어떤 compose 호출도 그 instance를 이름으로 부르지 않는다.
     """
 
     candidate = _candidate_generation()
-    previous = _committed_status(
-        candidate, **({} if same_pair else {"map_revision": "0" * 40})
-    )
+    previous = {
+        "first_deploy": None,
+        "same_pair": _committed_status(candidate),
+        "new_pair": _committed_status(candidate, map_revision="0" * 40),
+        "restart": _committed_status(candidate, map_revision="0" * 40),
+    }[scenario]
     harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    judged: list[str] = []
+    harness.mocks.map_precheck.side_effect = lambda _runtime: judged.append(
+        f"after {len(harness.readiness_requests)} readiness requests"
+    ) or "present"
 
-    def swap() -> None:
-        harness.live["identities"]["map_application"] = (
-            "kor_travel_map",
-            55555,
-            "7399999999999999999",
-        )
+    harness.service.rebuild_pinned_runtime(
+        **({"restart_reason": "readiness"} if scenario == "restart" else {})
+    )
 
-    harness.live["on_postgres_up"] = swap
+    instance_requests = [
+        index
+        for index, request in enumerate(harness.readiness_requests)
+        if request == (_FORWARD_INSTANCE,)
+    ]
+    # 외부 전제 다음, 판정 전에 한 번이다.
+    assert instance_requests == [1]
+    assert harness.readiness_requests[0] == (
+        compose_service_module._PINNED_RUNTIME_EXTERNAL_PREREQUISITES
+    )
+    if scenario in {"first_deploy", "new_pair"}:
+        assert judged == ["after 2 readiness requests"]
+    assert not [operation for operation in harness.operations if _FORWARD_INSTANCE in operation]
+    assert "Map PostgreSQL" not in harness.image_labels
 
-    with pytest.raises(DeploymentContractError, match="--adopt-live-databases"):
+
+def test_an_unready_shared_instance_is_refused_before_anything_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """멈춰 있거나 unhealthy인 instance를 재구축이 띄우지 않는다 — 거부하고 아무것도 바꾸지 않는다."""
+
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate, map_revision="0" * 40)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    harness.live["not_ready"] = {_FORWARD_INSTANCE}
+
+    with pytest.raises(DeploymentContractError, match="canonical readiness"):
         harness.service.rebuild_pinned_runtime()
 
-    assert _mutating_operations(harness) == []
+    assert harness.operations == []
     assert read_deploy_status(harness.status_path) == previous
-    harness.mocks.ensure_map.assert_not_called()
-
-
-def test_a_changed_map_postgres_image_is_recreated_not_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """떠 있는 Map PostgreSQL이 옛 이미지여도 `up`이 후보 이미지로 다시 만든다.
-
-    B2 적대 리뷰 2차(major): 준비된 컨테이너를 건너뛰면 이미지 대조가 모든 실행 —
-    `--restart`·`--adopt-live-databases`까지 — 을 같은 자리에서 영구히 거부했다.
-    """
-
-    candidate = _candidate_generation()
-    harness = _forward_harness(
-        monkeypatch, tmp_path, previous=_committed_status(candidate)
-    )
-    harness.live["map_postgres_image"] = f"sha256:{999:064x}"
-
-    result = harness.service.rebuild_pinned_runtime()
-
-    assert result["outcome"] == "converged"
+    harness.mocks.map_precheck.assert_not_called()
 
 
 def test_a_map_database_the_bootstrap_would_refuse_is_refused_before_the_runtime_stops(
@@ -2552,17 +2542,16 @@ def test_a_failed_bookkeeping_write_leaves_the_verified_runtime_up(
     assert status is not None and status.state == "in_progress"
 
 
-# --- M1 R3: 재구축은 전용 집합 밖의 PostgreSQL 서버를 바꾸지 않는다 ----------------------------
+# --- R3: 재구축은 PostgreSQL 서버를 하나도 바꾸지 않는다(M1 울타리, ADR-53으로 절대) -----------
 
 
 def _transaction_with_postgres(**extra: Mapping[str, Any]) -> Any:
-    """n150처럼 두 PostgreSQL 서버(공용·Map 전용)를 담은 frozen 문서."""
+    """ADR-53 뒤의 n150처럼 PostgreSQL 서버가 공용 instance 하나인 frozen 문서."""
 
     return SimpleNamespace(
         resolved={
             "services": {
                 "kor-travel-shared-postgres": {"command": ["postgres", "-p", "11000"]},
-                "kor-travel-map-postgres": {"command": ["postgres", "-p", "12700"]},
                 "kor-travel-map-api": {"image": "sha256:" + "1" * 64},
                 **extra,
             }
@@ -2606,7 +2595,7 @@ def test_rebuild_compose_refuses_mutating_a_shared_postgres_service(
     monkeypatch.setattr(service, "_run_frozen_recovery", runner)
 
     with pytest.raises(
-        DeploymentContractError, match="outside its dedicated set: kor-travel-shared-postgres"
+        DeploymentContractError, match="must not mutate a PostgreSQL service: kor-travel-shared-postgres"
     ):
         service._run_pinned_runtime_rebuild_compose(
             arguments, transaction=_transaction_with_postgres()
@@ -2620,13 +2609,12 @@ def test_rebuild_compose_refuses_mutating_a_shared_postgres_service(
     [
         ["ps", "--format", "json", "kor-travel-shared-postgres"],
         ["--profile", "bootstrap", "ps", "--all", "--format", "json", "kor-travel-shared-postgres"],
-        # 전용 집합(M1에서는 Map 전용 instance)은 재구축이 health까지 띄운다.
-        ["up", "-d", "--no-deps", "--wait", "kor-travel-map-postgres"],
         ["stop", "kor-travel-map-api"],
+        ["up", "-d", "--no-deps", "--wait", "kor-travel-map-api"],
     ],
     ids=lambda arguments: " ".join(arguments),
 )
-def test_rebuild_compose_allows_reads_and_the_dedicated_set(
+def test_rebuild_compose_allows_reads_and_non_postgres_mutations(
     arguments: list[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2650,7 +2638,7 @@ def test_rebuild_compose_refuses_a_witnessed_postgres_server_that_is_not_declare
     runner = _succeeding_recovery()
     monkeypatch.setattr(service, "_run_frozen_recovery", runner)
 
-    with pytest.raises(DeploymentContractError, match="dedicated set: sidecar-db"):
+    with pytest.raises(DeploymentContractError, match="PostgreSQL service: sidecar-db"):
         service._run_pinned_runtime_rebuild_compose(
             ["stop", "sidecar-db"],
             transaction=_transaction_with_postgres(
@@ -2732,7 +2720,7 @@ def test_rebuild_compose_refuses_a_call_whose_dependencies_reach_a_shared_postgr
     monkeypatch.setattr(service, "_run_frozen_recovery", runner)
 
     with pytest.raises(
-        DeploymentContractError, match="outside its dedicated set: kor-travel-shared-postgres"
+        DeploymentContractError, match="must not mutate a PostgreSQL service: kor-travel-shared-postgres"
     ):
         service._run_pinned_runtime_rebuild_compose(
             arguments, transaction=_transaction_with_dependents()
@@ -2779,7 +2767,7 @@ def test_r3_counts_only_the_no_deps_compose_parses_as_a_flag() -> None:
     """
 
     with pytest.raises(
-        DeploymentContractError, match="outside its dedicated set: kor-travel-shared-postgres"
+        DeploymentContractError, match="must not mutate a PostgreSQL service: kor-travel-shared-postgres"
     ):
         ComposeService._require_rebuild_compose_spares_foreign_postgres(
             ["--profile", "bootstrap", "run", "--rm", "pinvi-api", "pinvi-api", "--no-deps"],
@@ -2871,18 +2859,41 @@ def test_postgres_server_services_is_declared_or_witnessed(
     ) == {"declared-db", "witnessed-db", "env-db"}
 
 
+def test_rebuild_compose_refuses_even_the_retired_dedicated_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M1까지의 예외(Map 전용 instance의 `up`)는 ADR-53으로 사라졌다 — 울타리가 절대다.
+
+    옛 문서 모양(두 서버)을 그대로 두고 옛 호출을 보낸다. 전용 집합이 남아 있었다면 통과했다.
+    """
+
+    service = ComposeService()
+    runner = _succeeding_recovery()
+    monkeypatch.setattr(service, "_run_frozen_recovery", runner)
+
+    with pytest.raises(DeploymentContractError, match="must not mutate a PostgreSQL service: map-pg"):
+        service._run_pinned_runtime_rebuild_compose(
+            ["up", "-d", "--no-deps", "--wait", "map-pg"],
+            transaction=_transaction_with_postgres(
+                **{"map-pg": {"command": ["postgres", "-p", "15101"]}}
+            ),
+        )
+
+    runner.assert_not_called()
+
+
 @pytest.mark.parametrize("scenario", ("first_deploy", "same_pair", "new_pair", "restart"))
-def test_full_rebuild_never_mutates_a_postgres_service_outside_the_dedicated_set(
+def test_full_rebuild_never_names_a_postgres_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
     """재구축 전체를 대역으로 끝까지 돌리고, Docker에 닿은 **모든** compose argv를 본다.
 
     chokepoint(`_run_pinned_runtime_rebuild_compose`)는 진짜를 쓴다 — Docker 직전의
     `_run_frozen_recovery`만 기록기로 바꾼다. 단언은 chokepoint와 **해석기 모두와** 독립이다:
-    기록된 argv의 낱말에서 PostgreSQL 서버 이름을 찾고(읽기 호출 포함), 의존성으로 번질 수 있는
-    명령 낱말이 든 argv가 모두 `--no-deps`를 다는지 본다. M1의 전용 집합은 Map 전용 instance
-    하나이고, M2가 그것을 비우면 같은 단언이 "어떤 PostgreSQL 서버도 이름으로 불리지 않는다"가
-    된다.
+    기록된 argv의 낱말에서 PostgreSQL 서버 이름을 찾고, 의존성으로 번질 수 있는 명령 낱말이 든
+    argv가 모두 `--no-deps`를 다는지 본다. M1의 전용 집합(Map 전용 instance)은 ADR-53이 비웠다 —
+    그래서 단언은 "어떤 PostgreSQL 서버도 이름으로 불리지 않는다"다. instance readiness는 이
+    기록기를 지나지 않는 읽기(`_require_services_ready`)다.
     """
 
     candidate = _candidate_generation()
@@ -2895,8 +2906,9 @@ def test_full_rebuild_never_mutates_a_postgres_service_outside_the_dedicated_set
     harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
     harness.transaction.resolved["services"].update(
         {
-            "kor-travel-shared-postgres": {"command": ["postgres", "-p", "11000"]},
-            "kor-travel-map-postgres": {"command": ["postgres", "-p", "12700"]},
+            _FORWARD_INSTANCE: {"command": ["postgres", "-p", str(_FORWARD_PORT)]},
+            # 문서에 남은 다른 서버도 이름으로 불리지 않는다.
+            "sidecar-db": {"command": ["postgres", "-p", "15101"]},
         }
     )
     recorded: list[tuple[str, ...]] = []
@@ -2922,12 +2934,11 @@ def test_full_rebuild_never_mutates_a_postgres_service_outside_the_dedicated_set
         harness.service.rebuild_pinned_runtime()
 
     postgres = c6c_deployment.postgres_server_services(harness.transaction.resolved)
-    assert postgres == {"kor-travel-shared-postgres", "kor-travel-map-postgres"}
-    dedicated = set(compose_service_module._PINNED_RUNTIME_DATABASE_SERVICES)
+    assert postgres == {_FORWARD_INSTANCE, "sidecar-db"}
     # 탐지기가 공허하지 않다: 재구축의 mutation이 실제로 기록됐다.
     assert any(operation[0] == "up" for operation in recorded)
     named = {token for operation in recorded for token in operation} & postgres
-    assert named <= dedicated, sorted(named - dedicated)
+    assert named == set(), sorted(named)
     starters = [
         operation
         for operation in recorded
@@ -2998,10 +3009,325 @@ def test_a_malformed_map_login_is_refused_before_anything_stops(
 ) -> None:
     harness = _forward_harness(monkeypatch, tmp_path)
     harness.transaction.environment.effective["KOR_TRAVEL_MAP_PG_DSN"] = (
-        "postgresql+asyncpg://127.0.0.1:12700/kor_travel_map"
+        f"postgresql+asyncpg://127.0.0.1:{_FORWARD_PORT}/kor_travel_map"
     )
 
     with pytest.raises(DeploymentContractError, match="Map application login is invalid"):
         harness.service.rebuild_pinned_runtime()
 
     assert harness.operations == []
+
+
+# --- ADR-53 S1: bootstrap은 instance admin으로, 판정은 멈추기 전에 ---------------------------------
+
+_SHARED_ADMIN_PASSWORD = "shared-admin-password-0123456789-abcdef"
+#: PostgreSQL 16이 `_SHARED_ADMIN_PASSWORD`로 만든 진짜 verifier(test_database_runtime.py와 같다).
+_SHARED_ADMIN_VERIFIER = (
+    "SCRAM-SHA-256$4096:YtxppmrpF2qWtqnoXM/7/g==$MKxyZdyNGGUPggov7ygSmRWUC/cNH8b7fKdl9GXL3qI="
+    ":H+sCke8S9deqymWjIMFhKyQN9vPTRqbdM7XYVmpjQjA="
+)
+
+
+def _s1_output(head: str) -> bytes:
+    return f"{head}\n".encode("ascii")
+
+
+def _with_real_admin_preflight(
+    harness: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    output: bytes,
+    password: str = _SHARED_ADMIN_PASSWORD,
+) -> Mock:
+    """harness의 대역 대신 진짜 `require_map_bootstrap_admin_ready`를 태운다(psql만 대역).
+
+    instance의 admin secret은 frozen 문서에서 유도된다 — 서버의 `POSTGRES_PASSWORD_FILE` →
+    `secrets[]` → 최상위 `secrets.<source>.environment` → frozen env 값.
+    """
+
+    harness.transaction.resolved["services"][_FORWARD_INSTANCE] = {
+        "command": ["postgres", "-p", str(_FORWARD_PORT)],
+        "environment": {
+            "POSTGRES_USER": _FORWARD_ADMIN,
+            "POSTGRES_PASSWORD_FILE": "/run/secrets/shared-pw",
+        },
+        "secrets": [{"source": "shared-pw", "target": "/run/secrets/shared-pw"}],
+    }
+    harness.transaction.resolved["secrets"] = {"shared-pw": {"environment": "SHARED_PW"}}
+    harness.transaction.environment.effective.update(
+        {
+            "SHARED_PW": password,
+            "KOR_TRAVEL_MAP_SERVICE_PASSWORD": "map-service-password-0123456789-abcdef",
+        }
+    )
+    # 첫 읽기는 superuser·role setting·extension, 둘째는 admin의 `pg_authid` verifier다.
+    reads = Mock(side_effect=[output, f"{_SHARED_ADMIN_VERIFIER}\n".encode("ascii")])
+    monkeypatch.setattr(database_runtime_module, "_run_checked", reads)
+    monkeypatch.setattr(
+        compose_service_module,
+        "require_map_bootstrap_admin_ready",
+        database_runtime_module.require_map_bootstrap_admin_ready,
+    )
+    return reads
+
+
+@pytest.mark.parametrize(
+    ("output", "password", "match"),
+    (
+        (_s1_output("f|0|2"), _SHARED_ADMIN_PASSWORD, "must be a superuser"),
+        (_s1_output("t|2|2"), _SHARED_ADMIN_PASSWORD, "cluster-wide role settings"),
+        (_s1_output("t|0|1"), _SHARED_ADMIN_PASSWORD, "lacks an extension"),
+        (_s1_output("t|0|2"), "too-short", "32..256 URI-unreserved"),
+        (_s1_output("t|0|2"), "map-service-password-0123456789-abcdef", "must differ"),
+        # `.env`의 password가 모양은 맞지만 admin의 live verifier와 다르다(회전·편집 drift).
+        (_s1_output("t|0|2"), "rotated-admin-password-0123456789-abcdef", "live SCRAM"),
+    ),
+    ids=(
+        "superuser",
+        "role-settings",
+        "extension",
+        "password-shape",
+        "password-distinct",
+        "password-drift",
+    ),
+)
+def test_an_s1_refusal_comes_before_the_runtime_stops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output: bytes,
+    password: str,
+    match: str,
+) -> None:
+    """S1 고유의 실패가 bootstrap one-shot 안에서야 나면 Map·PinVi가 내려간 채 남는다(§1.3 b).
+
+    검사 하나마다 진짜 판정을 태워, 거부가 **어디서** 나는지 본다 — 멈춤(`stop`)도 다른 어떤 변경도
+    기록되지 않아야 한다.
+    """
+
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate, map_revision="0" * 40)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    harness.mocks.map_precheck.return_value = "absent"
+    _with_real_admin_preflight(harness, monkeypatch, output=output, password=password)
+
+    with pytest.raises(DeploymentContractError, match=match) as raised:
+        harness.service.rebuild_pinned_runtime()
+
+    assert not any(operation[0] == "stop" for operation in harness.operations)
+    assert _mutating_operations(harness) == []
+    harness.mocks.ensure_map.assert_not_called()
+    assert read_deploy_status(harness.status_path) == previous
+    assert password not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("state", "restart", "checked"),
+    (
+        ("absent", False, True),
+        ("unbootstrapped", False, True),
+        ("present", False, False),
+        # 리셋은 Map DB를 지운다 — 그 뒤 bootstrap이 돈다.
+        ("present", True, True),
+    ),
+)
+def test_admin_ready_check_is_skipped_when_the_map_database_is_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+    restart: bool,
+    checked: bool,
+) -> None:
+    harness = _forward_harness(
+        monkeypatch,
+        tmp_path,
+        previous=_committed_status(_candidate_generation(), map_revision="0" * 40),
+    )
+    harness.mocks.map_precheck.return_value = state
+
+    result = harness.service.rebuild_pinned_runtime(
+        **({"restart_reason": "rebuild"} if restart else {})
+    )
+
+    assert result["outcome"] == "deployed"
+    if checked:
+        harness.mocks.admin_preflight.assert_called_once_with(
+            harness.runtimes[0],
+            resolved=harness.transaction.resolved,
+            environment=harness.transaction.environment.effective,
+        )
+    else:
+        harness.mocks.admin_preflight.assert_not_called()
+
+
+def test_the_same_pair_convergence_never_checks_the_bootstrap_admin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(
+        monkeypatch, tmp_path, previous=_committed_status(_candidate_generation())
+    )
+
+    assert harness.service.rebuild_pinned_runtime()["outcome"] == "converged"
+    harness.mocks.admin_preflight.assert_not_called()
+
+
+def test_bootstrap_one_shot_gets_the_derived_admin_and_port_and_no_password_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """admin 이름·포트는 앱 DB runtime에서 유도한 실행 시점 `-e`다. password는 argv에 없다.
+
+    one-shot은 그 instance의 secret file에서 password를 스스로 읽는다(ADR-53 S1). Manager가
+    `--env NAME`으로 값을 넘기던 옛 모양은 전용 superuser password를 argv 옆 환경으로 옮겼다.
+    """
+
+    harness = _forward_harness(monkeypatch, tmp_path)
+    # instance의 admin secret을 frozen 문서에서 **유도할 수 있게** 둔다(서버의
+    # `POSTGRES_PASSWORD_FILE` → secrets[] → `SHARED_PW`). 그래야 password를 `-e`로 넘기는
+    # 회귀가 실제로 값을 argv에 올릴 수 있고, 아래 단언이 그것을 잡는다.
+    harness.transaction.resolved["services"][_FORWARD_INSTANCE] = {
+        "command": ["postgres", "-p", str(_FORWARD_PORT)],
+        "environment": {
+            "POSTGRES_USER": _FORWARD_ADMIN,
+            "POSTGRES_PASSWORD_FILE": "/run/secrets/shared-pw",
+        },
+        "secrets": [{"source": "shared-pw", "target": "/run/secrets/shared-pw"}],
+    }
+    harness.transaction.resolved["secrets"] = {"shared-pw": {"environment": "SHARED_PW"}}
+    harness.transaction.environment.effective["SHARED_PW"] = _SHARED_ADMIN_PASSWORD
+    assert (
+        c6c_deployment.postgres_admin_secret(
+            harness.transaction.resolved, _FORWARD_INSTANCE
+        ).environment
+        == "SHARED_PW"
+    )
+    harness.runtimes = (
+        replace(harness.runtimes[0], admin_name="derived_admin", owner_name="derived_admin", port=15432),
+        *harness.runtimes[1:],
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "database_runtimes_from_frozen_contract",
+        lambda **_kwargs: harness.runtimes,
+    )
+
+    def ensure(runtime: DatabaseRuntime, *, run_role_bootstrap: Any) -> str:
+        del runtime
+        run_role_bootstrap()
+        return "created"
+
+    harness.mocks.ensure_map.side_effect = ensure
+
+    harness.service.rebuild_pinned_runtime()
+
+    (bootstrap,) = [
+        operation
+        for operation in harness.operations
+        if "kor-travel-map-db-role-bootstrap" in operation
+        and "run" in operation
+    ]
+    assert bootstrap == (
+        "--profile",
+        "bootstrap",
+        "run",
+        "--rm",
+        "--no-deps",
+        "-e",
+        "KOR_TRAVEL_MAP_POSTGRES_USER=derived_admin",
+        "-e",
+        "KTDM_MAP_BOOTSTRAP_PGPORT=15432",
+        "kor-travel-map-db-role-bootstrap",
+    )
+    tokens = " ".join(token for operation in harness.operations for token in operation)
+    assert "--env" not in bootstrap
+    assert _SHARED_ADMIN_PASSWORD not in tokens
+    assert "SHARED_PW" not in tokens
+    # 어떤 호출의 어떤 `-e NAME=VALUE`도 admin password를 싣지 않는다.
+    passed = [
+        operation[index + 1]
+        for operation in harness.operations
+        for index, token in enumerate(operation[:-1])
+        if token in {"-e", "--env"}
+    ]
+    assert passed and not any(_SHARED_ADMIN_PASSWORD in value for value in passed)
+
+
+@pytest.mark.parametrize(
+    ("state", "restart", "checked"),
+    (
+        ("present", False, True),
+        ("absent", False, True),
+        ("unbootstrapped", False, True),
+        # 리셋은 Dagster DB를 지운 뒤 init이 판정한다 — 지우기 전에는 그 role이 DB를 소유한다.
+        ("present", True, False),
+    ),
+)
+def test_the_dagster_metadata_preflight_runs_before_the_stop_unless_restarting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+    restart: bool,
+    checked: bool,
+) -> None:
+    harness = _forward_harness(
+        monkeypatch,
+        tmp_path,
+        previous=_committed_status(_candidate_generation(), map_revision="0" * 40),
+    )
+    harness.mocks.map_precheck.return_value = state
+
+    result = harness.service.rebuild_pinned_runtime(
+        **({"restart_reason": "rebuild"} if restart else {})
+    )
+
+    assert result["outcome"] == "deployed"
+    if checked:
+        harness.mocks.dagster_preflight.assert_called_once_with(harness.runtimes[1])
+    else:
+        harness.mocks.dagster_preflight.assert_not_called()
+
+
+def test_a_foreign_dagster_metadata_role_is_refused_before_the_runtime_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """공용 instance의 다른 tenant role을 metadata user로 박은 `.env`(C6c는 이름 규칙만 본다).
+
+    init(R2)의 거부가 Map bootstrap·alembic 뒤에야 나면 Map·PinVi가 내려간 채 남는다. 진짜 판정을
+    태운다(psql만 대역): Dagster DB는 없고, 그 이름의 role은 NOLOGIN이며 아무것도 소유하지 않는다 —
+    2026-09-29 공용 instance의 `kor_travel_transport_dagster_app` 모양이다.
+    """
+
+    candidate = _candidate_generation()
+    previous = _committed_status(candidate, map_revision="0" * 40)
+    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
+    harness.mocks.map_precheck.return_value = "absent"
+    runtimes = (
+        harness.runtimes[0],
+        replace(
+            harness.runtimes[1],
+            additional_owner_names=frozenset({"kor_travel_transport_dagster_app"}),
+        ),
+        harness.runtimes[2],
+    )
+    monkeypatch.setattr(
+        compose_service_module,
+        "database_runtimes_from_frozen_contract",
+        lambda **_kwargs: runtimes,
+    )
+    monkeypatch.setattr(database_runtime_module, "_read_database_owner", Mock(return_value=None))
+    reads = Mock(return_value=b"f|f|f|f|f|f|f|-1|t|0|0|0|0|0|0\n")
+    monkeypatch.setattr(database_runtime_module, "_run_checked", reads)
+    monkeypatch.setattr(
+        compose_service_module,
+        "require_map_dagster_metadata_initializable",
+        database_runtime_module.require_map_dagster_metadata_initializable,
+    )
+
+    with pytest.raises(DeploymentContractError, match="role is unsafe"):
+        harness.service.rebuild_pinned_runtime()
+
+    assert not any(operation[0] == "stop" for operation in harness.operations)
+    assert _mutating_operations(harness) == []
+    harness.mocks.ensure_map.assert_not_called()
+    harness.mocks.dagster_init.assert_not_called()
+    assert read_deploy_status(harness.status_path) == previous
+    (call,) = reads.call_args_list
+    assert call.kwargs["label"] == "Map Dagster metadata role preflight"

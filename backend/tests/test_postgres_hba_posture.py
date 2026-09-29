@@ -57,8 +57,8 @@ def _rule(
 
 def _probe(**overrides: Any) -> InstanceProbe:
     base: dict[str, Any] = {
-        "container_id": "kor-travel-map-postgresql",
-        "container_name": "kor-travel-map-postgres",
+        "container_id": "kor-travel-test-postgresql",
+        "container_name": "kor-travel-test-postgres",
         "external_project": None,
         "declared_postgres": True,
         "live_postgres": True,
@@ -262,7 +262,7 @@ def test_a_manager_violation_outranks_an_external_one() -> None:
         ]
     )
     assert verdict.state == "missing"
-    assert "kor-travel-map-postgresql" in verdict.detail
+    assert "kor-travel-test-postgresql" in verdict.detail
 
 
 # ── 선언과 라이브의 불일치 자체가 소견이다 ──────────────────────────────
@@ -307,7 +307,7 @@ def test_containers_that_are_neither_declared_nor_live_are_out_of_scope() -> Non
         ]
     )
     assert verdict.state == "ok", verdict.detail
-    assert verdict.evidence["checked"] == ["kor-travel-map-postgresql"]
+    assert verdict.evidence["checked"] == ["kor-travel-test-postgresql"]
 
 
 # ── 관측 경로: 포트·role 유도와 argv ────────────────────────────────────
@@ -352,10 +352,10 @@ def _install(
         posture_module,
         "MANAGED_CONTAINERS",
         {
-            "kor-travel-map-postgresql": {
-                "name": "kor-travel-map-postgres",
-                "role": "map-postgresql",
-                "compose_service": "kor-travel-map-postgres",
+            "kor-travel-test-postgresql": {
+                "name": "kor-travel-test-postgres",
+                "role": "test-postgresql",
+                "compose_service": "kor-travel-test-postgres",
             }
         },
     )
@@ -375,17 +375,17 @@ def test_the_port_comes_from_the_live_command(monkeypatch: pytest.MonkeyPatch) -
     fake = _install(
         monkeypatch,
         {
-            "Cmd": ["postgres", "-c", "listen_addresses=127.0.0.1", "-p", "12700"],
+            "Cmd": ["postgres", "-c", "listen_addresses=127.0.0.1", "-p", "15437"],
             "Entrypoint": ["docker-entrypoint.sh"],
-            "Env": ["POSTGRES_USER=kor_travel_map"],
+            "Env": ["POSTGRES_USER=it_admin"],
         },
     )
     probes = probe_instances()
     assert probes is not None
     assert probes[0].unknown_reason is None, probes[0].unknown_reason
     argv = fake.psql_argv
-    assert argv[argv.index("--port") + 1] == "12700"
-    assert argv[argv.index("--username") + 1] == "kor_travel_map"
+    assert argv[argv.index("--port") + 1] == "15437"
+    assert argv[argv.index("--username") + 1] == "it_admin"
     # 자격증명을 넘기지 않는다 — 컨테이너 안 소켓이 `local … trust`에 매칭된다.
     assert not any("PGPASSWORD" in token for token in argv)
     assert "--no-psqlrc" in argv, "~/.psqlrc가 출력을 오염시키면 파싱이 깨진다"

@@ -55,7 +55,7 @@ poetry run ktdctl status srv
 # Linux/WSL에서 Docker socket을 명시할 때만 설정
 DOCKER_HOST=unix:///var/run/docker.sock
 
-# Geo는 공용 PostgreSQL(:11000)의 app role로 접속한다(ADR-45). 전용 instance는 Map(:12700)뿐이다.
+# Geo는 공용 PostgreSQL(:11000)의 app role로 접속한다(ADR-45). Map도 같은 instance다(ADR-53) — 전용 instance는 없다.
 # ⚠️ 5432로 두지 마라 — 이 저장소의 compose는 5432를 듣지 않는다.
 KOR_TRAVEL_GEO_SHARED_APP_PASSWORD=change-me-geo-shared-app-password
 KOR_TRAVEL_GEO_DOCKER_PG_DSN=postgresql+psycopg://kor_travel_geo_app:change-me-geo-shared-app-password@127.0.0.1:11000/kor_travel_geo
@@ -71,8 +71,7 @@ KOR_TRAVEL_GEO_DAGSTER_PG_URL=postgresql+psycopg2://kor_travel_geo_app:change-me
 
 | 변수 | 쓰는 곳 |
 |---|---|
-| `KOR_TRAVEL_MAP_POSTGRES_PASSWORD` | `kor-travel-map-postgres` superuser (secret file) |
-| `KOR_TRAVEL_SHARED_POSTGRES_PASSWORD` | `kor-travel-shared-postgres` cluster 관리자 + 각 `kor-travel-shared-db-init-*` (secret file) |
+| `KOR_TRAVEL_SHARED_POSTGRES_PASSWORD` | `kor-travel-shared-postgres` cluster 관리자 + 각 `kor-travel-shared-db-init-*` + Map role bootstrap one-shot(ADR-53 S1) (secret file). Map bootstrap 규칙상 32–256자 URI-unreserved이고 Map service·metadata password와 달라야 한다 |
 | `KOR_TRAVEL_CONCIERGE_SHARED_APP_PASSWORD` · `KOR_TRAVEL_GEO_SHARED_APP_PASSWORD` · `PINVI_APP_DB_PASSWORD` · `KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD` · `KOR_TRAVEL_TRANSPORT_SHARED_APP_PASSWORD` | 공용 instance의 프로젝트별 app role (secret file) |
 | `KOR_TRAVEL_GEO_DOCKER_PG_DSN` | Geo API와 Geo Dagster의 `kor_travel_geo` 접속 DSN (명시적 설정 필수) |
 | `KOR_TRAVEL_GEO_DAGSTER_PG_URL` | Geo Dagster metadata DB 접속 URL (명시적 설정 필수) |
@@ -85,7 +84,7 @@ KOR_TRAVEL_GEO_DAGSTER_PG_URL=postgresql+psycopg2://kor_travel_geo_app:change-me
 
 ```bash
 # 배포 전 확인. 값은 찍지 않는다.
-for v in KOR_TRAVEL_MAP_POSTGRES_PASSWORD KOR_TRAVEL_SHARED_POSTGRES_PASSWORD KOR_TRAVEL_CONCIERGE_SHARED_APP_PASSWORD KOR_TRAVEL_GEO_SHARED_APP_PASSWORD PINVI_APP_DB_PASSWORD KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD KOR_TRAVEL_TRANSPORT_SHARED_APP_PASSWORD KOR_TRAVEL_GEO_DOCKER_PG_DSN KOR_TRAVEL_GEO_DAGSTER_PG_URL KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL; do
+for v in KOR_TRAVEL_SHARED_POSTGRES_PASSWORD KOR_TRAVEL_CONCIERGE_SHARED_APP_PASSWORD KOR_TRAVEL_GEO_SHARED_APP_PASSWORD PINVI_APP_DB_PASSWORD KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD KOR_TRAVEL_TRANSPORT_SHARED_APP_PASSWORD KOR_TRAVEL_GEO_DOCKER_PG_DSN KOR_TRAVEL_GEO_DAGSTER_PG_URL KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL; do
   printf '%-46s ' "$v"; grep -q "^$v=" .env && echo SET || echo 'MISSING  <- compose가 죽는다'
 done
 ```
@@ -93,7 +92,7 @@ done
 `.env`는 권한 **600**이다. 백업본을 만들면 그것도 600으로 맞춘다 — 규정이 원본 이름만
 지목하면 파생물이 통째로 빠져나간다(#179).
 
-RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이다. 관측 target은 Grafana `12104`, cAdvisor `12103`, Prometheus `12102`를 사용한다(ADR-48 — `storage` 대역 안, `docs/ports.md` 참고). `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `kor-travel-concierge`는 `12601`/`12602`/`12605`, `kor-travel-map`은 `12701`/`12702`/`12705`, PinVi는 `12801`/`12805`를 사용한다. PostgreSQL은 Map 전용 instance `12700`(ADR-37)과 나머지 프로젝트의 공용 instance `11000`(ADR-44~47) 둘이다. 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
+RustFS host 포트는 `storage` 대역을 사용한다. 기본값은 S3 API `12101`, console `12105`이다. 관측 target은 Grafana `12104`, cAdvisor `12103`, Prometheus `12102`를 사용한다(ADR-48 — `storage` 대역 안, `docs/ports.md` 참고). `kor-travel-geo`는 API `12501`, Web UI `12505`를 사용한다. `kor-travel-concierge`는 `12601`/`12602`/`12605`, `kor-travel-map`은 `12701`/`12702`/`12705`, PinVi는 `12801`/`12805`를 사용한다. PostgreSQL은 공용 instance `11000`(ADR-44~47·ADR-53) 하나다. 전체 포트 정책은 `docs/ports.md`를 기준으로 한다.
 
 ### 2.3 로컬 개발 서버 실행
 Poetry를 사용할 경우:
@@ -125,7 +124,7 @@ poetry run ktdctl srv --build
 > [!NOTE]
 > dev 기본 Docker 네트워크는 host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)다. 포트 NAT가 없으므로 각 컨테이너가 호스트 정규 포트에 직접 바인딩하고(컨테이너 내부 포트 = 호스트 포트), 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다. host networking을 지원하지 않는 Docker 엔진에서는 `KTDM_DOCKER_NETWORK_MODE=bridge`로 바꾼 뒤 서비스 간 hostname을 컨테이너명으로 복원해야 한다.
 
-공식 target은 `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `weather`, `all`이다. `srv`와 `main`은 `pinvi`, `default`는 `all`을 가리키는 별칭이다. `pinvi` target은 PinVi API/Dagster(`pinvi-dagster`, 12802)/Web을 포함한다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 실제 실행 범위는 `depends_on` DAG의 전이 폐포다. 예를 들어 `ktdctl conc --build`는 `geo` 없이 공용 PostgreSQL과 Concierge API/MCP/Scheduler/Web UI를 실행하고, `ktdctl map --build`는 공용·Map PostgreSQL과 Geo·Concierge·Map 앱 runtime을 실행한다.
+공식 target은 `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `weather`, `all`이다. `srv`와 `main`은 `pinvi`, `default`는 `all`을 가리키는 별칭이다. `pinvi` target은 PinVi API/Dagster(`pinvi-dagster`, 12802)/Web을 포함한다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 실제 실행 범위는 `depends_on` DAG의 전이 폐포다. 예를 들어 `ktdctl conc --build`는 `geo` 없이 공용 PostgreSQL과 Concierge API/MCP/Scheduler/Web UI를 실행하고, `ktdctl map --build`는 공용 PostgreSQL(Map DB도 거기 산다, ADR-53)과 Geo·Concierge·Map 앱 runtime을 실행한다.
 
 추가 target 이름으로 `rustfs`, `grafana`, `cadvisor`, `prometheus`, `kor-travel-geo`, `kor-travel-map`, `python-krtour-map`, `kor-travel-concierge`, `srv`, `pinvi`, `main`도 사용할 수 있다.
 
