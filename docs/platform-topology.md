@@ -286,6 +286,20 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
      `dagster_shared`에서 `SELECT count(*) FROM runs r WHERE r.create_timestamp > <전환 시각> AND NOT
      EXISTS (SELECT 1 FROM run_tags t WHERE t.run_id = r.run_id AND t.key = 'dagster/code_location'
      AND t.value IN (<상한 값들>))`이 0이다. 0이 아니면 되돌린다(상한 없는 run이 전역 12를 먹는다).
+   - **3단계 게이트(G3-a) — 첫 프로젝트 전환 전에 통과해야 한다.** role
+     `kor_travel_dagster_shared_app`의 `CONNECTION LIMIT 30`(db-init `kor-travel-shared-db-init-dagster`)을
+     전역 run 상한 12가 찬 상태에서 **다시 잰다**. dagster-postgres는 `NullPool`이라 run worker·
+     webserver·daemon 스레드(schedules·sensors `use_threads`)가 저마다 연결을 열었다 닫는다 — 30은
+     추정이지 실측이 아니고 모자랄 수 있다. 공용 webserver·daemon과 PinVi code-server를 세운 뒤
+     run 12개를 동시에 돌리며 `SELECT count(*) FROM pg_stat_activity WHERE usename =
+     'kor_travel_dagster_shared_app'`의 최대값을 본다. 최대값에 여유를 둔 값이 30보다 크면 db-init의
+     CREATE·ALTER 두 문장과 `test_dagster_shared_config.py`의 기대값을 함께 올리고, 공용 instance의
+     `max_connections`에서 다른 테넌트 몫이 남는지 확인한 뒤에 전환한다. 실측값과 결론을 journal에 남긴다.
+   - **3단계 게이트(G3-b) — 공용 `workspace.yaml`이 들어오는 PR에서 함께 넣는다.** 그 파일의
+     `grpc_server` 항목마다의 `location_name` 집합이 공용 `dagster.yaml`의 `dagster/code_location` 상한
+     값 집합과 **같다**는 테스트를 더한다(`test_dagster_shared_config.py`의
+     `test_location_caps_cover_exactly_the_compose_code_servers` 옆). 이름이 하나라도 어긋나면 그
+     location의 상한이 조용히 사라지므로, 테스트 없이 `workspace.yaml`을 머지하지 않는다.
 4. 프로젝트별 webserver/daemon을 내린다. **이 단계 전까지는 되돌리기가 싸다.**
 5. 애플리케이션 DB를 `11000`으로 이사한다 — 프로젝트별 롤·ACL·마이그레이션 원장·
    백업 경로가 전부 따라온다. **가장 비싸고 되돌리기 어려운 단계이므로 마지막이다.**

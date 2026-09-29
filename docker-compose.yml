@@ -519,14 +519,28 @@ services:
     # GRANT해 두었으면 그 권한이 조용히 따라오므로 여기서 멈춘다.
     # CONNECTION LIMIT 30: 공용 plane 전체(webserver·daemon·code-server 넷의 run worker, 전역 run
     # 상한 12)가 여는 연결의 상한이다. 한 테넌트의 연결 누수가 공용 instance의 `max_connections`를
-    # 먹어 다른 테넌트의 앱 DB 접속을 막지 못하게 한다. 3단계에서 실측으로 다시 본다.
+    # 먹어 다른 테넌트의 앱 DB 접속을 막지 못하게 한다. 3단계 전환 전에 실측으로 다시 잰다
+    # (platform-topology.md §7 3단계 게이트).
     # 비밀번호는 명령줄이 아니라 psql 변수로 넘긴다(transport와 같다). 이미 있던 DB의
     # owner가 다르면 멈춘다 — 소유권은 createdb 때만 걸리므로(onboarding §7.3) 재실행이
     # 고치지 못한다.
+    # 맨 앞의 준비 대기: `ensure dagster`는 이 one-shot을 `run --rm --no-deps`로 돌리므로 위
+    # `depends_on`(service_healthy)을 compose가 보지 않는다. 앞선 `up -d`는 공용 instance를
+    # 띄우기만 하고 healthy를 기다리지 않는다 — cold start면 첫 psql이 아직 안 뜬 서버를 친다.
+    # 그래서 여기서 `pg_isready`를 2초 간격 60번(약 120초)까지 기다리고, 끝내 안 뜨면 멈춘다.
     command:
     - sh
     - -ec
     - |
+      tries=0
+      until pg_isready -q; do
+        tries=$$((tries + 1))
+        if [ "$$tries" -ge 60 ]; then
+          echo "shared postgres at $$PGHOST:$$PGPORT is not accepting connections after ~120s; aborting dagster db-init" >&2
+          exit 1
+        fi
+        sleep 2
+      done
       PGPASSWORD="$$(cat /run/secrets/kor-travel-shared-postgres-password)"
       export PGPASSWORD
       APP_PASSWORD="$$(cat /run/secrets/kor-travel-dagster-shared-app-password)"

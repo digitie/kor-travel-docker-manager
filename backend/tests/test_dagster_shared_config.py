@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from kor_travel_docker_manager.services import standalone_backup
@@ -200,6 +203,78 @@ def test_db_init_follows_the_shared_postgres_pattern() -> None:
     assert "FROM pg_auth_members WHERE member =" in script
 
 
+def _run_db_init_with_stubs(tmp_path: Path, *, ready_after: int | None) -> tuple[int, str, str]:
+    """db-init 스크립트를 stub `pg_isready`·`sleep`·`psql`·`cat`으로 돌린다.
+
+    `ready_after`번째 `pg_isready`부터 성공한다(None이면 끝내 실패). 반환은 (종료 코드, stderr,
+    호출 기록)이다.
+    """
+
+    script = _compose()["services"][_DB_INIT]["command"][-1].replace("$$", "$")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    calls = tmp_path / "calls"
+    counter = tmp_path / "ready-count"
+    counter.write_text("0", encoding="utf-8")
+    threshold = ready_after if ready_after is not None else 10**9
+    stubs = {
+        "pg_isready": (
+            f'n=$(( $(cat "{counter}") + 1 )); echo "$n" > "{counter}"; '
+            f'echo pg_isready >> "{calls}"; [ "$n" -ge {threshold} ]'
+        ),
+        "sleep": f'echo sleep >> "{calls}"',
+        # 준비 대기를 지나면 첫 명령이 secret을 읽는다 — 거기서 멈춰 대기 뒤로 넘어갔음을 기록한다.
+        "cat": f'case "$1" in /run/secrets/*) echo "cat $1" >> "{calls}"; exit 7;; esac; exec /bin/cat "$@"',
+        "psql": f'echo psql >> "{calls}"; exit 1',
+    }
+    for name, body in stubs.items():
+        stub = bin_dir / name
+        stub.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        stub.chmod(0o755)
+    environment = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "PGHOST": "127.0.0.1",
+        "PGPORT": "11000",
+    }
+    completed = subprocess.run(
+        ["sh", "-ec", script],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    recorded = calls.read_text(encoding="utf-8") if calls.exists() else ""
+    return completed.returncode, completed.stderr, recorded
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh가 필요하다")
+def test_db_init_waits_for_the_instance_and_gives_up_closed(tmp_path: Path) -> None:
+    """`run --no-deps`는 service_healthy를 보지 않는다 — cold start에서 db-init이 스스로 기다린다.
+
+    끝내 안 뜨면 유한 횟수 뒤 명확한 메시지로 실패하고 psql을 한 번도 치지 않는다.
+    """
+
+    code, stderr, calls = _run_db_init_with_stubs(tmp_path, ready_after=None)
+    assert code != 0
+    assert "not accepting connections" in stderr
+    lines = calls.split()
+    assert "psql" not in lines and not any(line.startswith("cat") for line in calls.splitlines())
+    # 유한하고, 약 60~120초 대기(2초 간격)다.
+    probes = lines.count("pg_isready")
+    assert 30 <= probes <= 60, probes
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh가 필요하다")
+def test_db_init_proceeds_once_the_instance_accepts(tmp_path: Path) -> None:
+    code, _, calls = _run_db_init_with_stubs(tmp_path, ready_after=3)
+    recorded = calls.splitlines()
+    # 세 번째 probe에서 떠서 대기를 빠져나가고, 다음 명령(secret 읽기)에 닿는다.
+    assert recorded[:5] == ["pg_isready", "sleep", "pg_isready", "sleep", "pg_isready"]
+    assert recorded[5].startswith("cat /run/secrets/")
+    assert code == 7
+
+
 def test_migrate_waits_for_the_db_init_and_runs_the_host_image() -> None:
     services = _compose()["services"]
     migrate = services[_MIGRATE]
@@ -269,15 +344,50 @@ def test_the_dagster_target_gates_ensure_on_both_one_shots() -> None:
 
 
 def _dockerfile_copy_sources(dockerfile: str) -> set[str]:
+    """build context에서 이미지로 들어가는 source(COPY·ADD, 대소문자 무관, `\\` 줄 이음 포함).
+
+    못 읽는 형식(JSON 배열, heredoc, `--from` 다단계, escape 지시자)을 만나면 조용히 건너뛰지
+    않고 멈춘다 — 건너뛰면 해시에서 빠진 입력이 tag를 그대로 둔다.
+    """
+
+    assert not re.search(r"^#\s*escape\s*=", dockerfile, re.MULTILINE | re.IGNORECASE), (
+        "escape 지시자는 줄 이음 문자를 바꾼다 — 이 추출이 읽지 못한다"
+    )
+    logical = re.sub(r"\\[ \t]*\r?\n", " ", dockerfile)
     sources: set[str] = set()
-    for line in dockerfile.splitlines():
+    for line in logical.splitlines():
         tokens = line.split()
-        if not tokens or tokens[0] != "COPY":
+        if not tokens or tokens[0].upper() not in {"COPY", "ADD"}:
             continue
+        unreadable = [
+            token
+            for token in tokens[1:]
+            if token.startswith(("[", "<<")) or token.lower().startswith("--from")
+        ]
+        assert not unreadable, f"이 추출이 읽지 못하는 {tokens[0]} 형식이다: {line!r}"
         operands = [token for token in tokens[1:] if not token.startswith("--")]
         assert len(operands) >= 2, line
         sources.update(operands[:-1])
     return sources
+
+
+def test_the_copy_source_extraction_reads_add_lowercase_and_continuations() -> None:
+    dockerfile = (
+        "FROM x@sha256:" + "0" * 64 + "\n"
+        "copy a.txt /a\n"
+        "ADD --chown=1:1 b.txt \\\n"
+        "    c.txt /opt/\n"
+        "RUN echo COPY not-a-source\n"
+    )
+    assert _dockerfile_copy_sources(dockerfile) == {"a.txt", "b.txt", "c.txt"}
+    for unreadable in (
+        'COPY ["a b.txt", "/a"]\n',
+        "COPY <<EOF /a\nx\nEOF\n",
+        "COPY --from=build /out /out\n",
+        "# escape=`\nCOPY a /a\n",
+    ):
+        with pytest.raises(AssertionError):
+            _dockerfile_copy_sources(unreadable)
 
 
 def test_the_host_image_tag_is_the_content_hash_of_what_goes_into_it() -> None:
