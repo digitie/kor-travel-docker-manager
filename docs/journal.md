@@ -8393,3 +8393,9 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
 - **재생성 없음**(n150, 설치본 `3b282a7` vs 이 브랜치, 같은 live `.env`, `config --hash '*'`): 기존 39개 전부
   같고 새 것은 둘(`kor-travel-shared-db-init-dagster`·`kor-travel-dagster-storage-migrate`),
   `kor-travel-shared-postgres` `3aaa6fe2…` = 실행 중 컨테이너의 `config-hash` 라벨.
+- **테스트**(n150, `02099d0`): 빨강 확인 14/14 빨강(버리는 사본에 변이 하나씩) — 단위 11(상한 key 되돌림, one-shot을
+  `up`으로, migrate step 삭제, preflight를 `config`가 아닌 명령으로, preflight 원문 에코, 기본 ACL 빠진 SQL,
+  warn→missing, 이미지 tag `latest-main`, ALTER 속성 삭제, nameable 삭제, 소속 검사 삭제)과 gated 3(옛 key로
+  11번째 run이 나간다, 기본 ACL 빠진 SQL이 `acl_probe`를 놓친다, CREATE 속성 삭제). `/tmp/b3-test.sh`: ruff 깨끗,
+  **2389 passed, 2 skipped**. gated 전체(`KTDM_REQUIRE_DOCKER_INTEGRATION=1`, 새 clone): **2389 passed, 2 skipped**,
+  잔재 0.
