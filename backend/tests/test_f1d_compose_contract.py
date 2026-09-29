@@ -1526,8 +1526,6 @@ def test_required_set_no_longer_contains_a_map_postgres_service() -> None:
         assert retired not in required
         assert retired not in services
     assert "kor-travel-map-postgres-password" not in source["secrets"]
-    assert not hasattr(c6c_deployment_module, "_MAP_POSTGRES_SERVICE")
-    assert not hasattr(c6c_deployment_module, "validate_map_postgres_runtime_secret_isolation")
 
 
 def test_no_compose_reference_to_kor_travel_map_postgres_password() -> None:
@@ -2835,26 +2833,27 @@ def test_map_bootstrap_one_shot_rejects_a_secret_of_another_instance() -> None:
     }
     service = {
         "profiles": ["bootstrap"],
-        "image": "postgres:16-alpine",
+        "image": "postgres:16-alpine@sha256:" + "0" * 64,
         "restart": "no",
         "entrypoint": ["/bin/sh", "-ec"],
         "command": ["\n".join(lines) + "\n"],
         "secrets": [{"source": "b-admin", "target": "/run/secrets/b-admin"}],
-        "volumes": [
-            {
-                "type": "bind",
-                "source": f"/src/map/{relative}",
-                "target": target,
-                "read_only": True,
-            }
-            for relative, target in c6c_deployment_module._MAP_DB_ROLE_BOOTSTRAP_MOUNTS
-        ],
         "environment": {},
     }
     document["services"]["kor-travel-map-db-role-bootstrap"] = service
     environment = {
-        "KOR_TRAVEL_MAP_PG_DSN": "postgresql+asyncpg://ktm_feature_service:s@127.0.0.1:15101/m"
+        "KOR_TRAVEL_MAP_PG_DSN": "postgresql+asyncpg://ktm_feature_service:s@127.0.0.1:15101/m",
+        "KOR_TRAVEL_MAP_REPO_DIR": "/src/map",
     }
+    service["volumes"] = [
+        {
+            "type": "bind",
+            "source": c6c_deployment_module._expand_env_path(source, environment),
+            "target": target,
+            "read_only": True,
+        }
+        for source, target in c6c_deployment_module._map_db_role_bootstrap_binds()
+    ]
 
     with pytest.raises(ComposeCandidateContractError, match="admin secret of the instance on the Map DSN port"):
         c6c_deployment_module._validate_map_db_role_bootstrap_service(
@@ -2865,9 +2864,122 @@ def test_map_bootstrap_one_shot_rejects_a_secret_of_another_instance() -> None:
         "kor-travel-map-db-role-bootstrap",
         service,
         document=document,
-        environment={"KOR_TRAVEL_MAP_PG_DSN": environment["KOR_TRAVEL_MAP_PG_DSN"].replace("15101", "15102")},
+        environment={
+            **environment,
+            "KOR_TRAVEL_MAP_PG_DSN": environment["KOR_TRAVEL_MAP_PG_DSN"].replace("15101", "15102"),
+        },
         resolved=True,
     )
+
+
+def _with_bootstrap_binds(
+    monkeypatch: pytest.MonkeyPatch, extra: list[tuple[str, str, bool]]
+) -> None:
+    """신뢰된 `compose_binds`에 이 one-shot의 항목을 더한 allowlist로 갈아 끼운다."""
+
+    allowlist = dict(registry_module.load_compose_bind_allowlist())
+    for source, target, read_only in extra:
+        allowlist[("kor-travel-map-db-role-bootstrap", target, read_only)] = source
+    monkeypatch.setattr(
+        registry_module, "load_compose_bind_allowlist", lambda: MappingProxyType(allowlist)
+    )
+
+
+_EXTRA_BOOTSTRAP_BIND = (
+    "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/scripts/extra-helper.sh",
+    "/usr/local/lib/kor-travel-map/extra-helper.sh",
+)
+
+
+def test_map_bootstrap_one_shot_mounts_follow_compose_binds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mount 계약은 `compose_binds`에서 온다 — 세 번째 `:ro` 항목은 backend 수정 없이 흐른다(GM-17).
+
+    compose가 그 bind를 싣지 않으면(개수·원소가 다르면) 거부하고, 싣으면 통과한다. raw는 원문,
+    resolved는 같은 env로 보간한 source다.
+    """
+
+    environment, documents = _bootstrap_documents(tmp_path)
+    source, target = _EXTRA_BOOTSTRAP_BIND
+    _with_bootstrap_binds(monkeypatch, [(source, target, True)])
+    for document, resolved in documents:
+        # compose가 새 bind를 아직 싣지 않았다 — 두 진실이 갈라진 자리다.
+        with pytest.raises(ComposeCandidateContractError, match="mounts are invalid"):
+            _check_bootstrap(document, environment, resolved=resolved)
+        shaped = deepcopy(document)
+        volumes = _bootstrap_service(shaped)["volumes"]
+        if resolved:
+            volumes.append(
+                {
+                    "type": "bind",
+                    "source": c6c_deployment_module._expand_env_path(source, environment),
+                    "target": target,
+                    "read_only": True,
+                }
+            )
+        else:
+            volumes.append(f"{source}:{target}:ro")
+        _check_bootstrap(shaped, environment, resolved=resolved)
+
+
+def test_map_bootstrap_one_shot_binds_must_be_read_only_in_compose_binds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cluster admin secret을 드는 one-shot이다 — 그 서비스의 `compose_binds` 항목이 쓰기 가능이면 거부."""
+
+    environment, documents = _bootstrap_documents(tmp_path)
+    source, target = _EXTRA_BOOTSTRAP_BIND
+    _with_bootstrap_binds(monkeypatch, [(source, target, False)])
+    for document, resolved in documents:
+        with pytest.raises(ComposeCandidateContractError, match="declared read-only in compose_binds"):
+            _check_bootstrap(document, environment, resolved=resolved)
+
+
+@pytest.mark.parametrize(
+    ("resolved_source", "environment", "matches"),
+    [
+        # 기본값(상대 경로)은 compose가 project 디렉터리에 붙여 푼다 — 꼬리가 같아야 한다.
+        ("/opt/kor-travel-map/docker/postgres-role-bootstrap.sh", {}, True),
+        ("/opt/other-repo/docker/postgres-role-bootstrap.sh", {}, False),
+        ("kor-travel-map/docker/postgres-role-bootstrap.sh", {}, False),
+        # env가 절대 경로를 주면 정확히 그 경로여야 한다.
+        ("/srv/map/docker/postgres-role-bootstrap.sh", {"KOR_TRAVEL_MAP_REPO_DIR": "/srv/map"}, True),
+        ("/srv/map2/docker/postgres-role-bootstrap.sh", {"KOR_TRAVEL_MAP_REPO_DIR": "/srv/map"}, False),
+        (None, {}, False),
+    ],
+)
+def test_resolved_bootstrap_bind_source_is_the_interpolated_raw_source(
+    resolved_source: object, environment: dict[str, str], matches: bool
+) -> None:
+    raw = "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/docker/postgres-role-bootstrap.sh"
+
+    assert (
+        c6c_deployment_module._resolved_bind_source_matches(resolved_source, raw, environment)
+        is matches
+    )
+
+
+def test_map_bootstrap_exec_path_is_the_script_binds_container_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`exec` 줄의 경로는 리터럴이 아니라 그 스크립트를 싣는 bind의 컨테이너 경로다."""
+
+    allowlist = {
+        key: value
+        for key, value in registry_module.load_compose_bind_allowlist().items()
+        if key[0] != "kor-travel-map-db-role-bootstrap"
+    }
+    allowlist[("kor-travel-map-db-role-bootstrap", "/opt/map/bootstrap", True)] = (
+        "/src/map/docker/postgres-role-bootstrap.sh"
+    )
+    monkeypatch.setattr(
+        registry_module, "load_compose_bind_allowlist", lambda: MappingProxyType(allowlist)
+    )
+
+    lines = c6c_deployment_module.map_db_role_bootstrap_script_lines("/run/secrets/x")
+
+    assert lines[-1] == "exec /bin/sh /opt/map/bootstrap"
 
 
 @pytest.mark.parametrize(
@@ -2909,6 +3021,41 @@ def test_map_bootstrap_one_shot_rejects_a_changed_surface(
         _bootstrap_service(shaped)[key] = value
         with pytest.raises(ComposeCandidateContractError, match=match):
             _check_bootstrap(shaped, environment, resolved=resolved)
+
+
+@pytest.mark.parametrize(
+    "image",
+    ["postgres:16-alpine", "postgres@sha256:" + "0" * 63, "postgres:16-alpine@sha256:" + "A" * 64],
+)
+def test_map_bootstrap_one_shot_image_must_be_digest_pinned(tmp_path: Path, image: str) -> None:
+    """admin secret을 받는 `/bin/sh`·`psql`이다 — 태그만 두면 `docker pull` 한 번이 그것을 바꾼다."""
+
+    environment, documents = _bootstrap_documents(tmp_path)
+    for document, resolved in documents:
+        # 전제: 정본은 digest로 고정돼 있고 통과한다.
+        assert "@sha256:" in _bootstrap_service(document)["image"]
+        shaped = deepcopy(document)
+        _bootstrap_service(shaped)["image"] = image
+        with pytest.raises(ComposeCandidateContractError, match="must be pinned by digest"):
+            _check_bootstrap(shaped, environment, resolved=resolved)
+
+
+@pytest.mark.parametrize("name", ["PGOPTIONS", "PSQLRC", "KOR_TRAVEL_MAP_EXTRA"])
+def test_map_bootstrap_one_shot_env_keys_are_the_contract_rows(tmp_path: Path, name: str) -> None:
+    """env 키는 계약표의 이 서비스 행과 리터럴 스위치 둘뿐이다 — 하나가 superuser 세션을 바꿀 수 있다."""
+
+    environment, documents = _bootstrap_documents(tmp_path)
+    for document, resolved in documents:
+        shaped = deepcopy(document)
+        _bootstrap_service(shaped)["environment"][name] = "-c log_statement=all"
+        with pytest.raises(
+            ComposeCandidateContractError, match=f"environment declares keys outside its contract: {name}"
+        ):
+            _check_bootstrap(shaped, environment, resolved=resolved)
+        # 대조군: 계약표 행 하나를 빼는 것은 이 검사의 일이 아니다(값 계약이 본다) — 키 집합만 본다.
+        trimmed = deepcopy(document)
+        del _bootstrap_service(trimmed)["environment"]["KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_PHASE"]
+        _check_bootstrap(trimmed, environment, resolved=resolved)
 
 
 def test_the_entry_points_run_the_bootstrap_one_shot_contract(tmp_path: Path) -> None:

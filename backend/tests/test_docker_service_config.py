@@ -249,7 +249,8 @@ def _compose_with_canonical_c6c_services(
             # 정본과 같은 S1 모양(ADR-53): instance admin secret을 파일로 받아 DSN을 셸 안에서 만든다.
             # C6c가 entrypoint·네 줄·secret·두 mount·profile·restart를 고정한다.
             "profiles": ["bootstrap"],
-            "image": "fixture.invalid/postgres:test",
+            # admin secret을 받는 이미지는 digest로 고정한다(C6c가 요구한다).
+            "image": "fixture.invalid/postgres:test@sha256:" + "0" * 64,
             "restart": "no",
             "network_mode": "host",
             "environment": {

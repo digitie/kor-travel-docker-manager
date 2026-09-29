@@ -7,6 +7,7 @@ import hmac
 import http.cookiejar
 import json
 import os
+import posixpath
 import re
 import shlex
 import stat
@@ -797,7 +798,7 @@ def _validate_map_database_dsn_identities(
     metadata_user = environment.get("KOR_TRAVEL_MAP_DAGSTER_METADATA_USER", "")
     if (
         not metadata_user
-        or metadata_user.startswith(_MAP_PRINCIPAL_PREFIX)
+        or metadata_user.startswith(MAP_PRINCIPAL_PREFIX)
         or not application_database
         or not dagster_database
         or application_database == dagster_database
@@ -849,6 +850,7 @@ def _validate_map_database_dsn_instance(
     environment: Mapping[str, str],
     *,
     resolved: Mapping[str, Any],
+    identity: _MapDatabaseDsnIdentity | None = None,
 ) -> None:
     """resolved 문서에서 Map DSN 포트가 가리키는 instance를 유도하고 그 admin을 비춘다(ADR-53).
 
@@ -857,17 +859,19 @@ def _validate_map_database_dsn_instance(
     말하면(2개) 거부한다. login과 metadata user는 그 instance의 admin(`POSTGRES_USER`)이 아니다.
 
     서버 형태 술어(`_assert_postgres_cluster_runtime_is_canonical`) **뒤에** 부른다 — 서버가
-    무엇인지 먼저 확정한 뒤에 포트로 고른다.
+    무엇인지 먼저 확정한 뒤에 포트로 고른다. 호출자가 같은 env로 이미 모양을 검사했으면 그
+    ``identity``를 넘긴다(한 번만 판정한다).
     """
 
-    identity = _validate_map_database_dsn_identities(environment)
+    if identity is None:
+        identity = _validate_map_database_dsn_identities(environment)
     instances = postgres_server_services_on_port(resolved, identity.port)
     if len(instances) != 1:
         raise ComposeCandidateContractError(
             "Map database DSN port must be the -p of exactly one PostgreSQL server "
             f"service (found {len(instances)})"
         )
-    admin = _postgres_server_admin_name(resolved, instances[0])
+    admin = postgres_server_admin_name(resolved, instances[0])
     if admin is None or identity.metadata_user == admin:
         raise ComposeCandidateContractError("Map database DSN identity is invalid")
     if identity.login == admin:
@@ -875,8 +879,31 @@ def _validate_map_database_dsn_instance(
 
 
 #: Map이 cluster 전역에 두는 role 가족의 접두(Map `docker/postgres-role-bootstrap.sh`의
-#: reserved inventory). Dagster metadata login은 그 가족이 아니다.
-_MAP_PRINCIPAL_PREFIX: Final = "ktm_"
+#: reserved inventory). Dagster metadata login은 그 가족이 아니다. database_runtime의 S1 판정도
+#: 이것에서 LIKE 패턴을 만든다.
+MAP_PRINCIPAL_PREFIX: Final = "ktm_"
+
+#: Manager가 다루는 PostgreSQL role·database 이름의 모양. instance admin 이름을 읽는 C6c와
+#: database_runtime이 이것 하나를 쓴다 — 두 술어가 다르면 C6c가 받은 이름을 재구축이 나중에
+#: 거부한다.
+POSTGRES_IDENTIFIER: Final = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+
+
+def loopback_dsn_authority(dsn: object) -> tuple[str, int] | None:
+    """DSN의 `(host, port)` — host가 `127.0.0.1`이고 포트가 1..65535일 때만. 아니면 ``None``.
+
+    모든 instance는 loopback만 듣는다. DSN authority를 읽는 자리(C6c의 Map DSN 검사와 role
+    bootstrap one-shot, database_runtime의 instance 유도)가 이것 하나를 쓴다.
+    """
+
+    try:
+        parsed = urlsplit(dsn if isinstance(dsn, str) else "")
+        host, port = parsed.hostname, parsed.port
+    except ValueError:
+        return None
+    if host != "127.0.0.1" or port is None or not 1 <= port <= 65535:
+        return None
+    return host, port
 
 
 def _parse_map_database_dsn(
@@ -888,15 +915,12 @@ def _parse_map_database_dsn(
 ) -> SplitResult:
     """Map DSN 하나의 scheme·host·port·path를 확인하고 파싱 결과를 낸다(값은 싣지 않는다)."""
 
-    try:
-        parsed = urlsplit(environment.get(name, ""))
-        port = parsed.port
-    except ValueError as exc:
-        raise ComposeCandidateContractError("Map database DSN identity is invalid") from exc
+    value = environment.get(name, "")
+    if loopback_dsn_authority(value) is None:
+        raise ComposeCandidateContractError("Map database DSN identity is invalid")
+    parsed = urlsplit(value)
     if (
         parsed.scheme != scheme
-        or parsed.hostname != "127.0.0.1"
-        or port is None
         or parsed.path != f"/{database}"
         or parsed.query
         or parsed.fragment
@@ -905,18 +929,21 @@ def _parse_map_database_dsn(
     return parsed
 
 
-def _postgres_server_admin_name(
+def postgres_server_admin_name(
     document: Mapping[str, Any],
     service_name: str,
 ) -> str | None:
-    """PostgreSQL 서버 서비스의 `POSTGRES_USER`(instance admin). 없거나 모양이 틀리면 ``None``."""
+    """PostgreSQL 서버 서비스의 `POSTGRES_USER`(instance admin). 없거나 모양이 틀리면 ``None``.
+
+    C6c의 Map DSN 검사와 database_runtime의 instance 유도가 이것 하나로 admin을 읽는다.
+    """
 
     services = document.get("services")
     service = services.get(service_name) if isinstance(services, Mapping) else None
     if not isinstance(service, Mapping):
         return None
     admin = dict(_service_environment_items(service)).get("POSTGRES_USER")
-    if not isinstance(admin, str) or re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", admin) is None:
+    if not isinstance(admin, str) or POSTGRES_IDENTIFIER.fullmatch(admin) is None:
         return None
     return admin
 
@@ -1613,7 +1640,7 @@ def _secret_reference_mount(reference: object) -> tuple[str, str] | None:
     return source, target
 
 
-def service_secret_sources(service: Mapping[str, Any]) -> frozenset[str]:
+def _service_secret_sources(service: Mapping[str, Any]) -> frozenset[str]:
     """서비스가 마운트하는 secret의 source 이름들. 읽을 수 없는 항목은 거부한다."""
 
     references = service.get("secrets")
@@ -1639,7 +1666,6 @@ class PostgresAdminSecret:
 
     source: str
     environment: str
-    target: str
 
 
 def postgres_admin_secret(
@@ -1686,11 +1712,7 @@ def postgres_admin_secret(
             "PostgreSQL instance admin secret is not derivable: "
             + _describe_candidate_service_key(service_name)
         )
-    return PostgresAdminSecret(
-        source=mounts[0][0],
-        environment=environment_name,
-        target=mounts[0][1],
-    )
+    return PostgresAdminSecret(source=mounts[0][0], environment=environment_name)
 
 
 #: 클러스터 서비스의 `healthcheck` payload에 나타나는 **프로그램 자리**. 정본 넷을
@@ -2131,7 +2153,7 @@ def _service_holds_admin_secret(
     나타난다. 두 모양을 다 본다 — 한쪽만 보면 다른 쪽 경로가 뚫린다.
     """
 
-    if secret.source in service_secret_sources(service):
+    if secret.source in _service_secret_sources(service):
         return True
     for name, value in _service_environment_items(service):
         if value is None:
@@ -2229,14 +2251,71 @@ _MAP_DB_ROLE_BOOTSTRAP_ALLOWED_KEYS: Final = frozenset(
         "volumes",
     }
 )
-#: Map 저장소 안의 두 스크립트와 그 컨테이너 안 경로. 둘 다 `:ro` bind다.
-_MAP_DB_ROLE_BOOTSTRAP_MOUNTS: Final = (
-    ("docker/postgres-role-bootstrap.sh", "/usr/local/bin/postgres-role-bootstrap"),
-    (
-        "scripts/database-credential-preflight.sh",
-        "/usr/local/lib/kor-travel-map/database-credential-preflight.sh",
-    ),
+#: 값이 compose 리터럴인 두 스위치. 나머지 env 키는 계약표(`_MAP_DATABASE_CANONICAL_ENV_VALUES`)의
+#: 이 서비스 행에서 온다.
+_MAP_DB_ROLE_BOOTSTRAP_LITERAL_ENV_NAMES: Final = frozenset(
+    {"KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_ENABLED", "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_PHASE"}
 )
+#: `name[:tag]@sha256:<64 hex>` — digest가 이미지를 정한다.
+_DIGEST_PINNED_IMAGE: Final = re.compile(r"[^\s@]+@sha256:[0-9a-f]{64}")
+#: one-shot이 `exec`하는 Map 스크립트의 파일 이름. 컨테이너 안 경로는 이 이름으로 끝나는
+#: source의 bind에서 읽는다(`compose_binds`) — 경로 리터럴은 두지 않는다.
+_MAP_DB_ROLE_BOOTSTRAP_SCRIPT: Final = "postgres-role-bootstrap.sh"
+
+
+def _map_db_role_bootstrap_binds() -> tuple[tuple[str, str], ...]:
+    """role bootstrap one-shot의 bind `(raw source, 컨테이너 경로)`, 선언 순서대로.
+
+    정본은 신뢰된 `config/docker-targets.yml`의 `compose_binds` 절이다(GM-17) — 새 bind나 Map
+    저장소 기본 경로가 바뀌어도 backend 수정·재설치 없이 그 절과 compose만 바꾼다. 이 one-shot은
+    cluster admin secret을 들므로 그 절의 항목은 **모두 읽기 전용**이어야 한다.
+    """
+
+    binds = [
+        (source, target, read_only)
+        for (service, target, read_only), source in (
+            registry_module.load_compose_bind_allowlist().items()
+        )
+        if service == _MAP_DB_ROLE_BOOTSTRAP_SERVICE
+    ]
+    if not binds or any(read_only is not True for _source, _target, read_only in binds):
+        raise ComposeCandidateContractError(
+            "Map role bootstrap binds must be declared read-only in compose_binds"
+        )
+    return tuple((source, target) for source, target, _read_only in binds)
+
+
+def _map_db_role_bootstrap_script_path() -> str:
+    targets = [
+        target
+        for source, target in _map_db_role_bootstrap_binds()
+        if PurePosixPath(source).name == _MAP_DB_ROLE_BOOTSTRAP_SCRIPT
+    ]
+    if len(targets) != 1:
+        raise ComposeCandidateContractError(
+            "Map role bootstrap script bind is not derivable from compose_binds"
+        )
+    return targets[0]
+
+
+def _resolved_bind_source_matches(
+    resolved_source: object, raw_source: str, environment: Mapping[str, str]
+) -> bool:
+    """resolved 문서의 bind source가 raw source를 같은 env로 보간한 경로인가.
+
+    보간 결과가 절대 경로면 그대로 같아야 한다. 상대 경로(기본값 `../kor-travel-map`)면 compose가
+    project 디렉터리에 붙여 풀므로 그 꼬리가 같아야 한다 — 정확한 경로는 모든 bind에 걸리는 볼륨
+    그래프 검사(`compose_binds` 대조)가 본다.
+    """
+
+    if not isinstance(resolved_source, str) or not resolved_source:
+        return False
+    expanded = PurePosixPath(posixpath.normpath(_expand_env_path(raw_source, environment)))
+    actual = PurePosixPath(posixpath.normpath(resolved_source))
+    if expanded.is_absolute():
+        return actual == expanded
+    tail = tuple(part for part in expanded.parts if part not in {".", ".."})
+    return actual.is_absolute() and bool(tail) and actual.parts[-len(tail) :] == tail
 
 
 def map_db_role_bootstrap_script_lines(secret_target: str) -> tuple[str, ...]:
@@ -2244,7 +2323,8 @@ def map_db_role_bootstrap_script_lines(secret_target: str) -> tuple[str, ...]:
 
     compose 문서의 모양 그대로다 — `$$`는 compose escape이고, `docker compose config`도 `$$`로
     낸다(n150 Compose v5.2.0 실측). 그래서 raw와 resolved가 같은 네 줄이다. DSN은 컨테이너 셸이
-    실행 시점에 만든다 — password는 Manager argv에도 compose env에도 없다.
+    실행 시점에 만든다 — password는 Manager argv에도 compose env에도 없다. `exec`하는 경로는
+    `compose_binds`에서 그 스크립트를 싣는 bind의 컨테이너 경로다.
     """
 
     return (
@@ -2253,7 +2333,7 @@ def map_db_role_bootstrap_script_lines(secret_target: str) -> tuple[str, ...]:
         "$${KOR_TRAVEL_MAP_POSTGRES_USER}:$${KOR_TRAVEL_MAP_POSTGRES_PASSWORD}"
         "@127.0.0.1:$${KTDM_MAP_BOOTSTRAP_PGPORT}/$${KOR_TRAVEL_MAP_POSTGRES_DB}\"",
         "export KOR_TRAVEL_MAP_POSTGRES_PASSWORD KOR_TRAVEL_MAP_BOOTSTRAP_PG_DSN",
-        f"exec /bin/sh {_MAP_DB_ROLE_BOOTSTRAP_MOUNTS[0][1]}",
+        f"exec /bin/sh {_map_db_role_bootstrap_script_path()}",
     )
 
 
@@ -2271,8 +2351,9 @@ def _validate_map_db_role_bootstrap_service(
     superuser다. 그래서 무엇을 실행하는지가 전부 계약이다: entrypoint, 셸 네 줄(그 안의 `cat`
     경로는 이 one-shot 자신의 secret 경로), secret 정확히 하나(그 source는 Map DSN 포트의
     instance에서 유도한 admin secret — raw 경로는 `-p`를 보간할 수 없으므로 어떤 서버의 admin
-    secret이든), Map 스크립트 두 개의 `:ro` mount, profile·restart, 허용 목록 밖의 키 없음,
-    실행 시점 전용 env 네 이름이 compose env에 없음.
+    secret이든), `compose_binds`의 그 서비스 항목과 원소 단위로 같은 `:ro` mount, profile·restart,
+    허용 목록 밖의 키 없음, digest로 고정한 이미지, 실행 시점 전용 env 네 이름이 compose env에
+    없음, 계약표 밖의 env 키 없음.
     """
 
     if service_name != _MAP_DB_ROLE_BOOTSTRAP_SERVICE:
@@ -2298,9 +2379,11 @@ def _validate_map_db_role_bootstrap_service(
         )
     source, target = mount
     if resolved:
-        port = urlsplit(environment.get("KOR_TRAVEL_MAP_PG_DSN", "")).port
+        authority = loopback_dsn_authority(environment.get("KOR_TRAVEL_MAP_PG_DSN"))
         instances = (
-            postgres_server_services_on_port(document, port) if port is not None else ()
+            postgres_server_services_on_port(document, authority[1])
+            if authority is not None
+            else ()
         )
         if len(instances) != 1:
             raise ComposeCandidateContractError(
@@ -2326,35 +2409,53 @@ def _validate_map_db_role_bootstrap_service(
         != map_db_role_bootstrap_script_lines(target)
     ):
         raise ComposeCandidateContractError("Map role bootstrap service command is invalid")
+    # mount는 `compose_binds`의 그 서비스 항목과 **원소 단위로** 같아야 한다(순서·개수 포함,
+    # 전부 읽기 전용). raw는 원문 그대로, resolved는 보간한 source와 `type: bind`로 본다.
+    binds = _map_db_role_bootstrap_binds()
     volumes = service.get("volumes")
-    if not isinstance(volumes, list) or len(volumes) != len(_MAP_DB_ROLE_BOOTSTRAP_MOUNTS):
+    if not isinstance(volumes, list) or len(volumes) != len(binds):
         raise ComposeCandidateContractError("Map role bootstrap service mounts are invalid")
-    for volume, (relative, container_path) in zip(
-        volumes, _MAP_DB_ROLE_BOOTSTRAP_MOUNTS, strict=True
-    ):
+    for volume, (bind_source, container_path) in zip(volumes, binds, strict=True):
         if resolved:
             valid = (
                 isinstance(volume, Mapping)
                 and volume.get("type") == "bind"
                 and volume.get("read_only") is True
                 and volume.get("target") == container_path
-                and isinstance(volume.get("source"), str)
-                and str(volume.get("source")).endswith(f"/{relative}")
+                and _resolved_bind_source_matches(volume.get("source"), bind_source, environment)
             )
         else:
-            valid = volume == (
-                f"${{KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}}/{relative}:{container_path}:ro"
-            )
+            valid = volume == f"{bind_source}:{container_path}:ro"
         if not valid:
             raise ComposeCandidateContractError("Map role bootstrap service mounts are invalid")
-    runtime_names = sorted(
-        {name for name, _value in _service_environment_items(service)}
-        & _MAP_DB_ROLE_BOOTSTRAP_RUNTIME_ENV_NAMES
-    )
+    # 그 admin secret을 받는 `/bin/sh`·`psql`이 무엇인지도 계약이다 — 태그만 두면 `docker pull`
+    # 한 번이 cluster admin 자격증명을 보는 바이너리를 바꾼다(공용 서버 이미지를 digest로 고정한
+    # 것과 같은 이유).
+    image = service.get("image")
+    if not isinstance(image, str) or _DIGEST_PINNED_IMAGE.fullmatch(image) is None:
+        raise ComposeCandidateContractError(
+            "Map role bootstrap service image must be pinned by digest"
+        )
+    environment_names = {name for name, _value in _service_environment_items(service)}
+    runtime_names = sorted(environment_names & _MAP_DB_ROLE_BOOTSTRAP_RUNTIME_ENV_NAMES)
     if runtime_names:
         raise ComposeCandidateContractError(
             "Map role bootstrap service environment carries run-time values: "
             + ", ".join(runtime_names)
+        )
+    # env 키도 허용 목록이다 — 계약표(`_MAP_DATABASE_CANONICAL_ENV_VALUES`)의 이 서비스 행과 값이
+    # 리터럴인 두 스위치뿐이다. `PGOPTIONS`·`PSQL*` 같은 키 하나가 Map password를 정하는
+    # superuser 세션을 바꿀 수 있다.
+    allowed_names = {
+        name
+        for service_key, name in _MAP_DATABASE_CANONICAL_ENV_VALUES
+        if service_key == _MAP_DB_ROLE_BOOTSTRAP_SERVICE
+    } | _MAP_DB_ROLE_BOOTSTRAP_LITERAL_ENV_NAMES
+    unexpected = sorted(environment_names - allowed_names)
+    if unexpected:
+        raise ComposeCandidateContractError(
+            "Map role bootstrap service environment declares keys outside its contract: "
+            + ", ".join(unexpected)
         )
 
 
@@ -4026,7 +4127,7 @@ def validate_resolved_compose_candidate_protected_values(
         reject_published_examples=(environment.get("KTDM_DEPLOYMENT_ENVIRONMENT") == "production"),
     )
     _assert_candidate_single_file_boundary(resolved, environment=environment)
-    _validate_map_database_dsn_identities(environment)
+    map_dsn_identity = _validate_map_database_dsn_identities(environment)
     services = resolved.get("services")
     if not isinstance(services, Mapping):
         raise ComposeCandidateContractError(
@@ -4102,7 +4203,9 @@ def validate_resolved_compose_candidate_protected_values(
     _assert_no_host_privilege_escalation(resolved)
     _assert_postgres_cluster_runtime_is_canonical(resolved)
     # 서버가 확정된 뒤다: Map DSN 포트의 instance와, 모든 서버의 admin secret을 누가 드는지.
-    _validate_map_database_dsn_instance(environment, resolved=resolved)
+    _validate_map_database_dsn_instance(
+        environment, resolved=resolved, identity=map_dsn_identity
+    )
     _assert_instance_admin_secret_holders(resolved, environment=environment, resolved=True)
     _validate_concierge_ui_canonical_contract(services, environment, resolved=True)
     _validate_map_application_300_images(services)
