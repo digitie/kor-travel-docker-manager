@@ -11,6 +11,7 @@ code-server의 모듈. 사본을 없앨 수 없는 자리(YAML은 문자열 보�
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,10 @@ _MIGRATE = "kor-travel-dagster-storage-migrate"
 _SHARED_POSTGRES = "kor-travel-shared-postgres"
 _ADMIN_SECRET = "kor-travel-shared-postgres-password"
 _BACKUP_ROLE = "dagster_shared"
-_REPOSITORY_TAG = ".dagster/repository"
+#: location별 상한의 key. `.dagster/repository`는 run 본문 tags에 없어 queue daemon이 세지 못한다
+#: (instance 설정 머리 주석, 적대 리뷰 H1). 효과는 격리 실행 테스트가 실제 dequeue로 본다.
+_LOCATION_TAG = "dagster/code_location"
+_UNCOUNTED_TAG = ".dagster/repository"
 
 _URL = re.compile(
     r"^postgresql\+psycopg2://(?P<user>[a-z_][a-z0-9_]*)"
@@ -121,9 +125,10 @@ def test_every_service_with_the_url_mounts_the_one_instance_config() -> None:
 
 
 def test_location_caps_cover_exactly_the_compose_code_servers() -> None:
-    """`.dagster/repository` 상한은 compose의 code-server(`dagster api grpc -m <모듈>`)마다 하나다.
+    """`dagster/code_location` 상한은 compose의 code-server(`dagster api grpc -m <모듈>`)마다 하나다.
 
-    location 이름은 code-server의 `-m` 모듈이다. 새 code-server가 compose에 들어오면(stage T의
+    location 이름은 code-server의 `-m` 모듈이다(오늘 네 instance의 실측 location 이름이고, 3단계
+    공용 `workspace.yaml`의 `location_name`이다). 새 code-server가 compose에 들어오면(stage T의
     transport) 여기서 그 상한을 요구한다.
     """
 
@@ -137,12 +142,11 @@ def test_location_caps_cover_exactly_the_compose_code_servers() -> None:
     assert modules, "compose에서 code-server를 하나도 못 찾았다 — 추출이 낡았다"
 
     runs = _instance_config()["concurrency"]["runs"]
-    caps = [
-        entry for entry in runs["tag_concurrency_limits"] if entry["key"] == _REPOSITORY_TAG
-    ]
-    assert sorted(entry["value"] for entry in caps) == sorted(
-        f"__repository__@{module}" for module in modules
-    )
+    limits = runs["tag_concurrency_limits"]
+    caps = [entry for entry in limits if entry["key"] == _LOCATION_TAG]
+    assert sorted(entry["value"] for entry in caps) == sorted(modules)
+    # run 본문에 없는 tag의 상한은 아무것도 막지 않는다 — 있으면 막는다고 믿게 만든다.
+    assert not [entry for entry in limits if entry["key"] == _UNCOUNTED_TAG]
     # D3: 전역 상한은 호스트 보호 상한이다 — 테넌트 상한의 합보다 작아야 의미가 있다.
     maximum = runs["max_concurrent_runs"]
     assert isinstance(maximum, int) and 0 < maximum < sum(entry["limit"] for entry in caps)
@@ -185,7 +189,15 @@ def test_db_init_follows_the_shared_postgres_pattern() -> None:
     assert "*[!A-Za-z0-9._~-]*" in script
     # C3 — 오류를 삼키지 않는다.
     assert "|| true" not in script and "2>/dev/null" not in script
-    assert "NOSUPERUSER NOCREATEDB NOCREATEROLE" in script
+    # 속성은 CREATE와 ALTER **둘 다**에 전부 — 재실행이 드리프트를 되돌린다.
+    attributes = (
+        "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 30"
+    )
+    for verb in ("CREATE", "ALTER"):
+        statement = f"{verb} ROLE {role} WITH LOGIN PASSWORD :'role_password' {attributes}\""
+        assert statement in script, verb
+    # role 소속 0을 확인하고, 아니면 멈춘다.
+    assert "FROM pg_auth_members WHERE member =" in script
 
 
 def test_migrate_waits_for_the_db_init_and_runs_the_host_image() -> None:
@@ -240,8 +252,59 @@ def test_the_host_image_installs_only_the_hash_locked_set() -> None:
     assert len(set(family.values())) == 1, family
 
 
-def test_the_dagster_target_provisions_without_runtime_services() -> None:
+def test_the_dagster_target_gates_ensure_on_both_one_shots() -> None:
+    """두 one-shot은 `up -d`가 아니라 init step(`run --rm --no-deps`)으로 **차례대로** 돈다.
+
+    `up -d`는 one-shot의 종료 코드를 보지 않는다 — 거기 두면 실패한 migrate가 성공한 ensure로
+    보인다(적대 리뷰 M3). 그리고 `up -d`와 init step 양쪽에 두면 migrate가 두 번 겹쳐 돈다.
+    """
+
     target = yaml.safe_load(_TARGETS.read_text(encoding="utf-8"))["targets"]["dagster"]
-    assert {_SHARED_POSTGRES, _DB_INIT, _MIGRATE} <= set(target["services"])
-    # 두 one-shot의 정상 상태는 exited(0)다 — runtime에 두면 status가 늘 실패로 읽힌다.
-    assert not {_DB_INIT, _MIGRATE} & set(target["runtime_services"])
+    assert target["services"] == [_SHARED_POSTGRES]
+    assert target["runtime_services"] == []
+    assert [step["command"] for step in target["init_steps"]] == [
+        ["run", "--rm", "--no-deps", _DB_INIT],
+        ["run", "--rm", "--no-deps", _MIGRATE],
+    ]
+
+
+def _dockerfile_copy_sources(dockerfile: str) -> set[str]:
+    sources: set[str] = set()
+    for line in dockerfile.splitlines():
+        tokens = line.split()
+        if not tokens or tokens[0] != "COPY":
+            continue
+        operands = [token for token in tokens[1:] if not token.startswith("--")]
+        assert len(operands) >= 2, line
+        sources.update(operands[:-1])
+    return sources
+
+
+def test_the_host_image_tag_is_the_content_hash_of_what_goes_into_it() -> None:
+    """tag는 이미지에 들어가는 파일의 내용 해시다 — 움직이는 이름은 옛 이미지를 새 잠금본으로 속인다.
+
+    해시에 드는 파일은 Dockerfile과 그것이 COPY하는 파일이다. COPY가 늘면 이 집합도 늘어야 한다 —
+    그렇지 않으면 새 파일을 고쳐도 tag가 그대로다. 재현은 compose 주석의 coreutils 한 줄과 같다.
+    """
+
+    dockerfile = (_HOST_IMAGE_DIR / "Dockerfile").read_text(encoding="utf-8")
+    hashed = sorted({"Dockerfile", *_dockerfile_copy_sources(dockerfile)})
+    assert hashed == ["Dockerfile", "requirements.txt", "storage-migrate.py"]
+    listing = "".join(
+        f"{hashlib.sha256((_HOST_IMAGE_DIR / name).read_bytes()).hexdigest()}  {name}\n"
+        for name in hashed
+    )
+    expected = f"kor-travel-dagster-host:{hashlib.sha256(listing.encode()).hexdigest()[:16]}"
+    image = _compose()["services"][_MIGRATE]["image"]
+    assert image == expected, f"호스트 이미지 내용이 바뀌었다 — compose의 tag를 {expected}로"
+
+
+def test_contract_errors_name_the_dagster_one_shots() -> None:
+    """후보 계약 오류가 두 one-shot을 sha8로 가리면 운영자가 어느 서비스가 거부됐는지 모른다."""
+
+    from kor_travel_docker_manager.services.c6c_deployment import (
+        _describe_candidate_service_key,
+    )
+
+    for name in (_DB_INIT, _MIGRATE):
+        assert _describe_candidate_service_key(name) == name

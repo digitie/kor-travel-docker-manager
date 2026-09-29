@@ -7,7 +7,7 @@
 # 안에서** 풀린다. 새 설정을 더할 때 그것을 기억한다.
 #
 # 여기 있는 것은 전부 instance 전역이다. daemon 하나가 모든 location에 같은 값을 쓴다.
-# 테넌트별 의도는 tag(`.dagster/repository`, 테넌트 이름공간 tag, `dagster/max_runtime`)로만
+# 테넌트별 의도는 tag(`dagster/code_location`, 테넌트 이름공간 tag, `dagster/max_runtime`)로만
 # 말한다.
 
 telemetry:
@@ -55,21 +55,32 @@ concurrency:
     # n150의 부하는 CPU가 아니라 디스크 대기다. 근거 없이 올리지 않는다.
     max_concurrent_runs: 12
     tag_concurrency_limits:
-      # 테넌트별 상한 — 오늘 각 instance의 상한 그대로다(D3). `.dagster/repository`는
-      # Dagster가 모든 run에 `__repository__@<location>`로 단다. location 이름은 각
-      # code-server command의 `-m` 모듈과 같다 — `backend/tests/test_dagster_shared_config.py`가
-      # compose의 code-server와 이 목록을 대조한다.
-      - key: .dagster/repository
-        value: __repository__@kortravelmap.dagster.definitions
+      # 테넌트별 상한 — 오늘 각 instance의 상한 그대로다(D3). key는 `dagster/code_location`이다.
+      #
+      # **`.dagster/repository`로 걸면 아무것도 막지 않는다.** 그 tag는 `DagsterRun.tags_for_storage()`가
+      # run_tags 표에만 쓰고 run 본문(run_body)의 tags에는 없다. queue daemon은 in-progress run을
+      # `get_run_records()`로 읽어 `record.dagster_run.tags`(본문)를 세므로 그 상한은 영원히 0을
+      # 센다(2026-09-30 적대 리뷰 H1). `dagster/code_location`은 Dagster 1.13.24의
+      # `RunDomain.create_run`이 `remote_job_origin`이 있을 때 본문 tags에 직접 넣는다(사용자 tag를
+      # 덮어쓴다). queue에 들어오는 경로는 전부 `remote_job_origin`을 준다 — schedule·sensor,
+      # UI launchpad·asset Materialize(`__ASSET_JOB`, GraphQL `create_valid_pipeline_run`), job·asset
+      # backfill, 재실행(UI·자동 재실행 모두 `create_reexecuted_run`).
+      #
+      # 값은 location 이름이다. 각 code-server command의 `-m` 모듈과 같고(오늘 네 instance의 실측
+      # location 이름), 3단계의 공용 `workspace.yaml`은 그 이름을 `location_name`으로 준다(합류 조건).
+      # `backend/tests/test_dagster_shared_config.py`가 compose의 code-server와 이 목록을 대조하고,
+      # `test_dagster_shared_storage_integration.py`가 실제 queue daemon의 dequeue로 상한이 무는지 본다.
+      - key: dagster/code_location
+        value: kortravelmap.dagster.definitions
         limit: 10
-      - key: .dagster/repository
-        value: __repository__@pinvi.etl.definitions
+      - key: dagster/code_location
+        value: pinvi.etl.definitions
         limit: 10
-      - key: .dagster/repository
-        value: __repository__@kortravelgeo_dagster.definitions
+      - key: dagster/code_location
+        value: kortravelgeo_dagster.definitions
         limit: 10
-      - key: .dagster/repository
-        value: __repository__@kortravelweather_dagster.definitions
+      - key: dagster/code_location
+        value: kortravelweather_dagster.definitions
         limit: 10
       # 테넌트 안의 상한 — 오늘 값 그대로다. key가 이미 테넌트 이름공간이라 겹치지 않는다.
       # Map: value 없이 key만 — 그 key를 가진 in-progress run 전체를 센다(Map
@@ -107,6 +118,10 @@ sensors:
 
 # Map의 값이다. bare int는 status 넷 전부에 걸려 sensor SKIPPED(기본 7일)를 늘리므로
 # sensor는 status별로 준다(Map `docker/dagster.yaml`의 실측 근거).
+#
+# **tick만 지운다.** Dagster의 `retention`은 schedule·sensor tick 보존만 다룬다 — run·event_log에는
+# 보존 설정이 없어 `dagster_shared`의 runs·event_logs는 지우지 않는 한 계속 자란다(네 테넌트가
+# 한 DB에 쌓는다). 정리는 별도 과제이고, 그때까지 크기는 백업 manifest의 `db_size_bytes`로 본다.
 retention:
   schedule:
     purge_after_days: 14

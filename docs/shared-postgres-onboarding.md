@@ -256,6 +256,8 @@ GRANT  CONNECT ON DATABASE <app DB>       TO <app_user>;
 
 > ⚠️ **남아 있는 구멍:** `template1`과 `template_postgis`는 여전히 기본 ACL이라 **모든 테넌트 role이 CONNECT 가능**하다(`template_postgis`는 TEMP까지). 읽을 내용이 확장 카탈로그뿐이라 데이터 유출 경로는 아니지만, "격리가 끝났다"고 적으면 틀린다. instance 전체의 CONNECT 자세를 검사하는 축은 아직 없다 — 네 db-init이 자기 DB만 보는 것은 옳고, cluster 전역 자세는 Manager가 별도로 소유해야 할 미해결 항목이다.
 
+
+> ⚠️ **`pinvi`가 PUBLIC CONNECT를 가진다(2026-09-30 n150 실측, 적대 리뷰 M4).** 공용 instance의 non-template database 중 PUBLIC에게 CONNECT를 주는 것은 `pinvi`(owner `pinvi_application_runtime`) 하나다 — PinVi의 DB는 db-init의 세 줄이 아니라 PinVi 자신의 부트스트랩이 만들었다. 그래서 이 instance에 로그인하는 **모든** role(다른 테넌트의 app role, 공용 Dagster의 `kor_travel_dagster_shared_app`)이 `pinvi`에 붙는다. 격리 실행 테스트(`test_dagster_shared_storage_integration.py`)가 같은 기본 ACL DB에서 새 role이 할 수 있는 것과 없는 것을 고정한다: **붙고, catalog를 읽고, TEMP table을 만든다. 그러나 PUBLIC에 GRANT되지 않은 table은 못 읽고 `public` schema에 만들지 못한다(PG16 기본).** 즉 데이터 유출 경로는 아니지만 격리 주장은 거짓이다. 걷는 것(`REVOKE CONNECT ON DATABASE pinvi FROM PUBLIC` + 필요한 role에게 GRANT)은 **PinVi 저장소의 변경**이다 — Manager가 남의 DB ACL을 바꾸지 않는다. Manager는 readiness 검사 `postgres_public_connect`(warn — 차단이 아니다)로 이런 DB를 계속 나열한다.
 ---
 
 ## 6. Manager 쪽 등록 체크리스트 — 빠뜨리면 나는 증상
@@ -294,7 +296,7 @@ GRANT  CONNECT ON DATABASE <app DB>       TO <app_user>;
 
 | # | 항목 | 빠뜨리면 나는 증상 |
 |---|---|---|
-| X1 | `.env.example`에 새 secret env 이름(빈 placeholder) + 필요 시 DSN override 예시 | §6.5 참조 — 값이 호스트 `.env`에 없으면 **모든 target의 compose 명령이 죽는다** |
+| X1 | `.env.example`에 새 secret env 이름(빈 placeholder) + 필요 시 DSN override 예시 | §6.5 참조 — `${X:?}`로 요구하는 값이 호스트 `.env`에 없으면 **모든 target의 compose 명령이 죽는다**(`secrets: environment:`만으로는 조용히 빈 secret이 된다) |
 | X2 | `c6c_deployment.py`의 `_CANDIDATE_NAMEABLE_SERVICE_NAMES`에 새 서비스 이름 추가 | 계약 위반 시 거부 문구가 서비스 이름을 `<unrecognized service key sha256:xxxxxxxx>`로 **가린다** — 운영자가 어느 서비스가 거부됐는지 모른다. (`kor-travel-shared-postgres`도 현재 그 목록에 없다) |
 | X3 | `test_api.py`의 target 응답 서비스 목록 | CI 빨강 |
 | X4 | `test_docker_manager_cli.py` 2곳(`..._resolves_application_targets_to_shared_services`, `..._compose_ensure_build_command`) | CI 빨강 |
@@ -322,7 +324,7 @@ GRANT  CONNECT ON DATABASE <app DB>       TO <app_user>;
 | `BACKUP_ROLES` tuple | 같은 파일 | CLI `choices`에 안 보인다 |
 | `_ROLE_CONFIG` dict | 같은 파일 | 대상 컨테이너·DB를 모른다 |
 | cron allowlist `case "$ROLE" in ...)` | `scripts/run-standalone-backup.sh` | **role은 UI/CLI에 보이는데 주기 백업이 영원히 안 돈다**(`exit 2`, 조용함) |
-| **n150 `digitie` crontab이 가리키는 체크아웃 자체** | 호스트 | **role 추가만으로는 부족하다 — crontab이 도는 트리를 동기화해야 한다.** 현재 crontab은 `/home/digitie/kor-travel-docker-manager`(배포 트리 `/opt/...`와 **다른 사본**)를 실행하고, 그 사본은 #363을 못 받아 아직 옛 instance를 겨냥한다(§1.1). 검증 핸들은 §7.5 |
+| **n150 `digitie` crontab이 가리키는 체크아웃 자체** | 호스트 | **role 추가만으로는 부족하다 — crontab이 도는 트리를 동기화해야 한다.** 새 role은 줄을 설치본 경로 `/opt/kor-travel-docker-manager/scripts/run-standalone-backup.sh`로 걸면 동기화가 필요 없다(`dagster_shared`가 그렇게 건다 — wrapper 머리). 현재 crontab은 `/home/digitie/kor-travel-docker-manager`(배포 트리 `/opt/...`와 **다른 사본**)를 실행하고, 그 사본은 #363을 못 받아 아직 옛 instance를 겨냥한다(§1.1). 검증 핸들은 §7.5 |
 
 CLI `choices`·API `routes.py`·프론트는 전부 파생이라 자동으로 따라온다.
 
@@ -334,11 +336,15 @@ CLI `choices`·API `routes.py`·프론트는 전부 파생이라 자동으로 �
 
 ### 6.5 secret 하나의 폭발 반경
 
-공용 secret 2종(`kor-travel-shared-postgres-password`, `<project>-shared-app-password`)은 `secrets: environment:` 형태다. `docker compose`는 **요청한 서비스와 무관하게 파일 전체를 interpolate**하므로, 값이 호스트 `.env`에 없으면 **무관한 target의 compose 명령까지 전부 죽는다.** `.env.example`이 이 사실을 명시한다.
+`docker compose`는 **요청한 서비스와 무관하게 파일 전체를 interpolate**한다. 그래서 파일 어디에든 **`${X:?…}`(필수 보간)** 이 있으면, 값이 호스트 `.env`에 없을 때 **무관한 target의 compose 명령까지 전부 죽는다.** 키를 전역 전제로 만드는 것은 그 `:?`다.
+
+⚠️ 정정(2026-09-30, n150 Compose v5.2.0 실측): 공용 secret 2종(`kor-travel-shared-postgres-password`, `<project>-shared-app-password`)의 `secrets: environment:` 형태는 **그 자체로는 전역 실패를 만들지 않는다** — 변수가 비어 있어도 `config -q`·`ps`가 0으로 끝난다(그 secret을 쓰는 서비스를 올릴 때에야 드러난다). 예전 문장은 이 형태를 원인으로 적었는데 틀렸다. 실제로 전역인 것은 같은 값을 URL·env에 넣는 `${…:?}` 쪽이다 — 예: 공용 Dagster의 metadata URL 앵커 `x-dagster-shared-control-env`의 `${KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD:?…}`(앵커는 파일 최상위라 서비스와 무관하게 풀린다), weather의 `PGPASSWORD: ${…:?}`. 새 secret을 `secrets: environment:`로만 두면 빠진 값이 조용히 빈 secret이 된다 — 그러니 필요하면 `:?`로 요구하되 아래 규칙을 따른다.
+
+신뢰 설치기(`scripts/install-ktdm-trusted-release`)는 flip **전에** 새 release의 compose를 배포 `.env`로 `docker compose config --quiet`해 보고, 실패하면 넘기지 않는다(오류에서는 compose가 참조하는 변수 이름만 싣는다). 그래도 `.env`를 먼저 넣는 것이 절차다 — preflight는 사고를 막을 뿐 창을 대신하지 않는다.
 
 따라서:
 
-- 네가 합류하며 secret을 하나 추가하면 그 변수는 **이 compose를 쓰는 모든 호스트의 전역 전제**가 된다.
+- 네가 합류하며 `${X:?}`로 요구하는 변수를 하나 추가하면 그 변수는 **이 compose를 쓰는 모든 호스트의 전역 전제**가 된다.
 - **값이 호스트 `.env`에 들어가기 전에 compose를 머지하면 안 된다.** 합류 PR과 호스트 `.env` 갱신은 같은 배포 창에서 함께 간다.
 - 공용 admin 비밀번호는 **프로젝트마다 새로 만들지 않고 재사용**한다. 네가 새로 추가하는 것은 app 비밀번호 **하나뿐**이다.
 

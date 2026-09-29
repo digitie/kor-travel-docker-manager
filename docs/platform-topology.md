@@ -203,7 +203,9 @@ Dagster 스토리지 `dagster_shared`)는 **Manager 쪽 정의가 있다** — d
 `kor-travel-shared-db-init-dagster`, storage migrate one-shot `kor-travel-dagster-storage-migrate`,
 공용 `config/dagster-shared/dagster.yaml`, Manager 소유 호스트 이미지(`docker/dagster-host/`),
 백업 role `dagster_shared`, target `dagster`. n150에 생기는 것은 그 release를 설치한 뒤 창에서
-`ensure dagster`를 돌렸을 때다. 아무것도 아직 그 instance를 쓰지 않는다. 3·4단계(공용
+`ensure dagster`를 돌렸을 때다(두 one-shot은 init step이라 어느 하나라도 실패하면 ensure가 실패한다).
+2단계 검증의 백업은 crontab 줄이 부르는 **그 경로**(설치본 `/opt/kor-travel-docker-manager/scripts/
+run-standalone-backup.sh dagster_shared 7`)를 cron 계정으로 돌린다. 아무것도 아직 그 instance를 쓰지 않는다. 3·4단계(공용
 webserver/daemon/gateway · 프로젝트별 webserver/daemon 철거)는 여전히 계획이다 — `11001`/`11002`에는
 **아직 아무것도 없다**. 다른 프로젝트가 5단계를 먼저 밟는 절차는
 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)가 갖는다.
@@ -245,7 +247,7 @@ code-server (dagster api grpc)  ← 프로젝트별 분리 유지, 각자 포트
 빠진 것이 아니라 미뤘다. 그때까지 transport는 자기 webserver·daemon·메타DB
 (`kor_travel_transport_dagster`)를 그대로 쓰고, Manager 배포로 옮겨 온 뒤(M-T) 같은 절차로
 합류한다. 설계는 그 합류가 재설계 없이 되게 잡았다 — 공용 `dagster.yaml`에
-`.dagster/repository=__repository__@kor-travel-transport` 상한 3과 `kortraveltransport/run_group`
+`dagster/code_location=<transport code-server의 -m 모듈>` 상한 3과 `kortraveltransport/run_group`
 상한 넷(각 1)을 더하는 것이 전부다(키가 이미 테넌트 이름공간이라 겹치지 않는다).
 
 **포트(D2).** `11001`은 공용 Dagster의 **입구 하나**다 — nginx Basic Auth gateway가 듣고,
@@ -277,6 +279,13 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
    (`127.0.0.1:11002`)·그 앞의 gateway(`11001`)·daemon(포트 없음)을 세운다. 그 뒤 프로젝트를
    **하나씩** 옮긴다(PinVi → geo → weather → Map). 한 프로젝트를 옮기면 옛 daemon·webserver를
    멈추고, 그 code-server와 소비자(API·UI)를 공용 URL로 돌린다.
+   - `grpc_server`의 `location_name`은 그 code-server의 `-m` 모듈이다 — 공용 `dagster.yaml`의
+     `dagster/code_location` 상한 값이 그 이름이다(오늘 네 instance의 실측 location 이름과 같다).
+     다른 이름을 주면 그 location의 상한이 조용히 사라진다.
+   - **전환 판정**: 옮긴 프로젝트의 run이 모두 상한이 걸린 location 값을 단다 —
+     `dagster_shared`에서 `SELECT count(*) FROM runs r WHERE r.create_timestamp > <전환 시각> AND NOT
+     EXISTS (SELECT 1 FROM run_tags t WHERE t.run_id = r.run_id AND t.key = 'dagster/code_location'
+     AND t.value IN (<상한 값들>))`이 0이다. 0이 아니면 되돌린다(상한 없는 run이 전역 12를 먹는다).
 4. 프로젝트별 webserver/daemon을 내린다. **이 단계 전까지는 되돌리기가 싸다.**
 5. 애플리케이션 DB를 `11000`으로 이사한다 — 프로젝트별 롤·ACL·마이그레이션 원장·
    백업 경로가 전부 따라온다. **가장 비싸고 되돌리기 어려운 단계이므로 마지막이다.**
@@ -298,8 +307,11 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
   공용 daemon이 집어 든다. 옛 프로젝트별 `*_dagster` DB는 지우지 않고 4단계 뒤 최종 dump를 뜬 채
   접속을 막아(`ALLOW_CONNECTIONS false`) 보존한다.
 - **D3 — 전역 run 상한은 12다.** 이것은 호스트 보호 상한이지 테넌트 손잡이가 아니다(n150의
-  부하는 CPU가 아니라 디스크 대기다). 테넌트별 상한은 오늘 값 그대로 `.dagster/repository` tag로
-  준다 — Map·PinVi·geo·weather 각 10. 테넌트 안의 상한도 그대로다(Map
+  부하는 CPU가 아니라 디스크 대기다). 테넌트별 상한은 오늘 값 그대로 `dagster/code_location` tag로
+  준다 — Map·PinVi·geo·weather 각 10. (`.dagster/repository`가 아니다 — 그 tag는 run_tags 표에만
+  있고 queue daemon이 세는 run 본문에는 없어 상한이 아무것도 막지 않는다. `dagster/code_location`은
+  Dagster가 queue로 들어오는 모든 경로 — schedule·sensor·launchpad·asset Materialize·backfill·재실행 —
+  에서 run 본문에 넣는다. 2026-09-30 적대 리뷰 H1, 근거는 공용 `dagster.yaml` 주석.) 테넌트 안의 상한도 그대로다(Map
   `kor_travel_map.feature_update_request_id` 4, weather `kortravelweather/run_group=external_weather`
   3; transport는 합류 때 3과 `run_group` 넷). 근거 없이 올리지 않는다.
 - **D4 — schedule·sensor의 켜짐/꺼짐은 코드에 선언한다**(`default_status`). 빈 `dagster_shared`는

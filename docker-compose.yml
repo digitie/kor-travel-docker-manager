@@ -513,6 +513,13 @@ services:
       target: /run/secrets/kor-travel-dagster-shared-app-password
     # 다른 db-init과 같은 규칙: `|| true`로 삼키지 않는다(C3), role은
     # NOSUPERUSER/NOCREATEDB/NOCREATEROLE, 재실행하면 비밀번호를 최신 secret으로 맞춘다.
+    # 이 role은 공용 instance의 가장 넓은 소비자다 — 합류한 code-server·webserver·daemon이 모두
+    # 이 자격증명으로 붙는다. 그래서 속성은 CREATE와 ALTER 양쪽에 **전부** 적고(재실행이 드리프트를
+    # 되돌린다) NOREPLICATION·NOBYPASSRLS까지 닫는다. role 소속은 0이어야 한다 — 누가 다른 role을
+    # GRANT해 두었으면 그 권한이 조용히 따라오므로 여기서 멈춘다.
+    # CONNECTION LIMIT 30: 공용 plane 전체(webserver·daemon·code-server 넷의 run worker, 전역 run
+    # 상한 12)가 여는 연결의 상한이다. 한 테넌트의 연결 누수가 공용 instance의 `max_connections`를
+    # 먹어 다른 테넌트의 앱 DB 접속을 막지 못하게 한다. 3단계에서 실측으로 다시 본다.
     # 비밀번호는 명령줄이 아니라 psql 변수로 넘긴다(transport와 같다). 이미 있던 DB의
     # owner가 다르면 멈춘다 — 소유권은 createdb 때만 걸리므로(onboarding §7.3) 재실행이
     # 고치지 못한다.
@@ -534,9 +541,9 @@ services:
 
       if psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER'" | grep -q 1; then
         echo "role $$KOR_TRAVEL_DAGSTER_SHARED_APP_USER already exists"
-        printf '%s\n' "ALTER ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
+        printf '%s\n' "ALTER ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 30" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
       else
-        printf '%s\n' "CREATE ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
+        printf '%s\n' "CREATE ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 30" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
       fi
       if psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_DAGSTER_SHARED_DB'" | grep -q 1; then
         echo "database $$KOR_TRAVEL_DAGSTER_SHARED_DB already exists"
@@ -544,6 +551,11 @@ services:
         createdb -O "$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER" "$$KOR_TRAVEL_DAGSTER_SHARED_DB"
       fi
       test "$$(psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -qAt -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$$KOR_TRAVEL_DAGSTER_SHARED_DB'")" = "$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER"
+      # role 소속 0 — 이 role이 다른 role의 권한을 물려받지 않는다.
+      test "$$(psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -qAt -c "SELECT count(*) FROM pg_auth_members WHERE member = (SELECT oid FROM pg_roles WHERE rolname = '$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER')")" = 0 || {
+        echo "role $$KOR_TRAVEL_DAGSTER_SHARED_APP_USER is a member of another role; revoke it first" >&2
+        exit 1
+      }
 
       # PUBLIC CONNECT 걷어내기(onboarding §5.3, C2) — bootstrap DB와 이 DB, 그리고 이 DB는
       # 소유 role에게만 되돌려준다.
@@ -553,11 +565,21 @@ services:
 
   # 공용 Dagster instance의 storage schema를 만들고 올리는 one-shot(`dagster instance migrate`).
   # 이미지는 Manager가 소유하는 공용 호스트 이미지다(`docker/dagster-host/`, 해시 잠금 설치).
-  # stage 3의 공용 webserver·daemon이 이 one-shot의 성공에 `service_completed_successfully`로
-  # 걸린다. 빈 DB면 schema를 만들고, 있으면 head까지 올린다 — 멱등이라 매 배포에 돈다.
-  # 무엇을 하는지는 `docker/dagster-host/storage-migrate.py` 머리에 적었다.
+  # 빈 DB면 schema를 만들고, 있으면 head까지 올린다 — 멱등이라 매 배포에 돈다. 무엇을 하는지는
+  # `docker/dagster-host/storage-migrate.py` 머리에 적었다.
+  #
+  # `ensure dagster`는 이 one-shot과 db-init을 `up -d`가 아니라 init step(`run --rm --no-deps`)으로
+  # 돌린다 — `up -d`는 one-shot의 종료 코드를 보지 않아 실패한 migrate가 성공한 ensure로 보인다
+  # (`config/docker-targets.yml`의 `dagster` target).
+  #
+  # 이미지 tag는 **내용 해시**다 — `latest-main`처럼 움직이는 이름이면 옛 이미지가 새 잠금본 행세를
+  # 하고, 두 호스트가 같은 tag로 다른 내용을 가진다. 값은 build context에서 이미지에 들어가는 세
+  # 파일의 해시이고(재현: `cd docker/dagster-host && sha256sum Dockerfile requirements.txt
+  # storage-migrate.py | sha256sum | cut -c1-16`, Linux coreutils), 셋 중 하나를 고치면 이 tag를
+  # 바꿔야 한다 — `backend/tests/test_dagster_shared_config.py`가 대조한다. 새 tag는 호스트에 없으므로
+  # 다음 `run`이 build context에서 만든다. env override는 두지 않는다(정본이 둘이 된다).
   kor-travel-dagster-storage-migrate:
-    image: ${KOR_TRAVEL_DAGSTER_HOST_IMAGE:-kor-travel-dagster-host:latest-main}
+    image: kor-travel-dagster-host:75f02d642f06bcbd
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_STORAGE_MIGRATE_CONTAINER:-kor-travel-dagster-storage-migrate}

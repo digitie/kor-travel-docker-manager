@@ -119,6 +119,21 @@ mv -f -- "${REL}/.ktdm-release-compose.yml.tmp" "${REL}/.ktdm-release-compose.ym
 # 모든 `.env` 쓰기는 G 아래에 있다(ADR-51 C-2) — 여기서 복사한 것이 곧 live 값이다.
 [[ "${PREV}" == "${NAME}" ]] || cp -p -- "${APP}/.env" "${REL}/.env"
 
+# 새 release의 compose가 배포 `.env`로 풀리는지 flip **전에** 본다. compose는 요청한 서비스와
+# 무관하게 파일 전체를 interpolate하므로 새 `${X:?}` 하나가 `.env`에 없으면 모든 compose 명령 —
+# backend의 ensure·status 전부 — 이 flip 직후부터 죽는다(onboarding §6.5). 실패하면 넘기지 않는다.
+# stderr는 원문을 싣지 않는다 — 오류 문구에 값이 섞일 수 있다. compose 파일이 참조하는 변수 이름만
+# 골라 낸다.
+# >>> preflight
+if ! preflight_err="$(docker compose --project-directory "${REL}" --file "${REL}/docker-compose.yml" \
+  --env-file "${REL}/.env" config --quiet 2>&1 >/dev/null 9>&-)"; then
+  referenced="$(grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*' "${REL}/docker-compose.yml" | tr -d '${' | sort -u)"
+  named="$(printf '%s\n' "${preflight_err}" | grep -oE '[A-Za-z_][A-Za-z0-9_]*' | sort -u \
+    | grep -Fx -f <(printf '%s\n' "${referenced}") | tr '\n' ' ' || true)"
+  die "docker compose config failed for ${REL} with its .env; not flipping (variables named in the error: ${named:-none})"
+fi
+# <<< preflight
+
 # host 파일은 release에서 설치한다. 여기서 실패하면 설치 root와 도는 backend는 그대로다.
 install -T -o root -g root -m 0644 -- "${REL}/deploy/tmpfiles.d/kor-travel-docker-manager.conf" \
   /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf

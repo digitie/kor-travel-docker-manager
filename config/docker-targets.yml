@@ -678,15 +678,34 @@ targets:
     aliases:
       - dagster-shared
       - dagster-control-plane
+    # `up -d`가 받는 것은 공용 instance뿐이다(정의가 그대로라 재생성되지 않는다 — compose config
+    # hash가 같다). 두 one-shot은 여기 두지 않는다: `up -d`는 one-shot의 종료 코드를 보지 않아
+    # 실패한 migrate가 성공한 ensure로 보이고, 아래 init step과 겹쳐 두 번 돈다.
     services:
       - kor-travel-shared-postgres
-      - kor-travel-shared-db-init-dagster
-      - kor-travel-dagster-storage-migrate
     # 두 one-shot은 restart=no라 정상 상태가 exited(0)다 — runtime 목록에 두지 않는다(T5).
     runtime_services: []
     containers:
       - kor-travel-shared-postgresql
-    init_steps: []
+    # one-shot은 init step으로 **차례대로** 돈다 — 각 `run`의 종료 코드가 ensure를 가른다(rustfs-init
+    # 선례). `--no-deps`: 의존(공용 instance·db-init)을 `run`이 다시 끌어오지 않는다 — 공용
+    # instance는 위 `up -d`가, db-init의 완료는 앞 step이 보장한다. 호스트 이미지가 없으면(tag가 내용
+    # 해시라 내용이 바뀌면 없다) `run`이 build context에서 만든다.
+    init_steps:
+      - name: dagster-shared-db-init
+        description: 공용 instance에 dagster_shared role·DB를 만들고 CONNECT를 소유 role에게만 남깁니다.
+        command:
+          - run
+          - --rm
+          - --no-deps
+          - kor-travel-shared-db-init-dagster
+      - name: dagster-shared-storage-migrate
+        description: dagster_shared의 storage schema를 만들거나 head까지 올립니다.
+        command:
+          - run
+          - --rm
+          - --no-deps
+          - kor-travel-dagster-storage-migrate
 
 # ── compose bind allowlist (GM-17 본작업 A) ─────────────────────────────
 #

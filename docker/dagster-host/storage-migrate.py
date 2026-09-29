@@ -3,13 +3,19 @@
 
 이 one-shot만 schema를 만든다. 공용 `dagster.yaml`은 `should_autocreate_tables: false`라
 webserver·daemon·code-server의 run worker가 빠진 table을 암묵 생성해 불완전한 migrate를
-숨기지 못한다(Map ADR-102의 교훈). 그런데 `dagster instance migrate`는 alembic
-upgrade만 하므로 **빈 DB에 table을 만들지 않는다** — 그래서 두 단계다.
+숨기지 못한다(Map ADR-102의 교훈). 그런데 `dagster instance migrate`(`DagsterInstance.upgrade`)는
+storage마다 alembic upgrade와 데이터 migration(run storage `migrate`, event log `reindex_assets`,
+schedule storage `migrate`)을 할 뿐 **빈 DB에 기본 table을 만들지 않는다** — 그래서 두 단계다.
 
-1. 빈 DB면 bootstrap: 같은 `dagster.yaml`을 `should_autocreate_tables`만 켠 채로 읽어
-   Dagster 자신의 storage 생성자가 table을 만들고 alembic head를 stamp하게 한다. table이
-   이미 있으면 생성자는 아무것도 만들지 않는다.
-2. 그 뒤 원래 설정 그대로 `dagster instance migrate`를 실행한다(멱등 — head면 무연산).
+1. bootstrap: 같은 `dagster.yaml`을 `should_autocreate_tables`만 켠 채로 읽어 Dagster 1.13.24 /
+   dagster-postgres 0.29.24의 storage 생성자를 부른다. 생성자는 **그 storage의 주 table이 없을 때만**
+   (`runs` / `event_logs` / `schedules`·`jobs` 둘 다) 전체 table을 만들고 alembic head를 stamp한 뒤
+   그 storage의 데이터 migration·reindex를 돈다. 주 table이 있으면 run storage가 `instance_info`만
+   빠졌을 때 만들 뿐 아무것도 하지 않는다 — 주 table만 있고 나머지가 빠진 DB는 여기서 고쳐지지
+   않는다.
+2. 그 뒤 원래 설정 그대로 `dagster instance migrate`를 exec한다. head면 alembic은 무연산이고 데이터
+   migration은 이미 된 것을 건너뛴다. 이 프로세스의 종료 코드가 곧 one-shot의 결과이고, Manager의
+   `ensure dagster`가 init step으로 그 코드를 본다(`config/docker-targets.yml`).
 
 `dagster.yaml`이 없거나 storage가 PostgreSQL이 아니면 거부한다. 파일이 없을 때 Dagster는
 `$DAGSTER_HOME` 아래 SQLite로 조용히 떨어지는데, 그 위의 migrate는 성공으로 보인다.

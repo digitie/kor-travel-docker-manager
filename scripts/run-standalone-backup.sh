@@ -30,7 +30,13 @@
 #   55 3 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh pinvi 7 >>/absolute/backup/root/pinvi.log 2>&1
 #   50 16 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh transport_dagster 7 >>/absolute/backup/root/transport_dagster.log 2>&1
 #   15 17 */3 * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh transport 3 >>/absolute/backup/root/transport.log 2>&1
-#   40 3 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /absolute/path/to/kor-travel-docker-manager/scripts/run-standalone-backup.sh dagster_shared 7 >>/absolute/backup/root/dagster_shared.log 2>&1
+# `dagster_shared`는 **설치본 경로**로 건다 — 위 줄들이 가리키는 옛 사본(n150의
+# /home/digitie/kor-travel-docker-manager, git이 아니다)의 허용 목록에는 이 role이 없어 exit 2로
+# 조용히 끝난다. 설치본은 trusted install이 매번 git에서 다시 쓰므로 따로 맞출 것이 없다(설치본의
+# ktdctl은 비-root cron 계정으로 돈다 — 2026-09-30 n150 `db-backup list` 실측):
+#   40 3 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /opt/kor-travel-docker-manager/scripts/run-standalone-backup.sh dagster_shared 7 >>/absolute/backup/root/dagster_shared.log 2>&1
+# 2단계 검증은 이 줄의 명령을 **cron 계정으로, 같은 경로·같은 env로** 한 번 손으로 돌리는 것이다 —
+# 다른 경로의 wrapper로 검증하면 cron이 실제로 부르는 트리를 보지 않은 것이다.
 set -eu
 
 ROLE="${1:?usage: run-standalone-backup.sh <role> <keep>}"
