@@ -8217,3 +8217,70 @@ MT(ADR-53 D4)의 세 번째 적대 리뷰 MED 3건(그중 둘은 같은 것)·LO
       접속하지 못해(새 컨테이너가 아직 기동 중) 빨갛다.
     - 변이 없는 같은 세 테스트는 3 passed(8분 31초).
   - 전체 스위트와 gated 전체 실행은 verify 단계의 몫이다. 그 수치와 CI run ID·`headSha`는 PR 본문에 적는다.
+
+## 2026-09-29 — Map DB 이동 M2: 적대 리뷰 수정(유도한 one-shot 계약, 멈추기 전 판정 둘, 공용 instance의 R4, 되돌림의 결합 상태)
+
+M2(`feat/map-db-shared-instance`, MT 위)의 적대 리뷰 MED 2건·LOW 11건 가운데 M2 몫을 반영했다. 이 브랜치는 창
+§4.4 B5에서만 머지·설치한다. main `24f6c57`(#436·#437) 위의 새 MT 위로 다시 올렸다 — `.env.example`·
+dev-environment.md는 #437과 겹치는 줄이 없어 충돌이 없었다.
+
+- **MED — one-shot의 mount가 코드 리터럴이었다(유도 → 결박 회귀).** `_MAP_DB_ROLE_BOOTSTRAP_MOUNTS`와 raw 검사가
+  두 bind의 경로·`${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}` 기본값·`:ro`를 적었는데, 신뢰된
+  `config/docker-targets.yml`의 `compose_binds.kor-travel-map-db-role-bootstrap`이 이미 같은 사실을 든다(GM-17이 그
+  절을 정본으로 만든 이유가 "새 bind에 backend 수정·재설치가 필요 없게"다). 이제 one-shot의 `volumes`는 그 항목과
+  **원소 단위로** 같아야 하고 전부 `:ro`다 — raw는 원문 `source:target:ro`, resolved는 같은 env로 보간한 source와
+  `type: bind`. `exec` 줄의 경로는 `postgres-role-bootstrap.sh`로 끝나는 bind의 컨테이너 경로다. 상수는 지웠고,
+  세 번째 `:ro` 항목이 backend 수정 없이 흐르는 테스트와 쓰기 가능 항목을 거부하는 테스트를 더했다.
+- **MED — 되돌림이 PinVi 아래에서 Map DB 정체를 두 번째로 바꾼다.** 코드가 아니라 runbook(§4.5 M-R·인수 뒤 0단계
+  결합 상태 검사)과 ADR-53 받아들인 위험으로 닫았다.
+- **LOW 반영**:
+  - 멈추기 전 S1 판정이 admin password를 admin의 **살아있는** SCRAM-SHA-256 verifier와 대조한다(`pg_authid`를
+    socket으로 읽어 PBKDF2 → ClientKey → SHA-256 = StoredKey를 프로세스 안에서 `compare_digest`). 평상시 그
+    password로 TCP 인증하는 것이 없어 회전·편집 drift가 B9에서야 드러나던 자리다. 단위 테스트의 기대값은 n150의
+    버리는 컨테이너(`postgres:16-alpine`, network none, 곧바로 지움)에서 PostgreSQL 16이 만든 verifier이고, gated
+    테스트가 fixture 서버의 verifier로 같은 식을 확인한다.
+  - Dagster metadata DB가 없으면(`--restart` 제외) init이 거부할 role을 같은 자리에서 먼저 거부한다
+    (`require_map_dagster_metadata_initializable`, 읽기 전용 preflight + 회전 단언). 공용 instance의 NOLOGIN
+    `kor_travel_transport_dagster_app` 같은 이름이 박힌 `.env`가 Map bootstrap·alembic 뒤에야 거부되던 자리다.
+  - R4: Dagster init이 `createdb` 직후 그 DB의 PUBLIC CONNECT를 닫고, R4 transaction의 끝(read-back 통과 뒤)에서
+    두 Map DB에 붙어 있지만 이제 CONNECT가 없는 client 세션을 끝낸다(REVOKE는 연결할 때만 검사된다). 앱 DB는
+    Map의 fresh 검사가 `datacl IS NULL`을 요구해 먼저 닫을 수 없다 — 남는 창은 ADR-53에 적었다.
+  - one-shot 이미지를 digest로 고정했다(`postgres:16-alpine@sha256:721873c3…`, n150 실측: 태그·`.Id`·
+    `RepoDigests`가 모두 그 digest). C6c가 `@sha256:`을 요구하고, env 키는 계약표의 그 서비스 행과 리터럴 스위치
+    둘만 받는다(`PGOPTIONS`·`PSQL*` 거부).
+  - 단일 정본: instance admin 이름은 C6c의 `postgres_server_admin_name` 하나로 읽고(술어도 `POSTGRES_IDENTIFIER`
+    하나 — 전에는 C6c가 `_admin`을 받고 재구축이 나중에 거부했다), DSN authority는 `loopback_dsn_authority` 하나,
+    S1의 LIKE 패턴은 C6c의 `MAP_PRINCIPAL_PREFIX`에서 만든다. `PostgresAdminSecret.target`(읽는 곳 없음)을 지우고
+    `service_secret_sources`를 모듈 안으로 숨겼다. resolved 검증은 Map DSN 모양 판정을 한 번만 한다.
+  - 문구: 호스트 프로세스 표의 admin password는 root만이 아니라 **호스트 PID namespace의 모든 프로세스**(권한 없는
+    시스템 daemon 포함)가 읽는다 — compose 주석·ADR-53·docker-management.md를 고치고 `/proc` `hidepid=2`를 후속으로
+    적었다. M2 설치부터 B6까지는 Map/PinVi 재구축만이 아니라 **모든** Manager compose mutation이 거부된다(ADR-53
+    상태 줄·tasks.md). ADR-53에 역방향 폭발 반경(Map backend 하나의 crash가 모든 테넌트를 재기동)과 공용 instance에
+    기대는 서비스 20 → 25를 적었고, onboarding §6(C10)·§7.3에도 옮겼다.
+  - 테스트: bootstrap one-shot의 no-password 테스트가 공용 instance의 admin secret을 frozen 문서에서 **유도할 수
+    있게** 두고(그래야 `-e`로 값을 넘기는 회귀가 실제로 argv에 올릴 수 있다) 모든 `-e` 값에 그 값이 없는지 본다.
+    이름에 결박한 `hasattr` 단언 셋은 지웠다(바로 앞의 효과 단언이 남는다). 낡은 이름의 전체 재구축 테스트를
+    `test_full_rebuild_never_names_a_postgres_service`로, hba 테스트의 fixture를 합성 이름·포트로 바꿨다.
+- **반영하지 않은 것**: resolved 문서의 admin password 값 스캔(`_assert_instance_admin_secret_holders`)은 남긴다 —
+  ADR-51 백스톱(`assert_resolved_secret_values_stay_at_reference_sites`)은 `compose_path`가 있을 때만 돌아 완전한
+  중복이 아니고, 지우는 쪽이 보안 약화다. 모든 admin secret holder에 digest를 요구하는 것(선택)은 db-init one-shot이
+  MT 결정대로 태그를 쓰므로 하지 않았다. `run --rm`·`environment:` secret·`-e`의 실 compose gated 테스트(선택)는 T-SECRET
+  spike와 V5가 덮는다.
+- **n150 실행**(모두 `/tmp`, 운영 컨테이너·DB는 읽기만 — 이미지 inspect. SCRAM 기대값용 버리는 컨테이너 하나는
+  `--network none`으로 띄워 바로 지웠다):
+  - 첫 대상 실행(`d9ffdf4`)은 14 failed였다. 셋 다 이 수정의 결함이었다: (1) S1의 첫 질의에 `pg_authid`를
+    넣어 superuser가 아닌 admin에게 권한 오류가 나 "must be a superuser" 거부를 가렸다 — verifier는 superuser를
+    확인한 **뒤** 따로 읽게 고쳤다(gated T-S1이 잡았다). (2) Bash heredoc이 테스트의 `\\`를 `\`로 접어 LIKE
+    패턴 기대값이 틀렸다. (3) `test_docker_service_config.py`의 bootstrap fixture 이미지가 digest 없는 태그라 새
+    digest 규칙에 12건이 걸렸다 — fixture에 digest를 붙였다.
+  - 고친 뒤 대상 14파일(f1d 계약·database_runtime 단위와 gated 실 PostgreSQL·재구축·hba·docker_service 설정·공용
+    계약·grep 게이트·compose 모델·백업·multi-project 둘·registry·후보), gate=1, `2699264` 트리: **950 passed**,
+    fixture 잔재 없음. ruff 0.16.4 통과.
+  - 빨강 확인(버리는 사본에 변이 일곱을 함께, gate=1): 새 테스트가 모두 빨갛다 — mount가 `compose_binds`를 따른다
+    ·쓰기 가능 항목 거부·`exec` 경로(3), 이미지 digest(3), env 키(3), Dagster DB의 PUBLIC 닫기(2), R4 세션 정리
+    (단위 1·gated 1), SCRAM 식(단위 2·gated 1 — HMAC 라벨을 바꾸면 PostgreSQL이 만든 verifier와 어긋난다),
+    멈추기 전 Dagster role 판정(4). 같은 실행에서 gated 모듈 fixture의 `docker rm --force`가 부하(load 12~14)로
+    120초를 넘겨 teardown ERROR 하나가 났고, 컨테이너는 곧 지워졌다(잔재 0 확인).
+  - SCRAM 판정을 "항상 맞다"로 바꾸면 drift 검출 넷(단위 4 — 다른 verifier·빈 값·md5·두 줄), PostgreSQL verifier
+    단위 1, 재구축의 `password-drift` 1, gated 2가 빨갛다(8 failed).
+  - 전체 스위트와 gated 전체 실행은 verify 단계의 몫이다. 그 수치와 CI run ID·`headSha`는 PR 본문에 적는다.

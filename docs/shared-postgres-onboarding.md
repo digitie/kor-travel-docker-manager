@@ -275,6 +275,7 @@ GRANT  CONNECT ON DATABASE <app DB>       TO <app_user>;
 | C7 | 앱 컨테이너에는 secret을 **마운트하지 않는다**(비밀번호는 DSN env로만) | 선례와 어긋나고, 비밀번호 보관처가 하나 더 늘어난다 |
 | C8 | override 파일(`docker-compose.override.yml`)로 시도하지 않는다 | 그 파일이 **존재하는 것만으로** deployment readiness가 `missing`으로 떨어져 승인된 재구축 전체가 막힌다 |
 | C9 | **튜닝·연결 상한 변경은 합류 PR과 분리한다** | 공용 서비스 `command:`의 튜닝 값(compose 리터럴이 정본, ADR-53 D4)과 `max_connections`는 **cluster 전역 단일값**이라 테넌트별로 나눌 수 없고, 반영하려면 **공용 postgres 재기동 = 이미 live인 모든 테넌트의 다운타임**이 따른다. 별개 배포 창에서, 기존 테넌트에 공지하고 한다. 재기동은 `stop_grace_period`(ADR-52, 300s) 안에 종료 checkpoint를 끝내야 crash recovery 없이 뜬다 — Manager의 컨테이너 stop/restart는 그 값을 따르고(#434), 계획된 재기동은 수동 `CHECKPOINT` 뒤 `docker stop --time 300`을 쓴다. 공용 서비스의 `/dev/shm`은 `shm_size: 1gb`다(ADR-53 D4 — ADR-52가 옛 geo 전용 instance와 같은 512mb로 올렸고, 그전 64MB에서 병렬 질의가 `could not resize shared memory segment`로 죽었다). 더 필요하면 이것도 cluster 전역 값이다 |
+| C10 | **합류는 양방향 결합이다** — 네 부하가 공유 postmaster 안에서 돈다 | 공용 instance 장애가 네 장애가 되는 것만이 아니다. 네 backend 하나가 OOM으로 죽거나 segfault하면 postmaster가 **모든 테넌트**를 crash-restart한다(컨테이너 메모리 상한 없음). 무거운 bulk load·큰 집계·새 확장은 합류 PR에 적고 기존 테넌트에 알린다(ADR-53 — Map이 그 예다). 네 서비스가 공용 instance를 `depends_on`하면 drift 동안의 손 명령 재생성 위험(§7.3)도 그만큼 넓어진다(Map 합류로 20 → 25개) |
 
 ### 6.2 `config/docker-targets.yml`
 
@@ -456,6 +457,8 @@ docker exec --user postgres <공용 컨테이너> \
 ### 7.3 소유권의 빈틈 (멱등성이 안 덮는 곳)
 
 db-init 재실행이 자가치유하는 것은 **role 속성·비밀번호·확장·CONNECT ACL**뿐이다. 소유권은 `createdb` 시점에만 적용되므로, **DB가 이미 존재하면 `-O`가 다시 걸리지 않는다.** role을 지웠다 다시 만들거나 DB를 수동으로 만든 뒤 one-shot을 돌리면 "소유자 불일치"가 조용히 남는다.
+
+⚠️ **재실행은 반드시 `--no-deps`로, drift guard가 MATCH일 때만.** 공용 서비스의 정의를 바꾸는 Manager release가 설치되고 계획된 재생성이 아직이면(config hash 불일치), `--no-deps` 없는 `docker compose run`/`up`이나 `create` 하나가 공용 instance를 **재생성**한다 — 모든 테넌트 재기동이다(ADR-53, n150 Compose v5.2.0 실측). 공용 instance를 `depends_on`하는 서비스가 많을수록(Map 합류 뒤 25개) 이 길도 넓다.
 
 따라서 소유권은 **두 층에서** 본다.
 

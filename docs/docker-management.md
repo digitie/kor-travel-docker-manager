@@ -694,9 +694,16 @@ sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
   bootstrap 전이거나 `--restart`) Map·PinVi를 멈추기 **전에** 읽기만으로 판정한다(`require_map_bootstrap_admin_ready`):
   admin이 superuser, database 0에 role 0·admin·`ktm_%` role setting 없음, `postgis`·`pg_prewarm` 있음, admin
   password(그 instance의 secret이 가리키는 `.env` 변수)가 32–256자 URI-unreserved이고 Map service·metadata
-  password와 다름. one-shot은 `-e KOR_TRAVEL_MAP_POSTGRES_USER=<admin> -e KTDM_MAP_BOOTSTRAP_PGPORT=<port>`를 받고
-  password는 instance secret file에서 스스로 읽어 DSN을 셸 안에서 만든다 — argv·Map 런타임에 password가 없다.
-  단 Map 스크립트가 DSN을 `psql` 인자로 넘기므로 bootstrap 동안 호스트 프로세스 표에는 보인다(root 동등 주체).
+  password와 다르며, admin의 **살아있는** SCRAM-SHA-256 verifier에 맞음(socket으로 `pg_authid`를 읽어 프로세스
+  안에서 비교 — 평상시에 그 password로 TCP 인증하는 것이 없어 회전·편집 drift가 창에서야 드러나기 때문이다).
+  Dagster metadata DB가 없으면(`--restart` 제외) init이 거부할 role(아무것도 소유하지 않는 LOGIN NOINHERIT이 아닌
+  것)도 같은 자리에서 거부한다(`require_map_dagster_metadata_initializable`). one-shot은 `-e
+  KOR_TRAVEL_MAP_POSTGRES_USER=<admin> -e KTDM_MAP_BOOTSTRAP_PGPORT=<port>`를 받고 password는 instance secret
+  file에서 스스로 읽어 DSN을 셸 안에서 만든다 — argv·Map 런타임에 password가 없다. 단 Map 스크립트가 DSN을
+  `psql` 인자로 넘기므로 bootstrap 동안 호스트 프로세스 표에는 보인다. n150의 `/proc`은 `hidepid` 없이 붙어
+  있어 root만이 아니라 **호스트 PID namespace의 모든 프로세스**(권한 없는 시스템 daemon 포함)가 읽는다 —
+  후속은 `/proc` `hidepid=2`(모니터링용 gid 포함)와 Map의 `PGPASSFILE`이다. one-shot의 이미지는 digest로,
+  env 키는 계약표 행으로, mount는 `config/docker-targets.yml`의 `compose_binds`로 C6c가 고정한다.
 - **R3 chokepoint**: 재구축의 모든 compose 호출은 `_run_pinned_runtime_rebuild_compose`를 지난다. 서비스를 명시하지
   않은 mutation은 거부하고, compose가 **실제로 닿는** 서비스 가운데 PostgreSQL 서버(declared ∪ witnessed)가 있으면
   거부한다(M1까지의 예외 — Map 전용 instance — 는 ADR-53으로 사라져 울타리가 절대다). 닿는 서비스는 명시 식별자에, 의존성으로 번지는 명령(`create`·`start`·`restart`·`scale`·
@@ -723,6 +730,11 @@ sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
     멈추지 않으므로 preflight가 없다.
   - app DB의 명시 CONNECT 가운데 소유자·login 밖의 것(옛 login, 손으로 준 grant)은 걷는다 — 거부가 아니라
     수렴이다. Dagster DB는 소유자 이름으로만 결박되므로 PUBLIC만 걷고, 남은 명시 grantee는 거부로 드러난다.
+  - REVOKE CONNECT는 **연결할 때만** 검사된다. 공용 instance에서 app DB는 createdb부터 R4까지(bootstrap·alembic·
+    Dagster init, 몇 분) PUBLIC CONNECT다 — Map fresh bootstrap이 `datacl IS NULL`을 요구하므로 먼저 닫을 수 없다.
+    그래서 read-back이 통과한 뒤 같은 transaction의 끝에서 두 Map DB에 붙어 있지만 이제 CONNECT가 없는 client
+    세션을 끝낸다(`pg_terminate_backend`, 판정은 방금 바꾼 ACL의 `has_database_privilege` — Map login·metadata
+    user·superuser는 남는다). Dagster DB는 init이 `createdb` 직후 PUBLIC CONNECT를 닫는다(ADR-53 M2).
   - C6c는 `KOR_TRAVEL_MAP_PG_DSN`을 형제 DSN처럼 결박한다(`postgresql+asyncpg`, `127.0.0.1`, Dagster URL과 같은
     포트, Map app DB). ADR-53(M2)부터 그 포트는 resolved 문서에서 **정확히 하나의** PostgreSQL 서버의 `-p`여야 하고
     (instance는 이름이 아니라 포트에서 유도한다), login은 metadata user·그 instance의 admin이 아니어야 한다. login

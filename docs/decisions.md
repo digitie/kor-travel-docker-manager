@@ -4070,7 +4070,10 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
   것은 M2(이동, `feat/map-db-shared-instance`)와 함께다 — M2가 코드·compose·문서를 그 모양으로 바꾸고,
   그것이 **사실이 되는 것은 창(runbook §4.4 B5)에서 M2를 설치하고 B9 adopt 재구축이 커밋할 때**다.
   설치 전이나 창에서 되돌려진 뒤에는 1~3·5가 n150에서 아직 사실이 아니다. ADR-35·ADR-37의 supersede
-  표시는 M2가 달았다.
+  표시는 M2가 달았다. M2를 설치한 뒤 B6 `.env` 편집 전까지는 Map DSN이 아직 퇴역 instance의 포트라
+  C6c가 거부한다(`… (found 0)`) — Map/PinVi 재구축만이 아니라 Manager 프로젝트의 **모든** compose
+  mutation(모든 테넌트의 대시보드 설정 변경·reset·없는 컨테이너 시작 포함)이 거부된다. 그래서 B6은 설치와
+  같은 단계에서 바로 잇는다.
 - 날짜: 2026-09-28
 - 결정자: 사용자(오너 결정 C와 하위 결정 D1~D10), Claude
 - supersedes: ADR-35 "Map principal 경계 원칙은 유지"(이 topology 한정), ADR-37의 Map 전용 instance 부분
@@ -4116,12 +4119,21 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
 - **멈추기 전의 S1 판정**(`require_map_bootstrap_admin_ready`): bootstrap이 돌 때(앱 DB 없음·bootstrap
   전·`--restart`) admin이 superuser인지, database 0에 role 0·admin·`ktm_%`의 role setting이 없는지,
   `postgis`·`pg_prewarm`이 있는지, admin password(그 instance의 secret이 가리키는 변수)가 32–256자
-  URI-unreserved이고 Map service·metadata password와 다른지 읽기만으로 본다. Map 스크립트가 여전히 정본이다.
+  URI-unreserved이고 Map service·metadata password와 다른지, 그리고 그 password가 admin의 **살아있는**
+  SCRAM-SHA-256 verifier에 맞는지(socket으로 `pg_authid`를 읽어 프로세스 안에서 비교 — 평상시 그 password로
+  TCP 인증하는 것이 없어 회전·편집 drift는 창에서야 드러난다) 읽기만으로 본다. Map 스크립트가 여전히 정본이다.
+  Dagster metadata DB가 없으면(`--restart` 제외) init이 거부할 metadata role도 같은 자리에서 거부한다
+  (`require_map_dagster_metadata_initializable`) — 공용 instance에서는 다른 tenant의 role도 그 이름의 후보다.
 - bootstrap one-shot은 `-e KOR_TRAVEL_MAP_POSTGRES_USER=<admin> -e KTDM_MAP_BOOTSTRAP_PGPORT=<port>`(runtime에서
   유도)를 받고, instance의 admin secret file을 `cat`해 DSN을 **셸 안에서** 만든다(T-SECRET 통과, §1.3(d)
-  주 변형). C6c가 entrypoint·네 줄(`cat` 경로 = 자기 secret target)·secret 하나(Map DSN 포트 instance의
-  admin secret)·`:ro` mount 둘·profile·restart·키 허용 목록·실행 시점 키 부재를 고정한다. compose가 보간하는
+  주 변형). C6c가 entrypoint·네 줄(`cat` 경로 = 자기 secret target, `exec` 경로 = 그 스크립트를 싣는 bind의
+  컨테이너 경로)·secret 하나(Map DSN 포트 instance의 admin secret)·mount(`config/docker-targets.yml`의
+  `compose_binds` 그 서비스 항목과 원소 단위로 같고 전부 `:ro`)·digest로 고정한 이미지·profile·restart·키 허용
+  목록·env 키 허용 목록(계약표 행과 리터럴 스위치 둘)·실행 시점 키 부재를 고정한다. compose가 보간하는
   `$$`를 `docker compose config`도 `$$`로 내므로(n150 Compose v5.2.0 실측) raw·resolved가 같은 네 줄이다.
+- R4(M1)는 공용 instance에서 두 가지를 더 한다: Dagster init이 `createdb` 직후 그 DB의 PUBLIC CONNECT를 닫고,
+  R4 transaction의 끝(read-back 통과 뒤)에서 두 Map DB에 붙어 있지만 이제 CONNECT가 없는 client 세션을 끝낸다
+  (REVOKE는 연결할 때만 검사된다).
 - **admin secret 규칙은 이름이 아니라 모든 서버에서 유도한다**(`_assert_instance_admin_secret_holders`):
   서버의 `POSTGRES_PASSWORD_FILE` → `secrets[]` → 최상위 `secrets.<source>.environment`. 그 secret을
   마운트하거나 그 변수(resolved에서는 그 값)를 env에 드는 서비스는 instance 자신이거나, pinned runtime·그
@@ -4133,9 +4145,33 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
 
 ### 받아들인 위험
 - 공용 admin은 모든 tenant에 닿는 superuser다. Map의 pinned bootstrap 스크립트가 fresh bootstrap마다
-  그 권한으로 돈다. 그동안 admin 비밀번호가 psql 인자로 호스트 프로세스 표에 보인다(n150에서는 root 동등 주체만).
+  그 권한으로 돈다. 그동안 admin 비밀번호가 psql 인자로 호스트 프로세스 표에 보인다. n150의 `/proc`은
+  `hidepid` 없이 붙어 있어 root만이 아니라 **호스트 PID namespace의 모든 프로세스**가 읽는다 — 권한 없는
+  시스템 daemon(systemd-resolve·systemd-network·systemd-oom·_chrony·syslog·polkitd·messagebus·sshd privsep)도
+  포함이다. 컨테이너는 자기 PID namespace라 못 보고, cAdvisor는 `comm`만 모은다. 호스트 후속: `/proc`을
+  `hidepid=2`(모니터링용 gid 포함)로 붙이는 것과 Map의 `PGPASSFILE`.
 - 공용 instance 장애가 Map 장애가 된다(2026-09-25~28 crash-restart 5회 — ADR-52가 원인으로 본 probe 고아를
   init·exec probe로 닫았고, 재기동 뒤 72시간 감시가 그것을 확인한다).
+- **반대 방향도 결합이다.** Map의 가장 무거운 부하(PostGIS 3.5.2 on glibc, bulk load, 큰 jsonb 집계)가 모든
+  테넌트가 공유하는 postmaster 안에서 돈다. Map backend 하나가 OOM으로 죽거나 segfault하면 postmaster가 **모든
+  테넌트**를 crash-restart한다. 컨테이너 메모리 상한은 없다. 72시간 감시는 crash marker를 그것을 낸 database·
+  질의로 귀속한다.
+- 공용 instance를 `depends_on`하는 서비스가 20개에서 25개로 는다(Map의 API·Dagster webserver·code-server·
+  storage-migrate·role bootstrap). 손으로 돌리는 `--no-deps` 없는 `up`/`run`이나 `create` 하나가 공용 서비스의
+  정의가 drift된 동안 공용 instance를 재생성하는 길(아래 compose config hash 항목)이 그만큼 넓어진다. 2026-09-29 기준
+  Map `scripts/n150`과 Manager 스크립트에는 그런 호출이 없다(grep).
+- **앱 DB는 createdb부터 R4까지 PUBLIC CONNECT다.** Map fresh bootstrap이 `datacl IS NULL`을 요구하므로 먼저
+  닫을 수 없다. bootstrap·alembic·Dagster init(몇 분) 동안 모든 tenant login이 붙을 수 있다. Map 데이터는 읽을
+  수 없고(Map schema는 PUBLIC에서 걷힌다), R4가 CONNECT 없는 세션을 끝낸다. 남는 것은 bootstrap **전**에 붙은
+  세션이 자기 이름으로 large object나 `ALTER DEFAULT PRIVILEGES`를 남겨 Map의 fresh 검사가 거부하는 경우다 —
+  멈춘 뒤라 재구축이 실패하고 M-R 또는 수동 정리로 간다(fail-closed). Dagster DB는 createdb 직후 닫는다.
+- **되돌림은 PinVi 아래에서 Map DB의 정체를 두 번째로 바꾼다.** B9가 커밋한 뒤 PinVi는 공용 instance의 새 Map
+  DB를 상대로 돌며 그 DB의 cursor·ack·feature_id를 자기 `pinvi` DB에 남길 수 있다. M-R(V1–V9 실패 뒤 몇 시간)과
+  인수 뒤 되돌림(몇 주 뒤)은 Map을 옛 12700 DB(이동 전 sequence·cursor)로 되돌린다. `--adopt-live-databases`는
+  identity 게이트를 건너뛰므로 Manager의 어떤 것도 그 전환을 막지 않고, 거꾸로 간 Map cursor를 PinVi가 어떻게
+  다룰지는 정해져 있지 않다. 그래서 두 되돌림은 0단계로 P5의 결합 상태 두 질의(Map 쪽은 그때의 live Map DB와
+  옛 instance 둘 다, PinVi 쪽은 `pinvi`)를 돌리고, 한 행이라도 나오면 오너 결정(PinVi 계약대로 PinVi의 Map
+  결합 상태를 리셋하거나, 되돌리지 않고 앞으로 고치기)으로 멈춘다(runbook §4.5).
 - Map의 `ktm_*` role 이름·membership 그래프가 cluster 전역을 점유한다. `ALTER ROLE <admin> SET`·
   `ALTER ROLE ALL SET`이 생기면 다음 Map fresh bootstrap이 거부된다(재구축은 멈추기 전에 거부한다).
 - `ktdctl pinvi-pair rebuild-pinned --restart`는 공용 instance에서 Map 두 DB와 PinVi DB를 지운다. launcher만
