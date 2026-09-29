@@ -310,11 +310,11 @@ GRANT  CONNECT ON DATABASE <app DB>       TO <app_user>;
 
 | 프로젝트/role | 일상 백업 주인 | 근거 |
 |---|---|---|
-| `concierge` · `pinvi` · `geo_dagster` · `transport` · `transport_dagster` | **Manager cron** (`scripts/run-standalone-backup.sh`) | wrapper의 `case "$ROLE" in geo_dagster|concierge|pinvi|transport|transport_dagster)` 허용 목록. transport 둘은 2026-09-28 오너 결정으로 transport 저장소의 자체 cron을 대신한다 |
+| `concierge` · `pinvi` · `geo_dagster` · `transport` · `transport_dagster` · `dagster_shared` | **Manager cron** (`scripts/run-standalone-backup.sh`) | wrapper의 `case "$ROLE" in geo_dagster|concierge|pinvi|transport|transport_dagster|dagster_shared)` 허용 목록. transport 둘은 2026-09-28 오너 결정으로 transport 저장소의 자체 cron을 대신한다. `dagster_shared`는 공용 Dagster instance의 metadata DB다(platform-topology.md §7 2단계) |
 | **`geo` (application DB, 32 GB)** | **프로젝트 자체 스케줄 백업** — Manager가 아니다 | wrapper가 `geo`를 **명시적으로 거부**한다(`exit 2`). 헤더: "geo application DB role은 kor-travel-geo 앱 레벨 스케줄 백업이 정본이므로 cron에 넣지 않는다". compose도 geo 앱이 자체 `db_backup`을 돌린다고 적는다(33 GB DB에 아카이브 약 4.7 GB) |
 | `map_application` · `map_dagster` | cron 대상 아님 (#148 정책과 중복) | 같은 wrapper 헤더 |
 
-일상 백업 role은 설정 파일이 아니라 **코드에 박힌 고정 집합**이다(`geo` / `geo_dagster` / `concierge` / `map_application` / `map_dagster` / `pinvi` / `transport` / `transport_dagster`). 새 프로젝트 백업을 붙이려면 Manager 저장소 PR로 다음을 함께 고친다(주기 백업 대상이면 프론트 `BackupHistoryPanel.tsx`의 `EXPECTED_INTERVAL_HOURS`도 — cron 주기를 미러링한다). **`database_runtime._ROLE_CONFIG`에는 넣지 않는다** — 그것은 v5 재구축이 파기·재생성하는 DB 목록이다:
+일상 백업 role은 설정 파일이 아니라 **코드에 박힌 고정 집합**이다(`geo` / `geo_dagster` / `concierge` / `map_application` / `map_dagster` / `pinvi` / `transport` / `transport_dagster` / `dagster_shared`). 새 프로젝트 백업을 붙이려면 Manager 저장소 PR로 다음을 함께 고친다(주기 백업 대상이면 프론트 `BackupHistoryPanel.tsx`의 `EXPECTED_INTERVAL_HOURS`도 — cron 주기를 미러링한다). **`database_runtime._ROLE_CONFIG`에는 넣지 않는다** — 그것은 v5 재구축이 파기·재생성하는 DB 목록이다:
 
 | 자리 | 파일 | 빠뜨리면 |
 |---|---|---|
@@ -606,7 +606,7 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
 - `docs/decisions.md` — **ADR-44**: concierge를 공용 제어 평면 PostgreSQL instance(`:11000`)로 이전한다 — ADR-37의 concierge 범위 부분 supersede (accepted, 2026-09-19). cutover 절차·롤백 안전망·합류 규칙의 정본.
 - `docs/decisions.md` — **ADR-37**: 프로젝트별 전용 PostgreSQL instance 분리(2026-08-17 사고). concierge 범위만 ADR-44로 일부 superseded되고 **geo/map/pinvi는 그대로 유효**. §5.2의 근거.
 - `docs/prod-deployment.md` §2 — 머지된 변경이 n150에 도달하는 경로(rsync 또는 trusted installer). §7.1 0b의 정본.
-- `docs/platform-topology.md` — 다른 프로젝트를 위한 플랫폼 참조. §2(내부/외부 target), §5(code-server 분리 현황), §7(전환 5단계 계획 — 공용 Dagster `11001`/`11002`는 **여기에만, 계획으로** 존재한다). ⚠️ §4 instance 표와 §7 도입부가 아직 cutover 전을 적는다(§1.2).
+- `docs/platform-topology.md` — 다른 프로젝트를 위한 플랫폼 참조. §2(내부/외부 target), §5(code-server 분리 현황), §7(전환 5단계 계획 — 공용 Dagster의 `dagster_shared`는 2단계 정의가 있고, gateway `11001`·webserver `127.0.0.1:11002`·daemon(포트 없음)은 **3단계 계획으로** 존재한다). ⚠️ §4 instance 표와 §7 도입부가 아직 cutover 전을 적는다(§1.2).
 - `AGENTS.md` — ⚠️ 74·151·156행이 아직 cutover 미완을 서술한다. 다른 저장소가 Manager를 처음 읽을 때 가장 먼저 여는 파일이므로 정정 우선순위가 가장 높다.
 - `docs/ports.md` — 포트 규약의 정본. `11000`은 12000대 대역과 별개이며 합류 프로젝트가 늘어도 바뀌지 않는다. ⚠️ 101행이 아직 미래형이다.
 - `docker-compose.yml` — `kor-travel-shared-postgres` + `kor-travel-shared-db-init-concierge`. **db-init 형태의 유일한 선례이자 복제 원본.**

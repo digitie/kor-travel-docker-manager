@@ -18,6 +18,12 @@
   합류한 프로젝트들(concierge ADR-44, geo ADR-45, PinVi ADR-46, weather ADR-47,
   transport)이 공유하는 자리이기 때문이다. 새 프로젝트가 합류해도 이 포트 자체는
   바뀌지 않는다.
+- `11001`·`11002`는 같은 이유로 대역 밖에 두는 **공용 Dagster 제어 평면**의 자리다
+  (platform-topology.md §7, 소유자 결정 D2). `11001`은 nginx Basic Auth gateway — 공용 Dagster의
+  유일한 입구이고, OPNsense HAProxy가 공개 host `dagster.digitie.mywire.org`를 그리로 보낸다.
+  `11002`는 공용 dagster-webserver이고 **`127.0.0.1`에서만** 듣는다(gateway 뒤에서만 닿는다).
+  공용 dagster-daemon은 포트가 없다. 셋 다 3단계에서 생긴다 — 지금(2단계)은 두 포트 모두 아무도
+  듣지 않는다. 다른 서비스에 배정하지 않는다.
 - 표의 값은 host 네트워크 기본값 기준이다. `KTDM_DOCKER_NETWORK_MODE=host`에서는
   컨테이너 내부 프로세스가 호스트 포트에 직접 listen하고 서비스 간 참조는
   `127.0.0.1:<포트>`를 사용한다.
@@ -37,6 +43,7 @@
 | `pinvi` | `12800-12899` | API `12801`, Dagster webserver `12802`, Dagster code-server(gRPC, PinVi ADR-069) `12803`, Web UI `12805` (DB는 공용 `11000`) | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
 | `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Prometheus `14104`, Web `14105` | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
+| 공용 Dagster(`dagster`) | 대역 밖 | gateway `11001`(nginx Basic Auth, 공개 host), webserver `127.0.0.1:11002`(loopback 전용), daemon 포트 없음 — **3단계에서 생긴다**. 2단계인 지금은 storage one-shot 둘뿐이다(`kor-travel-shared-db-init-dagster`, `kor-travel-dagster-storage-migrate`, DB는 공용 `11000`의 `dagster_shared`) | Manager (platform-topology.md §7) |
 | `transport` | `14001-14099` | Backend `14001`, Frontend `14002`, Dagster 게이트웨이 `14003`·webserver `14004`·code-server(gRPC) `14005`(셋 다 loopback, Manager 미등록 컨테이너) (DB는 공용 `11000`의 `kor_travel_transport`) | `kor-travel-transport` (외부 프로젝트) |
 
 ### `gra`/`cadv`/`prom`의 대역 예외 (ADR-48)
@@ -126,7 +133,7 @@ code-server는 `12503`이다.
 
 | 인스턴스 | 포트 | 데이터베이스 |
 |---|---:|---|
-| `kor-travel-shared-postgres` | `11000` | `kor_travel_map`+`kor_travel_map_dagster`(ADR-53), `kor_travel_concierge`(ADR-44), `kor_travel_geo`+`kor_travel_geo_dagster`(ADR-45), `pinvi`+`pinvi_dagster`(ADR-46), `kor_travel_weather`+`kor_travel_weather_dagster`(ADR-47), `kor_travel_transport`+`kor_travel_transport_dagster` — 프로젝트마다 자기 두 database를 소유하는 app role 하나. 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) |
+| `kor-travel-shared-postgres` | `11000` | `kor_travel_map`+`kor_travel_map_dagster`(ADR-53), `kor_travel_concierge`(ADR-44), `kor_travel_geo`+`kor_travel_geo_dagster`(ADR-45), `pinvi`+`pinvi_dagster`(ADR-46), `kor_travel_weather`+`kor_travel_weather_dagster`(ADR-47), `kor_travel_transport`+`kor_travel_transport_dagster` — 프로젝트마다 자기 두 database를 소유하는 app role 하나. 공용 Dagster instance의 `dagster_shared`(소유 role `kor_travel_dagster_shared_app`, platform-topology.md §7 2단계 — Manager 설치 뒤 창의 `ensure dagster`가 만든다). 합류 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) |
 
 loopback 전용이다. Map database provisioning은 pinned workflow가 이 instance의 admin으로
 Map one-shot을 돌려 수행하고(ADR-53 S1 — Map은 db-init이 없다), 나머지 프로젝트는 각자의

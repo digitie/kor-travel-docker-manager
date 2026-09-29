@@ -1191,6 +1191,7 @@ ktdctl db-backup create transport_dagster --timeout 14400
 | pinvi | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `pinvi` |
 | transport | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_transport` |
 | transport_dagster | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `kor_travel_transport_dagster` |
+| dagster_shared | `kor-travel-shared-postgres` | 11000 | `shared_admin` | `dagster_shared` |
 
 포트와 user는 코드가 들고 있지 않다 — `db-backup`이 떠 있는 컨테이너의 `-p` 인자와
 `POSTGRES_USER`에서 읽는다(위 값은 기본 설정 기준).

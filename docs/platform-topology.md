@@ -127,7 +127,8 @@ ADR-53으로 공용 인스턴스로 옮겨, 이제 Manager의 PostgreSQL은 공�
 **Dagster를 쓰는 다섯 프로젝트(`pinvi`·`geo`·`weather`·`map`·transport)가 모두 §7
 1단계(code-server 분리)를 충족했다.** code-server는 **프로젝트마다 하나씩 따로** 돈다 —
 프로젝트끼리 합치지 않고, 합칠 계획도 없다(§7 "왜 code-server만 나뉘는가"). 공유하기로 한
-것은 webserver/daemon과 메타DB(`dagster_shared`)이고, 그것은 아직 없다(§7 2~4단계).
+것은 webserver/daemon과 메타DB(`dagster_shared`)다. 메타DB는 2단계의 정의만 있고 아무도 쓰지
+않으며, webserver/daemon은 아직 없다(§7 2~4단계).
 pinvi/geo는 2026-09-19(서로 다른 PR이 거의 동시에 착지 — PinVi ADR-069/PR
 `digitie/pinvi#559`+`#358`, geo는 PR #357), weather는 원래 external target 때부터
 분리돼 있었고(참조 구현 `kor-travel-weather` PR #61) 2026-09-20 ADR-47로 Manager
@@ -197,9 +198,14 @@ instance `kor-travel-shared-postgres`(`:11000`)에 `kor_travel_concierge`(ADR-44
 보존 없이 fresh 구성), `kor_travel_weather`+`kor_travel_weather_dagster`(ADR-47),
 `kor_travel_transport`+`kor_travel_transport_dagster`가 활성이다(2026-09-28 n150 실측: 해당
 서비스의 DSN이 전부 `:11000`). 옛 전용 인스턴스는 같은 날 Manager compose에서 뺐다(§4).
-1단계(code-server 분리)도 Dagster를 쓰는 다섯 프로젝트가 모두 밟았다(§5). 2~4단계(공유
-Dagster 스토리지 `dagster_shared` · 공용 webserver/daemon · 프로젝트별 daemon 철거)는
-여전히 계획이다 — `dagster_shared`도 `11001`/`11002`도 **아직 없다**. 다른 프로젝트가 5단계를 먼저 밟는 절차는
+1단계(code-server 분리)도 Dagster를 쓰는 다섯 프로젝트가 모두 밟았다(§5). 2단계(공유
+Dagster 스토리지 `dagster_shared`)는 **Manager 쪽 정의가 있다** — db-init
+`kor-travel-shared-db-init-dagster`, storage migrate one-shot `kor-travel-dagster-storage-migrate`,
+공용 `config/dagster-shared/dagster.yaml`, Manager 소유 호스트 이미지(`docker/dagster-host/`),
+백업 role `dagster_shared`, target `dagster`. n150에 생기는 것은 그 release를 설치한 뒤 창에서
+`ensure dagster`를 돌렸을 때다. 아무것도 아직 그 instance를 쓰지 않는다. 3·4단계(공용
+webserver/daemon/gateway · 프로젝트별 webserver/daemon 철거)는 여전히 계획이다 — `11001`/`11002`에는
+**아직 아무것도 없다**. 다른 프로젝트가 5단계를 먼저 밟는 절차는
 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)가 갖는다.
 
 **공용 instance의 튜닝은 Map의 값이다(ADR-53 D4).** Map의 두 DB가 이리로 오기 전에
@@ -218,22 +224,35 @@ instance를 한 번 재기동해 Map이 전용 instance에서 쓰던 값을 올�
 **PinVi의 `pinvi_dagster`는 2단계(`dagster_shared`)가 아니다.** 그 데이터베이스를
 **PinVi 전용으로 유지한 채** 물리적으로 공용 instance로 옮긴 것뿐이다 — concierge의
 `kor_travel_concierge`처럼 5단계(애플리케이션 DB급 이사)의 연장이지, 여러 프로젝트가
-하나의 `dagster_shared`로 통합되는 2단계가 아니다. 나중에 2~4단계가 실제로 진행되면
-`pinvi_dagster`(그리고 geo·weather·transport의 Dagster 메타DB)도 다시 `dagster_shared`로
-옮기는 별도 작업이 필요하다.
+하나의 `dagster_shared`로 통합되는 2단계가 아니다. 그리고 2~4단계는 그 메타DB들을
+`dagster_shared`로 **옮기지 않는다** — 이력은 새로 시작한다(아래 D1).
 
 ```
 11000  PostgreSQL (단일 공용 인스턴스)
-         ├ dagster_shared        ← run / event log / schedule storage
-         ├ kor_travel_map
-         ├ kor_travel_geo
-         ├ kor_travel_concierge
-         └ pinvi
-11001  dagster-daemon     (전 프로젝트 공용)
-11002  dagster-webserver  (전 프로젝트 공용)
+         ├ dagster_shared        ← 공용 Dagster instance: run / event log / schedule storage
+         ├ kor_travel_map · kor_travel_geo · kor_travel_concierge · pinvi · …
+         └ 옛 *_dagster 메타DB   ← 4단계까지 그대로, 그 뒤 접속 차단·보존(D1·D6)
+11001  nginx Basic Auth gateway (공용, 공개 host dagster.digitie.mywire.org)
+         │   OPNsense HAProxy → 11001. `/health`만 인증 없이, POST는 same-origin 검사
+         └→ 127.0.0.1:11002  dagster-webserver (공용, loopback 전용 — gateway 뒤에서만)
+(포트 없음)  dagster-daemon (공용) — 나가는 연결뿐(Postgres, code-server gRPC).
+             health는 `dagster-daemon liveness-check`(DB heartbeat)
 
 code-server (dagster api grpc)  ← 프로젝트별 분리 유지, 각자 포트
 ```
+
+**참여 범위.** 공용 plane은 Map·PinVi·geo·weather 넷이다. **transport는 나중에 합류한다** —
+빠진 것이 아니라 미뤘다. 그때까지 transport는 자기 webserver·daemon·메타DB
+(`kor_travel_transport_dagster`)를 그대로 쓰고, Manager 배포로 옮겨 온 뒤(M-T) 같은 절차로
+합류한다. 설계는 그 합류가 재설계 없이 되게 잡았다 — 공용 `dagster.yaml`에
+`.dagster/repository=__repository__@kor-travel-transport` 상한 3과 `kortraveltransport/run_group`
+상한 넷(각 1)을 더하는 것이 전부다(키가 이미 테넌트 이름공간이라 겹치지 않는다).
+
+**포트(D2).** `11001`은 공용 Dagster의 **입구 하나**다 — nginx Basic Auth gateway가 듣고,
+HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보낸다. webserver는
+`127.0.0.1:11002`에서만 듣는다(gateway 없이는 인증이 없다 — weather `14102`/`14107`과 같은
+배치다). daemon은 포트가 없다. 옛 문서의 "11001 daemon / 11002 webserver"는 틀렸다 — daemon은
+아무것도 listen하지 않는다.
 
 **왜 code-server만 나뉘는가.** 프로젝트마다 Python 의존성이 다르므로 한 gRPC
 프로세스에 여러 프로젝트 코드를 올릴 수 없다. 반면 webserver와 daemon은 코드를
@@ -251,10 +270,13 @@ code-server (dagster api grpc)  ← 프로젝트별 분리 유지, 각자 포트
 
 1. 프로젝트마다 `dagster api grpc` code-server를 **별도 서비스로 분리**한다
    (2026-09-25 Map을 끝으로 다섯 프로젝트 모두 완료, §5). 이 단계까지는 기존 webserver/daemon을 그대로 둔다.
-2. 공유 인스턴스 스토리지(`11000`/`dagster_shared`)를 세우고, 각 프로젝트의 Dagster
-   메타DB를 그리로 옮긴다.
-3. 공유 `workspace.yaml`에 프로젝트별 `grpc_server`를 나열하고, 공유 webserver(`11002`)
-   /daemon(`11001`)을 세운다.
+2. 공유 인스턴스 스토리지(`11000`/`dagster_shared`)를 세운다 — db-init이 role·DB를,
+   storage migrate one-shot이 schema를 만든다. 프로젝트의 옛 Dagster 메타DB는 **옮기지
+   않는다**(D1). 아직 아무것도 이 스토리지를 쓰지 않는다.
+3. 공유 `workspace.yaml`에 프로젝트별 `grpc_server`를 나열하고, 공유 webserver
+   (`127.0.0.1:11002`)·그 앞의 gateway(`11001`)·daemon(포트 없음)을 세운다. 그 뒤 프로젝트를
+   **하나씩** 옮긴다(PinVi → geo → weather → Map). 한 프로젝트를 옮기면 옛 daemon·webserver를
+   멈추고, 그 code-server와 소비자(API·UI)를 공용 URL로 돌린다.
 4. 프로젝트별 webserver/daemon을 내린다. **이 단계 전까지는 되돌리기가 싸다.**
 5. 애플리케이션 DB를 `11000`으로 이사한다 — 프로젝트별 롤·ACL·마이그레이션 원장·
    백업 경로가 전부 따라온다. **가장 비싸고 되돌리기 어려운 단계이므로 마지막이다.**
@@ -267,6 +289,28 @@ code-server (dagster api grpc)  ← 프로젝트별 분리 유지, 각자 포트
 
 **되돌리기.** 4단계 전까지는 프로젝트별 webserver/daemon이 살아 있으므로 공유
 프로세스를 내리는 것으로 끝난다. 5단계 이후는 DB 복원이 필요하다.
+
+**소유자 결정(2026-09-29).**
+
+- **D1 — 이력은 새로 시작한다.** `dagster_shared`는 빈 DB에서 시작하고 옛 메타DB의 run·event·
+  tick을 옮기지 않는다. 다섯 메타DB가 모두 같은 Dagster schema지만 이력이 짧고, 합치면 serial
+  `event_logs.id`·`asset_keys`·instigator selector·`kvs`가 충돌하며 낡은 QUEUED/STARTED run을
+  공용 daemon이 집어 든다. 옛 프로젝트별 `*_dagster` DB는 지우지 않고 4단계 뒤 최종 dump를 뜬 채
+  접속을 막아(`ALLOW_CONNECTIONS false`) 보존한다.
+- **D3 — 전역 run 상한은 12다.** 이것은 호스트 보호 상한이지 테넌트 손잡이가 아니다(n150의
+  부하는 CPU가 아니라 디스크 대기다). 테넌트별 상한은 오늘 값 그대로 `.dagster/repository` tag로
+  준다 — Map·PinVi·geo·weather 각 10. 테넌트 안의 상한도 그대로다(Map
+  `kor_travel_map.feature_update_request_id` 4, weather `kortravelweather/run_group=external_weather`
+  3; transport는 합류 때 3과 `run_group` 넷). 근거 없이 올리지 않는다.
+- **D4 — schedule·sensor의 켜짐/꺼짐은 코드에 선언한다**(`default_status`). 빈 `dagster_shared`는
+  DB에만 켜져 있던 instigator를 STOPPED로 올린다 — geo의 셋과 transport의 하나가 그렇다. 그
+  프로젝트는 옮기기 **전에** 코드에서 선언한다. GraphQL로 다시 켜는 것은 저장소 밖 상태라 쓰지 않는다.
+- **D5 — 로그 표시는 오늘과 같다.** run은 code-server 컨테이너 안에서 돌고 compute log는 그
+  컨테이너의 `/opt/dagster/state/compute_logs`에 남는다. webserver는 자기 파일시스템을 읽으므로
+  UI의 stdout/stderr는 code-server를 분리한 오늘도 이미 비어 있다 — 공용 plane은 그것을 나쁘게도
+  좋게도 하지 않는다. 공유 디렉터리나 오브젝트 스토리지 log manager는 별도 과제다.
+- **D6 — soak.** 프로젝트 전환 사이 하루(그 프로젝트 schedule의 일일 주기 하나), 4단계 전 7일(그
+  동안 `dagster_shared` 백업이 7일 연속 초록), 옛 메타DB `DROP` 전 30일(dump는 백업 보존 기간대로).
 
 ---
 
@@ -300,6 +344,7 @@ code-server (dagster api grpc)  ← 프로젝트별 분리 유지, 각자 포트
 | 컨테이너·target 등록 | `config/docker-targets.yml` |
 | prod compose (내부 target) | Manager `docker-compose.yml` |
 | prod compose (외부 target) | 그 프로젝트 저장소 |
+| 공용 Dagster instance 설정·호스트 이미지 버전 | `config/dagster-shared/dagster.yaml` · `docker/dagster-host/requirements.in`(잠금본 `requirements.txt`) |
 | Manager 내부 설계 | [`architecture.md`](architecture.md) |
 | 결정과 그 근거 | [`decisions.md`](decisions.md) |
 | 두 곳에 적힌 사실의 결박 | [`bindings.md`](bindings.md) |
