@@ -573,14 +573,13 @@ targets:
       - pinvi-api
       - pinvi-web
       - pinvi-dagster-code-server
-      - pinvi-dagster
-      - pinvi-dagster-daemon
+    # 옛 webserver·daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster` profile에 있다 — `up`에 이름을 주면
+    # 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태 화면과 되돌리기가
+    # 찾는다.
     runtime_services:
       - pinvi-api
       - pinvi-web
       - pinvi-dagster-code-server
-      - pinvi-dagster
-      - pinvi-dagster-daemon
     containers:
       - kor-travel-shared-postgresql
       - rustfs
@@ -603,7 +602,7 @@ targets:
     init_steps: []
     # 필드 설명은 geo target에 있다.
     dagster:
-      control_plane: own
+      control_plane: shared
       consumers:
         pinvi-api:
           PINVI_DAGSTER_BASE_URL: internal
@@ -878,6 +877,10 @@ compose_binds:
     - container_path: "/var/lib/postgresql/data"
       read_only: false
       source: "${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}"
+  pinvi-dagster-code-server:
+    - container_path: "/opt/pinvi/.dagster/dagster.yaml"
+      read_only: true
+      source: "./config/dagster-shared/dagster.yaml"
   kor-travel-weather-dagster-code-server:
     - container_path: "/opt/dagster/home/dagster.yaml"
       read_only: true

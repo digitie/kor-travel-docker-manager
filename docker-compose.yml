@@ -687,7 +687,7 @@ services:
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "9bc2b3c97deb663e"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "111114624da6f2ac"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -757,7 +757,7 @@ services:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "9bc2b3c97deb663e"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "111114624da6f2ac"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -1826,6 +1826,9 @@ services:
       # API에 파생하고 다른 PinVi/Map service로의 누출을 fail-close한다.
       PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN: ${PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN:-}
       PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN: ${PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN:-}
+      # 공용 Dagster webserver(ADR-54, loopback 전용). admin_etl은 `repositoryOrError`·`runsOrError`를
+      # `pinvi_dagster_location_name`(= `pinvi.etl.definitions`)으로 좁혀 부른다.
+      PINVI_DAGSTER_BASE_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
     ports:
     - ${PINVI_API_PORT:-12801}:${PINVI_API_PORT:-12801}
     healthcheck:
@@ -1927,10 +1930,16 @@ services:
     - -h
     - 127.0.0.1
     - -p
-    - '${PINVI_DAGSTER_CODE_SERVER_PORT:-12803}'
+    # 공용 workspace가 이 포트를 싣는다(정적 파일이라 `.env`의 override를 모른다) — literal이다.
+    - '12803'
     - -m
     - pinvi.etl.definitions
     environment:
+      # 공용 Dagster plane에 합류했다(ADR-54, PinVi 전환) — instance storage는 공용 URL 앵커와 공용
+      # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `PINVI_DAGSTER_PG_URL`은 되돌리기
+      # 때까지 남긴다(공용 `dagster.yaml`은 읽지 않는다).
+      <<: *dagster-shared-control-env
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
       DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       # 여기가 code location이 실제로 도는 곳이다 — `DefaultRunLauncher`의 run
@@ -1948,6 +1957,9 @@ services:
       # `--port 14101`을 literal로 듣는다(`KOR_TRAVEL_WEATHER_API_PORT`는 host 모드에서
       # 무시되는 `ports:`에만 쓰인다) — 그래서 그 변수가 아니라 listener와 같은 literal이다.
       PINVI_KOR_TRAVEL_WEATHER_BASE_URL: http://127.0.0.1:14101
+    # 이미지에 구운 `apps/etl/dagster.yaml` 대신 공용 instance 정의를 붙인다.
+    volumes:
+    - ./config/dagster-shared/dagster.yaml:/opt/pinvi/.dagster/dagster.yaml:ro
     healthcheck:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
@@ -1965,7 +1977,10 @@ services:
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
       start_period: 180s
       start_interval: 5s
+  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`·pinned 재구축이 띄우지 않는다.
   pinvi-dagster:
+    profiles:
+    - legacy-dagster
     image: ${PINVI_DAGSTER_IMAGE:-pinvi-dagster:latest-main}
     build:
       context: ${PINVI_REPO_DIR:-../pinvi}
@@ -2037,7 +2052,10 @@ services:
   # (`pinvi_pii_retention` 포함)·schedule 7개·sensor 1개가 전부 그 상태였다.
   #
   # webserver와 **같은 이미지**를 argv만 달리해 돌린다(Map·geo와 같은 형태).
+  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`·pinned 재구축이 띄우지 않는다.
   pinvi-dagster-daemon:
+    profiles:
+    - legacy-dagster
     image: ${PINVI_DAGSTER_IMAGE:-pinvi-dagster:latest-main}
     container_name: ${PINVI_DAGSTER_DAEMON_CONTAINER:-pinvi-dagster-daemon-latest}
     restart: unless-stopped
