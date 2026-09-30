@@ -8600,7 +8600,7 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
 
 ## 2026-10-01 — 공용 Dagster: Map 전환 준비(Manager 쪽, ADR-54 개정)
 
-브랜치 `feat/dagster-shared-map-prep-mgr`(origin/main `cc5fa06` 위, geo 전환 브랜치와 독립). Map은 뒤집지 않는다.
+브랜치 `feat/dagster-shared-map-prep-mgr`(처음 `cc5fa06` 위에서 geo 전환과 독립으로 만들고, geo 머지(#449 `9211d63`) 뒤 그 위로 rebase). Map은 뒤집지 않는다.
 
 - **plane을 아는 pinned 재구축.** `RuntimeTopology.shared_dagster_slots`(Map·PinVi 중 `shared` carrier slot)가 있으면
   전체 경로가 PinVi smoke 전에 그 carrier를 띄우고 공용 plane webserver·daemon을 `up --no-deps --wait`로 맞춘다. 같은
