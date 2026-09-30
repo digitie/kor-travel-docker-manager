@@ -1665,6 +1665,14 @@ services:
       # Dagster instance storage. **scheme이 앱 DSN과 다르다** —
       # dagster-postgres는 psycopg2(동기)를 쓰므로 `+asyncpg`를 붙이면 안 된다.
       PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}
+      # `pinvi.etl.definitions`의 resource가 `EnvVar`로 읽는다 — run worker는 이
+      # 프로세스의 자식이라 webserver/daemon에는 필요 없다. KASI(특일·출몰시각) job의
+      # data.go.kr key는 전용 값이 없으면 Map의 key를 쓴다(KREX go key와 같은 폴백).
+      DATA_GO_KR_SERVICE_KEY: ${PINVI_DATA_GO_KR_SERVICE_KEY:-${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}}
+      # 보존 지평 가드가 부르는 weather API. host network이고, weather API는
+      # `--port 14101`을 literal로 듣는다(`KOR_TRAVEL_WEATHER_API_PORT`는 host 모드에서
+      # 무시되는 `ports:`에만 쓰인다) — 그래서 그 변수가 아니라 listener와 같은 literal이다.
+      PINVI_KOR_TRAVEL_WEATHER_BASE_URL: http://127.0.0.1:14101
     healthcheck:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
