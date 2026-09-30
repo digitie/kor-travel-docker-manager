@@ -8416,3 +8416,59 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
   G3-b 공용 `workspace.yaml`의 `location_name` ↔ `dagster/code_location` 상한 결박 테스트를 그 파일과 함께.
 - **테스트**(n150, `fc555a8`): 빨강 확인 — db-init을 부모 커밋의 스크립트로 되돌리면 대기 테스트 둘 빨강,
   옛 추출기로 되돌리면 추출 테스트 빨강. `/tmp/b3-test.sh`: ruff 0.16.4 깨끗, **2392 passed, 2 skipped**.
+
+## 2026-09-30 — 공용 Dagster 3단계: 공용 daemon·webserver·gateway, target별 합류 스위치(ADR-54)
+
+브랜치 `feat/dagster-shared-stage3`(origin/main `08824b0` 위). 모든 target이 `own`이라 plane은 빈 workspace로 돌고
+어느 프로젝트의 서비스 정의도 바뀌지 않는다.
+
+- **호스트 서비스** `kor-travel-dagster-daemon`·`-webserver`: 호스트 이미지(migrate와 같은 tag·context), 비-root,
+  `init: true`, migrate `service_completed_successfully`, env는 공용 URL 앵커·`DAGSTER_HOME`(+daemon tolerance
+  300)뿐. daemon은 storage 가드 뒤 `dagster-daemon run`, exec `liveness-check`. webserver는 `127.0.0.1:11002`,
+  probe는 붙은 workspace의 location **전부**가 `RepositoryLocation`인지(dagster import·gRPC 없음, 자체 timeout 8초).
+- **gateway** `11001`: 공식 nginx digest 고정, uid 101, Manager 소유 전체 설정(`config/dagster-shared/gateway.conf`),
+  Basic Auth(secret 파일, `{PLAIN}`), Origin 없는·남의 POST 403, `/health` 204, frame-ancestors(기본 geo UI).
+  fail-closed 기동 — n150 Compose v5.2.0은 값이 빈 env secret의 파일을 만들지 않는다(격리 실측), 그것도 빈
+  비밀번호로 거부한다. Dagster webserver의 자체 CSP는 두고 frame-ancestors를 두 번째 정책으로 더한다(실측).
+- **스위치와 파생**: target별 `dagster: {control_plane, consumers}`(넷 다 `own`, registry가 형태 검증),
+  `config/dagster-shared/workspace.yaml`은 `shared` target의 code-server command에서 파생(지금 `load_from: []`).
+  렌더러는 두지 않았다 — 단일 compose 경계(ADR-20)와 주석 보존 때문에 전환 PR이 손으로 바꾸고,
+  `test_dagster_shared_workspace_is_derived.py`가 (a)·(b)·(c)·`all` 포함·workspace drift·G3-b를 파생 기대와 대조한다.
+  참조 구현 `_flip`으로 네 target 각각·전부를 뒤집어 초록, 한 단계씩 뺀 9개 대조군이 이름으로 빨갛다.
+- **재생성 없음**(n150 읽기 전용, sudo, live `.env`, `config --hash '*'`): 설치본 `08824b0` vs 이 브랜치 — 기존 41개
+  전부 같고 새 것은 셋(daemon·webserver·gateway). live `.env`에 gateway 비밀번호가 없어도 `config`는 rc=0.
+  실행 중 컨테이너 31개 중 20개가 설치본 정의와 hash가 다른 것은 이 브랜치와 무관한 기존 상태다(설치본·브랜치
+  어느 쪽과 대조해도 같은 20개).
+- **테스트**(n150): 대상 6파일 312 passed; 격리 plane 통합 5 passed(빈 plane의 셋 healthy, heartbeat 있음·
+  instigator 0, 비-root uid, 없는 location을 기대하면 probe 빨강, gateway 401·403·204·200·CSP, 기동 거부 넷);
+  `/tmp/b3-test.sh`(`9811d5e`) ruff 0.16.4 깨끗, **2452 passed, 2 skipped**. 빨강 확인(버리는 사본에 변이 하나씩)
+  단위 16/16 빨강 — workspace drift, G3-b 상한 없는 location, own 서비스의 legacy profile, own code-server의 공용
+  URL, 호스트 서비스의 앱 비밀, webserver `0.0.0.0`, daemon `init` 삭제, daemon 가드 무력화, probe 판정 뒤집기,
+  probe 경로, probe 타입, `control_plane` 오타, runtime에서 daemon 삭제, ensure에서 gateway 삭제, 남의 서비스에
+  소비자 선언, code-server target의 스위치 삭제.
+  gated 1 빨강 — gateway의 `"POST:0" 1`을 0으로 + 빈 비밀번호 검사 무력화: 통합 본 테스트와 빈 비밀번호 거부가 빨갛고 나머지 거부 셋은 초록.
+- **D6 개정(2026-09-30 소유자)**: 전환 사이 soak 없음, 넷 뒤 약 24시간 함께 관측(C7 GREEN 포함) 뒤 4단계,
+  옛 메타DB `DROP` 전 30일은 그대로 — §7 runbook·D6·ADR-54에 반영.
+- **남은 것**: 적대 리뷰·PR, 버전 상한 검사(계획 0.6), G3-a 실측, 에지(3.6), 소비자 PR 3.1~3.4, Map 전환의 host
+  allowlist·C7 인증·C6c 보호 서비스 집합, 전환 창.
+
+## 2026-09-30 — 공용 Dagster 3단계: 적대 리뷰 수정(재생성 digest, `/graphql` CSRF, pinned 게이트, 버전 상한)
+
+브랜치 `feat/dagster-shared-stage3`(origin/main `9f0f1cd` 위). 모든 target은 여전히 `own`이다.
+
+- **H1** 공용 설정을 붙인 상시 서비스가 그 파일 sha256 앞 16자를 env로 싣는다(daemon·webserver: workspace·instance,
+  gateway: gateway.conf, 합류한 code-server: instance). bind가 설치본 symlink를 거쳐 compose hash가 경로만 보므로,
+  내용만 바뀐 workspace로는 재생성되지 않던 구멍이다. 파생 테스트가 내용과 대조하고 참조 전환이 digest를 갱신한다.
+- **H2·M1** gateway: POST가 아닌 `/graphql`은 인자가 있으면 403(처음에는 `query` 인자만 막았다 — 재리뷰 MED-1이
+  인코딩된 이름·중복 이름 우회를 찾아 인자 전부로 넓혔고, 그 판이 POST까지 막아 UI의 `POST /graphql?op=<Operation>`을
+  깨뜨려 재리뷰 HIGH-1로 POST를 뺐다 — POST는 Origin·`Sec-Fetch-Site`가 가른다), `Sec-Fetch-Site`가 same-origin·none·없음이 아니면 403, 허용
+  Origin이 아닌 `Upgrade` 403. UI HTML(`/`)의 교차 사이트 탐색(iframe)은 그대로 200.
+- **M2** 옛 webserver·daemon 이름을 literal로 든 코드가 있는 target은 계약 테스트가 `(pinned)`로 `shared`를 막는다 —
+  재리뷰 MED-2 뒤 목록 셋이 아니라 `backend/src`·`scripts` 전체를 토큰으로 찾는다(Map·PinVi·geo가 걸리고 weather만 열림). 파생은 별도 PR이다. `test_flipping_a_target_renders_a_consistent_plane`의 과장된 docstring 정정.
+- **M3** `127.0.0.1:11002` 무인증은 ADR-54에 받아들인 위험으로, runbook 4번이 소비자가 **할 수 있는 것**을 본다(weather
+  PR #65 `scopedDagsterRequest` 확인).
+- **M4** daemon probe: workspace code-server 전부 gRPC `SERVING` → 같은 프로세스 exec `liveness-check`.
+- **M5** webserver probe가 `dagsterLibraryVersions` ≤ 호스트 설치 버전(`importlib.metadata`)을 본다, 모르면 빨강.
+- LOW: `shared` code-server의 `-p` literal, 옛 공개 host env 참조 금지, webserver도 storage 가드(YAML anchor 하나,
+  argv handoff), liveness 테스트의 조기 return 구멍, 합류 조건(/opt/dagster/state 쓰기·pool 접두) 문서·검증 단계.
+  `limit_req`는 HAProxy 뒤 단일 주소라 UI 전체를 조이므로 두지 않았다(ADR-54).

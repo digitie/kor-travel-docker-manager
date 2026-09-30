@@ -121,14 +121,30 @@ def _guard_source(command: list[str]) -> str:
     return script[start:end]
 
 
+#: argv로 넘기는 형태(공용 plane, ADR-54): `sh -ec <가드> sh <argv...>`의 가드가 `exec "$$@"`로 끝난다.
+_ARGV_HANDOFF: Final = 'exec "$$@"'
+_HANDED_OFF_PROGRAMS: Final = ("dagster-daemon", "dagster-webserver")
+
+
+def _hands_off(command: list[str]) -> bool:
+    script = command[2]
+    if _HANDOFF in script:
+        return True
+    return _ARGV_HANDOFF in script and any(p in command[3:] for p in _HANDED_OFF_PROGRAMS)
+
+
 def _guarded_daemons() -> dict[str, str]:
-    """전제조건을 실은 daemon과 그 전제조건 원문."""
+    """전제조건을 실은 서비스(daemon, 그리고 같은 가드를 쓰는 공용 webserver)와 그 전제조건 원문."""
 
     guarded: dict[str, str] = {}
-    for name, command in _daemon_services().items():
+    for name, service in _compose()["services"].items():
+        raw = service.get("command")
+        if not isinstance(raw, list):
+            continue
+        command = [str(part) for part in raw]
         if tuple(command[:2]) != _GUARDED_SHELL or len(command) < 3:
             continue
-        if _HANDOFF not in command[2] or _PYTHON_INLINE_OPEN not in command[2]:
+        if not _hands_off(command) or _PYTHON_INLINE_OPEN not in command[2]:
             continue
         guarded[name] = _guard_source(command)
     return guarded
@@ -169,6 +185,8 @@ def test_the_guard_extraction_is_not_vacuous() -> None:
     """가드를 실제로 하나 이상 꺼내야 한다 — 0개면 아래 두 검사가 항진명제다."""
 
     guarded = _guarded_daemons()
+    # 공용 plane의 daemon·webserver(argv 형태)도 가드를 싣는다(ADR-54).
+    assert {"kor-travel-dagster-daemon", "kor-travel-dagster-webserver"} <= set(guarded), sorted(guarded)
     assert "pinvi-dagster-daemon" in guarded, (
         "PinVi daemon에서 기동 전제조건이 사라졌다. 이 daemon은 webserver와 같은 "
         "이미지를 쓰면서 볼륨 없는 `DAGSTER_HOME`을 보므로, 전제조건이 없으면 낡은 "

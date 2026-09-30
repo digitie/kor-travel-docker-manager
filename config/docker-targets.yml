@@ -290,6 +290,30 @@ containers:
     connection: "http://127.0.0.1:14104"
     expected_ports:
       - "14104:14104"
+  # 공용 Dagster 제어 평면(platform-topology.md §7 3단계, ADR-54). gateway가 유일한 입구다.
+  kor-travel-dagster-gateway:
+    name: kor-travel-dagster-gateway
+    compose_service: kor-travel-dagster-gateway
+    role: dagster-shared-gateway
+    display_name: 공용 Dagster 게이트웨이
+    connection: "http://127.0.0.1:11001 (Basic Auth, /health만 무인증)"
+    prod_url_env: KTDM_PROD_URL_DAGSTER
+    expected_ports:
+      - "11001:11001"
+  kor-travel-dagster-webserver:
+    name: kor-travel-dagster-webserver
+    compose_service: kor-travel-dagster-webserver
+    role: dagster-shared-webserver
+    display_name: 공용 Dagster webserver
+    connection: "내부 전용(127.0.0.1:11002) — gateway를 통해서만 접근"
+    expected_ports: []
+  kor-travel-dagster-daemon:
+    name: kor-travel-dagster-daemon
+    compose_service: kor-travel-dagster-daemon
+    role: dagster-shared-daemon
+    display_name: 공용 Dagster daemon
+    connection: 내부 전용(포트 없음) — schedule·sensor tick, queued run dequeue, run monitoring
+    expected_ports: []
   kor-travel-transport-backend:
     name: kor-travel-transport-backend-1
     compose_service: backend
@@ -426,6 +450,25 @@ targets:
       - kor-travel-geo-dagster-daemon
       - kor-travel-geo-dagster-code-server
     init_steps: []
+    # 공용 Dagster 제어 평면(ADR-54)에 합류했는가. code-server(`dagster api grpc`)를 가진 target은 모두
+    # 이 필드를 적는다. `own`은 자기 webserver·daemon·메타DB, `shared`는 공용 plane이다.
+    # `shared`로 바꾸는 PR은 같은 커밋에서 compose를 그 모양으로 바꾼다 — code-server가 공용 URL 앵커와
+    # 공용 `dagster.yaml`을 받고, 아래 `consumers`가 공용 webserver·공개 host를 가리키고, 이 target의
+    # webserver·daemon(과 그것에 기대는 gateway)은 `profiles: [legacy-dagster]`로 내려 target의
+    # `services`·`runtime_services`에서 빠진다. 그리고 `config/dagster-shared/workspace.yaml`에 항목
+    # 하나가 생긴다(파생). 어느 하나라도 빠지면 `test_dagster_shared_workspace_is_derived.py`가 무엇이
+    # 빠졌는지 말한다. 순서는 platform-topology.md §7 3단계의 전환 runbook이다.
+    #
+    # `consumers`: 이 target의 Dagster를 부르는 env(서비스 → env → 종류). 앱 코드의 기본값에 기대어
+    # compose에 아직 없는 env도 있어 compose만으로는 찾을 수 없다 — 그래서 여기 적는다. 종류는
+    # `internal`(공용 webserver `http://127.0.0.1:11002`), `public`(공개 host `KTDM_PROD_URL_DAGSTER`),
+    # 뒤에 경로를 붙일 수 있다(`public/graphql`).
+    dagster:
+      control_plane: own
+      consumers:
+        kor-travel-geo-api:
+          KTG_DAGSTER_URL: internal
+          KTG_DAGSTER_PUBLIC_URL: public
 
   conc:
     port_band: "12600-12699"
@@ -500,6 +543,16 @@ targets:
       - kor-travel-map-dagster-code-server
       - kor-travel-map-dagster-daemon
     init_steps: []
+    # 필드 설명은 geo target에 있다. Map API의 `KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS`(host
+    # allowlist, URL이 아니다)는 여기 적지 않는다 — Map 전환 때 공개 host를 더한다(§7 runbook).
+    dagster:
+      control_plane: own
+      consumers:
+        kor-travel-map-api:
+          KOR_TRAVEL_MAP_API_DAGSTER_URL: internal
+          KOR_TRAVEL_MAP_API_DAGSTER_GRAPHQL_URL: public/graphql
+        kor-travel-map-ui:
+          NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: public
 
   pinvi:
     port_band: "12800-12899"
@@ -548,6 +601,12 @@ targets:
       - pinvi-dagster
       - pinvi-dagster-daemon
     init_steps: []
+    # 필드 설명은 geo target에 있다.
+    dagster:
+      control_plane: own
+      consumers:
+        pinvi-api:
+          PINVI_DAGSTER_BASE_URL: internal
 
   all:
     display_name: 전체 Kor Travel/PinVi 개발 인프라
@@ -662,35 +721,57 @@ targets:
       - kor-travel-weather-dagster-daemon
       - kor-travel-weather-dagster-gateway
       - kor-travel-weather-prometheus
+    # 필드 설명은 geo target에 있다. weather의 gateway(14102)는 webserver에 기대므로 전환 때 함께
+    # `legacy-dagster`로 내려간다.
+    dagster:
+      control_plane: own
+      consumers:
+        kor-travel-weather-web:
+          DAGSTER_UI_INTERNAL_URL: internal
+          NEXT_PUBLIC_DAGSTER_URL: public
 
   dagster:
-    # 공용 Dagster 제어 평면(platform-topology.md §7, dagster-shared-plan §4). stage 2에는
-    # 공용 instance 위의 `dagster_shared` DB·role과 그 storage schema만 있다 — 두 one-shot뿐이고
-    # 상시 서비스가 없어 `runtime_services`가 비었다. 아직 아무것도 이 instance를 쓰지 않는다.
+    # 공용 Dagster 제어 평면(platform-topology.md §7, dagster-shared-plan §4, ADR-54). 공용 instance
+    # 위의 `dagster_shared` DB·role·storage schema(2단계)와 그 위의 daemon(포트 없음)·webserver
+    # (`127.0.0.1:11002`)·gateway(11001)(3단계)다. workspace는 `dagster.control_plane: shared`인
+    # target에서 파생한다 — 모두 `own`인 동안 비어 있고 plane은 빈 채로 healthy하게 돈다.
     #
-    # `all`에서 뺀다: stage 2의 준비는 창에서 명시적으로 한다(`ensure dagster`). stage 3이
-    # 공용 webserver(`127.0.0.1:11002`)·daemon(포트 없음)·gateway(11001)를 더할 때 `all`에
-    # 넣는다.
+    # 아직 `all`에서 뺀다: 첫 프로젝트가 합류하기 전의 plane은 아무 일도 하지 않고, gateway는
+    # `KOR_TRAVEL_DAGSTER_UI_PASSWORD`가 `.env`에 들어가기 전에는 기동을 거부한다. 창에서 비밀번호를
+    # 넣고 `ensure dagster`로 명시적으로 세운다. **어느 target이든 `shared`가 되는 PR이 이 줄을 지우고
+    # `all.include`에 넣는다** — `test_dagster_shared_workspace_is_derived.py`가 그것을 요구한다.
     excluded_from_all: true
     depends_on: []
     display_name: 공용 Dagster 제어 평면
-    description: 공용 PostgreSQL instance(:11000)의 dagster_shared DB와 그 storage schema입니다. stage 2에서는 DB·role·schema만 준비하고, 공용 webserver·daemon은 stage 3에서 더합니다.
+    description: 공용 PostgreSQL instance(:11000)의 dagster_shared DB·schema와 공용 Dagster daemon·webserver(127.0.0.1:11002)·Basic Auth gateway(:11001)입니다. 합류한 프로젝트의 code-server를 파생 workspace로 봅니다.
     aliases:
       - dagster-shared
       - dagster-control-plane
-    # `up -d`가 받는 것은 공용 instance뿐이다(정의가 그대로라 재생성되지 않는다 — compose config
-    # hash가 같다). 두 one-shot은 여기 두지 않는다: `up -d`는 one-shot의 종료 코드를 보지 않아
-    # 실패한 migrate가 성공한 ensure로 보이고, 아래 init step과 겹쳐 두 번 돈다.
+    # `up -d`가 받는 것은 공용 instance와 세 상시 서비스다(공용 instance는 정의가 그대로라 재생성되지
+    # 않는다 — compose config hash가 같다). daemon·webserver는 storage migrate에
+    # `service_completed_successfully`로 기대므로 `up -d`가 db-init·migrate를 먼저 돌리고, 둘 중 하나가
+    # 실패하면 `up`이 실패한다. 두 one-shot 자체는 여기 두지 않는다(적대 리뷰 M3 — `up -d`에 직접
+    # 이름을 주면 종료 코드가 사라진다).
     services:
       - kor-travel-shared-postgres
+      - kor-travel-dagster-daemon
+      - kor-travel-dagster-webserver
+      - kor-travel-dagster-gateway
     # 두 one-shot은 restart=no라 정상 상태가 exited(0)다 — runtime 목록에 두지 않는다(T5).
-    runtime_services: []
+    runtime_services:
+      - kor-travel-dagster-daemon
+      - kor-travel-dagster-webserver
+      - kor-travel-dagster-gateway
     containers:
       - kor-travel-shared-postgresql
-    # one-shot은 init step으로 **차례대로** 돈다 — 각 `run`의 종료 코드가 ensure를 가른다(rustfs-init
-    # 선례). `--no-deps`: 의존(공용 instance·db-init)을 `run`이 다시 끌어오지 않는다 — 공용
-    # instance는 위 `up -d`가, db-init의 완료는 앞 step이 보장한다. 호스트 이미지가 없으면(tag가 내용
-    # 해시라 내용이 바뀌면 없다) `run`이 build context에서 만든다.
+      - kor-travel-dagster-daemon
+      - kor-travel-dagster-webserver
+      - kor-travel-dagster-gateway
+    # one-shot은 init step으로도 **차례대로** 돈다 — 각 `run`의 종료 코드가 ensure를 가른다(rustfs-init
+    # 선례, 2단계). 위 `up -d`가 의존으로 이미 돌렸으면 두 번째 실행은 멱등이라 아무것도 바꾸지 않는다
+    # (db-init은 role·DB를 확인만 하고, migrate는 head에서 무연산). `--no-deps`: 의존(공용 instance·
+    # db-init)을 `run`이 다시 끌어오지 않는다. 호스트 이미지가 없으면(tag가 내용 해시라 내용이 바뀌면
+    # 없다) `up`·`run`이 build context에서 만든다.
     init_steps:
       - name: dagster-shared-db-init
         description: 공용 instance에 dagster_shared role·DB를 만들고 CONNECT를 소유 role에게만 남깁니다.
@@ -773,6 +854,24 @@ compose_binds:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
       source: "./config/dagster-shared/dagster.yaml"
+  kor-travel-dagster-daemon:
+    - container_path: "/opt/dagster/dagster_home/dagster.yaml"
+      read_only: true
+      source: "./config/dagster-shared/dagster.yaml"
+    - container_path: "/opt/dagster/dagster_home/workspace.yaml"
+      read_only: true
+      source: "./config/dagster-shared/workspace.yaml"
+  kor-travel-dagster-webserver:
+    - container_path: "/opt/dagster/dagster_home/dagster.yaml"
+      read_only: true
+      source: "./config/dagster-shared/dagster.yaml"
+    - container_path: "/opt/dagster/dagster_home/workspace.yaml"
+      read_only: true
+      source: "./config/dagster-shared/workspace.yaml"
+  kor-travel-dagster-gateway:
+    - container_path: "/etc/kor-travel-dagster-gateway/nginx.conf.template"
+      read_only: true
+      source: "./config/dagster-shared/gateway.conf"
   kor-travel-map-db-role-bootstrap:
     - container_path: "/usr/local/bin/postgres-role-bootstrap"
       read_only: true

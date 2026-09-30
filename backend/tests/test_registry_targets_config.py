@@ -761,3 +761,40 @@ def test_targets_validate_covers_the_bind_section() -> None:
     config["compose_binds"] = {"geo-db": "not-a-list"}
     with pytest.raises(registry_module.TargetsConfigError):
         registry_module._validate_targets_config(config, label="t")
+
+
+# ── `dagster` 절(ADR-54) ─────────────────────────────────────────────────
+
+
+def test_dagster_block_with_both_planes_and_consumers_passes() -> None:
+    for plane in registry_module.DAGSTER_CONTROL_PLANES:
+        config = _minimal_valid_config()
+        config["targets"]["geo"]["dagster"] = {
+            "control_plane": plane,
+            "consumers": {"geo-db": {"X_URL": "internal", "Y_URL": "public/graphql"}},
+        }
+        _validate_targets_config(config, label="test.yml")
+
+
+@pytest.mark.parametrize(
+    ("block", "said"),
+    [
+        ("shared", "must be a mapping"),
+        ({"control_plane": "Shared"}, "control_plane: must be one of"),
+        ({"control_plane": "own", "controlplane": "shared"}, "unknown fields ['controlplane']"),
+        ({}, "control_plane: must be one of"),
+        ({"control_plane": "own", "consumers": ["geo-db"]}, "consumers: must be a mapping"),
+        ({"control_plane": "own", "consumers": {"geo-db": {}}}, "must be a non-empty mapping"),
+        ({"control_plane": "own", "consumers": {"geo-db": {"X": "external"}}}, "kind must be"),
+        ({"control_plane": "own", "consumers": {"geo-db": {"X": "public/a b"}}}, "kind must be"),
+        ({"control_plane": "own", "consumers": {"geo-db": {"1X": "internal"}}}, "bad env name"),
+    ],
+)
+def test_dagster_block_typos_are_refused(block: object, said: str) -> None:
+    """스위치의 오타가 조용히 무시되면 전환 PR이 아무것도 켜지 않는다(fail-close)."""
+
+    config = _minimal_valid_config()
+    config["targets"]["geo"]["dagster"] = block
+    with pytest.raises(registry_module.TargetsConfigError) as excinfo:
+        _validate_targets_config(config, label="test.yml")
+    assert said in str(excinfo.value)
