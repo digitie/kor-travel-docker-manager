@@ -138,12 +138,80 @@ def _one(names: set[str], *, what: str, target: str) -> str:
 _SHARED_WORKSPACE_SOURCE: Final = "./config/dagster-shared/workspace.yaml"
 
 
+def _volume_source(volume: object) -> str:
+    return str(volume.get("source") if isinstance(volume, Mapping) else str(volume).split(":", 1)[0])
+
+
+def _is_shared_workspace_source(source: str) -> bool:
+    """reference compose의 상대 경로, 또는 frozen render(`compose config`)가 푼 절대 경로."""
+
+    return source == _SHARED_WORKSPACE_SOURCE or source.endswith(
+        "/" + _SHARED_WORKSPACE_SOURCE.removeprefix("./")
+    )
+
+
 def _mounts_shared_workspace(service: Mapping[str, Any]) -> bool:
-    for volume in service.get("volumes") or []:
-        source = volume.get("source") if isinstance(volume, Mapping) else str(volume).split(":", 1)[0]
-        if source == _SHARED_WORKSPACE_SOURCE:
-            return True
-    return False
+    return any(
+        _is_shared_workspace_source(_volume_source(volume))
+        for volume in service.get("volumes") or []
+    )
+
+
+def shared_workspace_source(service: Mapping[str, Any]) -> str:
+    """plane 서비스가 붙인 파생 workspace의 호스트 경로(렌더에 적힌 그대로). 하나가 아니면 거부한다."""
+
+    sources = {
+        _volume_source(volume)
+        for volume in service.get("volumes") or []
+        if _is_shared_workspace_source(_volume_source(volume))
+    }
+    if len(sources) != 1:
+        raise DeploymentContractError("shared plane service must mount exactly one workspace")
+    return next(iter(sources))
+
+
+def workspace_location_names(document: object) -> tuple[str, ...]:
+    """파생 workspace(`load_from: [grpc_server: {location_name}]`)의 location 이름. 모양이 다르면 거부한다."""
+
+    entries = document.get("load_from") if isinstance(document, Mapping) else None
+    if not isinstance(entries, list):
+        raise DeploymentContractError("shared workspace has no load_from list")
+    names: list[str] = []
+    for entry in entries:
+        server = entry.get("grpc_server") if isinstance(entry, Mapping) else None
+        name = server.get("location_name") if isinstance(server, Mapping) else None
+        if not isinstance(name, str) or not name:
+            raise DeploymentContractError("shared workspace entry has no location_name")
+        names.append(name)
+    return tuple(names)
+
+
+def _flag(argv: Sequence[str], *names: str) -> str | None:
+    for index, word in enumerate(argv[:-1]):
+        if word in names:
+            return argv[index + 1]
+    return None
+
+
+def code_server_location_name(service: Mapping[str, Any]) -> str:
+    """code-server(`dagster api grpc`)가 싣는 location — `--location-name`, 없으면 `-m` 모듈(workspace 파생과 같은 규칙)."""
+
+    argv = _words(service.get("command")) + _words(service.get("entrypoint"))
+    name = _flag(argv, "--location-name", "-l") or _flag(argv, "-m", "--module-name")
+    if not name:
+        raise DeploymentContractError("code-server command names no code location")
+    return name
+
+
+def listen_address(service: Mapping[str, Any]) -> tuple[str, int]:
+    """서비스 command의 `-h`·`-p`(webserver가 듣는 주소). literal 포트가 아니면 거부한다."""
+
+    argv = _words(service.get("command"))
+    host = _flag(argv, "-h", "--host") or "127.0.0.1"
+    port = _flag(argv, "-p", "--port")
+    if port is None or not port.isdigit():
+        raise DeploymentContractError("shared webserver has no literal listen port")
+    return ("127.0.0.1" if host in {"0.0.0.0", "::"} else host), int(port)
 
 
 def _split_documents(
@@ -291,6 +359,84 @@ def dagster_family(target: str) -> DagsterFamily:
     return installed_dagster_family(target)
 
 
+# ── 공용 Dagster plane ────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SharedDagsterPlane:
+    """공용 plane의 daemon·webserver — 파생 workspace를 붙인 활성 서비스다(이름이 아니라 모양)."""
+
+    daemon: str
+    webserver: str
+
+    @property
+    def services(self) -> tuple[str, str]:
+        """plane을 다시 맞출 때 부르는 순서 — webserver가 먼저 location을 싣고, daemon이 뒤따른다."""
+
+        return (self.webserver, self.daemon)
+
+
+def derive_shared_dagster_plane(compose: Mapping[str, Any]) -> SharedDagsterPlane:
+    """공용 workspace를 붙인 활성(profile 없는) 서비스 중 `dagster-daemon`·`dagster-webserver`를 실행하는 것."""
+
+    services = compose.get("services")
+    if not isinstance(services, Mapping):
+        raise DeploymentContractError("Dagster topology documents are invalid")
+    plane = {
+        str(name): service
+        for name, service in services.items()
+        if isinstance(service, Mapping)
+        and not service.get("profiles")
+        and _mounts_shared_workspace(service)
+    }
+
+    def runners(program: str) -> set[str]:
+        return {name for name, service in plane.items() if _runs(service, program)}
+
+    return SharedDagsterPlane(
+        daemon=_one(runners("dagster-daemon"), what="shared daemon", target="shared plane"),
+        webserver=_one(
+            runners("dagster-webserver"), what="shared webserver", target="shared plane"
+        ),
+    )
+
+
+def installed_shared_dagster_plane() -> SharedDagsterPlane:
+    """설치된 release의 공용 plane(매번 파생 — 설치가 바뀌어도 옛 값을 들고 있지 않는다)."""
+
+    return derive_shared_dagster_plane(_installed_documents()[0])
+
+
+def installed_code_location(family: DagsterFamily) -> str:
+    """설치된 release에서 이 family의 code-server가 싣는 location(다른 target의 모양은 보지 않는다)."""
+
+    services = _installed_documents()[0].get("services")
+    service = services.get(family.code_server) if isinstance(services, Mapping) else None
+    if not isinstance(service, Mapping):
+        raise DeploymentContractError(f"code-server {family.code_server} is not declared")
+    return code_server_location_name(service)
+
+
+def installed_location_owners() -> Mapping[str, DagsterFamily]:
+    """설치된 release의 location 이름 → 그 location을 싣는 target의 family(모든 Dagster target, 스위치와 무관).
+
+    공용 plane이 싣는 location마다 그 target의 옛(plane 밖) webserver·daemon이 멈춰 있는지 보는 데 쓴다 — target
+    이름을 적지 않는 한 규칙이다(Map·PinVi만이 아니라 앞으로 합류할 target까지).
+    """
+
+    compose, targets = _installed_documents()
+    services = compose.get("services")
+    if not isinstance(services, Mapping):
+        raise DeploymentContractError("Dagster topology documents are invalid")
+    owners: dict[str, DagsterFamily] = {}
+    for family in derive_dagster_families(compose, targets).values():
+        location = code_server_location_name(services[family.code_server])
+        if location in owners:
+            raise DeploymentContractError(f"code location {location} is served by two targets")
+        owners[location] = family
+    return MappingProxyType(owners)
+
+
 # ── pinned runtime slot ───────────────────────────────────────────────────
 
 #: pinned generation이 고정하는 이미지 slot. 이름은 generation payload의 `<slot>_image_id` 필드다 —
@@ -384,6 +530,16 @@ class RuntimeTopology:
         """`shared` family의 옛 서비스 — 어떤 실행 집합에도 없어야 한다."""
 
         return tuple(name for family in self.families.values() for name in family.retired)
+
+    @property
+    def shared_dagster_slots(self) -> tuple[RuntimeSlot, ...]:
+        """공용 plane에 합류한 target의 carrier slot(slot 순서). 모두 `own`이면 비어 있다."""
+
+        return tuple(
+            slot
+            for slot, target in (("map_dagster", MAP_TARGET), ("pinvi_dagster", PINVI_TARGET))
+            if self.families[target].shared
+        )
 
 
 def runtime_topology(families: Mapping[str, DagsterFamily] | None = None) -> RuntimeTopology:

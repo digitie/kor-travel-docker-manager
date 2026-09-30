@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import os
@@ -1543,16 +1544,37 @@ def _forward_harness(
     webserver·daemon은 `legacy-dagster`라 빠진다) — ``companions``가 그 render의 companion이다.
     """
 
-    if flipped:
-        from test_dagster_shared_workspace_is_derived import _flip, _own_pair_documents
+    from test_dagster_shared_workspace_is_derived import (
+        _derived_workspace,
+        _flip,
+        _own_pair_documents,
+    )
 
-        compose_document, targets_document = _own_pair_documents()
-        for target_id in flipped:
-            _flip(compose_document, targets_document, target_id)
+    compose_document, targets_document = _own_pair_documents()
+    for target_id in flipped:
+        _flip(compose_document, targets_document, target_id)
+    if flipped:
         families = derive_dagster_families(compose_document, targets_document)
         monkeypatch.setattr(
             runtime_topology_module, "installed_dagster_family", lambda target: families[target]
         )
+    # 공용 plane(ADR-54 개정): frozen render에 plane 서비스가 있고(보간은 기본값으로 푼다 — `compose config`처럼),
+    # 붙인 workspace는 이 모델의 파생 workspace다.
+    plane_model = runtime_topology_module.derive_shared_dagster_plane(compose_document)
+    plane_resolved = {
+        name: yaml.safe_load(
+            re.sub(
+                r"\$\{[A-Z0-9_]+:-([^${}]*)\}",
+                r"\1",
+                yaml.safe_dump(compose_document["services"][name]),
+            )
+        )
+        for name in plane_model.services
+    }
+    workspace_locations = tuple(
+        entry["grpc_server"]["location_name"]
+        for entry in _derived_workspace(compose_document, targets_document)["load_from"]
+    )
 
     values = {
         "KTDM_DEPLOYMENT_ENVIRONMENT": "rehearsal",
@@ -1593,6 +1615,7 @@ def _forward_harness(
             "pinvi-admin-bootstrap": {"image": image_ids["pinvi_api"]},
         }
     )
+    resolved_services.update(plane_resolved)
     deployed_images = ComposeService._deployed_images(candidate, companions, topology)
     transaction = SimpleNamespace(
         environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
@@ -1621,6 +1644,15 @@ def _forward_harness(
         "not_ready": set(),
         # docker에서 돌고 있는 컨테이너 이름(전환된 target의 옛 컨테이너 검사, ADR-54).
         "running_containers": set(),
+        # 공용 plane: 붙인 workspace의 location, 떠 있는 webserver가 싣는 것(None이면 물을 수 없음), plane 컨테이너가
+        # 도는가, 떠 있는 plane 컨테이너의 digest env.
+        "workspace_locations": workspace_locations,
+        "plane_loaded": {location: "RepositoryLocation" for location in workspace_locations},
+        "plane_running": True,
+        "plane_restarting": False,
+        # 떠 있는 plane 컨테이너가 frozen render와 같은가(True면 `up`하지 않는다), 그리고 서비스별 덮어쓰기.
+        "plane_current": False,
+        "plane_overrides": {},
     }
     operations: list[tuple[str, ...]] = []
     readiness_requests: list[tuple[str, ...]] = []
@@ -1676,12 +1708,59 @@ def _forward_harness(
         ]
 
     container_checks: list[str] = []
+    plane_containers = {
+        runtime_topology_module.installed_container_name(name) for name in plane_model.services
+    }
+
+    plane_image_id = "sha256:" + "e" * 64
+    plane_container_service = {
+        runtime_topology_module.installed_container_name(name): name for name in plane_model.services
+    }
+
+    def plane_container(container_name: str, *, label: str) -> object:
+        del label
+        operations.append(("plane-inspect", container_name))
+        if not live["plane_running"]:
+            return None
+        render = plane_resolved[plane_container_service[container_name]]
+
+        def docker(value: object) -> str:
+            # Docker가 컨테이너를 만들 때처럼 compose의 `$$` escape를 `$`로 푼다(render는 `$$`를 싣는다).
+            return str(value).replace("$$", "$")
+
+        observed = {
+            "image_id": plane_image_id,
+            "env": (
+                {
+                    str(k): docker(v)
+                    for k, v in (render.get("environment") or {}).items()
+                    if v is not None
+                }
+                if live["plane_current"]
+                else {}
+            ),
+            "cmd": [docker(word) for word in render.get("command") or []],
+            "entrypoint": (
+                None if render.get("entrypoint") is None else [docker(w) for w in render["entrypoint"]]
+            ),
+            "running": True,
+            "restarting": bool(live["plane_restarting"]),
+        }
+        observed.update(live["plane_overrides"].get(plane_container_service[container_name], {}))
+        return observed
+
+    def plane_query(host: str, port: int) -> object:
+        del host, port
+        loaded = live["plane_loaded"]
+        return None if loaded is None else dict(loaded)
 
     def container_running(container_name: str, *, label: str) -> bool | None:
         del label
         container_checks.append(container_name)
         # 검사도 같은 기록에 남겨 "무엇을 멈추기 전에"를 순서로 단언할 수 있게 한다.
         operations.append(("container-inspect", container_name))
+        if container_name in plane_containers:
+            return True if live["plane_running"] else None
         return True if container_name in cast(set[str], live["running_containers"]) else None
 
     def inspect_image(container_name: str, *, label: str) -> str:
@@ -1779,6 +1858,10 @@ def _forward_harness(
         "_inspect_c6c_runtime_configs": inspect_c6c,
         "_ensure_pinvi_fresh_migration_fence": mocks.fence,
         "_run_pinvi_admin_bootstrap": mocks.pinvi_bootstrap,
+        "_read_shared_workspace_locations": lambda _source: tuple(live["workspace_locations"]),
+        "_query_shared_plane_locations": plane_query,
+        "_inspect_plane_container": plane_container,
+        "_inspect_image_reference_id": lambda _reference, *, label: plane_image_id,
     }.items():
         monkeypatch.setattr(service, name, replacement)
     return SimpleNamespace(
@@ -1796,6 +1879,8 @@ def _forward_harness(
         mocks=mocks,
         expected_images=deployed_images,
         topology=topology,
+        plane=plane_model,
+        plane_resolved=plane_resolved,
     )
 
 
@@ -3584,7 +3669,17 @@ def test_a_flipped_targets_running_old_container_is_refused_before_anything_chan
         for index, operation in enumerate(harness.operations)
         if operation[0] == "container-inspect"
     ]
-    assert inspected and max(inspected) < first_mutation
+    before = [index for index in inspected if index < first_mutation]
+    assert len(before) >= len(expected)
+    # 뒤의 검사는 plane을 건드리기 직전의 재확인이다(ADR-54 개정) — 옛 컨테이너 전부를 plane `up` 전에 다시 본다.
+    plane_up = _plane_ups(harness.operations)
+    assert len(plane_up) == 1
+    rechecked = {
+        harness.operations[index][1]
+        for index in inspected
+        if first_mutation < index < plane_up[0]
+    }
+    assert set(expected) <= rechecked
 
 
 def test_an_own_rebuild_inspects_no_retired_container(
@@ -3799,3 +3894,376 @@ def test_the_production_pinset_is_a_function_of_the_sources_alone() -> None:
         )
         == "7ea6689c7d0051b64abf373b6af3bfed90fed816a3546e0aa5a7bac0b8b046b7"
     )
+
+
+# --- plane를 아는 재구축(ADR-54 개정, Map 전환 준비) -------------------------------------------------
+
+_PLANE_SERVICES = ("kor-travel-dagster-webserver", "kor-travel-dagster-daemon")
+
+
+def _plane_ups(operations: Sequence[tuple[str, ...]]) -> list[int]:
+    return [
+        index
+        for index, operation in enumerate(operations)
+        if operation[:1] == ("up",) and set(_PLANE_SERVICES) <= set(operation)
+    ]
+
+
+def test_the_shared_plane_is_derived_from_its_shape() -> None:
+    """plane은 공용 workspace를 붙인 활성 `dagster-webserver`·`dagster-daemon`이다 — 이름을 적지 않는다."""
+
+    compose, _ = runtime_topology_module._installed_documents()
+    plane = runtime_topology_module.derive_shared_dagster_plane(compose)
+    assert plane.services == _PLANE_SERVICES
+    # 모양이 어긋나면 거부한다: workspace를 떼면 없고, 둘이면 고르지 않는다.
+    broken = copy.deepcopy(dict(compose))
+    broken["services"] = dict(broken["services"])
+    broken["services"]["kor-travel-dagster-daemon"] = {
+        **broken["services"]["kor-travel-dagster-daemon"],
+        "volumes": [],
+    }
+    with pytest.raises(DeploymentContractError, match="shared daemon"):
+        runtime_topology_module.derive_shared_dagster_plane(broken)
+    twin = copy.deepcopy(dict(compose))
+    twin["services"] = dict(twin["services"])
+    twin["services"]["kor-travel-dagster-webserver-twin"] = twin["services"]["kor-travel-dagster-webserver"]
+    with pytest.raises(DeploymentContractError, match="shared webserver"):
+        runtime_topology_module.derive_shared_dagster_plane(twin)
+    # legacy-dagster로 내려간 서비스는 plane이 아니다.
+    profiled = copy.deepcopy(dict(compose))
+    profiled["services"] = dict(profiled["services"])
+    profiled["services"]["kor-travel-dagster-daemon"] = {
+        **profiled["services"]["kor-travel-dagster-daemon"],
+        "profiles": ["legacy-dagster"],
+    }
+    with pytest.raises(DeploymentContractError, match="shared daemon"):
+        runtime_topology_module.derive_shared_dagster_plane(profiled)
+
+
+def test_an_all_own_rebuild_never_touches_the_plane(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.service.rebuild_pinned_runtime()
+    assert not [operation for operation in harness.operations if set(operation) & set(_PLANE_SERVICES)]
+    assert runtime_topology().shared_dagster_slots == ()
+
+
+@pytest.mark.parametrize("target", sorted(_FLIP_CASES))
+def test_a_shared_target_is_on_the_plane_before_the_smoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    """smoke(PinVi `/admin/etl/summary`, Map `/v1/ops/pipeline/*`)는 공용 webserver에 자기 location을 묻는다 —
+    그 전에 carrier가 떠 있고 plane이 `up --wait`로 맞춰져 있다. 그 직전에 retired 컨테이너를 다시 본다."""
+
+    carrier, legacy, companions = _FLIP_CASES[target]
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=(target,), companions=companions)
+    harness.mocks.smoke.side_effect = lambda *_args, **_kwargs: harness.operations.append(("smoke",))
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "deployed"
+    operations = harness.operations
+    smoke = operations.index(("smoke",))
+    plane = _plane_ups(operations)
+    assert len(plane) == 1 and plane[0] < smoke, operations
+    # `--wait`는 쓰지 않는다 — plane의 healthcheck는 다른 테넌트까지 본다(H1). 이 target의 location만 따로 본다.
+    assert "--no-deps" in operations[plane[0]] and "--wait" not in operations[plane[0]]
+    carrier_ups = [
+        index for index, op in enumerate(operations) if op[:1] == ("up",) and carrier in op
+    ]
+    assert carrier_ups and carrier_ups[0] < plane[0]
+    retired = {runtime_topology_module.installed_container_name(name) for name in legacy}
+    between = {op[1] for op in operations[carrier_ups[0] : plane[0]] if op[:1] == ("container-inspect",)}
+    assert retired <= between, (retired, between)
+
+
+@pytest.mark.parametrize("target", sorted(_FLIP_CASES))
+def test_a_retired_daemon_revived_mid_rebuild_keeps_the_plane_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    """재구축 앞의 판정 뒤에 옛 daemon이 되살아나면(대시보드의 start) plane을 건드리기 직전에 거부한다."""
+
+    _, legacy, companions = _FLIP_CASES[target]
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=(target,), companions=companions)
+    revived = runtime_topology_module.installed_container_name(legacy[-1])
+    harness.mocks.pinvi_bootstrap.side_effect = (
+        lambda *_args, **_kwargs: cast(set[str], harness.live["running_containers"]).add(revived)
+    )
+
+    with pytest.raises(DeploymentContractError, match="double fire"):
+        harness.service.rebuild_pinned_runtime()
+
+    assert _plane_ups(harness.operations) == []
+    harness.mocks.smoke.assert_not_called()
+
+
+def test_both_targets_shared_bring_both_carriers_up_before_the_plane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=("map", "pinvi"), companions={})
+    harness.mocks.smoke.side_effect = lambda *_args, **_kwargs: harness.operations.append(("smoke",))
+
+    harness.service.rebuild_pinned_runtime()
+
+    operations = harness.operations
+    plane = _plane_ups(operations)
+    assert len(plane) == 1 and plane[0] < operations.index(("smoke",))
+    for carrier in ("kor-travel-map-dagster-code-server", "pinvi-dagster-code-server"):
+        assert any(
+            op[:1] == ("up",) and carrier in op for op in operations[: plane[0]]
+        ), (carrier, operations)
+
+
+@pytest.mark.parametrize("target", sorted(_FLIP_CASES))
+def test_a_same_pair_converge_also_converges_the_plane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    _, _, companions = _FLIP_CASES[target]
+    first = _forward_harness(monkeypatch, tmp_path / "first", flipped=(target,), companions=companions)
+    first.service.rebuild_pinned_runtime()
+    status = read_deploy_status(first.status_path)
+    harness = _forward_harness(
+        monkeypatch, tmp_path / "second", previous=status, flipped=(target,), companions=companions
+    )
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "converged"
+    assert len(_plane_ups(harness.operations)) == 1
+
+
+def test_the_plane_up_is_a_frozen_rebuild_mutation() -> None:
+    """R3 분류: plane `up --no-deps`는 서비스를 명시하고 --no-deps를 싣는다(재구축 runner가 받는 모양)."""
+
+    arguments = ["up", "-d", "--no-deps", "--wait", "--wait-timeout", "600", *_PLANE_SERVICES]
+    scope, flags = ComposeService._parse_compose_mutation(arguments)
+    assert list(scope) == list(_PLANE_SERVICES)
+    assert "--no-deps" in flags
+
+
+class _PlaneClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.mark.parametrize("target", sorted(_FLIP_CASES))
+def test_another_tenants_broken_location_does_not_block_the_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    """H1: plane은 이 target의 location만 기다린다 — geo·weather의 code-server가 내려가 있어도 배포는 선다."""
+
+    _, _, companions = _FLIP_CASES[target]
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=(target,), companions=companions)
+    clock = _PlaneClock()
+    monkeypatch.setattr(compose_service_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(compose_service_module.time, "sleep", clock.sleep)
+    loaded = dict(harness.live["plane_loaded"])
+    others = [location for location in loaded if not location.startswith(("kortravelmap", "pinvi"))]
+    assert others, loaded
+    for location in others:
+        loaded[location] = "PythonError"
+    harness.live["plane_loaded"] = loaded
+
+    assert harness.service.rebuild_pinned_runtime()["outcome"] == "deployed"
+
+
+@pytest.mark.parametrize("target", sorted(_FLIP_CASES))
+def test_the_plane_that_never_loads_this_location_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    _, _, companions = _FLIP_CASES[target]
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=(target,), companions=companions)
+    clock = _PlaneClock()
+    monkeypatch.setattr(compose_service_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(compose_service_module.time, "sleep", clock.sleep)
+    location = runtime_topology_module.installed_code_location(
+        runtime_topology().families[target]
+    )
+    harness.live["plane_loaded"] = {
+        **harness.live["plane_loaded"],
+        location: "RepositoryLocationLoadFailure",
+    }
+
+    with pytest.raises(DeploymentContractError, match="did not load the shared pinned locations"):
+        harness.service.rebuild_pinned_runtime()
+
+    assert clock.now >= compose_service_module._SHARED_PLANE_PROBE_TIMEOUT_SECONDS
+    harness.mocks.smoke.assert_not_called()
+
+
+def test_a_stopped_shared_daemon_fails_the_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=("map",), companions=_FLIP_CASES["map"][2])
+    clock = _PlaneClock()
+    monkeypatch.setattr(compose_service_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(compose_service_module.time, "sleep", clock.sleep)
+    harness.live["plane_running"] = False
+
+    with pytest.raises(DeploymentContractError, match="daemon running False"):
+        harness.service.rebuild_pinned_runtime()
+
+
+@pytest.mark.parametrize("target", sorted(_FLIP_CASES))
+def test_a_plane_already_like_the_render_is_not_recreated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    """M3: 떠 있는 daemon·webserver가 frozen render가 만들 컨테이너와 같으면 `up`하지 않고 location만 본다."""
+
+    _, _, companions = _FLIP_CASES[target]
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=(target,), companions=companions)
+    harness.live["plane_current"] = True
+    # render는 compose의 `$$` escape를 싣고(storage 가드의 `exec "$$@"`), 컨테이너는 Docker가 푼 `$`를 싣는다 —
+    # 비교가 그것을 풀지 않으면 매번 다르다(재리뷰 HIGH).
+    assert any("$$" in str(word) for word in harness.plane_resolved[harness.plane.daemon]["command"])
+
+    assert harness.service.rebuild_pinned_runtime()["outcome"] == "deployed"
+    assert _plane_ups(harness.operations) == []
+
+
+def _plane_env_key(harness: SimpleNamespace, suffix: str) -> tuple[str, str]:
+    for name, service in harness.plane_resolved.items():
+        for key in (service.get("environment") or {}):
+            if str(key).endswith(suffix):
+                return name, str(key)
+    raise AssertionError(suffix)
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["image", "shared_url", "heartbeat", "digest", "command", "entrypoint"],
+)
+def test_a_plane_that_differs_from_the_render_is_recreated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift: str
+) -> None:
+    """리뷰 MED: digest env만 같다고 넘기지 않는다 — 이미지(Dagster 올림)·공용 URL 앵커·heartbeat tolerance·command가
+    다르거나, 재시작 중이거나 없으면 다시 만든다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=("map",), companions=_FLIP_CASES["map"][2])
+    harness.live["plane_current"] = True
+    daemon = harness.plane.daemon
+    if drift == "image":
+        harness.live["plane_overrides"] = {daemon: {"image_id": "sha256:" + "d" * 64}}
+    elif drift in {"shared_url", "heartbeat", "digest"}:
+        suffix = {
+            "shared_url": "_SHARED_PG_URL",
+            "heartbeat": "HEARTBEAT_TOLERANCE",
+            "digest": "WORKSPACE_DIGEST",
+        }[drift]
+        name, key = _plane_env_key(harness, suffix)
+        env = {
+            str(k): str(v)
+            for k, v in (harness.plane_resolved[name].get("environment") or {}).items()
+            if v is not None
+        }
+        harness.live["plane_overrides"] = {name: {"env": {**env, key: "stale"}}}
+    elif drift == "command":
+        harness.live["plane_overrides"] = {daemon: {"cmd": ["dagster-daemon", "run"]}}
+    elif drift == "entrypoint":
+        harness.live["plane_overrides"] = {daemon: {"entrypoint": ["/stale"]}}
+        harness.plane_resolved[daemon]["entrypoint"] = ["/bin/sh"]
+
+    harness.service.rebuild_pinned_runtime()
+
+    assert len(_plane_ups(harness.operations)) == 1
+
+
+def test_a_restarting_shared_daemon_fails_the_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L3: daemon이 돌기만 하는 것이 아니라 재시작 중이 아니어야 한다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=("map",), companions=_FLIP_CASES["map"][2])
+    clock = _PlaneClock()
+    monkeypatch.setattr(compose_service_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(compose_service_module.time, "sleep", clock.sleep)
+    harness.live["plane_restarting"] = True
+
+    with pytest.raises(DeploymentContractError, match="daemon running False"):
+        harness.service.rebuild_pinned_runtime()
+
+
+def test_a_workspace_location_whose_own_daemon_runs_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M1: plane이 실을 workspace의 **모든** location에 한 규칙 — 그 target의 plane 밖 daemon이 돌면 거부한다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=("map",), companions=_FLIP_CASES["map"][2])
+    owners = runtime_topology_module.installed_location_owners()
+    other = next(
+        family
+        for location, family in owners.items()
+        if location in harness.live["workspace_locations"] and family.target not in {"map", "pinvi"}
+    )
+    running = runtime_topology_module.installed_container_name(other.daemon)
+    harness.mocks.pinvi_bootstrap.side_effect = (
+        lambda *_args, **_kwargs: cast(set[str], harness.live["running_containers"]).add(running)
+    )
+
+    with pytest.raises(DeploymentContractError, match=f"double fire.*{other.daemon}"):
+        harness.service.rebuild_pinned_runtime()
+    assert _plane_ups(harness.operations) == []
+
+
+def test_a_workspace_location_no_target_serves_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=("map",), companions=_FLIP_CASES["map"][2])
+    harness.live["workspace_locations"] = (*harness.live["workspace_locations"], "stranger.definitions")
+
+    with pytest.raises(DeploymentContractError, match="stranger.definitions"):
+        harness.service.rebuild_pinned_runtime()
+    assert _plane_ups(harness.operations) == []
+
+
+@pytest.mark.parametrize("where", ["workspace", "running"])
+def test_an_own_target_still_on_the_plane_is_refused_before_anything_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str
+) -> None:
+    """M2: 스위치가 `own`인데 plane이 그 location을 싣고 있으면(설치본 workspace, 또는 떠 있는 webserver) own daemon을
+    띄우기 전에 — 무엇을 멈추기도 전에 — 거부한다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path)
+    location = runtime_topology_module.installed_code_location(runtime_topology().families["pinvi"])
+    if where == "workspace":
+        harness.live["workspace_locations"] = (*harness.live["workspace_locations"], location)
+    else:
+        harness.live["plane_loaded"] = {**harness.live["plane_loaded"], location: "RepositoryLocation"}
+
+    with pytest.raises(DeploymentContractError, match="own target's location"):
+        harness.service.rebuild_pinned_runtime()
+    assert [op for op in harness.operations if op[0] not in {"container-inspect"}] == []
+
+
+@pytest.mark.parametrize(("daemon_running", "refused"), [(True, True), (False, False)])
+def test_an_unreachable_plane_webserver_blocks_only_while_its_daemon_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, daemon_running: bool, refused: bool
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.live["plane_loaded"] = None
+    harness.live["plane_running"] = daemon_running
+    if refused:
+        with pytest.raises(DeploymentContractError, match="cannot be asked"):
+            harness.service.rebuild_pinned_runtime()
+    else:
+        assert harness.service.rebuild_pinned_runtime()["outcome"] == "deployed"
+
+
+def test_a_frozen_plane_that_differs_from_the_installed_release_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L4: plane은 frozen render에서 파생하고, 설치된 release의 것과 다르면 거부한다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=("map",), companions=_FLIP_CASES["map"][2])
+    resolved = harness.transaction.resolved["services"]
+    resolved["kor-travel-dagster-webserver-renamed"] = resolved.pop("kor-travel-dagster-webserver")
+
+    with pytest.raises(DeploymentContractError, match="differs from the installed release"):
+        harness.service.rebuild_pinned_runtime()

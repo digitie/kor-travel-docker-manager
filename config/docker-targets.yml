@@ -543,12 +543,20 @@ targets:
       - kor-travel-map-dagster-daemon
     init_steps: []
     # 필드 설명은 geo target에 있다. Map API의 `KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS`(host
-    # allowlist, URL이 아니다)는 여기 적지 않는다 — Map 전환 때 공개 host를 더한다(§7 runbook).
+    # allowlist, URL이 아니다)는 여기 적지 않는다.
+    #
+    # Map API는 GraphQL을 **부르는** URL과 클라이언트(admin UI·C7 게이트)에 **보고하는** URL을 가른다(Map 전환 준비,
+    # ADR-54 개정). 부르는 쪽은 공용 webserver의 loopback(`internal/graphql` — 인증 없는 127.0.0.1이라 allowlist는
+    # loopback만으로 족하다), 보고하는 쪽은 공개 gateway(`public/graphql` — C7이 https origin으로 attest한다). 공개
+    # gateway는 Basic Auth와 브라우저 Origin 검사를 하므로 서버 쪽 호출이 그리로 가면 안 된다. 부르는 쪽 env 이름은
+    # Map 저장소의 설정 이름이다(`feat/dagster-shared-map-prep`에서 확정 — 바뀌면 여기와 Map 전환 PR의 compose를 같이
+    # 고친다). `own`인 동안 compose는 이 env를 아직 싣지 않는다(파생 계약은 `shared`에서만 값을 요구한다).
     dagster:
       control_plane: own
       consumers:
         kor-travel-map-api:
           KOR_TRAVEL_MAP_API_DAGSTER_URL: internal
+          KOR_TRAVEL_MAP_API_DAGSTER_INTERNAL_GRAPHQL_URL: internal/graphql
           KOR_TRAVEL_MAP_API_DAGSTER_GRAPHQL_URL: public/graphql
         kor-travel-map-ui:
           NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: public

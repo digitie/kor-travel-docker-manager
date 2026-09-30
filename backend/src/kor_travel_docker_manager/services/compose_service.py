@@ -5,6 +5,8 @@ import re
 import stat
 import subprocess
 import tempfile
+import time
+import urllib.request
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -149,11 +151,20 @@ from kor_travel_docker_manager.services.registry import (
 from kor_travel_docker_manager.services.runtime_topology import (
     COMPOSE_BUILT_RUNTIME_SLOTS,
     RUNTIME_SLOTS,
+    DagsterFamily,
     RuntimeSlot,
     RuntimeTopology,
+    SharedDagsterPlane,
+    derive_shared_dagster_plane,
+    installed_code_location,
     installed_container_name,
+    installed_location_owners,
+    installed_shared_dagster_plane,
+    listen_address,
     runtime_topology,
+    shared_workspace_source,
     slot_project,
+    workspace_location_names,
 )
 from kor_travel_docker_manager.services.trusted_install import (
     require_pinned_runtime_rebuild_root,
@@ -169,6 +180,12 @@ _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "kor-travel-map-dagster-storage-migrate",
     "pinvi-admin-bootstrap",
 )
+
+
+def _unescape_compose(value: str) -> str:
+    """compose의 `$$` escape를 컨테이너가 받는 `$`로 푼다(렌더된 값에는 보간할 `${…}`가 남지 않는다)."""
+
+    return value.replace("$$", "$")
 
 
 def _with_generation_companions(
@@ -2010,6 +2027,15 @@ _PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 600
 #: ADR-069 뒤 Map은 code-server → webserver → daemon이 `service_healthy`로 **직렬**
 #: 기동한다. 위 실측대로 컨테이너 하나가 뜨는 데만 1~2분이 걸리므로 300초는 부족하다.
 _COMPOSE_WAIT_TIMEOUT_SECONDS: Final = 900
+#: 공용 plane이 **이 재구축의** location을 싣기까지 기다리는 상한과 간격(ADR-54 개정, 적대 리뷰 H1). 다른 테넌트의
+#: location·code-server 상태는 보지 않는다 — plane의 healthcheck(`--wait`)는 그것까지 봐서 Map 배포를 geo·weather에
+#: 묶었다.
+_SHARED_PLANE_PROBE_TIMEOUT_SECONDS: Final = 300.0
+_SHARED_PLANE_PROBE_INTERVAL_SECONDS: Final = 5.0
+_SHARED_PLANE_WORKSPACE_QUERY: Final = (
+    "{ workspaceOrError { __typename ... on Workspace { locationEntries { name "
+    "locationOrLoadError { __typename } } } } }"
+)
 
 
 def _run_pinned_runtime_static_command(
@@ -4698,6 +4724,7 @@ class ComposeService:
             # 수렴이든 전체 경로든 무엇을 멈추거나 migration하기 전에 — 전환된 target의 옛 daemon은
             # `stop`에 들지 않으므로 떠 있으면 migration 중 run을 띄운다.
             self._require_retired_dagster_containers_stopped(topology)
+            self._require_shared_plane_releases_own_targets(topology, runtime_transaction)
 
             if (
                 not explicit
@@ -4919,12 +4946,315 @@ class ComposeService:
             ],
             transaction=runtime_transaction,
         )
+        self._converge_shared_dagster_plane(
+            runtime_transaction=runtime_transaction,
+            topology=topology,
+        )
         self._verify_pinned_runtime_services(
             runtime_transaction=runtime_transaction,
             topology=topology,
             companions=companions,
             expected_images=expected_images,
         )
+
+    def _converge_shared_dagster_plane(
+        self,
+        *,
+        runtime_transaction: ComposeTransactionSnapshot,
+        topology: RuntimeTopology,
+    ) -> None:
+        """pinned target이 공용 plane에 합류했으면 plane이 그 location을 싣게 한다(ADR-54 개정).
+
+        - **plane 서비스는 frozen render에서** 모양으로 파생하고, 설치된 release의 것과 다르면 거부한다.
+        - **실을 workspace의 location마다** 그 target의 plane 밖 webserver·daemon·gateway가 멈춰 있어야 한다(한 규칙,
+          이름 없음 — Map·PinVi만이 아니라 설치됐지만 아직 펜스 전인 다른 target도). 하나라도 돌면 이중 발화라 거부한다.
+        - **다시 만들 때만 `up`한다.** 떠 있는 daemon·webserver가 frozen render가 만들 컨테이너와 같으면(이미지 ID, render
+          env 전부, command·entrypoint, 돌고 재시작 중 아님) `up`하지 않는다 — frozen render와 평범한 render의 config
+          hash가 달라 무조건 `up`은 매 재구축 plane을 다시 만든다(`_shared_plane_current`).
+        - **이 target의 location만 기다린다.** `up -d --no-deps`(`--wait` 없음) 뒤 webserver의 `workspaceOrError`에서
+          합류한 carrier의 location이 `RepositoryLocation`이고 daemon 컨테이너가 도는지 본다. 다른 테넌트의
+          code-server가 내려가 있어도 이 배포를 막지 않는다. 상한(300초) 안에 안 되면 거부한다(fail-closed).
+
+        모두 `own`이면 아무것도 하지 않는다.
+        """
+
+        if not topology.shared_dagster_slots:
+            return
+        shared_targets = {
+            family.target for family in topology.families.values() if family.shared
+        }
+        plane, services, locations = self._frozen_shared_plane(runtime_transaction)
+        owners = installed_location_owners()
+        wanted = tuple(
+            sorted(
+                location for location, family in owners.items() if family.target in shared_targets
+            )
+        )
+        missing = [location for location in wanted if location not in locations]
+        if not wanted or missing:
+            raise DeploymentContractError(
+                "the shared plane workspace does not list the shared pinned locations: "
+                + ", ".join(missing or sorted(shared_targets))
+            )
+        self._require_plane_location_owners_fenced(locations, owners)
+        if not self._shared_plane_current(plane, services):
+            self._run_pinned_runtime_rebuild_compose(
+                ["up", "-d", "--no-deps", *plane.services],
+                transaction=runtime_transaction,
+            )
+        self._wait_shared_plane_locations(plane, services, wanted)
+
+    def _frozen_shared_plane(
+        self, runtime_transaction: ComposeTransactionSnapshot
+    ) -> tuple[SharedDagsterPlane, Mapping[str, Any], tuple[str, ...]]:
+        """frozen render의 plane(설치된 release와 같아야 한다), 그 서비스 정의, 붙인 workspace의 location."""
+
+        resolved = runtime_transaction.resolved
+        plane = derive_shared_dagster_plane(resolved)
+        if plane != installed_shared_dagster_plane():
+            raise DeploymentContractError(
+                "the frozen render's shared Dagster plane differs from the installed release"
+            )
+        services = cast(Mapping[str, Any], resolved["services"])
+        sources = {shared_workspace_source(services[name]) for name in plane.services}
+        if len(sources) != 1:
+            raise DeploymentContractError("shared plane services mount different workspaces")
+        return plane, services, self._read_shared_workspace_locations(next(iter(sources)))
+
+    @staticmethod
+    def _read_shared_workspace_locations(source: str) -> tuple[str, ...]:
+        path = Path(source)
+        if not path.is_absolute():
+            path = Path(get_project_root()) / path
+        try:
+            document = load_yaml_rejecting_duplicate_keys(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise DeploymentContractError("cannot read the shared plane workspace") from exc
+        return workspace_location_names(document)
+
+    def _require_plane_location_owners_fenced(
+        self,
+        locations: Sequence[str],
+        owners: Mapping[str, DagsterFamily],
+    ) -> None:
+        """plane이 실을 location마다 그 target의 plane 밖 webserver·daemon·gateway가 돌지 않는다(이중 발화 방지)."""
+
+        running: list[str] = []
+        for location in locations:
+            family = owners.get(location)
+            if family is None:
+                raise DeploymentContractError(
+                    f"the shared plane workspace lists {location}, which no Dagster target serves"
+                )
+            for service in family.legacy:
+                container = installed_container_name(service)
+                if self._inspect_container_running(container, label=service):
+                    running.append(f"{service} ({container}, location {location})")
+        if running:
+            raise DeploymentContractError(
+                "the shared plane would load a location whose own Dagster services are still "
+                "running (double fire); fence them first: " + ", ".join(running)
+            )
+
+    def _require_shared_plane_releases_own_targets(
+        self,
+        topology: RuntimeTopology,
+        runtime_transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        """`own`인 pinned target의 location을 공용 plane이 싣고 있지 않다(적대 리뷰 M2 — 되돌리기의 반대 방향).
+
+        Manager만 되돌린 release(스위치 `own`)를 재구축하면 own daemon이 뜬다. 그때 plane이 아직 그 location을
+        싣고 있으면(설치본 workspace가 적었거나, 떠 있는 webserver가 옛 workspace로 싣고 있으면) 같은 schedule을 둘이
+        쏜다. 둘 다 아니어야 한다. 떠 있는 webserver에 물을 수 없는데 plane daemon이 돌면 판정할 수 없어 거부한다.
+        되돌리기는 창 스크립트(`scripts/dagster-shared-cutover.sh <target> rollback`)가 plane에서 먼저 내린다.
+        """
+
+        # Map·PinVi family만 본다 — 다른 target의 모양이 어긋나도 이 판정은 막히지 않는다.
+        owned = {
+            installed_code_location(family)
+            for family in topology.families.values()
+            if not family.shared
+        }
+        if not owned:
+            return
+        plane, services, locations = self._frozen_shared_plane(runtime_transaction)
+        listed = owned & set(locations)
+        if listed:
+            raise DeploymentContractError(
+                "the installed shared plane workspace still lists an own target's location: "
+                + ", ".join(sorted(listed))
+            )
+        host, port = listen_address(services[plane.webserver])
+        loaded = self._query_shared_plane_locations(host, port)
+        if loaded is None:
+            if self._inspect_container_running(
+                installed_container_name(plane.daemon), label=plane.daemon
+            ):
+                raise DeploymentContractError(
+                    "the shared Dagster daemon is running but its webserver cannot be asked "
+                    "which locations it loads; refusing to start an own Dagster daemon"
+                )
+            return
+        still = owned & set(loaded)
+        if still:
+            raise DeploymentContractError(
+                "the running shared plane still loads an own target's location (roll back "
+                "through the cutover script first): " + ", ".join(sorted(still))
+            )
+
+    def _shared_plane_current(
+        self, plane: SharedDagsterPlane, services: Mapping[str, Any]
+    ) -> bool:
+        """떠 있는 daemon·webserver가 frozen render가 만들 컨테이너와 같은가 — 그러면 `up`하지 않는다.
+
+        config hash는 쓰지 않는다(frozen·평범한 render가 다르게 낸다). 대신 재생성을 부를 실행 형태를 직접 본다:
+        이미지(render의 `image:` 참조가 가리키는 image ID와 컨테이너의 `.Image`), render의 env 전부(공용 URL 앵커,
+        heartbeat tolerance, `*_DIGEST` — 컨테이너 env가 그 값들을 그대로 싣는다), command·entrypoint. 컨테이너가 돌고
+        재시작 중이 아니어야 한다. 하나라도 다르면(이미지 참조를 풀 수 없는 것 포함) `up`한다. 컨테이너를 **읽을 수
+        없으면** 거부한다(fail-closed, `_inspect_plane_container`).
+
+        render는 compose의 `$$` escape를 그대로 싣는다(`docker compose config --format json`) — Docker는 컨테이너를
+        만들 때 그것을 `$`로 푼다(storage 가드 argv의 `exec "$$@"` → Cmd의 `exec "$@"`, n150 실측). 그래서 render의
+        command·entrypoint·env 값을 같은 규칙으로 푼 뒤 비교한다(재리뷰 HIGH — 안 풀면 매번 달라 M3가 되살아난다).
+        """
+
+        for name in plane.services:
+            render = services[name]
+            observed = self._inspect_plane_container(installed_container_name(name), label=name)
+            if observed is None or not observed["running"] or observed["restarting"]:
+                return False
+            image = render.get("image")
+            if not isinstance(image, str) or not image:
+                return False
+            try:
+                wanted_image = self._inspect_image_reference_id(image, label=name)
+            except DeploymentContractError:
+                return False
+            if observed["image_id"] != wanted_image:
+                return False
+            environment = render.get("environment") or {}
+            if not isinstance(environment, Mapping):
+                return False
+            actual_env = observed["env"]
+            for key, value in environment.items():
+                if value is None:
+                    continue
+                if actual_env.get(str(key)) != _unescape_compose(str(value)):
+                    return False
+            command = [_unescape_compose(str(word)) for word in render.get("command") or []]
+            if command != observed["cmd"]:
+                return False
+            entrypoint = render.get("entrypoint")
+            if entrypoint is not None and [
+                _unescape_compose(str(word)) for word in entrypoint
+            ] != observed["entrypoint"]:
+                return False
+        return True
+
+    @staticmethod
+    def _inspect_plane_container(container_name: str, *, label: str) -> Mapping[str, Any] | None:
+        """plane 컨테이너의 실행 형태(이미지 ID·env·command·entrypoint·상태). 없으면 ``None``, 읽을 수 없으면 거부.
+
+        env에는 비밀(공용 metadata URL)이 있다 — 비교에만 쓰고 어디에도 싣지 않는다.
+        """
+
+        try:
+            completed = subprocess.run(
+                ["docker", "container", "inspect", "--format={{json .}}", container_name],
+                cwd=get_project_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentContractError(f"cannot inspect the {label} container") from exc
+        if completed.returncode == 1 and "no such container" in completed.stderr.lower():
+            return None
+        if completed.returncode != 0:
+            raise DeploymentContractError(f"cannot inspect the {label} container")
+        try:
+            document = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise DeploymentContractError(f"cannot inspect the {label} container") from exc
+        config = document.get("Config") if isinstance(document, Mapping) else None
+        state = document.get("State") if isinstance(document, Mapping) else None
+        if not isinstance(config, Mapping) or not isinstance(state, Mapping):
+            raise DeploymentContractError(f"cannot inspect the {label} container")
+        env: dict[str, str] = {}
+        for line in config.get("Env") or []:
+            key, separator, value = str(line).partition("=")
+            if separator:
+                env[key] = value
+        entrypoint = config.get("Entrypoint")
+        return {
+            "image_id": str(document.get("Image") or ""),
+            "env": env,
+            "cmd": [str(word) for word in config.get("Cmd") or []],
+            "entrypoint": None if entrypoint is None else [str(word) for word in entrypoint],
+            "running": state.get("Running") is True,
+            "restarting": state.get("Restarting") is True,
+        }
+
+    @staticmethod
+    def _query_shared_plane_locations(host: str, port: int) -> Mapping[str, str | None] | None:
+        """공용 webserver의 location → 로드 상태(`__typename`). 물을 수 없으면 ``None``."""
+
+        request = urllib.request.Request(
+            f"http://{host}:{port}/graphql",
+            data=json.dumps({"query": _SHARED_PLANE_WORKSPACE_QUERY}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - loopback
+                payload = json.loads(response.read(1_048_577))
+        except (OSError, ValueError):
+            return None
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        workspace = data.get("workspaceOrError") if isinstance(data, Mapping) else None
+        entries = workspace.get("locationEntries") if isinstance(workspace, Mapping) else None
+        if not isinstance(entries, list):
+            return None
+        states: dict[str, str | None] = {}
+        for entry in entries:
+            if not isinstance(entry, Mapping) or not isinstance(entry.get("name"), str):
+                return None
+            load = entry.get("locationOrLoadError")
+            states[entry["name"]] = load.get("__typename") if isinstance(load, Mapping) else None
+        return states
+
+    def _wait_shared_plane_locations(
+        self,
+        plane: SharedDagsterPlane,
+        services: Mapping[str, Any],
+        wanted: Sequence[str],
+    ) -> None:
+        host, port = listen_address(services[plane.webserver])
+        daemon_container = installed_container_name(plane.daemon)
+        deadline = time.monotonic() + _SHARED_PLANE_PROBE_TIMEOUT_SECONDS
+        while True:
+            loaded = self._query_shared_plane_locations(host, port)
+            # 도는가·재시작 중이 아닌가만 본다(L3). daemon의 health는 workspace의 code-server **전부**가 SERVING인지 보므로
+            # 다른 테넌트에 묶인다(H1) — 이 target의 location 적재는 위 webserver 물음이 본다.
+            observed = self._inspect_plane_container(daemon_container, label=plane.daemon)
+            daemon_running = (
+                observed is not None and observed["running"] and not observed["restarting"]
+            )
+            if (
+                daemon_running
+                and loaded is not None
+                and all(loaded.get(location) == "RepositoryLocation" for location in wanted)
+            ):
+                return
+            if time.monotonic() >= deadline:
+                state = {location: (loaded or {}).get(location) for location in wanted}
+                raise DeploymentContractError(
+                    "the shared Dagster plane did not load the shared pinned locations within "
+                    f"{int(_SHARED_PLANE_PROBE_TIMEOUT_SECONDS)} s: {state}, daemon running "
+                    f"{daemon_running}"
+                )
+            time.sleep(_SHARED_PLANE_PROBE_INTERVAL_SECONDS)
 
     def _verify_pinned_runtime_services(
         self,
@@ -5129,6 +5459,16 @@ class ComposeService:
             transaction=runtime_transaction,
             frozen_recovery=True,
         )
+        # 공용 plane에 합류한 target이 있으면 smoke 전에 그 code-server와 plane을 맞춘다 — PinVi admin
+        # (`/admin/etl/summary`)과 Map ops(`/v1/ops/pipeline/*`, PinVi provider-sync가 부른다)는 공용
+        # webserver에 자기 location을 묻는다. 모두 `own`이면 아무것도 하지 않는다(호출 순서가 파생 이전과 같다).
+        shared_slots = topology.shared_dagster_slots
+        if shared_slots:
+            compose_up(*_with_generation_companions(shared_slots, companions, topology))
+            self._converge_shared_dagster_plane(
+                runtime_transaction=runtime_transaction,
+                topology=topology,
+            )
         run_pinvi_canonical_smoke(
             load_c6c_deployment_config_from_environment(values),
             cancel_probe_state=PinviCancelProbeState(transaction_id=status.run_id),

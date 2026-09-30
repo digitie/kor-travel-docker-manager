@@ -829,7 +829,7 @@ services:
       DAGSTER_UI_USER: ${KOR_TRAVEL_DAGSTER_UI_USER:-admin}
       # 붙인 `gateway.conf`의 내용 digest — 설치본 symlink를 거친 bind라 내용만 바뀌면 재생성되지 않는다
       # (호스트 서비스와 같은 이유, 테스트가 파일과 대조한다).
-      DAGSTER_GATEWAY_CONF_DIGEST: "714dafe547b004f9"
+      DAGSTER_GATEWAY_CONF_DIGEST: "1f7e708e5c1bd519"
     secrets:
     - source: kor-travel-dagster-ui-password
       target: /run/secrets/kor-travel-dagster-ui-password
