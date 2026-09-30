@@ -1723,16 +1723,25 @@ def _forward_harness(
         if not live["plane_running"]:
             return None
         render = plane_resolved[plane_container_service[container_name]]
+
+        def docker(value: object) -> str:
+            # Docker가 컨테이너를 만들 때처럼 compose의 `$$` escape를 `$`로 푼다(render는 `$$`를 싣는다).
+            return str(value).replace("$$", "$")
+
         observed = {
             "image_id": plane_image_id,
             "env": (
-                {str(k): str(v) for k, v in (render.get("environment") or {}).items() if v is not None}
+                {
+                    str(k): docker(v)
+                    for k, v in (render.get("environment") or {}).items()
+                    if v is not None
+                }
                 if live["plane_current"]
                 else {}
             ),
-            "cmd": [str(word) for word in render.get("command") or []],
+            "cmd": [docker(word) for word in render.get("command") or []],
             "entrypoint": (
-                None if render.get("entrypoint") is None else [str(w) for w in render["entrypoint"]]
+                None if render.get("entrypoint") is None else [docker(w) for w in render["entrypoint"]]
             ),
             "running": True,
             "restarting": bool(live["plane_restarting"]),
@@ -4111,6 +4120,9 @@ def test_a_plane_already_like_the_render_is_not_recreated(
     _, _, companions = _FLIP_CASES[target]
     harness = _forward_harness(monkeypatch, tmp_path, flipped=(target,), companions=companions)
     harness.live["plane_current"] = True
+    # render는 compose의 `$$` escape를 싣고(storage 가드의 `exec "$$@"`), 컨테이너는 Docker가 푼 `$`를 싣는다 —
+    # 비교가 그것을 풀지 않으면 매번 다르다(재리뷰 HIGH).
+    assert any("$$" in str(word) for word in harness.plane_resolved[harness.plane.daemon]["command"])
 
     assert harness.service.rebuild_pinned_runtime()["outcome"] == "deployed"
     assert _plane_ups(harness.operations) == []

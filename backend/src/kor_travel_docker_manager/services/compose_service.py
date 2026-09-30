@@ -182,6 +182,12 @@ _PINNED_RUNTIME_ONESHOT_WRITERS = (
 )
 
 
+def _unescape_compose(value: str) -> str:
+    """compose의 `$$` escape를 컨테이너가 받는 `$`로 푼다(렌더된 값에는 보간할 `${…}`가 남지 않는다)."""
+
+    return value.replace("$$", "$")
+
+
 def _with_generation_companions(
     slots: Sequence[RuntimeSlot],
     companions: Mapping[str, RuntimeSlot],
@@ -5104,7 +5110,12 @@ class ComposeService:
         config hash는 쓰지 않는다(frozen·평범한 render가 다르게 낸다). 대신 재생성을 부를 실행 형태를 직접 본다:
         이미지(render의 `image:` 참조가 가리키는 image ID와 컨테이너의 `.Image`), render의 env 전부(공용 URL 앵커,
         heartbeat tolerance, `*_DIGEST` — 컨테이너 env가 그 값들을 그대로 싣는다), command·entrypoint. 컨테이너가 돌고
-        재시작 중이 아니어야 한다. 하나라도 다르거나 읽을 수 없으면 `up`한다(재생성은 안전한 쪽이다).
+        재시작 중이 아니어야 한다. 하나라도 다르면(이미지 참조를 풀 수 없는 것 포함) `up`한다. 컨테이너를 **읽을 수
+        없으면** 거부한다(fail-closed, `_inspect_plane_container`).
+
+        render는 compose의 `$$` escape를 그대로 싣는다(`docker compose config --format json`) — Docker는 컨테이너를
+        만들 때 그것을 `$`로 푼다(storage 가드 argv의 `exec "$$@"` → Cmd의 `exec "$@"`, n150 실측). 그래서 render의
+        command·entrypoint·env 값을 같은 규칙으로 푼 뒤 비교한다(재리뷰 HIGH — 안 풀면 매번 달라 M3가 되살아난다).
         """
 
         for name in plane.services:
@@ -5128,12 +5139,15 @@ class ComposeService:
             for key, value in environment.items():
                 if value is None:
                     continue
-                if actual_env.get(str(key)) != str(value):
+                if actual_env.get(str(key)) != _unescape_compose(str(value)):
                     return False
-            if [str(word) for word in render.get("command") or []] != observed["cmd"]:
+            command = [_unescape_compose(str(word)) for word in render.get("command") or []]
+            if command != observed["cmd"]:
                 return False
             entrypoint = render.get("entrypoint")
-            if entrypoint is not None and [str(word) for word in entrypoint] != observed["entrypoint"]:
+            if entrypoint is not None and [
+                _unescape_compose(str(word)) for word in entrypoint
+            ] != observed["entrypoint"]:
                 return False
         return True
 
