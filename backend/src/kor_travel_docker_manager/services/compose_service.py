@@ -4962,9 +4962,9 @@ class ComposeService:
         - **plane 서비스는 frozen render에서** 모양으로 파생하고, 설치된 release의 것과 다르면 거부한다.
         - **실을 workspace의 location마다** 그 target의 plane 밖 webserver·daemon·gateway가 멈춰 있어야 한다(한 규칙,
           이름 없음 — Map·PinVi만이 아니라 설치됐지만 아직 펜스 전인 다른 target도). 하나라도 돌면 이중 발화라 거부한다.
-        - **다시 만들 때만 `up`한다.** 떠 있는 daemon·webserver가 frozen render의 digest env(`*_DIGEST`)를 이미 실었으면
-          `up`하지 않는다 — frozen render와 평범한 render의 config hash가 달라 `up`은 매 재구축 plane을 다시 만든다.
-          창 스크립트와 같은 판정이다.
+        - **다시 만들 때만 `up`한다.** 떠 있는 daemon·webserver가 frozen render가 만들 컨테이너와 같으면(이미지 ID, render
+          env 전부, command·entrypoint, 돌고 재시작 중 아님) `up`하지 않는다 — frozen render와 평범한 render의 config
+          hash가 달라 무조건 `up`은 매 재구축 plane을 다시 만든다(`_shared_plane_current`).
         - **이 target의 location만 기다린다.** `up -d --no-deps`(`--wait` 없음) 뒤 webserver의 `workspaceOrError`에서
           합류한 carrier의 location이 `RepositoryLocation`이고 daemon 컨테이너가 도는지 본다. 다른 테넌트의
           code-server가 내려가 있어도 이 배포를 막지 않는다. 상한(300초) 안에 안 되면 거부한다(fail-closed).
@@ -5099,38 +5099,54 @@ class ComposeService:
     def _shared_plane_current(
         self, plane: SharedDagsterPlane, services: Mapping[str, Any]
     ) -> bool:
-        """떠 있는 daemon·webserver가 frozen render의 digest env를 이미 실었는가."""
+        """떠 있는 daemon·webserver가 frozen render가 만들 컨테이너와 같은가 — 그러면 `up`하지 않는다.
+
+        config hash는 쓰지 않는다(frozen·평범한 render가 다르게 낸다). 대신 재생성을 부를 실행 형태를 직접 본다:
+        이미지(render의 `image:` 참조가 가리키는 image ID와 컨테이너의 `.Image`), render의 env 전부(공용 URL 앵커,
+        heartbeat tolerance, `*_DIGEST` — 컨테이너 env가 그 값들을 그대로 싣는다), command·entrypoint. 컨테이너가 돌고
+        재시작 중이 아니어야 한다. 하나라도 다르거나 읽을 수 없으면 `up`한다(재생성은 안전한 쪽이다).
+        """
 
         for name in plane.services:
-            environment = services[name].get("environment") or {}
+            render = services[name]
+            observed = self._inspect_plane_container(installed_container_name(name), label=name)
+            if observed is None or not observed["running"] or observed["restarting"]:
+                return False
+            image = render.get("image")
+            if not isinstance(image, str) or not image:
+                return False
+            try:
+                wanted_image = self._inspect_image_reference_id(image, label=name)
+            except DeploymentContractError:
+                return False
+            if observed["image_id"] != wanted_image:
+                return False
+            environment = render.get("environment") or {}
             if not isinstance(environment, Mapping):
                 return False
-            wanted = {
-                str(key): str(value)
-                for key, value in environment.items()
-                if str(key).endswith("_DIGEST")
-            }
-            container = installed_container_name(name)
-            if not wanted or not self._inspect_container_running(container, label=name):
+            actual_env = observed["env"]
+            for key, value in environment.items():
+                if value is None:
+                    continue
+                if actual_env.get(str(key)) != str(value):
+                    return False
+            if [str(word) for word in render.get("command") or []] != observed["cmd"]:
                 return False
-            actual = self._inspect_container_digest_env(container, label=name)
-            if any(actual.get(key) != value for key, value in wanted.items()):
+            entrypoint = render.get("entrypoint")
+            if entrypoint is not None and [str(word) for word in entrypoint] != observed["entrypoint"]:
                 return False
         return True
 
     @staticmethod
-    def _inspect_container_digest_env(container_name: str, *, label: str) -> Mapping[str, str]:
-        """컨테이너 env 중 `*_DIGEST`만(비밀이 아닌 내용 digest). 읽을 수 없으면 거부한다."""
+    def _inspect_plane_container(container_name: str, *, label: str) -> Mapping[str, Any] | None:
+        """plane 컨테이너의 실행 형태(이미지 ID·env·command·entrypoint·상태). 없으면 ``None``, 읽을 수 없으면 거부.
+
+        env에는 비밀(공용 metadata URL)이 있다 — 비교에만 쓰고 어디에도 싣지 않는다.
+        """
 
         try:
             completed = subprocess.run(
-                [
-                    "docker",
-                    "container",
-                    "inspect",
-                    "--format={{range .Config.Env}}{{println .}}{{end}}",
-                    container_name,
-                ],
+                ["docker", "container", "inspect", "--format={{json .}}", container_name],
                 cwd=get_project_root(),
                 text=True,
                 capture_output=True,
@@ -5139,14 +5155,32 @@ class ComposeService:
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise DeploymentContractError(f"cannot inspect the {label} container") from exc
+        if completed.returncode == 1 and "no such container" in completed.stderr.lower():
+            return None
         if completed.returncode != 0:
             raise DeploymentContractError(f"cannot inspect the {label} container")
-        digests: dict[str, str] = {}
-        for line in completed.stdout.splitlines():
-            key, separator, value = line.partition("=")
-            if separator and key.endswith("_DIGEST"):
-                digests[key] = value
-        return digests
+        try:
+            document = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise DeploymentContractError(f"cannot inspect the {label} container") from exc
+        config = document.get("Config") if isinstance(document, Mapping) else None
+        state = document.get("State") if isinstance(document, Mapping) else None
+        if not isinstance(config, Mapping) or not isinstance(state, Mapping):
+            raise DeploymentContractError(f"cannot inspect the {label} container")
+        env: dict[str, str] = {}
+        for line in config.get("Env") or []:
+            key, separator, value = str(line).partition("=")
+            if separator:
+                env[key] = value
+        entrypoint = config.get("Entrypoint")
+        return {
+            "image_id": str(document.get("Image") or ""),
+            "env": env,
+            "cmd": [str(word) for word in config.get("Cmd") or []],
+            "entrypoint": None if entrypoint is None else [str(word) for word in entrypoint],
+            "running": state.get("Running") is True,
+            "restarting": state.get("Restarting") is True,
+        }
 
     @staticmethod
     def _query_shared_plane_locations(host: str, port: int) -> Mapping[str, str | None] | None:
@@ -5187,7 +5221,12 @@ class ComposeService:
         deadline = time.monotonic() + _SHARED_PLANE_PROBE_TIMEOUT_SECONDS
         while True:
             loaded = self._query_shared_plane_locations(host, port)
-            daemon_running = self._inspect_container_running(daemon_container, label=plane.daemon)
+            # 도는가·재시작 중이 아닌가만 본다(L3). daemon의 health는 workspace의 code-server **전부**가 SERVING인지 보므로
+            # 다른 테넌트에 묶인다(H1) — 이 target의 location 적재는 위 webserver 물음이 본다.
+            observed = self._inspect_plane_container(daemon_container, label=plane.daemon)
+            daemon_running = (
+                observed is not None and observed["running"] and not observed["restarting"]
+            )
             if (
                 daemon_running
                 and loaded is not None
@@ -5199,7 +5238,7 @@ class ComposeService:
                 raise DeploymentContractError(
                     "the shared Dagster plane did not load the shared pinned locations within "
                     f"{int(_SHARED_PLANE_PROBE_TIMEOUT_SECONDS)} s: {state}, daemon running "
-                    f"{bool(daemon_running)}"
+                    f"{daemon_running}"
                 )
             time.sleep(_SHARED_PLANE_PROBE_INTERVAL_SECONDS)
 

@@ -182,7 +182,7 @@ resume_hint() {
   echo "recover: to finish the cutover instead (same installed release $EXPECT; the pinned rebuild is idempotent under it):" >&2
   echo "  systemd-run --unit=dagster-cutover-$TARGET-resume --collect $0 $TARGET resume $EXPECT $STATE" >&2
   echo "  it re-checks the fence, reruns the switch$([[ "$SWITCH" == pinned ]] && echo " (scripts/run-pinned-rebuild-once $(installed_rev) <new outdir>)"), recreates the plane" >&2
-  echo "  (compose up -d --no-deps $DAEMON $WEBSERVER), verifies the location and instigator parity, removes the old containers" >&2
+  echo "  (compose up -d --no-deps ${DAEMON:-<shared daemon>} ${WEBSERVER:-<shared webserver>}), verifies the location and instigator parity, removes the old containers" >&2
 }
 pair_down_report() {  # pinned 재구축은 실패 때 slot 전부를 멈춘다(compose_service의 오류 처리) — 무엇이 내려갔는지 말한다
   local t f s down=""

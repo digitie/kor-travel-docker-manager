@@ -1649,7 +1649,10 @@ def _forward_harness(
         "workspace_locations": workspace_locations,
         "plane_loaded": {location: "RepositoryLocation" for location in workspace_locations},
         "plane_running": True,
-        "plane_digests": {},
+        "plane_restarting": False,
+        # 떠 있는 plane 컨테이너가 frozen render와 같은가(True면 `up`하지 않는다), 그리고 서비스별 덮어쓰기.
+        "plane_current": False,
+        "plane_overrides": {},
     }
     operations: list[tuple[str, ...]] = []
     readiness_requests: list[tuple[str, ...]] = []
@@ -1708,6 +1711,34 @@ def _forward_harness(
     plane_containers = {
         runtime_topology_module.installed_container_name(name) for name in plane_model.services
     }
+
+    plane_image_id = "sha256:" + "e" * 64
+    plane_container_service = {
+        runtime_topology_module.installed_container_name(name): name for name in plane_model.services
+    }
+
+    def plane_container(container_name: str, *, label: str) -> object:
+        del label
+        operations.append(("plane-inspect", container_name))
+        if not live["plane_running"]:
+            return None
+        render = plane_resolved[plane_container_service[container_name]]
+        observed = {
+            "image_id": plane_image_id,
+            "env": (
+                {str(k): str(v) for k, v in (render.get("environment") or {}).items() if v is not None}
+                if live["plane_current"]
+                else {}
+            ),
+            "cmd": [str(word) for word in render.get("command") or []],
+            "entrypoint": (
+                None if render.get("entrypoint") is None else [str(w) for w in render["entrypoint"]]
+            ),
+            "running": True,
+            "restarting": bool(live["plane_restarting"]),
+        }
+        observed.update(live["plane_overrides"].get(plane_container_service[container_name], {}))
+        return observed
 
     def plane_query(host: str, port: int) -> object:
         del host, port
@@ -1820,7 +1851,8 @@ def _forward_harness(
         "_run_pinvi_admin_bootstrap": mocks.pinvi_bootstrap,
         "_read_shared_workspace_locations": lambda _source: tuple(live["workspace_locations"]),
         "_query_shared_plane_locations": plane_query,
-        "_inspect_container_digest_env": lambda _name, *, label: dict(live["plane_digests"]),
+        "_inspect_plane_container": plane_container,
+        "_inspect_image_reference_id": lambda _reference, *, label: plane_image_id,
     }.items():
         monkeypatch.setattr(service, name, replacement)
     return SimpleNamespace(
@@ -4071,35 +4103,79 @@ def test_a_stopped_shared_daemon_fails_the_probe(
 
 
 @pytest.mark.parametrize("target", sorted(_FLIP_CASES))
-def test_a_plane_already_on_the_installed_digests_is_not_recreated(
+def test_a_plane_already_like_the_render_is_not_recreated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
 ) -> None:
-    """M3: 떠 있는 daemon·webserver가 frozen render의 digest env를 실었으면 `up`하지 않고 location만 본다."""
+    """M3: 떠 있는 daemon·webserver가 frozen render가 만들 컨테이너와 같으면 `up`하지 않고 location만 본다."""
 
     _, _, companions = _FLIP_CASES[target]
     harness = _forward_harness(monkeypatch, tmp_path, flipped=(target,), companions=companions)
-    digests = {
-        key: str(value)
-        for service in harness.plane_resolved.values()
-        for key, value in (service.get("environment") or {}).items()
-        if key.endswith("_DIGEST")
-    }
-    assert digests
-    harness.live["plane_digests"] = digests
+    harness.live["plane_current"] = True
 
     assert harness.service.rebuild_pinned_runtime()["outcome"] == "deployed"
     assert _plane_ups(harness.operations) == []
-    # 하나라도 다르면 다시 만든다.
-    key = next(iter(digests))
-    harness.live["plane_digests"] = {**digests, key: "0" * 16}
-    harness.operations.clear()
-    status = read_deploy_status(harness.status_path)
-    again = _forward_harness(
-        monkeypatch, tmp_path / "again", previous=status, flipped=(target,), companions=companions
-    )
-    again.live["plane_digests"] = {**digests, key: "0" * 16}
-    again.service.rebuild_pinned_runtime()
-    assert len(_plane_ups(again.operations)) == 1
+
+
+def _plane_env_key(harness: SimpleNamespace, suffix: str) -> tuple[str, str]:
+    for name, service in harness.plane_resolved.items():
+        for key in (service.get("environment") or {}):
+            if str(key).endswith(suffix):
+                return name, str(key)
+    raise AssertionError(suffix)
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["image", "shared_url", "heartbeat", "digest", "command", "entrypoint"],
+)
+def test_a_plane_that_differs_from_the_render_is_recreated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift: str
+) -> None:
+    """리뷰 MED: digest env만 같다고 넘기지 않는다 — 이미지(Dagster 올림)·공용 URL 앵커·heartbeat tolerance·command가
+    다르거나, 재시작 중이거나 없으면 다시 만든다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=("map",), companions=_FLIP_CASES["map"][2])
+    harness.live["plane_current"] = True
+    daemon = harness.plane.daemon
+    if drift == "image":
+        harness.live["plane_overrides"] = {daemon: {"image_id": "sha256:" + "d" * 64}}
+    elif drift in {"shared_url", "heartbeat", "digest"}:
+        suffix = {
+            "shared_url": "_SHARED_PG_URL",
+            "heartbeat": "HEARTBEAT_TOLERANCE",
+            "digest": "WORKSPACE_DIGEST",
+        }[drift]
+        name, key = _plane_env_key(harness, suffix)
+        env = {
+            str(k): str(v)
+            for k, v in (harness.plane_resolved[name].get("environment") or {}).items()
+            if v is not None
+        }
+        harness.live["plane_overrides"] = {name: {"env": {**env, key: "stale"}}}
+    elif drift == "command":
+        harness.live["plane_overrides"] = {daemon: {"cmd": ["dagster-daemon", "run"]}}
+    elif drift == "entrypoint":
+        harness.live["plane_overrides"] = {daemon: {"entrypoint": ["/stale"]}}
+        harness.plane_resolved[daemon]["entrypoint"] = ["/bin/sh"]
+
+    harness.service.rebuild_pinned_runtime()
+
+    assert len(_plane_ups(harness.operations)) == 1
+
+
+def test_a_restarting_shared_daemon_fails_the_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """L3: daemon이 돌기만 하는 것이 아니라 재시작 중이 아니어야 한다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=("map",), companions=_FLIP_CASES["map"][2])
+    clock = _PlaneClock()
+    monkeypatch.setattr(compose_service_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(compose_service_module.time, "sleep", clock.sleep)
+    harness.live["plane_restarting"] = True
+
+    with pytest.raises(DeploymentContractError, match="daemon running False"):
+        harness.service.rebuild_pinned_runtime()
 
 
 def test_a_workspace_location_whose_own_daemon_runs_is_refused(

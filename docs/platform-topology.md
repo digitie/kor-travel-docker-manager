@@ -370,7 +370,7 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
           pinned target이 있으면 PinVi smoke 전에 그 carrier(code-server)를 띄우고 plane이 그 location을 싣게 한다
           — smoke(PinVi `/admin/etl/summary`, Map `/v1/ops/pipeline/*`)가 공용 webserver에 자기 location을 묻기
           때문이다. plane이 실을 workspace의 location마다 그 target의 plane 밖 daemon이 돌면 거부하고, 떠 있는
-          plane이 설치본 digest를 이미 실었으면 다시 만들지 않으며(`up -d --no-deps`는 그때만), 그 target의
+          plane이 frozen render와 같은 이미지·env·command로 돌면 다시 만들지 않으며(`up -d --no-deps`는 그때만), 그 target의
           location이 `RepositoryLocation`이고 daemon이 도는지만 300초 안에서 본다(다른 테넌트의 상태는 보지 않는다).
           `own`인 target의 location을 plane이 아직 싣고 있으면 무엇을 멈추기 전에 거부한다 — 되돌리기는 이 창
           스크립트로 한다. 모두 `own`이면 plane을 건드리지 않는다. 순서: 설치 → 펜스(옛 daemon, 이어 webserver) → 옛 instance의 진행 중

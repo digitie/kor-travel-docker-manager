@@ -4354,10 +4354,13 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
      - **한 규칙의 이중 발화 가드(M1).** 그 workspace의 location마다 그 location을 싣는 target(설치된 모델에서 파생,
        모든 Dagster target)의 plane 밖 webserver·daemon·gateway가 돌면 거부한다 — Map·PinVi만이 아니라 설치됐지만
        아직 펜스 전인 다른 target(앞으로의 transport)도. 어느 target도 싣지 않는 location이 있으면 거부한다.
-     - **다시 만들 때만 `up -d --no-deps`(M3).** 떠 있는 daemon·webserver가 frozen render의 `*_DIGEST` env를 이미
-       실었으면 `up`하지 않는다. frozen render(`--env-file /dev/null`, stdin compose)와 평범한 render의 config hash가
-       달라 무조건 `up`은 매 재구축 plane을 다시 만들고 그동안 모든 테넌트의 webserver가 잠깐 끊긴다 — 무연산이
-       아니다. 창 스크립트와 같은 판정이다.
+     - **다시 만들 때만 `up -d --no-deps`(M3).** 떠 있는 daemon·webserver가 frozen render가 만들 컨테이너와 같으면
+       `up`하지 않는다 — 이미지(render의 `image:` 참조의 image ID = 컨테이너 `.Image`, 곧 Dagster 올림), render의 env
+       전부(공용 URL 앵커, heartbeat tolerance, `*_DIGEST`), command·entrypoint가 같고, 돌며 재시작 중이 아니어야 한다.
+       config hash는 쓰지 않는다: frozen render(`--env-file /dev/null`, stdin compose)와 평범한 render가 다르게 내서
+       무조건 `up`은 매 재구축 plane을 다시 만들고 그동안 모든 테넌트의 webserver가 잠깐 끊긴다. (처음 판은 `*_DIGEST`만
+       봐서 이미지·앵커·tolerance·command가 바뀐 release에서 낡은 plane이 살아남았다 — 재리뷰 MED.) daemon 확인은
+       돌고 재시작 중이 아님까지다 — daemon health는 모든 code-server를 봐서 다른 테넌트에 묶인다.
      - **이 target만 기다린다(H1).** `--wait`를 쓰지 않는다 — plane의 healthcheck는 workspace의 location 전부와
        code-server 전부를 봐서, geo·weather의 code-server 하나가 내려가면 Map 배포가 실패하고 smoke 뒤에 뜨는
        pinvi-web까지 내려간 채로 남았다. 대신 webserver의 `workspaceOrError`에서 합류한 pinned location이

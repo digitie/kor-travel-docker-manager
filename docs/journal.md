@@ -8612,7 +8612,8 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
   daemon이 도는지 300초 안에서 본다. M1: plane이 실을 workspace의 location마다 그 target(모든 Dagster target, 설치
   모델에서 파생)의 plane 밖 webserver·daemon·gateway가 돌면 거부 — 한 규칙. M2: `own`인 Map·PinVi의 location을
   설치본 workspace가 적었거나 떠 있는 webserver가 싣고 있으면 무엇을 멈추기 전에 거부(물을 수 없는데 plane daemon이
-  돌면 거부). M3: 떠 있는 plane이 frozen render의 `*_DIGEST` env를 이미 실었으면 `up`하지 않는다(frozen·평범한
+  돌면 거부). M3: 떠 있는 plane이 frozen render가 만들 컨테이너와 같으면(이미지 ID·render env 전부·command·entrypoint, 재리뷰
+  MED로 digest만 보던 것을 넓힘) `up`하지 않는다(frozen·평범한
   render의 config hash가 달라 무조건 `up`은 매번 plane을 다시 만들었다). L2: 재시도 상한은 대기의 시작을 묶는다(최악
   약 190초). L4: plane 파생에 캐시가 없다. 창 스크립트를 `scripts/dagster-shared-cutover.sh`로 저장소에 넣었다(weather
   전용 첫 판(weather-cutover.sh)은 같은 경로의 첫 커밋으로 남긴다 — 옛 서비스 이름이 literal이라 트리에 두면 `(pinned)` 게이트가 막는다).
