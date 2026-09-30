@@ -98,7 +98,7 @@ def _flipped_families(*targets: str) -> Mapping[str, DagsterFamily]:
 
 
 def _use(monkeypatch: pytest.MonkeyPatch, families: Mapping[str, DagsterFamily]) -> None:
-    monkeypatch.setattr(topology_module, "installed_dagster_families", lambda: families)
+    monkeypatch.setattr(topology_module, "installed_dagster_family", lambda target: families[target])
 
 
 # ── 모두 `own`: 파생 이전 literal과 같다 ─────────────────────────────────────
@@ -186,11 +186,11 @@ def test_a_flip_takes_the_old_services_out_of_every_running_set(
         *topology.runtime_services,
         *c6c._CANDIDATE_REQUIRED_PROTECTED_SERVICES,
         *c6c._candidate_protected_service_order(),
-        *c6c._map_database_host_network_services(),
         *c6c._MAP_RUNTIME_SERVICES,
     }
     assert running.isdisjoint(old)
-    assert set(topology.retired_services) == set(old)
+    # pinned runtime은 Map·PinVi family만 본다 — geo 전환은 그 집합을 바꾸지 않는다.
+    assert set(topology.retired_services) == (set(old) if target in ("map", "pinvi") else set())
     if target == "map":
         assert code_server in c6c._CANDIDATE_REQUIRED_PROTECTED_SERVICES
         assert code_server in c6c._map_database_host_network_services()
@@ -316,3 +316,106 @@ def test_a_frozen_render_without_the_old_map_dagster_passes_only_after_the_flip(
         validate()
     _use(monkeypatch, _flipped_families("map"))
     validate()
+
+
+# ── 적대 리뷰 2026-09-30 ──────────────────────────────────────────────────
+
+
+def test_a_family_has_no_gateway_that_is_its_own_runner() -> None:
+    """LOW-4: Map daemon은 Map webserver에 기대지만 gateway가 아니다. gateway는 weather의 것 하나뿐이다."""
+
+    families = installed_dagster_families()
+    assert families["map"].gateways == ()
+    assert families["pinvi"].gateways == ()
+    assert families["geo"].gateways == ()
+    assert families["weather"].gateways == ("kor-travel-weather-dagster-gateway",)
+    for family in families.values():
+        assert len(set(family.legacy)) == len(family.legacy), family
+
+
+def test_the_shared_webserver_depending_on_a_code_server_is_not_that_targets_webserver() -> None:
+    """공용 webserver·daemon이 합류한 code-server에 `depends_on`해도 그 target의 옛 서비스로 세지 않는다."""
+
+    from test_dagster_shared_workspace_is_derived import _documents, _flip
+
+    compose, targets_document = _documents()
+    _flip(compose, targets_document, "pinvi")
+    for name in ("kor-travel-dagster-webserver", "kor-travel-dagster-daemon"):
+        depends = compose["services"][name].setdefault("depends_on", {})
+        depends["pinvi-dagster-code-server"] = {"condition": "service_healthy"}
+    family = derive_dagster_families(compose, targets_document)["pinvi"]
+    assert (family.webserver, family.daemon, family.gateways) == (
+        "pinvi-dagster",
+        "pinvi-dagster-daemon",
+        (),
+    )
+
+
+def test_a_broken_unrelated_target_does_not_gate_map_and_pinvi(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MED-1: geo·weather의 모양이 어긋나도 Map·PinVi 파생(pinned runtime·C6c)은 선다. 전체 파생만 거부한다."""
+
+    from test_dagster_shared_workspace_is_derived import _documents
+
+    compose, targets_document = _documents()
+    # weather daemon이 사라지고 geo webserver가 둘이 된 모양.
+    del compose["services"]["kor-travel-weather-dagster-daemon"]
+    compose["services"]["kor-travel-geo-dagster-twin"] = dict(compose["services"]["kor-travel-geo-dagster"])
+    monkeypatch.setattr(topology_module, "_installed_documents", lambda: (compose, targets_document))
+    topology_module.installed_dagster_family.cache_clear()
+    try:
+        topology = runtime_topology()
+        assert topology.runtime_services[2] == "kor-travel-map-dagster"
+        assert c6c._candidate_protected_service_order() == _PRE_ADR54_REQUIRED_ORDER
+        with pytest.raises(c6c.DeploymentContractError, match="exactly one"):
+            installed_dagster_families()
+        with pytest.raises(c6c.DeploymentContractError, match="weather must have exactly one daemon"):
+            topology_module.dagster_family("weather")
+        with pytest.raises(c6c.DeploymentContractError, match="geo must have exactly one webserver"):
+            topology_module.dagster_family("geo")
+    finally:
+        topology_module.installed_dagster_family.cache_clear()
+
+
+def test_a_flipped_candidate_still_checks_its_old_map_dagster_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LOW-7: 전환 뒤 옛 Map webserver·daemon은 필수가 아니지만 raw 후보에 profile로 남는다 — 남아 있으면 Geo key·
+    DSN 계약을 그대로 본다. 필수에서 빼면서 검사까지 빼면 그 profile을 켰을 때 계약 밖 값으로 돈다."""
+
+    from copy import deepcopy
+
+    from test_f1d_compose_contract import _COMPOSE_PATH, _bootstrap_candidate, _source_compose
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    services["kor-travel-map-dagster-code-server"] = deepcopy(
+        _source_compose()["services"]["kor-travel-map-dagster-code-server"]
+    )
+    _use(monkeypatch, _flipped_families("map"))
+
+    def validate(document: dict[str, object]) -> None:
+        c6c.validate_compose_candidate_protected_values(
+            document,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+    validate(candidate)
+    for name, env in (
+        ("kor-travel-map-dagster", "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"),
+        ("kor-travel-map-dagster-daemon", "KOR_TRAVEL_MAP_PG_DSN"),
+    ):
+        drifted = deepcopy(candidate)
+        drifted_services = drifted["services"]
+        assert isinstance(drifted_services, dict)
+        drifted_services[name]["environment"][env] = "${SOMETHING_ELSE}"
+        with pytest.raises(ComposeCandidateContractError, match=f"{name}.{env} wiring is invalid"):
+            validate(drifted)
+    # 문서에서 지웠으면(profile째 제거) 필수가 아니므로 통과한다.
+    removed = deepcopy(candidate)
+    removed_services = removed["services"]
+    assert isinstance(removed_services, dict)
+    del removed_services["kor-travel-map-dagster"], removed_services["kor-travel-map-dagster-daemon"]
+    validate(removed)

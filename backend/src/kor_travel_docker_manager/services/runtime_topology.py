@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, Literal, TypeVar
@@ -74,6 +74,12 @@ class DagsterFamily:
         """전환하면 `legacy-dagster`로 내려가는 서비스(스위치와 무관한 모양)."""
 
         return (self.webserver, self.daemon, *self.gateways)
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """이 family의 모든 서비스 이름(스위치와 무관) — code-server·webserver·daemon·gateway."""
+
+        return (self.code_server, *self.legacy)
 
     @property
     def processes(self) -> tuple[str, ...]:
@@ -127,60 +133,106 @@ def _one(names: set[str], *, what: str, target: str) -> str:
     return next(iter(names))
 
 
-def derive_dagster_families(
-    compose: Mapping[str, Any],
-    targets: Mapping[str, Any],
-) -> Mapping[str, DagsterFamily]:
-    """`dagster` 절을 가진 target마다 family를 모양으로 찾는다. 모양이 어긋나면 거부한다."""
+#: 공용 plane의 webserver·daemon이 붙이는 파생 workspace. 이것을 붙인 서비스는 어느 target의 옛 서비스도 아니다 —
+#: 공용 webserver가 합류한 code-server에 `depends_on`해도 그 target의 webserver로 세지 않는다.
+_SHARED_WORKSPACE_SOURCE: Final = "./config/dagster-shared/workspace.yaml"
 
+
+def _mounts_shared_workspace(service: Mapping[str, Any]) -> bool:
+    for volume in service.get("volumes") or []:
+        source = volume.get("source") if isinstance(volume, Mapping) else str(volume).split(":", 1)[0]
+        if source == _SHARED_WORKSPACE_SOURCE:
+            return True
+    return False
+
+
+def _split_documents(
+    compose: Mapping[str, Any], targets: Mapping[str, Any]
+) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
     services = compose.get("services")
     target_specs = targets.get("targets")
     if not isinstance(services, Mapping) or not isinstance(target_specs, Mapping):
         raise DeploymentContractError("Dagster topology documents are invalid")
-    families: dict[str, DagsterFamily] = {}
-    for target_id, spec in target_specs.items():
-        if not isinstance(spec, Mapping) or "dagster" not in spec or spec.get("external_project"):
-            continue
-        block = spec.get("dagster")
-        control_plane = block.get("control_plane") if isinstance(block, Mapping) else None
-        if control_plane not in DAGSTER_CONTROL_PLANES:
-            raise DeploymentContractError(f"Dagster target {target_id} control plane is invalid")
-        declared = [str(name) for name in spec.get("services") or []]
-        code_server = _one(
-            {
-                name
-                for name in declared
-                if isinstance(services.get(name), Mapping) and _runs(services[name], "api grpc")
-            },
-            what="code-server",
-            target=str(target_id),
-        )
+    return services, target_specs
 
-        def runners(program: str, code_server: str = code_server) -> set[str]:
-            return {
-                str(name)
-                for name, service in services.items()
-                if isinstance(service, Mapping)
-                and _runs(service, program)
-                and code_server in _depends(service)
-            }
 
-        webserver = _one(runners("dagster-webserver"), what="webserver", target=str(target_id))
-        daemon = _one(runners("dagster-daemon"), what="daemon", target=str(target_id))
-        gateways = sorted(
-            str(name)
-            for name, service in services.items()
-            if isinstance(service, Mapping) and _depends(service) & {webserver, daemon}
-        )
-        families[str(target_id)] = DagsterFamily(
-            target=str(target_id),
-            control_plane=control_plane,
-            code_server=code_server,
-            webserver=webserver,
-            daemon=daemon,
-            gateways=tuple(gateways),
-        )
-    return MappingProxyType(families)
+def _is_dagster_target(spec: object) -> bool:
+    return isinstance(spec, Mapping) and "dagster" in spec and not spec.get("external_project")
+
+
+def derive_dagster_family(
+    compose: Mapping[str, Any],
+    targets: Mapping[str, Any],
+    target_id: str,
+) -> DagsterFamily:
+    """target **하나**의 family를 모양으로 찾는다. 다른 target의 모양은 보지 않는다 — geo·weather의 compose가
+    어긋나도 Map·PinVi의 파생은 막히지 않는다. 이 target의 모양이 어긋나면 거부한다."""
+
+    services, target_specs = _split_documents(compose, targets)
+    spec = target_specs.get(target_id)
+    if not isinstance(spec, Mapping) or not _is_dagster_target(spec):
+        raise DeploymentContractError(f"Dagster target {target_id} is not declared")
+    block = spec.get("dagster")
+    control_plane = block.get("control_plane") if isinstance(block, Mapping) else None
+    if control_plane not in DAGSTER_CONTROL_PLANES:
+        raise DeploymentContractError(f"Dagster target {target_id} control plane is invalid")
+    declared = [str(name) for name in spec.get("services") or []]
+    code_server = _one(
+        {
+            name
+            for name in declared
+            if isinstance(services.get(name), Mapping) and _runs(services[name], "api grpc")
+        },
+        what="code-server",
+        target=target_id,
+    )
+    # 이 target의 code-server에 기대는 서비스만 본다 — 공용 plane(공용 workspace를 붙인 것)은 뺀다.
+    dependents = {
+        str(name): service
+        for name, service in services.items()
+        if isinstance(service, Mapping)
+        and code_server in _depends(service)
+        and not _mounts_shared_workspace(service)
+    }
+
+    def runners(program: str) -> set[str]:
+        return {name for name, service in dependents.items() if _runs(service, program)}
+
+    webserver = _one(runners("dagster-webserver"), what="webserver", target=target_id)
+    daemon = _one(runners("dagster-daemon"), what="daemon", target=target_id)
+    # gateway는 옛 webserver·daemon에 기대는 **다른** 서비스다(Map daemon은 Map webserver에 기대지만 gateway가 아니다).
+    gateways = sorted(
+        str(name)
+        for name, service in services.items()
+        if isinstance(service, Mapping)
+        and name not in (webserver, daemon)
+        and _depends(service) & {webserver, daemon}
+        and not _mounts_shared_workspace(service)
+    )
+    return DagsterFamily(
+        target=target_id,
+        control_plane=control_plane,
+        code_server=code_server,
+        webserver=webserver,
+        daemon=daemon,
+        gateways=tuple(gateways),
+    )
+
+
+def derive_dagster_families(
+    compose: Mapping[str, Any],
+    targets: Mapping[str, Any],
+) -> Mapping[str, DagsterFamily]:
+    """`dagster` 절을 가진 target 전부의 family(하나라도 어긋나면 거부 — 계약 검사·테스트용)."""
+
+    _, target_specs = _split_documents(compose, targets)
+    return MappingProxyType(
+        {
+            str(target_id): derive_dagster_family(compose, targets, str(target_id))
+            for target_id, spec in target_specs.items()
+            if _is_dagster_target(spec)
+        }
+    )
 
 
 def _load_yaml(path: Path) -> Mapping[str, Any]:
@@ -207,9 +259,15 @@ def _installed_documents() -> tuple[Mapping[str, Any], Mapping[str, Any]]:
     return compose, targets
 
 
-@lru_cache(maxsize=1)
+@cache
+def installed_dagster_family(target: str) -> DagsterFamily:
+    """설치된 release의 compose·targets에서 target 하나의 family. 실패는 캐시하지 않는다."""
+
+    return derive_dagster_family(*_installed_documents(), target)
+
+
 def installed_dagster_families() -> Mapping[str, DagsterFamily]:
-    """설치된 release의 compose·targets에서 파생한 family."""
+    """설치된 release의 모든 family(진단·테스트용 — 실행 경로는 target별로 부른다)."""
 
     return derive_dagster_families(*_installed_documents())
 
@@ -230,10 +288,7 @@ def installed_container_name(service: str) -> str:
 
 
 def dagster_family(target: str) -> DagsterFamily:
-    families = installed_dagster_families()
-    if target not in families:
-        raise DeploymentContractError(f"Dagster target {target} is not declared")
-    return families[target]
+    return installed_dagster_family(target)
 
 
 # ── pinned runtime slot ───────────────────────────────────────────────────
@@ -334,7 +389,9 @@ class RuntimeTopology:
 def runtime_topology(families: Mapping[str, DagsterFamily] | None = None) -> RuntimeTopology:
     """설치된 모델(또는 주어진 family)에서 slot 서비스를 파생한다."""
 
-    families = installed_dagster_families() if families is None else families
+    if families is None:
+        # Map·PinVi만 파생한다 — 다른 target의 모양은 pinned runtime을 막지 못한다.
+        families = {target: dagster_family(target) for target in (MAP_TARGET, PINVI_TARGET)}
     for target in (MAP_TARGET, PINVI_TARGET):
         if target not in families:
             raise DeploymentContractError(f"Dagster target {target} is not declared")

@@ -64,6 +64,7 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
     PinnedRuntimeSourceSpec,
     canonical_pinset_sha256,
     current_pinned_runtime_release,
+    source_specs_for,
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import (
     MaterializedRuntimeSource,
@@ -1547,7 +1548,7 @@ def _forward_harness(
             _flip(compose_document, targets_document, target_id)
         families = derive_dagster_families(compose_document, targets_document)
         monkeypatch.setattr(
-            runtime_topology_module, "installed_dagster_families", lambda: families
+            runtime_topology_module, "installed_dagster_family", lambda target: families[target]
         )
 
     values = {
@@ -1615,6 +1616,8 @@ def _forward_harness(
         "pinvi_schema_table": True,
         # readiness가 거부할 서비스(ADR-53: instance는 readiness로만 본다).
         "not_ready": set(),
+        # docker에서 돌고 있는 컨테이너 이름(전환된 target의 옛 컨테이너 검사, ADR-54).
+        "running_containers": set(),
     }
     operations: list[tuple[str, ...]] = []
     readiness_requests: list[tuple[str, ...]] = []
@@ -1668,6 +1671,15 @@ def _forward_harness(
             {"Name": f"{name}-latest", "Service": name, "State": "running"}
             for name in services
         ]
+
+    container_checks: list[str] = []
+
+    def container_running(container_name: str, *, label: str) -> bool | None:
+        del label
+        container_checks.append(container_name)
+        # 검사도 같은 기록에 남겨 "무엇을 멈추기 전에"를 순서로 단언할 수 있게 한다.
+        operations.append(("container-inspect", container_name))
+        return True if container_name in cast(set[str], live["running_containers"]) else None
 
     def inspect_image(container_name: str, *, label: str) -> str:
         del container_name
@@ -1760,6 +1772,7 @@ def _forward_harness(
         "_require_services_ready": require_ready,
         "_inspect_container_runtime_config": Mock(return_value={}),
         "_inspect_container_image_id": inspect_image,
+        "_inspect_container_running": container_running,
         "_inspect_c6c_runtime_configs": inspect_c6c,
         "_ensure_pinvi_fresh_migration_fence": mocks.fence,
         "_run_pinvi_admin_bootstrap": mocks.pinvi_bootstrap,
@@ -1775,6 +1788,7 @@ def _forward_harness(
         operations=operations,
         readiness_requests=readiness_requests,
         image_labels=image_labels,
+        container_checks=container_checks,
         inspected_services=inspected_services,
         mocks=mocks,
         expected_images=deployed_images,
@@ -3532,3 +3546,250 @@ def test_an_explicit_up_of_a_flipped_code_server_reaches_its_api(
         assert scope == [old, api]
     scope, _ = ComposeService._parse_compose_mutation(["up", "-d", carrier])
     assert scope == [carrier]
+
+
+@pytest.mark.parametrize("target", sorted(_FLIP_CASES))
+def test_a_flipped_targets_running_old_container_is_refused_before_anything_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    """전환 뒤 옛 daemon은 `stop`에 들지 않는다 — 떠 있으면 무엇을 멈추거나 migration하기 전에 거부한다."""
+
+    _, legacy, companions = _FLIP_CASES[target]
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=(target,), companions=companions)
+    expected = [f"{name}-latest" for name in legacy]
+    daemon_container = f"{legacy[-1]}-latest"
+    harness.live["running_containers"] = {daemon_container}
+
+    with pytest.raises(DeploymentContractError, match="retired Dagster services .* still running"):
+        harness.service.rebuild_pinned_runtime()
+
+    assert harness.container_checks == expected
+    assert [operation for operation in harness.operations if operation[0] != "container-inspect"] == []
+    assert read_deploy_status(harness.status_path) is None
+
+    # 멈춰 있으면(또는 없으면) 같은 경로가 끝까지 간다 — 검사는 수렴·전체 경로 모두의 앞이다.
+    harness.live["running_containers"] = set()
+    harness.service.rebuild_pinned_runtime()
+    first_mutation = next(
+        index for index, operation in enumerate(harness.operations) if operation[0] == "stop"
+    )
+    inspected = [
+        index
+        for index, operation in enumerate(harness.operations)
+        if operation[0] == "container-inspect"
+    ]
+    assert inspected and max(inspected) < first_mutation
+
+
+def test_an_own_rebuild_inspects_no_retired_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.service.rebuild_pinned_runtime()
+    assert harness.container_checks == []
+
+
+def test_the_container_probe_reads_absent_running_and_refuses_the_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answers = {
+        "absent": (1, "", "Error response from daemon: No such container: absent\n"),
+        "running": (0, "true\n", ""),
+        "stopped": (0, "false\n", ""),
+        "broken": (1, "", "Cannot connect to the Docker daemon\n"),
+    }
+
+    def run(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        code, out, err = answers[command[-1]]
+        return subprocess.CompletedProcess(command, code, stdout=out, stderr=err)
+
+    monkeypatch.setattr(compose_service_module.subprocess, "run", run)
+    probe = ComposeService._inspect_container_running
+    assert probe("absent", label="x") is None
+    assert probe("running", label="x") is True
+    assert probe("stopped", label="x") is False
+    with pytest.raises(DeploymentContractError, match="cannot inspect the x container"):
+        probe("broken", label="x")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ["ps", "--format", "json"],
+        ["config", "--format", "json"],
+        ["logs", "--tail", "10", "kor-travel-map-api"],
+        ["stop", "kor-travel-map-dagster-daemon"],
+        ["up", "-d", "--no-deps", "grafana"],
+    ),
+)
+def test_reading_and_explicit_stopping_do_not_need_the_installed_model(
+    monkeypatch: pytest.MonkeyPatch, arguments: list[str]
+) -> None:
+    """모델이 깨져도(참조 파일 부재·어긋난 모양) 보고 멈추는 길은 남는다 — 파생은 필요한 mutation에서만."""
+
+    def broken() -> RuntimeTopology:
+        raise DeploymentContractError("reference compose cannot be read")
+
+    monkeypatch.setattr(compose_service_module, "runtime_topology", broken)
+    monkeypatch.setattr(runtime_topology_module, "installed_dagster_family", lambda _t: broken())
+    ComposeService._parse_compose_mutation(arguments)
+    ComposeService._compose_mutation_identifiers(arguments)
+    # 의존성을 끌어오는 `up`은 파생이 필요하다 — 그때는 조용히 넘어가지 않고 멈춘다.
+    with pytest.raises(DeploymentContractError, match="reference compose"):
+        ComposeService._parse_compose_mutation(["up", "-d", "kor-travel-map-ui"])
+
+
+# --- ADR-54 파생의 `own` 불변식: 파생 이전(6f384ba)의 지문과 같다 -----------------------------------
+
+_OWN_FINGERPRINT = Path(__file__).resolve().parent / "fixtures" / "pinned_runtime_own_fingerprint.json"
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            "|".join(key) if isinstance(key, tuple) else str(key): _jsonable(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list | tuple):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, set | frozenset):
+        return sorted(_jsonable(item) for item in value)
+    return value
+
+
+def _own_fingerprint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
+    """모든 target이 `own`일 때 파생이 만드는 것 전부를 서비스 이름·문자열로. 픽스처와 같은 모양이다.
+
+    픽스처는 파생 이전 코드(6f384ba, literal 집합)에서 같은 항목을 떠 seed revision·pinset만 자리표로 바꾼
+    것이다. 의도한 변경 셋은 빠져 있다 — M05 이미지 역할 키(`pinvi-app-dagster`), 보존 namespace가 알아보는
+    이름(family 전부, 적대 리뷰 MED-3), 그리고 seed에 묶인 generation sha256.
+    """
+
+    import kor_travel_docker_manager.services.c6c_image_retention as retention
+    import kor_travel_docker_manager.services.legacy_override_retirement as retirement
+    import kor_travel_docker_manager.services.m05_isolated_harness as m05
+
+    generation = _candidate_generation()
+    sources = _sources()
+    build = CandidateRuntimeBuild(sources, _map_application_candidate())
+    topology = runtime_topology()
+    out: dict[str, Any] = {
+        "runtime_services": list(topology.runtime_services),
+        "built_services": list(build.build_services),
+    }
+    payload = generation.to_payload()
+    payload.pop("recorded_at")
+    out["generation_payload"] = payload
+    out["build_compose_environment"] = dict(build.compose_environment())
+    out["generation_compose_environment"] = dict(generation_compose_environment(generation))
+    out["candidate_image_names"] = sorted(build.image_names.values())
+    out["paired_names"] = sorted(map_application_300_paired_build_image_names(sources).values())
+    out["runtime_image_references"] = sorted(
+        (topology.service(slot) or "-", image) for slot, image in build.runtime_image_references.items()
+    )
+    document = yaml.safe_load(
+        (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(encoding="utf-8")
+    )
+    by_variable = {
+        variable: generation.image_ids[slot]
+        for slot, variable in pinned_runtime_rebuild_module._IMAGE_ENVIRONMENT.items()
+    }
+    services: dict[str, dict[str, str]] = {}
+    for name, service in document["services"].items():
+        raw = str(service.get("image", ""))
+        match = re.fullmatch(r"\$\{([A-Z0-9_]+)[^}]*\}", raw)
+        services[name] = {"image": by_variable.get(match.group(1), raw) if match else raw}
+    companions = generation_companion_services(
+        {"services": services},
+        generation.image_ids,
+        excluded_services=compose_service_module._PINNED_RUNTIME_ONESHOT_WRITERS,
+        topology=topology,
+    )
+    out["companions"] = {name: topology.service(owner) for name, owner in companions.items()}
+    out["deployed_images"] = ComposeService._deployed_images(generation, companions)
+    out["retention_desired"] = retention._desired_references([generation], topology)
+    out["c6c_required"] = sorted(c6c_deployment._CANDIDATE_REQUIRED_PROTECTED_SERVICES)
+    out["c6c_known"] = sorted(c6c_deployment._CANDIDATE_KNOWN_SERVICE_NAMES)
+    out["c6c_map_runtime"] = list(c6c_deployment._MAP_RUNTIME_SERVICES)
+    out["c6c_pinvi_dsn_credentials"] = [list(row) for row in c6c_deployment._PINVI_DSN_SERVICE_CREDENTIALS]
+    out["c6c_pinvi_database_url_raw"] = list(dict(c6c_deployment._PINVI_DATABASE_URL_RAW_VALUES).items())
+    out["c6c_pinvi_dagster_pg_url_services"] = list(c6c_deployment._PINVI_DAGSTER_PG_URL_SERVICES)
+    out["c6c_pinvi_dagster_pg_url_raw"] = list(
+        dict(c6c_deployment._PINVI_DAGSTER_PG_URL_RAW_VALUES).items()
+    )
+    out["c6c_map_database_canonical"] = [
+        [list(key), value] for key, value in dict(c6c_deployment._MAP_DATABASE_CANONICAL_ENV_VALUES).items()
+    ]
+    out["c6c_candidate_canonical_api"] = [
+        [list(key), value]
+        for key, value in dict(c6c_deployment._CANDIDATE_CANONICAL_API_ENV_VALUES).items()
+    ]
+    out["c6c_contract_locked"] = {
+        key: sorted(value)
+        for key, value in sorted(dict(c6c_deployment._CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE).items())
+    }
+    out["c6c_describe"] = [
+        c6c_deployment._describe_candidate_service_key(name) for name in sorted(document["services"])
+    ]
+    out["mutation_parse_up"] = {
+        name: ComposeService._parse_compose_mutation(["up", "-d", name])[0]
+        for name in sorted(document["services"])
+    }
+    out["mutation_identifiers_down"] = ComposeService._compose_mutation_identifiers(["down"])
+    out["geo_override_services"] = list(retirement._GEO_SERVICES)
+    out["m05_roles_values"] = sorted(m05._RUNTIME_IMAGE_ROLES.values())
+    out["pinset_seed"] = PINNED_RUNTIME_RELEASE.pinset_sha256
+
+    harness = _forward_harness(monkeypatch, tmp_path / "first")
+    result = harness.service.rebuild_pinned_runtime()
+    out["first_deploy"] = {
+        "outcome": result["outcome"],
+        "operations": [list(operation) for operation in harness.operations],
+        "readiness": [list(request) for request in harness.readiness_requests],
+        "image_labels": harness.image_labels,
+        "inspected": [list(services) for services in harness.inspected_services],
+        "expected_images": harness.expected_images,
+    }
+    harness = _forward_harness(monkeypatch, tmp_path / "second", previous=_committed_status(generation))
+    result = harness.service.rebuild_pinned_runtime()
+    out["converge"] = {
+        "outcome": result["outcome"],
+        "operations": [list(operation) for operation in harness.operations],
+        "readiness": [list(request) for request in harness.readiness_requests],
+    }
+    text = json.dumps(_jsonable(out), sort_keys=True, ensure_ascii=False)
+    for value, placeholder in (
+        (payload["pinset_sha256"], "<PINSET>"),
+        (payload["map_source_revision"], "<MAP_REVISION>"),
+        (payload["pinvi_source_revision"], "<PINVI_REVISION>"),
+    ):
+        text = text.replace(str(value), placeholder)
+    return cast(dict[str, Any], json.loads(text))
+
+
+def test_every_own_rebuild_matches_the_pre_adr54_fingerprint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """모두 `own`이면 파생은 파생 이전과 글자까지 같다 — slot 서비스·build·tag·companion·배포 images·보존·C6c
+    표·mutation 분류·generation payload·compose env, 그리고 첫 배포·수렴의 호출 순서 전체."""
+
+    expected = json.loads(_OWN_FINGERPRINT.read_text(encoding="utf-8"))
+    expected.pop("_source")
+    actual = _own_fingerprint(monkeypatch, tmp_path)
+    assert sorted(actual) == sorted(expected)
+    assert [key for key in sorted(expected) if actual[key] != expected[key]] == []
+
+
+def test_the_production_pinset_is_a_function_of_the_sources_alone() -> None:
+    """운영 pin(2026-09-30 회전, `7ea6689c`)을 이 코드로 재계산해도 같다 — pinset은 서비스 이름을 보지 않는다."""
+
+    assert (
+        canonical_pinset_sha256(
+            version=5,
+            sources=source_specs_for(
+                map_revision="791f49f403553dcfe1a0a5a2b6b67a0557ab22e1",
+                pinvi_revision="83f00171da70bc3429bace9b32b5d3782e3c72aa",
+            ),
+        )
+        == "7ea6689c7d0051b64abf373b6af3bfed90fed816a3546e0aa5a7bac0b8b046b7"
+    )

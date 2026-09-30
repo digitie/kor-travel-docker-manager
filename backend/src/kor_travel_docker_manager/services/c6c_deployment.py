@@ -437,11 +437,33 @@ def _candidate_protected_service_order() -> tuple[str, ...]:
     )
 
 
+def _retired_map_dagster_services() -> tuple[str, ...]:
+    """공용 plane에 합류해 `legacy-dagster`로 내려간 옛 Map Dagster 서비스(`own`이면 없다)."""
+
+    return _map_dagster().retired
+
+
+def _candidate_checked_service_order(services: Mapping[str, Any]) -> tuple[str, ...]:
+    """서비스별 계약을 보는 순서 — 필수 서비스에 더해, 문서에 **남아 있는** 옛 Map Dagster 서비스.
+
+    전환 뒤 옛 webserver·daemon은 필수가 아니다(frozen render에 없다). 그래도 raw 후보에는 profile로 남고,
+    그 profile을 켜면 그 env로 돈다 — 그래서 있으면 같은 계약(Geo key·Map DSN 값, host network)을 본다
+    (적대 리뷰 2026-09-30 LOW-7). `own`이면 필수 목록 그대로다.
+    """
+
+    order = _candidate_protected_service_order()
+    return (
+        *order,
+        *(name for name in _retired_map_dagster_services() if name in services and name not in order),
+    )
+
+
 def _map_database_host_network_services() -> frozenset[str]:
     return frozenset(
         {
             _MAP_API_SERVICE,
             *_map_dagster_runtime_services(),
+            *_retired_map_dagster_services(),
             _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
             _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
             _MAP_APPLICATION_SCHEMA_SERVICE,
@@ -4266,7 +4288,7 @@ def validate_resolved_compose_candidate_protected_values(
     _validate_concierge_ui_canonical_contract(services, environment, resolved=True)
     _validate_map_application_300_images(services)
 
-    for service_name in _candidate_protected_service_order():
+    for service_name in _candidate_checked_service_order(services):
         # **무조건 인덱싱하지 않는다**(GM-17 B S1). 종전 `services[service_name]`은
         # 이름이 빠지면 raw `KeyError`를 던졌고, 그것이 계약 오류가 아니라 traceback으로
         # 사용자에게 샜다.
@@ -4649,7 +4671,7 @@ def validate_compose_candidate_protected_values(
     # bind source·env_file **내용**이 찾을 `.env` 비밀 값은 설치된 릴리스 compose 기준으로 고른다(ADR-51 결정 5).
     protected_values = secret_values_for(compose_path=compose_path, environment=environment)
 
-    for service_name in _candidate_protected_service_order():
+    for service_name in _candidate_checked_service_order(services):
         # **무조건 인덱싱하지 않는다**(GM-17 B S1). 종전 `services[service_name]`은
         # 이름이 빠지면 raw `KeyError`를 던졌고, 그것이 계약 오류가 아니라 traceback으로
         # 사용자에게 샜다.

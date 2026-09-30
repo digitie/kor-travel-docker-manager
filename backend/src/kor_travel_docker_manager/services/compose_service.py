@@ -151,6 +151,7 @@ from kor_travel_docker_manager.services.runtime_topology import (
     RUNTIME_SLOTS,
     RuntimeSlot,
     RuntimeTopology,
+    installed_container_name,
     runtime_topology,
     slot_project,
 )
@@ -3307,7 +3308,9 @@ class ComposeService:
         ``None``이거나 ``[]``이면 플래그는 비어 있다.
         """
 
-        runtime_identifiers = [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
+        # 파생(runtime_topology)은 **해석이 끝난 뒤, 그것이 필요한 mutation에서만** 한다 — read-only
+        # (`ps`·`config`·`logs`)와 명시 서비스 `stop`·`rm`은 설치된 모델을 읽지 않는다. 모델이 깨져도 보고
+        # 멈추는 길은 남는다(적대 리뷰 2026-09-30 MED-1).
         if not args:
             return None, frozenset()
         command_index = ComposeService._compose_command_index(args)
@@ -3558,7 +3561,7 @@ class ComposeService:
                     if service in api_dependencies
                 )
             if "--remove-orphans" in parsed_flags:
-                explicit_services.extend(runtime_identifiers)
+                explicit_services.extend([*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE])
             return explicit_services, frozenset(parsed_flags)
         # down/rm --all/unknown command/option parse failure may affect either API.
         return None, frozenset()
@@ -4250,6 +4253,52 @@ class ComposeService:
             )
         return image_id
 
+    @staticmethod
+    def _inspect_container_running(container_name: str, *, label: str) -> bool | None:
+        """컨테이너가 돌고 있는가. 없으면 ``None``. 읽을 수 없으면 거부한다(fail-closed)."""
+
+        try:
+            completed = subprocess.run(
+                ["docker", "container", "inspect", "--format={{.State.Running}}", container_name],
+                cwd=get_project_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentContractError(f"cannot inspect the {label} container") from exc
+        state = completed.stdout.strip()
+        if completed.returncode == 0 and state in {"true", "false"}:
+            return state == "true"
+        if completed.returncode == 1 and "no such container" in completed.stderr.lower():
+            return None
+        raise DeploymentContractError(
+            f"cannot inspect the {label} container" + command_output_tail("stderr", completed.stderr)
+        )
+
+    def _require_retired_dagster_containers_stopped(self, topology: RuntimeTopology) -> None:
+        """공용 plane에 합류한 target의 옛 webserver·daemon·gateway 컨테이너가 돌고 있지 않은가(ADR-54).
+
+        전환 전에는 전체 경로의 첫 `stop`이 Map daemon을 멈춰 migration 동안 run을 띄우지 못하게 했다. 전환 뒤
+        그 서비스는 `legacy-dagster`라 frozen render에 없고 `stop`에도 들지 않는다 — 그래서 docker에서 컨테이너
+        이름(설치된 targets의 `containers`에서 파생)으로 직접 본다. 돌고 있으면 무엇도 멈추거나 migration하기
+        전에 거부한다. `own`이면 볼 것이 없다.
+        """
+
+        running = [
+            f"{service} ({container})"
+            for service in topology.retired_services
+            if self._inspect_container_running(
+                container := installed_container_name(service), label=service
+            )
+        ]
+        if running:
+            raise DeploymentContractError(
+                "retired Dagster services of a target on the shared control plane are still "
+                "running; stop them before the pinned rebuild: " + ", ".join(running)
+            )
+
     def _assert_pinned_runtime_container_images(
         self,
         records: Sequence[Mapping[str, Any]],
@@ -4646,6 +4695,9 @@ class ComposeService:
                 runtimes,
                 transaction=runtime_transaction,
             )
+            # 수렴이든 전체 경로든 무엇을 멈추거나 migration하기 전에 — 전환된 target의 옛 daemon은
+            # `stop`에 들지 않으므로 떠 있으면 migration 중 run을 띄운다.
+            self._require_retired_dagster_containers_stopped(topology)
 
             if (
                 not explicit

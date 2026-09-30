@@ -32,12 +32,14 @@ _DELETED_IMAGE = re.compile(r"^Deleted: sha256:[0-9a-f]{64}$")
 def _reference_names(topology: RuntimeTopology, slots: tuple[RuntimeSlot, ...]) -> list[str]:
     """이 namespace가 자기 것으로 알아보는 reference 이름.
 
-    slot을 지금 운반하는 서비스에 더해, 공용 plane에 합류한 target의 옛 서비스 이름을 받는다
-    (ADR-54). 전환 전에 남긴 그 이름의 tag가 "모르는 reference"로 namespace 전체를 멈추지 않고
-    stale로 지워지게 하려는 것이다. `own`뿐이면 종전 집합 그대로다.
+    slot을 지금 운반하는 서비스에 더해, Map·PinVi Dagster family의 서비스 이름 전부를 **스위치와 무관하게**
+    받는다(ADR-54). 전환(`own`→`shared`)이든 되돌리기(`shared`→`own`)든 다른 모양일 때 남긴 tag가 "모르는
+    reference"로 namespace 전체를 멈추지 않고 stale로 지워지게 하려는 것이다. 보존·정리되는 것(desired)은
+    지금의 slot 서비스뿐이다 — 이 목록은 알아보는 이름일 뿐이다.
     """
 
-    return [*topology.services_for(slots), *topology.retired_services]
+    family_names = (name for family in topology.families.values() for name in family.names)
+    return list(dict.fromkeys([*topology.services_for(slots), *family_names]))
 
 
 def _reference_pattern(prefix: str, names: list[str]) -> re.Pattern[str]:

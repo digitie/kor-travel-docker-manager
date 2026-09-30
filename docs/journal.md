@@ -8512,3 +8512,20 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
   다시 빌드하고 전체 경로를 돈다(images 키가 바뀌므로 수렴이 아니다) — 의도. `shared`→`own` 되돌리기 뒤에는 code-server
   이름의 보존 tag를 `own` namespace가 모른다(fail-closed, 손으로 지운다). 계약 (c)는 profile 없는 서비스의 `depends_on`만
   보는데, `bootstrap` profile 서비스가 옛 서비스에 기대면 frozen render가 "undefined service"로 실패한다(지금은 없다).
+
+### 2026-09-30 — 적대 리뷰(`0eb26a4`) 수정, origin/main `6f30fd5`(#445) 위로 재기반
+
+- **MED-1** 파생은 해석이 끝난 뒤 그것이 필요한 mutation에서만 한다(`_parse_compose_mutation`) — read-only(`ps`·
+  `config`·`logs`)와 명시 서비스 `stop`, `--no-deps` `up`은 설치된 모델을 읽지 않는다. family는 target별로 파생·캐시하고
+  pinned runtime·C6c는 Map·PinVi만 부른다 — geo·weather 모양이 어긋나도 막히지 않는다(전체 파생만 거부). 공용 plane
+  (공용 workspace를 붙인 서비스)은 target의 runner·gateway로 세지 않는다.
+- **MED-2** 전환된 target의 옛 webserver·daemon·gateway 컨테이너(설치된 `containers`에서 이름 파생)가 docker에서 돌고
+  있으면 수렴·전체 경로 모두 무엇을 멈추거나 migration하기 전에 거부한다(없으면 통과, 못 읽으면 거부). `own`이면 볼 것이 없다.
+- **MED-3** 보존·candidate namespace는 Map·PinVi family의 이름 전부를 스위치와 무관하게 알아본다 — `shared`→`own` 되돌리기
+  뒤 code-server 이름의 tag도 stale로 지운다. 그 밖의 이름은 여전히 namespace를 멈춘다. `own`의 보존 대상(desired)은 그대로다.
+- **LOW-4** gateway에서 그 target의 runner를 뺀다(Map daemon이 Map gateway로 세이던 것). **LOW-7** 전환 뒤에도 raw 후보에
+  profile로 남은 옛 Map webserver·daemon은 서비스별 계약(Geo key·DSN·host network)을 그대로 본다(필수는 아니다).
+- **불변식을 저장소로**: `test_every_own_rebuild_matches_the_pre_adr54_fingerprint`가 `6f384ba`에서 뜬 지문
+  (`backend/tests/fixtures/pinned_runtime_own_fingerprint.json`, seed revision·pinset은 자리표)과 대조한다 — 의도한 변경 셋(M05
+  역할 키, 보존이 알아보는 이름, seed에 묶인 sha256)만 빠져 있다. 운영 pinset `7ea6689c`는 고정 벡터 테스트가 재계산한다.
+- **빨강 확인** 27/27(이전 16 + 이번 11). pinset 변이는 테스트 모듈 수집 단계에서 먼저 빨갛다(seed pin 대조).
