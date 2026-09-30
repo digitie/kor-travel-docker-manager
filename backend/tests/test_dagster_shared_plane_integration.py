@@ -86,6 +86,21 @@ def call(path, method="GET", secret=password, origin=None, body=None, headers=No
     except urllib.error.HTTPError as error:
         return error.code, error.headers.get_all("Content-Security-Policy") or []
 
+def ws(origin, path="/graphql"):
+    # UI의 SubscriptionClient가 여는 그대로: `<origin>/graphql`, subprotocol graphql-ws. 상태 줄만 읽는다.
+    import socket
+    token = base64.b64encode(("%s:%s" % (user, password)).encode()).decode()
+    lines = [
+        "GET %s HTTP/1.1" % path, "Host: 127.0.0.1:%s" % port, "Upgrade: websocket",
+        "Connection: Upgrade", "Sec-WebSocket-Version: 13",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Protocol: graphql-ws",
+        "Origin: %s" % origin, "Sec-Fetch-Site: same-origin", "Sec-Fetch-Mode: websocket",
+        "Authorization: Basic " + token,
+    ]
+    with socket.create_connection(("127.0.0.1", int(port)), timeout=15) as sock:
+        sock.sendall(("\\r\\n".join(lines) + "\\r\\n\\r\\n").encode())
+        return int(sock.recv(4096).split(b"\\r\\n", 1)[0].split()[1])
+
 query = json.dumps({"query": "{workspaceOrError{__typename}}"}).encode()
 ui_status, csp = call("/")
 print(json.dumps({
@@ -121,6 +136,15 @@ print(json.dumps({
     "post_same_origin_fetch": call(
         "/graphql", "POST", origin=public, body=query,
         headers={"Sec-Fetch-Site": "same-origin"})[0],
+    # 재리뷰 HIGH-1: UI의 Apollo link는 모든 HTTP 요청에 `?op=<OperationName>`을 붙인다.
+    "post_same_origin_op": call(
+        "/graphql?op=RunsRoot", "POST", origin=public, body=query,
+        headers={"Sec-Fetch-Site": "same-origin"})[0],
+    "post_foreign_origin_op": call(
+        "/graphql?op=RunsRoot", "POST", origin="https://evil.example.test", body=query)[0],
+    "ws_same_origin_ui": ws(public),
+    "ws_foreign_origin": ws("https://evil.example.test"),
+    "ws_with_args": ws(public, "/graphql?query=x"),
     # iframe(geo UI)은 교차 사이트 탐색으로 UI HTML을 연다 — 그것은 막지 않는다.
     "ui_cross_site_navigation": call("/", headers={"Sec-Fetch-Site": "cross-site"})[0],
     # M1: 교차 사이트 WebSocket(GraphQL subscription)은 Origin으로 막힌다.
@@ -375,6 +399,11 @@ def test_the_empty_plane_is_healthy_and_the_gateway_guards_the_ui(isolated_plane
         "post_cross_site_fetch": 403,
         "post_same_site_fetch": 403,
         "post_same_origin_fetch": 200,
+        "post_same_origin_op": 200,
+        "post_foreign_origin_op": 403,
+        "ws_same_origin_ui": 101,
+        "ws_foreign_origin": 403,
+        "ws_with_args": 403,
         "ui_cross_site_navigation": 200,
         "upgrade_foreign_origin": 403,
         "upgrade_without_origin": 403,

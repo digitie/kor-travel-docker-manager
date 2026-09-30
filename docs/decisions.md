@@ -4303,11 +4303,14 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
      `DAGSTER_GATEWAY_CONF_DIGEST`, 합류한 code-server는 `KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST`. 파생 테스트가 내용과
      대조한다. `ensure dagster --recreate`는 답이 아니다(target에 공용 PostgreSQL이 있다).
    - **gateway의 `/graphql`(H2·M1).** dagster-webserver는 Accept에 text/html이 없는 GET의 `query` 인자도
-     실행한다(mutation 포함) — 교차 사이트 `<img>`가 캐시된 Basic Auth로 부를 수 있다. `/graphql`은 **인자를 하나도**
-     받지 않고(`query`만 막으면 `?%71uery=…`·`?query=&query=…`가 지나간다 — nginx는 디코드 전 이름의 첫 값을, Starlette는
-     디코드한 이름의 마지막 값을 본다, 재리뷰 MED-1. UI는 `/graphql`을 POST·WebSocket으로만 쓴다), 브라우저의 `Sec-Fetch-Site`가 `same-origin`·`none`(또는 헤더 없음 — 비-브라우저)일 때만 받는다.
+     실행한다(mutation 포함) — 교차 사이트 `<img>`가 캐시된 Basic Auth로 부를 수 있다. POST가 아닌 `/graphql`은
+     **인자를 하나도** 받지 않고(`query`만 막으면 `?%71uery=…`·`?query=&query=…`가 지나간다 — nginx는 디코드 전 이름의
+     첫 값을, Starlette는 디코드한 이름의 마지막 값을 본다, 재리뷰 MED-1), 브라우저의 `Sec-Fetch-Site`가 `same-origin`·`none`(또는 헤더 없음 — 비-브라우저)일 때만 받는다.
      `Upgrade` 요청(GraphQL subscription WebSocket — 모든 테넌트의 run·compute log)도 허용 Origin이 아니면 403이다.
-     UI HTML(`/`)은 iframe으로 열리므로 이 검사 밖이다. `limit_req`는 두지 않았다 — HAProxy 뒤에서는 모든 요청이 한
+     POST의 인자는 막지 않는다 — UI의 Apollo HTTP link가 모든 요청에 `?op=<OperationName>`을 붙이고
+     (`createOperationQueryStringApolloLink`, 1.13.24 번들 확인; 처음 판은 인자 전부를 막아 UI를 깨뜨렸다, 재리뷰
+     HIGH-1), POST는 이미 Origin·`Sec-Fetch-Site`로 갈리고 본문이 요청을 정한다. UI의 subscription WebSocket은 인자
+     없는 `<origin>/graphql`이라 통과한다. UI HTML(`/`)은 iframe으로 열리므로 이 검사 밖이다. `limit_req`는 두지 않았다 — HAProxy 뒤에서는 모든 요청이 한
      주소로 오므로 Basic Auth 시도만이 아니라 UI 전체를 함께 조인다.
    - **daemon probe(M4).** workspace의 code-server 전부가 gRPC `SERVING`인지 본 뒤 **같은 프로세스를 exec**해
      `dagster-daemon liveness-check`로 넘어간다(두 번째 프로세스·셸 없음). daemon은 매 반복 workspace를 다시 읽으므로
