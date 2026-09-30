@@ -81,8 +81,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "pinvi-api",
         "pinvi-web",
         "pinvi-dagster-code-server",
-        "pinvi-dagster",
-        "pinvi-dagster-daemon",
+        # pinvi-dagster·pinvi-dagster-daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
     ]
     assert runtime_services_for_target("srv") == [
         "rustfs",
@@ -106,8 +105,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "pinvi-api",
         "pinvi-web",
         "pinvi-dagster-code-server",
-        "pinvi-dagster",
-        "pinvi-dagster-daemon",
+        # pinvi-dagster·pinvi-dagster-daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
     ]
     assert [step["name"] for step in init_steps_for_target("srv")] == [
         "rustfs-bucket-recovery",
@@ -346,8 +344,7 @@ def test_compose_ensure_build_command(
         "pinvi-api",
         "pinvi-web",
         "pinvi-dagster-code-server",
-        "pinvi-dagster",
-        "pinvi-dagster-daemon",
+        # pinvi-dagster·pinvi-dagster-daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
     ]
     assert result["target_sequence"] == [
         "storage",

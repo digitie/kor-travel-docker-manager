@@ -31,6 +31,9 @@ from kor_travel_docker_manager.services.runtime_topology import (
     runtime_topology,
 )
 
+#: pinned pair의 기제는 "Map·PinVi 모두 own" 기준선 위에서 본다 — 전환은 `flipped=(…)`/`_flip`으로 얹는다(conftest).
+pytestmark = pytest.mark.usefixtures("own_pinned_pair")
+
 PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
 
 
@@ -526,9 +529,9 @@ def test_candidate_reconcile_rejects_active_reference_content_drift(
 
 
 def _flipped_topology(*targets: str) -> RuntimeTopology:
-    from test_dagster_shared_workspace_is_derived import _documents, _flip
+    from test_dagster_shared_workspace_is_derived import _flip, _own_pair_documents
 
-    compose_document, targets_document = _documents()
+    compose_document, targets_document = _own_pair_documents()
     for target_id in targets:
         _flip(compose_document, targets_document, target_id)
     return runtime_topology(derive_dagster_families(compose_document, targets_document))

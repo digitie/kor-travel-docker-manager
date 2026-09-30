@@ -8547,3 +8547,24 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
   3이 있다.
 - 테스트: weather를 `own` 예로 쓰던 대조군을 pinvi·map으로 옮기고, weather 전환의 한 부분을 되돌리면 이름으로
   빨간 committed-state 대조군을 더했다. 격리 plane 통합 테스트는 빈 workspace(와 그 digest)로 돈다.
+
+## 2026-09-30 — 공용 Dagster: PinVi 전환 PR(둘째 합류, ADR-54)
+
+브랜치 `feat/dagster-shared-flip-pinvi`(origin/main `c6ea8f8` 위 — weather 전환 설치본). 참조 전환 `_flip`을 파일에 옮겼다.
+
+- PinVi `dagster.control_plane: shared`. code-server: `<<: *dagster-shared-control-env`, instance digest, 이미지에 구운
+  `apps/etl/dagster.yaml` 대신 공용 `dagster.yaml`을 `/opt/pinvi/.dagster/dagster.yaml`에(compose_binds도), gRPC 포트는
+  literal `12803`(공용 workspace가 `.env` override를 모른다).
+- pinvi-api: `PINVI_DAGSTER_BASE_URL` → `http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}`. admin_etl은
+  `pinvi_dagster_location_name`(= `pinvi.etl.definitions`)으로 location을 좁혀 부른다 — 공용 plane의 다른 테넌트가 섞이지 않는다.
+- 옛 `pinvi-dagster`·`pinvi-dagster-daemon` → `profiles: [legacy-dagster]`, PinVi의 `services`·`runtime_services`에서 뺌.
+  #447 파생으로 pinned slot `pinvi_dagster`는 code-server가 된다.
+- 공용 workspace에 `pinvi.etl.definitions`(127.0.0.1:12803), daemon·webserver의 workspace digest `111114624da6f2ac`.
+- 합류 조건(n150 읽기 전용 실측): code-server는 root, `/opt/dagster`는 없지만 `/opt` 쓰기 가능이라 state는 첫 쓰기 때
+  생긴다; op pool 없음; dagster 1.13.24 = 호스트; 코드에서 RUNNING schedule 7·sensor 1(옛 DB는 4개가 수동 RUNNING,
+  나머지는 DECLARED_IN_CODE); 공용 `dagster.yaml`에 PinVi `dagster/code_location` 10. 주의: 일부 job에 `max_runtime`
+  tag가 없어 공용 instance 기본 21600초를 받는다(나머지는 3600).
+- 적용은 `ensure pinvi`가 아니라 pinned 재구축이다(runbook §7 3번에 추가) — 전체 경로라 Map도 잠깐 멈춘다.
+- 테스트: pinned 재구축·C6c·보존·파생 legacy 테스트는 "Map·PinVi `own`" 기준선(conftest `own_pinned_pair`,
+  `_own_pair_documents`) 위에서 `_flip`을 얹는다. `own` 대조군은 geo로 옮겼고, f1d의 PinVi runtime 목록은 slot
+  carrier에서 파생한다. 계약 env에 공용 URL 앵커의 필수 키를 더했다.

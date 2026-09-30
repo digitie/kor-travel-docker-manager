@@ -78,7 +78,21 @@ _MAP_DATABASE_ONESHOT_SERVICES = (
     "kor-travel-map-application-schema",
     "kor-travel-map-dagster-storage-migrate",
 )
-_PINVI_RUNTIME_SERVICES = ("pinvi-api", "pinvi-web", "pinvi-dagster")
+
+
+def _pinvi_dagster_carrier() -> str:
+    """PinVi Dagster 이미지를 빌드·실행하는 서비스 — 설치 모델에서 파생한다(ADR-54). `own`이면 webserver,
+    공용 plane에 합류했으면 code-server다. 이 파일은 **실제 compose**를 렌더하므로 실제 모델을 본다."""
+
+    from kor_travel_docker_manager.services.runtime_topology import runtime_topology
+
+    return runtime_topology().require_service("pinvi_dagster")
+
+
+def _pinvi_runtime_services() -> tuple[str, ...]:
+    return ("pinvi-api", "pinvi-web", _pinvi_dagster_carrier())
+
+
 _PINVI_BOOTSTRAP_MAP_ENVIRONMENT = frozenset(
     {
         "PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL",
@@ -86,6 +100,7 @@ _PINVI_BOOTSTRAP_MAP_ENVIRONMENT = frozenset(
         "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN",
     }
 )
+
 _FEATURE_CREATE_TOKEN = "manual-feature-create-contract-token-0000"
 _MAP_API_IMAGE_ID = f"sha256:{'1' * 64}"
 _MAP_DAGSTER_IMAGE_ID = f"sha256:{'2' * 64}"
@@ -272,6 +287,8 @@ def _compose_contract_environment() -> dict[str, str]:
         "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": "n" * 32,
         "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": "m" * 32,
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "v" * 32,
+        # ADR-54: PinVi code-server가 공용 plane에 합류해 `x-dagster-shared-control-env`의 필수 키를 해석한다.
+        "KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD": "dagster-shared-contract-password",
         "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
         "KOR_TRAVEL_MAP_API_IMAGE": _MAP_API_IMAGE_ID,
         "KOR_TRAVEL_MAP_DAGSTER_IMAGE": _MAP_DAGSTER_IMAGE_ID,
@@ -1671,7 +1688,7 @@ def test_c6c_rejects_resolved_map_database_bridge_network(
 def test_resolved_pinvi_runtime_builds_receive_exact_candidate_provenance() -> None:
     revision = "a" * 40
     resolved = _resolved_compose(
-        *_PINVI_RUNTIME_SERVICES,
+        *_pinvi_runtime_services(),
         environment_update={
             "PINVI_SOURCE_REVISION": revision,
             "PINVI_BUILD_ENVIRONMENT": "production",
@@ -1683,7 +1700,7 @@ def test_resolved_pinvi_runtime_builds_receive_exact_candidate_provenance() -> N
     for service_name, dockerfile in {
         "pinvi-api": "apps/api/Dockerfile",
         "pinvi-web": "apps/web/Dockerfile",
-        "pinvi-dagster": "apps/etl/Dockerfile",
+        _pinvi_dagster_carrier(): "apps/etl/Dockerfile",
     }.items():
         build = services[service_name]["build"]
         assert build["dockerfile"] == dockerfile
@@ -1696,7 +1713,7 @@ def test_c6c_preflight_rejects_any_pinvi_runtime_provenance_gap() -> None:
     pinvi_revision = "a" * 40
     resolved = _resolved_compose(
         *_MAP_RUNTIME_SERVICES,
-        *_PINVI_RUNTIME_SERVICES,
+        *_pinvi_runtime_services(),
         environment_update={
             "KOR_TRAVEL_MAP_GIT_COMMIT": map_revision,
             "PINVI_SOURCE_REVISION": pinvi_revision,
@@ -1712,11 +1729,12 @@ def test_c6c_preflight_rejects_any_pinvi_runtime_provenance_gap() -> None:
         ),
     )
 
-    build = resolved["services"]["pinvi-dagster"]["build"]
+    carrier = _pinvi_dagster_carrier()
+    build = resolved["services"][carrier]["build"]
     del build["args"]["PINVI_SOURCE_REVISION"]
     with pytest.raises(
         DeploymentContractError,
-        match="pinvi-dagster.*provenance build args",
+        match=f"{carrier}.*provenance build args",
     ):
         validate_resolved_c6c_build_provenance(
             resolved,
@@ -1754,7 +1772,7 @@ def test_candidate_preflight_rejects_a_build_context_outside_staged_source(
     pinvi_revision = release.source_for("pinvi").revision
     resolved = _resolved_compose(
         *_MAP_RUNTIME_SERVICES,
-        *_PINVI_RUNTIME_SERVICES,
+        *_pinvi_runtime_services(),
         environment_update={
             "KOR_TRAVEL_MAP_REPO_DIR": str(map_root),
             "KOR_TRAVEL_MAP_GIT_COMMIT": map_revision,
@@ -1836,7 +1854,7 @@ def test_ordinary_runtime_services_never_receive_bootstrap_credential_contract()
     services = _source_compose()["services"]
     assert isinstance(services, dict)
 
-    for service_name in (*_MAP_RUNTIME_SERVICES, *_PINVI_RUNTIME_SERVICES):
+    for service_name in (*_MAP_RUNTIME_SERVICES, *_pinvi_runtime_services()):
         assert "PINVI_BOOTSTRAP_ADMIN" not in json.dumps(services[service_name])
 
 

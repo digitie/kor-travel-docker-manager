@@ -99,6 +99,9 @@ COMPOSE_BUILT_RUNTIME_SERVICES: tuple[str, ...] = (
 )
 _WAIT_TIMEOUT = str(compose_service_module._COMPOSE_WAIT_TIMEOUT_SECONDS)
 
+#: pinned pair의 기제는 "Map·PinVi 모두 own" 기준선 위에서 본다 — 전환은 `flipped=(…)`/`_flip`으로 얹는다(conftest).
+pytestmark = pytest.mark.usefixtures("own_pinned_pair")
+
 
 @pytest.fixture(autouse=True)
 def _isolate_runtime_pin_registry(
@@ -1541,9 +1544,9 @@ def _forward_harness(
     """
 
     if flipped:
-        from test_dagster_shared_workspace_is_derived import _documents, _flip
+        from test_dagster_shared_workspace_is_derived import _flip, _own_pair_documents
 
-        compose_document, targets_document = _documents()
+        compose_document, targets_document = _own_pair_documents()
         for target_id in flipped:
             _flip(compose_document, targets_document, target_id)
         families = derive_dagster_families(compose_document, targets_document)
@@ -3427,9 +3430,9 @@ _FLIP_CASES = {
 
 
 def _flipped_topology(*targets: str) -> RuntimeTopology:
-    from test_dagster_shared_workspace_is_derived import _documents, _flip
+    from test_dagster_shared_workspace_is_derived import _flip, _own_pair_documents
 
-    compose_document, targets_document = _documents()
+    compose_document, targets_document = _own_pair_documents()
     for target_id in targets:
         _flip(compose_document, targets_document, target_id)
     families = derive_dagster_families(compose_document, targets_document)
