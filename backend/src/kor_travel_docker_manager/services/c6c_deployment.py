@@ -21,6 +21,7 @@ from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from io import StringIO
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
@@ -62,6 +63,17 @@ from kor_travel_docker_manager.services.registry import (
     get_targets_config_path,
     load_targets_config,
 )
+from kor_travel_docker_manager.services.runtime_topology import (
+    MAP_TARGET,
+    PINVI_TARGET,
+    DagsterFamily,
+    LazyMapping,
+    LazySequence,
+    LazySet,
+    dagster_family,
+    installed_container_name,
+    runtime_topology,
+)
 from kor_travel_docker_manager.services.trusted_install import (
     GLOBAL_MUTATION_LOCK_FD_ENV,
     GLOBAL_MUTATION_LOCK_PATH,
@@ -82,9 +94,6 @@ MAP_API_IMMUTABLE_COMMAND: Final[None] = _MAP_API_IMMUTABLE_COMMAND
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _CONCIERGE_API_SERVICE = "kor-travel-concierge-api"
 _CONCIERGE_UI_SERVICE = "kor-travel-concierge-ui"
-_MAP_DAGSTER_SERVICE = "kor-travel-map-dagster"
-_MAP_DAGSTER_CODE_SERVER_SERVICE = "kor-travel-map-dagster-code-server"
-_MAP_DAGSTER_DAEMON_SERVICE = "kor-travel-map-dagster-daemon"
 _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
 #: ADR-101: root migration과 finalize 두 one-shot이 하나로 접혔다. Map 이미지의
@@ -99,34 +108,59 @@ _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 #: raw·resolved·UI 저장 경로를 **전부 통과**했다.
 _POSTGRES_CANONICAL_INITDB_ARGS = "--auth-host=scram-sha-256"
 #: ADR-46 — PinVi 앱(`pinvi`)·Dagster(`pinvi_dagster`) DSN은 공용 제어 평면
-#: instance(`kor-travel-shared-postgres`)를 쓴다. pinvi-api/pinvi-dagster/
-#: pinvi-dagster-code-server/pinvi-dagster-daemon/pinvi-admin-bootstrap이 실제로
-#: 접속하는 DSN의 포트다. 옛 전용 instance(pinvi-postgres, :12800)는 2026-09-28에
+#: instance(`kor-travel-shared-postgres`)를 쓴다. PinVi API, PinVi Dagster family(webserver·
+#: code-server·daemon), admin bootstrap이 실제로 접속하는 DSN의 포트다. 옛 전용
+#: instance(pinvi-postgres, :12800)는 2026-09-28에
 #: compose에서 뺐다.
 _PINVI_SHARED_POSTGRES_PORT = 11000
 _PINVI_WEB_SERVICE = "pinvi-web"
-_PINVI_DAGSTER_SERVICE = "pinvi-dagster"
-_PINVI_DAGSTER_CODE_SERVER_SERVICE = "pinvi-dagster-code-server"
-_PINVI_DAGSTER_DAEMON_SERVICE = "pinvi-dagster-daemon"
 _PINVI_DATABASE_URL_ENV = "PINVI_DATABASE_URL"
 _PINVI_DAGSTER_PG_URL_ENV = "PINVI_DAGSTER_PG_URL"
 _PINVI_APP_DB_USER_ENV = "PINVI_APP_DB_USER"
 _PINVI_APP_DB_PASSWORD_ENV = "PINVI_APP_DB_PASSWORD"
-_MAP_RUNTIME_SERVICES = (
-    _MAP_API_SERVICE,
-    _MAP_UI_SERVICE,
-    _MAP_DAGSTER_SERVICE,
-    _MAP_DAGSTER_DAEMON_SERVICE,
+
+
+# ── Dagster family 이름(ADR-54) ─────────────────────────────────────────────
+# Map·PinVi Dagster 서비스 이름은 literal로 두지 않는다. 공용 plane 전환이 옛 webserver·daemon을
+# `legacy-dagster`로 내리면 frozen render에서 사라지는데, literal 집합은 그것을 여전히 요구하고
+# 검사한다. 이름은 설치된 release의 compose·targets에서 파생한다(`runtime_topology`).
+#
+# 두 종류로 나뉜다. **env 계약**(DSN·Geo key 값 고정, UI 잠금)은 서비스가 문서에 있으면 보는 것이라
+# 스위치와 무관하게 family 전부(`processes`)에 건다 — profile로 내려간 옛 서비스도 켜면 그 값으로
+# 돈다. **실행·필수 집합**(required, 런타임, secret isolation)은 스위치를 따른다 — `shared`면 옛
+# webserver·daemon은 빠지고 carrier인 code-server가 들어간다.
+
+
+def _map_dagster() -> DagsterFamily:
+    return dagster_family(MAP_TARGET)
+
+
+def _pinvi_dagster() -> DagsterFamily:
+    return dagster_family(PINVI_TARGET)
+
+
+def _map_dagster_runtime_services() -> tuple[str, ...]:
+    """지금 떠 있어야 할 Map Dagster slot 서비스 — `own`이면 webserver·daemon, `shared`면 code-server."""
+
+    return runtime_topology().services_for(("map_dagster", "map_dagster_daemon"))
+
+
+#: mutation-identifier 분류용 Map runtime slot 서비스(slot 순서).
+_MAP_RUNTIME_SERVICES: Final[LazySequence[str]] = LazySequence(
+    lambda: runtime_topology().services_for(
+        ("map_api", "map_ui", "map_dagster", "map_dagster_daemon")
+    )
 )
-_MAP_RUNTIME_CONTAINERS = {
-    _MAP_API_SERVICE: "kor-travel-map-api-latest",
-    _MAP_UI_SERVICE: "kor-travel-map-ui-latest",
-    _MAP_DAGSTER_SERVICE: "kor-travel-map-dagster-latest",
-    _MAP_DAGSTER_DAEMON_SERVICE: "kor-travel-map-dagster-daemon-latest",
-}
-# ADR-069 code-server는 generation slot이 아니라 companion이라 `_MAP_RUNTIME_SERVICES`
-# (mutation-identifier 분류용)에는 넣지 않지만, runtime secret isolation은 받는다.
-_MAP_DAGSTER_CODE_SERVER_CONTAINER = "kor-travel-map-dagster-code-server-latest"
+
+
+def _map_dagster_secret_isolation_containers() -> tuple[str, ...]:
+    """Geo key를 받는 Map Dagster 컨테이너 — 지금 떠 있는 family 프로세스(carrier·daemon·code-server)."""
+
+    family = _map_dagster()
+    services = dict.fromkeys(
+        name for name in (family.carrier, family.active_daemon, family.code_server) if name
+    )
+    return tuple(installed_container_name(name) for name in services)
 # GM-09: 정본은 services/trusted_install.py다. ADR-51 C-1부터 cli.py는 경로 별칭을
 # 두지 않고 `manager_mutation_lock()`으로만 이 lock을 잡는다 — pinned rebuild와 pin
 # 회전이 서로 직렬화되는 근거가 이 한 이름이다.
@@ -388,18 +422,35 @@ _MAP_PRODUCTION_API_LITERAL_VALUES = {
 _MAP_PRODUCTION_API_LITERAL_ENV_NAMES = frozenset(
     _MAP_PRODUCTION_API_LITERAL_VALUES
 )
-_CANDIDATE_REQUIRED_PROTECTED_SERVICES = frozenset(
-    {
+def _candidate_protected_service_order() -> tuple[str, ...]:
+    """후보 계약이 서비스별로 보는 필수 서비스(순서). Map Dagster 자리는 스위치를 따른다."""
+
+    return (
         _MAP_API_SERVICE,
-        _MAP_DAGSTER_SERVICE,
-        _MAP_DAGSTER_DAEMON_SERVICE,
+        *_map_dagster_runtime_services(),
         _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _MAP_APPLICATION_SCHEMA_SERVICE,
         _PINVI_API_SERVICE,
         _PINVI_ADMIN_BOOTSTRAP_SERVICE,
         _MAP_UI_SERVICE,
-    }
+    )
+
+
+def _map_database_host_network_services() -> frozenset[str]:
+    return frozenset(
+        {
+            _MAP_API_SERVICE,
+            *_map_dagster_runtime_services(),
+            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+            _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
+            _MAP_APPLICATION_SCHEMA_SERVICE,
+        }
+    )
+
+
+_CANDIDATE_REQUIRED_PROTECTED_SERVICES: LazySet[str] | frozenset[str] = LazySet(
+    lambda: frozenset(_candidate_protected_service_order())
 )
 #: 거부 문구가 **이름을 말해도 되는** 서비스. 여기 없으면 sha8로 가려지는데,
 #: 그러면 운영자가 어느 서비스가 거부됐는지 알 수 없다 — 적대 리뷰 2026-09-18 C-F6
@@ -413,8 +464,8 @@ _CANDIDATE_NAMEABLE_SERVICE_NAMES: Final = frozenset(
         "kor-travel-dagster-storage-migrate",
     }
 )
-_CANDIDATE_KNOWN_SERVICE_NAMES = (
-    _CANDIDATE_REQUIRED_PROTECTED_SERVICES | _CANDIDATE_NAMEABLE_SERVICE_NAMES
+_CANDIDATE_KNOWN_SERVICE_NAMES: LazySet[str] | frozenset[str] = LazySet(
+    lambda: frozenset(_CANDIDATE_REQUIRED_PROTECTED_SERVICES) | _CANDIDATE_NAMEABLE_SERVICE_NAMES
 )
 
 
@@ -459,24 +510,15 @@ _OPS_ENV_NAMES = frozenset(
 #:
 #: canonical 값은 이 선언에서 유도한다. 보호 참조가 놓일 수 있는 자리는 표가 아니라 설치된 릴리스
 #: compose에서 파생한다(ADR-51 결정 5) — 서비스를 더해도 등록할 곳이 없다.
-_PINVI_DSN_SERVICE_CREDENTIALS: Final = (
-    (_PINVI_API_SERVICE, _PINVI_APP_DB_USER_ENV, _PINVI_APP_DB_PASSWORD_ENV),
-    (_PINVI_DAGSTER_SERVICE, _PINVI_APP_DB_USER_ENV, _PINVI_APP_DB_PASSWORD_ENV),
-    (
-        _PINVI_DAGSTER_CODE_SERVER_SERVICE,
-        _PINVI_APP_DB_USER_ENV,
-        _PINVI_APP_DB_PASSWORD_ENV,
-    ),
-    (
-        _PINVI_DAGSTER_DAEMON_SERVICE,
-        _PINVI_APP_DB_USER_ENV,
-        _PINVI_APP_DB_PASSWORD_ENV,
-    ),
-    (
-        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
-        _PINVI_APP_DB_USER_ENV,
-        _PINVI_APP_DB_PASSWORD_ENV,
-    ),
+_PINVI_DSN_SERVICE_CREDENTIALS: Final[LazySequence[tuple[str, str, str]]] = LazySequence(
+    lambda: tuple(
+        (service_name, _PINVI_APP_DB_USER_ENV, _PINVI_APP_DB_PASSWORD_ENV)
+        for service_name in (
+            _PINVI_API_SERVICE,
+            *_pinvi_dagster().processes,
+            _PINVI_ADMIN_BOOTSTRAP_SERVICE,
+        )
+    )
 )
 
 
@@ -495,195 +537,208 @@ def _pinvi_dsn(*, scheme: str, username_env: str, password_env: str, database: s
     )
 
 
-_PINVI_DATABASE_URL_RAW_VALUES = {
-    service_name: _pinvi_dsn(
-        scheme="postgresql+asyncpg",
-        username_env=username_env,
-        password_env=password_env,
-        database="${PINVI_POSTGRES_DB:-pinvi}",
-    )
-    for service_name, username_env, password_env in _PINVI_DSN_SERVICE_CREDENTIALS
-}
+@lru_cache(maxsize=1)
+def _build_pinvi_database_url_raw_values() -> dict[str, str]:
+    return {
+        service_name: _pinvi_dsn(
+            scheme="postgresql+asyncpg",
+            username_env=username_env,
+            password_env=password_env,
+            database="${PINVI_POSTGRES_DB:-pinvi}",
+        )
+        for service_name, username_env, password_env in _PINVI_DSN_SERVICE_CREDENTIALS
+    }
+
+
+_PINVI_DATABASE_URL_RAW_VALUES: Final[LazyMapping[str, str]] = LazyMapping(
+    _build_pinvi_database_url_raw_values
+)
 
 #: Dagster instance storage DSN. webserver·code-server·daemon이 **같은 storage**를
 #: 봐야 하므로 셋 다 같은 값을 든다. 앱 DSN과 달리 `postgresql://`(동기)이고
 #: 데이터베이스가 `pinvi_dagster`다 — 저장소를 앱 DB와 가르는 것이 #356의 요지다.
-_PINVI_DAGSTER_PG_URL_SERVICES: Final = (
-    _PINVI_DAGSTER_SERVICE,
-    _PINVI_DAGSTER_CODE_SERVER_SERVICE,
-    _PINVI_DAGSTER_DAEMON_SERVICE,
+_PINVI_DAGSTER_PG_URL_SERVICES: Final[LazySequence[str]] = LazySequence(
+    lambda: _pinvi_dagster().processes
 )
-_PINVI_DAGSTER_PG_URL_RAW_VALUES = {
-    service_name: _pinvi_dsn(
-        scheme="postgresql",
-        username_env=_PINVI_APP_DB_USER_ENV,
-        password_env=_PINVI_APP_DB_PASSWORD_ENV,
-        database="${PINVI_DAGSTER_DB:-pinvi_dagster}",
-    )
-    for service_name in _PINVI_DAGSTER_PG_URL_SERVICES
-}
 
 
-
-_MAP_DATABASE_CANONICAL_ENV_VALUES = {
-    # role bootstrap one-shot에는 bootstrap DSN·instance admin 이름·포트가 없다(ADR-53 S1) —
-    # 이름·포트는 Manager가 실행 시점 `-e`로, password는 instance의 secret file로 준다.
-    # 그 셋이 compose env에 없다는 것은 `_validate_map_db_role_bootstrap_service`가 본다.
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE"): (
-        "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
-        "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_DB"): (
-        "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
-        "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
-    ),
-    # ADR-100: Map의 세 LOGIN이 ktm_feature_service 하나로 합쳐졌다. 구 여섯 이름(MIGRATOR·
-    # API_RUNTIME·DAGSTER_RUNTIME의 DSN·password)을 함께 보내던 superset 창은 D10으로 닫았다.
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_SERVICE_PASSWORD"): (
-        "${KOR_TRAVEL_MAP_SERVICE_PASSWORD:?"
-        "KOR_TRAVEL_MAP_SERVICE_PASSWORD must be explicitly set}"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
-        "${KOR_TRAVEL_MAP_PG_DSN:?"
-        "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"): (
-        "${KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB:?"
-        "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB must be explicitly set}"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"): (
-        "${KOR_TRAVEL_MAP_DAGSTER_METADATA_USER:?"
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER must be explicitly set}"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
-        "${KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD:?"
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD must be explicitly set}"
-    ),
-    (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
-        "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?"
-        "KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
-    ),
-    (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
-        "${KOR_TRAVEL_MAP_PG_DSN:?"
-        "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
-    ),
-    **{
-        (service, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
-            "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?"
-            "KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+@lru_cache(maxsize=1)
+def _build_pinvi_dagster_pg_url_raw_values() -> dict[str, str]:
+    return {
+        service_name: _pinvi_dsn(
+            scheme="postgresql",
+            username_env=_PINVI_APP_DB_USER_ENV,
+            password_env=_PINVI_APP_DB_PASSWORD_ENV,
+            database="${PINVI_DAGSTER_DB:-pinvi_dagster}",
         )
-        for service in (
-            _MAP_DAGSTER_SERVICE,
-            _MAP_DAGSTER_CODE_SERVER_SERVICE,
-            _MAP_DAGSTER_DAEMON_SERVICE,
-            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
-        )
-    },
-    **{
-        (service, "KOR_TRAVEL_MAP_PG_DSN"): (
+        for service_name in _PINVI_DAGSTER_PG_URL_SERVICES
+    }
+
+
+_PINVI_DAGSTER_PG_URL_RAW_VALUES: Final[LazyMapping[str, str]] = LazyMapping(
+    _build_pinvi_dagster_pg_url_raw_values
+)
+
+
+
+@lru_cache(maxsize=1)
+def _build_map_database_canonical_env_values() -> dict[tuple[str, str], str]:
+    return {
+        # role bootstrap one-shot에는 bootstrap DSN·instance admin 이름·포트가 없다(ADR-53 S1) —
+        # 이름·포트는 Manager가 실행 시점 `-e`로, password는 instance의 secret file로 준다.
+        # 그 셋이 compose env에 없다는 것은 `_validate_map_db_role_bootstrap_service`가 본다.
+        (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE"): (
+            "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
+            "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
+        ),
+        (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_POSTGRES_DB"): (
+            "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
+            "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
+        ),
+        # ADR-100: Map의 세 LOGIN이 ktm_feature_service 하나로 합쳐졌다. 구 여섯 이름(MIGRATOR·
+        # API_RUNTIME·DAGSTER_RUNTIME의 DSN·password)을 함께 보내던 superset 창은 D10으로 닫았다.
+        (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_SERVICE_PASSWORD"): (
+            "${KOR_TRAVEL_MAP_SERVICE_PASSWORD:?"
+            "KOR_TRAVEL_MAP_SERVICE_PASSWORD must be explicitly set}"
+        ),
+        (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
             "${KOR_TRAVEL_MAP_PG_DSN:?"
             "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
-        )
-        for service in (
-            _MAP_DAGSTER_SERVICE,
-            _MAP_DAGSTER_CODE_SERVER_SERVICE,
-            _MAP_DAGSTER_DAEMON_SERVICE,
-        )
-    },
-    (_MAP_APPLICATION_SCHEMA_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
-        "${KOR_TRAVEL_MAP_PG_DSN:?"
-        "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
-    ),
-    (
-        _MAP_APPLICATION_SCHEMA_SERVICE,
-        "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE",
-    ): "true",
-}
-_CANDIDATE_CANONICAL_API_ENV_VALUES = {
-    (_MAP_API_SERVICE, _MAP_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
-    (_MAP_API_SERVICE, _MAP_CANCEL_ENV): "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}",
-    (_MAP_API_SERVICE, _MAP_FIXTURE_ENV): "${KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN:-}",
-    (_MAP_API_SERVICE, _MAP_REQUIRED_ENV): (
-        "${KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED:?"
-        "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED must be explicitly set}"
-    ),
-    (_PINVI_API_SERVICE, _PINVI_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
-    (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): ("${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"),
-    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_READ_ENV): ("${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"),
-    (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_CANCEL_ENV): (
-        "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
-    ),
-    (_MAP_UI_SERVICE, _MAP_UI_USERNAME_ENV): (
-        "${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:?"
-        "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME must be explicitly set}"
-    ),
-    (_MAP_UI_SERVICE, _MAP_UI_PASSWORD_HASH_ENV): (
-        "${KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH:?"
-        "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH must be explicitly set}"
-    ),
-    (_MAP_UI_SERVICE, _MAP_UI_SESSION_SECRET_ENV): (
-        "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?"
-        "KOR_TRAVEL_MAP_UI_SESSION_SECRET must be explicitly set}"
-    ),
-    (_MAP_API_SERVICE, _MAP_ADMIN_PROXY_ENV): (
-        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
-        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
-    ),
-    (_MAP_UI_SERVICE, _MAP_ADMIN_PROXY_ENV): (
-        "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
-        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
-    ),
-    (_MAP_API_SERVICE, _MAP_SERVICE_TOKEN_ENV): (
-        "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
-        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
-    ),
-    (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
-        "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
-        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
-    ),
-    (_MAP_API_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): ("${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"),
-    (_MAP_UI_SERVICE, _MAP_UI_GEO_API_KEY_ENV): (
-        "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY:?"
-        "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY must be explicitly set}"
-    ),
-    (_MAP_DAGSTER_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (
-        "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
-    ),
-    (_MAP_DAGSTER_CODE_SERVER_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (
-        "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
-    ),
-    (_MAP_DAGSTER_DAEMON_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): (
-        "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
-    ),
-    (_MAP_API_SERVICE, _MAP_CURATION_SNAPSHOT_DIGEST_ENV): (
-        "${KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256:-}"
-    ),
-    (_MAP_API_SERVICE, _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV): (
-        "${KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256:-}"
-    ),
-    (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV): (
-        "${KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256:?"
-        "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256 must be explicitly set}"
-    ),
-    (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_ENABLED_ENV): (
-        "${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}"
-    ),
-    (_MAP_UI_SERVICE, _MAP_FEATURE_CREATE_TOKEN_ENV): (
-        "${KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN:?"
-        "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN must be explicitly set}"
-    ),
-    (_PINVI_API_SERVICE, _PINVI_CURATION_SNAPSHOT_ENV): (
-        "${PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN:-}"
-    ),
-    (_PINVI_API_SERVICE, _PINVI_CUTOVER_MAPPING_ENV): (
-        "${PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN:-}"
-    ),
-    **{
-        (_MAP_API_SERVICE, env_name): value
-        for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
-    },
-    **_MAP_DATABASE_CANONICAL_ENV_VALUES,
-}
+        ),
+        (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"): (
+            "${KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB:?"
+            "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB must be explicitly set}"
+        ),
+        (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"): (
+            "${KOR_TRAVEL_MAP_DAGSTER_METADATA_USER:?"
+            "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER must be explicitly set}"
+        ),
+        (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"): (
+            "${KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD:?"
+            "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD must be explicitly set}"
+        ),
+        (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
+            "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?"
+            "KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+        ),
+        (_MAP_API_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+            "${KOR_TRAVEL_MAP_PG_DSN:?"
+            "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+        ),
+        **{
+            (service, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
+                "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?"
+                "KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+            )
+            for service in (
+                *_map_dagster().processes,
+                _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
+            )
+        },
+        **{
+            (service, "KOR_TRAVEL_MAP_PG_DSN"): (
+                "${KOR_TRAVEL_MAP_PG_DSN:?"
+                "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+            )
+            for service in _map_dagster().processes
+        },
+        (_MAP_APPLICATION_SCHEMA_SERVICE, "KOR_TRAVEL_MAP_PG_DSN"): (
+            "${KOR_TRAVEL_MAP_PG_DSN:?"
+            "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+        ),
+        (
+            _MAP_APPLICATION_SCHEMA_SERVICE,
+            "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE",
+        ): "true",
+    }
+
+
+_MAP_DATABASE_CANONICAL_ENV_VALUES: Final[Mapping[Any, Any]] = LazyMapping(_build_map_database_canonical_env_values)
+@lru_cache(maxsize=1)
+def _build_candidate_canonical_api_env_values() -> dict[tuple[str, str], str]:
+    return {
+        (_MAP_API_SERVICE, _MAP_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
+        (_MAP_API_SERVICE, _MAP_CANCEL_ENV): "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}",
+        (_MAP_API_SERVICE, _MAP_FIXTURE_ENV): "${KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN:-}",
+        (_MAP_API_SERVICE, _MAP_REQUIRED_ENV): (
+            "${KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED:?"
+            "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED must be explicitly set}"
+        ),
+        (_PINVI_API_SERVICE, _PINVI_READ_ENV): "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}",
+        (_PINVI_API_SERVICE, _PINVI_CANCEL_ENV): ("${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"),
+        (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_READ_ENV): ("${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"),
+        (_PINVI_ADMIN_BOOTSTRAP_SERVICE, _PINVI_CANCEL_ENV): (
+            "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
+        ),
+        (_MAP_UI_SERVICE, _MAP_UI_USERNAME_ENV): (
+            "${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:?"
+            "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME must be explicitly set}"
+        ),
+        (_MAP_UI_SERVICE, _MAP_UI_PASSWORD_HASH_ENV): (
+            "${KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH:?"
+            "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH must be explicitly set}"
+        ),
+        (_MAP_UI_SERVICE, _MAP_UI_SESSION_SECRET_ENV): (
+            "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?"
+            "KOR_TRAVEL_MAP_UI_SESSION_SECRET must be explicitly set}"
+        ),
+        (_MAP_API_SERVICE, _MAP_ADMIN_PROXY_ENV): (
+            "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
+            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
+        ),
+        (_MAP_UI_SERVICE, _MAP_ADMIN_PROXY_ENV): (
+            "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?"
+            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
+        ),
+        (_MAP_API_SERVICE, _MAP_SERVICE_TOKEN_ENV): (
+            "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
+            "KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
+        ),
+        (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
+            "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
+            "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
+        ),
+        (_MAP_API_SERVICE, _MAP_GEO_API_KEY_SOURCE_ENV): ("${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"),
+        (_MAP_UI_SERVICE, _MAP_UI_GEO_API_KEY_ENV): (
+            "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY:?"
+            "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY must be explicitly set}"
+        ),
+        **{
+            (service, _MAP_GEO_API_KEY_SOURCE_ENV): "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
+            for service in _map_dagster().processes
+        },
+        (_MAP_API_SERVICE, _MAP_CURATION_SNAPSHOT_DIGEST_ENV): (
+            "${KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256:-}"
+        ),
+        (_MAP_API_SERVICE, _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV): (
+            "${KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256:-}"
+        ),
+        (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV): (
+            "${KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256:?"
+            "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256 must be explicitly set}"
+        ),
+        (_MAP_API_SERVICE, _MAP_FEATURE_CREATE_ENABLED_ENV): (
+            "${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}"
+        ),
+        (_MAP_UI_SERVICE, _MAP_FEATURE_CREATE_TOKEN_ENV): (
+            "${KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN:?"
+            "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN must be explicitly set}"
+        ),
+        (_PINVI_API_SERVICE, _PINVI_CURATION_SNAPSHOT_ENV): (
+            "${PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN:-}"
+        ),
+        (_PINVI_API_SERVICE, _PINVI_CUTOVER_MAPPING_ENV): (
+            "${PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN:-}"
+        ),
+        **{
+            (_MAP_API_SERVICE, env_name): value
+            for env_name, value in _MAP_PRODUCTION_API_LITERAL_VALUES.items()
+        },
+        **_MAP_DATABASE_CANONICAL_ENV_VALUES,
+    }
+
+
+_CANDIDATE_CANONICAL_API_ENV_VALUES: Final[Mapping[Any, Any]] = LazyMapping(_build_candidate_canonical_api_env_values)
 # 계약이 값을 고정한 env 이름 — 화면이 처음부터 잠글 수 있도록 service별로 공개한다.
 #
 # 이 이름들을 UI 설정 편집기가 편집 가능하게 노출하면 저장은 성공하고, 그 다음
@@ -691,33 +746,40 @@ _CANDIDATE_CANONICAL_API_ENV_VALUES = {
 # 오므로 원인이 화면 조작이었다는 사실이 드러나지 않고, 그 사이 pinset 하나가 소모된다.
 # 이 목록은 candidate 계약 자체(`_CANDIDATE_CANONICAL_API_ENV_VALUES`)에서 유도하므로
 # 계약이 바뀌면 화면도 함께 바뀐다 — 손으로 관리하는 두 번째 목록을 만들지 않는다.
-_CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE: Final[dict[str, frozenset[str]]] = {
-    service_name: frozenset(
-        env_name
-        for candidate_service, env_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
-        if candidate_service == service_name
-    )
-    for service_name in {service for service, _ in _CANDIDATE_CANONICAL_API_ENV_VALUES}
-}
+@lru_cache(maxsize=1)
+def _build_contract_locked_env_names_by_service() -> dict[str, frozenset[str]]:
+    locked: dict[str, frozenset[str]] = {
+        service_name: frozenset(
+            env_name
+            for candidate_service, env_name in _CANDIDATE_CANONICAL_API_ENV_VALUES
+            if candidate_service == service_name
+        )
+        for service_name in {service for service, _ in _CANDIDATE_CANONICAL_API_ENV_VALUES}
+    }
 # DSN은 위 dict가 아니라 별도 검증기가 결박한다(`_PINVI_DATABASE_URL_RAW_VALUES`,
 # `_PINVI_DAGSTER_PG_URL_RAW_VALUES`). 계약의
 # 소유자가 다르므로 유도하지 않고 명시하되, **덮어쓰지 않고 합집합을 취한다** —
 # 대입으로 두면 나중에 같은 service가 candidate 계약에 등장했을 때 유도된 이름들이
 # 조용히 사라진다.
-for _service_name, _extra_locked in (
-    *(
-        (_dsn_service, {_PINVI_DATABASE_URL_ENV})
-        for _dsn_service in _PINVI_DATABASE_URL_RAW_VALUES
-    ),
-    *(
-        (_dsn_service, {_PINVI_DAGSTER_PG_URL_ENV})
-        for _dsn_service in _PINVI_DAGSTER_PG_URL_RAW_VALUES
-    ),
-):
-    _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE[_service_name] = frozenset(
-        _CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE.get(_service_name, frozenset())
-        | frozenset(_extra_locked)
-    )
+    for service_name, extra_locked in (
+        *(
+            (dsn_service, {_PINVI_DATABASE_URL_ENV})
+            for dsn_service in _PINVI_DATABASE_URL_RAW_VALUES
+        ),
+        *(
+            (dsn_service, {_PINVI_DAGSTER_PG_URL_ENV})
+            for dsn_service in _PINVI_DAGSTER_PG_URL_RAW_VALUES
+        ),
+    ):
+        locked[service_name] = frozenset(
+            locked.get(service_name, frozenset()) | frozenset(extra_locked)
+        )
+    return locked
+
+
+_CONTRACT_LOCKED_ENV_NAMES_BY_SERVICE: Final[LazyMapping[str, frozenset[str]]] = LazyMapping(
+    _build_contract_locked_env_names_by_service
+)
 
 CONTRACT_LOCKED_ENV_REASON: Final = (
     "이 값은 배포 계약이 고정한 값입니다. 여기서 바꾸면 저장은 되지만 다음 재구축이 "
@@ -2182,7 +2244,7 @@ def _assert_instance_admin_secret_holders(
     마운트하거나 그 변수(resolved에서는 그 값)를 env에 드는 서비스는
 
     - 그 instance 자신이거나,
-    - `restart: "no"`인 one-shot이고, pinned runtime 서비스(`RUNTIME_SERVICES`)도 아니고 그
+    - `restart: "no"`인 one-shot이고, pinned runtime slot 서비스(`runtime_topology`)도 아니고 그
       이미지를 쓰는 서비스(generation companion·그 이미지의 one-shot)도 아니어야 한다.
 
     공용 instance의 db-init 다섯과 Map role bootstrap one-shot이 그 모양이다(S1). admin secret을
@@ -2190,15 +2252,15 @@ def _assert_instance_admin_secret_holders(
     우회로다. **전역 불변식이다. 어떤 서비스의 존재에도 게이팅하지 마라.**
     """
 
-    # 순환 import를 피한다 — pinned_runtime_generation이 이 모듈의 예외를 쓴다.
-    from kor_travel_docker_manager.services.pinned_runtime_generation import RUNTIME_SERVICES
+    # pinned runtime slot 서비스는 렌더된 모델과 공용 Dagster plane 스위치에서 파생한다(ADR-54).
+    runtime_services = runtime_topology().runtime_services
 
     services = document.get("services")
     if not isinstance(services, Mapping):
         return
     runtime_images = {
         image
-        for name in RUNTIME_SERVICES
+        for name in runtime_services
         if isinstance(runtime := services.get(name), Mapping)
         and isinstance(image := runtime.get("image"), str)
         and image
@@ -2213,7 +2275,7 @@ def _assert_instance_admin_secret_holders(
                 continue
             if (
                 service.get("restart") == "no"
-                and service_name not in RUNTIME_SERVICES
+                and service_name not in runtime_services
                 and service.get("image") not in runtime_images
             ):
                 continue
@@ -2461,14 +2523,6 @@ def _validate_map_db_role_bootstrap_service(
         )
 
 
-_C6C_RUNTIME_IDENTIFIERS = frozenset(
-    {
-        *_MAP_RUNTIME_SERVICES,
-        *_MAP_RUNTIME_CONTAINERS.values(),
-        _PINVI_API_SERVICE,
-        "pinvi-api-latest",
-    }
-)
 _ISO8601_DATETIME_WITH_OFFSET = re.compile(
     r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?"
     r"(?:[Zz]|[+-]\d{2}:?\d{2})$"
@@ -4212,17 +4266,7 @@ def validate_resolved_compose_candidate_protected_values(
     _validate_concierge_ui_canonical_contract(services, environment, resolved=True)
     _validate_map_application_300_images(services)
 
-    for service_name in (
-        _MAP_API_SERVICE,
-        _MAP_DAGSTER_SERVICE,
-        _MAP_DAGSTER_DAEMON_SERVICE,
-        _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
-        _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
-        _MAP_APPLICATION_SCHEMA_SERVICE,
-        _PINVI_API_SERVICE,
-        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
-        _MAP_UI_SERVICE,
-    ):
+    for service_name in _candidate_protected_service_order():
         # **무조건 인덱싱하지 않는다**(GM-17 B S1). 종전 `services[service_name]`은
         # 이름이 빠지면 raw `KeyError`를 던졌고, 그것이 계약 오류가 아니라 traceback으로
         # 사용자에게 샜다.
@@ -4246,14 +4290,7 @@ def validate_resolved_compose_candidate_protected_values(
             raise ComposeCandidateContractError(
                 f"resolved compose candidate service {service_name} is invalid"
             )
-        if service_name in {
-            _MAP_API_SERVICE,
-            _MAP_DAGSTER_SERVICE,
-            _MAP_DAGSTER_DAEMON_SERVICE,
-            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
-            _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
-            _MAP_APPLICATION_SCHEMA_SERVICE,
-        }:
+        if service_name in _map_database_host_network_services():
             _require_map_database_host_network(service)
         service_environment = service.get("environment")
         if not isinstance(service_environment, Mapping):
@@ -4339,6 +4376,9 @@ def validate_resolved_c6c_build_provenance(
     services = resolved.get("services")
     if not isinstance(services, Mapping):
         raise DeploymentContractError("resolved compose config has no services mapping")
+    # PinVi Dagster 이미지는 그것을 지금 운반하는 서비스가 빌드한다(`own`이면 webserver, 공용 plane이면
+    # code-server — ADR-54). 옛 webserver는 `legacy-dagster`로 내려가 frozen render에 없다.
+    pinvi_dagster_service = runtime_topology().require_service("pinvi_dagster")
     expected_provenance_args = {
         _MAP_UI_SERVICE: {
             "KOR_TRAVEL_MAP_GIT_COMMIT": provenance.map_source_revision,
@@ -4351,7 +4391,7 @@ def validate_resolved_c6c_build_provenance(
             "PINVI_SOURCE_REVISION": provenance.pinvi_source_revision,
             "PINVI_BUILD_ENVIRONMENT": "production",
         },
-        _PINVI_DAGSTER_SERVICE: {
+        pinvi_dagster_service: {
             "PINVI_SOURCE_REVISION": provenance.pinvi_source_revision,
             "PINVI_BUILD_ENVIRONMENT": "production",
         },
@@ -4373,7 +4413,7 @@ def validate_resolved_c6c_build_provenance(
         _MAP_UI_SERVICE: "docker/frontend.Dockerfile",
         _PINVI_API_SERVICE: "apps/api/Dockerfile",
         _PINVI_WEB_SERVICE: "apps/web/Dockerfile",
-        _PINVI_DAGSTER_SERVICE: "apps/etl/Dockerfile",
+        pinvi_dagster_service: "apps/etl/Dockerfile",
     }
     for service_name, service_expected_args in expected_provenance_args.items():
         service = _service_mapping(services, service_name)
@@ -4439,6 +4479,7 @@ def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
     services = candidate.get("services")
     if not isinstance(services, Mapping):
         raise DeploymentContractError("compose source has no services mapping")
+    pinvi_dagster_service = runtime_topology().require_service("pinvi_dagster")
     expected = {
         _MAP_UI_SERVICE: {
             "context": "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}",
@@ -4478,7 +4519,7 @@ def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
                 ),
             },
         },
-        _PINVI_DAGSTER_SERVICE: {
+        pinvi_dagster_service: {
             "context": "${PINVI_REPO_DIR:-../pinvi}",
             "dockerfile": "apps/etl/Dockerfile",
             "args": {
@@ -4608,17 +4649,7 @@ def validate_compose_candidate_protected_values(
     # bind source·env_file **내용**이 찾을 `.env` 비밀 값은 설치된 릴리스 compose 기준으로 고른다(ADR-51 결정 5).
     protected_values = secret_values_for(compose_path=compose_path, environment=environment)
 
-    for service_name in (
-        _MAP_API_SERVICE,
-        _MAP_DAGSTER_SERVICE,
-        _MAP_DAGSTER_DAEMON_SERVICE,
-        _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
-        _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
-        _MAP_APPLICATION_SCHEMA_SERVICE,
-        _PINVI_API_SERVICE,
-        _PINVI_ADMIN_BOOTSTRAP_SERVICE,
-        _MAP_UI_SERVICE,
-    ):
+    for service_name in _candidate_protected_service_order():
         # **무조건 인덱싱하지 않는다**(GM-17 B S1). 종전 `services[service_name]`은
         # 이름이 빠지면 raw `KeyError`를 던졌고, 그것이 계약 오류가 아니라 traceback으로
         # 사용자에게 샜다.
@@ -6739,14 +6770,9 @@ def validate_runtime_secret_isolation(
             _MAP_UI_GEO_API_KEY_ENV: config.map_geo_api_key,
             _MAP_FEATURE_CREATE_TOKEN_ENV: config.feature_create_token,
         },
-        _MAP_RUNTIME_CONTAINERS[_MAP_DAGSTER_SERVICE]: {
-            _MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
-        },
-        _MAP_RUNTIME_CONTAINERS[_MAP_DAGSTER_DAEMON_SERVICE]: {
-            _MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
-        },
-        _MAP_DAGSTER_CODE_SERVER_CONTAINER: {
-            _MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key,
+        **{
+            container: {_MAP_GEO_API_KEY_SOURCE_ENV: config.map_geo_api_key}
+            for container in _map_dagster_secret_isolation_containers()
         },
     }
     for required_container in expected:

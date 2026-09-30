@@ -140,7 +140,7 @@ def _provenance_image_inspects(
         "map-api": expectation.services["map-api"].image_id,
         "map-frontend": "sha256:" + "5" * 64,
         "pinvi-api": expectation.services["pinvi-api"].image_id,
-        "pinvi-dagster": "sha256:" + "6" * 64,
+        "pinvi-app-dagster": "sha256:" + "6" * 64,
         "pinvi-web": "sha256:" + "7" * 64,
     }
     return {

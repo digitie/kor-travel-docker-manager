@@ -71,12 +71,12 @@ _DIGEST_ENV = {
 }
 
 #: 옛 프로젝트별 webserver·daemon·gateway의 서비스 이름을 **literal로** 든 코드(적대 리뷰 M2, 재리뷰 MED-2).
-#: pinned Map·PinVi 재구축(`RUNTIME_SERVICES`·`COMPOSE_BUILT_RUNTIME_SERVICES`), C6c 보호 집합, 명시적
-#: `compose_up("<서비스>")`, M05 하네스·이미지 보존이 그렇다. 여기 든 서비스가 `legacy-dagster`로 내려가면 frozen
-#: render(`--profile bootstrap`만)에서 사라지고, 명시적 `up <서비스>`는 꺼진 profile의 서비스도 띄워 옛 daemon이
-#: 되살아난다. 그래서 목록이 아니라 **코드 전체**를 본다: 옮기는 target의 옛 서비스 이름(compose에서 파생)이
-#: `backend/src`·`scripts`의 어디든 온전한 토큰으로 있으면 그 target은 `shared`가 될 수 없다. 그 참조를 스위치에서
-#: 파생하도록 바꾸는 PR이 먼저다. compose·targets(렌더된 모양 자체)와 테스트는 보지 않는다.
+#: 여기 든 서비스가 `legacy-dagster`로 내려가면 frozen render(`--profile bootstrap`만)에서 사라지는데 literal
+#: 집합(pinned 재구축의 slot·build 목록, C6c 보호 집합, 명시적 `compose_up("<서비스>")`, 이미지 보존)은 그것을
+#: 여전히 요구하고, 명시적 `up <서비스>`는 꺼진 profile의 서비스도 띄워 옛 daemon이 되살아난다. 그 참조는 이제
+#: 전부 `runtime_topology`가 렌더된 모델과 스위치에서 파생한다. 이 검사는 **되돌아옴을 막는 문**으로 남는다:
+#: 옮기는 target의 옛 서비스 이름(compose에서 파생)이 `backend/src`·`scripts`의 어디든 온전한 토큰으로 다시
+#: 나타나면 그 target은 `(pinned)`로 빨갛다. compose·targets(렌더된 모양 자체)와 테스트는 보지 않는다.
 _CODE_ROOTS = (_REPO_ROOT / "backend" / "src", _REPO_ROOT / "scripts")
 
 
@@ -90,7 +90,7 @@ def _code_files() -> list[Path]:
 
 
 def _hardcoded(names: set[str]) -> dict[str, list[str]]:
-    """이름마다 그것을 온전한 토큰으로 든 파일(저장소 기준 경로)."""
+    """이름마다 그것을 온전한 토큰으로 든 파일(저장소 기준 경로, 저장소 밖이면 절대 경로)."""
 
     found: dict[str, list[str]] = {}
     patterns = {name: re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])") for name in names}
@@ -99,9 +99,10 @@ def _hardcoded(names: set[str]) -> dict[str, list[str]]:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
+        shown = path.relative_to(_REPO_ROOT) if path.is_relative_to(_REPO_ROOT) else path
         for name, pattern in patterns.items():
             if pattern.search(text):
-                found.setdefault(name, []).append(path.relative_to(_REPO_ROOT).as_posix())
+                found.setdefault(name, []).append(shown.as_posix())
     return found
 
 
@@ -707,19 +708,18 @@ def _pinned(violations: list[str]) -> tuple[list[str], list[str]]:
 
 @pytest.mark.parametrize("target_id", _dagster_targets())
 def test_flipping_a_target_renders_a_consistent_plane(target_id: str) -> None:
-    """참조 전환을 하면 compose 계약·digest·workspace 파생·G3-b가 초록이다.
+    """참조 전환을 하면 compose 계약·digest·workspace 파생·G3-b가 초록이고, `(pinned)`도 없다.
 
-    compose만으로는 닫히지 않는다: Map·PinVi의 옛 webserver·daemon은 pinned 재구축·C6c가 literal로 든다.
-    그 target은 그 집합을 스위치에서 파생하기 전까지 `(pinned)`로 **빨갛다** — 조용히 초록이면 첫 전환
-    (PinVi)이 pinned 재구축을 깬다(적대 리뷰 M2).
+    Map·PinVi·geo의 옛 webserver·daemon을 literal로 들던 pinned 재구축·C6c·이미지 보존·M05·옛 override
+    이관은 이제 `runtime_topology`에서 파생한다 — 어느 target도 코드 literal에 막히지 않는다. literal이
+    되돌아오면 빨갛다(`test_a_literal_old_name_in_code_blocks_the_flip`).
     """
 
     compose, targets = _documents()
     files = _flip(compose, targets, target_id)
     pinned, rest = _pinned(_contract_violations(compose, targets, files))
     assert rest == []
-    legacy = _legacy(compose, targets["targets"][target_id])
-    assert bool(pinned) is bool(_hardcoded(legacy)), pinned
+    assert pinned == []
     workspace = _derived_workspace(compose, targets)
     location = {_location(s) for s in _code_servers(compose, targets["targets"][target_id]).values()}
     assert {e["grpc_server"]["location_name"] for e in workspace["load_from"]} == location
@@ -756,8 +756,6 @@ def test_flipping_every_target_keeps_the_plane_consistent() -> None:
         ("geo", "digest", "(d) `kor-travel-dagster-daemon`: `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`"),
         ("weather", "digest", "(d) `kor-travel-weather-dagster-code-server`"),
         ("map", "consumers", "옛 공개 host env `KTDM_PROD_URL_MAP_DAGSTER`"),
-        ("pinvi", "", "(pinned) `pinvi-dagster`가 코드에 literal로 있다("),
-        ("map", "", "(pinned) `kor-travel-map-dagster-daemon`가 코드에 literal로 있다("),
     ],
 )
 def test_a_flip_missing_a_step_is_named(target_id: str, skip: str, named: str) -> None:
@@ -767,6 +765,51 @@ def test_a_flip_missing_a_step_is_named(target_id: str, skip: str, named: str) -
     files = _flip(compose, targets, target_id, skip=skip)
     violations = _contract_violations(compose, targets, files)
     assert any(named in violation for violation in violations), violations
+
+
+@pytest.mark.parametrize("target_id", ["map", "pinvi", "geo", "weather"])
+def test_a_literal_old_name_in_code_blocks_the_flip(
+    target_id: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """옛 서비스 이름이 코드에 literal로 되돌아오면 그 target의 전환은 `(pinned)`로 빨갛다(빨간 대조군).
+
+    이름은 compose에서 모양으로 찾은 옛 서비스마다 하나씩 넣어 본다 — 검사가 이름 목록이 아니라 파생을 보는지.
+    """
+
+    compose, targets = _documents()
+    legacy = sorted(_legacy(compose, targets["targets"][target_id]))
+    files = _flip(compose, targets, target_id)
+    assert _pinned(_contract_violations(compose, targets, files))[0] == []
+    code = tmp_path / "scripts"
+    code.mkdir()
+    monkeypatch.setattr(sys.modules[__name__], "_CODE_ROOTS", (*_CODE_ROOTS, code))
+    for name in legacy:
+        (code / "revert.py").write_text(f'compose_up("{name}")\n', encoding="utf-8")
+        pinned, _ = _pinned(_contract_violations(compose, targets, files))
+        assert [v for v in pinned if f"`{name}`" in v], (name, pinned)
+    # 같은 이름이 더 긴 토큰의 일부(`<이름>-code-server`, 컨테이너 `<이름>-latest`)일 때는 참조가 아니다.
+    (code / "revert.py").write_text(
+        "\n".join(f'"{name}-latest"' for name in legacy) + "\n", encoding="utf-8"
+    )
+    assert _pinned(_contract_violations(compose, targets, files))[0] == []
+
+
+def test_the_manager_derivation_agrees_with_this_one() -> None:
+    """Manager의 `runtime_topology`가 모양으로 찾은 family가 이 테스트의 독립 파생과 같다 — 전환 전후 모두."""
+
+    from kor_travel_docker_manager.services.runtime_topology import derive_dagster_families
+
+    compose, targets = _documents()
+    for flipped in [None, *_dagster_targets()]:
+        if flipped is not None:
+            _flip(compose, targets, flipped)
+        families = derive_dagster_families(compose, targets)
+        assert sorted(families) == sorted(_dagster_targets())
+        for target_id, family in families.items():
+            spec = targets["targets"][target_id]
+            assert set(family.legacy) == _legacy(compose, spec), target_id
+            assert {family.code_server} == set(_code_servers(compose, spec)), target_id
+            assert family.control_plane == spec["dagster"]["control_plane"], target_id
 
 
 def test_the_committed_digests_follow_the_files() -> None:

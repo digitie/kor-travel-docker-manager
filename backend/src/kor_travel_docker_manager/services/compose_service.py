@@ -104,16 +104,13 @@ from kor_travel_docker_manager.services.map_application_candidate import (
     MapApplicationCandidate,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    RUNTIME_SERVICES,
     PinnedRuntimeGeneration,
     PinnedRuntimeStatePaths,
-    RuntimeService,
     ensure_pinned_runtime_state_directory,
     generation_logical_sha256,
     pinned_runtime_state_paths,
 )
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
-    COMPOSE_BUILT_RUNTIME_SERVICES,
     CandidateRuntimeBuild,
     build_candidate_generation,
     generation_companion_services,
@@ -149,6 +146,14 @@ from kor_travel_docker_manager.services.registry import (
     target_is_external,
     target_sequence_for_target,
 )
+from kor_travel_docker_manager.services.runtime_topology import (
+    COMPOSE_BUILT_RUNTIME_SLOTS,
+    RUNTIME_SLOTS,
+    RuntimeSlot,
+    RuntimeTopology,
+    runtime_topology,
+    slot_project,
+)
 from kor_travel_docker_manager.services.trusted_install import (
     require_pinned_runtime_rebuild_root,
     trusted_pinned_runtime_project_root,
@@ -166,14 +171,32 @@ _PINNED_RUNTIME_ONESHOT_WRITERS = (
 
 
 def _with_generation_companions(
-    services: Sequence[str],
-    companions: Mapping[str, RuntimeService],
+    slots: Sequence[RuntimeSlot],
+    companions: Mapping[str, RuntimeSlot],
+    topology: RuntimeTopology,
 ) -> tuple[str, ...]:
+    """slot 서비스와, 그 slot의 이미지를 공유하는 companion. slot에 서비스가 없으면(공용 plane에
+    합류한 target의 daemon) 그 slot은 아무것도 띄우지 않는다."""
+
     return (
-        *(name for name, owner in companions.items() if owner in services),
-        *services,
+        *(name for name, owner in companions.items() if owner in slots),
+        *topology.services_for(slots),
     )
 
+
+#: 명시 `up`이 의존성을 끌어올 때 함께 닿는 API. (API에 기대는 slot, 그 API slot).
+_API_DEPENDENT_SLOTS: Final[tuple[tuple[RuntimeSlot, RuntimeSlot], ...]] = (
+    ("map_ui", "map_api"),
+    ("map_dagster", "map_api"),
+    ("map_dagster_daemon", "map_api"),
+    ("pinvi_web", "pinvi_api"),
+    ("pinvi_dagster", "pinvi_api"),
+)
+#: Dagster family를 가진 pinned target과 그 API slot.
+_DAGSTER_TARGET_API_SLOTS: Final[tuple[tuple[str, RuntimeSlot], ...]] = (
+    ("map", "map_api"),
+    ("pinvi", "pinvi_api"),
+)
 
 _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
     "rustfs",
@@ -3517,13 +3540,18 @@ class ComposeService:
                 if ":" in item
             )
             if command in {"up", "create", "restart", "watch"} and "--no-deps" not in parsed_flags:
+                # API에 기대는 slot 서비스 → 그 API. Dagster slot은 스위치를 따른다(ADR-54). 공용
+                # plane에 합류해 `legacy-dagster`로 내려간 옛 서비스도 명시하면 compose가 띄우고 그
+                # `depends_on`(API)까지 끌어오므로 같은 API에 닿는다고 센다.
+                topology = runtime_topology()
                 api_dependencies = {
-                    "kor-travel-map-ui": "kor-travel-map-api",
-                    "kor-travel-map-dagster": "kor-travel-map-api",
-                    "kor-travel-map-dagster-daemon": "kor-travel-map-api",
-                    "pinvi-web": "pinvi-api",
-                    "pinvi-dagster": "pinvi-api",
+                    service: topology.require_service(api_slot)
+                    for slot, api_slot in _API_DEPENDENT_SLOTS
+                    if (service := topology.service(slot)) is not None
                 }
+                for target_id, api_slot in _DAGSTER_TARGET_API_SLOTS:
+                    for retired in topology.families[target_id].retired:
+                        api_dependencies[retired] = topology.require_service(api_slot)
                 explicit_services.extend(
                     api_dependencies[service]
                     for service in tuple(explicit_services)
@@ -3884,12 +3912,13 @@ class ComposeService:
         # waiting until its context deadline.  Keep the frozen transaction and
         # provenance checks identical, but give each candidate service its own
         # BuildKit request so a target completes before the next one starts.
+        built_services = runtime_topology().services_for(COMPOSE_BUILT_RUNTIME_SLOTS)
         if tuple(args) == (
             "build",
-            *COMPOSE_BUILT_RUNTIME_SERVICES,
+            *built_services,
         ):
             build_result: dict[str, Any] = {}
-            for service in COMPOSE_BUILT_RUNTIME_SERVICES:
+            for service in built_services:
                 # 실패 메시지의 명령(`build <service>`)이 어느 서비스인지 말한다.
                 build_result = self._run_pinned_runtime_rebuild_compose(
                     ["build", service],
@@ -4270,35 +4299,37 @@ class ComposeService:
         *,
         build: CandidateRuntimeBuild,
         map_candidate: MapApplicationCandidate,
-    ) -> dict[RuntimeService, str]:
+    ) -> dict[RuntimeSlot, str]:
         built_image_ids = {
-            service: self._inspect_image_reference_id(
-                build.image_names[service],
-                label=service,
+            slot: self._inspect_image_reference_id(
+                build.image_names[slot],
+                label=build.topology.require_service(slot),
             )
-            for service in COMPOSE_BUILT_RUNTIME_SERVICES
+            for slot in COMPOSE_BUILT_RUNTIME_SLOTS
         }
         map_revision = build.sources.release.source_for("map").revision
         pinvi_revision = build.sources.release.source_for("pinvi").revision
-        for service in COMPOSE_BUILT_RUNTIME_SERVICES:
-            expected_revision = map_revision if service.startswith("kor-travel-map-") else pinvi_revision
+        for slot in COMPOSE_BUILT_RUNTIME_SLOTS:
+            service = build.topology.require_service(slot)
+            project = slot_project(slot)
+            expected_revision = map_revision if project == "map" else pinvi_revision
             observed_revision = self._inspect_image_source_revision(
-                built_image_ids[service],
+                built_image_ids[slot],
                 label=service,
-                expected_build_environment=("production" if service.startswith("pinvi-") else None),
+                expected_build_environment=("production" if project == "pinvi" else None),
             )
             if observed_revision != expected_revision:
                 raise DeploymentContractError(
                     f"{service} candidate image revision differs from the release pin"
                 )
-        image_ids: dict[RuntimeService, str] = {
-            "kor-travel-map-api": map_candidate.api_image_id,
-            "kor-travel-map-ui": built_image_ids["kor-travel-map-ui"],
-            "kor-travel-map-dagster": map_candidate.dagster_image_id,
-            "kor-travel-map-dagster-daemon": map_candidate.dagster_image_id,
-            "pinvi-api": built_image_ids["pinvi-api"],
-            "pinvi-web": built_image_ids["pinvi-web"],
-            "pinvi-dagster": built_image_ids["pinvi-dagster"],
+        image_ids: dict[RuntimeSlot, str] = {
+            "map_api": map_candidate.api_image_id,
+            "map_ui": built_image_ids["map_ui"],
+            "map_dagster": map_candidate.dagster_image_id,
+            "map_dagster_daemon": map_candidate.dagster_image_id,
+            "pinvi_api": built_image_ids["pinvi_api"],
+            "pinvi_web": built_image_ids["pinvi_web"],
+            "pinvi_dagster": built_image_ids["pinvi_dagster"],
         }
         return image_ids
 
@@ -4340,10 +4371,10 @@ class ComposeService:
                 pinvi_source_revision=build.sources.release.source_for("pinvi").revision,
             ),
             expected_build_contexts={
-                "kor-travel-map-ui": map_context,
-                "pinvi-api": pinvi_context,
-                "pinvi-web": pinvi_context,
-                "pinvi-dagster": pinvi_context,
+                build.topology.require_service(slot): (
+                    map_context if slot_project(slot) == "map" else pinvi_context
+                )
+                for slot in COMPOSE_BUILT_RUNTIME_SLOTS
             },
         )
 
@@ -4401,12 +4432,18 @@ class ComposeService:
     @staticmethod
     def _deployed_images(
         candidate: PinnedRuntimeGeneration,
-        companions: Mapping[str, RuntimeService],
+        companions: Mapping[str, RuntimeSlot],
+        topology: RuntimeTopology | None = None,
     ) -> dict[str, str]:
-        """slot은 자기 이미지, companion은 owner slot의 이미지다."""
+        """slot 서비스는 자기 이미지, companion은 owner slot의 이미지다. 서비스 없는 slot은 없다."""
 
+        topology = runtime_topology() if topology is None else topology
         slot_images = candidate.image_ids
-        images = {str(service): image for service, image in slot_images.items()}
+        images = {
+            service: slot_images[slot]
+            for slot in RUNTIME_SLOTS
+            if (service := topology.service(slot)) is not None
+        }
         images.update((name, slot_images[owner]) for name, owner in companions.items())
         return images
 
@@ -4489,8 +4526,12 @@ class ComposeService:
                 )
                 # 이번 pair가 쓰지 않는 옛 revision·끊긴 시도를 지운다(G 안, 실패해도 배포는 계속).
                 prune_pinned_runtime_sources(state_paths, keep=sources)
+            # 공용 Dagster plane(ADR-54) 스위치를 포함한 slot → 서비스. 한 배포는 한 모양으로 돈다.
+            topology = runtime_topology()
             with _rebuild_stage("application_base_images"):
-                paired_build_images = map_application_300_paired_build_image_names(sources)
+                paired_build_images = map_application_300_paired_build_image_names(
+                    sources, topology
+                )
                 _ensure_map_application_300_python_base_images(sources)
             with _rebuild_stage("application_builder"):
                 # 이미지 태그는 pinset에 묶인다. 이미 있으면 같은 소스에서 나온 것이므로
@@ -4499,18 +4540,19 @@ class ComposeService:
                 if not all(_local_image_present(ref) for ref in paired_build_images.values()):
                     _build_map_application_300_images(
                         sources=sources,
-                        api_image=paired_build_images["kor-travel-map-api"],
-                        dagster_image=paired_build_images["kor-travel-map-dagster"],
+                        api_image=paired_build_images["map_api"],
+                        dagster_image=paired_build_images["map_dagster"],
                     )
             with _rebuild_stage("application_candidate"):
                 map_candidate = _load_application_300_candidate(
                     sources=sources,
-                    api_image=paired_build_images["kor-travel-map-api"],
-                    dagster_image=paired_build_images["kor-travel-map-dagster"],
+                    api_image=paired_build_images["map_api"],
+                    dagster_image=paired_build_images["map_dagster"],
                 )
                 build = CandidateRuntimeBuild(
                     sources=sources,
                     map_application_candidate=map_candidate,
+                    topology=topology,
                 )
                 candidate_build_references = {**paired_build_images, **build.image_names}
             candidate_environment = {
@@ -4531,7 +4573,7 @@ class ComposeService:
             with _rebuild_stage("candidate_compose_build"):
                 if not all(_local_image_present(ref) for ref in build.image_names.values()):
                     self._run_pinned_runtime_rebuild_compose(
-                        ["build", *COMPOSE_BUILT_RUNTIME_SERVICES],
+                        ["build", *build.build_services],
                         transaction=candidate_transaction,
                     )
             with _rebuild_stage("candidate_images"):
@@ -4548,7 +4590,7 @@ class ComposeService:
                 # 관측했다. 나머지 둘은 후보 이미지를 network-less로 한 번씩 돌린다.
                 map_dagster_head = parse_candidate_static_head(
                     _run_pinned_runtime_static_command(
-                        image_ids["kor-travel-map-dagster"],
+                        image_ids["map_dagster"],
                         ("head",),
                         label="Map Dagster",
                         entrypoint="/usr/local/bin/ktm-dagster-storage",
@@ -4558,7 +4600,7 @@ class ComposeService:
                 )
                 pinvi_head = parse_candidate_static_head(
                     _run_pinned_runtime_static_command(
-                        image_ids["pinvi-api"],
+                        image_ids["pinvi_api"],
                         ("pinvi-admin-bootstrap", "head"),
                         label="PinVi",
                     ),
@@ -4587,6 +4629,7 @@ class ComposeService:
                     runtime_transaction.resolved,
                     candidate.image_ids,
                     excluded_services=_PINNED_RUNTIME_ONESHOT_WRITERS,
+                    topology=topology,
                 )
             ensure_generation_references((candidate,), cwd=get_project_root())
             runtimes = database_runtimes_from_frozen_contract(
@@ -4595,7 +4638,7 @@ class ComposeService:
             )
             # R4가 Map application DB에 CONNECT를 줄 login. 멈추기 전에 유도해 둔다.
             map_login = map_application_login(runtime_transaction.environment.effective)
-            expected_images = self._deployed_images(candidate, companions)
+            expected_images = self._deployed_images(candidate, companions, topology)
             # 수렴 판정과 identity 기준선은 **실제로 migration할 cluster**를 읽어야 한다. 그
             # cluster는 공용 instance이고 재구축이 띄우거나 다시 만들지 않는다(R3) — 판정 전에
             # frozen Compose의 그 컨테이너가 떠 있고 healthy인지만 본다.
@@ -4617,6 +4660,7 @@ class ComposeService:
             ):
                 self._converge_committed_runtime(
                     runtime_transaction=runtime_transaction,
+                    topology=topology,
                     companions=companions,
                     expected_images=expected_images,
                     runtimes=runtimes,
@@ -4708,6 +4752,7 @@ class ComposeService:
                     candidate=candidate,
                     runtimes=runtimes,
                     runtime_transaction=runtime_transaction,
+                    topology=topology,
                     companions=companions,
                     expected_images=expected_images,
                     state_paths=state_paths,
@@ -4717,7 +4762,7 @@ class ComposeService:
             except Exception:
                 try:
                     self._run_pinned_runtime_rebuild_compose(
-                        ["stop", *RUNTIME_SERVICES, *companions],
+                        ["stop", *topology.runtime_services, *companions],
                         transaction=runtime_transaction,
                     )
                     self._retire_pinned_runtime_oneshot_writers(
@@ -4757,7 +4802,7 @@ class ComposeService:
     @staticmethod
     def _reconcile_pinned_runtime_image_retention(
         candidate: PinnedRuntimeGeneration,
-        candidate_build_references: Mapping[RuntimeService, str],
+        candidate_build_references: Mapping[RuntimeSlot, str],
         warnings: list[str],
     ) -> None:
         """이미지 보존 정리. 배포가 끝난 뒤의 일이라 실패는 경고로만 남긴다."""
@@ -4796,7 +4841,8 @@ class ComposeService:
         self,
         *,
         runtime_transaction: ComposeTransactionSnapshot,
-        companions: Mapping[str, RuntimeService],
+        topology: RuntimeTopology,
+        companions: Mapping[str, RuntimeSlot],
         expected_images: Mapping[str, str],
         runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
         map_login: str,
@@ -4817,12 +4863,13 @@ class ComposeService:
                 "--wait",
                 "--wait-timeout",
                 str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
-                *_with_generation_companions(RUNTIME_SERVICES, companions),
+                *_with_generation_companions(RUNTIME_SLOTS, companions, topology),
             ],
             transaction=runtime_transaction,
         )
         self._verify_pinned_runtime_services(
             runtime_transaction=runtime_transaction,
+            topology=topology,
             companions=companions,
             expected_images=expected_images,
         )
@@ -4831,13 +4878,14 @@ class ComposeService:
         self,
         *,
         runtime_transaction: ComposeTransactionSnapshot,
-        companions: Mapping[str, RuntimeService],
+        topology: RuntimeTopology,
+        companions: Mapping[str, RuntimeSlot],
         expected_images: Mapping[str, str],
     ) -> None:
         """전 서비스 readiness·이미지·C6c secret isolation을 확인한다."""
 
         runtime_records = self._require_services_ready(
-            (*RUNTIME_SERVICES, *companions),
+            (*topology.runtime_services, *companions),
             transaction=runtime_transaction,
             frozen_recovery=True,
         )
@@ -4851,7 +4899,7 @@ class ComposeService:
         if isinstance(config, C6cDeploymentConfig):
             runtime_configs = self._inspect_c6c_runtime_configs(
                 config,
-                [*RUNTIME_SERVICES, *companions],
+                [*topology.runtime_services, *companions],
                 transaction=runtime_transaction,
                 frozen_recovery=True,
             )
@@ -4870,7 +4918,8 @@ class ComposeService:
         candidate: PinnedRuntimeGeneration,
         runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
         runtime_transaction: ComposeTransactionSnapshot,
-        companions: Mapping[str, RuntimeService],
+        topology: RuntimeTopology,
+        companions: Mapping[str, RuntimeSlot],
         expected_images: Mapping[str, str],
         state_paths: PinnedRuntimeStatePaths,
         values: Mapping[str, str],
@@ -4904,7 +4953,7 @@ class ComposeService:
         # 보존된 DB를 동시에 건드리지 못하게 하는 자리다 — 마이그레이션 전진에서 더
         # 중요해진다.
         self._run_pinned_runtime_rebuild_compose(
-            ["stop", *RUNTIME_SERVICES, *companions],
+            ["stop", *topology.runtime_services, *companions],
             transaction=runtime_transaction,
         )
         self._retire_pinned_runtime_oneshot_writers(transaction=runtime_transaction)
@@ -5000,14 +5049,13 @@ class ComposeService:
             candidate.map_dagster_head,
             "Map Dagster storage execution result is uncertain",
         )
+        # Map UI와 Map Dagster slot. 공용 plane에 합류했으면 carrier가 code-server이고 daemon slot은
+        # 비어 있다 — 옛 webserver·daemon은 이름으로도 부르지 않는다(ADR-54).
         compose_up(
             *_with_generation_companions(
-                (
-                    "kor-travel-map-ui",
-                    "kor-travel-map-dagster",
-                    "kor-travel-map-dagster-daemon",
-                ),
+                ("map_ui", "map_dagster", "map_dagster_daemon"),
                 companions,
+                topology,
             )
         )
 
@@ -5033,9 +5081,12 @@ class ComposeService:
             load_c6c_deployment_config_from_environment(values),
             cancel_probe_state=PinviCancelProbeState(transaction_id=status.run_id),
         )
-        compose_up(*_with_generation_companions(("pinvi-web", "pinvi-dagster"), companions))
+        compose_up(
+            *_with_generation_companions(("pinvi_web", "pinvi_dagster"), companions, topology)
+        )
         self._verify_pinned_runtime_services(
             runtime_transaction=runtime_transaction,
+            topology=topology,
             companions=companions,
             expected_images=expected_images,
         )

@@ -31,6 +31,7 @@ from kor_travel_docker_manager.services import compose_service as compose_servic
 from kor_travel_docker_manager.services import database_runtime as database_runtime_module
 from kor_travel_docker_manager.services import registry as registry_module
 from kor_travel_docker_manager.services import standalone_backup as standalone_backup_module
+from kor_travel_docker_manager.services.runtime_topology import runtime_topology
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -155,10 +156,16 @@ def test_services_the_code_names_are_defined() -> None:
         for field in (
             "_PINNED_RUNTIME_ONESHOT_WRITERS",
             "_PINNED_RUNTIME_EXTERNAL_PREREQUISITES",
-            "RUNTIME_SERVICES",
         ):
             for name in getattr(compose_service_module, field):
                 yield f"compose_service.{field}", name
+        # slot 서비스는 이제 렌더된 모델에서 파생한다(ADR-54) — 파생 결과도 compose에 있어야 한다.
+        topology = runtime_topology()
+        for name in (*topology.runtime_services, *topology.retired_services):
+            yield "runtime_topology.runtime_services", name
+        for family in topology.families.values():
+            for name in (*family.processes, *family.gateways):
+                yield f"runtime_topology.families[{family.target}]", name
         # ADR-53: 세 DB의 PostgreSQL 서비스는 이름이 아니라 DSN 포트에서 유도한다 — 코드에 이름이 없다.
         for role, spec in database_runtime_module._ROLE_CONFIG.items():
             assert not any(

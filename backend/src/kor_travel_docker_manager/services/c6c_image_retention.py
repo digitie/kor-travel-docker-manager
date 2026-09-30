@@ -10,35 +10,53 @@ from typing import Any
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
 from kor_travel_docker_manager.services.pinned_runtime_generation import (
-    RUNTIME_SERVICES,
     PinnedRuntimeGeneration,
-    RuntimeService,
+)
+from kor_travel_docker_manager.services.runtime_topology import (
+    CANDIDATE_TAG_SLOTS,
+    RUNTIME_SLOTS,
+    RuntimeSlot,
+    RuntimeTopology,
+    runtime_topology,
 )
 
 RETENTION_REPOSITORY_PREFIX = "kor-travel-docker-manager/pinned-runtime-v5/"
 CANDIDATE_REPOSITORY_PREFIX = (
     "kor-travel-docker-manager/pinned-runtime-candidate-v6/"
 )
-_CANDIDATE_TAG_SERVICES: tuple[RuntimeService, ...] = (
-    "kor-travel-map-api",
-    "kor-travel-map-ui",
-    "kor-travel-map-dagster",
-    "pinvi-api",
-    "pinvi-web",
-    "pinvi-dagster",
-)
 _IMAGE_ID = re.compile(r"^sha256:([0-9a-f]{64})$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DELETED_IMAGE = re.compile(r"^Deleted: sha256:[0-9a-f]{64}$")
-_REFERENCE = re.compile(
-    rf"^{re.escape(RETENTION_REPOSITORY_PREFIX)}"
-    rf"({'|'.join(re.escape(service) for service in RUNTIME_SERVICES)}):([0-9a-f]{{64}})$"
-)
-_CANDIDATE_REFERENCE = re.compile(
-    rf"^{re.escape(CANDIDATE_REPOSITORY_PREFIX)}"
-    rf"({'|'.join(re.escape(service) for service in _CANDIDATE_TAG_SERVICES)})"
-    rf":([0-9a-f]{{64}})$"
-)
+
+
+def _reference_names(topology: RuntimeTopology, slots: tuple[RuntimeSlot, ...]) -> list[str]:
+    """이 namespace가 자기 것으로 알아보는 reference 이름.
+
+    slot을 지금 운반하는 서비스에 더해, 공용 plane에 합류한 target의 옛 서비스 이름을 받는다
+    (ADR-54). 전환 전에 남긴 그 이름의 tag가 "모르는 reference"로 namespace 전체를 멈추지 않고
+    stale로 지워지게 하려는 것이다. `own`뿐이면 종전 집합 그대로다.
+    """
+
+    return [*topology.services_for(slots), *topology.retired_services]
+
+
+def _reference_pattern(prefix: str, names: list[str]) -> re.Pattern[str]:
+    return re.compile(
+        rf"^{re.escape(prefix)}"
+        rf"({'|'.join(re.escape(name) for name in names)}):([0-9a-f]{{64}})$"
+    )
+
+
+def _retained_pattern(topology: RuntimeTopology) -> re.Pattern[str]:
+    return _reference_pattern(
+        RETENTION_REPOSITORY_PREFIX, _reference_names(topology, RUNTIME_SLOTS)
+    )
+
+
+def _candidate_pattern(topology: RuntimeTopology) -> re.Pattern[str]:
+    return _reference_pattern(
+        CANDIDATE_REPOSITORY_PREFIX, _reference_names(topology, CANDIDATE_TAG_SLOTS)
+    )
 
 
 @dataclass(frozen=True)
@@ -51,24 +69,32 @@ class RetentionReport:
 
 def _generation_images(
     generation: PinnedRuntimeGeneration,
-) -> tuple[tuple[RuntimeService, str], ...]:
-    return tuple(generation.image_ids.items())
+    topology: RuntimeTopology,
+) -> tuple[tuple[str, str], ...]:
+    """보존할 (서비스, 이미지). 서비스가 없는 slot(공용 plane에 합류한 target의 daemon)은 없다."""
+
+    return tuple(
+        (service, image_id)
+        for slot, image_id in generation.image_ids.items()
+        if (service := topology.service(slot)) is not None
+    )
 
 
-def _reference(service: RuntimeService, image_id: str) -> str:
+def _reference(service: str, image_id: str, topology: RuntimeTopology) -> str:
     match = _IMAGE_ID.fullmatch(image_id)
-    if service not in RUNTIME_SERVICES or match is None:
+    if service not in topology.runtime_services or match is None:
         raise DeploymentContractError("pinned runtime retention identity is invalid")
     return f"{RETENTION_REPOSITORY_PREFIX}{service}:{match.group(1)}"
 
 
 def _desired_references(
     generations: Sequence[PinnedRuntimeGeneration],
+    topology: RuntimeTopology,
 ) -> dict[str, str]:
     desired: dict[str, str] = {}
     for generation in generations:
-        for service, image_id in _generation_images(generation):
-            reference = _reference(service, image_id)
+        for service, image_id in _generation_images(generation, topology):
+            reference = _reference(service, image_id, topology)
             previous = desired.setdefault(reference, image_id)
             if previous != image_id:
                 raise DeploymentContractError(
@@ -119,10 +145,13 @@ def ensure_generation_references(
     generations: Sequence[PinnedRuntimeGeneration],
     *,
     cwd: str,
+    topology: RuntimeTopology | None = None,
 ) -> RetentionReport:
     """generation reference를 additive 생성하고 content collision을 거부한다."""
 
-    desired = _desired_references(generations)
+    desired = _desired_references(
+        generations, runtime_topology() if topology is None else topology
+    )
     created = 0
     for reference, image_id in sorted(desired.items()):
         observed = _inspect_reference(reference, cwd=cwd)
@@ -150,7 +179,7 @@ def ensure_generation_references(
     return RetentionReport(ensured=created, removed=0)
 
 
-def _owned_references(*, cwd: str) -> set[str]:
+def _owned_references(*, cwd: str, topology: RuntimeTopology) -> set[str]:
     completed = _run_docker(
         ["image", "ls", "--no-trunc", "--format={{.Repository}}:{{.Tag}}"],
         cwd=cwd,
@@ -158,11 +187,12 @@ def _owned_references(*, cwd: str) -> set[str]:
     if completed.returncode != 0 or completed.stderr:
         raise DeploymentContractError("pinned runtime retention references cannot be listed")
     owned: set[str] = set()
+    pattern = _retained_pattern(topology)
     for line in completed.stdout.splitlines():
         reference = line.strip()
         if not reference.startswith(RETENTION_REPOSITORY_PREFIX):
             continue
-        if _REFERENCE.fullmatch(reference) is None:
+        if pattern.fullmatch(reference) is None:
             raise DeploymentContractError(
                 "pinned runtime retention namespace contains an invalid reference"
             )
@@ -170,7 +200,7 @@ def _owned_references(*, cwd: str) -> set[str]:
     return owned
 
 
-def _owned_candidate_references(*, cwd: str) -> dict[str, str]:
+def _owned_candidate_references(*, cwd: str, topology: RuntimeTopology) -> dict[str, str]:
     completed = _run_docker(
         [
             "image",
@@ -190,6 +220,7 @@ def _owned_candidate_references(*, cwd: str) -> dict[str, str]:
             "pinned runtime candidate references cannot be listed"
         )
     owned: dict[str, str] = {}
+    pattern = _candidate_pattern(topology)
     for line in completed.stdout.splitlines():
         if not line or line.strip() != line:
             raise DeploymentContractError(
@@ -204,7 +235,7 @@ def _owned_candidate_references(*, cwd: str) -> dict[str, str]:
         if not reference.startswith(CANDIDATE_REPOSITORY_PREFIX):
             continue
         if (
-            _CANDIDATE_REFERENCE.fullmatch(reference) is None
+            pattern.fullmatch(reference) is None
             or _IMAGE_ID.fullmatch(image_id) is None
         ):
             raise DeploymentContractError(
@@ -219,38 +250,40 @@ def _owned_candidate_references(*, cwd: str) -> dict[str, str]:
 
 
 def _desired_candidate_references(
-    references: Mapping[RuntimeService, str],
+    references: Mapping[RuntimeSlot, str],
     generation: PinnedRuntimeGeneration,
+    topology: RuntimeTopology,
 ) -> dict[str, str]:
-    if set(references) != set(_CANDIDATE_TAG_SERVICES):
+    if set(references) != set(CANDIDATE_TAG_SLOTS):
         raise DeploymentContractError(
             "pinned runtime active candidate references are incomplete"
         )
     if _SHA256.fullmatch(generation.pinset_sha256) is None:
         raise DeploymentContractError("pinned runtime candidate pinset is invalid")
     desired: dict[str, str] = {}
-    for service in _CANDIDATE_TAG_SERVICES:
-        reference = references.get(service)
+    pattern = _candidate_pattern(topology)
+    for slot in CANDIDATE_TAG_SLOTS:
+        reference = references.get(slot)
         if not isinstance(reference, str):
             raise DeploymentContractError(
                 "pinned runtime active candidate reference is invalid"
             )
-        match = _CANDIDATE_REFERENCE.fullmatch(reference)
+        match = pattern.fullmatch(reference)
         if (
             match is None
-            or match.group(1) != service
+            or match.group(1) != topology.service(slot)
             or match.group(2) != generation.pinset_sha256
         ):
             raise DeploymentContractError(
                 "pinned runtime active candidate reference is invalid"
             )
-        image_id = generation.image_ids[service]
+        image_id = generation.image_ids[slot]
         if _IMAGE_ID.fullmatch(image_id) is None or reference in desired:
             raise DeploymentContractError(
                 "pinned runtime active candidate identity is invalid"
             )
         desired[reference] = image_id
-    if len(desired) != len(_CANDIDATE_TAG_SERVICES):
+    if len(desired) != len(CANDIDATE_TAG_SLOTS):
         raise DeploymentContractError(
             "pinned runtime active candidate references are not unique"
         )
@@ -284,10 +317,11 @@ def _remove_candidate_reference(reference: str, *, cwd: str) -> None:
 
 
 def reconcile_candidate_build_references(
-    references: Mapping[RuntimeService, str],
+    references: Mapping[RuntimeSlot, str],
     generation: PinnedRuntimeGeneration,
     *,
     cwd: str,
+    topology: RuntimeTopology | None = None,
 ) -> RetentionReport:
     """content-address 보존 뒤 active pinset의 candidate tag 여섯 개만 남긴다.
 
@@ -296,15 +330,17 @@ def reconcile_candidate_build_references(
     현재 runtime image의 유일한 도달 경로를 없애지 않는다.
     """
 
-    desired = _desired_candidate_references(references, generation)
-    for service in _CANDIDATE_TAG_SERVICES:
-        image_id = generation.image_ids[service]
-        if _inspect_reference(_reference(service, image_id), cwd=cwd) != image_id:
+    topology = runtime_topology() if topology is None else topology
+    desired = _desired_candidate_references(references, generation, topology)
+    for slot in CANDIDATE_TAG_SLOTS:
+        image_id = generation.image_ids[slot]
+        reference = _reference(topology.require_service(slot), image_id, topology)
+        if _inspect_reference(reference, cwd=cwd) != image_id:
             raise DeploymentContractError(
                 "pinned runtime candidate cleanup requires retained content references"
             )
 
-    owned = _owned_candidate_references(cwd=cwd)
+    owned = _owned_candidate_references(cwd=cwd, topology=topology)
     for reference, image_id in desired.items():
         if owned.get(reference) != image_id:
             raise DeploymentContractError(
@@ -323,7 +359,7 @@ def reconcile_candidate_build_references(
             )
         _remove_candidate_reference(reference, cwd=cwd)
 
-    if _owned_candidate_references(cwd=cwd) != desired:
+    if _owned_candidate_references(cwd=cwd, topology=topology) != desired:
         raise DeploymentContractError(
             "pinned runtime candidate reference reconciliation failed"
         )
@@ -339,23 +375,25 @@ def reconcile_generation_references(
     generations: Sequence[PinnedRuntimeGeneration],
     *,
     cwd: str,
+    topology: RuntimeTopology | None = None,
 ) -> RetentionReport:
     """desired reference를 먼저 보존한 뒤 owned stale tag만 제거한다."""
 
-    ensured = ensure_generation_references(generations, cwd=cwd).ensured
-    desired = set(_desired_references(generations))
-    stale = sorted(_owned_references(cwd=cwd) - desired)
+    topology = runtime_topology() if topology is None else topology
+    ensured = ensure_generation_references(generations, cwd=cwd, topology=topology).ensured
+    desired = set(_desired_references(generations, topology))
+    stale = sorted(_owned_references(cwd=cwd, topology=topology) - desired)
     for reference in stale:
         removed = _run_docker(["image", "rm", reference], cwd=cwd)
         if removed.returncode != 0 or removed.stderr:
             raise DeploymentContractError(
                 "pinned runtime stale retention reference cannot be removed"
             )
-    if _owned_references(cwd=cwd) != desired:
+    if _owned_references(cwd=cwd, topology=topology) != desired:
         raise DeploymentContractError(
             "pinned runtime retention reference reconciliation failed"
         )
-    for reference, image_id in _desired_references(generations).items():
+    for reference, image_id in _desired_references(generations, topology).items():
         if _inspect_reference(reference, cwd=cwd) != image_id:
             raise DeploymentContractError(
                 "pinned runtime retained image changed during reconciliation"
@@ -363,10 +401,15 @@ def reconcile_generation_references(
     return RetentionReport(ensured=ensured, removed=len(stale))
 
 
-def require_empty_generation_retention_namespace(*, cwd: str) -> None:
+def require_empty_generation_retention_namespace(
+    *,
+    cwd: str,
+    topology: RuntimeTopology | None = None,
+) -> None:
     """manifest 없는 bootstrap은 불확정 v5 retention residue를 덮지 않는다."""
 
-    if _owned_references(cwd=cwd):
+    topology = runtime_topology() if topology is None else topology
+    if _owned_references(cwd=cwd, topology=topology):
         raise DeploymentContractError(
             "pinned runtime bootstrap has unresolved retention references"
         )
