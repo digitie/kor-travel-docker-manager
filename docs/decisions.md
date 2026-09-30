@@ -4303,8 +4303,9 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
      `DAGSTER_GATEWAY_CONF_DIGEST`, 합류한 code-server는 `KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST`. 파생 테스트가 내용과
      대조한다. `ensure dagster --recreate`는 답이 아니다(target에 공용 PostgreSQL이 있다).
    - **gateway의 `/graphql`(H2·M1).** dagster-webserver는 Accept에 text/html이 없는 GET의 `query` 인자도
-     실행한다(mutation 포함) — 교차 사이트 `<img>`가 캐시된 Basic Auth로 부를 수 있다. `/graphql`은 `query` 인자를
-     받지 않고, 브라우저의 `Sec-Fetch-Site`가 `same-origin`·`none`(또는 헤더 없음 — 비-브라우저)일 때만 받는다.
+     실행한다(mutation 포함) — 교차 사이트 `<img>`가 캐시된 Basic Auth로 부를 수 있다. `/graphql`은 **인자를 하나도**
+     받지 않고(`query`만 막으면 `?%71uery=…`·`?query=&query=…`가 지나간다 — nginx는 디코드 전 이름의 첫 값을, Starlette는
+     디코드한 이름의 마지막 값을 본다, 재리뷰 MED-1. UI는 `/graphql`을 POST·WebSocket으로만 쓴다), 브라우저의 `Sec-Fetch-Site`가 `same-origin`·`none`(또는 헤더 없음 — 비-브라우저)일 때만 받는다.
      `Upgrade` 요청(GraphQL subscription WebSocket — 모든 테넌트의 run·compute log)도 허용 Origin이 아니면 403이다.
      UI HTML(`/`)은 iframe으로 열리므로 이 검사 밖이다. `limit_req`는 두지 않았다 — HAProxy 뒤에서는 모든 요청이 한
      주소로 오므로 Basic Auth 시도만이 아니라 UI 전체를 함께 조인다.
@@ -4314,16 +4315,22 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
      하나)이 그 효과를 본다.
    - **버전 상한(M5, 계획 0.6).** webserver probe가 각 location의 `dagsterLibraryVersions`를 호스트 이미지에 설치된 같은
      배포판(`importlib.metadata`, dagster import 없음)과 비교해 더 높거나 모르면 빨갛다. runbook 4번이 그것에 걸린다.
-   - **pinned 재구축(M2).** `pinned_runtime_generation.RUNTIME_SERVICES`·`pinned_runtime_rebuild.COMPOSE_BUILT_RUNTIME_SERVICES`·
-     C6c의 `_CANDIDATE_REQUIRED_PROTECTED_SERVICES`가 Map·PinVi의 옛 webserver·daemon을 literal로 들고, frozen render는
-     `--profile bootstrap`만 켠다. 옛 서비스가 `legacy-dagster`로 가면 재구축에서 사라지고, profile을 더하면 옛 daemon이
-     다시 떠 이중 발화한다. 그 집합을 스위치에서 파생하는 것은 pinned 재구축·M05·C6c 계약 전체에 닿는 변경이라 이
-     PR에 넣지 않았다. 대신 계약 테스트가 그 집합에 든 서비스가 있는 target의 `shared`를 `(pinned)`로 막는다 — Map·
-     PinVi 전환은 그 파생 PR이 먼저다.
+   - **pinned 재구축(M2, 재리뷰 MED-2).** pinned 재구축(`RUNTIME_SERVICES`·`COMPOSE_BUILT_RUNTIME_SERVICES`), C6c 보호
+     집합, 명시적 `compose_up("<서비스>")`, M05 하네스·이미지 보존, `legacy_override_retirement`가 옛 webserver·daemon을
+     literal로 든다. frozen render는 `--profile bootstrap`만 켜므로 옛 서비스가 `legacy-dagster`로 가면 재구축에서
+     사라지고, 명시적 `up <서비스>`는 꺼진 profile도 띄워 옛 daemon이 되살아난다. 그 참조를 스위치에서 파생하는 것은
+     pinned 재구축·M05·C6c 계약 전체에 닿는 변경이라 이 PR에 넣지 않았다. 대신 계약 테스트가 옮기는 target의 옛
+     서비스 이름(compose에서 파생)을 `backend/src`·`scripts` 전체에서 온전한 토큰으로 찾고, 하나라도 있으면 그 target의
+     `shared`를 `(pinned)`로 막는다 — 목록 몇 개가 아니라 코드 전체라, 부분 파생이 게이트를 초록으로 만들지 못한다.
+     2026-09-30 기준 Map·PinVi·geo(`legacy_override_retirement._GEO_SERVICES`)가 걸리고 weather만 열려 있다.
    - **포트는 literal.** `shared` code-server의 `-p`는 literal이어야 한다 — workspace는 정적 파일이라 `.env`의 포트
      override를 모른다. 계약 테스트가 요구하고 참조 전환이 literal로 바꾼다.
    - **옛 공개 host(b).** 활성 서비스가 옮긴 target의 옛 공개 host env(그 target 옛 서비스 컨테이너의 `prod_url_env`,
      예: `KTDM_PROD_URL_MAP_DAGSTER`)를 더 부르지 않는다.
+   - **재리뷰 LOW.** 두 probe는 붙인 `workspace.yaml`·`dagster.yaml`의 sha256을 자기 digest env와 비교해, 호스트에서
+     파일만 고쳐 컨테이너가 옛 내용을 들고 있으면 빨갛다(재생성하라는 뜻). 파생 테스트는 `config/dagster-shared/`의
+     파일을 모르는 모양(디렉터리·절대 경로·긴 형식)으로 붙이면 건너뛰지 않고 빨갛다. 버전 상한은 location마다
+     `dagster` 자신이 보고·비교됐어야 초록이다(보고하지 않거나 호스트 dagster 버전을 모르면 빨강).
    - **webserver도 storage 가드.** daemon과 같은 가드(YAML anchor 하나)를 지나 argv로 넘어간다(`sh -ec <가드> sh <argv>`).
 
 ### 근거

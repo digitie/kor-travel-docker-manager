@@ -704,7 +704,9 @@ services:
       - -I
       - -c
       - >-
-        import os, sys, yaml, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g;
+        import hashlib, os, sys, yaml, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g;
+        stale = sorted(f for f, k in (('workspace.yaml', 'KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST'), ('dagster.yaml', 'KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST')) if hashlib.sha256(open(os.path.join(os.environ['DAGSTER_HOME'], f), 'rb').read()).hexdigest()[:16] != os.environ.get(k));
+        stale and sys.exit('mounted files differ from the digests this container was created with (recreate it): %s' % stale);
         entries = [e['grpc_server'] for e in ((yaml.safe_load(open(sys.argv[1])) or {}).get('load_from') or [])];
         serving = lambda e: (lambda f: f.exception() is None and f.result().status == h.HealthCheckResponse.SERVING)(g.HealthStub(grpc.insecure_channel('%s:%s' % (e['host'], e['port']))).Check.future(h.HealthCheckRequest(service='DagsterApi'), timeout=5));
         down = sorted(e['location_name'] for e in entries if not serving(e));
@@ -766,7 +768,9 @@ services:
       - -I
       - -c
       - >-
-        import json, re, sys, yaml, urllib.request as u, importlib.metadata as m;
+        import hashlib, json, os, re, sys, yaml, urllib.request as u, importlib.metadata as m;
+        stale = sorted(f for f, k in (('workspace.yaml', 'KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST'), ('dagster.yaml', 'KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST')) if hashlib.sha256(open(os.path.join(os.environ['DAGSTER_HOME'], f), 'rb').read()).hexdigest()[:16] != os.environ.get(k));
+        stale and sys.exit('mounted files differ from the digests this container was created with (recreate it): %s' % stale);
         port, path = sys.argv[1], sys.argv[2];
         want = {e['grpc_server']['location_name'] for e in ((yaml.safe_load(open(path)) or {}).get('load_from') or [])};
         q = json.dumps({'query': '{workspaceOrError{__typename ... on Workspace{locationEntries{name locationOrLoadError{__typename ... on RepositoryLocation{dagsterLibraryVersions{name version}}}}}}}'}).encode();
@@ -778,7 +782,10 @@ services:
         missing and sys.exit('code locations not loaded: %s' % missing);
         v = lambda s: tuple(int(x) for x in re.findall(r'\d+', s)[:3]);
         host = {(d.metadata['Name'] or '').lower(): d.version for d in m.distributions()};
-        over = sorted('%s: %s %s > host %s' % (n, lib['name'], lib['version'], host.get(lib['name'].lower())) for n in sorted(want) for lib in (loaded[n].get('dagsterLibraryVersions') or [{'name': 'dagster', 'version': 'unknown'}]) if lib['version'] == 'unknown' or (lib['name'].lower() in host and v(lib['version']) > v(host[lib['name'].lower()])));
+        not want or 'dagster' in host or sys.exit('host dagster version is unknown');
+        unreported = sorted(n for n in want if 'dagster' not in {lib['name'].lower() for lib in (loaded[n].get('dagsterLibraryVersions') or [])});
+        unreported and sys.exit('code-server did not report its dagster version: %s' % unreported);
+        over = sorted('%s: %s %s > host %s' % (n, lib['name'], lib['version'], host[lib['name'].lower()]) for n in sorted(want) for lib in loaded[n]['dagsterLibraryVersions'] if lib['name'].lower() in host and v(lib['version']) > v(host[lib['name'].lower()]));
         sys.exit('code-server dagster above the host version ceiling: %s' % over if over else 0)
       - ${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
       - /opt/dagster/dagster_home/workspace.yaml
@@ -822,7 +829,7 @@ services:
       DAGSTER_UI_USER: ${KOR_TRAVEL_DAGSTER_UI_USER:-admin}
       # 붙인 `gateway.conf`의 내용 digest — 설치본 symlink를 거친 bind라 내용만 바뀌면 재생성되지 않는다
       # (호스트 서비스와 같은 이유, 테스트가 파일과 대조한다).
-      DAGSTER_GATEWAY_CONF_DIGEST: "e1f5803f7cdf0886"
+      DAGSTER_GATEWAY_CONF_DIGEST: "4bdad54a5d712efc"
     secrets:
     - source: kor-travel-dagster-ui-password
       target: /run/secrets/kor-travel-dagster-ui-password

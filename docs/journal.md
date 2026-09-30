@@ -8459,10 +8459,11 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
 - **H1** 공용 설정을 붙인 상시 서비스가 그 파일 sha256 앞 16자를 env로 싣는다(daemon·webserver: workspace·instance,
   gateway: gateway.conf, 합류한 code-server: instance). bind가 설치본 symlink를 거쳐 compose hash가 경로만 보므로,
   내용만 바뀐 workspace로는 재생성되지 않던 구멍이다. 파생 테스트가 내용과 대조하고 참조 전환이 digest를 갱신한다.
-- **H2·M1** gateway: `/graphql`은 `query` 인자 403, `Sec-Fetch-Site`가 same-origin·none·없음이 아니면 403, 허용
+- **H2·M1** gateway: `/graphql`은 인자가 있으면 403(처음에는 `query` 인자만 막았다 — 재리뷰 MED-1이 인코딩된 이름·중복
+  이름 우회를 찾아 인자 전부로 넓혔다), `Sec-Fetch-Site`가 same-origin·none·없음이 아니면 403, 허용
   Origin이 아닌 `Upgrade` 403. UI HTML(`/`)의 교차 사이트 탐색(iframe)은 그대로 200.
-- **M2** pinned 재구축·C6c의 literal 집합에 옛 webserver·daemon이 든 target(Map·PinVi)은 계약 테스트가 `(pinned)`로
-  `shared`를 막는다. 파생은 별도 PR이다. `test_flipping_a_target_renders_a_consistent_plane`의 과장된 docstring 정정.
+- **M2** 옛 webserver·daemon 이름을 literal로 든 코드가 있는 target은 계약 테스트가 `(pinned)`로 `shared`를 막는다 —
+  재리뷰 MED-2 뒤 목록 셋이 아니라 `backend/src`·`scripts` 전체를 토큰으로 찾는다(Map·PinVi·geo가 걸리고 weather만 열림). 파생은 별도 PR이다. `test_flipping_a_target_renders_a_consistent_plane`의 과장된 docstring 정정.
 - **M3** `127.0.0.1:11002` 무인증은 ADR-54에 받아들인 위험으로, runbook 4번이 소비자가 **할 수 있는 것**을 본다(weather
   PR #65 `scopedDagsterRequest` 확인).
 - **M4** daemon probe: workspace code-server 전부 gRPC `SERVING` → 같은 프로세스 exec `liveness-check`.

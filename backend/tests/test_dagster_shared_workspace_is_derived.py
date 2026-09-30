@@ -43,9 +43,6 @@ from typing import Any
 import pytest
 import yaml
 
-from kor_travel_docker_manager.services import c6c_deployment
-from kor_travel_docker_manager.services.pinned_runtime_generation import RUNTIME_SERVICES
-from kor_travel_docker_manager.services.pinned_runtime_rebuild import COMPOSE_BUILT_RUNTIME_SERVICES
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -73,16 +70,39 @@ _DIGEST_ENV = {
     _GATEWAY_SOURCE: "DAGSTER_GATEWAY_CONF_DIGEST",
 }
 
-#: 서비스 이름을 **literal로** 든 pinned Map·PinVi 재구축과 C6c의 집합(적대 리뷰 M2). 여기 든 서비스가
-#: `legacy-dagster`로 내려가면 frozen render(`--profile bootstrap`만)에서 사라지고, profile을 더하면 옛
-#: daemon이 다시 뜬다. 이 집합들을 스위치에서 파생하기 전에는 그 target을 `shared`로 바꿀 수 없다.
-_PINNED_LITERAL_SETS = {
-    "pinned_runtime_generation.RUNTIME_SERVICES": set(RUNTIME_SERVICES),
-    "pinned_runtime_rebuild.COMPOSE_BUILT_RUNTIME_SERVICES": set(COMPOSE_BUILT_RUNTIME_SERVICES),
-    "c6c_deployment._CANDIDATE_REQUIRED_PROTECTED_SERVICES": set(
-        c6c_deployment._CANDIDATE_REQUIRED_PROTECTED_SERVICES
-    ),
-}
+#: 옛 프로젝트별 webserver·daemon·gateway의 서비스 이름을 **literal로** 든 코드(적대 리뷰 M2, 재리뷰 MED-2).
+#: pinned Map·PinVi 재구축(`RUNTIME_SERVICES`·`COMPOSE_BUILT_RUNTIME_SERVICES`), C6c 보호 집합, 명시적
+#: `compose_up("<서비스>")`, M05 하네스·이미지 보존이 그렇다. 여기 든 서비스가 `legacy-dagster`로 내려가면 frozen
+#: render(`--profile bootstrap`만)에서 사라지고, 명시적 `up <서비스>`는 꺼진 profile의 서비스도 띄워 옛 daemon이
+#: 되살아난다. 그래서 목록이 아니라 **코드 전체**를 본다: 옮기는 target의 옛 서비스 이름(compose에서 파생)이
+#: `backend/src`·`scripts`의 어디든 온전한 토큰으로 있으면 그 target은 `shared`가 될 수 없다. 그 참조를 스위치에서
+#: 파생하도록 바꾸는 PR이 먼저다. compose·targets(렌더된 모양 자체)와 테스트는 보지 않는다.
+_CODE_ROOTS = (_REPO_ROOT / "backend" / "src", _REPO_ROOT / "scripts")
+
+
+def _code_files() -> list[Path]:
+    files: list[Path] = []
+    for root in _CODE_ROOTS:
+        for path in sorted(root.rglob("*")):
+            if path.is_file() and "__pycache__" not in path.parts and path.suffix not in {".pyc", ".md"}:
+                files.append(path)
+    return files
+
+
+def _hardcoded(names: set[str]) -> dict[str, list[str]]:
+    """이름마다 그것을 온전한 토큰으로 든 파일(저장소 기준 경로)."""
+
+    found: dict[str, list[str]] = {}
+    patterns = {name: re.compile(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])") for name in names}
+    for path in _code_files():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for name, pattern in patterns.items():
+            if pattern.search(text):
+                found.setdefault(name, []).append(path.relative_to(_REPO_ROOT).as_posix())
+    return found
 
 
 def _digest(content: bytes) -> str:
@@ -102,8 +122,12 @@ def _digest_violations(compose: dict[str, Any], files: Mapping[str, bytes] | Non
             continue
         environment = service.get("environment") or {}
         for volume in service.get("volumes") or []:
-            source = _split_top(str(volume))[0]
+            source = str(volume.get("source")) if isinstance(volume, dict) else _split_top(str(volume))[0]
             if source not in _DIGEST_ENV:
+                # 공용 plane 설정을 모르는 모양(긴 형식·절대 경로·디렉터리·다른 파일)으로 붙이면 digest가 보지
+                # 못한다 — 조용히 건너뛰지 않고 멈춘다(재리뷰 LOW-2).
+                if "config/dagster-shared" in str(volume):
+                    violations.append(f"(d) `{name}`: 공용 plane 설정을 모르는 모양으로 붙였다: {volume!r}")
                 continue
             key = _DIGEST_ENV[source]
             expected = _digest(_file_bytes(source, files))
@@ -451,12 +475,11 @@ def _contract_violations(
 
         # (c) 옛 webserver·daemon·gateway
         if shared:
-            for label, members in _PINNED_LITERAL_SETS.items():
-                for name in sorted(legacy & members):
-                    violations.append(
-                        f"(pinned) `{name}`가 `{label}`에 literal로 있다 — 그 집합을 스위치에서 파생하기 전에는 "
-                        f"`{target_id}`를 옮길 수 없다(ADR-54, 적대 리뷰 M2)"
-                    )
+            for name, paths in sorted(_hardcoded(legacy).items()):
+                violations.append(
+                    f"(pinned) `{name}`가 코드에 literal로 있다({', '.join(paths)}) — 그 참조를 스위치에서 "
+                    f"파생하기 전에는 `{target_id}`를 옮길 수 없다(ADR-54, 적대 리뷰 M2)"
+                )
         for name in sorted(legacy):
             profiles = services[name].get("profiles")
             if shared:
@@ -696,8 +719,7 @@ def test_flipping_a_target_renders_a_consistent_plane(target_id: str) -> None:
     pinned, rest = _pinned(_contract_violations(compose, targets, files))
     assert rest == []
     legacy = _legacy(compose, targets["targets"][target_id])
-    hardcoded = set().union(*_PINNED_LITERAL_SETS.values())
-    assert bool(pinned) is bool(legacy & hardcoded), pinned
+    assert bool(pinned) is bool(_hardcoded(legacy)), pinned
     workspace = _derived_workspace(compose, targets)
     location = {_location(s) for s in _code_servers(compose, targets["targets"][target_id]).values()}
     assert {e["grpc_server"]["location_name"] for e in workspace["load_from"]} == location
@@ -734,8 +756,8 @@ def test_flipping_every_target_keeps_the_plane_consistent() -> None:
         ("geo", "digest", "(d) `kor-travel-dagster-daemon`: `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`"),
         ("weather", "digest", "(d) `kor-travel-weather-dagster-code-server`"),
         ("map", "consumers", "옛 공개 host env `KTDM_PROD_URL_MAP_DAGSTER`"),
-        ("pinvi", "", "(pinned) `pinvi-dagster`가 `pinned_runtime_generation.RUNTIME_SERVICES`"),
-        ("map", "", "(pinned) `kor-travel-map-dagster-daemon`가 `c6c_deployment._CANDIDATE_REQUIRED_PROTECTED_SERVICES`"),
+        ("pinvi", "", "(pinned) `pinvi-dagster`가 코드에 literal로 있다("),
+        ("map", "", "(pinned) `kor-travel-map-dagster-daemon`가 코드에 literal로 있다("),
     ],
 )
 def test_a_flip_missing_a_step_is_named(target_id: str, skip: str, named: str) -> None:
@@ -762,6 +784,22 @@ def test_the_committed_digests_follow_the_files() -> None:
     assert len(bound) >= 5, bound
     changed = {_WORKSPACE_SOURCE: _WORKSPACE.read_bytes() + b"# changed\n"}
     assert len(_digest_violations(compose, changed)) == 2
+
+
+@pytest.mark.parametrize(
+    "volume",
+    [
+        "./config/dagster-shared:/opt/dagster/dagster_home:ro",
+        "/opt/kor-travel-docker-manager/config/dagster-shared/workspace.yaml:/w.yaml:ro",
+        {"type": "bind", "source": "${PWD}/config/dagster-shared/dagster.yaml", "target": "/d.yaml"},
+    ],
+)
+def test_a_shared_config_mount_the_digest_cannot_read_is_named(volume: object) -> None:
+    """digest가 모르는 모양(디렉터리·절대 경로·긴 형식)으로 붙이면 건너뛰지 않고 빨갛다(재리뷰 LOW-2)."""
+
+    compose, _ = _documents()
+    compose["services"]["kor-travel-dagster-daemon"]["volumes"].append(volume)
+    assert any("모르는 모양" in v for v in _digest_violations(compose)), volume
 
 
 def test_a_switch_without_its_rendering_is_named_and_the_workspace_drifts() -> None:
@@ -886,8 +924,9 @@ def graphql_server() -> Iterator[tuple[int, type[_GraphQL]]]:
         server.server_close()
 
 
-#: 테스트 interpreter에 깔린 배포판 — 버전 상한 판정의 "호스트"다(실제 호스트에서는 dagster 가족).
-_HOST_LIB = "PyYAML"
+#: 버전 상한 판정의 "호스트" — 테스트는 가짜 `dagster` 배포판(dist-info)을 PYTHONPATH에 올린다. probe는
+#: `importlib.metadata`로 설치 버전을 읽을 뿐 dagster를 import하지 않으므로 이 대역이 실제 판정과 같은 것을 잰다.
+_HOST_DAGSTER = "1.13.24"
 
 
 def _entry(
@@ -898,25 +937,59 @@ def _entry(
     body: dict[str, Any] = {"__typename": typename}
     if typename == "RepositoryLocation":
         body["dagsterLibraryVersions"] = (
-            [{"name": _HOST_LIB, "version": "0.1"}] if versions == "default" else versions
+            [{"name": "dagster", "version": _HOST_DAGSTER}] if versions == "default" else versions
         )
     return {"name": name, "locationOrLoadError": body}
 
 
-def _workspace_file(tmp_path: Path, names: list[str]) -> Path:
-    path = tmp_path / "workspace.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "load_from": [
-                    {"grpc_server": {"host": "127.0.0.1", "port": 4000 + i, "location_name": name}}
-                    for i, name in enumerate(names)
-                ]
-            }
-        ),
-        encoding="utf-8",
+def _workspace_text(names: list[str]) -> str:
+    return yaml.safe_dump(
+        {
+            "load_from": [
+                {"grpc_server": {"host": "127.0.0.1", "port": 4000 + i, "location_name": name}}
+                for i, name in enumerate(names)
+            ]
+        }
     )
-    return path
+
+
+def _run_probe(
+    tmp_path: Path, port: int, workspace_text: str, *, stale: bool = False, host_dagster: bool = True
+) -> subprocess.CompletedProcess[str]:
+    """컨테이너와 같은 모양으로 probe를 돌린다: `$DAGSTER_HOME`의 두 파일과 그 digest env, 호스트의 배포판."""
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "workspace.yaml").write_text(workspace_text, encoding="utf-8")
+    (home / "dagster.yaml").write_bytes(_INSTANCE_CONFIG.read_bytes())
+    site = tmp_path / "site"
+    if host_dagster:
+        dist = site / f"dagster-{_HOST_DAGSTER}.dist-info"
+        dist.mkdir(parents=True)
+        (dist / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: dagster\nVersion: {_HOST_DAGSTER}\n", encoding="utf-8"
+        )
+    else:
+        site.mkdir()
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "PYTHONPATH": str(site),
+        "DAGSTER_HOME": str(home),
+        _DIGEST_ENV[_WORKSPACE_SOURCE]: _digest((home / "workspace.yaml").read_bytes()),
+        _DIGEST_ENV[_INSTANCE_SOURCE]: "0" * 16 if stale else _digest((home / "dagster.yaml").read_bytes()),
+    }
+    return subprocess.run(  # noqa: S603 - 고정 인터프리터, compose에서 꺼낸 원문
+        # `-I`는 PYTHONPATH를 지운다 — 가짜 호스트 배포판을 보이려고 여기서만 뺀다(probe 원문은 그대로).
+        [sys.executable, "-c", _probe_argv()[4], str(port), str(home / "workspace.yaml")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+        env=env,
+    )
+
+
+_OK = [{"name": "dagster", "version": _HOST_DAGSTER}]
 
 
 @pytest.mark.parametrize(
@@ -938,27 +1011,35 @@ def _workspace_file(tmp_path: Path, names: list[str]) -> Path:
         (["a"], {"__typename": "Workspace", "locationEntries": [_entry("a", None)]}, False, "['a']"),
         (["a"], {"__typename": "Workspace", "locationEntries": []}, False, "['a']"),
         ([], {"__typename": "PythonError"}, False, "workspace not loaded"),
-        # 버전 상한(plan §2.1): code-server의 라이브러리가 호스트에 깔린 같은 배포판보다 높으면 빨갛다.
+        # 버전 상한(plan §2.1): code-server의 dagster가 호스트보다 높으면 빨갛다.
         (
             ["a"],
             {"__typename": "Workspace", "locationEntries": [
-                _entry("a", "RepositoryLocation", [{"name": _HOST_LIB, "version": "999.0.0"}])]},
+                _entry("a", "RepositoryLocation", [{"name": "dagster", "version": "1.13.25"}])]},
             False,
             "above the host version ceiling",
         ),
+        # 호스트에 없는 라이브러리는 비교하지 않는다 — dagster 자신이 비교됐으면 초록.
         (
             ["a"],
             {"__typename": "Workspace", "locationEntries": [
-                _entry("a", "RepositoryLocation", [{"name": "not-on-host", "version": "999.0.0"}])]},
+                _entry("a", "RepositoryLocation", [*_OK, {"name": "not-on-host", "version": "999.0.0"}])]},
             True,
             "",
         ),
-        # 버전을 모르면(null) 통과시키지 않는다.
+        # 버전을 모르거나(null) dagster 자신을 보고하지 않으면 통과시키지 않는다(재리뷰 LOW-3).
         (
             ["a"],
             {"__typename": "Workspace", "locationEntries": [_entry("a", "RepositoryLocation", None)]},
             False,
-            "above the host version ceiling",
+            "did not report its dagster version: ['a']",
+        ),
+        (
+            ["a"],
+            {"__typename": "Workspace", "locationEntries": [
+                _entry("a", "RepositoryLocation", [{"name": "dagster-postgres", "version": "0.29.24"}])]},
+            False,
+            "did not report its dagster version: ['a']",
         ),
     ],
 )
@@ -974,32 +1055,41 @@ def test_the_shared_probe_is_green_only_when_every_workspace_location_loaded(
 
     port, handler = graphql_server
     handler.reply = {"data": {"workspaceOrError": reply}}
-    argv = _probe_argv()
-    completed = subprocess.run(  # noqa: S603 - 고정 인터프리터, compose에서 꺼낸 원문
-        [sys.executable, "-I", "-c", argv[4], str(port), str(_workspace_file(tmp_path, expected))],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    completed = _run_probe(tmp_path, port, _workspace_text(expected))
     assert (completed.returncode == 0) is healthy, completed.stderr
     assert said in completed.stderr
 
 
+def test_the_shared_probe_is_red_when_the_mounted_files_drift_from_their_digests(
+    tmp_path: Path, graphql_server: tuple[int, type[_GraphQL]]
+) -> None:
+    """호스트에서 붙인 파일을 고치면 컨테이너는 옛 내용을 들고 있다 — probe가 빨개져 재생성을 요구한다(LOW-1)."""
+
+    port, handler = graphql_server
+    handler.reply = {"data": {"workspaceOrError": {"__typename": "Workspace", "locationEntries": []}}}
+    completed = _run_probe(tmp_path, port, _workspace_text([]), stale=True)
+    assert completed.returncode != 0
+    assert "differ from the digests" in completed.stderr and "dagster.yaml" in completed.stderr
+
+
+def test_the_shared_probe_needs_the_host_dagster_version(
+    tmp_path: Path, graphql_server: tuple[int, type[_GraphQL]]
+) -> None:
+    port, handler = graphql_server
+    handler.reply = {"data": {"workspaceOrError": {
+        "__typename": "Workspace", "locationEntries": [_entry("a", "RepositoryLocation")]}}}
+    completed = _run_probe(tmp_path, port, _workspace_text(["a"]), host_dagster=False)
+    assert completed.returncode != 0 and "host dagster version is unknown" in completed.stderr
+
+
 def test_the_committed_workspace_is_loadable_by_the_probe(
-    graphql_server: tuple[int, type[_GraphQL]],
+    tmp_path: Path, graphql_server: tuple[int, type[_GraphQL]]
 ) -> None:
     """실제 workspace 파일(지금은 빈 plane)이 probe의 입력으로 읽힌다 — 빈 plane은 healthy다."""
 
     port, handler = graphql_server
     handler.reply = {"data": {"workspaceOrError": {"__typename": "Workspace", "locationEntries": []}}}
-    completed = subprocess.run(  # noqa: S603
-        [sys.executable, "-I", "-c", _probe_argv()[4], str(port), str(_WORKSPACE)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=False,
-    )
+    completed = _run_probe(tmp_path, port, _WORKSPACE.read_text(encoding="utf-8"))
     workspace = load_yaml_rejecting_duplicate_keys(_WORKSPACE.read_text(encoding="utf-8"))
     assert (completed.returncode == 0) is (not workspace["load_from"]), completed.stderr
 

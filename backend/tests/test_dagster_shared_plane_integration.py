@@ -104,6 +104,14 @@ print(json.dumps({
     "get_graphql_query_arg": call(
         "/graphql?query=%7BworkspaceOrError%7B__typename%7D%7D",
         headers={"Accept": "application/json"})[0],
+    # 재리뷰 MED-1: 디코드 전 이름·첫 값만 보는 규칙을 우회하던 두 모양, 그리고 다른 인자.
+    "get_graphql_encoded_name": call(
+        "/graphql?%71uery=%7BworkspaceOrError%7B__typename%7D%7D",
+        headers={"Accept": "application/json"})[0],
+    "get_graphql_duplicate_name": call(
+        "/graphql?query=&query=%7BworkspaceOrError%7B__typename%7D%7D",
+        headers={"Accept": "application/json"})[0],
+    "get_graphql_other_arg": call("/graphql?x=1", headers={"Accept": "application/json"})[0],
     "post_cross_site_fetch": call(
         "/graphql", "POST", origin=public, body=query,
         headers={"Sec-Fetch-Site": "cross-site"})[0],
@@ -321,6 +329,19 @@ def test_the_empty_plane_is_healthy_and_the_gateway_guards_the_ui(isolated_plane
     assert down.returncode != 0, down.stderr
     assert "code servers not serving: ['not.joined']" in down.stderr, down.stderr
 
+    # 재리뷰 LOW-1: 붙인 파일과 컨테이너가 만들어질 때의 digest가 다르면(호스트에서 파일을 고침) 두 probe 다 빨갛다.
+    webserver_test = [str(part) for part in canonical[_WEBSERVER]["healthcheck"]["test"]]
+    for service, argv in (
+        (_DAEMON, [daemon_test[4], daemon_test[5]]),
+        (_WEBSERVER, [webserver_test[4], _resolve(webserver_test[5], {}), webserver_test[6]]),
+    ):
+        stale = _run(
+            "docker", "exec", "-e", "KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST=0000000000000000",
+            _container(plane, service), "python", "-I", "-c", *argv, timeout=120,
+        )
+        assert stale.returncode != 0, (service, stale.stderr)
+        assert "differ from the digests" in stale.stderr, (service, stale.stderr)
+
     # gateway — webserver 컨테이너 안에서(같은 netns) 부른다.
     port = _resolve(str(canonical[_GATEWAY]["environment"]["DAGSTER_GATEWAY_PORT"]), {})
     answered = _run(
@@ -348,6 +369,9 @@ def test_the_empty_plane_is_healthy_and_the_gateway_guards_the_ui(isolated_plane
         "post_local_origin": 200,
         "post_public_origin_anonymous": 401,
         "get_graphql_query_arg": 403,
+        "get_graphql_encoded_name": 403,
+        "get_graphql_duplicate_name": 403,
+        "get_graphql_other_arg": 403,
         "post_cross_site_fetch": 403,
         "post_same_site_fetch": 403,
         "post_same_origin_fetch": 200,

@@ -310,7 +310,8 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
      버전이 호스트 이하다(버전 상한). (4) instigator 켜짐 상태는 코드에 선언한다(D4). (5) Map·PinVi는 pinned
      재구축·C6c가 옛 webserver·daemon을 literal로 들어 있어, 그 집합을 스위치에서 파생하는 PR이 먼저다 —
      그 전에는 계약 테스트가 `(pinned)`로 그 target의 전환을 막는다(적대 리뷰 M2). 그래서 실제 순서는
-     geo·weather가 먼저 가능하고, PinVi·Map은 그 PR 뒤다.
+     weather가 먼저 가능하고, Map·PinVi·geo는 그 PR 뒤다(계약 테스트가 옮기는 target의 옛 서비스 이름을
+     `backend/src`·`scripts` 전체에서 찾는다 — geo는 `legacy_override_retirement._GEO_SERVICES`가 걸린다).
    - **합류 스위치와 파생물(ADR-54).** target마다 `config/docker-targets.yml`의
      `dagster: {control_plane: own|shared, consumers: {...}}`가 스위치다(지금 넷 다 `own`). 공용
      `config/dagster-shared/workspace.yaml`은 `shared` target의 code-server command(`-p`, `-m`/
@@ -330,7 +331,7 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
      (daemon은 heartbeat만 쓰고, webserver probe는 기대 location이 0개다). gateway는
      `KOR_TRAVEL_DAGSTER_UI_PASSWORD`가 비어 있으면 기동을 거부한다. 그래서 plane target은 첫 합류 전까지
      `all`에서 빠져 있고, 창에서 비밀번호를 넣고 `ensure dagster`로 세운다.
-   - **전환 runbook(프로젝트 P 하나).** 계획 순서는 PinVi → geo → weather → Map이다(PinVi·Map은 pinned 집합을 파생하는 PR이 먼저 — 위 합류 조건 (5), 그 전이면 geo·weather를 앞세운다). **사이에 soak이 없다**(D6
+   - **전환 runbook(프로젝트 P 하나).** 계획 순서는 PinVi → geo → weather → Map이다(Map·PinVi·geo는 옛 서비스 이름을 literal로 든 코드를 파생하는 PR이 먼저 — 위 합류 조건 (5), 그 전이면 weather를 앞세운다). **사이에 soak이 없다**(D6
      개정 2026-09-30) — 한 프로젝트의 4번 검증이 끝나면 바로 다음 프로젝트다. 넷이 모두 옮긴 뒤 함께 관측한다(5번).
      0. 첫 전환 전 한 번: 빈 plane을 세운다 — `.env`에 `KOR_TRAVEL_DAGSTER_UI_PASSWORD`(와 운영의
         `KTDM_PROD_URL_DAGSTER`)를 넣고 `ensure dagster`. daemon `liveness-check` 초록, webserver probe 초록,
