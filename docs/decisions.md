@@ -4225,7 +4225,7 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
   합류하지 않았다. 합류는 프로젝트마다 별도 PR·창이다(platform-topology.md §7 전환 runbook).
 - 날짜: 2026-09-30
 - 결정자: 사용자(D2 — gateway `11001`·webserver `127.0.0.1:11002`·daemon 포트 없음, D3 전역 12, D4 코드 선언,
-  D6 soak, transport는 나중에 필드 하나와 파생 항목 하나로 합류), Claude
+  D6 관측 — 2026-09-30 개정, transport는 나중에 필드 하나와 파생 항목 하나로 합류), Claude
 - 관련: platform-topology.md §7(2~4단계, G3-a·G3-b), ADR-20(단일 compose 파일 경계), ADR-50(과결박 없이),
   ADR-52(init·exec probe), 2단계(#443: `dagster_shared`·호스트 이미지·공용 `dagster.yaml`)
 
@@ -4288,7 +4288,10 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
    모두 workspace에 있다(테스트).
 8. **전환과 되돌리기**는 platform-topology.md §7 runbook이다 — drain, fence(옛 daemon 뒤 webserver 정지,
    `fence_ts`), switch(스위치를 바꾼 release 설치 → `ensure dagster` → `ensure P`), verify(probe·instigator
-   동등·옛 DB tick 0·슬롯당 tick 하나·첫 run SUCCESS·전환 판정 SQL·소비자 격리), soak(D6). 되돌리기는
+   동등·옛 DB tick 0·슬롯당 tick 하나·첫 run SUCCESS·전환 판정 SQL·소비자 격리). **D6 개정(2026-09-30, "관찰 기간을
+   대폭 줄이고 모두 마이그레이션 후 함께 관측")**: 전환 사이에 soak이 없다 — 네 프로젝트를 잇달아 옮기고,
+   넷이 모두 오른 뒤 약 24시간(일일 주기 하나, Map C7 prod gate GREEN 포함)을 함께 관측한 다음 4단계로 간다.
+   옛 메타DB `DROP` 전 30일은 그대로다. 되돌리기는
    **공용 workspace에서 P를 먼저 내리고(`ensure dagster`) 옛 daemon을 띄운다(`ensure P`)** — 반대면 두 daemon이 쏜다.
 
 ### 근거

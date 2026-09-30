@@ -323,7 +323,8 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
      (daemon은 heartbeat만 쓰고, webserver probe는 기대 location이 0개다). gateway는
      `KOR_TRAVEL_DAGSTER_UI_PASSWORD`가 비어 있으면 기동을 거부한다. 그래서 plane target은 첫 합류 전까지
      `all`에서 빠져 있고, 창에서 비밀번호를 넣고 `ensure dagster`로 세운다.
-   - **전환 runbook(프로젝트 P 하나).** 순서는 PinVi → geo → weather → Map, 사이마다 D6의 soak.
+   - **전환 runbook(프로젝트 P 하나).** 순서는 PinVi → geo → weather → Map이고 **사이에 soak이 없다**(D6
+     개정 2026-09-30) — 한 프로젝트의 4번 검증이 끝나면 바로 다음 프로젝트다. 넷이 모두 옮긴 뒤 함께 관측한다(5번).
      0. 첫 전환 전 한 번: 빈 plane을 세운다 — `.env`에 `KOR_TRAVEL_DAGSTER_UI_PASSWORD`(와 운영의
         `KTDM_PROD_URL_DAGSTER`)를 넣고 `ensure dagster`. daemon `liveness-check` 초록, webserver probe 초록,
         `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:11001/health`가 204, 인증 없는 `/`가 401,
@@ -341,8 +342,10 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
         `SELECT count(*) FROM job_ticks WHERE timestamp > :fence_ts`가 0으로 머문다, `dagster_shared`에는
         P의 schedule마다 cron 슬롯당 tick이 정확히 하나, 첫 run이 SUCCESS이고 그 event가 `dagster_shared`에
         있다, 위 "전환 판정" SQL이 0, P의 API·UI가 P의 location과 run만 보인다.
-     5. **Soak.** D6 — P의 일일 주기 하나를 지켜본 뒤 다음 프로젝트. Map은 공용 plane에서 C7 prod gate가
-        GREEN이어야 끝난다. 전환된 프로젝트의 옛 hostname은 소유자가 OPNsense에서 공용 host로 redirect한다.
+        4번이 하나라도 빨가면 다음 프로젝트로 가지 않고 P를 되돌린다(아래).
+     5. **함께 관측(D6).** 네 프로젝트가 모두 공용 plane에 오른 뒤 약 24시간 — schedule의 일일 주기 하나 —
+        를 함께 지켜본다. 그 안에 Map의 C7 prod gate가 공용 plane에서 GREEN이어야 한다. 4단계는 이 관측
+        뒤에 온다. 전환된 프로젝트의 옛 hostname은 소유자가 OPNsense에서 공용 host로 redirect한다.
    - **되돌리기(4단계 전까지 싸다).** 순서가 중요하다 — **공용 workspace에서 P를 먼저 내리고, 그 다음에
      옛 daemon을 띄운다.** 반대로 하면 두 daemon이 같은 schedule을 함께 쏜다.
      1. P의 스위치를 `own`으로 되돌린 release를 설치하고 `ensure dagster`(공용 daemon·webserver가 P 없는
@@ -386,8 +389,12 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
   컨테이너의 `/opt/dagster/state/compute_logs`에 남는다. webserver는 자기 파일시스템을 읽으므로
   UI의 stdout/stderr는 code-server를 분리한 오늘도 이미 비어 있다 — 공용 plane은 그것을 나쁘게도
   좋게도 하지 않는다. 공유 디렉터리나 오브젝트 스토리지 log manager는 별도 과제다.
-- **D6 — soak.** 프로젝트 전환 사이 하루(그 프로젝트 schedule의 일일 주기 하나), 4단계 전 7일(그
-  동안 `dagster_shared` 백업이 7일 연속 초록), 옛 메타DB `DROP` 전 30일(dump는 백업 보존 기간대로).
+- **D6 — 관측(2026-09-30 개정: "관찰 기간을 대폭 줄이고 모두 마이그레이션 후 함께 관측").** 프로젝트
+  전환 사이에는 soak을 두지 않는다 — 각 프로젝트는 자기 cron 주기 하나 안의 즉시 검증(location 로드,
+  instigator 동등, 이중 발화 없음, 첫 run SUCCESS, 소비자 격리)만 통과하면 다음으로 간다. 넷이 모두 옮긴
+  뒤 약 24시간(일일 schedule 주기 하나)을 함께 관측하고, 그 안에 Map C7 prod gate가 GREEN이어야 한다.
+  4단계는 그 관측 뒤다(옛 "전환 사이 하루"·"4단계 전 7일"은 폐기). 옛 메타DB `DROP` 전 30일은 그대로다
+  (dump는 백업 보존 기간대로).
 
 ---
 
