@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 from unittest.mock import Mock
 
@@ -23,6 +23,12 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     current_pinned_runtime_release,
+)
+from kor_travel_docker_manager.services.runtime_topology import (
+    RuntimeSlot,
+    RuntimeTopology,
+    derive_dagster_families,
+    runtime_topology,
 )
 
 PINNED_RUNTIME_RELEASE = current_pinned_runtime_release()
@@ -136,13 +142,14 @@ class FakeDocker:
         raise AssertionError(command)
 
 
-_CANDIDATE_SERVICES = (
-    "kor-travel-map-api",
-    "kor-travel-map-ui",
-    "kor-travel-map-dagster",
-    "pinvi-api",
-    "pinvi-web",
-    "pinvi-dagster",
+#: candidate tag slot과, 모두 `own`일 때 그 tag가 붙는 이름(ADR-54 파생 이전 literal 그대로).
+_CANDIDATE_SERVICES: tuple[tuple[RuntimeSlot, str], ...] = (
+    ("map_api", "kor-travel-map-api"),
+    ("map_ui", "kor-travel-map-ui"),
+    ("map_dagster", "kor-travel-map-dagster"),
+    ("pinvi_api", "pinvi-api"),
+    ("pinvi_web", "pinvi-web"),
+    ("pinvi_dagster", "pinvi-dagster"),
 )
 
 
@@ -150,11 +157,13 @@ def _candidate_references(
     generation: PinnedRuntimeGeneration,
     *,
     pinset_sha256: str | None = None,
-) -> dict[str, str]:
+    services: Mapping[RuntimeSlot, str] | None = None,
+) -> dict[RuntimeSlot, str]:
     pinset = pinset_sha256 or generation.pinset_sha256
+    names = dict(_CANDIDATE_SERVICES) if services is None else services
     return {
-        service: f"{CANDIDATE_REPOSITORY_PREFIX}{service}:{pinset}"
-        for service in _CANDIDATE_SERVICES
+        slot: f"{CANDIDATE_REPOSITORY_PREFIX}{names[slot]}:{pinset}"
+        for slot, _ in _CANDIDATE_SERVICES
     }
 
 
@@ -163,7 +172,7 @@ def _install_candidate_references(
     generation: PinnedRuntimeGeneration,
     *,
     pinset_sha256: str | None = None,
-) -> dict[str, str]:
+) -> dict[RuntimeSlot, str]:
     references = _candidate_references(generation, pinset_sha256=pinset_sha256)
     docker.references.update(
         {
@@ -505,9 +514,137 @@ def test_candidate_reconcile_rejects_active_reference_content_drift(
     monkeypatch.setattr(subprocess, "run", docker.run)
     ensure_generation_references((active,), cwd="/tmp")
     active_references = _install_candidate_references(docker, active)
-    docker.references[active_references["kor-travel-map-api"]] = other.map_api_image_id
+    docker.references[active_references["map_api"]] = other.map_api_image_id
 
     with pytest.raises(DeploymentContractError, match="active candidate reference changed"):
         reconcile_candidate_build_references(active_references, active, cwd="/tmp")
 
     assert not any(command[1:3] == ("image", "rm") for command in docker.commands)
+
+
+# --- ADR-54: 공용 Dagster plane에 합류한 target ------------------------------------------------
+
+
+def _flipped_topology(*targets: str) -> RuntimeTopology:
+    from test_dagster_shared_workspace_is_derived import _documents, _flip
+
+    compose_document, targets_document = _documents()
+    for target_id in targets:
+        _flip(compose_document, targets_document, target_id)
+    return runtime_topology(derive_dagster_families(compose_document, targets_document))
+
+
+def test_every_own_target_retains_the_pre_adr54_reference_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generation = _generation("abcdef1", "6")
+    docker = FakeDocker(generation)
+    monkeypatch.setattr(subprocess, "run", docker.run)
+
+    ensure_generation_references((generation,), cwd="/tmp")
+
+    names = {reference.split("/")[-1].split(":")[0] for reference in docker.references}
+    assert names == {
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster",
+        "kor-travel-map-dagster-daemon",
+        "pinvi-api",
+        "pinvi-web",
+        "pinvi-dagster",
+    }
+
+
+def test_a_flipped_map_retains_its_code_server_not_its_old_dagster_and_prunes_their_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """전환 전 tag가 남은 채 Map이 합류한다: 옛 webserver·daemon tag는 모르는 reference로 멈추지 않고 stale로
+    지워지며, 새로 보존하는 것은 code-server다. daemon slot은 서비스가 없어 보존하지 않는다."""
+
+    generation = _generation("abcdef1", "6")
+    docker = FakeDocker(generation)
+    monkeypatch.setattr(subprocess, "run", docker.run)
+    reconcile_generation_references((generation,), cwd="/tmp")
+    own_candidates = _install_candidate_references(docker, generation)
+    assert len(docker.references) == 13
+    topology = _flipped_topology("map")
+
+    report = reconcile_generation_references((generation,), cwd="/tmp", topology=topology)
+
+    retained = {
+        reference.removeprefix(RETENTION_REPOSITORY_PREFIX).split(":")[0]
+        for reference in docker.references
+        if reference.startswith(RETENTION_REPOSITORY_PREFIX)
+    }
+    assert retained == {
+        "kor-travel-map-api",
+        "kor-travel-map-ui",
+        "kor-travel-map-dagster-code-server",
+        "pinvi-api",
+        "pinvi-web",
+        "pinvi-dagster",
+    }
+    assert report.removed == 2
+
+    flipped_candidates = _candidate_references(
+        generation,
+        services={slot: topology.require_service(slot) for slot, _ in _CANDIDATE_SERVICES},
+    )
+    docker.references.update(
+        {reference: generation.image_ids[slot] for slot, reference in flipped_candidates.items()}
+    )
+    removed = reconcile_candidate_build_references(
+        flipped_candidates, generation, cwd="/tmp", topology=topology
+    )
+    assert removed.removed == 1
+    assert own_candidates["map_dagster"] not in docker.references
+    assert flipped_candidates["map_dagster"] in docker.references
+
+
+def test_a_rollback_to_own_prunes_the_tags_the_shared_shape_left(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`shared`→`own` 되돌리기: 합류 동안 code-server 이름으로 남긴 보존·candidate tag를 `own` namespace도
+    알아보고 stale로 지운다 — 모르는 reference로 보존 정리 전체가 멈추지 않는다(적대 리뷰 2026-09-30 MED-3)."""
+
+    generation = _generation("abcdef1", "6")
+    docker = FakeDocker(generation)
+    monkeypatch.setattr(subprocess, "run", docker.run)
+    shared = _flipped_topology("map", "pinvi")
+    reconcile_generation_references((generation,), cwd="/tmp", topology=shared)
+    shared_candidates = _candidate_references(
+        generation,
+        services={slot: shared.require_service(slot) for slot, _ in _CANDIDATE_SERVICES},
+    )
+    docker.references.update(
+        {reference: generation.image_ids[slot] for slot, reference in shared_candidates.items()}
+    )
+    assert any("dagster-code-server:" in reference for reference in docker.references)
+
+    report = reconcile_generation_references((generation,), cwd="/tmp")
+    own_candidates = _install_candidate_references(docker, generation)
+    candidate_report = reconcile_candidate_build_references(own_candidates, generation, cwd="/tmp")
+
+    assert report.removed == 2  # Map·PinVi code-server 보존 tag
+    assert candidate_report.removed == 2  # Map·PinVi code-server candidate tag
+    assert not any("dagster-code-server:" in reference for reference in docker.references)
+    retained = {
+        reference.removeprefix(RETENTION_REPOSITORY_PREFIX).split(":")[0]
+        for reference in docker.references
+        if reference.startswith(RETENTION_REPOSITORY_PREFIX)
+    }
+    assert "kor-travel-map-dagster-daemon" in retained and len(retained) == 7
+
+
+def test_a_name_outside_every_family_still_stops_retention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """알아보는 이름을 family 전부로 넓혔어도 그 밖의 이름은 여전히 namespace를 멈춘다(fail-closed)."""
+
+    generation = _generation("abcdef1", "6")
+    docker = FakeDocker(generation)
+    docker.references[f"{RETENTION_REPOSITORY_PREFIX}grafana:{'a' * 64}"] = generation.map_api_image_id
+    monkeypatch.setattr(subprocess, "run", docker.run)
+
+    with pytest.raises(DeploymentContractError, match="invalid reference"):
+        require_empty_generation_retention_namespace(cwd="/tmp")

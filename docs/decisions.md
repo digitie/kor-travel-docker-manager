@@ -4326,6 +4326,9 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
      서비스 이름(compose에서 파생)을 `backend/src`·`scripts` 전체에서 온전한 토큰으로 찾고, 하나라도 있으면 그 target의
      `shared`를 `(pinned)`로 막는다 — 목록 몇 개가 아니라 코드 전체라, 부분 파생이 게이트를 초록으로 만들지 못한다.
      2026-09-30 기준 Map·PinVi·geo(`legacy_override_retirement._GEO_SERVICES`)가 걸리고 weather만 열려 있다.
+     **해제(같은 날, 후속 PR):** 그 참조는 전부 `services/runtime_topology.py`가 렌더된 모델(설치된 release의 reference
+     compose·targets)과 스위치에서 파생한다 — `shared`면 옛 서비스는 어떤 실행 집합에도 없고 carrier인 code-server가
+     slot을 잇는다. 모두 `own`이면 이름·집합·tag·호출 순서가 글자까지 같다. 게이트는 되돌아옴을 막는 문으로 남는다.
    - **포트는 literal.** `shared` code-server의 `-p`는 literal이어야 한다 — workspace는 정적 파일이라 `.env`의 포트
      override를 모른다. 계약 테스트가 요구하고 참조 전환이 literal로 바꾼다.
    - **옛 공개 host(b).** 활성 서비스가 옮긴 target의 옛 공개 host env(그 target 옛 서비스 컨테이너의 `prod_url_env`,
@@ -4366,5 +4369,5 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
   allowlist(`KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS`)는 URL이 아니라 이 계약 밖이고, Map API가 클라이언트에
   돌려주는 공개 GraphQL URL은 이제 Basic Auth gateway 뒤다 — Map 전환 전에 C7 게이트가 그 입구로 인증해 붙는지
   Map 쪽에서 정한다. Map 전환은 Map 전용 C6c 계약(보호 서비스 집합, pinned rebuild의 필요 서비스)도 바꿔야 한다.
-- Map·PinVi 전환 전에 pinned 재구축·C6c의 literal 집합을 스위치에서 파생하는 PR이 필요하다(위 9, M2).
+- ~~Map·PinVi 전환 전에 pinned 재구축·C6c의 literal 집합을 스위치에서 파생하는 PR이 필요하다(위 9, M2).~~ 해제 — `runtime_topology`.
 - 공개 host `dagster.digitie.mywire.org` → `192.168.1.14:11001`과 옛 hostname redirect는 저장소 밖(OPNsense)이다.

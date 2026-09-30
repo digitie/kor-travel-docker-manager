@@ -8472,3 +8472,60 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
 - LOW: `shared` code-server의 `-p` literal, 옛 공개 host env 참조 금지, webserver도 storage 가드(YAML anchor 하나,
   argv handoff), liveness 테스트의 조기 return 구멍, 합류 조건(/opt/dagster/state 쓰기·pool 접두) 문서·검증 단계.
   `limit_req`는 HAProxy 뒤 단일 주소라 UI 전체를 조이므로 두지 않았다(ADR-54).
+
+## 2026-09-30 — 공용 Dagster 전환의 `(pinned)` 해제: 옛 webserver·daemon 이름을 렌더된 모델과 스위치에서 파생
+
+브랜치 `feat/dagster-shared-derived-legacy`(3단계 head `6f384ba` 위). 모든 target은 여전히 `own`이다 — 전환 PR이 아니다.
+
+- **왜**: 계약 테스트가 Map·PinVi·geo를 `(pinned)`로 막고 있었다. pinned 재구축(slot·build 목록, `compose_up`),
+  C6c(필수·런타임·secret isolation 집합), 이미지 보존, M05, 옛 override 이관이 옛 webserver·daemon 이름을 literal로
+  들었다. 전환하면 그 서비스는 `legacy-dagster`로 내려가 frozen render(`--profile bootstrap`만)에서 사라지는데 literal은
+  그것을 계속 요구·검사·기동한다.
+- **파생**: `services/runtime_topology.py`. family(code-server·webserver·daemon·gateway)는 모양으로 찾는다(계약 테스트와
+  같은 규칙, 독립 파생과 대조하는 테스트가 있다). 원본은 이 코드와 함께 설치된 release의 reference compose와
+  `docker-targets.yml`이다(env로 옮기지 않는다, import 시점에 읽지 않는다). 스위치가 carrier를 고른다 — `own`이면 webserver,
+  `shared`면 code-server, daemon slot은 `shared`면 없다.
+  - pinned generation의 이미지 일곱은 **slot**(`map_api`…, payload 필드 이름)으로 키하고, slot의 서비스·build 서비스·
+    candidate tag·companion·stop/up/verify·배포 기록 images 키를 topology에서 얻는다. 옛 서비스를 실은 render는 거부.
+  - C6c: 실행·필수 집합은 스위치를 따르고, env 계약(DSN·Geo key·UI 잠금)은 family 전부에 남는다(profile로 내려간 옛
+    서비스도 켜면 그 값으로 돈다). admin secret 전역 규칙의 runtime 집합도 파생.
+  - 보존: 이름은 carrier를 따르고, 전환된 target의 옛 tag는 stale로 알아보고 지운다(모르는 reference로 멈추지 않게).
+  - M05 격리 이미지 역할 키 `pinvi-app-dagster`(PinVi 저장소의 `app-dagster` 이미지 — Manager 서비스가 아니다), receipt 불변.
+  - 옛 override 이관의 Geo 서비스는 Geo family의 webserver·daemon(과거 파일의 모양이라 스위치와 무관).
+  - 계약: 모든 target에서 `(pinned)`가 비어야 하고, 옛 이름을 `backend/src`·`scripts`에 다시 넣으면 빨갛다.
+- **실측(n150 Compose v5.2.0)**: `config --no-interpolate`와 `config --services`는 profile을 거르지 않는다 — 꺼진
+  profile의 서비스도 적는다. 보간한 `config`(frozen render)는 거른다. 활성 서비스가 꺼진 profile 서비스에 `depends_on`하면
+  보간한 `config`는 "depends on undefined service"로 실패한다(fail-closed).
+- **불변(모두 `own`)**: 지문 32항목이 `6f384ba`와 같다 — slot 서비스, build 서비스, candidate·paired tag, companion,
+  배포 images, 보존 reference·패턴, C6c 필수·known·Map runtime·PinVi DSN·Map DSN·API env·UI 잠금 표, 오류 이름 가림,
+  mutation 분류, generation payload·logical sha256, 두 compose env, **첫 배포·수렴의 compose 호출 순서 전체**. 다른 것은
+  M05 역할 키 하나(의도). 운영 pinset `7ea6689c`는 두 코드로 재계산해도 같다. compose는 바뀌지 않았다 — 설치본
+  `9f0f1cd` 대비 기존 41개 hash 전부 같고 새 것은 3단계의 셋뿐.
+- **테스트(n150)**: `/tmp/b3-test.sh`(`9e572ff`) ruff 0.16.4 깨끗, **2500 passed, 2 skipped**. 대상 13파일 957 passed.
+  Map·PinVi 전환을 실제 재구축 경로(`_forward_harness`)로 돌려 옛 webserver·daemon이 어떤 compose 호출·readiness·
+  이미지 검사·배포 기록에도 없고 code-server가 `up`된다. 넷 다 전환한 compose의 실제 frozen render(보간한 `config`)에
+  옛 서비스가 없다. 빨강 확인(버리는 사본에 변이 하나씩) 16/16 — carrier·daemon slot이 스위치를 무시, `own`의 carrier
+  이동, gateway 파생, process 순서, companion 거부 제거, C6c 필수·secret isolation·PinVi build 배선이 family 전부/webserver,
+  보존의 옛 이름 인식·서비스 없는 slot, API 분류의 옛 서비스, frozen profile에 `legacy-dagster`, 옛 override의 스위치
+  추종, 계약의 코드 스캔 제거, literal 재도입.
+- **남은 것**: 전환된 target의 첫 재구축은 Map이면 paired tag 이름이 바뀌어(`…/<code-server>:<pinset>`) Map 이미지를
+  다시 빌드하고 전체 경로를 돈다(images 키가 바뀌므로 수렴이 아니다) — 의도. `shared`→`own` 되돌리기 뒤에는 code-server
+  이름의 보존 tag를 `own` namespace가 모른다(fail-closed, 손으로 지운다). 계약 (c)는 profile 없는 서비스의 `depends_on`만
+  보는데, `bootstrap` profile 서비스가 옛 서비스에 기대면 frozen render가 "undefined service"로 실패한다(지금은 없다).
+
+### 2026-09-30 — 적대 리뷰(`0eb26a4`) 수정, origin/main `6f30fd5`(#445) 위로 재기반
+
+- **MED-1** 파생은 해석이 끝난 뒤 그것이 필요한 mutation에서만 한다(`_parse_compose_mutation`) — read-only(`ps`·
+  `config`·`logs`)와 명시 서비스 `stop`, `--no-deps` `up`은 설치된 모델을 읽지 않는다. family는 target별로 파생·캐시하고
+  pinned runtime·C6c는 Map·PinVi만 부른다 — geo·weather 모양이 어긋나도 막히지 않는다(전체 파생만 거부). 공용 plane
+  (공용 workspace를 붙인 서비스)은 target의 runner·gateway로 세지 않는다.
+- **MED-2** 전환된 target의 옛 webserver·daemon·gateway 컨테이너(설치된 `containers`에서 이름 파생)가 docker에서 돌고
+  있으면 수렴·전체 경로 모두 무엇을 멈추거나 migration하기 전에 거부한다(없으면 통과, 못 읽으면 거부). `own`이면 볼 것이 없다.
+- **MED-3** 보존·candidate namespace는 Map·PinVi family의 이름 전부를 스위치와 무관하게 알아본다 — `shared`→`own` 되돌리기
+  뒤 code-server 이름의 tag도 stale로 지운다. 그 밖의 이름은 여전히 namespace를 멈춘다. `own`의 보존 대상(desired)은 그대로다.
+- **LOW-4** gateway에서 그 target의 runner를 뺀다(Map daemon이 Map gateway로 세이던 것). **LOW-7** 전환 뒤에도 raw 후보에
+  profile로 남은 옛 Map webserver·daemon은 서비스별 계약(Geo key·DSN·host network)을 그대로 본다(필수는 아니다).
+- **불변식을 저장소로**: `test_every_own_rebuild_matches_the_pre_adr54_fingerprint`가 `6f384ba`에서 뜬 지문
+  (`backend/tests/fixtures/pinned_runtime_own_fingerprint.json`, seed revision·pinset은 자리표)과 대조한다 — 의도한 변경 셋(M05
+  역할 키, 보존이 알아보는 이름, seed에 묶인 sha256)만 빠져 있다. 운영 pinset `7ea6689c`는 고정 벡터 테스트가 재계산한다.
+- **빨강 확인** 27/27(이전 16 + 이번 11). pinset 변이는 테스트 모듈 수집 단계에서 먼저 빨갛다(seed pin 대조).

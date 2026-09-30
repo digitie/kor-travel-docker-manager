@@ -3893,7 +3893,7 @@ def main(expected_revision: str, output: Path, *, rehearse: bool = False) -> int
             "map-api": map_rendered_images["api"],
             "map-frontend": map_rendered_images["frontend"],
             "pinvi-api": pinvi_rendered_images["app-api"],
-            "pinvi-dagster": pinvi_rendered_images["app-dagster"],
+            "pinvi-app-dagster": pinvi_rendered_images["app-dagster"],
             "pinvi-web": pinvi_rendered_images["app-web"],
         }
         _build_runtime_provenance(

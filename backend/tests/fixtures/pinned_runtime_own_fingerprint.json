@@ -1,0 +1,1218 @@
+{
+ "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized",
+ "build_compose_environment": {
+  "KOR_TRAVEL_MAP_API_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
+  "KOR_TRAVEL_MAP_DAGSTER_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+  "KOR_TRAVEL_MAP_GIT_COMMIT": "<MAP_REVISION>",
+  "KOR_TRAVEL_MAP_REPO_DIR": "/state/map",
+  "KOR_TRAVEL_MAP_UI_IMAGE": "kor-travel-docker-manager/pinned-runtime-candidate-v6/kor-travel-map-ui:<PINSET>",
+  "PINVI_API_IMAGE": "kor-travel-docker-manager/pinned-runtime-candidate-v6/pinvi-api:<PINSET>",
+  "PINVI_BUILD_ENVIRONMENT": "production",
+  "PINVI_DAGSTER_IMAGE": "kor-travel-docker-manager/pinned-runtime-candidate-v6/pinvi-dagster:<PINSET>",
+  "PINVI_REPO_DIR": "/state/pinvi",
+  "PINVI_SOURCE_REVISION": "<PINVI_REVISION>",
+  "PINVI_WEB_IMAGE": "kor-travel-docker-manager/pinned-runtime-candidate-v6/pinvi-web:<PINSET>"
+ },
+ "built_services": [
+  "kor-travel-map-ui",
+  "pinvi-api",
+  "pinvi-web",
+  "pinvi-dagster"
+ ],
+ "c6c_candidate_canonical_api": [
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN"
+   ],
+   "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN"
+   ],
+   "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN"
+   ],
+   "${KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN:-}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED"
+   ],
+   "${KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED:?KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED must be explicitly set}"
+  ],
+  [
+   [
+    "pinvi-api",
+    "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN"
+   ],
+   "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
+  ],
+  [
+   [
+    "pinvi-api",
+    "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN"
+   ],
+   "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
+  ],
+  [
+   [
+    "pinvi-admin-bootstrap",
+    "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN"
+   ],
+   "${KOR_TRAVEL_MAP_API_OPS_READ_TOKEN:-}"
+  ],
+  [
+   [
+    "pinvi-admin-bootstrap",
+    "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN"
+   ],
+   "${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}"
+  ],
+  [
+   [
+    "kor-travel-map-ui",
+    "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME"
+   ],
+   "${KOR_TRAVEL_MAP_UI_ADMIN_USERNAME:?KOR_TRAVEL_MAP_UI_ADMIN_USERNAME must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-ui",
+    "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"
+   ],
+   "${KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH:?KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-ui",
+    "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
+   ],
+   "${KOR_TRAVEL_MAP_UI_SESSION_SECRET:?KOR_TRAVEL_MAP_UI_SESSION_SECRET must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
+   ],
+   "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-ui",
+    "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
+   ],
+   "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
+   ],
+   "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+   ],
+   "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"
+   ],
+   "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
+  ],
+  [
+   [
+    "kor-travel-map-ui",
+    "KOR_TRAVEL_GEO_API_KEY"
+   ],
+   "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY:?KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster",
+    "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"
+   ],
+   "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster-code-server",
+    "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"
+   ],
+   "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster-daemon",
+    "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"
+   ],
+   "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256"
+   ],
+   "${KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256:-}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256"
+   ],
+   "${KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256:-}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256"
+   ],
+   "${KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256:?KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256 must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED"
+   ],
+   "${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}"
+  ],
+  [
+   [
+    "kor-travel-map-ui",
+    "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN"
+   ],
+   "${KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN:?KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN must be explicitly set}"
+  ],
+  [
+   [
+    "pinvi-api",
+    "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN"
+   ],
+   "${PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN:-}"
+  ],
+  [
+   [
+    "pinvi-api",
+    "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN"
+   ],
+   "${PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN:-}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_PROFILE"
+   ],
+   "production"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED"
+   ],
+   "true"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED"
+   ],
+   "false"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED"
+   ],
+   "true"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED"
+   ],
+   "true"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED"
+   ],
+   "false"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS"
+   ],
+   "[\"127.0.0.1/32\",\"::1/128\"]"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE"
+   ],
+   "${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_POSTGRES_DB"
+   ],
+   "${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_SERVICE_PASSWORD"
+   ],
+   "${KOR_TRAVEL_MAP_SERVICE_PASSWORD:?KOR_TRAVEL_MAP_SERVICE_PASSWORD must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_PG_DSN"
+   ],
+   "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB:?KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_METADATA_USER:?KOR_TRAVEL_MAP_DAGSTER_METADATA_USER must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD:?KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_PG_DSN"
+   ],
+   "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster",
+    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster-code-server",
+    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster-daemon",
+    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster-storage-migrate",
+    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster",
+    "KOR_TRAVEL_MAP_PG_DSN"
+   ],
+   "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster-code-server",
+    "KOR_TRAVEL_MAP_PG_DSN"
+   ],
+   "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster-daemon",
+    "KOR_TRAVEL_MAP_PG_DSN"
+   ],
+   "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-application-schema",
+    "KOR_TRAVEL_MAP_PG_DSN"
+   ],
+   "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-application-schema",
+    "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE"
+   ],
+   "true"
+  ]
+ ],
+ "c6c_contract_locked": {
+  "kor-travel-map-api": [
+   "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET",
+   "KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256",
+   "KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED",
+   "KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS",
+   "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET",
+   "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED",
+   "KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED",
+   "KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED",
+   "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN",
+   "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN",
+   "KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED",
+   "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN",
+   "KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256",
+   "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256",
+   "KOR_TRAVEL_MAP_API_PROFILE",
+   "KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED",
+   "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED",
+   "KOR_TRAVEL_MAP_API_SERVICE_TOKEN",
+   "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY",
+   "KOR_TRAVEL_MAP_PG_DSN"
+  ],
+  "kor-travel-map-application-schema": [
+   "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE",
+   "KOR_TRAVEL_MAP_PG_DSN"
+  ],
+  "kor-travel-map-dagster": [
+   "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+   "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY",
+   "KOR_TRAVEL_MAP_PG_DSN"
+  ],
+  "kor-travel-map-dagster-code-server": [
+   "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+   "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY",
+   "KOR_TRAVEL_MAP_PG_DSN"
+  ],
+  "kor-travel-map-dagster-daemon": [
+   "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+   "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY",
+   "KOR_TRAVEL_MAP_PG_DSN"
+  ],
+  "kor-travel-map-dagster-storage-migrate": [
+   "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+  ],
+  "kor-travel-map-db-role-bootstrap": [
+   "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD",
+   "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER",
+   "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
+   "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB",
+   "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE",
+   "KOR_TRAVEL_MAP_PG_DSN",
+   "KOR_TRAVEL_MAP_POSTGRES_DB",
+   "KOR_TRAVEL_MAP_SERVICE_PASSWORD"
+  ],
+  "kor-travel-map-ui": [
+   "KOR_TRAVEL_GEO_API_KEY",
+   "KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN",
+   "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET",
+   "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH",
+   "KOR_TRAVEL_MAP_UI_ADMIN_USERNAME",
+   "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
+  ],
+  "pinvi-admin-bootstrap": [
+   "PINVI_DATABASE_URL",
+   "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN",
+   "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN"
+  ],
+  "pinvi-api": [
+   "PINVI_DATABASE_URL",
+   "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN",
+   "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN",
+   "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN",
+   "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN"
+  ],
+  "pinvi-dagster": [
+   "PINVI_DAGSTER_PG_URL",
+   "PINVI_DATABASE_URL"
+  ],
+  "pinvi-dagster-code-server": [
+   "PINVI_DAGSTER_PG_URL",
+   "PINVI_DATABASE_URL"
+  ],
+  "pinvi-dagster-daemon": [
+   "PINVI_DAGSTER_PG_URL",
+   "PINVI_DATABASE_URL"
+  ]
+ },
+ "c6c_describe": [
+  "<unrecognized service key sha256:cef030f6>",
+  "<unrecognized service key sha256:101df5c0>",
+  "<unrecognized service key sha256:d0b1b3d4>",
+  "<unrecognized service key sha256:330a2af4>",
+  "<unrecognized service key sha256:614f32e0>",
+  "<unrecognized service key sha256:064a1a69>",
+  "<unrecognized service key sha256:4d92da65>",
+  "<unrecognized service key sha256:b75b0605>",
+  "kor-travel-dagster-storage-migrate",
+  "<unrecognized service key sha256:146a715b>",
+  "<unrecognized service key sha256:7f3b89f3>",
+  "<unrecognized service key sha256:572ffddf>",
+  "<unrecognized service key sha256:2e6ce01e>",
+  "<unrecognized service key sha256:e0acc8e9>",
+  "<unrecognized service key sha256:3962fb20>",
+  "kor-travel-map-api",
+  "kor-travel-map-application-schema",
+  "kor-travel-map-dagster",
+  "<unrecognized service key sha256:1457d35c>",
+  "kor-travel-map-dagster-daemon",
+  "kor-travel-map-dagster-storage-migrate",
+  "kor-travel-map-db-role-bootstrap",
+  "kor-travel-map-ui",
+  "<unrecognized service key sha256:f0321e02>",
+  "kor-travel-shared-db-init-dagster",
+  "<unrecognized service key sha256:767e4018>",
+  "kor-travel-shared-db-init-pinvi",
+  "<unrecognized service key sha256:1da0b069>",
+  "<unrecognized service key sha256:bfd874e5>",
+  "kor-travel-shared-postgres",
+  "<unrecognized service key sha256:495b80f0>",
+  "<unrecognized service key sha256:d9368cb3>",
+  "<unrecognized service key sha256:5f5896c0>",
+  "<unrecognized service key sha256:3d74ba21>",
+  "<unrecognized service key sha256:8db4946e>",
+  "<unrecognized service key sha256:cca2f4e6>",
+  "<unrecognized service key sha256:61fa55bf>",
+  "<unrecognized service key sha256:a9823483>",
+  "pinvi-admin-bootstrap",
+  "pinvi-api",
+  "<unrecognized service key sha256:f8973737>",
+  "<unrecognized service key sha256:c69aae78>",
+  "<unrecognized service key sha256:aa27dedc>",
+  "<unrecognized service key sha256:787db4c8>",
+  "<unrecognized service key sha256:6aabee6c>",
+  "<unrecognized service key sha256:39ae08c2>",
+  "<unrecognized service key sha256:469eab38>"
+ ],
+ "c6c_known": [
+  "kor-travel-dagster-storage-migrate",
+  "kor-travel-map-api",
+  "kor-travel-map-application-schema",
+  "kor-travel-map-dagster",
+  "kor-travel-map-dagster-daemon",
+  "kor-travel-map-dagster-storage-migrate",
+  "kor-travel-map-db-role-bootstrap",
+  "kor-travel-map-ui",
+  "kor-travel-shared-db-init-dagster",
+  "kor-travel-shared-db-init-pinvi",
+  "kor-travel-shared-postgres",
+  "pinvi-admin-bootstrap",
+  "pinvi-api"
+ ],
+ "c6c_map_database_canonical": [
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE"
+   ],
+   "${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_POSTGRES_DB"
+   ],
+   "${KOR_TRAVEL_MAP_POSTGRES_DB:?KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_SERVICE_PASSWORD"
+   ],
+   "${KOR_TRAVEL_MAP_SERVICE_PASSWORD:?KOR_TRAVEL_MAP_SERVICE_PASSWORD must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_PG_DSN"
+   ],
+   "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB:?KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_METADATA_USER:?KOR_TRAVEL_MAP_DAGSTER_METADATA_USER must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD:?KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-db-role-bootstrap",
+    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-api",
+    "KOR_TRAVEL_MAP_PG_DSN"
+   ],
+   "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster",
+    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster-code-server",
+    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster-daemon",
+    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster-storage-migrate",
+    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
+   ],
+   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster",
+    "KOR_TRAVEL_MAP_PG_DSN"
+   ],
+   "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster-code-server",
+    "KOR_TRAVEL_MAP_PG_DSN"
+   ],
+   "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-dagster-daemon",
+    "KOR_TRAVEL_MAP_PG_DSN"
+   ],
+   "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-application-schema",
+    "KOR_TRAVEL_MAP_PG_DSN"
+   ],
+   "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
+  ],
+  [
+   [
+    "kor-travel-map-application-schema",
+    "KOR_TRAVEL_MAP_ALEMBIC_USE_SCHEMA_OWNER_ROLE"
+   ],
+   "true"
+  ]
+ ],
+ "c6c_map_runtime": [
+  "kor-travel-map-api",
+  "kor-travel-map-ui",
+  "kor-travel-map-dagster",
+  "kor-travel-map-dagster-daemon"
+ ],
+ "c6c_pinvi_dagster_pg_url_raw": [
+  [
+   "pinvi-dagster",
+   "postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}"
+  ],
+  [
+   "pinvi-dagster-code-server",
+   "postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}"
+  ],
+  [
+   "pinvi-dagster-daemon",
+   "postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}"
+  ]
+ ],
+ "c6c_pinvi_dagster_pg_url_services": [
+  "pinvi-dagster",
+  "pinvi-dagster-code-server",
+  "pinvi-dagster-daemon"
+ ],
+ "c6c_pinvi_database_url_raw": [
+  [
+   "pinvi-api",
+   "postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}"
+  ],
+  [
+   "pinvi-dagster",
+   "postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}"
+  ],
+  [
+   "pinvi-dagster-code-server",
+   "postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}"
+  ],
+  [
+   "pinvi-dagster-daemon",
+   "postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}"
+  ],
+  [
+   "pinvi-admin-bootstrap",
+   "postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}"
+  ]
+ ],
+ "c6c_pinvi_dsn_credentials": [
+  [
+   "pinvi-api",
+   "PINVI_APP_DB_USER",
+   "PINVI_APP_DB_PASSWORD"
+  ],
+  [
+   "pinvi-dagster",
+   "PINVI_APP_DB_USER",
+   "PINVI_APP_DB_PASSWORD"
+  ],
+  [
+   "pinvi-dagster-code-server",
+   "PINVI_APP_DB_USER",
+   "PINVI_APP_DB_PASSWORD"
+  ],
+  [
+   "pinvi-dagster-daemon",
+   "PINVI_APP_DB_USER",
+   "PINVI_APP_DB_PASSWORD"
+  ],
+  [
+   "pinvi-admin-bootstrap",
+   "PINVI_APP_DB_USER",
+   "PINVI_APP_DB_PASSWORD"
+  ]
+ ],
+ "c6c_required": [
+  "kor-travel-map-api",
+  "kor-travel-map-application-schema",
+  "kor-travel-map-dagster",
+  "kor-travel-map-dagster-daemon",
+  "kor-travel-map-dagster-storage-migrate",
+  "kor-travel-map-db-role-bootstrap",
+  "kor-travel-map-ui",
+  "pinvi-admin-bootstrap",
+  "pinvi-api"
+ ],
+ "candidate_image_names": [
+  "kor-travel-docker-manager/pinned-runtime-candidate-v6/kor-travel-map-ui:<PINSET>",
+  "kor-travel-docker-manager/pinned-runtime-candidate-v6/pinvi-api:<PINSET>",
+  "kor-travel-docker-manager/pinned-runtime-candidate-v6/pinvi-dagster:<PINSET>",
+  "kor-travel-docker-manager/pinned-runtime-candidate-v6/pinvi-web:<PINSET>"
+ ],
+ "companions": {
+  "kor-travel-map-dagster-code-server": "kor-travel-map-dagster",
+  "pinvi-dagster-code-server": "pinvi-dagster",
+  "pinvi-dagster-daemon": "pinvi-dagster"
+ },
+ "converge": {
+  "operations": [
+   [
+    "ensure-map-databases-isolated",
+    "kor_travel_map",
+    "kor_travel_map_dagster",
+    "ktm_feature_service"
+   ],
+   [
+    "up",
+    "-d",
+    "--no-deps",
+    "--wait",
+    "--wait-timeout",
+    "900",
+    "kor-travel-map-dagster-code-server",
+    "pinvi-dagster-code-server",
+    "pinvi-dagster-daemon",
+    "kor-travel-map-api",
+    "kor-travel-map-ui",
+    "kor-travel-map-dagster",
+    "kor-travel-map-dagster-daemon",
+    "pinvi-api",
+    "pinvi-web",
+    "pinvi-dagster"
+   ]
+  ],
+  "outcome": "converged",
+  "readiness": [
+   [
+    "rustfs",
+    "kor-travel-geo-api",
+    "kor-travel-concierge-api"
+   ],
+   [
+    "kor-travel-shared-postgres"
+   ],
+   [
+    "kor-travel-map-api",
+    "kor-travel-map-ui",
+    "kor-travel-map-dagster",
+    "kor-travel-map-dagster-daemon",
+    "pinvi-api",
+    "pinvi-web",
+    "pinvi-dagster",
+    "kor-travel-map-dagster-code-server",
+    "pinvi-dagster-code-server",
+    "pinvi-dagster-daemon"
+   ]
+  ]
+ },
+ "deployed_images": {
+  "kor-travel-map-api": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
+  "kor-travel-map-dagster": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+  "kor-travel-map-dagster-code-server": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+  "kor-travel-map-dagster-daemon": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+  "kor-travel-map-ui": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+  "pinvi-api": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+  "pinvi-dagster": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+  "pinvi-dagster-code-server": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+  "pinvi-dagster-daemon": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+  "pinvi-web": "sha256:0000000000000000000000000000000000000000000000000000000000000006"
+ },
+ "first_deploy": {
+  "expected_images": {
+   "kor-travel-map-api": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
+   "kor-travel-map-dagster": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+   "kor-travel-map-dagster-code-server": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+   "kor-travel-map-dagster-daemon": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+   "kor-travel-map-ui": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+   "pinvi-api": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+   "pinvi-dagster": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+   "pinvi-dagster-code-server": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+   "pinvi-dagster-daemon": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+   "pinvi-web": "sha256:0000000000000000000000000000000000000000000000000000000000000006"
+  },
+  "image_labels": [
+   "kor-travel-map-api",
+   "kor-travel-map-ui",
+   "kor-travel-map-dagster",
+   "kor-travel-map-dagster-daemon",
+   "pinvi-api",
+   "pinvi-web",
+   "pinvi-dagster",
+   "kor-travel-map-dagster-code-server",
+   "pinvi-dagster-code-server",
+   "pinvi-dagster-daemon"
+  ],
+  "inspected": [
+   [
+    "kor-travel-map-api",
+    "kor-travel-map-ui",
+    "kor-travel-map-dagster",
+    "kor-travel-map-dagster-daemon",
+    "pinvi-api",
+    "pinvi-web",
+    "pinvi-dagster",
+    "kor-travel-map-dagster-code-server",
+    "pinvi-dagster-code-server",
+    "pinvi-dagster-daemon"
+   ]
+  ],
+  "operations": [
+   [
+    "stop",
+    "kor-travel-map-api",
+    "kor-travel-map-ui",
+    "kor-travel-map-dagster",
+    "kor-travel-map-dagster-daemon",
+    "pinvi-api",
+    "pinvi-web",
+    "pinvi-dagster",
+    "kor-travel-map-dagster-code-server",
+    "pinvi-dagster-code-server",
+    "pinvi-dagster-daemon"
+   ],
+   [
+    "--profile",
+    "bootstrap",
+    "run",
+    "--rm",
+    "--no-deps",
+    "kor-travel-map-application-schema"
+   ],
+   [
+    "ensure-map-databases-isolated",
+    "kor_travel_map",
+    "kor_travel_map_dagster",
+    "ktm_feature_service"
+   ],
+   [
+    "up",
+    "-d",
+    "--no-deps",
+    "--wait",
+    "--wait-timeout",
+    "900",
+    "kor-travel-map-api"
+   ],
+   [
+    "run",
+    "--rm",
+    "--no-deps",
+    "kor-travel-map-dagster-storage-migrate"
+   ],
+   [
+    "up",
+    "-d",
+    "--no-deps",
+    "--wait",
+    "--wait-timeout",
+    "900",
+    "kor-travel-map-dagster-code-server",
+    "kor-travel-map-ui",
+    "kor-travel-map-dagster",
+    "kor-travel-map-dagster-daemon"
+   ],
+   [
+    "up",
+    "-d",
+    "--no-deps",
+    "--wait",
+    "--wait-timeout",
+    "900",
+    "pinvi-api"
+   ],
+   [
+    "up",
+    "-d",
+    "--no-deps",
+    "--wait",
+    "--wait-timeout",
+    "900",
+    "pinvi-dagster-code-server",
+    "pinvi-dagster-daemon",
+    "pinvi-web",
+    "pinvi-dagster"
+   ]
+  ],
+  "outcome": "deployed",
+  "readiness": [
+   [
+    "rustfs",
+    "kor-travel-geo-api",
+    "kor-travel-concierge-api"
+   ],
+   [
+    "kor-travel-shared-postgres"
+   ],
+   [
+    "pinvi-api"
+   ],
+   [
+    "kor-travel-map-api",
+    "kor-travel-map-ui",
+    "kor-travel-map-dagster",
+    "kor-travel-map-dagster-daemon",
+    "pinvi-api",
+    "pinvi-web",
+    "pinvi-dagster",
+    "kor-travel-map-dagster-code-server",
+    "pinvi-dagster-code-server",
+    "pinvi-dagster-daemon"
+   ]
+  ]
+ },
+ "generation_compose_environment": {
+  "KOR_TRAVEL_MAP_API_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
+  "KOR_TRAVEL_MAP_DAGSTER_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+  "KOR_TRAVEL_MAP_UI_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+  "PINVI_API_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+  "PINVI_DAGSTER_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+  "PINVI_WEB_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000006"
+ },
+ "generation_payload": {
+  "map_api_image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
+  "map_application_300_candidate_evidence": {
+   "candidate_git_tree": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "dagster_config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "map_application_head": "300",
+  "map_dagster_daemon_image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+  "map_dagster_head": "map-dagster-head",
+  "map_dagster_image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+  "map_source_revision": "<MAP_REVISION>",
+  "map_ui_image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+  "pinset_sha256": "<PINSET>",
+  "pinvi_api_image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+  "pinvi_dagster_image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+  "pinvi_head": "pinvi-head",
+  "pinvi_source_revision": "<PINVI_REVISION>",
+  "pinvi_web_image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006"
+ },
+ "geo_override_services": [
+  "kor-travel-geo-api",
+  "kor-travel-geo-dagster",
+  "kor-travel-geo-dagster-daemon"
+ ],
+ "m05_roles_values": [
+  "map",
+  "map",
+  "map",
+  "pinvi",
+  "pinvi",
+  "pinvi"
+ ],
+ "mutation_identifiers_down": [
+  "kor-travel-map-api",
+  "kor-travel-map-ui",
+  "kor-travel-map-dagster",
+  "kor-travel-map-dagster-daemon",
+  "pinvi-api"
+ ],
+ "mutation_parse_up": {
+  "cadvisor": [
+   "cadvisor"
+  ],
+  "grafana": [
+   "grafana"
+  ],
+  "kor-travel-concierge-api": [
+   "kor-travel-concierge-api"
+  ],
+  "kor-travel-concierge-mcp": [
+   "kor-travel-concierge-mcp"
+  ],
+  "kor-travel-concierge-scheduler": [
+   "kor-travel-concierge-scheduler"
+  ],
+  "kor-travel-concierge-ui": [
+   "kor-travel-concierge-ui"
+  ],
+  "kor-travel-dagster-daemon": [
+   "kor-travel-dagster-daemon"
+  ],
+  "kor-travel-dagster-gateway": [
+   "kor-travel-dagster-gateway"
+  ],
+  "kor-travel-dagster-storage-migrate": [
+   "kor-travel-dagster-storage-migrate"
+  ],
+  "kor-travel-dagster-webserver": [
+   "kor-travel-dagster-webserver"
+  ],
+  "kor-travel-geo-api": [
+   "kor-travel-geo-api"
+  ],
+  "kor-travel-geo-dagster": [
+   "kor-travel-geo-dagster"
+  ],
+  "kor-travel-geo-dagster-code-server": [
+   "kor-travel-geo-dagster-code-server"
+  ],
+  "kor-travel-geo-dagster-daemon": [
+   "kor-travel-geo-dagster-daemon"
+  ],
+  "kor-travel-geo-ui": [
+   "kor-travel-geo-ui"
+  ],
+  "kor-travel-map-api": [
+   "kor-travel-map-api"
+  ],
+  "kor-travel-map-application-schema": [
+   "kor-travel-map-application-schema"
+  ],
+  "kor-travel-map-dagster": [
+   "kor-travel-map-dagster",
+   "kor-travel-map-api"
+  ],
+  "kor-travel-map-dagster-code-server": [
+   "kor-travel-map-dagster-code-server"
+  ],
+  "kor-travel-map-dagster-daemon": [
+   "kor-travel-map-dagster-daemon",
+   "kor-travel-map-api"
+  ],
+  "kor-travel-map-dagster-storage-migrate": [
+   "kor-travel-map-dagster-storage-migrate"
+  ],
+  "kor-travel-map-db-role-bootstrap": [
+   "kor-travel-map-db-role-bootstrap"
+  ],
+  "kor-travel-map-ui": [
+   "kor-travel-map-ui",
+   "kor-travel-map-api"
+  ],
+  "kor-travel-shared-db-init-concierge": [
+   "kor-travel-shared-db-init-concierge"
+  ],
+  "kor-travel-shared-db-init-dagster": [
+   "kor-travel-shared-db-init-dagster"
+  ],
+  "kor-travel-shared-db-init-geo": [
+   "kor-travel-shared-db-init-geo"
+  ],
+  "kor-travel-shared-db-init-pinvi": [
+   "kor-travel-shared-db-init-pinvi"
+  ],
+  "kor-travel-shared-db-init-transport": [
+   "kor-travel-shared-db-init-transport"
+  ],
+  "kor-travel-shared-db-init-weather": [
+   "kor-travel-shared-db-init-weather"
+  ],
+  "kor-travel-shared-postgres": [
+   "kor-travel-shared-postgres"
+  ],
+  "kor-travel-weather-api": [
+   "kor-travel-weather-api"
+  ],
+  "kor-travel-weather-dagster-code-server": [
+   "kor-travel-weather-dagster-code-server"
+  ],
+  "kor-travel-weather-dagster-daemon": [
+   "kor-travel-weather-dagster-daemon"
+  ],
+  "kor-travel-weather-dagster-gateway": [
+   "kor-travel-weather-dagster-gateway"
+  ],
+  "kor-travel-weather-dagster-webserver": [
+   "kor-travel-weather-dagster-webserver"
+  ],
+  "kor-travel-weather-migrate": [
+   "kor-travel-weather-migrate"
+  ],
+  "kor-travel-weather-prometheus": [
+   "kor-travel-weather-prometheus"
+  ],
+  "kor-travel-weather-web": [
+   "kor-travel-weather-web"
+  ],
+  "pinvi-admin-bootstrap": [
+   "pinvi-admin-bootstrap"
+  ],
+  "pinvi-api": [
+   "pinvi-api"
+  ],
+  "pinvi-dagster": [
+   "pinvi-dagster",
+   "pinvi-api"
+  ],
+  "pinvi-dagster-code-server": [
+   "pinvi-dagster-code-server"
+  ],
+  "pinvi-dagster-daemon": [
+   "pinvi-dagster-daemon"
+  ],
+  "pinvi-web": [
+   "pinvi-web",
+   "pinvi-api"
+  ],
+  "prometheus": [
+   "prometheus"
+  ],
+  "rustfs": [
+   "rustfs"
+  ],
+  "rustfs-init": [
+   "rustfs-init"
+  ]
+ },
+ "paired_names": [
+  "kor-travel-docker-manager/pinned-runtime-candidate-v6/kor-travel-map-api:<PINSET>",
+  "kor-travel-docker-manager/pinned-runtime-candidate-v6/kor-travel-map-dagster:<PINSET>"
+ ],
+ "pinset_seed": "<PINSET>",
+ "retention_desired": {
+  "kor-travel-docker-manager/pinned-runtime-v5/kor-travel-map-api:0000000000000000000000000000000000000000000000000000000000000065": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
+  "kor-travel-docker-manager/pinned-runtime-v5/kor-travel-map-dagster-daemon:0000000000000000000000000000000000000000000000000000000000000066": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+  "kor-travel-docker-manager/pinned-runtime-v5/kor-travel-map-dagster:0000000000000000000000000000000000000000000000000000000000000066": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
+  "kor-travel-docker-manager/pinned-runtime-v5/kor-travel-map-ui:0000000000000000000000000000000000000000000000000000000000000002": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+  "kor-travel-docker-manager/pinned-runtime-v5/pinvi-api:0000000000000000000000000000000000000000000000000000000000000005": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+  "kor-travel-docker-manager/pinned-runtime-v5/pinvi-dagster:0000000000000000000000000000000000000000000000000000000000000007": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+  "kor-travel-docker-manager/pinned-runtime-v5/pinvi-web:0000000000000000000000000000000000000000000000000000000000000006": "sha256:0000000000000000000000000000000000000000000000000000000000000006"
+ },
+ "runtime_image_references": [
+  [
+   "kor-travel-map-api",
+   "sha256:0000000000000000000000000000000000000000000000000000000000000065"
+  ],
+  [
+   "kor-travel-map-dagster",
+   "sha256:0000000000000000000000000000000000000000000000000000000000000066"
+  ],
+  [
+   "kor-travel-map-dagster-daemon",
+   "sha256:0000000000000000000000000000000000000000000000000000000000000066"
+  ],
+  [
+   "kor-travel-map-ui",
+   "kor-travel-docker-manager/pinned-runtime-candidate-v6/kor-travel-map-ui:<PINSET>"
+  ],
+  [
+   "pinvi-api",
+   "kor-travel-docker-manager/pinned-runtime-candidate-v6/pinvi-api:<PINSET>"
+  ],
+  [
+   "pinvi-dagster",
+   "kor-travel-docker-manager/pinned-runtime-candidate-v6/pinvi-dagster:<PINSET>"
+  ],
+  [
+   "pinvi-web",
+   "kor-travel-docker-manager/pinned-runtime-candidate-v6/pinvi-web:<PINSET>"
+  ]
+ ],
+ "runtime_services": [
+  "kor-travel-map-api",
+  "kor-travel-map-ui",
+  "kor-travel-map-dagster",
+  "kor-travel-map-dagster-daemon",
+  "pinvi-api",
+  "pinvi-web",
+  "pinvi-dagster"
+ ]
+}

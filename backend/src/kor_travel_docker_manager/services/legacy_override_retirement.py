@@ -31,6 +31,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     validate_concierge_ui_canonical_compose_boundary,
 )
 from kor_travel_docker_manager.services.compose_service import get_project_root
+from kor_travel_docker_manager.services.runtime_topology import LazySequence, dagster_family
 from kor_travel_docker_manager.services.trusted_install import TRUSTED_INSTALL_ROOT
 
 _OVERRIDE_NAME = "docker-compose.override.yml"
@@ -41,10 +42,15 @@ _STAGED_SOURCE_ENV_NAME = "concierge-source.env"
 _MAX_IMPORT_BYTES = 128 * 1024
 # GM-09: 경로 상수의 정본은 services/trusted_install.py다.
 _TRUSTED_PRODUCTION_PROJECT_ROOT = TRUSTED_INSTALL_ROOT
-_GEO_SERVICES = (
-    "kor-travel-geo-api",
-    "kor-travel-geo-dagster",
-    "kor-travel-geo-dagster-daemon",
+#: 옛 override가 Geo backup env를 싣던 서비스 — Geo API와 Geo의 Dagster webserver·daemon이다. 과거 파일의
+#: 모양이라 스위치와 무관하다: 공용 Dagster plane(ADR-54)에 합류해 옛 webserver·daemon이 `legacy-dagster`로
+#: 내려가도 그 override는 여전히 그 둘을 이름으로 든다. 이름은 compose의 Geo Dagster family에서 파생한다.
+_GEO_SERVICES: LazySequence[str] = LazySequence(
+    lambda: (
+        "kor-travel-geo-api",
+        dagster_family("geo").webserver,
+        dagster_family("geo").daemon,
+    )
 )
 _GEO_ENV_MIGRATIONS = {
     "KTG_BACKUP_SCHEDULE_ENABLED": "KOR_TRAVEL_GEO_BACKUP_SCHEDULE_ENABLED",

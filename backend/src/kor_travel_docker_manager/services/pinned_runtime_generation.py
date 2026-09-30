@@ -20,29 +20,11 @@ from pathlib import Path
 from typing import Literal, cast
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.runtime_topology import RuntimeSlot
 
 DeploymentEnvironment = Literal["local", "rehearsal", "production"]
 DeploymentLifecycle = Literal["development", "rebuildable", "operational"]
-RuntimeService = Literal[
-    "kor-travel-map-api",
-    "kor-travel-map-ui",
-    "kor-travel-map-dagster",
-    "kor-travel-map-dagster-daemon",
-    "pinvi-api",
-    "pinvi-web",
-    "pinvi-dagster",
-]
 SchemaRole = Literal["map_application", "map_dagster", "pinvi"]
-
-RUNTIME_SERVICES: tuple[RuntimeService, ...] = (
-    "kor-travel-map-api",
-    "kor-travel-map-ui",
-    "kor-travel-map-dagster",
-    "kor-travel-map-dagster-daemon",
-    "pinvi-api",
-    "pinvi-web",
-    "pinvi-dagster",
-)
 
 _LIFECYCLE_PAIRS: dict[tuple[str, str], tuple[str, str]] = {
     ("local", "development"): ("development", "false"),
@@ -236,15 +218,17 @@ class PinnedRuntimeGeneration:
         _validate_utc_timestamp(self.recorded_at, "pinned runtime generation timestamp")
 
     @property
-    def image_ids(self) -> Mapping[RuntimeService, str]:
+    def image_ids(self) -> Mapping[RuntimeSlot, str]:
+        """slot별 이미지. slot이 어느 compose 서비스로 도는지는 ``RuntimeTopology``가 정한다."""
+
         return {
-            "kor-travel-map-api": self.map_api_image_id,
-            "kor-travel-map-ui": self.map_ui_image_id,
-            "kor-travel-map-dagster": self.map_dagster_image_id,
-            "kor-travel-map-dagster-daemon": self.map_dagster_daemon_image_id,
-            "pinvi-api": self.pinvi_api_image_id,
-            "pinvi-web": self.pinvi_web_image_id,
-            "pinvi-dagster": self.pinvi_dagster_image_id,
+            "map_api": self.map_api_image_id,
+            "map_ui": self.map_ui_image_id,
+            "map_dagster": self.map_dagster_image_id,
+            "map_dagster_daemon": self.map_dagster_daemon_image_id,
+            "pinvi_api": self.pinvi_api_image_id,
+            "pinvi_web": self.pinvi_web_image_id,
+            "pinvi_dagster": self.pinvi_dagster_image_id,
         }
 
     @property

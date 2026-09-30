@@ -30,13 +30,17 @@ M05_ISOLATED_MANAGER_ADMISSION_KIND: Final = "pinvi-m05-isolated-manager-admissi
 _EXPOSED_RUNTIME_SERVICE_ROLES: Final[Mapping[str, M05IsolatedRuntimeRole]] = MappingProxyType(
     {"map-api": "map", "pinvi-api": "pinvi"}
 )
+#: isolated project의 이미지 → source project. 키는 격리 project 안의 **이미지 역할**이다 — Manager
+#: compose 서비스 이름이 아니다. PinVi Dagster는 PinVi 저장소 compose의 `app-dagster` 서비스 이미지라
+#: `pinvi-app-dagster`로 부른다. 옛 이름(`pinvi-` + `dagster`)은 Manager의 PinVi webserver 서비스와 같은
+#: 글자라, 공용 Dagster plane 전환(ADR-54)의 literal 검사가 그것을 Manager 서비스 참조로 읽었다.
 _RUNTIME_IMAGE_ROLES: Final[Mapping[str, M05IsolatedRuntimeRole]] = MappingProxyType(
     {
         "map-admin": "map",
         "map-api": "map",
         "map-frontend": "map",
         "pinvi-api": "pinvi",
-        "pinvi-dagster": "pinvi",
+        "pinvi-app-dagster": "pinvi",
         "pinvi-web": "pinvi",
     }
 )
@@ -512,7 +516,7 @@ def build_m05_isolated_runtime_provenance(
         "pinset_sha256": expectation.plan.release.pinset_sha256,
         "pinvi": {
             "api_image_id": image_ids["pinvi-api"],
-            "dagster_image_id": image_ids["pinvi-dagster"],
+            "dagster_image_id": image_ids["pinvi-app-dagster"],
             "source_revision": expectation.pair.pinvi_source_revision,
             "web_image_id": image_ids["pinvi-web"],
         },
