@@ -4218,3 +4218,103 @@ map 전용 instance는 healthcheck가 `test "$(cat /proc/1/comm)" = postgres`로
   `TimeoutStopSec`는 90초 그대로다. 그래서 daemon이 거는 정지(재부팅·패키지 재시작)가 공용 instance를
   SIGKILL하고 crash recovery로 이어질 가능성이 커진다. docker.service `TimeoutStopSec=300` drop-in(호스트
   후속, 오너 결정)은 이 튜닝 **뒤가 아니라 함께** 하기를 권한다.
+
+## ADR-54: 공용 Dagster 제어 평면 3단계 — 공용 daemon·webserver·gateway와 target별 합류 스위치
+
+- 상태: accepted — 효력은 정의까지다. 모든 target이 `own`이라 plane은 빈 workspace로 돌고 어느 프로젝트도
+  합류하지 않았다. 합류는 프로젝트마다 별도 PR·창이다(platform-topology.md §7 전환 runbook).
+- 날짜: 2026-09-30
+- 결정자: 사용자(D2 — gateway `11001`·webserver `127.0.0.1:11002`·daemon 포트 없음, D3 전역 12, D4 코드 선언,
+  D6 soak, transport는 나중에 필드 하나와 파생 항목 하나로 합류), Claude
+- 관련: platform-topology.md §7(2~4단계, G3-a·G3-b), ADR-20(단일 compose 파일 경계), ADR-50(과결박 없이),
+  ADR-52(init·exec probe), 2단계(#443: `dagster_shared`·호스트 이미지·공용 `dagster.yaml`)
+
+### 컨텍스트
+
+2단계가 `dagster_shared`와 그 schema, Manager 소유 호스트 이미지(`kor-travel-dagster-host:<내용 해시>`),
+공용 `dagster.yaml`(location별 상한은 `dagster/code_location`)을 세웠다. 아무것도 그것을 쓰지 않았다. 네
+프로젝트(Map·PinVi·geo·weather)는 각자 webserver·daemon·메타DB를 쓰고, 소비자(API·UI)는 그 webserver를 부른다.
+공용 plane으로 옮기려면 (1) 공용 daemon·webserver와 인증된 입구가 있어야 하고, (2) 공용 workspace가 합류한
+code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-server·소비자·옛 webserver/daemon이 함께
+바뀌어야 한다 — 한 곳이라도 빠지면 두 daemon이 같은 schedule을 쏘거나 소비자가 옛 instance를 본다.
+
+### 결정
+
+1. **호스트 서비스.** `kor-travel-dagster-daemon`·`kor-travel-dagster-webserver`는 storage migrate와 같은 호스트
+   이미지(tag·build context 동일), 비-root(`USER dagster`, uid 10001, `/opt/dagster/state` 쓰기 가능),
+   `init: true`, `restart: unless-stopped`, migrate에 `service_completed_successfully`로 기댄다. env는 공용 URL
+   앵커와 `DAGSTER_HOME`(daemon은 `DAGSTER_DAEMON_HEARTBEAT_TOLERANCE=300`)뿐 — run은 code-server의 자식이라
+   앱 비밀이 필요 없다. daemon은 PinVi와 같은 storage 가드(비-Postgres instance면 기동 거부) 뒤 `dagster-daemon
+   run`, healthcheck는 exec 형식 `dagster-daemon liveness-check`. webserver는 `127.0.0.1:11002`에서만 듣는다.
+2. **모든 location을 보는 probe.** 프로젝트별 webserver의 `repositoriesOrError`는 location 하나만 떠도 초록이라
+   여러 테넌트의 webserver에서는 한 테넌트의 실패를 가린다. 공용 webserver probe는 붙은 workspace 파일에서
+   기대 location을 읽고 `workspaceOrError.locationEntries[*].locationOrLoadError.__typename`이 전부
+   `RepositoryLocation`일 때만 초록이다. exec 형식, dagster를 import하지 않고(yaml·urllib), 자체 timeout(8초)이
+   healthcheck timeout(10초)보다 짧고, gRPC를 부르지 않는다(webserver가 이미 가진 location 상태를 읽는다).
+3. **gateway(`11001`).** weather·transport gateway의 형태 — nginx Basic Auth, same-origin이 아닌 POST(Origin
+   없는 POST 포함) 403, `/health`만 무인증 204, `frame-ancestors 'self'`+iframe을 여는 프로젝트 UI(기본
+   `KTDM_PROD_URL_GEO`, `KOR_TRAVEL_DAGSTER_FRAME_ANCESTORS`로 덮는다). 공식 nginx를 digest로 고정하고
+   uid 101로 돌린다. 그래서 nginx 설정 전체를 Manager가 소유한다(`config/dagster-shared/gateway.conf`, pid·temp를
+   `/tmp/nginx`로). 기동 스크립트는 fail-closed다 — 비밀번호가 비었거나(값이 비면 compose는 secret 파일을
+   만들지 않는다, n150 Compose v5.2.0 실측), 사용자 이름·origin 값이 설정을 깰 모양이면 nginx를 띄우지 않는다.
+   비밀번호는 secret 파일로 받고(`docker inspect`에 없다) htpasswd는 컨테이너 `/tmp`의 `{PLAIN}` 한 줄이다(원문이
+   이미 그 컨테이너의 secret 파일에 있어 컨테이너 안 해시는 더 지키는 것이 없다). 비밀번호 env는 `:?`로
+   요구하지 않는다 — 그러면 그 줄이 없는 `.env`에서 모든 compose 명령이 죽는다. Dagster webserver 자신의 CSP는
+   지우지 않고 frame-ancestors를 두 번째 정책으로 더한다(브라우저는 둘 다 적용한다).
+4. **합류 스위치와 파생 workspace.** target마다 `dagster: {control_plane: own|shared, consumers: {서비스: {env:
+   internal|public[/경로]}}}`(registry가 형태를 fail-close로 검증한다). `config/dagster-shared/workspace.yaml`은
+   `shared` target의 code-server command에서 **파생**한다 — host `127.0.0.1`, port는 `-p`의 compose 기본값,
+   `location_name`은 `--location-name`이 있으면 그것, 없으면 `-m`(상한 값과 같은 이름). 소비자 env만 선언인 이유:
+   PinVi·geo API는 앱 코드의 기본값(`localhost:12802`, `127.0.0.1:12502`)에 기대어 compose에 그 env가 없어,
+   compose만으로는 찾을 수 없다. 나머지(code-server, 옛 webserver·daemon, 그것에 기대는 gateway, 공용
+   webserver·gateway, 공개 host env)는 모양에서 찾는다.
+5. **렌더러를 두지 않는다 — compose가 렌더된 모양이고 테스트가 스위치에서 파생한 기대와 대조한다.** compose는
+   단일 정본 파일이고(ADR-20: override·`include`·`COMPOSE_FILE` 거부) 주석이 계약의 일부다. 오버레이는 그 경계를
+   깨고, 파일을 기계로 다시 쓰면 주석을 잃는다(주석 보존 YAML 라이브러리도 없다). 전환은 네 번뿐이고 각각
+   검토되는 PR이다. 그래서 전환 PR이 compose를 손으로 바꾸고 `test_dagster_shared_workspace_is_derived.py`가
+   빠진 단계를 이름으로 말한다: (a) code-server가 앵커와 공용 `dagster.yaml` 마운트를 받고(그 자리의 옛 마운트
+   없이) gRPC가 `127.0.0.1`, (b) 선언한 소비자 env가 공용 webserver·공개 host로 풀리고 어떤 활성 서비스의
+   env·build arg도 옛 webserver·gateway 포트를 부르지 않는다, (c) 옛 webserver·daemon·gateway가 `profiles:
+   [legacy-dagster]`이고 어느 target의 `services`·`runtime_services`에도 없으며(`containers`에는 남아 되돌리기에
+   쓴다) 활성 서비스가 그것에 기대지 않는다, 그리고 합류한 target이 있으면 plane target이 `all`에 있다. `own`
+   target은 그 어느 것도 갖지 않는다. 같은 파일의 참조 구현 `_flip`이 모델 위에서 그 편집을 하고, 네 target
+   모두에서 계약·workspace 파생·G3-b가 초록임을 보인다.
+6. **빈 plane.** 모든 target이 `own`이면 workspace는 `load_from: []`이고 daemon·webserver는 healthy다(daemon은
+   heartbeat만, probe는 기대 location 0개). plane target은 첫 합류 전까지 `all`에서 빠진다 — 그 전의 plane은 할
+   일이 없고, 비밀번호 전에는 gateway가 기동을 거부하기 때문이다. 첫 합류 PR이 `all`에 넣는다(테스트가 요구한다).
+7. **게이트.** G3-a — 첫 전환 전에 role `kor_travel_dagster_shared_app`의 연결 수를 전역 run 상한 12가 찬
+   상태에서 잰다(`CONNECTION LIMIT 30`, dagster-postgres는 NullPool). 모자라면 db-init 두 문장과 테스트 기대를
+   함께 올린다. G3-b — workspace location마다 `dagster/code_location` 상한이 있고 `shared` target의 location은
+   모두 workspace에 있다(테스트).
+8. **전환과 되돌리기**는 platform-topology.md §7 runbook이다 — drain, fence(옛 daemon 뒤 webserver 정지,
+   `fence_ts`), switch(스위치를 바꾼 release 설치 → `ensure dagster` → `ensure P`), verify(probe·instigator
+   동등·옛 DB tick 0·슬롯당 tick 하나·첫 run SUCCESS·전환 판정 SQL·소비자 격리), soak(D6). 되돌리기는
+   **공용 workspace에서 P를 먼저 내리고(`ensure dagster`) 옛 daemon을 띄운다(`ensure P`)** — 반대면 두 daemon이 쏜다.
+
+### 근거
+
+- 모든 target이 `own`인 동안 기존 서비스의 정의는 한 글자도 바뀌지 않는다. n150 실측(읽기 전용, live `.env`,
+  sudo): 설치본 `08824b0`과 이 브랜치의 `docker compose config --hash '*'`가 기존 41개 서비스 전부 같고 새
+  것은 셋(daemon·webserver·gateway)뿐이다. 설치가 어떤 컨테이너의 재생성도 걸어 두지 않는다.
+- transport는 Manager 안으로 옮겨 온 뒤(M-T) `dagster` 필드 하나와 workspace의 파생 항목 하나로 합류한다 —
+  location 이름이 custom이어도 `--location-name`을 읽는다. 상한 두 줄은 공용 `dagster.yaml`에 더한다(2단계).
+
+### 결과
+
+- 전환 PR의 할 일이 테스트로 닫혀 있다. 빠뜨린 단계는 이름으로 빨갛다(참조 구현에서 한 단계씩 뺀 대조군).
+- 공용 plane의 입구는 인증된 gateway 하나다. webserver는 loopback이고 서버 쪽 소비자는 그 loopback에 직접 붙는다.
+- 한 테넌트의 location이 안 뜨면 공용 webserver가 unhealthy가 된다 — 그것이 의도다(가리지 않는다). gateway는
+  webserver에 `service_started`로만 기대어 그때도 UI를 연다.
+
+### 받아들인 위험 · 남은 것
+
+- Dagster OSS에는 RBAC가 없다. 합류한 code-server는 모두 공용 metadata 자격증명을 가지므로 다른 테넌트의 run
+  기록을 읽고 바꿀 수 있다. 공용 instance라는 결정에 딸린 것이고 받아들였다.
+- 소비자 URL의 앱 쪽 준비(location-scoped GraphQL, 계획 3.1~3.4)는 각 저장소의 PR이다. Map API의 host
+  allowlist(`KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS`)는 URL이 아니라 이 계약 밖이고, Map API가 클라이언트에
+  돌려주는 공개 GraphQL URL은 이제 Basic Auth gateway 뒤다 — Map 전환 전에 C7 게이트가 그 입구로 인증해 붙는지
+  Map 쪽에서 정한다. Map 전환은 Map 전용 C6c 계약(보호 서비스 집합, pinned rebuild의 필요 서비스)도 바꿔야 한다.
+- 버전 상한 검사(계획 0.6 — code-server의 `dagsterLibraryVersions` ≤ 호스트)는 아직 없다. 첫 합류 전에 둔다.
+- workspace의 port는 compose **기본값**이다. `.env`가 code-server 포트를 덮으면 workspace가 틀리고, 공용
+  webserver probe가 그 location을 빨갛게 보인다(조용하지 않다).
+- 공개 host `dagster.digitie.mywire.org` → `192.168.1.14:11001`과 옛 hostname redirect는 저장소 밖(OPNsense)이다.

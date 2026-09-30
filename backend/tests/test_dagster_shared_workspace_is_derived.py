@@ -164,8 +164,21 @@ def _build_args(service: Mapping[str, Any]) -> dict[str, Any]:
     return args if isinstance(args, dict) else {}
 
 
+def _split_top(text: str) -> list[str]:
+    """`:`로 자르되 보간(`${A:-x}`) 안의 `:`에서는 자르지 않는다."""
+
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(text):
+        depth += char == "{"
+        depth -= char == "}"
+        if char == ":" and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+    return [*parts, text[start:]]
+
+
 def _mount_target(volume: object) -> str | None:
-    parts = str(volume).split(":")
+    parts = _split_top(str(volume))
     return parts[1] if len(parts) >= 2 else None
 
 
@@ -222,18 +235,6 @@ def _legacy_ports(compose: dict[str, Any], legacy: set[str]) -> set[int]:
     return ports
 
 
-def _host_port(mapping: str) -> str:
-    """`${A:-1}:${A:-1}`의 앞쪽(host) — 보간 안의 `:`에서 자르지 않는다."""
-
-    depth = 0
-    for index, char in enumerate(mapping):
-        depth += char == "{"
-        depth -= char == "}"
-        if char == ":" and depth == 0:
-            return mapping[:index]
-    return mapping
-
-
 def _plane(compose: dict[str, Any], targets: dict[str, Any]) -> dict[str, Any]:
     """공용 plane — 공용 workspace를 붙인 webserver·daemon, 그 앞 gateway, 그것을 가진 target."""
 
@@ -264,7 +265,7 @@ def _plane(compose: dict[str, Any], targets: dict[str, Any]) -> dict[str, Any]:
     ]
     assert len(public_env) == 1, f"gateway 컨테이너의 prod_url_env를 하나로 못 찾았다: {public_env}"
     webserver_argv = _words(services[webserver]["command"])
-    gateway_port = _host_port(str(services[gateway]["ports"][0]))
+    gateway_port = _split_top(str(services[gateway]["ports"][0]))[0]
     return {
         "target": owners[0],
         "webserver": webserver,
@@ -430,7 +431,8 @@ def _contract_violations(compose: dict[str, Any], targets: dict[str, Any]) -> li
 
         if shared:
             ports = _legacy_ports(compose, legacy)
-            pattern = re.compile(r"(?:127\.0\.0\.1|localhost):(%s)(?!\d)" % "|".join(map(str, sorted(ports))))
+            alternatives = "|".join(map(str, sorted(ports)))
+            pattern = re.compile(rf"(?:127\.0\.0\.1|localhost):({alternatives})(?!\d)")
             for name, service in services.items():
                 if service.get("profiles"):
                     continue

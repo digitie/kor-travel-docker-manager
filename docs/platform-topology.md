@@ -127,8 +127,10 @@ ADR-53으로 공용 인스턴스로 옮겨, 이제 Manager의 PostgreSQL은 공�
 **Dagster를 쓰는 다섯 프로젝트(`pinvi`·`geo`·`weather`·`map`·transport)가 모두 §7
 1단계(code-server 분리)를 충족했다.** code-server는 **프로젝트마다 하나씩 따로** 돈다 —
 프로젝트끼리 합치지 않고, 합칠 계획도 없다(§7 "왜 code-server만 나뉘는가"). 공유하기로 한
-것은 webserver/daemon과 메타DB(`dagster_shared`)다. 메타DB는 2단계의 정의만 있고 아무도 쓰지
-않으며, webserver/daemon은 아직 없다(§7 2~4단계).
+것은 webserver/daemon과 메타DB(`dagster_shared`)다. 공용 plane(§7 3단계, ADR-54)은 정의돼 있다 —
+daemon·webserver(`127.0.0.1:11002`)·gateway(`11001`)가 `dagster_shared` 위에서 **빈 workspace로** 돈다.
+어느 프로젝트도 아직 합류하지 않았으므로(모든 target의 `dagster.control_plane: own`) 아래 표의
+프로젝트별 webserver/daemon이 여전히 실제로 일하는 것들이다. 합류는 §7의 전환 runbook대로 하나씩 한다.
 pinvi/geo는 2026-09-19(서로 다른 PR이 거의 동시에 착지 — PinVi ADR-069/PR
 `digitie/pinvi#559`+`#358`, geo는 PR #357), weather는 원래 external target 때부터
 분리돼 있었고(참조 구현 `kor-travel-weather` PR #61) 2026-09-20 ADR-47로 Manager
@@ -148,6 +150,7 @@ internal target이 되며 `network_mode: host`로도 옮겨왔다 — 지금은 
 | `weather` | `kor-travel-weather-dagster-webserver` 내부 전용 `14107` + 게이트웨이(Basic Auth) `14102` | `kor-travel-weather-dagster-daemon` (포트 없음) | `kor-travel-weather-dagster-code-server` `14106`(loopback 전용, 무인증) | ADR-47 — Manager 소유, webserver/daemon → `-w workspace.yaml`(grpc_server, Manager 소유 오버라이드가 `host: dagster-code-server`를 `127.0.0.1`로 재작성), code-server만 `-m kortravelweather_dagster.definitions` |
 | `transport`(외부) | 그 저장소 compose | 그 저장소 compose | `kor-travel-transport-dagster-code-server-1` | 그 저장소가 소유한다 — Manager compose에는 없다 |
 | `conc` | 없음 | — | 없음 | — |
+| 공용(`dagster`) | `kor-travel-dagster-webserver` `127.0.0.1:11002` + 게이트웨이 `kor-travel-dagster-gateway` `11001`(Basic Auth) | `kor-travel-dagster-daemon` (포트 없음) | 없음 — 합류한 프로젝트의 code-server를 본다 | ADR-54 — `-w config/dagster-shared/workspace.yaml`(파생물, 지금은 `load_from: []`), 호스트 이미지 `kor-travel-dagster-host`, instance는 공용 `dagster.yaml` |
 
 > **접속 방식**: pinvi·geo·weather·map 모두 이 저장소의 compose가 강제하는
 > `network_mode: host`라 `workspace.yaml`이 서비스명이 아니라 `host: 127.0.0.1`을
@@ -205,9 +208,10 @@ Dagster 스토리지 `dagster_shared`)는 **Manager 쪽 정의가 있다** — d
 백업 role `dagster_shared`, target `dagster`. n150에 생기는 것은 그 release를 설치한 뒤 창에서
 `ensure dagster`를 돌렸을 때다(두 one-shot은 init step이라 어느 하나라도 실패하면 ensure가 실패한다).
 2단계 검증의 백업은 crontab 줄이 부르는 **그 경로**(설치본 `/opt/kor-travel-docker-manager/scripts/
-run-standalone-backup.sh dagster_shared 7`)를 cron 계정으로 돌린다. 아무것도 아직 그 instance를 쓰지 않는다. 3·4단계(공용
-webserver/daemon/gateway · 프로젝트별 webserver/daemon 철거)는 여전히 계획이다 — `11001`/`11002`에는
-**아직 아무것도 없다**. 다른 프로젝트가 5단계를 먼저 밟는 절차는
+run-standalone-backup.sh dagster_shared 7`)를 cron 계정으로 돌린다. 3단계(공용 daemon·webserver·gateway,
+target별 합류 스위치)도 **Manager 쪽 정의가 있다**(ADR-54) — 모든 target이 `own`이라 plane은 빈
+workspace로 돌고, 어느 프로젝트도 아직 합류하지 않았다. 4단계(프로젝트별 webserver/daemon 철거)는
+계획이다. 다른 프로젝트가 5단계를 먼저 밟는 절차는
 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md)가 갖는다.
 
 **공용 instance의 튜닝은 Map의 값이다(ADR-53 D4).** Map의 두 DB가 이리로 오기 전에
@@ -295,11 +299,58 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
      'kor_travel_dagster_shared_app'`의 최대값을 본다. 최대값에 여유를 둔 값이 30보다 크면 db-init의
      CREATE·ALTER 두 문장과 `test_dagster_shared_config.py`의 기대값을 함께 올리고, 공용 instance의
      `max_connections`에서 다른 테넌트 몫이 남는지 확인한 뒤에 전환한다. 실측값과 결론을 journal에 남긴다.
-   - **3단계 게이트(G3-b) — 공용 `workspace.yaml`이 들어오는 PR에서 함께 넣는다.** 그 파일의
-     `grpc_server` 항목마다의 `location_name` 집합이 공용 `dagster.yaml`의 `dagster/code_location` 상한
-     값 집합과 **같다**는 테스트를 더한다(`test_dagster_shared_config.py`의
-     `test_location_caps_cover_exactly_the_compose_code_servers` 옆). 이름이 하나라도 어긋나면 그
-     location의 상한이 조용히 사라지므로, 테스트 없이 `workspace.yaml`을 머지하지 않는다.
+   - **3단계 게이트(G3-b) — 들어갔다(ADR-54).** `test_dagster_shared_workspace_is_derived.py`의
+     `test_g3b_workspace_locations_and_location_caps_agree`: workspace의 `location_name`마다 공용
+     `dagster.yaml`에 `dagster/code_location` 상한이 있고, `shared` target의 location은 모두 workspace에
+     있다(상한 쪽은 `own` target의 것도 미리 담고 있으므로 "같다"가 아니라 이 두 방향이다). 이름이 하나라도
+     어긋나면 그 location의 상한이 조용히 사라진다.
+   - **합류 스위치와 파생물(ADR-54).** target마다 `config/docker-targets.yml`의
+     `dagster: {control_plane: own|shared, consumers: {...}}`가 스위치다(지금 넷 다 `own`). 공용
+     `config/dagster-shared/workspace.yaml`은 `shared` target의 code-server command(`-p`, `-m`/
+     `--location-name`)에서 **파생**하고, 테스트가 어긋나면 빨개진다. `shared`로 바꾸는 PR은 같은
+     커밋에서 compose를 그 모양으로 바꾼다 — (a) code-server가 `<<: *dagster-shared-control-env`와
+     `./config/dagster-shared/dagster.yaml:$DAGSTER_HOME/dagster.yaml:ro`를 받고 gRPC가 `127.0.0.1`에서만
+     듣는다(geo는 지금 `0.0.0.0`), (b) `consumers`의 env가 공용 webserver(`internal` =
+     `http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}`)·공개 host(`public` =
+     `${KTDM_PROD_URL_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}}`)를 가리키고
+     어떤 활성 서비스도 옛 webserver·gateway 포트를 부르지 않는다, (c) 옛 webserver·daemon(과 그것에 기대는
+     weather gateway)이 `profiles: [legacy-dagster]`로 내려가 target의 `services`·`runtime_services`에서
+     빠진다(`containers`에는 남는다 — 되돌리기 때 `ktdctl start`가 찾는다). 첫 합류 PR은 공용 plane
+     target을 `all`에 넣는다. 빠진 단계는 테스트가 이름으로 말한다. Map API의 host allowlist
+     (`KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS`)는 URL이 아니라 이 계약 밖이다 — Map 전환 PR이 공개 host를
+     더한다.
+   - **빈 plane.** 모든 target이 `own`이면 workspace는 `load_from: []`이고 daemon·webserver는 healthy다
+     (daemon은 heartbeat만 쓰고, webserver probe는 기대 location이 0개다). gateway는
+     `KOR_TRAVEL_DAGSTER_UI_PASSWORD`가 비어 있으면 기동을 거부한다. 그래서 plane target은 첫 합류 전까지
+     `all`에서 빠져 있고, 창에서 비밀번호를 넣고 `ensure dagster`로 세운다.
+   - **전환 runbook(프로젝트 P 하나).** 순서는 PinVi → geo → weather → Map, 사이마다 D6의 soak.
+     0. 첫 전환 전 한 번: 빈 plane을 세운다 — `.env`에 `KOR_TRAVEL_DAGSTER_UI_PASSWORD`(와 운영의
+        `KTDM_PROD_URL_DAGSTER`)를 넣고 `ensure dagster`. daemon `liveness-check` 초록, webserver probe 초록,
+        `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:11001/health`가 204, 인증 없는 `/`가 401,
+        `dagster_shared.daemon_heartbeats`에 행이 있고 `instigators`·`jobs`가 비어 있다. 그 뒤 G3-a를 잰다.
+     1. **Drain.** P의 옛 DB에서 `SELECT status, count(*) FROM runs WHERE status IN ('QUEUED','STARTED',
+        'STARTING','CANCELING') GROUP BY 1`이 0이거나, 남은 run을 낡은 것으로 판정해 옛 UI에서 끝낸다
+        (weather는 QUEUED 4·STARTED 2가 있었다). P의 cron 슬롯 사이 조용한 창을 고른다.
+     2. **Fence.** P의 옛 daemon, 이어 옛 webserver를 멈춘다(`ktdctl stop`). `fence_ts = now()`를 적는다.
+        여기서부터 옛 instance는 tick·sensor·dequeue·launch를 못 한다.
+     3. **Switch.** P의 스위치를 `shared`로 바꾼 release를 설치하고(위 (a)·(b)·(c)와 workspace 항목이 같은
+        커밋에 있다) `ensure dagster`(공용 daemon·webserver가 새 workspace를 읽도록 재생성) 다음 `ensure P`
+        (code-server가 공용 URL·`dagster.yaml`로, 소비자가 공용 URL로 재생성된다).
+     4. **Verify** — P의 cron 주기 하나 안에: 공용 webserver probe 초록(workspace의 location 전부가
+        `RepositoryLocation`), P의 RUNNING instigator 집합이 옛 DB의 것과 같다(D4 — 코드 선언), 옛 DB의
+        `SELECT count(*) FROM job_ticks WHERE timestamp > :fence_ts`가 0으로 머문다, `dagster_shared`에는
+        P의 schedule마다 cron 슬롯당 tick이 정확히 하나, 첫 run이 SUCCESS이고 그 event가 `dagster_shared`에
+        있다, 위 "전환 판정" SQL이 0, P의 API·UI가 P의 location과 run만 보인다.
+     5. **Soak.** D6 — P의 일일 주기 하나를 지켜본 뒤 다음 프로젝트. Map은 공용 plane에서 C7 prod gate가
+        GREEN이어야 끝난다. 전환된 프로젝트의 옛 hostname은 소유자가 OPNsense에서 공용 host로 redirect한다.
+   - **되돌리기(4단계 전까지 싸다).** 순서가 중요하다 — **공용 workspace에서 P를 먼저 내리고, 그 다음에
+     옛 daemon을 띄운다.** 반대로 하면 두 daemon이 같은 schedule을 함께 쏜다.
+     1. P의 스위치를 `own`으로 되돌린 release를 설치하고 `ensure dagster`(공용 daemon·webserver가 P 없는
+        workspace를 읽는다).
+     2. `ensure P` — code-server가 옛 URL·`dagster.yaml`로, 소비자가 옛 URL로 돌아가고, 옛 webserver·daemon이
+        profile 밖으로 나와 다시 뜬다.
+     3. 소유자가 에지의 옛 hostname upstream을 되돌린다. 전환 창 동안 공용 plane에서 돈 run은
+        `dagster_shared`에 남는다 — 이력이 나뉠 뿐 잃는 것은 없다.
 4. 프로젝트별 webserver/daemon을 내린다. **이 단계 전까지는 되돌리기가 싸다.**
 5. 애플리케이션 DB를 `11000`으로 이사한다 — 프로젝트별 롤·ACL·마이그레이션 원장·
    백업 경로가 전부 따라온다. **가장 비싸고 되돌리기 어려운 단계이므로 마지막이다.**

@@ -800,7 +800,10 @@ services:
       }
       user="$$DAGSTER_UI_USER"
       case "$$user" in ''|*[!A-Za-z0-9._@-]*) fail "KOR_TRAVEL_DAGSTER_UI_USER must be non-empty [A-Za-z0-9._@-]" ;; esac
-      password="$$(cat /run/secrets/kor-travel-dagster-ui-password)"
+      # 값이 비었거나 없으면 compose는 secret 파일을 만들지 않는다(n150 Compose v5.2.0 실측).
+      secret=/run/secrets/kor-travel-dagster-ui-password
+      password=""
+      if [ -s "$$secret" ]; then password="$$(cat "$$secret")"; fi
       [ -n "$$password" ] || fail "KOR_TRAVEL_DAGSTER_UI_PASSWORD is empty; refusing to serve the shared Dagster UI without authentication"
       case "$$password" in *'
       '*) fail "KOR_TRAVEL_DAGSTER_UI_PASSWORD must be a single line" ;; esac

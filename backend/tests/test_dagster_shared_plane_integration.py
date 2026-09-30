@@ -80,9 +80,9 @@ def call(path, method="GET", secret=password, origin=None, body=None):
         request.add_header("Content-Type", "application/json")
     try:
         response = urllib.request.urlopen(request, timeout=15)
-        return response.status, response.headers.get("Content-Security-Policy")
+        return response.status, response.headers.get_all("Content-Security-Policy") or []
     except urllib.error.HTTPError as error:
-        return error.code, error.headers.get("Content-Security-Policy")
+        return error.code, error.headers.get_all("Content-Security-Policy") or []
 
 query = json.dumps({"query": "{workspaceOrError{__typename}}"}).encode()
 ui_status, csp = call("/")
@@ -131,6 +131,23 @@ def _container(plane: _Plane, service: str) -> str:
 
 @pytest.fixture
 def isolated_plane(tmp_path: Path) -> Iterator[_Plane]:
+    yield from _isolated(tmp_path, build_host_image=True)
+
+
+@pytest.fixture
+def isolated_gateway(tmp_path: Path) -> Iterator[_Plane]:
+    """gateway 기동 거부만 본다 — 호스트 이미지를 만들지 않는다. netns를 빌려 줄 공용 instance만 띄운다."""
+
+    for plane in _isolated(tmp_path, build_host_image=False):
+        up = _run(
+            *plane.compose, "up", "--detach", "--pull", "never", "--no-deps", _SHARED_POSTGRES,
+            env=plane.env, timeout=_RUN_TIMEOUT,
+        )
+        assert up.returncode == 0, up.stderr
+        yield plane
+
+
+def _isolated(tmp_path: Path, *, build_host_image: bool) -> Iterator[_Plane]:
     canonical = _canonical()
     services = canonical["services"]
     postgres = _fixture_service()
@@ -148,7 +165,8 @@ def isolated_plane(tmp_path: Path) -> Iterator[_Plane]:
     if not available:
         _unavailable_docker_fixture("Docker Compose 또는 공용 instance·gateway 이미지를 쓸 수 없음")
 
-    project = f"{_PROJECT_PREFIX}{os.getpid()}-{tmp_path.name[-8:]}".lower()
+    # 이미지 참조와 compose 프로젝트 이름에 쓸 수 있는 글자만 — tmp 이름은 `_`로 시작할 수 있다.
+    project = f"{_PROJECT_PREFIX}{os.getpid()}-{secrets.token_hex(4)}"
     image = f"{project}:it"
     context = _REPO_ROOT / services[_MIGRATE]["build"]["context"]
     host_image = services[_MIGRATE]["image"]
@@ -185,9 +203,10 @@ def isolated_plane(tmp_path: Path) -> Iterator[_Plane]:
     compose = ("docker", "compose", "--file", str(compose_path), "--project-name", project)
     built = False
     try:
-        build = _run("docker", "build", "--tag", image, str(context), timeout=_BUILD_TIMEOUT)
-        assert build.returncode == 0, build.stdout[-3000:] + build.stderr[-3000:]
-        built = True
+        if build_host_image:
+            build = _run("docker", "build", "--tag", image, str(context), timeout=_BUILD_TIMEOUT)
+            assert build.returncode == 0, build.stdout[-3000:] + build.stderr[-3000:]
+            built = True
         yield _Plane(
             compose=compose,
             env=env,
@@ -269,12 +288,18 @@ def test_the_empty_plane_is_healthy_and_the_gateway_guards_the_ui(isolated_plane
     )
     assert answered.returncode == 0, answered.stderr
     seen = json.loads(answered.stdout.strip().splitlines()[-1])
+    # Dagster webserver는 자기 CSP(script-src 등)를 보낸다. gateway의 frame-ancestors는 **두 번째** 정책으로
+    # 붙는다 — 브라우저는 정책 둘을 모두 적용하므로 Dagster의 것을 지우지 않고 더한다.
+    policies = seen.pop("csp")
+    assert f"frame-ancestors 'self' {_FRAME_ANCESTOR}" in policies, policies
+    assert not any("frame-ancestors" in p for p in policies if not p.startswith("frame-ancestors")), (
+        policies
+    )
     assert seen == {
         "health": 204,
         "anonymous": 401,
         "wrong_password": 401,
         "ui": 200,
-        "csp": f"frame-ancestors 'self' {_FRAME_ANCESTOR}",
         "post_without_origin": 403,
         "post_foreign_origin": 403,
         "post_public_origin": 200,
@@ -293,11 +318,11 @@ def test_the_empty_plane_is_healthy_and_the_gateway_guards_the_ui(isolated_plane
     ],
 )
 def test_the_gateway_refuses_to_start_unguarded(
-    isolated_plane: _Plane, override: dict[str, str], said: str
+    isolated_gateway: _Plane, override: dict[str, str], said: str
 ) -> None:
     """비밀번호가 비었거나 설정 값이 nginx 설정을 깰 모양이면 nginx를 띄우지 않고 죽는다."""
 
-    plane = isolated_plane
+    plane = isolated_gateway
     env = dict(plane.env)
     for key, value in override.items():
         env[plane.ui_password_env if key == "__password__" else key] = value
