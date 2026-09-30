@@ -344,6 +344,15 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
         (weather는 QUEUED 4·STARTED 2가 있었다). P의 cron 슬롯 사이 조용한 창을 고른다.
      2. **Fence.** P의 옛 daemon, 이어 옛 webserver를 멈춘다(`ktdctl stop`). `fence_ts = now()`를 적는다.
         여기서부터 옛 instance는 tick·sensor·dequeue·launch를 못 한다.
+     - **설치와 창은 이어서(전환 리뷰 H1).** plane은 workspace를 설치본 symlink를 거쳐 붙인다. P의 스위치를
+       바꾼 release를 설치한 뒤 plane이 한 번이라도 다시 시작되면(crash 재시작, dockerd 재시작, 대시보드의 restart)
+       새 workspace로 P를 로드하는데, 펜스 전이라 옛 daemon도 tick한다 — 이중 발화다. 그래서 설치 직후 바로 창
+       스크립트를 돌리고, 그 사이 아무도 plane을 재시작하지 않는다. 스크립트는 precheck와 펜스 직전에 plane 컨테이너에
+       **붙은** workspace가 아직 설치 전 것인지(내용 digest = 컨테이너의 digest env = 설치 전 값, P 없음)와
+       `dagster_shared`에 P의 tick·run이 없는지 본다.
+     - **전제(소유자).** 옛 공개 host(`<p>-dagster.digitie.mywire.org`)를 공용 host로 redirect한다. 소비자 UI의
+       브라우저 번들이 공개 URL을 빌드 때 굽는 경우(weather-web의 `NEXT_PUBLIC_DAGSTER_URL`) env 변경은 SSR·다음
+       빌드에만 먹고, 배포된 번들은 옛 host를 링크한다.
      3. **Switch.** P의 스위치를 `shared`로 바꾼 release를 설치하고(위 (a)·(b)·(c)와 workspace 항목, 그리고
         daemon·webserver의 `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`가 같은 커밋에 있다) `ensure dagster` 다음
         `ensure P`. **재생성은 digest가 건다** — bind source가 설치본 symlink를 거친 경로라 compose는 경로 문자열만
@@ -374,9 +383,17 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
           P의 op pool 이름이 테넌트 접두를 단다(공용 `concurrency.pools.default_limit`이 모든 테넌트의 모든 pool에
           걸린다 — 접두 없는 이름은 다른 테넌트의 같은 이름과 한 슬롯을 나눈다).
         4번이 하나라도 빨가면 다음 프로젝트로 가지 않고 P를 되돌린다(아래).
+        - 펜스와 스위치 사이의 cron 슬롯은 **건너뛴다** — 공용 daemon은 P의 schedule을 처음 보므로 과거 슬롯을
+          따라잡지 않는다(짧은 창을 고르는 이유).
+        - 검증이 끝나면 멈춘 옛 daemon·webserver·gateway **컨테이너를 지운다**(볼륨은 두고). 멈춘 채 두면 대시보드의
+          start 한 번이 옛 daemon을 되살려 이중 발화한다. 되돌리기는 legacy release의 compose가 다시 만든다.
      5. **함께 관측(D6).** 네 프로젝트가 모두 공용 plane에 오른 뒤 약 24시간 — schedule의 일일 주기 하나 —
         를 함께 지켜본다. 그 안에 Map의 C7 prod gate가 공용 plane에서 GREEN이어야 한다. 4단계는 이 관측
         뒤에 온다. 전환된 프로젝트의 옛 hostname은 소유자가 OPNsense에서 공용 host로 redirect한다.
+   - **되돌리기의 따라잡기.** 되돌아간 옛 daemon은 펜스 뒤 놓친 슬롯을 schedule마다 `max_catchup_runs`(Dagster
+     기본 5)까지 한꺼번에 띄울 수 있다 — weather라면 17 × 5. 다시 전진할 때 공용 daemon도 되돌리기 동안 놓친 P의
+     슬롯을 같은 상한까지 따라잡는다. 되돌린 직후 큐를 본다. 되돌리기 전에 공용 plane의 P run(QUEUED·STARTED,
+     `dagster/code_location=<P>`)은 plane 컨테이너에서 끝낸다.
    - **되돌리기(4단계 전까지 싸다).** 순서가 중요하다 — **공용 workspace에서 P를 먼저 내리고, 그 다음에
      옛 daemon을 띄운다.** 반대로 하면 두 daemon이 같은 schedule을 함께 쏜다.
      1. P의 스위치를 `own`으로 되돌린 release를 설치하고 `ensure dagster`(공용 daemon·webserver가 P 없는
