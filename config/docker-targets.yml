@@ -432,14 +432,13 @@ targets:
       - kor-travel-shared-db-init-geo
       - kor-travel-geo-api
       - kor-travel-geo-ui
-      - kor-travel-geo-dagster
-      - kor-travel-geo-dagster-daemon
       - kor-travel-geo-dagster-code-server
+    # 옛 webserver·daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster` profile에 있다 — `up`에 이름을 주면
+    # 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태 화면과 되돌리기가
+    # 찾는다.
     runtime_services:
       - kor-travel-geo-api
       - kor-travel-geo-ui
-      - kor-travel-geo-dagster
-      - kor-travel-geo-dagster-daemon
       - kor-travel-geo-dagster-code-server
     containers:
       - kor-travel-shared-postgresql
@@ -464,7 +463,7 @@ targets:
     # `internal`(공용 webserver `http://127.0.0.1:11002`), `public`(공개 host `KTDM_PROD_URL_DAGSTER`),
     # 뒤에 경로를 붙일 수 있다(`public/graphql`).
     dagster:
-      control_plane: own
+      control_plane: shared
       consumers:
         kor-travel-geo-api:
           KTG_DAGSTER_URL: internal
@@ -844,6 +843,9 @@ compose_binds:
     - container_path: "/app/data/backups"
       read_only: false
       source: "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
+    - container_path: "/opt/dagster/dagster_home/dagster.yaml"
+      read_only: true
+      source: "./config/dagster-shared/dagster.yaml"
   kor-travel-dagster-storage-migrate:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true

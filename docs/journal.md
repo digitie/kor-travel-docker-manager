@@ -8569,3 +8569,31 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
 - 테스트: pinned 재구축·C6c·보존·파생 legacy 테스트는 "Map·PinVi `own`" 기준선(conftest `own_pinned_pair`,
   `_own_pair_documents`) 위에서 `_flip`을 얹는다. `own` 대조군은 geo로 옮겼고, f1d의 PinVi runtime 목록은 slot
   carrier에서 파생한다. 계약 env에 공용 URL 앵커의 필수 키를 더했다.
+
+## 2026-10-01 — 공용 Dagster: geo 전환 PR(셋째 합류, ADR-54)
+
+브랜치 `feat/dagster-shared-flip-geo`(origin/main `cc5fa06` 위 — PinVi 전환 설치본). 참조 전환 `_flip`을 파일에 옮겼다.
+
+- geo `dagster.control_plane: shared`. code-server: `<<: *dagster-shared-control-env`, instance digest, 이미지에 구운
+  `dagster_home/dagster.yaml` 대신 공용 `dagster.yaml`(compose_binds는 기존 백업 디렉터리 항목 옆에), gRPC는
+  `-h 0.0.0.0` → **`127.0.0.1`**(plan §4 — 인증 없는 gRPC가 LAN에 열려 있었다. f1d의 알려진 예외 목록이 비었다),
+  포트는 literal `12503`(healthcheck도).
+- geo-api: `KTG_DAGSTER_URL` → `http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}`(geo의 SSRF allowlist가
+  host만 보고 127.0.0.1을 허용한다), `KTG_DAGSTER_PUBLIC_URL` → `${KTDM_PROD_URL_DAGSTER:-…11001}`. 옛
+  `KOR_TRAVEL_GEO_DAGSTER_PUBLIC_URL`(`geo-dagster` host)은 더 읽지 않는다. geo의 summary·run 조회·launch는
+  `dagster_repository_location_name`으로 좁혀 부르고 run 상세는 `repositoryOrigin`으로 소유를 본다(geo #569).
+- 옛 `kor-travel-geo-dagster`·`-daemon` → `profiles: [legacy-dagster]`, geo의 `services`·`runtime_services`에서 뺌.
+- 공용 workspace에 `kortravelgeo_dagster.definitions`(127.0.0.1:12503), daemon·webserver의 workspace digest 갱신.
+- 합류 조건(n150 실측): code-server는 `appuser`(uid 999)이고 `/opt/dagster`를 소유한다 — `/opt/dagster/state`를
+  첫 쓰기 때 만든다; op pool 없음(`pool`·`dagster/concurrency_key` 0); dagster 1.13.24 = 호스트; 코드 선언은
+  schedule 3개 중 RUNNING 2(`backup_retention_janitor_daily`·`scheduled_backup`, `backup_restore_drill_daily`는
+  STOPPED)와 `run_failure_sensor` RUNNING — 옛 instance의 RUNNING 집합(3)과 같다; 공용 `dagster.yaml`에 geo
+  `dagster/code_location` 10. `max_runtime` 86400이 4 job(full_load_batch·load_source·db_restore·restore_drill),
+  나머지는 공용 기본 21600.
+- geo UI iframe: `/admin/dagster`의 `DagsterEmbed`는 **요청마다** UI 컨테이너의 `KTG_DAGSTER_PUBLIC_URL`(→`.env`→
+  `NEXT_PUBLIC_DAGSTER_URL`)을 읽는다 — 빌드에 굽지 않는다. 지금 geo-ui 컨테이너에는 그 값이 없어 iframe은 안내만
+  보인다(전환 전과 같다). 켜려면 geo-ui에 `KTG_DAGSTER_PUBLIC_URL`을 공용 공개 host로 준다 — gateway의
+  `frame-ancestors` 기본값은 `KTDM_PROD_URL_GEO`(= geo UI origin)라 그대로 맞는다. 다만 iframe 안의 Basic Auth
+  prompt와 공용 UI가 모든 테넌트를 보인다는 점은 소유자 결정이다.
+- 테스트: `own` 대조군은 이제 마지막 `own`인 Map으로 든다(Map은 이미 loopback이라 loopback 대조군은 `-h 0.0.0.0`을
+  먼저 입힌다). 설치 모델의 스위치 단언은 map·pinvi `own`(기준선 fixture), geo·weather `shared`.

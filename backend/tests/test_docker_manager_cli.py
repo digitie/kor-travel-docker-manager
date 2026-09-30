@@ -62,8 +62,6 @@ def test_registry_resolves_application_targets_to_shared_services():
         "kor-travel-shared-db-init-geo",
         "kor-travel-geo-api",
         "kor-travel-geo-ui",
-        "kor-travel-geo-dagster",
-        "kor-travel-geo-dagster-daemon",
         "kor-travel-geo-dagster-code-server",
         # kor-travel-shared-postgres는 geo target에서 이미 나왔으므로(ADR-45) 여기서는
         # dedupe로 빠진다.
@@ -81,7 +79,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "pinvi-api",
         "pinvi-web",
         "pinvi-dagster-code-server",
-        # pinvi-dagster·pinvi-dagster-daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
+        # PinVi·geo의 옛 webserver·daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
     ]
     assert runtime_services_for_target("srv") == [
         "rustfs",
@@ -90,8 +88,6 @@ def test_registry_resolves_application_targets_to_shared_services():
         "prometheus",
         "kor-travel-geo-api",
         "kor-travel-geo-ui",
-        "kor-travel-geo-dagster",
-        "kor-travel-geo-dagster-daemon",
         "kor-travel-geo-dagster-code-server",
         "kor-travel-concierge-api",
         "kor-travel-concierge-mcp",
@@ -105,7 +101,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "pinvi-api",
         "pinvi-web",
         "pinvi-dagster-code-server",
-        # pinvi-dagster·pinvi-dagster-daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
+        # PinVi·geo의 옛 webserver·daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
     ]
     assert [step["name"] for step in init_steps_for_target("srv")] == [
         "rustfs-bucket-recovery",
@@ -167,8 +163,6 @@ def test_short_aliases_resolve_dependency_order():
         "kor-travel-shared-db-init-geo",
         "kor-travel-geo-api",
         "kor-travel-geo-ui",
-        "kor-travel-geo-dagster",
-        "kor-travel-geo-dagster-daemon",
         "kor-travel-geo-dagster-code-server",
     ]
     assert services_for_target("prom")[-3:] == ["grafana", "cadvisor", "prometheus"]
@@ -327,8 +321,6 @@ def test_compose_ensure_build_command(
         "kor-travel-shared-db-init-geo",
         "kor-travel-geo-api",
         "kor-travel-geo-ui",
-        "kor-travel-geo-dagster",
-        "kor-travel-geo-dagster-daemon",
         "kor-travel-geo-dagster-code-server",
         "kor-travel-shared-db-init-concierge",
         "kor-travel-concierge-api",
@@ -344,7 +336,7 @@ def test_compose_ensure_build_command(
         "pinvi-api",
         "pinvi-web",
         "pinvi-dagster-code-server",
-        # pinvi-dagster·pinvi-dagster-daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
+        # PinVi·geo의 옛 webserver·daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
     ]
     assert result["target_sequence"] == [
         "storage",
