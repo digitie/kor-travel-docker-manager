@@ -8529,3 +8529,21 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
   (`backend/tests/fixtures/pinned_runtime_own_fingerprint.json`, seed revision·pinset은 자리표)과 대조한다 — 의도한 변경 셋(M05
   역할 키, 보존이 알아보는 이름, seed에 묶인 sha256)만 빠져 있다. 운영 pinset `7ea6689c`는 고정 벡터 테스트가 재계산한다.
 - **빨강 확인** 27/27(이전 16 + 이번 11). pinset 변이는 테스트 모듈 수집 단계에서 먼저 빨갛다(seed pin 대조).
+
+## 2026-09-30 — 공용 Dagster: weather 전환 PR(첫 합류, ADR-54)
+
+브랜치 `feat/dagster-shared-flip-weather`(origin/main `6f30fd5` 위 — 3단계 설치본). 참조 전환 `_flip`을 파일에 그대로 옮겼다.
+
+- weather `dagster.control_plane: shared`. code-server: `<<: *dagster-shared-control-env`, instance digest, 옛
+  `deploy/dagster.yaml` 대신 공용 `dagster.yaml`(compose_binds도), gRPC는 이미 `127.0.0.1:14106`(literal).
+- weather-web: `DAGSTER_UI_INTERNAL_URL` → `http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}`,
+  `NEXT_PUBLIC_DAGSTER_URL` → `${KTDM_PROD_URL_DAGSTER:-…11001}`, gateway `depends_on` 삭제.
+- 옛 weather webserver·daemon·gateway → `profiles: [legacy-dagster]`, weather의 `services`·`runtime_services`에서 뺌
+  (`containers`에는 남음). plane target `dagster`가 `all`에 든다.
+- 공용 workspace에 `kortravelweather_dagster.definitions`(127.0.0.1:14106), daemon·webserver의 workspace digest 갱신.
+- 합류 조건(n150 읽기 전용 실측): code-server는 root라 `/opt/dagster/state`를 첫 쓰기 때 만든다(`/opt/dagster`
+  쓰기 가능, 아직 없음); op pool을 쓰지 않는다; dagster 1.13.24 = 호스트; schedule 17개 전부 코드에서 RUNNING,
+  sensor 0; 공용 `dagster.yaml`에 weather `dagster/code_location` 10과 `kortravelweather/run_group=external_weather`
+  3이 있다.
+- 테스트: weather를 `own` 예로 쓰던 대조군을 pinvi·map으로 옮기고, weather 전환의 한 부분을 되돌리면 이름으로
+  빨간 committed-state 대조군을 더했다. 격리 plane 통합 테스트는 빈 workspace(와 그 digest)로 돈다.

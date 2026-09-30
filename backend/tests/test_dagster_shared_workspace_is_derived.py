@@ -743,18 +743,18 @@ def test_flipping_every_target_keeps_the_plane_consistent() -> None:
 @pytest.mark.parametrize(
     ("target_id", "skip", "named"),
     [
-        ("weather", "env", "(a) `kor-travel-weather-dagster-code-server`: 공용 URL 앵커"),
-        ("weather", "mount", "`/opt/dagster/home/dagster.yaml`에 다른 마운트가 남았다"),
+        # weather는 이미 합류했다(첫 전환) — 대조군은 아직 `own`인 target으로 든다. weather에만 있던 모양
+        # (옛 마운트가 남음, 활성 서비스가 옛 gateway에 기댐, `all` 누락)은 아래 committed-state 대조군이 본다.
+        ("pinvi", "env", "(a) `pinvi-dagster-code-server`: 공용 URL 앵커"),
+        ("pinvi", "mount", "(a) `pinvi-dagster-code-server`: 공용 dagster.yaml 마운트"),
         ("geo", "loopback", "gRPC가 `0.0.0.0`에서 듣는다"),
-        ("weather", "profile", "(c) `kor-travel-weather-dagster-gateway`: `profiles: [legacy-dagster]`가 아니다"),
+        ("pinvi", "profile", "(c) `pinvi-dagster`: `profiles: [legacy-dagster]`가 아니다"),
         ("pinvi", "services", "(c) `pinvi-dagster`: target `pinvi`의 `services`에 남았다"),
-        ("weather", "depends", "활성 `kor-travel-weather-web`이 `legacy-dagster`의 `kor-travel-weather-dagster-gateway`"),
         ("pinvi", "consumers", "(b) `pinvi-api`: `PINVI_DAGSTER_BASE_URL`가 없다"),
         ("map", "consumers", "(b) `kor-travel-map-ui`: `NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL`가 옛 plane(`map`)의 포트"),
-        ("geo", "all", "공용 plane target `dagster`이 `all`에 없다"),
         ("geo", "port", "`-p ${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_PORT:-12503}`는 literal 포트여야 한다"),
         ("geo", "digest", "(d) `kor-travel-dagster-daemon`: `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`"),
-        ("weather", "digest", "(d) `kor-travel-weather-dagster-code-server`"),
+        ("pinvi", "digest", "(d) `pinvi-dagster-code-server`"),
         ("map", "consumers", "옛 공개 host env `KTDM_PROD_URL_MAP_DAGSTER`"),
     ],
 )
@@ -812,6 +812,40 @@ def test_the_manager_derivation_agrees_with_this_one() -> None:
             assert family.control_plane == spec["dagster"]["control_plane"], target_id
 
 
+@pytest.mark.parametrize(
+    ("undo", "named"),
+    [
+        ("mount", "`/opt/dagster/home/dagster.yaml`에 다른 마운트가 남았다"),
+        ("depends", "활성 `kor-travel-weather-web`이 `legacy-dagster`의 `kor-travel-weather-dagster-gateway`"),
+        ("profile", "(c) `kor-travel-weather-dagster-gateway`: `profiles: [legacy-dagster]`가 아니다"),
+        ("all", "공용 plane target `dagster`이 `all`에 없다"),
+        ("consumer", "(b) `kor-travel-weather-web`: `DAGSTER_UI_INTERNAL_URL`가 `http://127.0.0.1:14107`로 풀린다"),
+    ],
+)
+def test_undoing_one_part_of_the_committed_weather_flip_is_named(undo: str, named: str) -> None:
+    """합류한 weather의 렌더에서 한 단계를 되돌리면 계약이 그 단계를 이름으로 말한다(빨간 대조군)."""
+
+    compose, targets = _documents()
+    assert targets["targets"]["weather"]["dagster"]["control_plane"] == "shared"
+    services = compose["services"]
+    if undo == "mount":
+        services["kor-travel-weather-dagster-code-server"]["volumes"].append(
+            "${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/dagster.yaml:/opt/dagster/home/dagster.yaml:ro"
+        )
+    elif undo == "depends":
+        services["kor-travel-weather-web"]["depends_on"]["kor-travel-weather-dagster-gateway"] = {
+            "condition": "service_started"
+        }
+    elif undo == "profile":
+        del services["kor-travel-weather-dagster-gateway"]["profiles"]
+    elif undo == "all":
+        targets["targets"]["all"]["include"].remove("dagster")
+    elif undo == "consumer":
+        services["kor-travel-weather-web"]["environment"]["DAGSTER_UI_INTERNAL_URL"] = "http://127.0.0.1:14107"
+    violations = _contract_violations(compose, targets)
+    assert any(named in violation for violation in violations), violations
+
+
 def test_the_committed_digests_follow_the_files() -> None:
     """설치본 symlink 너머의 파일 내용이 바뀌면 상시 서비스가 재생성되도록 digest가 내용과 같다(H1)."""
 
@@ -864,14 +898,14 @@ def test_own_targets_carrying_shared_parts_are_named() -> None:
     services = compose["services"]
     services["kor-travel-geo-dagster-code-server"]["environment"].update(compose[_ANCHOR])
     services["pinvi-dagster-daemon"]["profiles"] = [_LEGACY_PROFILE]
-    services["kor-travel-weather-web"]["environment"]["DAGSTER_UI_INTERNAL_URL"] = (
+    services["kor-travel-map-api"]["environment"]["KOR_TRAVEL_MAP_API_DAGSTER_URL"] = (
         _plane(compose, targets)["internal_raw"]
     )
     violations = _contract_violations(compose, targets)
     for named in (
         "(a) `kor-travel-geo-dagster-code-server`: `own`인데",
         "(c) `pinvi-dagster-daemon`: `own`인데",
-        "(b) `kor-travel-weather-web`: `own`인데",
+        "(b) `kor-travel-map-api`: `own`인데",
     ):
         assert any(named in v for v in violations), (named, violations)
 

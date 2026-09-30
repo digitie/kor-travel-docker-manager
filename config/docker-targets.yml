@@ -623,6 +623,7 @@ targets:
       - map
       - pinvi
       - weather
+      - dagster
     services: []
     runtime_services: []
     containers:
@@ -697,10 +698,10 @@ targets:
       - kor-travel-weather-api
       - kor-travel-weather-web
       - kor-travel-weather-dagster-code-server
-      - kor-travel-weather-dagster-webserver
-      - kor-travel-weather-dagster-daemon
-      - kor-travel-weather-dagster-gateway
       - kor-travel-weather-prometheus
+    # 옛 webserver·daemon·gateway는 공용 plane 전환(ADR-54)으로 `legacy-dagster` profile에 있다 — `up`에
+    # 이름을 주면 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태
+    # 화면과 되돌리기(`ktdctl start`)가 찾는다.
     # `kor-travel-shared-db-init-weather`/`kor-travel-weather-migrate`는
     # restart=no인 one-shot이라 runtime에서 빠진다 — 정상 상태가 exited(0)이므로
     # runtime 목록에 두면 상태 판정이 늘 실패로 읽힌다.
@@ -708,9 +709,6 @@ targets:
       - kor-travel-weather-api
       - kor-travel-weather-web
       - kor-travel-weather-dagster-code-server
-      - kor-travel-weather-dagster-webserver
-      - kor-travel-weather-dagster-daemon
-      - kor-travel-weather-dagster-gateway
       - kor-travel-weather-prometheus
     containers:
       - kor-travel-shared-postgresql
@@ -724,7 +722,7 @@ targets:
     # 필드 설명은 geo target에 있다. weather의 gateway(14102)는 webserver에 기대므로 전환 때 함께
     # `legacy-dagster`로 내려간다.
     dagster:
-      control_plane: own
+      control_plane: shared
       consumers:
         kor-travel-weather-web:
           DAGSTER_UI_INTERNAL_URL: internal
@@ -736,11 +734,8 @@ targets:
     # (`127.0.0.1:11002`)·gateway(11001)(3단계)다. workspace는 `dagster.control_plane: shared`인
     # target에서 파생한다 — 모두 `own`인 동안 비어 있고 plane은 빈 채로 healthy하게 돈다.
     #
-    # 아직 `all`에서 뺀다: 첫 프로젝트가 합류하기 전의 plane은 아무 일도 하지 않고, gateway는
-    # `KOR_TRAVEL_DAGSTER_UI_PASSWORD`가 `.env`에 들어가기 전에는 기동을 거부한다. 창에서 비밀번호를
-    # 넣고 `ensure dagster`로 명시적으로 세운다. **어느 target이든 `shared`가 되는 PR이 이 줄을 지우고
-    # `all.include`에 넣는다** — `test_dagster_shared_workspace_is_derived.py`가 그것을 요구한다.
-    excluded_from_all: true
+    # weather가 합류해(첫 전환) `all`에 든다 — 합류한 target이 있으면 plane이 `all`에 있어야 한다
+    # (`test_dagster_shared_workspace_is_derived.py`).
     depends_on: []
     display_name: 공용 Dagster 제어 평면
     description: 공용 PostgreSQL instance(:11000)의 dagster_shared DB·schema와 공용 Dagster daemon·webserver(127.0.0.1:11002)·Basic Auth gateway(:11001)입니다. 합류한 프로젝트의 code-server를 파생 workspace로 봅니다.
@@ -886,7 +881,7 @@ compose_binds:
   kor-travel-weather-dagster-code-server:
     - container_path: "/opt/dagster/home/dagster.yaml"
       read_only: true
-      source: "${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/dagster.yaml"
+      source: "./config/dagster-shared/dagster.yaml"
   kor-travel-weather-dagster-webserver:
     - container_path: "/opt/dagster/home/dagster.yaml"
       read_only: true
