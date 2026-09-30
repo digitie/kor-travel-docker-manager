@@ -18,6 +18,7 @@ gate는 `test_compose_readiness_integration.py`의 것을 그대로 쓴다.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -169,15 +170,32 @@ class _Plane:
     ui_password_env: str
 
 
-def _carry(service: dict[str, Any], postgres: str) -> dict[str, Any]:
+#: 격리 plane은 **빈** workspace로 돈다 — 정본 workspace에는 합류한 프로젝트의 code-server가 있는데(weather),
+#: 격리 실행에는 그 code-server가 없다. 빈 workspace와 그 digest로 바꿔 넣는다(probe의 digest 자가 검사가 초록이게).
+_EMPTY_WORKSPACE = "load_from: []\n"
+_WORKSPACE_SOURCE = "./config/dagster-shared/workspace.yaml"
+_WORKSPACE_DIGEST_ENV = "KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST"
+
+
+def _carry(service: dict[str, Any], postgres: str, empty_workspace: Path | None = None) -> dict[str, Any]:
     carried = {key: service[key] for key in _CARRIED_KEYS if key in service}
     carried["network_mode"] = f"service:{postgres}"
-    volumes = [
-        str(_REPO_ROOT / str(volume)[2:]) if str(volume).startswith("./") else volume
-        for volume in carried.get("volumes", [])
-    ]
+    volumes = []
+    for volume in carried.get("volumes", []):
+        text = str(volume)
+        if empty_workspace is not None and text.startswith(f"{_WORKSPACE_SOURCE}:"):
+            text = str(empty_workspace) + text[len(_WORKSPACE_SOURCE):]
+        elif text.startswith("./"):
+            text = str(_REPO_ROOT / text[2:])
+        volumes.append(text)
     if volumes:
         carried["volumes"] = volumes
+    environment = carried.get("environment")
+    if empty_workspace is not None and isinstance(environment, dict) and _WORKSPACE_DIGEST_ENV in environment:
+        carried["environment"] = {
+            **environment,
+            _WORKSPACE_DIGEST_ENV: hashlib.sha256(_EMPTY_WORKSPACE.encode()).hexdigest()[:16],
+        }
     return carried
 
 
@@ -249,8 +267,10 @@ def _isolated(tmp_path: Path, *, build_host_image: bool) -> Iterator[_Plane]:
     ui_secret = services[_GATEWAY]["secrets"][0]["source"]
 
     document: dict[str, Any] = {"services": {_SHARED_POSTGRES: postgres}, "secrets": {}}
+    empty_workspace = tmp_path / "workspace.yaml"
+    empty_workspace.write_text(_EMPTY_WORKSPACE, encoding="utf-8")
     for name in names:
-        carried = _carry(services[name], _SHARED_POSTGRES)
+        carried = _carry(services[name], _SHARED_POSTGRES, empty_workspace)
         if carried.get("image") == host_image:
             # 정본의 tag는 내용 해시(운영 이름)다 — 격리 tag로 바꿔 운영 이미지를 만들지 않는다.
             carried["image"] = image

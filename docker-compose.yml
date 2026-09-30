@@ -687,7 +687,7 @@ services:
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "b2311ec335e60898"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "9bc2b3c97deb663e"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -757,7 +757,7 @@ services:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "b2311ec335e60898"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "9bc2b3c97deb663e"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -2594,6 +2594,11 @@ services:
     - kortravelweather_dagster.definitions
     - --inject-env-vars-from-instance
     environment:
+      # 공용 Dagster plane에 합류했다(ADR-54, weather 전환) — instance storage는 공용 URL 앵커와 공용
+      # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `DAGSTER_POSTGRES_URL`은 되돌리기
+      # 때까지 남긴다(공용 `dagster.yaml`은 읽지 않는다).
+      <<: *dagster-shared-control-env
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
       DAGSTER_HOME: /opt/dagster/home
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
@@ -2635,7 +2640,7 @@ services:
       KOR_TRAVEL_WEATHER_METRICS_PORT: ${KOR_TRAVEL_WEATHER_METRICS_PORT:-14103}
       PROMETHEUS_MULTIPROC_DIR: /var/run/kor-travel-weather-metrics
     volumes:
-    - ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/dagster.yaml:/opt/dagster/home/dagster.yaml:ro
+    - ./config/dagster-shared/dagster.yaml:/opt/dagster/home/dagster.yaml:ro
     tmpfs:
     - /var/run/kor-travel-weather-metrics
     cpu_shares: 4096
@@ -2662,7 +2667,10 @@ services:
       start_period: 180s
       start_interval: 5s
 
+  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`가 띄우지 않는다.
   kor-travel-weather-dagster-webserver:
+    profiles:
+    - legacy-dagster
     image: ${KOR_TRAVEL_WEATHER_DAGSTER_IMAGE:-kor-travel-weather-dagster:latest-main}
     build:
       context: ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}
@@ -2757,7 +2765,10 @@ services:
       retries: 8
       start_period: 30s
 
+  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`가 띄우지 않는다.
   kor-travel-weather-dagster-daemon:
+    profiles:
+    - legacy-dagster
     image: ${KOR_TRAVEL_WEATHER_DAGSTER_IMAGE:-kor-travel-weather-dagster:latest-main}
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_DAEMON_CONTAINER:-kor-travel-weather-dagster-daemon-latest}
     restart: unless-stopped
@@ -2835,7 +2846,10 @@ services:
       start_period: 60s
       start_interval: 15s
 
+  # 공용 plane으로 옮겼다(ADR-54) — 옛 `weather-dagster` 입구. 공개 host는 소유자가 공용 host로 redirect한다.
   kor-travel-weather-dagster-gateway:
+    profiles:
+    - legacy-dagster
     image: ${KOR_TRAVEL_WEATHER_DAGSTER_GATEWAY_IMAGE:-kor-travel-weather-dagster-gateway:latest-main}
     build:
       context: ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}
@@ -2871,8 +2885,6 @@ services:
     depends_on:
       kor-travel-weather-api:
         condition: service_healthy
-      kor-travel-weather-dagster-gateway:
-        condition: service_started
     # command: 오버라이드 불필요 — deploy/Dockerfile.web이 이미
     # `next start -- --hostname 0.0.0.0 --port 14105`를 이미지 CMD로 굽는다.
     environment:
@@ -2880,12 +2892,12 @@ services:
       # fetch라 브라우저가 아니라 web 컨테이너 자신이 부른다) — host 모드엔
       # 없으니 loopback으로 바꾼다.
       WEATHER_API_INTERNAL_URL: http://127.0.0.1:14101
-      # dagster-webserver의 새 내부 전용 포트(14107)를 가리킨다 — 공개
-      # gateway(14102)가 아니다. weather 자신의 원래 의도(이 Next 프록시는
-      # gateway를 거치지 않고 내부 dagster 서비스에 직접 붙는다)를 포트 재배치
-      # 아래서도 그대로 지킨다.
-      DAGSTER_UI_INTERNAL_URL: http://127.0.0.1:14107
-      NEXT_PUBLIC_DAGSTER_URL: ${NEXT_PUBLIC_DAGSTER_URL:-https://weather-dagster.digitie.mywire.org}
+      # 공용 Dagster webserver(ADR-54, loopback 전용)를 가리킨다 — gateway가 아니다. 이 Next 프록시는
+      # weather PR #65의 `scopedDagsterRequest`로 이름 붙은 operation만 weather location scope로 넘긴다
+      # (공용 webserver에 브라우저의 GraphQL 원문을 넘기지 않는다).
+      DAGSTER_UI_INTERNAL_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
+      # 링크는 공용 gateway의 공개 host다(`/locations/kortravelweather_dagster.definitions/…`는 weather가 붙인다).
+      NEXT_PUBLIC_DAGSTER_URL: ${KTDM_PROD_URL_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}}
       NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
       WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       WEATHER_UI_USER: ${WEATHER_UI_USER:-admin}

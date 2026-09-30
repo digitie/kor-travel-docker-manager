@@ -3432,7 +3432,10 @@ def _flipped_topology(*targets: str) -> RuntimeTopology:
     compose_document, targets_document = _documents()
     for target_id in targets:
         _flip(compose_document, targets_document, target_id)
-    return runtime_topology(derive_dagster_families(compose_document, targets_document))
+    families = derive_dagster_families(compose_document, targets_document)
+    # 실행 경로(`runtime_topology()`)처럼 Map·PinVi family만 넘긴다 — 이미 `shared`인 다른 target(weather)의
+    # 옛 서비스는 pinned runtime의 집합이 아니다.
+    return runtime_topology({target: families[target] for target in ("map", "pinvi")})
 
 
 def test_every_own_target_derives_the_pre_adr54_slot_services() -> None:

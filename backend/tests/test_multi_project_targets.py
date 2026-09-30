@@ -210,9 +210,7 @@ def test_weather_is_one_group_with_both_compose_files(
         "kor-travel-weather-api",
         "kor-travel-weather-web",
         "kor-travel-weather-dagster-code-server",
-        "kor-travel-weather-dagster-webserver",
-        "kor-travel-weather-dagster-daemon",
-        "kor-travel-weather-dagster-gateway",
+        # 옛 webserver·daemon·gateway는 공용 plane 전환(ADR-54)으로 `legacy-dagster` profile에 있어 빠졌다.
         "kor-travel-weather-prometheus",
     ]
 

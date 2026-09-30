@@ -105,11 +105,15 @@ def _use(monkeypatch: pytest.MonkeyPatch, families: Mapping[str, DagsterFamily])
 
 
 def test_every_target_is_own_in_the_installed_model() -> None:
-    """이 파일의 `own` 단언이 뜻을 가지려면 설치된 모델이 실제로 모두 `own`이어야 한다."""
+    """이 파일의 `own` 단언이 뜻을 가지려면 설치된 모델에서 그 단언이 다루는 target이 실제로 `own`이어야 한다.
+
+    이 파일이 글자까지 고정하는 집합은 Map·PinVi(C6c·M05·pinned runtime)와 geo(옛 override 이관)의 것이다.
+    weather는 첫 전환으로 `shared`다 — 그 옛 서비스는 이 집합들 어디에도 없다.
+    """
 
     families = installed_dagster_families()
     assert sorted(families) == ["geo", "map", "pinvi", "weather"]
-    assert {family.control_plane for family in families.values()} == {"own"}
+    assert {families[t].control_plane for t in ("map", "pinvi", "geo")} == {"own"}
 
 
 def test_own_c6c_sets_are_the_pre_adr54_literals() -> None:
