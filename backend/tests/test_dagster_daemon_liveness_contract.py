@@ -166,6 +166,11 @@ def test_every_dagster_daemon_comes_back_on_its_own(service_name: str) -> None:
 #: 준다. 둘 다 HTTP 200이므로 **본문을 봐야** 갈린다.
 _CODE_LOCATION_PROBE_FRAGMENT = "repositoriesOrError"
 _CODE_LOCATION_PROBE_EXPECTED = "RepositoryConnection"
+#: 공용 webserver의 probe(ADR-54) — location **전부**를 본다. `repositoriesOrError`는 location이 하나라도
+#: 뜨면 `RepositoryConnection`이라 여러 테넌트의 webserver에서는 한 테넌트의 실패를 가린다. 그 probe의
+#: 판정 자체는 `test_dagster_shared_workspace_is_derived.py`가 원문을 실행해 센다.
+_ALL_LOCATIONS_PROBE_FRAGMENT = "locationOrLoadError"
+_ALL_LOCATIONS_PROBE_EXPECTED = "RepositoryLocation"
 
 
 def _webserver_services() -> dict[str, dict[str, Any]]:
@@ -204,6 +209,10 @@ def test_every_dagster_webserver_probe_asks_whether_code_loaded(
         f"`{service_name}`에 healthcheck가 없다 — code location 로드 실패가 조용해진다."
     )
     probe = _command_text(healthcheck.get("test"))
+    if _ALL_LOCATIONS_PROBE_FRAGMENT in probe:
+        assert _ALL_LOCATIONS_PROBE_EXPECTED in probe, (service_name, probe)
+        assert healthcheck.get("start_period"), (service_name, healthcheck)
+        return
     assert _CODE_LOCATION_PROBE_FRAGMENT in probe, (
         f"`{service_name}`의 healthcheck가 code location을 묻지 않는다: {probe}. "
         "`/`나 `/server_info`는 webserver가 정적으로 주는 문서라 code location이 "

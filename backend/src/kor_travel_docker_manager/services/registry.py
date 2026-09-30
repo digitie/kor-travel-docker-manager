@@ -1,5 +1,6 @@
 import os
 import posixpath
+import re
 import stat
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
@@ -476,6 +477,7 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
                 )
 
         _validate_external_project(spec, target_id=target_id, label=label)
+        _validate_dagster_field(spec, target_id=target_id, label=label)
 
         aliases = _require_list_field(spec, "aliases", target_id=target_id, label=label)
         for alias in [target_id, *aliases]:
@@ -644,6 +646,7 @@ _ALLOWED_TARGET_FIELDS: Final = frozenset(
     {
         "aliases",
         "containers",
+        "dagster",
         "depends_on",
         "description",
         "display_name",
@@ -827,6 +830,53 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
                     f"{label} targets.all.include: missing Manager target "
                     f"'{name}' declared in dependency_order "
                     "(set `excluded_from_all: true` if that is deliberate)"
+                )
+
+
+#: target의 `dagster` 절(ADR-54). 공용 Dagster 제어 평면에 합류했는가와, 그 target의 Dagster를 부르는
+#: env. 형태만 여기서 본다 — compose가 그 선언의 모양인지는
+#: `backend/tests/test_dagster_shared_workspace_is_derived.py`가 파생해 대조한다.
+DAGSTER_CONTROL_PLANES: Final = ("own", "shared")
+_DAGSTER_FIELDS: Final = frozenset({"control_plane", "consumers"})
+#: 소비자 env의 종류 — 공용 webserver(`internal`)나 공개 host(`public`), 뒤에 경로를 붙일 수 있다.
+_DAGSTER_CONSUMER_KIND: Final = re.compile(r"(internal|public)(/[A-Za-z0-9._~/-]*)?")
+_ENV_NAME: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _validate_dagster_field(spec: dict[str, Any], *, target_id: str, label: str) -> None:
+    """`dagster` 절의 형태 — 없으면 아무것도 하지 않는다.
+
+    `control_plane`의 오타가 조용히 무시되면 전환 PR의 스위치가 아무것도 켜지 않는다(fail-close).
+    """
+
+    if "dagster" not in spec:
+        return
+    where = f"{label} targets.{target_id}.dagster"
+    block = spec["dagster"]
+    if not isinstance(block, dict):
+        raise TargetsConfigError(f"{where}: must be a mapping")
+    unknown = sorted(set(block) - _DAGSTER_FIELDS)
+    if unknown:
+        raise TargetsConfigError(f"{where}: unknown fields {unknown}")
+    if block.get("control_plane") not in DAGSTER_CONTROL_PLANES:
+        raise TargetsConfigError(
+            f"{where}.control_plane: must be one of {list(DAGSTER_CONTROL_PLANES)}"
+        )
+    consumers = block.get("consumers", {})
+    if not isinstance(consumers, dict):
+        raise TargetsConfigError(f"{where}.consumers: must be a mapping of service to env")
+    for service, variables in consumers.items():
+        if not isinstance(variables, dict) or not variables:
+            raise TargetsConfigError(
+                f"{where}.consumers.{service}: must be a non-empty mapping of env name to kind"
+            )
+        for name, kind in variables.items():
+            if not isinstance(name, str) or not _ENV_NAME.fullmatch(name):
+                raise TargetsConfigError(f"{where}.consumers.{service}: bad env name {name!r}")
+            if not isinstance(kind, str) or not _DAGSTER_CONSUMER_KIND.fullmatch(kind):
+                raise TargetsConfigError(
+                    f"{where}.consumers.{service}.{name}: kind must be internal or public, "
+                    f"optionally followed by a path (got {kind!r})"
                 )
 
 

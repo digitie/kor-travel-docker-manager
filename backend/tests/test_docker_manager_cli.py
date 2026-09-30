@@ -2886,7 +2886,14 @@ def test_ensure_dagster_runs_the_one_shots_as_gating_init_steps(tmp_path: Path) 
 
     assert result["success"] is True
     assert [_compose_tail(argv) for argv in calls] == [
-        ["up", "-d", "kor-travel-shared-postgres"],
+        [
+            "up",
+            "-d",
+            "kor-travel-shared-postgres",
+            "kor-travel-dagster-daemon",
+            "kor-travel-dagster-webserver",
+            "kor-travel-dagster-gateway",
+        ],
         ["run", "--rm", "--no-deps", "kor-travel-shared-db-init-dagster"],
         ["run", "--rm", "--no-deps", "kor-travel-dagster-storage-migrate"],
     ]

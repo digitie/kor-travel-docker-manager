@@ -611,6 +611,226 @@ services:
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
 
+  # ── 공용 Dagster 호스트 서비스(platform-topology.md §7 3단계, ADR-54) ──────────
+  #
+  # daemon·webserver는 위 storage migrate와 **같은 호스트 이미지**다(tag·build context 동일 —
+  # `backend/tests/test_dagster_shared_config.py`가 대조한다). 호스트 서비스는 공용 metadata URL
+  # 앵커와 `DAGSTER_HOME`만 받는다 — 앱 비밀은 없다. run은 여기서 돌지 않는다(DefaultRunLauncher가
+  # code-server의 자식으로 띄운다).
+  #
+  # 둘은 공용 `config/dagster-shared/workspace.yaml`을 읽는다. 그 파일은 **파생물**이다 — 손으로
+  # 쓰지 않는다. `config/docker-targets.yml`에서 `dagster.control_plane: shared`인 target의
+  # code-server command(`-p`·`-m`)에서 만들고, `backend/tests/test_dagster_shared_workspace_is_derived.py`가
+  # 어긋나면 빨개진다. 모든 target이 `own`인 동안 workspace는 비어 있고(`load_from: []`) 둘은
+  # 빈 plane으로 healthy하게 돈다 — daemon은 heartbeat만 쓰고, webserver의 probe는 기대 location이
+  # 0개라 통과한다.
+  #
+  # 둘 다 code-server에 `depends_on`하지 않는다 — 어느 code-server가 합류했는지는 workspace가
+  # 말하고, 합류한 location이 떴는지는 webserver probe가 본다(아래).
+  kor-travel-dagster-daemon:
+    image: kor-travel-dagster-host:75f02d642f06bcbd
+    build:
+      context: ./docker/dagster-host
+    container_name: ${KOR_TRAVEL_DAGSTER_DAEMON_CONTAINER:-kor-travel-dagster-daemon}
+    restart: unless-stopped
+    # healthcheck·exec의 고아를 거둔다(ADR-52와 같은 이유).
+    init: true
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-dagster-storage-migrate:
+        condition: service_completed_successfully
+    # **잘못된 instance storage 위에서 뜨지 않는다**(PinVi daemon과 같은 가드). `dagster.yaml`
+    # bind가 빠지면 Dagster는 `$DAGSTER_HOME` 아래 SQLite로 조용히 떨어지고, daemon은 자기 빈 DB를
+    # dequeue하며 heartbeat도 거기에 써서 liveness-check까지 초록이 된다. storage 세 개의 실제 구현을
+    # 보고 하나라도 Postgres가 아니면 daemon으로 넘어가지 않는다.
+    command:
+    - sh
+    - -ec
+    - |
+      python -c '
+      import sys
+      from dagster import DagsterInstance
+
+      with DagsterInstance.get() as instance:
+          wrong = {
+              label: type(storage).__name__
+              for label, storage in (
+                  ("run", instance.run_storage),
+                  ("event log", instance.event_log_storage),
+                  ("schedule", instance.schedule_storage),
+              )
+              if "Postgres" not in type(storage).__name__
+          }
+      if wrong:
+          sys.exit(
+              "shared Dagster instance storage is not PostgreSQL: %s. "
+              "The shared dagster.yaml is not mounted at DAGSTER_HOME." % wrong
+          )
+      '
+      exec dagster-daemon run -w /opt/dagster/dagster_home/workspace.yaml
+    environment:
+      <<: *dagster-shared-control-env
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
+      DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
+    volumes:
+    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
+    healthcheck:
+      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). exec 형식이라 timeout 때 셸 래퍼만
+      # 죽고 Python이 고아로 남는 일이 없다. 주기 × retries(240초)를 tolerance(300초) 아래로 둔다.
+      test: ["CMD", "dagster-daemon", "liveness-check"]
+      interval: 120s
+      timeout: 60s
+      retries: 2
+      start_period: 90s
+      start_interval: 15s
+
+  # 공용 webserver — `127.0.0.1`에서만 듣는다(D2). 인증은 앞의 gateway(11001)가 한다.
+  #
+  # healthcheck는 **파생 workspace의 location 전부**가 `RepositoryLocation`으로 로드됐는지 본다 —
+  # 프로젝트별 webserver의 `repositoriesOrError`는 location이 하나라도 뜨면 초록이라, 여러 테넌트가
+  # 한 webserver를 쓰면 한 테넌트의 실패를 가린다. 기대 집합은 컨테이너에 붙은 그 workspace 파일에서
+  # 읽는다(목록 사본이 없다). probe는:
+  # - exec 형식이고 dagster를 import하지 않는다(yaml·urllib만, 0.3초) — 2026-09-27 CMD-SHELL 고아 폭주의
+  #   교훈(ADR-52). 자체 timeout(8초)이 healthcheck timeout(10초)보다 짧아 스스로 끝난다.
+  # - gRPC를 부르지 않는다 — `locationOrLoadError`는 webserver가 이미 들고 있는 location 상태를 읽을
+  #   뿐 code-server에 닿지 않는다. 느린 code-server가 probe를 붙잡지 못한다.
+  kor-travel-dagster-webserver:
+    image: kor-travel-dagster-host:75f02d642f06bcbd
+    build:
+      context: ./docker/dagster-host
+    container_name: ${KOR_TRAVEL_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-dagster-webserver}
+    restart: unless-stopped
+    init: true
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      kor-travel-dagster-storage-migrate:
+        condition: service_completed_successfully
+    command:
+    - dagster-webserver
+    - -h
+    - 127.0.0.1
+    - -p
+    - ${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
+    - -w
+    - /opt/dagster/dagster_home/workspace.yaml
+    environment:
+      <<: *dagster-shared-control-env
+      DAGSTER_HOME: /opt/dagster/dagster_home
+    volumes:
+    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -I
+      - -c
+      - >-
+        import json, sys, yaml, urllib.request as u;
+        port, path = sys.argv[1], sys.argv[2];
+        want = {e['grpc_server']['location_name'] for e in ((yaml.safe_load(open(path)) or {}).get('load_from') or [])};
+        q = json.dumps({'query': '{workspaceOrError{__typename ... on Workspace{locationEntries{name locationOrLoadError{__typename}}}}}'}).encode();
+        w = json.load(u.urlopen(u.Request('http://127.0.0.1:%s/graphql' % port, data=q, headers={'Content-Type': 'application/json'}), timeout=8))['data']['workspaceOrError'];
+        t = w['__typename'];
+        t == 'Workspace' or sys.exit('workspace not loaded: %s' % t);
+        got = {e['name'] for e in w['locationEntries'] if (e.get('locationOrLoadError') or {}).get('__typename') == 'RepositoryLocation'};
+        missing = sorted(want - got);
+        sys.exit('code locations not loaded: %s' % missing if missing else 0)
+      - ${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
+      - /opt/dagster/dagster_home/workspace.yaml
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+      start_interval: 5s
+
+  # 공용 Dagster의 **유일한 입구**(D2) — nginx Basic Auth + same-origin POST 검사, `/health`만 인증
+  # 없음. weather·transport gateway의 형태를 따른다. OPNsense HAProxy가 공개 host
+  # `dagster.digitie.mywire.org`를 여기(0.0.0.0:11001)로 보낸다(에지는 저장소 밖).
+  #
+  # 이미지는 weather gateway의 베이스와 같은 공식 nginx를 digest로 고정하고 **비-root(nginx, 101)**로
+  # 돌린다. 그래서 설정 전체(`pid`·temp 경로가 `/tmp`)를 Manager가 소유한다(`gateway.conf`). 기동
+  # 스크립트는 fail-closed다 — 비밀번호가 비었거나 origin 값이 URL 모양이 아니면 nginx를 띄우지
+  # 않고 죽는다. 비밀번호는 env가 아니라 secret 파일로 받는다(`docker inspect`에 남지 않는다).
+  #
+  # htpasswd는 nginx의 `{PLAIN}` 형식이다 — 이미지에 해시 도구가 없고, 원문은 이미 이 컨테이너의
+  # secret 파일에 있으므로 컨테이너 안 해시는 더 지키는 것이 없다. 파일은 컨테이너의 `/tmp`에만
+  # 0600으로 생긴다.
+  #
+  # `DAGSTER_FRAME_ANCESTORS`: Dagster UI를 iframe으로 여는 프로젝트 UI의 origin(geo admin).
+  # 공백으로 여럿을 줄 수 있다. `DAGSTER_PUBLIC_ORIGIN`: 브라우저가 POST에 싣는 공개 origin.
+  kor-travel-dagster-gateway:
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    container_name: ${KOR_TRAVEL_DAGSTER_GATEWAY_CONTAINER:-kor-travel-dagster-gateway}
+    restart: unless-stopped
+    init: true
+    user: "101:101"
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    depends_on:
+      # service_started — webserver가 unhealthy(한 location이 안 뜸)일 때도 UI는 열려야 그 실패를 본다.
+      kor-travel-dagster-webserver:
+        condition: service_started
+    environment:
+      DAGSTER_GATEWAY_PORT: ${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}
+      DAGSTER_WEBSERVER_PORT: ${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
+      DAGSTER_PUBLIC_ORIGIN: ${KTDM_PROD_URL_DAGSTER:-}
+      DAGSTER_FRAME_ANCESTORS: ${KOR_TRAVEL_DAGSTER_FRAME_ANCESTORS:-${KTDM_PROD_URL_GEO:-}}
+      DAGSTER_UI_USER: ${KOR_TRAVEL_DAGSTER_UI_USER:-admin}
+    secrets:
+    - source: kor-travel-dagster-ui-password
+      target: /run/secrets/kor-travel-dagster-ui-password
+    volumes:
+    - ./config/dagster-shared/gateway.conf:/etc/kor-travel-dagster-gateway/nginx.conf.template:ro
+    entrypoint:
+    - sh
+    - -ec
+    - |
+      set -f
+      umask 077
+      mkdir -p /tmp/nginx
+      fail() { echo "kor-travel-dagster-gateway: $$*" >&2; exit 1; }
+      for port in "$$DAGSTER_GATEWAY_PORT" "$$DAGSTER_WEBSERVER_PORT"; do
+        case "$$port" in ''|*[!0-9]*) fail "port must be numeric: '$$port'" ;; esac
+      done
+      origin_ok() {
+        case "$$1" in http://?*|https://?*) ;; *) return 1 ;; esac
+        case "$$1" in *[!A-Za-z0-9.:/-]*) return 1 ;; esac
+      }
+      user="$$DAGSTER_UI_USER"
+      case "$$user" in ''|*[!A-Za-z0-9._@-]*) fail "KOR_TRAVEL_DAGSTER_UI_USER must be non-empty [A-Za-z0-9._@-]" ;; esac
+      password="$$(cat /run/secrets/kor-travel-dagster-ui-password)"
+      [ -n "$$password" ] || fail "KOR_TRAVEL_DAGSTER_UI_PASSWORD is empty; refusing to serve the shared Dagster UI without authentication"
+      case "$$password" in *'
+      '*) fail "KOR_TRAVEL_DAGSTER_UI_PASSWORD must be a single line" ;; esac
+      printf '%s:{PLAIN}%s\n' "$$user" "$$password" > /tmp/nginx/htpasswd
+      : > /tmp/nginx/allowed-origins.map
+      for origin in "$$DAGSTER_PUBLIC_ORIGIN" "http://127.0.0.1:$$DAGSTER_GATEWAY_PORT" "http://localhost:$$DAGSTER_GATEWAY_PORT"; do
+        origin="$${origin%/}"
+        [ -n "$$origin" ] || continue
+        origin_ok "$$origin" || fail "not an origin: '$$origin'"
+        grep -qxF "\"$$origin\" 1;" /tmp/nginx/allowed-origins.map || printf '"%s" 1;\n' "$$origin" >> /tmp/nginx/allowed-origins.map
+      done
+      DAGSTER_CSP_FRAME_ANCESTORS=""
+      for origin in $$DAGSTER_FRAME_ANCESTORS; do
+        origin="$${origin%/}"
+        origin_ok "$$origin" || fail "not an origin: '$$origin'"
+        DAGSTER_CSP_FRAME_ANCESTORS="$$DAGSTER_CSP_FRAME_ANCESTORS $$origin"
+      done
+      export DAGSTER_CSP_FRAME_ANCESTORS
+      envsubst '$$DAGSTER_GATEWAY_PORT $$DAGSTER_WEBSERVER_PORT $$DAGSTER_CSP_FRAME_ANCESTORS' \
+        < /etc/kor-travel-dagster-gateway/nginx.conf.template > /tmp/nginx/nginx.conf
+      exec nginx -e stderr -c /tmp/nginx/nginx.conf -g 'daemon off;'
+    ports:
+    - ${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}:${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   rustfs:
     image: rustfs/rustfs:latest
     container_name: kor-travel-rustfs
@@ -2688,5 +2908,9 @@ secrets:
     environment: KOR_TRAVEL_TRANSPORT_SHARED_APP_PASSWORD
   kor-travel-dagster-shared-app-password:
     environment: KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD
+  # 공용 Dagster gateway(11001)의 Basic Auth 비밀번호. `:?`로 요구하지 않는다 — 그러면 이 값이 없는
+  # `.env`에서 모든 compose 명령이 죽는다(onboarding §6.5). 비었으면 gateway가 스스로 기동을 거부한다.
+  kor-travel-dagster-ui-password:
+    environment: KOR_TRAVEL_DAGSTER_UI_PASSWORD
   kor-travel-weather-metrics-token:
     environment: KOR_TRAVEL_WEATHER_METRICS_TOKEN

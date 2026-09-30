@@ -335,12 +335,63 @@ def test_the_dagster_target_gates_ensure_on_both_one_shots() -> None:
     """
 
     target = yaml.safe_load(_TARGETS.read_text(encoding="utf-8"))["targets"]["dagster"]
-    assert target["services"] == [_SHARED_POSTGRES]
-    assert target["runtime_services"] == []
+    # one-shot은 `up -d`의 인자가 아니다 — 상시 서비스가 `service_completed_successfully`로 기대어
+    # `up`이 그 종료 코드를 보게 하고, init step이 다시 한 번 종료 코드로 가른다.
+    assert not {_DB_INIT, _MIGRATE} & set(target["services"])
+    assert not {_DB_INIT, _MIGRATE} & set(target["runtime_services"])
+    assert target["services"][0] == _SHARED_POSTGRES
     assert [step["command"] for step in target["init_steps"]] == [
         ["run", "--rm", "--no-deps", _DB_INIT],
         ["run", "--rm", "--no-deps", _MIGRATE],
     ]
+
+
+def _host_services() -> dict[str, dict[str, Any]]:
+    """호스트 이미지(migrate와 같은 image)를 쓰는 상시 서비스 — 이름이 아니라 image로 찾는다."""
+
+    services = _compose()["services"]
+    image = services[_MIGRATE]["image"]
+    return {
+        name: service
+        for name, service in services.items()
+        if service.get("image") == image and name != _MIGRATE
+    }
+
+
+def test_the_host_services_run_the_host_image_with_only_the_control_env() -> None:
+    """daemon·webserver는 migrate와 같은 호스트 이미지이고, 공용 URL과 DAGSTER_HOME 말고 받는 것이 없다.
+
+    run은 code-server의 자식으로 돈다 — 호스트 서비스에 앱 비밀을 넣을 이유가 없다(plan §1.4).
+    """
+
+    services = _compose()["services"]
+    migrate = services[_MIGRATE]
+    hosts = _host_services()
+    assert len(hosts) == 2, sorted(hosts)
+    target = yaml.safe_load(_TARGETS.read_text(encoding="utf-8"))["targets"]["dagster"]
+    for name, service in hosts.items():
+        assert service["build"] == migrate["build"], name
+        assert name in target["runtime_services"], name
+        assert "secrets" not in service and "env_file" not in service, name
+        allowed = {_url_env_name(), "DAGSTER_HOME", "DAGSTER_DAEMON_HEARTBEAT_TOLERANCE"}
+        assert set(service["environment"]) <= allowed, (name, sorted(service["environment"]))
+        assert service["environment"]["DAGSTER_HOME"] == migrate["environment"]["DAGSTER_HOME"]
+        assert service["depends_on"] == {_MIGRATE: {"condition": "service_completed_successfully"}}
+        assert service.get("init") is True and service.get("restart") == "unless-stopped"
+        assert "user" not in service, "호스트 이미지의 비-root 사용자(USER dagster)를 덮지 않는다"
+        assert "ports" not in service, "daemon은 포트가 없고 webserver는 loopback 뒤에 있다"
+
+
+def test_the_shared_webserver_listens_only_on_loopback() -> None:
+    """D2: webserver는 `127.0.0.1`에서만 듣는다 — 인증은 앞의 gateway가 한다."""
+
+    for name, service in _host_services().items():
+        command = [str(part) for part in service["command"]]
+        if "dagster-webserver" not in command:
+            continue
+        assert command[command.index("-h") + 1] == "127.0.0.1", name
+        return
+    pytest.fail("공용 webserver를 못 찾았다")
 
 
 def _dockerfile_copy_sources(dockerfile: str) -> set[str]:
