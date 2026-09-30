@@ -782,18 +782,19 @@ def test_flipping_every_target_keeps_the_plane_consistent() -> None:
 @pytest.mark.parametrize(
     ("target_id", "skip", "named"),
     [
-        # weather·PinVi는 이미 합류했다 — 대조군은 아직 `own`인 target(geo·Map)으로 든다. 합류한 target에만 있던
-        # 모양(옛 마운트가 남음, 활성 서비스가 옛 gateway에 기댐, `all` 누락)은 아래 committed-state 대조군이 본다.
-        ("geo", "env", "(a) `kor-travel-geo-dagster-code-server`: 공용 URL 앵커"),
-        ("geo", "mount", "(a) `kor-travel-geo-dagster-code-server`: 공용 dagster.yaml 마운트"),
-        ("geo", "loopback", "gRPC가 `0.0.0.0`에서 듣는다"),
-        ("geo", "profile", "(c) `kor-travel-geo-dagster`: `profiles: [legacy-dagster]`가 아니다"),
-        ("geo", "services", "(c) `kor-travel-geo-dagster`: target `geo`의 `services`에 남았다"),
-        ("geo", "consumers", "(b) `kor-travel-geo-api`: `KTG_DAGSTER_URL`가 없다"),
+        # weather·PinVi·geo는 이미 합류했다 — 대조군은 아직 `own`인 마지막 target(Map)으로 든다. 합류한 target에만
+        # 있던 모양(옛 마운트가 남음, 활성 서비스가 옛 gateway에 기댐, `all` 누락)은 committed-state 대조군이 본다.
+        ("map", "env", "(a) `kor-travel-map-dagster-code-server`: 공용 URL 앵커"),
+        ("map", "mount", "(a) `kor-travel-map-dagster-code-server`: 공용 dagster.yaml 마운트"),
+        # Map은 이미 loopback이다 — 대조군은 geo가 전환 전에 가졌던 `-h 0.0.0.0`을 먼저 입힌다(아래 테스트).
+        ("map", "loopback", "gRPC가 `0.0.0.0`에서 듣는다"),
+        ("map", "profile", "(c) `kor-travel-map-dagster`: `profiles: [legacy-dagster]`가 아니다"),
+        ("map", "services", "(c) `kor-travel-map-dagster`: target `map`의 `services`에 남았다"),
+        ("map", "consumers", "(b) `kor-travel-map-api`: `KOR_TRAVEL_MAP_API_DAGSTER_URL`가"),
         ("map", "consumers", "(b) `kor-travel-map-ui`: `NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL`가 옛 plane(`map`)의 포트"),
-        ("geo", "port", "`-p ${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_PORT:-12503}`는 literal 포트여야 한다"),
-        ("geo", "digest", "(d) `kor-travel-dagster-daemon`: `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`"),
-        ("geo", "digest", "(d) `kor-travel-geo-dagster-code-server`"),
+        ("map", "port", "`-p ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT:-12703}`는 literal 포트여야 한다"),
+        ("map", "digest", "(d) `kor-travel-dagster-daemon`: `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`"),
+        ("map", "digest", "(d) `kor-travel-map-dagster-code-server`"),
         ("map", "consumers", "옛 공개 host env `KTDM_PROD_URL_MAP_DAGSTER`"),
     ],
 )
@@ -801,6 +802,10 @@ def test_a_flip_missing_a_step_is_named(target_id: str, skip: str, named: str) -
     """전환 PR이 한 단계를 빠뜨리면 계약이 그 단계를 이름으로 말한다(빨간 대조군)."""
 
     compose, targets = _documents()
+    if skip == "loopback":
+        for service in _code_servers(compose, targets["targets"][target_id]).values():
+            argv = service["command"]
+            argv[argv.index("-h") + 1] = "0.0.0.0"
     files = _flip(compose, targets, target_id, skip=skip)
     violations = _contract_violations(compose, targets, files)
     assert any(named in violation for violation in violations), violations
@@ -922,9 +927,9 @@ def test_a_switch_without_its_rendering_is_named_and_the_workspace_drifts() -> N
     """스위치만 뒤집고 compose를 그대로 두면 (a)·(b)·(c)가 모두 빨갛고, workspace가 파생과 어긋난다."""
 
     compose, targets = _documents()
-    targets["targets"]["geo"]["dagster"]["control_plane"] = "shared"
+    targets["targets"]["map"]["dagster"]["control_plane"] = "shared"
     violations = _contract_violations(compose, targets)
-    for step in ("(a) `kor-travel-geo-dagster-code-server`", "(b) `kor-travel-geo-api`", "(c) `kor-travel-geo-dagster`"):
+    for step in ("(a) `kor-travel-map-dagster-code-server`", "(b) `kor-travel-map-api`", "(c) `kor-travel-map-dagster`"):
         assert any(v.startswith(step) for v in violations), (step, violations)
     actual = load_yaml_rejecting_duplicate_keys(_WORKSPACE.read_text(encoding="utf-8"))
     assert actual != _derived_workspace(compose, targets)
@@ -935,14 +940,14 @@ def test_own_targets_carrying_shared_parts_are_named() -> None:
 
     compose, targets = _documents()
     services = compose["services"]
-    services["kor-travel-geo-dagster-code-server"]["environment"].update(compose[_ANCHOR])
+    services["kor-travel-map-dagster-code-server"]["environment"].update(compose[_ANCHOR])
     services["kor-travel-map-dagster-daemon"]["profiles"] = [_LEGACY_PROFILE]
     services["kor-travel-map-api"]["environment"]["KOR_TRAVEL_MAP_API_DAGSTER_URL"] = (
         _plane(compose, targets)["internal_raw"]
     )
     violations = _contract_violations(compose, targets)
     for named in (
-        "(a) `kor-travel-geo-dagster-code-server`: `own`인데",
+        "(a) `kor-travel-map-dagster-code-server`: `own`인데",
         "(c) `kor-travel-map-dagster-daemon`: `own`인데",
         "(b) `kor-travel-map-api`: `own`인데",
     ):
@@ -951,9 +956,9 @@ def test_own_targets_carrying_shared_parts_are_named() -> None:
 
 def test_g3b_names_a_location_without_a_cap() -> None:
     compose, targets = _documents()
-    _flip(compose, targets, "geo")
+    _flip(compose, targets, "map")
     workspace = _derived_workspace(compose, targets)
-    caps = _location_caps() - {"kortravelgeo_dagster.definitions"}
+    caps = _location_caps() - {"kortravelmap.dagster.definitions"}
     violations = _g3b_violations(workspace, compose, targets, caps)
     assert any("상한이 없다" in v for v in violations), violations
     stale = {"load_from": []}
@@ -1213,5 +1218,5 @@ def test_the_committed_workspace_is_loadable_by_the_probe(
 def test_flip_helper_does_not_mutate_the_source_documents() -> None:
     compose, targets = _documents()
     before = copy.deepcopy((compose, targets))
-    _flip(copy.deepcopy(compose), copy.deepcopy(targets), "geo")
+    _flip(copy.deepcopy(compose), copy.deepcopy(targets), "map")
     assert (compose, targets) == before

@@ -1902,9 +1902,9 @@ def test_every_real_compose_bind_is_declared_in_a_candidate_bind_allowlist() -> 
     )
 
 
-# geo code-server는 아직 `-h 0.0.0.0`이다. 그 이미지의 workspace.yaml이 어느 host로
-# 붙는지 확인한 뒤 따로 닫는다 — 고쳐지면 아래 테스트가 이 예외부터 지우라고 빨개진다.
-_GRPC_WILDCARD_BIND_KNOWN = frozenset({"kor-travel-geo-dagster-code-server"})
+# 알려진 예외 — 비어 있다. geo code-server의 `-h 0.0.0.0`은 공용 plane 전환(ADR-54)에서 닫았다(공용
+# daemon·webserver는 host network의 loopback으로 붙는다). 예외를 다시 넣으면 아래 테스트가 그것이 해소됐는지 본다.
+_GRPC_WILDCARD_BIND_KNOWN: frozenset[str] = frozenset()
 
 
 def _dagster_grpc_host(command: object) -> str | None | bool:
@@ -1947,6 +1947,8 @@ def test_every_dagster_code_server_binds_loopback_only() -> None:
     assert {
         "kor-travel-map-dagster-code-server",
         "pinvi-dagster-code-server",
+        "kor-travel-geo-dagster-code-server",
+        "kor-travel-weather-dagster-code-server",
     } <= set(hosts)
     exposed = {
         name: host
