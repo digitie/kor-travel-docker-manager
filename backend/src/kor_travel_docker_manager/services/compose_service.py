@@ -151,8 +151,8 @@ from kor_travel_docker_manager.services.registry import (
 from kor_travel_docker_manager.services.runtime_topology import (
     COMPOSE_BUILT_RUNTIME_SLOTS,
     RUNTIME_SLOTS,
-    RuntimeSlot,
     DagsterFamily,
+    RuntimeSlot,
     RuntimeTopology,
     SharedDagsterPlane,
     derive_shared_dagster_plane,
@@ -163,8 +163,8 @@ from kor_travel_docker_manager.services.runtime_topology import (
     listen_address,
     runtime_topology,
     shared_workspace_source,
-    workspace_location_names,
     slot_project,
+    workspace_location_names,
 )
 from kor_travel_docker_manager.services.trusted_install import (
     require_pinned_runtime_rebuild_root,

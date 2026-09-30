@@ -4020,6 +4020,9 @@ def test_another_tenants_broken_location_does_not_block_the_rebuild(
 
     _, _, companions = _FLIP_CASES[target]
     harness = _forward_harness(monkeypatch, tmp_path, flipped=(target,), companions=companions)
+    clock = _PlaneClock()
+    monkeypatch.setattr(compose_service_module.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(compose_service_module.time, "sleep", clock.sleep)
     loaded = dict(harness.live["plane_loaded"])
     others = [location for location in loaded if not location.startswith(("kortravelmap", "pinvi"))]
     assert others, loaded
