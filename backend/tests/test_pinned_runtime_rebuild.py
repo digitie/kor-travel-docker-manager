@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 import os
@@ -3584,7 +3585,12 @@ def test_a_flipped_targets_running_old_container_is_refused_before_anything_chan
         for index, operation in enumerate(harness.operations)
         if operation[0] == "container-inspect"
     ]
-    assert inspected and max(inspected) < first_mutation
+    before = [index for index in inspected if index < first_mutation]
+    assert len(before) >= len(expected)
+    # 뒤의 검사는 plane을 건드리기 직전의 재확인뿐이다(ADR-54 개정) — 곧바로 plane `up`이 따른다.
+    after = [index for index in inspected if index > first_mutation]
+    assert after and harness.operations[max(after) + 1][:1] == ("up",)
+    assert "kor-travel-dagster-daemon" in harness.operations[max(after) + 1]
 
 
 def test_an_own_rebuild_inspects_no_retired_container(
@@ -3799,3 +3805,148 @@ def test_the_production_pinset_is_a_function_of_the_sources_alone() -> None:
         )
         == "7ea6689c7d0051b64abf373b6af3bfed90fed816a3546e0aa5a7bac0b8b046b7"
     )
+
+
+# --- plane를 아는 재구축(ADR-54 개정, Map 전환 준비) -------------------------------------------------
+
+_PLANE_SERVICES = ("kor-travel-dagster-webserver", "kor-travel-dagster-daemon")
+
+
+def _plane_ups(operations: Sequence[tuple[str, ...]]) -> list[int]:
+    return [
+        index
+        for index, operation in enumerate(operations)
+        if operation[:1] == ("up",) and set(_PLANE_SERVICES) <= set(operation)
+    ]
+
+
+def test_the_shared_plane_is_derived_from_its_shape() -> None:
+    """plane은 공용 workspace를 붙인 활성 `dagster-webserver`·`dagster-daemon`이다 — 이름을 적지 않는다."""
+
+    compose, _ = runtime_topology_module._installed_documents()
+    plane = runtime_topology_module.derive_shared_dagster_plane(compose)
+    assert plane.services == _PLANE_SERVICES
+    # 모양이 어긋나면 거부한다: workspace를 떼면 없고, 둘이면 고르지 않는다.
+    broken = copy.deepcopy(dict(compose))
+    broken["services"] = dict(broken["services"])
+    broken["services"]["kor-travel-dagster-daemon"] = {
+        **broken["services"]["kor-travel-dagster-daemon"],
+        "volumes": [],
+    }
+    with pytest.raises(DeploymentContractError, match="shared daemon"):
+        runtime_topology_module.derive_shared_dagster_plane(broken)
+    twin = copy.deepcopy(dict(compose))
+    twin["services"] = dict(twin["services"])
+    twin["services"]["kor-travel-dagster-webserver-twin"] = twin["services"]["kor-travel-dagster-webserver"]
+    with pytest.raises(DeploymentContractError, match="shared webserver"):
+        runtime_topology_module.derive_shared_dagster_plane(twin)
+    # legacy-dagster로 내려간 서비스는 plane이 아니다.
+    profiled = copy.deepcopy(dict(compose))
+    profiled["services"] = dict(profiled["services"])
+    profiled["services"]["kor-travel-dagster-daemon"] = {
+        **profiled["services"]["kor-travel-dagster-daemon"],
+        "profiles": ["legacy-dagster"],
+    }
+    with pytest.raises(DeploymentContractError, match="shared daemon"):
+        runtime_topology_module.derive_shared_dagster_plane(profiled)
+
+
+def test_an_all_own_rebuild_never_touches_the_plane(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.service.rebuild_pinned_runtime()
+    assert not [operation for operation in harness.operations if set(operation) & set(_PLANE_SERVICES)]
+    assert runtime_topology().shared_dagster_slots == ()
+
+
+@pytest.mark.parametrize("target", sorted(_FLIP_CASES))
+def test_a_shared_target_is_on_the_plane_before_the_smoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    """smoke(PinVi `/admin/etl/summary`, Map `/v1/ops/pipeline/*`)는 공용 webserver에 자기 location을 묻는다 —
+    그 전에 carrier가 떠 있고 plane이 `up --wait`로 맞춰져 있다. 그 직전에 retired 컨테이너를 다시 본다."""
+
+    carrier, legacy, companions = _FLIP_CASES[target]
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=(target,), companions=companions)
+    harness.mocks.smoke.side_effect = lambda *_args, **_kwargs: harness.operations.append(("smoke",))
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "deployed"
+    operations = harness.operations
+    smoke = operations.index(("smoke",))
+    plane = _plane_ups(operations)
+    assert len(plane) == 1 and plane[0] < smoke, operations
+    assert "--no-deps" in operations[plane[0]] and "--wait" in operations[plane[0]]
+    carrier_ups = [
+        index for index, op in enumerate(operations) if op[:1] == ("up",) and carrier in op
+    ]
+    assert carrier_ups and carrier_ups[0] < plane[0]
+    retired = {runtime_topology_module.installed_container_name(name) for name in legacy}
+    between = {op[1] for op in operations[carrier_ups[0] : plane[0]] if op[:1] == ("container-inspect",)}
+    assert retired <= between, (retired, between)
+
+
+@pytest.mark.parametrize("target", sorted(_FLIP_CASES))
+def test_a_retired_daemon_revived_mid_rebuild_keeps_the_plane_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    """재구축 앞의 판정 뒤에 옛 daemon이 되살아나면(대시보드의 start) plane을 건드리기 직전에 거부한다."""
+
+    _, legacy, companions = _FLIP_CASES[target]
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=(target,), companions=companions)
+    revived = runtime_topology_module.installed_container_name(legacy[-1])
+    harness.mocks.pinvi_bootstrap.side_effect = (
+        lambda *_args, **_kwargs: cast(set[str], harness.live["running_containers"]).add(revived)
+    )
+
+    with pytest.raises(DeploymentContractError, match="retired Dagster services"):
+        harness.service.rebuild_pinned_runtime()
+
+    assert _plane_ups(harness.operations) == []
+    harness.mocks.smoke.assert_not_called()
+
+
+def test_both_targets_shared_bring_both_carriers_up_before_the_plane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path, flipped=("map", "pinvi"), companions={})
+    harness.mocks.smoke.side_effect = lambda *_args, **_kwargs: harness.operations.append(("smoke",))
+
+    harness.service.rebuild_pinned_runtime()
+
+    operations = harness.operations
+    plane = _plane_ups(operations)
+    assert len(plane) == 1 and plane[0] < operations.index(("smoke",))
+    for carrier in ("kor-travel-map-dagster-code-server", "pinvi-dagster-code-server"):
+        assert any(
+            op[:1] == ("up",) and carrier in op for op in operations[: plane[0]]
+        ), (carrier, operations)
+
+
+@pytest.mark.parametrize("target", sorted(_FLIP_CASES))
+def test_a_same_pair_converge_also_converges_the_plane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    _, _, companions = _FLIP_CASES[target]
+    first = _forward_harness(monkeypatch, tmp_path / "first", flipped=(target,), companions=companions)
+    first.service.rebuild_pinned_runtime()
+    status = read_deploy_status(first.status_path)
+    harness = _forward_harness(
+        monkeypatch, tmp_path / "second", previous=status, flipped=(target,), companions=companions
+    )
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "converged"
+    assert len(_plane_ups(harness.operations)) == 1
+
+
+def test_the_plane_up_is_a_frozen_rebuild_mutation() -> None:
+    """R3 분류: plane `up --no-deps`는 서비스를 명시하고 --no-deps를 싣는다(재구축 runner가 받는 모양)."""
+
+    arguments = ["up", "-d", "--no-deps", "--wait", "--wait-timeout", "600", *_PLANE_SERVICES]
+    scope, flags = ComposeService._parse_compose_mutation(arguments)
+    assert list(scope) == list(_PLANE_SERVICES)
+    assert "--no-deps" in flags

@@ -366,10 +366,14 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
           없다. 스위치를 바꾼 release를 설치한 뒤 `scripts/run-pinned-rebuild-once <rev> <outdir>`로 적용한다. slot
           서비스 키 집합이 바뀌므로(옛 webserver·daemon → code-server) 재구축은 **전체 경로**다: Map도 잠깐 멈추고,
           마이그레이션을 돌고, compose가 빌드하는 이미지 넷을 다시 굽는다. 재구축은 retired 컨테이너가 돌고 있으면
-          거부하므로(#447 MED-2) 펜스가 먼저이고, `kor-travel-dagster-*`는 건드리지 않으므로 plane은 재구축 뒤
-          `up -d --no-deps`로 따로 다시 만든다. 순서: 설치 → 펜스(옛 daemon, 이어 webserver) → 옛 instance의 진행 중
-          run 취소 → pinned 재구축 → plane 재생성 → 검증 → 옛 컨테이너 `docker rm`. plane이 P를 싣는 것은 재생성
-          뒤이고 옛 daemon은 그 전에 멈췄으므로 이중 발화 창은 없다(사이 슬롯은 건너뛴다). 대가로 **펜스부터 plane
+          거부하므로(#447 MED-2) 펜스가 먼저다. **재구축은 plane을 안다(ADR-54 개정, Map 전환 준비):** `shared`인
+          pinned target이 있으면 PinVi smoke 전에 그 carrier(code-server)를 띄우고 plane webserver·daemon을
+          `up --no-deps --wait`로 맞춘다 — smoke(PinVi `/admin/etl/summary`, Map `/v1/ops/pipeline/*`)가 공용
+          webserver에 자기 location을 묻기 때문이다. 그 직전에 retired 컨테이너를 다시 보고 돌면 거부한다. 모두
+          `own`이면 plane을 부르지 않는다. 순서: 설치 → 펜스(옛 daemon, 이어 webserver) → 옛 instance의 진행 중
+          run 취소 → pinned 재구축(그 안에서 plane 재생성) → 검증(창 스크립트는 plane이 펜스 뒤 새로 만들어졌고
+          설치본 workspace digest를 실었으면 다시 만들지 않는다) → 옛 컨테이너 `docker rm`. plane이 P를 싣는 것은
+          재생성 뒤이고 옛 daemon은 그 전에 멈췄으므로 이중 발화 창은 없다(사이 슬롯은 건너뛴다). 대가로 **펜스부터 plane
           재생성까지 P에는 scheduler가 없다** — 재구축이 이미지 넷을 다시 굽는 동안이라 15~40분으로 잡는다. 그
           구간의 P cron 슬롯은 모두 건너뛰므로 P의 긴 주기 schedule을 피해 창을 고른다. 전체 경로는 Map의 진행 중
           run도 끊는다 — 창 스크립트가 precheck에서 세어 알리고, `REQUIRE_MAP_IDLE=1`이면 멈춘다. 재구축이 slot을

@@ -1220,3 +1220,25 @@ def test_flip_helper_does_not_mutate_the_source_documents() -> None:
     before = copy.deepcopy((compose, targets))
     _flip(copy.deepcopy(compose), copy.deepcopy(targets), "map")
     assert (compose, targets) == before
+
+
+def test_the_map_api_calls_the_loopback_and_only_reports_the_public_graphql() -> None:
+    """Map 전환 준비: Map API가 **부르는** GraphQL은 공용 webserver의 loopback, **보고하는** 것은 공개 gateway다.
+
+    공개 gateway는 Basic Auth와 브라우저 Origin 검사를 하므로 서버 쪽 호출이 그리로 가면 전환 뒤 401·403이다. 전환
+    PR은 두 env를 이 종류대로 싣는다 — `_flip`이 그렇게 쓰고 계약이 값을 대조한다.
+    """
+
+    _, targets = _documents()
+    consumers = targets["targets"]["map"]["dagster"]["consumers"]["kor-travel-map-api"]
+    kinds = {str(kind) for kind in consumers.values()}
+    assert "internal/graphql" in kinds and "public/graphql" in kinds, consumers
+    compose, targets = _documents()
+    files = _flip(compose, targets, "map")
+    rest = [v for v in _pinned(_contract_violations(compose, targets, files))[1] if "kor-travel-map-api" in v]
+    assert rest == []
+    environment = _environment(compose["services"]["kor-travel-map-api"])
+    internal = [name for name, kind in consumers.items() if kind == "internal/graphql"]
+    assert [_resolve(str(environment[name]), {}) for name in internal] == [
+        f"{_plane(compose, targets)['internal']}/graphql"
+    ]

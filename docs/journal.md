@@ -8597,3 +8597,24 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
   prompt와 공용 UI가 모든 테넌트를 보인다는 점은 소유자 결정이다.
 - 테스트: `own` 대조군은 이제 마지막 `own`인 Map으로 든다(Map은 이미 loopback이라 loopback 대조군은 `-h 0.0.0.0`을
   먼저 입힌다). 설치 모델의 스위치 단언은 map·pinvi `own`(기준선 fixture), geo·weather `shared`.
+
+## 2026-10-01 — 공용 Dagster: Map 전환 준비(Manager 쪽, ADR-54 개정)
+
+브랜치 `feat/dagster-shared-map-prep-mgr`(origin/main `cc5fa06` 위, geo 전환 브랜치와 독립). Map은 뒤집지 않는다.
+
+- **plane을 아는 pinned 재구축.** `RuntimeTopology.shared_dagster_slots`(Map·PinVi 중 `shared` carrier slot)가 있으면
+  전체 경로가 PinVi smoke 전에 그 carrier를 띄우고 공용 plane webserver·daemon을 `up --no-deps --wait`로 맞춘다. 같은
+  pair 수렴도 같은 단계를 거친다. plane 서비스는 `runtime_topology.derive_shared_dagster_plane`이 모양(공용
+  workspace를 붙인 활성 `dagster-webserver`·`dagster-daemon`)으로 파생한다. plane을 건드리기 직전 retired 컨테이너를
+  다시 보고 돌면 거부한다. 모두 `own`이면 호출이 하나도 늘지 않는다(파생 이전 지문 테스트 그대로 초록).
+- **smoke 재시도.** PinVi canonical smoke의 본문 없는 GET 둘(`/admin/etl/summary`·`/admin/provider-sync`)만 최대 6회,
+  5→10→20→30→30초, 첫 시도부터 180초 상한(넘길 대기는 하지 않는다). 연결 거부·timeout과 PinVi의 upstream 미준비
+  envelope(502/503 `FEATURE_SERVICE_UNAVAILABLE`)만 재시도하고, 다 쓰면 마지막 결과로 fail-closed. cancel POST·login·
+  logout은 재시도하지 않는다. Map 쪽 canonical smoke는 재구축 경로에 따로 없다 — PinVi provider-sync가 Map
+  `/v1/ops/pipeline/*`를 거쳐 그 역할을 한다.
+- **gateway: 비-브라우저 API POST.** `Origin`·`Sec-Fetch-Site`가 둘 다 없는 POST는 Basic Auth만으로 통과한다(C7의
+  sensor 조작이 bridge network에서 공개 host로 온다). 교차·`null` Origin, Origin 없이 `Sec-Fetch-Site`만 실은 POST는
+  403, 인증 없음·틀린 비밀번호는 401. 격리 plane 통합 테스트가 본다. gateway digest `1f7e708e5c1bd519`.
+- **Map 전환 계약.** Map API 소비자에 `KOR_TRAVEL_MAP_API_DAGSTER_INTERNAL_GRAPHQL_URL: internal/graphql`(서버 쪽이
+  부르는 loopback)을 더했다 — `KOR_TRAVEL_MAP_API_DAGSTER_GRAPHQL_URL: public/graphql`은 보고용으로 남는다. 이름은 Map
+  저장소 `feat/dagster-shared-map-prep`에서 확정한다(2026-10-01 현재 그 브랜치에 아직 변경 없음).

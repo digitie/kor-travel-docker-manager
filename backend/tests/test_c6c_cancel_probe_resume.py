@@ -532,3 +532,136 @@ def test_finalized_fixture_resume_reads_map_without_second_finalize_post(
 
     finalizer.assert_not_called()
     assert state.fixture == finalized
+
+
+# --- 인증된 smoke의 안전한 GET 재시도(재구축 직후의 upstream 미준비 창) ---------------------------
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+def _response(status: int, payload: object = None) -> c6c.HttpProbeResponse:
+    return c6c.HttpProbeResponse(
+        status=status,
+        payload=payload,
+        retry_after=None,
+        retry_after_present=False,
+        set_cookie=False,
+        location=None,
+        body_text=None,
+        content_type=None,
+    )
+
+
+_UNAVAILABLE = {"error": {"code": "FEATURE_SERVICE_UNAVAILABLE", "message": "x"}}
+_UNAVAILABLE_MESSAGE = "C6c authenticated smoke endpoint is unavailable"
+
+
+def _timeout() -> c6c.DeploymentContractError:
+    error = c6c.DeploymentContractError(_UNAVAILABLE_MESSAGE)
+    error.__cause__ = TimeoutError("timed out")
+    return error
+
+
+def _run_retry(monkeypatch: pytest.MonkeyPatch, outcomes: list[object]) -> tuple[object, _Clock, int]:
+    clock = _Clock()
+    monkeypatch.setattr(c6c.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(c6c.time, "sleep", clock.sleep)
+    calls = 0
+
+    def operation() -> c6c.HttpProbeResponse:
+        nonlocal calls
+        outcome = outcomes[min(calls, len(outcomes) - 1)]
+        calls += 1
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return cast(c6c.HttpProbeResponse, outcome)
+
+    try:
+        result: object = c6c._retry_safe_smoke_get(operation, unavailable_message=_UNAVAILABLE_MESSAGE)
+    except c6c.DeploymentContractError as exc:
+        result = exc
+    return result, clock, calls
+
+
+def test_a_safe_get_retries_timeouts_and_upstream_unavailable_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ok = _response(200, {"data": {}})
+    result, clock, calls = _run_retry(
+        monkeypatch, [_timeout(), _response(503, _UNAVAILABLE), _response(502, _UNAVAILABLE), ok]
+    )
+    assert result is ok
+    assert calls == 4
+    assert clock.sleeps == [5.0, 10.0, 20.0]
+
+
+def test_a_safe_get_stays_fail_closed_after_its_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    unavailable = _response(503, _UNAVAILABLE)
+    result, clock, calls = _run_retry(monkeypatch, [unavailable])
+    # 다 쓰면 마지막 응답을 그대로 돌려준다 — 호출자의 envelope 판정이 실패로 끝낸다.
+    assert result is unavailable
+    assert calls == 6
+    assert sum(clock.sleeps) <= 180.0
+    assert clock.sleeps == [5.0, 10.0, 20.0, 30.0, 30.0]
+    # 예외로 끝나면 예외를 다시 던진다.
+    result, _, calls = _run_retry(monkeypatch, [_timeout()])
+    assert isinstance(result, c6c.DeploymentContractError) and calls == 6
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        _response(500, _UNAVAILABLE),
+        _response(503, {"error": {"code": "PIPELINE_CANCELLATION_UNSAFE"}}),
+        _response(503, None),
+        _response(401, None),
+        _response(200, {"data": {}}),
+    ],
+)
+def test_a_safe_get_does_not_retry_other_answers(
+    monkeypatch: pytest.MonkeyPatch, outcome: c6c.HttpProbeResponse
+) -> None:
+    result, clock, calls = _run_retry(monkeypatch, [outcome, _response(200, {"data": {}})])
+    assert result is outcome and calls == 1 and clock.sleeps == []
+
+
+def test_a_safe_get_does_not_retry_foreign_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    refused_other = c6c.DeploymentContractError("something else")
+    refused_other.__cause__ = TimeoutError()
+    result, _, calls = _run_retry(monkeypatch, [refused_other])
+    assert result is refused_other and calls == 1
+    no_cause = c6c.DeploymentContractError(_UNAVAILABLE_MESSAGE)
+    no_cause.__cause__ = OSError("reset")
+    result, _, calls = _run_retry(monkeypatch, [no_cause])
+    assert result is no_cause and calls == 1
+
+
+def test_a_safe_get_retry_never_waits_past_the_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(c6c, "_SAFE_GET_READINESS_BUDGET_SECONDS", 12.0)
+    unavailable = _response(503, _UNAVAILABLE)
+    result, clock, calls = _run_retry(monkeypatch, [unavailable])
+    # 5초 대기 뒤 10초를 더 기다리면 12초를 넘는다 — 기다리지 않고 한 번 더 부르고 끝낸다.
+    assert clock.sleeps == [5.0] and calls == 3 and result is unavailable
+
+
+def test_only_bodyless_gets_may_retry() -> None:
+    """cancel POST·login처럼 상태를 바꾸는 호출은 이 재시도에 들어오지 못한다."""
+
+    opener = Mock()
+    with pytest.raises(ValueError, match="bodyless GET"):
+        c6c._session_request(
+            opener, "http://127.0.0.1:1/x", method="POST", headers={}, body=b"{}",
+            read_error_body=True, retry_safe_get_readiness=True,
+        )
+    opener.open.assert_not_called()

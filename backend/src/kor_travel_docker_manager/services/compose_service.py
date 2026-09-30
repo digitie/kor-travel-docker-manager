@@ -152,6 +152,7 @@ from kor_travel_docker_manager.services.runtime_topology import (
     RuntimeSlot,
     RuntimeTopology,
     installed_container_name,
+    installed_shared_dagster_plane,
     runtime_topology,
     slot_project,
 )
@@ -4919,11 +4920,48 @@ class ComposeService:
             ],
             transaction=runtime_transaction,
         )
+        self._converge_shared_dagster_plane(
+            runtime_transaction=runtime_transaction,
+            topology=topology,
+        )
         self._verify_pinned_runtime_services(
             runtime_transaction=runtime_transaction,
             topology=topology,
             companions=companions,
             expected_images=expected_images,
+        )
+
+    def _converge_shared_dagster_plane(
+        self,
+        *,
+        runtime_transaction: ComposeTransactionSnapshot,
+        topology: RuntimeTopology,
+    ) -> None:
+        """pinned target이 공용 plane에 합류했으면 plane의 webserver·daemon을 맞추고 healthy를 기다린다(ADR-54).
+
+        전환 release를 설치하면 plane의 workspace digest env가 바뀌므로 `up`이 두 서비스를 다시 만들고, 이미
+        맞으면 무연산이다(code-server가 다시 떴을 때 location은 webserver·daemon이 스스로 다시 싣는다). webserver의
+        healthcheck는 workspace의 location 전부가 `RepositoryLocation`인지 보므로 `--wait`가 곧 "합류한 location이
+        실렸다"는 판정이다 — 그래서 합류한 carrier를 먼저 띄운다.
+
+        안전: 옛 webserver·daemon(retired)이 돌고 있으면 plane이 같은 schedule을 싣는 순간 이중 발화다. 재구축 앞의
+        같은 판정을 plane을 건드리기 **직전**에 다시 한다. 모두 `own`이면 plane을 부르지 않는다.
+        """
+
+        if not topology.shared_dagster_slots:
+            return
+        self._require_retired_dagster_containers_stopped(topology)
+        self._run_pinned_runtime_rebuild_compose(
+            [
+                "up",
+                "-d",
+                "--no-deps",
+                "--wait",
+                "--wait-timeout",
+                str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+                *installed_shared_dagster_plane().services,
+            ],
+            transaction=runtime_transaction,
         )
 
     def _verify_pinned_runtime_services(
@@ -5129,6 +5167,16 @@ class ComposeService:
             transaction=runtime_transaction,
             frozen_recovery=True,
         )
+        # 공용 plane에 합류한 target이 있으면 smoke 전에 그 code-server와 plane을 맞춘다 — PinVi admin
+        # (`/admin/etl/summary`)과 Map ops(`/v1/ops/pipeline/*`, PinVi provider-sync가 부른다)는 공용
+        # webserver에 자기 location을 묻는다. 모두 `own`이면 아무것도 하지 않는다(호출 순서가 파생 이전과 같다).
+        shared_slots = topology.shared_dagster_slots
+        if shared_slots:
+            compose_up(*_with_generation_companions(shared_slots, companions, topology))
+            self._converge_shared_dagster_plane(
+                runtime_transaction=runtime_transaction,
+                topology=topology,
+            )
         run_pinvi_canonical_smoke(
             load_c6c_deployment_config_from_environment(values),
             cancel_probe_state=PinviCancelProbeState(transaction_id=status.run_id),

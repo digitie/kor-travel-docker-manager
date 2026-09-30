@@ -4251,8 +4251,8 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
    기대 location을 읽고 `workspaceOrError.locationEntries[*].locationOrLoadError.__typename`이 전부
    `RepositoryLocation`일 때만 초록이다. exec 형식, dagster를 import하지 않고(yaml·urllib), 자체 timeout(8초)이
    healthcheck timeout(10초)보다 짧고, gRPC를 부르지 않는다(webserver가 이미 가진 location 상태를 읽는다).
-3. **gateway(`11001`).** weather·transport gateway의 형태 — nginx Basic Auth, same-origin이 아닌 POST(Origin
-   없는 POST 포함) 403, `/health`만 무인증 204, `frame-ancestors 'self'`+iframe을 여는 프로젝트 UI(기본
+3. **gateway(`11001`).** weather·transport gateway의 형태 — nginx Basic Auth, same-origin이 아닌 브라우저 POST
+   403(Origin 없는 POST는 아래 개정), `/health`만 무인증 204, `frame-ancestors 'self'`+iframe을 여는 프로젝트 UI(기본
    `KTDM_PROD_URL_GEO`, `KOR_TRAVEL_DAGSTER_FRAME_ANCESTORS`로 덮는다). 공식 nginx를 digest로 고정하고
    uid 101로 돌린다. 그래서 nginx 설정 전체를 Manager가 소유한다(`config/dagster-shared/gateway.conf`, pid·temp를
    `/tmp/nginx`로). 기동 스크립트는 fail-closed다 — 비밀번호가 비었거나(값이 비면 compose는 secret 파일을
@@ -4338,6 +4338,20 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
      파일을 모르는 모양(디렉터리·절대 경로·긴 형식)으로 붙이면 건너뛰지 않고 빨갛다. 버전 상한은 location마다
      `dagster` 자신이 보고·비교됐어야 초록이다(보고하지 않거나 호스트 dagster 버전을 모르면 빨강).
    - **webserver도 storage 가드.** daemon과 같은 가드(YAML anchor 하나)를 지나 argv로 넘어간다(`sh -ec <가드> sh <argv>`).
+   - **개정(2026-10-01, Map 전환 준비): 비-브라우저 API POST.** `Origin`과 `Sec-Fetch-Site`가 **둘 다 없는** POST는
+     Basic Auth만으로 통과한다. 브라우저는 POST에 항상 Origin을 싣고(fetch·XHR·form), Fetch Metadata도 싣는다 — 둘 다
+     없으면 브라우저가 아니므로 캐시된 자격증명을 빌려 쓰는 CSRF가 아니다. 그런 호출자는 스스로 Basic Auth를 실어야
+     하고(없거나 틀리면 401), 교차 사이트·`null` Origin이나 Origin 없이 `Sec-Fetch-Site`만 실은 POST는 여전히 403이다.
+     이유: C7 게이트의 queue sensor 조작은 bridge network의 Playwright 컨테이너에서 돌아 loopback webserver에 닿지
+     못하고, 공개 host(이 gateway)로 GraphQL mutation을 보낸다. 서버 쪽 소비자(Map·PinVi·geo API)는 계속 loopback에
+     붙는다. 격리 plane 통합 테스트가 no-Origin+인증 200, 인증 없음·틀린 비밀번호 401, 교차·`null` Origin 403,
+     `Sec-Fetch-Site`만 있는 no-Origin 403을 본다.
+   - **개정(같은 날): plane을 아는 pinned 재구축.** Map·PinVi 중 `shared`인 target이 있으면 재구축이 PinVi smoke
+     **전에** 그 carrier(code-server)를 띄우고 공용 plane의 webserver·daemon을 `up --wait`로 맞춘다(설치로 digest가
+     바뀌었으면 재생성, 아니면 무연산). plane 서비스는 이름이 아니라 모양(공용 workspace를 붙인 활성
+     `dagster-webserver`·`dagster-daemon`)으로 파생한다. plane을 건드리기 직전에 retired 컨테이너가 멈춰 있는지 다시
+     본다 — 옛 daemon이 돌면 거부한다(이중 발화). 모두 `own`이면 아무 호출도 더하지 않는다(파생 이전 지문과 같다).
+     smoke가 공용 webserver에 자기 location을 묻기 때문이다(PinVi `/admin/etl/summary`, Map `/v1/ops/pipeline/*`).
 
 ### 근거
 
@@ -4367,7 +4381,8 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
   기록을 읽고 바꿀 수 있다. 공용 instance라는 결정에 딸린 것이고 받아들였다.
 - 소비자 URL의 앱 쪽 준비(location-scoped GraphQL, 계획 3.1~3.4)는 각 저장소의 PR이다. Map API의 host
   allowlist(`KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS`)는 URL이 아니라 이 계약 밖이고, Map API가 클라이언트에
-  돌려주는 공개 GraphQL URL은 이제 Basic Auth gateway 뒤다 — Map 전환 전에 C7 게이트가 그 입구로 인증해 붙는지
-  Map 쪽에서 정한다. Map 전환은 Map 전용 C6c 계약(보호 서비스 집합, pinned rebuild의 필요 서비스)도 바꿔야 한다.
+  돌려주는 공개 GraphQL URL은 이제 Basic Auth gateway 뒤다 — C7 게이트는 그 입구로 Basic Auth를 실어 붙는다(위
+  개정: 비-브라우저 POST). Map API의 서버 쪽 호출은 내부 GraphQL URL(loopback)로 가르고 공개 URL은 보고용으로만
+  남긴다(Map 저장소, `consumers`의 `internal`·`public/graphql`). Map 전환은 Map 전용 C6c 계약(보호 서비스 집합, pinned rebuild의 필요 서비스)도 바꿔야 한다.
 - ~~Map·PinVi 전환 전에 pinned 재구축·C6c의 literal 집합을 스위치에서 파생하는 PR이 필요하다(위 9, M2).~~ 해제 — `runtime_topology`.
 - 공개 host `dagster.digitie.mywire.org` → `192.168.1.14:11001`과 옛 hostname redirect는 저장소 밖(OPNsense)이다.

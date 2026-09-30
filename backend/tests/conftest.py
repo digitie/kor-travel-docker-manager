@@ -240,7 +240,10 @@ def _dagster_topology_cache_clears() -> list[Callable[[], None]]:
     from kor_travel_docker_manager.services import c6c_deployment
     from kor_travel_docker_manager.services import runtime_topology as topology
 
-    clears = [topology.installed_dagster_family.cache_clear]
+    clears = [
+        topology.installed_dagster_family.cache_clear,
+        topology.installed_shared_dagster_plane.cache_clear,
+    ]
     for value in vars(c6c_deployment).values():
         if callable(value) and hasattr(value, "cache_clear") and getattr(value, "__module__", "") == c6c_deployment.__name__:
             clears.append(value.cache_clear)

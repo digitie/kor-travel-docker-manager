@@ -291,6 +291,55 @@ def dagster_family(target: str) -> DagsterFamily:
     return installed_dagster_family(target)
 
 
+# ── 공용 Dagster plane ────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class SharedDagsterPlane:
+    """공용 plane의 daemon·webserver — 파생 workspace를 붙인 활성 서비스다(이름이 아니라 모양)."""
+
+    daemon: str
+    webserver: str
+
+    @property
+    def services(self) -> tuple[str, str]:
+        """plane을 다시 맞출 때 부르는 순서 — webserver가 먼저 location을 싣고, daemon이 뒤따른다."""
+
+        return (self.webserver, self.daemon)
+
+
+def derive_shared_dagster_plane(compose: Mapping[str, Any]) -> SharedDagsterPlane:
+    """공용 workspace를 붙인 활성(profile 없는) 서비스 중 `dagster-daemon`·`dagster-webserver`를 실행하는 것."""
+
+    services = compose.get("services")
+    if not isinstance(services, Mapping):
+        raise DeploymentContractError("Dagster topology documents are invalid")
+    plane = {
+        str(name): service
+        for name, service in services.items()
+        if isinstance(service, Mapping)
+        and not service.get("profiles")
+        and _mounts_shared_workspace(service)
+    }
+
+    def runners(program: str) -> set[str]:
+        return {name for name, service in plane.items() if _runs(service, program)}
+
+    return SharedDagsterPlane(
+        daemon=_one(runners("dagster-daemon"), what="shared daemon", target="shared plane"),
+        webserver=_one(
+            runners("dagster-webserver"), what="shared webserver", target="shared plane"
+        ),
+    )
+
+
+@cache
+def installed_shared_dagster_plane() -> SharedDagsterPlane:
+    """설치된 release의 공용 plane. 실패는 캐시하지 않는다."""
+
+    return derive_shared_dagster_plane(_installed_documents()[0])
+
+
 # ── pinned runtime slot ───────────────────────────────────────────────────
 
 #: pinned generation이 고정하는 이미지 slot. 이름은 generation payload의 `<slot>_image_id` 필드다 —
@@ -384,6 +433,16 @@ class RuntimeTopology:
         """`shared` family의 옛 서비스 — 어떤 실행 집합에도 없어야 한다."""
 
         return tuple(name for family in self.families.values() for name in family.retired)
+
+    @property
+    def shared_dagster_slots(self) -> tuple[RuntimeSlot, ...]:
+        """공용 plane에 합류한 target의 carrier slot(slot 순서). 모두 `own`이면 비어 있다."""
+
+        return tuple(
+            slot
+            for slot, target in (("map_dagster", MAP_TARGET), ("pinvi_dagster", PINVI_TARGET))
+            if self.families[target].shared
+        )
 
 
 def runtime_topology(families: Mapping[str, DagsterFamily] | None = None) -> RuntimeTopology:

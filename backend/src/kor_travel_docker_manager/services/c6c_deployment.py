@@ -302,7 +302,17 @@ _MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
         _PINVI_ADMIN_PASSWORD_ENV,
     }
 )
-_SAFE_GET_READINESS_ATTEMPTS = 2
+#: 인증된 smoke의 **본문 없는 GET**(PinVi `/admin/etl/summary`·`/admin/provider-sync`)만 재시도한다 — 전체 경로
+#: 재구축 직후 Map·PinVi가 이미지 빌드 부하 속에서 막 떠, 첫 호출이 timeout이나 upstream 미준비(PinVi 503
+#: `FEATURE_SERVICE_UNAVAILABLE`)로 끝나는 창이 있다(2026-09-30 PinVi 전환: provider-sync가
+#: `kor_travel_map_admin.unavailable` 뒤 timeout). 시도 사이 대기는 5→30초, 첫 시도부터 합한 상한은 180초다 —
+#: 상한을 넘길 대기는 시작하지 않는다. cancel POST·login·logout은 재시도하지 않는다(파괴적이거나 상태를 바꾼다).
+_SAFE_GET_READINESS_ATTEMPTS = 6
+_SAFE_GET_READINESS_BACKOFF_SECONDS: Final[tuple[float, ...]] = (5.0, 10.0, 20.0, 30.0, 30.0)
+_SAFE_GET_READINESS_BUDGET_SECONDS: Final = 180.0
+#: PinVi가 upstream(Map) 미준비를 알리는 envelope — `map_ops_errors`의 `KorTravelMapUnavailable` 분기(502/503).
+_PINVI_UPSTREAM_UNAVAILABLE_STATUSES: Final = frozenset({502, 503})
+_PINVI_UPSTREAM_UNAVAILABLE_CODE: Final = "FEATURE_SERVICE_UNAVAILABLE"
 _T = TypeVar("_T")
 # 읽기 전용 docker/git 조회 주입점. Docker 없는 단위 검증이 argv를 그대로 관측한다.
 C6cCommandRunner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
@@ -5101,7 +5111,8 @@ def run_pinvi_canonical_smoke(
             f"{smoke.pinvi_api_base_url}{path}",
             method="GET",
             headers={},
-            read_error_body=False,
+            # upstream 미준비 envelope(503 `FEATURE_SERVICE_UNAVAILABLE`)를 알아보려고 오류 본문을 읽는다.
+            read_error_body=True,
             retry_safe_get_readiness=True,
         )
         validator = (
@@ -6546,18 +6557,70 @@ def _session_request(
         except OSError as exc:
             raise DeploymentContractError(unavailable_message) from exc
 
-    if retry_connection_refused or retry_safe_get_readiness:
+    if retry_safe_get_readiness:
+        return _retry_safe_smoke_get(request_once, unavailable_message=unavailable_message)
+    if retry_connection_refused:
         return _retry_smoke_connection(
             request_once,
             unavailable_message=unavailable_message,
-            attempt_count=(
-                _SAFE_GET_READINESS_ATTEMPTS
-                if retry_safe_get_readiness
-                else LOOPBACK_HTTP_READINESS_ATTEMPTS
-            ),
-            retry_timeout=retry_safe_get_readiness,
+            attempt_count=LOOPBACK_HTTP_READINESS_ATTEMPTS,
         )
     return request_once()
+
+
+def _pinvi_upstream_unavailable(response: HttpProbeResponse) -> bool:
+    """PinVi가 upstream 미준비를 typed envelope로 알렸는가 — 그 밖의 5xx는 재시도하지 않는다."""
+
+    if response.status not in _PINVI_UPSTREAM_UNAVAILABLE_STATUSES:
+        return False
+    payload = response.payload
+    error = payload.get("error") if isinstance(payload, Mapping) else None
+    detail = payload.get("detail") if isinstance(payload, Mapping) else None
+    codes = {
+        value.get("code")
+        for value in (error, detail)
+        if isinstance(value, Mapping)
+    }
+    return _PINVI_UPSTREAM_UNAVAILABLE_CODE in codes
+
+
+def _retry_safe_smoke_get(
+    operation: Callable[[], HttpProbeResponse],
+    *,
+    unavailable_message: str,
+) -> HttpProbeResponse:
+    """본문 없는 GET을 연결 거부·timeout·PinVi upstream 미준비 동안 제한적으로 다시 부른다(fail-closed).
+
+    다 쓰면 마지막 결과를 그대로 낸다 — 예외면 다시 던지고, upstream 미준비 응답이면 그 응답을 돌려줘 호출자의
+    envelope 판정이 실패로 끝낸다. 재시도하지 않는 결과(4xx, 다른 5xx, 형식 오류)는 곧바로 돌려준다.
+    """
+
+    deadline = time.monotonic() + _SAFE_GET_READINESS_BUDGET_SECONDS
+    for attempt in range(_SAFE_GET_READINESS_ATTEMPTS):
+        last_attempt = attempt + 1 == _SAFE_GET_READINESS_ATTEMPTS
+        try:
+            response = operation()
+        except DeploymentContractError as exc:
+            cause: object = exc.__cause__
+            if isinstance(cause, urllib.error.URLError):
+                cause = cause.reason
+            if str(exc) != unavailable_message or not isinstance(
+                cause, ConnectionRefusedError | TimeoutError
+            ):
+                raise
+            if last_attempt:
+                raise
+        else:
+            if not _pinvi_upstream_unavailable(response) or last_attempt:
+                return response
+        wait = _SAFE_GET_READINESS_BACKOFF_SECONDS[
+            min(attempt, len(_SAFE_GET_READINESS_BACKOFF_SECONDS) - 1)
+        ]
+        if time.monotonic() + wait > deadline:
+            # 상한을 넘길 대기는 하지 않는다 — 한 번 더 부르고 그 결과로 끝낸다.
+            return operation()
+        time.sleep(wait)
+    raise AssertionError("unreachable safe GET retry state")
 
 
 def _retry_smoke_connection(
@@ -6565,7 +6628,6 @@ def _retry_smoke_connection(
     *,
     unavailable_message: str,
     attempt_count: int | None = None,
-    retry_timeout: bool = False,
 ) -> _T:
     """컨테이너 health 직후의 loopback 연결 race만 제한적으로 재시도한다."""
 
@@ -6583,12 +6645,7 @@ def _retry_smoke_connection(
                 retry_cause = retry_cause.reason
             if (
                 str(exc) != unavailable_message
-                or not isinstance(
-                    retry_cause,
-                    (ConnectionRefusedError, TimeoutError)
-                    if retry_timeout
-                    else ConnectionRefusedError,
-                )
+                or not isinstance(retry_cause, ConnectionRefusedError)
                 or attempt + 1 == attempt_count
             ):
                 raise

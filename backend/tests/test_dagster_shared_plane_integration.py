@@ -110,7 +110,17 @@ print(json.dumps({
     "wrong_password": call("/", secret=password + "x")[0],
     "ui": ui_status,
     "csp": csp,
+    # 비-브라우저 API 호출(Origin·Sec-Fetch-Site 둘 다 없음)은 Basic Auth만으로 통과한다 — 브라우저는 POST에
+    # 항상 Origin을 싣는다. 인증이 없으면 401, 브라우저 흔적(Sec-Fetch-Site)이나 `null` Origin이 있으면 403.
     "post_without_origin": call("/graphql", "POST", body=query)[0],
+    "post_without_origin_anonymous": call("/graphql", "POST", secret=None, body=query)[0],
+    "post_without_origin_wrong_password": call(
+        "/graphql", "POST", secret=password + "x", body=query)[0],
+    "post_null_origin": call("/graphql", "POST", origin="null", body=query)[0],
+    "post_without_origin_cross_site_fetch": call(
+        "/graphql", "POST", body=query, headers={"Sec-Fetch-Site": "cross-site"})[0],
+    "post_without_origin_same_origin_fetch": call(
+        "/graphql", "POST", body=query, headers={"Sec-Fetch-Site": "same-origin"})[0],
     "post_foreign_origin": call("/graphql", "POST", origin="https://evil.example.test", body=query)[0],
     "post_public_origin": call("/graphql", "POST", origin=public, body=query)[0],
     "post_local_origin": call("/graphql", "POST", origin="http://127.0.0.1:%s" % port, body=query)[0],
@@ -407,7 +417,12 @@ def test_the_empty_plane_is_healthy_and_the_gateway_guards_the_ui(isolated_plane
         "anonymous": 401,
         "wrong_password": 401,
         "ui": 200,
-        "post_without_origin": 403,
+        "post_without_origin": 200,
+        "post_without_origin_anonymous": 401,
+        "post_without_origin_wrong_password": 401,
+        "post_null_origin": 403,
+        "post_without_origin_cross_site_fetch": 403,
+        "post_without_origin_same_origin_fetch": 403,
         "post_foreign_origin": 403,
         "post_public_origin": 200,
         "post_local_origin": 200,
