@@ -281,6 +281,15 @@ def _location(service: Mapping[str, Any]) -> str:
     return location
 
 
+#: healthcheck argv에서 포트로 읽히는 낱말 — literal 숫자 또는 기본값이 숫자인 `${VAR:-N}`.
+_PORT_WORD = re.compile(r"\d{2,5}|\$\{[A-Za-z_][A-Za-z0-9_]*:-\d{2,5}\}")
+
+
+def _health_argv(service: Mapping[str, Any]) -> list[Any]:
+    test = (service.get("healthcheck") or {}).get("test")
+    return test if isinstance(test, list) else []
+
+
 def _port(argv: list[str]) -> int:
     raw = _flag(argv, "-p", "--port")
     assert raw, f"command에 `-p`가 없다: {argv}"
@@ -471,6 +480,10 @@ def _contract_violations(
                 port = _flag(_words(service.get("command")), "-p", "--port") or ""
                 if not port.isdigit():
                     violations.append(f"(a) `{name}`: `-p {port}`는 literal 포트여야 한다 — workspace가 그 값을 싣는다")
+                # healthcheck가 포트를 따로 들면 `-p`와 같은 literal이다 — env override가 probe만 옮기면 healthy가 거짓이다.
+                probe_ports = [str(w) for w in _health_argv(service) if _PORT_WORD.fullmatch(str(w))]
+                if any(w != port for w in probe_ports):
+                    violations.append(f"(a) `{name}`: healthcheck가 `-p {port}`와 다른 포트 {probe_ports}를 부른다")
             elif carries or mount in volumes:
                 violations.append(f"(a) `{name}`: `own`인데 공용 URL·마운트를 받았다")
 
@@ -606,7 +619,12 @@ def _flip(
         if skip != "loopback" and "-h" in argv:
             argv[argv.index("-h") + 1] = "127.0.0.1"
         if skip != "port":
-            argv[argv.index("-p") + 1] = str(_port(argv))
+            port = str(_port(argv))
+            argv[argv.index("-p") + 1] = port
+            health = _health_argv(service)
+            for index, word in enumerate(health):
+                if _PORT_WORD.fullmatch(str(word)) and _resolve(str(word), {}) == port:
+                    health[index] = port
     for name in legacy:
         if skip != "profile":
             services[name]["profiles"] = [_LEGACY_PROFILE]
@@ -645,6 +663,19 @@ def _flip(
         for name in (plane["webserver"], plane["daemon"]):
             _environment(services[name])[_DIGEST_ENV[_WORKSPACE_SOURCE]] = _digest(rendered)
     return {_WORKSPACE_SOURCE: rendered}
+
+
+def _own_pair_documents() -> tuple[dict[str, Any], dict[str, Any]]:
+    """체크아웃 모델에서 pinned pair(Map·PinVi)의 스위치만 `own`으로 되돌린 문서 — #447 기제 테스트의 기준선.
+
+    family 파생은 스위치와 모양만 본다. PinVi(뒤에 Map)가 실제로 합류한 뒤에도 pinned 재구축·C6c·보존 테스트는
+    "모두 own" 위에 `_flip`을 얹어 본다(conftest의 `own_pinned_pair`와 같은 기준선).
+    """
+
+    compose, targets = _documents()
+    for target_id in ("map", "pinvi"):
+        targets["targets"][target_id]["dagster"]["control_plane"] = "own"
+    return compose, targets
 
 
 def _dagster_targets() -> list[str]:
@@ -751,18 +782,18 @@ def test_flipping_every_target_keeps_the_plane_consistent() -> None:
 @pytest.mark.parametrize(
     ("target_id", "skip", "named"),
     [
-        # weather는 이미 합류했다(첫 전환) — 대조군은 아직 `own`인 target으로 든다. weather에만 있던 모양
-        # (옛 마운트가 남음, 활성 서비스가 옛 gateway에 기댐, `all` 누락)은 아래 committed-state 대조군이 본다.
-        ("pinvi", "env", "(a) `pinvi-dagster-code-server`: 공용 URL 앵커"),
-        ("pinvi", "mount", "(a) `pinvi-dagster-code-server`: 공용 dagster.yaml 마운트"),
+        # weather·PinVi는 이미 합류했다 — 대조군은 아직 `own`인 target(geo·Map)으로 든다. 합류한 target에만 있던
+        # 모양(옛 마운트가 남음, 활성 서비스가 옛 gateway에 기댐, `all` 누락)은 아래 committed-state 대조군이 본다.
+        ("geo", "env", "(a) `kor-travel-geo-dagster-code-server`: 공용 URL 앵커"),
+        ("geo", "mount", "(a) `kor-travel-geo-dagster-code-server`: 공용 dagster.yaml 마운트"),
         ("geo", "loopback", "gRPC가 `0.0.0.0`에서 듣는다"),
-        ("pinvi", "profile", "(c) `pinvi-dagster`: `profiles: [legacy-dagster]`가 아니다"),
-        ("pinvi", "services", "(c) `pinvi-dagster`: target `pinvi`의 `services`에 남았다"),
-        ("pinvi", "consumers", "(b) `pinvi-api`: `PINVI_DAGSTER_BASE_URL`가 없다"),
+        ("geo", "profile", "(c) `kor-travel-geo-dagster`: `profiles: [legacy-dagster]`가 아니다"),
+        ("geo", "services", "(c) `kor-travel-geo-dagster`: target `geo`의 `services`에 남았다"),
+        ("geo", "consumers", "(b) `kor-travel-geo-api`: `KTG_DAGSTER_URL`가 없다"),
         ("map", "consumers", "(b) `kor-travel-map-ui`: `NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL`가 옛 plane(`map`)의 포트"),
         ("geo", "port", "`-p ${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_PORT:-12503}`는 literal 포트여야 한다"),
         ("geo", "digest", "(d) `kor-travel-dagster-daemon`: `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`"),
-        ("pinvi", "digest", "(d) `pinvi-dagster-code-server`"),
+        ("geo", "digest", "(d) `kor-travel-geo-dagster-code-server`"),
         ("map", "consumers", "옛 공개 host env `KTDM_PROD_URL_MAP_DAGSTER`"),
     ],
 )
@@ -891,9 +922,9 @@ def test_a_switch_without_its_rendering_is_named_and_the_workspace_drifts() -> N
     """스위치만 뒤집고 compose를 그대로 두면 (a)·(b)·(c)가 모두 빨갛고, workspace가 파생과 어긋난다."""
 
     compose, targets = _documents()
-    targets["targets"]["pinvi"]["dagster"]["control_plane"] = "shared"
+    targets["targets"]["geo"]["dagster"]["control_plane"] = "shared"
     violations = _contract_violations(compose, targets)
-    for step in ("(a) `pinvi-dagster-code-server`", "(b) `pinvi-api`", "(c) `pinvi-dagster`"):
+    for step in ("(a) `kor-travel-geo-dagster-code-server`", "(b) `kor-travel-geo-api`", "(c) `kor-travel-geo-dagster`"):
         assert any(v.startswith(step) for v in violations), (step, violations)
     actual = load_yaml_rejecting_duplicate_keys(_WORKSPACE.read_text(encoding="utf-8"))
     assert actual != _derived_workspace(compose, targets)
@@ -905,14 +936,14 @@ def test_own_targets_carrying_shared_parts_are_named() -> None:
     compose, targets = _documents()
     services = compose["services"]
     services["kor-travel-geo-dagster-code-server"]["environment"].update(compose[_ANCHOR])
-    services["pinvi-dagster-daemon"]["profiles"] = [_LEGACY_PROFILE]
+    services["kor-travel-map-dagster-daemon"]["profiles"] = [_LEGACY_PROFILE]
     services["kor-travel-map-api"]["environment"]["KOR_TRAVEL_MAP_API_DAGSTER_URL"] = (
         _plane(compose, targets)["internal_raw"]
     )
     violations = _contract_violations(compose, targets)
     for named in (
         "(a) `kor-travel-geo-dagster-code-server`: `own`인데",
-        "(c) `pinvi-dagster-daemon`: `own`인데",
+        "(c) `kor-travel-map-dagster-daemon`: `own`인데",
         "(b) `kor-travel-map-api`: `own`인데",
     ):
         assert any(named in v for v in violations), (named, violations)

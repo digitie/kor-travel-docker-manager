@@ -11,5 +11,9 @@
 load_from:
 - grpc_server:
     host: 127.0.0.1
+    port: 12803
+    location_name: pinvi.etl.definitions
+- grpc_server:
+    host: 127.0.0.1
     port: 14106
     location_name: kortravelweather_dagster.definitions

@@ -87,11 +87,14 @@ _PRE_ADR54_GEO_OVERRIDE_SERVICES = (
     "kor-travel-geo-dagster-daemon",
 )
 
+#: pinned pair의 기제는 "Map·PinVi 모두 own" 기준선 위에서 본다 — 전환은 `flipped=(…)`/`_flip`으로 얹는다(conftest).
+pytestmark = pytest.mark.usefixtures("own_pinned_pair")
+
 
 def _flipped_families(*targets: str) -> Mapping[str, DagsterFamily]:
-    from test_dagster_shared_workspace_is_derived import _documents, _flip
+    from test_dagster_shared_workspace_is_derived import _flip, _own_pair_documents
 
-    compose, targets_document = _documents()
+    compose, targets_document = _own_pair_documents()
     for target_id in targets:
         _flip(compose, targets_document, target_id)
     return derive_dagster_families(compose, targets_document)

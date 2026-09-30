@@ -361,6 +361,21 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
         대조한다. `ensure dagster --recreate`는 쓰지 않는다 — target에 공용 PostgreSQL이 들어 있다. 설치 뒤
         `docker inspect kor-travel-dagster-daemon --format '{{range .Config.Env}}{{println .}}{{end}}' | grep
         WORKSPACE_DIGEST`가 새 값인지 확인한다.
+        - **pinned pair(PinVi·Map)는 `ensure P`가 아니다.** 두 target의 서비스는 pinned 재구축 세대의 이미지로 돈다 —
+          `ensure`·`compose up`으로 다시 만들면 세대 밖 이미지로 갈라지고, 재구축 밖에는 그 어긋남을 보는 검사가
+          없다. 스위치를 바꾼 release를 설치한 뒤 `scripts/run-pinned-rebuild-once <rev> <outdir>`로 적용한다. slot
+          서비스 키 집합이 바뀌므로(옛 webserver·daemon → code-server) 재구축은 **전체 경로**다: Map도 잠깐 멈추고,
+          마이그레이션을 돌고, compose가 빌드하는 이미지 넷을 다시 굽는다. 재구축은 retired 컨테이너가 돌고 있으면
+          거부하므로(#447 MED-2) 펜스가 먼저이고, `kor-travel-dagster-*`는 건드리지 않으므로 plane은 재구축 뒤
+          `up -d --no-deps`로 따로 다시 만든다. 순서: 설치 → 펜스(옛 daemon, 이어 webserver) → 옛 instance의 진행 중
+          run 취소 → pinned 재구축 → plane 재생성 → 검증 → 옛 컨테이너 `docker rm`. plane이 P를 싣는 것은 재생성
+          뒤이고 옛 daemon은 그 전에 멈췄으므로 이중 발화 창은 없다(사이 슬롯은 건너뛴다). 대가로 **펜스부터 plane
+          재생성까지 P에는 scheduler가 없다** — 재구축이 이미지 넷을 다시 굽는 동안이라 15~40분으로 잡는다. 그
+          구간의 P cron 슬롯은 모두 건너뛰므로 P의 긴 주기 schedule을 피해 창을 고른다. 전체 경로는 Map의 진행 중
+          run도 끊는다 — 창 스크립트가 precheck에서 세어 알리고, `REQUIRE_MAP_IDLE=1`이면 멈춘다. 재구축이 slot을
+          멈춘 뒤 실패하면 Map·PinVi가 내려간 채다: 옛 daemon을 되살리지 말고(code-server가 없다) 스크립트가 찍는
+          `resume`으로 재구축(전환된 release 아래 멱등)·plane 재생성·검증을 이어 간다. 창 스크립트
+          `dagster-cutover.sh <target> forward|rollback <sha>`가 이 분기를 target에서 고른다.
      4. **Verify** — P의 cron 주기 하나 안에: 공용 webserver probe 초록(workspace의 location 전부가
         `RepositoryLocation`), P의 RUNNING instigator 집합이 옛 DB의 것과 같다(D4 — 코드 선언), 옛 DB의
         `SELECT count(*) FROM job_ticks WHERE timestamp > :fence_ts`가 0으로 머문다, `dagster_shared`에는
@@ -399,7 +414,8 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
      1. P의 스위치를 `own`으로 되돌린 release를 설치하고 `ensure dagster`(공용 daemon·webserver가 P 없는
         workspace를 읽는다).
      2. `ensure P` — code-server가 옛 URL·`dagster.yaml`로, 소비자가 옛 URL로 돌아가고, 옛 webserver·daemon이
-        profile 밖으로 나와 다시 뜬다.
+        profile 밖으로 나와 다시 뜬다. pinned pair는 여기서도 `ensure P` 대신 pinned 재구축이다(옛 webserver·daemon이
+        다시 slot·동반 서비스가 된다) — plane 재생성과 공용 plane의 P run 취소가 그 앞이다.
      3. 소유자가 에지의 옛 hostname upstream을 되돌린다. 전환 창 동안 공용 plane에서 돈 run은
         `dagster_shared`에 남는다 — 이력이 나뉠 뿐 잃는 것은 없다.
 4. 프로젝트별 webserver/daemon을 내린다. **이 단계 전까지는 되돌리기가 싸다.**

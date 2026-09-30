@@ -1035,8 +1035,7 @@ def test_get_targets():
         "pinvi-api",
         "pinvi-web",
         "pinvi-dagster-code-server",
-        "pinvi-dagster",
-        "pinvi-dagster-daemon",
+        # pinvi-dagster·pinvi-dagster-daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
     ]
     assert data[3]["resolved_services"][-3:] == ["grafana", "cadvisor", "prometheus"]
     assert any(target["id"] == "all" for target in data)
