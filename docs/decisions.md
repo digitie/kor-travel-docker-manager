@@ -4294,6 +4294,38 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
    옛 메타DB `DROP` 전 30일은 그대로다. 되돌리기는
    **공용 workspace에서 P를 먼저 내리고(`ensure dagster`) 옛 daemon을 띄운다(`ensure P`)** — 반대면 두 daemon이 쏜다.
 
+9. **적대 리뷰(2026-09-30)로 더한 것.**
+   - **내용 digest(H1).** bind source가 설치본 symlink(`/opt/kor-travel-docker-manager` → release)를 거친 경로라
+     compose config hash는 경로 문자열만 본다. 전환·되돌리기로 workspace 내용만 바뀌면 daemon·webserver가
+     재생성되지 않아 옛 workspace를 계속 읽는다 — 전진 전환은 P의 schedule을 조용히 멈추고(probe도 같은 옛 파일을
+     읽어 초록), 되돌리기는 이중 발화한다. 그래서 공용 설정 파일을 붙인 상시 서비스는 그 파일 sha256 앞 16자를 env로
+     싣는다: daemon·webserver는 `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`·`KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST`, gateway는
+     `DAGSTER_GATEWAY_CONF_DIGEST`, 합류한 code-server는 `KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST`. 파생 테스트가 내용과
+     대조한다. `ensure dagster --recreate`는 답이 아니다(target에 공용 PostgreSQL이 있다).
+   - **gateway의 `/graphql`(H2·M1).** dagster-webserver는 Accept에 text/html이 없는 GET의 `query` 인자도
+     실행한다(mutation 포함) — 교차 사이트 `<img>`가 캐시된 Basic Auth로 부를 수 있다. `/graphql`은 `query` 인자를
+     받지 않고, 브라우저의 `Sec-Fetch-Site`가 `same-origin`·`none`(또는 헤더 없음 — 비-브라우저)일 때만 받는다.
+     `Upgrade` 요청(GraphQL subscription WebSocket — 모든 테넌트의 run·compute log)도 허용 Origin이 아니면 403이다.
+     UI HTML(`/`)은 iframe으로 열리므로 이 검사 밖이다. `limit_req`는 두지 않았다 — HAProxy 뒤에서는 모든 요청이 한
+     주소로 오므로 Basic Auth 시도만이 아니라 UI 전체를 함께 조인다.
+   - **daemon probe(M4).** workspace의 code-server 전부가 gRPC `SERVING`인지 본 뒤 **같은 프로세스를 exec**해
+     `dagster-daemon liveness-check`로 넘어간다(두 번째 프로세스·셸 없음). daemon은 매 반복 workspace를 다시 읽으므로
+     떠 있는 code-server는 로드된다. daemon 자신의 location 로드 상태는 노출되지 않으므로 runbook의 tick 검증(슬롯당
+     하나)이 그 효과를 본다.
+   - **버전 상한(M5, 계획 0.6).** webserver probe가 각 location의 `dagsterLibraryVersions`를 호스트 이미지에 설치된 같은
+     배포판(`importlib.metadata`, dagster import 없음)과 비교해 더 높거나 모르면 빨갛다. runbook 4번이 그것에 걸린다.
+   - **pinned 재구축(M2).** `pinned_runtime_generation.RUNTIME_SERVICES`·`pinned_runtime_rebuild.COMPOSE_BUILT_RUNTIME_SERVICES`·
+     C6c의 `_CANDIDATE_REQUIRED_PROTECTED_SERVICES`가 Map·PinVi의 옛 webserver·daemon을 literal로 들고, frozen render는
+     `--profile bootstrap`만 켠다. 옛 서비스가 `legacy-dagster`로 가면 재구축에서 사라지고, profile을 더하면 옛 daemon이
+     다시 떠 이중 발화한다. 그 집합을 스위치에서 파생하는 것은 pinned 재구축·M05·C6c 계약 전체에 닿는 변경이라 이
+     PR에 넣지 않았다. 대신 계약 테스트가 그 집합에 든 서비스가 있는 target의 `shared`를 `(pinned)`로 막는다 — Map·
+     PinVi 전환은 그 파생 PR이 먼저다.
+   - **포트는 literal.** `shared` code-server의 `-p`는 literal이어야 한다 — workspace는 정적 파일이라 `.env`의 포트
+     override를 모른다. 계약 테스트가 요구하고 참조 전환이 literal로 바꾼다.
+   - **옛 공개 host(b).** 활성 서비스가 옮긴 target의 옛 공개 host env(그 target 옛 서비스 컨테이너의 `prod_url_env`,
+     예: `KTDM_PROD_URL_MAP_DAGSTER`)를 더 부르지 않는다.
+   - **webserver도 storage 가드.** daemon과 같은 가드(YAML anchor 하나)를 지나 argv로 넘어간다(`sh -ec <가드> sh <argv>`).
+
 ### 근거
 
 - 모든 target이 `own`인 동안 기존 서비스의 정의는 한 글자도 바뀌지 않는다. n150 실측(읽기 전용, live `.env`,
@@ -4311,13 +4343,18 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
 
 ### 받아들인 위험 · 남은 것
 
+- **`127.0.0.1:11002`는 인증이 없다(D2 + host network의 본성).** host network의 컨테이너는 전부 공용 webserver에
+  인증 없이 닿는다 — 공용 plane의 모든 테넌트의 run·schedule을 읽고 mutation을 보낼 수 있다. 호스트 컨테이너를
+  신뢰 경계 안으로 두는 오늘의 모델(Docker 그룹은 root 동급, ADR-20)과 같은 부류라 받아들였다. 대신 `internal`을
+  가리키는 소비자는 브라우저의 GraphQL 원문을 넘기지 않아야 한다(이름 붙은 operation만 자기 location scope로 —
+  weather는 PR #65의 `scopedDagsterRequest`가 그렇게 한다, 2026-09-30 확인). Manager가 그것을 코드로 알 수는 없어
+  runbook 4번이 각 소비자가 **할 수 있는 것**을 직접 시도해 본다.
+
 - Dagster OSS에는 RBAC가 없다. 합류한 code-server는 모두 공용 metadata 자격증명을 가지므로 다른 테넌트의 run
   기록을 읽고 바꿀 수 있다. 공용 instance라는 결정에 딸린 것이고 받아들였다.
 - 소비자 URL의 앱 쪽 준비(location-scoped GraphQL, 계획 3.1~3.4)는 각 저장소의 PR이다. Map API의 host
   allowlist(`KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS`)는 URL이 아니라 이 계약 밖이고, Map API가 클라이언트에
   돌려주는 공개 GraphQL URL은 이제 Basic Auth gateway 뒤다 — Map 전환 전에 C7 게이트가 그 입구로 인증해 붙는지
   Map 쪽에서 정한다. Map 전환은 Map 전용 C6c 계약(보호 서비스 집합, pinned rebuild의 필요 서비스)도 바꿔야 한다.
-- 버전 상한 검사(계획 0.6 — code-server의 `dagsterLibraryVersions` ≤ 호스트)는 아직 없다. 첫 합류 전에 둔다.
-- workspace의 port는 compose **기본값**이다. `.env`가 code-server 포트를 덮으면 workspace가 틀리고, 공용
-  webserver probe가 그 location을 빨갛게 보인다(조용하지 않다).
+- Map·PinVi 전환 전에 pinned 재구축·C6c의 literal 집합을 스위치에서 파생하는 PR이 필요하다(위 9, M2).
 - 공개 host `dagster.digitie.mywire.org` → `192.168.1.14:11001`과 옛 hostname redirect는 저장소 밖(OPNsense)이다.

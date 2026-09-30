@@ -29,6 +29,7 @@ webserver·daemon은 `dagster-webserver`/`dagster-daemon`을 실행하면서 그
 from __future__ import annotations
 
 import copy
+import hashlib
 import http.server
 import json
 import re
@@ -42,6 +43,9 @@ from typing import Any
 import pytest
 import yaml
 
+from kor_travel_docker_manager.services import c6c_deployment
+from kor_travel_docker_manager.services.pinned_runtime_generation import RUNTIME_SERVICES
+from kor_travel_docker_manager.services.pinned_runtime_rebuild import COMPOSE_BUILT_RUNTIME_SERVICES
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -58,6 +62,56 @@ _PUBLIC_PROBE = "https://dagster-shared.probe.invalid"
 
 _WORKSPACE_SOURCE = f"./{_WORKSPACE.relative_to(_REPO_ROOT).as_posix()}"
 _INSTANCE_SOURCE = f"./{_INSTANCE_CONFIG.relative_to(_REPO_ROOT).as_posix()}"
+_GATEWAY_SOURCE = "./config/dagster-shared/gateway.conf"
+
+#: 공용 plane 설정 파일 → 그것을 붙인 상시 서비스가 실어야 할 내용 digest env(적대 리뷰 H1). bind source가
+#: 설치본 symlink를 거친 경로라 compose config hash는 경로 문자열만 본다 — 내용이 바뀌어도 재생성되지 않는다.
+#: digest env가 hash를 내용에 묶는다. one-shot(`restart: "no"`)은 매번 새로 돌므로 빠진다.
+_DIGEST_ENV = {
+    _INSTANCE_SOURCE: "KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST",
+    _WORKSPACE_SOURCE: "KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST",
+    _GATEWAY_SOURCE: "DAGSTER_GATEWAY_CONF_DIGEST",
+}
+
+#: 서비스 이름을 **literal로** 든 pinned Map·PinVi 재구축과 C6c의 집합(적대 리뷰 M2). 여기 든 서비스가
+#: `legacy-dagster`로 내려가면 frozen render(`--profile bootstrap`만)에서 사라지고, profile을 더하면 옛
+#: daemon이 다시 뜬다. 이 집합들을 스위치에서 파생하기 전에는 그 target을 `shared`로 바꿀 수 없다.
+_PINNED_LITERAL_SETS = {
+    "pinned_runtime_generation.RUNTIME_SERVICES": set(RUNTIME_SERVICES),
+    "pinned_runtime_rebuild.COMPOSE_BUILT_RUNTIME_SERVICES": set(COMPOSE_BUILT_RUNTIME_SERVICES),
+    "c6c_deployment._CANDIDATE_REQUIRED_PROTECTED_SERVICES": set(
+        c6c_deployment._CANDIDATE_REQUIRED_PROTECTED_SERVICES
+    ),
+}
+
+
+def _digest(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()[:16]
+
+
+def _file_bytes(source: str, files: Mapping[str, bytes] | None) -> bytes:
+    if files and source in files:
+        return files[source]
+    return (_REPO_ROOT / source[2:]).read_bytes()
+
+
+def _digest_violations(compose: dict[str, Any], files: Mapping[str, bytes] | None = None) -> list[str]:
+    violations: list[str] = []
+    for name, service in compose["services"].items():
+        if service.get("restart") == "no":
+            continue
+        environment = service.get("environment") or {}
+        for volume in service.get("volumes") or []:
+            source = _split_top(str(volume))[0]
+            if source not in _DIGEST_ENV:
+                continue
+            key = _DIGEST_ENV[source]
+            expected = _digest(_file_bytes(source, files))
+            if str(environment.get(key)) != expected:
+                violations.append(
+                    f"(d) `{name}`: `{key}`가 `{environment.get(key)}`다 — 붙인 `{source}`의 내용은 `{expected}`"
+                )
+    return violations
 
 
 # ── compose 보간 ─────────────────────────────────────────────────────────
@@ -333,14 +387,19 @@ def _g3b_violations(
     return violations
 
 
-def _contract_violations(compose: dict[str, Any], targets: dict[str, Any]) -> list[str]:
-    """스위치(`dagster.control_plane`)에서 파생한 기대와 렌더된 compose의 차이. 빈 목록이면 일치."""
+def _contract_violations(
+    compose: dict[str, Any], targets: dict[str, Any], files: Mapping[str, bytes] | None = None
+) -> list[str]:
+    """스위치(`dagster.control_plane`)에서 파생한 기대와 렌더된 compose의 차이. 빈 목록이면 일치.
+
+    `files`는 디스크 대신 쓸 설정 파일 내용(참조 전환이 만든 workspace)이다.
+    """
 
     services = compose["services"]
     anchor = compose[_ANCHOR]
     plane = _plane(compose, targets)
     probe_env = {plane["public_env"]: _PUBLIC_PROBE}
-    violations: list[str] = []
+    violations: list[str] = _digest_violations(compose, files)
     any_shared = False
 
     for target_id, spec in targets["targets"].items():
@@ -383,10 +442,21 @@ def _contract_violations(compose: dict[str, Any], targets: dict[str, Any]) -> li
                 host = _flag(_words(service.get("command")), "-h", "--host")
                 if host != "127.0.0.1":
                     violations.append(f"(a) `{name}`: gRPC가 `{host}`에서 듣는다 — 공용 plane은 loopback만")
+                # workspace는 정적 파일이라 `.env`의 포트 override를 모른다 — `-p`는 literal이어야 둘이 갈리지 않는다.
+                port = _flag(_words(service.get("command")), "-p", "--port") or ""
+                if not port.isdigit():
+                    violations.append(f"(a) `{name}`: `-p {port}`는 literal 포트여야 한다 — workspace가 그 값을 싣는다")
             elif carries or mount in volumes:
                 violations.append(f"(a) `{name}`: `own`인데 공용 URL·마운트를 받았다")
 
         # (c) 옛 webserver·daemon·gateway
+        if shared:
+            for label, members in _PINNED_LITERAL_SETS.items():
+                for name in sorted(legacy & members):
+                    violations.append(
+                        f"(pinned) `{name}`가 `{label}`에 literal로 있다 — 그 집합을 스위치에서 파생하기 전에는 "
+                        f"`{target_id}`를 옮길 수 없다(ADR-54, 적대 리뷰 M2)"
+                    )
         for name in sorted(legacy):
             profiles = services[name].get("profiles")
             if shared:
@@ -430,6 +500,21 @@ def _contract_violations(compose: dict[str, Any], targets: dict[str, Any]) -> li
                             violations.append(f"(b) `{consumer}`: `own`인데 `{variable}`가 공용 plane을 가리킨다")
 
         if shared:
+            old_public = sorted(
+                str(container["prod_url_env"])
+                for container in targets["containers"].values()
+                if container.get("compose_service") in legacy and container.get("prod_url_env")
+            )
+            for name, service in services.items():
+                if service.get("profiles"):
+                    continue
+                for source in (_environment(service), _build_args(service)):
+                    for variable, value in source.items():
+                        for env_name in old_public:
+                            if re.search(rf"\$\{{{env_name}[:}}?+-]", str(value)):
+                                violations.append(
+                                    f"(b) `{name}`: `{variable}`가 옛 공개 host env `{env_name}`를 부른다"
+                                )
             ports = _legacy_ports(compose, legacy)
             alternatives = "|".join(map(str, sorted(ports)))
             pattern = re.compile(rf"(?:127\.0\.0\.1|localhost):({alternatives})(?!\d)")
@@ -463,11 +548,18 @@ def _contract_violations(compose: dict[str, Any], targets: dict[str, Any]) -> li
 # ── 전환의 참조 구현(모델 위에서) ─────────────────────────────────────────
 
 #: `_flip`이 하는 단계. `skip`으로 하나를 빼면 계약이 그 단계를 이름으로 말해야 한다.
-_STEPS = ("env", "mount", "loopback", "profile", "services", "depends", "consumers", "all")
+_STEPS = (
+    "env", "mount", "loopback", "port", "profile", "services", "depends", "consumers", "all", "digest",
+)
 
 
-def _flip(compose: dict[str, Any], targets: dict[str, Any], target_id: str, *, skip: str = "") -> None:
-    """target 하나를 `shared`로 — 전환 PR이 compose·targets에 하는 편집 그대로(주석만 빼고)."""
+def _flip(
+    compose: dict[str, Any], targets: dict[str, Any], target_id: str, *, skip: str = ""
+) -> dict[str, bytes]:
+    """target 하나를 `shared`로 — 전환 PR이 compose·targets에 하는 편집 그대로(주석만 빼고).
+
+    전환 PR이 새로 쓰는 파일(파생 workspace)의 내용을 돌려준다 — 계약은 그것으로 digest를 대조한다.
+    """
 
     services = compose["services"]
     spec = targets["targets"][target_id]
@@ -484,9 +576,13 @@ def _flip(compose: dict[str, Any], targets: dict[str, Any], target_id: str, *, s
             service["volumes"] = [
                 v for v in service.get("volumes") or [] if _mount_target(v) != instance_path
             ] + [f"{_INSTANCE_SOURCE}:{instance_path}:ro"]
+        if skip not in ("mount", "digest"):
+            environment[_DIGEST_ENV[_INSTANCE_SOURCE]] = _digest(_file_bytes(_INSTANCE_SOURCE, None))
         argv = service["command"]
         if skip != "loopback" and "-h" in argv:
             argv[argv.index("-h") + 1] = "127.0.0.1"
+        if skip != "port":
+            argv[argv.index("-p") + 1] = str(_port(argv))
     for name in legacy:
         if skip != "profile":
             services[name]["profiles"] = [_LEGACY_PROFILE]
@@ -520,6 +616,11 @@ def _flip(compose: dict[str, Any], targets: dict[str, Any], target_id: str, *, s
         include = targets["targets"]["all"].setdefault("include", [])
         if plane["target"] not in include:
             include.append(plane["target"])
+    rendered = yaml.safe_dump(_derived_workspace(compose, targets), sort_keys=False).encode()
+    if skip != "digest":
+        for name in (plane["webserver"], plane["daemon"]):
+            _environment(services[name])[_DIGEST_ENV[_WORKSPACE_SOURCE]] = _digest(rendered)
+    return {_WORKSPACE_SOURCE: rendered}
 
 
 def _dagster_targets() -> list[str]:
@@ -575,13 +676,28 @@ def test_the_rendered_compose_matches_every_control_plane_switch() -> None:
     assert _contract_violations(compose, targets) == []
 
 
+def _pinned(violations: list[str]) -> tuple[list[str], list[str]]:
+    return [v for v in violations if v.startswith("(pinned)")], [
+        v for v in violations if not v.startswith("(pinned)")
+    ]
+
+
 @pytest.mark.parametrize("target_id", _dagster_targets())
 def test_flipping_a_target_renders_a_consistent_plane(target_id: str) -> None:
-    """참조 전환을 하면 계약·workspace 파생·G3-b가 모두 초록이다 — 전환 PR이 할 일이 이것으로 닫힌다."""
+    """참조 전환을 하면 compose 계약·digest·workspace 파생·G3-b가 초록이다.
+
+    compose만으로는 닫히지 않는다: Map·PinVi의 옛 webserver·daemon은 pinned 재구축·C6c가 literal로 든다.
+    그 target은 그 집합을 스위치에서 파생하기 전까지 `(pinned)`로 **빨갛다** — 조용히 초록이면 첫 전환
+    (PinVi)이 pinned 재구축을 깬다(적대 리뷰 M2).
+    """
 
     compose, targets = _documents()
-    _flip(compose, targets, target_id)
-    assert _contract_violations(compose, targets) == []
+    files = _flip(compose, targets, target_id)
+    pinned, rest = _pinned(_contract_violations(compose, targets, files))
+    assert rest == []
+    legacy = _legacy(compose, targets["targets"][target_id])
+    hardcoded = set().union(*_PINNED_LITERAL_SETS.values())
+    assert bool(pinned) is bool(legacy & hardcoded), pinned
     workspace = _derived_workspace(compose, targets)
     location = {_location(s) for s in _code_servers(compose, targets["targets"][target_id]).values()}
     assert {e["grpc_server"]["location_name"] for e in workspace["load_from"]} == location
@@ -592,9 +708,11 @@ def test_flipping_every_target_keeps_the_plane_consistent() -> None:
     """transport가 합류할 때와 같은 모양 — 네 target이 모두 `shared`여도 서로 밟지 않는다."""
 
     compose, targets = _documents()
+    files: dict[str, bytes] = {}
     for target_id in _dagster_targets():
-        _flip(compose, targets, target_id)
-    assert _contract_violations(compose, targets) == []
+        files = _flip(compose, targets, target_id)
+    _, rest = _pinned(_contract_violations(compose, targets, files))
+    assert rest == []
     workspace = _derived_workspace(compose, targets)
     assert len(workspace["load_from"]) == len(_dagster_targets())
     assert _g3b_violations(workspace, compose, targets, _location_caps()) == []
@@ -612,15 +730,38 @@ def test_flipping_every_target_keeps_the_plane_consistent() -> None:
         ("pinvi", "consumers", "(b) `pinvi-api`: `PINVI_DAGSTER_BASE_URL`가 없다"),
         ("map", "consumers", "(b) `kor-travel-map-ui`: `NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL`가 옛 plane(`map`)의 포트"),
         ("geo", "all", "공용 plane target `dagster`이 `all`에 없다"),
+        ("geo", "port", "`-p ${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_PORT:-12503}`는 literal 포트여야 한다"),
+        ("geo", "digest", "(d) `kor-travel-dagster-daemon`: `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`"),
+        ("weather", "digest", "(d) `kor-travel-weather-dagster-code-server`"),
+        ("map", "consumers", "옛 공개 host env `KTDM_PROD_URL_MAP_DAGSTER`"),
+        ("pinvi", "", "(pinned) `pinvi-dagster`가 `pinned_runtime_generation.RUNTIME_SERVICES`"),
+        ("map", "", "(pinned) `kor-travel-map-dagster-daemon`가 `c6c_deployment._CANDIDATE_REQUIRED_PROTECTED_SERVICES`"),
     ],
 )
 def test_a_flip_missing_a_step_is_named(target_id: str, skip: str, named: str) -> None:
     """전환 PR이 한 단계를 빠뜨리면 계약이 그 단계를 이름으로 말한다(빨간 대조군)."""
 
     compose, targets = _documents()
-    _flip(compose, targets, target_id, skip=skip)
-    violations = _contract_violations(compose, targets)
+    files = _flip(compose, targets, target_id, skip=skip)
+    violations = _contract_violations(compose, targets, files)
     assert any(named in violation for violation in violations), violations
+
+
+def test_the_committed_digests_follow_the_files() -> None:
+    """설치본 symlink 너머의 파일 내용이 바뀌면 상시 서비스가 재생성되도록 digest가 내용과 같다(H1)."""
+
+    compose, _ = _documents()
+    assert _digest_violations(compose) == []
+    bound = [
+        (name, source)
+        for name, service in compose["services"].items()
+        for source in (_split_top(str(v))[0] for v in service.get("volumes") or [])
+        if source in _DIGEST_ENV and service.get("restart") != "no"
+    ]
+    # daemon·webserver가 dagster.yaml과 workspace를, gateway가 gateway.conf를 붙인다.
+    assert len(bound) >= 5, bound
+    changed = {_WORKSPACE_SOURCE: _WORKSPACE.read_bytes() + b"# changed\n"}
+    assert len(_digest_violations(compose, changed)) == 2
 
 
 def test_a_switch_without_its_rendering_is_named_and_the_workspace_drifts() -> None:
@@ -745,8 +886,21 @@ def graphql_server() -> Iterator[tuple[int, type[_GraphQL]]]:
         server.server_close()
 
 
-def _entry(name: str, typename: str | None) -> dict[str, Any]:
-    return {"name": name, "locationOrLoadError": {"__typename": typename} if typename else None}
+#: 테스트 interpreter에 깔린 배포판 — 버전 상한 판정의 "호스트"다(실제 호스트에서는 dagster 가족).
+_HOST_LIB = "PyYAML"
+
+
+def _entry(
+    name: str, typename: str | None, versions: list[dict[str, str]] | None | str = "default"
+) -> dict[str, Any]:
+    if typename is None:
+        return {"name": name, "locationOrLoadError": None}
+    body: dict[str, Any] = {"__typename": typename}
+    if typename == "RepositoryLocation":
+        body["dagsterLibraryVersions"] = (
+            [{"name": _HOST_LIB, "version": "0.1"}] if versions == "default" else versions
+        )
+    return {"name": name, "locationOrLoadError": body}
 
 
 def _workspace_file(tmp_path: Path, names: list[str]) -> Path:
@@ -784,6 +938,28 @@ def _workspace_file(tmp_path: Path, names: list[str]) -> Path:
         (["a"], {"__typename": "Workspace", "locationEntries": [_entry("a", None)]}, False, "['a']"),
         (["a"], {"__typename": "Workspace", "locationEntries": []}, False, "['a']"),
         ([], {"__typename": "PythonError"}, False, "workspace not loaded"),
+        # 버전 상한(plan §2.1): code-server의 라이브러리가 호스트에 깔린 같은 배포판보다 높으면 빨갛다.
+        (
+            ["a"],
+            {"__typename": "Workspace", "locationEntries": [
+                _entry("a", "RepositoryLocation", [{"name": _HOST_LIB, "version": "999.0.0"}])]},
+            False,
+            "above the host version ceiling",
+        ),
+        (
+            ["a"],
+            {"__typename": "Workspace", "locationEntries": [
+                _entry("a", "RepositoryLocation", [{"name": "not-on-host", "version": "999.0.0"}])]},
+            True,
+            "",
+        ),
+        # 버전을 모르면(null) 통과시키지 않는다.
+        (
+            ["a"],
+            {"__typename": "Workspace", "locationEntries": [_entry("a", "RepositoryLocation", None)]},
+            False,
+            "above the host version ceiling",
+        ),
     ],
 )
 def test_the_shared_probe_is_green_only_when_every_workspace_location_loaded(

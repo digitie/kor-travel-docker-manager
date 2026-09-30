@@ -304,6 +304,13 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
      `dagster.yaml`에 `dagster/code_location` 상한이 있고, `shared` target의 location은 모두 workspace에
      있다(상한 쪽은 `own` target의 것도 미리 담고 있으므로 "같다"가 아니라 이 두 방향이다). 이름이 하나라도
      어긋나면 그 location의 상한이 조용히 사라진다.
+   - **합류 조건(ADR-54).** 합류하는 code-server는 (1) 공용 `dagster.yaml`의 `local_artifact_storage`·
+     `compute_logs`가 가리키는 `/opt/dagster/state`에 쓸 수 있어야 하고(run worker가 그 컨테이너 안에서 쓴다 —
+     비-root 이미지에서 흔히 깨진다, Map 2026-09-11), (2) op pool 이름이 테넌트 접두를 단다. (3) dagster 가족
+     버전이 호스트 이하다(버전 상한). (4) instigator 켜짐 상태는 코드에 선언한다(D4). (5) Map·PinVi는 pinned
+     재구축·C6c가 옛 webserver·daemon을 literal로 들어 있어, 그 집합을 스위치에서 파생하는 PR이 먼저다 —
+     그 전에는 계약 테스트가 `(pinned)`로 그 target의 전환을 막는다(적대 리뷰 M2). 그래서 실제 순서는
+     geo·weather가 먼저 가능하고, PinVi·Map은 그 PR 뒤다.
    - **합류 스위치와 파생물(ADR-54).** target마다 `config/docker-targets.yml`의
      `dagster: {control_plane: own|shared, consumers: {...}}`가 스위치다(지금 넷 다 `own`). 공용
      `config/dagster-shared/workspace.yaml`은 `shared` target의 code-server command(`-p`, `-m`/
@@ -323,7 +330,7 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
      (daemon은 heartbeat만 쓰고, webserver probe는 기대 location이 0개다). gateway는
      `KOR_TRAVEL_DAGSTER_UI_PASSWORD`가 비어 있으면 기동을 거부한다. 그래서 plane target은 첫 합류 전까지
      `all`에서 빠져 있고, 창에서 비밀번호를 넣고 `ensure dagster`로 세운다.
-   - **전환 runbook(프로젝트 P 하나).** 순서는 PinVi → geo → weather → Map이고 **사이에 soak이 없다**(D6
+   - **전환 runbook(프로젝트 P 하나).** 계획 순서는 PinVi → geo → weather → Map이다(PinVi·Map은 pinned 집합을 파생하는 PR이 먼저 — 위 합류 조건 (5), 그 전이면 geo·weather를 앞세운다). **사이에 soak이 없다**(D6
      개정 2026-09-30) — 한 프로젝트의 4번 검증이 끝나면 바로 다음 프로젝트다. 넷이 모두 옮긴 뒤 함께 관측한다(5번).
      0. 첫 전환 전 한 번: 빈 plane을 세운다 — `.env`에 `KOR_TRAVEL_DAGSTER_UI_PASSWORD`(와 운영의
         `KTDM_PROD_URL_DAGSTER`)를 넣고 `ensure dagster`. daemon `liveness-check` 초록, webserver probe 초록,
@@ -334,14 +341,35 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
         (weather는 QUEUED 4·STARTED 2가 있었다). P의 cron 슬롯 사이 조용한 창을 고른다.
      2. **Fence.** P의 옛 daemon, 이어 옛 webserver를 멈춘다(`ktdctl stop`). `fence_ts = now()`를 적는다.
         여기서부터 옛 instance는 tick·sensor·dequeue·launch를 못 한다.
-     3. **Switch.** P의 스위치를 `shared`로 바꾼 release를 설치하고(위 (a)·(b)·(c)와 workspace 항목이 같은
-        커밋에 있다) `ensure dagster`(공용 daemon·webserver가 새 workspace를 읽도록 재생성) 다음 `ensure P`
-        (code-server가 공용 URL·`dagster.yaml`로, 소비자가 공용 URL로 재생성된다).
+     3. **Switch.** P의 스위치를 `shared`로 바꾼 release를 설치하고(위 (a)·(b)·(c)와 workspace 항목, 그리고
+        daemon·webserver의 `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`가 같은 커밋에 있다) `ensure dagster` 다음
+        `ensure P`. **재생성은 digest가 건다** — bind source가 설치본 symlink를 거친 경로라 compose는 경로 문자열만
+        hash하고, 파일 내용만 바뀐 workspace로는 daemon·webserver를 다시 만들지 않는다(적대 리뷰 H1). 그래서
+        workspace·`dagster.yaml`·`gateway.conf`의 sha256 앞 16자를 붙인 서비스의 env로 두고 테스트가 파일과
+        대조한다. `ensure dagster --recreate`는 쓰지 않는다 — target에 공용 PostgreSQL이 들어 있다. 설치 뒤
+        `docker inspect kor-travel-dagster-daemon --format '{{range .Config.Env}}{{println .}}{{end}}' | grep
+        WORKSPACE_DIGEST`가 새 값인지 확인한다.
      4. **Verify** — P의 cron 주기 하나 안에: 공용 webserver probe 초록(workspace의 location 전부가
         `RepositoryLocation`), P의 RUNNING instigator 집합이 옛 DB의 것과 같다(D4 — 코드 선언), 옛 DB의
         `SELECT count(*) FROM job_ticks WHERE timestamp > :fence_ts`가 0으로 머문다, `dagster_shared`에는
         P의 schedule마다 cron 슬롯당 tick이 정확히 하나, 첫 run이 SUCCESS이고 그 event가 `dagster_shared`에
         있다, 위 "전환 판정" SQL이 0, P의 API·UI가 P의 location과 run만 보인다.
+        - **버전 상한**(계획 0.6, 적대 리뷰 M5): 공용 webserver probe가 초록이면 P의 code-server가 보고한
+          `dagsterLibraryVersions`가 전부 호스트 이미지의 설치 버전 이하다(probe가 그것까지 본다 — 모르면 빨강).
+          probe 출력을 `docker inspect --format '{{json .State.Health}}' kor-travel-dagster-webserver`로 본다.
+        - **daemon이 P를 본다**(M4): daemon healthcheck는 workspace의 code-server 전부가 gRPC `SERVING`인지 본 뒤
+          `liveness-check`로 넘어간다 — 초록이어야 한다. 그리고 위 tick 검증(슬롯당 하나)이 daemon이 P를 실제로
+          로드했다는 효과다.
+        - **소비자가 할 수 있는 것**(M3): 보이는 것만이 아니라 **할 수 있는 것**을 본다. `internal`(127.0.0.1:11002,
+          무인증)을 가리키는 P의 소비자는 브라우저의 GraphQL 원문을 그대로 넘기지 않아야 한다 — 이름 붙은
+          operation만 P의 location scope로 보내는지(weather: PR #65의 `scopedDagsterRequest`처럼), 다른 location의
+          schedule·run에 mutation을 보낼 수 없는지 P의 API·UI로 직접 시도해 본다.
+        - **옛 공개 hostname**: P의 소비자·링크가 옛 `<p>-dagster` host나 그 env(`KTDM_PROD_URL_<P>_DAGSTER` 등)를
+          더 부르지 않는다(계약 테스트 (b)가 compose에서 보고, 앱 기본값은 여기서 본다).
+        - **합류 조건 재확인**: P의 code-server에서 `docker exec <code-server> sh -c 'mkdir -p
+          /opt/dagster/state/compute_logs /opt/dagster/state/artifacts && test -w /opt/dagster/state'`가 0,
+          P의 op pool 이름이 테넌트 접두를 단다(공용 `concurrency.pools.default_limit`이 모든 테넌트의 모든 pool에
+          걸린다 — 접두 없는 이름은 다른 테넌트의 같은 이름과 한 슬롯을 나눈다).
         4번이 하나라도 빨가면 다음 프로젝트로 가지 않고 P를 되돌린다(아래).
      5. **함께 관측(D6).** 네 프로젝트가 모두 공용 plane에 오른 뒤 약 24시간 — schedule의 일일 주기 하나 —
         를 함께 지켜본다. 그 안에 Map의 C7 prod gate가 공용 plane에서 GREEN이어야 한다. 4단계는 이 관측

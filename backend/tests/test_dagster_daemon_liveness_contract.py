@@ -210,19 +210,25 @@ def test_every_dagster_webserver_probe_asks_whether_code_loaded(
     )
     probe = _command_text(healthcheck.get("test"))
     if _ALL_LOCATIONS_PROBE_FRAGMENT in probe:
-        assert _ALL_LOCATIONS_PROBE_EXPECTED in probe, (service_name, probe)
-        assert healthcheck.get("start_period"), (service_name, healthcheck)
-        return
-    assert _CODE_LOCATION_PROBE_FRAGMENT in probe, (
-        f"`{service_name}`의 healthcheck가 code location을 묻지 않는다: {probe}. "
-        "`/`나 `/server_info`는 webserver가 정적으로 주는 문서라 code location이 "
-        "죽어도 200이다 — 컨테이너는 끝까지 healthy로 보고되고 job은 조용히 멈춘다."
-    )
-    assert _CODE_LOCATION_PROBE_EXPECTED in probe, (
-        f"`{service_name}`의 probe가 응답 **본문을 판정하지 않는다**: {probe}. "
-        "`repositoriesOrError`는 실패 시에도 HTTP 200으로 `PythonError`를 주므로, "
-        "요청이 성공한 것만 보면 아무것도 관측하지 못한다."
-    )
+        # 조각이 문자열에 있다는 것만으로 통과시키지 않는다(적대 리뷰 LOW: 조기 return 구멍). 이 형태는 공용
+        # webserver의 것이고, 그 판정은 `test_dagster_shared_workspace_is_derived.py`가 원문을 실행해 센다 —
+        # 여기서는 그 probe가 **그 원문**인지(workspace를 묻고 기대 집합을 읽는지)를 본다.
+        for fragment in ("workspaceOrError", _ALL_LOCATIONS_PROBE_EXPECTED, "load_from", "sys.exit"):
+            assert fragment in probe, (service_name, fragment)
+        assert any(str(v).endswith(":ro") and "workspace.yaml" in str(v) for v in service.get("volumes") or []), (
+            f"`{service_name}`의 all-locations probe가 읽을 workspace를 붙이지 않았다"
+        )
+    else:
+        assert _CODE_LOCATION_PROBE_FRAGMENT in probe, (
+            f"`{service_name}`의 healthcheck가 code location을 묻지 않는다: {probe}. "
+            "`/`나 `/server_info`는 webserver가 정적으로 주는 문서라 code location이 "
+            "죽어도 200이다 — 컨테이너는 끝까지 healthy로 보고되고 job은 조용히 멈춘다."
+        )
+        assert _CODE_LOCATION_PROBE_EXPECTED in probe, (
+            f"`{service_name}`의 probe가 응답 **본문을 판정하지 않는다**: {probe}. "
+            "`repositoriesOrError`는 실패 시에도 HTTP 200으로 `PythonError`를 주므로, "
+            "요청이 성공한 것만 보면 아무것도 관측하지 못한다."
+        )
     # 기동 창이 없으면 code location 로딩 중에 unhealthy로 떨어진다.
     assert healthcheck.get("start_period"), (service_name, healthcheck)
 

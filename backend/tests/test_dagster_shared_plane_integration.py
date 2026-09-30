@@ -68,7 +68,7 @@ import base64, json, sys, urllib.error, urllib.request
 
 port, user, password, public = sys.argv[1:5]
 
-def call(path, method="GET", secret=password, origin=None, body=None):
+def call(path, method="GET", secret=password, origin=None, body=None, headers=None):
     request = urllib.request.Request(
         "http://127.0.0.1:%s%s" % (port, path), data=body, method=method)
     if secret is not None:
@@ -78,6 +78,8 @@ def call(path, method="GET", secret=password, origin=None, body=None):
         request.add_header("Origin", origin)
     if body:
         request.add_header("Content-Type", "application/json")
+    for key, value in (headers or {}).items():
+        request.add_header(key, value)
     try:
         response = urllib.request.urlopen(request, timeout=15)
         return response.status, response.headers.get_all("Content-Security-Policy") or []
@@ -98,6 +100,30 @@ print(json.dumps({
     "post_local_origin": call("/graphql", "POST", origin="http://127.0.0.1:%s" % port, body=query)[0],
     "post_public_origin_anonymous": call(
         "/graphql", "POST", secret=None, origin=public, body=query)[0],
+    # H2: GET도 query를 실행한다 — 교차 사이트 <img>가 캐시된 Basic Auth로 부를 수 있다.
+    "get_graphql_query_arg": call(
+        "/graphql?query=%7BworkspaceOrError%7B__typename%7D%7D",
+        headers={"Accept": "application/json"})[0],
+    "post_cross_site_fetch": call(
+        "/graphql", "POST", origin=public, body=query,
+        headers={"Sec-Fetch-Site": "cross-site"})[0],
+    "post_same_site_fetch": call(
+        "/graphql", "POST", origin=public, body=query,
+        headers={"Sec-Fetch-Site": "same-site"})[0],
+    "post_same_origin_fetch": call(
+        "/graphql", "POST", origin=public, body=query,
+        headers={"Sec-Fetch-Site": "same-origin"})[0],
+    # iframe(geo UI)은 교차 사이트 탐색으로 UI HTML을 연다 — 그것은 막지 않는다.
+    "ui_cross_site_navigation": call("/", headers={"Sec-Fetch-Site": "cross-site"})[0],
+    # M1: 교차 사이트 WebSocket(GraphQL subscription)은 Origin으로 막힌다.
+    "upgrade_foreign_origin": call(
+        "/graphql", origin="https://evil.example.test",
+        headers={"Upgrade": "websocket", "Connection": "Upgrade",
+                 "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="})[0],
+    "upgrade_without_origin": call(
+        "/graphql",
+        headers={"Upgrade": "websocket", "Connection": "Upgrade",
+                 "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="})[0],
 }))
 """
 
@@ -279,6 +305,22 @@ def test_the_empty_plane_is_healthy_and_the_gateway_guards_the_ui(isolated_plane
     empty = _probe_in_webserver(plane, "load_from: []\n")
     assert empty.returncode == 0, empty.stderr
 
+    # daemon probe(M4): 떠 있지 않은 code-server를 기대하면 liveness-check로 넘어가기 전에 빨갛다.
+    daemon = _container(plane, _DAEMON)
+    written = subprocess.run(
+        ["docker", "exec", "-i", daemon, "sh", "-c", "cat > /tmp/probe-workspace.yaml"],
+        input="load_from:\n  - grpc_server: {host: 127.0.0.1, port: 4999, location_name: not.joined}\n",
+        text=True, capture_output=True, check=False, timeout=60,
+    )
+    assert written.returncode == 0, written.stderr
+    daemon_test = [str(part) for part in canonical[_DAEMON]["healthcheck"]["test"]]
+    down = _run(
+        "docker", "exec", daemon, "python", "-I", "-c", daemon_test[4],
+        "/tmp/probe-workspace.yaml", timeout=120,
+    )
+    assert down.returncode != 0, down.stderr
+    assert "code servers not serving: ['not.joined']" in down.stderr, down.stderr
+
     # gateway — webserver 컨테이너 안에서(같은 netns) 부른다.
     port = _resolve(str(canonical[_GATEWAY]["environment"]["DAGSTER_GATEWAY_PORT"]), {})
     answered = _run(
@@ -305,6 +347,13 @@ def test_the_empty_plane_is_healthy_and_the_gateway_guards_the_ui(isolated_plane
         "post_public_origin": 200,
         "post_local_origin": 200,
         "post_public_origin_anonymous": 401,
+        "get_graphql_query_arg": 403,
+        "post_cross_site_fetch": 403,
+        "post_same_site_fetch": 403,
+        "post_same_origin_fetch": 200,
+        "ui_cross_site_navigation": 200,
+        "upgrade_foreign_origin": 403,
+        "upgrade_without_origin": 403,
     }
 
 

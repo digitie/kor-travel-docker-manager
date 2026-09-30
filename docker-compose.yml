@@ -17,6 +17,35 @@ name: kor-travel-docker-manager
 x-dagster-shared-control-env: &dagster-shared-control-env
   KOR_TRAVEL_DAGSTER_SHARED_PG_URL: postgresql+psycopg2://kor_travel_dagster_shared_app:${KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/dagster_shared
 
+# 공용 Dagster 호스트 서비스(daemon·webserver)의 기동 가드(ADR-54) — **잘못된 instance storage 위에서 뜨지
+# 않는다**(PinVi daemon과 같은 가드). `dagster.yaml` bind가 빠지면 Dagster는 `$DAGSTER_HOME` 아래 SQLite로
+# 조용히 떨어지고, daemon은 자기 빈 DB를 dequeue하며 heartbeat도 거기 써서 liveness-check까지 초록이 되고,
+# webserver는 빈 instance를 보여 준다. storage 세 개의 실제 구현을 보고 하나라도 Postgres가 아니면 넘어가지
+# 않는다. 넘어갈 명령은 `sh -ec <이 가드> sh <argv...>`의 argv다(`exec "$$@"`) — 서비스의 command에 argv가
+# 그대로 남아 파생 검사가 `-p`·`-w`를 읽는다.
+x-dagster-shared-storage-guard: &dagster-shared-storage-guard |
+  python -c '
+  import sys
+  from dagster import DagsterInstance
+
+  with DagsterInstance.get() as instance:
+      wrong = {
+          label: type(storage).__name__
+          for label, storage in (
+              ("run", instance.run_storage),
+              ("event log", instance.event_log_storage),
+              ("schedule", instance.schedule_storage),
+          )
+          if "Postgres" not in type(storage).__name__
+      }
+  if wrong:
+      sys.exit(
+          "shared Dagster instance storage is not PostgreSQL: %s. "
+          "The shared dagster.yaml is not mounted at DAGSTER_HOME." % wrong
+      )
+  '
+  exec "$$@"
+
 services:
   # platform-topology.md §7(2026-09-19 결정)의 공용 제어 평면 instance. concierge·geo·
   # PinVi·weather·transport가 여기 산다 — 프로젝트마다 role+database만 만드는 별도
@@ -615,18 +644,22 @@ services:
   #
   # daemon·webserver는 위 storage migrate와 **같은 호스트 이미지**다(tag·build context 동일 —
   # `backend/tests/test_dagster_shared_config.py`가 대조한다). 호스트 서비스는 공용 metadata URL
-  # 앵커와 `DAGSTER_HOME`만 받는다 — 앱 비밀은 없다. run은 여기서 돌지 않는다(DefaultRunLauncher가
-  # code-server의 자식으로 띄운다).
+  # 앵커와 `DAGSTER_HOME`(과 아래 내용 digest)만 받는다 — 앱 비밀은 없다. run은 여기서 돌지 않는다
+  # (DefaultRunLauncher가 code-server의 자식으로 띄운다).
   #
   # 둘은 공용 `config/dagster-shared/workspace.yaml`을 읽는다. 그 파일은 **파생물**이다 — 손으로
   # 쓰지 않는다. `config/docker-targets.yml`에서 `dagster.control_plane: shared`인 target의
   # code-server command(`-p`·`-m`)에서 만들고, `backend/tests/test_dagster_shared_workspace_is_derived.py`가
   # 어긋나면 빨개진다. 모든 target이 `own`인 동안 workspace는 비어 있고(`load_from: []`) 둘은
-  # 빈 plane으로 healthy하게 돈다 — daemon은 heartbeat만 쓰고, webserver의 probe는 기대 location이
-  # 0개라 통과한다.
+  # 빈 plane으로 healthy하게 돈다.
+  #
+  # **내용 digest env.** bind source는 설치본 symlink(`/opt/kor-travel-docker-manager/...`)를 거친 경로라
+  # compose config hash는 경로 문자열만 본다 — 파일 내용이 바뀌어도(합류·되돌리기로 workspace가 바뀌어도)
+  # 컨테이너가 재생성되지 않고 옛 workspace를 계속 읽는다. 그래서 붙인 파일의 sha256 앞 16자를 env로 둔다 —
+  # 내용이 바뀌면 hash가 바뀌어 `up`이 재생성한다. 값은 파생이다(테스트가 파일 내용과 대조한다).
   #
   # 둘 다 code-server에 `depends_on`하지 않는다 — 어느 code-server가 합류했는지는 workspace가
-  # 말하고, 합류한 location이 떴는지는 webserver probe가 본다(아래).
+  # 말하고, 합류한 location이 떴는지는 두 probe가 본다(아래).
   kor-travel-dagster-daemon:
     image: kor-travel-dagster-host:75f02d642f06bcbd
     build:
@@ -639,47 +672,45 @@ services:
     depends_on:
       kor-travel-dagster-storage-migrate:
         condition: service_completed_successfully
-    # **잘못된 instance storage 위에서 뜨지 않는다**(PinVi daemon과 같은 가드). `dagster.yaml`
-    # bind가 빠지면 Dagster는 `$DAGSTER_HOME` 아래 SQLite로 조용히 떨어지고, daemon은 자기 빈 DB를
-    # dequeue하며 heartbeat도 거기에 써서 liveness-check까지 초록이 된다. storage 세 개의 실제 구현을
-    # 보고 하나라도 Postgres가 아니면 daemon으로 넘어가지 않는다.
     command:
     - sh
     - -ec
-    - |
-      python -c '
-      import sys
-      from dagster import DagsterInstance
-
-      with DagsterInstance.get() as instance:
-          wrong = {
-              label: type(storage).__name__
-              for label, storage in (
-                  ("run", instance.run_storage),
-                  ("event log", instance.event_log_storage),
-                  ("schedule", instance.schedule_storage),
-              )
-              if "Postgres" not in type(storage).__name__
-          }
-      if wrong:
-          sys.exit(
-              "shared Dagster instance storage is not PostgreSQL: %s. "
-              "The shared dagster.yaml is not mounted at DAGSTER_HOME." % wrong
-          )
-      '
-      exec dagster-daemon run -w /opt/dagster/dagster_home/workspace.yaml
+    - *dagster-shared-storage-guard
+    - sh
+    - dagster-daemon
+    - run
+    - -w
+    - /opt/dagster/dagster_home/workspace.yaml
     environment:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "b2311ec335e60898"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
     healthcheck:
-      # dagster의 정식 판정(required daemon 전부의 heartbeat 신선도). exec 형식이라 timeout 때 셸 래퍼만
-      # 죽고 Python이 고아로 남는 일이 없다. 주기 × retries(240초)를 tolerance(300초) 아래로 둔다.
-      test: ["CMD", "dagster-daemon", "liveness-check"]
+      # 두 겹이다. (1) workspace의 code-server 전부가 gRPC health로 `SERVING`인가 — daemon은 매 반복에
+      # workspace를 다시 읽으므로 떠 있는 code-server는 daemon이 로드한다. 안 뜬 location이 있으면 그
+      # location의 schedule은 tick하지 않으므로 daemon을 unhealthy로 본다(webserver probe와 같은 의미).
+      # dagster를 import하지 않는다(grpc·yaml만). (2) 그 다음 **같은 프로세스를 exec**해 dagster의 정식 판정
+      # `dagster-daemon liveness-check`(required daemon 전부의 heartbeat 신선도) — exec라 셸 래퍼도 두 번째
+      # 프로세스도 없다(ADR-52). 주기 × retries(240초)를 tolerance(300초) 아래로 둔다.
+      test:
+      - CMD
+      - python
+      - -I
+      - -c
+      - >-
+        import os, sys, yaml, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g;
+        entries = [e['grpc_server'] for e in ((yaml.safe_load(open(sys.argv[1])) or {}).get('load_from') or [])];
+        serving = lambda e: (lambda f: f.exception() is None and f.result().status == h.HealthCheckResponse.SERVING)(g.HealthStub(grpc.insecure_channel('%s:%s' % (e['host'], e['port']))).Check.future(h.HealthCheckRequest(service='DagsterApi'), timeout=5));
+        down = sorted(e['location_name'] for e in entries if not serving(e));
+        down and sys.exit('code servers not serving: %s' % down);
+        sys.stdout.flush(); os.execvp('dagster-daemon', ['dagster-daemon', 'liveness-check'])
+      - /opt/dagster/dagster_home/workspace.yaml
       interval: 120s
       timeout: 60s
       retries: 2
@@ -688,14 +719,15 @@ services:
 
   # 공용 webserver — `127.0.0.1`에서만 듣는다(D2). 인증은 앞의 gateway(11001)가 한다.
   #
-  # healthcheck는 **파생 workspace의 location 전부**가 `RepositoryLocation`으로 로드됐는지 본다 —
-  # 프로젝트별 webserver의 `repositoriesOrError`는 location이 하나라도 뜨면 초록이라, 여러 테넌트가
-  # 한 webserver를 쓰면 한 테넌트의 실패를 가린다. 기대 집합은 컨테이너에 붙은 그 workspace 파일에서
-  # 읽는다(목록 사본이 없다). probe는:
-  # - exec 형식이고 dagster를 import하지 않는다(yaml·urllib만, 0.3초) — 2026-09-27 CMD-SHELL 고아 폭주의
-  #   교훈(ADR-52). 자체 timeout(8초)이 healthcheck timeout(10초)보다 짧아 스스로 끝난다.
-  # - gRPC를 부르지 않는다 — `locationOrLoadError`는 webserver가 이미 들고 있는 location 상태를 읽을
-  #   뿐 code-server에 닿지 않는다. 느린 code-server가 probe를 붙잡지 못한다.
+  # healthcheck는 **파생 workspace의 location 전부**가 `RepositoryLocation`으로 로드됐는지, 그리고 각
+  # location의 dagster 라이브러리 버전이 **호스트의 설치 버전 이하**인지 본다(버전 상한, dagster-shared-plan
+  # §2.1·§3 — 호스트 ≥ code-server가 Dagster의 호환 정책이다). 프로젝트별 webserver의 `repositoriesOrError`는
+  # location이 하나라도 뜨면 초록이라, 여러 테넌트가 한 webserver를 쓰면 한 테넌트의 실패를 가린다. 기대
+  # 집합은 컨테이너에 붙은 그 workspace 파일에서 읽는다(목록 사본이 없다). probe는:
+  # - exec 형식이고 dagster를 import하지 않는다(yaml·urllib·importlib.metadata만) — 2026-09-27 CMD-SHELL 고아
+  #   폭주의 교훈(ADR-52). 자체 timeout(8초)이 healthcheck timeout(10초)보다 짧아 스스로 끝난다.
+  # - gRPC를 부르지 않는다 — `locationOrLoadError`·`dagsterLibraryVersions`는 webserver가 이미 들고 있는
+  #   location 상태를 읽을 뿐 code-server에 닿지 않는다. 느린 code-server가 probe를 붙잡지 못한다.
   kor-travel-dagster-webserver:
     image: kor-travel-dagster-host:75f02d642f06bcbd
     build:
@@ -708,6 +740,10 @@ services:
       kor-travel-dagster-storage-migrate:
         condition: service_completed_successfully
     command:
+    - sh
+    - -ec
+    - *dagster-shared-storage-guard
+    - sh
     - dagster-webserver
     - -h
     - 127.0.0.1
@@ -718,6 +754,8 @@ services:
     environment:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "b2311ec335e60898"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -728,16 +766,20 @@ services:
       - -I
       - -c
       - >-
-        import json, sys, yaml, urllib.request as u;
+        import json, re, sys, yaml, urllib.request as u, importlib.metadata as m;
         port, path = sys.argv[1], sys.argv[2];
         want = {e['grpc_server']['location_name'] for e in ((yaml.safe_load(open(path)) or {}).get('load_from') or [])};
-        q = json.dumps({'query': '{workspaceOrError{__typename ... on Workspace{locationEntries{name locationOrLoadError{__typename}}}}}'}).encode();
+        q = json.dumps({'query': '{workspaceOrError{__typename ... on Workspace{locationEntries{name locationOrLoadError{__typename ... on RepositoryLocation{dagsterLibraryVersions{name version}}}}}}}'}).encode();
         w = json.load(u.urlopen(u.Request('http://127.0.0.1:%s/graphql' % port, data=q, headers={'Content-Type': 'application/json'}), timeout=8))['data']['workspaceOrError'];
         t = w['__typename'];
         t == 'Workspace' or sys.exit('workspace not loaded: %s' % t);
-        got = {e['name'] for e in w['locationEntries'] if (e.get('locationOrLoadError') or {}).get('__typename') == 'RepositoryLocation'};
-        missing = sorted(want - got);
-        sys.exit('code locations not loaded: %s' % missing if missing else 0)
+        loaded = {e['name']: e['locationOrLoadError'] for e in w['locationEntries'] if (e.get('locationOrLoadError') or {}).get('__typename') == 'RepositoryLocation'};
+        missing = sorted(want - set(loaded));
+        missing and sys.exit('code locations not loaded: %s' % missing);
+        v = lambda s: tuple(int(x) for x in re.findall(r'\d+', s)[:3]);
+        host = {(d.metadata['Name'] or '').lower(): d.version for d in m.distributions()};
+        over = sorted('%s: %s %s > host %s' % (n, lib['name'], lib['version'], host.get(lib['name'].lower())) for n in sorted(want) for lib in (loaded[n].get('dagsterLibraryVersions') or [{'name': 'dagster', 'version': 'unknown'}]) if lib['version'] == 'unknown' or (lib['name'].lower() in host and v(lib['version']) > v(host[lib['name'].lower()])));
+        sys.exit('code-server dagster above the host version ceiling: %s' % over if over else 0)
       - ${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
       - /opt/dagster/dagster_home/workspace.yaml
       interval: 30s
@@ -778,6 +820,9 @@ services:
       DAGSTER_PUBLIC_ORIGIN: ${KTDM_PROD_URL_DAGSTER:-}
       DAGSTER_FRAME_ANCESTORS: ${KOR_TRAVEL_DAGSTER_FRAME_ANCESTORS:-${KTDM_PROD_URL_GEO:-}}
       DAGSTER_UI_USER: ${KOR_TRAVEL_DAGSTER_UI_USER:-admin}
+      # 붙인 `gateway.conf`의 내용 digest — 설치본 symlink를 거친 bind라 내용만 바뀌면 재생성되지 않는다
+      # (호스트 서비스와 같은 이유, 테스트가 파일과 대조한다).
+      DAGSTER_GATEWAY_CONF_DIGEST: "e1f5803f7cdf0886"
     secrets:
     - source: kor-travel-dagster-ui-password
       target: /run/secrets/kor-travel-dagster-ui-password

@@ -8451,3 +8451,22 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
   옛 메타DB `DROP` 전 30일은 그대로 — §7 runbook·D6·ADR-54에 반영.
 - **남은 것**: 적대 리뷰·PR, 버전 상한 검사(계획 0.6), G3-a 실측, 에지(3.6), 소비자 PR 3.1~3.4, Map 전환의 host
   allowlist·C7 인증·C6c 보호 서비스 집합, 전환 창.
+
+## 2026-09-30 — 공용 Dagster 3단계: 적대 리뷰 수정(재생성 digest, `/graphql` CSRF, pinned 게이트, 버전 상한)
+
+브랜치 `feat/dagster-shared-stage3`(origin/main `9f0f1cd` 위). 모든 target은 여전히 `own`이다.
+
+- **H1** 공용 설정을 붙인 상시 서비스가 그 파일 sha256 앞 16자를 env로 싣는다(daemon·webserver: workspace·instance,
+  gateway: gateway.conf, 합류한 code-server: instance). bind가 설치본 symlink를 거쳐 compose hash가 경로만 보므로,
+  내용만 바뀐 workspace로는 재생성되지 않던 구멍이다. 파생 테스트가 내용과 대조하고 참조 전환이 digest를 갱신한다.
+- **H2·M1** gateway: `/graphql`은 `query` 인자 403, `Sec-Fetch-Site`가 same-origin·none·없음이 아니면 403, 허용
+  Origin이 아닌 `Upgrade` 403. UI HTML(`/`)의 교차 사이트 탐색(iframe)은 그대로 200.
+- **M2** pinned 재구축·C6c의 literal 집합에 옛 webserver·daemon이 든 target(Map·PinVi)은 계약 테스트가 `(pinned)`로
+  `shared`를 막는다. 파생은 별도 PR이다. `test_flipping_a_target_renders_a_consistent_plane`의 과장된 docstring 정정.
+- **M3** `127.0.0.1:11002` 무인증은 ADR-54에 받아들인 위험으로, runbook 4번이 소비자가 **할 수 있는 것**을 본다(weather
+  PR #65 `scopedDagsterRequest` 확인).
+- **M4** daemon probe: workspace code-server 전부 gRPC `SERVING` → 같은 프로세스 exec `liveness-check`.
+- **M5** webserver probe가 `dagsterLibraryVersions` ≤ 호스트 설치 버전(`importlib.metadata`)을 본다, 모르면 빨강.
+- LOW: `shared` code-server의 `-p` literal, 옛 공개 host env 참조 금지, webserver도 storage 가드(YAML anchor 하나,
+  argv handoff), liveness 테스트의 조기 return 구멍, 합류 조건(/opt/dagster/state 쓰기·pool 접두) 문서·검증 단계.
+  `limit_req`는 HAProxy 뒤 단일 주소라 UI 전체를 조이므로 두지 않았다(ADR-54).

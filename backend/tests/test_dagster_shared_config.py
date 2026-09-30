@@ -373,13 +373,21 @@ def test_the_host_services_run_the_host_image_with_only_the_control_env() -> Non
         assert service["build"] == migrate["build"], name
         assert name in target["runtime_services"], name
         assert "secrets" not in service and "env_file" not in service, name
-        allowed = {_url_env_name(), "DAGSTER_HOME", "DAGSTER_DAEMON_HEARTBEAT_TOLERANCE"}
+        # 내용 digest 둘은 비밀이 아니다 — 붙인 파일이 바뀌면 재생성되게 하는 값이다(ADR-54, H1).
+        allowed = {
+            _url_env_name(), "DAGSTER_HOME", "DAGSTER_DAEMON_HEARTBEAT_TOLERANCE",
+            "KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST", "KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST",
+        }
         assert set(service["environment"]) <= allowed, (name, sorted(service["environment"]))
         assert service["environment"]["DAGSTER_HOME"] == migrate["environment"]["DAGSTER_HOME"]
         assert service["depends_on"] == {_MIGRATE: {"condition": "service_completed_successfully"}}
         assert service.get("init") is True and service.get("restart") == "unless-stopped"
         assert "user" not in service, "호스트 이미지의 비-root 사용자(USER dagster)를 덮지 않는다"
         assert "ports" not in service, "daemon은 포트가 없고 webserver는 loopback 뒤에 있다"
+        # 둘 다 storage 가드를 지나 argv로 넘어간다(`sh -ec <가드> sh <argv>`).
+        command = [str(part) for part in service["command"]]
+        assert command[:2] == ["sh", "-ec"] and 'exec "$$@"' in command[2], name
+        assert "DagsterInstance" in command[2] and command[3] == "sh", name
 
 
 def test_the_shared_webserver_listens_only_on_loopback() -> None:
