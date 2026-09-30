@@ -369,7 +369,12 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
           거부하므로(#447 MED-2) 펜스가 먼저이고, `kor-travel-dagster-*`는 건드리지 않으므로 plane은 재구축 뒤
           `up -d --no-deps`로 따로 다시 만든다. 순서: 설치 → 펜스(옛 daemon, 이어 webserver) → 옛 instance의 진행 중
           run 취소 → pinned 재구축 → plane 재생성 → 검증 → 옛 컨테이너 `docker rm`. plane이 P를 싣는 것은 재생성
-          뒤이고 옛 daemon은 그 전에 멈췄으므로 이중 발화 창은 없다(사이 슬롯은 건너뛴다). 창 스크립트
+          뒤이고 옛 daemon은 그 전에 멈췄으므로 이중 발화 창은 없다(사이 슬롯은 건너뛴다). 대가로 **펜스부터 plane
+          재생성까지 P에는 scheduler가 없다** — 재구축이 이미지 넷을 다시 굽는 동안이라 15~40분으로 잡는다. 그
+          구간의 P cron 슬롯은 모두 건너뛰므로 P의 긴 주기 schedule을 피해 창을 고른다. 전체 경로는 Map의 진행 중
+          run도 끊는다 — 창 스크립트가 precheck에서 세어 알리고, `REQUIRE_MAP_IDLE=1`이면 멈춘다. 재구축이 slot을
+          멈춘 뒤 실패하면 Map·PinVi가 내려간 채다: 옛 daemon을 되살리지 말고(code-server가 없다) 스크립트가 찍는
+          `resume`으로 재구축(전환된 release 아래 멱등)·plane 재생성·검증을 이어 간다. 창 스크립트
           `dagster-cutover.sh <target> forward|rollback <sha>`가 이 분기를 target에서 고른다.
      4. **Verify** — P의 cron 주기 하나 안에: 공용 webserver probe 초록(workspace의 location 전부가
         `RepositoryLocation`), P의 RUNNING instigator 집합이 옛 DB의 것과 같다(D4 — 코드 선언), 옛 DB의

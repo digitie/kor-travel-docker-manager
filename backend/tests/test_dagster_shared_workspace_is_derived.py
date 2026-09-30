@@ -281,6 +281,15 @@ def _location(service: Mapping[str, Any]) -> str:
     return location
 
 
+#: healthcheck argv에서 포트로 읽히는 낱말 — literal 숫자 또는 기본값이 숫자인 `${VAR:-N}`.
+_PORT_WORD = re.compile(r"\d{2,5}|\$\{[A-Za-z_][A-Za-z0-9_]*:-\d{2,5}\}")
+
+
+def _health_argv(service: Mapping[str, Any]) -> list[Any]:
+    test = (service.get("healthcheck") or {}).get("test")
+    return test if isinstance(test, list) else []
+
+
 def _port(argv: list[str]) -> int:
     raw = _flag(argv, "-p", "--port")
     assert raw, f"command에 `-p`가 없다: {argv}"
@@ -471,6 +480,10 @@ def _contract_violations(
                 port = _flag(_words(service.get("command")), "-p", "--port") or ""
                 if not port.isdigit():
                     violations.append(f"(a) `{name}`: `-p {port}`는 literal 포트여야 한다 — workspace가 그 값을 싣는다")
+                # healthcheck가 포트를 따로 들면 `-p`와 같은 literal이다 — env override가 probe만 옮기면 healthy가 거짓이다.
+                probe_ports = [str(w) for w in _health_argv(service) if _PORT_WORD.fullmatch(str(w))]
+                if any(w != port for w in probe_ports):
+                    violations.append(f"(a) `{name}`: healthcheck가 `-p {port}`와 다른 포트 {probe_ports}를 부른다")
             elif carries or mount in volumes:
                 violations.append(f"(a) `{name}`: `own`인데 공용 URL·마운트를 받았다")
 
@@ -606,7 +619,12 @@ def _flip(
         if skip != "loopback" and "-h" in argv:
             argv[argv.index("-h") + 1] = "127.0.0.1"
         if skip != "port":
-            argv[argv.index("-p") + 1] = str(_port(argv))
+            port = str(_port(argv))
+            argv[argv.index("-p") + 1] = port
+            health = _health_argv(service)
+            for index, word in enumerate(health):
+                if _PORT_WORD.fullmatch(str(word)) and _resolve(str(word), {}) == port:
+                    health[index] = port
     for name in legacy:
         if skip != "profile":
             services[name]["profiles"] = [_LEGACY_PROFILE]

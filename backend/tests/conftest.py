@@ -234,16 +234,17 @@ def sibling_projects(monkeypatch: pytest.MonkeyPatch) -> None:
 # ── pinned pair의 "모두 own" 기준선(ADR-54) ───────────────────────────────
 
 
-def _clear_dagster_topology_caches() -> None:
-    """설치 모델에서 파생해 캐시하는 것들 — 기준선을 바꾸는 테스트 앞뒤로 비운다."""
+def _dagster_topology_cache_clears() -> list[Callable[[], None]]:
+    """설치 모델에서 파생해 캐시하는 함수들의 `cache_clear` — 기준선을 바꾸는 테스트 앞뒤로 비운다."""
 
     from kor_travel_docker_manager.services import c6c_deployment
     from kor_travel_docker_manager.services import runtime_topology as topology
 
-    topology.installed_dagster_family.cache_clear()
+    clears = [topology.installed_dagster_family.cache_clear]
     for value in vars(c6c_deployment).values():
         if callable(value) and hasattr(value, "cache_clear") and getattr(value, "__module__", "") == c6c_deployment.__name__:
-            value.cache_clear()
+            clears.append(value.cache_clear)
+    return clears
 
 
 @pytest.fixture
@@ -255,6 +256,11 @@ def own_pinned_pair(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     그 기제 테스트가 같은 기준선을 보도록, 이 fixture가 체크아웃 모델에서 두 target의 스위치만 `own`으로 되돌린
     문서를 설치 모델로 준다. 파생은 스위치와 모양만 보므로(`derive_dagster_family`) 스위치 하나로 충분하다.
     실제 설치 모델을 보는 테스트(`test_dagster_shared_*`, 레지스트리·CLI)는 이 fixture를 쓰지 않는다.
+
+    패치는 테스트와 **같은** `monkeypatch`에 건다 — 되돌리기는 pytest가 그 fixture의 정리에서 건 순서의 역순으로
+    한다(테스트가 같은 속성을 다시 바꿔 끼워도 이 문서, 그다음 진짜 것으로 돌아간다). 여기서 `undo()`를 부르면
+    테스트의 패치까지 앞당겨 되돌리고, 따로 연 문맥은 정리 순서가 테스트의 `monkeypatch`와 엇갈려 이 문서를 남긴다.
+    캐시는 **진짜 함수의 것**을 setup 때 잡아 두고 비운다 — 테스트가 그 함수를 바꿔 끼운 채여도 정리가 닿는다.
     """
 
     from kor_travel_docker_manager.services import runtime_topology as topology
@@ -263,11 +269,13 @@ def own_pinned_pair(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     own_targets = copy.deepcopy(dict(targets))
     for target in (topology.MAP_TARGET, topology.PINVI_TARGET):
         own_targets["targets"][target]["dagster"]["control_plane"] = "own"
-    _clear_dagster_topology_caches()
+    clears = _dagster_topology_cache_clears()
+    for clear in clears:
+        clear()
     # 문서를 바꿔 끼운다 — 파생 함수는 진짜 것이 그대로 돈다(테스트가 그 함수를 다시 바꿔 끼워도 된다).
     monkeypatch.setattr(topology, "_installed_documents", lambda: (compose, own_targets))
     try:
         yield
     finally:
-        monkeypatch.undo()
-        _clear_dagster_topology_caches()
+        for clear in clears:
+            clear()

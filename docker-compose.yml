@@ -1970,7 +1970,7 @@ services:
       - -I
       - -c
       - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
-      - '${PINVI_DAGSTER_CODE_SERVER_PORT:-12803}'
+      - '12803'
       interval: 30s
       timeout: 10s
       retries: 5

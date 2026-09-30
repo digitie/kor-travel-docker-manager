@@ -8554,7 +8554,8 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
 
 - PinVi `dagster.control_plane: shared`. code-server: `<<: *dagster-shared-control-env`, instance digest, 이미지에 구운
   `apps/etl/dagster.yaml` 대신 공용 `dagster.yaml`을 `/opt/pinvi/.dagster/dagster.yaml`에(compose_binds도), gRPC 포트는
-  literal `12803`(공용 workspace가 `.env` override를 모른다).
+  literal `12803`(공용 workspace가 `.env` override를 모른다). healthcheck의 gRPC 포트도 같은 literal이다 — 계약이
+  `shared` code-server의 healthcheck가 `-p`와 다른 포트(또는 `${VAR:-N}`)를 부르면 빨갛다(적대 리뷰 LOW).
 - pinvi-api: `PINVI_DAGSTER_BASE_URL` → `http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}`. admin_etl은
   `pinvi_dagster_location_name`(= `pinvi.etl.definitions`)으로 location을 좁혀 부른다 — 공용 plane의 다른 테넌트가 섞이지 않는다.
 - 옛 `pinvi-dagster`·`pinvi-dagster-daemon` → `profiles: [legacy-dagster]`, PinVi의 `services`·`runtime_services`에서 뺌.
