@@ -5,6 +5,8 @@ import re
 import stat
 import subprocess
 import tempfile
+import time
+import urllib.request
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -150,10 +152,18 @@ from kor_travel_docker_manager.services.runtime_topology import (
     COMPOSE_BUILT_RUNTIME_SLOTS,
     RUNTIME_SLOTS,
     RuntimeSlot,
+    DagsterFamily,
     RuntimeTopology,
+    SharedDagsterPlane,
+    derive_shared_dagster_plane,
+    installed_code_location,
     installed_container_name,
+    installed_location_owners,
     installed_shared_dagster_plane,
+    listen_address,
     runtime_topology,
+    shared_workspace_source,
+    workspace_location_names,
     slot_project,
 )
 from kor_travel_docker_manager.services.trusted_install import (
@@ -2011,6 +2021,15 @@ _PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 600
 #: ADR-069 뒤 Map은 code-server → webserver → daemon이 `service_healthy`로 **직렬**
 #: 기동한다. 위 실측대로 컨테이너 하나가 뜨는 데만 1~2분이 걸리므로 300초는 부족하다.
 _COMPOSE_WAIT_TIMEOUT_SECONDS: Final = 900
+#: 공용 plane이 **이 재구축의** location을 싣기까지 기다리는 상한과 간격(ADR-54 개정, 적대 리뷰 H1). 다른 테넌트의
+#: location·code-server 상태는 보지 않는다 — plane의 healthcheck(`--wait`)는 그것까지 봐서 Map 배포를 geo·weather에
+#: 묶었다.
+_SHARED_PLANE_PROBE_TIMEOUT_SECONDS: Final = 300.0
+_SHARED_PLANE_PROBE_INTERVAL_SECONDS: Final = 5.0
+_SHARED_PLANE_WORKSPACE_QUERY: Final = (
+    "{ workspaceOrError { __typename ... on Workspace { locationEntries { name "
+    "locationOrLoadError { __typename } } } } }"
+)
 
 
 def _run_pinned_runtime_static_command(
@@ -4699,6 +4718,7 @@ class ComposeService:
             # 수렴이든 전체 경로든 무엇을 멈추거나 migration하기 전에 — 전환된 target의 옛 daemon은
             # `stop`에 들지 않으므로 떠 있으면 migration 중 run을 띄운다.
             self._require_retired_dagster_containers_stopped(topology)
+            self._require_shared_plane_releases_own_targets(topology, runtime_transaction)
 
             if (
                 not explicit
@@ -4937,32 +4957,251 @@ class ComposeService:
         runtime_transaction: ComposeTransactionSnapshot,
         topology: RuntimeTopology,
     ) -> None:
-        """pinned target이 공용 plane에 합류했으면 plane의 webserver·daemon을 맞추고 healthy를 기다린다(ADR-54).
+        """pinned target이 공용 plane에 합류했으면 plane이 그 location을 싣게 한다(ADR-54 개정).
 
-        전환 release를 설치하면 plane의 workspace digest env가 바뀌므로 `up`이 두 서비스를 다시 만들고, 이미
-        맞으면 무연산이다(code-server가 다시 떴을 때 location은 webserver·daemon이 스스로 다시 싣는다). webserver의
-        healthcheck는 workspace의 location 전부가 `RepositoryLocation`인지 보므로 `--wait`가 곧 "합류한 location이
-        실렸다"는 판정이다 — 그래서 합류한 carrier를 먼저 띄운다.
+        - **plane 서비스는 frozen render에서** 모양으로 파생하고, 설치된 release의 것과 다르면 거부한다.
+        - **실을 workspace의 location마다** 그 target의 plane 밖 webserver·daemon·gateway가 멈춰 있어야 한다(한 규칙,
+          이름 없음 — Map·PinVi만이 아니라 설치됐지만 아직 펜스 전인 다른 target도). 하나라도 돌면 이중 발화라 거부한다.
+        - **다시 만들 때만 `up`한다.** 떠 있는 daemon·webserver가 frozen render의 digest env(`*_DIGEST`)를 이미 실었으면
+          `up`하지 않는다 — frozen render와 평범한 render의 config hash가 달라 `up`은 매 재구축 plane을 다시 만든다.
+          창 스크립트와 같은 판정이다.
+        - **이 target의 location만 기다린다.** `up -d --no-deps`(`--wait` 없음) 뒤 webserver의 `workspaceOrError`에서
+          합류한 carrier의 location이 `RepositoryLocation`이고 daemon 컨테이너가 도는지 본다. 다른 테넌트의
+          code-server가 내려가 있어도 이 배포를 막지 않는다. 상한(300초) 안에 안 되면 거부한다(fail-closed).
 
-        안전: 옛 webserver·daemon(retired)이 돌고 있으면 plane이 같은 schedule을 싣는 순간 이중 발화다. 재구축 앞의
-        같은 판정을 plane을 건드리기 **직전**에 다시 한다. 모두 `own`이면 plane을 부르지 않는다.
+        모두 `own`이면 아무것도 하지 않는다.
         """
 
         if not topology.shared_dagster_slots:
             return
-        self._require_retired_dagster_containers_stopped(topology)
-        self._run_pinned_runtime_rebuild_compose(
-            [
-                "up",
-                "-d",
-                "--no-deps",
-                "--wait",
-                "--wait-timeout",
-                str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
-                *installed_shared_dagster_plane().services,
-            ],
-            transaction=runtime_transaction,
+        shared_targets = {
+            family.target for family in topology.families.values() if family.shared
+        }
+        plane, services, locations = self._frozen_shared_plane(runtime_transaction)
+        owners = installed_location_owners()
+        wanted = tuple(
+            sorted(
+                location for location, family in owners.items() if family.target in shared_targets
+            )
         )
+        missing = [location for location in wanted if location not in locations]
+        if not wanted or missing:
+            raise DeploymentContractError(
+                "the shared plane workspace does not list the shared pinned locations: "
+                + ", ".join(missing or sorted(shared_targets))
+            )
+        self._require_plane_location_owners_fenced(locations, owners)
+        if not self._shared_plane_current(plane, services):
+            self._run_pinned_runtime_rebuild_compose(
+                ["up", "-d", "--no-deps", *plane.services],
+                transaction=runtime_transaction,
+            )
+        self._wait_shared_plane_locations(plane, services, wanted)
+
+    def _frozen_shared_plane(
+        self, runtime_transaction: ComposeTransactionSnapshot
+    ) -> tuple[SharedDagsterPlane, Mapping[str, Any], tuple[str, ...]]:
+        """frozen render의 plane(설치된 release와 같아야 한다), 그 서비스 정의, 붙인 workspace의 location."""
+
+        resolved = runtime_transaction.resolved
+        plane = derive_shared_dagster_plane(resolved)
+        if plane != installed_shared_dagster_plane():
+            raise DeploymentContractError(
+                "the frozen render's shared Dagster plane differs from the installed release"
+            )
+        services = cast(Mapping[str, Any], resolved["services"])
+        sources = {shared_workspace_source(services[name]) for name in plane.services}
+        if len(sources) != 1:
+            raise DeploymentContractError("shared plane services mount different workspaces")
+        return plane, services, self._read_shared_workspace_locations(next(iter(sources)))
+
+    @staticmethod
+    def _read_shared_workspace_locations(source: str) -> tuple[str, ...]:
+        path = Path(source)
+        if not path.is_absolute():
+            path = Path(get_project_root()) / path
+        try:
+            document = load_yaml_rejecting_duplicate_keys(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise DeploymentContractError("cannot read the shared plane workspace") from exc
+        return workspace_location_names(document)
+
+    def _require_plane_location_owners_fenced(
+        self,
+        locations: Sequence[str],
+        owners: Mapping[str, DagsterFamily],
+    ) -> None:
+        """plane이 실을 location마다 그 target의 plane 밖 webserver·daemon·gateway가 돌지 않는다(이중 발화 방지)."""
+
+        running: list[str] = []
+        for location in locations:
+            family = owners.get(location)
+            if family is None:
+                raise DeploymentContractError(
+                    f"the shared plane workspace lists {location}, which no Dagster target serves"
+                )
+            for service in family.legacy:
+                container = installed_container_name(service)
+                if self._inspect_container_running(container, label=service):
+                    running.append(f"{service} ({container}, location {location})")
+        if running:
+            raise DeploymentContractError(
+                "the shared plane would load a location whose own Dagster services are still "
+                "running (double fire); fence them first: " + ", ".join(running)
+            )
+
+    def _require_shared_plane_releases_own_targets(
+        self,
+        topology: RuntimeTopology,
+        runtime_transaction: ComposeTransactionSnapshot,
+    ) -> None:
+        """`own`인 pinned target의 location을 공용 plane이 싣고 있지 않다(적대 리뷰 M2 — 되돌리기의 반대 방향).
+
+        Manager만 되돌린 release(스위치 `own`)를 재구축하면 own daemon이 뜬다. 그때 plane이 아직 그 location을
+        싣고 있으면(설치본 workspace가 적었거나, 떠 있는 webserver가 옛 workspace로 싣고 있으면) 같은 schedule을 둘이
+        쏜다. 둘 다 아니어야 한다. 떠 있는 webserver에 물을 수 없는데 plane daemon이 돌면 판정할 수 없어 거부한다.
+        되돌리기는 창 스크립트(`scripts/dagster-shared-cutover.sh <target> rollback`)가 plane에서 먼저 내린다.
+        """
+
+        # Map·PinVi family만 본다 — 다른 target의 모양이 어긋나도 이 판정은 막히지 않는다.
+        owned = {
+            installed_code_location(family)
+            for family in topology.families.values()
+            if not family.shared
+        }
+        if not owned:
+            return
+        plane, services, locations = self._frozen_shared_plane(runtime_transaction)
+        listed = owned & set(locations)
+        if listed:
+            raise DeploymentContractError(
+                "the installed shared plane workspace still lists an own target's location: "
+                + ", ".join(sorted(listed))
+            )
+        host, port = listen_address(services[plane.webserver])
+        loaded = self._query_shared_plane_locations(host, port)
+        if loaded is None:
+            if self._inspect_container_running(
+                installed_container_name(plane.daemon), label=plane.daemon
+            ):
+                raise DeploymentContractError(
+                    "the shared Dagster daemon is running but its webserver cannot be asked "
+                    "which locations it loads; refusing to start an own Dagster daemon"
+                )
+            return
+        still = owned & set(loaded)
+        if still:
+            raise DeploymentContractError(
+                "the running shared plane still loads an own target's location (roll back "
+                "through the cutover script first): " + ", ".join(sorted(still))
+            )
+
+    def _shared_plane_current(
+        self, plane: SharedDagsterPlane, services: Mapping[str, Any]
+    ) -> bool:
+        """떠 있는 daemon·webserver가 frozen render의 digest env를 이미 실었는가."""
+
+        for name in plane.services:
+            environment = services[name].get("environment") or {}
+            if not isinstance(environment, Mapping):
+                return False
+            wanted = {
+                str(key): str(value)
+                for key, value in environment.items()
+                if str(key).endswith("_DIGEST")
+            }
+            container = installed_container_name(name)
+            if not wanted or not self._inspect_container_running(container, label=name):
+                return False
+            actual = self._inspect_container_digest_env(container, label=name)
+            if any(actual.get(key) != value for key, value in wanted.items()):
+                return False
+        return True
+
+    @staticmethod
+    def _inspect_container_digest_env(container_name: str, *, label: str) -> Mapping[str, str]:
+        """컨테이너 env 중 `*_DIGEST`만(비밀이 아닌 내용 digest). 읽을 수 없으면 거부한다."""
+
+        try:
+            completed = subprocess.run(
+                [
+                    "docker",
+                    "container",
+                    "inspect",
+                    "--format={{range .Config.Env}}{{println .}}{{end}}",
+                    container_name,
+                ],
+                cwd=get_project_root(),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise DeploymentContractError(f"cannot inspect the {label} container") from exc
+        if completed.returncode != 0:
+            raise DeploymentContractError(f"cannot inspect the {label} container")
+        digests: dict[str, str] = {}
+        for line in completed.stdout.splitlines():
+            key, separator, value = line.partition("=")
+            if separator and key.endswith("_DIGEST"):
+                digests[key] = value
+        return digests
+
+    @staticmethod
+    def _query_shared_plane_locations(host: str, port: int) -> Mapping[str, str | None] | None:
+        """공용 webserver의 location → 로드 상태(`__typename`). 물을 수 없으면 ``None``."""
+
+        request = urllib.request.Request(
+            f"http://{host}:{port}/graphql",
+            data=json.dumps({"query": _SHARED_PLANE_WORKSPACE_QUERY}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 - loopback
+                payload = json.loads(response.read(1_048_577))
+        except (OSError, ValueError):
+            return None
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        workspace = data.get("workspaceOrError") if isinstance(data, Mapping) else None
+        entries = workspace.get("locationEntries") if isinstance(workspace, Mapping) else None
+        if not isinstance(entries, list):
+            return None
+        states: dict[str, str | None] = {}
+        for entry in entries:
+            if not isinstance(entry, Mapping) or not isinstance(entry.get("name"), str):
+                return None
+            load = entry.get("locationOrLoadError")
+            states[entry["name"]] = load.get("__typename") if isinstance(load, Mapping) else None
+        return states
+
+    def _wait_shared_plane_locations(
+        self,
+        plane: SharedDagsterPlane,
+        services: Mapping[str, Any],
+        wanted: Sequence[str],
+    ) -> None:
+        host, port = listen_address(services[plane.webserver])
+        daemon_container = installed_container_name(plane.daemon)
+        deadline = time.monotonic() + _SHARED_PLANE_PROBE_TIMEOUT_SECONDS
+        while True:
+            loaded = self._query_shared_plane_locations(host, port)
+            daemon_running = self._inspect_container_running(daemon_container, label=plane.daemon)
+            if (
+                daemon_running
+                and loaded is not None
+                and all(loaded.get(location) == "RepositoryLocation" for location in wanted)
+            ):
+                return
+            if time.monotonic() >= deadline:
+                state = {location: (loaded or {}).get(location) for location in wanted}
+                raise DeploymentContractError(
+                    "the shared Dagster plane did not load the shared pinned locations within "
+                    f"{int(_SHARED_PLANE_PROBE_TIMEOUT_SECONDS)} s: {state}, daemon running "
+                    f"{bool(daemon_running)}"
+                )
+            time.sleep(_SHARED_PLANE_PROBE_INTERVAL_SECONDS)
 
     def _verify_pinned_runtime_services(
         self,

@@ -242,7 +242,6 @@ def _dagster_topology_cache_clears() -> list[Callable[[], None]]:
 
     clears = [
         topology.installed_dagster_family.cache_clear,
-        topology.installed_shared_dagster_plane.cache_clear,
     ]
     for value in vars(c6c_deployment).values():
         if callable(value) and hasattr(value, "cache_clear") and getattr(value, "__module__", "") == c6c_deployment.__name__:

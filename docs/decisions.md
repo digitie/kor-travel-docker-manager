@@ -4346,12 +4346,28 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
      못하고, 공개 host(이 gateway)로 GraphQL mutation을 보낸다. 서버 쪽 소비자(Map·PinVi·geo API)는 계속 loopback에
      붙는다. 격리 plane 통합 테스트가 no-Origin+인증 200, 인증 없음·틀린 비밀번호 401, 교차·`null` Origin 403,
      `Sec-Fetch-Site`만 있는 no-Origin 403을 본다.
-   - **개정(같은 날): plane을 아는 pinned 재구축.** Map·PinVi 중 `shared`인 target이 있으면 재구축이 PinVi smoke
-     **전에** 그 carrier(code-server)를 띄우고 공용 plane의 webserver·daemon을 `up --wait`로 맞춘다(설치로 digest가
-     바뀌었으면 재생성, 아니면 무연산). plane 서비스는 이름이 아니라 모양(공용 workspace를 붙인 활성
-     `dagster-webserver`·`dagster-daemon`)으로 파생한다. plane을 건드리기 직전에 retired 컨테이너가 멈춰 있는지 다시
-     본다 — 옛 daemon이 돌면 거부한다(이중 발화). 모두 `own`이면 아무 호출도 더하지 않는다(파생 이전 지문과 같다).
-     smoke가 공용 webserver에 자기 location을 묻기 때문이다(PinVi `/admin/etl/summary`, Map `/v1/ops/pipeline/*`).
+   - **개정(같은 날): plane을 아는 pinned 재구축.** smoke가 공용 webserver에 자기 location을 묻는다(PinVi
+     `/admin/etl/summary`, Map `/v1/ops/pipeline/*`). 그래서 Map·PinVi 중 `shared`인 target이 있으면 재구축이 PinVi
+     smoke **전에** 그 carrier(code-server)를 띄우고 plane이 그 location을 싣게 한다(적대 리뷰 H1·M1·M3·L4 반영).
+     - plane 서비스는 **frozen render에서** 모양(공용 workspace를 붙인 활성 `dagster-webserver`·`dagster-daemon`)으로
+       파생하고, 설치된 release의 것과 다르면 거부한다. 붙인 workspace 파일에서 실을 location을 읽는다.
+     - **한 규칙의 이중 발화 가드(M1).** 그 workspace의 location마다 그 location을 싣는 target(설치된 모델에서 파생,
+       모든 Dagster target)의 plane 밖 webserver·daemon·gateway가 돌면 거부한다 — Map·PinVi만이 아니라 설치됐지만
+       아직 펜스 전인 다른 target(앞으로의 transport)도. 어느 target도 싣지 않는 location이 있으면 거부한다.
+     - **다시 만들 때만 `up -d --no-deps`(M3).** 떠 있는 daemon·webserver가 frozen render의 `*_DIGEST` env를 이미
+       실었으면 `up`하지 않는다. frozen render(`--env-file /dev/null`, stdin compose)와 평범한 render의 config hash가
+       달라 무조건 `up`은 매 재구축 plane을 다시 만들고 그동안 모든 테넌트의 webserver가 잠깐 끊긴다 — 무연산이
+       아니다. 창 스크립트와 같은 판정이다.
+     - **이 target만 기다린다(H1).** `--wait`를 쓰지 않는다 — plane의 healthcheck는 workspace의 location 전부와
+       code-server 전부를 봐서, geo·weather의 code-server 하나가 내려가면 Map 배포가 실패하고 smoke 뒤에 뜨는
+       pinvi-web까지 내려간 채로 남았다. 대신 webserver의 `workspaceOrError`에서 합류한 pinned location이
+       `RepositoryLocation`이고 daemon 컨테이너가 도는지를 300초 상한 안에서 본다(넘으면 거부).
+     - **반대 방향(M2).** `own`인 Map·PinVi의 location을 설치본 workspace가 적었거나 떠 있는 webserver가 싣고
+       있으면, 무엇을 멈추기 전에 거부한다(own daemon이 뜨면 같은 schedule을 둘이 쏜다). webserver에 물을 수 없는데
+       plane daemon이 돌면 판정할 수 없어 거부한다. 되돌리기는 창 스크립트
+       (`scripts/dagster-shared-cutover.sh <target> rollback <sha>`)로 한다 — plane에서 먼저 내린다.
+     - 모두 `own`이면 plane을 건드리지 않고 docker 호출도 더하지 않는다(파생 이전 지문과 같다). M2의 물음은 plane
+       webserver에 대한 읽기 하나다.
 
 ### 근거
 

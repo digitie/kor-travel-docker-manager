@@ -367,10 +367,13 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
           서비스 키 집합이 바뀌므로(옛 webserver·daemon → code-server) 재구축은 **전체 경로**다: Map도 잠깐 멈추고,
           마이그레이션을 돌고, compose가 빌드하는 이미지 넷을 다시 굽는다. 재구축은 retired 컨테이너가 돌고 있으면
           거부하므로(#447 MED-2) 펜스가 먼저다. **재구축은 plane을 안다(ADR-54 개정, Map 전환 준비):** `shared`인
-          pinned target이 있으면 PinVi smoke 전에 그 carrier(code-server)를 띄우고 plane webserver·daemon을
-          `up --no-deps --wait`로 맞춘다 — smoke(PinVi `/admin/etl/summary`, Map `/v1/ops/pipeline/*`)가 공용
-          webserver에 자기 location을 묻기 때문이다. 그 직전에 retired 컨테이너를 다시 보고 돌면 거부한다. 모두
-          `own`이면 plane을 부르지 않는다. 순서: 설치 → 펜스(옛 daemon, 이어 webserver) → 옛 instance의 진행 중
+          pinned target이 있으면 PinVi smoke 전에 그 carrier(code-server)를 띄우고 plane이 그 location을 싣게 한다
+          — smoke(PinVi `/admin/etl/summary`, Map `/v1/ops/pipeline/*`)가 공용 webserver에 자기 location을 묻기
+          때문이다. plane이 실을 workspace의 location마다 그 target의 plane 밖 daemon이 돌면 거부하고, 떠 있는
+          plane이 설치본 digest를 이미 실었으면 다시 만들지 않으며(`up -d --no-deps`는 그때만), 그 target의
+          location이 `RepositoryLocation`이고 daemon이 도는지만 300초 안에서 본다(다른 테넌트의 상태는 보지 않는다).
+          `own`인 target의 location을 plane이 아직 싣고 있으면 무엇을 멈추기 전에 거부한다 — 되돌리기는 이 창
+          스크립트로 한다. 모두 `own`이면 plane을 건드리지 않는다. 순서: 설치 → 펜스(옛 daemon, 이어 webserver) → 옛 instance의 진행 중
           run 취소 → pinned 재구축(그 안에서 plane 재생성) → 검증(창 스크립트는 plane이 펜스 뒤 새로 만들어졌고
           설치본 workspace digest를 실었으면 다시 만들지 않는다) → 옛 컨테이너 `docker rm`. plane이 P를 싣는 것은
           재생성 뒤이고 옛 daemon은 그 전에 멈췄으므로 이중 발화 창은 없다(사이 슬롯은 건너뛴다). 대가로 **펜스부터 plane
@@ -379,7 +382,7 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
           run도 끊는다 — 창 스크립트가 precheck에서 세어 알리고, `REQUIRE_MAP_IDLE=1`이면 멈춘다. 재구축이 slot을
           멈춘 뒤 실패하면 Map·PinVi가 내려간 채다: 옛 daemon을 되살리지 말고(code-server가 없다) 스크립트가 찍는
           `resume`으로 재구축(전환된 release 아래 멱등)·plane 재생성·검증을 이어 간다. 창 스크립트
-          `dagster-cutover.sh <target> forward|rollback <sha>`가 이 분기를 target에서 고른다.
+          `scripts/dagster-shared-cutover.sh <target> forward|rollback|resume <sha>`가 이 분기를 target에서 고른다.
      4. **Verify** — P의 cron 주기 하나 안에: 공용 webserver probe 초록(workspace의 location 전부가
         `RepositoryLocation`), P의 RUNNING instigator 집합이 옛 DB의 것과 같다(D4 — 코드 선언), 옛 DB의
         `SELECT count(*) FROM job_ticks WHERE timestamp > :fence_ts`가 0으로 머문다, `dagster_shared`에는

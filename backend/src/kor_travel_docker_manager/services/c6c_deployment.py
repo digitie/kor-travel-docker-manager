@@ -305,8 +305,9 @@ _MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
 #: 인증된 smoke의 **본문 없는 GET**(PinVi `/admin/etl/summary`·`/admin/provider-sync`)만 재시도한다 — 전체 경로
 #: 재구축 직후 Map·PinVi가 이미지 빌드 부하 속에서 막 떠, 첫 호출이 timeout이나 upstream 미준비(PinVi 503
 #: `FEATURE_SERVICE_UNAVAILABLE`)로 끝나는 창이 있다(2026-09-30 PinVi 전환: provider-sync가
-#: `kor_travel_map_admin.unavailable` 뒤 timeout). 시도 사이 대기는 5→30초, 첫 시도부터 합한 상한은 180초다 —
-#: 상한을 넘길 대기는 시작하지 않는다. cancel POST·login·logout은 재시도하지 않는다(파괴적이거나 상태를 바꾼다).
+#: `kor_travel_map_admin.unavailable` 뒤 timeout). 시도 사이 대기는 5→30초다. 상한 180초는 **대기의 시작**을 묶는다 —
+#: 첫 시도부터 잰 시각에 대기를 더하면 180초를 넘을 때는 기다리지 않고 한 번만 더 부른다. 호출 하나의 timeout(10초)이
+#: 그 뒤에 붙으므로 최악은 약 190초다. cancel POST·login·logout은 재시도하지 않는다(파괴적이거나 상태를 바꾼다).
 _SAFE_GET_READINESS_ATTEMPTS = 6
 _SAFE_GET_READINESS_BACKOFF_SECONDS: Final[tuple[float, ...]] = (5.0, 10.0, 20.0, 30.0, 30.0)
 _SAFE_GET_READINESS_BUDGET_SECONDS: Final = 180.0

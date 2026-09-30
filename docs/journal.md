@@ -8603,10 +8603,19 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
 브랜치 `feat/dagster-shared-map-prep-mgr`(처음 `cc5fa06` 위에서 geo 전환과 독립으로 만들고, geo 머지(#449 `9211d63`) 뒤 그 위로 rebase). Map은 뒤집지 않는다.
 
 - **plane을 아는 pinned 재구축.** `RuntimeTopology.shared_dagster_slots`(Map·PinVi 중 `shared` carrier slot)가 있으면
-  전체 경로가 PinVi smoke 전에 그 carrier를 띄우고 공용 plane webserver·daemon을 `up --no-deps --wait`로 맞춘다. 같은
-  pair 수렴도 같은 단계를 거친다. plane 서비스는 `runtime_topology.derive_shared_dagster_plane`이 모양(공용
-  workspace를 붙인 활성 `dagster-webserver`·`dagster-daemon`)으로 파생한다. plane을 건드리기 직전 retired 컨테이너를
-  다시 보고 돌면 거부한다. 모두 `own`이면 호출이 하나도 늘지 않는다(파생 이전 지문 테스트 그대로 초록).
+  전체 경로가 PinVi smoke 전에 그 carrier를 띄우고 plane이 그 location을 싣게 한다. 같은 pair 수렴도 같은 단계를
+  거친다. plane 서비스는 `runtime_topology.derive_shared_dagster_plane`이 frozen render에서 모양(공용 workspace를 붙인
+  활성 `dagster-webserver`·`dagster-daemon`)으로 파생하고 설치본과 다르면 거부한다. 모두 `own`이면 plane을 건드리지
+  않는다(파생 이전 지문 테스트 그대로 초록).
+- **적대 리뷰(5ece4aa) 반영.** H1: `--wait`(plane healthcheck가 모든 테넌트를 봐서 geo·weather 하나가 Map 배포를
+  막았다) 대신 `up -d --no-deps` 뒤 webserver `workspaceOrError`에서 합류한 pinned location만 `RepositoryLocation`인지,
+  daemon이 도는지 300초 안에서 본다. M1: plane이 실을 workspace의 location마다 그 target(모든 Dagster target, 설치
+  모델에서 파생)의 plane 밖 webserver·daemon·gateway가 돌면 거부 — 한 규칙. M2: `own`인 Map·PinVi의 location을
+  설치본 workspace가 적었거나 떠 있는 webserver가 싣고 있으면 무엇을 멈추기 전에 거부(물을 수 없는데 plane daemon이
+  돌면 거부). M3: 떠 있는 plane이 frozen render의 `*_DIGEST` env를 이미 실었으면 `up`하지 않는다(frozen·평범한
+  render의 config hash가 달라 무조건 `up`은 매번 plane을 다시 만들었다). L2: 재시도 상한은 대기의 시작을 묶는다(최악
+  약 190초). L4: plane 파생에 캐시가 없다. 창 스크립트를 `scripts/dagster-shared-cutover.sh`로 저장소에 넣었다(weather
+  전용 첫 판(weather-cutover.sh)은 같은 경로의 첫 커밋으로 남긴다 — 옛 서비스 이름이 literal이라 트리에 두면 `(pinned)` 게이트가 막는다).
 - **smoke 재시도.** PinVi canonical smoke의 본문 없는 GET 둘(`/admin/etl/summary`·`/admin/provider-sync`)만 최대 6회,
   5→10→20→30→30초, 첫 시도부터 180초 상한(넘길 대기는 하지 않는다). 연결 거부·timeout과 PinVi의 upstream 미준비
   envelope(502/503 `FEATURE_SERVICE_UNAVAILABLE`)만 재시도하고, 다 쓰면 마지막 결과로 fail-closed. cancel POST·login·
