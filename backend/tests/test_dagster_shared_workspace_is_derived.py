@@ -722,7 +722,15 @@ def test_flipping_a_target_renders_a_consistent_plane(target_id: str) -> None:
     assert pinned == []
     workspace = _derived_workspace(compose, targets)
     location = {_location(s) for s in _code_servers(compose, targets["targets"][target_id]).values()}
-    assert {e["grpc_server"]["location_name"] for e in workspace["load_from"]} == location
+    # 이미 합류한 target(weather)의 location도 함께 있다 — 이 target의 것이 더해지고, 나머지는 `shared`인 target의 것이다.
+    names = {e["grpc_server"]["location_name"] for e in workspace["load_from"]}
+    shared = {
+        _location(s)
+        for spec in targets["targets"].values()
+        if (spec.get("dagster") or {}).get("control_plane") == "shared"
+        for s in _code_servers(compose, spec).values()
+    }
+    assert location <= names and names == shared
     assert _g3b_violations(workspace, compose, targets, _location_caps()) == []
 
 
