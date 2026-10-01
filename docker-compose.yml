@@ -1451,6 +1451,10 @@ services:
   # 봉인과 같은 이유 — weather의 code-server도 동일).
   kor-travel-map-dagster-code-server:
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
+    # ⚠️ 아직 `api grpc`다 — location reload가 definitions를 다시 import하지 못한다(PinVi code-server의 주석).
+    # Map 이미지의 production `dagster-entrypoint.sh`가 code-server argv를 정확히 `api grpc -h 127.0.0.1 -p N
+    # -m kortravelmap.dagster.definitions`로 봉인하므로, Map이 `code-server start`를 받아들이는 이미지를 내기
+    # 전에 여기를 바꾸면 code-server가 기동부터 거부된다. 그 Map 변경 뒤 바꾸고 알려진 예외에서 지운다.
     command:
     - /usr/local/bin/dagster
     - api
@@ -1880,10 +1884,13 @@ services:
         condition: service_healthy
     # gRPC code server에는 인증이 없고 host network다 — 0.0.0.0이면 LAN 누구나 run을
     # 띄울 수 있다. webserver/daemon은 workspace.yaml로 127.0.0.1:12803에 붙는다.
+    # `code-server start`(proxy + 자식 gRPC 프로세스)다 — 공용 webserver의 location reload(`ReloadCode`)가
+    # 자식을 새로 띄워 definitions를 다시 import한다. `api grpc`는 reload를 경고만 남기고 무시한다
+    # (2026-10-01 n150 실측, Map의 C7 schedule override가 그래서 반영되지 않았다).
     command:
     - dagster
-    - api
-    - grpc
+    - code-server
+    - start
     - -h
     - 127.0.0.1
     - -p
@@ -2187,10 +2194,11 @@ services:
         condition: service_healthy
       kor-travel-shared-db-init-geo:
         condition: service_completed_successfully
+    # `code-server start` — location reload가 definitions를 다시 import한다(PinVi code-server의 주석).
     command:
     - dagster
-    - api
-    - grpc
+    - code-server
+    - start
     # 공용 plane의 daemon·webserver는 host network의 loopback으로 붙는다 — gRPC를 LAN에 열 이유가 없다
     # (plan §4 보안, 옛 `0.0.0.0`은 인증 없는 gRPC를 LAN에 열었다).
     - -h
@@ -2574,10 +2582,11 @@ services:
     # publish 자체가 없어 -h 바인드 값이 유일한 방어선이다(weather 자신의
     # compose.yaml은 -h 0.0.0.0을 쓰는데, 그건 bridge NAT을 전제한 것이라
     # 여기서는 안전하지 않다).
+    # `code-server start` — location reload가 definitions를 다시 import한다(PinVi code-server의 주석).
     command:
     - dagster
-    - api
-    - grpc
+    - code-server
+    - start
     - -h
     - "127.0.0.1"
     - -p

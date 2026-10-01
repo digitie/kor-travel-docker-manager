@@ -248,14 +248,22 @@ def test_every_dagster_webserver_probe_asks_whether_code_loaded(
 _GRPC_HEALTH_FRAGMENTS = ("grpc_health", "DagsterApi", "SERVING")
 
 
+#: 장기 실행 code-server의 두 모양. `code-server start`의 proxy도 같은 `DagsterApi` health를 답한다 — 자식이
+#: code를 다 싣기 전에는 SERVING이 아니다(2026-10-02 n150 실측).
+_CODE_SERVER_COMMANDS = ("dagster code-server start", "dagster api grpc")
+
+
 def _code_server_services() -> dict[str, dict[str, Any]]:
-    """`dagster api grpc`를 실행하는 서비스. **이름으로 찾지 않는다.**"""
+    """`dagster code-server start`·`dagster api grpc`를 실행하는 서비스. **이름으로 찾지 않는다.**"""
     services = _compose()["services"]
     return {
         name: service
         for name, service in services.items()
-        if "dagster api grpc" in _command_text(service.get("command"))
-        or "dagster api grpc" in _command_text(service.get("entrypoint"))
+        if any(
+            command in _command_text(service.get(key))
+            for command in _CODE_SERVER_COMMANDS
+            for key in ("command", "entrypoint")
+        )
     }
 
 
@@ -263,7 +271,7 @@ def test_the_compose_declares_at_least_one_dagster_code_server() -> None:
     """유도의 전제. 못 찾으면 아래 검사가 조용히 항진명제가 된다."""
     found = _code_server_services()
     assert found, (
-        "`dagster api grpc`를 실행하는 서비스를 command에서 찾지 못했다 — "
+        "Dagster code-server를 실행하는 서비스를 command에서 찾지 못했다 — "
         "command 모양이 바뀌었거나 이 계약의 파서가 낡았다."
     )
 

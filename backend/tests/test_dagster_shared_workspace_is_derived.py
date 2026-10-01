@@ -19,7 +19,8 @@
 대조해 빠진 단계를 이름으로 말한다. 아래 `_flip`은 그 편집을 모델 위에서 그대로 하는 참조 구현이다 —
 네 target 모두 뒤집으면 계약이 초록이고, 한 단계라도 빼면 빨갛다는 것을 보인다.
 
-**이름이 아니라 모양에서 찾는다.** code-server는 `dagster api grpc`를 실행하는 target의 서비스, 옛
+**이름이 아니라 모양에서 찾는다.** code-server는 `dagster code-server start`(또는 `api grpc`)를 실행하는
+target의 서비스, 옛
 webserver·daemon은 `dagster-webserver`/`dagster-daemon`을 실행하면서 그 code-server에 `depends_on`하는
 서비스, gateway는 그것들에 `depends_on`하는 서비스다. 공용 webserver는 공용 workspace를 붙인 webserver이고
 공개 host env는 그 앞 gateway 컨테이너의 `prod_url_env`다. 소비자 env만 선언이다 — PinVi·geo API는 앱
@@ -215,8 +216,22 @@ def _runs(service: Mapping[str, Any], program: str) -> bool:
     return program in text
 
 
+#: 장기 실행 code-server의 두 모양 — `code-server start`만 location reload에 definitions를 다시 import한다.
+_RELOADABLE = ("code-server", "start")
+_NON_RELOADABLE = ("api", "grpc")
+
+
+def _code_server_subcommand(service: Mapping[str, Any]) -> tuple[str, ...] | None:
+    argv = _words(service.get("command")) + _words(service.get("entrypoint"))
+    for index, word in enumerate(argv):
+        pair = tuple(argv[index + 1 : index + 3])
+        if word.rsplit("/", 1)[-1] == "dagster" and pair in (_RELOADABLE, _NON_RELOADABLE):
+            return pair
+    return None
+
+
 def _is_code_server(service: Mapping[str, Any]) -> bool:
-    return _runs(service, "api grpc")
+    return _code_server_subcommand(service) is not None
 
 
 def _flag(argv: list[str], *names: str) -> str | None:
@@ -913,6 +928,61 @@ def test_the_manager_derivation_agrees_with_this_one() -> None:
             assert set(family.legacy) == _legacy(compose, spec), target_id
             assert {family.code_server} == set(_code_servers(compose, spec)), target_id
             assert family.control_plane == spec["dagster"]["control_plane"], target_id
+
+
+#: 공용 plane에 합류했지만 아직 `dagster api grpc`인 code-server — 알려진 예외. Map 이미지의 production
+#: `dagster-entrypoint.sh`가 code-server argv를 `api grpc`로 봉인해서, Map이 `code-server start`를 받는 이미지를
+#: 내기 전에는 바꿀 수 없다. 해소되면(compose를 바꾸면) 아래 테스트가 이 항목을 지우라고 말한다.
+_NON_RELOADABLE_KNOWN: frozenset[str] = frozenset({"kor-travel-map-dagster-code-server"})
+
+
+def _non_reloadable_shared_code_servers(compose: dict[str, Any], targets: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """(`shared` target의 code-server 전부, 그중 `api grpc`인 것) — 이름이 아니라 스위치와 모양에서."""
+
+    shared: set[str] = set()
+    for target_id in _dagster_targets():
+        spec = targets["targets"][target_id]
+        if spec["dagster"].get("control_plane") == "shared":
+            shared |= set(_code_servers(compose, spec))
+    stuck = {
+        name
+        for name in shared
+        if _code_server_subcommand(compose["services"][name]) == _NON_RELOADABLE
+    }
+    return shared, stuck
+
+
+def test_every_shared_plane_code_server_reloads_its_definitions() -> None:
+    """공용 webserver의 location reload(`ReloadCode`)가 definitions를 다시 import해야 한다.
+
+    `dagster api grpc`는 reload를 "not currently supported" 경고만 남기고 무시한다 — 2026-10-01 n150에서 Map의
+    C7 schedule override(definitions import 때 읽는다)가 그래서 반영되지 않았다. `dagster code-server start`는
+    proxy가 자식 gRPC 프로세스를 새로 띄워 다시 import한다(같은 n150 이미지로 실측). 예외 집합은 양방향이다 —
+    새 `api grpc`도, 해소된 예외도 빨갛다.
+    """
+
+    compose, targets = _documents()
+    shared, stuck = _non_reloadable_shared_code_servers(compose, targets)
+    # 본 것에 하한을 건다 — 추출이 낡아 아무것도 못 보면 아래 단언은 항진이다.
+    assert len(shared) >= 4, sorted(shared)
+    assert stuck - _NON_RELOADABLE_KNOWN == set(), (
+        f"공용 plane code-server가 `dagster api grpc`다 — `dagster code-server start`로: {sorted(stuck - _NON_RELOADABLE_KNOWN)}"
+    )
+    assert _NON_RELOADABLE_KNOWN - stuck == set(), (
+        f"알려진 예외가 해소됐다 — `_NON_RELOADABLE_KNOWN`에서 지운다: {sorted(_NON_RELOADABLE_KNOWN - stuck)}"
+    )
+
+
+def test_a_shared_code_server_reverted_to_api_grpc_is_named() -> None:
+    """빨간 대조군: 합류한 code-server 하나를 `api grpc`로 되돌리면 이름으로 잡힌다."""
+
+    compose, targets = _documents()
+    shared, stuck = _non_reloadable_shared_code_servers(compose, targets)
+    victim = sorted(shared - stuck)[0]
+    argv = compose["services"][victim]["command"]
+    start = argv.index("code-server")
+    argv[start : start + 2] = ["api", "grpc"]
+    assert victim in _non_reloadable_shared_code_servers(compose, targets)[1]
 
 
 @pytest.mark.parametrize(

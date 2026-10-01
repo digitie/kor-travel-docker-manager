@@ -1888,7 +1888,9 @@ _GRPC_WILDCARD_BIND_KNOWN: frozenset[str] = frozenset()
 
 
 def _dagster_grpc_host(command: object) -> str | None | bool:
-    """`dagster api grpc` 명령이면 `-h` 값(없으면 None), 아니면 False."""
+    """`dagster code-server start`·`dagster api grpc` 명령이면 `-h` 값(없으면 None), 아니면 False.
+
+    `code-server start`의 자식 gRPC 프로세스는 UDS socket으로만 듣는다 — TCP는 proxy의 `-h`·`-p`뿐이다."""
 
     if isinstance(command, str):
         words = shlex.split(command)
@@ -1899,7 +1901,7 @@ def _dagster_grpc_host(command: object) -> str | None | bool:
     for index in range(len(words) - 2):
         if (
             Path(words[index]).name == "dagster"
-            and words[index + 1 : index + 3] == ["api", "grpc"]
+            and words[index + 1 : index + 3] in (["api", "grpc"], ["code-server", "start"])
         ):
             for flag in ("-h", "--host"):
                 if flag in words[index + 3 :]:

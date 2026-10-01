@@ -128,7 +128,8 @@ def test_every_service_with_the_url_mounts_the_one_instance_config() -> None:
 
 
 def test_location_caps_cover_exactly_the_compose_code_servers() -> None:
-    """`dagster/code_location` 상한은 compose의 code-server(`dagster api grpc -m <모듈>`)마다 하나다.
+    """`dagster/code_location` 상한은 compose의 code-server(`dagster code-server start`·`api grpc`
+    `-m <모듈>`)마다 하나다.
 
     location 이름은 code-server의 `-m` 모듈이다(오늘 네 instance의 실측 location 이름이고, 3단계
     공용 `workspace.yaml`의 `location_name`이다). 새 code-server가 compose에 들어오면(stage T의
@@ -139,7 +140,8 @@ def test_location_caps_cover_exactly_the_compose_code_servers() -> None:
     for service in _compose()["services"].values():
         command = [str(part) for part in service.get("command") or []]
         if any(
-            command[index : index + 2] == ["api", "grpc"] for index in range(len(command))
+            command[index : index + 2] in (["api", "grpc"], ["code-server", "start"])
+            for index in range(len(command))
         ) and "-m" in command:
             modules.add(command[command.index("-m") + 1])
     assert modules, "compose에서 code-server를 하나도 못 찾았다 — 추출이 낡았다"
