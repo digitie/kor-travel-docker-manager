@@ -136,7 +136,18 @@ argv = words(services[code])
 location = flag(argv, "--location-name", "-l") or flag(argv, "-m", "--module-name")
 webport = flag(words(services[web[0]]), "-p", "--port")
 consumers = sorted(block.get("consumers") or {})
-internal = sorted("%s %s" % (svc, var) for svc, vs in (block.get("consumers") or {}).items() for var, kind in vs.items() if str(kind).split("/")[0] == "internal")
+def plane_webserver_port():
+    plane_web = [n for n, s in services.items() if not s.get("profiles") and shared_workspace(s) and runs(s, "dagster-webserver")]
+    if len(plane_web) != 1: sys.exit("expected one shared webserver, got %s" % plane_web)
+    port = flag(words(services[plane_web[0]]), "-p", "--port")
+    if not (port or "").isdigit(): sys.exit("shared webserver port is not a literal: %s" % port)
+    return port
+INTERNAL_BASE = "http://127.0.0.1:%s" % plane_webserver_port()
+def expected_internal(kind):
+    # 종류는 internal 또는 internal/<path> — 값은 공용 webserver의 loopback 뒤에 그 경로를 붙인 것(계약과 같다).
+    base, _, path = str(kind).partition("/")
+    return INTERNAL_BASE + ("/" + path if path else "")
+internal = sorted("%s %s %s" % (svc, var, expected_internal(kind)) for svc, vs in (block.get("consumers") or {}).items() for var, kind in vs.items() if str(kind).split("/")[0] == "internal")
 print("CODE=%s" % code)
 print("OLD_WEBSERVER=%s" % web[0])
 print("OLD_DAEMON=%s" % dae[0])
@@ -145,6 +156,7 @@ print("LOCATION=%s" % location)
 print("OLD_WEBSERVER_PORT=%s" % webport)
 print("CONSUMERS=%s" % " ".join(consumers))
 print("INTERNAL_CONSUMERS=%s" % ";".join(internal))
+print("PLANE_WEBSERVER_PORT=%s" % plane_webserver_port())
 print("CONTROL_PLANE=%s" % block.get("control_plane"))
 print("CODE_HAS_SHARED_URL=%s" % ("yes" if "KOR_TRAVEL_DAGSTER_SHARED_PG_URL" in (services[code].get("environment") or {}) else "no"))
 print("RUNTIME_SERVICES=%s" % " ".join(spec.get("runtime_services") or spec.get("services") or []))
@@ -159,6 +171,14 @@ if len(pg) != 1: sys.exit("expected one shared gateway, got %s" % pg)
 print("PLANE_DAEMON=%s" % pd[0])
 print("PLANE_WEBSERVER=%s" % pw[0])
 print("PLANE_GATEWAY=%s" % pg[0])
+# 공용 instance의 role·DB를 만드는 one-shot — 공용 role 사용자 env를 싣고 CONNECTION LIMIT을 거는 활성 서비스.
+dbi = [n for n, s in active.items() if "KOR_TRAVEL_DAGSTER_SHARED_APP_USER" in (s.get("environment") or {})
+       and "CONNECTION LIMIT" in " ".join(words(s))]
+if len(dbi) != 1: sys.exit("expected one shared db-init one-shot, got %s" % dbi)
+limits = sorted(set(re.findall(r"CONNECTION LIMIT ([0-9]+)", " ".join(words(active[dbi[0]])))))
+if len(limits) != 1: sys.exit("the shared db-init sets no single CONNECTION LIMIT: %s" % limits)
+print("PLANE_DB_INIT=%s" % dbi[0])
+print("PLANE_ROLE_CONNECTION_LIMIT=%s" % limits[0])
 ' "${1:-$TARGET}" "$ROOT/config/docker-targets.yml"
 }
 fact() { sed -n "s/^$1=//p" <<<"$2"; }
@@ -252,7 +272,7 @@ q = sys.stdin.read()
 r = u.urlopen(u.Request("http://127.0.0.1:%s/graphql" % sys.argv[1], data=json.dumps({"query": q}).encode(),
     headers={"Content-Type": "application/json"}), timeout=20)
 print(json.dumps(json.load(r)))' "$2"; }
-graphql() { container_graphql "$WEBSERVER" 11002 <<<"$1"; }
+graphql() { container_graphql "$WEBSERVER" "$PLANE_PORT" <<<"$1"; }
 old_graphql() { container_graphql "$OLD_WEBSERVER" "$OLD_WEBSERVER_PORT" <<<"$1"; }
 instigators_q() { printf '%s' '{ repositoryOrError(repositorySelector:{repositoryLocationName:"'"$LOCATION"'", repositoryName:"__repository__"}) { __typename ... on Repository { schedules { name scheduleState { status } } sensors { name sensorState { status } } } } }'; }
 running_instigators() {  # stdin: GraphQL → RUNNING schedule·sensor 이름(정렬, "schedule:"·"sensor:" 접두)
@@ -412,19 +432,34 @@ app_active_operations() {  # stdout: 남은 active operation 수(0이면 통과)
 # C7 게이트(D2)의 Dagster 자격증명 파일 — Map의 C7만 공용 gateway를 부른다(Map #1290, Manager ADR-54 개정).
 C7_AUTH_FILE=/root/.d2-dagster-basic-auth
 write_c7_auth_file() {  # gateway의 user:password 한 줄, root 0600, symlink 아님. 값은 출력하지 않는다.
+  # 끝난 전환을 실패로 만들지 않는다(리뷰 L1) — 문제가 있으면 경고와 손으로 할 단계를 찍고 1을 돌려준다.
   local gw user tmp
-  gw="$(cid "$GATEWAY")"; [[ -n "$gw" ]] || fail "no gateway container"
+  c7_manual() {
+    say "WARNING: $1 — C7 auth file NOT written. By hand (root, values not echoed): printf '%s:' <KOR_TRAVEL_DAGSTER_UI_USER> > $C7_AUTH_FILE;"
+    say "  docker exec <$GATEWAY> cat /run/secrets/kor-travel-dagster-ui-password >> $C7_AUTH_FILE; chmod 0600 $C7_AUTH_FILE"
+    say "  (C7 accepts only [\\x21-\\x39\\x3b-\\x7e]+:[\\x21-\\x7e]+ — no spaces or non-ASCII in the password)"
+  }
+  gw="$(cid "$GATEWAY")"; [[ -n "$gw" ]] || { c7_manual "no gateway container"; return 1; }
   user="$(env_value "$GATEWAY" DAGSTER_UI_USER)"
-  [[ "$user" =~ ^[A-Za-z0-9._@-]+$ ]] || fail "gateway user is not a plain name"
-  [[ ! -L "$C7_AUTH_FILE" ]] || fail "$C7_AUTH_FILE is a symlink"
-  tmp="$(mktemp /root/.d2-dagster-basic-auth.XXXXXX)"
-  { printf '%s:' "$user"; docker exec "$gw" cat /run/secrets/kor-travel-dagster-ui-password; } > "$tmp" \
-    || { rm -f "$tmp"; fail "cannot read the gateway credential"; }
-  [[ "$(wc -l < "$tmp")" -le 1 && "$(wc -c < "$tmp")" -gt "$(( ${#user} + 1 ))" ]] || { rm -f "$tmp"; fail "gateway credential is empty or multi-line"; }
+  [[ "$user" =~ ^[A-Za-z0-9._@-]+$ ]] || { c7_manual "gateway user is not a plain name"; return 1; }
+  [[ ! -L "$C7_AUTH_FILE" ]] || { c7_manual "$C7_AUTH_FILE is a symlink"; return 1; }
+  tmp="$(mktemp /root/.d2-dagster-basic-auth.XXXXXX)" || { c7_manual "cannot create a temp file"; return 1; }
+  if ! { printf '%s:' "$user"; docker exec "$gw" cat /run/secrets/kor-travel-dagster-ui-password; } > "$tmp"; then
+    rm -f "$tmp"; c7_manual "cannot read the gateway credential"; return 1
+  fi
+  # C7(run-c7-prod-live-e2e.sh validate_dagster_basic_auth_file)가 읽는 모양만 쓴다 — 끝 개행 하나는 허용.
+  if ! python3 -I - "$tmp" <<'PY'
+import re, sys
+credential = open(sys.argv[1], "rb").read().removesuffix(b"\n")
+sys.exit(0 if re.fullmatch(rb"[\x21-\x39\x3b-\x7e]+:[\x21-\x7e]+", credential) else 1)
+PY
+  then
+    rm -f "$tmp"; c7_manual "the gateway credential is not in the form C7 accepts"; return 1
+  fi
   chown 0:0 "$tmp"; chmod 0600 "$tmp"; mv -f "$tmp" "$C7_AUTH_FILE"
   # 효과로 확인: Origin·Sec-Fetch-Site 없는 인증 POST가 gateway를 지나 공용 webserver에 닿는다(값은 출력하지 않는다).
   local port; port="$(env_value "$GATEWAY" DAGSTER_GATEWAY_PORT)"
-  python3 - "$C7_AUTH_FILE" "${port:-11001}" <<'PY' || fail "the gateway refused the C7 credential (non-browser POST)"
+  if ! python3 - "$C7_AUTH_FILE" "${port:-11001}" <<'PY'
 import base64, json, sys, urllib.request
 cred = open(sys.argv[1], "rb").read().strip()
 req = urllib.request.Request("http://127.0.0.1:%s/graphql" % sys.argv[2],
@@ -432,6 +467,10 @@ req = urllib.request.Request("http://127.0.0.1:%s/graphql" % sys.argv[2],
     headers={"Content-Type": "application/json", "Authorization": "Basic " + base64.b64encode(cred).decode()})
 sys.exit(0 if urllib.request.urlopen(req, timeout=20).status == 200 else 1)
 PY
+  then
+    say "WARNING: wrote $C7_AUTH_FILE but the gateway refused it as a non-browser POST — check the gateway release (ADR-54 amendment)"
+    return 1
+  fi
   say "wrote $C7_AUTH_FILE (root 0600) from the gateway credential; a non-browser authenticated POST passes the gateway"
 }
 c7_dagster_attestation() {  # Map C7의 canonical GraphQL URL과 sha256(scripts/lib/c7_prod_runtime.py와 같은 규칙)
@@ -468,6 +507,7 @@ CODE="$(sed -n 's/^CODE=//p' <<<"$facts")"; OLD_WEBSERVER="$(sed -n 's/^OLD_WEBS
 OLD_DAEMON="$(sed -n 's/^OLD_DAEMON=//p' <<<"$facts")"; OLD_GATEWAYS="$(sed -n 's/^OLD_GATEWAYS=//p' <<<"$facts")"
 LOCATION="$(sed -n 's/^LOCATION=//p' <<<"$facts")"; OLD_WEBSERVER_PORT="$(sed -n 's/^OLD_WEBSERVER_PORT=//p' <<<"$facts")"
 CONSUMERS="$(sed -n 's/^CONSUMERS=//p' <<<"$facts")"; INTERNAL_CONSUMERS="$(sed -n 's/^INTERNAL_CONSUMERS=//p' <<<"$facts")"
+PLANE_PORT="$(sed -n 's/^PLANE_WEBSERVER_PORT=//p' <<<"$facts")"
 PLANE_SWITCH="$(sed -n 's/^CONTROL_PLANE=//p' <<<"$facts")"; CODE_SHARED="$(sed -n 's/^CODE_HAS_SHARED_URL=//p' <<<"$facts")"
 DAEMON="$(fact PLANE_DAEMON "$facts")"; WEBSERVER="$(fact PLANE_WEBSERVER "$facts")"; GATEWAY="$(fact PLANE_GATEWAY "$facts")"
 [[ -n "$DAEMON" && -n "$WEBSERVER" && -n "$GATEWAY" ]] || fail "cannot derive the shared plane services"
@@ -486,6 +526,10 @@ if [[ "$MODE" == rollback ]]; then
   PHASE="f-precheck"
   [[ "$PLANE_SWITCH" == own && "$CODE_SHARED" == no ]] || fail "the installed release still has $TARGET on the shared plane — install the rollback release first"
   ! installed_workspace_lists || fail "the installed shared workspace still lists $LOCATION"
+  # 되돌리기도 같은 앱 게이트를 지난다: active operation이 공용 instance의 run을 가리키면 옛 reconcile sensor가 그 run을
+  # 영영 찾지 못한다. 공용 plane이 아직 이 location을 싣는 동안(plane 재생성 전) 그쪽 reconcile이 끝내게 한다.
+  active="$(app_active_operations)" || fail "cannot read $TARGET's active operations"
+  [[ "$active" == 0 ]] || fail "$active active $TARGET operations point at runs of the shared instance — let them settle there first (runbook §7 Map drain)"
   pair_runs_report
   cancel_runs_py > "$STATE/cancel-runs.py"
   daemon_c="$(cid "$DAEMON")"
@@ -550,13 +594,14 @@ switch_and_verify() {
   fi
   wait_health "$CODE" 600
   env_has "$CODE" KOR_TRAVEL_DAGSTER_SHARED_PG_URL || fail "$CODE did not get the shared metadata URL"
-  local internal entry svc var s before now
+  local internal entry svc var want s before now
   IFS=';' read -r -a internal <<<"$INTERNAL_CONSUMERS"
   for entry in "${internal[@]}"; do
     [[ -n "$entry" ]] || continue
-    svc="${entry% *}"; var="${entry#* }"
+    # "<서비스> <env> <기대값>" — 기대값은 derive가 계약대로 만든다(공용 webserver loopback + 종류의 경로).
+    read -r svc var want <<<"$entry"
     running "$svc" || fail "consumer $svc is not running"
-    [[ "$(env_value "$svc" "$var")" == "http://127.0.0.1:11002" ]] || fail "$svc $var does not point at the shared webserver"
+    [[ "$(env_value "$svc" "$var")" == "$want" ]] || fail "$svc $var does not point at the shared webserver ($want)"
   done
   # plane: Manager의 plane을 아는 pinned 재구축(ADR-54 개정)은 smoke 전에 이미 plane을 맞췄다 — 그러면 여기는 검증이다.
   # 옛 release의 재구축이거나 compose 경로면 여기서 맞춘다. 판정은 실제 상태로: 두 컨테이너가 펜스 뒤에 새로 만들어졌고
@@ -624,7 +669,7 @@ sys.exit(0 if got.get(sys.argv[1]) == "RepositoryLocation" else "location not lo
     (( $(date +%s) < deadline )) || fail "no $TARGET tick in $NEW_DB within $FIRST_TICK_TIMEOUT_S s"
     sleep "$SAMPLE_EVERY_S"
   done
-  say "G3-a: peak $max_conn connections for $SHARED_ROLE so far (CONNECTION LIMIT 30) — samples in $STATE/g3a.csv"
+  say "G3-a: peak $max_conn connections for $SHARED_ROLE so far (CONNECTION LIMIT $(fact PLANE_ROLE_CONNECTION_LIMIT "$facts")) — samples in $STATE/g3a.csv"
   PHASE="done"
   say "forward cutover verified. By hand (runbook step 4): the first $TARGET run reaches SUCCESS in $NEW_DB; the switch SQL on"
   say "  dagster/code_location is 0; $TARGET's API/UI show only $LOCATION; keep sampling G3-a under load."
@@ -633,7 +678,7 @@ sys.exit(0 if got.get(sys.argv[1]) == "RepositoryLocation" else "location not lo
   say "edge (information, not a prerequisite): $TARGET's old public Dagster hostname (e.g. $TARGET-dagster.digitie.mywire.org) has"
   say "  no upstream any more — the owner chose no redirect. $TARGET's Dagster UI is now the shared one: ${shared_url:-<KTDM_PROD_URL_DAGSTER>}"
   if [[ "$TARGET" == map ]]; then
-    write_c7_auth_file
+    write_c7_auth_file || true
     local attest
     attest="$(c7_dagster_attestation "${shared_url:-}")" || fail "cannot derive the C7 Dagster attestation from KTDM_PROD_URL_DAGSTER"
     say "C7 (D2): set these three in /root/.d2-live.env before the next chain run (repin flips the service and plane keys):"
@@ -696,6 +741,14 @@ active="$(app_active_operations)" || fail "cannot read $TARGET's active operatio
 (( $(count_lines "$STATE/old-running.txt") > 0 )) || fail "the old instance shows no RUNNING instigators"
 say "old instance: $(count_lines "$STATE/old-running.txt") RUNNING instigators"
 pair_runs_report
+# G3-a(ADR-54): 설치본이 정한 공용 role 연결 상한을 live role에 건다 — db-init one-shot은 멱등 ALTER다(이미 맞으면 같은 값).
+# 펜스 전이라 실패하면 아무것도 바뀌지 않은 채 멈춘다. lock G 아래다.
+DB_INIT="$(fact PLANE_DB_INIT "$facts")"; WANT_LIMIT="$(fact PLANE_ROLE_CONNECTION_LIMIT "$facts")"
+[[ -n "$DB_INIT" && "$WANT_LIMIT" =~ ^[0-9]+$ ]] || fail "cannot derive the shared db-init one-shot or its connection limit"
+compose run -T --rm --no-deps "$DB_INIT" >"$STATE/db-init.log" 2>&1 || { tail -n 20 "$STATE/db-init.log" >&2; fail "$DB_INIT failed"; }
+got_limit="$(sql postgres "SELECT rolconnlimit FROM pg_roles WHERE rolname = '$SHARED_ROLE'")"
+[[ "$got_limit" == "$WANT_LIMIT" ]] || fail "$SHARED_ROLE CONNECTION LIMIT is ${got_limit:-?}, the installed release wants $WANT_LIMIT"
+say "$SHARED_ROLE CONNECTION LIMIT $got_limit (applied by $DB_INIT)"
 for s in "$CODE" $CONSUMERS "$DAEMON" "$WEBSERVER"; do c="$(cid "$s")"; echo "$s $c"; done > "$STATE/ids-before.txt"
 
 PHASE="b-drain"
