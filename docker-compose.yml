@@ -1451,14 +1451,14 @@ services:
   # 봉인과 같은 이유 — weather의 code-server도 동일).
   kor-travel-map-dagster-code-server:
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
-    # ⚠️ 아직 `api grpc`다 — location reload가 definitions를 다시 import하지 못한다(PinVi code-server의 주석).
-    # Map 이미지의 production `dagster-entrypoint.sh`가 code-server argv를 정확히 `api grpc -h 127.0.0.1 -p N
-    # -m kortravelmap.dagster.definitions`로 봉인하므로, Map이 `code-server start`를 받아들이는 이미지를 내기
-    # 전에 여기를 바꾸면 code-server가 기동부터 거부된다. 그 Map 변경 뒤 바꾸고 알려진 예외에서 지운다.
+    # `code-server start` — location reload가 definitions를 다시 import한다(PinVi code-server의 주석). C7의
+    # schedule override가 이것을 기다렸다. Map 이미지의 production `dagster-entrypoint.sh`는 code-server argv를
+    # 정확한 모양으로 봉인한다 — 이 모양을 받는 이미지(Map `fix/dagster-entrypoint-code-server`)가 핀에 오른
+    # 뒤에만 이 compose를 설치한다(그 전 이미지는 기동부터 거부한다).
     command:
     - /usr/local/bin/dagster
-    - api
-    - grpc
+    - code-server
+    - start
     - -h
     - 127.0.0.1
     - -p

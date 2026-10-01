@@ -930,12 +930,6 @@ def test_the_manager_derivation_agrees_with_this_one() -> None:
             assert family.control_plane == spec["dagster"]["control_plane"], target_id
 
 
-#: 공용 plane에 합류했지만 아직 `dagster api grpc`인 code-server — 알려진 예외. Map 이미지의 production
-#: `dagster-entrypoint.sh`가 code-server argv를 `api grpc`로 봉인해서, Map이 `code-server start`를 받는 이미지를
-#: 내기 전에는 바꿀 수 없다. 해소되면(compose를 바꾸면) 아래 테스트가 이 항목을 지우라고 말한다.
-_NON_RELOADABLE_KNOWN: frozenset[str] = frozenset({"kor-travel-map-dagster-code-server"})
-
-
 def _non_reloadable_shared_code_servers(compose: dict[str, Any], targets: dict[str, Any]) -> tuple[set[str], set[str]]:
     """(`shared` target의 code-server 전부, 그중 `api grpc`인 것) — 이름이 아니라 스위치와 모양에서."""
 
@@ -957,8 +951,7 @@ def test_every_shared_plane_code_server_reloads_its_definitions() -> None:
 
     `dagster api grpc`는 reload를 "not currently supported" 경고만 남기고 무시한다 — 2026-10-01 n150에서 Map의
     C7 schedule override(definitions import 때 읽는다)가 그래서 반영되지 않았다. `dagster code-server start`는
-    proxy가 자식 gRPC 프로세스를 새로 띄워 다시 import한다(같은 n150 이미지로 실측). 예외 집합은 양방향이다 —
-    새 `api grpc`도, 해소된 예외도 빨갛다.
+    proxy가 자식 gRPC 프로세스를 새로 띄워 다시 import한다(같은 n150 이미지로 실측). 예외는 없다.
     """
 
     compose, targets = _documents()
@@ -969,11 +962,8 @@ def test_every_shared_plane_code_server_reloads_its_definitions() -> None:
     loaded = {entry["grpc_server"]["location_name"] for entry in workspace["load_from"]}
     assert loaded, "공용 workspace에 location이 없다 — 이 검사가 공허하다"
     assert {_location(compose["services"][name]) for name in shared} == loaded, sorted(shared)
-    assert stuck - _NON_RELOADABLE_KNOWN == set(), (
-        f"공용 plane code-server가 `dagster api grpc`다 — `dagster code-server start`로: {sorted(stuck - _NON_RELOADABLE_KNOWN)}"
-    )
-    assert _NON_RELOADABLE_KNOWN - stuck == set(), (
-        f"알려진 예외가 해소됐다 — `_NON_RELOADABLE_KNOWN`에서 지운다: {sorted(_NON_RELOADABLE_KNOWN - stuck)}"
+    assert stuck == set(), (
+        f"공용 plane code-server가 `dagster api grpc`다 — `dagster code-server start`로: {sorted(stuck)}"
     )
 
 
