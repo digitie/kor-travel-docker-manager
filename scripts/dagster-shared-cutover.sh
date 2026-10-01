@@ -387,8 +387,67 @@ consumer_scope_check() {  # 소비자가 공용 webserver에 이 location만 묻
     # geo #569: summary·run 조회·launch가 `dagster_repository_location_name`으로 좁혀진다. run 상세는
     # `repositoryOrigin`으로 소유를 확인한다(`Run.tags`는 `.dagster/*`를 숨긴다).
     geo) [[ "$(docker exec "$(cid kor-travel-geo-api)" python -c 'from kortravelgeo.settings import Settings as S; print(S().dagster_repository_location_name)' 2>/dev/null | tail -1)" == "$LOCATION" ]] ;;
+    # Map #1289: summary·pipeline·schedule 명령·writer drain이 `dagster_repository_location_name`으로 좁혀진다.
+    map) [[ "$(docker exec "$(cid kor-travel-map-api)" python -c 'from kortravelmap.api.settings import ApiSettings as S; print(S().dagster_repository_location_name)' 2>/dev/null | tail -1)" == "$LOCATION" ]] ;;
     *) say "WARNING: no consumer-scoping probe for $TARGET — check by hand (runbook step 4) that its consumers scope to $LOCATION"; return 0 ;;
   esac
+}
+
+# ── 앱 쪽 drain 게이트(target마다 다르다 — 앱의 일이라 파생 불가) ──────────────────────
+# Map: 공용 instance의 run storage는 새로 시작한다. Map DB의 active operation(`ops.import_jobs`의 queued·running)이
+# 옛 instance에만 있는 Dagster run을 가리키면 새 instance의 reconcile sensor가 그 run을 영영 찾지 못한다(Map runbook
+# docker-app.md "공유 Dagster plane으로 옮기기 전의 drain"). 그래서 펜스 전과, 펜스·취소 뒤 스위치 전에 0이어야 한다.
+# 큐에만 있고 run이 없는 요청(`dagster_run_id` 없음)은 새 instance의 queue sensor가 DB 상태로 이어받으므로 세지 않는다.
+app_active_operations() {  # stdout: 남은 active operation 수(0이면 통과). 게이트가 없는 target은 0.
+  case "$TARGET" in
+    map)
+      local db
+      db="$(sed -n 's/^KOR_TRAVEL_MAP_POSTGRES_DB=//p' "$ROOT/.env" | tail -1 | tr -d "\"'")"
+      [[ "$db" =~ ^[a-z_][a-z0-9_]*$ ]] || { echo "cannot tell the Map application database" >&2; return 1; }
+      sql "$db" "SELECT count(*) FROM ops.import_jobs WHERE status IN ('queued','running') AND dagster_run_id IS NOT NULL AND quarantined_at IS NULL AND kind IN ('provider_feature_load_run','feature_update_request')"
+      ;;
+    *) echo 0 ;;
+  esac
+}
+# C7 게이트(D2)의 Dagster 자격증명 파일 — Map의 C7만 공용 gateway를 부른다(Map #1290, Manager ADR-54 개정).
+C7_AUTH_FILE=/root/.d2-dagster-basic-auth
+write_c7_auth_file() {  # gateway의 user:password 한 줄, root 0600, symlink 아님. 값은 출력하지 않는다.
+  local gw user tmp
+  gw="$(cid "$GATEWAY")"; [[ -n "$gw" ]] || fail "no gateway container"
+  user="$(env_value "$GATEWAY" DAGSTER_UI_USER)"
+  [[ "$user" =~ ^[A-Za-z0-9._@-]+$ ]] || fail "gateway user is not a plain name"
+  [[ ! -L "$C7_AUTH_FILE" ]] || fail "$C7_AUTH_FILE is a symlink"
+  tmp="$(mktemp /root/.d2-dagster-basic-auth.XXXXXX)"
+  { printf '%s:' "$user"; docker exec "$gw" cat /run/secrets/kor-travel-dagster-ui-password; } > "$tmp" \
+    || { rm -f "$tmp"; fail "cannot read the gateway credential"; }
+  [[ "$(wc -l < "$tmp")" -le 1 && "$(wc -c < "$tmp")" -gt "$(( ${#user} + 1 ))" ]] || { rm -f "$tmp"; fail "gateway credential is empty or multi-line"; }
+  chown 0:0 "$tmp"; chmod 0600 "$tmp"; mv -f "$tmp" "$C7_AUTH_FILE"
+  # 효과로 확인: Origin·Sec-Fetch-Site 없는 인증 POST가 gateway를 지나 공용 webserver에 닿는다(값은 출력하지 않는다).
+  local port; port="$(env_value "$GATEWAY" DAGSTER_GATEWAY_PORT)"
+  python3 - "$C7_AUTH_FILE" "${port:-11001}" <<'PY' || fail "the gateway refused the C7 credential (non-browser POST)"
+import base64, json, sys, urllib.request
+cred = open(sys.argv[1], "rb").read().strip()
+req = urllib.request.Request("http://127.0.0.1:%s/graphql" % sys.argv[2],
+    data=json.dumps({"query": "{ version }"}).encode(),
+    headers={"Content-Type": "application/json", "Authorization": "Basic " + base64.b64encode(cred).decode()})
+sys.exit(0 if urllib.request.urlopen(req, timeout=20).status == 200 else 1)
+PY
+  say "wrote $C7_AUTH_FILE (root 0600) from the gateway credential; a non-browser authenticated POST passes the gateway"
+}
+c7_dagster_attestation() {  # Map C7의 canonical GraphQL URL과 sha256(scripts/lib/c7_prod_runtime.py와 같은 규칙)
+  python3 - "$1" <<'PY'
+import hashlib, sys
+from urllib.parse import urlsplit, urlunsplit
+raw = sys.argv[1].strip().rstrip("/")
+p = urlsplit(raw)
+assert p.scheme == "https" and p.hostname and not p.username and not p.query and not p.fragment, "not an https origin"
+host = p.hostname.rstrip(".").lower()
+origin = urlunsplit(("https", host + (":%d" % p.port if p.port else ""), "", "", ""))
+path = p.path.rstrip("/")
+path = path if path.endswith("/graphql") else path + "/graphql"
+url = origin + path
+print(url, hashlib.sha256(url.encode()).hexdigest())
+PY
 }
 
 # ── lock G ────────────────────────────────────────────────────────────────
@@ -573,6 +632,15 @@ sys.exit(0 if got.get(sys.argv[1]) == "RepositoryLocation" else "location not lo
   shared_url="$(sed -n 's/^KTDM_PROD_URL_DAGSTER=//p' "$ROOT/.env" | tail -1 | tr -d "\"'")"
   say "edge (information, not a prerequisite): $TARGET's old public Dagster hostname (e.g. $TARGET-dagster.digitie.mywire.org) has"
   say "  no upstream any more — the owner chose no redirect. $TARGET's Dagster UI is now the shared one: ${shared_url:-<KTDM_PROD_URL_DAGSTER>}"
+  if [[ "$TARGET" == map ]]; then
+    write_c7_auth_file
+    local attest
+    attest="$(c7_dagster_attestation "${shared_url:-}")" || fail "cannot derive the C7 Dagster attestation from KTDM_PROD_URL_DAGSTER"
+    say "C7 (D2): set these three in /root/.d2-live.env before the next chain run (repin flips the service and plane keys):"
+    say "  E2E_DAGSTER_URL=${attest%% *}"
+    say "  E2E_C7_EXPECTED_DAGSTER_ORIGIN_SHA256=${attest##* }"
+    say "  E2E_DAGSTER_BASIC_AUTH_FILE=$C7_AUTH_FILE"
+  fi
 }
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -623,6 +691,8 @@ plane_clean || fail "the running plane already loaded the new workspace or ran $
 say "the running plane does not carry $LOCATION yet ($TARGET tick baseline $SHARED_TICKS_BASELINE)"
 consumer_scope_check || fail "a consumer of $TARGET is not scoped to $LOCATION — it would see or act on other tenants"
 old_graphql "$(instigators_q)" | running_instigators > "$STATE/old-running.txt" || fail "cannot read the old RUNNING instigators"
+active="$(app_active_operations)" || fail "cannot read $TARGET's active operations"
+[[ "$active" == 0 ]] || fail "$active active $TARGET operations still point at runs of the old instance — drain first (runbook §7 Map drain)"
 (( $(count_lines "$STATE/old-running.txt") > 0 )) || fail "the old instance shows no RUNNING instigators"
 say "old instance: $(count_lines "$STATE/old-running.txt") RUNNING instigators"
 pair_runs_report
@@ -647,5 +717,9 @@ cancel_runs_py > "$STATE/cancel-runs.py"
 docker exec -i "$(cid "$CODE")" python -I - "$OLD_DB" < "$STATE/cancel-runs.py" | tee "$STATE/drain-canceled.txt" | sed 's/^/  /'
 left="$(sql "$OLD_DB" "SELECT count(*) FROM runs WHERE status IN $LIVE")"
 [[ "$left" == 0 ]] || fail "$left runs still in flight in $OLD_DB"
+# 펜스와 취소 사이에 old instance가 띄운 run을 가리키는 active operation이 생겼으면 여기서 멈춘다 — 아직 아무것도
+# 옮기지 않았으므로 recover가 옛 서비스를 되살리고, 옛 reconcile sensor가 그 상태를 DB에 반영한다.
+active="$(app_active_operations)" || fail "cannot read $TARGET's active operations"
+[[ "$active" == 0 ]] || fail "$active active $TARGET operations point at runs of the old instance after the fence — retry after the old instance settles them"
 
 switch_and_verify

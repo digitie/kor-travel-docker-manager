@@ -687,7 +687,7 @@ services:
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "9c97cae751ec0093"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "987db472ace5845a"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -757,7 +757,7 @@ services:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "9c97cae751ec0093"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "987db472ace5845a"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -1324,14 +1324,13 @@ services:
       KOR_TRAVEL_MAP_API_HOST: 0.0.0.0
       KOR_TRAVEL_MAP_API_PORT: ${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}
       KOR_TRAVEL_MAP_API_CORS_ALLOW_ORIGINS: '["${KTDM_PROD_URL_MAP:-http://localhost:${KOR_TRAVEL_MAP_UI_PORT:-12705}}","http://localhost:${KOR_TRAVEL_MAP_UI_PORT:-12705}","http://127.0.0.1:${KOR_TRAVEL_MAP_UI_PORT:-12705}"]'
-      KOR_TRAVEL_MAP_API_DAGSTER_URL: http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
-      # admin API가 클라이언트(admin UI / C7 게이트)에 노출하는 Dagster GraphQL endpoint는
-      # 내부(127.0.0.1)가 아니라 공개 https origin이어야 한다(ops-c7-schedule-write의
-      # canonicalGraphqlSha256이 https 강제). 서버측 호출용 DAGSTER_URL(내부)과 분리해
-      # KTDM_PROD_URL_MAP_DAGSTER에서 파생한다. dev(미설정)면 내부로 fallback.
-      KOR_TRAVEL_MAP_API_DAGSTER_GRAPHQL_URL: ${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}}/graphql
-      # allowlist에 공개 dagster host를 추가해야 위 공개 graphql_url이 SSRF 검증을 통과한다.
-      KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS: '["kor-travel-map-dagster","127.0.0.1","localhost","::1"${KTDM_PROD_MAP_DAGSTER_HOST:+,"${KTDM_PROD_MAP_DAGSTER_HOST}"}]'
+      # 공용 Dagster plane(ADR-54, Map 전환). Map API는 GraphQL을 **부르는** URL과 **보고하는** URL을 가른다(Map
+      # #1290): 부르는 쪽은 공용 webserver의 loopback(인증 없음, `dagster_allowed_hosts`는 그것만), 보고하는 쪽은
+      # 공용 gateway의 공개 https host(Basic Auth — admin UI 링크와 C7 게이트의 origin attestation이 이것을 본다).
+      KOR_TRAVEL_MAP_API_DAGSTER_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
+      KOR_TRAVEL_MAP_API_DAGSTER_INTERNAL_GRAPHQL_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}/graphql
+      KOR_TRAVEL_MAP_API_DAGSTER_GRAPHQL_URL: ${KTDM_PROD_URL_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}}/graphql
+      KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS: '["127.0.0.1","localhost","::1"]'
       # reloadRepositoryLocation(schedule cron override 반영 시 호출)은 code location을
       # 다시 로드하며 완료까지 ~4s+ 걸린다. 기본 3s 타임아웃으로는 이 reload가 timeout(503)돼
       # C7 ops-c7-schedule-write의 cron 단계가 실패한다. 상한(30s) 내에서 여유를 준다.
@@ -1400,7 +1399,8 @@ services:
       args:
         KOR_TRAVEL_MAP_GIT_COMMIT: ${KOR_TRAVEL_MAP_GIT_COMMIT:-development}
         NEXT_PUBLIC_KOR_TRAVEL_MAP_API: ${KTDM_PROD_URL_MAP_API:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_PORT:-12701}}
-        NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: ${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}}
+        # 공용 gateway의 공개 host(ADR-54) — UI는 `/locations/<Map location>`을 붙인다(Map #1289). 빌드 때 굽는다.
+        NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: ${KTDM_PROD_URL_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}}
         NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL: ${KTDM_PROD_URL_GEO_API:-http://127.0.0.1:12501}
         NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
     container_name: ${KOR_TRAVEL_MAP_UI_CONTAINER:-kor-travel-map-ui-latest}
@@ -1418,7 +1418,7 @@ services:
       KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}
       KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN: ${KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN:?KOR_TRAVEL_MAP_ADMIN_FEATURE_CREATE_TOKEN must be explicitly set}
       NEXT_PUBLIC_KOR_TRAVEL_MAP_API: ${KTDM_PROD_URL_MAP_API:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_PORT:-12701}}
-      NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: ${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}}
+      NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: ${KTDM_PROD_URL_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}}
       NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL: ${KTDM_PROD_URL_GEO_API:-http://127.0.0.1:12501}
       NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
       # Map UI `/api/geo` BFF는 Geo가 Map consumer에 발급한 server-only key만 쓴다.
@@ -1451,7 +1451,8 @@ services:
     - -h
     - 127.0.0.1
     - -p
-    - ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT:-12703}
+    # 공용 workspace가 이 포트를 싣는다(정적 파일이라 `.env`의 override를 모른다) — literal이다.
+    - '12703'
     - -m
     - kortravelmap.dagster.definitions
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-map-dagster-code-server-latest}
@@ -1470,12 +1471,17 @@ services:
       kor-travel-map-api:
         condition: service_healthy
     environment:
+      # 공용 Dagster plane에 합류했다(ADR-54, Map 전환) — instance storage는 공용 URL 앵커와 공용
+      # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `KOR_TRAVEL_MAP_DAGSTER_PG_URL`은
+      # 되돌리기와 C6c 계약(옛 metadata DB의 storage migrate·head)을 위해 남긴다(공용 `dagster.yaml`은 읽지 않는다).
+      <<: *dagster-shared-control-env
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
       TMPDIR: /tmp
       TEMP: /tmp
       TMP: /tmp
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
-      KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT: ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT:-12703}
+      KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT: '12703'
       KOR_TRAVEL_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}
       KOR_TRAVEL_MAP_DAGSTER_ADDRESS_VALIDATION: ${KOR_TRAVEL_MAP_DOCKER_ADDRESS_VALIDATION:-drop}
       KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DB_PATH:-/tmp/mois_source.db}
@@ -1503,6 +1509,9 @@ services:
       KOR_TRAVEL_MAP_KREX_EX_API_KEY: ${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}
       KOR_TRAVEL_MAP_KREX_GO_API_KEY: ${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}}
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
+    # 이미지에 구운 `dagster_home/dagster.yaml`(옛 전용 metadata DB) 대신 공용 instance 정의를 붙인다.
+    volumes:
+    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     healthcheck:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
@@ -1513,14 +1522,18 @@ services:
       - -I
       - -c
       - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
-      - '${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT:-12703}'
+      - '12703'
       interval: 30s
       timeout: 10s
       retries: 5
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
       start_period: 180s
       start_interval: 5s
+  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`·pinned 재구축이 띄우지 않는다. 옛 공개
+  # host `map-dagster`는 upstream을 잃는다(소유자: redirect 없음).
   kor-travel-map-dagster:
+    profiles:
+    - legacy-dagster
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
     command:
     - /usr/local/bin/dagster-webserver
@@ -1650,7 +1663,10 @@ services:
     # 해석할 수 있게 한다. host network를 쓰는 기본 경로에는 영향이 없다.
     extra_hosts:
     - host.docker.internal:host-gateway
+  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`·pinned 재구축이 띄우지 않는다.
   kor-travel-map-dagster-daemon:
+    profiles:
+    - legacy-dagster
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_DAEMON_CONTAINER:-kor-travel-map-dagster-daemon-latest}
     restart: unless-stopped

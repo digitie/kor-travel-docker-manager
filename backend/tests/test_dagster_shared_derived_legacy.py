@@ -273,9 +273,9 @@ def test_the_frozen_render_never_carries_a_flipped_targets_old_dagster(tmp_path:
 def test_the_pinvi_build_provenance_follows_the_carrier(monkeypatch: pytest.MonkeyPatch) -> None:
     """PinVi Dagster 이미지를 빌드하는 서비스의 build 배선을 본다 — 합류하면 code-server다."""
 
-    from test_dagster_shared_workspace_is_derived import _documents, _flip
+    from test_dagster_shared_workspace_is_derived import _flip, _own_pair_documents
 
-    compose, targets_document = _documents()
+    compose, targets_document = _own_pair_documents()
     c6c.validate_c6c_build_source_wiring(compose)
     _flip(compose, targets_document, "pinvi")
     _use(monkeypatch, derive_dagster_families(compose, targets_document))
@@ -363,9 +363,9 @@ def test_the_shared_webserver_depending_on_a_code_server_is_not_that_targets_web
 def test_a_broken_unrelated_target_does_not_gate_map_and_pinvi(monkeypatch: pytest.MonkeyPatch) -> None:
     """MED-1: geo·weather의 모양이 어긋나도 Map·PinVi 파생(pinned runtime·C6c)은 선다. 전체 파생만 거부한다."""
 
-    from test_dagster_shared_workspace_is_derived import _documents
+    from test_dagster_shared_workspace_is_derived import _own_pair_documents
 
-    compose, targets_document = _documents()
+    compose, targets_document = _own_pair_documents()
     # weather daemon이 사라지고 geo webserver가 둘이 된 모양.
     del compose["services"]["kor-travel-weather-dagster-daemon"]
     compose["services"]["kor-travel-geo-dagster-twin"] = dict(compose["services"]["kor-travel-geo-dagster"])

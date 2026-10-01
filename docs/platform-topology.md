@@ -383,6 +383,27 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
           멈춘 뒤 실패하면 Map·PinVi가 내려간 채다: 옛 daemon을 되살리지 말고(code-server가 없다) 스크립트가 찍는
           `resume`으로 재구축(전환된 release 아래 멱등)·plane 재생성·검증을 이어 간다. 창 스크립트
           `scripts/dagster-shared-cutover.sh <target> forward|rollback|resume <sha>`가 이 분기를 target에서 고른다.
+        - **Map 전환(마지막, 2026-10-01).** 위 pinned 경로 그대로에 셋이 더해진다.
+          1. **drain(Map runbook `docker-app.md` "공유 Dagster plane으로 옮기기 전의 drain").** 공용 instance의 run
+             storage는 새로 시작한다 — Map DB의 active operation이 옛 instance에만 있는 run을 가리키면 새 reconcile
+             sensor가 그 run을 영영 찾지 못한다. 창 전에 진행 중인 feature 적재가 끝나 reconcile(settle 300초 + 주기
+             30초)이 DB에 반영할 때까지 기다리고, 그동안 새 적재·요청을 넣지 않는다. 판정(읽기 전용, Map 앱 DB):
+             `SELECT count(*) FROM ops.import_jobs WHERE status IN ('queued','running') AND dagster_run_id IS NOT NULL
+             AND quarantined_at IS NULL AND kind IN ('provider_feature_load_run','feature_update_request')` = 0.
+             Map의 writer drain(`ktm-cache-target-writer-drain/v1`)은 **쓰지 않는다** — reconcile·상태 sensor까지 멈추고
+             run을 약 15초 뒤 terminate하므로 이 판정이 수렴하지 않는다(Map 저장소 #1290 runbook과 다르다 — Map에 알림).
+             queue는 닫지 않는다: run이 없는 요청(`dagster_run_id` 없음)은 새 queue sensor가 DB 상태로 이어받고, run이
+             있는 요청은 위 판정이 0이어야 한다. 창 스크립트가 precheck와 **펜스·취소 뒤 스위치 전**에 같은 판정을 다시
+             한다 — 펜스 직전에 queue sensor가 띄운 run이 있으면 스위치 전에 멈추고 recover가 옛 서비스를 되살려 옛
+             reconcile이 정리하게 한다. 매분 weather summary run은 operation이 아니라 세지 않는다 — 펜스 때 돌던 것은
+             취소되고 공용 plane의 다음 슬롯이 다시 한다.
+          2. **C7(D2).** repin이 web·daemon·plane 키를 바꾼다. 손으로 바꿀 셋은 창 스크립트가 끝에 찍는다:
+             `E2E_DAGSTER_URL=https://<공용 공개 host>/graphql`, 그 canonical sha256(`E2E_C7_EXPECTED_DAGSTER_ORIGIN_SHA256`,
+             Map `c7_prod_runtime._canonical_graphql`과 같은 규칙), `E2E_DAGSTER_BASIC_AUTH_FILE=/root/.d2-dagster-basic-auth`.
+             자격증명 파일은 스크립트가 gateway의 user·secret에서 만든다(root 0600, symlink 거부, 값은 출력하지 않음) —
+             그리고 Origin·`Sec-Fetch-Site` 없는 인증 POST가 gateway를 지나는지 효과로 확인한다.
+          3. **G3-a.** Map은 지금 공용 plane 부하의 약 50배다(하루 run 약 1,400 — 대부분 매분 weather summary, tick 시간당
+             약 900). 전환 전 1초 간격 표본으로 공용 role의 연결 최대를 재고, 전환 뒤 같은 표본을 다시 잰다(아래 G3-a).
      4. **Verify** — P의 cron 주기 하나 안에: 공용 webserver probe 초록(workspace의 location 전부가
         `RepositoryLocation`), P의 RUNNING instigator 집합이 옛 DB의 것과 같다(D4 — 코드 선언), 옛 DB의
         `SELECT count(*) FROM job_ticks WHERE timestamp > :fence_ts`가 0으로 머문다, `dagster_shared`에는

@@ -8628,3 +8628,34 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
 - **Map 전환 계약.** Map API 소비자에 `KOR_TRAVEL_MAP_API_DAGSTER_INTERNAL_GRAPHQL_URL: internal/graphql`(서버 쪽이
   부르는 loopback)을 더했다 — `KOR_TRAVEL_MAP_API_DAGSTER_GRAPHQL_URL: public/graphql`은 보고용으로 남는다. 이름은 Map
   저장소 `feat/dagster-shared-map-prep`에서 확정한다(2026-10-01 현재 그 브랜치에 아직 변경 없음).
+
+## 2026-10-01 — 공용 Dagster: Map 전환 PR(마지막 합류, ADR-54)
+
+브랜치 `feat/dagster-shared-flip-map`(origin/main `3c9661c` 위 — Map 준비 Manager #450 설치본). 참조 전환 `_flip`을 옮겼다.
+
+- Map `dagster.control_plane: shared`. code-server: `<<: *dagster-shared-control-env`, instance digest, 이미지에 구운
+  `dagster_home/dagster.yaml` 대신 공용 `dagster.yaml`(compose_binds), gRPC는 이미 `127.0.0.1`, 포트 literal `12703`
+  (healthcheck·`KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT`도).
+- Map API(Map #1290의 부르는/보고하는 URL 분리): `KOR_TRAVEL_MAP_API_DAGSTER_URL` →
+  `http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}`, `…_DAGSTER_INTERNAL_GRAPHQL_URL` → 그 `/graphql`,
+  `…_DAGSTER_GRAPHQL_URL` → `${KTDM_PROD_URL_DAGSTER:-…11001}/graphql`(보고·C7 attestation), `…_DAGSTER_ALLOWED_HOSTS`
+  → loopback만(옛 `kor-travel-map-dagster`·`KTDM_PROD_MAP_DAGSTER_HOST` 삭제). Map UI의 `NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL`
+  (build arg·env) → 공용 공개 host — 전체 경로 재구축이 UI를 다시 굽는다. C6c의 Map UI build 배선 검사가 그 값을 스위치에서
+  고른다(`own`이면 옛 값).
+- 옛 `kor-travel-map-dagster`·`-daemon` → `legacy-dagster`, Map의 `services`·`runtime_services`에서 뺌.
+  `kor-travel-map-dagster-storage-migrate`는 **남긴다** — pinned 재구축이 옛 metadata DB의 storage head를 계약으로 보고
+  (`require_head(... map_dagster_head)`), 되돌리기가 그 DB로 돌아가며, code-server가 그 one-shot에 기댄다. frozen
+  render(`--profile bootstrap`)에서 profile로 내리면 재구축의 `run`이 서비스를 찾지 못한다.
+- 공용 workspace에 `kortravelmap.dagster.definitions`(127.0.0.1:12703), 네 location이 모두 공용 plane에 있다.
+- 합류 조건(n150 읽기 전용 실측): code-server는 `appuser`이고 `/opt/dagster`는 root 소유 읽기 전용이지만
+  `/opt/dagster/state`는 이미지에 `appuser` 소유로 있다(공용 `dagster.yaml`의 artifacts·compute_logs 자리) ; pool은 셋 다
+  `kor_travel_map.` 접두(`kor_travel_geo`·`krex_notice_snapshot`·`opinet_api`); `concurrency_limits` 행은 Map·공용 둘 다 0
+  (pool은 `default_limit: 1`); dagster 1.13.24; 공용 `dagster.yaml`에 Map cap 10; 코드 선언 RUNNING은 schedule 1
+  (`current_weather_summary_refresh_minutely_schedule`) + sensor 10 = 옛 instance RUNNING 11과 같다; 공용 instance의 Map
+  run 0 — reconcile sensor는 null cursor로 시작한다(Map run ≤ 200, #1290).
+- 테스트: `own`인 target이 남지 않아 대조군의 출발점을 `_unflip`(전환 전 모양으로 되돌리기)으로 만든다 — `_unflip` 뒤
+  `_flip`이 커밋된 렌더를 위반 없이 다시 만드는지 검사한다. `own_pinned_pair`·`_own_pair_documents`는 스위치만이 아니라
+  compose도 되돌린다. f1d는 Map Dagster 서비스를 slot에서 파생하고, 필수 보호 서비스 골든은 9 → 8(옛 webserver·daemon →
+  code-server, 바뀐 칸 하나). Map API host allowlist가 loopback만인지 따로 본다.
+- 창 스크립트: Map 앱 drain 게이트(precheck와 펜스·취소 뒤), Map 소비자 scope 확인, 끝에 C7 자격증명 파일과
+  `.d2-live.env`에 넣을 세 값(공개 GraphQL URL·canonical sha256 — Map README의 값과 같음을 n150에서 확인).
