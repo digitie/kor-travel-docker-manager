@@ -58,6 +58,11 @@ _CONCIERGE_UI_VWORLD_KEY = (
     "${KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY:?"
     "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY must be explicitly set}"
 )
+# 이 파일의 C6c candidate fixture는 Map·PinVi Dagster가 `own`인 모양(옛 webserver·daemon)으로 짜여 있다. 설치 모델의 C6c
+# 필수 보호 서비스 집합은 스위치에서 파생되므로(ADR-54), 같은 기준선(`own_pinned_pair` — 스위치와 compose를 함께 전환 전
+# 모양으로)을 쓴다. 공용 plane 모양의 계약은 test_f1d_compose_contract.py가 실제 compose로 본다.
+pytestmark = pytest.mark.usefixtures("own_pinned_pair")
+
 _MAP_FETCH_SERVICES = (
     "kor-travel-map-dagster",
     "kor-travel-map-dagster-code-server",

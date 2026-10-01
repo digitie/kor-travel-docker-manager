@@ -265,9 +265,9 @@ def own_pinned_pair(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     캐시는 **진짜 함수의 것**을 setup 때 잡아 두고 비운다 — 테스트가 그 함수를 바꿔 끼운 채여도 정리가 닿는다.
     """
 
-    from kor_travel_docker_manager.services import runtime_topology as topology
-
     from test_dagster_shared_workspace_is_derived import _unflip
+
+    from kor_travel_docker_manager.services import runtime_topology as topology
 
     compose, targets = topology._installed_documents()
     # 스위치와 compose를 함께 전환 전 모양으로 되돌린다 — Map·PinVi가 모두 합류한 뒤에도(2026-10-01) 기준선이
