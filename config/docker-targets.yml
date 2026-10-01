@@ -724,6 +724,18 @@ targets:
       - kor-travel-weather-dagster-daemon
       - kor-travel-weather-dagster-gateway
       - kor-travel-weather-prometheus
+    # weather를 갱신(ensure)한 뒤 Prometheus가 alerts 규칙을 다시 읽게 한다. 규칙은 weather 체크아웃의 디렉터리 bind로
+    # 들어오지만(파일 bind는 git이 바꾼 inode를 따라가지 못한다) Prometheus는 기동·reload 때만 읽는다. SIGHUP이 그
+    # reload다 — `--web.enable-lifecycle`(인증 없는 `/-/reload`·`/-/quit`를 host network 포트에 연다)은 쓰지 않는다.
+    # 이미 같은 내용이면 무연산이고, 규칙이 깨졌으면 Prometheus는 옛 규칙을 지키며 로그에 남긴다.
+    init_steps:
+      - name: weather-prometheus-rules-reload
+        description: weather Prometheus가 갱신된 alerts 규칙을 다시 읽게 SIGHUP을 보냅니다.
+        command:
+          - kill
+          - -s
+          - SIGHUP
+          - kor-travel-weather-prometheus
     # 필드 설명은 geo target에 있다. weather의 gateway(14102)는 webserver에 기대므로 전환 때 함께
     # `legacy-dagster`로 내려간다.
     dagster:
@@ -920,9 +932,9 @@ compose_binds:
     - container_path: "/etc/prometheus/prometheus.yml"
       read_only: true
       source: "./config/kor-travel-weather/prometheus.yml"
-    - container_path: "/etc/prometheus/alerts.yml"
+    - container_path: "/etc/prometheus/weather-rules"
       read_only: true
-      source: "${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/prometheus/alerts.yml"
+      source: "${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/prometheus"
     - container_path: "/prometheus"
       read_only: false
       source: "${KOR_TRAVEL_WEATHER_PROMETHEUS_DATA_DIR:-/home/digitie/kor-travel-weather-data/prometheus}"

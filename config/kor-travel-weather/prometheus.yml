@@ -7,7 +7,8 @@ global:
   scrape_timeout: 10s
 
 rule_files:
-  - /etc/prometheus/alerts.yml
+  # weather 체크아웃의 deploy/prometheus 디렉터리 bind(파일 bind는 git 갱신의 새 inode를 따라가지 못한다).
+  - /etc/prometheus/weather-rules/alerts.yml
 
 scrape_configs:
   - job_name: kor-travel-weather-api
