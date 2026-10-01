@@ -830,3 +830,19 @@ def test_no_long_running_service_binds_a_single_file_from_a_sibling_checkout() -
                 offenders.append((service_name, source))
     assert seen_repo_binds, "형제 체크아웃 bind를 하나도 못 봤다 — 검사가 항진이다"
     assert offenders == []
+
+
+def test_the_weather_rules_reload_step_signals_only_its_prometheus() -> None:
+    """weather를 ensure한 뒤 그 Prometheus가 규칙을 다시 읽는다(SIGHUP) — 변경 범위는 그 서비스 하나다."""
+
+    from kor_travel_docker_manager.services.compose_service import ComposeService
+
+    targets = yaml.safe_load((_ROOT / "config" / "docker-targets.yml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    steps = {step["name"]: step["command"] for step in targets["targets"]["weather"]["init_steps"]}
+    command = steps["weather-prometheus-rules-reload"]
+    scope, _ = ComposeService._parse_compose_mutation(command)
+    assert scope == ["kor-travel-weather-prometheus"], (command, scope)
+    # 그 Prometheus는 규칙을 디렉터리 bind로 받는다(파일 bind면 SIGHUP이 옛 inode를 다시 읽는다).
+    volumes = [str(v) for v in compose["services"]["kor-travel-weather-prometheus"]["volumes"]]
+    assert any(v.endswith("/deploy/prometheus:/etc/prometheus/weather-rules:ro") for v in volumes), volumes

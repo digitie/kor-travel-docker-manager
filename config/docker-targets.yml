@@ -733,8 +733,7 @@ targets:
         description: weather Prometheus가 갱신된 alerts 규칙을 다시 읽게 SIGHUP을 보냅니다.
         command:
           - kill
-          - -s
-          - SIGHUP
+          - --signal=SIGHUP
           - kor-travel-weather-prometheus
     # 필드 설명은 geo target에 있다. weather의 gateway(14102)는 webserver에 기대므로 전환 때 함께
     # `legacy-dagster`로 내려간다.
