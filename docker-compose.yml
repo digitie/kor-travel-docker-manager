@@ -688,7 +688,7 @@ services:
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "987db472ace5845a"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "1680116219ea76ad"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -758,7 +758,7 @@ services:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "987db472ace5845a"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "1680116219ea76ad"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -1486,6 +1486,10 @@ services:
       # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `KOR_TRAVEL_MAP_DAGSTER_PG_URL`은
       # 되돌리기와 C6c 계약(옛 metadata DB의 storage migrate·head)을 위해 남긴다(공용 `dagster.yaml`은 읽지 않는다).
       <<: *dagster-shared-control-env
+      # `code-server start`의 proxy가 자식에 거는 heartbeat(기본 30초 안에 proxy의 heartbeat가 안 오면 자식이 스스로
+      # 내려간다)를 사실상 끈다. weather가 heartbeat를 걷어낸 사고와 n150의 디스크 대기 급등을 보면 30초는 짧다.
+      # proxy와 자식은 같은 컨테이너라 heartbeat가 지킬 것이 없다(자식이 죽으면 healthcheck가 컨테이너를 끝낸다).
+      DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "86400"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
       TMPDIR: /tmp
       TEMP: /tmp
@@ -1525,12 +1529,30 @@ services:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
       # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
+      # **효과에 묶는다.** `code-server start`의 proxy는 `DagsterApi`를 늘 SERVING으로 답한다 — 자식 gRPC가 code
+      # 로딩에 실패했거나(load error) 나중에 죽어도(OOM·crash) proxy는 살아 있고 아무도 자식을 다시 띄우지 않는다.
+      # 그래서 proxy가 SERVING이면 자식에게 **전달되는** `ListRepositories`를 raw bytes로 부른다(dagster import 없음).
+      # 답이 load error(`SerializableErrorInfo`)거나 자식에 닿지 못하면(deadline 초과가 아닌 RPC 오류) PID 1(`init:
+      # true`의 tini)에 SIGTERM을 보내 컨테이너를 끝낸다 — `restart: unless-stopped`가 다시 띄운다(옛 `api grpc`가
+      # import 실패에 스스로 죽고 재시작되던 self-heal). 초기 로딩 중에는 proxy가 아직 listen하지 않아 첫 단계에서
+      # 그냥 실패한다(죽이지 않는다). 2026-10-02 n150 실측: 정상 healthy, 없는 `-m` → 재시작, 자식 kill → 재시작.
       test:
       - CMD
       - python
       - -I
       - -c
-      - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
+      - |-
+        import os, sys, grpc
+        from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g
+        c = grpc.insecure_channel('127.0.0.1:' + sys.argv[1])
+        r = g.HealthStub(c).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=4)
+        r.status == h.HealthCheckResponse.SERVING or sys.exit(1)
+        try:
+            dead = b'SerializableErrorInfo' in c.unary_unary('/api.DagsterApi/ListRepositories')(b'', timeout=4)
+        except grpc.RpcError as e:
+            dead = e.code() != grpc.StatusCode.DEADLINE_EXCEEDED
+        dead and os.kill(1, 15)
+        sys.exit(1 if dead else 0)
       - '12703'
       interval: 30s
       timeout: 10s
@@ -1886,7 +1908,10 @@ services:
     # 띄울 수 있다. webserver/daemon은 workspace.yaml로 127.0.0.1:12803에 붙는다.
     # `code-server start`(proxy + 자식 gRPC 프로세스)다 — 공용 webserver의 location reload(`ReloadCode`)가
     # 자식을 새로 띄워 definitions를 다시 import한다. `api grpc`는 reload를 경고만 남기고 무시한다
-    # (2026-10-01 n150 실측, Map의 C7 schedule override가 그래서 반영되지 않았다).
+    # (2026-10-01 n150 실측, Map의 C7 schedule override가 그래서 반영되지 않았다). 자식은 UDS socket으로만
+    # 듣는다(TCP는 proxy의 `-h`·`-p`뿐). proxy 자신이 dagster를 import해 ~100MB RSS를 더 쓰고(n150 실측 97MB),
+    # reload 때 진행 중인 run이 있으면 옛 자식이 그 run이 끝날 때까지 새 자식과 함께 남는다 — 그동안 code import가
+    # 둘이다(weather의 4g 한도는 이것까지 감안해야 한다).
     command:
     - dagster
     - code-server
@@ -1903,6 +1928,10 @@ services:
       # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `PINVI_DAGSTER_PG_URL`은 되돌리기
       # 때까지 남긴다(공용 `dagster.yaml`은 읽지 않는다).
       <<: *dagster-shared-control-env
+      # `code-server start`의 proxy가 자식에 거는 heartbeat(기본 30초 안에 proxy의 heartbeat가 안 오면 자식이 스스로
+      # 내려간다)를 사실상 끈다. weather가 heartbeat를 걷어낸 사고와 n150의 디스크 대기 급등을 보면 30초는 짧다.
+      # proxy와 자식은 같은 컨테이너라 heartbeat가 지킬 것이 없다(자식이 죽으면 healthcheck가 컨테이너를 끝낸다).
+      DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "86400"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
       DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
@@ -1928,12 +1957,30 @@ services:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
       # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
+      # **효과에 묶는다.** `code-server start`의 proxy는 `DagsterApi`를 늘 SERVING으로 답한다 — 자식 gRPC가 code
+      # 로딩에 실패했거나(load error) 나중에 죽어도(OOM·crash) proxy는 살아 있고 아무도 자식을 다시 띄우지 않는다.
+      # 그래서 proxy가 SERVING이면 자식에게 **전달되는** `ListRepositories`를 raw bytes로 부른다(dagster import 없음).
+      # 답이 load error(`SerializableErrorInfo`)거나 자식에 닿지 못하면(deadline 초과가 아닌 RPC 오류) PID 1(`init:
+      # true`의 tini)에 SIGTERM을 보내 컨테이너를 끝낸다 — `restart: unless-stopped`가 다시 띄운다(옛 `api grpc`가
+      # import 실패에 스스로 죽고 재시작되던 self-heal). 초기 로딩 중에는 proxy가 아직 listen하지 않아 첫 단계에서
+      # 그냥 실패한다(죽이지 않는다). 2026-10-02 n150 실측: 정상 healthy, 없는 `-m` → 재시작, 자식 kill → 재시작.
       test:
       - CMD
       - python
       - -I
       - -c
-      - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
+      - |-
+        import os, sys, grpc
+        from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g
+        c = grpc.insecure_channel('127.0.0.1:' + sys.argv[1])
+        r = g.HealthStub(c).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=4)
+        r.status == h.HealthCheckResponse.SERVING or sys.exit(1)
+        try:
+            dead = b'SerializableErrorInfo' in c.unary_unary('/api.DagsterApi/ListRepositories')(b'', timeout=4)
+        except grpc.RpcError as e:
+            dead = e.code() != grpc.StatusCode.DEADLINE_EXCEEDED
+        dead and os.kill(1, 15)
+        sys.exit(1 if dead else 0)
       - '12803'
       interval: 30s
       timeout: 10s
@@ -2213,6 +2260,10 @@ services:
       # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `KTG_DAGSTER_PG_URL`은 되돌리기
       # 때까지 남긴다(공용 `dagster.yaml`은 읽지 않는다).
       <<: *dagster-shared-control-env
+      # `code-server start`의 proxy가 자식에 거는 heartbeat(기본 30초 안에 proxy의 heartbeat가 안 오면 자식이 스스로
+      # 내려간다)를 사실상 끈다. weather가 heartbeat를 걷어낸 사고와 n150의 디스크 대기 급등을 보면 30초는 짧다.
+      # proxy와 자식은 같은 컨테이너라 heartbeat가 지킬 것이 없다(자식이 죽으면 healthcheck가 컨테이너를 끝낸다).
+      DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "86400"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
@@ -2247,12 +2298,30 @@ services:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
       # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
+      # **효과에 묶는다.** `code-server start`의 proxy는 `DagsterApi`를 늘 SERVING으로 답한다 — 자식 gRPC가 code
+      # 로딩에 실패했거나(load error) 나중에 죽어도(OOM·crash) proxy는 살아 있고 아무도 자식을 다시 띄우지 않는다.
+      # 그래서 proxy가 SERVING이면 자식에게 **전달되는** `ListRepositories`를 raw bytes로 부른다(dagster import 없음).
+      # 답이 load error(`SerializableErrorInfo`)거나 자식에 닿지 못하면(deadline 초과가 아닌 RPC 오류) PID 1(`init:
+      # true`의 tini)에 SIGTERM을 보내 컨테이너를 끝낸다 — `restart: unless-stopped`가 다시 띄운다(옛 `api grpc`가
+      # import 실패에 스스로 죽고 재시작되던 self-heal). 초기 로딩 중에는 proxy가 아직 listen하지 않아 첫 단계에서
+      # 그냥 실패한다(죽이지 않는다). 2026-10-02 n150 실측: 정상 healthy, 없는 `-m` → 재시작, 자식 kill → 재시작.
       test:
       - CMD
       - python
       - -I
       - -c
-      - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
+      - |-
+        import os, sys, grpc
+        from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g
+        c = grpc.insecure_channel('127.0.0.1:' + sys.argv[1])
+        r = g.HealthStub(c).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=4)
+        r.status == h.HealthCheckResponse.SERVING or sys.exit(1)
+        try:
+            dead = b'SerializableErrorInfo' in c.unary_unary('/api.DagsterApi/ListRepositories')(b'', timeout=4)
+        except grpc.RpcError as e:
+            dead = e.code() != grpc.StatusCode.DEADLINE_EXCEEDED
+        dead and os.kill(1, 15)
+        sys.exit(1 if dead else 0)
       - '12503'
       interval: 30s
       timeout: 10s
@@ -2599,6 +2668,10 @@ services:
       # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `DAGSTER_POSTGRES_URL`은 되돌리기
       # 때까지 남긴다(공용 `dagster.yaml`은 읽지 않는다).
       <<: *dagster-shared-control-env
+      # `code-server start`의 proxy가 자식에 거는 heartbeat(기본 30초 안에 proxy의 heartbeat가 안 오면 자식이 스스로
+      # 내려간다)를 사실상 끈다. weather가 heartbeat를 걷어낸 사고와 n150의 디스크 대기 급등을 보면 30초는 짧다.
+      # proxy와 자식은 같은 컨테이너라 heartbeat가 지킬 것이 없다(자식이 죽으면 healthcheck가 컨테이너를 끝낸다).
+      DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "86400"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
       DAGSTER_HOME: /opt/dagster/home
       KOR_TRAVEL_WEATHER_ENV: production
@@ -2654,12 +2727,30 @@ services:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
       # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
+      # **효과에 묶는다.** `code-server start`의 proxy는 `DagsterApi`를 늘 SERVING으로 답한다 — 자식 gRPC가 code
+      # 로딩에 실패했거나(load error) 나중에 죽어도(OOM·crash) proxy는 살아 있고 아무도 자식을 다시 띄우지 않는다.
+      # 그래서 proxy가 SERVING이면 자식에게 **전달되는** `ListRepositories`를 raw bytes로 부른다(dagster import 없음).
+      # 답이 load error(`SerializableErrorInfo`)거나 자식에 닿지 못하면(deadline 초과가 아닌 RPC 오류) PID 1(`init:
+      # true`의 tini)에 SIGTERM을 보내 컨테이너를 끝낸다 — `restart: unless-stopped`가 다시 띄운다(옛 `api grpc`가
+      # import 실패에 스스로 죽고 재시작되던 self-heal). 초기 로딩 중에는 proxy가 아직 listen하지 않아 첫 단계에서
+      # 그냥 실패한다(죽이지 않는다). 2026-10-02 n150 실측: 정상 healthy, 없는 `-m` → 재시작, 자식 kill → 재시작.
       test:
       - CMD
       - python
       - -I
       - -c
-      - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
+      - |-
+        import os, sys, grpc
+        from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g
+        c = grpc.insecure_channel('127.0.0.1:' + sys.argv[1])
+        r = g.HealthStub(c).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=4)
+        r.status == h.HealthCheckResponse.SERVING or sys.exit(1)
+        try:
+            dead = b'SerializableErrorInfo' in c.unary_unary('/api.DagsterApi/ListRepositories')(b'', timeout=4)
+        except grpc.RpcError as e:
+            dead = e.code() != grpc.StatusCode.DEADLINE_EXCEEDED
+        dead and os.kill(1, 15)
+        sys.exit(1 if dead else 0)
       - '14106'
       interval: 30s
       timeout: 10s

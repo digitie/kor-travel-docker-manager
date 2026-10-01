@@ -449,7 +449,7 @@ targets:
       - kor-travel-geo-dagster-daemon
       - kor-travel-geo-dagster-code-server
     init_steps: []
-    # 공용 Dagster 제어 평면(ADR-54)에 합류했는가. code-server(`dagster api grpc`)를 가진 target은 모두
+    # 공용 Dagster 제어 평면(ADR-54)에 합류했는가. code-server(`dagster code-server start`)를 가진 target은 모두
     # 이 필드를 적는다. `own`은 자기 webserver·daemon·메타DB, `shared`는 공용 plane이다.
     # `shared`로 바꾸는 PR은 같은 커밋에서 compose를 그 모양으로 바꾼다 — code-server가 공용 URL 앵커와
     # 공용 `dagster.yaml`을 받고, 아래 `consumers`가 공용 webserver·공개 host를 가리키고, 이 target의

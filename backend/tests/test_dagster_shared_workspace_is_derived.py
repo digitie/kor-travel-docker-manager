@@ -963,8 +963,12 @@ def test_every_shared_plane_code_server_reloads_its_definitions() -> None:
 
     compose, targets = _documents()
     shared, stuck = _non_reloadable_shared_code_servers(compose, targets)
-    # 본 것에 하한을 건다 — 추출이 낡아 아무것도 못 보면 아래 단언은 항진이다.
-    assert len(shared) >= 4, sorted(shared)
+    # 본 것에 하한을 건다 — 개수가 아니라 **본 location**이 공용 webserver가 싣는 workspace의 location 전부여야
+    # 한다. 추출이 낡아 code-server 하나라도 놓치면 여기서 빨갛다(아래 단언이 항진이 되지 않는다).
+    workspace = load_yaml_rejecting_duplicate_keys(_WORKSPACE.read_text(encoding="utf-8"))
+    loaded = {entry["grpc_server"]["location_name"] for entry in workspace["load_from"]}
+    assert loaded, "공용 workspace에 location이 없다 — 이 검사가 공허하다"
+    assert {_location(compose["services"][name]) for name in shared} == loaded, sorted(shared)
     assert stuck - _NON_RELOADABLE_KNOWN == set(), (
         f"공용 plane code-server가 `dagster api grpc`다 — `dagster code-server start`로: {sorted(stuck - _NON_RELOADABLE_KNOWN)}"
     )

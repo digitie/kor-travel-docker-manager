@@ -245,7 +245,7 @@ instance를 한 번 재기동해 Map이 전용 instance에서 쓰던 값을 올�
 (포트 없음)  dagster-daemon (공용) — 나가는 연결뿐(Postgres, code-server gRPC).
              health는 `dagster-daemon liveness-check`(DB heartbeat)
 
-code-server (dagster api grpc)  ← 프로젝트별 분리 유지, 각자 포트
+code-server (dagster code-server start)  ← 프로젝트별 분리 유지, 각자 포트
 ```
 
 **참여 범위.** 공용 plane은 Map·PinVi·geo·weather 넷이다. **transport는 나중에 합류한다** —
@@ -266,6 +266,16 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
 로드하지 않고 `workspace.yaml`의 `grpc_server` 항목을 통해 각 code-server에 붙는다 —
 이것이 Dagster가 공식 지원하는 배치다.
 
+**code-server는 location reload를 받아야 한다(2026-10-02).** 공용 webserver의 location reload는
+code-server에 `ReloadCode`를 보낸다. `dagster api grpc`는 그것을 "not currently supported" 경고만 남기고
+무시한다 — Map의 C7 schedule override(definitions import 때 읽는다)가 그래서 반영되지 않았다. 그래서
+code-server는 `dagster code-server start`다: proxy가 자식 gRPC(UDS socket)를 띄우고 reload 때 자식을 새로
+띄워 다시 import한다. 대가 둘 — proxy의 `DagsterApi` health는 고정 SERVING이라 healthcheck는 자식에
+전달되는 `ListRepositories`를 부르고, 자식이 load error거나 죽었으면 PID 1(tini)을 끝내 `restart`가 다시
+띄우게 한다(옛 `api grpc`의 import 실패 self-heal). proxy→자식 heartbeat(기본 30초)는
+`DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS=86400`으로 사실상 끈다. Map은 이미지의 production entrypoint가
+code-server argv를 봉인하므로 그 이미지가 `code-server start`를 받은 뒤 바뀐다.
+
 **공유의 전제 둘.**
 
 - 공유 webserver/daemon과 모든 code-server가 **같은 인스턴스 스토리지**를 본다.
@@ -275,7 +285,8 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
 
 **선행 작업 순서.** 각 단계는 다음 단계의 전제다.
 
-1. 프로젝트마다 `dagster api grpc` code-server를 **별도 서비스로 분리**한다
+1. 프로젝트마다 code-server(당시 `dagster api grpc`, 지금은 reload를 받는 `dagster code-server start`)를
+   **별도 서비스로 분리**한다
    (2026-09-25 Map을 끝으로 다섯 프로젝트 모두 완료, §5). 이 단계까지는 기존 webserver/daemon을 그대로 둔다.
 2. 공유 인스턴스 스토리지(`11000`/`dagster_shared`)를 세운다 — db-init이 role·DB를,
    storage migrate one-shot이 schema를 만든다. 프로젝트의 옛 Dagster 메타DB는 **옮기지

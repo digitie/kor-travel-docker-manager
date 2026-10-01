@@ -248,8 +248,8 @@ def test_every_dagster_webserver_probe_asks_whether_code_loaded(
 _GRPC_HEALTH_FRAGMENTS = ("grpc_health", "DagsterApi", "SERVING")
 
 
-#: 장기 실행 code-server의 두 모양. `code-server start`의 proxy도 같은 `DagsterApi` health를 답한다 — 자식이
-#: code를 다 싣기 전에는 SERVING이 아니다(2026-10-02 n150 실측).
+#: 장기 실행 code-server의 두 모양. `code-server start`의 proxy도 `DagsterApi` health를 답하지만 그 답은
+#: **proxy의 것**이다 — 자식이 load error를 냈거나 죽어도 SERVING이다(아래 effect 검사).
 _CODE_SERVER_COMMANDS = ("dagster code-server start", "dagster api grpc")
 
 
@@ -311,6 +311,49 @@ def test_every_dagster_code_server_comes_back_on_its_own(service_name: str) -> N
     restart = _code_server_services()[service_name].get("restart")
     assert restart == "unless-stopped", (
         f"`{service_name}`의 restart 정책이 `unless-stopped`가 아니다: {restart!r}."
+    )
+
+
+#: `code-server start` probe가 자식까지 닿는 조각 — proxy가 자식에 **전달하는** RPC, 그 답의 load error 표지,
+#: 확정된 죽음에서 PID 1(tini)을 끝내는 동작.
+_PROXY_EFFECT_FRAGMENTS = ("/api.DagsterApi/ListRepositories", "SerializableErrorInfo", "os.kill(1,")
+_PROXY_HEARTBEAT_ENV = "DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS"
+#: 이보다 짧은 proxy→자식 heartbeat는 디스크 대기 급등에서 자식을 스스로 내리게 한다(기본 30초).
+_PROXY_HEARTBEAT_FLOOR_SECONDS = 3600
+
+
+def _proxy_code_server_services() -> dict[str, dict[str, Any]]:
+    return {
+        name: service
+        for name, service in _code_server_services().items()
+        if "dagster code-server start" in _command_text(service.get("command"))
+        or "dagster code-server start" in _command_text(service.get("entrypoint"))
+    }
+
+
+def test_the_compose_declares_a_proxy_code_server() -> None:
+    """유도의 전제 — 공용 plane code-server는 `code-server start`다(못 찾으면 아래 검사가 항진이다)."""
+    assert _proxy_code_server_services()
+
+
+@pytest.mark.parametrize("service_name", sorted(_proxy_code_server_services()))
+def test_every_proxy_code_server_probe_is_bound_to_the_child(service_name: str) -> None:
+    """`code-server start`의 healthcheck는 proxy가 아니라 **자식**을 본다(2026-10-02 적대 리뷰 HIGH).
+
+    proxy의 `DagsterApi` health는 고정 SERVING이고, 자식이 load error를 냈거나 OOM으로 죽어도 proxy는 그대로
+    살아 아무도 자식을 다시 띄우지 않는다. 옛 `api grpc`는 import 실패에 프로세스가 끝나 `restart:
+    unless-stopped`가 고쳤다. 그 self-heal을 되살리는 것이 이 probe다 — 자식에 전달되는 RPC를 부르고, 확정된
+    실패면 PID 1을 끝낸다. PID 1이 tini여야(`init: true`) SIGTERM이 proxy에 전달되어 컨테이너가 끝난다.
+    heartbeat는 사실상 끈다 — 같은 컨테이너 안의 proxy·자식 사이에서 지킬 것이 없고, 30초는 n150 부하에 짧다.
+    """
+    service = _proxy_code_server_services()[service_name]
+    probe = _command_text((service.get("healthcheck") or {}).get("test"))
+    missing = [fragment for fragment in _PROXY_EFFECT_FRAGMENTS if fragment not in probe]
+    assert not missing, f"`{service_name}`의 probe가 자식에 닿지 않는다(빠진 조각: {missing})"
+    assert service.get("init") is True, f"`{service_name}`: PID 1이 tini가 아니다(`init: true`)"
+    ttl = str((service.get("environment") or {}).get(_PROXY_HEARTBEAT_ENV, ""))
+    assert ttl.isdigit() and int(ttl) >= _PROXY_HEARTBEAT_FLOOR_SECONDS, (
+        f"`{service_name}`: `{_PROXY_HEARTBEAT_ENV}`가 {_PROXY_HEARTBEAT_FLOOR_SECONDS}초 이상이 아니다: {ttl!r}"
     )
 
 
