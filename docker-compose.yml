@@ -2939,7 +2939,7 @@ services:
     # **파일이 아니라 디렉터리를 붙인다.** 단일 파일 bind는 컨테이너를 만들 때의 inode에 묶인다 — git은 파일을
     # 새 inode로 바꿔 쓰므로 weather를 갱신해도 컨테이너는 옛 alerts.yml을 계속 읽었다(2026-09-25에 만든 컨테이너가
     # 09-04 내용으로 남았다). 디렉터리 bind는 디렉터리를 따라가므로 새 파일이 보인다. Prometheus가 그것을 다시 읽는
-    # 것은 weather target의 init step(`kill -s SIGHUP`)이다. 그 디렉터리에는 alerts.yml과 weather 자신의
+    # 것은 weather target의 init step(`kill --signal=SIGHUP`)이다. 그 디렉터리에는 alerts.yml과 weather 자신의
     # prometheus.yml(스크랩 설정, 비밀 없음 — 쓰지 않는다)만 있다(2026-10-02 n150 확인).
     - ./config/kor-travel-weather/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     - ${KOR_TRAVEL_WEATHER_REPO_DIR:-../kor-travel-weather}/deploy/prometheus:/etc/prometheus/weather-rules:ro
