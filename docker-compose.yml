@@ -546,10 +546,11 @@ services:
     # 이 자격증명으로 붙는다. 그래서 속성은 CREATE와 ALTER 양쪽에 **전부** 적고(재실행이 드리프트를
     # 되돌린다) NOREPLICATION·NOBYPASSRLS까지 닫는다. role 소속은 0이어야 한다 — 누가 다른 role을
     # GRANT해 두었으면 그 권한이 조용히 따라오므로 여기서 멈춘다.
-    # CONNECTION LIMIT 30: 공용 plane 전체(webserver·daemon·code-server 넷의 run worker, 전역 run
+    # CONNECTION LIMIT 45: 공용 plane 전체(webserver·daemon·code-server 넷의 run worker, 전역 run
     # 상한 12)가 여는 연결의 상한이다. 한 테넌트의 연결 누수가 공용 instance의 `max_connections`를
-    # 먹어 다른 테넌트의 앱 DB 접속을 막지 못하게 한다. 3단계 전환 전에 실측으로 다시 잰다
-    # (platform-topology.md §7 3단계 게이트).
+    # 먹어 다른 테넌트의 앱 DB 접속을 막지 못하게 한다. 30 → 45(2026-10-01, Map 전환 전 G3-a): 세 테넌트
+    # 실측 최대 6, Map 합류 뒤 추정 약 11, 전역 12가 찬 최악은 30에 다가간다; `max_connections` 100에서
+    # 지금 약 43을 쓰므로 여유 약 57 안에 든다(platform-topology.md §7 G3-a).
     # 비밀번호는 명령줄이 아니라 psql 변수로 넘긴다(transport와 같다). 이미 있던 DB의
     # owner가 다르면 멈춘다 — 소유권은 createdb 때만 걸리므로(onboarding §7.3) 재실행이
     # 고치지 못한다.
@@ -584,9 +585,9 @@ services:
 
       if psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_roles WHERE rolname='$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER'" | grep -q 1; then
         echo "role $$KOR_TRAVEL_DAGSTER_SHARED_APP_USER already exists"
-        printf '%s\n' "ALTER ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 30" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
+        printf '%s\n' "ALTER ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 45" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
       else
-        printf '%s\n' "CREATE ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 30" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
+        printf '%s\n' "CREATE ROLE \"$$KOR_TRAVEL_DAGSTER_SHARED_APP_USER\" WITH LOGIN PASSWORD :'role_password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 45" | psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -v role_password="$$APP_PASSWORD"
       fi
       if psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_DAGSTER_SHARED_DB'" | grep -q 1; then
         echo "database $$KOR_TRAVEL_DAGSTER_SHARED_DB already exists"

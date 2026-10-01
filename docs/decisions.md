@@ -4283,8 +4283,12 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
    heartbeat만, probe는 기대 location 0개). plane target은 첫 합류 전까지 `all`에서 빠진다 — 그 전의 plane은 할
    일이 없고, 비밀번호 전에는 gateway가 기동을 거부하기 때문이다. 첫 합류 PR이 `all`에 넣는다(테스트가 요구한다).
 7. **게이트.** G3-a — 첫 전환 전에 role `kor_travel_dagster_shared_app`의 연결 수를 전역 run 상한 12가 찬
-   상태에서 잰다(`CONNECTION LIMIT 30`, dagster-postgres는 NullPool). 모자라면 db-init 두 문장과 테스트 기대를
-   함께 올린다. G3-b — workspace location마다 `dagster/code_location` 상한이 있고 `shared` target의 location은
+   상태에서 잰다(`CONNECTION LIMIT`, dagster-postgres는 NullPool). 모자라면 db-init 두 문장과 테스트 기대를
+   함께 올린다. **2026-10-01 Map 전환 전 30 → 45**: weather·PinVi·geo 세 테넌트 1초 표본 745개(15분) 최대 6(평균 2.1),
+   같은 시각 Map 전용 instance의 role 최대 5 — Map 합류 뒤 추정 약 11; 전역 run 12가 찬 최악(run worker마다 연결 하나
+   이상 + daemon·webserver 스레드)은 30에 다가간다. 공용 instance `max_connections` 100에 지금 최대 43이 붙으므로 여유는
+   약 57 — 45는 그 안이다. 창 스크립트가 Map forward의 펜스 전에 db-init을 다시 돌려(멱등 ALTER) live role에 적용하고
+   `rolconnlimit`을 확인한다. D3(전역 12, Map 10)는 바꾸지 않았다(굶주림 증거 없음). G3-b — workspace location마다 `dagster/code_location` 상한이 있고 `shared` target의 location은
    모두 workspace에 있다(테스트).
 8. **전환과 되돌리기**는 platform-topology.md §7 runbook이다 — drain, fence(옛 daemon 뒤 webserver 정지,
    `fence_ts`), switch(스위치를 바꾼 release 설치 → `ensure dagster` → `ensure P`), verify(probe·instigator

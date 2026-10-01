@@ -194,7 +194,7 @@ def test_db_init_follows_the_shared_postgres_pattern() -> None:
     assert "|| true" not in script and "2>/dev/null" not in script
     # 속성은 CREATE와 ALTER **둘 다**에 전부 — 재실행이 드리프트를 되돌린다.
     attributes = (
-        "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 30"
+        "NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS CONNECTION LIMIT 45"
     )
     for verb in ("CREATE", "ALTER"):
         statement = f"{verb} ROLE {role} WITH LOGIN PASSWORD :'role_password' {attributes}\""
