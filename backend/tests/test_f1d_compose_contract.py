@@ -67,12 +67,18 @@ from kor_travel_docker_manager.services.registry import (
 
 _ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE_PATH = _ROOT / "docker-compose.yml"
-_MAP_RUNTIME_SERVICES = (
-    "kor-travel-map-api",
-    "kor-travel-map-ui",
-    "kor-travel-map-dagster",
-    "kor-travel-map-dagster-daemon",
-)
+def _map_dagster_runtime_services() -> tuple[str, ...]:
+    """지금 떠 있어야 할 Map Dagster 서비스 — 설치 모델에서 파생한다(ADR-54). `own`이면 webserver·daemon, 공용 plane에
+    합류했으면(2026-10-01) code-server 하나다. 이 파일은 **실제 compose**를 렌더하므로 실제 모델을 본다."""
+
+    from kor_travel_docker_manager.services.runtime_topology import runtime_topology
+
+    return runtime_topology().services_for(("map_dagster", "map_dagster_daemon"))
+
+
+def _map_runtime_services() -> tuple[str, ...]:
+    return ("kor-travel-map-api", "kor-travel-map-ui", *_map_dagster_runtime_services())
+
 _MAP_DATABASE_ONESHOT_SERVICES = (
     "kor-travel-map-db-role-bootstrap",
     "kor-travel-map-application-schema",
@@ -202,32 +208,18 @@ def test_map_runtime_requires_the_image_entrypoint_and_empty_command(
                 }
             )
         },
-        "kor-travel-map-dagster-latest": {
-            "Env": _runtime_environment(
-                {
-                    c6c_deployment_module._MAP_GEO_API_KEY_SOURCE_ENV: (
-                        config.map_geo_api_key
-                    )
-                }
-            )
-        },
-        "kor-travel-map-dagster-daemon-latest": {
-            "Env": _runtime_environment(
-                {
-                    c6c_deployment_module._MAP_GEO_API_KEY_SOURCE_ENV: (
-                        config.map_geo_api_key
-                    )
-                }
-            )
-        },
-        "kor-travel-map-dagster-code-server-latest": {
-            "Env": _runtime_environment(
-                {
-                    c6c_deployment_module._MAP_GEO_API_KEY_SOURCE_ENV: (
-                        config.map_geo_api_key
-                    )
-                }
-            )
+        # Geo key를 받는 Map Dagster 컨테이너는 스위치에서 파생한다(ADR-54) — 공용 plane이면 code-server 하나.
+        **{
+            container: {
+                "Env": _runtime_environment(
+                    {
+                        c6c_deployment_module._MAP_GEO_API_KEY_SOURCE_ENV: (
+                            config.map_geo_api_key
+                        )
+                    }
+                )
+            }
+            for container in c6c_deployment_module._map_dagster_secret_isolation_containers()
         },
     }
 
@@ -588,8 +580,7 @@ def test_concierge_ui_canonical_contract_matches_raw_and_resolved_compose() -> N
 def test_resolved_map_dagster_services_require_candidate_storage_migration() -> None:
     resolved = _resolved_compose(
         "kor-travel-map-api",
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
+        *_map_dagster_runtime_services(),
         "kor-travel-map-dagster-storage-migrate",
     )
     services = resolved["services"]
@@ -616,10 +607,7 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
     # ADR-51 D-3: M1 이후 storage one-shot은 permit을 읽지 않으므로 마운트도 없다.
     assert "volumes" not in migration
 
-    for service_name in (
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
-    ):
+    for service_name in _map_dagster_runtime_services():
         dependency = services[service_name]["depends_on"]
         assert dependency["kor-travel-map-dagster-storage-migrate"]["condition"] == (
             "service_completed_successfully"
@@ -628,14 +616,10 @@ def test_resolved_map_dagster_services_require_candidate_storage_migration() -> 
 
 
 _MAP_DAGSTER_STORAGE_PERMIT_TARGET = "/run/kor-travel-map-dagster-storage-permit"
-_MAP_DAGSTER_PROCESS_SERVICES = frozenset(
-    {
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-code-server",
-        "kor-travel-map-dagster-daemon",
-        "kor-travel-map-dagster-storage-migrate",
-    }
-)
+def _map_dagster_process_services() -> frozenset[str]:
+    """렌더에 있어야 할 Map Dagster 프로세스 — 지금 떠 있는 slot 서비스와 storage one-shot(ADR-54 파생)."""
+
+    return frozenset({*_map_dagster_runtime_services(), "kor-travel-map-dagster-storage-migrate"})
 
 
 def _map_permit_residue_and_binds(
@@ -650,7 +634,7 @@ def _map_permit_residue_and_binds(
 
     map_services = sorted(name for name in services if name.startswith("kor-travel-map-"))
     # 검출기가 아무것도 못 보면 아래 단언은 항진이다 — 본 것에 하한을 건다.
-    assert _MAP_DAGSTER_PROCESS_SERVICES <= set(map_services), map_services
+    assert _map_dagster_process_services() <= set(map_services), map_services
     residue: list[str] = []
     binds: set[tuple[str, str, bool]] = set()
     for service_name in map_services:
@@ -1065,8 +1049,7 @@ def _bootstrap_candidate(tmp_path: Path) -> tuple[dict[str, object], dict[str, s
         "kor-travel-shared-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
+        *_map_dagster_runtime_services(),
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
@@ -1177,8 +1160,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         "kor-travel-shared-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
+        *_map_dagster_runtime_services(),
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
@@ -1401,7 +1383,7 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
 
     map_api_environment = services["kor-travel-map-api"]["environment"]
     assert map_api_environment["KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"] == "v" * 32
-    map_dagster_environment = services["kor-travel-map-dagster"]["environment"]
+    map_dagster_environment = services[_map_dagster_runtime_services()[0]]["environment"]
     map_bootstrap_environment = services["kor-travel-map-db-role-bootstrap"]["environment"]
     map_schema_environment = services["kor-travel-map-application-schema"]["environment"]
     assert isinstance(map_api_environment, dict)
@@ -1463,8 +1445,7 @@ def test_map_geo_key_cannot_leak_outside_exact_runtime_wiring(
         "kor-travel-shared-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
+        *_map_dagster_runtime_services(),
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
@@ -1655,8 +1636,7 @@ def test_c6c_rejects_resolved_map_database_bridge_network(
         "kor-travel-shared-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
+        *_map_dagster_runtime_services(),
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
@@ -1712,7 +1692,7 @@ def test_c6c_preflight_rejects_any_pinvi_runtime_provenance_gap() -> None:
     map_revision = "b" * 40
     pinvi_revision = "a" * 40
     resolved = _resolved_compose(
-        *_MAP_RUNTIME_SERVICES,
+        *_map_runtime_services(),
         *_pinvi_runtime_services(),
         environment_update={
             "KOR_TRAVEL_MAP_GIT_COMMIT": map_revision,
@@ -1771,7 +1751,7 @@ def test_candidate_preflight_rejects_a_build_context_outside_staged_source(
     map_revision = release.source_for("map").revision
     pinvi_revision = release.source_for("pinvi").revision
     resolved = _resolved_compose(
-        *_MAP_RUNTIME_SERVICES,
+        *_map_runtime_services(),
         *_pinvi_runtime_services(),
         environment_update={
             "KOR_TRAVEL_MAP_REPO_DIR": str(map_root),
@@ -1854,7 +1834,7 @@ def test_ordinary_runtime_services_never_receive_bootstrap_credential_contract()
     services = _source_compose()["services"]
     assert isinstance(services, dict)
 
-    for service_name in (*_MAP_RUNTIME_SERVICES, *_pinvi_runtime_services()):
+    for service_name in (*_map_runtime_services(), *_pinvi_runtime_services()):
         assert "PINVI_BOOTSTRAP_ADMIN" not in json.dumps(services[service_name])
 
 
@@ -2139,8 +2119,8 @@ def test_deployment_validation_rejects_binding_the_allowlist_itself(
 _REQUIRED_SERVICES_GOLDEN: tuple[str, ...] = (
     "kor-travel-map-api",
     "kor-travel-map-application-schema",
-    "kor-travel-map-dagster",
-    "kor-travel-map-dagster-daemon",
+    # 2026-10-01 Map 전환(ADR-54): 옛 webserver·daemon(`legacy-dagster`)이 빠지고 code-server가 slot을 잇는다.
+    "kor-travel-map-dagster-code-server",
     "kor-travel-map-dagster-storage-migrate",
     "kor-travel-map-db-role-bootstrap",
     "kor-travel-map-ui",
@@ -2218,8 +2198,7 @@ def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
         "kor-travel-shared-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
+        *_map_dagster_runtime_services(),
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",
@@ -2242,7 +2221,9 @@ def test_required_protected_service_set_is_pinned() -> None:
 
     """
 
-    assert len(_REQUIRED_SERVICES_GOLDEN) == 9
+    # 2026-10-01 Map 전환(ADR-54): 9 → 8. 옛 Map webserver·daemon(`legacy-dagster`) 둘이 빠지고 code-server 하나가
+    # 들었다.
+    assert len(_REQUIRED_SERVICES_GOLDEN) == 8
     assert set(_REQUIRED_SERVICES_GOLDEN) == set(
         c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
     ), (
@@ -3638,8 +3619,7 @@ def _bootstrap_resolved(environment: dict[str, str]) -> dict[str, Any]:
         "kor-travel-shared-postgres",
         "kor-travel-map-api",
         "kor-travel-map-ui",
-        "kor-travel-map-dagster",
-        "kor-travel-map-dagster-daemon",
+        *_map_dagster_runtime_services(),
         *_MAP_DATABASE_ONESHOT_SERVICES,
         "pinvi-api",
         "pinvi-admin-bootstrap",

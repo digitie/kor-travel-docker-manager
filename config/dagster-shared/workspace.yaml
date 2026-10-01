@@ -15,6 +15,10 @@ load_from:
     location_name: kortravelgeo_dagster.definitions
 - grpc_server:
     host: 127.0.0.1
+    port: 12703
+    location_name: kortravelmap.dagster.definitions
+- grpc_server:
+    host: 127.0.0.1
     port: 12803
     location_name: pinvi.etl.definitions
 - grpc_server:

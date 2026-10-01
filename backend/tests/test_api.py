@@ -1026,14 +1026,12 @@ def test_get_targets():
         "kor-travel-concierge-ui",
         "kor-travel-map-api",
         "kor-travel-map-ui",
-        "kor-travel-map-dagster",
         "kor-travel-map-dagster-code-server",
-        "kor-travel-map-dagster-daemon",
         "kor-travel-shared-db-init-pinvi",
         "pinvi-api",
         "pinvi-web",
         "pinvi-dagster-code-server",
-        # PinVi·geo의 옛 webserver·daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
+        # PinVi·geo·Map의 옛 webserver·daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
     ]
     assert data[3]["resolved_services"][-3:] == ["grafana", "cadvisor", "prometheus"]
     assert any(target["id"] == "all" for target in data)

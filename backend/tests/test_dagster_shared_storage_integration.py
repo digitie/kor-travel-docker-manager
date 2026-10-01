@@ -321,7 +321,7 @@ def test_db_init_and_migrate_prepare_the_shared_storage_idempotently(
         plane,
         "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolreplication, "
         f"rolbypassrls, rolconnlimit FROM pg_roles WHERE rolname = '{role}'",
-    ) == ["t|f|f|f|f|f|30"]
+    ) == ["t|f|f|f|f|f|45"]
     assert _sql(
         plane,
         "SELECT count(*) FROM pg_auth_members "

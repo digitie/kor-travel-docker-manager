@@ -265,17 +265,22 @@ def own_pinned_pair(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     캐시는 **진짜 함수의 것**을 setup 때 잡아 두고 비운다 — 테스트가 그 함수를 바꿔 끼운 채여도 정리가 닿는다.
     """
 
+    from test_dagster_shared_workspace_is_derived import _unflip
+
     from kor_travel_docker_manager.services import runtime_topology as topology
 
     compose, targets = topology._installed_documents()
+    # 스위치와 compose를 함께 전환 전 모양으로 되돌린다 — Map·PinVi가 모두 합류한 뒤에도(2026-10-01) 기준선이
+    # 일관된다(스위치만 `own`이고 compose는 공용 plane이면 C6c의 스위치 의존 검사가 둘을 섞어 본다).
+    own_compose = copy.deepcopy(dict(compose))
     own_targets = copy.deepcopy(dict(targets))
     for target in (topology.MAP_TARGET, topology.PINVI_TARGET):
-        own_targets["targets"][target]["dagster"]["control_plane"] = "own"
+        _unflip(own_compose, own_targets, target)
     clears = _dagster_topology_cache_clears()
     for clear in clears:
         clear()
     # 문서를 바꿔 끼운다 — 파생 함수는 진짜 것이 그대로 돈다(테스트가 그 함수를 다시 바꿔 끼워도 된다).
-    monkeypatch.setattr(topology, "_installed_documents", lambda: (compose, own_targets))
+    monkeypatch.setattr(topology, "_installed_documents", lambda: (own_compose, own_targets))
     try:
         yield
     finally:

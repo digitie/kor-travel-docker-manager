@@ -4513,6 +4513,13 @@ def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
     if not isinstance(services, Mapping):
         raise DeploymentContractError("compose source has no services mapping")
     pinvi_dagster_service = runtime_topology().require_service("pinvi_dagster")
+    # Map UI가 굽는 Dagster 링크는 스위치를 따른다(ADR-54): `own`이면 Map 자신의 공개 host(옛 webserver 포트로
+    # fallback), 공용 plane에 합류했으면 공용 gateway의 공개 host다(Manager compose의 `consumers` 계약과 같은 값).
+    map_dagster_url = (
+        "${KTDM_PROD_URL_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}}"
+        if _map_dagster().shared
+        else "${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}}"
+    )
     expected = {
         _MAP_UI_SERVICE: {
             "context": "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}",
@@ -4523,10 +4530,7 @@ def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
                     "${KTDM_PROD_URL_MAP_API:-http://127.0.0.1:"
                     "${KOR_TRAVEL_MAP_API_PORT:-12701}}"
                 ),
-                "NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL": (
-                    "${KTDM_PROD_URL_MAP_DAGSTER:-http://127.0.0.1:"
-                    "${KOR_TRAVEL_MAP_DAGSTER_PORT:-12702}}"
-                ),
+                "NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL": map_dagster_url,
                 "NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL": (
                     "${KTDM_PROD_URL_GEO_API:-http://127.0.0.1:12501}"
                 ),

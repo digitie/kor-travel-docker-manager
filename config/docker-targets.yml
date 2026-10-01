@@ -518,15 +518,14 @@ targets:
       - kor-travel-shared-postgres
       - kor-travel-map-api
       - kor-travel-map-ui
-      - kor-travel-map-dagster
       - kor-travel-map-dagster-code-server
-      - kor-travel-map-dagster-daemon
+    # 옛 webserver·daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster` profile에 있다 — `up`에 이름을 주면
+    # 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태 화면과 되돌리기가
+    # 찾는다.
     runtime_services:
       - kor-travel-map-api
       - kor-travel-map-ui
-      - kor-travel-map-dagster
       - kor-travel-map-dagster-code-server
-      - kor-travel-map-dagster-daemon
     containers:
       - kor-travel-shared-postgresql
       - rustfs
@@ -552,7 +551,7 @@ targets:
     # Map 저장소의 설정 이름이다(`feat/dagster-shared-map-prep`에서 확정 — 바뀌면 여기와 Map 전환 PR의 compose를 같이
     # 고친다). `own`인 동안 compose는 이 env를 아직 싣지 않는다(파생 계약은 `shared`에서만 값을 요구한다).
     dagster:
-      control_plane: own
+      control_plane: shared
       consumers:
         kor-travel-map-api:
           KOR_TRAVEL_MAP_API_DAGSTER_URL: internal
@@ -889,6 +888,10 @@ compose_binds:
       source: "${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}"
   pinvi-dagster-code-server:
     - container_path: "/opt/pinvi/.dagster/dagster.yaml"
+      read_only: true
+      source: "./config/dagster-shared/dagster.yaml"
+  kor-travel-map-dagster-code-server:
+    - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
       source: "./config/dagster-shared/dagster.yaml"
   kor-travel-weather-dagster-code-server:

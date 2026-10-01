@@ -665,6 +665,62 @@ def _flip(
     return {_WORKSPACE_SOURCE: rendered}
 
 
+def _unflip(compose: dict[str, Any], targets: dict[str, Any], target_id: str) -> None:
+    """합류한 target 하나를 **전환 전 `own` 모양**으로 되돌린다(모델 위에서) — 대조군의 출발점.
+
+    2026-10-01 Map 전환으로 `own`인 target이 남지 않았다. `_flip`에서 한 단계를 뺀 대조군은 전환 전 모양이 있어야
+    하므로 그 모양을 되살린다: 스위치 `own`, code-server에서 공용 URL 앵커·instance digest·공용 `dagster.yaml`
+    마운트를 빼고 `-p`를 env 보간식으로, 옛 webserver·daemon(과 gateway)을 profile 밖으로 내어 target의 `services`·
+    `runtime_services`에 돌려놓고, 소비자를 옛 plane(옛 webserver 포트, 옛 공개 host env)으로 되돌린다.
+    """
+
+    services = compose["services"]
+    spec = targets["targets"][target_id]
+    spec["dagster"]["control_plane"] = "own"
+    anchor_keys = set(compose[_ANCHOR])
+    for service in _code_servers(compose, spec).values():
+        environment = _environment(service)
+        for key in (*anchor_keys, _DIGEST_ENV[_INSTANCE_SOURCE]):
+            environment.pop(key, None)
+        service["volumes"] = [
+            v for v in service.get("volumes") or [] if _split_top(str(v))[0] != _INSTANCE_SOURCE
+        ]
+        if not service["volumes"]:
+            del service["volumes"]
+        argv = service["command"]
+        port = _port(argv)
+        argv[argv.index("-p") + 1] = f"${{UNFLIPPED_CODE_SERVER_PORT:-{port}}}"
+    legacy = _legacy(compose, spec)
+    for name in sorted(legacy):
+        services[name].pop("profiles", None)
+        for field in ("services", "runtime_services"):
+            if name not in spec.get(field, []):
+                spec.setdefault(field, []).append(name)
+    # 옛 webserver: 서버 쪽 소비자(`internal`)는 그 listen 포트(`-p`의 원문)로, 브라우저 쪽(`public`)은 옛 공개 host
+    # env와 host에 publish한 포트(`ports:`의 host 쪽 원문)로 붙었다 — 전환 전 compose가 그렇게 적었다.
+    webserver = next(services[name] for name in sorted(legacy) if _runs(services[name], "dagster-webserver"))
+    listen_raw = str(_flag(_words(webserver.get("command")), "-p", "--port"))
+    published = [str(mapping) for mapping in webserver.get("ports") or []]
+    host_raw = _split_top(published[0])[0] if published else listen_raw
+    old_public = sorted(
+        str(container["prod_url_env"])
+        for container in targets["containers"].values()
+        if container.get("compose_service") in legacy and container.get("prod_url_env")
+    )
+    for consumer, variables in (spec["dagster"].get("consumers") or {}).items():
+        service = services[consumer]
+        for variable, kind in variables.items():
+            base, _, path = str(kind).partition("/")
+            if base == "public" and old_public:
+                old = f"${{{old_public[0]}:-http://127.0.0.1:{host_raw}}}"
+            else:
+                old = f"http://127.0.0.1:{listen_raw}"
+            value = old + (f"/{path}" if path else "")
+            service.setdefault("environment", {})[variable] = value
+            if variable in _build_args(service):
+                service["build"]["args"][variable] = value
+
+
 def _own_pair_documents() -> tuple[dict[str, Any], dict[str, Any]]:
     """체크아웃 모델에서 pinned pair(Map·PinVi)의 스위치만 `own`으로 되돌린 문서 — #447 기제 테스트의 기준선.
 
@@ -673,8 +729,9 @@ def _own_pair_documents() -> tuple[dict[str, Any], dict[str, Any]]:
     """
 
     compose, targets = _documents()
+    # 스위치만이 아니라 compose도 전환 전 모양으로 — 둘이 함께 `own`이어야 기준선이 일관된다(Map 전환 뒤).
     for target_id in ("map", "pinvi"):
-        targets["targets"][target_id]["dagster"]["control_plane"] = "own"
+        _unflip(compose, targets, target_id)
     return compose, targets
 
 
@@ -782,8 +839,9 @@ def test_flipping_every_target_keeps_the_plane_consistent() -> None:
 @pytest.mark.parametrize(
     ("target_id", "skip", "named"),
     [
-        # weather·PinVi·geo는 이미 합류했다 — 대조군은 아직 `own`인 마지막 target(Map)으로 든다. 합류한 target에만
-        # 있던 모양(옛 마운트가 남음, 활성 서비스가 옛 gateway에 기댐, `all` 누락)은 committed-state 대조군이 본다.
+        # 네 target 모두 합류했다(2026-10-01 Map 전환) — 대조군은 Map을 `_unflip`으로 전환 전 모양에 되돌린 뒤 한 단계를
+        # 뺀 `_flip`이다. 합류한 target에만 있던 모양(옛 마운트가 남음, 활성 서비스가 옛 gateway에 기댐, `all` 누락)은
+        # committed-state 대조군이 본다.
         ("map", "env", "(a) `kor-travel-map-dagster-code-server`: 공용 URL 앵커"),
         ("map", "mount", "(a) `kor-travel-map-dagster-code-server`: 공용 dagster.yaml 마운트"),
         # Map은 이미 loopback이다 — 대조군은 geo가 전환 전에 가졌던 `-h 0.0.0.0`을 먼저 입힌다(아래 테스트).
@@ -792,7 +850,7 @@ def test_flipping_every_target_keeps_the_plane_consistent() -> None:
         ("map", "services", "(c) `kor-travel-map-dagster`: target `map`의 `services`에 남았다"),
         ("map", "consumers", "(b) `kor-travel-map-api`: `KOR_TRAVEL_MAP_API_DAGSTER_URL`가"),
         ("map", "consumers", "(b) `kor-travel-map-ui`: `NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL`가 옛 plane(`map`)의 포트"),
-        ("map", "port", "`-p ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT:-12703}`는 literal 포트여야 한다"),
+        ("map", "port", "`-p ${UNFLIPPED_CODE_SERVER_PORT:-12703}`는 literal 포트여야 한다"),
         ("map", "digest", "(d) `kor-travel-dagster-daemon`: `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`"),
         ("map", "digest", "(d) `kor-travel-map-dagster-code-server`"),
         ("map", "consumers", "옛 공개 host env `KTDM_PROD_URL_MAP_DAGSTER`"),
@@ -802,6 +860,7 @@ def test_a_flip_missing_a_step_is_named(target_id: str, skip: str, named: str) -
     """전환 PR이 한 단계를 빠뜨리면 계약이 그 단계를 이름으로 말한다(빨간 대조군)."""
 
     compose, targets = _documents()
+    _unflip(compose, targets, target_id)
     if skip == "loopback":
         for service in _code_servers(compose, targets["targets"][target_id]).values():
             argv = service["command"]
@@ -927,18 +986,21 @@ def test_a_switch_without_its_rendering_is_named_and_the_workspace_drifts() -> N
     """스위치만 뒤집고 compose를 그대로 두면 (a)·(b)·(c)가 모두 빨갛고, workspace가 파생과 어긋난다."""
 
     compose, targets = _documents()
+    _unflip(compose, targets, "map")
+    # 커밋된 workspace는 Map을 싣는다 — `own` 모델의 파생과 어긋난다(전환 전 모양 + 전환 후 workspace).
+    actual = load_yaml_rejecting_duplicate_keys(_WORKSPACE.read_text(encoding="utf-8"))
+    assert actual != _derived_workspace(compose, targets)
     targets["targets"]["map"]["dagster"]["control_plane"] = "shared"
     violations = _contract_violations(compose, targets)
     for step in ("(a) `kor-travel-map-dagster-code-server`", "(b) `kor-travel-map-api`", "(c) `kor-travel-map-dagster`"):
         assert any(v.startswith(step) for v in violations), (step, violations)
-    actual = load_yaml_rejecting_duplicate_keys(_WORKSPACE.read_text(encoding="utf-8"))
-    assert actual != _derived_workspace(compose, targets)
 
 
 def test_own_targets_carrying_shared_parts_are_named() -> None:
     """`own`인데 공용 URL을 받았거나 옛 서비스가 profile로 내려갔거나 소비자가 공용을 가리키면 빨갛다."""
 
     compose, targets = _documents()
+    _unflip(compose, targets, "map")
     services = compose["services"]
     services["kor-travel-map-dagster-code-server"]["environment"].update(compose[_ANCHOR])
     services["kor-travel-map-dagster-daemon"]["profiles"] = [_LEGACY_PROFILE]
@@ -1242,3 +1304,28 @@ def test_the_map_api_calls_the_loopback_and_only_reports_the_public_graphql() ->
     assert [_resolve(str(environment[name]), {}) for name in internal] == [
         f"{_plane(compose, targets)['internal']}/graphql"
     ]
+
+
+def test_unflip_then_flip_is_the_committed_map_rendering() -> None:
+    """대조군의 출발점이 참이다: `_unflip` 뒤 `_flip`이 되돌린 모양을 계약 위반 없이 다시 만든다."""
+
+    compose, targets = _documents()
+    _unflip(compose, targets, "map")
+    assert targets["targets"]["map"]["dagster"]["control_plane"] == "own"
+    files = _flip(compose, targets, "map")
+    _, rest = _pinned(_contract_violations(compose, targets, files))
+    assert rest == []
+
+
+def test_the_shared_map_api_allows_only_the_loopback_dagster_hosts() -> None:
+    """Map 전환: Map API가 **부르는** Dagster는 공용 webserver의 loopback뿐이다 — host allowlist도 loopback만.
+
+    옛 allowlist는 Map 전용 webserver의 서비스 이름과 공개 host(`KTDM_PROD_MAP_DAGSTER_HOST`)를 실었다. 보고용 공개 URL은
+    Map #1290부터 allowlist를 지나지 않는다(모양만 본다). URL이 아니라 host 목록이라 `consumers` 계약 밖이어서 따로 본다.
+    """
+
+    compose, targets = _documents()
+    assert targets["targets"]["map"]["dagster"]["control_plane"] == "shared"
+    raw = _environment(compose["services"]["kor-travel-map-api"])["KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS"]
+    assert "${" not in str(raw), raw
+    assert set(json.loads(str(raw))) == {"127.0.0.1", "localhost", "::1"}
