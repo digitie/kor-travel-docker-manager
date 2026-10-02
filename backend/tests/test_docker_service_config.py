@@ -878,7 +878,9 @@ def _map_collector_credentials_sourced_from_their_own_name() -> set[str]:
     compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]
     names: set[str] = set()
-    for service_name in (_MAP_DAGSTER_SERVICE, _MAP_DAGSTER_DAEMON_SERVICE):
+    # code-server가 run worker의 부모다(공용 plane). transport token처럼 code-server에만 가는
+    # credential도 운영자가 채울 자리이므로 함께 센다.
+    for service_name in (*_MAP_RUN_WORKER_SERVICES, _MAP_DAGSTER_SERVICE, _MAP_DAGSTER_DAEMON_SERVICE):
         environment = services[service_name].get("environment") or {}
         for key, value in environment.items():
             if not key.endswith(("_API_KEY", "_SERVICE_KEY", "_TOKEN")):
