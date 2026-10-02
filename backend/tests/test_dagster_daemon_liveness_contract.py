@@ -436,9 +436,20 @@ def _run_reaper(
     runs = types.ModuleType("dagster._core.storage.dagster_run")
     runs.DagsterRunStatus = _Status  # type: ignore[attr-defined]
     runs.RunsFilter = _RunsFilter  # type: ignore[attr-defined]
-    saved = {name: sys.modules.get(name) for name in ("dagster", "dagster._core.storage.dagster_run")}
-    sys.modules["dagster"] = dagster
-    sys.modules["dagster._core.storage.dagster_run"] = runs
+    # probe 머리의 import(`grpc`, `grpc_health.v1`)는 reap 모드에서 쓰이지 않는다 — 이 venv에 없어도 되게 대역을 둔다.
+    grpc_health = types.ModuleType("grpc_health")
+    grpc_health_v1 = types.ModuleType("grpc_health.v1")
+    grpc_health_v1.health_pb2 = types.ModuleType("health_pb2")  # type: ignore[attr-defined]
+    grpc_health_v1.health_pb2_grpc = types.ModuleType("health_pb2_grpc")  # type: ignore[attr-defined]
+    fakes = {
+        "dagster": dagster,
+        "dagster._core.storage.dagster_run": runs,
+        "grpc": types.ModuleType("grpc"),
+        "grpc_health": grpc_health,
+        "grpc_health.v1": grpc_health_v1,
+    }
+    saved = {name: sys.modules.get(name) for name in fakes}
+    sys.modules.update(fakes)
     argv, real_time = sys.argv, time.time
     sys.argv = ["-c", "12345", "reap"]
     time.time = lambda: now  # type: ignore[assignment]
