@@ -60,7 +60,9 @@ x-dagster-shared-storage-guard: &dagster-shared-storage-guard |
 #    실패에 스스로 죽던 self-heal). 한 번의 일시 오류(n150 디스크 대기)로는 죽이지 않는다(interval 30초 × 3).
 #    **load error인데 run worker가 돌고 있으면 죽이지 않는다.** reload가 실패하면 proxy는 새 자식의 load error를
 #    답하면서 옛 자식을 그 run이 끝날 때까지 남긴다 — 그때 죽이면 정상 run이 함께 죽는다. run worker는 자식이
-#    multiprocessing spawn으로 띄우므로 argv에 `spawn_main`이 있다(n150 실측). run이 끝난 뒤 다음 probe들이 죽인다.
+#    multiprocessing spawn으로 띄우므로 argv 한 칸이 `from multiprocessing.spawn import spawn_main`으로 **시작**한다
+#    (n150 실측; 이 probe 자신의 `-c` 원문도 그 낱말을 품으므로 부분 문자열이 아니라 칸의 시작을 본다). run이 끝난
+#    뒤 다음 probe들이 죽인다.
 #    닿지 못함은 run이 있어도 죽인다(자식이 죽었으면 그 run도 이미 주인이 없다).
 # 3. **orphan run 정리 — 컨테이너 incarnation마다 한 번.** run worker는 `DefaultRunLauncher`로 이 컨테이너 안에서
 #    돈다. `DefaultRunLauncher`는 `supports_check_run_worker_health`가 False라(dagster 1.13.24 소스) 공용 daemon의
@@ -115,7 +117,7 @@ x-dagster-code-server-probe: &dagster-code-server-probe |-
       def runs_in_flight():
           for pid in os.listdir('/proc'):
               try:
-                  if pid.isdigit() and b'spawn_main' in open('/proc/' + pid + '/cmdline', 'rb').read():
+                  if pid.isdigit() and any(arg.startswith(b'from multiprocessing.spawn import spawn_main') for arg in open('/proc/' + pid + '/cmdline', 'rb').read().split(b'\0')):
                       return True
               except OSError:
                   pass

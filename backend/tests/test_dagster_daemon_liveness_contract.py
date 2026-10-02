@@ -603,6 +603,14 @@ def test_a_load_error_with_runs_in_flight_does_not_kill(world: _ProbeWorld) -> N
     import shutil
 
     probe = _the_probe()
+    # run이 끝나도 남는 것: probe 자신(그 `-c` 원문이 `spawn_main` 낱말을 품는다 — 2026-10-02 n150에서 probe가
+    # 자기를 run worker로 세어 끝내 죽이지 못했다)과 multiprocessing resource tracker.
+    world.add_process(77, ["/usr/local/bin/python", "-I", "-c", probe, "12345"])
+    world.add_process(
+        78,
+        ["/usr/local/bin/python", "-B", "-s", "-c",
+         "from multiprocessing.resource_tracker import main;main(11)"],
+    )
     world.add_process(4242, _RUN_WORKER)
     for _ in range(_KILL_THRESHOLD + 2):
         assert world.run(probe, reply=_LOAD_ERROR) == 1
