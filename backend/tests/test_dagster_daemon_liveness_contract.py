@@ -357,6 +357,168 @@ def test_every_proxy_code_server_probe_is_bound_to_the_child(service_name: str) 
     )
 
 
+# ── orphan run 정리 (2026-10-02 weather 사고) ─────────────────────────────
+#
+# `DefaultRunLauncher`는 worker health를 지원하지 않아(`supports_check_run_worker_health` False) daemon의 run
+# monitoring은 code-server 재시작으로 worker를 잃은 STARTED run을 `max_runtime`까지 둔다. probe의 reaper가 그것을
+# 컨테이너 incarnation마다 한 번 실패로 만든다. 아래는 그 선택 규칙을 **실행해서** 잰다 — 조각 문자열이 아니라.
+
+
+class _FakeRun:
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+
+
+class _FakeRecord:
+    def __init__(self, run_id: str, start_time: float | None) -> None:
+        self.dagster_run = _FakeRun(run_id)
+        self.start_time = start_time
+
+
+def _run_reaper(
+    probe: str,
+    tmp_path: Path,
+    *,
+    cmdline: list[str],
+    pid1_ticks: int,
+    uptime: float,
+    now: float,
+    records: list[_FakeRecord],
+) -> tuple[list[str], dict[str, Any], str]:
+    """probe를 `reap` 모드로 실행한다 — `/proc`·`/tmp`·dagster·시계는 대역이다."""
+
+    import builtins
+    import sys
+    import time
+    import types
+
+    failed: list[str] = []
+    query: dict[str, Any] = {}
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    stat = f"1 (docker-init) S {' '.join(['0'] * 18)} {pid1_ticks} 0 0"
+    fake_proc = {
+        "/proc/1/stat": stat,
+        "/proc/uptime": f"{uptime} 0.0",
+        "/proc/1/cmdline": "\0".join(cmdline) + "\0",
+    }
+    real_open = builtins.open
+
+    def fake_open(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if path in fake_proc:
+            import io
+
+            return io.StringIO(fake_proc[path])
+        if isinstance(path, str) and path.startswith("/tmp/"):
+            path = str(tmp / path.removeprefix("/tmp/"))
+        return real_open(path, *args, **kwargs)
+
+    class _Status:
+        STARTED = "STARTED"
+
+    class _RunsFilter:
+        def __init__(self, **kwargs: Any) -> None:
+            query.update(kwargs)
+
+    class _Instance:
+        @staticmethod
+        def get() -> _Instance:
+            return _Instance()
+
+        def get_run_records(self, filters: Any) -> list[_FakeRecord]:
+            return records
+
+        def report_run_failed(self, run: _FakeRun, message: str) -> None:
+            failed.append(run.run_id)
+
+    dagster = types.ModuleType("dagster")
+    dagster.DagsterInstance = _Instance  # type: ignore[attr-defined]
+    runs = types.ModuleType("dagster._core.storage.dagster_run")
+    runs.DagsterRunStatus = _Status  # type: ignore[attr-defined]
+    runs.RunsFilter = _RunsFilter  # type: ignore[attr-defined]
+    saved = {name: sys.modules.get(name) for name in ("dagster", "dagster._core.storage.dagster_run")}
+    sys.modules["dagster"] = dagster
+    sys.modules["dagster._core.storage.dagster_run"] = runs
+    argv, real_time = sys.argv, time.time
+    sys.argv = ["-c", "12345", "reap"]
+    time.time = lambda: now  # type: ignore[assignment]
+    builtins.open = fake_open  # type: ignore[assignment]
+    try:
+        with pytest.raises(SystemExit) as caught:
+            exec(compile(probe, "probe", "exec"), {"__name__": "__main__"})
+        assert caught.value.code in (0, None)
+    finally:
+        builtins.open = real_open  # type: ignore[assignment]
+        sys.argv, time.time = argv, real_time  # type: ignore[assignment]
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+    marker = tmp / ".ktdm-orphan-reap"
+    return failed, query, marker.read_text() if marker.exists() else ""
+
+
+def test_the_orphan_reaper_fails_only_runs_started_before_this_container() -> None:
+    """재시작 전에 시작한 STARTED run만 실패로, 그 뒤(같은 incarnation의 긴 run 포함)는 그대로 둔다.
+
+    PID 1은 부팅 뒤 1000초(ticks 100000, 100Hz)에 떴고 지금은 부팅 뒤 5000초다 — 컨테이너 시작은 now−4000.
+    location은 PID 1 argv의 `--location-name`, 없으면 `-m`(workspace 파생과 같은 규칙)이다.
+    """
+
+    import os
+    import tempfile
+
+    probe = next(iter(_proxy_code_server_services().values()))["healthcheck"]["test"][4]
+    now = 1_800_000_000.0
+    born = now - 4000
+    records = [
+        _FakeRecord("orphan-old", born - 50_000),  # 전 incarnation, 14시간 전
+        _FakeRecord("orphan-just-before", born - 1),
+        _FakeRecord("healthy-long", born + 30),  # 이 incarnation에서 시작한 긴 run
+        _FakeRecord("healthy-new", now - 5),
+    ]
+    hz = os.sysconf("SC_CLK_TCK")
+    for cmdline, location in (
+        (
+            ["/sbin/docker-init", "--", "dagster", "code-server", "start", "-h", "127.0.0.1",
+             "-p", "14106", "-m", "kortravelweather_dagster.definitions"],
+            "kortravelweather_dagster.definitions",
+        ),
+        (
+            ["/sbin/docker-init", "--", "dagster", "code-server", "start", "-m", "m.defs",
+             "--location-name", "named"],
+            "named",
+        ),
+    ):
+        with tempfile.TemporaryDirectory() as scratch:
+            failed, query, marker = _run_reaper(
+                probe,
+                Path(scratch),
+                cmdline=cmdline,
+                pid1_ticks=1000 * hz,
+                uptime=5000.0,
+                now=now,
+                records=records,
+            )
+        assert failed == ["orphan-old", "orphan-just-before"], failed
+        assert query == {"statuses": ["STARTED"], "tags": {"dagster/code_location": location}}
+        assert marker == str(1000 * hz), "incarnation 표지를 쓰지 않으면 매 probe가 reaper를 띄운다"
+
+
+@pytest.mark.parametrize("service_name", sorted(_proxy_code_server_services()))
+def test_every_proxy_code_server_probe_carries_the_orphan_reaper(service_name: str) -> None:
+    """네 code-server가 같은 probe(위에서 실행해 잰 것)를 쓴다 — 하나만 다른 사본이면 빨갛다."""
+
+    probes = {
+        str((service.get("healthcheck") or {}).get("test", [None] * 5)[4])
+        for service in _proxy_code_server_services().values()
+    }
+    assert len(probes) == 1, f"code-server probe가 서로 다르다({len(probes)}종)"
+    probe = _command_text(_proxy_code_server_services()[service_name]["healthcheck"]["test"])
+    assert "report_run_failed" in probe and "DagsterRunStatus.STARTED" in probe, service_name
+
+
 # ── probe가 스스로 쌓이지 않게 (2026-09-27) ────────────────────────────
 #
 # n150에서 Dagster 스택 넷(Map·PinVi·geo·weather)의 healthcheck가 부하 되먹임을 만들었다.
