@@ -100,18 +100,6 @@ run_queue:
 
 # Map의 값이다(가장 촘촘한 polling). 전역 상한과 다른 테넌트는 자기 job에
 # `dagster/max_runtime` tag를 단다(PinVi 3600, weather 57600).
-#
-# **이것이 잡는 것과 못 잡는 것(dagster 1.13.24 소스·2026-10-02 n150 일회용 실측).** run worker는
-# `DefaultRunLauncher`로 code-server 컨테이너 안에서 돈다. 그 launcher는 `supports_check_run_worker_health`가
-# False라 daemon은 STARTED run의 worker 생사를 묻지 않는다 — STARTED에는 `max_runtime`(전역 21600, 또는 tag)만
-# 건다. 그래서 잡는 것: STARTING·NOT_STARTED가 600초 안에 시작 못 함, CANCELING이 600초 안에 끝나지 않음,
-# STARTED가 `max_runtime` 초과. 못 잡는 것: worker가 사라진 STARTED run — code-server 컨테이너가 재시작·재생성되면
-# 그 run은 `max_runtime`까지 STARTED로 남아 동시성 슬롯을 쥔다(2026-10-01 weather 재생성 뒤 6건 최대 14.7시간,
-# queue 54건 적체). 일회용 실측에서 재시작 전 run은 120초 넘게 STARTED였고 tag 90초 run만 끝났다.
-# `max_runtime`을 줄여 메우지 않는다 — weather의 정상 run이 57600초까지 간다. 그 구멍은 code-server의
-# healthcheck가 메운다(compose `x-dagster-code-server-probe` 3번: 컨테이너 incarnation마다 한 번, 그 전에 시작한
-# 자기 location의 STARTED run만 실패로). 같은 컨테이너 안에서 worker 하나만 죽는 경우(OOM 등)는 둘 다 못 잡는다 —
-# `max_runtime`까지 남는다.
 run_monitoring:
   enabled: true
   start_timeout_seconds: 600

@@ -270,12 +270,27 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
 code-server에 `ReloadCode`를 보낸다. `dagster api grpc`는 그것을 "not currently supported" 경고만 남기고
 무시한다 — Map의 C7 schedule override(definitions import 때 읽는다)가 그래서 반영되지 않았다. 그래서
 code-server는 `dagster code-server start`다: proxy가 자식 gRPC(UDS socket)를 띄우고 reload 때 자식을 새로
-띄워 다시 import한다. 대가 둘 — proxy의 `DagsterApi` health는 고정 SERVING이라 healthcheck는 자식에
-전달되는 `ListRepositories`를 부르고, 자식이 load error거나 죽었으면 PID 1(tini)을 끝내 `restart`가 다시
-띄우게 한다(옛 `api grpc`의 import 실패 self-heal). proxy→자식 heartbeat(기본 30초)는
-`DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS=86400`으로 사실상 끈다. Map 이미지의 production entrypoint는
-code-server argv를 봉인하므로, Map의 이 compose는 `code-server start`를 받는 Map 이미지가 핀에 오른 뒤에만
-설치한다.
+띄워 다시 import한다. 대가와 그 처리는 compose `x-dagster-code-server-probe`의 주석이 정본이다 — proxy의
+`DagsterApi` health는 고정 SERVING이라 healthcheck가 자식에 전달되는 `ListRepositories`를 보고, load error나
+닿지 못함이 **연속 3번**이면 PID 1(tini)을 끝내 `restart`가 다시 띄우게 한다(옛 `api grpc`의 import 실패
+self-heal). 실패한 reload 뒤 옛 자식이 run을 마저 도는 동안(run worker가 있는 동안)은 load error로 죽이지 않는다.
+proxy→자식 heartbeat는 `DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS=600`(기본 30초는 n150 부하에 짧고, 길면 정리 못 한
+옛 자식이 오래 남는다). Map 이미지의 production entrypoint는 code-server argv를 봉인하므로, Map의 이 compose는
+`code-server start`를 받는 Map 이미지가 핀에 오른 뒤에만 설치한다.
+
+**run monitoring이 잡는 것과 못 잡는 것(2026-10-02, dagster 1.13.24 소스·n150 일회용 실측).** 공용
+`dagster.yaml`의 `run_monitoring`은 켜져 있다(start·cancel 600초, `max_runtime` 21600초, poll 15초). run worker는
+`DefaultRunLauncher`로 code-server 컨테이너 안에서 돈다. 그 launcher는 `supports_check_run_worker_health`가
+False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(전역, 또는 `dagster/max_runtime` tag)만 건다.
+
+- 잡는 것: STARTING·NOT_STARTED가 600초 안에 시작 못 함, CANCELING이 600초 안에 끝나지 않음, STARTED가
+  `max_runtime` 초과(일회용 실측: tag 90초 run이 실패로 끝났다).
+- 못 잡는 것: worker가 사라진 STARTED run. code-server 컨테이너가 재시작·재생성되면 그 run은 `max_runtime`까지
+  STARTED로 남아 동시성 슬롯을 쥔다(2026-10-01 weather 재생성 뒤 6건 최대 14.7시간, queue 54건 적체; 일회용 실측에서
+  재시작 전 run이 120초 넘게 STARTED). `max_runtime`을 줄여 메우지 않는다 — weather의 정상 run이 57600초까지 간다.
+- 그 구멍은 code-server의 healthcheck가 메운다(`x-dagster-code-server-probe` 3번): 컨테이너 incarnation마다 한 번,
+  그 전에 시작한 자기 location의 STARTED run만 실패로 만든다.
+- 여전히 못 잡는 것: 컨테이너는 살아 있는데 worker 하나만 죽는 경우(OOM 등) — `max_runtime`까지 남는다.
 
 **공유의 전제 둘.**
 

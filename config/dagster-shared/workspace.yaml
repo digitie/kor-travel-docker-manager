@@ -1,7 +1,7 @@
 # 공용 Dagster webserver·daemon의 workspace — **파생물이다. 손으로 고치지 않는다**(ADR-54).
 #
 # `config/docker-targets.yml`에서 `dagster.control_plane: shared`인 target의 code-server
-# (`dagster code-server start`) command에서 만든다: `host`는 127.0.0.1(host network), `port`는 `-p`의 compose
+# (`dagster api grpc`) command에서 만든다: `host`는 127.0.0.1(host network), `port`는 `-p`의 compose
 # 기본값, `location_name`은 `--location-name`이 있으면 그 값, 없으면 `-m` 모듈이다. 순서는
 # `dependency_order`를 따른다.
 #
