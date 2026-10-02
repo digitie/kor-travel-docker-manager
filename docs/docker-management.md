@@ -522,11 +522,13 @@ Map은 휴게소·주유소·유가를 더 이상 OpiNet·KREX에서 직접 받�
 transport export는 concierge read key(7.2)와 같은 모양으로 배선한다.
 
 - `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN`: 루트 `.env`의 이 한 이름이 유일한 원천이다.
-  base compose가 실제 fetcher가 도는 Map Dagster 서비스(code-server, 그리고 옛 webserver·daemon)에만
-  같은 이름으로 보간하고, Map API·UI에는 넣지 않는다. Map은 이 값을 header
+  base compose가 run worker를 낳는 Map code-server(`kor-travel-map-dagster-code-server`)에만 보간한다.
+  공용 plane의 webserver·daemon, `legacy-dagster` profile의 옛 webserver·daemon, Map API·UI에는 넣지
+  않는다(fetcher를 돌리지 않는 곳에 비밀을 두지 않는다). Map은 이 값을 header
   `X-Kor-Travel-Transport-Service-Token`으로 보낸다.
 - `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`: 기본 `http://127.0.0.1:14001`(transport API, host
-  network loopback). transport는 loopback Host만 받으므로 다른 값으로 덮을 때도 loopback을 쓴다.
+  network loopback). transport는 **접속 주소**(peer)가 `SERVICE_EXPORT_ALLOWED_CLIENTS_CSV`(기본 loopback)
+  안일 때만 받으므로, 다른 값으로 덮을 때도 code-server가 host network에서 loopback으로 닿는 주소를 쓴다.
 - 비어 있으면 `${X:-}`가 빈 문자열을 넘긴다. Map은 빈 값을 미설정으로 보고 그 수집만 실패시킨다
   (조용히 빈 token을 보내지 않는다).
 
@@ -544,8 +546,16 @@ transport export는 concierge read key(7.2)와 같은 모양으로 배선한다.
    Dagster 서비스를 재생성한다(pinned 경로).
 4. 두 값이 같은지는 값을 출력하지 말고 한 프로세스 안에서 비교해 불리언만 남긴다(아래 문단과 같은 방식).
 
-token을 돌릴 때는 transport를 먼저 바꾸면 Map 수집이 그 사이 401로 실패한다 — 짧은 창에서 두 쪽을
-연달아 바꾼다. transport가 Manager 배포로 옮겨 오면(M-T) 이 짝은 Manager compose 한 원천에서 둘 다
+token이 어긋나면 transport는 401이 아니라 **404**로 경로를 숨긴다(transport ADR-012) — Map run은
+`failure_kind=transport_hidden`으로 실패하고 아무것도 적재·삭제하지 않는다. 그래서 token을 돌릴 때
+transport를 먼저 바꾸면 그 사이 Map 수집이 404로 실패한다 — 짧은 창에서 두 쪽을 연달아 바꾼다.
+
+**배포 순서(G1).** 이 브랜치는 Map의 OpiNet·KREX 키를 compose에서 지운다. 지금 Map main(ADR-106 이전)은
+그 키로 OpiNet·KREX job을 돌리므로, 이 Manager 변경은 **Map ADR-106 핀과 같은 rotation**에서만 반영한다:
+(1) transport의 수집기·export·token이 먼저 살아 있고(`REST_AREA_COLLECTION_ENABLED=true`, export 200),
+(2) Map ADR-106 머지 커밋으로 pinned pair를 올리면서 이 compose를 함께 반영한다. Manager만 먼저 반영하면
+옛 Map job이 키 없이 `ProviderCredentialMissing`으로 실패하고, Map만 먼저 올리면 transport token이 없어
+`ProviderCredentialMissing`(token 미설정)으로 실패한다 — 어느 쪽도 데이터를 지우지는 않는다. transport가 Manager 배포로 옮겨 오면(M-T) 이 짝은 Manager compose 한 원천에서 둘 다
 보간하는 형태로 접는다.
 
 Map API에는 provider credential을 하나도 주입하지 않는다. provider 조회·수집은 Dagster 경계에서

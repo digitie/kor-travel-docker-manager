@@ -1501,6 +1501,8 @@ services:
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
       # 휴게소·주유소·유가는 kor-travel-transport의 내부 export(`GET /v1/service/exports/*`)에서 읽는다 —
+      # run worker는 이 code-server의 자식이라 token은 여기에만 둔다(공용 plane의 webserver·daemon과
+      # legacy-dagster profile의 옛 webserver·daemon에는 넣지 않는다 — 노출 면을 줄인다).
       # OpiNet·KREX를 Map이 직접 부르지 않는다. token은 루트 `.env`의 이 한 이름이 원천이고, transport
       # 쪽 `TRANSPORT_SERVICE_EXPORT_TOKEN`(transport 배포 사본의 `.env.server14`)과 같은 값이어야 한다.
       # 비면 빈 문자열로 들어가며 Map은 그것을 미설정으로 본다(docs/docker-management.md 7.3).
@@ -1589,8 +1591,6 @@ services:
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://127.0.0.1:12501}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
-      KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://127.0.0.1:14001}
-      KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN:-}
       # 서울 열린데이터광장은 data.go.kr과 **다른 포털이고 키도 다르다**.
       # 서울 책방(OA-21062) 하나가 쓴다 — 종전 odcloud 원천이 404로 사라졌다.
       KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY: ${KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY:-${SEOUL_OPEN_DATA_API_KEY:-}}
@@ -1722,8 +1722,6 @@ services:
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://127.0.0.1:12501}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
-      KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://127.0.0.1:14001}
-      KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN:-}
       # 서울 열린데이터광장은 data.go.kr과 **다른 포털이고 키도 다르다**.
       # 서울 책방(OA-21062) 하나가 쓴다 — 종전 odcloud 원천이 404로 사라졌다.
       KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY: ${KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY:-${SEOUL_OPEN_DATA_API_KEY:-}}

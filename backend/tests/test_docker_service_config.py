@@ -68,6 +68,8 @@ _MAP_FETCH_SERVICES = (
     "kor-travel-map-dagster-code-server",
     "kor-travel-map-dagster-daemon",
 )
+#: transport export token은 run worker를 낳는 code-server에만 간다(webserver·daemon은 fetcher를 돌리지 않는다).
+_MAP_RUN_WORKER_SERVICES = ("kor-travel-map-dagster-code-server",)
 _MAP_API_SERVICE = "kor-travel-map-api"
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _CONCIERGE_UI_SERVICE = "kor-travel-concierge-ui"
@@ -675,8 +677,8 @@ def test_map_services_share_single_concierge_read_key_source() -> None:
 
 
 def test_map_services_share_single_transport_service_token_source() -> None:
-    """transport 내부 export token도 concierge read key와 같은 모양이다 — 루트 `.env` 한 이름이 원천이고
-    실제 fetcher를 돌리는 Map Dagster 서비스에만 들어간다(Map API·UI에는 없다)."""
+    """transport 내부 export token은 루트 `.env` 한 이름이 원천이고, run worker를 낳는 Map
+    code-server에만 들어간다(webserver·daemon·Map API·UI에는 없다 — 노출 면 최소화)."""
 
     compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     services_with_token = {
@@ -685,9 +687,15 @@ def test_map_services_share_single_transport_service_token_source() -> None:
         if "KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN"
         in service.get("environment", {})
     }
-    assert services_with_token == set(_MAP_FETCH_SERVICES)
+    assert services_with_token == set(_MAP_RUN_WORKER_SERVICES)
+    services_with_url = {
+        service_name
+        for service_name, service in compose["services"].items()
+        if "KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL" in service.get("environment", {})
+    }
+    assert services_with_url == set(_MAP_RUN_WORKER_SERVICES)
 
-    for service_name in _MAP_FETCH_SERVICES:
+    for service_name in _MAP_RUN_WORKER_SERVICES:
         environment = compose["services"][service_name]["environment"]
         assert environment["KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL"] == (
             _TRANSPORT_BASE_URL_ENV
