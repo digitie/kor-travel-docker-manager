@@ -29,7 +29,7 @@ from dotenv import dotenv_values
 REDACTED = "<redacted>"
 
 # `API_KEY`는 `ACCESS_KEY`에 걸리지 않는다 — provider API 키가 여럿 있다
-# (`KOR_TRAVEL_MAP_OPINET_API_KEY`, `KOR_TRAVEL_GEO_VWORLD_API_KEY` 등). `SERVICE_KEY`는 data.go.kr
+# (`KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY`, `KOR_TRAVEL_GEO_VWORLD_API_KEY` 등). `SERVICE_KEY`는 data.go.kr
 # 계열(`*_DATA_GO_KR_SERVICE_KEY`)이다. 과다 가림은 안전한 방향이므로 의심스러우면 포함한다
 # (`..._API_KEY_CACHE_TTL_S` 같은 숫자나 공개용 `NEXT_PUBLIC_*_API_KEY`도 함께 가려진다).
 SENSITIVE_KEY_PARTS = (

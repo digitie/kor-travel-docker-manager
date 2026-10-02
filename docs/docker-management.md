@@ -510,17 +510,43 @@ prod 전환 순서는 다음과 같다.
   확인했다. UI 로그인 POST 200+`Set-Cookie`, BFF settings 200, 잘못된 비밀번호 401도 재확인했다.
 - 성공 뒤 key/cookie 임시 파일과 secret 포함 제한권한 백업을 모두 삭제했다.
 
-### 7.3 Map OpiNet·KREX provider 키 주입
+### 7.3 Map의 transport 내부 export token과 provider 키 주입
 
-`kor-travel-map`의 OpiNet·KREX credential은 gitignore된 루트 `.env`의 현재 이름을 source로
-사용한다.
+Map은 휴게소·주유소·유가를 더 이상 OpiNet·KREX에서 직접 받지 않는다. kor-travel-transport가
+그 원천을 수집하고, Map Dagster는 transport의 내부 export(`GET /v1/service/exports/*`)를 읽는다.
+그래서 옛 `KOR_TRAVEL_MAP_OPINET_*`(API key·scope 선택자·호출 상한 다섯)과
+`KOR_TRAVEL_MAP_KREX_EX_API_KEY`·`KOR_TRAVEL_MAP_KREX_GO_API_KEY`는 compose와 `.env.example`에서
+지웠다. 호스트 `.env`에 남은 값은 아무 컨테이너에도 가지 않으므로 운영자가 정리하면 된다.
+`KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY` 등 다른 Map provider가 쓰는 키는 그대로다.
 
-- `KOR_TRAVEL_MAP_OPINET_API_KEY`: OpiNet station·price 수집용이다. base compose가 실제 수집기를
-  실행하는 Dagster·Dagster daemon에만 같은 이름으로 명시 보간한다.
-- `KOR_TRAVEL_MAP_KREX_EX_API_KEY`: 교통 돌발·notice를 포함한 EX endpoint용이다. base compose가
-  Dagster·Dagster daemon에만 같은 이름으로 명시 보간한다.
-- `KOR_TRAVEL_MAP_KREX_GO_API_KEY`: data.go.kr 계열 KREX 수집용이다. 같은 두 수집 서비스에만 명시
-  보간한다.
+transport export는 concierge read key(7.2)와 같은 모양으로 배선한다.
+
+- `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN`: 루트 `.env`의 이 한 이름이 유일한 원천이다.
+  base compose가 실제 fetcher가 도는 Map Dagster 서비스(code-server, 그리고 옛 webserver·daemon)에만
+  같은 이름으로 보간하고, Map API·UI에는 넣지 않는다. Map은 이 값을 header
+  `X-Kor-Travel-Transport-Service-Token`으로 보낸다.
+- `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`: 기본 `http://127.0.0.1:14001`(transport API, host
+  network loopback). transport는 loopback Host만 받으므로 다른 값으로 덮을 때도 loopback을 쓴다.
+- 비어 있으면 `${X:-}`가 빈 문자열을 넘긴다. Map은 빈 값을 미설정으로 보고 그 수집만 실패시킨다
+  (조용히 빈 token을 보내지 않는다).
+
+**transport 쪽 짝은 Manager가 띄우지 않는다.** transport는 외부 target이다
+(`config/docker-targets.yml`의 `transport`, 정본 compose는 transport 저장소의
+`docker-compose.shared.yml`, n150 배포 사본은 `/home/digitie/apps/kor-travel-transport/`의 `.env.server14`).
+그래서 한 비밀을 두 소비자가 쓰지만 Manager compose 안에서 하나로 보간할 수는 없다. 운영자가 다음을
+함께 맞춘다.
+
+1. 32자 이상 token 하나를 만든다.
+2. transport 배포 사본의 `.env.server14`에 `TRANSPORT_SERVICE_EXPORT_TOKEN=<token>`을, 같은 파일에
+   `REST_AREA_COLLECTION_ENABLED=true`(transport Dagster 실행 환경의 휴게소 수집기 활성화)를 두고
+   transport 자신의 배포 절차로 backend·Dagster를 재생성한다.
+3. Manager 루트 `.env`에 `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN=<같은 token>`을 두고 Map
+   Dagster 서비스를 재생성한다(pinned 경로).
+4. 두 값이 같은지는 값을 출력하지 말고 한 프로세스 안에서 비교해 불리언만 남긴다(아래 문단과 같은 방식).
+
+token을 돌릴 때는 transport를 먼저 바꾸면 Map 수집이 그 사이 401로 실패한다 — 짧은 창에서 두 쪽을
+연달아 바꾼다. transport가 Manager 배포로 옮겨 오면(M-T) 이 짝은 Manager compose 한 원천에서 둘 다
+보간하는 형태로 접는다.
 
 Map API에는 provider credential을 하나도 주입하지 않는다. provider 조회·수집은 Dagster 경계에서
 수행하며, 제거된 `KOR_TRAVEL_MAP_API_*_SERVICE_KEY`와 legacy
@@ -534,7 +560,7 @@ override는 계속 금지한다.
 과거 `KRTOUR_MAP_*` 이름을 source로 쓰면 `.env`에 현재 이름의 key가 있어도 빈 문자열이
 컨테이너로 전달된다. 따라서 override에 bare key나 secret literal을 반복하지 않는다. 변경 뒤에는
 resolved config 전체를 출력하지 말고 `docker compose config --quiet`를 실행한 뒤, 한 프로세스
-안에서 `.env`와 두 수집 컨테이너 값을 constant-time 비교하고 API 컨테이너에는 provider runtime
+안에서 `.env`와 수집 컨테이너 값을 constant-time 비교하고 API 컨테이너에는 provider runtime
 변수가 없는지 확인한다. 검증 결과는 `nonempty && all_equal` 같은 불리언만 남기며
 실제 값·길이·digest는 로그에 남기지 않는다. API 컨테이너에는 제거된 provider runtime 이름이
 하나도 없어야 한다.

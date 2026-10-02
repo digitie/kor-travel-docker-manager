@@ -169,7 +169,7 @@ internal target이 되며 `network_mode: host`로도 옮겨왔다 — 지금은 
 Manager compose가 프로젝트에 값을 넘기는 형태는 하나다.
 
 ```yaml
-KOR_TRAVEL_MAP_OPINET_API_KEY: ${KOR_TRAVEL_MAP_OPINET_API_KEY:-}
+KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
 ```
 
 지켜야 할 것 셋.
@@ -179,7 +179,8 @@ KOR_TRAVEL_MAP_OPINET_API_KEY: ${KOR_TRAVEL_MAP_OPINET_API_KEY:-}
    compose에서 유도해 이것을 센다 — 목록을 손으로 적지 않는다.
 2. **키를 받는 서비스는 그 키를 쓰게 하는 선택자도 함께 받는다.** OpiNet은 키가 있어도
    `scope`를 안 넘기면 영원히 비활성이었다. KREX go key, 서울 열린데이터광장 키까지
-   **같은 형태의 구멍이 세 번** 났다.
+   **같은 형태의 구멍이 세 번** 났다(OpiNet·KREX 배선은 2026-10에 Map이 transport 내부
+   export를 읽게 되면서 compose에서 사라졌다 — `docker-management.md` 7.3).
 3. **빈 문자열은 값이 아니다.** `${X:-}`는 변수를 *항상 정의하고 값을 비운다.* 받는
    쪽이 pydantic이면 `SecretStr("")`가 되어 `if secret is None` 가드가 **배포
    형상에서 한 번도 발화하지 않는다.** 로컬·CI에서는 env를 아예 안 주므로 보이지
@@ -187,7 +188,7 @@ KOR_TRAVEL_MAP_OPINET_API_KEY: ${KOR_TRAVEL_MAP_OPINET_API_KEY:-}
    닫는다.
 
 값 자체는 호스트 `.env`(root 0600)에만 둔다. Manager의 로그 마스킹은 패턴 기반이라
-`*_API_KEY`/`*_SERVICE_KEY` 꼴 새 이름도 자동으로 가려진다.
+`*_API_KEY`/`*_SERVICE_KEY`/`*_TOKEN` 꼴 새 이름도 자동으로 가려진다.
 
 ---
 
