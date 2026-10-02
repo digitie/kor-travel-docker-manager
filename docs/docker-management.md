@@ -416,7 +416,7 @@ OOM-kill되면 `finally`의 terminal block이 돌지 않고, 같은 압박으로
   `m05i-pinvi-<txn>` 이름을 쓰므로 `docker ps -a --filter name=m05i`로 확인한다.
 - **남이 띄운 것을 임의로 내리지 않는다.** 여러 에이전트와 사람이 같은 호스트를
   쓴다. 자기가 띄운 것만 정리하고, 남의 것이 걸리면 소유자에게 확인한다.
-  상시 스택(weather·concierge·geo·parking-radar·prometheus 등)은 기본이 유지다.
+  상시 스택(weather·concierge·geo·transport·prometheus 등)은 기본이 유지다.
 - 긴 one-shot 전에는 **현재 여유를 측정하고 기록**한다(`free -g`, `docker ps -q | wc -l`).
   부족하면 스택을 내리는 대신 소유자와 일정을 조율한다.
 - 무엇을 왜 내렸는지와 되돌리는 명령을 작업 기록에 남긴다
@@ -1641,8 +1641,8 @@ KTDM_BACKUP_ROOT=/home/digitie/backups \
 #### transport 복원 — 손으로, 공용 instance에서 superuser로
 
 Manager에는 운영 DB를 덮어쓰는 복원 명령이 없다(아래 "아직 안 된 것"). transport 앱의 자체 복원
-API도 이 dump를 받지 않는다 — 그 앱의 백업 디렉터리만 읽고 `parking-radar-*.dump` 이름만 받으며
-(`BACKUP_NAME_PATTERN`), 2 GiB가 넘는 파일을 거부하고(`MAX_BACKUP_BYTES`), 명령 timeout 기본값이
+API도 이 dump를 받지 않는다 — 그 앱의 백업 디렉터리만 읽고 `kor-travel-transport-*.dump` 이름만 받으며
+(`BACKUP_NAME_PATTERN`, transport ADR-011 전에는 `parking-radar-*.dump`), 2 GiB가 넘는 파일을 거부하고(`MAX_BACKUP_BYTES`), 명령 timeout 기본값이
 120초(`BACKUP_COMMAND_TIMEOUT_SECONDS`)라 13 GB DB의 복원이 그 안에 끝나지 않는다. 그래서 공용
 instance에서 superuser로 직접 복원한다. Manager dump는 superuser가 소유권·ACL을 담아 떴으므로
 (`--no-owner` 없음) 같은 instance에 superuser로 복원하면 소유자(`kor_travel_transport_app`)와 GRANT가

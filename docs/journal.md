@@ -8659,3 +8659,10 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
   code-server, 바뀐 칸 하나). Map API host allowlist가 loopback만인지 따로 본다.
 - 창 스크립트: Map 앱 drain 게이트(precheck와 펜스·취소 뒤), Map 소비자 scope 확인, 끝에 C7 자격증명 파일과
   `.d2-live.env`에 넣을 세 값(공개 GraphQL URL·canonical sha256 — Map README의 값과 같음을 n150에서 확인).
+
+## 2026-10-02 — transport 앱 dump 접두어 문서 갱신(transport ADR-011)
+
+- transport가 백엔드·내부 식별자를 `kor-travel-transport`로 옮겨(transport ADR-011) 앱 백업 dump 이름이
+  `parking-radar-*.dump`에서 `kor-travel-transport-*.dump`로 바뀐다. `docker-management.md`의 transport 복원
+  설명과 상시 스택 목록(`parking-radar` → `transport`)만 고쳤다. Manager 코드·target·백업 cron은 바뀌지 않는다
+  (Manager standalone dump 이름은 원래 앱 접두어와 무관하다). transport 브랜치 머지·배포와 함께 머지한다.
