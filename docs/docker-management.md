@@ -546,7 +546,7 @@ transport export는 concierge read key(7.2)와 같은 모양으로 배선한다.
    Dagster 서비스를 재생성한다(pinned 경로).
 4. 두 값이 같은지는 값을 출력하지 말고 한 프로세스 안에서 비교해 불리언만 남긴다(아래 문단과 같은 방식).
 
-token이 어긋나면 transport는 401이 아니라 **404**로 경로를 숨긴다(transport ADR-012) — Map run은
+token이 어긋나면 transport는 401이 아니라 **404**로 경로를 숨긴다(transport ADR-013) — Map run은
 `failure_kind=transport_hidden`으로 실패하고 아무것도 적재·삭제하지 않는다. 그래서 token을 돌릴 때
 transport를 먼저 바꾸면 그 사이 Map 수집이 404로 실패한다 — 짧은 창에서 두 쪽을 연달아 바꾼다.
 
