@@ -64,10 +64,22 @@ class DagsterFamily:
     daemon: str
     #: 옛 webserver·daemon에 기대는 서비스(weather의 gateway). 대부분 비어 있다.
     gateways: tuple[str, ...]
+    #: 형제 프로젝트(`external_project`)면 그 compose project 이름 — 서비스는 Manager compose가 아니라 그
+    #: project에 있다. Manager 자신의 target이면 ``None``.
+    external_project: str | None = None
 
     @property
     def shared(self) -> bool:
         return self.control_plane == "shared"
+
+    def container_name(self, service: str) -> str:
+        """이 family 서비스의 컨테이너 이름. Manager target은 `containers` 레지스트리에서, 형제 프로젝트는
+        compose의 기본 이름 규칙(`<project>-<service>-1`)으로 — 그 compose는 `container_name`을 두지 않는다
+        (전환 스크립트가 렌더된 compose에서 확인한다)."""
+
+        if self.external_project is not None:
+            return f"{self.external_project}-{service}-1"
+        return installed_container_name(service)
 
     @property
     def legacy(self) -> tuple[str, ...]:
@@ -313,6 +325,46 @@ def derive_dagster_family(
     )
 
 
+def derive_external_dagster_family(targets: Mapping[str, Any], target_id: str) -> DagsterFamily:
+    """형제 프로젝트 target의 family — 그 compose는 이 저장소 밖이라 선언(`dagster.external`)에서 만든다.
+
+    선언과 그 프로젝트의 실제 compose가 같은지는 전환 스크립트가 렌더해 대조한다(어긋나면 펜스 전에 멈춘다).
+    """
+
+    target_specs = targets.get("targets")
+    spec = target_specs.get(target_id) if isinstance(target_specs, Mapping) else None
+    project = spec.get("external_project") if isinstance(spec, Mapping) else None
+    block = spec.get("dagster") if isinstance(spec, Mapping) else None
+    external = block.get("external") if isinstance(block, Mapping) else None
+    if not isinstance(project, Mapping) or not isinstance(external, Mapping):
+        raise DeploymentContractError(f"external Dagster target {target_id} is not declared")
+    control_plane = block.get("control_plane") if isinstance(block, Mapping) else None
+    if control_plane not in DAGSTER_CONTROL_PLANES:
+        raise DeploymentContractError(f"Dagster target {target_id} control plane is invalid")
+    return DagsterFamily(
+        target=target_id,
+        control_plane=control_plane,
+        code_server=str(external["code_server"]),
+        webserver=str(external["webserver"]),
+        daemon=str(external["daemon"]),
+        gateways=tuple(str(name) for name in external.get("gateways") or ()),
+        external_project=str(project["project"]),
+    )
+
+
+def external_dagster_locations(targets: Mapping[str, Any]) -> Mapping[str, tuple[str, int]]:
+    """형제 프로젝트 target → 선언한 (location 이름, gRPC 포트). 공용 workspace와 상한이 이것을 싣는다."""
+
+    target_specs = targets.get("targets")
+    found: dict[str, tuple[str, int]] = {}
+    for target_id, spec in (target_specs.items() if isinstance(target_specs, Mapping) else ()):
+        block = spec.get("dagster") if isinstance(spec, Mapping) else None
+        external = block.get("external") if isinstance(block, Mapping) else None
+        if isinstance(spec, Mapping) and spec.get("external_project") and isinstance(external, Mapping):
+            found[str(target_id)] = (str(external["location_name"]), int(external["port"]))
+    return MappingProxyType(found)
+
+
 def derive_dagster_families(
     compose: Mapping[str, Any],
     targets: Mapping[str, Any],
@@ -455,8 +507,16 @@ def installed_location_owners() -> Mapping[str, DagsterFamily]:
     if not isinstance(services, Mapping):
         raise DeploymentContractError("Dagster topology documents are invalid")
     owners: dict[str, DagsterFamily] = {}
-    for family in derive_dagster_families(compose, targets).values():
-        location = code_server_location_name(services[family.code_server])
+    served = [
+        (code_server_location_name(services[family.code_server]), family)
+        for family in derive_dagster_families(compose, targets).values()
+    ]
+    # 형제 프로젝트(transport): 선언한 location과 그 프로젝트의 옛 서비스 — 펜스 검사가 그 컨테이너를 본다.
+    served += [
+        (location, derive_external_dagster_family(targets, target_id))
+        for target_id, (location, _port) in external_dagster_locations(targets).items()
+    ]
+    for location, family in served:
         if location in owners:
             raise DeploymentContractError(f"code location {location} is served by two targets")
         owners[location] = family

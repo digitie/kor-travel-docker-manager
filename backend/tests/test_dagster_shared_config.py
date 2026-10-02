@@ -145,6 +145,17 @@ def test_location_caps_cover_exactly_the_compose_code_servers() -> None:
         ) and "-m" in command:
             modules.add(command[command.index("-m") + 1])
     assert modules, "compose에서 code-server를 하나도 못 찾았다 — 추출이 낡았다"
+    # 형제 프로젝트(transport)의 code-server는 그 저장소의 compose에 있다 — 선언한 location이 상한을 받는다.
+    targets = load_yaml_rejecting_duplicate_keys(
+        (_REPO_ROOT / "config" / "docker-targets.yml").read_text(encoding="utf-8")
+    )
+    externals = {
+        str(spec["dagster"]["external"]["location_name"])
+        for spec in targets["targets"].values()
+        if spec.get("external_project") and "external" in (spec.get("dagster") or {})
+    }
+    assert externals, "형제 프로젝트의 Dagster 선언을 하나도 못 찾았다 — 추출이 낡았다"
+    modules |= externals
 
     runs = _instance_config()["concurrency"]["runs"]
     limits = runs["tag_concurrency_limits"]

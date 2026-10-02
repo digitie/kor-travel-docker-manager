@@ -8722,3 +8722,48 @@ api grpc`라 location reload가 "not currently supported" 경고만 남기고 �
 - **⚠️ 설치 순서: Map commit이 `fix/dagster-entrypoint-code-server`(Map PR #1295)를 포함하는 pinned pair가 회전된
   뒤에만 이 Manager를 설치한다.** 그 전 Map 이미지는 `code-server start` argv를 봉인에서 거부한다. Manager는 이
   결합을 검사하지 않는다(결박·preflight를 더하지 않는다).
+
+## 2026-10-02 — 공용 Dagster: transport 합류(형제 프로젝트, ADR-54 개정)
+
+브랜치 `feat/transport-shared-dagster`(origin/main `9dc51d9` 위). 짝은 transport `feat/shared-dagster-plane`. 소유자 승인,
+전환·배포는 하지 않았다(소유자가 리뷰 뒤 실행). 처음엔 prep(transport `own`)·flip 두 커밋이었으나 transport의 되돌리기를
+지원하지 않기로 해(소유자 결정, 아래) 한 커밋으로 합쳤다.
+
+- **prep.** transport는 compose가 그 저장소에 있는 첫 합류자라 Manager가 모양을 파생할 수 없다 →
+  `targets.transport.dagster.external`이 선언한다(code-server·옛 webserver·daemon·gateway 서비스 이름, location
+  `kor-travel-transport`, 포트 `14005`). registry는 `external`을 형제 프로젝트에만 받고 거기서는 필수, `consumers`는
+  금지(소비자는 그 저장소의 운영 UI, 다른 compose project). `DagsterFamily.external_project`·`container_name()`(compose
+  기본 이름 `<project>-<service>-1`), `installed_location_owners()`가 선언한 location을 싣는다 — 그러지 않으면 workspace의
+  transport location이 "which no Dagster target serves"로 Map·PinVi 재구축을 막는다. 공용 `dagster.yaml`에 transport 상한
+  (location 3, `kortraveltransport/run_group` 넷 각 1 — 옛 instance 그대로) → instance digest가 그 파일을 붙인 서비스
+  전부에서 바뀐다(geo·weather·map·pinvi code-server는 다음 ensure/재구축 때 한 번 재생성된다).
+- **창 스크립트.** 형제 프로젝트면 실행 중 code-server의 compose label(project·working_dir·config_files)로 그 프로젝트를
+  `--profile legacy-dagster`까지 렌더하고 같은 규칙으로 파생해 선언과 대조한다(어긋나거나 loopback이 아니거나
+  `container_name`을 두면 펜스 전에 멈춘다). env 파일은 `EXTERNAL_ENV_FILE`(0600/0400). code-server 이미지가 호스트에
+  있어야 한다(`--no-build`). 공용 plane 서비스는 Manager project, 나머지는 그 project(`project_of`). derive는 `api grpc`와
+  `code-server start`를 모두 code-server로 본다(병행 `fix/dagster-code-server-reloadable`와 같은 규칙).
+- **#456 뒤 rebase(2026-10-03).** 공용 plane code-server 규칙(`code-server start`, 공용 probe
+  `x-dagster-code-server-probe`, proxy heartbeat 600, init·exec 형식)을 형제 프로젝트에도 건다 — 그 compose는 여기서 볼 수
+  없으므로 창 스크립트 derive가 공용 URL을 받은 형제 code-server에 대해 Manager 렌더와 대조한다(`api grpc`, 다른 probe 원문·
+  포트, shell 형식, heartbeat, init 각각 멈추는 빨간 대조군). `test_every_shared_plane_code_server_reloads_its_definitions`는
+  workspace에서 형제 location을 빼고 이 compose의 code-server와 대조한다. transport 쪽은 probe 원문을 복사해 쓴다.
+- **적대 리뷰(2026-10-03) 반영 — 펜스 전 가드 둘.** (H1) 형제 이미지의 dagster 버전이 공용 webserver(`{ version }`)와 다르면
+  멈춘다(`dagster_versions_match` — n150 실측: 운영 transport 이미지는 1.13.25, 호스트 1.13.24 → 그대로 전환하면 공용
+  webserver가 버전 상한으로 unhealthy, 전 테넌트). (M1) 옛 instance의 schedule·sensor 상태가 코드의 `default_status`와
+  다르면 이름을 말하고 멈춘다(`instigators_off_their_code_default`) — 공용 instance는 새로 시작해 코드 기본값으로 돈다.
+  각각 옛 스크립트에 먼저 빨간 것을 보고(8 failed) 고쳤다. systemd-run 안내는 `-E EXTERNAL_ENV_FILE=…`를 싣는다.
+- **flip.** `control_plane: shared`, 공용 workspace에 `kor-travel-transport`(127.0.0.1:14005), workspace digest.
+- **되돌리기는 지원하지 않는다**(소유자 결정 2026-10-02, 보장 없는 수동 best-effort). 창 스크립트의 `rollback` 모드는 이
+  형제 프로젝트에 대해 검증하지 않았다 — 이전 transport release의 code-server는 `--location-name`이 없어 선언과의
+  대조에서 멈춘다. 옛 메타DB는 30일 보존한다. `docs/ports.md`의 옛 12302·14003·14004 기재를 고쳤다.
+- 테스트: `test_dagster_external_family.py`(펜스가 transport 옛 컨테이너를 본다 + 셋 각각 돌면 거부하는 빨간 대조군,
+  선언이 빠지면 소유자 없음, registry 검증), 창 스크립트 derive를 형제 렌더에 돌리고 location·port·host·
+  container_name·gateway 어긋남이 각각 멈추는 빨간 대조군, workspace·G3-b·상한 파생에 선언 포함.
+- n150 읽기 전용 실측: transport 옛 instance RUNNING = schedule 10·sensor 0(코드 `default_status` 전부 RUNNING),
+  공용 role 연결 3/45, transport code-server root·dagster 1.13.24, `.env.server14`의 `BACKEND_RUNTIME_IMAGE`는 낡은
+  digest(→ transport prepare 단계가 전환 env 파일을 만든다), 공용 instance 정의는
+  `/opt/kor-travel-docker-manager/config/dagster-shared/dagster.yaml`.
+- 검증(n150, python:3.11 컨테이너, CI 핀 ruff 0.16.4): ruff 통과. pytest는 (합치기 전) prep·flip 둘 다 2488 passed·96 skipped·
+  14 failed — 14건(`test_docker_service_config` 12, `test_m05_isolated_e2e_driver` 1, `test_pinned_runtime_rebuild` 1)은
+  main `9dc51d9`의 같은 환경에서도 같은 14건이다(컨테이너에 docker CLI 없음 → "could not start"). 실제 transport 렌더
+  (`docker compose config`, 예시 env)를 derive에 넣어 선언과 일치(CODE·옛 서비스·location·포트)를 확인했다.

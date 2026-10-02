@@ -389,22 +389,35 @@ def _ordered_targets(targets: dict[str, Any]) -> list[str]:
 # ── 파생 ─────────────────────────────────────────────────────────────────
 
 
+def _external_location(spec: Mapping[str, Any]) -> tuple[str, int] | None:
+    """형제 프로젝트가 선언한 (location 이름, 포트) — 그 compose는 이 저장소 밖이라 선언이 정본이다."""
+
+    external = (spec.get("dagster") or {}).get("external")
+    if not _is_external(spec) or not isinstance(external, dict):
+        return None
+    return str(external["location_name"]), int(external["port"])
+
+
+def _shared_locations(compose: dict[str, Any], spec: Mapping[str, Any]) -> list[tuple[str, int]]:
+    """target이 공용 plane에 싣는 (location, 포트) — Manager target은 code-server command, 형제 프로젝트는 선언."""
+
+    declared = _external_location(spec)
+    if declared is not None:
+        return [declared]
+    return [
+        (_location(service), _port(_words(service.get("command"))))
+        for _, service in sorted(_code_servers(compose, spec).items())
+    ]
+
+
 def _derived_workspace(compose: dict[str, Any], targets: dict[str, Any]) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     for target_id in _ordered_targets(targets):
         spec = targets["targets"].get(target_id) or {}
         if (spec.get("dagster") or {}).get("control_plane") != "shared":
             continue
-        for _, service in sorted(_code_servers(compose, spec).items()):
-            entries.append(
-                {
-                    "grpc_server": {
-                        "host": "127.0.0.1",
-                        "port": _port(_words(service.get("command"))),
-                        "location_name": _location(service),
-                    }
-                }
-            )
+        for location, port in _shared_locations(compose, spec):
+            entries.append({"grpc_server": {"host": "127.0.0.1", "port": port, "location_name": location}})
     return {"load_from": entries}
 
 
@@ -427,8 +440,7 @@ def _g3b_violations(
     for target_id, spec in targets["targets"].items():
         if (spec.get("dagster") or {}).get("control_plane") != "shared":
             continue
-        for service in _code_servers(compose, spec).values():
-            location = _location(service)
+        for location, _ in _shared_locations(compose, spec):
             if location not in names:
                 violations.append(f"shared target `{target_id}`의 location `{location}`이 workspace에 없다")
             if location not in caps:
@@ -751,8 +763,31 @@ def _own_pair_documents() -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def _dagster_targets() -> list[str]:
+    """Manager 자신의 compose에 Dagster가 있는 target(모양에서 파생한다)."""
+
     _, targets = _documents()
-    return [name for name, spec in targets["targets"].items() if "dagster" in spec]
+    return [name for name, spec in targets["targets"].items() if "dagster" in spec and not _is_external(spec)]
+
+
+def _external_dagster_targets() -> list[str]:
+    """형제 프로젝트 target(transport) — compose가 밖에 있어 선언(`dagster.external`)이 모양이다."""
+
+    _, targets = _documents()
+    return [name for name, spec in targets["targets"].items() if "dagster" in spec and _is_external(spec)]
+
+
+def _flip_external(targets: dict[str, Any], compose: dict[str, Any], target_id: str) -> dict[str, bytes]:
+    """형제 프로젝트 하나를 `shared`로 — Manager 쪽 전환은 스위치와 파생 workspace(그 digest)뿐이다.
+
+    code-server·옛 서비스의 compose 편집은 그 저장소의 전환 PR이 한다(그 저장소의 계약 테스트가 본다).
+    """
+
+    targets["targets"][target_id]["dagster"]["control_plane"] = "shared"
+    plane = _plane(compose, targets)
+    rendered = yaml.safe_dump(_derived_workspace(compose, targets), sort_keys=False).encode()
+    for name in (plane["webserver"], plane["daemon"]):
+        _environment(compose["services"][name])[_DIGEST_ENV[_WORKSPACE_SOURCE]] = _digest(rendered)
+    return {_WORKSPACE_SOURCE: rendered}
 
 
 # ── 테스트 ───────────────────────────────────────────────────────────────
@@ -828,10 +863,10 @@ def test_flipping_a_target_renders_a_consistent_plane(target_id: str) -> None:
     # 이미 합류한 target(weather)의 location도 함께 있다 — 이 target의 것이 더해지고, 나머지는 `shared`인 target의 것이다.
     names = {e["grpc_server"]["location_name"] for e in workspace["load_from"]}
     shared = {
-        _location(s)
+        location
         for spec in targets["targets"].values()
         if (spec.get("dagster") or {}).get("control_plane") == "shared"
-        for s in _code_servers(compose, spec).values()
+        for location, _ in _shared_locations(compose, spec)
     }
     assert location <= names and names == shared
     assert _g3b_violations(workspace, compose, targets, _location_caps()) == []
@@ -844,10 +879,12 @@ def test_flipping_every_target_keeps_the_plane_consistent() -> None:
     files: dict[str, bytes] = {}
     for target_id in _dagster_targets():
         files = _flip(compose, targets, target_id)
+    for target_id in _external_dagster_targets():
+        files = _flip_external(targets, compose, target_id)
     _, rest = _pinned(_contract_violations(compose, targets, files))
     assert rest == []
     workspace = _derived_workspace(compose, targets)
-    assert len(workspace["load_from"]) == len(_dagster_targets())
+    assert len(workspace["load_from"]) == len(_dagster_targets()) + len(_external_dagster_targets())
     assert _g3b_violations(workspace, compose, targets, _location_caps()) == []
 
 
@@ -961,7 +998,16 @@ def test_every_shared_plane_code_server_reloads_its_definitions() -> None:
     workspace = load_yaml_rejecting_duplicate_keys(_WORKSPACE.read_text(encoding="utf-8"))
     loaded = {entry["grpc_server"]["location_name"] for entry in workspace["load_from"]}
     assert loaded, "공용 workspace에 location이 없다 — 이 검사가 공허하다"
-    assert {_location(compose["services"][name]) for name in shared} == loaded, sorted(shared)
+    # 형제 프로젝트(transport)의 code-server는 그 저장소의 compose에 있어 여기서 볼 수 없다 — 같은 규칙(`code-server
+    # start`, 공용 probe, heartbeat, init)을 창 스크립트의 derive가 그 렌더에 건다(`test_dagster_shared_cutover_script.py`
+    # 의 빨간 대조군). 그 location을 빼면 나머지는 이 compose의 code-server가 전부 싣는다.
+    external = {
+        location
+        for target_id in _external_dagster_targets()
+        if targets["targets"][target_id]["dagster"].get("control_plane") == "shared"
+        for location, _ in _shared_locations(compose, targets["targets"][target_id])
+    }
+    assert {_location(compose["services"][name]) for name in shared} == loaded - external, sorted(shared)
     assert stuck == set(), (
         f"공용 plane code-server가 `dagster api grpc`다 — `dagster code-server start`로: {sorted(stuck)}"
     )
@@ -1097,6 +1143,76 @@ def test_a_code_server_target_without_the_switch_is_named() -> None:
     compose, targets = _documents()
     del targets["targets"]["geo"]["dagster"]
     assert any("`dagster.control_plane`이 없다" in v for v in _contract_violations(compose, targets))
+
+
+# ── 형제 프로젝트(transport): compose가 밖에 있어 선언이 모양이다 ──────────────────
+
+
+def test_external_targets_declare_a_shape_the_manager_derives() -> None:
+    """선언한 형제 프로젝트를 본다(항진명제 방지) — Manager의 family·location 소유와 상한이 그 선언을 싣는다."""
+
+    from kor_travel_docker_manager.services.runtime_topology import (
+        derive_external_dagster_family,
+        external_dagster_locations,
+        installed_location_owners,
+    )
+
+    compose, targets = _documents()
+    externals = _external_dagster_targets()
+    assert externals == ["transport"], externals
+    locations = external_dagster_locations(targets)
+    owners = installed_location_owners()
+    internal_locations = {
+        location for target_id in _dagster_targets() for location, _ in _shared_locations(compose, targets["targets"][target_id])
+    }
+    for target_id in externals:
+        spec = targets["targets"][target_id]
+        family = derive_external_dagster_family(targets, target_id)
+        project = spec["external_project"]["project"]
+        assert family.external_project == project
+        assert family.control_plane == spec["dagster"]["control_plane"]
+        # 옛 서비스의 컨테이너는 그 project의 compose 기본 이름이다(Manager `containers` 레지스트리에 없다).
+        assert {family.container_name(name) for name in family.legacy} == {
+            f"{project}-{name}-1" for name in (family.webserver, family.daemon, *family.gateways)
+        }
+        location, port = locations[target_id]
+        assert location not in internal_locations
+        # 상한은 스위치와 무관하다(Manager target의 상한이 stage 2부터 있던 것과 같다).
+        assert location in _location_caps()
+        # 펜스 검사(`_require_plane_location_owners_fenced`)가 이 location의 옛 서비스를 찾는다.
+        assert owners[location].target == target_id
+        assert owners[location].legacy == family.legacy
+        assert 1 <= port <= 65535
+
+
+def test_flipping_an_external_target_adds_exactly_its_declared_location() -> None:
+    compose, targets = _documents()
+    for target_id in _external_dagster_targets():
+        targets["targets"][target_id]["dagster"]["control_plane"] = "own"
+        before = _derived_workspace(compose, targets)["load_from"]
+        files = _flip_external(targets, compose, target_id)
+        after = _derived_workspace(compose, targets)["load_from"]
+        location, port = _external_location(targets["targets"][target_id]) or ("", 0)
+        added = [entry for entry in after if entry not in before]
+        assert added == [{"grpc_server": {"host": "127.0.0.1", "port": port, "location_name": location}}]
+        assert yaml.safe_load(files[_WORKSPACE_SOURCE]) == {"load_from": after}
+        assert _g3b_violations({"load_from": after}, compose, targets, _location_caps()) == []
+        assert _digest_violations(compose, files) == []
+
+
+def test_an_external_target_on_the_plane_without_its_workspace_entry_or_cap_is_named() -> None:
+    """형제 프로젝트를 `shared`로 두고 workspace·상한을 빠뜨리면 G3-b가 그 location을 이름으로 말한다(빨간 대조군)."""
+
+    compose, targets = _documents()
+    for target_id in _external_dagster_targets():
+        targets["targets"][target_id]["dagster"]["control_plane"] = "shared"
+        location, _ = _external_location(targets["targets"][target_id]) or ("", 0)
+        workspace = _derived_workspace(compose, targets)
+        stale = {"load_from": [e for e in workspace["load_from"] if e["grpc_server"]["location_name"] != location]}
+        named = f"shared target `{target_id}`의 location `{location}`"
+        assert any(v.startswith(named) and "workspace에 없다" in v for v in _g3b_violations(stale, compose, targets, _location_caps()))
+        uncapped = _g3b_violations(workspace, compose, targets, _location_caps() - {location})
+        assert any(f"`{location}`에 `{_LOCATION_TAG}` 상한이 없다" in v for v in uncapped), uncapped
 
 
 def test_the_resolver_reads_nested_defaults() -> None:

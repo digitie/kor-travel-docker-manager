@@ -47,7 +47,7 @@
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
 | `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Prometheus `14104`, Web `14105` | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
 | 공용 Dagster(`dagster`) | 대역 밖 | gateway `11001`(`kor-travel-dagster-gateway`, nginx Basic Auth, `0.0.0.0` — 공개 host `dagster.digitie.mywire.org`, `/health`만 무인증), webserver `127.0.0.1:11002`(`kor-travel-dagster-webserver`, loopback 전용), daemon 포트 없음(`kor-travel-dagster-daemon`). storage one-shot 둘(`kor-travel-shared-db-init-dagster`, `kor-travel-dagster-storage-migrate`, DB는 공용 `11000`의 `dagster_shared`) | Manager (platform-topology.md §7, ADR-54) |
-| `transport` | `14001-14099` | Backend `14001`, Frontend `14002`, Dagster 게이트웨이 `14003`·webserver `14004`·code-server(gRPC) `14005`(셋 다 loopback, Manager 미등록 컨테이너) (DB는 공용 `11000`의 `kor_travel_transport`) | `kor-travel-transport` (외부 프로젝트) |
+| `transport` | `14001-14099` | Backend `14001`, Frontend `14002`, Dagster code-server(gRPC) `14005`(loopback, 공용 Dagster plane의 location `kor-travel-transport`, ADR-54 개정). 옛 전용 Dagster 게이트웨이 `14003`·webserver `14004`는 그 저장소의 `legacy-dagster` profile이라 평소 듣지 않는다 (DB는 공용 `11000`의 `kor_travel_transport`) | `kor-travel-transport` (외부 프로젝트) |
 
 ### `gra`/`cadv`/`prom`의 대역 예외 (ADR-48)
 
@@ -61,8 +61,9 @@ target 이름이 가리키는 100단위 대역(`12200-12299`/`12300-12399`/`1240
 
 **`cadv` 대역은 비어 있지 않다.** Manager에 등록되지 않은 외부 compose 프로젝트
 `kor-travel-transport-admin`(transport 저장소의 `docker-compose.transport-admin.yml`)이
-이 대역 안의 `12301`(API 게이트웨이)·`12302`(Dagster 게이트웨이)·`12305`(관리 웹)를
-`0.0.0.0`에서 listen한다(2026-09-28 n150 `ss -ltn` 실측). Manager는 이 프로젝트를 모르므로
+이 대역 안의 `12301`(API 게이트웨이)·`12305`(관리 웹)를
+`0.0.0.0`에서 listen한다(2026-09-28 n150 `ss -ltn` 실측). 옛 `12302`(transport 전용 Dagster 게이트웨이)는
+transport가 공용 Dagster plane에 합류하며 없어졌다(ADR-54 개정 2026-10-02, 그 저장소의 운영 UI 배포가 지운다). Manager는 이 프로젝트를 모르므로
 포트 충돌을 알려 주지 않는다 — `12300-12399`에 새 포트를 배정하지 않는다.
 
 ### 외부 프로젝트 대역 (`14000-14099`)
