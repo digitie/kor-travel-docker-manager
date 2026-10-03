@@ -436,9 +436,13 @@ class _ProbeWorld:
         check_error: str | None = None,
         reap: bool = False,
         now: float | None = None,
+        wall: float | None = None,
         records: tuple[_FakeRecord, ...] = (),
     ) -> int:
-        """probe를 한 번 실행하고 exit code를 돌려준다(끝까지 가면 0)."""
+        """probe를 한 번 실행하고 exit code를 돌려준다(끝까지 가면 0).
+
+        `now`는 monotonic 시계, `wall`은 벽시계다(없으면 `now`와 같다 — NTP step을 흉내낼 때만 따로 준다).
+        """
 
         import os
         import subprocess
@@ -517,12 +521,13 @@ class _ProbeWorld:
             "dagster._core.storage.dagster_run": runs,
         }
         saved_modules = {name: sys.modules.get(name) for name in fakes}
-        saved = (sys.argv, sys.orig_argv, time.time, os.kill, subprocess.Popen)
+        saved = (sys.argv, sys.orig_argv, time.time, time.monotonic, os.kill, subprocess.Popen)
         sys.modules.update(fakes)
         sys.argv = ["-c", "12345", *(["reap"] if reap else [])]
         sys.orig_argv = ["python", "-I", "-c", probe, *sys.argv[1:]]
         if now is not None:
-            time.time = lambda: now  # type: ignore[assignment]
+            time.monotonic = lambda: now  # type: ignore[assignment]
+            time.time = lambda: now if wall is None else wall  # type: ignore[assignment]
         os.kill = lambda pid, sig: world.kills.append((pid, sig))  # type: ignore[assignment]
         subprocess.Popen = lambda argv, **kwargs: world.spawned.append(argv)  # type: ignore[assignment,misc]
         try:
@@ -531,7 +536,7 @@ class _ProbeWorld:
         except SystemExit as exited:
             code = 0 if exited.code is None else int(exited.code)
         finally:
-            sys.argv, sys.orig_argv, time.time, os.kill, subprocess.Popen = saved  # type: ignore[assignment,misc]
+            (sys.argv, sys.orig_argv, time.time, time.monotonic, os.kill, subprocess.Popen) = saved  # type: ignore[assignment,misc]
             for name, module in saved_modules.items():
                 if module is None:
                     sys.modules.pop(name, None)
@@ -583,6 +588,8 @@ _LOADED = {"reply": b'{"__class__": "ListRepositoriesResponse"}'}
 _DOWN_SECONDS = 90
 _TIMEOUT_SECONDS = 300
 _ABANDON_SECONDS = 7200
+#: 한 번도 healthy가 아닌 컨테이너의 시간 초과 문턱 — 부팅 때 느린 자식은 기다리고, 부팅부터 멈춘 자식은 죽인다.
+_PRE_HEALTHY_TIMEOUT_SECONDS = 1800
 
 
 def _hz() -> int:
@@ -618,9 +625,59 @@ def test_the_probe_kills_pid1_only_after_failing_for_long_enough(
     assert world.kills == [(1, 15)]
 
 
-def test_before_the_first_healthy_probe_timeouts_never_kill(world: _ProbeWorld) -> None:
-    """부팅 때 디스크 폭주로 느린 자식을 죽이지 않는다 — 한 번도 healthy가 아니면 시간 초과로는 죽이지 않는다."""
-    assert world.series(_the_probe(), 0, 3600, 30, **_TIMEOUT) is None
+def test_before_the_first_healthy_probe_timeouts_wait_half_an_hour(world: _ProbeWorld) -> None:
+    """부팅 때 디스크 폭주로 느린 자식은 5분 문턱으로 죽이지 않는다. 그러나 부팅부터 멈춘 자식(`Check`는 SERVING,
+    `ListRepositories`는 처음부터 시간 초과)은 한 번도 healthy가 못 되니 그 문턱이 영영 안 걸린다 — 30분이면
+    죽인다(2026-10-03 적대 리뷰 LOW)."""
+    killed_at = world.series(_the_probe(), 0, _PRE_HEALTHY_TIMEOUT_SECONDS + 60, 30, **_TIMEOUT)
+    assert killed_at == _PRE_HEALTHY_TIMEOUT_SECONDS, killed_at
+    assert world.kills == [(1, 15)]
+
+
+@pytest.mark.parametrize("kwargs", [_LOAD_ERROR, _UNREACHABLE], ids=["load error", "unreachable"])
+@pytest.mark.parametrize("step", [-3600, 3600], ids=["clock stepped back", "clock stepped forward"])
+def test_an_ntp_step_does_not_move_the_thresholds(
+    world: _ProbeWorld, kwargs: dict[str, Any], step: int
+) -> None:
+    """문턱은 monotonic 시계로 잰다 — 벽시계가 NTP로 한 시간 뒤로 가도 90초에 죽이고, 앞으로 가도 일찍 죽이지
+    않는다(2026-10-03 적대 리뷰 LOW). Linux monotonic은 시스템 전역이고 상태 키가 `boot_id`를 품는다."""
+    probe = _the_probe()
+    _healthy_once(world, probe)
+    killed_at = None
+    for t in range(0, _DOWN_SECONDS + 61, 30):
+        world.run(probe, now=_T0 + t, wall=_T0 + t + (step if t >= 30 else 0), **kwargs)
+        if world.kills:
+            killed_at = t
+            break
+    assert killed_at == _DOWN_SECONDS, killed_at
+
+
+def test_concurrent_probes_never_share_a_temp_file(
+    world: _ProbeWorld, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """부하 때 timeout을 넘긴 probe는 다음 probe와 겹친다. 같은 `path + '.new'`를 쓰면 서로의 임시 파일을 덮거나
+    옮긴다 — 임시 이름은 probe마다 다르고(pid + 난수) 쓰기는 `os.replace`로 원자적이다(2026-10-03 적대 리뷰 LOW)."""
+    import os
+
+    probe = _the_probe()
+    sources: list[str] = []
+    real_replace = os.replace
+
+    def replace(src: Any, dst: Any) -> None:
+        sources.append(str(src))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    foreign = world.tmp / ".ktdm-probe-fails.new"
+    foreign.write_text("another probe is writing this")
+    world.run(probe, now=_T0, **_LOAD_ERROR)
+    world.run(probe, now=_T0 + 30, **_LOAD_ERROR)
+    assert len(sources) == 2 and len(set(sources)) == 2, sources
+    assert str(foreign) not in sources
+    assert foreign.read_text() == "another probe is writing this"
+    assert (world.tmp / ".ktdm-probe-fails").read_text().split()[1] == "2"
+    left = sorted(p.name for p in world.tmp.iterdir() if p.name.startswith(".ktdm-probe-fails"))
+    assert left == [".ktdm-probe-fails", ".ktdm-probe-fails.new"], left
 
 
 def test_a_child_that_never_loads_is_still_killed(world: _ProbeWorld) -> None:
@@ -665,24 +722,31 @@ def test_a_success_resets_the_streak(world: _ProbeWorld) -> None:
     assert world.series(probe, 80, 80 + _DOWN_SECONDS - 10, 30, **_UNREACHABLE) is None
 
 
-@pytest.mark.parametrize("change", ["container restart", "host reboot", "corrupt file"])
+@pytest.mark.parametrize(
+    "change", ["container restart", "host reboot", "corrupt file", "wall-clock format file"]
+)
 def test_a_new_incarnation_or_a_broken_file_starts_the_streak_over(
     world: _ProbeWorld, change: str
 ) -> None:
     """`/tmp`는 `docker restart`를 넘어 남는다 — 옛 incarnation의 실패를 이어 세지 않는다. 호스트 재부팅 뒤에는 같은
-    PID 1 tick이 다시 나올 수 있어 `boot_id`도 본다. 깨진 파일은 처음부터다."""
+    PID 1 tick이 다시 나올 수 있어 `boot_id`도 본다. 깨진 파일은 처음부터다. 벽시계로 쓴 옛 형식 파일(필드 넷)도
+    처음부터다 — 그 시각을 monotonic 시계에서 빼면 문턱이 엉뚱해진다."""
     probe = _the_probe()
     world.series(probe, 0, 60, 30, **_LOAD_ERROR)
     if change == "container restart":
         world.incarnation(boot_id="boot-a", pid1_ticks=9000 * _hz())
     elif change == "host reboot":
         world.incarnation(boot_id="boot-b", pid1_ticks=1000 * _hz())
-    else:
+    elif change == "corrupt file":
         (world.tmp / ".ktdm-probe-fails").write_text("garbage")
+    else:
+        old = _T0 - 1000
+        (world.tmp / ".ktdm-probe-fails").write_text(f"boot-a:{1000 * _hz()} 5 {old} {old}")
     world.run(probe, now=_T0 + 200, **_LOAD_ERROR)
     assert world.kills == [], change
     assert (world.tmp / ".ktdm-probe-fails").read_text().split()[1:3] == ["1", str(_T0 + 200)]
-    assert not (world.tmp / ".ktdm-probe-fails.new").exists()
+    left = sorted(p.name for p in world.tmp.iterdir() if p.name.startswith(".ktdm-probe-fails"))
+    assert left == [".ktdm-probe-fails"], left
 
 
 @pytest.mark.parametrize("kwargs", [_LOAD_ERROR, _UNREACHABLE], ids=["load error", "unreachable"])
