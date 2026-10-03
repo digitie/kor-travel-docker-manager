@@ -823,8 +823,8 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "987db472ace5845a"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "c4a18eb47deb0693"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "cd0fff9b88ceaff1"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -893,8 +893,8 @@ services:
     environment:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "987db472ace5845a"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "c4a18eb47deb0693"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "cd0fff9b88ceaff1"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -1629,7 +1629,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "c4a18eb47deb0693"
       TMPDIR: /tmp
       TEMP: /tmp
       TMP: /tmp
@@ -2056,7 +2056,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "c4a18eb47deb0693"
       DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       # 여기가 code location이 실제로 도는 곳이다 — `DefaultRunLauncher`의 run
@@ -2373,7 +2373,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "c4a18eb47deb0693"
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:?KOR_TRAVEL_GEO_DAGSTER_PG_URL must be explicitly set}
@@ -2766,7 +2766,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "c4a18eb47deb0693"
       DAGSTER_HOME: /opt/dagster/home
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}

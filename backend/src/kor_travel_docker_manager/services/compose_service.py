@@ -5047,7 +5047,8 @@ class ComposeService:
                     f"the shared plane workspace lists {location}, which no Dagster target serves"
                 )
             for service in family.legacy:
-                container = installed_container_name(service)
+                # 형제 프로젝트(transport)의 옛 서비스는 그 project의 이름 규칙으로 찾는다.
+                container = family.container_name(service)
                 if self._inspect_container_running(container, label=service):
                     running.append(f"{service} ({container}, location {location})")
         if running:

@@ -837,7 +837,19 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
 #: env. 형태만 여기서 본다 — compose가 그 선언의 모양인지는
 #: `backend/tests/test_dagster_shared_workspace_is_derived.py`가 파생해 대조한다.
 DAGSTER_CONTROL_PLANES: Final = ("own", "shared")
-_DAGSTER_FIELDS: Final = frozenset({"control_plane", "consumers"})
+_DAGSTER_FIELDS: Final = frozenset({"control_plane", "consumers", "external"})
+#: 형제 프로젝트(`external_project`)의 Dagster 모양. compose가 이 저장소 밖이라 모양에서 파생할 수 없어 적는다 —
+#: 전환 스크립트가 그 프로젝트의 렌더된 compose에서 같은 모양을 파생해 대조한다(어긋나면 멈춘다).
+_DAGSTER_EXTERNAL_FIELDS: Final = (
+    "code_server",
+    "webserver",
+    "daemon",
+    "gateways",
+    "location_name",
+    "port",
+)
+_COMPOSE_SERVICE_NAME: Final = re.compile(r"[a-z0-9][a-z0-9_.-]*")
+_LOCATION_NAME: Final = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 #: 소비자 env의 종류 — 공용 webserver(`internal`)나 공개 host(`public`), 뒤에 경로를 붙일 수 있다.
 _DAGSTER_CONSUMER_KIND: Final = re.compile(r"(internal|public)(/[A-Za-z0-9._~/-]*)?")
 _ENV_NAME: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -878,6 +890,53 @@ def _validate_dagster_field(spec: dict[str, Any], *, target_id: str, label: str)
                     f"{where}.consumers.{service}.{name}: kind must be internal or public, "
                     f"optionally followed by a path (got {kind!r})"
                 )
+    _validate_dagster_external(spec, block, where=where)
+
+
+def _validate_dagster_external(spec: dict[str, Any], block: dict[str, Any], *, where: str) -> None:
+    """형제 프로젝트의 `dagster.external` — 형제 프로젝트에는 필수, Manager 자신의 target에는 금지.
+
+    형제 프로젝트의 소비자 env는 그 저장소가 소유한다(그 compose를 여기서 볼 수 없다) — `consumers`를 받지 않는다.
+    """
+
+    is_external = "external_project" in spec
+    external = block.get("external")
+    if not is_external:
+        if external is not None:
+            raise TargetsConfigError(
+                f"{where}.external: only a sibling project (external_project) declares its Dagster shape"
+            )
+        return
+    if block.get("consumers"):
+        raise TargetsConfigError(
+            f"{where}.consumers: a sibling project's consumers live in its own repository"
+        )
+    if not isinstance(external, dict):
+        raise TargetsConfigError(
+            f"{where}.external: a sibling project must declare its Dagster shape "
+            f"({', '.join(_DAGSTER_EXTERNAL_FIELDS)})"
+        )
+    unknown = sorted(set(external) - set(_DAGSTER_EXTERNAL_FIELDS))
+    missing = [field for field in _DAGSTER_EXTERNAL_FIELDS if field not in external]
+    if unknown or missing:
+        raise TargetsConfigError(f"{where}.external: unknown {unknown}, missing {missing}")
+    for field in ("code_server", "webserver", "daemon"):
+        if not isinstance(external[field], str) or not _COMPOSE_SERVICE_NAME.fullmatch(external[field]):
+            raise TargetsConfigError(f"{where}.external.{field}: must be a compose service name")
+    gateways = external["gateways"]
+    if not isinstance(gateways, list) or not all(
+        isinstance(name, str) and _COMPOSE_SERVICE_NAME.fullmatch(name) for name in gateways
+    ):
+        raise TargetsConfigError(f"{where}.external.gateways: must be a list of compose service names")
+    names = [external["code_server"], external["webserver"], external["daemon"], *gateways]
+    if len(set(names)) != len(names):
+        raise TargetsConfigError(f"{where}.external: service names must be distinct")
+    location = external["location_name"]
+    if not isinstance(location, str) or not _LOCATION_NAME.fullmatch(location):
+        raise TargetsConfigError(f"{where}.external.location_name: must be a code location name")
+    port = external["port"]
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise TargetsConfigError(f"{where}.external.port: must be a literal TCP port")
 
 
 def _validate_external_project(spec: dict[str, Any], *, target_id: str, label: str) -> None:

@@ -148,7 +148,7 @@ internal target이 되며 `network_mode: host`로도 옮겨왔다 — 지금은 
 | `geo` | `kor-travel-geo-dagster` `12502` | `kor-travel-geo-dagster-daemon`(포트 없음) | `kor-travel-geo-dagster-code-server` `12503` | PR #357 — pinvi와 같은 3-분리 형태(상세는 그 PR 참조, 이 문서는 표만 갱신) |
 | `map` | `kor-travel-map-dagster` `12702` | `kor-travel-map-dagster-daemon` (포트 없음) | `kor-travel-map-dagster-code-server` `12703`(loopback 전용) | #397 — webserver/daemon → `-w workspace.yaml`(grpc_server), code-server만 `-m kortravelmap.dagster.definitions` |
 | `weather` | `kor-travel-weather-dagster-webserver` 내부 전용 `14107` + 게이트웨이(Basic Auth) `14102` | `kor-travel-weather-dagster-daemon` (포트 없음) | `kor-travel-weather-dagster-code-server` `14106`(loopback 전용, 무인증) | ADR-47 — Manager 소유, webserver/daemon → `-w workspace.yaml`(grpc_server, Manager 소유 오버라이드가 `host: dagster-code-server`를 `127.0.0.1`로 재작성), code-server만 `-m kortravelweather_dagster.definitions` |
-| `transport`(외부) | 그 저장소 compose | 그 저장소 compose | `kor-travel-transport-dagster-code-server-1` | 그 저장소가 소유한다 — Manager compose에는 없다 |
+| `transport`(외부) | 공용(옛 `kor-travel-transport-dagster-webserver-1`은 그 저장소의 `legacy-dagster`) | 공용(옛 daemon도 `legacy-dagster`) | `kor-travel-transport-dagster-code-server-1` `127.0.0.1:14005`(`dagster code-server start --location-name kor-travel-transport`) | 그 저장소가 소유한다 — Manager compose에는 없고, 모양은 targets의 `dagster.external`이 선언한다(ADR-54 개정 2026-10-02) |
 | `conc` | 없음 | — | 없음 | — |
 | 공용(`dagster`) | `kor-travel-dagster-webserver` `127.0.0.1:11002` + 게이트웨이 `kor-travel-dagster-gateway` `11001`(Basic Auth) | `kor-travel-dagster-daemon` (포트 없음) | 없음 — 합류한 프로젝트의 code-server를 본다 | ADR-54 — `-w config/dagster-shared/workspace.yaml`(파생물, 지금은 `load_from: []`), 호스트 이미지 `kor-travel-dagster-host`, instance는 공용 `dagster.yaml` |
 
@@ -248,12 +248,13 @@ instance를 한 번 재기동해 Map이 전용 instance에서 쓰던 값을 올�
 code-server (dagster code-server start)  ← 프로젝트별 분리 유지, 각자 포트
 ```
 
-**참여 범위.** 공용 plane은 Map·PinVi·geo·weather 넷이다. **transport는 나중에 합류한다** —
-빠진 것이 아니라 미뤘다. 그때까지 transport는 자기 webserver·daemon·메타DB
-(`kor_travel_transport_dagster`)를 그대로 쓰고, Manager 배포로 옮겨 온 뒤(M-T) 같은 절차로
-합류한다. 설계는 그 합류가 재설계 없이 되게 잡았다 — 공용 `dagster.yaml`에
-`dagster/code_location=<transport code-server의 -m 모듈>` 상한 3과 `kortraveltransport/run_group`
-상한 넷(각 1)을 더하는 것이 전부다(키가 이미 테넌트 이름공간이라 겹치지 않는다).
+**참여 범위.** 공용 plane은 Map·PinVi·geo·weather에 **transport**를 더한 다섯이다. transport는
+Manager 배포로 옮겨 오지 않고(M-T 없이) **형제 프로젝트 그대로** 합류한다(ADR-54 개정 2026-10-02): compose가
+그 저장소에 있어 Manager는 모양을 파생할 수 없으므로 target의 `dagster.external`이 모양을 선언한다 —
+code-server·옛 webserver·daemon·gateway의 compose 서비스 이름, location `kor-travel-transport`(옛 workspace의
+이름 그대로), literal 포트 `14005`. 공용 workspace의 항목과 공용 `dagster.yaml`의 상한(`dagster/code_location`
+3, `kortraveltransport/run_group` 넷 각 1)이 그 선언에서 나오고, 창 스크립트가 그 프로젝트의 렌더에서 파생한
+모양과 대조한다. 옛 메타DB `kor_travel_transport_dagster`는 다른 테넌트처럼 보존한다(D1·D6).
 
 **포트(D2).** `11001`은 공용 Dagster의 **입구 하나**다 — nginx Basic Auth gateway가 듣고,
 HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보낸다. webserver는

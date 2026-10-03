@@ -4202,7 +4202,7 @@ def test_a_workspace_location_whose_own_daemon_runs_is_refused(
         for location, family in owners.items()
         if location in harness.live["workspace_locations"] and family.target not in {"map", "pinvi"}
     )
-    running = runtime_topology_module.installed_container_name(other.daemon)
+    running = other.container_name(other.daemon)
     harness.mocks.pinvi_bootstrap.side_effect = (
         lambda *_args, **_kwargs: cast(set[str], harness.live["running_containers"]).add(running)
     )

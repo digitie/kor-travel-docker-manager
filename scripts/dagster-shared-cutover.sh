@@ -29,10 +29,12 @@
 #
 # 운영: systemd-run으로(세션이 끊겨도 계속):
 #   systemd-run --unit=dagster-cutover-<target> --collect /opt/kor-travel-docker-manager/scripts/dagster-shared-cutover.sh <target> forward <sha>
+#   형제 프로젝트(transport)는 env 파일을 systemd-run으로 넘긴다(셸 env는 unit에 가지 않는다):
+#   systemd-run --unit=dagster-cutover-transport --collect -E EXTERNAL_ENV_FILE=<file> /opt/kor-travel-docker-manager/scripts/dagster-shared-cutover.sh transport forward <sha>
 # stdin이 tty면 거부한다(tmux 안이면 FORCE_TTY=1). 설치와 forward는 이어서 돌고, 그 사이 아무도 공용 plane을
 # 재시작하지 않는다(재시작하면 새 workspace로 target을 싣는데 옛 daemon은 아직 tick한다 — 스크립트가 확인한다).
 #
-# 환경: FIRST_TICK_TIMEOUT_S(기본 4500), SAMPLE_EVERY_S(기본 30), ROLLBACK_RELEASE(forward 실패 때 찍을 되돌릴
+# 환경: EXTERNAL_ENV_FILE(형제 프로젝트 target에만, 필수 — 위), FIRST_TICK_TIMEOUT_S(기본 4500), SAMPLE_EVERY_S(기본 30), ROLLBACK_RELEASE(forward 실패 때 찍을 되돌릴
 # release — 전환 직전 설치본의 sha. 없으면 "전환 직전 설치본"이라고만 찍는다), REQUIRE_MAP_IDLE(1이면 pinned
 # 재구축이 끊을 pair 상대편 — PinVi 전환이면 Map — 의 진행 중 run이 있을 때 멈춘다. 기본은 세어 알리기만: 소유자가
 # 그 손실을 받아들였다).
@@ -40,6 +42,16 @@
 # 공용 plane은 이미 다른 테넌트(weather 등)가 tick한다 — tick은 **이 target의 것만** 센다. 이 target의 instigator
 # selector id를 옛 DB에서 모아(`instigators`·`job_ticks`) `dagster_shared.job_ticks.selector_id`로 좁힌다. selector id는
 # location·repository·이름에서 결정되므로 두 instance에서 같다. run은 `dagster/code_location` tag로 좁힌다.
+#
+# 형제 프로젝트(`external_project`, transport): compose가 Manager 밖(그 프로젝트의 working_dir)에 있다. 그 target의
+# code-server·옛 서비스는 그 compose project에 있고, 공용 plane은 Manager project에 있다. 그래서
+#   - 그 프로젝트의 compose 파일은 **실행 중 code-server 컨테이너의 compose label**(project·working_dir·config_files)에서
+#     읽고 targets의 `external_project`와 대조한다. env 파일은 label이 말하지 못하므로(배포 스크립트의 임시 파일이다)
+#     `EXTERNAL_ENV_FILE`(소유자만 읽는 일반 파일, 필수)로 받는다 — transport는
+#     `DEPLOY_MODE=prepare-shared-dagster-cutover`가 만드는 `.env.server14.shared-dagster-cutover`다(이미지 tag 포함).
+#   - 모양은 그 렌더(`--profile legacy-dagster`)에서 같은 규칙으로 파생하고 targets의 `dagster.external` 선언과 대조한다
+#     (어긋나면 펜스 전에 멈춘다). code-server가 쓸 이미지가 호스트에 있어야 한다(전환은 빌드·pull하지 않는다).
+#   - 스위치는 compose 경로(`up -d --no-deps --no-build <code-server>`)이고, 소비자는 그 저장소가 따로 배포한다.
 #
 # 원칙: 비밀을 출력하지 않는다(compose config는 python이 읽고 이름·개수만 꺼낸다). 모든 단계는 실패하면 멈추고 무엇이
 # 실패했는지 말한다. 펜스 뒤 실패는 code-server가 아직 옛 instance면 옛 서비스를 되살리고, 아니면 되돌리기 명령을
@@ -54,7 +66,7 @@ TARGET="${1:-}"; MODE="${2:-}"; EXPECT="${3:-}"; RESUME_FROM="${4:-}"
 [[ "$(id -u)" == 0 ]] || { echo "run as root" >&2; exit 64; }
 if [[ -t 0 && "${FORCE_TTY:-0}" != 1 ]]; then
   echo "refusing to run on a terminal: a dropped session would stop between fence and switch." >&2
-  echo "run: systemd-run --unit=dagster-cutover-$TARGET --collect $0 $TARGET $MODE $EXPECT${RESUME_FROM:+ $RESUME_FROM}   (inside tmux: FORCE_TTY=1)" >&2
+  echo "run: systemd-run --unit=dagster-cutover-$TARGET --collect${EXTERNAL_ENV_FILE:+ -E EXTERNAL_ENV_FILE=$EXTERNAL_ENV_FILE} $0 $TARGET $MODE $EXPECT${RESUME_FROM:+ $RESUME_FROM}   (inside tmux: FORCE_TTY=1)" >&2
   exit 64
 fi
 
@@ -70,6 +82,10 @@ FIRST_TICK_TIMEOUT_S="${FIRST_TICK_TIMEOUT_S:-4500}"
 SAMPLE_EVERY_S="${SAMPLE_EVERY_S:-30}"
 ROLLBACK_RELEASE="${ROLLBACK_RELEASE:-}"
 REQUIRE_MAP_IDLE="${REQUIRE_MAP_IDLE:-0}"
+EXTERNAL_ENV_FILE="${EXTERNAL_ENV_FILE:-}"
+# 이 target의 서비스(code-server·옛 서비스·소비자)가 사는 compose project. Manager 자신의 target이면 Manager project이고,
+# 형제 프로젝트면 아래 external 단계가 그 project·working_dir·compose 파일로 바꾼다.
+TPROJECT="$PROJECT"; TWD=""; TFILES=()
 STATE=/root/dagster-cutover-$TARGET-$MODE-$(date -u +%Y%m%dT%H%M%SZ)
 mkdir -p "$STATE"
 
@@ -80,9 +96,21 @@ SEL_IN=""   # 이 target의 selector id SQL 목록 — ('…','…')
 say() { printf '[%s] %s/%s: %s\n' "$(date -u +%H:%M:%SZ)" "$TARGET" "$PHASE" "$*"; }
 count_lines() { awk 'NF { n++ } END { print n + 0 }' "$@"; }
 compose() { docker compose -p "$PROJECT" --project-directory "$ROOT" -f "$ROOT/docker-compose.yml" --env-file "$ROOT/.env" "$@"; }
+tcompose() {  # 이 target의 compose — Manager target이면 Manager compose, 형제 프로젝트면 그 project의 파일·env
+  if [[ -z "$TWD" ]]; then compose "$@"; return; fi
+  local f args=()
+  for f in "${TFILES[@]}"; do args+=(-f "$f"); done
+  docker compose -p "$TPROJECT" --project-directory "$TWD" "${args[@]}" --env-file "$EXTERNAL_ENV_FILE" "$@"
+}
+tup() {  # target 서비스 재생성(의존 없이). 형제 프로젝트는 빌드·pull하지 않는다 — 이미지는 그 저장소의 준비 단계가 만든다.
+  if [[ -n "$TWD" ]]; then tcompose up -d --no-deps --no-build "$@"; else compose up -d --no-deps "$@"; fi
+}
+project_of() {  # 서비스가 사는 compose project — 공용 plane 서비스는 Manager project, 나머지는 target의 project
+  case " $DAEMON $WEBSERVER $GATEWAY " in *" $1 "*) echo "$PROJECT" ;; *) echo "$TPROJECT" ;; esac
+}
 cid() {  # compose 서비스의 컨테이너 id(`compose run` 일회성 제외). 없으면 빈 문자열, 둘 이상이면 실패
   local ids n
-  ids="$(docker ps -aq --no-trunc --filter "label=com.docker.compose.project=$PROJECT" \
+  ids="$(docker ps -aq --no-trunc --filter "label=com.docker.compose.project=$(project_of "$1")" \
     --filter "label=com.docker.compose.service=$1" --filter "label=com.docker.compose.oneoff=False")"
   n="$(count_lines <<<"$ids")"
   (( n <= 1 )) || fail "$n containers match compose service $1 — refusing to guess which one is live"
@@ -96,13 +124,26 @@ sql() { docker exec -u postgres "$PG" sh -c 'psql -X -qAt -v ON_ERROR_STOP=1 -h 
 installed_rev() { basename "$(readlink -f "$ROOT")" | sed -n 's/^ktdm-release-\([0-9a-f]\{40\}\)$/\1/p'; }
 
 # ── 파생: 설치본 compose(legacy-dagster profile까지 렌더)·targets에서 이 target의 family ──────────────────
+# 형제 프로젝트 target이면 family는 그 프로젝트의 렌더(두 번째 입력)에서, 공용 plane은 Manager 렌더(stdin)에서 찾는다.
 derive() {
-  compose --profile legacy-dagster config --format json 2>/dev/null | python3 -I -c '
+  local t="${1:-$TARGET}"
+  if [[ "$t" == "$TARGET" && -n "$TWD" ]]; then
+    compose --profile legacy-dagster config --format json 2>/dev/null \
+      | python3 -I -c "$DERIVE_PY" "$t" "$ROOT/config/docker-targets.yml" \
+          <(tcompose --profile legacy-dagster config --format json 2>/dev/null)
+  else
+    compose --profile legacy-dagster config --format json 2>/dev/null \
+      | python3 -I -c "$DERIVE_PY" "$t" "$ROOT/config/docker-targets.yml" -
+  fi
+}
+DERIVE_PY='
 import json, shlex, sys
-target, targets_path = sys.argv[1], sys.argv[2]
+target, targets_path, target_compose = sys.argv[1], sys.argv[2], sys.argv[3]
 import re
 compose = json.load(sys.stdin)
 services = compose["services"]
+# 이 target의 서비스가 사는 렌더 — Manager target이면 같은 것, 형제 프로젝트면 그 프로젝트의 것.
+tservices = services if target_compose == "-" else json.load(open(target_compose, encoding="utf-8"))["services"]
 # targets YAML은 PyYAML 없이 읽을 수 없을 수 있다 — docker compose가 아니라 Manager 설치본의 python에 기대지 않으려고
 # 최소 파서 대신 yaml을 시도하고, 없으면 실패한다.
 try:
@@ -129,18 +170,60 @@ def code_server(s):
     argv = words(s)
     return any(w.rsplit("/", 1)[-1] == "dagster" and tuple(argv[i + 1:i + 3]) in (("code-server", "start"), ("api", "grpc"))
                for i, w in enumerate(argv))
-codes = [n for n in spec.get("services") or [] if n in services and code_server(services[n])]
+external = block.get("external") if spec.get("external_project") else None
+if spec.get("external_project") and not isinstance(external, dict):
+    sys.exit("targets.%s.dagster.external is not declared" % target)
+if spec.get("external_project") and target_compose == "-":
+    sys.exit("internal: no compose rendering for the sibling project %s" % target)
+# Manager target은 그 target의 `services` 안에서, 형제 프로젝트는 그 프로젝트의 렌더 전체에서 찾는다.
+candidates = list(tservices) if external is not None else [n for n in spec.get("services") or [] if n in tservices]
+codes = [n for n in candidates if code_server(tservices[n])]
 if len(codes) != 1: sys.exit("expected one code-server in %s, got %s" % (target, codes))
 code = codes[0]
-dependents = {n: s for n, s in services.items() if code in deps(s) and not shared_workspace(s)}
+dependents = {n: s for n, s in tservices.items() if code in deps(s) and not shared_workspace(s)}
 web = [n for n, s in dependents.items() if runs(s, "dagster-webserver")]
 dae = [n for n, s in dependents.items() if runs(s, "dagster-daemon")]
 if len(web) != 1 or len(dae) != 1: sys.exit("expected one old webserver and daemon, got %s %s" % (web, dae))
-gws = sorted(n for n, s in services.items() if n not in (web[0], dae[0]) and deps(s) & {web[0], dae[0]} and not shared_workspace(s))
-argv = words(services[code])
+gws = sorted(n for n, s in tservices.items() if n not in (web[0], dae[0]) and deps(s) & {web[0], dae[0]} and not shared_workspace(s))
+argv = words(tservices[code])
 location = flag(argv, "--location-name", "-l") or flag(argv, "-m", "--module-name")
-webport = flag(words(services[web[0]]), "-p", "--port")
+webport = flag(words(tservices[web[0]]), "-p", "--port")
 consumers = sorted(block.get("consumers") or {})
+if external is not None:
+    # 선언과 그 프로젝트의 실제 렌더가 같아야 한다 — Manager의 workspace·상한·펜스 검사는 선언을 싣는다.
+    port = flag(argv, "-p", "--port") or ""
+    derived = {"code_server": code, "webserver": web[0], "daemon": dae[0], "gateways": gws,
+               "location_name": location, "port": int(port) if port.isdigit() else port}
+    declared = {key: (sorted(external.get(key) or []) if key == "gateways" else external.get(key)) for key in derived}
+    differ = sorted(key for key in derived if derived[key] != declared[key])
+    if differ:
+        sys.exit("the %s compose differs from targets.%s.dagster.external in %s: rendered %s, declared %s"
+                 % (target, target, differ, {k: derived[k] for k in differ}, {k: declared[k] for k in differ}))
+    if flag(argv, "-h", "--host") != "127.0.0.1":
+        sys.exit("the %s code-server does not listen on 127.0.0.1 only" % target)
+    named = sorted(n for n in [code, web[0], dae[0], *gws] if tservices[n].get("container_name"))
+    if named:
+        sys.exit("the %s Dagster services set container_name (Manager expects the compose default names): %s" % (target, named))
+    # 공용 plane 모양(공용 URL을 받은 code-server)이면 Manager의 공용 plane code-server와 같은 규칙을 지킨다 — 이
+    # 저장소의 규칙 테스트가 그 compose를 볼 수 없으므로 여기서 효과로 본다: `code-server start`(reload가 정의를 다시
+    # 읽는다), Manager의 공용 probe(`x-dagster-code-server-probe`) 원문 그대로 exec 형식, 같은 proxy heartbeat, init.
+    tcode = tservices[code]
+    if "KOR_TRAVEL_DAGSTER_SHARED_PG_URL" in (tcode.get("environment") or {}):
+        if not any(argv[i:i + 2] == ["code-server", "start"] for i in range(len(argv))):
+            sys.exit("the %s code-server on the shared plane does not run `dagster code-server start`" % target)
+        proxies = [s for s in services.values() if any(words(s)[i:i + 2] == ["code-server", "start"] for i in range(len(words(s))))]
+        probes = {str(((s.get("healthcheck") or {}).get("test") or [None] * 5)[4]) for s in proxies}
+        ttls = {str((s.get("environment") or {}).get("DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS")) for s in proxies}
+        if len(probes) != 1 or len(ttls) != 1:
+            sys.exit("the Manager shared code-servers do not share one probe and heartbeat (%d, %d)" % (len(probes), len(ttls)))
+        test = [str(w) for w in ((tcode.get("healthcheck") or {}).get("test") or [])]
+        if test[:4] != ["CMD", "python", "-I", "-c"] or len(test) != 6 or test[4] != next(iter(probes)) or test[5] != port:
+            sys.exit("the %s code-server healthcheck is not the shared probe (exec form, Manager x-dagster-code-server-probe, port %s)" % (target, port))
+        if str((tcode.get("environment") or {}).get("DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS")) != next(iter(ttls)):
+            sys.exit("the %s code-server DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS differs from the shared code-servers (%s)" % (target, next(iter(ttls))))
+        if tcode.get("init") is not True:
+            sys.exit("the %s code-server does not run under init (init: true)" % target)
+    print("CODE_IMAGE=%s" % (tcode.get("image") or ""))
 def plane_webserver_port():
     plane_web = [n for n, s in services.items() if not s.get("profiles") and shared_workspace(s) and runs(s, "dagster-webserver")]
     if len(plane_web) != 1: sys.exit("expected one shared webserver, got %s" % plane_web)
@@ -163,7 +246,7 @@ print("CONSUMERS=%s" % " ".join(consumers))
 print("INTERNAL_CONSUMERS=%s" % ";".join(internal))
 print("PLANE_WEBSERVER_PORT=%s" % plane_webserver_port())
 print("CONTROL_PLANE=%s" % block.get("control_plane"))
-print("CODE_HAS_SHARED_URL=%s" % ("yes" if "KOR_TRAVEL_DAGSTER_SHARED_PG_URL" in (services[code].get("environment") or {}) else "no"))
+print("CODE_HAS_SHARED_URL=%s" % ("yes" if "KOR_TRAVEL_DAGSTER_SHARED_PG_URL" in (tservices[code].get("environment") or {}) else "no"))
 print("RUNTIME_SERVICES=%s" % " ".join(spec.get("runtime_services") or spec.get("services") or []))
 # 공용 plane — 파생 workspace를 붙인 활성 webserver·daemon, 그리고 그 webserver에 기대는 활성 gateway(이름을 적지 않는다).
 active = {n: s for n, s in services.items() if not s.get("profiles")}
@@ -184,8 +267,7 @@ limits = sorted(set(re.findall(r"CONNECTION LIMIT ([0-9]+)", " ".join(words(acti
 if len(limits) != 1: sys.exit("the shared db-init sets no single CONNECTION LIMIT: %s" % limits)
 print("PLANE_DB_INIT=%s" % dbi[0])
 print("PLANE_ROLE_CONNECTION_LIMIT=%s" % limits[0])
-' "${1:-$TARGET}" "$ROOT/config/docker-targets.yml"
-}
+'
 fact() { sed -n "s/^$1=//p" <<<"$2"; }
 
 # 공용 plane 서비스 — derive()가 설치본 compose에서 모양으로 찾는다(아래 derive 단계에서 채운다).
@@ -195,7 +277,7 @@ DAEMON=""; WEBSERVER=""; GATEWAY=""
 code_moved() {  # code-server가 공용 instance로 넘어갔는가 — 실제 상태로 본다
   local before now
   before="$(awk -v s="$CODE" '$1==s{print $2}' "$STATE/ids-before.txt" 2>/dev/null || true)"
-  now="$(docker ps -aq --no-trunc --filter "label=com.docker.compose.project=$PROJECT" \
+  now="$(docker ps -aq --no-trunc --filter "label=com.docker.compose.project=$TPROJECT" \
     --filter "label=com.docker.compose.service=$CODE" --filter "label=com.docker.compose.oneoff=False" 2>/dev/null | head -1 || true)"
   [[ -z "$before" || -z "$now" || "$now" != "$before" ]] && return 0
   docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$now" 2>/dev/null | grep -q '^KOR_TRAVEL_DAGSTER_SHARED_PG_URL='
@@ -205,7 +287,7 @@ rollback_hint() {
 }
 resume_hint() {
   echo "recover: to finish the cutover instead (same installed release $EXPECT; the pinned rebuild is idempotent under it):" >&2
-  echo "  systemd-run --unit=dagster-cutover-$TARGET-resume --collect $0 $TARGET resume $EXPECT $STATE" >&2
+  echo "  systemd-run --unit=dagster-cutover-$TARGET-resume --collect${EXTERNAL_ENV_FILE:+ -E EXTERNAL_ENV_FILE=$EXTERNAL_ENV_FILE} $0 $TARGET resume $EXPECT $STATE" >&2
   echo "  it re-checks the fence, reruns the switch$([[ "$SWITCH" == pinned ]] && echo " (scripts/run-pinned-rebuild-once $(installed_rev) <new outdir>)"), recreates the plane" >&2
   echo "  (compose up -d --no-deps ${DAEMON:-<shared daemon>} ${WEBSERVER:-<shared webserver>}), verifies the location and instigator parity, removes the old containers" >&2
 }
@@ -228,7 +310,7 @@ recover() {
     elif plane_clean quiet; then
       echo "recover: $CODE is still on the old instance and the plane does not list $LOCATION — restarting the old services" >&2
       for s in "$OLD_WEBSERVER" "$OLD_DAEMON" $OLD_GATEWAYS; do
-        c="$(docker ps -aq --filter "label=com.docker.compose.project=$PROJECT" --filter "label=com.docker.compose.service=$s" \
+        c="$(docker ps -aq --filter "label=com.docker.compose.project=$TPROJECT" --filter "label=com.docker.compose.service=$s" \
           --filter "label=com.docker.compose.oneoff=False" 2>/dev/null | head -1 || true)"
         if [[ -n "$c" ]] && docker start "$c" >/dev/null 2>&1; then echo "recover: started $s" >&2; else echo "recover: COULD NOT start $s" >&2; fi
       done
@@ -279,7 +361,28 @@ r = u.urlopen(u.Request("http://127.0.0.1:%s/graphql" % sys.argv[1], data=json.d
 print(json.dumps(json.load(r)))' "$2"; }
 graphql() { container_graphql "$WEBSERVER" "$PLANE_PORT" <<<"$1"; }
 old_graphql() { container_graphql "$OLD_WEBSERVER" "$OLD_WEBSERVER_PORT" <<<"$1"; }
-instigators_q() { printf '%s' '{ repositoryOrError(repositorySelector:{repositoryLocationName:"'"$LOCATION"'", repositoryName:"__repository__"}) { __typename ... on Repository { schedules { name scheduleState { status } } sensors { name sensorState { status } } } } }'; }
+instigators_q() { printf '%s' '{ repositoryOrError(repositorySelector:{repositoryLocationName:"'"$LOCATION"'", repositoryName:"__repository__"}) { __typename ... on Repository { schedules { name defaultStatus scheduleState { status } } sensors { name defaultStatus sensorState { status } } } } }'; }
+# stdin: GraphQL(위 query) → 상태가 코드의 `default_status`와 다른 schedule·sensor("이름 상태≠기본값"). 공용 instance는
+# 새로 시작하므로(D1) 상태 행이 없고 코드의 기본값으로 돈다 — 옛 instance에서 손으로 멈춘(또는 켠) instigator는 전환 뒤
+# 기본값으로 돌아가 쏘고(이중 정책), 동등 검증(e-verify)은 펜스 **뒤**에야 실패한다. 상태는 옮기지 않는다(D4) — 펜스 전에
+# 멈추고 이름을 말한다. 코드의 기본값을 바꾸거나 옛 instance에서 상태를 기본값으로 되돌린 뒤 다시 한다.
+dagster_versions_match() {  # $1: 이미지. 그 이미지의 dagster 버전 = 공용 webserver의 버전이면 0(둘을 말한다)
+  local image_version host_version
+  image_version="$(docker run --rm --network none --entrypoint python "$1" -I -c 'import importlib.metadata as m; print(m.version("dagster"))' 2>/dev/null)" || return 1
+  host_version="$(graphql '{ version }' | python3 -c 'import json, sys; print(json.load(sys.stdin)["data"]["version"])')" || return 1
+  say "dagster: $1 has ${image_version:-?}, the shared plane runs ${host_version:-?}"
+  [[ -n "$image_version" && "$image_version" == "$host_version" ]]
+}
+instigators_off_their_code_default() {
+  python3 -c '
+import json, sys
+d = json.load(sys.stdin)["data"]["repositoryOrError"]
+if d["__typename"] != "Repository": sys.exit("repository not loaded: %s" % d["__typename"])
+rows = [("schedule:" + s["name"], s["scheduleState"]["status"], s.get("defaultStatus")) for s in d["schedules"]]
+rows += [("sensor:" + s["name"], s["sensorState"]["status"], s.get("defaultStatus")) for s in d["sensors"]]
+for name, status, default in sorted(rows):
+    if default is None: sys.exit("the webserver reports no defaultStatus for %s" % name)
+    if status != default: print("%s %s!=%s" % (name, status, default))'; }
 running_instigators() {  # stdin: GraphQL → RUNNING schedule·sensor 이름(정렬, "schedule:"·"sensor:" 접두)
   python3 -c '
 import json, sys
@@ -414,6 +517,10 @@ consumer_scope_check() {  # 소비자가 공용 webserver에 이 location만 묻
     geo) [[ "$(docker exec "$(cid kor-travel-geo-api)" python -c 'from kortravelgeo.settings import Settings as S; print(S().dagster_repository_location_name)' 2>/dev/null | tail -1)" == "$LOCATION" ]] ;;
     # Map #1289: summary·pipeline·schedule 명령·writer drain이 `dagster_repository_location_name`으로 좁혀진다.
     map) [[ "$(docker exec "$(cid kor-travel-map-api)" python -c 'from kortravelmap.api.settings import ApiSettings as S; print(S().dagster_repository_location_name)' 2>/dev/null | tail -1)" == "$LOCATION" ]] ;;
+    # transport의 소비자는 다른 compose project(`kor-travel-transport-admin`)의 운영 UI다. 지금 떠 있는 것은 옛 전용
+    # webserver(14004)를 부르므로 공용 webserver의 다른 테넌트를 보지 못한다. 공용 webserver를 부르는 release는
+    # 이름 붙은 query만 이 location으로 좁혀 보낸다(transport `lib/dagster-scope.ts`) — 전환 **뒤에** 배포한다.
+    transport) say "transport's consumer (kor-travel-transport-admin) is deployed after the cutover with location-scoped queries (transport runbook)"; return 0 ;;
     *) say "WARNING: no consumer-scoping probe for $TARGET — check by hand (runbook step 4) that its consumers scope to $LOCATION"; return 0 ;;
   esac
 }
@@ -506,6 +613,36 @@ say "holding lock G; state dir $STATE"
 
 PHASE="derive"
 rev="$(installed_rev)"; [[ -n "$rev" && "$rev" == "$EXPECT"* ]] || fail "installed release is ${rev:-unknown}, expected $EXPECT"
+# 형제 프로젝트면 그 compose project·working_dir를 targets에서, compose 파일을 실행 중 code-server의 label에서 읽는다.
+external="$(python3 -I -c '
+import sys, yaml
+spec = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["targets"][sys.argv[2]]
+project = spec.get("external_project") or {}
+external = (spec.get("dagster") or {}).get("external") or {}
+if project:
+    print(project["project"], project["working_dir"], external.get("code_server", ""))
+' "$ROOT/config/docker-targets.yml" "$TARGET")" || fail "cannot read targets.$TARGET from the installed release"
+if [[ -n "$external" ]]; then
+  read -r TPROJECT TWD ext_code <<<"$external"
+  [[ "$TPROJECT" =~ ^[a-z0-9][a-z0-9_-]*$ && "$TWD" == /* && -n "$ext_code" ]] \
+    || fail "targets.$TARGET.external_project / dagster.external are incomplete"
+  [[ -n "$EXTERNAL_ENV_FILE" ]] || fail "EXTERNAL_ENV_FILE is required for the sibling project $TARGET (its compose env file)"
+  # 비밀이 든 파일이다 — 일반 파일이고 소유자만 읽는다(되돌리기 때는 그 프로젝트의 이전 release가 working_dir를
+  # 다시 동기화하며 지울 수 있어 밖에 복사해 둔 것을 쓴다).
+  [[ -f "$EXTERNAL_ENV_FILE" && ! -L "$EXTERNAL_ENV_FILE" && "$(stat -c '%a' "$EXTERNAL_ENV_FILE")" =~ ^[46]00$ ]] \
+    || fail "EXTERNAL_ENV_FILE must be a regular file readable by its owner only (0600/0400)"
+  ext_c="$(docker ps -aq --no-trunc --filter "label=com.docker.compose.project=$TPROJECT" \
+    --filter "label=com.docker.compose.service=$ext_code" --filter "label=com.docker.compose.oneoff=False")"
+  [[ "$(count_lines <<<"$ext_c")" == 1 ]] || fail "expected one $TPROJECT $ext_code container to read the compose files from"
+  [[ "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$ext_c")" == "$TWD" ]] \
+    || fail "$ext_code was not created from $TWD"
+  IFS=',' read -r -a TFILES <<<"$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$ext_c")"
+  (( ${#TFILES[@]} > 0 )) || fail "$ext_code carries no compose config_files label"
+  for f in "${TFILES[@]}"; do
+    [[ "$f" == "$TWD"/* && -f "$f" && ! -L "$f" ]] || fail "compose file $f of $TPROJECT is not a regular file inside $TWD"
+  done
+  say "sibling project $TPROJECT in $TWD: compose files ${TFILES[*]##*/}, env file ${EXTERNAL_ENV_FILE##*/}"
+fi
 facts="$(derive)" || fail "cannot derive $TARGET's Dagster family from the installed release"
 printf '%s\n' "$facts" > "$STATE/family.txt"
 CODE="$(sed -n 's/^CODE=//p' <<<"$facts")"; OLD_WEBSERVER="$(sed -n 's/^OLD_WEBSERVER=//p' <<<"$facts")"
@@ -525,6 +662,17 @@ if [[ "$SWITCH" == pinned ]]; then
   [[ -x "$ROOT/scripts/run-pinned-rebuild-once" ]] || fail "the installed release has no scripts/run-pinned-rebuild-once"
 fi
 say "code-server $CODE, old $OLD_WEBSERVER (port $OLD_WEBSERVER_PORT) + $OLD_DAEMON${OLD_GATEWAYS:+ + $OLD_GATEWAYS}, location $LOCATION, consumers [$CONSUMERS], switch $SWITCH"
+if [[ -n "$TWD" ]]; then
+  # 형제 프로젝트의 code-server는 `--no-build`로 다시 만든다 — 그 이미지가 호스트에 있어야 한다(펜스 전에 본다).
+  CODE_IMAGE="$(fact CODE_IMAGE "$facts")"
+  [[ -n "$CODE_IMAGE" ]] && docker image inspect "$CODE_IMAGE" >/dev/null 2>&1 \
+    || fail "the image $TPROJECT's $CODE would run (${CODE_IMAGE:-none}) is not on this host — build it with the sibling project's prepare step first"
+  say "$CODE will run $CODE_IMAGE"
+  # Manager 자신의 code-server는 Manager가 짓는 이미지라 호스트와 같은 dagster로 맞춰지지만, 형제 프로젝트의 이미지는 그
+  # 저장소가 짓는다. 다른 버전이면 공용 webserver가 unhealthy가 되어(버전 상한) 전 테넌트가 함께 내려가고, 그것이 펜스
+  # **뒤**의 wait_health에서야 드러난다. 그래서 펜스 전에 같은지 본다.
+  dagster_versions_match "$CODE_IMAGE" || fail "the dagster version of $CODE_IMAGE differs from the shared plane's — pin the sibling project to the host version and prepare again"
+fi
 
 # ═════════════════════════════════════════════════════════════════════════
 if [[ "$MODE" == rollback ]]; then
@@ -561,12 +709,12 @@ if [[ "$MODE" == rollback ]]; then
   if [[ "$SWITCH" == pinned ]]; then
     pinned_rebuild   # own release: the old webserver·daemon are slot/companion services again
   else
-    compose up -d --no-deps "$CODE" >/dev/null
+    tup "$CODE" >/dev/null
     wait_health "$CODE" 420
-    compose up -d --no-deps "$OLD_WEBSERVER" >/dev/null
+    tup "$OLD_WEBSERVER" >/dev/null
     wait_health "$OLD_WEBSERVER" 300
     # shellcheck disable=SC2086 # 게이트웨이·소비자 목록은 공백으로 나뉜 서비스 이름이다
-    compose up -d --no-deps "$OLD_DAEMON" $OLD_GATEWAYS $CONSUMERS >/dev/null
+    tup "$OLD_DAEMON" $OLD_GATEWAYS $CONSUMERS >/dev/null
   fi
   wait_health "$CODE" 420
   env_has "$CODE" KOR_TRAVEL_DAGSTER_SHARED_PG_URL && fail "$CODE still has the shared metadata URL"
@@ -595,7 +743,7 @@ switch_and_verify() {
   else
     SWITCH_STARTED=1
     # shellcheck disable=SC2086
-    compose up -d --no-deps "$CODE" $CONSUMERS >/dev/null
+    tup "$CODE" $CONSUMERS >/dev/null
   fi
   wait_health "$CODE" 600
   env_has "$CODE" KOR_TRAVEL_DAGSTER_SHARED_PG_URL || fail "$CODE did not get the shared metadata URL"
@@ -678,6 +826,10 @@ sys.exit(0 if got.get(sys.argv[1]) == "RepositoryLocation" else "location not lo
   PHASE="done"
   say "forward cutover verified. By hand (runbook step 4): the first $TARGET run reaches SUCCESS in $NEW_DB; the switch SQL on"
   say "  dagster/code_location is 0; $TARGET's API/UI show only $LOCATION; keep sampling G3-a under load."
+  if [[ -n "$TWD" ]]; then
+    say "sibling project $TPROJECT: only $CODE was recreated. Converge the rest with its own deploy (transport:"
+    say "  scripts/deploy-server14.sh, then scripts/deploy-transport-admin-server14.sh for the location-scoped UI)."
+  fi
   local shared_url
   shared_url="$(sed -n 's/^KTDM_PROD_URL_DAGSTER=//p' "$ROOT/.env" | tail -1 | tr -d "\"'")"
   say "edge (information, not a prerequisite): $TARGET's old public Dagster hostname (e.g. $TARGET-dagster.digitie.mywire.org) has"
@@ -740,7 +892,10 @@ echo "$SHARED_TICKS_BASELINE" > "$STATE/tick_baseline"
 plane_clean || fail "the running plane already loaded the new workspace or ran $TARGET — double-fire risk (restarted since install?)"
 say "the running plane does not carry $LOCATION yet ($TARGET tick baseline $SHARED_TICKS_BASELINE)"
 consumer_scope_check || fail "a consumer of $TARGET is not scoped to $LOCATION — it would see or act on other tenants"
-old_graphql "$(instigators_q)" | running_instigators > "$STATE/old-running.txt" || fail "cannot read the old RUNNING instigators"
+old_graphql "$(instigators_q)" > "$STATE/old-instigators.json" || fail "cannot read the old instigators"
+running_instigators < "$STATE/old-instigators.json" > "$STATE/old-running.txt" || fail "cannot read the old RUNNING instigators"
+drift="$(instigators_off_their_code_default < "$STATE/old-instigators.json")" || fail "cannot compare the old instigator states with their code defaults"
+[[ -z "$drift" ]] || fail "instigators whose state on the old instance differs from default_status in code (the shared instance starts from the code default, states are not copied) — align them first: $(tr '\n' ' ' <<<"$drift")"
 active="$(app_active_operations)" || fail "cannot read $TARGET's active operations"
 [[ "$active" == 0 ]] || fail "$active active $TARGET operations still point at runs of the old instance — drain first (runbook §7 Map drain)"
 (( $(count_lines "$STATE/old-running.txt") > 0 )) || fail "the old instance shows no RUNNING instigators"

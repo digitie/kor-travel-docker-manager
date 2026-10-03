@@ -4375,6 +4375,30 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
        (`scripts/dagster-shared-cutover.sh <target> rollback <sha>`)로 한다 — plane에서 먼저 내린다.
      - 모두 `own`이면 plane을 건드리지 않고 docker 호출도 더하지 않는다(파생 이전 지문과 같다). M2의 물음은 plane
        webserver에 대한 읽기 하나다.
+   - **개정(2026-10-02, transport 합류): 형제 프로젝트(`external_project`)도 합류한다 — Manager로 옮겨 오지 않고(M-T
+     없이).** compose가 그 저장소에 있으므로 Manager는 모양을 파생할 수 없다. 그래서 그 target의 `dagster.external`이
+     모양을 **선언**한다(code-server·옛 webserver·daemon·gateway의 compose 서비스 이름, `--location-name`, literal `-p`).
+     - 공용 workspace의 항목과 `dagster/code_location` 상한(transport 3, `kortraveltransport/run_group` 넷 각 1 — 옛
+       instance 그대로, D3)은 그 선언에서 나온다. location 이름은 옛 workspace의 `kor-travel-transport` 그대로라 selector
+       id가 두 instance에서 같다(전환 스크립트의 tick 범위 한정이 성립한다).
+     - 선언과 실물의 일치는 **전환 때 효과로** 본다. 창 스크립트가 실행 중 code-server의 compose label(project·
+       working_dir·config_files)로 그 프로젝트를 `--profile legacy-dagster`까지 렌더하고 같은 규칙으로 파생해 선언과
+       대조한다. 어긋나거나 gRPC가 loopback이 아니거나 서비스가 `container_name`을 두면 펜스 전에 멈춘다. env 파일은
+       label이 말하지 못해(배포 스크립트의 임시 파일) `EXTERNAL_ENV_FILE`로 받는다. code-server는 `--no-build`로
+       다시 만들고 그 이미지가 호스트에 있어야 한다.
+     - 이중 발화 가드(M1)의 소유자에 형제 프로젝트가 든다. 옛 서비스의 컨테이너는 compose 기본 이름
+       (`<project>-<service>-1`)이다. 선언이 빠지면 그 location은 소유자가 없어 Map·PinVi 재구축이 거부한다(fail-closed).
+     - 소비자 env는 그 저장소가 소유한다(`consumers` 금지). transport의 소비자(운영 UI, 다른 compose project
+       `kor-travel-transport-admin`)는 이름 붙은 query만 자기 location으로 좁혀 보내고(`lib/dagster-scope.ts`), 전환
+       **뒤에** 배포한다 — 그 전의 UI는 옛 webserver를 불러 다른 테넌트를 보지 못한다.
+     - 형제 code-server도 공용 plane code-server 규칙(#456)을 지킨다 — `code-server start`, Manager 공용 probe 원문
+       (`x-dagster-code-server-probe`)을 exec 형식으로, 같은 proxy heartbeat, `init: true`. 창 스크립트가 렌더끼리
+       대조한다(저장소 사이에 SHA를 박지 않는다 — 효과로 본다).
+     - transport의 **되돌리기는 지원하지 않는다**(소유자 결정 — 보장 없는 수동 best-effort). 창 스크립트의 `rollback`
+       모드는 이 형제 프로젝트에 대해 검증하지 않았다(이전 release의 code-server는 `--location-name`이 없어 선언과의
+       대조에서 멈춘다).
+     - transport의 code-server는 `dagster code-server start`다(reload가 정의를 다시 읽는다 — Manager 쪽 전환은
+       `fix/dagster-code-server-reloadable`). 창 스크립트의 파생은 `api grpc`와 `code-server start`를 모두 code-server로 본다.
 
 ### 근거
 
@@ -4383,6 +4407,7 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
   것은 셋(daemon·webserver·gateway)뿐이다. 설치가 어떤 컨테이너의 재생성도 걸어 두지 않는다.
 - transport는 Manager 안으로 옮겨 온 뒤(M-T) `dagster` 필드 하나와 workspace의 파생 항목 하나로 합류한다 —
   location 이름이 custom이어도 `--location-name`을 읽는다. 상한 두 줄은 공용 `dagster.yaml`에 더한다(2단계).
+  (2026-10-02 개정: M-T를 기다리지 않고 형제 프로젝트 그대로 합류했다 — 위 개정, `dagster.external` 선언.)
 
 ### 결과
 

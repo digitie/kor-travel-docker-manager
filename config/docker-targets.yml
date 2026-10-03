@@ -688,6 +688,24 @@ targets:
     containers:
       - kor-travel-transport-backend
       - kor-travel-transport-frontend
+    # 공용 Dagster 제어 평면(ADR-54). 필드 설명은 geo target에 있다. 형제 프로젝트라 compose가 이 저장소 밖이다 —
+    # Manager는 그 모양을 파생할 수 없어 `external`에 적는다(code-server·옛 webserver·daemon·gateway의 compose
+    # 서비스 이름, code-server의 `--location-name`과 literal `-p`). 공용 workspace의 항목과 공용 `dagster.yaml`의
+    # `dagster/code_location` 상한이 이 값을 싣고(`test_dagster_shared_workspace_is_derived.py`·
+    # `test_dagster_shared_config.py`), 전환 스크립트(`scripts/dagster-shared-cutover.sh transport …`)가 그
+    # 프로젝트의 렌더된 compose(실행 중 code-server의 compose label이 말하는 파일들)에서 같은 모양을 파생해 이
+    # 선언과 대조한다 — 어긋나면 펜스 전에 멈춘다. 옛 서비스의 컨테이너는 compose 기본 이름
+    # (`kor-travel-transport-<service>-1`)이다. 소비자(운영 UI `kor-travel-transport-admin`, 다른 compose
+    # project)의 env는 그 저장소가 소유하고 그 저장소의 계약 테스트가 본다 — 여기 `consumers`를 두지 않는다.
+    dagster:
+      control_plane: shared
+      external:
+        code_server: dagster-code-server
+        webserver: dagster-webserver
+        daemon: dagster-daemon
+        gateways: [dagster-gateway]
+        location_name: kor-travel-transport
+        port: 14005
 
   weather:
     port_band: "14100-14199"
