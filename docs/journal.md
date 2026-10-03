@@ -8767,3 +8767,20 @@ api grpc`라 location reload가 "not currently supported" 경고만 남기고 �
   14 failed — 14건(`test_docker_service_config` 12, `test_m05_isolated_e2e_driver` 1, `test_pinned_runtime_rebuild` 1)은
   main `9dc51d9`의 같은 환경에서도 같은 14건이다(컨테이너에 docker CLI 없음 → "could not start"). 실제 transport 렌더
   (`docker compose config`, 예시 env)를 derive에 넣어 선언과 일치(CODE·옛 서비스·location·포트)를 확인했다.
+
+## 2026-10-04 — 공용 code-server probe의 LOW 셋(적대 리뷰 2026-10-03)
+
+- **부팅부터 멈춘 자식.** `Check`는 SERVING인데 `ListRepositories`가 처음부터 시간 초과면 한 번도 healthy가 못 되어
+  5분 문턱이 영영 안 걸렸다. 한 번도 healthy가 아니면 시간 초과 구간 30분에 죽인다(부팅 때 느린 자식은 기다린다).
+- **시계.** 문턱을 `time.monotonic()`으로 잰다 — NTP step이 문턱을 늘이거나 줄이지 않는다. Linux monotonic은 시스템
+  전역이고 상태 키가 `boot_id`를 품으므로 healthcheck 프로세스 사이에서 안전하다. 상태 파일에 `monotonic` 꼬리표를 더해
+  벽시계로 쓴 옛 파일(필드 넷)은 처음부터 센다. reaper의 시각(dagster `start_time`과 비교)과 5분 시도 간격(파일 mtime과
+  비교)은 벽시계 그대로다.
+- **임시 파일.** 겹친 probe가 같은 `path + '.new'`를 덮거나 옮기던 것을 probe마다 다른 이름(pid + 난수) + `os.replace`로.
+- 테스트(각각 옛 probe에 먼저 빨간 것을 봤다, 7 failed): 부팅부터 시간 초과면 1800초에 죽인다, 벽시계 ±1시간 step에도
+  90초에 죽인다(load error·닿지 못함), 남의 `.new` 임시 파일을 건드리지 않고 매 쓰기 이름이 다르다, 옛 형식 파일은
+  처음부터다.
+- **transport와 함께 간다.** transport `docker-compose.shared.yml`의 원문 사본을 같은 이름 브랜치
+  (`fix/dagster-probe-lows`)에 다시 복사했다 — 전환 스크립트가 두 원문을 정확히 대조한다.
+- 공용 config digest(instance `c4a18eb47deb0693`·workspace `cd0fff9b88ceaff1`·gateway `1f7e708e5c1bd519`)는 그대로다.
+  healthcheck가 바뀌는 것은 code-server 넷(map·pinvi·geo·weather)뿐이다.
