@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -798,3 +799,50 @@ def test_dagster_block_typos_are_refused(block: object, said: str) -> None:
     with pytest.raises(registry_module.TargetsConfigError) as excinfo:
         _validate_targets_config(config, label="test.yml")
     assert said in str(excinfo.value)
+
+
+#: 단일 파일로 보이는 bind source — 확장자로 가른다(디렉터리 bind는 확장자가 없다).
+_FILE_SOURCE = re.compile(r"\.(ya?ml|conf|sh|json|sql|py|ini|toml|txt|rules)$")
+
+
+def test_no_long_running_service_binds_a_single_file_from_a_sibling_checkout() -> None:
+    """형제 저장소 체크아웃(`${…_REPO_DIR…}`)의 **파일 하나**를 상시 서비스에 bind하지 않는다.
+
+    단일 파일 bind는 컨테이너를 만들 때의 inode에 묶이고, git은 갱신 때 파일을 새 inode로 바꿔 쓴다 — 그러면
+    컨테이너는 다시 만들 때까지 옛 내용을 읽는다(2026-10-02: weather Prometheus가 09-04의 alerts.yml로 남았다).
+    디렉터리를 붙인다. one-shot(`restart: "no"`)은 매번 새 컨테이너라 괜찮고, `legacy-dagster` 같은 꺼진 profile의
+    서비스도 돌지 않으므로 뺀다.
+    """
+
+    targets = yaml.safe_load((_ROOT / "config" / "docker-targets.yml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    offenders = []
+    seen_repo_binds = 0
+    for service_name, binds in targets["compose_binds"].items():
+        service = compose["services"].get(service_name) or {}
+        long_running = str(service.get("restart", "no")) != "no" and not service.get("profiles")
+        for bind in binds:
+            source = str(bind["source"])
+            if "_REPO_DIR" not in source:
+                continue
+            seen_repo_binds += 1
+            if long_running and _FILE_SOURCE.search(source):
+                offenders.append((service_name, source))
+    assert seen_repo_binds, "형제 체크아웃 bind를 하나도 못 봤다 — 검사가 항진이다"
+    assert offenders == []
+
+
+def test_the_weather_rules_reload_step_signals_only_its_prometheus() -> None:
+    """weather를 ensure한 뒤 그 Prometheus가 규칙을 다시 읽는다(SIGHUP) — 변경 범위는 그 서비스 하나다."""
+
+    from kor_travel_docker_manager.services.compose_service import ComposeService
+
+    targets = yaml.safe_load((_ROOT / "config" / "docker-targets.yml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    steps = {step["name"]: step["command"] for step in targets["targets"]["weather"]["init_steps"]}
+    command = steps["weather-prometheus-rules-reload"]
+    scope, _ = ComposeService._parse_compose_mutation(command)
+    assert scope == ["kor-travel-weather-prometheus"], (command, scope)
+    # 그 Prometheus는 규칙을 디렉터리 bind로 받는다(파일 bind면 SIGHUP이 옛 inode를 다시 읽는다).
+    volumes = [str(v) for v in compose["services"]["kor-travel-weather-prometheus"]["volumes"]]
+    assert any(v.endswith("/deploy/prometheus:/etc/prometheus/weather-rules:ro") for v in volumes), volumes
