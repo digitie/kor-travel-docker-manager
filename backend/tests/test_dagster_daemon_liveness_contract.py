@@ -437,7 +437,9 @@ class _ProbeWorld:
         import time
         import types
 
-        source = probe.replace("/proc", str(self.proc)).replace("/tmp/", f"{self.tmp}/")
+        # `/tmp/` 먼저 — pytest의 tmp_path가 `/tmp` 아래라 거꾸로 하면 넣은 경로를 다시 바꾼다.
+        source = probe.replace("'/tmp/", f"'{self.tmp}/").replace("'/proc", f"'{self.proc}")
+        assert "'/proc" not in source and "'/tmp/.ktdm" not in source
         world = self
 
         class _Channel:
@@ -620,11 +622,18 @@ def test_a_load_error_with_runs_in_flight_does_not_kill(world: _ProbeWorld) -> N
     assert world.kills == [(1, 15)]
 
 
-def test_an_unreachable_child_kills_even_with_runs_in_flight(world: _ProbeWorld) -> None:
+def test_an_unreachable_child_waits_for_runs_in_flight(world: _ProbeWorld) -> None:
+    """실패한 reload 직후 닿지 못함도 잠깐 보인다(n150 실측: 그 창에서 죽여 정상 run을 잃었다). 자식이 정말 죽었어도
+    run worker는 run을 마저 끝낸다 — run이 있는 동안은 기다리고, 끝나면 죽인다."""
+    import shutil
+
     probe = _the_probe()
     world.add_process(4242, _RUN_WORKER)
-    for _ in range(_KILL_THRESHOLD):
-        world.run(probe, error="UNAVAILABLE")
+    for _ in range(_KILL_THRESHOLD + 1):
+        assert world.run(probe, error="UNAVAILABLE") == 1
+    assert world.kills == []
+    shutil.rmtree(world.proc / "4242")
+    world.run(probe, error="UNAVAILABLE")
     assert world.kills == [(1, 15)]
 
 

@@ -58,12 +58,13 @@ x-dagster-shared-storage-guard: &dagster-shared-storage-guard |
 #    닿지 못함(다른 RPC 오류)은 `/tmp`에 **연속** 횟수를 세고(성공하면 지운다, incarnation이 바뀌면 처음부터) 3번째에
 #    PID 1(`init: true`의 tini)에 SIGTERM을 보낸다 — `restart: unless-stopped`가 다시 띄운다(옛 `api grpc`가 import
 #    실패에 스스로 죽던 self-heal). 한 번의 일시 오류(n150 디스크 대기)로는 죽이지 않는다(interval 30초 × 3).
-#    **load error인데 run worker가 돌고 있으면 죽이지 않는다.** reload가 실패하면 proxy는 새 자식의 load error를
-#    답하면서 옛 자식을 그 run이 끝날 때까지 남긴다 — 그때 죽이면 정상 run이 함께 죽는다. run worker는 자식이
+#    **run worker가 돌고 있으면 죽이지 않는다**(실패로만 보고한다). reload가 실패하면 proxy는 새 자식의 load error를
+#    답하면서 옛 자식을 그 run이 끝날 때까지 남긴다 — 그때 죽이면 정상 run이 함께 죽는다. 실패한 reload 직후에는
+#    닿지 못함도 잠깐 보인다(n150 실측: 그 창에서 죽여 정상 run을 잃었다). 자식이 정말 죽었어도 run worker는
+#    tini 밑에서 run을 마저 끝내고 결과를 storage에 직접 쓴다 — 그래서 기다린다. run worker는 자식이
 #    multiprocessing spawn으로 띄우므로 argv 한 칸이 `from multiprocessing.spawn import spawn_main`으로 **시작**한다
 #    (n150 실측; 이 probe 자신의 `-c` 원문도 그 낱말을 품으므로 부분 문자열이 아니라 칸의 시작을 본다). run이 끝난
-#    뒤 다음 probe들이 죽인다.
-#    닿지 못함은 run이 있어도 죽인다(자식이 죽었으면 그 run도 이미 주인이 없다).
+#    뒤 다음 probe들이 죽인다. 판정 이유(`child load error x2` 등)는 healthcheck 로그에 남는다.
 # 3. **orphan run 정리 — 컨테이너 incarnation마다 한 번.** run worker는 `DefaultRunLauncher`로 이 컨테이너 안에서
 #    돈다. `DefaultRunLauncher`는 `supports_check_run_worker_health`가 False라(dagster 1.13.24 소스) 공용 daemon의
 #    run monitoring은 worker가 사라진 STARTED run을 못 본다 — `max_runtime`(weather 57600초)까지 STARTED로 남아
@@ -109,11 +110,12 @@ x-dagster-code-server-probe: &dagster-code-server-probe |-
       load_error, unreachable = b'SerializableErrorInfo' in c.unary_unary('/api.DagsterApi/ListRepositories')(b'', timeout=4), False
   except grpc.RpcError as e:
       e.code() == grpc.StatusCode.DEADLINE_EXCEEDED and sys.exit(1)
-      load_error, unreachable = False, True
+      load_error, unreachable = False, str(e.code())
   if load_error or unreachable:
       prev = open(fails).read().split() if os.path.exists(fails) else []
       count = int(prev[1]) + 1 if prev[:1] == [born] else 1
       open(fails, 'w').write(born + ' ' + str(count))
+      print('child', unreachable or 'load error', 'x' + str(count), file=sys.stderr)
       def runs_in_flight():
           for pid in os.listdir('/proc'):
               try:
@@ -122,7 +124,7 @@ x-dagster-code-server-probe: &dagster-code-server-probe |-
               except OSError:
                   pass
           return False
-      if count >= 3 and (unreachable or not runs_in_flight()):
+      if count >= 3 and not runs_in_flight():
           os.kill(1, 15)
       sys.exit(1)
   os.path.exists(fails) and os.remove(fails)

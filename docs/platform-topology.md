@@ -273,7 +273,7 @@ code-server는 `dagster code-server start`다: proxy가 자식 gRPC(UDS socket)�
 띄워 다시 import한다. 대가와 그 처리는 compose `x-dagster-code-server-probe`의 주석이 정본이다 — proxy의
 `DagsterApi` health는 고정 SERVING이라 healthcheck가 자식에 전달되는 `ListRepositories`를 보고, load error나
 닿지 못함이 **연속 3번**이면 PID 1(tini)을 끝내 `restart`가 다시 띄우게 한다(옛 `api grpc`의 import 실패
-self-heal). 실패한 reload 뒤 옛 자식이 run을 마저 도는 동안(run worker가 있는 동안)은 load error로 죽이지 않는다.
+self-heal). 실패한 reload 뒤 옛 자식이 run을 마저 도는 동안(run worker가 있는 동안)은 죽이지 않는다(실패로만 보고).
 proxy→자식 heartbeat는 `DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS=600`(기본 30초는 n150 부하에 짧고, 길면 정리 못 한
 옛 자식이 오래 남는다). Map 이미지의 production entrypoint는 code-server argv를 봉인하므로, Map의 이 compose는
 `code-server start`를 받는 Map 이미지가 핀에 오른 뒤에만 설치한다.
