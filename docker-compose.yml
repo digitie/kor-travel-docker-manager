@@ -60,12 +60,16 @@ x-dagster-shared-storage-guard: &dagster-shared-storage-guard |
 #    아닌 RPC 오류), 시간 초과(4초 deadline — 멈춘 자식이거나 부하). 실패한 probe가 이어지는 동안 `/tmp`에 그 수, 첫
 #    실패 시각, 그리고 지금 이어지는 닿지 못함·시간 초과 구간의 시작 시각(load error가 끼면 지운다)을 둔다 — 종류가
 #    섞여도 이어지고, **성공 한 번이 지운다**, incarnation(`boot_id` + PID 1 시작 tick)이 바뀌거나 파일이 깨졌으면
-#    처음부터다(쓰기는 임시 파일 + `os.replace`). 판정은 **시간**으로 한다 — 첫 healthy 전에는 `start_interval` 5초로
-#    probe가 촘촘해서 횟수로는 15초 만에 죽인다. PID 1(`init: true`의 tini)에 SIGTERM을 보내 `restart:
-#    unless-stopped`가 다시 띄우게 하는 때(옛 `api grpc`가 import 실패에 스스로 죽던 self-heal) — 모두 3번 이상 본 뒤:
+#    처음부터다. 쓰기는 probe마다 다른 임시 파일(pid + 난수) + `os.replace`다 — 부하 때 겹친 probe끼리 임시 파일을
+#    덮지 않는다. 판정은 **시간**으로 한다 — 첫 healthy 전에는 `start_interval` 5초로 probe가 촘촘해서 횟수로는 15초
+#    만에 죽인다. 시계는 `time.monotonic()`이다(NTP step이 문턱을 늘이거나 줄이지 않는다; Linux monotonic은 시스템
+#    전역이고 키가 `boot_id`를 품는다). 벽시계로 쓴 옛 형식 파일(필드 넷)은 형식이 달라 처음부터다. PID 1(`init:
+#    true`의 tini)에 SIGTERM을 보내 `restart: unless-stopped`가 다시 띄우게 하는 때(옛 `api grpc`가 import 실패에
+#    스스로 죽던 self-heal) — 모두 3번 이상 본 뒤:
 #    - load error가 90초 이어졌다. 닿지 못함 구간이 90초다. 시간 초과 구간이 5분이다(n150 디스크 대기 급등은 4초
-#      deadline을 잠깐 넘긴다) — 시간 초과는 이 컨테이너가 한 번이라도 healthy였어야 센다(부팅 때 디스크 폭주로 느린
-#      자식을 죽이지 않는다). **그리고 run worker가 없을 때만.** reload가 실패하면 proxy는 새 자식의 load error를
+#      deadline을 잠깐 넘긴다) — 이 컨테이너가 한 번도 healthy가 아니면 시간 초과 구간은 30분이다(부팅 때 디스크
+#      폭주로 느린 자식은 기다리되, 부팅부터 멈춘 자식 — `Check`는 SERVING, `ListRepositories`는 처음부터 시간 초과 —
+#      도 결국 죽인다). **그리고 run worker가 없을 때만.** reload가 실패하면 proxy는 새 자식의 load error를
 #      답하면서 옛 자식을 그 run이 끝날 때까지 남긴다 — 그때 죽이면 정상 run이 함께 죽는다. 실패한 reload 직후에는
 #      닿지 못함도 잠깐 보인다(n150 실측: 그 창에서 죽여 정상 run을 잃었다). 자식이 정말 죽었어도 run worker는 tini
 #      밑에서 run을 마저 끝내고 결과를 storage에 직접 쓴다 — 그래서 기다린다.
@@ -96,8 +100,10 @@ x-dagster-code-server-probe: &dagster-code-server-probe |-
   born = open('/proc/1/stat').read().rsplit(')', 1)[1].split()[19]
   key = open('/proc/sys/kernel/random/boot_id').read().strip() + ':' + born
   def write(path, text):
-      open(path + '.new', 'w').write(text)
-      os.replace(path + '.new', path)
+      new = '%s.%d.%s' % (path, os.getpid(), os.urandom(4).hex())
+      with open(new, 'w') as f:
+          f.write(text)
+      os.replace(new, path)
   if sys.argv[2:] == ['reap']:
       import fcntl
       lock = open(mark + '.lock', 'w')
@@ -129,7 +135,7 @@ x-dagster-code-server-probe: &dagster-code-server-probe |-
       sys.exit(0)
   import grpc
   from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g
-  now = time.time()
+  now = time.monotonic()
   seen_healthy = os.path.exists(passed) and open(passed).read() == key
   c = grpc.insecure_channel('127.0.0.1:' + sys.argv[1])
   def kind_of(e):
@@ -148,14 +154,14 @@ x-dagster-code-server-probe: &dagster-code-server-probe |-
           kind = kind_of(e)
   if kind:
       try:
-          k, count, first, down = open(fails).read().split()
-          if k != key:
+          k, count, first, down, clock = open(fails).read().split()
+          if k != key or clock != 'monotonic':
               raise ValueError(k)
           count, first = int(count) + 1, float(first)
       except (OSError, ValueError):
           count, first, down = 1, now, '-'
       down = '-' if kind == 'load error' else (down if down != '-' else str(now))
-      write(fails, ' '.join((key, str(count), str(first), down)))
+      write(fails, ' '.join((key, str(count), str(first), down, 'monotonic')))
       print('child', kind, 'x' + str(count), file=sys.stderr)
       def runs_in_flight():
           for pid in os.listdir('/proc'):
@@ -169,7 +175,7 @@ x-dagster-code-server-probe: &dagster-code-server-probe |-
       if kind == 'load error':
           due = now - first >= 90
       elif kind == 'timeout':
-          due = seen_healthy and down_for >= 300
+          due = down_for >= (300 if seen_healthy else 1800)
       else:
           due = down_for >= 90
       if count >= 3 and due and (down_for >= 7200 or not runs_in_flight()):
