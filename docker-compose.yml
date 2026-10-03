@@ -46,6 +46,142 @@ x-dagster-shared-storage-guard: &dagster-shared-storage-guard |
   '
   exec "$$@"
 
+# 공용 plane code-server(`dagster code-server start`)의 healthcheck — 네 code-server가 이 하나를 쓴다(argv의 마지막은
+# 그 서비스의 `-p` 포트다). 세 가지를 한다.
+#
+# 1. **proxy 생존.** dagster 자신의 gRPC health(`DagsterApi` → SERVING)를 **dagster를 import하지 않고** 부른다
+#    (`dagster api grpc-health-check`는 매 호출 dagster import — 2026-09-27 n150에서 그런 probe 47개가 load 137).
+#    이 컨테이너가 아직 한 번도 healthy가 아니면(초기 로딩 — proxy는 자식이 다 실을 때까지 listen하지 않는다) 그냥
+#    실패한다(세지도 죽이지도 않는다). 한 번 healthy였던 뒤의 health 실패(proxy 스레드 풀이 멈춘 자식에 다 묶인 경우
+#    등)는 아래 2의 실패로 센다 — 안 세면 멈춘 자식이 영영 안 죽는다(docker는 unhealthy를 재시작하지 않는다).
+# 2. **효과에 묶는다 — 자식.** proxy의 `DagsterApi`는 고정 SERVING이다. 자식 gRPC가 load error를 냈거나 죽거나
+#    멈춰도(OOM·crash·hang) proxy는 살아 있고 아무도 자식을 다시 띄우지 않는다. 그래서 자식에게 **전달되는**
+#    `ListRepositories`를 raw bytes로 부른다. 실패는 셋이다: load error(`SerializableErrorInfo`), 닿지 못함(deadline
+#    아닌 RPC 오류), 시간 초과(4초 deadline — 멈춘 자식이거나 부하). 실패한 probe가 이어지는 동안 `/tmp`에 그 수, 첫
+#    실패 시각, 그리고 지금 이어지는 닿지 못함·시간 초과 구간의 시작 시각(load error가 끼면 지운다)을 둔다 — 종류가
+#    섞여도 이어지고, **성공 한 번이 지운다**, incarnation(`boot_id` + PID 1 시작 tick)이 바뀌거나 파일이 깨졌으면
+#    처음부터다(쓰기는 임시 파일 + `os.replace`). 판정은 **시간**으로 한다 — 첫 healthy 전에는 `start_interval` 5초로
+#    probe가 촘촘해서 횟수로는 15초 만에 죽인다. PID 1(`init: true`의 tini)에 SIGTERM을 보내 `restart:
+#    unless-stopped`가 다시 띄우게 하는 때(옛 `api grpc`가 import 실패에 스스로 죽던 self-heal) — 모두 3번 이상 본 뒤:
+#    - load error가 90초 이어졌다. 닿지 못함 구간이 90초다. 시간 초과 구간이 5분이다(n150 디스크 대기 급등은 4초
+#      deadline을 잠깐 넘긴다) — 시간 초과는 이 컨테이너가 한 번이라도 healthy였어야 센다(부팅 때 디스크 폭주로 느린
+#      자식을 죽이지 않는다). **그리고 run worker가 없을 때만.** reload가 실패하면 proxy는 새 자식의 load error를
+#      답하면서 옛 자식을 그 run이 끝날 때까지 남긴다 — 그때 죽이면 정상 run이 함께 죽는다. 실패한 reload 직후에는
+#      닿지 못함도 잠깐 보인다(n150 실측: 그 창에서 죽여 정상 run을 잃었다). 자식이 정말 죽었어도 run worker는 tini
+#      밑에서 run을 마저 끝내고 결과를 storage에 직접 쓴다 — 그래서 기다린다.
+#    - 천장: **닿지 못함·시간 초과 구간이** 2시간이면 run worker가 있어도 죽인다. 자식이 2시간 죽어 있거나 멈춰 있으면
+#      location이 내려가 있고 취소도 그 자식을 거치므로 그 run은 사실상 버려졌다. 시계는 그 구간에서만 돈다 — 2시간
+#      넘은 load error 뒤에 시간 초과 하나가 와도 천장이 아니다(그동안 run은 옛 자식에서 정상으로 돈다; weather 정상
+#      run은 57600초까지 간다). load error에는 천장이 없다(run이 끝나면 위 규칙이 죽인다).
+#    run worker는 자식이 multiprocessing spawn으로 띄우므로 argv 한 칸이 `from multiprocessing.spawn import
+#    spawn_main`으로 **시작**한다(n150 실측; 이 probe 자신의 `-c` 원문도 그 낱말을 품으므로 부분 문자열이 아니라 칸의
+#    시작을 본다). 판정 이유(`child load error x2`, `child timeout x4` 등)는 healthcheck 로그에 남는다.
+# 3. **orphan run 정리 — 컨테이너 incarnation마다 한 번.** run worker는 `DefaultRunLauncher`로 이 컨테이너 안에서
+#    돈다. `DefaultRunLauncher`는 `supports_check_run_worker_health`가 False라(dagster 1.13.24 소스) 공용 daemon의
+#    run monitoring은 worker가 사라진 STARTED run을 못 본다 — `max_runtime`(weather 57600초)까지 STARTED로 남아
+#    동시성 슬롯을 쥔다(2026-10-01 weather code-server 재생성 뒤 6건이 최대 14.7시간, queue 54건 적체). 컨테이너가
+#    다시 뜨면 그 전에 시작한 이 location의 worker는 **전부** 죽었다(같은 PID namespace). 그래서 healthy probe가 이
+#    incarnation에서 처음이면(`boot_id` + PID 1 시작 tick을 `/tmp` 표지와 비교 — `/tmp`는 `docker restart`를 넘어
+#    남고, tick은 호스트 재부팅 뒤 같은 값이 다시 나올 수 있다) 분리된
+#    reaper를 띄운다: 이 location(`--location-name`/`-l`, 없으면 `-m`/`--module-name`, `--x=값` 꼴도 —
+#    `runtime_topology.code_server_location_name`과 같은 규칙; 못 찾으면 한 번 로그하고 끝낸다)의 STARTED run 중 시작
+#    시각이 PID 1 시작보다 앞선 것만 실패로 만든다. 지금 incarnation에서 시작한 run(reload 뒤 옛 자식에 남은 run
+#    포함)은 건드리지 않는다 — 긴 정상 run을 죽이지 않는다. reaper는 dagster를 import하므로 시도는 5분에 한 번이고
+#    (실패하면 표지가 없어 5분 뒤 다시), flock으로 하나만 돈다. 결과는 PID 1의 stderr(컨테이너 로그)로 간다.
+#    2026-10-02 n150 실측: 재시작 전 run은 실패로, 재시작 뒤 run과 같은 incarnation의 긴 run은 STARTED로 남았다.
+#    run monitoring 쪽 경계는 `docs/platform-topology.md` §7 "code-server는 location reload를 받아야 한다".
+x-dagster-code-server-probe: &dagster-code-server-probe |-
+  import os, sys, time, subprocess
+  mark, tried, fails, passed = '/tmp/.ktdm-orphan-reap', '/tmp/.ktdm-orphan-reap.tried', '/tmp/.ktdm-probe-fails', '/tmp/.ktdm-probe-passed'
+  born = open('/proc/1/stat').read().rsplit(')', 1)[1].split()[19]
+  key = open('/proc/sys/kernel/random/boot_id').read().strip() + ':' + born
+  def write(path, text):
+      open(path + '.new', 'w').write(text)
+      os.replace(path + '.new', path)
+  if sys.argv[2:] == ['reap']:
+      import fcntl
+      lock = open(mark + '.lock', 'w')
+      try:
+          fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+      except OSError:
+          sys.exit(0)
+      argv = open('/proc/1/cmdline').read().split('\0')
+      def flag(*names):
+          for i, w in enumerate(argv):
+              for name in names:
+                  if w == name and i + 1 < len(argv):
+                      return argv[i + 1]
+                  if w.startswith(name + '='):
+                      return w[len(name) + 1:]
+      location = flag('--location-name', '-l') or flag('-m', '--module-name')
+      if not location:
+          print('orphan reaper: PID 1 argv names no code location; nothing to reap', flush=True)
+      else:
+          from dagster import DagsterInstance
+          from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
+          since = time.time() - float(open('/proc/uptime').read().split()[0]) + int(born) / os.sysconf('SC_CLK_TCK')
+          instance = DagsterInstance.get()
+          for record in instance.get_run_records(filters=RunsFilter(statuses=[DagsterRunStatus.STARTED], tags={'dagster/code_location': location})):
+              if record.start_time is not None and record.start_time < since:
+                  instance.report_run_failed(record.dagster_run, 'run worker lost: this code server container restarted after the run started')
+                  print('orphan run failed:', record.dagster_run.run_id, flush=True)
+      write(mark, key)
+      sys.exit(0)
+  import grpc
+  from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g
+  now = time.time()
+  seen_healthy = os.path.exists(passed) and open(passed).read() == key
+  c = grpc.insecure_channel('127.0.0.1:' + sys.argv[1])
+  def kind_of(e):
+      return 'timeout' if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED else str(e.code())
+  try:
+      r = g.HealthStub(c).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=4)
+      kind = None if r.status == h.HealthCheckResponse.SERVING else 'NOT_SERVING'
+  except grpc.RpcError as e:
+      kind = kind_of(e)
+  if kind and not seen_healthy:
+      sys.exit(1)
+  if not kind:
+      try:
+          kind = 'load error' if b'SerializableErrorInfo' in c.unary_unary('/api.DagsterApi/ListRepositories')(b'', timeout=4) else None
+      except grpc.RpcError as e:
+          kind = kind_of(e)
+  if kind:
+      try:
+          k, count, first, down = open(fails).read().split()
+          if k != key:
+              raise ValueError(k)
+          count, first = int(count) + 1, float(first)
+      except (OSError, ValueError):
+          count, first, down = 1, now, '-'
+      down = '-' if kind == 'load error' else (down if down != '-' else str(now))
+      write(fails, ' '.join((key, str(count), str(first), down)))
+      print('child', kind, 'x' + str(count), file=sys.stderr)
+      def runs_in_flight():
+          for pid in os.listdir('/proc'):
+              try:
+                  if pid.isdigit() and any(arg.startswith(b'from multiprocessing.spawn import spawn_main') for arg in open('/proc/' + pid + '/cmdline', 'rb').read().split(b'\0')):
+                      return True
+              except OSError:
+                  pass
+          return False
+      down_for = now - float(down) if down != '-' else 0.0
+      if kind == 'load error':
+          due = now - first >= 90
+      elif kind == 'timeout':
+          due = seen_healthy and down_for >= 300
+      else:
+          due = down_for >= 90
+      if count >= 3 and due and (down_for >= 7200 or not runs_in_flight()):
+          os.kill(1, 15)
+      sys.exit(1)
+  os.path.exists(fails) and os.remove(fails)
+  seen_healthy or write(passed, key)
+  if (not os.path.exists(mark) or open(mark).read() != key) and (not os.path.exists(tried) or time.time() - os.path.getmtime(tried) >= 300):
+      open(tried, 'w').close()
+      log = open('/proc/1/fd/2', 'w')
+      subprocess.Popen([sys.executable, '-I', '-c', sys.orig_argv[sys.orig_argv.index('-c') + 1], sys.argv[1], 'reap'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+
 services:
   # platform-topology.md §7(2026-09-19 결정)의 공용 제어 평면 instance. concierge·geo·
   # PinVi·weather·transport가 여기 산다 — 프로젝트마다 role+database만 만드는 별도
@@ -1451,10 +1587,15 @@ services:
   # 봉인과 같은 이유 — weather의 code-server도 동일).
   kor-travel-map-dagster-code-server:
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
+    # `code-server start` — location reload가 definitions를 다시 import한다(PinVi code-server의 주석). C7의
+    # schedule override가 이것을 기다렸다. Map 이미지의 production `dagster-entrypoint.sh`는 code-server argv를
+    # 정확한 모양으로 봉인한다. ⚠️ **설치 순서: 이 compose는 Map commit이 `fix/dagster-entrypoint-code-server`(Map
+    # PR #1295)를 포함하는 pinned pair가 회전된 뒤에만 설치한다** — 그 전 Map 이미지는 이 argv를 기동부터 거부한다.
+    # Manager는 이 결합을 검사하지 않는다(소유자 결정: 결박·preflight를 더하지 않는다).
     command:
     - /usr/local/bin/dagster
-    - api
-    - grpc
+    - code-server
+    - start
     - -h
     - 127.0.0.1
     - -p
@@ -1482,6 +1623,12 @@ services:
       # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `KOR_TRAVEL_MAP_DAGSTER_PG_URL`은
       # 되돌리기와 C6c 계약(옛 metadata DB의 storage migrate·head)을 위해 남긴다(공용 `dagster.yaml`은 읽지 않는다).
       <<: *dagster-shared-control-env
+      # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
+      # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
+      # heartbeat를 걷어낸 사고) — 그러면 멀쩡한 자식이 내려가 location이 끊긴다. 600초는 그런 급등을 넘기면서,
+      # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
+      # 10분으로 묶는다.
+      DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
       TMPDIR: /tmp
       TEMP: /tmp
@@ -1521,12 +1668,13 @@ services:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
       # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
+      # 자식에 묶은 probe·orphan run 정리 — `x-dagster-code-server-probe`(파일 머리)의 주석.
       test:
       - CMD
       - python
       - -I
       - -c
-      - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
+      - *dagster-code-server-probe
       - '12703'
       interval: 30s
       timeout: 10s
@@ -1880,10 +2028,16 @@ services:
         condition: service_healthy
     # gRPC code server에는 인증이 없고 host network다 — 0.0.0.0이면 LAN 누구나 run을
     # 띄울 수 있다. webserver/daemon은 workspace.yaml로 127.0.0.1:12803에 붙는다.
+    # `code-server start`(proxy + 자식 gRPC 프로세스)다 — 공용 webserver의 location reload(`ReloadCode`)가
+    # 자식을 새로 띄워 definitions를 다시 import한다. `api grpc`는 reload를 경고만 남기고 무시한다
+    # (2026-10-01 n150 실측, Map의 C7 schedule override가 그래서 반영되지 않았다). 자식은 UDS socket으로만
+    # 듣는다(TCP는 proxy의 `-h`·`-p`뿐). proxy 자신이 dagster를 import해 ~100MB RSS를 더 쓰고(n150 실측 97MB),
+    # reload 때 진행 중인 run이 있으면 옛 자식이 그 run이 끝날 때까지 새 자식과 함께 남는다 — 그동안 code import가
+    # 둘이다(weather의 4g 한도는 이것까지 감안해야 한다).
     command:
     - dagster
-    - api
-    - grpc
+    - code-server
+    - start
     - -h
     - 127.0.0.1
     - -p
@@ -1896,6 +2050,12 @@ services:
       # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `PINVI_DAGSTER_PG_URL`은 되돌리기
       # 때까지 남긴다(공용 `dagster.yaml`은 읽지 않는다).
       <<: *dagster-shared-control-env
+      # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
+      # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
+      # heartbeat를 걷어낸 사고) — 그러면 멀쩡한 자식이 내려가 location이 끊긴다. 600초는 그런 급등을 넘기면서,
+      # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
+      # 10분으로 묶는다.
+      DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
       DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
@@ -1921,12 +2081,13 @@ services:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
       # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
+      # 자식에 묶은 probe·orphan run 정리 — `x-dagster-code-server-probe`(파일 머리)의 주석.
       test:
       - CMD
       - python
       - -I
       - -c
-      - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
+      - *dagster-code-server-probe
       - '12803'
       interval: 30s
       timeout: 10s
@@ -2187,10 +2348,11 @@ services:
         condition: service_healthy
       kor-travel-shared-db-init-geo:
         condition: service_completed_successfully
+    # `code-server start` — location reload가 definitions를 다시 import한다(PinVi code-server의 주석).
     command:
     - dagster
-    - api
-    - grpc
+    - code-server
+    - start
     # 공용 plane의 daemon·webserver는 host network의 loopback으로 붙는다 — gRPC를 LAN에 열 이유가 없다
     # (plan §4 보안, 옛 `0.0.0.0`은 인증 없는 gRPC를 LAN에 열었다).
     - -h
@@ -2205,6 +2367,12 @@ services:
       # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `KTG_DAGSTER_PG_URL`은 되돌리기
       # 때까지 남긴다(공용 `dagster.yaml`은 읽지 않는다).
       <<: *dagster-shared-control-env
+      # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
+      # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
+      # heartbeat를 걷어낸 사고) — 그러면 멀쩡한 자식이 내려가 location이 끊긴다. 600초는 그런 급등을 넘기면서,
+      # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
+      # 10분으로 묶는다.
+      DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
@@ -2239,12 +2407,13 @@ services:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
       # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
+      # 자식에 묶은 probe·orphan run 정리 — `x-dagster-code-server-probe`(파일 머리)의 주석.
       test:
       - CMD
       - python
       - -I
       - -c
-      - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
+      - *dagster-code-server-probe
       - '12503'
       interval: 30s
       timeout: 10s
@@ -2574,10 +2743,11 @@ services:
     # publish 자체가 없어 -h 바인드 값이 유일한 방어선이다(weather 자신의
     # compose.yaml은 -h 0.0.0.0을 쓰는데, 그건 bridge NAT을 전제한 것이라
     # 여기서는 안전하지 않다).
+    # `code-server start` — location reload가 definitions를 다시 import한다(PinVi code-server의 주석).
     command:
     - dagster
-    - api
-    - grpc
+    - code-server
+    - start
     - -h
     - "127.0.0.1"
     - -p
@@ -2590,6 +2760,12 @@ services:
       # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `DAGSTER_POSTGRES_URL`은 되돌리기
       # 때까지 남긴다(공용 `dagster.yaml`은 읽지 않는다).
       <<: *dagster-shared-control-env
+      # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
+      # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
+      # heartbeat를 걷어낸 사고) — 그러면 멀쩡한 자식이 내려가 location이 끊긴다. 600초는 그런 급등을 넘기면서,
+      # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
+      # 10분으로 묶는다.
+      DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "0580153ee4dbb245"
       DAGSTER_HOME: /opt/dagster/home
       KOR_TRAVEL_WEATHER_ENV: production
@@ -2645,12 +2821,13 @@ services:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
       # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
+      # 자식에 묶은 probe·orphan run 정리 — `x-dagster-code-server-probe`(파일 머리)의 주석.
       test:
       - CMD
       - python
       - -I
       - -c
-      - "import sys, grpc; from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g; r = g.HealthStub(grpc.insecure_channel('127.0.0.1:' + sys.argv[1])).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=8); sys.exit(0 if r.status == h.HealthCheckResponse.SERVING else 1)"
+      - *dagster-code-server-probe
       - '14106'
       interval: 30s
       timeout: 10s

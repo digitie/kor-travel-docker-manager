@@ -248,14 +248,22 @@ def test_every_dagster_webserver_probe_asks_whether_code_loaded(
 _GRPC_HEALTH_FRAGMENTS = ("grpc_health", "DagsterApi", "SERVING")
 
 
+#: 장기 실행 code-server의 두 모양. `code-server start`의 proxy도 `DagsterApi` health를 답하지만 그 답은
+#: **proxy의 것**이다 — 자식이 load error를 냈거나 죽어도 SERVING이다(아래 effect 검사).
+_CODE_SERVER_COMMANDS = ("dagster code-server start", "dagster api grpc")
+
+
 def _code_server_services() -> dict[str, dict[str, Any]]:
-    """`dagster api grpc`를 실행하는 서비스. **이름으로 찾지 않는다.**"""
+    """`dagster code-server start`·`dagster api grpc`를 실행하는 서비스. **이름으로 찾지 않는다.**"""
     services = _compose()["services"]
     return {
         name: service
         for name, service in services.items()
-        if "dagster api grpc" in _command_text(service.get("command"))
-        or "dagster api grpc" in _command_text(service.get("entrypoint"))
+        if any(
+            command in _command_text(service.get(key))
+            for command in _CODE_SERVER_COMMANDS
+            for key in ("command", "entrypoint")
+        )
     }
 
 
@@ -263,7 +271,7 @@ def test_the_compose_declares_at_least_one_dagster_code_server() -> None:
     """유도의 전제. 못 찾으면 아래 검사가 조용히 항진명제가 된다."""
     found = _code_server_services()
     assert found, (
-        "`dagster api grpc`를 실행하는 서비스를 command에서 찾지 못했다 — "
+        "Dagster code-server를 실행하는 서비스를 command에서 찾지 못했다 — "
         "command 모양이 바뀌었거나 이 계약의 파서가 낡았다."
     )
 
@@ -304,6 +312,502 @@ def test_every_dagster_code_server_comes_back_on_its_own(service_name: str) -> N
     assert restart == "unless-stopped", (
         f"`{service_name}`의 restart 정책이 `unless-stopped`가 아니다: {restart!r}."
     )
+
+
+#: `code-server start` probe가 자식까지 닿는 조각 — proxy가 자식에 **전달하는** RPC, 그 답의 load error 표지,
+#: 확정된 죽음에서 PID 1(tini)을 끝내는 동작. 판정 자체는 아래 `_ProbeWorld` 테스트가 실행해서 잰다.
+_PROXY_EFFECT_FRAGMENTS = ("/api.DagsterApi/ListRepositories", "SerializableErrorInfo", "os.kill(1,")
+_PROXY_HEARTBEAT_ENV = "DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS"
+#: proxy→자식 heartbeat의 범위. 기본 30초는 n150 디스크 대기 급등에 짧아 멀쩡한 자식이 내려간다. 너무 길면
+#: reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나)이 그만큼 남는다 — 하루는 너무 길다.
+_PROXY_HEARTBEAT_RANGE_SECONDS = (300, 1800)
+
+
+def _proxy_code_server_services() -> dict[str, dict[str, Any]]:
+    return {
+        name: service
+        for name, service in _code_server_services().items()
+        if "dagster code-server start" in _command_text(service.get("command"))
+        or "dagster code-server start" in _command_text(service.get("entrypoint"))
+    }
+
+
+def _the_probe() -> str:
+    """네 code-server가 공유하는 probe 원문(`x-dagster-code-server-probe`)."""
+    probes = {
+        str(((service.get("healthcheck") or {}).get("test") or [None] * 5)[4])
+        for service in _proxy_code_server_services().values()
+    }
+    assert len(probes) == 1, f"code-server probe가 서로 다르다({len(probes)}종)"
+    return next(iter(probes))
+
+
+def test_the_compose_declares_a_proxy_code_server() -> None:
+    """유도의 전제 — 공용 plane code-server는 `code-server start`다(못 찾으면 아래 검사가 항진이다)."""
+    assert _proxy_code_server_services()
+
+
+@pytest.mark.parametrize("service_name", sorted(_proxy_code_server_services()))
+def test_every_proxy_code_server_probe_is_bound_to_the_child(service_name: str) -> None:
+    """`code-server start`의 healthcheck는 proxy가 아니라 **자식**을 본다(2026-10-02 적대 리뷰 HIGH).
+
+    proxy의 `DagsterApi` health는 고정 SERVING이고, 자식이 load error를 냈거나 OOM으로 죽어도 proxy는 그대로
+    살아 아무도 자식을 다시 띄우지 않는다. 옛 `api grpc`는 import 실패에 프로세스가 끝나 `restart:
+    unless-stopped`가 고쳤다. 그 self-heal을 되살리는 것이 이 probe다. PID 1이 tini여야(`init: true`) SIGTERM이
+    proxy에 전달되어 컨테이너가 끝난다. 네 서비스가 **같은** probe를 쓴다(아래 실행 테스트가 그 하나를 잰다).
+    """
+    service = _proxy_code_server_services()[service_name]
+    probe = _command_text((service.get("healthcheck") or {}).get("test"))
+    missing = [fragment for fragment in _PROXY_EFFECT_FRAGMENTS if fragment not in probe]
+    assert not missing, f"`{service_name}`의 probe가 자식에 닿지 않는다(빠진 조각: {missing})"
+    assert service["healthcheck"]["test"][4] == _the_probe(), service_name
+    assert service.get("init") is True, f"`{service_name}`: PID 1이 tini가 아니다(`init: true`)"
+    ttl = str((service.get("environment") or {}).get(_PROXY_HEARTBEAT_ENV, ""))
+    low, high = _PROXY_HEARTBEAT_RANGE_SECONDS
+    assert ttl.isdigit() and low <= int(ttl) <= high, (
+        f"`{service_name}`: `{_PROXY_HEARTBEAT_ENV}`가 {low}..{high}초가 아니다: {ttl!r}"
+    )
+
+
+# ── probe를 실행해서 잰다 (2026-10-02~03 적대 리뷰) ───────────────────────
+#
+# probe는 `/proc`·`/tmp`·grpc·dagster·시계에 닿는다. 원문의 `/proc`·`/tmp` 경로를 임시 디렉터리로 바꾸고 grpc·
+# dagster는 대역 module로, 시계는 고정값으로 넣어 **원문 그대로** 실행한다 — 조각 문자열이 아니라 판정을 잰다.
+
+
+class _FakeRpcError(Exception):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self._code = code
+
+    def code(self) -> str:
+        return self._code
+
+
+class _FakeRun:
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+
+
+class _FakeRecord:
+    def __init__(self, run_id: str, start_time: float | None) -> None:
+        self.dagster_run = _FakeRun(run_id)
+        self.start_time = start_time
+
+
+class _ProbeWorld:
+    """한 컨테이너의 `/proc`·`/tmp`와 그 안에서 실행한 probe의 관측."""
+
+    def __init__(self, root: Path, *, cmdline: list[str], pid1_ticks: int, uptime: float) -> None:
+        self.proc = root / "proc"
+        self.tmp = root / "tmp"
+        (self.proc / "1" / "fd").mkdir(parents=True)
+        (self.proc / "sys" / "kernel" / "random").mkdir(parents=True)
+        self.tmp.mkdir()
+        self.set_cmdline(cmdline)
+        (self.proc / "1" / "fd" / "2").write_text("")
+        (self.proc / "uptime").write_text(f"{uptime} 0.0")
+        self.incarnation(boot_id="boot-a", pid1_ticks=pid1_ticks)
+        self.kills: list[tuple[int, int]] = []
+        self.spawned: list[list[str]] = []
+        self.failed: list[str] = []
+        self.query: dict[str, Any] = {}
+        self.queried = False
+
+    def set_cmdline(self, cmdline: list[str]) -> None:
+        (self.proc / "1" / "cmdline").write_text("\0".join(cmdline) + "\0")
+
+    def incarnation(self, *, boot_id: str, pid1_ticks: int) -> None:
+        """컨테이너 재시작(PID 1 시작 tick) 또는 호스트 재부팅(`boot_id`)."""
+        stat = f"1 (docker-init) S {' '.join(['0'] * 18)} {pid1_ticks} 0 0"
+        (self.proc / "1" / "stat").write_text(stat)
+        (self.proc / "sys" / "kernel" / "random" / "boot_id").write_text(boot_id + "\n")
+
+    def add_process(self, pid: int, argv: list[str]) -> None:
+        (self.proc / str(pid)).mkdir()
+        (self.proc / str(pid) / "cmdline").write_bytes("\0".join(argv).encode() + b"\0")
+
+    def run(
+        self,
+        probe: str,
+        *,
+        reply: bytes = b"",
+        error: str | None = None,
+        check_error: str | None = None,
+        reap: bool = False,
+        now: float | None = None,
+        records: tuple[_FakeRecord, ...] = (),
+    ) -> int:
+        """probe를 한 번 실행하고 exit code를 돌려준다(끝까지 가면 0)."""
+
+        import os
+        import subprocess
+        import sys
+        import time
+        import types
+
+        # `/tmp/` 먼저 — pytest의 tmp_path가 `/tmp` 아래라 거꾸로 하면 넣은 경로를 다시 바꾼다.
+        source = probe.replace("'/tmp/", f"'{self.tmp}/").replace("'/proc", f"'{self.proc}")
+        assert "'/proc" not in source and "'/tmp/.ktdm" not in source
+        world = self
+
+        class _Channel:
+            def unary_unary(self, method: str) -> Any:
+                assert method == "/api.DagsterApi/ListRepositories"
+
+                def call(request: bytes, timeout: float) -> bytes:
+                    if error is not None:
+                        raise _FakeRpcError(error)
+                    return reply
+
+                return call
+
+        class _Response:
+            SERVING = 1
+
+        class _Stub:
+            def __init__(self, channel: Any) -> None:
+                pass
+
+            def Check(self, request: Any, timeout: float) -> Any:  # noqa: N802 - grpc의 이름
+                if check_error is not None:
+                    raise _FakeRpcError(check_error)
+                return types.SimpleNamespace(status=_Response.SERVING)
+
+        class _Status:
+            STARTED = "STARTED"
+
+        class _RunsFilter:
+            def __init__(self, **kwargs: Any) -> None:
+                world.query.update(kwargs)
+
+        class _Instance:
+            @staticmethod
+            def get() -> _Instance:
+                world.queried = True
+                return _Instance()
+
+            def get_run_records(self, filters: Any) -> list[_FakeRecord]:
+                return list(records)
+
+            def report_run_failed(self, run: _FakeRun, message: str) -> None:
+                world.failed.append(run.run_id)
+
+        grpc = types.ModuleType("grpc")
+        grpc.RpcError = _FakeRpcError  # type: ignore[attr-defined]
+        grpc.StatusCode = types.SimpleNamespace(  # type: ignore[attr-defined]
+            DEADLINE_EXCEEDED="DEADLINE_EXCEEDED", UNAVAILABLE="UNAVAILABLE"
+        )
+        grpc.insecure_channel = lambda address: _Channel()  # type: ignore[attr-defined]
+        v1 = types.ModuleType("grpc_health.v1")
+        v1.health_pb2 = types.SimpleNamespace(  # type: ignore[attr-defined]
+            HealthCheckRequest=lambda service: service, HealthCheckResponse=_Response
+        )
+        v1.health_pb2_grpc = types.SimpleNamespace(HealthStub=_Stub)  # type: ignore[attr-defined]
+        dagster = types.ModuleType("dagster")
+        dagster.DagsterInstance = _Instance  # type: ignore[attr-defined]
+        runs = types.ModuleType("dagster._core.storage.dagster_run")
+        runs.DagsterRunStatus = _Status  # type: ignore[attr-defined]
+        runs.RunsFilter = _RunsFilter  # type: ignore[attr-defined]
+        fakes = {
+            "grpc": grpc,
+            "grpc_health": types.ModuleType("grpc_health"),
+            "grpc_health.v1": v1,
+            "dagster": dagster,
+            "dagster._core.storage.dagster_run": runs,
+        }
+        saved_modules = {name: sys.modules.get(name) for name in fakes}
+        saved = (sys.argv, sys.orig_argv, time.time, os.kill, subprocess.Popen)
+        sys.modules.update(fakes)
+        sys.argv = ["-c", "12345", *(["reap"] if reap else [])]
+        sys.orig_argv = ["python", "-I", "-c", probe, *sys.argv[1:]]
+        if now is not None:
+            time.time = lambda: now  # type: ignore[assignment]
+        os.kill = lambda pid, sig: world.kills.append((pid, sig))  # type: ignore[assignment]
+        subprocess.Popen = lambda argv, **kwargs: world.spawned.append(argv)  # type: ignore[assignment,misc]
+        try:
+            exec(compile(source, "probe", "exec"), {"__name__": "__main__"})
+            code = 0
+        except SystemExit as exited:
+            code = 0 if exited.code is None else int(exited.code)
+        finally:
+            sys.argv, sys.orig_argv, time.time, os.kill, subprocess.Popen = saved  # type: ignore[assignment,misc]
+            for name, module in saved_modules.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+        return code
+
+    def series(
+        self, probe: str, start: float, end: float, step: float, **kwargs: Any
+    ) -> float | None:
+        """start부터 end까지 step초마다 probe를 돌리고, 처음 죽인 시각(start 기준 초)을 돌려준다."""
+        t = start
+        while t <= end:
+            self.run(probe, now=_T0 + t, **kwargs)
+            if self.kills:
+                return t
+            t += step
+        return None
+
+
+_T0 = 1_800_000_000.0
+_WEATHER_PID1 = [
+    "/sbin/docker-init",
+    "--",
+    "dagster",
+    "code-server",
+    "start",
+    "-h",
+    "127.0.0.1",
+    "-p",
+    "14106",
+    "-m",
+    "kortravelweather_dagster.definitions",
+]
+#: run worker — 자식 gRPC가 multiprocessing spawn으로 띄운다(2026-10-02 n150 실측 argv).
+_RUN_WORKER = [
+    "/usr/local/bin/python",
+    "-B",
+    "-s",
+    "-c",
+    "from multiprocessing.spawn import spawn_main; spawn_main(tracker_fd=12, pipe_handle=14)",
+    "--multiprocessing-fork",
+]
+_LOAD_ERROR = {"reply": b'{"__class__": "SerializableErrorInfo", "message": "boom"}'}
+_UNREACHABLE = {"error": "UNAVAILABLE"}
+_TIMEOUT = {"error": "DEADLINE_EXCEEDED"}
+_LOADED = {"reply": b'{"__class__": "ListRepositoriesResponse"}'}
+#: probe 원문의 시간 문턱 — load error·닿지 못함 90초, 시간 초과 5분, 천장 2시간.
+_DOWN_SECONDS = 90
+_TIMEOUT_SECONDS = 300
+_ABANDON_SECONDS = 7200
+
+
+def _hz() -> int:
+    import os
+
+    return os.sysconf("SC_CLK_TCK")
+
+
+@pytest.fixture
+def world(tmp_path: Path) -> _ProbeWorld:
+    return _ProbeWorld(tmp_path, cmdline=_WEATHER_PID1, pid1_ticks=1000 * _hz(), uptime=5000.0)
+
+
+def _healthy_once(world: _ProbeWorld, probe: str) -> None:
+    assert world.run(probe, now=_T0 - 1, **_LOADED) == 0
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "after"),
+    [(_LOAD_ERROR, _DOWN_SECONDS), (_UNREACHABLE, _DOWN_SECONDS), (_TIMEOUT, _TIMEOUT_SECONDS)],
+    ids=["load error", "unreachable", "timeout"],
+)
+@pytest.mark.parametrize("step", [30, 5], ids=["interval 30s", "start_interval 5s"])
+def test_the_probe_kills_pid1_only_after_failing_for_long_enough(
+    world: _ProbeWorld, kwargs: dict[str, Any], after: int, step: int
+) -> None:
+    """한 번의 일시 오류(n150 디스크 대기)로는 죽이지 않는다. 판정은 시간이다 — 첫 healthy 전 `start_interval` 5초
+    cadence에서도 횟수로 일찍 죽이지 않는다. 시간 초과는 부하일 수 있어 더 오래 본다."""
+    probe = _the_probe()
+    _healthy_once(world, probe)
+    killed_at = world.series(probe, 0, after + 60, step, **kwargs)
+    assert killed_at is not None and after <= killed_at < after + step + 1, killed_at
+    assert world.kills == [(1, 15)]
+
+
+def test_before_the_first_healthy_probe_timeouts_never_kill(world: _ProbeWorld) -> None:
+    """부팅 때 디스크 폭주로 느린 자식을 죽이지 않는다 — 한 번도 healthy가 아니면 시간 초과로는 죽이지 않는다."""
+    assert world.series(_the_probe(), 0, 3600, 30, **_TIMEOUT) is None
+
+
+def test_a_child_that_never_loads_is_still_killed(world: _ProbeWorld) -> None:
+    """없는 `-m`처럼 한 번도 healthy가 못 되는 자식도 load error 90초면 죽인다(옛 `api grpc`의 재시작 루프)."""
+    assert world.series(_the_probe(), 0, 200, 5, **_LOAD_ERROR) == _DOWN_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("check_error", "after"),
+    [("UNAVAILABLE", _DOWN_SECONDS), ("DEADLINE_EXCEEDED", _TIMEOUT_SECONDS)],
+    ids=["unavailable", "deadline"],
+)
+def test_health_check_failures_count_once_the_container_was_healthy(
+    world: _ProbeWorld, check_error: str, after: int
+) -> None:
+    """멈춘 자식이 proxy 스레드 풀을 다 묶으면 health `Check`부터 실패한다 — 안 세면 영영 안 죽는다(docker는
+    unhealthy를 재시작하지 않는다). 초기 로딩 중(한 번도 healthy가 아님)에는 세지 않는다."""
+    probe = _the_probe()
+    assert world.series(probe, 0, 600, 30, check_error=check_error) is None
+    assert not (world.tmp / ".ktdm-probe-fails").exists()
+    _healthy_once(world, probe)
+    killed_at = world.series(probe, 0, after + 60, 30, check_error=check_error)
+    assert killed_at is not None and after <= killed_at < after + 31, killed_at
+
+
+def test_a_timeout_neither_resets_nor_breaks_the_streak(world: _ProbeWorld) -> None:
+    """load error → 시간 초과 → load error: 시간 초과도 이어진 실패다 — load error 시계는 처음부터 돈다."""
+    probe = _the_probe()
+    world.run(probe, now=_T0, **_LOAD_ERROR)
+    world.run(probe, now=_T0 + 30, **_TIMEOUT)
+    world.run(probe, now=_T0 + 60, **_LOAD_ERROR)
+    assert world.kills == []
+    world.run(probe, now=_T0 + _DOWN_SECONDS, **_LOAD_ERROR)
+    assert world.kills == [(1, 15)]
+
+
+def test_a_success_resets_the_streak(world: _ProbeWorld) -> None:
+    probe = _the_probe()
+    _healthy_once(world, probe)
+    world.series(probe, 0, 60, 30, **_UNREACHABLE)
+    assert world.run(probe, now=_T0 + 75, **_LOADED) == 0
+    assert world.series(probe, 80, 80 + _DOWN_SECONDS - 10, 30, **_UNREACHABLE) is None
+
+
+@pytest.mark.parametrize("change", ["container restart", "host reboot", "corrupt file"])
+def test_a_new_incarnation_or_a_broken_file_starts_the_streak_over(
+    world: _ProbeWorld, change: str
+) -> None:
+    """`/tmp`는 `docker restart`를 넘어 남는다 — 옛 incarnation의 실패를 이어 세지 않는다. 호스트 재부팅 뒤에는 같은
+    PID 1 tick이 다시 나올 수 있어 `boot_id`도 본다. 깨진 파일은 처음부터다."""
+    probe = _the_probe()
+    world.series(probe, 0, 60, 30, **_LOAD_ERROR)
+    if change == "container restart":
+        world.incarnation(boot_id="boot-a", pid1_ticks=9000 * _hz())
+    elif change == "host reboot":
+        world.incarnation(boot_id="boot-b", pid1_ticks=1000 * _hz())
+    else:
+        (world.tmp / ".ktdm-probe-fails").write_text("garbage")
+    world.run(probe, now=_T0 + 200, **_LOAD_ERROR)
+    assert world.kills == [], change
+    assert (world.tmp / ".ktdm-probe-fails").read_text().split()[1:3] == ["1", str(_T0 + 200)]
+    assert not (world.tmp / ".ktdm-probe-fails.new").exists()
+
+
+@pytest.mark.parametrize("kwargs", [_LOAD_ERROR, _UNREACHABLE], ids=["load error", "unreachable"])
+def test_runs_in_flight_hold_off_the_kill_until_they_end(
+    world: _ProbeWorld, kwargs: dict[str, Any]
+) -> None:
+    """실패한 reload 뒤 proxy는 load error를 답하면서 옛 자식이 run을 마저 돌게 둔다. 그 직후 닿지 못함도 잠깐 보인다
+    (n150 실측: 그 창에서 죽여 정상 run을 잃었다). run worker가 있는 동안은 죽이지 않고, 끝나면 죽인다."""
+    import shutil
+
+    probe = _the_probe()
+    # run이 끝나도 남는 것: probe 자신(그 `-c` 원문이 `spawn_main` 낱말을 품는다 — n150에서 probe가 자기를 run
+    # worker로 세어 끝내 죽이지 못했다)과 multiprocessing resource tracker.
+    world.add_process(77, ["/usr/local/bin/python", "-I", "-c", probe, "12345"])
+    world.add_process(
+        78,
+        ["/usr/local/bin/python", "-B", "-s", "-c",
+         "from multiprocessing.resource_tracker import main;main(11)"],
+    )
+    world.add_process(4242, _RUN_WORKER)
+    assert world.series(probe, 0, 600, 30, **kwargs) is None
+    shutil.rmtree(world.proc / "4242")
+    world.run(probe, now=_T0 + 630, **kwargs)
+    assert world.kills == [(1, 15)]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "killed"),
+    [(_UNREACHABLE, True), (_TIMEOUT, True), (_LOAD_ERROR, False)],
+    ids=["unreachable", "timeout", "load error"],
+)
+def test_a_child_down_for_two_hours_is_killed_even_with_runs_in_flight(
+    world: _ProbeWorld, kwargs: dict[str, Any], killed: bool
+) -> None:
+    """천장: 닿지 못함·시간 초과 구간이 2시간이면 run worker가 있어도 죽인다 — 자식이 죽었거나 멈춰 location이
+    내려가 있고 취소도 그 자식을 거친다. load error에는 천장이 없다(그 run은 옛 자식에서 정상으로 돈다)."""
+    probe = _the_probe()
+    _healthy_once(world, probe)
+    world.add_process(4242, _RUN_WORKER)
+    assert world.series(probe, 0, _ABANDON_SECONDS - 60, 600, **kwargs) is None
+    world.run(probe, now=_T0 + _ABANDON_SECONDS + 1, **kwargs)
+    assert world.kills == ([(1, 15)] if killed else [])
+
+
+def test_the_ceiling_clock_runs_only_in_the_down_part_of_a_streak(world: _ProbeWorld) -> None:
+    """2시간 넘은 load error(실패한 reload 뒤 옛 자식이 긴 weather run을 도는 중) 끝에 시간 초과나 닿지 못함 하나가
+    와도 천장이 아니다 — 천장 시계는 닿지 못함·시간 초과 구간에서만 돈다."""
+    probe = _the_probe()
+    _healthy_once(world, probe)
+    world.add_process(4242, _RUN_WORKER)
+    assert world.series(probe, 0, _ABANDON_SECONDS + 600, 600, **_LOAD_ERROR) is None
+    world.run(probe, now=_T0 + _ABANDON_SECONDS + 630, **_TIMEOUT)
+    world.run(probe, now=_T0 + _ABANDON_SECONDS + 660, **_UNREACHABLE)
+    assert world.kills == []
+
+
+def test_the_reaper_is_tried_at_most_every_five_minutes(world: _ProbeWorld) -> None:
+    """reaper(dagster import)는 incarnation 표지가 없을 때만, 시도는 5분에 한 번이다 — 실패해도 30초마다 다시
+    import하지 않는다."""
+    import os
+    import time
+
+    probe = _the_probe()
+    assert world.run(probe, **_LOADED) == 0
+    assert len(world.spawned) == 1 and world.spawned[0][-2:] == ["12345", "reap"]
+    assert world.spawned[0][3] == probe, "reaper는 probe 원문 그대로다"
+    world.run(probe, **_LOADED)
+    assert len(world.spawned) == 1, "5분 안에 reaper를 다시 띄웠다"
+    past = time.time() - 301
+    os.utime(world.tmp / ".ktdm-orphan-reap.tried", (past, past))
+    world.run(probe, **_LOADED)
+    assert len(world.spawned) == 2, "표지 없이 5분이 지났는데 reaper를 다시 띄우지 않았다"
+
+
+def test_the_reaper_fails_only_runs_started_before_this_container(world: _ProbeWorld) -> None:
+    """재시작 전에 시작한 STARTED run만 실패로, 그 뒤(같은 incarnation의 긴 run 포함)는 그대로 둔다.
+
+    PID 1은 부팅 뒤 1000초에 떴고 지금은 부팅 뒤 5000초다 — 컨테이너 시작은 now−4000. 끝나면 incarnation 표지
+    (`boot_id` + PID 1 tick)를 쓴다 — 그래야 매 probe가 reaper를 띄우지 않는다.
+    """
+    born = _T0 - 4000
+    records = (
+        _FakeRecord("orphan-old", born - 50_000),
+        _FakeRecord("orphan-just-before", born - 1),
+        _FakeRecord("healthy-long", born + 30),
+        _FakeRecord("healthy-new", _T0 - 5),
+    )
+    assert world.run(_the_probe(), reap=True, now=_T0, records=records) == 0
+    assert world.failed == ["orphan-old", "orphan-just-before"], world.failed
+    assert world.query == {
+        "statuses": ["STARTED"],
+        "tags": {"dagster/code_location": "kortravelweather_dagster.definitions"},
+    }
+    assert (world.tmp / ".ktdm-orphan-reap").read_text() == f"boot-a:{1000 * _hz()}"
+
+
+@pytest.mark.parametrize(
+    ("flags", "location"),
+    [
+        (["-m", "m.defs", "--location-name", "named"], "named"),
+        (["-m", "m.defs", "-l", "short"], "short"),
+        (["--module-name=m.defs", "--location-name=eq"], "eq"),
+        (["--module-name=m.defs"], "m.defs"),
+    ],
+    ids=["--location-name", "-l", "--x=value", "module only"],
+)
+def test_the_reaper_reads_the_location_like_the_manager_derivation(
+    world: _ProbeWorld, flags: list[str], location: str
+) -> None:
+    """reaper의 location 규칙은 `runtime_topology.code_server_location_name`과 같다(`-l`, `--x=값` 포함)."""
+    from kor_travel_docker_manager.services.runtime_topology import code_server_location_name
+
+    command = ["dagster", "code-server", "start", *flags]
+    assert code_server_location_name({"command": command}) == location
+    world.set_cmdline(["/sbin/docker-init", "--", *command])
+    world.run(_the_probe(), reap=True, now=_T0)
+    assert world.query["tags"] == {"dagster/code_location": location}
+
+
+def test_a_reaper_without_a_location_logs_once_and_is_done(world: _ProbeWorld) -> None:
+    """location을 못 찾으면 5분마다 dagster를 다시 import하지 않는다 — 한 번 로그하고 표지를 쓴다."""
+    world.set_cmdline(["/sbin/docker-init", "--", "dagster", "code-server", "start", "-f", "/w/defs.py"])
+    assert world.run(_the_probe(), reap=True, now=_T0) == 0
+    assert not world.queried
+    assert (world.tmp / ".ktdm-orphan-reap").read_text() == f"boot-a:{1000 * _hz()}"
 
 
 # ── probe가 스스로 쌓이지 않게 (2026-09-27) ────────────────────────────

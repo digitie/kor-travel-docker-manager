@@ -245,7 +245,7 @@ instance를 한 번 재기동해 Map이 전용 instance에서 쓰던 값을 올�
 (포트 없음)  dagster-daemon (공용) — 나가는 연결뿐(Postgres, code-server gRPC).
              health는 `dagster-daemon liveness-check`(DB heartbeat)
 
-code-server (dagster api grpc)  ← 프로젝트별 분리 유지, 각자 포트
+code-server (dagster code-server start)  ← 프로젝트별 분리 유지, 각자 포트
 ```
 
 **참여 범위.** 공용 plane은 Map·PinVi·geo·weather 넷이다. **transport는 나중에 합류한다** —
@@ -266,6 +266,38 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
 로드하지 않고 `workspace.yaml`의 `grpc_server` 항목을 통해 각 code-server에 붙는다 —
 이것이 Dagster가 공식 지원하는 배치다.
 
+**code-server는 location reload를 받아야 한다(2026-10-02).** 공용 webserver의 location reload는
+code-server에 `ReloadCode`를 보낸다. `dagster api grpc`는 그것을 "not currently supported" 경고만 남기고
+무시한다 — Map의 C7 schedule override(definitions import 때 읽는다)가 그래서 반영되지 않았다. 그래서
+code-server는 `dagster code-server start`다: proxy가 자식 gRPC(UDS socket)를 띄우고 reload 때 자식을 새로
+띄워 다시 import한다. 대가와 그 처리는 compose `x-dagster-code-server-probe`의 주석이 정본이다 — proxy의
+`DagsterApi` health는 고정 SERVING이라 healthcheck가 자식에 전달되는 `ListRepositories`를 본다. 실패(load error,
+닿지 못함, 4초 시간 초과)가 이어지면 시간으로(load error·닿지 못함 90초, 시간 초과 5분 — 시간 초과는 한 번 healthy였던 뒤에만) PID 1(tini)을 끝내 `restart`가 다시 띄우게 한다(옛
+`api grpc`의 import 실패 self-heal). run worker가 있는 동안은 죽이지 않는다(실패로만 보고) — 실패한 reload 뒤 옛
+자식이 run을 마저 돈다. 단 닿지 못함·시간 초과가 2시간 이어지면 run이 있어도 죽인다(자식이 죽었거나 멈춰 그 run은
+취소도 못 한다). proxy→자식 heartbeat는 `DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS=600`(기본 30초는 n150 부하에
+짧고, 길면 정리 못 한 옛 자식이 오래 남는다).
+
+**⚠️ 설치 순서.** Map 이미지의 production entrypoint는 code-server argv를 봉인한다. 그래서 Map code-server를
+`code-server start`로 바꾼 Manager compose는 **Map commit이 `fix/dagster-entrypoint-code-server`(Map PR #1295)를
+포함하는 pinned pair가 회전된 뒤에만** 설치한다 — 그 전 Map 이미지는 이 argv를 기동부터 거부한다. Manager는 이
+결합을 검사하지 않는다(소유자 결정: 결박·preflight를 더하지 않는다). PinVi·geo·weather 이미지는 argv를 봉인하지
+않는다(2026-10-02 실측).
+
+**run monitoring이 잡는 것과 못 잡는 것(2026-10-02, dagster 1.13.24 소스·n150 일회용 실측).** 공용
+`dagster.yaml`의 `run_monitoring`은 켜져 있다(start·cancel 600초, `max_runtime` 21600초, poll 15초). run worker는
+`DefaultRunLauncher`로 code-server 컨테이너 안에서 돈다. 그 launcher는 `supports_check_run_worker_health`가
+False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(전역, 또는 `dagster/max_runtime` tag)만 건다.
+
+- 잡는 것: STARTING·NOT_STARTED가 600초 안에 시작 못 함, CANCELING이 600초 안에 끝나지 않음, STARTED가
+  `max_runtime` 초과(일회용 실측: tag 90초 run이 실패로 끝났다).
+- 못 잡는 것: worker가 사라진 STARTED run. code-server 컨테이너가 재시작·재생성되면 그 run은 `max_runtime`까지
+  STARTED로 남아 동시성 슬롯을 쥔다(2026-10-01 weather 재생성 뒤 6건 최대 14.7시간, queue 54건 적체; 일회용 실측에서
+  재시작 전 run이 120초 넘게 STARTED). `max_runtime`을 줄여 메우지 않는다 — weather의 정상 run이 57600초까지 간다.
+- 그 구멍은 code-server의 healthcheck가 메운다(`x-dagster-code-server-probe` 3번): 컨테이너 incarnation마다 한 번,
+  그 전에 시작한 자기 location의 STARTED run만 실패로 만든다.
+- 여전히 못 잡는 것: 컨테이너는 살아 있는데 worker 하나만 죽는 경우(OOM 등) — `max_runtime`까지 남는다.
+
 **공유의 전제 둘.**
 
 - 공유 webserver/daemon과 모든 code-server가 **같은 인스턴스 스토리지**를 본다.
@@ -275,7 +307,8 @@ HAProxy(OPNsense)가 공개 host `dagster.digitie.mywire.org`를 그리로 보�
 
 **선행 작업 순서.** 각 단계는 다음 단계의 전제다.
 
-1. 프로젝트마다 `dagster api grpc` code-server를 **별도 서비스로 분리**한다
+1. 프로젝트마다 code-server(당시 `dagster api grpc`, 지금은 reload를 받는 `dagster code-server start`)를
+   **별도 서비스로 분리**한다
    (2026-09-25 Map을 끝으로 다섯 프로젝트 모두 완료, §5). 이 단계까지는 기존 webserver/daemon을 그대로 둔다.
 2. 공유 인스턴스 스토리지(`11000`/`dagster_shared`)를 세운다 — db-init이 role·DB를,
    storage migrate one-shot이 schema를 만든다. 프로젝트의 옛 Dagster 메타DB는 **옮기지

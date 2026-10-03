@@ -6,8 +6,8 @@ literal로 들고 있으면 전환된 target에서 frozen render(`--profile boot
 pinned 재구축은 여전히 빌드·`up`·검사하려 하고, 명시적 `up <서비스>`는 꺼진 profile의 서비스도 띄워
 옛 daemon이 되살아난다. 그래서 이름은 여기서 한 번 파생한다.
 
-- **모양으로 찾는다.** code-server는 target의 `services` 중 `dagster api grpc`를 실행하는 서비스, 옛
-  webserver·daemon은 `dagster-webserver`/`dagster-daemon`을 실행하면서 그 code-server에 `depends_on`하는
+- **모양으로 찾는다.** code-server는 target의 `services` 중 `dagster code-server start`(또는 옛
+  `dagster api grpc`)를 실행하는 서비스, 옛 webserver·daemon은 `dagster-webserver`/`dagster-daemon`을 실행하면서 그 code-server에 `depends_on`하는
   서비스, gateway는 그것들에 `depends_on`하는 서비스다. 모양은 스위치와 무관하다 — 전환 뒤에도 옛 서비스는
   compose에 profile로 남는다(되돌리기와, 옛 override 같은 과거 모양을 알아보는 데 쓴다).
 - **스위치로 고른다.** `dagster.control_plane`이 `own`이면 오늘의 이름 그대로다. `shared`면 옛
@@ -118,6 +118,26 @@ def _runs(service: Mapping[str, Any], program: str) -> bool:
     return program in " ".join(_words(service.get("command")) + _words(service.get("entrypoint")))
 
 
+#: 장기 실행 code-server의 두 모양. `code-server start`(proxy + 자식 gRPC)만 location reload에 definitions를
+#: 다시 import한다 — `api grpc`는 reload를 경고만 남기고 무시한다(공용 plane 규칙은 테스트가 고정한다).
+CODE_SERVER_SUBCOMMANDS: Final = (("code-server", "start"), ("api", "grpc"))
+
+
+def code_server_subcommand(service: Mapping[str, Any]) -> tuple[str, str] | None:
+    """서비스가 `dagster <하위 명령>`으로 code-server를 띄우면 그 하위 명령, 아니면 None."""
+
+    argv = _words(service.get("command")) + _words(service.get("entrypoint"))
+    for index, word in enumerate(argv):
+        pair = tuple(argv[index + 1 : index + 3])
+        if word.rsplit("/", 1)[-1] == "dagster" and pair in CODE_SERVER_SUBCOMMANDS:
+            return pair[0], pair[1]
+    return None
+
+
+def _is_code_server(service: Mapping[str, Any]) -> bool:
+    return code_server_subcommand(service) is not None
+
+
 def _depends(service: Mapping[str, Any]) -> set[str]:
     depends = service.get("depends_on") or {}
     if isinstance(depends, Mapping | list):
@@ -187,14 +207,20 @@ def workspace_location_names(document: object) -> tuple[str, ...]:
 
 
 def _flag(argv: Sequence[str], *names: str) -> str | None:
-    for index, word in enumerate(argv[:-1]):
-        if word in names:
-            return argv[index + 1]
+    """`--name value` 또는 `--name=value`(click이 둘 다 받는다). code-server probe의 reaper도 같은 규칙이다."""
+    for index, word in enumerate(argv):
+        for name in names:
+            if word == name and index + 1 < len(argv):
+                return argv[index + 1]
+            if word.startswith(name + "="):
+                return word[len(name) + 1 :]
     return None
 
 
 def code_server_location_name(service: Mapping[str, Any]) -> str:
-    """code-server(`dagster api grpc`)가 싣는 location — `--location-name`, 없으면 `-m` 모듈(workspace 파생과 같은 규칙)."""
+    """code-server(`dagster code-server start`·`api grpc`)가 싣는 location.
+
+    `--location-name`, 없으면 `-m` 모듈(workspace 파생과 같은 규칙)."""
 
     argv = _words(service.get("command")) + _words(service.get("entrypoint"))
     name = _flag(argv, "--location-name", "-l") or _flag(argv, "-m", "--module-name")
@@ -249,7 +275,7 @@ def derive_dagster_family(
         {
             name
             for name in declared
-            if isinstance(services.get(name), Mapping) and _runs(services[name], "api grpc")
+            if isinstance(services.get(name), Mapping) and _is_code_server(services[name])
         },
         what="code-server",
         target=target_id,

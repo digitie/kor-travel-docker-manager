@@ -10,7 +10,8 @@
 #       # 명령을 그대로 찍는다.
 #
 # weather-cutover.sh(첫 전환의 기록)를 일반화했다. target의 서비스·location·옛 DB·소비자는 이름을 적지 않고
-# **설치본에서 파생**한다: code-server는 target의 `services` 중 `dagster api grpc`를 실행하는 것, 옛 webserver·
+# **설치본에서 파생**한다: code-server는 target의 `services` 중 `dagster code-server start`(또는 옛
+# `dagster api grpc`)를 실행하는 것, 옛 webserver·
 # daemon은 그 code-server에 기대며 `dagster-webserver`/`dagster-daemon`을 실행하는 것(공용 workspace를 붙인 것 제외),
 # gateway는 그 둘에 기대는 것, location은 code-server의 `--location-name` 또는 `-m`, 옛 DB는 code-server의 옛 instance가
 # 붙은 database(`current_database()`), 소비자는 targets의 `dagster.consumers`다.
@@ -124,7 +125,11 @@ def flag(argv, *names):
     return None
 def shared_workspace(s):
     return any("config/dagster-shared/workspace.yaml" in str(v.get("source", v) if isinstance(v, dict) else v) for v in s.get("volumes") or [])
-codes = [n for n in spec.get("services") or [] if n in services and runs(services[n], "api grpc")]
+def code_server(s):
+    argv = words(s)
+    return any(w.rsplit("/", 1)[-1] == "dagster" and tuple(argv[i + 1:i + 3]) in (("code-server", "start"), ("api", "grpc"))
+               for i, w in enumerate(argv))
+codes = [n for n in spec.get("services") or [] if n in services and code_server(services[n])]
 if len(codes) != 1: sys.exit("expected one code-server in %s, got %s" % (target, codes))
 code = codes[0]
 dependents = {n: s for n, s in services.items() if code in deps(s) and not shared_workspace(s)}
