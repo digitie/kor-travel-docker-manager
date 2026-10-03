@@ -94,7 +94,6 @@ MAP_API_IMMUTABLE_COMMAND: Final[None] = _MAP_API_IMMUTABLE_COMMAND
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _CONCIERGE_API_SERVICE = "kor-travel-concierge-api"
 _CONCIERGE_UI_SERVICE = "kor-travel-concierge-ui"
-_MAP_DAGSTER_STORAGE_MIGRATE_SERVICE = "kor-travel-map-dagster-storage-migrate"
 _MAP_DB_ROLE_BOOTSTRAP_SERVICE = "kor-travel-map-db-role-bootstrap"
 #: ADR-101: root migration과 finalize 두 one-shot이 하나로 접혔다. Map 이미지의
 #: `ktm-application-schema-fresh-300` / `-fresh-finalize`가 삭제됐고, 그 둘이
@@ -107,15 +106,14 @@ _PINVI_ADMIN_BOOTSTRAP_SERVICE = "pinvi-admin-bootstrap"
 #: 없어서 `--auth-host=trust`(fresh PGDATA에서 superuser 인증을 통째로 끄는 값)가
 #: raw·resolved·UI 저장 경로를 **전부 통과**했다.
 _POSTGRES_CANONICAL_INITDB_ARGS = "--auth-host=scram-sha-256"
-#: ADR-46 — PinVi 앱(`pinvi`)·Dagster(`pinvi_dagster`) DSN은 공용 제어 평면
-#: instance(`kor-travel-shared-postgres`)를 쓴다. PinVi API, PinVi Dagster family(webserver·
-#: code-server·daemon), admin bootstrap이 실제로 접속하는 DSN의 포트다. 옛 전용
-#: instance(pinvi-postgres, :12800)는 2026-09-28에
-#: compose에서 뺐다.
+#: ADR-46 — PinVi 앱(`pinvi`) DSN은 공용 제어 평면 instance(`kor-travel-shared-postgres`)를 쓴다.
+#: PinVi API, PinVi Dagster family(webserver·code-server·daemon), admin bootstrap이 실제로 접속하는
+#: DSN의 포트다. 옛 전용 instance(pinvi-postgres, :12800)는 2026-09-28에 compose에서 뺐다. 옛
+#: Dagster storage DSN(`PINVI_DAGSTER_PG_URL`, `pinvi_dagster`)은 platform-topology.md §7 4단계에서
+#: 지웠다 — PinVi Dagster는 공용 `dagster_shared`에서 돈다.
 _PINVI_SHARED_POSTGRES_PORT = 11000
 _PINVI_WEB_SERVICE = "pinvi-web"
 _PINVI_DATABASE_URL_ENV = "PINVI_DATABASE_URL"
-_PINVI_DAGSTER_PG_URL_ENV = "PINVI_DAGSTER_PG_URL"
 _PINVI_APP_DB_USER_ENV = "PINVI_APP_DB_USER"
 _PINVI_APP_DB_PASSWORD_ENV = "PINVI_APP_DB_PASSWORD"
 
@@ -439,7 +437,6 @@ def _candidate_protected_service_order() -> tuple[str, ...]:
     return (
         _MAP_API_SERVICE,
         *_map_dagster_runtime_services(),
-        _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
         _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
         _MAP_APPLICATION_SCHEMA_SERVICE,
         _PINVI_API_SERVICE,
@@ -475,7 +472,6 @@ def _map_database_host_network_services() -> frozenset[str]:
             _MAP_API_SERVICE,
             *_map_dagster_runtime_services(),
             *_retired_map_dagster_services(),
-            _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
             _MAP_DB_ROLE_BOOTSTRAP_SERVICE,
             _MAP_APPLICATION_SCHEMA_SERVICE,
         }
@@ -587,30 +583,6 @@ _PINVI_DATABASE_URL_RAW_VALUES: Final[LazyMapping[str, str]] = LazyMapping(
     _build_pinvi_database_url_raw_values
 )
 
-#: Dagster instance storage DSN. webserver·code-server·daemon이 **같은 storage**를
-#: 봐야 하므로 셋 다 같은 값을 든다. 앱 DSN과 달리 `postgresql://`(동기)이고
-#: 데이터베이스가 `pinvi_dagster`다 — 저장소를 앱 DB와 가르는 것이 #356의 요지다.
-_PINVI_DAGSTER_PG_URL_SERVICES: Final[LazySequence[str]] = LazySequence(
-    lambda: _pinvi_dagster().processes
-)
-
-
-@lru_cache(maxsize=1)
-def _build_pinvi_dagster_pg_url_raw_values() -> dict[str, str]:
-    return {
-        service_name: _pinvi_dsn(
-            scheme="postgresql",
-            username_env=_PINVI_APP_DB_USER_ENV,
-            password_env=_PINVI_APP_DB_PASSWORD_ENV,
-            database="${PINVI_DAGSTER_DB:-pinvi_dagster}",
-        )
-        for service_name in _PINVI_DAGSTER_PG_URL_SERVICES
-    }
-
-
-_PINVI_DAGSTER_PG_URL_RAW_VALUES: Final[LazyMapping[str, str]] = LazyMapping(
-    _build_pinvi_dagster_pg_url_raw_values
-)
 
 
 
@@ -620,6 +592,11 @@ def _build_map_database_canonical_env_values() -> dict[tuple[str, str], str]:
         # role bootstrap one-shot에는 bootstrap DSN·instance admin 이름·포트가 없다(ADR-53 S1) —
         # 이름·포트는 Manager가 실행 시점 `-e`로, password는 instance의 secret file로 준다.
         # 그 셋이 compose env에 없다는 것은 `_validate_map_db_role_bootstrap_service`가 본다.
+        #
+        # 아래 `KOR_TRAVEL_MAP_DAGSTER_*` 넷은 옛 Map Dagster metadata DB의 이름·login·DSN이다. Manager는
+        # 그 DB에 접속하지 않는다(platform-topology.md §7 4단계). 이 one-shot만 받는 이유는 Map의
+        # `docker/postgres-role-bootstrap.sh`가 `validate_map_database_credentials`로 넷을 **문자열로**
+        # 요구하기 때문이다(접속하지 않는다). Map이 그 요구를 지우면 이 넷과 `.env`의 넷을 함께 지운다.
         (_MAP_DB_ROLE_BOOTSTRAP_SERVICE, "KOR_TRAVEL_MAP_DB_ROLE_BOOTSTRAP_CONFIRM_DATABASE"): (
             "${KOR_TRAVEL_MAP_POSTGRES_DB:?"
             "KOR_TRAVEL_MAP_POSTGRES_DB must be explicitly set}"
@@ -658,16 +635,6 @@ def _build_map_database_canonical_env_values() -> dict[tuple[str, str], str]:
             "${KOR_TRAVEL_MAP_PG_DSN:?"
             "KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
         ),
-        **{
-            (service, "KOR_TRAVEL_MAP_DAGSTER_PG_URL"): (
-                "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?"
-                "KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
-            )
-            for service in (
-                *_map_dagster().processes,
-                _MAP_DAGSTER_STORAGE_MIGRATE_SERVICE,
-            )
-        },
         **{
             (service, "KOR_TRAVEL_MAP_PG_DSN"): (
                 "${KOR_TRAVEL_MAP_PG_DSN:?"
@@ -789,8 +756,7 @@ def _build_contract_locked_env_names_by_service() -> dict[str, frozenset[str]]:
         )
         for service_name in {service for service, _ in _CANDIDATE_CANONICAL_API_ENV_VALUES}
     }
-# DSN은 위 dict가 아니라 별도 검증기가 결박한다(`_PINVI_DATABASE_URL_RAW_VALUES`,
-# `_PINVI_DAGSTER_PG_URL_RAW_VALUES`). 계약의
+# DSN은 위 dict가 아니라 별도 검증기가 결박한다(`_PINVI_DATABASE_URL_RAW_VALUES`). 계약의
 # 소유자가 다르므로 유도하지 않고 명시하되, **덮어쓰지 않고 합집합을 취한다** —
 # 대입으로 두면 나중에 같은 service가 candidate 계약에 등장했을 때 유도된 이름들이
 # 조용히 사라진다.
@@ -798,10 +764,6 @@ def _build_contract_locked_env_names_by_service() -> dict[str, frozenset[str]]:
         *(
             (dsn_service, {_PINVI_DATABASE_URL_ENV})
             for dsn_service in _PINVI_DATABASE_URL_RAW_VALUES
-        ),
-        *(
-            (dsn_service, {_PINVI_DAGSTER_PG_URL_ENV})
-            for dsn_service in _PINVI_DAGSTER_PG_URL_RAW_VALUES
         ),
     ):
         locked[service_name] = frozenset(
@@ -1166,50 +1128,6 @@ def _validate_pinvi_database_url_service_identities(
             or parsed.fragment
         ):
             raise ComposeCandidateContractError("PinVi database URL identity is invalid")
-
-    # Dagster instance storage DSN. webserver·code-server·daemon이 **같은** storage를
-    # 봐야 하고(다르면 schedule 켜짐 상태와 run 이력이 갈린다), 그 storage는 앱 DB와
-    # **달라야 한다**(#356의 요지 — 적재 트랜잭션과 Dagster 쓰기를 가른다).
-    for service_name in _PINVI_DAGSTER_PG_URL_SERVICES:
-        service = services.get(service_name)
-        if not isinstance(service, Mapping):
-            continue
-        service_environment = service.get("environment")
-        if not isinstance(service_environment, Mapping):
-            raise ComposeCandidateContractError("PinVi Dagster storage URL is invalid")
-        value = service_environment.get(_PINVI_DAGSTER_PG_URL_ENV)
-        if not isinstance(value, str) or not value:
-            raise ComposeCandidateContractError("PinVi Dagster storage URL is invalid")
-        if not resolved:
-            if not hmac.compare_digest(
-                value, _PINVI_DAGSTER_PG_URL_RAW_VALUES[service_name]
-            ):
-                raise ComposeCandidateContractError(
-                    "PinVi Dagster storage URL is invalid"
-                )
-            continue
-        try:
-            parsed = urlsplit(value)
-            parsed_port = parsed.port
-        except ValueError as exc:
-            raise ComposeCandidateContractError(
-                "PinVi Dagster storage URL is invalid"
-            ) from exc
-        expected_user = cast(str, role_values[_PINVI_APP_DB_USER_ENV])
-        expected_password = cast(str, role_values[_PINVI_APP_DB_PASSWORD_ENV])
-        if (
-            parsed.scheme != "postgresql"
-            or parsed.hostname != "127.0.0.1"
-            or parsed_port != expected_port
-            or unquote(parsed.username or "") != expected_user
-            or not hmac.compare_digest(unquote(parsed.password or ""), expected_password)
-            or not parsed.path.lstrip("/")
-            # 앱 DB와 같은 이름이면 #356이 가른 것이 도로 붙은 것이다.
-            or parsed.path == f"/{expected_database}"
-            or parsed.query
-            or parsed.fragment
-        ):
-            raise ComposeCandidateContractError("PinVi Dagster storage URL is invalid")
 
 
 def _require_map_database_host_network(service: Mapping[str, Any]) -> None:

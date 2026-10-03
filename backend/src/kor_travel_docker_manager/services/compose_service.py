@@ -73,14 +73,12 @@ from kor_travel_docker_manager.services.database_runtime import (
     database_runtimes_from_frozen_contract,
     ensure_map_application_database,
     ensure_map_databases_isolated,
-    initialize_application_300_dagster_metadata_database,
     map_application_login,
     read_database_identity,
     read_database_schema_revision,
     require_databases_resettable,
     require_map_application_database_convergible,
     require_map_bootstrap_admin_ready,
-    require_map_dagster_metadata_initializable,
     require_map_databases_isolatable,
     reset_databases_for_application_300,
     schema_revision_table_exists,
@@ -174,10 +172,13 @@ from kor_travel_docker_manager.services.yaml_strict import (
     load_yaml_rejecting_duplicate_keys,
 )
 
+#: pinned 재구축이 `run`하는 one-shot writer. 옛 `kor-travel-map-dagster-storage-migrate`(옛 Map Dagster
+#: metadata DB를 migrate했다)는 없다 — Map Dagster storage는 공용 `dagster_shared`이고 그 schema는
+#: `kor-travel-dagster-storage-migrate`(`ensure dagster`의 init step)가 올린다. 그 DB가 막힌 뒤 이 순서에
+#: 남아 있던 그 one-shot이 Map·PinVi를 멈춘 다음 실패했다(2026-10-03 22:51Z, platform-topology.md §7 4단계).
 _PINNED_RUNTIME_ONESHOT_WRITERS = (
     "kor-travel-map-db-role-bootstrap",
     _MAP_APPLICATION_SCHEMA_SERVICE,
-    "kor-travel-map-dagster-storage-migrate",
     "pinvi-admin-bootstrap",
 )
 
@@ -4479,9 +4480,9 @@ class ComposeService:
 
     @staticmethod
     def _observe_deployed_databases(
-        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime],
     ) -> dict[DatabaseRole, DeployedDatabase] | None:
-        """세 DB의 identity. 하나라도 없으면 ``None``."""
+        """두 DB(Map application·PinVi)의 identity. 하나라도 없으면 ``None``."""
 
         observed: dict[DatabaseRole, DeployedDatabase] = {}
         for runtime in runtimes:
@@ -4493,9 +4494,9 @@ class ComposeService:
 
     @staticmethod
     def _observe_schema_heads(
-        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime],
     ) -> dict[str, str] | None:
-        """세 DB의 Alembic head. 하나라도 읽을 수 없으면 ``None``."""
+        """두 DB(Map application·PinVi)의 Alembic head. 하나라도 읽을 수 없으면 ``None``."""
 
         try:
             return {
@@ -4662,17 +4663,8 @@ class ComposeService:
                 )
             with _rebuild_stage("candidate_heads"):
                 # Map application head는 `_load_application_300_candidate`가 이미 한 번
-                # 관측했다. 나머지 둘은 후보 이미지를 network-less로 한 번씩 돌린다.
-                map_dagster_head = parse_candidate_static_head(
-                    _run_pinned_runtime_static_command(
-                        image_ids["map_dagster"],
-                        ("head",),
-                        label="Map Dagster",
-                        entrypoint="/usr/local/bin/ktm-dagster-storage",
-                    ),
-                    schema="kor-travel-map.dagster-storage-head.v1",
-                    field="head",
-                )
+                # 관측했다. PinVi head는 후보 이미지를 network-less로 한 번 돌린다. 옛 Map Dagster
+                # storage head는 묻지 않는다 — 그 metadata DB는 퇴역했다(platform-topology.md §7 4단계).
                 pinvi_head = parse_candidate_static_head(
                     _run_pinned_runtime_static_command(
                         image_ids["pinvi_api"],
@@ -4686,7 +4678,6 @@ class ComposeService:
                     sources=sources,
                     map_application_candidate=map_candidate,
                     image_ids=image_ids,
-                    map_dagster_head=map_dagster_head,
                     pinvi_head=pinvi_head,
                 )
             with _rebuild_stage("runtime_generation"):
@@ -4784,9 +4775,9 @@ class ComposeService:
                     environment=runtime_transaction.environment.effective,
                 )
             elif require_map_application_database_convergible(runtimes[0]) == "present":
-                # R4의 live 전제. 넘겨받은 app DB와 이미 있는 Dagster DB를 전체 경로는 R4 전에
-                # 바꾸지 않는다(없거나 bootstrap 전인 DB는 만든 뒤 R4가 판정한다).
-                require_map_databases_isolatable(runtimes[0], runtimes[1], login=map_login)
+                # R4의 live 전제. 넘겨받은 app DB를 전체 경로는 R4 전에 바꾸지 않는다(없거나
+                # bootstrap 전인 DB는 만든 뒤 R4가 판정한다).
+                require_map_databases_isolatable(runtimes[0], login=map_login)
             else:
                 # 앱 DB가 없거나 bootstrap 전이다 — role bootstrap이 instance admin으로 돈다(S1).
                 require_map_bootstrap_admin_ready(
@@ -4794,11 +4785,6 @@ class ComposeService:
                     resolved=runtime_transaction.resolved,
                     environment=runtime_transaction.environment.effective,
                 )
-            if restart is None:
-                # Dagster metadata DB가 없으면 init이 role을 만들거나 password를 돌린다. 공용
-                # instance에서는 다른 tenant의 role도 그 이름의 후보다 — init의 거부(R2)를 멈추기
-                # 전으로 당긴다. `--restart`는 DB를 지운 뒤에 판정한다.
-                require_map_dagster_metadata_initializable(runtimes[1])
 
             from kor_travel_docker_manager.services.runtime_execution_registry import (
                 trusted_manager_source_revision,
@@ -4898,11 +4884,11 @@ class ComposeService:
 
     def _require_pinned_runtime_database_instances_ready(
         self,
-        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime],
         *,
         transaction: ComposeTransactionSnapshot,
     ) -> None:
-        """세 DB가 사는 PostgreSQL instance가 떠 있고 healthy인지 **보기만** 한다(ADR-53).
+        """두 DB가 사는 PostgreSQL instance가 떠 있고 healthy인지 **보기만** 한다(ADR-53).
 
         instance는 DSN 포트에서 유도했다(`database_runtimes_from_frozen_contract`). 공용
         instance는 모든 tenant가 쓰므로 재구축이 `up`·재생성·재시작하지 않는다(R3) — `compose
@@ -4923,7 +4909,7 @@ class ComposeService:
         topology: RuntimeTopology,
         companions: Mapping[str, RuntimeSlot],
         expected_images: Mapping[str, str],
-        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime],
         map_login: str,
     ) -> None:
         """committed와 같은 pair: 빌드·migration 없이 떠 있어야 할 것만 맞춘다.
@@ -4933,7 +4919,7 @@ class ComposeService:
         이미 맞으면 멱등이다.
         """
 
-        ensure_map_databases_isolated(runtimes[0], runtimes[1], login=map_login)
+        ensure_map_databases_isolated(runtimes[0], login=map_login)
         self._run_pinned_runtime_rebuild_compose(
             [
                 "up",
@@ -5299,7 +5285,7 @@ class ComposeService:
         status_path: Path,
         restart: bool,
         candidate: PinnedRuntimeGeneration,
-        runtimes: tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime],
+        runtimes: tuple[DatabaseRuntime, DatabaseRuntime],
         runtime_transaction: ComposeTransactionSnapshot,
         topology: RuntimeTopology,
         companions: Mapping[str, RuntimeSlot],
@@ -5356,7 +5342,7 @@ class ComposeService:
             status = replace(status, databases=None, step=RESET_DONE_STEP)
             write_deploy_status(status_path, status)
         # PinVi DB가 없으면(새 호스트·지워진 DB) Map을 건드리기 전에 만든다.
-        create_database_if_absent(runtimes[2])
+        create_database_if_absent(runtimes[1])
 
         # Map application DB: 없으면 만들고 role bootstrap, 이미 bootstrap됐으면 그대로.
         # instance admin 이름·포트는 비밀이 아니다 — 앱 DB runtime에서 유도해 실행 시점 `-e`로
@@ -5400,37 +5386,19 @@ class ComposeService:
             "Map application schema differs from candidate head",
         )
 
-        # Dagster metadata DB: 없을 때만 role과 DB를 만든다.
-        if read_database_identity(runtimes[1]) is None:
-            metadata_user = values.get("KOR_TRAVEL_MAP_DAGSTER_METADATA_USER")
-            metadata_password = values.get("KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD")
-            if not isinstance(metadata_user, str) or not isinstance(metadata_password, str):
-                raise DeploymentContractError(
-                    "Map Dagster metadata credentials are unavailable"
-                )
-            initialize_application_300_dagster_metadata_database(
-                runtimes[1],
-                metadata_user=metadata_user,
-                metadata_password=metadata_password,
-            )
-
-        # 두 Map DB를 PUBLIC에 닫고 app DB에 login CONNECT·연결 상한을 건다(R4). fresh
-        # bootstrap은 기본 ACL을 요구하므로 bootstrap 뒤, Map이 처음 연결하기 전이다.
-        ensure_map_databases_isolated(runtimes[0], runtimes[1], login=map_login)
+        # Map app DB를 PUBLIC에 닫고 login CONNECT·연결 상한을 건다(R4). fresh bootstrap은 기본
+        # ACL을 요구하므로 bootstrap 뒤, Map이 처음 연결하기 전이다.
+        #
+        # 옛 Map Dagster metadata DB는 만들지도(init), migrate하지도(`kor-travel-map-dagster-storage-migrate`),
+        # head를 읽지도 않는다 — Map Dagster storage는 공용 `dagster_shared`이고 그 schema는
+        # `kor-travel-dagster-storage-migrate`가 올린다. 옛 DB가 막힌 뒤 이 자리의 migrate가 Map·PinVi를 멈춘
+        # 채 실패했다(2026-10-03 22:51Z, platform-topology.md §7 4단계).
+        ensure_map_databases_isolated(runtimes[0], login=map_login)
         compose_up("kor-travel-map-api")
         require_head(
             runtimes[0],
             candidate.map_application_head,
             "Map application schema differs from candidate head",
-        )
-        self._run_pinned_runtime_rebuild_compose(
-            ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
-            transaction=runtime_transaction,
-        )
-        require_head(
-            runtimes[1],
-            candidate.map_dagster_head,
-            "Map Dagster storage execution result is uncertain",
         )
         # Map UI와 Map Dagster slot. 공용 plane에 합류했으면 carrier가 code-server이고 daemon slot은
         # 비어 있다 — 옛 webserver·daemon은 이름으로도 부르지 않는다(ADR-54).
@@ -5445,7 +5413,7 @@ class ComposeService:
         # PinVi: 0101 fresh-install fence는 빈 DB에서만 필요하다(기존 DB에서는 0101이
         # 다시 돌지 않는다). bootstrap은 `alembic upgrade head` 뒤 admin을 만들거나
         # 고친다 — 둘 다 멱등이다.
-        if not schema_revision_table_exists(runtimes[2]):
+        if not schema_revision_table_exists(runtimes[1]):
             self._ensure_pinvi_fresh_migration_fence(values=values)
         self._run_pinvi_admin_bootstrap(
             transaction=runtime_transaction,
@@ -5453,7 +5421,7 @@ class ComposeService:
             values=values,
             transaction_id=status.run_id,
         )
-        require_head(runtimes[2], candidate.pinvi_head, "PinVi schema differs from candidate head")
+        require_head(runtimes[1], candidate.pinvi_head, "PinVi schema differs from candidate head")
         compose_up("pinvi-api")
         self._require_services_ready(
             ("pinvi-api",),

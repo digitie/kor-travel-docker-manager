@@ -310,7 +310,6 @@ def build_candidate_generation(
     sources: PinnedRuntimeSourceMaterialization,
     map_application_candidate: MapApplicationCandidate,
     image_ids: Mapping[RuntimeSlot, str],
-    map_dagster_head: str,
     pinvi_head: str,
     recorded_at: str | None = None,
 ) -> PinnedRuntimeGeneration:
@@ -330,7 +329,7 @@ def build_candidate_generation(
             "Map Dagster candidate image differs from the paired candidate"
         )
     declared_head = map_application_candidate.application_head
-    for head in (declared_head, map_dagster_head, pinvi_head):
+    for head in (declared_head, pinvi_head):
         if _SCHEMA_HEAD.fullmatch(head) is None:
             raise DeploymentContractError("pinned runtime candidate schema head is invalid")
     timestamp = recorded_at or datetime.now(UTC).isoformat()
@@ -345,7 +344,6 @@ def build_candidate_generation(
         map_source_revision=sources.release.source_for("map").revision,
         pinvi_source_revision=sources.release.source_for("pinvi").revision,
         map_application_head=declared_head,
-        map_dagster_head=map_dagster_head,
         pinvi_head=pinvi_head,
         pinset_sha256=sources.pinset_sha256,
         map_application_300_candidate_evidence=_candidate_evidence(
