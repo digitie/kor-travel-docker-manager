@@ -8700,3 +8700,25 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
   `docker-compose.shared.yml` + n150 `.env.server14`). 그래서 `TRANSPORT_SERVICE_EXPORT_TOKEN`과
   `REST_AREA_COLLECTION_ENABLED=true`는 Manager compose에 만들지 않고, 운영자가 두 쪽을 같은 값으로 맞추는
   절차를 `docker-management.md` 7.3에 적었다. M-T(transport의 Manager 이관) 때 한 원천으로 접는다.
+
+## 2026-10-02 — 공용 plane code-server를 `code-server start`로(reload가 definitions를 다시 import), probe를 자식에 묶고 orphan run 정리
+
+C7 schedule-write가 prod에서 실패한 원인: Map은 cron override를 definitions import 때 읽는데 code-server가 `dagster
+api grpc`라 location reload가 "not currently supported" 경고만 남기고 무시됐다. 네 code-server(Map·PinVi·geo·weather —
+`code_server_subcommand`로 모양에서 파생)를 `dagster code-server start`로 바꿨다. n150 일회용 컨테이너(live 이미지,
+빈 loopback 포트) 실측: `api grpc`는 reload에 import 1회 그대로, `code-server start`는 새 자식 pid로 다시 import.
+
+- **probe(`x-dagster-code-server-probe`, 네 서비스 공유).** proxy health는 고정 SERVING이라 자식에 전달되는
+  `ListRepositories`를 본다. 실패가 이어지면 3번째(시간 초과면 6번째)에 PID 1(tini)을 끝낸다 — run worker가 있으면
+  기다리고(실패한 reload 뒤 옛 자식의 run을 지킨다), 닿지 못함·시간 초과가 2시간이면 run이 있어도 끝낸다. 카운터는
+  `boot_id` + PID 1 tick으로 incarnation을 가른다. 실측: 없는 `-m`·자식 kill → 재시작, 실패한 reload 중 run 진행 →
+  run SUCCESS 뒤 재시작.
+- **orphan run.** `DefaultRunLauncher`는 worker health를 지원하지 않아 daemon의 run monitoring은 code-server
+  재시작으로 worker를 잃은 STARTED run을 `max_runtime`(weather 57600초)까지 둔다(2026-10-01 weather 6건 최대 14.7시간,
+  queue 54건). probe가 incarnation마다 한 번 reaper를 띄워 컨테이너 시작 전에 시작한 자기 location의 STARTED run만
+  실패로 만든다. 여전히 못 잡는 것: 컨테이너는 살아 있는데 worker 하나만 죽는 경우.
+- **heartbeat** `DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS=600`(자식 argv `--heartbeat-timeout 600` 확인).
+- **공용 `dagster.yaml`·`workspace.yaml`은 바꾸지 않았다** — 설치는 code-server만 재생성한다.
+- **⚠️ 설치 순서: Map commit이 `fix/dagster-entrypoint-code-server`(Map PR #1295)를 포함하는 pinned pair가 회전된
+  뒤에만 이 Manager를 설치한다.** 그 전 Map 이미지는 `code-server start` argv를 봉인에서 거부한다. Manager는 이
+  결합을 검사하지 않는다(결박·preflight를 더하지 않는다).

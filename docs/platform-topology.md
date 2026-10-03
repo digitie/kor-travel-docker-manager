@@ -271,12 +271,18 @@ code-server에 `ReloadCode`를 보낸다. `dagster api grpc`는 그것을 "not c
 무시한다 — Map의 C7 schedule override(definitions import 때 읽는다)가 그래서 반영되지 않았다. 그래서
 code-server는 `dagster code-server start`다: proxy가 자식 gRPC(UDS socket)를 띄우고 reload 때 자식을 새로
 띄워 다시 import한다. 대가와 그 처리는 compose `x-dagster-code-server-probe`의 주석이 정본이다 — proxy의
-`DagsterApi` health는 고정 SERVING이라 healthcheck가 자식에 전달되는 `ListRepositories`를 보고, load error나
-닿지 못함이 **연속 3번**이면 PID 1(tini)을 끝내 `restart`가 다시 띄우게 한다(옛 `api grpc`의 import 실패
-self-heal). 실패한 reload 뒤 옛 자식이 run을 마저 도는 동안(run worker가 있는 동안)은 죽이지 않는다(실패로만 보고).
-proxy→자식 heartbeat는 `DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS=600`(기본 30초는 n150 부하에 짧고, 길면 정리 못 한
-옛 자식이 오래 남는다). Map 이미지의 production entrypoint는 code-server argv를 봉인하므로, Map의 이 compose는
-`code-server start`를 받는 Map 이미지가 핀에 오른 뒤에만 설치한다.
+`DagsterApi` health는 고정 SERVING이라 healthcheck가 자식에 전달되는 `ListRepositories`를 본다. 실패(load error,
+닿지 못함, 4초 시간 초과)가 이어지면 3번째(시간 초과면 6번째)에 PID 1(tini)을 끝내 `restart`가 다시 띄우게 한다(옛
+`api grpc`의 import 실패 self-heal). run worker가 있는 동안은 죽이지 않는다(실패로만 보고) — 실패한 reload 뒤 옛
+자식이 run을 마저 돈다. 단 닿지 못함·시간 초과가 2시간 이어지면 run이 있어도 죽인다(자식이 죽었거나 멈춰 그 run은
+취소도 못 한다). proxy→자식 heartbeat는 `DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS=600`(기본 30초는 n150 부하에
+짧고, 길면 정리 못 한 옛 자식이 오래 남는다).
+
+**⚠️ 설치 순서.** Map 이미지의 production entrypoint는 code-server argv를 봉인한다. 그래서 Map code-server를
+`code-server start`로 바꾼 Manager compose는 **Map commit이 `fix/dagster-entrypoint-code-server`(Map PR #1295)를
+포함하는 pinned pair가 회전된 뒤에만** 설치한다 — 그 전 Map 이미지는 이 argv를 기동부터 거부한다. Manager는 이
+결합을 검사하지 않는다(소유자 결정: 결박·preflight를 더하지 않는다). PinVi·geo·weather 이미지는 argv를 봉인하지
+않는다(2026-10-02 실측).
 
 **run monitoring이 잡는 것과 못 잡는 것(2026-10-02, dagster 1.13.24 소스·n150 일회용 실측).** 공용
 `dagster.yaml`의 `run_monitoring`은 켜져 있다(start·cancel 600초, `max_runtime` 21600초, poll 15초). run worker는
