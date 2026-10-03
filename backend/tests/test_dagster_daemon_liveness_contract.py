@@ -321,10 +321,6 @@ _PROXY_HEARTBEAT_ENV = "DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS"
 #: proxy→자식 heartbeat의 범위. 기본 30초는 n150 디스크 대기 급등에 짧아 멀쩡한 자식이 내려간다. 너무 길면
 #: reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나)이 그만큼 남는다 — 하루는 너무 길다.
 _PROXY_HEARTBEAT_RANGE_SECONDS = (300, 1800)
-#: 이어진 실패 몇 번째에 PID 1을 끝내는가(probe 원문의 `6 if kind == 'timeout' else 3`) — 시간 초과는 부하일 수
-#: 있어 더 오래 본다.
-_KILL_THRESHOLD = 3
-_TIMEOUT_KILL_THRESHOLD = 6
 
 
 def _proxy_code_server_services() -> dict[str, dict[str, Any]]:
@@ -373,10 +369,10 @@ def test_every_proxy_code_server_probe_is_bound_to_the_child(service_name: str) 
     )
 
 
-# ── probe를 실행해서 잰다 (2026-10-02 적대 리뷰) ──────────────────────────
+# ── probe를 실행해서 잰다 (2026-10-02~03 적대 리뷰) ───────────────────────
 #
-# probe는 `/proc`·`/tmp`·grpc·dagster에 닿는다. 원문의 `/proc`·`/tmp` 경로를 임시 디렉터리로 바꾸고 grpc·dagster는
-# 대역 module로 넣어 **원문 그대로** 실행한다 — 조각 문자열이 아니라 판정을 잰다.
+# probe는 `/proc`·`/tmp`·grpc·dagster·시계에 닿는다. 원문의 `/proc`·`/tmp` 경로를 임시 디렉터리로 바꾸고 grpc·
+# dagster는 대역 module로, 시계는 고정값으로 넣어 **원문 그대로** 실행한다 — 조각 문자열이 아니라 판정을 잰다.
 
 
 class _FakeRpcError(Exception):
@@ -408,7 +404,7 @@ class _ProbeWorld:
         (self.proc / "1" / "fd").mkdir(parents=True)
         (self.proc / "sys" / "kernel" / "random").mkdir(parents=True)
         self.tmp.mkdir()
-        (self.proc / "1" / "cmdline").write_text("\0".join(cmdline) + "\0")
+        self.set_cmdline(cmdline)
         (self.proc / "1" / "fd" / "2").write_text("")
         (self.proc / "uptime").write_text(f"{uptime} 0.0")
         self.incarnation(boot_id="boot-a", pid1_ticks=pid1_ticks)
@@ -416,6 +412,10 @@ class _ProbeWorld:
         self.spawned: list[list[str]] = []
         self.failed: list[str] = []
         self.query: dict[str, Any] = {}
+        self.queried = False
+
+    def set_cmdline(self, cmdline: list[str]) -> None:
+        (self.proc / "1" / "cmdline").write_text("\0".join(cmdline) + "\0")
 
     def incarnation(self, *, boot_id: str, pid1_ticks: int) -> None:
         """컨테이너 재시작(PID 1 시작 tick) 또는 호스트 재부팅(`boot_id`)."""
@@ -427,20 +427,13 @@ class _ProbeWorld:
         (self.proc / str(pid)).mkdir()
         (self.proc / str(pid) / "cmdline").write_bytes("\0".join(argv).encode() + b"\0")
 
-    def failing_for(self, seconds: float) -> None:
-        """지금 이어지는 실패의 첫 시각을 `seconds`초 전으로 옮긴다."""
-        import time
-
-        path = self.tmp / ".ktdm-probe-fails"
-        key, count, _first = path.read_text().split()
-        path.write_text(f"{key} {count} {time.time() - seconds}")
-
     def run(
         self,
         probe: str,
         *,
         reply: bytes = b"",
         error: str | None = None,
+        check_error: str | None = None,
         reap: bool = False,
         now: float | None = None,
         records: tuple[_FakeRecord, ...] = (),
@@ -477,6 +470,8 @@ class _ProbeWorld:
                 pass
 
             def Check(self, request: Any, timeout: float) -> Any:  # noqa: N802 - grpc의 이름
+                if check_error is not None:
+                    raise _FakeRpcError(check_error)
                 return types.SimpleNamespace(status=_Response.SERVING)
 
         class _Status:
@@ -489,6 +484,7 @@ class _ProbeWorld:
         class _Instance:
             @staticmethod
             def get() -> _Instance:
+                world.queried = True
                 return _Instance()
 
             def get_run_records(self, filters: Any) -> list[_FakeRecord]:
@@ -543,7 +539,20 @@ class _ProbeWorld:
                     sys.modules[name] = module
         return code
 
+    def series(
+        self, probe: str, start: float, end: float, step: float, **kwargs: Any
+    ) -> float | None:
+        """start부터 end까지 step초마다 probe를 돌리고, 처음 죽인 시각(start 기준 초)을 돌려준다."""
+        t = start
+        while t <= end:
+            self.run(probe, now=_T0 + t, **kwargs)
+            if self.kills:
+                return t
+            t += step
+        return None
 
+
+_T0 = 1_800_000_000.0
 _WEATHER_PID1 = [
     "/sbin/docker-init",
     "--",
@@ -570,7 +579,9 @@ _LOAD_ERROR = {"reply": b'{"__class__": "SerializableErrorInfo", "message": "boo
 _UNREACHABLE = {"error": "UNAVAILABLE"}
 _TIMEOUT = {"error": "DEADLINE_EXCEEDED"}
 _LOADED = {"reply": b'{"__class__": "ListRepositoriesResponse"}'}
-#: 닿지 못함·시간 초과가 이만큼 이어지면 run worker가 있어도 죽인다(probe 원문의 7200).
+#: probe 원문의 시간 문턱 — load error·닿지 못함 90초, 시간 초과 5분, 천장 2시간.
+_DOWN_SECONDS = 90
+_TIMEOUT_SECONDS = 300
 _ABANDON_SECONDS = 7200
 
 
@@ -585,61 +596,93 @@ def world(tmp_path: Path) -> _ProbeWorld:
     return _ProbeWorld(tmp_path, cmdline=_WEATHER_PID1, pid1_ticks=1000 * _hz(), uptime=5000.0)
 
 
+def _healthy_once(world: _ProbeWorld, probe: str) -> None:
+    assert world.run(probe, now=_T0 - 1, **_LOADED) == 0
+
+
 @pytest.mark.parametrize(
-    ("failure", "kwargs", "threshold"),
-    [
-        ("load error", _LOAD_ERROR, _KILL_THRESHOLD),
-        ("unreachable", _UNREACHABLE, _KILL_THRESHOLD),
-        ("timeout", _TIMEOUT, _TIMEOUT_KILL_THRESHOLD),
-    ],
+    ("kwargs", "after"),
+    [(_LOAD_ERROR, _DOWN_SECONDS), (_UNREACHABLE, _DOWN_SECONDS), (_TIMEOUT, _TIMEOUT_SECONDS)],
+    ids=["load error", "unreachable", "timeout"],
 )
-def test_the_probe_kills_pid1_only_at_the_streak_threshold(
-    world: _ProbeWorld, failure: str, kwargs: dict[str, Any], threshold: int
+@pytest.mark.parametrize("step", [30, 5], ids=["interval 30s", "start_interval 5s"])
+def test_the_probe_kills_pid1_only_after_failing_for_long_enough(
+    world: _ProbeWorld, kwargs: dict[str, Any], after: int, step: int
 ) -> None:
-    """한 번의 일시 오류(n150 디스크 대기)로는 죽이지 않는다 — 이어진 실패의 threshold번째에 PID 1에 SIGTERM.
-    시간 초과는 멈춘 자식이거나 부하라 더 오래 본다."""
+    """한 번의 일시 오류(n150 디스크 대기)로는 죽이지 않는다. 판정은 시간이다 — 첫 healthy 전 `start_interval` 5초
+    cadence에서도 횟수로 일찍 죽이지 않는다. 시간 초과는 부하일 수 있어 더 오래 본다."""
     probe = _the_probe()
-    for attempt in range(1, threshold):
-        assert world.run(probe, **kwargs) == 1
-        assert world.kills == [], f"{failure}: {attempt}번째에 죽였다"
-    assert world.run(probe, **kwargs) == 1
-    assert world.kills == [(1, 15)], failure
+    _healthy_once(world, probe)
+    killed_at = world.series(probe, 0, after + 60, step, **kwargs)
+    assert killed_at is not None and after <= killed_at < after + step + 1, killed_at
+    assert world.kills == [(1, 15)]
+
+
+def test_before_the_first_healthy_probe_timeouts_never_kill(world: _ProbeWorld) -> None:
+    """부팅 때 디스크 폭주로 느린 자식을 죽이지 않는다 — 한 번도 healthy가 아니면 시간 초과로는 죽이지 않는다."""
+    assert world.series(_the_probe(), 0, 3600, 30, **_TIMEOUT) is None
+
+
+def test_a_child_that_never_loads_is_still_killed(world: _ProbeWorld) -> None:
+    """없는 `-m`처럼 한 번도 healthy가 못 되는 자식도 load error 90초면 죽인다(옛 `api grpc`의 재시작 루프)."""
+    assert world.series(_the_probe(), 0, 200, 5, **_LOAD_ERROR) == _DOWN_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("check_error", "after"),
+    [("UNAVAILABLE", _DOWN_SECONDS), ("DEADLINE_EXCEEDED", _TIMEOUT_SECONDS)],
+    ids=["unavailable", "deadline"],
+)
+def test_health_check_failures_count_once_the_container_was_healthy(
+    world: _ProbeWorld, check_error: str, after: int
+) -> None:
+    """멈춘 자식이 proxy 스레드 풀을 다 묶으면 health `Check`부터 실패한다 — 안 세면 영영 안 죽는다(docker는
+    unhealthy를 재시작하지 않는다). 초기 로딩 중(한 번도 healthy가 아님)에는 세지 않는다."""
+    probe = _the_probe()
+    assert world.series(probe, 0, 600, 30, check_error=check_error) is None
+    assert not (world.tmp / ".ktdm-probe-fails").exists()
+    _healthy_once(world, probe)
+    killed_at = world.series(probe, 0, after + 60, 30, check_error=check_error)
+    assert killed_at is not None and after <= killed_at < after + 31, killed_at
 
 
 def test_a_timeout_neither_resets_nor_breaks_the_streak(world: _ProbeWorld) -> None:
-    """실패 → 시간 초과 → 실패: 시간 초과도 이어진 실패다(지우지 않는다) — 세 번째에 죽인다."""
+    """load error → 시간 초과 → load error: 시간 초과도 이어진 실패다 — load error 시계는 처음부터 돈다."""
     probe = _the_probe()
-    world.run(probe, **_LOAD_ERROR)
-    world.run(probe, **_TIMEOUT)
+    world.run(probe, now=_T0, **_LOAD_ERROR)
+    world.run(probe, now=_T0 + 30, **_TIMEOUT)
+    world.run(probe, now=_T0 + 60, **_LOAD_ERROR)
     assert world.kills == []
-    world.run(probe, **_LOAD_ERROR)
+    world.run(probe, now=_T0 + _DOWN_SECONDS, **_LOAD_ERROR)
     assert world.kills == [(1, 15)]
 
 
 def test_a_success_resets_the_streak(world: _ProbeWorld) -> None:
     probe = _the_probe()
-    for _ in range(_KILL_THRESHOLD - 1):
-        world.run(probe, **_UNREACHABLE)
-    assert world.run(probe, **_LOADED) == 0
-    for _ in range(_KILL_THRESHOLD - 1):
-        world.run(probe, **_UNREACHABLE)
-    assert world.kills == []
+    _healthy_once(world, probe)
+    world.series(probe, 0, 60, 30, **_UNREACHABLE)
+    assert world.run(probe, now=_T0 + 75, **_LOADED) == 0
+    assert world.series(probe, 80, 80 + _DOWN_SECONDS - 10, 30, **_UNREACHABLE) is None
 
 
-@pytest.mark.parametrize("change", ["container restart", "host reboot"])
-def test_a_new_incarnation_starts_the_streak_over(world: _ProbeWorld, change: str) -> None:
+@pytest.mark.parametrize("change", ["container restart", "host reboot", "corrupt file"])
+def test_a_new_incarnation_or_a_broken_file_starts_the_streak_over(
+    world: _ProbeWorld, change: str
+) -> None:
     """`/tmp`는 `docker restart`를 넘어 남는다 — 옛 incarnation의 실패를 이어 세지 않는다. 호스트 재부팅 뒤에는 같은
-    PID 1 tick이 다시 나올 수 있어 `boot_id`도 본다."""
+    PID 1 tick이 다시 나올 수 있어 `boot_id`도 본다. 깨진 파일은 처음부터다."""
     probe = _the_probe()
-    for _ in range(_KILL_THRESHOLD - 1):
-        world.run(probe, **_UNREACHABLE)
+    world.series(probe, 0, 60, 30, **_LOAD_ERROR)
     if change == "container restart":
         world.incarnation(boot_id="boot-a", pid1_ticks=9000 * _hz())
-    else:
+    elif change == "host reboot":
         world.incarnation(boot_id="boot-b", pid1_ticks=1000 * _hz())
-    world.run(probe, **_UNREACHABLE)
+    else:
+        (world.tmp / ".ktdm-probe-fails").write_text("garbage")
+    world.run(probe, now=_T0 + 200, **_LOAD_ERROR)
     assert world.kills == [], change
-    assert (world.tmp / ".ktdm-probe-fails").read_text().split()[1] == "1"
+    assert (world.tmp / ".ktdm-probe-fails").read_text().split()[1:3] == ["1", str(_T0 + 200)]
+    assert not (world.tmp / ".ktdm-probe-fails.new").exists()
 
 
 @pytest.mark.parametrize("kwargs", [_LOAD_ERROR, _UNREACHABLE], ids=["load error", "unreachable"])
@@ -660,40 +703,40 @@ def test_runs_in_flight_hold_off_the_kill_until_they_end(
          "from multiprocessing.resource_tracker import main;main(11)"],
     )
     world.add_process(4242, _RUN_WORKER)
-    for _ in range(_KILL_THRESHOLD + 2):
-        assert world.run(probe, **kwargs) == 1
-    assert world.kills == []
+    assert world.series(probe, 0, 600, 30, **kwargs) is None
     shutil.rmtree(world.proc / "4242")
-    assert world.run(probe, **kwargs) == 1
+    world.run(probe, now=_T0 + 630, **kwargs)
     assert world.kills == [(1, 15)]
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "threshold", "killed"),
-    [
-        (_UNREACHABLE, _KILL_THRESHOLD, True),
-        (_TIMEOUT, _TIMEOUT_KILL_THRESHOLD, True),
-        (_LOAD_ERROR, _KILL_THRESHOLD, False),
-    ],
+    ("kwargs", "killed"),
+    [(_UNREACHABLE, True), (_TIMEOUT, True), (_LOAD_ERROR, False)],
     ids=["unreachable", "timeout", "load error"],
 )
 def test_a_child_down_for_two_hours_is_killed_even_with_runs_in_flight(
-    world: _ProbeWorld, kwargs: dict[str, Any], threshold: int, killed: bool
+    world: _ProbeWorld, kwargs: dict[str, Any], killed: bool
 ) -> None:
-    """천장: 닿지 못함·시간 초과가 2시간 이어지면 run worker가 있어도 죽인다 — 자식이 죽었거나 멈춰 location이 내려가
-    있고 취소도 그 자식을 거친다. load error에는 천장이 없다 — 그 run은 살아 있는 옛 자식에서 정상으로 돈다(weather
-    정상 run은 57600초까지 간다)."""
+    """천장: 닿지 못함·시간 초과 구간이 2시간이면 run worker가 있어도 죽인다 — 자식이 죽었거나 멈춰 location이
+    내려가 있고 취소도 그 자식을 거친다. load error에는 천장이 없다(그 run은 옛 자식에서 정상으로 돈다)."""
     probe = _the_probe()
+    _healthy_once(world, probe)
     world.add_process(4242, _RUN_WORKER)
-    for _ in range(threshold):
-        world.run(probe, **kwargs)
-    assert world.kills == []
-    world.failing_for(_ABANDON_SECONDS - 60)
-    world.run(probe, **kwargs)
-    assert world.kills == []
-    world.failing_for(_ABANDON_SECONDS + 1)
-    world.run(probe, **kwargs)
+    assert world.series(probe, 0, _ABANDON_SECONDS - 60, 600, **kwargs) is None
+    world.run(probe, now=_T0 + _ABANDON_SECONDS + 1, **kwargs)
     assert world.kills == ([(1, 15)] if killed else [])
+
+
+def test_the_ceiling_clock_runs_only_in_the_down_part_of_a_streak(world: _ProbeWorld) -> None:
+    """2시간 넘은 load error(실패한 reload 뒤 옛 자식이 긴 weather run을 도는 중) 끝에 시간 초과나 닿지 못함 하나가
+    와도 천장이 아니다 — 천장 시계는 닿지 못함·시간 초과 구간에서만 돈다."""
+    probe = _the_probe()
+    _healthy_once(world, probe)
+    world.add_process(4242, _RUN_WORKER)
+    assert world.series(probe, 0, _ABANDON_SECONDS + 600, 600, **_LOAD_ERROR) is None
+    world.run(probe, now=_T0 + _ABANDON_SECONDS + 630, **_TIMEOUT)
+    world.run(probe, now=_T0 + _ABANDON_SECONDS + 660, **_UNREACHABLE)
+    assert world.kills == []
 
 
 def test_the_reaper_is_tried_at_most_every_five_minutes(world: _ProbeWorld) -> None:
@@ -720,15 +763,14 @@ def test_the_reaper_fails_only_runs_started_before_this_container(world: _ProbeW
     PID 1은 부팅 뒤 1000초에 떴고 지금은 부팅 뒤 5000초다 — 컨테이너 시작은 now−4000. 끝나면 incarnation 표지
     (`boot_id` + PID 1 tick)를 쓴다 — 그래야 매 probe가 reaper를 띄우지 않는다.
     """
-    now = 1_800_000_000.0
-    born = now - 4000
+    born = _T0 - 4000
     records = (
         _FakeRecord("orphan-old", born - 50_000),
         _FakeRecord("orphan-just-before", born - 1),
         _FakeRecord("healthy-long", born + 30),
-        _FakeRecord("healthy-new", now - 5),
+        _FakeRecord("healthy-new", _T0 - 5),
     )
-    assert world.run(_the_probe(), reap=True, now=now, records=records) == 0
+    assert world.run(_the_probe(), reap=True, now=_T0, records=records) == 0
     assert world.failed == ["orphan-old", "orphan-just-before"], world.failed
     assert world.query == {
         "statuses": ["STARTED"],
@@ -737,17 +779,35 @@ def test_the_reaper_fails_only_runs_started_before_this_container(world: _ProbeW
     assert (world.tmp / ".ktdm-orphan-reap").read_text() == f"boot-a:{1000 * _hz()}"
 
 
-def test_the_reaper_reads_the_location_name_before_the_module(tmp_path: Path) -> None:
-    """location은 PID 1 argv의 `--location-name`, 없으면 `-m`이다(workspace 파생과 같은 규칙)."""
-    named = _ProbeWorld(
-        tmp_path,
-        cmdline=["/sbin/docker-init", "--", "dagster", "code-server", "start", "-m", "m.defs",
-                 "--location-name", "named"],
-        pid1_ticks=1000 * _hz(),
-        uptime=5000.0,
-    )
-    named.run(_the_probe(), reap=True, now=1_800_000_000.0)
-    assert named.query["tags"] == {"dagster/code_location": "named"}
+@pytest.mark.parametrize(
+    ("flags", "location"),
+    [
+        (["-m", "m.defs", "--location-name", "named"], "named"),
+        (["-m", "m.defs", "-l", "short"], "short"),
+        (["--module-name=m.defs", "--location-name=eq"], "eq"),
+        (["--module-name=m.defs"], "m.defs"),
+    ],
+    ids=["--location-name", "-l", "--x=value", "module only"],
+)
+def test_the_reaper_reads_the_location_like_the_manager_derivation(
+    world: _ProbeWorld, flags: list[str], location: str
+) -> None:
+    """reaper의 location 규칙은 `runtime_topology.code_server_location_name`과 같다(`-l`, `--x=값` 포함)."""
+    from kor_travel_docker_manager.services.runtime_topology import code_server_location_name
+
+    command = ["dagster", "code-server", "start", *flags]
+    assert code_server_location_name({"command": command}) == location
+    world.set_cmdline(["/sbin/docker-init", "--", *command])
+    world.run(_the_probe(), reap=True, now=_T0)
+    assert world.query["tags"] == {"dagster/code_location": location}
+
+
+def test_a_reaper_without_a_location_logs_once_and_is_done(world: _ProbeWorld) -> None:
+    """location을 못 찾으면 5분마다 dagster를 다시 import하지 않는다 — 한 번 로그하고 표지를 쓴다."""
+    world.set_cmdline(["/sbin/docker-init", "--", "dagster", "code-server", "start", "-f", "/w/defs.py"])
+    assert world.run(_the_probe(), reap=True, now=_T0) == 0
+    assert not world.queried
+    assert (world.tmp / ".ktdm-orphan-reap").read_text() == f"boot-a:{1000 * _hz()}"
 
 
 # ── probe가 스스로 쌓이지 않게 (2026-09-27) ────────────────────────────

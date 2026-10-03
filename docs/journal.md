@@ -8709,7 +8709,7 @@ api grpc`라 location reload가 "not currently supported" 경고만 남기고 �
 빈 loopback 포트) 실측: `api grpc`는 reload에 import 1회 그대로, `code-server start`는 새 자식 pid로 다시 import.
 
 - **probe(`x-dagster-code-server-probe`, 네 서비스 공유).** proxy health는 고정 SERVING이라 자식에 전달되는
-  `ListRepositories`를 본다. 실패가 이어지면 3번째(시간 초과면 6번째)에 PID 1(tini)을 끝낸다 — run worker가 있으면
+  `ListRepositories`를 본다. 실패가 시간으로 이어지면(load error·닿지 못함 90초, 시간 초과 5분) PID 1(tini)을 끝낸다 — run worker가 있으면
   기다리고(실패한 reload 뒤 옛 자식의 run을 지킨다), 닿지 못함·시간 초과가 2시간이면 run이 있어도 끝낸다. 카운터는
   `boot_id` + PID 1 tick으로 incarnation을 가른다. 실측: 없는 `-m`·자식 kill → 재시작, 실패한 reload 중 run 진행 →
   run SUCCESS 뒤 재시작.

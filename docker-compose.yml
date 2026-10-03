@@ -51,23 +51,28 @@ x-dagster-shared-storage-guard: &dagster-shared-storage-guard |
 #
 # 1. **proxy 생존.** dagster 자신의 gRPC health(`DagsterApi` → SERVING)를 **dagster를 import하지 않고** 부른다
 #    (`dagster api grpc-health-check`는 매 호출 dagster import — 2026-09-27 n150에서 그런 probe 47개가 load 137).
-#    초기 로딩 중에는 proxy가 아직 listen하지 않아 그냥 실패한다(아무것도 세지 않고 죽이지 않는다).
+#    이 컨테이너가 아직 한 번도 healthy가 아니면(초기 로딩 — proxy는 자식이 다 실을 때까지 listen하지 않는다) 그냥
+#    실패한다(세지도 죽이지도 않는다). 한 번 healthy였던 뒤의 health 실패(proxy 스레드 풀이 멈춘 자식에 다 묶인 경우
+#    등)는 아래 2의 실패로 센다 — 안 세면 멈춘 자식이 영영 안 죽는다(docker는 unhealthy를 재시작하지 않는다).
 # 2. **효과에 묶는다 — 자식.** proxy의 `DagsterApi`는 고정 SERVING이다. 자식 gRPC가 load error를 냈거나 죽거나
 #    멈춰도(OOM·crash·hang) proxy는 살아 있고 아무도 자식을 다시 띄우지 않는다. 그래서 자식에게 **전달되는**
 #    `ListRepositories`를 raw bytes로 부른다. 실패는 셋이다: load error(`SerializableErrorInfo`), 닿지 못함(deadline
-#    아닌 RPC 오류), 시간 초과(4초 deadline — 멈춘 자식이거나 부하). 실패한 probe가 이어지는 동안 `/tmp`에 그 수와 첫
-#    실패 시각을 둔다 — 실패의 종류가 섞여도 이어지고, **성공 한 번이 지운다**, incarnation(`boot_id` + PID 1 시작
-#    tick)이 바뀌면 처음부터다. PID 1(`init: true`의 tini)에 SIGTERM을 보내 `restart: unless-stopped`가 다시 띄우게
-#    하는 때(옛 `api grpc`가 import 실패에 스스로 죽던 self-heal):
-#    - 연속 3번째 실패(interval 30초 × 3 ≈ 90초)에, 단 지금 실패가 시간 초과면 6번째(≈ 3분 — n150 디스크 대기 급등은
-#      4초 deadline을 잠깐 넘긴다)에, **그리고 run worker가 없을 때만.** reload가 실패하면 proxy는 새 자식의 load
-#      error를 답하면서 옛 자식을 그 run이 끝날 때까지 남긴다 — 그때 죽이면 정상 run이 함께 죽는다. 실패한 reload
-#      직후에는 닿지 못함도 잠깐 보인다(n150 실측: 그 창에서 죽여 정상 run을 잃었다). 자식이 정말 죽었어도 run
-#      worker는 tini 밑에서 run을 마저 끝내고 결과를 storage에 직접 쓴다 — 그래서 기다린다.
-#    - 천장: 닿지 못함·시간 초과가 **2시간** 이어졌으면 run worker가 있어도 죽인다. 자식이 2시간 죽어 있거나 멈춰
-#      있으면 location이 내려가 있고 취소도 그 자식을 거치므로 그 run은 사실상 버려졌다. weather의 정상 run은
-#      57600초까지 가지만 그 run은 자식이 살아 있는 동안 도는 것이라 이 천장에 걸리지 않는다. load error에는 천장이
-#      없다 — 그때 run은 살아 있는 옛 자식에서 정상으로 돈다(끝나면 위 규칙이 죽인다).
+#    아닌 RPC 오류), 시간 초과(4초 deadline — 멈춘 자식이거나 부하). 실패한 probe가 이어지는 동안 `/tmp`에 그 수, 첫
+#    실패 시각, 그리고 지금 이어지는 닿지 못함·시간 초과 구간의 시작 시각(load error가 끼면 지운다)을 둔다 — 종류가
+#    섞여도 이어지고, **성공 한 번이 지운다**, incarnation(`boot_id` + PID 1 시작 tick)이 바뀌거나 파일이 깨졌으면
+#    처음부터다(쓰기는 임시 파일 + `os.replace`). 판정은 **시간**으로 한다 — 첫 healthy 전에는 `start_interval` 5초로
+#    probe가 촘촘해서 횟수로는 15초 만에 죽인다. PID 1(`init: true`의 tini)에 SIGTERM을 보내 `restart:
+#    unless-stopped`가 다시 띄우게 하는 때(옛 `api grpc`가 import 실패에 스스로 죽던 self-heal) — 모두 3번 이상 본 뒤:
+#    - load error가 90초 이어졌다. 닿지 못함 구간이 90초다. 시간 초과 구간이 5분이다(n150 디스크 대기 급등은 4초
+#      deadline을 잠깐 넘긴다) — 시간 초과는 이 컨테이너가 한 번이라도 healthy였어야 센다(부팅 때 디스크 폭주로 느린
+#      자식을 죽이지 않는다). **그리고 run worker가 없을 때만.** reload가 실패하면 proxy는 새 자식의 load error를
+#      답하면서 옛 자식을 그 run이 끝날 때까지 남긴다 — 그때 죽이면 정상 run이 함께 죽는다. 실패한 reload 직후에는
+#      닿지 못함도 잠깐 보인다(n150 실측: 그 창에서 죽여 정상 run을 잃었다). 자식이 정말 죽었어도 run worker는 tini
+#      밑에서 run을 마저 끝내고 결과를 storage에 직접 쓴다 — 그래서 기다린다.
+#    - 천장: **닿지 못함·시간 초과 구간이** 2시간이면 run worker가 있어도 죽인다. 자식이 2시간 죽어 있거나 멈춰 있으면
+#      location이 내려가 있고 취소도 그 자식을 거치므로 그 run은 사실상 버려졌다. 시계는 그 구간에서만 돈다 — 2시간
+#      넘은 load error 뒤에 시간 초과 하나가 와도 천장이 아니다(그동안 run은 옛 자식에서 정상으로 돈다; weather 정상
+#      run은 57600초까지 간다). load error에는 천장이 없다(run이 끝나면 위 규칙이 죽인다).
 #    run worker는 자식이 multiprocessing spawn으로 띄우므로 argv 한 칸이 `from multiprocessing.spawn import
 #    spawn_main`으로 **시작**한다(n150 실측; 이 probe 자신의 `-c` 원문도 그 낱말을 품으므로 부분 문자열이 아니라 칸의
 #    시작을 본다). 판정 이유(`child load error x2`, `child timeout x4` 등)는 healthcheck 로그에 남는다.
@@ -78,7 +83,8 @@ x-dagster-shared-storage-guard: &dagster-shared-storage-guard |
 #    다시 뜨면 그 전에 시작한 이 location의 worker는 **전부** 죽었다(같은 PID namespace). 그래서 healthy probe가 이
 #    incarnation에서 처음이면(`boot_id` + PID 1 시작 tick을 `/tmp` 표지와 비교 — `/tmp`는 `docker restart`를 넘어
 #    남고, tick은 호스트 재부팅 뒤 같은 값이 다시 나올 수 있다) 분리된
-#    reaper를 띄운다: 이 location(`--location-name`, 없으면 `-m` — workspace 파생과 같은 규칙)의 STARTED run 중 시작
+#    reaper를 띄운다: 이 location(`--location-name`/`-l`, 없으면 `-m`/`--module-name`, `--x=값` 꼴도 —
+#    `runtime_topology.code_server_location_name`과 같은 규칙; 못 찾으면 한 번 로그하고 끝낸다)의 STARTED run 중 시작
 #    시각이 PID 1 시작보다 앞선 것만 실패로 만든다. 지금 incarnation에서 시작한 run(reload 뒤 옛 자식에 남은 run
 #    포함)은 건드리지 않는다 — 긴 정상 run을 죽이지 않는다. reaper는 dagster를 import하므로 시도는 5분에 한 번이고
 #    (실패하면 표지가 없어 5분 뒤 다시), flock으로 하나만 돈다. 결과는 PID 1의 stderr(컨테이너 로그)로 간다.
@@ -86,9 +92,12 @@ x-dagster-shared-storage-guard: &dagster-shared-storage-guard |
 #    run monitoring 쪽 경계는 `docs/platform-topology.md` §7 "code-server는 location reload를 받아야 한다".
 x-dagster-code-server-probe: &dagster-code-server-probe |-
   import os, sys, time, subprocess
-  mark, tried, fails = '/tmp/.ktdm-orphan-reap', '/tmp/.ktdm-orphan-reap.tried', '/tmp/.ktdm-probe-fails'
+  mark, tried, fails, passed = '/tmp/.ktdm-orphan-reap', '/tmp/.ktdm-orphan-reap.tried', '/tmp/.ktdm-probe-fails', '/tmp/.ktdm-probe-passed'
   born = open('/proc/1/stat').read().rsplit(')', 1)[1].split()[19]
   key = open('/proc/sys/kernel/random/boot_id').read().strip() + ':' + born
+  def write(path, text):
+      open(path + '.new', 'w').write(text)
+      os.replace(path + '.new', path)
   if sys.argv[2:] == ['reap']:
       import fcntl
       lock = open(mark + '.lock', 'w')
@@ -96,32 +105,57 @@ x-dagster-code-server-probe: &dagster-code-server-probe |-
           fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
       except OSError:
           sys.exit(0)
-      from dagster import DagsterInstance
-      from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
-      since = time.time() - float(open('/proc/uptime').read().split()[0]) + int(born) / os.sysconf('SC_CLK_TCK')
       argv = open('/proc/1/cmdline').read().split('\0')
-      flag = lambda *names: next((argv[i + 1] for i, w in enumerate(argv[:-1]) if w in names), None)
-      location = flag('--location-name') or flag('-m', '--module-name')
-      instance = DagsterInstance.get()
-      for record in instance.get_run_records(filters=RunsFilter(statuses=[DagsterRunStatus.STARTED], tags={'dagster/code_location': location})):
-          if record.start_time is not None and record.start_time < since:
-              instance.report_run_failed(record.dagster_run, 'run worker lost: this code server container restarted after the run started')
-              print('orphan run failed:', record.dagster_run.run_id, flush=True)
-      open(mark, 'w').write(key)
+      def flag(*names):
+          for i, w in enumerate(argv):
+              for name in names:
+                  if w == name and i + 1 < len(argv):
+                      return argv[i + 1]
+                  if w.startswith(name + '='):
+                      return w[len(name) + 1:]
+      location = flag('--location-name', '-l') or flag('-m', '--module-name')
+      if not location:
+          print('orphan reaper: PID 1 argv names no code location; nothing to reap', flush=True)
+      else:
+          from dagster import DagsterInstance
+          from dagster._core.storage.dagster_run import DagsterRunStatus, RunsFilter
+          since = time.time() - float(open('/proc/uptime').read().split()[0]) + int(born) / os.sysconf('SC_CLK_TCK')
+          instance = DagsterInstance.get()
+          for record in instance.get_run_records(filters=RunsFilter(statuses=[DagsterRunStatus.STARTED], tags={'dagster/code_location': location})):
+              if record.start_time is not None and record.start_time < since:
+                  instance.report_run_failed(record.dagster_run, 'run worker lost: this code server container restarted after the run started')
+                  print('orphan run failed:', record.dagster_run.run_id, flush=True)
+      write(mark, key)
       sys.exit(0)
   import grpc
   from grpc_health.v1 import health_pb2 as h, health_pb2_grpc as g
+  now = time.time()
+  seen_healthy = os.path.exists(passed) and open(passed).read() == key
   c = grpc.insecure_channel('127.0.0.1:' + sys.argv[1])
-  r = g.HealthStub(c).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=4)
-  r.status == h.HealthCheckResponse.SERVING or sys.exit(1)
+  def kind_of(e):
+      return 'timeout' if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED else str(e.code())
   try:
-      kind = 'load error' if b'SerializableErrorInfo' in c.unary_unary('/api.DagsterApi/ListRepositories')(b'', timeout=4) else None
+      r = g.HealthStub(c).Check(h.HealthCheckRequest(service='DagsterApi'), timeout=4)
+      kind = None if r.status == h.HealthCheckResponse.SERVING else 'NOT_SERVING'
   except grpc.RpcError as e:
-      kind = 'timeout' if e.code() == grpc.StatusCode.DEADLINE_EXCEEDED else str(e.code())
+      kind = kind_of(e)
+  if kind and not seen_healthy:
+      sys.exit(1)
+  if not kind:
+      try:
+          kind = 'load error' if b'SerializableErrorInfo' in c.unary_unary('/api.DagsterApi/ListRepositories')(b'', timeout=4) else None
+      except grpc.RpcError as e:
+          kind = kind_of(e)
   if kind:
-      prev = open(fails).read().split() if os.path.exists(fails) else []
-      count, first = (int(prev[1]) + 1, float(prev[2])) if prev[:1] == [key] else (1, time.time())
-      open(fails, 'w').write(key + ' ' + str(count) + ' ' + str(first))
+      try:
+          k, count, first, down = open(fails).read().split()
+          if k != key:
+              raise ValueError(k)
+          count, first = int(count) + 1, float(first)
+      except (OSError, ValueError):
+          count, first, down = 1, now, '-'
+      down = '-' if kind == 'load error' else (down if down != '-' else str(now))
+      write(fails, ' '.join((key, str(count), str(first), down)))
       print('child', kind, 'x' + str(count), file=sys.stderr)
       def runs_in_flight():
           for pid in os.listdir('/proc'):
@@ -131,11 +165,18 @@ x-dagster-code-server-probe: &dagster-code-server-probe |-
               except OSError:
                   pass
           return False
-      abandoned = kind != 'load error' and time.time() - first >= 7200
-      if count >= (6 if kind == 'timeout' else 3) and (abandoned or not runs_in_flight()):
+      down_for = now - float(down) if down != '-' else 0.0
+      if kind == 'load error':
+          due = now - first >= 90
+      elif kind == 'timeout':
+          due = seen_healthy and down_for >= 300
+      else:
+          due = down_for >= 90
+      if count >= 3 and due and (down_for >= 7200 or not runs_in_flight()):
           os.kill(1, 15)
       sys.exit(1)
   os.path.exists(fails) and os.remove(fails)
+  seen_healthy or write(passed, key)
   if (not os.path.exists(mark) or open(mark).read() != key) and (not os.path.exists(tried) or time.time() - os.path.getmtime(tried) >= 300):
       open(tried, 'w').close()
       log = open('/proc/1/fd/2', 'w')

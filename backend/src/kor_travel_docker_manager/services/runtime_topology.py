@@ -207,9 +207,13 @@ def workspace_location_names(document: object) -> tuple[str, ...]:
 
 
 def _flag(argv: Sequence[str], *names: str) -> str | None:
-    for index, word in enumerate(argv[:-1]):
-        if word in names:
-            return argv[index + 1]
+    """`--name value` 또는 `--name=value`(click이 둘 다 받는다). code-server probe의 reaper도 같은 규칙이다."""
+    for index, word in enumerate(argv):
+        for name in names:
+            if word == name and index + 1 < len(argv):
+                return argv[index + 1]
+            if word.startswith(name + "="):
+                return word[len(name) + 1 :]
     return None
 
 
