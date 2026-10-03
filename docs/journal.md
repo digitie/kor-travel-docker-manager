@@ -8666,3 +8666,24 @@ platform-topology.md §7 2단계의 Manager 쪽을 만들었다(브랜치 `feat/
   `parking-radar-*.dump`에서 `kor-travel-transport-*.dump`로 바뀐다. `docker-management.md`의 transport 복원
   설명과 상시 스택 목록(`parking-radar` → `transport`)만 고쳤다. Manager 코드·target·백업 cron은 바뀌지 않는다
   (Manager standalone dump 이름은 원래 앱 접두어와 무관하다). transport 브랜치 머지·배포와 함께 머지한다.
+
+## 2026-10-02 — Map이 OpiNet·KREX 대신 transport 내부 export를 읽는다(Manager 배선)
+
+- Map이 휴게소·주유소·유가를 kor-travel-transport의 `GET /v1/service/exports/*`(header
+  `X-Kor-Travel-Transport-Service-Token`, loopback Host만)에서 읽게 되면서, Map Dagster 세 서비스
+  (code-server, 옛 webserver·daemon)에 `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`(기본
+  `http://127.0.0.1:14001`)과 `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN`을 concierge read key와
+  같은 모양(루트 `.env` 한 이름이 원천, `.env.example` 빈 줄, Map API·UI에는 없음)으로 넣었다.
+- 같은 세 서비스에서 `KOR_TRAVEL_MAP_OPINET_*` 여섯과 `KOR_TRAVEL_MAP_KREX_EX/GO_API_KEY`를 지웠다
+  (`.env.example`·docs·테스트도). `KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY` 등 다른 provider 키는 그대로다.
+  KREX go 폴백·OpiNet scope 선택자를 세던 `test_map_provider_credential_wiring.py`의 검사 다섯은 대상이
+  사라져 지웠고, 접두(`KOR_TRAVEL_MAP_OPINET_`·`KOR_TRAVEL_MAP_KREX_`)가 compose·`.env.example` 어디에도
+  없음을 보는 검사 하나로 바꿨다. placeholder 유도 검사는 `_TOKEN` 접미도 센다(하한 3 유지).
+- **C6c `_FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES`는 그대로 뒀다.** 이 목록은 "Map API 컨테이너에 들어오면
+  안 되는 옛 이름" 거부 목록이고 Map `docker/api-entrypoint.sh`의 `removed_provider_keys`와 같은 집합이다.
+  `…_API_OPINET_SERVICE_KEY`·`…_API_KREX_SERVICE_KEY`를 빼면 그 거부가 약해질 뿐 얻는 것이 없다.
+  `secret_scrub`은 이름 조각(`TOKEN`) 기반이라 새 token도 코드 변경 없이 가려진다 — 주석의 예시만 고쳤다.
+- **transport 컨테이너 env는 Manager가 소유하지 않는다**(외부 target, transport 저장소의
+  `docker-compose.shared.yml` + n150 `.env.server14`). 그래서 `TRANSPORT_SERVICE_EXPORT_TOKEN`과
+  `REST_AREA_COLLECTION_ENABLED=true`는 Manager compose에 만들지 않고, 운영자가 두 쪽을 같은 값으로 맞추는
+  절차를 `docker-management.md` 7.3에 적었다. M-T(transport의 Manager 이관) 때 한 원천으로 접는다.

@@ -175,10 +175,9 @@ def test_env_redaction_masks_sensitive_values():
     [
         # `API_KEY`는 `ACCESS_KEY`에 걸리지 않아 예전에는 평문으로 나갔다.
         # T-012가 inspect를 대시보드에 연결하면서 브라우저에 그대로 보이게 됐던 값들이다.
-        "KOR_TRAVEL_MAP_OPINET_API_KEY",
-        "KOR_TRAVEL_MAP_KREX_EX_API_KEY",
-        "KOR_TRAVEL_MAP_KREX_GO_API_KEY",
+        "KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY",
         "KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY",
+        "KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN",
         "KOR_TRAVEL_GEO_VWORLD_API_KEY",
         "SOME_APIKEY",
         "SERVICE_CREDENTIAL",

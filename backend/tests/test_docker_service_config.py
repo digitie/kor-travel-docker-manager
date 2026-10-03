@@ -68,11 +68,8 @@ _MAP_FETCH_SERVICES = (
     "kor-travel-map-dagster-code-server",
     "kor-travel-map-dagster-daemon",
 )
-_MAP_INGESTION_SERVICES = (
-    "kor-travel-map-dagster",
-    "kor-travel-map-dagster-code-server",
-    "kor-travel-map-dagster-daemon",
-)
+#: transport export token은 run worker를 낳는 code-server에만 간다(webserver·daemon은 fetcher를 돌리지 않는다).
+_MAP_RUN_WORKER_SERVICES = ("kor-travel-map-dagster-code-server",)
 _MAP_API_SERVICE = "kor-travel-map-api"
 _MAP_UI_SERVICE = "kor-travel-map-ui"
 _CONCIERGE_UI_SERVICE = "kor-travel-concierge-ui"
@@ -110,15 +107,14 @@ _PINVI_MAP_BASE_URL_SOURCE = (
     "${PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL:-http://127.0.0.1:"
     "${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}"
 )
-_OPINET_API_KEY_ENV = "${KOR_TRAVEL_MAP_OPINET_API_KEY:-}"
-_KREX_EX_API_KEY_ENV = "${KOR_TRAVEL_MAP_KREX_EX_API_KEY:-}"
-#: KREX go key는 data.go.kr service key와 **같은 비밀**이다. 이 줄에 폴백이 없어
-#: prod에서 빈 값이었고(`.env`에는 `KRTOUR_` 접두 이름만 있다)
-#: `feature_place_krex_rest_areas_job`이 자격증명 없이 돌았다(2026-09-18 n150 실측).
-#: 위 `KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY`와 **같은 원천**으로 떨어뜨린다.
-_KREX_GO_API_KEY_ENV = (
-    "${KOR_TRAVEL_MAP_KREX_GO_API_KEY:-${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}}"
+_TRANSPORT_BASE_URL_ENV = (
+    "${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://127.0.0.1:14001}"
 )
+_TRANSPORT_SERVICE_TOKEN_ENV = "${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN:-}"
+#: Map이 OpiNet·KREX를 직접 부르던 시절의 수집 서비스 설정 접두. 휴게소·주유소·유가는 이제
+#: kor-travel-transport 내부 export에서 읽으므로 이 접두의 이름은 어느 서비스에도,
+#: `.env.example`에도 없어야 한다(이름을 하나씩 베끼지 않고 접두로 센다).
+_RETIRED_MAP_PROVIDER_ENV_PREFIXES = ("KOR_TRAVEL_MAP_OPINET_", "KOR_TRAVEL_MAP_KREX_")
 _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = {
     "KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY",
     "KOR_TRAVEL_MAP_API_KMA_SERVICE_KEY",
@@ -680,6 +676,43 @@ def test_map_services_share_single_concierge_read_key_source() -> None:
     assert key_lines == ["KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY="]
 
 
+def test_map_services_share_single_transport_service_token_source() -> None:
+    """transport 내부 export token은 루트 `.env` 한 이름이 원천이고, run worker를 낳는 Map
+    code-server에만 들어간다(webserver·daemon·Map API·UI에는 없다 — 노출 면 최소화)."""
+
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services_with_token = {
+        service_name
+        for service_name, service in compose["services"].items()
+        if "KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN"
+        in service.get("environment", {})
+    }
+    assert services_with_token == set(_MAP_RUN_WORKER_SERVICES)
+    services_with_url = {
+        service_name
+        for service_name, service in compose["services"].items()
+        if "KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL" in service.get("environment", {})
+    }
+    assert services_with_url == set(_MAP_RUN_WORKER_SERVICES)
+
+    for service_name in _MAP_RUN_WORKER_SERVICES:
+        environment = compose["services"][service_name]["environment"]
+        assert environment["KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL"] == (
+            _TRANSPORT_BASE_URL_ENV
+        )
+        assert (
+            environment["KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN"]
+            == _TRANSPORT_SERVICE_TOKEN_ENV
+        )
+
+    token_lines = [
+        line
+        for line in (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+        if line.startswith("KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN=")
+    ]
+    assert token_lines == ["KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN="]
+
+
 def test_concierge_ui_uses_canonical_production_command_and_auth_allowlist() -> None:
     compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     service = compose["services"][_CONCIERGE_UI_SERVICE]
@@ -778,26 +811,24 @@ def test_concierge_ui_uses_canonical_production_command_and_auth_allowlist() -> 
     }
 
 
-def test_map_ingestion_services_interpolate_provider_credentials_from_current_env_names() -> None:
+def test_retired_map_opinet_krex_settings_are_gone() -> None:
     compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    seen_environments = 0
+    for service_name, service in compose["services"].items():
+        environment = service.get("environment") or {}
+        if not isinstance(environment, dict):
+            continue
+        seen_environments += 1
+        leftover = sorted(
+            key for key in environment if key.startswith(_RETIRED_MAP_PROVIDER_ENV_PREFIXES)
+        )
+        assert not leftover, f"{service_name}에 퇴역한 Map provider 설정이 남았다: {leftover}"
+    assert seen_environments, "environment를 가진 서비스를 하나도 보지 못했다"
 
-    provider_keys = {
-        "KOR_TRAVEL_MAP_OPINET_API_KEY": _OPINET_API_KEY_ENV,
-        "KOR_TRAVEL_MAP_KREX_EX_API_KEY": _KREX_EX_API_KEY_ENV,
-        "KOR_TRAVEL_MAP_KREX_GO_API_KEY": _KREX_GO_API_KEY_ENV,
-    }
-    for key in provider_keys:
-        services_with_key = {
-            service_name
-            for service_name, service in compose["services"].items()
-            if key in service.get("environment", {})
-        }
-        assert services_with_key == set(_MAP_INGESTION_SERVICES)
-
-    for service_name in _MAP_INGESTION_SERVICES:
-        environment = compose["services"][service_name]["environment"]
-        for key, source_expression in provider_keys.items():
-            assert environment[key] == source_expression
+    env_example_lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert not [
+        line for line in env_example_lines if line.startswith(_RETIRED_MAP_PROVIDER_ENV_PREFIXES)
+    ]
 
 
 def test_map_api_excludes_removed_provider_runtime_credentials() -> None:
@@ -847,10 +878,12 @@ def _map_collector_credentials_sourced_from_their_own_name() -> set[str]:
     compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]
     names: set[str] = set()
-    for service_name in (_MAP_DAGSTER_SERVICE, _MAP_DAGSTER_DAEMON_SERVICE):
+    # code-server가 run worker의 부모다(공용 plane). transport token처럼 code-server에만 가는
+    # credential도 운영자가 채울 자리이므로 함께 센다.
+    for service_name in (*_MAP_RUN_WORKER_SERVICES, _MAP_DAGSTER_SERVICE, _MAP_DAGSTER_DAEMON_SERVICE):
         environment = services[service_name].get("environment") or {}
         for key, value in environment.items():
-            if not key.endswith(("_API_KEY", "_SERVICE_KEY")):
+            if not key.endswith(("_API_KEY", "_SERVICE_KEY", "_TOKEN")):
                 continue
             if str(value).startswith("${" + key + ":-"):
                 names.add(key)
@@ -1241,7 +1274,7 @@ def test_validate_network_name_rejects_bad_forms(raw: str) -> None:
     [
         "POSTGRES_PASSWORD",
         "RUSTFS_ACCESS_KEY",
-        "KOR_TRAVEL_MAP_OPINET_API_KEY",
+        "KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY",
         "SOME_TOKEN",
         "SERVICE_CREDENTIAL",
     ],
