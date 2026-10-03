@@ -24,14 +24,16 @@ from kor_travel_docker_manager.services.deploy_status import (
 _RUN_ID = str(uuid.UUID(int=1))
 _DATABASES = {
     "map_application": DeployedDatabase("kor_travel_map", 16401, "7300000000000000001"),
-    "map_dagster": DeployedDatabase("kor_travel_map_dagster", 16402, "7300000000000000001"),
     "pinvi": DeployedDatabase("pinvi", 20001, "7300000000000000002"),
 }
 _IMAGES = {
     "kor-travel-map-api": "sha256:" + "1" * 64,
     "kor-travel-map-dagster-code-server": "sha256:" + "2" * 64,
 }
-_HEADS = {"map_application": "400", "map_dagster": "7e2f3204cf8e", "pinvi": "20260917_0102"}
+_HEADS = {"map_application": "400", "pinvi": "20260917_0102"}
+#: platform-topology.md §7 4단계 전의 Manager가 쓴 파일은 옛 Map Dagster metadata DB를 하나 더 싣는다.
+_RETIRED_DATABASE = {"name": "kor_travel_map_dagster", "oid": 16402, "system_identifier": "7300000000000000001"}
+_RETIRED_HEAD = "7e2f3204cf8e"
 
 
 def _begin(previous: DeployStatus | None = None, **overrides: object) -> DeployStatus:
@@ -203,6 +205,56 @@ def test_the_carried_over_from_key_round_trips(
     write_deploy_status(path, status)
     assert json.loads(path.read_text(encoding="utf-8")) == payload
     assert read_deploy_status(path) == status
+
+
+def test_a_status_written_before_stage_4_drops_only_the_retired_map_dagster_entry(
+    tmp_path: Path,
+) -> None:
+    """옛 파일의 `map_dagster`를 기준선으로 남기면 같은 pair 재실행이 수렴하지 못하고 막힌 DB를 읽는다."""
+
+    payload = _committed().to_payload()
+    databases = payload["databases"]
+    heads = payload["schema_heads"]
+    assert isinstance(databases, dict) and isinstance(heads, dict)
+    databases["map_dagster"] = _RETIRED_DATABASE
+    heads["map_dagster"] = _RETIRED_HEAD
+    path = deploy_status_path(tmp_path)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    status = read_deploy_status(path)
+
+    assert status == _committed()
+    assert status is not None
+    assert set(status.databases or {}) == {"map_application", "pinvi"}
+    assert set(status.schema_heads) == {"map_application", "pinvi"}
+    write_deploy_status(path, status)
+    rewritten = json.loads(path.read_text(encoding="utf-8"))
+    assert "map_dagster" not in rewritten["databases"]
+    assert "map_dagster" not in rewritten["schema_heads"]
+
+
+@pytest.mark.parametrize("field", ("databases", "schema_heads"))
+def test_only_the_retired_role_is_dropped_on_read(tmp_path: Path, field: str) -> None:
+    payload = _committed().to_payload()
+    entries = payload[field]
+    assert isinstance(entries, dict)
+    entries["geo_dagster"] = _RETIRED_DATABASE if field == "databases" else _RETIRED_HEAD
+    path = deploy_status_path(tmp_path)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(DeploymentContractError):
+        read_deploy_status(path)
+
+
+def test_a_new_status_cannot_carry_the_retired_map_dagster_database() -> None:
+    with pytest.raises(DeploymentContractError, match="databases are invalid"):
+        replace(
+            _committed(),
+            databases={
+                **_DATABASES,
+                "map_dagster": DeployedDatabase(**_RETIRED_DATABASE),  # type: ignore[arg-type]
+            },
+        )
 
 
 def test_only_an_in_progress_deploy_can_be_committed() -> None:
