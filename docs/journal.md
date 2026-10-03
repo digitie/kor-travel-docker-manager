@@ -2,6 +2,30 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-04 — 옛 프로젝트별 Dagster 메타DB 의존 제거(4단계 사고 후속)
+
+2026-10-03 22:51Z, 4단계가 옛 메타DB 다섯(`kor_travel_map_dagster`·`pinvi_dagster`·`kor_travel_geo_dagster`·
+`kor_travel_weather_dagster`·`kor_travel_transport_dagster`)을 `ALLOW_CONNECTIONS false`로 막은 뒤 같은 pair
+pinned 재구축이 Map·PinVi를 멈추고 `kor-travel-map-dagster-storage-migrate`에서
+`dagster_storage_database_unavailable`로 죽었다(운영 몇 분 중단, 연결 재허용으로 복구). 같은 pair가 수렴하지
+못한 것은 `deploy-status.json`의 `map_dagster` head를 막힌 DB에서 읽지 못해서다.
+
+Manager가 옛 메타DB에 닿는 자리를 모두 지웠다. pinned 재구축은 Map application·PinVi 두 DB만 다룬다(옛 Map
+storage migrate·storage head·metadata role/DB init·R4의 Dagster DB·`--restart` drop 제거). 옛 상태 파일의
+`map_dagster` 항목은 읽을 때 버린다. compose는 옛 Map storage migrate 서비스와 code-server·`legacy-dagster`
+정의의 옛 metadata URL env를 지웠고, db-init 넷은 옛 DB를 만들거나 확인하거나 grant하지 않는다. 백업 role
+`geo_dagster`·`map_dagster`·`transport_dagster`를 지웠다. C6c 보호 집합에서 옛 Map storage migrate와 옛
+metadata URL 행, PinVi Dagster storage URL 검사기를 뺐다. 남은 결합은 Map 저장소 하나다 — Map의
+`postgres-role-bootstrap.sh`가 metadata env 넷을 문자열로 요구하므로 Map role bootstrap만 그 넷을 받는다(접속
+없음). 되돌리기(per-project Dagster)는 지원하지 않는다(소유자 결정).
+
+회귀 방지 `backend/tests/test_old_dagster_meta_db_retired.py`는 기본 profile·재구축 one-shot·init step 서비스,
+db-init, 꺼진 profile의 `:?` 요구, 재구축 DB role, 백업 role을 본다 — 이 변경 전 트리에서 7개 모두 빨갛다. 실
+PostgreSQL 통합 테스트는 막힌 모양의 옛 메타DB를 심고 리셋·격리가 그 oid·ACL·`datallowconn`을 건드리지 않는지
+본다. 안전한 순서: 이 release 설치 → 같은 pair 재구축 `converged` 확인 → crontab의 옛 백업 두 줄 삭제 → 옛
+메타DB 차단 → 30일 뒤 DROP(platform-topology.md §7).
+
+
 ## 2026-10-03 — Concierge 스케줄러 종료 유예와 자원 상한
 
 Concierge 앱의 SIGTERM 정리·작업 재투입·전사 프로세스 격리에 맞춰 운영 Compose의

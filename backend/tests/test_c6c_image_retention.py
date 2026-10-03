@@ -60,7 +60,6 @@ def _generation(characters: str, revision: str) -> PinnedRuntimeGeneration:
         map_source_revision=PINNED_RUNTIME_RELEASE.source_for("map").revision,
         pinvi_source_revision=PINNED_RUNTIME_RELEASE.source_for("pinvi").revision,
         map_application_head="300",
-        map_dagster_head="29b539ebc72a",
         pinvi_head="20260801_0050",
         pinset_sha256=PINNED_RUNTIME_RELEASE.pinset_sha256,
         map_application_300_candidate_evidence=_candidate_evidence(revision),

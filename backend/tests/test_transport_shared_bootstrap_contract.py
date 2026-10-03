@@ -32,11 +32,9 @@ def test_transport_bootstrap_separates_application_and_dagster_databases() -> No
     assert environment["PGHOST"] == "127.0.0.1"
     assert environment["KOR_TRAVEL_TRANSPORT_SHARED_APP_DB"] == "kor_travel_transport"
     assert environment["KOR_TRAVEL_TRANSPORT_SHARED_APP_USER"] == "kor_travel_transport_app"
-    assert environment["KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB"] == (
-        "kor_travel_transport_dagster"
-    )
-    # 2026-09-25: 별도 dagster role은 통합돼 더는 없다(PinVi/geo/weather와 같은
-    # 단일-role 패턴) — 두 DB는 여전히 분리, owner만 하나.
+    # 옛 Dagster metadata DB(`kor_travel_transport_dagster`)는 platform-topology.md §7 4단계로 막히고
+    # DROP된다 — db-init은 그것을 만들거나 소유자를 확인하거나 CONNECT를 주지 않는다.
+    assert "KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB" not in environment
     assert "KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_APP_USER" not in environment
 
     command = service["command"]
@@ -45,9 +43,8 @@ def test_transport_bootstrap_separates_application_and_dagster_databases() -> No
     assert isinstance(script, str)
     assert 'REVOKE CONNECT ON DATABASE \\"$$PGDATABASE\\" FROM PUBLIC' in script
     assert 'REVOKE CONNECT ON DATABASE \\"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB\\" FROM PUBLIC' in script
-    assert 'REVOKE CONNECT ON DATABASE \\"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB\\" FROM PUBLIC' in script
     assert 'GRANT CONNECT ON DATABASE \\"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB\\" TO \\"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER\\"' in script
-    assert 'GRANT CONNECT ON DATABASE \\"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB\\" TO \\"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER\\"' in script
+    assert "DAGSTER" not in script
     assert "SELECT pg_get_userbyid(datdba) FROM pg_database" in script
     assert "-v role_password=\"$$password\"" in script
     assert "PASSWORD :'role_password'" in script

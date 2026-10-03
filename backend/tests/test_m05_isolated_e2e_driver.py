@@ -3453,17 +3453,11 @@ def test_source_pair_preflight_binds_the_committed_deploy_status(
                 images={"kor-travel-map-api": "sha256:" + "a" * 64},
                 schema_heads={
                     "map_application": head,
-                    "map_dagster": "dagster-1",
                     "pinvi": "pinvi-1",
                 },
                 databases={
                     "map_application": DeployedDatabase(
                         name="kor_travel_map", oid=16384, system_identifier="7000000000000000001"
-                    ),
-                    "map_dagster": DeployedDatabase(
-                        name="kor_travel_map_dagster",
-                        oid=16385,
-                        system_identifier="7000000000000000001",
                     ),
                     "pinvi": DeployedDatabase(
                         name="pinvi", oid=16386, system_identifier="7000000000000000002"

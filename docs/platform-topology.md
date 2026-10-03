@@ -238,7 +238,8 @@ instance를 한 번 재기동해 Map이 전용 instance에서 쓰던 값을 올�
 11000  PostgreSQL (단일 공용 인스턴스)
          ├ dagster_shared        ← 공용 Dagster instance: run / event log / schedule storage
          ├ kor_travel_map · kor_travel_geo · kor_travel_concierge · pinvi · …
-         └ 옛 *_dagster 메타DB   ← 4단계까지 그대로, 그 뒤 접속 차단·보존(D1·D6)
+         └ 옛 *_dagster 메타DB   ← 4단계: 최종 dump → 접속 차단(ALLOW_CONNECTIONS false) → 30일 뒤 DROP(D1·D6).
+                                   Manager는 이 DB에 닿지 않는다(아래 "4단계 — 옛 메타DB 퇴역")
 11001  nginx Basic Auth gateway (공용, 공개 host dagster.digitie.mywire.org)
          │   OPNsense HAProxy → 11001. `/health`만 인증 없이, POST는 same-origin 검사
          └→ 127.0.0.1:11002  dagster-webserver (공용, loopback 전용 — gateway 뒤에서만)
@@ -495,6 +496,45 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
      3. 소유자가 에지의 옛 hostname upstream을 되돌린다. 전환 창 동안 공용 plane에서 돈 run은
         `dagster_shared`에 남는다 — 이력이 나뉠 뿐 잃는 것은 없다.
 4. 프로젝트별 webserver/daemon을 내린다. **이 단계 전까지는 되돌리기가 싸다.**
+
+   **4단계 — 옛 메타DB 퇴역(2026-10-04).** 다섯 테넌트(weather·pinvi·geo·map·transport)가 공용 plane
+   (`dagster_shared`)에서 돈 뒤, 옛 메타DB `kor_travel_map_dagster`·`pinvi_dagster`·`kor_travel_geo_dagster`·
+   `kor_travel_weather_dagster`·`kor_travel_transport_dagster`의 최종 dump를 뜨고 `ALLOW_CONNECTIONS false`로
+   막아 30일 보존한 뒤 DROP한다(D1). **되돌리기(per-project Dagster)는 지원하지 않는다**(소유자 결정) — 옛 DB가
+   필요한 되돌리기 경로를 남기지 않는다.
+
+   2026-10-03 22:51Z 사고: 막은 뒤의 같은 pair pinned 재구축(`scripts/run-pinned-rebuild-once`)이 옛 DB의
+   head를 읽지 못해 수렴하지 못하고 전체 경로로 갔다 — Map·PinVi를 멈춘 다음
+   `compose run --rm --no-deps kor-travel-map-dagster-storage-migrate`(옛 Map 메타DB를
+   `KOR_TRAVEL_MAP_DAGSTER_PG_URL`로 migrate한다)에서 `{"code":"dagster_storage_database_unavailable"}`로
+   죽었다. 운영 Map·PinVi가 연결을 다시 허용할 때까지 몇 분 내려갔다. 그래서 Manager가 옛 메타DB에 의존하는
+   자리를 모두 지웠다(브랜치 `fix/retire-old-dagster-meta-db-refs`):
+
+   - **pinned 재구축**: `kor-travel-map-dagster-storage-migrate` one-shot·후보 이미지의 storage head 질의·옛
+     metadata role/DB init·그 DB의 identity·head 관측·`--restart`의 drop·R4 격리가 없다. 재구축이 다루는 DB는
+     Map application·PinVi 둘이다. 4단계 전 Manager가 쓴 `deploy-status.json`의 `map_dagster` 항목은 읽을 때
+     버린다(그 항목 하나만) — 같은 pair 재실행은 아무것도 멈추지 않고 수렴한다. 공용 storage는
+     `kor-travel-dagster-storage-migrate`(`ensure dagster`의 init step)가 올린다.
+   - **compose**: 옛 Map storage migrate 서비스와 그 `depends_on`을 지웠고, code-server와 `legacy-dagster`
+     모양 정의에서 `KOR_TRAVEL_MAP_DAGSTER_PG_URL`·`PINVI_DAGSTER_PG_URL`·`KTG_DAGSTER_PG_URL`·
+     `DAGSTER_POSTGRES_URL`을 뺐다. `legacy-dagster` 서비스는 family를 모양으로 파생하는 자리로만 남고 기동하지
+     못한다. db-init(geo·pinvi·weather·transport)은 옛 DB를 만들거나 소유자를 확인하거나 CONNECT를 주지 않는다 —
+     남아 있으면 DROP 뒤 매 `ensure`가 빈 DB를 되살리고, transport는 소유자 확인에서 멈춘다.
+   - **백업**: `geo_dagster`·`map_dagster`·`transport_dagster` role을 지웠다(cron wrapper·UI 포함).
+   - **남은 결합 하나(Map 저장소)**: Map의 `docker/postgres-role-bootstrap.sh`가
+     `validate_map_database_credentials`로 `KOR_TRAVEL_MAP_DAGSTER_POSTGRES_DB`·`..._METADATA_USER`·
+     `..._METADATA_PASSWORD`·`..._PG_URL`을 **문자열로** 요구한다(접속하지 않는다). 그래서
+     `kor-travel-map-db-role-bootstrap`(fresh bootstrap·`--restart`에서만 돈다)만 그 넷을 받고 `.env`에 넷이
+     남는다. Map 이미지(`dagster-entrypoint.sh`·`runtime_preflight`·code-server)는 그 env를 읽지 않는다.
+   - 회귀 방지: `backend/tests/test_old_dagster_meta_db_retired.py`.
+
+   **안전한 순서.** (1) 이 release를 설치한다(`~/install-mgr.sh <sha>` → rebind → verify). (2) 같은 pair
+   pinned 재구축을 한 번 돌려 `converged`와 새 `deploy-status.json`(두 role)을 확인하고, `ensure`
+   geo·pinvi·weather·transport·dagster가 초록인지 본다. (3) 호스트 crontab의 `geo_dagster`·`transport_dagster`
+   백업 줄을 지운다. (4) 그 뒤에야 옛 메타DB를 `ALLOW_CONNECTIONS false`로 막는다. (5) 30일 뒤 DROP. 막기 전에
+   (1)·(2)를 건너뛰면 2026-10-03 사고가 되풀이된다. 형제 저장소 쪽 잔재(transport `.env.server14`의
+   `DAGSTER_POSTGRES_URL`과 그 `legacy-dagster` 서비스, Map의 `scripts/dagster_run_completion_gate.py`가 읽는
+   `KOR_TRAVEL_MAP_DAGSTER_PG_URL`)는 접속 경로가 아니거나 이미 옛 webserver 전용이라 막기를 가로막지 않는다.
 5. 애플리케이션 DB를 `11000`으로 이사한다 — 프로젝트별 롤·ACL·마이그레이션 원장·
    백업 경로가 전부 따라온다. **가장 비싸고 되돌리기 어려운 단계이므로 마지막이다.**
 
@@ -513,7 +553,8 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
   tick을 옮기지 않는다. 다섯 메타DB가 모두 같은 Dagster schema지만 이력이 짧고, 합치면 serial
   `event_logs.id`·`asset_keys`·instigator selector·`kvs`가 충돌하며 낡은 QUEUED/STARTED run을
   공용 daemon이 집어 든다. 옛 프로젝트별 `*_dagster` DB는 지우지 않고 4단계 뒤 최종 dump를 뜬 채
-  접속을 막아(`ALLOW_CONNECTIONS false`) 보존한다.
+  접속을 막아(`ALLOW_CONNECTIONS false`) 보존한다. 막기 **전에** 그 DB에 닿지 않는 Manager release를
+  설치한다(위 "4단계 — 옛 메타DB 퇴역"의 안전한 순서).
 - **D3 — 전역 run 상한은 12다.** 이것은 호스트 보호 상한이지 테넌트 손잡이가 아니다(n150의
   부하는 CPU가 아니라 디스크 대기다). 테넌트별 상한은 오늘 값 그대로 `dagster/code_location` tag로
   준다 — Map·PinVi·geo·weather 각 10. (`.dagster/repository`가 아니다 — 그 tag는 run_tags 표에만

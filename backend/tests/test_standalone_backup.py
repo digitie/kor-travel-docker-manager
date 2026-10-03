@@ -557,17 +557,10 @@ def test_role_lock_releases_after_context_exits(tmp_path: Path) -> None:
     ("role", "env_var", "expected"),
     [
         ("geo", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "geo-override"),
-        ("geo_dagster", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "geo-dagster-override"),
         ("concierge", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "concierge-override"),
         ("map_application", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "map-override"),
-        ("map_dagster", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "map-dagster-override"),
         ("pinvi", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "pinvi-override"),
         ("transport", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "transport-override"),
-        (
-            "transport_dagster",
-            "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
-            "transport-dagster-override",
-        ),
         ("dagster_shared", "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "dagster-shared-override"),
     ],
 )
@@ -580,21 +573,19 @@ def test_role_config_respects_container_name_override(
 
 
 def test_backup_roles_cover_four_instances() -> None:
+    # 옛 프로젝트별 Dagster metadata DB(geo_dagster·map_dagster·transport_dagster)는 4단계에서 뺐다.
     assert set(BACKUP_ROLES) == {
         "geo",
-        "geo_dagster",
         "concierge",
         "map_application",
-        "map_dagster",
         "pinvi",
         "transport",
-        "transport_dagster",
         "dagster_shared",
     }
 
 
 def test_map_roles_resolve_to_the_shared_container(monkeypatch: pytest.MonkeyPatch) -> None:
-    """ADR-53(D7): Map 두 DB는 공용 instance에 산다 — 백업도 그 컨테이너를 뜬다.
+    """ADR-53(D7): Map DB는 공용 instance에 산다 — 백업도 그 컨테이너를 뜬다.
 
     옛 전용 instance의 override(`KOR_TRAVEL_MAP_POSTGRES_CONTAINER`)는 더 읽지 않는다 — n150 `.env`에
     남아 있어도 퇴역한 컨테이너를 겨냥하지 않는다(이동 창이 그 줄을 지운다).
@@ -603,10 +594,7 @@ def test_map_roles_resolve_to_the_shared_container(monkeypatch: pytest.MonkeyPat
     monkeypatch.delenv("KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", raising=False)
     monkeypatch.setenv("KOR_TRAVEL_MAP_POSTGRES_CONTAINER", "retired-map-postgres")
 
-    for role, database_name in (
-        ("map_application", "kor_travel_map"),
-        ("map_dagster", "kor_travel_map_dagster"),
-    ):
+    for role, database_name in (("map_application", "kor_travel_map"),):
         assert standalone_backup._role_config(role) == (
             "kor-travel-shared-postgres",
             database_name,
@@ -617,10 +605,8 @@ def test_map_roles_resolve_to_the_shared_container(monkeypatch: pytest.MonkeyPat
     ("role", "database_name"),
     [
         ("transport", "kor_travel_transport"),
-        ("transport_dagster", "kor_travel_transport_dagster"),
-        # ADR-53: Map 둘도 같은 자리를 **실제로** 뜬다.
+        # ADR-53: Map도 같은 자리를 **실제로** 뜬다.
         ("map_application", "kor_travel_map"),
-        ("map_dagster", "kor_travel_map_dagster"),
         # 공용 Dagster instance의 metadata DB(platform-topology.md §7).
         ("dagster_shared", "dagster_shared"),
     ],

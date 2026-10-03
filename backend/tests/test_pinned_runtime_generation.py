@@ -56,7 +56,6 @@ def _generation(seed: str = "a") -> PinnedRuntimeGeneration:
         map_source_revision=_revision(seed),
         pinvi_source_revision=_revision(seed),
         map_application_head="0084_c6c_cancel_probe_fixtures",
-        map_dagster_head="dagster-1",
         pinvi_head="20260801_0050",
         pinset_sha256=_digest(seed),
         map_application_300_candidate_evidence=_candidate_evidence(seed),

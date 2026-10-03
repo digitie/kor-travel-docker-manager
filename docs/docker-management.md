@@ -722,8 +722,10 @@ sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
     않는다). 같은 pair 수렴과 기록이 있는 일반 배포는 `deploy-status.json`의 DB identity가 live와 같을 때만 R4에
     닿으므로 이 경로가 없다.
 - **이름**: `postgres`·`template*`은 drop뿐 아니라 수렴(ensure)·DB 생성·격리 경로에서도 거부한다.
-- **instance(ADR-53)**: 세 DB의 instance는 이름이 아니라 DSN 포트에서 유도한다 — Map은 `KOR_TRAVEL_MAP_PG_DSN`
-  (Dagster URL과 같은 authority), PinVi는 `pinvi-api`의 resolved `PINVI_DATABASE_URL`. 그 포트를 `-p`로 듣는
+- **instance(ADR-53)**: 두 DB(Map application·PinVi)의 instance는 이름이 아니라 DSN 포트에서 유도한다 — Map은
+  `KOR_TRAVEL_MAP_PG_DSN`, PinVi는 `pinvi-api`의 resolved `PINVI_DATABASE_URL`. 옛 Map Dagster metadata DB는
+  재구축이 다루지 않는다(platform-topology.md §7 "4단계 — 옛 메타DB 퇴역": 만들지도, 읽지도, migrate하지도,
+  `--restart`로 지우지도 않는다). 그 포트를 `-p`로 듣는
   PostgreSQL 서버 서비스가 정확히 하나여야 한다. 재구축은 그 instance를 `compose ps`로만 본다(running·healthy·
   컨테이너 이름) — 띄우지도, 다시 만들지도 않는다. 멈춰 있으면 거부하고 아무것도 바꾸지 않는다.
 - **S1 bootstrap(ADR-53)**: Map fresh bootstrap은 그 instance의 admin으로 돈다. bootstrap이 돌 때(앱 DB가 없거나
@@ -732,8 +734,7 @@ sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
   password(그 instance의 secret이 가리키는 `.env` 변수)가 32–256자 URI-unreserved이고 Map service·metadata
   password와 다르며, admin의 **살아있는** SCRAM-SHA-256 verifier에 맞음(socket으로 `pg_authid`를 읽어 프로세스
   안에서 비교 — 평상시에 그 password로 TCP 인증하는 것이 없어 회전·편집 drift가 창에서야 드러나기 때문이다).
-  Dagster metadata DB가 없으면(`--restart` 제외) init이 거부할 role(아무것도 소유하지 않는 LOGIN NOINHERIT이 아닌
-  것)도 같은 자리에서 거부한다(`require_map_dagster_metadata_initializable`). one-shot은 `-e
+  one-shot은 `-e
   KOR_TRAVEL_MAP_POSTGRES_USER=<admin> -e KTDM_MAP_BOOTSTRAP_PGPORT=<port>`를 받고 password는 instance secret
   file에서 스스로 읽어 DSN을 셸 안에서 만든다 — argv·Map 런타임에 password가 없다. 단 Map 스크립트가 DSN을
   `psql` 인자로 넘기므로 bootstrap 동안 호스트 프로세스 표에는 보인다. n150의 `/proc`은 `hidepid` 없이 붙어
@@ -1211,11 +1212,16 @@ host network라 **`-p`가 필수**다. 빠뜨리면 컨테이너 기본값 `5432
 ktdctl db-backup create geo --timeout 14400
 ktdctl db-backup create concierge --timeout 14400
 ktdctl db-backup create map_application --timeout 14400
-ktdctl db-backup create map_dagster --timeout 14400
 ktdctl db-backup create pinvi --timeout 14400
 ktdctl db-backup create transport --timeout 14400
-ktdctl db-backup create transport_dagster --timeout 14400
+ktdctl db-backup create dagster_shared --timeout 14400
 ```
+
+옛 프로젝트별 Dagster metadata DB(`geo_dagster`·`map_dagster`·`transport_dagster` role)는 2026-10-04에 뺐다
+(platform-topology.md §7 "4단계 — 옛 메타DB 퇴역") — 4단계의 최종 dump 뒤 `ALLOW_CONNECTIONS false`로 막히고
+30일 뒤 DROP된다. 막힌 DB를 뜨면 매일 실패하므로 **호스트 crontab의 `geo_dagster`·`transport_dagster` 줄도
+지운다**(이 release 설치 직후, 막기 전에). 그 role로 이미 떠 둔 dump 파일은 Manager가 더 정리하지 않는다 —
+손으로 보존·삭제한다. 아래 표와 이 절의 옛 기록에 남은 그 셋은 이력이다.
 
 | role | 컨테이너 | 포트 | user | database |
 |---|---|---|---|---|

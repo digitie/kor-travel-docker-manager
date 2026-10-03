@@ -307,7 +307,6 @@ def _candidate_generation(
         sources=materialized,
         map_application_candidate=paired,
         image_ids=_candidate_image_ids(paired),
-        map_dagster_head="map-dagster-head",
         pinvi_head="pinvi-head",
     )
 
@@ -451,7 +450,6 @@ def test_candidate_generation_binds_all_runtime_inputs() -> None:
         sources=sources,
         map_application_candidate=paired,
         image_ids=image_ids,
-        map_dagster_head="dagster_storage_1",
         pinvi_head="20260806_0001",
         recorded_at="2026-08-06T00:00:00+00:00",
     )
@@ -493,7 +491,6 @@ def test_candidate_generation_rejects_paired_source_and_image_drift() -> None:
             sources=sources,
             map_application_candidate=paired,
             image_ids={**image_ids, "map_api": f"sha256:{999:064x}"},
-                map_dagster_head="dagster_storage_1",
             pinvi_head="20260806_0001",
         )
 
@@ -505,7 +502,6 @@ def test_candidate_generation_rejects_paired_source_and_image_drift() -> None:
                 **image_ids,
                 "map_dagster_daemon": f"sha256:{998:064x}",
             },
-                map_dagster_head="dagster_storage_1",
             pinvi_head="20260806_0001",
         )
 
@@ -1047,23 +1043,23 @@ def test_rebuild_compose_error_carries_the_command_and_its_output(
                 "success": False,
                 "returncode": 23,
                 "stdout": "alembic.util.exc.CommandError: Can't locate revision 0412",
-                "stderr": 'kor-travel-map-dagster-storage-migrate-1 | {"code":"x"}',
+                "stderr": 'kor-travel-map-application-schema-1 | {"code":"x"}',
             }
         ),
     )
 
     with pytest.raises(DeploymentContractError) as captured:
         service._run_pinned_runtime_rebuild_compose(
-            ["run", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
+            ["run", "--no-deps", "kor-travel-map-application-schema"],
             transaction=_opaque_transaction(),
         )
 
     message = str(captured.value)
     assert message.startswith(
         "pinned runtime rebuild Compose run --no-deps "
-        "kor-travel-map-dagster-storage-migrate failed (exit 23)"
+        "kor-travel-map-application-schema failed (exit 23)"
     )
-    assert 'storage-migrate-1 | {"code":"x"}' in message
+    assert 'application-schema-1 | {"code":"x"}' in message
     assert "Can't locate revision 0412" in message
 
 
@@ -1208,7 +1204,7 @@ def test_compose_mutation_parse_reports_the_flags_compose_reads(
     assert ComposeService._parse_compose_mutation(arguments) == (services, frozenset(flags))
 
 
-def test_rebuild_never_retries_a_failed_dagster_storage_migration(
+def test_rebuild_never_retries_a_failed_one_shot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = ComposeService()
@@ -1219,7 +1215,7 @@ def test_rebuild_never_retries_a_failed_dagster_storage_migration(
 
     with pytest.raises(DeploymentContractError, match=r"Compose run .* failed \(exit 1\)"):
         service._run_pinned_runtime_rebuild_compose(
-            ["run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate"],
+            ["run", "--rm", "--no-deps", "kor-travel-map-application-schema"],
             transaction=_opaque_transaction(),
         )
 
@@ -1243,7 +1239,7 @@ def test_static_command_failure_carries_both_streams(
         return_value=SimpleNamespace(
             returncode=1,
             stdout="partial-static-output",
-            stderr="exec /usr/local/bin/ktm-dagster-storage: no such file or directory",
+            stderr="exec /usr/local/bin/ktm-application-schema: no such file or directory",
         )
     )
     monkeypatch.setattr(compose_service_module.subprocess, "run", runner)
@@ -1252,12 +1248,12 @@ def test_static_command_failure_carries_both_streams(
         compose_service_module._run_pinned_runtime_static_command(
             f"sha256:{'a' * 64}",
             ("head",),
-            label="Map Dagster",
-            entrypoint="/usr/local/bin/ktm-dagster-storage",
+            label="Map application",
+            entrypoint="/usr/local/bin/ktm-application-schema",
         )
 
     message = str(captured.value)
-    assert message.startswith("Map Dagster candidate static inspection failed (exit 1)")
+    assert message.startswith("Map application candidate static inspection failed (exit 1)")
     assert "no such file or directory" in message
     assert "partial-static-output" in message
 
@@ -1340,8 +1336,8 @@ def test_static_command_can_bypass_a_sealed_image_entrypoint(
     output = compose_service_module._run_pinned_runtime_static_command(
         f"sha256:{'a' * 64}",
         ("head",),
-        label="Map Dagster",
-        entrypoint="/usr/local/bin/ktm-dagster-storage",
+        label="Map application",
+        entrypoint="/usr/local/bin/ktm-application-schema",
     )
 
     assert output == "static-output"
@@ -1353,7 +1349,7 @@ def test_static_command_can_bypass_a_sealed_image_entrypoint(
         "--network",
         "none",
         "--entrypoint",
-        "/usr/local/bin/ktm-dagster-storage",
+        "/usr/local/bin/ktm-application-schema",
         f"sha256:{'a' * 64}",
         "head",
     ]
@@ -1388,7 +1384,6 @@ def test_oneshot_writer_liveness_must_be_empty_before_database_reset(
     expected_writers = (
         "kor-travel-map-db-role-bootstrap",
         "kor-travel-map-application-schema",
-        "kor-travel-map-dagster-storage-migrate",
         "pinvi-admin-bootstrap",
     )
     assert operations[0] == (
@@ -1448,12 +1443,12 @@ _FORWARD_COMPANIONS: dict[str, RuntimeSlot] = {
     "pinvi-dagster-daemon": "pinvi_dagster",
 }
 _FORWARD_ONESHOTS = (
-    "kor-travel-map-dagster-storage-migrate",
     "kor-travel-map-application-schema",
     "pinvi-admin-bootstrap",
     "kor-travel-map-db-role-bootstrap",
 )
-_STORAGE_RUN = ("run", "--rm", "--no-deps", "kor-travel-map-dagster-storage-migrate")
+#: 옛 Map Dagster metadata DB의 migrate one-shot. 재구축은 이것을 부르지 않는다(platform-topology.md §7 4단계).
+_RETIRED_STORAGE_MIGRATE = "kor-travel-map-dagster-storage-migrate"
 _SCHEMA_RUN = (
     "--profile",
     "bootstrap",
@@ -1464,7 +1459,6 @@ _SCHEMA_RUN = (
 )
 _LIVE_IDENTITIES: dict[str, tuple[str, int, str]] = {
     "map_application": ("kor_travel_map", 16401, "7300000000000000001"),
-    "map_dagster": ("kor_travel_map_dagster", 16402, "7300000000000000001"),
     "pinvi": ("pinvi", 20001, "7300000000000000002"),
 }
 
@@ -1478,7 +1472,7 @@ _FORWARD_PORT = 11000
 _FORWARD_ADMIN = "cluster_admin"
 
 
-def _forward_runtimes() -> tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime]:
+def _forward_runtimes() -> tuple[DatabaseRuntime, DatabaseRuntime]:
     def runtime(role: Any, name: str) -> DatabaseRuntime:
         return DatabaseRuntime(
             role=role,
@@ -1493,7 +1487,6 @@ def _forward_runtimes() -> tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRunti
 
     return (
         runtime("map_application", "kor_travel_map"),
-        runtime("map_dagster", "kor_travel_map_dagster"),
         runtime("pinvi", "pinvi"),
     )
 
@@ -1584,8 +1577,6 @@ def _forward_harness(
         "KOR_TRAVEL_MAP_API_OPS_READ_TOKEN": "r" * 32,
         "KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN": "c" * 32,
         "KOR_TRAVEL_MAP_API_OPS_FIXTURE_TOKEN": "f" * 32,
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_dagster_metadata",
-        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "metadata-password",
         "KOR_TRAVEL_MAP_PG_DSN": (
             f"postgresql+asyncpg://ktm_feature_service:service-password@127.0.0.1:{_FORWARD_PORT}/"
             "kor_travel_map"
@@ -1610,7 +1601,6 @@ def _forward_harness(
     # 같은 slot 이미지를 쓰는 one-shot writer는 companion이 아니다.
     resolved_services.update(
         {
-            "kor-travel-map-dagster-storage-migrate": {"image": image_ids["map_dagster"]},
             "kor-travel-map-application-schema": {"image": image_ids["map_api"]},
             "pinvi-admin-bootstrap": {"image": image_ids["pinvi_api"]},
         }
@@ -1636,10 +1626,11 @@ def _forward_harness(
         "identities": dict(_LIVE_IDENTITIES),
         "heads": {
             "map_application": candidate.map_application_head,
-            "map_dagster": candidate.map_dagster_head,
             "pinvi": candidate.pinvi_head,
         },
         "pinvi_schema_table": True,
+        # identity·head를 읽은 DB role(옛 `map_dagster`가 여기 나타나면 안 된다).
+        "read_roles": set(),
         # readiness가 거부할 서비스(ADR-53: instance는 readiness로만 본다).
         "not_ready": set(),
         # docker에서 돌고 있는 컨테이너 이름(전환된 target의 옛 컨테이너 검사, ADR-54).
@@ -1661,7 +1652,6 @@ def _forward_harness(
     mocks = SimpleNamespace(
         reset=Mock(),
         ensure_map=Mock(return_value="present"),
-        dagster_init=Mock(),
         fence=Mock(),
         pinvi_bootstrap=Mock(),
         smoke=Mock(),
@@ -1676,8 +1666,6 @@ def _forward_harness(
         isolation_preflight=Mock(),
         # S1: bootstrap이 돌 때 instance admin을 멈추기 전에 판정한다.
         admin_preflight=Mock(),
-        # Dagster metadata DB가 없을 때 init이 거부할 role을 멈추기 전에 판정한다.
-        dagster_preflight=Mock(),
         retention_generation=Mock(),
         retention_candidate=Mock(),
     )
@@ -1782,17 +1770,17 @@ def _forward_harness(
         inspected_services.append(tuple(services))
         return {_C6cConfig.map_ui_container: {}}
 
-    def isolate(app: DatabaseRuntime, dagster: DatabaseRuntime, *, login: str) -> None:
+    def isolate(app: DatabaseRuntime, *, login: str) -> None:
         # DB 권한 변경도 순서를 단언할 수 있게 compose 호출과 같은 기록에 남긴다.
-        operations.append(
-            (_ISOLATION, app.database_name, dagster.database_name, login)
-        )
+        operations.append((_ISOLATION, app.database_name, login))
 
     def read_identity(runtime: DatabaseRuntime) -> tuple[str, int, str] | None:
+        live["read_roles"].add(runtime.role)
         identities = cast(dict[str, Any], live["identities"])
         return cast("tuple[str, int, str] | None", identities.get(runtime.role))
 
     def read_head(runtime: DatabaseRuntime) -> str:
+        live["read_roles"].add(runtime.role)
         head = cast(dict[str, Any], live["heads"]).get(runtime.role)
         if head is None:
             raise DeploymentContractError(f"{runtime.role} schema revision output is invalid")
@@ -1824,7 +1812,6 @@ def _forward_harness(
         "read_database_schema_revision": read_head,
         "schema_revision_table_exists": lambda _runtime: live["pinvi_schema_table"],
         "ensure_map_application_database": mocks.ensure_map,
-        "initialize_application_300_dagster_metadata_database": mocks.dagster_init,
         "reset_databases_for_application_300": mocks.reset,
         "ensure_map_databases_isolated": isolate,
         "reconcile_orphaned_pinvi_bootstrap_credentials": Mock(),
@@ -1840,7 +1827,6 @@ def _forward_harness(
         "require_databases_resettable": mocks.reset_preflight,
         "require_map_databases_isolatable": mocks.isolation_preflight,
         "require_map_bootstrap_admin_ready": mocks.admin_preflight,
-        "require_map_dagster_metadata_initializable": mocks.dagster_preflight,
     }.items():
         monkeypatch.setattr(compose_service_module, name, replacement)
     service = ComposeService()
@@ -1884,6 +1870,13 @@ def _forward_harness(
     )
 
 
+def _assert_the_retired_metadata_database_was_never_touched(harness: SimpleNamespace) -> None:
+    """옛 Map Dagster metadata DB(4단계에서 막힌 뒤 DROP)는 migrate·identity·head 어느 것으로도 닿지 않는다."""
+
+    assert not any(_RETIRED_STORAGE_MIGRATE in operation for operation in harness.operations)
+    assert harness.live["read_roles"] <= {"map_application", "pinvi"}
+
+
 def _mutating_operations(harness: SimpleNamespace) -> list[tuple[str, ...]]:
     """무언가를 바꾸는 호출(compose·DB 권한). readiness 읽기는 따로 기록된다.
 
@@ -1911,7 +1904,7 @@ def test_first_deploy_runs_the_idempotent_full_path_and_commits(
     harness.mocks.reset.assert_not_called()
     harness.mocks.ensure_map.assert_called_once()
     assert harness.operations.count(_SCHEMA_RUN) == 1
-    assert harness.operations.count(_STORAGE_RUN) == 1
+    _assert_the_retired_metadata_database_was_never_touched(harness)
     harness.mocks.pinvi_bootstrap.assert_called_once()
     status = read_deploy_status(harness.status_path)
     assert status is not None
@@ -2013,7 +2006,7 @@ def test_a_new_pair_migrates_forward_on_the_same_databases(
 
     assert result["outcome"] == "deployed"
     harness.mocks.reset.assert_not_called()
-    assert harness.operations.count(_STORAGE_RUN) == 1
+    _assert_the_retired_metadata_database_was_never_touched(harness)
     status = read_deploy_status(harness.status_path)
     assert status is not None and status.state == "committed"
     assert status.map_revision == candidate.map_source_revision
@@ -2048,10 +2041,9 @@ def test_restart_resets_once_and_rebaselines_the_identities(
     harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
     new_identities = {
         "map_application": ("kor_travel_map", 17001, "7300000000000000001"),
-        "map_dagster": ("kor_travel_map_dagster", 17002, "7300000000000000001"),
         "pinvi": ("pinvi", 27001, "7300000000000000002"),
     }
-    harness.live["identities"] = {"map_application": None, "map_dagster": None, "pinvi": None}
+    harness.live["identities"] = {"map_application": None, "pinvi": None}
     harness.live["identities"].update(_LIVE_IDENTITIES)
 
     def reset(runtimes: object) -> None:
@@ -2069,9 +2061,9 @@ def test_restart_resets_once_and_rebaselines_the_identities(
     assert status.restart is not None and status.restart.reason == "rebuild from empty"
     assert {role: database.oid for role, database in (status.databases or {}).items()} == {
         "map_application": 17001,
-        "map_dagster": 17002,
         "pinvi": 27001,
     }
+    _assert_the_retired_metadata_database_was_never_touched(harness)
 
 
 def test_a_failure_after_in_progress_cleans_up_and_the_rerun_finishes_without_reset(
@@ -2080,9 +2072,11 @@ def test_a_failure_after_in_progress_cleans_up_and_the_rerun_finishes_without_re
     candidate = _candidate_generation()
     previous = _committed_status(candidate, map_revision="0" * 40)
     harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
-    harness.live["heads"]["map_dagster"] = "older-dagster-head"
+    harness.live["heads"]["map_application"] = "older-application-head"
 
-    with pytest.raises(DeploymentContractError, match="storage execution result") as captured:
+    with pytest.raises(
+        DeploymentContractError, match="Map application schema differs from candidate head"
+    ) as captured:
         harness.service.rebuild_pinned_runtime()
 
     stop = ("stop", *RUNTIME_SERVICES, *sorted(_FORWARD_COMPANIONS))
@@ -2095,7 +2089,7 @@ def test_a_failure_after_in_progress_cleans_up_and_the_rerun_finishes_without_re
     # in_progress를 쓴 뒤의 실패는 단계 밖이다.
     assert compose_service_module.rebuild_failure_stage(captured.value) is None
 
-    harness.live["heads"]["map_dagster"] = candidate.map_dagster_head
+    harness.live["heads"]["map_application"] = candidate.map_application_head
     harness.operations.clear()
     result = harness.service.rebuild_pinned_runtime()
 
@@ -2156,25 +2150,40 @@ def test_the_pinvi_fresh_install_fence_is_only_for_an_empty_database(
     harness.mocks.pinvi_bootstrap.assert_called_once()
 
 
-def test_the_dagster_metadata_database_is_created_only_when_absent(
+def test_a_same_pair_rerun_after_stage_4_converges_without_the_old_metadata_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """2026-10-03 22:51Z 사고의 재현: 4단계 전의 Manager가 쓴 deploy-status.json(옛 `map_dagster` 항목 포함)과
+    막힌 옛 Map Dagster metadata DB 위에서 같은 pair를 다시 돌린다.
+
+    그때는 옛 DB의 head를 읽지 못해 수렴하지 못하고 전체 경로로 가서 Map·PinVi를 멈춘 뒤
+    `kor-travel-map-dagster-storage-migrate`에서 죽었다. 이제 그 항목은 읽을 때 버려지고 옛 DB는 닿지 않으므로
+    아무것도 멈추지 않고 수렴한다.
+    """
+
+    candidate = _candidate_generation()
+    payload = _committed_status(candidate).to_payload()
+    databases = payload["databases"]
+    heads = payload["schema_heads"]
+    assert isinstance(databases, dict) and isinstance(heads, dict)
+    databases["map_dagster"] = {
+        "name": "kor_travel_map_dagster",
+        "oid": 16402,
+        "system_identifier": "7300000000000000001",
+    }
+    heads["map_dagster"] = "7e2f3204cf8e"
     harness = _forward_harness(monkeypatch, tmp_path)
-    harness.service.rebuild_pinned_runtime()
-    harness.mocks.dagster_init.assert_not_called()
+    harness.status_path.write_text(json.dumps(payload), encoding="utf-8")
+    os.chmod(harness.status_path, 0o600)
 
-    absent = _forward_harness(monkeypatch, tmp_path / "absent")
-    identities = absent.live["identities"]
-    created = identities.pop("map_dagster")
+    result = harness.service.rebuild_pinned_runtime()
 
-    def create(runtime: object, **_kwargs: object) -> None:
-        del runtime
-        identities["map_dagster"] = created
-
-    absent.mocks.dagster_init.side_effect = create
-    absent.service.rebuild_pinned_runtime()
-
-    absent.mocks.dagster_init.assert_called_once()
+    assert result["outcome"] == "converged"
+    assert not any(operation[0] == "stop" for operation in harness.operations)
+    assert not any(
+        writer in operation for operation in harness.operations for writer in _FORWARD_ONESHOTS
+    )
+    _assert_the_retired_metadata_database_was_never_touched(harness)
 
 
 def test_existing_candidate_images_are_not_rebuilt(
@@ -2311,8 +2320,8 @@ def test_a_replaced_database_of_the_same_pair_is_refused(
     harness = _forward_harness(
         monkeypatch, tmp_path, previous=_committed_status(candidate)
     )
-    harness.live["identities"]["map_dagster"] = (
-        "kor_travel_map_dagster",
+    harness.live["identities"]["map_application"] = (
+        "kor_travel_map",
         19999,
         "7300000000000000001",
     )
@@ -2530,7 +2539,7 @@ def test_an_isolation_precondition_refusal_comes_before_the_runtime_stops(
     harness.mocks.ensure_map.assert_not_called()
     assert read_deploy_status(harness.status_path) == previous
     harness.mocks.isolation_preflight.assert_called_once_with(
-        harness.runtimes[0], harness.runtimes[1], login="ktm_feature_service"
+        harness.runtimes[0], login="ktm_feature_service"
     )
 
 
@@ -3133,7 +3142,6 @@ def test_converge_applies_isolation_before_up(
     assert harness.operations[isolation[0]] == (
         _ISOLATION,
         "kor_travel_map",
-        "kor_travel_map_dagster",
         "ktm_feature_service",
     )
 
@@ -3407,89 +3415,6 @@ def test_bootstrap_one_shot_gets_the_derived_admin_and_port_and_no_password_env(
         if token in {"-e", "--env"}
     ]
     assert passed and not any(_SHARED_ADMIN_PASSWORD in value for value in passed)
-
-
-@pytest.mark.parametrize(
-    ("state", "restart", "checked"),
-    (
-        ("present", False, True),
-        ("absent", False, True),
-        ("unbootstrapped", False, True),
-        # 리셋은 Dagster DB를 지운 뒤 init이 판정한다 — 지우기 전에는 그 role이 DB를 소유한다.
-        ("present", True, False),
-    ),
-)
-def test_the_dagster_metadata_preflight_runs_before_the_stop_unless_restarting(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    state: str,
-    restart: bool,
-    checked: bool,
-) -> None:
-    harness = _forward_harness(
-        monkeypatch,
-        tmp_path,
-        previous=_committed_status(_candidate_generation(), map_revision="0" * 40),
-    )
-    harness.mocks.map_precheck.return_value = state
-
-    result = harness.service.rebuild_pinned_runtime(
-        **({"restart_reason": "rebuild"} if restart else {})
-    )
-
-    assert result["outcome"] == "deployed"
-    if checked:
-        harness.mocks.dagster_preflight.assert_called_once_with(harness.runtimes[1])
-    else:
-        harness.mocks.dagster_preflight.assert_not_called()
-
-
-def test_a_foreign_dagster_metadata_role_is_refused_before_the_runtime_stops(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """공용 instance의 다른 tenant role을 metadata user로 박은 `.env`(C6c는 이름 규칙만 본다).
-
-    init(R2)의 거부가 Map bootstrap·alembic 뒤에야 나면 Map·PinVi가 내려간 채 남는다. 진짜 판정을
-    태운다(psql만 대역): Dagster DB는 없고, 그 이름의 role은 NOLOGIN이며 아무것도 소유하지 않는다 —
-    2026-09-29 공용 instance의 `kor_travel_transport_dagster_app` 모양이다.
-    """
-
-    candidate = _candidate_generation()
-    previous = _committed_status(candidate, map_revision="0" * 40)
-    harness = _forward_harness(monkeypatch, tmp_path, previous=previous)
-    harness.mocks.map_precheck.return_value = "absent"
-    runtimes = (
-        harness.runtimes[0],
-        replace(
-            harness.runtimes[1],
-            additional_owner_names=frozenset({"kor_travel_transport_dagster_app"}),
-        ),
-        harness.runtimes[2],
-    )
-    monkeypatch.setattr(
-        compose_service_module,
-        "database_runtimes_from_frozen_contract",
-        lambda **_kwargs: runtimes,
-    )
-    monkeypatch.setattr(database_runtime_module, "_read_database_owner", Mock(return_value=None))
-    reads = Mock(return_value=b"f|f|f|f|f|f|f|-1|t|0|0|0|0|0|0\n")
-    monkeypatch.setattr(database_runtime_module, "_run_checked", reads)
-    monkeypatch.setattr(
-        compose_service_module,
-        "require_map_dagster_metadata_initializable",
-        database_runtime_module.require_map_dagster_metadata_initializable,
-    )
-
-    with pytest.raises(DeploymentContractError, match="role is unsafe"):
-        harness.service.rebuild_pinned_runtime()
-
-    assert not any(operation[0] == "stop" for operation in harness.operations)
-    assert _mutating_operations(harness) == []
-    harness.mocks.ensure_map.assert_not_called()
-    harness.mocks.dagster_init.assert_not_called()
-    assert read_deploy_status(harness.status_path) == previous
-    (call,) = reads.call_args_list
-    assert call.kwargs["label"] == "Map Dagster metadata role preflight"
 
 
 # --- ADR-54: 공용 Dagster plane에 합류한 target의 pinned 재구축 ----------------------------------
