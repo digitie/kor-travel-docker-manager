@@ -1156,6 +1156,12 @@ services:
       context: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}
       dockerfile: Dockerfile.python
     container_name: ${KOR_TRAVEL_CONCIERGE_SCHEDULER_CONTAINER:-kor-travel-concierge-scheduler-latest}
+    init: true
+    # 앱의 종료 대기·LLM HTTP 정리보다 길게 확보한다.
+    stop_grace_period: 180s
+    mem_limit: 2g
+    mem_reservation: 512m
+    cpus: 2
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     command:
