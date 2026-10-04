@@ -1,5 +1,5 @@
 {
- "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized",
+ "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized; re-captured 2026-10-04 for platform-topology.md §7 stage 4 (old Map/PinVi Dagster metadata DB dependencies removed)",
  "build_compose_environment": {
   "KOR_TRAVEL_MAP_API_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
   "KOR_TRAVEL_MAP_DAGSTER_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
@@ -324,34 +324,6 @@
   [
    [
     "kor-travel-map-dagster",
-    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
-   ],
-   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
-  ],
-  [
-   [
-    "kor-travel-map-dagster-code-server",
-    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
-   ],
-   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
-  ],
-  [
-   [
-    "kor-travel-map-dagster-daemon",
-    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
-   ],
-   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
-  ],
-  [
-   [
-    "kor-travel-map-dagster-storage-migrate",
-    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
-   ],
-   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
-  ],
-  [
-   [
-    "kor-travel-map-dagster",
     "KOR_TRAVEL_MAP_PG_DSN"
    ],
    "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
@@ -413,22 +385,16 @@
    "KOR_TRAVEL_MAP_PG_DSN"
   ],
   "kor-travel-map-dagster": [
-   "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
    "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY",
    "KOR_TRAVEL_MAP_PG_DSN"
   ],
   "kor-travel-map-dagster-code-server": [
-   "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
    "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY",
    "KOR_TRAVEL_MAP_PG_DSN"
   ],
   "kor-travel-map-dagster-daemon": [
-   "KOR_TRAVEL_MAP_DAGSTER_PG_URL",
    "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY",
    "KOR_TRAVEL_MAP_PG_DSN"
-  ],
-  "kor-travel-map-dagster-storage-migrate": [
-   "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
   ],
   "kor-travel-map-db-role-bootstrap": [
    "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD",
@@ -461,15 +427,12 @@
    "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN"
   ],
   "pinvi-dagster": [
-   "PINVI_DAGSTER_PG_URL",
    "PINVI_DATABASE_URL"
   ],
   "pinvi-dagster-code-server": [
-   "PINVI_DAGSTER_PG_URL",
    "PINVI_DATABASE_URL"
   ],
   "pinvi-dagster-daemon": [
-   "PINVI_DAGSTER_PG_URL",
    "PINVI_DATABASE_URL"
   ]
  },
@@ -494,7 +457,6 @@
   "kor-travel-map-dagster",
   "<unrecognized service key sha256:1457d35c>",
   "kor-travel-map-dagster-daemon",
-  "kor-travel-map-dagster-storage-migrate",
   "kor-travel-map-db-role-bootstrap",
   "kor-travel-map-ui",
   "<unrecognized service key sha256:f0321e02>",
@@ -528,7 +490,6 @@
   "kor-travel-map-application-schema",
   "kor-travel-map-dagster",
   "kor-travel-map-dagster-daemon",
-  "kor-travel-map-dagster-storage-migrate",
   "kor-travel-map-db-role-bootstrap",
   "kor-travel-map-ui",
   "kor-travel-shared-db-init-dagster",
@@ -604,34 +565,6 @@
   [
    [
     "kor-travel-map-dagster",
-    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
-   ],
-   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
-  ],
-  [
-   [
-    "kor-travel-map-dagster-code-server",
-    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
-   ],
-   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
-  ],
-  [
-   [
-    "kor-travel-map-dagster-daemon",
-    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
-   ],
-   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
-  ],
-  [
-   [
-    "kor-travel-map-dagster-storage-migrate",
-    "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
-   ],
-   "${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}"
-  ],
-  [
-   [
-    "kor-travel-map-dagster",
     "KOR_TRAVEL_MAP_PG_DSN"
    ],
    "${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}"
@@ -670,25 +603,6 @@
   "kor-travel-map-ui",
   "kor-travel-map-dagster",
   "kor-travel-map-dagster-daemon"
- ],
- "c6c_pinvi_dagster_pg_url_raw": [
-  [
-   "pinvi-dagster",
-   "postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}"
-  ],
-  [
-   "pinvi-dagster-code-server",
-   "postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}"
-  ],
-  [
-   "pinvi-dagster-daemon",
-   "postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}"
-  ]
- ],
- "c6c_pinvi_dagster_pg_url_services": [
-  "pinvi-dagster",
-  "pinvi-dagster-code-server",
-  "pinvi-dagster-daemon"
  ],
  "c6c_pinvi_database_url_raw": [
   [
@@ -744,7 +658,6 @@
   "kor-travel-map-application-schema",
   "kor-travel-map-dagster",
   "kor-travel-map-dagster-daemon",
-  "kor-travel-map-dagster-storage-migrate",
   "kor-travel-map-db-role-bootstrap",
   "kor-travel-map-ui",
   "pinvi-admin-bootstrap",
@@ -766,7 +679,6 @@
    [
     "ensure-map-databases-isolated",
     "kor_travel_map",
-    "kor_travel_map_dagster",
     "ktm_feature_service"
    ],
    [
@@ -888,7 +800,6 @@
    [
     "ensure-map-databases-isolated",
     "kor_travel_map",
-    "kor_travel_map_dagster",
     "ktm_feature_service"
    ],
    [
@@ -899,12 +810,6 @@
     "--wait-timeout",
     "900",
     "kor-travel-map-api"
-   ],
-   [
-    "run",
-    "--rm",
-    "--no-deps",
-    "kor-travel-map-dagster-storage-migrate"
    ],
    [
     "up",
@@ -983,7 +888,6 @@
   },
   "map_application_head": "300",
   "map_dagster_daemon_image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
-  "map_dagster_head": "map-dagster-head",
   "map_dagster_image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
   "map_source_revision": "<MAP_REVISION>",
   "map_ui_image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
@@ -1076,9 +980,6 @@
   "kor-travel-map-dagster-daemon": [
    "kor-travel-map-dagster-daemon",
    "kor-travel-map-api"
-  ],
-  "kor-travel-map-dagster-storage-migrate": [
-   "kor-travel-map-dagster-storage-migrate"
   ],
   "kor-travel-map-db-role-bootstrap": [
    "kor-travel-map-db-role-bootstrap"
