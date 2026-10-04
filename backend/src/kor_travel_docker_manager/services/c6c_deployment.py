@@ -309,6 +309,14 @@ _MANAGER_ONLY_CREDENTIAL_NAMES = frozenset(
 _SAFE_GET_READINESS_ATTEMPTS = 6
 _SAFE_GET_READINESS_BACKOFF_SECONDS: Final[tuple[float, ...]] = (5.0, 10.0, 20.0, 30.0, 30.0)
 _SAFE_GET_READINESS_BUDGET_SECONDS: Final = 180.0
+#: Map contract-fixture **ensure PUT·read GET**만 연결 단계 실패(연결 거부·끊김·timeout)를 재시도한다 — 둘 다
+#: transaction ID로 키가 잡힌 멱등 요청이다(Map `ensure_c6c_cancel_probe_fixture`는 advisory lock 아래 기존 행을
+#: 그대로 돌려준다). 2026-10-04 08:32Z 고정 재구축은 막 뜬 Map API의 첫 PUT이 IO wait 아래 10초 timeout으로
+#: 끝나 Map·PinVi를 멈춘 채 실패했고, 몇 분 뒤 같은 요청은 성공했다. 대기 5→30초, 시도 5회: 대기 합 65초에
+#: 시도마다 timeout 10초를 더한 최악이 약 115초다. finalize POST는 "불확실한 결과 뒤 반복 금지" 계약 때문에 재시도하지 않는다.
+_MAP_FIXTURE_COLD_START_ATTEMPTS: Final = 5
+_MAP_FIXTURE_COLD_START_BACKOFF_SECONDS: Final[tuple[float, ...]] = (5.0, 10.0, 20.0, 30.0)
+_MAP_FIXTURE_REQUEST_TIMEOUT_SECONDS: Final = 10
 #: PinVi가 upstream(Map) 미준비를 알리는 envelope — `map_ops_errors`의 `KorTravelMapUnavailable` 분기(502/503).
 _PINVI_UPSTREAM_UNAVAILABLE_STATUSES: Final = frozenset({502, 503})
 _PINVI_UPSTREAM_UNAVAILABLE_CODE: Final = "FEATURE_SERVICE_UNAVAILABLE"
@@ -4898,6 +4906,7 @@ def _read_c6c_cancel_probe_fixture(
         method="GET",
         headers=_fixture_headers(config),
         read_error_body=True,
+        retry_cold_start=True,
     )
     if status != 200:
         raise DeploymentContractError("C6c fixture lifecycle read failed")
@@ -4928,6 +4937,7 @@ def _ensure_c6c_cancel_probe_fixture(
         method="PUT",
         headers=_fixture_headers(config),
         read_error_body=True,
+        retry_cold_start=True,
     )
     if status != 200:
         raise DeploymentContractError("C6c fixture lifecycle ensure failed")
@@ -6620,11 +6630,46 @@ def _request_json(
     headers: Mapping[str, str],
     body: bytes | None = None,
     read_error_body: bool = False,
+    retry_cold_start: bool = False,
+) -> tuple[int, Any | None]:
+    if not retry_cold_start:
+        return _request_json_once(
+            url, method=method, headers=headers, body=body, read_error_body=read_error_body
+        )
+    if method not in {"GET", "PUT"} or body is not None:
+        raise ValueError("cold-start retry requires an idempotent bodyless GET or PUT")
+    for attempt in range(_MAP_FIXTURE_COLD_START_ATTEMPTS):
+        try:
+            return _request_json_once(
+                url, method=method, headers=headers, body=None, read_error_body=read_error_body
+            )
+        except DeploymentContractError as exc:
+            cause: object = exc.__cause__
+            if isinstance(cause, urllib.error.URLError):
+                cause = cause.reason
+            if (
+                not isinstance(cause, ConnectionError | TimeoutError)
+                or attempt + 1 == _MAP_FIXTURE_COLD_START_ATTEMPTS
+            ):
+                raise
+        time.sleep(_MAP_FIXTURE_COLD_START_BACKOFF_SECONDS[attempt])
+    raise AssertionError("unreachable Map fixture retry state")
+
+
+def _request_json_once(
+    url: str,
+    *,
+    method: str,
+    headers: Mapping[str, str],
+    body: bytes | None,
+    read_error_body: bool,
 ) -> tuple[int, Any | None]:
     request = urllib.request.Request(url, data=body, headers=dict(headers), method=method)
     try:
         # S310: production config가 exact loopback origin을 강제한다.
-        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
+        with urllib.request.urlopen(  # noqa: S310
+            request, timeout=_MAP_FIXTURE_REQUEST_TIMEOUT_SECONDS
+        ) as response:
             status = response.status
             if status != 200:
                 return status, None
