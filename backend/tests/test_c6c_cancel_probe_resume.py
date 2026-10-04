@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import json
+import urllib.error
+import urllib.request
+from email.message import Message
 from types import SimpleNamespace
 from typing import Literal, cast
 from unittest.mock import Mock
@@ -665,3 +670,163 @@ def test_only_bodyless_gets_may_retry() -> None:
             read_error_body=True, retry_safe_get_readiness=True,
         )
     opener.open.assert_not_called()
+
+
+# --- Map fixture 요청의 cold-start 재시도 (2026-10-04 08:32Z 재구축 실패) -----------------------------
+#
+# 막 뜬 Map API의 첫 fixture PUT이 IO wait 아래에서 10초 timeout으로 끝나 재구축 전체가 죽었다. 몇 분 뒤
+# 같은 요청은 성공했다. ensure PUT과 read GET은 transaction ID로 키가 잡힌 멱등 요청이라 연결 단계 실패를
+# 제한적으로 재시도한다. finalize POST는 "불확실한 결과 뒤 반복 금지" 계약이 있으므로 재시도하지 않는다.
+
+_TRANSACTION_ID = "11111111-1111-1111-1111-111111111111"
+
+
+def _fixture_config() -> C6cDeploymentConfig:
+    return cast(
+        C6cDeploymentConfig,
+        SimpleNamespace(base_url="http://127.0.0.1:12701", fixture_token="fixture-token"),
+    )
+
+
+def _armed_payload() -> bytes:
+    return json.dumps(
+        {
+            "data": {
+                "fixture": {
+                    "transaction_id": _TRANSACTION_ID,
+                    "job_id": "22222222-2222-2222-2222-222222222222",
+                    "state": "armed",
+                    "cancellation_id": None,
+                    "created_at": "2026-10-04T08:32:00+00:00",
+                    "consumed_at": None,
+                    "finalized_at": None,
+                    "canonical_unsafe_outcome": None,
+                    "capability_generation": c6c.C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
+                }
+            },
+            "meta": {},
+        }
+    ).encode()
+
+
+class _FakeResponse:
+    status = 200
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self) -> _FakeResponse:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def read(self, *_args: object) -> bytes:
+        return self._body
+
+
+def _fake_urlopen(
+    monkeypatch: pytest.MonkeyPatch, outcomes: list[object]
+) -> tuple[list[tuple[str, float]], _Clock]:
+    """outcomes를 차례로 낸다(마지막 것은 반복). 예외면 던지고, bytes면 200 응답 본문이다."""
+
+    clock = _Clock()
+    monkeypatch.setattr(c6c.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(c6c.time, "sleep", clock.sleep)
+    calls: list[tuple[str, float]] = []
+
+    def urlopen(request: urllib.request.Request, *, timeout: float) -> _FakeResponse:
+        outcome = outcomes[min(len(calls), len(outcomes) - 1)]
+        calls.append((request.get_method(), timeout))
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return _FakeResponse(cast(bytes, outcome))
+
+    monkeypatch.setattr(c6c.urllib.request, "urlopen", urlopen)
+    return calls, clock
+
+
+def test_fixture_ensure_put_survives_a_cold_start_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, clock = _fake_urlopen(monkeypatch, [TimeoutError("timed out"), _armed_payload()])
+    state = PinviCancelProbeState(transaction_id=_TRANSACTION_ID)
+
+    fixture = c6c._ensure_c6c_cancel_probe_fixture(_fixture_config(), state)
+
+    assert fixture.state == "armed" and state.fixture == fixture
+    assert [method for method, _ in calls] == ["PUT", "PUT"]
+    assert clock.sleeps == [5.0]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+        urllib.error.URLError(TimeoutError("timed out")),
+        ConnectionResetError(104, "Connection reset by peer"),
+    ],
+)
+def test_fixture_read_get_survives_cold_start_connection_errors(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    calls, _ = _fake_urlopen(monkeypatch, [error, error, _armed_payload()])
+
+    fixture = c6c._read_c6c_cancel_probe_fixture(_fixture_config(), _TRANSACTION_ID)
+
+    assert fixture.transaction_id == _TRANSACTION_ID
+    assert [method for method, _ in calls] == ["GET", "GET", "GET"]
+
+
+def test_fixture_cold_start_retry_is_bounded_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, clock = _fake_urlopen(monkeypatch, [TimeoutError("timed out")])
+    state = PinviCancelProbeState(transaction_id=_TRANSACTION_ID)
+
+    with pytest.raises(DeploymentContractError, match="Map smoke endpoint is unavailable"):
+        c6c._ensure_c6c_cancel_probe_fixture(_fixture_config(), state)
+
+    # 대기 합 + 시도마다 timeout을 더한 최악이 약 2분이다.
+    worst_case = sum(clock.sleeps) + sum(timeout for _, timeout in calls)
+    assert len(calls) == 5 and worst_case <= 120.0
+    assert state.fixture is None
+
+
+def test_fixture_cold_start_retry_ignores_http_answers_and_other_os_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, clock = _fake_urlopen(
+        monkeypatch, [OSError("unrelated"), _armed_payload()]
+    )
+    with pytest.raises(DeploymentContractError, match="Map smoke endpoint is unavailable"):
+        c6c._read_c6c_cancel_probe_fixture(_fixture_config(), _TRANSACTION_ID)
+    assert len(calls) == 1 and clock.sleeps == []
+
+    http_error = urllib.error.HTTPError(
+        "http://127.0.0.1:12701/x", 503, "unavailable", Message(), io.BytesIO(b"{}")
+    )
+    calls, clock = _fake_urlopen(monkeypatch, [http_error, _armed_payload()])
+    with pytest.raises(DeploymentContractError, match="lifecycle read failed"):
+        c6c._read_c6c_cancel_probe_fixture(_fixture_config(), _TRANSACTION_ID)
+    assert len(calls) == 1 and clock.sleeps == []
+
+
+def test_fixture_finalize_post_is_not_retried_after_a_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, clock = _fake_urlopen(monkeypatch, [TimeoutError("timed out"), _armed_payload()])
+    state = _consumed_state(finalize_attempted=True)
+    config = _fixture_config()
+
+    with pytest.raises(DeploymentContractError, match="Map smoke endpoint is unavailable"):
+        c6c._finalize_c6c_cancel_probe_fixture(config, state)
+
+    assert [method for method, _ in calls] == ["POST"] and clock.sleeps == []
+
+
+def test_cold_start_retry_refuses_requests_with_a_body_or_post() -> None:
+    for method, body in (("POST", None), ("PUT", b"{}"), ("DELETE", None)):
+        with pytest.raises(ValueError, match="idempotent bodyless"):
+            c6c._request_json(
+                "http://127.0.0.1:1/x", method=method, headers={}, body=body,
+                retry_cold_start=True,
+            )
