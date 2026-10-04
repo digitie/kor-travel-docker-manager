@@ -1527,7 +1527,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
-      start_period: 20s
+      # 300초: 재구축은 이 서비스를 `up --wait`한다. 2026-10-04 n150 재구축에서 같은 부하 속 냉기동이
+      # code-server·pinvi-api의 창을 넘겼다. start_interval이 빨리 뜬 기동을 바로 healthy로 만든다 —
+      # `backend/tests/test_rebuild_start_budget.py`.
+      start_period: 300s
+      start_interval: 5s
   kor-travel-map-ui:
     image: ${KOR_TRAVEL_MAP_UI_IMAGE:-kor-travel-map-ui:latest-main}
     build:
@@ -1571,7 +1575,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
-      start_period: 30s
+      # 300초: 재구축은 이 서비스를 `up --wait`한다. 2026-10-04 n150 재구축에서 같은 부하 속 냉기동이
+      # code-server·pinvi-api의 창을 넘겼다. start_interval이 빨리 뜬 기동을 바로 healthy로 만든다 —
+      # `backend/tests/test_rebuild_start_budget.py`.
+      start_period: 300s
+      start_interval: 5s
   # ADR-069 짝(weather/geo/transport/PinVi와 같은 code-server 분리 패턴) —
   # 실제 code location이 도는 유일한 프로세스. `DefaultRunLauncher`의 run
   # worker는 이 프로세스의 자식으로 뜬다. host network에서는 127.0.0.1이 곧
@@ -1673,7 +1681,10 @@ services:
       timeout: 10s
       retries: 5
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
-      start_period: 180s
+      # 600초: 2026-10-04 n150 재구축에서 180초 창(+ 5 × 30초)이 냉기동을 못 덮어 compose `--wait`가
+      # unhealthy로 세 번 실패했다(자식 import가 4분 55초에야 시작). 창 전체는 재구축 `--wait-timeout`
+      # 900초 안이다 — `backend/tests/test_rebuild_start_budget.py`.
+      start_period: 600s
       start_interval: 5s
   # 공용 plane으로 옮겼다(ADR-54). 이 옛 정의는 Dagster family를 **모양으로** 파생하는 자리
   # (`runtime_topology.derive_dagster_family`)를 위해서만 `legacy-dagster` profile에 남는다 — 되돌리기는 지원하지
@@ -1910,7 +1921,11 @@ services:
       - curl -fsS http://localhost:${PINVI_API_PORT:-12801}/health || exit 1
       interval: 30s
       timeout: 5s
-      start_period: 20s
+      # 300초: 2026-10-04 n150 재구축에서 20초 창(+ 3 × 30초)이 부하 속 냉기동(손 기동도 3분)을 못 덮어
+      # compose `--wait`가 unhealthy로 실패했다. start_interval이 빨리 뜬 기동을 바로 healthy로 만든다 —
+      # `backend/tests/test_rebuild_start_budget.py`.
+      start_period: 300s
+      start_interval: 5s
       retries: 3
   # C1의 migration + fresh-admin bootstrap command는 C2 rebuild transaction이
   # `docker compose --profile bootstrap run`으로만 호출한다. credential file의
@@ -2059,7 +2074,10 @@ services:
       timeout: 10s
       retries: 5
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
-      start_period: 180s
+      # 600초: 2026-10-04 n150 재구축에서 180초 창(+ 5 × 30초)이 냉기동을 못 덮어 compose `--wait`가
+      # unhealthy로 세 번 실패했다(자식 import가 4분 55초에야 시작). 창 전체는 재구축 `--wait-timeout`
+      # 900초 안이다 — `backend/tests/test_rebuild_start_budget.py`.
+      start_period: 600s
       start_interval: 5s
   # 공용 plane으로 옮겼다(ADR-54) — 옛 metadata DB env를 지웠으므로 기동하지 못하는
   # 모양 정의다(family 파생용, 되돌리기는 지원하지 않는다 — 소유자 결정, platform-topology.md §7 4단계). `ensure`·pinned 재구축이 띄우지 않는다.
@@ -2381,7 +2399,10 @@ services:
       timeout: 10s
       retries: 5
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
-      start_period: 180s
+      # 600초: 2026-10-04 n150 재구축에서 180초 창(+ 5 × 30초)이 냉기동을 못 덮어 compose `--wait`가
+      # unhealthy로 세 번 실패했다(자식 import가 4분 55초에야 시작). 창 전체는 재구축 `--wait-timeout`
+      # 900초 안이다 — `backend/tests/test_rebuild_start_budget.py`.
+      start_period: 600s
       start_interval: 5s
   # 공용 plane으로 옮겼다(ADR-54) — 옛 metadata DB env를 지웠으므로 기동하지 못하는
   # 모양 정의다(family 파생용, 되돌리기는 지원하지 않는다 — 소유자 결정, platform-topology.md §7 4단계). `ensure`가 띄우지 않는다. 옛 공개 host
@@ -2793,7 +2814,10 @@ services:
       timeout: 10s
       retries: 5
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
-      start_period: 180s
+      # 600초: 2026-10-04 n150 재구축에서 180초 창(+ 5 × 30초)이 냉기동을 못 덮어 compose `--wait`가
+      # unhealthy로 세 번 실패했다(자식 import가 4분 55초에야 시작). 창 전체는 재구축 `--wait-timeout`
+      # 900초 안이다 — `backend/tests/test_rebuild_start_budget.py`.
+      start_period: 600s
       start_interval: 5s
 
   # 공용 plane으로 옮겼다(ADR-54) — 옛 metadata DB env를 지웠으므로 기동하지 못하는
