@@ -478,7 +478,7 @@ services:
       else
         psql -d "$$PGDATABASE" -c "CREATE ROLE \"$$PINVI_APP_DB_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
       fi
-      # 옛 Dagster 메타 DB(`pinvi_dagster`)는 만들지도 CONNECT를 주지도 않는다 — geo db-init의 주석.
+      # PinVi의 옛 Dagster 메타 DB는 만들지도 CONNECT를 주지도 않는다 — geo db-init의 주석.
       if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$PINVI_POSTGRES_DB'" | grep -q 1; then
         echo "database $$PINVI_POSTGRES_DB already exists"
       else
@@ -548,7 +548,7 @@ services:
       else
         psql -d "$$PGDATABASE" -c "CREATE ROLE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
       fi
-      # 옛 Dagster 메타 DB(`kor_travel_weather_dagster`)는 만들지도 CONNECT를 주지도 않는다 — geo
+      # weather의 옛 Dagster 메타 DB는 만들지도 CONNECT를 주지도 않는다 — geo
       # db-init의 주석.
       if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_WEATHER_SHARED_APP_DB'" | grep -q 1; then
         echo "database $$KOR_TRAVEL_WEATHER_SHARED_APP_DB already exists"
@@ -627,7 +627,7 @@ services:
 
       ensure_role "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER" "$$APP_PASSWORD"
       ensure_database "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB" "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER"
-      # 옛 Dagster 메타 DB(`kor_travel_transport_dagster`)는 만들지도, 소유자를 확인하지도, CONNECT를
+      # transport의 옛 Dagster 메타 DB는 만들지도, 소유자를 확인하지도, CONNECT를
       # 주지도 않는다 — geo db-init의 주석. 소유자 확인이 남아 있으면 DROP 뒤 매 `ensure`가 여기서 멈춘다.
 
       # 이미 존재한 DB라도 잘못된 owner를 재사용하면 다른 tenant 데이터에 쓰게 된다.
