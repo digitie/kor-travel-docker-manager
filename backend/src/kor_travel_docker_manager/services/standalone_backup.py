@@ -47,25 +47,19 @@ from kor_travel_docker_manager.services.secure_state_file import (
 
 BackupRole = Literal[
     "geo",
-    "geo_dagster",
     "concierge",
     "map_application",
-    "map_dagster",
     "pinvi",
     "transport",
-    "transport_dagster",
     "dagster_shared",
 ]
 
 BACKUP_ROLES: tuple[BackupRole, ...] = (
     "geo",
-    "geo_dagster",
     "concierge",
     "map_application",
-    "map_dagster",
     "pinvi",
     "transport",
-    "transport_dagster",
     "dagster_shared",
 )
 
@@ -95,11 +89,6 @@ _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
         "kor-travel-shared-postgres",
         "kor_travel_geo",
     ),
-    "geo_dagster": (
-        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
-        "kor-travel-shared-postgres",
-        "kor_travel_geo_dagster",
-    ),
     "concierge": (
         "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
         "kor-travel-shared-postgres",
@@ -110,11 +99,6 @@ _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
         "kor-travel-shared-postgres",
         "kor_travel_map",
     ),
-    "map_dagster": (
-        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
-        "kor-travel-shared-postgres",
-        "kor_travel_map_dagster",
-    ),
     "pinvi": (
         "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
         "kor-travel-shared-postgres",
@@ -122,17 +106,17 @@ _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
     ),
     # 2026-09-28 오너 결정: transport 스택의 백업을 Manager로 접는다. transport 저장소의
     # 자체 cron(`POST /v1/admin/backups`)은 2026-09-05 뒤로 dump를 하나도 남기지 않았고
-    # Dagster metadata DB는 백업 자체가 없었다. 두 DB 이름은 compose의
+    # Dagster metadata DB는 백업 자체가 없었다. DB 이름은 compose의
     # `kor-travel-shared-db-init-transport`가 env override 없이 literal로 고정한다.
+    #
+    # 옛 프로젝트별 Dagster metadata DB(`geo_dagster`·`map_dagster`·`transport_dagster` role)는 지웠다 —
+    # 다섯 테넌트가 공용 `dagster_shared`에서 돌고, 옛 DB는 platform-topology.md §7 4단계가 마지막 dump를
+    # 뜬 뒤 막고(ALLOW_CONNECTIONS false) 30일 뒤 DROP한다. 남아 있으면 주기 백업이 막힌 DB에 접속하다
+    # 매일 실패한다.
     "transport": (
         "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
         "kor-travel-shared-postgres",
         "kor_travel_transport",
-    ),
-    "transport_dagster": (
-        "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
-        "kor-travel-shared-postgres",
-        "kor_travel_transport_dagster",
     ),
     # 공용 Dagster instance의 metadata DB(platform-topology.md §7). 이름은 compose의
     # `kor-travel-shared-db-init-dagster`가 literal로 만든다 —

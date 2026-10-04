@@ -8,7 +8,7 @@ pinset별 journal·phase·receipt 대신 전역 파일 하나에 세 상태만 �
   단계가 멱등이라 재개가 필요 없다.
 - ``committed``: 마지막 배포가 끝났다. 같은 pair를 다시 돌리면 빌드 없이 수렴만 한다.
 
-``databases``는 직전 committed 배포가 관측한 DB identity다. 배포 시작 전에 라이브 DB가 이것과
+``databases``는 직전 committed 배포가 관측한 DB identity다(Map application·PinVi). 배포 시작 전에 라이브 DB가 이것과
 다르면(누가 지우고 다시 만들었다) 아무것도 바꾸기 전에 거부한다. 명시적 ``--restart``만 이
 기준을 지운 DB로 다시 잡고, 명시적 ``--adopt-live-databases``는 지금 떠 있는 DB를 새
 기준으로 받아들인다(백업 복원처럼 비파괴로 DB가 바뀐 경우). 비밀은 담지 않는다.
@@ -34,8 +34,13 @@ DEPLOY_STATUS_FILENAME: Final = "deploy-status.json"
 DeployState = Literal["in_progress", "committed"]
 
 _VERSION: Final = 1
-_DATABASE_ROLES: Final[tuple[DatabaseRole, ...]] = ("map_application", "map_dagster", "pinvi")
-_SCHEMA_ROLES: Final = ("map_application", "map_dagster", "pinvi")
+_DATABASE_ROLES: Final[tuple[DatabaseRole, ...]] = ("map_application", "pinvi")
+_SCHEMA_ROLES: Final = ("map_application", "pinvi")
+#: 옛 Map Dagster metadata DB의 role. platform-topology.md §7 4단계 전의 Manager가 쓴 파일은
+#: ``databases``·``schema_heads``에 이 키를 하나 더 갖는다. 읽을 때 **그 키 하나만** 버린다 — 그 DB는
+#: 막힌 뒤 DROP되므로 기준선이 될 수 없고, 남기면 같은 pair 재실행이 수렴하지 못하고 그 DB를
+#: 다시 읽는다(2026-10-03 22:51Z 사고). 다음 쓰기는 두 role만 남긴다. 다른 모양은 그대로 거부한다.
+_RETIRED_ROLE: Final = "map_dagster"
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -390,6 +395,21 @@ def _exact_mapping(value: object, keys: frozenset[str] | set[str]) -> Mapping[st
     return cast(Mapping[str, Any], value)
 
 
+def _without_retired_role(value: object, keys: set[str]) -> Mapping[str, Any]:
+    """정확히 ``keys``거나, ``keys`` + 옛 ``map_dagster`` 하나면 그 하나를 버린다(``_RETIRED_ROLE``)."""
+
+    if isinstance(value, Mapping) and set(value) == keys | {_RETIRED_ROLE}:
+        value = {key: item for key, item in value.items() if key != _RETIRED_ROLE}
+    return _exact_mapping(value, keys)
+
+
+def _schema_heads_without_retired_role(value: object) -> dict[str, str]:
+    heads = _string_mapping(value)
+    if heads:
+        return dict(_without_retired_role(heads, set(_SCHEMA_ROLES)))
+    return heads
+
+
 def _string_mapping(value: object) -> dict[str, str]:
     if not isinstance(value, Mapping) or not all(
         isinstance(key, str) and isinstance(item, str) for key, item in value.items()
@@ -405,7 +425,7 @@ def _status_from_payload(payload: object) -> DeployStatus:
         raise DeploymentContractError("deploy status version is unsupported")
     databases: dict[DatabaseRole, DeployedDatabase] | None = None
     if fields["databases"] is not None:
-        entries = _exact_mapping(fields["databases"], set(_DATABASE_ROLES))
+        entries = _without_retired_role(fields["databases"], set(_DATABASE_ROLES))
         databases = {}
         for role in _DATABASE_ROLES:
             entry = _exact_mapping(entries[role], {"name", "oid", "system_identifier"})
@@ -431,7 +451,7 @@ def _status_from_payload(payload: object) -> DeployStatus:
         pinvi_revision=fields["pinvi_revision"],
         pinset_sha256=fields["pinset_sha256"],
         images=_string_mapping(fields["images"]),
-        schema_heads=_string_mapping(fields["schema_heads"]),
+        schema_heads=_schema_heads_without_retired_role(fields["schema_heads"]),
         databases=databases,
         restart=records["restart"],
         adopted=records["adopted"],

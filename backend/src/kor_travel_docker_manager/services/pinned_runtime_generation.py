@@ -24,7 +24,7 @@ from kor_travel_docker_manager.services.runtime_topology import RuntimeSlot
 
 DeploymentEnvironment = Literal["local", "rehearsal", "production"]
 DeploymentLifecycle = Literal["development", "rebuildable", "operational"]
-SchemaRole = Literal["map_application", "map_dagster", "pinvi"]
+SchemaRole = Literal["map_application", "pinvi"]
 
 _LIFECYCLE_PAIRS: dict[tuple[str, str], tuple[str, str]] = {
     ("local", "development"): ("development", "false"),
@@ -189,7 +189,9 @@ class PinnedRuntimeGeneration:
     map_source_revision: str
     pinvi_source_revision: str
     map_application_head: str
-    map_dagster_head: str
+    #: 옛 ``map_dagster_head``(옛 Map Dagster metadata DB의 storage head)는 없다 — Map Dagster storage는
+    #: 공용 ``dagster_shared``이고 그 head는 ``kor-travel-dagster-storage-migrate``가 맞춘다(platform-topology.md
+    #: §7 4단계).
     pinvi_head: str
     pinset_sha256: str
     map_application_300_candidate_evidence: MapApplication300CandidateEvidence
@@ -235,7 +237,6 @@ class PinnedRuntimeGeneration:
     def schema_heads(self) -> Mapping[SchemaRole, str]:
         return {
             "map_application": self.map_application_head,
-            "map_dagster": self.map_dagster_head,
             "pinvi": self.pinvi_head,
         }
 
@@ -251,7 +252,6 @@ class PinnedRuntimeGeneration:
             "map_source_revision": self.map_source_revision,
             "pinvi_source_revision": self.pinvi_source_revision,
             "map_application_head": self.map_application_head,
-            "map_dagster_head": self.map_dagster_head,
             "pinvi_head": self.pinvi_head,
             "pinset_sha256": self.pinset_sha256,
             "map_application_300_candidate_evidence": (

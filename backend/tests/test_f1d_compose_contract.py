@@ -82,7 +82,6 @@ def _map_runtime_services() -> tuple[str, ...]:
 _MAP_DATABASE_ONESHOT_SERVICES = (
     "kor-travel-map-db-role-bootstrap",
     "kor-travel-map-application-schema",
-    "kor-travel-map-dagster-storage-migrate",
 )
 
 
@@ -577,49 +576,26 @@ def test_concierge_ui_canonical_contract_matches_raw_and_resolved_compose() -> N
         )
 
 
-def test_resolved_map_dagster_services_require_candidate_storage_migration() -> None:
-    resolved = _resolved_compose(
-        "kor-travel-map-api",
-        *_map_dagster_runtime_services(),
-        "kor-travel-map-dagster-storage-migrate",
-    )
+def test_resolved_map_dagster_services_never_touch_the_retired_metadata_database() -> None:
+    """platform-topology.md §7 4단계: 옛 Map Dagster metadata DB의 storage migrate는 compose에 없고, Map Dagster
+    서비스는 그것을 기다리지도 옛 metadata URL을 받지도 않는다 — storage는 공용 `dagster_shared`다."""
+
+    resolved = _resolved_compose("kor-travel-map-api", *_map_dagster_runtime_services())
     services = resolved["services"]
     assert isinstance(services, dict)
 
-    migration = services["kor-travel-map-dagster-storage-migrate"]
-    assert migration["image"] == f"sha256:{'2' * 64}"
-    assert "build" not in migration
-    assert migration["command"] == ["/usr/local/bin/ktm-dagster-storage", "migrate"]
-    assert migration["restart"] == "no"
-    assert migration["network_mode"] == "host"
-    assert migration["environment"] == {
-        "DAGSTER_DISABLE_TELEMETRY": "yes",
-        "DAGSTER_HOME": "/opt/dagster/dagster_home",
-        "KOR_TRAVEL_MAP_DAGSTER_PG_URL": (
-            "postgresql://map_contract_dagster:map-contract-dagster-metadata-password@"
-            "127.0.0.1:11000/map_contract_dagster"
-        ),
-    }
-    assert migration["depends_on"]["kor-travel-shared-postgres"]["condition"] == (
-        "service_healthy"
-    )
-    assert migration["extra_hosts"] == ["host.docker.internal=host-gateway"]
-    # ADR-51 D-3: M1 이후 storage one-shot은 permit을 읽지 않으므로 마운트도 없다.
-    assert "volumes" not in migration
-
+    assert "kor-travel-map-dagster-storage-migrate" not in services
     for service_name in _map_dagster_runtime_services():
-        dependency = services[service_name]["depends_on"]
-        assert dependency["kor-travel-map-dagster-storage-migrate"]["condition"] == (
-            "service_completed_successfully"
-        )
-        assert services[service_name]["image"] == migration["image"]
+        service = services[service_name]
+        assert "kor-travel-map-dagster-storage-migrate" not in (service.get("depends_on") or {})
+        assert "KOR_TRAVEL_MAP_DAGSTER_PG_URL" not in (service.get("environment") or {})
 
 
 _MAP_DAGSTER_STORAGE_PERMIT_TARGET = "/run/kor-travel-map-dagster-storage-permit"
 def _map_dagster_process_services() -> frozenset[str]:
-    """렌더에 있어야 할 Map Dagster 프로세스 — 지금 떠 있는 slot 서비스와 storage one-shot(ADR-54 파생)."""
+    """렌더에 있어야 할 Map Dagster 프로세스 — 지금 떠 있는 slot 서비스(ADR-54 파생)."""
 
-    return frozenset({*_map_dagster_runtime_services(), "kor-travel-map-dagster-storage-migrate"})
+    return frozenset(_map_dagster_runtime_services())
 
 
 def _map_permit_residue_and_binds(
@@ -1402,7 +1378,9 @@ def test_frozen_bootstrap_compose_contract_passes_raw_and_resolved_c6c_validatio
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PASSWORD",
         "KOR_TRAVEL_MAP_DAGSTER_RUNTIME_PG_DSN",
     }
-    assert "KOR_TRAVEL_MAP_DAGSTER_PG_URL" in map_dagster_environment
+    # 4단계: 옛 metadata URL은 Map role bootstrap만 받는다(Map 스크립트가 문자열로 요구한다).
+    assert "KOR_TRAVEL_MAP_DAGSTER_PG_URL" not in map_dagster_environment
+    assert "KOR_TRAVEL_MAP_DAGSTER_PG_URL" in map_bootstrap_environment
     assert not retired.intersection(
         map_api_environment | map_dagster_environment | map_bootstrap_environment
     )
@@ -2123,7 +2101,6 @@ _REQUIRED_SERVICES_GOLDEN: tuple[str, ...] = (
     "kor-travel-map-application-schema",
     # 2026-10-01 Map 전환(ADR-54): 옛 webserver·daemon(`legacy-dagster`)이 빠지고 code-server가 slot을 잇는다.
     "kor-travel-map-dagster-code-server",
-    "kor-travel-map-dagster-storage-migrate",
     "kor-travel-map-db-role-bootstrap",
     "kor-travel-map-ui",
     "pinvi-admin-bootstrap",
@@ -2224,8 +2201,9 @@ def test_required_protected_service_set_is_pinned() -> None:
     """
 
     # 2026-10-01 Map 전환(ADR-54): 9 → 8. 옛 Map webserver·daemon(`legacy-dagster`) 둘이 빠지고 code-server 하나가
-    # 들었다.
-    assert len(_REQUIRED_SERVICES_GOLDEN) == 8
+    # 들었다. 2026-10-04 4단계(platform-topology.md §7): 8 → 7. 옛 Map metadata DB의
+    # `kor-travel-map-dagster-storage-migrate`가 빠졌다.
+    assert len(_REQUIRED_SERVICES_GOLDEN) == 7
     assert set(_REQUIRED_SERVICES_GOLDEN) == set(
         c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
     ), (
@@ -2326,12 +2304,12 @@ _SHAPE_GOLDEN: dict[str, str] = {
     "absent_map_oneshots/raw": (
         "ComposeCandidateContractError: compose candidate is missing required "
         "protected services: kor-travel-map-application-schema, "
-        "kor-travel-map-dagster-storage-migrate, kor-travel-map-db-role-bootstrap"
+        "kor-travel-map-db-role-bootstrap"
     ),
     "absent_map_oneshots/resolved": (
         "ComposeCandidateContractError: resolved compose candidate is missing "
         "required protected services: kor-travel-map-application-schema, "
-        "kor-travel-map-dagster-storage-migrate, kor-travel-map-db-role-bootstrap"
+        "kor-travel-map-db-role-bootstrap"
     ),
     "absent_pinvi_core/raw": (
         "ComposeCandidateContractError: compose candidate is missing required "

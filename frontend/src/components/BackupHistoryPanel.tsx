@@ -35,11 +35,9 @@ import InlineError from './InlineError';
 // 배지가 cron dump를 보려면 backend의 KTDM_BACKUP_ROOT(.env)가 crontab의 것과 같아야 한다 —
 // 없으면 backend 계정의 ~/backups를 읽어 배지가 계속 "없음"이다(docs/docker-management.md).
 const EXPECTED_INTERVAL_HOURS: Partial<Record<string, number>> = {
-  geo_dagster: 24,
   concierge: 24,
   pinvi: 24,
   transport: 72,
-  transport_dagster: 24,
   dagster_shared: 24,
 };
 const FRESHNESS_WARN_MULTIPLIER = 1.25;

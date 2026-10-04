@@ -371,16 +371,21 @@ services:
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_CONCIERGE_SHARED_DB\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_CONCIERGE_SHARED_DB\" TO \"$$KOR_TRAVEL_CONCIERGE_SHARED_APP_USER\""
 
-  # geo 전용 role+database 2개(앱 DB + Dagster 메타 DB)만 만든다 — concierge와 같은
+  # geo 전용 role+앱 database 하나만 만든다 — concierge와 같은
   # 이유로 role/ACL은 cluster 전역이라는 ADR-37 교훈을 지킨다(ADR-45). concierge
   # db-init과 달리 여기서는 extension을 만들지 않는다 — geo의 실제 스키마
   # (kor-travel-geo의 sql/ddl/001_schema.sql)는 postgis/pg_trgm/unaccent/
   # pg_stat_statements를 전부 `x_extension` 스키마에 설치하는데, 여기서 기본
   # `public` 스키마에 먼저 심어 버리면 cutover pg_restore 때 dump가 가져오는
   # `x_extension` 배치와 충돌한다(공용 instance 자체 주석이 경고하는 "map 커토버
-  # 실측" 함정과 동일 원인). 그래서 db-init은 빈 database 2개 + role + CONNECT
+  # 실측" 함정과 동일 원인). 그래서 db-init은 빈 database + role + CONNECT
   # grant까지만 하고, extension/스키마/테이블은 cutover의 pg_restore가 dump
   # 그대로 재생하게 둔다.
+  #
+  # 옛 Dagster 메타 DB(`kor_travel_geo_dagster`)는 더 만들지도 CONNECT를 주지도 않는다 — geo는 공용
+  # plane(`dagster_shared`)에서 돌고, 그 DB는 platform-topology.md §7 4단계가 막고(ALLOW_CONNECTIONS
+  # false) 30일 뒤 DROP한다. 여기 남아 있으면 DROP 뒤 매 `ensure`가 빈 DB를 되살린다
+  # (`backend/tests/test_old_dagster_meta_db_retired.py`). weather·pinvi·transport db-init도 같다.
   kor-travel-shared-db-init-geo:
     image: postgis/postgis:16-3.5
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_GEO_CONTAINER:-kor-travel-shared-db-init-geo}
@@ -395,7 +400,6 @@ services:
       PGUSER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
       PGDATABASE: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
       KOR_TRAVEL_GEO_SHARED_DB: ${KOR_TRAVEL_GEO_SHARED_DB:-kor_travel_geo}
-      KOR_TRAVEL_GEO_DAGSTER_SHARED_DB: ${KOR_TRAVEL_GEO_DAGSTER_SHARED_DB:-kor_travel_geo_dagster}
       KOR_TRAVEL_GEO_SHARED_APP_USER: ${KOR_TRAVEL_GEO_SHARED_APP_USER:-kor_travel_geo_app}
     secrets:
     - source: kor-travel-shared-postgres-password
@@ -404,8 +408,8 @@ services:
       target: /run/secrets/kor-travel-geo-shared-app-password
     # concierge db-init과 동일한 이유로 `|| true` 삼킴을 쓰지 않는다 — 인증 실패나
     # 권한 부족을 삼키면 `service_completed_successfully` 게이트가 잘못 통과한다.
-    # role은 geo의 두 database를 모두 소유한다(오늘 옛 instance에서 `addr`
-    # superuser 하나가 둘 다 소유하는 것과 동일한 권한 경계, 다만 이번엔
+    # role은 geo의 database를 소유한다(옛 instance에서 `addr`
+    # superuser 하나가 소유하던 것과 동일한 권한 경계, 다만 이번엔
     # NOSUPERUSER/NOCREATEDB/NOCREATEROLE로 scoped — 2026-08-17 사고 재발 방지의
     # 핵심 지점을 여기서도 지킨다).
     command:
@@ -421,20 +425,16 @@ services:
       else
         psql -d "$$PGDATABASE" -c "CREATE ROLE \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
       fi
-      for db in "$$KOR_TRAVEL_GEO_SHARED_DB" "$$KOR_TRAVEL_GEO_DAGSTER_SHARED_DB"; do
-        if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1; then
-          echo "database $$db already exists"
-        else
-          createdb -O "$$KOR_TRAVEL_GEO_SHARED_APP_USER" "$$db"
-        fi
-      done
+      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_GEO_SHARED_DB'" | grep -q 1; then
+        echo "database $$KOR_TRAVEL_GEO_SHARED_DB already exists"
+      else
+        createdb -O "$$KOR_TRAVEL_GEO_SHARED_APP_USER" "$$KOR_TRAVEL_GEO_SHARED_DB"
+      fi
       # PUBLIC CONNECT 걷어내기 — ADR-44가 concierge 최초 배포 뒤에야 발견해 hotfix로
-      # 추가했던 것을 여기서는 처음부터 반영한다(bootstrap DB + geo의 두 DB 모두).
+      # 추가했던 것을 여기서는 처음부터 반영한다(bootstrap DB + geo DB).
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PGDATABASE\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_SHARED_DB\" FROM PUBLIC"
-      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_DAGSTER_SHARED_DB\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_SHARED_DB\" TO \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\""
-      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\""
 
   # ADR-46 — PinVi도 geo/concierge/weather와 같은 모양이다: **app role 하나**가
   # 자기 두 database를 소유한다. 종전에는 PinVi만 자체 다중 role 모델(M05)을 갖고
@@ -457,7 +457,6 @@ services:
       PGUSER: ${KOR_TRAVEL_SHARED_POSTGRES_USER:-shared_admin}
       PGDATABASE: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
       PINVI_POSTGRES_DB: ${PINVI_POSTGRES_DB:-pinvi}
-      PINVI_DAGSTER_DB: ${PINVI_DAGSTER_DB:-pinvi_dagster}
       PINVI_APP_DB_USER: ${PINVI_APP_DB_USER:-pinvi_app}
     secrets:
     - source: kor-travel-shared-postgres-password
@@ -479,17 +478,14 @@ services:
       else
         psql -d "$$PGDATABASE" -c "CREATE ROLE \"$$PINVI_APP_DB_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
       fi
-      for db in "$$PINVI_POSTGRES_DB" "$$PINVI_DAGSTER_DB"; do
-        if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1; then
-          echo "database $$db already exists"
-        else
-          createdb -O "$$PINVI_APP_DB_USER" "$$db"
-        fi
-      done
+      # PinVi의 옛 Dagster 메타 DB는 만들지도 CONNECT를 주지도 않는다 — geo db-init의 주석.
+      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$PINVI_POSTGRES_DB'" | grep -q 1; then
+        echo "database $$PINVI_POSTGRES_DB already exists"
+      else
+        createdb -O "$$PINVI_APP_DB_USER" "$$PINVI_POSTGRES_DB"
+      fi
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PINVI_POSTGRES_DB\" FROM PUBLIC"
-      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PINVI_DAGSTER_DB\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$PINVI_POSTGRES_DB\" TO \"$$PINVI_APP_DB_USER\""
-      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$PINVI_DAGSTER_DB\" TO \"$$PINVI_APP_DB_USER\""
 
   # weather 전용 role 1개(2026-09-25 이전엔 2개) + database 2개(앱 DB + Dagster
   # 메타 DB)를 만든다. 사용자 지시: "weather는 데이터는 옮기지 마 — 어차피 새로
@@ -528,7 +524,6 @@ services:
       PGDATABASE: ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
       KOR_TRAVEL_WEATHER_SHARED_APP_DB: ${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
       KOR_TRAVEL_WEATHER_SHARED_APP_USER: ${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}
-      KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB: kor_travel_weather_dagster
     secrets:
     - source: kor-travel-shared-postgres-password
       target: /run/secrets/kor-travel-shared-postgres-password
@@ -553,22 +548,20 @@ services:
       else
         psql -d "$$PGDATABASE" -c "CREATE ROLE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\" WITH LOGIN PASSWORD '$$APP_PASSWORD' NOSUPERUSER NOCREATEDB NOCREATEROLE"
       fi
-      for db in "$$KOR_TRAVEL_WEATHER_SHARED_APP_DB" "$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB"; do
-        if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$db'" | grep -q 1; then
-          echo "database $$db already exists"
-        else
-          createdb -O "$$KOR_TRAVEL_WEATHER_SHARED_APP_USER" "$$db"
-        fi
-      done
+      # weather의 옛 Dagster 메타 DB는 만들지도 CONNECT를 주지도 않는다 — geo
+      # db-init의 주석.
+      if psql -d "$$PGDATABASE" -tAc "SELECT 1 FROM pg_database WHERE datname='$$KOR_TRAVEL_WEATHER_SHARED_APP_DB'" | grep -q 1; then
+        echo "database $$KOR_TRAVEL_WEATHER_SHARED_APP_DB already exists"
+      else
+        createdb -O "$$KOR_TRAVEL_WEATHER_SHARED_APP_USER" "$$KOR_TRAVEL_WEATHER_SHARED_APP_DB"
+      fi
 
       # PUBLIC CONNECT 걷어내기 — concierge/geo db-init과 같은 이유(ADR-37/ADR-44
       # 교훈: role·ACL은 database가 아니라 cluster 전역, DB만 나누는 것으로는
       # 격리가 안 된다).
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PGDATABASE\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_DB\" FROM PUBLIC"
-      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_SHARED_APP_DB\" TO \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\""
-      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_WEATHER_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_WEATHER_SHARED_APP_USER\""
 
   # kor-travel-transport는 application schema와 Dagster metadata schema가 모두
   # alembic_version을 사용하므로 하나의 DB를 공유할 수 없다(두 DB는 계속 분리).
@@ -602,7 +595,6 @@ services:
       # 고정한다.
       KOR_TRAVEL_TRANSPORT_SHARED_APP_DB: kor_travel_transport
       KOR_TRAVEL_TRANSPORT_SHARED_APP_USER: kor_travel_transport_app
-      KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB: kor_travel_transport_dagster
     secrets:
     - source: kor-travel-shared-postgres-password
       target: /run/secrets/kor-travel-shared-postgres-password
@@ -635,20 +627,16 @@ services:
 
       ensure_role "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER" "$$APP_PASSWORD"
       ensure_database "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB" "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER"
-      ensure_database "$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB" "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER"
+      # transport의 옛 Dagster 메타 DB는 만들지도, 소유자를 확인하지도, CONNECT를
+      # 주지도 않는다 — geo db-init의 주석. 소유자 확인이 남아 있으면 DROP 뒤 매 `ensure`가 여기서 멈춘다.
 
-      # 이미 존재한 DB라도 잘못된 owner를 재사용하면 다른 tenant 데이터에 쓰거나
-      # 기존 Dagster metadata를 정본으로 삼게 된다. 재기동 안전성은 유지하되,
-      # identity가 다르면 여기서 멈춘다. 빈 상태 검증은 데이터 cutover 직전의
-      # transport receipt gate가 application/Dagster 양쪽에 대해 수행한다.
+      # 이미 존재한 DB라도 잘못된 owner를 재사용하면 다른 tenant 데이터에 쓰게 된다.
+      # 재기동 안전성은 유지하되, identity가 다르면 여기서 멈춘다.
       test "$$(psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -qAt -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB'")" = "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER"
-      test "$$(psql -d "$$PGDATABASE" -v ON_ERROR_STOP=1 -qAt -c "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB'")" = "$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER"
 
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PGDATABASE\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB\" FROM PUBLIC"
-      psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_DB\" TO \"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER\""
-      psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_TRANSPORT_DAGSTER_SHARED_DB\" TO \"$$KOR_TRAVEL_TRANSPORT_SHARED_APP_USER\""
 
   # 공용 Dagster instance의 metadata DB(`dagster_shared`)와 그 소유 role 하나만 만든다
   # (platform-topology.md §7 2단계, dagster-shared-plan §4). 어느 프로젝트의 것도 아니므로
@@ -1620,14 +1608,14 @@ services:
         condition: service_healthy
       rustfs:
         condition: service_healthy
-      kor-travel-map-dagster-storage-migrate:
-        condition: service_completed_successfully
       kor-travel-map-api:
         condition: service_healthy
     environment:
       # 공용 Dagster plane에 합류했다(ADR-54, Map 전환) — instance storage는 공용 URL 앵커와 공용
-      # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `KOR_TRAVEL_MAP_DAGSTER_PG_URL`은
-      # 되돌리기와 C6c 계약(옛 metadata DB의 storage migrate·head)을 위해 남긴다(공용 `dagster.yaml`은 읽지 않는다).
+      # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `KOR_TRAVEL_MAP_DAGSTER_PG_URL`과
+      # 옛 metadata DB의 storage migrate(`kor-travel-map-dagster-storage-migrate`)는 4단계(platform-topology.md
+      # §7)에서 지웠다 — 그 DB는 막힌 뒤 DROP되고, 되돌리기는 지원하지 않는다(소유자 결정). Map 이미지의
+      # `dagster-entrypoint.sh`·`runtime_preflight`는 그 env를 읽지 않는다(`KOR_TRAVEL_MAP_PG_DSN`만 요구한다).
       <<: *dagster-shared-control-env
       # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
       # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
@@ -1642,7 +1630,6 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT: '12703'
-      KOR_TRAVEL_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}
       KOR_TRAVEL_MAP_DAGSTER_ADDRESS_VALIDATION: ${KOR_TRAVEL_MAP_DOCKER_ADDRESS_VALIDATION:-drop}
       KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DB_PATH:-/tmp/mois_source.db}
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
@@ -1688,7 +1675,10 @@ services:
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
       start_period: 180s
       start_interval: 5s
-  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`·pinned 재구축이 띄우지 않는다. 옛 공개
+  # 공용 plane으로 옮겼다(ADR-54). 이 옛 정의는 Dagster family를 **모양으로** 파생하는 자리
+  # (`runtime_topology.derive_dagster_family`)를 위해서만 `legacy-dagster` profile에 남는다 — 되돌리기는 지원하지
+  # 않는다(소유자 결정, platform-topology.md §7 4단계). 옛 metadata DB env·storage migrate 의존을 지웠으므로
+  # 이 profile을 켜도 기동하지 못한다. `ensure`·pinned 재구축이 띄우지 않는다. 옛 공개
   # host `map-dagster`는 upstream을 잃는다(소유자: redirect 없음).
   kor-travel-map-dagster:
     profiles:
@@ -1713,11 +1703,6 @@ services:
         condition: service_healthy
       rustfs:
         condition: service_healthy
-      # Dagster metadata storage는 Map application Alembic과 별도의 migration
-      # graph다. candidate Dagster image가 one-shot에서 성공한 경우에만 web을
-      # 기동해 application/API readiness와 storage readiness를 혼용하지 않는다.
-      kor-travel-map-dagster-storage-migrate:
-        condition: service_completed_successfully
       kor-travel-map-api:
         condition: service_healthy
       # ADR-069 — webserver는 이제 code location을 직접 import하지 않는다.
@@ -1732,7 +1717,6 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KOR_TRAVEL_MAP_DAGSTER_PORT: ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
-      KOR_TRAVEL_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}
       KOR_TRAVEL_MAP_DAGSTER_ADDRESS_VALIDATION: ${KOR_TRAVEL_MAP_DOCKER_ADDRESS_VALIDATION:-drop}
       KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DB_PATH:-/tmp/mois_source.db}
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
@@ -1768,28 +1752,10 @@ services:
       timeout: 5s
       retries: 20
       start_period: 30s
-  # C0의 candidate-image storage migration command를 Manager runtime에도
-  # 명시한다. 이 service는 Map Dagster web image를 그대로 사용하므로 여덟 번째
-  # runtime image를 만들지 않으며, build는 candidate generation builder가 소유한다.
-  kor-travel-map-dagster-storage-migrate:
-    image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
-    restart: "no"
-    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
-    depends_on:
-      kor-travel-shared-postgres:
-        condition: service_healthy
-    command:
-    - /usr/local/bin/ktm-dagster-storage
-    - migrate
-    environment:
-      DAGSTER_HOME: /opt/dagster/dagster_home
-      DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
-      KOR_TRAVEL_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}
-    # C0의 external-DB overlay와 같은 candidate image가 host gateway DSN도
-    # 해석할 수 있게 한다. host network를 쓰는 기본 경로에는 영향이 없다.
-    extra_hosts:
-    - host.docker.internal:host-gateway
-  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`·pinned 재구축이 띄우지 않는다.
+  # 공용 plane으로 옮겼다(ADR-54). 이 옛 정의는 Dagster family를 **모양으로** 파생하는 자리
+  # (`runtime_topology.derive_dagster_family`)를 위해서만 `legacy-dagster` profile에 남는다 — 되돌리기는 지원하지
+  # 않는다(소유자 결정, platform-topology.md §7 4단계). 옛 metadata DB env·storage migrate 의존을 지웠으므로
+  # 이 profile을 켜도 기동하지 못한다. `ensure`·pinned 재구축이 띄우지 않는다.
   kor-travel-map-dagster-daemon:
     profiles:
     - legacy-dagster
@@ -1838,13 +1804,10 @@ services:
       start_interval: 15s
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
-      # daemon도 web readiness의 transitive 의존만 믿지 않는다. candidate
-      # storage migration의 성공과 code-server healthy를 직접 predecessor로
+      # daemon도 web readiness의 transitive 의존만 믿지 않는다. code-server healthy를 직접 predecessor로
       # 고정한다(ADR-069 — daemon도 더 이상 code location을 직접 import하지
       # 않는다, code location 로드 가능 여부의 신호는 이제 daemon이 아니라
       # code-server 자신이다).
-      kor-travel-map-dagster-storage-migrate:
-        condition: service_completed_successfully
       kor-travel-map-dagster-code-server:
         condition: service_healthy
       kor-travel-map-dagster:
@@ -1861,7 +1824,6 @@ services:
       TMP: /tmp
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
-      KOR_TRAVEL_MAP_DAGSTER_PG_URL: ${KOR_TRAVEL_MAP_DAGSTER_PG_URL:?KOR_TRAVEL_MAP_DAGSTER_PG_URL must be explicitly set}
       KOR_TRAVEL_MAP_DAGSTER_ADDRESS_VALIDATION: ${KOR_TRAVEL_MAP_DOCKER_ADDRESS_VALIDATION:-drop}
       KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DB_PATH:-/tmp/mois_source.db}
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
@@ -2053,8 +2015,9 @@ services:
     - pinvi.etl.definitions
     environment:
       # 공용 Dagster plane에 합류했다(ADR-54, PinVi 전환) — instance storage는 공용 URL 앵커와 공용
-      # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `PINVI_DAGSTER_PG_URL`은 되돌리기
-      # 때까지 남긴다(공용 `dagster.yaml`은 읽지 않는다).
+      # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `PINVI_DAGSTER_PG_URL`(옛
+      # `pinvi_dagster`)은 4단계(platform-topology.md §7)에서 지웠다 — 이미지에 구운 `apps/etl/dagster.yaml`만 그것을
+      # 읽고, 그 파일은 아래 마운트가 가린다.
       <<: *dagster-shared-control-env
       # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
       # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
@@ -2069,9 +2032,6 @@ services:
       # worker는 이 프로세스의 자식으로 뜬다. asset/job/resource가 app DB를
       # 직접 쓴다(PinviDatabaseResource 등).
       PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}
-      # Dagster instance storage. **scheme이 앱 DSN과 다르다** —
-      # dagster-postgres는 psycopg2(동기)를 쓰므로 `+asyncpg`를 붙이면 안 된다.
-      PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}
       # `pinvi.etl.definitions`의 resource가 `EnvVar`로 읽는다 — run worker는 이
       # 프로세스의 자식이라 webserver/daemon에는 필요 없다. KASI(특일·출몰시각) job의
       # data.go.kr key는 전용 값이 없으면 Map의 key를 쓴다(같은 비밀을 새로 만들지 않는 폴백).
@@ -2101,7 +2061,8 @@ services:
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
       start_period: 180s
       start_interval: 5s
-  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`·pinned 재구축이 띄우지 않는다.
+  # 공용 plane으로 옮겼다(ADR-54) — 옛 metadata DB env를 지웠으므로 기동하지 못하는
+  # 모양 정의다(family 파생용, 되돌리기는 지원하지 않는다 — 소유자 결정, platform-topology.md §7 4단계). `ensure`·pinned 재구축이 띄우지 않는다.
   pinvi-dagster:
     profiles:
     - legacy-dagster
@@ -2149,9 +2110,6 @@ services:
       # 제거하지 않는다(부작용 없음, 혹시 모를 Dagster UI 내부 경로의 암묵
       # 의존을 배제하기 전까지 안전한 쪽을 택한다). 안정 확인 후 제거 후보.
       PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}
-      # Dagster instance storage. **scheme이 앱 DSN과 다르다** —
-      # dagster-postgres는 psycopg2(동기)를 쓰므로 `+asyncpg`를 붙이면 안 된다.
-      PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}
     ports:
     - ${PINVI_DAGSTER_PORT:-12802}:${PINVI_DAGSTER_PORT:-12802}
     healthcheck:
@@ -2176,7 +2134,8 @@ services:
   # (`pinvi_pii_retention` 포함)·schedule 7개·sensor 1개가 전부 그 상태였다.
   #
   # webserver와 **같은 이미지**를 argv만 달리해 돌린다(Map·geo와 같은 형태).
-  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`·pinned 재구축이 띄우지 않는다.
+  # 공용 plane으로 옮겼다(ADR-54) — 옛 metadata DB env를 지웠으므로 기동하지 못하는
+  # 모양 정의다(family 파생용, 되돌리기는 지원하지 않는다 — 소유자 결정, platform-topology.md §7 4단계). `ensure`·pinned 재구축이 띄우지 않는다.
   pinvi-dagster-daemon:
     profiles:
     - legacy-dagster
@@ -2248,9 +2207,6 @@ services:
       # 31분 뒤에 알게 되고 healthcheck의 interval·retries로는 그 지연이
       # 줄지 않는다. Map·geo와 같은 300초를 쓴다.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
-      # webserver와 **같은 instance storage**를 봐야 한다. 다르면 schedule 켜짐
-      # 상태와 run 이력이 갈려 UI에 보이는 것과 실제로 도는 것이 달라진다.
-      PINVI_DAGSTER_PG_URL: postgresql://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_DAGSTER_DB:-pinvi_dagster}
       # ADR-069: daemon은 code location을 더 이상 직접 import하지 않는다
       # (run worker는 이제 code-server의 자식이다) — 엄밀히는 앱 DSN이 필요
       # 없지만, webserver와 같은 이유로 컷오버 직후에는 제거하지 않는다.
@@ -2370,8 +2326,9 @@ services:
     - kortravelgeo_dagster.definitions
     environment:
       # 공용 Dagster plane에 합류했다(ADR-54, geo 전환) — instance storage는 공용 URL 앵커와 공용
-      # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `KTG_DAGSTER_PG_URL`은 되돌리기
-      # 때까지 남긴다(공용 `dagster.yaml`은 읽지 않는다).
+      # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `KTG_DAGSTER_PG_URL`(옛
+      # `kor_travel_geo_dagster`)은 4단계(platform-topology.md §7)에서 지웠다 — geo 이미지의 entrypoint는 빈 값을
+      # 허용한다(`ktg-dagster-entrypoint`의 `check_storage_url`).
       <<: *dagster-shared-control-env
       # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
       # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
@@ -2382,7 +2339,6 @@ services:
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "c4a18eb47deb0693"
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
-      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:?KOR_TRAVEL_GEO_DAGSTER_PG_URL must be explicitly set}
       KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:?KOR_TRAVEL_GEO_DOCKER_PG_DSN must be explicitly set}
       KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
@@ -2427,7 +2383,8 @@ services:
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
       start_period: 180s
       start_interval: 5s
-  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`가 띄우지 않는다. 옛 공개 host
+  # 공용 plane으로 옮겼다(ADR-54) — 옛 metadata DB env를 지웠으므로 기동하지 못하는
+  # 모양 정의다(family 파생용, 되돌리기는 지원하지 않는다 — 소유자 결정, platform-topology.md §7 4단계). `ensure`가 띄우지 않는다. 옛 공개 host
   # `geo-dagster`는 upstream을 잃는다(소유자: redirect 없음).
   kor-travel-geo-dagster:
     profiles:
@@ -2461,7 +2418,6 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KTG_DAGSTER_PORT: ${KOR_TRAVEL_GEO_DAGSTER_PORT:-12502}
-      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:?KOR_TRAVEL_GEO_DAGSTER_PG_URL must be explicitly set}
       KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:?KOR_TRAVEL_GEO_DOCKER_PG_DSN must be explicitly set}
       KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
@@ -2505,7 +2461,8 @@ services:
       timeout: 5s
       retries: 20
       start_period: 30s
-  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`가 띄우지 않는다.
+  # 공용 plane으로 옮겼다(ADR-54) — 옛 metadata DB env를 지웠으므로 기동하지 못하는
+  # 모양 정의다(family 파생용, 되돌리기는 지원하지 않는다 — 소유자 결정, platform-topology.md §7 4단계). `ensure`가 띄우지 않는다.
   kor-travel-geo-dagster-daemon:
     profiles:
     - legacy-dagster
@@ -2578,7 +2535,6 @@ services:
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
-      KTG_DAGSTER_PG_URL: ${KOR_TRAVEL_GEO_DAGSTER_PG_URL:?KOR_TRAVEL_GEO_DAGSTER_PG_URL must be explicitly set}
       KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:?KOR_TRAVEL_GEO_DOCKER_PG_DSN must be explicitly set}
       KTG_RUSTFS_ENABLED: ${KOR_TRAVEL_GEO_RUSTFS_ENABLED:-1}
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
@@ -2763,8 +2719,9 @@ services:
     - --inject-env-vars-from-instance
     environment:
       # 공용 Dagster plane에 합류했다(ADR-54, weather 전환) — instance storage는 공용 URL 앵커와 공용
-      # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `DAGSTER_POSTGRES_URL`은 되돌리기
-      # 때까지 남긴다(공용 `dagster.yaml`은 읽지 않는다).
+      # `dagster.yaml`이다. run worker가 이 컨테이너 안에서 그 둘을 푼다. 옛 `DAGSTER_POSTGRES_URL`(옛
+      # `kor_travel_weather_dagster`)은 4단계(platform-topology.md §7)에서 지웠다 — weather의 `deploy/dagster.yaml`만
+      # 그것을 읽고, 이 컨테이너는 그 파일 대신 공용 정의를 붙인다.
       <<: *dagster-shared-control-env
       # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
       # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
@@ -2777,9 +2734,6 @@ services:
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
       PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
-      # Dagster instance storage — app 계정과 같은 role, DB만 분리(2026-09-25
-      # 단일-role 통합, PinVi/geo 패턴).
-      DAGSTER_POSTGRES_URL: postgresql://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}:${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/kor_travel_weather_dagster
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
@@ -2842,7 +2796,8 @@ services:
       start_period: 180s
       start_interval: 5s
 
-  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`가 띄우지 않는다.
+  # 공용 plane으로 옮겼다(ADR-54) — 옛 metadata DB env를 지웠으므로 기동하지 못하는
+  # 모양 정의다(family 파생용, 되돌리기는 지원하지 않는다 — 소유자 결정, platform-topology.md §7 4단계). `ensure`가 띄우지 않는다.
   kor-travel-weather-dagster-webserver:
     profiles:
     - legacy-dagster
@@ -2885,7 +2840,6 @@ services:
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
       PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
-      DAGSTER_POSTGRES_URL: postgresql://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}:${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/kor_travel_weather_dagster
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
@@ -2940,7 +2894,8 @@ services:
       retries: 8
       start_period: 30s
 
-  # 공용 plane으로 옮겼다(ADR-54) — 되돌리기용으로 정의만 남긴다. `ensure`가 띄우지 않는다.
+  # 공용 plane으로 옮겼다(ADR-54) — 옛 metadata DB env를 지웠으므로 기동하지 못하는
+  # 모양 정의다(family 파생용, 되돌리기는 지원하지 않는다 — 소유자 결정, platform-topology.md §7 4단계). `ensure`가 띄우지 않는다.
   kor-travel-weather-dagster-daemon:
     profiles:
     - legacy-dagster
@@ -2971,7 +2926,6 @@ services:
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
       PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
-      DAGSTER_POSTGRES_URL: postgresql://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}:${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/kor_travel_weather_dagster
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}

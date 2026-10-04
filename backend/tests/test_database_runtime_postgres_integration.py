@@ -31,7 +31,6 @@ from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRuntime,
     ensure_map_application_database,
     ensure_map_databases_isolated,
-    initialize_application_300_dagster_metadata_database,
     reset_databases_for_application_300,
 )
 
@@ -45,7 +44,11 @@ _ADMIN_PASSWORD = secrets.token_urlsafe(32)
 _PORT = 15432
 _SCHEMA_OWNER = "ktm_feature_schema_owner"
 _LOGIN = "it_map_login"
+#: 옛 Map Dagster metadata DB와 그 login. platform-topology.md §7 4단계가 이 DB를 `ALLOW_CONNECTIONS false`로
+#: 막은 뒤 DROP한다 — 재구축은 이것을 만들거나, 읽거나, ACL을 바꾸거나, 지우지 않는다. 여기서는 막힌 모양으로
+#: 심어 두고 그것이 그대로인지 본다.
 _METADATA = "kor_travel_map_dagster"
+_RETIRED_METADATA_DATABASE = "kor_travel_map_dagster"
 #: non-superuser 슬롯 = 10 − 3 − 0 = 7 → 상한 floor(0.4 × 7) = 2. T-CAP이 그 상한을 채울 수 있게
 #: 순수 helper의 **입력**을 instance 설정으로 정한다(helper를 바꿔치지 않는다).
 _MAX_CONNECTIONS = 10
@@ -224,16 +227,13 @@ def _runtimes(
     container: str,
     *,
     app: str = "kor_travel_map",
-    dagster: str = "kor_travel_map_dagster",
-    metadata: str = _METADATA,
     pinvi: str = "pinvi",
-) -> tuple[DatabaseRuntime, DatabaseRuntime, DatabaseRuntime]:
+) -> tuple[DatabaseRuntime, DatabaseRuntime]:
     def runtime(
         role: database_runtime.DatabaseRole,
         name: str,
         *,
         owner: str = _ADMIN,
-        additional: frozenset[str] = frozenset(),
     ) -> DatabaseRuntime:
         return DatabaseRuntime(
             role=role,
@@ -244,18 +244,20 @@ def _runtimes(
             database_name=name,
             owner_name=owner,
             admin_name=_ADMIN,
-            additional_owner_names=additional,
         )
 
     return (
         runtime("map_application", app),
-        runtime("map_dagster", dagster, additional=frozenset({metadata})),
         runtime("pinvi", pinvi, owner="pinvi_app"),
     )
 
 
 def _seed_map_pair(container: str) -> None:
-    """bootstrap 뒤의 Map 모양: app DB는 schema owner, login은 그 role을 INHERIT FALSE로 든다."""
+    """bootstrap 뒤의 Map 모양: app DB는 schema owner, login은 그 role을 INHERIT FALSE로 든다.
+
+    옛 Map Dagster metadata DB는 4단계가 막은 모양(`ALLOW_CONNECTIONS false`, PUBLIC CONNECT 없음)으로
+    함께 둔다 — 재구축이 그것을 건드리면 아래 탐지기(`_retired_state`)가 움직인다.
+    """
 
     _admin(
         container,
@@ -263,7 +265,20 @@ def _seed_map_pair(container: str) -> None:
         f"GRANT {_SCHEMA_OWNER} TO {_LOGIN} WITH INHERIT FALSE;\n"
         f"CREATE ROLE {_METADATA} LOGIN NOINHERIT;\n"
         f"CREATE DATABASE kor_travel_map OWNER {_SCHEMA_OWNER};\n"
-        f"CREATE DATABASE kor_travel_map_dagster OWNER {_METADATA};\n",
+        f"CREATE DATABASE {_RETIRED_METADATA_DATABASE} OWNER {_METADATA};\n"
+        f"REVOKE CONNECT ON DATABASE {_RETIRED_METADATA_DATABASE} FROM PUBLIC;\n"
+        f"ALTER DATABASE {_RETIRED_METADATA_DATABASE} ALLOW_CONNECTIONS false;\n",
+    )
+
+
+def _retired_state(container: str) -> str:
+    """옛 metadata DB의 (oid, 소유자, ACL, 연결 허용, 상한) — 재구축 전후에 같아야 한다."""
+
+    return _admin(
+        container,
+        "SELECT oid || ' ' || pg_catalog.pg_get_userbyid(datdba) || ' ' || "
+        "COALESCE(datacl::text, 'NULL') || ' ' || datallowconn || ' ' || datconnlimit "
+        f"FROM pg_catalog.pg_database WHERE datname = '{_RETIRED_METADATA_DATABASE}'",
     )
 
 
@@ -302,56 +317,24 @@ def test_happy_path_drops_only_runtime_dbs(cluster: str) -> None:
     _admin(cluster, "CREATE ROLE pinvi_app LOGIN;\nCREATE DATABASE pinvi OWNER pinvi_app;\n")
     before = _database_oids(cluster)
 
+    retired = _retired_state(cluster)
+
     reset_databases_for_application_300(_runtimes(cluster))
 
     after = _database_oids(cluster)
     assert "kor_travel_map" not in after
-    assert "kor_travel_map_dagster" not in after
     assert after["pinvi"] != before["pinvi"]
-    for untouched in ("foreign_db", "postgres", "template0", "template1", "template_postgis"):
+    # 막힌 옛 Map Dagster metadata DB는 `--restart`도 지우거나 다시 만들지 않는다(4단계).
+    assert _retired_state(cluster) == retired
+    for untouched in (
+        "foreign_db",
+        _RETIRED_METADATA_DATABASE,
+        "postgres",
+        "template0",
+        "template1",
+        "template_postgis",
+    ):
         assert after[untouched] == before[untouched], untouched
-
-
-def test_foreign_login_named_as_metadata_user_is_neither_rotated_nor_dropped(cluster: str) -> None:
-    """T-R2d: 속성 검사를 다 통과하는 다른 tenant의 login(`LOGIN NOINHERIT`, 멤버십 없음)이다."""
-
-    _admin(cluster, "CREATE DATABASE foreign_dagster OWNER foreign_app;\nCREATE ROLE pinvi_app LOGIN;\n")
-    fingerprint = _password_fingerprint(cluster, "foreign_app")
-    before = _database_oids(cluster)
-
-    # (1) Dagster DB가 없고 metadata user가 foreign login → password를 돌리지 않는다.
-    _, dagster, _ = _runtimes(cluster, metadata="foreign_app")
-    with pytest.raises(DeploymentContractError, match="role is unsafe"):
-        initialize_application_300_dagster_metadata_database(
-            dagster,
-            metadata_user="foreign_app",
-            metadata_password=secrets.token_urlsafe(32),
-        )
-    assert _password_fingerprint(cluster, "foreign_app") == fingerprint
-    assert _database_oids(cluster) == before
-
-    # (2) Dagster DB 이름까지 그 tenant의 DB → 아무것도 지우지 않는다.
-    with pytest.raises(DeploymentContractError, match="outside the Map pair"):
-        reset_databases_for_application_300(
-            _runtimes(cluster, dagster="foreign_dagster", metadata="foreign_app")
-        )
-    assert _database_oids(cluster) == before
-    assert _password_fingerprint(cluster, "foreign_app") == fingerprint
-
-    # 대조군: 아무것도 소유하지 않는 남은 metadata role은 **돌린다**.
-    _admin(
-        cluster,
-        f"CREATE ROLE {_METADATA} LOGIN NOINHERIT PASSWORD '{secrets.token_urlsafe(24)}';\n",
-    )
-    leftover = _password_fingerprint(cluster, _METADATA)
-    _, dagster, _ = _runtimes(cluster)
-    identity = initialize_application_300_dagster_metadata_database(
-        dagster,
-        metadata_user=_METADATA,
-        metadata_password=secrets.token_urlsafe(32),
-    )
-    assert identity.owner == _METADATA
-    assert _password_fingerprint(cluster, _METADATA) != leftover
 
 
 # --- name fence --------------------------------------------------------------------------------
@@ -360,7 +343,7 @@ def test_foreign_login_named_as_metadata_user_is_neither_rotated_nor_dropped(clu
 def test_ensure_refuses_reserved_names(cluster: str) -> None:
     """T-NAME: 공용 instance의 `postgres`는 admin 소유에 `alembic_version`이 없다."""
 
-    app, _, _ = _runtimes(cluster, app="postgres")
+    app, _ = _runtimes(cluster, app="postgres")
     bootstrap = Mock()
 
     with pytest.raises(DeploymentContractError, match="reserved cluster database"):
@@ -375,41 +358,41 @@ def test_ensure_refuses_reserved_names(cluster: str) -> None:
 
 
 def test_map_databases_end_closed_to_public(cluster: str) -> None:
-    """T-R4: 다른 tenant login은 막히고, DSN login과 Dagster 소유자만 붙는다."""
+    """T-R4: 다른 tenant login은 막히고, DSN login만 붙는다. 막힌 옛 metadata DB는 그대로다."""
 
     _seed_map_pair(cluster)
     foreign_acl = _datacl(cluster, "foreign_db")
+    retired = _retired_state(cluster)
     # 격리 전에는 PUBLIC CONNECT로 붙는다 — 아래 거부가 이 함수 때문임을 보인다.
     assert _connect(cluster, "foreign_app", "kor_travel_map").returncode == 0
-    app, dagster, _ = _runtimes(cluster)
+    app, _ = _runtimes(cluster)
 
-    ensure_map_databases_isolated(app, dagster, login=_LOGIN)
+    ensure_map_databases_isolated(app, login=_LOGIN)
 
-    for user, database in (
-        ("foreign_app", "kor_travel_map"),
-        ("foreign_app", "kor_travel_map_dagster"),
-        (_LOGIN, "kor_travel_map_dagster"),
-        (_METADATA, "kor_travel_map"),
-    ):
-        denied = _connect(cluster, user, database)
-        assert denied.returncode != 0, (user, database)
-        assert "permission denied for database" in denied.stderr, (user, database)
+    for user in ("foreign_app", _METADATA):
+        denied = _connect(cluster, user, "kor_travel_map")
+        assert denied.returncode != 0, user
+        assert "permission denied for database" in denied.stderr, user
     assert _connect(cluster, _LOGIN, "kor_travel_map").returncode == 0
-    assert _connect(cluster, _METADATA, "kor_travel_map_dagster").returncode == 0
     assert _datacl(cluster, "foreign_db") == foreign_acl
+    # R4는 옛 Map Dagster metadata DB의 ACL·연결 허용을 다시 쓰지 않는다(4단계).
+    assert _retired_state(cluster) == retired
+    assert "is not currently accepting connections" in _connect(
+        cluster, _METADATA, _RETIRED_METADATA_DATABASE
+    ).stderr
 
 
 def test_isolation_is_idempotent(cluster: str) -> None:
     """T-R4i: 두 번째 호출은 아무것도 바꾸지 않는다."""
 
     _seed_map_pair(cluster)
-    app, dagster, _ = _runtimes(cluster)
-    ensure_map_databases_isolated(app, dagster, login=_LOGIN)
-    first = (_datacl(cluster, "kor_travel_map"), _datacl(cluster, "kor_travel_map_dagster"))
+    app, _ = _runtimes(cluster)
+    ensure_map_databases_isolated(app, login=_LOGIN)
+    first = (_datacl(cluster, "kor_travel_map"), _retired_state(cluster))
 
-    ensure_map_databases_isolated(app, dagster, login=_LOGIN)
+    ensure_map_databases_isolated(app, login=_LOGIN)
 
-    assert (_datacl(cluster, "kor_travel_map"), _datacl(cluster, "kor_travel_map_dagster")) == first
+    assert (_datacl(cluster, "kor_travel_map"), _retired_state(cluster)) == first
     assert first[0].endswith(" 2")
 
 
@@ -419,11 +402,11 @@ def test_isolation_readback_catches_connect_through_membership(cluster: str) -> 
     _seed_map_pair(cluster)
     # PG16은 inherit 옵션의 기본을 member의 `rolinherit`에서 가져온다(foreign_app은 NOINHERIT).
     _admin(cluster, f"GRANT {_LOGIN} TO foreign_app WITH INHERIT TRUE;\n")
-    app, dagster, _ = _runtimes(cluster)
+    app, _ = _runtimes(cluster)
 
     try:
         with pytest.raises(DeploymentContractError, match="not isolated after the grant"):
-            ensure_map_databases_isolated(app, dagster, login=_LOGIN)
+            ensure_map_databases_isolated(app, login=_LOGIN)
     finally:
         _admin(cluster, f"REVOKE {_LOGIN} FROM foreign_app;\n")
 
@@ -440,15 +423,15 @@ def test_isolation_refuses_a_login_outside_the_map_owner_and_changes_nothing(
     """
 
     _seed_map_pair(cluster)
-    watched = ("kor_travel_map", "kor_travel_map_dagster", "foreign_db")
+    watched = ("kor_travel_map", _RETIRED_METADATA_DATABASE, "foreign_db")
     before = {name: _datacl(cluster, name) for name in watched}
-    app, dagster, _ = _runtimes(cluster)
+    app, _ = _runtimes(cluster)
 
     with pytest.raises(
         DeploymentContractError,
         match=f"login {login} is not a non-superuser LOGIN member of {_SCHEMA_OWNER}",
     ):
-        ensure_map_databases_isolated(app, dagster, login=login)
+        ensure_map_databases_isolated(app, login=login)
 
     assert {name: _datacl(cluster, name) for name in watched} == before
 
@@ -462,7 +445,7 @@ def test_isolation_refuses_an_application_database_outside_the_map_owner(cluster
 
     _seed_map_pair(cluster)
     before = _datacl(cluster, "foreign_db")
-    app, dagster, _ = _runtimes(cluster, app="foreign_db")
+    app, _ = _runtimes(cluster, app="foreign_db")
 
     with pytest.raises(
         DeploymentContractError,
@@ -471,49 +454,9 @@ def test_isolation_refuses_an_application_database_outside_the_map_owner(cluster
             "(owner=foreign_app)"
         ),
     ):
-        ensure_map_databases_isolated(app, dagster, login="foreign_app")
+        ensure_map_databases_isolated(app, login="foreign_app")
 
     assert _datacl(cluster, "foreign_db") == before
-
-
-@pytest.mark.parametrize(
-    ("dagster_name", "metadata", "message"),
-    [
-        (
-            "foreign_dagster",
-            _METADATA,
-            re.escape(
-                "map_dagster database foreign_dagster is not owned by the Dagster metadata "
-                f"user {_METADATA} (owner=foreign_app)"
-            ),
-        ),
-        (
-            "foreign_dagster",
-            "foreign_app",
-            re.escape("Dagster metadata user foreign_app also owns {foreign_db}"),
-        ),
-    ],
-    ids=["foreign-owned-dagster-db", "metadata-user-owns-another-db"],
-)
-def test_isolation_refuses_a_dagster_database_outside_the_metadata_identity(
-    cluster: str, dagster_name: str, metadata: str, message: str
-) -> None:
-    """Dagster DB 이름·metadata user가 다른 tenant 것으로 박혀도 그 DB의 ACL을 바꾸지 않는다(리뷰 MED b).
-
-    종전에는 소유자를 보지 않고 PUBLIC CONNECT를 걷었다. 둘째 사례는 metadata user = 소유자라서
-    소유자 검사를 지나지만, 그 login이 다른 DB도 소유하므로 Map의 metadata user일 수 없다.
-    """
-
-    _seed_map_pair(cluster)
-    _admin(cluster, "CREATE DATABASE foreign_dagster OWNER foreign_app;\n")
-    watched = ("kor_travel_map", "foreign_dagster", "foreign_db")
-    before = {name: _datacl(cluster, name) for name in watched}
-    app, dagster, _ = _runtimes(cluster, dagster=dagster_name, metadata=metadata)
-
-    with pytest.raises(DeploymentContractError, match=message):
-        ensure_map_databases_isolated(app, dagster, login=_LOGIN)
-
-    assert {name: _datacl(cluster, name) for name in watched} == before
 
 
 def test_a_refused_readback_rolls_back_every_change(cluster: str) -> None:
@@ -535,9 +478,9 @@ def test_a_refused_readback_rolls_back_every_change(cluster: str) -> None:
         f"ALTER ROLE {_METADATA} NOLOGIN;\n"
         "ALTER ROLE foreign_app NOLOGIN;\n",
     )
-    watched = ("kor_travel_map", "kor_travel_map_dagster")
+    watched = ("kor_travel_map", _RETIRED_METADATA_DATABASE)
     before = {name: _datacl(cluster, name) for name in watched}
-    app, dagster, _ = _runtimes(cluster)
+    app, _ = _runtimes(cluster)
 
     try:
         with pytest.raises(
@@ -547,7 +490,7 @@ def test_a_refused_readback_rolls_back_every_change(cluster: str) -> None:
                 f"public_connect=t, connect_logins={{{_LOGIN}}}, connection_limit=2)"
             ),
         ):
-            ensure_map_databases_isolated(app, dagster, login=_LOGIN)
+            ensure_map_databases_isolated(app, login=_LOGIN)
         assert {name: _datacl(cluster, name) for name in watched} == before
     finally:
         _admin(cluster, "ALTER ROLE foreign_app LOGIN;\n")
@@ -565,14 +508,14 @@ def test_isolation_converges_stray_connect_grants_on_the_app_database(cluster: s
         f"CREATE ROLE {_OLD_LOGIN} LOGIN NOINHERIT;\n"
         f"GRANT {_SCHEMA_OWNER} TO {_OLD_LOGIN} WITH INHERIT FALSE;\n",
     )
-    app, dagster, _ = _runtimes(cluster)
-    ensure_map_databases_isolated(app, dagster, login=_OLD_LOGIN)
+    app, _ = _runtimes(cluster)
+    ensure_map_databases_isolated(app, login=_OLD_LOGIN)
     _admin(cluster, "GRANT CONNECT ON DATABASE kor_travel_map TO foreign_app;\n")
     for user in (_OLD_LOGIN, "foreign_app"):
         assert _connect(cluster, user, "kor_travel_map").returncode == 0, user
     foreign_acl = _datacl(cluster, "foreign_db")
 
-    ensure_map_databases_isolated(app, dagster, login=_LOGIN)
+    ensure_map_databases_isolated(app, login=_LOGIN)
 
     for user in (_OLD_LOGIN, "foreign_app"):
         denied = _connect(cluster, user, "kor_travel_map")
@@ -586,11 +529,11 @@ def test_cap_applies_to_the_login_not_the_admin(cluster: str) -> None:
     """T-CAP: 상한 2를 login 연결 둘이 채우면 셋째는 거부되고, admin(superuser)은 붙는다."""
 
     _seed_map_pair(cluster)
-    app, dagster, _ = _runtimes(cluster)
+    app, _ = _runtimes(cluster)
     usable = database_runtime._read_usable_connection_slots(app)
     assert usable == _MAX_CONNECTIONS - _SUPERUSER_RESERVED
     assert database_runtime.map_application_connection_cap(usable) == 2
-    ensure_map_databases_isolated(app, dagster, login=_LOGIN)
+    ensure_map_databases_isolated(app, login=_LOGIN)
 
     holders = [
         subprocess.Popen(
@@ -641,7 +584,7 @@ def test_cap_applies_to_the_login_not_the_admin(cluster: str) -> None:
 def test_reset_preflight_refuses_before_any_drop_and_only_reads(cluster: str) -> None:
     """`--restart`의 R2를 멈추기 전에 읽기만으로 판정한다(적대 리뷰 2026-09-29).
 
-    오늘 n150 전용 instance의 모양: schema owner가 Map 쌍 밖의 남은 DB도 소유한다. 통과하는 입력에서도
+    옛 n150 전용 instance의 모양: schema owner가 Map DB 밖의 남은 DB도 소유한다. 통과하는 입력에서도
     preflight는 아무것도 지우지 않는다 — 대조군이 탐지기(oid)가 움직이지 않음을 본다.
     """
 
@@ -653,7 +596,7 @@ def test_reset_preflight_refuses_before_any_drop_and_only_reads(cluster: str) ->
     )
     before = _database_oids(cluster)
 
-    with pytest.raises(DeploymentContractError, match="outside the Map pair"):
+    with pytest.raises(DeploymentContractError, match="outside the Map database"):
         database_runtime.require_databases_resettable(_runtimes(cluster))
     assert _database_oids(cluster) == before
 
@@ -663,43 +606,25 @@ def test_reset_preflight_refuses_before_any_drop_and_only_reads(cluster: str) ->
     assert _database_oids(cluster) == before
 
 
-@pytest.mark.parametrize(
-    ("login", "dagster_name", "metadata", "message"),
-    [
-        (
-            "foreign_app",
-            "kor_travel_map_dagster",
-            _METADATA,
-            f"login foreign_app is not a non-superuser LOGIN member of {_SCHEMA_OWNER}",
-        ),
-        (
-            _LOGIN,
-            "foreign_dagster",
-            "foreign_app",
-            re.escape("Dagster metadata user foreign_app also owns {foreign_db}"),
-        ),
-    ],
-    ids=["login-outside-the-map-owner", "metadata-user-owns-another-db"],
-)
 def test_isolation_preflight_refuses_what_isolation_refuses_and_changes_nothing(
-    cluster: str, login: str, dagster_name: str, metadata: str, message: str
+    cluster: str,
 ) -> None:
     """R4의 live 전제를 멈추기 전에 READ ONLY로 판정한다 — 같은 거부, 바뀌는 것 없음."""
 
     _seed_map_pair(cluster)
     _admin(cluster, "CREATE DATABASE foreign_dagster OWNER foreign_app;\n")
-    watched = ("kor_travel_map", "kor_travel_map_dagster", "foreign_dagster", "foreign_db")
+    watched = ("kor_travel_map", _RETIRED_METADATA_DATABASE, "foreign_dagster", "foreign_db")
     before = {name: _datacl(cluster, name) for name in watched}
-    app, dagster, _ = _runtimes(cluster, dagster=dagster_name, metadata=metadata)
+    app, _ = _runtimes(cluster)
+    message = f"login foreign_app is not a non-superuser LOGIN member of {_SCHEMA_OWNER}"
 
     with pytest.raises(DeploymentContractError, match=message):
-        database_runtime.require_map_databases_isolatable(app, dagster, login=login)
+        database_runtime.require_map_databases_isolatable(app, login="foreign_app")
     with pytest.raises(DeploymentContractError, match=message):
-        ensure_map_databases_isolated(app, dagster, login=login)
+        ensure_map_databases_isolated(app, login="foreign_app")
 
     # 대조군: 격리가 통과할 입력이면 preflight도 통과하고, 여전히 아무것도 바꾸지 않는다.
-    app, dagster, _ = _runtimes(cluster)
-    database_runtime.require_map_databases_isolatable(app, dagster, login=_LOGIN)
+    database_runtime.require_map_databases_isolatable(app, login=_LOGIN)
     assert {name: _datacl(cluster, name) for name in watched} == before
     assert _connect(cluster, "foreign_app", "kor_travel_map").returncode == 0
 
@@ -849,9 +774,9 @@ def test_isolation_ends_sessions_that_no_longer_have_connect(cluster: str) -> No
     foreign = _hold_session(cluster, "foreign_app", "kor_travel_map")
     login = _hold_session(cluster, _LOGIN, "kor_travel_map")
     try:
-        app, dagster, _ = _runtimes(cluster)
+        app, _ = _runtimes(cluster)
 
-        ensure_map_databases_isolated(app, dagster, login=_LOGIN)
+        ensure_map_databases_isolated(app, login=_LOGIN)
 
         _, stderr = foreign.communicate(timeout=60)
         assert foreign.returncode != 0

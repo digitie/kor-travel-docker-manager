@@ -20,12 +20,11 @@ from kor_travel_docker_manager.services.standalone_backup import BACKUP_ROLES
 _WRAPPER = Path(__file__).resolve().parents[2] / "scripts" / "run-standalone-backup.sh"
 
 #: cron 주기 백업 대상. **이 집합이 정책이다.** geo application은 kor-travel-geo 앱 레벨
-#: 백업이, Map 둘은 kor-travel-map #148이 소유한다. transport 둘은 2026-09-28 오너 결정으로
+#: 백업이, Map은 kor-travel-map #148이 소유한다. transport는 2026-09-28 오너 결정으로
 #: transport 저장소의 자체 cron을 대신해 합류했다. `dagster_shared`는 공용 Dagster instance의
-#: metadata DB다(platform-topology.md §7 — stage 4가 이 백업의 7일 연속 초록을 전제한다).
-_PERIODIC = frozenset(
-    {"geo_dagster", "concierge", "pinvi", "transport", "transport_dagster", "dagster_shared"}
-)
+#: metadata DB다(platform-topology.md §7 — stage 4가 이 백업의 7일 연속 초록을 전제한다). 옛
+#: 프로젝트별 Dagster metadata DB(`geo_dagster`·`transport_dagster`)는 4단계로 막히고 DROP되므로 뺐다.
+_PERIODIC = frozenset({"concierge", "pinvi", "transport", "dagster_shared"})
 
 
 def _run_wrapper(role: str, tmp_path: Path) -> tuple[subprocess.CompletedProcess[str], list[str]]:
