@@ -434,8 +434,8 @@ targets:
       - kor-travel-geo-ui
       - kor-travel-geo-dagster-code-server
     # 옛 webserver·daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster` profile에 있다 — `up`에 이름을 주면
-    # 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태 화면과 되돌리기가
-    # 찾는다.
+    # 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태 화면이
+    # 찾는다(되돌리기는 지원하지 않는다 — platform-topology.md §7 4단계).
     runtime_services:
       - kor-travel-geo-api
       - kor-travel-geo-ui
@@ -520,8 +520,8 @@ targets:
       - kor-travel-map-ui
       - kor-travel-map-dagster-code-server
     # 옛 webserver·daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster` profile에 있다 — `up`에 이름을 주면
-    # 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태 화면과 되돌리기가
-    # 찾는다.
+    # 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태 화면이
+    # 찾는다(되돌리기는 지원하지 않는다 — platform-topology.md §7 4단계).
     runtime_services:
       - kor-travel-map-api
       - kor-travel-map-ui
@@ -580,8 +580,8 @@ targets:
       - pinvi-web
       - pinvi-dagster-code-server
     # 옛 webserver·daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster` profile에 있다 — `up`에 이름을 주면
-    # 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태 화면과 되돌리기가
-    # 찾는다.
+    # 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태 화면이
+    # 찾는다(되돌리기는 지원하지 않는다 — platform-topology.md §7 4단계).
     runtime_services:
       - pinvi-api
       - pinvi-web
@@ -724,7 +724,7 @@ targets:
       - kor-travel-weather-prometheus
     # 옛 webserver·daemon·gateway는 공용 plane 전환(ADR-54)으로 `legacy-dagster` profile에 있다 — `up`에
     # 이름을 주면 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태
-    # 화면과 되돌리기(`ktdctl start`)가 찾는다.
+    # 화면이 찾는다(되돌리기는 지원하지 않는다 — platform-topology.md §7 4단계).
     # `kor-travel-shared-db-init-weather`/`kor-travel-weather-migrate`는
     # restart=no인 one-shot이라 runtime에서 빠진다 — 정상 상태가 exited(0)이므로
     # runtime 목록에 두면 상태 판정이 늘 실패로 읽힌다.

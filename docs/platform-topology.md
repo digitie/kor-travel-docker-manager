@@ -513,7 +513,9 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
    - **pinned 재구축**: `kor-travel-map-dagster-storage-migrate` one-shot·후보 이미지의 storage head 질의·옛
      metadata role/DB init·그 DB의 identity·head 관측·`--restart`의 drop·R4 격리가 없다. 재구축이 다루는 DB는
      Map application·PinVi 둘이다. 4단계 전 Manager가 쓴 `deploy-status.json`의 `map_dagster` 항목은 읽을 때
-     버린다(그 항목 하나만) — 같은 pair 재실행은 아무것도 멈추지 않고 수렴한다. 공용 storage는
+     버린다(그 항목 하나만) — 그래서 그 항목이 수렴 판정을 막지 않는다. **수렴은 상태 파일이 `committed`일 때만
+     일어난다**(`compose_service.py`의 수렴 분기가 `previous.state == "committed"`를 요구한다). `in_progress`·실패한
+     배포 뒤(손으로 `docker start`한 경우 포함)의 다음 실행은 Map·PinVi를 **멈추는 전체 경로**다. 공용 storage는
      `kor-travel-dagster-storage-migrate`(`ensure dagster`의 init step)가 올린다.
    - **compose**: 옛 Map storage migrate 서비스와 그 `depends_on`을 지웠고, code-server와 `legacy-dagster`
      모양 정의에서 `KOR_TRAVEL_MAP_DAGSTER_PG_URL`·`PINVI_DAGSTER_PG_URL`·`KTG_DAGSTER_PG_URL`·
@@ -528,9 +530,14 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
      남는다. Map 이미지(`dagster-entrypoint.sh`·`runtime_preflight`·code-server)는 그 env를 읽지 않는다.
    - 회귀 방지: `backend/tests/test_old_dagster_meta_db_retired.py`.
 
-   **안전한 순서.** (1) 이 release를 설치한다(`~/install-mgr.sh <sha>` → rebind → verify). (2) 같은 pair
-   pinned 재구축을 한 번 돌려 `converged`와 새 `deploy-status.json`(두 role)을 확인하고, `ensure`
-   geo·pinvi·weather·transport·dagster가 초록인지 본다. (3) 호스트 crontab의 `geo_dagster`·`transport_dagster`
+   **안전한 순서.** (1) 이 release를 설치한다(`~/install-mgr.sh <sha>` → rebind → verify). 설치 뒤 첫
+   `ensure`·재구축은 code-server 넷(Map·PinVi·geo·weather)을 **다시 만든다** — env가 바뀌었다(옛 metadata URL 제거).
+   `ensure`와 재구축은 **하나씩** 돌리고, 공용 plane에 진행 중인 run이 없을 때만 돌린다. (2) 같은 pair pinned
+   재구축을 한 번 돌린다. 지금 상태 파일이 `committed`면 결과는 `converged`다. **`in_progress`나 실패 뒤면**
+   (2026-10-04 n150은 실패한 재구축 뒤 손으로 `docker start`해 `in_progress`다) 이 실행은 Map·PinVi를 멈추고 다시
+   올리는 전체 경로다 — 짧은 중단으로 잡고 디스크 대기가 낮은 창에 돌린다. 그 실행이 실패하면 다시 만들어진
+   컨테이너를 `docker start`로 올린다. 어느 쪽이든 끝에 새 `deploy-status.json`이 `committed`(두 role)인지 본다. 그
+   다음 `ensure` geo·pinvi·weather·transport·dagster를 하나씩 돌려 초록인지 본다. (3) 호스트 crontab의 `geo_dagster`·`transport_dagster`
    백업 줄을 지운다. (4) 그 뒤에야 옛 메타DB를 `ALLOW_CONNECTIONS false`로 막는다. (5) 30일 뒤 DROP. 막기 전에
    (1)·(2)를 건너뛰면 2026-10-03 사고가 되풀이된다. 형제 저장소 쪽 잔재(transport `.env.server14`의
    `DAGSTER_POSTGRES_URL`과 그 `legacy-dagster` 서비스, Map의 `scripts/dagster_run_completion_gate.py`가 읽는

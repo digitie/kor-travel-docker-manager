@@ -22,8 +22,11 @@ metadata URL 행, PinVi Dagster storage URL 검사기를 뺐다. 남은 결합�
 회귀 방지 `backend/tests/test_old_dagster_meta_db_retired.py`는 기본 profile·재구축 one-shot·init step 서비스,
 db-init, 꺼진 profile의 `:?` 요구, 재구축 DB role, 백업 role을 본다 — 이 변경 전 트리에서 7개 모두 빨갛다. 실
 PostgreSQL 통합 테스트는 막힌 모양의 옛 메타DB를 심고 리셋·격리가 그 oid·ACL·`datallowconn`을 건드리지 않는지
-본다. 안전한 순서: 이 release 설치 → 같은 pair 재구축 `converged` 확인 → crontab의 옛 백업 두 줄 삭제 → 옛
-메타DB 차단 → 30일 뒤 DROP(platform-topology.md §7).
+본다. 수렴은 상태 파일이 `committed`일 때만이다 — n150의 지금 상태(`in_progress`, 실패 뒤 손으로 `docker start`)에서
+다음 재구축은 Map·PinVi를 멈추는 전체 경로이므로 디스크 대기가 낮은 창의 짧은 중단으로 잡고, 실패하면 다시 만들어진
+컨테이너를 `docker start`로 올린다. 설치는 env가 바뀐 code-server 넷을 다시 만든다 — `ensure`와 재구축은 하나씩, 진행
+중인 run이 없을 때만. 안전한 순서: 이 release 설치 → 같은 pair 재구축(`committed`면 `converged`, 아니면 전체 경로)으로
+`committed` 상태 파일 확보 → crontab의 옛 백업 두 줄 삭제 → 옛 메타DB 차단 → 30일 뒤 DROP(platform-topology.md §7).
 
 
 ## 2026-10-03 — Concierge 스케줄러 종료 유예와 자원 상한
