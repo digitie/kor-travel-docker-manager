@@ -2201,8 +2201,9 @@ def test_required_protected_service_set_is_pinned() -> None:
     """
 
     # 2026-10-01 Map 전환(ADR-54): 9 → 8. 옛 Map webserver·daemon(`legacy-dagster`) 둘이 빠지고 code-server 하나가
-    # 들었다.
-    assert len(_REQUIRED_SERVICES_GOLDEN) == 8
+    # 들었다. 2026-10-04 4단계(platform-topology.md §7): 8 → 7. 옛 Map metadata DB의
+    # `kor-travel-map-dagster-storage-migrate`가 빠졌다.
+    assert len(_REQUIRED_SERVICES_GOLDEN) == 7
     assert set(_REQUIRED_SERVICES_GOLDEN) == set(
         c6c_deployment_module._CANDIDATE_REQUIRED_PROTECTED_SERVICES
     ), (
