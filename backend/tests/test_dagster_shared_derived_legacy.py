@@ -36,7 +36,6 @@ _PRE_ADR54_REQUIRED_ORDER = (
     "kor-travel-map-api",
     "kor-travel-map-dagster",
     "kor-travel-map-dagster-daemon",
-    "kor-travel-map-dagster-storage-migrate",
     "kor-travel-map-db-role-bootstrap",
     "kor-travel-map-application-schema",
     "pinvi-api",
@@ -48,7 +47,6 @@ _PRE_ADR54_HOST_NETWORK = frozenset(
         "kor-travel-map-api",
         "kor-travel-map-dagster",
         "kor-travel-map-dagster-daemon",
-        "kor-travel-map-dagster-storage-migrate",
         "kor-travel-map-db-role-bootstrap",
         "kor-travel-map-application-schema",
     }
@@ -65,11 +63,6 @@ _PRE_ADR54_PINVI_DSN_SERVICES = (
     "pinvi-dagster-code-server",
     "pinvi-dagster-daemon",
     "pinvi-admin-bootstrap",
-)
-_PRE_ADR54_PINVI_DAGSTER_PG_URL_SERVICES = (
-    "pinvi-dagster",
-    "pinvi-dagster-code-server",
-    "pinvi-dagster-daemon",
 )
 _PRE_ADR54_MAP_DAGSTER_PROCESSES = (
     "kor-travel-map-dagster",
@@ -134,8 +127,6 @@ def test_own_c6c_sets_are_the_pre_adr54_literals() -> None:
         for name in _PRE_ADR54_PINVI_DSN_SERVICES
     )
     assert tuple(c6c._PINVI_DATABASE_URL_RAW_VALUES) == _PRE_ADR54_PINVI_DSN_SERVICES
-    assert tuple(c6c._PINVI_DAGSTER_PG_URL_SERVICES) == _PRE_ADR54_PINVI_DAGSTER_PG_URL_SERVICES
-    assert tuple(c6c._PINVI_DAGSTER_PG_URL_RAW_VALUES) == _PRE_ADR54_PINVI_DAGSTER_PG_URL_SERVICES
     assert c6c._map_dagster_secret_isolation_containers() == _PRE_ADR54_SECRET_ISOLATION_CONTAINERS
 
 
@@ -146,11 +137,9 @@ def test_own_env_contract_tables_keep_their_pre_adr54_rows_in_order() -> None:
     dagster_pg_url = [
         service for service, name in database_rows if name == "KOR_TRAVEL_MAP_DAGSTER_PG_URL"
     ]
-    assert dagster_pg_url == [
-        "kor-travel-map-db-role-bootstrap",
-        *_PRE_ADR54_MAP_DAGSTER_PROCESSES,
-        "kor-travel-map-dagster-storage-migrate",
-    ]
+    # 4단계(platform-topology.md §7): 옛 metadata URL은 Map role bootstrap 하나만 받는다(Map 스크립트가 문자열로
+    # 요구한다). Dagster 프로세스와 옛 storage migrate의 행은 지웠다.
+    assert dagster_pg_url == ["kor-travel-map-db-role-bootstrap"]
     api_rows = list(c6c._CANDIDATE_CANONICAL_API_ENV_VALUES)
     geo_key = [
         service
@@ -158,7 +147,7 @@ def test_own_env_contract_tables_keep_their_pre_adr54_rows_in_order() -> None:
         if name == "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"
     ]
     assert geo_key == ["kor-travel-map-api", *_PRE_ADR54_MAP_DAGSTER_PROCESSES]
-    for service in (*_PRE_ADR54_MAP_DAGSTER_PROCESSES, *_PRE_ADR54_PINVI_DAGSTER_PG_URL_SERVICES):
+    for service in (*_PRE_ADR54_MAP_DAGSTER_PROCESSES, *_PRE_ADR54_PINVI_DSN_SERVICES):
         assert c6c.contract_locked_env_names(service), service
 
 

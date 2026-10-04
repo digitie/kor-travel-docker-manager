@@ -3687,7 +3687,9 @@ def _own_fingerprint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[st
     """모든 target이 `own`일 때 파생이 만드는 것 전부를 서비스 이름·문자열로. 픽스처와 같은 모양이다.
 
     픽스처는 파생 이전 코드(6f384ba, literal 집합)에서 같은 항목을 떠 seed revision·pinset만 자리표로 바꾼
-    것이다. 의도한 변경 셋은 빠져 있다 — M05 이미지 역할 키(`pinvi-app-dagster`), 보존 namespace가 알아보는
+    것이다. 2026-10-04 platform-topology.md §7 4단계에서 옛 Map·PinVi Dagster metadata DB 의존(옛 Map storage
+    migrate one-shot·`map_dagster_head`·`map_dagster` DB role·두 metadata URL 행)을 지운 만큼만 다시 떴다 — 그
+    변경은 의도한 것이고, 나머지 항목은 6f384ba 그대로다. 의도한 변경 셋은 빠져 있다 — M05 이미지 역할 키(`pinvi-app-dagster`), 보존 namespace가 알아보는
     이름(family 전부, 적대 리뷰 MED-3), 그리고 seed에 묶인 generation sha256.
     """
 
@@ -3739,10 +3741,6 @@ def _own_fingerprint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[st
     out["c6c_map_runtime"] = list(c6c_deployment._MAP_RUNTIME_SERVICES)
     out["c6c_pinvi_dsn_credentials"] = [list(row) for row in c6c_deployment._PINVI_DSN_SERVICE_CREDENTIALS]
     out["c6c_pinvi_database_url_raw"] = list(dict(c6c_deployment._PINVI_DATABASE_URL_RAW_VALUES).items())
-    out["c6c_pinvi_dagster_pg_url_services"] = list(c6c_deployment._PINVI_DAGSTER_PG_URL_SERVICES)
-    out["c6c_pinvi_dagster_pg_url_raw"] = list(
-        dict(c6c_deployment._PINVI_DAGSTER_PG_URL_RAW_VALUES).items()
-    )
     out["c6c_map_database_canonical"] = [
         [list(key), value] for key, value in dict(c6c_deployment._MAP_DATABASE_CANONICAL_ENV_VALUES).items()
     ]
