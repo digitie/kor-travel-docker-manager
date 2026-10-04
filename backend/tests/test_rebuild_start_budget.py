@@ -110,9 +110,9 @@ def test_a_cold_start_under_rebuild_load_fits_the_start_window(service_name: str
 @pytest.mark.parametrize("service_name", sorted(_waited_services()))
 def test_the_whole_start_window_ends_inside_the_rebuild_wait(service_name: str) -> None:
     healthcheck = _services()[service_name].get("healthcheck") or {}
-    window = _seconds(healthcheck.get("start_period", "0s")) + int(healthcheck.get("retries", 3)) * _seconds(
-        healthcheck.get("interval", "30s")
-    )
+    start_period = _seconds(healthcheck.get("start_period", "0s"))
+    retries = int(healthcheck.get("retries", 3))
+    window = start_period + retries * _seconds(healthcheck.get("interval", "30s"))
     assert window < compose_service._COMPOSE_WAIT_TIMEOUT_SECONDS, (
         f"`{service_name}`의 기동 창({window:g}초)이 재구축 `--wait-timeout`"
         f"({compose_service._COMPOSE_WAIT_TIMEOUT_SECONDS}초) 이상이다 — 정말 실패한 기동이 unhealthy 대신 "
