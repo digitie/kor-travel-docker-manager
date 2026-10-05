@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import json
 import urllib.error
@@ -821,6 +822,140 @@ def test_fixture_finalize_post_is_not_retried_after_a_timeout(
         c6c._finalize_c6c_cancel_probe_fixture(config, state)
 
     assert [method for method, _ in calls] == ["POST"] and clock.sleeps == []
+
+
+class _TruncatedResponse(_FakeResponse):
+    """헤더는 왔지만 본문이 Content-Length보다 짧게 끊긴 응답 — `read()`가 `IncompleteRead`를 던진다."""
+
+    def __init__(self) -> None:
+        super().__init__(b"")
+
+    def read(self, *_args: object) -> bytes:
+        raise http.client.IncompleteRead(b'{"da', 120)
+
+
+def test_fixture_read_get_survives_a_truncated_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`IncompleteRead`는 `OSError`가 아니다 — 연결 단계 실패처럼 재시도된다."""
+
+    clock = _Clock()
+    monkeypatch.setattr(c6c.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(c6c.time, "sleep", clock.sleep)
+    responses = iter((_TruncatedResponse(), _FakeResponse(_armed_payload())))
+    monkeypatch.setattr(
+        c6c.urllib.request, "urlopen", lambda _request, *, timeout: next(responses)
+    )
+
+    fixture = c6c._read_c6c_cancel_probe_fixture(_fixture_config(), _TRANSACTION_ID)
+
+    assert fixture.transaction_id == _TRANSACTION_ID and clock.sleeps == [5.0]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        http.client.IncompleteRead(b"", 10),
+        http.client.RemoteDisconnected("Remote end closed connection without response"),
+    ],
+)
+def test_fixture_put_retries_incomplete_reads_and_remote_disconnects(
+    monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    calls, _ = _fake_urlopen(monkeypatch, [error, _armed_payload()])
+    state = PinviCancelProbeState(transaction_id=_TRANSACTION_ID)
+
+    fixture = c6c._ensure_c6c_cancel_probe_fixture(_fixture_config(), state)
+
+    assert fixture.state == "armed"
+    assert [method for method, _ in calls] == ["PUT", "PUT"]
+
+
+def test_an_incomplete_read_that_is_not_retried_is_a_contract_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """재시도하지 않는 finalize POST와 재시도를 다 쓴 GET 모두 날것의 `IncompleteRead`로 새지 않는다."""
+
+    calls, clock = _fake_urlopen(monkeypatch, [http.client.IncompleteRead(b"", 10)])
+    with pytest.raises(DeploymentContractError, match="Map smoke endpoint is unavailable") as caught:
+        c6c._finalize_c6c_cancel_probe_fixture(
+            _fixture_config(), _consumed_state(finalize_attempted=True)
+        )
+    assert isinstance(caught.value.__cause__, http.client.IncompleteRead)
+    assert [method for method, _ in calls] == ["POST"] and clock.sleeps == []
+
+    calls, _ = _fake_urlopen(monkeypatch, [http.client.IncompleteRead(b"", 10)])
+    with pytest.raises(DeploymentContractError, match="Map smoke endpoint is unavailable"):
+        c6c._read_c6c_cancel_probe_fixture(_fixture_config(), _TRANSACTION_ID)
+    assert len(calls) == 5
+
+
+def _stalling_urlopen(
+    monkeypatch: pytest.MonkeyPatch, *, stalls: list[float], outcomes: list[object]
+) -> tuple[list[float], _Clock]:
+    """시도마다 `stalls`만큼 벽시계를 쓴다(마지막 값 반복) — socket timeout은 연산마다라 시도의 timeout보다 길 수 있다."""
+
+    clock = _Clock()
+    monkeypatch.setattr(c6c.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(c6c.time, "sleep", clock.sleep)
+    starts: list[float] = []
+
+    def urlopen(_request: urllib.request.Request, *, timeout: float) -> _FakeResponse:
+        index = len(starts)
+        outcome = outcomes[min(index, len(outcomes) - 1)]
+        starts.append(clock.now)
+        clock.now += stalls[min(index, len(stalls) - 1)]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return _FakeResponse(cast(bytes, outcome))
+
+    monkeypatch.setattr(c6c.urllib.request, "urlopen", urlopen)
+    return starts, clock
+
+
+def test_cold_start_retry_has_a_wall_clock_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """시도마다 50초씩 늘어지면 시도 횟수가 아니라 벽시계 예산이 멈춘다 — 같은 오류로 닫힌다."""
+
+    starts, clock = _stalling_urlopen(
+        monkeypatch, stalls=[50.0], outcomes=[TimeoutError("timed out")]
+    )
+
+    with pytest.raises(DeploymentContractError, match="Map smoke endpoint is unavailable"):
+        c6c._read_c6c_cancel_probe_fixture(_fixture_config(), _TRANSACTION_ID)
+
+    budget = c6c._MAP_FIXTURE_BUDGET_SECONDS
+    assert 150.0 <= budget <= 210.0
+    # 예산 안에서만 시도를 시작하고, 대기는 예산을 넘기지 않는다. 넘는 것은 진행 중이던 시도 하나뿐이다.
+    assert all(start < budget for start in starts) and len(starts) < 5
+    assert clock.now <= budget + 50.0
+
+
+def test_the_smoke_shares_one_map_request_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """smoke 하나의 Map fixture 요청(ensure·cancel 뒤 read)이 예산 하나를 나눠 쓴다.
+
+    첫 read가 예산을 거의 다 쓰면 둘째 read는 남은 몇 초 안에서만 돈다 — 시도 하나가 실패하면 대기 없이 닫힌다.
+    """
+
+    budget = c6c._MAP_FIXTURE_BUDGET_SECONDS
+    starts, _ = _stalling_urlopen(
+        monkeypatch,
+        stalls=[budget - 5.0, 10.0],
+        outcomes=[_armed_payload(), TimeoutError("timed out")],
+    )
+
+    def smoke_body(config: C6cDeploymentConfig, **_kwargs: object) -> list[dict[str, int | str]]:
+        c6c._read_c6c_cancel_probe_fixture(config, _TRANSACTION_ID)
+        c6c._read_c6c_cancel_probe_fixture(config, _TRANSACTION_ID)
+        return []
+
+    monkeypatch.setattr(c6c, "_run_pinvi_canonical_smoke", smoke_body)
+    with pytest.raises(DeploymentContractError, match="Map smoke endpoint is unavailable"):
+        c6c.run_pinvi_canonical_smoke(_fixture_config())
+    assert len(starts) == 2
+
+    # 예산은 smoke마다 새로 잡힌다 — 다음 smoke의 첫 요청은 다시 시작한다.
+    starts.clear()
+    with pytest.raises(DeploymentContractError, match="Map smoke endpoint is unavailable"):
+        c6c.run_pinvi_canonical_smoke(_fixture_config())
+    assert len(starts) == 2
 
 
 def test_cold_start_retry_refuses_requests_with_a_body_or_post() -> None:
