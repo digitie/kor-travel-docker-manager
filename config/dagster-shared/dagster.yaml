@@ -151,10 +151,12 @@ retention:
       started: 14
       failure: 30
 
-# Map의 두 logger를 event stream에 결선한다. 다른 테넌트에는 그 이름의 logger가 없어
-# 무해하다.
+# Map의 세 logger를 event stream에 결선한다. 다른 테넌트에는 그 이름의 logger가 없어
+# 무해하다. `kortravelmap.infra.feature_repo`는 run 안의 place-locator 경고를 남긴다 — 여기
+# 없으면 그 경고는 code-server stderr로만 가고 운영 run 로그에 보이지 않는다.
 python_logs:
   managed_python_loggers:
     - kortravelmap.dagster.provider_fetchers
     - kortravelmap.dagster.resources
+    - kortravelmap.infra.feature_repo
   python_log_level: WARNING

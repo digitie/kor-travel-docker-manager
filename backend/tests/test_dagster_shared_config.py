@@ -183,6 +183,22 @@ def test_the_coordinator_is_the_queued_default_and_telemetry_is_off() -> None:
         assert config[section]["config"]["base_dir"].startswith("/opt/dagster/state/")
 
 
+def test_map_warning_loggers_reach_the_run_event_stream() -> None:
+    """Map이 run 안에서 WARNING을 남기는 logger가 event stream에 결선된다.
+
+    `managed_python_loggers`에 없는 logger의 경고는 컨테이너 stderr로만 가고 운영 run 로그에는 보이지 않는다.
+    `kortravelmap.infra.feature_repo`는 place-locator 경고를 남긴다(Map `feature_repo.py`의 `_LOG`).
+    """
+
+    python_logs = _instance_config()["python_logs"]
+    assert python_logs["python_log_level"] == "WARNING"
+    assert {
+        "kortravelmap.dagster.provider_fetchers",
+        "kortravelmap.dagster.resources",
+        "kortravelmap.infra.feature_repo",
+    } <= set(python_logs["managed_python_loggers"])
+
+
 def test_db_init_follows_the_shared_postgres_pattern() -> None:
     service = _compose()["services"][_DB_INIT]
     assert service["restart"] == "no"
