@@ -320,9 +320,13 @@ _SAFE_GET_READINESS_BUDGET_SECONDS: Final = 180.0
 #: **시도 횟수로는 시간이 묶이지 않는다.** urllib의 timeout 10초는 요청 전체가 아니라 socket 연산(connect·recv)
 #: 하나하나의 상한이라, 조금씩 흘러나오는 응답 하나가 10초보다 훨씬 길 수 있다 — 예전 주석의 "최악 약 115초"(대기
 #: 65초 + 시도마다 10초)는 그 가정에서만 맞았다. 그래서 smoke 하나(`run_pinvi_canonical_smoke`)의 이 재시도
-#: 요청들은 벽시계(monotonic) 예산 `_MAP_FIXTURE_BUDGET_SECONDS`를 나눠 쓴다: 예산이 남았을 때만 시도를 시작하고
-#: (시도의 timeout도 남은 예산으로 줄인다), 대기가 예산을 넘기면 기다리지 않고 같은 오류("Map smoke endpoint is
-#: unavailable")로 닫힌다. 예산을 넘을 수 있는 것은 진행 중이던 시도 하나의 socket 연산뿐이다.
+#: 요청들은 예산 `_MAP_FIXTURE_BUDGET_SECONDS`를 나눠 쓴다. 예산은 smoke 전체 시간이 아니라 **Map fixture 요청
+#: 안에서 쓴 벽시계(monotonic) 시간의 누계**다 — 그 사이의 PinVi 호출 시간은 세지 않는다. 예산은 **재시도와 대기만**
+#: 묶는다: 호출마다 첫 시도는 예산과 상관없이 timeout 10초 그대로 한 번 간다(파괴적인 PinVi cancel 뒤의 read가
+#: 예산 때문에 한 번도 못 가는 일이 없게). 재시도는 예산이 남았을 때만 시작하고 그 timeout을 남은 예산으로
+#: 줄이며, 대기가 예산을 넘기면 기다리지 않고 같은 오류("Map smoke endpoint is unavailable")로 닫힌다. 그러므로
+#: 상한은 엄밀하지 않다 — 진행 중인 시도(특히 첫 시도)가 조금씩 흘러나오는 응답을 받는 동안에는 socket 연산마다
+#: timeout이 다시 걸려 예산을 넘을 수 있다.
 _MAP_FIXTURE_COLD_START_ATTEMPTS: Final = 5
 _MAP_FIXTURE_COLD_START_BACKOFF_SECONDS: Final[tuple[float, ...]] = (5.0, 10.0, 20.0, 30.0)
 _MAP_FIXTURE_REQUEST_TIMEOUT_SECONDS: Final = 10
@@ -6501,7 +6505,10 @@ def _session_request(
                     content_type=_response_header(response.headers, "Content-Type"),
                 )
         except urllib.error.HTTPError as exc:
-            raw = exc.read(65_537) if read_error_body else b""
+            try:
+                raw = exc.read(65_537) if read_error_body else b""
+            except (OSError, http.client.HTTPException) as read_exc:
+                raise DeploymentContractError(unavailable_message) from read_exc
             retry_after_raw = _response_header(exc.headers, "Retry-After")
             return HttpProbeResponse(
                 status=exc.code,
@@ -6513,7 +6520,8 @@ def _session_request(
                 body_text=_read_text_payload(raw) if read_error_body else None,
                 content_type=_response_header(exc.headers, "Content-Type"),
             )
-        except OSError as exc:
+        except (OSError, http.client.HTTPException) as exc:
+            # `IncompleteRead`는 `OSError`가 아니다 — 날것으로 새지 않게 같은 계약 오류로 감싼다.
             raise DeploymentContractError(unavailable_message) from exc
 
     if retry_safe_get_readiness:
@@ -6682,9 +6690,13 @@ def _request_json(
     deadline = started + budget.remaining
     try:
         for attempt in range(_MAP_FIXTURE_COLD_START_ATTEMPTS):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise DeploymentContractError("C6c Map smoke endpoint is unavailable")
+            # 첫 시도는 늘 timeout 그대로 간다 — 예산은 재시도만 묶는다.
+            timeout: float = _MAP_FIXTURE_REQUEST_TIMEOUT_SECONDS
+            if attempt:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise DeploymentContractError("C6c Map smoke endpoint is unavailable")
+                timeout = min(timeout, remaining)
             try:
                 return _request_json_once(
                     url,
@@ -6692,7 +6704,7 @@ def _request_json(
                     headers=headers,
                     body=None,
                     read_error_body=read_error_body,
-                    timeout=min(_MAP_FIXTURE_REQUEST_TIMEOUT_SECONDS, remaining),
+                    timeout=timeout,
                 )
             except DeploymentContractError as exc:
                 cause: object = exc.__cause__

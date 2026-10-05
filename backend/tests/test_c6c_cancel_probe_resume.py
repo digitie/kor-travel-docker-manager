@@ -6,6 +6,7 @@ import io
 import json
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from email.message import Message
 from types import SimpleNamespace
 from typing import Literal, cast
@@ -889,7 +890,11 @@ def test_an_incomplete_read_that_is_not_retried_is_a_contract_error(
 
 
 def _stalling_urlopen(
-    monkeypatch: pytest.MonkeyPatch, *, stalls: list[float], outcomes: list[object]
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stalls: list[float],
+    outcomes: list[object],
+    timeouts: list[float] | None = None,
 ) -> tuple[list[float], _Clock]:
     """시도마다 `stalls`만큼 벽시계를 쓴다(마지막 값 반복) — socket timeout은 연산마다라 시도의 timeout보다 길 수 있다."""
 
@@ -902,6 +907,8 @@ def _stalling_urlopen(
         index = len(starts)
         outcome = outcomes[min(index, len(outcomes) - 1)]
         starts.append(clock.now)
+        if timeouts is not None:
+            timeouts.append(timeout)
         clock.now += stalls[min(index, len(stalls) - 1)]
         if isinstance(outcome, BaseException):
             raise outcome
@@ -956,6 +963,109 @@ def test_the_smoke_shares_one_map_request_budget(monkeypatch: pytest.MonkeyPatch
     with pytest.raises(DeploymentContractError, match="Map smoke endpoint is unavailable"):
         c6c.run_pinvi_canonical_smoke(_fixture_config())
     assert len(starts) == 2
+
+
+def _smoke_with_spent_budget(
+    monkeypatch: pytest.MonkeyPatch, spent: float, body: Callable[[], object]
+) -> None:
+    """smoke 예산을 `spent`초 쓴 상태에서 `body()`를 부른다(cancel 뒤 read의 자리)."""
+
+    def smoke_body(config: C6cDeploymentConfig, **_kwargs: object) -> list[dict[str, int | str]]:
+        budget = c6c._MAP_FIXTURE_BUDGET.get()
+        assert budget is not None
+        budget.remaining -= spent
+        body()
+        return []
+
+    monkeypatch.setattr(c6c, "_run_pinvi_canonical_smoke", smoke_body)
+    c6c.run_pinvi_canonical_smoke(_fixture_config())
+
+
+def test_an_exhausted_budget_still_gives_the_read_one_full_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """파괴적인 PinVi cancel 뒤의 read는 예산이 바닥나도 timeout 10초 그대로 한 번은 간다."""
+
+    timeouts: list[float] = []
+    starts, clock = _stalling_urlopen(
+        monkeypatch, stalls=[1.0], outcomes=[_armed_payload()], timeouts=timeouts
+    )
+    def read() -> object:
+        return c6c._read_c6c_cancel_probe_fixture(_fixture_config(), _TRANSACTION_ID)
+
+    _smoke_with_spent_budget(monkeypatch, c6c._MAP_FIXTURE_BUDGET_SECONDS + 60.0, read)
+    assert timeouts == [c6c._MAP_FIXTURE_REQUEST_TIMEOUT_SECONDS]
+
+    # 그 한 번이 실패하면 재시도·대기 없이 같은 오류로 닫힌다.
+    timeouts.clear()
+    starts, clock = _stalling_urlopen(
+        monkeypatch, stalls=[10.0], outcomes=[TimeoutError("timed out")], timeouts=timeouts
+    )
+    with pytest.raises(DeploymentContractError, match="Map smoke endpoint is unavailable"):
+        _smoke_with_spent_budget(monkeypatch, c6c._MAP_FIXTURE_BUDGET_SECONDS, read)
+    assert timeouts == [c6c._MAP_FIXTURE_REQUEST_TIMEOUT_SECONDS] and clock.sleeps == []
+    assert len(starts) == 1
+
+
+def test_only_retries_are_clipped_to_the_remaining_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """첫 시도는 10초, 재시도는 남은 예산(여기서는 7초)으로 줄어든 timeout을 받는다."""
+
+    budget = c6c._MAP_FIXTURE_BUDGET_SECONDS
+    timeouts: list[float] = []
+    # 첫 시도가 budget-12초를 쓰고 실패 → 5초 대기 → 남은 예산 7초.
+    _stalling_urlopen(
+        monkeypatch,
+        stalls=[budget - 12.0, 1.0],
+        outcomes=[TimeoutError("timed out"), _armed_payload()],
+        timeouts=timeouts,
+    )
+
+    fixture = c6c._read_c6c_cancel_probe_fixture(_fixture_config(), _TRANSACTION_ID)
+
+    assert fixture.transaction_id == _TRANSACTION_ID
+    assert timeouts == [c6c._MAP_FIXTURE_REQUEST_TIMEOUT_SECONDS, 7.0]
+
+
+class _BodyTruncatedHttpError(urllib.error.HTTPError):
+    """오류 응답의 본문을 읽다가 `IncompleteRead`가 난다."""
+
+    def __init__(self) -> None:
+        super().__init__("http://127.0.0.1:1/x", 503, "unavailable", Message(), io.BytesIO(b""))
+
+    def read(self, *_args: object) -> bytes:
+        raise http.client.IncompleteRead(b'{"err', 64)
+
+
+def test_a_truncated_map_error_body_is_a_contract_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def urlopen(_request: urllib.request.Request, *, timeout: float) -> object:
+        raise _BodyTruncatedHttpError()
+
+    monkeypatch.setattr(c6c.urllib.request, "urlopen", urlopen)
+    with pytest.raises(DeploymentContractError, match="Map smoke endpoint is unavailable") as caught:
+        c6c._request_json_once(
+            "http://127.0.0.1:1/x", method="GET", headers={}, body=None, read_error_body=True
+        )
+    assert isinstance(caught.value.__cause__, http.client.IncompleteRead)
+
+
+@pytest.mark.parametrize("where", ["error_body", "response_body"])
+def test_pinvi_session_requests_never_leak_a_raw_incomplete_read(where: str) -> None:
+    """PinVi `_session_request`도 `IncompleteRead`(오류 본문·정상 본문)를 계약 오류로 감싼다."""
+
+    opener = Mock()
+    if where == "error_body":
+        opener.open.side_effect = _BodyTruncatedHttpError()
+    else:
+        opener.open.return_value = _TruncatedResponse()
+    with pytest.raises(
+        DeploymentContractError, match="authenticated smoke endpoint is unavailable"
+    ) as caught:
+        c6c._session_request(
+            opener, "http://127.0.0.1:1/x", method="GET", headers={}, read_error_body=True
+        )
+    assert isinstance(caught.value.__cause__, http.client.IncompleteRead)
 
 
 def test_cold_start_retry_refuses_requests_with_a_body_or_post() -> None:
