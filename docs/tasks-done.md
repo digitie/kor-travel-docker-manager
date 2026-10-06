@@ -16,6 +16,11 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-10-06 — Concierge 공용 Dagster 합류 구현
+
+- [x] Concierge shared-only code server, workspace/digest·readonly instance bind·location/job cap과 canonical health/reaper를 구현했다(ADR-55). legacy profile과 기존 own/partial topology 검증을 유지한다.
+- Linux backend 2632 PASS/7 SKIP, frontend 34 PASS 및 type/lint/build, Ruff 통과. Concierge 격리 native/Docker/N150 UI 검증을 완료했다. 독립 FULL 리뷰·PR 검사는 병합 gate이며 운영 설치·drain/backend 전환은 별도 작업이다.
+
 ## 2026-09-04 — 격리 하네스의 불변 핀 소스 트리 오염
 
 - [x] 실행을 봉인 트리가 아니라 **일회용 체크아웃**(같은 bare의 object store에서 재유도)에서

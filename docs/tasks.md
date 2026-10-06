@@ -1,6 +1,5 @@
 # TASKS — 활성 작업
 
-- [/] Concierge shared-only Dagster code server 합류(ADR-55): 구현·격리 native/Docker/N150 UI 검증 후 독립 FULL 리뷰·PR. 운영 drain/backend 전환은 별도 창.
 
 이 문서는 완료되지 않은 작업만 순서대로 한 줄씩 나열한다. lane, 담당자 구분,
 계층형 하위 작업과 완료 이력은 두지 않는다. 완료 이력은
