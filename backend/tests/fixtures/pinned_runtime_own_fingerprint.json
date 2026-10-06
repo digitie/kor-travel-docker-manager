@@ -440,6 +440,7 @@
   "<unrecognized service key sha256:cef030f6>",
   "<unrecognized service key sha256:101df5c0>",
   "<unrecognized service key sha256:d0b1b3d4>",
+  "<unrecognized service key sha256:c1fdb1fe>",
   "<unrecognized service key sha256:330a2af4>",
   "<unrecognized service key sha256:614f32e0>",
   "<unrecognized service key sha256:064a1a69>",
@@ -927,6 +928,9 @@
   ],
   "kor-travel-concierge-api": [
    "kor-travel-concierge-api"
+  ],
+  "kor-travel-concierge-dagster-code-server": [
+   "kor-travel-concierge-dagster-code-server"
   ],
   "kor-travel-concierge-mcp": [
    "kor-travel-concierge-mcp"

@@ -817,8 +817,8 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "ff189facb6d6cf1a"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "cd0fff9b88ceaff1"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "e21f540cae94f43f"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "8a86a75219b7938d"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -887,8 +887,8 @@ services:
     environment:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "ff189facb6d6cf1a"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "cd0fff9b88ceaff1"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "e21f540cae94f43f"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "8a86a75219b7938d"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -1206,6 +1206,8 @@ services:
       rustfs:
         condition: service_healthy
     environment:
+      KTC_DAGSTER_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
+      KTC_DAGSTER_PUBLIC_URL: ${KTDM_PROD_URL_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}}
       DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
       # UI BFF와 backend admin proxy는 같은 Manager root authority만 사용한다.
       KTC_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET:?KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET must be explicitly set}
@@ -1280,7 +1282,9 @@ services:
     - ${KOR_TRAVEL_CONCIERGE_MCP_PORT:-12602}:${KOR_TRAVEL_CONCIERGE_MCP_PORT:-12602}
     extra_hosts:
     - host.docker.internal:host-gateway
+  # 명시적 DB backend 전환 후에만 쓰는 롤백용 APScheduler. 기본 ensure는 실행하지 않는다.
   kor-travel-concierge-scheduler:
+    profiles: [legacy-scheduler]
     image: ${KOR_TRAVEL_CONCIERGE_SCHEDULER_IMAGE:-kor-travel-concierge-scheduler:latest-main}
     build:
       context: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}
@@ -1322,6 +1326,73 @@ services:
       FFMPEG_PATH: /usr/bin/ffmpeg
     extra_hosts:
     - host.docker.internal:host-gateway
+  kor-travel-concierge-dagster-code-server:
+    image: ${KOR_TRAVEL_CONCIERGE_DAGSTER_IMAGE:-kor-travel-concierge-dagster-code-server:latest-main}
+    build:
+      context: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}
+      dockerfile: Dockerfile.python
+      target: dagster
+    container_name: ${KOR_TRAVEL_CONCIERGE_DAGSTER_CONTAINER:-kor-travel-concierge-dagster-code-server-latest}
+    init: true
+    # 앱의 종료 대기·LLM HTTP 정리보다 길게 확보한다.
+    stop_grace_period: 180s
+    mem_limit: 2g
+    mem_reservation: 512m
+    cpus: 2
+    restart: unless-stopped
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    command:
+    - dagster
+    - code-server
+    - start
+    - -h
+    - 127.0.0.1
+    - -p
+    - '12603'
+    - -m
+    - ktc.dagster.definitions
+    env_file:
+    - path: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}/.env
+      required: false
+      format: raw
+    depends_on:
+      kor-travel-concierge-api:
+        condition: service_healthy
+    environment:
+      <<: *dagster-shared-control-env
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "e21f540cae94f43f"
+      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
+      RUSTFS_ENABLED: 'true'
+      RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      APP_ENV: ${KOR_TRAVEL_CONCIERGE_APP_ENV:-local}
+      API_AUTH_ENABLED: ${KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED:-false}
+      API_KEYS: ${KOR_TRAVEL_CONCIERGE_API_KEYS:-}
+      # 자막 비활성/숏폼 영상은 transcript_api·yt-dlp로 자막을 못 받으므로,
+      # faster-whisper 오디오 전사 폴백을 켠다(무거움; env로 제어).
+      TRANSCRIPT_WHISPER_ENABLED: ${KOR_TRAVEL_CONCIERGE_WHISPER_ENABLED:-true}
+      WHISPER_MODEL_SIZE: ${KOR_TRAVEL_CONCIERGE_WHISPER_MODEL_SIZE:-base}
+      FFMPEG_PATH: /usr/bin/ffmpeg
+    extra_hosts:
+    - host.docker.internal:host-gateway
+    volumes:
+    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    healthcheck:
+      test:
+      - CMD
+      - python
+      - -I
+      - -c
+      - *dagster-code-server-probe
+      - '12603'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s
+      start_interval: 5s
   kor-travel-concierge-ui:
     image: ${KOR_TRAVEL_CONCIERGE_UI_IMAGE:-kor-travel-concierge-ui:latest-main}
     build:
@@ -1631,7 +1702,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "ff189facb6d6cf1a"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "e21f540cae94f43f"
       TMPDIR: /tmp
       TEMP: /tmp
       TMP: /tmp
@@ -2040,7 +2111,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "ff189facb6d6cf1a"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "e21f540cae94f43f"
       DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       # 여기가 code location이 실제로 도는 곳이다 — `DefaultRunLauncher`의 run
@@ -2354,7 +2425,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "ff189facb6d6cf1a"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "e21f540cae94f43f"
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:?KOR_TRAVEL_GEO_DOCKER_PG_DSN must be explicitly set}
@@ -2750,7 +2821,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "ff189facb6d6cf1a"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "e21f540cae94f43f"
       DAGSTER_HOME: /opt/dagster/home
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
