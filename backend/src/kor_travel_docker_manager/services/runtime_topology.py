@@ -60,8 +60,8 @@ class DagsterFamily:
     target: str
     control_plane: ControlPlane
     code_server: str
-    webserver: str
-    daemon: str
+    webserver: str | None
+    daemon: str | None
     #: 옛 webserver·daemon에 기대는 서비스(weather의 gateway). 대부분 비어 있다.
     gateways: tuple[str, ...]
     #: 형제 프로젝트(`external_project`)면 그 compose project 이름 — 서비스는 Manager compose가 아니라 그
@@ -85,7 +85,7 @@ class DagsterFamily:
     def legacy(self) -> tuple[str, ...]:
         """전환하면 `legacy-dagster`로 내려가는 서비스(스위치와 무관한 모양)."""
 
-        return (self.webserver, self.daemon, *self.gateways)
+        return tuple(name for name in (self.webserver, self.daemon, *self.gateways) if name is not None)
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -97,13 +97,16 @@ class DagsterFamily:
     def processes(self) -> tuple[str, ...]:
         """이 target의 Dagster 프로세스 서비스 전부(webserver·code-server·daemon, 스위치와 무관)."""
 
-        return (self.webserver, self.code_server, self.daemon)
+        return tuple(name for name in (self.webserver, self.code_server, self.daemon) if name is not None)
 
     @property
     def carrier(self) -> str:
         """target Dagster 이미지를 대표하는 실행 서비스 — `own`이면 webserver, `shared`면 code-server."""
 
-        return self.code_server if self.shared else self.webserver
+        if self.shared:
+            return self.code_server
+        assert self.webserver is not None
+        return self.webserver
 
     @property
     def active_daemon(self) -> str | None:
@@ -304,15 +307,21 @@ def derive_dagster_family(
     def runners(program: str) -> set[str]:
         return {name for name, service in dependents.items() if _runs(service, program)}
 
-    webserver = _one(runners("dagster-webserver"), what="webserver", target=target_id)
-    daemon = _one(runners("dagster-daemon"), what="daemon", target=target_id)
+    webservers, daemons = runners("dagster-webserver"), runners("dagster-daemon")
+    # 처음부터 공용 plane으로 들어오는 target에는 옛 Dagster 서비스가 없다.
+    # 한쪽만 빠진 기존 family나 `own`의 누락은 계속 거부한다.
+    if control_plane == "shared" and not webservers and not daemons:
+        webserver = daemon = None
+    else:
+        webserver = _one(webservers, what="webserver", target=target_id)
+        daemon = _one(daemons, what="daemon", target=target_id)
     # gateway는 옛 webserver·daemon에 기대는 **다른** 서비스다(Map daemon은 Map webserver에 기대지만 gateway가 아니다).
     gateways = sorted(
         str(name)
         for name, service in services.items()
         if isinstance(service, Mapping)
         and name not in (webserver, daemon)
-        and _depends(service) & {webserver, daemon}
+        and _depends(service) & {name for name in (webserver, daemon) if name is not None}
         and not _mounts_shared_workspace(service)
     )
     return DagsterFamily(

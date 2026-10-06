@@ -480,7 +480,7 @@ def _contract_violations(
         shared = block["control_plane"] == "shared"
         any_shared = any_shared or shared
         legacy = _legacy(compose, spec)
-        if not legacy:
+        if not legacy and not shared:
             violations.append(f"`{target_id}`: 옛 webserver·daemon을 모양으로 찾지 못했다")
 
         # (a) code-server
@@ -689,6 +689,10 @@ def _flip(
     if skip != "digest":
         for name in (plane["webserver"], plane["daemon"]):
             _environment(services[name])[_DIGEST_ENV[_WORKSPACE_SOURCE]] = _digest(rendered)
+    else:
+        # 원문 포맷이 현재 파생 결과와 같아도 누락 대조군은 실제로 digest를 누락시킨다.
+        for name in (plane["webserver"], plane["daemon"]):
+            _environment(services[name]).pop(_DIGEST_ENV[_WORKSPACE_SOURCE], None)
     return {_WORKSPACE_SOURCE: rendered}
 
 
@@ -803,8 +807,11 @@ def test_the_derivation_sees_what_it_derives_from() -> None:
         spec = targets["targets"][target_id]
         assert _code_servers(compose, spec), target_id
         legacy = _legacy(compose, spec)
-        assert any(_runs(compose["services"][n], "dagster-webserver") for n in legacy), (target_id, legacy)
-        assert any(_runs(compose["services"][n], "dagster-daemon") for n in legacy), (target_id, legacy)
+        if legacy:
+            assert any(_runs(compose["services"][n], "dagster-webserver") for n in legacy), (target_id, legacy)
+            assert any(_runs(compose["services"][n], "dagster-daemon") for n in legacy), (target_id, legacy)
+        else:
+            assert spec["dagster"]["control_plane"] == "shared", target_id
         assert spec["dagster"].get("consumers"), f"`{target_id}`가 소비자 env를 선언하지 않는다"
     plane = _plane(compose, targets)
     assert plane["internal"].startswith("http://127.0.0.1:")

@@ -105,6 +105,13 @@ containers:
     display_name: Kor Travel Concierge Scheduler
     connection: internal scheduler
     expected_ports: []
+  kor-travel-concierge-dagster-code-server:
+    name: kor-travel-concierge-dagster-code-server-latest
+    compose_service: kor-travel-concierge-dagster-code-server
+    role: concierge-dagster-code-server
+    display_name: Kor Travel Concierge Dagster Code Server
+    connection: internal grpc
+    expected_ports: []
   kor-travel-concierge-ui:
     name: kor-travel-concierge-ui-latest
     compose_service: kor-travel-concierge-ui
@@ -473,7 +480,7 @@ targets:
     port_band: "12600-12699"
     depends_on: [prom]
     display_name: Kor Travel Concierge
-    description: Kor Travel Concierge API/MCP/Scheduler/Web UI를 실행합니다. geo에는 의존하지 않는다.
+    description: Kor Travel Concierge API/MCP/공용 Dagster code-server/Web UI를 실행합니다. geo에는 의존하지 않는다.
     aliases:
       - kor-travel-concierge
       - concierge
@@ -486,21 +493,27 @@ targets:
       - kor-travel-shared-db-init-concierge
       - kor-travel-concierge-api
       - kor-travel-concierge-mcp
-      - kor-travel-concierge-scheduler
+      - kor-travel-concierge-dagster-code-server
       - kor-travel-concierge-ui
     runtime_services:
       - kor-travel-concierge-api
       - kor-travel-concierge-mcp
-      - kor-travel-concierge-scheduler
+      - kor-travel-concierge-dagster-code-server
       - kor-travel-concierge-ui
     containers:
       - kor-travel-shared-postgresql
       - rustfs
       - kor-travel-concierge-api
       - kor-travel-concierge-mcp
-      - kor-travel-concierge-scheduler
+      - kor-travel-concierge-dagster-code-server
       - kor-travel-concierge-ui
     init_steps: []
+    dagster:
+      control_plane: shared
+      consumers:
+        kor-travel-concierge-api:
+          KTC_DAGSTER_URL: internal
+          KTC_DAGSTER_PUBLIC_URL: public
 
   map:
     port_band: "12700-12799"
@@ -533,7 +546,7 @@ targets:
       - kor-travel-geo-ui
       - kor-travel-concierge-api
       - kor-travel-concierge-mcp
-      - kor-travel-concierge-scheduler
+      - kor-travel-concierge-dagster-code-server
       - kor-travel-concierge-ui
       - kor-travel-map-api
       - kor-travel-map-ui
@@ -593,7 +606,7 @@ targets:
       - kor-travel-geo-ui
       - kor-travel-concierge-api
       - kor-travel-concierge-mcp
-      - kor-travel-concierge-scheduler
+      - kor-travel-concierge-dagster-code-server
       - kor-travel-concierge-ui
       - kor-travel-map-api
       - kor-travel-map-ui
@@ -641,7 +654,7 @@ targets:
       - kor-travel-geo-ui
       - kor-travel-concierge-api
       - kor-travel-concierge-mcp
-      - kor-travel-concierge-scheduler
+      - kor-travel-concierge-dagster-code-server
       - kor-travel-concierge-ui
       - kor-travel-map-api
       - kor-travel-map-ui
@@ -853,6 +866,10 @@ targets:
 # 정식 등록했다, 원래 `geo` 소유자 몫으로 남아 있던 gap.)
 
 compose_binds:
+  kor-travel-concierge-dagster-code-server:
+    - container_path: "/opt/dagster/dagster_home/dagster.yaml"
+      read_only: true
+      source: "./config/dagster-shared/dagster.yaml"
   grafana:
     - container_path: "/etc/grafana/provisioning/datasources"
       read_only: true

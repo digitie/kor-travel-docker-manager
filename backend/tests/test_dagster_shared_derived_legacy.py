@@ -109,9 +109,10 @@ def test_every_target_is_own_in_the_installed_model() -> None:
     """
 
     families = installed_dagster_families()
-    assert sorted(families) == ["geo", "map", "pinvi", "weather"]
+    assert sorted(families) == ["conc", "geo", "map", "pinvi", "weather"]
     assert {families[t].control_plane for t in ("map", "pinvi")} == {"own"}
-    assert {families[t].control_plane for t in ("geo", "weather")} == {"shared"}
+    assert {families[t].control_plane for t in ("conc", "geo", "weather")} == {"shared"}
+    assert families["conc"].legacy == ()
 
 
 def test_own_c6c_sets_are_the_pre_adr54_literals() -> None:

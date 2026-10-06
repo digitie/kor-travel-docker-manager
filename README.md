@@ -109,3 +109,8 @@ npm run dev
 ## 에이전트 협업 규칙
 
 본 저장소는 다양한 AI 에이전트들과 협업하여 개발됩니다. 저장소 기여 규칙은 [AGENTS.md](AGENTS.md)를 참고해 주시고, 쉘 커맨드 및 체크리스트는 [SKILL.md](SKILL.md)를 읽어 주시기 바랍니다.
+
+
+Concierge 공용 Dagster(ADR-55): `conc` 기본 runtime은 `kor-travel-concierge-dagster-code-server`를
+사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용하며 old APScheduler는
+`legacy-scheduler` profile이다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.
