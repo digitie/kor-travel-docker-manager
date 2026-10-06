@@ -2,6 +2,14 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-07 — Concierge 운영 설치·backend 전환 검증 완료
+
+- 두 독립 적대 리뷰·관련 53 tests/Ruff·CI를 통과한 PR #464를 머지했다. root 소유 source clone과 offline wheelhouse로 머지 커밋 `42ffc553`을 trusted installer에 적용하고 backend health를 확인했다. 기존 rehearsal/rebuildable 분류와 다른 앱의 배포 상태는 유지했다.
+- Concierge·shared metadata DB 백업과 이전 소스·이미지 복구 지점 확보 후 old APScheduler 중지·drain, 앱 migration `20261006_0030`, canonical C6c의 네 서비스 재생성 및 공유 storage migrate·plane 갱신을 수행했다. Concierge CLI로 `dagster / generation 1` 전환을 완료했다.
+- 실제 native/domain 성공·실패, UI 재시작 lineage와 동일 입력 재실패, 같은 batch lane 후속 성공을 확인했다. 검증 seed는 외부 provider를 호출하지 않는다. 세 sensor tick·공유 plane health, code server UID10001·2GiB 및 API/MCP SDK 부재를 확인했다.
+- 공개/LAN 인증 및 N150 공개 Chromium 3 live E2E를 통과했다. Basic 인증 미주입·목록 제외 seed의 초기 하니스 실패 원문을 보존하고 조건 보정 후 다시 실행했다. 다른 다섯 앱의 기존 컨테이너 ID/health와 종료 시 domain pending/running 0을 확인했다. 테스트 실패 attention만 확인 처리하고 native/domain 이력·복구 지점은 보존했다.
+- 운영 강제 종료·timeout·cancel drill과 실제 Whisper 최대 RSS·유료 provider 평가는 이번 운영 배포 검증에 포함하지 않았다. 접속·인증값·dump·상세 실행 증거는 비공개 기록에만 둔다.
+
 ## 2026-10-07 — Concierge 운영 전환 준비와 공식 재생성 경로 보강
 
 - `compose-boundary activate-concierge`의 C6c 고정 projection/recreate allowlist를 기본 shared-only Dagster code server로 맞췄다. legacy profile의 APScheduler는 자동 재기동하지 않는다.
