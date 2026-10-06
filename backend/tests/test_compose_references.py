@@ -18,6 +18,7 @@ from kor_travel_docker_manager.services.compose_references import (
     assert_protected_references_are_derived,
     assert_resolved_secret_values_stay_at_reference_sites,
     compose_references,
+    env_file_secret_values_by_service,
     reference_compose_path,
     variable_names,
 )
@@ -314,3 +315,77 @@ def test_the_resolved_backstop_sees_compose_dollar_escaping() -> None:
         assert_resolved_secret_values_stay_at_reference_sites(
             resolved, compose_path=_COMPOSE, environment=environment
         )
+
+
+def _checkout_family(anchor: str) -> set[str]:
+    """원본에서 `anchor` 변수 아래 checkout을 build context나 `env_file`로 쓰는 서비스."""
+
+    family = set()
+    for name, service in _DOCUMENT["services"].items():
+        build = service.get("build")
+        context = build.get("context") if isinstance(build, dict) else build
+        paths = [
+            entry["path"] if isinstance(entry, dict) else entry for entry in service.get("env_file") or []
+        ]
+        if any(anchor in variable_names(text) for text in [context or "", *paths]):
+            family.add(name)
+    return family
+
+
+def test_env_file_leak_set_is_everything_the_checkout_family_is_not_given() -> None:
+    """`env_file` 내용 판정은 원본이 그 checkout 가족에게 주는 값을 뺀 `.env` 비밀이다(ADR-56)."""
+
+    environment = _environment()
+    by_service = env_file_secret_values_by_service(compose_path=_COMPOSE, environment=environment)
+
+    env_file_services = {name for name, service in _DOCUMENT["services"].items() if service.get("env_file")}
+    assert set(by_service) == env_file_services
+
+    family = _checkout_family("KOR_TRAVEL_CONCIERGE_REPO_DIR")
+    # 공유 Dagster code server(ADR-55)와 env_file이 없는 UI도 같은 가족이다.
+    assert {
+        "kor-travel-concierge-api",
+        "kor-travel-concierge-mcp",
+        "kor-travel-concierge-dagster-code-server",
+        "kor-travel-concierge-ui",
+    } <= family
+    granted = {
+        environment[name]
+        for site, names in compose_references(_DOCUMENT).items()
+        if site[:1] == ("services",) and site[1] in family and site[2:3] != ("env_file",)
+        for name in names
+        if name in environment and is_sensitive_key(name)
+    }
+    for service in family & env_file_services:
+        leak = set(by_service[service])
+        assert granted.isdisjoint(leak), service
+        for c6c_name in (
+            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET",
+            "KOR_TRAVEL_MAP_SERVICE_PASSWORD",
+            "PINVI_APP_DB_PASSWORD",
+            "PINVI_JWT_SECRET_KEY",
+            "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD",
+        ):
+            assert environment[c6c_name] in leak, (service, c6c_name)
+
+
+def test_env_file_family_follows_the_reference_model_not_a_name_list(tmp_path: Path) -> None:
+    """가족은 원본 compose에서 파생한다 — 서비스 이름 표가 아니다.
+
+    원본이 Map API를 Concierge checkout에서 빌드한다고 적으면(가정) Map API가 받는 값도 그 가족의 것이 된다.
+    설치된 원본만 이렇게 바꿀 수 있다(후보의 `env_file`·참조는 원본의 부분집합이어야 한다).
+    """
+
+    environment = _environment()
+    map_secret = environment["KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"]
+    before = env_file_secret_values_by_service(compose_path=_COMPOSE, environment=environment)
+    assert map_secret in before["kor-travel-concierge-api"]
+
+    moved = copy.deepcopy(_DOCUMENT)
+    moved["services"]["kor-travel-map-api"]["build"] = "${KOR_TRAVEL_CONCIERGE_REPO_DIR}/map"
+    reference = tmp_path / "docker-compose.yml"
+    reference.write_text(yaml.safe_dump(moved, sort_keys=False), encoding="utf-8")
+    after = env_file_secret_values_by_service(compose_path=reference, environment=environment)
+
+    assert map_secret not in after["kor-travel-concierge-api"]
+    assert map_secret in after["kor-travel-geo-ui"]
