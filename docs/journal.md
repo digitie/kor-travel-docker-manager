@@ -2,6 +2,12 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-07 — C6c `env_file` 판정을 checkout 가족에서 파생(ADR-56)
+
+- `KOR_TRAVEL_CONCIERGE_REPO_DIR`가 다시 켜지자 모든 Map/PinVi pinned 재구축이 `prebuild_snapshot`에서 "env_file leaks C6c data for kor-travel-concierge-api"로 거부됐다. Concierge `.env`가 공유 VWorld key와 Concierge UI auth 세 값을 Manager `.env`와 같은 값으로 담기 때문이다.
+- `env_file` 내용의 누출 집합을 원본 compose가 같은 checkout 가족(Concierge API·MCP·공유 Dagster code server·scheduler·UI)에 주지 않는 값으로 좁혔다. Map·PinVi credential과 공용 instance admin은 세 `env_file` 서비스 어디서든 그대로 거부한다(RED→GREEN 회귀 26건 + 파생 규칙 단위 2건, 가족을 자기 자신으로 줄이는 mutation에서 3건 RED).
+- n150 운영 파일 read-only 실측(키 이름만): 설치된 `42ffc553`은 raw 후보 검사에서 같은 메시지로 실패하고 이 브랜치는 통과한다. resolved 검사는 둘 다 통과한다.
+
 ## 2026-10-07 — Concierge 운영 설치·backend 전환 검증 완료
 
 - 두 독립 적대 리뷰·관련 53 tests/Ruff·CI를 통과한 PR #464를 머지했다. root 소유 source clone과 offline wheelhouse로 머지 커밋 `42ffc553`을 trusted installer에 적용하고 backend health를 확인했다. 기존 rehearsal/rebuildable 분류와 다른 앱의 배포 상태는 유지했다.
