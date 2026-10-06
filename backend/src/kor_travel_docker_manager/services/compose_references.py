@@ -236,6 +236,71 @@ def secret_values_for(*, compose_path: str | Path, environment: Mapping[str, str
     return tuple(sorted(secret_values(environment, reference_text=reference_text), key=len, reverse=True))
 
 
+def _checkout_anchors(service_document: Mapping[str, Any]) -> set[str]:
+    """서비스의 build context와 `env_file` 경로가 뿌리를 두는 변수(대개 `*_REPO_DIR`)."""
+
+    build = service_document.get("build")
+    context = build.get("context") if isinstance(build, Mapping) else build
+    anchors = variable_names(context) if isinstance(context, str) else set()
+    for path in _env_file_paths(service_document.get("env_file")):
+        anchors |= variable_names(path)
+    return anchors
+
+
+def env_file_secret_values_by_service(
+    *, compose_path: str | Path, environment: Mapping[str, str]
+) -> dict[str, tuple[str, ...]]:
+    """`env_file` **내용**이 담으면 누출인 `.env` 비밀 값을 서비스마다(긴 것부터).
+
+    `env_file`은 원본 compose가 고정한 자리에만 있다(`assert_protected_references_are_derived`). 그 파일은
+    한 소스 checkout 안에 산다 — 그 checkout에서 빌드하거나 같은 checkout에 `env_file`을 둔 원본의 서비스들이
+    그 파일의 **가족**이다. 원본이 그 가족에게 이미 주는 값(가족 서비스의 어느 자리든 참조하는 변수의 값, DSN 안의
+    비밀 포함)은 파일에 다시 있어도 새로 흘러가는 것이 없다. 그 밖의 `.env` 비밀(다른 프로젝트의 DB password,
+    proxy secret, token)만 누출이다. 이름이 아니라 값으로 판정한다 — 여러 서비스가 같은 값을 공유하면(VWorld
+    browser key) 원본이 가족에게 그 값을 준 순간 그 값은 가족의 것이다.
+
+    원본에 `env_file`이 없는 서비스는 결과에 없다. 호출부는 그 경우 전체 비밀 집합을 쓴다(후보가 원본에 없는
+    `env_file`을 추가하면 참조 규칙이 먼저 거부한다).
+    """
+
+    reference_text, reference = _load_reference(compose_path)
+    secret_set = secret_values(environment, reference_text=reference_text)
+    services = reference.get("services")
+    if not isinstance(services, Mapping):
+        return {}
+    documents = {
+        str(name): document for name, document in services.items() if isinstance(document, Mapping)
+    }
+    granted_names: dict[str, set[str]] = {}
+    for site, names in compose_references(reference).items():
+        if site[:1] == ("services",) and site[2:3] != ("env_file",):
+            granted_names.setdefault(site[1], set()).update(names)
+    anchors = {name: _checkout_anchors(document) for name, document in documents.items()}
+    result: dict[str, tuple[str, ...]] = {}
+    for name, document in documents.items():
+        paths = list(_env_file_paths(document.get("env_file")))
+        if not paths:
+            continue
+        own = set().union(*(variable_names(path) for path in paths))
+        family = {name} | {other for other, other_anchors in anchors.items() if own & other_anchors}
+        granted_texts = [
+            text
+            for member in family
+            for variable in granted_names.get(member, ())
+            for value in [environment.get(variable) or ""]
+            for text in (value, unquote(value))
+            if text
+        ]
+        result[name] = tuple(
+            sorted(
+                (secret for secret in secret_set if not any(secret in text for text in granted_texts)),
+                key=len,
+                reverse=True,
+            )
+        )
+    return result
+
+
 def _site_of(path: tuple[str, ...]) -> Site:
     if path[:1] == ("services",) and len(path) >= 3:
         if path[2] == "environment" and len(path) >= 4:
