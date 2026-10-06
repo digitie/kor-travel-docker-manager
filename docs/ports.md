@@ -41,7 +41,7 @@
 | `cadv` | `12300-12399` | Exporter `12103`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | cAdvisor |
 | `prom` | `12400-12499` | HTTP `12102`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | Prometheus |
 | `geo` | `12500-12599` | API `12501`, Dagster `12502`, Web UI `12505` (DB는 공용 `11000`) | `kor-travel-geo` |
-| `conc` | `12600-12699` | API `12601`, MCP `12602`, Web UI `12605` (DB는 공용 `11000`) | `kor-travel-concierge` |
+| `conc` | `12600-12699` | API `12601`, MCP `12602`, Dagster code-server gRPC `12603`(loopback, ADR-55), Web UI `12605` (DB는 공용 `11000`) | `kor-travel-concierge` |
 | `map` | `12700-12799` | API `12701`, Dagster `12702`, Web UI `12705`(`12700`은 퇴역한 전용 PostgreSQL의 자리, ADR-53) | `kor-travel-map` |
 | `pinvi` | `12800-12899` | API `12801`, Dagster webserver `12802`, Dagster code-server(gRPC, PinVi ADR-069) `12803`, Web UI `12805` (DB는 공용 `11000`) | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
@@ -124,7 +124,7 @@ bare `prometheus` compose 서비스명이 Manager 자신의 `prometheus:` 서비
 `kor-travel-weather-prometheus`로 이름을 바꿔 해소했다(외부 target이었을 때는 "config
 편집 거부" 특례로 무해했지만, internal target에는 그 특례가 적용되지 않는다).
 
-Concierge scheduler와 Map Dagster daemon은 외부 포트를 열지 않는 내부 실행 서비스다.
+legacy Concierge scheduler와 Map Dagster daemon은 외부 포트를 열지 않는 내부 실행 서비스다.
 Geo Dagster webserver는 registry의 일반 runtime 표에는 없는 보조 서비스지만 Compose에서
 `12502`를 사용한다. PinVi의 `srv`와 `main`은 `pinvi` target 별칭이다. PinVi Dagster
 code-server(`12803`, PinVi ADR-069)도 daemon과 같은 내부 전용이다 — webserver/daemon만

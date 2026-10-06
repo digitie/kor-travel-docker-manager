@@ -144,3 +144,8 @@ docs/
       흔한 상황별 대응을 포함한다. 코드 주석으로 대신하지 않는다
 - [ ] 줄바꿈이 LF인지 확인한다. Windows에서 스크립트로 파일을 다시 쓰면 CRLF가 섞여
       diff가 파일 전체 재작성으로 부푼다 (`file <path>`로 확인)
+
+
+Concierge 공용 Dagster(ADR-55): `conc` 기본 runtime은 `kor-travel-concierge-dagster-code-server`를
+사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용하며 old APScheduler는
+`legacy-scheduler` profile이다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.

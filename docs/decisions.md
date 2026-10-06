@@ -4434,3 +4434,21 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
   남긴다(Map 저장소, `consumers`의 `internal`·`public/graphql`). Map 전환은 Map 전용 C6c 계약(보호 서비스 집합, pinned rebuild의 필요 서비스)도 바꿔야 한다.
 - ~~Map·PinVi 전환 전에 pinned 재구축·C6c의 literal 집합을 스위치에서 파생하는 PR이 필요하다(위 9, M2).~~ 해제 — `runtime_topology`.
 - 공개 host `dagster.digitie.mywire.org` → `192.168.1.14:11001`과 옛 hostname redirect는 저장소 밖(OPNsense)이다.
+
+
+## ADR-55: Concierge는 공용 Dagster code server로 합류한다
+
+- 상태: accepted
+- 날짜: 2026-10-06
+- 결정자: human, Codex
+
+`conc`는 Dagster webserver/daemon을 새로 만들지 않고 shared-only family로 등록한다.
+code location은 `ktc.dagster.definitions`, loopback gRPC는 `12603`이다. 기존 APScheduler는
+`legacy-scheduler` rollback profile로 남고 기본 runtime/target에서 제외한다.
+workspace는 registry/compose에서 유도하고 digest를 갱신한다. canonical child-health/incarnation
+probe와 shared PostgreSQL instance를 그대로 사용한다. location limit 2와 각 Concierge job limit 1을
+추가하며 기존 프로젝트의 cap을 바꾸지 않는다. shared-only의 webserver/daemon None은 허용하지만
+own family 누락과 한쪽만 있는 legacy 정의는 계속 거부한다. candidate bind 허용 목록도 공유 instance
+read-only bind를 명시한다. Map/PinVi pinned 재구축 정본의 기존 필드는 유지하고 추가된 서비스 관측만
+갱신한다. 앱의 backend/generation 전환·drain은 Concierge CLI가 소유한다.
+실제 운영 전환은 별도 창이며 이 변경의 격리 검증을 운영 설치 완료로 간주하지 않는다.

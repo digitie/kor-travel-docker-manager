@@ -276,3 +276,8 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
 `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi는 더 이상 자체 저장소의 Docker compose 또는 RustFS 구동 스크립트로 PostgreSQL/RustFS 생명주기를 직접 관리하지 않는다. `geo`, `conc`, `map`, `pinvi` target은 각 앱 컨테이너를 manager에서 함께 빌드하고 실행한다. 로컬에서 해당 인프라를 실행하거나 재시작할 때는 이 저장소의 `ktdctl` CLI, 대시보드/API를 사용한다. 공식 CLI target은 `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `weather`이며, `srv`와 `main`은 `pinvi`를 가리키는 별칭이다. `config/docker-targets.yml`에서 순서와 포함 서비스를 확장한다.
 
 로컬 host 포트 정책은 `docs/ports.md`를 기준으로 한다. PostgreSQL은 공용 instance(`11000`, ADR-44~47·ADR-53) 하나다. loopback 전용이고 `5432`를 듣는 것은 없다. RustFS는 `storage` 대역(`12100-12199`), Grafana는 `gra` 대역(`12200-12299`), cAdvisor는 `cadv` 대역(`12300-12399`), Prometheus는 `prom` 대역(`12400-12499`), `kor-travel-geo`는 `geo` 대역(`12500-12599`), `kor-travel-concierge`는 `conc` 대역(`12600-12699`), `kor-travel-map`은 `map` 대역(`12700-12799`), PinVi는 `pinvi` 대역(`12800-12899`), `kor-travel-docker-manager` 자체 API/Web은 `12900-12999` 대역을 사용한다.
+
+
+Concierge 공용 Dagster(ADR-55): `conc` 기본 runtime은 `kor-travel-concierge-dagster-code-server`를
+사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용하며 old APScheduler는
+`legacy-scheduler` profile이다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.

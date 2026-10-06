@@ -2,6 +2,13 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-06: Concierge shared-only Dagster family 추가
+
+- `conc` 기본 runtime을 code server로 전환하고 기존 APScheduler는 명시적 legacy profile로 보존했다(ADR-55). 공유 workspace/digest·instance readonly bind·location2/job1 cap과 canonical health/reaper를 적용했다.
+- own/partial legacy 누락은 계속 거부한다. Map/PinVi pinned fingerprint는 새 Compose 서비스의 관측 두 필드만 추가하며 기존 필드를 보존했다.
+- backend 전체 2632 PASS/7 SKIP, frontend type-check/build, 전체 Ruff 통과. 독립 적대 리뷰에서 공유 계약을 검토했다. 앱의 lane starvation 반례는 Concierge에서 수정한다.
+- Concierge 격리 native/Docker/N150 UI로 queue·cgroup·child load·incarnation reaper를 확인했다. 기존 운영 서비스와 DB는 변경하지 않았으며 실제 Concierge drain/backend 전환·운영 설치는 별도 창이다.
+
 ## 2026-10-04 — 옛 프로젝트별 Dagster 메타DB 의존 제거(4단계 사고 후속)
 
 2026-10-03 22:51Z, 4단계가 옛 메타DB 다섯(`kor_travel_map_dagster`·`pinvi_dagster`·`kor_travel_geo_dagster`·
