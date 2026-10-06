@@ -1513,7 +1513,10 @@ def _concierge_env_file_candidate(
     concierge_services = concierge["services"]
     assert isinstance(concierge_services, dict)
     for name, service in concierge_services.items():
-        services.setdefault(name, service)
+        # Map API가 Concierge를 부르므로 기본 후보에는 Concierge API가 dependency stub으로 있다.
+        existing = services.get(name)
+        if existing is None or existing == {"image": "alpine:3.20"}:
+            services[name] = service
     for name in (
         "NEXT_PUBLIC_VWORLD_API_KEY",
         "KOR_TRAVEL_GEO_VWORLD_API_KEY",
