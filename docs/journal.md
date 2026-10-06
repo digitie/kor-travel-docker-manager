@@ -2,6 +2,12 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-07 — Concierge 운영 전환 준비와 공식 재생성 경로 보강
+
+- `compose-boundary activate-concierge`의 C6c 고정 projection/recreate allowlist를 기본 shared-only Dagster code server로 맞췄다. legacy profile의 APScheduler는 자동 재기동하지 않는다.
+- 실제 registry runtime 집합과 allowlist 동등성, canonical Compose projection 및 공식 activate 명령의 exact service set을 회귀한다. 관련 Linux backend 53건과 Ruff를 통과했다.
+- 독립 리뷰에서 발견한 배포 가이드의 scheduler 잔존 문구를 수정했다. 운영 전환은 DB 백업·기존 실행자 중지/drain·migration·generation CLI와 공개 UI 로그인 검증을 거친다. 이 기록 시점에는 실제 backend 전환을 아직 실행하지 않았다.
+
 ## 2026-10-06: Concierge shared-only Dagster family 추가
 
 - `conc` 기본 runtime을 code server로 전환하고 기존 APScheduler는 명시적 legacy profile로 보존했다(ADR-55). 공유 workspace/digest·instance readonly bind·location2/job1 cap과 canonical health/reaper를 적용했다.
