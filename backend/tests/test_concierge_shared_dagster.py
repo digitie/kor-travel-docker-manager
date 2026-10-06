@@ -55,3 +55,20 @@ def test_existing_locations_keep_their_limits_and_concierge_has_bounded_lanes():
     assert all(by_location[name] == 10 for name in ("kortravelmap.dagster.definitions", "pinvi.etl.definitions", "kortravelgeo_dagster.definitions", "kortravelweather_dagster.definitions"))
     lanes = {entry["value"]: entry["limit"] for entry in limits if entry["key"] == "kortravelcommon/job"}
     assert lanes == {"concierge/" + name: 1 for name in ("concierge_interactive", "concierge_batch", "concierge_source_scan", "concierge_feature_exports")}
+
+
+
+def test_canonical_activation_matches_default_concierge_runtime():
+    from kor_travel_docker_manager.services.legacy_override_retirement import (
+        _CONCIERGE_RECREATE_SERVICES,
+        _concierge_compose_projection_document,
+    )
+
+    compose, targets = documents()
+    runtime = set(targets["targets"]["conc"]["runtime_services"])
+    assert set(_CONCIERGE_RECREATE_SERVICES) == runtime
+    projection = _concierge_compose_projection_document(compose)
+    selected = projection["services"]
+    assert runtime <= set(selected)
+    assert "kor-travel-concierge-scheduler" not in selected
+    assert selected["kor-travel-concierge-dagster-code-server"]["build"]["target"] == "dagster"

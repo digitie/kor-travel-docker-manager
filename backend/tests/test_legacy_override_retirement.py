@@ -52,7 +52,7 @@ def _canonical_compose_document() -> dict[str, object]:
                 "image": "alpine:3.20",
                 "network_mode": c6c_module._CONCIERGE_CANONICAL_RAW_NETWORK_MODE,
             },
-            "kor-travel-concierge-scheduler": {
+            "kor-travel-concierge-dagster-code-server": {
                 "image": "alpine:3.20",
                 "network_mode": c6c_module._CONCIERGE_CANONICAL_RAW_NETWORK_MODE,
             },
@@ -1122,7 +1122,7 @@ def test_activate_canonical_concierge_recreates_only_exact_service_set(
     assert observed[-4:] == [
         "kor-travel-concierge-api",
         "kor-travel-concierge-mcp",
-        "kor-travel-concierge-scheduler",
+        "kor-travel-concierge-dagster-code-server",
         "kor-travel-concierge-ui",
     ]
     assert "--no-deps" in observed

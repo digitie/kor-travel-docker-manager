@@ -133,10 +133,12 @@ class ComposeConfigResult:
 ComposeConfigRunner = Callable[[list[str], Path, Mapping[str, str]], ComposeConfigResult]
 ComposeUpRunner = Callable[[list[str], Path, Mapping[str, str]], int]
 
+# C6c projection의 고정 allowlist다. registry와 집합 동등성은
+# test_canonical_activation_matches_default_concierge_runtime이 결박한다.
 _CONCIERGE_RECREATE_SERVICES = (
     "kor-travel-concierge-api",
     "kor-travel-concierge-mcp",
-    "kor-travel-concierge-scheduler",
+    "kor-travel-concierge-dagster-code-server",
     "kor-travel-concierge-ui",
 )
 _CANONICAL_COMPOSE_PROJECTION_ENTITY_KEYS = (

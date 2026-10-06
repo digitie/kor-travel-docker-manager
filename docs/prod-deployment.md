@@ -754,7 +754,7 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
 retire는 protected pending snapshot의 root-only로 알려진 Geo backup 값과 Concierge UI source만 raw 파싱하고,
 값 충돌·symlink·비정규 파일·잘못된 API key membership을 fail-close한다. 위 API auth 세 값의 허용된 root fallback도
 candidate에 새 값을 쓰지 않고 existing root authority를 재검증할 뿐이다. candidate root `.env`를 원자적으로
-갱신한 뒤 canonical `/opt` Compose에서 Concierge API/MCP/scheduler/UI와 그 전이 `depends_on` 서비스, 실제로 참조한
+갱신한 뒤 canonical `/opt` Compose에서 Concierge API/MCP/Dagster code server/UI와 그 전이 `depends_on` 서비스, 실제로 참조한
 top-level secret/network/volume/config만 추린 root-owned 일시 projection을 출력 없이 raw/resolved C6c 경계까지
 검증한다. 같은 projection만 정확한 네 Concierge service의 recreate에도 사용하므로, 이번 retire와 무관한 Map/PinVi
 candidate의 아직 준비되지 않은 explicit credential guard가 Concierge 경로를 막거나 반대로 runtime 입력으로 섞일 수 없다.
@@ -762,7 +762,7 @@ projection은 trusted canonical source에서 매번 만들고 즉시 제거하�
 성공한 경우에만 **같은
 protected state filesystem 안에서** pending directory를 owner-only archive로 rename한다. canonical
 rehearsal/rebuildable과 production 모두 Manager 변경 락 G(`global-mutation.lock`)를
-계속 보유한 채 API/MCP/scheduler/UI 정확한 네 service만 canonical single-file source로 force-recreate한다.
+계속 보유한 채 API/MCP/Dagster code server/UI 정확한 네 service만 canonical single-file source로 force-recreate한다.
 production의 일반 `ensure`는 허용되지 않으므로 이 단계에 사용하지 않는다. archive 뒤 재생성이 실패하면 root
 `.env`와 archive는 의도적으로 유지된다. 원인을 해소한 뒤 아래 Manager retry만 사용한다.
 
@@ -772,7 +772,7 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
 ```
 
 retry 역시 pending stage가 없는지와 raw/resolved C6c 경계를 먼저 다시 확인하며, 수동 `docker compose`·legacy
-source restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다.
+source restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다. 이 재생성은 기본 runtime인 Dagster code server를 사용하며 legacy profile의 APScheduler를 다시 시작하지 않는다. backend 전환은 먼저 기존 실행자를 중지·drain하고 Concierge의 `docs/dagster-adoption.md`에 있는 generation CLI로 수행한다.
 
 ## 8. pinned runtime 배포 (ADR-51 마이그레이션 전진)
 
