@@ -18,8 +18,9 @@ from kor_travel_docker_manager.services.compose_references import (
     assert_protected_references_are_derived,
     assert_resolved_secret_values_stay_at_reference_sites,
     compose_references,
-    env_file_secret_values_by_service,
+    env_file_secret_values_by_path,
     reference_compose_path,
+    secret_values,
     variable_names,
 )
 from kor_travel_docker_manager.services.errors import ComposeCandidateContractError
@@ -317,75 +318,137 @@ def test_the_resolved_backstop_sees_compose_dollar_escaping() -> None:
         )
 
 
-def _checkout_family(anchor: str) -> set[str]:
-    """원본에서 `anchor` 변수 아래 checkout을 build context나 `env_file`로 쓰는 서비스."""
 
-    family = set()
-    for name, service in _DOCUMENT["services"].items():
-        build = service.get("build")
-        context = build.get("context") if isinstance(build, dict) else build
-        paths = [
-            entry["path"] if isinstance(entry, dict) else entry for entry in service.get("env_file") or []
-        ]
-        if any(anchor in variable_names(text) for text in [context or "", *paths]):
-            family.add(name)
-    return family
+_CONCIERGE_ENV_FILE = "${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}/.env"
 
 
-def test_env_file_leak_set_is_everything_the_checkout_family_is_not_given() -> None:
-    """`env_file` 내용 판정은 원본이 그 checkout 가족에게 주는 값을 뺀 `.env` 비밀이다(ADR-56)."""
+def _env_file_leaks(compose_path: Path = _COMPOSE, environment: dict[str, str] | None = None) -> dict[str, set[str]]:
+    """경로마다 누출로 보는 값의 **이름**(값이 모두 다른 `_environment()` 기준)."""
 
-    environment = _environment()
-    by_service = env_file_secret_values_by_service(compose_path=_COMPOSE, environment=environment)
-
-    env_file_services = {name for name, service in _DOCUMENT["services"].items() if service.get("env_file")}
-    assert set(by_service) == env_file_services
-
-    family = _checkout_family("KOR_TRAVEL_CONCIERGE_REPO_DIR")
-    # 공유 Dagster code server(ADR-55)와 env_file이 없는 UI도 같은 가족이다.
-    assert {
-        "kor-travel-concierge-api",
-        "kor-travel-concierge-mcp",
-        "kor-travel-concierge-dagster-code-server",
-        "kor-travel-concierge-ui",
-    } <= family
-    granted = {
-        environment[name]
-        for site, names in compose_references(_DOCUMENT).items()
-        if site[:1] == ("services",) and site[1] in family and site[2:3] != ("env_file",)
-        for name in names
-        if name in environment and is_sensitive_key(name)
+    environment = _environment() if environment is None else environment
+    by_path = env_file_secret_values_by_path(
+        compose_path=compose_path, environment=environment, protected_services=()
+    )
+    return {
+        path: {name for name, value in environment.items() if value in set(leak)}
+        for path, leak in by_path.items()
     }
-    for service in family & env_file_services:
-        leak = set(by_service[service])
-        assert granted.isdisjoint(leak), service
-        for c6c_name in (
-            "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET",
-            "KOR_TRAVEL_MAP_SERVICE_PASSWORD",
-            "PINVI_APP_DB_PASSWORD",
-            "PINVI_JWT_SECRET_KEY",
-            "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD",
-        ):
-            assert environment[c6c_name] in leak, (service, c6c_name)
 
 
-def test_env_file_family_follows_the_reference_model_not_a_name_list(tmp_path: Path) -> None:
-    """가족은 원본 compose에서 파생한다 — 서비스 이름 표가 아니다.
+def _with_reference(tmp_path: Path, edit: Any) -> Path:
+    document = copy.deepcopy(_DOCUMENT)
+    edit(document["services"])
+    reference = tmp_path / "docker-compose.yml"
+    reference.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+    return reference
 
-    원본이 Map API를 Concierge checkout에서 빌드한다고 적으면(가정) Map API가 받는 값도 그 가족의 것이 된다.
-    설치된 원본만 이렇게 바꿀 수 있다(후보의 `env_file`·참조는 원본의 부분집합이어야 한다).
+
+def test_concierge_env_file_allows_only_what_every_loader_or_the_ui_alone_receives() -> None:
+    """기대값은 compose를 읽어 손으로 적은 것이다(ADR-56) — 함수의 계산을 되풀이하지 않는다.
+
+    - 네 loader(API·MCP·code server·scheduler) 모두: `API_KEYS`, RustFS 두 값.
+    - 파일을 읽지 않는 UI만, 가족 밖 누구도 받지 않음: UI auth 세 값, BFF backend key.
+    - `NEXT_PUBLIC_*`로 공개: Concierge UI VWorld key, Map UI VWorld build arg.
     """
 
     environment = _environment()
-    map_secret = environment["KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"]
-    before = env_file_secret_values_by_service(compose_path=_COMPOSE, environment=environment)
-    assert map_secret in before["kor-travel-concierge-api"]
+    leaks = _env_file_leaks(environment=environment)
+    secrets = secret_values(environment, reference_text=_TEXT)
+    sensitive = {name for name, value in environment.items() if value in secrets}
+    allowed = sensitive - leaks[_CONCIERGE_ENV_FILE]
+    assert allowed == {
+        "KOR_TRAVEL_CONCIERGE_API_KEYS",
+        "RUSTFS_ACCESS_KEY",
+        "RUSTFS_SECRET_KEY",
+        "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH",
+        "KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET",
+        "KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET",
+        "KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY",
+        "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY",
+        "NEXT_PUBLIC_VWORLD_API_KEY",
+    }
+    for c6c_name in (
+        # code server 하나만 받는다 — MCP(0.0.0.0)에게 새로 흘러간다(적대 리뷰 MED-1).
+        "KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD",
+        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET",
+        "KOR_TRAVEL_MAP_SERVICE_PASSWORD",
+        "PINVI_APP_DB_PASSWORD",
+        "PINVI_JWT_SECRET_KEY",
+        "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD",
+    ):
+        assert c6c_name in leaks[_CONCIERGE_ENV_FILE], c6c_name
 
-    moved = copy.deepcopy(_DOCUMENT)
-    moved["services"]["kor-travel-map-api"]["build"] = "${KOR_TRAVEL_CONCIERGE_REPO_DIR}/map"
-    reference = tmp_path / "docker-compose.yml"
-    reference.write_text(yaml.safe_dump(moved, sort_keys=False), encoding="utf-8")
-    after = env_file_secret_values_by_service(compose_path=reference, environment=environment)
 
-    assert map_secret not in after["kor-travel-concierge-api"]
-    assert map_secret in after["kor-travel-geo-ui"]
+def test_a_value_only_one_loader_receives_is_a_leak(tmp_path: Path) -> None:
+    """교집합이다 — API만 받는 값은 같은 파일을 읽는 MCP에게 새로 흘러간다."""
+
+    def edit(services: dict[str, Any]) -> None:
+        services["kor-travel-concierge-api"]["environment"]["KTDM_PROBE"] = "${KOR_TRAVEL_WEATHER_ADMIN_TOKEN}"
+
+    leaks = _env_file_leaks(_with_reference(tmp_path, edit))
+    assert "KOR_TRAVEL_WEATHER_ADMIN_TOKEN" in leaks[_CONCIERGE_ENV_FILE]
+
+
+def test_only_container_value_sites_grant_a_value(tmp_path: Path) -> None:
+    """image·container_name·healthcheck의 변수는 컨테이너가 받는 값이 아니다(적대 리뷰 LOW-3)."""
+
+    def edit(services: dict[str, Any]) -> None:
+        for name, service in services.items():
+            if name.startswith("kor-travel-concierge-") and name != "kor-travel-concierge-ui":
+                service["container_name"] = "${KOR_TRAVEL_WEATHER_ADMIN_TOKEN}"
+                service["image"] = "${KOR_TRAVEL_WEATHER_METRICS_TOKEN}"
+
+    leaks = _env_file_leaks(_with_reference(tmp_path, edit))
+    assert {"KOR_TRAVEL_WEATHER_ADMIN_TOKEN", "KOR_TRAVEL_WEATHER_METRICS_TOKEN"} <= leaks[_CONCIERGE_ENV_FILE]
+
+    def edit_environment(services: dict[str, Any]) -> None:
+        for name, service in services.items():
+            if name.startswith("kor-travel-concierge-") and name != "kor-travel-concierge-ui":
+                service["environment"]["KTDM_PROBE"] = "${KOR_TRAVEL_WEATHER_ADMIN_TOKEN}"
+
+    leaks = _env_file_leaks(_with_reference(tmp_path, edit_environment))
+    assert "KOR_TRAVEL_WEATHER_ADMIN_TOKEN" not in leaks[_CONCIERGE_ENV_FILE]
+
+
+def test_a_ui_only_value_shared_outside_the_family_is_a_leak(tmp_path: Path) -> None:
+    """UI carry-over는 가족만의 값에 한한다 — UI가 Map secret을 받아도 Concierge `.env`가 실을 수 없다."""
+
+    def edit(services: dict[str, Any]) -> None:
+        services["kor-travel-concierge-ui"]["environment"]["KTDM_PROBE"] = "${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET}"
+
+    leaks = _env_file_leaks(_with_reference(tmp_path, edit))
+    assert "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET" in leaks[_CONCIERGE_ENV_FILE]
+
+
+def test_env_file_family_containing_a_protected_service_fails_closed(tmp_path: Path) -> None:
+    """원본이 Map API를 Concierge checkout에서 빌드한다고 적으면 가족 판정 자체를 거부한다(LOW-2)."""
+
+    def edit(services: dict[str, Any]) -> None:
+        services["kor-travel-map-api"]["build"] = "${KOR_TRAVEL_CONCIERGE_REPO_DIR}/map"
+
+    reference = _with_reference(tmp_path, edit)
+    env_file_secret_values_by_path(compose_path=reference, environment=_environment(), protected_services=())
+    with pytest.raises(ComposeCandidateContractError, match="contains a C6c protected service: kor-travel-map-api"):
+        env_file_secret_values_by_path(
+            compose_path=reference,
+            environment=_environment(),
+            protected_services={"kor-travel-map-api", "pinvi-api"},
+        )
+
+
+def test_env_file_family_spanning_two_checkout_roots_fails_closed(tmp_path: Path) -> None:
+    def edit(services: dict[str, Any]) -> None:
+        services["kor-travel-concierge-ui"]["build"]["context"] = (
+            "${KOR_TRAVEL_CONCIERGE_REPO_DIR}/${KOR_TRAVEL_MAP_REPO_DIR}"
+        )
+
+    with pytest.raises(ComposeCandidateContractError, match="spans several checkout roots: kor-travel-concierge-ui"):
+        _env_file_leaks(_with_reference(tmp_path, edit))
+
+
+def test_env_file_path_without_a_single_root_fails_closed(tmp_path: Path) -> None:
+    def edit(services: dict[str, Any]) -> None:
+        services["kor-travel-concierge-mcp"]["env_file"] = [{"path": ".env.concierge", "required": False}]
+
+    with pytest.raises(ComposeCandidateContractError, match="not rooted at exactly one variable"):
+        _env_file_leaks(_with_reference(tmp_path, edit))
