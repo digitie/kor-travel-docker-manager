@@ -1492,6 +1492,7 @@ _CONCIERGE_ENV_FILE_SERVICES = (
     "kor-travel-concierge-dagster-code-server",
 )
 _SHARED_VWORLD_KEY = "shared-vworld-browser-key-0001"
+_CONCIERGE_ADMIN_HASH = "pbkdf2_sha256$100000$concierge-salt$concierge-digest"
 
 
 def _concierge_env_file_candidate(
@@ -1523,6 +1524,8 @@ def _concierge_env_file_candidate(
         "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY",
     ):
         environment[name] = _SHARED_VWORLD_KEY
+    # 운영처럼 Concierge UI 관리자 hash는 Map UI의 것과 다르다(같으면 가족 밖에서도 받는 값이다).
+    environment["KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH"] = _CONCIERGE_ADMIN_HASH
     concierge_source = tmp_path / "concierge-source"
     concierge_source.mkdir()
     (concierge_source / ".env").write_text(
@@ -1537,7 +1540,7 @@ def _concierge_owned_env(environment: dict[str, str]) -> dict[str, str]:
     return {
         "VWORLD_SERVICE_KEY": _SHARED_VWORLD_KEY,
         "KOR_TRAVEL_GEO_V2_API_KEY": _SHARED_VWORLD_KEY,
-        "KTC_ADMIN_PASSWORD_HASH": environment["KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH"],
+        "KTC_ADMIN_PASSWORD_HASH": _CONCIERGE_ADMIN_HASH,
         "KTC_UI_SESSION_SECRET": environment["KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET"],
         "KTC_ADMIN_PROXY_SECRET": environment["KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET"],
         "KTC_UI_PUBLIC_ORIGINS": environment["KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS"],
@@ -1577,6 +1580,8 @@ def test_concierge_env_file_may_carry_values_the_compose_grants_its_family(
         "PINVI_APP_DB_PASSWORD",
         "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN",
         "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD",
+        # 공유 Dagster plane(전 tenant run 기록)의 password — code server만 받는다(적대 리뷰 MED-1).
+        "KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD",
     ],
 )
 @pytest.mark.parametrize("carrier", _CONCIERGE_ENV_FILE_SERVICES)
@@ -1603,6 +1608,33 @@ def test_concierge_env_file_still_cannot_carry_map_or_pinvi_c6c_secrets(
     with pytest.raises(
         ComposeCandidateContractError, match=f"env_file leaks C6c data for {carrier}"
     ):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+@pytest.mark.parametrize("encode", [False, True], ids=["raw", "percent-encoded"])
+def test_concierge_env_file_cannot_carry_a_map_password_inside_a_dsn(
+    tmp_path: Path, encode: bool
+) -> None:
+    """DSN 안의 비밀도, percent-encoding으로 감춘 비밀도 누출이다(적대 리뷰 LOW-1)."""
+
+    base_environment = _compose_contract_environment()
+    password = base_environment["KOR_TRAVEL_MAP_SERVICE_PASSWORD"]
+    if encode:
+        password = "".join(f"%{byte:02X}" for byte in password.encode("utf-8"))
+    candidate, environment, root_env = _concierge_env_file_candidate(
+        tmp_path,
+        {
+            **_concierge_owned_env(base_environment),
+            "DATABASE_URL": f"postgresql://u:{password}@h/db",
+        },
+    )
+
+    with pytest.raises(ComposeCandidateContractError, match="env_file leaks C6c data"):
         validate_compose_candidate_protected_values(
             candidate,
             compose_path=str(_COMPOSE_PATH),
