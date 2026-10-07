@@ -1493,6 +1493,7 @@ _CONCIERGE_ENV_FILE_SERVICES = (
 )
 _SHARED_VWORLD_KEY = "shared-vworld-browser-key-0001"
 _CONCIERGE_ADMIN_HASH = "pbkdf2_sha256$100000$concierge-salt$concierge-digest"
+_CONCIERGE_SESSION_SECRET = "concierge-ui-session-secret-0000000000"
 
 
 def _concierge_env_file_candidate(
@@ -1526,6 +1527,8 @@ def _concierge_env_file_candidate(
         environment[name] = _SHARED_VWORLD_KEY
     # 운영처럼 Concierge UI 관리자 hash는 Map UI의 것과 다르다(같으면 가족 밖에서도 받는 값이다).
     environment["KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH"] = _CONCIERGE_ADMIN_HASH
+    # 공용 계약 환경의 `"c" * 32`는 Map ops cancel token과 같은 값이다 — 운영처럼 Concierge만의 값으로 둔다.
+    environment["KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET"] = _CONCIERGE_SESSION_SECRET
     concierge_source = tmp_path / "concierge-source"
     concierge_source.mkdir()
     (concierge_source / ".env").write_text(
@@ -1541,7 +1544,7 @@ def _concierge_owned_env(environment: dict[str, str]) -> dict[str, str]:
         "VWORLD_SERVICE_KEY": _SHARED_VWORLD_KEY,
         "KOR_TRAVEL_GEO_V2_API_KEY": _SHARED_VWORLD_KEY,
         "KTC_ADMIN_PASSWORD_HASH": _CONCIERGE_ADMIN_HASH,
-        "KTC_UI_SESSION_SECRET": environment["KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET"],
+        "KTC_UI_SESSION_SECRET": _CONCIERGE_SESSION_SECRET,
         "KTC_ADMIN_PROXY_SECRET": environment["KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET"],
         "KTC_UI_PUBLIC_ORIGINS": environment["KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS"],
     }
