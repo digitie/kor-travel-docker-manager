@@ -1646,20 +1646,20 @@ def test_concierge_env_file_cannot_carry_a_map_password_inside_a_dsn(
         )
 
 
-def test_a_vworld_value_not_granted_to_the_concierge_family_is_still_c6c_data(
+def test_a_concierge_key_name_carrying_a_map_only_value_is_still_c6c_data(
     tmp_path: Path,
 ) -> None:
-    """판정은 이름이 아니라 값이다 — Concierge가 받지 않는 Map 전용 VWorld 값은 누출이다."""
+    """판정은 이름이 아니라 값이다 — Concierge의 `VWORLD_SERVICE_KEY` 이름이라도 Map만 받는 비공개 key 값이면
+    누출이다. (`NEXT_PUBLIC_*`로 브라우저에 실리는 값은 공개 값이라 이 경우가 아니다.)"""
 
     base_environment = _compose_contract_environment()
     candidate, environment, root_env = _concierge_env_file_candidate(
         tmp_path,
         {
             **_concierge_owned_env(base_environment),
-            "VWORLD_SERVICE_KEY": "map-only-vworld-key-0002",
+            "VWORLD_SERVICE_KEY": base_environment["KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"],
         },
     )
-    environment["NEXT_PUBLIC_VWORLD_API_KEY"] = "map-only-vworld-key-0002"
 
     with pytest.raises(ComposeCandidateContractError, match="env_file leaks C6c data"):
         validate_compose_candidate_protected_values(
