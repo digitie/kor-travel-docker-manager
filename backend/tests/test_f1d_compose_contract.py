@@ -1486,6 +1486,190 @@ def test_c6c_rejects_the_instance_admin_secret_on_a_map_runtime(tmp_path: Path) 
         )
 
 
+_CONCIERGE_ENV_FILE_SERVICES = (
+    "kor-travel-concierge-api",
+    "kor-travel-concierge-mcp",
+    "kor-travel-concierge-dagster-code-server",
+)
+_SHARED_VWORLD_KEY = "shared-vworld-browser-key-0001"
+_CONCIERGE_ADMIN_HASH = "pbkdf2_sha256$100000$concierge-salt$concierge-digest"
+_CONCIERGE_SESSION_SECRET = "concierge-ui-session-secret-0000000000"
+
+
+def _concierge_env_file_candidate(
+    tmp_path: Path, concierge_env: dict[str, str]
+) -> tuple[dict[str, object], dict[str, str], Path]:
+    """Map/PinVi 재구축 후보 + 실제 `.env`를 읽는 Concierge 가족(운영 2026-10-07 형상).
+
+    운영 Manager `.env`는 VWorld browser key 하나를 Map UI·Map API·Geo·PinVi·Concierge UI가 공유하고,
+    Concierge `.env`는 같은 VWorld 값과 Concierge UI의 세 auth 값을 자기 이름으로 담는다.
+    """
+
+    candidate, environment, root_env = _bootstrap_candidate(tmp_path)
+    concierge = _compose_fragment(
+        *_CONCIERGE_ENV_FILE_SERVICES,
+        "kor-travel-concierge-ui",
+    )
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    concierge_services = concierge["services"]
+    assert isinstance(concierge_services, dict)
+    for name, service in concierge_services.items():
+        # Map API가 Concierge를 부르므로 기본 후보에는 Concierge API가 dependency stub으로 있다.
+        existing = services.get(name)
+        if existing is None or existing == {"image": "alpine:3.20"}:
+            services[name] = service
+    for name in (
+        "NEXT_PUBLIC_VWORLD_API_KEY",
+        "KOR_TRAVEL_GEO_VWORLD_API_KEY",
+        "KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY",
+    ):
+        environment[name] = _SHARED_VWORLD_KEY
+    # 운영처럼 Concierge UI 관리자 hash는 Map UI의 것과 다르다(같으면 가족 밖에서도 받는 값이다).
+    environment["KOR_TRAVEL_CONCIERGE_UI_ADMIN_PASSWORD_HASH"] = _CONCIERGE_ADMIN_HASH
+    # 공용 계약 환경의 `"c" * 32`는 Map ops cancel token과 같은 값이다 — 운영처럼 Concierge만의 값으로 둔다.
+    environment["KOR_TRAVEL_CONCIERGE_UI_SESSION_SECRET"] = _CONCIERGE_SESSION_SECRET
+    concierge_source = tmp_path / "concierge-source"
+    concierge_source.mkdir()
+    (concierge_source / ".env").write_text(
+        "".join(f"{name}={value}\n" for name, value in concierge_env.items()),
+        encoding="utf-8",
+    )
+    environment["KOR_TRAVEL_CONCIERGE_REPO_DIR"] = str(concierge_source)
+    return candidate, environment, root_env
+
+
+def _concierge_owned_env(environment: dict[str, str]) -> dict[str, str]:
+    return {
+        "VWORLD_SERVICE_KEY": _SHARED_VWORLD_KEY,
+        "KOR_TRAVEL_GEO_V2_API_KEY": _SHARED_VWORLD_KEY,
+        "KTC_ADMIN_PASSWORD_HASH": _CONCIERGE_ADMIN_HASH,
+        "KTC_UI_SESSION_SECRET": _CONCIERGE_SESSION_SECRET,
+        "KTC_ADMIN_PROXY_SECRET": environment["KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET"],
+        "KTC_UI_PUBLIC_ORIGINS": environment["KOR_TRAVEL_CONCIERGE_UI_PUBLIC_ORIGINS"],
+    }
+
+
+def test_concierge_env_file_may_carry_values_the_compose_grants_its_family(
+    tmp_path: Path,
+) -> None:
+    """Concierge가 공유 Dagster runtime에서 자기 `.env`를 받아도 Map/PinVi 재구축이 막히지 않는다.
+
+    VWorld 값과 Concierge UI auth 값은 원본 compose가 Concierge 가족(같은 checkout에서 빌드하는
+    서비스)에 이미 준다 — `.env`에 다시 있어도 새로 흘러가는 것이 없다.
+    """
+
+    base_environment = _compose_contract_environment()
+    candidate, environment, root_env = _concierge_env_file_candidate(
+        tmp_path, _concierge_owned_env(base_environment)
+    )
+
+    validate_compose_candidate_protected_values(
+        candidate,
+        compose_path=str(_COMPOSE_PATH),
+        root_env_path=str(root_env),
+        environment=environment,
+    )
+
+
+@pytest.mark.parametrize(
+    "c6c_key",
+    [
+        "KOR_TRAVEL_MAP_SERVICE_PASSWORD",
+        "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD",
+        "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET",
+        "KOR_TRAVEL_MAP_API_SERVICE_TOKEN",
+        "KOR_TRAVEL_MAP_UI_SESSION_SECRET",
+        "PINVI_APP_DB_PASSWORD",
+        "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN",
+        "KOR_TRAVEL_SHARED_POSTGRES_PASSWORD",
+        # 공유 Dagster plane(전 tenant run 기록)의 password — code server만 받는다(적대 리뷰 MED-1).
+        "KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD",
+    ],
+)
+@pytest.mark.parametrize("carrier", _CONCIERGE_ENV_FILE_SERVICES)
+def test_concierge_env_file_still_cannot_carry_map_or_pinvi_c6c_secrets(
+    tmp_path: Path, c6c_key: str, carrier: str
+) -> None:
+    """가족에게 주지 않은 값(Map/PinVi credential, 공용 instance admin)은 여전히 누출이다."""
+
+    base_environment = _compose_contract_environment()
+    concierge_env = {
+        **_concierge_owned_env(base_environment),
+        "SOME_PROVIDER_SETTING": base_environment[c6c_key],
+    }
+    candidate, environment, root_env = _concierge_env_file_candidate(tmp_path, concierge_env)
+    services = candidate["services"]
+    assert isinstance(services, dict)
+    for name in _CONCIERGE_ENV_FILE_SERVICES:
+        if name != carrier:
+            service = services[name]
+            assert isinstance(service, dict)
+            service.pop("env_file")
+    # 원본 compose는 세 서비스 모두에 `env_file`을 둔다 — 뺀 것은 참조 부분집합이므로 허용된다.
+
+    with pytest.raises(
+        ComposeCandidateContractError, match=f"env_file leaks C6c data for {carrier}"
+    ):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+@pytest.mark.parametrize("encode", [False, True], ids=["raw", "percent-encoded"])
+def test_concierge_env_file_cannot_carry_a_map_password_inside_a_dsn(
+    tmp_path: Path, encode: bool
+) -> None:
+    """DSN 안의 비밀도, percent-encoding으로 감춘 비밀도 누출이다(적대 리뷰 LOW-1)."""
+
+    base_environment = _compose_contract_environment()
+    password = base_environment["KOR_TRAVEL_MAP_SERVICE_PASSWORD"]
+    if encode:
+        password = "".join(f"%{byte:02X}" for byte in password.encode("utf-8"))
+    candidate, environment, root_env = _concierge_env_file_candidate(
+        tmp_path,
+        {
+            **_concierge_owned_env(base_environment),
+            "DATABASE_URL": f"postgresql://u:{password}@h/db",
+        },
+    )
+
+    with pytest.raises(ComposeCandidateContractError, match="env_file leaks C6c data"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
+def test_a_concierge_key_name_carrying_a_map_only_value_is_still_c6c_data(
+    tmp_path: Path,
+) -> None:
+    """판정은 이름이 아니라 값이다 — Concierge의 `VWORLD_SERVICE_KEY` 이름이라도 Map만 받는 비공개 key 값이면
+    누출이다. (`NEXT_PUBLIC_*`로 브라우저에 실리는 값은 공개 값이라 이 경우가 아니다.)"""
+
+    base_environment = _compose_contract_environment()
+    candidate, environment, root_env = _concierge_env_file_candidate(
+        tmp_path,
+        {
+            **_concierge_owned_env(base_environment),
+            "VWORLD_SERVICE_KEY": base_environment["KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"],
+        },
+    )
+
+    with pytest.raises(ComposeCandidateContractError, match="env_file leaks C6c data"):
+        validate_compose_candidate_protected_values(
+            candidate,
+            compose_path=str(_COMPOSE_PATH),
+            root_env_path=str(root_env),
+            environment=environment,
+        )
+
+
 def test_required_set_no_longer_contains_a_map_postgres_service() -> None:
     """ADR-53: Map 전용 instance·그 Dagster db-init·Map superuser secret이 정본에서 사라졌다."""
 

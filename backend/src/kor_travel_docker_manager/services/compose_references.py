@@ -236,6 +236,142 @@ def secret_values_for(*, compose_path: str | Path, environment: Mapping[str, str
     return tuple(sorted(secret_values(environment, reference_text=reference_text), key=len, reverse=True))
 
 
+#: 컨테이너 안으로 값이 들어가는 서비스 필드. image·container_name·build·ports·healthcheck의 변수는 Compose가
+#: 쓰고 끝난다 — 그 서비스가 그 값을 "받는" 것이 아니다(적대 리뷰 LOW-3).
+_CONTAINER_VALUE_FIELDS = frozenset({"environment", "command", "entrypoint"})
+#: 브라우저 번들에 그대로 실리는 키 접두사(Next.js). 원본이 이 키에 두는 값은 공개 값이다.
+_PUBLISHED_KEY_PREFIX = "NEXT_PUBLIC_"
+
+
+def _build_context(service_document: Mapping[str, Any]) -> str | None:
+    build = service_document.get("build")
+    context = build.get("context") if isinstance(build, Mapping) else build
+    return context if isinstance(context, str) else None
+
+
+def _checkout_root_texts(service_document: Mapping[str, Any]) -> list[str]:
+    """서비스가 어느 checkout에 뿌리를 두는지 말하는 문자열: build context와 `env_file` 경로."""
+
+    context = _build_context(service_document)
+    return [*([context] if context is not None else []), *_env_file_paths(service_document.get("env_file"))]
+
+
+def _published_values(reference: Mapping[str, Any], environment: Mapping[str, str]) -> set[str]:
+    """원본이 `NEXT_PUBLIC_*` 컨테이너 env key나 build arg에 두는 값 — 브라우저에 공개되므로 비밀이 아니다."""
+
+    published: set[str] = set()
+    services = reference.get("services")
+    for service_document in (services if isinstance(services, Mapping) else {}).values():
+        if not isinstance(service_document, Mapping):
+            continue
+        build = service_document.get("build")
+        blocks = [service_document.get("environment")]
+        if isinstance(build, Mapping):
+            blocks.append(build.get("args"))
+        for block in blocks:
+            for key, names in _environment_references(block):
+                if key.startswith(_PUBLISHED_KEY_PREFIX):
+                    published.update(environment.get(name) or "" for name in names)
+    published.discard("")
+    return published
+
+
+def env_file_secret_values_by_path(
+    *,
+    compose_path: str | Path,
+    environment: Mapping[str, str],
+    protected_services: Iterable[str],
+) -> dict[str, tuple[str, ...]]:
+    """원본 `env_file` 경로마다, 그 파일 **내용**이 담으면 누출인 `.env` 비밀 값(긴 것부터)(ADR-56).
+
+    파일 하나는 그것을 읽는 서비스(loader) **모두**에게 같은 내용을 준다. 그래서 허용은 다음 셋의 합이다.
+
+    1. 모든 loader가 원본에서 이미 받는 값의 **교집합**(environment·command·entrypoint 자리만, DSN 안 포함).
+       한 loader만 받는 값(공유 Dagster plane의 password를 code server만 받는다)은 다른 loader에게 새로 흘러간다.
+    2. 같은 checkout 가족 중 파일을 읽지 않는 서비스(BFF UI)가 받는 값 가운데, 가족 **밖** 어느 서비스도 원본의
+       어느 자리에서도 받지 않는 값 — 그 checkout만의 비밀이다.
+    3. 원본이 `NEXT_PUBLIC_*`에 두는 공개 값(VWorld browser key).
+
+    가족은 경로가 뿌리를 둔 변수 **하나**(대개 `*_REPO_DIR`)를 build context나 `env_file` 경로로 쓰는 원본의
+    서비스다. 경로의 변수가 하나가 아니거나, 가족의 build context·`env_file`이 다른 뿌리를 함께 쓰거나, 가족에
+    `protected_services`(C6c가 지키는 Map/PinVi 서비스)가 있으면 원본이 모호한 것이므로 거부한다(fail-closed).
+    """
+
+    reference_text, reference = _load_reference(compose_path)
+    secret_set = secret_values(environment, reference_text=reference_text)
+    services = reference.get("services")
+    documents = {
+        str(name): document
+        for name, document in (services if isinstance(services, Mapping) else {}).items()
+        if isinstance(document, Mapping)
+    }
+    received: dict[str, list[str]] = {}
+    referenced: dict[str, list[str]] = {}
+    for site, names in compose_references(reference).items():
+        if site[:1] != ("services",):
+            continue
+        values = [
+            text
+            for name in names
+            if not name.startswith("env_file:")
+            for value in [environment.get(name) or ""]
+            for text in (value, unquote(value))
+            if text
+        ]
+        referenced.setdefault(site[1], []).extend(values)
+        if site[2:3] and site[2] in _CONTAINER_VALUE_FIELDS:
+            received.setdefault(site[1], []).extend(values)
+
+    def given(secret: str, texts: Iterable[str]) -> bool:
+        return any(secret in text for text in texts)
+
+    published = _published_values(reference, environment)
+    protected = set(protected_services)
+    paths = sorted(
+        {path for document in documents.values() for path in _env_file_paths(document.get("env_file"))}
+    )
+    result: dict[str, tuple[str, ...]] = {}
+    for path in paths:
+        roots = variable_names(path)
+        if len(roots) != 1:
+            raise ComposeCandidateContractError(
+                f"the reference compose env_file path is not rooted at exactly one variable: {path}"
+            )
+        family = {
+            name
+            for name, document in documents.items()
+            if any(roots & variable_names(text) for text in _checkout_root_texts(document))
+        }
+        for name in sorted(family):
+            joined_roots = {
+                variable
+                for text in _checkout_root_texts(documents[name])
+                if roots & variable_names(text)
+                for variable in variable_names(text)
+            }
+            if joined_roots != roots:
+                raise ComposeCandidateContractError(
+                    f"the reference compose env_file family of {path} spans several checkout roots: {name}"
+                )
+        if family & protected:
+            raise ComposeCandidateContractError(
+                f"the reference compose env_file family of {path} contains a C6c protected service: "
+                + ", ".join(sorted(family & protected))
+            )
+        loaders = {name for name in family if path in _env_file_paths(documents[name].get("env_file"))}
+        outside = [text for name, texts in referenced.items() if name not in family for text in texts]
+        non_loader = [text for name in family - loaders for text in received.get(name, ())]
+        allowed = {
+            secret
+            for secret in secret_set
+            if secret in published
+            or all(given(secret, received.get(loader, ())) for loader in loaders)
+            or (given(secret, non_loader) and not given(secret, outside))
+        }
+        result[path] = tuple(sorted(secret_set - allowed, key=len, reverse=True))
+    return result
+
+
 def _site_of(path: tuple[str, ...]) -> Site:
     if path[:1] == ("services",) and len(path) >= 3:
         if path[2] == "environment" and len(path) >= 4:

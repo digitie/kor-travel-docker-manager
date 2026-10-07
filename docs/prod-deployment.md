@@ -266,6 +266,12 @@ sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin verify; echo $?
 
 - **손으로 symlink를 넘기지 않는다.** 옛 release의 `.env` 사본에는 그 설치 때의 비밀·관리자 해시가
   들어 있다.
+- **`manager_drift`는 rebind 한 번으로 끝난다.** `pin verify`가 `execution_binding manager_drift`(source pinset·두
+  revision은 같고 trusted Manager revision만 다름)를 보이면 새로 설치한 sha로 `pin rebind-execution`만 한다 —
+  중간에 설치했던 sha를 먼저 결박할 필요도, `rollback`·`rotate-pair`도 없다. Manager만 바뀐 설치는 컨테이너를
+  바꾸지 않으므로 같은 pair 수렴(`rebuild-pinned --confirm`, 결과 `outcome: converged`)은 반영 단계가 아니라
+  **확인** 단계다: 모든 재구축이 지나는 `prebuild_snapshot`의 C6c 후보 검사를 실제 `.env`로 통과하는지와
+  컨테이너 재생성 0을 본다(ADR-56 설치 뒤에는 `KOR_TRAVEL_CONCIERGE_REPO_DIR`를 켠 채로).
 - 옛 sha를 checkout한 clone에서 **그 sha의 installer를 돌리지 않는다.** I-2 이전 installer는 symlink
   레이아웃을 "deployment .env path must be canonical" 검사로 거부한다(해는 없다). I-1보다 낮게
   내려가려면 §3.0의 역전환을 먼저 한다.

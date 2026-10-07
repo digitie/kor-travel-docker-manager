@@ -44,6 +44,7 @@ from kor_travel_docker_manager.services.capabilities import (
 from kor_travel_docker_manager.services.compose_references import (
     assert_protected_references_are_derived,
     assert_resolved_secret_values_stay_at_reference_sites,
+    env_file_secret_values_by_path,
     secret_values_for,
     variable_names,
 )
@@ -4625,6 +4626,15 @@ def validate_compose_candidate_protected_values(
 
     # bind source·env_file **내용**이 찾을 `.env` 비밀 값은 설치된 릴리스 compose 기준으로 고른다(ADR-51 결정 5).
     protected_values = secret_values_for(compose_path=compose_path, environment=environment)
+    # `env_file` 내용은 서비스의 checkout 가족이 원본에서 이미 받는 값을 빼고 본다(ADR-56).
+    env_file_protected_values = env_file_secret_values_by_path(
+        compose_path=compose_path,
+        environment=environment,
+        protected_services=(
+            frozenset(_CANDIDATE_REQUIRED_PROTECTED_SERVICES)
+            | _map_database_host_network_services()
+        ),
+    )
 
     for service_name in _candidate_checked_service_order(services):
         # **무조건 인덱싱하지 않는다**(GM-17 B S1). 종전 `services[service_name]`은
@@ -4763,9 +4773,11 @@ def validate_compose_candidate_protected_values(
                 raise ComposeCandidateContractError(
                     f"compose candidate cannot validate env_file for {service_name}"
                 ) from exc
+            leak_values = env_file_protected_values.get(env_file, protected_values)
             for raw_value in env_values.values():
                 text = "" if raw_value is None else str(raw_value)
-                if any(value in text for value in protected_values):
+                # DSN은 password를 percent-encoding으로 담을 수 있다 — 풀어서도 본다(참조 규칙과 대칭).
+                if any(value in form for form in (text, unquote(text)) for value in leak_values):
                     raise ComposeCandidateContractError(
                         f"compose candidate env_file leaks C6c data for {service_name}"
                     )
