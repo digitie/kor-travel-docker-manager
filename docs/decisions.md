@@ -4454,7 +4454,7 @@ read-only bind를 명시한다. Map/PinVi pinned 재구축 정본의 기존 필�
 실제 운영 전환은 별도 창이며 이 변경의 격리 검증을 운영 설치 완료로 간주하지 않는다.
 
 
-## ADR-56: C6c `env_file` 누출은 그 checkout 가족이 원본에서 받지 않는 값만이다
+## ADR-56: C6c `env_file` 누출은 그 파일의 loader 모두가 원본에서 받지 않는 값이다
 
 - 상태: accepted
 - 날짜: 2026-10-07
@@ -4464,30 +4464,36 @@ read-only bind를 명시한다. Map/PinVi pinned 재구축 정본의 기존 필�
 다시 읽게 되자, `validate_compose_candidate_protected_values`의 `env_file` 내용 스캔이 모든 Map/PinVi
 pinned 재구축을 `prebuild_snapshot`에서 "compose candidate env_file leaks C6c data for
 kor-travel-concierge-api"로 거부했다. 그 스캔은 Manager `.env`의 **모든** 민감 값(55개)을 C6c 데이터로
-보았고, Concierge `.env`에는 그중 두 값 묶음이 정당하게 있었다 — 여러 서비스가 공유하는 VWorld browser
-key(`VWORLD_SERVICE_KEY`·`KOR_TRAVEL_GEO_V2_API_KEY` = Manager의 `NEXT_PUBLIC_VWORLD_API_KEY`·
+보았고, Concierge `.env`에는 그중 두 묶음이 정당하게 있었다 — 여러 서비스가 공유하는 VWorld browser key
+(`VWORLD_SERVICE_KEY`·`KOR_TRAVEL_GEO_V2_API_KEY` = Manager의 `NEXT_PUBLIC_VWORLD_API_KEY`·
 `KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY` 등 6개 이름)와 Concierge UI 자신의 auth 값 세 개
 (`KTC_ADMIN_PASSWORD_HASH`·`KTC_UI_SESSION_SECRET`·`KTC_ADMIN_PROXY_SECRET`). 두 번은 `REPO_DIR` 줄을
 꺼서 우회했지만 Concierge는 그 `.env`가 필요하다.
 
-**결정.** `env_file` 내용에서 누출로 보는 값은 서비스마다 원본(설치된 release의
-`.ktdm-release-compose.yml`)에서 파생한다(`compose_references.env_file_secret_values_by_service`).
+**결정.** `env_file` 내용에서 누출로 보는 값은 원본(설치된 release의 `.ktdm-release-compose.yml`)의 `env_file`
+경로마다 파생한다(`compose_references.env_file_secret_values_by_path`). 파일 하나는 그것을 읽는 서비스(loader)
+**모두**에게 같은 내용을 주므로 허용은 다음 셋의 합이다.
 
-1. 가족: `env_file` 경로가 뿌리를 둔 변수(대개 `*_REPO_DIR`)를 build context나 `env_file` 경로로 쓰는 원본의
-   서비스들. Concierge는 API·MCP·공유 Dagster code server·legacy scheduler·UI 다섯이다.
-2. 허용: 원본이 그 가족의 어느 자리에서든 참조하는 변수의 값(DSN 안의 비밀 포함). 판정은 이름이 아니라 값이다.
-3. 누출: 그 밖의 `.env` 비밀 전부. 원본에 `env_file`이 없는 자리는 종전대로 전체 집합이다(후보가 `env_file`을
-   추가하는 것은 참조 부분집합 규칙이 먼저 거부한다).
+1. 모든 loader가 원본에서 받는 값의 **교집합**. "받는다"는 environment·command·entrypoint 자리만 센다
+   (image·container_name·build·ports·healthcheck는 Compose가 쓰고 끝난다). DSN 안의 비밀도 받은 것이다.
+2. 같은 checkout **가족** 중 그 파일을 읽지 않는 서비스(BFF UI)가 받는 값 가운데, 가족 밖 어느 서비스도 원본의
+   어느 자리에서도 받지 않는 값 — 그 checkout만의 비밀이다(UI auth 세 값, BFF backend key).
+3. 원본이 `NEXT_PUBLIC_*` 컨테이너 env key·build arg에 두는 값 — 브라우저 번들에 실리는 공개 값이다(VWorld key).
+
+가족은 경로가 뿌리를 둔 변수 하나(대개 `*_REPO_DIR`)를 build context나 `env_file` 경로로 쓰는 원본의 서비스다
+(Concierge: API·MCP·공유 Dagster code server·legacy scheduler·UI). 경로의 변수가 하나가 아니거나, 가족이 다른
+뿌리를 함께 쓰거나, 가족에 C6c 보호 서비스(topology에서 파생한 Map/PinVi 필수 집합)가 있으면 fail-closed로
+거부한다. 내용 스캔은 값을 percent-decoding해서도 본다. 원본에 없는 `env_file` 자리는 종전대로 전체 집합이다.
 
 **택하지 않은 것.** (a) 보호 집합을 "Map/PinVi 소유 키"로 좁히기 — 소유를 이름 접두사나 서비스 표로 적어야
 하고(리터럴 결박), Geo·Weather·Manager 자신의 비밀이 보호 밖으로 떨어진다. (b) topology의 "non-C6c tenant"
-면제 — 면제된 가족의 `env_file`은 Map DB password까지 실어도 통과한다. 파생 규칙은 둘 다 피한다: 가족은
-원본에서 읽고, 여전히 모든 서비스의 `env_file`을 같은 규칙으로 본다.
+면제 — 면제된 가족의 `env_file`은 Map DB password까지 실어도 통과한다. (c) 첫 판의 "가족 누구든 받는 값"
+합집합 — 적대 리뷰 MED-1: 공유 Dagster plane password(전 tenant run 기록)를 code server만 받는데, 같은
+`.env`를 읽는 MCP(`0.0.0.0`, 기본 인증 꺼짐)에게도 흘러간다. 교집합이 그것을 막는다.
 
-**결과.** n150 실측(키 이름만): 55개 보호 값 중 Concierge 가족에 원본이 주는 값 7개(VWorld 1, Concierge UI 3,
-Concierge API key(`KOR_TRAVEL_CONCIERGE_API_KEYS`·`..._BACKEND_API_KEY`가 같은 값), Concierge app DB password,
-공유 Dagster app password)가 빠지고 48개 값
-(52개 이름 — Map·PinVi·Geo·Weather·Transport·공용 instance admin·Manager 자신의 비밀)은 그대로 누출이다.
-설치된 `42ffc553` 코드는 운영 compose의 raw 후보 검사에서 위 메시지로 실패하고, 이 규칙은 통과한다
-(resolved 검사는 양쪽 모두 통과). 원본이 가족에게 주는 값은 `.env`에 다시 있어도 새로 흘러가는 것이 없다 —
-값을 공유하기로 한 것은 Manager `.env` 자신이다.
+**결과.** n150 실측(키 이름만): 55개 보호 값 중 Concierge `.env`에 허용되는 값은 6개다 — VWorld(공개, 6개 이름),
+Concierge UI session secret·admin hash·admin proxy secret(가족 전용), Concierge API key
+(`KOR_TRAVEL_CONCIERGE_API_KEYS`·`..._BACKEND_API_KEY`가 같은 값, 네 loader 공통), Concierge app DB password
+(네 loader의 DSN 안). 공유 Dagster app password를 포함한 49개 값은 누출이다. 설치된 compose와 실제 Concierge
+`.env`는 통과하고, 같은 `.env`에 공유 Dagster password를 더하면(메모리 안) 거부된다. 설치된 `42ffc553` 코드는
+같은 후보를 위 메시지로 거부한다(resolved 검사는 양쪽 모두 통과).
