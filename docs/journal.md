@@ -2,6 +2,13 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-08 — weather Web을 host 포트 `12205`로(ADR-57)
+
+- 소유자 지시: OPNsense HAProxy의 weather backend(`192.168.1.14:12205`)는 그대로 두고 weather Web을 그 포트에 직접 붙인다. `12205`는 ADR-48이 Grafana를 `12104`로 옮기며 비운 자리다(n150 `ss -ltn` 실측: `12205` 미사용, Grafana `12104`, weather Web `14105`; Manager `.env`에 `KOR_TRAVEL_WEATHER_WEB_PORT` 재정의 없음).
+- host 모드에서는 `ports:`가 버려지고 이미지 CMD가 `--port 14105`를 굽는다 — `kor-travel-weather-web`에 같은 모양의 `command:`를 두고 `--port ${KOR_TRAVEL_WEATHER_WEB_PORT:-12205}`로 넘긴다. `ports:`·registry `connection`/`expected_ports`·weather API CORS 기본 origin이 같은 변수/값을 따른다. `docker compose config`로 기본값과 변수 재정의(`13999`) 둘 다 command·ports·CORS에 풀리는 것을 확인했다.
+- 이미지에 HEALTHCHECK가 없고(n150 실측 `null`), Manager 안에서 weather Web 포트를 probe하는 healthcheck·smoke·C6c 검사는 없다(`dagster-shared-cutover.sh`는 컨테이너 안 파일만 본다).
+- 문서: `ports.md`(weather Web 대역 예외 절), `docker-management.md`, `decisions.md` ADR-57(+ADR-47의 "포트 재배정 안 함"에 Web만 superseded 표시). n150 재배포는 하지 않았다.
+
 ## 2026-10-07 — C6c `env_file` 판정을 loader 교집합에서 파생(ADR-56)
 
 - `KOR_TRAVEL_CONCIERGE_REPO_DIR`가 다시 켜지자 모든 Map/PinVi pinned 재구축이 `prebuild_snapshot`에서 "env_file leaks C6c data for kor-travel-concierge-api"로 거부됐다. Concierge `.env`가 공유 VWorld key와 Concierge UI auth 세 값을 Manager `.env`와 같은 값으로 담기 때문이다.
