@@ -3249,7 +3249,7 @@ map/pinvi와 동일).
   이미 있던 노출). **사용자 결정: 지금은 그대로 두고 알려진 것으로 기록, 후속
   작업으로 미룬다** — compose 수준 해법이 없어(weather 저장소 소스 변경 또는 n150
   호스트 방화벽 필요) 이 ADR의 범위 밖이다.
-- **포트는 재배정하지 않는다** — n150의 HAProxy(저장소 밖, 호스트 설정)가 이미
+- **포트는 재배정하지 않는다** (Web `14105`만 2026-10-08 ADR-57로 superseded — `12205`) — n150의 HAProxy(저장소 밖, 호스트 설정)가 이미
   weather의 기존 포트(`192.168.1.14:14101`/`14102`/`14105`)로 공개 도메인을
   라우팅 중이다. `network_mode: host`에는 NAT이 없어 `ports:`는 사실상 무의미하고
   (Docker가 무시), 프로세스가 같은 포트에서 `0.0.0.0` 바인드를 유지하는 한 HAProxy는
@@ -4497,3 +4497,49 @@ Concierge UI session secret·admin hash·admin proxy secret(가족 전용), Conc
 (네 loader의 DSN 안). 공유 Dagster app password를 포함한 49개 값은 누출이다. 설치된 compose와 실제 Concierge
 `.env`는 통과하고, 같은 `.env`에 공유 Dagster password를 더하면(메모리 안) 거부된다. 설치된 `42ffc553` 코드는
 같은 후보를 위 메시지로 거부한다(resolved 검사는 양쪽 모두 통과).
+
+## ADR-57: weather Web은 host 포트 `12205`에서 듣는다 — 141xx 대역 밖의 의도된 예외
+
+- 상태: accepted (repo-level 설정·문서 변경만 이 변경의 범위 — n150 재배포는 별도 단계)
+- 날짜: 2026-10-08
+- 결정자: 사용자(소유자), Claude
+
+### 컨텍스트
+OPNsense HAProxy의 weather backend는 `192.168.1.14:12205`를 가리킨다. 소유자는 HAProxy를 그대로
+두고 weather Web을 그 포트에 직접 붙이라고 지시했다("weather 웹을 12205 포트로 설정"). 그때까지
+weather Web(`kor-travel-weather-web`)은 `14105`에서 들었다 — ADR-47은 "HAProxy가 `14105`를
+가리키므로 포트를 재배정하지 않는다"고 적었지만, 그 전제는 지금 HAProxy 설정과 맞지 않는다.
+`12205`는 ADR-48(2026-09-21)이 Grafana를 `12104`로 옮기며 비운 자리다. 2026-10-08 n150 `ss -ltn`
+실측에서 `12205`를 듣는 프로세스는 없고(Grafana는 `12104`), n150 Manager `.env`에는
+`KOR_TRAVEL_WEATHER_WEB_PORT` 재정의가 없다(compose 기본값이 그대로 적용된다).
+
+### 결정
+- `KOR_TRAVEL_WEATHER_WEB_PORT`의 기본값을 `14105` → `12205`로 바꾼다.
+- `network_mode: host`에서는 `ports:`가 버려지고 이미지 CMD(weather `deploy/Dockerfile.web`)가
+  `--port 14105`를 굽는다. 그래서 compose가 `command:`로 CMD를 같은 모양
+  (`npm run start -- --hostname 0.0.0.0 --port ${KOR_TRAVEL_WEATHER_WEB_PORT:-12205}`)으로 덮는다.
+  `ports:`·registry(`config/docker-targets.yml`의 `connection`·`expected_ports`)·weather API의
+  `KOR_TRAVEL_WEATHER_CORS_ORIGINS` 기본값의 loopback origin도 같은 변수/값을 따른다.
+- 이 포트는 weather 대역(`14100-14199`) 밖의 의도된 예외다(`docs/ports.md` "weather Web의 대역 예외").
+
+### 근거
+- 소유자가 HAProxy 쪽 값을 유지하고 목표 포트를 명시했다.
+- 이미지 CMD를 바꾸는 것은 weather 저장소의 일이고, host 모드에서 listen 포트를 바꾸는 유일한
+  compose 수준 수단은 프로세스 인자다. npm `start` 스크립트(`next start --hostname 127.0.0.1
+  --port 14105`)에 `--` 뒤로 붙인 인자가 이긴다 — 이미지 CMD 자신이 이미 이 방식으로 `0.0.0.0`을 얻는다.
+
+### 결과(긍정)
+- HAProxy 설정 변경 없이 공개 weather Web이 n150의 `12205`로 닿는다(재배포 후).
+- 포트가 변수 하나(`KOR_TRAVEL_WEATHER_WEB_PORT`)에서 command·`ports:`·CORS 기본값으로 함께 풀린다.
+
+### 결과(부정)
+- `14105`를 가정한 북마크·외부 규칙은 재배포 뒤 닿지 않는다.
+- weather 이미지 CMD의 인자 모양(`npm run start -- …`, WORKDIR `/app`)이 바뀌면 이 command도 함께
+  바꿔야 한다. 이미지 쪽 `EXPOSE 14105`는 host 모드에서 의미가 없다.
+- `gra` target 이름의 대역(`12200-12299`) 안에 다른 target의 포트가 생긴다.
+
+### 확인하지 않은 것
+- n150의 weather Web 컨테이너는 Manager 재설치 + `kor-travel-weather-web` 재생성 전까지 계속
+  `14105`를 듣는다. 이 ADR·브랜치는 live 서비스를 건드리지 않았다.
+- weather Web의 `WEATHER_UI_PUBLIC_ORIGIN`(CSRF origin)은 공개 HTTPS origin이라 포트와 무관하다고
+  보았지만 재배포 뒤 로그인으로 확인해야 한다.
