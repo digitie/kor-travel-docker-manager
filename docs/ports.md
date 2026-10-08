@@ -37,7 +37,7 @@
 |---|---:|---|---|
 | — | `12000-12099` | 없음 | 비어 있다. 폐지된 통합 instance(ADR-37)와, 그 뒤 geo 전용 instance만 가리키던 `db` target(2026-09-28 폐지)의 자리였다. |
 | `storage` | `12100-12199` | S3 API `12101`, console `12105`, **Prometheus `12102`, cAdvisor `12103`, Grafana `12104`**(ADR-48, 대역 예외 — 아래 참고) | RustFS |
-| `gra` | `12200-12299` | Web UI `12104`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | Grafana |
+| `gra` | `12200-12299` | Web UI `12104`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고). 대역 안의 `12205`는 **weather Web**이 쓴다(ADR-57, 아래 참고) | Grafana |
 | `cadv` | `12300-12399` | Exporter `12103`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | cAdvisor |
 | `prom` | `12400-12499` | HTTP `12102`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | Prometheus |
 | `geo` | `12500-12599` | API `12501`, Dagster `12502`, Web UI `12505` (DB는 공용 `11000`) | `kor-travel-geo` |
@@ -45,7 +45,7 @@
 | `map` | `12700-12799` | API `12701`, Dagster `12702`, Web UI `12705`(`12700`은 퇴역한 전용 PostgreSQL의 자리, ADR-53) | `kor-travel-map` |
 | `pinvi` | `12800-12899` | API `12801`, Dagster webserver `12802`, Dagster code-server(gRPC, PinVi ADR-069) `12803`, Web UI `12805` (DB는 공용 `11000`) | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
-| `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Prometheus `14104`, Web `14105` | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
+| `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Prometheus `14104`, **Web `12205`**(대역 예외 — 아래 참고, ADR-57) | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
 | 공용 Dagster(`dagster`) | 대역 밖 | gateway `11001`(`kor-travel-dagster-gateway`, nginx Basic Auth, `0.0.0.0` — 공개 host `dagster.digitie.mywire.org`, `/health`만 무인증), webserver `127.0.0.1:11002`(`kor-travel-dagster-webserver`, loopback 전용), daemon 포트 없음(`kor-travel-dagster-daemon`). storage one-shot 둘(`kor-travel-shared-db-init-dagster`, `kor-travel-dagster-storage-migrate`, DB는 공용 `11000`의 `dagster_shared`) | Manager (platform-topology.md §7, ADR-54) |
 | `transport` | `14001-14099` | Backend `14001`, Frontend `14002`, Dagster code-server(gRPC) `14005`(loopback, 공용 Dagster plane의 location `kor-travel-transport`, ADR-54 개정). 옛 전용 Dagster 게이트웨이 `14003`·webserver `14004`는 그 저장소의 `legacy-dagster` profile이라 평소 듣지 않는다 (DB는 공용 `11000`의 `kor_travel_transport`) | `kor-travel-transport` (외부 프로젝트) |
 
@@ -58,6 +58,17 @@ target 이름이 가리키는 100단위 대역(`12200-12299`/`12300-12399`/`1240
 대역"이라는 §기본 규칙 전제는 이 세 target에 더 이상 성립하지 않는다 — target 이름
 (`gra`/`cadv`/`prom`)과 `config/docker-targets.yml`의 키는 바뀌지 않았고 포트만
 옮겼다. 근거·배경은 `docs/decisions.md` ADR-48(ADR-10의 포트 배정 부분을 supersede).
+
+### weather Web의 대역 예외 (ADR-57)
+
+weather Web(`kor-travel-weather-web`)은 weather 대역(`14100-14199`)의 `+5`(`14105`)가 아니라
+`12205`에서 듣는다(2026-10-08 소유자 결정). OPNsense HAProxy의 weather backend가
+`192.168.1.14:12205`를 가리키고, 소유자는 HAProxy 쪽을 그대로 두기로 했다. `12205`는 ADR-48이
+Grafana를 `12104`로 옮기며 비운 자리다(`gra` 대역 안이지만 Grafana는 더 이상 거기 없다).
+값은 `KOR_TRAVEL_WEATHER_WEB_PORT`의 기본값이다. host 모드에서는 `ports:`가 버려지므로
+compose가 이미지 CMD(`--port 14105`)를 같은 모양으로 덮어 이 변수로 포트를 넘긴다 —
+`ports:`만 바꾸면 프로세스는 계속 `14105`를 듣는다. `14105`는 이제 비어 있다.
+`12200-12299`의 나머지 자리에 새 포트를 배정할 때는 `12205`를 피한다.
 
 **`cadv` 대역은 비어 있지 않다.** Manager에 등록되지 않은 외부 compose 프로젝트
 `kor-travel-transport-admin`(transport 저장소의 `docker-compose.transport-admin.yml`)이

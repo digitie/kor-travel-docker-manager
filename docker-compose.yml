@@ -2722,7 +2722,7 @@ services:
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_METRICS_TOKEN: ${KOR_TRAVEL_WEATHER_METRICS_TOKEN:?set KOR_TRAVEL_WEATHER_METRICS_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
-      KOR_TRAVEL_WEATHER_CORS_ORIGINS: '${KOR_TRAVEL_WEATHER_CORS_ORIGINS:-["https://weather.digitie.mywire.org","http://127.0.0.1:14105"]}'
+      KOR_TRAVEL_WEATHER_CORS_ORIGINS: '${KOR_TRAVEL_WEATHER_CORS_ORIGINS:-["https://weather.digitie.mywire.org","http://127.0.0.1:${KOR_TRAVEL_WEATHER_WEB_PORT:-12205}"]}'
       KOR_TRAVEL_WEATHER_API_BASE_URL: ${KOR_TRAVEL_WEATHER_API_BASE_URL:-https://weather-api.digitie.mywire.org}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
       KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
@@ -3109,8 +3109,21 @@ services:
     depends_on:
       kor-travel-weather-api:
         condition: service_healthy
-    # command: 오버라이드 불필요 — deploy/Dockerfile.web이 이미
-    # `next start -- --hostname 0.0.0.0 --port 14105`를 이미지 CMD로 굽는다.
+    # 이미지 CMD(weather deploy/Dockerfile.web)는 `--port 14105`를 굽는다. host 모드에서는
+    # `ports:`가 버려지므로 listen 포트는 프로세스 인자로만 바꿀 수 있다 — 그래서 CMD를
+    # 같은 모양으로 덮어 포트만 `KOR_TRAVEL_WEATHER_WEB_PORT`(기본 `12205`)로 바꾼다.
+    # 12205는 OPNsense HAProxy의 weather backend(192.168.1.14:12205)가 가리키는 자리다
+    # — 141xx 대역 밖의 의도된 예외(ADR-57, docs/ports.md). npm start 스크립트 자신의
+    # `--hostname 127.0.0.1 --port 14105`보다 뒤에 붙은 인자가 이긴다.
+    command:
+    - npm
+    - run
+    - start
+    - --
+    - --hostname
+    - 0.0.0.0
+    - --port
+    - ${KOR_TRAVEL_WEATHER_WEB_PORT:-12205}
     environment:
       # weather 자신의 compose.yaml은 여기서 서비스명 DNS를 썼다(서버사이드
       # fetch라 브라우저가 아니라 web 컨테이너 자신이 부른다) — host 모드엔
@@ -3141,7 +3154,7 @@ services:
       WEATHER_UI_TRUST_PROXY: ${WEATHER_UI_TRUST_PROXY:-}
       WEATHER_UI_PUBLIC_ORIGIN: ${WEATHER_UI_PUBLIC_ORIGIN:-}
     ports:
-    - ${KOR_TRAVEL_WEATHER_WEB_PORT:-14105}:${KOR_TRAVEL_WEATHER_WEB_PORT:-14105}
+    - ${KOR_TRAVEL_WEATHER_WEB_PORT:-12205}:${KOR_TRAVEL_WEATHER_WEB_PORT:-12205}
 
   kor-travel-weather-prometheus:
     image: prom/prometheus:v3.5.0
