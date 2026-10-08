@@ -3202,7 +3202,8 @@ PinVi 자체의 다중 role 분리(app/schema-owner/migration-owner/migrator) �
 
 ## ADR-47: weather를 external target에서 Manager internal target으로 전환한다 — 앱·Dagster DB 둘 다 공용 instance로, 데이터 보존 없이
 
-- 상태: accepted (구현 진행 중 — compose 서비스·db-init·registry·포트 문서 배선은 이
+- 상태: accepted (Web 포트 `14105` 부분만 2026-10-08 ADR-57로 superseded — `12205`.
+  구현 진행 중 — compose 서비스·db-init·registry·포트 문서 배선은 이
   변경으로 만들어졌고, n150에서의 실제 배포·cutover는 별도 단계에서 수행한다)
 - 날짜: 2026-09-20
 - 결정자: 사용자("weather, transport도 내부 target으로 바꿔", "weather 전체(db·api·web·dagster
@@ -4543,3 +4544,11 @@ weather Web(`kor-travel-weather-web`)은 `14105`에서 들었다 — ADR-47은 "
   `14105`를 듣는다. 이 ADR·브랜치는 live 서비스를 건드리지 않았다.
 - weather Web의 `WEATHER_UI_PUBLIC_ORIGIN`(CSRF origin)은 공개 HTTPS origin이라 포트와 무관하다고
   보았지만 재배포 뒤 로그인으로 확인해야 한다.
+
+### cutover(n150)
+- 이 ADR 전에 임시 방편으로 systemd 유닛 `weather-web-port-12205.service`를 두었다. 이 유닛은 iptables
+  nat PREROUTING `REDIRECT 12205→14105`를 걸고 enable 상태다. 웹을 재생성하기 **직전**에
+  `systemctl disable --now weather-web-port-12205.service`를 실행하고 유닛 파일을 지운다.
+  - `stop`만 하면 enable이 남아 재부팅 뒤 규칙이 되살아난다. 그러면 LAN 트래픽이 아무도 듣지 않는 14105로 간다.
+- 재생성은 `up -d --no-deps kor-travel-weather-web`으로 한다. CORS 기본값이 바뀌어 weather API의
+  config-hash도 달라지므로, `--no-deps`가 없으면 API까지 재생성된다.
