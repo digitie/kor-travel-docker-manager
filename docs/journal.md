@@ -21,6 +21,16 @@
   각각 실패, 원복 뒤 통과.
 - compose·C6c 정본 행·fixture가 바뀌지 않으므로 fingerprint·pin rebind·C6c generation 변화는 없다.
 
+## 2026-10-12 — Map MOIS 원천 SQLite를 named volume으로(Map ADR-108 짝)
+
+- Map MOIS 재개형 적재(Map 브랜치 `feat/mois-chunked-resumable-load`, ADR-108)의 짝이다. `kor-travel-map-dagster-code-server`가
+  원천 SQLite를 `/tmp/mois_source.db`(컨테이너 overlay — 재생성마다 소실, root 디스크 압박)에서 internal named volume
+  `kor-travel-map-mois-source`로 옮긴다. 경로 env와 mount target은 변수 `KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DIR` 하나에서
+  나온다(기본 `/opt/dagster/state/mois` — Map 이미지가 appuser 소유로 만드는 자리). 옛 `..._MOIS_SOURCE_DB_PATH` 변수는 버린다.
+- 규칙 테스트 `test_map_mois_source_volume.py`: env를 받는 활성 서비스를 유도하고, 경로 디렉터리가 같은 서비스의 named
+  volume target과 같은 표현식인지, volume 정의에 `name`·`external`·`driver_opts`가 없는지 본다.
+- 설치 순서: 새 디렉터리를 가진 Map pair 회전 → 이 compose 설치 → `mois_localdata_source_sync` 1회. n150 설치는 하지 않았다.
+
 ## 2026-10-08 — weather Web을 host 포트 `12205`로(ADR-57)
 
 - 소유자 지시: OPNsense HAProxy의 weather backend(`192.168.1.14:12205`)는 그대로 두고 weather Web을 그 포트에 직접 붙인다. `12205`는 ADR-48이 Grafana를 `12104`로 옮기며 비운 자리다(n150 `ss -ltn` 실측: `12205` 미사용, Grafana `12104`, weather Web `14105`; Manager `.env`에 `KOR_TRAVEL_WEATHER_WEB_PORT` 재정의 없음).
