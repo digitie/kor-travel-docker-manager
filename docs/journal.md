@@ -29,6 +29,10 @@
   나온다(기본 `/opt/dagster/state/mois` — Map 이미지가 appuser 소유로 만드는 자리). 옛 `..._MOIS_SOURCE_DB_PATH` 변수는 버린다.
 - 규칙 테스트 `test_map_mois_source_volume.py`: env를 받는 활성 서비스를 유도하고, 경로 디렉터리가 같은 서비스의 named
   volume target과 같은 표현식인지, volume 정의에 `name`·`external`·`driver_opts`가 없는지 본다.
+- 이 저장소의 첫 top-level named volume이라 F1D 테스트의 `_compose_fragment`가 그것을 몰랐다(service·secret만 복사 → 정본
+  service가 "named volume is undeclared"로 거부, 39건). fragment가 선택 service의 mount source에서 참조 volume을 유도해
+  함께 옮기게 했다(`_carry_referenced_named_volumes`). n150 실측: 관련 세 파일 300 passed(실제 `docker compose config`
+  해석 포함), 전체는 docker CLI 없는 컨테이너에서 main과 실패 집합 동일(14건, 전부 docker CLI 필요) + 새 2건 통과.
 - 설치 순서: 새 디렉터리를 가진 Map pair 회전 → 이 compose 설치 → `mois_localdata_source_sync` 1회. n150 설치는 하지 않았다.
 
 ## 2026-10-08 — weather Web을 host 포트 `12205`로(ADR-57)
