@@ -383,7 +383,12 @@ def test_a_flipped_candidate_still_checks_its_old_map_dagster_env(
 
     from copy import deepcopy
 
-    from test_f1d_compose_contract import _COMPOSE_PATH, _bootstrap_candidate, _source_compose
+    from test_f1d_compose_contract import (
+        _COMPOSE_PATH,
+        _bootstrap_candidate,
+        _carry_referenced_named_volumes,
+        _source_compose,
+    )
 
     candidate, environment, root_env = _bootstrap_candidate(tmp_path)
     services = candidate["services"]
@@ -391,6 +396,7 @@ def test_a_flipped_candidate_still_checks_its_old_map_dagster_env(
     services["kor-travel-map-dagster-code-server"] = deepcopy(
         _source_compose()["services"]["kor-travel-map-dagster-code-server"]
     )
+    _carry_referenced_named_volumes(candidate)
     _use(monkeypatch, _flipped_families("map"))
 
     def validate(document: dict[str, object]) -> None:
