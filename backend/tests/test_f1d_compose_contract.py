@@ -383,6 +383,25 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
                     services[dependency] = {"image": "alpine:3.20"}
 
     fragment: dict[str, object] = {"services": services}
+    # 선택한 service가 참조하는 top-level named volume 정의를 함께 옮긴다. 빼면 정본 compose에서는
+    # 선언된 volume이 fragment에서는 "undeclared"가 되어 validator가 정본을 거부한다. 이름 목록을
+    # 박지 않고 mount source에서 유도한다(short syntax `source:target[:mode]`).
+    source_volumes = _source_compose().get("volumes") or {}
+    assert isinstance(source_volumes, dict)
+    referenced_volumes = sorted(
+        {
+            str(mount).split(":", 1)[0]
+            for service in services.values()
+            if isinstance(service, dict)
+            for mount in service.get("volumes") or []
+            if isinstance(mount, str)
+        }
+        & set(source_volumes)
+    )
+    if referenced_volumes:
+        fragment["volumes"] = {
+            name: deepcopy(source_volumes[name]) for name in referenced_volumes
+        }
     if (
         "kor-travel-shared-postgres" in services
         or "kor-travel-shared-db-init-pinvi" in services
