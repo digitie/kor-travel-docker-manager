@@ -2,6 +2,25 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-13 — Map 날씨 env 잔여 점검과 퇴역 접두 가드 확장(Map ADR-104/105)
+
+- 소유자 승인 정리: Map이 날씨를 kor-travel-weather에 넘겼으므로(Map ADR-104/105) Manager가 Map 서비스에
+  주던 KMA/AirKorea/weather env를 지우려 했다. 점검해 보니 **compose·`.env.example`·C6c·fixture에 지울 것이 없다.**
+  Map Dagster 세 서비스의 `KOR_TRAVEL_MAP_KMA_WEATHER_MAX_GRIDS_PER_RUN`·`…_EXTRA_POINTS`(원천
+  `KOR_TRAVEL_MAP_DOCKER_KMA_*`)는 #452(`b083f2a`, 2026-10-03)가 이미 지웠다. 현재 Map 서비스 블록에는
+  `KMA`·`AIRKOREA`·`WEATHER`가 든 키도 보간 원천도 없다.
+- Map API의 `docker/api-entrypoint.sh` `removed_provider_keys`(`KOR_TRAVEL_MAP_API_KMA_*`·`…_API_AIRKOREA_*` 등)는
+  Manager compose가 건드린 적이 없다 — #452가 지운 이름은 API가 아니라 Dagster 쪽이었고 API 거부 목록에도 없다.
+  C6c `_FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES`는 그 거부 목록의 거울이라 그대로 둔다(2026-10-02 판단과 같다).
+- 남는 키: `KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY`(Map `settings.data_go_kr_service_key` — datagokr/krheritage/MOIS가
+  아직 쓴다), `KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY`(날씨 아님), weather 자신의 `KOR_TRAVEL_WEATHER_*`(KMA·AirKorea 포함).
+- 되살아남 방지: `test_docker_service_config.py`의 퇴역 접두 검사(옛 `test_retired_map_opinet_krex_settings_are_gone`
+  → `test_retired_map_provider_settings_are_gone`)에 `KOR_TRAVEL_MAP_KMA_`·`KOR_TRAVEL_MAP_DOCKER_KMA_`·
+  `KOR_TRAVEL_MAP_AIRKOREA_`를 더하고, environment **키**뿐 아니라 값의 `${...}` **보간 원천**도 센다(#452가 지운 원천
+  이름은 키 검사로는 못 잡는다). 원천을 하나도 못 보면 실패하는 하한을 붙였다. RED: 키 재삽입·원천만 재삽입 두 변형이
+  각각 실패, 원복 뒤 통과.
+- compose·C6c 정본 행·fixture가 바뀌지 않으므로 fingerprint·pin rebind·C6c generation 변화는 없다.
+
 ## 2026-10-08 — weather Web을 host 포트 `12205`로(ADR-57)
 
 - 소유자 지시: OPNsense HAProxy의 weather backend(`192.168.1.14:12205`)는 그대로 두고 weather Web을 그 포트에 직접 붙인다. `12205`는 ADR-48이 Grafana를 `12104`로 옮기며 비운 자리다(n150 `ss -ltn` 실측: `12205` 미사용, Grafana `12104`, weather Web `14105`; Manager `.env`에 `KOR_TRAVEL_WEATHER_WEB_PORT` 재정의 없음).

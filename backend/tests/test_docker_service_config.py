@@ -1,4 +1,5 @@
 import hashlib
+import re
 from collections.abc import Callable
 from contextlib import nullcontext
 from copy import deepcopy
@@ -111,10 +112,21 @@ _TRANSPORT_BASE_URL_ENV = (
     "${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://127.0.0.1:14001}"
 )
 _TRANSPORT_SERVICE_TOKEN_ENV = "${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN:-}"
-#: Map이 OpiNet·KREX를 직접 부르던 시절의 수집 서비스 설정 접두. 휴게소·주유소·유가는 이제
-#: kor-travel-transport 내부 export에서 읽으므로 이 접두의 이름은 어느 서비스에도,
-#: `.env.example`에도 없어야 한다(이름을 하나씩 베끼지 않고 접두로 센다).
-_RETIRED_MAP_PROVIDER_ENV_PREFIXES = ("KOR_TRAVEL_MAP_OPINET_", "KOR_TRAVEL_MAP_KREX_")
+#: Map이 직접 부르던 시절의 수집 provider 설정 접두. 이 접두의 이름은 어느 서비스의 environment
+#: 키로도, 그 값의 `${...}` 보간 원천으로도, `.env.example`에도 없어야 한다(이름을 하나씩 베끼지
+#: 않고 접두로 센다).
+#: - OpiNet·KREX: 휴게소·주유소·유가는 이제 kor-travel-transport 내부 export에서 읽는다.
+#: - KMA·AirKorea: Map이 날씨를 떼어 kor-travel-weather에 넘겼다(Map ADR-104/105). Manager에서는
+#:   #452가 Map Dagster의 `KOR_TRAVEL_MAP_KMA_WEATHER_*`(원천 `KOR_TRAVEL_MAP_DOCKER_KMA_*`)를 지웠다.
+#:   weather 자신의 `KOR_TRAVEL_WEATHER_*`는 이 접두에 걸리지 않는다.
+_RETIRED_MAP_PROVIDER_ENV_PREFIXES = (
+    "KOR_TRAVEL_MAP_OPINET_",
+    "KOR_TRAVEL_MAP_KREX_",
+    "KOR_TRAVEL_MAP_KMA_",
+    "KOR_TRAVEL_MAP_DOCKER_KMA_",
+    "KOR_TRAVEL_MAP_AIRKOREA_",
+)
+_COMPOSE_INTERPOLATION_SOURCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)")
 _FORBIDDEN_MAP_API_PROVIDER_ENV_NAMES = {
     "KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY",
     "KOR_TRAVEL_MAP_API_KMA_SERVICE_KEY",
@@ -811,19 +823,31 @@ def test_concierge_ui_uses_canonical_production_command_and_auth_allowlist() -> 
     }
 
 
-def test_retired_map_opinet_krex_settings_are_gone() -> None:
+def test_retired_map_provider_settings_are_gone() -> None:
     compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     seen_environments = 0
+    seen_sources = 0
     for service_name, service in compose["services"].items():
         environment = service.get("environment") or {}
         if not isinstance(environment, dict):
             continue
         seen_environments += 1
+        sources = {
+            source
+            for value in environment.values()
+            if isinstance(value, str)
+            for source in _COMPOSE_INTERPOLATION_SOURCE.findall(value)
+        }
+        seen_sources += len(sources)
         leftover = sorted(
-            key for key in environment if key.startswith(_RETIRED_MAP_PROVIDER_ENV_PREFIXES)
+            name
+            for name in set(environment) | sources
+            if name.startswith(_RETIRED_MAP_PROVIDER_ENV_PREFIXES)
         )
         assert not leftover, f"{service_name}에 퇴역한 Map provider 설정이 남았다: {leftover}"
     assert seen_environments, "environment를 가진 서비스를 하나도 보지 못했다"
+    # 보간 원천을 하나도 못 봤다면 정규식이 값 모양과 어긋난 것이다 — 원천 검사가 공허하게 초록이 된다.
+    assert seen_sources, "environment 값에서 `${...}` 보간 원천을 하나도 보지 못했다"
 
     env_example_lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
     assert not [
