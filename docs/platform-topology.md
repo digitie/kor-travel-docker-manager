@@ -251,6 +251,7 @@ workspace로 돌고, 어느 프로젝트도 아직 합류하지 않았다. 4단�
 instance를 한 번 재기동해 Map이 전용 instance에서 쓰던 값을 올린다 — `pg_prewarm`
 (autoprewarm) + `pg_stat_statements`, `shared_buffers=1GB`,
 `work_mem=64MB`, `maintenance_work_mem=256MB`, `effective_cache_size=1536MB`, `max_wal_size=2GB`.
+2026-10-13에 `max_locks_per_transaction=256`을 더했다(공유 lock table 넘침 — `shared-postgres-onboarding.md` §6.1 C10).
 값은 compose `command:`의 리터럴이 정본이고 `ALTER SYSTEM`은 쓰지 않는다. autoprewarm의 dump는
 모든 database를 덮지만 재기동 때의 reload는 DB OID 순이고 free buffer가 바닥나면 멈춘다 —
 가장 나중에 만든 DB(Map이 오면 Map의 둘)가 마지막이고 못 올라올 수 있다(best effort, ADR-53

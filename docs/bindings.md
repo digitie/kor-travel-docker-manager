@@ -132,6 +132,17 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   못한다
 - **결박**: "양끝 host 집합이 다른 간선 집합 == ∅"(T-MGR-01b; 간선 하나를 일부러 남겨 빨갛게 확인)
 
+### B-10. 공용 PostgreSQL `command`의 GUC 이름 집합
+
+- **사실**: 공용 instance가 `-c`로 설정하는 GUC 이름들
+- **정본**: `docker-compose.yml` `kor-travel-shared-postgres`의 `command:`
+- **사본**: `c6c_deployment._POSTGRES_ALLOWED_COMMAND_SETTINGS`
+- **사본이 필요한 이유**: 후보 검사기는 검사 대상인 후보 문서를 신뢰할 수 없다 — 허용 목록은 후보 밖에
+  있어야 `hba_file`·`config_file` 같은 이름을 막는다
+- **결박**: `test_c6c_accepts_every_setting_the_shared_postgres_command_renders` — 렌더된 서비스를
+  C6c 검사기 자체에 통과시킨다(목록을 테스트에 다시 적지 않는다). compose에만 이름을 더하면 빨강
+  (2026-10-13 `max_locks_per_transaction`으로 확인)
+
 ---
 
 ## 결박할 수 없어 남겨 둔 것

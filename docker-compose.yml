@@ -281,6 +281,14 @@ services:
     - pg_stat_statements.track=all
     - -c
     - pg_stat_statements.max=10000
+    # 공유 lock table 크기는 `max_locks_per_transaction × (max_connections +
+    # max_prepared_transactions)`이고 **cluster 전역 한 벌**이다. 기본 64(약 64×122 슬롯)에서는
+    # 한 트랜잭션이 수천 개의 lock을 잡으면(2026-10-12 09:25Z부터 Map curation finalize가
+    # feature별 `pg_advisory_xact_lock` 약 11,820개) 테이블이 넘쳐 **모든 테넌트**의 쓰기와 새
+    # 연결이 "out of shared memory"로 죽었다(시간당 약 120건). 256은 약 31k 슬롯, 공유 메모리
+    # 약 10~15MB다. 원인 수정은 Map 쪽 몫이고 이 값은 다른 테넌트를 지키는 여유다.
+    - -c
+    - max_locks_per_transaction=256
     secrets:
     - kor-travel-shared-postgres-password
     volumes:

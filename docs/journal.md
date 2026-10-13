@@ -2,6 +2,27 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-13 — 공용 PostgreSQL `max_locks_per_transaction` 64 → 256 (공유 lock table 넘침 stopgap)
+
+- **증상**: 2026-10-12 09:25Z부터 `kor-travel-shared-postgres`(PG 16, `max_connections` 100)가 시간당 약 120건의
+  `out of shared memory`를 냈다. 멈춘 Map curation finalize(`feature.finalize_provider_curation_root`)가 한 트랜잭션에서
+  feature별 `pg_advisory_xact_lock` 약 11,820개를 잡아 기본 64의 공유 lock table(약 64×122 슬롯)을 30초마다 넘겼고,
+  그때마다 **모든 테넌트**의 쓰기와 새 연결이 죽었다.
+- **변경**: compose `command:`에 `-c max_locks_per_transaction=256`(약 31k 슬롯, 공유 메모리 약 10~15MB). 다른 튜닝과
+  같이 compose 리터럴이 정본이다(ADR-53 D4 — env 우회 없음; T-MGR-03의 env 파생은 별개 작업). C6c 허용 목록
+  `_POSTGRES_ALLOWED_COMMAND_SETTINGS`에 이름을 더했다 — 빠지면 C6c 후보 검사가 이 compose를 거부한다.
+  원인 수정(묶음 단위 lock)은 Map 몫이고 이 값은 다른 테넌트를 지키는 여유다. ADR은 두지 않았다(D4 튜닝 목록에 한 줄을
+  더하는 것이고 결정 구조는 그대로다).
+- **테스트**(`test_shared_postgres_runtime_contract.py`): D4 command 정확 목록에 한 줄; 새
+  `test_the_shared_lock_table_outlasts_one_tenants_lock_burst`는 렌더된 command를 C6c 파서로 읽어 슬롯 수
+  (`max_locks_per_transaction × (max_connections + max_prepared_transactions)`, 없으면 PG 16 기본값)가 관측 burst
+  11,820의 2배 이상인지 본다 — 64로 되돌리면 6,400으로 빨강, `max_connections`를 낮춰도 빨강. 새
+  `test_c6c_accepts_every_setting_the_shared_postgres_command_renders`는 목록을 다시 적지 않고 렌더된 서비스를 C6c
+  검사기에 통과시킨다 — 허용 목록에서 이름을 빼면 빨강(둘 다 일부러 빨갛게 확인). `bindings.md` B-10 등록.
+- **반영(머지 뒤, 별개 창)**: 설치는 compose config hash를 바꿔 공용 instance 재생성을 무장한다 — 설치와 재생성 사이에
+  `--no-deps` 없는 `up`을 돌리지 않는다. 재생성은 호스트에서 수동 `CHECKPOINT` 뒤 `up -d --no-deps --force-recreate
+  kor-travel-shared-postgres`(production `ensure`는 거부된다), 모든 테넌트가 짧게 끊긴다(onboarding §6.1 C9).
+
 ## 2026-10-13 — Track 2: odroid 다중 호스트 설계 ADR-58(proposed)·문서 반영·`decisions.md` 아카이브 분리
 
 - 소유자 지시("설계와 각 프로젝트 문서 수정해서 코딩을 할 수 있게 준비하고 각각 PR 머지까지 진행")에 따른 **문서만**의 변경이다.

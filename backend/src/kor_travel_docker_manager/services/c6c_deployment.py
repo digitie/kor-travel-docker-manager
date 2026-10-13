@@ -1378,6 +1378,7 @@ _POSTGRES_ALLOWED_COMMAND_SETTINGS: Final = frozenset(
         "effective_cache_size",
         "listen_addresses",
         "maintenance_work_mem",
+        "max_locks_per_transaction",
         "max_wal_size",
         "pg_prewarm.autoprewarm",
         "pg_stat_statements.max",
@@ -1830,7 +1831,7 @@ def _assert_one_postgres_cluster_runtime(
     """PostgreSQL 서버의 **형태 전체**를 허용 목록으로 묶는다.
 
     금지 목록은 세 라운드 연속으로 뒤처졌다 — 매번 내가 놓친 철자·키가 우회로였다.
-    정본 넷의 형태는 좁고 고정적이므로(최상위 키 13개, GUC 12개 + `-p`) 방향을
+    정본 넷의 형태는 좁고 고정적이므로(최상위 키 13개, GUC 13개 + `-p`) 방향을
     뒤집으면 **모르는 것이 하나라도 있으면 거부**가 되고, 다음 compose 스펙이나
     postgres 버전이 무엇을 추가해도 fail-close다.
     """
