@@ -16,6 +16,11 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-10-14 — 공용 Dagster 최신 tick 조회와 연결 대기 복구
+
+- [x] timestamp DESC 인덱스를 storage bootstrap에 추가하고 동일 정의 invalid index 재진입 복구, 연결/lock/SQL 시간 제한, 이름 충돌·오류 fail-closed를 구현했다. [계약](dagster-tick-index.md).
+- 관련 계약 318 PASS, 실제 PG·Dagster 이미지 4 PASS, 독립 FULL 적대 리뷰 2건 OPEN 0 및 Concierge n150 live UI 90 PASS를 확인했다. 검토 함수의 운영 인덱스 적용/실제 계획·최신 ID/tick body/요약 응답을 검증했다. 공유 PG/plane 재생성·새 이미지 정식 rollout·장기 안정성을 완료로 계산하지 않는다.
+
 ## 2026-10-06 — Concierge 공용 Dagster 합류 구현
 
 - [x] Concierge shared-only code server, workspace/digest·readonly instance bind·location/job cap과 canonical health/reaper를 구현했다(ADR-55). legacy profile과 기존 own/partial topology 검증을 유지한다.
