@@ -357,6 +357,17 @@ def test_db_init_and_migrate_prepare_the_shared_storage_idempotently(
     assert version == [instance["head"]]
     assert {"runs", "event_logs", "jobs", "instigators", "daemon_heartbeats"} <= set(tables)
     assert owners == [role]
+    tick_index = _sql_in(
+        plane, plane.database,
+        "SELECT i.indisvalid, i.indisready, pg_get_indexdef(i.indexrelid), "
+        "pg_get_userbyid(c.relowner) FROM pg_index AS i "
+        "JOIN pg_class AS c ON c.oid = i.indexrelid "
+        "WHERE i.indexrelid = to_regclass('public.ktdm_job_ticks_latest_timestamp')",
+    )
+    assert tick_index == [
+        't|t|CREATE INDEX ktdm_job_ticks_latest_timestamp ON public.job_ticks '
+        f'USING btree ("timestamp" DESC)|{role}'
+    ]
 
     # Dagster가 공용 설정을 받아들였고, 결과가 파일에 적은 것과 같다.
     config = load_yaml_rejecting_duplicate_keys(
@@ -378,6 +389,11 @@ def test_db_init_and_migrate_prepare_the_shared_storage_idempotently(
         again = _one_shot(plane, service)
         assert again.returncode == 0, service + again.stdout[-2000:] + again.stderr[-2000:]
     assert _storage_state(plane) == (version, tables, owners)
+    assert _sql_in(
+        plane, plane.database,
+        "SELECT indisvalid AND indisready FROM pg_index "
+        "WHERE indexrelid = to_regclass('public.ktdm_job_ticks_latest_timestamp')",
+    ) == ["t"]
 
 
 def test_db_init_refuses_a_password_that_would_break_the_url(isolated_plane: _Plane) -> None:
@@ -527,3 +543,47 @@ def test_the_location_cap_blocks_the_next_run_of_that_location_only(
     uncounted = _queue_probe(plane, {**request, "concurrency": control})
     assert uncounted["busy_dequeued"] is True, "옛 key의 상한이 막았다 — 대조군이 무의미해졌다"
     assert uncounted["idle_dequeued"] is True
+
+
+_CONNECT_TIMEOUT_PROBE = """
+import json, runpy, socket, threading, time
+module = runpy.run_path('/usr/local/bin/kor-travel-dagster-storage-migrate', run_name='tick_probe')
+listener = socket.socket()
+listener.bind(('127.0.0.1', 0)); listener.listen(1); listener.settimeout(15)
+port = listener.getsockname()[1]
+stop = threading.Event(); accepted = threading.Event()
+def fixture():
+    try:
+        connection, _ = listener.accept()
+        with connection:
+            accepted.set(); stop.wait(20)
+    finally:
+        listener.close()
+thread = threading.Thread(target=fixture); thread.start()
+start = time.monotonic(); failure = None
+try:
+    module['ensure_tick_lookup_index'](
+        f'postgresql://fixture@127.0.0.1:{port}/fixture?connect_timeout=0')
+except Exception as error:
+    failure = type(error).__name__
+finally:
+    stop.set(); thread.join(timeout=2)
+elapsed = time.monotonic() - start
+print(json.dumps({'accepted': accepted.is_set(), 'failure': failure, 'elapsed': elapsed}))
+assert accepted.is_set() and failure == 'OperationalError' and 4 <= elapsed < 15
+"""
+
+
+def test_new_tick_connection_is_bounded_before_any_sql(isolated_plane: _Plane) -> None:
+    """실제 libpq가 handshake 무응답을 제한하고 URL timeout=0도 덮어쓴다."""
+
+    plane = isolated_plane
+    probe = _run(
+        *plane.compose, "run", "--rm", "--no-deps", "--entrypoint", "python", _MIGRATE,
+        "-I", "-c", _CONNECT_TIMEOUT_PROBE,
+        env=plane.env, timeout=30,
+    )
+    assert probe.returncode == 0, probe.stdout[-2000:] + probe.stderr[-2000:]
+    proof = json.loads(probe.stdout.strip().splitlines()[-1])
+    assert proof["accepted"] and proof["failure"] == "OperationalError"
+    assert 4 <= proof["elapsed"] < 15

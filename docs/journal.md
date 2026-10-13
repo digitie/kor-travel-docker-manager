@@ -2,6 +2,26 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+
+## 2026-10-14 — tick 조회 수정의 운영/live gate 완료
+
+- 최신 main의 공용 PG lock 정책과 기록을 양쪽 모두 보존해 병합했다. 관련 계약 318 PASS, 실제 PG·Dagster 이미지 4 PASS 및 두 FULL source 리뷰 OPEN 0을 확인했다. source R3는 `25725af8`이고 핵심 함수 SHA256은 `8152a6f21038975cbe177153e04159fdd829b9e2844b424f41beb4edb6b5305c`다.
+- 첫 운영 하니스는 remote 문자열의 구문 오류로 DDL 전에 실패했다. 문자열을 compile 확인 후 검토 함수만 Manager host lock 아래 적용해 50.559초에 인덱스 준비를 완료했다. 공유 3서비스 ID·health·restart 0·OOM false는 불변이며 PG/plane을 재생성하지 않았다.
+- 실제 계획은 Index Scan이며 repeatable-read 최신 범위 검증에서 원래 조건의 단일 ID/tick body와 인덱스 flags를 확인했다. history 정렬을 강제한 비교 하니스의 outer timeout 25초는 실패로 보존한다.
+- 적용 직후 GraphQL 표본은 timeout 2건 뒤 3건 정상, 후속 고정 표본 5건은 200/0.080~0.524초다. 후보 API summary ok, n150 native Chromium 전체 UI 90 PASS(0 skip/0 retry/0 flaky)를 확인했다. 초기 UI 71건 중 fixture 공개키 누락 1건은 own DB fixture 준비 후 단독 재검증과 전체 90건에서 통과했다.
+- 이 단계는 Concierge의 실제 Geo 공개키 401이나 호스트 이전을 완료했다는 근거가 아니다. 새 Dagster host image의 정식 rollout과 장기 표본은 별도 운영 절차다. 원본 Codex worktree의 staged 변경은 보존했다.
+
+## 2026-10-14 — tick 인덱스 R1 연결 대기 보강
+
+독립 리뷰 B는 PostgreSQL handshake를 응답하지 않는 본인 loopback TCP fixture에서 새 연결이 SQL timeout 이전에 계속 대기하는 문제를 재현했다. 기존 R1 BLOCK을 보존하고 `connect_timeout=5`를 명시한다. 이미지 content tag와 focused 회귀 기대값을 함께 갱신한다. 수정 후보의 실제 blackhole·격리 이미지·운영/live/UI 및 재리뷰는 검증 중이다.
+
+## 2026-10-13 — 공용 Dagster 센서 최신 tick 조회 병목 보강
+
+- Concierge Track 1·2 live gate에서 전체 요약이 gateway timeout으로 실패했다. 저장소/활성 run 조회는 빠르지만 sensor tick과 daemon 최신 tick 조회는 metadata I/O를 오래 기다렸다. read-only 실행 계획은 `LIMIT 1`에서도 약 9,800행의 Bitmap Heap Scan·Sort를 보였다.
+- 격리 PostgreSQL 16만 행의 같은 OR/최신 정렬 쿼리는 timestamp 정렬 인덱스 후 결과 ID 불변, Sort 제거, 25.058ms → 0.175ms였다. 이는 운영 p95 결과가 아니다.
+- storage bootstrap에 쓰기를 막지 않는 `CREATE INDEX CONCURRENTLY`와 같은 정의의 invalid index 재진입 복구를 추가했다. 기존 이름의 다른 정의는 거부한다. 데이터 삭제·timeout 상향·tick 응답 축소는 하지 않는다. 단일 프로세스 bootstrap 뒤 기존 `exec dagster instance migrate` 흐름을 유지한다.
+- 독립 적대 리뷰 2건·실제 PostgreSQL·운영 효과·live UI는 진행 중이다. 원본 Codex worktree의 다수 staged 변경은 보존하고 별도 깨끗한 worktree에서 구현했다.
+
 ## 2026-10-13 — 공용 PostgreSQL `max_locks_per_transaction` 64 → 256 (공유 lock table 넘침 stopgap)
 
 - **증상**: 2026-10-12 09:25Z부터 `kor-travel-shared-postgres`(PG 16)가 `out of shared memory`를 냈다(26시간 3,160건 +
