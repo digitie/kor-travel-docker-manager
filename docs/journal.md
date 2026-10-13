@@ -2,6 +2,13 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-13 — 공용 Dagster 센서 최신 tick 조회 병목 보강
+
+- Concierge Track 1·2 live gate에서 전체 요약이 gateway timeout으로 실패했다. 저장소/활성 run 조회는 빠르지만 sensor tick과 daemon 최신 tick 조회는 metadata I/O를 오래 기다렸다. read-only 실행 계획은 `LIMIT 1`에서도 약 9,800행의 Bitmap Heap Scan·Sort를 보였다.
+- 격리 PostgreSQL 16만 행의 같은 OR/최신 정렬 쿼리는 timestamp 정렬 인덱스 후 결과 ID 불변, Sort 제거, 25.058ms → 0.175ms였다. 이는 운영 p95 결과가 아니다.
+- storage bootstrap에 쓰기를 막지 않는 `CREATE INDEX CONCURRENTLY`와 같은 정의의 invalid index 재진입 복구를 추가했다. 기존 이름의 다른 정의는 거부한다. 데이터 삭제·timeout 상향·tick 응답 축소는 하지 않는다. 단일 프로세스 bootstrap 뒤 기존 `exec dagster instance migrate` 흐름을 유지한다.
+- 독립 적대 리뷰 2건·실제 PostgreSQL·운영 효과·live UI는 진행 중이다. 원본 Codex worktree의 다수 staged 변경은 보존하고 별도 깨끗한 worktree에서 구현했다.
+
 ## 2026-10-13 — Track 2: odroid 다중 호스트 설계 ADR-58(proposed)·문서 반영·`decisions.md` 아카이브 분리
 
 - 소유자 지시("설계와 각 프로젝트 문서 수정해서 코딩을 할 수 있게 준비하고 각각 PR 머지까지 진행")에 따른 **문서만**의 변경이다.

@@ -36,6 +36,62 @@ def _fail(message: str) -> int:
     return 2
 
 
+class TickIndexError(RuntimeError):
+    """비밀값 없이 운영자가 조치할 수 있는 인덱스 준비 오류."""
+
+
+
+def _postgres_url(postgres: dict) -> str:
+    value = postgres.get("postgres_url")
+    if isinstance(value, dict) and set(value) == {"env"}:
+        name = value["env"]
+        value = os.environ.get(name) if isinstance(name, str) else None
+    if not isinstance(value, str) or not value.startswith("postgresql"):
+        raise TickIndexError("PostgreSQL storage URL 설정을 확인하세요")
+    return value
+
+
+def ensure_tick_lookup_index(postgres_url: str) -> None:
+    """최신 tick 조회의 OR 조건 뒤 전체 정렬을 줄이는 공용 인덱스를 준비한다.
+
+    CONCURRENTLY는 운영 쓰기를 막지 않으며, autocommit 연결에서만 실행한다.
+    중단된 같은 정의의 invalid 인덱스는 재시도 때 복구한다. 이름만 같은 다른
+    정의는 교체하지 않고 거부한다. Dagster 데이터와 기존 인덱스는 지우지 않는다.
+    """
+    from sqlalchemy import create_engine
+
+    engine = create_engine(postgres_url, isolation_level="AUTOCOMMIT")
+    lookup = (
+        "SELECT indisvalid, indisready, pg_get_indexdef(indexrelid) "
+        "FROM pg_index WHERE indexrelid = "
+        "to_regclass('public.ktdm_job_ticks_latest_timestamp')"
+    )
+    expected = ('CREATE INDEX ktdm_job_ticks_latest_timestamp '
+                'ON public.job_ticks USING btree ("timestamp" DESC)')
+    try:
+        with engine.connect() as connection:
+            connection.exec_driver_sql("SET lock_timeout = '5s'")
+            connection.exec_driver_sql("SET statement_timeout = '120s'")
+            row = connection.exec_driver_sql(lookup).first()
+            if row is not None:
+                if row[2] != expected:
+                    raise TickIndexError("tick 인덱스 이름 충돌: 기존 정의를 확인하세요")
+                if row[0] and row[1]:
+                    return
+                connection.exec_driver_sql(
+                    "DROP INDEX CONCURRENTLY public.ktdm_job_ticks_latest_timestamp"
+                )
+            connection.exec_driver_sql(
+                'CREATE INDEX CONCURRENTLY ktdm_job_ticks_latest_timestamp '
+                'ON public.job_ticks ("timestamp" DESC)'
+            )
+            row = connection.exec_driver_sql(lookup).first()
+            if row is None or not (row[0] and row[1]) or row[2] != expected:
+                raise TickIndexError("tick 인덱스 준비 미완료: storage bootstrap을 재시도하세요")
+    finally:
+        engine.dispose()
+
+
 def main() -> int:
     home = os.environ.get("DAGSTER_HOME", "")
     if not home:
@@ -66,6 +122,16 @@ def main() -> int:
         names = sorted(type(item).__name__ for item in storages)
         if not all(name.startswith("Postgres") for name in names):
             return _fail(f"storage is not PostgreSQL: {names}")
+        try:
+            ensure_tick_lookup_index(_postgres_url(storage["postgres"]))
+        except TickIndexError as exc:
+            return _fail(str(exc))
+        except Exception as exc:  # noqa: BLE001 - 실패는 비밀값 없이 종료 코드 2로 전파
+            # 접속 URL/비밀값을 포함할 수 있는 DB 예외 본문은 출력하지 않는다.
+            return _fail(
+                f"tick index SQL error ({type(exc).__name__}); "
+                "check database connectivity and retry storage bootstrap"
+            )
 
     sys.stdout.flush()
     os.execvp("dagster", ["dagster", "instance", "migrate"])
