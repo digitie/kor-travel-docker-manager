@@ -31,7 +31,6 @@ from typing import Any
 
 import pytest
 
-from kor_travel_docker_manager.services import c6c_deployment as c6c
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -47,17 +46,6 @@ _MIN_STOP_GRACE_SECONDS = 120
 _MIN_SHM_BYTES = 1024**3
 
 _SIZE_UNIT_EXPONENTS = {"": 0, "k": 1, "m": 2, "g": 3, "t": 4, "p": 5}
-
-#: 2026-10-12 Map curation finalize 한 트랜잭션이 잡은 advisory lock 수(실측).
-_OBSERVED_LOCK_BURST = 11_820
-#: 그 burst가 다시 와도 다른 테넌트의 lock이 들어갈 자리 — 테이블의 절반 이하만 쓰게 한다.
-_LOCK_BURST_HEADROOM = 2
-#: command에 없을 때 서버가 쓰는 값(PostgreSQL 16 기본값).
-_PG16_DEFAULTS = {
-    "max_locks_per_transaction": 64,
-    "max_connections": 100,
-    "max_prepared_transactions": 0,
-}
 
 
 def _service() -> dict[str, Any]:
@@ -185,56 +173,6 @@ def test_the_shared_postgres_command_is_the_d4_tuning() -> None:
     ]
     settings = [command[index + 1] for index, token in enumerate(command) if token == "-c"]
     assert not any("${" in setting for setting in settings), settings
-
-
-def _rendered_settings() -> dict[str, str]:
-    """compose `command`를 C6c가 읽는 그대로 읽는다 — 같은 이름이 여러 번이면 postgres처럼 마지막."""
-    settings = c6c._postgres_command_settings(_service()["command"])
-    assert settings is not None, "C6c 파서가 공용 instance의 command를 읽지 못한다"
-    return dict(settings)
-
-
-def _int_setting(settings: dict[str, str], name: str) -> int:
-    value = settings.get(name, str(_PG16_DEFAULTS[name]))
-    assert value.isdigit(), f"`{name}={value}`는 정수가 아니다"
-    return int(value)
-
-
-def test_the_shared_lock_table_outlasts_one_tenants_lock_burst() -> None:
-    """공유 lock table은 cluster 전역 한 벌이다 — 한 테넌트의 큰 트랜잭션이 넘치게 하면 전부 죽는다.
-
-    2026-10-12 09:25Z부터 Map curation finalize가 한 트랜잭션에서 feature별
-    `pg_advisory_xact_lock` 약 11,820개를 잡았고, 기본 `max_locks_per_transaction` 64의
-    테이블(약 64 × 122 슬롯)이 30초마다 넘쳐 모든 테넌트의 쓰기·새 연결이
-    "out of shared memory"로 죽었다(시간당 약 120건). 크기는 렌더된 command에서
-    **효과**(슬롯 수)로 계산한다 — 64로 되돌리거나 `max_connections`를 낮춰 같은 효과를
-    내도 빨강이다. 분모는 보수적으로 `max_connections + max_prepared_transactions`만 센다
-    (서버는 autovacuum·WAL sender 몫을 더 얹는다).
-    """
-    settings = _rendered_settings()
-    slots = _int_setting(settings, "max_locks_per_transaction") * (
-        _int_setting(settings, "max_connections")
-        + _int_setting(settings, "max_prepared_transactions")
-    )
-    assert slots >= _LOCK_BURST_HEADROOM * _OBSERVED_LOCK_BURST, (
-        f"공유 lock 슬롯 {slots}가 관측된 한 트랜잭션의 lock {_OBSERVED_LOCK_BURST}개의 "
-        f"{_LOCK_BURST_HEADROOM}배보다 작다 — 다시 넘치면 모든 테넌트가 끊긴다."
-    )
-
-
-def test_c6c_accepts_every_setting_the_shared_postgres_command_renders() -> None:
-    """compose에 GUC를 더하면 C6c 허용 목록도 같이 가야 한다 — 아니면 재구축이 후보를 거부한다.
-
-    목록을 여기 다시 적지 않고, 렌더된 서비스를 C6c 검사기 자체에 통과시킨다.
-    """
-    service = _service()
-    c6c._assert_one_postgres_cluster_runtime(_SERVICE, service, declared=True)
-    settings = _rendered_settings()
-    assert "max_locks_per_transaction" in settings
-    service_with_unknown = dict(service)
-    service_with_unknown["command"] = [*service["command"], "-c", "max_pred_locks_per_transaction=256"]
-    with pytest.raises(c6c.ComposeCandidateContractError, match="non-canonical"):
-        c6c._assert_one_postgres_cluster_runtime(_SERVICE, service_with_unknown, declared=True)
 
 
 def test_the_shared_postgres_image_is_digest_pinned() -> None:

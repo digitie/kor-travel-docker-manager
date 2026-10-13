@@ -85,7 +85,7 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **사본**: `config/dagster-shared/workspace.n150.yaml` ∪ `config/dagster-shared/workspace.odroid.yaml`
   (오늘의 파생물 `workspace.yaml`이 호스트별 두 파일이 된다; compose가 `${KTDM_HOST:-n150}`으로 고른다)
 - **사본이 필요한 이유**: compose bind는 커밋된 파일만 마운트할 수 있고 registry를 읽지 못한다 — 오늘의
-  `workspace.yaml`과 같은 이유(`docker-compose.yml:781-786`)
+  `workspace.yaml`과 같은 이유(`docker-compose.yml:789-794`)
 - **결박**: 합집합 == shared 집합 ∧ 교집합 ∅ ∧ `workspace.n150.yaml`은 첫 구현에서 오늘 파일과 byte 동일 —
   기존 `test_dagster_shared_workspace_is_derived`를 두 파일 + 호스트별 `all` 규칙으로 확장(T-MGR-02)
 
@@ -95,8 +95,8 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   pinvi-api→weather(`14101`)의 host
 - **정본**: registry `hosts:` + 각 target의 `host:`(렌더 호스트와 같으면 `127.0.0.1`, 아니면 그 addr)
 - **사본**: Manager `docker-compose.yml`에서 **형제 서비스 포트(`12501`/`14001`/`14101`)를 기본값에 가진 env 전부**(비활성
-  `legacy-dagster` profile 포함) — 오늘 **7곳**: geo `:1582`(map-api)·`:1727`(map code-server)·`:1819`·`:1926`(legacy webserver/daemon),
-  transport `:1736`, PinVi ETL `:2134`(오늘은 리터럴), 그리고 pinvi-api 블록 `:1935-2010`에 추가될 같은 weather 변수
+  `legacy-dagster` profile 포함) — 오늘 **7곳**: geo `:1590`(map-api)·`:1735`(map code-server)·`:1827`·`:1934`(legacy webserver/daemon),
+  transport `:1744`, PinVi ETL `:2142`(오늘은 리터럴), 그리고 pinvi-api 블록 `:1943-2018`에 추가될 같은 weather 변수
 - **사본이 필요한 이유**: compose는 registry를 읽지 못한다(compose subprocess는 allowlist env만 받는다,
   `compose_service.py:3154-3158`). 값을 root `.env`로 내리면 호스트마다 손으로 맞추는 두 번째 사본이 생긴다 —
   그래서 기본값을 커밋 파생물로 두고 `.env` 재정의는 `targets validate`가 거부한다
@@ -109,9 +109,9 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **사실**: daemon·webserver가 기대하는 `workspace.yaml` sha256[:16]
 - **정본**: 설치된 `config/dagster-shared/workspace.<host>.yaml`의 내용
 - **사본**: compose `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-<n150 파일 digest>}`의 기본값
-  (오늘은 리터럴 `8a86a75219b7938d`, `docker-compose.yml:821,891`), odroid는 root `.env` 값
+  (오늘은 리터럴 `8a86a75219b7938d`, `docker-compose.yml:829,899`), odroid는 root `.env` 값
 - **사본이 필요한 이유**: healthcheck가 마운트 파일과 env를 대조해 낡은 컨테이너를 exit시키는 기제 자체가 이 사본이다
-  (`:839,903`); installer에 계산 로직을 더하지 않는다(ADR-51)
+  (`:847,911`); installer에 계산 로직을 더하지 않는다(ADR-51)
 - **결박**: 기본값 == `workspace.n150.yaml` sha256[:16] — 기존 `test_dagster_shared_config` 확장(T-MGR-02); odroid 값은
   `targets validate`가 설치된 파일과 대조(효과)
 
@@ -127,7 +127,7 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 
 - **사실**: compose `depends_on`이 tenant 경계를 넘지 않는다(R7)
 - **정본**: registry에서 계산한 각 서비스의 host 집합
-- **사본**: `docker-compose.yml`의 `depends_on` 간선(오늘 `kor-travel-map-api → kor-travel-geo-api`, `:1527`이 유일한 위반 후보)
+- **사본**: `docker-compose.yml`의 `depends_on` 간선(오늘 `kor-travel-map-api → kor-travel-geo-api`, `:1535`이 유일한 위반 후보)
 - **사본이 필요한 이유**: 간선 자체는 compose에만 있다 — 지울 수는 있어도(T-MGR-01b가 지운다) 다시 생기는 것을 registry가 막지
   못한다
 - **결박**: "양끝 host 집합이 다른 간선 집합 == ∅"(T-MGR-01b; 간선 하나를 일부러 남겨 빨갛게 확인)
@@ -139,9 +139,9 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **사본**: `c6c_deployment._POSTGRES_ALLOWED_COMMAND_SETTINGS`
 - **사본이 필요한 이유**: 후보 검사기는 검사 대상인 후보 문서를 신뢰할 수 없다 — 허용 목록은 후보 밖에
   있어야 `hba_file`·`config_file` 같은 이름을 막는다
-- **결박**: `test_c6c_accepts_every_setting_the_shared_postgres_command_renders` — 렌더된 서비스를
-  C6c 검사기 자체에 통과시킨다(목록을 테스트에 다시 적지 않는다). compose에만 이름을 더하면 빨강
-  (2026-10-13 `max_locks_per_transaction`으로 확인)
+- **결박**: `test_f1d_compose_contract.py::test_the_canonical_shared_postgres_runtime_shape_passes` — raw compose의
+  공용 서비스를 C6c 검사기 자체에 통과시키고(목록을 테스트에 다시 적지 않는다), 허용 목록 밖의 GUC 하나를 더한 대조군이
+  거부되는지 함께 본다. compose에만 이름을 더하면 빨강(2026-10-13 `max_locks_per_transaction`으로 확인)
 
 ---
 

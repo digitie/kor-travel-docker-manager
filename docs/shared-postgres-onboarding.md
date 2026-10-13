@@ -19,7 +19,7 @@
 > `shared_buffers=1GB`, `work_mem=64MB`, `maintenance_work_mem=256MB`,
 > `effective_cache_size=1536MB`, `random_page_cost=1.1`, `max_wal_size=2GB`,
 > `pg_stat_statements.track=all`·`.max=10000`, 그리고 2026-10-13에 더한
-> `max_locks_per_transaction=256`(아래 C10). 값은 compose `command:`의 리터럴이 정본이다
+> `max_locks_per_transaction=256`(§6.1 C10 — 공유 lock table 넘침 stopgap). 값은 compose `command:`의 리터럴이 정본이다
 > (`KOR_TRAVEL_SHARED_POSTGRES_*` env 우회는 없앴다). `shm_size`는 1gb이고, 이미지는
 > `postgis/postgis:16-3.5@sha256:8b33…`로 digest 고정이다(2026-09-28 실행 중이던 이미지 그대로 —
 > 교체가 아니다). `init: true`·exec probe·`stop_grace_period: 300s`는 ADR-52의 것이고, 그 grace가
@@ -278,7 +278,7 @@ GRANT  CONNECT ON DATABASE <app DB>       TO <app_user>;
 | C7 | 앱 컨테이너에는 secret을 **마운트하지 않는다**(비밀번호는 DSN env로만) | 선례와 어긋나고, 비밀번호 보관처가 하나 더 늘어난다 |
 | C8 | override 파일(`docker-compose.override.yml`)로 시도하지 않는다 | 그 파일이 **존재하는 것만으로** deployment readiness가 `missing`으로 떨어져 승인된 재구축 전체가 막힌다 |
 | C9 | **튜닝·연결 상한 변경은 합류 PR과 분리한다** | 공용 서비스 `command:`의 튜닝 값(compose 리터럴이 정본, ADR-53 D4)과 `max_connections`는 **cluster 전역 단일값**이라 테넌트별로 나눌 수 없고, 반영하려면 **공용 postgres 재기동 = 이미 live인 모든 테넌트의 다운타임**이 따른다. 별개 배포 창에서, 기존 테넌트에 공지하고 한다. 재기동은 `stop_grace_period`(ADR-52, 300s) 안에 종료 checkpoint를 끝내야 crash recovery 없이 뜬다 — Manager의 컨테이너 stop/restart는 그 값을 따르고(#434), 계획된 재기동은 수동 `CHECKPOINT` 뒤 `docker stop --time 300`을 쓴다. 공용 서비스의 `/dev/shm`은 `shm_size: 1gb`다(ADR-53 D4 — ADR-52가 옛 geo 전용 instance와 같은 512mb로 올렸고, 그전 64MB에서 병렬 질의가 `could not resize shared memory segment`로 죽었다). 더 필요하면 이것도 cluster 전역 값이다 |
-| C10 | **합류는 양방향 결합이다** — 네 부하가 공유 postmaster 안에서 돈다 | 공용 instance 장애가 네 장애가 되는 것만이 아니다. 네 backend 하나가 OOM으로 죽거나 segfault하면 postmaster가 **모든 테넌트**를 crash-restart한다(컨테이너 메모리 상한 없음). 무거운 bulk load·큰 집계·새 확장은 합류 PR에 적고 기존 테넌트에 알린다(ADR-53 — Map이 그 예다). 네 서비스가 공용 instance를 `depends_on`하면 drift 동안의 손 명령 재생성 위험(§7.3)도 그만큼 넓어진다(Map 합류로 20 → 25개). **공유 lock table도 cluster 전역 한 벌이다** — 크기는 `max_locks_per_transaction × (max_connections + max_prepared_transactions)`이고, 한 트랜잭션이 수천 개의 lock(advisory lock 포함)을 잡으면 다른 테넌트의 쓰기와 새 연결이 `out of shared memory`로 죽는다. 2026-10-12 09:25Z부터 Map curation finalize가 feature별 `pg_advisory_xact_lock` 약 11,820개로 기본 64의 테이블(약 64×122)을 30초마다 넘겼다(시간당 약 120건) — 그래서 256(약 31k 슬롯, 공유 메모리 약 10~15MB)으로 올렸다. 이 값은 여유일 뿐이다: 한 트랜잭션에서 lock 수가 행 수에 비례하는 코드는 합류 PR에 적고 묶음 단위로 끊는다. 크기 하한은 `test_the_shared_lock_table_outlasts_one_tenants_lock_burst`가 렌더된 command에서 계산해 본다 |
+| C10 | **합류는 양방향 결합이다** — 네 부하가 공유 postmaster 안에서 돈다 | 공용 instance 장애가 네 장애가 되는 것만이 아니다. 네 backend 하나가 OOM으로 죽거나 segfault하면 postmaster가 **모든 테넌트**를 crash-restart한다(컨테이너 메모리 상한 없음). 무거운 bulk load·큰 집계·새 확장은 합류 PR에 적고 기존 테넌트에 알린다(ADR-53 — Map이 그 예다). 네 서비스가 공용 instance를 `depends_on`하면 drift 동안의 손 명령 재생성 위험(§7.3)도 그만큼 넓어진다(Map 합류로 20 → 25개). **공유 lock table도 cluster 전역 한 벌이다** — 슬롯 수는 `max_locks_per_transaction × MaxBackends + max_prepared_transactions`이고 MaxBackends = `max_connections`(100) + `autovacuum_max_workers`(3) + 1 + `max_worker_processes`(8) + `max_wal_senders`(10) = 122다(기본 64 → 7,808슬롯). 한 트랜잭션이 수천 개의 lock(advisory lock 포함)을 잡으면 테이블이 넘쳐 그 순간 lock을 새로 얻는 **다른 테넌트**의 질의와 새 연결도 `out of shared memory`로 실패한다. 2026-10-12 09:25Z부터 Map curation finalize(`feature.finalize_provider_curation_root`)가 feature별 `pg_advisory_xact_lock` 약 11,820개를 잡고 30초마다 재시도되며 테이블을 넘겼다 — 피해는 간헐적이었다: 26시간 3,160건 중 2,789건은 finalize 자신이고, 다른 테넌트에 닿은 것은 약 10건 중 1건, 그 밖에 새 연결의 FATAL 178건. 그래서 2026-10-13 `max_locks_per_transaction`을 256(31,232슬롯)으로 올렸다(#471). 공유 메모리는 슬롯당 약 330 B라 약 7.5~8 MB 늘고 lock table 전체는 약 10.6 MB다 (main segment는 anonymous mmap이라 `shm_size`와 무관하다). **256은 큰 finalize가 한 번에 하나라는 전제의 여유다** — Map 등산로(57k)·MOIS bulk 적재는 [Map `fix/bulk-curation-locks`(#1319, 진행 중)](https://github.com/digitie/kor-travel-map/pull/1319)의 묶음 단위 lock이 들어온 뒤에 돌린다. 한 트랜잭션의 lock 수가 행 수에 비례하는 코드는 합류 PR에 적고 묶음 단위로 끊는다 |
 
 ### 6.2 `config/docker-targets.yml`
 
@@ -617,15 +617,15 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
   odroid에서 **`ensure dagster`가 PG·db-init-dagster·storage-migrate·plane을 올린다**. `ensure kor-travel-shared-postgresql` 같은 명령은
   없다. 롤·DB bootstrap은 n150과 같은 one-shot(`kor-travel-shared-db-init-{geo,weather,transport,dagster}`)이 같은 이름으로 만들되
   **실행 시점이 target마다 다르다**(R4 — 생성 명령은 `KTDM_HOST ∈ host 집합`일 때만): `dagster_shared`/`kor_travel_dagster_shared_app`
-  (`CONNECTION LIMIT 45`, compose 리터럴 `docker-compose.yml:718,720`)은 `ensure dagster`(§9.2 전체 순서 3); `kor_travel_geo`/
+  (`CONNECTION LIMIT 45`, compose 리터럴 `docker-compose.yml:726,728`)은 `ensure dagster`(§9.2 전체 순서 3); `kor_travel_geo`/
   `kor_travel_geo_app`은 geo 플립의 `ensure geo`(8b — db-init-geo는 geo target의 service `config/docker-targets.yml:439`),
   `kor_travel_weather`/`kor_travel_weather_app`은 weather 플립의 `ensure weather`(6b, `:732`); `kor_travel_transport`/
-  `kor_travel_transport_app`은 **어느 target의 service도 등록된 `init_steps`도 아니라**(`docker-compose.yml:580`; n150 합류 때도 Manager
+  `kor_travel_transport_app`은 **어느 target의 service도 등록된 `init_steps`도 아니라**(`docker-compose.yml:588`; n150 합류 때도 Manager
   명령 밖이었다) 설치 루트에서 `docker compose run --rm --no-deps kor-travel-shared-db-init-transport`로 1회(4a′). **앱 role 셋에는
-  connlimit이 없다** — db-init의 `CREATE/ALTER ROLE`에 `CONNECTION LIMIT` 절이 없고(`:424-426` 등) n150 실측도 무제한이다(fact base;
+  connlimit이 없다** — db-init의 `CREATE/ALTER ROLE`에 `CONNECTION LIMIT` 절이 없고(`:432-434` 등) n150 실측도 무제한이다(fact base;
   compose 전체에서 `CONNECTION LIMIT`은 dagster 45뿐). odroid도 같다(두고 싶으면 db-init 셋에 넣는 것이 대안 — T-MGR-03 범위 밖).
-  **geo 확장은 오늘 db-init이 만들지 않는다**(`:374-383` 주석 — cutover `pg_restore`가 dump의 `x_extension` 배치를 재생하게 두려고;
-  §4.3의 "현재 postgis 1종"은 concierge `:363`). odroid는 pg_restore 없는 fresh 경로라 T-MGR-03이 db-init-geo에
+  **geo 확장은 오늘 db-init이 만들지 않는다**(`:382-391` 주석 — cutover `pg_restore`가 dump의 `x_extension` 배치를 재생하게 두려고;
+  §4.3의 "현재 postgis 1종"은 concierge `:371`). odroid는 pg_restore 없는 fresh 경로라 T-MGR-03이 db-init-geo에
   `CREATE SCHEMA IF NOT EXISTS x_extension` + `CREATE EXTENSION IF NOT EXISTS {postgis,pg_trgm,unaccent,pg_stat_statements} SCHEMA x_extension`을
   더한다(n150 no-op; 8b 게이트 `\dx`; §4.3 문장도 그때 갱신). weather·transport는 n150에서도 fresh DB로 합류했고 소스에 `CREATE EXTENSION`이
   없어 공백이 없다. **`kor_travel_transport_dagster`는 만들지 않는다** — db-init-transport는 그 DB를
@@ -636,11 +636,12 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
   `test_transport_shared_bootstrap_contract.py:23`은 "이미지 == compose 기본값"으로 바뀐다). odroid root `.env`가 `imresamu/postgis:16-3.5`
   (공식과 같은 레이아웃의 제3자 이미지)를 준다. 결박은 효과로 — `ensure` 프리플라이트가 이미지 arch == 호스트 arch를 검사하고, 설치
   때 `pg_isready` 경로와 `postgis_full_version()` major.minor를 n150과 대조한다.
-- **튜닝(env 파생, 기본값 = `docker-compose.yml:265-283`의 n150 값).** odroid `.env`: `effective_cache_size 2GB`(n150 1536MB),
+- **튜닝(env 파생, 기본값 = `docker-compose.yml:265-291`의 n150 값).** odroid `.env`: `effective_cache_size 2GB`(n150 1536MB),
   `work_mem 16MB`(n150 64MB), `max_parallel_workers 2`/`_per_gather 1`, `effective_io_concurrency 200`(fio 뒤), `checkpoint_timeout 900`,
   `wal_compression zstd`, `autovacuum_max_workers 2` — 뒤의 여섯 키는 n150 compose에 없어 env 파생 줄이 새로 생기고 기본값은 PG 16 서버
   기본값(효과 0, ADR-58 결정 1 ⑦); `shared_buffers 1GB`·`maintenance_work_mem 256MB`·`shm_size 1gb`·`init: true`·exec healthcheck(ADR-52)는
-  동일. **`max_connections`는 compose에 없다(서버 기본 100) — 추가하지 않는다**(실측 사용 ≈17이라 내려도 이득이 없다); connlimit은
+  동일. `max_locks_per_transaction=256`(§6.1 C10)도 env 파생 없이 **두 호스트 같은 리터럴**이다(ADR-58 결정 8 ⅰ).
+  **`max_connections`는 compose에 없다(서버 기본 100) — 추가하지 않는다**(실측 사용 ≈17이라 내려도 이득이 없다); connlimit은
   위 "누가 올리나"대로 `dagster_shared` 45 리터럴뿐이다.
 - **메모리 정책(ADR-58 결정 8).** 두 호스트 **동일한 것은 규칙 둘** — `oom_score_adj -800`(plane -600, weather cs -500 유지,
   geo cs 0 — 호스트 OOM이 PG backend보다 run worker를 먼저 고르게; transport cs는 transport 저장소 compose의 몫)과 "`mem_limit`가 있으면
