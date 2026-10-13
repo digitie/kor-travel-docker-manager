@@ -251,6 +251,7 @@ workspace로 돌고, 어느 프로젝트도 아직 합류하지 않았다. 4단�
 instance를 한 번 재기동해 Map이 전용 instance에서 쓰던 값을 올린다 — `pg_prewarm`
 (autoprewarm) + `pg_stat_statements`, `shared_buffers=1GB`,
 `work_mem=64MB`, `maintenance_work_mem=256MB`, `effective_cache_size=1536MB`, `max_wal_size=2GB`.
+2026-10-13에 `max_locks_per_transaction=256`을 더했다(공유 lock table 넘침 stopgap, 큰 finalize 하나 전제 — `shared-postgres-onboarding.md` §6.1 C10).
 값은 compose `command:`의 리터럴이 정본이고 `ALTER SYSTEM`은 쓰지 않는다. autoprewarm의 dump는
 모든 database를 덮지만 재기동 때의 reload는 DB OID 순이고 free buffer가 바닥나면 멈춘다 —
 가장 나중에 만든 DB(Map이 오면 Map의 둘)가 마지막이고 못 올라올 수 있다(best effort, ADR-53
@@ -682,7 +683,7 @@ validate` → odroid `ensure <target>`. consumer 전환(Map/PinVi 코드서버·
 | 호스트 | target(종류) | 서비스(포트 — n150과 동일) | 비고 |
 |---|---|---|---|
 | **odroid `192.168.1.13`** | `geo`(tenant, `host: odroid`) | api `12501`, ui `12505`, code-server gRPC `127.0.0.1:12503`, db-init | geo 플립 PR(T-MGR-06, 마지막) |
-| | `weather`(tenant) | api `14101`, web `12205`(ADR-57), code-server gRPC `127.0.0.1:14106` · code-server metrics `14103`(compose `:2866`), weather Prometheus `14104`(관측 1단계 유지), `legacy-dagster` 서비스는 기동 안 함 | |
+| | `weather`(tenant) | api `14101`, web `12205`(ADR-57), code-server gRPC `127.0.0.1:14106` · code-server metrics `14103`(compose `:2874`), weather Prometheus `14104`(관측 1단계 유지), `legacy-dagster` 서비스는 기동 안 함 | |
 | | `transport`(tenant, 외부 project) | backend `14001`, frontend `14002`, code-server `127.0.0.1:14005`; `transport-admin` `12305`/`12301` | app dir `/home/digitie/apps/kor-travel-transport` 동일 |
 | | `dagster`(infra, `host: all`) | **odroid PG** `kor-travel-shared-postgres` `11000` loopback(`kor_travel_geo`·`kor_travel_weather`·`kor_travel_transport`·`dagster_shared`), gateway `11001`, webserver `127.0.0.1:11002`, daemon, storage-migrate | 두 번째 plane; PG는 이 target의 service |
 | | `storage`(infra, `host: all`) | RustFS `12101`/`12105`(bind는 compose상 `0.0.0.0` — 경계는 호스트 방화벽) | `rustfs-init`은 버킷 6개를 registry와 무관하게 다 만든다 — 양쪽에 생기고 사용만 분리 |

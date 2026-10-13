@@ -281,6 +281,14 @@ services:
     - pg_stat_statements.track=all
     - -c
     - pg_stat_statements.max=10000
+    # 공유 lock table은 **cluster 전역 한 벌**이다: 슬롯 = `max_locks_per_transaction × MaxBackends(122)
+    # + max_prepared_transactions`. 기본 64(7,808슬롯)에서 Map curation finalize 한 트랜잭션의
+    # `pg_advisory_xact_lock` 약 11,820개가 테이블을 넘겨, 다른 테넌트의 질의·새 연결도 간헐적으로
+    # "out of shared memory"로 실패했다(2026-10-12~13). 256 = 31,232슬롯, 공유 메모리 약 +8MB.
+    # 큰 finalize 하나를 견디는 여유이고, 원인 수정(묶음 단위 lock)은 Map 몫이다
+    # (shared-postgres-onboarding.md §6.1 C10).
+    - -c
+    - max_locks_per_transaction=256
     secrets:
     - kor-travel-shared-postgres-password
     volumes:
