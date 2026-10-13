@@ -2122,20 +2122,20 @@ weather Web(`kor-travel-weather-web`)은 `14105`에서 들었다 — ADR-47은 "
 | S3 | registry target에 **host 필드가 없다**; `connection:`은 URL과 설명 문자열이 섞여 있다; 한 컨테이너가 여러 target에 속한다(service 이름 `kor-travel-shared-postgres`는 geo·conc·map·pinvi·weather·dagster **6개** target의 `services:`에 있고, containers 키는 `kor-travel-shared-postgresql`이다 — 결정 1의 host 합집합은 **service 이름**으로 센다) | `config/docker-targets.yml:23-345`(containers; `:24-26` 이름 쌍), `:438,492,531,590,731,798`(services), `:778-800`(dagster target) |
 | S4 | 외부 target `working_dir`는 로더가 **절대 경로·정규화만** 검증한다; 로컬 존재 대조는 `ktdctl targets validate --check-coordinates` **옵트인**(기본 off)뿐이다 | `services/registry.py:942-972`; `cli.py:183,1722` |
 | S5 | C6c: PG는 정확히 하나, `listen_addresses=127.0.0.1`, DSN host `127.0.0.1` | `services/c6c_deployment.py:974-990,1392-1394` |
-| S6 | 호스트 bind는 n150 절대 경로, build context는 `../kor-travel-{geo,weather}` | `config/docker-targets.yml:868-`(compose_binds); `docker-compose.yml:1075,2395`(geo api·cs)·`:2697`(weather) |
+| S6 | 호스트 bind는 n150 절대 경로, build context는 `../kor-travel-{geo,weather}` | `config/docker-targets.yml:868-`(compose_binds); `docker-compose.yml:1083,2403`(geo api·cs)·`:2705`(weather) |
 | S7 | 공용 workspace는 host `127.0.0.1`로만 파생(0.0.0.0은 127.0.0.1로 정규화); 테스트·cutover가 강제 | `services/runtime_topology.py:247-255`; `backend/tests/test_dagster_shared_workspace_is_derived.py:420,503-505`; `scripts/dagster-shared-cutover.sh:202-203` |
 | S8 | 유일한 원격 추상은 `offbox-sync`(SSH/rsync **push**, 백업 전송만) | `services/offbox_backup_sync.py:1-16,40-45` |
 | S9 | (transport 저장소 몫 — transport ADR-014) 배포 스크립트가 `.14` 외 호스트를 거부하고 DSN `@127.0.0.1:11000`을 `require_exact` | transport `scripts/deploy-server14.sh`·`deploy-server14-remote.sh`; Manager는 R2/R4 효과(`targets validate --json`)만 제공 |
 | S10 | compose subprocess에는 allowlist + `DOCKER_*`만 통과한다; compose 파일은 root `.env`와 프로세스 env만 읽고 **registry를 읽지 못한다** | `services/compose_service.py:3154-3158` |
 | S11 | Manager backend는 compose 서비스가 아니라 **systemd**(`ktdm-backend`, uvicorn `0.0.0.0:12901`); 설치는 root clone + 오프라인 wheelhouse + trusted installer | `deploy/systemd/ktdm-backend.service:29`; `scripts/install-ktdm-trusted-release:28`; `docs/prod-deployment.md` §3·§3.1 |
-| S12 | 공용 plane의 `dagster.yaml`·`workspace.yaml` digest가 **compose 리터럴**이고 healthcheck가 마운트 파일 sha256[:16]과 대조해 다르면 exit. instance digest 리터럴 **7곳**(daemon·webserver·conc/map/pinvi/geo/weather 코드서버), workspace digest 2곳 | `docker-compose.yml:820-821,839,890-891,903,1365,1705,2120,2434,2830` |
+| S12 | 공용 plane의 `dagster.yaml`·`workspace.yaml` digest가 **compose 리터럴**이고 healthcheck가 마운트 파일 sha256[:16]과 대조해 다르면 exit. instance digest 리터럴 **7곳**(daemon·webserver·conc/map/pinvi/geo/weather 코드서버), workspace digest 2곳 | `docker-compose.yml:828-829,847,898-899,911,1373,1713,2128,2442,2838` |
 | S13 | 공용 PG 서버 이미지는 digest 핀, db-init one-shot 6개는 태그 `postgis/postgis:16-3.5` | `docker-compose.yml:213`; `backend/tests/test_transport_shared_bootstrap_contract.py:23` |
 | S14 | 백업 role 목록에 weather가 없다 | `services/standalone_backup.py:57-64` |
 | S15 | transport code-server는 Manager 설치 경로의 `dagster.yaml`을 bind한다(transport `docker-compose.shared.yml`) | transport 저장소 |
-| S16 | compose `depends_on`이 **tenant 경계를 넘는다**: `kor-travel-map-api → kor-travel-geo-api`(service_healthy). `ensure`는 `--no-deps` 없이 의존 closure를 범위로 센다(C6c 재구축만 `--no-deps` 강제) | `docker-compose.yml:1522-1530`(geo `:1527`, concierge `:1529`), `:1622,1690,1954`(같은 호스트 안 간선); `services/compose_service.py:3572-3589,3714-3719,3935` |
-| S17 | Manager compose는 weather base URL을 **PinVi ETL code-server에만** 리터럴로 준다; `pinvi-api` 블록에는 없어 pinvi-api는 코드 기본값 `localhost:14101`로 trip 날씨·weather card를 부른다 | `docker-compose.yml:2134`(ETL 리터럴 `http://127.0.0.1:14101`), `:1935-2010`(pinvi-api 블록 — weather env 없음) |
+| S16 | compose `depends_on`이 **tenant 경계를 넘는다**: `kor-travel-map-api → kor-travel-geo-api`(service_healthy). `ensure`는 `--no-deps` 없이 의존 closure를 범위로 센다(C6c 재구축만 `--no-deps` 강제) | `docker-compose.yml:1530-1538`(geo `:1535`, concierge `:1537`), `:1630,1698,1962`(같은 호스트 안 간선); `services/compose_service.py:3572-3589,3714-3719,3935` |
+| S17 | Manager compose는 weather base URL을 **PinVi ETL code-server에만** 리터럴로 준다; `pinvi-api` 블록에는 없어 pinvi-api는 코드 기본값 `localhost:14101`로 trip 날씨·weather card를 부른다 | `docker-compose.yml:2142`(ETL 리터럴 `http://127.0.0.1:14101`), `:1943-2018`(pinvi-api 블록 — weather env 없음) |
 | S18 | 공용 instance `run_monitoring.max_runtime_seconds: 21600`; 테넌트는 `dagster/max_runtime` 태그로 올린다 | `config/dagster-shared/dagster.yaml:137-144` |
-| S19 | weather code-server만 `mem_limit 4g`·`mem_swappiness 10`·`oom_score_adj -500`; 공용 PG·geo code-server에는 `mem_limit`·`oom_score_adj`가 없다; compose 전체에 `memswap_limit` 0건 | `docker-compose.yml:2874-2877,2980,3066`; `:254-269`(PG) |
+| S19 | weather code-server만 `mem_limit 4g`·`mem_swappiness 10`·`oom_score_adj -500`; 공용 PG·geo code-server에는 `mem_limit`·`oom_score_adj`가 없다; compose 전체에 `memswap_limit` 0건 | `docker-compose.yml:2882-2885,2988,3074`; `:254-269`(PG) |
 
 **소유자 지시와 비범위.** geo·weather·transport 세 서비스와 **그들의 PostgreSQL**을 odroid(`192.168.1.13`)에서 돌리고,
 n150(`192.168.1.14`)의 Map/PinVi/concierge/HAProxy는 REST로만 부른다. 포트·URL·컨테이너명·compose 프로젝트명·디렉터리
@@ -2175,7 +2175,7 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
    §9.2-1 게이트·T-MGR-01c/02/03 수용 기준은 전부 이 목록을 가리킨다; 어느 PR이 목록 밖 줄을 바꾸면 그 PR이 이 목록을 먼저 고친다):
    ① `depends_on` 간선 −1(`kor-travel-map-api → kor-travel-geo-api`, T-MGR-01b) ② geo api/cs 소스 bind +1줄씩(T-MGR-01d)
    ③ pinvi-api 블록 weather env +1줄(T-MGR-01c; 나머지 R2 기본값은 값 불변) ④ workspace bind source 2줄(`workspace.yaml` →
-   `workspace.n150.yaml`, `:824,894`; T-MGR-02) ⑤ instance digest 값 7곳 1회(T-MGR-02) ⑥ `oom_score_adj` 줄(PG·plane daemon/webserver)과
+   `workspace.n150.yaml`, `:832,902`; T-MGR-02) ⑤ instance digest 값 7곳 1회(T-MGR-02) ⑥ `oom_score_adj` 줄(PG·plane daemon/webserver)과
    `mem_limit` 있는 서비스마다 `memswap_limit` 줄(T-MGR-03) ⑦ 결정 8 ⅰ 중 n150 compose에 없는 PG `-c` 키 6개(`max_parallel_workers`·
    `_per_gather`·`effective_io_concurrency`·`checkpoint_timeout`·`wal_compression`·`autovacuum_max_workers`)의 env 파생 줄 — 기본값 = PG 16
    서버 기본값이라 효과 0, 테스트가 기본값 == 서버 기본값을 단언(T-MGR-03) ⑧ db-init-geo의 확장 4종 `CREATE … IF NOT EXISTS` 줄
@@ -2192,25 +2192,25 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
    target(daemon·webserver `127.0.0.1:11002`·gateway 11001·`dagster_shared`)과 같은 서비스명·포트·bind의 PG
    (`kor-travel-shared-postgres`, 11000, `listen_addresses=127.0.0.1`)가 뜬다. PG는 registry에서 `dagster` target의 service이므로
    **odroid `ensure dagster`가 PG를 올린다**. DB·롤은 n150과 같은 이름(`kor_travel_geo`·`kor_travel_weather`·`kor_travel_transport`·
-   `dagster_shared`). **connlimit은 `dagster_shared` 45만**(compose 리터럴 `docker-compose.yml:718,720`); 앱 role 셋은 db-init이
+   `dagster_shared`). **connlimit은 `dagster_shared` 45만**(compose 리터럴 `docker-compose.yml:726,728`); 앱 role 셋은 db-init이
    `CONNECTION LIMIT`을 두지 않아 무제한이고 n150 실측도 같다(fact base — 설계 §5.4의 "15/10/10"은 compose·실측 어디에도 없는 값이라
    쓰지 않는다; odroid도 db-init 그대로). **`kor_travel_transport_dagster`는 만들지 않는다**(Manager db-init-transport는 그것을
    만들지 않으며 — `backend/tests/test_transport_shared_bootstrap_contract.py:35-37,47` — transport backend 코드도 읽지 않는다;
    transport env의 `DAGSTER_POSTGRES_URL`은 그 저장소 compose의 `:?` 보간 때문에 **모양만** 남긴다). pg_hba는 loopback scram만
    (n150의 `10.88.0.0/24` 잔재는 복제하지 않는다). **geo 확장 4종의 생성 주체**: 오늘 db-init-geo는 확장을 만들지 않는다
-   (`docker-compose.yml:374-383` 주석 — cutover `pg_restore`가 dump의 `x_extension` 배치를 재생하게 두려고; one-shot이 만드는 확장은
-   concierge postgis 1종 `:363`뿐, onboarding §4.3). odroid는 pg_restore 없는 fresh 경로이고 app role은 NOSUPERUSER라 postgis를
+   (`docker-compose.yml:382-391` 주석 — cutover `pg_restore`가 dump의 `x_extension` 배치를 재생하게 두려고; one-shot이 만드는 확장은
+   concierge postgis 1종 `:371`뿐, onboarding §4.3). odroid는 pg_restore 없는 fresh 경로이고 app role은 NOSUPERUSER라 postgis를
    만들 수 없으므로 **T-MGR-03이 db-init-geo에 `CREATE SCHEMA IF NOT EXISTS x_extension` + `CREATE EXTENSION IF NOT EXISTS {postgis,
-   pg_trgm,unaccent,pg_stat_statements} SCHEMA x_extension`을 더한다**(geo DDL과 같은 배치 — compose 주석 `:376-379`; 스키마 소유는
+   pg_trgm,unaccent,pg_stat_statements} SCHEMA x_extension`을 더한다**(geo DDL과 같은 배치 — compose 주석 `:384-387`; 스키마 소유는
    geo ADR-070과 맞춘다; n150에서는 전부 존재해 no-op). weather·transport는 n150에서도 fresh DB로 합류했고 소스에 `CREATE EXTENSION`이
-   없어 공백이 없다. **transport role/DB one-shot의 실행 경로**: `kor-travel-shared-db-init-transport`(`:580`)는 어느 target의 service도
+   없어 공백이 없다. **transport role/DB one-shot의 실행 경로**: `kor-travel-shared-db-init-transport`(`:588`)는 어느 target의 service도
    등록된 `init_steps`도 아니다(`config/docker-targets.yml` — n150에서도 그랬다) → odroid에서는 설치 루트에서 `docker compose run --rm
    --no-deps kor-travel-shared-db-init-transport`로 1회 돌린다(`prod-deployment.md` §9.2 4a′; named `init_steps` 등록은 대안 — transport가
    Manager 앱 lifecycle에 들어올 때 함께). **대안 (b) "n150 공용 plane에 odroid code-server를 원격 등록"은 기각**: gRPC
    무인증 LAN 노출 + n150 PG LAN 개방 + C6c 잠금 해제 + compute log가 n150 webserver 로컬 파일이라 odroid run 로그가 **안 보인다**
    (`config/dagster-shared/dagster.yaml:38-42`, `LocalComputeLogManager`) + 한 instance가 두 호스트를 섞어 센다. (c) 혼합(transport만 (b))은 8 GB가 정말
    모자랄 때 재검토하되 (b)의 보안 비용은 그대로다. (a)의 비용은 UI 둘과 ≈0.7 GiB, 그리고 plane healthcheck가 **모든** location
-   SERVING을 요구하므로(빈 workspace는 healthy, `docker-compose.yml:781-786`) 단계적 이전은 **workspace에 location을 하나씩 더하는**
+   SERVING을 요구하므로(빈 workspace는 healthy, `docker-compose.yml:789-794`) 단계적 이전은 **workspace에 location을 하나씩 더하는**
    방식으로만 가능하다 → 결정 6 "플립 = 합류".
 4. **파생 규칙 R1~R7(값이 아니라 규칙을 고정한다).**
    - **R1** registry `connection:`의 host는 `{host}` 자리표시 — 렌더 호스트 ∈ 컨테이너의 host 집합이면 `127.0.0.1`, 아니면 그
@@ -2219,12 +2219,12 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
      **규칙**이다: "형제 서비스 포트(`12501`·`14001`·`14101`)를 기본값에 가진 **모든** compose env(비활성 `legacy-dagster` profile
      포함 — `compose config`는 profile을 가리지 않고 보간한다)". 파생 테스트(B-6)는 렌더된 compose를 **스캔**해 그 집합을 찾고
      registry 계산값과 대조한다 — 지정 줄만 보면 하나를 빠뜨려도 초록이다. 오늘 그 집합은 **7곳**: geo
-     `KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://<host(geo)>:12501}` **4곳**(`docker-compose.yml:1582`
-     map-api, **`:1727` map code-server** — MOIS/geocode run을 실제로 돌리는 서비스, `:1819`·`:1926` legacy webserver/daemon), transport
-     `${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://<host(transport)>:14001}`(`:1736`), PinVi ETL `:2134`를 같은 모양의
-     `${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://<host(weather)>:14101}`로, **그리고 pinvi-api 블록(`:1935-2010`)에 같은 변수를
+     `KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://<host(geo)>:12501}` **4곳**(`docker-compose.yml:1590`
+     map-api, **`:1735` map code-server** — MOIS/geocode run을 실제로 돌리는 서비스, `:1827`·`:1934` legacy webserver/daemon), transport
+     `${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://<host(transport)>:14001}`(`:1744`), PinVi ETL `:2142`를 같은 모양의
+     `${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://<host(weather)>:14101}`로, **그리고 pinvi-api 블록(`:1943-2018`)에 같은 변수를
      추가**한다(없으면 weather 플립 뒤 PinVi 여행 날씨가 조용히 빈다 — S17). 플립 PR이 `<host(x)>`를 `127.0.0.1`에서
-     `192.168.1.13`으로 **그 집합 전부** 바꾼다(geo 플립이 `:1582`만 바꾸면 map code-server는 loopback에 남아 n150 geo-api stop 뒤 모든
+     `192.168.1.13`으로 **그 집합 전부** 바꾼다(geo 플립이 `:1590`만 바꾸면 map code-server는 loopback에 남아 n150 geo-api stop 뒤 모든
      geocode run이 connection refused — 테스트가 그것을 빨갛게 만들어야 한다). root `.env`의 재정의는 `ktdctl targets validate`가 파생
      기대값과 다르면 거부한다. 외부 저장소 값(concierge env, transport `.env.prod`)은 Manager가 쓰지 않고 기대값만 문서화한다.
    - **R3** 자기 식별 `KTDM_HOST`는 **운영 모드에서만 강제**한다. 운영 모드 = trusted installer가 만든 release 아래 실행
@@ -2249,13 +2249,13 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
      생략 — n150 무변경).
    - **R6** compose 파일은 **하나**다. 호스트별 차이는 root `.env`뿐(튜닝·이미지·비밀·workspace digest·`KTDM_PROD_URL_*`·`KTDM_HOST`).
      compose 리터럴 중 env로 파생시키는 것: PG 튜닝 수치(`${KTDM_PG_SHARED_BUFFERS:-1GB}` 꼴, 기본값 = 현재 n150 값
-     `docker-compose.yml:265-283`; n150 compose에 없는 키는 결정 1 ⑦; `max_connections`는 compose에 **없다**(서버 기본 100) — 추가하지
-     않는다; connlimit 45는 리터럴 그대로), PG 서버·db-init 6개 이미지(`${KTDM_POSTGRES_IMAGE:-postgis/postgis:16-3.5@sha256:8b33…}`·
+     `docker-compose.yml:265-291`; n150 compose에 없는 키는 결정 1 ⑦; `max_connections`는 compose에 **없다**(서버 기본 100) — 추가하지
+     않는다; connlimit 45와 `max_locks_per_transaction=256`(결정 8 ⅰ)은 리터럴 그대로), PG 서버·db-init 6개 이미지(`${KTDM_POSTGRES_IMAGE:-postgis/postgis:16-3.5@sha256:8b33…}`·
      `${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}` — 기본값은 현재 문자열 byte 그대로, odroid `.env`가 arm64
      `imresamu/postgis:16-3.5`를 준다), workspace bind 경로·digest. 커밋된 파생물로 고정하는 것: R2 consumer env 기본값(7곳)·
      Prometheus 타깃·workspace 파일.
    - **R7** compose `depends_on` 간선은 **양끝 서비스의 host 집합이 같을 때만** 둔다. tenant 간 의존은 런타임 REST 검증(health
-     probe·fail-open 기동·`failure_kind`)으로 대체한다. T-MGR-01b가 `kor-travel-map-api → kor-travel-geo-api`(`docker-compose.yml:1527`)
+     probe·fail-open 기동·`failure_kind`)으로 대체한다. T-MGR-01b가 `kor-travel-map-api → kor-travel-geo-api`(`docker-compose.yml:1535`)
      를 **삭제**한다 — Map은 `kor_travel_geo_preflight_required`(기본 false) fail-open 기동 경로가 있어 안전하다(Map 저장소:
      `packages/kor-travel-map-api/src/kortravelmap/api/app.py:700`의 분기, 설정은 `settings.py:164-176` — 설계 §7.2 R7 인용; Map 저장소
      기준이라 Manager head로는 검증하지 않는다). 같은 호스트에
@@ -2267,15 +2267,15 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
    | 표면 | 기제 | 결박 |
    |---|---|---|
    | registry `connection:`·probe(R1) | **런타임** 렌더(Manager가 registry를 읽는다) | 단위 테스트 |
-   | compose env 기본값(R2 — 형제 포트를 기본값에 가진 env 전부, 오늘 7곳: geo 4·transport 1·weather 1 + pinvi-api 신설), `config/prometheus/prometheus.yml`, `config/dagster-shared/workspace.<host>.yaml` | **커밋된 파생물**(리터럴 `192.168.1.13` 포함) — compose·정적 YAML은 registry를 읽지 못한다(S10). `workspace.yaml`과 같은 선례(`docker-compose.yml:781-786`) | 파생 테스트가 기대값을 `hosts:`+`host:`에서 계산해 파일과 대조(B-5·B-6·B-8); 플립 PR이 파생물을 빠뜨리면 빨갛다 |
+   | compose env 기본값(R2 — 형제 포트를 기본값에 가진 env 전부, 오늘 7곳: geo 4·transport 1·weather 1 + pinvi-api 신설), `config/prometheus/prometheus.yml`, `config/dagster-shared/workspace.<host>.yaml` | **커밋된 파생물**(리터럴 `192.168.1.13` 포함) — compose·정적 YAML은 registry를 읽지 못한다(S10). `workspace.yaml`과 같은 선례(`docker-compose.yml:789-794`) | 파생 테스트가 기대값을 `hosts:`+`host:`에서 계산해 파일과 대조(B-5·B-6·B-8); 플립 PR이 파생물을 빠뜨리면 빨갛다 |
    | root `.env` | 호스트별 값(비밀·튜닝·digest·`KTDM_HOST`·`KTDM_PROD_URL_*`) | `targets validate`가 파생 기대값과 다른 재정의를 거부 |
 
 6. **host 플립 = workspace 합류; `workspace.{n150,odroid}.yaml` 두 파일 커밋 + compose 보간.** 파생기(`runtime_topology.py`)에
    host 필터를 더해 `workspace.<host>.yaml` = `control_plane: shared` **이고** `target.host == host`인 location(host 값은 계속
    `127.0.0.1`, S7 불변). 별도 선언 필드 없음. T-MGR-02 직후 `workspace.odroid.yaml`은 `load_from: []`, `workspace.n150.yaml`은 오늘
    `workspace.yaml`(6 location: geo 12503·conc 12603·map 12703·pinvi 12803·weather 14106·transport 14005)과 **byte 동일**. compose의 두
-   bind(`docker-compose.yml:824,894`)를 `./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml:/opt/dagster/dagster_home/workspace.yaml:ro`
-   로 — 컨테이너 안 경로가 그대로라 healthcheck digest 비교(`:839,903`)와 cutover의 컨테이너 내부 읽기(`scripts/dagster-shared-cutover.sh:424`)
+   bind(`docker-compose.yml:832,902`)를 `./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml:/opt/dagster/dagster_home/workspace.yaml:ro`
+   로 — 컨테이너 안 경로가 그대로라 healthcheck digest 비교(`:847,911`)와 cutover의 컨테이너 내부 읽기(`scripts/dagster-shared-cutover.sh:424`)
    는 불변. 바뀌는 참조 4곳: cutover `:168,394,764`(호스트 파일 경로 — 셸이라 root `.env`의 `KTDM_HOST`를 읽고 미설정이면 n150),
    liveness 테스트 `backend/tests/test_dagster_daemon_liveness_contract.py:218`(`workspace.` 접두). digest env:
    `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-8a86a75219b7938d}`(기본 = n150 파일; B-7). odroid root `.env`가
@@ -2296,15 +2296,18 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
    않는다(geo 장기 job은 이미 `dagster/max_runtime` 24 h 태그 — `dagster.yaml:137` 주석의 태그 사용 테넌트 목록(PinVi·weather·transport)에
    geo가 빠져 있으니 T-MGR-02의 1회 수정에서 주석만 함께 고친다; `mv_refresh`만 geo T-GEO-02에서 결정). `legacy-dagster` profile은
    재활용하지 않는다. 두 plane은 같은 체크아웃·같은 `docker/dagster-host/Dockerfile`에서 **호스트별 arch로** 빌드한다(같은 sha).
-8. **PG·메모리 정책.** (ⅰ) odroid 튜닝(env 파생, 기본값 = n150 `docker-compose.yml:265-283`의 현재 값): `shared_buffers 1GB`,
+8. **PG·메모리 정책.** (ⅰ) odroid 튜닝(env 파생, 기본값 = n150 `docker-compose.yml:265-291`의 현재 값): `shared_buffers 1GB`,
    `effective_cache_size 2GB`(n150 1536MB), `work_mem 16MB`(n150 64MB), `maintenance_work_mem 256MB`, `max_parallel_workers 2`/`_per_gather 1`,
-   `effective_io_concurrency 200`(fio 뒤 확정), `checkpoint_timeout 900`, `wal_compression zstd`, `autovacuum_max_workers 2` — 뒤의 여섯
+   `effective_io_concurrency 200`(fio 뒤 확정), `checkpoint_timeout 900`, `wal_compression zstd`, `autovacuum_max_workers 2`;
+   **`max_locks_per_transaction=256`은 env 파생이 아니라 두 호스트 같은 리터럴**이다(2026-10-13 #471 — 공유 lock table은 cluster 전역 한
+   벌이고 크기는 그 instance에 붙는 테넌트의 가장 큰 트랜잭션이 정한다; 호스트마다 다르게 둘 근거가 없다. odroid의
+   `autovacuum_max_workers 2`는 MaxBackends를 1 줄일 뿐이다, onboarding §6.1 C10) — 앞 목록 중 뒤의 여섯
    키는 n150 compose에 **없어서**(서버 기본값으로 돈다) env 파생 줄을 새로 넣으면 n150 렌더에 `-c` 줄이 생긴다: 기본값 = PG 16 서버
    기본값(8/2/1/300s/off/3)으로 효과 0, 결정 1 ⑦의 허용 diff. 대안 "odroid PGDATA에 `ALTER SYSTEM`(postgresql.auto.conf)로만 두기"는
    compose·`.env` 밖의 손 상태라 기각(단일 정본). `shm_size 1gb`·`init: true`·exec healthcheck(ADR-52) 동일. (ⅱ) **`mem_limit`는 호스트별 값이다 — odroid 값이고 n150은 현재 상태 그대로**(설계 §5.3: PG `mem_limit` n150 "없음" /
    odroid "4g(가드)"). odroid: PG **4g**(OOM 가드이지 하드 캡이 아니다 — 하드 캡 2.5g/3.5g은 §14-14 대안, 유휴 때 빈 RAM을 캐시로
    못 쓴다), geo cs **2g**·`pids_limit 1024`, weather cs **1.5g**(초과 시 배치 축소). n150: PG·geo cs 없음(`docker-compose.yml:254-279`·
-   `:2434` 블록에 `mem_limit` 없음 — S19), weather cs 4g(`:2874`) 그대로. 자리는 R6대로 env 파생(`${KTDM_PG_MEM_LIMIT:-…}` 꼴, 기본값
+   `:2442` 블록에 `mem_limit` 없음 — S19), weather cs 4g(`:2882`) 그대로. 자리는 R6대로 env 파생(`${KTDM_PG_MEM_LIMIT:-…}` 꼴, 기본값
    = n150 현재 상태와 **효과 동일** — "없음"을 기본값으로 표현하는 형태는 T-MGR-03이 정한다)이고 odroid root `.env`가 값을 준다.
    (ⅲ) **OOM 희생자 정책(리터럴, 두 호스트 동일)**: `oom_score_adj` PG **-800**, plane daemon/webserver **-600**, weather cs
    -500 유지, geo cs·transport cs 0 — 호스트 OOM이 PG backend보다 run worker를 먼저 고르게 한다(backend 하나가 죽어도 postmaster가 전

@@ -5668,9 +5668,12 @@ def test_an_exec_pg_isready_probe_with_arguments_passes(tmp_path: Path) -> None:
 
 
 def test_the_canonical_shared_postgres_runtime_shape_passes() -> None:
-    """정본 공용 instance의 `init`·`stop_grace_period`·exec probe가 서버 형태 계약을 통과한다.
+    """정본 공용 instance의 `init`·`stop_grace_period`·exec probe·`-c` GUC 전부가 서버 형태 계약을 통과한다.
 
     전제를 먼저 단언한다 — 정본이 그 모양을 담지 않으면 이 검사는 아무것도 재지 않는다.
+    raw compose의 `command`에 GUC를 더하면 C6c 허용 목록도 같이 가야 한다(`docs/bindings.md`
+    B-10) — 목록을 여기 다시 적지 않고 서비스를 검사기에 그대로 통과시킨다. 허용 목록 밖의 GUC가
+    거부되는 대조군이 없으면 이 통과는 아무것도 재지 않는다.
     """
 
     services = _source_compose()["services"]
@@ -5683,6 +5686,14 @@ def test_the_canonical_shared_postgres_runtime_shape_passes() -> None:
     c6c_deployment_module._assert_one_postgres_cluster_runtime(
         "kor-travel-shared-postgres", shared, declared=True
     )
+    unknown_guc = {
+        **shared,
+        "command": [*shared["command"], "-c", "max_pred_locks_per_transaction=256"],
+    }
+    with pytest.raises(ComposeCandidateContractError, match="non-canonical"):
+        c6c_deployment_module._assert_one_postgres_cluster_runtime(
+            "kor-travel-shared-postgres", unknown_guc, declared=True
+        )
 
 
 def test_removing_the_loopback_binding_entirely_is_refused(tmp_path: Path) -> None:

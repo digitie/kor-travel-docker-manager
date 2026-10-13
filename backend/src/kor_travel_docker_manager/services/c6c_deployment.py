@@ -1369,7 +1369,9 @@ _POSTGRES_ALLOWED_SERVICE_KEYS: Final = frozenset(
     }
 )
 
-#: 정본 넷의 `command`가 `-c`로 설정하는 GUC 전부(실측). 이 밖의 설정은 거부한다 —
+#: 정본 PostgreSQL 서버(ADR-53 뒤로는 공용 instance 하나)의 `command`가 `-c`로 설정해도 되는 GUC —
+#: 그 compose가 쓰는 것 전부와, 퇴역한 전용 instance가 쓰던 `checkpoint_completion_target`. 공용 instance에
+#: GUC를 더하면 여기도 더한다(`docs/bindings.md` B-10). 이 밖의 설정은 거부한다 —
 #: 그래서 `hba_file`·`ident_file`·`password_encryption`·`config_file`·`data_directory`·
 #: `external_pid_file`을 **따로 열거하지 않아도** 전부 막힌다.
 _POSTGRES_ALLOWED_COMMAND_SETTINGS: Final = frozenset(
@@ -1378,6 +1380,7 @@ _POSTGRES_ALLOWED_COMMAND_SETTINGS: Final = frozenset(
         "effective_cache_size",
         "listen_addresses",
         "maintenance_work_mem",
+        "max_locks_per_transaction",
         "max_wal_size",
         "pg_prewarm.autoprewarm",
         "pg_stat_statements.max",
@@ -1830,7 +1833,7 @@ def _assert_one_postgres_cluster_runtime(
     """PostgreSQL 서버의 **형태 전체**를 허용 목록으로 묶는다.
 
     금지 목록은 세 라운드 연속으로 뒤처졌다 — 매번 내가 놓친 철자·키가 우회로였다.
-    정본 넷의 형태는 좁고 고정적이므로(최상위 키 13개, GUC 12개 + `-p`) 방향을
+    정본 서버의 형태는 좁고 고정적이므로(최상위 키 13개, 허용 GUC 13개 + `-p`) 방향을
     뒤집으면 **모르는 것이 하나라도 있으면 거부**가 되고, 다음 compose 스펙이나
     postgres 버전이 무엇을 추가해도 fail-close다.
     """

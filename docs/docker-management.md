@@ -214,12 +214,12 @@ installer가 만든 release 아래 실행(`.ktdm-source-revision` 존재; `servi
 
 **consumer origin(R2).** 내부 target이 형제 서비스를 부르는 URL은 compose env **기본값**이 정본이며 registry에서 계산한 값과 같아야
 한다. 대상은 규칙으로 정한다 — "형제 서비스 포트(`12501`/`14001`/`14101`)를 기본값에 가진 모든 compose env(비활성 `legacy-dagster`
-profile 포함)": 오늘 7곳 = geo `docker-compose.yml:1582`(map-api)·`:1727`(map code-server)·`:1819`·`:1926`(legacy webserver/daemon),
-transport `:1736`, PinVi ETL `:2134`, 그리고 pinvi-api 블록에 추가되는 같은 weather 변수(`docs/bindings.md` B-6). 파생 테스트는 렌더된
+profile 포함)": 오늘 7곳 = geo `docker-compose.yml:1590`(map-api)·`:1735`(map code-server)·`:1827`·`:1934`(legacy webserver/daemon),
+transport `:1744`, PinVi ETL `:2142`, 그리고 pinvi-api 블록에 추가되는 같은 weather 변수(`docs/bindings.md` B-6). 파생 테스트는 렌더된
 compose를 스캔해 이 집합을 찾는다(줄 번호 열거 금지). root `.env`에 다른 값을 적으면 `targets validate`가 거부한다.
 
 **compose `depends_on`(R7).** 간선은 양끝 서비스의 host 집합이 같을 때만 둔다. tenant 간 의존(`kor-travel-map-api → kor-travel-geo-api`,
-`docker-compose.yml:1527`)은 삭제하고 런타임 REST 검증(health probe·fail-open 기동·`failure_kind`; Map은 `kor_travel_geo_preflight_required`
+`docker-compose.yml:1535`)은 삭제하고 런타임 REST 검증(health probe·fail-open 기동·`failure_kind`; Map은 `kor_travel_geo_preflight_required`
 기본 false — Map 저장소 `packages/kor-travel-map-api/src/kortravelmap/api/app.py:700`, 설계 §7.2 R7 인용)으로 대체한다 — `ensure`가 `--no-deps`
 없이 의존 closure를 올리므로(`compose_service.py:3572-3589,3714-3719`) 간선이 남으면 geo 플립 뒤 n150 `ensure map`이 geo-api를 n150에
 되살린다.

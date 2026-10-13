@@ -168,6 +168,8 @@ def test_the_shared_postgres_command_is_the_d4_tuning() -> None:
         "pg_stat_statements.track=all",
         "-c",
         "pg_stat_statements.max=10000",
+        "-c",
+        "max_locks_per_transaction=256",
     ]
     settings = [command[index + 1] for index, token in enumerate(command) if token == "-c"]
     assert not any("${" in setting for setting in settings), settings
