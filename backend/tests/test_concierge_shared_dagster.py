@@ -54,7 +54,7 @@ def test_existing_locations_keep_their_limits_and_concierge_has_bounded_lanes():
     assert by_location["kor-travel-transport"] == 3
     assert all(by_location[name] == 10 for name in ("kortravelmap.dagster.definitions", "pinvi.etl.definitions", "kortravelgeo_dagster.definitions", "kortravelweather_dagster.definitions"))
     lanes = {entry["value"]: entry["limit"] for entry in limits if entry["key"] == "kortravelcommon/job"}
-    assert lanes == {"concierge/" + name: 1 for name in ("concierge_interactive", "concierge_batch", "concierge_source_scan", "concierge_feature_exports")}
+    assert lanes == {"concierge/" + name: 1 for name in ("concierge_interactive", "concierge_batch", "concierge_source_scan", "concierge_feature_exports", "concierge_admin_region_refresh")}
 
 
 
