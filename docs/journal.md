@@ -1,3 +1,7 @@
+## 2026-10-14 — tick 인덱스 R1 연결 대기 보강
+
+독립 리뷰 B는 PostgreSQL handshake를 응답하지 않는 본인 loopback TCP fixture에서 새 연결이 SQL timeout 이전에 계속 대기하는 문제를 재현했다. 기존 R1 BLOCK을 보존하고 `connect_timeout=5`를 명시한다. 이미지 content tag와 focused 회귀 기대값을 함께 갱신한다. 수정 후보의 실제 blackhole·격리 이미지·운영/live/UI 및 재리뷰는 검증 중이다.
+
 # JOURNAL — 작업 일지
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.

@@ -32,7 +32,9 @@ def setup_engine(monkeypatch, rows):
 def test_new_index_is_concurrent_and_connection_is_bounded(monkeypatch):
     engine, connection, factory = setup_engine(monkeypatch, [None, (True, True, DEFINITION)])
     MODULE.ensure_tick_lookup_index("postgresql://fixture")
-    factory.assert_called_once_with("postgresql://fixture", isolation_level="AUTOCOMMIT")
+    factory.assert_called_once_with(
+        "postgresql://fixture", isolation_level="AUTOCOMMIT", connect_args={"connect_timeout": 5}
+    )
     commands = [call.args[0] for call in connection.exec_driver_sql.call_args_list]
     assert commands[:2] == ["SET lock_timeout = '5s'", "SET statement_timeout = '120s'"]
     assert len([sql for sql in commands if sql.startswith("CREATE INDEX CONCURRENTLY")]) == 1

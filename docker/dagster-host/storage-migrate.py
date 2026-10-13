@@ -60,7 +60,9 @@ def ensure_tick_lookup_index(postgres_url: str) -> None:
     """
     from sqlalchemy import create_engine
 
-    engine = create_engine(postgres_url, isolation_level="AUTOCOMMIT")
+    engine = create_engine(
+        postgres_url, isolation_level="AUTOCOMMIT", connect_args={"connect_timeout": 5}
+    )
     lookup = (
         "SELECT indisvalid, indisready, pg_get_indexdef(indexrelid) "
         "FROM pg_index WHERE indexrelid = "
