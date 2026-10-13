@@ -575,6 +575,25 @@ resolved config 전체를 출력하지 말고 `docker compose config --quiet`를
 실제 값·길이·digest는 로그에 남기지 않는다. API 컨테이너에는 제거된 provider runtime 이름이
 하나도 없어야 한다.
 
+### 7.3a Map MOIS 원천 SQLite volume (Map ADR-108)
+
+MOIS Phase A 원천 SQLite(약 5GB)는 `kor-travel-map-dagster-code-server`의 internal named volume
+`kor-travel-map-mois-source`에 둔다. run worker가 그 컨테이너의 자식이므로 다른 Map 서비스에는 붙이지
+않는다. 경로(`KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH`)와 mount target은 같은 변수
+`KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DIR`(기본 `/opt/dagster/state/mois`)에서 나오고,
+`backend/tests/test_map_mois_source_volume.py`가 그 규칙을 고정한다. 옛 `/tmp/mois_source.db`는 컨테이너
+overlay라 재생성마다 사라지고 root 디스크를 압박했다. 옛 변수 `KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DB_PATH`는
+더 읽지 않는다.
+
+- **설치 순서.** 기본 디렉터리는 Map Dagster 이미지가 appuser 소유로 만든다. 새 named volume은 처음 붙을 때
+  이미지 디렉터리의 소유자를 물려받으므로, **그 디렉터리를 가진 Map 이미지로 pair를 먼저 회전한 뒤** 이
+  compose를 설치한다. 옛 이미지에 먼저 붙으면 volume이 root 소유로 생겨 appuser가 쓰지 못한다 — 그때는 비어
+  있는 volume을 지우고(`docker volume rm kor-travel-docker-manager_kor-travel-map-mois-source`) code-server를
+  다시 만든다.
+- **첫 적재.** volume은 비어 있으므로 `mois_localdata_source_sync`를 한 번 돌려 채운다(실측 약 24분).
+- **이름.** `name:`/`external`을 두지 않는다 — resolved 이름이 compose project에서 파생되어 격리 스택은 자기
+  volume을 갖는다(아래 named volume 규칙).
+
 ### 7.4 Map↔PinVi canonical ops read/cancel principal
 
 PinVi API는 Map의 canonical `/v1/ops/datasets*`와 `/v1/ops/pipeline*` 조회, 그리고

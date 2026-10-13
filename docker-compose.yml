@@ -1710,7 +1710,11 @@ services:
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_PORT: '12703'
       KOR_TRAVEL_MAP_DAGSTER_ADDRESS_VALIDATION: ${KOR_TRAVEL_MAP_DOCKER_ADDRESS_VALIDATION:-drop}
-      KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DB_PATH:-/tmp/mois_source.db}
+      # MOIS Phase A 원천 SQLite(약 5GB). 경로와 아래 volume target이 **같은 변수 하나**에서 나온다 — 둘이
+      # 갈라질 수 없다. 기본 디렉터리는 Map Dagster 이미지가 appuser 소유로 만들어 두는 자리이고(Map ADR-108),
+      # 새 named volume은 그 디렉터리의 소유자를 물려받는다. 옛 `/tmp/mois_source.db`는 컨테이너 overlay라
+      # 재생성마다 사라졌다.
+      KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DIR:-/opt/dagster/state/mois}/mois_source.db
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
@@ -1736,6 +1740,8 @@ services:
     # 이미지에 구운 `dagster_home/dagster.yaml`(옛 전용 metadata DB) 대신 공용 instance 정의를 붙인다.
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    # run worker는 이 컨테이너의 자식이다 — MOIS 적재·Phase A sync가 여기서 원천 SQLite를 읽고 쓴다.
+    - kor-travel-map-mois-source:${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DIR:-/opt/dagster/state/mois}
     healthcheck:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
@@ -1800,7 +1806,7 @@ services:
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KOR_TRAVEL_MAP_DAGSTER_PORT: ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
       KOR_TRAVEL_MAP_DAGSTER_ADDRESS_VALIDATION: ${KOR_TRAVEL_MAP_DOCKER_ADDRESS_VALIDATION:-drop}
-      KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DB_PATH:-/tmp/mois_source.db}
+      KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DIR:-/opt/dagster/state/mois}/mois_source.db
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
@@ -1907,7 +1913,7 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KOR_TRAVEL_MAP_DAGSTER_ADDRESS_VALIDATION: ${KOR_TRAVEL_MAP_DOCKER_ADDRESS_VALIDATION:-drop}
-      KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DB_PATH:-/tmp/mois_source.db}
+      KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DIR:-/opt/dagster/state/mois}/mois_source.db
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
@@ -3202,6 +3208,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+
+# internal named volume — 이름은 compose project에서 파생된다(`<project>_kor-travel-map-mois-source`). 그래서
+# 격리 스택(M05 등)은 자기 volume을 따로 갖는다. `name:`/`external`은 두지 않는다(docs/docker-management.md).
+volumes:
+  kor-travel-map-mois-source: {}
 
 secrets:
   kor-travel-shared-postgres-password:

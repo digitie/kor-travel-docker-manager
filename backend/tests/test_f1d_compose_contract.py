@@ -351,6 +351,32 @@ def _map_application_candidate(
     )
 
 
+def _carry_referenced_named_volumes(fragment: dict[str, object]) -> None:
+    """fragment의 service가 참조하는 정본 top-level named volume 정의를 함께 옮긴다.
+
+    빼면 정본 compose에서는 선언된 volume이 fragment에서는 "undeclared"가 되어 validator가 정본을
+    거부한다. 이름 목록을 박지 않고 mount source에서 유도한다(short syntax `source:target[:mode]`).
+    service를 fragment에 나중에 더하는 테스트도 이것을 다시 부른다.
+    """
+
+    services = fragment["services"]
+    assert isinstance(services, dict)
+    source_volumes = _source_compose().get("volumes") or {}
+    assert isinstance(source_volumes, dict)
+    referenced = sorted(
+        {
+            str(mount).split(":", 1)[0]
+            for service in services.values()
+            if isinstance(service, dict)
+            for mount in service.get("volumes") or []
+            if isinstance(mount, str)
+        }
+        & set(source_volumes)
+    )
+    if referenced:
+        fragment["volumes"] = {name: deepcopy(source_volumes[name]) for name in referenced}
+
+
 def _compose_fragment(*service_names: str) -> dict[str, object]:
     """선택 service와 그 dependency 이름을 실제 Compose resolver로 해석한다."""
 
@@ -383,6 +409,7 @@ def _compose_fragment(*service_names: str) -> dict[str, object]:
                     services[dependency] = {"image": "alpine:3.20"}
 
     fragment: dict[str, object] = {"services": services}
+    _carry_referenced_named_volumes(fragment)
     if (
         "kor-travel-shared-postgres" in services
         or "kor-travel-shared-db-init-pinvi" in services
