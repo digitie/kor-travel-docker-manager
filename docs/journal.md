@@ -3,6 +3,12 @@
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
 
+## 2026-10-14 — Concierge 행정구역 재해결 lane 준비
+
+- Concierge T-200의 `concierge/concierge_admin_region_refresh` job에 limit 1을 추가하고 lane 집합 계약을 갱신했다. 전체 location limit 2와 다른 테넌트 상한은 유지한다.
+- instance 파일 변경의 재생성을 감지하도록 기존 7개 digest 선언을 동일 파일 SHA256으로 함께 회전했다. 기존 파일-환경 결박 테스트를 따른다.
+- 독립 적대 리뷰 2인·관련 계약·live/UI 및 운영 설정 반영은 검증 중이다. 신규 job의 첫 운영 실행은 Geo 데이터 토큰/backfill과 Map 신뢰 규칙 배포 뒤에만 진행한다.
+
 ## 2026-10-14 — tick 조회 수정의 운영/live gate 완료
 
 - 최신 main의 공용 PG lock 정책과 기록을 양쪽 모두 보존해 병합했다. 관련 계약 318 PASS, 실제 PG·Dagster 이미지 4 PASS 및 두 FULL source 리뷰 OPEN 0을 확인했다. source R3는 `25725af8`이고 핵심 함수 SHA256은 `8152a6f21038975cbe177153e04159fdd829b9e2844b424f41beb4edb6b5305c`다.

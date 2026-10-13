@@ -104,6 +104,9 @@ concurrency:
       - key: kortravelcommon/job
         value: concierge/concierge_feature_exports
         limit: 1
+      - key: kortravelcommon/job
+        value: concierge/concierge_admin_region_refresh
+        limit: 1
       # 테넌트 안의 상한 — 오늘 값 그대로다. key가 이미 테넌트 이름공간이라 겹치지 않는다.
       # Map: value 없이 key만 — 그 key를 가진 in-progress run 전체를 센다(Map
       # `docker/dagster.yaml`: 관리자 요청 worker class 전체를 4로 묶는다).
