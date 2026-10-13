@@ -606,6 +606,64 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
 
 ---
 
+## 11. odroid 전용 instance — 별 호스트의 두 번째 공용 instance (계획 — ADR-58 proposed, 미구현)
+
+"공용 instance는 하나"는 **호스트당 하나**로 범위가 바뀐다(ADR-58 결정 3). odroid(`192.168.1.13`)에 같은 서비스명·컨테이너명·
+포트·bind·pg_hba(loopback scram만; n150의 `10.88.0.0/24` 잔재는 복제하지 않는다)의 `kor-travel-shared-postgres`(`11000`)가 뜬다.
+이 절은 그 instance의 bootstrap 규칙이고, 위 §1~§10의 "하나뿐인 instance" 서술은 n150에 대해 그대로 참이다.
+
+- **누가 올리나.** PG는 registry에서 `dagster` target(infra, `host: all`)의 service다(`config/docker-targets.yml:778-800`) —
+  odroid에서 **`ensure dagster`가 PG·db-init-dagster·storage-migrate·plane을 올린다**. `ensure kor-travel-shared-postgresql` 같은 명령은
+  없다. 롤·DB bootstrap은 n150과 같은 one-shot(`kor-travel-shared-db-init-{geo,weather,transport,dagster}`)이 같은 이름으로 만들되
+  **실행 시점이 target마다 다르다**(R4 — 생성 명령은 `KTDM_HOST ∈ host 집합`일 때만): `dagster_shared`/`kor_travel_dagster_shared_app`
+  (`CONNECTION LIMIT 45`, compose 리터럴 `docker-compose.yml:718,720`)은 `ensure dagster`(§9.2 전체 순서 3); `kor_travel_geo`/
+  `kor_travel_geo_app`은 geo 플립의 `ensure geo`(8b — db-init-geo는 geo target의 service `config/docker-targets.yml:439`),
+  `kor_travel_weather`/`kor_travel_weather_app`은 weather 플립의 `ensure weather`(6b, `:732`); `kor_travel_transport`/
+  `kor_travel_transport_app`은 **어느 target의 service도 등록된 `init_steps`도 아니라**(`docker-compose.yml:580`; n150 합류 때도 Manager
+  명령 밖이었다) 설치 루트에서 `docker compose run --rm --no-deps kor-travel-shared-db-init-transport`로 1회(4a′). **앱 role 셋에는
+  connlimit이 없다** — db-init의 `CREATE/ALTER ROLE`에 `CONNECTION LIMIT` 절이 없고(`:424-426` 등) n150 실측도 무제한이다(fact base;
+  compose 전체에서 `CONNECTION LIMIT`은 dagster 45뿐). odroid도 같다(두고 싶으면 db-init 셋에 넣는 것이 대안 — T-MGR-03 범위 밖).
+  **geo 확장은 오늘 db-init이 만들지 않는다**(`:374-383` 주석 — cutover `pg_restore`가 dump의 `x_extension` 배치를 재생하게 두려고;
+  §4.3의 "현재 postgis 1종"은 concierge `:363`). odroid는 pg_restore 없는 fresh 경로라 T-MGR-03이 db-init-geo에
+  `CREATE SCHEMA IF NOT EXISTS x_extension` + `CREATE EXTENSION IF NOT EXISTS {postgis,pg_trgm,unaccent,pg_stat_statements} SCHEMA x_extension`을
+  더한다(n150 no-op; 8b 게이트 `\dx`; §4.3 문장도 그때 갱신). weather·transport는 n150에서도 fresh DB로 합류했고 소스에 `CREATE EXTENSION`이
+  없어 공백이 없다. **`kor_travel_transport_dagster`는 만들지 않는다** — db-init-transport는 그 DB를
+  만들지도 CONNECT를 주지도 않고(`backend/tests/test_transport_shared_bootstrap_contract.py:35-37,47`) transport backend 코드가
+  `DAGSTER_POSTGRES_URL`을 읽지 않는다; transport env의 그 변수는 그 저장소 compose의 `:?` 보간 때문에 모양만 남긴다.
+- **이미지(arm64).** 공식 `postgis/postgis:16-3.5`에는 arm64가 없다. 서버 `image:`와 db-init 6개를 `${KTDM_POSTGRES_IMAGE:-<현재 digest 핀>}`·
+  `${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}`로 두고 **기본값은 현재 문자열 그대로**(n150 렌더 byte 불변;
+  `test_transport_shared_bootstrap_contract.py:23`은 "이미지 == compose 기본값"으로 바뀐다). odroid root `.env`가 `imresamu/postgis:16-3.5`
+  (공식과 같은 레이아웃의 제3자 이미지)를 준다. 결박은 효과로 — `ensure` 프리플라이트가 이미지 arch == 호스트 arch를 검사하고, 설치
+  때 `pg_isready` 경로와 `postgis_full_version()` major.minor를 n150과 대조한다.
+- **튜닝(env 파생, 기본값 = `docker-compose.yml:265-283`의 n150 값).** odroid `.env`: `effective_cache_size 2GB`(n150 1536MB),
+  `work_mem 16MB`(n150 64MB), `max_parallel_workers 2`/`_per_gather 1`, `effective_io_concurrency 200`(fio 뒤), `checkpoint_timeout 900`,
+  `wal_compression zstd`, `autovacuum_max_workers 2` — 뒤의 여섯 키는 n150 compose에 없어 env 파생 줄이 새로 생기고 기본값은 PG 16 서버
+  기본값(효과 0, ADR-58 결정 1 ⑦); `shared_buffers 1GB`·`maintenance_work_mem 256MB`·`shm_size 1gb`·`init: true`·exec healthcheck(ADR-52)는
+  동일. **`max_connections`는 compose에 없다(서버 기본 100) — 추가하지 않는다**(실측 사용 ≈17이라 내려도 이득이 없다); connlimit은
+  위 "누가 올리나"대로 `dagster_shared` 45 리터럴뿐이다.
+- **메모리 정책(ADR-58 결정 8).** 두 호스트 **동일한 것은 규칙 둘** — `oom_score_adj -800`(plane -600, weather cs -500 유지,
+  geo cs 0 — 호스트 OOM이 PG backend보다 run worker를 먼저 고르게; transport cs는 transport 저장소 compose의 몫)과 "`mem_limit`가 있으면
+  `memswap_limit == mem_limit`"(odroid는 cgroup v1 swap accounting이 켜져 있어 기본 swap 한도 2×가 실제로 적용된다; n150 cgroup v2에서는
+  `memory.swap.max=0`과 같은 뜻). **`mem_limit` 자체는 호스트별 값**이다: odroid PG `4g`(OOM 가드, 하드 캡 아님 — §14-14), n150 PG는
+  지금처럼 **없음**(`docker-compose.yml:254-279`; 24 h cgroup 피크 6,256 MiB라 4g를 n150에 걸면 설계 밖의 운영 변경이다). 자리는 env
+  파생(`${KTDM_PG_MEM_LIMIT:-…}` 꼴, 기본값은 n150 현재 상태와 효과 동일)이고 odroid root `.env`가 값을 준다(T-MGR-03).
+  기대 효과는 drill로 — odroid PG backend 하나 `kill -9` → postmaster가 전 backend를 재시작하고 60 s 안에 geo/weather/transport
+  `/health` 200·daemon healthy·code-server 3개 SERVING·다음 schedule tick 정상(code-server와 각 앱 pool의 재연결은 검증된 적이 없다).
+- **데이터 디렉터리.** bind 문자열은 n150과 같은 `/home/digitie/kor-travel-shared-data/pgdata`이고, odroid에서는 그 경로가 NVMe
+  `/mnt/media/kor-travel/shared-data`의 fstab bind 마운트다(eMMC는 33 G free라 183 GB DB 불가). 매 `ensure`가 `findmnt -T … -o SOURCE`를
+  `KTDM_DATA_SOURCE_DEVICE`와 대조한다(`prod-deployment.md` §9.1-4).
+- **초기 적재(이관 없음).** geo: 소스 ZIP 재확보 → serving DB 직접 full load(하루 창) → `mv_refresh` → **공개 키 정책 재적용**(fresh
+  DB의 `public_api_keys`는 비어 VWorld 키 폴백뿐 — DB에 키가 하나라도 발급되면 폴백이 꺼지는 all-or-nothing; 소유자 결정 §14-21).
+  weather: `migrate` → 1,428 location → 스케줄 재개(`RETENTION_DAYS=7`). transport: `migrate` → 참조 로드(쿼터 1~2일) → 5분 스냅샷.
+  n150 수집은 각 플립 **직전에** 멈춘다(이중 수집 금지). n150 공용 instance의 세 DB(+`kor_travel_transport_dagster`)는 consumer
+  트래픽이 있는 상태에서 연결 0을 확인한 뒤 drop한다(`prod-deployment.md` §9.6).
+- **백업.** odroid에서 geo 백업·restore drill은 **off**(재로드 원칙; drill 2 h+/일), weather role은 없다(§6.4의 `BACKUP_ROLES`에
+  weather가 없는 것은 그대로), transport 3일 백업은 odroid cron으로 옮기는 것을 추천한다(**§14-7 소유자 결정 전 추천값** — 대안
+  "아무것도 안 함"). `offbox-sync`는 odroid→n150 push를 n150 쪽
+  forced-command(rrsync 쓰기 전용)로 묶는다(ADR-58 결정 10).
+
+---
+
 ## 관련
 
 - **kor-travel-concierge 저장소 `docs/journal.md` 2026-09-20 항목** — "공용 Postgres 인스턴스(`:11000`)로 실제 데이터 마이그레이션 완료(ADR-44)". **유일한 실행 선례.** 7단계 순서, 실제 `pg_restore --no-owner --role=` 플래그, owner-only 경고 4건, row count/sequence 전수 일치, Alembic head, 연결 수 대비까지 들어 있다. §7의 검증 항목은 전부 여기서 파생됐다.

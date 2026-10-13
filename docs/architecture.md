@@ -76,6 +76,13 @@ graph TD
 - **Linux/WSL**: 유닉스 소켓 (`unix:///var/run/docker.sock`)을 통해 통신한다.
 - **예외 처리**: Docker 데몬이 구동 중이지 않거나 권한이 없을 경우를 대비해, API 응답 시 503 Service Unavailable 및 정형화된 에러 객체를 반환하도록 설계한다.
 - **사용 범위**: 컨테이너 상태, metrics, logs, inspect, 개별 action은 Docker SDK로 수행한다.
+- **호스트 프로필(계획 — ADR-58 proposed, 미구현)**: Docker 호스트가 둘(n150·odroid)이 되어도 Manager는 **원격 데몬을 다루지
+  않는다.** 호스트마다 같은 Manager 인스턴스가 자기 로컬 소켓으로 돌고(`DOCKER_HOST=ssh://`·Manager 간 SSH 없음), 같은 registry·
+  같은 `docker-compose.yml`을 읽으며, 차이는 root `.env`의 `KTDM_HOST`(자기 식별, `hosts:` 키)와 호스트별 값뿐이다. 의존 방향에
+  "registry `hosts:`·`host:` → 런타임 파생(`connection:` 렌더, 명령의 host 일치 검사)"과 "registry → **커밋된 파생물**(compose
+  consumer env 기본값·`config/prometheus/prometheus.yml`·`config/dagster-shared/workspace.<host>.yaml`) ← 결박 테스트가 registry에서
+  다시 계산해 대조"의 두 화살표가 더해진다 — compose·정적 YAML은 registry를 읽을 수 없기 때문이다(compose subprocess는 allowlist
+  env만 받는다). 호스트 이름·주소는 코드에 리터럴로 두지 않는다(소유자 범용성 원칙). 정의는 `docs/docker-management.md` §3.2.
 
 ### 2.2 Compose 실행 (`ComposeService`)
 - **역할**: 개발환경에서 의존 Docker를 앱 관점 target으로 실행한다.
