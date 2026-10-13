@@ -2,6 +2,88 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-13 — Track 2: odroid 다중 호스트 설계 ADR-58(proposed)·문서 반영·`decisions.md` 아카이브 분리
+
+- 소유자 지시("설계와 각 프로젝트 문서 수정해서 코딩을 할 수 있게 준비하고 각각 PR 머지까지 진행")에 따른 **문서만**의 변경이다.
+  코드·compose·config·`.env.example`·테스트는 바뀌지 않았다. 설계 정본은 Track 2 설계 최종본(저장소 밖; 3차 적대 리뷰 6건과
+  2026-10-13 odroid 실측 반영본)이고, 이 저장소에는 결정만 ADR-58로 옮겼다.
+- **커밋 ① `docs/decisions.md` 아카이브 분리**: 파일이 359,272 B로 에이전트 read 한도(256 KB)를 넘어 ADR-1~40(2,524줄)을
+  `docs/decisions-archive-01.md`로 **byte 그대로** 옮기고 상단에 번호·제목·상태·파일 인덱스 표를 두었다. 분리 전후 `## ADR-` 제목
+  집합 57개가 같음을 스크립트로 대조했다(본 파일 17 + 아카이브 40). 저장소 안에 `decisions.md#anchor` 링크는 0건이라 링크 갱신은
+  없다. 분리 뒤 `decisions.md`는 186,825 B(ADR-58·2차 리뷰 반영 포함 239,295 B — 한도 안, 상단 "다음 분리 규칙" 참조).
+- **커밋 ② ADR-58(proposed)** — 두 번째 Docker 호스트 odroid(`192.168.1.13`): registry `hosts:` + target `host:`(tenant 단일/infra
+  `all`, 컨테이너 host-local 합집합), 호스트마다 같은 Manager(`KTDM_HOST` 자기 식별, Manager 간 SSH 없음), 호스트당 Dagster plane·
+  PG(ADR-54·47의 "하나"를 호스트 단위로 범위 명시), 파생 규칙 R1~R7(R7: tenant 간 `depends_on` 금지 — `map-api → geo-api`
+  `docker-compose.yml:1527` 삭제), 파생 표면별 기제(런타임 vs 커밋 파생물 — compose는 registry를 읽지 못한다 `compose_service.py:3154-3158`),
+  host 플립 = workspace 합류(`workspace.{n150,odroid}.yaml` + compose `${KTDM_HOST:-n150}` 보간; 설치 시 렌더는 ADR-51로 기각),
+  `dagster.yaml` 한 벌 + location 상한 T-MGR-02 1회(instance digest 리터럴 7곳 → anchor), PG 이미지 변수(`imresamu` arm64)·튜닝 env
+  파생·OOM 희생자(`oom_score_adj` PG -800)·**memswap 정책**(odroid cgroup v1 swap accounting on 실측), 내용 해시 tag에 arch 없음(레지스트리
+  선결), offbox odroid→n150 push forced-command, 관측 (b) 중앙 Prometheus + federate 1단계, Manager 범용성 원칙(리터럴 결박 대신
+  env·rendered 모델 파생 + 효과 검사). Dagster (b)·Manager (1)/(3)·설치 시 렌더의 기각 근거와 열린 결정(§14 번호)을 함께 적었다.
+- 설계 인용과 head(`094d397`)의 차이를 고쳐 썼다: Map→transport env는 `:1732`가 아니라 **`:1736`**이고 변수명은
+  `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`(같은 이름의 `${…:-}` 보간); PinVi ETL weather는 `:2128`이 아니라 **`:2134`**(리터럴);
+  instance digest 리터럴은 "8곳"이 아니라 **7곳**(`:820,890,1365,1705,2120,2434,2830`); weather cs 자원 제한은 `:2874-2877`,
+  `mem_swappiness`는 `:2875,2980,3066`; readiness 테스트의 `compose version` 호출은 `test_compose_readiness_integration.py:78`.
+  `test_f1d_compose_contract.py:724`가 "Compose v2/v5 bind 차이"를 안다는 설계 문장은 head에서 그 자리를 찾지 못해 인용하지 않았다.
+  **1차 리뷰(두 리뷰어, 22건) 반영으로 더 고친 것**: ADR 결정 3의 compute log 근거는 `dagster.yaml:64-69`(run tag 주석)가 아니라
+  **`:38-42`**(`LocalComputeLogManager`), 결정 7의 location 상한 근거는 `:100-117`(테넌트 안 상한)이 아니라 **`:57-94`**(`dagster/code_location`
+  항목 `:73-92`) — 둘 다 설계 본문에서 옮겨온 drift; S6 geo context `:1075,2395` 보강; S9(transport 몫) 행 추가; ADR-53 설명 오기
+  (튜닝 리터럴 → Map 두 DB 이전)와 결정 1의 교차 참조(결정 7 → 결정 4 R7) 정정. **설계와 다르게 둔 것**: `mem_limit`는 호스트별
+  값(odroid PG 4g / n150 없음 — 설계 §5.3 표대로)이고 두 호스트 동일한 것은 `oom_score_adj`·memswap **규칙**뿐임을 결정 8·onboarding
+  §11·T-MGR-03에 명시(설계 T-MGR-03과 1차 문서가 PG 4g를 n150에도 리터럴로 읽히게 적고 있었다); transport code-server의
+  memswap/mem_limit은 transport 저장소 compose의 몫으로 분리(Manager compose에 그 서비스가 없다, `config/docker-targets.yml:671-`);
+  concierge 두 서비스(`:1296,:1339` `mem_limit 2g`)가 memswap 규칙에 함께 걸린다는 n150 부작용을 T-MGR-03에 적었다; NTP ⑤
+  `After=time-sync.target` drop-in을 §9.1 1-④에서 **11(Manager 설치 뒤)**로 옮김(설계 §11.2 2단계 순서와 같게 — `ktdm-backend.service`가
+  설치 뒤에야 존재); 설계 §11.2 전체 순서표(0~11)를 §9.2 머리에 옮겨 §5·§9.4·§9.6·T-OPS가 그 번호를 쓰게 했다(종전 "transport 5"는
+  저장소에 없는 번호였다); 설계 내부 절 번호(`§3.2 조건`·`§11.5`)를 ADR 결정 13·`prod-deployment.md` §9.6 포인터로 바꾸고 접두 규칙
+  ("설계 §x.y")을 ADR 머리에 적었다. **열린 결정 2건 추가(§14-29·30)**: odroid 대시보드 `12905`(설계 §4.3 표대로면 `12901`이 n150만
+  허용이라 대시보드가 자기 API에 닿지 못한다 — 추천 (가) backend만), 호스트 래퍼 스크립트 정본 위치(설계 §7.6·§15가 ADR 항목으로
+  들었으나 빠져 있었다 — 추천 odroid 홈 사본). 그 밖에 `deploy-prod.sh`(transport T-TRN-01 예정, 아직 없음)·transport 백업 cron(§14-7
+  추천값) 표시, `KTDM_DATA_SOURCE_DEVICE`를 `findmnt` 실측 placeholder로, ports.md "주소를 적지 않는다" 선언을 "예시·파생값"으로,
+  platform-topology §3에 `hosts:` 스키마 단락, 인덱스 ADR-10/35/37 상태 칸 요약, 기준 리비전을 `094d397`로 통일, T-OPS-02/03 분리,
+  `decisions.md` 다음 분리 규칙(200 KB 초과 시 ADR-41~50 → `decisions-archive-02.md`; archive-01은 184,575 B라 ADR-41~50 64,172 B를
+  받아도 248,747 B로 한도 안이지만 "아카이브 ≤ 200 KB" 규칙과 현행 결정 인용 때문에 받지 않는다 — 1차 반영 보고의 "≈90 KB·256 KB
+  초과"는 수치 오류였고 2차 리뷰가 잡았다)과 `journal.md` 분리(774 KB)를 T-MGR-07에 남김 — 이 PR에서는 하지 않는다(범위: 계획된
+  ADR-1~40 분리 + ADR-58).
+- **2차 리뷰(두 리뷰어, HIGH 2·MED 8·LOW 13) 반영** — 전부 반영, 기각 0(수치 정정 1건은 위). ① **R2 geo consumer 기본값은 compose에
+  4곳**(`:1582` map-api·`:1727` map code-server·`:1819`/`:1926` legacy webserver/daemon)인데 `:1582` 한 곳으로 세고 있었다 — geo 플립이
+  `:1582`만 바꾸면 code-server가 loopback에 남아 모든 geocode run이 connection refused가 된다. R2를 줄 번호 열거에서 **규칙**("형제 포트를
+  기본값에 가진 모든 compose env, legacy profile 포함 — 테스트가 렌더를 스캔")으로 바꾸고 ADR 결정 4·5, bindings B-6, docker-management §3.2,
+  platform-topology §9, T-MGR-01c·06을 같은 7곳 집합으로 맞췄다. ② **geo 확장 4종의 생성 주체 공백**: onboarding §11이 "db-init이
+  만든다"고 적었으나 head db-init-geo는 확장을 만들지 않는다(`docker-compose.yml:374-383` — cutover pg_restore 전제; 유일한
+  `CREATE EXTENSION`은 concierge `:363`). odroid fresh 경로에는 pg_restore가 없고 app role은 NOSUPERUSER라 T-MGR-03이 db-init-geo에
+  `x_extension` 스키마 + 확장 4종 `IF NOT EXISTS`를 더하는 것으로 결정 3에 넣고 §9.2 8b에 `\dx` 게이트를 두었다(설계 §5.4의 drift).
+  ③ **connlimit 15/10/10은 compose·실측 어디에도 없다**(`CONNECTION LIMIT`은 dagster 45뿐 `:718,720`; fact base "app roles unlimited") —
+  설계 §5.4의 값이었고 ADR·onboarding·platform-topology에서 걷어냈다(odroid도 db-init 그대로 무제한). ④ n150 렌더 **허용 diff 목록을 ADR
+  결정 1에 단일 정본(①~⑨)**으로 두고 결과·후속·§9.2-1·T-MGR-01b/01c/01d/02/03이 그것을 가리키게 했다 — 빠져 있던 pinvi-api env +1,
+  workspace bind source 2줄, PG `-c` 키 6개(n150 compose에 없는 키 — 기본값 = PG 16 서버 기본값, 효과 0), db-init-geo 확장 줄을 포함.
+  ⑤ odroid에서 transport role/DB one-shot을 돌릴 명령 경로가 없었다(`kor-travel-shared-db-init-transport` `:580`은 어느 target service도
+  `init_steps`도 아님) → §9.2 4a′ `docker compose run --rm --no-deps …` 명시, 3단계는 `dagster_shared`만 생성으로 정정, onboarding §11에
+  target별 실행 시점. ⑥ §5 "stop 상태에서 공개 host 200" 모순 → 내부 consumer run 게이트 뒤 backend 전환, 그 뒤 공개 200. ⑦ 원격
+  `status` probe를 효과 기반 하나로: `http(s)://` 전부 probe, `up`/`down`/`unreachable`, registry에 방화벽 필드 없음(HAProxy 전용 포트의
+  `unreachable`은 정상). ⑧ §9 머리·T-OPS-01: §9.1-0~7은 지금 가능, 8 이후는 T-MGR-01a~05 머지 뒤. LOW: S3 "7개 target" → 6개(service
+  이름/containers 키 구분), S4 "로컬 존재 검사" → 절대 경로·정규화만(`registry.py:942-972`; 존재는 `--check-coordinates` 옵트인
+  `cli.py:1722`)과 R5 결박, `max_connections`는 compose에 없음(추가 안 함), 14103을 ports.md weather 행에 등록·§10.1 code-server metrics로
+  정정, `dagster.yaml:73-94`·`:137` 주석 geo 누락(T-MGR-02), NOPASSWD/비밀번호 SSH 반쪽 상태(§9.1-3을 0 다음 권장), fio 경로 순서,
+  4b 게이트 `targets validate --json` 복원, Map fail-open 근거(`app.py:700`·설계 `settings.py:164-176`), §9.5 주소·§9.1-7 열린 결정 표기,
+  tasks 의존 필드(01d/03/05 병렬·04→01a·07→01a~05), journal 수치.
+- **odroid 상태는 2026-10-13 03:4xZ 소유자 처리 결과로 적었다**(설계 본문의 "sudo 비밀번호 요구·ProxyJump 필수"는 낡은 상태):
+  WSL 직접 키 로그인 가능(WSL Docker 잔재 네트워크가 `.13`을 가렸던 것 — 제거), NOPASSWD sudo·docker 그룹·NTP 동기 **완료**;
+  timesyncd 부팅 순서 사이클 영속화(drop-in)·compose v2/buildx·방화벽·fstab bind·swapfile **미완**. docker 그룹 추가는 설계
+  §11.1-3(c)가 권하지 않던 것이지만 소유자가 했으므로 완료로 기록하고 운영 경로(root systemd)에 영향 없음을 적었다.
+- 문서 반영(전부 "(계획 — ADR-58 proposed, 미구현)" 표시, 현황 서술은 그대로): `platform-topology.md` §2 호스트 차원·§4 호스트당 PG·
+  §5 호스트당 plane·§7 플립 PR 절차·§8 단계 8·§9 정본 행 3개·**새 §10**(odroid 배치표·envelope 실측·완료/미완·Track 1 관계);
+  `ports.md` "호스트 규칙"(포트 동일·호스트만 `.13`, 점유 포트 × 우리 집합 충돌 0 — TCP+UDP, node_exporter 후보 `12106`, plane별
+  공개 host, odroid 방화벽 집합 (가)); `prod-deployment.md` §2 odroid 전제(현지 wheelhouse·현지 빌드·compose v2/buildx)·§5 backend
+  전환 포인터·**새 §9**(초기화 상태와 남은 순서·플립 PR 배포 절차·재배포·HAProxy 전환표·체크리스트·n150 해체); `docker-management.md`
+  **§3.2**(`KTDM_HOST`·운영 모드 판정·R4 표·`remote(not probed)`·R2·R7·프리플라이트·`--json` 초안); `shared-postgres-onboarding.md`
+  **§11**(odroid instance — `ensure dagster`가 PG, imresamu, 튜닝 env, 메모리 정책·drill, 초기 적재, 백업); `architecture.md` §2.1
+  호스트 프로필 단락; `bindings.md` B-5~B-9(계획 — 테스트 이름은 각 T에서 확정, 존재하는 테스트 파일만 코드 폰트)·U-2(교차 비밀 2개);
+  `tasks.md` T-MGR-01a~07·T-OPS-01~03(수용 기준·수정 파일·의존·규모; `.env.example` 키는 여기에).
+- 교차 저장소 번호(같은 설계): transport ADR-014, geo ADR-070, Map ADR-110, concierge ADR-50(Track 1 문서 geo ADR-069·Map ADR-109·
+  concierge ADR-49·transport T-045는 이미 main). 다음 한 작업: **T-MGR-01a**(선행: 소유자 결정 §14-9 로컬 체크아웃을 origin/main으로,
+  n150 선행 실측 §14-1).
+
 ## 2026-10-13 — Map 날씨 env 잔여 점검과 퇴역 접두 가드 확장(Map ADR-104/105)
 
 - 소유자 승인 정리: Map이 날씨를 kor-travel-weather에 넘겼으므로(Map ADR-104/105) Manager가 Map 서비스에

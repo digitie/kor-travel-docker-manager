@@ -187,6 +187,57 @@ profile로도 피할 수 없다(비활성 profile의 서비스도 interpolate �
 못 띄운다. `docker compose config --quiet`로 먼저 전체 파일이 interpolate되는지
 확인하고, 안 쓸 target들은 값의 정합성이 필요 없으니 placeholder로만 채워도 된다.
 
+### 3.2 호스트 프로필과 `KTDM_HOST` (계획 — ADR-58 proposed, 미구현)
+
+이 절은 **아직 코드에 없는** 동작의 정의다. 2026-10-13 현재 registry에 `hosts:`·`host:` 필드가 없고 `KTDM_HOST`를 읽는 코드도
+없다(T-MGR-01a·01b가 만든다). 결정·근거는 `docs/decisions.md` ADR-58, 배치는 `docs/platform-topology.md` §10.
+
+**registry.** 최상위 `hosts:`(`<키>: {addr: <IPv4>, default: true|생략}`, default는 정확히 1개)와 target의 `host:`(tenant: `hosts` 키
+하나, 생략 = default; infra `storage`/`dagster`/`cadv`: `all`). 로더는 오늘의 unknown-field 거부(`registry.py:373-376`와 같은
+모양)로 default 0·2개, IPv4가 아닌 `addr`, `hosts`에 없는 `host:` 값을 `TargetsConfigError`로 거부한다. `all` target의 `include`는
+`KTDM_HOST`로 필터해 "이 호스트의 target만"이 된다. 컨테이너의 host 집합 = 그 컨테이너를 service로 갖는 target들의 host 합집합.
+
+**`KTDM_HOST`(root `.env`).** 이 Manager가 어느 호스트인지. 값은 `hosts` 키. **운영 모드에서만 강제**한다 — 운영 모드 = trusted
+installer가 만든 release 아래 실행(`.ktdm-source-revision` 존재; `services/compose_references.py:33`,
+`services/registry.py:129-132`의 `running_from_trusted_install_root`). 운영 모드에서 값이 비었거나 `hosts[KTDM_HOST].addr`가 이
+호스트의 IPv4 주소 집합에 없으면 거부(빈 env가 가드를 뚫지 못하게). 비운영(CI·개발·isolated plane)은 명시했을 때만 검사하고
+미설정이면 default 호스트 — 기존 하네스는 무변경.
+
+**명령별 host 규칙(R4).**
+
+| 명령 | 조건 |
+|---|---|
+| `ensure`·`start`·`restart`·`db-backup`·`pin`·C6c 재구축 | `KTDM_HOST ∈ target의 host 집합`일 때만(`all`은 항상). 아니면 `target geo is on host odroid`로 거부 |
+| `stop`·`logs`·`status`(로컬) | **로컬 소켓에 그 컨테이너명이 조회되면** host 무관 — 옛 스택 해체용. 판정은 Docker SDK 조회 성공 여부(효과 기반, label 없음) |
+| `status`(원격 target) | `connection`이 `http(s)://`인 항목은 **전부** HTTP probe → `up`(2xx/3xx) / `down`(비정상 응답) / `unreachable`(connect timeout·거부); `http(s)://`가 아닌 항목(설명 문자열·gRPC·DB)은 `remote(not probed)`. registry에 방화벽 개방 필드는 없다 — odroid의 HAProxy 전용 포트(`12505`·`12205`·`14002`·`12301`·`12305`·`11001`, `ports.md` 방화벽 집합)는 n150에서 `unreachable`이 **정상**(거짓 빨강 아님) |
+| `targets validate` | 전체 구문 + 자기 호스트 좌표(`--check-coordinates`) + consumer origin 기대값(R2) 대조 + 설치된 `workspace.<host>.yaml` sha256[:16] == digest env(효과) + `--json` |
+
+**consumer origin(R2).** 내부 target이 형제 서비스를 부르는 URL은 compose env **기본값**이 정본이며 registry에서 계산한 값과 같아야
+한다. 대상은 규칙으로 정한다 — "형제 서비스 포트(`12501`/`14001`/`14101`)를 기본값에 가진 모든 compose env(비활성 `legacy-dagster`
+profile 포함)": 오늘 7곳 = geo `docker-compose.yml:1582`(map-api)·`:1727`(map code-server)·`:1819`·`:1926`(legacy webserver/daemon),
+transport `:1736`, PinVi ETL `:2134`, 그리고 pinvi-api 블록에 추가되는 같은 weather 변수(`docs/bindings.md` B-6). 파생 테스트는 렌더된
+compose를 스캔해 이 집합을 찾는다(줄 번호 열거 금지). root `.env`에 다른 값을 적으면 `targets validate`가 거부한다.
+
+**compose `depends_on`(R7).** 간선은 양끝 서비스의 host 집합이 같을 때만 둔다. tenant 간 의존(`kor-travel-map-api → kor-travel-geo-api`,
+`docker-compose.yml:1527`)은 삭제하고 런타임 REST 검증(health probe·fail-open 기동·`failure_kind`; Map은 `kor_travel_geo_preflight_required`
+기본 false — Map 저장소 `packages/kor-travel-map-api/src/kortravelmap/api/app.py:700`, 설계 §7.2 R7 인용)으로 대체한다 — `ensure`가 `--no-deps`
+없이 의존 closure를 올리므로(`compose_service.py:3572-3589,3714-3719`) 간선이 남으면 geo 플립 뒤 n150 `ensure map`이 geo-api를 n150에
+되살린다.
+
+**`ensure` 프리플라이트(T-MGR-05).** 이미지 `.Architecture` == 호스트 arch(amd64 이미지를 arm64 호스트에 올리면 거부);
+`KTDM_DATA_SOURCE_DEVICE`가 설정돼 있으면 bind 경로마다 `findmnt -T <경로> -o SOURCE`가 그 장치인지(미설정이면 생략 — n150 무변경);
+`docker compose config` 렌더 성공(compose 플러그인 부재는 여기서 드러난다 — `backend/tests/test_compose_readiness_integration.py:78`의
+`compose version`보다 효과가 앞선다).
+
+**`targets validate --json` 출력(초안).** `{"ok": bool, "host": "<KTDM_HOST 또는 default>", "targets": {"<id>": {"host": "<hosts 키|all>",
+"local": bool}}, "errors": [...]}` — transport 저장소의 배포 스크립트가 `targets.transport.host == <addr의 키>`를 효과로 읽는다. 스키마는
+T-MGR-01a에서 확정한다.
+
+**호스트 차이는 root `.env`뿐이다(R6).** compose 파일은 하나. odroid `.env`에만 있는 키(예정, 값은 T-MGR-02/03/05에서 추가):
+`KTDM_HOST`, `KTDM_DAGSTER_WORKSPACE_DIGEST`, `KTDM_POSTGRES_IMAGE`/`KTDM_POSTGRES_CLIENT_IMAGE`, `KTDM_PG_*` 튜닝, `KTDM_DATA_SOURCE_DEVICE`,
+호스트별 `KTDM_PROD_URL_*`·`KOR_TRAVEL_DAGSTER_UI_PASSWORD`. 교차 비밀 2개(Map→geo API key, Map→transport token)는 두 `.env`에 같은 값
+— 결박 없이 효과(401/404)로 드러난다(`docs/bindings.md` U-2).
+
 ---
 
 ## 4. 초기화 및 복구 흐름

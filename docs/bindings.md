@@ -74,6 +74,64 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **범위 주의**: `docs/journal.md`·`docs/tasks-done.md`·감사 보고서는 **검사하지
   않는다.** 과거 기록이므로 지금 기준으로 고치라고 하면 역사를 다시 쓰게 된다.
 
+> **B-5~B-9는 계획이다(ADR-58 proposed, 2026-10-13).** 사본도 결박 테스트도 아직 없다 — 각 항목의
+> "결박"에 적은 T-MGR 번호의 PR이 사본과 테스트를 **같은 PR에서** 만든다(DO NOT 15의 결박 규칙).
+> 테스트 이름은 그 PR에서 확정하며, 여기에는 이미 존재하는 테스트 파일만 코드 폰트로 적는다.
+
+### B-5. (계획) 호스트별 공용 Dagster workspace의 합집합
+
+- **사실**: 공용 plane에 합류한 location 집합(오늘 6: geo·conc·map·pinvi·weather·transport)
+- **정본**: `config/docker-targets.yml`의 `dagster.control_plane: shared`인 target과 그 `host:`
+- **사본**: `config/dagster-shared/workspace.n150.yaml` ∪ `config/dagster-shared/workspace.odroid.yaml`
+  (오늘의 파생물 `workspace.yaml`이 호스트별 두 파일이 된다; compose가 `${KTDM_HOST:-n150}`으로 고른다)
+- **사본이 필요한 이유**: compose bind는 커밋된 파일만 마운트할 수 있고 registry를 읽지 못한다 — 오늘의
+  `workspace.yaml`과 같은 이유(`docker-compose.yml:781-786`)
+- **결박**: 합집합 == shared 집합 ∧ 교집합 ∅ ∧ `workspace.n150.yaml`은 첫 구현에서 오늘 파일과 byte 동일 —
+  기존 `test_dagster_shared_workspace_is_derived`를 두 파일 + 호스트별 `all` 규칙으로 확장(T-MGR-02)
+
+### B-6. (계획) 내부 consumer가 부르는 형제 서비스의 origin
+
+- **사실**: Map(api·dagster code-server·legacy webserver/daemon)→geo(`12501`)·Map→transport(`14001`)·PinVi ETL→weather(`14101`)·
+  pinvi-api→weather(`14101`)의 host
+- **정본**: registry `hosts:` + 각 target의 `host:`(렌더 호스트와 같으면 `127.0.0.1`, 아니면 그 addr)
+- **사본**: Manager `docker-compose.yml`에서 **형제 서비스 포트(`12501`/`14001`/`14101`)를 기본값에 가진 env 전부**(비활성
+  `legacy-dagster` profile 포함) — 오늘 **7곳**: geo `:1582`(map-api)·`:1727`(map code-server)·`:1819`·`:1926`(legacy webserver/daemon),
+  transport `:1736`, PinVi ETL `:2134`(오늘은 리터럴), 그리고 pinvi-api 블록 `:1935-2010`에 추가될 같은 weather 변수
+- **사본이 필요한 이유**: compose는 registry를 읽지 못한다(compose subprocess는 allowlist env만 받는다,
+  `compose_service.py:3154-3158`). 값을 root `.env`로 내리면 호스트마다 손으로 맞추는 두 번째 사본이 생긴다 —
+  그래서 기본값을 커밋 파생물로 두고 `.env` 재정의는 `targets validate`가 거부한다
+- **결박**: 테스트가 렌더된 compose를 **스캔**해 그 집합을 찾고(줄 번호 열거 금지 — 지정 줄만 보면 하나를 빠뜨려도 초록이다)
+  registry에서 계산한 기대값 == 각 기본값을 단언(T-MGR-01c; 7곳 중 어느 하나를 registry와 다르게 고치면 빨강); `.env` 재정의
+  거부(validate)
+
+### B-7. (계획) 공용 workspace digest의 기본값
+
+- **사실**: daemon·webserver가 기대하는 `workspace.yaml` sha256[:16]
+- **정본**: 설치된 `config/dagster-shared/workspace.<host>.yaml`의 내용
+- **사본**: compose `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-<n150 파일 digest>}`의 기본값
+  (오늘은 리터럴 `8a86a75219b7938d`, `docker-compose.yml:821,891`), odroid는 root `.env` 값
+- **사본이 필요한 이유**: healthcheck가 마운트 파일과 env를 대조해 낡은 컨테이너를 exit시키는 기제 자체가 이 사본이다
+  (`:839,903`); installer에 계산 로직을 더하지 않는다(ADR-51)
+- **결박**: 기본값 == `workspace.n150.yaml` sha256[:16] — 기존 `test_dagster_shared_config` 확장(T-MGR-02); odroid 값은
+  `targets validate`가 설치된 파일과 대조(효과)
+
+### B-8. (계획) Prometheus scrape 타깃의 host
+
+- **사실**: n150 Prometheus가 긁는 geo/weather/transport/odroid exporter의 주소
+- **정본**: registry `hosts:` + `host:`
+- **사본**: `config/prometheus/prometheus.yml`의 `static_configs.targets`(오늘 전부 `127.0.0.1:…`, `:27-34` 등)
+- **사본이 필요한 이유**: Prometheus는 정적 파일만 읽는다
+- **결박**: registry에서 계산한 타깃 집합 == 파일(T-MGR-04의 파생 테스트)
+
+### B-9. (계획) 교차 호스트 `depends_on` 간선 ∅
+
+- **사실**: compose `depends_on`이 tenant 경계를 넘지 않는다(R7)
+- **정본**: registry에서 계산한 각 서비스의 host 집합
+- **사본**: `docker-compose.yml`의 `depends_on` 간선(오늘 `kor-travel-map-api → kor-travel-geo-api`, `:1527`이 유일한 위반 후보)
+- **사본이 필요한 이유**: 간선 자체는 compose에만 있다 — 지울 수는 있어도(T-MGR-01b가 지운다) 다시 생기는 것을 registry가 막지
+  못한다
+- **결박**: "양끝 host 집합이 다른 간선 집합 == ∅"(T-MGR-01b; 간선 하나를 일부러 남겨 빨갛게 확인)
+
 ---
 
 ## 결박할 수 없어 남겨 둔 것
@@ -97,3 +155,15 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   동시 릴리스) 별건으로 둔다.
 - **재발 이력**: 2026-09-01 이후 재핀 **네 번**(#506·#508·#510·#519). 그중 하나는
   커밋 제목이 스스로 "docs-only bump"라고 적었다.
+
+### U-2. (계획, ADR-58) 두 호스트 `.env`의 교차 비밀 2개
+
+- **사실**: Map→geo 공개 API 키(`KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY`)와 Map→transport service token — 발급하는 쪽(geo·transport,
+  odroid `.env`)과 쓰는 쪽(Map, n150 `.env`)이 다른 호스트의 root `.env`에 같은 값을 가져야 한다
+- **왜 결박할 수 없나**: 두 파일은 저장소 밖(root 0600)이고 호스트가 다르다 — Manager 간 SSH가 없으므로(ADR-58 결정 2·10) 어느
+  Manager도 상대 파일을 읽어 대조할 수 없다. 동기화 기제를 만드는 것은 새 신뢰 경계다(ADR-50 "먼저 멈춘다")
+- **완화**: 효과로 드러난다 — 키 불일치는 geo 401/transport 404로 즉시 보이고, 플립 절차의 게이트("n150 쪽 컨테이너 stop 상태에서
+  Map geocode·export 1 run 성공, 키 경로 200")가 그것을 전환 **전에** 잡는다(`docs/prod-deployment.md` §9.5). geo는 VWorld 공용 키
+  폴백 유지(§14-21 추천)면 Map 쪽 값이 VWorld 키 하나로 고정된다
+- **weather metrics bearer는 해당 없음**: 관측 1단계(federate)에서 n150이 weather-api `/metrics`를 직접 긁지 않으므로 토큰이 한
+  호스트에만 있다

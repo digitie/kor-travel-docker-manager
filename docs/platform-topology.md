@@ -49,6 +49,15 @@ C6c 계약 기계(보호값 스캔·볼륨 그래프·단일파일 경계·핀�
 > e2e 스택에만 쓰인다. Manager가 프로젝트 저장소를 참조하는 것은 build context와
 > 스크립트 bind mount뿐이다.
 
+**호스트 차원(계획 — ADR-58 proposed, 미구현).** 위 표의 두 축에 "어느 호스트에서 도는가"가 더해진다. tenant target
+(`geo`·`weather`·`transport`·`map`·`pinvi`·`conc`)은 registry `host:` 하나(생략 = default 호스트 n150), infra target(`storage`·
+`dagster`·`cadv`)은 `host: all`(모든 호스트에 host-local로 하나씩), `prom`·`gra`는 n150뿐이다. **컨테이너는 host-local**이다 —
+같은 이름의 컨테이너는 그것을 service로 갖는 target들의 host **합집합**에 존재한다(`kor-travel-shared-postgresql`은 `dagster`(all)
+때문에 두 호스트 모두, `kor-travel-geo-api`는 geo target의 host 하나). 호스트마다 **같은 Manager**가 자기 로컬 소켓으로 돌고
+(`KTDM_HOST`로 자기를 식별), 원격 Docker·Manager 간 SSH는 없다. 내부/외부 구분과 `ensure` 거부 규칙은 그대로다 — 다만 `ensure`는
+"자기 호스트의 target"에만 허용된다(`docker-management.md` §3.2). 오늘(2026-10-13) 모든 target은 n150에 있고 `hosts:`·`host:`
+필드는 아직 없다. 배치 목표는 §10.
+
 ---
 
 ## 3. 등록되는 자리 — `config/docker-targets.yml`
@@ -85,6 +94,14 @@ targets:                          # 사람이 다루는 단위 = 한 프로젝�
 코드가 0건임이 확인돼 제거됐다 — 정본은 [`ports.md`](ports.md) 하나다. `port_band`는
 target 단위로만 남아 있다.
 
+**호스트 차원(계획 — ADR-58 proposed, 미구현; T-MGR-01a가 만든다).** 이 파일에 최상위 `hosts:` 절과 target의
+`host:` 필드가 더해진다 — 주소의 유일한 자리다. 스키마: `hosts: {<키>: {addr: <IPv4 리터럴>, default: true|생략}}`
+(default는 정확히 1개 — 0·2개는 `TargetsConfigError`), tenant target `host: <hosts 키>`(생략 = default), infra
+target(`storage`·`dagster`·`cadv`) `host: all`; `hosts`에 없는 `host:` 값은 unknown host로 거부; 운영 모드의 `KTDM_HOST` 값은
+`hosts` 키여야 하고 `all` target의 `include`는 그 값으로 필터된다. 컨테이너의 host 집합은 그것을 service로 갖는 target들의
+host 합집합이다(위 `containers:`에는 host 필드가 없다). 로더 검증·명령 규칙·`KTDM_HOST`의 정의는
+[`docker-management.md`](docker-management.md) §3.2, 배치표는 §10.
+
 `ktdctl targets validate --check-coordinates`가 선언과 실재를 대조한다. 기본값이
 아닌 이유는 형제 저장소가 **배포 호스트에만** 있기 때문이다. 무조건 돌리면 개발
 체크아웃과 CI에서 스키마가 완벽해도 실패한다.
@@ -100,6 +117,14 @@ concierge `:12600`·PinVi `:12800`)를 Manager compose에서 뺐다 — 그날 n
 서비스의 DSN이 `:11000`(Map만 `:12700`)을 가리켰고, 남아 있던 옛 인스턴스는 접속 0인
 `pinvi-postgres` 하나였다. 옛 데이터 디렉터리는 호스트에 그대로 둔다. Map의 두 DB도
 ADR-53으로 공용 인스턴스로 옮겨, 이제 Manager의 PostgreSQL은 공용 하나다.
+
+**계획(ADR-58 proposed, 미구현) — "공용 하나"는 호스트당 하나가 된다.** odroid에도 같은 서비스명·컨테이너명·포트·bind의
+`kor-travel-shared-postgres`(`11000`, `listen_addresses=127.0.0.1`)가 뜨고 `kor_travel_geo`·`kor_travel_weather`·`kor_travel_transport`·
+`dagster_shared`를 담는다(`kor_travel_transport_dagster`는 만들지 않는다). n150 instance의 그 세 DB(+`kor_travel_transport_dagster`)는
+전환 확인 뒤 drop한다(데이터 이관 없음 — 소스에서 재적재). PG는 registry에서 `dagster` target의 service이므로 odroid에서는
+`ensure dagster`가 올린다. 이미지는 arm64 `imresamu/postgis:16-3.5`(env 파생, 기본값은 현재 문자열), 튜닝은 env 파생(기본값 =
+아래 n150 값; `max_connections`는 compose에 없어 서버 기본 100 그대로 — 추가하지 않는다; connlimit은 `dagster_shared` 45 리터럴만이고
+앱 role은 db-init이 limit을 두지 않는다). 절차는 [`shared-postgres-onboarding.md`](shared-postgres-onboarding.md) §11.
 
 | 인스턴스 | 포트 | 소유 | 담긴 DB |
 |---|---:|---|---|
@@ -161,6 +186,13 @@ internal target이 되며 `network_mode: host`로도 옮겨왔다 — 지금은 
 이 배치의 결과가 §7 전환의 전제다: **공유 webserver/daemon으로 가려면 모든 프로젝트가
 먼저 code-server를 분리해야 한다.** Dagster를 쓰는 다섯 프로젝트가 모두 그 1단계를
 밟았다. 다음 차단 요인은 §7의 "공유의 전제 둘"(같은 인스턴스 스토리지, dagster 버전 호환)이다.
+
+**계획(ADR-58 proposed, 미구현) — plane은 호스트당 하나.** odroid에 같은 compose `dagster` target(daemon·webserver
+`127.0.0.1:11002`·gateway `11001`·odroid PG의 `dagster_shared`)이 **두 번째 plane**으로 뜬다. 두 plane 사이 통신은 없고 workspace는
+호스트별 파생물 `config/dagster-shared/workspace.{n150,odroid}.yaml`(합집합 = 오늘의 6 location, 교집합 ∅)이다 — target의 `host:`를
+바꾸는 PR이 곧 그 location의 "합류"다(bindings.md B-5). (b) "n150 plane에 odroid code-server를 원격 등록"은 gRPC 무인증 LAN 노출·
+PG LAN 개방·run 로그 불가시(compute log가 webserver 로컬 파일)로 기각했다. 공개 host는 plane마다 하나(`dagster.` = n150; odroid plane
+host는 소유자 결정 §14-4).
 
 ---
 
@@ -584,6 +616,14 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
   4단계는 그 관측 뒤다(옛 "전환 사이 하루"·"4단계 전 7일"은 폐기). 옛 메타DB `DROP` 전 30일은 그대로다
   (dump는 백업 보존 기간대로).
 
+**호스트 플립 PR(계획 — ADR-58 proposed, 미구현).** 한 target을 다른 호스트로 옮기는 변경은 PR 하나로 닫힌다: registry `host:` +
+파생물 4종(`workspace.n150.yaml`에서 빠짐·`workspace.odroid.yaml`에 들어감, compose consumer env 기본값(R2), `config/prometheus/prometheus.yml`
+타깃) 갱신. `dagster.yaml`은 건드리지 않는다(location 상한은 T-MGR-02에서 1회 조정). 적용 순서와 비용: n150 재설치 → n150의 그
+code-server `stop`(이중 수집 금지) → n150 `ensure dagster`(workspace digest 기본값이 바뀌어 daemon·webserver 재생성, tick 공백 ≈2 min;
+코드서버는 재생성되지 않는다) → odroid에 같은 sha 재설치 → odroid root `.env` `KTDM_DAGSTER_WORKSPACE_DIGEST` 갱신 → `ktdctl targets
+validate` → odroid `ensure <target>`. consumer 전환(Map/PinVi 코드서버·API 재생성)은 `.env` 편집이 아니라 n150 `ensure map`/`ensure pinvi`다
+(기본값이 바뀐 커밋 파생물). 전체 절차는 [`prod-deployment.md`](prod-deployment.md) §9.
+
 ---
 
 ## 8. 새 프로젝트가 합류하는 절차
@@ -603,6 +643,9 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
 6. 자격증명이 필요하면 §6의 세 규약을 지킨다.
 7. 두 곳에 같은 사실을 적게 됐다면 [`bindings.md`](bindings.md)에 결박을 등록하거나,
    등록할 수 없으면 그 이유를 남긴다.
+8. (계획 — ADR-58 proposed, 미구현) **호스트를 고른다.** tenant target은 `host:` 하나, 생략하면 default(n150). 포트는 호스트가
+   달라도 바꾸지 않는다([`ports.md`](ports.md) "호스트 규칙"). 다른 호스트에 두면 그 호스트의 Manager root `.env`에 비밀·`KTDM_PROD_URL_*`을
+   넣고, 그 target을 부르는 내부 consumer의 compose 기본값(R2)을 커밋 파생물로 갱신한다.
 
 ---
 
@@ -623,3 +666,56 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
 | 배포 절차 | [`prod-deployment.md`](prod-deployment.md) · [`docker-management.md`](docker-management.md) |
 | 설치된 Manager revision | 호스트 `/opt/kor-travel-docker-manager/.ktdm-source-revision` |
 | 운영 값(키·DSN·핀) | 호스트 `.env` (root 0600) — 저장소에 두지 않는다 |
+| 호스트 주소·target의 호스트 (계획, ADR-58) | `config/docker-targets.yml` `hosts:`·`targets.<id>.host` — 주소의 유일한 자리 |
+| 내부 consumer가 부르는 형제 서비스의 origin (계획, ADR-58) | Manager `docker-compose.yml`에서 형제 포트(`12501`/`14001`/`14101`)를 기본값에 가진 env **전부**(오늘 7곳 — geo 4·transport 1·weather 1 + pinvi-api 신설; 커밋된 파생물 — registry에서 계산해 테스트가 렌더를 스캔해 대조, bindings.md B-6). root `.env` 재정의는 `targets validate`가 거부 |
+| 호스트별 운영 값(`KTDM_HOST`·workspace digest·PG 튜닝·이미지·`KTDM_PROD_URL_*`) (계획, ADR-58) | **그 호스트의** `.env` — 호스트마다 값 집합이 다르다 |
+
+---
+
+## 10. 두 번째 호스트 odroid — 배치표와 envelope 실측 (계획 — ADR-58 proposed, 미구현)
+
+이 절은 **현황이 아니다**. 2026-10-13 현재 모든 target은 n150에 있다. 아래는 ADR-58이 정한 목표 배치와, 그날 odroid에서 읽기
+전용으로 잰 값(소유자 처리 결과 포함)이다. 결정의 근거·대안은 ADR-58, 절차는 [`prod-deployment.md`](prod-deployment.md) §9.
+
+### 10.1 목표 배치 — 포트·이름은 n150과 같고 호스트만 `.14 → .13`
+
+| 호스트 | target(종류) | 서비스(포트 — n150과 동일) | 비고 |
+|---|---|---|---|
+| **odroid `192.168.1.13`** | `geo`(tenant, `host: odroid`) | api `12501`, ui `12505`, code-server gRPC `127.0.0.1:12503`, db-init | geo 플립 PR(T-MGR-06, 마지막) |
+| | `weather`(tenant) | api `14101`, web `12205`(ADR-57), code-server gRPC `127.0.0.1:14106` · code-server metrics `14103`(compose `:2866`), weather Prometheus `14104`(관측 1단계 유지), `legacy-dagster` 서비스는 기동 안 함 | |
+| | `transport`(tenant, 외부 project) | backend `14001`, frontend `14002`, code-server `127.0.0.1:14005`; `transport-admin` `12305`/`12301` | app dir `/home/digitie/apps/kor-travel-transport` 동일 |
+| | `dagster`(infra, `host: all`) | **odroid PG** `kor-travel-shared-postgres` `11000` loopback(`kor_travel_geo`·`kor_travel_weather`·`kor_travel_transport`·`dagster_shared`), gateway `11001`, webserver `127.0.0.1:11002`, daemon, storage-migrate | 두 번째 plane; PG는 이 target의 service |
+| | `storage`(infra, `host: all`) | RustFS `12101`/`12105`(bind는 compose상 `0.0.0.0` — 경계는 호스트 방화벽) | `rustfs-init`은 버킷 6개를 registry와 무관하게 다 만든다 — 양쪽에 생기고 사용만 분리 |
+| | `cadv`(infra, `host: all`) | cAdvisor `12103`, node_exporter(새 포트 — `ports.md` 절차, 후보 `12106`) | |
+| | Manager | backend `12901`(systemd, `0.0.0.0`); dashboard `12905`는 **§14-29 조건부**(추천 (가) backend만 — frontend 설치 없음; (나)면 `12901` 허용 소스와 공개 host 2개가 따라온다) | `KTDM_HOST=odroid` |
+| | **보존(우리 범위 밖, 실측)** | Plex `32400`/`32469`(Docker, volume `media` = `/mnt/media`), Samba `139`/`445`, webvnc-router `2121`/`6080`, `8080`, `1994`; UDP 137/138·1900/1901·32410-32414 외 | Track 2가 만지지 않는다; 포트 충돌 0(`ports.md`) |
+| | **폐기(실측으로 한정)** | parking-radar `3000`/`8000`/`18000`, Portainer `9443` | Plex 정의 보관·Portainer 볼륨 유지·`prune` 금지(§14-2) |
+| **n150 `192.168.1.14`** | `map`·`pinvi`·`conc`(tenant, default host), `dagster`·`storage`·`cadv`(infra, all), `prom`·`gra`(n150만) | 공용 plane, 공용 PG `11000`(세 DB drop 뒤 9 DB), rustfs, Prometheus `12102`, Grafana `12104`, cAdvisor `12103`, node_exporter, Manager `12901` | geo/weather/transport 스택 제거, compose `map-api → geo-api` 간선 삭제(R7), Prometheus 타깃 추가 |
+
+규칙: **`host = hosts[<target.host>].addr`; 포트·경로·서비스명·컨테이너명·project명·app dir 불변; 같은 호스트 안 참조는 `127.0.0.1`.**
+두 호스트가 `11000`·`11001`·`12101`·`12901`을 각각 가져도 충돌이 없다 — 포트 정책은 호스트 로컬이다.
+
+### 10.2 odroid envelope 실측(2026-10-13; 비root 읽기 전용 프로브 + 소유자 처리 결과) — 미검증은 그대로 표시
+
+| 항목 | 실측 | 상태 |
+|---|---|---|
+| CPU/arch | aarch64, Cortex-A55 ×4, max 1.8 GHz | 실측 — arm64 이미지 필수; 코어당 성능 배율(N150의 1/3~1/4)은 **가정**(sysbench 미측정) |
+| RAM / swap | 7,676 MiB(used 1.7 G, 그중 parking-radar uvicorn 1.43 GiB) / **swap 0** | 실측 — swapfile 4 GB(`/mnt/media/kor-travel/swapfile`) **신설 미완** |
+| OS / 커널 / systemd | noble(24.04.4) userland + **PID1 systemd 245(focal 빌드)** + kernel 5.10.198; `is-system-running`=degraded(polkit·rsyslog failed) | 실측 — 245 핀 유지 vs noble 정합은 §14-27 |
+| 디스크 | eMMC 58 GB = `/` + `/var/lib/docker`(23 G 사용, 33 G free); NVMe 938 GB ext4 통째 `/mnt/media`(Plex 336 G, 555 G free), 슬롯 링크 PCIe 2.0 ×1(순차 ≈SATA급); `daemon.json` 없음 | 실측 — fio IOPS/지연·`nvme smart-log` **미측정**; B안(data-root eMMC 유지 + PG·데이터 bind만 NVMe fstab bind) 추천, **fstab bind 미완** |
+| cgroup | v1(hybrid), memory 컨트롤러 on, **`memory.memsw.*` 존재(swap accounting on)** | 실측 — limit **효과** 검사(64m+swap64m OOM ∧ 64m 단독 통과 ∧ 256m 통과)는 swapfile 뒤 **미완** |
+| Docker / compose | Docker 29.1.3(docker.io, containerd 2.2.1); **`docker compose` v2 플러그인·buildx 없음**(python docker-compose 1.29.2만) | 실측 — 설치 **미완**(§14-26: Ubuntu `docker-compose-v2` 2.40.3 + `docker-buildx` 0.30.1 추천); n150은 Compose 5.2.0이라 이질 major |
+| 시계 | **2026-10-13 03:38Z 동기 완료**(소유자: `timedatectl set-ntp true` + timesyncd 재시작, RTC 갱신). 단 timesyncd는 이번 부팅에서 start job이 없었다(보존 unit `webvnc-router-timesyncd-config.service`와의 ordering cycle — 가정 강함) | **영속화 미완** — 재부팅 뒤 재발 가능; drop-in으로 사이클 해소 → 재부팅 2회 PASS 뒤에만 docker/ktdm `After=time-sync.target`(§14-25) |
+| 접근 / 권한 | WSL에서 `ssh digitie@192.168.1.13` **직접 키 로그인 가능**(종전 "No route"는 WSL Docker 잔재 네트워크가 가린 것 — 제거됨); `/etc/sudoers.d/digitie` NOPASSWD:ALL 설치, `sudo -n` 동작; `digitie` docker 그룹 추가 | **완료**(2026-10-13 03:4xZ) — 비밀번호 SSH off는 **미완**(전제, §14-5) |
+| IP | DHCP(`dynamic`, NM 프로필 `webvnc-router-ethernet` 소유 = 보존 서비스 `webvnc-router-network.service`) | 실측 — OPNsense 예약 유무 미확인(§14-20, 예약 추천) |
+| 호스트 방화벽 | 없음(ufw 미설치, nftables disabled 기본 stub, netfilter-persistent·firewalld inactive; Docker iptables 규칙만) | 실측 — nftables 도입 **미완**(정책 (가): 우리 포트만 제한, 그 외 accept, `flush ruleset` 금지) |
+| 상주 서비스 | Plex·Samba(`[homes]` 쓰기 가능 공유)·webvnc-router·8080·1994 + legacy parking-radar·Portainer; 보존 서비스 유휴 RSS ≈0.3 GiB | 실측 — 8080/1994·UDP 6개 소유 프로세스는 root 재확인; `/home/digitie`에 Plex·Portainer compose 없음(정의는 Portainer 볼륨 안 개연성) |
+
+남은 미검증(root 뒤): fio·sysbench·`nvme smart-log`, `docker volume inspect media`(bind 타입 확정), ordering cycle 확정(`journalctl -b`),
+RTC 전지(`hwclock -r`, 콜드 부팅 뒤), usershare 범위, `webvncrouter.network_setup`이 `ipv4.method`를 덮는지, Portainer stack 소유,
+`/var/lib/docker` 크기, nftables 지속·Docker iptables-nft 공존(변경 뒤).
+
+### 10.3 Track 1과의 관계
+
+geo 플립 뒤 Map·concierge Dagster 센서(Track 1 — geo ADR-069·Map ADR-109·concierge ADR-49)는 LAN 너머의 geo를 ≤5분마다 폴링하고,
+odroid 빈 호스트 full load가 낸 새 `data_token`에 전량 재지오코딩으로 반응한다 — 수용하되 geo 야간 job 창 밖에서(ADR-58 "관계").

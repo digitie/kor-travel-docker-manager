@@ -45,7 +45,7 @@
 | `map` | `12700-12799` | API `12701`, Dagster `12702`, Web UI `12705`(`12700`은 퇴역한 전용 PostgreSQL의 자리, ADR-53) | `kor-travel-map` |
 | `pinvi` | `12800-12899` | API `12801`, Dagster webserver `12802`, Dagster code-server(gRPC, PinVi ADR-069) `12803`, Web UI `12805` (DB는 공용 `11000`) | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
-| `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Prometheus `14104`, **Web `12205`**(대역 예외 — 아래 참고, ADR-57) | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
+| `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Dagster code-server metrics `14103`(`prometheus_client`, `docker-compose.yml:2866` — 2026-10-13 이 표에 등록, 포트 자체는 종전부터 듣고 있었다), Prometheus `14104`, **Web `12205`**(대역 예외 — 아래 참고, ADR-57) | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
 | 공용 Dagster(`dagster`) | 대역 밖 | gateway `11001`(`kor-travel-dagster-gateway`, nginx Basic Auth, `0.0.0.0` — 공개 host `dagster.digitie.mywire.org`, `/health`만 무인증), webserver `127.0.0.1:11002`(`kor-travel-dagster-webserver`, loopback 전용), daemon 포트 없음(`kor-travel-dagster-daemon`). storage one-shot 둘(`kor-travel-shared-db-init-dagster`, `kor-travel-dagster-storage-migrate`, DB는 공용 `11000`의 `dagster_shared`) | Manager (platform-topology.md §7, ADR-54) |
 | `transport` | `14001-14099` | Backend `14001`, Frontend `14002`, Dagster code-server(gRPC) `14005`(loopback, 공용 Dagster plane의 location `kor-travel-transport`, ADR-54 개정). 옛 전용 Dagster 게이트웨이 `14003`·webserver `14004`는 그 저장소의 `legacy-dagster` profile이라 평소 듣지 않는다 (DB는 공용 `11000`의 `kor_travel_transport`) | `kor-travel-transport` (외부 프로젝트) |
 
@@ -171,9 +171,69 @@ cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실�
 디렉터리는 호스트에 그대로 둔다. weather는 Manager가 관리하는 전용 instance를 가진 적이
 없고, 옛 transport(당시 이름 airport) 전용 DB(`:14000`)도 이미 사라졌다.
 
+## 호스트 규칙 (계획 — ADR-58 proposed, 미구현)
+
+2026-10-13 현재 모든 서비스는 n150(`192.168.1.14`) 한 호스트에 있다. ADR-58은 geo·weather·transport와
+그들의 PostgreSQL·Dagster plane을 odroid(`192.168.1.13`)로 옮기되 **이 문서의 포트는 하나도 바꾸지
+않는다**는 것을 결정했다. 호스트가 둘이 되면 아래 규칙이 더해진다.
+
+- **포트 정책은 호스트 로컬이다.** 두 호스트가 `11000`(PG)·`11001`/`11002`(plane)·`12101`/`12105`
+  (RustFS)·`12103`(cAdvisor)·`12901`/`12905`(Manager)를 **각각** 가진다. 충돌이 아니다 — 같은 역할의
+  인스턴스가 호스트마다 하나다.
+- **`host = hosts[<target.host>].addr`, 같은 호스트 안 참조는 `127.0.0.1`.** 주소의 정본은
+  registry의 `hosts:` 절(계획)이다 — 이 문서에 적힌 `.13`/`.14`는 그 파생값의 **예시**이지 정본이 아니다.
+  n150의 Map/PinVi가 odroid의 geo/transport/weather를 부를 때만 `http://<hosts[odroid].addr>:{12501,14001,14101}`
+  (오늘 값 `192.168.1.13`)이며, 그 값은 Manager compose env 기본값(커밋된 파생물, `bindings.md` B-6)에서 나온다.
+- **호스트가 바뀌어도 포트는 바꾸지 않는다.** 포트 재배정이 필요해 보이면 그것은 호스트 규칙이 아니라
+  이 문서의 대역 규칙 문제다.
+- **바인드 주소도 바꾸지 않는다.** RustFS `0.0.0.0`, exporter `0.0.0.0`, Manager `0.0.0.0`, loopback
+  전용(`11000`·`11002`·code-server gRPC)은 그대로다. host network라 포트는 방화벽 경계가 아니므로(ADR-48)
+  경계는 인증·CIDR·**odroid 호스트 방화벽**이다.
+
+### odroid 점유 포트 × 우리 포트 집합 — 충돌 0 (2026-10-13 실측, TCP+UDP)
+
+우리 집합은 전부 `11000-14106` 대역의 **TCP**다(11000/11001/11002, 12101/12105, 12103, 12205, 12301/12305,
+12501/12503/12505, 12901/12905, 14001/14002/14005, 14101/14103/14104/14106 + node_exporter 신설). odroid가
+오늘 듣는 것: TCP 22·139·445·1994·2121·3000·6080·8000·8080·9443·18000·32400·32469, UDP 137/138·1900/1901·
+32410/32412-32414·(소유 미상 6개: 9662·12129·14367·48244·59870·60025), loopback 32401/32600/33083/37063·
+127.0.0.53:53. **TCP 점유 포트 중 우리 대역 안은 없고**, UDP 12129·14367은 숫자가 대역 안이지만 프로토콜이
+달라 충돌이 아니다. 따라서 "포트 동일" 규칙은 odroid에서 그대로 성립한다. 폐기 대상(parking-radar
+3000/8000/18000, Portainer 9443)을 빼도 같다.
+
+### node_exporter (계획)
+
+호스트 swap·메모리·디스크 여유·시계 동기 상태가 ADR-58의 핵심 위험이라 n150·odroid 양쪽에 node_exporter를
+둔다(지금은 없다). 포트는 이 문서의 절차로 배정한다 — 후보 **`12106`**(`storage` 대역 안, ADR-48의 세
+관측 포트 `12102`~`12104` 옆; `12205`는 weather Web이라 피한다). 확정은 T-MGR-04.
+
+### plane별 공개 host (계획)
+
+| plane | gateway | 공개 host |
+|---|---|---|
+| n150 공용 plane | `192.168.1.14:11001` | `dagster.digitie.mywire.org`(불변) |
+| odroid plane | `192.168.1.13:11001` | 소유자 결정 §14-4 — `weather-dagster.`/`geo-dagster.` 재사용(지금은 ADR-54 redirect) 또는 새 이름. `KTDM_PROD_URL_DAGSTER`는 호스트마다 **다른 값** |
+
+HAProxy backend 전환표(geo/weather/transport/pr → `.13`)는 `prod-deployment.md` §9.4.
+
+### odroid 호스트 방화벽 집합 (계획 — 정책 (가): 우리 포트만 제한, 그 외는 accept)
+
+| 집합 | 포트 | 허용 소스 |
+|---|---|---|
+| consumer/공개 API | `12501`, `14101`, `14001` | n150 addr + HAProxy(OPNsense) LAN addr(§14-6) — 그 외 LAN drop |
+| HAProxy 웹 backend | `12505`, `12205`, `14002`, `12301`, `12305`, `11001` | HAProxy addr만 |
+| exporter | `12103`, node_exporter, `14103`, `14104`, `12901` | n150 addr만 |
+| 관리 | `22`(키만), `12905`(§14-29 — (가) backend만이면 odroid에 리스너 없음, **추천**) | 22: LAN(키만은 sshd 설정); 12905: (나)일 때만 n150 addr + 운영자 PC addr(§14-5) — 그때는 `12901`도 같은 소스에 열어야 대시보드가 자기 API에 닿는다 |
+| 로컬 전용 | `11000`, `11002`, `12503`/`14106`/`14005`, `12101`/`12105` | LAN 유입 drop(bind는 서비스별로 다름 — 바꾸지 않는다) |
+| 보존 서비스(Plex·Samba·webvnc 등 TCP+UDP) | 열거하지 않음 | **정책 accept(변경 0)** — 기본 DROP + 허용 열거(나)는 누락이 곧 Plex 검색·NetBIOS 단절이라 소유자가 원할 때만(§14-28) |
+
+두 안 공통: `flush ruleset` 금지(`table inet ktm`만 flush — 기본 `/etc/nftables.conf`의 `flush ruleset`은 Docker nat/filter를
+지워 bridge 컨테이너(Plex 등)의 포트 공개를 죽인다), `nftables.service` enable 시 docker.service보다 먼저인지 확인, 재부팅
+전후 `nc` 매트릭스 + `iptables -t nat -S DOCKER` 존재 단언. n150 방화벽에 새 inbound는 없다.
+
 ## 변경 절차
 
 새 서비스를 추가할 때는 먼저 `config/docker-targets.yml`의 `dependency_order`, target,
 container metadata와 `docker-compose.yml`의 실제 listen 포트를 함께 갱신한다. 이후 API·CLI
 registry 테스트와 이 문서를 같은 변경으로 갱신한다. 기존 서비스의 포트는 관련 프로젝트가
-공유하므로 임의로 바꾸지 않는다.
+공유하므로 임의로 바꾸지 않는다. 서비스를 다른 호스트로 옮길 때도 포트는 바꾸지 않는다
+(위 "호스트 규칙") — 바뀌는 것은 registry의 `host:`와 그것에서 파생되는 consumer origin뿐이다.

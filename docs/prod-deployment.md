@@ -35,6 +35,13 @@ rsync 대상에 포함하지 않는다. 비밀 설정은 운영 호스트에서 
   별도로 안전하게 준비한다. `--delete`와 저장소 루트 전체 동기화는 사용하지 않는다. 신규
   설치는 아래 trusted installer를 우선하고, 이 rsync 절차는 기존 rsync 배포본을 갱신할 때만 쓴다.
 
+**두 번째 호스트 odroid(계획 — ADR-58 proposed, 미구현).** odroid(`192.168.1.13`, aarch64)에도 같은 절차로 root clone + trusted
+installer를 쓴다. 다른 점은 셋이다: (1) wheelhouse는 n150 사본을 옮기지 않고 **odroid 현지에서 root 소유로 발행**한다(amd64 wheel은
+쓸 수 없다, §3.1); (2) 앱 이미지는 **odroid 현지 빌드**다(n150에 binfmt가 없어 교차 빌드하지 않고, 레지스트리도 두지 않는다 —
+같은 tag가 호스트마다 다른 arch 내용을 갖는다); (3) 설치 **전제**로 `docker compose` v2 플러그인과 buildx가 있어야 한다 —
+2026-10-13 실측 odroid에는 둘 다 없다(python docker-compose 1.29.2만; Manager는 `docker compose` subprocess를 전제한다). 전체 초기화
+순서와 플립 절차는 §9.
+
 ### 2.1 runtime pin registry는 배포 트리 밖에 둔다 (설치 전 필수 준비)
 
 Map·PinVi pinned revision은 소스코드 상수가 아니라 root 소유 JSON registry 파일에
@@ -646,6 +653,13 @@ KTDM_FRONTEND_NPM=<npm 절대 경로, 생략 시 /usr/local/bin/npm>
 이 라우팅이 없으면 대시보드(prod 빌드)가 API(`manager-api.*`)에 닿지 못한다. 라우팅 설정은 라우터/프록시
 인프라 영역이며 이 저장소 범위 밖이다.
 
+**odroid 전환 뒤의 backend(계획 — ADR-58 proposed, 미구현).** 포트는 그대로이고 host만 `.14 → .13`으로 바뀐다. 전환표는
+§9.4 — §9.2 전체 순서의 consumer 전환 단계(transport 5 → weather 7 → geo 9)마다 그 서비스의 n150 컨테이너가 **stop인 상태에서**
+§9.2 target당 절차 ④의 **내부 consumer run 게이트**(Map geocode/transport export/PinVi ETL 1 run — 이 호출은 HAProxy를 거치지 않는다)를
+통과한 뒤 backend를 `.13`으로 바꾸고, 바꾼 **뒤에** 공개 host 200을 확인한다(§9.5 — backend가 아직 `.14`인 동안 n150 컨테이너를 stop하면
+공개 host는 503이라 "stop 상태에서 공개 200"은 성립하지 않는다). 위 표의 `manager.*`/`manager-api.*`는 n150 Manager 것이며 odroid
+Manager용 공개 host는 §14-29 결정((가) backend만이면 없음) 전까지 두지 않는다.
+
 ### 5.1 신뢰 프록시 설정 (필수 — 로그인 rate limit 정상 동작)
 
 엣지 프록시(HAProxy 등) 뒤에서 백엔드는 모든 공개 트래픽을 프록시의 소켓 IP 하나로 본다.
@@ -869,3 +883,195 @@ ADR-51 D-3부터는 `<state_root>/map-application-300-artifacts/`(pinset별 Dags
 않는다. 지우는 것은 역시 **선택**이며, D-3 설치 검증(재구축·M05)이 끝나고 D-3 이전 Manager와 M1 이전
 Map pinset의 조합으로 되돌릴 일이 없다고 판단한 뒤에만 한다 — 그 조합의 storage one-shot은 pinset별
 `permit.json`을 읽는데, Manager는 그것을 다시 발급하지 않는다.
+
+## 9. 두 번째 호스트 odroid (계획 — ADR-58 proposed, 미구현)
+
+이 절은 ADR-58의 운영 절차다. **아직 아무것도 적용되지 않았다**(2026-10-13: 모든 target이 n150, Manager 코드에 호스트 차원 없음).
+**§9.1-0~7은 지금 가능하다**(호스트 준비 — Manager 코드와 무관). **§9.1-8 이후와 §9.2 이후는 T-MGR-01a~05 머지·n150 설치 뒤에만**
+밟는다 — §9.1-9의 `KTDM_HOST`·`KTDM_DAGSTER_WORKSPACE_DIGEST`(`workspace.odroid.yaml`은 T-MGR-02가 만든다)·`KTDM_DATA_SOURCE_DEVICE`
+(T-MGR-05)·`targets validate`의 host 효과(T-MGR-01a)는 그 코드가 있어야 뜻이 있고, head의 Manager를 odroid에 설치하면 `.env`의
+`KTDM_HOST`가 무시된 채 validate가 통과하는 거짓 안심이 된다. 호스트 규칙(포트 동일·호스트만 `.13`)은 `ports.md`, 배치표·실측은
+`platform-topology.md` §10. 각 단계는 ssh timeout 밖(tmux/nohup)에서 돌린다. n150 변경 전에는 n150 `~/preflight.sh` PASS가 선행한다.
+
+### 9.1 odroid 초기화 — 상태(2026-10-13)와 남은 순서
+
+**완료(소유자, 2026-10-13 03:4xZ)**: WSL에서 `ssh digitie@192.168.1.13` 직접 키 로그인(종전 "No route"는 WSL Docker 잔재 네트워크가
+`.13`을 가린 것 — 제거됨); `/etc/sudoers.d/digitie` NOPASSWD:ALL(`sudo -n` 동작); `digitie` docker 그룹 추가; `timedatectl set-ntp true`
++ timesyncd 재시작으로 시계 동기(2026-10-13 03:38Z, RTC 갱신; 상주 서비스 유지). 비root 선행 실측(arch·RAM·디스크·cgroup·Docker·
+시계·상주 서비스·포트·DHCP·방화벽 부재)도 끝났다.
+
+**미완 — 순서대로**(효과 검사는 §9.5; 전부 root):
+
+0. **n150에서 먼저(odroid 불필요)**: geo cs `db_backup`·`mv_refresh` 중 `memory.stat anon` 최대값 + PG cgroup anon, weather hot set
+   (`pg_buffercache`), weather 매시 run 소요 p95(location 상한 2 vs 1), transport run 소요, geo `mv_refresh` 소요 → geo 플립 조건·
+   `dagster.yaml` 상한의 근거.
+1. **NTP 영속화(모든 설치 단계에 선행 — 시계가 틀리면 apt·pip·`docker pull`·TLS가 전부 실패한다)**: timesyncd는 enabled이지만
+   이번 부팅에서 start job이 없었다(`ConditionTimestamp` 빈 값 — 보존 unit `webvnc-router-timesyncd-config.service`와의 ordering cycle,
+   가정 강함). ⓪ `journalctl -b | grep -iE 'ordering cycle|timesyncd'`로 확정 → ① 보존 unit을 고치지 않고 drop-in 하나
+   (`/etc/systemd/system/webvnc-router-timesyncd-config.service.d/override.conf`: `[Unit]` `DefaultDependencies=no`
+   `After=local-fs.target` `Before=systemd-timesyncd.service`) + `daemon-reload`(NTP 서버 `pool.ntp.org`는 그 패키지 소유 — 바꾸지
+   않는다) → ② `hwclock --systohc` → ③ **재부팅 2회 재검증**(매번 `ConditionTimestamp` 채워짐 ∧ `synchronized: yes` ∧
+   `/var/lib/systemd/timesync/clock` mtime 갱신 ∧ 오차 < 1 s; 전지 판정은 `hwclock -r`로만 — `date`는 epoch 때문에 2017이 안 나온다).
+   ⓪~③ 실패가 중단선(§14-16). 선택지는 §14-25. **④ `After=time-sync.target` drop-in은 여기서 넣지 않는다** — Manager 설치 뒤
+   **11**에서(`ktdm-backend.service`가 그때 생기고, docker drop-in은 사이클 미해소 상태에서 넣으면 콜드 부팅마다 Docker(**Plex 포함**)·
+   Manager 영구 미기동이라 재부팅 2회 PASS가 선행해야 한다).
+2. **잔여 envelope(root)**: `nvme smart-log`, `fio randread/randwrite 4k QD32`·`seq 1M`을 NVMe 위에서(`/mnt/media/kor-travel/`
+   트리는 4에서 만든다 — 4를 먼저 하거나 `/mnt/media` 아래 임시 디렉터리에서 재고 지운다) Plex 유휴·재생 중 2회, `sysbench cpu`, `ss -ltnp`/`ss -lunp`(8080/1994·UDP 6개 소유), `docker volume inspect media`, `du -sh /var/lib/docker`,
+   `findmnt -no SOURCE /mnt/media`(9의 `KTDM_DATA_SOURCE_DEVICE` 값 — 파티션 유무는 미실측), `nmcli … con show webvnc-router-ethernet` +
+   `webvncrouter.network_setup`이 `ipv4.method`를 덮는지, `testparm -s`·`net usershare info --long`(우리 경로가 어떤 SMB 공유 아래에도
+   없음), `docker info`. 결과는 `platform-topology.md` §10.2 갱신.
+3. **SSH 마무리 — 시계와 무관하니 0 다음 바로 해도 되고, 그쪽을 권한다**(NOPASSWD:ALL이 이미 설치돼 LAN에서 비밀번호 로그인이
+   곧 무비밀번호 root인 창이 열려 있다 — ADR-58 "닫힌 것"의 반쪽 상태): Windows `ssh.exe`·n150 공개키 추가 등록 →
+   `PasswordAuthentication no` + `sshd -t` + 새 세션으로 키 로그인 확인 **뒤** 기존 세션 종료(§14-5 전제). docker 그룹은 이미 추가돼
+   있다(Manager는 root systemd로 돈다 — 사람의 `docker ps`도 된다).
+4. **디스크(B안, §14-22)**: NVMe에 트리 `/mnt/media/kor-travel/{shared-data/pgdata, geo-data/{rustfs,source}, weather-data/prometheus,
+   preserved, swapfile}`(root:root 0755) → n150과 같은 경로 `/home/digitie/kor-travel-{shared,geo,weather}-data`를 **fstab bind 마운트**
+   (`none bind,x-systemd.requires=/mnt/media`; symlink는 대안 — `/home/digitie`가 Samba `[homes]` 공유라 symlink는 지워질 수 있다)
+   → `daemon.json`(없음 → 신규)에 로그 회전 `max-size 20m`·`max-file 3`(eMMC 수명) → **swapfile 4 GB**(`dd`, 0600, `mkswap`, fstab,
+   `vm.swappiness=10`). 게이트: `df /var/lib/docker` free ≥ 18 G(실측 33 G PASS), `/mnt/media` free ≥ 330 G(실측 555 G PASS; 우리
+   트리 ≈150~230 G 추정 + 여유). A안(data-root를 NVMe로 이전)은 Plex·webvnc 중단과 `media` volume 모양 확인이 선행 — 대안.
+5. **compose v2·buildx 설치 + cgroup/memswap 효과(swap 켠 뒤)**: §14-26에 따라 Ubuntu `docker-compose-v2`(2.40.3) + `docker-buildx`
+   (0.30.1)(추천 — 엔진 교체 없음, Plex 무접촉) 또는 docker.com `docker-compose-plugin` 5.x. 효과: `docker compose version` v2 이상 ∧
+   **Manager compose가 `docker compose config`로 렌더됨** ∧ `docker buildx version`; major를 기록하고 n150(5.2.0)과 다르면 Manager
+   렌더 테스트를 두 major로 돌린다. `docker info`에 `No memory limit support`·`No swap limit support` **문자열 부재**(WARNING 개수가
+   아니다 — cgroup v1 deprecation WARNING은 거짓 빨강). cgroup 효과(양방향): `docker run --rm --memory 64m --memory-swap 64m
+   python:3.12-slim python -c "b=bytearray(128*2**20)"` → exit 137 ∧ `OOMKilled`; `--memory 64m` 단독 → **통과**(swap 사용 — memswap
+   정책이 필요한 이유); `--memory 256m --memory-swap 256m` → exit 0; limit 파일은 v1 `memory.limit_in_bytes`(v2면 `memory.max`) 양쪽
+   수용. 실패 = 중단선.
+6. **폐기(parking-radar·Portainer만)**: ① 전 컨테이너 `docker inspect`(특히 Plex)·`docker volume inspect media`를
+   `/mnt/media/kor-travel/preserved/`에 저장 ② Portainer stack export(같은 곳 — `/home/digitie`에 Plex·Portainer compose가 없어 Plex
+   정의는 Portainer 볼륨 안일 개연성) ③ 저장한 inspect로 Plex 재생성 dry-run ④ 그 뒤에만 Portainer 컨테이너 stop·rm(**볼륨 유지,
+   `volume prune` 금지**) ⑤ parking-radar만 `compose down` + 그 이미지만 `rmi`(`image prune -a` 금지 — Plex 이미지) ⑥ HAProxy `pr2`
+   제거. Plex·Samba·webvnc-router·8080·1994·UDP 리스너는 건드리지 않는다.
+7. **방화벽(추천 (가) — §14-28 소유자 결정; (나)면 보존 서비스 TCP+UDP 허용 행 필수, `ports.md`)**: root `nft list ruleset`·`iptables-save` 기록 → `table inet ktm`만 적용(`flush ruleset` 금지) →
+   `nftables.service` enable(docker.service보다 먼저) → n150·제3 LAN 호스트에서 `nc -z` 매트릭스(열림·닫힘 둘 다) + 보존 효과
+   (재부팅 전후 TCP+UDP listen 집합 동일 ∧ Plex 자동 검색 ∧ `nc -zu` 137/1900) + `iptables -t nat -S DOCKER` 존재 — **재부팅 뒤 한 번 더**.
+8. **Manager 설치**(전제 = 5의 compose·buildx): 호스트 래퍼 스크립트 사본(§14-30 — 추천: n150 홈의 `~/install-mgr.sh`·`~/preflight.sh`·
+   `~/guarded-rb.sh`와 같은 모델로 odroid 홈에 사본; `preflight.sh`는 n150 특유 검사를 §9.5의 odroid 효과 검사로 바꾼다; ADR-58 결정 10)
+   → root clone → 현지 root 소유 wheelhouse 발행(§3.1, aarch64) → `scripts/install-ktdm-trusted-release --expected-source-revision <sha>`
+   → `ktdm-backend` systemd(`MemoryMax=300M`; `After=time-sync.target` drop-in은 11에서) → `/health`. **frontend(대시보드 `12905`)는
+   §14-29 결정 전 설치하지 않는다**(추천 (가) backend만). 형제 체크아웃 `/home/digitie/kor-travel-geo`·`…/kor-travel-weather`·
+   `/home/digitie/apps/kor-travel-transport`.
+9. **root `.env`(odroid)**: `KTDM_HOST=odroid`, PG 튜닝·이미지(`KTDM_POSTGRES_IMAGE=imresamu/postgis:16-3.5` 등), workspace digest
+   (`sha256sum config/dagster-shared/workspace.odroid.yaml | cut -c1-16`), `KTDM_DATA_SOURCE_DEVICE=<2의 `findmnt -no SOURCE /mnt/media`
+   실측값 — 예: `/dev/nvme0n1p1`; 틀리면 T-MGR-05 프리플라이트가 매 `ensure`를 거부한다>`, 호스트별 `KTDM_PROD_URL_*`(`_DAGSTER`는 odroid
+   plane host), `KOR_TRAVEL_DAGSTER_UI_PASSWORD`, geo/weather/transport 비밀 — `scp`로 0600/root(비밀번호 SSH 단계에서는 보내지 않는다)
+   → `ktdctl targets validate`.
+10. **arch 실측**: `docker info --format '{{.Architecture}}'`=aarch64, `docker image inspect … .Architecture`=arm64, dagster-host 빌드 +
+    `pip check`, `imresamu/postgis` 안 `pg_isready` 경로 존재, base digest가 manifest list인지(`buildx imagetools inspect`),
+    `postgis_full_version()` major.minor == n150.
+11. **NTP ⑤ — 부팅 순서 결박(1의 재부팅 2회 PASS 뒤에만, Manager 설치 뒤)**: `systemd-time-wait-sync.service` enable +
+    `docker.service`·`ktdm-backend.service` drop-in `After=time-sync.target` → 재부팅 1회 → 컨테이너 전부 Up ∧ Manager `/health` ∧
+    `ConditionTimestamp` 채워짐(§9.5 NTP 항목). 사이클이 되살아나면(Docker·Plex·Manager 미기동) drop-in을 걷고 1로 돌아간다 — 중단선.
+
+### 9.2 호스트 플립 PR 배포 절차(target마다 1회 — transport → weather → geo)
+
+**전체 순서(0~11).** 이 표의 번호가 이 저장소에서 "순서 N"의 정본이다(§5·§9.4·§9.6·`tasks.md` T-OPS가 가리킨다). target당 반복하는
+세부 절차는 아래 "target당 절차 ①~⑥".
+
+| 순서 | 단계 | 게이트 |
+|---|---|---|
+| 0 | n150 `~/preflight.sh` PASS; Manager 로컬 체크아웃을 origin/main 최신으로(§14-9) | |
+| 1 | T-MGR-01a~d·02~05 머지(tenant target host 전부 n150) → n150 재설치 → `ensure dagster`(instance digest 1회 → plane·코드서버 재생성, tick 공백 ≈2 min) → `ensure map`(geo 간선 삭제·geo bind 1줄 반영) | n150 `compose config` 변경이 **ADR-58 결정 1의 허용 diff 목록 ①~⑨** 안(테스트가 diff를 계산한다); `targets validate`; `ensure map`·`ensure pinvi` 성공 |
+| 2 | odroid 초기화 §9.1 0~11 전부(8 이후는 1 뒤에만 — Manager 설치 포함) | §9.5 NTP·cgroup·디스크·compose·`nc` 매트릭스·arch 항목 |
+| 3 | odroid `ensure dagster`(**PG 포함**, imresamu; plane은 빈 workspace) → `ensure storage` → `ensure cadv`. 이 단계에서 생기는 role/DB는 **`dagster_shared`뿐**(db-init-dagster가 `dagster` target의 service); geo·weather role/DB는 각 플립의 `ensure geo`(8b)·`ensure weather`(6b)가 그 target의 db-init으로 만든다(`shared-postgres-onboarding.md` §11 "누가 올리나") | `pg_isready`·`postgis_full_version()`; plane healthy, workspace `load_from: []`; `\du`에 `kor_travel_dagster_shared_app` |
+| 4a | **transport 플립 PR** → target당 절차 ① | n150 plane healthy(5 location) |
+| 4a′ | odroid **transport role/DB one-shot**: 설치 루트에서 `docker compose run --rm --no-deps kor-travel-shared-db-init-transport`(`docker-compose.yml:580` — 어느 target의 service도 등록된 `init_steps`도 아니라 `ensure`가 돌리지 않는다, ADR-58 결정 3) | `\l`에 `kor_travel_transport`·`\du`에 `kor_travel_transport_app`; `kor_travel_transport_dagster` **없음** |
+| 4b | target당 절차 ②(transport: 그 저장소의 배포 스크립트 → migrate → 참조 로드) | odroid `sudo -n ktdctl targets validate --json` → `targets.transport.host == odroid`(배포 스크립트가 읽는 값, `docker-management.md` §3.2); odroid plane healthy(1); 5분 스냅샷 1회; 같은 시각 run 두 호스트 0건 |
+| 5 | target당 절차 ③·④(n150 `ensure map` cs 재생성; transport `.env.prod` allow-list += n150; HAProxy `pr`/`pr-api`/`transport*` → `.13`) | n150 transport backend **stop 상태**에서 Map export 1회 성공 |
+| 6a | **weather 플립 PR** → ① | n150 plane healthy(4) |
+| 6b | ②(`ensure weather` → migrate → 적재 재개) | odroid plane healthy(2); 첫 run; 동시 run 0건 |
+| 7 | ③·④(n150 `ensure pinvi` ETL cs + pinvi-api 재생성; HAProxy weather/weather-api → `.13`) | n150 weather-api **stop 상태**에서 PinVi ETL 1 run + trip view weather card 비어 있지 않음 + odroid access log peer `.14` |
+| 8a | (ADR-58 결정 13의 geo 플립 조건 통과 시) **geo 플립 PR** → ① | n150 plane healthy(3) |
+| 8b | ②·⑤(소스 반입 → `ensure geo`(db-init-geo가 role·DB·**확장 4종** `x_extension` 생성 — T-MGR-03) → full load → `mv_refresh` → 키 정책) | `kor_travel_geo`에서 `\dx`에 postgis·pg_trgm·unaccent·pg_stat_statements(스키마 `x_extension`); odroid plane healthy(3); `/v2/reverse` smoke; full load run cancel 없이 SUCCESS; `mv_refresh` 소요 < 태그 상한의 70 % |
+| 9 | (`mv_refresh` 다음 날, geo 야간 창 밖) ③·④(n150 `ensure map` cs·API 재생성, `.env` geo API key, concierge 설정, Map UI BFF 경로 §14-10; HAProxy geo/geo-api → `.13`; Track 1 재계획 수용) | n150 geo-api **stop 상태**에서 Map geocode e2e(키 경로 200); Track 1 센서 계획 1건 생성 |
+| 10 | ⑥(n150 `ensure prom` 재생성 — 타깃·federate는 플립 PR 파생물) | `count(up{host="odroid"})==N` ∧ 전부 1; 시계 rule 0 firing |
+| 11 | §9.6 해체 | n150 `ensure map`·`ensure pinvi` 성공 ∧ n150에 geo/weather/transport 컨테이너 0개 |
+
+반대 순서(odroid 먼저)는 이중 수집이라 쓰지 않는다. 각 단계는 ssh timeout 밖(tmux/nohup).
+
+**target당 절차 ①~⑥.** PR은 registry `host:` + 파생물 4종(`workspace.n150.yaml`에서 빠짐·`workspace.odroid.yaml`에 들어감, compose
+consumer env 기본값, `config/prometheus/prometheus.yml`)만 바꾼다(`dagster.yaml` 불변). 적용:
+
+1. n150 Manager 재설치(§3) → n150의 그 code-server **stop**(이중 수집 금지 — 공백 시작) → n150 `ensure dagster`(workspace digest
+   기본값 변경으로 daemon·webserver 재생성, tick 공백 ≈2 min; 코드서버는 재생성되지 않는다) → n150 plane healthy(location 수 −1).
+2. odroid에 **같은 sha** 재설치 → odroid root `.env`의 `KTDM_DAGSTER_WORKSPACE_DIGEST` 갱신 → `ktdctl targets validate`(설치된
+   workspace 파일 sha256[:16] == digest env를 효과로 검사) → odroid `ensure <target>`(transport는 그 저장소의 배포 스크립트 —
+   계획명 `deploy-prod.sh --host 192.168.1.13`, transport ADR-014/T-TRN-01이 오늘의 `deploy-server14.sh`를 대체할 **예정**이며 아직 없다;
+   weather/geo는 `ensure weather`/`ensure geo` → migrate → 적재 재개) → odroid plane healthy(location 수 +1), 첫 run
+   SUCCESS, **같은 시각 run이 두 호스트에 0건**.
+3. consumer 전환: n150 `ensure map`(transport·geo 플립 뒤 — cs·API 재생성)·`ensure pinvi`(weather 플립 뒤 — ETL cs + pinvi-api
+   재생성). `.env` 편집이 아니라 compose 기본값(커밋 파생물)이 바뀐 결과다. root `.env`에 옛 loopback 재정의가 남아 있으면
+   `targets validate`가 거부한다. transport는 `.env.prod`의 export allow-list에 n150을 더한다; geo는 공개 키 정책(§14-21)을 적용하고
+   Map `.env` 키·concierge 설정을 맞춘다.
+4. HAProxy backend를 `.13`으로(§9.4) — n150 쪽 컨테이너가 stop인 상태에서 Map geocode/transport export/PinVi ETL 1 run + PinVi trip
+   view weather card가 비어 있지 않음을 확인한 뒤.
+5. geo만: 소스 ZIP 반입(파일 수 > 0 프리플라이트) → serving DB 직접 full load(하루 창, LONG_JOBS 24 h) → `mv_refresh` → 키 정책 →
+   consumer 전환은 **다음 날** geo 야간 job 창 밖(Track 1 전량 재지오코딩 수용, ADR-58 "관계"). geo 플립 조건의 정본은 ADR-58
+   결정 13(anon 산식 ≤ 7.5 − 여유 − 6.35·swapfile·cgroup 효과·백업/drill off·weather 7일 정상 상태) — 통과하지 못하면 geo는 n150에
+   남긴다.
+6. 마지막: n150 Prometheus 타깃·federate는 플립 PR에 이미 들어 있다 → `ensure prom` 재생성 → `count(up{host="odroid"})==N` ∧ 전부 1,
+   시계 rule 0 firing.
+
+### 9.3 장애 시 재배포(롤백 아님)
+
+odroid 서비스 깨짐: 같은 sha 재`ensure`. DB 깨짐: drop → 재적재(geo 재적재 뒤에는 `public_api_keys`가 비므로 키 정책을 다시
+적용한다). n150 공용 PG로 되돌리는 경로는 설계하지 않는다. consumer 전환 단계는 실패 시 "n150 Manager 옛 sha 재설치 + n150 cs 재start"가
+가능한 상태를 §9.6 해체 전까지 유지한다.
+
+### 9.4 HAProxy backend 전환표(OPNsense, 저장소 밖)
+
+| 공개 host | 전 | 후 | 시점(§9.2 전체 순서) |
+|---|---|---|---|
+| `pr.` / `pr-api.` | `.14:14002` / `14001` | `.13:14002` / `14001` | 5 |
+| `transport.` / `transport-api.` | `.14:12305` / `12301` | `.13:12305` / `12301` | 5 |
+| `pr2.` | odroid legacy `3000` | **제거** | §9.1-6 폐기 |
+| `weather.` / `weather-api.` | `.14:12205` / `14101` | `.13:12205` / `14101` | 7 |
+| `geo.` / `geo-api.` | `.14:12505` / `12501` | `.13:12505` / `12501` | 9 |
+| odroid plane 공개 host(§14-4) | ADR-54 redirect | `.13:11001` | 3 |
+| `dagster.` | `.14:11001` | 불변 | — |
+| `manager.` / `manager-api.` | `.14:12905` / `12901` | 불변(n150 Manager) — odroid Manager용 host는 §14-29 (나)일 때만 2행 추가 | — |
+
+XFF: weather web `WEATHER_UI_TRUST_PROXY=true`는 HAProxy의 XFF strip+append 전제 — 불변. transport export는 peer IP
+allow-list라 `.14`를 더하면 된다.
+
+### 9.5 검증 체크리스트(효과 기반)
+
+- [ ] NTP: 재부팅 2회마다 timesyncd `ConditionTimestamp` 비어 있지 않음 ∧ synchronized yes ∧ clock 파일 mtime 갱신 ∧ 오차 < 1 s; UDP 123
+      차단 재부팅에서 컨테이너 0개·Manager 미기동 → 해제 뒤 기동(§9.1-11 효과)
+- [ ] cgroup·swap: 64m+swap64m → 137·OOMKilled, 64m 단독 → 통과, 256m → 0; `swapon --show`에 `/mnt/media/kor-travel/swapfile` 4 G;
+      운영 중 cs·PG cgroup의 `memory.memsw.max_usage_in_bytes` == `memory.max_usage_in_bytes`(swap 0 효과)
+- [ ] 디스크: PGDATA·rustfs·source bind가 **NVMe 장치**(`findmnt -T … -o SOURCE`; 매 `ensure` 프리플라이트가 `KTDM_DATA_SOURCE_DEVICE`와
+      대조), eMMC free ≥ 18 G, NVMe free ≥ 330 G, Plex `docker ps` Up + 저장된 inspect로 재생성 dry-run 성공, Plex 라이브러리가
+      `/mnt/media/kor-travel`을 스캔하지 않음
+- [ ] compose: `docker compose version` major 기록, Manager compose `docker compose config` 렌더 성공, `docker buildx version`
+- [ ] `nc -z` 매트릭스(재부팅 전후): 11000/11002/12503/14106/14005/12101 LAN에서 닫힘; 12501/14101/14001 n150·HAProxy 열림·제3 호스트 닫힘;
+      12901/14103/14104/12103 n150만; 12905는 §14-29 (가)면 리스너 없음·(나)면 n150·운영자만; 22 키만(비밀번호 로그인 거부); 보존 서비스 listen 집합 동일 + Plex 자동
+      검색 + `iptables -t nat -S DOCKER` 존재
+- [ ] 주소: DHCP 임대 갱신 뒤에도 `.13` 유지(§14-20 추천 안 OPNsense 예약 기준 — static을 택하면 `nmcli … con show`의 `ipv4.method manual` 확인으로 대체)
+- [ ] SMB 노출 없음: `testparm -s`·`net usershare info --long`에 `/mnt/media/kor-travel`·`/home/digitie/kor-travel-*` 없음; digitie SMB
+      세션에서 transport `.env.prod`·root `.env`가 읽히지 않음(root 0600)
+- [ ] arch: `uname -m`·이미지 arch 일치·dagster-host 빌드·`pip check`
+- [ ] n150 geo-api·transport backend·weather-api가 **stop인 상태에서** Map geocode·transport export·PinVi ETL 각 1 run 성공 + PinVi trip
+      view weather card 비어 있지 않음; odroid access log peer `192.168.1.14`, odroid PG `pg_stat_activity` application_name; Map→geo
+      **키 경로** 200(면제 아님)
+- [ ] n150 공용 PG에 세 DB 연결 0 — drop 전, consumer 트래픽 있는 상태에서
+- [ ] 두 plane 각 3 location; 같은 시각 run 두 호스트 0건; `count(up{host="odroid"})==N` ∧ 전부 1; federate된 `weather_*`; 시계 rule 0 firing
+- [ ] 메모리: OOM-kill 0·swap < 1 GB를 geo mv_refresh·weather 3h/12h·transport Opinet이 각 ≥1회 포함된 창에서
+- [ ] PG backend drill: odroid PG backend 하나 `kill -9` → 60 s 안에 세 `/health` 200·daemon healthy·code-server 3개 SERVING·다음 tick 정상
+- [ ] odroid 전원 off drill: PinVi trip view p95 < 3 s, Map MOIS run이 budget의 10 % 안에 FAILURE, concierge 장소 확정 지연 < 3 s
+      (consumer 쪽 connect timeout 분리는 각 저장소의 몫)
+- [ ] geo: full load run cancel 없이 SUCCESS; mv_refresh 소요 < 태그 상한의 70 %
+- [ ] 해체 뒤 n150 `ensure map`·`ensure pinvi` 성공, n150에 geo/weather/transport 컨테이너 0개; HAProxy 공개 host 전부 200
+
+### 9.6 n150에서 해체(마지막 단계)
+
+| 항목 | 조치 |
+|---|---|
+| 공용 PG `kor_travel_geo`/`kor_travel_weather`/`kor_travel_transport`/`kor_travel_transport_dagster` | `DROP DATABASE`(≈183 GB), 롤 drop, pg_hba `10.88.0.0/24` 잔재 제거 |
+| geo/weather 스택, transport 두 compose project | Manager `stop` → **`docker compose rm -sf <geo/weather 서비스 목록…>`**(서비스 범위 명시 — bare `down`은 map/pinvi/PG까지 내린다), 이미지 정리; `../kor-travel-geo`·`../kor-travel-weather` 체크아웃 삭제 |
+| n150 workspace의 3 location | 플립 PR 파생물이 이미 뺐다 |
+| compose `map-api → geo-api` 간선 | T-MGR-01b에서 이미 삭제(R7) |
+| cron `run-standalone-backup.sh transport` | odroid로 이동 — §14-7 소유자 결정 전 추천값(대안: 아무것도 안 함) |
+| HAProxy n150 backend 8개 | §9.4 |
+| 효과 | `ensure map`·`ensure pinvi` 성공, n150에 geo/weather/transport 컨테이너 0개, 공용 PG에 `kor_travel_geo` 없음 |
