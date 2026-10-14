@@ -201,3 +201,21 @@ def test_a_literal_consumer_url_is_named() -> None:
         "http://192.168.1.13:12201"
     )
     assert any("꼴이어야 한다" in v for v in _violations(compose, targets))
+
+
+def test_env_example_does_not_shadow_a_consumer_default() -> None:
+    """`.env.example`이 소비자 origin의 원천 변수에 값을 주면 그것을 베낀 root `.env`가 compose 기본값을 조용히 가린다
+    (옛 예시 `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL=http://127.0.0.1:14001`). 원천 이름은 스캔한 기본값에서 읽는다."""
+
+    compose, targets = _documents()
+    sources = {
+        match.group(1)
+        for _sibling, value in _scan(compose, targets).values()
+        if (match := _DEFAULTED.fullmatch(value)) is not None
+    }
+    assert sources, "스캔이 원천 변수를 하나도 못 찾았다 — 이 검사가 공허하다"
+    lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assigned = sorted(
+        line for line in lines if not line.lstrip().startswith("#") and line.partition("=")[0].strip() in sources
+    )
+    assert assigned == [], assigned
