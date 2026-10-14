@@ -2,9 +2,10 @@ import os
 import posixpath
 import re
 import stat
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, ItemsView, Iterator, Mapping, ValuesView
 from dataclasses import dataclass
 from functools import lru_cache
+from ipaddress import IPv4Address
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
@@ -296,7 +297,145 @@ def load_targets_config() -> dict[str, Any]:
     if not isinstance(config.get("dependency_order"), list):
         raise TargetsConfigError("docker target config must define dependency_order")
     _validate_targets_config(config, label=os.path.basename(path))
+    # 설치된 release는 자기 호스트를 명시해야 한다. 순수 스키마 검사와 분리한다.
+    current_host(config)
     return config
+
+
+def _host_specs(config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """옛 단일 호스트 개발 fixture만 loopback으로 읽는다. v2에는 hosts가 필수다."""
+    version = config.get("version", 1)
+    if type(version) is not int or version not in {1, 2}:
+        raise TargetsConfigError("targets config version must be 1 or 2")
+    if version == 1:
+        if "hosts" in config or any(
+            isinstance(spec, dict) and "host" in spec
+            for spec in config.get("targets", {}).values()
+        ):
+            raise TargetsConfigError("hosts and target host require config version 2")
+        return {"local": {"addr": "127.0.0.1", "default": True}}
+    hosts = config.get("hosts")
+    if not isinstance(hosts, dict) or not hosts:
+        raise TargetsConfigError("hosts must be a non-empty mapping")
+    defaults = 0
+    for name, spec in hosts.items():
+        if not isinstance(name, str) or re.fullmatch(r"[a-z][a-z0-9_-]*", name) is None or name == "all":
+            raise TargetsConfigError("hosts key must be a host name, not all")
+        if not isinstance(spec, dict) or set(spec) - {"addr", "default"}:
+            raise TargetsConfigError(f"hosts.{name}: unknown fields or invalid mapping")
+        if not isinstance(spec.get("addr"), str):
+            raise TargetsConfigError(f"hosts.{name}.addr must be a literal IPv4 address")
+        try:
+            IPv4Address(spec["addr"])
+        except ValueError as exc:
+            raise TargetsConfigError(f"hosts.{name}.addr must be a literal IPv4 address") from exc
+        if "default" in spec and not isinstance(spec["default"], bool):
+            raise TargetsConfigError(f"hosts.{name}.default must be a boolean")
+        defaults += spec.get("default", False)
+    if defaults != 1:
+        raise TargetsConfigError("hosts must have exactly one default: true")
+    return hosts
+
+
+def default_host(config: Mapping[str, Any] | None = None) -> str:
+    config = load_targets_config() if config is None else config
+    return next(name for name, spec in _host_specs(config).items() if spec.get("default", False))
+
+
+def current_host(config: Mapping[str, Any] | None = None) -> str:
+    """호스트 선택은 프로세스 환경에서 읽고 캐시하지 않는다. release에서는 필수다."""
+    config = load_targets_config() if config is None else config
+    hosts = _host_specs(config)
+    from kor_travel_docker_manager.services.trusted_install import (
+        TRUSTED_INSTALL_ROOT,
+        running_from_trusted_install_root,
+    )
+
+    trusted = running_from_trusted_install_root()
+    if trusted:
+        # load_targets_config의 캐시가 따뜻해도 env의 설치 경로 우회는 다시 거부한다.
+        get_targets_config_path()
+    root = TRUSTED_INSTALL_ROOT if trusted else Path(get_project_root())
+    operating = trusted or os.path.lexists(root / ".ktdm-source-revision")
+    selected = os.environ.get("KTDM_HOST", "").strip()
+    if operating and (not selected or "hosts" not in config):
+        raise TargetsConfigError("operating release requires hosts and KTDM_HOST")
+    if not selected:
+        selected = default_host(config)
+    if selected not in hosts:
+        raise TargetsConfigError("KTDM_HOST must be a declared hosts key")
+    if operating and hosts[selected]["addr"] not in _local_ipv4_addresses():
+        raise TargetsConfigError("KTDM_HOST address is not assigned to this host")
+    return selected
+
+
+def _local_ipv4_addresses() -> frozenset[str]:
+    """Linux 인터페이스의 실제 IPv4를 읽는다. DNS나 외부 HTTP를 자기 식별에 쓰지 않는다."""
+    import json
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/ip", "-j", "-4", "address", "show"],
+            capture_output=True, timeout=5, check=True,
+        )
+        if len(result.stdout) > _MAX_TARGETS_BYTES:
+            raise TargetsConfigError("local IPv4 probe exceeded its size bound")
+        data = json.loads(result.stdout)
+        return frozenset(
+            str(IPv4Address(address["local"]))
+            for interface in data
+            for address in interface.get("addr_info", [])
+            if address.get("family") == "inet"
+        )
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise TargetsConfigError("could not verify assigned local IPv4 addresses") from exc
+
+
+def target_hosts(target: str, config: Mapping[str, Any] | None = None) -> frozenset[str]:
+    """target 직접 소유 호스트. depends_on은 소유권을 다른 호스트로 넓히지 않는다."""
+    config = load_targets_config() if config is None else config
+    hosts = _host_specs(config)
+    spec = config["targets"][target]
+    name = spec.get("host", default_host(config))
+    if not isinstance(name, str):
+        raise TargetsConfigError(f"targets.{target}.host must be a declared host name")
+    if name == "all":
+        return frozenset(hosts)
+    if name not in hosts:
+        raise TargetsConfigError(f"targets.{target}.host: unknown host")
+    return frozenset({name})
+
+
+def container_hosts(container_id: str, config: Mapping[str, Any] | None = None) -> frozenset[str]:
+    """같은 컨테이너를 직접 소유하는 target의 합집합으로 host-local 존재를 파생한다."""
+    config = load_targets_config() if config is None else config
+    container = config["containers"][container_id]
+    owners: set[str] = set()
+    for target, spec in config["targets"].items():
+        # all 같은 조회 집계 target의 containers는 직접 소유 선언이 아니다.
+        if spec.get("include"):
+            continue
+        # containers에는 의존 target을 관찰하기 위한 항목도 들어 있다.
+        # 실제 실행 services만 소유권이다(Map의 Geo 관찰은 Geo를 복제하지 않는다).
+        if (
+            container["compose_service"] in (spec.get("services") or [])
+            and container.get("external_project") == (spec.get("external_project") or {}).get("project")
+        ):
+            owners.update(target_hosts(target, config))
+    return frozenset(owners)
+
+
+def _managed_containers() -> dict[str, dict[str, Any]]:
+    config = load_targets_config()
+    selected = current_host(config)
+    result = {}
+    for name, spec in config["containers"].items():
+        connection = spec["connection"]
+        owners = container_hosts(name, config)
+        host = "127.0.0.1" if selected in owners or not owners else _host_specs(config)[sorted(owners)[0]]["addr"]
+        result[name] = {**spec, "connection": connection.replace("{host}", host) if isinstance(connection, str) else connection}
+    return result
 
 
 def _require_list_field(
@@ -443,6 +582,7 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
 
     containers = config["containers"]
     targets = config["targets"]
+    _host_specs(config)
 
     for container_id, spec in containers.items():
         if not isinstance(spec, dict):
@@ -457,6 +597,7 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
     for target_id, spec in targets.items():
         if not isinstance(spec, dict):
             raise TargetsConfigError(f"{label} targets.{target_id}: must be a mapping")
+        target_hosts(target_id, config)
 
         for dep in _require_list_field(spec, "depends_on", target_id=target_id, label=label):
             if dep not in targets:
@@ -553,6 +694,13 @@ class _LazyMapping(Mapping[str, Any]):
     def __len__(self) -> int:
         return len(self._resolve())
 
+    def items(self) -> ItemsView[str, Any]:
+        # 집합 순회당 한 snapshot만 만든다. host/env를 장기 캐시하지 않는다.
+        return self._resolve().items()
+
+    def values(self) -> ValuesView[Any]:
+        return self._resolve().values()
+
     def __repr__(self) -> str:
         return repr(self._resolve())
 
@@ -565,9 +713,7 @@ class _LazyMapping(Mapping[str, Any]):
 TARGETS_CONFIG_ERRORS: Final = (TargetsConfigError, OSError, yaml.YAMLError)
 
 
-MANAGED_CONTAINERS: Mapping[str, dict[str, Any]] = _LazyMapping(
-    lambda: load_targets_config()["containers"]
-)
+MANAGED_CONTAINERS: Mapping[str, dict[str, Any]] = _LazyMapping(_managed_containers)
 MANAGED_TARGETS: Mapping[str, dict[str, Any]] = _LazyMapping(_targets)
 TARGET_ALIASES: Mapping[str, str] = _LazyMapping(_build_aliases)
 
@@ -600,7 +746,8 @@ def target_sequence_for_target(target: str | None) -> list[str]:
         included: list[str] = []
         for included_target in target_spec["include"]:
             included.extend(target_sequence_for_target(included_target))
-        return _dedupe(included)
+        config = load_targets_config()
+        return [name for name in _dedupe(included) if current_host(config) in target_hosts(name, config)]
 
     # 선형 슬라이스 대신 `depends_on` DAG의 위상정렬을 사용한다.
     # dependency_order는 DAG의 유효한 linearization이므로, 폐포를 그 순서로 정렬하면
@@ -618,6 +765,7 @@ def get_target(target: str | None) -> dict[str, Any]:
     return {
         "id": target_name,
         **spec,
+        "host": spec.get("host", default_host()),
         "resolved_sequence": target_sequence_for_target(target_name),
         "resolved_services": services_for_target(target_name),
         "resolved_runtime_services": runtime_services_for_target(target_name),
@@ -652,6 +800,7 @@ _ALLOWED_TARGET_FIELDS: Final = frozenset(
         "display_name",
         "excluded_from_all",
         "external_project",
+        "host",
         "include",
         "init_steps",
         "port_band",

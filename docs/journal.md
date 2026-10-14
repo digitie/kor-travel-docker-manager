@@ -2,6 +2,16 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-15 — 배포 설정 일치화의 호스트 registry 구현
+
+- 최신 main에서 registry v2의 호스트 선언, 직접 실행 서비스 기준 소유권, host-local `all` 집합,
+  `{host}` 연결 좌표와 `targets validate --json`을 구현했다. tenant 이동·운영 재생성은 수행하지 않았다.
+- 두 독립 적대 리뷰의 trusted wheel/환경 경로 우회, version 혼용, 목록 순회의 반복 할당,
+  secondary IPv4 누락을 반영했다. 관련 계약 116 PASS와 backend Ruff PASS를 확인했다.
+  전체 backend와 수정 후 독립 재리뷰는 진행 중이다.
+- Geo 튜닝값은 그대로 유지한다. 일치화 대상은 배포 경로·호스트 선택·공개 URL·Dagster 연결·버전 계약이다.
+  호스트별 workspace/명령 제한 구현과 실제 이전 뒤 검증을 마쳐야 ADR-58 운영 전환을 완료할 수 있다.
+
 
 ## 2026-10-14 — Concierge 행정구역 재해결 lane 준비
 

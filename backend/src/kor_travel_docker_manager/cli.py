@@ -180,8 +180,21 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
     # `_validate_targets_config`에 넣지 않는 이유는 따로다 — 그쪽은 모든 로드 경로에서
     # 도는 순수 스키마 검사여야 하고, 파일시스템 접근을 넣으면 오프라인 로드와 합성
     # 설정 검사가 함께 깨진다.
+    def emit_validated() -> None:
+        if getattr(args, "json", False):
+            from kor_travel_docker_manager.services.registry import current_host, default_host
+
+            print(json.dumps({
+                "status": "ok",
+                "host": current_host(config),
+                "targets": {name: {"host": spec.get("host", default_host(config))}
+                            for name, spec in config["targets"].items()},
+            }, ensure_ascii=False))
+        else:
+            print("OK")
+
     if not getattr(args, "check_coordinates", False):
-        print("OK")
+        emit_validated()
         return 0
     missing: list[str] = []
     for target_id, spec in (config.get("targets") or {}).items():
@@ -203,7 +216,7 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
         for line in missing:
             print(f"  {line}", file=sys.stderr)
         return 1
-    print("OK")
+    emit_validated()
     return 0
 
 
@@ -1717,6 +1730,9 @@ def build_parser() -> argparse.ArgumentParser:
     targets_validate = targets_subparsers.add_parser(
         "validate",
         help="config/docker-targets.yml의 참조 무결성을 재기동 전에 미리 검증합니다.",
+    )
+    targets_validate.add_argument(
+        "--json", action="store_true", help="호스트와 target 배치를 JSON으로 출력합니다."
     )
     targets_validate.add_argument(
         "--check-coordinates",

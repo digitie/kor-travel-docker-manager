@@ -187,10 +187,17 @@ profile로도 피할 수 없다(비활성 profile의 서비스도 interpolate �
 못 띄운다. `docker compose config --quiet`로 먼저 전체 파일이 interpolate되는지
 확인하고, 안 쓸 target들은 값의 정합성이 필요 없으니 placeholder로만 채워도 된다.
 
-### 3.2 호스트 프로필과 `KTDM_HOST` (계획 — ADR-58 proposed, 미구현)
+### 3.2 호스트 프로필과 `KTDM_HOST` (registry 구현, 운영 전환 예정)
 
-이 절은 **아직 코드에 없는** 동작의 정의다. 2026-10-13 현재 registry에 `hosts:`·`host:` 필드가 없고 `KTDM_HOST`를 읽는 코드도
-없다(T-MGR-01a·01b가 만든다). 결정·근거는 `docs/decisions.md` ADR-58, 배치는 `docs/platform-topology.md` §10.
+registry v2의 `hosts:`·target `host:`·자기 호스트 검증·연결 좌표 파생과 `targets validate --json`은
+T-MGR-01a에서 구현한다. tenant는 아직 default에 둔다. 아래 명령별 host 제한(R4), consumer origin(R2),
+workspace 분리는 후속 구현·설치 전이며, registry 구현만으로 운영 이전 완료를 판정하지 않는다.
+결정·근거는 `docs/decisions.md` ADR-58, 배치는 `docs/platform-topology.md` §10이다.
+
+v1은 host 필드가 없는 기존 개발 fixture에만 loopback으로 호환된다. 운영 설치본은 v2와 명시적 `KTDM_HOST`가
+필수이며, trusted wheel의 설치 경로 판정은 환경의 project root와 분리한다. 캐시된 registry를 읽더라도
+설치 경로 변경과 실제 IPv4 소유 여부를 다시 검사한다. Linux `ip -j -4 address show`로 secondary 주소도 확인한다.
+목록 순회는 순회당 한 snapshot만 만들고 host 환경값을 전역 캐시하지 않는다.
 
 **registry.** 최상위 `hosts:`(`<키>: {addr: <IPv4>, default: true|생략}`, default는 정확히 1개)와 target의 `host:`(tenant: `hosts` 키
 하나, 생략 = default; infra `storage`/`dagster`/`cadv`: `all`). 로더는 오늘의 unknown-field 거부(`registry.py:373-376`와 같은
