@@ -2483,8 +2483,8 @@ n150에서 깨진 둘을 고치는 최소 변경만 먼저 넣는다(계획 모�
 
 - **`hosts:` + target `host:`**(결정 1의 부분집합): `config/docker-targets.yml`에 `n150`(default)·`odroid`, weather·transport에
   `host: odroid`. 로더가 default 정확히 하나·IPv4 `addr`·알려진 `host:`를 fail-close로 본다. R1 렌더·R3 `KTDM_HOST`·R4 명령
-  규칙·`all` 필터·`targets validate --json`은 **없다**(T-MGR-01a·01b) — 그래서 n150에서 `ensure weather`/`ensure all`은 여전히
-  weather 컨테이너를 n150에 되살릴 수 있다(운영자가 하지 않는다).
+  규칙·`all` 필터·`targets validate --json`은 **없다**(T-MGR-01a·01b) — 그래서 n150에서 `ensure weather`는 여전히
+  weather 컨테이너를 n150에 되살릴 수 있다(`ensure all`은 아래 제외로 막힘; 운영자가 하지 않는다).
 - **workspace 호스트 필터**(결정 6의 부분집합): 파생 workspace = `control_plane: shared` ∧ target이 default 호스트(n150).
   파일은 오늘처럼 `workspace.yaml` 하나(n150 plane만 붙인다) — weather `14106`·transport `14005`가 빠져 n150 plane healthcheck
   (모든 location SERVING)가 다시 초록이 된다. `workspace.{n150,odroid}.yaml` 두 파일·`${KTDM_HOST}` bind·digest env 파생은
@@ -2501,4 +2501,6 @@ n150에서 깨진 둘을 고치는 최소 변경만 먼저 넣는다(계획 모�
   weather를 다시 세우지 않게. target 자체(상태·로그)는 남는다. `hosts:`에 `all`은 예약어(infra `host: all`)라 로더가 거부한다.
 - **T-MGR-NH가 없애야 할 2-호스트 가정**: (ⅰ) workspace 파생의 "default 호스트 = 이 plane" 필터(파일 하나, n150 고정),
   (ⅱ) 소비자 origin 테스트의 geo 호스트 재정의 표, (ⅲ) weather의 `excluded_from_all`(호스트별 `all` 필터로 대체),
-  (ⅳ) 소비자 포트 표(호스트별 포트가 다르다는 사실을 registry가 갖게 — T-MGR-01c와 함께).
+  (ⅳ) 소비자 포트 표(호스트별 포트가 다르다는 사실을 registry가 갖게 — T-MGR-01c와 함께), (ⅴ) 소비자 origin 테스트의
+  "consumer는 default 호스트에서 돈다" 가정(`_expected_origin`이 default → `127.0.0.1`), (ⅵ) Prometheus odroid job 주소
+  리터럴(#474, T-MGR-04).
