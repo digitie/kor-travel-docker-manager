@@ -200,11 +200,17 @@ cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실�
 달라 충돌이 아니다. 따라서 "포트 동일" 규칙은 odroid에서 그대로 성립한다. 폐기 대상(parking-radar
 3000/8000/18000, Portainer 9443)을 빼도 같다.
 
-### node_exporter (계획)
+### node_exporter
 
 호스트 swap·메모리·디스크 여유·시계 동기 상태가 ADR-58의 핵심 위험이라 n150·odroid 양쪽에 node_exporter를
-둔다(지금은 없다). 포트는 이 문서의 절차로 배정한다 — 후보 **`12106`**(`storage` 대역 안, ADR-48의 세
-관측 포트 `12102`~`12104` 옆; `12205`는 weather Web이라 피한다). 확정은 T-MGR-04.
+둔다. 포트는 **`12106`**(`storage` 대역 안, ADR-48의 세 관측 포트 `12102`~`12104` 옆; `12205`는 weather Web이라
+피한다).
+
+- **odroid: 2026-10-14 기동**(소유자 지시, 임시 최소 반영). Manager 설치 전이라 저장소 밖 호스트 파일
+  `/opt/kor-travel-odroid/compose-mon.yml`(project `kor-travel-odroid-monitoring`)로 cAdvisor `12103`과 함께 띄웠다.
+  n150 Prometheus가 `cadvisor-odroid`·`node-odroid` job(`labels: host=odroid`)으로 수집한다 —
+  `config/prometheus/prometheus.yml`의 주소 리터럴은 T-MGR-04의 registry 파생물로 대체한다.
+- n150: 아직 없다(T-MGR-04).
 
 ### plane별 공개 host (계획)
 
