@@ -6,7 +6,11 @@
 resource에 넘기는데 `pinvi-dagster-code-server`(run worker의 부모)에 둘 다 없었기 때문이다.
 
 원문 문자열이 아니라 `docker compose config`가 **해석한 값**을 본다 — 폴백이 실제로
-Map key에 닿는지, URL이 weather API가 실제로 듣는 포트를 가리키는지가 효과다.
+Map key에 닿는지, URL이 weather API가 실제로 있는 곳을 가리키는지가 효과다.
+
+2026-10-14 weather가 odroid(`192.168.1.13`)로 옮겼고 소유자가 공개 대역 포트 `12201`로 통일했다 —
+n150의 weather API(`127.0.0.1:14101`)는 멈췄다. URL은 이제 odroid weather이고, 운영자가 root `.env`로
+재정의할 수 있다(ADR-58 R2; 모든 소비자 기본값의 스캔은 `test_consumer_origin_defaults.py`).
 """
 
 from __future__ import annotations
@@ -27,7 +31,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _ROOT / "docker-compose.yml"
 
 _CODE_SERVER = "pinvi-dagster-code-server"
-_WEATHER_API = "kor-travel-weather-api"
+#: 여행 날씨 화면이 같은 weather API를 부른다(ADR-58 S17) — ETL과 같은 원천·기본값이어야 한다.
+_PINVI_API = "pinvi-api"
+#: odroid weather API — 소유자가 통일한 공개 대역 포트(2026-10-14).
+_ODROID_WEATHER_ORIGIN = "http://192.168.1.13:12201"
 #: code location을 import하지 않는 PinVi Dagster 서비스 — run을 실행하지 않는다.
 _NON_EXECUTING_PINVI_DAGSTER = ("pinvi-dagster", "pinvi-dagster-daemon")
 
@@ -69,7 +76,7 @@ def _render(*service_names: str, environment_update: dict[str, str]) -> dict[str
         key: value
         for key, value in os.environ.items()
         # 호스트 값이 새어 들어와 결과를 바꾸지 않게 한다.
-        if key not in {_DEDICATED_SOURCE, _MAP_SOURCE, "KTDM_DOCKER_NETWORK_MODE"}
+        if key not in {_DEDICATED_SOURCE, _MAP_SOURCE, _WEATHER_URL_ENV, "KTDM_DOCKER_NETWORK_MODE"}
         and not key.startswith("COMPOSE_")
     }
     environment.update(
@@ -90,13 +97,6 @@ def _render(*service_names: str, environment_update: dict[str, str]) -> dict[str
     rendered = json.loads(completed.stdout)["services"]
     assert isinstance(rendered, dict)
     return rendered
-
-
-def _listening_port(command: list[str]) -> str:
-    """uvicorn argv의 `--port` 값 — host network에서 실제로 듣는 포트다."""
-
-    index = command.index("--port")
-    return command[index + 1]
 
 
 def test_kasi_key_falls_back_to_the_map_key_when_no_dedicated_key_is_set() -> None:
@@ -123,16 +123,21 @@ def test_empty_dedicated_key_still_falls_back() -> None:
     assert rendered[_CODE_SERVER]["environment"][_KASI_KEY_ENV] == _MAP_KEY
 
 
-def test_weather_url_points_at_the_port_the_weather_api_listens_on() -> None:
-    rendered = _render(_CODE_SERVER, _WEATHER_API, environment_update={})
-    code_server = rendered[_CODE_SERVER]
-    weather = rendered[_WEATHER_API]
-    # 127.0.0.1이 weather API에 닿는 것은 둘 다 host network일 때뿐이다.
-    assert code_server["network_mode"] == "host"
-    assert weather["network_mode"] == "host"
-    assert code_server["environment"][_WEATHER_URL_ENV] == (
-        f"http://127.0.0.1:{_listening_port(weather['command'])}"
-    )
+def test_weather_url_points_at_the_odroid_weather_api() -> None:
+    """ETL code-server와 pinvi-api 둘 다 odroid weather를 부른다(옛 n150 `127.0.0.1:14101`이 아니다)."""
+
+    rendered = _render(_CODE_SERVER, _PINVI_API, environment_update={})
+    assert rendered[_CODE_SERVER]["environment"][_WEATHER_URL_ENV] == _ODROID_WEATHER_ORIGIN
+    assert rendered[_PINVI_API]["environment"][_WEATHER_URL_ENV] == _ODROID_WEATHER_ORIGIN
+
+
+def test_weather_url_follows_the_operator_override() -> None:
+    """root `.env`의 같은 이름이 두 서비스 모두를 바꾼다 — 리터럴이면 재정의가 조용히 무시된다."""
+
+    override = "http://weather.override.invalid:18080"
+    rendered = _render(_CODE_SERVER, _PINVI_API, environment_update={_WEATHER_URL_ENV: override})
+    assert rendered[_CODE_SERVER]["environment"][_WEATHER_URL_ENV] == override
+    assert rendered[_PINVI_API]["environment"][_WEATHER_URL_ENV] == override
 
 
 def test_etl_env_is_only_on_the_service_that_executes_runs() -> None:

@@ -826,7 +826,7 @@ services:
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "8a86a75219b7938d"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "fbd0eadc90829753"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -896,7 +896,7 @@ services:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "8a86a75219b7938d"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "fbd0eadc90829753"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -1587,7 +1587,7 @@ services:
       KOR_TRAVEL_MAP_OBJECT_STORE_PUBLIC_BASE_URL: ${KTDM_PROD_URL_S3_API:-http://127.0.0.1:${RUSTFS_API_PORT:-12101}}/${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
-      KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://127.0.0.1:12501}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://192.168.1.13:12501}
       # issue #114 — reverse_geocoder가 map dagster의 전역 필수 리소스라 이 key 없이는
       # provider ETL job 전체가 fail-close된다(GeoAuthNotConfiguredError). API 자체는
       # geo client를 직접 쓰지 않지만 세 서비스를 동일하게 결선해 drift를 막는다.
@@ -1732,7 +1732,7 @@ services:
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
       KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
-      KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://127.0.0.1:12501}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://192.168.1.13:12501}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
       # 휴게소·주유소·유가는 kor-travel-transport의 내부 export(`GET /v1/service/exports/*`)에서 읽는다 —
@@ -1741,7 +1741,10 @@ services:
       # OpiNet·KREX를 Map이 직접 부르지 않는다. token은 루트 `.env`의 이 한 이름이 원천이고, transport
       # 쪽 `TRANSPORT_SERVICE_EXPORT_TOKEN`(transport 배포 사본의 `.env.server14`)과 같은 값이어야 한다.
       # 비면 빈 문자열로 들어가며 Map은 그것을 미설정으로 본다(docs/docker-management.md 7.3).
-      KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://127.0.0.1:14001}
+      # transport는 2026-10-14 odroid로 옮겼다 — 소비자는 backend(14001)가 아니라 odroid의 API gateway(12301)를
+      # 부른다(gateway가 `/v1/service/exports/*`를 n150 `192.168.1.14`에만 연다). 소비자 origin 기본값은 ADR-58 R2의
+      # 커밋된 파생물이고 `backend/tests/test_consumer_origin_defaults.py`가 렌더를 스캔해 대조한다.
+      KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://192.168.1.13:12301}
       KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN:-}
       KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY: ${KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY:-${SEOUL_OPEN_DATA_API_KEY:-}}
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
@@ -1824,7 +1827,7 @@ services:
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
       KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
-      KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://127.0.0.1:12501}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://192.168.1.13:12501}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
       # 서울 열린데이터광장은 data.go.kr과 **다른 포털이고 키도 다르다**.
@@ -1931,7 +1934,7 @@ services:
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
       KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
-      KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://127.0.0.1:12501}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://192.168.1.13:12501}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
       # 서울 열린데이터광장은 data.go.kr과 **다른 포털이고 키도 다르다**.
@@ -1998,6 +2001,10 @@ services:
       # 공용 Dagster webserver(ADR-54, loopback 전용). admin_etl은 `repositoryOrError`·`runsOrError`를
       # `pinvi_dagster_location_name`(= `pinvi.etl.definitions`)으로 좁혀 부른다.
       PINVI_DAGSTER_BASE_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
+      # 여행 날씨(feature 단건·trip view·Admin weather-values)가 부르는 weather API(ADR-58 S17). 없으면 앱 기본값
+      # `localhost:14101`(n150의 옛 weather)로 가서 weather가 odroid로 옮긴 뒤 조용히 빈다. ETL code-server와 같은
+      # 원천·기본값이다(`backend/tests/test_consumer_origin_defaults.py`).
+      PINVI_KOR_TRAVEL_WEATHER_BASE_URL: ${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}
     ports:
     - ${PINVI_API_PORT:-12801}:${PINVI_API_PORT:-12801}
     healthcheck:
@@ -2136,10 +2143,11 @@ services:
       # 프로세스의 자식이라 webserver/daemon에는 필요 없다. KASI(특일·출몰시각) job의
       # data.go.kr key는 전용 값이 없으면 Map의 key를 쓴다(같은 비밀을 새로 만들지 않는 폴백).
       DATA_GO_KR_SERVICE_KEY: ${PINVI_DATA_GO_KR_SERVICE_KEY:-${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}}
-      # 보존 지평 가드가 부르는 weather API. host network이고, weather API는
-      # `--port 14101`을 literal로 듣는다(`KOR_TRAVEL_WEATHER_API_PORT`는 host 모드에서
-      # 무시되는 `ports:`에만 쓰인다) — 그래서 그 변수가 아니라 listener와 같은 literal이다.
-      PINVI_KOR_TRAVEL_WEATHER_BASE_URL: http://127.0.0.1:14101
+      # 보존 지평 가드가 부르는 weather API. weather는 2026-10-14 odroid로 옮겼다 — odroid의 공개 대역
+      # 포트(12201)다(n150의 옛 `127.0.0.1:14101`이 아니다). 소비자 origin 기본값은 ADR-58 R2의 커밋된
+      # 파생물이고 `backend/tests/test_consumer_origin_defaults.py`가 렌더를 스캔해 대조한다. pinvi-api도
+      # 같은 변수를 받는다.
+      PINVI_KOR_TRAVEL_WEATHER_BASE_URL: ${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}
     # 이미지에 구운 `apps/etl/dagster.yaml` 대신 공용 instance 정의를 붙인다.
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/pinvi/.dagster/dagster.yaml:ro

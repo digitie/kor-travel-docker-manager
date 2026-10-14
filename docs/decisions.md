@@ -2472,3 +2472,25 @@ Plex 라이브러리에서 `/mnt/media/kor-travel` 제외, 용량 상한) · §1
 - (open) 이 ADR이 accepted가 되는 시점 = T-MGR-01a~05 머지 + n150 설치(렌더 변경이 **결정 1의 허용 diff 목록 ①~⑨** 안임을
   확인). 플립 PR이 끝나고 `docs/prod-deployment.md` §9.6
   해체까지 되면 ADR-47·ADR-54의 "범위" 문구와 `docs/platform-topology.md` §4·§5 현황 표를 갱신한다.
+
+### 잠정 시행(2026-10-14 — 소유자 승인, T-MGR-01a~02 앞당김의 부분집합)
+
+소유자가 geo·weather·transport를 odroid로 먼저 옮기고(n150의 weather·transport 컨테이너는 멈춤, 수집은 odroid 자체
+Dagster) odroid의 포트를 **공개 대역으로 통일**했다 — geo `12501`(불변), weather `12201`(n150의 `14101`이 아니다), transport는
+backend `14001`이 아니라 **API gateway `12301`**(gateway가 `/v1/service/exports/*`를 `192.168.1.14`에만 연다). 이로써 위
+"포트를 하나도 바꾸지 않는다"(결정 1·`docs/ports.md` 호스트 규칙)는 이 세 소비자 origin에 한해 소유자 결정으로 대체됐다.
+n150에서 깨진 둘을 고치는 최소 변경만 먼저 넣는다(계획 모델이 나중에 그대로 흡수하는 모양):
+
+- **`hosts:` + target `host:`**(결정 1의 부분집합): `config/docker-targets.yml`에 `n150`(default)·`odroid`, weather·transport에
+  `host: odroid`. 로더가 default 정확히 하나·IPv4 `addr`·알려진 `host:`를 fail-close로 본다. R1 렌더·R3 `KTDM_HOST`·R4 명령
+  규칙·`all` 필터·`targets validate --json`은 **없다**(T-MGR-01a·01b) — 그래서 n150에서 `ensure weather`/`ensure all`은 여전히
+  weather 컨테이너를 n150에 되살릴 수 있다(운영자가 하지 않는다).
+- **workspace 호스트 필터**(결정 6의 부분집합): 파생 workspace = `control_plane: shared` ∧ target이 default 호스트(n150).
+  파일은 오늘처럼 `workspace.yaml` 하나(n150 plane만 붙인다) — weather `14106`·transport `14005`가 빠져 n150 plane healthcheck
+  (모든 location SERVING)가 다시 초록이 된다. `workspace.{n150,odroid}.yaml` 두 파일·`${KTDM_HOST}` bind·digest env 파생은
+  T-MGR-02 그대로 남는다. `dagster.yaml` location 상한은 불변(결정 7 — 없는 location의 상한은 무해).
+- **R2 소비자 기본값**: geo 4곳 `http://192.168.1.13:12501`, transport `http://192.168.1.13:12301`, PinVi ETL weather를
+  리터럴에서 `${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}`로, pinvi-api에 같은 변수 추가(S17).
+  결박은 렌더 스캔(`backend/tests/test_consumer_origin_defaults.py`) — 형제 → (호스트, 포트) 표는 테스트에 있고 transport·
+  weather는 registry `host:`와 대조한다. **geo는 소비자가 호스트보다 앞선다**: geo Dagster는 아직 n150 plane에 있어 geo
+  target은 n150이다(geo 플립 = T-MGR-06 셋째). 표를 R1 계산으로 바꾸는 것·`.env` 재정의 거부는 T-MGR-01c.

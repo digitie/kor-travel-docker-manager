@@ -3,6 +3,12 @@
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
 
+## 2026-10-15 — odroid 이전 뒤 n150 소비자 origin·공용 workspace 잠정 정리(T-MGR-06i)
+
+- 소유자가 geo·weather·transport를 odroid(`192.168.1.13`)로 옮기고 포트를 통일했다(geo `12501`·weather `12201`·transport API gateway `12301`). n150의 weather·transport 컨테이너는 멈췄다.
+- n150에서 깨진 둘: (1) 소비자 env 기본값이 n150 loopback을 가리켰다 — R2 집합 8곳(geo 4·transport 1·weather 2, pinvi-api 신설)을 odroid origin으로; (2) n150 공용 plane healthcheck는 모든 location SERVING을 요구하는데 workspace가 멈춘 weather `14106`·transport `14005`를 실었다 — `hosts:`+`host: odroid`와 workspace 파생의 default 호스트 필터로 둘을 뺐다(digest `fbd0eadc90829753`).
+- 계획 모델(T-MGR-01a·01c·02·06)의 부분집합만 넣었다 — R1·R3·R4·`all` 필터·두 workspace 파일·Prometheus 타깃은 없다(ADR-58 "잠정 시행"). 배포·n150 반영은 이 PR 범위 밖이다.
+
 ## 2026-10-14 — Concierge 행정구역 재해결 lane 준비
 
 - Concierge T-200의 `concierge/concierge_admin_region_refresh` job에 limit 1을 추가하고 lane 집합 계약을 갱신했다. 전체 location limit 2와 다른 테넌트 상한은 유지한다.

@@ -3,6 +3,19 @@ version: 1
 # GM-19: port_policy/port_band 블록을 소비하는 코드가 0건이라 제거했다 — 포트 정책의
 # 유일한 정본은 docs/ports.md다.
 
+# Docker 호스트(ADR-58 결정 1의 `hosts:`). target의 `host:`(생략 = default 호스트)가 그 target의 컨테이너가 도는
+# 호스트다. **잠정(interim, 2026-10-14 소유자 승인)**: 지금 이 값을 읽는 것은 공용 Dagster workspace 파생 하나뿐이다 —
+# `config/dagster-shared/workspace.yaml`(n150 plane이 붙인다)은 `control_plane: shared` **이고** default 호스트에 있는
+# target의 location만 싣는다(`backend/tests/test_dagster_shared_workspace_is_derived.py`). R1 `{host}` 렌더·R3 `KTDM_HOST`·
+# R4 명령 host 규칙·`all` 필터·`workspace.<host>.yaml` 두 파일은 아직 없다(T-MGR-01a·01b·02가 이 블록 위에 더한다).
+# 로더는 default가 정확히 하나인지, `addr`가 IPv4인지, target `host:`가 여기 있는 이름인지 검사한다.
+hosts:
+  n150:
+    addr: 192.168.1.14
+    default: true
+  odroid:
+    addr: 192.168.1.13
+
 dependency_order:
   - storage
   - gra
@@ -681,6 +694,10 @@ targets:
     # base 하나뿐인 것은 의도다 — shared overlay는 `${…:?}` 필수 보간이라 env 파일 없이
     # 열면 실패하고, `ps`·`logs`는 base만으로 같은 컨테이너를 찾는다. overlay를 더하는
     # 일은 transport ADR-010 후속(별도 설계)이다.
+    # 2026-10-14 odroid로 옮겼다(소유자 지시 — n150의 transport 컨테이너는 멈춤, 수집은 odroid Dagster). 잠정: 이 값이
+    # 지금 바꾸는 것은 n150 공용 workspace에서 이 location이 빠지는 것뿐이다(`hosts:` 주석). 소비자(Map)는 odroid의
+    # API gateway `http://192.168.1.13:12301`을 부른다(`docker-compose.yml`의 R2 기본값).
+    host: odroid
     external_project:
       project: kor-travel-transport
       working_dir: /home/digitie/apps/kor-travel-transport
@@ -721,6 +738,10 @@ targets:
         port: 14005
 
   weather:
+    # 2026-10-14 odroid로 옮겼다(소유자 지시 — n150의 weather 컨테이너는 멈춤, 수집은 odroid Dagster). 잠정: 이 값이
+    # 지금 바꾸는 것은 n150 공용 workspace에서 이 location이 빠지는 것뿐이다(`hosts:` 주석). 소비자(PinVi)는 odroid의
+    # weather API `http://192.168.1.13:12201`을 부른다(`docker-compose.yml`의 R2 기본값).
+    host: odroid
     port_band: "14100-14199"
     depends_on: []
     display_name: Kor Travel Weather
