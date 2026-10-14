@@ -77,6 +77,8 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 > **B-5~B-9는 계획이다(ADR-58 proposed, 2026-10-13).** 사본도 결박 테스트도 아직 없다 — 각 항목의
 > "결박"에 적은 T-MGR 번호의 PR이 사본과 테스트를 **같은 PR에서** 만든다(DO NOT 15의 결박 규칙).
 > 테스트 이름은 그 PR에서 확정하며, 여기에는 이미 존재하는 테스트 파일만 코드 폰트로 적는다.
+> **2026-10-14 잠정 시행**(ADR-58 "잠정 시행"): B-6은 렌더 스캔 테스트와 함께 들어왔고, B-5는 한 파일
+> (`workspace.yaml` = n150 plane)에 호스트 필터만 들어왔다. 나머지는 계획 그대로다.
 
 ### B-5. (계획) 호스트별 공용 Dagster workspace의 합집합
 
@@ -88,28 +90,37 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   `workspace.yaml`과 같은 이유(`docker-compose.yml:789-794`)
 - **결박**: 합집합 == shared 집합 ∧ 교집합 ∅ ∧ `workspace.n150.yaml`은 첫 구현에서 오늘 파일과 byte 동일 —
   기존 `test_dagster_shared_workspace_is_derived`를 두 파일 + 호스트별 `all` 규칙으로 확장(T-MGR-02)
+- **잠정(2026-10-14)**: 파일은 아직 `workspace.yaml` 하나이고 파생은 "shared ∧ default 호스트(n150)"다 — weather·transport
+  (`host: odroid`)가 빠져 4 location(geo·conc·map·pinvi). 결박은 `test_the_workspace_file_is_the_derivation`과 옮긴 target의
+  빨간 대조군(`test_bringing_a_moved_target_back_drifts_the_workspace`·`test_a_moved_target_left_in_the_workspace_is_named`).
+  odroid 파일이 없으므로 "합집합 == shared 집합"은 아직 단언하지 않는다(odroid plane은 Manager 밖에서 돈다)
 
-### B-6. (계획) 내부 consumer가 부르는 형제 서비스의 origin
+### B-6. (잠정 시행 2026-10-14) 내부 consumer가 부르는 형제 서비스의 origin
 
-- **사실**: Map(api·dagster code-server·legacy webserver/daemon)→geo(`12501`)·Map→transport(`14001`)·PinVi ETL→weather(`14101`)·
-  pinvi-api→weather(`14101`)의 host
+- **사실**: Map(api·dagster code-server·legacy webserver/daemon)→geo(`12501`)·Map→transport(API gateway `12301`)·PinVi ETL→weather(`12201`)·
+  pinvi-api→weather(`12201`)의 host. 포트는 2026-10-14 소유자가 odroid에서 통일한 값이다(옛 n150 `14001`·`14101`이 아니다)
 - **정본**: registry `hosts:` + 각 target의 `host:`(렌더 호스트와 같으면 `127.0.0.1`, 아니면 그 addr)
-- **사본**: Manager `docker-compose.yml`에서 **형제 서비스 포트(`12501`/`14001`/`14101`)를 기본값에 가진 env 전부**(비활성
-  `legacy-dagster` profile 포함) — 오늘 **7곳**: geo `:1590`(map-api)·`:1735`(map code-server)·`:1827`·`:1934`(legacy webserver/daemon),
-  transport `:1744`, PinVi ETL `:2142`(오늘은 리터럴), 그리고 pinvi-api 블록 `:1943-2018`에 추가될 같은 weather 변수
+- **사본**: Manager `docker-compose.yml`에서 **형제 서비스 포트(`12501`/`12301`/`12201`, 되돌림 감지용 옛 `14001`/`14101`)를 기본값에 가진 env 전부**(비활성
+  `legacy-dagster` profile 포함) — 오늘 **8곳**: geo 5곳(`KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL` 4곳 — map-api·map code-server·legacy webserver/daemon —
+  와 pinvi-api `PINVI_KOR_TRAVEL_GEO_BASE_URL` 신설), transport `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`(map code-server), weather
+  `PINVI_KOR_TRAVEL_WEATHER_BASE_URL` 2곳(PinVi ETL code-server — 리터럴에서 `${…:-…}`로 — 와 pinvi-api 신설). 빼는 것: 형제 자신의 서비스(geo code-server의 `KTG_DAGSTER_ADMIN_API_URL`, weather-web의
+  `WEATHER_API_INTERNAL_URL` — 같은 호스트 안 자기 호출)와 `NEXT_PUBLIC_*`(브라우저 공개 origin — root `.env`의 `KTDM_PROD_URL_*`, R6)
 - **사본이 필요한 이유**: compose는 registry를 읽지 못한다(compose subprocess는 allowlist env만 받는다,
   `compose_service.py:3154-3158`). 값을 root `.env`로 내리면 호스트마다 손으로 맞추는 두 번째 사본이 생긴다 —
   그래서 기본값을 커밋 파생물로 두고 `.env` 재정의는 `targets validate`가 거부한다
-- **결박**: 테스트가 렌더된 compose를 **스캔**해 그 집합을 찾고(줄 번호 열거 금지 — 지정 줄만 보면 하나를 빠뜨려도 초록이다)
-  registry에서 계산한 기대값 == 각 기본값을 단언(T-MGR-01c; 7곳 중 어느 하나를 registry와 다르게 고치면 빨강); `.env` 재정의
-  거부(validate)
+- **결박**: `test_every_consumer_default_is_the_sibling_origin`이 compose를 **스캔**해 그 집합을 찾고(줄 번호 열거 금지 — 지정 줄만
+  보면 하나를 빠뜨려도 초록이다; 하한은 `test_the_scan_sees_every_known_consumer`) 기대 origin == 각 기본값을 단언한다 — 어느 한 곳을
+  옛 n150 loopback으로 되돌리면 그 곳이 이름으로 빨갛다(`test_reverting_any_one_consumer_to_its_n150_loopback_is_named`). **잠정**:
+  형제 → 소비자 포트 표만 테스트에 있고 호스트는 registry `host:`에서 파생한다(default면 `127.0.0.1`); geo만 명시 재정의(소비자가
+  호스트보다 앞선다 — geo Dagster는 아직 n150), registry가 같은 말을 하면 `test_host_overrides_only_cover_targets_still_on_another_host`가
+  빨개져 지우게 한다. 포트 표를 registry로 옮기는 것과 `.env` 재정의 거부(validate)는 T-MGR-01c, 재정의 제거는 T-MGR-NH
 
 ### B-7. (계획) 공용 workspace digest의 기본값
 
 - **사실**: daemon·webserver가 기대하는 `workspace.yaml` sha256[:16]
 - **정본**: 설치된 `config/dagster-shared/workspace.<host>.yaml`의 내용
 - **사본**: compose `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-<n150 파일 digest>}`의 기본값
-  (오늘은 리터럴 `8a86a75219b7938d`, `docker-compose.yml:829,899`), odroid는 root `.env` 값
+  (오늘은 리터럴 `fbd0eadc90829753` — 2026-10-14 weather·transport가 빠진 n150 파일, `docker-compose.yml:829,899`), odroid는 root `.env` 값
 - **사본이 필요한 이유**: healthcheck가 마운트 파일과 env를 대조해 낡은 컨테이너를 exit시키는 기제 자체가 이 사본이다
   (`:847,911`); installer에 계산 로직을 더하지 않는다(ADR-51)
 - **결박**: 기본값 == `workspace.n150.yaml` sha256[:16] — 기존 `test_dagster_shared_config` 확장(T-MGR-02); odroid 값은

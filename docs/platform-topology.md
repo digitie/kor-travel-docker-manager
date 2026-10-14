@@ -667,8 +667,8 @@ validate` → odroid `ensure <target>`. consumer 전환(Map/PinVi 코드서버·
 | 배포 절차 | [`prod-deployment.md`](prod-deployment.md) · [`docker-management.md`](docker-management.md) |
 | 설치된 Manager revision | 호스트 `/opt/kor-travel-docker-manager/.ktdm-source-revision` |
 | 운영 값(키·DSN·핀) | 호스트 `.env` (root 0600) — 저장소에 두지 않는다 |
-| 호스트 주소·target의 호스트 (계획, ADR-58) | `config/docker-targets.yml` `hosts:`·`targets.<id>.host` — 주소의 유일한 자리 |
-| 내부 consumer가 부르는 형제 서비스의 origin (계획, ADR-58) | Manager `docker-compose.yml`에서 형제 포트(`12501`/`14001`/`14101`)를 기본값에 가진 env **전부**(오늘 7곳 — geo 4·transport 1·weather 1 + pinvi-api 신설; 커밋된 파생물 — registry에서 계산해 테스트가 렌더를 스캔해 대조, bindings.md B-6). root `.env` 재정의는 `targets validate`가 거부 |
+| 호스트 주소·target의 호스트 (ADR-58 — 2026-10-14 잠정: 절과 로더 검사만, 읽는 곳은 공용 workspace 파생뿐) | `config/docker-targets.yml` `hosts:`·`targets.<id>.host` — 주소의 유일한 자리 |
+| 내부 consumer가 부르는 형제 서비스의 origin (ADR-58 R2 — 2026-10-14 잠정 시행) | Manager `docker-compose.yml`에서 형제 포트를 기본값에 가진 env **전부**(오늘 8곳 — geo 5(Map 4·pinvi-api 1)·transport 1·weather 2(ETL code-server·pinvi-api); 커밋된 파생물 — 테스트가 렌더를 스캔해 대조, bindings.md B-6). 값은 odroid `192.168.1.13`의 소유자 통일 포트: geo `12501`, weather `12201`, transport API gateway `12301`(backend `14001` 아님). root `.env` 재정의 거부(`targets validate`)는 계획(T-MGR-01c) |
 | 호스트별 운영 값(`KTDM_HOST`·workspace digest·PG 튜닝·이미지·`KTDM_PROD_URL_*`) (계획, ADR-58) | **그 호스트의** `.env` — 호스트마다 값 집합이 다르다 |
 
 ---
