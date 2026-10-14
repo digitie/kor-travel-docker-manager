@@ -687,7 +687,7 @@ validate` → odroid `ensure <target>`. consumer 전환(Map/PinVi 코드서버·
 | | `transport`(tenant, 외부 project) | backend `14001`, frontend `14002`, code-server `127.0.0.1:14005`; `transport-admin` `12305`/`12301` | app dir `/home/digitie/apps/kor-travel-transport` 동일 |
 | | `dagster`(infra, `host: all`) | **odroid PG** `kor-travel-shared-postgres` `11000` loopback(`kor_travel_geo`·`kor_travel_weather`·`kor_travel_transport`·`dagster_shared`), gateway `11001`, webserver `127.0.0.1:11002`, daemon, storage-migrate | 두 번째 plane; PG는 이 target의 service |
 | | `storage`(infra, `host: all`) | RustFS `12101`/`12105`(bind는 compose상 `0.0.0.0` — 경계는 호스트 방화벽) | `rustfs-init`은 버킷 6개를 registry와 무관하게 다 만든다 — 양쪽에 생기고 사용만 분리 |
-| | `cadv`(infra, `host: all`) | cAdvisor `12103`, node_exporter(새 포트 — `ports.md` 절차, 후보 `12106`) | |
+| | `cadv`(infra, `host: all`) | cAdvisor `12103`, node_exporter `12106`(2026-10-14 odroid 임시 기동 — `ports.md` node_exporter 절) | |
 | | Manager | backend `12901`(systemd, `0.0.0.0`); dashboard `12905`는 **§14-29 조건부**(추천 (가) backend만 — frontend 설치 없음; (나)면 `12901` 허용 소스와 공개 host 2개가 따라온다) | `KTDM_HOST=odroid` |
 | | **보존(우리 범위 밖, 실측)** | Plex `32400`/`32469`(Docker, volume `media` = `/mnt/media`), Samba `139`/`445`, webvnc-router `2121`/`6080`, `8080`, `1994`; UDP 137/138·1900/1901·32410-32414 외 | Track 2가 만지지 않는다; 포트 충돌 0(`ports.md`) |
 | | **폐기(실측으로 한정)** | parking-radar `3000`/`8000`/`18000`, Portainer `9443` | Plex 정의 보관·Portainer 볼륨 유지·`prune` 금지(§14-2) |

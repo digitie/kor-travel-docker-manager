@@ -119,7 +119,7 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 
 - **사실**: n150 Prometheus가 긁는 geo/weather/transport/odroid exporter의 주소
 - **정본**: registry `hosts:` + `host:`
-- **사본**: `config/prometheus/prometheus.yml`의 `static_configs.targets`(오늘 전부 `127.0.0.1:…`, `:27-34` 등)
+- **사본**: `config/prometheus/prometheus.yml`의 `static_configs.targets`(오늘 n150 자기 타깃은 `127.0.0.1:…`(`:27-34` 등)이고, 2026-10-14부터 odroid exporter 두 job `cadvisor-odroid`·`node-odroid`가 임시 리터럴 `192.168.1.13:{12103,12106}`이다 — T-MGR-04가 파생물로 대체)
 - **사본이 필요한 이유**: Prometheus는 정적 파일만 읽는다
 - **결박**: registry에서 계산한 타깃 집합 == 파일(T-MGR-04의 파생 테스트)
 
