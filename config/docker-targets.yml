@@ -653,7 +653,8 @@ targets:
       - conc
       - map
       - pinvi
-      - weather
+      # weather는 2026-10-14 odroid로 옮겨 n150 `all`에서 뺐다(잠정 — `ensure all`이 n150에서 지운 DB로 weather를
+      # 다시 세우지 않게). target 자체는 남는다(상태·로그). 호스트별 `all` 필터는 T-MGR-01a·NH.
       - dagster
     services: []
     runtime_services: []
@@ -742,6 +743,8 @@ targets:
     # 지금 바꾸는 것은 n150 공용 workspace에서 이 location이 빠지는 것뿐이다(`hosts:` 주석). 소비자(PinVi)는 odroid의
     # weather API `http://192.168.1.13:12201`을 부른다(`docker-compose.yml`의 R2 기본값).
     host: odroid
+    # n150 `all`에서 뺀다(잠정 — `all` 주석). 호스트별 `all` 필터(T-MGR-01a·NH)가 이 줄을 대신한다.
+    excluded_from_all: true
     port_band: "14100-14199"
     depends_on: []
     display_name: Kor Travel Weather

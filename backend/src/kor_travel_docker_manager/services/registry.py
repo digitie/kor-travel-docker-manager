@@ -842,6 +842,8 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
 #: 글자(`host: odorid`)가 조용히 default로 읽히면 옮긴 target이 n150 plane에 다시 실린다.
 _HOST_FIELDS: Final = frozenset({"addr", "default"})
 _HOST_NAME: Final = re.compile(r"[a-z0-9][a-z0-9-]*")
+#: `all`은 "모든 호스트"(infra `host: all`, ADR-58 결정 1)의 자리라 호스트 이름이 될 수 없다.
+_RESERVED_HOST_NAMES: Final = frozenset({"all"})
 
 
 def _validate_hosts(config: dict[str, Any], *, label: str) -> None:
@@ -861,6 +863,8 @@ def _validate_hosts(config: dict[str, Any], *, label: str) -> None:
         where = f"{label} hosts.{name}"
         if not isinstance(name, str) or not _HOST_NAME.fullmatch(name):
             raise TargetsConfigError(f"{where}: invalid host name")
+        if name in _RESERVED_HOST_NAMES:
+            raise TargetsConfigError(f"{where}: host name {name!r} is reserved")
         if not isinstance(spec, dict):
             raise TargetsConfigError(f"{where}: must be a mapping")
         unknown = sorted(set(spec) - _HOST_FIELDS)

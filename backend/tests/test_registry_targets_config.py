@@ -874,6 +874,10 @@ def test_the_real_config_moves_weather_and_transport_to_odroid() -> None:
     moved = sorted(t for t, spec in config["targets"].items() if spec.get("host") == "odroid")
     assert moved == ["transport", "weather"]
     assert config["hosts"]["odroid"]["addr"] == "192.168.1.13"
+    # n150 `ensure all`이 odroid로 옮긴 Manager target(weather)을 지운 DB로 다시 세우지 않는다(잠정 — 호스트별 `all`
+    # 필터 전까지). transport는 외부 프로젝트라 원래 `all` 밖이다.
+    assert "weather" not in config["targets"]["all"]["include"]
+    assert config["targets"]["weather"]["excluded_from_all"] is True
 
 
 @pytest.mark.parametrize(
@@ -888,6 +892,7 @@ def test_the_real_config_moves_weather_and_transport_to_odroid() -> None:
         (lambda c: c["hosts"]["odroid"].pop("addr"), "hosts.odroid.addr: must be an IPv4"),
         (lambda c: c["hosts"]["odroid"].update(adr="192.168.1.13"), r"hosts.odroid: unknown fields \['adr'\]"),
         (lambda c: c.update(hosts={}), "hosts: must be a non-empty mapping"),
+        (lambda c: c["hosts"].update(all={"addr": "192.168.1.15"}), "hosts.all: host name 'all' is reserved"),
     ],
 )
 def test_a_malformed_host_declaration_is_rejected(mutate: Any, said: str) -> None:

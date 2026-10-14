@@ -2222,7 +2222,7 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
      `KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://<host(geo)>:12501}` **4곳**(`docker-compose.yml:1590`
      map-api, **`:1735` map code-server** — MOIS/geocode run을 실제로 돌리는 서비스, `:1827`·`:1934` legacy webserver/daemon), transport
      `${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://<host(transport)>:14001}`(`:1744`), PinVi ETL `:2142`를 같은 모양의
-     `${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://<host(weather)>:14101}`로, **그리고 pinvi-api 블록(`:1943-2018`)에 같은 변수를
+     `${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://<host(weather)>:14101}`로(**2026-10-14 잠정 시행으로 대체**: 소비자 포트 geo `12501`·transport API gateway `12301`·weather `12201`, 집합 8곳(geo 5 — Map 4·pinvi-api 1, transport 1, weather 2 — PinVi ETL·pinvi-api), n150 workspace digest `fbd0eadc90829753`(weather·transport 제외 4 location) — ADR-58 "잠정 시행".), **그리고 pinvi-api 블록(`:1943-2018`)에 같은 변수를
      추가**한다(없으면 weather 플립 뒤 PinVi 여행 날씨가 조용히 빈다 — S17). 플립 PR이 `<host(x)>`를 `127.0.0.1`에서
      `192.168.1.13`으로 **그 집합 전부** 바꾼다(geo 플립이 `:1590`만 바꾸면 map code-server는 loopback에 남아 n150 geo-api stop 뒤 모든
      geocode run이 connection refused — 테스트가 그것을 빨갛게 만들어야 한다). root `.env`의 재정의는 `ktdctl targets validate`가 파생
@@ -2267,7 +2267,7 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
    | 표면 | 기제 | 결박 |
    |---|---|---|
    | registry `connection:`·probe(R1) | **런타임** 렌더(Manager가 registry를 읽는다) | 단위 테스트 |
-   | compose env 기본값(R2 — 형제 포트를 기본값에 가진 env 전부, 오늘 7곳: geo 4·transport 1·weather 1 + pinvi-api 신설), `config/prometheus/prometheus.yml`, `config/dagster-shared/workspace.<host>.yaml` | **커밋된 파생물**(리터럴 `192.168.1.13` 포함) — compose·정적 YAML은 registry를 읽지 못한다(S10). `workspace.yaml`과 같은 선례(`docker-compose.yml:789-794`) | 파생 테스트가 기대값을 `hosts:`+`host:`에서 계산해 파일과 대조(B-5·B-6·B-8); 플립 PR이 파생물을 빠뜨리면 빨갛다 |
+   | compose env 기본값(R2 — 형제 포트를 기본값에 가진 env 전부, 오늘 7곳: geo 4·transport 1·weather 1 + pinvi-api 신설; **2026-10-14 잠정 시행으로 대체**: 소비자 포트 geo `12501`·transport API gateway `12301`·weather `12201`, 집합 8곳(geo 5 — Map 4·pinvi-api 1, transport 1, weather 2 — PinVi ETL·pinvi-api), n150 workspace digest `fbd0eadc90829753`(weather·transport 제외 4 location) — ADR-58 "잠정 시행".), `config/prometheus/prometheus.yml`, `config/dagster-shared/workspace.<host>.yaml` | **커밋된 파생물**(리터럴 `192.168.1.13` 포함) — compose·정적 YAML은 registry를 읽지 못한다(S10). `workspace.yaml`과 같은 선례(`docker-compose.yml:789-794`) | 파생 테스트가 기대값을 `hosts:`+`host:`에서 계산해 파일과 대조(B-5·B-6·B-8); 플립 PR이 파생물을 빠뜨리면 빨갛다 |
    | root `.env` | 호스트별 값(비밀·튜닝·digest·`KTDM_HOST`·`KTDM_PROD_URL_*`) | `targets validate`가 파생 기대값과 다른 재정의를 거부 |
 
 6. **host 플립 = workspace 합류; `workspace.{n150,odroid}.yaml` 두 파일 커밋 + compose 보간.** 파생기(`runtime_topology.py`)에
@@ -2278,7 +2278,7 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
    로 — 컨테이너 안 경로가 그대로라 healthcheck digest 비교(`:847,911`)와 cutover의 컨테이너 내부 읽기(`scripts/dagster-shared-cutover.sh:424`)
    는 불변. 바뀌는 참조 4곳: cutover `:168,394,764`(호스트 파일 경로 — 셸이라 root `.env`의 `KTDM_HOST`를 읽고 미설정이면 n150),
    liveness 테스트 `backend/tests/test_dagster_daemon_liveness_contract.py:218`(`workspace.` 접두). digest env:
-   `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-8a86a75219b7938d}`(기본 = n150 파일; B-7). odroid root `.env`가
+   `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-8a86a75219b7938d}`(기본 = n150 파일; B-7; **2026-10-14 잠정 시행으로 대체**: 소비자 포트 geo `12501`·transport API gateway `12301`·weather `12201`, 집합 8곳(geo 5 — Map 4·pinvi-api 1, transport 1, weather 2 — PinVi ETL·pinvi-api), n150 workspace digest `fbd0eadc90829753`(weather·transport 제외 4 location) — ADR-58 "잠정 시행".). odroid root `.env`가
    `sha256sum config/dagster-shared/workspace.odroid.yaml | cut -c1-16`을 준다 — 플립 PR마다 바뀌므로 플립 절차에 "odroid Manager 같은
    sha 재설치 + `.env` digest 갱신 + `targets validate`" 단계를 둔다. **대안 "설치 시 렌더"(trusted installer가 workspace를 고정
    경로로 렌더, 참조 0곳 변경)는 기각** — ADR-51 "installer에 로직을 더하지 않는다"; 누락은 validate(사전)와 healthcheck exit
@@ -2489,8 +2489,16 @@ n150에서 깨진 둘을 고치는 최소 변경만 먼저 넣는다(계획 모�
   파일은 오늘처럼 `workspace.yaml` 하나(n150 plane만 붙인다) — weather `14106`·transport `14005`가 빠져 n150 plane healthcheck
   (모든 location SERVING)가 다시 초록이 된다. `workspace.{n150,odroid}.yaml` 두 파일·`${KTDM_HOST}` bind·digest env 파생은
   T-MGR-02 그대로 남는다. `dagster.yaml` location 상한은 불변(결정 7 — 없는 location의 상한은 무해).
-- **R2 소비자 기본값**: geo 4곳 `http://192.168.1.13:12501`, transport `http://192.168.1.13:12301`, PinVi ETL weather를
-  리터럴에서 `${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}`로, pinvi-api에 같은 변수 추가(S17).
-  결박은 렌더 스캔(`backend/tests/test_consumer_origin_defaults.py`) — 형제 → (호스트, 포트) 표는 테스트에 있고 transport·
-  weather는 registry `host:`와 대조한다. **geo는 소비자가 호스트보다 앞선다**: geo Dagster는 아직 n150 plane에 있어 geo
-  target은 n150이다(geo 플립 = T-MGR-06 셋째). 표를 R1 계산으로 바꾸는 것·`.env` 재정의 거부는 T-MGR-01c.
+- **R2 소비자 기본값(8곳)**: Map geo 4곳 `http://192.168.1.13:12501`, transport `http://192.168.1.13:12301`, PinVi ETL weather를
+  리터럴에서 `${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}`로, pinvi-api에 같은 변수 추가(S17), 그리고
+  pinvi-api에 `PINVI_KOR_TRAVEL_GEO_BASE_URL`(odroid geo, 소유자 "pinvi geo 연동해")·`PINVI_KOR_TRAVEL_GEO_API_KEY`(빈 기본값 —
+  odroid geo `ops.public_api_keys` 전용 키는 root `.env`, PinVi 쪽 짝 PR이 설정을 더한다).
+  결박은 렌더 스캔(`backend/tests/test_consumer_origin_defaults.py`) — 형제 → 소비자 포트 표만 테스트에 있고 호스트는
+  registry `host:`에서 파생한다. **geo는 소비자가 호스트보다 앞선다**: geo Dagster는 아직 n150 plane에 있어 geo target은
+  n150이고, 테스트의 명시 재정의 하나(`geo → odroid`)가 그것을 말한다(geo 플립 = T-MGR-06 셋째). 포트 표를 R1 계산으로
+  바꾸는 것·`.env` 재정의 거부는 T-MGR-01c.
+- **`all`에서 weather 제외**: weather에 `excluded_from_all: true`, n150 `all.include`에서 뺐다 — n150 `ensure all`이 지운 DB로
+  weather를 다시 세우지 않게. target 자체(상태·로그)는 남는다. `hosts:`에 `all`은 예약어(infra `host: all`)라 로더가 거부한다.
+- **T-MGR-NH가 없애야 할 2-호스트 가정**: (ⅰ) workspace 파생의 "default 호스트 = 이 plane" 필터(파일 하나, n150 고정),
+  (ⅱ) 소비자 origin 테스트의 geo 호스트 재정의 표, (ⅲ) weather의 `excluded_from_all`(호스트별 `all` 필터로 대체),
+  (ⅳ) 소비자 포트 표(호스트별 포트가 다르다는 사실을 registry가 갖게 — T-MGR-01c와 함께).

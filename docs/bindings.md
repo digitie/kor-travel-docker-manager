@@ -101,9 +101,9 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   pinvi-api→weather(`12201`)의 host. 포트는 2026-10-14 소유자가 odroid에서 통일한 값이다(옛 n150 `14001`·`14101`이 아니다)
 - **정본**: registry `hosts:` + 각 target의 `host:`(렌더 호스트와 같으면 `127.0.0.1`, 아니면 그 addr)
 - **사본**: Manager `docker-compose.yml`에서 **형제 서비스 포트(`12501`/`12301`/`12201`, 되돌림 감지용 옛 `14001`/`14101`)를 기본값에 가진 env 전부**(비활성
-  `legacy-dagster` profile 포함) — 오늘 **8곳**: geo `KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL` 4곳(map-api·map code-server·legacy webserver/daemon),
-  transport `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`(map code-server), weather `PINVI_KOR_TRAVEL_WEATHER_BASE_URL` 2곳(PinVi ETL code-server —
-  리터럴에서 `${…:-…}`로 — 와 pinvi-api 신설). 빼는 것: 형제 자신의 서비스(geo code-server의 `KTG_DAGSTER_ADMIN_API_URL`, weather-web의
+  `legacy-dagster` profile 포함) — 오늘 **8곳**: geo 5곳(`KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL` 4곳 — map-api·map code-server·legacy webserver/daemon —
+  와 pinvi-api `PINVI_KOR_TRAVEL_GEO_BASE_URL` 신설), transport `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`(map code-server), weather
+  `PINVI_KOR_TRAVEL_WEATHER_BASE_URL` 2곳(PinVi ETL code-server — 리터럴에서 `${…:-…}`로 — 와 pinvi-api 신설). 빼는 것: 형제 자신의 서비스(geo code-server의 `KTG_DAGSTER_ADMIN_API_URL`, weather-web의
   `WEATHER_API_INTERNAL_URL` — 같은 호스트 안 자기 호출)와 `NEXT_PUBLIC_*`(브라우저 공개 origin — root `.env`의 `KTDM_PROD_URL_*`, R6)
 - **사본이 필요한 이유**: compose는 registry를 읽지 못한다(compose subprocess는 allowlist env만 받는다,
   `compose_service.py:3154-3158`). 값을 root `.env`로 내리면 호스트마다 손으로 맞추는 두 번째 사본이 생긴다 —
@@ -111,8 +111,9 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **결박**: `test_every_consumer_default_is_the_sibling_origin`이 compose를 **스캔**해 그 집합을 찾고(줄 번호 열거 금지 — 지정 줄만
   보면 하나를 빠뜨려도 초록이다; 하한은 `test_the_scan_sees_every_known_consumer`) 기대 origin == 각 기본값을 단언한다 — 어느 한 곳을
   옛 n150 loopback으로 되돌리면 그 곳이 이름으로 빨갛다(`test_reverting_any_one_consumer_to_its_n150_loopback_is_named`). **잠정**:
-  형제 → (호스트, 포트) 표가 테스트에 있고 transport·weather는 registry `host:`와 대조한다(`test_the_origin_table_agrees_with_the_registry_hosts`);
-  geo는 소비자가 호스트보다 앞선다(geo Dagster는 아직 n150). 표를 R1 계산으로 바꾸는 것과 `.env` 재정의 거부(validate)는 T-MGR-01c
+  형제 → 소비자 포트 표만 테스트에 있고 호스트는 registry `host:`에서 파생한다(default면 `127.0.0.1`); geo만 명시 재정의(소비자가
+  호스트보다 앞선다 — geo Dagster는 아직 n150), registry가 같은 말을 하면 `test_host_overrides_only_cover_targets_still_on_another_host`가
+  빨개져 지우게 한다. 포트 표를 registry로 옮기는 것과 `.env` 재정의 거부(validate)는 T-MGR-01c, 재정의 제거는 T-MGR-NH
 
 ### B-7. (계획) 공용 workspace digest의 기본값
 

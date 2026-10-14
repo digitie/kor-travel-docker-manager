@@ -2005,6 +2005,12 @@ services:
       # `localhost:14101`(n150의 옛 weather)로 가서 weather가 odroid로 옮긴 뒤 조용히 빈다. ETL code-server와 같은
       # 원천·기본값이다(`backend/tests/test_consumer_origin_defaults.py`).
       PINVI_KOR_TRAVEL_WEATHER_BASE_URL: ${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}
+      # geocoding·주소·행정구역(kor-travel-geo v2, PinVi ADR-025). 없으면 앱 기본값 `localhost:12501`(n150 geo)로 간다 —
+      # 소비자는 odroid geo로 옮겼다(2026-10-14 소유자 "pinvi geo 연동해"). odroid geo는 `ops.public_api_keys`에 등록된
+      # 키만 받으므로 전용 키를 root `.env`의 `PINVI_KOR_TRAVEL_GEO_API_KEY`에 둔다(비면 PinVi가 VWorld 키로 폴백 —
+      # PinVi 쪽 설정). 키는 비밀이라 기본값이 없다.
+      PINVI_KOR_TRAVEL_GEO_BASE_URL: ${PINVI_KOR_TRAVEL_GEO_BASE_URL:-http://192.168.1.13:12501}
+      PINVI_KOR_TRAVEL_GEO_API_KEY: ${PINVI_KOR_TRAVEL_GEO_API_KEY:-}
     ports:
     - ${PINVI_API_PORT:-12801}:${PINVI_API_PORT:-12801}
     healthcheck:

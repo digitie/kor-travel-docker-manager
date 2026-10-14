@@ -421,13 +421,16 @@ def _plane_host(targets: Mapping[str, Any]) -> str | None:
     return defaults[0] if defaults else None
 
 
-def _on_plane_host(targets: Mapping[str, Any], spec: Mapping[str, Any]) -> bool:
-    """target이 plane과 같은 호스트에 있는가(`host:` 생략 = default). 다른 호스트의 location은 이 plane이 싣지 않는다 —
-    healthcheck가 **모든** location SERVING을 요구하므로, 다른 호스트로 옮겨 여기서 멈춘 code-server를 실으면 plane이
-    unhealthy다(2026-10-14 weather·transport → odroid)."""
+def _on_plane_host(targets: Mapping[str, Any], spec: Mapping[str, Any], host: str | None = None) -> bool:
+    """target이 `host`(생략 = 이 compose의 plane 호스트, 곧 default)에 있는가(`host:` 생략 = default). 다른 호스트의
+    location은 그 plane이 싣지 않는다 — healthcheck가 **모든** location SERVING을 요구하므로, 다른 호스트로 옮겨 여기서
+    멈춘 code-server를 실으면 plane이 unhealthy다(2026-10-14 weather·transport → odroid). `host` 인자는 T-MGR-02의
+    호스트별 workspace 파생이 쓸 자리다(잠정 파일은 default 호스트 하나)."""
 
-    host = _plane_host(targets)
-    return host is None or spec.get("host", host) == host
+    default = _plane_host(targets)
+    if default is None:
+        return True
+    return spec.get("host", default) == (host or default)
 
 
 def _derived_workspace(compose: dict[str, Any], targets: dict[str, Any]) -> dict[str, Any]:

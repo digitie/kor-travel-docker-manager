@@ -217,6 +217,9 @@ installer가 만든 release 아래 실행(`.ktdm-source-revision` 존재; `servi
 profile 포함)": 오늘 7곳 = geo `docker-compose.yml:1590`(map-api)·`:1735`(map code-server)·`:1827`·`:1934`(legacy webserver/daemon),
 transport `:1744`, PinVi ETL `:2142`, 그리고 pinvi-api 블록에 추가되는 같은 weather 변수(`docs/bindings.md` B-6). 파생 테스트는 렌더된
 compose를 스캔해 이 집합을 찾는다(줄 번호 열거 금지). root `.env`에 다른 값을 적으면 `targets validate`가 거부한다.
+**2026-10-14 잠정 시행으로 대체**: 소비자 포트는 geo `12501`·transport API gateway `12301`·weather `12201`(odroid `192.168.1.13`),
+집합은 8곳(geo 5 — Map 4·pinvi-api `PINVI_KOR_TRAVEL_GEO_BASE_URL` 1, transport 1, weather 2 — PinVi ETL·pinvi-api), 결박은
+`backend/tests/test_consumer_origin_defaults.py`의 렌더 스캔이다. `validate`의 `.env` 재정의 거부는 아직 없다(T-MGR-01c).
 
 **compose `depends_on`(R7).** 간선은 양끝 서비스의 host 집합이 같을 때만 둔다. tenant 간 의존(`kor-travel-map-api → kor-travel-geo-api`,
 `docker-compose.yml:1535`)은 삭제하고 런타임 REST 검증(health probe·fail-open 기동·`failure_kind`; Map은 `kor_travel_geo_preflight_required`
@@ -577,9 +580,10 @@ transport export는 concierge read key(7.2)와 같은 모양으로 배선한다.
   공용 plane의 webserver·daemon, `legacy-dagster` profile의 옛 webserver·daemon, Map API·UI에는 넣지
   않는다(fetcher를 돌리지 않는 곳에 비밀을 두지 않는다). Map은 이 값을 header
   `X-Kor-Travel-Transport-Service-Token`으로 보낸다.
-- `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`: 기본 `http://127.0.0.1:14001`(transport API, host
-  network loopback). transport는 **접속 주소**(peer)가 `SERVICE_EXPORT_ALLOWED_CLIENTS_CSV`(기본 loopback)
-  안일 때만 받으므로, 다른 값으로 덮을 때도 code-server가 host network에서 loopback으로 닿는 주소를 쓴다.
+- `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`: 기본 `http://192.168.1.13:12301`(odroid transport API gateway —
+  2026-10-14 잠정 시행으로 대체, 옛 기본 `http://127.0.0.1:14001`은 n150 backend loopback이었다). gateway가
+  `/v1/service/exports/*`를 n150 `192.168.1.14`에만 연다(그 저장소 소유). root `.env`에 값을 두지 않는다 — compose
+  기본값이 정본이다(ADR-58 R2).
 - 비어 있으면 `${X:-}`가 빈 문자열을 넘긴다. Map은 빈 값을 미설정으로 보고 그 수집만 실패시킨다
   (조용히 빈 token을 보내지 않는다).
 
