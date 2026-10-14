@@ -36,7 +36,7 @@
 | 대상 | 대역 | 현재 사용 포트 | 관리 대상 |
 |---|---:|---|---|
 | — | `12000-12099` | 없음 | 비어 있다. 폐지된 통합 instance(ADR-37)와, 그 뒤 geo 전용 instance만 가리키던 `db` target(2026-09-28 폐지)의 자리였다. |
-| `storage` | `12100-12199` | S3 API `12101`, console `12105`, **Prometheus `12102`, cAdvisor `12103`, Grafana `12104`**(ADR-48, 대역 예외 — 아래 참고) | RustFS |
+| `storage` | `12100-12199` | S3 API `12101`, console `12105`, **Prometheus `12102`, cAdvisor `12103`, Grafana `12104`, node_exporter `12106`**(ADR-48, 대역 예외 — 아래 참고; node_exporter는 아래 절) | RustFS |
 | `gra` | `12200-12299` | Web UI `12104`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고). 대역 안의 `12205`는 **weather Web**이 쓴다(ADR-57, 아래 참고) | Grafana |
 | `cadv` | `12300-12399` | Exporter `12103`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | cAdvisor |
 | `prom` | `12400-12499` | HTTP `12102`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | Prometheus |
@@ -200,11 +200,19 @@ cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실�
 달라 충돌이 아니다. 따라서 "포트 동일" 규칙은 odroid에서 그대로 성립한다. 폐기 대상(parking-radar
 3000/8000/18000, Portainer 9443)을 빼도 같다.
 
-### node_exporter (계획)
+### node_exporter
 
 호스트 swap·메모리·디스크 여유·시계 동기 상태가 ADR-58의 핵심 위험이라 n150·odroid 양쪽에 node_exporter를
-둔다(지금은 없다). 포트는 이 문서의 절차로 배정한다 — 후보 **`12106`**(`storage` 대역 안, ADR-48의 세
-관측 포트 `12102`~`12104` 옆; `12205`는 weather Web이라 피한다). 확정은 T-MGR-04.
+둔다. 포트는 **`12106`**(`storage` 대역 안, ADR-48의 세 관측 포트 `12102`~`12104` 옆; `12205`는 weather Web이라
+피한다).
+
+- **odroid: 2026-10-14 기동**(소유자 지시, 임시 최소 반영). Manager 설치 전이라 저장소 밖 호스트 파일
+  `/opt/kor-travel-odroid/compose-mon.yml`(project `kor-travel-odroid-monitoring`)로 cAdvisor `12103`과 함께 띄웠다.
+  n150 Prometheus가 `cadvisor-odroid`·`node-odroid` job(`labels: host=odroid`)으로 수집한다 —
+  `config/prometheus/prometheus.yml`의 주소 리터럴은 T-MGR-04의 registry 파생물로 대체한다. **odroid 방화벽은 아직 없다**
+  (INPUT ACCEPT — `prod-deployment.md` §9.1 단계 7 미실시): exporter 집합의 "n150 addr만" 경계(아래 표)는 그 단계 전까지
+  성립하지 않는다. cAdvisor의 노출 수준은 n150과 같고(`0.0.0.0:12103`, privileged), node_exporter는 새 표면이다(읽기 전용).
+- n150: 아직 없다(T-MGR-04).
 
 ### plane별 공개 host (계획)
 
