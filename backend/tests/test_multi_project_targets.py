@@ -305,7 +305,9 @@ def test_single_file_boundary_is_refused_for_an_external_project(
 
 
 @pytest.mark.parametrize("target", ["transport"])
-def test_ensure_target_refuses_external_projects(target: str) -> None:
+def test_ensure_target_refuses_external_projects(
+    target: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """`ensure`는 Manager 자신의 후보만 다룬다.
 
     `ensure`가 전제하는 것은 보호값 스캔·볼륨 그래프·단일파일 경계·핀셋을 통과한
@@ -320,8 +322,15 @@ def test_ensure_target_refuses_external_projects(target: str) -> None:
     에서 뺐다 — `ensure weather`는 이제 정당하게 (외부 거부가 아닌) 다른 배포
     계약 게이트를 탄다. 남은 실제 외부 target 하나(`transport`)로도 "외부는
     거부된다"는 실제 메커니즘이 충분히 증명된다.
+
+    host 경계보다 뒤의 외부 프로젝트 계약을 검사하므로 현재 host를 대상의 직접
+    소유 host로 지정한다. 실제 배치가 다른 host라는 이유로 앞선 소유권 거절만
+    확인하는 시험으로 바뀌지 않는다. 정본 registry의 host 값은 수정하지 않는다.
     """
 
+    owners = registry_module.target_hosts(target)
+    assert len(owners) == 1
+    monkeypatch.setenv("KTDM_HOST", next(iter(owners)))
     service = ComposeService()
     with pytest.raises(DeploymentContractError) as rejection:
         service.ensure_target(target)

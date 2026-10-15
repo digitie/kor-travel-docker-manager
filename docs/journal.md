@@ -1,4 +1,15 @@
 ## 2026-10-15 — 원격 target의 HTTP 관측과 로컬 도구 경계(Codex)
+## 2026-10-15 — 전체 회귀의 Docker 격리와 외부 프로젝트 fixture 전제 교정(Codex)
+
+- 최초 전체 backend 검증은 69 FAIL/2773 PASS/39 SKIP이었다. 실제 Docker 접근을 막은
+  검증 전용 shim이 데몬을 쓰지 않는 `compose config`도 exit127로 막아 정적 렌더와
+  후속 volume 검증이 실패했다. 이 로그를 보존하고 정적 `config`만 허용하는 별도
+  검증 경로로 재확인한다. daemon 명령과 image digest 원격 조회는 계속 차단한다.
+- 별도 실제 fixture 결함은 external-project 거절 시험이 다른 host의 Transport를
+  선택해 더 앞선 host 거절을 받던 것이다. 이 시험만 registry의 직접 소유 host를
+  현재 host로 지정해 기존 외부 프로젝트 거절 경로를 확인한다. 실제 registry 배치와
+  원격 mutation 거절은 바꾸지 않는다. 해당 시험과 host 경계 62 PASS, Ruff·diff PASS.
+  전체 재검증과 독립 제품 리뷰·live 결과는 후속이며 완료로 기록하지 않는다.
 
 - 로컬 컨테이너가 없는 원격 target을 로컬 미생성/offline으로 오인하지 않는다. 로컬에 남은
   컨테이너는 기존 Docker 상태와 stop/log 경로를 유지하고, 나머지는 모든 HTTP connection을
