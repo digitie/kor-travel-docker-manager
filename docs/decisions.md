@@ -2518,3 +2518,8 @@ n150에서 깨진 둘을 고치는 최소 변경만 먼저 넣는다(계획 모�
   폐포가 어차피 geo를 담는다(그 간선 삭제는 R7, T-MGR-01b; 그 전까지 n150 `ensure map`은 n150 geo 컨테이너를 되살린다 —
   workspace에는 없으므로 이중 적재는 없다). Map/PinVi pinned 수렴(`wanted`)은 map·pinvi location만 보고, fence·소유자 파생
   (`installed_location_owners`)은 workspace에 있는 location만 검사하므로 geo가 빠져도 바뀌지 않는다.
+- **T-MGR-01a-F(2026-10-16, #477 리뷰 잔여)**: 공용 plane `dagster`는 `host: all`이 아니라 생략(= default) — T-MGR-02 전까지
+  다른 호스트의 `ensure all`이 두 번째 plane을 띄우지 않게. 자기 식별은 "주소가 로컬인 선언 호스트 정확히 하나 == `KTDM_HOST`",
+  주소 조회는 프로세스당 1회. R1: `{host}`는 URL 호스트 자리에만(설명 문자열은 `127.0.0.1`), 주소가 하나로 정해지지 않으면 로더
+  거부(이름순 첫 호스트·loopback fallback 제거), 실행 service 소유자가 없으면 `containers:`에 적은 target의 호스트. 버전 게이트 제거
+  (`hosts:` 없음 = 암묵 default). 설치기는 flip 전에 새 release의 `targets validate --json`을 `.env`만으로 돌린다.

@@ -2,6 +2,18 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-16 — #477 리뷰 잔여(T-MGR-01a-F): 자기 식별·R1 렌더 N-ready, 설치기 flip 전 식별 검사
+
+- 설치기: compose preflight 다음에 `host-identity` 구간 — 새 release의 `targets validate --json`을 `.env`만으로(`env -u KTDM_HOST`)
+  돌려 누락·미선언·비로컬·모호 식별이면 flip 전에 멈춘다. 같은 sha 재설치도 다시 본다.
+- registry: 주소 조회 프로세스당 1회, "로컬인 선언 호스트 정확히 하나 == `KTDM_HOST`", `{host}`는 URL 호스트 자리에만,
+  다중 원격 소유·무소유 컨테이너는 로더 거부(모든 선언 호스트 기준), 옛 profile 컨테이너는 그것을 적은 target의 호스트,
+  버전 게이트·가짜 `local` 제거, `dagster` default 호스트, root `.env` 비정규 파일·비 UTF-8·dotenv 실패도 운영 모드 거부.
+- n150 실측(own clone, 운영 무변경): `compose config` sha256이 설치본(main `5433056`)과 같다. `targets validate --json`은 `dagster.host`만
+  `all`→`n150`. 연결 좌표 차이 3건(의도): 옛 geo webserver·옛 weather gateway가 loopback → odroid 주소, weather code-server 설명이
+  odroid 주소 → `127.0.0.1`.
+- 배포·n150 변경은 하지 않았다.
+
 ## 2026-10-15 — ktdctl이 root `.env`의 `KTDM_HOST`를 읽게 함
 
 - 증상(n150 prod, #477 설치 `ab52ab51` 뒤): root `.env`에 `KTDM_HOST=n150`이 있는데 `sudo ktdctl pin verify`가

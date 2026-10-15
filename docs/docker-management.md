@@ -194,20 +194,27 @@ T-MGR-01a에서 구현한다. Weather·Transport의 이전된 host 선언을 보
 workspace 분리는 후속 구현·설치 전이며, registry 구현만으로 운영 이전 완료를 판정하지 않는다.
 결정·근거는 `docs/decisions.md` ADR-58, 배치는 `docs/platform-topology.md` §10이다.
 
-v1은 host 필드가 없는 기존 개발 fixture에만 loopback으로 호환된다. 운영 설치본은 v2와 명시적 `KTDM_HOST`가
-필수이며, trusted wheel의 설치 경로 판정은 환경의 project root와 분리한다. 캐시된 registry를 읽더라도
-설치 경로 변경과 실제 IPv4 소유 여부를 다시 검사한다. Linux `ip -j -4 address show`로 secondary 주소도 확인한다.
-목록 순회는 순회당 한 snapshot만 만들고 host 환경값을 전역 캐시하지 않는다.
+`hosts:`가 없는 문서(합성 개발 fixture)는 loopback의 암묵 default 호스트 하나(`default`)로 읽는다 — 스키마 버전 게이트는
+없다(`version` 값은 해석하지 않는다, T-MGR-01a-F). 운영 설치본은 선언된 `hosts:`와 명시적 `KTDM_HOST`가 필수이며, trusted wheel의
+설치 경로 판정은 환경의 project root와 분리한다. 캐시된 registry를 읽더라도 설치 경로 변경과 `KTDM_HOST`(env·`.env`)는 조회마다
+다시 본다. 인터페이스 IPv4 집합(Linux `ip -j -4 address show`, secondary 주소 포함)은 **프로세스당 한 번** 읽는다 — `ktdctl`은
+단명 프로세스이고 backend는 설치마다 재기동되므로 주소 변경은 다음 프로세스에서 보인다. 목록 순회는 순회당 한 snapshot만 만든다.
 
 **registry.** 최상위 `hosts:`(`<키>: {addr: <IPv4>, default: true|생략}`, default는 정확히 1개)와 target의 `host:`(tenant: `hosts` 키
-하나, 생략 = default; infra `storage`/`dagster`/`cadv`: `all`). 로더는 오늘의 unknown-field 거부(`registry.py:373-376`와 같은
+하나, 생략 = default; infra `storage`/`cadv`: `all`, `dagster`는 T-MGR-02 전까지 default). 로더는 오늘의 unknown-field 거부(`registry.py:373-376`와 같은
 모양)로 default 0·2개, IPv4가 아닌 `addr`, `hosts`에 없는 `host:` 값을 `TargetsConfigError`로 거부한다. `all` target의 `include`는
-`KTDM_HOST`로 필터해 "이 호스트의 target만"이 된다. 컨테이너의 host 집합 = 그 컨테이너를 service로 갖는 target들의 host 합집합.
+`KTDM_HOST`로 필터해 "이 호스트의 target만"이 된다. 컨테이너의 host 집합 = 그 컨테이너를 실행 service로 갖는 target들의 host
+합집합, 그런 target이 없으면(옛 `legacy-dagster` profile 컨테이너) 그 컨테이너를 `containers:`에 적은 target들의 host 합집합이다.
+`connection:`의 `{host}`는 URL 호스트 자리(`scheme://{host}`)에만 쓴다 — loopback 전용 설명 문자열은 `127.0.0.1` 리터럴(로더가
+거부한다). R1 렌더는 렌더 호스트가 그 집합에 있으면 `127.0.0.1`, 아니면 집합의 **단일** 주소이고, 어느 선언 호스트에서든 주소가
+하나로 정해지지 않으면(원격 소유자가 둘 이상이거나 어느 target에도 없으면) 로더가 `TargetsConfigError`로 거부한다. 공용 Dagster
+plane(`dagster`)은 호스트별 workspace(T-MGR-02) 전까지 `host:` 생략(= default)이다.
 
 **`KTDM_HOST`(root `.env`).** 이 Manager가 어느 호스트인지. 값은 `hosts` 키. **운영 모드에서만 강제**한다 — 운영 모드 = trusted
 installer가 만든 release 아래 실행(`.ktdm-source-revision` 존재; `services/compose_references.py:33`,
 `services/registry.py:129-132`의 `running_from_trusted_install_root`). 운영 모드에서 값이 비었거나 `hosts[KTDM_HOST].addr`가 이
-호스트의 IPv4 주소 집합에 없으면 거부(빈 env가 가드를 뚫지 못하게). 비운영(CI·개발·isolated plane)은 명시했을 때만 검사하고
+호스트의 IPv4 주소 집합에 없으면 거부(빈 env가 가드를 뚫지 못하게). 또한 주소가 이 장비에 있는 선언 호스트가 **정확히 하나**여야
+한다 — 보조 IPv4·VIP로 선언 주소 둘이 로컬이면 어느 이름이든 거부한다(자기 식별 모호). 비운영(CI·개발·isolated plane)은 명시했을 때만 검사하고
 미설정이면 default 호스트 — 기존 하네스는 무변경.
 값의 출처 우선순위는 **비어 있지 않은 프로세스 env → Manager 루트 `.env`**다(`registry._root_env_file_value`). backend만
 `load_dotenv`로 `.env`를 올리므로, 이 순서가 없으면 `ktdctl`·설치 래퍼·launcher는 `.env`에 값이 있어도 운영 모드에서
@@ -217,7 +224,10 @@ installer가 만든 release 아래 실행(`.ktdm-source-revision` 존재; `servi
 있는 키를 덮지 않으므로 빈 값이 남아 같은 순서로 `.env`를 읽는다 — 어느 쪽이든 최종 값이 비면 운영 모드는 거부한다
 (fail closed). 운영 모드에서 `.env`가 있는데 이 계정이 읽을 수 없으면 "KTDM_HOST 없음"이 아니라
 `Manager root .env is unreadable by this user (<path>); set KTDM_HOST in the process environment`로 거부한다
-(비-root cron은 `docs/prod-deployment.md` §3.w).
+(비-root cron은 `docs/prod-deployment.md` §3.w). 일반 파일이 아니거나(디렉터리·FIFO) UTF-8·dotenv로 풀리지 않는 `.env`도 같은
+꼴(`… is not a regular file` / `is not valid UTF-8` / `is not parseable as a dotenv file`)로 거부한다. 설치기는 flip **전에** 새
+release의 `targets validate --json`을 프로세스 env의 `KTDM_HOST` 없이(`.env`만으로) 돌려 위 거부 조건이면 넘기지 않는다
+(`scripts/install-ktdm-trusted-release`의 `host-identity` 구간).
 
 **명령별 host 규칙(R4).**
 
@@ -248,9 +258,8 @@ compose를 스캔해 이 집합을 찾는다(줄 번호 열거 금지). root `.e
 `docker compose config` 렌더 성공(compose 플러그인 부재는 여기서 드러난다 — `backend/tests/test_compose_readiness_integration.py:78`의
 `compose version`보다 효과가 앞선다).
 
-**`targets validate --json` 출력(초안).** `{"ok": bool, "host": "<KTDM_HOST 또는 default>", "targets": {"<id>": {"host": "<hosts 키|all>",
-"local": bool}}, "errors": [...]}` — transport 저장소의 배포 스크립트가 `targets.transport.host == <addr의 키>`를 효과로 읽는다. 스키마는
-T-MGR-01a에서 확정한다.
+**`targets validate --json` 출력.** 성공 시 `{"status": "ok", "host": "<자기 호스트>", "targets": {"<id>": {"host": "<hosts 키|all>"}}}`,
+실패 시 exit≠0과 stderr 한 줄 — transport 저장소의 배포 스크립트가 `targets.transport.host == <addr의 키>`를 효과로 읽는다.
 
 **호스트 차이는 root `.env`뿐이다(R6).** compose 파일은 하나. odroid `.env`에만 있는 키(예정, 값은 T-MGR-02/03/05에서 추가):
 `KTDM_HOST`, `KTDM_DAGSTER_WORKSPACE_DIGEST`, `KTDM_POSTGRES_IMAGE`/`KTDM_POSTGRES_CLIENT_IMAGE`, `KTDM_PG_*` 튜닝, `KTDM_DATA_SOURCE_DEVICE`,
