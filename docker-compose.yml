@@ -2498,17 +2498,9 @@ services:
     # 이미지에 구운 `dagster_home/dagster.yaml`(옛 전용 metadata DB) 대신 공용 instance 정의를 붙인다.
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     healthcheck:
-      # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
-      # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
-      # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
-      # 자식에 묶은 probe·orphan run 정리 — `x-dagster-code-server-probe`(파일 머리)의 주석.
-      test:
-      - CMD
-      - python
-      - -I
-      - -c
-      - *dagster-code-server-probe
-      - '12503'
+      # 읽기 전용 live 확인만 수행한다. PID 종료·DB reaper는 healthcheck 책임이 아니다.
+      # consumer 이미지에 Common grpc_health CLI가 포함된 뒤 적용한다(docker-management.md).
+      test: ["CMD", "python", "-m", "kortravelcommon.grpc_health", "12503", "--check", "live"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -2913,17 +2905,9 @@ services:
     oom_score_adj: -500
     pids_limit: 2048
     healthcheck:
-      # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
-      # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
-      # 2026-09-27 n150에서 그런 probe 47개가 겹쳐 load 137을 만들었다. 이 probe는 0.5초다.
-      # 자식에 묶은 probe·orphan run 정리 — `x-dagster-code-server-probe`(파일 머리)의 주석.
-      test:
-      - CMD
-      - python
-      - -I
-      - -c
-      - *dagster-code-server-probe
-      - '14106'
+      # 읽기 전용 live 확인만 수행한다. PID 종료·DB reaper는 healthcheck 책임이 아니다.
+      # consumer 이미지에 Common grpc_health CLI가 포함된 뒤 적용한다(docker-management.md).
+      test: ["CMD", "python", "-m", "kortravelcommon.grpc_health", "14106", "--check", "live"]
       interval: 30s
       timeout: 10s
       retries: 5

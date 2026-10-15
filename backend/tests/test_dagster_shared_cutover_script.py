@@ -158,7 +158,11 @@ def _shared_code_servers() -> list[dict[str, Any]]:
 
 
 def _shared_probe() -> str:
-    probes = {str(service["healthcheck"]["test"][4]) for service in _shared_code_servers()}
+    probes = {
+        str(service["healthcheck"]["test"][4])
+        for service in _shared_code_servers()
+        if service["healthcheck"]["test"][:4] != ["CMD", "python", "-m", "kortravelcommon.grpc_health"]
+    }
     assert len(probes) == 1, len(probes)
     return next(iter(probes))
 
@@ -422,3 +426,43 @@ def test_a_sibling_image_with_another_dagster_than_the_plane_is_refused(image: s
         capture_output=True, text=True, check=False,
     )
     assert (result.returncode == 0) is ok, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("target", ["geo", "weather"])
+def test_common_live_probe_matches_code_server_port_and_keeps_timing(target: str) -> None:
+    service = _rendered()["services"][f"kor-travel-{target}-dagster-code-server"]
+    command = service["command"]
+    port = str(command[command.index("-p") + 1])
+    health = service["healthcheck"]
+    assert health == {
+        "test": ["CMD", "python", "-m", "kortravelcommon.grpc_health", port, "--check", "live"],
+        "interval": "30s", "timeout": "10s", "retries": 5,
+        "start_period": "600s", "start_interval": "5s",
+    }
+
+
+@pytest.mark.parametrize("replacement", [
+    ["CMD", "python", "-m", "kortravelcommon.grpc_health", "1", "--check", "live"],
+    ["CMD", "python", "-m", "kortravelcommon.grpc_health", "12503", "--check", "ready"],
+    ["CMD-SHELL", "python -m kortravelcommon.grpc_health 12503 --check live"],
+])
+def test_cutover_does_not_hide_malformed_common_probe(
+    tmp_path: Path, replacement: list[str],
+) -> None:
+    document = _rendered()
+    document["services"]["kor-travel-geo-dagster-code-server"]["healthcheck"]["test"] = replacement
+    completed = _run_derive("transport", document, _write(tmp_path, _sibling_render()))
+    assert completed.returncode != 0
+    assert "do not share one probe" in completed.stderr
+
+
+def test_other_code_servers_keep_the_legacy_anchor_and_transport_is_external() -> None:
+    document = yaml.safe_load(_COMPOSE.read_text(encoding="utf-8"))
+    opted = {"kor-travel-geo-dagster-code-server", "kor-travel-weather-dagster-code-server"}
+    for name, service in document["services"].items():
+        if " code-server start " in " " + " ".join(str(w) for w in service.get("command") or []) + " ":
+            if name not in opted:
+                assert service["healthcheck"]["test"][4] == document["x-dagster-code-server-probe"]
+    assert not any("transport" in name and "code-server" in name for name in document["services"])
+    targets = yaml.safe_load(_TARGETS.read_text())
+    assert targets["targets"]["transport"]["external_project"]
