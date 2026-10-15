@@ -357,6 +357,26 @@ def save_compose_config(config: dict[str, Any]) -> None:
         compose_path = Path(environment_snapshot.compose_path)
         original_bytes = compose_path.read_bytes()
         current = get_compose_config(str(compose_path))
+        before_services = current.get("services")
+        after_services = config.get("services")
+        if not isinstance(before_services, Mapping) or not isinstance(after_services, Mapping):
+            raise ComposeCandidateContractError("compose config has no bounded host service scope")
+        names = set(before_services) | set(after_services)
+        if any(not isinstance(name, str) for name in names):
+            raise ComposeCandidateContractError("compose config has invalid host service scope")
+        # 공통 project/network/extension 변경은 모든 service에 영향을 줄 수 있다.
+        # service별 변경·삭제는 그 service만 검사한다. 저장은 실행이 아니므로 의존성을
+        # 시작한다고 가정하지 않는다. 실제 실행 폐포는 frozen Compose argv 경계가 검사한다.
+        shared_changed = (
+            {key: value for key, value in current.items() if key != "services"}
+            != {key: value for key, value in config.items() if key != "services"}
+        )
+        missing = object()
+        changed = sorted(
+            name for name in names
+            if shared_changed or before_services.get(name, missing) != after_services.get(name, missing)
+        )
+        compose_service._assert_host_service_scope(changed)
         if not current or (
             compose_volume_graph_hash(config) != compose_volume_graph_hash(current)
         ):

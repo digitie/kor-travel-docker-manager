@@ -304,6 +304,8 @@ def test_frozen_compose_dependencies_cannot_start_a_foreign_tenant(config):
     # SERVICE 뒤의 --no-deps는 container argv이므로 의존성 면제가 아니다.
     with pytest.raises(DeploymentContractError, match="host"):
         ComposeService._assert_host_mutation_scope(["run", "kor-travel-map-api", "--no-deps"], resolved=resolved)
+    with pytest.raises(DeploymentContractError, match="host"):
+        ComposeService._assert_host_mutation_scope(["scale", "kor-travel-map-api=2"], resolved=resolved)
 
 
 def test_compose_stop_and_read_survive_missing_host_config(config, monkeypatch):
@@ -348,3 +350,60 @@ def test_lower_compose_guard_does_not_trust_frozen_or_capability_scope(config, m
             environment_snapshot=None, external_input_snapshot=None,
             materialized_compose={"services": {"kor-travel-geo-api": {}}} if frozen else None,
         )
+
+
+@pytest.fixture
+def config_writer(config, monkeypatch, tmp_path):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from kor_travel_docker_manager.services import docker_service as module
+
+    before = {"services": {"kor-travel-map-api": {}, "kor-travel-geo-api": {}}}
+    path = tmp_path / "compose.yml"
+    path.write_text(yaml.safe_dump(before))
+    snapshot = SimpleNamespace(compose_path=str(path), effective={})
+    monkeypatch.setattr(module, "c6c_deployment_lock_from_environment", lambda: nullcontext(None))
+    monkeypatch.setattr(module, "_capture_compose_environment_snapshot", lambda **_kw: snapshot)
+    monkeypatch.setattr(module, "assert_environment_snapshot_matches_c6c_lock", lambda *_a: None)
+    monkeypatch.setattr(module, "assert_manager_mutation_allowed", lambda **_kw: None)
+    monkeypatch.setattr(module, "get_compose_config", lambda *_a: copy.deepcopy(before))
+    monkeypatch.setattr(module, "revalidate_candidate_system_bind_snapshots", lambda *_a: None)
+    return module, before, path
+
+
+@pytest.mark.parametrize("change", ["foreign", "remove_foreign", "global", "unknown"])
+def test_compose_config_writer_refuses_foreign_scope_before_validation(config_writer, monkeypatch, change):
+    module, before, path = config_writer
+    candidate = copy.deepcopy(before)
+    if change == "foreign":
+        candidate["services"]["kor-travel-geo-api"]["environment"] = {"MODE": "changed"}
+    elif change == "remove_foreign":
+        del candidate["services"]["kor-travel-geo-api"]
+    elif change == "global":
+        candidate["name"] = "another-project"
+    else:
+        candidate["services"]["undeclared-service"] = {}
+    original = path.read_bytes()
+    monkeypatch.setattr(module, "_validate_compose_candidate", lambda *_a, **_k: pytest.fail("foreign scope reached render"))
+    monkeypatch.setattr(module, "_atomic_write", lambda *_a, **_k: pytest.fail("foreign scope reached write"))
+    with pytest.raises(DeploymentContractError, match="host"):
+        module.save_compose_config(candidate)
+    assert path.read_bytes() == original
+
+
+def test_compose_config_writer_keeps_local_change_and_existing_transaction(config_writer, monkeypatch):
+    from types import SimpleNamespace
+
+    module, before, path = config_writer
+    candidate = copy.deepcopy(before)
+    candidate["services"]["kor-travel-map-api"]["environment"] = {"MODE": "local"}
+    payload = yaml.safe_dump(candidate).encode()
+    validation = SimpleNamespace(system_bind_snapshots=(), transaction_snapshot=SimpleNamespace(
+        compose_source_bytes=payload, compose_source_mode=0o600,
+    ))
+    monkeypatch.setattr(module, "_validate_compose_candidate", lambda *_a, **_k: validation)
+    writes = []
+    monkeypatch.setattr(module, "_atomic_write", lambda *a, **k: writes.append((a, k)))
+    module.save_compose_config(candidate)
+    assert writes == [((str(path), payload), {"mode": 0o600})]

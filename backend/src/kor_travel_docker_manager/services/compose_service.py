@@ -2637,6 +2637,23 @@ class ComposeService:
         # 남아 있는 local container를 멈추는 길은 host 식별/설정 장애에도 보존한다.
         if command == "stop":
             return
+        ComposeService._assert_host_service_scope(
+            scope,
+            resolved=resolved,
+            follow_dependencies=(
+                command in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES
+                and "--no-deps" not in flags
+            ),
+        )
+
+    @staticmethod
+    def _assert_host_service_scope(
+        scope: Sequence[str], *, resolved: Mapping[str, Any] | None = None,
+        follow_dependencies: bool = False,
+    ) -> None:
+        """기존 registry의 직접 service 소유권을 config 저장과 실제 실행이 공유한다."""
+        if not scope:
+            return
         config = load_targets_config()
         selected = current_host(config)
         owners: dict[str, set[str]] = {}
@@ -2673,7 +2690,6 @@ class ComposeService:
             raise DeploymentContractError("resolved compose has no host service graph")
         visited: set[str] = set()
         pending = list(scope)
-        follow_dependencies = command in {"up", "create", "run", "start", "restart", "watch"} and "--no-deps" not in flags
         while pending:
             service = pending.pop()
             if service in visited:

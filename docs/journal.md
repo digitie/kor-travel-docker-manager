@@ -1,3 +1,15 @@
+## 2026-10-15 — compose 전체 저장의 host 소유권 보강(Codex)
+
+- `save_compose_config`도 기존 registry의 직접 service 소유권을 검사한다. 원격 service 수정·삭제,
+  미등록 service 추가, 원격 service에 영향을 줄 수 있는 project/network 공통 설정 변경을
+  렌더·원자 저장 전에 거부한다. 로컬 service 변경과 기존 G·frozen validation·CAS 저장은 유지한다.
+- 기존 Compose 실행 경계와 소유권 계산을 공유한다. config 저장은 컨테이너를 시작하지 않으므로
+  가짜 argv/플래그로 의존성 면제를 주장하지 않는다. 실제 시작의 의존 폐포는 실제 파싱된 argv와
+  frozen graph로 계속 판정하고, `scale`도 기존 의존성 도달 명령 집합을 재사용한다.
+- 신규 전체 저장 회귀 OLD 4 FAIL/1 PASS → host/config 관련 176 PASS. scale 의존 경계를 추가한
+  최종 host61 PASS, backend 전체 Ruff·diff PASS. 중복 실행 수는 합산하지 않는다.
+  운영·배포·live E2E는 수행하지 않았다.
+
 ## 2026-10-15 — T-MGR-01b lower Compose 실행 범위
 
 - 기존 Compose parser와 registry 직접 services/init·installed Dagster family·기존 pinned one-shot 이름으로 소유권을 파생한다. public run은 mutation lock 전에 직접 범위를 검사하고 실제 실행은 frozen resolved depends_on 폐포도 검사한다. 진짜 no-deps 옵션만 폐포를 생략한다.
