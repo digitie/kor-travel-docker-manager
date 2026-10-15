@@ -45,6 +45,7 @@ from kor_travel_docker_manager.services.registry import (
     MANAGED_CONTAINERS,
     external_project_for_container,
     get_project_root,
+    require_local_container,
 )
 from kor_travel_docker_manager.services.secret_scrub import (
     URL_USERINFO_RE,
@@ -899,6 +900,8 @@ class DockerService:
             return {"success": False, "error": f"Container {container_id} is not managed."}
         if action not in {"start", "stop", "restart"}:
             return {"success": False, "error": f"Invalid action: {action}"}
+        if action != "stop":
+            require_local_container(container_id)
         if external_project_for_container(container_id) is not None:
             # 형제 컨테이너의 수명주기는 Docker SDK만 쓴다. c6c lock과 Manager mutation
             # 환경 계약은 **Manager 자신의 compose**를 지키는 장치라, 남의 컨테이너를
@@ -1160,6 +1163,7 @@ class DockerService:
         """Update docker-compose.yml configuration and recreate the service through Compose."""
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}
+        require_local_container(container_id)
         # lock 획득이나 Docker 접근보다 먼저 검증한다. compose 파일을 읽는 것은 로컬 YAML
         # 읽기라 lock이 필요 없다 — env의 기존(baseline) 값이 이미 `${...}` 보간이었는지
         # 알아야 "보간 → 리터럴 되돌리기"만 정확히 잡고 원래부터 리터럴이던 값(불리언
@@ -1554,6 +1558,7 @@ class DockerService:
         """Reset container configuration in docker-compose.yml to default and recreate it."""
         if container_id not in MANAGED_CONTAINERS:
             return {"success": False, "error": f"Container {container_id} is not managed."}
+        require_local_container(container_id)
         if external_project_for_container(container_id) is not None:
             # `update`와 같은 이유로 첫 관문에서 내려보낸다. 거부는 아래 한 자리에서.
             return self._reset_container_config_unlocked(

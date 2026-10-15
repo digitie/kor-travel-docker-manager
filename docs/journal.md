@@ -1,3 +1,10 @@
+## 2026-10-15 — T-MGR-01b 변경 소유권 기초 구현 중
+
+- PR477 머지 main6bd65cd에서 별도 브랜치로 시작했다. registry의 직접 target/container 호스트 판정을 재사용하고 alias·대소문자와 pair 각 대상 검사를 추가했다.
+- 공개 Docker start/restart/config/reset의 external 빠른 경로보다 먼저 소유 호스트를 검사한다. stop·logs·status의 기존 로컬 관측 경로는 유지한다.
+- ensure에 사용할 services/init 동일 local 폐포 계산을 구현했다. 첫 커밋은 이 공통 primitive와 Docker 경계만이며 lower Compose·backup·pin·workspace 전체 연결은 아직 진행 중이다. T-MGR-01b/T02 완료나 운영 설치 가능 상태로 표시하지 않는다.
+- 운영·Docker·네트워크·DB 변경 0, 기존 G·pin schema·instance 설정 변경 0. 새 봉인이나 권한 체인은 추가하지 않는다. 전체 회귀·2인 독립 리뷰·live 검증은 후속이다.
+
 # JOURNAL — 작업 일지
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.

@@ -12,6 +12,7 @@ from typing import Any, Final
 
 import yaml
 
+from kor_travel_docker_manager.services.errors import DeploymentContractError
 from kor_travel_docker_manager.services.yaml_strict import (
     load_yaml_rejecting_duplicate_keys,
 )
@@ -434,6 +435,53 @@ def container_hosts(container_id: str, config: Mapping[str, Any] | None = None) 
     return frozenset(owners)
 
 
+def _require_targets_on_host(
+    names: list[str], config: Mapping[str, Any], selected: str
+) -> None:
+    for name in names:
+        if selected not in target_hosts(name, config):
+            raise DeploymentContractError(
+                f"target {name} is not owned by the current host; mutation refused"
+            )
+
+
+def require_local_targets(
+    *targets: str, config: Mapping[str, Any] | None = None
+) -> None:
+    """쓰기 전에 각 target의 직접 소유권을 확인한다. 의존·관찰 집합은 권한이 아니다."""
+    config = load_targets_config() if config is None else config
+    selected = current_host(config)
+    names = [_target_name_from_config(target, config) for target in targets]
+    _require_targets_on_host(names, config, selected)
+
+
+def require_local_container(
+    container_id: str, *, config: Mapping[str, Any] | None = None
+) -> None:
+    """실행 services의 소유권으로만 container 시작·재생성 범위를 판정한다."""
+    config = load_targets_config() if config is None else config
+    if current_host(config) not in container_hosts(container_id, config):
+        raise DeploymentContractError(
+            f"container {container_id} is not owned by the current host; mutation refused"
+        )
+
+
+def local_mutation_target(
+    target: str, *, config: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """ensure의 services와 init을 같은 host-local 의존 폐포에서 유도한다."""
+    config = load_targets_config() if config is None else config
+    selected = current_host(config)
+    name = _target_name_from_config(target, config)
+    if not config["targets"][name].get("include"):
+        _require_targets_on_host([name], config, selected)
+    sequence = [
+        owner for owner in _target_sequence_from_config(name, config, selected)
+        if selected in target_hosts(owner, config)
+    ]
+    return _target_details(name, config, selected, sequence=sequence)
+
+
 def _managed_containers() -> dict[str, dict[str, Any]]:
     config = load_targets_config()
     selected = current_host(config)
@@ -777,10 +825,14 @@ def target_sequence_for_target(target: str | None) -> list[str]:
     return _config_and_sequence(target)[1]
 
 
-def _target_details(name: str, config: Mapping[str, Any], selected: str | None) -> dict[str, Any]:
+def _target_details(
+    name: str, config: Mapping[str, Any], selected: str | None,
+    *, sequence: list[str] | None = None,
+) -> dict[str, Any]:
     targets = config["targets"]
     spec = targets[name]
-    sequence = _target_sequence_from_config(name, config, selected)
+    if sequence is None:
+        sequence = _target_sequence_from_config(name, config, selected)
     return {
         "id": name,
         **spec,
