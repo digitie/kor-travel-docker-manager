@@ -296,6 +296,11 @@ def test_every_dagster_code_server_has_a_grpc_health_healthcheck(
         "healthcheck가 없다 — 죽거나 응답 없어져도 조용하다."
     )
     probe = _command_text(healthcheck.get("test"))
+    if "kortravelcommon.grpc_health" in probe:
+        assert healthcheck["test"][:4] == ["CMD", "python", "-m", "kortravelcommon.grpc_health"]
+        assert healthcheck["test"][5:] == ["--check", "live"]
+        assert healthcheck.get("start_period")
+        return
     missing = [fragment for fragment in _GRPC_HEALTH_FRAGMENTS if fragment not in probe]
     assert not missing, (
         f"`{service_name}`의 healthcheck가 dagster의 gRPC health protocol을 부르지 않는다"
@@ -337,6 +342,7 @@ def _the_probe() -> str:
     probes = {
         str(((service.get("healthcheck") or {}).get("test") or [None] * 5)[4])
         for service in _proxy_code_server_services().values()
+        if service["healthcheck"]["test"][:4] != ["CMD", "python", "-m", "kortravelcommon.grpc_health"]
     }
     assert len(probes) == 1, f"code-server probe가 서로 다르다({len(probes)}종)"
     return next(iter(probes))
@@ -348,19 +354,21 @@ def test_the_compose_declares_a_proxy_code_server() -> None:
 
 
 @pytest.mark.parametrize("service_name", sorted(_proxy_code_server_services()))
-def test_every_proxy_code_server_probe_is_bound_to_the_child(service_name: str) -> None:
-    """`code-server start`의 healthcheck는 proxy가 아니라 **자식**을 본다(2026-10-02 적대 리뷰 HIGH).
+def test_every_proxy_code_server_probe_uses_its_declared_health_policy(service_name: str) -> None:
+    """legacy는 자식 확인·reaper를 유지하고 Common opt-in은 순수 live 조회만 한다.
 
-    proxy의 `DagsterApi` health는 고정 SERVING이고, 자식이 load error를 냈거나 OOM으로 죽어도 proxy는 그대로
-    살아 아무도 자식을 다시 띄우지 않는다. 옛 `api grpc`는 import 실패에 프로세스가 끝나 `restart:
-    unless-stopped`가 고쳤다. 그 self-heal을 되살리는 것이 이 probe다. PID 1이 tini여야(`init: true`) SIGTERM이
-    proxy에 전달되어 컨테이너가 끝난다. 네 서비스가 **같은** probe를 쓴다(아래 실행 테스트가 그 하나를 잰다).
+    init과 proxy heartbeat 범위는 두 정책 모두에 적용한다. live의 자식 준비/복구 보장은
+    별도 상태 확인과 실행 복구 경계에서 검증하며 이 테스트가 그 성공을 주장하지 않는다.
     """
     service = _proxy_code_server_services()[service_name]
     probe = _command_text((service.get("healthcheck") or {}).get("test"))
-    missing = [fragment for fragment in _PROXY_EFFECT_FRAGMENTS if fragment not in probe]
-    assert not missing, f"`{service_name}`의 probe가 자식에 닿지 않는다(빠진 조각: {missing})"
-    assert service["healthcheck"]["test"][4] == _the_probe(), service_name
+    if service["healthcheck"]["test"][:4] == ["CMD", "python", "-m", "kortravelcommon.grpc_health"]:
+        # opt-in 서비스는 조회만 한다. PID 종료·orphan reaper를 기대하지 않는다.
+        assert service["healthcheck"]["test"][5:] == ["--check", "live"]
+    else:
+        missing = [fragment for fragment in _PROXY_EFFECT_FRAGMENTS if fragment not in probe]
+        assert not missing, (service_name, missing)
+        assert service["healthcheck"]["test"][4] == _the_probe(), service_name
     assert service.get("init") is True, f"`{service_name}`: PID 1이 tini가 아니다(`init: true`)"
     ttl = str((service.get("environment") or {}).get(_PROXY_HEARTBEAT_ENV, ""))
     low, high = _PROXY_HEARTBEAT_RANGE_SECONDS

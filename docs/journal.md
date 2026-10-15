@@ -1,3 +1,19 @@
+## 2026-10-16 — Weather·Geo 상태 조회와 복구 부작용 분리
+
+Manager의 두 code-server healthcheck를 Common grpc live CLI로 전환한다. Transport는
+외부 프로젝트 Compose 소유이므로 새 서비스 선언을 추가하지 않고 후속으로 남긴다.
+기존 legacy anchor를 쓰는 다른 서비스와 external cutover 검증은 보존한다.
+조회에서 PID 종료·DB reaper를 분리하고 기존 run monitoring/실패 재시도 센서의 책임과
+live가 자식 정의·worker·DB 준비를 보장하지 않는 한계를 운영 문서에 명시했다.
+이미지에 CLI가 없는 상태에서 선언을 먼저 적용하면 unhealthy이므로 소비 이미지 확인이 선행한다.
+주기·timeout·동시성 수치는 변경하지 않았고 운영 배포나 성능 개선 실증은 수행하지 않았다.
+관련 Compose/cutover/상태 확인 회귀 225건, 전체 백엔드 Ruff와 프런트엔드 35건·type/lint/build가 통과했다.
+새 선언 회귀는 이전 Compose에서 2건 실패했고 수정본에서 통과했다. YAML 모델 대조로
+두 서비스의 healthcheck.test 외 전체 필드 및 다른 서비스·기존 anchor가 동일함을 확인했다.
+초기 구계약 회귀 41 FAIL/115 PASS와 shell 형식 진단 1 FAIL/161 PASS 원문은 로컬에 보존했다.
+이전 공용-probe 단일성 검사는 Common live CLI의 정확한 argv만 제외하며 잘못된 포트·모드·shell은
+계속 거절한다. CodeGraph init/sync와 diff 점검을 통과했다. 전체 backend suite는 PR CI에서 별도 확인한다.
+
 ## 2026-10-16 — Geo UI Dagster 공개 URL 누락 수정
 
 Geo API에만 Dagster 공개 URL이 설정되어 UI 콘솔 버튼이 표시되지 않는 배포 누락을 수정한다.
