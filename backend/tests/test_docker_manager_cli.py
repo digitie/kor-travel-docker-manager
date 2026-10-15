@@ -53,16 +53,10 @@ def test_registry_resolves_application_targets_to_shared_services():
     ]
     assert services_for_target("srv") == [
         "rustfs",
-        "grafana",
         "cadvisor",
         "prometheus",
+        # R7(T-MGR-01b): map은 다른 호스트의 geo에 기대지 않는다 — 공용 PG는 concierge가 처음 낸다.
         "kor-travel-shared-postgres",
-        "kor-travel-shared-db-init-geo",
-        "kor-travel-geo-api",
-        "kor-travel-geo-ui",
-        "kor-travel-geo-dagster-code-server",
-        # kor-travel-shared-postgres는 geo target에서 이미 나왔으므로(ADR-45) 여기서는
-        # dedupe로 빠진다.
         "kor-travel-shared-db-init-concierge",
         "kor-travel-concierge-api",
         "kor-travel-concierge-mcp",
@@ -146,16 +140,14 @@ def test_short_aliases_resolve_dependency_order():
     ]
     assert services_for_target("geo") == [
         "rustfs",
-        "grafana",
         "cadvisor",
-        "prometheus",
         "kor-travel-shared-postgres",
         "kor-travel-shared-db-init-geo",
         "kor-travel-geo-api",
         "kor-travel-geo-ui",
         "kor-travel-geo-dagster-code-server",
     ]
-    assert services_for_target("prom")[-3:] == ["grafana", "cadvisor", "prometheus"]
+    assert services_for_target("prom")[-3:] == ["rustfs", "cadvisor", "prometheus"]
 
 
 def test_env_redaction_masks_sensitive_values():

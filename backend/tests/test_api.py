@@ -1007,16 +1007,10 @@ def test_get_targets():
     ]
     assert data[7]["resolved_services"] == [
         "rustfs",
-        "grafana",
         "cadvisor",
         "prometheus",
+        # R7(T-MGR-01b): map은 다른 호스트의 geo에 기대지 않는다 — 공용 PG는 concierge가 처음 낸다.
         "kor-travel-shared-postgres",
-        "kor-travel-shared-db-init-geo",
-        "kor-travel-geo-api",
-        "kor-travel-geo-ui",
-        "kor-travel-geo-dagster-code-server",
-        # kor-travel-shared-postgres는 geo target에서 이미 나왔으므로(ADR-45) 여기서는
-        # dedupe로 빠진다 — services_for_target()이 첫 등장만 남긴다.
         "kor-travel-shared-db-init-concierge",
         "kor-travel-concierge-api",
         "kor-travel-concierge-mcp",
