@@ -1025,7 +1025,7 @@ def test_get_targets():
         "pinvi-dagster-code-server",
         # PinVi·geo·Map의 옛 webserver·daemon은 공용 plane 전환(ADR-54)으로 `legacy-dagster`에 있어 빠졌다.
     ]
-    assert data[3]["resolved_services"][-3:] == ["grafana", "cadvisor", "prometheus"]
+    assert data[3]["resolved_services"][-3:] == ["rustfs", "cadvisor", "prometheus"]
     assert any(target["id"] == "all" for target in data)
 
 

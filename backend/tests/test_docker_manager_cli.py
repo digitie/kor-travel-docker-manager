@@ -73,12 +73,8 @@ def test_registry_resolves_application_targets_to_shared_services():
     ]
     assert runtime_services_for_target("srv") == [
         "rustfs",
-        "grafana",
         "cadvisor",
         "prometheus",
-        "kor-travel-geo-api",
-        "kor-travel-geo-ui",
-        "kor-travel-geo-dagster-code-server",
         "kor-travel-concierge-api",
         "kor-travel-concierge-mcp",
         "kor-travel-concierge-dagster-code-server",

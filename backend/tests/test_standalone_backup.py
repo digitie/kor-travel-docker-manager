@@ -42,6 +42,8 @@ def _backup_role_on_this_host(monkeypatch: pytest.MonkeyPatch) -> None:
     original = standalone_backup._require_role_on_this_host
 
     def on_its_host(role):
+        if role not in standalone_backup.BACKUP_ROLE_TARGETS:
+            return original(role)
         monkeypatch.setenv("KTDM_HOST", get_target(standalone_backup.BACKUP_ROLE_TARGETS[role])["host"])
         original(role)
 
