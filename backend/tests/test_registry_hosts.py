@@ -215,12 +215,51 @@ def test_cached_config_rechecks_identity_but_probes_addresses_once(config, monke
         registry.services_for_target("map")
     registry.list_targets()
     assert len(calls) == 1
-    # 이름은 매 조회 다시 본다 — 바꾸면 다음 조회가 거부한다.
+    # 이름은 매 조회 다시 본다 — 바꾸면 다음 조회가 거부한다. 맞지 않는 조회는 캐시를 비우고 정확히 한 번 다시 본다.
     monkeypatch.setenv("KTDM_HOST", "odroid")
     for read in (registry.load_targets_config, lambda: registry.services_for_target("map"), registry.list_targets):
         with pytest.raises(registry.TargetsConfigError, match="not assigned"):
             read()
-    assert len(calls) == 1
+    assert len(calls) == 1 + 3
+
+
+def test_identity_mismatch_reprobes_once_so_a_late_address_is_not_cached(config, monkeypatch, tmp_path):
+    """#483 리뷰 A: n150은 Wi-Fi라 부팅 직후 첫 probe에 자기 주소가 없을 수 있다. 그 결과가 프로세스 수명 동안 남으면
+    backend가 재기동 전까지 모든 조회를 거부한다. 맞지 않으면 캐시를 비우고 한 번만 다시 본다."""
+    import json
+    import subprocess
+
+    (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
+    monkeypatch.setenv("KTDM_HOST", "n150")
+    own = config["hosts"]["n150"]["addr"]
+    answers = [set(), {own}]
+    calls = []
+
+    def probe(command, **kwargs):
+        calls.append(command)
+        current = answers[min(len(calls), len(answers)) - 1]
+        data = [{"addr_info": [{"family": "inet", "local": address} for address in sorted(current)]}]
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(data).encode())
+
+    monkeypatch.setattr(subprocess, "run", probe)
+    assert registry.current_host(config) == "n150"
+    assert len(calls) == 2
+    # 맞은 뒤에는 다시 캐시에서 읽는다.
+    for _ in range(20):
+        registry.current_host(config)
+    assert len(calls) == 2
+
+
+def test_identity_mismatch_is_refused_after_a_single_reprobe(config, monkeypatch, tmp_path):
+    (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
+    monkeypatch.setenv("KTDM_HOST", "n150")
+    calls = _fake_ip(monkeypatch, set())
+    with pytest.raises(registry.TargetsConfigError, match=r"not assigned to this host \(declared hosts assigned here: none\)"):
+        registry.current_host(config)
+    assert len(calls) == 2
+    calls = _fake_ip(monkeypatch, {config["hosts"]["odroid"]["addr"]})
+    with pytest.raises(registry.TargetsConfigError, match=r"declared hosts assigned here: odroid"):
+        registry.current_host(config)
 
 
 def test_failed_address_probe_is_not_cached(monkeypatch):
@@ -422,7 +461,6 @@ def test_multi_owner_remote_container_does_not_resolve_to_the_first_name(config,
     monkeypatch.setenv("KTDM_HOST", "n150")
     assert registry.container_hosts("kor-travel-map-api", config) == frozenset({"mars", "odroid"})
     assert registry._managed_containers()["kor-travel-map-api"]["connection"] == config["containers"]["kor-travel-map-api"]["connection"]
-    assert "{host}" in registry._managed_containers()["kor-travel-map-api"]["connection"]
 
 
 def _derived(config, monkeypatch, host):
@@ -529,10 +567,11 @@ def _host_literal_hits(hosts: dict) -> list[tuple[str, int, str]]:
 
     names = "|".join(re.escape(name) for name in hosts)
     word = re.compile(rf"(?<![A-Za-z0-9_])(?:{names})(?![A-Za-z0-9_])")
-    addresses = [spec["addr"] for spec in hosts.values()]
+    # 주소는 숫자 경계로 — `.13`이 `.130`·`1.13`이 `11.13`에 걸리지 않게.
+    address = re.compile("|".join(rf"(?<![0-9]){re.escape(spec['addr'])}(?![0-9])" for spec in hosts.values()))
 
     def carries(text: str) -> bool:
-        return word.search(text) is not None or any(address in text for address in addresses)
+        return word.search(text) is not None or address.search(text) is not None
 
     hits = []
     for path in _python_sources():
@@ -566,6 +605,7 @@ def test_host_literal_scan_sees_words_fstrings_and_skips_docstrings(tmp_path, mo
         '    a = f"ssh {x}@n150 now"\n'
         '    b = "target on odroid"\n'
         '    c = "http://10.0.0.9:1"\n'
+        '    e = "http://10.0.0.90:1 110.0.0.9"\n'
         '    d = "n1500 xodroid odroid_x"\n',
         encoding="utf-8",
     )

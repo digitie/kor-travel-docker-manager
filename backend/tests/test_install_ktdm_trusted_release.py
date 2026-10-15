@@ -460,6 +460,8 @@ def _hosts() -> tuple[str, str]:
     return default, other
 
 
+#: 설치기 식별 테스트는 실제 인터페이스로 판정한다. `/usr/sbin/ip`가 없는 곳(Windows·macOS 개발 PC)에서는 skip — CI
+#: (ubuntu)와 n150에는 있다.
 _HAS_IP = Path("/usr/sbin/ip").exists()
 
 
@@ -510,6 +512,7 @@ def test_host_identity_refuses_two_local_declared_addresses(tmp_path: Path) -> N
     import yaml
 
     local = _local_ipv4()
+    # 이 장비에 IPv4가 둘 이상 있어야 "선언 주소 둘이 로컬"을 실제로 만들 수 있다(loopback + LAN). 하나뿐이면 skip.
     if len(local) < 2:
         pytest.skip("이 장비의 IPv4가 둘 미만이다")
     default, other = _hosts()
