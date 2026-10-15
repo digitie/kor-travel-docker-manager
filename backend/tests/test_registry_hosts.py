@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
 
 from kor_travel_docker_manager.services import registry
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
