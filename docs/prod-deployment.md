@@ -884,6 +884,34 @@ ADR-51 D-3부터는 `<state_root>/map-application-300-artifacts/`(pinset별 Dags
 Map pinset의 조합으로 되돌릴 일이 없다고 판단한 뒤에만 한다 — 그 조합의 storage one-shot은 pinset별
 `permit.json`을 읽는데, Manager는 그것을 다시 발급하지 않는다.
 
+### 8.2 공용 Dagster plane만 수렴 (`ktdctl dagster-plane converge`)
+
+**언제 쓰나.** 공용 workspace(`config/dagster-shared/workspace.yaml`)나 그 digest env를 바꾸는 Manager release를
+설치한 **직후**, pinned 재구축 전에 preflight가 공용 daemon·webserver를 unhealthy로 보고할 때다. 떠 있는 두 컨테이너는
+옛 release의 workspace bind와 옛 `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`로 만들어졌으므로, location이 빠지면(예: #476의
+weather·transport) healthcheck가 사라진 code-server를 기다려 unhealthy로 남는다. 재구축 안의 plane 수렴이 이것을 고치지만
+preflight는 plane이 unhealthy이면 재구축을 시작하지 않는다 — 이 명령은 그 수렴 한 조각만 따로 돈다. n150은
+`rehearsal/rebuildable`이라 일반 `ensure dagster`는 거부된다(`_validate_mutation_environment`).
+
+```bash
+# 무엇이 다른지만 본다(아무것도 바꾸지 않는다). 서비스별로 이미지·env 이름·digest(떠 있는 값 != render 값)를 낸다.
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --dry-run
+# 다른 plane 서비스만 다시 만들고 두 컨테이너가 healthy가 될 때까지(최대 300초) 기다린다.
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --confirm
+```
+
+- **같은 조건**: pinned 재구축의 lock·환경 계약 그대로다 — host 변경 lock G를 잡은 뒤(다른 변경이 쥐고 있으면 기다리지 않고
+  종료 코드 2) trusted root `.env`를 frozen snapshot으로 읽고 `rehearsal/rebuildable`·PinVi production·Map principal 필수를
+  확인한다. 대기 중인 pair 회전이 있거나 launcher가 물려준 lock 아래면 거부한다. `local`·`production` 호스트는 이 명령이
+  아니라 `ensure dagster`가 정본이다.
+- **범위**: plane 서비스는 설치된 release의 render에서 모양으로 파생한다(`installed_shared_dagster_plane`). 재구축과 같은
+  `up -d --no-deps <webserver> <daemon>` 하나만 부른다 — Map·PinVi slot 서비스, gateway, code-server는 건드리지 않는다.
+  plane이 실을 location의 옛 Dagster 서비스가 돌면(이중 발화) 거부한다.
+- **판정**: 두 컨테이너가 render와 같으면(이미지 ID·env 전부·command·entrypoint, 재구축의 `_shared_plane_current`)
+  `outcome: current` 무연산이다. 재생성 뒤 healthy가 안 되면 `outcome: recreated_not_healthy`·종료 코드 2와 서비스별
+  health를 낸다 — daemon의 healthcheck는 workspace의 code-server 전부가 SERVING인지도 보므로 남은 location의
+  code-server가 내려가 있으면 그것을 먼저 고친다. `--json`은 secret-free 결과를 낸다(env 값은 `_DIGEST` 16진 값만 싣는다).
+
 ## 9. 두 번째 호스트 odroid (계획 — ADR-58 proposed, 미구현)
 
 이 절은 ADR-58의 운영 절차다. **아직 아무것도 적용되지 않았다**(2026-10-13: 모든 target이 n150, Manager 코드에 호스트 차원 없음).
