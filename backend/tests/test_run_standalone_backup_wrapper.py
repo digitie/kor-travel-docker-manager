@@ -64,3 +64,60 @@ def test_every_periodic_role_is_a_backup_role() -> None:
     """허용 목록에만 있고 정본에 없는 role은 CLI가 `invalid choice`로 거부한다."""
 
     assert _PERIODIC <= set(BACKUP_ROLES)
+
+
+def _installed_copy(tmp_path: Path) -> Path:
+    """설치본 배치를 흉내 낸다: `<root>/scripts/run-standalone-backup.sh` + 운영 표지 + root `.env`."""
+
+    root = tmp_path / "install"
+    (root / "scripts").mkdir(parents=True)
+    wrapper = root / "scripts" / _WRAPPER.name
+    wrapper.write_bytes(_WRAPPER.read_bytes())
+    (root / ".ktdm-source-revision").write_text("a" * 40 + "\n", encoding="utf-8")
+    (root / ".env").write_text("SECRET_TOKEN=do-not-print\nKTDM_HOST=n150\n", encoding="utf-8")
+    return wrapper
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root는 0000 파일도 읽는다")
+@pytest.mark.parametrize("host_env", [None, "", "n150"])
+def test_installed_wrapper_needs_host_env_when_root_env_is_unreadable(
+    tmp_path: Path, host_env: str | None
+) -> None:
+    """n150 백업 cron은 비-root 계정이고 root `.env`는 root:root 0600이다(#477 뒤 2026-10-15).
+
+    `KTDM_HOST`가 비면 ktdctl을 부르지 않고 고칠 자리(crontab 환경 줄)를 말하며 exit 2,
+    있으면 그대로 진행한다. 어느 경우든 `.env`의 내용은 출력에 없다.
+    """
+
+    wrapper = _installed_copy(tmp_path)
+    env_file = wrapper.parents[1] / ".env"
+    calls = tmp_path / "ktdctl-calls"
+    fake_ktdctl = tmp_path / "ktdctl"
+    fake_ktdctl.write_text(f'#!/bin/sh\nprintf "%s\n" "$*" >> "{calls}"\n', encoding="utf-8")
+    fake_ktdctl.chmod(0o755)
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "KTDCTL": str(fake_ktdctl),
+        "KTDM_BACKUP_ROOT": str(tmp_path / "backups"),
+    }
+    if host_env is not None:
+        env["KTDM_HOST"] = host_env
+    env_file.chmod(0)
+    try:
+        completed = subprocess.run(
+            ["sh", str(wrapper), "concierge", "3"],
+            env=env, capture_output=True, text=True, check=False, timeout=30,
+        )
+    finally:
+        env_file.chmod(0o600)
+    made = calls.read_text(encoding="utf-8").splitlines() if calls.exists() else []
+    assert "do-not-print" not in completed.stdout + completed.stderr
+    if host_env:
+        assert completed.returncode == 0, completed.stderr
+        assert made == ["db-backup create concierge", "db-backup gc concierge --keep 3"]
+    else:
+        assert completed.returncode == 2
+        assert "Manager root .env is unreadable by this user" in completed.stderr
+        assert str(env_file) in completed.stderr
+        assert "KTDM_HOST=<host>" in completed.stderr
+        assert made == []

@@ -14,6 +14,10 @@
   오류 문구에 출처(프로세스 env 또는 root `.env`)를 덧붙였다(접두는 유지).
 - 조회당 `ip` subprocess 캐시는 기존 테스트가 "매 조회 재검증"을 의도로 고정하고 있어 이 PR에서 바꾸지 않았다. 나머지 리뷰
   항목은 `docs/tasks.md` T-MGR-01a-F로 옮겼다. 배포·n150 변경은 하지 않았다.
+- 리뷰 반영: 운영 모드에서 root `.env`가 있는데 읽을 수 없으면(n150 `root:root 0600`, 비-root 백업 cron) 빈 값으로
+  넘기지 않고 경로와 함께 "process env에 KTDM_HOST를 두라"로 거부한다. `run-standalone-backup.sh`는 같은 조건에서
+  ktdctl 전에 exit 2, `docs/prod-deployment.md` §3.w에 crontab `KTDM_HOST=<host>` 환경 줄을 필수로 적었다.
+  #477 이후 n150의 concierge·pinvi·transport·dagster_shared 주기 백업은 그 줄이 들어가기 전까지 실패한다.
 
 ## 2026-10-15 — PR #477 최신 main 병합과 이전 완료 상태 보존
 

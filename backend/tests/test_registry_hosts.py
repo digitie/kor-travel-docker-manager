@@ -1,6 +1,7 @@
 """ADR-58: 원격 Docker 없이 host-local target 집합과 연결 좌표를 파생한다."""
 
 import copy
+import os
 from pathlib import Path
 
 import pytest
@@ -307,3 +308,40 @@ def test_trusted_release_reads_installed_root_env_file(config, monkeypatch, tmp_
         registry.current_host(config)
     (install / ".env").write_text("KTDM_HOST=n150\n")
     assert registry.current_host(config) == "n150"
+
+
+_ROOT_USER = hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+@pytest.mark.skipif(_ROOT_USER, reason="root는 0000 파일도 읽는다")
+def test_cli_names_unreadable_root_env_file_instead_of_missing_host(operating_cli, monkeypatch, capsys):
+    # n150의 root `.env`는 root:root 0600이고 백업 cron은 비-root 계정이다. 빈 값으로 넘기면
+    # "requires KTDM_HOST"가 나와, `.env`에 값이 있는 운영자를 엉뚱한 곳으로 보낸다.
+    env_file = operating_cli / ".env"
+    env_file.write_text("SECRET_TOKEN=do-not-print\nKTDM_HOST=odroid\n")
+    env_file.chmod(0)
+    try:
+        code, _, err = _validate_json(capsys)
+        assert code != 0
+        assert "Manager root .env is unreadable by this user" in err
+        assert str(env_file) in err
+        assert "set KTDM_HOST in the process environment" in err
+        assert "do-not-print" not in err and "requires hosts" not in err
+        # 안내대로 프로세스 env에 두면 파일을 읽지 않고 통과한다.
+        monkeypatch.setenv(registry.HOST_ENV, "odroid")
+        code, document, _ = _validate_json(capsys)
+        assert code == 0 and document["host"] == "odroid"
+    finally:
+        env_file.chmod(0o600)
+
+
+@pytest.mark.skipif(_ROOT_USER, reason="root는 0000 파일도 읽는다")
+def test_development_checkout_ignores_unreadable_root_env_file(config, monkeypatch, tmp_path):
+    monkeypatch.delenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("KTDM_HOST=odroid\n")
+    env_file.chmod(0)
+    try:
+        assert registry.current_host(config) == registry.default_host(config)
+    finally:
+        env_file.chmod(0o600)

@@ -351,8 +351,8 @@ def default_host(config: Mapping[str, Any] | None = None) -> str:
     return next(name for name, spec in _host_specs(config).items() if spec.get("default", False))
 
 
-def _root_env_file_value(name: str, *, root: Path, trusted: bool) -> str:
-    """Manager 루트 `.env`에 선언된 `name`의 값. 없거나 읽을 수 없으면 빈 문자열.
+def _root_env_file_value(name: str, *, root: Path, trusted: bool, operating: bool) -> str:
+    """Manager 루트 `.env`에 선언된 `name`의 값. 파일이 없거나 키가 없으면 빈 문자열.
 
     backend는 `main.py`의 `load_dotenv(get_env_path())`로 이 값을 프로세스 환경에 올리지만
     `ktdctl`·설치 래퍼·launcher는 `.env`를 로드하지 않는다. 그래서 `.env`에만 `KTDM_HOST`를
@@ -363,6 +363,10 @@ def _root_env_file_value(name: str, *, root: Path, trusted: bool) -> str:
     trusted 설치본은 설치 root의 `.env`(installer가 release로 복사하는 바로 그 파일)를
     읽는다. 개발 checkout은 backend와 같은 `get_env_path()`를 쓴다. 값만 돌려주고 파일의
     다른 줄은 어디에도 싣지 않는다(비밀이 섞여 있다).
+
+    운영 모드에서 파일이 있는데 읽을 수 없으면(`root:root 0600`을 비-root cron 계정이 부를 때)
+    빈 값으로 넘기지 않고 그 사유로 거부한다 — "KTDM_HOST가 없다"는 문구는 `.env`에 값이
+    있는 운영자를 엉뚱한 곳으로 보낸다. 오류에는 경로만 싣고 내용은 싣지 않는다.
     """
 
     if trusted:
@@ -372,12 +376,25 @@ def _root_env_file_value(name: str, *, root: Path, trusted: bool) -> str:
 
         path = Path(get_env_path())
     try:
-        if not path.is_file():
-            return ""
-        from dotenv import dotenv_values
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        if operating and path.exists():
+            raise TargetsConfigError(
+                f"Manager root .env is unreadable by this user ({path}); "
+                f"set {name} in the process environment"
+            ) from exc
+        return ""
+    except UnicodeError:
+        return ""
+    from io import StringIO
 
-        value = dotenv_values(path, interpolate=False).get(name)
-    except (OSError, UnicodeError, ValueError):
+    from dotenv import dotenv_values
+
+    try:
+        value = dotenv_values(stream=StringIO(text), interpolate=False).get(name)
+    except ValueError:
         return ""
     return (value or "").strip()
 
@@ -403,7 +420,7 @@ def current_host(config: Mapping[str, Any] | None = None) -> str:
     root = TRUSTED_INSTALL_ROOT if trusted else Path(get_project_root())
     operating = trusted or os.path.lexists(root / ".ktdm-source-revision")
     selected = os.environ.get(HOST_ENV, "").strip() or _root_env_file_value(
-        HOST_ENV, root=root, trusted=trusted
+        HOST_ENV, root=root, trusted=trusted, operating=operating
     )
     if operating and (not selected or "hosts" not in config):
         raise TargetsConfigError(

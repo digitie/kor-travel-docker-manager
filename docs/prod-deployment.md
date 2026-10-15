@@ -457,6 +457,25 @@ nohup setsid env PYTHONPATH=src .venv/bin/python \
   > /tmp/ktdm_backend.log 2>&1 &
 ```
 
+### 3.w 주기 백업 cron과 `KTDM_HOST` (필수 — 운영 설치본)
+
+#477(ADR-58) 이후 운영 설치본의 `ktdctl`은 자기 호스트를 정해야 돈다. 값의 출처는 **비어 있지 않은 프로세스
+env `KTDM_HOST` → root `.env`의 `KTDM_HOST`** 순이다. root `.env`는 `root:root 0600`이라 **비-root cron 계정
+(n150은 `digitie`)은 그 파일을 읽지 못한다** — 그래서 `run-standalone-backup.sh`를 부르는 crontab에는 호스트마다
+환경 줄로 `KTDM_HOST=<host>`를 넣는다. `<host>`는 `config/docker-targets.yml`의 `hosts` 키이고 그 주소가 이
+호스트에 할당돼 있어야 한다(아니면 `KTDM_HOST address is not assigned to this host`).
+
+```text
+CRON_TZ=UTC
+KTDM_HOST=n150
+30 3 * * * KTDM_BACKUP_ROOT=... /opt/kor-travel-docker-manager/scripts/run-standalone-backup.sh concierge 7 >>.../concierge.log 2>&1
+```
+
+- 빠지면 wrapper가 ktdctl을 부르기 전에 `Manager root .env is unreadable by this user (<path>); set KTDM_HOST
+  in the process environment`로 exit 2다(ktdctl도 같은 사유로 거부한다). `.env`의 내용은 출력하지 않는다.
+- 같은 규칙이 비-root로 부르는 모든 ktdctl에 적용된다. root(`sudo ktdctl …`)는 `.env`를 읽으므로 따로 줄 필요가 없다.
+- 확인: cron 계정으로 같은 env·같은 경로로 `ktdctl targets validate --json`을 한 번 돌려 `"host"`가 이 호스트인지 본다.
+
 ### 3.x 백업 산출물을 UI와 cron이 공유할 때 (선택 — UI에서도 만들 때만)
 
 `POST /api/v1/backups/{role}`이 생기면서 백업을 만드는 주체가 UI와 cron 둘이 된다. 두
@@ -473,7 +492,7 @@ sudo find "$KTDM_BACKUP_ROOT" -type d -exec chmod 2770 {} +
 sudo find "$KTDM_BACKUP_ROOT" -type f -exec chmod 0640 {} +
 # .env에 그룹 이름을 선언한다.
 #   KTDM_BACKUP_SHARED_GROUP=ktdm-backup
-# cron 계정의 crontab에도 같은 값을 백업 줄 위 환경 줄로 넣는다(ktdctl은 .env를 읽지 않는다).
+# cron 계정의 crontab에도 같은 값을 백업 줄 위 환경 줄로 넣는다(ktdctl이 .env에서 읽는 값은 KTDM_HOST 하나뿐이다).
 #   KTDM_BACKUP_SHARED_GROUP=ktdm-backup
 ```
 
