@@ -6,7 +6,8 @@
 
 - n150 재구축 t1015b가 배포 뒤 `validate_runtime_secret_isolation`에서 "a C6c credential leaks outside its exact environment path"로 멈췄다. 원인은 마지막 scalar 순회의 날 substring 검사(`name in text`)다 — pinvi-api의 `PINVI_KOR_TRAVEL_GEO_API_KEY`(PinVi 자신의 geo 키, #476 + PinVi ADR-075 — C6c 비밀이 아니다)가 보호 이름 `KOR_TRAVEL_GEO_API_KEY`(Map UI)를 품고 있어 누출로 오판했다.
 - `contains_env_name(text, name)` 하나를 더해 이름은 `[A-Za-z0-9_]` 경계로만 맞춘다. 적용 4곳: `validate_current_map_ui_auth_runtime`·`validate_runtime_secret_isolation`의 scalar 순회, Map source 환경 계약의 `matching_names`와 추적 env_file 내용 검사. `NAME=`·`$NAME`·`${NAME:-}`·JSON 키·문장 속 단어는 그대로 잡는다. 비밀 **값** 검사와 정확 이름 비교는 바꾸지 않았다.
-- 테스트(`test_f1d_compose_contract.py`): 오탐(1)은 옛 코드에서 빨갛고, 진짜 참조(Env·Cmd `${}`/`$`·Entrypoint·라벨 값/키)와 값 누출은 이름 검사·값 검사를 각각 끈 돌연변이에서 빨갛다. 배포·n150 반영은 이 PR 범위 밖이다.
+- 의도한 맞바꿈: 보호 이름을 **늘리기만 한** 이름(`<NAME>_FILE`, `${<NAME>_OLD}`, `PINVI_<NAME>`)은 이제 이름으로는 잡지 않는다. 그 값이 C6c 비밀이면 값 검사가 그대로 잡고, Map 설정은 `_FILE` 변형을 읽지 않는다.
+- 테스트(`test_f1d_compose_contract.py`·`test_map_source_contract_files.py`): 바꾼 4곳마다 양성(늘린 이름 통과)·음성(`${NAME}`·`NAME=` 거부) 한 쌍. 양성은 그 자리를 날 substring으로 되돌린 돌연변이에서, 음성은 그 자리 검사를 끈 돌연변이에서 빨갛다. 값 누출 테스트는 값 검사를 끈 돌연변이에서 빨갛다. 배포·n150 반영은 이 PR 범위 밖이다.
 
 ## 2026-10-15 — n150 공용 workspace에서 geo 제외(소유자 결정)
 

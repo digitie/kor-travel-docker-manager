@@ -277,24 +277,131 @@ def test_runtime_isolation_matches_protected_env_names_as_whole_identifiers(
     allowed[pinvi]["Labels"] = {"note": f"reads PINVI_{geo_name}_FILE"}
     validate_runtime_secret_isolation(allowed, config)
 
-    leaks: list[tuple[str, Any]] = [
-        ("Env", f"{geo_name}=not-a-c6c-secret"),
-        ("Cmd", ["sh", "-c", f"exec app --geo-key ${{{geo_name}}}"]),
-        ("Cmd", ["sh", "-c", f"exec app --geo-key ${geo_name}"]),
-        ("Entrypoint", ["sh", "-c", f'echo "${{{geo_name}:-}}"']),
-        ("Labels", {"com.example.env": f"uses {geo_name} at boot"}),
-        ("Labels", {geo_name: "present"}),
+    # 정확 이름 검사(env 이름이 보호 집합)와 scalar 순회 이름 검사(`contains_env_name`)를 갈라 본다.
+    exact_name = "protected value is present in an unauthorized container"
+    scalar_walk = "leaks outside its exact environment path"
+    leaks: list[tuple[str, Any, str]] = [
+        ("Env", f"{geo_name}=not-a-c6c-secret", exact_name),
+        ("Env", f"PINVI_WRAPPER=exec app --geo-key ${{{geo_name}}}", scalar_walk),
+        ("Cmd", ["sh", "-c", f"exec app --geo-key ${{{geo_name}}}"], scalar_walk),
+        ("Cmd", ["sh", "-c", f"exec app --geo-key ${geo_name}"], scalar_walk),
+        ("Entrypoint", ["sh", "-c", f'echo "${{{geo_name}:-}}"'], scalar_walk),
+        ("Labels", {"com.example.env": f"uses {geo_name} at boot"}, scalar_walk),
+        ("Labels", {geo_name: "present"}, scalar_walk),
     ]
-    for field_name, leak in leaks:
+    for field_name, leak, message in leaks:
         broken = deepcopy(_valid_runtime_configs(config))
         if field_name == "Env":
             broken[pinvi]["Env"].append(leak)
         else:
             broken[pinvi][field_name] = leak
-        with pytest.raises(DeploymentContractError) as excinfo:
+        with pytest.raises(DeploymentContractError, match=message):
             validate_runtime_secret_isolation(broken, config)
-        assert "leak" in str(excinfo.value) or "unauthorized" in str(excinfo.value), (
-            field_name
+
+
+def _map_ui_auth_runtime(config: Any) -> dict[str, Any]:
+    """`validate_current_map_ui_auth_runtime`(계약 v4)이 통과시키는 Map UI inspection."""
+
+    return {
+        "Env": _runtime_environment(
+            {
+                c6c_deployment_module._MAP_UI_USERNAME_ENV: config.smoke.map_ui_username,
+                c6c_deployment_module._MAP_UI_PASSWORD_HASH_ENV: config.map_ui_password_hash,
+                c6c_deployment_module._MAP_UI_SESSION_SECRET_ENV: config.map_ui_session_secret,
+                c6c_deployment_module._MAP_ADMIN_PROXY_ENV: config.map_admin_proxy_secret,
+                c6c_deployment_module._MAP_UI_GEO_API_KEY_ENV: config.map_geo_api_key,
+                c6c_deployment_module._MAP_FEATURE_CREATE_TOKEN_ENV: config.feature_create_token,
+            }
+        ),
+        "Cmd": ["node", "server.js"],
+    }
+
+
+def test_map_ui_auth_runtime_matches_protected_env_names_as_whole_identifiers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Map UI 인증 scalar 순회도 이름을 식별자 경계로만 맞춘다(같은 helper)."""
+
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_validate_map_production_secrets",
+        lambda _config: None,
+    )
+    config = _runtime_secret_config()
+    geo_name = c6c_deployment_module._MAP_UI_GEO_API_KEY_ENV
+    session_name = c6c_deployment_module._MAP_UI_SESSION_SECRET_ENV
+
+    runtime = _map_ui_auth_runtime(config)
+    c6c_deployment_module.validate_current_map_ui_auth_runtime(runtime, config)
+
+    runtime["Env"].append(f"PINVI_{geo_name}=not-a-c6c-secret")
+    runtime["Labels"] = {"note": f"reads {session_name}_FILE"}
+    c6c_deployment_module.validate_current_map_ui_auth_runtime(runtime, config)
+
+    broken = _map_ui_auth_runtime(config)
+    broken["Cmd"] = ["sh", "-c", f"exec node server.js --key ${{{geo_name}}}"]
+    with pytest.raises(
+        DeploymentContractError,
+        match="authentication leaks outside its exact environment path",
+    ):
+        c6c_deployment_module.validate_current_map_ui_auth_runtime(broken, config)
+
+
+def _map_source_services() -> dict[str, Any]:
+    """계약 v4 Map source compose의 보호 scalar 트리 정본 형상."""
+
+    api_environment = dict(compose_service_module._MAP_SOURCE_V3_API_ENVIRONMENT)
+    api_environment[
+        "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
+    ] = compose_service_module._MAP_SOURCE_V4_CURSOR_ENV_VALUE
+    services: dict[str, Any] = {
+        "api": {"environment": api_environment},
+        "frontend": {
+            "environment": dict(compose_service_module._MAP_SOURCE_V3_UI_ENVIRONMENT)
+        },
+    }
+    for service_name in (
+        "dagster-db-init",
+        "dagster-db-init-fresh-300",
+        "dagster",
+        "dagster-code-server",
+        "dagster-daemon",
+        "dagster-storage-migrate",
+    ):
+        services[service_name] = {
+            "environment": {
+                "KOR_TRAVEL_MAP_DAGSTER_PROFILE": (
+                    "local-dev"
+                    if service_name == "dagster-db-init-fresh-300"
+                    else compose_service_module._MAP_SOURCE_DAGSTER_PROFILE_FALLBACK_VALUE
+                )
+            }
+        }
+    return services
+
+
+def test_map_source_protected_names_match_as_whole_identifiers() -> None:
+    """`matching_names`는 보호 이름을 식별자 전체로만 센다 — 늘린 이름은 다른 이름이다."""
+
+    proxy_name = "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
+    assert proxy_name in compose_service_module._MAP_SOURCE_PROTECTED_ENV_VALUES
+
+    services = _map_source_services()
+    services["frontend"]["environment"][f"PINVI_{proxy_name}"] = "x"
+    services["frontend"]["environment"]["PREVIOUS"] = f"${{{proxy_name}_OLD:-}}"
+    compose_service_module._validate_map_source_protected_scalar_tree(
+        {"services": services},
+        contract_version=4,
+    )
+
+    services = _map_source_services()
+    services["frontend"]["environment"]["COPY"] = f"${{{proxy_name}}}"
+    with pytest.raises(
+        DeploymentContractError, match="protected placeholder outside its exact path"
+    ):
+        compose_service_module._validate_map_source_protected_scalar_tree(
+            {"services": services},
+            contract_version=4,
         )
 
 
