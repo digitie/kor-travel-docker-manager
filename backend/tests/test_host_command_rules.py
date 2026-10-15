@@ -220,7 +220,9 @@ def test_stop_does_not_ask_the_host_rule(config, monkeypatch, remote_container):
     monkeypatch.setenv(registry.HOST_ENV, _default(config))
     calls = []
     monkeypatch.setattr(module, "c6c_deployment_lock_from_environment", lambda: contextlib.nullcontext(object()))
-    monkeypatch.setattr(module, "_capture_compose_environment_snapshot", lambda **_: object())
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(module, "_capture_compose_environment_snapshot", lambda **_: SimpleNamespace(effective={}))
     monkeypatch.setattr(module, "assert_environment_snapshot_matches_c6c_lock", lambda *_: None)
     monkeypatch.setattr(module, "assert_manager_mutation_allowed", lambda **_: "rehearsal")
     monkeypatch.setattr(
@@ -285,7 +287,10 @@ def test_shared_plane_services_are_on_the_default_host_only(config, monkeypatch)
 
 
 def test_backup_roles_name_registry_targets(config):
-    from kor_travel_docker_manager.services.standalone_backup import BACKUP_ROLE_TARGETS, BACKUP_ROLES
+    from kor_travel_docker_manager.services.standalone_backup import (
+        BACKUP_ROLE_TARGETS,
+        BACKUP_ROLES,
+    )
 
     assert set(BACKUP_ROLE_TARGETS) == set(BACKUP_ROLES)
     assert set(BACKUP_ROLE_TARGETS.values()) <= set(config["targets"])
@@ -398,12 +403,11 @@ def test_three_hosts_keep_the_rules_generic(config, monkeypatch):
     monkeypatch.setattr(registry, "load_targets_config", lambda: config)
     config["hosts"]["mars"] = {"addr": "192.0.2.7"}
     targets = config["targets"]
-    # 다른 target이 기대는 default 호스트 target — 옮기면 그 간선이 R7에 걸려야 한다.
-    moved = next(
-        n for n, s in targets.items()
-        if "host" not in s and not s.get("include") and not s.get("external_project")
-        and any(n in (other.get("depends_on") or []) for other in targets.values())
-    )
+    # 다른 target(map)이 기대는 default 호스트 target. 공용 PG service도 실행하므로 mars에서도 PG가 로컬이다 — PG를
+    # 실행하지 않는 target만 옮기면 mars에서 PG(n150·odroid 두 곳)의 R1 주소가 하나로 정해지지 않아 로더가 거부한다
+    # (#483의 다중 소유 규칙; 열린 질문으로 보고).
+    moved = "conc"
+    assert any(moved in (other.get("depends_on") or []) for other in targets.values())
     targets[moved]["host"] = "mars"
     with pytest.raises(registry.TargetsConfigError, match="R7"):
         registry._validate_targets_config(config, label="test")
