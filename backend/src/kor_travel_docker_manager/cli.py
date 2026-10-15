@@ -374,6 +374,51 @@ def _cmd_pinvi_pair(args: argparse.Namespace) -> int:
     return _emit_process_result(result, json_output=args.json)
 
 
+def _plane_converge_summary(result: dict[str, Any]) -> str:
+    lines = [f"shared Dagster plane: {result.get('outcome')}"]
+    drift = result.get("drift") or {}
+    health = result.get("health") or {}
+    for service in result.get("services") or []:
+        reasons = drift.get(service) or []
+        state = "current" if not reasons else "; ".join(reasons)
+        suffix = f" [health: {health[service]}]" if service in health else ""
+        lines.append(f"  {service}: {state}{suffix}")
+    for service, reasons in (result.get("remaining_drift") or {}).items():
+        if reasons:
+            lines.append(f"  {service} still differs after recreate: {'; '.join(reasons)}")
+    return "\n".join(lines) + "\n"
+
+
+def _cmd_dagster_plane_converge(args: argparse.Namespace) -> int:
+    """공용 Dagster plane만 설치된 release의 render로 맞춘다(재구축과 같은 lock·환경 계약)."""
+
+    if args.dry_run == args.confirm:
+        print(
+            "dagster-plane converge requires exactly one of --dry-run or --confirm "
+            "(no mutation was attempted)",
+            file=sys.stderr,
+        )
+        return 2
+    # launcher가 물려준 lock을 쓰는 것은 재구축 one-shot뿐이다 — 이 명령은 G가 비어 있을 때만 돈다.
+    if os.environ.get(_INHERITED_GLOBAL_MUTATION_LOCK_FD_ENV, ""):
+        print(
+            "dagster-plane converge does not run under an inherited Manager mutation lock "
+            "(no mutation was attempted)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        result = compose_service.converge_shared_dagster_plane(dry_run=args.dry_run)
+    except Exception as exc:  # noqa: BLE001 - every failure leaves a verdict and a scrubbed cause
+        if args.json:
+            print(json.dumps({"status": "failed"}, ensure_ascii=False, indent=2))
+        _emit_failure_detail(exc, label="dagster plane converge failure detail")
+        return 2
+    if not args.json:
+        result = {**result, "stdout": _plane_converge_summary(result)}
+    return _emit_process_result(result, json_output=args.json)
+
+
 def _cmd_retire_legacy_override(args: argparse.Namespace) -> int:
     if not args.confirm:
         print(
@@ -1816,6 +1861,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="secret-free 실행 결과 metadata를 JSON으로 출력합니다.",
     )
     pair_rebuild.set_defaults(func=_cmd_pinvi_pair)
+
+    dagster_plane = subparsers.add_parser(
+        "dagster-plane",
+        help="공용 Dagster 제어 평면(daemon·webserver)을 다룹니다.",
+    )
+    plane_subparsers = dagster_plane.add_subparsers(dest="plane_action", required=True)
+    plane_converge = plane_subparsers.add_parser(
+        "converge",
+        help=(
+            "설치된 release의 render와 다른 공용 daemon·webserver만 다시 만듭니다 "
+            "(pinned 재구축과 같은 lock·환경 계약, 다른 서비스는 건드리지 않습니다)."
+        ),
+    )
+    plane_converge.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="무엇이 다른지(서비스별 digest 등)만 보고하고 아무것도 바꾸지 않습니다.",
+    )
+    plane_converge.add_argument(
+        "--confirm",
+        action="store_true",
+        help="다른 plane 서비스를 다시 만들고 healthy를 기다립니다.",
+    )
+    plane_converge.add_argument(
+        "--json",
+        action="store_true",
+        help="secret-free 결과를 JSON으로 출력합니다.",
+    )
+    plane_converge.set_defaults(func=_cmd_dagster_plane_converge)
 
     compose_boundary = subparsers.add_parser(
         "compose-boundary",

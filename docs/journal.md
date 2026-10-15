@@ -3,6 +3,14 @@
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
 
+## 2026-10-15 — `ktdctl dagster-plane converge`: 공용 plane만 설치 release render로 수렴(T-MGR-06j)
+
+- #476 설치 뒤 n150 공용 daemon·webserver는 옛 workspace bind·옛 digest env로 남아 사라진 weather·transport code-server를 기다리며 unhealthy다. n150은 `rehearsal/rebuildable`이라 일반 `ensure`는 거부되고, plane을 고치는 재구축은 preflight가 plane unhealthy를 이유로 시작하지 않는다(소유자는 preflight 면제를 거절).
+- 재구축의 plane 수렴 조각을 같은 lock(G, `_pinned_runtime_rebuild_environment_lock`)·같은 환경 계약(`assert_pinned_runtime_rebuild_allowed`)·같은 compose 호출(`up -d --no-deps <plane>`, `_recreate_shared_plane`로 재구축과 공유)로 따로 도는 명령을 더했다. 판정은 `_shared_plane_current`를 서비스별 이유로 펼친 `_shared_plane_drift`(같은 판정). ~~비밀 env 값은 싣지 않고 `_DIGEST` 16진 값만, 기다림은 300초 상한~~ — 아래 리뷰 반영 줄이 대체한다.
+- 테스트 `backend/tests/test_dagster_plane_converge.py` 18건: plane 밖 서비스 미접촉·G 안에서만 compose·거부 환경 4종·lock 경합·pair 회전 대기·이중 발화·무연산·dry-run 무변경·healthy 실패 보고·CLI 플래그. 돌연변이 4종(gateway 추가, lock·환경 우회, 환경 검사 제거, 기다림 생략)이 모두 빨갛다.
+- 적대 리뷰 2인(차단 없음) 반영: 기다림 상한을 render healthcheck에서 파생(daemon은 start_period 뒤 120초 간격이라 고정 300초는 정상 plane을 실패로 볼 수 있었다; 재리뷰 뒤 `start_period + (interval + timeout) × retries + 15초` → daemon 465초 — probe는 앞 probe가 끝난 뒤 interval을 쉬고 디스크 대기 중엔 timeout까지 걸린다). `--dry-run`은 늘 종료 코드 0이고 어느 결과든 health를 싣는다(JSON에 `health`·`remaining_drift` 항상), 무연산도 health를 보고 unhealthy면 종료 코드 2(`current_not_healthy`), drift 값 출력은 healthcheck가 이름으로 대조하는 파일 digest env만, healthcheck 없는 컨테이너는 즉시 실패. ADR-51에 G 위 진입점 NOTE.
+- 배포·n150 실행은 이 PR 범위 밖이다(설치 뒤 `--dry-run` → `--confirm`).
+
 ## 2026-10-15 — odroid 이전 뒤 n150 소비자 origin·공용 workspace 잠정 정리(T-MGR-06i)
 
 - 소유자가 geo·weather·transport를 odroid(`192.168.1.13`)로 옮기고 포트를 통일했다(geo `12501`·weather `12201`·transport API gateway `12301`). n150의 weather·transport 컨테이너는 멈췄다.

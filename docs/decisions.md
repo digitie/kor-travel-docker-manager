@@ -1521,6 +1521,13 @@ git을 부르지 않는다. `pinned_runtime_sources.py`는 754줄에서 401줄�
   파생 규칙은 진입점의 무조건 호출 하나이고, 진입점 테스트가 그것을 결박한다. sole-consumer 테스트는 같은 문서를
   파생 규칙에 태운다.
 
+### NOTE: G 위의 진입점 하나 추가 — `ktdctl dagster-plane converge` (2026-10-15)
+
+재구축의 공용 Dagster plane 수렴 조각만 같은 G·같은 환경 계약(rehearsal/rebuildable)·같은 compose 호출(`up -d --no-deps
+<plane>`)로 따로 도는 명령을 G 위 목록에 더한다. generation·pin·DB·`.env`를 바꾸지 않고 plane daemon·webserver만 다시
+만든다 — Manager 설치가 공용 workspace를 바꿔 plane이 unhealthy인데 preflight가 재구축을 막는 경우의 출구다
+(`docs/prod-deployment.md` §8.2).
+
 ## ADR-52: 공용 PostgreSQL instance는 PID 1에 init을 두고, healthcheck는 exec 형식으로 binary를 직접 부른다
 
 - 상태: accepted

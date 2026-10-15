@@ -801,6 +801,9 @@ source restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공
 > 근거가 아니며, 아래 비운영 `rebuild-pinned`만 generation을 배포하는 정본이다. 파기형 v8 journal·resume
 > 설계의 근거는 `docs/decisions.md` ADR-51과 `docs/journal.md`에 남아 있다.
 
+이 절의 managed mutation은 `rebuild-pinned` 하나와, 그 안의 공용 Dagster plane 수렴만 따로 도는
+`dagster-plane converge`(§8.2 — generation·pin을 바꾸지 않고 같은 G 아래에서 plane daemon·webserver만 다시 만든다) 둘이다.
+
 ### 8.1 비운영 pinned runtime 배포
 
 실제 운영 환경에는 이 절을 적용하지 않는다. typed 환경 pair
@@ -883,6 +886,48 @@ ADR-51 D-3부터는 `<state_root>/map-application-300-artifacts/`(pinset별 Dags
 않는다. 지우는 것은 역시 **선택**이며, D-3 설치 검증(재구축·M05)이 끝나고 D-3 이전 Manager와 M1 이전
 Map pinset의 조합으로 되돌릴 일이 없다고 판단한 뒤에만 한다 — 그 조합의 storage one-shot은 pinset별
 `permit.json`을 읽는데, Manager는 그것을 다시 발급하지 않는다.
+
+### 8.2 공용 Dagster plane만 수렴 (`ktdctl dagster-plane converge`)
+
+**언제 쓰나.** 공용 workspace(`config/dagster-shared/workspace.yaml`)나 그 digest env를 바꾸는 Manager release를
+설치한 **직후**, pinned 재구축 전에 preflight가 공용 daemon·webserver를 unhealthy로 보고할 때다. 떠 있는 두 컨테이너는
+옛 release의 workspace bind와 옛 `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`로 만들어졌으므로, location이 빠지면(예: #476의
+weather·transport) healthcheck가 사라진 code-server를 기다려 unhealthy로 남는다. 재구축 안의 plane 수렴이 이것을 고치지만
+preflight는 plane이 unhealthy이면 재구축을 시작하지 않는다 — 이 명령은 그 수렴 한 조각만 따로 돈다. n150은
+`rehearsal/rebuildable`이라 일반 `ensure dagster`는 거부된다(`_validate_mutation_environment`).
+
+**순서(n150).** ① Manager 설치 → ② `dagster-plane converge --dry-run`으로 서비스별 차이를 본다 → ③ `--confirm` 전에
+호스트 preflight(`~/preflight.sh`, 저장소 밖)의 **plane health를 뺀 나머지 검사**(load·디스크·상시 서비스 등)가 PASS여야
+한다. 그 순간 실패해도 되는 항목은 **plane health 하나뿐**이고(이 명령이 고치는 대상이다), 운영자·소유자가 그것을
+받아들이고 `--confirm`을 돌린다 — 일반 면제가 아니다. 다른 항목이 하나라도 실패하면 돌리지 않는다 → ④ `--confirm` → ⑤ preflight가 **전부** PASS → ⑥ pinned 재구축. `--dry-run` 이유에 `rendered image is not present
+locally`가 있으면 `--confirm`의 `up`이 G 아래에서 `kor-travel-dagster-host` 이미지를 **빌드**한다(재구축의 plane 수렴과
+같다) — 부하가 낮을 때 돌리거나 이미지를 먼저 준비한다.
+
+```bash
+# 보기만 한다(아무것도 바꾸지 않고 종료 코드는 항상 0). 서비스별 차이(이미지·env 이름·파일 digest 떠 있는 값 != render 값)와 health(한 번 관측)를 낸다.
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --dry-run
+# 다른 plane 서비스만 다시 만들고 두 컨테이너가 healthy가 될 때까지 기다린다(상한은 render healthcheck에서 파생).
+sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --confirm
+```
+
+- **같은 조건**: pinned 재구축의 lock·환경 계약 그대로다 — host 변경 lock G를 잡은 뒤(다른 변경이 쥐고 있으면 기다리지 않고
+  종료 코드 2) trusted root `.env`를 frozen snapshot으로 읽고 `rehearsal/rebuildable`·PinVi production·Map principal 필수를
+  확인한다. 대기 중인 pair 회전이 있거나 launcher가 물려준 lock 아래면 거부한다. `local`·`production` 호스트는 이 명령이
+  아니라 `ensure dagster`가 정본이다.
+- **범위**: plane 서비스는 설치된 release의 render에서 모양으로 파생한다(`installed_shared_dagster_plane`). 재구축과 같은
+  `up -d --no-deps <webserver> <daemon>` 하나만 부른다 — Map·PinVi slot 서비스, gateway, code-server는 건드리지 않는다.
+  plane이 실을 location의 옛 Dagster 서비스가 돌면(이중 발화) 거부한다.
+- **판정**: 두 컨테이너가 render와 같으면(이미지 ID·env 전부·command·entrypoint, 재구축의 `_shared_plane_current`)
+  다시 만들지 않는다. `--confirm`은 재생성했든 안 했든 두 컨테이너가 healthy인지 본다 — 상한은 render healthcheck의
+  `start_period + (interval + timeout) × retries + 15초`(가장 긴 서비스, 60~900초; 지금 daemon은 465초 — probe는 앞 probe가
+  끝난 뒤 interval을 쉬고, 디스크 대기 중에는 probe 하나가 timeout까지 걸린다)이다. healthy면 `outcome: current`/`recreated`
+  (종료 코드 0), 아니면 `current_not_healthy`/`recreated_not_healthy`·종료 코드 2와 서비스별 health를 낸다(healthcheck가
+  없는 컨테이너는 기다리지 않고 바로 실패). daemon의 healthcheck는 workspace의 code-server 전부가 SERVING인지도 보므로 남은
+  location의 code-server가 내려가 있으면 그것을 먼저 고친다.
+- **`--dry-run`**: 결과는 `would_recreate`(다시 만들 것이 있다)·`current`·`current_not_healthy` 가운데 하나이고 어느 것이든
+  health를 한 번 보고(기다리지 않음) 싣는다. 보기만 하므로 **종료 코드는 항상 0**이다 — 판정은 운영자가 한다.
+- **출력**: 결과에는 늘 `health`와 `remaining_drift`(재생성 뒤 남은 차이, 재생성하지 않았으면 `{}`)가 있다. `--json`은 secret-free 결과를 낸다 — env 값은 healthcheck가 이름으로 대조하는 파일 digest
+  env(16진 16자)만 싣고 나머지는 이름만 싣는다.
 
 ## 9. 두 번째 호스트 odroid (계획 — ADR-58 proposed, 미구현)
 
