@@ -2035,6 +2035,8 @@ _SHARED_PLANE_PROBE_TIMEOUT_SECONDS: Final = 300.0
 _SHARED_PLANE_PROBE_INTERVAL_SECONDS: Final = 5.0
 #: `dagster-plane converge`의 health 기다림 하한 — render healthcheck에서 파생한 값이 이보다 짧아도 이만큼은 본다.
 _SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS: Final = 60.0
+#: 파생 상한에 더하는 여유(컨테이너 기동·inspect 간격).
+_SHARED_PLANE_HEALTH_WAIT_SLACK_SECONDS: Final = 15.0
 #: 붙인 파일의 내용 digest(sha256 앞 16자) 모양. drift 이유에 값을 싣는 것은 이 모양뿐이다.
 _FILE_DIGEST: Final = re.compile(r"[0-9a-f]{16}")
 _DURATION_PART: Final = re.compile(r"(\d+(?:\.\d+)?)(ns|us|ms|s|m|h)")
@@ -5062,11 +5064,13 @@ class ComposeService:
         - **판정·실행**: `_shared_plane_current`가 같다고 하면 재생성하지 않는다. 다르면 재구축과 같은 `up -d --no-deps
           <plane>` 하나만 부른다 — Map·PinVi slot 서비스, gateway, code-server는 건드리지 않는다.
         - **기다림**: 재생성했든 안 했든 두 컨테이너의 healthcheck가 `healthy`가 될 때까지 render healthcheck에서 파생한
-          상한(`_shared_plane_health_wait_seconds`) 안에서 본다 — 무연산도 unhealthy면 실패다. daemon의 healthcheck는
-          workspace의 code-server 전부가 SERVING인지도 보므로 다른 테넌트가 내려가 있으면 healthy가 되지 않는다 — 그때는
-          실패로 서비스별 상태를 돌려준다.
+          상한(`_shared_plane_health_wait_seconds`) 안에서 본다 — 무연산도 unhealthy면 실패다(종료 코드 2). daemon의
+          healthcheck는 workspace의 code-server 전부가 SERVING인지도 보므로 다른 테넌트가 내려가 있으면 healthy가 되지
+          않는다 — 그때는 실패로 서비스별 상태를 돌려준다.
 
-        ``dry_run``이면 같은 검사를 거쳐 무엇이 다른지와 지금 health(한 번 관측)만 돌려주고 아무것도 바꾸지 않는다.
+        ``dry_run``이면 같은 검사를 거쳐 무엇이 다른지(`would_recreate`·`current`·`current_not_healthy`)와 health(한 번
+        관측, 기다리지 않음)를 돌려주고 아무것도 바꾸지 않는다. 보기만 하므로 종료 코드는 항상 0이다. 결과에는 늘
+        `health`와 `remaining_drift`(재생성하지 않았으면 `{}`)가 있다.
         """
 
         _require_pinned_runtime_rebuild_root()
@@ -5094,16 +5098,25 @@ class ComposeService:
                 "drift": drift,
                 "dry_run": dry_run,
             }
-            if any(drift.values()) and dry_run:
-                return {**result, "success": True, "returncode": 0, "outcome": "would_recreate"}
-            recreated = any(drift.values())
+            recreated = any(drift.values()) and not dry_run
             if recreated:
                 self._recreate_shared_plane(plane, transaction=transaction)
             # 무연산도 health를 본다 — 앞선 실행이 거짓 실패로 끝났거나 plane이 다른 이유로 unhealthy이면 다시 돌린
-            # 이 명령이 OK라고 말하지 않는다. dry-run은 한 번만 보고 기다리지 않는다.
+            # 이 명령이 OK라고 말하지 않는다. dry-run은 어느 결과든 health를 한 번 보고 기다리지 않는다.
             health = self._wait_shared_plane_healthy(plane, services, wait=not dry_run)
             healthy = all(state == "healthy" for state in health.values())
-            remaining = self._shared_plane_drift(plane, services) if recreated else drift
+            remaining = self._shared_plane_drift(plane, services) if recreated else {}
+            if dry_run:
+                # 보기만 한다 — 판정은 운영자가 한다. 종료 코드는 항상 0이다.
+                outcome = "would_recreate" if any(drift.values()) else "current"
+                return {
+                    **result,
+                    "success": True,
+                    "returncode": 0,
+                    "outcome": outcome if healthy or outcome == "would_recreate" else f"{outcome}_not_healthy",
+                    "health": health,
+                    "remaining_drift": remaining,
+                }
             converged = healthy and not any(remaining.values())
             outcome = "recreated" if recreated else "current"
             return {
@@ -5112,7 +5125,7 @@ class ComposeService:
                 "returncode": 0 if converged else 2,
                 "outcome": outcome if converged else f"{outcome}_not_healthy",
                 "health": health,
-                **({"remaining_drift": remaining} if recreated else {}),
+                "remaining_drift": remaining,
             }
 
     @staticmethod
@@ -5121,8 +5134,9 @@ class ComposeService:
     ) -> float:
         """plane 서비스의 render healthcheck에서 기다림 상한을 파생한다(고정 상수가 아니다).
 
-        서비스마다 `start_period + interval × retries + timeout` — start_period 뒤 probe는 `interval`마다 돌고(daemon은
-        120초), `retries`번 연달아 실패해야 unhealthy다. 그 안에 첫 성공이 오면 healthy다. 가장 긴 서비스를 쓰고
+        서비스마다 `start_period + (interval + timeout) × retries + 여유` — start_period 뒤 probe는 앞 probe가 **끝난 뒤**
+        `interval`을 쉬고 돌며(daemon은 120초), 디스크 대기가 큰 n150에서는 probe 하나가 timeout까지 걸릴 수 있다.
+        `retries`번 연달아 실패해야 unhealthy다. 그 안에 첫 성공이 오면 healthy다. 가장 긴 서비스를 쓰고
         `_SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS`~`_COMPOSE_WAIT_TIMEOUT_SECONDS`로 자른다. 값이 없으면 Docker 기본값.
         """
 
@@ -5133,9 +5147,12 @@ class ComposeService:
             retries = check.get("retries")
             bound = (
                 _duration_seconds(check.get("start_period"), default=0.0)
-                + _duration_seconds(check.get("interval"), default=30.0)
+                + (
+                    _duration_seconds(check.get("interval"), default=30.0)
+                    + _duration_seconds(check.get("timeout"), default=30.0)
+                )
                 * (retries if isinstance(retries, int) and retries > 0 else 3)
-                + _duration_seconds(check.get("timeout"), default=30.0)
+                + _SHARED_PLANE_HEALTH_WAIT_SLACK_SECONDS
             )
             longest = max(longest, bound)
         return min(

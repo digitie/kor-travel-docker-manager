@@ -179,6 +179,10 @@ def test_dry_run_reports_and_mutates_nothing(harness: SimpleNamespace) -> None:
     result = harness.service.converge_shared_dagster_plane(dry_run=True)
 
     assert result["outcome"] == "would_recreate" and result["dry_run"] is True
+    assert result["returncode"] == 0 and result["success"] is True
+    # 어느 결과든 health를 싣는다(떠 있는 옛 컨테이너는 unhealthy) — JSON 모양은 늘 같다.
+    assert result["health"] == {name: "unhealthy" for name in harness.plane.services}
+    assert result["remaining_drift"] == {}
     assert harness.state.compose_calls == []
 
 
@@ -187,8 +191,9 @@ def test_a_current_plane_is_a_no_op(harness: SimpleNamespace) -> None:
 
     result = harness.service.converge_shared_dagster_plane(dry_run=False)
 
-    assert result["outcome"] == "current"
+    assert result["outcome"] == "current" and result["returncode"] == 0
     assert result["drift"] == {name: [] for name in harness.plane.services}
+    assert result["remaining_drift"] == {}
     assert harness.state.compose_calls == []
 
 
@@ -292,12 +297,15 @@ def test_a_current_plane_dry_run_reports_health_without_waiting(
 
     result = harness.service.converge_shared_dagster_plane(dry_run=True)
 
-    assert result["outcome"] == "current_not_healthy" and result["returncode"] == 2
+    # 보기만 한다 — unhealthy여도 종료 코드는 0이고 판정은 운영자가 한다.
+    assert result["outcome"] == "current_not_healthy" and result["returncode"] == 0
+    assert result["health"][harness.plane.daemon] == "starting"
     assert harness.state.compose_calls == []
 
 
 def test_the_wait_bound_comes_from_the_rendered_healthchecks(harness: SimpleNamespace) -> None:
-    """고정 300초가 아니다 — daemon은 start_period 90초 뒤 120초마다 probe하므로 300초 안에 healthy가 못 될 수 있다."""
+    """고정 300초가 아니다 — daemon은 start_period 90초 뒤 앞 probe가 끝나고 120초를 쉬며, 디스크 대기 중엔 probe 하나가
+    timeout(60초)까지 걸린다. 그래서 probe 한 주기는 interval + timeout이다."""
 
     services = harness.resolved["services"]
     expected = 0.0
@@ -306,16 +314,19 @@ def test_the_wait_bound_comes_from_the_rendered_healthchecks(harness: SimpleName
         expected = max(
             expected,
             compose_service_module._duration_seconds(check["start_period"], default=0.0)
-            + compose_service_module._duration_seconds(check["interval"], default=30.0)
+            + (
+                compose_service_module._duration_seconds(check["interval"], default=30.0)
+                + compose_service_module._duration_seconds(check["timeout"], default=30.0)
+            )
             * check["retries"]
-            + compose_service_module._duration_seconds(check["timeout"], default=30.0),
+            + compose_service_module._SHARED_PLANE_HEALTH_WAIT_SLACK_SECONDS,
         )
 
     bound = ComposeService._shared_plane_health_wait_seconds(harness.plane, services)
 
     assert bound == expected
-    # 설치본 daemon: 90 + 120 × 2 + 60 — 옛 고정 상한(300초)보다 길다.
-    assert bound > 300.0
+    # 설치본 daemon: 90 + (120 + 60) × 2 + 15 = 465 — 옛 고정 상한(300초)·첫 수정(390초)보다 길다.
+    assert bound == 465.0
 
 
 def test_the_wait_bound_reads_compose_config_durations_and_is_clamped(
@@ -328,7 +339,7 @@ def test_the_wait_bound_reads_compose_config_durations_and_is_clamped(
 
     # `docker compose config --format json`은 기간을 Go 문자열로 낸다.
     rendered = services(start_period="1m30s", interval="2m0s", timeout="1m0s", retries=2)
-    assert ComposeService._shared_plane_health_wait_seconds(plane, rendered) == 390.0
+    assert ComposeService._shared_plane_health_wait_seconds(plane, rendered) == 465.0
     tiny = services(start_period="1s", interval="1s", timeout="1s", retries=1)
     assert (
         ComposeService._shared_plane_health_wait_seconds(plane, tiny)
