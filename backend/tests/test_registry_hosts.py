@@ -17,11 +17,15 @@ def _load_registry() -> dict:
     return load_yaml_rejecting_duplicate_keys((ROOT / "config/docker-targets.yml").read_text(encoding="utf-8"))
 
 
+#: 진짜 프로세스 캐시 — 테스트가 monkeypatch로 함수를 바꿔도 이 참조로 비운다.
+_ADDRESS_PROBE = registry._local_ipv4_addresses
+
+
 @pytest.fixture(autouse=True)
 def _fresh_address_probe():
-    registry._local_ipv4_addresses.cache_clear()
+    _ADDRESS_PROBE.cache_clear()
     yield
-    registry._local_ipv4_addresses.cache_clear()
+    _ADDRESS_PROBE.cache_clear()
 
 
 @pytest.fixture

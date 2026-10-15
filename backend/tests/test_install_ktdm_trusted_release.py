@@ -412,9 +412,9 @@ def _identity_release(tmp_path: Path, env_text: str | None) -> Path:
 
     import sys
 
-    from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
-
     import yaml
+
+    from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
     release = tmp_path / "release"
     (release / "config").mkdir(parents=True)
