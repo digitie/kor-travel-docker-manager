@@ -1996,6 +1996,8 @@ def owned_backup_root(tmp_path, monkeypatch):
     root.mkdir()
     monkeypatch.setenv("KTDM_BACKUP_ROOT", str(root))
     monkeypatch.delenv("KTDM_BACKUP_SHARED_GROUP", raising=False)
+    # 이 fixture는 job/파일 소유 계약 전용이며 host 경계는 별도 public handler 회귀가 검증한다.
+    monkeypatch.setattr("kor_travel_docker_manager.api.routes.require_local_backup_role", lambda _role: None)
     return root
 
 

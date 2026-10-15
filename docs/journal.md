@@ -1,3 +1,10 @@
+## 2026-10-15 — T-MGR-01b 백업 role의 host 소유권 경계
+
+- 공용 PG의 host-all 소유권과 tenant DB 쓰기 권한을 분리했다. create/gc/rehearse는 기존 registry의 직접 target 소유권을 파일·PG 접근 전에 확인하고, API는 job 제출·감사 기록 전에 같은 검사를 thread에서 수행한다. 기존 StandaloneBackupError/HTTP409 응답 계약을 보존한다.
+- 원격 Geo/Transport role 6조건은 OLD 6 FAIL로 재현했다. 새 회귀는 두 host의 실제 role 배치, unknown/missing operating host, public API의 job·파일 접근 전 거절을 확인한다. 기존 백업 알고리즘 모형은 host 계약 모형과 분리한다.
+- 관련 4파일 381 PASS, 전체 backend Ruff·diff 검사 PASS, CodeGraph sync 완료. 초기 378 PASS/1 FAIL은 T02 CLI srv의 이동 전 Geo 기대였고 최신 host-local 기대와 Geo 미시작 음성 조건으로 수정했다. 추가 379 PASS/2 FAIL은 pytest-asyncio 미설치 상태의 새 모형 marker 오류였으며 asyncio.run으로 수정했다. 원 로그는 보존한다.
+- lower Compose·pin writer·remote 상태의 나머지01b와 전체 backend/독립 리뷰2인/live는 후속이다. 이 백업 atom만으로 01b 완료나 운영 배포 가능을 선언하지 않는다. 실제 Docker/PG/운영 접근 0, instance 튜닝 bytes 불변이다.
+
 ## 2026-10-15 — T-MGR-02 호스트 workspace 연결 구현 중
 
 - registry의 실제 배치로 host별 shared workspace를 유도하고 default alias를 보존한다. Compose 선택 host와 기존 frozen env의 두 digest를 같은 file bytes와 대조한다. cutover membership/digest는 같은 resolved source를 사용한다.

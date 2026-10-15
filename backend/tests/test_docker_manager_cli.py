@@ -307,16 +307,13 @@ def test_compose_ensure_build_command(
         result = ComposeService().ensure_target("srv", build=True, recreate=True)
 
     assert result["success"] is True
+    # 실제 host-local srv 폐포는 이전한 Geo를 시작하지 않는다.
     assert result["services"] == [
         "rustfs",
         "grafana",
         "cadvisor",
         "prometheus",
         "kor-travel-shared-postgres",
-        "kor-travel-shared-db-init-geo",
-        "kor-travel-geo-api",
-        "kor-travel-geo-ui",
-        "kor-travel-geo-dagster-code-server",
         "kor-travel-shared-db-init-concierge",
         "kor-travel-concierge-api",
         "kor-travel-concierge-mcp",
@@ -336,7 +333,6 @@ def test_compose_ensure_build_command(
         "gra",
         "cadv",
         "prom",
-        "geo",
         "conc",
         "map",
         "pinvi",
@@ -349,8 +345,8 @@ def test_compose_ensure_build_command(
     assert "grafana" in up_command
     assert "cadvisor" in up_command
     assert "prometheus" in up_command
-    assert "kor-travel-geo-api" in up_command
-    assert "kor-travel-geo-ui" in up_command
+    assert "kor-travel-geo-api" not in up_command
+    assert "kor-travel-geo-ui" not in up_command
     assert "kor-travel-concierge-api" in up_command
     assert "kor-travel-map-api" in up_command
     assert "pinvi-api" in up_command

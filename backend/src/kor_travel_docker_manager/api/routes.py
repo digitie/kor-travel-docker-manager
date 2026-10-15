@@ -62,6 +62,7 @@ from kor_travel_docker_manager.services.standalone_backup import (
     StandaloneBackupError,
     create_standalone_backup,
     list_standalone_backups_for_display,
+    require_local_backup_role,
     ui_backup_owner_conflict,
 )
 
@@ -229,6 +230,11 @@ async def post_backup(
     request is refused with 409 before any job starts (`ui_backup_owner_conflict`)."""
     if role not in BACKUP_ROLES:
         raise HTTPException(status_code=400, detail=f"unknown backup role: {role}")
+    try:
+        # 실제 host 식별은 subprocess를 포함할 수 있어 event loop 밖에서 확인한다.
+        await asyncio.to_thread(require_local_backup_role, role)
+    except StandaloneBackupError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     owner_conflict = ui_backup_owner_conflict(role)
     if owner_conflict is not None:
         raise HTTPException(status_code=409, detail=owner_conflict)

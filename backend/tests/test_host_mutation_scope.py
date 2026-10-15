@@ -127,3 +127,75 @@ def test_declared_compose_dependencies_do_not_start_off_host_tenants(config):
     # 원래 위험 간선을 되돌리면 회귀가 실제로 거부한다.
     compose["services"]["kor-travel-map-api"]["depends_on"]["kor-travel-geo-api"] = {"condition": "service_healthy"}
     assert ("kor-travel-map-api", "kor-travel-geo-api") in _cross_host_declared_dependencies(compose, config)
+
+
+@pytest.mark.parametrize("role", ["geo", "transport"])
+@pytest.mark.parametrize("operation", ["create", "gc", "rehearse"])
+def test_backup_role_refuses_remote_before_shared_pg_or_artifact_access(
+    config, monkeypatch, tmp_path, role, operation,
+):
+    from kor_travel_docker_manager.services import standalone_backup as backup
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("remote role reached shared PG or artifact access")
+
+    monkeypatch.setattr(backup, "_discover_port", unexpected)
+    monkeypatch.setattr(backup, "_resolve_backup_root", unexpected)
+    monkeypatch.setattr(backup, "plan_standalone_restore", unexpected)
+    with pytest.raises(backup.StandaloneBackupError, match="host"):
+        if operation == "create":
+            backup.create_standalone_backup(role, backup_root=tmp_path)
+        elif operation == "gc":
+            backup.gc_standalone_backups(role, keep=3, backup_root=tmp_path)
+        else:
+            backup.rehearse_standalone_restore(role, backup_root=tmp_path)
+
+
+@pytest.mark.parametrize("role,target", [
+    ("geo", "geo"), ("transport", "transport"), ("concierge", "conc"),
+    ("map_application", "map"), ("pinvi", "pinvi"), ("dagster_shared", "dagster"),
+])
+def test_backup_role_uses_logical_owner_not_shared_pg(config, monkeypatch, role, target):
+    from kor_travel_docker_manager.services import standalone_backup as backup
+
+    for selected in config["hosts"]:
+        monkeypatch.setenv("KTDM_HOST", selected)
+        if selected in registry.target_hosts(target, config):
+            backup.require_local_backup_role(role)
+        else:
+            with pytest.raises(backup.StandaloneBackupError, match="host"):
+                backup.require_local_backup_role(role)
+
+
+@pytest.mark.parametrize("mode", ["unknown_host", "missing_operating_host"])
+def test_backup_host_config_errors_keep_typed_backup_failure(config, monkeypatch, mode):
+    from kor_travel_docker_manager.services import standalone_backup as backup
+
+    if mode == "unknown_host":
+        monkeypatch.setenv("KTDM_HOST", "undeclared")
+    else:
+        Path(registry.get_project_root(), ".ktdm-source-revision").touch()
+        monkeypatch.delenv("KTDM_HOST", raising=False)
+    with pytest.raises(backup.StandaloneBackupError, match="KTDM_HOST"):
+        backup.require_local_backup_role("map_application")
+
+
+@pytest.mark.parametrize("role", ["geo", "transport"])
+def test_public_backup_handler_refuses_remote_before_job_or_file_access(
+    config, monkeypatch, role,
+):
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from kor_travel_docker_manager.api import routes
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("remote backup reached job/file mutation")
+
+    monkeypatch.setattr(routes, "ui_backup_owner_conflict", unexpected)
+    monkeypatch.setattr(routes.job_runner, "submit", unexpected)
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(routes.post_backup(role, None, None, None))
+    assert raised.value.status_code == 409
+    assert "host" in raised.value.detail
