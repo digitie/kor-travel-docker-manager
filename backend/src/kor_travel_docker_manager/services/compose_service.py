@@ -41,6 +41,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     c6c_deployment_lock,
     c6c_state_paths,
     compose_volume_graph_hash,
+    contains_env_name,
     derive_curation_service_principal_environment,
     inspect_c6c_image_source_revision,
     load_c6c_deployment_config_from_environment,
@@ -717,7 +718,9 @@ def _validate_map_source_protected_scalar_tree(
     protected_names = tuple(_MAP_SOURCE_PROTECTED_ENV_VALUES)
     for path, scalar in _walk_map_source_scalars(payload):
         text = "" if scalar is None else str(scalar)
-        matching_names = tuple(name for name in protected_names if name in text)
+        matching_names = tuple(
+            name for name in protected_names if contains_env_name(text, name)
+        )
         if path[-1:] == ("<key>",):
             value_path = path[:-1]
             if value_path in allowed_values:
@@ -828,7 +831,7 @@ def _validate_map_source_env_files(
             raise DeploymentContractError(
                 "Map source environment contract tracked env_file is not UTF-8"
             ) from exc
-        if any(name in content for name in protected_names):
+        if any(contains_env_name(content, name) for name in protected_names):
             raise DeploymentContractError(
                 "Map source environment contract tracked env_file contains protected wiring"
             )

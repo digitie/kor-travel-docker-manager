@@ -6863,7 +6863,7 @@ def validate_current_map_ui_auth_runtime(
         if path in allowed_paths:
             continue
         text = "" if scalar is None else str(scalar)
-        if any(name in text for name in protected_names) or any(
+        if any(contains_env_name(text, name) for name in protected_names) or any(
             value and value in text for value in protected_values
         ):
             raise DeploymentContractError(
@@ -6991,7 +6991,7 @@ def validate_runtime_secret_isolation(
             if path in allowed_paths:
                 continue
             text = "" if scalar is None else str(scalar)
-            if any(name in text for name in protected_names) or any(
+            if any(contains_env_name(text, name) for name in protected_names) or any(
                 secret in text for secret in secret_values
             ):
                 raise DeploymentContractError(
@@ -7134,6 +7134,22 @@ def _runtime_environment_entries(
     if value is None:
         return []
     raise DeploymentContractError("container returned invalid runtime Env")
+
+
+def contains_env_name(text: str, name: str) -> bool:
+    """`name`이 `text` 안에 **식별자 전체**로 나타나는지 본다.
+
+    env 이름은 `[A-Za-z0-9_]` 경계로만 맞춘다 — 앞뒤에 식별자 글자가 붙으면 다른 이름이다.
+    날 substring 검사는 PinVi 자신의 `PINVI_KOR_TRAVEL_GEO_API_KEY`(별개 자격증명, PinVi
+    ADR-075)를 Map UI의 `KOR_TRAVEL_GEO_API_KEY` 누출로 오판했다(2026-10-15 t1015b).
+    `NAME=`·`$NAME`·`${NAME:-}`·JSON 키·문장 속 단어는 그대로 잡는다. 비밀 **값** 검사는
+    이 함수를 쓰지 않는다 — 값은 어디에 박혀 있어도 누출이다.
+    """
+
+    return (
+        re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text)
+        is not None
+    )
 
 
 def _walk_scalars(value: Any, path: tuple[str, ...] = ()) -> Iterable[tuple[tuple[str, ...], Any]]:

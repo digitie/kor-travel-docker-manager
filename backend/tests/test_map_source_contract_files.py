@@ -121,3 +121,22 @@ def test_a_tracked_env_file_is_held_to_the_contract(
 
     with pytest.raises(DeploymentContractError, match=message):
         _validate_env_files(tmp_path)
+
+
+def test_a_tracked_env_file_matches_protected_names_as_whole_identifiers(
+    tmp_path: Path,
+) -> None:
+    """env_file 내용 검사는 보호 이름을 식별자 전체로만 본다(`contains_env_name`)."""
+
+    protected = "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
+    assert protected in compose_service_module._MAP_SOURCE_PROTECTED_ENV_VALUES
+
+    _write_env_file(
+        tmp_path,
+        f"PINVI_{protected}=x\n{protected}_FILE=/run/secrets/x\n".encode(),
+    )
+    _validate_env_files(tmp_path)
+
+    _write_env_file(tmp_path, f"COPY=${{{protected}}}\n".encode())
+    with pytest.raises(DeploymentContractError, match="contains protected wiring"):
+        _validate_env_files(tmp_path)
