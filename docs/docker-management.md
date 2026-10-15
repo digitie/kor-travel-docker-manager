@@ -249,7 +249,9 @@ R4의 직접 소유권은 조회용 `containers` 합집합이 아니라 target�
 조회하고 redirect·재시도·본문 읽기를 하지 않는다. HTTP `up`은 Docker `running`이 아니며 metrics와 로컬 config를
 제공하지 않는다. UI의 로컬 제어·inspect·설정도 비활성화한다. gRPC·DB·설명 문자열은 `remote`(미관측)이고,
 `unreachable`은 방화벽 구성에서도 정상적으로 생길 수 있는 연결 관측 결과다. 추가 계정·SSH agent·원격 쓰기는 없다.
-HTTPX는 기존 개발 의존성에서 런타임 의존성으로 옮겼으므로 trusted offline 설치의 wheelhouse에도 포함되어야 한다.
+HTTPX 런타임 지원 범위는 `>=0.28.1,<0.29.0`이며 CI의 `httpx==0.28.1`과 일치한다.
+trusted offline 설치의 해당 host/Python/아키텍처 wheelhouse에도 이 범위의 HTTPX와 전이 의존성이 필요하다.
+기존 venv의 시험 통과나 backend wheel 생성만으로 새 설치의 resolver 성공을 판단하지 않는다.
 
 **consumer origin(R2).** 내부 target이 형제 서비스를 부르는 URL은 compose env **기본값**이 정본이며 registry에서 계산한 값과 같아야
 한다. 대상은 규칙으로 정한다 — "형제 서비스 포트(`12501`/`14001`/`14101`)를 기본값에 가진 모든 compose env(비활성 `legacy-dagster`

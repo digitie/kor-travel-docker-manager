@@ -1,4 +1,17 @@
 ## 2026-10-15 — 원격 target의 HTTP 관측과 로컬 도구 경계(Codex)
+## 2026-10-15 — HTTPX 런타임·CI·오프라인 설치 계약 교정(Codex)
+
+- 독립 B-P1-02를 수용했다. runtime으로 옮긴 `^0.27.0`은 CI `httpx==0.28.1`과
+  교집합이 없어 실제 old wheel/pip에서 ResolutionImpossible이었다. 원문 실패를 보존하고
+  지원 범위를 `^0.28.1`로 맞췄다. CI pin이나 resolver를 우회하는 설치 옵션은 바꾸지 않았다.
+- 새 별도 venv에서 캐시 기반 의존성 해석과 실제 wheel 설치·CI editable 설치·pip check가
+  통과했다. 그 환경에서 remote/multi-project52 PASS였다. 이어 자기 로컬 wheelhouse32개만
+  제공한 빈 venv의 `--no-index --find-links` source build/설치도 CI 버전 조합으로 통과했다.
+  cold 설치된 package/HTTPX0.28.1의 observer6 PASS·pip check PASS이며 중복 수를 합산하지 않는다.
+- 이 wheelhouse는 자체 x86_64/CPython3.13 검증용이다. 운영 root-owned wheelhouse를 수정하거나
+  배포하지 않았으며 대상 host/아키텍처의 준비는 기존 trusted 발행 절차를 따른다.
+  전체 backend·독립 postfix 두 리뷰·최종 CI·live는 별도 후속이다.
+
 ## 2026-10-15 — 실제 Compose host 선택과 공개 plane 시작의 리뷰 결함 교정(Codex)
 
 - 독립 리뷰 A-P2-01/B-P1-01을 수용했다. 두 plane의 workspace mount를 `KTDM_HOST`로,
