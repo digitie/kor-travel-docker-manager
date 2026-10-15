@@ -866,14 +866,14 @@ def test_a_target_on_a_declared_host_passes() -> None:
     _validate_targets_config(config, label="test.yml")
 
 
-def test_the_real_config_moves_weather_and_transport_to_odroid() -> None:
+def test_the_real_config_moves_geo_weather_and_transport_to_odroid() -> None:
     registry_module.load_targets_config.cache_clear()
     try:
         config = registry_module.load_targets_config()
     finally:
         registry_module.load_targets_config.cache_clear()
     moved = sorted(t for t, spec in config["targets"].items() if spec.get("host") == "odroid")
-    assert moved == ["transport", "weather"]
+    assert moved == ["geo", "transport", "weather"]
     assert config["hosts"]["odroid"]["addr"] == "192.168.1.13"
     # n150 `ensure all`이 odroid로 옮긴 Manager target(weather)을 지운 DB로 다시 세우지 않는다(잠정 — 호스트별 `all`
     # 필터 전까지). transport는 외부 프로젝트라 원래 `all` 밖이다.

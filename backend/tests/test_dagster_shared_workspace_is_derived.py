@@ -880,7 +880,7 @@ def _location_of(compose: dict[str, Any], targets: Mapping[str, Any], target_id:
 
 
 def test_targets_on_another_host_are_not_on_this_plane() -> None:
-    """odroid로 옮긴 target(2026-10-14 weather·transport)은 합류해 있어도 n150 plane의 workspace에 없다(잠정).
+    """odroid로 옮긴 target(2026-10-14 weather·transport, 2026-10-15 geo)은 합류해 있어도 n150 plane의 workspace에 없다(잠정).
 
     n150 plane healthcheck는 workspace의 **모든** location SERVING을 요구한다 — 여기서 멈춘 code-server를 실으면
     daemon·webserver가 unhealthy다. 본 것에 하한을 건다: 옮긴 target이 하나도 안 보이면 이 검사는 공허하다.
@@ -888,7 +888,7 @@ def test_targets_on_another_host_are_not_on_this_plane() -> None:
 
     compose, targets = _documents()
     moved = _off_host_shared_targets(targets)
-    assert sorted(moved) == ["transport", "weather"], moved
+    assert sorted(moved) == ["geo", "transport", "weather"], moved
     committed = {
         e["grpc_server"]["location_name"]
         for e in load_yaml_rejecting_duplicate_keys(_WORKSPACE.read_text(encoding="utf-8"))["load_from"]
@@ -898,7 +898,7 @@ def test_targets_on_another_host_are_not_on_this_plane() -> None:
         assert location and not location & committed, target_id
 
 
-@pytest.mark.parametrize("target_id", ["transport", "weather"])
+@pytest.mark.parametrize("target_id", ["geo", "transport", "weather"])
 def test_bringing_a_moved_target_back_drifts_the_workspace(target_id: str) -> None:
     """빨간 대조군 — registry에서 `host:`를 지우면(n150으로 되돌리면) 파생이 그 location을 싣고 커밋된 파일과 갈린다."""
 
@@ -910,7 +910,7 @@ def test_bringing_a_moved_target_back_drifts_the_workspace(target_id: str) -> No
     assert derived != load_yaml_rejecting_duplicate_keys(_WORKSPACE.read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("target_id", ["transport", "weather"])
+@pytest.mark.parametrize("target_id", ["geo", "transport", "weather"])
 def test_a_moved_target_left_in_the_workspace_is_named(target_id: str) -> None:
     """빨간 대조군 — 옮긴 target의 location을 workspace에 남기면 G3-b가 그 target을 이름으로 말한다."""
 

@@ -9,10 +9,8 @@ map code-server는 loopback에 남아 n150 geo stop 뒤 모든 geocode run이 co
 포트를 공개 대역으로 통일했다 — geo `12501`, weather `12201`(n150의 옛 `14101`이 아니다), transport는 backend
 `14001`이 아니라 API gateway `12301`. 그래서 형제 → 소비자 포트만 아래 표로 적고, 호스트는 registry에서
 파생한다 — `targets.<형제>.host`(생략 = default), default면 `127.0.0.1`, 아니면 `hosts[<host>].addr`(R1).
-**geo만 명시 재정의다** — 소비자는 odroid geo로 옮겼지만 geo의 Dagster는 아직 n150 공용 plane에 있어 geo target은
-default 호스트(n150)다(geo 플립 전 이중 상태). geo 플립(또는 T-MGR-NH)이 registry를 바꾸면 재정의는 군더더기가 되고
-`test_host_overrides_only_cover_targets_still_on_another_host`가 빨개져 지우게 한다. 포트 표를 registry
-(`connection:`)로 옮기는 것은 T-MGR-01c다.
+재정의는 없다 — 2026-10-15 geo도 registry에서 `host: odroid`가 되어(n150 workspace에서 빠짐) 세 형제 모두
+registry가 말한다(그 전에는 geo만 명시 재정의였다). 포트 표를 registry(`connection:`)로 옮기는 것은 T-MGR-01c다.
 
 스캔 범위: 모든 서비스(모든 profile)의 `environment`와 `build.args`. 빼는 것 — (1) 형제 자신의 서비스(geo
 code-server의 `KTG_DAGSTER_ADMIN_API_URL`, weather-web의 `WEATHER_API_INTERNAL_URL`은 같은 호스트 안의 자기
@@ -22,7 +20,6 @@ code-server의 `KTG_DAGSTER_ADMIN_API_URL`, weather-web의 `WEATHER_API_INTERNAL
 from __future__ import annotations
 
 import re
-import sys
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -38,8 +35,6 @@ _TARGETS = _ROOT / "config" / "docker-targets.yml"
 
 #: 형제 target → 소비자가 부르는 포트. 2026-10-14 소유자가 통일한 odroid 포트.
 _CONSUMER_PORT: Mapping[str, int] = {"geo": 12501, "transport": 12301, "weather": 12201}
-#: 소비자 origin의 호스트를 registry `host:` 대신 이것으로 — geo만(위 docstring). 잠정, T-MGR-NH가 없앤다.
-_HOST_OVERRIDE: Mapping[str, str] = {"geo": "odroid"}
 #: 소비자 기본값에서 더는 나오면 안 되는 n150 시절 포트 — 스캔이 이것도 형제 포트로 본다(되돌림을 잡는다).
 _RETIRED_CONSUMER_PORTS: Mapping[int, str] = {14001: "transport", 14101: "weather"}
 
@@ -79,7 +74,7 @@ def _default_host(targets: Mapping[str, Any]) -> str:
 
 def _expected_origin(targets: Mapping[str, Any], sibling: str) -> str:
     default = _default_host(targets)
-    host = _HOST_OVERRIDE.get(sibling) or targets["targets"][sibling].get("host", default)
+    host = targets["targets"][sibling].get("host", default)
     addr = "127.0.0.1" if host == default else targets["hosts"][host]["addr"]
     return f"http://{addr}:{_CONSUMER_PORT[sibling]}"
 
@@ -155,41 +150,7 @@ def test_every_consumer_default_is_the_sibling_origin() -> None:
     assert _violations(compose, targets) == []
 
 
-def _override_violations(targets: Mapping[str, Any]) -> list[str]:
-    default = _default_host(targets)
-    violations: list[str] = []
-    for sibling, host in _HOST_OVERRIDE.items():
-        if host not in targets["hosts"]:
-            violations.append(f"`{sibling}` 재정의 호스트 `{host}`가 `hosts:`에 없다")
-        elif targets["targets"][sibling].get("host", default) == host:
-            violations.append(f"`{sibling}` 재정의는 이제 군더더기다 — registry가 같은 호스트를 말한다")
-    return violations
-
-
-def test_host_overrides_only_cover_targets_still_on_another_host() -> None:
-    """재정의는 registry가 아직 못 말하는 것만 — geo가 odroid로 플립되면(registry가 같은 말을 하면) 지운다."""
-
-    _, targets = _documents()
-    assert _override_violations(targets) == []
-
-
-def test_without_the_geo_override_the_geo_consumers_are_named(monkeypatch: pytest.MonkeyPatch) -> None:
-    """빨간 대조군 — 재정의를 빼면 geo 기대 origin은 registry의 n150 loopback이 되어 odroid를 부르는 geo 소비자가 빨갛다."""
-
-    compose, targets = _documents()
-    monkeypatch.setattr(sys.modules[__name__], "_HOST_OVERRIDE", {})
-    assert [v for v in _violations(compose, targets) if "형제 `geo`" in v]
-
-
-def test_a_redundant_override_is_named() -> None:
-    """빨간 대조군 — geo를 registry에서 odroid로 옮기면 재정의가 군더더기라 빨갛다."""
-
-    _, targets = _documents()
-    targets["targets"]["geo"]["host"] = "odroid"
-    assert any("`geo` 재정의는 이제 군더더기" in v for v in _override_violations(targets))
-
-
-@pytest.mark.parametrize("sibling", ["transport", "weather"])
+@pytest.mark.parametrize("sibling", ["geo", "transport", "weather"])
 def test_moving_a_target_back_to_the_default_host_is_named(sibling: str) -> None:
     """빨간 대조군 — registry에서 `host:`를 지우면(n150으로 되돌리면) 기대 origin이 loopback이 되어 그 소비자가 빨갛다."""
 

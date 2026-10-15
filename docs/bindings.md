@@ -91,7 +91,7 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **결박**: 합집합 == shared 집합 ∧ 교집합 ∅ ∧ `workspace.n150.yaml`은 첫 구현에서 오늘 파일과 byte 동일 —
   기존 `test_dagster_shared_workspace_is_derived`를 두 파일 + 호스트별 `all` 규칙으로 확장(T-MGR-02)
 - **잠정(2026-10-14)**: 파일은 아직 `workspace.yaml` 하나이고 파생은 "shared ∧ default 호스트(n150)"다 — weather·transport
-  (`host: odroid`)가 빠져 4 location(geo·conc·map·pinvi). 결박은 `test_the_workspace_file_is_the_derivation`과 옮긴 target의
+  (`host: odroid`)가 빠져 4 location(geo·conc·map·pinvi), 2026-10-15 geo도 빠져 3 location(conc·map·pinvi). 결박은 `test_the_workspace_file_is_the_derivation`과 옮긴 target의
   빨간 대조군(`test_bringing_a_moved_target_back_drifts_the_workspace`·`test_a_moved_target_left_in_the_workspace_is_named`).
   odroid 파일이 없으므로 "합집합 == shared 집합"은 아직 단언하지 않는다(odroid plane은 Manager 밖에서 돈다)
 
@@ -111,16 +111,15 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **결박**: `test_every_consumer_default_is_the_sibling_origin`이 compose를 **스캔**해 그 집합을 찾고(줄 번호 열거 금지 — 지정 줄만
   보면 하나를 빠뜨려도 초록이다; 하한은 `test_the_scan_sees_every_known_consumer`) 기대 origin == 각 기본값을 단언한다 — 어느 한 곳을
   옛 n150 loopback으로 되돌리면 그 곳이 이름으로 빨갛다(`test_reverting_any_one_consumer_to_its_n150_loopback_is_named`). **잠정**:
-  형제 → 소비자 포트 표만 테스트에 있고 호스트는 registry `host:`에서 파생한다(default면 `127.0.0.1`); geo만 명시 재정의(소비자가
-  호스트보다 앞선다 — geo Dagster는 아직 n150), registry가 같은 말을 하면 `test_host_overrides_only_cover_targets_still_on_another_host`가
-  빨개져 지우게 한다. 포트 표를 registry로 옮기는 것과 `.env` 재정의 거부(validate)는 T-MGR-01c, 재정의 제거는 T-MGR-NH
+  형제 → 소비자 포트 표만 테스트에 있고 호스트는 registry `host:`에서 파생한다(default면 `127.0.0.1`; 2026-10-15부터 geo·transport·
+  weather 모두 `host: odroid`라 재정의 없음). 포트 표를 registry로 옮기는 것과 `.env` 재정의 거부(validate)는 T-MGR-01c
 
 ### B-7. (계획) 공용 workspace digest의 기본값
 
 - **사실**: daemon·webserver가 기대하는 `workspace.yaml` sha256[:16]
 - **정본**: 설치된 `config/dagster-shared/workspace.<host>.yaml`의 내용
 - **사본**: compose `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-<n150 파일 digest>}`의 기본값
-  (오늘은 리터럴 `fbd0eadc90829753` — 2026-10-14 weather·transport가 빠진 n150 파일, `docker-compose.yml:829,899`), odroid는 root `.env` 값
+  (오늘은 리터럴 `4461abc13cce9c4f` — 2026-10-15 geo·weather·transport가 빠진 n150 파일(concierge·map·pinvi), `docker-compose.yml:829,899`), odroid는 root `.env` 값
 - **사본이 필요한 이유**: healthcheck가 마운트 파일과 env를 대조해 낡은 컨테이너를 exit시키는 기제 자체가 이 사본이다
   (`:847,911`); installer에 계산 로직을 더하지 않는다(ADR-51)
 - **결박**: 기본값 == `workspace.n150.yaml` sha256[:16] — 기존 `test_dagster_shared_config` 확장(T-MGR-02); odroid 값은

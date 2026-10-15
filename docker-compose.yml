@@ -833,7 +833,7 @@ services:
       DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS: "180"
       DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD: "60"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "fbd0eadc90829753"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "4461abc13cce9c4f"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -903,7 +903,7 @@ services:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "fbd0eadc90829753"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "4461abc13cce9c4f"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro

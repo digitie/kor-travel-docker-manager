@@ -2,6 +2,13 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-15 — PR #477 최신 main 병합과 이전 완료 상태 보존
+
+- main `409833e`를 feature branch에 merge했다. registry v2의 단일 hosts 선언·현재 호스트 검증·집계 조회 최적화와 선택적 시작 RPC 설정을 유지한다.
+- #479의 Geo `host: odroid` 및 n150 workspace 제외, #480의 C6c 보호 환경변수 식별자 경계 검사를 보존한다. 기존 instance 파일·앱 튜닝은 변경하지 않는다.
+- 충돌은 registry 설명과 일지 두 곳이며 양쪽 작업 기록을 보존했다. T-MGR-01b 호스트 mutation guard와 T-MGR-02 호스트별 workspace는 별도 후속 작업이다.
+- 로컬 회귀·정적 검사와 적대 리뷰를 거쳐 PR head를 갱신한다. 운영 설치·배포·live E2E 완료를 뜻하지 않는다.
+
 ## 2026-10-15 — 최신 main 통합과 시작 RPC 경합 보완
 
 - #476·#478을 통합했다. registry의 중복 hosts 선언·검증기를 제거하고 Weather·Transport의 이미 이전된 배치를 보존한다.
@@ -21,6 +28,18 @@
 - Geo 튜닝값은 그대로 유지한다. 일치화 대상은 배포 경로·호스트 선택·공개 URL·Dagster 연결·버전 계약이다.
   호스트별 workspace/명령 제한 구현과 실제 이전 뒤 검증을 마쳐야 ADR-58 운영 전환을 완료할 수 있다.
 
+## 2026-10-15 — C6c 보호 env 이름을 식별자 경계로만 맞춘다(오탐 수정)
+
+- n150 재구축 t1015b가 배포 뒤 `validate_runtime_secret_isolation`에서 "a C6c credential leaks outside its exact environment path"로 멈췄다. 원인은 마지막 scalar 순회의 날 substring 검사(`name in text`)다 — pinvi-api의 `PINVI_KOR_TRAVEL_GEO_API_KEY`(PinVi 자신의 geo 키, #476 + PinVi ADR-075 — C6c 비밀이 아니다)가 보호 이름 `KOR_TRAVEL_GEO_API_KEY`(Map UI)를 품고 있어 누출로 오판했다.
+- `contains_env_name(text, name)` 하나를 더해 이름은 `[A-Za-z0-9_]` 경계로만 맞춘다. 적용 4곳: `validate_current_map_ui_auth_runtime`·`validate_runtime_secret_isolation`의 scalar 순회, Map source 환경 계약의 `matching_names`와 추적 env_file 내용 검사. `NAME=`·`$NAME`·`${NAME:-}`·JSON 키·문장 속 단어는 그대로 잡는다. 비밀 **값** 검사와 정확 이름 비교는 바꾸지 않았다.
+- 의도한 맞바꿈: 보호 이름을 **늘리기만 한** 이름(`<NAME>_FILE`, `${<NAME>_OLD}`, `PINVI_<NAME>`)은 이제 이름으로는 잡지 않는다. 그 값이 C6c 비밀이면 값 검사가 그대로 잡고, Map 설정은 `_FILE` 변형을 읽지 않는다.
+- 테스트(`test_f1d_compose_contract.py`·`test_map_source_contract_files.py`): 바꾼 4곳마다 양성(늘린 이름 통과)·음성(`${NAME}`·`NAME=` 거부) 한 쌍. 양성은 그 자리를 날 substring으로 되돌린 돌연변이에서, 음성은 그 자리 검사를 끈 돌연변이에서 빨갛다. 값 누출 테스트는 값 검사를 끈 돌연변이에서 빨갛다. 배포·n150 반영은 이 PR 범위 밖이다.
+
+## 2026-10-15 — n150 공용 workspace에서 geo 제외(소유자 결정)
+
+- n150 geo code-server(`12503`)가 02:42Z 멈춘 뒤 공용 daemon·webserver가 geo location 미응답으로 unhealthy였다(운영자 preflight 차단).
+- geo에 `host: odroid`를 두어 같은 잠정 파생으로 n150 `workspace.yaml`에서 뺐다 — 남는 것 concierge·map·pinvi, digest `4461abc13cce9c4f`. 소비자 origin 테스트의 geo 재정의는 군더더기로 빨개져 지웠다.
+- geo Dagster는 2026-10-15부터 odroid의 plane에서 돈다(다른 세션이 odroid 자체 workspace에 02:52Z 합류 — Manager 밖, 호스트 측; 그 schedule·sensor는 지금 멈춤 상태). Manager의 odroid workspace 파생은 T-MGR-02. 배포·n150 반영은 이 PR 범위 밖이다.
 
 ## 2026-10-15 — `ktdctl dagster-plane converge`: 공용 plane만 설치 release render로 수렴(T-MGR-06j)
 
