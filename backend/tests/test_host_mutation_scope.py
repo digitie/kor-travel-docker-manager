@@ -199,3 +199,78 @@ def test_public_backup_handler_refuses_remote_before_job_or_file_access(
         asyncio.run(routes.post_backup(role, None, None, None))
     assert raised.value.status_code == 409
     assert "host" in raised.value.detail
+
+
+@pytest.mark.parametrize("operation", ["pins", "published", "execution", "request", "clear", "discard"])
+def test_pin_writers_refuse_remote_before_private_state_changes(config, monkeypatch, tmp_path, operation):
+    from types import SimpleNamespace
+
+    from kor_travel_docker_manager.services import runtime_execution_registry as execution
+    from kor_travel_docker_manager.services import runtime_pin_registry as pins
+    from kor_travel_docker_manager.services import runtime_pin_request as requests
+
+    monkeypatch.setenv("KTDM_HOST", config["targets"]["geo"]["host"])
+    path = tmp_path / "state.json"
+    path.write_text("{}")
+    if operation == "clear":
+        monkeypatch.setattr(requests, "read_runtime_pin_request", lambda **_kw: SimpleNamespace(role="map", request_id="same"))
+    with pytest.raises(DeploymentContractError, match="host"):
+        if operation == "pins":
+            pins.write_runtime_pin_registry(None, path=path, publish=False)
+        elif operation == "published":
+            pins.publish_runtime_pins(None, public_path=path)
+        elif operation == "execution":
+            execution.write_runtime_execution_registry(None, path=path, public_path=path)
+        elif operation == "request":
+            requests.write_runtime_pin_request(SimpleNamespace(role="map"), path=path, replace_existing=True)
+        elif operation == "clear":
+            requests.clear_runtime_pin_request(expect_request_id="same", path=path)
+        else:
+            requests.discard_unreadable_runtime_pin_request(path=path)
+    assert path.read_text() == "{}"
+
+
+@pytest.mark.parametrize("operation", ["pair", "single", "rollback"])
+def test_rotation_refuses_remote_before_intent_or_pending_reads(config, monkeypatch, operation):
+    from kor_travel_docker_manager.services import runtime_pair_rotation as rotation
+
+    monkeypatch.setenv("KTDM_HOST", config["targets"]["geo"]["host"])
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("remote rotation reached private intent")
+
+    monkeypatch.setattr(rotation, "load_pending_runtime_pair_rotation", unexpected)
+    monkeypatch.setattr(rotation, "load_runtime_pin_registry", unexpected)
+    with pytest.raises(DeploymentContractError, match="host"):
+        if operation == "pair":
+            rotation.rotate_pair_with_execution(map_revision="a" * 40, pinvi_revision="b" * 40,
+                manager_source_revision="c" * 40, reason="test", rotated_by="test", block_previous=False)
+        elif operation == "single":
+            rotation.rotate_single_role_with_execution(role="map", revision="a" * 40,
+                manager_source_revision="c" * 40, reason="test", rotated_by="test", block_previous=False)
+        else:
+            rotation.rollback_with_execution(pinset_sha256="a" * 64, manager_source_revision="c" * 40,
+                reason="test", rotated_by="test")
+
+
+
+def test_pair_writer_requires_each_member_when_targets_split(config, monkeypatch, tmp_path):
+    from kor_travel_docker_manager.services import runtime_pin_registry as pins
+
+    config["targets"]["pinvi"]["host"] = config["targets"]["geo"]["host"]
+    path = tmp_path / "pins.json"
+    with pytest.raises(DeploymentContractError, match="pinvi"):
+        pins.write_runtime_pin_registry(None, path=path, publish=False)
+    assert not path.exists()
+
+
+def test_single_target_request_does_not_require_a_remote_peer(config, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from kor_travel_docker_manager.services import runtime_pin_request as requests
+
+    config["targets"]["pinvi"]["host"] = config["targets"]["geo"]["host"]
+    path = tmp_path / "request.json"
+    request = SimpleNamespace(role="map", to_payload=lambda: {"inert": True})
+    requests.write_runtime_pin_request(request, path=path, replace_existing=True)
+    assert path.exists()

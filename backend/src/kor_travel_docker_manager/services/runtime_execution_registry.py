@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.registry import require_local_targets
 from kor_travel_docker_manager.services.runtime_execution_identity import (
     ExecutionIdentityV6,
 )
@@ -469,6 +470,7 @@ def write_runtime_execution_registry(
     path: Path | None = None,
     public_path: Path | None = None,
 ) -> None:
+    require_local_targets("map", "pinvi")
     _write(path or runtime_execution_registry_path(), registry.to_payload(), mode=0o600)
     _write(
         public_path or runtime_execution_registry_public_path(),

@@ -1,3 +1,10 @@
+## 2026-10-15 — T-MGR-01b pin 쓰기의 host 경계
+
+- pin/execution private·public pair 문서와 회전 intent는 Map/PinVi 각 target이 모두 local일 때만 쓴다. 기존 registry 직접 소유권 검사를 재사용하며, 단일 role 회전도 v6 pair 문서와 intent를 함께 쓰므로 같은 조건을 적용한다. 개별 요청 write/clear는 해당 role만 검사하고 손상 요청 discard는 pair를 검사한다.
+- writer 6개·회전 진입 3개를 OLD 9 FAIL로 재현했다. off-host에서는 private 파일 바이트를 보존하고 intent 조회/생성 전 거절한다. split-host pair의 한쪽만 local인 경우 거절하며 local 단일 요청은 remote peer 때문에 막지 않는다.
+- 관련 6파일 385 PASS, 전체 backend Ruff·diff PASS. 기존 v5/v6 digest·직렬화·버전·G/lock·복구 절차·read-only 경로는 변경하지 않았다. 이전 backup 381건과 겹치므로 합산하지 않는다.
+- lower Compose·compose 편집·pinned workflow 상위 진입·remote 상태·전체 backend/독립 리뷰2인/live는 후속이다. 아직01b 전체 완료가 아니고 운영 접근·실제 pin 회전은 0이다.
+
 ## 2026-10-15 — T-MGR-01b 백업 role의 host 소유권 경계
 
 - 공용 PG의 host-all 소유권과 tenant DB 쓰기 권한을 분리했다. create/gc/rehearse는 기존 registry의 직접 target 소유권을 파일·PG 접근 전에 확인하고, API는 job 제출·감사 기록 전에 같은 검사를 thread에서 수행한다. 기존 StandaloneBackupError/HTTP409 응답 계약을 보존한다.
