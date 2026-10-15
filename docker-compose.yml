@@ -1173,6 +1173,7 @@ services:
       PORT: ${KOR_TRAVEL_GEO_UI_CONTAINER_PORT:-12505}
       HOSTNAME: 0.0.0.0
       KTG_API_INTERNAL_URL: http://127.0.0.1:${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}
+      KTG_DAGSTER_PUBLIC_URL: ${KTDM_PROD_URL_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}}
       NEXT_PUBLIC_API_BASE_URL: ${KOR_TRAVEL_GEO_UI_PUBLIC_API_BASE_URL:-/api/proxy}
       NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
       KTG_VWORLD_API_KEY: ${KOR_TRAVEL_GEO_VWORLD_API_KEY:-}
@@ -1185,9 +1186,11 @@ services:
     - host.docker.internal:host-gateway
     healthcheck:
       test:
-      - CMD-SHELL
+      - CMD
+      - node
+      - -e
       - >-
-        node -e "fetch('http://localhost:' + (process.env.PORT || '12505')).then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+        const http=require('node:http');const req=http.get('http://127.0.0.1:'+(process.env.PORT||'12505')+'/login',res=>{const ok=res.statusCode>=200&&res.statusCode<300;res.destroy();process.exit(ok?0:1)});req.on('error',()=>process.exit(1));setTimeout(()=>{req.destroy();process.exit(1)},4000).unref();
       interval: 10s
       timeout: 5s
       retries: 12
