@@ -216,3 +216,94 @@ def test_public_target_readers_preserve_case_insensitive_names(config, monkeypat
     assert registry.runtime_services_for_target("geo") == registry.get_target("GEO")["resolved_runtime_services"]
     assert registry.init_steps_for_target("geo") == registry.get_target("GEO")["resolved_init_steps"]
     assert registry.service_groups_for_target("geo")
+
+
+# --- 2026-10-15 n150: ktdctl은 root `.env`를 로드하지 않는다 -------------------------------
+# backend는 `main.py`의 `load_dotenv`로 `.env`의 KTDM_HOST를 프로세스 env에 올리지만
+# ktdctl·설치 래퍼·launcher는 그러지 않아, `.env`에 `KTDM_HOST=n150`이 있어도 운영 모드의
+# 모든 ktdctl 명령이 "requires hosts and KTDM_HOST"로 죽었다(#477 리뷰 차단 2번).
+# 아래는 CLI 진입점(`main`)에서 실제 targets 문서·운영 표지·root `.env`로 확인한다.
+
+
+@pytest.fixture
+def operating_cli(monkeypatch, tmp_path):
+    from kor_travel_docker_manager.services import trusted_install
+
+    monkeypatch.setattr(trusted_install, "running_from_trusted_install_root", lambda: False)
+    monkeypatch.setenv(registry.PROJECT_ROOT_ENV, str(tmp_path))
+    monkeypatch.setenv(registry.TARGETS_FILE_ENV, str(ROOT / "config/docker-targets.yml"))
+    monkeypatch.delenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", raising=False)
+    monkeypatch.delenv(registry.HOST_ENV, raising=False)
+    (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
+    addresses = yaml.safe_load((ROOT / "config/docker-targets.yml").read_text())["hosts"]
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset({addresses["odroid"]["addr"]}))
+    registry.load_targets_config.cache_clear()
+    yield tmp_path
+    registry.load_targets_config.cache_clear()
+
+
+def _validate_json(capsys):
+    import json
+
+    from kor_travel_docker_manager.cli import main
+
+    try:
+        code = main(["targets", "validate", "--json"])
+    except SystemExit as exc:
+        code = exc.code
+    captured = capsys.readouterr()
+    return code, (json.loads(captured.out) if code == 0 else None), captured.err
+
+
+def test_cli_reads_host_from_root_env_file(operating_cli, capsys):
+    (operating_cli / ".env").write_text("OTHER=x\nKTDM_HOST=odroid\n")
+    code, document, _ = _validate_json(capsys)
+    assert code == 0
+    assert document["host"] == "odroid"
+
+
+def test_cli_rejects_host_missing_from_env_and_root_env_file(operating_cli, capsys):
+    (operating_cli / ".env").write_text("OTHER=x\nKTDM_HOST=\n")
+    code, _, err = _validate_json(capsys)
+    assert code != 0
+    assert "requires hosts and KTDM_HOST" in err
+
+
+def test_cli_process_env_overrides_root_env_file(operating_cli, monkeypatch, capsys):
+    # `.env`의 값은 로컬이 아닌 호스트다. 프로세스 env가 이기면 통과, `.env`가 이기면 거부된다.
+    (operating_cli / ".env").write_text("KTDM_HOST=n150\n")
+    monkeypatch.setenv(registry.HOST_ENV, "odroid")
+    code, document, _ = _validate_json(capsys)
+    assert code == 0
+    assert document["host"] == "odroid"
+    monkeypatch.delenv(registry.HOST_ENV)
+    code, _, err = _validate_json(capsys)
+    assert code != 0
+    assert "not assigned" in err
+
+
+@pytest.mark.parametrize("value", ["mars", "all", "ODROID"])
+def test_cli_rejects_invalid_host_in_root_env_file(operating_cli, capsys, value):
+    (operating_cli / ".env").write_text(f"KTDM_HOST={value}\n")
+    code, _, err = _validate_json(capsys)
+    assert code != 0
+    assert "KTDM_HOST must be a declared hosts key" in err
+
+
+def test_trusted_release_reads_installed_root_env_file(config, monkeypatch, tmp_path):
+    from kor_travel_docker_manager.services import trusted_install
+
+    install = tmp_path / "opt"
+    install.mkdir()
+    monkeypatch.setattr(trusted_install, "running_from_trusted_install_root", lambda: True)
+    monkeypatch.setattr(trusted_install, "TRUSTED_INSTALL_ROOT", install)
+    monkeypatch.delenv(registry.PROJECT_ROOT_ENV, raising=False)
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset({config["hosts"]["n150"]["addr"]}))
+    # 설치 root 밖의 `.env`(env-file override)는 trusted 자기 식별의 근거가 아니다.
+    foreign = tmp_path / "foreign.env"
+    foreign.write_text("KTDM_HOST=n150\n")
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", str(foreign))
+    with pytest.raises(registry.TargetsConfigError, match="requires hosts and KTDM_HOST"):
+        registry.current_host(config)
+    (install / ".env").write_text("KTDM_HOST=n150\n")
+    assert registry.current_host(config) == "n150"
