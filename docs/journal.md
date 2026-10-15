@@ -1,3 +1,12 @@
+## 2026-10-16 — #477 리뷰 잔여(T-MGR-01a-F), #481 위로 rebase
+
+- #481(호스트 변경 경계·workspace 분리)이 먼저 머지돼 겹치는 것(registry 소유권·host-local 폐포·연결 주소·host 선택)은 #481을
+  정본으로 두고 #483의 같은 목적 코드는 버렸다. 얹은 것: 설치기 flip 전 `host-identity` 검사(+롤백 안내), "로컬 선언 호스트 정확히
+  하나" 자기 식별, `sorted(owners)[0]` 제거(미해석으로 남김), 주소 조회 프로세스당 1회(+conftest 초기화), 세 번째 가상 호스트
+  fixture, 호스트 리터럴 검사·허용 목록. `decisions.md` 분리 task는 별도 문서 PR로 뺐다.
+- #484(T-MGR-01b 차이분)는 닫았다 — #481의 host 필터 방식을 정본으로(코디네이터 결정, "단순하게, 과결박 없이").
+- 배포·n150 변경은 하지 않았다.
+
 ## 2026-10-16 — Geo UI Dagster 공개 URL 누락 수정
 
 Geo API에만 Dagster 공개 URL이 설정되어 UI 콘솔 버튼이 표시되지 않는 배포 누락을 수정한다.
@@ -8,7 +17,6 @@ node:http 단일 요청으로 /login의 2xx를 확인하고 4초 뒤 실패한�
 감소했다고 주장하지 않는다. 이미지 재빌드나 API/code-server 변경은 필요하지 않다.
 로컬 Compose 참조 회귀 32건과 실제 Node HTTP 모형 8조건(2xx·3xx·401·503·4초 예산·PORT override)이 통과했다.
 CodeGraph init/sync와 diff 점검도 통과했다. 제품 리뷰·현재 CI·설정 반영·외부 UI 재검증은 별도 gate다.
-
 
 ## 2026-10-16 — 최신 root 환경 자기 식별과 host 실행 경계 통합(Codex)
 

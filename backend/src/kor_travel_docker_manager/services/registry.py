@@ -441,13 +441,42 @@ def current_host(config: Mapping[str, Any] | None = None) -> str:
         selected = default_host(config)
     if selected not in hosts:
         raise TargetsConfigError("KTDM_HOST must be a declared hosts key")
-    if operating and hosts[selected]["addr"] not in _local_ipv4_addresses():
-        raise TargetsConfigError("KTDM_HOST address is not assigned to this host")
+    if operating:
+        # 자기 식별은 "주소가 이 장비에 있는 선언 호스트가 정확히 하나 ∧ 그것 == KTDM_HOST"다(#477 리뷰 7번) — 보조
+        # IPv4·VIP로 선언 주소 둘이 로컬이면 어느 이름이든 통과하던 스푸핑을 막는다. 주소 집합은 프로세스 캐시라,
+        # 맞지 않으면 캐시를 비우고 **한 번만** 다시 본다: 부팅 직후 Wi-Fi 주소가 아직 없던 첫 probe가 프로세스
+        # 수명 동안 남지 않게(#483 리뷰 A — 캐시 전 backend는 매 호출 probe였다).
+        claimed = _claimed_hosts(hosts)
+        if claimed != [selected]:
+            _ADDRESS_PROBE_CACHE.cache_clear()
+            claimed = _claimed_hosts(hosts)
+        if claimed != [selected]:
+            if selected not in claimed:
+                where = ", ".join(claimed) if claimed else "none"
+                raise TargetsConfigError(
+                    f"KTDM_HOST address is not assigned to this host (declared hosts assigned here: {where})"
+                )
+            raise TargetsConfigError(
+                "more than one declared host address is assigned to this host "
+                f"({', '.join(claimed)}); self-identification is ambiguous"
+            )
     return selected
 
 
+def _claimed_hosts(hosts: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    local = _local_ipv4_addresses()
+    return sorted(name for name, spec in hosts.items() if spec["addr"] in local)
+
+
+@lru_cache(maxsize=1)
 def _local_ipv4_addresses() -> frozenset[str]:
-    """Linux 인터페이스의 실제 IPv4를 읽는다. DNS나 외부 HTTP를 자기 식별에 쓰지 않는다."""
+    """Linux 인터페이스의 실제 IPv4를 읽는다. DNS나 외부 HTTP를 자기 식별에 쓰지 않는다.
+
+    **프로세스당 한 번**이다(#477 리뷰 5번) — 단건 조회마다 `current_host`가 돌므로 캐시가 없으면 status 한 번에
+    `ip` subprocess가 수백 번 뜬다. 대가: 실행 중 주소가 바뀌면 다음 프로세스부터 보인다. 호스트 주소는 고정 LAN
+    주소이고 `ktdctl`은 단명 프로세스이며 backend는 설치마다 재기동된다(ADR-51 D). 실패(예외)는 캐시되지 않고,
+    자기 식별이 맞지 않으면 `current_host`가 캐시를 비우고 한 번 다시 본다.
+    """
     import json
     import subprocess
 
@@ -467,6 +496,10 @@ def _local_ipv4_addresses() -> frozenset[str]:
         )
     except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, AttributeError) as exc:
         raise TargetsConfigError("could not verify assigned local IPv4 addresses") from exc
+
+
+#: 진짜 캐시의 손잡이. `current_host`의 재검사가 이것으로 비운다(대역으로 바뀐 함수에는 `cache_clear`가 없다).
+_ADDRESS_PROBE_CACHE: Final = _local_ipv4_addresses
 
 
 def target_hosts(target: str, config: Mapping[str, Any] | None = None) -> frozenset[str]:
@@ -559,8 +592,16 @@ def _managed_containers(
     for name, spec in config["containers"].items():
         connection = spec["connection"]
         owners = container_hosts(name, config)
-        host = "127.0.0.1" if selected in owners or not owners else _host_specs(config)[sorted(owners)[0]]["addr"]
-        result[name] = {**spec, "connection": connection.replace("{host}", host) if isinstance(connection, str) else connection}
+        if selected in owners or not owners:
+            host: str | None = "127.0.0.1"
+        elif len(owners) == 1:
+            host = _host_specs(config)[next(iter(owners))]["addr"]
+        else:
+            # 원격 소유 호스트가 둘 이상이면 주소가 하나가 아니다 — 이름순 첫 호스트로 조용히 풀지 않는다
+            # (#477 리뷰 6번). 설정 전체를 거부하지도 않는다: 그 connection만 `{host}` 그대로(미해석) 남긴다.
+            host = None
+        rendered = connection.replace("{host}", host) if isinstance(connection, str) and host is not None else connection
+        result[name] = {**spec, "connection": rendered}
     return result
 
 

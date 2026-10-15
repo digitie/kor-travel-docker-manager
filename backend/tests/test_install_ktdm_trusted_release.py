@@ -381,3 +381,149 @@ def test_the_preflight_runs_after_the_env_copy_and_before_anything_is_flipped() 
 
     assert env_copy < preflight < first_host_write < flip
     assert "--env-file \"${REL}/.env\" config --quiet" in _preflight_block()
+
+
+# --- 2026-10-16 T-MGR-01a-F (1): flip 전 자기 식별 ---------------------------------------------
+# smoke import는 config를 로드하지 않아 `KTDM_HOST` 누락·비로컬 주소가 flip **뒤에야** 모든 ktdctl·backend 조회를
+# 죽였다(#477 리뷰 차단 2번 후속). 새 release의 `targets validate --json`을 `.env`만으로 돌려 flip 전에 멈춘다.
+
+
+def _host_identity_block() -> str:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    return text[text.index("# >>> host-identity") : text.index("# <<< host-identity")]
+
+
+def test_host_identity_runs_after_the_env_copy_and_before_anything_is_flipped() -> None:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    env_copy = text.index('cp -p -- "${APP}/.env" "${REL}/.env"')
+    marker = text.index('> "${REL}/.ktdm-source-revision"')
+    identity = text.index("# >>> host-identity")
+    first_host_write = text.index("install -T -o root -g root")
+    flip = text.index('ln -sfn "${NAME}" "${APP}.new"')
+
+    # 추출 분기 밖이다 — 같은 sha 재설치(.env만 바뀐 경우)도 다시 본다.
+    assert marker < text.index("\nfi\n", marker) < env_copy < identity < first_host_write < flip
+    assert '"targets", "validate", "--json"' in _host_identity_block()
+    assert "-u KTDM_HOST" in _host_identity_block()
+
+
+def _identity_release(tmp_path: Path, env_text: str | None) -> Path:
+    """설치기가 만든 release의 최소 모양: 표식·config·`.env`·release venv의 python."""
+
+    import sys
+
+    import yaml
+
+    from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
+
+    release = tmp_path / "release"
+    (release / "config").mkdir(parents=True)
+    config = load_yaml_rejecting_duplicate_keys(
+        (_ROOT / "config" / "docker-targets.yml").read_text(encoding="utf-8")
+    )
+    # 이 장비의 실제 인터페이스로 판정하게 한다: default 호스트는 loopback(항상 로컬), 나머지는 TEST-NET.
+    for index, spec in enumerate(config["hosts"].values()):
+        spec["addr"] = "127.0.0.1" if spec.get("default") else f"192.0.2.{index + 1}"
+    (release / "config" / "docker-targets.yml").write_text(
+        yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
+    (release / ".ktdm-source-revision").write_text("a" * 40 + "\n", encoding="utf-8")
+    if env_text is not None:
+        (release / ".env").write_text(env_text, encoding="utf-8")
+    python = release / "backend" / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+    python.chmod(0o755)
+    return release
+
+
+def _run_identity(release: Path, **extra_env: str) -> subprocess.CompletedProcess[str]:
+    script = (
+        "set -euo pipefail\n"
+        'die() { echo "$1" >&2; exit 126; }\n'
+        f'REL="{release}"\n' + _host_identity_block() + "echo PASSED\n"
+    )
+    environment = {**os.environ, **extra_env}
+    return subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=False, env=environment
+    )
+
+
+def _hosts() -> tuple[str, str]:
+    from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
+
+    hosts = load_yaml_rejecting_duplicate_keys(
+        (_ROOT / "config" / "docker-targets.yml").read_text(encoding="utf-8")
+    )["hosts"]
+    default = next(name for name, spec in hosts.items() if spec.get("default"))
+    other = next(name for name in hosts if name != default)
+    return default, other
+
+
+#: 설치기 식별 테스트는 실제 인터페이스로 판정한다. `/usr/sbin/ip`가 없는 곳(Windows·macOS 개발 PC)에서는 skip — CI
+#: (ubuntu)와 n150에는 있다.
+_HAS_IP = Path("/usr/sbin/ip").exists()
+
+
+@pytest.mark.skipif(not _HAS_IP, reason="/usr/sbin/ip 없음(Linux 전용)")
+def test_host_identity_passes_for_the_local_host(tmp_path: Path) -> None:
+    default, _ = _hosts()
+    completed = _run_identity(_identity_release(tmp_path, f"OTHER=x\nKTDM_HOST={default}\n"))
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "PASSED"
+
+
+@pytest.mark.skipif(not _HAS_IP, reason="/usr/sbin/ip 없음(Linux 전용)")
+@pytest.mark.parametrize(
+    ("env_text", "reason"),
+    [
+        (None, "requires hosts and KTDM_HOST"),
+        ("KTDM_HOST=\n", "requires hosts and KTDM_HOST"),
+        ("KTDM_HOST=mars\n", "KTDM_HOST must be a declared hosts key"),
+        ("KTDM_HOST={other}\n", "KTDM_HOST address is not assigned to this host"),
+    ],
+)
+def test_host_identity_refuses_before_the_flip(tmp_path: Path, env_text: str | None, reason: str) -> None:
+    default, other = _hosts()
+    release = _identity_release(tmp_path, None if env_text is None else env_text.format(other=other))
+    # 운영자 셸의 KTDM_HOST가 `.env`의 공백을 메우지 못한다 — backend 유닛은 `.env`만 본다.
+    completed = _run_identity(release, KTDM_HOST=default)
+
+    assert completed.returncode == 126, completed.stdout
+    assert "not flipping" in completed.stderr
+    assert reason in completed.stderr
+    assert "PASSED" not in completed.stdout
+
+
+def _local_ipv4() -> list[str]:
+    import json
+
+    data = json.loads(
+        subprocess.run(["/usr/sbin/ip", "-j", "-4", "address", "show"], capture_output=True, check=True).stdout
+    )
+    return sorted({a["local"] for i in data for a in i.get("addr_info", []) if a.get("family") == "inet"})
+
+
+@pytest.mark.skipif(not _HAS_IP, reason="/usr/sbin/ip 없음(Linux 전용)")
+def test_host_identity_refuses_two_local_declared_addresses(tmp_path: Path) -> None:
+    """선언 주소 둘이 이 장비에 있으면(보조 IPv4·VIP) 어느 이름이든 식별이 모호하다 — flip 전에 멈춘다."""
+
+    import yaml
+
+    local = _local_ipv4()
+    # 이 장비에 IPv4가 둘 이상 있어야 "선언 주소 둘이 로컬"을 실제로 만들 수 있다(loopback + LAN). 하나뿐이면 skip.
+    if len(local) < 2:
+        pytest.skip("이 장비의 IPv4가 둘 미만이다")
+    default, other = _hosts()
+    release = _identity_release(tmp_path, f"KTDM_HOST={default}\n")
+    path = release / "config" / "docker-targets.yml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config["hosts"][default]["addr"], config["hosts"][other]["addr"] = local[0], local[1]
+    path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    completed = _run_identity(release)
+
+    assert completed.returncode == 126, completed.stdout
+    assert "not flipping" in completed.stderr
+    assert "more than one declared host address is assigned to this host" in completed.stderr

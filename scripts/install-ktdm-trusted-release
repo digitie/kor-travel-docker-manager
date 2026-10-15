@@ -134,6 +134,21 @@ if ! preflight_err="$(docker compose --project-directory "${REL}" --file "${REL}
 fi
 # <<< preflight
 
+# 새 release가 배포 `.env`로 이 호스트를 식별하는지도 flip **전에** 본다(ADR-58 R3, #477 리뷰 후속).
+# 운영 모드의 모든 ktdctl·backend 조회가 `KTDM_HOST`를 요구하므로, 누락·미선언·이 장비에 없는 주소·
+# 주소가 겹치는 선언은 flip 직후 status까지 전부 죽인다. 값은 프로세스 env가 아니라 `.env`에서만 본다 —
+# backend 유닛은 env에 `KTDM_HOST`를 두지 않는다. stderr는 registry가 만든 한 줄(상수·이름·경로)이다.
+# 새 release는 아직 설치 root symlink 뒤가 아니라 trusted 판정이 거짓이다 — 그래서 project root(= REL)와 그 안의
+# `.ktdm-source-revision` 표식으로 운영 모드에 들어가고, flip 뒤와 같은 REL의 config·`.env`를 읽는다.
+# >>> host-identity
+if ! identity_err="$(env -u KTDM_HOST -u KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE \
+  -u KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT="${REL}" \
+  "${REL}/backend/.venv/bin/python" -I -c 'from kor_travel_docker_manager.cli import main
+raise SystemExit(main(["targets", "validate", "--json"]))' 2>&1 >/dev/null 9>&-)"; then
+  die "new release cannot identify this host from ${REL}/.env (KTDM_HOST); not flipping: $(printf '%s\n' "${identity_err}" | tail -n 1)"
+fi
+# <<< host-identity
+
 # host 파일은 release에서 설치한다. 여기서 실패하면 설치 root와 도는 backend는 그대로다.
 install -T -o root -g root -m 0644 -- "${REL}/deploy/tmpfiles.d/kor-travel-docker-manager.conf" \
   /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
@@ -211,6 +226,10 @@ for _ in $(seq 60); do
   sleep 1
 done
 echo "ktdm-backend did not become healthy on ${SHA} (systemctl status ktdm-backend);" >&2
-echo "roll back by reinstalling the previous release:" >&2
-echo "  sudo ${SRC}/scripts/install-ktdm-trusted-release --expected-source-revision ${PREV#ktdm-release-} ${SRC}" >&2
+# 롤백은 옛 sha를 **그 sha의 설치기로** 다시 설치하는 것이다 — 이 설치기의 host-identity 검사는 `targets validate --json`이
+# 없거나 `KTDM_HOST`를 모르는 옛 release를 거부한다. 그래서 source clone을 PREV로 먼저 옮기라고 안내한다(n150·odroid의
+# `~/install-mgr.sh <sha>` 래퍼가 그 순서다).
+echo "roll back by reinstalling the previous release with its own installer:" >&2
+echo "  git -C ${SRC} checkout --detach ${PREV#ktdm-release-} && sudo ${SRC}/scripts/install-ktdm-trusted-release --expected-source-revision ${PREV#ktdm-release-} ${SRC}" >&2
+echo "  (host wrapper: ~/install-mgr.sh ${PREV#ktdm-release-})" >&2
 exit 1
