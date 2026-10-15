@@ -2229,7 +2229,7 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
      `KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://<host(geo)>:12501}` **4곳**(`docker-compose.yml:1590`
      map-api, **`:1735` map code-server** — MOIS/geocode run을 실제로 돌리는 서비스, `:1827`·`:1934` legacy webserver/daemon), transport
      `${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://<host(transport)>:14001}`(`:1744`), PinVi ETL `:2142`를 같은 모양의
-     `${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://<host(weather)>:14101}`로(**2026-10-14 잠정 시행으로 대체**: 소비자 포트 geo `12501`·transport API gateway `12301`·weather `12201`, 집합 8곳(geo 5 — Map 4·pinvi-api 1, transport 1, weather 2 — PinVi ETL·pinvi-api), n150 workspace digest `fbd0eadc90829753`(weather·transport 제외 4 location) — ADR-58 "잠정 시행".), **그리고 pinvi-api 블록(`:1943-2018`)에 같은 변수를
+     `${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://<host(weather)>:14101}`로(**2026-10-14 잠정 시행으로 대체**: 소비자 포트 geo `12501`·transport API gateway `12301`·weather `12201`, 집합 8곳(geo 5 — Map 4·pinvi-api 1, transport 1, weather 2 — PinVi ETL·pinvi-api), n150 workspace digest `fbd0eadc90829753`(weather·transport 제외 4 location → **2026-10-15 `4461abc13cce9c4f`, geo도 제외 3 location**) — ADR-58 "잠정 시행".), **그리고 pinvi-api 블록(`:1943-2018`)에 같은 변수를
      추가**한다(없으면 weather 플립 뒤 PinVi 여행 날씨가 조용히 빈다 — S17). 플립 PR이 `<host(x)>`를 `127.0.0.1`에서
      `192.168.1.13`으로 **그 집합 전부** 바꾼다(geo 플립이 `:1590`만 바꾸면 map code-server는 loopback에 남아 n150 geo-api stop 뒤 모든
      geocode run이 connection refused — 테스트가 그것을 빨갛게 만들어야 한다). root `.env`의 재정의는 `ktdctl targets validate`가 파생
@@ -2274,7 +2274,7 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
    | 표면 | 기제 | 결박 |
    |---|---|---|
    | registry `connection:`·probe(R1) | **런타임** 렌더(Manager가 registry를 읽는다) | 단위 테스트 |
-   | compose env 기본값(R2 — 형제 포트를 기본값에 가진 env 전부, 오늘 7곳: geo 4·transport 1·weather 1 + pinvi-api 신설; **2026-10-14 잠정 시행으로 대체**: 소비자 포트 geo `12501`·transport API gateway `12301`·weather `12201`, 집합 8곳(geo 5 — Map 4·pinvi-api 1, transport 1, weather 2 — PinVi ETL·pinvi-api), n150 workspace digest `fbd0eadc90829753`(weather·transport 제외 4 location) — ADR-58 "잠정 시행".), `config/prometheus/prometheus.yml`, `config/dagster-shared/workspace.<host>.yaml` | **커밋된 파생물**(리터럴 `192.168.1.13` 포함) — compose·정적 YAML은 registry를 읽지 못한다(S10). `workspace.yaml`과 같은 선례(`docker-compose.yml:789-794`) | 파생 테스트가 기대값을 `hosts:`+`host:`에서 계산해 파일과 대조(B-5·B-6·B-8); 플립 PR이 파생물을 빠뜨리면 빨갛다 |
+   | compose env 기본값(R2 — 형제 포트를 기본값에 가진 env 전부, 오늘 7곳: geo 4·transport 1·weather 1 + pinvi-api 신설; **2026-10-14 잠정 시행으로 대체**: 소비자 포트 geo `12501`·transport API gateway `12301`·weather `12201`, 집합 8곳(geo 5 — Map 4·pinvi-api 1, transport 1, weather 2 — PinVi ETL·pinvi-api), n150 workspace digest `fbd0eadc90829753`(weather·transport 제외 4 location → **2026-10-15 `4461abc13cce9c4f`, geo도 제외 3 location**) — ADR-58 "잠정 시행".), `config/prometheus/prometheus.yml`, `config/dagster-shared/workspace.<host>.yaml` | **커밋된 파생물**(리터럴 `192.168.1.13` 포함) — compose·정적 YAML은 registry를 읽지 못한다(S10). `workspace.yaml`과 같은 선례(`docker-compose.yml:789-794`) | 파생 테스트가 기대값을 `hosts:`+`host:`에서 계산해 파일과 대조(B-5·B-6·B-8); 플립 PR이 파생물을 빠뜨리면 빨갛다 |
    | root `.env` | 호스트별 값(비밀·튜닝·digest·`KTDM_HOST`·`KTDM_PROD_URL_*`) | `targets validate`가 파생 기대값과 다른 재정의를 거부 |
 
 6. **host 플립 = workspace 합류; `workspace.{n150,odroid}.yaml` 두 파일 커밋 + compose 보간.** 파생기(`runtime_topology.py`)에
@@ -2285,7 +2285,7 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
    로 — 컨테이너 안 경로가 그대로라 healthcheck digest 비교(`:847,911`)와 cutover의 컨테이너 내부 읽기(`scripts/dagster-shared-cutover.sh:424`)
    는 불변. 바뀌는 참조 4곳: cutover `:168,394,764`(호스트 파일 경로 — 셸이라 root `.env`의 `KTDM_HOST`를 읽고 미설정이면 n150),
    liveness 테스트 `backend/tests/test_dagster_daemon_liveness_contract.py:218`(`workspace.` 접두). digest env:
-   `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-8a86a75219b7938d}`(기본 = n150 파일; B-7; **2026-10-14 잠정 시행으로 대체**: 소비자 포트 geo `12501`·transport API gateway `12301`·weather `12201`, 집합 8곳(geo 5 — Map 4·pinvi-api 1, transport 1, weather 2 — PinVi ETL·pinvi-api), n150 workspace digest `fbd0eadc90829753`(weather·transport 제외 4 location) — ADR-58 "잠정 시행".). odroid root `.env`가
+   `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-8a86a75219b7938d}`(기본 = n150 파일; B-7; **2026-10-14 잠정 시행으로 대체**: 소비자 포트 geo `12501`·transport API gateway `12301`·weather `12201`, 집합 8곳(geo 5 — Map 4·pinvi-api 1, transport 1, weather 2 — PinVi ETL·pinvi-api), n150 workspace digest `fbd0eadc90829753`(weather·transport 제외 4 location → **2026-10-15 `4461abc13cce9c4f`, geo도 제외 3 location**) — ADR-58 "잠정 시행".). odroid root `.env`가
    `sha256sum config/dagster-shared/workspace.odroid.yaml | cut -c1-16`을 준다 — 플립 PR마다 바뀌므로 플립 절차에 "odroid Manager 같은
    sha 재설치 + `.env` digest 갱신 + `targets validate`" 단계를 둔다. **대안 "설치 시 렌더"(trusted installer가 workspace를 고정
    경로로 렌더, 참조 0곳 변경)는 기각** — ADR-51 "installer에 로직을 더하지 않는다"; 누락은 validate(사전)와 healthcheck exit
@@ -2513,7 +2513,7 @@ n150에서 깨진 둘을 고치는 최소 변경만 먼저 넣는다(계획 모�
 - **geo workspace 제외(2026-10-15 소유자 결정)**: n150 geo code-server(`127.0.0.1:12503`)를 멈췄더니 n150 공용 daemon·webserver가
   "code servers not serving: ['kortravelgeo_dagster.definitions']"로 unhealthy가 됐다(운영자 preflight 차단). geo target에
   `host: odroid` → 같은 파생 규칙으로 n150 `workspace.yaml`에서 빠지고(남는 것 concierge·map·pinvi 3 location, digest
-  `4461abc13cce9c4f`), 소비자 origin 테스트의 geo 재정의가 군더더기로 빨개져 지웠다. **geo Dagster는 2026-10-15부터 odroid의 plane에서 돈다**(n150 code-server 02:42Z 정지, odroid `127.0.0.1:12503`이 odroid
+  `4461abc13cce9c4f`), 소비자 origin 테스트의 geo 재정의가 군더더기로 빨개져 지웠다. **geo Dagster는 2026-10-15부터 odroid의 plane에서 돈다**(schedule·sensor는 현재 STOPPED — 켜는 시점은 odroid 부하를 보고 정한다)(n150 code-server 02:42Z 정지, odroid `127.0.0.1:12503`이 odroid
   자체 workspace에 02:52Z 합류 — Manager 밖, 호스트 측 구성; Manager가 그 workspace를 파생하는 것은 T-MGR-02). geo는 `all.include`에 남긴다 — `map`이 `depends_on: [geo]`라 `ensure all`·`ensure map`
   폐포가 어차피 geo를 담는다(그 간선 삭제는 R7, T-MGR-01b; 그 전까지 n150 `ensure map`은 n150 geo 컨테이너를 되살린다 —
   workspace에는 없으므로 이중 적재는 없다). Map/PinVi pinned 수렴(`wanted`)은 map·pinvi location만 보고, fence·소유자 파생

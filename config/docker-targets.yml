@@ -4,7 +4,8 @@ version: 1
 # 유일한 정본은 docs/ports.md다.
 
 # Docker 호스트(ADR-58 결정 1의 `hosts:`). target의 `host:`(생략 = default 호스트)가 그 target의 컨테이너가 도는
-# 호스트다. **잠정(interim, 2026-10-14 소유자 승인)**: 지금 이 값을 읽는 것은 공용 Dagster workspace 파생 하나뿐이다 —
+# 호스트다. **잠정(interim, 2026-10-14 소유자 승인)**: 지금 이 값을 읽는 것은 공용 Dagster workspace 파생과 소비자 origin
+# 테스트(`backend/tests/test_consumer_origin_defaults.py` — 형제의 호스트를 여기서 읽는다) 둘뿐이다 —
 # `config/dagster-shared/workspace.yaml`(n150 plane이 붙인다)은 `control_plane: shared` **이고** default 호스트에 있는
 # target의 location만 싣는다(`backend/tests/test_dagster_shared_workspace_is_derived.py`). R1 `{host}` 렌더·R3 `KTDM_HOST`·
 # R4 명령 host 규칙·`all` 필터·`workspace.<host>.yaml` 두 파일은 아직 없다(T-MGR-01a·01b·02가 이 블록 위에 더한다).
