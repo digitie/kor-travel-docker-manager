@@ -22,6 +22,8 @@ export interface ContainerStatus {
   image?: string;
   status: string;
   state: string;
+  /** 원격 HTTP 응답만 관측한 항목. 로컬 Docker 상태·metrics·제어 권한을 뜻하지 않는다. */
+  remote?: boolean;
   ports: string[];
   metrics?: ContainerMetricSnapshot;
   /** 이 컨테이너를 소유한 **다른** compose 프로젝트. Manager 자신의 것이면 null.
@@ -63,6 +65,10 @@ const STATUS_LABELS: Record<string, string> = {
   'not created': '미생성',
   dead: '비정상 종료',
   error: '오류',
+  up: '원격 응답 정상',
+  down: '원격 응답 오류',
+  unreachable: '원격 연결 불가',
+  remote: '원격(미관측)',
 };
 
 /** 매핑에 없으면 **원문을 그대로** 돌려준다 — 새 상태값이 생겨도 화면이 비지 않는다. */
@@ -101,13 +107,13 @@ export const roleLabel = (role: string | null | undefined): string => {
 
 export const getStatusConfig = (status: string) => {
   const s = status.toLowerCase();
-  if (s === 'running') {
+  if (s === 'running' || s === 'up') {
     return {
       dotClass: 'bg-ok animate-pulse',
       textClass: 'text-ok font-semibold',
       rowClass: 'bg-card hover:bg-subtle',
     };
-  } else if (s === 'exited' || s === 'offline') {
+  } else if (s === 'exited' || s === 'offline' || s === 'down') {
     return {
       dotClass: 'bg-danger',
       textClass: 'text-danger font-semibold',

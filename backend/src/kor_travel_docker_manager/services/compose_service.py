@@ -136,15 +136,18 @@ from kor_travel_docker_manager.services.registry import (
     MANAGED_CONTAINERS,
     ExternalProject,
     container_id_to_compose_service,
+    current_host,
     external_project_for_container,
     external_project_for_target,
     get_project_root,
-    init_steps_for_target,
     is_known_target,
+    load_targets_config,
+    local_mutation_target,
+    require_local_targets,
     runtime_services_for_target,
     service_groups_for_target,
     services_for_target,
-    target_is_external,
+    target_hosts,
     target_sequence_for_target,
 )
 from kor_travel_docker_manager.services.runtime_topology import (
@@ -160,10 +163,10 @@ from kor_travel_docker_manager.services.runtime_topology import (
     installed_location_owners,
     installed_shared_dagster_plane,
     listen_address,
+    read_host_workspace,
     runtime_topology,
     shared_workspace_source,
     slot_project,
-    workspace_location_names,
 )
 from kor_travel_docker_manager.services.trusted_install import (
     require_pinned_runtime_rebuild_root,
@@ -2619,6 +2622,92 @@ class ComposeService:
             _frozen_recovery_capability=_TRUSTED_FROZEN_RECOVERY_CAPABILITY,
         )
 
+    @staticmethod
+    def _assert_host_mutation_scope(
+        args: Sequence[str], *, resolved: Mapping[str, Any] | None = None,
+    ) -> None:
+        scope, flags = ComposeService._parse_compose_mutation(args)
+        if scope == []:
+            return
+        if scope is None or "--remove-orphans" in flags:
+            raise DeploymentContractError("compose mutation has no bounded host scope")
+        command_index = ComposeService._compose_command_index(args)
+        assert command_index is not None
+        command = args[command_index]
+        # 남아 있는 local container를 멈추는 길은 host 식별/설정 장애에도 보존한다.
+        if command == "stop":
+            return
+        ComposeService._assert_host_service_scope(
+            scope,
+            resolved=resolved,
+            follow_dependencies=(
+                command in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES
+                and "--no-deps" not in flags
+            ),
+        )
+
+    @staticmethod
+    def _assert_host_service_scope(
+        scope: Sequence[str], *, resolved: Mapping[str, Any] | None = None,
+        follow_dependencies: bool = False,
+    ) -> None:
+        """기존 registry의 직접 service 소유권을 config 저장과 실제 실행이 공유한다."""
+        if not scope:
+            return
+        config = load_targets_config()
+        selected = current_host(config)
+        owners: dict[str, set[str]] = {}
+
+        def own(service: str, target: str) -> None:
+            owners.setdefault(service, set()).update(target_hosts(target, config))
+
+        for target, spec in config["targets"].items():
+            if spec.get("include") or spec.get("external_project"):
+                continue
+            for service in spec.get("services", []):
+                own(service, target)
+            # 별도 ownership 표를 만들지 않고 기존 init 선언의 실제 Compose 범위를 쓴다.
+            for step in spec.get("init_steps", []):
+                initializers, _ = ComposeService._parse_compose_mutation(step["command"])
+                if not initializers:
+                    raise DeploymentContractError("initializer has no bounded host scope")
+                for service in initializers:
+                    own(service, target)
+        for service, target in (
+            (_PINNED_RUNTIME_ONESHOT_WRITERS[0], "map"),
+            (_MAP_APPLICATION_SCHEMA_SERVICE, "map"),
+            (_PINVI_ADMIN_BOOTSTRAP_SERVICE, "pinvi"),
+        ):
+            own(service, target)
+        # 전환 뒤 profile로 남은 Dagster family도 원래 target의 소유권을 따른다.
+        if any(service not in owners for service in scope):
+            for target, family in runtime_topology().families.items():
+                if family.external_project is None:
+                    for service in family.names:
+                        own(service, target)
+        services = None if resolved is None else resolved.get("services")
+        if resolved is not None and not isinstance(services, Mapping):
+            raise DeploymentContractError("resolved compose has no host service graph")
+        visited: set[str] = set()
+        pending = list(scope)
+        while pending:
+            service = pending.pop()
+            if service in visited:
+                continue
+            visited.add(service)
+            if selected not in owners.get(service, set()):
+                raise DeploymentContractError("compose service is not owned by the current host")
+            if services is None:
+                continue
+            spec = services.get(service)
+            if not isinstance(spec, Mapping):
+                raise DeploymentContractError("compose service is absent from the frozen host graph")
+            if follow_dependencies:
+                dependencies = spec.get("depends_on", {})
+                if not isinstance(dependencies, (Mapping, list)) or any(not isinstance(name, str) for name in dependencies):
+                    raise DeploymentContractError("compose dependency host scope is invalid")
+                pending.extend(dependencies)
+
     def run(
         self,
         args: Sequence[str],
@@ -2663,6 +2752,7 @@ class ComposeService:
                 "external compose projects are read-only from the Manager; "
                 "mutation paths are reserved for the Manager's own project"
             )
+        self._assert_host_mutation_scope(args)
         if (
             _frozen_recovery_capability is not None
             and _frozen_recovery_capability is not _TRUSTED_FROZEN_RECOVERY_CAPABILITY
@@ -3151,6 +3241,19 @@ class ComposeService:
                 "external compose projects cannot enter the Manager mutation "
                 "machinery"
             )
+        self._assert_host_mutation_scope(args, resolved=materialized_compose)
+        if materialized_compose is not None:
+            scope, flags = self._parse_compose_mutation(args)
+            command_index = self._compose_command_index(args)
+            action = args[command_index] if command_index is not None else None
+            if scope and action in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES | {"unpause"}:
+                touched = set(scope)
+                if action in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES and "--no-deps" not in flags:
+                    touched |= _compose_dependency_closure(materialized_compose, touched)
+                if touched.intersection(installed_shared_dagster_plane().services):
+                    # ensure도 이 낮은 실행 경계를 지난다. converge와 같은 frozen reader로
+                    # host/source/두 digest를 실제 mutation argv 전달 전에 확인한다.
+                    self._shared_plane_workspace(materialized_compose)
         command = self.build_command(
             args,
             canonical_single_file=materialized_compose is not None,
@@ -3656,8 +3759,9 @@ class ComposeService:
         recreate: bool = False,
         capture_output: bool = True,
     ) -> dict[str, Any]:
-        target_sequence = target_sequence_for_target(target)
-        if target_is_external(target):
+        plan = local_mutation_target(target)
+        target_sequence = plan["resolved_sequence"]
+        if plan.get("external_project"):
             # `ensure`는 Manager의 C6c 계약 기계(보호값 스캔·볼륨 그래프·단일파일
             # 경계·핀셋)를 통과한 **Manager 자신의** 후보를 전제한다. 형제 프로젝트의
             # compose는 그 계약을 받은 적이 없고, 정본도 이 저장소가 아니다.
@@ -3668,7 +3772,7 @@ class ComposeService:
                 "ensure is only for the Manager's own project — use container "
                 "start/stop/restart, or deploy from that project's repository"
             )
-        services = services_for_target(target)
+        services = plan["resolved_services"]
         preflight_environment = _capture_compose_environment_snapshot(
             environment_override=None,
         )
@@ -3710,6 +3814,7 @@ class ComposeService:
                 target,
                 target_sequence=target_sequence,
                 services=services,
+                init_steps=plan["resolved_init_steps"],
                 build=build,
                 recreate=recreate,
                 capture_output=capture_output,
@@ -3733,6 +3838,7 @@ class ComposeService:
         *,
         target_sequence: list[str],
         services: list[str],
+        init_steps: list[dict[str, Any]],
         build: bool,
         recreate: bool,
         capture_output: bool,
@@ -3747,7 +3853,6 @@ class ComposeService:
         expected_external_input_snapshot: ComposeExternalInputSnapshot | None,
         transaction: ComposeTransactionSnapshot,
     ) -> dict[str, Any]:
-        init_steps = init_steps_for_target(target)
         commands: list[list[str]] = []
         init_results: list[dict[str, Any]] = []
 
@@ -4596,6 +4701,7 @@ class ComposeService:
         (``rebuild_failure_stage``) — CLI가 JSON 판정에 싣는다.
         """
 
+        require_local_targets("map", "pinvi")
         if restart_reason is not None and adopt_reason is not None:
             raise DeploymentContractError(
                 "a deploy either restarts or adopts the live databases, not both"
@@ -5196,7 +5302,12 @@ class ComposeService:
     ) -> tuple[SharedDagsterPlane, Mapping[str, Any], tuple[str, ...]]:
         """frozen render의 plane(설치된 release와 같아야 한다), 그 서비스 정의, 붙인 workspace의 location."""
 
-        resolved = runtime_transaction.resolved
+        return self._shared_plane_workspace(runtime_transaction.resolved)
+
+    def _shared_plane_workspace(
+        self, resolved: Mapping[str, Any],
+    ) -> tuple[SharedDagsterPlane, Mapping[str, Any], tuple[str, ...]]:
+        """기존 converge와 public Compose activation이 같은 frozen workspace 검사를 쓴다."""
         plane = derive_shared_dagster_plane(resolved)
         if plane != installed_shared_dagster_plane():
             raise DeploymentContractError(
@@ -5206,18 +5317,22 @@ class ComposeService:
         sources = {shared_workspace_source(services[name]) for name in plane.services}
         if len(sources) != 1:
             raise DeploymentContractError("shared plane services mount different workspaces")
-        return plane, services, self._read_shared_workspace_locations(next(iter(sources)))
+        digests = tuple(
+            services[name].get("environment", {}).get("KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST")
+            for name in plane.services
+        )
+        return plane, services, self._read_shared_workspace_locations(
+            next(iter(sources)), expected_digests=digests
+        )
 
     @staticmethod
-    def _read_shared_workspace_locations(source: str) -> tuple[str, ...]:
-        path = Path(source)
-        if not path.is_absolute():
-            path = Path(get_project_root()) / path
-        try:
-            document = load_yaml_rejecting_duplicate_keys(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, ValueError) as exc:
-            raise DeploymentContractError("cannot read the shared plane workspace") from exc
-        return workspace_location_names(document)
+    def _read_shared_workspace_locations(
+        source: str, *, expected_digests: Sequence[object]
+    ) -> tuple[str, ...]:
+        return read_host_workspace(
+            source, root=Path(get_project_root()), targets=load_targets_config(),
+            digests=expected_digests,
+        )
 
     def _require_plane_location_owners_fenced(
         self,

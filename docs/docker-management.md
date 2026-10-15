@@ -189,9 +189,28 @@ profile로도 피할 수 없다(비활성 profile의 서비스도 interpolate �
 
 ### 3.2 호스트 프로필과 `KTDM_HOST` (registry 구현, 운영 전환 예정)
 
+#### 호스트별 Dagster workspace 구현(2026-10-15)
+
+registry의 hosts와 target_hosts에서 shared location을 유도한 workspace.<host>.yaml을 커밋한다.
+현재 두 호스트는 각각3개 location이며 default alias workspace.yaml은 default host 파일과 byte동일하다.
+다른 호스트의 fallback 파일이 아니며 host-all target은 해당 모든 호스트에 실린다. SSL은 미지정 상태를 유지한다.
+
+Compose는 KTDM_HOST로 호스트 파일을 선택하고 컨테이너 안에서는 기존 workspace.yaml 경로를 사용한다.
+default 외 호스트는 KTDM_DAGSTER_WORKSPACE_DIGEST에 선택 파일 SHA256 앞16자리를 설정한다.
+기존 frozen transaction이 두 plane의 source 동일성·선택 호스트 경로·두 digest와 파일 같은 bytes를 확인한 뒤 파싱한다.
+공개 ensure와 lower Compose가 plane을 실제 시작하는 경로도 converge와 같은 reader를 명령 전달 전에 사용한다.
+cutover의 membership과 재생성 digest도 frozen render에서 선택한 같은 source를 쓴다.
+
+ktdctl targets validate의 offline registry/schema 의미는 유지하며 파일·frozen env 효과는 기존 mutation preflight에서 재검증한다.
+별도 renderer/봉인/lock을 추가하지 않는다. dagster.yaml은 byte 불변이며 상한 조정은 같은 workload의 별도 실측 후 검토한다.
+01b의 lower Compose·backup·pin·remote status 소스 연결은 구현했으며 운영 이전 완료는 별도 검증한다.
+
+
 registry v2의 `hosts:`·target `host:`·자기 호스트 검증·연결 좌표 파생과 `targets validate --json`은
-T-MGR-01a에서 구현한다. Weather·Transport의 이전된 host 선언을 보존한다. Geo 이전은 별도 검증으로 확정한다. 아래 명령별 host 제한(R4), consumer origin(R2),
-workspace 분리는 후속 구현·설치 전이며, registry 구현만으로 운영 이전 완료를 판정하지 않는다.
+T-MGR-01a에서 구현했다. Geo·Weather·Transport의 이전된 host 선언을 보존한다. PR #481은 명령별 host 제한(R4),
+같은 host의 직접 services/init 범위, 교차 host Compose 의존 간선 제거 및 호스트별 workspace 파생을 구현한다.
+consumer origin(R2)의 잔여 작업과 실측 없는 instance 상한 조정은 포함하지 않는다. 두 독립 리뷰·전체 검증·운영 설치와
+live 통과는 별도 gate이며, 소스 구현만으로 운영 이전 완료를 판정하지 않는다.
 결정·근거는 `docs/decisions.md` ADR-58, 배치는 `docs/platform-topology.md` §10이다.
 
 v1은 host 필드가 없는 기존 개발 fixture에만 loopback으로 호환된다. 운영 설치본은 v2와 명시적 `KTDM_HOST`가
@@ -227,6 +246,21 @@ installer가 만든 release 아래 실행(`.ktdm-source-revision` 존재; `servi
 | `stop`·`logs`·`status`(로컬) | **로컬 소켓에 그 컨테이너명이 조회되면** host 무관 — 옛 스택 해체용. 판정은 Docker SDK 조회 성공 여부(효과 기반, label 없음) |
 | `status`(원격 target) | `connection`이 `http(s)://`인 항목은 **전부** HTTP probe → `up`(2xx/3xx) / `down`(비정상 응답) / `unreachable`(connect timeout·거부); `http(s)://`가 아닌 항목(설명 문자열·gRPC·DB)은 `remote(not probed)`. registry에 방화벽 개방 필드는 없다 — odroid의 HAProxy 전용 포트(`12505`·`12205`·`14002`·`12301`·`12305`·`11001`, `ports.md` 방화벽 집합)는 n150에서 `unreachable`이 **정상**(거짓 빨강 아님) |
 | `targets validate` | 전체 구문 + 자기 호스트 좌표(`--check-coordinates`) + consumer origin 기대값(R2) 대조 + 설치된 `workspace.<host>.yaml` sha256[:16] == digest env(효과) + `--json` |
+
+R4의 직접 소유권은 조회용 `containers` 합집합이 아니라 target의 실행 `services`와 기존 init 선언에서 파생한다.
+서비스 설정 변경·reset·전체 Compose 저장·backup·pin writer와 pinned rebuild 진입점도 이 규칙을 사용한다.
+전체 Compose 저장의 project/network 공통 변경은 영향을 받을 모든 service의 host 소유권을 요구한다. 저장 자체는
+컨테이너를 시작하지 않으며 실제 activation의 의존 폐포는 기존 parser가 읽은 argv와 frozen graph에서 검사한다.
+컨테이너 argv나 옵션 값 자리에 있는 `--no-deps` 문자열은 의존 면제의 근거가 아니다.
+
+로컬 Docker에 남은 원격 target 컨테이너는 기존 Docker 상태·stop/log 경로를 유지한다. 로컬에 없거나 Docker가
+응답하지 않는 원격 항목만 registry connection을 HTTP 관측한다. 모든 HTTP URL을 최대 4개씩 각 2초 전체 예산으로
+조회하고 redirect·재시도·본문 읽기를 하지 않는다. HTTP `up`은 Docker `running`이 아니며 metrics와 로컬 config를
+제공하지 않는다. UI의 로컬 제어·inspect·설정도 비활성화한다. gRPC·DB·설명 문자열은 `remote`(미관측)이고,
+`unreachable`은 방화벽 구성에서도 정상적으로 생길 수 있는 연결 관측 결과다. 추가 계정·SSH agent·원격 쓰기는 없다.
+HTTPX 런타임 지원 범위는 `>=0.28.1,<0.29.0`이며 CI의 `httpx==0.28.1`과 일치한다.
+trusted offline 설치의 해당 host/Python/아키텍처 wheelhouse에도 이 범위의 HTTPX와 전이 의존성이 필요하다.
+기존 venv의 시험 통과나 backend wheel 생성만으로 새 설치의 resolver 성공을 판단하지 않는다.
 
 **consumer origin(R2).** 내부 target이 형제 서비스를 부르는 URL은 compose env **기본값**이 정본이며 registry에서 계산한 값과 같아야
 한다. 대상은 규칙으로 정한다 — "형제 서비스 포트(`12501`/`14001`/`14101`)를 기본값에 가진 모든 compose env(비활성 `legacy-dagster`

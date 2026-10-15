@@ -1,3 +1,136 @@
+## 2026-10-16 — 최신 root 환경 자기 식별과 host 실행 경계 통합(Codex)
+
+- 기존 PR #481 `c881630`에 main `5433056`(#482)을 병합했다. root `.env`의
+  `KTDM_HOST` fallback, 읽기 불가의 명시적 CLI 오류와 비-root backup wrapper 안내를
+  유지하며 직접 소유권에 따른 변경 거절·호스트별 workspace 파생도 보존한다.
+- 문서 충돌은 upstream의 T-MGR-01a-F 잔여 과제와 PR #481 구현 기록을 모두 남겼다.
+  root `.env`로 두 호스트를 각각 선택해도 공개 `ensure_target`이 다른 호스트를
+  transaction 전에 거절하는 회귀 2개를 추가했다.
+- 집중 회귀의 첫 274 PASS/16 FAIL은 fixture가 registry loader만 대체하고 Compose의
+  loader 별칭은 실제 캐시에 의존한 문제였다. 둘이 같은 fixture를 읽도록 교정해
+  292 PASS를 확인했다. CI와 같은 Ruff0.16.4 명령·diff 검사도 통과했다.
+  이전 Ruff0.3.7 실행 오류 원문은 보존하고 현재 CI 결함으로 집계하지 않는다.
+- frontend 입력은 c881과 바이트 동일하다. 이전 complete artifact의 source provenance는
+  그대로이며, 새 운영 환경 SHA 대조 전 재사용·새 source 표식·운영 성공을 주장하지 않는다.
+  두 독립 제품 delta 리뷰·새 HEAD의 CI·현재 배포 revision을 기준으로 한 설치 준비와
+  실제 배포/live는 별도 후속이다. 기존 운영 설치기는 실행하지 않았다.
+
+## 2026-10-15 — 원격 target의 HTTP 관측과 로컬 도구 경계(Codex)
+## 2026-10-15 — HTTPX 런타임·CI·오프라인 설치 계약 교정(Codex)
+
+- 독립 B-P1-02를 수용했다. runtime으로 옮긴 `^0.27.0`은 CI `httpx==0.28.1`과
+  교집합이 없어 실제 old wheel/pip에서 ResolutionImpossible이었다. 원문 실패를 보존하고
+  지원 범위를 `^0.28.1`로 맞췄다. CI pin이나 resolver를 우회하는 설치 옵션은 바꾸지 않았다.
+- 새 별도 venv에서 캐시 기반 의존성 해석과 실제 wheel 설치·CI editable 설치·pip check가
+  통과했다. 그 환경에서 remote/multi-project52 PASS였다. 이어 자기 로컬 wheelhouse32개만
+  제공한 빈 venv의 `--no-index --find-links` source build/설치도 CI 버전 조합으로 통과했다.
+  cold 설치된 package/HTTPX0.28.1의 observer6 PASS·pip check PASS이며 중복 수를 합산하지 않는다.
+- 이 wheelhouse는 자체 x86_64/CPython3.13 검증용이다. 운영 root-owned wheelhouse를 수정하거나
+  배포하지 않았으며 대상 host/아키텍처의 준비는 기존 trusted 발행 절차를 따른다.
+  전체 backend·독립 postfix 두 리뷰·최종 CI·live는 별도 후속이다.
+
+## 2026-10-15 — 실제 Compose host 선택과 공개 plane 시작의 리뷰 결함 교정(Codex)
+
+- 독립 리뷰 A-P2-01/B-P1-01을 수용했다. 두 plane의 workspace mount를 `KTDM_HOST`로,
+  digest를 기존 `KTDM_DAGSTER_WORKSPACE_DIGEST`로 실제 보간한다. 기본 n150은 유지한다.
+- 기존 frozen reader를 lower Compose activation에도 연결해 public `ensure_target("dagster")`
+  및 의존성으로 plane을 시작할 때 host/source/두 digest를 명령 전달 전에 확인한다.
+  converge와 같은 함수를 재사용하며 새 lock·봉인이나 runtime 튜닝을 추가하지 않았다.
+- 실제 제품 전체 Compose를 plugin으로 정적 렌더한 n150/odroid/추가 host 및 공개 ensure의
+  잘못된 source·각 plane digest 거절 회귀 OLD8 FAIL/3 PASS → NEW11 PASS.
+  관련 host/CLI/converge/cutover 286 PASS, Ruff·diff PASS. 기존 실패 원문은 보존한다.
+  실제 daemon 활성화·운영 설치·live는 미실행이며 전체 후속 검증은 별도다.
+
+## 2026-10-15 — host writer·workspace 분리의 로컬 전체 회귀 완료(Codex)
+
+- 고정 소스 `0a8dd96`의 ext4 독립 사본에서 backend 전체 2842 PASS/39 SKIP(318.69초).
+  Docker daemon은 미존재 소켓으로 격리하고 검증 전용 shim은 정적 `compose config`만
+  실제 plugin에 전달했다. 실제 Docker 통합 39건은 미실행이며 PASS로 합산하지 않는다.
+- 초기 69 FAIL은 보존했다. 원본 제품 소스 `d8c2cfc` 그대로 정적 Compose 관련
+  6파일 679 PASS로 환경 원인 68건을 확인했고, 나머지 외부 프로젝트 fixture 1건은
+  직접 소유 host를 명시해 관련 host 경계 62 PASS로 닫았다. skip이나 기대 계약을 완화하지 않았다.
+- frontend35 PASS·type/lint/build, backend 전체 Ruff·diff, offline wheel 및 CodeGraph sync도
+  완료했다. HTTPX runtime 의존성은 설치 wheelhouse에서 포함 여부를 확인해야 한다.
+  독립 제품 리뷰 2인·최종 CI·운영 설치·live E2E는 아직 후속이며 PR은 draft다.
+  Common light health와 추가 CPU/cadence 변경은 이번 소스에 섞지 않았다.
+
+## 2026-10-15 — 전체 회귀의 Docker 격리와 외부 프로젝트 fixture 전제 교정(Codex)
+
+- 최초 전체 backend 검증은 69 FAIL/2773 PASS/39 SKIP이었다. 실제 Docker 접근을 막은
+  검증 전용 shim이 데몬을 쓰지 않는 `compose config`도 exit127로 막아 정적 렌더와
+  후속 volume 검증이 실패했다. 이 로그를 보존하고 정적 `config`만 허용하는 별도
+  검증 경로로 재확인한다. daemon 명령과 image digest 원격 조회는 계속 차단한다.
+- 별도 실제 fixture 결함은 external-project 거절 시험이 다른 host의 Transport를
+  선택해 더 앞선 host 거절을 받던 것이다. 이 시험만 registry의 직접 소유 host를
+  현재 host로 지정해 기존 외부 프로젝트 거절 경로를 확인한다. 실제 registry 배치와
+  원격 mutation 거절은 바꾸지 않는다. 해당 시험과 host 경계 62 PASS, Ruff·diff PASS.
+  전체 재검증과 독립 제품 리뷰·live 결과는 후속이며 완료로 기록하지 않는다.
+
+- 로컬 컨테이너가 없는 원격 target을 로컬 미생성/offline으로 오인하지 않는다. 로컬에 남은
+  컨테이너는 기존 Docker 상태와 stop/log 경로를 유지하고, 나머지는 모든 HTTP connection을
+  4개 동시·각 2초 전체 예산으로 header만 관측한다. redirect·재시도·본문 읽기·원격 쓰기는 없다.
+- HTTP up/down/unreachable과 미관측 remote는 Docker running이 아니다. metrics/config를 추정하지
+  않으며 UI의 로컬 제어·로그·inspect·설정을 잠근다. host/registry snapshot도 항목별로 다시 읽지 않는다.
+  HTTPX는 같은 기존 버전 범위의 개발 의존성을 runtime으로 옮겼다. offline wheelhouse 포함 확인이 필요하다.
+- 원격 상태 OLD 2 FAIL/1 PASS, UI OLD 1 FAIL로 결함을 재현했다. 첫 NTFS UI 실행은 worker
+  timeout으로 시험0건이었고 실패를 보존했다. 같은 lock의 ext4 의존성에서 전체 frontend35 PASS,
+  type/lint/build PASS, remote/multi-project52 PASS, Ruff·diff·offline wheel build PASS.
+- 최초 확대 backend 회귀는9 FAIL/40 PASS였다. 새 status snapshot의 import 별칭이 fixture 주입을
+  우회한 결함을 고치고, 다른 host에 배치된 Transport를 사용하는 예전 같은-host Compose 경계 시험은
+  임시 registry에서 해당 전제만 명시했다. 실제 registry의 이전된 host와 변경 거절 계약은 유지한다.
+- 그 최초 확대 실행은 새 HTTP observer를 mock하지 않은 기존 시험 때문에 실제 원격 GET 읽기가
+  나갔을 가능성을 배제할 수 없다. 이를 운영 호출0으로 기록하지 않는다. 쓰기/배포 경로는 없고,
+  추가 재조회 없이 이후 모든 backend 시험의 기본 observer를 미관측 대역으로 격리했다.
+  HTTP 동작 자체는 명시 MockTransport로만 검증했다. 전체 backend·독립2리뷰·live·설치는 후속이다.
+
+## 2026-10-15 — compose 전체 저장의 host 소유권 보강(Codex)
+
+- `save_compose_config`도 기존 registry의 직접 service 소유권을 검사한다. 원격 service 수정·삭제,
+  미등록 service 추가, 원격 service에 영향을 줄 수 있는 project/network 공통 설정 변경을
+  렌더·원자 저장 전에 거부한다. 로컬 service 변경과 기존 G·frozen validation·CAS 저장은 유지한다.
+- 기존 Compose 실행 경계와 소유권 계산을 공유한다. config 저장은 컨테이너를 시작하지 않으므로
+  가짜 argv/플래그로 의존성 면제를 주장하지 않는다. 실제 시작의 의존 폐포는 실제 파싱된 argv와
+  frozen graph로 계속 판정하고, `scale`도 기존 의존성 도달 명령 집합을 재사용한다.
+- 신규 전체 저장 회귀 OLD 4 FAIL/1 PASS → host/config 관련 176 PASS. scale 의존 경계를 추가한
+  최종 host61 PASS, backend 전체 Ruff·diff PASS. 중복 실행 수는 합산하지 않는다.
+  운영·배포·live E2E는 수행하지 않았다.
+
+## 2026-10-15 — T-MGR-01b lower Compose 실행 범위
+
+- 기존 Compose parser와 registry 직접 services/init·installed Dagster family·기존 pinned one-shot 이름으로 소유권을 파생한다. public run은 mutation lock 전에 직접 범위를 검사하고 실제 실행은 frozen resolved depends_on 폐포도 검사한다. 진짜 no-deps 옵션만 폐포를 생략한다.
+- 모호한 전체 mutation·알 수 없는 서비스·remove-orphans는 범위를 보증할 수 없어 거절한다. 조회와 명시적 stop은 host 설정 장애에도 기존 경로를 보존한다. pinned rebuild는 pair 소유권을 root/intent 진입 전에 확인한다. 새 role·봉인·lock·registry field를 추가하지 않았다.
+- OLD 7 FAIL로 진입·의존 범위 결함을 재현했고 새 host 회귀56 PASS. 관련 확대 최초734건은730 PASS/4 FAIL였으며 4개 모두 빈 resolved mock이 새 graph 검사를 충족하지 못한 CLI fixture였다. 실제 선언 graph로 고친 뒤 host+CLI 200 PASS로 해당4개를 재검증했다. 중복 수를 합산하지 않으며 최종 전체 backend 통과로 부르지 않는다.
+- backend Ruff·diff PASS. compose 편집/remote 상태·전체 backend/두 독립 리뷰/live는 후속이며 운영 접근0이다. 다른 우선 운영 제어기 리뷰 동안 이 atom을 보존한다.
+
+## 2026-10-15 — T-MGR-01b pin 쓰기의 host 경계
+
+- pin/execution private·public pair 문서와 회전 intent는 Map/PinVi 각 target이 모두 local일 때만 쓴다. 기존 registry 직접 소유권 검사를 재사용하며, 단일 role 회전도 v6 pair 문서와 intent를 함께 쓰므로 같은 조건을 적용한다. 개별 요청 write/clear는 해당 role만 검사하고 손상 요청 discard는 pair를 검사한다.
+- writer 6개·회전 진입 3개를 OLD 9 FAIL로 재현했다. off-host에서는 private 파일 바이트를 보존하고 intent 조회/생성 전 거절한다. split-host pair의 한쪽만 local인 경우 거절하며 local 단일 요청은 remote peer 때문에 막지 않는다.
+- 관련 6파일 385 PASS, 전체 backend Ruff·diff PASS. 기존 v5/v6 digest·직렬화·버전·G/lock·복구 절차·read-only 경로는 변경하지 않았다. 이전 backup 381건과 겹치므로 합산하지 않는다.
+- lower Compose·compose 편집·pinned workflow 상위 진입·remote 상태·전체 backend/독립 리뷰2인/live는 후속이다. 아직01b 전체 완료가 아니고 운영 접근·실제 pin 회전은 0이다.
+
+## 2026-10-15 — T-MGR-01b 백업 role의 host 소유권 경계
+
+- 공용 PG의 host-all 소유권과 tenant DB 쓰기 권한을 분리했다. create/gc/rehearse는 기존 registry의 직접 target 소유권을 파일·PG 접근 전에 확인하고, API는 job 제출·감사 기록 전에 같은 검사를 thread에서 수행한다. 기존 StandaloneBackupError/HTTP409 응답 계약을 보존한다.
+- 원격 Geo/Transport role 6조건은 OLD 6 FAIL로 재현했다. 새 회귀는 두 host의 실제 role 배치, unknown/missing operating host, public API의 job·파일 접근 전 거절을 확인한다. 기존 백업 알고리즘 모형은 host 계약 모형과 분리한다.
+- 관련 4파일 381 PASS, 전체 backend Ruff·diff 검사 PASS, CodeGraph sync 완료. 초기 378 PASS/1 FAIL은 T02 CLI srv의 이동 전 Geo 기대였고 최신 host-local 기대와 Geo 미시작 음성 조건으로 수정했다. 추가 379 PASS/2 FAIL은 pytest-asyncio 미설치 상태의 새 모형 marker 오류였으며 asyncio.run으로 수정했다. 원 로그는 보존한다.
+- lower Compose·pin writer·remote 상태의 나머지01b와 전체 backend/독립 리뷰2인/live는 후속이다. 이 백업 atom만으로 01b 완료나 운영 배포 가능을 선언하지 않는다. 실제 Docker/PG/운영 접근 0, instance 튜닝 bytes 불변이다.
+
+## 2026-10-15 — T-MGR-02 호스트 workspace 연결 구현 중
+
+- registry의 실제 배치로 host별 shared workspace를 유도하고 default alias를 보존한다. Compose 선택 host와 기존 frozen env의 두 digest를 같은 file bytes와 대조한다. cutover membership/digest는 같은 resolved source를 사용한다.
+- ensure의 services와 init을 같은 local 실행 계획으로 연결했고 cross-host Map→Geo Compose 간선만 제거했다. 기존 same-host/infra 간선과 Geo odroid 배치는 보존한다.
+- 단일 host 가정의 기존 전환 fixture를 실제 target 소유 plane에 맞추고 off-host/한쪽 stale digest 음성 회귀를 추가했다. dagster.yaml fullSHA와 현재 상한은 불변이다.
+- 고정 후 관련115 PASS, 전체 backend Ruff와 diff 검사 PASS다. 이전 개발 중146조건 통과는 최종 고정 검증과 분리하며 합산하지 않는다.
+- 이 단계는 lower Compose/backup/pin/remote 상태의 전체01b 완료가 아니다. 운영·DB·배포0, 전체 backend/독립 리뷰2인/live는 후속이며 현 로컬 결과만으로 완주를 선언하지 않는다.
+
+## 2026-10-15 — T-MGR-01b 변경 소유권 기초 구현 중
+
+- PR477 머지 main6bd65cd에서 별도 브랜치로 시작했다. registry의 직접 target/container 호스트 판정을 재사용하고 alias·대소문자와 pair 각 대상 검사를 추가했다.
+- 공개 Docker start/restart/config/reset의 external 빠른 경로보다 먼저 소유 호스트를 검사한다. stop·logs·status의 기존 로컬 관측 경로는 유지한다.
+- ensure에 사용할 services/init 동일 local 폐포 계산을 구현했다. 첫 커밋은 이 공통 primitive와 Docker 경계만이며 lower Compose·backup·pin·workspace 전체 연결은 아직 진행 중이다. T-MGR-01b/T02 완료나 운영 설치 가능 상태로 표시하지 않는다.
+- 운영·Docker·네트워크·DB 변경 0, 기존 G·pin schema·instance 설정 변경 0. 새 봉인이나 권한 체인은 추가하지 않는다. 전체 회귀·2인 독립 리뷰·live 검증은 후속이다.
+
 # JOURNAL — 작업 일지
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.

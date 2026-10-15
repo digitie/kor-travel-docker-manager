@@ -137,7 +137,8 @@ derive() {
   fi
 }
 DERIVE_PY='
-import json, shlex, sys
+import hashlib, json, shlex, sys
+from pathlib import Path
 target, targets_path, target_compose = sys.argv[1], sys.argv[2], sys.argv[3]
 import re
 compose = json.load(sys.stdin)
@@ -150,7 +151,8 @@ try:
     import yaml
 except ImportError:
     sys.exit("python3-yaml is required to read docker-targets.yml")
-spec = yaml.safe_load(open(targets_path, encoding="utf-8"))["targets"][target]
+targets = yaml.safe_load(open(targets_path, encoding="utf-8"))
+spec = targets["targets"][target]
 block = spec.get("dagster") or {}
 def words(s):
     out = []
@@ -165,7 +167,10 @@ def flag(argv, *names):
         if w in names: return argv[i + 1]
     return None
 def shared_workspace(s):
-    return any("config/dagster-shared/workspace.yaml" in str(v.get("source", v) if isinstance(v, dict) else v) for v in s.get("volumes") or [])
+    return bool(workspace_sources(s))
+def workspace_sources(s):
+    sources = [str(v.get("source", "")) if isinstance(v, dict) else str(v).split(":", 1)[0] for v in s.get("volumes") or []]
+    return {v for v in sources if re.search(r"(?:^|/)config/dagster-shared/workspace(?:\.[a-z][a-z0-9_-]*)?\.yaml$", v)}
 def code_server(s):
     argv = words(s)
     return any(w.rsplit("/", 1)[-1] == "dagster" and tuple(argv[i + 1:i + 3]) in (("code-server", "start"), ("api", "grpc"))
@@ -254,6 +259,22 @@ plane = {n: s for n, s in active.items() if shared_workspace(s)}
 pd = [n for n, s in plane.items() if runs(s, "dagster-daemon")]
 pw = [n for n, s in plane.items() if runs(s, "dagster-webserver")]
 if len(pd) != 1 or len(pw) != 1: sys.exit("expected one shared daemon and webserver, got %s %s" % (pd, pw))
+sources = [workspace_sources(plane[n]) for n in (pd[0], pw[0])]
+if any(len(s) != 1 for s in sources) or sources[0] != sources[1]:
+    sys.exit("shared plane services mount different workspaces")
+workspace = Path(next(iter(sources[0])))
+if not workspace.is_absolute(): workspace = Path(targets_path).parent.parent / workspace
+default = next((n for n, h in targets.get("hosts", {}).items() if h.get("default")), None)
+selected = default if workspace.name == "workspace.yaml" else workspace.name[len("workspace."):-len(".yaml")]
+if selected not in targets.get("hosts", {}) or spec.get("host", default) not in (selected, "all"):
+    sys.exit("cutover target does not belong to the selected workspace host")
+expected = Path(targets_path).parent / "dagster-shared" / ("workspace.yaml" if workspace.name == "workspace.yaml" and selected == default else "workspace.%s.yaml" % selected)
+if workspace.resolve() != expected.resolve(): sys.exit("workspace is outside the selected release")
+workspace_bytes = workspace.read_bytes()
+workspace_digest = hashlib.sha256(workspace_bytes).hexdigest()[:16]
+if any((plane[n].get("environment") or {}).get("KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST") != workspace_digest for n in (pd[0], pw[0])):
+    sys.exit("workspace differs from the frozen plane digest")
+print("PLANE_WORKSPACE_SOURCE=%s" % workspace)
 pg = sorted(n for n, s in active.items() if n not in plane and pw[0] in deps(s))
 if len(pg) != 1: sys.exit("expected one shared gateway, got %s" % pg)
 print("PLANE_DAEMON=%s" % pd[0])
@@ -391,7 +412,7 @@ if d["__typename"] != "Repository": sys.exit("repository not loaded: %s" % d["__
 names = ["schedule:" + s["name"] for s in d["schedules"] if s["scheduleState"]["status"] == "RUNNING"]
 names += ["sensor:" + s["name"] for s in d["sensors"] if s["sensorState"]["status"] == "RUNNING"]
 print("\n".join(sorted(names)))'; }
-installed_workspace_lists() { grep -q "location_name: $LOCATION" "$ROOT/config/dagster-shared/workspace.yaml"; }
+installed_workspace_lists() { grep -q "location_name: $LOCATION" "$PLANE_WORKSPACE_SOURCE"; }
 TARGET_RUNS_SQL() { printf "SELECT count(*) FROM runs r JOIN run_tags t ON t.run_id = r.run_id WHERE t.key = 'dagster/code_location' AND t.value = '%s'%s" "$LOCATION" "${1:-}"; }
 LIVE="('QUEUED','NOT_STARTED','STARTING','STARTED','CANCELING')"
 TARGET_TICKS_SQL() {  # 이 target의 tick만 — 공용 plane에는 다른 테넌트의 tick이 섞인다(적대 리뷰 H1)
@@ -652,6 +673,7 @@ CONSUMERS="$(sed -n 's/^CONSUMERS=//p' <<<"$facts")"; INTERNAL_CONSUMERS="$(sed 
 PLANE_PORT="$(sed -n 's/^PLANE_WEBSERVER_PORT=//p' <<<"$facts")"
 PLANE_SWITCH="$(sed -n 's/^CONTROL_PLANE=//p' <<<"$facts")"; CODE_SHARED="$(sed -n 's/^CODE_HAS_SHARED_URL=//p' <<<"$facts")"
 DAEMON="$(fact PLANE_DAEMON "$facts")"; WEBSERVER="$(fact PLANE_WEBSERVER "$facts")"; GATEWAY="$(fact PLANE_GATEWAY "$facts")"
+PLANE_WORKSPACE_SOURCE="$(fact PLANE_WORKSPACE_SOURCE "$facts")"
 [[ -n "$DAEMON" && -n "$WEBSERVER" && -n "$GATEWAY" ]] || fail "cannot derive the shared plane services"
 [[ "$OLD_WEBSERVER_PORT" =~ ^[0-9]+$ ]] || fail "old webserver port is not a literal: $OLD_WEBSERVER_PORT"
 [[ -n "$LOCATION" && -n "$CODE" ]] || fail "incomplete family"
@@ -761,7 +783,7 @@ switch_and_verify() {
   # 설치본 workspace의 digest를 싣고 있으면 다시 만들지 않는다(frozen render와 평범한 render의 config hash가 달라 `up`이
   # 한 번 더 재생성하는 것을 피한다).
   local want_digest plane_current=1
-  want_digest="$(sha256sum "$ROOT/config/dagster-shared/workspace.yaml" | cut -c1-16)"
+  want_digest="$(sha256sum "$PLANE_WORKSPACE_SOURCE" | cut -c1-16)"
   for s in "$DAEMON" "$WEBSERVER"; do
     before="$(awk -v s="$s" '$1==s{print $2}' "$STATE/ids-before.txt")"; now="$(cid "$s")"
     if [[ -z "$now" || "$now" == "$before" ]] || ! running "$s" \

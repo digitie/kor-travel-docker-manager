@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
-from kor_travel_docker_manager.services.registry import get_project_root
+from kor_travel_docker_manager.services.registry import get_project_root, require_local_targets
 from kor_travel_docker_manager.services.runtime_pin_registry import utc_timestamp
 from kor_travel_docker_manager.services.trusted_install import (
     TRUSTED_INSTALL_ROOT,
@@ -416,6 +416,7 @@ def write_runtime_pin_request(
     말없이 덮으면서 **둘 다 "기록됨"으로 감사에 남는다.** 그래서 배타 생성
     (``O_CREAT|O_EXCL``)으로 커널이 승자를 정하게 한다.
     """
+    require_local_targets(request.role)
 
     target = path or runtime_pin_request_path()
     if replace_existing:
@@ -441,6 +442,7 @@ def clear_runtime_pin_request(*, expect_request_id: str, path: Path | None = Non
     existing = read_runtime_pin_request(path=target)
     if existing is None or existing.request_id != expect_request_id:
         return False
+    require_local_targets(existing.role)
     target.unlink(missing_ok=True)
     return True
 
@@ -454,6 +456,7 @@ def discard_unreadable_runtime_pin_request(*, path: Path | None = None) -> Path 
 
     이미 잘 읽히는 요청은 이 함수로 지울 수 없다 — 그것은 id 대조 경로의 일이다.
     """
+    require_local_targets("map", "pinvi")
 
     target = path or runtime_pin_request_path()
 

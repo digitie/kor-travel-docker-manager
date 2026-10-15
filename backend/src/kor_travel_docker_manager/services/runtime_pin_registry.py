@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.registry import require_local_targets
 from kor_travel_docker_manager.services.secure_state_file import (
     atomic_write_json,
     insecure_mode_allowed,
@@ -718,6 +719,7 @@ def publish_runtime_pins(
     인증된 API 응답에 실린다** — 비밀을 사유에 적지 않는다는 규약이 필요하다.
     사본에도 ``pinset_sha256``이 있어 읽는 쪽이 재계산 대조할 수 있다.
     """
+    require_local_targets("map", "pinvi")
 
     target = public_path or runtime_pin_registry_public_path()
     payload = dict(registry.to_payload())
@@ -816,7 +818,7 @@ def _is_packaged_seed_path(path: Path) -> bool:
 def _assert_registry_is_writable_target(path: Path) -> None:
     """회전 대상 registry가 운영 규약을 만족하는지 mutation 이전에 확인한다.
 
-    두 가지를 막는다.
+    pair의 두 target이 모두 현재 host 소유인지 먼저 확인한 뒤, 두 파일 계약을 지킨다.
 
     1. **설치 트리 안에서의 회전.** trusted installer는 설치할 때마다 새 release
        디렉터리로 설치 root symlink를 넘기므로, 배포 트리 안의 registry에 회전하면 다음
@@ -825,6 +827,7 @@ def _assert_registry_is_writable_target(path: Path) -> None:
     2. **그룹·타인 접근 가능한 운영 registry.** 회전 권한이 root 밖으로 새는 상태다.
        저장소 안의 개발 기본값은 git이 관리하는 world-readable 파일이므로 예외다.
     """
+    require_local_targets("map", "pinvi")
 
     try:
         # 양쪽 다 resolve한다 — 설치 root가 symlink면 한쪽만 해석해서는 가드를 지나친다.

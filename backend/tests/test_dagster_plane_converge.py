@@ -134,7 +134,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     transaction = SimpleNamespace(resolved=resolved)
     for name, replacement in {
         "capture_transaction_unlocked": lambda **_kwargs: (transaction, None),
-        "_read_shared_workspace_locations": lambda _source: (),
+        "_read_shared_workspace_locations": lambda _source, **_kwargs: (),
         "_inspect_plane_container": plane_container,
         "_inspect_image_reference_id": lambda _reference, *, label: _IMAGE_ID,
         "_run_frozen_recovery": frozen_recovery,
@@ -258,7 +258,7 @@ def test_a_running_legacy_daemon_for_a_loaded_location_refuses(
     monkeypatch.setattr(
         compose_service_module, "installed_location_owners", lambda: {"loc": family}
     )
-    monkeypatch.setattr(harness.service, "_read_shared_workspace_locations", lambda _s: ("loc",))
+    monkeypatch.setattr(harness.service, "_read_shared_workspace_locations", lambda _s, **_kwargs: ("loc",))
     monkeypatch.setattr(
         harness.service, "_inspect_container_running", lambda _container, *, label: True
     )

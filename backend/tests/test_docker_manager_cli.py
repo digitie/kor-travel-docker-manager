@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -7,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from kor_travel_docker_manager.cli import build_parser, main
 from kor_travel_docker_manager.services import compose_service as compose_service_module
@@ -268,7 +270,8 @@ def test_label_sanitizer_uses_the_same_predicate():
     ComposeService,
     "_validate_current_compose_candidate_unlocked",
     return_value=ValidatedComposeCandidate(
-        resolved={},
+        # 실제 dependency graph를 두어 host scope 검증을 우회하지 않는다.
+        resolved=yaml.safe_load((Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()),
         system_bind_snapshots=(),
         raw_volume_graph_hash="raw-stable",
         resolved_volume_graph_hash="resolved-stable",
@@ -307,16 +310,13 @@ def test_compose_ensure_build_command(
         result = ComposeService().ensure_target("srv", build=True, recreate=True)
 
     assert result["success"] is True
+    # 실제 host-local srv 폐포는 이전한 Geo를 시작하지 않는다.
     assert result["services"] == [
         "rustfs",
         "grafana",
         "cadvisor",
         "prometheus",
         "kor-travel-shared-postgres",
-        "kor-travel-shared-db-init-geo",
-        "kor-travel-geo-api",
-        "kor-travel-geo-ui",
-        "kor-travel-geo-dagster-code-server",
         "kor-travel-shared-db-init-concierge",
         "kor-travel-concierge-api",
         "kor-travel-concierge-mcp",
@@ -336,7 +336,6 @@ def test_compose_ensure_build_command(
         "gra",
         "cadv",
         "prom",
-        "geo",
         "conc",
         "map",
         "pinvi",
@@ -349,8 +348,8 @@ def test_compose_ensure_build_command(
     assert "grafana" in up_command
     assert "cadvisor" in up_command
     assert "prometheus" in up_command
-    assert "kor-travel-geo-api" in up_command
-    assert "kor-travel-geo-ui" in up_command
+    assert "kor-travel-geo-api" not in up_command
+    assert "kor-travel-geo-ui" not in up_command
     assert "kor-travel-concierge-api" in up_command
     assert "kor-travel-map-api" in up_command
     assert "pinvi-api" in up_command
@@ -2798,13 +2797,25 @@ def test_cli_rebuild_pinned_shows_warnings_to_a_human(mock_compose_service, caps
     assert "warning: the trusted execution binding is stale" in capsys.readouterr().err
 
 
-def _ensure_dagster_with(tmp_path: Path, failing_service: str | None) -> tuple[dict, list[list[str]]]:
+def _ensure_dagster_with(
+    tmp_path: Path, failing_service: str | None, *,
+    resolved: dict | None = None, calls: list[list[str]] | None = None,
+) -> tuple[dict, list[list[str]]]:
     """`ensure dagster`를 실제 ComposeService로 돌린다 — compose 호출만 가짜다.
 
     `failing_service`를 argv에 담은 compose 호출은 exit 3으로 끝난다.
     """
 
-    calls: list[list[str]] = []
+    if calls is None:
+        calls = []
+    if resolved is None:
+        # 이 fixture는 argv 순서만 본다. 실제 host 보간 회귀는 test_host_workspaces의
+        # 제품 전체 Compose/plugin 렌더가 담당한다. 기존 기본값 fixture도 보간형을 해석한다.
+        source = (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()
+        resolved = yaml.safe_load(re.sub(
+            r"\$\{([A-Z0-9_]+):-([^${}]*)\}",
+            lambda match: os.environ.get(match[1], match[2]), source,
+        ))
 
     def fake_run(argv, *args, **kwargs):  # type: ignore[no-untyped-def]
         calls.append(list(argv))
@@ -2823,7 +2834,7 @@ def _ensure_dagster_with(tmp_path: Path, failing_service: str | None) -> tuple[d
             ComposeService,
             "_validate_current_compose_candidate_unlocked",
             return_value=ValidatedComposeCandidate(
-                resolved={},
+                resolved=resolved,
                 system_bind_snapshots=(),
                 raw_volume_graph_hash="raw-stable",
                 resolved_volume_graph_hash="resolved-stable",

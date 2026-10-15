@@ -1844,7 +1844,7 @@ def _forward_harness(
         "_inspect_c6c_runtime_configs": inspect_c6c,
         "_ensure_pinvi_fresh_migration_fence": mocks.fence,
         "_run_pinvi_admin_bootstrap": mocks.pinvi_bootstrap,
-        "_read_shared_workspace_locations": lambda _source: tuple(live["workspace_locations"]),
+        "_read_shared_workspace_locations": lambda _source, **_kwargs: tuple(live["workspace_locations"]),
         "_query_shared_plane_locations": plane_query,
         "_inspect_plane_container": plane_container,
         "_inspect_image_reference_id": lambda _reference, *, label: plane_image_id,

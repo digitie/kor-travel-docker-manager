@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from kor_travel_docker_manager.services.c6c_deployment import DeploymentContractError
+from kor_travel_docker_manager.services.registry import require_local_targets
 from kor_travel_docker_manager.services.runtime_execution_registry import (
     RuntimeExecutionRegistry,
     RuntimeExecutionRegistryError,
@@ -236,6 +237,7 @@ def rotate_pair_with_execution(
     ``rotate-pair``가 정확한 target을 다시 publish한 뒤 intent를 지워 복구한다. pending
     intent가 있는 동안 모든 runtime mutation은 별도 gate에서 거부된다.
     """
+    require_local_targets("map", "pinvi")
 
     pending = load_pending_runtime_pair_rotation()
     if pending is not None:
@@ -318,6 +320,7 @@ def rotate_single_role_with_execution(
     먼저 소비할 수 있는 문이기 때문이다. terminal에서의 탈출은 두 revision을 함께
     선언하는 ``rotate-pair``만 허용된다.
     """
+    require_local_targets("map", "pinvi")
 
     from kor_travel_docker_manager.services.pinned_runtime_release import RUNTIME_SOURCE_ROLES
     from kor_travel_docker_manager.services.runtime_execution_registry import (
@@ -402,6 +405,7 @@ def rollback_with_execution(
     않으면 정확히 그 치유가 막힌다. v5/v6가 함께 current인 일반 원복에서는 execution도
     새 binding으로 이행한다.
     """
+    require_local_targets("map", "pinvi")
 
     from kor_travel_docker_manager.services.runtime_execution_registry import (
         load_runtime_execution_registry,

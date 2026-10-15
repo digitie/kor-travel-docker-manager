@@ -40,6 +40,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from kor_travel_docker_manager.services.errors import DeploymentContractError
+from kor_travel_docker_manager.services.registry import TargetsConfigError, require_local_targets
 from kor_travel_docker_manager.services.secure_state_file import (
     atomic_write_bytes,
     atomic_write_json,
@@ -438,6 +440,7 @@ def create_standalone_backup(
 
     if expected_dump_bytes is not None and expected_dump_bytes <= 0:
         raise StandaloneBackupError("expected_dump_bytes must be a positive byte count")
+    require_local_backup_role(role)
     container_name, database_name = _role_config(role)
     port = _discover_port(container_name)
     admin_name = _discover_admin_role(container_name)
@@ -658,6 +661,7 @@ def gc_standalone_backups(
 
     if keep < 1:
         raise StandaloneBackupError("keep must be at least 1")
+    require_local_backup_role(role)
     root = _resolve_backup_root(role, backup_root)
     if not root.is_dir():
         return GcOutcome(deleted=(), orphans_removed=())
@@ -1092,6 +1096,7 @@ def rehearse_standalone_restore(
     트래픽이 적은 시간대에 실행하는 것을 권장한다.
     """
 
+    require_local_backup_role(role)
     plan = plan_standalone_restore(role, backup_filename=backup_filename, backup_root=backup_root)
     if not plan.restorable:
         return RehearsalOutcome(
@@ -1419,6 +1424,21 @@ def rehearse_standalone_restore(
         restored_catalog_digest=restored_catalog_digest,
         live_catalog_digest=live_catalog_digest,
     )
+
+
+def require_local_backup_role(role: BackupRole) -> None:
+    # DB host-all 소유권은 개별 tenant DB의 쓰기 권한을 뜻하지 않는다.
+    # 기존 백업 role 명칭 중 target과 다른 세 이름만 정본 alias로 연결한다.
+    if role not in BACKUP_ROLES:
+        raise StandaloneBackupError(f"unknown backup role: {role}")
+    target = {"concierge": "conc", "map_application": "map", "dagster_shared": "dagster"}.get(
+        role, role
+    )
+    try:
+        require_local_targets(target)
+    except (DeploymentContractError, TargetsConfigError) as exc:
+        # API/CLI의 기존 백업 오류 응답 계약을 보존한다.
+        raise StandaloneBackupError(str(exc)) from exc
 
 
 def _role_config(role: BackupRole) -> tuple[str, str]:

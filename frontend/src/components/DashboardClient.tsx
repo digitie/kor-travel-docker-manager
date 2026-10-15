@@ -1149,7 +1149,7 @@ export default function DashboardClient() {
                       <td data-label="CPU" className="text-center">
                         <button 
                           type="button"
-                          disabled={container.status !== 'running'}
+                          disabled={container.remote || container.status !== 'running'}
                           onClick={() => container.status === 'running' && openChartModal(container.id, 'cpu')}
                           className="ops-metric"
                           title={container.status === 'running' ? '지난 1시간 CPU 사용 이력 보기' : ''}
@@ -1166,7 +1166,7 @@ export default function DashboardClient() {
                       <td data-label="메모리" className="text-center">
                         <button 
                           type="button"
-                          disabled={container.status !== 'running'}
+                          disabled={container.remote || container.status !== 'running'}
                           onClick={() => container.status === 'running' && openChartModal(container.id, 'memory')}
                           className="ops-metric"
                           title={container.status === 'running' ? '지난 1시간 메모리 사용 이력 보기' : ''}
@@ -1185,7 +1185,7 @@ export default function DashboardClient() {
                       <td data-label="I/O" className="text-center">
                         <button 
                           type="button"
-                          disabled={container.status !== 'running'}
+                          disabled={container.remote || container.status !== 'running'}
                           onClick={() => container.status === 'running' && openChartModal(container.id, 'io')}
                           className="ops-metric"
                           title={container.status === 'running' ? '지난 1시간 I/O 이력 보기' : ''}
@@ -1204,6 +1204,7 @@ export default function DashboardClient() {
                           <button
                             type="button"
                             onClick={() => openLogModal(container.id)}
+                            disabled={container.remote}
                             className="ops-icon-button"
                             title="실시간 터미널 로그 스트리밍 모달 열기"
                           >
@@ -1215,15 +1216,15 @@ export default function DashboardClient() {
                           <button
                             type="button"
                             disabled={
-                              container.status === 'not_created' ||
+                              container.remote || container.status === 'not_created' ||
                               container.status === 'offline'
                             }
                             onClick={() => setDetailContainer(container)}
                             className="ops-icon-button"
                             title={
-                              container.status === 'not_created' ||
+                              container.remote || container.status === 'not_created' ||
                               container.status === 'offline'
-                                ? '컨테이너가 생성되지 않아 상세 정보를 볼 수 없습니다'
+                                ? '로컬 컨테이너를 관측하지 않아 상세 정보를 볼 수 없습니다'
                                 : 'inspect 상세(상태·리소스·mounts·networks·healthcheck·env) 보기'
                             }
                           >
@@ -1234,9 +1235,11 @@ export default function DashboardClient() {
                             type="button"
                             onClick={() => openConfigModal(container)}
                             className="ops-icon-button"
-                            disabled={Boolean(container.external_project)}
+                            disabled={container.remote || Boolean(container.external_project)}
                             title={
-                              container.external_project
+                              container.remote
+                                ? '원격 HTTP 관측만 제공하며 로컬 설정을 변경할 수 없습니다'
+                                : container.external_project
                                 ? `${container.external_project} 프로젝트가 소유한 컨테이너입니다 — 설정 정본이 이 저장소 밖에 있어 변경할 수 없습니다`
                                 : '컨테이너 세부 설정 변경'
                             }
@@ -1259,7 +1262,7 @@ export default function DashboardClient() {
                               <button
                                 type="button"
                                 onClick={() => handleAction(container.id, 'start')}
-                                disabled={actionMutation.isPending || container.status === 'running'}
+                                disabled={container.remote || actionMutation.isPending || container.status === 'running'}
                                 className="ops-button text-ok border-ok hover:border-ok hover:bg-ok hover:text-card disabled:hover:bg-card disabled:hover:text-ok"
                                 title="컨테이너 가동"
                               >
@@ -1270,7 +1273,7 @@ export default function DashboardClient() {
                               <button
                                 type="button"
                                 onClick={() => handleAction(container.id, 'stop')}
-                                disabled={actionMutation.isPending || container.status !== 'running'}
+                                disabled={container.remote || actionMutation.isPending || container.status !== 'running'}
                                 className="ops-button ops-button--danger text-danger border-danger disabled:hover:bg-card disabled:hover:text-danger"
                                 title="컨테이너 정지"
                               >
@@ -1281,7 +1284,7 @@ export default function DashboardClient() {
                               <button
                                 type="button"
                                 onClick={() => handleAction(container.id, 'restart')}
-                                disabled={actionMutation.isPending || container.status !== 'running'}
+                                disabled={container.remote || actionMutation.isPending || container.status !== 'running'}
                                 className="ops-icon-button"
                                 title="컨테이너 재부팅"
                               >

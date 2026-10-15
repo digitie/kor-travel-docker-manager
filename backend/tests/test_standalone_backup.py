@@ -37,6 +37,8 @@ def _ample_disk(monkeypatch: pytest.MonkeyPatch) -> None:
     (CI runner의 `/tmp`는 우리가 정하지 않는다)에 기대지 않도록 넉넉한 값을 준다."""
 
     monkeypatch.setattr(shutil, "disk_usage", Mock(return_value=Mock(free=1 << 50)))
+    # 이 파일은 백업 알고리즘 전용이다. 실제 host 경계는 test_host_mutation_scope가 검증한다.
+    monkeypatch.setattr(standalone_backup, "require_local_targets", lambda *_args: None)
 
 
 def _fake_time(monkeypatch: pytest.MonkeyPatch) -> None:
