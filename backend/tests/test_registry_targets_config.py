@@ -904,7 +904,8 @@ def test_a_malformed_host_declaration_is_rejected(mutate: Any, said: str) -> Non
 
 
 def test_a_target_host_without_hosts_is_rejected() -> None:
+    # `hosts:` 없음 = 암묵 default 하나(T-MGR-01a-F) — 그 밖의 이름은 미선언 호스트다. 버전 값과 무관하다.
     config = _minimal_valid_config()
     config["targets"]["geo"]["host"] = "odroid"
-    with pytest.raises(ValueError, match="require config version 2"):
+    with pytest.raises(ValueError, match="unknown host"):
         _validate_targets_config(config, label="test.yml")
