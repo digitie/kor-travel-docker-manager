@@ -2513,8 +2513,8 @@ n150에서 깨진 둘을 고치는 최소 변경만 먼저 넣는다(계획 모�
 - **geo workspace 제외(2026-10-15 소유자 결정)**: n150 geo code-server(`127.0.0.1:12503`)를 멈췄더니 n150 공용 daemon·webserver가
   "code servers not serving: ['kortravelgeo_dagster.definitions']"로 unhealthy가 됐다(운영자 preflight 차단). geo target에
   `host: odroid` → 같은 파생 규칙으로 n150 `workspace.yaml`에서 빠지고(남는 것 concierge·map·pinvi 3 location, digest
-  `4461abc13cce9c4f`), 소비자 origin 테스트의 geo 재정의가 군더더기로 빨개져 지웠다. **geo Dagster 적재는 odroid plane이 생길
-  때까지 쉰다**(T-MGR-02·06; 소유자 수용). geo는 `all.include`에 남긴다 — `map`이 `depends_on: [geo]`라 `ensure all`·`ensure map`
+  `4461abc13cce9c4f`), 소비자 origin 테스트의 geo 재정의가 군더더기로 빨개져 지웠다. **geo Dagster는 2026-10-15부터 odroid의 plane에서 돈다**(n150 code-server 02:42Z 정지, odroid `127.0.0.1:12503`이 odroid
+  자체 workspace에 02:52Z 합류 — Manager 밖, 호스트 측 구성; Manager가 그 workspace를 파생하는 것은 T-MGR-02). geo는 `all.include`에 남긴다 — `map`이 `depends_on: [geo]`라 `ensure all`·`ensure map`
   폐포가 어차피 geo를 담는다(그 간선 삭제는 R7, T-MGR-01b; 그 전까지 n150 `ensure map`은 n150 geo 컨테이너를 되살린다 —
   workspace에는 없으므로 이중 적재는 없다). Map/PinVi pinned 수렴(`wanted`)은 map·pinvi location만 보고, fence·소유자 파생
   (`installed_location_owners`)은 workspace에 있는 location만 검사하므로 geo가 빠져도 바뀌지 않는다.
