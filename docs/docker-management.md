@@ -243,7 +243,7 @@ CLI exit 2, API 409 `TARGET_ON_ANOTHER_HOST`)다. 문구: `target geo is on host
 | `status`(원격 target) | 로컬 `ps`(옛 잔재) 뒤에 `remote` 절: 그 target의 컨테이너 중 이 호스트에 없는 것의 렌더된 connection에서 `http(s)://` URL을 **전부** GET(리다이렉트 안 따라감, 3 s) → `up`(2xx/3xx) / `down`(연결 뒤 비정상 — 4xx·5xx·응답 전 끊김·TLS 실패) / `unreachable`(연결 거부·연결 시간 초과·이름 풀이 실패). URL 없는 connection은 `remote(not probed)`. registry에 방화벽 개방 필드는 없다 — 다른 호스트의 HAProxy 전용 포트(`12505`·`12205`·`14002`·`12301`·`12305`·`11001`)는 여기서 `unreachable`이 **정상**(거짓 빨강 아님). 종료 코드는 로컬 `ps`의 것이다(`services/remote_probe.py`) |
 | `targets validate` | 전체 구문 + R7 + 자기 호스트 좌표(`--check-coordinates`) + `--json`. consumer origin 대조(R2)·workspace digest 효과는 T-MGR-01c·02 |
 
-UI의 원격 표시(같은 세 값)는 아직 없다 — API `status`가 같은 `remote` 절을 싣는다.
+원격 판정은 `ktdctl status`(`compose_service.status_target`의 `remote` 절)에만 있다 — API·UI의 원격 표시(같은 세 값)는 아직 없다.
 
 **consumer origin(R2).** 내부 target이 형제 서비스를 부르는 URL은 compose env **기본값**이 정본이며 registry에서 계산한 값과 같아야
 한다. 대상은 규칙으로 정한다 — "형제 서비스 포트(`12501`/`14001`/`14101`)를 기본값에 가진 모든 compose env(비활성 `legacy-dagster`
