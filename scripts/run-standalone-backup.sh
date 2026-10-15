@@ -20,8 +20,8 @@
 # 배지가 cron dump를 보지 못한다 — 2026-09-28 n150이 그 상태다(docs/docker-management.md
 # "PostgreSQL 백업" 참고). 공유 백업 디렉터리(chgrp+2770)를 쓰면 KTDM_BACKUP_SHARED_GROUP을
 # **두 곳에** 선언한다: .env(backend, 그리고 logrotate가 group-writable 부모를 거부하지 않게)와
-# 이 crontab(CRON_TZ=UTC 아래 환경 줄 `KTDM_BACKUP_SHARED_GROUP=<group>` — ktdctl은 .env를 읽지
-# 않는다). backend와 cron이 다른 계정으로 같은 root를 쓰면(n150) 공유 그룹 없이는 UI 생성이
+# 이 crontab(CRON_TZ=UTC 아래 환경 줄 `KTDM_BACKUP_SHARED_GROUP=<group>` — ktdctl이 .env에서 읽는
+# 값은 `KTDM_HOST` 하나뿐이다). backend와 cron이 다른 계정으로 같은 root를 쓰면(n150) 공유 그룹 없이는 UI 생성이
 # 409로 거절된다(cron의 role 디렉터리를 망가뜨리지 않게). UI로도 만들 때만 공유 그룹을 한다.
 # crontab이 가리키는 체크아웃은 설치본(/opt)과 별개다 — 설치 뒤 backend/src·
 # config/docker-targets.yml·이 파일을 함께 맞춘다(docs/docker-management.md "PostgreSQL 백업").
@@ -35,6 +35,11 @@
 # 조용히 끝난다. 설치본은 trusted install이 매번 git에서 다시 쓰므로 따로 맞출 것이 없다(설치본의
 # ktdctl은 비-root cron 계정으로 돈다 — 2026-09-30 n150 `db-backup list` 실측):
 #   40 3 * * * KTDM_BACKUP_ROOT=/absolute/backup/root /opt/kor-travel-docker-manager/scripts/run-standalone-backup.sh dagster_shared 7 >>/absolute/backup/root/dagster_shared.log 2>&1
+# **`KTDM_HOST`(#477, ADR-58).** 운영 설치본의 ktdctl은 자기 호스트를 프로세스 env `KTDM_HOST` →
+# root `.env`의 `KTDM_HOST` 순으로 정한다. root `.env`는 root:root 0600이라 **비-root cron 계정은 그
+# 파일을 읽지 못한다** — 그래서 호스트마다 crontab의 CRON_TZ 아래 환경 줄로 `KTDM_HOST=<host>`를 넣는다
+# (`docs/prod-deployment.md` "주기 백업 cron과 KTDM_HOST"). 빠지면 아래에서 바로 exit 2로 끝난다.
+#   KTDM_HOST=n150
 # 2단계 검증은 이 줄의 명령을 **cron 계정으로, 같은 경로·같은 env로** 한 번 손으로 돌리는 것이다 —
 # 다른 경로의 wrapper로 검증하면 cron이 실제로 부르는 트리를 보지 않은 것이다.
 set -eu
@@ -69,6 +74,15 @@ fi
   printf 'ktdctl is not executable: %s\n' "$KTDCTL" >&2
   exit 2
 }
+
+# 운영 설치본(`.ktdm-source-revision`)에서 `KTDM_HOST`가 env에 없고 root `.env`를 이 계정이 읽을 수
+# 없으면 ktdctl을 부르기 전에 끝낸다 — ktdctl도 같은 사유로 거부하지만, 여기서 멈추면 cron 로그에
+# 고칠 자리(crontab 환경 줄)가 바로 남는다. `.env`의 내용은 읽지도 싣지도 않는다.
+if [ -z "${KTDM_HOST:-}" ] && [ -e "$PROJECT_ROOT/.ktdm-source-revision" ] \
+  && [ -e "$PROJECT_ROOT/.env" ] && [ ! -r "$PROJECT_ROOT/.env" ]; then
+  printf 'Manager root .env is unreadable by this user (%s); set KTDM_HOST in the process environment (crontab line KTDM_HOST=<host>)\n' "$PROJECT_ROOT/.env" >&2
+  exit 2
+fi
 
 log() {
   printf '[%s] [standalone-backup:%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ROLE" "$*"

@@ -228,6 +228,15 @@ installer가 만든 release 아래 실행(`.ktdm-source-revision` 존재; `servi
 `services/registry.py:129-132`의 `running_from_trusted_install_root`). 운영 모드에서 값이 비었거나 `hosts[KTDM_HOST].addr`가 이
 호스트의 IPv4 주소 집합에 없으면 거부(빈 env가 가드를 뚫지 못하게). 비운영(CI·개발·isolated plane)은 명시했을 때만 검사하고
 미설정이면 default 호스트 — 기존 하네스는 무변경.
+값의 출처 우선순위는 **비어 있지 않은 프로세스 env → Manager 루트 `.env`**다(`registry._root_env_file_value`). backend만
+`load_dotenv`로 `.env`를 올리므로, 이 순서가 없으면 `ktdctl`·설치 래퍼·launcher는 `.env`에 값이 있어도 운영 모드에서
+모두 거부됐다(2026-10-15 n150). trusted 설치본은 설치 root의 `.env`만 읽고(`KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE`로 옮길 수
+없다), 개발 checkout은 backend와 같은 `get_env_path()`를 읽는다. 어느 출처든 검증은 같다.
+프로세스 env의 **빈** `KTDM_HOST=`는 CLI에서 "없음"으로 보고 `.env`로 내려간다. backend는 `load_dotenv`가 이미
+있는 키를 덮지 않으므로 빈 값이 남아 같은 순서로 `.env`를 읽는다 — 어느 쪽이든 최종 값이 비면 운영 모드는 거부한다
+(fail closed). 운영 모드에서 `.env`가 있는데 이 계정이 읽을 수 없으면 "KTDM_HOST 없음"이 아니라
+`Manager root .env is unreadable by this user (<path>); set KTDM_HOST in the process environment`로 거부한다
+(비-root cron은 `docs/prod-deployment.md` §3.w).
 
 **명령별 host 규칙(R4).**
 

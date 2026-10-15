@@ -36,6 +36,7 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
 )
 from kor_travel_docker_manager.services.registry import (
     TARGETS_CONFIG_ERRORS,
+    RootEnvUnreadableError,
     list_targets,
     load_targets_config,
 )
@@ -158,6 +159,18 @@ def _cmd_targets_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _targets_config_error_text(exc: BaseException) -> str:
+    """targets/자기 식별 실패의 한 줄. 비밀은 가리되, `.env`를 못 읽은 실패 자체는 그대로 낸다.
+
+    `RootEnvUnreadableError`는 상수와 경로만 담는다. 가리기는 같은 `.env`를 읽어야 해서 이
+    실패에서는 늘 원문을 숨기고, 운영자는 "process env에 KTDM_HOST를 두라"를 듣지 못한다.
+    """
+
+    if isinstance(exc, RootEnvUnreadableError):
+        return str(exc)
+    return scrub_failure_text(str(exc), get_env_path())
+
+
 def _cmd_targets_validate(args: argparse.Namespace) -> int:
     """GM-11 후속(docker-targets.yml 스키마 검증 잔여): `docs/docker-management.md`
     3절이 안내하던 별도 python 한 줄 pre-flight 검증(`load_targets_config()`를 직접
@@ -167,7 +180,7 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
     try:
         config = load_targets_config()
     except TARGETS_CONFIG_ERRORS as exc:
-        print(scrub_failure_text(str(exc), get_env_path()), file=sys.stderr)
+        print(_targets_config_error_text(exc), file=sys.stderr)
         return 1
 
     # 좌표가 **실재하는지**는 여기서만, 그리고 **요청받았을 때만** 본다.
@@ -2286,7 +2299,7 @@ def main(argv: list[str] | None = None) -> int:
         # bare `ValueError`는 여전히 각 `_cmd_*`의 기존 로컬 `except
         # ValueError`가 그대로 처리한다(이 부분은 이 커밋 이전부터 있던
         # 동작이라 손대지 않았다).
-        print(scrub_failure_text(str(exc), get_env_path()), file=sys.stderr)
+        print(_targets_config_error_text(exc), file=sys.stderr)
         sys.exit(1)
     except Exception as exc:  # noqa: BLE001 - last output boundary: never an unscrubbed traceback
         # 명령 처리기가 잡지 않은 예외는 Python 기본 traceback으로 나가 비밀을 싣고 갔다. 같은 원문을

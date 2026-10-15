@@ -1,3 +1,20 @@
+## 2026-10-16 — 최신 root 환경 자기 식별과 host 실행 경계 통합(Codex)
+
+- 기존 PR #481 `c881630`에 main `5433056`(#482)을 병합했다. root `.env`의
+  `KTDM_HOST` fallback, 읽기 불가의 명시적 CLI 오류와 비-root backup wrapper 안내를
+  유지하며 직접 소유권에 따른 변경 거절·호스트별 workspace 파생도 보존한다.
+- 문서 충돌은 upstream의 T-MGR-01a-F 잔여 과제와 PR #481 구현 기록을 모두 남겼다.
+  root `.env`로 두 호스트를 각각 선택해도 공개 `ensure_target`이 다른 호스트를
+  transaction 전에 거절하는 회귀 2개를 추가했다.
+- 집중 회귀의 첫 274 PASS/16 FAIL은 fixture가 registry loader만 대체하고 Compose의
+  loader 별칭은 실제 캐시에 의존한 문제였다. 둘이 같은 fixture를 읽도록 교정해
+  292 PASS를 확인했다. CI와 같은 Ruff0.16.4 명령·diff 검사도 통과했다.
+  이전 Ruff0.3.7 실행 오류 원문은 보존하고 현재 CI 결함으로 집계하지 않는다.
+- frontend 입력은 c881과 바이트 동일하다. 이전 complete artifact의 source provenance는
+  그대로이며, 새 운영 환경 SHA 대조 전 재사용·새 source 표식·운영 성공을 주장하지 않는다.
+  두 독립 제품 delta 리뷰·새 HEAD의 CI·현재 배포 revision을 기준으로 한 설치 준비와
+  실제 배포/live는 별도 후속이다. 기존 운영 설치기는 실행하지 않았다.
+
 ## 2026-10-15 — 원격 target의 HTTP 관측과 로컬 도구 경계(Codex)
 ## 2026-10-15 — HTTPX 런타임·CI·오프라인 설치 계약 교정(Codex)
 
@@ -117,6 +134,23 @@
 # JOURNAL — 작업 일지
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
+
+## 2026-10-15 — ktdctl이 root `.env`의 `KTDM_HOST`를 읽게 함
+
+- 증상(n150 prod, #477 설치 `ab52ab51` 뒤): root `.env`에 `KTDM_HOST=n150`이 있는데 `sudo ktdctl pin verify`가
+  "operating release requires hosts and KTDM_HOST"로 실패. `sudo env KTDM_HOST=n150 ktdctl …`는 통과. preflight·pinned
+  rebuild·dagster-plane converge·compose-boundary 등 ktdctl을 거치는 운영 작업 전부가 막혔다.
+- 원인: `registry.current_host`가 `os.environ`만 봤다. backend는 `main.py`의 `load_dotenv`로 `.env`를 올리지만 `ktdctl`·설치
+  래퍼(project root만 설정)·launcher는 그러지 않는다. #477 리뷰 차단 2번이 지적했으나 고치지 않고 머지됐다.
+- 수정: `current_host`가 비어 있지 않은 프로세스 env → Manager 루트 `.env` 순으로 값을 정한다. trusted 설치본은 설치 root의
+  `.env`만, 개발 checkout은 `get_env_path()`. 둘 다 비면 운영 모드는 여전히 거부하고, 선언 호스트·로컬 주소 검증은 그대로다.
+  오류 문구에 출처(프로세스 env 또는 root `.env`)를 덧붙였다(접두는 유지).
+- 조회당 `ip` subprocess 캐시는 기존 테스트가 "매 조회 재검증"을 의도로 고정하고 있어 이 PR에서 바꾸지 않았다. 나머지 리뷰
+  항목은 `docs/tasks.md` T-MGR-01a-F로 옮겼다. 배포·n150 변경은 하지 않았다.
+- 리뷰 반영: 운영 모드에서 root `.env`가 있는데 읽을 수 없으면(n150 `root:root 0600`, 비-root 백업 cron) 빈 값으로
+  넘기지 않고 경로와 함께 "process env에 KTDM_HOST를 두라"로 거부한다. `run-standalone-backup.sh`는 같은 조건에서
+  ktdctl 전에 exit 2, `docs/prod-deployment.md` §3.w에 crontab `KTDM_HOST=<host>` 환경 줄을 필수로 적었다.
+  #477 이후 n150의 concierge·pinvi·transport·dagster_shared 주기 백업은 그 줄이 들어가기 전까지 실패한다.
 
 ## 2026-10-15 — PR #477 최신 main 병합과 이전 완료 상태 보존
 

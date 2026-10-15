@@ -12,9 +12,13 @@ from kor_travel_docker_manager.services.errors import DeploymentContractError
 
 @pytest.fixture
 def config(monkeypatch, tmp_path):
+    from kor_travel_docker_manager.services import compose_service
+
     root = Path(__file__).resolve().parents[2]
     value = yaml.safe_load((root / "config/docker-targets.yml").read_text())
     monkeypatch.setattr(registry, "load_targets_config", lambda: value)
+    # lower Compose도 같은 fixture를 읽는다. 다른 파일의 캐시 예열에 의존하지 않는다.
+    monkeypatch.setattr(compose_service, "load_targets_config", lambda: value)
     monkeypatch.setenv(registry.PROJECT_ROOT_ENV, str(tmp_path))
     monkeypatch.setenv("KTDM_HOST", registry.default_host(value))
     return value
@@ -100,6 +104,32 @@ def test_public_remote_ensure_rejects_before_environment_or_lock(config, monkeyp
     monkeypatch.setattr(service, "capture_transaction_unlocked", lambda **_kwargs: pytest.fail("transaction reached"))
     with pytest.raises(DeploymentContractError, match="host"):
         service.ensure_target("GEO")
+
+
+@pytest.mark.parametrize("selected_target,foreign_target", [("map", "geo"), ("geo", "map")])
+def test_root_env_host_fallback_preserves_public_mutation_ownership(
+    config, monkeypatch, tmp_path, selected_target, foreign_target,
+):
+    """CLI용 root .env fallback도 같은 직접 소유권 경계를 적용한다."""
+    from kor_travel_docker_manager.services import trusted_install
+    from kor_travel_docker_manager.services.compose_service import ComposeService
+
+    selected = next(iter(registry.target_hosts(selected_target, config)))
+    monkeypatch.setattr(trusted_install, "running_from_trusted_install_root", lambda: False)
+    monkeypatch.delenv(registry.HOST_ENV, raising=False)
+    monkeypatch.delenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", raising=False)
+    monkeypatch.setattr(
+        registry, "_local_ipv4_addresses", lambda: frozenset({config["hosts"][selected]["addr"]}),
+    )
+    (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
+    (tmp_path / ".env").write_text(f"KTDM_HOST={selected}\n")
+
+    assert registry.current_host(config) == selected
+    registry.require_local_targets(selected_target, config=config)
+    service = ComposeService()
+    monkeypatch.setattr(service, "capture_transaction_unlocked", lambda **_kwargs: pytest.fail("transaction reached"))
+    with pytest.raises(DeploymentContractError, match="host"):
+        service.ensure_target(foreign_target)
 
 
 def _cross_host_declared_dependencies(compose, config):
