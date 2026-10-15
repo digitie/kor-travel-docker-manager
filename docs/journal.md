@@ -2,6 +2,33 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-15 — PR #477 최신 main 병합과 이전 완료 상태 보존
+
+- main `409833e`를 feature branch에 merge했다. registry v2의 단일 hosts 선언·현재 호스트 검증·집계 조회 최적화와 선택적 시작 RPC 설정을 유지한다.
+- #479의 Geo `host: odroid` 및 n150 workspace 제외, #480의 C6c 보호 환경변수 식별자 경계 검사를 보존한다. 기존 instance 파일·앱 튜닝은 변경하지 않는다.
+- 충돌은 registry 설명과 일지 두 곳이며 양쪽 작업 기록을 보존했다. T-MGR-01b 호스트 mutation guard와 T-MGR-02 호스트별 workspace는 별도 후속 작업이다.
+- 병합 후 독립 리뷰에서 Geo 이동 전 가정이 남은 호스트 테스트 두 건의 실패를 재현했다. 이동 전→후 필터는 fixture를 명시하고 현재 배치는 Geo도 odroid로 검사하도록 고쳤다. 실제 배치를 되돌리거나 제품 로직을 완화하지 않았다.
+- 로컬 회귀·정적 검사와 적대 리뷰를 거쳐 PR head를 갱신한다. 운영 설치·배포·live E2E 완료를 뜻하지 않는다.
+
+## 2026-10-15 — 최신 main 통합과 시작 RPC 경합 보완
+
+- #476·#478을 통합했다. registry의 중복 hosts 선언·검증기를 제거하고 Weather·Transport의 이미 이전된 배치를 보존한다.
+- Geo 검증 run에서 실제 StartRun 60초 만료→재큐잉→늦은 worker 중복 종료→FAILURE를 확인했다.
+  실패를 성공으로 덮지 않고 별도 새 run으로 재검증한다.
+- daemon과 Geo proxy의 일반 RPC 예산을 호스트 환경으로 조정할 수 있게 했다. 기본값은 기존 60초,
+  별도 schedule·sensor·repository·shutdown 제한은 명시해 파생 증가를 막는다. Geo 앱 튜닝은 변경하지 않는다.
+- 운영 적용·새 run·live UI·최종 독립 리뷰 결과는 검증 후 별도 기록한다. 이 항목은 운영 완료 선언이 아니다.
+
+## 2026-10-15 — 배포 설정 일치화의 호스트 registry 구현
+
+- 최신 main에서 registry v2의 호스트 선언, 직접 실행 서비스 기준 소유권, host-local `all` 집합,
+  `{host}` 연결 좌표와 `targets validate --json`을 구현했다. tenant 이동·운영 재생성은 수행하지 않았다.
+- 두 독립 적대 리뷰의 trusted wheel/환경 경로 우회, version 혼용, 목록 순회의 반복 할당,
+  secondary IPv4 누락을 반영했다. 관련 계약 116 PASS와 backend Ruff PASS를 확인했다.
+  전체 backend와 수정 후 독립 재리뷰는 진행 중이다.
+- Geo 튜닝값은 그대로 유지한다. 일치화 대상은 배포 경로·호스트 선택·공개 URL·Dagster 연결·버전 계약이다.
+  호스트별 workspace/명령 제한 구현과 실제 이전 뒤 검증을 마쳐야 ADR-58 운영 전환을 완료할 수 있다.
+
 ## 2026-10-15 — C6c 보호 env 이름을 식별자 경계로만 맞춘다(오탐 수정)
 
 - n150 재구축 t1015b가 배포 뒤 `validate_runtime_secret_isolation`에서 "a C6c credential leaks outside its exact environment path"로 멈췄다. 원인은 마지막 scalar 순회의 날 substring 검사(`name in text`)다 — pinvi-api의 `PINVI_KOR_TRAVEL_GEO_API_KEY`(PinVi 자신의 geo 키, #476 + PinVi ADR-075 — C6c 비밀이 아니다)가 보호 이름 `KOR_TRAVEL_GEO_API_KEY`(Map UI)를 품고 있어 누출로 오판했다.

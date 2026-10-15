@@ -1,21 +1,15 @@
-version: 1
+version: 2
 
-# GM-19: port_policy/port_band 블록을 소비하는 코드가 0건이라 제거했다 — 포트 정책의
-# 유일한 정본은 docs/ports.md다.
-
-# Docker 호스트(ADR-58 결정 1의 `hosts:`). target의 `host:`(생략 = default 호스트)가 그 target의 컨테이너가 도는
-# 호스트다. **잠정(interim, 2026-10-14 소유자 승인)**: 지금 이 값을 읽는 것은 공용 Dagster workspace 파생과 소비자 origin
-# 테스트(`backend/tests/test_consumer_origin_defaults.py` — 형제의 호스트를 여기서 읽는다) 둘뿐이다 —
-# `config/dagster-shared/workspace.yaml`(n150 plane이 붙인다)은 `control_plane: shared` **이고** default 호스트에 있는
-# target의 location만 싣는다(`backend/tests/test_dagster_shared_workspace_is_derived.py`). R1 `{host}` 렌더·R3 `KTDM_HOST`·
-# R4 명령 host 규칙·`all` 필터·`workspace.<host>.yaml` 두 파일은 아직 없다(T-MGR-01a·01b·02가 이 블록 위에 더한다).
-# 로더는 default가 정확히 하나인지, `addr`가 IPv4인지, target `host:`가 여기 있는 이름인지 검사한다.
+# 주소의 정본. tenant 이동은 개별 검증 PR에서 host를 바꾼다(ADR-58).
 hosts:
   n150:
     addr: 192.168.1.14
     default: true
   odroid:
     addr: 192.168.1.13
+
+# GM-19: port_policy/port_band 블록을 소비하는 코드가 0건이라 제거했다 — 포트 정책의
+# 유일한 정본은 docs/ports.md다.
 
 dependency_order:
   - storage
@@ -40,7 +34,7 @@ containers:
     compose_service: kor-travel-shared-postgres
     role: shared-postgresql
     display_name: 공용 제어 평면 PostgreSQL / PostGIS (platform-topology.md §7)
-    connection: "postgresql://127.0.0.1:11000 (geo·concierge·Map·PinVi·weather·transport·공용 Dagster)"
+    connection: "postgresql://{host}:11000 (geo·concierge·Map·PinVi·weather·transport·공용 Dagster)"
     expected_ports:
       - "11000:11000"
   rustfs:
@@ -48,7 +42,7 @@ containers:
     compose_service: rustfs
     role: rustfs
     display_name: RustFS 공용 오브젝트 스토리지
-    connection: "S3 API http://127.0.0.1:12101 / console http://127.0.0.1:12105/rustfs/console/"
+    connection: "S3 API http://{host}:12101 / console http://{host}:12105/rustfs/console/"
     prod_url_env: KTDM_PROD_URL_S3
     expected_ports:
       - "12101:12101"
@@ -58,7 +52,7 @@ containers:
     compose_service: kor-travel-geo-api
     role: geocoder-api
     display_name: Kor Travel Geo API
-    connection: http://127.0.0.1:12501
+    connection: http://{host}:12501
     prod_url_env: KTDM_PROD_URL_GEO_API
     expected_ports:
       - "12501:12501"
@@ -67,7 +61,7 @@ containers:
     compose_service: kor-travel-geo-ui
     role: geocoder-ui
     display_name: Kor Travel Geo Web UI
-    connection: http://127.0.0.1:12505
+    connection: http://{host}:12505
     prod_url_env: KTDM_PROD_URL_GEO
     expected_ports:
       - "12505:12505"
@@ -76,7 +70,7 @@ containers:
     compose_service: kor-travel-geo-dagster
     role: geo-dagster
     display_name: Kor Travel Geo Dagster
-    connection: http://127.0.0.1:12502
+    connection: http://{host}:12502
     prod_url_env: KTDM_PROD_URL_GEO_DAGSTER
     expected_ports:
       - "12502:12502"
@@ -99,7 +93,7 @@ containers:
     compose_service: kor-travel-concierge-api
     role: concierge-api
     display_name: Kor Travel Concierge API
-    connection: http://127.0.0.1:12601
+    connection: http://{host}:12601
     prod_url_env: KTDM_PROD_URL_CONCIERGE_API
     expected_ports:
       - "12601:12601"
@@ -108,7 +102,7 @@ containers:
     compose_service: kor-travel-concierge-mcp
     role: concierge-mcp
     display_name: Kor Travel Concierge MCP
-    connection: http://127.0.0.1:12602/mcp
+    connection: http://{host}:12602/mcp
     prod_url_env: KTDM_PROD_URL_CONCIERGE_MCP
     expected_ports:
       - "12602:12602"
@@ -131,7 +125,7 @@ containers:
     compose_service: kor-travel-concierge-ui
     role: concierge-ui
     display_name: Kor Travel Concierge Web UI
-    connection: http://127.0.0.1:12605
+    connection: http://{host}:12605
     prod_url_env: KTDM_PROD_URL_CONCIERGE
     expected_ports:
       - "12605:12605"
@@ -140,7 +134,7 @@ containers:
     compose_service: kor-travel-map-api
     role: map-api
     display_name: Kor Travel Map API
-    connection: http://127.0.0.1:12701
+    connection: http://{host}:12701
     prod_url_env: KTDM_PROD_URL_MAP_API
     expected_ports:
       - "12701:12701"
@@ -149,7 +143,7 @@ containers:
     compose_service: kor-travel-map-ui
     role: map-ui
     display_name: Kor Travel Map Web UI
-    connection: http://127.0.0.1:12705
+    connection: http://{host}:12705
     prod_url_env: KTDM_PROD_URL_MAP
     expected_ports:
       - "12705:12705"
@@ -158,7 +152,7 @@ containers:
     compose_service: kor-travel-map-dagster
     role: map-dagster
     display_name: Kor Travel Map Dagster
-    connection: http://127.0.0.1:12702
+    connection: http://{host}:12702
     prod_url_env: KTDM_PROD_URL_MAP_DAGSTER
     expected_ports:
       - "12702:12702"
@@ -181,7 +175,7 @@ containers:
     compose_service: pinvi-api
     role: pinvi-api
     display_name: PinVi API
-    connection: http://127.0.0.1:12801
+    connection: http://{host}:12801
     prod_url_env: KTDM_PROD_URL_PINVI_API
     expected_ports:
       - "12801:12801"
@@ -190,7 +184,7 @@ containers:
     compose_service: pinvi-web
     role: pinvi-web
     display_name: PinVi Web UI
-    connection: http://127.0.0.1:12805
+    connection: http://{host}:12805
     prod_url_env: KTDM_PROD_URL_PINVI
     expected_ports:
       - "12805:12805"
@@ -207,7 +201,7 @@ containers:
     compose_service: pinvi-dagster
     role: pinvi-dagster
     display_name: PinVi Dagster
-    connection: http://127.0.0.1:12802
+    connection: http://{host}:12802
     prod_url_env: KTDM_PROD_URL_PINVI_DAGSTER
     expected_ports:
       - "12802:12802"
@@ -223,7 +217,7 @@ containers:
     compose_service: prometheus
     role: prometheus
     display_name: Prometheus 메트릭 저장소
-    connection: http://127.0.0.1:12102
+    connection: http://{host}:12102
     prod_url_env: KTDM_PROD_URL_PROMETHEUS
     expected_ports:
       - "12102:12102"
@@ -232,7 +226,7 @@ containers:
     compose_service: grafana
     role: grafana
     display_name: 공용 Grafana 시각화 도구
-    connection: http://127.0.0.1:12104
+    connection: http://{host}:12104
     prod_url_env: KTDM_PROD_URL_GRAFANA
     expected_ports:
       - "12104:12104"
@@ -241,7 +235,7 @@ containers:
     compose_service: cadvisor
     role: metrics-exporter
     display_name: cAdvisor 컨테이너 메트릭 Exporter
-    connection: http://127.0.0.1:12103
+    connection: http://{host}:12103
     prod_url_env: KTDM_PROD_URL_CADVISOR
     expected_ports:
       - "12103:12103"
@@ -255,7 +249,7 @@ containers:
     compose_service: kor-travel-weather-api
     role: weather-api
     display_name: Kor Travel Weather API
-    connection: "http://127.0.0.1:14101"
+    connection: "http://{host}:14101"
     expected_ports:
       - "14101:14101"
     prod_url_env: KTDM_PROD_URL_WEATHER_API
@@ -266,14 +260,14 @@ containers:
     compose_service: kor-travel-weather-dagster-code-server
     role: weather-dagster-code-server
     display_name: Kor Travel Weather Dagster Code Server
-    connection: "내부 전용(gRPC, 127.0.0.1:14106) — 인증 없음, loopback만 허용"
+    connection: "내부 전용(gRPC, {host}:14106) — 인증 없음, loopback만 허용"
     expected_ports: []
   kor-travel-weather-dagster-webserver:
     name: kor-travel-weather-dagster-webserver-latest
     compose_service: kor-travel-weather-dagster-webserver
     role: weather-dagster-webserver
     display_name: Kor Travel Weather Dagster Webserver
-    connection: "내부 전용(127.0.0.1:14107) — gateway를 통해서만 접근"
+    connection: "내부 전용({host}:14107) — gateway를 통해서만 접근"
     expected_ports: []
   kor-travel-weather-dagster-daemon:
     name: kor-travel-weather-dagster-daemon-latest
@@ -287,7 +281,7 @@ containers:
     compose_service: kor-travel-weather-dagster-gateway
     role: weather-dagster-gateway
     display_name: Kor Travel Weather Dagster 게이트웨이
-    connection: "http://127.0.0.1:14102"
+    connection: "http://{host}:14102"
     expected_ports:
       - "14102:14102"
     prod_url_env: KTDM_PROD_URL_WEATHER_DAGSTER
@@ -296,7 +290,7 @@ containers:
     compose_service: kor-travel-weather-web
     role: weather-web
     display_name: Kor Travel Weather 웹
-    connection: "http://127.0.0.1:12205"
+    connection: "http://{host}:12205"
     expected_ports:
       - "12205:12205"
     prod_url_env: KTDM_PROD_URL_WEATHER
@@ -308,7 +302,7 @@ containers:
     compose_service: kor-travel-weather-prometheus
     role: weather-prometheus
     display_name: Kor Travel Weather Prometheus
-    connection: "http://127.0.0.1:14104"
+    connection: "http://{host}:14104"
     expected_ports:
       - "14104:14104"
   # 공용 Dagster 제어 평면(platform-topology.md §7 3단계, ADR-54). gateway가 유일한 입구다.
@@ -317,7 +311,7 @@ containers:
     compose_service: kor-travel-dagster-gateway
     role: dagster-shared-gateway
     display_name: 공용 Dagster 게이트웨이
-    connection: "http://127.0.0.1:11001 (Basic Auth, /health만 무인증)"
+    connection: "http://{host}:11001 (Basic Auth, /health만 무인증)"
     prod_url_env: KTDM_PROD_URL_DAGSTER
     expected_ports:
       - "11001:11001"
@@ -326,7 +320,7 @@ containers:
     compose_service: kor-travel-dagster-webserver
     role: dagster-shared-webserver
     display_name: 공용 Dagster webserver
-    connection: "내부 전용(127.0.0.1:11002) — gateway를 통해서만 접근"
+    connection: "내부 전용({host}:11002) — gateway를 통해서만 접근"
     expected_ports: []
   kor-travel-dagster-daemon:
     name: kor-travel-dagster-daemon
@@ -341,7 +335,7 @@ containers:
     external_project: kor-travel-transport
     role: transport-backend
     display_name: Kor Travel Transport 백엔드
-    connection: "http://127.0.0.1:14001"
+    connection: "http://{host}:14001"
     # host network다 — 운영 overlay(`docker-compose.shared.yml`)가 `network_mode: host`와
     # `ports: !reset []`를 걸어 uvicorn이 호스트 14001에 직접 listen한다(PortBindings 없음,
     # 2026-09-28 n150 실측). base compose의 `14001:8000` 매핑은 운영에서 쓰이지 않는다.
@@ -353,13 +347,14 @@ containers:
     external_project: kor-travel-transport
     role: transport-frontend
     display_name: Kor Travel Transport 프런트엔드
-    connection: "http://127.0.0.1:14002"
+    connection: "http://{host}:14002"
     # backend와 같이 host network다(next가 호스트 14002에 직접 listen한다).
     expected_ports:
       - "14002:14002"
 
 targets:
   storage:
+    host: all
     port_band: "12100-12199"
     depends_on: []
     display_name: 통합 RustFS
@@ -400,6 +395,7 @@ targets:
     init_steps: []
 
   cadv:
+    host: all
     # 이 대역은 이름뿐이다 — cAdvisor는 ADR-48로 12103에 있다. 대역 안 12301·12302·12305는
     # Manager에 등록되지 않은 외부 compose 프로젝트 `kor-travel-transport-admin`이 쓴다
     # (0.0.0.0 listen, 2026-09-28 n150 실측). 여기에 포트를 새로 배정하지 않는다(ports.md).
@@ -648,6 +644,7 @@ targets:
           PINVI_DAGSTER_BASE_URL: internal
 
   all:
+    host: all
     display_name: 전체 Kor Travel/PinVi 개발 인프라
     description: dependency_order 전체를 순서대로 실행합니다.
     aliases:
@@ -661,8 +658,8 @@ targets:
       - conc
       - map
       - pinvi
-      # weather는 2026-10-14 odroid로 옮겨 n150 `all`에서 뺐다(잠정 — `ensure all`이 n150에서 지운 DB로 weather를
-      # 다시 세우지 않게). target 자체는 남는다(상태·로그). 호스트별 `all` 필터는 T-MGR-01a·NH.
+      # 호스트별 all 필터가 n150에서 제외하고 소유 호스트에서는 포함한다.
+      - weather
       - dagster
     services: []
     runtime_services: []
@@ -752,7 +749,6 @@ targets:
     # weather API `http://192.168.1.13:12201`을 부른다(`docker-compose.yml`의 R2 기본값).
     host: odroid
     # n150 `all`에서 뺀다(잠정 — `all` 주석). 호스트별 `all` 필터(T-MGR-01a·NH)가 이 줄을 대신한다.
-    excluded_from_all: true
     port_band: "14100-14199"
     depends_on: []
     display_name: Kor Travel Weather
@@ -808,6 +804,7 @@ targets:
           NEXT_PUBLIC_DAGSTER_URL: public
 
   dagster:
+    host: all
     # 공용 Dagster 제어 평면(platform-topology.md §7, dagster-shared-plan §4, ADR-54). 공용 instance
     # 위의 `dagster_shared` DB·role·storage schema(2단계)와 그 위의 daemon(포트 없음)·webserver
     # (`127.0.0.1:11002`)·gateway(11001)(3단계)다. workspace는 `dagster.control_plane: shared`인
