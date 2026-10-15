@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from kor_travel_docker_manager.cli import build_parser, main
 from kor_travel_docker_manager.services import compose_service as compose_service_module
@@ -268,7 +269,8 @@ def test_label_sanitizer_uses_the_same_predicate():
     ComposeService,
     "_validate_current_compose_candidate_unlocked",
     return_value=ValidatedComposeCandidate(
-        resolved={},
+        # 실제 dependency graph를 두어 host scope 검증을 우회하지 않는다.
+        resolved=yaml.safe_load((Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()),
         system_bind_snapshots=(),
         raw_volume_graph_hash="raw-stable",
         resolved_volume_graph_hash="resolved-stable",
@@ -2819,7 +2821,7 @@ def _ensure_dagster_with(tmp_path: Path, failing_service: str | None) -> tuple[d
             ComposeService,
             "_validate_current_compose_candidate_unlocked",
             return_value=ValidatedComposeCandidate(
-                resolved={},
+                resolved=yaml.safe_load((Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()),
                 system_bind_snapshots=(),
                 raw_volume_graph_hash="raw-stable",
                 resolved_volume_graph_hash="resolved-stable",

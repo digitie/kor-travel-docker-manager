@@ -274,3 +274,77 @@ def test_single_target_request_does_not_require_a_remote_peer(config, monkeypatc
     request = SimpleNamespace(role="map", to_payload=lambda: {"inert": True})
     requests.write_runtime_pin_request(request, path=path, replace_existing=True)
     assert path.exists()
+
+
+@pytest.mark.parametrize("args", [
+    ["up", "--no-deps", "kor-travel-geo-api"], ["up", "-d"],
+    ["down"], ["up", "unknown-service"],
+])
+def test_public_compose_refuses_unsafe_host_scope_before_lock(config, monkeypatch, args):
+    from kor_travel_docker_manager.services import compose_service as module
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("off-host compose reached mutation lock")
+
+    monkeypatch.setattr(module, "c6c_deployment_lock_from_environment", unexpected)
+    with pytest.raises(DeploymentContractError, match="host"):
+        module.ComposeService().run(args)
+
+
+def test_frozen_compose_dependencies_cannot_start_a_foreign_tenant(config):
+    from kor_travel_docker_manager.services.compose_service import ComposeService
+
+    resolved = {"services": {
+        "kor-travel-map-api": {"depends_on": {"kor-travel-geo-api": {}}},
+        "kor-travel-geo-api": {},
+    }}
+    with pytest.raises(DeploymentContractError, match="host"):
+        ComposeService._assert_host_mutation_scope(["up", "kor-travel-map-api"], resolved=resolved)
+    ComposeService._assert_host_mutation_scope(["up", "--no-deps", "kor-travel-map-api"], resolved=resolved)
+    # SERVICE 뒤의 --no-deps는 container argv이므로 의존성 면제가 아니다.
+    with pytest.raises(DeploymentContractError, match="host"):
+        ComposeService._assert_host_mutation_scope(["run", "kor-travel-map-api", "--no-deps"], resolved=resolved)
+
+
+def test_compose_stop_and_read_survive_missing_host_config(config, monkeypatch):
+    from kor_travel_docker_manager.services.compose_service import ComposeService
+
+    monkeypatch.setattr(registry, "load_targets_config", lambda: pytest.fail("read/stop loaded registry"))
+    for args in [["ps"], ["logs", "kor-travel-geo-api"], ["stop", "kor-travel-geo-api"]]:
+        ComposeService._assert_host_mutation_scope(args)
+
+
+def test_pinned_rebuild_rejects_remote_before_root_or_intent(config, monkeypatch):
+    from kor_travel_docker_manager.services import compose_service as module
+
+    monkeypatch.setenv("KTDM_HOST", config["targets"]["geo"]["host"])
+    monkeypatch.setattr(module, "_require_pinned_runtime_rebuild_root", lambda: pytest.fail("root/intent reached"))
+    with pytest.raises(DeploymentContractError, match="host"):
+        module.ComposeService().rebuild_pinned_runtime()
+
+
+@pytest.mark.parametrize("service", [
+    "rustfs-init", "kor-travel-shared-db-init-dagster", "kor-travel-dagster-storage-migrate",
+    "kor-travel-map-db-role-bootstrap", "kor-travel-map-application-schema", "pinvi-admin-bootstrap",
+])
+def test_existing_initializers_and_bootstraps_keep_logical_owners(config, service):
+    from kor_travel_docker_manager.services.compose_service import ComposeService
+
+    ComposeService._assert_host_mutation_scope(
+        ["run", "--rm", "--no-deps", service], resolved={"services": {service: {}}},
+    )
+
+
+@pytest.mark.parametrize("frozen", [False, True])
+def test_lower_compose_guard_does_not_trust_frozen_or_capability_scope(config, monkeypatch, frozen):
+    from kor_travel_docker_manager.services.compose_service import ComposeService
+
+    service = ComposeService()
+    monkeypatch.setattr(service, "build_command", lambda *_a, **_k: pytest.fail("Docker argv reached"))
+    with pytest.raises(DeploymentContractError, match="host"):
+        service._run_unlocked(
+            ["up", "--no-deps", "kor-travel-geo-api"], capture_output=True,
+            environment=None, expected_system_bind_snapshots=None, expected_compose_source_bytes=None,
+            environment_snapshot=None, external_input_snapshot=None,
+            materialized_compose={"services": {"kor-travel-geo-api": {}}} if frozen else None,
+        )

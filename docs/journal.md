@@ -1,3 +1,10 @@
+## 2026-10-15 — T-MGR-01b lower Compose 실행 범위
+
+- 기존 Compose parser와 registry 직접 services/init·installed Dagster family·기존 pinned one-shot 이름으로 소유권을 파생한다. public run은 mutation lock 전에 직접 범위를 검사하고 실제 실행은 frozen resolved depends_on 폐포도 검사한다. 진짜 no-deps 옵션만 폐포를 생략한다.
+- 모호한 전체 mutation·알 수 없는 서비스·remove-orphans는 범위를 보증할 수 없어 거절한다. 조회와 명시적 stop은 host 설정 장애에도 기존 경로를 보존한다. pinned rebuild는 pair 소유권을 root/intent 진입 전에 확인한다. 새 role·봉인·lock·registry field를 추가하지 않았다.
+- OLD 7 FAIL로 진입·의존 범위 결함을 재현했고 새 host 회귀56 PASS. 관련 확대 최초734건은730 PASS/4 FAIL였으며 4개 모두 빈 resolved mock이 새 graph 검사를 충족하지 못한 CLI fixture였다. 실제 선언 graph로 고친 뒤 host+CLI 200 PASS로 해당4개를 재검증했다. 중복 수를 합산하지 않으며 최종 전체 backend 통과로 부르지 않는다.
+- backend Ruff·diff PASS. compose 편집/remote 상태·전체 backend/두 독립 리뷰/live는 후속이며 운영 접근0이다. 다른 우선 운영 제어기 리뷰 동안 이 atom을 보존한다.
+
 ## 2026-10-15 — T-MGR-01b pin 쓰기의 host 경계
 
 - pin/execution private·public pair 문서와 회전 intent는 Map/PinVi 각 target이 모두 local일 때만 쓴다. 기존 registry 직접 소유권 검사를 재사용하며, 단일 role 회전도 v6 pair 문서와 intent를 함께 쓰므로 같은 조건을 적용한다. 개별 요청 write/clear는 해당 role만 검사하고 손상 요청 discard는 pair를 검사한다.

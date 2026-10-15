@@ -136,15 +136,18 @@ from kor_travel_docker_manager.services.registry import (
     MANAGED_CONTAINERS,
     ExternalProject,
     container_id_to_compose_service,
+    current_host,
     external_project_for_container,
     external_project_for_target,
     get_project_root,
     is_known_target,
     load_targets_config,
     local_mutation_target,
+    require_local_targets,
     runtime_services_for_target,
     service_groups_for_target,
     services_for_target,
+    target_hosts,
     target_sequence_for_target,
 )
 from kor_travel_docker_manager.services.runtime_topology import (
@@ -2619,6 +2622,76 @@ class ComposeService:
             _frozen_recovery_capability=_TRUSTED_FROZEN_RECOVERY_CAPABILITY,
         )
 
+    @staticmethod
+    def _assert_host_mutation_scope(
+        args: Sequence[str], *, resolved: Mapping[str, Any] | None = None,
+    ) -> None:
+        scope, flags = ComposeService._parse_compose_mutation(args)
+        if scope == []:
+            return
+        if scope is None or "--remove-orphans" in flags:
+            raise DeploymentContractError("compose mutation has no bounded host scope")
+        command_index = ComposeService._compose_command_index(args)
+        assert command_index is not None
+        command = args[command_index]
+        # 남아 있는 local container를 멈추는 길은 host 식별/설정 장애에도 보존한다.
+        if command == "stop":
+            return
+        config = load_targets_config()
+        selected = current_host(config)
+        owners: dict[str, set[str]] = {}
+
+        def own(service: str, target: str) -> None:
+            owners.setdefault(service, set()).update(target_hosts(target, config))
+
+        for target, spec in config["targets"].items():
+            if spec.get("include") or spec.get("external_project"):
+                continue
+            for service in spec.get("services", []):
+                own(service, target)
+            # 별도 ownership 표를 만들지 않고 기존 init 선언의 실제 Compose 범위를 쓴다.
+            for step in spec.get("init_steps", []):
+                initializers, _ = ComposeService._parse_compose_mutation(step["command"])
+                if not initializers:
+                    raise DeploymentContractError("initializer has no bounded host scope")
+                for service in initializers:
+                    own(service, target)
+        for service, target in (
+            (_PINNED_RUNTIME_ONESHOT_WRITERS[0], "map"),
+            (_MAP_APPLICATION_SCHEMA_SERVICE, "map"),
+            (_PINVI_ADMIN_BOOTSTRAP_SERVICE, "pinvi"),
+        ):
+            own(service, target)
+        # 전환 뒤 profile로 남은 Dagster family도 원래 target의 소유권을 따른다.
+        if any(service not in owners for service in scope):
+            for target, family in runtime_topology().families.items():
+                if family.external_project is None:
+                    for service in family.names:
+                        own(service, target)
+        services = None if resolved is None else resolved.get("services")
+        if resolved is not None and not isinstance(services, Mapping):
+            raise DeploymentContractError("resolved compose has no host service graph")
+        visited: set[str] = set()
+        pending = list(scope)
+        follow_dependencies = command in {"up", "create", "run", "start", "restart", "watch"} and "--no-deps" not in flags
+        while pending:
+            service = pending.pop()
+            if service in visited:
+                continue
+            visited.add(service)
+            if selected not in owners.get(service, set()):
+                raise DeploymentContractError("compose service is not owned by the current host")
+            if services is None:
+                continue
+            spec = services.get(service)
+            if not isinstance(spec, Mapping):
+                raise DeploymentContractError("compose service is absent from the frozen host graph")
+            if follow_dependencies:
+                dependencies = spec.get("depends_on", {})
+                if not isinstance(dependencies, (Mapping, list)) or any(not isinstance(name, str) for name in dependencies):
+                    raise DeploymentContractError("compose dependency host scope is invalid")
+                pending.extend(dependencies)
+
     def run(
         self,
         args: Sequence[str],
@@ -2663,6 +2736,7 @@ class ComposeService:
                 "external compose projects are read-only from the Manager; "
                 "mutation paths are reserved for the Manager's own project"
             )
+        self._assert_host_mutation_scope(args)
         if (
             _frozen_recovery_capability is not None
             and _frozen_recovery_capability is not _TRUSTED_FROZEN_RECOVERY_CAPABILITY
@@ -3151,6 +3225,7 @@ class ComposeService:
                 "external compose projects cannot enter the Manager mutation "
                 "machinery"
             )
+        self._assert_host_mutation_scope(args, resolved=materialized_compose)
         command = self.build_command(
             args,
             canonical_single_file=materialized_compose is not None,
@@ -4598,6 +4673,7 @@ class ComposeService:
         (``rebuild_failure_stage``) — CLI가 JSON 판정에 싣는다.
         """
 
+        require_local_targets("map", "pinvi")
         if restart_reason is not None and adopt_reason is not None:
             raise DeploymentContractError(
                 "a deploy either restarts or adopts the live databases, not both"
