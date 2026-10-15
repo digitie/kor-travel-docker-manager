@@ -206,8 +206,10 @@ ktdctl targets validate의 offline registry/schema 의미는 유지하며 파일
 
 
 registry v2의 `hosts:`·target `host:`·자기 호스트 검증·연결 좌표 파생과 `targets validate --json`은
-T-MGR-01a에서 구현한다. Weather·Transport의 이전된 host 선언을 보존한다. Geo 이전은 별도 검증으로 확정한다. 아래 명령별 host 제한(R4), consumer origin(R2),
-workspace 분리는 후속 구현·설치 전이며, registry 구현만으로 운영 이전 완료를 판정하지 않는다.
+T-MGR-01a에서 구현했다. Geo·Weather·Transport의 이전된 host 선언을 보존한다. PR #481은 명령별 host 제한(R4),
+같은 host의 직접 services/init 범위, 교차 host Compose 의존 간선 제거 및 호스트별 workspace 파생을 구현한다.
+consumer origin(R2)의 잔여 작업과 실측 없는 instance 상한 조정은 포함하지 않는다. 두 독립 리뷰·전체 검증·운영 설치와
+live 통과는 별도 gate이며, 소스 구현만으로 운영 이전 완료를 판정하지 않는다.
 결정·근거는 `docs/decisions.md` ADR-58, 배치는 `docs/platform-topology.md` §10이다.
 
 v1은 host 필드가 없는 기존 개발 fixture에만 loopback으로 호환된다. 운영 설치본은 v2와 명시적 `KTDM_HOST`가
@@ -234,6 +236,19 @@ installer가 만든 release 아래 실행(`.ktdm-source-revision` 존재; `servi
 | `stop`·`logs`·`status`(로컬) | **로컬 소켓에 그 컨테이너명이 조회되면** host 무관 — 옛 스택 해체용. 판정은 Docker SDK 조회 성공 여부(효과 기반, label 없음) |
 | `status`(원격 target) | `connection`이 `http(s)://`인 항목은 **전부** HTTP probe → `up`(2xx/3xx) / `down`(비정상 응답) / `unreachable`(connect timeout·거부); `http(s)://`가 아닌 항목(설명 문자열·gRPC·DB)은 `remote(not probed)`. registry에 방화벽 개방 필드는 없다 — odroid의 HAProxy 전용 포트(`12505`·`12205`·`14002`·`12301`·`12305`·`11001`, `ports.md` 방화벽 집합)는 n150에서 `unreachable`이 **정상**(거짓 빨강 아님) |
 | `targets validate` | 전체 구문 + 자기 호스트 좌표(`--check-coordinates`) + consumer origin 기대값(R2) 대조 + 설치된 `workspace.<host>.yaml` sha256[:16] == digest env(효과) + `--json` |
+
+R4의 직접 소유권은 조회용 `containers` 합집합이 아니라 target의 실행 `services`와 기존 init 선언에서 파생한다.
+서비스 설정 변경·reset·전체 Compose 저장·backup·pin writer와 pinned rebuild 진입점도 이 규칙을 사용한다.
+전체 Compose 저장의 project/network 공통 변경은 영향을 받을 모든 service의 host 소유권을 요구한다. 저장 자체는
+컨테이너를 시작하지 않으며 실제 activation의 의존 폐포는 기존 parser가 읽은 argv와 frozen graph에서 검사한다.
+컨테이너 argv나 옵션 값 자리에 있는 `--no-deps` 문자열은 의존 면제의 근거가 아니다.
+
+로컬 Docker에 남은 원격 target 컨테이너는 기존 Docker 상태·stop/log 경로를 유지한다. 로컬에 없거나 Docker가
+응답하지 않는 원격 항목만 registry connection을 HTTP 관측한다. 모든 HTTP URL을 최대 4개씩 각 2초 전체 예산으로
+조회하고 redirect·재시도·본문 읽기를 하지 않는다. HTTP `up`은 Docker `running`이 아니며 metrics와 로컬 config를
+제공하지 않는다. UI의 로컬 제어·inspect·설정도 비활성화한다. gRPC·DB·설명 문자열은 `remote`(미관측)이고,
+`unreachable`은 방화벽 구성에서도 정상적으로 생길 수 있는 연결 관측 결과다. 추가 계정·SSH agent·원격 쓰기는 없다.
+HTTPX는 기존 개발 의존성에서 런타임 의존성으로 옮겼으므로 trusted offline 설치의 wheelhouse에도 포함되어야 한다.
 
 **consumer origin(R2).** 내부 target이 형제 서비스를 부르는 URL은 compose env **기본값**이 정본이며 registry에서 계산한 값과 같아야
 한다. 대상은 규칙으로 정한다 — "형제 서비스 포트(`12501`/`14001`/`14101`)를 기본값에 가진 모든 compose env(비활성 `legacy-dagster`

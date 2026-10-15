@@ -74,13 +74,14 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **범위 주의**: `docs/journal.md`·`docs/tasks-done.md`·감사 보고서는 **검사하지
   않는다.** 과거 기록이므로 지금 기준으로 고치라고 하면 역사를 다시 쓰게 된다.
 
-> **B-5~B-9는 계획이다(ADR-58 proposed, 2026-10-13).** 사본도 결박 테스트도 아직 없다 — 각 항목의
+> **B-5~B-9 최초 계획(ADR-58 proposed, 2026-10-13).** 각 항목의
 > "결박"에 적은 T-MGR 번호의 PR이 사본과 테스트를 **같은 PR에서** 만든다(DO NOT 15의 결박 규칙).
 > 테스트 이름은 그 PR에서 확정하며, 여기에는 이미 존재하는 테스트 파일만 코드 폰트로 적는다.
 > **2026-10-14 잠정 시행**(ADR-58 "잠정 시행"): B-6은 렌더 스캔 테스트와 함께 들어왔고, B-5는 한 파일
 > (`workspace.yaml` = n150 plane)에 호스트 필터만 들어왔다. 나머지는 계획 그대로다.
+> **2026-10-15 PR #481 소스 구현:** B-5·B-7·B-9를 아래 테스트로 결박한다. 운영 설치·두 독립 리뷰와 live gate는 별도다.
 
-### B-5. (계획) 호스트별 공용 Dagster workspace의 합집합
+### B-5. 호스트별 공용 Dagster workspace의 합집합
 
 - **사실**: 공용 plane에 합류한 location 집합(오늘 6: geo·conc·map·pinvi·weather·transport)
 - **정본**: `config/docker-targets.yml`의 `dagster.control_plane: shared`인 target과 그 `host:`
@@ -93,7 +94,10 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **잠정(2026-10-14)**: 파일은 아직 `workspace.yaml` 하나이고 파생은 "shared ∧ default 호스트(n150)"다 — weather·transport
   (`host: odroid`)가 빠져 4 location(geo·conc·map·pinvi), 2026-10-15 geo도 빠져 3 location(conc·map·pinvi). 결박은 `test_the_workspace_file_is_the_derivation`과 옮긴 target의
   빨간 대조군(`test_bringing_a_moved_target_back_drifts_the_workspace`·`test_a_moved_target_left_in_the_workspace_is_named`).
-  odroid 파일이 없으므로 "합집합 == shared 집합"은 아직 단언하지 않는다(odroid plane은 Manager 밖에서 돈다)
+  당시에는 odroid 파일이 없어 "합집합 == shared 집합"을 단언하지 않았다.
+- **현재 결박**: `test_host_workspaces.py`의 `test_all_committed_hosts_are_derived_and_alias_is_default`,
+  `test_third_host_move_changes_only_affected_workspaces`, `test_host_all_and_own_switch_are_honored`가
+  registry의 모든 host와 기본 alias를 계산·비교한다. instance YAML byte는 변경하지 않는다.
 
 ### B-6. (잠정 시행 2026-10-14) 내부 consumer가 부르는 형제 서비스의 origin
 
@@ -114,7 +118,7 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   형제 → 소비자 포트 표만 테스트에 있고 호스트는 registry `host:`에서 파생한다(default면 `127.0.0.1`; 2026-10-15부터 geo·transport·
   weather 모두 `host: odroid`라 재정의 없음). 포트 표를 registry로 옮기는 것과 `.env` 재정의 거부(validate)는 T-MGR-01c
 
-### B-7. (계획) 공용 workspace digest의 기본값
+### B-7. 공용 workspace digest의 기본값
 
 - **사실**: daemon·webserver가 기대하는 `workspace.yaml` sha256[:16]
 - **정본**: 설치된 `config/dagster-shared/workspace.<host>.yaml`의 내용
@@ -124,6 +128,9 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   (`:847,911`); installer에 계산 로직을 더하지 않는다(ADR-51)
 - **결박**: 기본값 == `workspace.n150.yaml` sha256[:16] — 기존 `test_dagster_shared_config` 확장(T-MGR-02); odroid 값은
   `targets validate`가 설치된 파일과 대조(효과)
+- **현재 결박**: `test_frozen_workspace_uses_same_bytes_for_digest_and_parse`와
+  `test_either_frozen_plane_digest_drift_rejected`가 기존 frozen render의 두 plane을 같은 파일 bytes에 묶는다.
+  `test_wrong_host_or_noncanonical_workspace_path_rejected`가 선택 host와 실제 bind 경로를 함께 검사한다.
 
 ### B-8. (계획) Prometheus scrape 타깃의 host
 
@@ -133,7 +140,7 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **사본이 필요한 이유**: Prometheus는 정적 파일만 읽는다
 - **결박**: registry에서 계산한 타깃 집합 == 파일(T-MGR-04의 파생 테스트)
 
-### B-9. (계획) 교차 호스트 `depends_on` 간선 ∅
+### B-9. 교차 호스트 `depends_on` 간선 ∅
 
 - **사실**: compose `depends_on`이 tenant 경계를 넘지 않는다(R7)
 - **정본**: registry에서 계산한 각 서비스의 host 집합
@@ -141,6 +148,9 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **사본이 필요한 이유**: 간선 자체는 compose에만 있다 — 지울 수는 있어도(T-MGR-01b가 지운다) 다시 생기는 것을 registry가 막지
   못한다
 - **결박**: "양끝 host 집합이 다른 간선 집합 == ∅"(T-MGR-01b; 간선 하나를 일부러 남겨 빨갛게 확인)
+- **현재 결박**: `test_declared_compose_dependencies_do_not_start_off_host_tenants`가 실제 Compose와 registry를
+  비교하며 위험 간선을 다시 넣어 실패를 검증한다. 실제 실행은 `test_frozen_compose_dependencies_cannot_start_a_foreign_tenant`와
+  lower/public Compose 회귀가 frozen graph와 실제 parsed flag 경계를 확인한다.
 
 ### B-10. 공용 PostgreSQL `command`의 GUC 이름 집합
 

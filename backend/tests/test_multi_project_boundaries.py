@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from kor_travel_docker_manager.services import docker_service as docker_service_module
 from kor_travel_docker_manager.services import registry as registry_module
@@ -51,6 +52,20 @@ from kor_travel_docker_manager.services.registry import (
 
 #: 정본 `docker-compose.yml` 1행이 선언하는 이름. 구현에서 파생하지 않는다.
 _MANAGER_PROJECT_NAME = "kor-travel-docker-manager"
+
+
+@pytest.fixture(autouse=True)
+def local_transport_project_boundary(tmp_path, monkeypatch):
+    """이 파일은 같은 호스트의 외부 Compose 경계다. 실제 원격 배치 회귀는 별도다."""
+    loader = registry_module.load_targets_config
+    config = _real_config()
+    config["targets"]["transport"]["host"] = registry_module.default_host(config)
+    path = tmp_path / "local-external-targets.yml"
+    path.write_text(yaml.safe_dump(config))
+    monkeypatch.setenv(registry_module.TARGETS_FILE_ENV, str(path))
+    loader.cache_clear()
+    yield
+    loader.cache_clear()
 
 
 class _FakeContainer:

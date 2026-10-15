@@ -17,6 +17,7 @@ python-dotenv = "^1.0.1"
 pyyaml = "^6.0.1"
 websockets = "^12.0"
 sqlalchemy = "^2.0.0"
+httpx = "^0.27.0"
 
 [tool.poetry.scripts]
 ktdctl = "kor_travel_docker_manager.cli:main"
@@ -25,7 +26,6 @@ ktdctl = "kor_travel_docker_manager.cli:main"
 pytest = "^8.0.0"
 ruff = "^0.3.0"
 mypy = "^1.9.0"
-httpx = "^0.27.0"
 types-docker = "^7.1.0"
 types-PyYAML = "^6.0.12"
 

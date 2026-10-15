@@ -482,9 +482,11 @@ def local_mutation_target(
     return _target_details(name, config, selected, sequence=sequence)
 
 
-def _managed_containers() -> dict[str, dict[str, Any]]:
-    config = load_targets_config()
-    selected = current_host(config)
+def _managed_containers(
+    *, config: Mapping[str, Any] | None = None, selected: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    config = load_targets_config() if config is None else config
+    selected = current_host(config) if selected is None else selected
     result = {}
     for name, spec in config["containers"].items():
         connection = spec["connection"]

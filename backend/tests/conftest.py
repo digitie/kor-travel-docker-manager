@@ -53,6 +53,21 @@ os.environ.setdefault(
 _REAL_GLOBAL_MUTATION_LOCK_MARKER = "real_global_mutation_lock"
 
 
+@pytest.fixture(autouse=True)
+def _unprobed_remote_http_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """기존 Docker 대역 시험이 새 원격 HTTP 관측을 실제 운영 주소에 보내지 않는다.
+
+    HTTP 계약 시험은 명시적 MockTransport를, 상태 통합 시험은 이 별칭의 자기 대역을 쓴다.
+    기본값은 성공을 꾸미지 않고 미관측 상태다.
+    """
+    from kor_travel_docker_manager.services import docker_service as module
+
+    monkeypatch.setattr(
+        module, "probe_remote_connections",
+        lambda connections: dict.fromkeys(connections, "remote"),
+    )
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",

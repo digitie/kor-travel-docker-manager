@@ -11,6 +11,7 @@ import docker
 import yaml
 from docker.errors import DockerException, NotFound
 
+from kor_travel_docker_manager.services import registry
 from kor_travel_docker_manager.services.c6c_deployment import (
     _FORBIDDEN_AUTH_OVERRIDE_ENV_NAMES,
     _POSTGRES_CANONICAL_INITDB_ARGS,
@@ -43,10 +44,13 @@ from kor_travel_docker_manager.services.errors import (
 )
 from kor_travel_docker_manager.services.registry import (
     MANAGED_CONTAINERS,
+    _managed_containers,
+    container_hosts,
     external_project_for_container,
     get_project_root,
     require_local_container,
 )
+from kor_travel_docker_manager.services.remote_status import probe_remote_connections
 from kor_travel_docker_manager.services.secret_scrub import (
     URL_USERINFO_RE,
     is_sensitive_key,
@@ -113,7 +117,7 @@ def _managed_service_config(
     """
 
     svc_name = str(spec["compose_service"])
-    if external_project_for_container(container_id) is not None:
+    if spec.get("external_project"):
         return svc_name, {}
     resolved = services.get(svc_name, {})
     return svc_name, resolved if isinstance(resolved, Mapping) else {}
@@ -144,7 +148,8 @@ def _live_compose_project(container: object) -> str | None:
 
 
 def _declared_project_matches_runtime(
-    container_id: str, container: object, *, manager_project: str
+    container_id: str, container: object, *, manager_project: str,
+    declared_project: str | None = None,
 ) -> bool:
     """선언된 소속이 실행 중 라벨과 일치하는가. 모르면 **일치로 보지 않는다**.
 
@@ -162,9 +167,10 @@ def _declared_project_matches_runtime(
     runtime_project = _live_compose_project(container)
     if runtime_project is None:
         return True
-    external = external_project_for_container(container_id)
-    declared = external.project if external is not None else manager_project
-    return runtime_project == declared
+    if declared_project is None:
+        external = external_project_for_container(container_id)
+        declared_project = external.project if external is not None else manager_project
+    return runtime_project == declared_project
 
 
 #: compose 문서가 자기 프로젝트 이름을 선언하는 키. 이 저장소의
@@ -250,6 +256,24 @@ def _public_url(spec: dict[str, Any]) -> str | None:
         return None
     value = os.environ.get(str(env_key), "").strip()
     return value or None
+
+
+def _observe_remote_containers(entries: list[dict[str, Any]], remote_ids: set[str]) -> list[dict[str, Any]]:
+    missing = {
+        entry["id"]: entry["connection"] for entry in entries
+        if entry["id"] in remote_ids and entry["status"] in {"not_created", "offline"}
+    }
+    observations = probe_remote_connections(missing)
+    for index, entry in enumerate(entries):
+        if entry["id"] in observations:
+            entries[index] = {
+                key: value for key, value in entry.items()
+                if key not in {"config", "metrics", "status", "state"}
+            } | {
+                "status": observations[entry["id"]], "remote": True,
+                "state": "Remote HTTP observation; Docker state not observed",
+            }
+    return entries
 
 
 def get_compose_config(path: str | None = None) -> dict[str, Any]:
@@ -753,11 +777,18 @@ class DockerService:
         status_list = []
         compose_cfg = get_compose_config()
         services = compose_cfg.get("services", {})
+        config = registry.load_targets_config()
+        selected = registry.current_host(config)
+        managed = _managed_containers(config=config, selected=selected)
+        remote_ids = {
+            name for name in managed
+            if (owners := container_hosts(name, config)) and selected not in owners
+        }
 
         try:
             client = self._get_client()
         except RuntimeError:
-            for key, spec in MANAGED_CONTAINERS.items():
+            for key, spec in managed.items():
                 svc_name, svc_config = _managed_service_config(key, spec, services)
                 status_list.append(
                     {
@@ -779,7 +810,7 @@ class DockerService:
                             "io_read": 0,
                             "io_write": 0,
                         },
-                        "external_project": _external_project_label(key),
+                        "external_project": spec.get("external_project") or None,
                         "config": {
                             "ports": svc_config.get("ports", []),
                             "env": svc_config.get("environment", {}),
@@ -789,19 +820,20 @@ class DockerService:
                         },
                     }
                 )
-            return status_list
+            return _observe_remote_containers(status_list, remote_ids)
 
         # 프로젝트 이름은 문서당 한 번만 유도한다 — 컨테이너마다 부르면 92KB YAML을
         # 다시 파싱한다(적대 리뷰 2026-09-18 라운드4 F-01: 98ms → 1917ms).
         manager_project = _manager_compose_project(compose_cfg)
-        for key, spec in MANAGED_CONTAINERS.items():
+        for key, spec in managed.items():
             cname = spec["name"]
             svc_name, svc_config = _managed_service_config(key, spec, services)
 
             try:
                 container = client.containers.get(cname)
                 if not _declared_project_matches_runtime(
-                    key, container, manager_project=manager_project
+                    key, container, manager_project=manager_project,
+                    declared_project=spec.get("external_project") or manager_project,
                 ):
                     # 선언이 실행 중 라벨과 어긋난다 — 어느 쪽이 맞는지 Manager는
                     # 모른다. 설정을 그리지 않는 쪽이 fail-close다.
@@ -839,7 +871,7 @@ class DockerService:
                         "state": container.attrs.get("State", {}).get("Status", "unknown"),
                         "ports": ports,
                         "metrics": metric,
-                        "external_project": _external_project_label(key),
+                        "external_project": spec.get("external_project") or None,
                         "config": {
                             "ports": svc_config.get("ports", []),
                             "env": svc_config.get("environment", {}),
@@ -870,7 +902,7 @@ class DockerService:
                             "io_read": 0,
                             "io_write": 0,
                         },
-                        "external_project": _external_project_label(key),
+                        "external_project": spec.get("external_project") or None,
                         "config": {
                             "ports": svc_config.get("ports", []),
                             "env": svc_config.get("environment", {}),
@@ -902,7 +934,7 @@ class DockerService:
                             "io_read": 0,
                             "io_write": 0,
                         },
-                        "external_project": _external_project_label(key),
+                        "external_project": spec.get("external_project") or None,
                         "config": {
                             "ports": svc_config.get("ports", []),
                             "env": svc_config.get("environment", {}),
@@ -912,7 +944,7 @@ class DockerService:
                         },
                     }
                 )
-        return status_list
+        return _observe_remote_containers(status_list, remote_ids)
 
     def control_container(self, container_id: str, action: str) -> dict[str, Any]:
         """Perform start/stop/restart action on a container."""

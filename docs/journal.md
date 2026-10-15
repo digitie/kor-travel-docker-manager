@@ -1,3 +1,22 @@
+## 2026-10-15 — 원격 target의 HTTP 관측과 로컬 도구 경계(Codex)
+
+- 로컬 컨테이너가 없는 원격 target을 로컬 미생성/offline으로 오인하지 않는다. 로컬에 남은
+  컨테이너는 기존 Docker 상태와 stop/log 경로를 유지하고, 나머지는 모든 HTTP connection을
+  4개 동시·각 2초 전체 예산으로 header만 관측한다. redirect·재시도·본문 읽기·원격 쓰기는 없다.
+- HTTP up/down/unreachable과 미관측 remote는 Docker running이 아니다. metrics/config를 추정하지
+  않으며 UI의 로컬 제어·로그·inspect·설정을 잠근다. host/registry snapshot도 항목별로 다시 읽지 않는다.
+  HTTPX는 같은 기존 버전 범위의 개발 의존성을 runtime으로 옮겼다. offline wheelhouse 포함 확인이 필요하다.
+- 원격 상태 OLD 2 FAIL/1 PASS, UI OLD 1 FAIL로 결함을 재현했다. 첫 NTFS UI 실행은 worker
+  timeout으로 시험0건이었고 실패를 보존했다. 같은 lock의 ext4 의존성에서 전체 frontend35 PASS,
+  type/lint/build PASS, remote/multi-project52 PASS, Ruff·diff·offline wheel build PASS.
+- 최초 확대 backend 회귀는9 FAIL/40 PASS였다. 새 status snapshot의 import 별칭이 fixture 주입을
+  우회한 결함을 고치고, 다른 host에 배치된 Transport를 사용하는 예전 같은-host Compose 경계 시험은
+  임시 registry에서 해당 전제만 명시했다. 실제 registry의 이전된 host와 변경 거절 계약은 유지한다.
+- 그 최초 확대 실행은 새 HTTP observer를 mock하지 않은 기존 시험 때문에 실제 원격 GET 읽기가
+  나갔을 가능성을 배제할 수 없다. 이를 운영 호출0으로 기록하지 않는다. 쓰기/배포 경로는 없고,
+  추가 재조회 없이 이후 모든 backend 시험의 기본 observer를 미관측 대역으로 격리했다.
+  HTTP 동작 자체는 명시 MockTransport로만 검증했다. 전체 backend·독립2리뷰·live·설치는 후속이다.
+
 ## 2026-10-15 — compose 전체 저장의 host 소유권 보강(Codex)
 
 - `save_compose_config`도 기존 registry의 직접 service 소유권을 검사한다. 원격 service 수정·삭제,
