@@ -289,16 +289,12 @@ def test_compose_ensure_build_command(
         result = ComposeService().ensure_target("srv", build=True, recreate=True)
 
     assert result["success"] is True
+    # R7(T-MGR-01b): 다른 호스트의 geo와 default 호스트 전용 gra가 폐포에서 빠졌다.
     assert result["services"] == [
         "rustfs",
-        "grafana",
         "cadvisor",
         "prometheus",
         "kor-travel-shared-postgres",
-        "kor-travel-shared-db-init-geo",
-        "kor-travel-geo-api",
-        "kor-travel-geo-ui",
-        "kor-travel-geo-dagster-code-server",
         "kor-travel-shared-db-init-concierge",
         "kor-travel-concierge-api",
         "kor-travel-concierge-mcp",
@@ -315,10 +311,8 @@ def test_compose_ensure_build_command(
     ]
     assert result["target_sequence"] == [
         "storage",
-        "gra",
         "cadv",
         "prom",
-        "geo",
         "conc",
         "map",
         "pinvi",
