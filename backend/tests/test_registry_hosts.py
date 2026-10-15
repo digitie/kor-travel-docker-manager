@@ -80,9 +80,11 @@ def test_legacy_development_fixture_is_local_only(config, monkeypatch, tmp_path)
 
 
 def test_all_filters_transitive_remote_dependencies(config, monkeypatch):
+    # 실제 registry는 Geo도 이동했다. 이동 전→후 필터 회귀는 fixture로 명시한다.
+    config["targets"]["geo"]["host"] = "n150"
     monkeypatch.setattr(registry, "load_targets_config", lambda: config)
     monkeypatch.setenv("KTDM_HOST", "odroid")
-    # 이동 전 tenant는 전부 default. cadv의 gra 의존도 로컬 all에 끼지 않는다.
+    # Geo 이동 전에도 cadv의 gra 의존도 로컬 all에 끼지 않는다.
     assert set(registry.target_sequence_for_target("all")) == {"storage", "cadv", "dagster", "weather"}
     config["targets"]["geo"]["host"] = "odroid"
     result = registry.target_sequence_for_target("all")
@@ -103,12 +105,12 @@ def test_connection_tracks_direct_owner_union_and_keeps_raw_config(config, monke
     assert config == before
 
 
-def test_default_tenant_layout_is_unchanged(config, monkeypatch):
+def test_current_tenant_layout_preserves_moved_tenants(config, monkeypatch):
     monkeypatch.setattr(registry, "load_targets_config", lambda: config)
     assert registry.current_host() == "n150"
-    for tenant in ["geo", "map", "pinvi", "conc"]:
+    for tenant in ["map", "pinvi", "conc"]:
         assert registry.get_target(tenant)["host"] == "n150"
-    for tenant in ["weather", "transport"]:
+    for tenant in ["geo", "weather", "transport"]:
         assert registry.get_target(tenant)["host"] == "odroid"
 
 

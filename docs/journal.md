@@ -7,6 +7,7 @@
 - main `409833e`를 feature branch에 merge했다. registry v2의 단일 hosts 선언·현재 호스트 검증·집계 조회 최적화와 선택적 시작 RPC 설정을 유지한다.
 - #479의 Geo `host: odroid` 및 n150 workspace 제외, #480의 C6c 보호 환경변수 식별자 경계 검사를 보존한다. 기존 instance 파일·앱 튜닝은 변경하지 않는다.
 - 충돌은 registry 설명과 일지 두 곳이며 양쪽 작업 기록을 보존했다. T-MGR-01b 호스트 mutation guard와 T-MGR-02 호스트별 workspace는 별도 후속 작업이다.
+- 병합 후 독립 리뷰에서 Geo 이동 전 가정이 남은 호스트 테스트 두 건의 실패를 재현했다. 이동 전→후 필터는 fixture를 명시하고 현재 배치는 Geo도 odroid로 검사하도록 고쳤다. 실제 배치를 되돌리거나 제품 로직을 완화하지 않았다.
 - 로컬 회귀·정적 검사와 적대 리뷰를 거쳐 PR head를 갱신한다. 운영 설치·배포·live E2E 완료를 뜻하지 않는다.
 
 ## 2026-10-15 — 최신 main 통합과 시작 RPC 경합 보완
