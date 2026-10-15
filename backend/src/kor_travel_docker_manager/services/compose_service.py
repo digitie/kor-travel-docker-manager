@@ -139,12 +139,12 @@ from kor_travel_docker_manager.services.registry import (
     external_project_for_container,
     external_project_for_target,
     get_project_root,
-    init_steps_for_target,
     is_known_target,
+    load_targets_config,
+    local_mutation_target,
     runtime_services_for_target,
     service_groups_for_target,
     services_for_target,
-    target_is_external,
     target_sequence_for_target,
 )
 from kor_travel_docker_manager.services.runtime_topology import (
@@ -160,10 +160,10 @@ from kor_travel_docker_manager.services.runtime_topology import (
     installed_location_owners,
     installed_shared_dagster_plane,
     listen_address,
+    read_host_workspace,
     runtime_topology,
     shared_workspace_source,
     slot_project,
-    workspace_location_names,
 )
 from kor_travel_docker_manager.services.trusted_install import (
     require_pinned_runtime_rebuild_root,
@@ -3656,8 +3656,9 @@ class ComposeService:
         recreate: bool = False,
         capture_output: bool = True,
     ) -> dict[str, Any]:
-        target_sequence = target_sequence_for_target(target)
-        if target_is_external(target):
+        plan = local_mutation_target(target)
+        target_sequence = plan["resolved_sequence"]
+        if plan.get("external_project"):
             # `ensure`는 Manager의 C6c 계약 기계(보호값 스캔·볼륨 그래프·단일파일
             # 경계·핀셋)를 통과한 **Manager 자신의** 후보를 전제한다. 형제 프로젝트의
             # compose는 그 계약을 받은 적이 없고, 정본도 이 저장소가 아니다.
@@ -3668,7 +3669,7 @@ class ComposeService:
                 "ensure is only for the Manager's own project — use container "
                 "start/stop/restart, or deploy from that project's repository"
             )
-        services = services_for_target(target)
+        services = plan["resolved_services"]
         preflight_environment = _capture_compose_environment_snapshot(
             environment_override=None,
         )
@@ -3710,6 +3711,7 @@ class ComposeService:
                 target,
                 target_sequence=target_sequence,
                 services=services,
+                init_steps=plan["resolved_init_steps"],
                 build=build,
                 recreate=recreate,
                 capture_output=capture_output,
@@ -3733,6 +3735,7 @@ class ComposeService:
         *,
         target_sequence: list[str],
         services: list[str],
+        init_steps: list[dict[str, Any]],
         build: bool,
         recreate: bool,
         capture_output: bool,
@@ -3747,7 +3750,6 @@ class ComposeService:
         expected_external_input_snapshot: ComposeExternalInputSnapshot | None,
         transaction: ComposeTransactionSnapshot,
     ) -> dict[str, Any]:
-        init_steps = init_steps_for_target(target)
         commands: list[list[str]] = []
         init_results: list[dict[str, Any]] = []
 
@@ -5206,18 +5208,22 @@ class ComposeService:
         sources = {shared_workspace_source(services[name]) for name in plane.services}
         if len(sources) != 1:
             raise DeploymentContractError("shared plane services mount different workspaces")
-        return plane, services, self._read_shared_workspace_locations(next(iter(sources)))
+        digests = tuple(
+            services[name].get("environment", {}).get("KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST")
+            for name in plane.services
+        )
+        return plane, services, self._read_shared_workspace_locations(
+            next(iter(sources)), expected_digests=digests
+        )
 
     @staticmethod
-    def _read_shared_workspace_locations(source: str) -> tuple[str, ...]:
-        path = Path(source)
-        if not path.is_absolute():
-            path = Path(get_project_root()) / path
-        try:
-            document = load_yaml_rejecting_duplicate_keys(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, ValueError) as exc:
-            raise DeploymentContractError("cannot read the shared plane workspace") from exc
-        return workspace_location_names(document)
+    def _read_shared_workspace_locations(
+        source: str, *, expected_digests: Sequence[object]
+    ) -> tuple[str, ...]:
+        return read_host_workspace(
+            source, root=Path(get_project_root()), targets=load_targets_config(),
+            digests=expected_digests,
+        )
 
     def _require_plane_location_owners_fenced(
         self,

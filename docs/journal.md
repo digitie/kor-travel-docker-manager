@@ -1,3 +1,11 @@
+## 2026-10-15 — T-MGR-02 호스트 workspace 연결 구현 중
+
+- registry의 실제 배치로 host별 shared workspace를 유도하고 default alias를 보존한다. Compose 선택 host와 기존 frozen env의 두 digest를 같은 file bytes와 대조한다. cutover membership/digest는 같은 resolved source를 사용한다.
+- ensure의 services와 init을 같은 local 실행 계획으로 연결했고 cross-host Map→Geo Compose 간선만 제거했다. 기존 same-host/infra 간선과 Geo odroid 배치는 보존한다.
+- 단일 host 가정의 기존 전환 fixture를 실제 target 소유 plane에 맞추고 off-host/한쪽 stale digest 음성 회귀를 추가했다. dagster.yaml fullSHA와 현재 상한은 불변이다.
+- 고정 후 관련115 PASS, 전체 backend Ruff와 diff 검사 PASS다. 이전 개발 중146조건 통과는 최종 고정 검증과 분리하며 합산하지 않는다.
+- 이 단계는 lower Compose/backup/pin/remote 상태의 전체01b 완료가 아니다. 운영·DB·배포0, 전체 backend/독립 리뷰2인/live는 후속이며 현 로컬 결과만으로 완주를 선언하지 않는다.
+
 ## 2026-10-15 — T-MGR-01b 변경 소유권 기초 구현 중
 
 - PR477 머지 main6bd65cd에서 별도 브랜치로 시작했다. registry의 직접 target/container 호스트 판정을 재사용하고 alias·대소문자와 pair 각 대상 검사를 추가했다.

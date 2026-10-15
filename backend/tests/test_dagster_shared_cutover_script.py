@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -68,9 +69,45 @@ def _run_derive(
 
 
 def _facts(target: str, document: dict[str, Any], target_document: Path | None = None) -> dict[str, str]:
+    # 기존 family/소비자 회귀는 해당 target을 소유한 호스트의 plane을 사용한다.
+    # off-host 거절 자체는 아래 _run_derive 직접 호출의 음성 회귀에서 확인한다.
+    targets = yaml.safe_load(_TARGETS.read_text())
+    default = next(name for name, spec in targets["hosts"].items() if spec.get("default"))
+    host = targets["targets"][target].get("host", default)
+    if host == "all":
+        host = default
+    document = json.loads(json.dumps(document))
+    path = _ROOT / "config/dagster-shared" / f"workspace.{host}.yaml"
+    for service in document["services"].values():
+        if "KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST" in (service.get("environment") or {}):
+            service["environment"]["KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST"] = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+            service["volumes"] = [
+                f"{path}:{volume.split(':', 1)[1]}"
+                if isinstance(volume, str) and "/config/dagster-shared/workspace" in volume else volume
+                for volume in service.get("volumes", [])
+            ]
     completed = _run_derive(target, document, target_document)
     assert completed.returncode == 0, completed.stderr
     return dict(line.split("=", 1) for line in completed.stdout.splitlines() if "=" in line)
+
+
+def test_cutover_cannot_adopt_a_foreign_hosts_workspace() -> None:
+    targets = yaml.safe_load(_TARGETS.read_text())
+    default = next(name for name, spec in targets["hosts"].items() if spec.get("default"))
+    foreign = next(name for name, spec in targets["targets"].items() if spec.get("dagster") and not spec.get("external_project") and spec.get("host", default) not in {default, "all"})
+    result = _run_derive(foreign, _rendered())
+    assert result.returncode != 0
+    assert "does not belong" in result.stderr
+
+
+def test_cutover_checks_both_plane_digests_before_fencing() -> None:
+    document = _rendered()
+    names = [name for name, service in document["services"].items() if "KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST" in (service.get("environment") or {})]
+    for name in names:
+        changed = json.loads(json.dumps(document))
+        changed["services"][name]["environment"]["KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST"] = "0" * 16
+        result = _run_derive("map", changed)
+        assert result.returncode != 0 and "frozen plane digest" in result.stderr
 
 
 @pytest.mark.parametrize("target", ["map", "pinvi", "geo", "weather"])

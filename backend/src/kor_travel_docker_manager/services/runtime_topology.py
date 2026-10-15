@@ -25,6 +25,8 @@ import 시점에는 아무것도 읽지 않는다 — 모듈 상수 자리에는
 
 from __future__ import annotations
 
+import hashlib
+import re
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass
 from functools import cache, lru_cache
@@ -32,11 +34,17 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, Literal, TypeVar
 
+from yaml import YAMLError
+
 from kor_travel_docker_manager.services.compose_references import reference_compose_path
 from kor_travel_docker_manager.services.errors import DeploymentContractError
 from kor_travel_docker_manager.services.registry import (
     DAGSTER_CONTROL_PLANES,
+    _host_specs,
+    current_host,
+    default_host,
     load_targets_config,
+    target_hosts,
 )
 from kor_travel_docker_manager.services.trusted_install import (
     TRUSTED_INSTALL_ROOT,
@@ -174,15 +182,25 @@ _SHARED_WORKSPACE_SOURCE: Final = "./config/dagster-shared/workspace.yaml"
 
 
 def _volume_source(volume: object) -> str:
-    return str(volume.get("source") if isinstance(volume, Mapping) else str(volume).split(":", 1)[0])
+    if isinstance(volume, Mapping):
+        return str(volume.get("source"))
+    text, depth = str(volume), 0
+    for index, character in enumerate(text):
+        depth += character == "{"
+        depth -= character == "}"
+        if character == ":" and depth == 0:
+            return text[:index]
+    return text
 
 
 def _is_shared_workspace_source(source: str) -> bool:
-    """reference compose의 상대 경로, 또는 frozen render(`compose config`)가 푼 절대 경로."""
-
-    return source == _SHARED_WORKSPACE_SOURCE or source.endswith(
-        "/" + _SHARED_WORKSPACE_SOURCE.removeprefix("./")
-    )
+    """정본 디렉터리의 alias·호스트 파일·reference template만 인식한다."""
+    directory, _, name = source.rpartition("/")
+    return (
+        directory == "./config/dagster-shared" or directory.endswith("/config/dagster-shared")
+    ) and re.fullmatch(
+        r"workspace(?:\.[a-z][a-z0-9_-]*|\.\$\{KTDM_HOST:-[a-z][a-z0-9_-]*\})?\.yaml", name
+    ) is not None
 
 
 def _mounts_shared_workspace(service: Mapping[str, Any]) -> bool:
@@ -219,6 +237,33 @@ def workspace_location_names(document: object) -> tuple[str, ...]:
             raise DeploymentContractError("shared workspace entry has no location_name")
         names.append(name)
     return tuple(names)
+
+
+def read_host_workspace(
+    source: str, *, root: Path, targets: Mapping[str, Any], digests: Sequence[object]
+) -> tuple[str, ...]:
+    """frozen 두 plane env를 선택 파일의 같은 bytes와 대조한 뒤 그 bytes를 파싱한다."""
+    selected = current_host(targets)
+    directory = root / "config/dagster-shared"
+    allowed = {directory / f"workspace.{selected}.yaml"}
+    if selected == default_host(targets):
+        allowed.add(directory / "workspace.yaml")
+    path = Path(source)
+    if not path.is_absolute():
+        path = root / path
+    try:
+        if path.resolve() not in {candidate.resolve() for candidate in allowed}:
+            raise DeploymentContractError("shared workspace source differs from the current host")
+        raw = path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()[:16]
+        if len(digests) != 2 or any(value != digest for value in digests):
+            raise DeploymentContractError("shared workspace differs from frozen plane digests")
+        document = load_yaml_rejecting_duplicate_keys(raw.decode("utf-8"))
+    except DeploymentContractError:
+        raise
+    except (OSError, UnicodeError, ValueError, YAMLError) as exc:
+        raise DeploymentContractError("cannot read the current host shared workspace") from exc
+    return workspace_location_names(document)
 
 
 def _flag(argv: Sequence[str], *names: str) -> str | None:
@@ -372,6 +417,43 @@ def external_dagster_locations(targets: Mapping[str, Any]) -> Mapping[str, tuple
         if isinstance(spec, Mapping) and spec.get("external_project") and isinstance(external, Mapping):
             found[str(target_id)] = (str(external["location_name"]), int(external["port"]))
     return MappingProxyType(found)
+
+
+def derive_host_workspace(
+    compose: Mapping[str, Any], targets: Mapping[str, Any], host: str | None = None
+) -> dict[str, Any]:
+    """shared location을 직접 target 소유권으로 호스트별 파생한다(SSL은 미지정)."""
+    selected = default_host(targets) if host is None else host
+    if selected not in _host_specs(targets):
+        raise DeploymentContractError("workspace host must be a declared hosts key")
+    specs = targets["targets"]
+    services = compose.get("services") or {}
+    external = external_dagster_locations(targets)
+    entries: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for target in dict.fromkeys([*targets["dependency_order"], *specs]):
+        spec = specs.get(target) or {}
+        if (spec.get("dagster") or {}).get("control_plane") != "shared":
+            continue
+        if selected not in target_hosts(target, targets):
+            continue
+        if spec.get("external_project"):
+            location, port = external[target]
+        else:
+            codes = [services[name] for name in spec.get("services", []) if name in services and _is_code_server(services[name])]
+            if len(codes) != 1:
+                raise DeploymentContractError(f"Dagster target {target} must have exactly one code-server")
+            location = code_server_location_name(codes[0])
+            raw_port = _flag(_words(codes[0].get("command")) + _words(codes[0].get("entrypoint")), "-p", "--port")
+            try:
+                port = int(raw_port or "")
+            except ValueError as exc:
+                raise DeploymentContractError(f"Dagster target {target} has no literal gRPC port") from exc
+        if location in names or not 1 <= port <= 65535:
+            raise DeploymentContractError("workspace locations must be unique with valid gRPC ports")
+        names.add(location)
+        entries.append({"grpc_server": {"host": "127.0.0.1", "port": port, "location_name": location}})
+    return {"load_from": entries}
 
 
 def derive_dagster_families(

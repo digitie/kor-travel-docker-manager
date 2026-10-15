@@ -2277,6 +2277,12 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
    | compose env 기본값(R2 — 형제 포트를 기본값에 가진 env 전부, 오늘 7곳: geo 4·transport 1·weather 1 + pinvi-api 신설; **2026-10-14 잠정 시행으로 대체**: 소비자 포트 geo `12501`·transport API gateway `12301`·weather `12201`, 집합 8곳(geo 5 — Map 4·pinvi-api 1, transport 1, weather 2 — PinVi ETL·pinvi-api), n150 workspace digest `fbd0eadc90829753`(weather·transport 제외 4 location → **2026-10-15 `4461abc13cce9c4f`, geo도 제외 3 location**) — ADR-58 "잠정 시행".), `config/prometheus/prometheus.yml`, `config/dagster-shared/workspace.<host>.yaml` | **커밋된 파생물**(리터럴 `192.168.1.13` 포함) — compose·정적 YAML은 registry를 읽지 못한다(S10). `workspace.yaml`과 같은 선례(`docker-compose.yml:789-794`) | 파생 테스트가 기대값을 `hosts:`+`host:`에서 계산해 파일과 대조(B-5·B-6·B-8); 플립 PR이 파생물을 빠뜨리면 빨갛다 |
    | root `.env` | 호스트별 값(비밀·튜닝·digest·`KTDM_HOST`·`KTDM_PROD_URL_*`) | `targets validate`가 파생 기대값과 다른 재정의를 거부 |
 
+**2026-10-15 T-MGR-02 구현 범위 정정.** 실제 registry 배치를 기준으로 각 호스트 shared location은3개씩이다.
+아래 원계획의 빈 odroid/6개 default 가정과 Geo1·Weather2 일괄 조정은 현재 구현에 적용하지 않는다.
+workspace는 선언된 N개 호스트에서 유도하고 default alias를 유지한다. dagster.yaml은 이번 단계에서 byte 불변이다.
+사용자는 후속 실측을 근거로 튜닝 변경도 허용했으나 같은 수집량·freshness 비교 전에는 임의 병렬도 축소를 하지 않는다.
+cutover는 root 환경을 별도 파싱하지 않고 기존 frozen/resolved mount source와 두 env digest를 그대로 사용한다.
+
 6. **host 플립 = workspace 합류; `workspace.{n150,odroid}.yaml` 두 파일 커밋 + compose 보간.** 파생기(`runtime_topology.py`)에
    host 필터를 더해 `workspace.<host>.yaml` = `control_plane: shared` **이고** `target.host == host`인 location(host 값은 계속
    `127.0.0.1`, S7 불변). 별도 선언 필드 없음. T-MGR-02 직후 `workspace.odroid.yaml`은 `load_from: []`, `workspace.n150.yaml`은 오늘

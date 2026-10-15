@@ -49,7 +49,10 @@ from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_d
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _TARGETS = _REPO_ROOT / "config" / "docker-targets.yml"
-_WORKSPACE = _REPO_ROOT / "config" / "dagster-shared" / "workspace.yaml"
+from kor_travel_docker_manager.services.registry import default_host
+
+_DEFAULT_HOST = default_host(load_yaml_rejecting_duplicate_keys(_TARGETS.read_text(encoding="utf-8")))
+_WORKSPACE = _REPO_ROOT / "config" / "dagster-shared" / f"workspace.{_DEFAULT_HOST}.yaml"
 _INSTANCE_CONFIG = _REPO_ROOT / "config" / "dagster-shared" / "dagster.yaml"
 
 _ANCHOR = "x-dagster-shared-control-env"
@@ -200,6 +203,17 @@ def _documents() -> tuple[dict[str, Any], dict[str, Any]]:
     compose = load_yaml_rejecting_duplicate_keys(_COMPOSE.read_text(encoding="utf-8"))
     targets = load_yaml_rejecting_duplicate_keys(_TARGETS.read_text(encoding="utf-8"))
     assert isinstance(compose, dict) and isinstance(targets, dict)
+    # 기존 own/shared 전환 회귀는 default plane의 실제 mount를 모델로 사용한다.
+    # 전체 호스트/override 효과는 test_host_workspaces가 별도로 검증한다.
+    for service in compose["services"].values():
+        service["volumes"] = [
+            _resolve(volume, {"KTDM_HOST": _DEFAULT_HOST})
+            if isinstance(volume, str) and "config/dagster-shared/workspace.${KTDM_HOST:" in volume else volume
+            for volume in service.get("volumes", [])
+        ]
+        environment = service.get("environment") or {}
+        if isinstance(environment, dict) and "KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST" in environment:
+            environment["KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST"] = _resolve(str(environment["KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST"]), {})
     return compose, targets
 
 

@@ -189,6 +189,22 @@ profile로도 피할 수 없다(비활성 profile의 서비스도 interpolate �
 
 ### 3.2 호스트 프로필과 `KTDM_HOST` (registry 구현, 운영 전환 예정)
 
+#### 호스트별 Dagster workspace 구현(2026-10-15)
+
+registry의 hosts와 target_hosts에서 shared location을 유도한 workspace.<host>.yaml을 커밋한다.
+현재 두 호스트는 각각3개 location이며 default alias workspace.yaml은 default host 파일과 byte동일하다.
+다른 호스트의 fallback 파일이 아니며 host-all target은 해당 모든 호스트에 실린다. SSL은 미지정 상태를 유지한다.
+
+Compose는 KTDM_HOST로 호스트 파일을 선택하고 컨테이너 안에서는 기존 workspace.yaml 경로를 사용한다.
+default 외 호스트는 KTDM_DAGSTER_WORKSPACE_DIGEST에 선택 파일 SHA256 앞16자리를 설정한다.
+기존 frozen transaction이 두 plane의 source 동일성·선택 호스트 경로·두 digest와 파일 같은 bytes를 확인한 뒤 파싱한다.
+cutover의 membership과 재생성 digest도 frozen render에서 선택한 같은 source를 쓴다.
+
+ktdctl targets validate의 offline registry/schema 의미는 유지하며 파일·frozen env 효과는 기존 mutation preflight에서 재검증한다.
+별도 renderer/봉인/lock을 추가하지 않는다. dagster.yaml은 byte 불변이며 상한 조정은 같은 workload의 별도 실측 후 검토한다.
+현재01b의 lower Compose·backup·pin·remote status 전체 연결은 진행 중이므로 이 문단만으로 운영 이전 완료를 판단하지 않는다.
+
+
 registry v2의 `hosts:`·target `host:`·자기 호스트 검증·연결 좌표 파생과 `targets validate --json`은
 T-MGR-01a에서 구현한다. Weather·Transport의 이전된 host 선언을 보존한다. Geo 이전은 별도 검증으로 확정한다. 아래 명령별 host 제한(R4), consumer origin(R2),
 workspace 분리는 후속 구현·설치 전이며, registry 구현만으로 운영 이전 완료를 판정하지 않는다.
