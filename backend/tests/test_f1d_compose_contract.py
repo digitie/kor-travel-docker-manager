@@ -141,15 +141,9 @@ def _runtime_environment(values: dict[str, str]) -> list[str]:
     return [f"{name}={value}" for name, value in values.items()]
 
 
-def test_map_runtime_requires_the_image_entrypoint_and_empty_command(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        c6c_deployment_module,
-        "_validate_map_production_secrets",
-        lambda _config: None,
-    )
-    config = _runtime_secret_config()
+def _valid_runtime_configs(config: Any) -> dict[str, dict[str, Any]]:
+    """`validate_runtime_secret_isolation`이 통과시키는 정본 런타임 inspection."""
+
     map_environment = {
         c6c_deployment_module._MAP_READ_ENV: config.read_token,
         c6c_deployment_module._MAP_CANCEL_ENV: config.cancel_token,
@@ -221,6 +215,19 @@ def test_map_runtime_requires_the_image_entrypoint_and_empty_command(
             for container in c6c_deployment_module._map_dagster_secret_isolation_containers()
         },
     }
+    return runtime_configs
+
+
+def test_map_runtime_requires_the_image_entrypoint_and_empty_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_validate_map_production_secrets",
+        lambda _config: None,
+    )
+    config = _runtime_secret_config()
+    runtime_configs = _valid_runtime_configs(config)
 
     validate_runtime_secret_isolation(runtime_configs, config)
 
@@ -245,6 +252,95 @@ def test_map_runtime_requires_the_image_entrypoint_and_empty_command(
     del broken[config.map_container]["Cmd"]
     with pytest.raises(DeploymentContractError, match="immutable image entrypoint"):
         validate_runtime_secret_isolation(broken, config)
+
+
+def test_runtime_isolation_matches_protected_env_names_as_whole_identifiers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PinVi 자신의 geo 키 env(`PINVI_KOR_TRAVEL_GEO_API_KEY`)는 Map UI의 보호 이름이 아니다.
+
+    2026-10-15 t1015b: 날 substring 검사가 이 env 항목을 `KOR_TRAVEL_GEO_API_KEY` 누출로
+    오판해 배포 뒤 검증이 멈췄다. 이름은 식별자 경계로만 맞추고, 진짜 참조는 그대로 잡는다.
+    """
+
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_validate_map_production_secrets",
+        lambda _config: None,
+    )
+    config = _runtime_secret_config()
+    geo_name = c6c_deployment_module._MAP_UI_GEO_API_KEY_ENV
+    pinvi = config.pinvi_container
+
+    allowed = _valid_runtime_configs(config)
+    allowed[pinvi]["Env"].append(f"PINVI_{geo_name}=pinvi-own-geo-key")
+    allowed[pinvi]["Labels"] = {"note": f"reads PINVI_{geo_name}_FILE"}
+    validate_runtime_secret_isolation(allowed, config)
+
+    leaks: list[tuple[str, Any]] = [
+        ("Env", f"{geo_name}=not-a-c6c-secret"),
+        ("Cmd", ["sh", "-c", f"exec app --geo-key ${{{geo_name}}}"]),
+        ("Cmd", ["sh", "-c", f"exec app --geo-key ${geo_name}"]),
+        ("Entrypoint", ["sh", "-c", f'echo "${{{geo_name}:-}}"']),
+        ("Labels", {"com.example.env": f"uses {geo_name} at boot"}),
+        ("Labels", {geo_name: "present"}),
+    ]
+    for field_name, leak in leaks:
+        broken = deepcopy(_valid_runtime_configs(config))
+        if field_name == "Env":
+            broken[pinvi]["Env"].append(leak)
+        else:
+            broken[pinvi][field_name] = leak
+        with pytest.raises(DeploymentContractError) as excinfo:
+            validate_runtime_secret_isolation(broken, config)
+        assert "leak" in str(excinfo.value) or "unauthorized" in str(excinfo.value), (
+            field_name
+        )
+
+
+def test_runtime_isolation_still_finds_secret_values_anywhere(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """값 검사는 경계 없이 그대로다 — 보호 값은 다른 이름·라벨 속에 박혀도 누출이다."""
+
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_validate_map_production_secrets",
+        lambda _config: None,
+    )
+    config = _runtime_secret_config()
+    pinvi = config.pinvi_container
+
+    broken = _valid_runtime_configs(config)
+    broken[pinvi]["Env"].append(f"PINVI_KOR_TRAVEL_GEO_API_KEY=x{config.map_geo_api_key}x")
+    with pytest.raises(DeploymentContractError, match="secret value leaks"):
+        validate_runtime_secret_isolation(broken, config)
+
+    broken = _valid_runtime_configs(config)
+    broken[pinvi]["Labels"] = {"note": f"token={config.map_service_token}"}
+    with pytest.raises(DeploymentContractError, match="leaks outside its exact"):
+        validate_runtime_secret_isolation(broken, config)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("KOR_TRAVEL_GEO_API_KEY=x", True),
+        ("${KOR_TRAVEL_GEO_API_KEY:-}", True),
+        ("$KOR_TRAVEL_GEO_API_KEY", True),
+        ('{"KOR_TRAVEL_GEO_API_KEY": 1}', True),
+        ("uses KOR_TRAVEL_GEO_API_KEY.", True),
+        ("PINVI_KOR_TRAVEL_GEO_API_KEY=x", False),
+        ("KOR_TRAVEL_GEO_API_KEY_FILE=x", False),
+        ("KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY=x", False),
+        ("kor_travel_geo_api_key", False),
+    ],
+)
+def test_contains_env_name_uses_identifier_boundaries(text: str, expected: bool) -> None:
+    assert (
+        c6c_deployment_module.contains_env_name(text, "KOR_TRAVEL_GEO_API_KEY")
+        is expected
+    )
 
 
 def _shared_postgres_contract_pgdata() -> str:
