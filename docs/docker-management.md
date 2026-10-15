@@ -198,11 +198,12 @@ registry의 hosts와 target_hosts에서 shared location을 유도한 workspace.<
 Compose는 KTDM_HOST로 호스트 파일을 선택하고 컨테이너 안에서는 기존 workspace.yaml 경로를 사용한다.
 default 외 호스트는 KTDM_DAGSTER_WORKSPACE_DIGEST에 선택 파일 SHA256 앞16자리를 설정한다.
 기존 frozen transaction이 두 plane의 source 동일성·선택 호스트 경로·두 digest와 파일 같은 bytes를 확인한 뒤 파싱한다.
+공개 ensure와 lower Compose가 plane을 실제 시작하는 경로도 converge와 같은 reader를 명령 전달 전에 사용한다.
 cutover의 membership과 재생성 digest도 frozen render에서 선택한 같은 source를 쓴다.
 
 ktdctl targets validate의 offline registry/schema 의미는 유지하며 파일·frozen env 효과는 기존 mutation preflight에서 재검증한다.
 별도 renderer/봉인/lock을 추가하지 않는다. dagster.yaml은 byte 불변이며 상한 조정은 같은 workload의 별도 실측 후 검토한다.
-현재01b의 lower Compose·backup·pin·remote status 전체 연결은 진행 중이므로 이 문단만으로 운영 이전 완료를 판단하지 않는다.
+01b의 lower Compose·backup·pin·remote status 소스 연결은 구현했으며 운영 이전 완료는 별도 검증한다.
 
 
 registry v2의 `hosts:`·target `host:`·자기 호스트 검증·연결 좌표 파생과 `targets validate --json`은

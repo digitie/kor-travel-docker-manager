@@ -1,4 +1,16 @@
 ## 2026-10-15 — 원격 target의 HTTP 관측과 로컬 도구 경계(Codex)
+## 2026-10-15 — 실제 Compose host 선택과 공개 plane 시작의 리뷰 결함 교정(Codex)
+
+- 독립 리뷰 A-P2-01/B-P1-01을 수용했다. 두 plane의 workspace mount를 `KTDM_HOST`로,
+  digest를 기존 `KTDM_DAGSTER_WORKSPACE_DIGEST`로 실제 보간한다. 기본 n150은 유지한다.
+- 기존 frozen reader를 lower Compose activation에도 연결해 public `ensure_target("dagster")`
+  및 의존성으로 plane을 시작할 때 host/source/두 digest를 명령 전달 전에 확인한다.
+  converge와 같은 함수를 재사용하며 새 lock·봉인이나 runtime 튜닝을 추가하지 않았다.
+- 실제 제품 전체 Compose를 plugin으로 정적 렌더한 n150/odroid/추가 host 및 공개 ensure의
+  잘못된 source·각 plane digest 거절 회귀 OLD8 FAIL/3 PASS → NEW11 PASS.
+  관련 host/CLI/converge/cutover 286 PASS, Ruff·diff PASS. 기존 실패 원문은 보존한다.
+  실제 daemon 활성화·운영 설치·live는 미실행이며 전체 후속 검증은 별도다.
+
 ## 2026-10-15 — host writer·workspace 분리의 로컬 전체 회귀 완료(Codex)
 
 - 고정 소스 `0a8dd96`의 ext4 독립 사본에서 backend 전체 2842 PASS/39 SKIP(318.69초).

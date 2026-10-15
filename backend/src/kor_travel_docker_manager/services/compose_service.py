@@ -3242,6 +3242,18 @@ class ComposeService:
                 "machinery"
             )
         self._assert_host_mutation_scope(args, resolved=materialized_compose)
+        if materialized_compose is not None:
+            scope, flags = self._parse_compose_mutation(args)
+            command_index = self._compose_command_index(args)
+            action = args[command_index] if command_index is not None else None
+            if scope and action in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES | {"unpause"}:
+                touched = set(scope)
+                if action in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES and "--no-deps" not in flags:
+                    touched |= _compose_dependency_closure(materialized_compose, touched)
+                if touched.intersection(installed_shared_dagster_plane().services):
+                    # ensure도 이 낮은 실행 경계를 지난다. converge와 같은 frozen reader로
+                    # host/source/두 digest를 실제 mutation argv 전달 전에 확인한다.
+                    self._shared_plane_workspace(materialized_compose)
         command = self.build_command(
             args,
             canonical_single_file=materialized_compose is not None,
@@ -5290,7 +5302,12 @@ class ComposeService:
     ) -> tuple[SharedDagsterPlane, Mapping[str, Any], tuple[str, ...]]:
         """frozen render의 plane(설치된 release와 같아야 한다), 그 서비스 정의, 붙인 workspace의 location."""
 
-        resolved = runtime_transaction.resolved
+        return self._shared_plane_workspace(runtime_transaction.resolved)
+
+    def _shared_plane_workspace(
+        self, resolved: Mapping[str, Any],
+    ) -> tuple[SharedDagsterPlane, Mapping[str, Any], tuple[str, ...]]:
+        """기존 converge와 public Compose activation이 같은 frozen workspace 검사를 쓴다."""
         plane = derive_shared_dagster_plane(resolved)
         if plane != installed_shared_dagster_plane():
             raise DeploymentContractError(

@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import tomllib
@@ -2796,13 +2797,25 @@ def test_cli_rebuild_pinned_shows_warnings_to_a_human(mock_compose_service, caps
     assert "warning: the trusted execution binding is stale" in capsys.readouterr().err
 
 
-def _ensure_dagster_with(tmp_path: Path, failing_service: str | None) -> tuple[dict, list[list[str]]]:
+def _ensure_dagster_with(
+    tmp_path: Path, failing_service: str | None, *,
+    resolved: dict | None = None, calls: list[list[str]] | None = None,
+) -> tuple[dict, list[list[str]]]:
     """`ensure dagster`를 실제 ComposeService로 돌린다 — compose 호출만 가짜다.
 
     `failing_service`를 argv에 담은 compose 호출은 exit 3으로 끝난다.
     """
 
-    calls: list[list[str]] = []
+    if calls is None:
+        calls = []
+    if resolved is None:
+        # 이 fixture는 argv 순서만 본다. 실제 host 보간 회귀는 test_host_workspaces의
+        # 제품 전체 Compose/plugin 렌더가 담당한다. 기존 기본값 fixture도 보간형을 해석한다.
+        source = (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()
+        resolved = yaml.safe_load(re.sub(
+            r"\$\{([A-Z0-9_]+):-([^${}]*)\}",
+            lambda match: os.environ.get(match[1], match[2]), source,
+        ))
 
     def fake_run(argv, *args, **kwargs):  # type: ignore[no-untyped-def]
         calls.append(list(argv))
@@ -2821,7 +2834,7 @@ def _ensure_dagster_with(tmp_path: Path, failing_service: str | None) -> tuple[d
             ComposeService,
             "_validate_current_compose_candidate_unlocked",
             return_value=ValidatedComposeCandidate(
-                resolved=yaml.safe_load((Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()),
+                resolved=resolved,
                 system_bind_snapshots=(),
                 raw_volume_graph_hash="raw-stable",
                 resolved_volume_graph_hash="resolved-stable",

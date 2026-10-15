@@ -833,10 +833,10 @@ services:
       DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS: "180"
       DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD: "60"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: 4461abc13cce9c4f
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
-    - ./config/dagster-shared/workspace.n150.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
+    - ./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
     healthcheck:
       # 두 겹이다. (1) workspace의 code-server 전부가 gRPC health로 `SERVING`인가 — daemon은 매 반복에
       # workspace를 다시 읽으므로 떠 있는 code-server는 daemon이 로드한다. 안 뜬 location이 있으면 그
@@ -903,10 +903,10 @@ services:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: 4461abc13cce9c4f
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
-    - ./config/dagster-shared/workspace.n150.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
+    - ./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
     healthcheck:
       test:
       - CMD

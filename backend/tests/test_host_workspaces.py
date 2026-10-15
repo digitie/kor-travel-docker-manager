@@ -2,6 +2,11 @@
 
 import copy
 import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -129,3 +134,86 @@ def test_invalid_workspace_is_not_empty_healthy(workspace_files, raw):
     digest = hashlib.sha256(raw).hexdigest()[:16]
     with pytest.raises(DeploymentContractError):
         topology.read_host_workspace(str(path), root=root, targets=targets, digests=[digest, digest])
+
+
+@pytest.fixture
+def real_host_render(tmp_path, monkeypatch, documents):
+    """제품 Compose를 실제 plugin으로 정적 렌더한다. daemon/외부 HTTP는 쓰지 않는다."""
+    if shutil.which("docker") is None:
+        pytest.skip("실제 Compose config가 필요하다")
+    source = (ROOT / "docker-compose.yml").read_text()
+    directory = tmp_path / "config/dagster-shared"
+    directory.mkdir(parents=True)
+    (tmp_path / "docker-compose.yml").write_text(source)
+    for file in (ROOT / "config/dagster-shared").glob("*.yaml"):
+        (directory / file.name).write_bytes(file.read_bytes())
+    targets = documents[1]
+    targets["hosts"]["third"] = {"addr": "192.0.2.3"}
+    (directory / "workspace.third.yaml").write_text("load_from: []\n")
+    (tmp_path / "config/docker-targets.yml").write_text(yaml.safe_dump(targets))
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", str(tmp_path))
+
+    def render(host):
+        path = directory / f"workspace.{host}.yaml"
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        # 실제 값이나 개발자의 .env를 상속하지 않는다. config만 호출하므로 endpoint를 읽지 않는다.
+        environment = {name: "fixture-only" for name in re.findall(r"\$\{([A-Z0-9_]+):\?", source)}
+        environment.update(PATH=os.defpath, HOME=str(tmp_path), KTDM_HOST=host,
+                           KTDM_DAGSTER_WORKSPACE_DIGEST=digest,
+                           DOCKER_HOST="unix:///tmp/manager481-host-render-no-daemon.sock")
+        result = subprocess.run(
+            ["docker", "compose", "--env-file", "/dev/null", "--project-directory", str(tmp_path),
+             "-f", str(tmp_path / "docker-compose.yml"), "config", "--format", "json"],
+            env=environment, capture_output=True, text=True, timeout=30, check=False,
+        )
+        assert result.returncode == 0, "정적 Compose 렌더 실패(원문 환경은 출력하지 않음)"
+        return json.loads(result.stdout), path, digest
+
+    return tmp_path, targets, render
+
+
+@pytest.mark.parametrize("host", ["n150", "odroid", "third"])
+def test_actual_compose_host_selection_reaches_workspace_reader(real_host_render, monkeypatch, host):
+    root, targets, render = real_host_render
+    monkeypatch.setenv("KTDM_HOST", host)
+    document, expected_path, digest = render(host)
+    plane = topology.derive_shared_dagster_plane(document)
+    services = [document["services"][name] for name in plane.services]
+    sources = [topology.shared_workspace_source(service) for service in services]
+    assert sources == [str(expected_path)] * 2
+    digests = [service["environment"]["KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST"] for service in services]
+    assert digests == [digest] * 2
+    actual = topology.read_host_workspace(sources[0], root=root, targets=targets, digests=digests)
+    expected = topology.workspace_location_names(yaml.safe_load(expected_path.read_bytes()))
+    assert actual == expected
+
+
+@pytest.mark.parametrize("host", ["n150", "odroid"])
+@pytest.mark.parametrize("drift", [None, "source", "daemon_digest", "webserver_digest"])
+def test_public_ensure_dagster_validates_frozen_workspace_before_mutation(
+    real_host_render, monkeypatch, host, drift,
+):
+    from test_docker_manager_cli import _ensure_dagster_with
+
+    root, _, render = real_host_render
+    monkeypatch.setenv("KTDM_HOST", host)
+    document, _, _ = render(host)
+    plane = topology.derive_shared_dagster_plane(document)
+    if drift == "source":
+        foreign = "odroid" if host == "n150" else "n150"
+        for name in plane.services:
+            service = document["services"][name]
+            for volume in service["volumes"]:
+                if volume.get("target") == "/opt/dagster/dagster_home/workspace.yaml":
+                    volume["source"] = str(root / "config/dagster-shared" / f"workspace.{foreign}.yaml")
+    elif drift:
+        name = plane.daemon if drift == "daemon_digest" else plane.webserver
+        document["services"][name]["environment"]["KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST"] = "0" * 16
+    calls = []
+    if drift:
+        with pytest.raises(DeploymentContractError, match="workspace"):
+            _ensure_dagster_with(root, None, resolved=document, calls=calls)
+        assert calls == [], "workspace 거절 전에 실제 mutation argv가 전달되면 안 된다"
+    else:
+        result, _ = _ensure_dagster_with(root, None, resolved=document, calls=calls)
+        assert result["success"] and calls
