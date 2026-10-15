@@ -1,3 +1,14 @@
+## 2026-10-16 — Weather API의 경량 HTTP 생존 점검과 시작 여유
+
+Weather API health만 Common의 strict core HTTP CLI로 바꾼다. HTTP 예산3초는 유지하고
+Docker timeout12초·interval30초·retries4로 Python 시작 여유와 명목 실패 창120초를 함께 둔다.
+현재 API command의 고정 listen 포트도 포트 매핑·health와 같은 환경변수로 유도한다.
+다른 서비스·이미지·설정·start period·Geo 튜닝·486의 CS health 범위는 변경하지 않았다.
+원 native 표본은 빈 Python2.454초, urllib9.693초, Common7.789초였으며 통제된 개선율이 아니다.
+소비 이미지에 CLI가 있어야 하고 redirect·오류·불완전 헤더는 실패한다. 운영 적용은 하지 않았다.
+신규 계약3건은 기존 선언에서 모두 실패했고 새 선언/관련 회귀102건이 통과했다.
+정확 Common ad988 원문의 자기 loopback CLI10조건도 통과했으며 운영 실측으로 합산하지 않는다.
+
 ## 2026-10-16 — #477 리뷰 잔여(T-MGR-01a-F), #481 위로 rebase
 
 - #481(호스트 변경 경계·workspace 분리)이 먼저 머지돼 겹치는 것(registry 소유권·host-local 폐포·연결 주소·host 선택)은 #481을
