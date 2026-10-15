@@ -1,3 +1,4 @@
+import ipaddress
 import os
 import posixpath
 import re
@@ -635,6 +636,7 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
         if name not in targets:
             raise TargetsConfigError(f"{label} dependency_order: unknown target '{name}'")
 
+    _validate_hosts(config, label=label)
     _validate_external_wiring(config, label=label)
 
     # `ktdctl targets validate`가 bind 절도 함께 본다 — 배포 도중이 아니라 그 전에
@@ -980,6 +982,62 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
                     f"'{name}' declared in dependency_order "
                     "(set `excluded_from_all: true` if that is deliberate)"
                 )
+
+
+#: `hosts:` 절(ADR-58 결정 1의 부분집합 — 잠정). 호스트 이름 → `addr`(IPv4)·`default`(정확히 하나). target의
+#: `host:`(생략 = default)가 그 target의 컨테이너가 도는 호스트다. 지금 이 값을 읽는 것은 공용 Dagster workspace
+#: 파생뿐이다(`backend/tests/test_dagster_shared_workspace_is_derived.py`) — 형태만 여기서 fail-close로 본다. 오타 한
+#: 글자(`host: odorid`)가 조용히 default로 읽히면 옮긴 target이 n150 plane에 다시 실린다.
+_HOST_FIELDS: Final = frozenset({"addr", "default"})
+_HOST_NAME: Final = re.compile(r"[a-z0-9][a-z0-9-]*")
+#: `all`은 "모든 호스트"(infra `host: all`, ADR-58 결정 1)의 자리라 호스트 이름이 될 수 없다.
+_RESERVED_HOST_NAMES: Final = frozenset({"all"})
+
+
+def _validate_hosts(config: dict[str, Any], *, label: str) -> None:
+    hosts = config.get("hosts")
+    targets = config["targets"]
+    if hosts is None:
+        for target_id, spec in targets.items():
+            if "host" in spec:
+                raise TargetsConfigError(
+                    f"{label} targets.{target_id}.host: no `hosts:` are declared"
+                )
+        return
+    if not isinstance(hosts, dict) or not hosts:
+        raise TargetsConfigError(f"{label} hosts: must be a non-empty mapping")
+    defaults: list[str] = []
+    for name, spec in hosts.items():
+        where = f"{label} hosts.{name}"
+        if not isinstance(name, str) or not _HOST_NAME.fullmatch(name):
+            raise TargetsConfigError(f"{where}: invalid host name")
+        if name in _RESERVED_HOST_NAMES:
+            raise TargetsConfigError(f"{where}: host name {name!r} is reserved")
+        if not isinstance(spec, dict):
+            raise TargetsConfigError(f"{where}: must be a mapping")
+        unknown = sorted(set(spec) - _HOST_FIELDS)
+        if unknown:
+            raise TargetsConfigError(f"{where}: unknown fields {unknown}")
+        addr = spec.get("addr")
+        try:
+            ipaddress.IPv4Address(addr if isinstance(addr, str) else "")
+        except ipaddress.AddressValueError as exc:
+            raise TargetsConfigError(f"{where}.addr: must be an IPv4 address") from exc
+        default = spec.get("default", False)
+        if not isinstance(default, bool):
+            raise TargetsConfigError(f"{where}.default: must be a boolean")
+        if default:
+            defaults.append(name)
+    if len(defaults) != 1:
+        raise TargetsConfigError(
+            f"{label} hosts: exactly one host must be the default, got {sorted(defaults)}"
+        )
+    for target_id, spec in targets.items():
+        host = spec.get("host")
+        if "host" in spec and (not isinstance(host, str) or host not in hosts):
+            raise TargetsConfigError(
+                f"{label} targets.{target_id}.host: unknown host {host!r}"
+            )
 
 
 #: target의 `dagster` 절(ADR-54). 공용 Dagster 제어 평면에 합류했는가와, 그 target의 Dagster를 부르는

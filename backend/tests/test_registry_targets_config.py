@@ -846,3 +846,64 @@ def test_the_weather_rules_reload_step_signals_only_its_prometheus() -> None:
     # 그 Prometheus는 규칙을 디렉터리 bind로 받는다(파일 bind면 SIGHUP이 옛 inode를 다시 읽는다).
     volumes = [str(v) for v in compose["services"]["kor-travel-weather-prometheus"]["volumes"]]
     assert any(v.endswith("/deploy/prometheus:/etc/prometheus/weather-rules:ro") for v in volumes), volumes
+
+
+# ── `hosts:`·target `host:`(ADR-58 결정 1의 부분집합 — 잠정, 2026-10-14) ──────────────
+
+
+def _with_hosts(config: dict[str, Any]) -> dict[str, Any]:
+    config["hosts"] = {
+        "n150": {"addr": "192.168.1.14", "default": True},
+        "odroid": {"addr": "192.168.1.13"},
+    }
+    return config
+
+
+def test_a_target_on_a_declared_host_passes() -> None:
+    config = _with_hosts(_minimal_valid_config())
+    config["targets"]["geo"]["host"] = "odroid"
+    _validate_targets_config(config, label="test.yml")
+
+
+def test_the_real_config_moves_weather_and_transport_to_odroid() -> None:
+    registry_module.load_targets_config.cache_clear()
+    try:
+        config = registry_module.load_targets_config()
+    finally:
+        registry_module.load_targets_config.cache_clear()
+    moved = sorted(t for t, spec in config["targets"].items() if spec.get("host") == "odroid")
+    assert moved == ["transport", "weather"]
+    assert config["hosts"]["odroid"]["addr"] == "192.168.1.13"
+    # n150 `ensure all`이 odroid로 옮긴 Manager target(weather)을 지운 DB로 다시 세우지 않는다(잠정 — 호스트별 `all`
+    # 필터 전까지). transport는 외부 프로젝트라 원래 `all` 밖이다.
+    assert "weather" not in config["targets"]["all"]["include"]
+    assert config["targets"]["weather"]["excluded_from_all"] is True
+
+
+@pytest.mark.parametrize(
+    ("mutate", "said"),
+    [
+        (lambda c: c["targets"]["geo"].update(host="odorid"), "targets.geo.host: unknown host 'odorid'"),
+        (lambda c: c["targets"]["geo"].update(host=["odroid"]), "targets.geo.host: unknown host"),
+        (lambda c: c["hosts"]["odroid"].update(default=True), "exactly one host must be the default"),
+        (lambda c: c["hosts"]["n150"].pop("default"), "exactly one host must be the default"),
+        (lambda c: c["hosts"]["n150"].update(default="yes"), "hosts.n150.default: must be a boolean"),
+        (lambda c: c["hosts"]["odroid"].update(addr="192.168.1"), "hosts.odroid.addr: must be an IPv4"),
+        (lambda c: c["hosts"]["odroid"].pop("addr"), "hosts.odroid.addr: must be an IPv4"),
+        (lambda c: c["hosts"]["odroid"].update(adr="192.168.1.13"), r"hosts.odroid: unknown fields \['adr'\]"),
+        (lambda c: c.update(hosts={}), "hosts: must be a non-empty mapping"),
+        (lambda c: c["hosts"].update(all={"addr": "192.168.1.15"}), "hosts.all: host name 'all' is reserved"),
+    ],
+)
+def test_a_malformed_host_declaration_is_rejected(mutate: Any, said: str) -> None:
+    config = _with_hosts(_minimal_valid_config())
+    mutate(config)
+    with pytest.raises(ValueError, match=said):
+        _validate_targets_config(config, label="test.yml")
+
+
+def test_a_target_host_without_hosts_is_rejected() -> None:
+    config = _minimal_valid_config()
+    config["targets"]["geo"]["host"] = "odroid"
+    with pytest.raises(ValueError, match=r"targets.geo.host: no `hosts:` are declared"):
+        _validate_targets_config(config, label="test.yml")

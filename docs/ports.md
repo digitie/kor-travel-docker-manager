@@ -36,7 +36,7 @@
 | 대상 | 대역 | 현재 사용 포트 | 관리 대상 |
 |---|---:|---|---|
 | — | `12000-12099` | 없음 | 비어 있다. 폐지된 통합 instance(ADR-37)와, 그 뒤 geo 전용 instance만 가리키던 `db` target(2026-09-28 폐지)의 자리였다. |
-| `storage` | `12100-12199` | S3 API `12101`, console `12105`, **Prometheus `12102`, cAdvisor `12103`, Grafana `12104`**(ADR-48, 대역 예외 — 아래 참고) | RustFS |
+| `storage` | `12100-12199` | S3 API `12101`, console `12105`, **Prometheus `12102`, cAdvisor `12103`, Grafana `12104`, node_exporter `12106`**(ADR-48, 대역 예외 — 아래 참고; node_exporter는 아래 절) | RustFS |
 | `gra` | `12200-12299` | Web UI `12104`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고). 대역 안의 `12205`는 **weather Web**이 쓴다(ADR-57, 아래 참고) | Grafana |
 | `cadv` | `12300-12399` | Exporter `12103`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | cAdvisor |
 | `prom` | `12400-12499` | HTTP `12102`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | Prometheus |
@@ -171,7 +171,7 @@ cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실�
 디렉터리는 호스트에 그대로 둔다. weather는 Manager가 관리하는 전용 instance를 가진 적이
 없고, 옛 transport(당시 이름 airport) 전용 DB(`:14000`)도 이미 사라졌다.
 
-## 호스트 규칙 (계획 — ADR-58 proposed, 미구현)
+## 호스트 규칙 (계획 — ADR-58 proposed; `hosts:`·workspace 필터·소비자 origin만 2026-10-14 잠정 시행)
 
 2026-10-13 현재 모든 서비스는 n150(`192.168.1.14`) 한 호스트에 있다. ADR-58은 geo·weather·transport와
 그들의 PostgreSQL·Dagster plane을 odroid(`192.168.1.13`)로 옮기되 **이 문서의 포트는 하나도 바꾸지
@@ -182,8 +182,12 @@ cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실�
   인스턴스가 호스트마다 하나다.
 - **`host = hosts[<target.host>].addr`, 같은 호스트 안 참조는 `127.0.0.1`.** 주소의 정본은
   registry의 `hosts:` 절(계획)이다 — 이 문서에 적힌 `.13`/`.14`는 그 파생값의 **예시**이지 정본이 아니다.
-  n150의 Map/PinVi가 odroid의 geo/transport/weather를 부를 때만 `http://<hosts[odroid].addr>:{12501,14001,14101}`
+  n150의 Map/PinVi가 odroid의 geo/transport/weather를 부를 때만 `http://<hosts[odroid].addr>:<소비자 포트>`
   (오늘 값 `192.168.1.13`)이며, 그 값은 Manager compose env 기본값(커밋된 파생물, `bindings.md` B-6)에서 나온다.
+  **소비자 포트는 2026-10-14 소유자가 odroid에서 공개 대역으로 통일했다**: geo `12501`(불변), weather **`12201`**
+  (n150의 `14101`이 아니다), transport는 backend `14001`이 아니라 **API gateway `12301`**(gateway가
+  `/v1/service/exports/*`를 n150 `192.168.1.14`에만 연다). 그래서 아래 "포트를 바꾸지 않는다"는 이 세 소비자
+  origin에는 적용되지 않는다(ADR-58 "잠정 시행(2026-10-14)").
 - **호스트가 바뀌어도 포트는 바꾸지 않는다.** 포트 재배정이 필요해 보이면 그것은 호스트 규칙이 아니라
   이 문서의 대역 규칙 문제다.
 - **바인드 주소도 바꾸지 않는다.** RustFS `0.0.0.0`, exporter `0.0.0.0`, Manager `0.0.0.0`, loopback
@@ -200,11 +204,19 @@ cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실�
 달라 충돌이 아니다. 따라서 "포트 동일" 규칙은 odroid에서 그대로 성립한다. 폐기 대상(parking-radar
 3000/8000/18000, Portainer 9443)을 빼도 같다.
 
-### node_exporter (계획)
+### node_exporter
 
 호스트 swap·메모리·디스크 여유·시계 동기 상태가 ADR-58의 핵심 위험이라 n150·odroid 양쪽에 node_exporter를
-둔다(지금은 없다). 포트는 이 문서의 절차로 배정한다 — 후보 **`12106`**(`storage` 대역 안, ADR-48의 세
-관측 포트 `12102`~`12104` 옆; `12205`는 weather Web이라 피한다). 확정은 T-MGR-04.
+둔다. 포트는 **`12106`**(`storage` 대역 안, ADR-48의 세 관측 포트 `12102`~`12104` 옆; `12205`는 weather Web이라
+피한다).
+
+- **odroid: 2026-10-14 기동**(소유자 지시, 임시 최소 반영). Manager 설치 전이라 저장소 밖 호스트 파일
+  `/opt/kor-travel-odroid/compose-mon.yml`(project `kor-travel-odroid-monitoring`)로 cAdvisor `12103`과 함께 띄웠다.
+  n150 Prometheus가 `cadvisor-odroid`·`node-odroid` job(`labels: host=odroid`)으로 수집한다 —
+  `config/prometheus/prometheus.yml`의 주소 리터럴은 T-MGR-04의 registry 파생물로 대체한다. **odroid 방화벽은 아직 없다**
+  (INPUT ACCEPT — `prod-deployment.md` §9.1 단계 7 미실시): exporter 집합의 "n150 addr만" 경계(아래 표)는 그 단계 전까지
+  성립하지 않는다. cAdvisor의 노출 수준은 n150과 같고(`0.0.0.0:12103`, privileged), node_exporter는 새 표면이다(읽기 전용).
+- n150: 아직 없다(T-MGR-04).
 
 ### plane별 공개 host (계획)
 
@@ -219,7 +231,7 @@ HAProxy backend 전환표(geo/weather/transport/pr → `.13`)는 `prod-deploymen
 
 | 집합 | 포트 | 허용 소스 |
 |---|---|---|
-| consumer/공개 API | `12501`, `14101`, `14001` | n150 addr + HAProxy(OPNsense) LAN addr(§14-6) — 그 외 LAN drop |
+| consumer/공개 API | `12501`, `12201`(weather — 2026-10-14 통일, 옛 `14101`), `12301`(transport API gateway — n150 소비자는 backend `14001`이 아니라 이것을 부른다) | n150 addr + HAProxy(OPNsense) LAN addr(§14-6) — 그 외 LAN drop |
 | HAProxy 웹 backend | `12505`, `12205`, `14002`, `12301`, `12305`, `11001` | HAProxy addr만 |
 | exporter | `12103`, node_exporter, `14103`, `14104`, `12901` | n150 addr만 |
 | 관리 | `22`(키만), `12905`(§14-29 — (가) backend만이면 odroid에 리스너 없음, **추천**) | 22: LAN(키만은 sshd 설정); 12905: (나)일 때만 n150 addr + 운영자 PC addr(§14-5) — 그때는 `12901`도 같은 소스에 열어야 대시보드가 자기 API에 닿는다 |
