@@ -386,9 +386,7 @@ def _plane_converge_summary(result: dict[str, Any]) -> str:
     for service, reasons in (result.get("remaining_drift") or {}).items():
         if reasons:
             lines.append(f"  {service} still differs after recreate: {'; '.join(reasons)}")
-    return "
-".join(lines) + "
-"
+    return "\n".join(lines) + "\n"
 
 
 def _cmd_dagster_plane_converge(args: argparse.Namespace) -> int:
