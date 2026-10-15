@@ -20,6 +20,7 @@ from kor_travel_docker_manager.services.yaml_strict import (
 #: trusted 설치본에서는 그렇지 않다 — 아래 `get_targets_config_path`가 가른다.
 TARGETS_FILE_ENV: Final = "KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE"
 PROJECT_ROOT_ENV: Final = "KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT"
+HOST_ENV: Final = "KTDM_HOST"
 
 #: targets 문서의 상한. 이 파일은 손으로 편집하는 수백 줄짜리 선언이고, 그보다
 #: 크다면 다른 것을 읽고 있다는 뜻이다 — 읽기 전에 멈춘다.
@@ -98,6 +99,16 @@ class TargetsConfigError(ValueError):
     서브클래스는 오직 `main()`/`_cmd_targets_validate`/
     `MetricsCollector.__init__`이 정확히 무엇을 fail-open으로 삼키는지 좁히기
     위한 것이다.
+    """
+
+
+class RootEnvUnreadableError(TargetsConfigError):
+    """운영 모드 자기 식별이 root `.env`를 읽지 못했다.
+
+    문구는 상수와 파일 경로만으로 만든다 — 파일 내용은 담지 않는다. CLI의 비밀 가리기
+    (`scrub_failure_text`)는 같은 `.env`를 읽어야 동작하므로 이 실패에서는 원리상 항상
+    원문을 숨긴다. 그러면 운영자는 고칠 자리(프로세스 env)를 듣지 못한다. 그래서 CLI는
+    이 타입만 가리지 않고 그대로 낸다.
     """
 
 
@@ -350,8 +361,61 @@ def default_host(config: Mapping[str, Any] | None = None) -> str:
     return next(name for name, spec in _host_specs(config).items() if spec.get("default", False))
 
 
+def _root_env_file_value(name: str, *, root: Path, trusted: bool, operating: bool) -> str:
+    """Manager 루트 `.env`에 선언된 `name`의 값. 파일이 없거나 키가 없으면 빈 문자열.
+
+    backend는 `main.py`의 `load_dotenv(get_env_path())`로 이 값을 프로세스 환경에 올리지만
+    `ktdctl`·설치 래퍼·launcher는 `.env`를 로드하지 않는다. 그래서 `.env`에만 `KTDM_HOST`를
+    둔 운영 호스트에서 모든 ktdctl 명령이 "requires hosts and KTDM_HOST"로 죽었다
+    (2026-10-15 n150, #477 리뷰 차단 2번). 여기서 같은 파일을 직접 읽어 진입점마다 같은
+    값을 보게 한다 — import 시점 부작용(`load_dotenv`)에 기대지 않는다.
+
+    trusted 설치본은 설치 root의 `.env`(installer가 release로 복사하는 바로 그 파일)를
+    읽는다. 개발 checkout은 backend와 같은 `get_env_path()`를 쓴다. 값만 돌려주고 파일의
+    다른 줄은 어디에도 싣지 않는다(비밀이 섞여 있다).
+
+    운영 모드에서 파일이 있는데 읽을 수 없으면(`root:root 0600`을 비-root cron 계정이 부를 때)
+    빈 값으로 넘기지 않고 그 사유로 거부한다 — "KTDM_HOST가 없다"는 문구는 `.env`에 값이
+    있는 운영자를 엉뚱한 곳으로 보낸다. 오류에는 경로만 싣고 내용은 싣지 않는다.
+    """
+
+    if trusted:
+        path = root / ".env"
+    else:
+        from kor_travel_docker_manager.services.compose_service import get_env_path
+
+        path = Path(get_env_path())
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        if operating and path.exists():
+            raise RootEnvUnreadableError(
+                f"Manager root .env is unreadable by this user ({path}); "
+                f"set {name} in the process environment"
+            ) from exc
+        return ""
+    except UnicodeError:
+        return ""
+    from io import StringIO
+
+    from dotenv import dotenv_values
+
+    try:
+        value = dotenv_values(stream=StringIO(text), interpolate=False).get(name)
+    except ValueError:
+        return ""
+    return (value or "").strip()
+
+
 def current_host(config: Mapping[str, Any] | None = None) -> str:
-    """호스트 선택은 프로세스 환경에서 읽고 캐시하지 않는다. release에서는 필수다."""
+    """자기 호스트 이름. release(운영 모드)에서는 선언 필수, 캐시하지 않는다.
+
+    우선순위: 비어 있지 않은 프로세스 env `KTDM_HOST` → Manager 루트 `.env`의 `KTDM_HOST`
+    (compose·backend와 같은 순서). 둘 다 비면 운영 모드는 거부하고 개발은 default 호스트다.
+    어느 쪽에서 왔든 아래 검증(선언된 호스트·로컬 주소)은 똑같이 적용된다.
+    """
     config = load_targets_config() if config is None else config
     hosts = _host_specs(config)
     from kor_travel_docker_manager.services.trusted_install import (
@@ -365,9 +429,13 @@ def current_host(config: Mapping[str, Any] | None = None) -> str:
         get_targets_config_path()
     root = TRUSTED_INSTALL_ROOT if trusted else Path(get_project_root())
     operating = trusted or os.path.lexists(root / ".ktdm-source-revision")
-    selected = os.environ.get("KTDM_HOST", "").strip()
+    selected = os.environ.get(HOST_ENV, "").strip() or _root_env_file_value(
+        HOST_ENV, root=root, trusted=trusted, operating=operating
+    )
     if operating and (not selected or "hosts" not in config):
-        raise TargetsConfigError("operating release requires hosts and KTDM_HOST")
+        raise TargetsConfigError(
+            "operating release requires hosts and KTDM_HOST (process env or Manager root .env)"
+        )
     if not selected:
         selected = default_host(config)
     if selected not in hosts:

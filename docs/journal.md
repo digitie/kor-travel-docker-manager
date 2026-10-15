@@ -2,6 +2,23 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-15 — ktdctl이 root `.env`의 `KTDM_HOST`를 읽게 함
+
+- 증상(n150 prod, #477 설치 `ab52ab51` 뒤): root `.env`에 `KTDM_HOST=n150`이 있는데 `sudo ktdctl pin verify`가
+  "operating release requires hosts and KTDM_HOST"로 실패. `sudo env KTDM_HOST=n150 ktdctl …`는 통과. preflight·pinned
+  rebuild·dagster-plane converge·compose-boundary 등 ktdctl을 거치는 운영 작업 전부가 막혔다.
+- 원인: `registry.current_host`가 `os.environ`만 봤다. backend는 `main.py`의 `load_dotenv`로 `.env`를 올리지만 `ktdctl`·설치
+  래퍼(project root만 설정)·launcher는 그러지 않는다. #477 리뷰 차단 2번이 지적했으나 고치지 않고 머지됐다.
+- 수정: `current_host`가 비어 있지 않은 프로세스 env → Manager 루트 `.env` 순으로 값을 정한다. trusted 설치본은 설치 root의
+  `.env`만, 개발 checkout은 `get_env_path()`. 둘 다 비면 운영 모드는 여전히 거부하고, 선언 호스트·로컬 주소 검증은 그대로다.
+  오류 문구에 출처(프로세스 env 또는 root `.env`)를 덧붙였다(접두는 유지).
+- 조회당 `ip` subprocess 캐시는 기존 테스트가 "매 조회 재검증"을 의도로 고정하고 있어 이 PR에서 바꾸지 않았다. 나머지 리뷰
+  항목은 `docs/tasks.md` T-MGR-01a-F로 옮겼다. 배포·n150 변경은 하지 않았다.
+- 리뷰 반영: 운영 모드에서 root `.env`가 있는데 읽을 수 없으면(n150 `root:root 0600`, 비-root 백업 cron) 빈 값으로
+  넘기지 않고 경로와 함께 "process env에 KTDM_HOST를 두라"로 거부한다. `run-standalone-backup.sh`는 같은 조건에서
+  ktdctl 전에 exit 2, `docs/prod-deployment.md` §3.w에 crontab `KTDM_HOST=<host>` 환경 줄을 필수로 적었다.
+  #477 이후 n150의 concierge·pinvi·transport·dagster_shared 주기 백업은 그 줄이 들어가기 전까지 실패한다.
+
 ## 2026-10-15 — PR #477 최신 main 병합과 이전 완료 상태 보존
 
 - main `409833e`를 feature branch에 merge했다. registry v2의 단일 hosts 선언·현재 호스트 검증·집계 조회 최적화와 선택적 시작 RPC 설정을 유지한다.
