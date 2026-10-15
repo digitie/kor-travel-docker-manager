@@ -2,6 +2,7 @@
 
 import copy
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,15 +18,7 @@ def _load_registry() -> dict:
     return load_yaml_rejecting_duplicate_keys((ROOT / "config/docker-targets.yml").read_text(encoding="utf-8"))
 
 
-#: 진짜 프로세스 캐시 — 테스트가 monkeypatch로 함수를 바꿔도 이 참조로 비운다.
-_ADDRESS_PROBE = registry._local_ipv4_addresses
-
-
-@pytest.fixture(autouse=True)
-def _fresh_address_probe():
-    _ADDRESS_PROBE.cache_clear()
-    yield
-    _ADDRESS_PROBE.cache_clear()
+# 주소 probe 캐시는 conftest의 autouse `_fresh_local_address_probe`가 테스트마다 비운다.
 
 
 @pytest.fixture
@@ -524,8 +517,10 @@ def _derived(config, monkeypatch, host):
 
 
 def test_third_virtual_host_derives_without_code_changes(config, monkeypatch):
-    """T-MGR-NH 수용 기준: 세 번째 호스트를 더하고 target 하나를 옮기면 파생물이 그 호스트를 반영하고, 옮긴 target이
-    혼자 갖지 않은 것은 원래 두 호스트에서 byte 불변이다. 코드는 그대로 — registry만 바꾼다."""
+    """T-MGR-NH 수용 기준의 **오늘 있는 런타임 파생물(R1 연결 좌표·`all` 필터·target host)** 부분: 세 번째 호스트를
+    더하고 target 하나를 옮기면 그 셋이 새 호스트를 반영하고, 옮긴 target이 혼자 갖지 않은 것은 원래 두 호스트에서 byte
+    불변이다. 코드는 그대로 — registry만 바꾼다. 커밋된 파생물(workspace·R2 소비자 기본값·Prometheus)은 아직 registry에서
+    계산되지 않아 여기서 보지 않는다(T-MGR-02·01c·04)."""
     import json
 
     before = {host: _derived(config, monkeypatch, host) for host in list(config["hosts"])}
@@ -561,17 +556,110 @@ def test_third_virtual_host_derives_without_code_changes(config, monkeypatch):
     assert set(after["mars"]["all"]) == {*everywhere, moved}
 
 
-def test_backend_code_has_no_host_name_literals():
-    """T-MGR-NH: 호스트 이름·주소는 registry에만 — 코드의 문자열 상수가 들고 있으면 호스트를 더할 때 코드를 고친다."""
+#: 호스트 리터럴 검사의 **범위**: `backend/src`와 `scripts/`의 Python(확장자 `.py` 또는 python shebang) 문자열 상수
+#: (f-string 조각 포함, docstring 제외)와 `config/prometheus/prometheus.yml`의 주석 아닌 줄. 범위 밖(명시): 셸 스크립트
+#: (`scripts/*.sh`·bash shebang — 주석·사람용 안내가 대부분이라 단어 검사가 잡음뿐이다), `docker-compose.yml`(R2 소비자
+#: 기본값은 커밋된 파생물 — `test_consumer_origin_defaults.py`가 registry와 대조한다), 문서·주석.
+#:
+#: 허용 목록은 (파일, 리터럴) 정확 일치다 — 같은 파일에 새 리터럴이 생기면 빨갛다. 항목이 더 이상 보이지 않아도 빨갛다
+#: (낡은 허용이 남지 않게).
+_HOST_LITERAL_ALLOWED: dict[tuple[str, str], str] = {
+    ("scripts/m05_isolated_e2e.py", "scripts/n150-playwright-runner.sh"):
+        "PinVi 저장소의 파일 이름이다(호스트 선택이 아니다).",
+    ("config/prometheus/prometheus.yml", "- job_name: cadvisor-odroid"):
+        "잠정 odroid exporter job(ADR-58 잠정 시행 ⅵ) — T-MGR-04가 registry 파생물(B-8)로 대체한다.",
+    ("config/prometheus/prometheus.yml", "- 192.168.1.13:12103"): "같은 잠정 job(T-MGR-04).",
+    ("config/prometheus/prometheus.yml", "host: odroid"): "같은 잠정 job들의 label(T-MGR-04).",
+    ("config/prometheus/prometheus.yml", "- job_name: node-odroid"): "같은 잠정 job(T-MGR-04).",
+    ("config/prometheus/prometheus.yml", "- 192.168.1.13:12106"): "같은 잠정 job(T-MGR-04).",
+}
+
+
+def _python_sources() -> list[Path]:
+    files = sorted((ROOT / "backend/src").rglob("*.py"))
+    for path in sorted((ROOT / "scripts").rglob("*")):
+        if not path.is_file():
+            continue
+        head = path.read_bytes()[:80]
+        if path.suffix == ".py" or (not path.suffix and head.startswith(b"#!") and b"python" in head.split(b"\n")[0]):
+            files.append(path)
+    return files
+
+
+def _string_constants(path: Path) -> list[tuple[int, str]]:
+    """docstring을 뺀 문자열 상수. f-string의 리터럴 조각도 `ast.Constant`로 나온다."""
     import ast
 
-    hosts = _load_registry()["hosts"]
-    names = set(hosts)
-    addresses = {spec["addr"] for spec in hosts.values()}
-    found = []
-    for path in sorted((ROOT / "backend/src").rglob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if node.value in names or any(address in node.value for address in addresses):
-                    found.append(f"{path.relative_to(ROOT)}:{node.lineno}: {node.value[:60]!r}")
-    assert found == []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                docstrings.add(id(first.value))
+    return [
+        (node.lineno, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings
+    ]
+
+
+def _host_literal_hits(hosts: dict) -> list[tuple[str, int, str]]:
+    import re
+
+    names = "|".join(re.escape(name) for name in hosts)
+    word = re.compile(rf"(?<![A-Za-z0-9_])(?:{names})(?![A-Za-z0-9_])")
+    addresses = [spec["addr"] for spec in hosts.values()]
+
+    def carries(text: str) -> bool:
+        return word.search(text) is not None or any(address in text for address in addresses)
+
+    hits = []
+    for path in _python_sources():
+        relative = path.relative_to(ROOT).as_posix()
+        hits.extend((relative, line, value) for line, value in _string_constants(path) if carries(value))
+    prometheus = ROOT / "config/prometheus/prometheus.yml"
+    for line, text in enumerate(prometheus.read_text(encoding="utf-8").splitlines(), start=1):
+        code = text.split("#", 1)[0].strip()
+        if code and carries(code):
+            hits.append(("config/prometheus/prometheus.yml", line, code))
+    return hits
+
+
+def test_code_has_no_host_name_literals():
+    """T-MGR-NH: 호스트 이름·주소는 registry에만 — 코드가 들고 있으면 호스트를 더할 때 코드를 고친다. 범위·허용은
+    `_HOST_LITERAL_ALLOWED` 주석."""
+    hits = _host_literal_hits(_load_registry()["hosts"])
+    unexpected = [f"{path}:{line}: {value[:80]!r}" for path, line, value in hits if (path, value) not in _HOST_LITERAL_ALLOWED]
+    assert unexpected == []
+    seen = {(path, value) for path, _, value in hits}
+    assert set(_HOST_LITERAL_ALLOWED) <= seen, sorted(set(_HOST_LITERAL_ALLOWED) - seen)
+
+
+def test_host_literal_scan_sees_words_fstrings_and_skips_docstrings(tmp_path, monkeypatch):
+    # 검사기 자체를 빨갛게: 단어 안·f-string 조각·주소는 잡고, docstring·다른 단어의 일부는 넘긴다.
+    source = tmp_path / "probe.py"
+    source.write_text(
+        '"""모듈 설명 n150."""\n'
+        'def f(x):\n'
+        '    """함수 설명 odroid."""\n'
+        '    a = f"ssh {x}@n150 now"\n'
+        '    b = "target on odroid"\n'
+        '    c = "http://10.0.0.9:1"\n'
+        '    d = "n1500 xodroid odroid_x"\n',
+        encoding="utf-8",
+    )
+    found = [value for _, value in _string_constants(source)]
+    hosts = {"n150": {"addr": "10.0.0.1"}, "odroid": {"addr": "10.0.0.9"}}
+    monkeypatch.setattr(sys.modules[__name__], "_python_sources", lambda: [source])
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    (tmp_path / "config/prometheus").mkdir(parents=True)
+    (tmp_path / "config/prometheus/prometheus.yml").write_text("# n150 주석\n- 10.0.0.1:9\n", encoding="utf-8")
+    hits = {(path, value) for path, _, value in _host_literal_hits(hosts)}
+    assert "모듈 설명 n150." not in found and "함수 설명 odroid." not in found
+    assert hits == {
+        ("probe.py", "@n150 now"),
+        ("probe.py", "target on odroid"),
+        ("probe.py", "http://10.0.0.9:1"),
+        ("config/prometheus/prometheus.yml", "- 10.0.0.1:9"),
+    }

@@ -12,6 +12,9 @@
 - n150 실측(own clone, 운영 무변경): `compose config` sha256이 설치본(main `5433056`)과 같다. `targets validate --json`은 `dagster.host`만
   `all`→`n150`. 연결 좌표 차이 3건(의도): 옛 geo webserver·옛 weather gateway가 loopback → odroid 주소, weather code-server 설명이
   odroid 주소 → `127.0.0.1`.
+- 리뷰 2인 반영: 호스트 리터럴 검사를 단어 일치·f-string·`scripts/`·Prometheus까지(범위 밖은 셸·compose·문서, 허용은 잠정
+  odroid job → T-MGR-04), 3rd-host 문구를 "오늘의 런타임 파생물"로, `version: 2` 그대로(읽는 코드 없음 — 바꾸는 것이 churn),
+  설치기 식별 모호(로컬 선언 주소 둘) 거부 테스트, 롤백 안내는 PREV checkout 뒤 그 sha의 설치기로, 주소 캐시는 conftest가 비움.
 - 배포·n150 변경은 하지 않았다.
 
 ## 2026-10-15 — ktdctl이 root `.env`의 `KTDM_HOST`를 읽게 함

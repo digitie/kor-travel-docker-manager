@@ -492,3 +492,35 @@ def test_host_identity_refuses_before_the_flip(tmp_path: Path, env_text: str | N
     assert "not flipping" in completed.stderr
     assert reason in completed.stderr
     assert "PASSED" not in completed.stdout
+
+
+def _local_ipv4() -> list[str]:
+    import json
+
+    data = json.loads(
+        subprocess.run(["/usr/sbin/ip", "-j", "-4", "address", "show"], capture_output=True, check=True).stdout
+    )
+    return sorted({a["local"] for i in data for a in i.get("addr_info", []) if a.get("family") == "inet"})
+
+
+@pytest.mark.skipif(not _HAS_IP, reason="/usr/sbin/ip 없음(Linux 전용)")
+def test_host_identity_refuses_two_local_declared_addresses(tmp_path: Path) -> None:
+    """선언 주소 둘이 이 장비에 있으면(보조 IPv4·VIP) 어느 이름이든 식별이 모호하다 — flip 전에 멈춘다."""
+
+    import yaml
+
+    local = _local_ipv4()
+    if len(local) < 2:
+        pytest.skip("이 장비의 IPv4가 둘 미만이다")
+    default, other = _hosts()
+    release = _identity_release(tmp_path, f"KTDM_HOST={default}\n")
+    path = release / "config" / "docker-targets.yml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config["hosts"][default]["addr"], config["hosts"][other]["addr"] = local[0], local[1]
+    path.write_text(yaml.safe_dump(config, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+    completed = _run_identity(release)
+
+    assert completed.returncode == 126, completed.stdout
+    assert "not flipping" in completed.stderr
+    assert "more than one declared host address is assigned to this host" in completed.stderr

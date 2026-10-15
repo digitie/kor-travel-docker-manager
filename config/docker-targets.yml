@@ -1,4 +1,4 @@
-version: 1
+version: 2
 
 # 주소의 정본. tenant 이동은 개별 검증 PR에서 host를 바꾼다(ADR-58).
 hosts:
