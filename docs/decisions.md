@@ -2501,13 +2501,20 @@ n150에서 깨진 둘을 고치는 최소 변경만 먼저 넣는다(계획 모�
   pinvi-api에 `PINVI_KOR_TRAVEL_GEO_BASE_URL`(odroid geo, 소유자 "pinvi geo 연동해")·`PINVI_KOR_TRAVEL_GEO_API_KEY`(빈 기본값 —
   odroid geo `ops.public_api_keys` 전용 키는 root `.env`, PinVi 쪽 짝 PR이 설정을 더한다).
   결박은 렌더 스캔(`backend/tests/test_consumer_origin_defaults.py`) — 형제 → 소비자 포트 표만 테스트에 있고 호스트는
-  registry `host:`에서 파생한다. **geo는 소비자가 호스트보다 앞선다**: geo Dagster는 아직 n150 plane에 있어 geo target은
-  n150이고, 테스트의 명시 재정의 하나(`geo → odroid`)가 그것을 말한다(geo 플립 = T-MGR-06 셋째). 포트 표를 R1 계산으로
-  바꾸는 것·`.env` 재정의 거부는 T-MGR-01c.
+  registry `host:`에서 파생한다. ~~geo는 소비자가 호스트보다 앞선다~~ — **2026-10-15 geo도 `host: odroid`**(아래 "geo
+  workspace 제외")라 테스트의 geo 재정의는 없어졌다. 포트 표를 R1 계산으로 바꾸는 것·`.env` 재정의 거부는 T-MGR-01c.
 - **`all`에서 weather 제외**: weather에 `excluded_from_all: true`, n150 `all.include`에서 뺐다 — n150 `ensure all`이 지운 DB로
   weather를 다시 세우지 않게. target 자체(상태·로그)는 남는다. `hosts:`에 `all`은 예약어(infra `host: all`)라 로더가 거부한다.
 - **T-MGR-NH가 없애야 할 2-호스트 가정**: (ⅰ) workspace 파생의 "default 호스트 = 이 plane" 필터(파일 하나, n150 고정),
-  (ⅱ) 소비자 origin 테스트의 geo 호스트 재정의 표, (ⅲ) weather의 `excluded_from_all`(호스트별 `all` 필터로 대체),
+  (ⅱ) ~~소비자 origin 테스트의 geo 호스트 재정의 표~~(2026-10-15 제거됨), (ⅲ) weather의 `excluded_from_all`(호스트별 `all` 필터로 대체),
   (ⅳ) 소비자 포트 표(호스트별 포트가 다르다는 사실을 registry가 갖게 — T-MGR-01c와 함께), (ⅴ) 소비자 origin 테스트의
   "consumer는 default 호스트에서 돈다" 가정(`_expected_origin`이 default → `127.0.0.1`), (ⅵ) Prometheus odroid job 주소
   리터럴(#474, T-MGR-04).
+- **geo workspace 제외(2026-10-15 소유자 결정)**: n150 geo code-server(`127.0.0.1:12503`)를 멈췄더니 n150 공용 daemon·webserver가
+  "code servers not serving: ['kortravelgeo_dagster.definitions']"로 unhealthy가 됐다(운영자 preflight 차단). geo target에
+  `host: odroid` → 같은 파생 규칙으로 n150 `workspace.yaml`에서 빠지고(남는 것 concierge·map·pinvi 3 location, digest
+  `4461abc13cce9c4f`), 소비자 origin 테스트의 geo 재정의가 군더더기로 빨개져 지웠다. **geo Dagster 적재는 odroid plane이 생길
+  때까지 쉰다**(T-MGR-02·06; 소유자 수용). geo는 `all.include`에 남긴다 — `map`이 `depends_on: [geo]`라 `ensure all`·`ensure map`
+  폐포가 어차피 geo를 담는다(그 간선 삭제는 R7, T-MGR-01b; 그 전까지 n150 `ensure map`은 n150 geo 컨테이너를 되살린다 —
+  workspace에는 없으므로 이중 적재는 없다). Map/PinVi pinned 수렴(`wanted`)은 map·pinvi location만 보고, fence·소유자 파생
+  (`installed_location_owners`)은 workspace에 있는 location만 검사하므로 geo가 빠져도 바뀌지 않는다.
