@@ -1,4 +1,17 @@
 ## 2026-10-15 — 원격 target의 HTTP 관측과 로컬 도구 경계(Codex)
+## 2026-10-15 — host writer·workspace 분리의 로컬 전체 회귀 완료(Codex)
+
+- 고정 소스 `0a8dd96`의 ext4 독립 사본에서 backend 전체 2842 PASS/39 SKIP(318.69초).
+  Docker daemon은 미존재 소켓으로 격리하고 검증 전용 shim은 정적 `compose config`만
+  실제 plugin에 전달했다. 실제 Docker 통합 39건은 미실행이며 PASS로 합산하지 않는다.
+- 초기 69 FAIL은 보존했다. 원본 제품 소스 `d8c2cfc` 그대로 정적 Compose 관련
+  6파일 679 PASS로 환경 원인 68건을 확인했고, 나머지 외부 프로젝트 fixture 1건은
+  직접 소유 host를 명시해 관련 host 경계 62 PASS로 닫았다. skip이나 기대 계약을 완화하지 않았다.
+- frontend35 PASS·type/lint/build, backend 전체 Ruff·diff, offline wheel 및 CodeGraph sync도
+  완료했다. HTTPX runtime 의존성은 설치 wheelhouse에서 포함 여부를 확인해야 한다.
+  독립 제품 리뷰 2인·최종 CI·운영 설치·live E2E는 아직 후속이며 PR은 draft다.
+  Common light health와 추가 CPU/cadence 변경은 이번 소스에 섞지 않았다.
+
 ## 2026-10-15 — 전체 회귀의 Docker 격리와 외부 프로젝트 fixture 전제 교정(Codex)
 
 - 최초 전체 backend 검증은 69 FAIL/2773 PASS/39 SKIP이었다. 실제 Docker 접근을 막은
