@@ -420,6 +420,7 @@ def test_multi_owner_remote_container_is_a_config_error_not_the_first_name(confi
     config["targets"]["map"]["host"] = "odroid"
     # map-api를 map(odroid)와 conc(mars) 둘의 실행 service로 만든다 — n150에서 보면 주소가 둘이다.
     config["targets"]["conc"]["services"] = [*config["targets"]["conc"]["services"], "kor-travel-map-api"]
+    _cut_cross_host_edges(config)
     with pytest.raises(registry.TargetsConfigError, match="kor-travel-map-api.*no single address.*mars, odroid"):
         registry._validate_targets_config(config, label="test")
 
@@ -505,6 +506,15 @@ def test_operating_mode_names_an_unusable_root_env_file(config, monkeypatch, tmp
     assert registry.current_host(config) == registry.default_host(config)
 
 
+def _cut_cross_host_edges(config) -> None:
+    """R7: target을 옮기면 그 target에 닿는 교차 호스트 간선을 끊는다(모든 호스트에 있는 infra로 가는 간선은 남는다)."""
+    for name, spec in config["targets"].items():
+        spec["depends_on"] = [
+            d for d in spec.get("depends_on") or []
+            if registry.target_hosts(name, config) <= registry.target_hosts(d, config)
+        ]
+
+
 def _derived(config, monkeypatch, host):
     """한 호스트에서 본 런타임 파생물 전부: 연결 좌표(R1)·`all` 필터·target 호스트."""
     monkeypatch.setattr(registry, "load_targets_config", lambda: config)
@@ -528,6 +538,7 @@ def test_third_virtual_host_derives_without_code_changes(config, monkeypatch):
     mars = "192.0.2.7"  # TEST-NET-1
     config["hosts"]["mars"] = {"addr": mars}
     config["targets"][moved]["host"] = "mars"
+    _cut_cross_host_edges(config)  # 플립 PR이 하는 일(R7, T-MGR-01b)
     registry._validate_targets_config(config, label="test")
     after = {host: _derived(config, monkeypatch, host) for host in config["hosts"]}
 

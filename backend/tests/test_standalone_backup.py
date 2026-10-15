@@ -31,6 +31,23 @@ _TOC_OUTPUT = b";\n; Archive created ...\n;\n1; 2615 SCHEMA public\n2; 1259 TABL
 _MAX_WAL_OUTPUT = b"1073741824\n"
 
 
+
+@pytest.fixture(autouse=True)
+def _backup_role_on_this_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """이 파일은 dump·디스크·잠금 기제를 본다. R4(role의 target이 이 호스트에 있어야 한다)는
+    `test_host_command_rules.py::test_db_backup_create_refuses_a_role_of_another_host_before_touching_postgres`가 본다
+    — 여기서는 role을 그 target의 호스트에서 부르는 것으로 둔다(효과 없는 대역이 아니라 같은 판정의 통과 쪽)."""
+    from kor_travel_docker_manager.services.registry import get_target
+
+    original = standalone_backup._require_role_on_this_host
+
+    def on_its_host(role):
+        monkeypatch.setenv("KTDM_HOST", get_target(standalone_backup.BACKUP_ROLE_TARGETS[role])["host"])
+        original(role)
+
+    monkeypatch.setattr(standalone_backup, "_require_role_on_this_host", on_its_host)
+
+
 @pytest.fixture(autouse=True)
 def _ample_disk(monkeypatch: pytest.MonkeyPatch) -> None:
     """디스크 여유 가드는 아래 전용 테스트가 본다. 나머지 테스트가 이 머신의 실제 여유

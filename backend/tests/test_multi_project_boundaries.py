@@ -623,6 +623,10 @@ def test_lifecycle_actions_work_through_the_public_entry_point(
 
     monkeypatch.setattr(DockerService, "_get_client", lambda self: _Client())
     monkeypatch.delenv("KTDM_DEPLOYMENT_ENVIRONMENT", raising=False)
+    # R4(T-MGR-01b): restart는 그 컨테이너가 있는 호스트에서만 — transport의 호스트에서 돈다.
+    from kor_travel_docker_manager.services.registry import get_target
+
+    monkeypatch.setenv("KTDM_HOST", get_target("transport")["host"])
 
     result = DockerService().control_container("kor-travel-transport-backend", "restart")
     assert result["success"] is True

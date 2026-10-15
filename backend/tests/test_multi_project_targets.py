@@ -305,7 +305,7 @@ def test_single_file_boundary_is_refused_for_an_external_project(
 
 
 @pytest.mark.parametrize("target", ["transport"])
-def test_ensure_target_refuses_external_projects(target: str) -> None:
+def test_ensure_target_refuses_external_projects(target: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """`ensure`는 Manager 자신의 후보만 다룬다.
 
     `ensure`가 전제하는 것은 보호값 스캔·볼륨 그래프·단일파일 경계·핀셋을 통과한
@@ -322,6 +322,10 @@ def test_ensure_target_refuses_external_projects(target: str) -> None:
     거부된다"는 실제 메커니즘이 충분히 증명된다.
     """
 
+    # R4(T-MGR-01b)가 먼저 보지 않게 그 target의 호스트에서 돈다 — 여기서 보는 것은 외부 거부다.
+    from kor_travel_docker_manager.services.registry import get_target
+
+    monkeypatch.setenv("KTDM_HOST", get_target(target)["host"])
     service = ComposeService()
     with pytest.raises(DeploymentContractError) as rejection:
         service.ensure_target(target)

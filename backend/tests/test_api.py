@@ -999,10 +999,8 @@ def test_get_targets():
     ]
     assert data[7]["resolved_sequence"] == [
         "storage",
-        "gra",
         "cadv",
         "prom",
-        "geo",
         "conc",
         "map",
         "pinvi",

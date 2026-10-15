@@ -45,10 +45,8 @@ def test_registry_resolves_application_targets_to_shared_services():
     assert target["id"] == "pinvi"
     assert target_sequence_for_target("srv") == [
         "storage",
-        "gra",
         "cadv",
         "prom",
-        "geo",
         "conc",
         "map",
         "pinvi",
@@ -126,26 +124,22 @@ def test_short_aliases_resolve_dependency_order():
     # concierge는 geo에 의존하지 않는다(prometheus 다음 별도 분기).
     assert target_sequence_for_target("conc") == [
         "storage",
-        "gra",
         "cadv",
         "prom",
         "conc",
     ]
+    # R7(T-MGR-01b): map은 다른 호스트의 geo에 기대지 않고, 모든 호스트의 cadv는 default 호스트의 gra에 기대지 않는다.
     assert target_sequence_for_target("map") == [
         "storage",
-        "gra",
         "cadv",
         "prom",
-        "geo",
         "conc",
         "map",
     ]
     assert target_sequence_for_target("srv") == [
         "storage",
-        "gra",
         "cadv",
         "prom",
-        "geo",
         "conc",
         "map",
         "pinvi",
