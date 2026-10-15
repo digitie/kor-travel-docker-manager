@@ -1539,8 +1539,8 @@ services:
         condition: service_healthy
       rustfs:
         condition: service_healthy
-      kor-travel-geo-api:
-        condition: service_healthy
+      # geo는 다른 호스트다(ADR-58 R7, T-MGR-01b) — 간선을 두면 이 호스트의 `up`이 geo-api를 되살린다. Map은 geo를
+      # 런타임 REST로 부르고 geo preflight 기본 false로 fail-open 기동한다.
       kor-travel-concierge-api:
         condition: service_healthy
     environment:

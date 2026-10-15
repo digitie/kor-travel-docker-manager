@@ -45,6 +45,7 @@ from kor_travel_docker_manager.services.registry import (
     MANAGED_CONTAINERS,
     external_project_for_container,
     get_project_root,
+    require_container_on_this_host,
 )
 from kor_travel_docker_manager.services.secret_scrub import (
     URL_USERINFO_RE,
@@ -899,6 +900,10 @@ class DockerService:
             return {"success": False, "error": f"Container {container_id} is not managed."}
         if action not in {"start", "stop", "restart"}:
             return {"success": False, "error": f"Invalid action: {action}"}
+        if action in {"start", "restart"}:
+            # R4: 기동·재기동은 그 컨테이너가 있어야 할 호스트에서만. `stop`은 묻지 않는다 — 이 소켓에 그 이름이
+            # 있으면 멈추고(옛 스택 해체), 없으면 아래 SDK 조회가 NotFound로 실패한다(효과 판정, label 없음).
+            require_container_on_this_host(container_id, action=action)
         if external_project_for_container(container_id) is not None:
             # 형제 컨테이너의 수명주기는 Docker SDK만 쓴다. c6c lock과 Manager mutation
             # 환경 계약은 **Manager 자신의 compose**를 지키는 장치라, 남의 컨테이너를

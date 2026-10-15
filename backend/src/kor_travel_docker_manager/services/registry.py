@@ -2,7 +2,7 @@ import os
 import posixpath
 import re
 import stat
-from collections.abc import Callable, ItemsView, Iterator, Mapping, ValuesView
+from collections.abc import Callable, ItemsView, Iterable, Iterator, Mapping, ValuesView
 from dataclasses import dataclass
 from functools import lru_cache
 from ipaddress import IPv4Address
@@ -558,6 +558,116 @@ def container_hosts(container_id: str, config: Mapping[str, Any] | None = None) 
     return frozenset(owners or observers)
 
 
+def _run_services(spec: Mapping[str, Any]) -> list[str]:
+    """target이 이 호스트에서 **실행**하는 Manager compose service — `services`와 `run` init step의 one-shot."""
+    executed = list(spec.get("services") or [])
+    for step in spec.get("init_steps") or []:
+        command = step.get("command") if isinstance(step, Mapping) else None
+        if isinstance(command, list) and command and command[0] == "run":
+            executed.append(str(command[-1]))
+    return executed
+
+
+def service_hosts(service: str, config: Mapping[str, Any] | None = None) -> frozenset[str]:
+    """Manager 자신의 compose service가 실행되는 호스트 집합(그 service를 실행하는 target들의 host 합집합).
+
+    형제 프로젝트 target(`external_project`)과 조회 집계(`include`)는 Manager compose service를 소유하지 않는다.
+    어느 target도 실행하지 않는 service(옛 profile·수동 bootstrap one-shot)는 빈 집합이다.
+    """
+    config = load_targets_config() if config is None else config
+    hosts: set[str] = set()
+    for target, spec in config["targets"].items():
+        if spec.get("include") or spec.get("external_project"):
+            continue
+        if service in _run_services(spec):
+            hosts.update(target_hosts(target, config))
+    return frozenset(hosts)
+
+
+def _host_placement_error(subject: str, hosts: frozenset[str], selected: str, action: str) -> Exception:
+    from kor_travel_docker_manager.services.errors import HostPlacementError
+
+    where = ", ".join(sorted(hosts)) or "no declared host"
+    return HostPlacementError(
+        f"{subject} is on host {where}, not on this host ({selected}); {action} runs only there (ADR-58 R4)"
+    )
+
+
+def require_targets_on_this_host(targets: Iterable[str], *, action: str) -> None:
+    """R4: 생성·변경 명령은 `KTDM_HOST ∈ target의 host 집합`일 때만(`all`은 모든 호스트라 항상 통과).
+
+    거부는 아무것도 바꾸기 전이다. `stop`·`logs`·`status`는 이 검사를 거치지 않는다 — 그쪽은 로컬 소켓에서
+    컨테이너가 조회되는지(효과)로 갈린다.
+    """
+    config = load_targets_config()
+    selected = current_host(config)
+    for target in targets:
+        name = _target_name_from_config(target, config)
+        hosts = target_hosts(name, config)
+        if selected not in hosts:
+            raise _host_placement_error(f"target {name}", hosts, selected, action)
+
+
+def require_container_on_this_host(container_id: str, *, action: str) -> None:
+    """R4의 컨테이너 단위(`start`·`restart`): 그 컨테이너가 존재하는 호스트 집합에 이 호스트가 있어야 한다."""
+    config = load_targets_config()
+    selected = current_host(config)
+    hosts = container_hosts(container_id, config)
+    if selected not in hosts:
+        raise _host_placement_error(f"container {container_id}", hosts, selected, action)
+
+
+def require_services_on_this_host(services: Iterable[str], *, action: str) -> None:
+    """R4의 compose service 단위(공용 plane 수렴처럼 target이 아니라 service 묶음을 다루는 명령)."""
+    config = load_targets_config()
+    selected = current_host(config)
+    for service in services:
+        hosts = service_hosts(service, config)
+        if selected not in hosts:
+            raise _host_placement_error(f"service {service}", hosts, selected, action)
+
+
+def remote_target_containers(target: str) -> tuple[frozenset[str], list[str]] | None:
+    """target이 이 호스트에 없으면 (그 호스트 집합, 이 호스트에 없는 그 target의 컨테이너들), 있으면 None.
+
+    `status`가 원격 target을 HTTP로 볼 대상이다. 이 호스트에도 있는 컨테이너(공용 PG 같은 `all` 소유)는 로컬
+    `ps`가 이미 본다.
+    """
+    config = load_targets_config()
+    selected = current_host(config)
+    name = _target_name_from_config(target, config)
+    hosts = target_hosts(name, config)
+    if selected in hosts or config["targets"][name].get("include"):
+        return None
+    names = [
+        container
+        for container in config["targets"][name].get("containers") or []
+        if selected not in container_hosts(container, config)
+    ]
+    return hosts, names
+
+
+def _validate_target_edges_stay_on_host(config: Mapping[str, Any], *, label: str) -> None:
+    """R7: target `depends_on` 간선 a → b는 a가 있는 모든 호스트에 b도 있을 때만(`hosts(a) ⊆ hosts(b)`).
+
+    `ensure`는 의존 폐포를 올리므로 간선 하나가 다른 호스트의 target을 이 호스트에 되살린다(2026-10-15 `map → geo`).
+    R4는 지목한 target만 막고 폐포는 막지 못한다. ADR-58 R7 문구는 "host 집합이 같을 때"지만 `all` 호스트의
+    infra(storage·cadv)로 가는 간선은 어디서든 로컬에 있어 안전하다 — 부분집합이 그 규칙의 효과다.
+    """
+    for target_id, spec in config["targets"].items():
+        if spec.get("include"):
+            continue
+        source = target_hosts(target_id, config)
+        for dependency in spec.get("depends_on") or []:
+            reached = target_hosts(dependency, config)
+            if not source <= reached:
+                raise TargetsConfigError(
+                    f"{label} targets.{target_id}.depends_on: '{dependency}' (host "
+                    f"{', '.join(sorted(reached))}) is not on every host of '{target_id}' "
+                    f"({', '.join(sorted(source))}) — cross-host edges are not allowed (ADR-58 R7)"
+                )
+
+
 #: R1 자리표시. URL의 authority 자리(`scheme://{host}`)에만 둔다 — 로더가 강제한다.
 _HOST_PLACEHOLDER: Final = "{host}"
 
@@ -811,6 +921,8 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
     for name in config["dependency_order"]:
         if name not in targets:
             raise TargetsConfigError(f"{label} dependency_order: unknown target '{name}'")
+
+    _validate_target_edges_stay_on_host(config, label=label)
 
     # R1이 모든 선언 호스트에서 주소 하나로 풀리는지 로드 때 본다 — 한 호스트에서만 도는 status가
     # 처음 만나는 모순이 되지 않게(N개 호스트 어디서든 같은 판정).

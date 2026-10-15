@@ -120,6 +120,7 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     parse_candidate_static_head,
 )
 from kor_travel_docker_manager.services.pinned_runtime_release import (
+    RUNTIME_SOURCE_ROLES,
     PinnedRuntimeRelease,
     current_pinned_runtime_release,
 )
@@ -141,6 +142,9 @@ from kor_travel_docker_manager.services.registry import (
     get_project_root,
     init_steps_for_target,
     is_known_target,
+    remote_target_containers,
+    require_services_on_this_host,
+    require_targets_on_this_host,
     runtime_services_for_target,
     service_groups_for_target,
     services_for_target,
@@ -3657,6 +3661,9 @@ class ComposeService:
         capture_output: bool = True,
     ) -> dict[str, Any]:
         target_sequence = target_sequence_for_target(target)
+        # R4: 지목한 target과 그 폐포가 전부 이 호스트에 있어야 한다. 폐포는 R7(로더)이 호스트 안으로 묶지만
+        # 여기서도 본다 — 다른 호스트의 target을 이 호스트에 되살리는 `up`은 어떤 경로로도 나가지 않는다.
+        require_targets_on_this_host([target, *target_sequence], action="ensure")
         if target_is_external(target):
             # `ensure`는 Manager의 C6c 계약 기계(보호값 스캔·볼륨 그래프·단일파일
             # 경계·핀셋)를 통과한 **Manager 자신의** 후보를 전제한다. 형제 프로젝트의
@@ -4600,6 +4607,8 @@ class ComposeService:
             raise DeploymentContractError(
                 "a deploy either restarts or adopts the live databases, not both"
             )
+        # R4: 핀된 pair(Map·PinVi)가 이 호스트의 target이어야 한다 — 아니면 아무것도 잡기 전에 멈춘다.
+        require_targets_on_this_host(RUNTIME_SOURCE_ROLES, action="pinned runtime rebuild")
         _require_pinned_runtime_rebuild_root()
         restart = (
             None
@@ -5093,6 +5102,8 @@ class ComposeService:
                 environment_snapshot=environment_snapshot,
             )
             plane, services, locations = self._frozen_shared_plane(transaction)
+            # R4: 공용 plane이 이 호스트에서 도는 것이어야 한다(plane service의 호스트는 registry에서 파생).
+            require_services_on_this_host(plane.services, action="dagster-plane converge")
             self._require_plane_location_owners_fenced(locations, installed_location_owners())
             drift = self._shared_plane_drift(plane, services)
             result: dict[str, Any] = {
@@ -5863,6 +5874,23 @@ class ComposeService:
         return runtime_config
 
     def status_target(self, target: str = "all", *, capture_output: bool = True) -> dict[str, Any]:
+        result = self._status_target_local(target, capture_output=capture_output)
+        remote = remote_target_containers(target)
+        if remote is not None:
+            # R4: 다른 호스트의 target은 이 소켓에 없다(로컬 `ps`는 옛 스택 잔재만 보인다). registry connection의
+            # http(s) URL을 전부 본다 — 판정은 `remote_probe` 모듈 docstring.
+            from kor_travel_docker_manager.services.remote_probe import probe_remote_containers
+
+            hosts, names = remote
+            probes = probe_remote_containers(MANAGED_CONTAINERS, names)
+            result["remote"] = {"hosts": sorted(hosts), "containers": probes}
+            lines = [f"# remote target {target} on host {', '.join(sorted(hosts))} (HTTP probe)"]
+            lines.extend(f"{name} {probe['state']}" for name, probe in probes.items())
+            local = str(result.get("stdout") or "").rstrip("\n")
+            result["stdout"] = "\n".join([local, *lines] if local else lines) + "\n"
+        return result
+
+    def _status_target_local(self, target: str, *, capture_output: bool) -> dict[str, Any]:
         services = services_for_target(target)
         groups = service_groups_for_target(target)
         external_groups = [group for group in groups if group.external is not None]

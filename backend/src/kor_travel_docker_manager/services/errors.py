@@ -17,6 +17,15 @@ class DeploymentContractError(ValueError):
     """C6c 배포가 컨테이너 변경 전에 중단되어야 하는 계약 위반."""
 
 
+class HostPlacementError(DeploymentContractError):
+    """생성·변경 명령의 대상이 이 호스트(`KTDM_HOST`)에 있지 않다(ADR-58 R4).
+
+    아무것도 바꾸기 전에 던진다. API는 409로 낸다(`DeploymentContractError` 핸들러).
+    """
+
+    code = "TARGET_ON_ANOTHER_HOST"
+
+
 class ComposeCandidateContractError(DeploymentContractError):
     """compose candidate가 C6c 보호값 격리 계약을 위반했다."""
 

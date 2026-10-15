@@ -63,6 +63,18 @@ BACKUP_ROLES: tuple[BackupRole, ...] = (
     "dagster_shared",
 )
 
+#: role의 database를 소유하는 registry target(ADR-58 R4). DB는 공용 instance가 있는 모든 호스트에 같은 이름으로
+#: **있을 수 있지만** 살아 있는 것은 그 target이 도는 호스트의 것뿐이다 — 다른 호스트의 같은 이름 DB는 이전 뒤 남은
+#: 낡은 사본이다(2026-10-14·15 geo·transport가 odroid로 옮긴 뒤 n150의 것). 그래서 dump는 그 호스트에서만 뜬다.
+BACKUP_ROLE_TARGETS: dict[BackupRole, str] = {
+    "geo": "geo",
+    "concierge": "conc",
+    "map_application": "map",
+    "pinvi": "pinvi",
+    "transport": "transport",
+    "dagster_shared": "dagster",
+}
+
 _CONTAINER_NAME = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
 _ROLE_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,62}$")
 _DATABASE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
@@ -438,6 +450,7 @@ def create_standalone_backup(
 
     if expected_dump_bytes is not None and expected_dump_bytes <= 0:
         raise StandaloneBackupError("expected_dump_bytes must be a positive byte count")
+    _require_role_on_this_host(role)
     container_name, database_name = _role_config(role)
     port = _discover_port(container_name)
     admin_name = _discover_admin_role(container_name)
@@ -1419,6 +1432,19 @@ def rehearse_standalone_restore(
         restored_catalog_digest=restored_catalog_digest,
         live_catalog_digest=live_catalog_digest,
     )
+
+
+def _require_role_on_this_host(role: BackupRole) -> None:
+    """R4: dump는 role의 target이 도는 호스트에서만. 거부는 이 모듈의 오류 타입으로(CLI·API가 그것만 잡는다)."""
+    from kor_travel_docker_manager.services.errors import DeploymentContractError
+    from kor_travel_docker_manager.services.registry import require_targets_on_this_host
+
+    if role not in BACKUP_ROLE_TARGETS:
+        raise StandaloneBackupError(f"unknown backup role: {role}")
+    try:
+        require_targets_on_this_host([BACKUP_ROLE_TARGETS[role]], action=f"db-backup create {role}")
+    except DeploymentContractError as exc:
+        raise StandaloneBackupError(str(exc)) from exc
 
 
 def _role_config(role: BackupRole) -> tuple[str, str]:

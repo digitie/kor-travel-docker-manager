@@ -1229,6 +1229,11 @@ def _runtime_pin_mutation_lock(
         and not allow_inherited_terminal_block
     ):
         raise DeploymentContractError("runtime pin mutation inherited lock is invalid")
+    # R4(ADR-58): 핀은 그 pair(Map·PinVi)가 도는 호스트에서만 바꾼다. 거부는 lock 전이다.
+    from kor_travel_docker_manager.services.pinned_runtime_release import RUNTIME_SOURCE_ROLES
+    from kor_travel_docker_manager.services.registry import require_targets_on_this_host
+
+    require_targets_on_this_host(RUNTIME_SOURCE_ROLES, action="runtime pin mutation")
     with manager_mutation_lock():
         if not allow_pending_pair_recovery:
             from kor_travel_docker_manager.services.runtime_pair_rotation import (

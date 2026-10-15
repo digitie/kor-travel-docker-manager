@@ -400,7 +400,9 @@ targets:
     # Manager에 등록되지 않은 외부 compose 프로젝트 `kor-travel-transport-admin`이 쓴다
     # (0.0.0.0 listen, 2026-09-28 n150 실측). 여기에 포트를 새로 배정하지 않는다(ports.md).
     port_band: "12300-12399"
-    depends_on: [gra]
+    # R7(ADR-58): 모든 호스트에 있는 target은 default 호스트에만 있는 gra에 기댈 수 없다 — 기대면 다른 호스트의
+    # `ensure cadv`가 그 호스트에 Grafana를 띄운다. 간선은 기동 순서 선형화일 뿐이라 storage로 충분하다.
+    depends_on: [storage]
     display_name: cAdvisor Exporter
     description: Docker 컨테이너 리소스 메트릭을 Prometheus 형식으로 노출합니다.
     aliases:
@@ -437,11 +439,12 @@ targets:
     # (n150 geo code-server `12503`은 02:42Z 멈춤, odroid `127.0.0.1:12503`이 odroid 자체 workspace에 02:52Z 합류 — Manager
     # 밖, 호스트 측 구성; Manager의 `workspace.odroid.yaml`은 T-MGR-02). 소비자(Map·PinVi)는 이미 odroid geo `http://192.168.1.13:12501`을
     # 부른다. 잠정: 이 값이 지금 바꾸는 것은 n150 공용 workspace에서 이 location이 빠지는 것과 소비자 origin 테스트의
-    # 기대 호스트뿐이다(`hosts:` 주석). `all.include`에는 남긴다 — `map`이 `depends_on: [geo]`라 `ensure all`/`ensure map`의
-    # 폐포가 어차피 geo를 담는다(그 간선 삭제는 R7, T-MGR-01b). n150 geo API는 아직 돈다.
+    # 기대 호스트뿐이다(`hosts:` 주석). `all.include`에는 남긴다 — 호스트별 `all` 필터가 geo의
+    # 호스트에서만 담는다. `map → geo` 간선은 R7로 지웠다(T-MGR-01b, registry·compose 둘 다).
     host: odroid
     port_band: "12500-12599"
-    depends_on: [prom]
+    # R7: geo의 호스트에 없는 prom(default 호스트의 중앙 관측) 대신 모든 호스트에 있는 cadv에 건다.
+    depends_on: [cadv]
     display_name: Kor Travel Geo
     description: Kor Travel Geo API/Web UI와 원천 데이터 적재 상태를 관리합니다.
     aliases:
@@ -534,7 +537,9 @@ targets:
 
   map:
     port_band: "12700-12799"
-    depends_on: [geo, conc]
+    # R7(T-MGR-01b): geo는 다른 호스트다 — 간선을 두면 `ensure map`이 이 호스트에 geo를 되살린다. Map은 geo를
+    # 런타임 REST로 부르고 `kor_travel_geo_preflight_required` 기본 false로 fail-open 기동한다(ADR-58 R7).
+    depends_on: [conc]
     display_name: Kor Travel Map
     description: 공용 PostgreSQL instance의 Map DB 위에서 Kor Travel Map API/Dagster/Web UI를 실행하며 Kor Travel Geo와 Kor Travel Concierge에 의존한다.
     aliases:
