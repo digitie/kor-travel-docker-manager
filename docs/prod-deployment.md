@@ -801,6 +801,9 @@ source restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공
 > 근거가 아니며, 아래 비운영 `rebuild-pinned`만 generation을 배포하는 정본이다. 파기형 v8 journal·resume
 > 설계의 근거는 `docs/decisions.md` ADR-51과 `docs/journal.md`에 남아 있다.
 
+이 절의 managed mutation은 `rebuild-pinned` 하나와, 그 안의 공용 Dagster plane 수렴만 따로 도는
+`dagster-plane converge`(§8.2 — generation·pin을 바꾸지 않고 같은 G 아래에서 plane daemon·webserver만 다시 만든다) 둘이다.
+
 ### 8.1 비운영 pinned runtime 배포
 
 실제 운영 환경에는 이 절을 적용하지 않는다. typed 환경 pair
@@ -893,10 +896,16 @@ weather·transport) healthcheck가 사라진 code-server를 기다려 unhealthy�
 preflight는 plane이 unhealthy이면 재구축을 시작하지 않는다 — 이 명령은 그 수렴 한 조각만 따로 돈다. n150은
 `rehearsal/rebuildable`이라 일반 `ensure dagster`는 거부된다(`_validate_mutation_environment`).
 
+**순서(n150).** ① Manager 설치 → ② `dagster-plane converge --dry-run`으로 서비스별 차이를 본다 → ③ `--confirm` 전에
+호스트 preflight(`~/preflight.sh`, 저장소 밖)의 **plane health를 뺀 나머지 검사**(load·디스크·상시 서비스 등)가 PASS여야
+한다 → ④ `--confirm` → ⑤ preflight가 **전부** PASS → ⑥ pinned 재구축. `--dry-run` 이유에 `rendered image is not present
+locally`가 있으면 `--confirm`의 `up`이 G 아래에서 `kor-travel-dagster-host` 이미지를 **빌드**한다(재구축의 plane 수렴과
+같다) — 부하가 낮을 때 돌리거나 이미지를 먼저 준비한다.
+
 ```bash
-# 무엇이 다른지만 본다(아무것도 바꾸지 않는다). 서비스별로 이미지·env 이름·digest(떠 있는 값 != render 값)를 낸다.
+# 무엇이 다른지만 본다(아무것도 바꾸지 않는다). 서비스별로 이미지·env 이름·파일 digest(떠 있는 값 != render 값)와 지금 health를 낸다.
 sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --dry-run
-# 다른 plane 서비스만 다시 만들고 두 컨테이너가 healthy가 될 때까지(최대 300초) 기다린다.
+# 다른 plane 서비스만 다시 만들고 두 컨테이너가 healthy가 될 때까지 기다린다(상한은 render healthcheck에서 파생).
 sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --confirm
 ```
 
@@ -908,9 +917,13 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane co
   `up -d --no-deps <webserver> <daemon>` 하나만 부른다 — Map·PinVi slot 서비스, gateway, code-server는 건드리지 않는다.
   plane이 실을 location의 옛 Dagster 서비스가 돌면(이중 발화) 거부한다.
 - **판정**: 두 컨테이너가 render와 같으면(이미지 ID·env 전부·command·entrypoint, 재구축의 `_shared_plane_current`)
-  `outcome: current` 무연산이다. 재생성 뒤 healthy가 안 되면 `outcome: recreated_not_healthy`·종료 코드 2와 서비스별
-  health를 낸다 — daemon의 healthcheck는 workspace의 code-server 전부가 SERVING인지도 보므로 남은 location의
-  code-server가 내려가 있으면 그것을 먼저 고친다. `--json`은 secret-free 결과를 낸다(env 값은 `_DIGEST` 16진 값만 싣는다).
+  다시 만들지 않는다. 재생성했든 안 했든 두 컨테이너가 healthy인지 본다 — 상한은 render healthcheck의
+  `start_period + interval × retries + timeout`(가장 긴 서비스, 60~900초; 지금 daemon은 390초)이다. healthy면
+  `outcome: current`/`recreated`, 아니면 `current_not_healthy`/`recreated_not_healthy`·종료 코드 2와 서비스별 health를
+  낸다(healthcheck가 없는 컨테이너는 기다리지 않고 바로 실패). daemon의 healthcheck는 workspace의 code-server 전부가
+  SERVING인지도 보므로 남은 location의 code-server가 내려가 있으면 그것을 먼저 고친다. `--dry-run`은 health를 한 번만
+  보고 기다리지 않는다. `--json`은 secret-free 결과를 낸다 — env 값은 healthcheck가 이름으로 대조하는 파일 digest
+  env(16진 16자)만 싣고 나머지는 이름만 싣는다.
 
 ## 9. 두 번째 호스트 odroid (계획 — ADR-58 proposed, 미구현)
 

@@ -62,6 +62,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
         compose_calls=[],
         inspected=[],
         rotation_pending=False,
+        env_overrides={},
     )
 
     @contextmanager
@@ -94,6 +95,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
         }
         if state.stale[name]:
             env["KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST"] = "0123456789abcdef"
+        env.update(state.env_overrides)
         return {
             "image_id": _IMAGE_ID,
             "env": env,
@@ -233,7 +235,7 @@ def test_a_plane_that_does_not_become_healthy_reports_each_service(
 ) -> None:
     daemon = harness.plane.daemon
     harness.state.health[daemon] = "unhealthy"
-    monkeypatch.setattr(compose_service_module, "_SHARED_PLANE_PROBE_TIMEOUT_SECONDS", 0.0)
+    monkeypatch.setattr(harness.service, "_shared_plane_health_wait_seconds", lambda _p, _s: 0.0)
 
     result = harness.service.converge_shared_dagster_plane(dry_run=False)
 
@@ -260,6 +262,122 @@ def test_a_running_legacy_daemon_for_a_loaded_location_refuses(
         harness.service.converge_shared_dagster_plane(dry_run=False)
 
     assert harness.state.compose_calls == []
+
+
+def test_a_current_but_unhealthy_plane_is_not_ok(
+    harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """무연산도 health를 본다 — 거짓 실패 뒤 다시 돌린 명령이 unhealthy plane을 OK라고 하지 않는다."""
+
+    harness.state.stale = {name: False for name in harness.plane.services}
+    harness.state.health[harness.plane.daemon] = "unhealthy"
+    monkeypatch.setattr(harness.service, "_shared_plane_health_wait_seconds", lambda _p, _s: 0.0)
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=False)
+
+    assert result["outcome"] == "current_not_healthy"
+    assert result["success"] is False and result["returncode"] == 2
+    assert result["health"][harness.plane.daemon] == "unhealthy"
+    assert harness.state.compose_calls == []
+
+
+def test_a_current_plane_dry_run_reports_health_without_waiting(
+    harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness.state.stale = {name: False for name in harness.plane.services}
+    harness.state.health[harness.plane.daemon] = "starting"
+    monkeypatch.setattr(
+        compose_service_module.time, "sleep", lambda _s: pytest.fail("dry-run waited")
+    )
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    assert result["outcome"] == "current_not_healthy" and result["returncode"] == 2
+    assert harness.state.compose_calls == []
+
+
+def test_the_wait_bound_comes_from_the_rendered_healthchecks(harness: SimpleNamespace) -> None:
+    """고정 300초가 아니다 — daemon은 start_period 90초 뒤 120초마다 probe하므로 300초 안에 healthy가 못 될 수 있다."""
+
+    services = harness.resolved["services"]
+    expected = 0.0
+    for name in harness.plane.services:
+        check = services[name]["healthcheck"]
+        expected = max(
+            expected,
+            compose_service_module._duration_seconds(check["start_period"], default=0.0)
+            + compose_service_module._duration_seconds(check["interval"], default=30.0)
+            * check["retries"]
+            + compose_service_module._duration_seconds(check["timeout"], default=30.0),
+        )
+
+    bound = ComposeService._shared_plane_health_wait_seconds(harness.plane, services)
+
+    assert bound == expected
+    # 설치본 daemon: 90 + 120 × 2 + 60 — 옛 고정 상한(300초)보다 길다.
+    assert bound > 300.0
+
+
+def test_the_wait_bound_reads_compose_config_durations_and_is_clamped(
+    harness: SimpleNamespace,
+) -> None:
+    plane = harness.plane
+
+    def services(**check: object) -> dict[str, Any]:
+        return {name: {"healthcheck": dict(check)} for name in plane.services}
+
+    # `docker compose config --format json`은 기간을 Go 문자열로 낸다.
+    rendered = services(start_period="1m30s", interval="2m0s", timeout="1m0s", retries=2)
+    assert ComposeService._shared_plane_health_wait_seconds(plane, rendered) == 390.0
+    tiny = services(start_period="1s", interval="1s", timeout="1s", retries=1)
+    assert (
+        ComposeService._shared_plane_health_wait_seconds(plane, tiny)
+        == compose_service_module._SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS
+    )
+    huge = services(start_period="10h", interval="1h", timeout="1h", retries=5)
+    assert ComposeService._shared_plane_health_wait_seconds(plane, huge) == float(
+        compose_service_module._COMPOSE_WAIT_TIMEOUT_SECONDS
+    )
+
+
+def test_a_container_without_a_healthcheck_fails_fast(
+    harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness.state.health[harness.plane.daemon] = None
+    monkeypatch.setattr(
+        harness.service, "_shared_plane_health_wait_seconds", lambda _p, _s: 1e9
+    )
+    monkeypatch.setattr(
+        compose_service_module.time, "sleep", lambda _s: pytest.fail("waited for a healthcheck")
+    )
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=False)
+
+    assert result["returncode"] == 2
+    assert result["health"][harness.plane.daemon] == "no healthcheck"
+
+
+def test_only_the_plane_file_digests_carry_values(harness: SimpleNamespace) -> None:
+    """값을 싣는 env는 healthcheck가 이름으로 대조하는 파일 digest뿐이다 — `_DIGEST` 이름·16진 값만으로는 아니다."""
+
+    for name in harness.plane.services:
+        harness.resolved["services"][name]["environment"]["OTHER_DIGEST"] = "0123456789abcdef"
+    harness.state.env_overrides = {
+        "OTHER_DIGEST": "fedcba9876543210",
+        "KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST": "not-a-digest-secret",
+    }
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    for name in harness.plane.services:
+        reasons = result["drift"][name]
+        assert "env OTHER_DIGEST differs" in reasons, reasons
+        assert not any("OTHER_DIGEST:" in reason for reason in reasons)
+        assert "not-a-digest-secret" not in repr(result)
+        # 파일 digest라도 떠 있는 값이 digest 모양이 아니면 그 값은 싣지 않는다.
+        assert "env KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: running other != rendered" in " ".join(
+            reasons
+        )
 
 
 # --- CLI ---------------------------------------------------------------------------------------

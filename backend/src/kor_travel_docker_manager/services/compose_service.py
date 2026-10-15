@@ -2033,7 +2033,56 @@ _COMPOSE_WAIT_TIMEOUT_SECONDS: Final = 900
 #: 묶었다.
 _SHARED_PLANE_PROBE_TIMEOUT_SECONDS: Final = 300.0
 _SHARED_PLANE_PROBE_INTERVAL_SECONDS: Final = 5.0
-_HEX_DIGEST: Final = re.compile(r"[0-9a-f]{8,64}")
+#: `dagster-plane converge`의 health 기다림 하한 — render healthcheck에서 파생한 값이 이보다 짧아도 이만큼은 본다.
+_SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS: Final = 60.0
+#: 붙인 파일의 내용 digest(sha256 앞 16자) 모양. drift 이유에 값을 싣는 것은 이 모양뿐이다.
+_FILE_DIGEST: Final = re.compile(r"[0-9a-f]{16}")
+_DURATION_PART: Final = re.compile(r"(\d+(?:\.\d+)?)(ns|us|ms|s|m|h)")
+_DURATION_UNIT_SECONDS: Final = {
+    "ns": 1e-9,
+    "us": 1e-6,
+    "ms": 1e-3,
+    "s": 1.0,
+    "m": 60.0,
+    "h": 3600.0,
+}
+
+
+def _plane_file_digest_keys(render: Mapping[str, Any]) -> frozenset[str]:
+    """plane 서비스가 붙인 파일의 내용 digest env 이름 — render의 healthcheck가 그 이름으로 붙인 파일과 대조한다.
+
+    이름 규칙이 아니라 모델에서 읽는다: env 가운데 healthcheck 명령이 이름을 말하고 값이 digest 모양(16진 16자)인
+    것만이다. drift 이유에 값을 싣는 것은 이 env뿐이다(그 밖의 env는 비밀일 수 있어 이름만 싣는다).
+    """
+
+    environment = render.get("environment")
+    check = render.get("healthcheck")
+    test = check.get("test") if isinstance(check, Mapping) else None
+    if not isinstance(environment, Mapping) or not isinstance(test, list):
+        return frozenset()
+    probe = " ".join(str(word) for word in test)
+    return frozenset(
+        str(key)
+        for key, value in environment.items()
+        if value is not None
+        and _FILE_DIGEST.fullmatch(_unescape_compose(str(value)))
+        and re.search(rf"(?<![A-Za-z0-9_]){re.escape(str(key))}(?![A-Za-z0-9_])", probe)
+    )
+
+
+def _duration_seconds(value: object, *, default: float) -> float:
+    """compose render의 기간 값(`"1m30s"`·`"15s"`, 또는 나노초 정수)을 초로. 없거나 읽을 수 없으면 ``default``."""
+
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int | float):
+        return float(value) / 1e9
+    if not isinstance(value, str) or not value:
+        return default
+    parts = _DURATION_PART.findall(value)
+    if not parts or "".join(number + unit for number, unit in parts) != value:
+        return default
+    return sum(float(number) * _DURATION_UNIT_SECONDS[unit] for number, unit in parts)
 _SHARED_PLANE_WORKSPACE_QUERY: Final = (
     "{ workspaceOrError { __typename ... on Workspace { locationEntries { name "
     "locationOrLoadError { __typename } } } } }"
@@ -5010,13 +5059,14 @@ class ComposeService:
           통과해야 한다. 대기 중인 pair 회전이 있으면 거부한다. 일반 `ensure`의 환경 계약은 바꾸지 않는다.
         - **서비스**: frozen render에서 모양으로 파생한 plane이고 설치된 release의 것과 같아야 한다(`_frozen_shared_plane`).
           plane이 실을 location의 옛 Dagster 서비스가 돌면 거부한다(이중 발화, 재구축과 같은 검사).
-        - **판정·실행**: `_shared_plane_current`가 같다고 하면 무연산이다. 다르면 재구축과 같은 `up -d --no-deps <plane>`
-          하나만 부른다 — Map·PinVi slot 서비스, gateway, code-server는 건드리지 않는다.
-        - **기다림**: 두 컨테이너의 healthcheck가 `healthy`가 될 때까지 상한(`_SHARED_PLANE_PROBE_TIMEOUT_SECONDS`) 안에서
-          본다. daemon의 healthcheck는 workspace의 code-server 전부가 SERVING인지도 보므로 다른 테넌트가 내려가 있으면
-          healthy가 되지 않는다 — 그때는 실패로 서비스별 상태를 돌려준다(재생성은 이미 끝났다).
+        - **판정·실행**: `_shared_plane_current`가 같다고 하면 재생성하지 않는다. 다르면 재구축과 같은 `up -d --no-deps
+          <plane>` 하나만 부른다 — Map·PinVi slot 서비스, gateway, code-server는 건드리지 않는다.
+        - **기다림**: 재생성했든 안 했든 두 컨테이너의 healthcheck가 `healthy`가 될 때까지 render healthcheck에서 파생한
+          상한(`_shared_plane_health_wait_seconds`) 안에서 본다 — 무연산도 unhealthy면 실패다. daemon의 healthcheck는
+          workspace의 code-server 전부가 SERVING인지도 보므로 다른 테넌트가 내려가 있으면 healthy가 되지 않는다 — 그때는
+          실패로 서비스별 상태를 돌려준다.
 
-        ``dry_run``이면 같은 검사를 거쳐 무엇이 다른지만 돌려주고 아무것도 바꾸지 않는다.
+        ``dry_run``이면 같은 검사를 거쳐 무엇이 다른지와 지금 health(한 번 관측)만 돌려주고 아무것도 바꾸지 않는다.
         """
 
         _require_pinned_runtime_rebuild_root()
@@ -5044,28 +5094,67 @@ class ComposeService:
                 "drift": drift,
                 "dry_run": dry_run,
             }
-            if not any(drift.values()):
-                return {**result, "success": True, "returncode": 0, "outcome": "current"}
-            if dry_run:
+            if any(drift.values()) and dry_run:
                 return {**result, "success": True, "returncode": 0, "outcome": "would_recreate"}
-            self._recreate_shared_plane(plane, transaction=transaction)
-            health = self._wait_shared_plane_healthy(plane)
+            recreated = any(drift.values())
+            if recreated:
+                self._recreate_shared_plane(plane, transaction=transaction)
+            # 무연산도 health를 본다 — 앞선 실행이 거짓 실패로 끝났거나 plane이 다른 이유로 unhealthy이면 다시 돌린
+            # 이 명령이 OK라고 말하지 않는다. dry-run은 한 번만 보고 기다리지 않는다.
+            health = self._wait_shared_plane_healthy(plane, services, wait=not dry_run)
             healthy = all(state == "healthy" for state in health.values())
-            remaining = self._shared_plane_drift(plane, services)
+            remaining = self._shared_plane_drift(plane, services) if recreated else drift
             converged = healthy and not any(remaining.values())
+            outcome = "recreated" if recreated else "current"
             return {
                 **result,
                 "success": converged,
                 "returncode": 0 if converged else 2,
-                "outcome": "recreated" if converged else "recreated_not_healthy",
+                "outcome": outcome if converged else f"{outcome}_not_healthy",
                 "health": health,
-                "remaining_drift": remaining,
+                **({"remaining_drift": remaining} if recreated else {}),
             }
 
-    def _wait_shared_plane_healthy(self, plane: SharedDagsterPlane) -> dict[str, str]:
-        """plane 컨테이너마다 healthcheck 상태(`healthy`·`starting`·`unhealthy`·`missing`·`not running`)를 상한 안에서 본다."""
+    @staticmethod
+    def _shared_plane_health_wait_seconds(
+        plane: SharedDagsterPlane, services: Mapping[str, Any]
+    ) -> float:
+        """plane 서비스의 render healthcheck에서 기다림 상한을 파생한다(고정 상수가 아니다).
 
-        deadline = time.monotonic() + _SHARED_PLANE_PROBE_TIMEOUT_SECONDS
+        서비스마다 `start_period + interval × retries + timeout` — start_period 뒤 probe는 `interval`마다 돌고(daemon은
+        120초), `retries`번 연달아 실패해야 unhealthy다. 그 안에 첫 성공이 오면 healthy다. 가장 긴 서비스를 쓰고
+        `_SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS`~`_COMPOSE_WAIT_TIMEOUT_SECONDS`로 자른다. 값이 없으면 Docker 기본값.
+        """
+
+        longest = 0.0
+        for name in plane.services:
+            check = services[name].get("healthcheck")
+            check = check if isinstance(check, Mapping) else {}
+            retries = check.get("retries")
+            bound = (
+                _duration_seconds(check.get("start_period"), default=0.0)
+                + _duration_seconds(check.get("interval"), default=30.0)
+                * (retries if isinstance(retries, int) and retries > 0 else 3)
+                + _duration_seconds(check.get("timeout"), default=30.0)
+            )
+            longest = max(longest, bound)
+        return min(
+            max(longest, _SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS),
+            float(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+        )
+
+    def _wait_shared_plane_healthy(
+        self, plane: SharedDagsterPlane, services: Mapping[str, Any], *, wait: bool
+    ) -> dict[str, str]:
+        """plane 컨테이너마다 healthcheck 상태(`healthy`·`starting`·`unhealthy`·`missing`·`not running`·`no healthcheck`).
+
+        ``wait``이면 모두 healthy가 되거나 render healthcheck에서 파생한 상한이 지날 때까지 본다. healthcheck가 없는
+        컨테이너는 healthy가 될 수 없으므로 기다리지 않고 바로 돌려준다.
+        """
+
+        deadline = time.monotonic() + (
+            self._shared_plane_health_wait_seconds(plane, services) if wait else 0.0
+        )
         while True:
             health: dict[str, str] = {}
             for name in plane.services:
@@ -5078,7 +5167,7 @@ class ComposeService:
                     health[name] = str(observed.get("health") or "no healthcheck")
             if all(state == "healthy" for state in health.values()):
                 return health
-            if time.monotonic() >= deadline:
+            if "no healthcheck" in health.values() or time.monotonic() >= deadline:
                 return health
             time.sleep(_SHARED_PLANE_PROBE_INTERVAL_SECONDS)
 
@@ -5237,6 +5326,7 @@ class ComposeService:
                 reasons.append("render environment is invalid")
                 environment = {}
             actual_env = observed["env"]
+            digest_keys = _plane_file_digest_keys(render)
             for key, value in environment.items():
                 if value is None:
                     continue
@@ -5244,12 +5334,9 @@ class ComposeService:
                 actual = actual_env.get(str(key))
                 if actual == wanted:
                     continue
-                if (
-                    str(key).endswith("_DIGEST")
-                    and _HEX_DIGEST.fullmatch(wanted)
-                    and (actual is None or _HEX_DIGEST.fullmatch(actual))
-                ):
-                    reasons.append(f"env {key}: running {actual} != rendered {wanted}")
+                if str(key) in digest_keys:
+                    shown = actual if actual is not None and _FILE_DIGEST.fullmatch(actual) else "other"
+                    reasons.append(f"env {key}: running {shown} != rendered {wanted}")
                 else:
                     reasons.append(f"env {key} differs")
             command = [_unescape_compose(str(word)) for word in render.get("command") or []]
