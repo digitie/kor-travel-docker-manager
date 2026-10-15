@@ -1,3 +1,15 @@
+## 2026-10-16 — Geo UI Dagster 공개 URL 누락 수정
+
+Geo API에만 Dagster 공개 URL이 설정되어 UI 콘솔 버튼이 표시되지 않는 배포 누락을 수정한다.
+API와 동일한 KTDM_PROD_URL_DAGSTER 표현식을 UI runtime에 전달한다. 상태 점검은
+node:http 단일 요청으로 /login의 2xx를 확인하고 4초 뒤 실패한다. fetch·shell 시작
+비용과 localhost IPv6 해석을 피하며 기존 healthcheck 주기·timeout·재시도·PORT 설정은 유지한다.
+운영에서 별도 검증된 core HTTP 점검을 정본 Compose에도 반영하며, 이 변경으로 운영 CPU가
+감소했다고 주장하지 않는다. 이미지 재빌드나 API/code-server 변경은 필요하지 않다.
+로컬 Compose 참조 회귀 32건과 실제 Node HTTP 모형 8조건(2xx·3xx·401·503·4초 예산·PORT override)이 통과했다.
+CodeGraph init/sync와 diff 점검도 통과했다. 제품 리뷰·현재 CI·설정 반영·외부 UI 재검증은 별도 gate다.
+
+
 ## 2026-10-16 — 최신 root 환경 자기 식별과 host 실행 경계 통합(Codex)
 
 - 기존 PR #481 `c881630`에 main `5433056`(#482)을 병합했다. root `.env`의
