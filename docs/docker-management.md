@@ -229,14 +229,21 @@ installer가 만든 release 아래 실행(`.ktdm-source-revision` 존재; `servi
 release의 `targets validate --json`을 프로세스 env의 `KTDM_HOST` 없이(`.env`만으로) 돌려 위 거부 조건이면 넘기지 않는다
 (`scripts/install-ktdm-trusted-release`의 `host-identity` 구간).
 
-**명령별 host 규칙(R4).**
+**명령별 host 규칙(R4, T-MGR-01b 구현).** 거부는 아무것도 바꾸기 전이고 `HostPlacementError`(`DeploymentContractError` 하위 —
+CLI exit 2, API 409 `TARGET_ON_ANOTHER_HOST`)다. 문구: `target geo is on host odroid, not on this host (n150); ensure runs only there`.
 
-| 명령 | 조건 |
+| 명령 | 조건(구현 자리) |
 |---|---|
-| `ensure`·`start`·`restart`·`db-backup`·`pin`·C6c 재구축 | `KTDM_HOST ∈ target의 host 집합`일 때만(`all`은 항상). 아니면 `target geo is on host odroid`로 거부 |
-| `stop`·`logs`·`status`(로컬) | **로컬 소켓에 그 컨테이너명이 조회되면** host 무관 — 옛 스택 해체용. 판정은 Docker SDK 조회 성공 여부(효과 기반, label 없음) |
-| `status`(원격 target) | `connection`이 `http(s)://`인 항목은 **전부** HTTP probe → `up`(2xx/3xx) / `down`(비정상 응답) / `unreachable`(connect timeout·거부); `http(s)://`가 아닌 항목(설명 문자열·gRPC·DB)은 `remote(not probed)`. registry에 방화벽 개방 필드는 없다 — odroid의 HAProxy 전용 포트(`12505`·`12205`·`14002`·`12301`·`12305`·`11001`, `ports.md` 방화벽 집합)는 n150에서 `unreachable`이 **정상**(거짓 빨강 아님) |
-| `targets validate` | 전체 구문 + 자기 호스트 좌표(`--check-coordinates`) + consumer origin 기대값(R2) 대조 + 설치된 `workspace.<host>.yaml` sha256[:16] == digest env(효과) + `--json` |
+| `ensure` | 지목한 target **과 그 폐포 전부**가 이 호스트에 있어야 한다(`all`은 호스트별 필터 뒤라 항상 통과; `compose_service.ensure_target`) |
+| `start`·`restart`(컨테이너) | 그 컨테이너가 있는 호스트 집합(`registry.container_hosts`)에 이 호스트가 있어야 한다(`docker_service.control_container`) |
+| `db-backup create` | role의 target(`standalone_backup.BACKUP_ROLE_TARGETS`)이 이 호스트에 있어야 한다 — 다른 호스트의 같은 이름 DB는 이전 뒤 남은 낡은 사본이다. `list`·`gc`·`restore-plan`·`rehearse-restore`(이 호스트의 파일·scratch DB)는 묻지 않는다 |
+| `pin` 변경(`init`·`rotate*`·`block*`·`rollback`·`apply-pending`·`clear-pending`·`*-execution` 변경) | 핀된 pair(`RUNTIME_SOURCE_ROLES` = map·pinvi target)가 이 호스트에 있어야 한다(`cli._runtime_pin_mutation_lock` — lock 전). `show`·`verify`는 묻지 않는다 |
+| C6c 재구축(`pinvi-pair rebuild-pinned`)·`dagster-plane converge` | pair target / 공용 plane service(`registry.service_hosts`)가 이 호스트에 있어야 한다 |
+| `stop`·`logs`·`status`(로컬) | host 규칙을 묻지 않는다 — **로컬 소켓에 그 컨테이너가 있으면** 동작한다(옛 스택 해체용). 없으면 Docker SDK·compose가 NotFound·빈 결과로 끝난다(효과 기반, label 없음) |
+| `status`(원격 target) | 로컬 `ps`(옛 잔재) 뒤에 `remote` 절: 그 target의 컨테이너 중 이 호스트에 없는 것의 렌더된 connection에서 `http(s)://` URL을 **전부** GET(리다이렉트 안 따라감, 3 s) → `up`(2xx/3xx) / `down`(연결 뒤 비정상 — 4xx·5xx·응답 전 끊김·TLS 실패) / `unreachable`(연결 거부·연결 시간 초과·이름 풀이 실패). URL 없는 connection은 `remote(not probed)`. registry에 방화벽 개방 필드는 없다 — 다른 호스트의 HAProxy 전용 포트(`12505`·`12205`·`14002`·`12301`·`12305`·`11001`)는 여기서 `unreachable`이 **정상**(거짓 빨강 아님). 종료 코드는 로컬 `ps`의 것이다(`services/remote_probe.py`) |
+| `targets validate` | 전체 구문 + R7 + 자기 호스트 좌표(`--check-coordinates`) + `--json`. consumer origin 대조(R2)·workspace digest 효과는 T-MGR-01c·02 |
+
+UI의 원격 표시(같은 세 값)는 아직 없다 — API `status`가 같은 `remote` 절을 싣는다.
 
 **consumer origin(R2).** 내부 target이 형제 서비스를 부르는 URL은 compose env **기본값**이 정본이며 registry에서 계산한 값과 같아야
 한다. 대상은 규칙으로 정한다 — "형제 서비스 포트(`12501`/`14001`/`14101`)를 기본값에 가진 모든 compose env(비활성 `legacy-dagster`
@@ -247,11 +254,18 @@ compose를 스캔해 이 집합을 찾는다(줄 번호 열거 금지). root `.e
 집합은 8곳(geo 5 — Map 4·pinvi-api `PINVI_KOR_TRAVEL_GEO_BASE_URL` 1, transport 1, weather 2 — PinVi ETL·pinvi-api), 결박은
 `backend/tests/test_consumer_origin_defaults.py`의 렌더 스캔이다. `validate`의 `.env` 재정의 거부는 아직 없다(T-MGR-01c).
 
-**compose `depends_on`(R7).** 간선은 양끝 서비스의 host 집합이 같을 때만 둔다. tenant 간 의존(`kor-travel-map-api → kor-travel-geo-api`,
-`docker-compose.yml:1535`)은 삭제하고 런타임 REST 검증(health probe·fail-open 기동·`failure_kind`; Map은 `kor_travel_geo_preflight_required`
-기본 false — Map 저장소 `packages/kor-travel-map-api/src/kortravelmap/api/app.py:700`, 설계 §7.2 R7 인용)으로 대체한다 — `ensure`가 `--no-deps`
-없이 의존 closure를 올리므로(`compose_service.py:3572-3589,3714-3719`) 간선이 남으면 geo 플립 뒤 n150 `ensure map`이 geo-api를 n150에
-되살린다.
+**`depends_on`(R7, T-MGR-01b 구현).** 간선 a → b는 **a가 있는 모든 호스트에 b도 있을 때만**(`hosts(a) ⊆ hosts(b)`) 둔다 —
+ADR-58 문구 "양끝 host 집합이 같을 때"의 효과다(`all` 호스트의 infra·공용 PG로 가는 간선은 어디서든 로컬이라 안전하고,
+"같을 때만"이면 모든 tenant → 공용 PG 간선이 위반이 된다). 두 층에 건다:
+- **registry target 간선** — 로더가 거부한다(`registry._validate_target_edges_stay_on_host`, `targets validate`가 보여 준다).
+  2026-10-16 끊은 것: `map → geo`(geo는 다른 호스트), `geo → prom`(→ `cadv`), `cadv → gra`(→ `storage`) — 뒤 둘은 모든 호스트에
+  있는 cAdvisor·다른 호스트의 geo가 default 호스트의 Grafana·Prometheus를 그 호스트에 띄우던 간선이다. 간선은 기동 순서
+  선형화일 뿐이라(위 GM-11) 순서는 `dependency_order`가 그대로 정한다. 결과: default 호스트의 `ensure cadv`·`ensure prom`·
+  `ensure map` 등은 더 이상 Grafana를 함께 올리지 않는다(`ensure gra`·`ensure all`이 올린다).
+- **compose service 간선** — `kor-travel-map-api → kor-travel-geo-api`를 지웠다. 결박은 `backend/tests/test_host_command_rules.py`의
+  렌더 대조(registry로 계산한 service host 집합; 어느 target도 실행하지 않는 옛 profile·수동 bootstrap one-shot이 출발인 간선은
+  범위 밖). Map은 geo를 런타임 REST로 부르고 `kor_travel_geo_preflight_required` 기본 false로 fail-open 기동한다(Map 저장소
+  `packages/kor-travel-map-api/src/kortravelmap/api/app.py:700`, 설계 §7.2 R7 인용).
 
 **`ensure` 프리플라이트(T-MGR-05).** 이미지 `.Architecture` == 호스트 arch(amd64 이미지를 arm64 호스트에 올리면 거부);
 `KTDM_DATA_SOURCE_DEVICE`가 설정돼 있으면 bind 경로마다 `findmnt -T <경로> -o SOURCE`가 그 장치인지(미설정이면 생략 — n150 무변경);

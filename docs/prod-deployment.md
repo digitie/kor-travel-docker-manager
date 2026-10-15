@@ -1136,6 +1136,6 @@ allow-list라 `.14`를 더하면 된다.
 | geo/weather 스택, transport 두 compose project | Manager `stop` → **`docker compose rm -sf <geo/weather 서비스 목록…>`**(서비스 범위 명시 — bare `down`은 map/pinvi/PG까지 내린다), 이미지 정리; `../kor-travel-geo`·`../kor-travel-weather` 체크아웃 삭제 |
 | n150 workspace의 3 location | 플립 PR 파생물이 이미 뺐다 |
 | compose `map-api → geo-api` 간선 | T-MGR-01b에서 이미 삭제(R7) |
-| cron `run-standalone-backup.sh transport` | odroid로 이동 — §14-7 소유자 결정 전 추천값(대안: 아무것도 안 함) |
+| cron `run-standalone-backup.sh transport` | odroid로 이동 — §14-7 소유자 결정 전 추천값(대안: 아무것도 안 함). **T-MGR-01b(R4) 설치 뒤 n150의 이 줄은 `target transport is on host odroid`로 exit 2다** — 지우거나 odroid로 옮긴다 |
 | HAProxy n150 backend 8개 | §9.4 |
 | 효과 | `ensure map`·`ensure pinvi` 성공, n150에 geo/weather/transport 컨테이너 0개, 공용 PG에 `kor_travel_geo` 없음 |

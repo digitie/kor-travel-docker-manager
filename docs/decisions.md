@@ -2523,3 +2523,6 @@ n150에서 깨진 둘을 고치는 최소 변경만 먼저 넣는다(계획 모�
   주소 조회는 프로세스당 1회. R1: `{host}`는 URL 호스트 자리에만(설명 문자열은 `127.0.0.1`), 주소가 하나로 정해지지 않으면 로더
   거부(이름순 첫 호스트·loopback fallback 제거), 실행 service 소유자가 없으면 `containers:`에 적은 target의 호스트. 버전 게이트 제거
   (`hosts:` 없음 = 암묵 default). 설치기는 flip 전에 새 release의 `targets validate --json`을 `.env`만으로 돌린다.
+- **T-MGR-01b(2026-10-16)**: R4 구현(변경 명령은 대상이 이 호스트에 있을 때만 — `HostPlacementError`; `stop`·`logs`·로컬
+  `status`는 효과; 원격 `status`는 HTTP probe 세 값). R7은 `hosts(a) ⊆ hosts(b)`로 시행한다(위 "같을 때만"의 효과 — 같음이면
+  tenant → 공용 PG·`all` infra 간선이 위반이 된다); registry target 간선은 로더가 거부하고 compose `map-api → geo-api`는 지웠다.

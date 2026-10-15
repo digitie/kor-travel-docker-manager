@@ -2,6 +2,15 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-16 — R4 명령 host 규칙 + R7 교차 호스트 간선 삭제(T-MGR-01b)
+
+- 2026-10-15 위험(n150 `ensure map`이 odroid로 옮긴 geo 컨테이너를 n150에 되살림)을 닫는다: registry `map → geo`와 compose
+  `kor-travel-map-api → kor-travel-geo-api`를 지웠고, 로더가 교차 호스트 target 간선을 거부한다. 같은 규칙에 걸린 `geo → prom`·
+  `cadv → gra`(다른 호스트에 Grafana·Prometheus를 띄우는 간선)도 끊었다.
+- R4: 생성·변경 명령은 대상이 이 호스트에 있을 때만, 변경 전에 `HostPlacementError`. `stop`·`logs`·로컬 `status`는 효과(로컬
+  소켓 조회)로 갈린다. 원격 target `status`는 registry URL을 HTTP로 본다(연결 거부 = `unreachable`이지 `down`이 아님).
+- 운영 영향: n150 transport 백업 cron은 설치 뒤 exit 2 — 줄 정리 필요. 배포·n150 변경은 하지 않았다.
+
 ## 2026-10-16 — #477 리뷰 잔여(T-MGR-01a-F): 자기 식별·R1 렌더 N-ready, 설치기 flip 전 식별 검사
 
 - 설치기: compose preflight 다음에 `host-identity` 구간 — 새 release의 `targets validate --json`을 `.env`만으로(`env -u KTDM_HOST`)

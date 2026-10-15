@@ -78,7 +78,7 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 > "결박"에 적은 T-MGR 번호의 PR이 사본과 테스트를 **같은 PR에서** 만든다(DO NOT 15의 결박 규칙).
 > 테스트 이름은 그 PR에서 확정하며, 여기에는 이미 존재하는 테스트 파일만 코드 폰트로 적는다.
 > **2026-10-14 잠정 시행**(ADR-58 "잠정 시행"): B-6은 렌더 스캔 테스트와 함께 들어왔고, B-5는 한 파일
-> (`workspace.yaml` = n150 plane)에 호스트 필터만 들어왔다. 나머지는 계획 그대로다.
+> (`workspace.yaml` = n150 plane)에 호스트 필터만 들어왔다. **2026-10-16 B-9는 구현됐다(T-MGR-01b).** 나머지는 계획 그대로다.
 
 ### B-5. (계획) 호스트별 공용 Dagster workspace의 합집합
 
@@ -133,14 +133,17 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **사본이 필요한 이유**: Prometheus는 정적 파일만 읽는다
 - **결박**: registry에서 계산한 타깃 집합 == 파일(T-MGR-04의 파생 테스트)
 
-### B-9. (계획) 교차 호스트 `depends_on` 간선 ∅
+### B-9. 교차 호스트 `depends_on` 간선 ∅(T-MGR-01b 구현)
 
 - **사실**: compose `depends_on`이 tenant 경계를 넘지 않는다(R7)
 - **정본**: registry에서 계산한 각 서비스의 host 집합
 - **사본**: `docker-compose.yml`의 `depends_on` 간선(오늘 `kor-travel-map-api → kor-travel-geo-api`, `:1535`이 유일한 위반 후보)
 - **사본이 필요한 이유**: 간선 자체는 compose에만 있다 — 지울 수는 있어도(T-MGR-01b가 지운다) 다시 생기는 것을 registry가 막지
   못한다
-- **결박**: "양끝 host 집합이 다른 간선 집합 == ∅"(T-MGR-01b; 간선 하나를 일부러 남겨 빨갛게 확인)
+- **결박**: "출발 host 집합 ⊄ 도착 host 집합인 간선 == ∅" — compose는 `backend/tests/test_host_command_rules.py`
+  (`test_compose_has_no_cross_host_depends_on_edge`, 간선 하나를 남긴 대조 `test_a_left_over_cross_host_compose_edge_is_red`),
+  registry target 간선은 로더(`_validate_target_edges_stay_on_host`)가 거부한다. "같을 때만"이 아니라 부분집합인 이유는
+  `docs/docker-management.md` §3.2 R7.
 
 ### B-10. 공용 PostgreSQL `command`의 GUC 이름 집합
 
