@@ -682,7 +682,7 @@ validate` → odroid `ensure <target>`. consumer 전환(Map/PinVi 코드서버·
 
 | 호스트 | target(종류) | 서비스(포트 — n150과 동일) | 비고 |
 |---|---|---|---|
-| **odroid `192.168.1.13`** | `geo`(tenant, `host: odroid`) | api `12501`, ui `12505`, code-server gRPC `127.0.0.1:12503`, db-init | geo 플립 PR(T-MGR-06, 마지막) |
+| **odroid `192.168.1.13`** | `geo`(tenant, `host: odroid`) | api `12501`, ui `12505`, code-server gRPC `127.0.0.1:12503`(2026-10-15 odroid plane 합류, schedule·sensor STOPPED), db-init | geo 플립 PR(T-MGR-06, 마지막). **2026-10-15 잠정**: registry `host: odroid`·n150 공용 workspace에서 제외(n150 code-server 멈춤), geo Dagster는 odroid의 plane에서 돈다(odroid 자체 workspace, Manager 밖 — 2026-10-15 02:52Z); n150 geo API는 아직 돈다 |
 | | `weather`(tenant) | api `14101`, web `12205`(ADR-57), code-server gRPC `127.0.0.1:14106` · code-server metrics `14103`(compose `:2874`), weather Prometheus `14104`(관측 1단계 유지), `legacy-dagster` 서비스는 기동 안 함 | |
 | | `transport`(tenant, 외부 project) | backend `14001`, frontend `14002`, code-server `127.0.0.1:14005`; `transport-admin` `12305`/`12301` | app dir `/home/digitie/apps/kor-travel-transport` 동일 |
 | | `dagster`(infra, `host: all`) | **odroid PG** `kor-travel-shared-postgres` `11000` loopback(`kor_travel_geo`·`kor_travel_weather`·`kor_travel_transport`·`dagster_shared`), gateway `11001`, webserver `127.0.0.1:11002`, daemon, storage-migrate | 두 번째 plane; PG는 이 target의 service |

@@ -826,7 +826,7 @@ services:
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "fbd0eadc90829753"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "4461abc13cce9c4f"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
@@ -896,7 +896,7 @@ services:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
-      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "fbd0eadc90829753"
+      KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "4461abc13cce9c4f"
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml:ro

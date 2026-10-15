@@ -4,7 +4,8 @@ version: 1
 # 유일한 정본은 docs/ports.md다.
 
 # Docker 호스트(ADR-58 결정 1의 `hosts:`). target의 `host:`(생략 = default 호스트)가 그 target의 컨테이너가 도는
-# 호스트다. **잠정(interim, 2026-10-14 소유자 승인)**: 지금 이 값을 읽는 것은 공용 Dagster workspace 파생 하나뿐이다 —
+# 호스트다. **잠정(interim, 2026-10-14 소유자 승인)**: 지금 이 값을 읽는 것은 공용 Dagster workspace 파생과 소비자 origin
+# 테스트(`backend/tests/test_consumer_origin_defaults.py` — 형제의 호스트를 여기서 읽는다) 둘뿐이다 —
 # `config/dagster-shared/workspace.yaml`(n150 plane이 붙인다)은 `control_plane: shared` **이고** default 호스트에 있는
 # target의 location만 싣는다(`backend/tests/test_dagster_shared_workspace_is_derived.py`). R1 `{host}` 렌더·R3 `KTDM_HOST`·
 # R4 명령 host 규칙·`all` 필터·`workspace.<host>.yaml` 두 파일은 아직 없다(T-MGR-01a·01b·02가 이 블록 위에 더한다).
@@ -436,6 +437,13 @@ targets:
     init_steps: []
 
   geo:
+    # 2026-10-15 소유자 결정 — n150 공용 workspace에서 geo를 뺀다. geo Dagster는 2026-10-15부터 odroid의 plane에서 돈다
+    # (n150 geo code-server `12503`은 02:42Z 멈춤, odroid `127.0.0.1:12503`이 odroid 자체 workspace에 02:52Z 합류 — Manager
+    # 밖, 호스트 측 구성; Manager의 `workspace.odroid.yaml`은 T-MGR-02). 소비자(Map·PinVi)는 이미 odroid geo `http://192.168.1.13:12501`을
+    # 부른다. 잠정: 이 값이 지금 바꾸는 것은 n150 공용 workspace에서 이 location이 빠지는 것과 소비자 origin 테스트의
+    # 기대 호스트뿐이다(`hosts:` 주석). `all.include`에는 남긴다 — `map`이 `depends_on: [geo]`라 `ensure all`/`ensure map`의
+    # 폐포가 어차피 geo를 담는다(그 간선 삭제는 R7, T-MGR-01b). n150 geo API는 아직 돈다.
+    host: odroid
     port_band: "12500-12599"
     depends_on: [prom]
     display_name: Kor Travel Geo

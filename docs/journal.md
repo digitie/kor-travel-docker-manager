@@ -2,6 +2,11 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-15 — n150 공용 workspace에서 geo 제외(소유자 결정)
+
+- n150 geo code-server(`12503`)가 02:42Z 멈춘 뒤 공용 daemon·webserver가 geo location 미응답으로 unhealthy였다(운영자 preflight 차단).
+- geo에 `host: odroid`를 두어 같은 잠정 파생으로 n150 `workspace.yaml`에서 뺐다 — 남는 것 concierge·map·pinvi, digest `4461abc13cce9c4f`. 소비자 origin 테스트의 geo 재정의는 군더더기로 빨개져 지웠다.
+- geo Dagster는 2026-10-15부터 odroid의 plane에서 돈다(다른 세션이 odroid 자체 workspace에 02:52Z 합류 — Manager 밖, 호스트 측; 그 schedule·sensor는 지금 멈춤 상태). Manager의 odroid workspace 파생은 T-MGR-02. 배포·n150 반영은 이 PR 범위 밖이다.
 
 ## 2026-10-15 — `ktdctl dagster-plane converge`: 공용 plane만 설치 release render로 수렴(T-MGR-06j)
 

@@ -4120,11 +4120,17 @@ def test_a_workspace_location_whose_own_daemon_runs_is_refused(
 
     harness = _forward_harness(monkeypatch, tmp_path, flipped=("map",), companions=_FLIP_CASES["map"][2])
     owners = runtime_topology_module.installed_location_owners()
-    other = next(
-        family
+    # 다른 target 중 자기 daemon(옛 plane 밖 daemon)을 가진 것 — 2026-10-15부터 n150 workspace에는 그런 location이
+    # 없다(geo·weather·transport는 odroid, concierge는 daemon이 없다). 규칙은 "workspace의 **모든** location"이므로 그
+    # location을 이 plane이 싣는 것으로 두고 본다 — 커밋된 workspace 구성에 기대지 않는다.
+    location, other = next(
+        (location, family)
         for location, family in owners.items()
-        if location in harness.live["workspace_locations"] and family.target not in {"map", "pinvi"}
+        if family.target not in {"map", "pinvi"} and family.daemon
     )
+    if location not in harness.live["workspace_locations"]:
+        harness.live["workspace_locations"] = (*harness.live["workspace_locations"], location)
+        cast(dict[str, str], harness.live["plane_loaded"])[location] = "RepositoryLocation"
     running = other.container_name(other.daemon)
     harness.mocks.pinvi_bootstrap.side_effect = (
         lambda *_args, **_kwargs: cast(set[str], harness.live["running_containers"]).add(running)
