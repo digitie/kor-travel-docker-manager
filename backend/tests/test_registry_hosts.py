@@ -5,16 +5,28 @@ import os
 from pathlib import Path
 
 import pytest
-import yaml
 
 from kor_travel_docker_manager.services import registry
+from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _load_registry() -> dict:
+    # 실제 로더와 같은 중복 키 거부 로더 — safe_load는 중복 블록의 마지막만 보고 초록이 된다(#477 리뷰 1번).
+    return load_yaml_rejecting_duplicate_keys((ROOT / "config/docker-targets.yml").read_text(encoding="utf-8"))
+
+
+@pytest.fixture(autouse=True)
+def _fresh_address_probe():
+    registry._local_ipv4_addresses.cache_clear()
+    yield
+    registry._local_ipv4_addresses.cache_clear()
+
+
 @pytest.fixture
 def config(monkeypatch, tmp_path):
-    value = yaml.safe_load((ROOT / "config/docker-targets.yml").read_text())
+    value = _load_registry()
     monkeypatch.setenv(registry.PROJECT_ROOT_ENV, str(tmp_path))
     monkeypatch.delenv("KTDM_HOST", raising=False)
     return value
@@ -42,10 +54,26 @@ def test_unknown_target_host(config, host):
         registry._validate_targets_config(config, label="test")
 
 
-def test_v2_cannot_omit_hosts(config):
+def test_missing_hosts_is_one_implicit_default_host(config):
+    # `hosts:` 없음 = 암묵 default 하나(#477 리뷰 3번). 버전 값과 무관하다.
     del config["hosts"]
-    with pytest.raises(registry.TargetsConfigError, match="hosts"):
+    for spec in config["targets"].values():
+        if spec.get("host") != "all":
+            spec.pop("host", None)
+    for version in (1, 2, None):
+        config["version"] = version
         registry._validate_targets_config(config, label="test")
+        assert registry.current_host(config) == registry.IMPLICIT_HOST == registry.default_host(config)
+    config["targets"]["geo"]["host"] = "odroid"
+    with pytest.raises(registry.TargetsConfigError, match="unknown host"):
+        registry._validate_targets_config(config, label="test")
+
+
+@pytest.mark.parametrize("version", [1, 2, None, "anything"])
+def test_host_dimension_is_not_gated_by_version(config, version):
+    config["version"] = version
+    registry._validate_targets_config(config, label="test")
+    assert registry.target_hosts("geo", config) == frozenset({"odroid"})
 
 
 def test_installed_release_requires_self_identification(config, monkeypatch, tmp_path):
@@ -68,14 +96,13 @@ def test_installed_release_rejects_another_hosts_identity(config, monkeypatch, t
         registry.current_host(config)
 
 
-def test_legacy_development_fixture_is_local_only(config, monkeypatch, tmp_path):
+def test_operating_release_does_not_accept_the_implicit_host(config, monkeypatch, tmp_path):
     del config["hosts"]
-    config["version"] = 1
     for spec in config["targets"].values():
         spec.pop("host", None)
-    assert registry.current_host(config) == "local"
+    assert registry.current_host(config) == registry.IMPLICIT_HOST
     (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
-    monkeypatch.setenv("KTDM_HOST", "local")
+    monkeypatch.setenv("KTDM_HOST", registry.IMPLICIT_HOST)
     with pytest.raises(registry.TargetsConfigError, match="requires hosts"):
         registry.current_host(config)
 
@@ -85,8 +112,8 @@ def test_all_filters_transitive_remote_dependencies(config, monkeypatch):
     config["targets"]["geo"]["host"] = "n150"
     monkeypatch.setattr(registry, "load_targets_config", lambda: config)
     monkeypatch.setenv("KTDM_HOST", "odroid")
-    # Geo 이동 전에도 cadv의 gra 의존도 로컬 all에 끼지 않는다.
-    assert set(registry.target_sequence_for_target("all")) == {"storage", "cadv", "dagster", "weather"}
+    # Geo 이동 전에도 cadv의 gra 의존도 로컬 all에 끼지 않는다. 공용 plane(dagster)은 default 호스트뿐이다.
+    assert set(registry.target_sequence_for_target("all")) == {"storage", "cadv", "weather"}
     config["targets"]["geo"]["host"] = "odroid"
     result = registry.target_sequence_for_target("all")
     assert "geo" in result
@@ -113,19 +140,6 @@ def test_current_tenant_layout_preserves_moved_tenants(config, monkeypatch):
         assert registry.get_target(tenant)["host"] == "n150"
     for tenant in ["geo", "weather", "transport"]:
         assert registry.get_target(tenant)["host"] == "odroid"
-
-
-@pytest.mark.parametrize("version", [0, 3, True, "2", None])
-def test_unsupported_versions_are_rejected(config, version):
-    config["version"] = version
-    with pytest.raises(registry.TargetsConfigError, match="version"):
-        registry._validate_targets_config(config, label="test")
-
-
-def test_v1_cannot_inject_host_dimension(config):
-    config["version"] = 1
-    with pytest.raises(registry.TargetsConfigError, match="version 2"):
-        registry._validate_targets_config(config, label="test")
 
 
 def test_trusted_wheel_does_not_derive_mode_from_project_root(config, monkeypatch, tmp_path):
@@ -176,17 +190,69 @@ def test_local_address_probe_includes_secondary_ipv4(monkeypatch):
     monkeypatch.setattr(subprocess, "run", probe)
     assert registry._local_ipv4_addresses() == frozenset({"10.1.1.1", "10.1.1.2"})
 
-def test_cached_config_rechecks_self_identity(config, monkeypatch, tmp_path):
+def _fake_ip(monkeypatch, addresses):
+    """`/usr/sbin/ip` subprocess만 바꾼다 — 프로세스 캐시(`_local_ipv4_addresses`)는 진짜를 쓴다."""
+    import json
+    import subprocess
+
+    calls = []
+
+    def probe(command, **kwargs):
+        calls.append(command)
+        data = [{"addr_info": [{"family": "inet", "local": address} for address in sorted(addresses)]}]
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(data).encode())
+
+    monkeypatch.setattr(subprocess, "run", probe)
+    return calls
+
+
+def test_cached_config_rechecks_identity_but_probes_addresses_once(config, monkeypatch, tmp_path):
+    """의도(2026-10-16 변경): **자기 식별(`KTDM_HOST`·`.env`)은 매 조회 다시 읽고, 인터페이스 주소는 프로세스당
+    한 번**이다(#477 리뷰 5번 — `_LazyMapping` 단건 조회마다 `ip` subprocess가 떴다). 종전 이 테스트는 주소 집합까지
+    매 조회 재검증을 고정했다. 주소는 고정 LAN 주소이고 바뀌면 재기동으로 반영된다(`_local_ipv4_addresses` docstring)."""
     (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
     monkeypatch.setenv("KTDM_HOST", "n150")
-    addresses = {config["hosts"]["n150"]["addr"]}
-    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset(addresses))
+    calls = _fake_ip(monkeypatch, {config["hosts"]["n150"]["addr"]})
     monkeypatch.setattr(registry, "_load_targets_config_cached", lambda: config)
     assert registry.load_targets_config() is config
-    addresses.clear()
+    for _ in range(50):
+        registry.MANAGED_CONTAINERS["kor-travel-map-api"]
+        registry.services_for_target("geo")
+    registry.list_targets()
+    assert len(calls) == 1
+    # 이름은 매 조회 다시 본다 — 바꾸면 다음 조회가 거부한다.
+    monkeypatch.setenv("KTDM_HOST", "odroid")
     for read in (registry.load_targets_config, lambda: registry.services_for_target("geo"), registry.list_targets):
         with pytest.raises(registry.TargetsConfigError, match="not assigned"):
             read()
+    assert len(calls) == 1
+
+
+def test_failed_address_probe_is_not_cached(monkeypatch):
+    import subprocess
+
+    def broken(command, **kwargs):
+        raise OSError("no ip")
+
+    monkeypatch.setattr(subprocess, "run", broken)
+    with pytest.raises(registry.TargetsConfigError, match="could not verify"):
+        registry._local_ipv4_addresses()
+    _fake_ip(monkeypatch, {"10.9.9.9"})
+    assert registry._local_ipv4_addresses() == frozenset({"10.9.9.9"})
+
+
+def test_self_identification_requires_exactly_one_local_declared_host(config, monkeypatch, tmp_path):
+    # 보조 IPv4/VIP로 선언 주소 둘이 이 장비에 있으면 어느 이름이든 "로컬"이다 — 이름을 고를 근거가 없다.
+    (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
+    both = {spec["addr"] for spec in config["hosts"].values()}
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset(both))
+    for name in config["hosts"]:
+        monkeypatch.setenv("KTDM_HOST", name)
+        with pytest.raises(registry.TargetsConfigError, match="more than one declared host"):
+            registry.current_host(config)
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset({config["hosts"]["odroid"]["addr"]}))
+    monkeypatch.setenv("KTDM_HOST", "odroid")
+    assert registry.current_host(config) == "odroid"
 
 
 def test_target_aggregate_bounds_identity_probes(config, monkeypatch, tmp_path):
@@ -236,7 +302,7 @@ def operating_cli(monkeypatch, tmp_path):
     monkeypatch.delenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", raising=False)
     monkeypatch.delenv(registry.HOST_ENV, raising=False)
     (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
-    addresses = yaml.safe_load((ROOT / "config/docker-targets.yml").read_text())["hosts"]
+    addresses = _load_registry()["hosts"]
     monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset({addresses["odroid"]["addr"]}))
     registry.load_targets_config.cache_clear()
     yield tmp_path
@@ -345,3 +411,163 @@ def test_development_checkout_ignores_unreadable_root_env_file(config, monkeypat
         assert registry.current_host(config) == registry.default_host(config)
     finally:
         env_file.chmod(0o600)
+
+
+# --- 2026-10-16 T-MGR-01a-F: #477 리뷰 잔여 ---------------------------------------------------
+
+
+def test_multi_owner_remote_container_is_a_config_error_not_the_first_name(config):
+    # 종전: `sorted(owners)[0]` — 두 원격 호스트가 가진 컨테이너가 이름순 첫 호스트 주소로 조용히 풀렸다.
+    config["hosts"]["mars"] = {"addr": "192.0.2.7"}
+    config["targets"]["conc"]["host"] = "mars"
+    config["targets"]["map"]["host"] = "odroid"
+    # map-api를 map(odroid)와 conc(mars) 둘의 실행 service로 만든다 — n150에서 보면 주소가 둘이다.
+    config["targets"]["conc"]["services"] = [*config["targets"]["conc"]["services"], "kor-travel-map-api"]
+    with pytest.raises(registry.TargetsConfigError, match="kor-travel-map-api.*no single address.*mars, odroid"):
+        registry._validate_targets_config(config, label="test")
+
+
+def test_unowned_container_follows_the_target_that_lists_it(config, monkeypatch):
+    # 옛 profile 컨테이너(weather webserver·gateway)는 실행 service가 아니다. 종전에는 loopback으로 그려
+    # 원격(odroid) weather의 옛 gateway가 n150에 있는 것처럼 보였다.
+    monkeypatch.setattr(registry, "load_targets_config", lambda: config)
+    monkeypatch.setenv("KTDM_HOST", "n150")
+    assert registry.container_hosts("kor-travel-weather-dagster-gateway", config) == frozenset({"odroid"})
+    odroid = config["hosts"]["odroid"]["addr"]
+    assert registry._managed_containers()["kor-travel-weather-dagster-gateway"]["connection"] == f"http://{odroid}:14102"
+    monkeypatch.setenv("KTDM_HOST", "odroid")
+    assert registry._managed_containers()["kor-travel-weather-dagster-gateway"]["connection"] == "http://127.0.0.1:14102"
+
+
+def test_container_in_no_target_cannot_render_a_host(config):
+    config["containers"]["orphan"] = {
+        **config["containers"]["kor-travel-map-api"], "compose_service": "orphan-service", "name": "orphan",
+    }
+    with pytest.raises(registry.TargetsConfigError, match="orphan.*no target"):
+        registry._validate_targets_config(config, label="test")
+    config["containers"]["orphan"]["connection"] = "내부 전용 — 포트 없음"
+    registry._validate_targets_config(config, label="test")
+
+
+@pytest.mark.parametrize(
+    "connection",
+    ["내부 전용({host}:14107) — loopback만", "{host}:11000", "postgresql://x@{host}:1", "http:/{host}:1"],
+)
+def test_host_placeholder_only_as_url_host(config, connection):
+    config["containers"]["kor-travel-map-api"]["connection"] = connection
+    with pytest.raises(registry.TargetsConfigError, match="only allowed as a URL host"):
+        registry._validate_targets_config(config, label="test")
+
+
+def test_loopback_only_descriptions_stay_loopback_from_every_host(config, monkeypatch):
+    monkeypatch.setattr(registry, "load_targets_config", lambda: config)
+    seen = 0
+    for host in config["hosts"]:
+        monkeypatch.setenv("KTDM_HOST", host)
+        for name, spec in registry._managed_containers().items():
+            connection = str(spec["connection"])
+            if "loopback" in connection or "내부 전용" in connection:
+                seen += 1
+                for other in config["hosts"].values():
+                    assert other["addr"] not in connection, (host, name, connection)
+    assert seen >= 3
+
+
+def test_shared_dagster_plane_is_on_the_default_host_only(config):
+    # `host: all`이면 다른 호스트의 `ensure all`이 workspace 없는 두 번째 plane을 띄운다(#477 리뷰 8번).
+    assert registry.target_hosts("dagster", config) == frozenset({registry.default_host(config)})
+
+
+@pytest.mark.parametrize("kind", ["directory", "fifo", "latin1", "dotenv"])
+def test_operating_mode_names_an_unusable_root_env_file(config, monkeypatch, tmp_path, kind):
+    (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
+    monkeypatch.delenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", raising=False)
+    env_file = tmp_path / ".env"
+    if kind == "directory":
+        env_file.mkdir()
+    elif kind == "fifo":
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("mkfifo 없음")
+        os.mkfifo(env_file)
+    elif kind == "latin1":
+        env_file.write_bytes("KTDM_HOST=n150\nNOTE=café\n".encode("latin-1"))
+    else:
+        env_file.write_text("KTDM_HOST=n150\n")
+
+        def broken(**_):
+            raise ValueError("bad")
+
+        monkeypatch.setattr("dotenv.dotenv_values", broken)
+    with pytest.raises(
+        registry.RootEnvUnreadableError,
+        match=r"Manager root \.env is .*set KTDM_HOST in the process environment",
+    ):
+        registry.current_host(config)
+    # 개발 checkout은 종전처럼 "값 없음" → default.
+    (tmp_path / ".ktdm-source-revision").unlink()
+    assert registry.current_host(config) == registry.default_host(config)
+
+
+def _derived(config, monkeypatch, host):
+    """한 호스트에서 본 런타임 파생물 전부: 연결 좌표(R1)·`all` 필터·target 호스트."""
+    monkeypatch.setattr(registry, "load_targets_config", lambda: config)
+    monkeypatch.setenv("KTDM_HOST", host)
+    return {
+        "connections": {name: spec["connection"] for name, spec in registry._managed_containers().items()},
+        "all": registry.target_sequence_for_target("all"),
+        "hosts": {target["id"]: target["host"] for target in registry.list_targets()},
+    }
+
+
+def test_third_virtual_host_derives_without_code_changes(config, monkeypatch):
+    """T-MGR-NH 수용 기준: 세 번째 호스트를 더하고 target 하나를 옮기면 파생물이 그 호스트를 반영하고, 옮긴 target이
+    혼자 갖지 않은 것은 원래 두 호스트에서 byte 불변이다. 코드는 그대로 — registry만 바꾼다."""
+    import json
+
+    before = {host: _derived(config, monkeypatch, host) for host in list(config["hosts"])}
+    moved = "conc"
+    mars = "192.0.2.7"  # TEST-NET-1
+    config["hosts"]["mars"] = {"addr": mars}
+    config["targets"][moved]["host"] = "mars"
+    registry._validate_targets_config(config, label="test")
+    after = {host: _derived(config, monkeypatch, host) for host in config["hosts"]}
+
+    moved_containers = {
+        name for name in config["containers"] if registry.container_hosts(name, config) == frozenset({"mars"})
+    }
+    assert moved_containers  # 옮긴 target이 혼자 가진 컨테이너가 있어야 이 테스트가 무언가를 본다
+
+    def dump(connections):
+        kept = {name: value for name, value in connections.items() if name not in moved_containers}
+        return json.dumps(kept, ensure_ascii=False, sort_keys=True)
+
+    for host in before:
+        assert dump(after[host]["connections"]) == dump(before[host]["connections"])
+        for name in moved_containers:
+            old, new = str(before[host]["connections"][name]), str(after[host]["connections"][name])
+            if "://" in old:
+                assert f"://{mars}:" in new, (host, name, new)
+        assert after[host]["all"] == [name for name in before[host]["all"] if name != moved]
+        assert after[host]["hosts"] == {**before[host]["hosts"], moved: "mars"}
+    for name in moved_containers:
+        new = str(after["mars"]["connections"][name])
+        assert "://" not in new or "://127.0.0.1:" in new, (name, new)
+    # mars의 all = 모든 호스트에 있는 infra + 옮긴 target.
+    everywhere = {t for t, spec in config["targets"].items() if spec.get("host") == "all" and not spec.get("include")}
+    assert set(after["mars"]["all"]) == {*everywhere, moved}
+
+
+def test_backend_code_has_no_host_name_literals():
+    """T-MGR-NH: 호스트 이름·주소는 registry에만 — 코드의 문자열 상수가 들고 있으면 호스트를 더할 때 코드를 고친다."""
+    import ast
+
+    hosts = _load_registry()["hosts"]
+    names = set(hosts)
+    addresses = {spec["addr"] for spec in hosts.values()}
+    found = []
+    for path in sorted((ROOT / "backend/src").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if node.value in names or any(address in node.value for address in addresses):
+                    found.append(f"{path.relative_to(ROOT)}:{node.lineno}: {node.value[:60]!r}")
+    assert found == []

@@ -134,6 +134,19 @@ if ! preflight_err="$(docker compose --project-directory "${REL}" --file "${REL}
 fi
 # <<< preflight
 
+# 새 release가 배포 `.env`로 이 호스트를 식별하는지도 flip **전에** 본다(ADR-58 R3, #477 리뷰 후속).
+# 운영 모드의 모든 ktdctl·backend 조회가 `KTDM_HOST`를 요구하므로, 누락·미선언·이 장비에 없는 주소·
+# 주소가 겹치는 선언은 flip 직후 status까지 전부 죽인다. 값은 프로세스 env가 아니라 `.env`에서만 본다 —
+# backend 유닛은 env에 `KTDM_HOST`를 두지 않는다. stderr는 registry가 만든 한 줄(상수·이름·경로)이다.
+# >>> host-identity
+if ! identity_err="$(env -u KTDM_HOST -u KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE \
+  -u KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT="${REL}" \
+  "${REL}/backend/.venv/bin/python" -I -c 'from kor_travel_docker_manager.cli import main
+raise SystemExit(main(["targets", "validate", "--json"]))' 2>&1 >/dev/null 9>&-)"; then
+  die "new release cannot identify this host from ${REL}/.env (KTDM_HOST); not flipping: $(printf '%s\n' "${identity_err}" | tail -n 1)"
+fi
+# <<< host-identity
+
 # host 파일은 release에서 설치한다. 여기서 실패하면 설치 root와 도는 backend는 그대로다.
 install -T -o root -g root -m 0644 -- "${REL}/deploy/tmpfiles.d/kor-travel-docker-manager.conf" \
   /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf

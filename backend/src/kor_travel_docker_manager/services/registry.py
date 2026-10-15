@@ -320,25 +320,27 @@ def load_targets_config() -> dict[str, Any]:
 
 load_targets_config.cache_clear = _load_targets_config_cached.cache_clear
 
+#: `hosts:`가 없는 문서(합성 개발 fixture)의 암묵 호스트. 호스트 차원이 없다는 것은 모든 target이
+#: 한 호스트 — 곧 default 호스트 하나 — 에 있다는 뜻이다. 이름은 그 사실 그대로 `default`다.
+#: 운영 모드는 이 암묵 호스트를 받지 않는다(`current_host` — 선언된 `hosts:`가 필수).
+IMPLICIT_HOST: Final = "default"
+
+_HOST_NAME = re.compile(r"[a-z][a-z0-9_-]*")
+
 
 def _host_specs(config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    """옛 단일 호스트 개발 fixture만 loopback으로 읽는다. v2에는 hosts가 필수다."""
-    version = config.get("version", 1)
-    if not isinstance(version, int) or isinstance(version, bool) or version not in {1, 2}:
-        raise TargetsConfigError("targets config version must be 1 or 2")
-    if version == 1:
-        if "hosts" in config or any(
-            isinstance(spec, dict) and "host" in spec
-            for spec in config.get("targets", {}).values()
-        ):
-            raise TargetsConfigError("hosts and target host require config version 2")
-        return {"local": {"addr": "127.0.0.1", "default": True}}
+    """선언된 호스트. `hosts:`가 없으면 loopback의 암묵 default 호스트 하나다.
+
+    버전 게이트는 두지 않는다(#477 리뷰 3번 — ADR-58은 스키마 버전 bump를 요구하지 않는다).
+    """
+    if "hosts" not in config:
+        return {IMPLICIT_HOST: {"addr": "127.0.0.1", "default": True}}
     hosts = config.get("hosts")
     if not isinstance(hosts, dict) or not hosts:
         raise TargetsConfigError("hosts must be a non-empty mapping")
     defaults = 0
     for name, spec in hosts.items():
-        if not isinstance(name, str) or re.fullmatch(r"[a-z][a-z0-9_-]*", name) is None or name == "all":
+        if not isinstance(name, str) or _HOST_NAME.fullmatch(name) is None or name == "all":
             raise TargetsConfigError("hosts key must be a host name, not all")
         if not isinstance(spec, dict) or set(spec) - {"addr", "default"}:
             raise TargetsConfigError(f"hosts.{name}: unknown fields or invalid mapping")
@@ -374,9 +376,11 @@ def _root_env_file_value(name: str, *, root: Path, trusted: bool, operating: boo
     읽는다. 개발 checkout은 backend와 같은 `get_env_path()`를 쓴다. 값만 돌려주고 파일의
     다른 줄은 어디에도 싣지 않는다(비밀이 섞여 있다).
 
-    운영 모드에서 파일이 있는데 읽을 수 없으면(`root:root 0600`을 비-root cron 계정이 부를 때)
-    빈 값으로 넘기지 않고 그 사유로 거부한다 — "KTDM_HOST가 없다"는 문구는 `.env`에 값이
-    있는 운영자를 엉뚱한 곳으로 보낸다. 오류에는 경로만 싣고 내용은 싣지 않는다.
+    운영 모드에서 파일이 있는데 쓸 수 없으면 빈 값으로 넘기지 않고 그 사유로 거부한다 —
+    "KTDM_HOST가 없다"는 문구는 `.env`에 값이 있는 운영자를 엉뚱한 곳으로 보낸다. 쓸 수 없음은
+    셋이다: 이 계정이 읽을 수 없다(`root:root 0600`을 비-root cron이 부를 때), 일반 파일이 아니다
+    (디렉터리·FIFO — FIFO는 읽으면 멈춘다), UTF-8/dotenv로 풀리지 않는다(#482 리뷰). 오류에는
+    경로만 싣고 내용은 싣지 않는다. 개발 checkout은 셋 다 종전처럼 "값 없음"이다.
     """
 
     if trusted:
@@ -385,18 +389,35 @@ def _root_env_file_value(name: str, *, root: Path, trusted: bool, operating: boo
         from kor_travel_docker_manager.services.compose_service import get_env_path
 
         path = Path(get_env_path())
+
+    def unusable(reason: str) -> RootEnvUnreadableError:
+        return RootEnvUnreadableError(
+            f"Manager root .env is {reason} ({path}); set {name} in the process environment"
+        )
+
+    try:
+        metadata = path.stat()
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        if operating:
+            raise unusable("unreadable by this user") from exc
+        return ""
+    if not stat.S_ISREG(metadata.st_mode):
+        if operating:
+            raise unusable("not a regular file")
+        return ""
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return ""
-    except OSError as exc:
-        if operating and path.exists():
-            raise RootEnvUnreadableError(
-                f"Manager root .env is unreadable by this user ({path}); "
-                f"set {name} in the process environment"
-            ) from exc
+    except UnicodeError as exc:
+        if operating:
+            raise unusable("not valid UTF-8") from exc
         return ""
-    except UnicodeError:
+    except OSError as exc:
+        if operating:
+            raise unusable("unreadable by this user") from exc
         return ""
     from io import StringIO
 
@@ -404,17 +425,26 @@ def _root_env_file_value(name: str, *, root: Path, trusted: bool, operating: boo
 
     try:
         value = dotenv_values(stream=StringIO(text), interpolate=False).get(name)
-    except ValueError:
+    except ValueError as exc:
+        if operating:
+            raise unusable("not parseable as a dotenv file") from exc
         return ""
     return (value or "").strip()
 
 
 def current_host(config: Mapping[str, Any] | None = None) -> str:
-    """자기 호스트 이름. release(운영 모드)에서는 선언 필수, 캐시하지 않는다.
+    """자기 호스트 이름. release(운영 모드)에서는 선언 필수.
 
     우선순위: 비어 있지 않은 프로세스 env `KTDM_HOST` → Manager 루트 `.env`의 `KTDM_HOST`
     (compose·backend와 같은 순서). 둘 다 비면 운영 모드는 거부하고 개발은 default 호스트다.
-    어느 쪽에서 왔든 아래 검증(선언된 호스트·로컬 주소)은 똑같이 적용된다.
+    어느 쪽에서 왔든 아래 검증은 똑같이 적용된다.
+
+    운영 모드의 자기 식별은 **"주소가 이 장비에 있는 선언 호스트가 정확히 하나 ∧ 그것 == KTDM_HOST"**다
+    (#477 리뷰 7번). `KTDM_HOST`의 주소가 로컬이기만 하면 통과시키면, 보조 IPv4·VIP로 선언 주소 둘이
+    로컬인 장비에서 어느 이름이든 통과한다.
+
+    env·`.env`의 값은 조회마다 다시 읽는다. 인터페이스 주소 집합만 프로세스당 한 번 읽는다
+    (`_local_ipv4_addresses` — 그 docstring에 이유).
     """
     config = load_targets_config() if config is None else config
     hosts = _host_specs(config)
@@ -440,13 +470,29 @@ def current_host(config: Mapping[str, Any] | None = None) -> str:
         selected = default_host(config)
     if selected not in hosts:
         raise TargetsConfigError("KTDM_HOST must be a declared hosts key")
-    if operating and hosts[selected]["addr"] not in _local_ipv4_addresses():
-        raise TargetsConfigError("KTDM_HOST address is not assigned to this host")
+    if operating:
+        local = _local_ipv4_addresses()
+        if hosts[selected]["addr"] not in local:
+            raise TargetsConfigError("KTDM_HOST address is not assigned to this host")
+        claimed = sorted(name for name, spec in hosts.items() if spec["addr"] in local)
+        if claimed != [selected]:
+            raise TargetsConfigError(
+                "more than one declared host address is assigned to this host "
+                f"({', '.join(claimed)}); self-identification is ambiguous"
+            )
     return selected
 
 
+@lru_cache(maxsize=1)
 def _local_ipv4_addresses() -> frozenset[str]:
-    """Linux 인터페이스의 실제 IPv4를 읽는다. DNS나 외부 HTTP를 자기 식별에 쓰지 않는다."""
+    """Linux 인터페이스의 실제 IPv4를 읽는다. DNS나 외부 HTTP를 자기 식별에 쓰지 않는다.
+
+    **프로세스당 한 번**이다(#477 리뷰 5번). `MANAGED_CONTAINERS["x"]` 단건 조회마다
+    `current_host`가 돌므로, 캐시가 없으면 status 한 번에 `ip` subprocess가 수백 번 뜬다(디스크
+    대기형 n150). 대가: 실행 중 주소가 바뀌면 다음 프로세스부터 보인다. 수용한다 — 호스트 주소는
+    고정 LAN 주소이고 바꾸는 일은 운영 사건이며, `ktdctl`은 단명 프로세스이고 backend는 설치마다
+    재기동된다(ADR-51 D). 실패(예외)는 캐시되지 않으므로 다음 조회가 다시 시도한다.
+    """
     import json
     import subprocess
 
@@ -484,10 +530,18 @@ def target_hosts(target: str, config: Mapping[str, Any] | None = None) -> frozen
 
 
 def container_hosts(container_id: str, config: Mapping[str, Any] | None = None) -> frozenset[str]:
-    """같은 컨테이너를 직접 소유하는 target의 합집합으로 host-local 존재를 파생한다."""
+    """컨테이너가 존재하는 호스트 집합(host-local).
+
+    1차: 그 컨테이너의 compose service를 **실행** service로 가진 target들의 host 합집합.
+    2차(1차가 비면): 그 컨테이너를 `containers:`에 적은 target들의 host 합집합 — 실행 service에서
+    빠진 옛 profile 컨테이너(`legacy-dagster`의 webserver·daemon·gateway)는 그것을 관찰하는 자기
+    target의 호스트에 있다. 종전의 "소유자 없음 → loopback"은 원격 target의 옛 컨테이너를 이 호스트에
+    있는 것처럼 그렸다(#477 리뷰 6번).
+    """
     config = load_targets_config() if config is None else config
     container = config["containers"][container_id]
     owners: set[str] = set()
+    observers: set[str] = set()
     for target, spec in config["targets"].items():
         # all 같은 조회 집계 target의 containers는 직접 소유 선언이 아니다.
         if spec.get("include"):
@@ -499,19 +553,65 @@ def container_hosts(container_id: str, config: Mapping[str, Any] | None = None) 
             and container.get("external_project") == (spec.get("external_project") or {}).get("project")
         ):
             owners.update(target_hosts(target, config))
-    return frozenset(owners)
+        elif container_id in (spec.get("containers") or []):
+            observers.update(target_hosts(target, config))
+    return frozenset(owners or observers)
+
+
+#: R1 자리표시. URL의 authority 자리(`scheme://{host}`)에만 둔다 — 로더가 강제한다.
+_HOST_PLACEHOLDER: Final = "{host}"
+
+
+def _render_connection(
+    container_id: str, connection: Any, selected: str, config: Mapping[str, Any]
+) -> Any:
+    """R1: 렌더 호스트가 컨테이너의 host 집합에 있으면 loopback, 아니면 그 집합의 **단일** addr."""
+    if not isinstance(connection, str) or _HOST_PLACEHOLDER not in connection:
+        return connection
+    hosts = container_hosts(container_id, config)
+    if selected in hosts:
+        address = "127.0.0.1"
+    elif len(hosts) == 1:
+        address = _host_specs(config)[next(iter(hosts))]["addr"]
+    else:
+        # 이름순 첫 호스트로 조용히 풀지 않는다(#477 리뷰 6번) — 여럿이면 주소가 하나가 아니고,
+        # 없으면 이 컨테이너가 어디에도 없다. 둘 다 registry의 모순이다.
+        where = ", ".join(sorted(hosts)) or "no target"
+        raise TargetsConfigError(
+            f"containers.{container_id}.connection: {{host}} has no single address from host "
+            f"{selected} (owned by {where})"
+        )
+    return connection.replace(_HOST_PLACEHOLDER, address)
 
 
 def _managed_containers() -> dict[str, dict[str, Any]]:
     config = load_targets_config()
     selected = current_host(config)
-    result = {}
-    for name, spec in config["containers"].items():
-        connection = spec["connection"]
-        owners = container_hosts(name, config)
-        host = "127.0.0.1" if selected in owners or not owners else _host_specs(config)[sorted(owners)[0]]["addr"]
-        result[name] = {**spec, "connection": connection.replace("{host}", host) if isinstance(connection, str) else connection}
-    return result
+    return {
+        name: {**spec, "connection": _render_connection(name, spec["connection"], selected, config)}
+        for name, spec in config["containers"].items()
+    }
+
+
+def _validate_connection_placeholders(config: Mapping[str, Any], *, label: str) -> None:
+    """`{host}`는 URL authority(`scheme://{host}`)에만 — 설명 문자열은 R1 대상이 아니다.
+
+    "내부 전용(127.0.0.1:14107) — loopback만 허용" 같은 설명에 `{host}`를 두면 원격 호스트에서
+    LAN 주소로 렌더돼 "그 주소로 붙으라"는 거짓 안내가 된다(#477 리뷰 낮음). loopback 전용
+    항목은 `127.0.0.1` 리터럴로 적는다.
+    """
+    for container_id, spec in config["containers"].items():
+        connection = spec.get("connection")
+        if not isinstance(connection, str):
+            continue
+        rest = connection
+        while _HOST_PLACEHOLDER in rest:
+            before, _, rest = rest.partition(_HOST_PLACEHOLDER)
+            if re.search(r"[a-z][a-z0-9+.-]*://$", before) is None:
+                raise TargetsConfigError(
+                    f"{label} containers.{container_id}.connection: {{host}} is only allowed as a "
+                    "URL host (scheme://{host}); write 127.0.0.1 for loopback-only descriptions"
+                )
 
 
 def _require_list_field(
@@ -668,6 +768,7 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
                 raise TargetsConfigError(
                     f"{label} containers.{container_id}: missing required field '{field}'"
                 )
+    _validate_connection_placeholders(config, label=label)
 
     seen_aliases: dict[str, str] = {}
     for target_id, spec in targets.items():
@@ -710,6 +811,12 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
     for name in config["dependency_order"]:
         if name not in targets:
             raise TargetsConfigError(f"{label} dependency_order: unknown target '{name}'")
+
+    # R1이 모든 선언 호스트에서 주소 하나로 풀리는지 로드 때 본다 — 한 호스트에서만 도는 status가
+    # 처음 만나는 모순이 되지 않게(N개 호스트 어디서든 같은 판정).
+    for host in _host_specs(config):
+        for container_id, spec in containers.items():
+            _render_connection(container_id, spec["connection"], host, config)
 
     _validate_external_wiring(config, label=label)
 

@@ -1,4 +1,4 @@
-version: 2
+version: 1
 
 # 주소의 정본. tenant 이동은 개별 검증 PR에서 host를 바꾼다(ADR-58).
 hosts:
@@ -260,14 +260,14 @@ containers:
     compose_service: kor-travel-weather-dagster-code-server
     role: weather-dagster-code-server
     display_name: Kor Travel Weather Dagster Code Server
-    connection: "내부 전용(gRPC, {host}:14106) — 인증 없음, loopback만 허용"
+    connection: "내부 전용(gRPC, 127.0.0.1:14106) — 인증 없음, loopback만 허용"
     expected_ports: []
   kor-travel-weather-dagster-webserver:
     name: kor-travel-weather-dagster-webserver-latest
     compose_service: kor-travel-weather-dagster-webserver
     role: weather-dagster-webserver
     display_name: Kor Travel Weather Dagster Webserver
-    connection: "내부 전용({host}:14107) — gateway를 통해서만 접근"
+    connection: "내부 전용(127.0.0.1:14107) — gateway를 통해서만 접근"
     expected_ports: []
   kor-travel-weather-dagster-daemon:
     name: kor-travel-weather-dagster-daemon-latest
@@ -320,7 +320,7 @@ containers:
     compose_service: kor-travel-dagster-webserver
     role: dagster-shared-webserver
     display_name: 공용 Dagster webserver
-    connection: "내부 전용({host}:11002) — gateway를 통해서만 접근"
+    connection: "내부 전용(127.0.0.1:11002) — gateway를 통해서만 접근"
     expected_ports: []
   kor-travel-dagster-daemon:
     name: kor-travel-dagster-daemon
@@ -748,7 +748,6 @@ targets:
     # 지금 바꾸는 것은 n150 공용 workspace에서 이 location이 빠지는 것뿐이다(`hosts:` 주석). 소비자(PinVi)는 odroid의
     # weather API `http://192.168.1.13:12201`을 부른다(`docker-compose.yml`의 R2 기본값).
     host: odroid
-    # n150 `all`에서 뺀다(잠정 — `all` 주석). 호스트별 `all` 필터(T-MGR-01a·NH)가 이 줄을 대신한다.
     port_band: "14100-14199"
     depends_on: []
     display_name: Kor Travel Weather
@@ -804,7 +803,9 @@ targets:
           NEXT_PUBLIC_DAGSTER_URL: public
 
   dagster:
-    host: all
+    # `host:` 생략 = default 호스트(#477 리뷰 8번). 공용 plane은 지금 default 호스트에만 있고 workspace 파생도
+    # 그 호스트 하나를 본다 — `all`이면 다른 호스트의 `ensure dagster`·`ensure all`이 그 호스트에 workspace 없는
+    # 두 번째 plane을 띄운다. 호스트별 workspace(T-MGR-02)가 생기면 `all`로 되돌린다.
     # 공용 Dagster 제어 평면(platform-topology.md §7, dagster-shared-plan §4, ADR-54). 공용 instance
     # 위의 `dagster_shared` DB·role·storage schema(2단계)와 그 위의 daemon(포트 없음)·webserver
     # (`127.0.0.1:11002`)·gateway(11001)(3단계)다. workspace는 `dagster.control_plane: shared`인
