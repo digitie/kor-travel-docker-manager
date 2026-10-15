@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 import kor_travel_docker_manager.database as _database_module
+from kor_travel_docker_manager.services import registry as _registry_module
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SEED = _REPO_ROOT / "config" / "runtime-pins.seed.json"
@@ -301,3 +302,15 @@ def own_pinned_pair(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     finally:
         for clear in clears:
             clear()
+
+
+#: 진짜 프로세스 캐시(T-MGR-01a-F — 인터페이스 주소는 프로세스당 1회). 테스트가 monkeypatch로 함수를 바꿔도 이
+#: 참조로 비운다. 비우지 않으면 앞 테스트가 채운 주소 집합이 다음 테스트의 자기 식별에 새어 순서에 따라 결과가 바뀐다.
+_ADDRESS_PROBE = _registry_module._local_ipv4_addresses
+
+
+@pytest.fixture(autouse=True)
+def _fresh_local_address_probe() -> Iterator[None]:
+    _ADDRESS_PROBE.cache_clear()
+    yield
+    _ADDRESS_PROBE.cache_clear()

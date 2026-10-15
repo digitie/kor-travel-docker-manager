@@ -2,19 +2,29 @@
 
 import copy
 import os
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
 from kor_travel_docker_manager.services import registry
+from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def _load_registry() -> dict:
+    # 실제 로더와 같은 중복 키 거부 로더 — safe_load는 중복 블록의 마지막만 보고 초록이 된다(#477 리뷰 1번).
+    return load_yaml_rejecting_duplicate_keys((ROOT / "config/docker-targets.yml").read_text(encoding="utf-8"))
+
+
+# 주소 probe 캐시는 conftest의 autouse `_fresh_local_address_probe`가 테스트마다 비운다.
+
+
 @pytest.fixture
 def config(monkeypatch, tmp_path):
-    value = yaml.safe_load((ROOT / "config/docker-targets.yml").read_text())
+    value = _load_registry()
     monkeypatch.setenv(registry.PROJECT_ROOT_ENV, str(tmp_path))
     monkeypatch.delenv("KTDM_HOST", raising=False)
     return value
@@ -176,17 +186,69 @@ def test_local_address_probe_includes_secondary_ipv4(monkeypatch):
     monkeypatch.setattr(subprocess, "run", probe)
     assert registry._local_ipv4_addresses() == frozenset({"10.1.1.1", "10.1.1.2"})
 
-def test_cached_config_rechecks_self_identity(config, monkeypatch, tmp_path):
+def _fake_ip(monkeypatch, addresses):
+    """`/usr/sbin/ip` subprocess만 바꾼다 — 프로세스 캐시(`_local_ipv4_addresses`)는 진짜를 쓴다."""
+    import json
+    import subprocess
+
+    calls = []
+
+    def probe(command, **kwargs):
+        calls.append(command)
+        data = [{"addr_info": [{"family": "inet", "local": address} for address in sorted(addresses)]}]
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(data).encode())
+
+    monkeypatch.setattr(subprocess, "run", probe)
+    return calls
+
+
+def test_cached_config_rechecks_identity_but_probes_addresses_once(config, monkeypatch, tmp_path):
+    """의도(2026-10-16 변경): **자기 식별(`KTDM_HOST`·`.env`)은 매 조회 다시 읽고, 인터페이스 주소는 프로세스당
+    한 번**이다(#477 리뷰 5번 — 단건 조회마다 `ip` subprocess가 떴다). 종전 이 테스트는 주소 집합까지 매 조회
+    재검증을 고정했다. 주소는 고정 LAN 주소이고 바뀌면 재기동으로 반영된다(`_local_ipv4_addresses` docstring)."""
     (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
     monkeypatch.setenv("KTDM_HOST", "n150")
-    addresses = {config["hosts"]["n150"]["addr"]}
-    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset(addresses))
+    calls = _fake_ip(monkeypatch, {config["hosts"]["n150"]["addr"]})
     monkeypatch.setattr(registry, "_load_targets_config_cached", lambda: config)
     assert registry.load_targets_config() is config
-    addresses.clear()
-    for read in (registry.load_targets_config, lambda: registry.services_for_target("geo"), registry.list_targets):
+    for _ in range(50):
+        registry.MANAGED_CONTAINERS["kor-travel-map-api"]
+        registry.services_for_target("map")
+    registry.list_targets()
+    assert len(calls) == 1
+    # 이름은 매 조회 다시 본다 — 바꾸면 다음 조회가 거부한다.
+    monkeypatch.setenv("KTDM_HOST", "odroid")
+    for read in (registry.load_targets_config, lambda: registry.services_for_target("map"), registry.list_targets):
         with pytest.raises(registry.TargetsConfigError, match="not assigned"):
             read()
+    assert len(calls) == 1
+
+
+def test_failed_address_probe_is_not_cached(monkeypatch):
+    import subprocess
+
+    def broken(command, **kwargs):
+        raise OSError("no ip")
+
+    monkeypatch.setattr(subprocess, "run", broken)
+    with pytest.raises(registry.TargetsConfigError, match="could not verify"):
+        registry._local_ipv4_addresses()
+    _fake_ip(monkeypatch, {"10.9.9.9"})
+    assert registry._local_ipv4_addresses() == frozenset({"10.9.9.9"})
+
+
+def test_self_identification_requires_exactly_one_local_declared_host(config, monkeypatch, tmp_path):
+    # 보조 IPv4/VIP로 선언 주소 둘이 이 장비에 있으면 어느 이름이든 "로컬"이다 — 이름을 고를 근거가 없다.
+    (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
+    both = {spec["addr"] for spec in config["hosts"].values()}
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset(both))
+    for name in config["hosts"]:
+        monkeypatch.setenv("KTDM_HOST", name)
+        with pytest.raises(registry.TargetsConfigError, match="more than one declared host"):
+            registry.current_host(config)
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset({config["hosts"]["odroid"]["addr"]}))
+    monkeypatch.setenv("KTDM_HOST", "odroid")
+    assert registry.current_host(config) == "odroid"
 
 
 def test_target_aggregate_bounds_identity_probes(config, monkeypatch, tmp_path):
@@ -236,7 +298,7 @@ def operating_cli(monkeypatch, tmp_path):
     monkeypatch.delenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", raising=False)
     monkeypatch.delenv(registry.HOST_ENV, raising=False)
     (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
-    addresses = yaml.safe_load((ROOT / "config/docker-targets.yml").read_text())["hosts"]
+    addresses = _load_registry()["hosts"]
     monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset({addresses["odroid"]["addr"]}))
     registry.load_targets_config.cache_clear()
     yield tmp_path
@@ -345,3 +407,180 @@ def test_development_checkout_ignores_unreadable_root_env_file(config, monkeypat
         assert registry.current_host(config) == registry.default_host(config)
     finally:
         env_file.chmod(0o600)
+
+
+# --- 2026-10-16 T-MGR-01a-F: #477 리뷰 잔여(#481 위로 rebase — 겹치는 것은 #481 그대로) ----------------
+
+
+def test_multi_owner_remote_container_does_not_resolve_to_the_first_name(config, monkeypatch):
+    # 종전: `sorted(owners)[0]` — 두 원격 호스트가 가진 컨테이너가 이름순 첫 호스트 주소로 조용히 풀렸다. 지금은 그
+    # connection만 미해석(`{host}` 그대로)으로 남기고 설정 전체는 거부하지 않는다(N-host 규칙은 T-MGR-NH).
+    config["hosts"]["mars"] = {"addr": "192.0.2.7"}
+    config["targets"]["conc"]["host"] = "mars"
+    config["targets"]["map"]["host"] = "odroid"
+    config["targets"]["conc"]["services"] = [*config["targets"]["conc"]["services"], "kor-travel-map-api"]
+    monkeypatch.setattr(registry, "load_targets_config", lambda: config)
+    monkeypatch.setenv("KTDM_HOST", "n150")
+    assert registry.container_hosts("kor-travel-map-api", config) == frozenset({"mars", "odroid"})
+    assert registry._managed_containers()["kor-travel-map-api"]["connection"] == config["containers"]["kor-travel-map-api"]["connection"]
+    assert "{host}" in registry._managed_containers()["kor-travel-map-api"]["connection"]
+
+
+def _derived(config, monkeypatch, host):
+    """한 호스트에서 본 런타임 파생물 전부: 연결 좌표(R1)·`all` 필터·target 호스트."""
+    monkeypatch.setattr(registry, "load_targets_config", lambda: config)
+    monkeypatch.setenv("KTDM_HOST", host)
+    return {
+        "connections": {name: spec["connection"] for name, spec in registry._managed_containers().items()},
+        "all": registry.target_sequence_for_target("all"),
+        "hosts": {target["id"]: target["host"] for target in registry.list_targets()},
+    }
+
+
+def test_third_virtual_host_derives_without_code_changes(config, monkeypatch):
+    """T-MGR-NH 수용 기준의 **오늘 있는 런타임 파생물(R1 연결 좌표·`all` 필터·target host)** 부분: 세 번째 호스트를
+    더하고 target 하나를 옮기면 그 셋이 새 호스트를 반영하고, 옮긴 target이 혼자 갖지 않은 것은 원래 두 호스트에서 byte
+    불변이다. 코드는 그대로 — registry만 바꾼다. 커밋된 파생물(workspace·R2 소비자 기본값·Prometheus)은 아직 registry에서
+    계산되지 않아 여기서 보지 않는다(T-MGR-02·01c·04)."""
+    import json
+
+    before = {host: _derived(config, monkeypatch, host) for host in list(config["hosts"])}
+    moved = "conc"
+    mars = "192.0.2.7"  # TEST-NET-1
+    config["hosts"]["mars"] = {"addr": mars}
+    config["targets"][moved]["host"] = "mars"
+    registry._validate_targets_config(config, label="test")
+    after = {host: _derived(config, monkeypatch, host) for host in config["hosts"]}
+
+    moved_containers = {
+        name for name in config["containers"] if registry.container_hosts(name, config) == frozenset({"mars"})
+    }
+    assert moved_containers  # 옮긴 target이 혼자 가진 컨테이너가 있어야 이 테스트가 무언가를 본다
+
+    def dump(connections):
+        kept = {name: value for name, value in connections.items() if name not in moved_containers}
+        return json.dumps(kept, ensure_ascii=False, sort_keys=True)
+
+    for host in before:
+        assert dump(after[host]["connections"]) == dump(before[host]["connections"])
+        for name in moved_containers:
+            old, new = str(before[host]["connections"][name]), str(after[host]["connections"][name])
+            if "://" in old:
+                assert f"://{mars}:" in new, (host, name, new)
+        assert after[host]["all"] == [name for name in before[host]["all"] if name != moved]
+        assert after[host]["hosts"] == {**before[host]["hosts"], moved: "mars"}
+    for name in moved_containers:
+        new = str(after["mars"]["connections"][name])
+        assert "://" not in new or "://127.0.0.1:" in new, (name, new)
+    # mars의 all = 모든 호스트에 있는 infra + 옮긴 target.
+    everywhere = {t for t, spec in config["targets"].items() if spec.get("host") == "all" and not spec.get("include")}
+    assert set(after["mars"]["all"]) == {*everywhere, moved}
+
+
+#: 호스트 리터럴 검사의 **범위**: `backend/src`와 `scripts/`의 Python(확장자 `.py` 또는 python shebang) 문자열 상수
+#: (f-string 조각 포함, docstring 제외)와 `config/prometheus/prometheus.yml`의 주석 아닌 줄. 범위 밖(명시): 셸 스크립트
+#: (`scripts/*.sh`·bash shebang — 주석·사람용 안내가 대부분이라 단어 검사가 잡음뿐이다), `docker-compose.yml`(R2 소비자
+#: 기본값은 커밋된 파생물 — `test_consumer_origin_defaults.py`가 registry와 대조한다), 문서·주석.
+#:
+#: 허용 목록은 (파일, 리터럴) 정확 일치다 — 같은 파일에 새 리터럴이 생기면 빨갛다. 항목이 더 이상 보이지 않아도 빨갛다
+#: (낡은 허용이 남지 않게).
+_HOST_LITERAL_ALLOWED: dict[tuple[str, str], str] = {
+    ("scripts/m05_isolated_e2e.py", "scripts/n150-playwright-runner.sh"):
+        "PinVi 저장소의 파일 이름이다(호스트 선택이 아니다).",
+    ("config/prometheus/prometheus.yml", "- job_name: cadvisor-odroid"):
+        "잠정 odroid exporter job(ADR-58 잠정 시행 ⅵ) — T-MGR-04가 registry 파생물(B-8)로 대체한다.",
+    ("config/prometheus/prometheus.yml", "- 192.168.1.13:12103"): "같은 잠정 job(T-MGR-04).",
+    ("config/prometheus/prometheus.yml", "host: odroid"): "같은 잠정 job들의 label(T-MGR-04).",
+    ("config/prometheus/prometheus.yml", "- job_name: node-odroid"): "같은 잠정 job(T-MGR-04).",
+    ("config/prometheus/prometheus.yml", "- 192.168.1.13:12106"): "같은 잠정 job(T-MGR-04).",
+}
+
+
+def _python_sources() -> list[Path]:
+    files = sorted((ROOT / "backend/src").rglob("*.py"))
+    for path in sorted((ROOT / "scripts").rglob("*")):
+        if not path.is_file():
+            continue
+        head = path.read_bytes()[:80]
+        if path.suffix == ".py" or (not path.suffix and head.startswith(b"#!") and b"python" in head.split(b"\n")[0]):
+            files.append(path)
+    return files
+
+
+def _string_constants(path: Path) -> list[tuple[int, str]]:
+    """docstring을 뺀 문자열 상수. f-string의 리터럴 조각도 `ast.Constant`로 나온다."""
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+                docstrings.add(id(first.value))
+    return [
+        (node.lineno, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings
+    ]
+
+
+def _host_literal_hits(hosts: dict) -> list[tuple[str, int, str]]:
+    import re
+
+    names = "|".join(re.escape(name) for name in hosts)
+    word = re.compile(rf"(?<![A-Za-z0-9_])(?:{names})(?![A-Za-z0-9_])")
+    addresses = [spec["addr"] for spec in hosts.values()]
+
+    def carries(text: str) -> bool:
+        return word.search(text) is not None or any(address in text for address in addresses)
+
+    hits = []
+    for path in _python_sources():
+        relative = path.relative_to(ROOT).as_posix()
+        hits.extend((relative, line, value) for line, value in _string_constants(path) if carries(value))
+    prometheus = ROOT / "config/prometheus/prometheus.yml"
+    for line, text in enumerate(prometheus.read_text(encoding="utf-8").splitlines(), start=1):
+        code = text.split("#", 1)[0].strip()
+        if code and carries(code):
+            hits.append(("config/prometheus/prometheus.yml", line, code))
+    return hits
+
+
+def test_code_has_no_host_name_literals():
+    """T-MGR-NH: 호스트 이름·주소는 registry에만 — 코드가 들고 있으면 호스트를 더할 때 코드를 고친다. 범위·허용은
+    `_HOST_LITERAL_ALLOWED` 주석."""
+    hits = _host_literal_hits(_load_registry()["hosts"])
+    unexpected = [f"{path}:{line}: {value[:80]!r}" for path, line, value in hits if (path, value) not in _HOST_LITERAL_ALLOWED]
+    assert unexpected == []
+    seen = {(path, value) for path, _, value in hits}
+    assert set(_HOST_LITERAL_ALLOWED) <= seen, sorted(set(_HOST_LITERAL_ALLOWED) - seen)
+
+
+def test_host_literal_scan_sees_words_fstrings_and_skips_docstrings(tmp_path, monkeypatch):
+    # 검사기 자체를 빨갛게: 단어 안·f-string 조각·주소는 잡고, docstring·다른 단어의 일부는 넘긴다.
+    source = tmp_path / "probe.py"
+    source.write_text(
+        '"""모듈 설명 n150."""\n'
+        'def f(x):\n'
+        '    """함수 설명 odroid."""\n'
+        '    a = f"ssh {x}@n150 now"\n'
+        '    b = "target on odroid"\n'
+        '    c = "http://10.0.0.9:1"\n'
+        '    d = "n1500 xodroid odroid_x"\n',
+        encoding="utf-8",
+    )
+    found = [value for _, value in _string_constants(source)]
+    hosts = {"n150": {"addr": "10.0.0.1"}, "odroid": {"addr": "10.0.0.9"}}
+    monkeypatch.setattr(sys.modules[__name__], "_python_sources", lambda: [source])
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    (tmp_path / "config/prometheus").mkdir(parents=True)
+    (tmp_path / "config/prometheus/prometheus.yml").write_text("# n150 주석\n- 10.0.0.1:9\n", encoding="utf-8")
+    hits = {(path, value) for path, _, value in _host_literal_hits(hosts)}
+    assert "모듈 설명 n150." not in found and "함수 설명 odroid." not in found
+    assert hits == {
+        ("probe.py", "@n150 now"),
+        ("probe.py", "target on odroid"),
+        ("probe.py", "http://10.0.0.9:1"),
+        ("config/prometheus/prometheus.yml", "- 10.0.0.1:9"),
+    }

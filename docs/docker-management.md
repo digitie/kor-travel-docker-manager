@@ -215,8 +215,13 @@ live 통과는 별도 gate이며, 소스 구현만으로 운영 이전 완료를
 
 v1은 host 필드가 없는 기존 개발 fixture에만 loopback으로 호환된다. 운영 설치본은 v2와 명시적 `KTDM_HOST`가
 필수이며, trusted wheel의 설치 경로 판정은 환경의 project root와 분리한다. 캐시된 registry를 읽더라도
-설치 경로 변경과 실제 IPv4 소유 여부를 다시 검사한다. Linux `ip -j -4 address show`로 secondary 주소도 확인한다.
-목록 순회는 순회당 한 snapshot만 만들고 host 환경값을 전역 캐시하지 않는다.
+설치 경로 변경과 `KTDM_HOST`(env·`.env`)는 조회마다 다시 본다. 인터페이스 IPv4 집합(Linux `ip -j -4 address show`,
+secondary 주소 포함)은 **프로세스당 한 번** 읽는다(`ktdctl`은 단명, backend는 설치마다 재기동 — 주소 변경은 다음 프로세스에서
+보인다). 운영 모드 자기 식별은 "주소가 이 장비에 있는 선언 호스트가 **정확히 하나** ∧ 그것 == `KTDM_HOST`"다 — 선언 주소 둘이
+로컬(보조 IPv4·VIP)이면 어느 이름이든 거부한다. 설치기는 flip **전에** 새 release의 `targets validate --json`을 프로세스 env의
+`KTDM_HOST` 없이(`.env`만으로) 돌려 위 거부 조건이면 넘기지 않는다(`scripts/install-ktdm-trusted-release`의 `host-identity` 구간).
+R1 렌더에서 원격 소유 호스트가 둘 이상인 컨테이너는 이름순 첫 호스트로 풀지 않고 그 connection만 `{host}` 그대로(미해석) 둔다.
+목록 순회는 순회당 한 snapshot만 만든다.
 
 **registry.** 최상위 `hosts:`(`<키>: {addr: <IPv4>, default: true|생략}`, default는 정확히 1개)와 target의 `host:`(tenant: `hosts` 키
 하나, 생략 = default; infra `storage`/`dagster`/`cadv`: `all`). 로더는 오늘의 unknown-field 거부(`registry.py:373-376`와 같은
