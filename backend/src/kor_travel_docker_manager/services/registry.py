@@ -102,6 +102,16 @@ class TargetsConfigError(ValueError):
     """
 
 
+class RootEnvUnreadableError(TargetsConfigError):
+    """운영 모드 자기 식별이 root `.env`를 읽지 못했다.
+
+    문구는 상수와 파일 경로만으로 만든다 — 파일 내용은 담지 않는다. CLI의 비밀 가리기
+    (`scrub_failure_text`)는 같은 `.env`를 읽어야 동작하므로 이 실패에서는 원리상 항상
+    원문을 숨긴다. 그러면 운영자는 고칠 자리(프로세스 env)를 듣지 못한다. 그래서 CLI는
+    이 타입만 가리지 않고 그대로 낸다.
+    """
+
+
 def get_project_root() -> str:
     configured = os.environ.get("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", "").strip()
     if configured:
@@ -381,7 +391,7 @@ def _root_env_file_value(name: str, *, root: Path, trusted: bool, operating: boo
         return ""
     except OSError as exc:
         if operating and path.exists():
-            raise TargetsConfigError(
+            raise RootEnvUnreadableError(
                 f"Manager root .env is unreadable by this user ({path}); "
                 f"set {name} in the process environment"
             ) from exc
