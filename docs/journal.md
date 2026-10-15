@@ -2,8 +2,6 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
-
-
 ## 2026-10-15 — n150 공용 workspace에서 geo 제외(소유자 결정)
 
 - n150 geo code-server(`12503`)가 02:42Z 멈춘 뒤 공용 daemon·webserver가 geo location 미응답으로 unhealthy였다(운영자 preflight 차단).
