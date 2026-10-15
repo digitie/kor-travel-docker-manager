@@ -133,13 +133,10 @@ def test_a_tracked_env_file_matches_protected_names_as_whole_identifiers(
 
     _write_env_file(
         tmp_path,
-        f"PINVI_{protected}=x
-{protected}_FILE=/run/secrets/x
-".encode(),
+        f"PINVI_{protected}=x\n{protected}_FILE=/run/secrets/x\n".encode(),
     )
     _validate_env_files(tmp_path)
 
-    _write_env_file(tmp_path, f"COPY=${{{protected}}}
-".encode())
+    _write_env_file(tmp_path, f"COPY=${{{protected}}}\n".encode())
     with pytest.raises(DeploymentContractError, match="contains protected wiring"):
         _validate_env_files(tmp_path)
