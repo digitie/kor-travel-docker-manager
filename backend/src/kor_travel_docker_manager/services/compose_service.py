@@ -2033,6 +2033,7 @@ _COMPOSE_WAIT_TIMEOUT_SECONDS: Final = 900
 #: 묶었다.
 _SHARED_PLANE_PROBE_TIMEOUT_SECONDS: Final = 300.0
 _SHARED_PLANE_PROBE_INTERVAL_SECONDS: Final = 5.0
+_HEX_DIGEST: Final = re.compile(r"[0-9a-f]{8,64}")
 _SHARED_PLANE_WORKSPACE_QUERY: Final = (
     "{ workspaceOrError { __typename ... on Workspace { locationEntries { name "
     "locationOrLoadError { __typename } } } } }"
@@ -4984,11 +4985,102 @@ class ComposeService:
             )
         self._require_plane_location_owners_fenced(locations, owners)
         if not self._shared_plane_current(plane, services):
-            self._run_pinned_runtime_rebuild_compose(
-                ["up", "-d", "--no-deps", *plane.services],
-                transaction=runtime_transaction,
-            )
+            self._recreate_shared_plane(plane, transaction=runtime_transaction)
         self._wait_shared_plane_locations(plane, services, wanted)
+
+    def _recreate_shared_plane(
+        self, plane: SharedDagsterPlane, *, transaction: ComposeTransactionSnapshot
+    ) -> None:
+        """plane 서비스만 frozen render로 다시 만든다 — 재구축과 `dagster-plane converge`가 같은 호출을 쓴다."""
+
+        self._run_pinned_runtime_rebuild_compose(
+            ["up", "-d", "--no-deps", *plane.services],
+            transaction=transaction,
+        )
+
+    def converge_shared_dagster_plane(self, *, dry_run: bool) -> dict[str, Any]:
+        """설치된 release의 공용 Dagster plane(daemon·webserver)**만** 그 render로 맞춘다(`ktdctl dagster-plane converge`).
+
+        Manager 설치가 공용 workspace를 바꾸면(location 추가·제거) 떠 있는 daemon·webserver는 옛 workspace와 옛 digest
+        env로 남아 unhealthy가 된다. 그것을 고치는 길은 pinned 재구축 안의 plane 수렴뿐이었는데, 운영자의 preflight는
+        plane이 unhealthy이면 재구축을 시작하지 않는다. 이 명령은 그 수렴 한 조각만 재구축과 **같은 조건으로** 돈다:
+
+        - **lock·환경 계약**: 재구축의 `_pinned_runtime_rebuild_environment_lock`을 그대로 쓴다 — host 변경 lock G를 잡은
+          뒤 trusted root `.env`를 frozen snapshot으로 읽고 `assert_pinned_runtime_rebuild_allowed`(rehearsal/rebuildable)를
+          통과해야 한다. 대기 중인 pair 회전이 있으면 거부한다. 일반 `ensure`의 환경 계약은 바꾸지 않는다.
+        - **서비스**: frozen render에서 모양으로 파생한 plane이고 설치된 release의 것과 같아야 한다(`_frozen_shared_plane`).
+          plane이 실을 location의 옛 Dagster 서비스가 돌면 거부한다(이중 발화, 재구축과 같은 검사).
+        - **판정·실행**: `_shared_plane_current`가 같다고 하면 무연산이다. 다르면 재구축과 같은 `up -d --no-deps <plane>`
+          하나만 부른다 — Map·PinVi slot 서비스, gateway, code-server는 건드리지 않는다.
+        - **기다림**: 두 컨테이너의 healthcheck가 `healthy`가 될 때까지 상한(`_SHARED_PLANE_PROBE_TIMEOUT_SECONDS`) 안에서
+          본다. daemon의 healthcheck는 workspace의 code-server 전부가 SERVING인지도 보므로 다른 테넌트가 내려가 있으면
+          healthy가 되지 않는다 — 그때는 실패로 서비스별 상태를 돌려준다(재생성은 이미 끝났다).
+
+        ``dry_run``이면 같은 검사를 거쳐 무엇이 다른지만 돌려주고 아무것도 바꾸지 않는다.
+        """
+
+        _require_pinned_runtime_rebuild_root()
+
+        def no_pending_rotation(environment_snapshot: ComposeEnvironmentSnapshot) -> None:
+            del environment_snapshot
+            from kor_travel_docker_manager.services.runtime_pair_rotation import (
+                require_no_pending_runtime_pair_rotation,
+            )
+
+            require_no_pending_runtime_pair_rotation()
+
+        with _pinned_runtime_rebuild_environment_lock(
+            prewrite_admission=no_pending_rotation
+        ) as environment_snapshot:
+            transaction, _ = self.capture_transaction_unlocked(
+                environment_snapshot=environment_snapshot,
+            )
+            plane, services, locations = self._frozen_shared_plane(transaction)
+            self._require_plane_location_owners_fenced(locations, installed_location_owners())
+            drift = self._shared_plane_drift(plane, services)
+            result: dict[str, Any] = {
+                "services": list(plane.services),
+                "locations": list(locations),
+                "drift": drift,
+                "dry_run": dry_run,
+            }
+            if not any(drift.values()):
+                return {**result, "success": True, "returncode": 0, "outcome": "current"}
+            if dry_run:
+                return {**result, "success": True, "returncode": 0, "outcome": "would_recreate"}
+            self._recreate_shared_plane(plane, transaction=transaction)
+            health = self._wait_shared_plane_healthy(plane)
+            healthy = all(state == "healthy" for state in health.values())
+            remaining = self._shared_plane_drift(plane, services)
+            converged = healthy and not any(remaining.values())
+            return {
+                **result,
+                "success": converged,
+                "returncode": 0 if converged else 2,
+                "outcome": "recreated" if converged else "recreated_not_healthy",
+                "health": health,
+                "remaining_drift": remaining,
+            }
+
+    def _wait_shared_plane_healthy(self, plane: SharedDagsterPlane) -> dict[str, str]:
+        """plane 컨테이너마다 healthcheck 상태(`healthy`·`starting`·`unhealthy`·`missing`·`not running`)를 상한 안에서 본다."""
+
+        deadline = time.monotonic() + _SHARED_PLANE_PROBE_TIMEOUT_SECONDS
+        while True:
+            health: dict[str, str] = {}
+            for name in plane.services:
+                observed = self._inspect_plane_container(installed_container_name(name), label=name)
+                if observed is None:
+                    health[name] = "missing"
+                elif not observed["running"] or observed["restarting"]:
+                    health[name] = "not running"
+                else:
+                    health[name] = str(observed.get("health") or "no healthcheck")
+            if all(state == "healthy" for state in health.values()):
+                return health
+            if time.monotonic() >= deadline:
+                return health
+            time.sleep(_SHARED_PLANE_PROBE_INTERVAL_SECONDS)
 
     def _frozen_shared_plane(
         self, runtime_transaction: ComposeTransactionSnapshot
@@ -5105,38 +5197,70 @@ class ComposeService:
         command·entrypoint·env 값을 같은 규칙으로 푼 뒤 비교한다(재리뷰 HIGH — 안 풀면 매번 달라 M3가 되살아난다).
         """
 
+        return not any(self._shared_plane_drift(plane, services).values())
+
+    def _shared_plane_drift(
+        self, plane: SharedDagsterPlane, services: Mapping[str, Any]
+    ) -> dict[str, list[str]]:
+        """서비스마다 떠 있는 컨테이너가 render와 어디서 다른가(비면 같다). `_shared_plane_current`의 판정 그대로다.
+
+        이유 문구에 env **값**은 싣지 않는다(공용 metadata URL이 비밀이다) — 이름만 싣는다. 예외는 이름이
+        `_DIGEST`로 끝나고 값이 16진 문자열인 env다(붙인 파일의 내용 해시, 비밀이 아니다): 운영자가 옛 workspace를
+        싣고 있는지 보도록 떠 있는 값과 render 값을 함께 싣는다.
+        """
+
+        drift: dict[str, list[str]] = {}
         for name in plane.services:
+            drift[name] = reasons = []
             render = services[name]
             observed = self._inspect_plane_container(installed_container_name(name), label=name)
-            if observed is None or not observed["running"] or observed["restarting"]:
-                return False
+            if observed is None:
+                reasons.append("container is missing")
+                continue
+            if not observed["running"]:
+                reasons.append("container is not running")
+            if observed["restarting"]:
+                reasons.append("container is restarting")
             image = render.get("image")
             if not isinstance(image, str) or not image:
-                return False
-            try:
-                wanted_image = self._inspect_image_reference_id(image, label=name)
-            except DeploymentContractError:
-                return False
-            if observed["image_id"] != wanted_image:
-                return False
+                reasons.append("render has no image reference")
+            else:
+                try:
+                    wanted_image = self._inspect_image_reference_id(image, label=name)
+                except DeploymentContractError:
+                    reasons.append("rendered image is not present locally")
+                else:
+                    if observed["image_id"] != wanted_image:
+                        reasons.append("image differs")
             environment = render.get("environment") or {}
             if not isinstance(environment, Mapping):
-                return False
+                reasons.append("render environment is invalid")
+                environment = {}
             actual_env = observed["env"]
             for key, value in environment.items():
                 if value is None:
                     continue
-                if actual_env.get(str(key)) != _unescape_compose(str(value)):
-                    return False
+                wanted = _unescape_compose(str(value))
+                actual = actual_env.get(str(key))
+                if actual == wanted:
+                    continue
+                if (
+                    str(key).endswith("_DIGEST")
+                    and _HEX_DIGEST.fullmatch(wanted)
+                    and (actual is None or _HEX_DIGEST.fullmatch(actual))
+                ):
+                    reasons.append(f"env {key}: running {actual} != rendered {wanted}")
+                else:
+                    reasons.append(f"env {key} differs")
             command = [_unescape_compose(str(word)) for word in render.get("command") or []]
             if command != observed["cmd"]:
-                return False
+                reasons.append("command differs")
             entrypoint = render.get("entrypoint")
             if entrypoint is not None and [
                 _unescape_compose(str(word)) for word in entrypoint
             ] != observed["entrypoint"]:
-                return False
-        return True
+                reasons.append("entrypoint differs")
+        return drift
 
     @staticmethod
     def _inspect_plane_container(container_name: str, *, label: str) -> Mapping[str, Any] | None:
@@ -5181,6 +5305,11 @@ class ComposeService:
             "entrypoint": None if entrypoint is None else [str(word) for word in entrypoint],
             "running": state.get("Running") is True,
             "restarting": state.get("Restarting") is True,
+            "health": (
+                str(state["Health"].get("Status") or "")
+                if isinstance(state.get("Health"), Mapping)
+                else None
+            ),
         }
 
     @staticmethod
