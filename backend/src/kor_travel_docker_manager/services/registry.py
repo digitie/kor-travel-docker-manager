@@ -1,4 +1,3 @@
-import ipaddress
 import os
 import posixpath
 import re
@@ -276,7 +275,7 @@ def _read_targets_bytes(path: str) -> bytes:
 
 
 @lru_cache(maxsize=1)
-def load_targets_config() -> dict[str, Any]:
+def _load_targets_config_cached() -> dict[str, Any]:
     # 캐시는 프로세스당 한 번이다 — 첫 로드 이후 파일이 바뀌어도 다시 읽지 않는다.
     #
     # 종전에는 이 캐시에 컨테이너 정체만 있었지만 지금은 bind allowlist가 들어 있다
@@ -298,15 +297,23 @@ def load_targets_config() -> dict[str, Any]:
     if not isinstance(config.get("dependency_order"), list):
         raise TargetsConfigError("docker target config must define dependency_order")
     _validate_targets_config(config, label=os.path.basename(path))
-    # 설치된 release는 자기 호스트를 명시해야 한다. 순수 스키마 검사와 분리한다.
+    return config
+
+
+def load_targets_config() -> dict[str, Any]:
+    """캐시하는 것은 release의 정적 설정뿐이다. 자기 호스트 검증은 매 조회에 수행한다."""
+    config = _load_targets_config_cached()
     current_host(config)
     return config
+
+
+load_targets_config.cache_clear = _load_targets_config_cached.cache_clear
 
 
 def _host_specs(config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """옛 단일 호스트 개발 fixture만 loopback으로 읽는다. v2에는 hosts가 필수다."""
     version = config.get("version", 1)
-    if type(version) is not int or version not in {1, 2}:
+    if not isinstance(version, int) or isinstance(version, bool) or version not in {1, 2}:
         raise TargetsConfigError("targets config version must be 1 or 2")
     if version == 1:
         if "hosts" in config or any(
@@ -636,7 +643,6 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
         if name not in targets:
             raise TargetsConfigError(f"{label} dependency_order: unknown target '{name}'")
 
-    _validate_hosts(config, label=label)
     _validate_external_wiring(config, label=label)
 
     # `ktdctl targets validate`가 bind 절도 함께 본다 — 배포 도중이 아니라 그 전에
@@ -727,8 +733,27 @@ def resolve_target_name(target: str | None) -> str:
     raise ValueError(f"unknown target: {target}")
 
 
-def _dependency_closure(target_name: str) -> set[str]:
-    """target의 transitive `depends_on` 폐포(자기 자신 포함)를 반환한다."""
+def _target_name_from_config(target: str | None, config: Mapping[str, Any]) -> str:
+    normalized = (target or "all").strip().lower()
+    for name, spec in config["targets"].items():
+        if normalized == str(name).strip().lower() or any(normalized == str(alias).strip().lower() for alias in spec.get("aliases", [])):
+            return name
+    raise ValueError(f"unknown target: {target}")
+
+
+def _target_sequence_from_config(
+    target_name: str, config: Mapping[str, Any], selected: str | None
+) -> list[str]:
+    """한 조회의 설정·자기 호스트를 재사용한다. 재귀/항목마다 ip subprocess를 만들지 않는다."""
+    targets = config["targets"]
+    spec = targets[target_name]
+    if spec.get("include"):
+        included = _dedupe([
+            name
+            for child in spec["include"]
+            for name in _target_sequence_from_config(child, config, selected)
+        ])
+        return [name for name in included if selected in target_hosts(name, config)]
     closure: set[str] = set()
     stack = [target_name]
     while stack:
@@ -736,55 +761,64 @@ def _dependency_closure(target_name: str) -> set[str]:
         if name in closure:
             continue
         closure.add(name)
-        for dep in _targets().get(name, {}).get("depends_on", []):
-            stack.append(str(dep))
-    return closure
+        stack.extend(targets[name].get("depends_on", []))
+    order = config["dependency_order"]
+    return sorted(closure, key=lambda name: order.index(name) if name in order else len(order))
+
+
+def _config_and_sequence(target: str | None) -> tuple[dict[str, Any], list[str]]:
+    config = load_targets_config()
+    name = _target_name_from_config(target, config)
+    selected = current_host(config) if config["targets"][name].get("include") else None
+    return config, _target_sequence_from_config(name, config, selected)
 
 
 def target_sequence_for_target(target: str | None) -> list[str]:
-    target_name = resolve_target_name(target)
-    target_spec = _targets()[target_name]
-    if target_spec.get("include"):
-        included: list[str] = []
-        for included_target in target_spec["include"]:
-            included.extend(target_sequence_for_target(included_target))
-        config = load_targets_config()
-        return [name for name in _dedupe(included) if current_host(config) in target_hosts(name, config)]
-
-    # 선형 슬라이스 대신 `depends_on` DAG의 위상정렬을 사용한다.
-    # dependency_order는 DAG의 유효한 linearization이므로, 폐포를 그 순서로 정렬하면
-    # 의존성(부모)이 항상 먼저 오는 결정적 순서가 된다. depends_on이 없으면 단일 target.
-    order = _dependency_order()
-    closure = _dependency_closure(target_name)
-    if not _targets()[target_name].get("depends_on") and target_name not in order:
-        return [target_name]
-    return sorted(closure, key=lambda t: order.index(t) if t in order else len(order))
+    return _config_and_sequence(target)[1]
 
 
-def get_target(target: str | None) -> dict[str, Any]:
-    target_name = resolve_target_name(target)
-    spec = _targets()[target_name]
+def _target_details(name: str, config: Mapping[str, Any], selected: str | None) -> dict[str, Any]:
+    targets = config["targets"]
+    spec = targets[name]
+    sequence = _target_sequence_from_config(name, config, selected)
     return {
-        "id": target_name,
+        "id": name,
         **spec,
-        "host": spec.get("host", default_host()),
-        "resolved_sequence": target_sequence_for_target(target_name),
-        "resolved_services": services_for_target(target_name),
-        "resolved_runtime_services": runtime_services_for_target(target_name),
-        "resolved_init_steps": init_steps_for_target(target_name),
+        "host": spec.get("host", default_host(config)),
+        "resolved_sequence": sequence,
+        "resolved_services": _dedupe([
+            service for owner in sequence for service in targets[owner].get("services", [])
+        ]),
+        "resolved_runtime_services": _dedupe([
+            service for owner in sequence for service in targets[owner].get("runtime_services", [])
+        ]),
+        "resolved_init_steps": [
+            {"target": owner, **step}
+            for owner in sequence for step in targets[owner].get("init_steps", [])
+        ],
     }
 
 
+def get_target(target: str | None) -> dict[str, Any]:
+    config = load_targets_config()
+    name = _target_name_from_config(target, config)
+    selected = current_host(config) if config["targets"][name].get("include") else None
+    return _target_details(name, config, selected)
+
+
 def list_targets() -> list[dict[str, Any]]:
-    ordered_ids = _dedupe([*_dependency_order(), *list(_targets().keys())])
-    return [get_target(target) for target in ordered_ids if target in _targets()]
+    config = load_targets_config()
+    selected = current_host(config)
+    targets = config["targets"]
+    ordered_ids = _dedupe([*config["dependency_order"], *targets])
+    return [_target_details(name, config, selected) for name in ordered_ids if name in targets]
 
 
 def services_for_target(target: str | None) -> list[str]:
-    services: list[str] = []
-    for target_name in target_sequence_for_target(target):
-        services.extend(_targets()[target_name].get("services", []))
-    return _dedupe(services)
+    config, sequence = _config_and_sequence(target)
+    return _dedupe([
+        service for owner in sequence for service in config["targets"][owner].get("services", [])
+    ])
 
 
 #: 컨테이너 절이 쓸 수 있는 필드. target 절과 **같은 등급으로** 닫는다 — 오타 한
@@ -984,62 +1018,6 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
                 )
 
 
-#: `hosts:` 절(ADR-58 결정 1의 부분집합 — 잠정). 호스트 이름 → `addr`(IPv4)·`default`(정확히 하나). target의
-#: `host:`(생략 = default)가 그 target의 컨테이너가 도는 호스트다. 지금 이 값을 읽는 것은 공용 Dagster workspace
-#: 파생뿐이다(`backend/tests/test_dagster_shared_workspace_is_derived.py`) — 형태만 여기서 fail-close로 본다. 오타 한
-#: 글자(`host: odorid`)가 조용히 default로 읽히면 옮긴 target이 n150 plane에 다시 실린다.
-_HOST_FIELDS: Final = frozenset({"addr", "default"})
-_HOST_NAME: Final = re.compile(r"[a-z0-9][a-z0-9-]*")
-#: `all`은 "모든 호스트"(infra `host: all`, ADR-58 결정 1)의 자리라 호스트 이름이 될 수 없다.
-_RESERVED_HOST_NAMES: Final = frozenset({"all"})
-
-
-def _validate_hosts(config: dict[str, Any], *, label: str) -> None:
-    hosts = config.get("hosts")
-    targets = config["targets"]
-    if hosts is None:
-        for target_id, spec in targets.items():
-            if "host" in spec:
-                raise TargetsConfigError(
-                    f"{label} targets.{target_id}.host: no `hosts:` are declared"
-                )
-        return
-    if not isinstance(hosts, dict) or not hosts:
-        raise TargetsConfigError(f"{label} hosts: must be a non-empty mapping")
-    defaults: list[str] = []
-    for name, spec in hosts.items():
-        where = f"{label} hosts.{name}"
-        if not isinstance(name, str) or not _HOST_NAME.fullmatch(name):
-            raise TargetsConfigError(f"{where}: invalid host name")
-        if name in _RESERVED_HOST_NAMES:
-            raise TargetsConfigError(f"{where}: host name {name!r} is reserved")
-        if not isinstance(spec, dict):
-            raise TargetsConfigError(f"{where}: must be a mapping")
-        unknown = sorted(set(spec) - _HOST_FIELDS)
-        if unknown:
-            raise TargetsConfigError(f"{where}: unknown fields {unknown}")
-        addr = spec.get("addr")
-        try:
-            ipaddress.IPv4Address(addr if isinstance(addr, str) else "")
-        except ipaddress.AddressValueError as exc:
-            raise TargetsConfigError(f"{where}.addr: must be an IPv4 address") from exc
-        default = spec.get("default", False)
-        if not isinstance(default, bool):
-            raise TargetsConfigError(f"{where}.default: must be a boolean")
-        if default:
-            defaults.append(name)
-    if len(defaults) != 1:
-        raise TargetsConfigError(
-            f"{label} hosts: exactly one host must be the default, got {sorted(defaults)}"
-        )
-    for target_id, spec in targets.items():
-        host = spec.get("host")
-        if "host" in spec and (not isinstance(host, str) or host not in hosts):
-            raise TargetsConfigError(
-                f"{label} targets.{target_id}.host: unknown host {host!r}"
-            )
-
-
 #: target의 `dagster` 절(ADR-54). 공용 Dagster 제어 평면에 합류했는가와, 그 target의 Dagster를 부르는
 #: env. 형태만 여기서 본다 — compose가 그 선언의 모양인지는
 #: `backend/tests/test_dagster_shared_workspace_is_derived.py`가 파생해 대조한다.
@@ -1218,11 +1196,14 @@ def _validate_external_project(spec: dict[str, Any], *, target_id: str, label: s
         )
 
 
-def external_project_for_target(target: str | None) -> ExternalProject | None:
+def external_project_for_target(
+    target: str | None, *, config: Mapping[str, Any] | None = None
+) -> ExternalProject | None:
     """target이 선언한 외부 프로젝트. 선언이 없으면 `None`(= Manager 자신)."""
 
-    target_name = resolve_target_name(target)
-    spec = _targets()[target_name]
+    config = load_targets_config() if config is None else config
+    target_name = _target_name_from_config(target, config)
+    spec = config["targets"][target_name]
     external = spec.get("external_project")
     if not external:
         return None
@@ -1246,12 +1227,13 @@ def service_groups_for_target(
     호출은 한 번으로 족하고, 그것이 compose가 기대하는 사용법이다.
     """
 
+    config, sequence = _config_and_sequence(target)
     field = "runtime_services" if runtime_only else "services"
     grouped: dict[tuple[str, str, tuple[str, ...]] | None, list[str]] = {}
     order: list[tuple[str, str, tuple[str, ...]] | None] = []
-    for target_name in target_sequence_for_target(target):
-        spec = _targets()[target_name]
-        external = external_project_for_target(target_name)
+    for target_name in sequence:
+        spec = config["targets"][target_name]
+        external = external_project_for_target(target_name, config=config)
         key = (
             (external.project, external.working_dir, external.config_files)
             if external is not None
@@ -1285,18 +1267,18 @@ def target_is_external(target: str | None) -> bool:
 
 
 def runtime_services_for_target(target: str | None) -> list[str]:
-    services: list[str] = []
-    for target_name in target_sequence_for_target(target):
-        services.extend(_targets()[target_name].get("runtime_services", []))
-    return _dedupe(services)
+    config, sequence = _config_and_sequence(target)
+    return _dedupe([
+        service for owner in sequence for service in config["targets"][owner].get("runtime_services", [])
+    ])
 
 
 def init_steps_for_target(target: str | None) -> list[dict[str, Any]]:
-    steps: list[dict[str, Any]] = []
-    for target_name in target_sequence_for_target(target):
-        for step in _targets()[target_name].get("init_steps", []):
-            steps.append({"target": target_name, **step})
-    return steps
+    config, sequence = _config_and_sequence(target)
+    return [
+        {"target": owner, **step}
+        for owner in sequence for step in config["targets"][owner].get("init_steps", [])
+    ]
 
 
 def external_project_for_container(container_id: str) -> ExternalProject | None:

@@ -825,6 +825,13 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
+      # StartRun RPC: 외부 daemon 예산은 Geo proxy보다 크고 시작 감시 상한보다 짧게 둔다.
+      DAGSTER_GRPC_TIMEOUT_SECONDS: ${KTDM_DAGSTER_GRPC_TIMEOUT_SECONDS:-60}
+      # 일반 RPC 예산 변경이 별도 제한의 기본값까지 늘리지 않게 명시한다.
+      DAGSTER_SCHEDULE_GRPC_TIMEOUT_SECONDS: "60"
+      DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS: "60"
+      DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS: "180"
+      DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD: "60"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: "fbd0eadc90829753"
     volumes:
@@ -2453,6 +2460,13 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
+      # StartRun RPC: 외부 daemon 예산은 Geo proxy보다 크고 시작 감시 상한보다 짧게 둔다.
+      DAGSTER_GRPC_TIMEOUT_SECONDS: ${KTDM_GEO_DAGSTER_GRPC_TIMEOUT_SECONDS:-60}
+      # 일반 RPC 예산 변경이 별도 제한의 기본값까지 늘리지 않게 명시한다.
+      DAGSTER_SCHEDULE_GRPC_TIMEOUT_SECONDS: "60"
+      DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS: "60"
+      DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS: "180"
+      DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD: "60"
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}

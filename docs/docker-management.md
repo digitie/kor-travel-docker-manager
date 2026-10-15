@@ -190,7 +190,7 @@ profile로도 피할 수 없다(비활성 profile의 서비스도 interpolate �
 ### 3.2 호스트 프로필과 `KTDM_HOST` (registry 구현, 운영 전환 예정)
 
 registry v2의 `hosts:`·target `host:`·자기 호스트 검증·연결 좌표 파생과 `targets validate --json`은
-T-MGR-01a에서 구현한다. tenant는 아직 default에 둔다. 아래 명령별 host 제한(R4), consumer origin(R2),
+T-MGR-01a에서 구현한다. Weather·Transport의 이전된 host 선언을 보존한다. Geo 이전은 별도 검증으로 확정한다. 아래 명령별 host 제한(R4), consumer origin(R2),
 workspace 분리는 후속 구현·설치 전이며, registry 구현만으로 운영 이전 완료를 판정하지 않는다.
 결정·근거는 `docs/decisions.md` ADR-58, 배치는 `docs/platform-topology.md` §10이다.
 
@@ -247,6 +247,27 @@ T-MGR-01a에서 확정한다.
 `KTDM_HOST`, `KTDM_DAGSTER_WORKSPACE_DIGEST`, `KTDM_POSTGRES_IMAGE`/`KTDM_POSTGRES_CLIENT_IMAGE`, `KTDM_PG_*` 튜닝, `KTDM_DATA_SOURCE_DEVICE`,
 호스트별 `KTDM_PROD_URL_*`·`KOR_TRAVEL_DAGSTER_UI_PASSWORD`. 교차 비밀 2개(Map→geo API key, Map→transport token)는 두 `.env`에 같은 값
 — 결박 없이 효과(401/404)로 드러난다(`docs/bindings.md` U-2).
+
+### Dagster worker 시작 RPC와 복구
+
+Dagster 1.13.24의 StartRun은 daemon→proxy와 proxy→API child 양쪽의 일반 gRPC 기본 제한을 사용한다.
+60초 제한 뒤 같은 run이 다시 QUEUED가 되면 늦은 worker가 중복으로 판단해 종료할 수 있다.
+제한 시간 만료를 미실행으로 간주해 같은 run을 무조건 재전송하지 않는다.
+
+`KTDM_DAGSTER_GRPC_TIMEOUT_SECONDS`는 daemon의 외부 RPC,
+`KTDM_GEO_DAGSTER_GRPC_TIMEOUT_SECONDS`는 Geo proxy의 내부 RPC다. 기본값은 기존 60초다.
+ARM64의 측정된 기동 지연을 수용하는 설정 예시는 내부 300초·외부 360초이며,
+기존 `run_monitoring.start_timeout_seconds=600` 아래에 전달 여유를 남긴다.
+이는 성공 보장치가 아니므로 실제 새 run의 큐 통과와 성공 종료를 확인한다.
+
+일반 RPC 설정은 StartRun 전용이 아니다. 공유 daemon의 다른 일반 RPC도 영향을 받는다.
+schedule 60초·sensor 60초·repository 180초·shutdown grace 60초는 명시해 기본값의 연쇄 증가를 막지만,
+모든 proxy 내부 경로가 불변이라고 주장하지 않는다. Geo의 배치·메모리·CPU·DB pool·동시성·job 실행 상한은 유지한다.
+
+적용 전 기존 run과 worker를 조회하고 daemon을 먼저 중지한다. 중지 뒤 STARTING과 Geo worker가 없는지 다시 확인한 후
+Geo CS를 재생성한다. 실제 child 준비를 확인하고 daemon을 복원한다. 이 동안 다른 테넌트의 schedule·sensor·run 감시는
+잠시 중단되지만 기존 foreign CS와 PostgreSQL은 유지한다. workspace 변경은 생성 시 digest도 함께 맞춘다.
+실패 이력은 보존하고 별도의 NOOP run 하나로 실제 기동과 부작용 없음을 검증한다. timeout·불명 상태에서는 자동 재제출하지 않는다.
 
 ---
 

@@ -406,6 +406,9 @@ def test_the_host_services_run_the_host_image_with_only_the_control_env() -> Non
         allowed = {
             _url_env_name(), "DAGSTER_HOME", "DAGSTER_DAEMON_HEARTBEAT_TOLERANCE",
             "KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST", "KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST",
+            "DAGSTER_GRPC_TIMEOUT_SECONDS", "DAGSTER_SCHEDULE_GRPC_TIMEOUT_SECONDS",
+            "DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS", "DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS",
+            "DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD",
         }
         assert set(service["environment"]) <= allowed, (name, sorted(service["environment"]))
         assert service["environment"]["DAGSTER_HOME"] == migrate["environment"]["DAGSTER_HOME"]
@@ -506,3 +509,30 @@ def test_contract_errors_name_the_dagster_one_shots() -> None:
 
     for name in (_DB_INIT, _MIGRATE):
         assert _describe_candidate_service_key(name) == name
+
+
+def test_cold_start_rpc_budget_preserves_specialized_deadlines() -> None:
+    from test_dagster_shared_workspace_is_derived import _resolve
+
+    services = _compose()["services"]
+    proxy = services["kor-travel-geo-dagster-code-server"]["environment"]
+    daemon = services["kor-travel-dagster-daemon"]["environment"]
+    for environment in (proxy, daemon):
+        assert int(_resolve(environment["DAGSTER_GRPC_TIMEOUT_SECONDS"], {})) == 60
+        assert {key: environment[key] for key in (
+            "DAGSTER_SCHEDULE_GRPC_TIMEOUT_SECONDS", "DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS",
+            "DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS", "DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD",
+        )} == {
+            "DAGSTER_SCHEDULE_GRPC_TIMEOUT_SECONDS": "60",
+            "DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS": "60",
+            "DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS": "180",
+            "DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD": "60",
+        }
+    overrides = {
+        "KTDM_DAGSTER_GRPC_TIMEOUT_SECONDS": "360",
+        "KTDM_GEO_DAGSTER_GRPC_TIMEOUT_SECONDS": "300",
+    }
+    inner = int(_resolve(proxy["DAGSTER_GRPC_TIMEOUT_SECONDS"], overrides))
+    outer = int(_resolve(daemon["DAGSTER_GRPC_TIMEOUT_SECONDS"], overrides))
+    assert inner == 300 and outer == 360
+    assert inner < outer < _instance_config()["run_monitoring"]["start_timeout_seconds"]

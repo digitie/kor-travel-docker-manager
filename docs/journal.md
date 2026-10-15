@@ -2,6 +2,15 @@
 
 이 파일은 `kor-travel-docker-manager` 저장소에서 진행된 작업을 역시간순(가장 최신 항목이 맨 위)으로 기록한다.
 
+## 2026-10-15 — 최신 main 통합과 시작 RPC 경합 보완
+
+- #476·#478을 통합했다. registry의 중복 hosts 선언·검증기를 제거하고 Weather·Transport의 이미 이전된 배치를 보존한다.
+- Geo 검증 run에서 실제 StartRun 60초 만료→재큐잉→늦은 worker 중복 종료→FAILURE를 확인했다.
+  실패를 성공으로 덮지 않고 별도 새 run으로 재검증한다.
+- daemon과 Geo proxy의 일반 RPC 예산을 호스트 환경으로 조정할 수 있게 했다. 기본값은 기존 60초,
+  별도 schedule·sensor·repository·shutdown 제한은 명시해 파생 증가를 막는다. Geo 앱 튜닝은 변경하지 않는다.
+- 운영 적용·새 run·live UI·최종 독립 리뷰 결과는 검증 후 별도 기록한다. 이 항목은 운영 완료 선언이 아니다.
+
 ## 2026-10-15 — 배포 설정 일치화의 호스트 registry 구현
 
 - 최신 main에서 registry v2의 호스트 선언, 직접 실행 서비스 기준 소유권, host-local `all` 집합,

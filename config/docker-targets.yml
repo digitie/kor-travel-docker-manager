@@ -11,19 +11,6 @@ hosts:
 # GM-19: port_policy/port_band 블록을 소비하는 코드가 0건이라 제거했다 — 포트 정책의
 # 유일한 정본은 docs/ports.md다.
 
-# Docker 호스트(ADR-58 결정 1의 `hosts:`). target의 `host:`(생략 = default 호스트)가 그 target의 컨테이너가 도는
-# 호스트다. **잠정(interim, 2026-10-14 소유자 승인)**: 지금 이 값을 읽는 것은 공용 Dagster workspace 파생 하나뿐이다 —
-# `config/dagster-shared/workspace.yaml`(n150 plane이 붙인다)은 `control_plane: shared` **이고** default 호스트에 있는
-# target의 location만 싣는다(`backend/tests/test_dagster_shared_workspace_is_derived.py`). R1 `{host}` 렌더·R3 `KTDM_HOST`·
-# R4 명령 host 규칙·`all` 필터·`workspace.<host>.yaml` 두 파일은 아직 없다(T-MGR-01a·01b·02가 이 블록 위에 더한다).
-# 로더는 default가 정확히 하나인지, `addr`가 IPv4인지, target `host:`가 여기 있는 이름인지 검사한다.
-hosts:
-  n150:
-    addr: 192.168.1.14
-    default: true
-  odroid:
-    addr: 192.168.1.13
-
 dependency_order:
   - storage
   - gra
@@ -664,8 +651,8 @@ targets:
       - conc
       - map
       - pinvi
-      # weather는 2026-10-14 odroid로 옮겨 n150 `all`에서 뺐다(잠정 — `ensure all`이 n150에서 지운 DB로 weather를
-      # 다시 세우지 않게). target 자체는 남는다(상태·로그). 호스트별 `all` 필터는 T-MGR-01a·NH.
+      # 호스트별 all 필터가 n150에서 제외하고 소유 호스트에서는 포함한다.
+      - weather
       - dagster
     services: []
     runtime_services: []
@@ -755,7 +742,6 @@ targets:
     # weather API `http://192.168.1.13:12201`을 부른다(`docker-compose.yml`의 R2 기본값).
     host: odroid
     # n150 `all`에서 뺀다(잠정 — `all` 주석). 호스트별 `all` 필터(T-MGR-01a·NH)가 이 줄을 대신한다.
-    excluded_from_all: true
     port_band: "14100-14199"
     depends_on: []
     display_name: Kor Travel Weather

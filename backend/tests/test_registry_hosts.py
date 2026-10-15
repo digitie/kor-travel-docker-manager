@@ -48,7 +48,7 @@ def test_v2_cannot_omit_hosts(config):
 
 
 def test_installed_release_requires_self_identification(config, monkeypatch, tmp_path):
-    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset({"192.168.1.13"}))
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset({config["hosts"]["odroid"]["addr"]}))
     (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
     with pytest.raises(registry.TargetsConfigError, match="KTDM_HOST"):
         registry.current_host(config)
@@ -62,7 +62,7 @@ def test_installed_release_requires_self_identification(config, monkeypatch, tmp
 def test_installed_release_rejects_another_hosts_identity(config, monkeypatch, tmp_path):
     (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
     monkeypatch.setenv("KTDM_HOST", "odroid")
-    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset({"192.168.1.14"}))
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset({config["hosts"]["n150"]["addr"]}))
     with pytest.raises(registry.TargetsConfigError, match="not assigned"):
         registry.current_host(config)
 
@@ -83,7 +83,7 @@ def test_all_filters_transitive_remote_dependencies(config, monkeypatch):
     monkeypatch.setattr(registry, "load_targets_config", lambda: config)
     monkeypatch.setenv("KTDM_HOST", "odroid")
     # 이동 전 tenant는 전부 default. cadv의 gra 의존도 로컬 all에 끼지 않는다.
-    assert set(registry.target_sequence_for_target("all")) == {"storage", "cadv", "dagster"}
+    assert set(registry.target_sequence_for_target("all")) == {"storage", "cadv", "dagster", "weather"}
     config["targets"]["geo"]["host"] = "odroid"
     result = registry.target_sequence_for_target("all")
     assert "geo" in result
@@ -96,7 +96,7 @@ def test_connection_tracks_direct_owner_union_and_keeps_raw_config(config, monke
     before = copy.deepcopy(config)
     monkeypatch.setattr(registry, "load_targets_config", lambda: config)
     monkeypatch.setenv("KTDM_HOST", "n150")
-    assert registry._managed_containers()["kor-travel-geo-api"]["connection"] == "http://192.168.1.13:12501"
+    assert registry._managed_containers()["kor-travel-geo-api"]["connection"] == "http://" + config["hosts"]["odroid"]["addr"] + ":12501"
     assert registry.container_hosts("kor-travel-shared-postgresql") == frozenset({"n150", "odroid"})
     monkeypatch.setenv("KTDM_HOST", "odroid")
     assert registry._managed_containers()["kor-travel-geo-api"]["connection"] == "http://127.0.0.1:12501"
@@ -106,8 +106,10 @@ def test_connection_tracks_direct_owner_union_and_keeps_raw_config(config, monke
 def test_default_tenant_layout_is_unchanged(config, monkeypatch):
     monkeypatch.setattr(registry, "load_targets_config", lambda: config)
     assert registry.current_host() == "n150"
-    for tenant in ["geo", "weather", "transport", "map", "pinvi", "conc"]:
+    for tenant in ["geo", "map", "pinvi", "conc"]:
         assert registry.get_target(tenant)["host"] == "n150"
+    for tenant in ["weather", "transport"]:
+        assert registry.get_target(tenant)["host"] == "odroid"
 
 
 @pytest.mark.parametrize("version", [0, 3, True, "2", None])
@@ -133,7 +135,7 @@ def test_trusted_wheel_does_not_derive_mode_from_project_root(config, monkeypatc
     with pytest.raises(registry.TargetsConfigError, match="requires hosts and KTDM_HOST"):
         registry.current_host(config)
     monkeypatch.setenv("KTDM_HOST", "odroid")
-    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset({"192.168.1.14"}))
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset({config["hosts"]["n150"]["addr"]}))
     with pytest.raises(registry.TargetsConfigError, match="not assigned"):
         registry.current_host(config)
     # 캐시된 config를 인자로 전달해도 설치 경로 env를 다시 검증한다.
@@ -170,3 +172,45 @@ def test_local_address_probe_includes_secondary_ipv4(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", probe)
     assert registry._local_ipv4_addresses() == frozenset({"10.1.1.1", "10.1.1.2"})
+
+def test_cached_config_rechecks_self_identity(config, monkeypatch, tmp_path):
+    (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
+    monkeypatch.setenv("KTDM_HOST", "n150")
+    addresses = {config["hosts"]["n150"]["addr"]}
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", lambda: frozenset(addresses))
+    monkeypatch.setattr(registry, "_load_targets_config_cached", lambda: config)
+    assert registry.load_targets_config() is config
+    addresses.clear()
+    for read in (registry.load_targets_config, lambda: registry.services_for_target("geo"), registry.list_targets):
+        with pytest.raises(registry.TargetsConfigError, match="not assigned"):
+            read()
+
+
+def test_target_aggregate_bounds_identity_probes(config, monkeypatch, tmp_path):
+    (tmp_path / ".ktdm-source-revision").write_text("a" * 40)
+    monkeypatch.setenv("KTDM_HOST", "odroid")
+    monkeypatch.setattr(registry, "_load_targets_config_cached", lambda: config)
+    calls = []
+    def addresses():
+        calls.append(True)
+        return frozenset({config["hosts"]["odroid"]["addr"]})
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", addresses)
+    for read in (lambda: registry.target_sequence_for_target("all"), lambda: registry.get_target("all"), registry.list_targets,
+                 lambda: registry.services_for_target("all"), lambda: registry.runtime_services_for_target("all"),
+                 lambda: registry.init_steps_for_target("all"), lambda: registry.service_groups_for_target("all")):
+        calls.clear()
+        read()
+        assert 1 <= len(calls) <= 2
+
+def test_public_target_readers_preserve_case_insensitive_names(config, monkeypatch):
+    config["targets"]["GEO"] = config["targets"].pop("geo")
+    config["dependency_order"] = ["GEO" if name == "geo" else name for name in config["dependency_order"]]
+    monkeypatch.setattr(registry, "load_targets_config", lambda: config)
+    assert registry.resolve_target_name("geo") == "GEO"
+    assert registry.get_target(" geo ")["id"] == "GEO"
+    sequence = registry.target_sequence_for_target("gEo")
+    assert "GEO" in sequence
+    assert registry.services_for_target("geo") == registry.get_target("GEO")["resolved_services"]
+    assert registry.runtime_services_for_target("geo") == registry.get_target("GEO")["resolved_runtime_services"]
+    assert registry.init_steps_for_target("geo") == registry.get_target("GEO")["resolved_init_steps"]
+    assert registry.service_groups_for_target("geo")
