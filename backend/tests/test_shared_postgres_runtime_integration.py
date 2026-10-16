@@ -140,7 +140,7 @@ def isolated_shared_postgres(tmp_path: Path) -> Iterator[str]:
         available = False
     if not available:
         _unavailable_docker_fixture(
-            f"Docker Compose 또는 로컬 이미지 {image}를 쓸 수 없음(pull하지 않는다)"
+            f"Docker Compose 또는 로컬 이미지 {image}를 쓸 수 없음(pull하지 않는다)", images=(str(image),)
         )
 
     compose_path = tmp_path / "compose.yml"

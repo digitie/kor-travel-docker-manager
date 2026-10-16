@@ -11,6 +11,8 @@
    bind 소스마다 `findmnt -T <경로> -o SOURCE`의 장치가 그 값이어야 한다(odroid: PGDATA 등 데이터가 NVMe가 아니라
    eMMC에 조용히 initdb되는 것을 막는다 — R5). 읽기 전용 bind(설정 파일)는 보지 않는다. 미설정이면 아무것도 하지
    않는다(n150 무변경).
+3. **PostgreSQL 서버 이미지**(T-MGR-03 리뷰): 올릴 서비스 중 registry가 PostgreSQL로 선언한 것의 렌더된 이미지가 digest
+   핀이고 PGDATA major인지(`postgres_image.postgres_image_violations` — `targets validate`와 같은 규칙).
 
 **범위**: 이 검사는 `ensure`(UI·`ktdctl ensure`)만 거친다. pinned 재구축·공용 plane 재생성(`dagster-plane converge`)·복구
 경로는 거치지 않는다 — 그 경로들은 이미 같은 호스트에 설치된 이미지·bind를 다시 맞추는 일이고, odroid의 첫 배치는
@@ -25,6 +27,10 @@ from pathlib import Path
 from typing import Any, Final
 
 from kor_travel_docker_manager.services.errors import DeploymentContractError
+from kor_travel_docker_manager.services.postgres_image import (
+    declared_postgres_services,
+    postgres_image_violations,
+)
 
 DATA_SOURCE_DEVICE_ENV: Final = "KTDM_DATA_SOURCE_DEVICE"
 
@@ -93,6 +99,7 @@ def ensure_preflight(
     *,
     build: bool = False,
     run: Runner = _run,
+    postgres_services: Iterable[str] | None = None,
 ) -> None:
     """compose가 만들거나 시작할 `services`(호출자가 렌더된 `depends_on` closure로 넓힌 것)에 대해 위 두 효과를 본다.
     위반이면 `DeploymentContractError`(아무것도 바꾸기 전).
@@ -102,6 +109,14 @@ def ensure_preflight(
     """
     rendered = resolved.get("services") or {}
     names = [name for name in dict.fromkeys(services) if name in rendered]
+
+    if postgres_services is None:
+        from kor_travel_docker_manager.services.registry import load_targets_config
+
+        postgres_services = declared_postgres_services(load_targets_config())
+    image_violations = postgres_image_violations(rendered, set(postgres_services) & set(names))
+    if image_violations:
+        raise DeploymentContractError("ensure preflight: " + "; ".join(image_violations))
 
     images = {
         name: rendered[name].get("image")

@@ -13,7 +13,9 @@ from typing import Any
 import pytest
 import yaml
 from test_shared_postgres_runtime_contract import compose_default
+from test_workspace_digest_validate import project  # noqa: F401 - fixture
 
+from kor_travel_docker_manager.services import registry
 from kor_travel_docker_manager.services.runtime_topology import derive_shared_dagster_plane
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
@@ -126,3 +128,48 @@ def test_db_init_geo_creates_the_four_extensions_in_x_extension():
     assert 'GRANT USAGE ON SCHEMA x_extension TO' in script
     # 확장 생성이 role·DB·CONNECT 뒤에 온다(DB가 있어야 한다).
     assert script.index("createdb") < script.index("CREATE SCHEMA IF NOT EXISTS x_extension")
+
+
+@pytest.mark.parametrize(
+    ("image", "refused"),
+    [
+        (None, False),  # 기본값(n150 digest 핀)
+        ("imresamu/postgis:16-3.5@sha256:" + "a" * 64, False),  # odroid 형태
+        ("postgis/postgis:17-3.5@sha256:" + "a" * 64, True),  # 다른 major — PGDATA(16)를 거부한다
+        ("imresamu/postgis:16-3.5", True),  # floating tag
+        ("postgis/postgis:latest@sha256:" + "a" * 64, True),  # major가 태그에 없다
+    ],
+)
+def test_the_server_image_must_be_a_digest_pinned_pgdata_major(project, capsys, image, refused):  # noqa: F811
+    """`.env`의 `KTDM_POSTGRES_IMAGE`가 다른 major·floating tag면 재생성된 공용 PG가 전 테넌트를 끊는다 — `targets validate`
+    (설치기 flip 전)와 `ensure` 프리플라이트가 같은 규칙으로 거부한다. 대상은 registry가 PostgreSQL로 선언한 서비스다."""
+    from test_workspace_digest_validate import _validate
+
+    from kor_travel_docker_manager.services.ensure_preflight import ensure_preflight
+    from kor_travel_docker_manager.services.errors import DeploymentContractError
+    from kor_travel_docker_manager.services.postgres_image import (
+        declared_postgres_services,
+        postgres_image_violations,
+    )
+
+    if image is not None:
+        (project / ".env").write_text(f"KTDM_POSTGRES_IMAGE={image}\n", encoding="utf-8")
+    code, _out, err = _validate(capsys)
+    assert (code == 1 and "digest-pinned major" in err) if refused else code == 0, err
+
+    declared = declared_postgres_services(registry.load_targets_config())
+    assert declared == {_PG}
+    default = compose_default(_compose()["services"][_PG]["image"])
+    rendered = {"services": {_PG: {"image": image or default}}}
+    no_docker = lambda _command: pytest.fail("이미지 가드는 docker를 부르기 전에 끝난다")  # noqa: E731
+    if refused:
+        with pytest.raises(DeploymentContractError, match="digest-pinned major"):
+            ensure_preflight(rendered, [_PG], {}, run=no_docker, postgres_services=declared)
+    else:
+        assert postgres_image_violations(rendered["services"], declared) == []
+
+
+def test_no_service_disables_the_oom_killer():
+    # -1000은 커널 OOM killer에서 아예 빠진다(호스트 전체가 대신 죽는다) — 우선순위는 -999까지만.
+    for name, service in _compose()["services"].items():
+        assert int(service.get("oom_score_adj", 0)) >= -999, name

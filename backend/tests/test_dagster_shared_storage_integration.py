@@ -183,16 +183,19 @@ def isolated_plane(tmp_path: Path) -> Iterator[_Plane]:
     # 디스크 대기 속에서 종료 checkpoint를 못 기다려 컨테이너가 exit 1로 끝난다(2026-09-29 실측,
     # load 12). 서버가 아니라 pg_ctl만 읽는 값이라 정본의 실행 형태는 그대로다.
     postgres["environment"]["PGCTLTIMEOUT"] = "300"
+    init_image = compose_default(services[_DB_INIT]["image"])
     try:
         available = (
             _run("docker", "compose", "version").returncode == 0
             and _run("docker", "image", "inspect", postgres["image"]).returncode == 0
-            and _run("docker", "image", "inspect", compose_default(services[_DB_INIT]["image"])).returncode == 0
+            and _run("docker", "image", "inspect", init_image).returncode == 0
         )
     except (OSError, subprocess.TimeoutExpired):
         available = False
     if not available:
-        _unavailable_docker_fixture("Docker Compose 또는 공용 PostgreSQL 이미지를 쓸 수 없음")
+        _unavailable_docker_fixture(
+            "Docker Compose 또는 공용 PostgreSQL 이미지를 쓸 수 없음", images=(str(postgres["image"]), init_image)
+        )
 
     project = f"{_PROJECT_PREFIX}{os.getpid()}-{tmp_path.name[-8:]}".lower()
     image = f"{project}:it"

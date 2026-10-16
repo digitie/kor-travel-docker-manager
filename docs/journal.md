@@ -4,7 +4,12 @@
   추가했다(효과 0). `max_locks_per_transaction`·`pg_stat_statements.*`·preload는 리터럴로 둔다.
 - `oom_score_adj` PG -800·plane -600. `mem_limit`가 호스트별 env인 서비스(PG·geo cs·weather cs)는 `memswap_limit`에 같은 식을 둔다.
   PG·geo cs의 기본값은 `0`(상한 없음 — 렌더에서 빠진다)이다. concierge scheduler·cs(고정 2g)는 이 규칙에서 뺐다 — n150에
-  swap 0 효과가 새로 생기기 때문이다. weather cs는 ADR-58 결정 8 ⅳ대로 n150에서도 swap 0이 된다.
+  swap 0 효과가 새로 생기기 때문이다. weather cs는 ADR-58 결정 8 ⅳ대로 렌더 기준 "4g + swap(Docker 기본 2배) → swap 0"이
+  된다. n150에서 이 컨테이너는 이미 odroid로 옮겨 돌지 않으므로 실제 영향은 없다. 기본값은 그대로 둔다.
+- 리뷰 반영: 서버 이미지 가드를 넣었다 — 렌더된 이미지가 digest 핀이고 `:16-`인지 본다. `targets validate`와 `ensure`
+  프리플라이트가 같은 규칙 하나를 쓰고, 대상은 registry가 PostgreSQL로 선언한 서비스다. `.env`에 다른 major나 floating
+  tag를 넣으면 재생성된 PG가 PGDATA를 거부하기 때문이다. 통합 fixture는 `${`가 남은 이미지 참조면 skip하지 않고 fail한다.
+  `oom_score_adj`의 하한은 -999다.
 - db-init-geo가 `x_extension`에 확장 4종과 app role `USAGE`를 만든다(odroid fresh 경로). 격리 instance에서 fresh 실행과
   재실행(no-op)을 통합 테스트로 돌렸다.
 - n150 설치 `.env`로 렌더를 비교했다. 차이는 ADR-58 결정 1의 ⑥·⑦·⑧뿐이다. 배포·n150 변경은 하지 않았다.

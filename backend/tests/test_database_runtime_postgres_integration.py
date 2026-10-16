@@ -77,10 +77,12 @@ def _require_shared_image() -> None:
         _unavailable_docker_fixture("Docker를 사용할 수 없음")
     if info.returncode != 0:
         _unavailable_docker_fixture("Docker를 사용할 수 없음")
+    if "${" in _SHARED_IMAGE:
+        _unavailable_docker_fixture("공용 PostgreSQL 이미지", images=(_SHARED_IMAGE,))
     if _docker("image", "inspect", _SHARED_IMAGE).returncode == 0:
         return
     if not _required_docker_gate():
-        _unavailable_docker_fixture(f"pull 없는 로컬 {_SHARED_IMAGE}를 사용할 수 없음")
+        _unavailable_docker_fixture(f"pull 없는 로컬 {_SHARED_IMAGE}를 사용할 수 없음", images=(_SHARED_IMAGE,))
     pull = _docker("pull", _SHARED_IMAGE, timeout=600)
     if pull.returncode != 0:
         pytest.fail(f"공용 PostgreSQL 이미지 pull 실패: {pull.stderr.strip()}")

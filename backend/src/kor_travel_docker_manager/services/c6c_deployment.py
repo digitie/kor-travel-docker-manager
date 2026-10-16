@@ -61,6 +61,7 @@ from kor_travel_docker_manager.services.loopback_readiness import (
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
+from kor_travel_docker_manager.services.postgres_image import declared_postgres_services
 from kor_travel_docker_manager.services.registry import (
     get_targets_config_path,
     load_targets_config,
@@ -1413,8 +1414,7 @@ _POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES: Final = frozenset({"PGDATA"})
 _POSTGRES_CLUSTER_INIT_ENV_NAMES: Final = frozenset(
     {"POSTGRES_PASSWORD", "POSTGRES_PASSWORD_FILE"}
 )
-#: `role`이 이것으로 끝나는 Manager 컨테이너의 `compose_service`가 declared 집합이다.
-_POSTGRES_DECLARED_ROLE_SUFFIX: Final = "postgresql"
+#: declared 집합(`role`이 `postgresql`로 끝나는 Manager 컨테이너의 `compose_service`)은 `postgres_image.declared_postgres_services`가 정본이다.
 
 
 def _postgres_command_tokens(command: object) -> list[str] | None:
@@ -1525,16 +1525,8 @@ def _declared_postgres_compose_services() -> frozenset[str]:
         config = load_targets_config()
     except Exception:  # noqa: BLE001 - 설정을 못 읽으면 witnessed 축만 쓴다
         return frozenset()
-    declared: set[str] = set()
-    for spec in (config.get("containers") or {}).values():
-        if not isinstance(spec, Mapping) or spec.get("external_project"):
-            continue
-        role = spec.get("role")
-        if isinstance(role, str) and role.endswith(_POSTGRES_DECLARED_ROLE_SUFFIX):
-            service = spec.get("compose_service")
-            if isinstance(service, str) and service:
-                declared.add(service)
-    return frozenset(declared)
+    # 같은 파생을 서버 이미지 가드(`postgres_image`)도 쓴다 — 한 자리.
+    return declared_postgres_services(config)
 
 
 #: 셸로 인식하는 프로그램 이름. 이 뒤의 `-c` 페이로드는 그 자체가 명령줄이다.
