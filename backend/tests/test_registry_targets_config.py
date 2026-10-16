@@ -857,6 +857,8 @@ def _with_hosts(config: dict[str, Any]) -> dict[str, Any]:
         "n150": {"addr": "192.168.1.14", "default": True},
         "odroid": {"addr": "192.168.1.13"},
     }
+    for spec in config["targets"].values():
+        spec.setdefault("host", "n150")  # v2는 `host:`를 생략할 수 없다(T-MGR-NH NH-1)
     return config
 
 
