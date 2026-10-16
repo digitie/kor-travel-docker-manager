@@ -396,6 +396,7 @@ targets:
           - rustfs-init
 
   gra:
+    host: n150
     port_band: "12200-12299"
     depends_on: [storage]
     display_name: 공용 Grafana
@@ -434,6 +435,7 @@ targets:
     init_steps: []
 
   prom:
+    host: n150
     port_band: "12400-12499"
     depends_on: [cadv]
     display_name: Prometheus
@@ -516,6 +518,7 @@ targets:
           KTG_DAGSTER_PUBLIC_URL: public
 
   conc:
+    host: n150
     port_band: "12600-12699"
     depends_on: [prom]
     display_name: Kor Travel Concierge
@@ -555,6 +558,7 @@ targets:
           KTC_DAGSTER_PUBLIC_URL: public
 
   map:
+    host: n150
     port_band: "12700-12799"
     depends_on: [geo, conc]
     display_name: Kor Travel Map
@@ -613,6 +617,7 @@ targets:
           NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: public
 
   pinvi:
+    host: n150
     port_band: "12800-12899"
     depends_on: [map]
     display_name: PinVi

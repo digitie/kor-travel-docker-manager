@@ -77,10 +77,10 @@ def test_moving_a_target_is_red_until_the_file_follows() -> None:
     config = _registry()
     moved = next(
         name for name, spec in config["targets"].items()
-        if spec.get("host") not in (None, "all") and not spec.get("external_project")
+        if spec.get("host") not in (None, "all", registry.default_host(config)) and not spec.get("external_project")
         and any(config["containers"][c].get("metrics_path") for c in spec.get("containers") or [])
     )
-    del config["targets"][moved]["host"]  # default(= Prometheus 호스트)로 되돌린다
+    config["targets"][moved]["host"] = registry.default_host(config)  # default(= Prometheus 호스트)로 되돌린다
     assert _mismatch(config, _file_jobs())
 
 

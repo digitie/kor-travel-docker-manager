@@ -266,7 +266,9 @@ workspace = Path(next(iter(sources[0])))
 if not workspace.is_absolute(): workspace = Path(targets_path).parent.parent / workspace
 default = next((n for n, h in targets.get("hosts", {}).items() if h.get("default")), None)
 selected = default if workspace.name == "workspace.yaml" else workspace.name[len("workspace."):-len(".yaml")]
-if selected not in targets.get("hosts", {}) or spec.get("host", default) not in (selected, "all"):
+owner = spec.get("host")
+owners = set(targets.get("hosts", {})) if owner == "all" else set(owner if isinstance(owner, list) else [owner])
+if selected not in targets.get("hosts", {}) or selected not in owners:
     sys.exit("cutover target does not belong to the selected workspace host")
 expected = Path(targets_path).parent / "dagster-shared" / ("workspace.yaml" if workspace.name == "workspace.yaml" and selected == default else "workspace.%s.yaml" % selected)
 if workspace.resolve() != expected.resolve(): sys.exit("workspace is outside the selected release")

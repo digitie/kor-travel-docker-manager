@@ -136,7 +136,7 @@ def test_moving_a_target_back_to_the_default_host_is_named(sibling: str) -> None
     """빨간 대조군 — registry에서 `host:`를 지우면(default로 되돌리면) 기대 origin이 loopback이 되어 그 소비자가 빨갛다."""
 
     compose, targets = _documents()
-    del targets["targets"][sibling]["host"]
+    targets["targets"][sibling]["host"] = registry.default_host(targets)
     assert registry.consumer_origin(sibling, registry.default_host(targets), targets).startswith("http://127.0.0.1:")
     named = [v for v in consumer_origins.default_violations(compose, targets) if f"`{sibling}`" in v]
     assert named
