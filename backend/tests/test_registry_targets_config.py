@@ -886,7 +886,8 @@ def test_the_real_config_moves_geo_weather_and_transport_to_odroid() -> None:
     ("mutate", "said"),
     [
         (lambda c: c["targets"]["geo"].update(host="odorid"), "targets.geo.host.*(unknown host|declared host)"),
-        (lambda c: c["targets"]["geo"].update(host=["odroid"]), "targets.geo.host.*(unknown host|declared host)"),
+        (lambda c: c["targets"]["geo"].update(host=["odroid", "mars"]), "targets.geo.host.*(unknown host|declared host)"),
+        (lambda c: c["targets"]["geo"].pop("host"), r"targets\.geo\.host is required"),
         (lambda c: c["hosts"]["odroid"].update(default=True), "exactly one"),
         (lambda c: c["hosts"]["n150"].pop("default"), "exactly one"),
         (lambda c: c["hosts"]["n150"].update(default="yes"), "hosts.n150.default.*boolean"),
