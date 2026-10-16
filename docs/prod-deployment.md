@@ -256,7 +256,8 @@ sudo "$CLONE/scripts/install-ktdm-trusted-release" --expected-source-revision "$
 for c in kor-travel-dagster-daemon kor-travel-dagster-webserver; do   # 컨테이너 이름은 이 호스트의 설치본 기준
   sudo docker inspect --format '{{range .Mounts}}{{if eq .Destination "/opt/dagster/dagster_home/workspace.yaml"}}{{.Source}}{{end}}{{end}}' "$c"
 done                                                         # …/workspace.yaml이면 아래를 먼저
-sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge   # → …/workspace.<KTDM_HOST>.yaml
+sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --dry-run   # 차이 확인
+sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --confirm   # → …/workspace.<KTDM_HOST>.yaml
 ```
 
 설치기도 flip 전에 같은 것을 본다(`plane-binds` — 떠 있는 plane의 workspace bind 파일이 새 release에 없으면 "converge
@@ -923,7 +924,8 @@ Map pinset의 조합으로 되돌릴 일이 없다고 판단한 뒤에만 한다
 
 > **NH-4 포함 release(옛 별칭 `workspace.yaml` 제거, 2026-10-17) 설치 전 선행 단계.** n150 공용 daemon·webserver가 아직
 > 옛 별칭 `config/dagster-shared/workspace.yaml`을 붙이고 있으면, 별칭이 없는 release로 symlink가 넘어간 뒤 다음
-> 재시작에서 마운트가 깨진다. 그래서 **현재 release로 먼저** `ktdctl dagster-plane converge`를 돌려 plane을
+> 재시작에서 마운트가 깨진다. 그래서 **현재 release로 먼저** `ktdctl dagster-plane converge --dry-run`으로 차이를 보고
+> `--confirm`으로 plane을
 > `workspace.<KTDM_HOST>.yaml` bind로 다시 만든 뒤 설치한다(`docker inspect`로 두 컨테이너의
 > `/opt/dagster/dagster_home/workspace.yaml` 마운트 source 이름 확인). 설치기는 flip 전에 같은 것을 본다(`plane-binds`) —
 > 떠 있는 plane이 새 release에 없는 workspace 파일을 붙이고 있으면 "converge 먼저"로 거부한다.

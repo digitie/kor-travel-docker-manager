@@ -565,9 +565,14 @@ def test_plane_binds_runs_before_anything_is_flipped() -> None:
 
 
 def _run_plane_binds(
-    tmp_path: Path, mounted: str, shipped: list[str], root: str = "/opt/kor-travel-docker-manager"
+    tmp_path: Path,
+    mounted: str,
+    shipped: list[str],
+    root: str = "/opt/kor-travel-docker-manager",
+    info_exit: int = 0,
 ) -> subprocess.CompletedProcess[str]:
-    """가짜 docker: `ps -q`는 컨테이너 하나, `inspect`는 그 workspace bind source 한 줄."""
+    """가짜 docker: `info`는 `info_exit`, `ps -aq`는 컨테이너 하나(`-a` 없이 부르면 빈 목록 — 멈춘 plane을 놓친다),
+    `inspect`는 그 workspace bind source 한 줄."""
     release = tmp_path / "release"
     (release / "config" / "dagster-shared").mkdir(parents=True)
     for name in shipped:
@@ -578,7 +583,8 @@ def _run_plane_binds(
     docker.write_text(
         "#!/bin/sh\n"
         'case "$1" in\n'
-        "  ps) echo abc123 ;;\n"
+        f"  info) exit {info_exit} ;;\n"
+        '  ps) [ "$2" = "-aq" ] && echo abc123 ;;\n'
         f"  inspect) echo {root}/config/dagster-shared/{mounted} ;;\n"
         "esac\n",
         encoding="utf-8",
@@ -596,7 +602,8 @@ def _run_plane_binds(
 def test_plane_binds_refuses_a_workspace_the_new_release_does_not_ship(tmp_path: Path) -> None:
     refused = _run_plane_binds(tmp_path, "workspace.yaml", ["workspace.n150.yaml", "workspace.odroid.yaml"])
     assert refused.returncode == 126 and "PASSED" not in refused.stdout
-    assert "config/dagster-shared/workspace.yaml" in refused.stderr and "dagster-plane converge" in refused.stderr
+    assert "binds config/dagster-shared/workspace.yaml," in refused.stderr
+    assert "dagster-plane converge --dry-run" in refused.stderr and "--confirm" in refused.stderr
 
 
 def test_plane_binds_passes_a_host_workspace_the_new_release_ships(tmp_path: Path) -> None:
@@ -608,3 +615,17 @@ def test_plane_binds_ignores_planes_outside_this_install_root(tmp_path: Path) ->
     # 같은 호스트의 격리 테스트 plane(다른 체크아웃의 bind)은 이 release와 무관하다.
     ignored = _run_plane_binds(tmp_path, "workspace.yaml", ["workspace.n150.yaml"], root="/home/someone/checkout")
     assert ignored.returncode == 0 and "PASSED" in ignored.stdout, ignored.stderr
+
+
+def test_plane_binds_compares_the_path_relative_to_the_install_root(tmp_path: Path) -> None:
+    # basename이 아니라 설치 root 기준 상대경로로 대조한다 — 같은 이름이 다른 디렉터리에 있어도 통과하지 않는다.
+    release = tmp_path / "release"
+    (release / "config" / "elsewhere").mkdir(parents=True)
+    (release / "config" / "elsewhere" / "workspace.yaml").write_text("load_from: []\n", encoding="utf-8")
+    refused = _run_plane_binds(tmp_path, "workspace.yaml", [])
+    assert refused.returncode == 126 and "binds config/dagster-shared/workspace.yaml," in refused.stderr
+
+
+def test_plane_binds_refuses_when_docker_does_not_answer(tmp_path: Path) -> None:
+    refused = _run_plane_binds(tmp_path, "workspace.n150.yaml", ["workspace.n150.yaml"], info_exit=1)
+    assert refused.returncode == 126 and "docker daemon did not answer" in refused.stderr
