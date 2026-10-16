@@ -14,7 +14,6 @@ registry 밖의 job(Manager 자신의 backend `kor-travel-docker-manager` — co
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from typing import Any, Final
 
@@ -24,7 +23,6 @@ PROMETHEUS_CONFIG: Final = "./config/prometheus/prometheus.yml"
 #: registry 컨테이너가 아닌 수집 대상. 호스트별 Manager job은 odroid Manager 설치(T-OPS-01) 뒤에 같은 규칙으로 들인다.
 NON_REGISTRY_JOBS: Final = frozenset({"kor-travel-docker-manager"})
 
-_PORT = re.compile(r"https?://\{host\}:([0-9]{1,5})")
 
 
 def prometheus_host(config: Mapping[str, Any]) -> str:
@@ -55,7 +53,7 @@ def derived_scrape_configs(config: Mapping[str, Any]) -> list[dict[str, Any]]:
         path = spec.get("metrics_path")
         if path is None:
             continue
-        port = _PORT.fullmatch(spec["connection"]).group(1)  # 형태는 로더가 강제한다
+        port = registry.HOST_URL.fullmatch(spec["connection"]).group(1)  # 형태는 로더가 강제한다
         present = registry.container_hosts(name, config)
         static_configs = [
             {

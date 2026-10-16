@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from kor_travel_docker_manager.services import prometheus_targets, registry
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
@@ -41,7 +42,11 @@ def _mismatch(config: dict[str, Any], jobs: dict[str, dict[str, Any]]) -> list[s
 
 
 def test_prometheus_targets_are_the_registry_derivation() -> None:
-    assert _mismatch(_registry(), _file_jobs()) == []
+    config = _registry()
+    problems = _mismatch(config, _file_jobs())
+    # 빨가면 아래 YAML이 registry가 기대하는 scrape_configs다 — `config/prometheus/prometheus.yml`의 파생 구간을 이것으로 바꾼다.
+    expected = yaml.safe_dump(prometheus_targets.derived_scrape_configs(config), allow_unicode=True, sort_keys=False)
+    assert problems == [], "\n".join([*problems, "expected registry-derived scrape_configs:", expected])
 
 
 def test_the_derivation_sees_remote_and_local_hosts() -> None:
@@ -56,8 +61,16 @@ def test_the_derivation_sees_remote_and_local_hosts() -> None:
 
 
 def test_only_the_manager_backend_job_is_outside_the_registry() -> None:
-    derived = {job["job_name"] for job in prometheus_targets.derived_scrape_configs(_registry())}
-    assert set(_file_jobs()) - derived == set(prometheus_targets.NON_REGISTRY_JOBS)
+    config = _registry()
+    derived = {job["job_name"] for job in prometheus_targets.derived_scrape_configs(config)}
+    jobs = _file_jobs()
+    assert set(jobs) - derived == set(prometheus_targets.NON_REGISTRY_JOBS)
+    # registry 밖 job은 이 Prometheus 호스트의 로컬 프로세스만 — 다른 호스트를 가리키거나 host label이 틀리면 빨갛다.
+    home = prometheus_targets.prometheus_host(config)
+    for name in prometheus_targets.NON_REGISTRY_JOBS:
+        for static in jobs[name]["static_configs"]:
+            assert all(target.startswith("127.0.0.1:") for target in static["targets"]), static
+            assert static.get("labels", {}).get("host") == home, static
 
 
 def test_moving_a_target_is_red_until_the_file_follows() -> None:

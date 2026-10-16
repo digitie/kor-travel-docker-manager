@@ -15,6 +15,8 @@ scrape_configs:
     static_configs:
       - targets:
           - 127.0.0.1:12901
+        labels:
+          host: n150
 
   # --- registry 파생(이 아래) ---
   - job_name: kor-travel-geo-api
