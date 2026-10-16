@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
+from _compose_test_residue import sweep_dead_runs
 
 from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
@@ -144,6 +145,7 @@ def test_canonical_compose_readiness_matches_real_runtime(
 ) -> None:
     fixture_image_id = _fixture_image_id()
     compose_path = tmp_path / "compose.yml"
+    sweep_dead_runs("ktdm-readiness-")  # 죽은 이전 실행의 잔재(`_compose_test_residue` docstring)
     project_name = f"ktdm-readiness-{os.getpid()}-{tmp_path.name[-8:]}".lower()
     compose_path.write_text(
         yaml.safe_dump(

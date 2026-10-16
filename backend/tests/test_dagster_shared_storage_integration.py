@@ -40,6 +40,7 @@ from typing import Any
 
 import pytest
 import yaml
+from _compose_test_residue import sweep_dead_runs
 from test_compose_readiness_integration import _unavailable_docker_fixture
 from test_shared_postgres_runtime_integration import (
     _ISOLATED_PORT,
@@ -193,6 +194,7 @@ def isolated_plane(tmp_path: Path) -> Iterator[_Plane]:
     if not available:
         _unavailable_docker_fixture("Docker Compose 또는 공용 PostgreSQL 이미지를 쓸 수 없음")
 
+    sweep_dead_runs(_PROJECT_PREFIX)  # 죽은 이전 실행의 잔재(`_compose_test_residue` docstring)
     project = f"{_PROJECT_PREFIX}{os.getpid()}-{tmp_path.name[-8:]}".lower()
     image = f"{project}:it"
     context = _REPO_ROOT / services[_MIGRATE]["build"]["context"]
