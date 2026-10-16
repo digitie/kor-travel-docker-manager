@@ -1083,10 +1083,13 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane co
 **target당 절차 ①~⑥.** PR은 registry `host:` + 파생물 4종(`workspace.n150.yaml`에서 빠짐·`workspace.odroid.yaml`에 들어감, compose
 consumer env 기본값, `config/prometheus/prometheus.yml`)만 바꾼다(`dagster.yaml` 불변). 적용:
 
-1. n150 Manager 재설치(§3) → n150의 그 code-server **stop**(이중 수집 금지 — 공백 시작) → n150 `ensure dagster`(workspace digest
-   기본값 변경으로 daemon·webserver 재생성, tick 공백 ≈2 min; 코드서버는 재생성되지 않는다) → n150 plane healthy(location 수 −1).
-2. odroid에 **같은 sha** 재설치 → odroid root `.env`의 `KTDM_DAGSTER_WORKSPACE_DIGEST` 갱신 → `ktdctl targets validate`(설치된
-   workspace 파일 sha256[:16] == digest env를 효과로 검사) → odroid `ensure <target>`(transport는 그 저장소의 배포 스크립트 —
+1. n150의 그 code-server **stop**(이중 수집 금지 — 공백 시작) → n150 Manager 재설치(§3) → n150 plane 재생성
+   `ktdctl dagster-plane converge --dry-run` → `--confirm`(workspace digest 기본값 변경으로 daemon·webserver 재생성, tick 공백 ≈2 min;
+   코드서버는 재생성되지 않는다; 운영 호스트에서 `ensure dagster`는 거부되고 공용 PG까지 담긴 target이라 쓰지 않는다) → n150 plane
+   healthy(location 수 −1).
+2. odroid root `.env`의 `KTDM_DAGSTER_WORKSPACE_DIGEST`를 새 `workspace.odroid.yaml`의 sha256[:16]으로 **먼저** 갱신(설치기가 flip
+   전에 대조한다) → odroid에 **같은 sha** 재설치 → `ktdctl targets validate`(설치된 workspace 파일 sha256[:16] == digest env를
+   효과로 검사) → odroid plane 재생성(`ktdctl dagster-plane converge --dry-run` → `--confirm`) → odroid `ensure <target>`(transport는 그 저장소의 배포 스크립트 —
    계획명 `deploy-prod.sh --host 192.168.1.13`, transport ADR-014/T-TRN-01이 오늘의 `deploy-server14.sh`를 대체할 **예정**이며 아직 없다;
    weather/geo는 `ensure weather`/`ensure geo` → migrate → 적재 재개) → odroid plane healthy(location 수 +1), 첫 run
    SUCCESS, **같은 시각 run이 두 호스트에 0건**.
@@ -1165,3 +1168,90 @@ allow-list라 `.14`를 더하면 된다.
 | cron `run-standalone-backup.sh transport` | odroid로 이동 — §14-7 소유자 결정 전 추천값(대안: 아무것도 안 함) |
 | HAProxy n150 backend 8개 | §9.4 |
 | 효과 | `ensure map`·`ensure pinvi` 성공, n150에 geo/weather/transport 컨테이너 0개, 공용 PG에 `kor_travel_geo` 없음 |
+
+## 10. 일반 절차 — 호스트 추가와 target 이전(T-MGR-NH NH-7)
+
+§9의 odroid 단계는 이 두 절차의 **사례**다. 호스트 이름·주소·target 이름은 인자이고, 코드는 바뀌지 않는다 — 바뀌는 것은
+registry(`config/docker-targets.yml`)와 커밋된 파생물(테스트가 계산값과 대조한다)뿐이다. 설계와 남은 가정은 `docs/multi-host.md`.
+
+**공통 수용 기준.** 이동 대상을 소유하지도 소비하지도 않는 호스트의 렌더는 byte 그대로다. 확인은 각 호스트의 설치 `.env`로
+`docker compose config`를 PR 전후로 비교한다.
+
+**0단계(두 절차 공통).** 바뀌는 호스트마다 `~/preflight.sh` PASS일 때만 시작한다. 재설치·적재·dump/restore처럼 긴 단계는 ssh 연결에
+기대지 않게 tmux/nohup 안에서 돌린다(연결이 끊기면 compose 재생성 도중에 멈춘다).
+
+### 10.1 호스트 추가 `<name> <addr>`
+
+1. **registry PR.**
+   - `hosts.<name>: {addr: <addr>}`를 더한다(IPv4 리터럴, `default`는 하나뿐).
+   - 모든 target은 `host:`를 이미 명시한다(생략은 로더가 거부 — NH-1).
+   - 그 호스트에 둘 infra를 정한다: 공용 plane·PG(`dagster`), RustFS(`storage`)의 목록에 `<name>`을 더한다. Dagster 합류 tenant나
+     RustFS를 쓰는 서비스를 그 호스트에 둘 때만 더한다 — 빠지면 `targets validate`(NH-2)가 plane 규칙·`depends_on`으로 거부한다.
+     `cadv`(`all`)는 자동이다.
+   - 파생물은 테스트가 실패하며 내용을 알려 준다: `config/dagster-shared/workspace.<name>.yaml`, Prometheus 타깃
+     (`config/prometheus/prometheus.yml`).
+2. **호스트 준비(저장소 밖).** OS·Docker·compose v2·cgroup swap accounting·NTP·데이터 장치·방화벽. 효과 검사는 §9.1·§9.5가 사례다.
+3. **Manager 설치(그 호스트).** root clone → 현지 wheelhouse → `scripts/install-ktdm-trusted-release`(§3). 설치 전 그 호스트 root
+   `.env`에 다음을 둔다:
+   - `KTDM_HOST=<name>`
+   - `KTDM_DAGSTER_WORKSPACE_DIGEST`(`sha256sum config/dagster-shared/workspace.<name>.yaml | cut -c1-16`)
+   - 호스트별 값: arm64면 `KTDM_POSTGRES_IMAGE`(digest 핀, major 16), `KTDM_PG_*`, `KTDM_*_MEM_LIMIT`, `KTDM_DATA_SOURCE_DEVICE`
+     — `.env.example`의 "호스트별" 절
+
+   이 값들은 **설치 전에** 둔다 — 설치기가 flip 전에 `targets validate`(자기 식별·소비자 origin·workspace digest·PG 이미지·교차
+   호스트 간선)를 돌리고, digest가 새 release의 파일과 다르면 거부한다.
+4. **infra 첫 기동(새 호스트만).** 목록에 넣은 것만: `ensure dagster`(그 호스트의 공용 PG·plane을 처음 세운다 — 이미 운영 중인 호스트의
+   plane 재생성은 `dagster-plane converge`로 한다) → `ensure storage` → `ensure cadv`.
+
+### 10.2 target 이전 `<target> <from> <to>`
+
+**PR.** registry에서 그 target의 `host:` 한 줄(`<from>` → `<to>`)을 바꾼다. 실패하는 파생물 테스트가 고칠 파일을 이름으로 말한다:
+- `workspace.<from>.yaml`·`workspace.<to>.yaml`(Dagster 합류 target)
+- compose의 소비자 origin 기본값(`test_consumer_origin_defaults.py` — 소비자 서비스·env를 이름으로)
+- `config/prometheus/prometheus.yml`
+- `<from>`이 default 호스트면 compose의 `${KTDM_DAGSTER_WORKSPACE_DIGEST:-…}` 기본값(NH-4 결박 테스트)
+
+`targets validate`가 같은 호스트에 있어야 하는 묶음을 강제한다. compose `depends_on` 간선이 그 근거다. 예를 들어 Map·PinVi·concierge는
+함께 옮긴다(PinVi→Map·Map→concierge loopback, `docs/multi-host.md` §3.2).
+
+**적용 순서.** 수동 단계가 섞여 있다. 그중 데이터 이동(④)과 HAProxy(⑥)는 **이 저장소의 범위 밖**이다. 상태가 있는 tenant(다시 만들 수
+없는 DB — Map·PinVi·concierge)를 옮길 때는 ④~⑥ 전체가 **점검 시간 안**이다.
+
+1. **`<from>`: 그 target의 code-server를 먼저 정지(수동)** — 두 plane이 같은 location을 동시에 돌리지 않게(이중 적재 방지).
+   비-default 호스트면 그 호스트 root `.env`의 `KTDM_DAGSTER_WORKSPACE_DIGEST`를 **재설치 전에** 새 `workspace.<from>.yaml`의
+   `sha256[:16]`으로 바꾼다(default 호스트는 compose 기본값이 파생물이라 `.env`에 두지 않는다). 그다음 `<from>`에 Manager를
+   재설치하고(§3 — 설치기가 flip 전에 digest를 대조한다), plane을 다시 만든다:
+   `ktdctl dagster-plane converge --dry-run` → `--confirm`(location 하나 줄어든 workspace). `ensure dagster`는 쓰지 않는다 —
+   공용 PG까지 담긴 target이고 운영 호스트에서 거부된다.
+2. **`<to>`: 같은 sha로 재설치.** 비-default 호스트면 같은 방식으로 `KTDM_DAGSTER_WORKSPACE_DIGEST`를 **재설치 전에** 새
+   `workspace.<to>.yaml` 값으로 바꾼다. 재설치 뒤 `<to>`의 plane을 다시 만든다:
+   `ktdctl dagster-plane converge --dry-run` → `--confirm`(location 하나 늘어난 workspace — code-server가 아직 없으면 plane은
+   그 location을 기다리는 상태다). `targets validate`가 설치된 파일 == digest env를 효과로 검사한다.
+3. **(상태가 없는 tenant는 4를 건너뛴다)** geo·weather·transport처럼 재적재가 정본인 tenant는 `<to>`의 fresh DB에 다시 적재한다
+   (§9.2 ②의 사례) — 5로.
+4. **`<from>`의 데이터 이동(수동, 범위 밖) — 쓰기를 멈춘 뒤에만.**
+   1. 점검 시간을 잡는다.
+   2. `<from>`에서 그 target과 그 소비자를 멈춘다: Manager `stop <target>`, 소비 target의 해당 서비스도 stop.
+      **⑥이 끝날 때까지 정지 상태를 유지한다**(다시 켜면 옛 DB에 쓰기가 생겨 dump 뒤 변경이 사라진다).
+   3. `<from>` 공용 PG에서 그 DB의 연결이 0인지 확인한다:
+      `SELECT count(*) FROM pg_stat_activity WHERE datname = '<db>' AND pid <> pg_backend_pid();` → `0`.
+   4. dump한다(`pg_dump -Fc`). **dump 파일은 정리(⑦)가 끝날 때까지 보존한다.**
+   5. `<to>` 공용 PG에 restore한다(role 리맵 — `shared-postgres-onboarding.md` §7).
+   6. restore를 검증한다: 테이블별 행 수(또는 테이블 체크섬)를 `<from>`과 `<to>`에서 대조해 같아야 한다.
+5. **`<to>`: `ensure <target>`**(db-init → migrate → 적재 재개). 확인: `<to>` plane healthy(location +1), 첫 run SUCCESS, **같은
+   시각 run이 두 호스트에 0건**. 소비자가 있는 호스트에서는 소비자를 재생성한다(`ensure <소비자 target>` — compose 기본값이 바뀐
+   결과이고 `.env` 편집이 아니다).
+6. **HAProxy backend 변경(수동, 범위 밖).** 공개 host의 backend를 `<to>`의 addr로 바꾼다(§9.4 표가 사례). `<from>` 쪽이 멈춘
+   상태에서 소비 경로 1회 성공을 확인한 뒤 바꾼다. 상태 있는 tenant의 점검 시간은 여기서 끝난다.
+7. **`<from>` 정리(수동) — 되돌리기 경로를 정리 직전까지 남긴다(§9.3과 같은 원칙).** 정리 전 조건:
+   - restore 검증(4.6)이 통과했다.
+   - soak 기간 동안 `<to>`가 정상이다(그 target의 정상 run·소비 경로·오류율; 기간은 점검 계획에 적는다 — 하루 이상 권장).
+   - dump 파일이 보존돼 있다.
+   - `<from>` 그 DB의 연결이 0이다.
+
+   그다음 `<from>`의 그 target 컨테이너를 project·디렉터리·서비스를 명시해 지운다:
+   `docker compose -p <project> --project-directory <설치 root 또는 외부 project working_dir> -f <compose 파일> rm -sf <서비스…>`
+   (bare `down` 금지 — 같은 project의 다른 target까지 내린다). 데이터를 옮긴 경우에만 `<from>` 공용 PG의 그 DB·role을 drop한다
+   (§9.6이 사례). Prometheus 타깃은 PR 파생물이 이미 옮겼다.
+
+되돌리기는 같은 절차를 `<to>` → `<from>`으로 다시 밟는 것이다(롤백이 아니라 재배포 — §9.3).
