@@ -722,8 +722,9 @@ targets:
     # stack을 두면 `host:`를 넓힌다(좌표는 호스트 상대, R5).
     host: odroid
     external_project:
-      # 호스트 이름이 없는 이름(T-MGR-NH NH-5) — 같은 stack을 다른 호스트에 두어도 이름이 그대로다. 호스트 측 개명은
-      # T-OPS-01b와 같은 창에서 한다(옛 `kor-travel-odroid-monitoring`·`/opt/kor-travel-odroid`).
+      # 호스트 이름이 없는 이름(T-MGR-NH NH-5) — 같은 stack을 다른 호스트에 두어도 이름이 그대로다. 모니터링 stack
+      # (`compose-mon.yml` 하나)만 자기 디렉터리로 옮긴다. 옛 `/opt/kor-travel-odroid`는 odroid의 geo·weather·transport
+      # compose·env·thermal-guard 등이 함께 사는 디렉터리라 **옮기지 않는다**(호스트 측 절차는 T-OPS-01b).
       project: kor-travel-host-monitoring
       working_dir: /opt/kor-travel-host-monitoring
       config_files:

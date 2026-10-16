@@ -213,7 +213,9 @@ cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실�
 - **odroid: 2026-10-14 기동**(소유자 지시, 임시 최소 반영). Manager 설치 전이라 저장소 밖 호스트 파일
   `/opt/kor-travel-odroid/compose-mon.yml`(project `kor-travel-odroid-monitoring`)로 cAdvisor `12103`과 함께 띄웠다.
   registry 좌표는 2026-10-17(T-MGR-NH NH-5)부터 호스트 이름 없는 `/opt/kor-travel-host-monitoring`·`kor-travel-host-monitoring`이다
-  — 호스트 측 개명은 T-OPS-01b에서 한다(그 전까지 odroid의 `targets validate --check-coordinates`는 이 좌표를 없다고 보고한다).
+  — 호스트 측에서는 `compose-mon.yml` **파일 하나만** 새 디렉터리로 옮겨 새 project 이름으로 올린다(T-OPS-01b; `/opt/kor-travel-odroid`는
+  geo·weather·transport compose·env와 thermal-guard가 사는 디렉터리라 그대로 둔다). 그 전까지 odroid의 `targets validate --check-coordinates`는
+  이 좌표를 없다고 보고한다.
   n150 Prometheus가 `cadvisor-odroid`·`node-odroid` job(`labels: host=odroid`)으로 수집한다 —
   `config/prometheus/prometheus.yml`의 주소는 2026-10-16부터 registry 파생물이다(T-MGR-04 — job 이름은 컨테이너 id
   `cadvisor`·`kor-travel-node-exporter`, 호스트는 `host` label). **odroid 방화벽은 아직 없다**
