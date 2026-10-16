@@ -14,6 +14,11 @@ name: kor-travel-docker-manager
 # - role·database 이름은 `kor-travel-shared-db-init-dagster`의 literal과 같아야 한다 —
 #   `backend/tests/test_dagster_shared_config.py`가 둘(과 백업 role)을 대조한다.
 # - 비밀번호가 URL에 그대로 들어가므로 URI unreserved 문자만 쓴다(db-init이 거부한다).
+# 공용 instance 설정(`config/dagster-shared/dagster.yaml`)의 sha256[:16] — 그 파일을 마운트하는 서비스마다 healthcheck가
+# 대조한다. 값은 한 자리(이 anchor)에만 두고 서비스는 `*dagster-instance-digest`로 참조한다(T-MGR-02; `compose config`
+# 렌더는 anchor를 풀어 종전과 byte 같다). 파일을 바꾸면 이 값을 함께 바꾼다 — `test_dagster_shared_config.py`가 대조한다.
+x-dagster-instance-digest: &dagster-instance-digest "7925bcdea8472b06"
+
 x-dagster-shared-control-env: &dagster-shared-control-env
   KOR_TRAVEL_DAGSTER_SHARED_PG_URL: postgresql+psycopg2://kor_travel_dagster_shared_app:${KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/dagster_shared
 
@@ -832,7 +837,7 @@ services:
       DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS: "60"
       DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS: "180"
       DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD: "60"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
@@ -902,7 +907,7 @@ services:
     environment:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
@@ -1380,7 +1385,7 @@ services:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
@@ -1718,7 +1723,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       TMPDIR: /tmp
       TEMP: /tmp
       TMP: /tmp
@@ -2146,7 +2151,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       # 여기가 code location이 실제로 도는 곳이다 — `DefaultRunLauncher`의 run
@@ -2468,7 +2473,7 @@ services:
       DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS: "60"
       DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS: "180"
       DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD: "60"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:?KOR_TRAVEL_GEO_DOCKER_PG_DSN must be explicitly set}
@@ -2864,7 +2869,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       DAGSTER_HOME: /opt/dagster/home
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
