@@ -325,8 +325,8 @@ def test_the_wait_bound_comes_from_the_rendered_healthchecks(harness: SimpleName
     bound = ComposeService._shared_plane_health_wait_seconds(harness.plane, services)
 
     assert bound == expected
-    # 설치본 daemon: 90 + (120 + 60) × 2 + 15 = 465 — 옛 고정 상한(300초)·첫 수정(390초)보다 길다.
-    assert bound == 465.0
+    # 현재 webserver:120 + (90 + 10) × 5 + 15 = 635. 원 render 계산과 일치해야 한다.
+    assert bound == 635.0
 
 
 def test_the_wait_bound_reads_compose_config_durations_and_is_clamped(

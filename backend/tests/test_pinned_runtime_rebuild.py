@@ -98,7 +98,6 @@ COMPOSE_BUILT_RUNTIME_SERVICES: tuple[str, ...] = (
     "pinvi-web",
     "pinvi-dagster",
 )
-_WAIT_TIMEOUT = str(compose_service_module._COMPOSE_WAIT_TIMEOUT_SECONDS)
 
 #: pinned pair의 기제는 "Map·PinVi 모두 own" 기준선 위에서 본다 — 전환은 `flipped=(…)`/`_flip`으로 얹는다(conftest).
 pytestmark = pytest.mark.usefixtures("own_pinned_pair")
@@ -2110,7 +2109,10 @@ def test_companions_ride_every_step_of_the_full_path(
     harness.service.rebuild_pinned_runtime()
 
     companions = tuple(sorted(_FORWARD_COMPANIONS))
-    wait = ("up", "-d", "--no-deps", "--wait", "--wait-timeout", _WAIT_TIMEOUT)
+    wait_timeout = str(compose_service_module._compose_wait_timeout_seconds(
+        harness.transaction.resolved["services"]
+    ))
+    wait = ("up", "-d", "--no-deps", "--wait", "--wait-timeout", wait_timeout)
     assert ("stop", *RUNTIME_SERVICES, *companions) in harness.operations
     assert (
         *wait,
@@ -4031,7 +4033,7 @@ def test_the_plane_that_never_loads_this_location_fails_closed(
     assert derived, "location 기다림이 파생 상한을 묻지 않았다"
     bound = derived[-1]
     # fixture의 frozen render는 정본 compose의 plane healthcheck 그대로다 — 기대값을 거기서 직접 계산한다:
-    # 서비스마다 start_period + (interval + timeout) × retries + 여유, 가장 긴 것(오늘 daemon 90 + 180 × 2 + 15 = 465).
+    # 서비스마다 start_period + (interval + timeout) × retries + 여유, 가장 긴 현재 webserver의635초.
     document = yaml.safe_load((Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(encoding="utf-8"))
     canonical = document["services"]
 
@@ -4047,7 +4049,7 @@ def test_the_plane_that_never_loads_this_location_fails_closed(
             canonical[name]["healthcheck"] for name in runtime_topology_module.derive_shared_dagster_plane(document).services
         )
     )
-    assert bound == expected == 465.0
+    assert bound == expected == 635.0
     assert f"within {int(bound)} s" in str(raised.value)
     assert bound <= clock.now < bound + compose_service_module._SHARED_PLANE_PROBE_INTERVAL_SECONDS + 1
     harness.mocks.smoke.assert_not_called()
@@ -4228,3 +4230,34 @@ def test_a_frozen_plane_that_differs_from_the_installed_release_is_refused(
 
     with pytest.raises(DeploymentContractError, match="differs from the installed release"):
         harness.service.rebuild_pinned_runtime()
+
+def test_frozen_health_wait_is_used_by_forward_compose_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    observed: list[object] = []
+
+    def derived(services: object) -> int:
+        observed.append(services)
+        return 1115
+
+    monkeypatch.setattr(compose_service_module, "_compose_wait_timeout_seconds", derived)
+    harness.service.rebuild_pinned_runtime()
+    waited = [op for op in harness.operations if op[:5] == ("up", "-d", "--no-deps", "--wait", "--wait-timeout")]
+    assert waited and all(op[5] == "1115" for op in waited)
+    assert observed and all(item is harness.transaction.resolved["services"] for item in observed)
+
+
+def test_invalid_health_wait_is_rejected_before_runtime_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+
+    def reject(_services: object) -> int:
+        raise DeploymentContractError("compose health start window exceeds maximum wait")
+
+    monkeypatch.setattr(compose_service_module, "_compose_wait_timeout_seconds", reject)
+    with pytest.raises(DeploymentContractError, match="exceeds maximum wait"):
+        harness.service.rebuild_pinned_runtime()
+    assert harness.operations == []
+    harness.mocks.reset.assert_not_called()
