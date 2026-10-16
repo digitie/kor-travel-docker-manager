@@ -1,3 +1,11 @@
+## 2026-10-16 — workspace digest 효과 검사·instance digest anchor(T-MGR-02 잔여)
+
+- `ktdctl targets validate`가 공용 plane 서비스(digest env + workspace bind)의 설치된 workspace 파일 sha256[:16]을 보간된
+  `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`와 대조한다 — 어긋나면 plane healthcheck가 unhealthy가 될 것을 설치 전에 멈춘다.
+- instance digest 리터럴 7곳을 첫 서비스 안 YAML anchor 한 자리로. 최상위 `x-` 키는 `compose config`가 그대로 내보내 렌더가
+  한 줄 늘어서 쓰지 않았다. n150 `compose config` sha256 불변, 운영 모드 `targets validate --json` 설치본과 byte 동일(실측).
+- `dagster.yaml` location 상한 조정은 실측이 필요해 제외. 배포·n150 변경은 하지 않았다.
+
 ## 2026-10-16 — Prometheus 타깃을 registry에서 파생(T-MGR-04)
 
 - `config/prometheus/prometheus.yml`을 커밋된 파생물로: registry 컨테이너의 `metrics_path`마다 job, 그 컨테이너가 있는
