@@ -15,7 +15,7 @@ import pytest
 import yaml
 
 from kor_travel_docker_manager.services import registry
-from kor_travel_docker_manager.services.host_edges import UNOWNED_ALLOWED, host_edge_violations
+from kor_travel_docker_manager.services.host_edges import host_edge_violations
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -67,9 +67,18 @@ def test_an_unowned_service_is_refused_and_a_stale_allowance_is_red() -> None:
     assert any("kor-travel-orphan is owned by no target" in line for line in host_edge_violations(grown, config))
 
     shrunk = copy.deepcopy(compose)
-    gone = next(iter(UNOWNED_ALLOWED))
+    gone = next(iter(config["unowned_services"]))
     del shrunk["services"][gone]
-    assert any(f"lists {gone}, which compose no longer declares" in line for line in host_edge_violations(shrunk, config))
+    assert any(f"unowned_services lists {gone}, which compose no longer declares" in line for line in host_edge_violations(shrunk, config))
+
+
+@pytest.mark.parametrize("value", [["pinvi-dagster"], {"pinvi-dagster": ""}, {"pinvi-dagster": None}])
+def test_unowned_services_needs_a_reason_per_name(value: object) -> None:
+    compose, config = _documents()
+    broken = copy.deepcopy(config)
+    broken["unowned_services"] = value
+    with pytest.raises(registry.TargetsConfigError, match="unowned_services"):
+        host_edge_violations(compose, broken)
 
 
 def test_init_step_services_count_as_owned() -> None:

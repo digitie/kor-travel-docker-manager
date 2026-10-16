@@ -6,8 +6,9 @@ loopback을 고정한 간선(PinVi→Map·concierge UI→API·PG DSN)도 compose
 "같은 호스트여야 한다"를 강제한다(`docs/multi-host.md` §3.2). 공용 PG는 소비 target이 직접 소유하므로 구성상 성립한다(§3.1).
 
 소유자 = Manager target(외부 project·`include` 집계 제외)의 `services` ∪ 그 target의 `init_steps`가 `run`하는 서비스.
-**소유자 없는 compose 서비스는 위반**이다 — 검사가 모르는 서비스를 조용히 건너뛰지 않게. 예외는 아래 명시 목록뿐이고,
-목록에 있는데 compose에 없는 이름도 위반이다(낡은 허용이 남지 않게).
+**소유자 없는 compose 서비스는 위반**이다 — 검사가 모르는 서비스를 조용히 건너뛰지 않게. 예외는 registry의 명시 목록
+`unowned_services:`(이름 → 이유)뿐이고, 목록에 있는데 compose에 없는 이름도 위반이다(낡은 허용이 남지 않게). 목록이 코드가
+아니라 registry에 있는 것은 옛 서비스 이름을 코드 literal로 두지 않는 규칙(ADR-54, 적대 리뷰 M2) 때문이다.
 
 규칙 하나를 더 본다: 공용 Dagster에 합류한(`dagster.control_plane: shared`) target의 호스트에는 그 workspace를 실을
 공용 plane이 있어야 한다 — plane 서비스(렌더 모양으로 파생)를 소유한 호스트 집합에 들어 있어야 한다.
@@ -16,29 +17,11 @@ loopback을 고정한 간선(PinVi→Map·concierge UI→API·PG DSN)도 compose
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Final
+from typing import Any
 
 from kor_travel_docker_manager.services import registry
 from kor_travel_docker_manager.services.errors import DeploymentContractError
 from kor_travel_docker_manager.services.runtime_topology import derive_shared_dagster_plane
-
-#: 소유 target이 없는 것이 정당한 compose 서비스 — 이름과 이유. 여기 없는 무소유 서비스는 위반이다.
-UNOWNED_ALLOWED: Final[Mapping[str, str]] = {
-    "kor-travel-shared-db-init-transport": "운영자가 설치 루트에서 1회 `run`한다(prod-deployment §9.2 4a′) — target 밖",
-    "kor-travel-concierge-scheduler": "profile 서비스(기본 기동 아님)",
-    "kor-travel-map-db-role-bootstrap": "profile one-shot(Map fresh bootstrap)",
-    "kor-travel-map-application-schema": "profile one-shot(Map fresh bootstrap)",
-    "pinvi-admin-bootstrap": "profile one-shot(PinVi admin bootstrap)",
-    "kor-travel-map-dagster": "legacy-dagster profile(공용 plane 이전의 target별 plane)",
-    "kor-travel-map-dagster-daemon": "legacy-dagster profile",
-    "pinvi-dagster": "legacy-dagster profile",
-    "pinvi-dagster-daemon": "legacy-dagster profile",
-    "kor-travel-geo-dagster": "legacy-dagster profile",
-    "kor-travel-geo-dagster-daemon": "legacy-dagster profile",
-    "kor-travel-weather-dagster-webserver": "legacy-dagster profile",
-    "kor-travel-weather-dagster-daemon": "legacy-dagster profile",
-    "kor-travel-weather-dagster-gateway": "legacy-dagster profile",
-}
 
 
 def _run_service(command: object) -> str | None:
@@ -67,17 +50,28 @@ def _depends_on(service: Mapping[str, Any]) -> list[str]:
     return [str(name) for name in (value if isinstance(value, (list, Mapping)) else [])]
 
 
+def unowned_allowed(config: Mapping[str, Any]) -> Mapping[str, str]:
+    """registry `unowned_services:` — 소유 target이 없는 것이 정당한 compose 서비스(이름 → 이유)."""
+    allowed = config.get("unowned_services") or {}
+    if not isinstance(allowed, Mapping) or any(
+        not isinstance(name, str) or not isinstance(reason, str) or not reason.strip() for name, reason in allowed.items()
+    ):
+        raise registry.TargetsConfigError("unowned_services must map a compose service name to a non-empty reason")
+    return allowed
+
+
 def host_edge_violations(compose: Mapping[str, Any], config: Mapping[str, Any]) -> list[str]:
     """위반 문구 목록(비면 통과). 이름과 호스트 집합만 싣는다."""
     services = compose.get("services") or {}
     owners = service_owners(config)
+    allowed = unowned_allowed(config)
     violations: list[str] = []
     for name in services:
-        if name not in owners and name not in UNOWNED_ALLOWED:
-            violations.append(f"compose service {name} is owned by no target (add it to a target or to UNOWNED_ALLOWED)")
+        if name not in owners and name not in allowed:
+            violations.append(f"compose service {name} is owned by no target (add it to a target or to unowned_services)")
     violations += [
-        f"UNOWNED_ALLOWED lists {name}, which compose no longer declares"
-        for name in UNOWNED_ALLOWED
+        f"unowned_services lists {name}, which compose no longer declares"
+        for name in allowed
         if name not in services
     ]
     for name, spec in services.items():

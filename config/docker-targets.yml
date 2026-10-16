@@ -1077,3 +1077,22 @@ compose_binds:
     - container_path: "/opt/kor-travel-docker-manager/ensure-rustfs-buckets.sh"
       read_only: true
       source: "./scripts/ensure-rustfs-buckets.sh"
+
+# 소유 target이 없는 것이 정당한 compose 서비스(이름 → 이유). `targets validate`의 교차 호스트 간선 검사(T-MGR-NH NH-2,
+# `services/host_edges.py`)는 소유자(target `services` ∪ `init_steps`가 `run`하는 서비스) 없는 서비스를 거부한다 — 이 목록만
+# 예외다. compose에서 사라진 이름이 남아 있어도 거부한다.
+unowned_services:
+  kor-travel-shared-db-init-transport: 운영자가 설치 루트에서 1회 run한다(prod-deployment §9.2 4a′) — target 밖
+  kor-travel-concierge-scheduler: profile 서비스(기본 기동 아님)
+  kor-travel-map-db-role-bootstrap: profile one-shot(Map fresh bootstrap)
+  kor-travel-map-application-schema: profile one-shot(Map fresh bootstrap)
+  pinvi-admin-bootstrap: profile one-shot(PinVi admin bootstrap)
+  kor-travel-map-dagster: legacy-dagster profile(공용 plane 이전의 target별 plane)
+  kor-travel-map-dagster-daemon: legacy-dagster profile
+  pinvi-dagster: legacy-dagster profile
+  pinvi-dagster-daemon: legacy-dagster profile
+  kor-travel-geo-dagster: legacy-dagster profile
+  kor-travel-geo-dagster-daemon: legacy-dagster profile
+  kor-travel-weather-dagster-webserver: legacy-dagster profile
+  kor-travel-weather-dagster-daemon: legacy-dagster profile
+  kor-travel-weather-dagster-gateway: legacy-dagster profile
