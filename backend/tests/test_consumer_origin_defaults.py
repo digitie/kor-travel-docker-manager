@@ -252,6 +252,10 @@ def project(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     (tmp_path / "config").mkdir()
     (tmp_path / "config" / "docker-targets.yml").write_bytes(_TARGETS.read_bytes())
     (tmp_path / "docker-compose.yml").write_bytes(_COMPOSE.read_bytes())
+    # compose가 마운트하는 공용 Dagster 설정도 둔다 — validate가 workspace 파일 digest를 함께 본다(T-MGR-02).
+    import shutil
+
+    shutil.copytree(_ROOT / "config" / "dagster-shared", tmp_path / "config" / "dagster-shared")
     monkeypatch.setenv(registry.PROJECT_ROOT_ENV, str(tmp_path))
     for name in (registry.TARGETS_FILE_ENV, registry.HOST_ENV, "KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE",
                  "KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE"):
