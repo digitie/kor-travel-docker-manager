@@ -81,6 +81,7 @@ def test_the_transport_target_declares_its_containers_under_the_new_names() -> N
     assert registry_module.get_target("transport")["containers"] == [
         "kor-travel-transport-backend",
         "kor-travel-transport-frontend",
+        "kor-travel-transport-dagster-code-server",  # 2026-10-17 T-MGR-04r
     ]
     declared = {
         container_id: (spec["name"], spec["external_project"], spec["role"])
@@ -97,6 +98,11 @@ def test_the_transport_target_declares_its_containers_under_the_new_names() -> N
             "kor-travel-transport-frontend-1",
             "kor-travel-transport",
             "transport-frontend",
+        ),
+        "kor-travel-transport-dagster-code-server": (
+            "kor-travel-transport-dagster-code-server-1",
+            "kor-travel-transport",
+            "transport-dagster-code-server",
         ),
     }
 
@@ -142,10 +148,12 @@ def test_the_old_airport_identity_resolves_nowhere() -> None:
     # 하한은 **본 것**에 건다 — 순회가 비면 위의 부정 단언은 전부 공허하게 참이다.
     # 2026-10-16 T-MGR-04: odroid 호스트 측 node_exporter stack(`node`)도 외부 프로젝트로 등록됐다.
     assert external_targets == ["node", "transport"]
+    # 2026-10-17 T-MGR-04r: 공용 plane이 싣는 transport code-server도 등록됐다.
     assert external_containers == [
         "kor-travel-node-exporter",
         "kor-travel-transport-backend",
         "kor-travel-transport-frontend",
+        "kor-travel-transport-dagster-code-server",
     ]
 
 
