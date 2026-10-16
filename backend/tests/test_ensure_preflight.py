@@ -69,29 +69,38 @@ def test_services_not_being_started_are_not_checked():
     assert docker.calls == []
 
 
-_DATA = {"type": "bind", "source": "/home/digitie/kor-travel-shared-data/pgdata", "target": "/var/lib/postgresql/data"}
-_CONFIG = {"type": "bind", "source": "/opt/x/config/a.yml", "target": "/a.yml", "read_only": True}
+@pytest.fixture
+def binds(tmp_path):
+    """실재하는 디렉터리 아래의 쓰기 bind(leaf는 아직 없다 — 가장 가까운 조상으로 본다)와 읽기 전용 bind."""
+    (tmp_path / "data").mkdir()
+    (tmp_path / "cfg").mkdir()
+    data = {"type": "bind", "source": str(tmp_path / "data" / "pgdata"), "target": "/var/lib/postgresql/data"}
+    config = {"type": "bind", "source": str(tmp_path / "cfg" / "a.yml"), "target": "/a.yml", "read_only": True}
+    return tmp_path, data, config
 
 
-def test_device_env_unset_skips_the_mount_check_entirely():
+def test_device_env_unset_skips_the_mount_check_entirely(binds):
     # n150 무변경: KTDM_DATA_SOURCE_DEVICE가 없으면 findmnt를 부르지 않는다.
+    _root, data, config = binds
     docker = _Docker(images={"img:1": "amd64"})
-    ensure_preflight(_resolved(volumes=[_DATA, _CONFIG]), ["api"], {}, run=docker)
+    ensure_preflight(_resolved(volumes=[data, config]), ["api"], {}, run=docker)
     assert [c for c in docker.calls if c[0] == "findmnt"] == []
 
 
-def test_a_writable_bind_on_another_device_is_refused():
-    docker = _Docker(images={"img:1": "amd64"}, mounts={"/home/digitie": "/dev/mmcblk0p2[/home]"})
+def test_a_writable_bind_on_another_device_is_refused(binds):
+    root, data, config = binds
+    docker = _Docker(images={"img:1": "amd64"}, mounts={str(root): "/dev/mmcblk0p2[/home]"})
     with pytest.raises(DeploymentContractError, match=r"KTDM_DATA_SOURCE_DEVICE=/dev/nvme0n1p1.*pgdata is on /dev/mmcblk0p2"):
-        ensure_preflight(_resolved(volumes=[_DATA, _CONFIG]), ["api"], {DATA_SOURCE_DEVICE_ENV: "/dev/nvme0n1p1"}, run=docker)
+        ensure_preflight(_resolved(volumes=[data, config]), ["api"], {DATA_SOURCE_DEVICE_ENV: "/dev/nvme0n1p1"}, run=docker)
 
 
-def test_a_writable_bind_on_the_device_passes_and_read_only_binds_are_ignored():
+def test_a_writable_bind_on_the_device_passes_and_read_only_binds_are_ignored(binds):
+    root, data, config = binds
     docker = _Docker(images={"img:1": "amd64"},
-                     mounts={"/home/digitie": "/dev/nvme0n1p1[/kor-travel/shared-data]", "/opt": "/dev/mmcblk0p2"})
-    ensure_preflight(_resolved(volumes=[_DATA, _CONFIG]), ["api"], {DATA_SOURCE_DEVICE_ENV: "/dev/nvme0n1p1"}, run=docker)
-    assert [c[3] for c in docker.calls if c[0] == "findmnt"] != []
-    assert not any(c[0] == "findmnt" and c[3].startswith("/opt") for c in docker.calls)
+                     mounts={str(root / "data"): "/dev/nvme0n1p1[/kor-travel/shared-data]", str(root / "cfg"): "/dev/mmcblk0p2"})
+    ensure_preflight(_resolved(volumes=[data, config]), ["api"], {DATA_SOURCE_DEVICE_ENV: "/dev/nvme0n1p1"}, run=docker)
+    probed = [c[3] for c in docker.calls if c[0] == "findmnt"]
+    assert probed == [str(root / "data")]  # 없는 leaf는 가장 가까운 조상, 읽기 전용 bind는 보지 않는다
 
 
 def test_an_unreadable_host_architecture_is_refused():
