@@ -818,7 +818,7 @@ services:
   # 앵커와 `DAGSTER_HOME`(과 아래 내용 digest)만 받는다 — 앱 비밀은 없다. run은 여기서 돌지 않는다
   # (DefaultRunLauncher가 code-server의 자식으로 띄운다).
   #
-  # 둘은 공용 `config/dagster-shared/workspace.yaml`을 읽는다. 그 파일은 **파생물**이다 — 손으로
+  # 둘은 이 호스트의 `config/dagster-shared/workspace.<KTDM_HOST>.yaml`을 읽는다. 그 파일은 **파생물**이다 — 손으로
   # 쓰지 않는다. `config/docker-targets.yml`에서 `dagster.control_plane: shared`인 target의
   # code-server command(`-p`·`-m`)에서 만들고, `backend/tests/test_dagster_shared_workspace_is_derived.py`가
   # 어긋나면 빨개진다. 모든 target이 `own`인 동안 workspace는 비어 있고(`load_from: []`) 둘은

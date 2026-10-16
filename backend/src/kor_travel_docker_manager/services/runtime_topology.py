@@ -176,11 +176,6 @@ def _one(names: set[str], *, what: str, target: str) -> str:
     return next(iter(names))
 
 
-#: 공용 plane의 webserver·daemon이 붙이는 파생 workspace. 이것을 붙인 서비스는 어느 target의 옛 서비스도 아니다 —
-#: 공용 webserver가 합류한 code-server에 `depends_on`해도 그 target의 webserver로 세지 않는다.
-_SHARED_WORKSPACE_SOURCE: Final = "./config/dagster-shared/workspace.yaml"
-
-
 def _volume_source(volume: object) -> str:
     if isinstance(volume, Mapping):
         return str(volume.get("source"))
@@ -194,12 +189,13 @@ def _volume_source(volume: object) -> str:
 
 
 def _is_shared_workspace_source(source: str) -> bool:
-    """정본 디렉터리의 alias·호스트 파일·reference template만 인식한다."""
+    """정본 디렉터리의 호스트 파일(`workspace.<host>.yaml`)과 그 reference template(`workspace.${KTDM_HOST:-<default>}.yaml`)만
+    인식한다. 옛 별칭 `workspace.yaml`은 2026-10-17 T-MGR-NH NH-4로 없어졌다."""
     directory, _, name = source.rpartition("/")
     return (
         directory == "./config/dagster-shared" or directory.endswith("/config/dagster-shared")
     ) and re.fullmatch(
-        r"workspace(?:\.[a-z][a-z0-9_-]*|\.\$\{KTDM_HOST:-[a-z][a-z0-9_-]*\})?\.yaml", name
+        r"workspace(?:\.[a-z][a-z0-9_-]*|\.\$\{KTDM_HOST:-[a-z][a-z0-9_-]*\})\.yaml", name
     ) is not None
 
 
@@ -246,8 +242,6 @@ def read_host_workspace(
     selected = current_host(targets)
     directory = root / "config/dagster-shared"
     allowed = {directory / f"workspace.{selected}.yaml"}
-    if selected == default_host(targets):
-        allowed.add(directory / "workspace.yaml")
     path = Path(source)
     if not path.is_absolute():
         path = root / path

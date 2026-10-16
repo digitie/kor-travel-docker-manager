@@ -249,6 +249,20 @@ sudo "$CLONE/scripts/install-ktdm-trusted-release" --expected-source-revision "$
 거부한다. `--restart-backend`·`--allow-live`는 받되 무시한다(백엔드는 항상 재기동한다).
 `--env-file`은 없어졌다.
 
+**옛 workspace 별칭에서 넘어갈 때(NH-4 포함 release를 처음 설치할 때) 선행 단계** — 떠 있는 공용 plane이 아직 옛
+`config/dagster-shared/workspace.yaml`을 붙이고 있으면, 설치 **전에 현재 release로** plane을 호스트 파일 bind로 다시 만든다:
+
+```bash
+for c in kor-travel-dagster-daemon kor-travel-dagster-webserver; do   # 컨테이너 이름은 이 호스트의 설치본 기준
+  sudo docker inspect --format '{{range .Mounts}}{{if eq .Destination "/opt/dagster/dagster_home/workspace.yaml"}}{{.Source}}{{end}}{{end}}' "$c"
+done                                                         # …/workspace.yaml이면 아래를 먼저
+sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --dry-run   # 차이 확인
+sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --confirm   # → …/workspace.<KTDM_HOST>.yaml
+```
+
+설치기도 flip 전에 같은 것을 본다(`plane-binds` — 떠 있는 plane의 workspace bind 파일이 새 release에 없으면 "converge
+먼저"로 거부). 자세한 converge 절차는 §8.2.
+
 설치 뒤 확인과 실행 레지스트리 반영:
 
 ```bash
@@ -908,7 +922,15 @@ Map pinset의 조합으로 되돌릴 일이 없다고 판단한 뒤에만 한다
 
 ### 8.2 공용 Dagster plane만 수렴 (`ktdctl dagster-plane converge`)
 
-**언제 쓰나.** 공용 workspace(`config/dagster-shared/workspace.yaml`)나 그 digest env를 바꾸는 Manager release를
+> **NH-4 포함 release(옛 별칭 `workspace.yaml` 제거, 2026-10-17) 설치 전 선행 단계.** n150 공용 daemon·webserver가 아직
+> 옛 별칭 `config/dagster-shared/workspace.yaml`을 붙이고 있으면, 별칭이 없는 release로 symlink가 넘어간 뒤 다음
+> 재시작에서 마운트가 깨진다. 그래서 **현재 release로 먼저** `ktdctl dagster-plane converge --dry-run`으로 차이를 보고
+> `--confirm`으로 plane을
+> `workspace.<KTDM_HOST>.yaml` bind로 다시 만든 뒤 설치한다(`docker inspect`로 두 컨테이너의
+> `/opt/dagster/dagster_home/workspace.yaml` 마운트 source 이름 확인). 설치기는 flip 전에 같은 것을 본다(`plane-binds`) —
+> 떠 있는 plane이 새 release에 없는 workspace 파일을 붙이고 있으면 "converge 먼저"로 거부한다.
+
+**언제 쓰나.** 공용 workspace(`config/dagster-shared/workspace.<host>.yaml`)나 그 digest env를 바꾸는 Manager release를
 설치한 **직후**, pinned 재구축 전에 preflight가 공용 daemon·webserver를 unhealthy로 보고할 때다. 떠 있는 두 컨테이너는
 옛 release의 workspace bind와 옛 `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`로 만들어졌으므로, location이 빠지면(예: #476의
 weather·transport) healthcheck가 사라진 code-server를 기다려 unhealthy로 남는다. 재구축 안의 plane 수렴이 이것을 고치지만

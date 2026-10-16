@@ -502,7 +502,7 @@ targets:
     # `shared`로 바꾸는 PR은 같은 커밋에서 compose를 그 모양으로 바꾼다 — code-server가 공용 URL 앵커와
     # 공용 `dagster.yaml`을 받고, 아래 `consumers`가 공용 webserver·공개 host를 가리키고, 이 target의
     # webserver·daemon(과 그것에 기대는 gateway)은 `profiles: [legacy-dagster]`로 내려 target의
-    # `services`·`runtime_services`에서 빠진다. 그리고 `config/dagster-shared/workspace.yaml`에 항목
+    # `services`·`runtime_services`에서 빠진다. 그리고 그 호스트의 `config/dagster-shared/workspace.<host>.yaml`에 항목
     # 하나가 생긴다(파생). 어느 하나라도 빠지면 `test_dagster_shared_workspace_is_derived.py`가 무엇이
     # 빠졌는지 말한다. 순서는 platform-topology.md §7 3단계의 전환 runbook이다.
     #

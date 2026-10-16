@@ -175,7 +175,7 @@ internal target이 되며 `network_mode: host`로도 옮겨왔다 — 지금은 
 | `weather` | `kor-travel-weather-dagster-webserver` 내부 전용 `14107` + 게이트웨이(Basic Auth) `14102` | `kor-travel-weather-dagster-daemon` (포트 없음) | `kor-travel-weather-dagster-code-server` `14106`(loopback 전용, 무인증) | ADR-47 — Manager 소유, webserver/daemon → `-w workspace.yaml`(grpc_server, Manager 소유 오버라이드가 `host: dagster-code-server`를 `127.0.0.1`로 재작성), code-server만 `-m kortravelweather_dagster.definitions` |
 | `transport`(외부) | 공용(옛 `kor-travel-transport-dagster-webserver-1`은 그 저장소의 `legacy-dagster`) | 공용(옛 daemon도 `legacy-dagster`) | `kor-travel-transport-dagster-code-server-1` `127.0.0.1:14005`(`dagster code-server start --location-name kor-travel-transport`) | 그 저장소가 소유한다 — Manager compose에는 없고, 모양은 targets의 `dagster.external`이 선언한다(ADR-54 개정 2026-10-02) |
 | `conc` | 없음 | — | 없음 | — |
-| 공용(`dagster`) | `kor-travel-dagster-webserver` `127.0.0.1:11002` + 게이트웨이 `kor-travel-dagster-gateway` `11001`(Basic Auth) | `kor-travel-dagster-daemon` (포트 없음) | 없음 — 합류한 프로젝트의 code-server를 본다 | ADR-54 — `-w config/dagster-shared/workspace.yaml`(파생물, 지금은 `load_from: []`), 호스트 이미지 `kor-travel-dagster-host`, instance는 공용 `dagster.yaml` |
+| 공용(`dagster`) | `kor-travel-dagster-webserver` `127.0.0.1:11002` + 게이트웨이 `kor-travel-dagster-gateway` `11001`(Basic Auth) | `kor-travel-dagster-daemon` (포트 없음) | 없음 — 합류한 프로젝트의 code-server를 본다 | ADR-54 — 호스트의 `config/dagster-shared/workspace.<host>.yaml`을 컨테이너 `workspace.yaml`로 붙인다(파생물), 호스트 이미지 `kor-travel-dagster-host`, instance는 공용 `dagster.yaml` |
 
 > **접속 방식**: pinvi·geo·weather·map 모두 이 저장소의 compose가 강제하는
 > `network_mode: host`라 `workspace.yaml`이 서비스명이 아니라 `host: 127.0.0.1`을
@@ -385,7 +385,7 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
      `backend/src`·`scripts`에 온전한 토큰으로 되돌아오면 `(pinned)`로 빨갛다(적대 리뷰 M2).
    - **합류 스위치와 파생물(ADR-54).** target마다 `config/docker-targets.yml`의
      `dagster: {control_plane: own|shared, consumers: {...}}`가 스위치다(지금 넷 다 `own`). 공용
-     `config/dagster-shared/workspace.yaml`은 `shared` target의 code-server command(`-p`, `-m`/
+     `config/dagster-shared/workspace.<host>.yaml`(호스트마다)은 `shared` target의 code-server command(`-p`, `-m`/
      `--location-name`)에서 **파생**하고, 테스트가 어긋나면 빨개진다. `shared`로 바꾸는 PR은 같은
      커밋에서 compose를 그 모양으로 바꾼다 — (a) code-server가 `<<: *dagster-shared-control-env`와
      `./config/dagster-shared/dagster.yaml:$DAGSTER_HOME/dagster.yaml:ro`를 받고 gRPC가 `127.0.0.1`에서만

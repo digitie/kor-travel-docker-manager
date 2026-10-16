@@ -1804,7 +1804,7 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
    요구하지 않는다 — 그러면 그 줄이 없는 `.env`에서 모든 compose 명령이 죽는다. Dagster webserver 자신의 CSP는
    지우지 않고 frame-ancestors를 두 번째 정책으로 더한다(브라우저는 둘 다 적용한다).
 4. **합류 스위치와 파생 workspace.** target마다 `dagster: {control_plane: own|shared, consumers: {서비스: {env:
-   internal|public[/경로]}}}`(registry가 형태를 fail-close로 검증한다). `config/dagster-shared/workspace.yaml`은
+   internal|public[/경로]}}}`(registry가 형태를 fail-close로 검증한다). `config/dagster-shared/workspace.yaml`(2026-10-15 #481부터 호스트별 `workspace.<host>.yaml`, 옛 별칭은 2026-10-17 NH-4로 제거)은
    `shared` target의 code-server command에서 **파생**한다 — host `127.0.0.1`, port는 `-p`의 compose 기본값,
    `location_name`은 `--location-name`이 있으면 그것, 없으면 `-m`(상한 값과 같은 이름). 소비자 env만 선언인 이유:
    PinVi·geo API는 앱 코드의 기본값(`localhost:12802`, `127.0.0.1:12502`)에 기대어 compose에 그 env가 없어,

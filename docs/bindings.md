@@ -95,9 +95,11 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   (`host: odroid`)가 빠져 4 location(geo·conc·map·pinvi), 2026-10-15 geo도 빠져 3 location(conc·map·pinvi). 결박은 `test_the_workspace_file_is_the_derivation`과 옮긴 target의
   빨간 대조군(`test_bringing_a_moved_target_back_drifts_the_workspace`·`test_a_moved_target_left_in_the_workspace_is_named`).
   당시에는 odroid 파일이 없어 "합집합 == shared 집합"을 단언하지 않았다.
-- **현재 결박**: `test_host_workspaces.py`의 `test_all_committed_hosts_are_derived_and_alias_is_default`,
+- **현재 결박**: `test_host_workspaces.py`의 `test_all_committed_hosts_are_derived`,
   `test_third_host_move_changes_only_affected_workspaces`, `test_host_all_and_own_switch_are_honored`가
-  registry의 모든 host와 기본 alias를 계산·비교한다. instance YAML byte는 변경하지 않는다.
+  registry의 모든 host를 계산·비교한다. instance YAML byte는 변경하지 않는다. 옛 별칭 `workspace.yaml`은 2026-10-17
+  T-MGR-NH NH-4로 없어졌고(파일이 **없음**을 같은 테스트가 단언), compose·registry의 default 호스트 기본값
+  (`${KTDM_HOST:-…}`·`${KTDM_DAGSTER_WORKSPACE_DIGEST:-…}`)은 `test_default_host_values_are_the_default_hosts_derivation`이 결박한다.
 
 ### B-6. 내부 consumer가 부르는 형제 서비스의 origin(2026-10-14 잠정 시행 → 2026-10-16 T-MGR-01c 구현)
 
