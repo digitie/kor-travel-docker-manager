@@ -2434,10 +2434,16 @@ services:
     privileged: true
     devices:
     - /dev/kmsg:/dev/kmsg
+    # 부하 경감(2026-10-17 소유자 지시): 수집 주기 15s(기본 1s — env로 덮어쓸 수 있다)와 쓰지 않는 메트릭 끄기 —
+    # odroid 호스트 측 `compose-mon.yml`과 같은 목록이다. 디스크 순회(disk·diskIO)·상세 네트워크(tcp·udp)·percpu 등이 꺼지고
+    # 기본 cpu·memory·network rx/tx는 남는다. 저장소의 소비자는 중앙 Prometheus scrape뿐이다(rule·대시보드가 이 메트릭을
+    # 쓰지 않는다 — Grafana에는 datasource만 있고, Manager 대시보드의 컨테이너 수치는 Docker stats API에서 온다).
     command:
     - --logtostderr
     - --docker_only=true
     - --port=${CADVISOR_PORT:-12103}
+    - --housekeeping_interval=${CADVISOR_HOUSEKEEPING_INTERVAL:-15s}
+    - --disable_metrics=percpu,sched,tcp,udp,disk,diskIO,hugetlb,referenced_memory,cpu_topology,resctrl
     healthcheck:
       test:
       - CMD-SHELL
