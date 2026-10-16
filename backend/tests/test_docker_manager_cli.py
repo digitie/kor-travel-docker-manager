@@ -2515,6 +2515,9 @@ def test_cli_targets_validate_prints_ok_on_success(
     config_path = tmp_path / "docker-targets.yml"
     config_path.write_text(_VALID_TARGETS_YAML, encoding="utf-8")
     monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+    # 합성 targets는 이 checkout의 compose(공용 Dagster plane·소비자 origin)와 짝이 아니다 — compose 대조는 그 검사들의
+    # 시험이 본다(T-MGR-01c·02). 여기서는 targets 스키마만.
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE", str(tmp_path / "absent-compose.yml"))
 
     assert main(["targets", "validate"]) == 0
     assert capsys.readouterr().out.strip() == "OK"
@@ -2566,6 +2569,9 @@ def test_cmd_targets_validate_directly_handles_success_and_failure(
     config_path = tmp_path / "docker-targets.yml"
     config_path.write_text(_VALID_TARGETS_YAML, encoding="utf-8")
     monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+    # 합성 targets는 이 checkout의 compose(공용 Dagster plane·소비자 origin)와 짝이 아니다 — compose 대조는 그 검사들의
+    # 시험이 본다(T-MGR-01c·02). 여기서는 targets 스키마만.
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE", str(tmp_path / "absent-compose.yml"))
 
     assert _cmd_targets_validate(argparse.Namespace()) == 0
     assert capsys.readouterr().out.strip() == "OK"

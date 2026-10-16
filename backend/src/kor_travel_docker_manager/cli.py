@@ -190,20 +190,25 @@ def _consumer_origin_env_violations(config: dict[str, Any]) -> list[str]:
 
 def _workspace_digest_violations(config: dict[str, Any]) -> list[str]:
     """설치된 공용 Dagster workspace 파일의 sha256[:16] == digest env(T-MGR-02, 효과). compose가 없으면 빈 목록."""
-    from kor_travel_docker_manager.services.registry import get_project_root, root_env_value
+    from dotenv import dotenv_values
+
+    from kor_travel_docker_manager.services.registry import get_project_root
     from kor_travel_docker_manager.services.workspace_digest import workspace_digest_violations
     from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
-    del config  # 보간은 compose처럼 env → root `.env` → 기본값(registry가 아니라 compose가 고르는 파일을 본다)
     compose_path = Path(get_compose_path())
     if not compose_path.is_file():
         return []
     compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
-    return workspace_digest_violations(
-        compose,
-        Path(get_project_root()),
-        lambda name: os.environ.get(name, "").strip() or root_env_value(name),
-    )
+    # compose와 같은 우선순위: 프로세스 env에 **있으면**(빈 값이어도) 그것, 없으면 compose가 읽는 `.env`(`get_env_path()` —
+    # `KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE` 존중), 그다음 `${VAR:-default}`의 기본값.
+    env_path = Path(get_env_path())
+    file_values = dotenv_values(env_path, interpolate=False) if env_path.is_file() else {}
+
+    def value(name: str) -> str | None:
+        return os.environ[name] if name in os.environ else file_values.get(name)
+
+    return workspace_digest_violations(compose, config, Path(get_project_root()), value)
 
 
 def _cmd_targets_validate(args: argparse.Namespace) -> int:

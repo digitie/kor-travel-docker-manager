@@ -836,6 +836,7 @@ services:
       # 대조한다. 리터럴은 여기 한 자리(anchor)이고 다른 서비스는 `*dagster-instance-digest`로 참조한다(T-MGR-02). 최상위
       # `x-` 키로 두지 않은 것은 `compose config` 렌더가 그 키를 그대로 내보내 n150 렌더가 한 줄 늘기 때문이다 — 여기 두면
       # 렌더는 종전과 byte 같다. 파일을 바꾸면 이 값을 함께 바꾼다(`test_workspace_digest_validate.py`가 대조한다).
+      # 이 서비스를 alias 사용처(`*dagster-instance-digest`)보다 아래로 옮기지 말 것 — YAML은 정의 전 alias를 거부한다.
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "7925bcdea8472b06"
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
