@@ -95,6 +95,7 @@ from kor_travel_docker_manager.services.deploy_status import (
     read_deploy_status,
     write_deploy_status,
 )
+from kor_travel_docker_manager.services.ensure_preflight import ensure_preflight
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
@@ -119,7 +120,6 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     map_application_300_paired_build_image_names,
     parse_candidate_static_head,
 )
-from kor_travel_docker_manager.services.ensure_preflight import ensure_preflight
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     PinnedRuntimeRelease,
     current_pinned_runtime_release,

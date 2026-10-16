@@ -12,7 +12,10 @@ from typing import Any
 
 import pytest
 
-from kor_travel_docker_manager.services.ensure_preflight import DATA_SOURCE_DEVICE_ENV, ensure_preflight
+from kor_travel_docker_manager.services.ensure_preflight import (
+    DATA_SOURCE_DEVICE_ENV,
+    ensure_preflight,
+)
 from kor_travel_docker_manager.services.errors import DeploymentContractError
 
 
