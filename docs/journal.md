@@ -1,3 +1,28 @@
+## 2026-10-16 — PR488의 최신 main 통합과 API 생존 점검 보존
+
+PR488에 main384cb40의 registry 소비자 origin 파생·root 환경 재정의 거부와 기존
+호스트/workspace·고아 worker 보호를 통합했다. 실제 충돌은 이 일지의 상단 기록뿐이어서
+양쪽 원문을 남겼다. API Common HTTP3초/Docker12초/30초주기/4회와 같은 포트 변수,
+다른 서비스·CS legacy health 계약은 유지한다. PR486은 포함하지 않았다.
+실제 병합 소스에서 API health·registry origin·host/workspace·고아 정산·문서 회귀290건과
+전체 backend Ruff, frontend35/type/lint/build가 통과했다. 설치기 회귀25건도
+전용 환경의 실제 isolated import로 통과했다. 최초 설치기7실패는 빌린 환경의 구제품이
+python -I에서 선택된 원문을 보존했고 타인 환경을 수정하지 않았다. Compose 전체 모델은
+Weather API의 기존5개 의미 차이 외 main과 같다. 운영 변경0이며 새 HEAD의 CI와
+독립 두 리뷰는 후속이다.
+
+## 2026-10-16 — 소비자 origin을 registry로(T-MGR-01c)
+
+- 형제 target(geo·transport·weather)에 `consumer_origin: "http://{host}:<port>"`를 두고, 기대 origin을 R1으로(소비자 서비스를
+  실행하는 target의 호스트에서 본 값) 파생한다. 테스트의 포트 표(ADR-58 잠정 ⅳ)를 지웠다.
+- `ktdctl targets validate`가 root `.env`의 원천 변수 재정의가 기대값과 다르면 거부한다(값은 싣지 않는다). 설치기의 flip 전
+  검사도 같은 명령이다. n150 root `.env`는 해당 변수 4개 모두 미설정이라 설치 영향이 없다(이름·상태만 읽어 확인).
+- 리뷰 2인 반영: 스캔 포트를 registry가 명시한 것(`consumer_origin` + `retired_consumer_ports`)으로 좁혔다(S3·UI·Dagster 포트
+  env가 형제 소비자로 잡혀 flip을 막던 위험). 실행 target 없는 서비스는 Dagster family target의 호스트, 그 밖은 unresolved로 보고
+  (default로 조용히 풀지 않음 — T-MGR-NH ⅴ는 완료가 아니다). 끝 `/` 무시, R1 주소 계산을 `registry.r1_address` 하나로 합침, 설치기
+  거부 문구를 중립으로 하고 위반 줄을 전부 낸다.
+- 배포·n150 변경은 하지 않았다.
+
 ## 2026-10-16 — Weather API의 경량 HTTP 생존 점검과 시작 여유
 
 Weather API health만 Common의 strict core HTTP CLI로 바꾼다. HTTP 예산3초는 유지하고

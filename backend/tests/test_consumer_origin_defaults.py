@@ -1,42 +1,27 @@
-"""소비자 origin 기본값(ADR-58 R2, `docs/bindings.md` B-6)을 **렌더된 compose를 스캔해** 결박한다 — 잠정판.
+"""소비자 origin 기본값(ADR-58 R2, `docs/bindings.md` B-6) — 렌더된 compose를 **스캔해** registry 기대값과 대조한다.
 
-R2: 내부 target(Map·PinVi)이 형제 서비스(geo·transport·weather)를 부르는 env는 **compose 기본값을 커밋된
-파생물로** 둔다. 대상은 줄 번호가 아니라 규칙이다 — "형제 서비스 포트를 기본값에 가진 **모든** compose env
-(비활성 `legacy-dagster` profile 포함)". 지정 줄만 보면 하나를 빠뜨려도 초록이다(geo 플립이 map-api만 바꾸면
-map code-server는 loopback에 남아 n150 geo stop 뒤 모든 geocode run이 connection refused).
-
-**잠정(2026-10-14, 소유자 승인).** geo·weather·transport가 odroid(`192.168.1.13`)로 옮겼고 소유자가 odroid의
-포트를 공개 대역으로 통일했다 — geo `12501`, weather `12201`(n150의 옛 `14101`이 아니다), transport는 backend
-`14001`이 아니라 API gateway `12301`. 그래서 형제 → 소비자 포트만 아래 표로 적고, 호스트는 registry에서
-파생한다 — `targets.<형제>.host`(생략 = default), default면 `127.0.0.1`, 아니면 `hosts[<host>].addr`(R1).
-재정의는 없다 — 2026-10-15 geo도 registry에서 `host: odroid`가 되어(n150 workspace에서 빠짐) 세 형제 모두
-registry가 말한다(그 전에는 geo만 명시 재정의였다). 포트 표를 registry(`connection:`)로 옮기는 것은 T-MGR-01c다.
-
-스캔 범위: 모든 서비스(모든 profile)의 `environment`와 `build.args`. 빼는 것 — (1) 형제 자신의 서비스(geo
-code-server의 `KTG_DAGSTER_ADMIN_API_URL`, weather-web의 `WEATHER_API_INTERNAL_URL`은 같은 호스트 안의 자기
-호출이다), (2) `NEXT_PUBLIC_*`(브라우저가 부르는 공개 origin — 정본은 root `.env`의 `KTDM_PROD_URL_*`, R6).
+T-MGR-01c(2026-10-16): 형제 → 소비자 포트 표를 테스트에서 지웠다. 기대 origin은 registry의 `consumer_origin`(R1 렌더 —
+소비자 서비스가 도는 호스트에서 본 값: 실행 target, 없으면 Dagster family target, 그 밖은 unresolved로 보고)이고, 스캔
+대상 포트도 registry가 명시한 것(`consumer_origin`·`retired_consumer_ports`)만이다(`services/consumer_origins.py`). root
+`.env` 재정의 거부는 `ktdctl targets validate`가 한다.
 """
 
 from __future__ import annotations
 
+import copy
+import json
 import re
-from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from kor_travel_docker_manager.services.runtime_topology import derive_dagster_families
+from kor_travel_docker_manager.services import consumer_origins, registry
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 _ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _ROOT / "docker-compose.yml"
 _TARGETS = _ROOT / "config" / "docker-targets.yml"
-
-#: 형제 target → 소비자가 부르는 포트. 2026-10-14 소유자가 통일한 odroid 포트.
-_CONSUMER_PORT: Mapping[str, int] = {"geo": 12501, "transport": 12301, "weather": 12201}
-#: 소비자 기본값에서 더는 나오면 안 되는 n150 시절 포트 — 스캔이 이것도 형제 포트로 본다(되돌림을 잡는다).
-_RETIRED_CONSUMER_PORTS: Mapping[int, str] = {14001: "transport", 14101: "weather"}
 
 #: 하한 — 스캔이 적어도 이것은 봐야 한다(추출이 낡아 아무것도 못 보면 아래 값 검사가 항진이 된다).
 _KNOWN_CONSUMERS: frozenset[tuple[str, str]] = frozenset(
@@ -52,9 +37,6 @@ _KNOWN_CONSUMERS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-_URL = re.compile(r"https?://([^/:}\s'\"]+):(\d+)")
-_DEFAULTED = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-(.*)\}")
-
 
 def _documents() -> tuple[dict[str, Any], dict[str, Any]]:
     compose = load_yaml_rejecting_duplicate_keys(_COMPOSE.read_text(encoding="utf-8"))
@@ -62,118 +44,171 @@ def _documents() -> tuple[dict[str, Any], dict[str, Any]]:
     return compose, targets
 
 
-def _sibling_ports() -> dict[int, str]:
-    ports = {port: target for target, port in _CONSUMER_PORT.items()}
-    ports.update(_RETIRED_CONSUMER_PORTS)
-    return ports
+def _siblings(targets: dict[str, Any]) -> list[str]:
+    return sorted(name for name, spec in targets["targets"].items() if spec.get("consumer_origin"))
 
 
-def _default_host(targets: Mapping[str, Any]) -> str:
-    return next(name for name, spec in targets["hosts"].items() if spec.get("default") is True)
-
-
-def _expected_origin(targets: Mapping[str, Any], sibling: str) -> str:
-    default = _default_host(targets)
-    host = targets["targets"][sibling].get("host", default)
-    addr = "127.0.0.1" if host == default else targets["hosts"][host]["addr"]
-    return f"http://{addr}:{_CONSUMER_PORT[sibling]}"
-
-
-def _owned_services(compose: Mapping[str, Any], targets: Mapping[str, Any]) -> dict[str, str]:
-    """compose 서비스 → 그것을 가진 target(services·containers·옛 Dagster family)."""
-
-    owner: dict[str, str] = {}
-    containers = targets["containers"]
-    for target_id, spec in targets["targets"].items():
-        if target_id == "all" or spec.get("external_project"):
-            continue
-        names = set(spec.get("services") or [])
-        names |= {containers[c]["compose_service"] for c in spec.get("containers") or []}
-        for name in names:
-            owner.setdefault(name, target_id)
-    for target_id, family in derive_dagster_families(compose, targets).items():
-        for name in (*family.legacy, family.code_server):
-            owner.setdefault(name, target_id)
-    return owner
-
-
-def _env_items(service: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
-    for block in (service.get("environment"), (service.get("build") or {}).get("args")):
-        if isinstance(block, Mapping):
-            yield from ((str(k), str(v)) for k, v in block.items() if v is not None)
-        elif isinstance(block, list):
-            for entry in block:
-                key, _, value = str(entry).partition("=")
-                yield key, value
-
-
-def _scan(compose: Mapping[str, Any], targets: Mapping[str, Any]) -> dict[tuple[str, str], tuple[str, str]]:
-    """(서비스, env) → (형제 target, 원문 값). 형제 포트를 가진 URL이 값 어디에든(기본값 포함) 있으면 잡는다."""
-
-    ports = _sibling_ports()
-    owner = _owned_services(compose, targets)
-    found: dict[tuple[str, str], tuple[str, str]] = {}
-    for name, service in compose["services"].items():
-        for key, value in _env_items(service):
-            if key.startswith("NEXT_PUBLIC_"):
-                continue
-            for _host, port in _URL.findall(value):
-                sibling = ports.get(int(port))
-                if sibling is None or owner.get(name) == sibling:
-                    continue
-                found[(name, key)] = (sibling, value)
-    return found
-
-
-def _violations(compose: Mapping[str, Any], targets: Mapping[str, Any]) -> list[str]:
-    violations: list[str] = []
-    for (name, key), (sibling, value) in sorted(_scan(compose, targets).items()):
-        expected = _expected_origin(targets, sibling)
-        match = _DEFAULTED.fullmatch(value)
-        if match is None:
-            violations.append(
-                f"`{name}`.{key}: `{value}` — root `.env`로 재정의할 수 있는 `${{VAR:-{expected}}}` 꼴이어야 한다"
-            )
-        elif match.group(2) != expected:
-            violations.append(f"`{name}`.{key}: 기본값 `{match.group(2)}` ≠ 형제 `{sibling}`의 origin `{expected}`")
-    return violations
+#: 파라미터는 registry에서 — 형제를 더하거나 빼도 테스트를 고치지 않는다.
+_SIBLINGS = _siblings(load_yaml_rejecting_duplicate_keys(_TARGETS.read_text(encoding="utf-8")))
 
 
 def test_the_scan_sees_every_known_consumer() -> None:
     compose, targets = _documents()
-    found = set(_scan(compose, targets))
+    found = set(consumer_origins.scan(compose, targets))
     assert _KNOWN_CONSUMERS <= found, sorted(_KNOWN_CONSUMERS - found)
 
 
-def test_every_consumer_default_is_the_sibling_origin() -> None:
+def test_every_consumer_default_is_the_registry_origin() -> None:
     compose, targets = _documents()
-    assert _violations(compose, targets) == []
+    assert consumer_origins.default_violations(compose, targets) == []
 
 
-@pytest.mark.parametrize("sibling", ["geo", "transport", "weather"])
+def test_scan_ports_are_exactly_what_the_registry_declares() -> None:
+    # 포트 표는 테스트에 없다: 형제의 `consumer_origin` 포트와 `retired_consumer_ports`만 스캔 대상이다.
+    _compose, targets = _documents()
+    expected: dict[int, str] = {}
+    for sibling in _siblings(targets):
+        spec = targets["targets"][sibling]
+        for port in [int(spec["consumer_origin"].rsplit(":", 1)[1]), *(spec.get("retired_consumer_ports") or [])]:
+            expected[port] = sibling
+    assert consumer_origins.sibling_ports(targets) == expected
+    assert any(targets["targets"][s].get("retired_consumer_ports") for s in _SIBLINGS)
+
+
+def test_unrelated_sibling_ports_are_not_consumer_origins() -> None:
+    """리뷰 1번: 형제의 다른 포트(S3·UI·Dagster)는 소비자 origin이 아니다 — 잡으면 무관한 env가 형제 소비자로 분류돼
+    validate·설치기 flip이 막힌다. 형제 컨테이너 connection의 `{host}` URL 포트 중 소비자 포트가 아닌 것 전부로 확인한다."""
+
+    compose, targets = _documents()
+    # 명시 포트는 registry 선언에서 직접 센다 — 스캐너의 `sibling_ports`로 세면 스캐너가 넓어질 때 이 검사도 함께 넓어진다.
+    declared = {
+        int(port)
+        for sibling in _siblings(targets)
+        for port in [targets["targets"][sibling]["consumer_origin"].rsplit(":", 1)[1],
+                     *(targets["targets"][sibling].get("retired_consumer_ports") or [])]
+    }
+    other_ports = sorted({
+        int(port)
+        for spec in targets["containers"].values()
+        for port in re.findall(r"https?://\{host\}:(\d+)", str(spec.get("connection") or ""))
+    } - declared)
+    assert other_ports  # 무언가를 넣어 본다
+    consumer = next(iter(sorted(_KNOWN_CONSUMERS)))[0]
+    environment = compose["services"][consumer].setdefault("environment", {})
+    for port in other_ports:
+        environment[f"UNRELATED_{port}"] = f"${{UNRELATED_{port}:-http://127.0.0.1:{port}}}"
+    found = consumer_origins.scan(compose, targets)
+    assert [key for (_service, key) in found if key.startswith("UNRELATED_")] == []
+    assert consumer_origins.default_violations(compose, targets) == []
+
+
+@pytest.mark.parametrize("sibling", _SIBLINGS)
+def test_moving_the_registry_port_and_retiring_the_old_one_names_every_consumer(sibling: str) -> None:
+    """빨간 대조군 — 플립 PR이 하듯 포트를 바꾸고 옛 포트를 `retired_consumer_ports`에 두면(compose 기본값은 그대로)
+    그 형제의 알려진 소비자 **전부**가 이름으로 빨갛다(포트의 정본이 registry다)."""
+
+    compose, targets = _documents()
+    known = {consumer for consumer, env in consumer_origins.scan(compose, targets).items()
+             if env.sibling == sibling and consumer in _KNOWN_CONSUMERS}
+    assert known
+    spec = targets["targets"][sibling]
+    old_port = int(spec["consumer_origin"].rsplit(":", 1)[1])
+    spec["consumer_origin"] = spec["consumer_origin"].rsplit(":", 1)[0] + ":1"
+    spec["retired_consumer_ports"] = [*(spec.get("retired_consumer_ports") or []), old_port]
+    violations = consumer_origins.default_violations(compose, targets)
+    assert {(n, k) for n, k in known if not any(v.startswith(f"`{n}`.{k}:") for v in violations)} == set()
+
+
+@pytest.mark.parametrize("sibling", _SIBLINGS)
+def test_moving_the_port_without_retiring_the_old_one_breaks_the_floor(sibling: str) -> None:
+    """옛 포트를 퇴역 목록에 두지 않으면 스캔이 그 소비자를 놓친다 — 그것을 잡는 것은 하한(`_KNOWN_CONSUMERS`)이다."""
+
+    compose, targets = _documents()
+    spec = targets["targets"][sibling]
+    spec["consumer_origin"] = spec["consumer_origin"].rsplit(":", 1)[0] + ":1"
+    spec.pop("retired_consumer_ports", None)
+    lost = {c for c in _KNOWN_CONSUMERS if c not in consumer_origins.scan(compose, targets)}
+    assert lost
+
+
+@pytest.mark.parametrize("sibling", _SIBLINGS)
 def test_moving_a_target_back_to_the_default_host_is_named(sibling: str) -> None:
-    """빨간 대조군 — registry에서 `host:`를 지우면(n150으로 되돌리면) 기대 origin이 loopback이 되어 그 소비자가 빨갛다."""
+    """빨간 대조군 — registry에서 `host:`를 지우면(default로 되돌리면) 기대 origin이 loopback이 되어 그 소비자가 빨갛다."""
 
     compose, targets = _documents()
     del targets["targets"][sibling]["host"]
-    assert _expected_origin(targets, sibling).startswith("http://127.0.0.1:")
-    named = [v for v in _violations(compose, targets) if "`" + sibling + "`" in v]
-    assert named, _violations(compose, targets)
+    assert registry.consumer_origin(sibling, registry.default_host(targets), targets).startswith("http://127.0.0.1:")
+    named = [v for v in consumer_origins.default_violations(compose, targets) if f"`{sibling}`" in v]
+    assert named
 
 
-#: 형제 → n150 시절 소비자 포트(되돌림 대조군의 입력).
-_N150_PORT: Mapping[str, int] = {"geo": 12501, "transport": 14001, "weather": 14101}
+def test_the_consumer_host_is_the_host_that_runs_the_consumer() -> None:
+    """N-host: 소비자(map)를 형제(geo)와 같은 호스트로 옮기면 기대 origin이 loopback이 된다 — 옛 profile 서비스(map
+    Dagster family의 webserver·daemon)도 family target의 호스트를 따르므로 함께 빨갛다(default로 조용히 풀리지 않는다)."""
+
+    compose, targets = _documents()
+    geo_host = targets["targets"]["geo"]["host"]
+    targets["targets"]["map"]["host"] = geo_host
+    violations = consumer_origins.default_violations(compose, targets)
+    for service in ("kor-travel-map-api", "kor-travel-map-dagster-code-server", "kor-travel-map-dagster",
+                    "kor-travel-map-dagster-daemon"):
+        env = consumer_origins.scan(compose, targets)[(service, "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL")]
+        assert env.expected == targets["targets"]["geo"]["consumer_origin"].replace("{host}", "127.0.0.1"), service
+        assert any(v.startswith(f"`{service}`.KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL:") for v in violations), service
+
+
+def test_a_consumer_no_target_runs_is_reported_unresolved() -> None:
+    """리뷰 2번: 실행 target도 Dagster family도 없는 서비스는 default 호스트로 조용히 풀지 않는다."""
+
+    compose, targets = _documents()
+    geo = targets["targets"]["geo"]
+    compose["services"]["orphan-consumer"] = {
+        "environment": {"GEO": "${ORPHAN_GEO:-" + geo["consumer_origin"].replace("{host}", "127.0.0.1") + "}"}
+    }
+    env = consumer_origins.scan(compose, targets)[("orphan-consumer", "GEO")]
+    assert env.expected is None and "unresolved" in (env.problem or "")
+    assert any(v.startswith("`orphan-consumer`.GEO:") and "unresolved" in v
+               for v in consumer_origins.default_violations(compose, targets))
+
+
+def test_a_sibling_on_several_hosts_is_a_clear_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """형제가 소비자 밖의 여러 호스트에 있으면 주소가 하나가 아니다 — `expected None`이 아니라 그 사실을 말한다.
+
+    오늘 스키마(`host:`는 하나 또는 `all`)로는 생기지 않는 모양이라(all이면 소비자 호스트가 늘 포함된다) 호스트 집합을
+    대역으로 만든다 — N-host 일반화(T-MGR-NH)에서 호스트 부분집합이 생기면 이 경로가 실제가 된다."""
+    compose, targets = _documents()
+    targets["hosts"]["mars"] = {"addr": "192.0.2.7"}
+    real = registry.target_hosts
+
+    def hosts(target, config=None):
+        return frozenset({"odroid", "mars"}) if target == "geo" else real(target, config)
+
+    monkeypatch.setattr(registry, "target_hosts", hosts)
+    violations = [v for v in consumer_origins.default_violations(compose, targets) if "GEO" in v]
+    assert violations and all("several hosts" in v and "no single address" in v for v in violations)
+
+
+def test_a_trailing_slash_is_not_a_difference() -> None:
+    compose, targets = _documents()
+    name, key = ("kor-travel-map-api", "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL")
+    env = consumer_origins.scan(compose, targets)[(name, key)]
+    compose["services"][name]["environment"][key] = f"${{{env.source_variable}:-{env.expected}/}}"
+    assert consumer_origins.default_violations(compose, targets) == []
+    assert consumer_origins.env_override_violations(
+        compose, targets, lambda variable: env.expected + "/" if variable == env.source_variable else ""
+    ) == []
 
 
 @pytest.mark.parametrize("consumer", sorted(_KNOWN_CONSUMERS))
-def test_reverting_any_one_consumer_to_its_n150_loopback_is_named(consumer: tuple[str, str]) -> None:
-    """빨간 대조군 — 한 곳만 옛 n150 loopback으로 되돌려도 그 곳이 이름으로 빨갛다."""
+def test_reverting_any_one_consumer_to_loopback_is_named(consumer: tuple[str, str]) -> None:
+    """빨간 대조군 — 한 곳만 loopback으로 되돌려도 그 곳이 이름으로 빨갛다."""
 
     compose, targets = _documents()
     name, key = consumer
-    sibling, _value = _scan(compose, targets)[consumer]
-    compose["services"][name]["environment"][key] = f"${{{key}:-http://127.0.0.1:{_N150_PORT[sibling]}}}"
-    violations = _violations(compose, targets)
+    env = consumer_origins.scan(compose, targets)[consumer]
+    port = env.expected.rsplit(":", 1)[1]
+    compose["services"][name]["environment"][key] = f"${{{key}:-http://127.0.0.1:{port}}}"
+    violations = consumer_origins.default_violations(compose, targets)
     assert [v for v in violations if v.startswith(f"`{name}`.{key}:")], violations
 
 
@@ -181,25 +216,115 @@ def test_a_literal_consumer_url_is_named() -> None:
     """`.env`로 재정의할 수 없는 리터럴(옛 PinVi ETL `http://127.0.0.1:14101`의 모양)은 빨갛다."""
 
     compose, targets = _documents()
-    compose["services"]["pinvi-dagster-code-server"]["environment"]["PINVI_KOR_TRAVEL_WEATHER_BASE_URL"] = (
-        "http://192.168.1.13:12201"
-    )
-    assert any("꼴이어야 한다" in v for v in _violations(compose, targets))
+    expected = consumer_origins.scan(compose, targets)[("pinvi-dagster-code-server", "PINVI_KOR_TRAVEL_WEATHER_BASE_URL")].expected
+    compose["services"]["pinvi-dagster-code-server"]["environment"]["PINVI_KOR_TRAVEL_WEATHER_BASE_URL"] = expected
+    assert any("꼴이어야 한다" in v for v in consumer_origins.default_violations(compose, targets))
 
 
 def test_env_example_does_not_shadow_a_consumer_default() -> None:
-    """`.env.example`이 소비자 origin의 원천 변수에 값을 주면 그것을 베낀 root `.env`가 compose 기본값을 조용히 가린다
-    (옛 예시 `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL=http://127.0.0.1:14001`). 원천 이름은 스캔한 기본값에서 읽는다."""
+    """`.env.example`이 소비자 origin의 원천 변수에 값을 주면 그것을 베낀 root `.env`가 compose 기본값을 조용히 가린다."""
 
     compose, targets = _documents()
-    sources = {
-        match.group(1)
-        for _sibling, value in _scan(compose, targets).values()
-        if (match := _DEFAULTED.fullmatch(value)) is not None
-    }
+    sources = {env.source_variable for env in consumer_origins.scan(compose, targets).values()} - {None}
     assert sources, "스캔이 원천 변수를 하나도 못 찾았다 — 이 검사가 공허하다"
     lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
     assigned = sorted(
         line for line in lines if not line.lstrip().startswith("#") and line.partition("=")[0].strip() in sources
     )
     assert assigned == [], assigned
+
+
+@pytest.mark.parametrize("value", ["http://{host}:12501/", "http://192.168.1.13:12501", "{host}:12501", 12501])
+def test_registry_rejects_a_malformed_consumer_origin(value: Any) -> None:
+    _compose, targets = _documents()
+    targets["targets"]["geo"]["consumer_origin"] = value
+    with pytest.raises(registry.TargetsConfigError, match="consumer_origin"):
+        registry._validate_targets_config(targets, label="test")
+
+
+# --- `targets validate`의 root `.env` 재정의 거부 ------------------------------------------------------------
+
+
+@pytest.fixture
+def project(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """실제 registry·compose를 가진 개발 checkout 모양의 project root(비운영 — 주소 검사 없음)."""
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "docker-targets.yml").write_bytes(_TARGETS.read_bytes())
+    (tmp_path / "docker-compose.yml").write_bytes(_COMPOSE.read_bytes())
+    monkeypatch.setenv(registry.PROJECT_ROOT_ENV, str(tmp_path))
+    for name in (registry.TARGETS_FILE_ENV, registry.HOST_ENV, "KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE",
+                 "KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    registry.load_targets_config.cache_clear()
+    yield tmp_path
+    registry.load_targets_config.cache_clear()
+
+
+def _validate(capsys: pytest.CaptureFixture[str]) -> tuple[int, str, str]:
+    from kor_travel_docker_manager.cli import main
+
+    try:
+        code = main(["targets", "validate", "--json"])
+    except SystemExit as exc:
+        code = int(exc.code or 0)
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def _expected(variable: str) -> str:
+    compose, targets = _documents()
+    return next(env.expected for env in consumer_origins.scan(compose, targets).values() if env.source_variable == variable)
+
+
+def test_validate_rejects_a_root_env_override_that_differs(project: Path, capsys) -> None:
+    variable = "KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL"
+    (project / ".env").write_text(f"OTHER=x\n{variable}=http://127.0.0.1:12501\n", encoding="utf-8")
+    code, out, err = _validate(capsys)
+    assert code != 0 and out == ""
+    assert variable in err and _expected(variable) in err
+    assert "http://127.0.0.1:12501" not in err  # 재정의된 값 자체는 싣지 않는다
+
+
+@pytest.mark.parametrize("line", ["", "KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL=\n", "KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL={expected}\n"])
+def test_validate_accepts_unset_empty_or_equal_overrides(project: Path, capsys, line: str) -> None:
+    (project / ".env").write_text(line.format(expected=_expected("KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL")), encoding="utf-8")
+    code, out, err = _validate(capsys)
+    assert code == 0, err
+    assert json.loads(out)["status"] == "ok"
+
+
+def test_validate_names_every_overridden_consumer_variable(project: Path, capsys) -> None:
+    compose, targets = _documents()
+    variables = sorted({env.source_variable for env in consumer_origins.scan(compose, targets).values()} - {None})
+    (project / ".env").write_text("".join(f"{v}=http://10.9.9.9:1\n" for v in variables), encoding="utf-8")
+    code, _out, err = _validate(capsys)
+    assert code != 0
+    assert [v for v in variables if v not in err] == []
+
+
+def test_override_check_is_quiet_without_a_compose_file(project: Path, capsys) -> None:
+    (project / "docker-compose.yml").unlink()
+    (project / ".env").write_text("KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL=http://10.9.9.9:1\n", encoding="utf-8")
+    code, _out, err = _validate(capsys)
+    assert code == 0, err
+
+
+def test_a_third_host_consumer_sees_the_sibling_address() -> None:
+    """세 번째 호스트(mars)로 소비자(pinvi)를 옮기면 기대 origin은 형제 호스트의 addr 그대로 — loopback이 아니다."""
+
+    compose, targets = _documents()
+    targets = copy.deepcopy(targets)
+    targets["hosts"]["mars"] = {"addr": "192.0.2.7"}
+    targets["targets"]["pinvi"]["host"] = "mars"
+    env = consumer_origins.scan(compose, targets)[("pinvi-api", "PINVI_KOR_TRAVEL_WEATHER_BASE_URL")]
+    weather = targets["targets"]["weather"]
+    assert env.expected == weather["consumer_origin"].replace("{host}", targets["hosts"][weather["host"]]["addr"])
+
+
+@pytest.mark.parametrize("payload", [b"services: [unclosed\n", b"\xff\xfe not utf-8\n"])
+def test_an_unreadable_compose_is_one_line_not_a_traceback(project: Path, capsys, payload: bytes) -> None:
+    (project / "docker-compose.yml").write_bytes(payload)
+    code, out, err = _validate(capsys)
+    assert code == 1 and out == ""
+    assert err.startswith("consumer origin check:") and "Traceback" not in err

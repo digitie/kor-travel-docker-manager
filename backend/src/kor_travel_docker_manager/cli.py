@@ -15,6 +15,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
 )
 from kor_travel_docker_manager.services.compose_service import (
     compose_service,
+    get_compose_path,
     get_env_path,
     rebuild_failure_stage,
 )
@@ -171,6 +172,22 @@ def _targets_config_error_text(exc: BaseException) -> str:
     return scrub_failure_text(str(exc), get_env_path())
 
 
+def _consumer_origin_env_violations(config: dict[str, Any]) -> list[str]:
+    """설치된(또는 checkout의) compose를 원문으로 읽어 소비자 env를 찾고, root `.env` 재정의를 대조한다.
+
+    compose 파일이 없으면(합성 targets만 있는 개발 fixture) 대조할 소비자가 없다 — 빈 목록.
+    """
+    from kor_travel_docker_manager.services.consumer_origins import env_override_violations
+    from kor_travel_docker_manager.services.registry import root_env_value
+    from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
+
+    compose_path = Path(get_compose_path())
+    if not compose_path.is_file():
+        return []
+    compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
+    return env_override_violations(compose, config, root_env_value)
+
+
 def _cmd_targets_validate(args: argparse.Namespace) -> int:
     """GM-11 후속(docker-targets.yml 스키마 검증 잔여): `docs/docker-management.md`
     3절이 안내하던 별도 python 한 줄 pre-flight 검증(`load_targets_config()`를 직접
@@ -205,6 +222,19 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
             }, ensure_ascii=False))
         else:
             print("OK")
+
+    # R2(T-MGR-01c): root `.env`가 소비자 origin을 registry 기대값과 다르게 재정의하면 거부한다. compose는 기본값만
+    # 파생물로 갖고 `.env`는 그것을 조용히 가릴 수 있다 — 그 재정의가 플립을 따라가지 못하면 소비자가 옛 호스트를 부른다.
+    try:
+        override_violations = _consumer_origin_env_violations(config)
+    except (*TARGETS_CONFIG_ERRORS, ValueError) as exc:
+        # compose를 읽지 못하거나(권한·인코딩) 파싱하지 못해도 traceback이 아니라 한 줄로 끝낸다.
+        print(f"consumer origin check: {_targets_config_error_text(exc)}", file=sys.stderr)
+        return 1
+    if override_violations:
+        for line in override_violations:
+            print(line, file=sys.stderr)
+        return 1
 
     if not getattr(args, "check_coordinates", False):
         emit_validated()
