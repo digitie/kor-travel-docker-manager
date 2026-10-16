@@ -1690,6 +1690,10 @@ services:
       NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: ${KTDM_PROD_URL_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}}
       NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL: ${KTDM_PROD_URL_GEO_API:-http://127.0.0.1:12501}
       NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
+      # Map UI `/api/geo` BFF(server-side)가 부르는 geo origin — `KOR_TRAVEL_GEO_INTERNAL_URL`을 공개 URL보다 먼저 읽는다
+      # (Map `app/api/geo/[...path]/route.ts`). R2 소비자 origin이고 map-api와 **같은 원천 변수**다(T-MGR-NH NH-8 —
+      # 없으면 BFF가 `NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL` 공개 URL로 돌아 나간다).
+      KOR_TRAVEL_GEO_INTERNAL_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://192.168.1.13:12501}
       # Map UI `/api/geo` BFF는 Geo가 Map consumer에 발급한 server-only key만 쓴다.
       # VWorld/public build alias로 대체하거나 브라우저 query에서 덮어쓸 수 없다.
       KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY:?KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY must be explicitly set}

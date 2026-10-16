@@ -27,6 +27,7 @@ _TARGETS = _ROOT / "config" / "docker-targets.yml"
 _KNOWN_CONSUMERS: frozenset[tuple[str, str]] = frozenset(
     {
         ("kor-travel-map-api", "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL"),
+        ("kor-travel-map-ui", "KOR_TRAVEL_GEO_INTERNAL_URL"),  # Map UI BFF(server-side, T-MGR-NH NH-8)
         ("kor-travel-map-dagster-code-server", "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL"),
         ("kor-travel-map-dagster", "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL"),
         ("kor-travel-map-dagster-daemon", "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL"),

@@ -20,7 +20,7 @@
 | 호스트 선언·자기 식별(N개, default 하나, 설치본은 로컬 선언 호스트 정확히 하나) | `registry.current_host`, `test_registry_hosts.py` |
 | 변경 경계(쓰기는 직접 소유 호스트에서만, `ensure`는 host-local 폐포) | `require_local_targets`·`local_mutation_target`, `test_host_mutation_scope.py`(mars) |
 | R1 주소(같은 호스트는 loopback, 원격 단일 소유는 그 addr) | `registry.r1_address` |
-| 소비자 origin(R2) — compose 기본값 8건을 registry와 대조, `.env` 재정의는 validate가 거부 | T-MGR-01c, `test_consumer_origin_defaults.py`(mars). 플립 PR이 기본값을 고치지 않으면 빨강 |
+| 소비자 origin(R2) — compose 기본값 8건(NH-8 뒤 9건)을 registry와 대조, `.env` 재정의는 validate가 거부 | T-MGR-01c, `test_consumer_origin_defaults.py`(mars). 플립 PR이 기본값을 고치지 않으면 빨강 |
 | workspace 파생 + 설치 파일 == digest env | #481, T-MGR-02 |
 | Prometheus registry job 파생 | T-MGR-04, `test_prometheus_targets_are_derived.py`(mars) |
 | 호스트별 값(PG 이미지·튜닝·mem_limit·데이터 장치)과 효과 가드 | T-MGR-03·05 |
