@@ -158,7 +158,8 @@ fi
 # 호스트 파일(`workspace.<KTDM_HOST>.yaml`) bind로 다시 만드는 것이다.
 # >>> plane-binds
 while IFS= read -r plane_source; do
-  [[ -n "${plane_source}" ]] || continue
+  # 이 설치 root 아래의 bind만 — 같은 호스트의 격리 테스트 plane(다른 체크아웃)은 이 release와 무관하다.
+  [[ "${plane_source}" == "${APP}/"* ]] || continue
   plane_file="$(basename -- "${plane_source}")"
   [[ -f "${REL}/config/dagster-shared/${plane_file}" ]] || die "running Dagster plane binds config/dagster-shared/${plane_file}, which the new release does not ship; run \`ktdctl dagster-plane converge\` with the current release first, then install"
 done < <(docker ps -q 9>&- | xargs -r docker inspect --format \

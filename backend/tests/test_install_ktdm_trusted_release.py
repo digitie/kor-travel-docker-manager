@@ -564,7 +564,9 @@ def test_plane_binds_runs_before_anything_is_flipped() -> None:
     assert text.index("# >>> plane-binds") < text.index('ln -sfn "${NAME}" "${APP}.new"')
 
 
-def _run_plane_binds(tmp_path: Path, mounted: str, shipped: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_plane_binds(
+    tmp_path: Path, mounted: str, shipped: list[str], root: str = "/opt/kor-travel-docker-manager"
+) -> subprocess.CompletedProcess[str]:
     """가짜 docker: `ps -q`는 컨테이너 하나, `inspect`는 그 workspace bind source 한 줄."""
     release = tmp_path / "release"
     (release / "config" / "dagster-shared").mkdir(parents=True)
@@ -577,7 +579,7 @@ def _run_plane_binds(tmp_path: Path, mounted: str, shipped: list[str]) -> subpro
         "#!/bin/sh\n"
         'case "$1" in\n'
         "  ps) echo abc123 ;;\n"
-        f"  inspect) echo /opt/kor-travel-docker-manager/config/dagster-shared/{mounted} ;;\n"
+        f"  inspect) echo {root}/config/dagster-shared/{mounted} ;;\n"
         "esac\n",
         encoding="utf-8",
     )
@@ -585,7 +587,7 @@ def _run_plane_binds(tmp_path: Path, mounted: str, shipped: list[str]) -> subpro
     script = (
         "set -euo pipefail\n"
         'die() { echo "$1" >&2; exit 126; }\n'
-        f'REL="{release}"\n' + _plane_binds_block() + "echo PASSED\n"
+        f'REL="{release}"\nAPP=/opt/kor-travel-docker-manager\n' + _plane_binds_block() + "echo PASSED\n"
     )
     environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=environment)
@@ -600,3 +602,9 @@ def test_plane_binds_refuses_a_workspace_the_new_release_does_not_ship(tmp_path:
 def test_plane_binds_passes_a_host_workspace_the_new_release_ships(tmp_path: Path) -> None:
     passed = _run_plane_binds(tmp_path, "workspace.n150.yaml", ["workspace.n150.yaml", "workspace.odroid.yaml"])
     assert passed.returncode == 0 and "PASSED" in passed.stdout, passed.stderr
+
+
+def test_plane_binds_ignores_planes_outside_this_install_root(tmp_path: Path) -> None:
+    # 같은 호스트의 격리 테스트 plane(다른 체크아웃의 bind)은 이 release와 무관하다.
+    ignored = _run_plane_binds(tmp_path, "workspace.yaml", ["workspace.n150.yaml"], root="/home/someone/checkout")
+    assert ignored.returncode == 0 and "PASSED" in ignored.stdout, ignored.stderr
