@@ -17,6 +17,20 @@
 
 ---
 
+## 2026-10-17 — 공용 Dagster dispatch 한도·큐 확인 주기 초안(PR514)
+
+- 최신 기준 main `872c326`에서 별도 worktree를 만들어 설계 초안 후
+  `max_concurrent_runs: 2`·`dequeue_interval_seconds: 30`만 구현했다.
+  location·run group 상한과 업무/monitor/health 설정은 그대로다.
+- 원본 파일 bytes SHA256 앞16자 anchor를 재계산했다. 모델 대조에서
+  instance 두scalar/Compose7소비자 digest만 달라짐을 확인했다.
+- 정책 변경 전 실패 보존 → 관련130PASS(44.71초), Ruff·diff검사 통과.
+  전체 suite는 재실행하지 않았고 실제 SDK/DB/Docker·운영 실행은 없다.
+- PR513의 Common 소비자 변경과 분리했다. 운영 원본은 source와 다를
+  수 있으므로 두 값만 적용한 뒤 실제 digest를 계산해야 한다. 독립2리뷰,
+  CI, 운영 CPU·대기 영향은 후속이며 성능 개선을 확정하지 않았다.
+
+
 ## 2026-10-17 — 공용 daemon 점검·빌드 cache 후속(PR511)
 
 - 공용 daemon만 interval120→360/start_interval15→45로 늘리고 원 Test·timeout60/retries2/start90·heartbeat tolerance300을 보존했다. shared-plane 대기945초가 기존900초에 잘리지 않게 기존3600초 허용 상한을 재사용한다.

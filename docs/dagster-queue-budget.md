@@ -31,5 +31,19 @@ Docker·DB fixture와 운영 접근은 이 source 작업에서 실행하지 않�
 시작 확인은 최대 한 polling 간격만큼 늦어질 수 있고, 전역 슬롯이 부족하면
 더 오래 대기한다.
 
-이 PR은 Common 소비자 PR513과 별도다. 초안 시점에는 아직 구현·회귀·운영
-측정 전이다.
+이 PR514는 Common 소비자 PR513과 별도다. source 구현과 관련 단위 회귀는
+완료했으며 운영 측정은 하지 않았다.
+
+## 실제 source 검증
+
+- 새 정책 테스트는 변경 전 `12 != 2`로 실패했고, 변경 뒤 관련 4개 파일
+  130개 테스트가 44.71초에 통과했다. Ruff와 diff 공백 검사도 통과했다.
+- 별도 전체 모델 대조에서 instance는 두 scalar 이외 동일하고 모든 tag
+  상한이 동일하다. Compose는 기존 raw 파일 SHA256 앞 16자 anchor를
+  `344105d5c06a22d3`로 변경한 효과만 있으며, 7개 소비자가 같은 값을 받는다.
+- `max_concurrent_runs`보다 큰 tag 상한은 오류가 아니다. 전역 상한과
+  독립적인 양의 정수인지 검사하고, 실제로 더 큰 tag 상한이 남아 있는지
+  회귀로 확인했다.
+- 전체 backend suite·frontend·실제 SDK/DB/Docker·운영 실행은 이 작업에서
+  재실행하지 않았다. frontend tree는 기준 main과 같고 CI 결과는 별도로
+  확인한다. 운영 CPU·backlog·공정성 효과는 아직 미검증이다.
