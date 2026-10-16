@@ -158,8 +158,9 @@ def test_ensure_runs_the_preflight_before_up(monkeypatch):
                         staticmethod(lambda argv, resolved: {argv[-1]} if argv[0] in {"up", "run"} else set()))
     seen = []
 
-    def refuse(resolved, services, environment):
+    def refuse(resolved, services, environment, *, build):
         seen.append(list(services))
+        assert build is False
         raise DeploymentContractError("ensure preflight: refused")
 
     monkeypatch.setattr(module, "ensure_preflight", refuse)
