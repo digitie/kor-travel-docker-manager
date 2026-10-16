@@ -285,10 +285,14 @@ compose를 스캔해 이 집합을 찾는다(줄 번호 열거 금지). root `.e
 없이 의존 closure를 올리므로(`compose_service.py:3572-3589,3714-3719`) 간선이 남으면 geo 플립 뒤 n150 `ensure map`이 geo-api를 n150에
 되살린다.
 
-**`ensure` 프리플라이트(T-MGR-05).** 이미지 `.Architecture` == 호스트 arch(amd64 이미지를 arm64 호스트에 올리면 거부);
-`KTDM_DATA_SOURCE_DEVICE`가 설정돼 있으면 bind 경로마다 `findmnt -T <경로> -o SOURCE`가 그 장치인지(미설정이면 생략 — n150 무변경);
-`docker compose config` 렌더 성공(compose 플러그인 부재는 여기서 드러난다 — `backend/tests/test_compose_readiness_integration.py:78`의
-`compose version`보다 효과가 앞선다).
+**`ensure` 프리플라이트(T-MGR-05, 2026-10-16 구현 — `services/ensure_preflight.py`).** `up` 전에, `ensure`의 transaction이 이미
+`docker compose config --format json`으로 해석한 문서에서 올릴 서비스(+`run` init step one-shot)를 보고 셋을 효과로 확인한다.
+(1) **렌더 성공**: 그 해석 자체 — compose 플러그인 부재·렌더 실패면 `compose candidate resolution failed`로 프리플라이트 전에
+멈춘다(새로 만든 검사가 아니라 순서만 테스트로 고정). (2) **이미지 arch**: 로컬에 있는 이미지의 `.Architecture` == `docker info`의
+`Architecture`(x86_64→amd64·aarch64→arm64로 맞춤; 로컬에 없는 이미지는 빌드·pull이 호스트 플랫폼을 고르므로 보지 않는다).
+(3) **쓰기 bind 장치**: root `.env`의 `KTDM_DATA_SOURCE_DEVICE`가 설정됐을 때만, 쓰기 가능 bind 소스마다 `findmnt -n -T <경로>
+-o SOURCE`의 장치(`[…]` 앞)가 그 값(읽기 전용 bind — 설정 파일 — 는 보지 않는다; 없는 경로는 가장 가까운 조상). 미설정이면
+`findmnt`를 부르지 않는다 — n150 무변경(설치본 렌더 43 서비스로 실측 통과).
 
 **`targets validate --json` 출력(초안).** `{"ok": bool, "host": "<KTDM_HOST 또는 default>", "targets": {"<id>": {"host": "<hosts 키|all>",
 "local": bool}}, "errors": [...]}` — transport 저장소의 배포 스크립트가 `targets.transport.host == <addr의 키>`를 효과로 읽는다. 스키마는

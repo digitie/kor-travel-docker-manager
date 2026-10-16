@@ -95,6 +95,7 @@ from kor_travel_docker_manager.services.deploy_status import (
     read_deploy_status,
     write_deploy_status,
 )
+from kor_travel_docker_manager.services.ensure_preflight import ensure_preflight
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
@@ -3415,6 +3416,23 @@ class ComposeService:
         return scope
 
     @staticmethod
+    def _compose_touched_services(args: Sequence[str], resolved: Mapping[str, Any]) -> set[str]:
+        """이 compose argv가 만들거나 시작하는 서비스 — 이름 붙은 것과, `--no-deps`가 없으면 렌더된 `depends_on` closure.
+
+        컨테이너를 만들거나 시작하지 않는 명령(`kill`·`stop`·`exec`·…)은 빈 집합이다.
+        """
+        index = ComposeService._compose_command_index(args)
+        if index is None or args[index] not in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES:
+            return set()
+        scope, flags = ComposeService._parse_compose_mutation(args)
+        if not scope:
+            return set()
+        touched = set(scope)
+        if "--no-deps" not in flags:
+            touched |= _compose_dependency_closure(resolved, touched)
+        return touched
+
+    @staticmethod
     def _compose_command_index(args: Sequence[str]) -> int | None:
         """전역 옵션을 건너뛴 compose 하위 명령의 위치. 전역 옵션을 해석할 수 없으면 ``None``."""
 
@@ -3810,6 +3828,19 @@ class ComposeService:
                 raise ComposeCandidateContractError(
                     "compose baseline changed before ensure mutation"
                 )
+            # ADR-58 결정 9·R5(T-MGR-05): 렌더된 문서(위 transaction이 `compose config`로 해석한 것)에서 올릴 서비스의
+            # 이미지 arch·쓰기 bind 장치를 효과로 본다 — `up` 전에 멈춘다. `run` init step의 one-shot도 같은 서비스다.
+            # 대상은 compose가 실제로 만들거나 시작할 서비스 — `up`과 init step argv를 기존 파서로 읽고 렌더된
+            # `depends_on` closure까지 넓힌다(R3 chokepoint와 같은 규칙).
+            touched: set[str] = set()
+            for argv in (["up", "-d", *services], *(list(step.get("command") or []) for step in plan["resolved_init_steps"])):
+                touched |= self._compose_touched_services(argv, transaction.resolved)
+            ensure_preflight(
+                transaction.resolved,
+                sorted(touched),
+                transaction.environment.effective,
+                build=build,
+            )
             return self._ensure_target_unlocked(
                 target,
                 target_sequence=target_sequence,
