@@ -696,6 +696,9 @@ validate` → odroid `ensure <target>`. consumer 전환(Map/PinVi 코드서버·
 
 규칙: **`host = hosts[<target.host>].addr`; 포트·경로·서비스명·컨테이너명·project명·app dir 불변; 같은 호스트 안 참조는 `127.0.0.1`.**
 두 호스트가 `11000`·`11001`·`12101`·`12901`을 각각 가져도 충돌이 없다 — 포트 정책은 호스트 로컬이다.
+**loopback 간선은 compose `depends_on`으로 선언한다**(2026-10-17 T-MGR-NH NH-2): `targets validate`가 소비자 서비스의 소유 호스트 ⊆
+제공자 소유 호스트를 검사한다(`services/host_edges.py`). C6c가 loopback을 고정한 PinVi→Map·concierge UI→API가 그렇게 같은 호스트에
+묶이고, `map-api → concierge-api`가 Map과 concierge를 묶는다. depends_on 없이 loopback을 쓰는 간선을 새로 만들면 검사가 보지 못한다.
 
 ### 10.2 odroid envelope 실측(2026-10-13; 비root 읽기 전용 프로브 + 소유자 처리 결과) — 미검증은 그대로 표시
 

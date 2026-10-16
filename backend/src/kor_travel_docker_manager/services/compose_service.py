@@ -162,6 +162,7 @@ from kor_travel_docker_manager.services.runtime_topology import (
     derive_shared_dagster_plane,
     installed_code_location,
     installed_container_name,
+    installed_dagster_families,
     installed_location_owners,
     installed_shared_dagster_plane,
     listen_address,
@@ -2702,35 +2703,11 @@ class ComposeService:
             return
         config = load_targets_config()
         selected = current_host(config)
-        owners: dict[str, set[str]] = {}
-
-        def own(service: str, target: str) -> None:
-            owners.setdefault(service, set()).update(target_hosts(target, config))
-
-        for target, spec in config["targets"].items():
-            if spec.get("include") or spec.get("external_project"):
-                continue
-            for service in spec.get("services", []):
-                own(service, target)
-            # 별도 ownership 표를 만들지 않고 기존 init 선언의 실제 Compose 범위를 쓴다.
-            for step in spec.get("init_steps", []):
-                initializers, _ = ComposeService._parse_compose_mutation(step["command"])
-                if not initializers:
-                    raise DeploymentContractError("initializer has no bounded host scope")
-                for service in initializers:
-                    own(service, target)
-        for service, target in (
-            (_PINNED_RUNTIME_ONESHOT_WRITERS[0], "map"),
-            (_MAP_APPLICATION_SCHEMA_SERVICE, "map"),
-            (_PINVI_ADMIN_BOOTSTRAP_SERVICE, "pinvi"),
-        ):
-            own(service, target)
-        # 전환 뒤 profile로 남은 Dagster family도 원래 target의 소유권을 따른다.
+        owners = compose_service_owners(config)
+        # 전환 뒤 profile로 남은 Dagster family도 원래 target의 소유권을 따른다 — 설치된 모델은 필요할 때만 읽는다
+        # (read-only·stop 길은 모델이 깨져도 남는다).
         if any(service not in owners for service in scope):
-            for target, family in runtime_topology().families.items():
-                if family.external_project is None:
-                    for service in family.names:
-                        own(service, target)
+            owners = compose_service_owners(config, families=installed_dagster_families())
         services = None if resolved is None else resolved.get("services")
         if resolved is not None and not isinstance(services, Mapping):
             raise DeploymentContractError("resolved compose has no host service graph")
@@ -6192,3 +6169,44 @@ class ComposeService:
 
 
 compose_service = ComposeService()
+
+
+def compose_service_owners(
+    config: Mapping[str, Any], *, families: Mapping[str, DagsterFamily] | None = None
+) -> dict[str, frozenset[str]]:
+    """compose 서비스 → 그것을 소유한 호스트 집합 — 소유자 판정의 **한 자리**(T-MGR-NH NH-2 리뷰 M1).
+
+    변경 경계(`_assert_host_service_scope`), 교차 호스트 간선 검사(`host_edges`), 소비자 origin의 소비자 호스트
+    (`consumer_origins`)가 모두 이것을 쓴다. 소유자 = Manager target(외부 project·`include` 집계 제외)의 `services`
+    ∪ 그 target의 `init_steps`가 compose로 건드리는 서비스(기존 명령 파서로 읽는다) ∪ pinned 재구축의 profile one-shot
+    ∪ (`families`를 주면) Dagster family의 모든 서비스(전환 뒤 profile로 남은 옛 webserver·daemon·gateway 포함).
+    """
+
+    owners: dict[str, set[str]] = {}
+
+    def own(service: str, target: str) -> None:
+        owners.setdefault(service, set()).update(target_hosts(target, config))
+
+    for target, spec in config["targets"].items():
+        if spec.get("include") or spec.get("external_project"):
+            continue
+        for service in spec.get("services", []):
+            own(service, target)
+        # 별도 ownership 표를 만들지 않고 기존 init 선언의 실제 Compose 범위를 쓴다.
+        for step in spec.get("init_steps", []):
+            initializers, _ = ComposeService._parse_compose_mutation(step["command"])
+            if not initializers:
+                raise DeploymentContractError("initializer has no bounded host scope")
+            for service in initializers:
+                own(service, target)
+    for service, target in (
+        (_PINNED_RUNTIME_ONESHOT_WRITERS[0], "map"),
+        (_MAP_APPLICATION_SCHEMA_SERVICE, "map"),
+        (_PINVI_ADMIN_BOOTSTRAP_SERVICE, "pinvi"),
+    ):
+        own(service, target)
+    for target, family in (families or {}).items():
+        if family.external_project is None:
+            for service in family.names:
+                own(service, target)
+    return {name: frozenset(hosts) for name, hosts in owners.items()}

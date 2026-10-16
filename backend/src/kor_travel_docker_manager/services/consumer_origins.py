@@ -83,18 +83,10 @@ def _service_owners(config: Mapping[str, Any]) -> dict[str, set[str]]:
 
 
 def _consumer_hosts(compose: Mapping[str, Any], config: Mapping[str, Any]) -> dict[str, frozenset[str]]:
-    """compose 서비스 → 그것이 도는 호스트 집합(실행 target, 없으면 Dagster family target)."""
-    hosts: dict[str, set[str]] = {}
-    for target, spec in config["targets"].items():
-        if spec.get("include") or spec.get("external_project"):
-            continue
-        for service in spec.get("services") or []:
-            hosts.setdefault(service, set()).update(registry.target_hosts(target, config))
-    for target, family in derive_dagster_families(compose, config).items():
-        for service in (*family.legacy, family.code_server):
-            if service not in hosts:
-                hosts[service] = set(registry.target_hosts(target, config))
-    return {service: frozenset(value) for service, value in hosts.items()}
+    """compose 서비스 → 그것이 도는 호스트 집합 — 소유자 판정의 한 자리(`compose_service_owners`, T-MGR-NH NH-2 M1)."""
+    from kor_travel_docker_manager.services.compose_service import compose_service_owners
+
+    return compose_service_owners(config, families=derive_dagster_families(compose, config))
 
 
 def _env_items(service: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
