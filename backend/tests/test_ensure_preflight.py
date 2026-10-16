@@ -152,6 +152,10 @@ def test_ensure_runs_the_preflight_before_up(monkeypatch):
     monkeypatch.setattr(module, "_assert_transaction_matches_c6c_lock", lambda *_: None)
     monkeypatch.setattr(module.Path, "read_bytes", lambda self: b"")
     monkeypatch.setattr(module.Path, "stat", lambda self: SimpleNamespace(st_mode=0))
+    # argv 파서는 설치된 모델을 읽을 수 있다 — 여기서는 순서만 보므로 마지막 서비스 이름만 돌려주는 대역(파서·closure 자체는
+    # `test_ensure_checks_the_rendered_depends_on_closure`가 본다).
+    monkeypatch.setattr(module.ComposeService, "_compose_touched_services",
+                        staticmethod(lambda argv, resolved: {argv[-1]} if argv[0] in {"up", "run"} else set()))
     seen = []
 
     def refuse(resolved, services, environment):
