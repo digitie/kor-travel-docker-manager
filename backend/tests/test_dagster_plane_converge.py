@@ -305,7 +305,7 @@ def test_a_current_plane_dry_run_reports_health_without_waiting(
 
 
 def test_the_wait_bound_comes_from_the_rendered_healthchecks(harness: SimpleNamespace) -> None:
-    """고정 300초가 아니다 — daemon은 start_period 90초 뒤 앞 probe가 끝나고 120초를 쉬며, 디스크 대기 중엔 probe 하나가
+    """고정 300초가 아니다 — daemon은 start_period 90초 뒤 앞 probe가 끝나고 360초를 쉬며, 디스크 대기 중엔 probe 하나가
     timeout(60초)까지 걸린다. 그래서 probe 한 주기는 interval + timeout이다."""
 
     services = harness.resolved["services"]
@@ -326,8 +326,8 @@ def test_the_wait_bound_comes_from_the_rendered_healthchecks(harness: SimpleName
     bound = ComposeService._shared_plane_health_wait_seconds(harness.plane, services)
 
     assert bound == expected
-    # 현재 webserver:120 + (90 + 10) × 5 + 15 = 635. 원 render 계산과 일치해야 한다.
-    assert bound == 635.0
+    # 현재 daemon:90 + (360 + 60) × 2 + 15 = 945. 원 render 계산과 일치해야 한다.
+    assert bound == 945.0
 
 
 def test_the_wait_bound_reads_compose_config_durations_and_is_clamped(
@@ -348,7 +348,7 @@ def test_the_wait_bound_reads_compose_config_durations_and_is_clamped(
     )
     huge = services(start_period="10h", interval="1h", timeout="1h", retries=5)
     assert ComposeService._shared_plane_health_wait_seconds(plane, huge) == float(
-        compose_service_module._COMPOSE_WAIT_TIMEOUT_SECONDS
+        compose_service_module._MAX_C6C_WAIT_TIMEOUT_SECONDS
     )
 
 
@@ -535,3 +535,17 @@ def test_a_bind_still_mounted_but_no_longer_rendered_is_stale(harness: SimpleNam
     assert result["outcome"] == "would_recreate"
     for name in harness.plane.services:
         assert result["drift"][name] == ["bind /opt/dagster/old.yaml is mounted but not rendered"]
+
+def test_shared_daemon_six_minute_interval_does_not_clip_health_start_window(
+    harness: SimpleNamespace,
+) -> None:
+    services = {
+        name: {"healthcheck": {
+            "test": ["CMD", "unchanged"], "start_period": "90s",
+            "interval": "360s", "timeout": "60s", "retries": 2,
+        }}
+        for name in harness.plane.services
+    }
+    bound = ComposeService._shared_plane_health_wait_seconds(harness.plane, services)
+    assert bound == 945.0
+    assert compose_service_module._compose_wait_timeout_seconds(services) >= bound

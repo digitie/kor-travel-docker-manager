@@ -4033,7 +4033,7 @@ def test_the_plane_that_never_loads_this_location_fails_closed(
     assert derived, "location 기다림이 파생 상한을 묻지 않았다"
     bound = derived[-1]
     # fixture의 frozen render는 정본 compose의 plane healthcheck 그대로다 — 기대값을 거기서 직접 계산한다:
-    # 서비스마다 start_period + (interval + timeout) × retries + 여유, 가장 긴 현재 webserver의635초.
+    # 서비스마다 start_period + (interval + timeout) × retries + 여유, 가장 긴 현재 daemon의945초.
     document = yaml.safe_load((Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(encoding="utf-8"))
     canonical = document["services"]
 
@@ -4049,7 +4049,7 @@ def test_the_plane_that_never_loads_this_location_fails_closed(
             canonical[name]["healthcheck"] for name in runtime_topology_module.derive_shared_dagster_plane(document).services
         )
     )
-    assert bound == expected == 635.0
+    assert bound == expected == 945.0
     assert f"within {int(bound)} s" in str(raised.value)
     assert bound <= clock.now < bound + compose_service_module._SHARED_PLANE_PROBE_INTERVAL_SECONDS + 1
     harness.mocks.smoke.assert_not_called()

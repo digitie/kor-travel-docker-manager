@@ -5301,9 +5301,9 @@ class ComposeService:
         """plane 서비스의 render healthcheck에서 기다림 상한을 파생한다(고정 상수가 아니다).
 
         서비스마다 `start_period + (interval + timeout) × retries + 여유` — start_period 뒤 probe는 앞 probe가 **끝난 뒤**
-        `interval`을 쉬고 돌며(daemon은 120초), 디스크 대기가 큰 n150에서는 probe 하나가 timeout까지 걸릴 수 있다.
+        `interval`을 쉬고 돌며(공용 daemon은 360초), 디스크 대기가 큰 n150에서는 probe 하나가 timeout까지 걸릴 수 있다.
         `retries`번 연달아 실패해야 unhealthy다. 그 안에 첫 성공이 오면 healthy다. 가장 긴 서비스를 쓰고
-        `_SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS`~`_COMPOSE_WAIT_TIMEOUT_SECONDS`로 자른다. 값이 없으면 Docker 기본값.
+        `_SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS`~`_MAX_C6C_WAIT_TIMEOUT_SECONDS`로 자른다. 값이 없으면 Docker 기본값.
         """
 
         longest = 0.0
@@ -5323,7 +5323,7 @@ class ComposeService:
             longest = max(longest, bound)
         return min(
             max(longest, _SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS),
-            float(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+            float(_MAX_C6C_WAIT_TIMEOUT_SECONDS),
         )
 
     def _wait_shared_plane_healthy(
