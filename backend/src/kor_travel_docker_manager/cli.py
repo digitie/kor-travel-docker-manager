@@ -188,6 +188,29 @@ def _consumer_origin_env_violations(config: dict[str, Any]) -> list[str]:
     return env_override_violations(compose, config, root_env_value)
 
 
+def _workspace_digest_violations(config: dict[str, Any]) -> list[str]:
+    """설치된 공용 Dagster workspace 파일의 sha256[:16] == digest env(T-MGR-02, 효과). compose가 없으면 빈 목록."""
+    from dotenv import dotenv_values
+
+    from kor_travel_docker_manager.services.registry import get_project_root
+    from kor_travel_docker_manager.services.workspace_digest import workspace_digest_violations
+    from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
+
+    compose_path = Path(get_compose_path())
+    if not compose_path.is_file():
+        return []
+    compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
+    # compose와 같은 우선순위: 프로세스 env에 **있으면**(빈 값이어도) 그것, 없으면 compose가 읽는 `.env`(`get_env_path()` —
+    # `KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE` 존중), 그다음 `${VAR:-default}`의 기본값.
+    env_path = Path(get_env_path())
+    file_values = dotenv_values(env_path, interpolate=False) if env_path.is_file() else {}
+
+    def value(name: str) -> str | None:
+        return os.environ[name] if name in os.environ else file_values.get(name)
+
+    return workspace_digest_violations(compose, config, Path(get_project_root()), value)
+
+
 def _cmd_targets_validate(args: argparse.Namespace) -> int:
     """GM-11 후속(docker-targets.yml 스키마 검증 잔여): `docs/docker-management.md`
     3절이 안내하던 별도 python 한 줄 pre-flight 검증(`load_targets_config()`를 직접
@@ -233,6 +256,16 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
         return 1
     if override_violations:
         for line in override_violations:
+            print(line, file=sys.stderr)
+        return 1
+    # T-MGR-02: 공용 plane이 마운트할 workspace 파일과 digest env가 어긋나면 plane이 unhealthy가 된다 — 설치 전에 멈춘다.
+    try:
+        digest_violations = _workspace_digest_violations(config)
+    except (*TARGETS_CONFIG_ERRORS, ValueError) as exc:
+        print(f"workspace digest check: {_targets_config_error_text(exc)}", file=sys.stderr)
+        return 1
+    if digest_violations:
+        for line in digest_violations:
             print(line, file=sys.stderr)
         return 1
 
