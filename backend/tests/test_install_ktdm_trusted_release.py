@@ -548,3 +548,55 @@ def test_the_pre_flip_validate_names_every_consumer_origin_override(tmp_path: Pa
     assert "identify this host" not in completed.stderr
     assert [v for v in variables if v not in completed.stderr] == []
     assert "10.9.9.9" not in completed.stderr  # 재정의된 값은 싣지 않는다
+
+
+# --- 2026-10-17 T-MGR-NH NH-4 리뷰 OS-1: 떠 있는 plane의 workspace bind 파일이 새 release에 있어야 한다 -----------
+
+
+def _plane_binds_block() -> str:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    return text[text.index("# >>> plane-binds") : text.index("# <<< plane-binds")]
+
+
+def test_plane_binds_runs_before_anything_is_flipped() -> None:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    assert text.index("# <<< host-identity") < text.index("# >>> plane-binds") < text.index("install -T -o root -g root")
+    assert text.index("# >>> plane-binds") < text.index('ln -sfn "${NAME}" "${APP}.new"')
+
+
+def _run_plane_binds(tmp_path: Path, mounted: str, shipped: list[str]) -> subprocess.CompletedProcess[str]:
+    """가짜 docker: `ps -q`는 컨테이너 하나, `inspect`는 그 workspace bind source 한 줄."""
+    release = tmp_path / "release"
+    (release / "config" / "dagster-shared").mkdir(parents=True)
+    for name in shipped:
+        (release / "config" / "dagster-shared" / name).write_text("load_from: []\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  ps) echo abc123 ;;\n"
+        f"  inspect) echo /opt/kor-travel-docker-manager/config/dagster-shared/{mounted} ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    script = (
+        "set -euo pipefail\n"
+        'die() { echo "$1" >&2; exit 126; }\n'
+        f'REL="{release}"\n' + _plane_binds_block() + "echo PASSED\n"
+    )
+    environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=environment)
+
+
+def test_plane_binds_refuses_a_workspace_the_new_release_does_not_ship(tmp_path: Path) -> None:
+    refused = _run_plane_binds(tmp_path, "workspace.yaml", ["workspace.n150.yaml", "workspace.odroid.yaml"])
+    assert refused.returncode == 126 and "PASSED" not in refused.stdout
+    assert "config/dagster-shared/workspace.yaml" in refused.stderr and "dagster-plane converge" in refused.stderr
+
+
+def test_plane_binds_passes_a_host_workspace_the_new_release_ships(tmp_path: Path) -> None:
+    passed = _run_plane_binds(tmp_path, "workspace.n150.yaml", ["workspace.n150.yaml", "workspace.odroid.yaml"])
+    assert passed.returncode == 0 and "PASSED" in passed.stdout, passed.stderr

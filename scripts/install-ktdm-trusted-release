@@ -151,6 +151,20 @@ ${identity_err}"
 fi
 # <<< host-identity
 
+# 떠 있는 공용 Dagster plane이 붙인 workspace 파일이 새 release에도 있는지 flip **전에** 본다(T-MGR-NH NH-4 리뷰 OS-1).
+# bind source는 설치 root symlink를 거친 경로라 flip 뒤 다음 재시작에서 새 release의 같은 이름 파일을 붙인다 — 그 파일이
+# 없으면(옛 별칭 `workspace.yaml`을 붙인 채 별칭이 없는 release로 넘어가면) 마운트가 깨진다. plane은 이름이 아니라
+# 컨테이너 안 workspace 경로로 알아본다. 고치는 길은 현재 release로 `ktdctl dagster-plane converge`를 먼저 돌려 plane을
+# 호스트 파일(`workspace.<KTDM_HOST>.yaml`) bind로 다시 만드는 것이다.
+# >>> plane-binds
+while IFS= read -r plane_source; do
+  [[ -n "${plane_source}" ]] || continue
+  plane_file="$(basename -- "${plane_source}")"
+  [[ -f "${REL}/config/dagster-shared/${plane_file}" ]] || die "running Dagster plane binds config/dagster-shared/${plane_file}, which the new release does not ship; run \`ktdctl dagster-plane converge\` with the current release first, then install"
+done < <(docker ps -q 9>&- | xargs -r docker inspect --format \
+  '{{range .Mounts}}{{if eq .Destination "/opt/dagster/dagster_home/workspace.yaml"}}{{println .Source}}{{end}}{{end}}' 9>&-)
+# <<< plane-binds
+
 # host 파일은 release에서 설치한다. 여기서 실패하면 설치 root와 도는 backend는 그대로다.
 install -T -o root -g root -m 0644 -- "${REL}/deploy/tmpfiles.d/kor-travel-docker-manager.conf" \
   /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf

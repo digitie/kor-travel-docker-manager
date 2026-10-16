@@ -170,7 +170,7 @@ def shared_workspace(s):
     return bool(workspace_sources(s))
 def workspace_sources(s):
     sources = [str(v.get("source", "")) if isinstance(v, dict) else str(v).split(":", 1)[0] for v in s.get("volumes") or []]
-    return {v for v in sources if re.search(r"(?:^|/)config/dagster-shared/workspace(?:\.[a-z][a-z0-9_-]*)?\.yaml$", v)}
+    return {v for v in sources if re.search(r"(?:^|/)config/dagster-shared/workspace\.[a-z][a-z0-9_-]*\.yaml$", v)}
 def code_server(s):
     argv = words(s)
     return any(w.rsplit("/", 1)[-1] == "dagster" and tuple(argv[i + 1:i + 3]) in (("code-server", "start"), ("api", "grpc"))

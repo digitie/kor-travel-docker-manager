@@ -67,16 +67,15 @@ def test_default_host_values_are_the_default_hosts_derivation(documents):
     assert set(digests) == {hashlib.sha256(workspace.read_bytes()).hexdigest()[:16]}
 
 
-def test_a_changed_default_host_leaves_the_compose_defaults_stale(documents):
-    """빨간 대조군 — registry default를 다른 호스트로 바꾸면 기본값이 옛 호스트·옛 digest를 가리켜 어긋난다."""
+def test_the_default_host_tie_fails_when_the_registry_default_moves(documents):
+    """빨간 대조군 — registry의 default를 다른 호스트로 **실제로** 바꾸면 같은 결박 테스트가 실패한다(기본값은 옛 호스트·
+    옛 digest를 가리킨다)."""
     _compose, targets = documents
-    compose_text = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    targets_text = (ROOT / "config/docker-targets.yml").read_text(encoding="utf-8")
-    hosts, digests = _default_host_values(compose_text, targets_text)
     other = next(name for name in targets["hosts"] if name != default_host(targets))
-    workspace = ROOT / "config/dagster-shared" / f"workspace.{other}.yaml"
-    assert set(hosts) != {other}
-    assert set(digests) != {hashlib.sha256(workspace.read_bytes()).hexdigest()[:16]}
+    for name, spec in targets["hosts"].items():
+        spec["default"] = name == other
+    with pytest.raises(AssertionError):
+        test_default_host_values_are_the_default_hosts_derivation(documents)
 
 
 def test_third_host_move_changes_only_affected_workspaces(documents):
