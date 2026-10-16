@@ -119,6 +119,7 @@ from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     map_application_300_paired_build_image_names,
     parse_candidate_static_head,
 )
+from kor_travel_docker_manager.services.ensure_preflight import ensure_preflight
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     PinnedRuntimeRelease,
     current_pinned_runtime_release,
@@ -3810,6 +3811,20 @@ class ComposeService:
                 raise ComposeCandidateContractError(
                     "compose baseline changed before ensure mutation"
                 )
+            # ADR-58 결정 9·R5(T-MGR-05): 렌더된 문서(위 transaction이 `compose config`로 해석한 것)에서 올릴 서비스의
+            # 이미지 arch·쓰기 bind 장치를 효과로 본다 — `up` 전에 멈춘다. `run` init step의 one-shot도 같은 서비스다.
+            ensure_preflight(
+                transaction.resolved,
+                [
+                    *services,
+                    *(
+                        str(step["command"][-1])
+                        for step in plan["resolved_init_steps"]
+                        if (step.get("command") or [None])[0] == "run"
+                    ),
+                ],
+                transaction.environment.effective,
+            )
             return self._ensure_target_unlocked(
                 target,
                 target_sequence=target_sequence,
