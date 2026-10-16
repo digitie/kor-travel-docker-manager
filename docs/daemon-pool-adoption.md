@@ -64,3 +64,13 @@ root의 별도 실제 gate다. 라이브러리 microbench를 운영 전체 CPU �
 - 실제 Manager daemon native 이미지/원CLI·SIGTERM/외부CS InstanceRef/PG 연결 반환·
   같은 workload CPU/RSS/pool 대기/수집 신선도 gate는 root가 별도로 확인한다.
   Common의 fake·root 격리 SDK/PG 성공과 이 소비자 운영 성공을 혼동하지 않는다.
+
+## CI guard 추출 회귀 정산
+
+최초 최종290f CI는 기존 storage guard 추출기가 공식 wrapper 실행 파일을
+인식하지 못해 2FAIL/3049PASS/39SKIP이었다. 실제 Compose의 기동 전제조건은
+바뀌지 않았다. 면제 목록을 늘리지 않고, 테스트 추출기의 정확한 실행 파일
+목록에 `kor-travel-dagster-daemon`을 추가했다. 비슷한 prefix/suffix 이름은
+허용하지 않는 회귀도 추가했다. Docker·Compose·명시5개 이미지 입력은
+290f와 byte 동일하므로 이 테스트 정정 때문에 이미지를 재빌드하지 않는다.
+이전 CI 실패는 보존한다. 수정 전 local2FAIL4PASS를 재현했고 수정 후 관련7개\n모듈377PASS/47.26초·Ruff·diff검사가 통과했다. 새 HEAD의 전체 CI는 별도 판정한다.

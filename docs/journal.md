@@ -17,6 +17,18 @@
 
 ---
 
+## 2026-10-17 — PR513 storage guard 추출 회귀 정정
+
+- 공식 Common daemon wrapper가 원 storage guard 뒤에 있어도 기존 test의
+  argv 추출기가 인식하지 못해 CI2FAIL/3049PASS/39SKIP으로 종결됐다.
+- 면제목록을 늘리지 않고 정확한 실행 파일을 추출 대상에 추가했다.
+  원CLI/wrapper3양성·유사이름3음성 회귀를 추가했다.
+- 수정 전 local2FAIL4PASS 보존 → 관련7모듈377PASS/47.26초,
+  Ruff·diff검사 PASS. Docker/Compose·명시5개 이미지입력은290f와
+  byte같고 tagc019 유지라 이 수정으로 native 재빌드하지 않는다.
+- 전체 새 CI는 별도 진행이며 실제 SDK/DB/Docker/운영은 실행하지 않았다.
+
+
 ## 2026-10-17 — 공용 daemon 연결 재사용 채택(PR513)
 
 - PR511 위 별도 소비자 범위로 Common38 final17ff(제품e0c)의 정식 whole core wheel을 vendor/source REV/SHA로 고정했다. 원 wheel과 독립 offline 재빌드가 동일하고 RECORD18/package13/공식 metadata를 직접 대조했다.
