@@ -2684,7 +2684,7 @@ def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch):
     # 줄 전체를 대조한다 — 부분 문자열이면 옛 좌표(개명 전 디렉터리)가 남아도 통과한다.
     assert captured.err.splitlines() == [
         "declared external coordinates do not exist here:",
-        "  targets.node.external_project.working_dir: /opt/kor-travel-odroid",
+        "  targets.node.external_project.working_dir: /opt/kor-travel-host-monitoring",
         "  targets.transport.external_project.working_dir: "
         "/home/digitie/apps/kor-travel-transport",
     ]
