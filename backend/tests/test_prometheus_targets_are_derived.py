@@ -170,15 +170,3 @@ def test_a_metrics_port_needs_a_metrics_path() -> None:
     del config["containers"][name]["metrics_path"]
     with pytest.raises(registry.TargetsConfigError, match="metrics_port"):
         registry._validate_targets_config(config, label="test")
-
-
-def test_the_transport_code_server_is_registered_without_a_scrape_job() -> None:
-    # 대시보드 컨테이너 상태·cAdvisor 메트릭용 등록 — HTTP metrics 엔드포인트가 없어 job은 없다.
-    config = _registry()
-    code_server = config["targets"]["transport"]["dagster"]["external"]["code_server"]
-    registered = [
-        name for name, spec in config["containers"].items()
-        if spec["compose_service"] == code_server and spec.get("external_project") == "kor-travel-transport"
-    ]
-    assert len(registered) == 1 and registered[0] in config["targets"]["transport"]["containers"]
-    assert "metrics_path" not in config["containers"][registered[0]]

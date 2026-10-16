@@ -374,16 +374,6 @@ containers:
     # backend와 같이 host network다(next가 호스트 14002에 직접 listen한다).
     expected_ports:
       - "14002:14002"
-  # 공용 plane이 싣는 transport code-server(T-MGR-04r) — 대시보드의 컨테이너 상태·cAdvisor 메트릭이 이 등록에서 나온다.
-  # gRPC는 loopback 전용이고 HTTP metrics 엔드포인트가 없어 scrape job은 없다(`metrics_path` 없음).
-  kor-travel-transport-dagster-code-server:
-    name: kor-travel-transport-dagster-code-server-1
-    compose_service: dagster-code-server
-    external_project: kor-travel-transport
-    role: transport-dagster-code-server
-    display_name: Kor Travel Transport Dagster code-server
-    connection: "내부 전용(gRPC, {host}:14005) — 인증 없음, loopback만 허용"
-    expected_ports: []
 
 targets:
   storage:
@@ -793,14 +783,12 @@ targets:
     services:
       - backend
       - frontend
-      - dagster-code-server
     runtime_services:
       - backend
       - frontend
     containers:
       - kor-travel-transport-backend
       - kor-travel-transport-frontend
-      - kor-travel-transport-dagster-code-server
     # 공용 Dagster 제어 평면(ADR-54). 필드 설명은 geo target에 있다. 형제 프로젝트라 compose가 이 저장소 밖이다 —
     # Manager는 그 모양을 파생할 수 없어 `external`에 적는다(code-server·옛 webserver·daemon·gateway의 compose
     # 서비스 이름, code-server의 `--location-name`과 literal `-p`). 공용 workspace의 항목과 공용 `dagster.yaml`의

@@ -26,6 +26,7 @@ weather는 2026-09-05에 **등록 해제된 적이 있다** — targets와 compo
 from __future__ import annotations
 
 import copy
+import os
 import subprocess
 from typing import Any
 from unittest import mock
@@ -81,7 +82,6 @@ def test_the_transport_target_declares_its_containers_under_the_new_names() -> N
     assert registry_module.get_target("transport")["containers"] == [
         "kor-travel-transport-backend",
         "kor-travel-transport-frontend",
-        "kor-travel-transport-dagster-code-server",  # 2026-10-17 T-MGR-04r
     ]
     declared = {
         container_id: (spec["name"], spec["external_project"], spec["role"])
@@ -98,11 +98,6 @@ def test_the_transport_target_declares_its_containers_under_the_new_names() -> N
             "kor-travel-transport-frontend-1",
             "kor-travel-transport",
             "transport-frontend",
-        ),
-        "kor-travel-transport-dagster-code-server": (
-            "kor-travel-transport-dagster-code-server-1",
-            "kor-travel-transport",
-            "transport-dagster-code-server",
         ),
     }
 
@@ -148,12 +143,10 @@ def test_the_old_airport_identity_resolves_nowhere() -> None:
     # 하한은 **본 것**에 건다 — 순회가 비면 위의 부정 단언은 전부 공허하게 참이다.
     # 2026-10-16 T-MGR-04: odroid 호스트 측 node_exporter stack(`node`)도 외부 프로젝트로 등록됐다.
     assert external_targets == ["node", "transport"]
-    # 2026-10-17 T-MGR-04r: 공용 plane이 싣는 transport code-server도 등록됐다.
     assert external_containers == [
         "kor-travel-node-exporter",
         "kor-travel-transport-backend",
         "kor-travel-transport-frontend",
-        "kor-travel-transport-dagster-code-server",
     ]
 
 
@@ -541,3 +534,33 @@ def test_the_real_config_passes_its_own_validation() -> None:
     finally:
         registry_module.load_targets_config.cache_clear()
     registry_module._validate_targets_config(copy.deepcopy(config), label="<real>")
+
+
+def test_external_target_services_exist_in_its_config_files() -> None:
+    """외부 target의 `services` 이름은 모두 그 target의 `config_files` compose 안에 있다(#512 리뷰 F1).
+
+    `status <target>`은 `docker compose -f <config_files…> ps <services…>`를 부른다 — overlay에만 있는 서비스를 적으면
+    "no such service"로 exit 1이다. compose 파일은 이 저장소 밖(그 target의 working_dir)이라, 파일이 있는 호스트에서만
+    본다(guarded): 없으면 그 target은 건너뛰고, 하나도 보지 못했으면 skip이다.
+    """
+    import yaml
+
+    seen = 0
+    for target_name, spec in registry_module.load_targets_config()["targets"].items():
+        external = spec.get("external_project")
+        if not external:
+            continue
+        files = [
+            os.path.join(str(external["working_dir"]), str(name)) for name in external.get("config_files") or []
+        ]
+        if not files or not all(os.path.isfile(path) for path in files):
+            continue
+        declared: set[str] = set()
+        for path in files:
+            with open(path, encoding="utf-8") as handle:
+                declared |= set((yaml.safe_load(handle) or {}).get("services") or {})
+        missing = sorted(set(spec.get("services") or []) - declared)
+        assert not missing, f"{target_name}: services not in {files}: {missing}"
+        seen += 1
+    if not seen:
+        pytest.skip("no external target's config_files are present on this host")
