@@ -17,6 +17,16 @@
 
 ---
 
+## 2026-10-16 — N-호스트 일반화 설계(T-MGR-NH)
+
+- `docs/multi-host.md` — 리뷰 3회를 거친 최종안이다. 1차 리뷰에서는 범위를 덜고(deferred로 이동) 빠진 가정을 채웠다.
+- 2차 blocker B1 — PG 간선은 소유 합집합이라 실패할 수 없다. PG 소유를 하나로 모으지 않고, "소비 target이 PG를 소유하므로 구성상
+  같은 호스트"로 정직하게 적었다. 그래서 R7 red 주장에서 PG를 뺐다. code-server↔plane은 validate 규칙 하나로 보장한다(공유
+  location 호스트 ⊆ `dagster` 호스트).
+- 2차 blocker B2 — 소유자 없는 서비스: 소유자에 init step의 `run` 서비스를 넣는다. 나머지는 명시 allowlist가 아니면 validate가 거부한다.
+- C1 — Map UI geo URL은 server-side BFF가 읽는다. "버그 아님"을 정정하고 NH-8(`KOR_TRAVEL_GEO_INTERNAL_URL`, R2 geo origin)을
+  더했다. `host:` 생략은 임계값 없이 지금 금지한다(NH-1에서 5개 target에 명시).
+
 ## 2026-10-16 — 재구축의 plane location 기다림 상한 파생(T-MGR-06k)
 
 - `_wait_shared_plane_locations`의 고정 300초를 `dagster-plane converge`와 같은 render healthcheck 파생 상한

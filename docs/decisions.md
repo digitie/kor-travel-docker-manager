@@ -2219,6 +2219,8 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
    모자랄 때 재검토하되 (b)의 보안 비용은 그대로다. (a)의 비용은 UI 둘과 ≈0.7 GiB, 그리고 plane healthcheck가 **모든** location
    SERVING을 요구하므로(빈 workspace는 healthy, `docker-compose.yml:789-794`) 단계적 이전은 **workspace에 location을 하나씩 더하는**
    방식으로만 가능하다 → 결정 6 "플립 = 합류".
+   **규칙(2026-10-16, T-MGR-NH): plane은 PG가 있는 호스트에서 돈다** — 둘은 같은 `dagster` target이라 배치가 하나다(나누지 않는다).
+   호스트 집합은 registry에 명시 목록으로 둔다(`docs/multi-host.md` NH-3).
 4. **파생 규칙 R1~R7(값이 아니라 규칙을 고정한다).**
    - **R1** registry `connection:`의 host는 `{host}` 자리표시 — 렌더 호스트 ∈ 컨테이너의 host 집합이면 `127.0.0.1`, 아니면 그
      집합의 (단일) addr. `all` 컨테이너(PG·RustFS·cAdvisor)는 항상 `127.0.0.1`. 설명 문자열 항목(S3)은 대상이 아니다.
@@ -2365,6 +2367,9 @@ cutover는 root 환경을 별도 파싱하지 않고 기존 frozen/resolved moun
     {mountpoint="/mnt/media"} < 100 GiB`·`{mountpoint="/"} < 10 GiB`, 시계 rule `node_timex_sync_status == 0 ∨ |node_time_seconds −
     timestamp| > 5`(federate 샘플이 odroid 타임스탬프를 달고 와 out-of-bounds로 조용히 버려지는 경우를 먼저 설명한다).
     Alertmanager는 두지 않는다.
+    **NOTE(2026-10-16, T-MGR-NH):** 위 rule·federate job은 아직 `config/prometheus/`에 없다(파생된 것은 scrape 타깃뿐). 결정 10의
+    offbox 방향과 이 결정의 "중앙 = n150"은 **오늘은 관례에 따른 역할**이다 — registry 필드가 없고, N-호스트 일반화에서도
+    deferred다(`docs/multi-host.md` §5).
 12. **Manager 범용성 원칙(소유자 반복 지시).** 호스트 이름·주소·odroid 특유의 값을 코드에 리터럴로 박지 않는다 — 주소는 registry
     `hosts:` 한 곳, 자기 식별은 `KTDM_HOST` 하나, 호스트 차이는 root `.env`의 env 파생(기본값 = n150 값)과 rendered 모델 파생,
     검증은 효과 기반 런타임 검사(IPv4 집합·`findmnt` 장치·이미지 arch·`docker compose config` 렌더 성공·컨테이너명 조회)로 한다.
