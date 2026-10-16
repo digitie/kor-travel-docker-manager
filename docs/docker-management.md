@@ -1989,3 +1989,8 @@ Map 원장 `T-VN-H49-{GEO-DAGSTER,CONCIERGE,PINVI}`의 마지막 해제 조건�
 즉 "주기 백업이 최근 성공과 bounded retention으로 수렴한다"는 전제는 **수렴할 대상이
 돌지 않는 상태**다. 이 축은 Map `T-VN-H49-OFFBOX`가 소유한다(목적지 호스트·계정·ssh
 키가 운영자 몫이고, 그 뒤 env 4개와 root crontab 한 줄이다).
+
+
+## 상태 점검 간격 정합
+
+서비스별 승인 간격과 적용 경계는 [배포 상태 점검 간격 정합](health-cadence.md)을 따른다. 기존 Test와 readiness 계약은 유지하며, Compose 파일 저장만으로 실행 중인 healthcheck가 바뀌었다고 판단하지 않는다.

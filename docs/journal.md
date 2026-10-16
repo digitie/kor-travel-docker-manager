@@ -17,6 +17,13 @@
 
 ---
 
+## 2026-10-17 — 상태 점검 간격 정본 정합(T-MGR-HC-CADENCE, PR505)
+
+- 기존8개 서비스의 healthcheck.interval만 승인값으로 조정했다. Geo30/90/30초, Weather90/90초, 공용 webserver90초, PG/RustFS30초다. 이미90초인 운영 Weather를270초로 늘리지 않는다.
+- 신규9회귀는 기존 source에서8FAIL/1PASS, 수정 후 기존 health·공용 PG·서비스 참조와 함께134PASS였다. Compose 전체 구조 대조는8개 interval 외 모든 필드 동일/서비스추가0이다. 전체 Ruff와 frontend35/type-check/lint/build도 통과했다.
+- 첫 CI의2986PASS/38SKIP/5FAIL은 보존했다. CS1100초 기동 창과 wait900초 충돌은 frozen health에서 outer wait를 파생해 해결하고 원 guard를 유지했다. 현재 최대1155초/기존 floor900·상한3600이며 stop 이전 검증과 호출 연결을 포함한249회귀/Ruff가 통과했다. plane의3개465초 고정 기대도 실제 render635초로 정산했다.
+- 실제 Docker/SSH/PG 호출과 운영 변경은0이다. 별도 전개·실행Config 확인 및 CPU 전후 측정 전에는 적용/개선 완료로 표시하지 않는다. 상세는 [간격 정합](health-cadence.md)을 따른다.
+
 ## 2026-10-16 — N-호스트 일반화 설계(T-MGR-NH)
 
 - `docs/multi-host.md` — 리뷰 3회를 거친 최종안이다. 1차 리뷰에서는 범위를 덜고(deferred로 이동) 빠진 가정을 채웠다.

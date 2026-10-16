@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -2028,7 +2029,7 @@ def _validate_c6c_wait_timeout(wait_timeout: int) -> None:
 # 112초, `ktm-application-schema head`가 74초 걸렸다 — 60초였을 때 t57a가 명령은
 # 정상인데 타임아웃으로 죽었다.
 _PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 600
-#: compose `--wait-timeout` 초. **정수**로 둔다 — head는 revision 문자열이라
+#: compose `--wait-timeout`의 기존 하한 초. frozen health 창이 길면 helper에서 파생한다. **정수**로 둔다 — head는 revision 문자열이라
 #: 형이 다르고, 이 파일에 따옴표 두른 숫자가 남지 않아 head 리터럴 게이트가
 #: 파일 단위 면제 없이 이 파일을 전부 볼 수 있다. 면제는 그 자체로 사각지대였다.
 #:
@@ -2092,6 +2093,50 @@ def _duration_seconds(value: object, *, default: float) -> float:
     if not parts or "".join(number + unit for number, unit in parts) != value:
         return default
     return sum(float(number) * _DURATION_UNIT_SECONDS[unit] for number, unit in parts)
+
+
+def _compose_wait_timeout_seconds(services: Mapping[str, Any]) -> int:
+    """frozen health 기동 창보다 먼저 outer wait가 끝나지 않도록 파생한다.
+
+    기존900초는 하한이다. 기존 허용 최대3600초를 넘는 선언은 runtime 변경 전에
+    거절하며 Test·health timeout·retries·start_period 자체를 바꾸지 않는다.
+    """
+    if not isinstance(services, Mapping) or not services:
+        raise DeploymentContractError("compose health wait requires frozen services")
+    longest = float(_COMPOSE_WAIT_TIMEOUT_SECONDS)
+    for service in services.values():
+        if not isinstance(service, Mapping):
+            raise DeploymentContractError("compose health wait service is invalid")
+        check = service.get("healthcheck")
+        if check is None:
+            continue
+        if not isinstance(check, Mapping):
+            raise DeploymentContractError("compose health wait declaration is invalid")
+        if check.get("disable") is True or check.get("test") == ["NONE"]:
+            continue
+
+        def seconds(key: str, default: float, check: Mapping[str, Any] = check) -> float:
+            value = _duration_seconds(check.get(key), default=default if key not in check else math.nan)
+            if not math.isfinite(value) or value < 0:
+                raise DeploymentContractError("compose health wait duration is invalid")
+            # Docker의0 interval/timeout은 기본값을 사용한다.
+            return default if key in {"interval", "timeout"} and value == 0 else value
+
+        retries = check.get("retries", 3)
+        if type(retries) is not int or retries < 0:
+            raise DeploymentContractError("compose health wait retries is invalid")
+        retries = retries or 3
+        bound = (
+            seconds("start_period", 0.0)
+            + (seconds("interval", 30.0) + seconds("timeout", 30.0)) * retries
+            + _SHARED_PLANE_HEALTH_WAIT_SLACK_SECONDS
+        )
+        if not math.isfinite(bound) or bound > _MAX_C6C_WAIT_TIMEOUT_SECONDS:
+            raise DeploymentContractError("compose health start window exceeds maximum wait")
+        longest = max(longest, bound)
+    return math.ceil(longest)
+
+
 _SHARED_PLANE_WORKSPACE_QUERY: Final = (
     "{ workspaceOrError { __typename ... on Workspace { locationEntries { name "
     "locationOrLoadError { __typename } } } } }"
@@ -4883,6 +4928,8 @@ class ComposeService:
                     environment_override=runtime_environment,
                     environment_snapshot=environment_snapshot,
                 )
+                # 잘못되거나 상한을 넘는 health 창은 in_progress/실패 정리 stop 이전에 거절한다.
+                _compose_wait_timeout_seconds(runtime_transaction.resolved.get("services"))
                 companions = generation_companion_services(
                     runtime_transaction.resolved,
                     candidate.image_ids,
@@ -5111,6 +5158,7 @@ class ComposeService:
         이미 맞으면 멱등이다.
         """
 
+        wait_timeout = _compose_wait_timeout_seconds(runtime_transaction.resolved.get("services"))
         ensure_map_databases_isolated(runtimes[0], login=map_login)
         self._run_pinned_runtime_rebuild_compose(
             [
@@ -5119,7 +5167,7 @@ class ComposeService:
                 "--no-deps",
                 "--wait",
                 "--wait-timeout",
-                str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+                str(wait_timeout),
                 *_with_generation_companions(RUNTIME_SLOTS, companions, topology),
             ],
             transaction=runtime_transaction,
@@ -5681,6 +5729,8 @@ class ComposeService:
     ) -> DeployStatus:
         """``in_progress`` 이후의 전체 경로. 모든 단계는 다시 돌려도 안전하다."""
 
+        wait_timeout = _compose_wait_timeout_seconds(runtime_transaction.resolved.get("services"))
+
         def compose_up(*services: str) -> None:
             self._run_pinned_runtime_rebuild_compose(
                 [
@@ -5689,7 +5739,7 @@ class ComposeService:
                     "--no-deps",
                     "--wait",
                     "--wait-timeout",
-                    str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+                    str(wait_timeout),
                     *services,
                 ],
                 transaction=runtime_transaction,
