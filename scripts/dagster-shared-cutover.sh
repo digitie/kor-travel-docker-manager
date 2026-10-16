@@ -264,7 +264,6 @@ if any(len(s) != 1 for s in sources) or sources[0] != sources[1]:
     sys.exit("shared plane services mount different workspaces")
 workspace = Path(next(iter(sources[0])))
 if not workspace.is_absolute(): workspace = Path(targets_path).parent.parent / workspace
-default = next((n for n, h in targets.get("hosts", {}).items() if h.get("default")), None)
 if not (workspace.name.startswith("workspace.") and workspace.name.endswith(".yaml")) or workspace.name == "workspace.yaml":
     sys.exit("shared workspace must be config/dagster-shared/workspace.<host>.yaml")
 selected = workspace.name[len("workspace."):-len(".yaml")]
