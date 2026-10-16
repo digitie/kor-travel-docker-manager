@@ -440,7 +440,8 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
           — smoke(PinVi `/admin/etl/summary`, Map `/v1/ops/pipeline/*`)가 공용 webserver에 자기 location을 묻기
           때문이다. plane이 실을 workspace의 location마다 그 target의 plane 밖 daemon이 돌면 거부하고, 떠 있는
           plane이 frozen render와 같은 이미지·env·command로 돌면 다시 만들지 않으며(`up -d --no-deps`는 그때만), 그 target의
-          location이 `RepositoryLocation`이고 daemon이 도는지만 300초 안에서 본다(다른 테넌트의 상태는 보지 않는다).
+          location이 `RepositoryLocation`이고 daemon이 도는지만 본다(다른 테넌트의 상태는 보지 않는다). 상한은 `dagster-plane converge`와
+          같은 render healthcheck 파생값이다(2026-10-16 T-MGR-06k — 옛 고정 300초).
           `own`인 target의 location을 plane이 아직 싣고 있으면 무엇을 멈추기 전에 거부한다 — 되돌리기는 이 창
           스크립트로 한다. 모두 `own`이면 plane을 건드리지 않는다. 순서: 설치 → 펜스(옛 daemon, 이어 webserver) → 옛 instance의 진행 중
           run 취소 → pinned 재구축(그 안에서 plane 재생성) → 검증(창 스크립트는 plane이 펜스 뒤 새로 만들어졌고

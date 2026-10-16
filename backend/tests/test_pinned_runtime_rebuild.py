@@ -4013,11 +4013,26 @@ def test_the_plane_that_never_loads_this_location_fails_closed(
         **harness.live["plane_loaded"],
         location: "RepositoryLocationLoadFailure",
     }
+    # 상한은 render healthcheck 파생(T-MGR-06k) — 기다림이 그 값을 쓰는지 본다(고정 300초가 아니다).
+    derived: list[float] = []
+    real_bound = compose_service_module.ComposeService._shared_plane_health_wait_seconds
 
-    with pytest.raises(DeploymentContractError, match="did not load the shared pinned locations"):
+    def recording_bound(plane: Any, services: Any) -> float:
+        derived.append(real_bound(plane, services))
+        return derived[-1]
+
+    monkeypatch.setattr(
+        compose_service_module.ComposeService, "_shared_plane_health_wait_seconds", staticmethod(recording_bound)
+    )
+
+    with pytest.raises(DeploymentContractError, match="did not load the shared pinned locations") as raised:
         harness.service.rebuild_pinned_runtime()
 
-    assert clock.now >= compose_service_module._SHARED_PLANE_PROBE_TIMEOUT_SECONDS
+    assert derived, "location 기다림이 파생 상한을 묻지 않았다"
+    bound = derived[-1]
+    assert bound != 300.0
+    assert f"within {int(bound)} s" in str(raised.value)
+    assert bound <= clock.now < bound + compose_service_module._SHARED_PLANE_PROBE_INTERVAL_SECONDS + 1
     harness.mocks.smoke.assert_not_called()
 
 
