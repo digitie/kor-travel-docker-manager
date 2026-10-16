@@ -16,6 +16,18 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-10-16 — ADR-58 registry 호스트 차원·변경 경계(T-MGR-01a·01a-F·01b·06j)
+
+- [x] **T-MGR-01a — registry 호스트 차원**: `hosts:`·target `host:`·R1 연결 주소·R3 자기 식별·호스트별 `all` 필터·
+  `targets validate --json`(#477), root `.env`의 `KTDM_HOST` 읽기(#482). n150 설치.
+- [x] **T-MGR-01a-F — #477 리뷰 잔여**(#483, `33ec707`): 설치기 flip 전 host-identity 검사, "로컬 선언 호스트 정확히 하나"
+  자기 식별(불일치 시 주소 캐시 비우고 한 번 재probe), `sorted(owners)[0]` 제거, 주소 조회 프로세스당 1회, 세 번째 가상 호스트
+  fixture, 호스트 리터럴 검사·허용 목록. n150 설치.
+- [x] **T-MGR-01b — R4 명령 host 규칙 + R7 교차 호스트 간선**(#481): 직접 소유권 변경 경계(`require_local_targets`·
+  `require_local_container`·host-local 폐포 `local_mutation_target`), 원격 HTTP 관측(`remote_status.py`), compose
+  `map-api → geo-api` 제거. (#484는 같은 범위의 대안이라 닫음.)
+- [x] **T-MGR-06j — 공용 Dagster plane 수렴 명령의 n150 적용**: `ktdctl dagster-plane converge`(#478) 머지·n150 적용.
+
 ## 2026-10-14 — 공용 Dagster 최신 tick 조회와 연결 대기 복구
 
 - [x] timestamp DESC 인덱스를 storage bootstrap에 추가하고 동일 정의 invalid index 재진입 복구, 연결/lock/SQL 시간 제한, 이름 충돌·오류 fail-closed를 구현했다. [계약](dagster-tick-index.md).
