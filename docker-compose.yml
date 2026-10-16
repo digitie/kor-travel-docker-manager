@@ -338,7 +338,7 @@ services:
       - ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
       - -t
       - "3"
-      interval: 10s
+      interval: 30s
       timeout: 10s
       retries: 20
 
@@ -976,7 +976,7 @@ services:
         sys.exit('code-server dagster above the host version ceiling: %s' % over if over else 0)
       - ${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
       - /opt/dagster/dagster_home/workspace.yaml
-      interval: 30s
+      interval: 90s
       timeout: 10s
       retries: 5
       start_period: 120s
@@ -1099,7 +1099,7 @@ services:
       - CMD-SHELL
       - curl -fsS http://localhost:${RUSTFS_API_CONTAINER_PORT:-12101}/health/live
         || exit 1
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 5
   rustfs-init:
@@ -1192,7 +1192,7 @@ services:
       - CMD-SHELL
       - >-
         python -c "import urllib.request; urllib.request.urlopen('http://localhost:${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}/v1/healthz', timeout=5).read()"
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 12
       start_period: 30s
@@ -1232,7 +1232,7 @@ services:
       - -e
       - >-
         const http=require('node:http');const req=http.get('http://127.0.0.1:'+(process.env.PORT||'12505')+'/login',res=>{const ok=res.statusCode>=200&&res.statusCode<300;res.destroy();process.exit(ok?0:1)});req.on('error',()=>process.exit(1));setTimeout(()=>{req.destroy();process.exit(1)},4000).unref();
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 12
       start_period: 30s
@@ -2554,7 +2554,7 @@ services:
       - -c
       - *dagster-code-server-probe
       - '12503'
-      interval: 30s
+      interval: 90s
       timeout: 10s
       retries: 5
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
@@ -2832,7 +2832,7 @@ services:
     - ${KOR_TRAVEL_WEATHER_API_PORT:-14101}:${KOR_TRAVEL_WEATHER_API_PORT:-14101}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:14101/health', timeout=3)"]
-      interval: 10s
+      interval: 90s
       timeout: 5s
       retries: 12
 
@@ -2972,7 +2972,7 @@ services:
       - -c
       - *dagster-code-server-probe
       - '14106'
-      interval: 30s
+      interval: 90s
       timeout: 10s
       retries: 5
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.

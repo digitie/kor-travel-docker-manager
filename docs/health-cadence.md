@@ -21,6 +21,6 @@ Geo580의 운영 override CS 이름과 Manager 서비스 키가 다를 수 있�
 
 ## 검증과 적용 상태
 
-초안 단계다. 목표 간격의 회귀와 전체 Compose 구조 대조, 기존 상태 점검·공용 PG·서비스 참조 검증을 진행한다. 실제 Docker/SSH/PG 호출은 하지 않는다.
+신규9회귀는 기존 source에서8FAIL/1PASS였고, 수정 후 기존 상태 점검·공용 PG·서비스 참조와 함께134PASS였다. 전체 Compose 구조 대조에서8개 interval 외 모든 필드가 같고 새 서비스는0개다. 전체 Ruff와 frontend35/type-check/lint/build를 통과했다. 실제 Docker/SSH/PG 호출은0이다. 최종 CI·독립 리뷰와 운영 적용/효과는 별도로 확인한다.
 
 소스 머지나 Compose 파일 저장만으로 실행 중인 컨테이너에 적용됐다고 기록하지 않는다. 운영자는 별도 전개 절차로 필요한 대상만 적용하고 API/UI/DB 상태를 보존한다. 동일 구성의 전후 CPU 표본과 실제 점검 횟수·duration·오류 수를 비교하기 전에는 CPU 개선을 확정하지 않는다.
