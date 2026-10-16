@@ -34,3 +34,8 @@ compose_service._compose_wait_timeout_seconds는 frozen transaction의 서비스
 현재 정본의 최대는 Weather API1140 + 15 = 1155초이고 CS는1100 + 15 = 1115초다. 두 rebuild up 호출은 live checkout 대신 같은 frozen render의 파생값을 전달한다. shared plane의 기존900초 clamp는 유지하고 현재 webserver 파생635초를 그대로 사용한다. HC Test/timeout/retries/start_period는 여전히 그대로다.
 
 보강 뒤 관련 재구축·plane249회귀와 전체 Ruff가 통과했다. 실제 기동 시간이나 CPU 개선을 실행한 결과는 아니다.
+
+## 공용 daemon 후속
+
+PR511의 공용 daemon interval360/start_interval45와 빌드 bytecode 준비는
+[별도 후속 범위](daemon-health-cadence.md)로 정산한다. 위 기존8개 interval 정책은 유지한다.

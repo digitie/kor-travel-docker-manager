@@ -17,6 +17,12 @@
 
 ---
 
+## 2026-10-17 — 공용 daemon 점검·빌드 cache 후속(PR511)
+
+- 공용 daemon만 interval120→360/start_interval15→45로 늘리고 원 Test·timeout60/retries2/start90·heartbeat tolerance300을 보존했다. shared-plane 대기945초가 기존900초에 잘리지 않게 기존3600초 허용 상한을 재사용한다.
+- Common37 c485 dependency-free helper 원문을 SPDX·SHA 회귀와 함께 build context에 추가했다. 고정 pip --compile + stdlib checked-hash O0 workers1 빌드 준비이며 runtime Common 의존성·queue 업무 설정은 변경하지 않는다.
+- 초기2RED 및 focused387PASS/최종 bytecode-context25PASS/Ruff/frontend type·lint·35tests·build를 확인했다. backend 전체 pytest는 로컬 Docker 통합 fixture 진입 후 own pytest SIGINT/EXIT1로 중단해 전체 PASS가 아니다. 제품 source5fd205e 고정 후 독립2리뷰·CI·native 운영 검증은 별도다. [범위·위험](daemon-health-cadence.md).
+
 ## 2026-10-17 — 활성 원장 정리(T-MGR·T-MGR-NH 완료분)
 
 - `docs/tasks.md`에 남아 있던 완료 항목 35건을 `docs/tasks-done.md`로 문구 그대로 옮겼다(새 절 "2026-10-17 — 활성 원장 정리"). 내역은
