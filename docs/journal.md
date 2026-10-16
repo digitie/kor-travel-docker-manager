@@ -17,6 +17,20 @@
 
 ---
 
+## 2026-10-17 — cAdvisor 관측 비용 설정 source 지속화(PR515)
+
+- 최신main872c326의 새 featureWT에서 설계초안부터 PR을 만들었다.
+  기존log/docker_only/port를 보존하고 housekeeping30s 및 정확disable_metrics
+  인자만 추가했다. CPU우선30초유지·docker_only를rootaggregate0으로
+  단정하지 않는 범위를 주석과 문서에 남겼다.
+- old2RED 보존→관련25PASS/291deselect5.83초·Ruff·diff검사 PASS.
+  전체모델은 두arg이외동일, 원문도 기존줄변경0이며 개별HC·자원·이미지와
+  모든다른서비스는 보존했다. 자체음성4조건은 제품test수와 구분했다.
+- 실제runtime은 root가이미같은값임을 확인했으므로 source지속화로
+  재시작/새이미지없이 정합을 맞춘다. agent의 SDK/DB/Docker/운영호출0.
+  두독립리뷰/CI/머지·root별도CPU측정은 후속이며 개선효과미확정이다.
+
+
 ## 2026-10-17 — 공용 daemon 점검·빌드 cache 후속(PR511)
 
 - 공용 daemon만 interval120→360/start_interval15→45로 늘리고 원 Test·timeout60/retries2/start90·heartbeat tolerance300을 보존했다. shared-plane 대기945초가 기존900초에 잘리지 않게 기존3600초 허용 상한을 재사용한다.
