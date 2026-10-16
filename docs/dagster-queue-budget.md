@@ -47,3 +47,12 @@ Docker·DB fixture와 운영 접근은 이 source 작업에서 실행하지 않�
 - 전체 backend suite·frontend·실제 SDK/DB/Docker·운영 실행은 이 작업에서
   재실행하지 않았다. frontend tree는 기준 main과 같고 CI 결과는 별도로
   확인한다. 운영 CPU·backlog·공정성 효과는 아직 미검증이다.
+
+## 기존 instance snapshot 회귀 정산
+
+최초 최종6f419f7 CI는 1FAIL/3049PASS/39SKIP이었다. 유일 실패는 NH-4의
+`test_instance_bytes_unchanged`가 이전 정책 원문 SHA7925…를 고정했던 것이다.
+이번 두 scalar 변경 뒤 원문 SHA3441…로 snapshot을 갱신하고 검사 이름·설명을
+현재 범위에 맞췄다. 원문 전체 SHA 검증은 그대로 유지한다. 제품 config·Compose는
+6f419f7과 byte 동일하다. 관련 host/workspace/digest/config 59개 테스트와 Ruff가
+통과했으며 이전 CI 실패는 보존한다. 새 전체 CI 결과는 별도 판정한다.

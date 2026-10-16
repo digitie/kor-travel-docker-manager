@@ -17,6 +17,15 @@
 
 ---
 
+## 2026-10-17 — PR514 instance snapshot 회귀 정산
+
+- 최초6f419f7 CI1FAIL/3049PASS/39SKIP의 유일 원인은 NH-4 당시 원문
+  SHA7925… snapshot이었다. 승인 범위 두scalar의 변경 뒤 새 SHA3441…로
+  기대값·검사명/설명을 정정하고 전체bytes 검증은 유지했다.
+- 제품 config·Compose는 불변, 관련59PASS/13.04초와 Ruff·diff검사 PASS.
+  원CI실패는 보존하고 새전체CI는 별도추적한다. 실제 SDK/DB/Docker/운영0.
+
+
 ## 2026-10-17 — 공용 Dagster dispatch 한도·큐 확인 주기 초안(PR514)
 
 - 최신 기준 main `872c326`에서 별도 worktree를 만들어 설계 초안 후
