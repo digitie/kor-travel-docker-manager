@@ -17,6 +17,14 @@
 
 ---
 
+## 2026-10-17 — 활성 원장 정리(T-MGR·T-MGR-NH 완료분)
+
+- `docs/tasks.md`에 남아 있던 완료 항목 35건을 `docs/tasks-done.md`로 문구 그대로 옮겼다(새 절 "2026-10-17 — 활성 원장 정리"). 내역은
+  다음과 같다.
+  - T-MGR-01c·02·03·04·05·06k·06i·NH: 첫 줄 `[x]`와 머지 PR을 덧붙였다.
+  - 옛 GM-17 등 `[x]` 27건.
+- 남은 일은 활성 원장에 잔여 한 줄로 남겼다: T-MGR-02r(`dagster.yaml` 상한), T-MGR-04r(Prometheus 잔여 job), T-MGR-NH 잔여(NH-6·NH-7).
+
 ## 2026-10-17 — 상태 점검 간격 정본 정합(T-MGR-HC-CADENCE, PR505)
 
 - 기존8개 서비스의 healthcheck.interval만 승인값으로 조정했다. Geo30/90/30초, Weather90/90초, 공용 webserver90초, PG/RustFS30초다. 이미90초인 운영 Weather를270초로 늘리지 않는다.
