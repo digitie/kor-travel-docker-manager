@@ -4013,11 +4013,43 @@ def test_the_plane_that_never_loads_this_location_fails_closed(
         **harness.live["plane_loaded"],
         location: "RepositoryLocationLoadFailure",
     }
+    # 상한은 render healthcheck 파생(T-MGR-06k) — 기다림이 그 값을 쓰는지 본다(고정 300초가 아니다).
+    derived: list[float] = []
+    real_bound = compose_service_module.ComposeService._shared_plane_health_wait_seconds
 
-    with pytest.raises(DeploymentContractError, match="did not load the shared pinned locations"):
+    def recording_bound(plane: Any, services: Any) -> float:
+        derived.append(real_bound(plane, services))
+        return derived[-1]
+
+    monkeypatch.setattr(
+        compose_service_module.ComposeService, "_shared_plane_health_wait_seconds", staticmethod(recording_bound)
+    )
+
+    with pytest.raises(DeploymentContractError, match="did not load the shared pinned locations") as raised:
         harness.service.rebuild_pinned_runtime()
 
-    assert clock.now >= compose_service_module._SHARED_PLANE_PROBE_TIMEOUT_SECONDS
+    assert derived, "location 기다림이 파생 상한을 묻지 않았다"
+    bound = derived[-1]
+    # fixture의 frozen render는 정본 compose의 plane healthcheck 그대로다 — 기대값을 거기서 직접 계산한다:
+    # 서비스마다 start_period + (interval + timeout) × retries + 여유, 가장 긴 것(오늘 daemon 90 + 180 × 2 + 15 = 465).
+    document = yaml.safe_load((Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text(encoding="utf-8"))
+    canonical = document["services"]
+
+    def seconds(value: str) -> float:
+        assert value.endswith("s"), value
+        return float(value[:-1])
+
+    expected = max(
+        seconds(check["start_period"])
+        + (seconds(check["interval"]) + seconds(check["timeout"])) * check["retries"]
+        + compose_service_module._SHARED_PLANE_HEALTH_WAIT_SLACK_SECONDS
+        for check in (
+            canonical[name]["healthcheck"] for name in runtime_topology_module.derive_shared_dagster_plane(document).services
+        )
+    )
+    assert bound == expected == 465.0
+    assert f"within {int(bound)} s" in str(raised.value)
+    assert bound <= clock.now < bound + compose_service_module._SHARED_PLANE_PROBE_INTERVAL_SECONDS + 1
     harness.mocks.smoke.assert_not_called()
 
 

@@ -17,6 +17,11 @@
 
 ---
 
+## 2026-10-16 — 재구축의 plane location 기다림 상한 파생(T-MGR-06k)
+
+- `_wait_shared_plane_locations`의 고정 300초를 `dagster-plane converge`와 같은 render healthcheck 파생 상한
+  (`_shared_plane_health_wait_seconds`)으로 바꿨다. 오늘 render에서 daemon은 465초다. healthcheck를 늘리면 기다림도 따라 늘어난다.
+
 ## 2026-10-16 — journal 분리(T-MGR-07)
 
 - `docs/journal.md`(820,205 B)의 옛 항목 332건을 `journal-archive-01~04.md`(각 ≤ 200 KB)로 byte 그대로 옮겼다. 본문에는 최근 54건이 남는다.

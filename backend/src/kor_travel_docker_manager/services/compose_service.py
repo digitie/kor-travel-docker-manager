@@ -2035,10 +2035,10 @@ _PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 600
 #: ADR-069 뒤 Map은 code-server → webserver → daemon이 `service_healthy`로 **직렬**
 #: 기동한다. 위 실측대로 컨테이너 하나가 뜨는 데만 1~2분이 걸리므로 300초는 부족하다.
 _COMPOSE_WAIT_TIMEOUT_SECONDS: Final = 900
-#: 공용 plane이 **이 재구축의** location을 싣기까지 기다리는 상한과 간격(ADR-54 개정, 적대 리뷰 H1). 다른 테넌트의
-#: location·code-server 상태는 보지 않는다 — plane의 healthcheck(`--wait`)는 그것까지 봐서 Map 배포를 geo·weather에
-#: 묶었다.
-_SHARED_PLANE_PROBE_TIMEOUT_SECONDS: Final = 300.0
+#: 공용 plane이 **이 재구축의** location을 싣기까지 기다리는 간격(ADR-54 개정, 적대 리뷰 H1). 상한은 고정값이 아니라
+#: `dagster-plane converge`와 같은 render healthcheck 파생(`_shared_plane_health_wait_seconds`, T-MGR-06k)이다. 다른
+#: 테넌트의 location·code-server 상태는 보지 않는다 — plane의 healthcheck(`--wait`)는 그것까지 봐서 Map 배포를
+#: geo·weather에 묶었다.
 _SHARED_PLANE_PROBE_INTERVAL_SECONDS: Final = 5.0
 #: `dagster-plane converge`의 health 기다림 하한 — render healthcheck에서 파생한 값이 이보다 짧아도 이만큼은 본다.
 _SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS: Final = 60.0
@@ -5151,7 +5151,8 @@ class ComposeService:
           hash가 달라 무조건 `up`은 매 재구축 plane을 다시 만든다(`_shared_plane_current`).
         - **이 target의 location만 기다린다.** `up -d --no-deps`(`--wait` 없음) 뒤 webserver의 `workspaceOrError`에서
           합류한 carrier의 location이 `RepositoryLocation`이고 daemon 컨테이너가 도는지 본다. 다른 테넌트의
-          code-server가 내려가 있어도 이 배포를 막지 않는다. 상한(300초) 안에 안 되면 거부한다(fail-closed).
+          code-server가 내려가 있어도 이 배포를 막지 않는다. 상한(plane render healthcheck 파생 —
+          `_shared_plane_health_wait_seconds`) 안에 안 되면 거부한다(fail-closed).
 
         모두 `own`이면 아무것도 하지 않는다.
         """
@@ -5601,7 +5602,9 @@ class ComposeService:
     ) -> None:
         host, port = listen_address(services[plane.webserver])
         daemon_container = installed_container_name(plane.daemon)
-        deadline = time.monotonic() + _SHARED_PLANE_PROBE_TIMEOUT_SECONDS
+        # 상한은 plane의 render healthcheck에서 파생한다(converge와 같은 규칙) — healthcheck를 늘리면 이 기다림도 따라간다.
+        bound = self._shared_plane_health_wait_seconds(plane, services)
+        deadline = time.monotonic() + bound
         while True:
             loaded = self._query_shared_plane_locations(host, port)
             # 도는가·재시작 중이 아닌가만 본다(L3). daemon의 health는 workspace의 code-server **전부**가 SERVING인지 보므로
@@ -5620,7 +5623,7 @@ class ComposeService:
                 state = {location: (loaded or {}).get(location) for location in wanted}
                 raise DeploymentContractError(
                     "the shared Dagster plane did not load the shared pinned locations within "
-                    f"{int(_SHARED_PLANE_PROBE_TIMEOUT_SECONDS)} s: {state}, daemon running "
+                    f"{int(bound)} s: {state}, daemon running "
                     f"{daemon_running}"
                 )
             time.sleep(_SHARED_PLANE_PROBE_INTERVAL_SECONDS)
