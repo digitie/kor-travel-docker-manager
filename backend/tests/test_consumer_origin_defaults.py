@@ -69,13 +69,21 @@ def test_scan_ports_come_from_the_registry() -> None:
 
 @pytest.mark.parametrize("sibling", ["geo", "transport", "weather"])
 def test_changing_the_registry_port_is_named(sibling: str) -> None:
-    """빨간 대조군 — registry의 포트를 바꾸면 그 형제의 소비자 전부가 이름으로 빨갛다(포트의 정본이 registry다)."""
+    """빨간 대조군 — registry의 포트를 바꾸면(compose 기본값은 그대로) 그 형제의 소비자가 빨갛다(포트의 정본이 registry다).
+
+    빨강은 둘 중 하나로 온다: 옛 포트가 형제 컨테이너 connection에도 있으면 스캔이 그 소비자를 보고 기본값 불일치로
+    이름을 대고(geo `12501`), 없으면 스캔이 그 소비자를 놓쳐 하한(`_KNOWN_CONSUMERS`)이 깨진다(transport `12301`·weather `12201`).
+    """
 
     compose, targets = _documents()
+    known = {consumer for consumer, env in consumer_origins.scan(compose, targets).items()
+             if env.sibling == sibling and consumer in _KNOWN_CONSUMERS}
+    assert known
     old = targets["targets"][sibling]["consumer_origin"]
     targets["targets"][sibling]["consumer_origin"] = old.rsplit(":", 1)[0] + ":1"
     named = [v for v in consumer_origins.default_violations(compose, targets) if f"`{sibling}`" in v]
-    assert named
+    lost = known - set(consumer_origins.scan(compose, targets))
+    assert named or lost
 
 
 @pytest.mark.parametrize("sibling", ["geo", "transport", "weather"])
