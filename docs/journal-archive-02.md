@@ -1,0 +1,2275 @@
+# JOURNAL 아카이브 02 — 항목 제목 날짜 2026-06-15 ~ 2026-08-05
+
+이 파일은 [`docs/journal.md`](journal.md)의 아카이브다(2026-10-16 분리). 파일 목록은 `journal.md` 상단 "과거 기록 아카이브" 표에 있다. 본문은 이동 당시 byte 그대로이며(원래 파일 순서 — 대체로 최신이 위지만 엄격한 시간순은 아니다) 아무 내용도 고치지 않는다.
+
+---
+
+## 2026-08-05 (T-VN-41-F1E — production 완료)
+
+PR #140을 n150 trusted Manager release로 설치한 뒤 `install-pinned-sources --confirm`은 source authority
+transaction을 `committed`로 끝냈다. 이 실행은 root-owned exact detached worktree와 canonical source selection만
+수렴했으며 Docker·Compose·DB·runtime·image build를 호출하지 않았다.
+
+첫 실행은 JSON success와 `committed` 상태에도 CLI 공통 process-result의 `returncode`가 빠져 shell 종료 코드
+`1`을 냈다. 후속 PR #141은 Compose service 경계에서 성공 결과에 `returncode: 0`을 명시하고 그 회귀를 고정했다.
+trusted release 갱신 후 같은 product command는 `committed`, `resumed: true`, `returncode: 0`으로 재실행됐으므로
+F1E를 완료한다. 다음 작업은 F1D의 one-shot pinned drift bootstrap이다.
+
+---
+
+## 2026-08-05 (T-VN-41-F1E — trusted pinned source-installer 구현·검증)
+
+`ktdctl pinvi-pair install-pinned-sources --confirm`은 trusted installed Manager root와 root EUID를 먼저
+확인한 뒤, C6c global lock과 frozen canonical env snapshot 안에서 source authority만 수렴한다. 이 경로는
+Compose transaction, Docker SDK/CLI, DB, runtime inspect/recreate, image build를 호출하지 않는다.
+
+source-owner helper만 기존 user-owned checkout의 local canonical origin을 읽고, root는 code-owned canonical
+HTTPS URL과 tracked full SHA를 root-owned empty bare staging에만 sanitized fetch한다. 모든 root Git 명령은
+hook, file/ext protocol, credential helper와 global/system config를 차단한다. gitlink/submodule은 worktree 생성
+전과 crash 뒤 기존 worktree 재사용 경로 모두에서 거부한다.
+
+source root·revision scalar 네 key는 strict dotenv parser로 하나의 owner-preserving atomic replace에서 바뀐다.
+private old-env backup과 owner-only journal은 replace 전에 fsync하고, foreign/non-terminal residue는 deploy,
+capture, rollback을 막는다. rollback 완료 journal도 original env SHA가 아니면 pair mutation을 허용하지 않는다.
+
+단일 적대적 코드 리뷰의 P1 두 건(submodule 재진입, root worktree hook)을 반영했다. focused 71 passed,
+backend 전체 1641 passed(기존 deprecation warning 2건), Ruff 및 strict mypy가 통과했다. 다음 단계는 코드 PR
+merge와 n150 trusted release 설치·secret-free production 실행이다.
+
+---
+
+## 2026-08-05 (T-VN-41-F1E — trusted pinned source-installer 설계, issue #138)
+
+F1D candidate가 source authority로 쓸 tracked Map·PinVi commit object는 n150의 current source cache에
+없다. 이 cache는 user-owned `0700` Git worktree이므로 root가 그 Git config·hook·remote를 실행해
+fetch/clone/archive하는 것은 P0다. canonical HTTPS origin 문자열만 맞아도 `include`, URL rewrite,
+custom upload-pack, credential 설정 같은 repository-local 입력을 root가 해석해서는 안 된다.
+
+F1E는 source owner checkout을 read-only origin identity helper input으로만 읽는다. root는 코드에 고정한
+canonical HTTPS `RepoSpec`과 tracked release SHA만 사용해 empty bare staging repo를 만들고, sanitized Git
+environment에서 exact commit 하나만 fetch한다. commit/tree를 다시 검증한 root-owned immutable detached
+worktree가 normal builder의 clean HEAD/`git archive` input이 된다.
+
+source root 두 값뿐 아니라 source-selection revision scalar도 unset-or-pin 조건으로 함께 검증·원자 교체한다.
+private `0600` old-env backup과 secret-free durable journal이 env replace 전 fsync되며, crash resume은 old/new
+SHA만 인정한다. F1E는 Docker·Compose·DB·runtime·image build를 호출하지 않고, 성공 뒤 F1D가 새 frozen
+transaction에서 exact candidate를 build한다.
+
+---
+
+## 2026-08-05 (T-VN-41-F1D — pinned compatible-pair drift bootstrap 설계, issue #136)
+
+F2 fresh v2 diagnostic은 writer stop 전 `writers_fencing`에서 Map API/UI, Map Dagster web/daemon,
+PinVi API가 active compatible-pair manifest와 다른 tuple임을 감지해 fail-close했다. 현재 canonical
+source cache의 clean HEAD도 tracked cache-target production pin과 다르므로, 일반 `pinvi-pair deploy`와
+rollback은 모두 의도대로 거부한다. 이 상태에서 raw Docker·Compose·`.env`로 수렴시키지 않는다.
+
+단일 적대적 설계 리뷰의 P1 세 건을 반영해 일반 deploy 예외 대신 one-shot
+`pinvi-pair bootstrap-pinned-drift --confirm` transaction으로 한정한다. source authority는 tracked
+Map·PinVi release pin뿐이며 current runtime이나 `.env` HEAD를 candidate/rollback source로 채택하지
+않는다. candidate·live Map/PinVi DB head가 동일한 expected head인 경우에만 runtime을 바꾸며, old image static
+head drift는 재기동하지 않는 기존 감사 근거로만 남긴다. candidate 실패 시 old image rollback 대신 다섯
+runtime을 halt한다. 성공 manifest는 active와 rollback을 동일 candidate로 bootstrap한다.
+
+candidate build 뒤 runtime stop 전 owner-only durable journal에 original manifest SHA, frozen env/Compose
+identity, candidate immutable IDs·source revision, DB head와 phase를 기록한다. non-terminal·foreign·손상
+journal은 다른 pair mutation을 막으며 동일 candidate resume만 허용한다. `.env` source checkout의 장기
+갱신은 별도 trusted source-installer transaction으로 분리한다.
+
+---
+
+## 2026-08-05 (T-VN-41-F1C — legacy pre-stop diagnostic journal 퇴역 완료)
+
+F1B trusted release의 default-off bootstrap과 secret-free contract attestation은 n150에서 성공했다. 이어
+새 UUID로 F2 `cache-target diagnose`를 시작하기 직전, Manager는 Docker·DB·runtime mutation 전에 기존
+version `1` diagnostic journal을 발견하고 fail-close했다. secret-free metadata로 이 journal은
+`writers_fencing`(writer stop 전)이고, window journal은 `rolled_back` terminal이며, 현재 attempt log는
+별도 abort-budget 정본임을 확인했다.
+
+수동 state-directory 삭제나 `.env`/Compose 우회 대신, `ktdctl cache-target retire-legacy-diagnostic --confirm`
+이라는 단일 제품 경로를 설계했다. command는 root-only state의 exact v1 pre-stop diagnostic 하나만 receipt를
+남기고 퇴역시킨다. post-drain/terminal/v2/suspicious state는 recovery를 추측하지 않고 계속 fail-close한다.
+attempt log, window, manifest, canonical env, Docker runtime, DB는 변경하지 않아 abort budget과 cutover boundary를
+우회하지 않는다. PR #135에서 strict parser·receipt-first crash resume·directory fsync 재시도와 CLI
+confirmation 회귀를 보강하고 단일 적대적 리뷰를 통과했다. focused 115 passed, backend 전체 1621 passed,
+Ruff와 strict mypy를 통과한 뒤 trusted release를 n150에 설치했다.
+
+`retire-legacy-diagnostic --confirm --json`은 owner-only receipt를 남기고 성공했으며, 같은 command의
+재실행도 같은 receipt를 반환해 idempotence를 확인했다. 이후 새 v2 diagnostic은 stale v1 state가 아니라
+runtime tuple drift에서 writer stop 전에 fail-close했다. 따라서 F1C는 완료이고 F1D의 Manager-only
+drift bootstrap이 다음 작업이다.
+
+---
+
+## 2026-08-05 (T-VN-41-F1B — trusted root canonical env 소유권 결박)
+
+F1A가 merge된 exact trusted Manager release를 n150에 설치하고 bootstrap을 실행했지만, command는
+canonical `.env` 교체 전에 `canonical env file is unsafe`로 fail-close했다. read-only metadata에서
+파일은 regular·single link·`0600`, app root는 root-owned/non-writable였고, 유일한 불일치는 trusted
+installer가 의도대로 보존한 deployment owner UID와 root command의 effective UID였다. 따라서 이 실패는
+raw env/Compose나 runtime mutation으로 넘어가지 않았고 container·DB·pair manifest·cutover journal도
+바꾸지 않았다.
+
+해결은 수동 `chown`이 아니라 frozen C6c transaction snapshot의 owner UID/GID를 canonical env helper에
+explicit expected identity로 전달하는 것이다. replacement는 여전히 root-owned parent, no-follow regular
+file, `0600`, single link, expected SHA/identity 재검증과 atomic replace를 강제하고 UID/GID를 보존한다.
+직접 호출자가 arbitrary owner를 넣는 CLI/config 표면은 추가하지 않는다. F1B를 별도 reviewable PR로
+보강한 뒤에만 F1A bootstrap과 F2 diagnostic을 재개한다.
+
+단일 적대적 리뷰는 bootstrap·일반 enable·window enable 세 경로가 frozen transaction의
+`env_file_identity.uid/gid`만 전달하고 receipt/journal SHA까지 다시 결박함을 확인했다. 임의 owner
+identity는 CLI/config에 노출되지 않으며, expected identity를 생략한 non-root 호출은 기존 current-EUID
+검사를 유지한다. 새 P0/P1/P2는 없었고 backend 전체 suite는 `1605 passed`다. 이후 trusted F1B release를
+n150에 설치해 `cache-target bootstrap --confirm --json`과 4-role default-off secret-free attestation을
+성공적으로 완료했다.
+
+---
+
+## 2026-08-05 (T-VN-41-F1A — default-off cache-target bootstrap)
+
+F1 Manager production 재pin을 설치한 뒤 F2 `cache-target diagnose`를 read-only로 재시도하기 전,
+기존 canonical `.env`에 cache-target 4-role contract와 cache API base가 아예 없음을 확인했다.
+이 상태에서는 diagnose가 base URL equality gate에서 fail-close하며, raw Compose 또는 수동 `.env`
+편집으로 계약을 보충하는 것은 final boundary의 단일 정본 원칙을 깬다.
+
+따라서 `ktdctl cache-target bootstrap --confirm --json`을 설계·구현한다. 이 command는 C6c global
+lock과 frozen env SHA 아래에서 완전 미구성 상태만 받아 네 개의 독립 token·최소 권한 registry·
+`sync=false`·production pin을 한 번에 원자 기록한다. 부분 설정/재실행/환경 override는 write 전
+거부하고, container·DB·pair manifest·cutover journal에는 손대지 않는다. 출력에는 환경과 role binding의
+digest만 포함한다. 이 PR의 적대적 리뷰와 production 설치·secret-free attestation 뒤에만 새
+diagnostic ID로 F2를 재개한다.
+
+적대적 리뷰는 dotenv가 허용하는 `export NAME=...` 및 값 없는 선언을 raw `NAME=` 검사로
+놓쳐 duplicate key를 append할 수 있는 P2를 찾아냈다. token이 있는 구성은 기존 config gate가
+먼저 차단하므로 P1은 아니지만, “하나라도 존재하면 거부” 규칙에는 위배된다. bootstrap은 parser의
+key set(값 없음 포함)으로 partial 선언을 판정하도록 보정하고 direct/export/blank 회귀를 추가했다.
+보정 diff의 재검토에서는 새 P0/P1/P2가 없었고, backend 전체 suite `1604 passed`를 확인했다.
+
+---
+
+## 2026-08-05 (issue #129 — T-VN-41-F1 production pair re-pin 시작)
+
+T-VN-41 production final boundary를 시작하기 전 Manager tracked manifest가 이전
+generation 7 pair를 가리키는 drift를 확인했다. production에 실제 배포된 Map release와 PinVi
+release, PinVi가 독립 검증한 service OpenAPI artifact/functional owner, PinVi PR #428의 review
+candidate를 GitHub merge provenance 및 n150 배포 receipt로 교차 확인했다. Map release는
+`c0afaa4e318a2e2e6d85f53bb889af3e6adec8c1`, functional owner는
+`e12494bd5c4b5b2e1d51c72b6ddcf18eead0e53f`, service OpenAPI SHA-256은
+`144b4335d98fc021368b3297f5b8ed7b1c560e9850ebbdd8af71e45623ba7b3d`다. PinVi
+reviewed candidate `51289cb1651e7771b0ff5c685989a9768d81b870`와 squash release
+`3ff54b8b15965c6ecd5c55b1419208e65831c7fe`는 역할이 다르므로 각각 보존한다.
+
+이 값은 Manager manifest, 전체 pin 회귀, runbook에서 동시에 갱신한다. exact contract와
+active/rollback pair가 모두 일치하지 않으면 기존 fail-close gate가 mutation 전에 중단한다.
+Manager를 production에 배포하고 적대적 리뷰 1건을 통과하기 전에는 F2 diagnose/cutover를
+실행하지 않는다.
+
+---
+
+## 2026-08-04 (issue #107 — map_release_revision re-pin `4a764a4f` → `6b537ed9`)
+
+Map PR #929(머지 SHA `6b537ed99aecb583805f3cde2ce7a9fcf8d14329`, MERGED
+2026-08-03T08:27:48Z)가 GC receipt `row_counts`에 `quarantine_candidates_before`
+preflight 게이트를 추가로 도입했다. 이슈 #107은 현재 pin `4a764a4f`에
+알려진 결함이 없다고 명시했고(선택적/저긴급), 이번 변경은 순수 additive라
+Manager의 기존 검증기와 호환된다는 점도 함께 확인했다: `row_counts`는
+`quarantine_candidates`/`quarantine_collections`/`quarantine_items` 키를
+새로 얻지만 migrate/verify receipt 검증은 key set에 대해 loose하고,
+`_validate_map_gc_receipt`는 GC receipt 전용이라 영향받지 않는다.
+`cache_target_production_manifest.py`의 tracked `map_release_revision`과 당시
+cache-target production cutover 문서의 pin 이력 문단을 갱신했다.
+`service_openapi_sha256`(PinVi 소유, Map release revision과 무관)은
+변경하지 않았다. 백엔드 전체 스위트(1595 passed) 통과 확인.
+
+---
+
+## 2026-08-04 (T-056 완료 — 읽기 전용 백업 이력 API + Web UI 페이지)
+
+fork가 멈춰둔 T-056을 이어받아 적대적 리뷰어 2명을 돌렸다(백엔드 인증/mutation
+경계/응답 내용 담당, 프론트 렌더링/build 담당). 백엔드는 confirmed 실공백
+없음 — 실제 adversarial 요청(`role=../../etc/passwd` 등)으로 직접 확인했고,
+`GET /backups`는 구조적으로 `gc`/create/restore 코드 경로 자체가 없어 이
+저장소의 CLI-전용 mutation 권한 경계를 그대로 유지한다. 프론트 리뷰어가
+실제 버그를 찾았다: `useQuery`에 `retry: false`가 빠져서 400/409 같은
+영구 에러도 TanStack 기본 재시도(~7초)를 다 거친 뒤에야 에러로 표시됐다
+— `DashboardClient`의 `auth-me` 쿼리와 같은 이유로 `retry: false`를
+추가해 고쳤다.
+
+backend 전체 1595 passed, frontend type-check/lint/build 전부 통과. 이로써
+T-053~T-057(백업 생성→목록/GC→복구→내장 통합→읽기 전용 API/UI) 백업/복구
+트랙 전체가 완료됐다. 남은 건 T-058 후보(receipt/journal/manifest 스키마
+통합 재설계, 별도 설계 필요)와 T-049E(map-ui/map-api revision drift로
+중단된 재검증)뿐이다.
+
+---
+
+## 2026-08-04 (T-056 구현 — 읽기 전용 백업 이력 API + Web UI 페이지, 리뷰 대기)
+
+T-053~055가 남긴 standalone DB backup(`ktdctl db-backup create/list/restore`,
+CLI 전용)에 읽기 전용 HTTP 표면을 추가했다. `GET /api/v1/backups`(`?role=`
+옵션)는 `ComposeService.list_standalone_backups(gc=False)`를 그대로 노출하며,
+알 수 없는 role은 400, `DeploymentContractError`는 409로 매핑한다. mutation
+(생성·GC·복구)은 이 API에 두지 않는다 — cache-target/pinvi-pair/map-ui-auth와
+동일하게 CLI 전용 권한 경계를 그대로 유지한다. 프론트엔드는 `AdminSettingsPanel`과
+같은 모달 패턴으로 `BackupHistoryPanel`을 추가해 role 필터·새로고침과 함께
+timestamp/role/schema revision/size/sha256/파일명을 표시한다(트리거 UI 없음).
+
+backend 회귀 테스트 6건 추가(세션 인증 필요, 목록 반환, 빈 목록, role 필터,
+알 수 없는 role 400, contract 실패 409) — 전체 스위트 1595 passed, ruff/mypy
+(신규 코드 범위) 통과. frontend type-check·lint·build(WSL, `next build` 성공,
+`✓ Compiled successfully`) 모두 통과.
+
+fork로 구현했으나 fork는 Agent tool로 subagent를 만들 수 없어(T-054/T-055와
+같은 제약) 적대적 리뷰어 2명·커밋·PR·병합 전 단계에서 멈췄다. 부모 세션이
+리뷰와 이후 단계를 이어받아야 한다.
+
+---
+
+## 2026-08-04 (T-057 완료 + 방향 전환 판단 — 안전한 helper 통합만 반영, 전체 스키마 재설계는 보류)
+
+T-057 진행 중 사용자가 지시를 바꿨다: "호환성, 기존계약 유지보다는 설계적
+우월성·최적화·유지보수성을 중점적으로, 대대적인 코드 변경 및 DB schema
+변경도 고려." fork에게 즉시 전달했다.
+
+fork는 이미 완료한 안전한 부분(`_write_pg_dump`/`create_standalone_database_backup`의
+중복 pg_dump subprocess 로직을 `_stream_pg_dump_custom_format` 공통
+헬퍼로 추출, 테스트 1589건 변경 없이 그대로 통과)은 유지하되, receipt/
+journal/manifest 스키마 전체를 하나로 재설계하는 더 큰 작업은 **스스로
+멈추고 보고**했다 — 이유: 오늘 이미 T-049F에서 journal을 v1→v2로 한 번
+바꿨고 n150에 그 v2 상태가 실제로 남아있는데, 같은 세션에서 또 한 번
+cutover-critical journal 스키마를 바꾸는 건 리스크가 크니 별도 설계
+단계를 먼저 거쳐야 한다는 판단이었다. 이 판단이 타당하다고 보고 사용자에게
+확인한 결과, 동의를 받아 안전한 부분만 반영하고 전체 재설계는 별도 태스크
+(T-058 후보)로 미뤘다.
+
+적대적 리뷰어 2명(behavior-equivalence 담당, 구조적 건전성 담당) 확인 —
+에러 메시지 텍스트·empty-output 검사·OSError 처리·fsync 순서 모두
+리팩터링 전후 byte-for-byte 동일, confirmed 실공백 없음.
+
+T-053→T-054→T-055→T-057(안전 범위) 백업/복구 체인이 완료됐다. 남은 건
+T-056(읽기 전용 API/Web UI), T-058 후보(스키마 통합 재설계, 별도 설계
+필요), T-049E(map-ui/map-api revision drift로 중단된 재검증)다.
+
+`_write_pg_dump`(cutover, idempotent 재사용)와 `create_standalone_database_backup`
+(T-053, `O_CREAT|O_EXCL` 원자 선점)이 각자 인라인으로 들고 있던 동일한
+`pg_dump --format=custom` subprocess 호출을 `_stream_pg_dump_custom_format`
+공유 헬퍼로 뽑아냈다. 파일 생성 전략은 두 함수의 계약이 근본적으로 달라(하나는
+재사용 허용, 하나는 재사용 거부) 통합하지 않고 각자 소유하게 두었다 — 실제
+pg_dump 실행 부분만 공유한다. 에러 메시지 텍스트는 호출자가 그대로 넘겨
+바뀌지 않았음을 확인(패턴매치하는 테스트 없음도 grep으로 확인). 범위는
+체크리스트가 명시한 create/verify만 — restore 쪽(T-055)은 건드리지 않았다.
+
+fork로 구현했으나 T-054/T-055와 같은 제약(fork는 Agent tool로 subagent를
+만들 수 없음)으로 리뷰 단계 전에 멈췄다 — **아직 커밋·PR·병합 전이다.**
+backend 전체 1589 passed(리팩터링 전후 동일 count, 테스트 변경 없음 —
+동작 불변의 직접 증거), ruff/mypy clean(touched files) 확인까지만 마쳤다.
+부모 세션이 적대적 리뷰어 2명을 돌리고 커밋해야 한다.
+
+---
+
+## 2026-08-04 (T-055 완료 — 안전장치 있는 DB 복구 CLI)
+
+fork가 멈춰둔 T-055(`ktdctl db-backup restore`)를 이어받아 적대적 리뷰어 2명을
+돌렸다(confirmation-gate 우회 가능성·role/backup-id 대상 오지정 담당,
+stderr-NOTICE 회귀·백업 무결성·복구 후 검증 담당) — 이 세션 전체에서 가장
+위험도 높은 명령(실 DB를 파괴적으로 덮어씀)이라 특히 꼼꼼히 봤다. 둘 다
+confirmed 실공백 없음: `_STANDALONE_RESTORE_CAPABILITY`는 진짜
+module-private singleton이라 CLI `--confirm` 우회 경로가 없고, dropdb는
+이 세션 초반 실제 사고로 고쳤던 조건부 패턴을 정확히 재사용했고, role/
+backup-id는 파일명·manifest JSON·요청 파라미터 3중 교차검증이라 다른
+role의 백업을 잘못 복구할 수 없다. 리뷰어 2가 지적한 사소한 커버리지
+공백(pg_restore가 exit 0인데 결과 schema가 틀린 경우의 음성 테스트 부재)만
+추가로 메꿨다. backend 전체 1589 passed.
+
+이로써 T-053→T-054→T-055(백업 생성→목록/GC→복구) 체인이 전부 완료됐다.
+남은 건 T-057(cache-target cutover 내장 백업을 이 primitive로 통합)과
+T-056(읽기 전용 API/Web UI)이다.
+
+---
+
+## 2026-08-04 (T-055: 안전장치 있는 DB 복구 CLI — 리뷰 대기 중, 미병합)
+
+`ktdctl db-backup restore --role ... --backup-id ... --expected-schema-revision ...
+--confirm`를 구현했다. T-050의 `--expected-alembic-head` fail-close opt-in 패턴을
+그대로 따라, 복구 대상 DB의 **현재** schema revision을 읽어 operator가 명시한
+값과 다르면 어떤 mutation도 없이 즉시 거부한다. `--confirm`이 1차 방어(없으면
+CLI가 `compose_service`를 아예 호출하지 않음), 새 `_STANDALONE_RESTORE_CAPABILITY`
+sentinel이 2차 방어(함수 자체 호출에도 요구)다. 복구 직전 백업 파일을 재-해시해
+manifest sha256과 대조하고, dropdb/createdb/pg_restore는 기존
+`restore_database_backup`과 동일한 stderr-NOTICE-안전 조건부 dropdb 패턴을
+그대로 따랐다.
+
+fork로 구현했으나 T-054와 같은 제약(fork는 Agent tool로 subagent를 만들 수
+없음)으로 적대적 리뷰어 2명 단계 전에 멈췄다 — **아직 커밋·PR·병합 전이다.**
+회귀 테스트는 추가했고 backend 전체 1578 passed, ruff/mypy clean(touched
+files) 확인까지만 마쳤다. 부모 세션이 적대적 리뷰어 2명(confirmation-gate
+우회 가능성 담당, 복구 메커니즘 정확성 담당)을 돌리고 커밋해야 한다.
+
+---
+
+## 2026-08-04 (PR #119/T-049F 병합 조정 — T-052 대체, evidence-validation 공백 수정)
+
+사용자 지시로 GitHub PR #119(다른 세션이 만든 것으로 보임 — 이 세션의 T-052(PR #117)가
+이미 병합된 뒤에 브랜치됐는데도 완전히 별도 모듈로 같은 issue #115를 다시 구현)를
+서브에이전트로 먼저 충돌·중복 여부 분석했다. 결론: 중복이 아니라 **T-052를 대체하는
+더 완성도 높은 구현**(Map 자체의 begin/attest/restore lease/receipt 프로토콜, cutover까지
+커버) — 코드는 깨끗이 auto-merge됐고 docs만 append 충돌, T-050의 gate 테스트 3건만
+v1 journal 픽스처 때문에 깨짐(v2 계약에 맞게 고침).
+
+병합 전 적대적 리뷰어 2명을 추가로 돌렸다(레이스/crash-recovery/rollback-claim 검증
+담당, secret 비노출/schema 검증 담당). 리뷰어가 `_validate_phase_evidence`(diagnostics·
+window 양쪽)의 실공백을 찾았다: restore receipt만 있고 그 전에 있어야 할 lease/receipt는
+없는 불가능한 조합이 phase 문턱 검사로는 안 걸러졌다 — phase 무관 무조건 검사를
+추가해 고쳤다. 다른 리뷰어는 crash-recovery 전체가 Map의 `begin` idempotency에
+의존한다는 medium 우려를 남겼는데, 이 저장소만으로는 검증 불가능해 fix 없이 열어둔다
+(Map 쪽 확인 필요, `docs/tasks-done.md`에 기록).
+
+backend 전체 1580 passed, ruff/mypy clean. T-052는 "대체됨" 표시로 남기고 T-049F를
+정본으로 `tasks.md`/`tasks-done.md`에 반영했다.
+
+---
+
+## 2026-08-04 (T-049F: isolated durable writer-drain 완료)
+
+Map-owned lease/receipt chain을 Manager diagnostic·cutover journal에 결선했다. initial fence는
+`writers_draining → writers_drained → writers_stopping`을 fsync하며, pre-backup crash는 DB
+rollback 없이 Map restore → full writer activation → prior pair re-attestation으로만 복구한다.
+backup 뒤 coupled rollback은 Map DB의 drained state를 되돌리는 특성상 `manager_state_restored`
+뒤 webserver-only restore receipt를 `writers_restored`로 fsync하고, 그 뒤 daemon 포함 old runtime과
+pair attestation을 연다.
+
+단일 적대 리뷰가 발견한 begin JSON null-key·forbidden argv, actual Compose progress stderr, late
+Dagster run cancel, pre-backup/superseded diagnostic pair re-attestation 누락을 모두 수정했다.
+후속 단일 적대 리뷰에서 `writers_restored` fsync 직후 crash 재개 누락, v1 journal의 불명확한
+upgrade 경계, stale pair 대조보다 이른 writer restore, JSON boolean `run_count` 수락을 발견해
+수정했다. v1 journal은 compatibility migration 대신 모든 mutation 전에 명시적으로 거부하고
+격리 state를 새로 만들도록 고정했다. Manager regression 148건과 actual ephemeral Docker Compose
+rehearsal 1건, Map strict command 5건과 isolated PostgreSQL migration/CAS 3건이 통과했다.
+production/n150·기존 데이터는 접근하지 않았다.
+
+---
+
+## 2026-08-04 (T-054: 백업 목록/보존 관리 완료)
+
+T-053(`ktdctl db-backup create`)이 남긴 owner-only manifest를 읽는
+`ktdctl db-backup list [--role ...] [--json]`과, 파일 목록 기반
+age/count 보존 정책(`--gc`)을 구현했다. GC는 `.manifest.json`을 먼저 지우고
+`.dump`를 나중에 지워, 중간에 죽어도 다음 조회가 고아 dump(디스크 낭비)만
+남기고 절대 깨지지 않게 했다. 손상된 manifest나 dump 유실은 예외로 전체
+조회를 막는 대신 `warnings`로 담아 나머지는 계속 보여준다.
+
+fork로 구현했으나 fork는 Agent tool로 subagent(적대적 리뷰어)를 만들 수
+없어 리뷰 단계를 완료하지 못하고 uncommitted 상태로 멈췄다 — 부모 세션이
+이어받아 적대적 리뷰어 2명(GC 삭제 안전성/race, 목록·출력 정확성)을 돌렸다.
+GC 안전성 쪽은 confirmed 실공백 없음(합성 fixture로 직접 재현 검증). 목록/출력
+쪽 리뷰어가 **실제 결함**을 찾았다: human-readable 출력에 시각 필드가
+빠져 있었는데, 코드를 고치는 대신 `docs/tasks.md`의 요구사항 문구 자체를
+구현에 맞춰 조용히 낮춰놓았던 것. `created_at_unix`를 ISO 8601 UTC로 출력에
+추가하고 문구도 원복 + 사고 경위를 명시해 고쳤다. 회귀 테스트 1건 추가.
+backend 전체 1570 passed, ruff/mypy clean(touched files).
+
+---
+
+## 2026-08-04 (백업/복구 기능 gap 분석 + T-053 독립 DB 백업 CLI)
+
+T-049E n150 재검증 중 `kor-travel-map-ui`/`kor-travel-map-api` revision drift로
+막힌 시점에, 사용자가 "전체 구현을 재검토해서 백업 리스토어에 필요한 기능을
+찾고 개선할 부분을 찾아 구현 계획을 세우라"고 방향을 크게 틀었다 — Map/PinVi
+프로젝트가 명확한 설계 없이 구현되고 있다는 문제의식.
+
+서브에이전트로 전체 조사(backend/CLI/API/Web UI/ADR)를 돌린 결과: **독립적으로
+호출 가능한 DB 백업 도구가 전혀 없다**는 게 가장 큰 공백으로 확인됐다. 모든
+`pg_dump`는 cache-target cutover window 안에 내장된 private 스텝일 뿐이었고,
+이슈 #109 때 운영자가 손으로 `pg_dump`/`psql DROP/RENAME`을 실행해야 했던 게
+바로 이 공백 때문이었다. CLI만 유일한 노출 경로였고(API/Web UI는 백업/복구
+관련 기능 0건, grep 확인 — 다만 이건 mutation을 CLI 전용으로 유지하는 기존
+권한 경계와 일치해서 버그가 아니라 지켜야 할 설계일 가능성이 큼), ADR 37개
+어디에도 백업/복구를 1급 기능으로 다룬 곳이 없어 사용자의 진단이 맞았음을
+확인했다.
+
+조사 결과를 T-053(백업 생성)→T-054(목록/GC)→T-055(안전장치 있는 복구)→
+T-057(cache-target 통합)→T-056(읽기 전용 API/Web UI) 5개 태스크로 tasks.md에
+공식 등록하고, T-053부터 순차 구현을 시작했다.
+
+**T-053**: `ktdctl db-backup create --role {map_application,map_dagster,pinvi}`.
+cache_target_backup.py의 기존 typed pg_dump/digest/owner-only-storage primitive를
+재사용하되 cutover window/journal과 완전히 분리했다. 구현 중 두 실공백을
+발견·수정했다: (1) `Path.mkdir(mode=..., parents=True)`가 자동 생성되는 상위
+디렉터리에는 `mode`를 적용하지 않아 `~/backups`가 0700이 아니게 될 뻔한 것,
+(2) 적대적 리뷰어 1명이 찾은 TOCTOU — 존재-확인 뒤 cutover-window 전용
+idempotent-재사용 헬퍼(`_write_pg_dump`)를 그대로 쓰면 동시 재호출이 "거부"
+계약을 어기고 조용히 성공할 수 있었던 것 — `O_CREAT|O_EXCL`로 최종 파일명을
+원자적으로 선점하는 방식으로 고쳤다. 리뷰어 2(lock 범위·identity 신뢰 모델)는
+confirmed 실공백 없음. backend 전체 1553 passed.
+
+다음은 T-054(목록/GC)부터 순서대로 이어간다. T-049E(map-ui/map-api revision
+drift로 중단된 상태)는 이 백업/복구 트랙이 끝난 뒤 재개한다.
+
+---
+
+## 2026-08-04 (T-049E 후속: inventory hash canonicalization으로 미해결 사항 해결)
+
+2026-08-03 journal에 미해결로 남겼던 schema/data inventory hash 오탐(pg_dump
+dump→restore→dump 비결정성)을 실제로 고쳤다. 데이터는 SQL문 정렬로 순서-무관
+비교, 스키마는 source를 scratch와 같은 dump→restore→dump 변환에 한 번 통과시켜
+비교하는 방식으로 문제 클래스 전체를 닫았다 — 개별 비결정성 패턴을 regex로
+쫓는 대신 근본 메커니즘 자체를 무력화했다. n150 실측(job_ticks 557줄 diff→0,
+map_application schema hash 일치)으로 검증했고 적대적 리뷰어 2명이 order-
+insensitivity의 오탐지 여부와 canonicalization 철저함을 각각 확인했다.
+
+T-052(durable Dagster writer drain, PR #117)가 먼저 병합된 뒤 이 작업을 이어받아
+최신 코드에 재통합했다(stash pop, 충돌 없음, backend 1545 passed). 다음 단계는
+실제 n150에서 `ktdctl cache-target diagnose`를 끝까지 돌려 `completed` phase
+도달을 확인하는 것 — T-049E의 마지막 남은 검증이다.
+
+---
+
+## 2026-08-04 (T-052: cache-target 진단의 durable Dagster writer drain, issue #115)
+
+issue #115가 요구한 6단계 설계를 그대로 구현했다: `writers_fencing`(순수 preflight)과
+`writers_stopping`(실제 전체 writer stop) 사이에 새 `writers_draining` phase를 넣고,
+그 안에서 `kor-travel-map-dagster-daemon`만 기존 writer stop/start와 같은
+`_COMPATIBLE_PAIR_MUTATION_CAPABILITY`로 먼저 멈춘다. daemon이 멈추면 schedule/sensor가
+더 이상 새 run을 못 만들므로, preflight 검사와 실제 stop 사이의 race가 구조적으로
+사라진다. 이미 떠 있던 run은 5분 bounded wait으로 기다리고, 그래도 안 끝나면 Dagster
+표준 `report_run_canceled` API로만 정식 취소한다(raw GraphQL/run 식별자/credential은
+절대 어디에도 남기지 않는다 — count만 계산·비교).
+
+drain 실패는 새 `DiagnosticStage="writer_drain"`/`DiagnosticFailureClass="drain_timeout"`으로
+기존 per-role DB stage 실패와 같은 `failure` 튜플·abort-budget reproduced-failure
+메커니즘을 그대로 탄다. 모든 종료 경로(성공/drain 실패/이후 단계 실패)는 이미
+있던 하나의 `try/finally`에 자연스럽게 편입돼, `_activate_cache_target_writers`
+(daemon 포함 전체 재기동)와 `_attest_cache_target_prebootstrap_pair`가 항상
+실행된다 — daemon만을 위한 별도 resume 코드가 필요 없었다. `writers_fencing`까지는
+attempt budget을 소모하지 않는 #113 불변식은 `_archive_superseded_cache_target_diagnostic`의
+기존 판정 로직을 전혀 건드리지 않고도 자동으로 확장됐다(`writers_draining`이
+exempt set에 없으므로 crash 시 자동으로 budget을 소모한다) — 코드 변경 없이 회귀
+테스트만 추가해 고정했다.
+
+적대적 리뷰어 2명이 검증했다(drain race/timeout/cancel 정책·compatible-pair 보호
+미우회, secret/식별자 비노출·모든 종료 경로 원복). 회귀 테스트 11건(단위 7건 + 통합
+2건 + #113 확장 1건 + cancel 스크립트 정적 검증 1건) 추가. backend 전체 1533 passed,
+ruff/mypy clean(touched files).
+
+n150 실제 재검증(schedule과 맞물린 실제 drain 동작 확인)은 별도 승인 아래 진행한다 —
+이슈 #115 자체의 "현재 데이터는 보존 대상이 아니다"라는 임시 운영 결론에 따라
+지금 당장 cache-target 진단을 다시 돌리지는 않았다. 이 초안은 Map durable lease/receipt와
+crash recovery를 보존하지 못하므로, T-049F가 재작성한다.
+
+## 2026-08-04 (T-051: Map DB naming 정리 착수 + issue #111/#114 결선)
+
+이슈 #109 사고 조사 도중 n150 postgres에 `kor_travel_map`(rev 0036, 오래된 leftover)과
+`krtour_map`(rev 0078, 실제 최신 데이터)이 공존한다는 것을 발견했다. 사용자 확인:
+`kor_travel_map`이 canonical 이름이 맞고, `krtour_map`은 legacy naming — 오래된
+`kor_travel_map`을 DROP하고 `krtour_map`을 `kor_travel_map`으로 RENAME해야 한다.
+map_dagster도 동일 패턴(`kor_travel_map_dagster` 80MB 낡음 vs `krtour_map_dagster`
+819MB 최신).
+
+같은 조사 중 새 이슈 3건이 열렸다: #111(Map PR #931의 `KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD`
+게이트를 Manager compose가 아직 결선 안 함), #114(`KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY`
+결선 누락으로 map dagster provider ETL 전체가 fail-close), #115(cache-target
+writer-drain 관련 대형 신규 기능 — 완료 전까지 진단/rehearsal 중단하라는 임시 운영
+결론 포함).
+
+이번 커밋에서 코드/설정 정렬만 반영했다: `docker-compose.yml`·`.env.example`·
+`cache_target_backup.py`의 DB 이름 기본값을 `kor_travel_map`/`kor_travel_map_dagster`로
+정렬하고, #111·#114 결선을 추가했다. n150의 실제 DROP/RENAME과 재기동은 아직
+실행하지 않았다(다음 단계). #115는 범위가 커서 별도 태스크로 분리하고, 지시대로
+cache-target 진단/rehearsal(T-049E)은 여기서 중단한다.
+
+---
+
+## 2026-08-04 (T-049E: pre-bootstrap diagnostic attestation 경계 수정)
+
+final cache-target cutover의 사전 조건을 n150에서 다시 확인하는 중, tracked Map·PinVi
+release pin은 이미 generation 7 candidate를 가리키지만 현재 compatible-pair manifest는
+bootstrap 전 old pair를 가리키는 상태를 확인했다. 이는 정상적인 one-time generation
+bootstrap의 출발 상태다. 그러나 `cache-target diagnose`의 writer 재기동 직후 일반
+`_attest_cache_target_pair`를 호출해 old pair에도 candidate release pin을 요구하고 있었다.
+그 결과 diagnostic은 모든 DB role 검사 뒤에도 fresh receipt를 완료할 수 없고, final
+cutover가 요구하는 gate가 스스로 막혔다.
+
+diagnostic 전용 `_attest_cache_target_prebootstrap_pair`를 추가해 old pair에는 manifest,
+frozen Compose, runtime readiness·image identity와 secret isolation만 다시 검증하도록
+분리했다. receipt identity는 candidate bootstrap에 쓸 canonical transaction으로 유지하고,
+old pair attestation에만 그 transaction의 raw Compose·external input에서 old image·source
+provenance를 materialize한 frozen transaction을 사용한다. 따라서 현재 candidate를 기준으로
+fresh receipt를 만들고 cutover에서 그대로 재검증할 수 있으며, old pair가 새 release로
+승인되거나 manifest가 진단 중 바뀌는 경로는 만들지 않는다. tracked release pin은 candidate
+build/generation bootstrap과 bootstrap 이후 일반 attestation에 그대로 남긴다.
+
+검토 중 singleton diagnostic journal의 복구 경로도 보강했다. 이전 process가 nonterminal
+journal을 남긴 경우 새 UUID가 단순히 거부돼, `aborted` attempt를 기록해도 새 rehearsal을
+시작할 제품 인터페이스가 없었다. 새 UUID는 C6c lock 안에서 해당 journal을 typed `aborted`
+terminal로 전이하고 attempt record와 대조·기록한 뒤, owner-only archive로 원자 이동한다.
+terminal receipt의 archive는 새 UUID가 명시적으로 supersede할 때만 허용하며, 충돌·검증·fsync
+실패는 fail-close한다. `PR #108`의 restore/dropdb 보정과는 별개의 production 발견이라 별도
+수정으로 관리한다. focused backend 회귀, Ruff 및 strict mypy(변경 서비스)를 다시 확인한다.
+
+같은 흐름의 n150 실행에서 `writers_fencing` 전 quiescence가 0이 아니어 process가 종료한
+사례를 확인했다. 이 단계는 writer stop과 DB/runtime mutation보다 앞선 preflight인데도,
+crash journal을 회전할 때 full rehearsal과 같은 abort budget을 소모했다. writer fence digest가
+없으면 archive만 하고 attempt record를 남기지 않도록 경계를 분리한다. fence digest가 남은
+실제 rehearsal은 기존처럼 terminal attempt로 보존한다.
+
+적대적 리뷰에서 digest 부재만으로 무변경을 증명할 수 없다는 P1을 확인했다. `writers_fencing`
+phase 안에도 실제 `stop` 호출이 있어 partial stop 또는 crash 뒤 digest 없이 journal이 남을 수
+있다. `stop` 직전 `writers_stopping` durable phase를 새로 기록하고, `prepared`/`writers_fencing`
+만 preflight로 archive하며 그 이후은 digest 유무와 관계없이 terminal attempt로 보존하도록
+정정했다.
+
+---
+
+## 2026-08-04 (T-050: 배포 alembic head 재발 방지 게이트, issue #109)
+
+prod에서 `kor-travel-map-api-latest`의 공개 큐레이션 표면이 0으로 떨어진 사고(issue #109)를
+조사했다. 원인은 floating tag `latest-main`(7/31 빌드, alembic head `0072`)으로 컨테이너가
+재기동되면서 entrypoint의 무조건 `alembic upgrade head`가 `0063`→`0072`까지만 조용히
+올리고, 공개 링크 신뢰도를 복구하는 `0073`이 빠진 것이었다. 컨테이너 `StartedAt`
+(`2026-08-03T11:31:35Z`)이 이 세션 자신의 T-049C cache-target 진단 writer 재기동
+시각과 정확히 일치해, 원인을 이 세션의 라이브 테스트 작업으로 추적했다. 사용자는
+데이터 복구 대신 폐기·재생성을 택했고, 이 작업은 재발 방지만 다뤘다.
+
+두 게이트를 구현했다: (1) `pinvi-pair deploy --expected-alembic-head`로 candidate Map
+API 이미지의 alembic head를 DB 접속 없이 정적으로 검사해 mutation 전 fail-close, (2)
+cache-target 진단의 writer 재기동에 exact image pair drift 검사를 추가해 read-mostly
+작업이 새 candidate를 조용히 활성화하지 못하게 함. 적대적 리뷰어 2명 중 1명이 (1)의
+실공백을 찾았다 — 최초 구현이 build 이전 tag를 검사해서 build가 그 태그를 덮어쓰면
+검사가 무의미해지는, 사고 자체와 같은 클래스의 결함이었다. build 뒤 immutable image
+ID를 검사하도록 고쳤다. (2)는 confirmed 실공백 없음. 회귀 테스트 10건 추가, backend
+전체 1515 passed, ruff/mypy clean.
+
+---
+
+## 2026-08-03 (T-049E 재실행: pg_restore timeout 수정 + inventory 해시 비교의 근본 한계 확인)
+
+dropdb NOTICE 수정을 n150에 배포하고 진단을 재실행했다. writer fence·3-role 진단
+stage가 정상 진행되어 `scratch_create`는 3개 role 전부 통과했지만, 이번엔 다른
+문제 2건이 나왔다.
+
+**1) map_application `scratch_restore` timeout(수정함).** `feature.feature_weather_values`
+(1,780만 행) 단일 테이블만으로 pg_restore가 기존 60분 timeout을 넘겼다. n150에서
+같은 아카이브를 수동으로 복원해 **끝까지 완주시켜 실측**했다: COPY ~19분,
+constraint 검증 ~7분, index 4개(개당 2~10분) — 총 약 97분. archive가 stdin
+스트리밍이라 `pg_restore --jobs` 병렬화를 못 쓰는 구조적 제약을 확인했다(파일
+기반 seekable archive가 필요). 공유 상수 `_DATABASE_RESTORE_TIMEOUT_SECONDS=10800`
+(3시간, 실측 + 여유)으로 3곳(`restore_database_backup`·
+`_restore_archive_into_database`·`diagnose_scratch_restore`)의 하드코딩
+`timeout=3600`을 교체했다. **이 발견의 무게**: `restore_database_backup`은
+실제 production coupled-rollback 경로다 — 즉 실제 T-VN-41 cutover가 롤백을
+타야 했다면 이 테이블에서 같은 timeout에 걸렸을 수 있다. 진단 도구가 정확히
+설계 의도대로("production을 실제로 만지기 전에 문제를 찾아낸다") 작동한 사례다.
+적대적 리뷰어 2명 검증, 회귀 테스트 1건 추가, backend 전체 1497 passed.
+
+**2) map_dagster/pinvi `inventory_mismatch`(의도적으로 미해결).** n150에서 writer를
+실제로 멈추고 원인을 격리했다:
+- pinvi 스키마: `CHECK (x = ANY (ARRAY[...]::text[]))` 형태 제약이 최초 생성과
+  dump→restore→재생성 뒤 **의미는 같지만 텍스트 표현이 다르게**(배열 전체 cast vs
+  원소별 cast) 저장되는 PostgreSQL의 알려진 동작. 실제 스키마 손상이 아니다.
+- map_dagster 데이터: `event_logs`/`job_ticks`처럼 자주 갱신되는 테이블에서
+  `pg_dump --data-only --inserts`의 **행 emission 순서가 두 번의 별도 dump
+  호출 사이에 달라짐**을 확인했다 — writer를 완전히 멈춘 상태에서도 재현되어,
+  새 쓰기가 아니라 순서 비결정성 자체가 원인임을 확인했다(diff에서 동일 행이
+  다른 줄 위치에 나타남, 내용은 100% 동일).
+
+두 사례 모두 이 진단의 schema/data inventory 비교 설계 자체가 "동일 데이터의
+pg_dump 출력은 byte-identical"이라는, PostgreSQL이 실제로 보장하지 않는 가정
+위에 있다는 걸 보여준다. 코드 한 줄로 안전하게 고칠 범위가 아니라고 판단해
+**의도적으로 미해결로 남겼다** — canonicalization이나 순서-무관 비교 같은 별도
+설계가 필요하다. docs/tasks.md에 미해결 항목으로 기록.
+
+---
+
+## 2026-08-03 (issue #99 pin 갱신 + T-049E 착수 중 n150 실측으로 dropdb NOTICE 오탐 발견·수정)
+
+issue #99에 Map 쪽에서 실측 확정값과 함께 pin 갱신 요청·PR #925 머지 알림·PR #928 알림이
+연달아 왔다. `map_release_revision`을 `d50bb2c5`(결함 포함, PR #925로 확인) →
+`0dbbd0b5`(PR #925 반영) → `4a764a4f`(PR #928, 문서 전용)로 순서대로 갱신·병합했다(PR #104,
+#105).
+
+pin 갱신 뒤 n150에 실제 배포하고 `ktdctl cache-target diagnose`를 처음으로 production에서
+실행했다. 여러 겹의 실제 운영 문제를 순서대로 만나 해결했다:
+
+1. **배포 자체 실패**: 백엔드 재기동이 `pkill` 권한 부족(기존 프로세스가 root 소유)으로
+   조용히 실패해 옛 코드가 계속 떠 있었다. sudo로 재기동해 해결.
+2. **writer 재기동 부분 실패**: 진단 중 3개 서비스(`map-dagster-daemon`, `map-dagster`,
+   `pinvi-api`)가 `Created` 상태로 멈췄다. `docker compose up -d --wait`로 명시적 재기동.
+3. **`/tmp` tmpfs 용량 부족**: `source_data_inventory`가 `--inserts --rows-per-insert=1`
+   dump를 기본 `/tmp`(7.5GB tmpfs)에 써서 `disk quota exceeded`. `TMPDIR`을 디스크 기반
+   경로로 지정해 우회.
+4. **stuck Dagster run이 in-flight 체크를 막음**: `feature_price_krex_rest_areas_job`이
+   `RESOURCE_INIT_FAILURE`로 계속 재시도 중이었다. 서브에이전트로 근본 원인을 조사해
+   `KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY`가 `.env`엔 있는데 `docker-compose.yml`에
+   연결이 안 돼 있던 것으로 확인, kor-travel-map#930 등록. 진단 동안만
+   `map-dagster-daemon`을 잠시 멈추는 방식으로 우회.
+5. **`scratch_create`가 3개 role 전부에서 100% 재현 실패**: 진짜 코드 버그였다.
+   `dropdb --if-exists`가 대상 부재 시에도 내는 NOTICE를 `_run_checked`가 stderr
+   존재만으로 실패 처리. `diagnose_scratch_create`와 sibling
+   `_rehearse_database_restore`/`restore_database_backup`(production restore 경로)을
+   모두 고쳤다. 적대적 리뷰어 2명이 검증했고 confirmed 실공백 없음. 회귀 6건 추가,
+   backend 전체 1496 passed.
+
+T-049 진단 도구가 설계 의도대로 "production을 실제로 만지기 전에 문제를 찾아낸다"는
+목적을 그대로 증명한 하루였다 — 5건 모두 코드 병합 전에는 드러나지 않았을 실제 운영/코드
+결함이었다.
+
+---
+
+## 2026-08-03 (T-049D: cache-target cutover gate와 window failure propagation 구현)
+
+이슈 #99에 Map 쪽 적대 리뷰 결과가 추가로 달렸다 — 현재 pinned `map_release_revision`
+(`d50bb2c5`)에 실제 결함 2건(migrate 재시도 영구 거부 위험, 공개 item 카운트
+`source_present` 누락)이 있고 수정은 kor-travel-map PR #925에 있다. 사용자 판단으로
+T-049D(pin과 무관한 gate 로직)는 지금 진행하고, pin 갱신은 PR #925 머지 후 별도
+처리하기로 했다.
+
+`cache-target cutover`가 T-049C 진단 receipt 없이 새 forward window를 열 수 없게
+`_require_fresh_cache_target_diagnostic` gate를 결선하고, pre-forward 실패가
+coupled rollback으로 넘어갈 때 window journal에 마지막 안전 phase와 실패 분류를
+남기는 `record_window_failure`를 추가했다. 적대적 리뷰어 2명(gate 담당·
+failure-propagation 담당)이 같은 strict mypy 실공백(삼항식이 literal이 아닌 str로
+추론됨)을 독립적으로 찾아 고쳤고, 그 외에는 실공백이 없었다.
+
+T-049C에서 배운 교훈대로 이번에도 `ruff format` 전체 실행 대신 diff를 무관한
+재포맷 없이 최소로 유지했다. backend 전체 1492 passed.
+
+T-049E(n150 production rehearsal)가 마지막 phase다 — 그 전에 Map PR #925 머지와
+pin 갱신이 필요하다.
+
+---
+
+## 2026-08-03 (T-049C: cache-target 진단 writer fence·orchestration·abort budget 구현)
+
+이슈 #99에 새 댓글이 달려 실측 확정값과 함께 Map 쪽 문서 PR 머지 시점 조율 요청이
+왔지만, T-049C 범위와는 무관하고(cutover-retry 기대값 대조는 T-049D/E) 응답은
+사용자 판단으로 보류했다.
+
+`ktdctl cache-target diagnose`를 신설해 T-049A(journal 모델)·T-049B(DB stage
+primitive)를 기존 cutover와 같은 C6c 전역 lock·writer-fence 기계 안에 결선했다.
+설계 문서 5절의 abort budget(24시간 2회, 재현 실패 시 자동 재시도 대신 aborted)을
+새 `DiagnosticAttemptRecord`/`DiagnosticAttemptLog`로 구현했다.
+
+production-critical 코드라 적대적 리뷰어 2명을 병렬로(락/동시성 담당, 데이터
+안전성/writer-fence 담당) 투입했고, 겹치지 않는 세 가지 실공백을 각각 찾았다.
+가장 심각한 것은 writer stop에 엉뚱한 mutation capability sentinel을 써서
+production에서 이 명령 자체가 항상 막혀 있던 것이었다 — 배포 전에 잡혔다는 점이
+이 리뷰 단계의 존재 이유를 그대로 보여준다. 나머지 둘(부분 stop 실패 시 writer
+방치, 재기동 뒤 pair 재-attestation 누락)도 모두 고치고 각각의 회귀 테스트를
+추가했다. backend 전체 1483 passed, ruff/mypy 유지.
+
+T-049D(cutover gate)부터는 이 diagnose 결과를 실제로 cutover 시작 조건에 묶는다.
+
+---
+
+## 2026-08-03 (T-049B: cache-target 진단 DB stage primitive 구현)
+
+open issue 확인 결과 이슈 #99(H35 Map 쪽 `0063→0078` 실 prod 데이터 실측 확정값)만
+있었고 T-049B 범위와는 무관해(T-049D/E의 cutover-retry 기대값 대조용) 이번 phase에는
+반영하지 않았다.
+
+`cache_target_diagnostic_stages.py`를 신설해 설계 문서 3절의 9개 DB stage를
+`cache_target_backup.py`의 기존 pg_dump/pg_restore helper 위에서 typed
+`DiagnosticStageReceipt`로 분해했다. 적대적 리뷰어 2명이 독립적으로 같은 핵심 공백을
+찾았다: scratch schema/data inventory 비교 stage가 `_run_logical_inventory`의 실제
+실패 원인(timeout/subprocess 실패/정책 위반 stderr)을 버리고 전부
+`inventory_mismatch`로 뭉뚱그려, 설계 문서가 명시한 "원인을 stderr_policy_rejected와
+다른 subprocess failure class로 분리한다"는 목적을 무너뜨리고 있었다 — 고쳤다.
+리뷰어 1은 추가로 archive 파일 open 지점에 `cache_target_backup.py`의 owner-only
+디렉터리 검증이 빠져 있었던 것과, scratch 관련 4개 함수가 production과의 이름 충돌을
+`diagnose_scratch_create`만큼 방어하지 않던 것을 지적해 반영했다. 회귀 테스트
+28건으로 backend 전체 1459 passed, ruff/mypy clean을 확인했다.
+
+T-049C(writer fence·orchestration)부터는 이 primitive들을 순서대로 호출하고,
+mid-sequence 실패 시 `diagnose_scratch_cleanup` 호출을 보장하는 책임을 진다.
+
+---
+
+## 2026-08-03 (T-049A: cache-target 진단 typed 모델·storage 구현)
+
+설계 문서 6절이 고정한 5-phase 순서의 첫 PR로 `cache_target_diagnostics.py`를 신설했다.
+`DiagnosticPhase`/`DiagnosticStage`/`DiagnosticFailureClass` sealed Literal union,
+`CacheTargetDiagnosticIdentity`(설계 문서 4절의 input logical identity), 비밀 없는
+`DiagnosticStageReceipt`, `CacheTargetDiagnosticJournal`을 `cache_target_window.py`의
+frozen-dataclass phase-state-machine 패턴을 그대로 따라 정의했다. storage는 기존
+`cache_target_cutover.write_cutover_state`/`read_owner_only_state`를 재사용해 0600/0700
+atomic write 계약을 그대로 물려받는다.
+
+적대적 리뷰어 2명(Agent tool, 독립·병렬)이 코드를 리뷰했다. 두 실공백을 확인:
+(1) `DiagnosticStageReceipt.role`이 그 receipt가 저장된 evidence tuple
+(`map_application_receipts`/`map_dagster_receipts`/`pinvi_receipts`)과 실제로 일치하는지
+아무도 검사하지 않아, `map_application_receipts`에 `role="pinvi"` receipt가 그대로
+통과했다. (2) `completed` phase 진입 시 모든 receipt의 `status="succeeded"`를 요구하지
+않아, 하나 이상의 stage가 실패한 채로도 진단이 `completed`로 끝날 수 있었다. 둘 다
+`_validate_journal`에 명시적 검사를 추가해 고쳤고, 각각의 회귀 테스트를 추가했다.
+리뷰 중 나온 사소한 지적(`external_event_count: int` → `Literal[0]`로 타입 강화, 테스트
+이름 개선, missing-field tamper 테스트 추가, write-never-persists-invalid 테스트 추가,
+carry-forward 의미론 테스트 추가)도 모두 반영했다. 최종 36건의 회귀 테스트로 backend
+전체 1431 passed, ruff 기존 baseline 유지, mypy clean을 확인했다.
+
+T-049B(DB diagnostic primitive)부터는 매 phase 착수 전 open issue를 먼저 확인한다.
+issue #99(H35 Map 쪽 `0063→0078` 실 prod 데이터 실측 확정값)는 T-049A 범위와 무관하고
+T-049D/E의 cutover-retry 기대값 대조에 필요하므로 해당 phase에서 반영한다.
+
+---
+
+## 2026-08-03 (T-049 cutover 사전 진단과 abort budget 설계)
+
+T-VN-41에서 production Map data logical inventory가 fail-close된 뒤 full pre-forward window를
+반복 실행해 원인을 찾는 방식이 길어지는 문제가 드러났다. `cache-target diagnose`가 C6c lock과
+writer fence 안에서 DB별 archive·schema/data inventory·scratch restore rehearsal과 canonical
+authenticated smoke를 별도 transaction으로 확인하도록 설계했다. 이 경로는 candidate build, migration,
+initial event, sync enable, `.env`/manifest mutation을 하지 않으며 `external_event_count=0`을 보장한다.
+
+진단과 cutover journal은 raw stderr/stdout, DSN, credential, resolved Compose, backup path를 남기지 않고
+typed stage/failure class와 logical identity만 owner-only receipt에 기록한다. diagnostic archive는 최신
+cutover backup으로 재사용하지 않으며, actual cutover는 writer fence 뒤 fresh backup/rehearsal을 다시
+만든다. 같은 input의 반복 failure에는 bounded abort budget을 적용해 regression을 포함한 수정과 새
+diagnostic receipt 없이는 재시도를 막는다. 상세 정본은 당시 cache-target cutover 진단 문서와
+ADR-29다.
+
+## 2026-08-03 (T-048 PinVi authenticated-readiness GET timeout 보강)
+
+결합 rollback이 old runtime을 재기동한 뒤 PinVi login은 성공했지만, 바로 다음 canonical
+`GET /admin/etl/summary`가 response-header 전에 한 번 timeout 났다. 같은 session의 다음 실행에서는
+ETL summary·provider sync·typed cancel·logout·post-logout protection이 모두 정상 통과했으므로, login credential이나
+canonical response 계약이 아니라 authenticated read readiness race로 분리했다.
+
+`run_pinvi_canonical_smoke`의 session cookie가 있는 두 idempotent admin GET만 `ConnectionRefusedError` 또는
+`TimeoutError`를 한 번(최대 두 attempt) 재시도한다. retry opt-in은 body 없는 `GET`만 허용하며, login/logout,
+post-logout protection, cancel을 포함한 모든 `POST`는 opt-in 자체를 거부한다. 단, login의 기존 요청 전
+`ConnectionRefusedError` retry는 유지하고 timeout은 계속 fail-close한다. default timeout fail-close와 destructive
+request 차단, direct·`URLError` timeout의 마지막 attempt 성공 회귀를 함께 고정했다.
+
+## 2026-08-03 (T-048 authenticated smoke readiness window 보강)
+
+n150에서 pre-forward 실패 뒤 결합 rollback을 같은 cutover ID로 재개했을 때, 구 runtime은 정상 복원됐지만
+Compose health 직후 authenticated smoke의 첫 TCP 연결이 두 번 연속 5초 window를 넘겼다. 이후 동일 runtime의
+Map UI login/logout/protected-page와 PinVi admin session·canonical read/cancel smoke는 모두 통과했으므로,
+credential·계약 오류가 아니라 readiness race로 분류했다.
+
+첫 signed read와 Map UI·PinVi admin login, PinVi Web shell의 `ConnectionRefusedError` 재시도만 기존 5회에서
+30회(1초 간격)로 늘려 Compose healthcheck `start_period`와 같은 bounded window로 맞췄다. timeout·DNS 등 다른
+`OSError`, HTTP/envelope/인증 오류, destructive cancel과 후속 admin 요청은 계속 즉시 실패한다. 마지막(30번째)
+attempt에서만 성공하는 회귀를 추가해 window 축소를 막았다. endpoint·credential·응답 본문은 journal에 기록하지
+않는다.
+
+## 2026-08-03 (T-048 production logical inventory warning 판정 보강)
+
+n150의 실제 Map logical inventory에서 `pg_dump --data-only`가 순환 FK의 restore-advisory warning을 stderr로
+출력했지만 exit code는 0이었다. 기존 구현은 stderr가 비어 있지 않다는 이유만으로 정상 dump를 실패 처리해
+pre-forward cutover를 coupled rollback으로 되돌렸다. data-only dump에서는 heading·detail·두 고정 hint가
+모두 일치하는 circular-FK advisory block만 허용하고, schema-only·다른 warning·nonzero exit는 계속
+fail-close하도록 고정했다. 허용·비허용 warning 및 nonzero exit 회귀를 추가했다. 경고 원문·DB DSN·credential은
+journal이나 receipt에 기록하지 않는다.
+
+## 2026-08-02 (T-048 production rollback smoke readiness 보강)
+
+n150 최초 결합 전환의 pre-forward rollback에서 Compose health 통과 직후 Map loopback endpoint가 잠깐
+연결을 거부해, 원래 backup/fence 오류 대신 recovery smoke 오류가 최종 원인으로 덮이는 현상을 확인했다.
+첫 Map signed read와 기존 read-only PinVi Web login shell 호출에서 exact `ConnectionRefusedError`만
+5회·1초 간격으로 재시도한다. 각 HTTP 호출의 10초 timeout까지 포함한 최악 상한은 14초다. timeout·DNS 등
+다른 `OSError`, typed HTTP 응답, envelope/인증/권한 오류와 PinVi destructive cancel probe는 재시도하지
+않는다. recovery에서 Map UI 또는 PinVi login port가 같은 race를 보인 후에는 두 로그인에만 opt-in flag를
+추가했다. exact 연결 거부는 TCP handshake 전에 실패하므로 요청 재전송 불확실성이 없고, destructive cancel과
+후속 admin 요청은 기본값 `false`를 유지한다. exact unavailable+cause 조합, 비재시도 오류와 시도 상한 회귀를
+추가했다.
+
+## 2026-08-02 (T-048 PinVi release pin과 Map GC observation 계약 정렬)
+
+PinVi #424가 단일 적대적 GO review 뒤 squash merge되어 exact release SHA
+`4943282006139fa3b4ef3cb247780bfd9721b4c7`가 확정됐다. tracked production manifest에 이 SHA를
+release로 고정해 candidate와 active·rollback pair provenance가 다른 PinVi source를 mutation 전에
+거부하도록 했다. reviewed candidate SHA는 자동 승격 근거가 아닌 감사 출발점으로 그대로 보존했다.
+
+merged PinVi의 final-boundary request 13개 필드와 append-only audit row의 request/evidence/Map evidence/
+initial·final fence/prior/canary 8개 대조 필드를 Manager parser·fresh DB query와 다시 대조해 동일함을
+확인했다. Map GC observation ID는 versioned namespace 정본인
+`h35:{transaction_id}:cache-target-snapshot-gc:v1`로 정렬하고 이전 `h35:{transaction_id}:gc` receipt를
+fail-close하는 회귀를 추가했다. Map #924 merge 뒤 `map_release_revision`을 final merge SHA로 바꾸고
+Manager exact-head 단일 적대적 리뷰를 진행한다.
+
+## 2026-08-02 (T-048 race-free final fence와 실제 GC checkpoint D)
+
+causal canary 뒤 running writer의 순간적인 in-flight 0을 최종 경계로 승인하던 경쟁 조건을 제거했다. Map
+H35 helper chain에 실제 `gc` operation을 추가해 acquired/non-skipped, remaining backlog 0, referenced 보존과
+deterministic observation 일치를 typed receipt로 먼저 fsync한다. 그 뒤 `final_writers_fencing`을 durable하게
+기록하고 exact 5 writer를 모두 정지한 상태에서 세 DB in-flight 0, Map Dagster run 0, registry/state의 별도
+final fence와 Map application/Dagster write-counter hash를 결박한다.
+
+stopped Map `verify`는 stream/control/restore epoch/etag/high-watermark/snapshot count·Merkle와 네 backlog 0의
+full typed evidence를 반환한다. Pin finalize request는 initial/final fence와 full Map evidence+SHA를 전달하며,
+Manager는 append-only audit receipt를 fresh Pin DB의 exact 1행과 request/evidence/fence/prior/canary 전체로
+대조한다. Pin audit INSERT는 final fence hash에 포함하지 않되 Map 두 DB counter는 verify 전·finalize 전후
+불변이어야 한다. audit commit 뒤 Manager journal fsync가 유실되어도 같은 request의 동일 audit row replay만
+허용한다.
+
+forward boundary는 writer가 stopped인 상태에서 먼저 fsync한다. 이후 exact 5 writer를 idempotent하게 재기동하고
+health와 compatible-pair attestation을 통과한 `runtime_activated`에서만 성공한다. GC backlog/observation 실패,
+foreign audit row, Map counter drift, finalize 응답 유실 재개와 forward-commit 뒤 재기동 재개 회귀를 제품 경계에
+추가했다.
+
+## 2026-08-02 (T-048 결합 window 구현 checkpoint C)
+
+`prepared` journal 뒤 exact 5-writer registry를 먼저 검증하고 DB in-flight와 Map Dagster run 0에서 모든
+writer를 정지하는 `writers_fenced` phase를 추가했다. Map application·Dagster와 Pin DB는 custom dump를
+owner-only transaction directory에 직접 stream하고, 각각 별도 scratch DB에 실제 restore해 Alembic head와
+schema/data logical inventory가 일치해야만 typed backup receipt를 만든다. 세 backup 전체 앞뒤의
+insert/update/delete counter와 `stats_reset` identity, in-flight 0, Map Dagster run 0이 같아야
+`backups_committed`에 도달한다.
+
+DB identity는 cross-repo `h35-db-identity-v1`의 prefix·필드별 NUL·terminal NUL exact bytes로 통일했다.
+scratch DB는 운영 identity를 가장하지 않고 별도 rehearsal identity를 원 archive SHA와 inventory에 결박한다.
+manager env/manifest/initial/enable 상태도 같은 transaction의 rollback bundle에 넣고, rollback은 세 DB 전체
+restore 뒤 manager state와 old runtime을 순서대로 복구하는 private capability에서만 허용한다.
+
+Pin 경계는 read-only schema `0047` preflight와 schema `0048` append-only final audit를 분리한다. 따라서
+window는 `candidate_built`, `pin_preflight_verified`, `map_preflight_verified`와 terminal 직전
+`final_boundary_verified`를 각각 durable phase로 기록한다. final audit row는 app-level DELETE하지 않으며,
+pre-forward rollback에서는 schema `0047` Pin DB 전체 restore로만 제거된다. release unset은 journal·Docker·
+DB mutation 전에 차단하는 회귀를 추가했다.
+
+## 2026-08-02 (T-048 NO-GO 반영: generation bootstrap과 H35 결합 전환 재설계)
+
+exact head `58ca4491` 적대 리뷰에서 기존 v4 active/rollback이 old Pin인 production은 새 release gate와 일반
+manifest 승격 규칙 때문에 generation 7 active=rollback pair를 만들 수 없는 순환 의존이 확인됐다. initial과
+enable도 별도 CLI가 각각 lock을 잡아 그 사이 H35 DB/CSV 변경이나 DB rewind를 막지 못하고, host receipt만
+일치하면 live cutover state를 다시 보지 않는 문제가 있었다.
+
+ADR-28과 runbook을 보강해 existing-v4 전용 one-time generation bootstrap을 정본화했다. sync=false exact
+candidate를 검증·배포한 뒤 v4 active/rollback을 같은 첫 generation 7 pair로 원자 commit하고, old pair는
+일반 rollback slot이 아니라 Map application·Dagster·Pin DB와 manager env/state/manifest를 함께 복구하는
+coupled rollback bundle에만 둔다.
+
+backup→build→DB migration→H35 CSV→bootstrap→initial→enable→causal canary→GC→verify→forward commit 전체를
+한 process의 C6c lock과 owner-only `0600` durable journal로 수행한다. non-terminal journal은 same transaction
+resume/coupled rollback 외 manager mutation을 subprocess 전에 차단한다. pre-forward 실패는 new runtime을
+먼저 중지하고 세 DB와 manager state를 복구한 뒤 old image를 마지막에 기동한다. migration 뒤 image-only
+rollback은 금지하며 forward commit 또는 최초 외부 event 뒤에는 old restore를 거부한다.
+
+Map schema/CSV 동작은 candidate image의 `h35_cutover.py`가 `preflight/migrate/csv5/verify`만 소유하고,
+backup/restore/finalize와 runtime lifecycle은 manager가 소유한다. manager는 transaction/source/schema/backup
+identity에 결박된 secret-free exact JSON receipt만 소비한다. cache-target 전체가 unset/default인 기존 production C6c는
+유지하고 부분 설정만 fail-close하며, Map·Pin actual release source를 active/rollback 양쪽에 결박한다.
+production initial/enable의 호출자 제공 attestor/canary/smoke 주입은 제거하고, 모든 public mutation entrypoint에
+release/pair/candidate 오류의 mutation-zero 행렬을 추가하는 구현 계획으로 전환했다.
+
+## 2026-08-02 (T-048 T-VN-41 production cutover docs-first 착수)
+
+ADR-28과 전용 runbook으로 cache-target production 경계를 먼저 고정했다. Map API에는 digest 기반
+4-role registry만, PinVi ordinary API에는 sync/command/consumer/consumer ID/세 contract pin의 정확한
+7개 변수만 전달한다. restore-fence/recovery 원문은 ordinary runtime에서 제외하고 C6c 전역 lock과
+frozen canonical evidence를 검증한 일회성 initial-cutover runner에는 실제 사용하는 command·consumer·
+recovery만 주입한다. restore-fence는 Map registry와 향후 별도 restore 작업 경계에만 보관한다.
+
+최초 runner 결과를 secret-free durable receipt로 먼저 commit한 뒤에만 sync를 `true`로 원자 전환한다.
+동일 immutable PinVi API image를 재생성하고 기존 full compatible-pair attestation까지 통과해야 enable을
+확정하며, 실패·crash는 `sync=false` env/runtime으로 수렴하도록 구현 범위를 정했다.
+
+적대 설계 리뷰를 반영해 Map registry는 신규 `cache-target:command`를 포함한 정확한 네 principal·role별
+최소 scope·`["pinvi"]`만 허용하도록 강화했다. initial runner에는 실제 쓰는 command/consumer/recovery만
+주입한다. active뿐 아니라 rollback pair도 같은 generation/contract와 cache health/pin smoke에 결박하며,
+env 변경 전 `enable_preparing`부터 enable/rollback 전 단계를 fsync하는 crash journal과 전체 전역 critical
+section을 구현 계약으로 추가했다.
+
+추가 적대 리뷰에 따라 initial receipt는 frozen env/raw·resolved Compose, active/rollback pair와 protected
+4-role binding의 logical SHA를 함께 묶되 registry JSON·개별 digest는 기록하지 않는다. elevated recovery
+token은 Docker inspect metadata에 남지 않는 owner-only secret-file/고정 entrypoint 경계로 전달하고 모든
+종료 경로에서 orphan을 정리한다. terminal enable 전에는 command→Map event→PinVi DB/cache→ACK, lag/DLQ,
+count/Merkle를 확인하는 n150 causal canary를 필수 rollback gate로 추가했다.
+
+운영 adapter는 canonical `.env`를 owner-only 단일 링크 regular file로 검증하고 기대 SHA에서만 원자 교체한다.
+enable 전에는 `sync=true` Compose 후보를 별도로 resolve해 journal에 SHA를 고정하므로 crash 재개 시 process
+override가 달라져도 거부한다. `ktdctl cache-target initial|enable` command를 추가하고, causal canary는 running
+PinVi API container의 `pinvi-cache-target-causal-canary`를 bounded `docker exec`로 호출한다. stdout의 exact
+receipt만 parse하며 고정 target, UUID identity, 연속 generation/order, backlog 0, cursor/count/Merkle 수렴을
+검증하고 raw stdout/stderr는 남기지 않는다. enable 실패 시 `sync=false` runtime 재생성 뒤 generic Compose
+health smoke까지 통과해야 `rolled_back`에 도달한다.
+
+첫 구현 checkpoint로 Map API registry와 PinVi ordinary 7개 변수 및 명시 API base URL을 Compose에 배치했다.
+별도 contract validator는 canonical consumer ID, 정확한 네 principal·role scope·`["pinvi"]`, token digest,
+네 role/legacy token 상호 분리와 pin 형식을 검증한다. restore-fence/recovery 원문은 manager-only로 분류하고
+raw/resolved/runtime protected name/value 경계에 registry JSON과 digest까지 포함했다.
+
+두 번째 구현 checkpoint로 frozen env/raw·resolved Compose/active·rollback pair/role-binding hash에 결박된
+initial receipt와 enable/rollback durable phase 모델을 추가했다. owner-only state의 atomic fsync/replace,
+동일 receipt retry 수렴·foreign evidence 거부, recovery secret-file의 성공/실패 cleanup, causal evidence 없는
+terminal commit 거부를 독립 테스트로 고정했다. recovery principal은 같은 trust domain의
+`cache-target:recovery` + `cache-target:recovery-replay` exact 두 scope로 정렬하되 별도 replay token은 만들지
+않는다.
+
+frozen initial runner adapter는 command/consumer/recovery 세 token을 단일 owner-only bundle mount로 전달하고
+ephemeral container의 세 env를 빈 값으로 override한다. restore-fence는 bundle API에 받지 않으며 argv·Docker
+create metadata에는 원문/digest가 남지 않는다. fixed one-off container identity는 active immutable image와
+Compose one-off label을 대조한 뒤에만 success/failure/retry orphan으로 제거한다. exact receipt retry는 runner를
+재실행하지 않고 secret-free 결과로 수렴하며, final cross-repo pin attestor는 주입 계약으로 남겼다.
+
+production pin checkpoint에서는 generation `7`, Map OpenAPI SHA-256
+`622ea54c98e9b0c09592cf84aced36227992c6bdf256742a3532b892f0efccf2`, Map functional owner
+`9b945ce832ecc3ed037d66c9d4e7bda9a1a69ae0`와 PinVi reviewed candidate
+`6ac8baae2814fae5b16c95846ee40d77cc7fe283`를 tracked manifest에 기록했다. candidate는 감사 정보로만
+취급하고 `pinvi_release_revision`은 비워 두었다. 따라서 두 적대적 GO review와 PinVi merge 뒤 별도 final
+pin commit 전에는 production initial/enable과 compatible-pair capture/deploy/rollback이 모두 mutation 전에
+fail-close한다. 주입 attestor도 이 release gate를 우회할 수 없고, timeout 오류는 Python exception context에
+원래 subprocess payload를 남기지 않는다. cache-target contract 미설정 경로는 기존 동작을 유지한다.
+
+## 2026-07-31 (T-047 compatible-pair canonical readiness 계약 정렬)
+
+production compatible-pair preflight가 canonical healthcheck가 없는 Grafana, Prometheus,
+Concierge MCP·Scheduler·UI, Map Dagster daemon까지 일률적으로 `Health=healthy`를 요구해
+정상 `running` runtime을 mutation 전에 영구 차단하는 결함을 확인했다.
+
+ADR-27에 따라 frozen transaction의 canonical resolved Compose service spec에서 typed readiness
+policy를 직접 파생한다. 활성 healthcheck는 `running + healthy`, healthcheck가 없거나 Compose
+표준으로 비활성화됐으면 `running`을 요구한다. service 누락·종료, 선언된 healthcheck의 빈/
+`starting`/`unhealthy` 상태, malformed/모호한 정의는 Docker 조회 전 또는 mutation 전에
+fail-close한다. 이름별 예외 목록, image 상속 probe 추측, `kill -0 1` 같은 가짜 probe는 추가하지
+않았다.
+
+unit 회귀는 선언/미선언/비활성 healthcheck와 missing/exited/starting/unhealthy/malformed를
+고정했다. 로컬 `alpine:3.20`을 `pull_policy: never`로 사용하는 폐기형 실제 Compose에서는
+healthcheck가 healthy인 service와 healthcheck 없는 long-running service 조합이 통과하고 실제
+unhealthy service가 거부되는 것을 확인했다. focused 결과는 `14 passed`이며 변경 source/test
+Ruff도 통과했다.
+
+전체 backend `1,155 passed`, frontend `type-check`/production build, 공개 placeholder를 사용한
+canonical Compose `config --quiet`/resolved 22-service 분류도 통과했다. 저장소 전체 Ruff에는
+이번 변경과 무관한 `test_api.py`/`test_c6c_image_retention.py` import 정렬 6건, strict mypy에는
+`registry.py`의 기존 `no-any-return` 1건만 남았고, touched source/test에는 새 오류가 없다.
+추적 이슈는 #90이다.
+
+단일 적대 리뷰어의 exact `9759d969` 리뷰는 P1으로 기본 `compose ps`가 같은 service의 stopped
+replica를 숨기고 dict가 duplicate를 덮어쓰는 mutation 전 fail-open을 실제 Docker에서 재현했다.
+P2로 실제 Docker test가 clean runner에서 image 부재를 silent skip하고 `compose down` 실패와
+residue를 검사하지 않는 증거 공백도 지적했다.
+
+이를 반영해 normal/frozen recovery readiness는 모두 `ps --all`을 사용한다. canonical
+`scale`/`deploy.replicas`와 runtime record는 service별 exact singleton이며 canonical
+`container_name`도 exact 일치해야 한다. 예상 밖 service, duplicate, mixed malformed record는
+하나도 버리지 않고 전체 payload를 거부한다. 필수 실제 gate는
+`KTDM_REQUIRE_DOCKER_INTEGRATION=1`에서 Docker 부재를 실패로 만들고, image가 없으면 명시적으로
+준비한 뒤 immutable image ID를 Compose에 사용한다. 실제 scale 2에서 replica 하나를 stop해
+기본 `ps`가 running 하나만 숨겨 보이는 조건을 재현했고 새 `ps --all` 경로가
+stopped+running duplicate를 거부했다. `down` 반환 코드와 사후 project container/network/volume
+0개도 검증한다. 보강 focused unit `37 passed`, 필수 actual Docker gate `1 passed`, backend
+전체 `1,179 passed`다.
+
+같은 단일 리뷰어가 exact `fd61c16f`를 다시 검토해 이전 P1/P2가 모두 해소됐고 새 blocker가
+없다고 판정했다. 최종 판정은 `P0 0 / P1 0 / P2 0`, `ACCEPT FOR TESTS`이며 PR #91은
+draft/mergeable, 원격 check가 구성되지 않은 상태다. n150 mutation은 수행하지 않았고 부모
+작업의 read-only exact preflight와 별도 승인된 compatible-pair 실행만 남겼다.
+
+## 2026-07-31 (T-045 Map UI credential rotation 제품화 착수)
+
+T-045를 별도 코드 PR로 진행 중 전환했다. 첫 checkpoint는 `ktdctl map-ui-auth rotate`
+입력 경계와 Map UI PBKDF2 hash 정본을 먼저 고정하고, 이후 같은 PR에 production
+transaction·journal/recovery·UI-only recreate 검증을 누적한다.
+
+rebase 후 hardening checkpoint에서 production C6c/rotation mutation을 root-only
+`/run/lock/kor-travel-docker-manager/global-mutation.lock` hardened lock으로 통일했다.
+Map UI rotation은 lock 내부에서 canonical `.env`를 다시 읽어 pre-lock 값과 SHA/hash를
+재검증하고, journal/backup/frozen compose는 root-owned private file 검증을 통과한 경우에만
+읽거나 정리한다. source snapshot 배포는 root-owned/non-writable checkout과 root-owned
+`.ktdm-source-revision` exact git SHA 파일을 필수 evidence로 요구하며, root process가
+user-owned `.git/config`를 실행하지 않도록 git 명령 검증을 제거했다.
+
+추가 hardening에서 `.env` owner를 `SUDO_UID`(없으면 root direct는 root, non-root 테스트는 현재
+UID)로 산출한 뒤 최초 read/re-read/replace/recovery까지 같은 expected owner로 전파했다. frozen
+compose 생성은 현재 `.env`와 root-owned compose evidence를 전후 재검증하고, 기존 C6c
+raw/resolved protected value·system bind·secret isolation validator를 통과한 resolved 문서만
+UI recreate와 rollback recovery에 사용한다.
+
+두 번째 rereview checkpoint에서는 production state를 env-owner `$HOME` 추론에서 FHS 정본으로
+clean-cut했다. C6c pair와 Map UI rotation은 모두 `/run/lock/kor-travel-docker-manager/global-mutation.lock`
+및 `/var/lib/kor-travel-docker-manager/<compose-project>/compatible-pair-v4.json`를 같은
+`c6c_state_paths()` 결과로 사용한다. root 실행은 user-writable venv를 직접 `sudo`하지 않고,
+root-owned `/usr/local/sbin/ktdctl-map-ui-auth-rotate` → root-owned `/opt/kor-travel-docker-manager`
+isolated venv/package 경계를 통해서만 rotation module을 import한다.
+
+rollback/recovery journal은 fresh recovery session으로 생기는 세 번째 `.env` SHA를
+`recovery_env_sha256`으로 기록하고 `rollback_prepared`→`rollback_recreate_started`→
+`rollback_verified`→`rolled_back` phase를 둔다. pending recovery는 pre-rotation UI stable
+signature와 non-UI snapshot을 journal evidence로 읽어 active image, UI health/auth, non-UI
+불변성을 재검증하고, terminal cleanup에서 backup·journal·frozen compose를 함께 정리한다.
+
+세 번째 hardening에서는 journal evidence를 secret-free로 재정의했다. UI runtime은 stable canonical
+bytes의 SHA-256만 저장하고, non-UI runtime은 service별 allowlist metadata digest만 저장한다.
+rollback은 root-private `env.recovery` bytes를 먼저 fsync한 뒤 journal에 SHA를 기록하고, 재실행은
+old/new/recovery SHA 각각에서 같은 recovery bytes로만 resume한다. `committed`/`rolled_back` terminal
+journal은 cleanup 중 backup·recovery artifact가 이미 지워진 crash도 current terminal SHA와 runtime/auth
+검증 후 같은 operation audit을 보충하고 남은 artifact를 정리한다. env_new/committed crash 뒤 같은
+stdin 두 줄을 replay해도 pending journal recovery가 일반 current-hash 검증보다 먼저 실행되도록 했다.
+
+trusted root launcher는 `/usr/bin/python3 -I -S`로 wheel `RECORD`와 root-owned site-packages/package를
+검증한 뒤에만 venv Python을 exec한다. venv `bin/python` symlink는 canonical root-owned
+`/usr/bin/python3.x` target chain으로 resolve될 때만 허용한다. 추가로
+`scripts/install-ktdm-trusted-release`를 도입해 clean checkout의 tracked `git archive`를 root-owned
+staging에 푼다. git archive는 source owner 권한으로 만들고, root는 root-owned/non-writable offline
+wheelhouse만 `pip --no-index --find-links`로 소비한다. 기존 또는 명시 deployment-owner 0600 `.env`를
+보존하며, staging exact source에서 backend wheel을 offline build해 설치한다. isolated wheel venv·
+wheelhouse SHA·backend wheel SHA·wheel `RECORD` SHA·`.ktdm-release-manifest.json`을 만든 뒤
+`/opt/kor-travel-docker-manager` activation/rollback 및 launcher self-check까지 이어지게 했다. launcher
+self-check 실패 시에도 새 app root와 새 launcher를 제거하고 이전 app root와 launcher bytes/mode를 복구한다.
+
+단일 적대 리뷰어의 세 번째 exact-head 리뷰는 production lock 선택, state root mode, active pair
+provenance, 실제 wheel `RECORD`, wheelhouse 신뢰 시점, recovery file/journal crash window를
+P0으로 지적했다. 이를 반영해 pair deploy/capture/rollback과 rotation은 canonical `.env`의
+identity·bytes로 같은 lock을 선택하고 lock 획득 직후 transaction snapshot과 다시 결박한다.
+`.env`가 없었다가 생기거나 경로·inode·bytes가 바뀌면 mutation 전에 중단한다. production state
+root는 공용 primitive가 root-owned 0700으로 만들며, frozen rotation Compose에는 active pair의
+다섯 immutable image ID와 Map/PinVi revision·production provenance를 모두 주입한다.
+
+trusted installer는 canonical root-owned wheelhouse의 모든 ancestor와 각 wheel의
+owner/mode/nlink/inode/digest를 root `pip` 실행 전에 snapshot하고 각 소비 단계 뒤에 exact
+재검증한다. 실제 Poetry console script의 `../../../bin/ktdctl`은 exact venv entrypoint 하나만
+허용하고 나머지 `RECORD` escape는 거부한다. recovery는 `rollback_preparing` journal을 먼저
+fsync하고 orphan recovery와 양방향으로 수렴하며, foreign `.env`는 덮지 않는다. terminal audit은
+operation ID당 한 번만 보충하고, 실패한 rollback 시도는 재시도 가능한 non-terminal evidence로
+남긴다. active runtime은 canonical service 집합·container name·healthy 상태·OCI source revision을
+모두 fail-close로 검증한다.
+
+첫 disposable Linux 설치는 실제 wheel build/install과 `RECORD` 검증까지 통과한 뒤, installed
+package의 registry가 source-layout 상대 경로를 사용해 `.venv/lib/config/docker-targets.yml`을
+찾는 제품 경계 결함을 드러냈다. trusted launcher가 고정하는
+`KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT`를 Compose와 registry의 공통 root resolver가 사용하도록
+바꿔 source checkout과 installed `/opt` layout을 같은 명시 root 계약으로 수렴시켰다.
+
+네 번째 exact-head 적대적 리뷰는 DockerService의 네 일반 mutation 진입점이 production lock을
+선택한 뒤 새 effective environment를 별도로 캡처해 다른 transaction을 실행할 수 있는 결함,
+installer가 고정 revision 대신 움직이는 `HEAD`를 archive하는 결함, installer가 rotation과 다른
+lock 경계에서 오래된 `.env`를 활성화할 수 있는 결함, prepared/orphan recovery audit의 cleanup
+crash 재시도 중복을 차단점으로 판정했다. DockerService는 공용 lock snapshot context가 반환한
+identity·bytes와 실제 environment transaction을 exact 결박하도록 네 진입점을 통일했다.
+
+trusted installer는 처음 읽은 exact commit SHA로 `diff-index`와 `git archive`를 모두 수행한다.
+또한 source `.env`의 inode·mode·owner·size·mtime/ctime·SHA snapshot을 잡은 뒤
+`/run/lock/kor-travel-docker-manager/global-mutation.lock`을 root-only/nonblocking 방식으로
+획득하고, lock 안에서 같은 snapshot임을 재검증한다. 그 lock은 wheel build부터 app root·launcher
+activation/rollback이 끝날 때까지 inherited descriptor로 유지되어 rotation과 두 installer의
+경쟁을 모두 차단한다. terminal audit은 `committed`/`rolled_back`/`aborted` 세 상태로 clean-cut하고,
+prepared residue와 orphan backup은 결정적 operation identity로 audit write 뒤 cleanup이
+중단되어도 한 terminal result만 남긴다. staging venv의 generated `ktdctl`은 canonical `/opt`
+Python과 project root를 고정하는 entrypoint로 다시 만들고 해당 wheel `RECORD` digest·size를
+재산출해, atomic activation 뒤에도 직접 CLI와 trusted rotation launcher가 모두 같은 installed
+root를 사용한다.
+
+다섯 번째 exact-head 적대적 리뷰는 installer가 `.env` snapshot 검증 뒤 경로를 다시 열어
+복사하는 TOCTOU, 일반 config mutation이 lock 밖에서 읽은 stale secret interpolation baseline을
+사용하는 문제, 새 release 검증 뒤 이전 backup 삭제 실패가 EXIT rollback trap을 다시 발동할 수
+있는 문제를 차단점으로 판정했다. installer는 전역 lock 안에서 canonical `.env`를
+`O_NOFOLLOW` read-only FD로 한 번 열고 identity·mode·owner·SHA를 결박한 뒤, root-only 0700
+staging에 그 descriptor의 exact bytes만 복사하도록 바꿨다. 경로와 descriptor는 copy 전후에
+각각 재검증하고 installed `.env`도 owner/mode/nlink/size/SHA를 확인한다.
+
+DockerService는 lock 안 exact Compose transaction bytes에서 대상 service의 environment baseline을
+다시 읽어 secret interpolation 의미를 재검증한 뒤에만 candidate를 만든다. release commit은
+검증된 active app/launcher evidence를 durable `committed` state로 먼저 fsync하고, EXIT cleanup도
+그 state를 보면 rollback 대신 active를 보존한 채 post-commit GC만 수행한다. 실패 경로는 이전
+app/launcher 복구가 완결되지 않으면 state와 유일한 rollback residue를 root-only 경로에 보존한다.
+
+여섯 번째 exact-head 적대적 리뷰는 보존한 PID-scoped app/launcher residue가 다음 실행의 recovery
+state와 연결되지 않는 문제와, launcher destination이 directory일 때 `mv -f`가 backup을 그 안으로
+옮기고 성공으로 오인하는 두 P1을 재현했다. installer artifact를 PID 경로에서 host-global 고정
+경로로 clean-cut하고, root-private `trusted-release-transaction.json`에 old app/launcher exact
+evidence, target revision, 새 launcher SHA와 `preparing|prepared|committed` phase를 atomic fsync한다.
+전역 lock 획득 직후 stale state를 먼저 reconcile하므로 non-committed는 old app/launcher exact
+rollback, committed는 active revision/launcher digest 검증 뒤 idempotent GC를 끝내야 새 install을
+시작할 수 있다. state가 없는데 artifact가 있거나 legacy PID/foreign collision이면 mutation 전에
+fail-close한다. 새 app root의 dev/ino도 activation 전에 기록하므로 cleanup이 일부 파일을 지운 뒤
+중단돼 manifest가 불완전해져도 transaction이 만든 exact directory만 제거하고 old rollback을
+복원하며, 같은 경로의 foreign directory는 삭제하지 않는다. `preparing`은 activation artifact가
+생기기 전 phase라 canonical app/env가 정상 운영 변경으로 달라져 staging 검증이 중단돼도
+staging/archive/state만 폐기하고 active baseline을 건드리지 않은 채 다음 실행에서 다시 snapshot한다.
+`committed` GC도 old rollback의 recorded root dev/ino를 사용하므로 이전 GC가 old tree 내부를
+부분 삭제해 revision/manifest evidence가 사라진 뒤 중단돼도 같은 transaction-owned directory만
+계속 삭제해 수렴하고, 다른 inode로 바뀐 경로는 fail-close한다. 실제 gate에서 old rollback 하위
+mount로 GC를 중단해 `.ktdm-source-revision`이 이미 사라진 committed residue를 만든 뒤, mount 해제
+후 재실행이 traceback 없이 남은 old tree를 제거하고 새 install까지 residue 0으로 완료했다.
+
+launcher installer도 고정 root-owned staging file, destination regular-file shape 검증,
+`mv -T`, 설치 후 owner/mode/nlink/SHA 재검증으로 바꿨다. disposable Debian 실제 gate에서 정상
+offline build/install, committed GC 중 rollback mount failure→state/residue 보존→unmount 후 재실행
+자동 GC, launcher destination directory collision→old app/launcher residue 보존→collision 제거 후
+재실행 exact 복구·설치, 새 app 하위 mount로 cleanup을 부분 삭제 상태에서 중단→mount 해제 후
+기록한 root dev/ino로 transaction-owned partial tree만 제거하고 old release 복구·재설치를 모두
+통과했다.
+
+최종 로컬 회귀는 backend 1,146건, C6c deployment 856건, Docker config 93건, credential
+rotation 64건과 touched Ruff·strict mypy·shell syntax를 통과했다. 수정한 exact clean Git tree로
+Debian disposable container에서
+root-owned offline wheelhouse를 새로 만들고 실제 Poetry backend wheel을 build/install했다.
+설치된 `RECORD`의 유일한 site-packages 밖 항목이 exact `.venv/bin/ktdctl`임을 확인하고,
+release manifest↔source revision, canonical `/opt` installed `ktdctl`, installed config,
+trusted launcher `--help`까지 통과했다. 별도 실제 process contention gate에서 같은 global lock을
+다른 process가 보유하면 installer가 source/archive/wheel/app mutation 전에 즉시 중단하는 것도
+확인했다. held `.env` FD 보강 뒤에도 동일한 실제 Debian offline build/install을 다시 통과했고,
+staging 중 env-owner가 canonical 경로를 다른 inode로 교체하는 공격을 주입했을 때 active app을
+만들지 않고 실패하는 actual TOCTOU gate도 통과했다.
+이 checkpoint를 push한 뒤 같은 단일 적대 리뷰어의 exact-head 재리뷰와 n150 검증으로 이어간다.
+
+---
+
+## 2026-07-31 (T-046: `pinvi-pair deploy`/`capture`의 `--wait-timeout` 하드코딩 제거, issue #88)
+
+kor-travel-map API는 uvicorn 기동 전에 `alembic upgrade head`를 실행하는데, `_run_up_stage`가
+`docker compose up --wait --wait-timeout 120`을 하드코딩해 `CREATE INDEX CONCURRENTLY` 등
+non-transactional DDL을 쓰는 긴 마이그레이션(실측 8~18분)에서 deploy가 실패로 판정되고
+`_recover_previous_pair` rollback이 마이그레이션 진행 중인 컨테이너를 그대로 뜯어 durable한
+부분 적용 상태를 남기는 문제였다. kor-travel-map T-VN-H35(prod alembic 0063→0069) 실행 중
+실제로 배포가 중단되며 발견됐다(issue #88).
+
+`_run_up_stage`부터 `deploy_compatible_pinvi_pair` → CLI `pinvi-pair deploy --wait-timeout`까지
+`wait_timeout`을 관통시켰다. 기본값(120)은 그대로라 기존 호출은 회귀 없다.
+
+적대적 리뷰 1명(Workflow 도구)이 스코프 공백을 찾아냈다: `pinvi-pair capture`(clean bootstrap)도
+5개 활성화 단계에서 같은 하드코딩 `wait=True`를 쓰고, `bootstrap_map_api` 단계는 issue #88과
+정확히 같은 alembic 선행 실행 패턴이었다 — 최초 bootstrap은 전체 마이그레이션 이력을 처음부터
+실행할 수 있어 오히려 증분 배포보다 초과 가능성이 크다는 지적도 있었다. 리뷰가 실제 코드
+라인(4139/4191/4214/4237/4264)까지 짚어 재확인했고, `capture_compatible_pinvi_pair`에도 같은
+파라미터·CLI 플래그를 추가해 막았다(검증 로직은 `_validate_c6c_wait_timeout` 공유 helper로
+통일 — CLI 기본값도 리터럴 대신 같은 상수를 import해 두 곳이 벌어지는 것을 막았다).
+
+rollback/recovery 경로(`_recover_previous_pair`, `rollback_compatible_pinvi_pair`)는 의도적으로
+그대로 뒀다 — rollback 대상은 이미 마이그레이션이 끝난 옛 image라, 진짜 hang을 빠르게 판별하는
+쪽이 더 안전하다.
+
+회귀 테스트 다수 추가: threading·기본값 유지·경계값(1/3600)·잘못된 타입/범위(`bool`은
+`isinstance(x, int)`가 `True`라 별도 배제 필요)·`_run_up_stage`가 실제로 만드는 compose
+인자·`_activate_pair_sequentially`의 세 단계 모두 동일 값 사용·`capture`의 11개 `up --wait`
+단계(base 7종 + map_api + map_dependents + pinvi_api + pinvi_dependents) 모두 동일 값 사용.
+backend 1067 passed(기존 1049 + 신규 18), ruff 기존 9건 유지, 변경 파일 mypy clean.
+
+n150에서 실제 긴 마이그레이션을 수반하는 배포로 오발동 rollback이 재현되지 않는 것은 아직
+확인하지 못했다 — kor-travel-map 쪽 실제 cutover 시점에 검증 예정.
+
+---
+
+## 2026-07-31 (C6c/C7 완료 태스크 이관과 credential blocker 분리)
+
+`docs/tasks.md`에 남은 C6c/C7 태스크의 GitHub·운영 증거를 다시 대조했다. 실제 인수까지
+끝난 T-037/038/039/040/041은 `docs/tasks-done.md`로 이관했다. T-031은 구현과 기존
+live가 충족됐지만 새 official deploy의 credential preflight가 막혀 있어 활성 상태를
+유지하고, 제품화 작업을 T-045로 분리했다.
+
+- T-037/039: PR #67/#69의 Map UI 통합 경로와 PinVi login shell 계약을 2026-07-27
+  compatible-pair에서 확인했다. Map UI는 login→`/ops/datasets` 보호 GET→logout→재차단을,
+  PinVi는 SSR route chunk와 hydrated login form을 각각 책임 경계대로 통과했다.
+- T-038/040: Manager가 Map API의 destructive와 features route를 production에서 literal
+  `true`로 승인하고 다른 service/channel에는 이름이 없는 계약을 유지했다. 2026-07-26 C7
+  destructive live와 2026-07-27 pair/live를 통과했고 Map issue #796 및 manager
+  issue #70은 closed 상태다.
+- T-041: PR #73(`c7328ed9`)의 content-addressed rollback reference와 cleanup 구현을 기준으로
+  n150에서 active/rollback reference 가용성과 cleanup 성공을 확인했다. manager issue #72는
+  closed 상태다. 프로세스 `SIGKILL` 주입 테스트는 실행했다고 과장하지 않고, 완료 근거를
+  불변 reference·복구 보존 회귀·실운영 가용성으로 명시했다.
+- 교차 C7 공식 증거는 2026-07-26 Map 조합에서 read-auth `7/7`, KMA active/cap/empty 각
+  `2/2`, schedule-write `2/2`, POI-cache-causal `2/2`, `BLOCKED` 0건, 상태 복구와 active
+  target 0이었다.
+- T-031/T-045: canonical Manager `.env`의 Map UI hash/session은 running UI와 일치하지만
+  manager smoke 평문은 hash 검증에 실패한다. 새 official deploy는 mutation 전에
+  중단되는 것이 올바른 fail-closed 동작이다. `ktdctl` 전용 audited production workflow로
+  hash와 session을 함께 회전하고 복구·감사·실운영 인수를 마칠 때까지 T-031을 완료로
+  기록하지 않는다.
+
+이 변경은 문서 전용이다. 코드, runtime, compose, 운영 환경은 변경하지 않았다.
+
+---
+
+## 2026-07-28 (tasks.md 정리 보정 — T-011/T-012/T-043/T-044 완료 이력 이관 누락 수정)
+
+T-033/034/035/036을 tasks-done.md로 이관하면서, 같은 세션에서 이미 `[x]` 완료 처리했던
+T-011·T-012·T-043·T-044는 정작 tasks.md에 그대로 남아 있던 것을 놓쳤다. `tasks.md`
+자신의 선언("진행 중/대기 작업만 관리한다. 완료된 작업은 tasks-done.md로 분리한다")과
+어긋나는 상태였다. 네 태스크의 요약 표 행과 전체 상세 절(기존 내용 그대로, 실측 기록
+포함)을 tasks-done.md로 옮기고 tasks.md에서 제거했다. 파일 끝의 불필요한 trailing
+blank line도 함께 정리했다. 코드 변경 없음(문서 전용).
+
+---
+
+## 2026-07-28 (T-033/034/035/036 완료 이력 이관 — GitHub issue 상태 확인)
+
+n150 읽기 전용 점검에서 이미 증거로 충족을 확인했던 T-033·T-034·T-035·T-036의 남은
+체크박스를 마무리하면서, 각 태스크 본문이 지시한 대로 관련 GitHub issue(#60/#62/#63)를
+`gh issue view`로 확인했다 — **세 건 모두 이미 closed 상태였다**(저장소에 열린 issue
+자체가 0건). 즉 GitHub 쪽은 이전에 이미 정리되어 있었고, 남은 것은 `docs/tasks.md`가
+그 사실을 반영하지 못하고 있던 문서 쪽 지연뿐이었다.
+
+- T-033: n150에서 실행 중인 Map 4종 image의 `org.opencontainers.image.revision`이 모두
+  동일 40자 commit(`c8ed6164...`)이고 manifest v4 기록과도 일치함을 재확인.
+- T-034: cAdvisor healthy·`/healthz` 200과 manifest의 2026-07-27 active 세대 기록으로
+  capture+readiness가 이미 통과했음을 재확인.
+- T-035: Map API 46시간째 healthy, `docker exec env`로 이름만 확인한 service별 secret
+  격리(admin proxy는 API+UI, service token/cursor signing은 API 전용, Dagster/daemon은
+  전무)가 설계 계약과 정확히 일치함을 재확인.
+- T-036: `pinvi-dagster-latest` 9일째 healthy로 PinVi dependent bootstrap 완료를 재확인.
+
+네 태스크 모두 `docs/tasks.md`에서 제거하고 `docs/tasks-done.md`에 요약 표 행과 전체
+상세 절(기존 체크박스 + 이번 실측으로 채운 마지막 체크박스)을 그대로 이관했다. 코드
+변경 없음(문서 전용).
+
+---
+
+## 2026-07-28 (n150 production 배포 + T-043 1013 shed 실측 검증)
+
+`main`(T-012, T-011 2라운드, T-044)이 병합된 뒤로도 n150 production 매니저는 갱신되지
+않은 상태였다(백엔드 프로세스가 오늘 03:30에 기동되어 T-011/T-044 코드보다 앞선다).
+읽기 전용 사전 점검(cAdvisor healthz, compatible-pair manifest, 실행 중 Map/PinVi
+이미지 4+1종의 OCI revision, Map API/UI의 production 전용 secret 이름 존재 여부)으로
+n150의 현재 상태를 먼저 확인한 뒤, 사용자 승인을 받아 실제 배포를 진행했다.
+
+**배포 절차**([[prod-deploy-mechanics]] 메모 그대로): `backend/src/`·`frontend/src/`만
+dry-run 확인 후 rsync(`.env`·`docker-compose.override.yml`·`frontend/.env.*` 등 보존
+파일은 경로 자체가 겹치지 않아 자동 회피), 프론트 `npm run build`로 재빌드, 백엔드
+프로세스를 내리고 `nohup setsid`로 재기동(`/health` 200 확인), 프론트는 `next start
+-p 12905`의 **process group만**(PGID 확인 후 `kill -TERM -<pgid>`) 종료하고 재기동
+(`Ready in 947ms`). 호스트에 공존하는 다른 프로젝트의 next-server(v15/v16 여러 종)는
+PID/PGID를 미리 확인해 전혀 건드리지 않았다. `kill -TERM -<pgid>`는 auto mode
+classifier가 차단해 사용자가 직접 실행했다.
+
+**T-043 1013 shed 실측**: 배포 직후 `scripts/verify-frontend-toolchain.sh`가 `툴체인
+정상`을 보고했다. WS shed 동작은 `/ws/status`가 아니라 실제로는 `/api/v1/ws/status`에
+마운트되어 있다는 것을 라우터 코드에서 재확인한 뒤(첫 시도는 잘못된 경로라 accept 이전
+ASGI 거절 → uvicorn이 403으로 변환하는 것이었다 — 이 자체가 코드 주석이 설명하는 정확한
+현상이었다), Origin 헤더도 앱의 `allowed_frontend_origins()`를 그대로 호출해 실제
+허용값과 100% 동일하게 맞췄다. 그 뒤 `/api/v1/ws/status`에 유효한 Origin으로 300개의
+미인증 WebSocket 연결을 `asyncio.Barrier`로 동시에 발생시켜 실측: `4401`(AUTH_REQUIRED)
+121건, `1013`(TRY_AGAIN_LATER, shed) 179건. 기본 상한 `KTDM_WS_MAX_PENDING_AUTHORIZATIONS=64`를
+넘는 동시 인가 시도가 정확히 shed되는 것을 실제 production에서 확인했다. 테스트 스크립트는
+실행 뒤 `/tmp`에서 삭제했고, `/health` 200과 다른 모든 컨테이너의 기존 uptime이 그대로
+유지되는 것을 확인해 부작용이 없음을 검증했다.
+
+이번 세션에서 함께 확인한(읽기 전용) T-033·T-034·T-035·T-036의 n150 관련 잔여 체크박스는
+증거상 이미 충족된 것으로 보이나(각 태스크 본문 참조 대신 이 항목에 요약: OCI revision
+전 서비스 동일 40자 commit, cAdvisor healthy+manifest 최신 active 세대, Map API/UI
+secret 이름별 격리 계약 실측 일치, PinVi Dagster 9일째 healthy), GitHub issue(#60/#62/#63)를
+직접 닫는 것은 별도 확인 없이 진행하지 않았다 — tasks.md 체크박스 갱신은 이번 항목의
+범위 밖이라 다음 세션에서 사용자 확인 후 처리한다.
+
+---
+
+## 2026-07-28 (T-044: ensure 라우트 production 서버측 차단)
+
+T-012 적대적 리뷰가 남긴 후속 항목이다. `POST /targets/{target}/ensure`(`ComposeService.ensure_target`)는
+`db`·`storage`·`gra`·`cadv`·`prom`·`geo`·`conc`처럼 Map/PinVi API 런타임이 아닌 target에 대해서는
+production에서도 막히지 않았다 — `assert_c6c_mutation_allowed`는 대상 service가 C6c runtime과
+겹치지 않으면 그대로 반환하는데(이는 개별 컨테이너 start/stop/config가 production에서도 정상
+동작해야 하므로 의도된 것이다), `ensure`는 그런 개별 제어가 아니라 target 전체(의존 서비스
+다건)를 `--build`/`--force-recreate`+init step까지 허용하는 범용 dev 부트스트랩 경로라서 다르다.
+지금까지 유일한 방어선은 프론트가 production 빌드에서 버튼 자체를 숨기는 것뿐이었는데, 이는
+브라우저 번들의 속성이지 백엔드의 속성이 아니다 — `npm run dev` 프론트를 운영 백엔드에 붙이면
+버튼이 보이고 실제로 실행됐다.
+
+**수정**: `ensure_target`이 `assert_manager_mutation_allowed`의 반환값(`mode`)을 받아,
+`assert_c6c_mutation_allowed` 호출 직후(`c6c_deployment_lock` 안, compose baseline 검사와 첫
+Docker subprocess보다 먼저) `mode == "production"`이면 target·service 구성과 무관하게 전면
+차단하도록 했다. `assert_c6c_mutation_allowed` 자체나 `assert_compose_mutation_allowed`,
+`control_container`/`update_container_config`/`reset_container_config`는 건드리지 않았다 —
+그 경로들이 비-C6c target을 production에서도 허용하는 것은 의도된 동작이고 이 태스크의 범위
+밖이다. `DeploymentContractError`를 재사용해 기존과 동일하게 HTTP 409로 매핑되므로 라우트 코드
+변경이 없고, CLI(`ktdctl ensure`)도 같은 메서드를 호출하므로 자동으로 함께 막힌다.
+
+새 회귀 테스트 2건: production + 비-C6c target(`storage`) → 거부(`subprocess.run` 미호출까지
+확인), local/개발 모드에서는 정상 `ensure` 흐름이 막히지 않는 것을 양성 대조로 확인. 기존
+`test_production_generic_mutation_guard_rejects_every_api_entrypoint`(C6c target `map`은
+`assert_c6c_mutation_allowed`가 이미 차단)와 두 차단이 서로 가리지 않고 공존하는 것도 함께
+재확인했다.
+
+**적대적 리뷰 2명(ultracode on, Workflow 도구로 병렬 실행) + 독립 검증**: 리뷰어 1(보안
+완결성/mode 판정/상태 코드 담당)은 `_validate_mutation_environment`가 `local`/`production`
+외에는 절대 반환하지 않는 fail-closed 계약임을 확인해 새 검사를 우회할 제3의 값이 없음을,
+`ensure_target`/`_ensure_target_unlocked`의 호출자가 API 라우트와 CLI 단 둘뿐임을(다른 라우트·
+WebSocket·스케줄러 경로에서 같은 "target 전체 up --build" 동작에 도달할 방법이 없음) 코드
+전수 추적으로 확인했다. 리뷰어 2(테스트 품질/회귀 위험 담당)는 두 production 차단(C6c
+전용·신규 전면 차단)이 서로 마스킹하지 않고 공존함을, 문서상 production에서 `ensure`에 실제로
+의존하는 사용처가 없음을 확인했다. 두 리뷰 모두 새 raise 메시지가 "compatible-pair 워크플로"를
+언급한 것을 지적했다 — 이 지점은 C6c target이면 이미 위에서 걸러지므로 항상 비-C6c target에서만
+도달하는데, 그 대안은 이 지점에서 결코 적용되지 않는다. 메시지를 "manage this service directly
+on the host instead"로 단순화했다. 테스트 하나에 실제로는 읽히지 않는(트랜잭션을 통째로 mock해
+`os.environ`을 안 읽는) `monkeypatch.setenv` 호출이 남아 있던 것도 제거했다. 검증 단계(별도
+에이전트, xhigh effort)에서 두 리뷰의 모든 구체적 주장을 코드에서 직접 재확인(CONFIRMED)했고
+우회나 회귀는 발견되지 않았다 — "핵심 수정은 그대로 merge해도 안전하다"는 결론.
+
+backend 1049 passed(기존 1047 + 신규 2), ruff 기존 9건 유지, 변경 파일 mypy clean. 백엔드 정책
+변경만이고 UI 표면이 없어 실브라우저 E2E는 수행하지 않았다.
+
+---
+
+## 2026-07-28 (T-011 적대적 리뷰 반영 — credential 스캔 우회 2건, React key 포커스 유실)
+
+T-011 구현 직후 적대적 리뷰어 2명(Agent 도구 병렬 실행, 이 시점 ultracode는 off라서 Workflow
+대신 Agent를 썼다)이 리뷰했고, 수정 후 재검토에서 관련된 2차 공백을 추가로 발견해 총 2라운드로
+막았다.
+
+**1라운드 — 리뷰어가 찾은 것**
+
+- **리뷰어 1(보안, confirmed)**: `_value_has_literal_url_credential`이 `_INTERPOLATION_BLOCK_RE`로
+  `${...}` 블록을 통째로 지운 뒤 남은 부분만 스캔했다. `${FAKE_NAME:-literal-secret}`처럼 지어낸
+  변수명으로 감싸기만 하면 스캔 대상 문자열 자체가 사라져 credential 검사를 통째로 우회했고,
+  이미 `${REAL_VAR:-old}`로 보호되던 key를 `${FAKE_VAR:-new-secret}`로 바꾸는 것도 "여전히 보간
+  형태"라 규칙 1(재보간 요구)만으로는 막지 못했다. 두 가지 구체적 우회 입력을 리뷰어가 제시했고,
+  직접 재현 스크립트(shell 이스케이프를 피하려고 Python 파일로 작성)로 두 우회 모두 확인 후 수정:
+  `_INTERPOLATION_BLOCK_RE`를 완전히 제거하고 raw 값을 그대로 스캔하되, `scheme://user:pass@`의
+  password 캡처 그룹 자체가 `${VAR}` 보간인 경우만 예외로 인정한다. credential 스캔은 **baseline과
+  완전히 같은 값**에만 예외를 준다(구조가 아니라 byte-동일성으로 게이트) — 그래야 지어낸 이름으로
+  감싸는 우회가 통하지 않는다.
+- **리뷰어 2(UX, pre-existing이지만 새 기능으로 새로 문제가 됨)**: ports/volumes/networks 행의
+  React `key`에 필드 값 자체(`key={\`port-${idx}-${port}\`}`)가 들어 있어, 이번에 추가한
+  "타이핑 중 즉시 검증" 기능과 만나면 매 keystroke마다 key가 바뀌어 DOM input이 재마운트되고
+  브라우저 포커스가 사라졌다 — 새 기능이 사실상 타이핑 불가능했다. index 전용 key로 교체(행은
+  추가/삭제만 되고 재정렬은 없어 안전). 그 외 whitespace로 인한 오탐 메시지(복붙 시 붙는 공백),
+  `aria-describedby`/`aria-live` 접근성 공백도 함께 수정.
+- 수정 후 mutation test(수정을 되돌리는 스크립트로 원래 취약한 구현을 재도입)로 새로 추가한
+  회귀 테스트 4건만 실패하고 나머지 79건은 그대로 통과하는 것을 확인해, 테스트가 실제로 이
+  수정에 의존한다는 것을 검증했다.
+
+**2라운드 — 1라운드 수정 직후 재검토에서 재발견한 것**
+
+1라운드 수정을 실브라우저로 재검증하려고 Grafana 컨테이너의 설정 모달을 열었을 때(실제
+`docker-compose.yml`의 `GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}`을 보고),
+리뷰어 1이 고친 credential 스캔(`_value_has_literal_url_credential`)이 `scheme://user:pass@`
+**형태에만** 반응한다는 것을 재확인했다 — DSN이 아닌 단일 리터럴 비밀은 이 스캔의 대상이 아니다.
+직접 재현: baseline `${GRAFANA_ADMIN_PASSWORD:-admin}`에 `${TOTALLY_MADE_UP_NAME:-h4x0r-literal-secret}`를
+넣으면 규칙 1(재보간 요구)은 "여전히 `${...}` 형태"라는 이유로 통과시켰다 — `BYPASS CONFIRMED`.
+1라운드에서 고친 것은 DSN류(연결 문자열)뿐이고, 이 저장소의 압도적 다수인 "단일 값 비밀"
+(`PASSWORD`, `TOKEN`, `API_KEY` 등 하나의 리터럴 값)에는 같은 클래스의 우회가 그대로 남아 있었다.
+
+- **수정**: 규칙 1(baseline이 보간이면 새 값도 보간이어야 한다)을 일반화했다. sensitive key
+  (`_is_sensitive_key`)이면, 새 값이 여전히 `${...}` 형태여도 `:-default` 리터럴 자체를 baseline의
+  default와 비교해서 **달라졌으면 거부**한다. 변수 이름이 바뀌었는지는 부수적이다 — 판단 기준은
+  "새 리터럴이 git 추적 파일에 커밋되는가"이다. default를 완전히 없애는 것(`${OTHER_NAME}`, default
+  없음)은 git에 아무것도 남기지 않으므로 허용하고, 변수 이름만 바뀌고 default 리터럴이 baseline과
+  동일하면 허용하며, 비-sensitive key(포트 번호 등)는 이 검사의 대상이 아니라 기본값을 자유롭게
+  바꿀 수 있다(과다 차단 방지).
+- 새 검증 5건 추가(위조 변수명 거부, 같은 변수명 아래 새 리터럴 거부, 변수 이름만 바뀌고 default
+  동일하면 허용, default 제거 허용, 비-sensitive key default 변경 허용) + 기존 DSN 우회 테스트 1건은
+  rule 3만 단독 검증하도록 key 이름을 sensitive하지 않은 이름으로 바꿔 재구성. mutation test로
+  새 테스트 2건만 실패 확인. backend 전체 1047 passed(기존 1042 + 5), ruff 기존 9건 유지. 프론트
+  `configValidation.ts`에 동일 로직 미러링, type-check/lint/build 모두 통과(build는 `next dev`와
+  동시 실행 시 `.next` lock 충돌로 정지하는 것을 발견 — dev 서버를 먼저 내리고 build를 단독
+  실행해야 한다).
+- **실브라우저 재검증**(WSL dev backend + frontend, admin 로그인 세션, 로컬 검증 전용 임시
+  `KTDM_ADMIN_*`/`KTDM_SESSION_SECRET`/`KTDM_FRONTEND_ORIGINS`/`KTDM_CORS_ALLOW_ORIGINS` 환경변수 —
+  `KTDM_CORS_ALLOW_ORIGINS`는 루트 `.env`의 prod 값이 `KTDM_FRONTEND_ORIGINS` 오버라이드보다
+  우선하므로 둘 다 명시적으로 설정해야 했다): Grafana 컨테이너의 `GF_SECURITY_ADMIN_PASSWORD`
+  필드에 `${TOTALLY_MADE_UP_NAME:-h4x0r-literal-secret}`를 한 글자씩 타이핑 → 인라인 오류 표시,
+  diff 미리보기에 `before → after` 정확히 표시, "적용 및 재생성" 버튼 비활성화까지 확인. 같은
+  세션에서 포트 필드에도 문자열을 이어서 타이핑해 React key 수정으로 값이 잘리거나 초기화되지
+  않고 그대로 누적되는 것을 확인했다. 실제 제출은 한 번도 누르지 않아 로컬 컨테이너는 그대로
+  유지했다.
+
+---
+
+## 2026-07-28 (T-011 설정 저장 validation 고도화 — diff 미리보기·baseline 인지 secret 방어)
+
+- T-011의 남은 3개 항목(diff 표시, 포트/볼륨/네트워크 validation, secret 값 방어)을 마무리했다.
+- **diff 미리보기**는 백엔드 호출 없이 프론트에서 계산한다. `configTargetContainer.config`(baseline)와
+  현재 입력 상태를 비교해 포트·네트워크 추가/삭제, env 변경 전후 값을 모달에 실시간으로 보여 준다.
+- **포트 validation**: `docker_service.validate_port_mapping`을 추가했다. 이 저장소의 모든 ports 항목이
+  `${VAR:-12101}:${VAR:-12101}` 형태를 쓰므로(docker-compose.yml 전수 확인), `${...}` 보간 토큰은
+  opaque하게 신뢰하고 리터럴 숫자만 1~65535 범위·host[:container] 형식을 검사한다. 실제 compose 파일의
+  ports 18개·environment 244개 전체를 대상으로 "지금 저장해도 통과하는가"를 living regression test로
+  고정했다(파일이 바뀌면 테스트도 같이 검증한다).
+- **볼륨**: 이미 `compose_volume_graph_hash` 비교로 완전히 불변 처리되어 있어(임의 변경이 첫 mutation
+  전에 409) 서버에 새 검증을 추가하지 않았다. 대신 프론트가 baseline과 비교해 변경을 감지하면 제출 전에
+  경고하고 제출 버튼을 막아, 이미 서버가 거부할 왕복을 미리 차단한다.
+- **secret 방어의 핵심 설계 결정**: 처음에는 T-012에서 확장한 `_is_sensitive_key`(정적 key-이름
+  substring 목록)를 그대로 재사용하려 했으나, 실제 compose 파일 244개 env 전수 검증에서
+  `KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED=true`가 오탐으로 걸렸다 — 이름에 "API_KEY"가 들어가지만
+  원래부터 리터럴 불리언 값이다. 정적 key-이름 휴리스틱은 READ(T-012의 inspect 마스킹, 과다 redaction이
+  안전한 방향)에는 맞지만 WRITE(이 작업, 오탐이 실제 기능을 막는 회귀)에는 너무 거칠다는 것을 실측으로
+  확인했다. **baseline이 이미 `${...}` 보간이었는지**를 기준으로 바꿨다 — 이미 `.env`로 분리돼 있던
+  참조를 리터럴로 되돌리는 것만 막고, 원래부터 리터럴이던 값(불리언 flag, DB 이름 등)은 건드리지 않는다.
+  baseline을 모르는 경우(오늘의 UI에서는 발생하지 않는 신규 key 추가 시나리오)에만 안전한 쪽으로
+  key-이름 휴리스틱을 fallback으로 쓴다.
+- key 이름과 무관하게, 값 안에 literal 접속 자격증명(`scheme://user:pass@`)이 `${...}` 밖에 남아 있으면
+  별도로 거부한다 — `..._PG_DSN`, `..._DATABASE_URL`처럼 이름이 평범해도 값에 비밀번호가 박혀 있을 수
+  있다(T-012 리뷰가 READ 경로에서 지적한 것과 같은 클래스의 위험을 WRITE 경로에서도 막는다). 다만
+  `${OUTER_VAR:-postgresql://user:dev_pw@host/db}`처럼 자격증명 전체를 하나의 `${...:-default}` 기본값
+  안에 두는 이 저장소의 기존 관행(모든 DSN류 값이 이 형태)은 통과시킨다 — `${...}` 블록을 통째로 지운
+  뒤 바깥쪽에 literal credential이 남아 있는지만 본다.
+- 검증은 lock 획득이나 Docker 접근보다 먼저 실행한다(`update_container_config` 진입 직후, compose 파일을
+  읽는 로컬 YAML 읽기만 하고 lock은 잡지 않는다). mutation 테스트로 이 순서를 직접 확인했다: 검증 호출을
+  제거하면 lock/환경 스냅샷 mock의 `AssertionError`가 먼저 터져 테스트가 실패한다.
+- 프론트에는 같은 규칙을 미러링한 `configValidation.ts`/`configDiff.ts`를 추가해 왕복 없이 즉시
+  피드백한다(서버가 최종 게이트이므로 프론트가 놓쳐도 보안 문제는 아니고 UX 품질만 낮아진다). 필드별
+  인라인 오류, 볼륨 불변 경고, 오류가 있으면 제출 버튼 비활성화까지 실브라우저로 확인했다.
+- **로컬 실브라우저 검증**(WSL 백엔드 + dev 프론트, 실제 컨테이너는 절대 재생성하지 않고 모달만 조작):
+  잘못된 포트 형식 → 인라인 오류 + 제출 비활성화, `POSTGRES_PASSWORD`를 리터럴로 바꾸면 baseline 인지
+  거부 메시지, 무해한 `POSTGRES_DB` 변경은 diff 패널에 정확히 표시, 볼륨 변경 시 불변 경고, 잘못된
+  네트워크 이름 거부까지 모두 확인. 제출은 한 번도 누르지 않아 로컬 인프라는 그대로 유지했다.
+- backend 1035 passed(신규 validation 테스트 다수 + negative control로 검증 순서 확인), ruff 기존 9건
+  유지, 프론트 type-check/lint/build 통과.
+
+---
+
+## 2026-07-28 (T-012 적대적 리뷰 반영 — 비밀 노출·포커스 탈취 수정)
+
+- **적대적 리뷰 2명이 각각 실제 비밀 노출 경로를 찾았다.** 이 패널은 inspect를 UI에
+  연결한 최초 지점이라, API/CLI에만 있던 redaction 공백이 브라우저 클릭 한 번으로 열렸다.
+  - key 이름 누락: `SENSITIVE_KEY_PARTS`에 `API_KEY`가 없어 `ACCESS_KEY`에 안 걸렸다.
+    `.env.example`에서 실제로 `*_API_KEY` 5개(OpiNet·KREX EX/GO·concierge·VWorld)를 확인.
+    `API_KEY`/`APIKEY`/`CREDENTIAL`/`PASSWD`를 추가했다.
+  - 값 내부 credential: key 이름이 뭘 걸어도 값 자체에 `postgresql+asyncpg://user:pw@host`
+    형태로 비밀번호가 박힌 DSN은 못 잡는다(`PINVI_DATABASE_URL`, `KOR_TRAVEL_MAP_PG_DSN`,
+    `KTG_PG_DSN` 등). key 전체를 가리는 대신 URL userinfo의 비밀번호 구간만 정규식으로
+    치환해, `..._BASE_URL`처럼 비밀 없는 URL은 그대로 읽을 수 있게 했다.
+  - `cmd`/`entrypoint`는 그동안 어떤 필터도 거치지 않았다. 지금 compose에는 credential이
+    없지만(모두 environment로 주입) 이미지 내장 CMD나 `mc alias set ep access secret`
+    관용구가 통로가 될 수 있어 같은 redaction을 적용했다.
+  - 실행 중 10개 컨테이너 전수 검사(로컬 실브라우저 + fetch)로 유출 0건을 확인했다.
+    `KTG_PG_DSN`은 `postgresql+psycopg://addr:<redacted>@127.0.0.1:5432/kor_travel_geo`로
+    나온다.
+- **포커스 탈취**: 열릴 때 포커스 이동 effect가 `[onClose]`에 묶여 있었는데, `onClose`는
+  부모의 인라인 화살표라 WS broadcast(2초)마다 새 identity를 받아 effect가 재실행되고
+  포커스가 닫기 버튼으로 계속 끌려갔다. 마우스 검증으로는 안 드러나는 키보드/스크린리더
+  결함이었다. 한 번만 포커스하는 effect와 ref로 최신 `onClose`를 읽는 별도 keydown
+  effect로 분리하고, 부모의 콜백도 `useCallback`으로 고정했다. 7초간(broadcast 3회분)
+  포커스가 유지되는 것을 확인했다.
+- **`ensure --build`가 라벨보다 훨씬 넓은 범위를 건드렸다.** `ensure_target`은
+  depends_on 폐포 전체를 재생성한다 — `prom` 5개, `map` 12개, `pinvi` 18개(전체 스택).
+  확인 없이 클릭 한 번으로 실행됐고, db가 포함되면 스키마·권한 복구 스크립트까지 돈다.
+  실행 전 실제 대상 서비스 목록과 개수를 보여 주고 확인을 받게 했다.
+- **target 매칭 comment가 사실과 달랐다.** `containers`를 "직접 소유"라고 적었지만
+  실제로는 depends_on까지 펼쳐진 목록이라 통합 PostgreSQL이 db·geo·conc·map·pinvi·all
+  여섯 target 모두에 들어 있다. 첫 매치를 쓰면 `dependency_order`가 좁은 것부터 나열돼
+  있다는 우연에 기댄 것이었다(`all`은 18개 담아 순서가 바뀌면 클릭 한 번이 전체 스택
+  재생성이 된다). 순서와 무관하게 가장 좁은 target을 고르도록 고쳤다.
+- **`assert_manager_mutation_allowed`가 production을 막는다는 코드 주석이 틀렸다.** 직접
+  읽어 확인 — 그 함수는 환경 선언의 정합성만 검증하고 문자열을 돌려주며,
+  `assert_c6c_mutation_allowed`는 대상이 C6c runtime(Map 4종·pinvi-api)과 안 겹치면 그냥
+  반환한다. 즉 db·storage·gra·cadv·prom·geo·conc는 production에서도 통과한다. 현재
+  유일한 방어선은 프론트 `NODE_ENV` 빌드 타임 제거뿐임을 주석에 정직하게 남기고, 서버측
+  차단은 T-044로 분리했다.
+- 그 외: `aria-controls`가 활성 탭 하나만 유효한 dangling IDREF였던 것을 고정 id로
+  통일, tabpanel에 `tabIndex=0`과 탭 좌우/Home/End 키 이동 추가, 미생성·오프라인
+  컨테이너의 상세 버튼 비활성화(500 에러 대신), raw FastAPI JSON을 사용자 문구로 교체,
+  running 중 `종료 코드 0`으로 오독되던 표시 제거.
+- backend 990 passed(신규 redaction 테스트 다수 포함, negative control로 구 predicate가
+  9건 실패함을 확인), ruff 기존 9건 유지, 프론트 type-check/lint/build 통과.
+
+---
+
+## 2026-07-28 (대시보드 inspect 상세 패널 — T-012)
+
+- 백엔드 `GET /containers/{id}/inspect`는 T-010부터 있었지만 프론트에서 호출하는 코드가
+  0건이었다. 이미 mounts·networks·healthcheck·redact된 env를 모두 반환하고 있어, 이번 작업은
+  기존 계약에 UI를 배선하는 일이었다.
+- `ContainerDetailModal`을 별도 파일로 분리했다. `DashboardClient.tsx`가 이미 1,400줄대라
+  탭 5개를 그 안에 넣으면 리뷰가 어려워진다.
+- target 매칭은 registry가 **직접 소유한 `containers`**를 쓴다. `resolved_services`는
+  depends_on까지 펼쳐지므로 상위 target이 잘못 잡힌다(예: postgres가 `pinvi`로 매칭).
+  실제로 `db`가 정확히 잡히는 것을 브라우저에서 확인했다.
+- `ensure --build` 버튼은 `NODE_ENV !== 'production'` 가드로 개발 빌드에만 노출한다.
+  운영 빌드에서는 번들에서 분기가 죽고, 서버도 production mutation 차단으로 거절하므로 이중이다.
+- **로컬 실브라우저 검증**(WSL 백엔드 + dev 프론트, Windows Chromium). 18개 row 전부 상세
+  버튼 노출, 5개 탭이 실데이터 렌더 — 마운트 rw/ro, 네트워크 2개의 IP/GW/MAC/alias,
+  healthcheck `healthy`와 최근 검사 로그, **env 비밀값 `<redacted>`**. Esc 닫기 동작, 콘솔
+  오류 0건(로그인 전 401·기존 favicon 404 제외).
+- 반응형: 390×844에서 page 가로 스크롤 0, 모달이 viewport 내부, 넓은 Mounts 표와 탭 목록은
+  각자 컨테이너 안에서만 가로 스크롤. 1440×900도 동일.
+- `ensure --build` **클릭은 실행하지 않았다.** 로컬 `db` target은 실데이터가 마운트된
+  PostgreSQL을 재생성하므로 확인 없이 누를 대상이 아니다. 버튼 렌더·target 매칭·title까지
+  확인했고, 클릭 경로는 기존 `POST /targets/{target}/ensure`를 그대로 호출한다.
+- 검증 중 확인한 환경 특성: WSL에서 `cleanup_old_log_files`가 `/mnt/f`(9p)를 스캔해 기동이
+  약 2분 걸린다. 코드 문제가 아니라 마운트 성능이며, 운영(n150 로컬 디스크)은 20~35초다.
+
+---
+
+## 2026-07-28 (WS 인가 동시성 상한 + 프론트 배포 preflight — T-043)
+
+- T-042 리뷰가 남긴 두 항목을 처리했다. accept-then-close 계약상 미인증 peer도 handshake를
+  완료하는데 WS 라우트에는 제한이 없었고, 운영 호스트의 `frontend/node_modules`가 부분 설치
+  상태(최상위 패키지는 있는데 `.bin`이 비어 `next: not found`)로 남아 있었다.
+- 동시 인가 handshake를 `KTDM_WS_MAX_PENDING_AUTHORIZATIONS`(기본 64, 프로세스당)로 묶고
+  초과분을 `close(1013)`으로 흘려보낸다. **per-IP 제한은 쓰지 않았다** — 이 배포의 공개
+  트래픽은 전부 리버스 프록시 IP 하나로 도착해(신뢰 프록시 CIDR이 loopback 전용, 운영
+  로그에서 실제로 모든 외부 접속이 라우터 IP로 관측됨) per-IP 버킷이 인터넷 전체를 한 키에
+  묶어 정상 관리자까지 막는다.
+- **적대적 리뷰 2명이 측정으로 최초 근거 자체를 반증했다. 정직하게 기록한다.**
+  - 위협 모델이 틀렸다: 미인증 peer는 SQLite에 도달하지 못한다. `validate_session_cookie`는
+    쿠키가 없으면 session을 열기 전에 `None`을 돌려주고 DB SELECT는 HMAC 서명 검증 뒤에
+    있다(측정: DB session 0건, 호출당 0.2~2.6us). "거절마다 DB 조회가 잡힌다"는 서술을
+    코드·문서·env에서 모두 걷어냈다.
+  - shed 경로가 완화하려던 경로보다 비쌌다(blocker). 거절 1건마다 `logger.warning`을 부른
+    탓이다 — 측정 거절당 1039~1207us, 로그 제거 시 57~62us, 4401 경로 285~313us.
+    attacker가 제어하는 무제한 동기 디스크 write이기도 했다. edge-triggered로 바꿨다.
+  - `uvicorn --limit-concurrency` 권고를 철회했다. h11 구현이 WebSocket upgrade를 503 검사
+    **이전에** return하므로(`h11_impl.py:221-230`) WS에는 발동하지 않는다. 연결 수 제한은
+    HAProxy `maxconn`/stick-table로 안내한다.
+  - 테스트 공백: counter 증가/감소를 통째로 지워도 970건이 전부 통과했다. 실제 인가 중
+    counter가 오르고 그 사이 요청이 shed되는지, 취소(BaseException)에서 slot이 반납되는지를
+    검증하는 테스트를 추가하고 mutation에서 정확히 그 테스트만 실패함을 확인했다.
+  - preflight가 부분 설치를 통과시켰다 — 막으려던 바로 그 장애다(`next`·`typescript`는
+    있고 `react`가 없는 트리). `npm ls --depth=0`을 결정적 게이트로 바꿨다.
+- 그 밖에 재인가 deadline jitter(배포 재기동 후 위상 고정 해소), 1013 시 폴백 폴링
+  5초→30초(5초 폴링은 요청마다 전체 docker sweep이라 shed가 부하를 되레 키운다),
+  심볼릭 링크 경로 해석·인자 검증·`--fix` 파괴성 경고를 보완했다.
+- backend 970 passed, ruff 기존 9건 유지, 프론트 type-check/lint/build 통과. PR #76.
+
+---
+
+## 2026-07-28 (C7 WebSocket accept-then-close 종료 코드 계약 — T-042)
+
+- `kor-travel-map`의 C7 WebSocket 작업(`T-ADM-C7W` issue #806/PR #807, `T-VN-H11` issue #809)을
+  참조해 매니저 WebSocket 로직을 점검한 결과, **Map이 고친 것과 같은 결함이 그대로 있었다.**
+  `ws_status`/`ws_logs`의 거절이 `accept()` 이전에 `close(4401)`을 호출해 uvicorn(0.28.1 legacy
+  `websockets_impl`)이 HTTP 403 handshake 거절로 바꿔 보냈고, 브라우저는 `4401`이 아니라 `1006`만
+  관측했다. 즉 종료 코드 계약이 어떤 실제 client에도 도달하지 않았다.
+- 기존 `test_ws_status_requires_session`은 이를 잡지 못했다. Starlette TestClient는 ASGI
+  `websocket.close`를 그대로 되던져 pre-accept close와 accept-then-close를 **모두** 같은
+  `WebSocketDisconnect(4401)`로 보고한다 — 거짓 통과였다. 계약은 `test_ws_contract.py`에서
+  ASGI 메시지 시퀀스(`accept` → `close`)로 고정했고, 구 동작 negative control에서 6건이 실패함을
+  확인했다.
+- `C-2`(subprotocol echo)는 이식하지 않았다. 매니저는 쿠키 인증이라 client가
+  `Sec-WebSocket-Protocol`을 보내지 않고, RFC 6455는 제시되지 않은 protocol 선택을 금지한다.
+- 같은 handler의 확인된 결함도 함께 정리했다: idle container에서 client 종료 미검출로 reader
+  thread/docker socket 누수, 소진된 stream의 무한 polling, accept 후 close 없는 return,
+  event loop 위의 blocking docker/SQLite 호출, 연결 0건에도 도는 docker sweep, 살아 있는 소켓의
+  세션 재검증 부재(logout·TTL 미적용).
+- **적대적 리뷰 2명 × 2라운드.** 1라운드는 양쪽 모두 REQUEST_CHANGES였고, 재인가가
+  `asyncio.wait` timeout 기반이라 프레임마다 창이 리셋돼 keepalive를 보내는 client가 logout·TTL을
+  무한 우회하는 것을 probe로 재현했다(19회 기대 → **0회**). 프론트 `attempt`를 `onopen`에서
+  리셋해 지수 backoff가 무력화된 것, `ensure_ascii=False` 회귀도 함께 잡혔다. 2라운드에서는
+  테스트 모듈이 import 시점에 공유 env를 덮어써 34건이 실패하는 blocker를 추가로 발견했다.
+- 리뷰어 간 상충 1건(로그 스트림 thread 누수)은 직접 확인해 **기각**했다. docker-py 7.1.0의
+  `logs(stream=True)`는 generator가 아니라 `CancellableStream`을 반환하고 그 `close()`가
+  `sock.shutdown(SHUT_RDWR)`으로 park된 worker를 깨운다. n150에서 로그 소켓을 16회 열고 닫아
+  hang 0건·pool이 정확히 8에서 유지되는 것으로 재확인했다.
+- **n150 운영 HAProxy TLS 엣지 경유 실브라우저 E2E**로 계약을 검증했다. 미인증
+  `/ws/status`·`/ws/logs` 모두 `code=4401, reason=AUTH_REQUIRED, wasClean=true, data frame 0건`,
+  인증 후 알 수 없는 container_id는 `4000/INVALID_CONTAINER_ID`로 구분됐다. 로그인→대시보드
+  (18개 컨테이너, `REALTIME WS SYNC`)→로그아웃 전환도 정상이고, **로그아웃 뒤 20초간 WS 재연결
+  시도 0건**으로 과거의 403 무한 재시도 루프가 사라진 것을 확인했다.
+- **settle window 기본값은 실측으로 정했다.** 같은 엣지에서 `0.25`는 10/10, `0.0`은 12/12 모두
+  4401이었고 1006은 한 번도 없었다(거절 왕복 264~791ms → 79~373ms). uvicorn legacy
+  `websockets_impl`이 `websocket.close`를 `handshake_completed_event` 뒤에 처리해 101과 close가
+  서버 단에서 이미 직렬화되기 때문이다. Map의 `0.25`는 `websockets-sansio` 기준이라 이 스택에
+  이식되지 않는다. 기본값을 `0.0`으로 두고 `KTDM_WS_ACCEPT_CLOSE_SETTLE_SECONDS` 조절 knob은
+  남겼다 — **uvicorn ws 구현이나 프록시 토폴로지 변경 시 재측정 필요.**
+- backend 956 passed, ruff 기존 9건 유지, 프론트 type-check/lint/build 통과.
+
+---
+
+## 2026-07-20 (C7 Map features routes production 결선 착수 — T-040)
+
+- n150 C7 attestation에서 Manager production Map API runtime에
+  `KOR_TRAVEL_MAP_API_FEATURES_ROUTES_ENABLED`가 없어 검증이 중단되는 원인을 확인했다. Map image의
+  미설정 기본값은 `true`라 feature 관리 REST는 동작했지만, review된 Manager source가 production
+  노출을 명시 승인했다는 사실을 runtime에서 증명할 수 없었다.
+- issue #70과 ADR-25를 먼저 기록했다. Manager canonical Compose의 Map API에만 exact `true`
+  literal을 두고, C6c raw/resolved/runtime 보호 환경 계약이 누락·값 변경·다른 service나 channel의
+  이름 유출을 첫 mutation 전에 거부하도록 구현한다.
+- 최신 main `b3bcb83`에서 독립 branch/worktree를 만들고 CodeGraph 영향도를 확인했다. 변경은 공통
+  candidate 검증과 compatible-pair capture/deploy/rollback 최종 runtime 검증에 모두 도달한다.
+- canonical Compose와 공통 production literal 집합을 정렬하고 누락·`false`·API 외 유출을 raw,
+  resolved, runtime 각각의 `false`·누락 음성 회귀로 고정했다. focused 42개, C6c·Docker config
+  849개, backend 전체 907개 테스트가 통과했다.
+- 변경 source strict mypy와 Ruff의 기존 `E721`/`UP038` 기준선을 제외한 변경 파일 검사가 통과했고,
+  공개 placeholder만 사용한 canonical Docker Compose `config --quiet`도 통과했다.
+
+## 2026-07-20 (C6c PinVi login SSR shell 오탐 수정 착수 — T-039)
+
+- n150 C6c capture status2에서 PinVi Web은 healthy이고 `/admin/login`도 200·`text/html`·비어 있지 않은
+  body·일반 Next.js static marker·`admin/login` 전용 page chunk를 반환했지만, raw HTML에
+  `data-testid="admin-login-form"`이 없다는 이유만으로 shell smoke가 실패했다.
+- exact PinVi page는 `Suspense fallback={null}` 아래 client component를 hydration하므로 SSR shell에
+  form이 없는 것이 정상이다. HTTP shell smoke는 status/content/body와 일반 static marker에 더해
+  route-specific page chunk를 요구해 generic fallback을 fail-close하고, 실제 form과 로그인 상호작용은
+  최종 n150 Playwright가 소유하도록 경계를 정렬한다.
+- C4e main `c4e7cad`에서 T-039 독립 branch/worktree를 만들었다. 문서-only draft PR을 먼저 게시한 뒤
+  exact 구현 diff를 같은 단일 적대적 reviewer가 승인하기 전에는 test/lint를 실행하지 않는다.
+- CodeGraph depth 4에서 직접 호출은 active-contract 검증과 단위 테스트 두 곳이고, 상위 영향은
+  capture/deploy/rollback의 공통 full-contract 검증으로 확인했다. 로컬 exact PinVi production build의
+  `admin/login.html`도 form 0개·Next static marker·`(admin)/admin/login/page-<hex>.js` chunk를 확인했다.
+- 구현 diff는 exact route script `src` regex와 form 유무 양성 2건, non-200/non-HTML/empty/generic/다른
+  route 음성 5건으로 제한했다. 동일 단일 reviewer 승인 전 정책에 따라 test/lint는 실행하지 않았다.
+- 단일 reviewer의 P2 두 건에 따라 content type prefix 비교를 exact `text/html` media type token
+  비교로 바꾸고 `text/html-fallback` 음성 fixture를 추가했다. 운영 문서도 실제
+  `(admin)/admin/login/page-<hex>.js` route chunk와 exact하게 맞췄다. 코드 재리뷰 전에는 test/lint를
+  계속 실행하지 않는다.
+- 같은 단일 reviewer가 수정된 exact head `e5a5835`를 재검토해 P0~P2 없음으로 승인했다. 그 뒤에만
+  gate를 실행했고 focused auth smoke 13개, C6c 전체 806개, backend 전체 894개가 통과했다.
+- pytest 기본 임시경로가 Windows 사용자 Temp를 가리킨 최초 실행은 capture 임시 파일 오류로 0개를
+  수집했고, C6c 전체의 최초 재시도도 NTFS 권한 비트 안전성 검사에서 실패했다. WSL `/tmp`를 명시한
+  동일 범위 재실행은 모두 통과해 코드 실패가 아닌 실행 환경 기준선임을 확인했다.
+- 변경 source Ruff와 기존 import 정렬 기준선을 제외한 C6c test Ruff가 통과했다. strict mypy는 공용
+  venv에 없는 `types-PyYAML` stub만 제외하고 변경 source에서 통과했다. 대형 기존 파일 전체의 import
+  정렬·format 기준선은 이 수정과 무관하므로 섞지 않았다.
+
+## 2026-07-20 (Map destructive production 명시 로컬 검증 완료 — T-038)
+
+- Map standalone compose가 파괴 작업 kill-switch를 기본 `false`로 내리면, Manager가 운영 Map API의
+  승인된 파괴 작업을 명시적으로 결선해야 한다. image 기본값이나 host 환경의 우연한 상속은 쓰지 않는다.
+- Manager canonical compose의 Map API에만 exact `true` literal을 두고 raw/resolved/runtime C6c 보호
+  환경 계약과 compatible-pair v4·C7 environment hash에 결박한다. Dagster·UI·PinVi 등 다른 service에는
+  이름과 값이 없어야 한다.
+- enablement 증거는 source/runtime attestation이 소유하고, 실제 delete/restore/swap 사용의 actor는
+  Map API가 인증 principal에서 기록한다. 단일 적대적 정적 리뷰에서 P0~P2 없음 판정을 받은 뒤 canonical
+  Docker config fixture 누락 한 곳을 exact `true`로 정렬했다.
+- WSL ext4 임시 디렉터리에서 C6c·Docker config focused `839 passed`, backend 전체 `897 passed`를
+  확인했다. 변경 범위는 Ruff 0.3.7의 기존 `I001` 8건을 제외한 gate와 변경 source strict mypy를
+  통과했고, 공개 placeholder만 사용한 production `docker compose config --quiet`도 통과했다.
+
+## 2026-07-20 (C6c Map UI 통합 경로 smoke 수정 착수 — T-037)
+
+- 최종 Map UI 로그인은 200과 `Set-Cookie`를 반환했지만, C6c가 clean-cut된
+  `/ops/providers`를 보호 페이지로 조회해 404로 compatible-pair capture를 차단하는 현상을
+  n150에서 재현했다.
+- provider 운영 화면의 통합 정본인 `/ops/datasets`를 login `next`, 로그인 후 보호 GET,
+  logout 후 재차단 GET의 단일 경로로 사용하고 회귀 테스트·Docker 관리 문서를 함께 정렬한다.
+- 단일 적대적 리뷰에서 P0~P2 없음 판정을 받은 뒤 focused 800개·backend 전체 888개 테스트,
+  Ruff 0.3.7 baseline 제외 gate와 변경 source strict mypy를 통과했다. PR 병합 뒤 같은 exact
+  source compatible-pair capture로 재검증한다.
+
+## 2026-07-20 (C7 PinVi Dagster image 계약 drift 수정 착수 — T-036)
+
+- n150 C7 verified-compatible capture의 PinVi dependent bootstrap에서 `pinvi-dagster`가
+  기동하지 못하는 blocker를 재현 로그와 exact source 계약으로 좁혔다.
+- PinVi exact source revision의 image는 `DAGSTER_HOME=/opt/pinvi/.dagster`와
+  `pinvi.etl.definitions`를 정본으로 사용하지만 manager canonical Compose가 각각 존재하지 않는
+  `/opt/dagster/dagster_home`과 과거 `tripmate.etl.definitions`로 덮어쓰고 있었다.
+- T-036은 두 override와 resolved Compose 회귀 계약만 최소 수정한다. 구현은 단일 적대적 리뷰
+  승인 전까지 테스트를 실행하지 않고, 승인 뒤 로컬 gate와 n150 compatible-pair capture로 검증한다.
+
+## 2026-07-20 (C7 Map production env 로컬 검증 완료 — T-035)
+
+- 같은 적대적 리뷰어가 marker 단조성, source 전체 scalar tree, tracked `env_file` object
+  identity와 test fixture 보강까지 exact head별로 재검토했고 최종 P0~P2 차단점이 없음을 확인했다.
+- Python 3.12에서 backend 886개 테스트가 모두 통과했다. 변경 파일은 Ruff 0.3.7 범위 검사와
+  `types-PyYAML`을 포함한 strict mypy를 통과했고, 공개 dummy 값으로 기본·커스텀 Compose
+  `config --quiet`도 모두 통과했다.
+- 저장소 main 자체의 Ruff/mypy 누적 오류는 별도 baseline으로 분리했다. 이번 변경 파일 Ruff는
+  기존 exact-type 검사(`E721`, `UP038`)를 명시적으로 보존했고, 새 source 두 파일은 strict mypy
+  suppression 없이 통과했다.
+- PR #64는 merge commit `3f9973806e8addff96eb1339602f992ed424fb1c`로 `main`에 병합됐다.
+  issue #63은 계속 열어 두며, final n150 v4 exact-pair의 startup/readiness, runtime secret
+  isolation, cAdvisor health와 C7 live E2E가 끝난 뒤에만 닫는다.
+
+## 2026-07-20 (C7 Map production env 적대적 리뷰 P1 보강 — T-035)
+
+- CodeGraph depth 4 재점검에서 현재 UI auth preflight가 candidate build/recreate 전에 실행되어,
+  base runtime에 새 admin proxy env가 없으면 첫 전환과 rollback이 모두 Docker mutation 0회에서
+  순환 차단됨을 확인했다.
+- compatible-pair v4 shape는 유지하면서 manifest active pair의 exact `map_source_revision`에서 Map
+  source `docker-compose.yml`을 읽는다. active/rollback이 모두 알려진 source env v3인 최초 전환
+  window에서만 현재 UI admin proxy의 없음/frozen exact를 허용한다. source env v4가 한 번 기록되면
+  이후 v3 rollback도 필수 exact이며 candidate와 activation 후 runtime의 결선은 완화하지 않았다.
+- `.env.example`에 공개된 admin/service/cursor local placeholder 세 값은 production config와
+  raw/resolved candidate에서 명시적으로 거부하고 local에서만 허용하도록 보강했다. 재리뷰 승인
+  전 정책에 따라 test/lint/Compose gate는 아직 실행하지 않았다.
+- 두 번째 재리뷰에서 active/rollback 두 slot만으로 v4 이력의 단조성을 증명할 수 없고 source Compose의
+  다른 scalar path에 보호 placeholder를 복제할 수 있음을 확인했다. manifest v4 exact shape는 유지하고
+  sibling marker에 최초 v3/v3 logical hash를 pending으로 원자 고정한 뒤 성공한 activation/runtime
+  isolation/전체 smoke 후 complete로만 전환한다. complete는 rollback/rotation이 낮출 수 없으며
+  A3→B4→rollback A3→C3 뒤에도 누락을 거부한다.
+- source classifier는 profile/public/debug/service/admin/cursor 이름과 placeholder를 전체 scalar tree에서
+  exact path/count로 검사한다. API·Dagster·daemon `env_file`의 path/options shape와 exact commit에
+  추적된 참조 파일 내용도 고정하고, 다른 service/build/label/command/config/secret 유출 fixture를
+  추가했다. 재리뷰 승인 전이므로 test/lint/Compose gate는 계속 실행하지 않았다.
+
+## 2026-07-19 (C7 Map production API env 구현 준비 — T-035)
+
+- 수정 전 CodeGraph로 `C6cDeploymentConfig`, config loader, raw candidate validator, resolved
+  secret isolation의 depth 4 영향도를 확인했다. 배포·캡처·롤백과 공용 fixture가 모두 직접
+  영향권이므로 config·Compose·raw/resolved/runtime 검사를 한 변경으로 정렬했다.
+- canonical Compose에 production/public-key/debug/metrics와 host-network loopback trusted proxy
+  CIDR literal을 고정했다. admin proxy secret은 Map API+UI BFF exact pair, service token과 cursor
+  signing secret은 Map API-only로 결선하고 모두 manager `.env`에서 hard-require한다.
+- 세 신규 secret의 32자 이상·Unicode 공백 금지·기존 ops/UI/smoke credential 포함 상호 구분을
+  mutation 전에 검증한다. 다른 service의 environment/env_file/build arg/config/secret/label/command
+  경로와 runtime metadata로 이름 또는 값이 유출되는 경우를 거부하는 음성 fixture를 보강했다.
+- 구현 diff와 보안 점검 뒤 동일 적대적 리뷰어에게 넘길 준비 상태다. 리뷰 승인 전 정책에 따라
+  test/lint/Compose gate와 n150 live 검증은 아직 실행하지 않았다.
+
+## 2026-07-19 (C7 Map production API env 결선 착수 — T-035)
+
+- Map PR #782 교차 적대 리뷰에서 manager main이 ops principal만 전달해 새 production image의
+  admin/service/public/debug/metrics 불변식을 만족하지 못하고 startup 전에 fail-close하는 P1을
+  확인했다. 이어지는 PR #780의 cursor signing secret도 같은 final cutover에 포함한다.
+- issue #63과 ADR-23을 만들고 admin proxy는 Map API+UI BFF, service/cursor secret은 Map API-only,
+  profile/public/debug는 canonical literal로 고정했다. 인증된 Prometheus scrape 결선 전에는 metrics
+  endpoint를 명시적으로 끈다.
+- 다음 단계는 문서 선행 commit 뒤 canonical Compose와 C6c raw/resolved/runtime preflight·음성
+  fixture를 구현하고, 같은 단일 적대적 리뷰어 승인 전에는 test/lint/Compose gate를 실행하지 않는 것이다.
+
+## 2026-07-19 (PR #61 리뷰 차단 보강 설계 — T-033/T-034)
+
+- PR #61 리뷰에서 raw Compose에는 있던 Map UI·Dagster web·Dagster daemon provenance가
+  resolved 검증, snapshot build, candidate inspection, activation·rollback에서 누락돼 기존
+  `development` image가 계속 기동될 수 있는 P1 경로를 확인했다.
+- Map API만 기록하던 compatible-pair v3 대신 Map runtime 네 immutable image ID와 공통 clean
+  source revision을 모두 기록하는 v4 clean-cut을 결정했다. capture/deploy/rollback은 Map
+  runtime 네 service와 PinVi API를 같은 frozen transaction으로 build·재생성·검증하고,
+  복원 실패 시 전체를 중지한다.
+- cAdvisor는 raw exact listen argument와 default/custom resolved health URL이 같은 port인지
+  확인하는 회귀 계약을 추가한다. 구현 뒤 동일 리뷰어 재검토 전에는 test·lint·Compose
+  config를 실행하지 않는다.
+- manager 구현은 manifest v4, 다섯 service snapshot build·activation·rollback·halt와 관련
+  회귀 계약까지 작성했다. Map main의 C7 attestation runner도 동반 PR #778에서 v4 9-field
+  pair와 네 Map role image ID 비교로 동기화하며, manager PR은 이 선행 계약에 의존한다.
+- 교차 재리뷰에서 canonical v4 파일이 없고 과거 기본 `compatible-pair-v2.json`만 있는 host를
+  빈 state로 오인하는 경로와 ADR-20의 과거 v3·두 API 지침이 현행 ADR-21과 충돌하는 문제를
+  확인했다. 저장소 역사에 실제 존재한 v2/v3 sibling은 payload를 신뢰하지 않고 fail-close하며,
+  ADR-20의 배포 결과는 ADR-21의 v4·다섯 runtime transaction이 대체함을 명시한다.
+
+## 2026-07-19 (C6c cAdvisor healthcheck 포트 drift 확인 — T-034)
+
+- n150 production의 canonical compose는 cAdvisor를 `CADVISOR_PORT`(기본 `12301`)로
+  정상 기동하고 해당 포트의 `/healthz`도 응답했지만, image에서 상속된
+  healthcheck는 `8080`을 계속 조회해 container를 `unhealthy`로 판정했다.
+- C6c bootstrap의 base-service readiness가 이 판정을 fail-close해 compatible-pair
+  capture가 중단되었고, 계약에 따라 Map·PinVi API는 정지 상태를 유지했다.
+- issue #62와 T-034는 cAdvisor listen·healthcheck가 같은 `CADVISOR_PORT`를 사용하게
+  고정하고, 정상 health 확인 후 capture를 한 번만 재시도하는 작업으로 분리한다.
+
+## 2026-07-19 (C7 Map UI·Dagster provenance 누락 확인 — T-033)
+
+- n150 production 후보를 clean Map commit에서 빌드한 뒤 OCI label을 확인한 결과 Map API는
+  exact revision을 가졌지만 Map UI·Dagster web·Dagster daemon은 Dockerfile 기본값
+  `development`를 유지해 C7 runtime attestation을 통과할 수 없음을 확인했다.
+- 원인은 세 compose service가 Dockerfile에 선언된 `KOR_TRAVEL_MAP_GIT_COMMIT` build arg를
+  전달하지 않는 wiring 누락이다. issue #60으로 기록하고 실제 container 기동 전에
+  candidate를 중단했다.
+- T-033은 Map runtime 네 image가 같은 canonical source commit을 사용하도록 compose와
+  계약 테스트를 정렬하고, n150 exact-image label 및 C7 attestation으로 완료한다.
+
+## 2026-07-19 (T-032 C7 image provenance 완료·아카이브)
+
+- docker-manager PR #58을 `ecaab504e63a99cb757318d3b67337bec962d90b`로 squash merge했다.
+- clean HEAD→Git archive context→exact Compose build mapping→OCI label→compatible-pair manifest v3
+  결박과 상위 C7 n150 production gate 완료를 반영해 T-032를 `tasks-done.md`로 옮겼다.
+- 세션 상태 정본인 `CLAUDE.md`를 최종 merge 상태로 갱신했다. 이 저장소에는 별도
+  `docs/resume.md`가 없다.
+
+## 2026-07-19 (C7 C6c image source provenance fail-close 착수 — T-032)
+
+- production `pinvi-pair capture/deploy --build`가 Map·PinVi 각 build context의 exact Git root,
+  clean worktree, lowercase 40자 `HEAD`를 host-wide lock 안에서 파생·재검증하도록 설계했다.
+- 적대적 사전 리뷰에서 live worktree build의 변경·원복 TOCTOU와 ignored 파일 혼입 위험을
+  P1로 확인해, 실제 Docker build input을 각 exact `HEAD`의 일회성 Git archive context로 교체했다.
+- 후속 리뷰에서 external Dockerfile·additional context가 snapshot을 우회할 수 있음을 확인해
+  raw/resolved build mapping 전체와 snapshot 내부 Dockerfile 경로를 exact allowlist로 고정했다.
+- Map의 `KOR_TRAVEL_MAP_GIT_COMMIT`, PinVi의 `PINVI_SOURCE_REVISION`/
+  `PINVI_BUILD_ENVIRONMENT=production`을 canonical Compose build arg로만 전달하고, 사용자
+  명시 값·resolved arg·source wiring drift를 첫 container mutation 전에 거부하도록 했다.
+- 각 API build/recreate 직후 smoke보다 먼저 immutable image의
+  `org.opencontainers.image.revision`을 검사하고 PinVi는
+  `io.pinvi.build.environment=production`도 강제했다.
+- compatible-pair를 v3 clean-cut해 active/rollback 각 pair에 두 image ID, 두 source revision,
+  contract generation, recorded time을 exact 필수 필드로 보존했다. provenance가 없는
+  v1/v2는 자동 전환하지 않으며 capture/deploy/rollback/smoke 결과도 image ID↔revision을
+  함께 반환한다.
+- 같은 단일 리뷰어가 두 P1 보강 뒤 새 P0/P1/P2 없음과 `ACCEPT FOR TESTS`를 확인했다. WSL
+  Docker Python 3.13에서 C6c focused `597 passed`, backend 전체 `685 passed`, 변경 source strict
+  mypy와 Ruff를 통과했다. production Compose도 `config --quiet`과 resolved exact build mapping을
+  통과했다. Python 3.13 tarfile의 3.14 기본 filter 변경 안내 2건만 남고 기능 실패는 없다.
+
+## 2026-07-19 (C6c Map API provider runtime clean-cut 정렬 — T-031)
+
+- n150 migration 전 비파괴 preflight에서 Manager compose가 Map에서 제거된 provider credential env 9개를
+  빈 값까지 API에 주입해 exact Map entrypoint가 fail-close하는 계약 drift를 확인했다.
+- 제거된 env를 Map API compose에서 삭제하고 provider credential은 Dagster·daemon 수집 경계에만 남겼다.
+- raw candidate·resolved candidate·최종 resolved C6c contract가 해당 이름과 제거된 live-preview flag의
+  존재 자체를 API 기동 전에 거부하도록 회귀 guard와 테스트를 추가했다.
+- legacy data.go.kr credential 잔여 주입도 제거하고 Map API `command`·`entrypoint` override를 세 검증
+  경계와 runtime inspect에서 금지해 immutable image의 migration과 entrypoint fail-close 우회를 차단했다.
+- migration·credential rotation·container/API/manifest 변경은 이 수정 PR 머지와 재검증 전까지 중지했다.
+
+## 2026-07-19 (C6c Map UI 인증 fail-close 계약 보강 — T-031)
+
+- Map UI runtime username·PBKDF2 hash·session secret을 기본값 없는 compose 보간과 정확한 Map UI Env
+  경로로 고정하고, manager-only 평문 smoke 비밀번호가 container에 주입되지 않는 계약을 문서화했다.
+- raw/resolved compose, runtime inspect, active-pair frozen recovery transaction에서 누락·변조·다른 서비스
+  노출·평문 주입·live environment drift를 거부하는 회귀 테스트를 추가했다.
+- 공식 차단 리뷰에 따라 첫 API stop 전에 current Map UI exact runtime 인증과
+  login→protected→logout→reblock을 검사하고, 모든 Unicode whitespace session secret·credential
+  repr/result/error 누출·필수 Map UI 서비스 부재를 거부하는 테스트와 운영 순서를 보강했다.
+- local gate에서 Docker Compose resolved JSON이 literal `$`를 `$$`로 표현하는 경계를 확인해,
+  resolved compose 비교는 escaped representation을 허용하되 current/final runtime은 raw exact 값을
+  유지하고 잘못된 dollar 수와 비허용 경로 복제를 거부하는 회귀 테스트를 보강했다.
+- 공식 리뷰 승인 뒤 ext4에서 C6c targeted 테스트 `541 passed`, backend 전체 테스트 `599 passed`,
+  strict mypy와 신규 lint `0`, production Docker Compose config/resolved guard를 통과했다.
+  n150 production cross-repo smoke와 실제 UI 로그인 검증은 아직 남아 있어 T-031은 진행 중으로 유지한다.
+- n150 read-only preflight에서 일반 scalar의 username 문자열 일치를 confidential value leak으로 오인한
+  false-positive를 mutation 없이 확인했다. username은 exact Map UI wiring/runtime equality만 강제하고,
+  ops token·PBKDF2 hash·session secret·평문 credential만 전역 scalar isolation 대상으로 유지하도록 회귀
+  테스트와 운영 문서를 보강했다. 공식 리뷰 승인 뒤 ext4에서 C6c targeted 테스트 `528 passed`, backend
+  전체 테스트 `616 passed`, strict mypy와 신규 lint `0`, production Docker Compose `config --quiet` 및
+  resolved guard `2/2`를 통과했다. root 권한이 필요한 n150 Map UI 비밀번호 회전, cross-repo smoke와
+  실제 UI 로그인 검증은 아직 남았다.
+
+## 2026-07-19 (C6c closed transaction 회귀 검증 — T-031)
+
+- pass17~19의 frozen compose transaction, candidate/baseline 분리, 동일 transaction 복구 계약에 맞춰
+  이전 테스트 fixture를 갱신했다. production guard를 우회하거나 실제 manager 경로 검증을 약화하지
+  않고, 테스트마다 frozen root/active recovery transaction을 명시적으로 주입했다.
+- C6c/Docker config focused 테스트 `395 passed`, backend 전체 테스트 `453 passed`,
+  `c6c_deployment.py` strict mypy와 변경 파일 Ruff를 통과했다.
+- n150 production 배포와 live UI/API E2E는 아직 수행하지 않았으므로 T-031은 진행 중으로 유지한다.
+
+## 2026-07-18 (Map↔PinVi C6c ops principal 배포 결선 착수 — T-031)
+
+- Map canonical ops clean-cut 뒤 PinVi가 삭제된 legacy endpoint를 호출하던 문제를 복구하기 위해,
+  서비스 간 principal을 `ops:read`와 import-job `ops:cancel` 두 capability로 분리한다.
+- token은 manager의 gitignore된 `.env`를 단일 source로 사용하되 map API와 PinVi API에만 각각
+  전달한다. Map Dagster·daemon·UI와 PinVi Web·Dagster에는 전달하지 않는다.
+- 일반 write token은 schedule·refresh policy·update request까지 불필요하게 열기 때문에 두지
+  않는다. cancel token은 exact import-job cancel endpoint에만 결박하며, 단일 고정 PinVi 주체를
+  위해 DB credential 수명주기를 추가하지 않는다.
+- 구현 전 완료 조건을 `docs/tasks.md` T-031과 ADR-20에 먼저 기록했다. 이후 compose 계약 테스트,
+  compatible image pair 배포/rollback, n150 read·cancel·거부 smoke와 로그인 검증까지 수행한다.
+- 적대적 리뷰에서 production mode 누락 시 local+빈 token으로 부팅되는 fail-open, public liveness만으로
+  Map과 PinVi를 동시에 올리는 순서, host-network bind/publish port 혼동, mutable tag rollback,
+  gitignore된 override의 secret leak 검사 공백을 확인했다.
+- `KTDM_DEPLOYMENT_ENVIRONMENT`와 `PINVI_ENVIRONMENT`를 명시적으로 일치시키고 production은 Map
+  `KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED=true`까지 요구한다. 두 token은 32자 이상·모든 공백 없음·
+  상호 다름을 container 변경 전에 검사한다.
+- 최초 구현은 production `ensure pinvi`를 dependency 1회 → Map API wait → signed read 200 envelope/
+  무토큰 401/import-job cancel 404/non-cancel mutation 403 → PinVi API wait → 나머지 앱 순서로
+  분리했다. 아래 적대적 재리뷰에서 일반 ensure를 폐쇄하고 mixed pair 없는 전용 deploy로 보강했다.
+- merged compose와 prod override의 environment/env_file/command/build args를 실제 token 값까지 검사하고,
+  기동 뒤에는 모든 managed container를 inspect해 Map API와 PinVi API 외 노출을 거부한다.
+- `ktdctl pinvi-pair capture --verified-compatible`와 `ktdctl pinvi-pair rollback`을 추가했다. manifest는
+  manager state 디렉터리에 두 immutable image ID를 mode 0600으로 원자 기록하며,
+  단일 image·moving tag rollback 표면은 제공하지 않는다. 실제 테스트와 n150 배포 검증은 아직 남았다.
+- C6c 적대적 재리뷰의 P1을 반영해 production 일반 `ensure`/container action·config·reset/direct Compose
+  경로의 API mutation을 중앙 차단하고, 전용 `ktdctl pinvi-pair deploy` capability만 허용했다. deploy,
+  capture, rollback은 preflight부터 manifest commit/복구까지 같은 host filesystem lock을 잡는다.
+- manifest를 generation 포함 v2로 올렸다. merged compose의 두 API host network, PinVi production mode,
+  Map bind port, 정확한 loopback base, container identity, manager-only smoke credential와 `env_file` 격리,
+  두 immutable image override를 mutation 전에 검증한다. local token opt-out도 두 값이 모두 빈 경우로
+  제한했다.
+- mixed pair 창을 없애기 위해 기존 PinVi API를 먼저 quiesce하고 Map smoke → PinVi admin 로그인과
+  ETL/provider-sync 200 envelope·typed cancel 오류/`Retry-After` → remaining app `--wait` → Map UI
+  로그인/보호 `/ops/providers`/로그아웃과 PinVi Web shell → runtime inspect 순으로 승격한다.
+- 어느 중간 단계나 rollback 검증이 실패해도 manifest를 갱신하지 않고 배포 시작 시점 active pair의 두
+  image를 함께 복구해 전체 계약을 재검증한다. 복구가 불가능하면 두 API를 중지하고
+  `halted_requires_operator`를 반환한다. 이 보강의 테스트 실행·n150 live 검증은 아직 하지 않았다.
+- 최종 적대적 리뷰를 반영해 generic API mutation guard가 mode/required/token pair를 공통 검사하도록
+  닫고, Compose 분류는 알려진 read-only만 허용하며 `scale`·`watch`·알 수 없는 명령을 default-deny한다.
+- pair deploy/rollback은 dependency·UI·Dagster를 build/recreate하지 않는다. 비-API 필수 서비스는 변경
+  없이 running/healthy를 검사하고 두 API만 `--no-deps`로 변경·복구한다. final/recovery runtime 검증도
+  `ps --all` 존재 여부가 아니라 필수 서비스의 실제 running/healthy 상태를 요구한다.
+- clean/legacy v1용 capture를 host-lock bootstrap transaction으로 강화했다. candidate Map → signed smoke
+  → PinVi → 전체 smoke 성공 뒤에만 최초 v2를 기록하고 실패하면 두 API를 모두 중지한다. PinVi owned
+  cancel fixture는 정확한 409/502/503 code/details/retryability와 양의 `Retry-After`만 허용하며 429와
+  generic 오류는 거부한다. 요청에 따라 이 보강 직후 테스트는 아직 실행하지 않았다.
+- 최종 차단 리뷰에서 local manager와 PinVi mode의 실제 계약을 `local → development`로 바로잡고,
+  모든 Compose/Docker SDK/config 파일 mutation이 공통 mode/token guard와 재진입 가능한 host lock을
+  공유하도록 닫았다. config recreate/init 실패는 compose 파일의 원래 byte를 원자 복원하고 기존 runtime
+  재생성까지 시도한다.
+- clean capture는 빈 host에서도 base dependency → Map API/signed smoke → Map dependents → PinVi API/
+  canonical smoke → PinVi dependents로 전체 topology를 구성한다. 실패 시 기존 container를 삭제하지 않고
+  transaction이 만든 container만 정리한다. rollback/recovery도 Map 복원·signed smoke 뒤 PinVi를 복원해
+  혼합 pair를 실행하지 않는다.
+- PinVi ETL/provider 응답은 `data: null`을 거부하고 실제 DTO 핵심 shape를 검사한다. Web 200도 admin login
+  form과 Next build marker가 모두 있어야 한다. runtime inspect는 Env뿐 아니라 Cmd/Entrypoint/Labels와 모든
+  안전 scalar에서 secret 이름·값 누출을 차단한다.
+- manifest/lock을 checkout-independent Compose project 상태 디렉터리로 옮기고 relative/noncanonical/
+  cross-project production override를 거부한다. manifest 원자 replace 뒤 부모 디렉터리까지 fsync한다.
+  이 차단 리뷰 반영 뒤에도 신규 적대적 리뷰 2명 승인 전에는 테스트·lint를 실행하지 않는다.
+- 신규 1차 적대적 리뷰에서 발견한 `wait --down-project=true` 분류 우회, raw Env 중복에 가려지는 secret,
+  offset 없는 PinVi datetime, REST 500에서의 config/runtime 복원 진단 유실을 보강했다. 회귀 테스트는
+  추가했지만 2명 승인 전 실행 금지 원칙에 따라 아직 실행하지 않았다.
+- pass3 적대적 차단 리뷰 8건을 반영했다. clean bootstrap은 실제 init 예외도 created-only cleanup으로
+  수렴하고, `wait --down-project=*`는 service 인자와 무관하게 project-wide guard/lock을 사용한다. production
+  state root/파일명은 project별 단일 경로로 고정했다. Map/PinVi DTO와 owned cancel member, manifest
+  version/recorded_at을 fail-closed로 강화했으며 parent fsync 실패 시 이전 manifest를 복원한다. config restore와
+  미생성 start fallback은 subprocess 진단을 REST까지 보존한다. 회귀 테스트는 작성만 했고 신규 리뷰 2명 승인
+  전까지 실행하지 않는다.
+- pass4 적대적 차단 리뷰 3건을 반영했다. Map dataset-grid의 canonical 필드를 `execution_coverage`로
+  바로잡고 production Map bind/PinVi base URL을 정확히 `12701`로 고정했다. Map dataset row와 PinVi
+  repository/asset/schedule/sensor 배열 원소를 실제 DTO shape까지 검사하며 `[null]`과 잘못된 nested 원소를
+  거부하는 회귀 fixture를 추가했다. 신규 적대적 리뷰 2명 승인 전이므로 테스트·lint·build는 실행하지 않았다.
+- pass5 적대적 차단 리뷰 3건을 반영했다. Map tokenless/cross-token/non-cancel capability 음성 smoke는 HTTP
+  status와 RFC7807 code를 함께 검사한다. PinVi destructive cancel은 transaction state로 정확히 한 번만
+  호출하고 첫 증거를 deploy/bootstrap/final verification/recovery에서 재사용하며 uncertain 결과에는 재요청하지
+  않는다. cancellation attempt/member/Dagster run의 전체 datetime·structured error·lifecycle·commit 보존
+  DTO와 canonical 409 root-only shape를 회귀 fixture로 고정했다. 신규 적대적 리뷰 2명 승인 전이므로
+  테스트·lint·build는 실행하지 않았다.
+- pass6 cancel DTO 정렬을 반영했다. full 409은 unresolved count 0, resolved root+unresolved child,
+  transient all-resolved topology를 허용하되 count와 member 상태를 정확히 맞춘다. retryable은 모든 failed
+  member/run의 exact run-backed `cancel_failed`와 retryable error를 요구하고 `already_terminal` 대체를
+  거부한다. in-progress/definitive CAS drift의 member `cancel_failed`+run `cancelled` canonical 전이는
+  허용한다. actual `409 PIPELINE_CANCELLATION_UNSAFE`+`failed`와
+  `503 DAGSTER_TERMINATION_TIMEOUT`+`retryable` pair도 고정했다. 회귀 fixture만 작성했으며
+  테스트·lint·build는 실행하지 않았다.
+- pass7에서 failed attempt의 retryable run-backed/definitive mismatch 혼재, status-error-finished DB lifecycle,
+  retry subset lineage, frozen termination flag와 engine timestamp를 actual Map/PinVi 정본에 맞췄다.
+  `Retry-After` header presence와 양의 정수 parsing을 분리하고, Compose `kill -s/--signal` 값 소비 및
+  service-less/project-wide·unknown option default-deny fixture를 추가했다. 신규 적대적 리뷰 전이므로
+  테스트·lint·build는 실행하지 않았다.
+- pass8에서 Compose 옵션을 command별로 분리해 `build --pull`, `run --rm`, `rm -s/--stop`이 다음 service를
+  값으로 소비하지 않게 했다. `config -o/--output`의 분리·inline·누락 형식은 write-capable mutation으로
+  host lock과 capability를 요구하고, `--format json` 등 명시한 read-only 형식만 무변경으로 허용한다.
+- PinVi cancel detail은 in-progress runless 실패를 definitive code로 한정하고, run-backed member/run 오류
+  policy group, retryable exact evidence, resolved member와 Dagster terminal mapping을 현재 Map/PinVi 정본에
+  맞췄다. feature-load root의 failed/SUCCESS 예외는 동일 run의 `provider_feature_load` child 증거가 있을
+  때만 허용한다.
+- `KTDM_C6C_CONTRACT_GENERATION`을 manager-only 보호값으로 올려 resolved compose scalar, non-root
+  `env_file`, runtime Env를 포함한 모든 container 주입을 거부한다. bootstrap 정리 명령이 예외를 내도
+  예외를 외부로 흘리지 않고 operator-required 상태로 수렴한다. 회귀 fixture만 작성했으며 신규 적대적
+  리뷰 2명 승인 전이므로 테스트·lint·build는 실행하지 않았다.
+- pass9에서 `Retry-After` parser를 ASCII `[0-9]+`와 1..300 범위로 고정했다. 부호, 앞뒤 공백,
+  Unicode digit, 0, 301 이상은 header가 존재해도 parsing 실패로 처리한다.
+- rustfs 같은 non-API config update/reset 및 미생성 start-create도 candidate raw compose 전체를 먼저
+  검사한다. exact Map/PinVi API environment interpolation 외의 environment·label·command·build scalar에서
+  ops/manager 보호 이름이나 현재 보호값을 참조하면 거부하고, non-root `env_file` 내용의 alias 값도 검사한다.
+  거부는 compose 파일 쓰기와 container recreate 전에 발생하며 REST는 typed 409
+  `COMPOSE_CANDIDATE_PROTECTED_REFERENCE`, `mutation_applied=false`를 반환한다. 정적 fixture만 보강했고
+  테스트·lint·build는 실행하지 않았다.
+- pass10 적대적 차단 리뷰 4건을 반영했다. candidate raw/resolved 검사를 compose 전체 graph와 top-level
+  secret/config 외부 파일로 확장하고, API raw wiring은 suffix까지 canonical exact로 고정했다. `env_file` 경로는
+  Compose 변수 연산자와 `$$`를 명시 해석하되 중첩·미완성 문법은 fail-close한다. generic ensure/up/create/
+  recreate와 config prewrite가 검증 전에 Docker/file mutation을 실행하지 않도록 중앙 gate를 연결했고 candidate
+  오류는 REST typed 409 detail을 보존한다. 지시에 따라 테스트·lint·build는 실행하지 않았다.
+- pass11 적대적 차단 리뷰를 반영했다. volume short/long bind source를 보간·canonicalize해 root `.env`, manager
+  state 파일, 보호 이름·현재 값이 든 파일의 relative/absolute/traversal/symlink/`:ro` 우회를 raw/resolved 모두
+  차단했다. Windows-looking source는 fail-close하고 named volume은 host file 검사에서 분리했다. 내용 확인이
+  불가능한 external secret/config alias reference도 빈 exact allowlist 밖에서 거부하며 rustfs config REST의
+  typed 409와 compose/container mutation 0 fixture를 고정했다. 지시에 따라 테스트·lint·build는 실행하지 않았다.
+- pass12 적대적 차단 리뷰 2건을 반영했다. manager 파일 ancestor·state directory·host root bind는 먼저
+  거부하고, directory bind를 서비스별 canonical source/target allowlist로 닫았다. missing source와 oversized/
+  unreadable/non-regular file은 Docker 자동 생성·mutation 전에 fail-close한다. cAdvisor의 `/:/rootfs`, `/var/run`,
+  `/var/lib/docker`, `/dev/disk` mount를 제거하고 Docker socket+`/sys`, `--docker_only=true`로 축소했다. RustFS
+  REST typed 409와 source/compose/container mutation 0 fixture를 보강했으며 같은 리뷰어 재승인 전이므로
+  테스트·lint·build는 실행하지 않았다.
+- pass13 적대적 리뷰의 volume/TOCTOU 지적을 반영했다. 운영 DB·RustFS·Geo·Prometheus·Grafana bind를 별도
+  migration 없이 유지하되 config API의 top-level/service volume graph를 pre-request compose와 exact immutable로
+  고정했다. internal/default named volume만 허용하고 bind-capable local driver option, unknown driver/option,
+  external alias를 raw/resolved에서 거부한다. cAdvisor short/long RO access와 `/sys` mountpoint, root:docker `0660`
+  socket, root-owned parent chain의 inode/device/mode snapshot을 mutex 안에서 compose write·Docker subprocess 직전
+  재검증한다. mismatch의 write 전 차단/compose byte 복원과 REST typed 409 mutation 0 fixture를 보강했으며 같은
+  리뷰어 재승인 전이므로 테스트·lint·build는 실행하지 않았다.
+- pass14 차단 리뷰를 반영해 mutex 안에서 persisted/request의 raw·resolved volume graph를 각각 exact 비교하고,
+  include/extends/`COMPOSE_FILE`/추가 override를 거부하는 single-file mutation 경계를 고정했다. cAdvisor는 raw
+  literal과 resolved identity 모두 RO `/sys`·Docker socket exact set만 허용하고 named-volume raw alias와
+  resolved project-name drift를 차단한다. 첫 mutation 성공 후 다음 preflight가 drift하면 원래 오류와 복구
+  진단을 typed 500으로 보존하고 compose byte/mode와 persisted runtime을 best-effort 복구한다. reset/API
+  no-mutation, Docker/ensure direct/API post-mutation fixture를 추가했으며 같은 리뷰어 재승인 전이므로
+  테스트·lint·build는 실행하지 않았다.
+- pass15 차단 리뷰 4건만 반영했다. mutation command에서 override 탐색을 제거하고 subprocess 직전
+  single-file 경계를 재검증한다. `ensure` recovery는 최초 compose byte/mode를 원자 복원하고 동일
+  raw/resolved hash·system snapshot을 재검증한 뒤에만 baseline runtime을 재생성하며, 실패 시 Docker recovery를
+  실행하지 않는다. preflight drift 원본 복원이 실패해 durable config mutation이 남는 경우도 원래 candidate
+  오류와 복구 진단을 typed 500으로 보존한다. CLI fixture는 완전한 validation DTO로 고쳤고 테스트·lint·build는
+  재승인 전 금지에 따라 실행하지 않았다.
+- pass16에서 Compose interpolation TOCTOU를 닫았다. transaction 시작 시 `.env` 존재 여부·byte와
+  device/inode/mode/uid/gid, process env를 합친 effective mapping을 비밀값 비노출 snapshot으로 고정하고
+  raw/resolved 검증·mutation·recovery 전체에서 재사용한다. mutation subprocess는
+  `--env-file /dev/null`과 frozen env만 받고, 직전 `.env` 생성·삭제·내용·identity drift는 typed contract
+  오류와 Docker subprocess 0으로 중단한다. direct/API no-mutation과 frozen env/recovery identity fixture를
+  보강했으며 재승인 전 금지에 따라 테스트·lint·build는 실행하지 않았다.
+- pass17에서 production mutation lock을 project state에서 분리한 사용자 단일 전역 경로로 고정했다. lock을
+  잡은 뒤 manifest 경로와 root `.env`, canonical compose source, external `env_file` graph·byte·identity를
+  한 번만 capture하고 pair deploy/capture/rollback 및 recovery 전체에 같은 transaction snapshot을 전달한다.
+  외부 입력은 exact `{path, required, format}` list만 허용하며 top-level secret/config file source는
+  fail-close한다. resolution은 외부 byte를 익명 fd로만 제공하고, mutation은 original project directory에서
+  완전 해석된 compose JSON을 `-f -` stdin으로 실행해 relative bind/build 의미와 secret 비노출을 함께
+  보존한다. 최초 mutation 뒤 source/external 계약 drift는 같은 snapshot으로 복구 또는 두 API halt를 시도하고
+  원래 오류와 복구 진단을 typed post-mutation 오류에 남긴다. 지시에 따라 추가 fixture는 중단했고
+  테스트·lint·build 없이 정적 호출부와 diff만 확인했다.
+- pass18에서 live env/source drift 뒤에도 복구 가능한 frozen resolved stdin 경계를 추가하고, config 변경의
+  baseline/candidate transaction을 분리해 원본 오류·halt 증거와 exact 원본 복원을 보존했다.
+- pass19에서 첫 mutation 전에 manifest active SHA를 root frozen source/env/external/system 입력으로 resolve한
+  recovery transaction을 별도 생성해 deploy/rollback과 legacy capture 실패 복구에만 사용하도록 분리했다.
+
+---
+
+## 2026-07-14 (Map OpiNet·KREX provider 키 compose 보간 drift 수정 — T-030)
+
+- manager `.env`는 현재 Map 계약인 `KOR_TRAVEL_MAP_OPINET_API_KEY`와
+  `KOR_TRAVEL_MAP_KREX_EX_API_KEY`를 사용하지만 base compose가 과거 `KRTOUR_MAP_*` source를
+  읽어, 값이 있어도 Dagster·Dagster daemon에 빈 문자열을 전달하는 반복 장애의 원천을
+  확인했다. KREX GO key와 두 provider의 map API live preview key도 함께 점검했다.
+- OpiNet·KREX EX·GO 공통 key를 현재 이름에서 명시 보간하되 실제 수집기를 실행하는
+  Dagster·Dagster daemon에만 주입한다. API에는 resolved live preview 변수만 주입하고, 별도 값이
+  없을 때 각각 OpiNet 공통 key와 EX key를 compose interpolation source로 재사용한다. 실제 secret은
+  코드·문서·테스트에 넣지 않고 gitignore된 루트 `.env` 한 곳에만 둔다.
+- 계약 테스트가 수집 서비스의 공통 key와 API 전용 preview key 경계를 분리하고 API에 원본 공통
+  key가 없음을 고정한다. `.env.example`의 빈 placeholder 각 1건, 백엔드 focused test·Ruff,
+  placeholder를 사용한 `docker compose config --quiet` 및 current/fallback/blank resolved-value 검증을
+  통과했다.
+
+---
+
+## 2026-07-13 (Concierge DB read 키 단일 source 주입·운영 전환 — T-029)
+
+- `KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY`를 manager 루트 `.env`의 단일 secret source로
+  정의하고, base compose가 실제 fetcher를 실행하는 Dagster·Dagster daemon에 동일하게 주입하도록
+  했다. 사용하지 않는 map API에는 read secret을 주입하지 않는다.
+- Concierge feature base URL도 두 서비스에 같은 계약으로 주입해 prod override의 중복 literal 없이
+  `/api/v1/features/{snapshot,changes}`를 호출할 수 있게 했다.
+- `.env.example`에는 빈 placeholder와 DB `read` scope 발급 원칙만 기록했다. 구현 PR에서는 실제
+  prod `.env`와 `docker-compose.override.yml`을 변경하지 않고 n150 전환 단계에서만 적용했다.
+- 계약 테스트가 두 서비스의 source 식과 `.env.example` key 정의 1건을 고정한다. n150 Python 3.11
+  일회성 컨테이너에서 백엔드 테스트 40개와 Ruff를 통과했고, n150의 Docker Compose로
+  `config --quiet` 보간도 통과했다. 로컬 테스트는 실행하지 않았다.
+- n150에서 Concierge DB를 Alembic head `20260713_0017`로 올리고 scope migration
+  `20260713_0016`의 `scope NOT NULL`, `read|admin` CHECK와 soft-delete schema를 확인했다. UI
+  재생성 뒤 admin 해시/session secret 비어 있지 않음, 로그인 POST 200+`Set-Cookie`, BFF settings
+  200, 잘못된 비밀번호 401을 확인했다. 재생성 직후 준비 구간에서 일시 503이 한 번 있었으나
+  준비 완료 후 같은 전체 검증을 재실행해 통과했다.
+- DB `read` 키를 발급해 DB에는 해시와 발급 감사 기록만 남기고, manager `.env` 한 곳에만 주입했다.
+  override의 기존 key 세 줄과 base URL 세 줄을 제거하고 Dagster·Dagster daemon을 재생성했다. 과거
+  환경변수를 확실히 제거하기 위해 map API도 한 번 재생성했으며, map API에는 read key가 없고 두
+  수집기 컨테이너 값은 `.env`와 같음을 값 비노출 constant-time 비교로 확인했다.
+- snapshot과 changes 각각 `limit=1` 2페이지 cursor 검증을 수행한 뒤 `page_size=200`으로 전체를
+  순회했다. 두 모드 모두 8페이지, 1,416건이었고 cursor 진행·export ID 무중복 조건을 통과했다.
+  실제 Dagster 컨테이너 수집기도 snapshot/changes 각 1,416건을 반환했다.
+- BFF/operator static admin 키를 old/new overlap으로 교체하고 UI·BFF를 검증한 뒤 old를 제거했다.
+  최종 old admin 401, new admin 내부 GET 200, read 공급 GET 200, read 내부/write 403과 로그인 POST
+  200+`Set-Cookie`를 확인했다. 성공 후 key/cookie 임시 파일, 제한권한 백업, migration 복원
+  지점을 삭제하고 관련 서비스 최근 로그에 오류가 없음을 확인해 T-029를 완료했다.
+
+---
+
+## 2026-06-28 (PinVi public API URL·CORS origin 환경변수화 — T-027)
+
+- PinVi live mutating E2E 재검증 중 public Web origin의 `/auth/login` preflight가 `400 Bad Request`로 거부되는 배포 drift를 확인했다. 원인은 manager compose가 `PINVI_CORS_ALLOWED_ORIGINS`를 로컬 origin으로만 고정하고, Web build/runtime API URL도 로컬 API 기본값으로만 선언하던 것이다.
+- `PINVI_PUBLIC_API_URL`과 `PINVI_CORS_ALLOWED_ORIGINS`를 `.env` 주입값으로 받도록 바꾸고, dev 기본값은 기존 로컬 `127.0.0.1:12801`/`12805` 계약으로 유지했다. prod 실제 도메인은 gitignore된 `.env`에만 둔다.
+- 검증: `docker compose config -q`로 compose 보간/문법을 확인했고, PinVi 쪽 live mutating E2E는 이 변경을 운영 compose에 동기화한 뒤 재실행한다.
+
+---
+
+## 2026-06-28 (PinVi API worker 기본값 환경변수화 — T-026)
+
+- PinVi live WebSocket mutating E2E에서 운영 배포의 `pinvi-api`가 `uvicorn --workers 2`로 고정되어 process-local broadcast broker가 worker 간 전달을 하지 못하는 문제를 확인했다. HTTP mutation과 WebSocket 연결이 서로 다른 worker에 배정되면 같은 trip의 변경 broadcast가 누락될 수 있다.
+- `docker-compose.yml`의 `pinvi-api` command를 `--workers ${PINVI_API_WORKERS:-1}`로 바꾸고, 환경변수와 `.env.example`에 `PINVI_API_WORKERS=1` 기본값을 추가했다. shared broker 도입 전에는 worker 1이 안전한 운영 계약임을 compose 주석과 아키텍처 문서에 남겼다.
+- 검증: `docker compose config -q`로 compose 보간/문법을 확인했고, PinVi 쪽 live mutating E2E는 이 변경을 배포한 뒤 재실행한다.
+
+---
+
+## 2026-06-26 (배포 런북 + push 전 보안 감사 절차 — concierge 스타일 정렬 — T-025)
+
+- 반복된 prod 배포 실수와 민감 운영 정보를 `docs/deploy-runbook.local.md`(gitignore `*.local.md`, 커밋 금지)에 상세 기록했다. 형제 프로젝트 `kor-travel-concierge`의 `deploy-runbook.local.md` 스타일에 맞춰 §0 접속 테이블 / §1 ★최우선 반복실수(heredoc 명령 깨짐·curl-only 검증 함정) / §2 그 외 함정 / §3 표준 절차 / §4 셀프 체크리스트 / §5 푸시 전 추가 스캔(grep)+`git check-ignore` 자기검증 구조로 작성. concierge 런북의 교차 내용(이 repo가 소유한 `docker-compose.override.yml` env_file 사일런트 스킵, `docker compose config`/`.env` 시크릿 평문 덤프 주의, OPNsense 라우터 HAProxy)도 반영. prod 비번이 커밋된 테스트 값과 동일하다는 노출도 명시(변경 권고).
+- 보안 감사는 concierge와 동일하게 **문서화 절차**로 정렬(전용 script/hook 미도입 — 처음 만들었던 `scripts/security-audit.sh`·`.githooks/pre-push`·`core.hooksPath`는 concierge에 없어 제거): `AGENTS.md`에 "## prod 배포 & 보안 감사" + "### remote 푸시 전 보안 감사(필수 절차)"(스테이징 파일 점검·`git diff --cached | grep` 일반 비밀 스캔·런북 §5 프로젝트별 패턴·.env.example placeholder·덤프 혼입 점검) 추가, DO NOT #13(보안 감사 생략 금지)·#14(배포 후 브라우저 검증 생략 금지) 추가, 작업 전 필독 목록에 런북 참조 추가.
+- 런북은 git으로 전파되지 않으므로 각 worktree(`-codex`, `-codex-pr38`)에 수동 복사.
+
+---
+
+## 2026-06-24 (로그아웃/세션만료 시 LoginScreen 전환 회귀 수정 — T-024)
+
+- 공개도메인 브라우저 E2E(Playwright)에서 발견: **로그아웃(또는 세션 만료) 후 대시보드가 LoginScreen으로 전환되지 않고** "통신 연결 오류" 배너 + 401 폴링 루프에 멈추는 회귀. 원인은 T-020(PR #37) FE-2에서 401 처리를 하드 리로드 → `auth-me` 쿼리 무효화로 바꾼 것: react-query가 refetch 에러 시 직전 성공 데이터(`authenticated:true`)를 유지해 `isAuthenticated`가 false로 내려가지 않는다(기존 하드 리로드는 전체 상태를 리셋해 우회했었음).
+- 수정 1: `auth-me` queryFn이 401을 throw하지 않고 `{authenticated:false}`로 반환하도록 변경. 미인증을 유효 상태로 취급 → 로그아웃/만료 시 `isAuthenticated=false` → 리로드 없이 LoginScreen 즉시 전환(FE-2 의도대로 동작). 초기 미로그인 로드도 동일.
+- 수정 2(브라우저 E2E로 추가 발견): 상태 WebSocket의 `onclose` 재연결이 무조건 `setTimeout(connectWS)`을 걸어, 로그아웃 시 서버가 WS를 닫으면 effect cleanup 이후에도 재연결이 스케줄돼 LoginScreen에서 **403 WS 핸드셰이크 무한 재시도 루프**가 돌았다. `cancelled` 플래그를 추가해 cleanup/언마운트 이후에는 재연결하지 않도록 수정(미인증 시 WS 시도 0건).
+- 검증: 프론트 `type-check`·`build`, prod 배포 후 브라우저 로그아웃→LoginScreen 전환 + WS 루프 정지(콘솔 에러 누적 중단) 확인.
+
+---
+
+## 2026-06-24 (concierge PR #127 참고: 공개도메인 Secure 쿠키 보강 — T-023)
+
+- 형제 프로젝트 `kor-travel-concierge` PR #127(공개 도메인 로그인 403 INVALID_ORIGIN — 운영 TLS 종단 프록시(라우터 HAProxy)가 `X-Forwarded-Proto: https` 미주입 → same-origin 재구성이 http가 돼 https Origin과 불일치 → 신뢰 origin 화이트리스트로 보완)를 참고해 동일 계열 문제를 점검·보강했다.
+- 이 repo의 origin(CSRF) 검사는 concierge와 달리 **헤더 재구성이 아니라 화이트리스트(`KTDM_FRONTEND_ORIGINS`) 대조** 방식이라 **로그인 403 버그가 없음**을 실제 공개도메인 브라우저 E2E(Playwright, `https://manager.…`)로 확인했다(로그인→대시보드 18컨테이너·WS 실시간 동작, `me 401(초기)→login 200→me 200`).
+- 다만 동일한 프록시-proto 문제로 `_is_https`가 내부 http로 판단해 **세션 쿠키 `Secure` 플래그가 누락**되는 약점이 남아 있었다. `_is_https`를 보강: 신뢰 `X-Forwarded-Proto`/직접 https가 아니어도 **브라우저 Origin이 설정된 https 공개 origin(`allowed_frontend_origins`)과 일치하면 https로 간주**해 `Secure`를 부여한다. 브라우저 Origin을 화이트리스트와 대조하므로 안전하고, LAN http origin은 영향 없으며 prod `.env` 변경이 필요 없다(기존 allowlist 재사용).
+- 단위 테스트 추가(https 공개 origin→True, http LAN→False, 미등록 https→False, 직접 https→True). 검증: 백엔드 `ruff`(클린)·`pytest`(39 passed), prod 배포 후 실제 브라우저 로그인 재검증.
+
+---
+
+## 2026-06-24 (prod 풀 라이브 e2e + Retry-After 버그 수정 — T-022)
+
+- n150(prod)에서 docker 컨테이너를 변경하지 않는 범위로 풀 라이브 e2e(63→65 케이스: health·unauth 게이트·CORS·RBAC(컨테이너 무변경)·로그인 음성/검증·next sanitize·인증 읽기전용·감사·키 lifecycle·WebSocket·세션 보안·AUTH-6 레이트리밋·프론트)를 수행했다. stdlib urllib + websockets 기반 e2e 스크립트(`/tmp/prod_e2e.py`, repo 미커밋)로 venv python 실행.
+- 라이브 e2e가 실제 버그 1건을 발견: **로그인 429(rate limited) 응답에 `Retry-After` 헤더가 누락**. 원인은 주입된 `response` 객체에 헤더를 설정한 뒤 `HTTPException`을 raise하면 그 헤더가 응답에 반영되지 않기 때문(PR #36 원본). `HTTPException(headers={"Retry-After": ...})`로 전달하도록 수정하고 회귀 테스트를 추가했다.
+- e2e의 다른 2건 실패는 시스템 정상 동작 확인(테스트 기대 수정): (1) 80자 초과 라벨은 truncate가 아니라 422 검증 거부, (2) 세션의 User-Agent fingerprint 바인딩으로 로그인/WS의 UA가 다르면 거부됨(보안 기능 정상) → 동일 UA로 검증.
+- 검증: 백엔드 `ruff`(클린)·`pytest`(38 passed), prod 배포 후 라이브 e2e 전체 통과.
+
+---
+
+## 2026-06-24 (PR #36 후속 하드닝 — T-021)
+
+- T-020에서 배포 리스크로 분리했던 후속 항목을 모두 반영(별도 PR, fix/pr36-followups-2). 적용:
+  - **AUTH-3**: `_request_from_trusted_proxy`에 선택적 공유 시크릿 헤더(`KTDM_TRUSTED_PROXY_SECRET` / `X-KTDM-Proxy-Secret`) 요구 추가 — 설정 시 신뢰 CIDR이라도 헤더가 일치해야 X-Forwarded-* 를 신뢰(host 네트워크 로컬 프로세스의 loopback 위조 차단), 미설정 시 기존 동작(하위호환).
+  - **AUTH-6**: 인메모리 brute-force 카운터를 제거하고 `login_audit_events` 기반 durable 집계로 전환 — 재시작·다중 워커에서 유지되며 마지막 성공 이후 실패만 카운트(성공 시 리셋 효과 보존).
+  - **APIKEY-1**: 공개 API 키 검증의 프로세스 로컬 TTL 캐시를 제거하고 요청당 `key_hash` 유니크 인덱스 DB 조회로 전환 — 키 폐기가 모든 워커에 즉시 반영. `KTDM_PUBLIC_API_KEY_CACHE_TTL_S` 폐기.
+  - **FE-4**: log/chart/config 모달에 `role="dialog"`/`aria-modal`/`aria-label`·Escape 닫기·닫기 버튼 초기 포커스 및 접근명(aria-label) 추가.
+  - 문서: `.env.example`에 `KTDM_TRUSTED_PROXY_SECRET` 추가, 미사용 `KTDM_PUBLIC_API_KEY_CACHE_TTL_S` 제거.
+- 검증: 백엔드 `ruff`(클린)·`pytest`(37 passed; AUTH-3/AUTH-6 테스트 추가), 프론트 `type-check`·`build` 통과. prod 배포 후 인증 end-to-end(로그인/me/컨테이너/키 생성·폐기/로그아웃·폐기쿠키 재사용 401) 재검증.
+
+---
+
+## 2026-06-24 (PR #36 사후 리뷰 + fix-forward — T-020)
+
+- 자동 머지된 PR #36(`[codex]` 관리자 인증·공개 API 키)에 대해 보안/정확성/설정/프론트/테스트 5개 차원의 다각도 적대적 코드리뷰(원시 28건 → 검증 후 확정 24건, critical/high 없음)를 수행하고 PR #36에 한글 상세 리뷰 코멘트를 게시했다.
+- #36은 이미 main(`b72becaa`)에 머지되어 있어 fix-forward 방식으로 후속 수정 PR(`fix/pr36-review-followups`)을 작성했다. 적용한 변경:
+  - 백엔드: 로그인 username 불일치 시에도 PBKDF2를 항상 수행(타이밍 기반 username 열거 차단), `login_audit_events` 보존 상한(`KTDM_LOGIN_AUDIT_MAX_ROWS`, 기본 5000)·logout 감사 게이트·misconfigured 경로 레이트리밋(미인증 감사 적재 방지), CORS 명시 분기의 stray `*` 제거, 공개 API 키 캐시 TTL 파싱 가드, `metrics_service.init_db` 엔진 live 참조 + 실패 시 fail-fast, `key_hint` 컬럼 폭 정렬(6), `utcnow()` 헬퍼로 deprecated `datetime.utcnow()` 일괄 제거.
+  - 테스트: 세션 검증 부정 경로(쿠키 없음→401, logout 후 폐기 쿠키 재사용→401, 변조 쿠키→401, `/auth/me`), WebSocket 인증 게이트(4401/성공), 신뢰 프록시 X-Forwarded-For 처리 긍정·부정을 추가/보강(28→35 passed).
+  - 프론트: 백그라운드 401 시 하드 리로드 대신 `auth-me` 무효화로 SPA 내 LoginScreen 전환(dead `next` 파라미터 제거), 로그인 비밀번호 필드 autofocus, Admin Settings 모달 dialog 시맨틱·Escape·초기 포커스, 생성 키 "지우기" 컨트롤.
+  - 문서: `.env.example`에 Grafana prod 오버라이드 주석·감사 로그 상한 env 추가.
+- 후속(별도 PR 권장): 신뢰 프록시 기본값(loopback) 하드닝, brute-force 스로틀 영속화, 나머지 모달(log/chart/config) a11y, 공개 API 키 캐시 멀티워커 대응 — 배포 토폴로지(reverse proxy) 영향이 있어 별도 검증과 함께 진행.
+- 검증: 백엔드 `ruff check`(클린), `pytest`(35 passed), 프론트 `type-check`·`build` 통과.
+
+---
+
+## 2026-06-23 (관리자 로그인·세션·공개 API 키 — T-019)
+
+- `kor-travel-geo` PR #399의 관리자 로그인·공개 API 키 패턴을 확인하고 매니저에 적용했다. 대시보드는 로그인 화면을 먼저 보여 주며, 보호 API와 WebSocket은 지정된 프론트엔드 Origin과 관리자 세션을 함께 검증한다.
+- 관리자 비밀번호는 `admin` 계정용 PBKDF2 해시로 gitignore된 `.env`에만 저장하고, 세션은 HMAC 서명 `httpOnly` 쿠키와 DB 저장 세션 해시로 검증한다.
+- 로그인 성공·실패·로그아웃·API 키 생성/폐기 이벤트를 `login_audit_events`에 기록하고, 관리자 설정 UI에서 감사 로그와 공개 API 키 상태를 확인하도록 했다.
+- 공개 API 키는 VWorld 호환 32자리 영문/숫자 문자열로 생성하며, 원문은 생성 직후 1회만 표시한다. DB에는 SHA-256 해시와 끝 6자리 힌트만 저장하고, 활성 키 해시는 짧은 TTL 메모리 캐시로 읽되 생성·폐기 시 즉시 무효화한다.
+- `kor-travel-geo` v2 API가 같은 키를 쓰도록 compose와 `.env.example`에 PR #399의 `KTG_*` 관리자 인증·공개 API 키 env 계약을 반영했다.
+- PR #399 사후 리뷰 코멘트를 다시 확인하고, 매니저에 해당하는 `X-Forwarded-*` 신뢰 제한, 401 세션 만료 처리, 로그인 오류 접근성, clipboard fallback, 외부 `env_file` raw 읽기 하드닝을 추가 반영했다.
+- 검증: 백엔드 `ruff check`, 백엔드 `pytest`, 프론트 `type-check`, 프론트 `build`, `docker compose config -q` 통과.
+
+---
+
+## 2026-06-23 (prod endpoint 문서 redaction — T-018)
+
+- `kor-travel-map` #508과 같은 prod endpoint 노출 패턴이 이 저장소에도 있는지 확인했다. 추적 파일 기준으로 `docs/journal.md`에 남아 있던 실제 운영 도메인 표현을 placeholder로 치환했다.
+- gitignore된 루트 `.env`, `frontend/.env.production`, `docs/prod-access.local.md`에는 실제 값이 남아 있으나, 저장소 커밋 대상이 아니므로 정책 범위 안으로 확인했다.
+
+---
+
+## 2026-06-22 — kor-travel-map 서비스 env rename + prod 도메인 정합 (by claude)
+
+`kor-travel-map`이 패키지 rename(`KRTOUR_MAP_*`→`KOR_TRAVEL_MAP_*`, `krtour.map_dagster`→
+`kortravelmap.dagster`) 이후 docker-manager의 map 서비스 블록이 구 이름 그대로라 현재 이미지로는
+동작 불가했다. 4개 서비스(api/ui/dagster/dagster-daemon)를 현재 코드 기준으로 정합.
+
+- **backend env 키 rename**: `KRTOUR_MAP_ADMIN_*`→`KOR_TRAVEL_MAP_API_*`, `KRTOUR_MAP_*`→
+  `KOR_TRAVEL_MAP_*` (컨테이너가 읽는 KEY만 변경, 우변 `${...:-default}`·값은 보존 →
+  기존 `krtour_map` DB / `krtour-map` bucket 데이터 연결 유지). healthcheck 포트 env 참조도 정정.
+- **dagster-daemon command 모듈**: `krtour.map_dagster.definitions`→`kortravelmap.dagster.definitions`.
+  (dagster webserver는 이미지 default CMD 사용 — 현재 코드라 정상.)
+- **UI NEXT_PUBLIC**: 구 `NEXT_PUBLIC_KRTOUR_MAP_ADMIN_API`(localhost)→`NEXT_PUBLIC_KOR_TRAVEL_MAP_API`
+  등 신 이름 + **브라우저-facing prod 도메인**(env-driven: `${KTDM_PROD_URL_MAP_API:-localhost}` 등)
+  + geo 추가. map admin은 BFF 프록시가 아니라 브라우저 직접 호출이라 cross-origin prod 도메인이 필수.
+- **API CORS**: prod frontend origin(`KTDM_PROD_URL_MAP`) + localhost 허용.
+- 검증: `docker compose config -q` VALID. 렌더 확인 — NEXT_PUBLIC=map-api/map-dagster/geo-api 도메인,
+  CORS=`["https://<map-host>",...]`, object public=s3-api/krtour-map.
+
+---
+
+## 2026-06-20 (운영 스택 db→conc 기동, geo 실데이터 복원, 의존성 DAG 재설정 — T-017)
+
+- **운영 스택 기동(db→conc, 도메인 정합성 확인)**: 운영 호스트에 dev의 빌드된 이미지를 `docker save | ssh docker load`로 전송(geo ~4.3GB, concierge ~4.5GB, GDAL 재빌드 회피)하고 `ktdctl`로 하나씩 기동했다. db·storage·gra·cadv·prom·geo·conc 각 단계에서 해당 `<service-prod-host>` 계열 도메인이 503→정상(200/307/406 등)으로 전환됨을 확인했다. 매니저 API가 running 11/18을 반영.
+  - rustfs 크래시(root 소유 데이터 디렉터리 Permission denied)는 digitie 소유 쓰기가능 디렉터리로 `RUSTFS_DATA_DIR`를 전환해 해결(sudo 불필요).
+  - geo는 앱 스키마(ops/public/x_extension)와 `pg_stat_statements`가 필요해 처음엔 data-less 기동했고, concierge는 기동 시 자동 마이그레이션(17테이블)으로 스키마 불필요.
+- **geo 실데이터 복원**: dev `kor_travel_geo`(31GB)를 `pg_dump -Fc | ssh pg_restore`로 운영 DB에 복원해 지오코딩 데이터를 살렸다(운영 geo DB를 drop/recreate 후 전체 schema+data 복원).
+- **의존성 DAG 재설정(ADR-18)**: target 의존을 선형 누적에서 `depends_on` DAG로 전환했다. `geo`와 `conc`는 각각 `prom`에만 의존(상호 독립, **concierge는 geo 비의존**), `map`은 `[geo, conc]`, `pinvi`는 `[map]`. `registry.target_sequence_for_target`을 폐포 위상정렬로 재작성하고, docker-compose의 concierge-api에서 geo-api 의존 제거·map-api에 geo-api 의존 추가.
+- **검증**: 백엔드 25 pytest 통과(`conc` 시퀀스에서 geo 제외 반영), `docker compose config` 통과(concierge-api: geo-postgres/rustfs만, map-api: geo-api+concierge-api 포함), ruff 통과. 문서 ADR-18·docker-management DAG·tasks 동기화.
+- **비민감 처리**: 운영 접속 정보/도메인/IP는 gitignore된 `.env`·`docs/prod-access.local.md`에만, 운영 전용 설정(`RUSTFS_DATA_DIR`, `STRICT_SOURCE_CHECK=0` 등)은 운영 호스트 `.env`에만 둔다.
+
+---
+
+## 2026-06-20 (운영(prod) 배포 및 docker-manager 실행 검증 — T-016)
+
+- **작업 내용**:
+  - 운영 호스트에 SSH 접속 후 docker-manager를 배포·기동했다(접속 정보는 gitignore된 `docs/prod-access.local.md`/`.env`에만 기록, git 비노출). 운영 호스트는 fresh 상태(Docker만 설치, repo·매니저 미설치)였다.
+  - 소스+gitignore된 운영 설정(`.env`, `frontend/.env.production`)을 rsync로 전달했다.
+  - 백엔드: 운영 호스트에 `python3-venv` 미설치 + sudo 제한이라 `python3 -m venv --without-pip` 후 get-pip.py로 pip을 부트스트랩하고 `pip install -e .` → uvicorn `:12901` 기동.
+  - 프론트엔드: `npm ci` + `npm run build`(`.env.production`의 `NEXT_PUBLIC_BACKEND_URL`이 번들에 인라인) + `next start :12905`.
+- **검증**:
+  - 백엔드 `/health` healthy, `/api/v1/containers` 18개(모두 not_created, Docker 연동 동작), 프론트 `/` HTTP 200, 번들에 운영 API 도메인 인라인 확인.
+- **범위 밖(네트워크 인프라)**:
+  - 운영 공개 도메인(`manager.*`/`manager-api.*`)은 DDNS로 공인 IP에 연결되나, 게이트웨이/리버스 프록시에서 매니저 포트로 라우팅이 아직 없어 외부 접근은 404다. `manager.*→:12905`, `manager-api.*→:12901` 포워딩/프록시 설정이 필요하다(저장소 밖, 라우터/게이트웨이 영역).
+  - 즉 docker-manager 앱 자체는 운영 호스트에서 정상 동작 확인 완료, 공개 도메인 접근만 인프라 라우팅이 남았다.
+- **문서**: `docs/prod-deployment.md`(비민감 배포 런북) 추가, `docs/prod-access.local.md`(gitignore) 기록, `.gitignore`에 `*.local.md` 추가.
+
+---
+
+## 2026-06-20 (Claude Code PR #23/#24 리뷰 후속 수정 — T-011/T-015)
+
+- **작업 내용**:
+  - Claude Code가 2026-06-19부터 올린 PR #23, #24(merged/closed 포함)를 확인하고 각각 후속 리뷰 코멘트를 남겼다.
+  - #23 후속: 설정 변경 API와 미생성 컨테이너 start fallback이 Docker SDK 직접 `containers.run(...)` 경로로 `network_mode: host` 계약을 우회하던 문제를 수정했다. `docker-compose.yml` 저장 후 `docker compose up -d --force-recreate <service>`로 재생성하고, RustFS는 compose의 `rustfs-init` service를 그대로 실행하도록 변경했다.
+  - #24 후속: 운영 콘솔 첫 화면을 compact top bar + KPI strip 중심으로 정리하고, UI/데이터 표시용 font token을 명시했다.
+- **검증**:
+  - 백엔드 `ktd_venv/bin/python -m ruff check .` 통과.
+  - 백엔드 `ktd_venv/bin/python -m pytest` 25 passed.
+  - 프론트 `npm run type-check`, `npm run build` 통과.
+  - `docker compose config` 통과.
+- **주의**:
+  - `codegraph sync`는 로컬 `.codegraph` disk I/O 오류로 실패해 직접 파일 확인과 테스트로 검증했다.
+
+---
+
+## 2026-06-20 (프론트엔드 Tailwind v4 + StyleSeed 전면 전환 및 전역 오류 복구 boundary — T-015)
+
+- **작업 내용**:
+  - **오류 복구 boundary**(`kor-travel-geo` PR #391 반영): App Router `app/error.tsx`/`app/global-error.tsx`, `components/layout/AppErrorPanel.tsx`, `lib/error-recovery.ts`를 추가했다. Next 기본 영어 오류 화면 대신 한국어 복구 패널을 보여 주고, chunk/RSC/network 계열 런타임 오류는 sessionStorage flag로 같은 pathname당 1회 hard reload를 시도한다.
+  - **Tailwind v4 전환**: `globals.css`를 `@import "tailwindcss"` + `@theme` CSS-first로 바꾸고, `postcss.config.js`를 `@tailwindcss/postcss`로 교체, `package.json` 의존성을 tailwindcss/@tailwindcss/postcss `^4`로 올리고 autoprefixer 제거, v3 `tailwind.config.ts`를 삭제했다.
+  - **StyleSeed 라이트 토큰**(`kor-travel-geo-ui/docs/DESIGN-RULES.md` 반영): `@theme`에 surface(page/card/subtle/elevated/row), 5단계 text(strong/ink/secondary/tertiary/disabled), 단일 brand teal(`#0f766e`), status(info/warn/danger/ok), 약한 shadow, motion 토큰을 정의했다. `DashboardClient`와 `AppErrorPanel`을 Pure Black 다크에서 이 토큰으로 전면 리스타일(단일 accent·약한 그림자·44px 터치타깃·상태 dot+text·rounded-card)했다.
+  - 문서: `docs/DESIGN-RULES.md` 신규(매니저용 포팅), `DESIGN.md`에 StyleSeed 전환 superseded 안내, ADR-17 추가.
+- **검증**:
+  - v4 의존성 설치(tailwindcss 4.3.1, @tailwindcss/postcss 4.3.1, oxide 네이티브 엔진) 완료.
+  - 프론트 `type-check`·`build` 통과(아래 최종 검증 절에서 재확인).
+  - 잔여 Pure Black 토큰(`bg-black`/`text-on-dark`/`border-hairline`/`m-blue-*`) 0건 확인.
+
+---
+
+## 2026-06-20 (Docker host 네트워크 전환·컨테이너=호스트 포트 통일·서비스 prod URL 반영·pinvi-dagster 추가·tripmate 잔재 정리 — T-014)
+
+- **작업 내용**:
+  - **host 네트워크(dev 기본)**: `docker-compose.yml` 전 서비스(19개)에 `network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}`를 적용했다. 포트 NAT가 없는 host 모드에 맞춰 인프라(RustFS 12101/12105, Grafana 12205, Prometheus 12401, cAdvisor 12301)와 앱이 호스트 정규 포트에 직접 바인딩하도록 바꾸고, 서비스 간 참조(PostgreSQL DSN, RustFS 엔드포인트, 내부 API/Dagster URL)를 컨테이너명 → `127.0.0.1:<포트>`로 전환했다. `config/prometheus/prometheus.yml` scrape 타깃과 `scripts/ensure-rustfs-buckets.sh` 엔드포인트도 `127.0.0.1` 기준으로 맞췄다.
+  - **컨테이너=호스트 포트 통일**: `kor-travel-geo`(이미 동일), `kor-travel-concierge`(api `--port`, mcp `MCP_PORT`, ui는 `next dev` command 오버라이드), `kor-travel-map`(`*_CONTAINER_PORT` 기본값을 12701/12702/12705로), PinVi(api `--port`, web은 `next start -p` command 오버라이드)를 모두 컨테이너 내부 포트 = 호스트 포트로 맞췄다.
+  - **PinVi Dagster 추가**: `pinvi-dagster`(host=container 12802) compose service와 registry 컨테이너/`pinvi` target 편입을 추가하고, upstream PinVi 저장소에 `apps/etl/Dockerfile`(python:3.12-slim, editable 설치, `dagster-webserver -m tripmate.etl.definitions`)을 신규 작성했다.
+  - **서비스 prod 공개 URL 반영**: 관리 16개 서비스(geo … s3-api)의 운영 공개 주소를 gitignore된 `.env`의 `KTDM_PROD_URL_*`에 저장하고, `docker-targets.yml`의 `prod_url_env`(환경변수 이름만 커밋)와 `docker_service._public_url()`로 읽어 대시보드 `public_url` 링크로 표시하도록 백엔드/프론트엔드를 확장했다. `.env.example`은 example.org 플레이스홀더로만 문서화(도메인 비노출).
+  - **tripmate 잔재 정리**: 루트 `tripmate_metrics.db` → `pinvi_metrics.db`(코드는 이미 `pinvi_metrics.db` 사용) 개명, 백엔드 venv `tripmate_venv` 제거 후 문서 표준명 `ktd_venv`로 재생성, 잔여 `backend/logs/tripmate_manager.log` 제거. 추적 코드에는 과거 명칭 잔재가 없었고 journal의 과거 이력 기록만 보존했다.
+  - 문서: ADR-16 추가, `docs/tasks.md` T-014 등록, `docs/docker-management.md`(컨테이너 18개·host 모드·포트 동일·pinvi-dagster), `docs/ports.md`(12802·host 모드) 동기화.
+- **검증**:
+  - `docker compose config` exit 0, 경고/에러 0. 19개 서비스 `network_mode: host`, 모든 published 포트가 host=container, `pinvi-dagster` 렌더링 확인.
+  - 백엔드 `ruff check`, `public_url` 해석 단위 검증. 프론트 `type-check`·`build` 통과(예정 항목은 최종 검증 절에서 재확인).
+  - 추적 파일 전수 grep으로 실제 도메인·잔여 `tripmate`·구 포트 참조 부재 확인.
+- **런타임 검증 필요(범위 외 주의)**:
+  - host 모드 실제 기동은 Docker 엔진의 host networking 지원에 의존하므로 사용자 환경에서 `ktdctl <target> --build` 런타임 검증이 필요하다.
+  - `pinvi-dagster`는 PinVi `apps/etl` ETL 모듈이 미완(Sprint 1 stub)이라 webserver 기동은 upstream 모듈 상태에 따라 달라질 수 있다.
+
+---
+
+## 2026-06-20 (운영 공개 주소 `.env` 주입 및 CORS 환경변수화 — T-013)
+
+- **작업 내용**:
+  - 매니저 백엔드 API/대시보드의 운영 공개 도메인을 소스에 하드코딩하지 않고 gitignore된 env 파일에만 주입하도록 설정 계층을 정비했다(외부 비노출).
+  - 백엔드(`main.py`): 기동 시 루트 `.env`(또는 `KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE`)를 `load_dotenv`로 로드하고, CORS 허용 Origin을 `KTDM_CORS_ALLOW_ORIGINS`(콤마 구분, 미설정/`*`이면 전체 허용)로 환경변수화했다. 기존 `allow_origins=["*"]` 개발 기본 동작은 유지.
+  - 프론트엔드: 백엔드 주소를 환경별로 분리했다. `frontend/.env.development`(localhost), `frontend/.env.production`(운영 API 도메인)을 추가하고, Next.js 우선순위상 `.env.local`이 `.env.production`을 덮어쓰는 사고를 막기 위해 `.env.local`에서 `NEXT_PUBLIC_BACKEND_URL`을 제거(주석화)했다. WS 주소는 `http→ws` 치환으로 `wss`가 자동 파생된다.
+  - 계약 문서화: 루트 `.env.example`과 신규 `frontend/.env.example`에 새 변수를 **플레이스홀더**(`manager.example.org` 등)로만 기재해 실제 도메인 노출 없이 셋업을 안내했다. 실제 값은 gitignore된 루트 `.env`, `frontend/.env.production`에만 존재.
+  - 문서: ADR-15 추가, `docs/tasks.md` T-013 등록·완료, `docs/dev-environment.md` 4.3 운영 공개 주소 절 추가.
+- **검증**:
+  - `git check-ignore`로 실제 도메인 파일 4종(`.env`, `frontend/.env.{production,development,local}`) ignore 확인, 추적 파일 전수 grep에서 실도메인 누출 0건.
+  - 백엔드: 전체 `ruff check` 통과, CORS 파싱 검증(콤마 리스트 trim, `*`/미설정→전체 허용, 루트 `.env` end-to-end 로드로 운영 Origin 적용).
+  - 프론트엔드: `@next/env`로 환경 우선순위 결정적 검증(prod→운영 API 도메인, dev→localhost, `.env.local` 섀도잉 없음), `npm run type-check`·`npm run build` 통과, 운영 빌드 번들에 API 도메인 인라인 및 `.next` ignore 확인.
+
+---
+
+## 2026-06-17 (브랜드 표기 PinVi 교정 및 관측 컨테이너 재기동)
+
+- **작업 내용**:
+  - PR #19에서 `Pinvi`로 표기된 브랜드명을 정식 표기 `PinVi`로 교정했다. 14개 파일에서 대소문자 구분 치환으로 73개 표기를 수정했다(.env.example, AGENTS.md, CLAUDE.md, SKILL.md, README.md, config/docker-targets.yml, docs/*).
+  - 소문자 식별자(`pinvi`, `pinvi-api-latest`, `pinvi-media`)와 환경변수 prefix(`PINVI_*`)는 런타임/계약 식별자이므로 그대로 두고, 사람이 읽는 표시 문자열만 `PinVi`로 맞췄다.
+  - PR #19의 공용 컨테이너 명칭 변경(`tripmate-* -> kor-travel-*`)을 실제 런타임에 반영하기 위해 관측 컨테이너(rustfs/prometheus/grafana/cadvisor)를 새 이름으로 재생성했다. 공용 DB(`kor-travel-geo-postgres`)와 실행 중인 concierge 스택은 유지했다.
+- **검증**:
+  - 대소문자 구분 `Pinvi` 잔여 검색 0건, `PinVi` 정상 반영 확인.
+  - `docker ps`로 `kor-travel-prometheus/grafana/cadvisor/rustfs` 신규 이름 기동 및 Prometheus `/-/healthy` 200 확인.
+
+---
+
+## 2026-06-17 (멀티 에이전트 MCP/agent/skill 설정 확장 — filesystem MCP & OpenCode 포팅)
+
+- **작업 내용**:
+  - Claude Code(`claude.json`), Codex(`codex.json`, `.codex/config.toml`), Antigravity(`antigravity.json`), OpenCode(`opencode.json`) 네 도구에 `@modelcontextprotocol/server-filesystem` MCP 서버를 추가했다. 허용 디렉터리는 각 도구의 worktree(`...-claude`, `...-codex`, `...-antigravity`, `...-opencode`)로 지정해 기존 codegraph cwd 규칙과 일치시켰다.
+  - OpenCode에 없던 기존 MCP 설정·agent·skill을 OpenCode 형식으로 포팅했다.
+    - **MCP**: `opencode.json`에 playwright/sequential-thinking/codegraph/filesystem 4개 서버를 OpenCode local 스키마(`type:"local"`, `command` 배열, `environment`)로 정의하고 `skills.paths`에 `.opencode/skills`를 등록했다.
+    - **Agent**: `.opencode/agent/`에 6개 subagent(api-designer, backend-developer, frontend-developer, mobile-developer, ui-designer, ui-fixer)를 추가했다. Claude markdown 5종은 본문을 그대로 보존하고 frontmatter만 OpenCode 형식(`mode: subagent`, `tools` 맵)으로 변환했으며, Codex에만 있던 ui-fixer는 새로 작성했다.
+    - **Skill**: `.opencode/skills/`에 postgres 외 8개 skill(SKILL.md + postgres/references 7종)을 원본과 byte 동일하게 복제했다.
+  - codegraph의 `cwd`는 OpenCode local MCP 스키마에 없는 필드(런타임이 instance 디렉터리에서 자동 설정)라 `opencode.json`에서는 제외했다.
+- **검증**:
+  - 4개 JSON 설정 `ConvertFrom-Json` 파싱 통과, `.codex/config.toml` 포함 5개 설정에서 filesystem 서버 존재 확인.
+  - skill 15개 파일 SHA256 원본 동일, 포팅한 agent 5종 본문이 원본과 byte 동일.
+  - 5개 병렬 감사 에이전트로 적대적 검증 수행: filesystem 추가·agent·skill·완전성은 모두 pass, opencode.json은 codegraph `cwd` 제거로 해결.
+- **범위 외 메모**:
+  - `.gemini/mcp.json`은 사용자가 지정한 4개 도구에 포함되지 않아 filesystem을 추가하지 않고 현 상태를 유지했다.
+  - playwright 패키지명 `@modelcontextprotocol/server-playwright`는 기존 4개 설정과 동일하게 유지했다(일관성). 공식 `@playwright/mcp`로의 전환은 전체 설정 동기화가 필요한 별도 사안.
+
+---
+
+## 2026-06-15 (PinVi 및 Kor Travel 공용 명칭 정리)
+
+- **작업 내용**:
+  - 남아 있던 과거 서비스명 계열 명칭을 PinVi 기준으로 정리했다.
+  - 공용 컨테이너 성격이 강한 RustFS, Grafana, cAdvisor, Prometheus 이름은 `kor-travel-*` 기준으로 변경했다.
+  - PinVi 전용 database/role/bucket/env 이름을 `pinvi`, `PINVI_*`, `pinvi-media` 기준으로 맞췄다.
+  - 과거 geo 패키지명 계열 잔여 명칭이 없는 것을 확인했다.
+- **검증**:
+  - WSL에서 과거 서비스명과 과거 geo 패키지명 계열 잔여 검색 결과 0건 확인.
+
+---
+
