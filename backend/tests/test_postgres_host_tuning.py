@@ -112,7 +112,8 @@ def test_oom_priorities():
     services = compose["services"]
     assert services[_PG]["oom_score_adj"] == -800
     # plane은 렌더된 모델에서 파생한다(`compose config`처럼 기본값으로 보간한 문서 — 이름을 적지 않는다).
-    plane = derive_shared_dagster_plane(yaml.safe_load(compose_default(yaml.safe_dump(compose))))
+    rendered = re.sub(r"\$\{[A-Z0-9_]+:-([^${}]*)\}", r"\1", yaml.safe_dump(compose))
+    plane = derive_shared_dagster_plane(yaml.safe_load(rendered))
     for name in plane.services:
         assert services[name]["oom_score_adj"] == -600, name
 

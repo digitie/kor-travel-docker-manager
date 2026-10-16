@@ -1,3 +1,14 @@
+## 2026-10-16 — 공용 PG 수치·이미지 env, OOM/memswap 규칙, db-init-geo 확장(T-MGR-03)
+
+- 공용 PG 서버 이미지·db-init 6개 이미지·튜닝 6키를 `${KTDM_*:-<오늘 값>}`으로, n150 compose에 없던 6키는 PG 16 서버 기본값으로
+  추가했다(효과 0). `max_locks_per_transaction`·`pg_stat_statements.*`·preload는 리터럴로 둔다.
+- `oom_score_adj` PG -800·plane -600. `mem_limit`가 호스트별 env인 서비스(PG·geo cs·weather cs)는 `memswap_limit`에 같은 식을 둔다.
+  PG·geo cs의 기본값은 `0`(상한 없음 — 렌더에서 빠진다)이다. concierge scheduler·cs(고정 2g)는 이 규칙에서 뺐다 — n150에
+  swap 0 효과가 새로 생기기 때문이다. weather cs는 ADR-58 결정 8 ⅳ대로 n150에서도 swap 0이 된다.
+- db-init-geo가 `x_extension`에 확장 4종과 app role `USAGE`를 만든다(odroid fresh 경로). 격리 instance에서 fresh 실행과
+  재실행(no-op)을 통합 테스트로 돌렸다.
+- n150 설치 `.env`로 렌더를 비교했다. 차이는 ADR-58 결정 1의 ⑥·⑦·⑧뿐이다. 배포·n150 변경은 하지 않았다.
+
 ## 2026-10-16 — workspace digest 효과 검사·instance digest anchor(T-MGR-02 잔여)
 
 - `ktdctl targets validate`가 공용 plane 서비스(digest env + workspace bind)의 설치된 workspace 파일 sha256[:16]을 보간된
