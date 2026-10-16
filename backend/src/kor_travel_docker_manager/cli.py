@@ -190,24 +190,19 @@ def _consumer_origin_env_violations(config: dict[str, Any]) -> list[str]:
 
 def _workspace_digest_violations(config: dict[str, Any]) -> list[str]:
     """설치된 공용 Dagster workspace 파일의 sha256[:16] == digest env(T-MGR-02, 효과). compose가 없으면 빈 목록."""
-    from kor_travel_docker_manager.services.registry import (
-        HOST_ENV,
-        current_host,
-        get_project_root,
-        root_env_value,
-    )
+    from kor_travel_docker_manager.services.registry import get_project_root, root_env_value
     from kor_travel_docker_manager.services.workspace_digest import workspace_digest_violations
     from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
+    del config  # 보간은 compose처럼 env → root `.env` → 기본값(registry가 아니라 compose가 고르는 파일을 본다)
     compose_path = Path(get_compose_path())
     if not compose_path.is_file():
         return []
     compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
-    host = current_host(config)
     return workspace_digest_violations(
         compose,
         Path(get_project_root()),
-        lambda name: host if name == HOST_ENV else root_env_value(name),
+        lambda name: os.environ.get(name, "").strip() or root_env_value(name),
     )
 
 

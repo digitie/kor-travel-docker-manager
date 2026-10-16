@@ -5,8 +5,8 @@
 validate`(설치기의 flip 전 검사 포함)에서 먼저 드러낸다.
 
 대상은 compose 원문에서 파생한다 — 값을 외우지 않는다: `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST` env를 가진 서비스마다, 같은
-서비스에서 `…/workspace.yaml`로 마운트되는 bind의 소스 파일. 둘 다 `${VAR:-default}`를 compose처럼 풀어 쓴다(`KTDM_HOST`는
-이 Manager의 자기 호스트, 그 밖은 root `.env`). 소스 경로는 project root 기준이다.
+서비스에서 `…/workspace.yaml`로 마운트되는 bind의 소스 파일. 둘 다 `${VAR:-default}`를 compose처럼 풀어 쓴다(비어 있지
+않은 프로세스 env → root `.env` → 기본값 — compose가 실제로 고를 파일을 본다). 소스 경로는 project root 기준이다.
 """
 
 from __future__ import annotations

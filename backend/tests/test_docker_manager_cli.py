@@ -2668,6 +2668,11 @@ def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch):
     monkeypatch.setattr(_Path, "is_dir", lambda self: False)
     # R5: 좌표는 호스트 상대라 그 target이 있는 호스트에서 본다 — 외부 target(transport·`node`)은 odroid에 있다.
     monkeypatch.setenv("KTDM_HOST", "odroid")
+    # odroid는 자기 workspace 파일의 digest를 둔다(T-MGR-02 validate) — 이 테스트는 좌표만 본다.
+    import hashlib
+
+    workspace = _Path(__file__).resolve().parents[2] / "config/dagster-shared/workspace.odroid.yaml"
+    monkeypatch.setenv("KTDM_DAGSTER_WORKSPACE_DIGEST", hashlib.sha256(workspace.read_bytes()).hexdigest()[:16])
     assert main(["targets", "validate", "--check-coordinates"]) == 1
     captured = capsys.readouterr()
     # 줄 전체를 대조한다 — 부분 문자열이면 옛 좌표(개명 전 디렉터리)가 남아도 통과한다.
