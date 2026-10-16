@@ -2441,6 +2441,11 @@ services:
     command:
     - --logtostderr
     - --docker_only=true
+    # CPU 우선: 현재 운영30초를 유지한다(10~15초 예시보다 확인 빈도가 낮다).
+    # docker_only는 root aggregate까지0이라는 뜻이 아니다.
+    - --housekeeping_interval=30s
+    # 명시 목록은 기본집합을 대체하므로 기본 off 4항목도 유지한다.
+    - --disable_metrics=percpu,sched,tcp,udp,disk,diskIO,hugetlb,referenced_memory,cpu_topology,resctrl,memory_numa,advtcp,process,cpuset
     - --port=${CADVISOR_PORT:-12103}
     - --housekeeping_interval=${CADVISOR_HOUSEKEEPING_INTERVAL:-15s}
     - --disable_metrics=percpu,sched,tcp,udp,disk,diskIO,hugetlb,referenced_memory,cpu_topology,resctrl
