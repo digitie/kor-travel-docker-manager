@@ -11,6 +11,10 @@
    bind 소스마다 `findmnt -T <경로> -o SOURCE`의 장치가 그 값이어야 한다(odroid: PGDATA 등 데이터가 NVMe가 아니라
    eMMC에 조용히 initdb되는 것을 막는다 — R5). 읽기 전용 bind(설정 파일)는 보지 않는다. 미설정이면 아무것도 하지
    않는다(n150 무변경).
+
+**범위**: 이 검사는 `ensure`(UI·`ktdctl ensure`)만 거친다. pinned 재구축·공용 plane 재생성(`dagster-plane converge`)·복구
+경로는 거치지 않는다 — 그 경로들은 이미 같은 호스트에 설치된 이미지·bind를 다시 맞추는 일이고, odroid의 첫 배치는
+`ensure`로 올라가므로 첫 배치는 이 검사를 받는다(받아들인 공백).
 """
 
 from __future__ import annotations
@@ -24,8 +28,8 @@ from kor_travel_docker_manager.services.errors import DeploymentContractError
 
 DATA_SOURCE_DEVICE_ENV: Final = "KTDM_DATA_SOURCE_DEVICE"
 
-#: `uname -m`/Docker 데몬 이름 → 이미지 `.Architecture` 이름(OCI).
-_ARCH_ALIASES: Final = {"x86_64": "amd64", "aarch64": "arm64", "armv7l": "arm", "i686": "386"}
+#: Docker 데몬 이름 → 이미지 `.Architecture` 이름(OCI). 운영 호스트는 x86_64(n150)·aarch64(odroid)뿐이다.
+_ARCH_ALIASES: Final = {"x86_64": "amd64", "aarch64": "arm64"}
 
 Runner = Callable[[list[str]], "subprocess.CompletedProcess[bytes]"]
 
@@ -87,13 +91,23 @@ def ensure_preflight(
     services: Iterable[str],
     environment: Mapping[str, str],
     *,
+    build: bool = False,
     run: Runner = _run,
 ) -> None:
-    """올릴 `services`에 대해 위 두 효과를 본다. 위반이면 `DeploymentContractError`(아무것도 바꾸기 전)."""
+    """compose가 만들거나 시작할 `services`(호출자가 렌더된 `depends_on` closure로 넓힌 것)에 대해 위 두 효과를 본다.
+    위반이면 `DeploymentContractError`(아무것도 바꾸기 전).
+
+    `build`(`ensure --build`)면 `build:`가 있는 서비스는 arch를 보지 않는다 — 그 명령이 이 호스트에서 이미지를 다시
+    만들어 어긋남을 고치는 길이다(막으면 고치는 명령 자체가 막힌다).
+    """
     rendered = resolved.get("services") or {}
     names = [name for name in dict.fromkeys(services) if name in rendered]
 
-    images = {name: rendered[name].get("image") for name in names if rendered[name].get("image")}
+    images = {
+        name: rendered[name].get("image")
+        for name in names
+        if rendered[name].get("image") and not (build and rendered[name].get("build"))
+    }
     if images:
         host = _host_arch(run)
         wrong = []
