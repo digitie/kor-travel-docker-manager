@@ -372,7 +372,7 @@ containers:
 
 targets:
   storage:
-    host: all
+    host: [n150, odroid]
     port_band: "12100-12199"
     depends_on: []
     display_name: 통합 RustFS
@@ -865,7 +865,7 @@ targets:
           NEXT_PUBLIC_DAGSTER_URL: public
 
   dagster:
-    host: all
+    host: [n150, odroid]
     # 공용 Dagster 제어 평면(platform-topology.md §7, dagster-shared-plan §4, ADR-54). 공용 instance
     # 위의 `dagster_shared` DB·role·storage schema(2단계)와 그 위의 daemon(포트 없음)·webserver
     # (`127.0.0.1:11002`)·gateway(11001)(3단계)다. workspace는 `dagster.control_plane: shared`인

@@ -171,19 +171,15 @@ def test_a_consumer_no_target_runs_is_reported_unresolved() -> None:
                for v in consumer_origins.default_violations(compose, targets))
 
 
-def test_a_sibling_on_several_hosts_is_a_clear_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_sibling_on_several_hosts_is_a_clear_error() -> None:
     """형제가 소비자 밖의 여러 호스트에 있으면 주소가 하나가 아니다 — `expected None`이 아니라 그 사실을 말한다.
 
-    오늘 스키마(`host:`는 하나 또는 `all`)로는 생기지 않는 모양이라(all이면 소비자 호스트가 늘 포함된다) 호스트 집합을
-    대역으로 만든다 — N-host 일반화(T-MGR-NH)에서 호스트 부분집합이 생기면 이 경로가 실제가 된다."""
+    `host:` 목록(T-MGR-NH NH-1)으로 실제 registry에서 만든다: geo를 소비자(n150) 밖의 두 호스트 `[odroid, mars]`에 두면
+    소비자 origin이 하나로 풀리지 않는다. 목록 자체는 허용된다 — 소비자 호스트가 목록에 들면 loopback으로 풀린다."""
     compose, targets = _documents()
     targets["hosts"]["mars"] = {"addr": "192.0.2.7"}
-    real = registry.target_hosts
-
-    def hosts(target, config=None):
-        return frozenset({"odroid", "mars"}) if target == "geo" else real(target, config)
-
-    monkeypatch.setattr(registry, "target_hosts", hosts)
+    targets["targets"]["geo"]["host"] = ["odroid", "mars"]
+    registry._validate_targets_config(targets, label="test")
     violations = [v for v in consumer_origins.default_violations(compose, targets) if "GEO" in v]
     assert violations and all("several hosts" in v and "no single address" in v for v in violations)
 
