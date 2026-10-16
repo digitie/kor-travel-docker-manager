@@ -527,3 +527,24 @@ def test_host_identity_refuses_two_local_declared_addresses(tmp_path: Path) -> N
     assert completed.returncode == 126, completed.stdout
     assert "not flipping" in completed.stderr
     assert "more than one declared host address is assigned to this host" in completed.stderr
+
+
+@pytest.mark.skipif(not _HAS_IP, reason="/usr/sbin/ip 없음(Linux 전용)")
+def test_the_pre_flip_validate_names_every_consumer_origin_override(tmp_path: Path) -> None:
+    """T-MGR-01c: 같은 flip 전 `targets validate`가 root `.env`의 소비자 origin 재정의도 거부한다. 문구는 식별 실패가 아니라
+    중립이고, 위반 줄을 **전부** 낸다(마지막 줄만 남기면 둘째 위반이 가려진다)."""
+
+    default, _ = _hosts()
+    variables = ["KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL", "PINVI_KOR_TRAVEL_WEATHER_BASE_URL"]
+    release = _identity_release(
+        tmp_path, f"KTDM_HOST={default}\n" + "".join(f"{v}=http://10.9.9.9:1\n" for v in variables)
+    )
+    (release / "docker-compose.yml").write_bytes((_ROOT / "docker-compose.yml").read_bytes())
+
+    completed = _run_identity(release)
+
+    assert completed.returncode == 126, completed.stdout
+    assert "targets validate failed" in completed.stderr and "not flipping" in completed.stderr
+    assert "identify this host" not in completed.stderr
+    assert [v for v in variables if v not in completed.stderr] == []
+    assert "10.9.9.9" not in completed.stderr  # 재정의된 값은 싣지 않는다

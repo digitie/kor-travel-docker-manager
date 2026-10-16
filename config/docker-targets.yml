@@ -440,6 +440,10 @@ targets:
     # 기대 호스트뿐이다(`hosts:` 주석). `all.include`에는 남긴다 — `map`이 `depends_on: [geo]`라 `ensure all`/`ensure map`의
     # 폐포가 어차피 geo를 담는다(그 간선 삭제는 R7, T-MGR-01b). n150 geo API는 아직 돈다.
     host: odroid
+    # R2(T-MGR-01c): 다른 target(Map·PinVi)이 이 target을 부르는 origin. `{host}`는 R1으로 렌더한다(소비자와 같은
+    # 호스트면 127.0.0.1, 아니면 이 target 호스트의 addr). 포트는 2026-10-14 소유자가 통일한 odroid 공개 포트다 —
+    # compose 소비자 기본값(커밋된 파생물)과 root `.env` 재정의가 이 값과 같아야 한다(`targets validate`).
+    consumer_origin: "http://{host}:12501"
     port_band: "12500-12599"
     depends_on: [prom]
     display_name: Kor Travel Geo
@@ -704,6 +708,10 @@ targets:
     # 지금 바꾸는 것은 n150 공용 workspace에서 이 location이 빠지는 것뿐이다(`hosts:` 주석). 소비자(Map)는 odroid의
     # API gateway `http://192.168.1.13:12301`을 부른다(`docker-compose.yml`의 R2 기본값).
     host: odroid
+    # R2(T-MGR-01c): 소비자(Map)가 부르는 것은 backend `14001`이 아니라 API gateway `12301`이다(설명은 geo).
+    consumer_origin: "http://{host}:12301"
+    # 옛 소비자 포트(n150 backend `14001`) — 이 포트로 되돌린 소비자 기본값도 스캔이 잡는다.
+    retired_consumer_ports: [14001]
     external_project:
       project: kor-travel-transport
       working_dir: /home/digitie/apps/kor-travel-transport
@@ -748,6 +756,10 @@ targets:
     # 지금 바꾸는 것은 n150 공용 workspace에서 이 location이 빠지는 것뿐이다(`hosts:` 주석). 소비자(PinVi)는 odroid의
     # weather API `http://192.168.1.13:12201`을 부른다(`docker-compose.yml`의 R2 기본값).
     host: odroid
+    # R2(T-MGR-01c): 소비자(PinVi)가 부르는 odroid 통일 포트 `12201`(n150의 옛 `14101`이 아니다; 설명은 geo).
+    consumer_origin: "http://{host}:12201"
+    # 옛 소비자 포트(n150 weather API `14101`).
+    retired_consumer_ports: [14101]
     # n150 `all`에서 뺀다(잠정 — `all` 주석). 호스트별 `all` 필터(T-MGR-01a·NH)가 이 줄을 대신한다.
     port_band: "14100-14199"
     depends_on: []
