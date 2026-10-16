@@ -2278,7 +2278,7 @@ def test_every_real_compose_bind_source_matches_its_allowlist_source() -> None:
     """키만 맞고 **source**가 어긋나도 배포에서만 죽는다 — 같은 조건을 정적으로 건다.
 
     #481이 daemon·webserver의 workspace bind를 `workspace.${KTDM_HOST:-n150}.yaml`로 바꾸고
-    allowlist는 `workspace.yaml`로 두었다. 키 테스트(위)는 통과했고, pinned rebuild는
+    allowlist는 옛 별칭 `workspace.yaml`로 두었다(별칭은 2026-10-17 NH-4로 없어졌다). 키 테스트(위)는 통과했고, pinned rebuild는
     `prebuild_snapshot`에서 "bind source is not canonical"로 죽었다(2026-10-16 t1016a).
     검증기는 두 원문을 같은 env로 펼쳐 비교하므로 여기서는 원문이 같아야 한다.
     """

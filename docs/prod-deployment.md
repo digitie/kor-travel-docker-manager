@@ -908,7 +908,7 @@ Map pinset의 조합으로 되돌릴 일이 없다고 판단한 뒤에만 한다
 
 ### 8.2 공용 Dagster plane만 수렴 (`ktdctl dagster-plane converge`)
 
-**언제 쓰나.** 공용 workspace(`config/dagster-shared/workspace.yaml`)나 그 digest env를 바꾸는 Manager release를
+**언제 쓰나.** 공용 workspace(`config/dagster-shared/workspace.<host>.yaml`)나 그 digest env를 바꾸는 Manager release를
 설치한 **직후**, pinned 재구축 전에 preflight가 공용 daemon·webserver를 unhealthy로 보고할 때다. 떠 있는 두 컨테이너는
 옛 release의 workspace bind와 옛 `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`로 만들어졌으므로, location이 빠지면(예: #476의
 weather·transport) healthcheck가 사라진 code-server를 기다려 unhealthy로 남는다. 재구축 안의 plane 수렴이 이것을 고치지만

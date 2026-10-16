@@ -385,7 +385,7 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
      `backend/src`·`scripts`에 온전한 토큰으로 되돌아오면 `(pinned)`로 빨갛다(적대 리뷰 M2).
    - **합류 스위치와 파생물(ADR-54).** target마다 `config/docker-targets.yml`의
      `dagster: {control_plane: own|shared, consumers: {...}}`가 스위치다(지금 넷 다 `own`). 공용
-     `config/dagster-shared/workspace.yaml`은 `shared` target의 code-server command(`-p`, `-m`/
+     `config/dagster-shared/workspace.<host>.yaml`(호스트마다)은 `shared` target의 code-server command(`-p`, `-m`/
      `--location-name`)에서 **파생**하고, 테스트가 어긋나면 빨개진다. `shared`로 바꾸는 PR은 같은
      커밋에서 compose를 그 모양으로 바꾼다 — (a) code-server가 `<<: *dagster-shared-control-env`와
      `./config/dagster-shared/dagster.yaml:$DAGSTER_HOME/dagster.yaml:ro`를 받고 gRPC가 `127.0.0.1`에서만

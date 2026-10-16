@@ -44,6 +44,8 @@ from test_shared_postgres_runtime_integration import (
     _wait_healthy,
 )
 
+from kor_travel_docker_manager.services import runtime_topology
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SHARED_POSTGRES = "kor-travel-shared-postgres"
 _DB_INIT = "kor-travel-shared-db-init-dagster"
@@ -185,7 +187,6 @@ class _Plane:
 #: 격리 plane은 **빈** workspace로 돈다 — 정본 workspace에는 합류한 프로젝트의 code-server가 있는데(weather),
 #: 격리 실행에는 그 code-server가 없다. 빈 workspace와 그 digest로 바꿔 넣는다(probe의 digest 자가 검사가 초록이게).
 _EMPTY_WORKSPACE = "load_from: []\n"
-_WORKSPACE_SOURCE = "./config/dagster-shared/workspace.yaml"
 _WORKSPACE_DIGEST_ENV = "KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST"
 
 
@@ -195,8 +196,11 @@ def _carry(service: dict[str, Any], postgres: str, empty_workspace: Path | None 
     volumes = []
     for volume in carried.get("volumes", []):
         text = str(volume)
-        if empty_workspace is not None and text.startswith(f"{_WORKSPACE_SOURCE}:"):
-            text = str(empty_workspace) + text[len(_WORKSPACE_SOURCE):]
+        # 공용 workspace bind는 렌더 모양(`workspace.${KTDM_HOST:-…}.yaml`)으로 알아본다 — 옛 별칭 경로 리터럴로 찾으면
+        # 일치하지 않아 정본 workspace(합류 code-server 포함)가 그대로 붙고 빈 plane이 healthy가 되지 않는다.
+        source = runtime_topology._volume_source(text)
+        if empty_workspace is not None and runtime_topology._is_shared_workspace_source(source):
+            text = str(empty_workspace) + text[len(source):]
         elif text.startswith("./"):
             text = str(_REPO_ROOT / text[2:])
         volumes.append(text)
