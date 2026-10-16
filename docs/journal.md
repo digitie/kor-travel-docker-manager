@@ -6,6 +6,12 @@
   한 줄 늘어서 쓰지 않았다. n150 `compose config` sha256 불변, 운영 모드 `targets validate --json` 설치본과 byte 동일(실측).
 - `dagster.yaml` location 상한 조정은 실측이 필요해 제외. 배포·n150 변경은 하지 않았다.
 
+## 2026-10-16 — `ensure` 프리플라이트 효과 검사(T-MGR-05)
+
+- `ensure`가 `up` 전에 렌더된 문서에서 올릴 서비스의 로컬 이미지 arch(== `docker info`)와, `KTDM_DATA_SOURCE_DEVICE`가 있을 때만
+  쓰기 bind 장치(`findmnt -T`)를 본다. compose 렌더 성공은 기존 transaction이 이미 강제하므로 새로 만들지 않고 순서만 테스트했다.
+- n150: 설치본 렌더 43 서비스로 실측 통과(장치 env 없음 → `findmnt` 호출 없음). 배포·n150 변경은 하지 않았다.
+
 ## 2026-10-16 — Prometheus 타깃을 registry에서 파생(T-MGR-04)
 
 - `config/prometheus/prometheus.yml`을 커밋된 파생물로: registry 컨테이너의 `metrics_path`마다 job, 그 컨테이너가 있는

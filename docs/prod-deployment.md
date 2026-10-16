@@ -1018,7 +1018,9 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane co
    `/home/digitie/apps/kor-travel-transport`.
 9. **root `.env`(odroid)**: `KTDM_HOST=odroid`, PG 튜닝·이미지(`KTDM_POSTGRES_IMAGE=imresamu/postgis:16-3.5` 등), workspace digest
    (`sha256sum config/dagster-shared/workspace.odroid.yaml | cut -c1-16`), `KTDM_DATA_SOURCE_DEVICE=<2의 `findmnt -no SOURCE /mnt/media`
-   실측값 — 예: `/dev/nvme0n1p1`; 틀리면 T-MGR-05 프리플라이트가 매 `ensure`를 거부한다>`, 호스트별 `KTDM_PROD_URL_*`(`_DAGSTER`는 odroid
+   실측값 — 예: `/dev/nvme0n1p1`; 틀리면 T-MGR-05 프리플라이트가 매 `ensure`를 거부한다>` — 설정하면 **올릴 서비스의 쓰기 bind
+   전부**가 그 장치여야 하므로 그 서비스의 데이터 경로 env를 NVMe 아래로 둔다: `KOR_TRAVEL_SHARED_PGDATA`·`RUSTFS_DATA_DIR`·`PROMETHEUS_DATA_DIR`·`GRAFANA_DATA_DIR`·`KOR_TRAVEL_WEATHER_PROMETHEUS_DATA_DIR`·`KOR_TRAVEL_GEO_BACKUP_DIR`(compose의 쓰기 bind 소스
+   전부; 읽기 전용 설정 bind는 보지 않는다), 호스트별 `KTDM_PROD_URL_*`(`_DAGSTER`는 odroid
    plane host), `KOR_TRAVEL_DAGSTER_UI_PASSWORD`, geo/weather/transport 비밀 — `scp`로 0600/root(비밀번호 SSH 단계에서는 보내지 않는다)
    → `ktdctl targets validate`.
 10. **arch 실측**: `docker info --format '{{.Architecture}}'`=aarch64, `docker image inspect … .Architecture`=arm64, dagster-host 빌드 +
