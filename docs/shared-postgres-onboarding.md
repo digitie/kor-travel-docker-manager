@@ -211,7 +211,7 @@ ALTER/CREATE ROLE <app_user> WITH LOGIN PASSWORD '<secret>' NOSUPERUSER NOCREATE
 
 ### 4.3 확장은 네 마이그레이션이 만들지 않는다
 
-**이것이 마이그레이션 작성자에게 가장 직접적으로 걸리는 제약이다.** postgis는 trusted extension이 아니므로 `NOSUPERUSER` role이 만들 수 없다. 공용 instance에서 확장은 db-init one-shot이 `shared_admin` 권한으로 미리 만든다(현재 `CREATE EXTENSION IF NOT EXISTS postgis` 1종).
+**이것이 마이그레이션 작성자에게 가장 직접적으로 걸리는 제약이다.** postgis는 trusted extension이 아니므로 `NOSUPERUSER` role이 만들 수 없다. 공용 instance에서 확장은 db-init one-shot이 `shared_admin` 권한으로 미리 만든다 — concierge는 `CREATE EXTENSION IF NOT EXISTS postgis` 1종(`public`), geo는 2026-10-16(T-MGR-03)부터 `x_extension` 스키마에 `postgis`·`pg_trgm`·`unaccent`·`pg_stat_statements` 4종(geo DDL과 같은 배치, 스키마는 admin 소유 + app role `USAGE`; 이미 있으면 no-op).
 
 그래서:
 
@@ -607,7 +607,11 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
 
 ---
 
-## 11. odroid 전용 instance — 별 호스트의 두 번째 공용 instance (계획 — ADR-58 proposed, 미구현)
+## 11. odroid 전용 instance — 별 호스트의 두 번째 공용 instance (ADR-58)
+
+> 상태(2026-10-16): 아래 compose 쪽 결정(이미지·튜닝·메모리 env, OOM·memswap 규칙, db-init-geo 확장)은 **T-MGR-03으로 구현**됐다 —
+> 값은 호스트별 root `.env`(`.env.example`의 "호스트별 공용 PG·메모리 값")가 주고, 비우면 n150 값이다. odroid instance의 **기동**은
+> 아직이다(T-OPS-01 초기화·T-MGR-06 플립·T-OPS-02 배포 순서 뒤).
 
 "공용 instance는 하나"는 **호스트당 하나**로 범위가 바뀐다(ADR-58 결정 3). odroid(`192.168.1.13`)에 같은 서비스명·컨테이너명·
 포트·bind·pg_hba(loopback scram만; n150의 `10.88.0.0/24` 잔재는 복제하지 않는다)의 `kor-travel-shared-postgres`(`11000`)가 뜬다.
@@ -624,10 +628,10 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
   명령 밖이었다) 설치 루트에서 `docker compose run --rm --no-deps kor-travel-shared-db-init-transport`로 1회(4a′). **앱 role 셋에는
   connlimit이 없다** — db-init의 `CREATE/ALTER ROLE`에 `CONNECTION LIMIT` 절이 없고(`:432-434` 등) n150 실측도 무제한이다(fact base;
   compose 전체에서 `CONNECTION LIMIT`은 dagster 45뿐). odroid도 같다(두고 싶으면 db-init 셋에 넣는 것이 대안 — T-MGR-03 범위 밖).
-  **geo 확장은 오늘 db-init이 만들지 않는다**(`:382-391` 주석 — cutover `pg_restore`가 dump의 `x_extension` 배치를 재생하게 두려고;
-  §4.3의 "현재 postgis 1종"은 concierge `:371`). odroid는 pg_restore 없는 fresh 경로라 T-MGR-03이 db-init-geo에
-  `CREATE SCHEMA IF NOT EXISTS x_extension` + `CREATE EXTENSION IF NOT EXISTS {postgis,pg_trgm,unaccent,pg_stat_statements} SCHEMA x_extension`을
-  더한다(n150 no-op; 8b 게이트 `\dx`; §4.3 문장도 그때 갱신). weather·transport는 n150에서도 fresh DB로 합류했고 소스에 `CREATE EXTENSION`이
+  **geo 확장은 db-init-geo가 만든다**(T-MGR-03): 원래는 cutover `pg_restore`가 dump의 `x_extension` 배치를 재생하게 두려고 만들지
+  않았지만, odroid는 pg_restore 없는 fresh 경로라 db-init-geo가 끝에 `CREATE SCHEMA IF NOT EXISTS x_extension` +
+  `CREATE EXTENSION IF NOT EXISTS {postgis,pg_trgm,unaccent,pg_stat_statements} WITH SCHEMA x_extension` + app role `USAGE`를 한다
+  (n150은 이미 있어 no-op; fresh·재실행 둘 다 `test_shared_postgres_runtime_integration.py`가 격리 instance에서 돌린다; 8b 게이트 `\dx`). weather·transport는 n150에서도 fresh DB로 합류했고 소스에 `CREATE EXTENSION`이
   없어 공백이 없다. **`kor_travel_transport_dagster`는 만들지 않는다** — db-init-transport는 그 DB를
   만들지도 CONNECT를 주지도 않고(`backend/tests/test_transport_shared_bootstrap_contract.py:35-37,47`) transport backend 코드가
   `DAGSTER_POSTGRES_URL`을 읽지 않는다; transport env의 그 변수는 그 저장소 compose의 `:?` 보간 때문에 모양만 남긴다.

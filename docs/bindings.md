@@ -166,7 +166,7 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   있어야 `hba_file`·`config_file` 같은 이름을 막는다
 - **결박**: `test_f1d_compose_contract.py::test_the_canonical_shared_postgres_runtime_shape_passes` — raw compose의
   공용 서비스를 C6c 검사기 자체에 통과시키고(목록을 테스트에 다시 적지 않는다), 허용 목록 밖의 GUC 하나를 더한 대조군이
-  거부되는지 함께 본다. compose에만 이름을 더하면 빨강(2026-10-13 `max_locks_per_transaction`으로 확인)
+  거부되는지 함께 본다. compose에만 이름을 더하면 빨강(2026-10-13 `max_locks_per_transaction`으로 확인). 2026-10-16(T-MGR-03) 서버 기본값 6키(`max_parallel_workers`·`_per_gather`·`effective_io_concurrency`·`checkpoint_timeout`·`wal_compression`·`autovacuum_max_workers`)를 더했고, 같은 검사기의 최상위 키 허용 목록(`_POSTGRES_ALLOWED_SERVICE_KEYS`)에 `mem_limit`·`memswap_limit`·`oom_score_adj`를 더했다(CI가 빨강으로 잡았다)
 
 ---
 

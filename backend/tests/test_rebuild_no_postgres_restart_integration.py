@@ -25,11 +25,12 @@ from pathlib import Path
 import pytest
 import yaml
 from test_compose_readiness_integration import _required_docker_gate, _unavailable_docker_fixture
-from test_shared_postgres_runtime_contract import _service
+from test_shared_postgres_runtime_contract import _service, compose_default
 
 #: 공용 instance(`kor-travel-shared-postgres`)가 도는 바로 그 이미지다 — 정본 compose의 digest
 #: 핀에서 읽는다. 사본을 두면 compose의 digest를 올린 뒤에도 이 파일은 옛 이미지를 시험한다.
-_SHARED_IMAGE: str = _service()["image"]
+# 호스트별 이미지(`KTDM_POSTGRES_IMAGE`, T-MGR-03)는 기본값으로 푼다 — `${…}` 원문으로 inspect하면 늘 skip이다.
+_SHARED_IMAGE: str = compose_default(_service()["image"])
 _PORT = 15433
 _ADMIN = "it_admin"
 
@@ -48,10 +49,12 @@ def _require_shared_image() -> None:
             _unavailable_docker_fixture("로컬 Docker Compose를 사용할 수 없음")
         if completed.returncode != 0:
             _unavailable_docker_fixture("로컬 Docker Compose를 사용할 수 없음")
+    if "${" in _SHARED_IMAGE:
+        _unavailable_docker_fixture("공용 PostgreSQL 이미지", images=(_SHARED_IMAGE,))
     if _docker("image", "inspect", _SHARED_IMAGE).returncode == 0:
         return
     if not _required_docker_gate():
-        _unavailable_docker_fixture(f"pull 없는 로컬 {_SHARED_IMAGE}를 사용할 수 없음")
+        _unavailable_docker_fixture(f"pull 없는 로컬 {_SHARED_IMAGE}를 사용할 수 없음", images=(_SHARED_IMAGE,))
     pull = _docker("pull", _SHARED_IMAGE, timeout=600)
     if pull.returncode != 0:
         pytest.fail(f"공용 PostgreSQL 이미지 pull 실패: {pull.stderr.strip()}")

@@ -188,10 +188,46 @@ def _consumer_origin_env_violations(config: dict[str, Any]) -> list[str]:
     return env_override_violations(compose, config, root_env_value)
 
 
-def _workspace_digest_violations(config: dict[str, Any]) -> list[str]:
-    """설치된 공용 Dagster workspace 파일의 sha256[:16] == digest env(T-MGR-02, 효과). compose가 없으면 빈 목록."""
+def _rendered_value() -> Any:
+    """compose와 같은 우선순위의 보간 값: 프로세스 env에 **있으면**(빈 값이어도) 그것, 없으면 compose가 읽는 `.env`
+    (`get_env_path()` — `KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE` 존중), 그다음 `${VAR:-default}`의 기본값."""
     from dotenv import dotenv_values
 
+    env_path = Path(get_env_path())
+    file_values = dotenv_values(env_path, interpolate=False) if env_path.is_file() else {}
+
+    def value(name: str) -> str | None:
+        return os.environ[name] if name in os.environ else file_values.get(name)
+
+    return value
+
+
+def _postgres_image_violations(config: dict[str, Any]) -> list[str]:
+    """렌더된 PG 서버 이미지 == digest 핀 + PGDATA major(T-MGR-03 리뷰). compose가 없으면 빈 목록."""
+    from kor_travel_docker_manager.services.postgres_image import (
+        declared_postgres_services,
+        postgres_image_violations,
+    )
+    from kor_travel_docker_manager.services.workspace_digest import interpolate
+    from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
+
+    compose_path = Path(get_compose_path())
+    if not compose_path.is_file():
+        return []
+    compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
+    services = compose.get("services") or {}
+    value = _rendered_value()
+    declared = declared_postgres_services(config)
+    rendered = {
+        name: {"image": interpolate(str(services[name].get("image") or ""), value)}
+        for name in declared
+        if isinstance(services.get(name), dict)
+    }
+    return postgres_image_violations(rendered, declared)
+
+
+def _workspace_digest_violations(config: dict[str, Any]) -> list[str]:
+    """설치된 공용 Dagster workspace 파일의 sha256[:16] == digest env(T-MGR-02, 효과). compose가 없으면 빈 목록."""
     from kor_travel_docker_manager.services.registry import get_project_root
     from kor_travel_docker_manager.services.workspace_digest import workspace_digest_violations
     from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
@@ -200,15 +236,7 @@ def _workspace_digest_violations(config: dict[str, Any]) -> list[str]:
     if not compose_path.is_file():
         return []
     compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
-    # compose와 같은 우선순위: 프로세스 env에 **있으면**(빈 값이어도) 그것, 없으면 compose가 읽는 `.env`(`get_env_path()` —
-    # `KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE` 존중), 그다음 `${VAR:-default}`의 기본값.
-    env_path = Path(get_env_path())
-    file_values = dotenv_values(env_path, interpolate=False) if env_path.is_file() else {}
-
-    def value(name: str) -> str | None:
-        return os.environ[name] if name in os.environ else file_values.get(name)
-
-    return workspace_digest_violations(compose, config, Path(get_project_root()), value)
+    return workspace_digest_violations(compose, config, Path(get_project_root()), _rendered_value())
 
 
 def _cmd_targets_validate(args: argparse.Namespace) -> int:
@@ -266,6 +294,16 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
         return 1
     if digest_violations:
         for line in digest_violations:
+            print(line, file=sys.stderr)
+        return 1
+    # T-MGR-03: `.env`의 서버 이미지가 다른 major·floating tag면 재생성된 공용 PG가 PGDATA를 거부한다 — 설치 전에 멈춘다.
+    try:
+        image_violations = _postgres_image_violations(config)
+    except (*TARGETS_CONFIG_ERRORS, ValueError) as exc:
+        print(f"postgres image check: {_targets_config_error_text(exc)}", file=sys.stderr)
+        return 1
+    if image_violations:
+        for line in image_violations:
             print(line, file=sys.stderr)
         return 1
 

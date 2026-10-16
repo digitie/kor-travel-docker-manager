@@ -1001,7 +1001,9 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane co
    아니다 — cgroup v1 deprecation WARNING은 거짓 빨강). cgroup 효과(양방향): `docker run --rm --memory 64m --memory-swap 64m
    python:3.12-slim python -c "b=bytearray(128*2**20)"` → exit 137 ∧ `OOMKilled`; `--memory 64m` 단독 → **통과**(swap 사용 — memswap
    정책이 필요한 이유); `--memory 256m --memory-swap 256m` → exit 0; limit 파일은 v1 `memory.limit_in_bytes`(v2면 `memory.max`) 양쪽
-   수용. 실패 = 중단선.
+   수용. **swap accounting 켜짐**(T-MGR-03 memswap 규칙의 전제): cgroup v1 `/sys/fs/cgroup/memory/memory.memsw.limit_in_bytes`
+   존재(v2면 컨테이너 cgroup의 `memory.swap.max`) ∧ `--memory 64m --memory-swap 64m` 컨테이너의 그 파일 값 == `memory.limit_in_bytes`
+   — 파일이 없으면 `memswap_limit`가 조용히 무시되고 limit 초과가 OOM이 아니라 swap이 된다. 실패 = 중단선.
 6. **폐기(parking-radar·Portainer만)**: ① 전 컨테이너 `docker inspect`(특히 Plex)·`docker volume inspect media`를
    `/mnt/media/kor-travel/preserved/`에 저장 ② Portainer stack export(같은 곳 — `/home/digitie`에 Plex·Portainer compose가 없어 Plex
    정의는 Portainer 볼륨 안일 개연성) ③ 저장한 inspect로 Plex 재생성 dry-run ④ 그 뒤에만 Portainer 컨테이너 stop·rm(**볼륨 유지,
