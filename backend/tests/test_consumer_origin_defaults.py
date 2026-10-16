@@ -314,3 +314,11 @@ def test_a_third_host_consumer_sees_the_sibling_address() -> None:
     env = consumer_origins.scan(compose, targets)[("pinvi-api", "PINVI_KOR_TRAVEL_WEATHER_BASE_URL")]
     weather = targets["targets"]["weather"]
     assert env.expected == weather["consumer_origin"].replace("{host}", targets["hosts"][weather["host"]]["addr"])
+
+
+@pytest.mark.parametrize("payload", [b"services: [unclosed\n", b"\xff\xfe not utf-8\n"])
+def test_an_unreadable_compose_is_one_line_not_a_traceback(project: Path, capsys, payload: bytes) -> None:
+    (project / "docker-compose.yml").write_bytes(payload)
+    code, out, err = _validate(capsys)
+    assert code == 1 and out == ""
+    assert err.startswith("consumer origin check:") and "Traceback" not in err
