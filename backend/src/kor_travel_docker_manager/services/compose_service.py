@@ -5151,7 +5151,8 @@ class ComposeService:
           hash가 달라 무조건 `up`은 매 재구축 plane을 다시 만든다(`_shared_plane_current`).
         - **이 target의 location만 기다린다.** `up -d --no-deps`(`--wait` 없음) 뒤 webserver의 `workspaceOrError`에서
           합류한 carrier의 location이 `RepositoryLocation`이고 daemon 컨테이너가 도는지 본다. 다른 테넌트의
-          code-server가 내려가 있어도 이 배포를 막지 않는다. 상한(300초) 안에 안 되면 거부한다(fail-closed).
+          code-server가 내려가 있어도 이 배포를 막지 않는다. 상한(plane render healthcheck 파생 —
+          `_shared_plane_health_wait_seconds`) 안에 안 되면 거부한다(fail-closed).
 
         모두 `own`이면 아무것도 하지 않는다.
         """
