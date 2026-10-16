@@ -82,7 +82,7 @@ def test_a_host_list_places_the_target_on_exactly_those_hosts(config, monkeypatc
     assert exporters
     jobs = {job["job_name"]: job for job in prometheus_targets.derived_scrape_configs(config)}
     for container in exporters:
-        job = jobs[config["containers"][container]["name"]]
+        job = jobs[container]  # job 이름 = registry 컨테이너 id
         assert {entry["labels"]["host"] for entry in job["static_configs"]} == {"n150", "odroid"}
 
 
