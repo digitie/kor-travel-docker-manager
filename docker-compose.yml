@@ -787,13 +787,13 @@ services:
   # (`config/docker-targets.yml`의 `dagster` target).
   #
   # 이미지 tag는 **내용 해시**다 — `latest-main`처럼 움직이는 이름이면 옛 이미지가 새 잠금본 행세를
-  # 하고, 두 호스트가 같은 tag로 다른 내용을 가진다. 값은 build context에서 이미지에 들어가는 세
-  # 파일의 해시이고(재현: `cd docker/dagster-host && sha256sum Dockerfile requirements.txt
-  # storage-migrate.py | sha256sum | cut -c1-16`, Linux coreutils), 셋 중 하나를 고치면 이 tag를
+  # 하고, 두 호스트가 같은 tag로 다른 내용을 가진다. 값은 build context에서 이미지에 들어가는 네
+  # 파일의 해시이고(재현: `cd docker/dagster-host && sha256sum Dockerfile build-bytecode.py
+  # requirements.txt storage-migrate.py | sha256sum | cut -c1-16`, Linux coreutils), 넷 중 하나를 고치면 이 tag를
   # 바꿔야 한다 — `backend/tests/test_dagster_shared_config.py`가 대조한다. 새 tag는 호스트에 없으므로
   # 다음 `run`이 build context에서 만든다. env override는 두지 않는다(정본이 둘이 된다).
   kor-travel-dagster-storage-migrate:
-    image: kor-travel-dagster-host:54b73e888026b39c
+    image: kor-travel-dagster-host:b640a42276a1a39f
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_STORAGE_MIGRATE_CONTAINER:-kor-travel-dagster-storage-migrate}
@@ -832,7 +832,7 @@ services:
   # 둘 다 code-server에 `depends_on`하지 않는다 — 어느 code-server가 합류했는지는 workspace가
   # 말하고, 합류한 location이 떴는지는 두 probe가 본다(아래).
   kor-travel-dagster-daemon:
-    image: kor-travel-dagster-host:54b73e888026b39c
+    image: kor-travel-dagster-host:b640a42276a1a39f
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_DAEMON_CONTAINER:-kor-travel-dagster-daemon}
@@ -882,7 +882,7 @@ services:
       # location의 schedule은 tick하지 않으므로 daemon을 unhealthy로 본다(webserver probe와 같은 의미).
       # dagster를 import하지 않는다(grpc·yaml만). (2) 그 다음 **같은 프로세스를 exec**해 dagster의 정식 판정
       # `dagster-daemon liveness-check`(required daemon 전부의 heartbeat 신선도) — exec라 셸 래퍼도 두 번째
-      # 프로세스도 없다(ADR-52). 주기 × retries(240초)를 tolerance(300초) 아래로 둔다.
+      # 프로세스도 없다(ADR-52). Docker 점검 간격과 내부 heartbeat tolerance300은 독립이다.
       test:
       - CMD
       - python
@@ -898,11 +898,11 @@ services:
         down and sys.exit('code servers not serving: %s' % down);
         sys.stdout.flush(); os.execvp('dagster-daemon', ['dagster-daemon', 'liveness-check'])
       - /opt/dagster/dagster_home/workspace.yaml
-      interval: 120s
+      interval: 360s
       timeout: 60s
       retries: 2
       start_period: 90s
-      start_interval: 15s
+      start_interval: 45s
 
   # 공용 webserver — `127.0.0.1`에서만 듣는다(D2). 인증은 앞의 gateway(11001)가 한다.
   #
@@ -916,7 +916,7 @@ services:
   # - gRPC를 부르지 않는다 — `locationOrLoadError`·`dagsterLibraryVersions`는 webserver가 이미 들고 있는
   #   location 상태를 읽을 뿐 code-server에 닿지 않는다. 느린 code-server가 probe를 붙잡지 못한다.
   kor-travel-dagster-webserver:
-    image: kor-travel-dagster-host:54b73e888026b39c
+    image: kor-travel-dagster-host:b640a42276a1a39f
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-dagster-webserver}

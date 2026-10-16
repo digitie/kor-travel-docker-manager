@@ -688,7 +688,7 @@
     "--no-deps",
     "--wait",
     "--wait-timeout",
-    "900",
+    "945",
     "kor-travel-map-dagster-code-server",
     "pinvi-dagster-code-server",
     "pinvi-dagster-daemon",
@@ -809,7 +809,7 @@
     "--no-deps",
     "--wait",
     "--wait-timeout",
-    "900",
+    "945",
     "kor-travel-map-api"
    ],
    [
@@ -818,7 +818,7 @@
     "--no-deps",
     "--wait",
     "--wait-timeout",
-    "900",
+    "945",
     "kor-travel-map-dagster-code-server",
     "kor-travel-map-ui",
     "kor-travel-map-dagster",
@@ -830,7 +830,7 @@
     "--no-deps",
     "--wait",
     "--wait-timeout",
-    "900",
+    "945",
     "pinvi-api"
    ],
    [
@@ -839,7 +839,7 @@
     "--no-deps",
     "--wait",
     "--wait-timeout",
-    "900",
+    "945",
     "pinvi-dagster-code-server",
     "pinvi-dagster-daemon",
     "pinvi-web",

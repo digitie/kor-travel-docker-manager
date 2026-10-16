@@ -17,11 +17,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     DAGSTER_HOME=/opt/dagster/dagster_home
 
+# Common37 c48595880aaad4367802ad71af2525a8a5e17c6a의 dependency-free 원문.
+# SPDX와 내용 SHA는 회귀시험으로 보존하며 runtime Common 설치는 추가하지 않는다.
+COPY --chmod=0644 build-bytecode.py /tmp/dagster-host-build-bytecode.py
 COPY requirements.txt /tmp/dagster-host-requirements.txt
-RUN pip install --no-deps --require-hashes --only-binary=:all: \
+RUN pip install --no-deps --require-hashes --only-binary=:all: --compile \
         -r /tmp/dagster-host-requirements.txt \
     && pip check \
-    && rm /tmp/dagster-host-requirements.txt
+    && python -I -B /tmp/dagster-host-build-bytecode.py --stdlib \
+    && rm /tmp/dagster-host-requirements.txt /tmp/dagster-host-build-bytecode.py
 
 # `DAGSTER_HOME`은 설정 전용(root 소유, `dagster.yaml`은 compose가 읽기 전용으로 붙인다).
 # 로컬 쓰기(compute log·artifact)는 공용 `dagster.yaml`이 `/opt/dagster/state`로 보낸다 —

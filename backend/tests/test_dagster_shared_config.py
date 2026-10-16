@@ -490,7 +490,7 @@ def test_the_host_image_tag_is_the_content_hash_of_what_goes_into_it() -> None:
 
     dockerfile = (_HOST_IMAGE_DIR / "Dockerfile").read_text(encoding="utf-8")
     hashed = sorted({"Dockerfile", *_dockerfile_copy_sources(dockerfile)})
-    assert hashed == ["Dockerfile", "requirements.txt", "storage-migrate.py"]
+    assert hashed == ["Dockerfile", "build-bytecode.py", "requirements.txt", "storage-migrate.py"]
     listing = "".join(
         f"{hashlib.sha256((_HOST_IMAGE_DIR / name).read_bytes()).hexdigest()}  {name}\n"
         for name in hashed
