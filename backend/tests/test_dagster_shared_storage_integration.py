@@ -41,6 +41,7 @@ from typing import Any
 import pytest
 import yaml
 from test_compose_readiness_integration import _unavailable_docker_fixture
+from test_shared_postgres_runtime_contract import compose_default
 from test_shared_postgres_runtime_integration import (
     _ISOLATED_PORT,
     _fixture_service,
@@ -186,7 +187,7 @@ def isolated_plane(tmp_path: Path) -> Iterator[_Plane]:
         available = (
             _run("docker", "compose", "version").returncode == 0
             and _run("docker", "image", "inspect", postgres["image"]).returncode == 0
-            and _run("docker", "image", "inspect", services[_DB_INIT]["image"]).returncode == 0
+            and _run("docker", "image", "inspect", compose_default(services[_DB_INIT]["image"])).returncode == 0
         )
     except (OSError, subprocess.TimeoutExpired):
         available = False

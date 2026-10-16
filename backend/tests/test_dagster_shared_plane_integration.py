@@ -34,6 +34,7 @@ import yaml
 from test_compose_readiness_integration import _unavailable_docker_fixture
 from test_dagster_shared_storage_integration import _canonical, _sql_in
 from test_dagster_shared_workspace_is_derived import _resolve
+from test_shared_postgres_runtime_contract import compose_default
 from test_shared_postgres_runtime_integration import (
     _ISOLATED_PORT,
     _fixture_service,
@@ -243,7 +244,7 @@ def _isolated(tmp_path: Path, *, build_host_image: bool) -> Iterator[_Plane]:
         available = (
             _run("docker", "compose", "version").returncode == 0
             and _run("docker", "image", "inspect", postgres["image"]).returncode == 0
-            and _run("docker", "image", "inspect", services[_DB_INIT]["image"]).returncode == 0
+            and _run("docker", "image", "inspect", compose_default(services[_DB_INIT]["image"])).returncode == 0
             and _run("docker", "image", "inspect", gateway_image).returncode == 0
         )
     except (OSError, subprocess.TimeoutExpired):
