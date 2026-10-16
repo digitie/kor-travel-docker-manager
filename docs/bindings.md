@@ -141,7 +141,8 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **사실**: 중앙 Prometheus(registry에서 파생 — `prometheus.yml`을 마운트하는 compose 서비스의 호스트, 오늘 n150)가 긁는 job·주소·경로
 - **정본**: registry — `metrics_path`가 있는 컨테이너마다 job 하나(`job_name` = 컨테이너 id), 그 컨테이너가 있는 호스트
   (`container_hosts`)마다 static_config 하나: 주소는 R1(Prometheus 호스트면 `127.0.0.1`, 아니면 `hosts.<이름>.addr`), 포트는
-  `connection`(`scheme://{host}:<port>`)의 포트, `labels: {host: <이름>}`(`services/prometheus_targets.py`)
+  `connection`(`scheme://{host}:<port>`)의 포트 — metrics가 다른 포트에서 나오면 컨테이너의 `metrics_port`(2026-10-17
+  T-MGR-04r, weather code-server), `labels: {host: <이름>}`(`services/prometheus_targets.py`)
 - **사본**: `config/prometheus/prometheus.yml`. registry 밖 job은 Manager backend(`kor-travel-docker-manager`) 하나뿐이다
 - **사본이 필요한 이유**: Prometheus는 정적 파일만 읽는다
 - **결박**: `backend/tests/test_prometheus_targets_are_derived.py` — 파생 == 파일(`test_prometheus_targets_are_the_registry_derivation`),

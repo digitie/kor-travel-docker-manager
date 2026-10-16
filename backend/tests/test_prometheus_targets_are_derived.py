@@ -137,3 +137,36 @@ def test_the_prometheus_host_must_be_single() -> None:
     config["targets"][prom_target]["host"] = "all"
     with pytest.raises(registry.TargetsConfigError, match="exactly one host"):
         prometheus_targets.prometheus_host(config)
+
+
+# --- T-MGR-04r: metrics가 connection과 다른 포트에서 나오는 컨테이너(`metrics_port`) --------------------------------
+
+
+def test_a_metrics_port_overrides_the_connection_port() -> None:
+    config = _registry()
+    with_port = [name for name, spec in config["containers"].items() if spec.get("metrics_port")]
+    assert with_port  # 전제: weather code-server(gRPC connection, prometheus_client 서버는 다른 포트)
+    jobs = {job["job_name"]: job for job in prometheus_targets.derived_scrape_configs(config)}
+    for name in with_port:
+        port = config["containers"][name]["metrics_port"]
+        assert all(target.endswith(f":{port}") for static in jobs[name]["static_configs"] for target in static["targets"])
+    # 포트를 바꾸고 파일을 따라 고치지 않으면 빨강.
+    config["containers"][with_port[0]]["metrics_port"] += 1
+    assert _mismatch(config, _file_jobs())
+
+
+@pytest.mark.parametrize("port", [0, 70000, "12203", True])
+def test_registry_rejects_an_invalid_metrics_port(port: Any) -> None:
+    config = _registry()
+    name = next(name for name, spec in config["containers"].items() if spec.get("metrics_port"))
+    config["containers"][name]["metrics_port"] = port
+    with pytest.raises(registry.TargetsConfigError, match="metrics_port"):
+        registry._validate_targets_config(config, label="test")
+
+
+def test_a_metrics_port_needs_a_metrics_path() -> None:
+    config = _registry()
+    name = next(name for name, spec in config["containers"].items() if spec.get("metrics_port"))
+    del config["containers"][name]["metrics_path"]
+    with pytest.raises(registry.TargetsConfigError, match="metrics_port"):
+        registry._validate_targets_config(config, label="test")
