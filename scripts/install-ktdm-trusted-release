@@ -251,7 +251,6 @@ for _ in $(seq 60); do
   if curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:12901/health \
     && ss -Hltnp 'sport = :12901' | grep -q "pid=${pid},"; then
     echo "installed ${SHA} (previous: ${PREV#ktdm-release-})"
-    [[ -z "${plane_rebind}" ]] || echo "NEXT: the shared Dagster plane still binds ${plane_rebind} (not in this release) — run \`ktdctl dagster-plane converge --dry-run\` then \`--confirm\` now" >&2
     if [[ "${PREV}" != "${NAME}" ]]; then
       for old in /opt/ktdm-release-*; do
         # 표식부터 지운다 — 삭제가 중간에 끊겨도 반쪽 트리가 완성 release로 재사용되지 않는다.
@@ -259,6 +258,8 @@ for _ in $(seq 60); do
           || { rm -f -- "${old}/.ktdm-source-revision"; rm -rf -- "${old}"; }
       done
     fi
+    # 남은 일은 stdout **마지막 줄**로 — 래퍼·운영자가 놓치지 않게.
+    [[ -z "${plane_rebind}" ]] || echo "NEXT: the shared Dagster plane still binds ${plane_rebind} (not in this release) — run \`ktdctl dagster-plane converge --dry-run\` then \`--confirm\` now"
     exit 0
   fi
   sleep 1

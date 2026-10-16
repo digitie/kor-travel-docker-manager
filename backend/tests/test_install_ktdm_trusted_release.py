@@ -654,5 +654,25 @@ def test_the_install_success_message_names_the_pending_converge() -> None:
     text = _INSTALLER.read_text(encoding="utf-8")
     installed = text.index('echo "installed ${SHA} (previous: ${PREV#ktdm-release-})"')
     reminder = text.index('NEXT: the shared Dagster plane still binds ${plane_rebind}')
-    assert installed < reminder < text.index("exit 0", installed)
+    cleanup = text.index('rm -rf -- "${old}"', installed)
+    # 성공 경로의 stdout 마지막 줄: 옛 release 정리 뒤, `exit 0` 바로 앞, stderr가 아니다.
+    assert installed < cleanup < reminder < text.index("exit 0", installed)
+    line = text[text.rindex("\n", 0, reminder) + 1 : text.index("\n", reminder)]
+    assert ">&2" not in line
     assert text.index('plane_rebind=""') < text.index("# >>> plane-binds")
+
+
+def test_plane_binds_refuses_a_file_neither_release_ships(tmp_path: Path) -> None:
+    refused = _run_plane_binds(tmp_path, "workspace.yaml", ["workspace.n150.yaml"], current_ships=("workspace.n150.yaml",))
+    assert refused.returncode == 126 and "PASSED" not in refused.stdout
+    assert (
+        "running Dagster plane binds config/dagster-shared/workspace.yaml, which neither the current nor the new release ships"
+        in refused.stderr
+    )
+
+
+def test_plane_binds_refuses_an_empty_directory_left_in_the_current_release(tmp_path: Path) -> None:
+    # docker가 없는 bind source를 디렉터리로 만들어 둔 경우 — 파일이 아니므로 전환 허용 대상이 아니다.
+    (tmp_path / "current" / "config" / "dagster-shared" / "workspace.yaml").mkdir(parents=True)
+    refused = _run_plane_binds(tmp_path, "workspace.yaml", ["workspace.n150.yaml"])
+    assert refused.returncode == 126 and "which neither the current nor the new release ships" in refused.stderr
