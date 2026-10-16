@@ -72,13 +72,27 @@ def test_an_unowned_service_is_refused_and_a_stale_allowance_is_red() -> None:
     assert any(f"unowned_services lists {gone}, which compose no longer declares" in line for line in host_edge_violations(shrunk, config))
 
 
-@pytest.mark.parametrize("value", [["pinvi-dagster"], {"pinvi-dagster": ""}, {"pinvi-dagster": None}])
-def test_unowned_services_needs_a_reason_per_name(value: object) -> None:
+@pytest.mark.parametrize("value", [{"kor-travel-concierge-scheduler": "why"}, ["x", "x"], [""], [None], "x"])
+def test_unowned_services_is_a_list_of_distinct_names(value: object) -> None:
     compose, config = _documents()
     broken = copy.deepcopy(config)
     broken["unowned_services"] = value
     with pytest.raises(registry.TargetsConfigError, match="unowned_services"):
         host_edge_violations(compose, broken)
+
+
+def test_only_truly_unowned_services_are_allowed() -> None:
+    """리뷰 M1: 소유자 판정이 한 자리라 bootstrap one-shot·옛 Dagster family는 소유자가 있다 — 허용 목록에 없다.
+    그들의 `depends_on`도 검사된다(예: legacy Map daemon이 공용 PG에 기대는 간선)."""
+    from kor_travel_docker_manager.services.compose_service import compose_service_owners
+    from kor_travel_docker_manager.services.runtime_topology import derive_dagster_families
+
+    compose, config = _documents()
+    owners = compose_service_owners(config, families=derive_dagster_families(compose, config))
+    unowned = sorted(name for name in compose["services"] if name not in owners)
+    assert unowned == sorted(config["unowned_services"])
+    profiled_owned = [name for name, spec in compose["services"].items() if spec.get("profiles") and name in owners]
+    assert profiled_owned  # 전제: profile 서비스 중 소유자가 있는 것(bootstrap·legacy Dagster)이 있다
 
 
 def test_init_step_services_count_as_owned() -> None:
