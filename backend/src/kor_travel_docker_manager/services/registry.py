@@ -22,6 +22,8 @@ from kor_travel_docker_manager.services.yaml_strict import (
 TARGETS_FILE_ENV: Final = "KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE"
 PROJECT_ROOT_ENV: Final = "KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT"
 HOST_ENV: Final = "KTDM_HOST"
+#: R1 URL connection의 모양 `scheme://{host}:<port>` — 포트를 잡는다(Prometheus 타깃 파생 등이 같은 것을 쓴다).
+HOST_URL: Final = re.compile(r"https?://\{host\}:([0-9]{1,5})")
 
 #: targets 문서의 상한. 이 파일은 손으로 편집하는 수백 줄짜리 선언이고, 그보다
 #: 크다면 다른 것을 읽고 있다는 뜻이다 — 읽기 전에 멈춘다.
@@ -776,6 +778,17 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
                 raise TargetsConfigError(
                     f"{label} containers.{container_id}: missing required field '{field}'"
                 )
+        metrics_path = spec.get("metrics_path")
+        if metrics_path is not None and (
+            not isinstance(metrics_path, str)
+            or not metrics_path.startswith("/")
+            or HOST_URL.fullmatch(str(spec.get("connection"))) is None
+        ):
+            # 수집 대상은 `scheme://{host}:<port>` connection의 그 포트다(Prometheus 타깃 파생, T-MGR-04).
+            raise TargetsConfigError(
+                f"{label} containers.{container_id}.metrics_path: must start with / on a "
+                "scheme://{host}:<port> connection"
+            )
 
     seen_aliases: dict[str, str] = {}
     for target_id, spec in targets.items():
@@ -1038,6 +1051,7 @@ _ALLOWED_CONTAINER_FIELDS: Final = frozenset(
         "prod_url_env",
         "expected_ports",
         "external_project",
+        "metrics_path",
     }
 )
 

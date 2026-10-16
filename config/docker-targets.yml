@@ -27,6 +27,7 @@ dependency_order:
   # 형제 프로젝트(외부 compose). Manager 자신의 프로젝트보다 뒤에 둔다 — 기동
   # 순서상 앞의 것들에 의존하지 않고, `all`에서 마지막에 오는 것이 읽기 쉽다.
   - transport
+  - node
 
 containers:
   kor-travel-shared-postgresql:
@@ -53,6 +54,9 @@ containers:
     role: geocoder-api
     display_name: Kor Travel Geo API
     connection: http://{host}:12501
+    # 중앙 Prometheus 수집(T-MGR-04): `metrics_path`가 있는 컨테이너마다 job 하나를 registry에서 파생한다
+    # (`services/prometheus_targets.py`, `config/prometheus/prometheus.yml`은 커밋된 파생물).
+    metrics_path: /metrics
     prod_url_env: KTDM_PROD_URL_GEO_API
     expected_ports:
       - "12501:12501"
@@ -62,6 +66,7 @@ containers:
     role: geocoder-ui
     display_name: Kor Travel Geo Web UI
     connection: http://{host}:12505
+    metrics_path: /api/metrics
     prod_url_env: KTDM_PROD_URL_GEO
     expected_ports:
       - "12505:12505"
@@ -218,6 +223,7 @@ containers:
     role: prometheus
     display_name: Prometheus 메트릭 저장소
     connection: http://{host}:12102
+    metrics_path: /metrics
     prod_url_env: KTDM_PROD_URL_PROMETHEUS
     expected_ports:
       - "12102:12102"
@@ -236,9 +242,21 @@ containers:
     role: metrics-exporter
     display_name: cAdvisor 컨테이너 메트릭 Exporter
     connection: http://{host}:12103
+    metrics_path: /metrics
     prod_url_env: KTDM_PROD_URL_CADVISOR
     expected_ports:
       - "12103:12103"
+  # 호스트 메트릭(swap·메모리·디스크 여유·시계 — ADR-58 핵심 위험). Manager compose 밖의 호스트 측 stack이다(`node` target).
+  kor-travel-node-exporter:
+    name: kor-travel-node-exporter
+    compose_service: node-exporter
+    external_project: kor-travel-odroid-monitoring
+    role: metrics-exporter
+    display_name: node_exporter 호스트 메트릭 Exporter
+    connection: http://{host}:12106
+    metrics_path: /metrics
+    expected_ports:
+      - "12106:12106"
 
   # kor-travel-weather-db는 삭제됐다(replaced, not renamed) — weather 전용 db는
   # internal target 전환(ADR-47)으로 은퇴했다. 앱 데이터는 kor-travel-shared-postgres
@@ -689,6 +707,32 @@ targets:
       - pinvi-dagster-code-server
       - pinvi-dagster
       - pinvi-dagster-daemon
+    init_steps: []
+
+  node:
+    # 호스트 측 node_exporter(2026-10-14 소유자 지시로 odroid에 기동, `docs/ports.md` "node_exporter"). Manager compose에
+    # 넣지 않는다 — 디스크 여유를 보려면 호스트 `/`를 읽기 전용으로 마운트해야 하는데, 그것은 C6c 후보 계약의 bind 경계
+    # (금지 source `/etc`·`/proc`·`/sys`… 의 상위)를 새로 여는 예외라 단순하지 않다(T-MGR-04 PR 근거). 그래서 형제 프로젝트처럼
+    # 등록만 한다: Manager는 상태·로그·start/stop을 보고, 중앙 Prometheus 타깃은 이 등록에서 파생한다. 다른 호스트에 같은
+    # stack을 두면 `host:`를 넓힌다(좌표는 호스트 상대, R5).
+    host: odroid
+    external_project:
+      project: kor-travel-odroid-monitoring
+      working_dir: /opt/kor-travel-odroid
+      config_files:
+        - compose-mon.yml
+    port_band: "12100-12199"
+    depends_on: []
+    display_name: node_exporter
+    description: 호스트 메트릭(swap·메모리·디스크 여유·시계 동기) exporter입니다. Manager compose 밖의 호스트 측 stack이며 중앙 Prometheus가 수집합니다.
+    aliases:
+      - node-exporter
+    services:
+      - node-exporter
+    runtime_services:
+      - node-exporter
+    containers:
+      - kor-travel-node-exporter
     init_steps: []
 
   transport:

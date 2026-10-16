@@ -23,7 +23,9 @@ import json
 import urllib.parse
 import urllib.request
 
-query = urllib.parse.urlencode({"query": 'up{job=~"prometheus|cadvisor"}'})
+# 이 Prometheus 호스트의 자기 타깃만 본다 — `cadvisor` job은 호스트마다 static_config가 있어(T-MGR-04, `host` label)
+# job 이름만으로 키를 잡으면 다른 호스트의 시계열이 덮어쓴다. 로컬 타깃은 `instance`가 127.0.0.1이다.
+query = urllib.parse.urlencode({"query": 'up{job=~"prometheus|cadvisor",instance=~"127\\\\.0\\\\.0\\\\.1:.*"}'})
 with urllib.request.urlopen(f"http://127.0.0.1:12102/api/v1/query?{query}", timeout=10) as response:
     payload = json.load(response)
 

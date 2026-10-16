@@ -1,15 +1,13 @@
-## 2026-10-16 — PR488의 최신 main 통합과 API 생존 점검 보존
+## 2026-10-16 — Prometheus 타깃을 registry에서 파생(T-MGR-04)
 
-PR488에 main384cb40의 registry 소비자 origin 파생·root 환경 재정의 거부와 기존
-호스트/workspace·고아 worker 보호를 통합했다. 실제 충돌은 이 일지의 상단 기록뿐이어서
-양쪽 원문을 남겼다. API Common HTTP3초/Docker12초/30초주기/4회와 같은 포트 변수,
-다른 서비스·CS legacy health 계약은 유지한다. PR486은 포함하지 않았다.
-실제 병합 소스에서 API health·registry origin·host/workspace·고아 정산·문서 회귀290건과
-전체 backend Ruff, frontend35/type/lint/build가 통과했다. 설치기 회귀25건도
-전용 환경의 실제 isolated import로 통과했다. 최초 설치기7실패는 빌린 환경의 구제품이
-python -I에서 선택된 원문을 보존했고 타인 환경을 수정하지 않았다. Compose 전체 모델은
-Weather API의 기존5개 의미 차이 외 main과 같다. 운영 변경0이며 새 HEAD의 CI와
-독립 두 리뷰는 후속이다.
+- `config/prometheus/prometheus.yml`을 커밋된 파생물로: registry 컨테이너의 `metrics_path`마다 job, 그 컨테이너가 있는
+  호스트마다 static_config(R1 주소, `host` label). geo job이 odroid 주소로 바뀌어 n150에 남은 옛 geo 수집이 끝난다.
+  `cadvisor-odroid`·`node-odroid` 잠정 job은 `cadvisor`(두 호스트)·`kor-travel-node-exporter` job으로 바뀐다(대시보드 영향 없음 —
+  Grafana provisioning은 datasource뿐).
+- node_exporter는 Manager compose에 넣지 않았다 — 디스크 여유를 보려면 호스트 `/` 읽기 전용 bind가 필요하고 그것은 C6c 후보
+  계약 bind 경계의 새 예외다. odroid 호스트 측 stack을 registry `node` target(외부 프로젝트)으로 등록했다.
+- `targets validate --check-coordinates`는 R5대로 자기 호스트 target의 좌표만 본다(외부 target `node`·transport는 odroid).
+- 관찰(읽기 전용): odroid 임시 stack의 cAdvisor가 `unhealthy`다(node-exporter는 정상). 배포·n150·odroid 변경은 하지 않았다.
 
 ## 2026-10-16 — 소비자 origin을 registry로(T-MGR-01c)
 
@@ -22,17 +20,6 @@ Weather API의 기존5개 의미 차이 외 main과 같다. 운영 변경0이며
   (default로 조용히 풀지 않음 — T-MGR-NH ⅴ는 완료가 아니다). 끝 `/` 무시, R1 주소 계산을 `registry.r1_address` 하나로 합침, 설치기
   거부 문구를 중립으로 하고 위반 줄을 전부 낸다.
 - 배포·n150 변경은 하지 않았다.
-
-## 2026-10-16 — Weather API의 경량 HTTP 생존 점검과 시작 여유
-
-Weather API health만 Common의 strict core HTTP CLI로 바꾼다. HTTP 예산3초는 유지하고
-Docker timeout12초·interval30초·retries4로 Python 시작 여유와 명목 실패 창120초를 함께 둔다.
-현재 API command의 고정 listen 포트도 포트 매핑·health와 같은 환경변수로 유도한다.
-다른 서비스·이미지·설정·start period·Geo 튜닝·486의 CS health 범위는 변경하지 않았다.
-원 native 표본은 빈 Python2.454초, urllib9.693초, Common7.789초였으며 통제된 개선율이 아니다.
-소비 이미지에 CLI가 있어야 하고 redirect·오류·불완전 헤더는 실패한다. 운영 적용은 하지 않았다.
-신규 계약3건은 기존 선언에서 모두 실패했고 새 선언/관련 회귀102건이 통과했다.
-정확 Common ad988 원문의 자기 loopback CLI10조건도 통과했으며 운영 실측으로 합산하지 않는다.
 
 ## 2026-10-16 — #477 리뷰 잔여(T-MGR-01a-F), #481 위로 rebase
 
@@ -70,6 +57,30 @@ CodeGraph init/sync와 diff 점검도 통과했다. 제품 리뷰·현재 CI·�
   그대로이며, 새 운영 환경 SHA 대조 전 재사용·새 source 표식·운영 성공을 주장하지 않는다.
   두 독립 제품 delta 리뷰·새 HEAD의 CI·현재 배포 revision을 기준으로 한 설치 준비와
   실제 배포/live는 별도 후속이다. 기존 운영 설치기는 실행하지 않았다.
+
+## 2026-10-16 — PR488의 최신 main 통합과 API 생존 점검 보존
+
+PR488에 main384cb40의 registry 소비자 origin 파생·root 환경 재정의 거부와 기존
+호스트/workspace·고아 worker 보호를 통합했다. 실제 충돌은 이 일지의 상단 기록뿐이어서
+양쪽 원문을 남겼다. API Common HTTP3초/Docker12초/30초주기/4회와 같은 포트 변수,
+다른 서비스·CS legacy health 계약은 유지한다. PR486은 포함하지 않았다.
+실제 병합 소스에서 API health·registry origin·host/workspace·고아 정산·문서 회귀290건과
+전체 backend Ruff, frontend35/type/lint/build가 통과했다. 설치기 회귀25건도
+전용 환경의 실제 isolated import로 통과했다. 최초 설치기7실패는 빌린 환경의 구제품이
+python -I에서 선택된 원문을 보존했고 타인 환경을 수정하지 않았다. Compose 전체 모델은
+Weather API의 기존5개 의미 차이 외 main과 같다. 운영 변경0이며 새 HEAD의 CI와
+독립 두 리뷰는 후속이다.
+
+## 2026-10-16 — Weather API의 경량 HTTP 생존 점검과 시작 여유
+
+Weather API health만 Common의 strict core HTTP CLI로 바꾼다. HTTP 예산3초는 유지하고
+Docker timeout12초·interval30초·retries4로 Python 시작 여유와 명목 실패 창120초를 함께 둔다.
+현재 API command의 고정 listen 포트도 포트 매핑·health와 같은 환경변수로 유도한다.
+다른 서비스·이미지·설정·start period·Geo 튜닝·486의 CS health 범위는 변경하지 않았다.
+원 native 표본은 빈 Python2.454초, urllib9.693초, Common7.789초였으며 통제된 개선율이 아니다.
+소비 이미지에 CLI가 있어야 하고 redirect·오류·불완전 헤더는 실패한다. 운영 적용은 하지 않았다.
+신규 계약3건은 기존 선언에서 모두 실패했고 새 선언/관련 회귀102건이 통과했다.
+정확 Common ad988 원문의 자기 loopback CLI10조건도 통과했으며 운영 실측으로 합산하지 않는다.
 
 ## 2026-10-15 — 원격 target의 HTTP 관측과 로컬 도구 경계(Codex)
 ## 2026-10-15 — HTTPX 런타임·CI·오프라인 설치 계약 교정(Codex)

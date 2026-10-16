@@ -85,7 +85,7 @@ def test_the_transport_target_declares_its_containers_under_the_new_names() -> N
     declared = {
         container_id: (spec["name"], spec["external_project"], spec["role"])
         for container_id, spec in registry_module.MANAGED_CONTAINERS.items()
-        if spec.get("external_project")
+        if spec.get("external_project") == "kor-travel-transport"
     }
     assert declared == {
         "kor-travel-transport-backend": (
@@ -140,8 +140,10 @@ def test_the_old_airport_identity_resolves_nowhere() -> None:
         assert external.working_dir != _OLD_WORKING_DIR, target_name
 
     # 하한은 **본 것**에 건다 — 순회가 비면 위의 부정 단언은 전부 공허하게 참이다.
-    assert external_targets == ["transport"]
+    # 2026-10-16 T-MGR-04: odroid 호스트 측 node_exporter stack(`node`)도 외부 프로젝트로 등록됐다.
+    assert external_targets == ["node", "transport"]
     assert external_containers == [
+        "kor-travel-node-exporter",
         "kor-travel-transport-backend",
         "kor-travel-transport-frontend",
     ]
