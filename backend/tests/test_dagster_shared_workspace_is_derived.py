@@ -917,7 +917,7 @@ def test_bringing_a_moved_target_back_drifts_the_workspace(target_id: str) -> No
     """빨간 대조군 — registry에서 `host:`를 지우면(n150으로 되돌리면) 파생이 그 location을 싣고 커밋된 파일과 갈린다."""
 
     compose, targets = _documents()
-    targets["targets"][target_id].pop("host")
+    targets["targets"][target_id]["host"] = default_host(targets)
     derived = _derived_workspace(compose, targets)
     names = {e["grpc_server"]["location_name"] for e in derived["load_from"]}
     assert _location_of(compose, targets, target_id) <= names
@@ -1306,7 +1306,7 @@ def test_flipping_an_external_target_adds_exactly_its_declared_location() -> Non
     compose, targets = _documents()
     for target_id in _external_dagster_targets():
         # 합류 기제를 본다 — plane 호스트에 있는 형제로(odroid로 옮긴 transport는 `host:`를 지워 n150에 둔다).
-        targets["targets"][target_id].pop("host", None)
+        targets["targets"][target_id]["host"] = default_host(targets)
         targets["targets"][target_id]["dagster"]["control_plane"] = "own"
         before = _derived_workspace(compose, targets)["load_from"]
         files = _flip_external(targets, compose, target_id)
@@ -1324,7 +1324,7 @@ def test_an_external_target_on_the_plane_without_its_workspace_entry_or_cap_is_n
 
     compose, targets = _documents()
     for target_id in _external_dagster_targets():
-        targets["targets"][target_id].pop("host", None)  # plane 호스트의 형제로(위 테스트와 같은 이유)
+        targets["targets"][target_id]["host"] = default_host(targets)  # plane 호스트의 형제로(위 테스트와 같은 이유)
         targets["targets"][target_id]["dagster"]["control_plane"] = "shared"
         location, _ = _external_location(targets["targets"][target_id]) or ("", 0)
         workspace = _derived_workspace(compose, targets)

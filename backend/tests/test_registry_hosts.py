@@ -44,11 +44,46 @@ def test_literal_ipv4_only(config, addr):
         registry._validate_targets_config(config, label="test")
 
 
-@pytest.mark.parametrize("host", ["mars", None, ["odroid"], ""])
+@pytest.mark.parametrize("host", ["mars", None, "", [], ["odroid", "odroid"], ["all"], ["odroid", "mars"], [None]])
 def test_unknown_target_host(config, host):
     config["targets"]["geo"]["host"] = host
     with pytest.raises(registry.TargetsConfigError, match="host"):
         registry._validate_targets_config(config, label="test")
+
+
+@pytest.mark.parametrize("target", ["gra", "map", "dagster"])
+def test_v2_target_cannot_omit_host(config, target):
+    """T-MGR-NH NH-1: 암묵 default 없음 — 호스트를 더할 때 생략된 target이 조용히 default에 묶이지 않게(임계값 없이)."""
+    del config["targets"][target]["host"]
+    with pytest.raises(registry.TargetsConfigError, match=rf"targets\.{target}\.host is required"):
+        registry._validate_targets_config(config, label="test")
+
+
+def test_a_host_list_places_the_target_on_exactly_those_hosts(config, monkeypatch):
+    """T-MGR-NH NH-1: `host:` 목록(infra용). 세 번째 호스트(mars)를 더해도 목록 target은 목록의 호스트에만 있다 —
+    `all` 필터·변경 경계·Prometheus 타깃 모두."""
+    from kor_travel_docker_manager.services import prometheus_targets
+    from kor_travel_docker_manager.services.errors import DeploymentContractError
+
+    config["hosts"]["mars"] = {"addr": "192.0.2.7"}
+    listed = "cadv"
+    assert config["targets"][listed]["host"] == "all"  # 전제: 오늘은 모든 호스트
+    config["targets"][listed]["host"] = ["n150", "odroid"]
+    registry._validate_targets_config(config, label="test")
+    assert registry.target_hosts(listed, config) == frozenset({"n150", "odroid"})
+
+    after = {host: _derived(config, monkeypatch, host) for host in config["hosts"]}
+    assert listed not in after["mars"]["all"]
+    assert all(listed in after[host]["all"] for host in ("n150", "odroid"))
+    with pytest.raises(DeploymentContractError, match="not owned by the current host"):
+        registry.require_local_targets(listed, config=config)  # KTDM_HOST는 _derived의 마지막 호스트(mars)
+
+    exporters = [c for c in config["targets"][listed]["containers"] if config["containers"][c].get("metrics_path")]
+    assert exporters
+    jobs = {job["job_name"]: job for job in prometheus_targets.derived_scrape_configs(config)}
+    for container in exporters:
+        job = jobs[container]  # job 이름 = registry 컨테이너 id
+        assert {entry["labels"]["host"] for entry in job["static_configs"]} == {"n150", "odroid"}
 
 
 def test_v2_cannot_omit_hosts(config):

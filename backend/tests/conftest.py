@@ -157,6 +157,7 @@ _SIBLING_TARGETS: dict[str, dict[str, object]] = {
             "working_dir": _SIBLING_WORKING_DIR,
             "config_files": ["docker-compose.db.yml"],
         },
+        "host": "n150",  # v2는 `host:`를 생략할 수 없다(T-MGR-NH NH-1)
         "port_band": "19000-19000",
         "depends_on": [],
         "display_name": "Test Sibling DB",
@@ -172,6 +173,7 @@ _SIBLING_TARGETS: dict[str, dict[str, object]] = {
             "working_dir": _SIBLING_WORKING_DIR,
             "config_files": ["docker-compose.yml"],
         },
+        "host": "n150",
         "port_band": "19001-19099",
         "depends_on": ["test-sibling-db"],
         "display_name": "Test Sibling",

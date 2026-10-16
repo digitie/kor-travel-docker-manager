@@ -518,18 +518,31 @@ _ADDRESS_PROBE_CACHE: Final = _local_ipv4_addresses
 
 
 def target_hosts(target: str, config: Mapping[str, Any] | None = None) -> frozenset[str]:
-    """target 직접 소유 호스트. depends_on은 소유권을 다른 호스트로 넓히지 않는다."""
+    """target 직접 소유 호스트. depends_on은 소유권을 다른 호스트로 넓히지 않는다.
+
+    `host:`는 선언된 호스트 이름 하나, 그 목록(`[n150, odroid]` — infra용; tenant에 두면 소비자 origin이 "several hosts"로
+    풀리지 않는다), 또는 `all`이다. v2에서는 **생략할 수 없다**(T-MGR-NH NH-1) — 암묵 default는 호스트를 더할 때 조용히
+    한 호스트에 묶인다. v1 개발 fixture는 호스트 차원이 없어 단일 `local`이다.
+    """
     config = load_targets_config() if config is None else config
     hosts = _host_specs(config)
     spec = config["targets"][target]
-    name = spec.get("host", default_host(config))
-    if not isinstance(name, str):
-        raise TargetsConfigError(f"targets.{target}.host must be a declared host name")
+    if "host" not in spec:
+        if config.get("version", 1) == 1:
+            return frozenset(hosts)
+        raise TargetsConfigError(f"targets.{target}.host is required (a declared host name, a list of them, or all)")
+    name = spec["host"]
     if name == "all":
         return frozenset(hosts)
-    if name not in hosts:
-        raise TargetsConfigError(f"targets.{target}.host: unknown host")
-    return frozenset({name})
+    names = name if isinstance(name, list) else [name]
+    if not names or any(not isinstance(item, str) for item in names) or len(set(names)) != len(names):
+        raise TargetsConfigError(
+            f"targets.{target}.host must be a declared host name, a non-empty list of distinct names, or all"
+        )
+    unknown = sorted(set(names) - set(hosts))
+    if unknown:
+        raise TargetsConfigError(f"targets.{target}.host: unknown host {', '.join(unknown)}")
+    return frozenset(names)
 
 
 def container_hosts(container_id: str, config: Mapping[str, Any] | None = None) -> frozenset[str]:
@@ -978,7 +991,7 @@ def _target_details(
     return {
         "id": name,
         **spec,
-        "host": spec.get("host", default_host(config)),
+        "host": spec.get("host", default_host(config)),  # v1 fixture만 생략한다(호스트 차원 없음)
         "resolved_sequence": sequence,
         "resolved_services": _dedupe([
             service for owner in sequence for service in targets[owner].get("services", [])
