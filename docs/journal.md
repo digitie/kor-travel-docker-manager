@@ -1,9 +1,13 @@
 ## 2026-10-16 — 소비자 origin을 registry로(T-MGR-01c)
 
 - 형제 target(geo·transport·weather)에 `consumer_origin: "http://{host}:<port>"`를 두고, 기대 origin을 R1으로(소비자 서비스를
-  실행하는 target의 호스트에서 본 값) 파생한다. 테스트의 포트 표와 "소비자는 default 호스트" 가정(ADR-58 잠정 ⅳ·ⅴ)을 지웠다.
+  실행하는 target의 호스트에서 본 값) 파생한다. 테스트의 포트 표(ADR-58 잠정 ⅳ)를 지웠다.
 - `ktdctl targets validate`가 root `.env`의 원천 변수 재정의가 기대값과 다르면 거부한다(값은 싣지 않는다). 설치기의 flip 전
   검사도 같은 명령이다. n150 root `.env`는 해당 변수 4개 모두 미설정이라 설치 영향이 없다(이름·상태만 읽어 확인).
+- 리뷰 2인 반영: 스캔 포트를 registry가 명시한 것(`consumer_origin` + `retired_consumer_ports`)으로 좁혔다(S3·UI·Dagster 포트
+  env가 형제 소비자로 잡혀 flip을 막던 위험). 실행 target 없는 서비스는 Dagster family target의 호스트, 그 밖은 unresolved로 보고
+  (default로 조용히 풀지 않음 — T-MGR-NH ⅴ는 완료가 아니다). 끝 `/` 무시, R1 주소 계산을 `registry.r1_address` 하나로 합침, 설치기
+  거부 문구를 중립으로 하고 위반 줄을 전부 낸다.
 - 배포·n150 변경은 하지 않았다.
 
 ## 2026-10-16 — #477 리뷰 잔여(T-MGR-01a-F), #481 위로 rebase

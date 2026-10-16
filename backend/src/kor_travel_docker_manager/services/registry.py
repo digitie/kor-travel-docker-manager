@@ -596,6 +596,16 @@ def local_mutation_target(
     return _target_details(name, config, selected, sequence=sequence)
 
 
+def r1_address(hosts: frozenset[str], selected: str, config: Mapping[str, Any]) -> str | None:
+    """R1: `selected` 호스트에서 본 `hosts`의 주소 — 그 집합에 있으면(또는 집합이 비면) loopback, 아니면 집합의
+    **단일** addr, 원격 호스트가 둘 이상이면 None(주소가 하나가 아니다)."""
+    if selected in hosts or not hosts:
+        return "127.0.0.1"
+    if len(hosts) == 1:
+        return _host_specs(config)[next(iter(hosts))]["addr"]
+    return None
+
+
 def _managed_containers(
     *, config: Mapping[str, Any] | None = None, selected: str | None = None,
 ) -> dict[str, dict[str, Any]]:
@@ -604,15 +614,9 @@ def _managed_containers(
     result = {}
     for name, spec in config["containers"].items():
         connection = spec["connection"]
-        owners = container_hosts(name, config)
-        if selected in owners or not owners:
-            host: str | None = "127.0.0.1"
-        elif len(owners) == 1:
-            host = _host_specs(config)[next(iter(owners))]["addr"]
-        else:
-            # 원격 소유 호스트가 둘 이상이면 주소가 하나가 아니다 — 이름순 첫 호스트로 조용히 풀지 않는다
-            # (#477 리뷰 6번). 설정 전체를 거부하지도 않는다: 그 connection만 `{host}` 그대로(미해석) 남긴다.
-            host = None
+        # 원격 소유 호스트가 둘 이상이면 주소가 하나가 아니다 — 이름순 첫 호스트로 조용히 풀지 않는다
+        # (#477 리뷰 6번). 설정 전체를 거부하지도 않는다: 그 connection만 `{host}` 그대로(미해석) 남긴다.
+        host = r1_address(container_hosts(name, config), selected, config)
         rendered = connection.replace("{host}", host) if isinstance(connection, str) and host is not None else connection
         result[name] = {**spec, "connection": rendered}
     return result
@@ -1007,6 +1011,7 @@ _ALLOWED_TARGET_FIELDS: Final = frozenset(
     {
         "aliases",
         "consumer_origin",
+        "retired_consumer_ports",
         "containers",
         "dagster",
         "depends_on",
@@ -1223,11 +1228,22 @@ _CONSUMER_ORIGIN = re.compile(r"https?://\{host\}:[0-9]{1,5}")
 
 def _validate_consumer_origin_field(spec: dict[str, Any], *, target_id: str, label: str) -> None:
     value = spec.get("consumer_origin")
+    retired = spec.get("retired_consumer_ports")
     if value is None:
+        if retired is not None:
+            raise TargetsConfigError(f"{label} targets.{target_id}.retired_consumer_ports: needs consumer_origin")
         return
     if not isinstance(value, str) or _CONSUMER_ORIGIN.fullmatch(value) is None:
         raise TargetsConfigError(
             f"{label} targets.{target_id}.consumer_origin: must be scheme://{{host}}:<port>"
+        )
+    if retired is not None and (
+        not isinstance(retired, list)
+        or not all(type(port) is int and 0 < port < 65536 for port in retired)
+        or int(value.rsplit(":", 1)[1]) in retired
+    ):
+        raise TargetsConfigError(
+            f"{label} targets.{target_id}.retired_consumer_ports: must be a list of ports other than the consumer_origin port"
         )
 
 
@@ -1242,14 +1258,8 @@ def consumer_origin(target: str, consumer_host: str, config: Mapping[str, Any] |
     template = config["targets"][target].get("consumer_origin")
     if template is None:
         return None
-    hosts = target_hosts(target, config)
-    if consumer_host in hosts:
-        address = "127.0.0.1"
-    elif len(hosts) == 1:
-        address = _host_specs(config)[next(iter(hosts))]["addr"]
-    else:
-        return None
-    return template.replace("{host}", address)
+    address = r1_address(target_hosts(target, config), consumer_host, config)
+    return None if address is None else template.replace("{host}", address)
 
 
 def _validate_dagster_field(spec: dict[str, Any], *, target_id: str, label: str) -> None:

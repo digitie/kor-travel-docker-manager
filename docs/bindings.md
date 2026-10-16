@@ -103,18 +103,22 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 
 - **사실**: Map(api·dagster code-server·legacy webserver/daemon)→geo·Map→transport(API gateway)·PinVi ETL·pinvi-api→weather의 origin
 - **정본**: registry — 형제 target의 `consumer_origin`(`http://{host}:<port>`; 포트는 2026-10-14 소유자가 odroid에서 통일한 값,
-  geo `12501`·transport `12301`·weather `12201`)을 R1으로 렌더한다: 소비자 서비스를 **실행하는 target의 호스트**에서 보아 형제와
-  같은 호스트면 `127.0.0.1`, 아니면 형제 호스트의 `addr`(`registry.consumer_origin`)
-- **사본**: Manager `docker-compose.yml`에서 **형제 포트(registry의 `consumer_origin` 포트와 형제 컨테이너 `connection` 포트 — 옛
-  `14001`/`14101`도 여기서 나온다)를 가진 URL을 값에 둔 env 전부**(비활성 profile 포함) — 오늘 8곳(geo 5·transport 1·weather 2).
-  빼는 것: 형제 자신의 서비스(같은 호스트 안 자기 호출)와 `NEXT_PUBLIC_*`(브라우저 공개 origin — root `.env`의 `KTDM_PROD_URL_*`, R6)
+  geo `12501`·transport `12301`·weather `12201`)을 R1으로 렌더한다(`registry.consumer_origin`): 소비자 서비스가 도는 호스트에서 보아
+  형제와 같은 호스트면 `127.0.0.1`, 아니면 형제 호스트의 `addr`. 소비자 호스트는 그 서비스를 **실행**하는 target의 호스트, 없으면
+  (옛 `legacy-dagster` 서비스) 그 서비스의 Dagster family target의 호스트다 — 둘 다 없거나 하나로 정해지지 않으면 기대값을 짓지
+  않고 "unresolved"로 보고한다. 형제가 여러 호스트에 있으면 주소가 하나가 아니라는 오류다
+- **사본**: Manager `docker-compose.yml`에서 **registry가 명시한 형제 포트(`consumer_origin` 포트와 `retired_consumer_ports` —
+  transport `14001`·weather `14101`)를 가진 URL을 값에 둔 env 전부**(비활성 profile 포함) — 오늘 8곳(geo 5·transport 1·weather 2).
+  형제의 다른 포트(S3·UI·Dagster)는 소비자 origin이 아니다. 빼는 것: 형제 자신의 서비스(같은 호스트 안 자기 호출)와
+  `NEXT_PUBLIC_*`(브라우저 공개 origin — root `.env`의 `KTDM_PROD_URL_*`, R6). 비교는 끝 `/`를 무시한다
 - **사본이 필요한 이유**: compose는 registry를 읽지 못한다(compose subprocess는 allowlist env만 받는다). 값을 root `.env`로 내리면
   호스트마다 손으로 맞추는 두 번째 사본이 생긴다 — 그래서 기본값을 커밋 파생물로 두고 `.env` 재정의는 `targets validate`가
-  거부한다(기대값과 다를 때만; 빈 값은 compose가 기본값을 쓴다; 문구에는 변수 이름과 기대값만)
+  거부한다(기대값과 다를 때만; 빈 값은 compose가 기본값을 쓴다; 문구에는 변수 이름과 기대값만; 설치기 flip 전 검사도 같은 명령)
 - **결박**: `services/consumer_origins.py`의 스캔을 `backend/tests/test_consumer_origin_defaults.py`가 쓴다 —
   `test_every_consumer_default_is_the_registry_origin`(기본값 == 기대 origin, 하한 `test_the_scan_sees_every_known_consumer`),
-  `test_reverting_any_one_consumer_to_loopback_is_named`·`test_changing_the_registry_port_is_named`(빨간 대조군),
-  `test_validate_rejects_a_root_env_override_that_differs`(validate 효과). 테스트에 포트 표·"소비자는 default 호스트" 가정은 없다
+  `test_reverting_any_one_consumer_to_loopback_is_named`·`test_moving_the_registry_port_and_retiring_the_old_one_names_every_consumer`
+  (빨간 대조군), `test_unrelated_sibling_ports_are_not_consumer_origins`, `test_validate_rejects_a_root_env_override_that_differs`
+  (validate 효과). 테스트에 포트 표는 없다
 
 ### B-7. 공용 workspace digest의 기본값
 

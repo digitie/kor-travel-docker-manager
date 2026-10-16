@@ -227,8 +227,9 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
     # 파생물로 갖고 `.env`는 그것을 조용히 가릴 수 있다 — 그 재정의가 플립을 따라가지 못하면 소비자가 옛 호스트를 부른다.
     try:
         override_violations = _consumer_origin_env_violations(config)
-    except TARGETS_CONFIG_ERRORS as exc:
-        print(_targets_config_error_text(exc), file=sys.stderr)
+    except (*TARGETS_CONFIG_ERRORS, ValueError) as exc:
+        # compose를 읽지 못하거나(권한·인코딩) 파싱하지 못해도 traceback이 아니라 한 줄로 끝낸다.
+        print(f"consumer origin check: {_targets_config_error_text(exc)}", file=sys.stderr)
         return 1
     if override_violations:
         for line in override_violations:

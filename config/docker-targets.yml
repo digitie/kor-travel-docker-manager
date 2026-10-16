@@ -710,6 +710,8 @@ targets:
     host: odroid
     # R2(T-MGR-01c): 소비자(Map)가 부르는 것은 backend `14001`이 아니라 API gateway `12301`이다(설명은 geo).
     consumer_origin: "http://{host}:12301"
+    # 옛 소비자 포트(n150 backend `14001`) — 이 포트로 되돌린 소비자 기본값도 스캔이 잡는다.
+    retired_consumer_ports: [14001]
     external_project:
       project: kor-travel-transport
       working_dir: /home/digitie/apps/kor-travel-transport
@@ -756,6 +758,8 @@ targets:
     host: odroid
     # R2(T-MGR-01c): 소비자(PinVi)가 부르는 odroid 통일 포트 `12201`(n150의 옛 `14101`이 아니다; 설명은 geo).
     consumer_origin: "http://{host}:12201"
+    # 옛 소비자 포트(n150 weather API `14101`).
+    retired_consumer_ports: [14101]
     # n150 `all`에서 뺀다(잠정 — `all` 주석). 호스트별 `all` 필터(T-MGR-01a·NH)가 이 줄을 대신한다.
     port_band: "14100-14199"
     depends_on: []
