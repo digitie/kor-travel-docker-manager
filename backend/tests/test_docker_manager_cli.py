@@ -2666,17 +2666,28 @@ def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch):
     from pathlib import Path as _Path
 
     monkeypatch.setattr(_Path, "is_dir", lambda self: False)
+    # R5: 좌표는 호스트 상대라 그 target이 있는 호스트에서 본다 — 외부 target(transport·`node`)은 odroid에 있다.
+    monkeypatch.setenv("KTDM_HOST", "odroid")
     assert main(["targets", "validate", "--check-coordinates"]) == 1
     captured = capsys.readouterr()
-    # weather는 2026-09-20(ADR-47)부터 internal target이라 더 이상 external
-    # coordinate를 선언하지 않는다 — 남은 external target(`transport`) 하나만으로도
-    # 이 메커니즘이 실제로 동작함을 증명하기에 충분하다. 줄 전체를 대조한다 —
-    # 부분 문자열이면 옛 좌표(개명 전 디렉터리)가 남아도 통과한다.
+    # 줄 전체를 대조한다 — 부분 문자열이면 옛 좌표(개명 전 디렉터리)가 남아도 통과한다.
     assert captured.err.splitlines() == [
         "declared external coordinates do not exist here:",
+        "  targets.node.external_project.working_dir: /opt/kor-travel-odroid",
         "  targets.transport.external_project.working_dir: "
         "/home/digitie/apps/kor-travel-transport",
     ]
+
+
+def test_targets_validate_does_not_check_coordinates_of_another_hosts_targets(capsys, monkeypatch):
+    """R5 — 다른 호스트 target의 좌표가 이 호스트에 없는 것은 정상이다(default 호스트에는 외부 target이 없다)."""
+
+    from pathlib import Path as _Path
+
+    monkeypatch.setattr(_Path, "is_dir", lambda self: False)
+    monkeypatch.delenv("KTDM_HOST", raising=False)
+    assert main(["targets", "validate", "--check-coordinates"]) == 0
+    assert capsys.readouterr().out.strip() == "OK"
 
 
 def test_targets_validate_coordinates_pass_when_they_exist(capsys, monkeypatch):

@@ -6,6 +6,7 @@
   Grafana provisioning은 datasource뿐).
 - node_exporter는 Manager compose에 넣지 않았다 — 디스크 여유를 보려면 호스트 `/` 읽기 전용 bind가 필요하고 그것은 C6c 후보
   계약 bind 경계의 새 예외다. odroid 호스트 측 stack을 registry `node` target(외부 프로젝트)으로 등록했다.
+- `targets validate --check-coordinates`는 R5대로 자기 호스트 target의 좌표만 본다(외부 target `node`·transport는 odroid).
 - 관찰(읽기 전용): odroid 임시 stack의 cAdvisor가 `unhealthy`다(node-exporter는 정상). 배포·n150·odroid 변경은 하지 않았다.
 
 ## 2026-10-16 — 소비자 origin을 registry로(T-MGR-01c)

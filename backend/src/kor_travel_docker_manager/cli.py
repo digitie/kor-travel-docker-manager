@@ -239,10 +239,15 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
     if not getattr(args, "check_coordinates", False):
         emit_validated()
         return 0
+    from kor_travel_docker_manager.services.registry import current_host, target_hosts
+
+    # R5(ADR-58): 좌표는 호스트 상대다 — 이 호스트의 target만 본다. 다른 호스트의 target(odroid의 transport·`node`)
+    # 좌표가 여기 없는 것은 정상이다.
+    here = current_host(config)
     missing: list[str] = []
     for target_id, spec in (config.get("targets") or {}).items():
         external = spec.get("external_project")
-        if not external:
+        if not external or here not in target_hosts(target_id, config):
             continue
         working_dir = Path(str(external["working_dir"]))
         if not working_dir.is_dir():
