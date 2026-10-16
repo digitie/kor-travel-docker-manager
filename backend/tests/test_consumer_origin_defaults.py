@@ -1,8 +1,9 @@
 """소비자 origin 기본값(ADR-58 R2, `docs/bindings.md` B-6) — 렌더된 compose를 **스캔해** registry 기대값과 대조한다.
 
-T-MGR-01c(2026-10-16): 형제 → 소비자 포트 표와 "소비자는 default 호스트" 가정을 테스트에서 지웠다. 기대 origin은
-registry의 `consumer_origin`(R1 렌더 — 소비자 서비스를 실행하는 target의 호스트에서 본 값)이고, 스캔 대상 포트도
-registry에서 읽는다(`services/consumer_origins.py`). root `.env` 재정의 거부는 `ktdctl targets validate`가 한다.
+T-MGR-01c(2026-10-16): 형제 → 소비자 포트 표를 테스트에서 지웠다. 기대 origin은 registry의 `consumer_origin`(R1 렌더 —
+소비자 서비스가 도는 호스트에서 본 값: 실행 target, 없으면 Dagster family target, 그 밖은 unresolved로 보고)이고, 스캔
+대상 포트도 registry가 명시한 것(`consumer_origin`·`retired_consumer_ports`)만이다(`services/consumer_origins.py`). root
+`.env` 재정의 거부는 `ktdctl targets validate`가 한다.
 """
 
 from __future__ import annotations
