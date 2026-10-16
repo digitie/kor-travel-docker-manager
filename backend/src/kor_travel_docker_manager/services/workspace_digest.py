@@ -25,12 +25,16 @@ def _interpolate(text: str, value: Callable[[str], str]) -> str:
     return _VAR.sub(lambda match: value(match.group(1)) or (match.group(2) or ""), text)
 
 
+#: 짧은 bind 문법 `source:target[:mode]` — source에 `${VAR:-default}`의 `:`가 있을 수 있어 target(절대 경로)에서 가른다.
+_SHORT_BIND = re.compile(r"^(.+?):(/[^:]*)(?::[A-Za-z,]+)?$")
+
+
 def _binds(service: Mapping[str, Any]) -> Iterator[tuple[str, str]]:
     for volume in service.get("volumes") or []:
         if isinstance(volume, str):
-            parts = volume.split(":")
-            if len(parts) >= 2:
-                yield parts[0], parts[1]
+            match = _SHORT_BIND.match(volume)
+            if match:
+                yield match.group(1), match.group(2)
         elif isinstance(volume, Mapping) and volume.get("type", "bind") == "bind":
             yield str(volume.get("source") or ""), str(volume.get("target") or "")
 

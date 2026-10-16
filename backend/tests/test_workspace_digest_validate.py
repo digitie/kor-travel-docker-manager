@@ -112,7 +112,7 @@ def test_the_instance_digest_has_one_literal_and_matches_the_file():
     text = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     expected = _digest(ROOT / "config/dagster-shared/dagster.yaml")
     assert text.count(expected) == 1, "instance digest 리터럴은 anchor 한 자리여야 한다"
-    assert re.search(rf'^x-dagster-instance-digest: &dagster-instance-digest "{expected}"$', text, re.M)
+    assert re.search(rf'^\s+KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "{expected}"$', text, re.M)
     compose = load_yaml_rejecting_duplicate_keys(text)
     values = {
         name: service["environment"]["KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST"]
