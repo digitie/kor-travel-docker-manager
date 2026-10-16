@@ -160,18 +160,22 @@ fi
 # docker가 응답하지 않으면 여기서 멈춘다(무한 대기·조용한 통과 둘 다 막는다) — 이 Manager는 docker 없이 의미가 없다.
 timeout 30 docker info >/dev/null 2>&1 9>&- || die "docker daemon did not answer within 30s; not flipping"
 plane_ids="$(timeout 30 docker ps -aq 9>&-)" || die "docker ps did not answer within 30s; not flipping"
-if [[ -n "${plane_ids}" ]]; then
-  # 멈춘 plane(`-a`)도 본다 — 다음 시작이 새 release의 같은 경로를 붙인다.
-  plane_sources="$(printf '%s\n' ${plane_ids} | xargs -r timeout 30 docker inspect --format \
-    '{{range .Mounts}}{{if eq .Destination "/opt/dagster/dagster_home/workspace.yaml"}}{{println .Source}}{{end}}{{end}}' 9>&-)" \
-    || die "docker inspect did not answer within 30s; not flipping"
+# 멈춘 plane(`-a`)도 본다 — 다음 시작이 새 release의 같은 경로를 붙인다. 컨테이너마다 따로 묻는다: 목록과 inspect 사이에
+# 사라진 컨테이너(같은 호스트의 격리 테스트 등)는 건너뛰고, 시간 초과(124)만 거부한다.
+for plane_id in ${plane_ids}; do
+  plane_rc=0
+  plane_sources="$(timeout 30 docker inspect --format \
+    '{{range .Mounts}}{{if eq .Destination "/opt/dagster/dagster_home/workspace.yaml"}}{{println .Source}}{{end}}{{end}}' \
+    "${plane_id}" 2>/dev/null 9>&-)" || plane_rc=$?
+  [[ "${plane_rc}" -ne 124 ]] || die "docker inspect did not answer within 30s; not flipping"
+  [[ "${plane_rc}" -eq 0 ]] || continue
   while IFS= read -r plane_source; do
     # 이 설치 root 아래의 bind만 — 같은 호스트의 격리 테스트 plane(다른 체크아웃)은 이 release와 무관하다.
     [[ "${plane_source}" == "${APP}/"* ]] || continue
     plane_path="${plane_source#"${APP}/"}"
     [[ -f "${REL}/${plane_path}" ]] || die "running Dagster plane binds ${plane_path}, which the new release does not ship; run \`ktdctl dagster-plane converge --dry-run\` then \`--confirm\` with the current release first, then install"
   done <<< "${plane_sources}"
-fi
+done
 # <<< plane-binds
 
 # host 파일은 release에서 설치한다. 여기서 실패하면 설치 root와 도는 backend는 그대로다.

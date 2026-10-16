@@ -584,8 +584,8 @@ def _run_plane_binds(
         "#!/bin/sh\n"
         'case "$1" in\n'
         f"  info) exit {info_exit} ;;\n"
-        '  ps) [ "$2" = "-aq" ] && echo abc123 ;;\n'
-        f"  inspect) echo {root}/config/dagster-shared/{mounted} ;;\n"
+        '  ps) [ "$2" = "-aq" ] && printf "gone\\nabc123\\n" ;;\n'
+        f'  inspect) [ "$4" = gone ] && exit 1; echo {root}/config/dagster-shared/{mounted} ;;\n'
         "esac\n",
         encoding="utf-8",
     )
