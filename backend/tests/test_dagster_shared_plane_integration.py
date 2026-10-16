@@ -31,6 +31,7 @@ from typing import Any
 
 import pytest
 import yaml
+from _compose_test_residue import sweep_dead_runs
 from test_compose_readiness_integration import _unavailable_docker_fixture
 from test_dagster_shared_storage_integration import _canonical, _sql_in
 from test_dagster_shared_workspace_is_derived import _resolve
@@ -252,6 +253,7 @@ def _isolated(tmp_path: Path, *, build_host_image: bool) -> Iterator[_Plane]:
         _unavailable_docker_fixture("Docker Compose 또는 공용 instance·gateway 이미지를 쓸 수 없음")
 
     # 이미지 참조와 compose 프로젝트 이름에 쓸 수 있는 글자만 — tmp 이름은 `_`로 시작할 수 있다.
+    sweep_dead_runs(_PROJECT_PREFIX)  # 죽은 이전 실행의 잔재(`_compose_test_residue` docstring)
     project = f"{_PROJECT_PREFIX}{os.getpid()}-{secrets.token_hex(4)}"
     image = f"{project}:it"
     context = _REPO_ROOT / services[_MIGRATE]["build"]["context"]

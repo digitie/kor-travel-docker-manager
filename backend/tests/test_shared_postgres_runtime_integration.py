@@ -36,6 +36,7 @@ from typing import Any
 import docker
 import pytest
 import yaml
+from _compose_test_residue import sweep_dead_runs
 from test_compose_readiness_integration import _unavailable_docker_fixture
 from test_shared_postgres_runtime_contract import _SERVICE, _bytes, _seconds, _service
 
@@ -137,6 +138,7 @@ def isolated_shared_postgres(tmp_path: Path) -> Iterator[str]:
     compose_path.write_text(
         yaml.safe_dump({"services": {"pg": service}}, sort_keys=False), encoding="utf-8"
     )
+    sweep_dead_runs(_PROJECT_PREFIX)  # 죽은 이전 실행의 잔재(`_compose_test_residue` docstring)
     project = f"{_PROJECT_PREFIX}{os.getpid()}-{tmp_path.name[-8:]}".lower()
     env = {**os.environ, "KOR_TRAVEL_SHARED_DB_PORT": _ISOLATED_PORT}
     compose = ("docker", "compose", "--file", str(compose_path), "--project-name", project)
