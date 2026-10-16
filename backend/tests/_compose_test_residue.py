@@ -12,7 +12,9 @@ pid가 이 호스트에서 살아 있지 않은가(`/proc/<pid>`) 하나다 — 
 
 from __future__ import annotations
 
+import os
 import subprocess
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 
@@ -27,7 +29,22 @@ _KINDS = (
 
 
 def _docker(run: Runner, *arguments: str) -> subprocess.CompletedProcess[str]:
-    return run(["docker", *arguments], capture_output=True, text=True, check=False, timeout=120)
+    """시간 초과는 경고만 남기고 빈 결과로 넘어간다 — 정리 실패가 fixture를 에러로 만들지 않는다."""
+    try:
+        return run(["docker", *arguments], capture_output=True, text=True, check=False, timeout=120)
+    except subprocess.TimeoutExpired:
+        warnings.warn(f"docker {' '.join(arguments[:2])} timed out while sweeping test residue", stacklevel=2)
+        return subprocess.CompletedProcess(["docker", *arguments], 124, stdout="", stderr="")
+
+
+def _local_daemon() -> bool:
+    """pid를 이 호스트의 `/proc`로 판정하므로 데몬도 이 호스트의 것이어야 한다 — `DOCKER_HOST`가 원격(로컬 unix 소켓이
+    아닌 것)이거나 기본이 아닌 docker context면 건너뛴다(다른 호스트·컨테이너의 실행을 지우지 않게)."""
+    host = os.environ.get("DOCKER_HOST", "").strip()
+    if host and not host.startswith("unix://"):
+        return False
+    context = os.environ.get("DOCKER_CONTEXT", "").strip()
+    return context in {"", "default"}
 
 
 def _projects(run: Runner) -> set[str]:
@@ -41,14 +58,14 @@ def _projects(run: Runner) -> set[str]:
 
 def sweep_dead_runs(prefix: str, *, run: Runner = subprocess.run, proc: Path = Path("/proc")) -> list[str]:
     """`prefix<pid>-…` 프로젝트 중 pid가 죽은 것을 지우고 그 이름들을 돌려준다(시험 시작 전 정리용)."""
-    if not (proc / "self").exists():
+    if not (proc / "self").exists() or not _local_daemon():
         return []
     removed: list[str] = []
     for project in sorted(_projects(run)):
         if not project.startswith(prefix):
             continue
         pid = project[len(prefix):].split("-", 1)[0]
-        if not pid.isdigit() or (proc / pid).exists():
+        if not (pid.isascii() and pid.isdigit()) or (proc / pid).exists():
             continue
         label = f"label={_LABEL}={project}"
         for listing, removal in _KINDS:

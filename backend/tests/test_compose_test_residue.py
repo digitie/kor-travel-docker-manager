@@ -26,7 +26,9 @@ class _FakeDocker:
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
 
-def test_only_dead_runs_with_the_prefix_are_removed(tmp_path: Path) -> None:
+def test_only_dead_runs_with_the_prefix_are_removed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
     proc = tmp_path / "proc"
     (proc / "self").mkdir(parents=True)
     (proc / "4242").mkdir()  # 살아 있는 실행
@@ -49,3 +51,48 @@ def test_nothing_happens_without_proc(tmp_path: Path) -> None:
     docker = _FakeDocker({"ktdm-dagsterplane-1111-bbbb": ["dead1"]})
     assert sweep_dead_runs("ktdm-dagsterplane-", run=docker, proc=tmp_path / "absent") == []
     assert docker.calls == []
+
+
+import pytest
+
+
+@pytest.mark.parametrize(("env", "value"), [("DOCKER_HOST", "tcp://10.0.0.5:2376"), ("DOCKER_HOST", "ssh://odroid"),
+                                            ("DOCKER_CONTEXT", "remote")])
+def test_a_remote_daemon_or_context_is_not_swept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env: str, value: str) -> None:
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    monkeypatch.setenv(env, value)
+    docker = _FakeDocker({"ktdm-dagsterplane-1111-bbbb": ["dead1"]})
+    assert sweep_dead_runs("ktdm-dagsterplane-", run=docker, proc=proc) == []
+    assert docker.calls == []
+
+
+def test_a_local_unix_socket_is_still_swept(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    docker = _FakeDocker({"ktdm-dagsterplane-1111-bbbb": ["dead1"]})
+    assert sweep_dead_runs("ktdm-dagsterplane-", run=docker, proc=proc) == ["ktdm-dagsterplane-1111-bbbb"]
+
+
+def test_non_ascii_digits_are_not_pids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    docker = _FakeDocker({"ktdm-dagsterplane-١٢-bbbb": ["odd"]})  # 아랍 숫자 — str.isdigit()는 참
+    assert sweep_dead_runs("ktdm-dagsterplane-", run=docker, proc=proc) == []
+
+
+def test_a_docker_timeout_warns_and_does_not_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    proc = tmp_path / "proc"
+    (proc / "self").mkdir(parents=True)
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+
+    def hang(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, 120)
+
+    with pytest.warns(UserWarning, match="timed out"):
+        assert sweep_dead_runs("ktdm-dagsterplane-", run=hang, proc=proc) == []
