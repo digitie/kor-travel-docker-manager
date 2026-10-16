@@ -154,8 +154,13 @@ fi
 # 공용 Dagster plane 컨테이너(멈춘 것 포함)가 붙인 workspace 파일이 새 release에도 있는지 flip **전에** 본다(T-MGR-NH NH-4
 # 리뷰 OS-1). bind source는 설치 root symlink를 거친 경로라 flip 뒤 다음 시작에서 새 release의 같은 상대경로를 붙인다 — 그
 # 파일이 없으면(옛 별칭 `workspace.yaml`을 붙인 채 별칭이 없는 release로 넘어가면) 마운트가 깨진다. plane은 이름이 아니라
-# 컨테이너 안 workspace 경로로 알아본다. 고치는 길은 현재 release로 `ktdctl dagster-plane converge --dry-run` → `--confirm`을
-# 먼저 돌려 plane을 호스트 파일(`workspace.<KTDM_HOST>.yaml`) bind로 다시 만드는 것이다.
+# 컨테이너 안 workspace 경로로 알아본다.
+#
+# **전환 한 번은 통과시킨다(2026-10-17).** 그 파일이 **지금 설치된 release에는 있으면**(옛 별칭에서 넘어가는 첫 설치) 거부하지 않고
+# 기록만 한다 — 옛 converge는 bind 차이를 보지 못해(내용 digest가 같은 두 파일) 설치 전에 고칠 길이 없고, 새 release의 converge가
+# bind drift를 재생성 사유로 본다. 대신 성공 메시지에 "지금 `ktdctl dagster-plane converge --dry-run` → `--confirm`"을 낸다(그 전에
+# plane이 재시작되면 마운트가 깨진다 — converge가 고친다). 지금 release에도 없는 파일이면(이미 깨진 상태) 그대로 거부한다.
+plane_rebind=""
 # >>> plane-binds
 # docker가 응답하지 않으면 여기서 멈춘다(무한 대기·조용한 통과 둘 다 막는다) — 이 Manager는 docker 없이 의미가 없다.
 timeout 30 docker info >/dev/null 2>&1 9>&- || die "docker daemon did not answer within 30s; not flipping"
@@ -173,7 +178,10 @@ for plane_id in ${plane_ids}; do
     # 이 설치 root 아래의 bind만 — 같은 호스트의 격리 테스트 plane(다른 체크아웃)은 이 release와 무관하다.
     [[ "${plane_source}" == "${APP}/"* ]] || continue
     plane_path="${plane_source#"${APP}/"}"
-    [[ -f "${REL}/${plane_path}" ]] || die "running Dagster plane binds ${plane_path}, which the new release does not ship; run \`ktdctl dagster-plane converge --dry-run\` then \`--confirm\` with the current release first, then install"
+    [[ -f "${REL}/${plane_path}" ]] && continue
+    [[ -f "${APP}/${plane_path}" ]] || die "running Dagster plane binds ${plane_path}, which neither the current nor the new release ships; run \`ktdctl dagster-plane converge --dry-run\` then \`--confirm\` first, then install"
+    echo "running Dagster plane binds ${plane_path}, which the new release does not ship — run \`ktdctl dagster-plane converge --dry-run\` then \`--confirm\` right after this install" >&2
+    plane_rebind="${plane_path}"
   done <<< "${plane_sources}"
 done
 # <<< plane-binds
@@ -243,6 +251,7 @@ for _ in $(seq 60); do
   if curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:12901/health \
     && ss -Hltnp 'sport = :12901' | grep -q "pid=${pid},"; then
     echo "installed ${SHA} (previous: ${PREV#ktdm-release-})"
+    [[ -z "${plane_rebind}" ]] || echo "NEXT: the shared Dagster plane still binds ${plane_rebind} (not in this release) — run \`ktdctl dagster-plane converge --dry-run\` then \`--confirm\` now" >&2
     if [[ "${PREV}" != "${NAME}" ]]; then
       for old in /opt/ktdm-release-*; do
         # 표식부터 지운다 — 삭제가 중간에 끊겨도 반쪽 트리가 완성 release로 재사용되지 않는다.
