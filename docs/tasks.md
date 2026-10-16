@@ -6,6 +6,7 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
+- [ ] **T-MGR-DAEMON-POOL — 공용 daemon 연결 재사용 채택(PR513)**. Common38 final17ff 정식 core wheel/source·RECORD·고정 잠금, daemon 한 곳의 공식 wrapper/동일 DSN source 구현과 focused392회귀 완료. 최종 독립2리뷰·CI·native 이미지/CLI/PG 정리·동일 workload 성능/신선도는 후속이다. [소비 경계](daemon-pool-adoption.md).
 - [ ] **T-MGR-DAEMON-HC — 공용 daemon 점검·빌드 cache 후속(PR511)**. interval360/start_interval45, 원 liveness·digest·heartbeat300 보존, shared-plane945초 대기와 Common37 stdlib checked-hash 빌드 준비 source 구현. 필수 전체 회귀·독립2리뷰·CI·운영 적용/비교는 후속이다. [범위와 제한](daemon-health-cadence.md).
 - [ ] **T-MGR-HC-CADENCE — 상태 점검 간격 정본 정합(PR505)**. 기존8개 interval의 source/회귀 구현, 기존 health·PG·참조134PASS/구조대조 및 CI실패를 정산한 frozen health 기반 rebuild wait·249회귀 완료. 독립2리뷰·CI·머지와 운영 Config 적용·동일 구성 CPU 측정은 후속이다. [범위와 적용 경계](health-cadence.md).
 - [ ] **T-GEO-DASHBOARD — Geo UI의 Dagster 공개 URL과 가벼운 HTTP 상태 점검 정합화**. API와 같은 공개 URL 변수를 UI runtime에 전달한다. UI 상태 점검은 core HTTP로 /login의 2xx만 확인하며 단일 4초 예산을 둔다. 기존 주기·포트·이미지·backend·수집 튜닝은 유지한다. 실제 운영 UI 설정 반영과 외부 Dagster dashboard E2E는 후속이며, 성공 전 완료로 표시하지 않는다.

@@ -17,6 +17,12 @@
 
 ---
 
+## 2026-10-17 — 공용 daemon 연결 재사용 채택(PR513)
+
+- PR511 위 별도 소비자 범위로 Common38 final17ff(제품e0c)의 정식 whole core wheel을 vendor/source REV/SHA로 고정했다. 원 wheel과 독립 offline 재빌드가 동일하고 RECORD18/package13/공식 metadata를 직접 대조했다.
+- 기존71개 runtime 버전·해시를 유지한 잠금72개와 명시 wheel COPY/find-links를 사용한다. daemon만 원 guard 뒤 공식 wrapper 실행/원 shared와 동일한 전용DSN을 추가하고 다른 업무·URL·HC 의미는 유지했다.
+- focused392PASS/Ruff/wholeCompose모델대조, 빈 core-only 정식설치와 잘못된해시 거절을 확인했다. frontend tree는511 검증본과 동일하다. 최종CI/두 리뷰·운영 native/CLI/PG·CPU/RSS 효과는 별도다. [범위·미검증](daemon-pool-adoption.md).
+
 ## 2026-10-17 — 공용 daemon 점검·빌드 cache 후속(PR511)
 
 - 공용 daemon만 interval120→360/start_interval15→45로 늘리고 원 Test·timeout60/retries2/start90·heartbeat tolerance300을 보존했다. shared-plane 대기945초가 기존900초에 잘리지 않게 기존3600초 허용 상한을 재사용한다.
