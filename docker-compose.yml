@@ -210,7 +210,9 @@ services:
   # 모든 테넌트의 PostgreSQL·PostGIS·glibc를 조용히 바꾼다. db-init one-shot은 psql
   # 클라이언트라 태그를 그대로 둔다.
   kor-travel-shared-postgres:
-    image: postgis/postgis:16-3.5@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40
+    # 호스트별 이미지(ADR-58 결정 9·R6, T-MGR-03). 기본값은 n150의 digest 핀 그대로다 — 이 index에는 amd64만 있어(2026-10-16
+    # 레지스트리 조회) arm64 호스트(odroid)는 root `.env`의 `KTDM_POSTGRES_IMAGE`로 arm64 이미지를 준다.
+    image: ${KTDM_POSTGRES_IMAGE:-postgis/postgis:16-3.5@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40}
     container_name: ${KOR_TRAVEL_SHARED_POSTGRES_CONTAINER:-kor-travel-shared-postgres}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -229,6 +231,12 @@ services:
     # 종료 checkpoint를 위해 120초 이상을 요구한다 — 이 값이 그것을 넘는다. Manager의
     # 컨테이너 stop/restart도 이 값(`Config.StopTimeout`)을 그대로 넘긴다(#434).
     stop_grace_period: 300s
+    # 메모리 압박 때 커널 OOM killer가 공용 instance를 마지막에 고르게 한다(ADR-58 결정 8 ⅱ, T-MGR-03) — 이것이 죽으면
+    # 전 테넌트가 끊긴다. 상한은 호스트별이다: 기본 `0`(= 상한 없음, 오늘 n150과 효과 동일), odroid `.env`가 준다.
+    # `memswap_limit`는 같은 값 — 상한을 두는 호스트에서 swap으로 새지 않게(같은 변수라 상한 없음이면 둘 다 0).
+    oom_score_adj: -800
+    mem_limit: ${KTDM_PG_MEM_LIMIT:-0}
+    memswap_limit: ${KTDM_PG_MEM_LIMIT:-0}
     # docker 기본 /dev/shm 64MB는 병렬 질의의 dynamic shared memory가 넘친다(09-22
     # "could not resize shared memory segment" 실측). D4의 64MB `work_mem`에서는 병렬
     # hash 하나가 `work_mem × hash_mem_multiplier(2) × (workers+1)`까지 자라므로 1gb로
@@ -265,18 +273,33 @@ services:
     - shared_preload_libraries=pg_prewarm,pg_stat_statements
     - -c
     - pg_prewarm.autoprewarm=on
+    # 튜닝 수치는 호스트별 root `.env`로 바꿀 수 있다(ADR-58 R6·결정 8 ⅰ, T-MGR-03). 기본값은 오늘 n150 값 그대로다.
     - -c
-    - shared_buffers=1GB
+    - shared_buffers=${KTDM_PG_SHARED_BUFFERS:-1GB}
     - -c
-    - work_mem=64MB
+    - work_mem=${KTDM_PG_WORK_MEM:-64MB}
     - -c
-    - maintenance_work_mem=256MB
+    - maintenance_work_mem=${KTDM_PG_MAINTENANCE_WORK_MEM:-256MB}
     - -c
-    - effective_cache_size=1536MB
+    - effective_cache_size=${KTDM_PG_EFFECTIVE_CACHE_SIZE:-1536MB}
     - -c
-    - random_page_cost=1.1
+    - random_page_cost=${KTDM_PG_RANDOM_PAGE_COST:-1.1}
     - -c
-    - max_wal_size=2GB
+    - max_wal_size=${KTDM_PG_MAX_WAL_SIZE:-2GB}
+    # 아래 여섯은 n150 compose에 없던 키다 — 기본값은 **PG 16 서버 기본값**이라 n150 효과는 0이다(ADR-58 결정 1 ⑦;
+    # `test_postgres_host_tuning.py`가 기본값 == 서버 기본값을 단언). odroid(4코어·eMMC/NVMe)가 `.env`로 바꾼다.
+    - -c
+    - max_parallel_workers=${KTDM_PG_MAX_PARALLEL_WORKERS:-8}
+    - -c
+    - max_parallel_workers_per_gather=${KTDM_PG_MAX_PARALLEL_WORKERS_PER_GATHER:-2}
+    - -c
+    - effective_io_concurrency=${KTDM_PG_EFFECTIVE_IO_CONCURRENCY:-1}
+    - -c
+    - checkpoint_timeout=${KTDM_PG_CHECKPOINT_TIMEOUT:-5min}
+    - -c
+    - wal_compression=${KTDM_PG_WAL_COMPRESSION:-off}
+    - -c
+    - autovacuum_max_workers=${KTDM_PG_AUTOVACUUM_MAX_WORKERS:-3}
     - -c
     - pg_stat_statements.track=all
     - -c
@@ -323,7 +346,7 @@ services:
   # 다른 -db-init one-shot을 추가한다(위 서비스 주석 참고) — role/ACL은 database가
   # 아니라 cluster 전역이라는 ADR-37의 교훈을 그대로 지킨다.
   kor-travel-shared-db-init-concierge:
-    image: postgis/postgis:16-3.5
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_CONCIERGE_CONTAINER:-kor-travel-shared-db-init-concierge}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -381,21 +404,22 @@ services:
 
   # geo 전용 role+앱 database 하나만 만든다 — concierge와 같은
   # 이유로 role/ACL은 cluster 전역이라는 ADR-37 교훈을 지킨다(ADR-45). concierge
-  # db-init과 달리 여기서는 extension을 만들지 않는다 — geo의 실제 스키마
+  # db-init과 달리 extension을 `public`에 만들지 않는다(아래 command 끝에서 `x_extension`에만 — T-MGR-03) — geo의 실제 스키마
   # (kor-travel-geo의 sql/ddl/001_schema.sql)는 postgis/pg_trgm/unaccent/
   # pg_stat_statements를 전부 `x_extension` 스키마에 설치하는데, 여기서 기본
   # `public` 스키마에 먼저 심어 버리면 cutover pg_restore 때 dump가 가져오는
   # `x_extension` 배치와 충돌한다(공용 instance 자체 주석이 경고하는 "map 커토버
-  # 실측" 함정과 동일 원인). 그래서 db-init은 빈 database + role + CONNECT
-  # grant까지만 하고, extension/스키마/테이블은 cutover의 pg_restore가 dump
-  # 그대로 재생하게 둔다.
+  # 실측" 함정과 동일 원인). 2026-10-16(T-MGR-03)부터는 fresh 호스트(odroid — pg_restore 없음)를 위해
+  # `x_extension`·확장 4종을 **그 배치 그대로** 만든다(`IF NOT EXISTS`, admin 소유 + app role USAGE). dump를
+  # 복원하는 경로는 geo `docs/t046-db-backup-restore.md`의 "확장·`x_extension`을 미리 만든 비-superuser 복원"
+  # 절차(그 TOC 제외)와 같다. 테이블은 여전히 geo DDL·복원이 만든다.
   #
   # 옛 Dagster 메타 DB(`kor_travel_geo_dagster`)는 더 만들지도 CONNECT를 주지도 않는다 — geo는 공용
   # plane(`dagster_shared`)에서 돌고, 그 DB는 platform-topology.md §7 4단계가 막고(ALLOW_CONNECTIONS
   # false) 30일 뒤 DROP한다. 여기 남아 있으면 DROP 뒤 매 `ensure`가 빈 DB를 되살린다
   # (`backend/tests/test_old_dagster_meta_db_retired.py`). weather·pinvi·transport db-init도 같다.
   kor-travel-shared-db-init-geo:
-    image: postgis/postgis:16-3.5
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_GEO_CONTAINER:-kor-travel-shared-db-init-geo}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -443,6 +467,14 @@ services:
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PGDATABASE\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_SHARED_DB\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_SHARED_DB\" TO \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\""
+      # 확장 4종(ADR-58 결정 3, T-MGR-03) — fresh 호스트(odroid)는 pg_restore가 없어 app role(NOSUPERUSER)이 postgis를 만들
+      # 수 없다. cluster admin이 geo DDL과 같은 배치(`x_extension`, admin 소유 + app role USAGE — geo
+      # `docs/t046-db-backup-restore.md`)로 만든다. 이미 있으면(n150 — dump가 재생) 모두 no-op이다.
+      psql -d "$$KOR_TRAVEL_GEO_SHARED_DB" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS x_extension"
+      for extension in postgis pg_trgm unaccent pg_stat_statements; do
+        psql -d "$$KOR_TRAVEL_GEO_SHARED_DB" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS $$extension WITH SCHEMA x_extension"
+      done
+      psql -d "$$KOR_TRAVEL_GEO_SHARED_DB" -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA x_extension TO \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\""
 
   # ADR-46 — PinVi도 geo/concierge/weather와 같은 모양이다: **app role 하나**가
   # 자기 두 database를 소유한다. 종전에는 PinVi만 자체 다중 role 모델(M05)을 갖고
@@ -452,7 +484,7 @@ services:
   # 그래서 그 모델을 폐기하고 geo 패턴으로 접었다 — role 분리 대신 scoped role
   # 하나(NOSUPERUSER/NOCREATEDB/NOCREATEROLE)와 CONNECT 격리로 경계를 잡는다.
   kor-travel-shared-db-init-pinvi:
-    image: postgis/postgis:16-3.5
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_PINVI_CONTAINER:-kor-travel-shared-db-init-pinvi}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -518,7 +550,7 @@ services:
   # PGHOST 127.0.0.1 + network_mode: host 규약으로 처음부터 새로 짠 것이다
   # (ADR-47 — weather internal-target 전환).
   kor-travel-shared-db-init-weather:
-    image: postgis/postgis:16-3.5
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_WEATHER_CONTAINER:-kor-travel-shared-db-init-weather}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -586,7 +618,7 @@ services:
   # DAGSTER_POSTGRES_URL도 이 통합에 맞춰 함께 바꿔야 한다(Manager 쪽만 바꾸면
   # 소비 컨테이너는 여전히 예전 role로 붙는다).
   kor-travel-shared-db-init-transport:
-    image: postgis/postgis:16-3.5
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_TRANSPORT_CONTAINER:-kor-travel-shared-db-init-transport}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -659,7 +691,7 @@ services:
   # 쪽에 적힌다) — 이 설치가 공용 instance의 재생성을 걸어 두지 않는다. 재실행은
   # onboarding §7.3대로 `--no-deps`로, drift guard가 MATCH일 때만 한다.
   kor-travel-shared-db-init-dagster:
-    image: postgis/postgis:16-3.5
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_DAGSTER_CONTAINER:-kor-travel-shared-db-init-dagster}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -807,6 +839,8 @@ services:
     restart: unless-stopped
     # healthcheck·exec의 고아를 거둔다(ADR-52와 같은 이유).
     init: true
+    # 공용 plane은 OOM 때 테넌트 code-server보다 나중에 죽게 한다(ADR-58 결정 8 ⅱ, T-MGR-03).
+    oom_score_adj: -600
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-dagster-storage-migrate:
@@ -888,6 +922,8 @@ services:
     container_name: ${KOR_TRAVEL_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-dagster-webserver}
     restart: unless-stopped
     init: true
+    # 공용 plane은 OOM 때 테넌트 code-server보다 나중에 죽게 한다(ADR-58 결정 8 ⅱ, T-MGR-03).
+    oom_score_adj: -600
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-dagster-storage-migrate:
@@ -2434,6 +2470,10 @@ services:
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
+    # 호스트별 상한(ADR-58 결정 8 ⅱ, T-MGR-03): 기본 `0`(= 상한 없음, 오늘과 효과 동일), odroid `.env`가 준다. swap으로 새지
+    # 않게 `memswap_limit`는 같은 값.
+    mem_limit: ${KTDM_GEO_CODE_SERVER_MEM_LIMIT:-0}
+    memswap_limit: ${KTDM_GEO_CODE_SERVER_MEM_LIMIT:-0}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-shared-postgres:
@@ -2913,7 +2953,10 @@ services:
     - /var/run/kor-travel-weather-metrics
     cpu_shares: 4096
     mem_reservation: 2g
-    mem_limit: 4g
+    # 호스트별 상한(ADR-58 결정 8 ⅱ, T-MGR-03): 기본값은 오늘 값(4g), odroid `.env`가 줄인다. swap으로 새지 않게
+    # `memswap_limit`는 같은 값.
+    mem_limit: ${KTDM_WEATHER_CODE_SERVER_MEM_LIMIT:-4g}
+    memswap_limit: ${KTDM_WEATHER_CODE_SERVER_MEM_LIMIT:-4g}
     mem_swappiness: 10
     oom_score_adj: -500
     pids_limit: 2048
