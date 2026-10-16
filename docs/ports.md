@@ -213,10 +213,15 @@ cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실�
 - **odroid: 2026-10-14 기동**(소유자 지시, 임시 최소 반영). Manager 설치 전이라 저장소 밖 호스트 파일
   `/opt/kor-travel-odroid/compose-mon.yml`(project `kor-travel-odroid-monitoring`)로 cAdvisor `12103`과 함께 띄웠다.
   n150 Prometheus가 `cadvisor-odroid`·`node-odroid` job(`labels: host=odroid`)으로 수집한다 —
-  `config/prometheus/prometheus.yml`의 주소 리터럴은 T-MGR-04의 registry 파생물로 대체한다. **odroid 방화벽은 아직 없다**
+  `config/prometheus/prometheus.yml`의 주소는 2026-10-16부터 registry 파생물이다(T-MGR-04 — job 이름은 컨테이너 id
+  `cadvisor`·`kor-travel-node-exporter`, 호스트는 `host` label). **odroid 방화벽은 아직 없다**
   (INPUT ACCEPT — `prod-deployment.md` §9.1 단계 7 미실시): exporter 집합의 "n150 addr만" 경계(아래 표)는 그 단계 전까지
   성립하지 않는다. cAdvisor의 노출 수준은 n150과 같고(`0.0.0.0:12103`, privileged), node_exporter는 새 표면이다(읽기 전용).
-- n150: 아직 없다(T-MGR-04).
+- n150: **두지 않는다(2026-10-16 T-MGR-04 판단)**. 디스크 여유를 보려면 호스트 `/`를 읽기 전용으로 마운트해야 하는데
+  Manager compose에 넣으면 C6c 후보 계약의 bind 경계(금지 source `/etc`·`/proc`·`/sys`… 의 상위)에 새 예외가 필요하다 —
+  단순성 기준으로 넣지 않는다. odroid의 호스트 측 stack은 registry `node` target(외부 프로젝트
+  `kor-travel-odroid-monitoring`, `host: odroid`)으로 등록했고 중앙 Prometheus 타깃은 그 등록에서 파생한다(B-8). n150에도
+  같은 호스트 측 stack을 두면 `node`의 `host:`만 넓힌다.
 
 ### plane별 공개 host (계획)
 

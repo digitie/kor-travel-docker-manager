@@ -134,13 +134,16 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   `test_either_frozen_plane_digest_drift_rejected`가 기존 frozen render의 두 plane을 같은 파일 bytes에 묶는다.
   `test_wrong_host_or_noncanonical_workspace_path_rejected`가 선택 host와 실제 bind 경로를 함께 검사한다.
 
-### B-8. (계획) Prometheus scrape 타깃의 host
+### B-8. Prometheus scrape 타깃(2026-10-16 T-MGR-04 구현)
 
-- **사실**: n150 Prometheus가 긁는 geo/weather/transport/odroid exporter의 주소
-- **정본**: registry `hosts:` + `host:`
-- **사본**: `config/prometheus/prometheus.yml`의 `static_configs.targets`(오늘 n150 자기 타깃은 `127.0.0.1:…`(`:27-34` 등)이고, 2026-10-14부터 odroid exporter 두 job `cadvisor-odroid`·`node-odroid`가 임시 리터럴 `192.168.1.13:{12103,12106}`이다 — T-MGR-04가 파생물로 대체)
+- **사실**: 중앙 Prometheus(registry에서 파생 — `prometheus.yml`을 마운트하는 compose 서비스의 호스트, 오늘 n150)가 긁는 job·주소·경로
+- **정본**: registry — `metrics_path`가 있는 컨테이너마다 job 하나(`job_name` = 컨테이너 id), 그 컨테이너가 있는 호스트
+  (`container_hosts`)마다 static_config 하나: 주소는 R1(Prometheus 호스트면 `127.0.0.1`, 아니면 `hosts.<이름>.addr`), 포트는
+  `connection`(`scheme://{host}:<port>`)의 포트, `labels: {host: <이름>}`(`services/prometheus_targets.py`)
+- **사본**: `config/prometheus/prometheus.yml`. registry 밖 job은 Manager backend(`kor-travel-docker-manager`) 하나뿐이다
 - **사본이 필요한 이유**: Prometheus는 정적 파일만 읽는다
-- **결박**: registry에서 계산한 타깃 집합 == 파일(T-MGR-04의 파생 테스트)
+- **결박**: `backend/tests/test_prometheus_targets_are_derived.py` — 파생 == 파일(`test_prometheus_targets_are_the_registry_derivation`),
+  target 이동·포트·경로 변경·세 번째 호스트가 빨갛다
 
 ### B-9. 교차 호스트 `depends_on` 간선 ∅
 

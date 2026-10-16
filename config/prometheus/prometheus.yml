@@ -2,48 +2,59 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
-# 네트워크 host 모드 기준: 각 서비스는 호스트 정규 포트에 직접 바인딩되므로
-# scrape target은 컨테이너명이 아닌 127.0.0.1:<호스트 포트>를 사용한다.
+# 커밋된 파생물(ADR-58 결정 11·R1, `docs/bindings.md` B-8, T-MGR-04). 아래 registry job은 손으로 고치지 않는다 —
+# `config/docker-targets.yml`에서 `metrics_path`가 있는 컨테이너마다 job 하나, 그 컨테이너가 있는 호스트마다
+# static_config 하나(`labels: {host: …}`)를 `services/prometheus_targets.py`가 계산하고
+# `backend/tests/test_prometheus_targets_are_derived.py`가 이 파일과 대조한다. 주소는 R1: 이 Prometheus가 도는
+# 호스트(registry에서 파생)면 127.0.0.1, 아니면 그 호스트의 `hosts.<이름>.addr`. host 네트워크 모드라 포트는 호스트 정규
+# 포트다.
 scrape_configs:
-  - job_name: prometheus
-    static_configs:
-      - targets:
-          - 127.0.0.1:12102
-
-  - job_name: cadvisor
-    static_configs:
-      - targets:
-          - 127.0.0.1:12103
-
+  # registry 밖 job — Manager 자신의 backend(systemd, compose 컨테이너가 아니다).
   - job_name: kor-travel-docker-manager
     metrics_path: /metrics
     static_configs:
       - targets:
           - 127.0.0.1:12901
 
+  # --- registry 파생(이 아래) ---
   - job_name: kor-travel-geo-api
     metrics_path: /metrics
     static_configs:
       - targets:
-          - 127.0.0.1:12501
+          - 192.168.1.13:12501
+        labels:
+          host: odroid
 
   - job_name: kor-travel-geo-ui
     metrics_path: /api/metrics
     static_configs:
       - targets:
-          - 127.0.0.1:12505
+          - 192.168.1.13:12505
+        labels:
+          host: odroid
 
-  # odroid(192.168.1.13) exporter — ADR-58 결정 11 "n150 중앙 Prometheus, odroid에는 exporter만".
-  # 임시 최소 반영(소유자 2026-10-14): 주소 리터럴이다. T-MGR-04가 registry `hosts:`에서 파생한 커밋된
-  # 파생물(B-8)로 대체한다 — 그때 이 두 job은 그 파생 테스트의 대상이 된다.
-  - job_name: cadvisor-odroid
+  - job_name: prometheus
+    metrics_path: /metrics
     static_configs:
+      - targets:
+          - 127.0.0.1:12102
+        labels:
+          host: n150
+
+  - job_name: cadvisor
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 127.0.0.1:12103
+        labels:
+          host: n150
       - targets:
           - 192.168.1.13:12103
         labels:
           host: odroid
 
-  - job_name: node-odroid
+  - job_name: kor-travel-node-exporter
+    metrics_path: /metrics
     static_configs:
       - targets:
           - 192.168.1.13:12106

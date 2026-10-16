@@ -1,3 +1,13 @@
+## 2026-10-16 — Prometheus 타깃을 registry에서 파생(T-MGR-04)
+
+- `config/prometheus/prometheus.yml`을 커밋된 파생물로: registry 컨테이너의 `metrics_path`마다 job, 그 컨테이너가 있는
+  호스트마다 static_config(R1 주소, `host` label). geo job이 odroid 주소로 바뀌어 n150에 남은 옛 geo 수집이 끝난다.
+  `cadvisor-odroid`·`node-odroid` 잠정 job은 `cadvisor`(두 호스트)·`kor-travel-node-exporter` job으로 바뀐다(대시보드 영향 없음 —
+  Grafana provisioning은 datasource뿐).
+- node_exporter는 Manager compose에 넣지 않았다 — 디스크 여유를 보려면 호스트 `/` 읽기 전용 bind가 필요하고 그것은 C6c 후보
+  계약 bind 경계의 새 예외다. odroid 호스트 측 stack을 registry `node` target(외부 프로젝트)으로 등록했다.
+- 관찰(읽기 전용): odroid 임시 stack의 cAdvisor가 `unhealthy`다(node-exporter는 정상). 배포·n150·odroid 변경은 하지 않았다.
+
 ## 2026-10-16 — 소비자 origin을 registry로(T-MGR-01c)
 
 - 형제 target(geo·transport·weather)에 `consumer_origin: "http://{host}:<port>"`를 두고, 기대 origin을 R1으로(소비자 서비스를

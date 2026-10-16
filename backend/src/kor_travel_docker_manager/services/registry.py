@@ -776,6 +776,17 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
                 raise TargetsConfigError(
                     f"{label} containers.{container_id}: missing required field '{field}'"
                 )
+        metrics_path = spec.get("metrics_path")
+        if metrics_path is not None and (
+            not isinstance(metrics_path, str)
+            or not metrics_path.startswith("/")
+            or re.fullmatch(r"https?://\{host\}:[0-9]{1,5}", str(spec.get("connection"))) is None
+        ):
+            # 수집 대상은 `scheme://{host}:<port>` connection의 그 포트다(Prometheus 타깃 파생, T-MGR-04).
+            raise TargetsConfigError(
+                f"{label} containers.{container_id}.metrics_path: must start with / on a "
+                "scheme://{host}:<port> connection"
+            )
 
     seen_aliases: dict[str, str] = {}
     for target_id, spec in targets.items():
@@ -1038,6 +1049,7 @@ _ALLOWED_CONTAINER_FIELDS: Final = frozenset(
         "prod_url_env",
         "expected_ports",
         "external_project",
+        "metrics_path",
     }
 )
 
