@@ -80,7 +80,13 @@ def test_unrelated_sibling_ports_are_not_consumer_origins() -> None:
     validate·설치기 flip이 막힌다. 형제 컨테이너 connection의 `{host}` URL 포트 중 소비자 포트가 아닌 것 전부로 확인한다."""
 
     compose, targets = _documents()
-    declared = set(consumer_origins.sibling_ports(targets))
+    # 명시 포트는 registry 선언에서 직접 센다 — 스캐너의 `sibling_ports`로 세면 스캐너가 넓어질 때 이 검사도 함께 넓어진다.
+    declared = {
+        int(port)
+        for sibling in _siblings(targets)
+        for port in [targets["targets"][sibling]["consumer_origin"].rsplit(":", 1)[1],
+                     *(targets["targets"][sibling].get("retired_consumer_ports") or [])]
+    }
     other_ports = sorted({
         int(port)
         for spec in targets["containers"].values()
