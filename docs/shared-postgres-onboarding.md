@@ -617,7 +617,7 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
 포트·bind·pg_hba(loopback scram만; n150의 `10.88.0.0/24` 잔재는 복제하지 않는다)의 `kor-travel-shared-postgres`(`11000`)가 뜬다.
 이 절은 그 instance의 bootstrap 규칙이고, 위 §1~§10의 "하나뿐인 instance" 서술은 n150에 대해 그대로 참이다.
 
-- **누가 올리나.** PG는 registry에서 `dagster` target(infra, `host: all`)의 service다(`config/docker-targets.yml:778-800`) —
+- **누가 올리나.** PG는 registry에서 `dagster` target(infra, `host: [n150, odroid]` — NH-3)의 service다(`config/docker-targets.yml:778-800`) —
   odroid에서 **`ensure dagster`가 PG·db-init-dagster·storage-migrate·plane을 올린다**. `ensure kor-travel-shared-postgresql` 같은 명령은
   없다. 롤·DB bootstrap은 n150과 같은 one-shot(`kor-travel-shared-db-init-{geo,weather,transport,dagster}`)이 같은 이름으로 만들되
   **실행 시점이 target마다 다르다**(R4 — 생성 명령은 `KTDM_HOST ∈ host 집합`일 때만): `dagster_shared`/`kor_travel_dagster_shared_app`

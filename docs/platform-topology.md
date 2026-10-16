@@ -50,8 +50,8 @@ C6c 계약 기계(보호값 스캔·볼륨 그래프·단일파일 경계·핀�
 > 스크립트 bind mount뿐이다.
 
 **호스트 차원(계획 — ADR-58 proposed, 미구현).** 위 표의 두 축에 "어느 호스트에서 도는가"가 더해진다. tenant target
-(`geo`·`weather`·`transport`·`map`·`pinvi`·`conc`)은 registry `host:` 하나(생략 = default 호스트 n150), infra target(`storage`·
-`dagster`·`cadv`)은 `host: all`(모든 호스트에 host-local로 하나씩), `prom`·`gra`는 n150뿐이다. **컨테이너는 host-local**이다 —
+(`geo`·`weather`·`transport`·`map`·`pinvi`·`conc`)은 registry `host:` 하나(2026-10-17 NH-1부터 생략 불가), infra target 중
+`storage`·`dagster`는 `host: [n150, odroid]`(NH-3 — 목록의 호스트에 host-local로 하나씩), `cadv`는 `host: all`, `prom`·`gra`는 n150뿐이다. **컨테이너는 host-local**이다 —
 같은 이름의 컨테이너는 그것을 service로 갖는 target들의 host **합집합**에 존재한다(`kor-travel-shared-postgresql`은 `dagster`(all)
 때문에 두 호스트 모두, `kor-travel-geo-api`는 geo target의 host 하나). 호스트마다 **같은 Manager**가 자기 로컬 소켓으로 돌고
 (`KTDM_HOST`로 자기를 식별), 원격 Docker·Manager 간 SSH는 없다. 내부/외부 구분과 `ensure` 거부 규칙은 그대로다 — 다만 `ensure`는
@@ -96,8 +96,8 @@ target 단위로만 남아 있다.
 
 **호스트 차원(계획 — ADR-58 proposed, 미구현; T-MGR-01a가 만든다).** 이 파일에 최상위 `hosts:` 절과 target의
 `host:` 필드가 더해진다 — 주소의 유일한 자리다. 스키마: `hosts: {<키>: {addr: <IPv4 리터럴>, default: true|생략}}`
-(default는 정확히 1개 — 0·2개는 `TargetsConfigError`), tenant target `host: <hosts 키>`(생략 = default), infra
-target(`storage`·`dagster`·`cadv`) `host: all`; `hosts`에 없는 `host:` 값은 unknown host로 거부; 운영 모드의 `KTDM_HOST` 값은
+(default는 정확히 1개 — 0·2개는 `TargetsConfigError`), tenant target `host: <hosts 키>`(생략 불가 — NH-1), infra
+target `storage`·`dagster`는 `host: [n150, odroid]`(NH-3)·`cadv`는 `host: all`; `hosts`에 없는 `host:` 값은 unknown host로 거부; 운영 모드의 `KTDM_HOST` 값은
 `hosts` 키여야 하고 `all` target의 `include`는 그 값으로 필터된다. 컨테이너의 host 집합은 그것을 service로 갖는 target들의
 host 합집합이다(위 `containers:`에는 host 필드가 없다). 로더 검증·명령 규칙·`KTDM_HOST`의 정의는
 [`docker-management.md`](docker-management.md) §3.2, 배치표는 §10.
