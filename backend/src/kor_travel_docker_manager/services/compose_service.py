@@ -5469,7 +5469,10 @@ class ComposeService:
 
         config hash는 쓰지 않는다(frozen·평범한 render가 다르게 낸다). 대신 재생성을 부를 실행 형태를 직접 본다:
         이미지(render의 `image:` 참조가 가리키는 image ID와 컨테이너의 `.Image`), render의 env 전부(공용 URL 앵커,
-        heartbeat tolerance, `*_DIGEST` — 컨테이너 env가 그 값들을 그대로 싣는다), command·entrypoint. 컨테이너가 돌고
+        heartbeat tolerance, `*_DIGEST` — 컨테이너 env가 그 값들을 그대로 싣는다), command·entrypoint, **bind mount**
+        (render의 long-syntax bind마다 같은 컨테이너 경로의 마운트가 같은 source·같은 읽기 전용 여부 — 2026-10-17: 내용
+        digest가 같은 두 파일(옛 별칭 `workspace.yaml`과 `workspace.n150.yaml`) 사이의 bind 변경을 env만으로는 못 봐서,
+        compose는 재생성 대상으로 보는데 converge는 current로 보고했다). 컨테이너가 돌고
         재시작 중이 아니어야 한다. 하나라도 다르면(이미지 참조를 풀 수 없는 것 포함) `up`한다. 컨테이너를 **읽을 수
         없으면** 거부한다(fail-closed, `_inspect_plane_container`).
 
@@ -5539,6 +5542,19 @@ class ComposeService:
                 _unescape_compose(str(word)) for word in entrypoint
             ] != observed["entrypoint"]:
                 reasons.append("entrypoint differs")
+            # bind mount: render(`compose config --format json`의 long syntax)의 bind마다. 경로는 비밀이 아니라 싣는다.
+            mounts = observed.get("mounts") or {}
+            for volume in render.get("volumes") or []:
+                if not isinstance(volume, Mapping) or volume.get("type") != "bind":
+                    continue
+                target, source = str(volume.get("target") or ""), str(volume.get("source") or "")
+                mounted = mounts.get(target)
+                if mounted is None:
+                    reasons.append(f"bind {target} is not mounted")
+                elif mounted[0] != source:
+                    reasons.append(f"bind {target}: running {mounted[0]} != rendered {source}")
+                elif mounted[1] != bool(volume.get("read_only")):
+                    reasons.append(f"bind {target} read-only differs")
         return drift
 
     @staticmethod
@@ -5577,11 +5593,18 @@ class ComposeService:
             if separator:
                 env[key] = value
         entrypoint = config.get("Entrypoint")
+        mounts = {
+            str(mount.get("Destination")): (str(mount.get("Source") or ""), mount.get("RW") is False)
+            for mount in document.get("Mounts") or []
+            if isinstance(mount, Mapping) and mount.get("Type") == "bind"
+        }
         return {
             "image_id": str(document.get("Image") or ""),
             "env": env,
             "cmd": [str(word) for word in config.get("Cmd") or []],
             "entrypoint": None if entrypoint is None else [str(word) for word in entrypoint],
+            #: 컨테이너 경로 → (source, 읽기 전용) — bind만.
+            "mounts": mounts,
             "running": state.get("Running") is True,
             "restarting": state.get("Restarting") is True,
             "health": (

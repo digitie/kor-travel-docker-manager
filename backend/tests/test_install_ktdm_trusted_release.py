@@ -568,15 +568,22 @@ def _run_plane_binds(
     tmp_path: Path,
     mounted: str,
     shipped: list[str],
-    root: str = "/opt/kor-travel-docker-manager",
+    root: str | None = None,
     info_exit: int = 0,
+    current_ships: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     """가짜 docker: `info`는 `info_exit`, `ps -aq`는 컨테이너 하나(`-a` 없이 부르면 빈 목록 — 멈춘 plane을 놓친다),
     `inspect`는 그 workspace bind source 한 줄."""
     release = tmp_path / "release"
-    (release / "config" / "dagster-shared").mkdir(parents=True)
+    (release / "config" / "dagster-shared").mkdir(parents=True, exist_ok=True)
     for name in shipped:
         (release / "config" / "dagster-shared" / name).write_text("load_from: []\n", encoding="utf-8")
+    # 지금 설치된 release(APP) — 전환 판정이 본다.
+    current = tmp_path / "current"
+    (current / "config" / "dagster-shared").mkdir(parents=True, exist_ok=True)
+    for name in current_ships:
+        (current / "config" / "dagster-shared" / name).write_text("load_from: []\n", encoding="utf-8")
+    root = str(current) if root is None else root
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker = bin_dir / "docker"
@@ -593,7 +600,8 @@ def _run_plane_binds(
     script = (
         "set -euo pipefail\n"
         'die() { echo "$1" >&2; exit 126; }\n'
-        f'REL="{release}"\nAPP=/opt/kor-travel-docker-manager\n' + _plane_binds_block() + "echo PASSED\n"
+        f'REL="{release}"\nAPP={current}\nplane_rebind=""\n' + _plane_binds_block()
+        + 'echo "PASSED rebind=${plane_rebind}"\n'
     )
     environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=environment)
@@ -629,3 +637,22 @@ def test_plane_binds_compares_the_path_relative_to_the_install_root(tmp_path: Pa
 def test_plane_binds_refuses_when_docker_does_not_answer(tmp_path: Path) -> None:
     refused = _run_plane_binds(tmp_path, "workspace.n150.yaml", ["workspace.n150.yaml"], info_exit=1)
     assert refused.returncode == 126 and "docker daemon did not answer" in refused.stderr
+
+
+def test_plane_binds_lets_the_one_alias_transition_through_and_says_to_converge(tmp_path: Path) -> None:
+    # 지금 설치된 release에는 그 파일이 있다(옛 별칭) — 옛 converge는 bind 차이를 못 봐서 설치 전에 고칠 길이 없다. 거부하지 않고
+    # 기록하며, 새 release의 converge를 바로 돌리라고 말한다.
+    passed = _run_plane_binds(
+        tmp_path, "workspace.yaml", ["workspace.n150.yaml"], current_ships=("workspace.yaml", "workspace.n150.yaml")
+    )
+    assert passed.returncode == 0, passed.stderr
+    assert "PASSED rebind=config/dagster-shared/workspace.yaml" in passed.stdout
+    assert "dagster-plane converge --dry-run" in passed.stderr and "right after this install" in passed.stderr
+
+
+def test_the_install_success_message_names_the_pending_converge() -> None:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    installed = text.index('echo "installed ${SHA} (previous: ${PREV#ktdm-release-})"')
+    reminder = text.index('NEXT: the shared Dagster plane still binds ${plane_rebind}')
+    assert installed < reminder < text.index("exit 0", installed)
+    assert text.index('plane_rebind=""') < text.index("# >>> plane-binds")

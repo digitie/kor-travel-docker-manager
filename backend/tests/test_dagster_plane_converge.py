@@ -7,6 +7,7 @@ plane 밖 서비스를 건드리는가, lock 밖에서 바꾸는가, 재구축�
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -448,3 +449,71 @@ def test_cli_failure_is_a_json_verdict(
 
     assert main(["dagster-plane", "converge", "--confirm", "--json"]) == 2
     assert '"status": "failed"' in capsys.readouterr().out
+
+
+# --- 2026-10-17: bind mount drift — 내용 digest가 같은 두 파일 사이의 bind 변경도 재생성 사유다 -------------------
+
+_WORKSPACE_IN_CONTAINER = "/opt/dagster/dagster_home/workspace.yaml"
+
+
+def _with_long_syntax_workspace_bind(harness: SimpleNamespace, rendered_source: str, mounted_source: str) -> None:
+    """render를 `compose config --format json` 모양(long syntax bind)으로, 떠 있는 컨테이너는 `mounted_source`를 붙인 것으로."""
+    for name in harness.plane.services:
+        harness.resolved["services"][name]["volumes"] = [
+            {"type": "bind", "source": rendered_source, "target": _WORKSPACE_IN_CONTAINER, "read_only": True}
+        ]
+    real = harness.service._inspect_plane_container
+
+    def with_mounts(container_name: str, *, label: str) -> Any:
+        observed = dict(real(container_name, label=label))
+        observed["mounts"] = {_WORKSPACE_IN_CONTAINER: (mounted_source, True)}
+        return observed
+
+    harness.service._inspect_plane_container = with_mounts
+    harness.state.stale = {name: False for name in harness.plane.services}  # env·digest는 같다(같은 내용의 두 파일)
+
+
+def test_a_plane_mounting_another_file_with_the_same_content_is_stale(harness: SimpleNamespace) -> None:
+    root = "/opt/kor-travel-docker-manager/config/dagster-shared"
+    _with_long_syntax_workspace_bind(harness, f"{root}/workspace.n150.yaml", f"{root}/workspace.yaml")
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    assert result["outcome"] == "would_recreate"
+    for name in harness.plane.services:
+        assert result["drift"][name] == [
+            f"bind {_WORKSPACE_IN_CONTAINER}: running {root}/workspace.yaml != rendered {root}/workspace.n150.yaml"
+        ]
+
+
+def test_a_plane_mounting_the_rendered_file_is_current(harness: SimpleNamespace) -> None:
+    root = "/opt/kor-travel-docker-manager/config/dagster-shared"
+    _with_long_syntax_workspace_bind(harness, f"{root}/workspace.n150.yaml", f"{root}/workspace.n150.yaml")
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    assert result["outcome"] == "current"
+    assert result["drift"] == {name: [] for name in harness.plane.services}
+
+
+def test_inspect_reads_bind_mounts_with_their_read_only_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    document = {
+        "Image": "sha256:" + "a" * 64,
+        "Config": {"Env": [], "Cmd": [], "Entrypoint": None},
+        "State": {"Running": True, "Restarting": False},
+        "Mounts": [
+            {"Type": "bind", "Source": "/opt/x/workspace.yaml", "Destination": _WORKSPACE_IN_CONTAINER, "RW": False},
+            {"Type": "bind", "Source": "/opt/x/dagster.yaml", "Destination": "/opt/dagster/dagster_home/dagster.yaml", "RW": True},
+            {"Type": "volume", "Name": "v", "Source": "/var/lib/docker/volumes/v", "Destination": "/data", "RW": True},
+        ],
+    }
+    monkeypatch.setattr(
+        compose_service_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(document), stderr=""),
+    )
+    observed = ComposeService._inspect_plane_container("c", label="c")
+    assert observed["mounts"] == {
+        _WORKSPACE_IN_CONTAINER: ("/opt/x/workspace.yaml", True),
+        "/opt/dagster/dagster_home/dagster.yaml": ("/opt/x/dagster.yaml", False),
+    }
