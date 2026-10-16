@@ -202,6 +202,18 @@ def _rendered_value() -> Any:
     return value
 
 
+def _host_edge_violations(config: dict[str, Any]) -> list[str]:
+    """교차 호스트 compose 간선·무소유 서비스·plane 없는 합류(R7, T-MGR-NH NH-2). compose가 없으면 빈 목록."""
+    from kor_travel_docker_manager.services.host_edges import host_edge_violations
+    from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
+
+    compose_path = Path(get_compose_path())
+    if not compose_path.is_file():
+        return []
+    compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
+    return host_edge_violations(compose, config)
+
+
 def _postgres_image_violations(config: dict[str, Any]) -> list[str]:
     """렌더된 PG 서버 이미지 == digest 핀 + PGDATA major(T-MGR-03 리뷰). compose가 없으면 빈 목록."""
     from kor_travel_docker_manager.services.postgres_image import (
@@ -304,6 +316,17 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
         return 1
     if image_violations:
         for line in image_violations:
+            print(line, file=sys.stderr)
+        return 1
+    # T-MGR-NH NH-2(R7): 다른 호스트 서비스에 기대는 compose 간선은 그 호스트의 `up`이 남의 tenant를 되살리거나 loopback을
+    # 비운다 — 플립 전에 멈춘다.
+    try:
+        edge_violations = _host_edge_violations(config)
+    except (*TARGETS_CONFIG_ERRORS, ValueError) as exc:
+        print(f"host edge check: {_targets_config_error_text(exc)}", file=sys.stderr)
+        return 1
+    if edge_violations:
+        for line in edge_violations:
             print(line, file=sys.stderr)
         return 1
 
