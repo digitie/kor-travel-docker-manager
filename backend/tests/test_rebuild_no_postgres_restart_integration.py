@@ -25,11 +25,12 @@ from pathlib import Path
 import pytest
 import yaml
 from test_compose_readiness_integration import _required_docker_gate, _unavailable_docker_fixture
-from test_shared_postgres_runtime_contract import _service
+from test_shared_postgres_runtime_contract import _service, compose_default
 
 #: 공용 instance(`kor-travel-shared-postgres`)가 도는 바로 그 이미지다 — 정본 compose의 digest
 #: 핀에서 읽는다. 사본을 두면 compose의 digest를 올린 뒤에도 이 파일은 옛 이미지를 시험한다.
-_SHARED_IMAGE: str = _service()["image"]
+# 호스트별 이미지(`KTDM_POSTGRES_IMAGE`, T-MGR-03)는 기본값으로 푼다 — `${…}` 원문으로 inspect하면 늘 skip이다.
+_SHARED_IMAGE: str = compose_default(_service()["image"])
 _PORT = 15433
 _ADMIN = "it_admin"
 
