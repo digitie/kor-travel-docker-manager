@@ -73,4 +73,5 @@ root의 별도 실제 gate다. 라이브러리 microbench를 운영 전체 CPU �
 목록에 `kor-travel-dagster-daemon`을 추가했다. 비슷한 prefix/suffix 이름은
 허용하지 않는 회귀도 추가했다. Docker·Compose·명시5개 이미지 입력은
 290f와 byte 동일하므로 이 테스트 정정 때문에 이미지를 재빌드하지 않는다.
-이전 CI 실패는 보존한다. 수정 전 local2FAIL4PASS를 재현했고 수정 후 관련7개\n모듈377PASS/47.26초·Ruff·diff검사가 통과했다. 새 HEAD의 전체 CI는 별도 판정한다.
+이전 CI 실패는 보존한다. 수정 전 local2FAIL4PASS를 재현했고 수정 후 관련7개
+모듈377PASS/47.26초·Ruff·diff검사가 통과했다. 새 HEAD의 전체 CI는 별도 판정한다.
