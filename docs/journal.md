@@ -58,6 +58,30 @@ CodeGraph init/sync와 diff 점검도 통과했다. 제품 리뷰·현재 CI·�
   두 독립 제품 delta 리뷰·새 HEAD의 CI·현재 배포 revision을 기준으로 한 설치 준비와
   실제 배포/live는 별도 후속이다. 기존 운영 설치기는 실행하지 않았다.
 
+## 2026-10-16 — PR488의 최신 main 통합과 API 생존 점검 보존
+
+PR488에 main384cb40의 registry 소비자 origin 파생·root 환경 재정의 거부와 기존
+호스트/workspace·고아 worker 보호를 통합했다. 실제 충돌은 이 일지의 상단 기록뿐이어서
+양쪽 원문을 남겼다. API Common HTTP3초/Docker12초/30초주기/4회와 같은 포트 변수,
+다른 서비스·CS legacy health 계약은 유지한다. PR486은 포함하지 않았다.
+실제 병합 소스에서 API health·registry origin·host/workspace·고아 정산·문서 회귀290건과
+전체 backend Ruff, frontend35/type/lint/build가 통과했다. 설치기 회귀25건도
+전용 환경의 실제 isolated import로 통과했다. 최초 설치기7실패는 빌린 환경의 구제품이
+python -I에서 선택된 원문을 보존했고 타인 환경을 수정하지 않았다. Compose 전체 모델은
+Weather API의 기존5개 의미 차이 외 main과 같다. 운영 변경0이며 새 HEAD의 CI와
+독립 두 리뷰는 후속이다.
+
+## 2026-10-16 — Weather API의 경량 HTTP 생존 점검과 시작 여유
+
+Weather API health만 Common의 strict core HTTP CLI로 바꾼다. HTTP 예산3초는 유지하고
+Docker timeout12초·interval30초·retries4로 Python 시작 여유와 명목 실패 창120초를 함께 둔다.
+현재 API command의 고정 listen 포트도 포트 매핑·health와 같은 환경변수로 유도한다.
+다른 서비스·이미지·설정·start period·Geo 튜닝·486의 CS health 범위는 변경하지 않았다.
+원 native 표본은 빈 Python2.454초, urllib9.693초, Common7.789초였으며 통제된 개선율이 아니다.
+소비 이미지에 CLI가 있어야 하고 redirect·오류·불완전 헤더는 실패한다. 운영 적용은 하지 않았다.
+신규 계약3건은 기존 선언에서 모두 실패했고 새 선언/관련 회귀102건이 통과했다.
+정확 Common ad988 원문의 자기 loopback CLI10조건도 통과했으며 운영 실측으로 합산하지 않는다.
+
 ## 2026-10-15 — 원격 target의 HTTP 관측과 로컬 도구 경계(Codex)
 ## 2026-10-15 — HTTPX 런타임·CI·오프라인 설치 계약 교정(Codex)
 

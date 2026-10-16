@@ -2752,7 +2752,7 @@ services:
     - --host
     - "0.0.0.0"
     - --port
-    - "14101"
+    - "${KOR_TRAVEL_WEATHER_API_PORT:-14101}"
     environment:
       KOR_TRAVEL_WEATHER_ENV: production
       # weather 자신의 전용 db는 은퇴한다(사용자 결정: 데이터 이전 없음, fresh
@@ -2785,11 +2785,21 @@ services:
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
     ports:
     - ${KOR_TRAVEL_WEATHER_API_PORT:-14101}:${KOR_TRAVEL_WEATHER_API_PORT:-14101}
+    # Common HTTP CLI가 설치된 API 이미지를 먼저 확인한다.
+    # HTTP 3초와 별개인 Python 시작 비용을 Docker timeout이 감싼다.
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:14101/health', timeout=3)"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
+      test:
+      - CMD
+      - python
+      - -m
+      - kortravelcommon.http_health
+      - --port
+      - "${KOR_TRAVEL_WEATHER_API_PORT:-14101}"
+      - --timeout-seconds
+      - "3"
+      interval: 30s
+      timeout: 12s
+      retries: 4
 
   kor-travel-weather-migrate:
     image: ${KOR_TRAVEL_WEATHER_API_IMAGE:-kor-travel-weather-api:latest-main}

@@ -1985,3 +1985,25 @@ Map 원장 `T-VN-H49-{GEO-DAGSTER,CONCIERGE,PINVI}`의 마지막 해제 조건�
 즉 "주기 백업이 최근 성공과 bounded retention으로 수렴한다"는 전제는 **수렴할 대상이
 돌지 않는 상태**다. 이 축은 Map `T-VN-H49-OFFBOX`가 소유한다(목적지 호스트·계정·ssh
 키가 운영자 몫이고, 그 뒤 env 4개와 root crontab 한 줄이다).
+
+## Weather API의 HTTP 생존 점검
+
+Weather API 이미지는 먼저 Common의 kortravelcommon.http_health CLI를 포함해야 한다.
+이 선언은 이미지에 모듈을 설치하지 않으며 구 이미지의 module missing은 unhealthy다.
+python -m kortravelcommon.http_health --port <API 포트> --timeout-seconds 3은
+IPv4 loopback의 /health에 GET 한 번을 보내 완전한 2xx 헤더만 수용한다.
+redirect·401/503·잘못된 헤더·시간 초과는 실패이며 proxy·재시도·본문 검증은 하지 않는다.
+데이터 최신성·DB/provider readiness나 복구 동작을 보장하는 점검은 아니다.
+
+API command의 listen 포트, 포트 매핑, probe는 모두 KOR_TRAVEL_WEATHER_API_PORT에서
+유도하고 개발 기본값은 그대로다. 별도 운영 override가 있으면 세 값이 같아야 한다.
+Docker timeout은 Python 시작 비용을 포함한 12초, HTTP 내부 예산은 3초다.
+주기는 30초, retries는 4로 바꿔 interval×retries의 명목 실패 창 120초를 유지한다.
+실제 탐지 시간은 probe 실행 시간·Docker scheduling·기존 start period에도 의존하므로
+정확히 120초라는 보장이 아니다. start period와 다른 서비스·Geo 튜닝은 바꾸지 않는다.
+
+운영 단일 표본은 빈 Python 2.454초/CPU 0.507초, urllib probe 9.693초/CPU 2.910초,
+Common CLI 7.789초/CPU 1.520초였다. urllib import 5.644초와 HTTP200 0.547초가
+관측되어 HTTP만의 문제가 아님을 확인했다. 통제된 전후 실험이나 절감률은 아니며
+12초도 모든 CPU 포화에서 성공을 보장하지 않는다. 이 제품 변경의 운영 적용·native health·
+live API/UI 및 같은 workload의 효과 확인은 별도다. healthy 판정 기준을 완화하지 않는다.
