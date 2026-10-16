@@ -18,7 +18,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     DAGSTER_HOME=/opt/dagster/dagster_home
 
 # Common37 c48595880aaad4367802ad71af2525a8a5e17c6a의 dependency-free 원문.
-# SPDX와 내용 SHA는 회귀시험으로 보존하며 runtime Common 설치는 추가하지 않는다.
+# SPDX와 내용 SHA는 회귀시험으로 보존한다. 런타임 Common은 아래 정식 wheel로 별도 설치한다.
 COPY --chmod=0644 build-bytecode.py /tmp/dagster-host-build-bytecode.py
 COPY vendor/kor_travel_common-0.1.0.dev0-py3-none-any.whl /tmp/common-wheels/kor_travel_common-0.1.0.dev0-py3-none-any.whl
 COPY requirements.txt /tmp/dagster-host-requirements.txt
