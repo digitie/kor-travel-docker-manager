@@ -86,6 +86,27 @@ def test_a_host_list_places_the_target_on_exactly_those_hosts(config, monkeypatc
         assert {entry["labels"]["host"] for entry in job["static_configs"]} == {"n150", "odroid"}
 
 
+def test_shared_infra_runs_only_on_its_listed_hosts(config, monkeypatch):
+    """T-MGR-NH NH-3: 공용 plane(`dagster`)·RustFS(`storage`)는 명시 목록의 호스트에만 있다 — 세 번째 호스트(mars)를
+    더해도 그 호스트의 `all`·변경 경계에 나타나지 않는다. 공용 PG는 소비 target이 직접 소유하므로 소비 target이 mars에
+    오면 함께 온다(구성상 같은 호스트 — `docs/multi-host.md` §3.1)."""
+    infra = ("dagster", "storage")
+    listed = {target: registry.target_hosts(target, config) for target in infra}
+    assert all(hosts == frozenset({"n150", "odroid"}) for hosts in listed.values()), listed
+    config["hosts"]["mars"] = {"addr": "192.0.2.7"}
+    registry._validate_targets_config(config, label="test")
+    assert all(registry.target_hosts(target, config) == listed[target] for target in infra)
+    mars = _derived(config, monkeypatch, "mars")
+    assert not set(infra) & set(mars["all"])
+
+    pg = next(
+        name for name, spec in config["containers"].items() if spec["compose_service"] == "kor-travel-shared-postgres"
+    )
+    assert "mars" not in registry.container_hosts(pg, config)
+    config["targets"]["map"]["host"] = "mars"
+    assert "mars" in registry.container_hosts(pg, config)
+
+
 def test_v2_cannot_omit_hosts(config):
     del config["hosts"]
     with pytest.raises(registry.TargetsConfigError, match="hosts"):

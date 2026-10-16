@@ -520,8 +520,9 @@ _ADDRESS_PROBE_CACHE: Final = _local_ipv4_addresses
 def target_hosts(target: str, config: Mapping[str, Any] | None = None) -> frozenset[str]:
     """target 직접 소유 호스트. depends_on은 소유권을 다른 호스트로 넓히지 않는다.
 
-    `host:`는 선언된 호스트 이름 하나, 그 목록(`[n150, odroid]` — infra용; tenant에 두면 소비자 origin이 "several hosts"로
-    풀리지 않는다), 또는 `all`이다. v2에서는 **생략할 수 없다**(T-MGR-NH NH-1) — 암묵 default는 호스트를 더할 때 조용히
+    `host:`는 선언된 호스트 이름 하나, 그 목록(`[n150, odroid]`), 또는 `all`이다. 목록은 어느 target에나 허용된다 —
+    소비자 origin(R2)을 가진 target이면, **그 목록 밖 호스트의 소비자**에게 origin이 하나로 풀리지 않아
+    `consumer_origins`가 "several hosts"로 거부한다(목록 안 호스트의 소비자는 loopback). v2에서는 **생략할 수 없다**(T-MGR-NH NH-1) — 암묵 default는 호스트를 더할 때 조용히
     한 호스트에 묶인다. v1 개발 fixture는 호스트 차원이 없어 단일 `local`이다.
     """
     config = load_targets_config() if config is None else config

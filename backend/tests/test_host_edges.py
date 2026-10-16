@@ -56,8 +56,15 @@ def test_moving_map_alone_breaks_its_edge_to_concierge() -> None:
 
 def test_moving_the_bound_group_together_passes() -> None:
     # 공용 PG는 소비 target(map·pinvi·conc)이 직접 소유해 mars에도 함께 온다 — PG 간선은 실패하지 않는다(구성상).
+    # RustFS·공용 plane은 명시 목록이라(NH-3) 그 호스트를 목록에 더해야 한다 — 빠지면 그 간선과 plane 규칙이 빨갛다.
     compose, config = _documents()
-    assert host_edge_violations(compose, _with_mars(config, "map", "pinvi", "conc")) == []
+    moved = _with_mars(config, "map", "pinvi", "conc")
+    missing = host_edge_violations(compose, moved)
+    assert any(" depends_on rustfs (" in line for line in missing), missing
+    assert any("joins the shared Dagster plane on mars" in line for line in missing), missing
+    for infra in ("storage", "dagster"):
+        moved["targets"][infra]["host"] = [*moved["targets"][infra]["host"], "mars"]
+    assert host_edge_violations(compose, moved) == []
 
 
 def test_an_unowned_service_is_refused_and_a_stale_allowance_is_red() -> None:
