@@ -77,7 +77,7 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 > **B-5~B-9 최초 계획(ADR-58 proposed, 2026-10-13).** 각 항목의
 > "결박"에 적은 T-MGR 번호의 PR이 사본과 테스트를 **같은 PR에서** 만든다(DO NOT 15의 결박 규칙).
 > 테스트 이름은 그 PR에서 확정하며, 여기에는 이미 존재하는 테스트 파일만 코드 폰트로 적는다.
-> **2026-10-14 잠정 시행**(ADR-58 "잠정 시행"): B-6은 렌더 스캔 테스트와 함께 들어왔고, B-5는 한 파일
+> **2026-10-14 잠정 시행**(ADR-58 "잠정 시행"): B-6은 렌더 스캔 테스트와 함께 들어왔고(2026-10-16 T-MGR-01c가 registry 파생으로 마감), B-5는 한 파일
 > (`workspace.yaml` = n150 plane)에 호스트 필터만 들어왔다. 나머지는 계획 그대로다.
 > **2026-10-15 PR #481 소스 구현:** B-5·B-7·B-9를 아래 테스트로 결박한다. 운영 설치·두 독립 리뷰와 live gate는 별도다.
 
@@ -99,24 +99,22 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   `test_third_host_move_changes_only_affected_workspaces`, `test_host_all_and_own_switch_are_honored`가
   registry의 모든 host와 기본 alias를 계산·비교한다. instance YAML byte는 변경하지 않는다.
 
-### B-6. (잠정 시행 2026-10-14) 내부 consumer가 부르는 형제 서비스의 origin
+### B-6. 내부 consumer가 부르는 형제 서비스의 origin(2026-10-14 잠정 시행 → 2026-10-16 T-MGR-01c 구현)
 
-- **사실**: Map(api·dagster code-server·legacy webserver/daemon)→geo(`12501`)·Map→transport(API gateway `12301`)·PinVi ETL→weather(`12201`)·
-  pinvi-api→weather(`12201`)의 host. 포트는 2026-10-14 소유자가 odroid에서 통일한 값이다(옛 n150 `14001`·`14101`이 아니다)
-- **정본**: registry `hosts:` + 각 target의 `host:`(렌더 호스트와 같으면 `127.0.0.1`, 아니면 그 addr)
-- **사본**: Manager `docker-compose.yml`에서 **형제 서비스 포트(`12501`/`12301`/`12201`, 되돌림 감지용 옛 `14001`/`14101`)를 기본값에 가진 env 전부**(비활성
-  `legacy-dagster` profile 포함) — 오늘 **8곳**: geo 5곳(`KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL` 4곳 — map-api·map code-server·legacy webserver/daemon —
-  와 pinvi-api `PINVI_KOR_TRAVEL_GEO_BASE_URL` 신설), transport `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`(map code-server), weather
-  `PINVI_KOR_TRAVEL_WEATHER_BASE_URL` 2곳(PinVi ETL code-server — 리터럴에서 `${…:-…}`로 — 와 pinvi-api 신설). 빼는 것: 형제 자신의 서비스(geo code-server의 `KTG_DAGSTER_ADMIN_API_URL`, weather-web의
-  `WEATHER_API_INTERNAL_URL` — 같은 호스트 안 자기 호출)와 `NEXT_PUBLIC_*`(브라우저 공개 origin — root `.env`의 `KTDM_PROD_URL_*`, R6)
-- **사본이 필요한 이유**: compose는 registry를 읽지 못한다(compose subprocess는 allowlist env만 받는다,
-  `compose_service.py:3154-3158`). 값을 root `.env`로 내리면 호스트마다 손으로 맞추는 두 번째 사본이 생긴다 —
-  그래서 기본값을 커밋 파생물로 두고 `.env` 재정의는 `targets validate`가 거부한다
-- **결박**: `test_every_consumer_default_is_the_sibling_origin`이 compose를 **스캔**해 그 집합을 찾고(줄 번호 열거 금지 — 지정 줄만
-  보면 하나를 빠뜨려도 초록이다; 하한은 `test_the_scan_sees_every_known_consumer`) 기대 origin == 각 기본값을 단언한다 — 어느 한 곳을
-  옛 n150 loopback으로 되돌리면 그 곳이 이름으로 빨갛다(`test_reverting_any_one_consumer_to_its_n150_loopback_is_named`). **잠정**:
-  형제 → 소비자 포트 표만 테스트에 있고 호스트는 registry `host:`에서 파생한다(default면 `127.0.0.1`; 2026-10-15부터 geo·transport·
-  weather 모두 `host: odroid`라 재정의 없음). 포트 표를 registry로 옮기는 것과 `.env` 재정의 거부(validate)는 T-MGR-01c
+- **사실**: Map(api·dagster code-server·legacy webserver/daemon)→geo·Map→transport(API gateway)·PinVi ETL·pinvi-api→weather의 origin
+- **정본**: registry — 형제 target의 `consumer_origin`(`http://{host}:<port>`; 포트는 2026-10-14 소유자가 odroid에서 통일한 값,
+  geo `12501`·transport `12301`·weather `12201`)을 R1으로 렌더한다: 소비자 서비스를 **실행하는 target의 호스트**에서 보아 형제와
+  같은 호스트면 `127.0.0.1`, 아니면 형제 호스트의 `addr`(`registry.consumer_origin`)
+- **사본**: Manager `docker-compose.yml`에서 **형제 포트(registry의 `consumer_origin` 포트와 형제 컨테이너 `connection` 포트 — 옛
+  `14001`/`14101`도 여기서 나온다)를 가진 URL을 값에 둔 env 전부**(비활성 profile 포함) — 오늘 8곳(geo 5·transport 1·weather 2).
+  빼는 것: 형제 자신의 서비스(같은 호스트 안 자기 호출)와 `NEXT_PUBLIC_*`(브라우저 공개 origin — root `.env`의 `KTDM_PROD_URL_*`, R6)
+- **사본이 필요한 이유**: compose는 registry를 읽지 못한다(compose subprocess는 allowlist env만 받는다). 값을 root `.env`로 내리면
+  호스트마다 손으로 맞추는 두 번째 사본이 생긴다 — 그래서 기본값을 커밋 파생물로 두고 `.env` 재정의는 `targets validate`가
+  거부한다(기대값과 다를 때만; 빈 값은 compose가 기본값을 쓴다; 문구에는 변수 이름과 기대값만)
+- **결박**: `services/consumer_origins.py`의 스캔을 `backend/tests/test_consumer_origin_defaults.py`가 쓴다 —
+  `test_every_consumer_default_is_the_registry_origin`(기본값 == 기대 origin, 하한 `test_the_scan_sees_every_known_consumer`),
+  `test_reverting_any_one_consumer_to_loopback_is_named`·`test_changing_the_registry_port_is_named`(빨간 대조군),
+  `test_validate_rejects_a_root_env_override_that_differs`(validate 효과). 테스트에 포트 표·"소비자는 default 호스트" 가정은 없다
 
 ### B-7. 공용 workspace digest의 기본값
 

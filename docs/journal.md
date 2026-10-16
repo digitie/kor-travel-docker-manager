@@ -1,3 +1,11 @@
+## 2026-10-16 — 소비자 origin을 registry로(T-MGR-01c)
+
+- 형제 target(geo·transport·weather)에 `consumer_origin: "http://{host}:<port>"`를 두고, 기대 origin을 R1으로(소비자 서비스를
+  실행하는 target의 호스트에서 본 값) 파생한다. 테스트의 포트 표와 "소비자는 default 호스트" 가정(ADR-58 잠정 ⅳ·ⅴ)을 지웠다.
+- `ktdctl targets validate`가 root `.env`의 원천 변수 재정의가 기대값과 다르면 거부한다(값은 싣지 않는다). 설치기의 flip 전
+  검사도 같은 명령이다. n150 root `.env`는 해당 변수 4개 모두 미설정이라 설치 영향이 없다(이름·상태만 읽어 확인).
+- 배포·n150 변경은 하지 않았다.
+
 ## 2026-10-16 — #477 리뷰 잔여(T-MGR-01a-F), #481 위로 rebase
 
 - #481(호스트 변경 경계·workspace 분리)이 먼저 머지돼 겹치는 것(registry 소유권·host-local 폐포·연결 주소·host 선택)은 #481을

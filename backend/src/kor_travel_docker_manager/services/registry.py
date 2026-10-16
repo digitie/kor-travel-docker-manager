@@ -410,6 +410,19 @@ def _root_env_file_value(name: str, *, root: Path, trusted: bool, operating: boo
     return (value or "").strip()
 
 
+def root_env_value(name: str) -> str:
+    """Manager 루트 `.env`의 `name` 값(없거나 비었으면 ""). `current_host`와 같은 자리·같은 오류 규칙으로 읽는다."""
+    from kor_travel_docker_manager.services.trusted_install import (
+        TRUSTED_INSTALL_ROOT,
+        running_from_trusted_install_root,
+    )
+
+    trusted = running_from_trusted_install_root()
+    root = TRUSTED_INSTALL_ROOT if trusted else Path(get_project_root())
+    operating = trusted or os.path.lexists(root / ".ktdm-source-revision")
+    return _root_env_file_value(name, root=root, trusted=trusted, operating=operating)
+
+
 def current_host(config: Mapping[str, Any] | None = None) -> str:
     """자기 호스트 이름. release(운영 모드)에서는 선언 필수, 캐시하지 않는다.
 
@@ -786,6 +799,7 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
 
         _validate_external_project(spec, target_id=target_id, label=label)
         _validate_dagster_field(spec, target_id=target_id, label=label)
+        _validate_consumer_origin_field(spec, target_id=target_id, label=label)
 
         aliases = _require_list_field(spec, "aliases", target_id=target_id, label=label)
         for alias in [target_id, *aliases]:
@@ -992,6 +1006,7 @@ def services_for_target(target: str | None) -> list[str]:
 _ALLOWED_TARGET_FIELDS: Final = frozenset(
     {
         "aliases",
+        "consumer_origin",
         "containers",
         "dagster",
         "depends_on",
@@ -1201,6 +1216,40 @@ _LOCATION_NAME: Final = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 #: 소비자 env의 종류 — 공용 webserver(`internal`)나 공개 host(`public`), 뒤에 경로를 붙일 수 있다.
 _DAGSTER_CONSUMER_KIND: Final = re.compile(r"(internal|public)(/[A-Za-z0-9._~/-]*)?")
 _ENV_NAME: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+_CONSUMER_ORIGIN = re.compile(r"https?://\{host\}:[0-9]{1,5}")
+
+
+def _validate_consumer_origin_field(spec: dict[str, Any], *, target_id: str, label: str) -> None:
+    value = spec.get("consumer_origin")
+    if value is None:
+        return
+    if not isinstance(value, str) or _CONSUMER_ORIGIN.fullmatch(value) is None:
+        raise TargetsConfigError(
+            f"{label} targets.{target_id}.consumer_origin: must be scheme://{{host}}:<port>"
+        )
+
+
+def consumer_origin(target: str, consumer_host: str, config: Mapping[str, Any] | None = None) -> str | None:
+    """R2: 다른 target(소비자)이 이 target을 부르는 origin — `consumer_origin`의 `{host}`를 R1으로 렌더한다.
+
+    소비자가 도는 호스트가 이 target의 호스트 집합에 있으면 `127.0.0.1`, 아니면 그 집합의 단일 주소. 주소가 하나로
+    정해지지 않거나 선언이 없으면 None. 포트는 호스트별로 다를 수 있는 사실이라(2026-10-14 odroid 통일 포트) registry가
+    가진다 — 테스트의 포트 표가 아니다(T-MGR-01c).
+    """
+    config = load_targets_config() if config is None else config
+    template = config["targets"][target].get("consumer_origin")
+    if template is None:
+        return None
+    hosts = target_hosts(target, config)
+    if consumer_host in hosts:
+        address = "127.0.0.1"
+    elif len(hosts) == 1:
+        address = _host_specs(config)[next(iter(hosts))]["addr"]
+    else:
+        return None
+    return template.replace("{host}", address)
 
 
 def _validate_dagster_field(spec: dict[str, Any], *, target_id: str, label: str) -> None:

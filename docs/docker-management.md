@@ -275,7 +275,9 @@ transport `:1744`, PinVi ETL `:2142`, 그리고 pinvi-api 블록에 추가되는
 compose를 스캔해 이 집합을 찾는다(줄 번호 열거 금지). root `.env`에 다른 값을 적으면 `targets validate`가 거부한다.
 **2026-10-14 잠정 시행으로 대체**: 소비자 포트는 geo `12501`·transport API gateway `12301`·weather `12201`(odroid `192.168.1.13`),
 집합은 8곳(geo 5 — Map 4·pinvi-api `PINVI_KOR_TRAVEL_GEO_BASE_URL` 1, transport 1, weather 2 — PinVi ETL·pinvi-api), 결박은
-`backend/tests/test_consumer_origin_defaults.py`의 렌더 스캔이다. `validate`의 `.env` 재정의 거부는 아직 없다(T-MGR-01c).
+`backend/tests/test_consumer_origin_defaults.py`의 렌더 스캔이다. **2026-10-16 T-MGR-01c**: 포트는 registry 형제 target의
+`consumer_origin`(`http://{host}:<port>`, R1 렌더 — 소비자를 실행하는 target의 호스트 기준)에서 파생하고, `targets validate`가 root
+`.env`의 원천 변수 재정의가 그 기대값과 다르면 거부한다(설치기의 flip 전 검사도 같은 명령이라 함께 막는다).
 
 **compose `depends_on`(R7).** 간선은 양끝 서비스의 host 집합이 같을 때만 둔다. tenant 간 의존(`kor-travel-map-api → kor-travel-geo-api`,
 `docker-compose.yml:1535`)은 삭제하고 런타임 REST 검증(health probe·fail-open 기동·`failure_kind`; Map은 `kor_travel_geo_preflight_required`
