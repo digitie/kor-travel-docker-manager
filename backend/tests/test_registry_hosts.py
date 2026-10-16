@@ -515,21 +515,16 @@ def test_third_virtual_host_derives_without_code_changes(config, monkeypatch):
 
 
 #: 호스트 리터럴 검사의 **범위**: `backend/src`와 `scripts/`의 Python(확장자 `.py` 또는 python shebang) 문자열 상수
-#: (f-string 조각 포함, docstring 제외)와 `config/prometheus/prometheus.yml`의 주석 아닌 줄. 범위 밖(명시): 셸 스크립트
-#: (`scripts/*.sh`·bash shebang — 주석·사람용 안내가 대부분이라 단어 검사가 잡음뿐이다), `docker-compose.yml`(R2 소비자
-#: 기본값은 커밋된 파생물 — `test_consumer_origin_defaults.py`가 registry와 대조한다), 문서·주석.
+#: (f-string 조각 포함, docstring 제외). 범위 밖(명시): 셸 스크립트(`scripts/*.sh`·bash shebang — 주석·사람용 안내가
+#: 대부분이라 단어 검사가 잡음뿐이다), 커밋된 파생물(`docker-compose.yml`의 R2 소비자 기본값 — `test_consumer_origin_defaults.py`,
+#: `config/prometheus/prometheus.yml` — `test_prometheus_targets_are_derived.py`가 registry와 대조한다; 2026-10-16 T-MGR-04로
+#: Prometheus의 잠정 odroid job 허용이 사라졌다), 문서·주석.
 #:
 #: 허용 목록은 (파일, 리터럴) 정확 일치다 — 같은 파일에 새 리터럴이 생기면 빨갛다. 항목이 더 이상 보이지 않아도 빨갛다
 #: (낡은 허용이 남지 않게).
 _HOST_LITERAL_ALLOWED: dict[tuple[str, str], str] = {
     ("scripts/m05_isolated_e2e.py", "scripts/n150-playwright-runner.sh"):
         "PinVi 저장소의 파일 이름이다(호스트 선택이 아니다).",
-    ("config/prometheus/prometheus.yml", "- job_name: cadvisor-odroid"):
-        "잠정 odroid exporter job(ADR-58 잠정 시행 ⅵ) — T-MGR-04가 registry 파생물(B-8)로 대체한다.",
-    ("config/prometheus/prometheus.yml", "- 192.168.1.13:12103"): "같은 잠정 job(T-MGR-04).",
-    ("config/prometheus/prometheus.yml", "host: odroid"): "같은 잠정 job들의 label(T-MGR-04).",
-    ("config/prometheus/prometheus.yml", "- job_name: node-odroid"): "같은 잠정 job(T-MGR-04).",
-    ("config/prometheus/prometheus.yml", "- 192.168.1.13:12106"): "같은 잠정 job(T-MGR-04).",
 }
 
 
@@ -577,11 +572,6 @@ def _host_literal_hits(hosts: dict) -> list[tuple[str, int, str]]:
     for path in _python_sources():
         relative = path.relative_to(ROOT).as_posix()
         hits.extend((relative, line, value) for line, value in _string_constants(path) if carries(value))
-    prometheus = ROOT / "config/prometheus/prometheus.yml"
-    for line, text in enumerate(prometheus.read_text(encoding="utf-8").splitlines(), start=1):
-        code = text.split("#", 1)[0].strip()
-        if code and carries(code):
-            hits.append(("config/prometheus/prometheus.yml", line, code))
     return hits
 
 
@@ -613,13 +603,10 @@ def test_host_literal_scan_sees_words_fstrings_and_skips_docstrings(tmp_path, mo
     hosts = {"n150": {"addr": "10.0.0.1"}, "odroid": {"addr": "10.0.0.9"}}
     monkeypatch.setattr(sys.modules[__name__], "_python_sources", lambda: [source])
     monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
-    (tmp_path / "config/prometheus").mkdir(parents=True)
-    (tmp_path / "config/prometheus/prometheus.yml").write_text("# n150 주석\n- 10.0.0.1:9\n", encoding="utf-8")
     hits = {(path, value) for path, _, value in _host_literal_hits(hosts)}
     assert "모듈 설명 n150." not in found and "함수 설명 odroid." not in found
     assert hits == {
         ("probe.py", "@n150 now"),
         ("probe.py", "target on odroid"),
         ("probe.py", "http://10.0.0.9:1"),
-        ("config/prometheus/prometheus.yml", "- 10.0.0.1:9"),
     }
