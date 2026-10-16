@@ -5544,10 +5544,12 @@ class ComposeService:
                 reasons.append("entrypoint differs")
             # bind mount: render(`compose config --format json`의 long syntax)의 bind마다. 경로는 비밀이 아니라 싣는다.
             mounts = observed.get("mounts") or {}
+            rendered_targets: set[str] = set()
             for volume in render.get("volumes") or []:
                 if not isinstance(volume, Mapping) or volume.get("type") != "bind":
                     continue
                 target, source = str(volume.get("target") or ""), str(volume.get("source") or "")
+                rendered_targets.add(target)
                 mounted = mounts.get(target)
                 if mounted is None:
                     reasons.append(f"bind {target} is not mounted")
@@ -5555,6 +5557,13 @@ class ComposeService:
                     reasons.append(f"bind {target}: running {mounted[0]} != rendered {source}")
                 elif mounted[1] != bool(volume.get("read_only")):
                     reasons.append(f"bind {target} read-only differs")
+            # 반대 방향: 떠 있는 컨테이너에는 있는데 render에는 없는 bind(지운 bind가 남아 있다). render가 bind를 long syntax로
+            # 실을 때만 본다 — short syntax(테스트 하네스)에는 target 목록이 없다.
+            if rendered_targets or not any(isinstance(v, str) for v in render.get("volumes") or []):
+                reasons.extend(
+                    f"bind {target} is mounted but not rendered"
+                    for target in sorted(set(mounts) - rendered_targets)
+                )
         return drift
 
     @staticmethod

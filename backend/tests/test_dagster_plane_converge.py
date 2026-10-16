@@ -517,3 +517,21 @@ def test_inspect_reads_bind_mounts_with_their_read_only_flag(monkeypatch: pytest
         _WORKSPACE_IN_CONTAINER: ("/opt/x/workspace.yaml", True),
         "/opt/dagster/dagster_home/dagster.yaml": ("/opt/x/dagster.yaml", False),
     }
+
+
+def test_a_bind_still_mounted_but_no_longer_rendered_is_stale(harness: SimpleNamespace) -> None:
+    root = "/opt/kor-travel-docker-manager/config/dagster-shared"
+    _with_long_syntax_workspace_bind(harness, f"{root}/workspace.n150.yaml", f"{root}/workspace.n150.yaml")
+    real = harness.service._inspect_plane_container
+
+    def with_extra(container_name: str, *, label: str) -> Any:
+        observed = dict(real(container_name, label=label))
+        observed["mounts"] = {**observed["mounts"], "/opt/dagster/old.yaml": (f"{root}/old.yaml", True)}
+        return observed
+
+    harness.service._inspect_plane_container = with_extra
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    assert result["outcome"] == "would_recreate"
+    for name in harness.plane.services:
+        assert result["drift"][name] == ["bind /opt/dagster/old.yaml is mounted but not rendered"]
