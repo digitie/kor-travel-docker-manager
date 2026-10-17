@@ -2907,8 +2907,10 @@ services:
     - start
     - -h
     - "127.0.0.1"
+    # gRPC 포트는 weather가 도는 odroid의 통일 포트 `12206`이다(2026-10-17 odroid 실측 — 옛 n150 `14106`). 공용 workspace
+    # (`workspace.odroid.yaml`)가 이 값에서 파생되고 odroid 호스트 측 plane의 workspace와 같아야 한다(F2).
     - -p
-    - "14106"
+    - "12206"
     - -m
     - kortravelweather_dagster.definitions
     - --inject-env-vars-from-instance
@@ -2960,6 +2962,10 @@ services:
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
       KOR_TRAVEL_WEATHER_RETENTION_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_DAYS:-2}
       KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS:-7}
+      # 기본값 `14103`은 이 compose(Manager가 weather를 올리는 배치)의 weather 대역 값이다. 지금 weather는 odroid의 호스트 측
+      # stack(통일 포트)에서 돌고 metrics는 `12203`이다 — 중앙 Prometheus는 registry `metrics_port: 12203`으로 그것을 긁는다
+      # (T-MGR-04r). 일부러 맞추지 않았다: 이 기본값을 바꾸면 weather 대역 밖 포트가 되고, 두 값은 odroid Manager가 weather를
+      # 넘겨받을 때(T-MGR-06·T-OPS) odroid root `.env`의 `KOR_TRAVEL_WEATHER_METRICS_PORT`와 registry를 같은 값으로 둔다.
       KOR_TRAVEL_WEATHER_METRICS_PORT: ${KOR_TRAVEL_WEATHER_METRICS_PORT:-14103}
       PROMETHEUS_MULTIPROC_DIR: /var/run/kor-travel-weather-metrics
     volumes:
@@ -2986,7 +2992,7 @@ services:
       - -I
       - -c
       - *dagster-code-server-probe
-      - '14106'
+      - '12206'
       interval: 90s
       timeout: 10s
       retries: 5
