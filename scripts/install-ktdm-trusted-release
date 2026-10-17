@@ -1,8 +1,9 @@
 #!/usr/bin/bash
 # Manager trusted release installer (ADR-51 D).
 #
-# 정확한 커밋 하나를 `/opt/ktdm-release-<sha>/`로 만들고 설치 root
-# `/opt/kor-travel-docker-manager`(상대 symlink)를 그쪽으로 넘긴다. release는 root 소유 source
+# 정확한 커밋 하나를 `<release root>/ktdm-release-<sha>/`로 만들고 설치 root
+# `/opt/kor-travel-docker-manager`(symlink)를 그쪽으로 넘긴다. release root는 지금 symlink가 정한다: 상대 symlink면
+# `/opt`(기본), 절대 symlink면 그 대상의 상위 디렉터리(데이터 디스크에 release를 두는 호스트 — prod-deployment §3 "새 호스트"). release는 root 소유 source
 # clone의 `git archive <sha>`, venv는 오프라인 wheelhouse로 만든다. 배포 `.env`는 앞으로
 # 복사하고, 백엔드는 항상 stop → flip → start 한다. 직전 release 하나를 남긴다.
 #
@@ -81,9 +82,35 @@ git_src() { git --no-replace-objects -C "${SRC}" "$@" 9>&-; }
 git_src cat-file -e "${SHA}^{commit}" 2>/dev/null || die "revision ${SHA} is not in ${SRC}; fetch it first"
 
 NAME="ktdm-release-${SHA}"
-REL="/opt/${NAME}"
+# >>> release-root
+# release root는 설치 root symlink가 정한다(설정 파일·env 없음 — 설치마다 같은 값을 기억할 필요가 없다). 상대 symlink면
+# 설치 root와 같은 디렉터리(`/opt`), 절대 symlink면 그 대상의 상위 디렉터리다. root가 실행할 코드가 놓이므로 그 경로의 모든
+# 디렉터리는 root 소유·group/other 쓰기 없음·symlink 아님이어야 한다(다른 계정이 release를 바꿔치기하지 못하게).
+CURRENT_TARGET="$(readlink -- "${APP}")"
+if [[ "${CURRENT_TARGET}" == /* ]]; then
+  RELEASE_ROOT="$(dirname -- "${CURRENT_TARGET}")"
+else
+  RELEASE_ROOT="$(dirname -- "${APP}")"
+fi
+trusted_dir_chain() {
+  local path="$1" prefix="" part
+  [[ "${path}" == /* ]] || return 1
+  [[ "$(stat -c '%u' /)" == "0" ]] || return 1
+  IFS=/ read -r -a parts <<< "${path#/}"
+  for part in "${parts[@]}"; do
+    [[ -n "${part}" ]] || continue
+    prefix="${prefix}/${part}"
+    [[ -d "${prefix}" && ! -L "${prefix}" ]] || return 1
+    [[ "$(stat -c '%u' "${prefix}")" == "0" ]] || return 1
+    (( (8#$(stat -c '%a' "${prefix}") & 022) == 0 )) || return 1
+  done
+}
+trusted_dir_chain "${RELEASE_ROOT}" \
+  || die "release root must be a root-owned directory chain without group/other write or symlinks: ${RELEASE_ROOT}"
+# <<< release-root
+REL="${RELEASE_ROOT}/${NAME}"
 # basename — 손으로 만든 절대 symlink여도 아래 비교·GC가 같은 이름을 본다.
-PREV="$(basename -- "$(readlink -- "${APP}")")"
+PREV="$(basename -- "${CURRENT_TARGET}")"
 if [[ "$(cat "${REL}/.ktdm-source-revision" 2>/dev/null)" != "${SHA}" ]]; then
   [[ "${PREV}" != "${NAME}" ]] || die "the active release has no revision marker: ${REL}"
   rm -rf -- "${REL}"
@@ -239,7 +266,12 @@ systemctl enable "${units[@]}"
 
 # flip. 실행 중인 backend가 새 release의 모듈을 섞어 읽지 않게 멈춘 뒤 넘긴다.
 systemctl stop ktdm-backend.service
-ln -sfn "${NAME}" "${APP}.new"
+# 기본(`/opt`)이면 종전처럼 상대 symlink, 다른 release root면 절대 symlink(다음 설치가 같은 root를 고르게).
+if [[ "${RELEASE_ROOT}" == "$(dirname -- "${APP}")" ]]; then
+  ln -sfn "${NAME}" "${APP}.new"
+else
+  ln -sfn "${REL}" "${APP}.new"
+fi
 mv -T "${APP}.new" "${APP}"
 # 깨진 release가 재기동 한도(StartLimitBurst)를 넘겼으면 그 뒤의 롤백 start도 거절된다 — 먼저 푼다.
 systemctl reset-failed ktdm-backend.service 2>/dev/null || true
@@ -252,9 +284,9 @@ for _ in $(seq 60); do
     && ss -Hltnp 'sport = :12901' | grep -q "pid=${pid},"; then
     echo "installed ${SHA} (previous: ${PREV#ktdm-release-})"
     if [[ "${PREV}" != "${NAME}" ]]; then
-      for old in /opt/ktdm-release-*; do
+      for old in "${RELEASE_ROOT}"/ktdm-release-*; do
         # 표식부터 지운다 — 삭제가 중간에 끊겨도 반쪽 트리가 완성 release로 재사용되지 않는다.
-        [[ "${old}" == "${REL}" || "${old}" == "/opt/${PREV}" ]] \
+        [[ "${old}" == "${REL}" || "${old}" == "${RELEASE_ROOT}/${PREV}" ]] \
           || { rm -f -- "${old}/.ktdm-source-revision"; rm -rf -- "${old}"; }
       done
     fi

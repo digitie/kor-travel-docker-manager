@@ -676,3 +676,53 @@ def test_plane_binds_refuses_an_empty_directory_left_in_the_current_release(tmp_
     (tmp_path / "current" / "config" / "dagster-shared" / "workspace.yaml").mkdir(parents=True)
     refused = _run_plane_binds(tmp_path, "workspace.yaml", ["workspace.n150.yaml"])
     assert refused.returncode == 126 and "which neither the current nor the new release ships" in refused.stderr
+
+
+# --- 2026-10-17: release root를 설치 root symlink에서 정한다(데이터 디스크에 release를 두는 호스트) ---------------
+
+
+def _release_root_block() -> str:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    return text[text.index("# >>> release-root") : text.index("# <<< release-root")]
+
+
+def _run_release_root(tmp_path: Path, target: str) -> subprocess.CompletedProcess[str]:
+    app = tmp_path / "opt" / "kor-travel-docker-manager"
+    app.parent.mkdir(parents=True)
+    app.symlink_to(target)
+    script = (
+        "set -euo pipefail\n"
+        'die() { echo "$1" >&2; exit 126; }\n'
+        f'APP="{app}"\n' + _release_root_block() + 'echo "ROOT=${RELEASE_ROOT}"\n'
+    )
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+
+
+def test_an_absolute_symlink_puts_releases_under_its_parent(tmp_path: Path) -> None:
+    # 절대 symlink의 상위가 root 소유·쓰기 금지 사슬이면 그곳이 release root다(`/usr/share`는 CI·n150에서 root 0755).
+    passed = _run_release_root(tmp_path, "/usr/share/ktdm-release-" + "a" * 40)
+    assert passed.returncode == 0, passed.stderr
+    assert "ROOT=/usr/share" in passed.stdout
+
+
+def test_a_release_root_owned_by_another_account_is_refused(tmp_path: Path) -> None:
+    # 테스트 계정 소유의 tmp 디렉터리 — root 소유 사슬이 아니다(데이터 디스크의 0777 상위 같은 경우).
+    elsewhere = tmp_path / "data" / "releases"
+    elsewhere.mkdir(parents=True)
+    refused = _run_release_root(tmp_path, f"{elsewhere}/ktdm-release-" + "a" * 40)
+    assert refused.returncode == 126 and "release root must be a root-owned directory chain" in refused.stderr
+
+
+def test_a_relative_symlink_keeps_the_release_root_next_to_the_install_root(tmp_path: Path) -> None:
+    # 종전 동작: 상대 symlink면 설치 root와 같은 디렉터리. tmp의 그 디렉터리는 테스트 계정 소유라 사슬 검사가 거부한다 —
+    # 고른 경로가 바로 그 디렉터리임을 문구로 확인한다.
+    result = _run_release_root(tmp_path, "ktdm-release-" + "a" * 40)
+    assert f"release root must be a root-owned directory chain without group/other write or symlinks: {tmp_path / 'opt'}" in result.stderr
+
+
+def test_the_flip_keeps_relative_links_for_opt_and_absolute_links_elsewhere() -> None:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    flip = text[text.index('if [[ "${RELEASE_ROOT}" == "$(dirname -- "${APP}")" ]]; then') :]
+    assert flip.index('ln -sfn "${NAME}" "${APP}.new"') < flip.index('ln -sfn "${REL}" "${APP}.new"')
+    assert 'for old in "${RELEASE_ROOT}"/ktdm-release-*; do' in text
+    assert "/opt/ktdm-release-*" not in text
