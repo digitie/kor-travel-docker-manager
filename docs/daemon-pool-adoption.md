@@ -96,6 +96,7 @@ fork/세대/동시성/primary strong registry·정리/pre_ping 보호는 유지�
 그로부터 유도한 공용 host 세 image ref뿐이다. Dockerfile의 명시 wheel 경로는 basename이
 같아 그대로 유지한다. 나머지 네 runtime 의존 파일 입력 중 requirements 외 세 파일도
 원형이고, cAdvisor30초/14제외·PR512 기능·instance queue 정책은 바꾸지 않는다.
+위 cAdvisor30초는 fcc2 핀 갱신 당시 기준이다. main #517 통합 후 현재 source는 CADVISOR_HOUSEKEEPING_INTERVAL 기본15초/env 덮어쓰기·제외14집합이며, Odroid 운영30초는 root의 별도 적용·관측 범위다.
 새 wholewheel/lazy import/기존 잠금/Compose wrapper와 작은 stdlib fixture11개 회귀는 통과했다.
 실제 SDK/격리 PG의 공식 start_run 성공은 root 실행 evidence로 별도 인계되며,
 새 Manager native 빌드·운영 launch/신선도·CPU 재측정과 두 독립 리뷰는 후속이다.
