@@ -267,9 +267,11 @@ containers:
     compose_service: kor-travel-weather-api
     role: weather-api
     display_name: Kor Travel Weather API
-    connection: "http://{host}:14101"
+    # odroid 실측 포트(2026-10-17, odroid `kor-travel-odroid` stack의 uvicorn `--port 12201` — 2026-10-14 통일 포트). n150 시절
+    # Manager compose 기본값은 `14101`이다(weather가 n150에서 돌 때의 값).
+    connection: "http://{host}:12201"
     expected_ports:
-      - "14101:14101"
+      - "12201:12201"
     prod_url_env: KTDM_PROD_URL_WEATHER_API
   # dagster는 code-server/webserver/daemon 3-분리로 나뉜다 — registry가 실제
   # compose.yaml 토폴로지(weather PR #61, code-server 분리) 뒤로 밀려 있었다.
@@ -278,10 +280,10 @@ containers:
     compose_service: kor-travel-weather-dagster-code-server
     role: weather-dagster-code-server
     display_name: Kor Travel Weather Dagster Code Server
-    connection: "내부 전용(gRPC, {host}:14106) — 인증 없음, loopback만 허용"
+    connection: "내부 전용(gRPC, {host}:12206) — 인증 없음, loopback만 허용"
     # 중앙 Prometheus 수집(T-MGR-04r): code-server의 `prometheus_client` 서버(`KOR_TRAVEL_WEATHER_METRICS_PORT`). 포트는 지금
-    # weather가 도는 odroid의 통일 포트 `12203`이다(2026-10-17 n150에서 `http://192.168.1.13:12203/metrics` 200 실측 — Manager
-    # compose 기본값 `14103`은 n150 시절 값). 인증 없이 LAN에 열려 있다(compose 주석의 알려진 노출) — odroid 방화벽 exporter 집합.
+    # weather가 도는 odroid의 통일 포트 `12203`이다(2026-10-17 n150에서 `http://192.168.1.13:12203/metrics` 200 실측). Manager
+    # compose 기본값 `14103`은 n150 시절 값이고 일부러 두었다(compose 주석). 인증 없이 LAN에 열려 있다 — odroid 방화벽 exporter 집합.
     metrics_path: /metrics
     metrics_port: 12203
     expected_ports: []
@@ -358,22 +360,23 @@ containers:
     external_project: kor-travel-transport
     role: transport-backend
     display_name: Kor Travel Transport 백엔드
-    connection: "http://{host}:14001"
+    connection: "http://{host}:12302"
     # host network다 — 운영 overlay(`docker-compose.shared.yml`)가 `network_mode: host`와
-    # `ports: !reset []`를 걸어 uvicorn이 호스트 14001에 직접 listen한다(PortBindings 없음,
-    # 2026-09-28 n150 실측). base compose의 `14001:8000` 매핑은 운영에서 쓰이지 않는다.
+    # `ports: !reset []`를 걸어 uvicorn이 호스트 포트에 직접 listen한다(PortBindings 없음). 포트는 odroid 실측 `12302`
+    # (2026-10-17, uvicorn `--port 12302` — 2026-10-14 통일 포트; n150 시절 `14001`). 소비자(Map)는 이것이 아니라 API
+    # gateway `12301`을 부른다(target `consumer_origin`). base compose의 `14001:8000` 매핑은 운영에서 쓰이지 않는다.
     expected_ports:
-      - "14001:14001"
+      - "12302:12302"
   kor-travel-transport-frontend:
     name: kor-travel-transport-frontend-1
     compose_service: frontend
     external_project: kor-travel-transport
     role: transport-frontend
     display_name: Kor Travel Transport 프런트엔드
-    connection: "http://{host}:14002"
-    # backend와 같이 host network다(next가 호스트 14002에 직접 listen한다).
+    connection: "http://{host}:12303"
+    # backend와 같이 host network다(next가 호스트 포트에 직접 listen한다 — odroid 실측 `12303`, n150 시절 `14002`).
     expected_ports:
-      - "14002:14002"
+      - "12303:12303"
 
 targets:
   storage:
@@ -777,7 +780,7 @@ targets:
     port_band: "14001-14099"
     depends_on: []
     display_name: Kor Travel Transport
-    description: 통합 교통정보 서비스입니다(공항 주차 현황 등). 백엔드(:14001)와 프런트엔드(:14002)로 구성되며 DB는 공용 instance(:11000)의 kor_travel_transport database에 있습니다.
+    description: 통합 교통정보 서비스입니다(공항 주차 현황 등). 백엔드(:12302)와 프런트엔드(:12303), API gateway(:12301)로 구성되며 DB는 공용 instance(:11000)의 kor_travel_transport database에 있습니다.
     aliases:
       - kor-travel-transport
     services:
@@ -821,7 +824,7 @@ targets:
     port_band: "14100-14199"
     depends_on: []
     display_name: Kor Travel Weather
-    description: 기상 데이터 서비스. API(:14101)·Dagster 게이트웨이(:14102, Basic Auth)·자체 Prometheus(:14104)·Web(:12205, HAProxy가 가리키는 대역 밖 예외 — ADR-57)으로 구성되며, 공용 control-plane instance(kor-travel-shared-postgres, :11000)에 fresh app/Dagster DB를 새로 만들어 쓴다(옛 전용 db 데이터는 옮기지 않는다 — PinVi ADR-46과 같은 패턴). weather 자신의 compose.yaml/deploy/compose.n150.yaml은 local-dev/e2e 전용으로 남는다 — prod 정본은 이제 이 파일이다(ADR-47).
+    description: 기상 데이터 서비스. odroid에서 API(:12201)·Dagster code-server(gRPC :12206, metrics :12203)·Web(:12205, HAProxy가 가리키는 대역 밖 예외 — ADR-57)으로 돈다(n150 시절 API :14101·게이트웨이 :14102·자체 Prometheus :14104; 공용 plane 합류 뒤 게이트웨이·webserver·daemon은 legacy profile이다). DB는 공용 control-plane instance(kor-travel-shared-postgres, :11000)에 fresh app/Dagster DB를 새로 만들어 쓴다(옛 전용 db 데이터는 옮기지 않는다 — PinVi ADR-46과 같은 패턴). weather 자신의 compose.yaml/deploy/compose.n150.yaml은 local-dev/e2e 전용으로 남는다 — prod 정본은 이제 이 파일이다(ADR-47).
     aliases:
       - kor-travel-weather
     services:
