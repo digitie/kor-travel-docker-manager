@@ -433,7 +433,7 @@ def _create_frozen_compose_descriptor(label: str, *, state_root: Path) -> int:
     descriptor = None
     try:
         with _pinned_runtime_temporary_directory(state_root) as directory:
-            descriptor, temporary_path = tempfile.mkstemp(prefix=f"{label}-", dir=directory)
+            descriptor, temporary_path = tempfile.mkstemp(prefix="compose-", dir=directory)
             os.unlink(temporary_path)
     except BaseException:
         if descriptor is not None:

@@ -44,3 +44,13 @@ fixture 오류였고 raising=False로 수정했다. 최초 명령의 registry �
 이 변경만으로 모든 저장소를 NVMe로 옮기지는 않는다. 설치자가 HOME/state/source/logs/cache/
 venv/Node 빌드 경로와 Docker data-root를 NVMe에 배치해야 한다. Manager DB 기본 상대 경로도
 설치 소스 위치에 의존하므로 실제 설치 root가 NVMe인지 확인한다. DB 기본값은 변경하지 않는다.
+
+
+## 독립 리뷰 후 경로 이탈 보완
+
+초기 b631e5a는 fallback mkstemp prefix에 진단용 label을 그대로 넣었다. 절대 경로나
+상대 ../ label은 dir 인자를 벗어난 파일을 만들 수 있다는 독립 P2 재현을 수용했다.
+현재 내부 호출자는0이고 실제 env_file 경로는 영향이 없지만 helper 자체의 state 한정
+계약은 위반했다. memfd의 진단 label은 유지하고 디스크 fallback prefix만 고정 문자열로
+바꿨다. 자기 scratch의 절대·상대 경로2회귀는 수정 전2FAIL, 수정 후16PASS에 포함된다.
+원 b631e5a와 초기 리뷰는 보존하며 전체 suite/실제 운영 검증은 여전히 미실시다.

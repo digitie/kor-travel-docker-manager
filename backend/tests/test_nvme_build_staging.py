@@ -247,3 +247,28 @@ def test_existing_builder_failure_test_body_without_global_integration_fixtures(
     }
     exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
     namespace[name](tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("label_kind", ["absolute", "relative"])
+def test_fallback_label_cannot_escape_state_directory(
+    functions, tmp_path, monkeypatch, label_kind,
+):
+    monkeypatch.setattr(os, "memfd_create", no_memfd, raising=False)
+    state = tmp_path / "state"
+    label = str(tmp_path / "outside-state") if label_kind == "absolute" else "../../outside-state"
+    original_mkstemp = tempfile.mkstemp
+    created = []
+
+    def create(**kwargs):
+        descriptor, path = original_mkstemp(**kwargs)
+        created.append(Path(path).resolve())
+        return descriptor, path
+
+    monkeypatch.setattr(tempfile, "mkstemp", create)
+    descriptor = functions._create_frozen_compose_descriptor(label, state_root=state)
+    os.close(descriptor)
+    assert len(created) == 1
+    assert created[0].is_relative_to(state)
+    assert created[0].parent.parent == state
+    assert not created[0].exists()
+    assert list(state.iterdir()) == []

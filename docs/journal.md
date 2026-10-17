@@ -17,6 +17,15 @@
 
 ---
 
+## 2026-10-17 — PR521 fallback label 경로 이탈 수정
+
+- 독립 리뷰가 b631e5a의 절대/상대 label로 mkstemp가 state 밖 파일을 만들 수 있음을 재현했다.
+- 현재 private helper 내부 caller0/실제 env_file memfd-only는 영향 없지만 state 한정 계약을
+  지키도록 디스크 fallback prefix만 고정했다. memfd label과 나머지 제품 동작은 그대로다.
+- 실제 자기 scratch 경로 회귀2FAIL→전체격리16PASS/backend Ruff 확인. 원 실패 및 원문 보존,
+  전체 suite·운영/NVMe 검증 미실시는 유지한다.
+
+
 ## 2026-10-17 — NVMe 빌드 임시 경로 구현(PR521)
 
 - 기존 frozen state root 아래0700 임시 디렉터리와0600/unlinked fallback 파일을 사용한다.
