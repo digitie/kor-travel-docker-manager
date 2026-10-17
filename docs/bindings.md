@@ -149,7 +149,9 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **사본이 필요한 이유**: Prometheus는 정적 파일만 읽는다
 - **결박**: `backend/tests/test_prometheus_targets_are_derived.py` — 파생 == 파일(`test_prometheus_targets_are_the_registry_derivation`),
   target 이동·포트·경로 변경·세 번째 호스트가 빨갛다. 손 job 추가는 `test_no_job_in_the_file_is_hand_written`, 호스트 누락은
-  `test_the_manager_job_has_one_static_config_per_declared_host`, unit 포트 변경은 `test_the_manager_port_comes_from_the_backend_unit`이 빨갛다
+  `test_the_manager_job_has_one_static_config_per_declared_host`, unit 포트 변경은 `test_the_manager_port_comes_from_the_backend_unit`이 빨갛다. 설치기 health 확인과 `main.py` dev 진입점의
+  하드코딩 포트가 unit과 다르면 `test_every_hard_coded_backend_port_is_the_unit_port`, unit에 `--port`가 둘이면
+  `test_a_unit_with_two_ports_is_rejected`가 빨갛다
 
 ### B-9. 교차 호스트 `depends_on` 간선 ∅
 

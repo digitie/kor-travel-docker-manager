@@ -29,7 +29,9 @@ PROMETHEUS_CONFIG: Final = "./config/prometheus/prometheus.yml"
 MANAGER_JOB: Final = "kor-travel-docker-manager"
 MANAGER_METRICS_PATH: Final = "/metrics"
 MANAGER_BACKEND_UNIT: Final = "deploy/systemd/ktdm-backend.service"
-_UNIT_PORT = re.compile(r"^ExecStart=.*\s--port[ =](\d+)(?:\s|$)", re.MULTILINE)
+_EXEC_START = re.compile(r"^ExecStart=(.*)$", re.MULTILINE)
+#: 한 ExecStart 줄 안의 `--port` **전부**(줄당 마지막 하나만 세면 `--port A --port B`가 조용히 B를 고른다).
+_PORT_FLAG = re.compile(r"(?:^|\s)--port[ =](\d+)(?=\s|$)")
 
 
 #: 이 코드가 들어 있는 소스 트리(`backend/src/kor_travel_docker_manager/services/` 위 네 단계). `prometheus.yml`은 커밋된
@@ -40,7 +42,8 @@ _SOURCE_ROOT: Final = Path(__file__).resolve().parents[4]
 def manager_backend_port(source_root: str | None = None) -> int:
     """Manager backend가 듣는 포트 — 그것을 띄우는 systemd unit의 `ExecStart … --port N`(하나여야 한다)."""
     unit = Path(source_root) / MANAGER_BACKEND_UNIT if source_root else _SOURCE_ROOT / MANAGER_BACKEND_UNIT
-    ports = _UNIT_PORT.findall(unit.read_text(encoding="utf-8"))
+    lines = _EXEC_START.findall(unit.read_text(encoding="utf-8"))
+    ports = [port for line in lines for port in _PORT_FLAG.findall(line)]
     if len(ports) != 1:
         raise registry.TargetsConfigError(f"{MANAGER_BACKEND_UNIT} must have exactly one ExecStart --port (found {ports})")
     return int(ports[0])

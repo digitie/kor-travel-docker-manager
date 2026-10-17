@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +107,40 @@ def test_the_manager_port_comes_from_the_backend_unit(tmp_path: Path) -> None:
     moved.write_text(text.replace(f" --port {port}", ""), encoding="utf-8")
     with pytest.raises(registry.TargetsConfigError, match="--port"):
         prometheus_targets.manager_backend_port(str(tmp_path))
+
+
+@pytest.mark.parametrize(
+    "exec_start",
+    [
+        # 한 줄에 두 번 — 줄당 마지막 하나만 세면 조용히 뒤엣것을 고른다.
+        "ExecStart=/usr/bin/python -m uvicorn app --port 12901 --port 12902",
+        # 두 줄(override 꼴) — 어느 쪽이 도는지 파일만으로 정할 수 없다.
+        "ExecStart=/usr/bin/python -m uvicorn app --port 12901\nExecStart=/usr/bin/python -m uvicorn app --port=12902",
+    ],
+)
+def test_a_unit_with_two_ports_is_rejected(tmp_path: Path, exec_start: str) -> None:
+    unit = tmp_path / prometheus_targets.MANAGER_BACKEND_UNIT
+    unit.parent.mkdir(parents=True)
+    unit.write_text(f"[Service]\n{exec_start}\n", encoding="utf-8")
+    with pytest.raises(registry.TargetsConfigError, match="exactly one ExecStart --port"):
+        prometheus_targets.manager_backend_port(str(tmp_path))
+
+
+def test_every_hard_coded_backend_port_is_the_unit_port() -> None:
+    """설치기의 health 확인(`curl …/health`·`ss sport`)과 dev 진입점(`main.py`)의 포트 == backend unit의 `--port`.
+
+    둘은 셸·`__main__`이라 unit을 읽지 않는다. unit 포트를 바꾸고 이들을 두면 설치기는 새 release를 영영 healthy로
+    보지 못해 롤백한다 — 그래서 여기서 같은 값인지 본다.
+    """
+
+    port = prometheus_targets.manager_backend_port()
+    installer = (_ROOT / "scripts/install-ktdm-trusted-release").read_text(encoding="utf-8")
+    seen = re.findall(r"127\.0\.0\.1:(\d+)/health", installer) + re.findall(r"sport = :(\d+)", installer)
+    assert len(seen) >= 2, seen  # 하한은 본 것에 — 패턴이 빗나가면 아래 비교가 항진이 된다
+    assert set(seen) == {str(port)}, seen
+    main = (_ROOT / "backend/src/kor_travel_docker_manager/main.py").read_text(encoding="utf-8")
+    dev = re.findall(r"uvicorn\.run\([^)]*\bport=(\d+)", main)
+    assert dev == [str(port)], dev
 
 
 def test_the_manager_metrics_path_is_a_backend_route() -> None:
