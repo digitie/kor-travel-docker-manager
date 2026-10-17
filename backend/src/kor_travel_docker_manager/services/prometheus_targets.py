@@ -32,9 +32,14 @@ MANAGER_BACKEND_UNIT: Final = "deploy/systemd/ktdm-backend.service"
 _UNIT_PORT = re.compile(r"^ExecStart=.*\s--port[ =](\d+)(?:\s|$)", re.MULTILINE)
 
 
-def manager_backend_port(project_root: str | None = None) -> int:
+#: 이 코드가 들어 있는 소스 트리(`backend/src/kor_travel_docker_manager/services/` 위 네 단계). `prometheus.yml`은 커밋된
+#: 파생물이라 대조는 소스 트리에서 한다 — 배포 설정 root(`KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT`)를 따르지 않는다.
+_SOURCE_ROOT: Final = Path(__file__).resolve().parents[4]
+
+
+def manager_backend_port(source_root: str | None = None) -> int:
     """Manager backend가 듣는 포트 — 그것을 띄우는 systemd unit의 `ExecStart … --port N`(하나여야 한다)."""
-    unit = Path(project_root or registry.get_project_root()) / MANAGER_BACKEND_UNIT
+    unit = Path(source_root) / MANAGER_BACKEND_UNIT if source_root else _SOURCE_ROOT / MANAGER_BACKEND_UNIT
     ports = _UNIT_PORT.findall(unit.read_text(encoding="utf-8"))
     if len(ports) != 1:
         raise registry.TargetsConfigError(f"{MANAGER_BACKEND_UNIT} must have exactly one ExecStart --port (found {ports})")
