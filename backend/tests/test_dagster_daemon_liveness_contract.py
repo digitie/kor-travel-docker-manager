@@ -567,7 +567,7 @@ _WEATHER_PID1 = [
     "-h",
     "127.0.0.1",
     "-p",
-    "14106",
+    "12206",
     "-m",
     "kortravelweather_dagster.definitions",
 ]

@@ -2905,8 +2905,10 @@ services:
     - start
     - -h
     - "127.0.0.1"
+    # gRPC 포트는 weather가 도는 odroid의 통일 포트 `12206`이다(2026-10-17 odroid 실측 — 옛 n150 `14106`). 공용 workspace
+    # (`workspace.odroid.yaml`)가 이 값에서 파생되고 odroid 호스트 측 plane의 workspace와 같아야 한다(F2).
     - -p
-    - "14106"
+    - "12206"
     - -m
     - kortravelweather_dagster.definitions
     - --inject-env-vars-from-instance
@@ -2988,7 +2990,7 @@ services:
       - -I
       - -c
       - *dagster-code-server-probe
-      - '14106'
+      - '12206'
       interval: 90s
       timeout: 10s
       retries: 5

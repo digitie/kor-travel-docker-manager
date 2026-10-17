@@ -777,6 +777,8 @@ targets:
       working_dir: /home/digitie/apps/kor-travel-transport
       config_files:
         - docker-compose.yml
+    # 대역(ports.md 정책)은 n150 시절 배정이다 — odroid의 transport 실제 포트는 통일 대역 `123xx`(gateway 12301·backend 12302·
+    # frontend 12303·admin 12305·code-server 12306)이고, 대역 재배정은 ports.md 결정 몫이다(2026-10-17 F2).
     port_band: "14001-14099"
     depends_on: []
     display_name: Kor Travel Transport
@@ -809,7 +811,8 @@ targets:
         daemon: dagster-daemon
         gateways: [dagster-gateway]
         location_name: kor-travel-transport
-        port: 14005
+        # odroid 실측 gRPC 포트(2026-10-17, `code-server start -p 12306` — 옛 n150 `14005`). 공용 workspace가 이 값을 싣는다.
+        port: 12306
 
   weather:
     # 2026-10-14 odroid로 옮겼다(소유자 지시 — n150의 weather 컨테이너는 멈춤, 수집은 odroid Dagster). 잠정: 이 값이
@@ -841,6 +844,10 @@ targets:
     # `kor-travel-shared-db-init-weather`/`kor-travel-weather-migrate`는
     # restart=no인 one-shot이라 runtime에서 빠진다 — 정상 상태가 exited(0)이므로
     # runtime 목록에 두면 상태 판정이 늘 실패로 읽힌다.
+    # TODO(T-MGR-06): weather 자체 Prometheus(`14104`)와 옛 gateway(`14102`)는 odroid에서 돌지 않는다(2026-10-17 실측 — 컨테이너
+    # 없음, 공용 plane·legacy profile). 그래서 그 컨테이너 상태는 원격 관측에서 offline으로 보인다. odroid Manager가 weather를
+    # 넘겨받을 때 Prometheus를 그 호스트에서 다시 둘지(→ 여기 유지) 뺄지(→ `services`·`runtime_services`·`containers`·init step에서
+    # 제거) 정한다.
     runtime_services:
       - kor-travel-weather-api
       - kor-travel-weather-web
