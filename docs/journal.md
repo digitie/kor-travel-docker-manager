@@ -1,5 +1,13 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-17 — PR513의 최신 main #517 통합
+
+- Common92d 정식 wheel과 기존 daemon pooled CLI 소비를 보존한 채 main `84e643a`를 merge했다. rebase/reset은 하지 않았다.
+- 실제 충돌은 cAdvisor 회귀의 기본 off 집합 앞 주석 한 곳이었다. 해당 회귀 함수를 최신 main으로 정렬해 `CADVISOR_HOUSEKEEPING_INTERVAL` 기본15초·단일 flag·제외14집합을 유지했다.
+- Compose는 자동 병합됐어도 별도로 전체 모델을 확인한다. host 빌드5입력과 content tag `73c524b1424d4aa6`는 이전 fcc2와 byte exact이며 기존 양쪽 작업 이력은 보존했다.
+- 운영/설정 배포는 이 merge 작업의 범위가 아니다. focused 순수 회귀·Ruff 및 독립 delta 리뷰/CI를 별도로 정산한다.
+
+
 새 항목은 아래 "과거 기록 아카이브" 블록 **다음, 첫 항목 위**에 더한다(최신이 위).
 
 ## 과거 기록 아카이브

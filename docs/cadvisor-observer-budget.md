@@ -1,5 +1,8 @@
 # cAdvisor 관측 비용 설정
 
+통합 정산: 최신 main #517의 canonical 수집 주기는 `${CADVISOR_HOUSEKEEPING_INTERVAL:-15s}`이며 제외14집합·단일 flag를 유지한다. 아래 30초와 초기10집합은 #515 당시의 source/운영 관측 이력이며 이번 PR513 main merge에서 재도입하지 않는다.
+
+
 ## 최종 범위
 
 기존 `--logtostderr`·`--docker_only=true`·port 보간 인자는 그대로 두고
