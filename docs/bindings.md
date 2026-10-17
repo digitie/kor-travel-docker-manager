@@ -143,10 +143,13 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   (`container_hosts`)마다 static_config 하나: 주소는 R1(Prometheus 호스트면 `127.0.0.1`, 아니면 `hosts.<이름>.addr`), 포트는
   `connection`(`scheme://{host}:<port>`)의 포트 — metrics가 다른 포트에서 나오면 컨테이너의 `metrics_port`(2026-10-17
   T-MGR-04r, weather code-server), `labels: {host: <이름>}`(`services/prometheus_targets.py`)
-- **사본**: `config/prometheus/prometheus.yml`. registry 밖 job은 Manager backend(`kor-travel-docker-manager`) 하나뿐이다
+  Manager backend job(`kor-travel-docker-manager`, systemd)도 같은 파일 안에서 파생한다(2026-10-17 NH-6): 선언된 모든 호스트마다
+  static_config 하나(R1 주소·`host` label), 포트는 `deploy/systemd/ktdm-backend.service`의 `ExecStart … --port`, 경로는 backend `/metrics` route
+- **사본**: `config/prometheus/prometheus.yml` — 손으로 쓴 job은 없다
 - **사본이 필요한 이유**: Prometheus는 정적 파일만 읽는다
 - **결박**: `backend/tests/test_prometheus_targets_are_derived.py` — 파생 == 파일(`test_prometheus_targets_are_the_registry_derivation`),
-  target 이동·포트·경로 변경·세 번째 호스트가 빨갛다
+  target 이동·포트·경로 변경·세 번째 호스트가 빨갛다. 손 job 추가는 `test_no_job_in_the_file_is_hand_written`, 호스트 누락은
+  `test_the_manager_job_has_one_static_config_per_declared_host`, unit 포트 변경은 `test_the_manager_port_comes_from_the_backend_unit`이 빨갛다
 
 ### B-9. 교차 호스트 `depends_on` 간선 ∅
 
