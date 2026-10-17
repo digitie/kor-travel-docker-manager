@@ -17,6 +17,16 @@
 
 ---
 
+## 2026-10-17 — PR522 SQLite URL 파일명 보존 수정
+
+- 독립 P2에서 문자열 URL이 '?' 파일명을 query로 해석하는 경계를 확인했다.
+  자체 dialect 인자 대역은 '%25' decode까지 포함해3FAIL5PASS를 재현했다.
+- 선택함수/default산술을 유지하고 공식 URL.create(database=DB_PATH)만 적용했다.
+  실제 SQLAlchemy dialect 인자 회귀 포함25PASS/backend Ruff/diff PASS다.
+- 기존 engine 설정/timeout/WAL event/schema는 그대로이며 실제 engine/DB연결0이다.
+  원739be4e와17회귀의 검증범위 한계를 보존한다.
+
+
 ## 2026-10-17 — 명시 SQLite 파일 경로 구현(PR522)
 
 - KTDM_DATABASE_PATH 프로세스 환경이 없으면 기존 기본 계산을 그대로 유지한다.

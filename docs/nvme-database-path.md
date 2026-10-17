@@ -55,3 +55,18 @@ main.py95–99의 로그 산술은 source import origin이
 /opt/kor-travel-docker-manager/backend/logs를 선택한다. APP alias가 NVMe release를 가리키면
 그 경로는 NVMe를 통과한다. 실제 import origin을 root가 확인할 필요는 있지만,
 이번 변경에는 로그 제품 설정을 추가하지 않았다.
+
+
+## 독립 리뷰 후 SQLite URL 경계 보완
+
+초기739be4e는 선택한 파일 경로를 sqlite URL 문자열에 붙였다. '?'가 있는 파일명은
+query로 나뉘고 '%25'는 decode되어 실제 연결 경로가 달라지는 독립 P2 재현을 수용했다.
+경로 선택 함수·기존 기본 산술은 그대로 두고 DATABASE_URL만 공식 URL.create의
+database 필드로 만든다. 따라서 '?mode=ro&uri=true'도 URI 모드 옵션이 아니라 파일명의
+일부로 유지한다. engine 연결 옵션/이벤트/schema는 그대로다.
+
+실제 SQLAlchemy의 make_url 및 SQLiteDialect_pysqlite.create_connect_args만 사용한
+회귀는 수정 전3FAIL5PASS, 수정 후 전체격리25PASS다. 원17회귀는 이 URL 파싱 경계를
+포함하지 않았음을 명시하며 최초 결과/원문은 보존한다. unset3종 import origin은 기존
+문자열 URL과 같은 SQLite 연결 인자를 만들고, 명시 파일명의 '?'/URI형/'#'/'%'/
+Unicode·공백을 보존한다. 실제 engine/연결/DB 파일 생성은0이다.

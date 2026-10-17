@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import pytest
+from sqlalchemy import URL
 
 _SOURCE = Path(__file__).resolve().parents[1] / "src/kor_travel_docker_manager/database.py"
 
@@ -23,7 +24,7 @@ def load_path_code(origin: str):
             and any(isinstance(target, ast.Name) and target.id in names for target in node.targets)
         )
     ]
-    namespace = {"os": os, "__file__": origin}
+    namespace = {"os": os, "URL": URL, "__file__": origin}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(_SOURCE), "exec"), namespace)
     return namespace
 
@@ -39,7 +40,7 @@ def test_unset_retains_exact_legacy_path(monkeypatch, origin):
     legacy = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(origin)),
                                          "../../../../", "pinvi_metrics.db"))
     assert namespace["DB_PATH"] == legacy
-    assert namespace["DATABASE_URL"] == f"sqlite:///{legacy}"
+    assert namespace["DATABASE_URL"].database == legacy
 
 
 def test_explicit_path_overrides_import_origin_without_creating_file(tmp_path, monkeypatch):
@@ -48,7 +49,7 @@ def test_explicit_path_overrides_import_origin_without_creating_file(tmp_path, m
     for origin in ("/opt/app/database.py", "/srv/release/.venv/site-packages/database.py"):
         namespace = load_path_code(origin)
         assert namespace["DB_PATH"] == str(database)
-        assert namespace["DATABASE_URL"] == f"sqlite:///{database}"
+        assert namespace["DATABASE_URL"].database == str(database)
     assert not database.exists()
     assert not database.parent.exists()
 
@@ -97,5 +98,43 @@ def test_actual_engine_setup_uses_selected_url(monkeypatch, tmp_path):
     namespace["create_engine"] = create_engine
     exec(compile(ast.Module(body=[engine_assignment], type_ignores=[]), str(_SOURCE), "exec"),
          namespace)
-    assert calls == [(f"sqlite:///{database}", {"connect_args": {"check_same_thread": False}})]
+    assert calls == [(URL.create("sqlite", database=database), {"connect_args": {"check_same_thread": False}})]
     assert not Path(database).exists()
+
+
+@pytest.mark.parametrize("filename", [
+    "state?archive.db", "state?mode=ro&uri=true", "state#archive.db",
+    "state%25.db", "상태 데이터.db",
+])
+def test_sqlite_connect_arguments_preserve_literal_filename(tmp_path, monkeypatch, filename):
+    from sqlalchemy.dialects.sqlite.pysqlite import SQLiteDialect_pysqlite
+    from sqlalchemy.engine import make_url
+
+    database = str(tmp_path / filename)
+    monkeypatch.setenv("KTDM_DATABASE_PATH", database)
+    namespace = load_path_code("/opt/app/database.py")
+    url = make_url(namespace["DATABASE_URL"])
+    arguments, options = SQLiteDialect_pysqlite().create_connect_args(url)
+    assert arguments == [database]
+    assert url.query == {}
+    assert "uri" not in options
+    assert not Path(database).exists()
+
+
+@pytest.mark.parametrize("origin", [
+    "/opt/kor-travel-docker-manager/backend/src/kor_travel_docker_manager/database.py",
+    "/srv/releases/ktdm-release-fixture/backend/src/kor_travel_docker_manager/database.py",
+    "/srv/releases/ktdm-release-fixture/backend/.venv/lib/python3.14/site-packages/kor_travel_docker_manager/database.py",
+])
+def test_unset_sqlite_connect_arguments_match_legacy_default(monkeypatch, origin):
+    from sqlalchemy.dialects.sqlite.pysqlite import SQLiteDialect_pysqlite
+    from sqlalchemy.engine import make_url
+
+    monkeypatch.delenv("KTDM_DATABASE_PATH", raising=False)
+    namespace = load_path_code(origin)
+    legacy = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(origin)),
+                                         "../../../../", "pinvi_metrics.db"))
+    dialect = SQLiteDialect_pysqlite()
+    assert dialect.create_connect_args(make_url(namespace["DATABASE_URL"])) == (
+        dialect.create_connect_args(make_url(f"sqlite:///{legacy}"))
+    )
