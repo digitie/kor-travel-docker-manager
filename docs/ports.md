@@ -248,7 +248,7 @@ HAProxy backend 전환표(geo/weather/transport/pr → `.13`)는 `prod-deploymen
 | HAProxy 웹 backend | `12505`, `12205`, `14002`, `12301`, `12305`, `11001` | HAProxy addr만 — **예외: `12505`는 n150 addr도**(중앙 Prometheus가 geo-ui `/api/metrics`를 수집한다, T-MGR-04r) |
 | exporter | `12103`, node_exporter(`12106`), `12203`(weather code-server metrics — odroid 통일 포트, 옛 `14103`), `12901` | n150 addr만 |
 | 관리 | `22`(키만), `12905`(§14-29 — (가) backend만이면 odroid에 리스너 없음, **추천**) | 22: LAN(키만은 sshd 설정); 12905: (나)일 때만 n150 addr + 운영자 PC addr(§14-5) — 그때는 `12901`도 같은 소스에 열어야 대시보드가 자기 API에 닿는다 |
-| 로컬 전용 | `11000`, `11002`, `12503`/`14106`/`14005`, `12101`/`12105` | LAN 유입 drop(bind는 서비스별로 다름 — 바꾸지 않는다) |
+| 로컬 전용 | `11000`, `11002`, `12503`/`12206`/`12306`(code-server gRPC — odroid 실측, 옛 `14106`/`14005`), `12101`/`12105` | LAN 유입 drop(bind는 서비스별로 다름 — 바꾸지 않는다) |
 | 보존 서비스(Plex·Samba·webvnc 등 TCP+UDP) | 열거하지 않음 | **정책 accept(변경 0)** — 기본 DROP + 허용 열거(나)는 누락이 곧 Plex 검색·NetBIOS 단절이라 소유자가 원할 때만(§14-28) |
 
 두 안 공통: `flush ruleset` 금지(`table inet ktm`만 flush — 기본 `/etc/nftables.conf`의 `flush ruleset`은 Docker nat/filter를

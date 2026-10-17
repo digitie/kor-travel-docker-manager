@@ -260,6 +260,10 @@ sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane conve
 sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --confirm   # → …/workspace.<KTDM_HOST>.yaml
 ```
 
+**오래 걸릴 수 있다.** 설치로 plane 이미지 태그가 바뀌면(`kor-travel-dagster-host`) `--confirm`이 그 이미지를 **빌드**한 뒤
+재생성한다 — 출력 없이 15분 남짓 걸릴 수 있다(2026-10-17 n150 실측 약 15분). ssh가 끊기지 않게 tmux/nohup 안에서 돌리고, 감싸는
+timeout을 둔다면 30분 이상으로 둔다. `--dry-run` 이유에 `rendered image is not present locally`가 있으면 빌드가 포함된다는 뜻이다.
+
 설치기도 flip 전에 같은 것을 본다(`plane-binds` — 떠 있는 plane의 workspace bind 파일이 새 release에 없으면 "converge
 먼저"로 거부). 자세한 converge 절차는 §8.2.
 
@@ -942,7 +946,7 @@ preflight는 plane이 unhealthy이면 재구축을 시작하지 않는다 — �
 한다. 그 순간 실패해도 되는 항목은 **plane health 하나뿐**이고(이 명령이 고치는 대상이다), 운영자·소유자가 그것을
 받아들이고 `--confirm`을 돌린다 — 일반 면제가 아니다. 다른 항목이 하나라도 실패하면 돌리지 않는다 → ④ `--confirm` → ⑤ preflight가 **전부** PASS → ⑥ pinned 재구축. `--dry-run` 이유에 `rendered image is not present
 locally`가 있으면 `--confirm`의 `up`이 G 아래에서 `kor-travel-dagster-host` 이미지를 **빌드**한다(재구축의 plane 수렴과
-같다) — 부하가 낮을 때 돌리거나 이미지를 먼저 준비한다.
+같다) — 부하가 낮을 때 돌리거나 이미지를 먼저 준비한다. 빌드가 포함되면 출력 없이 15분 남짓 걸릴 수 있다(2026-10-17 n150 실측 약 15분) — tmux/nohup 안에서, 감싸는 timeout은 30분 이상.
 
 ```bash
 # 보기만 한다(아무것도 바꾸지 않고 종료 코드는 항상 0). 서비스별 차이(이미지·env 이름·파일 digest 떠 있는 값 != render 값)와 health(한 번 관측)를 낸다.
