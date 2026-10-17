@@ -189,3 +189,40 @@ def test_collect_preserves_success_degraded_and_offline_contracts(mode):
     assert collector._collection_runs_total == 1
     if mode != "running":
         assert "app" not in collector._prev_io
+
+@pytest.mark.parametrize(
+    ("configured", "image_id", "expected", "reads"),
+    [
+        ("repo:tag", "sha256:fixture", ("repo:tag", "sha256:fixture"), 0),
+        ("repo:tag", "", ("repo:tag", "fallback-id"), 1),
+        ("", "sha256:fixture", ("fallback:tag", "sha256:fixture"), 1),
+        ("", "", ("fallback:tag", "fallback-id"), 1),
+    ],
+)
+def test_image_lookup_only_when_inspect_metadata_is_incomplete(
+    configured, image_id, expected, reads
+):
+    ns = load_collector()
+    container = Container(config_image=configured, image_id=image_id)
+    assert ns["_image_metadata"](container, container.attrs) == expected
+    assert container.image_reads == reads
+
+
+@pytest.mark.parametrize(
+    ("configured", "image_id", "expected"),
+    [
+        ("repo:tag", "", ("repo:tag", "")),
+        ("", "sha256:fixture", ("sha256:fixture", "sha256:fixture")),
+        ("", "", ("unknown", "")),
+    ],
+)
+def test_image_lookup_failure_keeps_existing_fallback(configured, image_id, expected):
+    ns = load_collector()
+
+    class UnavailableImage(Container):
+        @property
+        def image(self):
+            raise RuntimeError("fixture unavailable image")
+
+    container = UnavailableImage(config_image=configured, image_id=image_id)
+    assert ns["_image_metadata"](container, container.attrs) == expected

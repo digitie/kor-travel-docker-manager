@@ -171,6 +171,8 @@ def _image_metadata(container: Any, attrs: Mapping[str, Any]) -> tuple[str, str]
     config = _as_mapping(attrs.get("Config"))
     image_id = str(attrs.get("Image") or "")
     configured_image = str(config.get("Image") or "")
+    if configured_image and image_id:
+        return configured_image, image_id
     tags: list[str] = []
     try:
         image = getattr(container, "image", None)
