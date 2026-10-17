@@ -699,10 +699,12 @@ def _run_release_root(tmp_path: Path, target: str) -> subprocess.CompletedProces
 
 
 def test_an_absolute_symlink_puts_releases_under_its_parent(tmp_path: Path) -> None:
-    # 절대 symlink의 상위가 root 소유·쓰기 금지 사슬이면 그곳이 release root다(`/usr/share`는 CI·n150에서 root 0755).
-    passed = _run_release_root(tmp_path, "/usr/share/ktdm-release-" + "a" * 40)
+    # 절대 symlink의 상위가 root 소유·쓰기 금지 사슬이면 그곳이 release root다. 어느 호스트에서나 그 조건인 `/`로 본다
+    # (`/usr/share` 같은 하위는 러너마다 mode가 달라 전제가 환경의 우연이 된다).
+    passed = _run_release_root(tmp_path, "/ktdm-release-" + "a" * 40)
     assert passed.returncode == 0, passed.stderr
-    assert "ROOT=/usr/share" in passed.stdout
+    assert "ROOT=/
+" in passed.stdout
 
 
 def test_a_release_root_owned_by_another_account_is_refused(tmp_path: Path) -> None:
