@@ -1,0 +1,25 @@
+{
+  "common": "92d5cf16ad85c2b6cdd0140226066374ae345917",
+  "product": "92d5cf16ad85c2b6cdd0140226066374ae345917",
+  "wheel_sha256": "4fa65afd0b8ae90002503fb48d4455fb28ba8574c8cbb529c5add4ff04923527",
+  "wheel_bytes": 45621,
+  "package_files": {
+    "kortravelcommon/__init__.py": "5f044636451a4cad9874bc2563c0fc86d7509ef863adf2e41833ee6b8b134476",
+    "kortravelcommon/_daemon_pool_plugin.py": "07fe6573bafc906e2ce47baa6c0b79902eea551d341c6a0f73b4435bb61a8521",
+    "kortravelcommon/build_bytecode.py": "b07c7f94565147f619bffba7f1f9871106c0ee07d3683974393d596ffda5d266",
+    "kortravelcommon/daemon_pool.py": "b16fd932b13a029f466633b6e31dd25936898c23041e964734c2c058f5d85313",
+    "kortravelcommon/dagster.py": "c799fc4cb02445c37ef29f58d16153fce158adfd3c510e19cfec6745323bc935",
+    "kortravelcommon/dagster_health.py": "a0edc3dca6c78d2dce8a4bb22094aab6e9d5234384631b72b2902d574b253f1e",
+    "kortravelcommon/dagster_recovery.py": "c9b06b628c1dd9d428049cc56e6ff468c6ff2638c25f076bf0586ccc0dbc8844",
+    "kortravelcommon/deadline.py": "b69069b7cb337a1aba75f4e700abc73e2517374527a706a5e71d663cab566bde",
+    "kortravelcommon/grpc_health.py": "2aa9cccee16c65d04590c4c4ef2c2c7404ea7c27ef932df731bb84a7398a8f15",
+    "kortravelcommon/http.py": "cbb6d44f3635807579cefdbf64d9431c3fc2b46d30b50ccb9ed77602d45d5f2d",
+    "kortravelcommon/http_health.py": "dafb57227662e1298675017be9de04ad602cbeb1a383dcb029e387792c9ec4f6",
+    "kortravelcommon/py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "kortravelcommon/scheduling.py": "ce492bfa4d474842fed451e2c3f647615e5d87f397a62a00f39df967b5b95ec0"
+  },
+  "record_rows_checked": 18,
+  "rebuild_exit": 0,
+  "rebuild_sha256": "4fa65afd0b8ae90002503fb48d4455fb28ba8574c8cbb529c5add4ff04923527",
+  "reproduction": "독립 immutable Git archive의 offline uv build가 vendor wheel과 byte 동일"
+}
