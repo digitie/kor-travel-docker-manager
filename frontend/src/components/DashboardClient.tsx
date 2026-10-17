@@ -110,6 +110,8 @@ export default function DashboardClient() {
     staleTime: 60_000,
   });
   const isAuthenticated = auth?.authenticated === true;
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const canReadSession = isAuthenticated && !isLoggingOut;
 
   // 백그라운드 요청이 401을 받으면 하드 리로드 대신 auth-me 쿼리를 무효화해 SPA 내에서
   // LoginScreen 으로 전환한다(logout 경로와 동작 일치, in-flight UI 상태 보존).
@@ -210,12 +212,12 @@ export default function DashboardClient() {
   // Fallback Polling (Query) - Versioned v1
   const { data: fallbackContainers = [], isLoading, error } = useQuery<ContainerStatus[]>({
     queryKey: ['containers'],
-    queryFn: () => apiJson<ContainerStatus[]>('/api/v1/containers'),
+    queryFn: ({ signal }) => apiJson<ContainerStatus[]>('/api/v1/containers', { signal }),
     // 서버가 혼잡(1013)해서 WS를 흘려보낸 경우에는 폴백 폴링을 늦춘다. 5초 폴링은
     // 요청마다 전체 docker sweep을 돌아 WS 한 건보다 비싸므로, 그대로 두면 부하를
     // 덜어내려던 shed가 오히려 서버 부하를 올린다.
     refetchInterval: isWsShedding ? 30000 : 5000,
-    enabled: isAuthenticated && !isWsConnected,
+    enabled: canReadSession && !isWsConnected,
   });
 
   // target registry — 상세 패널의 `ensure --build`가 어떤 target에 속하고 실제로 몇 개
@@ -229,8 +231,8 @@ export default function DashboardClient() {
   };
   const { data: targets = [] } = useQuery<TargetSummary[]>({
     queryKey: ['targets'],
-    queryFn: () => apiJson<TargetSummary[]>('/api/v1/targets'),
-    enabled: isAuthenticated,
+    queryFn: ({ signal }) => apiJson<TargetSummary[]>('/api/v1/targets', { signal }),
+    enabled: canReadSession,
     staleTime: Infinity,
     refetchInterval: false,
   });
@@ -263,8 +265,8 @@ export default function DashboardClient() {
   // 화면에도 없었다. 원시 수치가 아니라 "정리 시 약 N GB 확보 가능"으로 보여 준다.
   const { data: diskUsage } = useQuery<DiskUsageResponse>({
     queryKey: ['disk-usage'],
-    queryFn: () => apiJson<DiskUsageResponse>('/api/v1/system/disk-usage'),
-    enabled: isAuthenticated,
+    queryFn: ({ signal }) => apiJson<DiskUsageResponse>('/api/v1/system/disk-usage', { signal }),
+    enabled: canReadSession,
     refetchInterval: 60_000,
     retry: false,
   });
@@ -273,7 +275,7 @@ export default function DashboardClient() {
   const { data: healthData, isError: healthErrored } = useQuery<{ status?: string }>({
     queryKey: ['manager-health'],
     queryFn: () => apiJson<{ status?: string }>('/health', { redirectOnUnauthorized: false }),
-    enabled: isAuthenticated,
+    enabled: canReadSession,
     refetchInterval: 30_000,
     retry: false,
   });
@@ -396,7 +398,7 @@ export default function DashboardClient() {
 
   // Status WebSockets connection setup - Versioned v1
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!canReadSession) return;
 
     let ws: WebSocket | undefined;
     let reconnectTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -530,7 +532,7 @@ export default function DashboardClient() {
         ws.close();
       }
     };
-  }, [isAuthenticated]);
+  }, [canReadSession]);
 
   // Container Action Mutation - Versioned v1
   const actionMutation = useMutation({
@@ -633,13 +635,13 @@ export default function DashboardClient() {
   // 볼 방법이 없었다. 이미 있는 파라미터를 노출만 한다.
   const { data: queryChartData = [], isLoading: isLoadingChart } = useQuery<MetricHistoryPoint[]>({
     queryKey: ['metrics-history', chartContainerId, chartMetricType, chartHours],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       if (!chartContainerId) return [];
       return apiJson<MetricHistoryPoint[]>(
-        `/api/v1/containers/${chartContainerId}/metrics?hours=${chartHours}`
+        `/api/v1/containers/${chartContainerId}/metrics?hours=${chartHours}`, { signal }
       );
     },
-    enabled: isAuthenticated && !!chartContainerId && isChartModalOpen,
+    enabled: canReadSession && !!chartContainerId && isChartModalOpen,
   });
 
   // Derived combined chart data using useMemo (resolves react-doctor's 'no-derived-state')
@@ -650,7 +652,7 @@ export default function DashboardClient() {
 
   // WebSocket live logs stream hook - Versioned v1
   useEffect(() => {
-    if (!logContainerId || !isLogModalOpen) return;
+    if (!canReadSession || !logContainerId || !isLogModalOpen) return;
 
     const wsUrl = apiWsUrl(`/api/v1/ws/logs/${logContainerId}`);
     let ws: WebSocket;
@@ -721,7 +723,7 @@ export default function DashboardClient() {
       ws.onclose = null;
       ws.close();
     };
-  }, [logContainerId, isLogModalOpen]);
+  }, [canReadSession, logContainerId, isLogModalOpen]);
 
   // Log Modal Auto-Scroll
   useEffect(() => {
@@ -817,13 +819,26 @@ export default function DashboardClient() {
   };
 
   const logoutMutation = useMutation({
+    onMutate: async () => {
+      // 세션 폐기 전에 관측을 끄고 진행 중인 읽기의 실제 fetch를 중단한다.
+      setIsLoggingOut(true);
+      await queryClient.cancelQueries({
+        predicate: ({ queryKey }) => ['containers', 'targets', 'disk-usage', 'metrics-history'].includes(String(queryKey[0])),
+      });
+    },
     mutationFn: () => apiJson<{ ok: boolean }>('/api/v1/auth/logout', { method: 'POST' }),
     onSettled: async () => {
       setWsContainers(null);
       setIsWsConnected(false);
       setIsAdminSettingsOpen(false);
       queryClient.removeQueries({ queryKey: ['containers'] });
-      await refetchAuth();
+      try {
+        await refetchAuth({ throwOnError: true });
+        setIsLoggingOut(false);
+      } catch (error) {
+        // 재확인이 실패하면 이전 인증 캐시로 읽기를 재개하지 않는다. 로그아웃 재시도는 가능하다.
+        pushToast(errorToast(humanizeError(error, '인증 상태 확인')));
+      }
     },
   });
 
