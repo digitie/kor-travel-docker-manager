@@ -6,7 +6,7 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
-- [ ] **T-MGR-TARGET-ADDR — targets validate JSON의 registry 주소 효과 투영**. 기존 성공 JSON/텍스트와 검증 경계를 보존하고 hosts.<key>.addr만 추가한다. Transport의 host 키·선언 주소 대조를 지원하며 DNS/원격 연결·비밀/SSH 옵션 출력은 추가하지 않는다. source/회귀·독립2리뷰·CI는 후속이다.
+- [ ] **T-MGR-TARGET-ADDR — targets validate JSON의 registry 주소 효과 투영**. 기존 성공 JSON/텍스트와 검증 경계를 보존하고 hosts.<key>.addr만 추가한다. Transport의 host 키·선언 주소 대조를 지원하며 DNS/원격 연결·비밀/SSH 옵션 출력은 추가하지 않는다. CLI2줄 projection과 실제 registry 신규5회귀/관련105PASS·Ruff·frontend type/build를 확인했다. 독립2리뷰·CI·merge/설치 및 실제 Transport 효과 확인은 후속이다.
 - [ ] **T-MGR-CADV-BUDGET — cAdvisor 관측 비용 설정(PR515)**. housekeeping30s/기존10+기본off4 합집합14를source에명시, 다른서비스·HC·이미지·resources보존. old1RED→관련26PASS/Ruff/전체모델2arg외동일 확인. 두독립리뷰·CI·merge·root실제binary지원확인/10→14적용·healthURL정합·CPU실측후속. 초기10항목의재시작불필요판정은최종14적용에확대하지않음. [범위·한계](cadvisor-observer-budget.md).
 - [ ] **T-MGR-DAEMON-HC — 공용 daemon 점검·빌드 cache 후속(PR511)**. interval360/start_interval45, 원 liveness·digest·heartbeat300 보존, shared-plane945초 대기와 Common37 stdlib checked-hash 빌드 준비 source 구현. 필수 전체 회귀·독립2리뷰·CI·운영 적용/비교는 후속이다. [범위와 제한](daemon-health-cadence.md).
 - [ ] **T-MGR-HC-CADENCE — 상태 점검 간격 정본 정합(PR505)**. 기존8개 interval의 source/회귀 구현, 기존 health·PG·참조134PASS/구조대조 및 CI실패를 정산한 frozen health 기반 rebuild wait·249회귀 완료. 독립2리뷰·CI·머지와 운영 Config 적용·동일 구성 CPU 측정은 후속이다. [범위와 적용 경계](health-cadence.md).
