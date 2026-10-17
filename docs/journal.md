@@ -1,5 +1,21 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-17 — PR514에 최종 PR513과 main #517 통합
+
+- clean24e3 위에서 최종513 f72e49를 ordinary merge했다. journal/tasks 충돌만 양쪽 이력을 보존해 해결하며 제품은 별도 whole-model로 확인한다.
+- 514의 source cap2/dequeue30·instance rawSHA/digest7소비자와 513 Common92d wholewheel/73c 빌드5입력·기존512 기능을 함께 보존한다.
+- 최신 main #517의 cAdvisor15초/env 기본·14제외·단일flags를 유지한다. 운영 Odroid tuning/raw463c는 이 source 작업에서 읽거나 수정하지 않는다.
+- PR514 base는 main/draft를 유지하고 PR513 선행을 명시한다. 513보다 먼저 merge하지 않으며 CI/독립 integration delta 리뷰는 별도다.
+
+
+## 2026-10-17 — PR513의 최신 main #517 통합
+
+- Common92d 정식 wheel과 기존 daemon pooled CLI 소비를 보존한 채 main `84e643a`를 merge했다. rebase/reset은 하지 않았다.
+- 실제 충돌은 cAdvisor 회귀의 기본 off 집합 앞 주석 한 곳이었다. 해당 회귀 함수를 최신 main으로 정렬해 `CADVISOR_HOUSEKEEPING_INTERVAL` 기본15초·단일 flag·제외14집합을 유지했다.
+- Compose는 자동 병합됐어도 별도로 전체 모델을 확인한다. host 빌드5입력과 content tag `73c524b1424d4aa6`는 이전 fcc2와 byte exact이며 기존 양쪽 작업 이력은 보존했다.
+- 운영/설정 배포는 이 merge 작업의 범위가 아니다. focused 순수 회귀·Ruff 및 독립 delta 리뷰/CI를 별도로 정산한다.
+
+
 새 항목은 아래 "과거 기록 아카이브" 블록 **다음, 첫 항목 위**에 더한다(최신이 위).
 
 ## 과거 기록 아카이브
@@ -39,6 +55,68 @@
   수 있으므로 두 값만 적용한 뒤 실제 digest를 계산해야 한다. 독립2리뷰,
   CI, 운영 CPU·대기 영향은 후속이며 성능 개선을 확정하지 않았다.
 
+
+## 2026-10-17 — PR513 공식 launch 임시 Instance 수정 wheel 갱신
+
+- 초기17ff candidate는 실제 heartbeat/health 뒤 job launch의 임시 Instance에서 네 번째
+  engine을 거절했다. 원 실패를 보존하고 Common92d의 primary3 QueuePool/임시 NullPool
+  수정 wholewheel로 교체한다. 전체 process12 상한이라는 잘못된 설명도 바로잡는다.
+- wheel13 Git source/RECORD18/공식 metadata와 별도 immutable archive 재빌드 whole SHA를
+  대조했다. 기존71 dependency 잠금 bytes·Dockerfile/기존 build helper/storage migrate·
+  cAdvisor30/14·512 기능·instance YAML·queue 정책은 보존한다.
+- 현재 wheel/lazy import/원 잠금·wrapper/작은 stdlib fixture11개·Ruff·diff 검사는 통과했다.
+- 아직 새 Manager native 빌드/운영 실행·CPU 결과를 주장하지 않는다. root 실제 SDK launch
+  회귀와 최종 Manager 독립2리뷰·소비자 실측은 별도 인계한다.
+
+## 2026-10-17 — PR512·515 병합의 cAdvisor 중복 인자 해소
+
+- 최신 main 병합 뒤 15초/10개 제외 인자가 30초/14개 뒤에 중복되어 뒤의 값이 앞 설정을 덮는 것을 독립 검토에서 발견했다.
+- 기존 회귀로 2FAIL/4PASS를 재현하고, 중복 두 인자와 소비되지 않는 env 예시를 제거했다. 512의 다른 관측 기능과 513의 이미지 입력은 보존한다.
+- 현재 운영은 이미 30초/14개이며 이 source 정정으로 컨테이너를 다시 시작하지 않는다. 수정 뒤 관련 119개 회귀와 Ruff를 통과했다. 독립 재검토·CI는 별도 확인한다.
+
+## 2026-10-17 — PR513 storage guard 추출 회귀 정정
+
+- 공식 Common daemon wrapper가 원 storage guard 뒤에 있어도 기존 test의
+  argv 추출기가 인식하지 못해 CI2FAIL/3049PASS/39SKIP으로 종결됐다.
+- 면제목록을 늘리지 않고 정확한 실행 파일을 추출 대상에 추가했다.
+  원CLI/wrapper3양성·유사이름3음성 회귀를 추가했다.
+- 수정 전 local2FAIL4PASS 보존 → 관련7모듈377PASS/47.26초,
+  Ruff·diff검사 PASS. Docker/Compose·명시5개 이미지입력은290f와
+  byte같고 tagc019 유지라 이 수정으로 native 재빌드하지 않는다.
+- 전체 새 CI는 별도 진행이며 실제 SDK/DB/Docker/운영은 실행하지 않았다.
+
+
+## 2026-10-17 — 공용 daemon 연결 재사용 채택(PR513)
+
+- PR511 위 별도 소비자 범위로 Common38 final17ff(제품e0c)의 정식 whole core wheel을 vendor/source REV/SHA로 고정했다. 원 wheel과 독립 offline 재빌드가 동일하고 RECORD18/package13/공식 metadata를 직접 대조했다.
+- 기존71개 runtime 버전·해시를 유지한 잠금72개와 명시 wheel COPY/find-links를 사용한다. daemon만 원 guard 뒤 공식 wrapper 실행/원 shared와 동일한 전용DSN을 추가하고 다른 업무·URL·HC 의미는 유지했다.
+- focused392PASS/Ruff/wholeCompose모델대조, 빈 core-only 정식설치와 잘못된해시 거절을 확인했다. frontend tree는511 검증본과 동일하다. 최종CI/두 리뷰·운영 native/CLI/PG·CPU/RSS 효과는 별도다. [범위·미검증](daemon-pool-adoption.md).
+
+## 2026-10-17 — PR515 기본 off metric 범위 보존
+
+- 초기10항목 지속화 뒤 독립검토에서 disable_metrics가기본집합에추가가아닌
+  전체교체임을 확인했다. CPU최우선 사용자요구에 맞춰 기본off에서빠진
+  memory_numa/advtcp/process/cpuset4를뒤에추가해합집합14로 보강했다.
+- v0.52.1 공식기본집합·Set교체동작과지원상수를공개원문으로직접확인했다.
+  실제binary지원과적용은root별도소유이며agent운영접근0이다.
+- 기존10에서새보존회귀1FAIL2PASS→관련26PASS/291deselect5.89초,
+  Ruff/diff검사·전체Compose2arg외동일확인. 이미지/HC/resources변경0.
+- 최종14는실제기존10과다르므로초기단계'재시작불필요'를확대하지않는다.
+  root가실제healthURL정합과한번에clone/recreate후측정할예정이며미실행이다.
+
+
+## 2026-10-17 — cAdvisor 초기10항목 source 지속화(PR515, 후속14보강 전)
+
+- 최신main872c326의 새 featureWT에서 설계초안부터 PR을 만들었다.
+  기존log/docker_only/port를 보존하고 housekeeping30s 및 정확disable_metrics
+  인자만 추가했다. CPU우선30초유지·docker_only를rootaggregate0으로
+  단정하지 않는 범위를 주석과 문서에 남겼다.
+- old2RED 보존→관련25PASS/291deselect5.83초·Ruff·diff검사 PASS.
+  전체모델은 두arg이외동일, 원문도 기존줄변경0이며 개별HC·자원·이미지와
+  모든다른서비스는 보존했다. 자체음성4조건은 제품test수와 구분했다.
+- 실제runtime은 root가이미같은값임을 확인했으므로 source지속화로
+  재시작/새이미지없이 정합을 맞춘다. agent의 SDK/DB/Docker/운영호출0.
+  두독립리뷰/CI/머지·root별도CPU측정은 후속이며 개선효과미확정이다.
 
 ## 2026-10-17 — 공용 daemon 점검·빌드 cache 후속(PR511)
 

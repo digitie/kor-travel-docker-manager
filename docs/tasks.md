@@ -6,7 +6,10 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
-- [ ] **T-MGR-QUEUE-BUDGET — 공용 dispatch 상한·큐 주기(PR514)**. source 전역12→2/공식dequeue5기본→30, 개별tag·업무·HC 보존, 파생instance digest와130회귀/Ruff·모델 대조 완료. 독립2리뷰·CI·운영 두scalar 적용 및 실제CPU/대기 영향 측정은 후속. [범위와 적용 경계](dagster-queue-budget.md).
+- [ ] **T-MGR-QUEUE-BUDGET — 공용 dispatch 상한·큐 주기(PR514)**. source 전역12→2/공식dequeue5기본→30, 개별tag·업무·HC 보존, 파생instance digest와130회귀/Ruff·모델 대조 완료. 독립2리뷰·CI·운영 두scalar 적용 및 실제CPU/대기 영향 측정은 후속. [범위와 적용 경계](dagster-queue-budget.md). 최종513/Common92d·73c와 main517 cAdvisor15초/env·14제외를 통합했으며 PR513 merge가 선행한다. 실제 배포·측정 근거와 source 회귀는 구분한다.
+- [ ] **T-MGR-DAEMON-POOL — 공용 daemon 연결 재사용 채택(PR513)**. Common38 공식 launch 임시 Instance 수정92d 정식 core wheel/source·RECORD·고정 잠금, daemon 한 곳의 공식 wrapper/동일 DSN source 구현. 초기17ff의 focused392와 현재 wheel/정적11회귀는 구분한다. 최종 독립2리뷰·CI·native 이미지/CLI/PG 정리·동일 workload 성능/신선도는 후속이다. [소비 경계](daemon-pool-adoption.md). 최신 main #517 통합은 cAdvisor 기본15초/env 덮어쓰기·제외14집합·단일 flags를 보존하며, host5빌드입력/73c content tag는 변경하지 않는다.
+
+- [ ] **T-MGR-CADV-BUDGET — cAdvisor 관측 비용 설정(PR515)**. housekeeping30s/기존10+기본off4 합집합14를source에명시, 다른서비스·HC·이미지·resources보존. old1RED→관련26PASS/Ruff/전체모델2arg외동일 확인. 두독립리뷰·CI·merge·root실제binary지원확인/10→14적용·healthURL정합·CPU실측후속. 초기10항목의재시작불필요판정은최종14적용에확대하지않음. [범위·한계](cadvisor-observer-budget.md).
 - [ ] **T-MGR-DAEMON-HC — 공용 daemon 점검·빌드 cache 후속(PR511)**. interval360/start_interval45, 원 liveness·digest·heartbeat300 보존, shared-plane945초 대기와 Common37 stdlib checked-hash 빌드 준비 source 구현. 필수 전체 회귀·독립2리뷰·CI·운영 적용/비교는 후속이다. [범위와 제한](daemon-health-cadence.md).
 - [ ] **T-MGR-HC-CADENCE — 상태 점검 간격 정본 정합(PR505)**. 기존8개 interval의 source/회귀 구현, 기존 health·PG·참조134PASS/구조대조 및 CI실패를 정산한 frozen health 기반 rebuild wait·249회귀 완료. 독립2리뷰·CI·머지와 운영 Config 적용·동일 구성 CPU 측정은 후속이다. [범위와 적용 경계](health-cadence.md).
 - [ ] **T-GEO-DASHBOARD — Geo UI의 Dagster 공개 URL과 가벼운 HTTP 상태 점검 정합화**. API와 같은 공개 URL 변수를 UI runtime에 전달한다. UI 상태 점검은 core HTTP로 /login의 2xx만 확인하며 단일 4초 예산을 둔다. 기존 주기·포트·이미지·backend·수집 튜닝은 유지한다. 실제 운영 UI 설정 반영과 외부 Dagster dashboard E2E는 후속이며, 성공 전 완료로 표시하지 않는다.

@@ -56,3 +56,13 @@ Docker·DB fixture와 운영 접근은 이 source 작업에서 실행하지 않�
 현재 범위에 맞췄다. 원문 전체 SHA 검증은 그대로 유지한다. 제품 config·Compose는
 6f419f7과 byte 동일하다. 관련 host/workspace/digest/config 59개 테스트와 Ruff가
 통과했으며 이전 CI 실패는 보존한다. 새 전체 CI 결과는 별도 판정한다.
+
+
+## PR513 최신 feature 통합
+
+최종513 f72e49를 ordinary merge해 Common92d 정식 wholewheel과 content tag73c를
+동시에 보존한다. PR514의 정책 두 scalar와 raw source SHA/digest7소비자는 기존24e3과 같다.
+cAdvisor는 최신 main #517의 기본15초/env 덮어쓰기·14제외·단일flags다.
+base는 main이며 PR513이 먼저 merge되어야 한다. 이 문서의 과거 '별도'는 정책 변경의
+책임범위가 별도라는 뜻이다. source branch는 이제513 제품을 포함하며 먼저 merge하지 않는다.
+실제 운영 원본463c 또는 Geo override를 source 정본으로 덮는 작업은 하지 않았다.
