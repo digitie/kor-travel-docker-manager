@@ -901,7 +901,8 @@ export default function DashboardClient() {
     return (
       <LoginScreen
         onLogin={async () => {
-          await refetchAuth();
+          const verified = await refetchAuth({ throwOnError: true });
+          if (verified.data?.authenticated === true) setIsLoggingOut(false);
           queryClient.invalidateQueries({ queryKey: ['containers'] });
         }}
       />

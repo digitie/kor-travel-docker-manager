@@ -36,6 +36,7 @@ let client: QueryClient;
 let logout: ReturnType<typeof deferred<Response>>;
 let authNext: ReturnType<typeof deferred<Response>> | null;
 let pendingContainers: boolean;
+let authenticated: boolean;
 let aborted: boolean;
 let calls: string[];
 let steps: string[];
@@ -44,6 +45,7 @@ beforeEach(() => {
   logout = deferred<Response>();
   authNext = null;
   pendingContainers = false;
+  authenticated = true;
   aborted = false;
   calls = [];
   steps = [];
@@ -53,8 +55,9 @@ beforeEach(() => {
     const path = new URL(address).pathname;
     calls.push(path);
     if (path === '/api/v1/auth/me') return authNext?.promise ?? Promise.resolve(json({
-      authenticated: true, username: 'test-user', expires_at: '2099-01-01T00:00:00Z',
+      authenticated, username: 'test-user', expires_at: '2099-01-01T00:00:00Z',
     }));
+    if (path === '/api/v1/auth/login') { authenticated = true; return Promise.resolve(json({ ok: true })); }
     if (path === '/api/v1/auth/logout') { steps.push('logout_post'); return logout.promise; }
     if (path === '/api/v1/containers') {
       if (!pendingContainers) return Promise.resolve(json([]));
@@ -141,4 +144,54 @@ it('인증 재확인도 실패하면 이전 세션 캐시로 읽기를 재개하
   expect(Socket.instances).toHaveLength(1);
   expect(Socket.instances[0].readyState).toBe(3);
   expect(await screen.findByText(/^인증 상태 확인 실패/)).toBeInTheDocument();
+});
+
+it('로그아웃 재확인 장애 뒤 로그인 화면으로 전환됐다가 새 로그인하면 관측 차단을 해제한다', async () => {
+  await mount();
+  authNext = deferred<Response>();
+  fireEvent.click(screen.getByRole('button', { name: '로그아웃' }));
+  await waitFor(() => expect(steps).toContain('logout_post'));
+  await act(async () => { logout.resolve(json({ ok: true })); });
+  await act(async () => { authNext!.resolve(json({ detail: '합성 재확인 실패' }, 503)); });
+  await screen.findByText(/^인증 상태 확인 실패/);
+  authNext = null;
+  authenticated = false;
+  await act(async () => { await client.invalidateQueries({ queryKey: ['auth-me'] }); });
+  await screen.findByLabelText('비밀번호');
+  const before = containerCalls();
+  fireEvent.change(screen.getByLabelText('아이디'), { target: { value: 'test-user' } });
+  fireEvent.change(screen.getByLabelText('비밀번호'), { target: { value: 'fixture-only' } });
+  fireEvent.click(screen.getByRole('button', { name: '로그인' }));
+  await screen.findByRole('button', { name: '로그아웃' });
+  await waitFor(() => expect(Socket.instances).toHaveLength(2));
+  await waitFor(() => expect(containerCalls()).toBeGreaterThan(before));
+});
+
+it.each([503, 200])('새 로그인 뒤 인증 재확인이 %s이면 읽기 차단을 성공으로 해제하지 않는다', async (status) => {
+  await mount();
+  authNext = deferred<Response>();
+  fireEvent.click(screen.getByRole('button', { name: '로그아웃' }));
+  await waitFor(() => expect(steps).toContain('logout_post'));
+  await act(async () => { logout.resolve(json({ ok: true })); });
+  await act(async () => { authNext!.resolve(json({ detail: '합성 재확인 실패' }, 503)); });
+  await screen.findByText(/^인증 상태 확인 실패/);
+  authNext = null;
+  authenticated = false;
+  await act(async () => { await client.invalidateQueries({ queryKey: ['auth-me'] }); });
+  await screen.findByLabelText('비밀번호');
+  const before = containerCalls();
+  authNext = deferred<Response>();
+  fireEvent.change(screen.getByLabelText('아이디'), { target: { value: 'test-user' } });
+  fireEvent.change(screen.getByLabelText('비밀번호'), { target: { value: 'fixture-only' } });
+  fireEvent.click(screen.getByRole('button', { name: '로그인' }));
+  await waitFor(() => expect(calls.filter(path => path === '/api/v1/auth/me')).toHaveLength(4));
+  await act(async () => { authNext!.resolve(json({ authenticated: false, detail: '합성 미확인' }, status)); });
+  await waitFor(() => expect(screen.getByRole('button', { name: '로그인' })).toBeEnabled());
+  // 이후 별도 인증 캐시 갱신이 오더라도 실패한 onLogin이 latch를 미리 풀면 안 된다.
+  authNext = null;
+  await act(async () => { await client.invalidateQueries({ queryKey: ['auth-me'] }); });
+  await screen.findByRole('button', { name: '로그아웃' });
+  await act(async () => { await client.invalidateQueries({ queryKey: ['containers'] }); });
+  expect(Socket.instances).toHaveLength(1);
+  expect(containerCalls()).toBe(before);
 });
