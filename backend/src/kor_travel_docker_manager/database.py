@@ -4,7 +4,7 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import URL, create_engine, event
 from sqlalchemy.orm import sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def get_database_path() -> str:
 
 
 DB_PATH = get_database_path()
-DATABASE_URL = f"sqlite:///{DB_PATH}"
+DATABASE_URL = URL.create("sqlite", database=DB_PATH)
 
 engine = create_engine(
     DATABASE_URL,
