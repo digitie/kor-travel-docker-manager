@@ -17,6 +17,14 @@
 
 ---
 
+## 2026-10-17 — NVMe 빌드 임시 경로 설계
+
+- 최신 main c1c7674의 별도 feature worktree에서 설계 초안을 작성했다.
+- 기존 state 경로 계약을 재사용하고 memfd fallback 및 Map buildx TMPDIR만 소유한다.
+- source cache/DB 기본값/서비스 기동 조건/다른 작업 트리는 변경하지 않는다.
+- 실제 운영·Docker·DB 접근 없이 로컬 회귀로 검증하며 운영 적용은 별도다.
+
+
 ## 2026-10-17 — PR515 기본 off metric 범위 보존
 
 - 초기10항목 지속화 뒤 독립검토에서 disable_metrics가기본집합에추가가아닌
