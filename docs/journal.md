@@ -17,6 +17,13 @@
 
 ---
 
+## 2026-10-17 — targets validate 주소 효과 JSON의 최소 확장 초안
+
+- 최신 main e84f3ce에서 별도 feature worktree를 만들고 기존 feature/WIP를 보존했다.
+- registry hosts 선언을 재구현하지 않고 성공 JSON에 addr만 whitelist 투영하는 범위다. 기존 status/host/targets 및 실패/텍스트 동작은 유지한다.
+- 운영·Docker·DB·SDK·원격 주소 조회는 하지 않는다. 실제 registry 변경 효과·출력 범위/호환 회귀 및 독립 리뷰는 구현 뒤 진행한다.
+
+
 ## 2026-10-17 — T-MGR-02r 실측: n150 plane의 location 상한은 바꾸지 않는다
 
 - 읽기 전용: n150 공용 webserver GraphQL(`127.0.0.1:11002`) `runsOrError`로 14일 19,845 run(SUCCESS 19,158·FAILURE 686·CANCELED 1).

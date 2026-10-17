@@ -294,9 +294,13 @@ compose를 스캔해 이 집합을 찾는다(줄 번호 열거 금지). root `.e
 -o SOURCE`의 장치(`[…]` 앞)가 그 값(읽기 전용 bind — 설정 파일 — 는 보지 않는다; 없는 경로는 가장 가까운 조상). 미설정이면
 `findmnt`를 부르지 않는다 — n150 무변경(설치본 렌더 43 서비스로 실측 통과).
 
-**`targets validate --json` 출력(초안).** `{"ok": bool, "host": "<KTDM_HOST 또는 default>", "targets": {"<id>": {"host": "<hosts 키|all>",
-"local": bool}}, "errors": [...]}` — transport 저장소의 배포 스크립트가 `targets.transport.host == <addr의 키>`를 효과로 읽는다. 스키마는
-T-MGR-01a에서 확정한다.
+**`targets validate --json` 출력.** 현재 성공 응답의 `status: "ok"`·`host`·`targets.<id>.host`를 보존한다.
+이번 초안은 여기에 `hosts.<key>.addr`를 추가해, Transport 배포 검증이 target의 호스트 키와 실제 registry 선언 주소를
+함께 대조할 수 있도록 한다. 주소는 검증된 registry `hosts:`에서 그대로 투영하며 DNS 조회나 원격 연결을 하지 않는다.
+각 호스트는 `{"addr": "<IPv4>"}`만 출력하고 `default`·SSH 옵션·인증 정보나 target의 다른 설정은 복사하지 않는다.
+호스트 선언이 없는 옛 v1 개발 fixture에서는 `hosts: {}`이며 기존 `host: "local"`·target 출력은 유지한다.
+일반 텍스트 성공 출력은 기존 `OK`다. 실패 시 기존 stderr/종료 코드 동작도 바꾸지 않는다. 실제 주소가 이 장비에
+할당되었는지에 대한 운영 자기 식별과 `--check-coordinates` 검사는 기존 경계를 그대로 사용한다.
 
 **호스트 차이는 root `.env`뿐이다(R6).** compose 파일은 하나. odroid `.env`에만 있는 키(예정, 값은 T-MGR-02/03/05에서 추가):
 `KTDM_HOST`, `KTDM_DAGSTER_WORKSPACE_DIGEST`, `KTDM_POSTGRES_IMAGE`/`KTDM_POSTGRES_CLIENT_IMAGE`, `KTDM_PG_*` 튜닝, `KTDM_DATA_SOURCE_DEVICE`,
