@@ -280,6 +280,8 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
             print(json.dumps({
                 "status": "ok",
                 "host": current_host(config),
+                "hosts": {name: {"addr": spec["addr"]}
+                          for name, spec in config.get("hosts", {}).items()},
                 "targets": {name: {"host": spec.get("host", default_host(config))}
                             for name, spec in config["targets"].items()},
             }, ensure_ascii=False))
