@@ -16,6 +16,12 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-10-17 — T-MGR-NH 잔여(NH-6) 완료
+
+`docs/tasks.md`에서 **문구 그대로** 옮겼다(첫 줄 `[ ]`→`[x]`, 머지·적용 결과를 덧붙임).
+
+- [x] **T-MGR-NH 잔여 — NH-6(`docs/multi-host.md` §4)**. NH-7(런북)은 2026-10-17 `prod-deployment.md` §10으로 완료. NH-6: Prometheus의 Manager job을 registry 파생으로(호스트마다 static_config) — **2026-10-17 구현(PR, 리뷰·머지 대기)**: odroid Manager가 설치돼 n150에서 `http://192.168.1.13:12901/metrics` 200 확인. 머지 뒤 n150 Prometheus reload(`ensure prom` 또는 `/-/reload`)로 `up{job="kor-travel-docker-manager",host="odroid"}==1` 확인. deferred 목록은 §5. 규모 S. **완료**: #524 머지(`76387c8f`), n150 Prometheus 적용·reload 뒤 target 9개 모두 up(odroid Manager `192.168.1.13:12901` 포함). T-MGR-NH 시리즈(NH-1~8) 종료.
+
 ## 2026-10-17 — 활성 원장 정리: ADR-58 T-MGR·T-MGR-NH 완료분과 남아 있던 완료 항목
 
 `docs/tasks.md`(활성 작업만 두는 원장)에 남아 있던 완료 항목을 **문구 그대로** 옮겼다. T-MGR 항목은 첫 줄의 `[ ]`를 `[x]`로
