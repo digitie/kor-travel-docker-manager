@@ -1284,6 +1284,7 @@ def test_application_image_build_failure_carries_the_buildx_tail(
             sources=sources,
             api_image="ktm-api:probe",
             dagster_image="ktm-dagster:probe",
+            state_root=tmp_path / "state",
         )
 
     message = str(captured.value)
