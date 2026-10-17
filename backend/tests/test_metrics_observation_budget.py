@@ -2,10 +2,11 @@
 
 import ast
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, ItemsView, Iterator, Mapping, ValuesView
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -296,3 +297,31 @@ def test_explicit_empty_spec_is_not_treated_as_missing_snapshot():
     assert result["container_name"] == "app"
     assert result["expected_ports"] == 0
     assert mapping.resolves == 0
+
+def test_cycle_uses_actual_registry_lazy_mapping_once():
+    registry_source = SOURCE.with_name("registry.py")
+    node = next(
+        n for n in ast.parse(registry_source.read_text()).body
+        if isinstance(n, ast.ClassDef) and n.name == "_LazyMapping"
+    )
+    scope = {
+        "Mapping": Mapping, "Any": Any, "Callable": Callable, "Iterator": Iterator,
+        "ItemsView": ItemsView, "ValuesView": ValuesView,
+    }
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(registry_source), "exec"), scope)
+    ns = load_collector()
+    calls = []
+
+    def loader():
+        calls.append(1)
+        return {f"app-{i}": {"name": f"container-{i}"} for i in range(16)}
+
+    ns["MANAGED_CONTAINERS"] = scope["_LazyMapping"](loader)
+    collector = ns["MetricsCollector"]()
+    calls.clear()
+    collector.set_docker_client_provider(
+        lambda: SimpleNamespace(containers=SimpleNamespace(get=lambda name: Container("exited")))
+    )
+    asyncio.run(collector.collect_metrics())
+    assert len(calls) == 1
+    assert len(collector._container_observations) == 16
