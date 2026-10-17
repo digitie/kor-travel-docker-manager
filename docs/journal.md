@@ -1,5 +1,13 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-17 — PR514에 최종 PR513과 main #517 통합
+
+- clean24e3 위에서 최종513 f72e49를 ordinary merge했다. journal/tasks 충돌만 양쪽 이력을 보존해 해결하며 제품은 별도 whole-model로 확인한다.
+- 514의 source cap2/dequeue30·instance rawSHA/digest7소비자와 513 Common92d wholewheel/73c 빌드5입력·기존512 기능을 함께 보존한다.
+- 최신 main #517의 cAdvisor15초/env 기본·14제외·단일flags를 유지한다. 운영 Odroid tuning/raw463c는 이 source 작업에서 읽거나 수정하지 않는다.
+- PR514 base는 main/draft를 유지하고 PR513 선행을 명시한다. 513보다 먼저 merge하지 않으며 CI/독립 integration delta 리뷰는 별도다.
+
+
 ## 2026-10-17 — PR513의 최신 main #517 통합
 
 - Common92d 정식 wheel과 기존 daemon pooled CLI 소비를 보존한 채 main `84e643a`를 merge했다. rebase/reset은 하지 않았다.
@@ -24,6 +32,29 @@
 | [`journal-archive-01.md`](journal-archive-01.md) | 2026-06-10 ~ 2026-10-04(파일 끝에 늦게 덧붙인 항목 몇 건 때문에 최대가 크다) | 55 | 199,413 B |
 
 ---
+
+## 2026-10-17 — PR514 instance snapshot 회귀 정산
+
+- 최초6f419f7 CI1FAIL/3049PASS/39SKIP의 유일 원인은 NH-4 당시 원문
+  SHA7925… snapshot이었다. 승인 범위 두scalar의 변경 뒤 새 SHA3441…로
+  기대값·검사명/설명을 정정하고 전체bytes 검증은 유지했다.
+- 제품 config·Compose는 불변, 관련59PASS/13.04초와 Ruff·diff검사 PASS.
+  원CI실패는 보존하고 새전체CI는 별도추적한다. 실제 SDK/DB/Docker/운영0.
+
+
+## 2026-10-17 — 공용 Dagster dispatch 한도·큐 확인 주기 초안(PR514)
+
+- 최신 기준 main `872c326`에서 별도 worktree를 만들어 설계 초안 후
+  `max_concurrent_runs: 2`·`dequeue_interval_seconds: 30`만 구현했다.
+  location·run group 상한과 업무/monitor/health 설정은 그대로다.
+- 원본 파일 bytes SHA256 앞16자 anchor를 재계산했다. 모델 대조에서
+  instance 두scalar/Compose7소비자 digest만 달라짐을 확인했다.
+- 정책 변경 전 실패 보존 → 관련130PASS(44.71초), Ruff·diff검사 통과.
+  전체 suite는 재실행하지 않았고 실제 SDK/DB/Docker·운영 실행은 없다.
+- PR513의 Common 소비자 변경과 분리했다. 운영 원본은 source와 다를
+  수 있으므로 두 값만 적용한 뒤 실제 digest를 계산해야 한다. 독립2리뷰,
+  CI, 운영 CPU·대기 영향은 후속이며 성능 개선을 확정하지 않았다.
+
 
 ## 2026-10-17 — PR513 공식 launch 임시 Instance 수정 wheel 갱신
 
