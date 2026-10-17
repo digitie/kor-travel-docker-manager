@@ -111,6 +111,7 @@ export default function DashboardClient() {
   });
   const isAuthenticated = auth?.authenticated === true;
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const logoutInFlight = useRef(false);
   const canReadSession = isAuthenticated && !isLoggingOut;
 
   // 백그라운드 요청이 401을 받으면 하드 리로드 대신 auth-me 쿼리를 무효화해 SPA 내에서
@@ -838,9 +839,18 @@ export default function DashboardClient() {
       } catch (error) {
         // 재확인이 실패하면 이전 인증 캐시로 읽기를 재개하지 않는다. 로그아웃 재시도는 가능하다.
         pushToast(errorToast(humanizeError(error, '인증 상태 확인')));
+      } finally {
+        logoutInFlight.current = false;
       }
     },
   });
+
+  const requestLogout = () => {
+    // React 재렌더 전의 같은 tick와 빠른 명령 진입도 하나의 요청으로 묶는다.
+    if (logoutInFlight.current) return;
+    logoutInFlight.current = true;
+    logoutMutation.mutate();
+  };
 
   const commandItems = [
     {
@@ -877,7 +887,7 @@ export default function DashboardClient() {
       id: 'logout',
       label: '로그아웃',
       hint: '세션',
-      run: () => logoutMutation.mutate(),
+      run: requestLogout,
     },
   ].filter((item) => item.label.includes(commandQuery.trim()) || item.hint.includes(commandQuery.trim()));
 
@@ -934,7 +944,7 @@ export default function DashboardClient() {
       }
       description="Docker 컨테이너 상태와 조작을 한 화면에서 확인합니다."
       isLoggingOut={logoutMutation.isPending}
-      onLogout={() => logoutMutation.mutate()}
+      onLogout={requestLogout}
       onOpenAdminSettings={() => setIsAdminSettingsOpen(true)}
       onOpenBackupHistory={() => setIsBackupHistoryOpen(true)}
       onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}

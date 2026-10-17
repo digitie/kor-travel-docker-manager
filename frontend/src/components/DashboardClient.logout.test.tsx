@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
@@ -34,6 +34,7 @@ class Socket {
 }
 let client: QueryClient;
 let logout: ReturnType<typeof deferred<Response>>;
+let logoutQueue: ReturnType<typeof deferred<Response>>[];
 let authNext: ReturnType<typeof deferred<Response>> | null;
 let pendingContainers: boolean;
 let authenticated: boolean;
@@ -43,6 +44,7 @@ let steps: string[];
 beforeEach(() => {
   Socket.instances = [];
   logout = deferred<Response>();
+  logoutQueue = [];
   authNext = null;
   pendingContainers = false;
   authenticated = true;
@@ -58,7 +60,7 @@ beforeEach(() => {
       authenticated, username: 'test-user', expires_at: '2099-01-01T00:00:00Z',
     }));
     if (path === '/api/v1/auth/login') { authenticated = true; return Promise.resolve(json({ ok: true })); }
-    if (path === '/api/v1/auth/logout') { steps.push('logout_post'); return logout.promise; }
+    if (path === '/api/v1/auth/logout') { steps.push('logout_post'); return (logoutQueue.shift() ?? logout).promise; }
     if (path === '/api/v1/containers') {
       if (!pendingContainers) return Promise.resolve(json([]));
       return new Promise<Response>((_resolve, reject) => {
@@ -194,4 +196,58 @@ it.each([503, 200])('새 로그인 뒤 인증 재확인이 %s이면 읽기 차�
   await act(async () => { await client.invalidateQueries({ queryKey: ['containers'] }); });
   expect(Socket.instances).toHaveLength(1);
   expect(containerCalls()).toBe(before);
+});
+
+
+it('버튼 뒤 빠른 명령 재진입을 막고 인증 재확인이 끝난 뒤 의도한 재시도만 허용한다', async () => {
+  const retry = deferred<Response>();
+  logoutQueue = [logout, retry];
+  await mount();
+  authNext = deferred<Response>();
+  fireEvent.click(screen.getByRole('button', { name: '로그아웃' }));
+  await waitFor(() => expect(steps).toHaveLength(1));
+  const before = containerCalls();
+  fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+  const palette = await screen.findByRole('dialog', { name: '빠른 명령' });
+  fireEvent.click(within(palette).getByText('로그아웃'));
+  await act(async () => {});
+  expect(steps).toHaveLength(1);
+  await act(async () => { logout.resolve(json({ detail: '합성 첫 실패' }, 503)); });
+  await waitFor(() => expect(calls.filter(path => path === '/api/v1/auth/me')).toHaveLength(2));
+  // POST가 끝나도 인증 재확인 중에는 다른 진입점이 guard를 풀지 않는다.
+  fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+  fireEvent.click(within(await screen.findByRole('dialog', { name: '빠른 명령' })).getByText('로그아웃'));
+  await act(async () => { await client.invalidateQueries({ queryKey: ['containers'] }); });
+  expect(steps).toHaveLength(1);
+  expect(containerCalls()).toBe(before);
+  expect(Socket.instances).toHaveLength(1);
+  await act(async () => { authNext!.resolve(json({ authenticated: true, username: 'test-user', expires_at: '2099-01-01T00:00:00Z' })); });
+  await waitFor(() => expect(screen.getByRole('button', { name: '로그아웃' })).toBeEnabled());
+  await waitFor(() => expect(Socket.instances).toHaveLength(2));
+  authNext = deferred<Response>();
+  fireEvent.click(screen.getByRole('button', { name: '로그아웃' }));
+  await waitFor(() => expect(steps).toHaveLength(2));
+  const retryReads = containerCalls();
+  await act(async () => { retry.resolve(json({ ok: true })); });
+  await act(async () => { await client.invalidateQueries({ queryKey: ['containers'] }); });
+  expect(containerCalls()).toBe(retryReads);
+  expect(Socket.instances).toHaveLength(2);
+  await act(async () => { authNext!.resolve(json({ detail: '미인증' }, 401)); });
+  await screen.findByLabelText('비밀번호');
+});
+
+it('같은 렌더 프레임에서 빠른 명령을 두 번 실행해도 로그아웃은 한 번만 보낸다', async () => {
+  await mount();
+  fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+  const command = within(await screen.findByRole('dialog', { name: '빠른 명령' })).getByText('로그아웃');
+  act(() => {
+    fireEvent.click(command);
+    fireEvent.click(command);
+  });
+  await waitFor(() => expect(steps).toContain('logout_post'));
+  expect(steps).toHaveLength(1);
+  authenticated = false;
+  await act(async () => { logout.resolve(json({ ok: true })); });
+  await screen.findByLabelText('비밀번호');
+  expect(Socket.instances).toHaveLength(1);
 });
