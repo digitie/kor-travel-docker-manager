@@ -259,9 +259,15 @@ WebSocket을 비활성화한다. 기존 containers 요청은 AbortSignal로 취�
 이 범위는 DashboardClient가 소유한 읽기와 상태·로그 소켓이며 이미 서버에서 시작된
 관측 연산을 강제 종료한다는 보장은 아니다. API·세션 서버 정책은 바꾸지 않는다.
 
-실제 QueryClientProvider와 제어된 fetch/인증 Promise/소켓 회귀 4개, frontend 전체39개,
+실제 QueryClientProvider와 제어된 fetch/인증 Promise/소켓 회귀 7개, frontend 전체42개,
 타입 검사·lint·build와 backend Ruff를 확인했다. backend 전체 pytest와 실제 배포/UI는
 수행하지 않았다. 패널이나 다른 사용자의 이미 진행 중인 작업 취소 기능을 추가하지 않았다.
 root의 공개 UI r9 결과는 46/48이며 Cookie Strict와 로그아웃 중 containers 401 집계가
 남았다. 이 변경은 쿠키 정책이나 하니스 기준을 완화하지 않으며 실제 UI 재검증은 root가
 수행한다.
+
+로그아웃 뒤 인증 재확인이 실패해 관측 차단이 남은 상태에서, 후속 인증 만료로 로그인
+화면이 표시될 수 있다. 새 로그인 성공 때도 auth-me 재조회가 authenticated=true로 확인된
+경우에만 그 표식을 해제한다. 재조회 오류·미인증 응답은 해제하지 않는다. 최초 구현의
+재로그인 후 차단 잔존 P2를 실제 QueryClient/로그인 폼 회귀로 재현한 뒤 수정했으며,
+기존 실패·검증 이력은 journal에 보존한다.

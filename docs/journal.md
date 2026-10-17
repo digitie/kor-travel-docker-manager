@@ -17,6 +17,17 @@
 
 ---
 
+## 2026-10-17 — PR531 재로그인 관측 차단 잔존 P2 수정
+
+- 독립 리뷰 M531-D-P2-01: logout200→auth 재확인 장애→후속 미인증→새 로그인 뒤
+  차단 표식이 남아 관측이 꺼지는 반례를 수용했다. 원 c228077·최초 검증·리뷰와 실패는 보존한다.
+- 실제 QueryClient/로그인 폼에서 새1FAIL4PASS를 확인한 뒤, onLogin이 auth-me를
+  오류 전파 방식으로 재조회하여 authenticated=true일 때만 표식을 해제하도록 최소 수정했다.
+  재조회503·미인증 응답은 해제하지 않는 음성도 포함했다.
+- 제품529092a, 집중7PASS/frontend전체42PASS·type/lint/build PASS. backend와 쿠키·
+  하니스·운영 변경0이며 독립 closure·새CI·root 정식n150 live UI는 후속이다.
+
+
 ## 2026-10-17 — PR531 로그아웃 관측 중단 구현·로컬 검증
 
 - 제품 a300ad4는 DashboardClient의 pending부터 보호 읽기/상태·로그 WS를 끄고,
