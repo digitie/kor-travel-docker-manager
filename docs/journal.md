@@ -17,6 +17,12 @@
 
 ---
 
+## 2026-10-17 — PR525 최신 main 통합 준비
+
+- 최신 main20b의 포트·관측 파생과 완료 원장을 ordinary merge하고 기존 기능 변경은 보존한다.
+- 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
+
+
 ## 2026-10-17 — NH-6 Manager Prometheus job을 호스트마다 파생
 
 - 전제 확인(읽기 전용): odroid에 Manager가 설치됐고(codex RC), n150에서 `http://192.168.1.13:12901/metrics`가 200
@@ -27,6 +33,19 @@
 - `prometheus.yml`: odroid static_config 1개 추가(`192.168.1.13:12901`). compose 변화 없음.
 - 테스트(n150 per-clone venv): 대상 21 PASS. 빨강 확인 4건 — odroid static_config 삭제, main의 옛 파일, unit `--port`
   변경, 손 job 추가가 모두 빨갛다.
+
+## 2026-10-17 — 메트릭 관측 cycle snapshot과 이미지 조회 절감(PR525)
+
+- 호출 내 기본값 재사용, cycle의 기존 spec 전달, inspect 이미지 정보가 완전한 경우의 추가 조회 생략을 작은 커밋으로 분리했다.
+- 장기 캐시·Docker 상태 캐시·DTO·주기·저장 변경 없이 실제 함수 AST 회귀39PASS/backend Ruff PASS와 6경로 old/new 출력 동등성을 확인했다.
+- 합성64행×100cycle에서 resolve12900→100/CPU 정지0.119434→0.038725s·실행2.718004→2.526916s. 운영 개선율이 아니며 일부 tracemalloc peak는 증가했다.
+- 앱 초기화·Docker·DB·SDK·운영 접근 없이 검사했다. 전체 pytest/frontend/운영 성능은 미실행이며 독립2리뷰·CI는 별도다. [측정 범위](metrics-observation-budget.md).
+
+## 2026-10-17 — 메트릭 관측 기본값 중복 평가 절감 설계
+
+- 최신 main의 별도 feature worktree에서 기본값 2회 평가를 확인했다.
+- 한 호출의 local template만 재사용하며 cycle·장기 캐시를 추가하지 않는다.
+- 순수 회귀·합성 측정 전 설계 초안이며 운영 CPU 인과·전체 회귀는 미확인이다.
 
 ## 2026-10-17 — PR515 기본 off metric 범위 보존
 
