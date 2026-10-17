@@ -10,8 +10,25 @@ from sqlalchemy.orm import sessionmaker
 logger = logging.getLogger(__name__)
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# backend 루트 폴더 아래에 pinvi_metrics.db 생성되도록 경로 지정
-DB_PATH = os.path.abspath(os.path.join(current_dir, "../../../../", "pinvi_metrics.db"))
+
+
+def get_database_path() -> str:
+    """프로세스의 명시 경로를 쓰고, 미설정일 때만 기존 기본 경로를 유지한다."""
+
+    if "KTDM_DATABASE_PATH" not in os.environ:
+        return os.path.abspath(os.path.join(current_dir, "../../../../", "pinvi_metrics.db"))
+    configured = os.environ["KTDM_DATABASE_PATH"]
+    if (
+        not configured
+        or not os.path.isabs(configured)
+        or "\x00" in configured
+        or os.path.basename(configured) in {"", ".", ".."}
+    ):
+        raise ValueError("KTDM_DATABASE_PATH must be a nonempty absolute database file path")
+    return os.path.abspath(configured)
+
+
+DB_PATH = get_database_path()
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(
