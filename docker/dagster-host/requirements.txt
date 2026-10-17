@@ -553,7 +553,7 @@ jinja2==3.1.6 \
     #   -c requirements.txt
     #   dagster
 kor-travel-common==0.1.0.dev0 \
-    --hash=sha256:0bd62cca5b5a2493e532113f0ae603c430a5f56e7d42428005096f0bdc811229
+    --hash=sha256:4fa65afd0b8ae90002503fb48d4455fb28ba8574c8cbb529c5add4ff04923527
     # via -r requirements.in
 mako==1.4.3 \
     --hash=sha256:723296007c870bfd6b3f0c3230dba7198096e5269297ebf5e4eff9e7ffa39d4f \

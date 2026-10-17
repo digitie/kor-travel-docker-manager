@@ -17,6 +17,18 @@
 
 ---
 
+## 2026-10-17 — PR513 공식 launch 임시 Instance 수정 wheel 갱신
+
+- 초기17ff candidate는 실제 heartbeat/health 뒤 job launch의 임시 Instance에서 네 번째
+  engine을 거절했다. 원 실패를 보존하고 Common92d의 primary3 QueuePool/임시 NullPool
+  수정 wholewheel로 교체한다. 전체 process12 상한이라는 잘못된 설명도 바로잡는다.
+- wheel13 Git source/RECORD18/공식 metadata와 별도 immutable archive 재빌드 whole SHA를
+  대조했다. 기존71 dependency 잠금 bytes·Dockerfile/기존 build helper/storage migrate·
+  cAdvisor30/14·512 기능·instance YAML·queue 정책은 보존한다.
+- 현재 wheel/lazy import/원 잠금·wrapper/작은 stdlib fixture11개·Ruff·diff 검사는 통과했다.
+- 아직 새 Manager native 빌드/운영 실행·CPU 결과를 주장하지 않는다. root 실제 SDK launch
+  회귀와 최종 Manager 독립2리뷰·소비자 실측은 별도 인계한다.
+
 ## 2026-10-17 — PR512·515 병합의 cAdvisor 중복 인자 해소
 
 - 최신 main 병합 뒤 15초/10개 제외 인자가 30초/14개 뒤에 중복되어 뒤의 값이 앞 설정을 덮는 것을 독립 검토에서 발견했다.

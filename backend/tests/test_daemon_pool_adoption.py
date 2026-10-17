@@ -29,8 +29,8 @@ def test_vendor_whole_record_source_and_official_metadata() -> None:
     proof = json.loads((_VENDOR / "common-source.json").read_text())
     assert hashlib.sha256(_WHEEL.read_bytes()).hexdigest() == proof["wheel_sha256"]
     assert _WHEEL.stat().st_size == proof["wheel_bytes"]
-    assert proof["common"] == "17ff89d2839c8a65fa6d7c2383fef676a86f075a"
-    assert proof["product"] == "e0c13894ad798c7d4e90267d788f01c8bdfedda0"
+    assert proof["common"] == "92d5cf16ad85c2b6cdd0140226066374ae345917"
+    assert proof["product"] == "92d5cf16ad85c2b6cdd0140226066374ae345917"
     with zipfile.ZipFile(_WHEEL) as wheel:
         names = wheel.namelist()
         assert len(names) == len(set(names))

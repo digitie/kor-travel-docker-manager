@@ -1,11 +1,11 @@
 {
-  "common": "17ff89d2839c8a65fa6d7c2383fef676a86f075a",
-  "product": "e0c13894ad798c7d4e90267d788f01c8bdfedda0",
-  "wheel_sha256": "0bd62cca5b5a2493e532113f0ae603c430a5f56e7d42428005096f0bdc811229",
-  "wheel_bytes": 45405,
+  "common": "92d5cf16ad85c2b6cdd0140226066374ae345917",
+  "product": "92d5cf16ad85c2b6cdd0140226066374ae345917",
+  "wheel_sha256": "4fa65afd0b8ae90002503fb48d4455fb28ba8574c8cbb529c5add4ff04923527",
+  "wheel_bytes": 45621,
   "package_files": {
     "kortravelcommon/__init__.py": "5f044636451a4cad9874bc2563c0fc86d7509ef863adf2e41833ee6b8b134476",
-    "kortravelcommon/_daemon_pool_plugin.py": "d6457a90d72f894644e591c1f541126fe037735a523a66cf1fa3e1f379763d7a",
+    "kortravelcommon/_daemon_pool_plugin.py": "07fe6573bafc906e2ce47baa6c0b79902eea551d341c6a0f73b4435bb61a8521",
     "kortravelcommon/build_bytecode.py": "b07c7f94565147f619bffba7f1f9871106c0ee07d3683974393d596ffda5d266",
     "kortravelcommon/daemon_pool.py": "b16fd932b13a029f466633b6e31dd25936898c23041e964734c2c058f5d85313",
     "kortravelcommon/dagster.py": "c799fc4cb02445c37ef29f58d16153fce158adfd3c510e19cfec6745323bc935",
@@ -20,6 +20,6 @@
   },
   "record_rows_checked": 18,
   "rebuild_exit": 0,
-  "rebuild_sha256": "0bd62cca5b5a2493e532113f0ae603c430a5f56e7d42428005096f0bdc811229",
-  "reproduction": "independent offline build byte-identical to vendor wheel"
+  "rebuild_sha256": "4fa65afd0b8ae90002503fb48d4455fb28ba8574c8cbb529c5add4ff04923527",
+  "reproduction": "독립 immutable Git archive의 offline uv build가 vendor wheel과 byte 동일"
 }

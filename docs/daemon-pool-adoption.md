@@ -3,18 +3,19 @@
 ## 범위
 
 PR511의 상태 점검/빌드 bytecode를 기준으로 별도 stacked PR을 구성한다.
-Common38 최종 lifecycle fix/독립 closure를 확인한 뒤 제품 source를 ebd07591dcdd5dc55d0213bef83b091e10ff00d6로 고정했다.
+초기 Common38 lifecycle 후보 채택 뒤 실제 launch의 임시 Instance 회귀가 발견되어,
+현재는 Common92d5cf1 수정 wheel로 갱신했다. 이전 후보와 실제 실패는 아래 이력으로 보존한다.
 PR511 병합 뒤 이 PR의 base를 main으로 정산했다. 구현 검증과 운영 완료는 구분한다.
 
 ## 정식 wheel과 고정 설치
 
-Common final17ff89d2839c8a65fa6d7c2383fef676a86f075a(제품e0c1389)의 정식 전체 core wheel을
-vendor에 넣었다. 원 wheel45405B와 독립 Git archive의 offline 재빌드가 동일 SHA256
-0bd62cca5b5a2493e532113f0ae603c430a5f56e7d42428005096f0bdc811229였다.
+Common 92d5cf16ad85c2b6cdd0140226066374ae345917(공식 launch 임시 Instance 수정)의 정식 전체 core wheel을
+vendor에 넣었다. 원 wheel45621B와 독립 Git archive의 offline 재빌드가 동일 SHA256
+4fa65afd0b8ae90002503fb48d4455fb28ba8574c8cbb529c5add4ff04923527였다.
 RECORD nonself18행/package13개 Git bytes/공식 entrypoint와 LICENSE·NOTICE를 대조했다.
 vendor/README.md와 common-source.json에 source REV/whole SHA/라이선스·파일 출처를 기록한다.
-requirements.in에는 kor-travel-common==0.1.0.dev0를 추가하고 기존71개 잠금 버전을
-제약으로 유지한 채 --find-links vendor로 해시 잠금본을 재생성한다.
+requirements.in의 kor-travel-common==0.1.0.dev0는 유지하고 Common wholewheel 해시만
+갱신한다. 기존71개 잠금 버전·해시·원문 bytes는 그대로 두며 의존성을 다시 해석하지 않는다.
 Docker는 개별 wheel을 /tmp/common-wheels에 명시 COPY하고 기존 pip
 --no-deps/--require-hashes/--only-binary에 --find-links만 더한다.
 임의 source2모듈 복사·수제 metadata·SDK monkeypatch·다른 runtime 의존성 변경은 하지 않는다.
@@ -45,7 +46,9 @@ source 단계에서는 실제 SDK/PG/Docker/SSH/provider/운영 자격 파일에
 root의 별도 실제 gate다. 라이브러리 microbench를 운영 전체 CPU 감소로 환산하지 않는다.
 
 
-## 현재 검증과 적용 gate
+## 기존17ff 채택 검증과 적용 gate
+
+다음 항목은 초기 후보 검증 이력이다. 현재92d 갱신 검증·한계는 아래 회귀 정산 절에서 구분한다.
 
 - 기존71개 runtime의 버전과 전체 wheel hash 집합을 그대로 유지한 uv offline compile로
   Common1개만 추가한72개 잠금본을 만들었다. 재생성 명령은 requirements.txt 머리다.
@@ -75,3 +78,24 @@ root의 별도 실제 gate다. 라이브러리 microbench를 운영 전체 CPU �
 290f와 byte 동일하므로 이 테스트 정정 때문에 이미지를 재빌드하지 않는다.
 이전 CI 실패는 보존한다. 수정 전 local2FAIL4PASS를 재현했고 수정 후 관련7개
 모듈377PASS/47.26초·Ruff·diff검사가 통과했다. 새 HEAD의 전체 CI는 별도 판정한다.
+
+
+## 공식 launch 임시 Instance 회귀 정산
+
+이전17ff는 실제 daemon heartbeat/health를 통과했으나 DefaultRunLauncher의 gRPC
+start_run이 같은 프로세스에서 만드는 임시 DagsterInstance.from_ref에 네 번째
+engine이 생겨 job launch를 막았다. 원 실패와 이전 성공 범위를 보존하며 heartbeat나
+InstanceRef 직렬화만으로 launch 성공이라고 하지 않는다.
+
+현재92d는 최초 primary 세 storage만 QueuePool로 예약한다. pooled primary 연결 상한은12,
+유휴 상한6이며, 임시 SDK storage는 원 NullPool로 두고 SDK의 원 수명대로 연결을 닫는다.
+전체 daemon 프로세스의 모든 임시 연결까지12개로 제한한다는 뜻은 아니다.
+fork/세대/동시성/primary strong registry·정리/pre_ping 보호는 유지한다.
+
+이번 Manager 변경은 vendor 전체 wheel·그 hash/source 기록·Common 잠금 해시 한 개와
+그로부터 유도한 공용 host 세 image ref뿐이다. Dockerfile의 명시 wheel 경로는 basename이
+같아 그대로 유지한다. 나머지 네 runtime 의존 파일 입력 중 requirements 외 세 파일도
+원형이고, cAdvisor30초/14제외·PR512 기능·instance queue 정책은 바꾸지 않는다.
+새 wholewheel/lazy import/기존 잠금/Compose wrapper와 작은 stdlib fixture11개 회귀는 통과했다.
+실제 SDK/격리 PG의 공식 start_run 성공은 root 실행 evidence로 별도 인계되며,
+새 Manager native 빌드·운영 launch/신선도·CPU 재측정과 두 독립 리뷰는 후속이다.
