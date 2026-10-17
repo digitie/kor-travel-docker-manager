@@ -61,7 +61,7 @@ PG DSN loopback(`:589`·`:987`·`:1146`). 이 간선들은 compose `depends_on`�
 | G18 | Map UI의 **server-side BFF**(`app/api/geo/[...path]/route.ts`)가 `KOR_TRAVEL_GEO_INTERNAL_URL ?? NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL`을 읽는데, compose map-ui에는 앞의 것이 없다. 그래서 공개 URL로 우회하고 있다(n150 운영은 `.env`의 공개 URL로 동작 — 코디네이터 확인). **1·2차 문서의 "버그 아님"은 틀렸다** | `docker-compose.yml` map-ui, `c6c_deployment.py:4480` | NH-8 |
 | G16 | config의 project 이름·경로에 호스트 이름: `kor-travel-odroid-monitoring`·`/opt/kor-travel-odroid` | `docker-targets.yml`의 `kor-travel-node-exporter` 컨테이너 `external_project`, `node` target `external_project.project`·`working_dir` | NH-5 |
 | G8 | 스크립트 문자열 1건(`run-pin-request-isolated-e2e:141` "n150 격리 e2e …") | scripts | NH-5 |
-| G9 | Prometheus의 손으로 쓴 Manager job(`prometheus.yml:12-18`) | `config/prometheus/prometheus.yml` | NH-6 |
+| G9 | Prometheus의 손으로 쓴 Manager job(`prometheus.yml:12-18`) — **2026-10-17 NH-6으로 해소**(호스트마다 파생) | `config/prometheus/prometheus.yml` | NH-6 |
 | G10 | 런북이 odroid 특유 단계다 | `prod-deployment.md` §9 | NH-7 |
 
 | PR | 내용 | n150 렌더 영향 | 빨갛게 되는 수용 테스트 | 의존 |

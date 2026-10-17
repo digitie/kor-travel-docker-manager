@@ -2,6 +2,11 @@
 
 새 항목은 아래 "과거 기록 아카이브" 블록 **다음, 첫 항목 위**에 더한다(최신이 위).
 
+## 2026-10-17 — PR522 최신 main 통합 준비
+
+- 최신 main20b의 포트·관측 파생과 완료 원장을 ordinary merge하고 기존 기능 변경은 보존한다.
+- 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
+
 ## 과거 기록 아카이브
 
 파일이 820,205 B(에이전트 read 한도 256 KB의 3배)가 되어 2026-10-16에 옛 항목을 아래 파일들로 옮겼다(T-MGR-07). 본문은 byte 그대로, 원래 파일 순서 그대로다 — 이 파일 끝 다음이 가장 번호가 큰 아카이브의 첫 항목이고, 번호가 작을수록 오래된 구간이다. 과거 검색은 `rg <패턴> docs/journal*.md`.
@@ -16,6 +21,17 @@
 | [`journal-archive-01.md`](journal-archive-01.md) | 2026-06-10 ~ 2026-10-04(파일 끝에 늦게 덧붙인 항목 몇 건 때문에 최대가 크다) | 55 | 199,413 B |
 
 ---
+
+## 2026-10-17 — NH-6 Manager Prometheus job을 호스트마다 파생
+
+- 전제 확인(읽기 전용): odroid에 Manager가 설치됐고(codex RC), n150에서 `http://192.168.1.13:12901/metrics`가 200
+  (`text/plain; version=0.0.4`, `ktdm_up 1`)이다. 먼저 머지하면 `up=0`이던 조건이 풀렸다.
+- `services/prometheus_targets.py`: 손으로 쓰던 `kor-travel-docker-manager` job을 파생에 넣었다. Manager는 선언된 모든
+  호스트에서 돈다(ADR-58 결정 2) → `hosts:` 순서로 static_config 하나씩(R1 주소·`host` label). 포트는 backend를 띄우는
+  `deploy/systemd/ktdm-backend.service`의 `ExecStart … --port`에서 읽는다(없거나 둘이면 거부). `NON_REGISTRY_JOBS`는 없앴다.
+- `prometheus.yml`: odroid static_config 1개 추가(`192.168.1.13:12901`). compose 변화 없음.
+- 테스트(n150 per-clone venv): 대상 21 PASS. 빨강 확인 4건 — odroid static_config 삭제, main의 옛 파일, unit `--port`
+  변경, 손 job 추가가 모두 빨갛다.
 
 ## 2026-10-17 — PR522 SQLite URL 파일명 보존 수정
 
