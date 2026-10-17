@@ -17,6 +17,17 @@
 
 ---
 
+## 2026-10-17 — NVMe 빌드 임시 경로 구현(PR521)
+
+- 기존 frozen state root 아래0700 임시 디렉터리와0600/unlinked fallback 파일을 사용한다.
+  Map buildx 두 호출에 같은 TMPDIR를 전달하며 기존 Docker/XDG 환경과 argv를 보존한다.
+- 실제 env_file의 memfd-only 경로·source cache·DB 기본값·기동 조건은 변경하지 않는다.
+- 신규 격리14회귀/backend Ruff 통과, parent 실제 함수2RED→새 함수2GREEN을 확인했다.
+  기존 단일test 직접 실행의 registry 경로 오류/fixture 부재와 초기 mock6실패는 별도 이력으로 남겼다.
+- 전체 suite·실제 NVMe 배포·Docker 빌드·eMMC 쓰기 측정은 미실시다.
+  [검증 방법과 운영 경계](nvme-build-staging.md)에 입력/cleanup/설치 주의점을 기록했다.
+
+
 ## 2026-10-17 — NVMe 빌드 임시 경로 설계
 
 - 최신 main c1c7674의 별도 feature worktree에서 설계 초안을 작성했다.
