@@ -279,6 +279,11 @@ containers:
     role: weather-dagster-code-server
     display_name: Kor Travel Weather Dagster Code Server
     connection: "내부 전용(gRPC, {host}:14106) — 인증 없음, loopback만 허용"
+    # 중앙 Prometheus 수집(T-MGR-04r): code-server의 `prometheus_client` 서버(`KOR_TRAVEL_WEATHER_METRICS_PORT`). 포트는 지금
+    # weather가 도는 odroid의 통일 포트 `12203`이다(2026-10-17 n150에서 `http://192.168.1.13:12203/metrics` 200 실측 — Manager
+    # compose 기본값 `14103`은 n150 시절 값). 인증 없이 LAN에 열려 있다(compose 주석의 알려진 노출) — odroid 방화벽 exporter 집합.
+    metrics_path: /metrics
+    metrics_port: 12203
     expected_ports: []
   kor-travel-weather-dagster-webserver:
     name: kor-travel-weather-dagster-webserver-latest

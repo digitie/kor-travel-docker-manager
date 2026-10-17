@@ -238,11 +238,15 @@ HAProxy backend 전환표(geo/weather/transport/pr → `.13`)는 `prod-deploymen
 
 ### odroid 호스트 방화벽 집합 (계획 — 정책 (가): 우리 포트만 제한, 그 외는 accept)
 
+중앙 Prometheus(n150)가 odroid에서 수집하는 주소는 registry 파생물 `config/prometheus/prometheus.yml`이 정본이다(B-8) — 이 표의 n150
+허용은 그 job 집합과 같아야 한다: geo-api `12501`·geo-ui `12505`·cAdvisor `12103`·node_exporter `12106`·weather code-server `12203`
+(2026-10-17 T-MGR-04r). weather 자체 Prometheus(`14104`)는 odroid에 없어 federate job을 두지 않았다.
+
 | 집합 | 포트 | 허용 소스 |
 |---|---|---|
 | consumer/공개 API | `12501`, `12201`(weather — 2026-10-14 통일, 옛 `14101`), `12301`(transport API gateway — n150 소비자는 backend `14001`이 아니라 이것을 부른다) | n150 addr + HAProxy(OPNsense) LAN addr(§14-6) — 그 외 LAN drop |
-| HAProxy 웹 backend | `12505`, `12205`, `14002`, `12301`, `12305`, `11001` | HAProxy addr만 |
-| exporter | `12103`, node_exporter, `14103`, `14104`, `12901` | n150 addr만 |
+| HAProxy 웹 backend | `12505`, `12205`, `14002`, `12301`, `12305`, `11001` | HAProxy addr만 — **예외: `12505`는 n150 addr도**(중앙 Prometheus가 geo-ui `/api/metrics`를 수집한다, T-MGR-04r) |
+| exporter | `12103`, node_exporter(`12106`), `12203`(weather code-server metrics — odroid 통일 포트, 옛 `14103`), `12901` | n150 addr만 |
 | 관리 | `22`(키만), `12905`(§14-29 — (가) backend만이면 odroid에 리스너 없음, **추천**) | 22: LAN(키만은 sshd 설정); 12905: (나)일 때만 n150 addr + 운영자 PC addr(§14-5) — 그때는 `12901`도 같은 소스에 열어야 대시보드가 자기 API에 닿는다 |
 | 로컬 전용 | `11000`, `11002`, `12503`/`14106`/`14005`, `12101`/`12105` | LAN 유입 drop(bind는 서비스별로 다름 — 바꾸지 않는다) |
 | 보존 서비스(Plex·Samba·webvnc 등 TCP+UDP) | 열거하지 않음 | **정책 accept(변경 0)** — 기본 DROP + 허용 열거(나)는 누락이 곧 Plex 검색·NetBIOS 단절이라 소유자가 원할 때만(§14-28) |

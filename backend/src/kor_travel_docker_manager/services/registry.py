@@ -793,15 +793,23 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
                     f"{label} containers.{container_id}: missing required field '{field}'"
                 )
         metrics_path = spec.get("metrics_path")
+        metrics_port = spec.get("metrics_port")
+        if metrics_port is not None and (
+            type(metrics_port) is not int or not 0 < metrics_port < 65536 or metrics_path is None
+        ):
+            raise TargetsConfigError(
+                f"{label} containers.{container_id}.metrics_port: must be a port number next to metrics_path"
+            )
         if metrics_path is not None and (
             not isinstance(metrics_path, str)
             or not metrics_path.startswith("/")
-            or HOST_URL.fullmatch(str(spec.get("connection"))) is None
+            or (metrics_port is None and HOST_URL.fullmatch(str(spec.get("connection"))) is None)
         ):
-            # 수집 대상은 `scheme://{host}:<port>` connection의 그 포트다(Prometheus 타깃 파생, T-MGR-04).
+            # 수집 대상은 `scheme://{host}:<port>` connection의 그 포트다(Prometheus 타깃 파생, T-MGR-04). metrics가
+            # 다른 포트에서 나오면(gRPC code-server의 prometheus_client 서버 등) `metrics_port`로 준다(T-MGR-04r).
             raise TargetsConfigError(
                 f"{label} containers.{container_id}.metrics_path: must start with / on a "
-                "scheme://{host}:<port> connection"
+                "scheme://{host}:<port> connection (or give metrics_port)"
             )
 
     seen_aliases: dict[str, str] = {}
@@ -1066,6 +1074,7 @@ _ALLOWED_CONTAINER_FIELDS: Final = frozenset(
         "expected_ports",
         "external_project",
         "metrics_path",
+        "metrics_port",
     }
 )
 

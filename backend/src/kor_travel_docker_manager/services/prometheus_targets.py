@@ -2,7 +2,8 @@
 
 `config/prometheus/prometheus.yml`은 **커밋된 파생물**이다 — Prometheus는 registry를 읽지 못한다. 규칙 하나:
 
-- registry 컨테이너 중 `metrics_path`가 있는 것마다 job 하나(`job_name` = 컨테이너 id).
+- registry 컨테이너 중 `metrics_path`가 있는 것마다 job 하나(`job_name` = 컨테이너 id). 포트는 connection의 포트,
+  metrics가 다른 포트에서 나오면 컨테이너의 `metrics_port`.
 - 그 컨테이너가 존재하는 호스트(`registry.container_hosts`)마다 static_config 하나 — 주소는 R1: Prometheus가 도는
   호스트면 `127.0.0.1`, 아니면 그 호스트의 `addr`; 포트는 `connection`(`scheme://{host}:<port>`)의 포트;
   `labels: {host: <호스트 이름>}`. 호스트를 하나 더하면 코드 수정 없이 static_config만 늘어난다.
@@ -53,7 +54,8 @@ def derived_scrape_configs(config: Mapping[str, Any]) -> list[dict[str, Any]]:
         path = spec.get("metrics_path")
         if path is None:
             continue
-        port = registry.HOST_URL.fullmatch(spec["connection"]).group(1)  # 형태는 로더가 강제한다
+        # metrics가 connection과 다른 포트에서 나오면 `metrics_port`(T-MGR-04r), 아니면 connection의 포트(형태는 로더가 강제한다).
+        port = spec.get("metrics_port") or registry.HOST_URL.fullmatch(spec["connection"]).group(1)
         present = registry.container_hosts(name, config)
         static_configs = [
             {
