@@ -43,7 +43,12 @@ fixture 오류였고 raising=False로 수정했다. 최초 명령의 registry �
 
 이 변경만으로 모든 저장소를 NVMe로 옮기지는 않는다. 설치자가 HOME/state/source/logs/cache/
 venv/Node 빌드 경로와 Docker data-root를 NVMe에 배치해야 한다. Manager DB 기본 상대 경로도
-설치 소스 위치에 의존하므로 실제 설치 root가 NVMe인지 확인한다. DB 기본값은 변경하지 않는다.
+설치 소스 위치에 의존한다. backend/src/kor_travel_docker_manager/database.py는 실제
+__file__ 디렉터리에서 ../../../../pinvi_metrics.db의 abspath를 계산하므로, 새 release/venv의
+설치 layout이 바뀌면 예상과 다른 상위 디렉터리가 선택될 수 있다. state root의 이전과 별개로
+운영자가 실제 실행본의 계산된 DB_PATH 및 symlink를 해석한 최종 파일 경로·mount를 확인하고,
+DB 본체와 존재하는 -wal/-shm(또는 -journal) 파일의 보존·NVMe 배치도 따로 확인한다.
+이 PR은 DB 기본값이나 파일을 이전하지 않으며 DB 모듈을 실행한 실제 경로 검증도 수행하지 않았다.
 
 
 ## 독립 리뷰 후 경로 이탈 보완
