@@ -16,6 +16,18 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-10-17 — T-MGR-04r(Prometheus 잔여) 완료
+
+`docs/tasks.md`에서 **문구 그대로** 옮겼다(첫 줄 `[ ]`→`[x]`, 머지·적용 결과를 덧붙임).
+
+- [x] **T-MGR-04r — Prometheus 잔여(T-MGR-04 #492 뒤)**. `weather-code-server`(14103)·`weather-federate` job, transport code-server registry 등록, geo-ui `12505` scrape 여부(odroid 방화벽 뒤). Manager 자신의 호스트별 job은 T-MGR-NH NH-6, alert rule(`count(up{host})`·디스크·시계)은 `docs/multi-host.md` §5 deferred. 규모 S. **2026-10-17 구현(PR, 리뷰·머지 대기)**: weather code-server를 `metrics_port`(odroid `12203`, n150에서 200 실측)로 registry 파생 job에 넣었다; weather 자체 Prometheus가 odroid에 없어(14104 리스너 없음) **weather-federate는 두지 않는다**(weather 메트릭 접두사도 `weather_*`가 아니라 `ktw_*`); transport code-server 등록은 **뺐다**(#512 리뷰 F1 — `config_files`의 `docker-compose.yml`에 그 서비스가 없어 `status transport`가 실패한다; transport shared overlay 작업 때 다시); geo-ui `12505`는 계속 수집하고 odroid 방화벽 표에 n150 허용을 적었다(`ports.md`). **완료**: #512 머지, n150 Prometheus 적용·reload 뒤 target 9개 모두 up. 남은 alert rule은 활성 원장 `T-MGR-04r 잔여` 한 줄(`multi-host.md` §5 deferred).
+
+## 2026-10-17 — T-MGR-NH 잔여(NH-6) 완료
+
+`docs/tasks.md`에서 **문구 그대로** 옮겼다(첫 줄 `[ ]`→`[x]`, 머지·적용 결과를 덧붙임).
+
+- [x] **T-MGR-NH 잔여 — NH-6(`docs/multi-host.md` §4)**. NH-7(런북)은 2026-10-17 `prod-deployment.md` §10으로 완료. NH-6: Prometheus의 Manager job을 registry 파생으로(호스트마다 static_config) — **2026-10-17 구현(PR, 리뷰·머지 대기)**: odroid Manager가 설치돼 n150에서 `http://192.168.1.13:12901/metrics` 200 확인. 머지 뒤 n150 Prometheus reload(`ensure prom` 또는 `/-/reload`)로 `up{job="kor-travel-docker-manager",host="odroid"}==1` 확인. deferred 목록은 §5. 규모 S. **완료**: #524 머지(`76387c8f`), n150 Prometheus 적용·reload 뒤 target 9개 모두 up(odroid Manager `192.168.1.13:12901` 포함). T-MGR-NH 시리즈(NH-1~8) 종료.
+
 ## 2026-10-17 — 활성 원장 정리: ADR-58 T-MGR·T-MGR-NH 완료분과 남아 있던 완료 항목
 
 `docs/tasks.md`(활성 작업만 두는 원장)에 남아 있던 완료 항목을 **문구 그대로** 옮겼다. T-MGR 항목은 첫 줄의 `[ ]`를 `[x]`로
