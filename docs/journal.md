@@ -17,6 +17,12 @@
 
 ---
 
+## 2026-10-17 — PR521 최신 main 통합 준비
+
+- 최신 main20b의 포트·관측 파생과 완료 원장을 ordinary merge하고 기존 기능 변경은 보존한다.
+- 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
+
+
 ## 2026-10-17 — NH-6 Manager Prometheus job을 호스트마다 파생
 
 - 전제 확인(읽기 전용): odroid에 Manager가 설치됐고(codex RC), n150에서 `http://192.168.1.13:12901/metrics`가 200
@@ -27,6 +33,34 @@
 - `prometheus.yml`: odroid static_config 1개 추가(`192.168.1.13:12901`). compose 변화 없음.
 - 테스트(n150 per-clone venv): 대상 21 PASS. 빨강 확인 4건 — odroid static_config 삭제, main의 옛 파일, unit `--port`
   변경, 손 job 추가가 모두 빨갛다.
+
+## 2026-10-17 — PR521 fallback label 경로 이탈 수정
+
+- 독립 리뷰가 b631e5a의 절대/상대 label로 mkstemp가 state 밖 파일을 만들 수 있음을 재현했다.
+- 현재 private helper 내부 caller0/실제 env_file memfd-only는 영향 없지만 state 한정 계약을
+  지키도록 디스크 fallback prefix만 고정했다. memfd label과 나머지 제품 동작은 그대로다.
+- 실제 자기 scratch 경로 회귀2FAIL→전체격리16PASS/backend Ruff 확인. 원 실패 및 원문 보존,
+  전체 suite·운영/NVMe 검증 미실시는 유지한다.
+
+
+## 2026-10-17 — NVMe 빌드 임시 경로 구현(PR521)
+
+- 기존 frozen state root 아래0700 임시 디렉터리와0600/unlinked fallback 파일을 사용한다.
+  Map buildx 두 호출에 같은 TMPDIR를 전달하며 기존 Docker/XDG 환경과 argv를 보존한다.
+- 실제 env_file의 memfd-only 경로·source cache·DB 기본값·기동 조건은 변경하지 않는다.
+- 신규 격리14회귀/backend Ruff 통과, parent 실제 함수2RED→새 함수2GREEN을 확인했다.
+  기존 단일test 직접 실행의 registry 경로 오류/fixture 부재와 초기 mock6실패는 별도 이력으로 남겼다.
+- 전체 suite·실제 NVMe 배포·Docker 빌드·eMMC 쓰기 측정은 미실시다.
+  [검증 방법과 운영 경계](nvme-build-staging.md)에 입력/cleanup/설치 주의점을 기록했다.
+
+
+## 2026-10-17 — NVMe 빌드 임시 경로 설계
+
+- 최신 main c1c7674의 별도 feature worktree에서 설계 초안을 작성했다.
+- 기존 state 경로 계약을 재사용하고 memfd fallback 및 Map buildx TMPDIR만 소유한다.
+- source cache/DB 기본값/서비스 기동 조건/다른 작업 트리는 변경하지 않는다.
+- 실제 운영·Docker·DB 접근 없이 로컬 회귀로 검증하며 운영 적용은 별도다.
+
 
 ## 2026-10-17 — PR515 기본 off metric 범위 보존
 
