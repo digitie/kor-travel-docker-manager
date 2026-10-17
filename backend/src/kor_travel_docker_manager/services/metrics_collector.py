@@ -328,10 +328,11 @@ class MetricsCollector:
         network_settings = _as_mapping(attrs.get("NetworkSettings"))
         image, image_id = _image_metadata(container, attrs)
         state_name = _container_status(container, attrs)
-        old = self._container_observations.get(container_id, self._default_observation(container_id))
+        default = self._default_observation(container_id)
+        old = self._container_observations.get(container_id, default)
         raw_exit_code = state.get("ExitCode")
         return {
-            **self._default_observation(container_id),
+            **default,
             "state": state_name,
             "health": _health_status(state.get("Health")),
             "running": _as_bool(state.get("Running")) or state_name == "running",
