@@ -16,6 +16,12 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-10-17 — T-MGR-02r 닫음(실측 결과 n150 변경 없음)
+
+`docs/tasks.md`에서 **문구 그대로** 옮겼다(첫 줄 `[ ]`→`[x]`, 실측 근거를 덧붙임).
+
+- [x] **T-MGR-02r — `dagster.yaml` location 상한 1회 조정(ADR-58 결정 7)**. `tag_concurrency_limits`의 location 값(geo 1·weather 2 — n150 실측 매시 run p95 < 5 min일 때, 아니면 1·transport 3)과 instance digest anchor 한 자리 갱신을 한 번에. 실측이 선행 조건이라 T-MGR-02(#494)에서 뺐다. 규모 S. **닫음(2026-10-17, 변경 없음)**: n150 공용 Dagster run 이력 14일(GraphQL `runsOrError`, 2026-10-03T08Z~10-17T08Z, 19,845 run)을 location별로 실측했다. geo·weather·transport는 10-14~15에 odroid plane으로 옮겨 n150에서 마지막 run이 각각 10-15T02:15Z·10-14T21:05Z·10-14T21:10Z이고, n150 workspace에는 map·pinvi·concierge 세 location만 LOADED다. 세 location은 상한에 닿은 적이 없다 — pinvi(3,726 run, 전부 schedule: duration p95 24 s·max 746 s, 동시 실행 최대 4 / 상한 10), concierge(6,097 run: p95 20 s·max 1,023 s, 최대 2 / location 상한 2 + job별 1 — 설계대로 무는 상한), map(9 run뿐 — 10-03·10-12, p95 3,480 s, 최대 1 / 상한 10). 세 location 합산 동시 실행은 최대 4(시간의 93 %가 0, 6.3 %가 1), queue 대기 p95 26.7 s·p99 81 s(geo 이전 뒤 10-15T03Z~: p95 21 s·max 90 s)라 전역 `max_concurrent_runs: 12`도 멀다. ADR-58 결정 7도 map·pinvi·concierge·12는 불변이다. 그래서 n150 기준으로는 조정할 상한이 없다. **odroid 쪽은 범위 밖**: 결정 7의 geo 1·weather 2/1·transport 3은 odroid 호스트 보호용이고 odroid plane은 codex 영역이다. 같은 `dagster.yaml` 한 벌을 두 plane이 읽으므로, 바꾸면 instance digest가 바뀌어 **두 plane 모두** 재생성된다(n150은 `ktdctl dagster-plane converge --dry-run` → `--confirm`). 참고 수치(n150 시절 같은 14일): weather 매시 job p95가 5 min을 넘는다(airkorea 1,128 s·kma 초단기예보 1,199 s·특보 852 s·초단기실황 502 s) — 결정 7 규칙대로면 weather 1이지만, 이미 `kortravelweather/run_group=external_weather` 3이 대기 최대 80 min을 만들고 있어(10-03T21:15Z·10-14T00:15Z) 1로 내리면 매시 job이 한 시간 안에 끝나지 않을 수 있다 — odroid 실측으로 정할 일이다. transport는 최대 3(상한 3)·geo는 최대 2였다. `dagster.yaml:140` 주석의 태그 테넌트 목록에서 geo가 빠진 것도 그때 함께 고친다(주석만 바꿔도 digest가 바뀐다).
+
 ## 2026-10-17 — T-MGR-04r(Prometheus 잔여) 완료
 
 `docs/tasks.md`에서 **문구 그대로** 옮겼다(첫 줄 `[ ]`→`[x]`, 머지·적용 결과를 덧붙임).
