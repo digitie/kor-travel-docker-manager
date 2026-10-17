@@ -17,6 +17,18 @@
 
 ---
 
+## 2026-10-17 — T-MGR-02r 실측: n150 plane의 location 상한은 바꾸지 않는다
+
+- 읽기 전용: n150 공용 webserver GraphQL(`127.0.0.1:11002`) `runsOrError`로 14일 19,845 run(SUCCESS 19,158·FAILURE 686·CANCELED 1).
+  location은 `dagster/code_location` tag, duration = end − start, queue 대기 = start − creation, 동시 실행은 구간 sweep(시간 비율).
+- n150 workspace는 map·pinvi·concierge만 LOADED. geo·weather·transport의 n150 마지막 run은 10-15T02:15Z·10-14T21:05Z·10-14T21:10Z.
+- 남은 세 location: pinvi p95 24 s·최대 동시 4(상한 10), concierge p95 20 s·최대 2(상한 2, 의도된 상한), map 9 run·최대 1(상한 10).
+  합산 최대 동시 4, 대기 p95 26.7 s·p99 81 s → 전역 12도 멀다. 결정 7도 이 셋과 12는 불변 → **변경 없음, T-MGR-02r 닫음**(doc-only).
+- odroid(geo·weather·transport 상한)는 범위 밖(codex). 참고로 n150 시절 weather 매시 job p95 > 5 min(airkorea 1,128 s·초단기예보 1,199 s),
+  external_weather 3이 이미 대기 최대 80 min — 결정 7 규칙(weather 1)을 그대로 적용하기 전에 odroid 실측이 필요하다. `dagster.yaml`은
+  두 plane이 한 벌을 읽어 바꾸면 둘 다 재생성된다.
+
+
 ## 2026-10-17 — NH-6 Manager Prometheus job을 호스트마다 파생
 
 - 전제 확인(읽기 전용): odroid에 Manager가 설치됐고(codex RC), n150에서 `http://192.168.1.13:12901/metrics`가 200
