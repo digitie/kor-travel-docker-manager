@@ -242,3 +242,18 @@ pin 회전처럼 **backend가 물리적으로 실행할 수 없는** 조작은 C
 - [ ] 새 패널이 ESC·포커스·`aria-*`를 갖췄고 진입점 두 곳에 등록됐다.
 - [ ] `npm run type-check`, `npm run lint`, `npm run build` 통과 (WSL에서 실행).
 - [ ] 화면 변경은 n150 live에서 확인했다(Playwright는 n150 Linux 우선).
+
+## 9. 로그아웃 중 읽기와 소켓의 경계
+
+로그아웃 시작부터 인증 재조회가 끝날 때까지 대시보드의 보호된 읽기와 상태·로그
+WebSocket을 비활성화한다. 기존 containers 요청은 AbortSignal로 취소하고 취소 완료 후
+로그아웃 POST를 보낸다. 성공 뒤 인증 재조회로 로그인 화면에 전환하고, 요청 실패 뒤에는
+실제 세션을 다시 확인하여 살아 있는 세션의 관측을 복구한다. 가짜 미인증 성공이나 401
+무시는 사용하지 않는다.
+
+기존 source는 onSettled에서 WebSocket 연결 상태를 먼저 false로 바꾸고 auth 재조회를
+기다렸다. 그 사이 기존 authenticated=true가 남아 HTTP 폴링이 다시 켜질 수 있었다.
+이 설계는 그 전환을 별도 pending 상태로 막는다. 아직 구현·집중 회귀·실제 배포는 후속이다.
+root의 공개 UI r9 결과는 46/48이며 Cookie Strict와 로그아웃 중 containers 401 집계가
+남았다. 이 변경은 쿠키 정책이나 하니스 기준을 완화하지 않으며 실제 UI 재검증은 root가
+수행한다.

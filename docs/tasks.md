@@ -6,6 +6,7 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
+- [ ] **T-MGR-LOGOUT-READ — 로그아웃 폴링 재진입 차단**. pending 읽기·WS 경계와 AbortSignal/POST 전 취소·성공 및 실패 세션 회복을 별도 PR로 구현·검증한다. 46/48 공개 UI 원문은 보존하며 Cookie 정책·하니스 기준은 바꾸지 않는다. 독립2리뷰·CI·root 실제 UI는 후속이다. [규약](dashboard-ui.md#9-로그아웃-중-읽기와-소켓의-경계).
 - [ ] **T-MGR-CADV-BUDGET — cAdvisor 관측 비용 설정(PR515)**. housekeeping30s/기존10+기본off4 합집합14를source에명시, 다른서비스·HC·이미지·resources보존. old1RED→관련26PASS/Ruff/전체모델2arg외동일 확인. 두독립리뷰·CI·merge·root실제binary지원확인/10→14적용·healthURL정합·CPU실측후속. 초기10항목의재시작불필요판정은최종14적용에확대하지않음. [범위·한계](cadvisor-observer-budget.md).
 - [ ] **T-MGR-DAEMON-HC — 공용 daemon 점검·빌드 cache 후속(PR511)**. interval360/start_interval45, 원 liveness·digest·heartbeat300 보존, shared-plane945초 대기와 Common37 stdlib checked-hash 빌드 준비 source 구현. 필수 전체 회귀·독립2리뷰·CI·운영 적용/비교는 후속이다. [범위와 제한](daemon-health-cadence.md).
 - [ ] **T-MGR-HC-CADENCE — 상태 점검 간격 정본 정합(PR505)**. 기존8개 interval의 source/회귀 구현, 기존 health·PG·참조134PASS/구조대조 및 CI실패를 정산한 frozen health 기반 rebuild wait·249회귀 완료. 독립2리뷰·CI·머지와 운영 Config 적용·동일 구성 CPU 측정은 후속이다. [범위와 적용 경계](health-cadence.md).

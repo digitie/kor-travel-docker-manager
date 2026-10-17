@@ -17,6 +17,16 @@
 
 ---
 
+## 2026-10-17 — 로그아웃 폴링 재진입 수정 준비
+
+- 최신 main e84f3ce의 별도 feature worktree에서 onSettled의 WS false→auth 재조회
+  사이 containers 폴링 재활성화 경로를 확인했다. 실제 callback/options 제어 Promise
+  모형 9조건으로 재현했으며 운영·브라우저·private 접근은 없다.
+- logout pending부터 보호 읽기/WS를 잠시 끄고 요청 취소 완료 뒤 POST를 보내는 최소안을
+  구현한다. 성공/실패 세션 회복 회귀, 독립2리뷰와 root 공개 UI는 후속이다.
+- 기존 r9 46/48 결과와 Cookie Strict 실패를 보존하고 하니스401 예외는 늘리지 않는다.
+
+
 ## 2026-10-17 — T-MGR-02r 실측: n150 plane의 location 상한은 바꾸지 않는다
 
 - 읽기 전용: n150 공용 webserver GraphQL(`127.0.0.1:11002`) `runsOrError`로 14일 19,845 run(SUCCESS 19,158·FAILURE 686·CANCELED 1).
