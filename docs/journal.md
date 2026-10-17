@@ -17,6 +17,17 @@
 
 ---
 
+## 2026-10-17 — NH-6 Manager Prometheus job을 호스트마다 파생
+
+- 전제 확인(읽기 전용): odroid에 Manager가 설치됐고(codex RC), n150에서 `http://192.168.1.13:12901/metrics`가 200
+  (`text/plain; version=0.0.4`, `ktdm_up 1`)이다. 먼저 머지하면 `up=0`이던 조건이 풀렸다.
+- `services/prometheus_targets.py`: 손으로 쓰던 `kor-travel-docker-manager` job을 파생에 넣었다. Manager는 선언된 모든
+  호스트에서 돈다(ADR-58 결정 2) → `hosts:` 순서로 static_config 하나씩(R1 주소·`host` label). 포트는 backend를 띄우는
+  `deploy/systemd/ktdm-backend.service`의 `ExecStart … --port`에서 읽는다(없거나 둘이면 거부). `NON_REGISTRY_JOBS`는 없앴다.
+- `prometheus.yml`: odroid static_config 1개 추가(`192.168.1.13:12901`). compose 변화 없음.
+- 테스트(n150 per-clone venv): 대상 21 PASS. 빨강 확인 4건 — odroid static_config 삭제, main의 옛 파일, unit `--port`
+  변경, 손 job 추가가 모두 빨갛다.
+
 ## 2026-10-17 — PR515 기본 off metric 범위 보존
 
 - 초기10항목 지속화 뒤 독립검토에서 disable_metrics가기본집합에추가가아닌
