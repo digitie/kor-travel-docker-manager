@@ -362,6 +362,19 @@ sudo install -o root -g root -m 0600 <prepared-.env> /opt/ktdm-release-bootstrap
 sudo ln -s ktdm-release-bootstrap /opt/kor-travel-docker-manager
 ```
 
+**release를 데이터 디스크에 두는 호스트**(루트 디스크가 작은 경우 — odroid). installer는 release root를 설치 root symlink에서 정한다:
+상대 symlink면 `/opt`, **절대 symlink면 그 대상의 상위 디렉터리**다. 그 디렉터리까지의 모든 경로 성분은 root 소유·group/other 쓰기
+없음·symlink 아님이어야 한다(installer가 검사하고 아니면 멈춘다). 데이터 디스크의 마운트 지점이 그 조건을 못 지키면(예: 0777) root
+소유 디렉터리를 bind mount로 root 경로(`/srv/...`)에 붙인다. bootstrap release를 그 아래에 두고 절대 symlink로 가리킨다:
+
+```bash
+sudo install -d -o root -g root -m 0755 /srv/ktdm-releases/ktdm-release-bootstrap
+sudo install -o root -g root -m 0600 <prepared-.env> /srv/ktdm-releases/ktdm-release-bootstrap/.env
+sudo ln -s /srv/ktdm-releases/ktdm-release-bootstrap /opt/kor-travel-docker-manager
+```
+
+이후 설치는 같은 root(`/srv/ktdm-releases`)에 release를 만들고 절대 symlink로 넘기며, GC도 그 root 안에서만 한다.
+
 ### 3.1 Debian `poetry-core` build dependency를 포함한 wheelhouse 발행
 
 trusted installer는 source의 backend를 오프라인으로 build해 설치하므로, wheelhouse에는 runtime
@@ -446,13 +459,56 @@ commit을 포함한 새 root-owned destination을 선택하고, provisioner와 i
 전달한다. 이 경로도 pre-existing이면 새 이름을 정해 다시 root operator attestation을 받아야 한다.
 
 wheel을 인터넷에서 내려받거나, home/user-writable 경로에서 복사하거나, `pip install`로 wheelhouse를
-수정해서는 안 된다. `dpkg --verify` 실패, package metadata 불일치, source/destination 권한 drift도
+수정해서는 안 된다. 예외는 아래 "arm64 호스트" 절차 하나뿐이다(소유자 승인 2026-10-17 — 컴파일 wheel만,
+n150과 같은 버전만). `dpkg --verify` 실패, package metadata 불일치, source/destination 권한 drift도
 모두 installer 재시도보다 먼저 해결해야 할 fail-close 조건이다.
 
 원본 wheelhouse는 poetry-core wheel이 **없는** root 소유 디렉터리여야 한다(도구가 원본에 poetry-core가
 있으면 섞이지 않게 멈춘다). 발행된 wheelhouse에서 다시 만들 때는 `poetry_core-*.whl`을 뺀 사본을 root
 소유 0755 디렉터리로 만들어 원본으로 준다. 새 destination을 발행했으면 installer에
 `--wheelhouse "${WHEELHOUSE_DESTINATION}"`로 넘긴다.
+
+#### arm64 호스트(odroid) — 원본 wheelhouse 만들기
+
+n150 wheelhouse는 amd64라 그대로 쓸 수 없다. 2026-10-17 기준 n150 wheelhouse 25개 중 컴파일 wheel은 5개(`charset_normalizer`·
+`greenlet`·`pydantic_core`·`pyyaml`·`sqlalchemy`, 모두 `cp314-…-x86_64`)이고, 나머지는 `py3-none-any`(그중 하나는 provisioner가
+만든 `poetry_core`)다. 그래서 arm64 호스트의 원본 wheelhouse는 **pure wheel은 n150에서 복사·SHA-256 대조**, **컴파일 wheel만 그
+호스트에서 n150과 같은 버전으로 root가 받는다**. 그 뒤는 위 provisioner·installer 절차와 같다.
+
+전제: 그 호스트의 `python3`가 n150과 **같은 minor**다(`cp314` — odroid 3.14.4). 다르면 컴파일 wheel tag가 맞지 않고, pure wheel의
+의존 조건도 달라질 수 있으므로 멈춘다. Debian `python3-poetry-core`는 apt로 설치한다(provisioner가 `dpkg --verify`로 확인한다).
+`python3 -m pip --version`이 돌아야 한다(`download`만 쓴다 — 시스템 site-packages에 설치하지 않는다).
+
+```bash
+SRC=/var/lib/kor-travel-docker-manager/wheelhouse-src-arm64   # root 0755, poetry_core 없음
+# n150(root): poetry_core를 뺀 목록과 pure wheel의 SHA-256을 만든다.
+sudo -n sh -c 'cd /var/lib/kor-travel-docker-manager/wheelhouse && ls | grep -v "^poetry_core-" | sort' > n150-wheels.txt
+grep -- '-none-any\.whl$' n150-wheels.txt \
+  | sudo -n sh -c 'cd /var/lib/kor-travel-docker-manager/wheelhouse && xargs sha256sum' > n150-pure.sha256
+# 그 호스트(root): 원본 디렉터리를 root 소유로 만든다.
+sudo -n install -d -o root -g root -m 0755 "${SRC}"
+# ① pure wheel: n150 파일을 옮겨 root 0644로 두고, n150에서 만든 SHA-256과 대조한다(하나라도 다르면 멈춘다).
+sudo -n install -o root -g root -m 0644 <n150에서-옮긴-pure-wheel들> "${SRC}/"
+(cd "${SRC}" && sudo -n sha256sum -c --strict "${OLDPWD}/n150-pure.sha256")
+# ② 컴파일 wheel: n150 파일 이름에서 이름==버전을 얻어, 그 호스트에서 바이너리만·의존 없이 받는다.
+grep -v -- '-none-any\.whl$' n150-wheels.txt | while read -r f; do
+  IFS=- read -r name ver _ <<<"${f}"
+  sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+    /usr/bin/python3 -m pip download --no-cache-dir --only-binary=:all: --no-deps -d "${SRC}" "${name}==${ver}"
+done
+sudo -n chown root:root "${SRC}"/*.whl && sudo -n chmod 0644 "${SRC}"/*.whl
+# 대조: 배포판 이름·버전 집합이 n150(poetry_core 제외)과 같다(개수 포함). 받은 컴파일 wheel의 SHA-256은 기록해 둔다.
+diff <(cut -d- -f1,2 n150-wheels.txt | tr A-Z a-z) \
+     <(sudo -n ls "${SRC}" | grep '\.whl$' | cut -d- -f1,2 | tr A-Z a-z | sort)
+sudo -n sha256sum "${SRC}"/*.whl | grep -v -- '-none-any\.whl$'
+```
+
+규칙:
+- `--only-binary=:all:`(sdist를 빌드하지 않는다)와 `--no-deps`(n150에 없는 패키지를 들이지 않는다)를 반드시 붙인다. 위 diff가
+  비어 있지 않으면 멈춘다. 받을 수 없는 버전이 있으면(aarch64 wheel 미배포) 다른 버전으로 바꾸지 말고 멈춘다 — 버전은 lock이 정한다.
+- 원본에는 `poetry_core-*`를 넣지 않는다(provisioner가 섞임을 거부한다). 그 뒤 provisioner를 `--source-wheelhouse "${SRC}"`로 돌리고,
+  발행된 destination을 installer `--wheelhouse`로 넘긴다.
+- n150 wheelhouse가 바뀌면(lock 변경) 이 원본도 같은 절차로 **새 디렉터리**에 다시 만든다. 기존 디렉터리를 고치지 않는다.
 
 ### 3.2 백엔드 서비스
 
@@ -1035,6 +1091,9 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane co
    정의는 Portainer 볼륨 안일 개연성) ③ 저장한 inspect로 Plex 재생성 dry-run ④ 그 뒤에만 Portainer 컨테이너 stop·rm(**볼륨 유지,
    `volume prune` 금지**) ⑤ parking-radar만 `compose down` + 그 이미지만 `rmi`(`image prune -a` 금지 — Plex 이미지) ⑥ HAProxy `pr2`
    제거. Plex·Samba·webvnc-router·8080·1994·UDP 리스너는 건드리지 않는다.
+   **`media` named volume 주의**: 이 volume은 `/mnt/media` **전체**를 bind한다(2026-10-17 실측 — 지금은 쓰는 컨테이너 없음). 어떤
+   컨테이너에 붙이면 `/mnt/media/kor-travel`(PG·geo·weather 데이터)과 `/mnt/media/ktdm`(Manager release·state)까지 그 컨테이너에
+   보이고 쓰인다. 다시 쓸 때는 필요한 하위 디렉터리만 bind하는 volume으로 바꾼다. `volume rm`·prune으로 지우지도 않는다.
 7. **방화벽(추천 (가) — §14-28 소유자 결정; (나)면 보존 서비스 TCP+UDP 허용 행 필수, `ports.md`)**: root `nft list ruleset`·`iptables-save` 기록 → `table inet ktm`만 적용(`flush ruleset` 금지) →
    `nftables.service` enable(docker.service보다 먼저) → n150·제3 LAN 호스트에서 `nc -z` 매트릭스(열림·닫힘 둘 다) + 보존 효과
    (재부팅 전후 TCP+UDP listen 집합 동일 ∧ Plex 자동 검색 ∧ `nc -zu` 137/1900) + `iptables -t nat -S DOCKER` 존재 — **재부팅 뒤 한 번 더**.
