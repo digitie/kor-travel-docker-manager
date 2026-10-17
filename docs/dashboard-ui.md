@@ -242,3 +242,46 @@ pin 회전처럼 **backend가 물리적으로 실행할 수 없는** 조작은 C
 - [ ] 새 패널이 ESC·포커스·`aria-*`를 갖췄고 진입점 두 곳에 등록됐다.
 - [ ] `npm run type-check`, `npm run lint`, `npm run build` 통과 (WSL에서 실행).
 - [ ] 화면 변경은 n150 live에서 확인했다(Playwright는 n150 Linux 우선).
+
+## 9. 로그아웃 중 읽기와 소켓의 경계
+
+로그아웃 시작부터 인증 재조회가 끝날 때까지 대시보드의 보호된 읽기와 상태·로그
+WebSocket을 비활성화한다. 기존 containers 요청은 AbortSignal로 취소하고 취소 완료 후
+로그아웃 POST를 보낸다. 성공 뒤 인증 재조회로 로그인 화면에 전환하고, 요청 실패 뒤에는
+실제 세션을 다시 확인하여 살아 있는 세션의 관측을 복구한다. 가짜 미인증 성공이나 401
+무시는 사용하지 않는다.
+
+기존 source는 onSettled에서 WebSocket 연결 상태를 먼저 false로 바꾸고 auth 재조회를
+기다렸다. 그 사이 기존 authenticated=true가 남아 HTTP 폴링이 다시 켜질 수 있었다.
+구현은 그 전환을 별도 pending 상태로 막는다. containers·targets·disk-usage·metrics-history
+읽기는 query의 AbortSignal을 fetch에 전달하고 POST 전에 취소를 기다린다. 인증 재조회가
+실패하면 이전 캐시로 관측을 재개하지 않고 오류를 표시하며 로그아웃 재시도는 허용한다.
+이 범위는 DashboardClient가 소유한 읽기와 상태·로그 소켓이며 이미 서버에서 시작된
+관측 연산을 강제 종료한다는 보장은 아니다. API·세션 서버 정책은 바꾸지 않는다.
+
+실제 QueryClientProvider와 제어된 fetch/인증 Promise/소켓 회귀 9개, frontend 전체44개,
+타입 검사·lint·build와 backend Ruff를 확인했다. backend 전체 pytest와 실제 배포/UI는
+수행하지 않았다. 패널이나 다른 사용자의 이미 진행 중인 작업 취소 기능을 추가하지 않았다.
+root의 공개 UI r9 결과는 46/48이며 Cookie Strict와 로그아웃 중 containers 401 집계가
+남았다. 이 변경은 쿠키 정책이나 하니스 기준을 완화하지 않으며 실제 UI 재검증은 root가
+수행한다.
+
+로그아웃 뒤 인증 재확인이 실패해 관측 차단이 남은 상태에서, 후속 인증 만료로 로그인
+화면이 표시될 수 있다. 새 로그인 성공 때도 auth-me 재조회가 authenticated=true로 확인된
+경우에만 그 표식을 해제한다. 재조회 오류·미인증 응답은 해제하지 않는다. 최초 구현의
+재로그인 후 차단 잔존 P2를 실제 QueryClient/로그인 폼 회귀로 재현한 뒤 수정했으며,
+기존 실패·검증 이력은 journal에 보존한다.
+
+
+앱 로그아웃 버튼의 pending 비활성화만으로는 빠른 명령이나 같은 렌더 프레임의 두 번째
+실행을 막을 수 없다. 두 진입점은 같은 동기 in-flight ref를 먼저 획득한 뒤 mutation을
+시작한다. 인증 재확인까지의 성공·오류 처리가 끝난 finally에서만 ref를 해제하므로,
+POST만 끝나고 인증 확인이 진행 중인 틈에도 새 로그아웃은 보내지 않는다. 재확인 실패 시
+읽기 차단 표식은 유지하되 in-flight ref는 해제하여 다음 의도적인 재시도는 허용한다.
+기존 새 로그인 후 authenticated=true 확인에 따른 관측 회복 정책은 그대로다.
+
+독립 리뷰에서 버튼→빠른 명령의 중복 POST 뒤 첫 요청의 settle가 두 번째 요청 중
+관측을 다시 켜는 반례를 확인했다. 동일 실제 QueryClient 회귀에서 원본7PASS+신규2FAIL,
+수정 뒤9PASS이며 같은 프레임의 빠른 명령 두 번도 요청 하나만 생성한다. 기존8ff8 후보
+빌드와 이 추가 source 수정을 구분하며, 배포 전 새 후보 빌드와 두 독립 closure/정식 n150
+UI는 후속이다. WSL의 원46/48 실패를 정식 환경 수용이나 이번 수정의 UI 성공으로 세지 않는다.

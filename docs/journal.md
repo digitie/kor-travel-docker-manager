@@ -17,6 +17,55 @@
 
 ---
 
+## 2026-10-17 — PR531 빠른 명령 중복 로그아웃 P2 수정
+
+- 독립 C의 M531-C-P2-01을 수용했다. 원8ff8에서 버튼 뒤 Ctrl+K 빠른 명령으로 두 번째
+  POST가 생기고 첫503/auth-true 정산이 남은 요청 중 관측을 여는 실제 반례를 재현했다.
+  C의 원문과 본인7PASS/1FAIL·읽기1→3/소켓2/POST2 로그는 보존한다.
+- 두 UI 진입점을 같은 동기 useRef guard로 묶었다. React pending 재렌더 전에도 중복을
+  막고 POST 이후 인증 재확인까지의 처리가 끝난 finally에서만 다음 시도를 허용한다.
+  재확인 오류 뒤 읽기 차단·명시 재시도와 새 로그인 회복의 기존 정책은 유지한다.
+- 고정 회귀2개는 원본7PASS/2FAIL→수정9PASS이며 버튼→명령·같은프레임2회·auth대기·
+  실패후의도재시도를 검증했다. frontend전체44PASS/11files,type/lint/build/backendRuff PASS.
+  backend 전체pytest·실제 UI/SDK/DB/서비스 조작은0이다.
+- 기존8ff8 native 후보 빌드만으로 새 source를 적용했다고 하지 않는다. 두 independent
+  closure·exactCI·root 새 frontend 빌드/정식 n150 UI는 후속이며 Cookie/harness 변경0이다.
+
+## 2026-10-17 — PR531 재로그인 관측 차단 잔존 P2 수정
+
+- 독립 리뷰 M531-D-P2-01: logout200→auth 재확인 장애→후속 미인증→새 로그인 뒤
+  차단 표식이 남아 관측이 꺼지는 반례를 수용했다. 원 c228077·최초 검증·리뷰와 실패는 보존한다.
+- 실제 QueryClient/로그인 폼에서 새1FAIL4PASS를 확인한 뒤, onLogin이 auth-me를
+  오류 전파 방식으로 재조회하여 authenticated=true일 때만 표식을 해제하도록 최소 수정했다.
+  재조회503·미인증 응답은 해제하지 않는 음성도 포함했다.
+- 제품529092a, 집중7PASS/frontend전체42PASS·type/lint/build PASS. backend와 쿠키·
+  하니스·운영 변경0이며 독립 closure·새CI·root 정식n150 live UI는 후속이다.
+
+
+## 2026-10-17 — PR531 로그아웃 관측 중단 구현·로컬 검증
+
+- 제품 a300ad4는 DashboardClient의 pending부터 보호 읽기/상태·로그 WS를 끄고,
+  4개 읽기 query의 실제 fetch AbortSignal 취소를 POST보다 먼저 완료한다.
+  auth 재조회 후 정상 세션은 복구하고 재조회 오류에는 읽기를 막고 재시도를 허용한다.
+- 실제 QueryClientProvider·제어 Promise 회귀에서 원본3FAIL→집중4PASS,
+  frontend 전체39PASS·type/lint/build·backend Ruff/diff 검사 PASS.
+  backend 전체 pytest·SDK/DB/Docker/원격/실제 UI 실행은 하지 않았다.
+- 초기 합성 disk 응답의 summary 누락, 토스트의 실제 부가 문구와 test exact 옵션
+  차이는 테스트만 정정했고 원 로그는 보존했다. 제품 판정 기준을 완화하지 않았다.
+- 기존 root r9 46/48과 Strict 실패는 그대로다. 독립2리뷰·CI·root 설치/새 공개 UI는
+  후속이며 525 backend 변경이나 하니스 변경을 이 PR에 섞지 않았다.
+
+
+## 2026-10-17 — 로그아웃 폴링 재진입 수정 준비
+
+- 최신 main e84f3ce의 별도 feature worktree에서 onSettled의 WS false→auth 재조회
+  사이 containers 폴링 재활성화 경로를 확인했다. 실제 callback/options 제어 Promise
+  모형 9조건으로 재현했으며 운영·브라우저·private 접근은 없다.
+- logout pending부터 보호 읽기/WS를 잠시 끄고 요청 취소 완료 뒤 POST를 보내는 최소안을
+  구현한다. 성공/실패 세션 회복 회귀, 독립2리뷰와 root 공개 UI는 후속이다.
+- 기존 r9 46/48 결과와 Cookie Strict 실패를 보존하고 하니스401 예외는 늘리지 않는다.
+
+
 ## 2026-10-17 — T-MGR-02r 실측: n150 plane의 location 상한은 바꾸지 않는다
 
 - 읽기 전용: n150 공용 webserver GraphQL(`127.0.0.1:11002`) `runsOrError`로 14일 19,845 run(SUCCESS 19,158·FAILURE 686·CANCELED 1).
