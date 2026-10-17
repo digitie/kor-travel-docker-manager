@@ -226,3 +226,73 @@ def test_image_lookup_failure_keeps_existing_fallback(configured, image_id, expe
 
     container = UnavailableImage(config_image=configured, image_id=image_id)
     assert ns["_image_metadata"](container, container.attrs) == expected
+
+
+@pytest.mark.parametrize("count", [1, 4, 16])
+@pytest.mark.parametrize(
+    "mode", ["running", "exited", "stats-error", "get-error", "not-found", "offline"]
+)
+def test_one_snapshot_derivation_for_entire_cycle(count, mode):
+    ns, template, _ = collector_fixture()
+    specs = {
+        f"app-{i}": {**template.specs["app"], "name": f"container-{i}"}
+        for i in range(count)
+    }
+    mapping = ResolvingMapping(specs)
+    ns["MANAGED_CONTAINERS"] = mapping
+    collector = ns["MetricsCollector"]()
+    mapping.resolves = mapping.spec_visits = 0
+
+    def get(name):
+        if mode == "not-found":
+            raise ns["NotFound"]("fixture")
+        if mode == "get-error":
+            raise RuntimeError("fixture")
+        container = Container("exited" if mode == "exited" else "running")
+        if mode == "stats-error":
+            container.stats_error = RuntimeError("fixture")
+        return container
+
+    def provider():
+        if mode == "offline":
+            raise RuntimeError("fixture")
+        return SimpleNamespace(containers=SimpleNamespace(get=get))
+
+    collector.set_docker_client_provider(provider)
+    asyncio.run(collector.collect_metrics())
+    assert mapping.resolves == 1
+    assert mapping.spec_visits == count
+    assert len(collector._container_observations) == count
+    for key in specs:
+        observation = collector.get_container_observation(key)
+        assert observation["container_name"] == specs[key]["name"]
+        assert observation["collection_success"] == (mode in {"running", "exited", "not-found"})
+
+
+def test_cycle_snapshot_consistency_and_next_cycle_invalidation():
+    ns, mapping, collector = collector_fixture()
+    mapping.specs["other"] = {**mapping.specs["app"], "name": "other-container"}
+
+    def get(name):
+        mapping.specs["app"]["display_name"] = "다음 cycle"
+        mapping.specs["other"]["display_name"] = "다음 cycle"
+        return Container("exited")
+
+    collector.set_docker_client_provider(
+        lambda: SimpleNamespace(containers=SimpleNamespace(get=get))
+    )
+    asyncio.run(collector.collect_metrics())
+    assert collector.get_container_observation("app")["display_name"] == "앱"
+    assert collector.get_container_observation("other")["display_name"] == "앱"
+    asyncio.run(collector.collect_metrics())
+    assert collector.get_container_observation("app")["display_name"] == "다음 cycle"
+    assert collector.get_container_observation("other")["display_name"] == "다음 cycle"
+    assert mapping.resolves == 2
+
+
+def test_explicit_empty_spec_is_not_treated_as_missing_snapshot():
+    ns, mapping, collector = collector_fixture()
+    result = collector._default_observation("app", spec={})
+    assert result["container_name"] == "app"
+    assert result["expected_ports"] == 0
+    assert mapping.resolves == 0
