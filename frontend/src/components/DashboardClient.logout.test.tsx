@@ -146,6 +146,17 @@ it('인증 재확인도 실패하면 이전 세션 캐시로 읽기를 재개하
   expect(Socket.instances).toHaveLength(1);
   expect(Socket.instances[0].readyState).toBe(3);
   expect(await screen.findByText(/^인증 상태 확인 실패/)).toBeInTheDocument();
+  const retry = deferred<Response>();
+  logoutQueue = [retry];
+  authNext = deferred<Response>();
+  fireEvent.click(screen.getByRole('button', { name: '로그아웃' }));
+  await waitFor(() => expect(steps).toHaveLength(2));
+  await act(async () => { await client.invalidateQueries({ queryKey: ['containers'] }); });
+  expect(containerCalls()).toBe(before);
+  await act(async () => { retry.resolve(json({ ok: true })); });
+  await act(async () => { authNext!.resolve(json({ detail: '미인증' }, 401)); });
+  await screen.findByLabelText('비밀번호');
+  expect(Socket.instances).toHaveLength(1);
 });
 
 it('로그아웃 재확인 장애 뒤 로그인 화면으로 전환됐다가 새 로그인하면 관측 차단을 해제한다', async () => {

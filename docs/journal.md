@@ -17,6 +17,20 @@
 
 ---
 
+## 2026-10-17 — PR531 빠른 명령 중복 로그아웃 P2 수정
+
+- 독립 C의 M531-C-P2-01을 수용했다. 원8ff8에서 버튼 뒤 Ctrl+K 빠른 명령으로 두 번째
+  POST가 생기고 첫503/auth-true 정산이 남은 요청 중 관측을 여는 실제 반례를 재현했다.
+  C의 원문과 본인7PASS/1FAIL·읽기1→3/소켓2/POST2 로그는 보존한다.
+- 두 UI 진입점을 같은 동기 useRef guard로 묶었다. React pending 재렌더 전에도 중복을
+  막고 POST 이후 인증 재확인까지의 처리가 끝난 finally에서만 다음 시도를 허용한다.
+  재확인 오류 뒤 읽기 차단·명시 재시도와 새 로그인 회복의 기존 정책은 유지한다.
+- 고정 회귀2개는 원본7PASS/2FAIL→수정9PASS이며 버튼→명령·같은프레임2회·auth대기·
+  실패후의도재시도를 검증했다. frontend전체44PASS/11files,type/lint/build/backendRuff PASS.
+  backend 전체pytest·실제 UI/SDK/DB/서비스 조작은0이다.
+- 기존8ff8 native 후보 빌드만으로 새 source를 적용했다고 하지 않는다. 두 independent
+  closure·exactCI·root 새 frontend 빌드/정식 n150 UI는 후속이며 Cookie/harness 변경0이다.
+
 ## 2026-10-17 — PR531 재로그인 관측 차단 잔존 P2 수정
 
 - 독립 리뷰 M531-D-P2-01: logout200→auth 재확인 장애→후속 미인증→새 로그인 뒤

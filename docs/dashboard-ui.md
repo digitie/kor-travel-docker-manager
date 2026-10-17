@@ -259,7 +259,7 @@ WebSocket을 비활성화한다. 기존 containers 요청은 AbortSignal로 취�
 이 범위는 DashboardClient가 소유한 읽기와 상태·로그 소켓이며 이미 서버에서 시작된
 관측 연산을 강제 종료한다는 보장은 아니다. API·세션 서버 정책은 바꾸지 않는다.
 
-실제 QueryClientProvider와 제어된 fetch/인증 Promise/소켓 회귀 7개, frontend 전체42개,
+실제 QueryClientProvider와 제어된 fetch/인증 Promise/소켓 회귀 9개, frontend 전체44개,
 타입 검사·lint·build와 backend Ruff를 확인했다. backend 전체 pytest와 실제 배포/UI는
 수행하지 않았다. 패널이나 다른 사용자의 이미 진행 중인 작업 취소 기능을 추가하지 않았다.
 root의 공개 UI r9 결과는 46/48이며 Cookie Strict와 로그아웃 중 containers 401 집계가
@@ -271,3 +271,17 @@ root의 공개 UI r9 결과는 46/48이며 Cookie Strict와 로그아웃 중 con
 경우에만 그 표식을 해제한다. 재조회 오류·미인증 응답은 해제하지 않는다. 최초 구현의
 재로그인 후 차단 잔존 P2를 실제 QueryClient/로그인 폼 회귀로 재현한 뒤 수정했으며,
 기존 실패·검증 이력은 journal에 보존한다.
+
+
+앱 로그아웃 버튼의 pending 비활성화만으로는 빠른 명령이나 같은 렌더 프레임의 두 번째
+실행을 막을 수 없다. 두 진입점은 같은 동기 in-flight ref를 먼저 획득한 뒤 mutation을
+시작한다. 인증 재확인까지의 성공·오류 처리가 끝난 finally에서만 ref를 해제하므로,
+POST만 끝나고 인증 확인이 진행 중인 틈에도 새 로그아웃은 보내지 않는다. 재확인 실패 시
+읽기 차단 표식은 유지하되 in-flight ref는 해제하여 다음 의도적인 재시도는 허용한다.
+기존 새 로그인 후 authenticated=true 확인에 따른 관측 회복 정책은 그대로다.
+
+독립 리뷰에서 버튼→빠른 명령의 중복 POST 뒤 첫 요청의 settle가 두 번째 요청 중
+관측을 다시 켜는 반례를 확인했다. 동일 실제 QueryClient 회귀에서 원본7PASS+신규2FAIL,
+수정 뒤9PASS이며 같은 프레임의 빠른 명령 두 번도 요청 하나만 생성한다. 기존8ff8 후보
+빌드와 이 추가 source 수정을 구분하며, 배포 전 새 후보 빌드와 두 독립 closure/정식 n150
+UI는 후속이다. WSL의 원46/48 실패를 정식 환경 수용이나 이번 수정의 UI 성공으로 세지 않는다.
