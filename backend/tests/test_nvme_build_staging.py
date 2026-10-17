@@ -135,6 +135,7 @@ def test_invalid_state_fails_before_build(functions, tmp_path, monkeypatch, unsa
         state.symlink_to(target)
     else:
         state.mkdir(mode=0o755)
+        state.chmod(0o755)  # 실행자 umask와 무관하게 잘못된 권한을 실제로 만든다.
     runner = Mock()
     monkeypatch.setattr(subprocess, "run", runner)
     with pytest.raises(RuntimeError):
