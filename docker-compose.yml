@@ -2438,17 +2438,15 @@ services:
     # odroid 호스트 측 `compose-mon.yml`과 같은 목록이다. 디스크 순회(disk·diskIO)·상세 네트워크(tcp·udp)·percpu 등이 꺼지고
     # 기본 cpu·memory·network rx/tx는 남는다. 저장소의 소비자는 중앙 Prometheus scrape뿐이다(rule·대시보드가 이 메트릭을
     # 쓰지 않는다 — Grafana에는 datasource만 있고, Manager 대시보드의 컨테이너 수치는 Docker stats API에서 온다).
+    # #515·#516이 겹쳐 같은 flag가 두 번 들어갔다(Go flag는 마지막 값을 쓴다 — 기본 off 4항목이 다시 켜졌다). 한 벌로 합친다:
+    # 수집 주기는 소유자 지시 15s(env로 덮어쓴다), 끄는 목록은 #515의 합집합 — 명시 목록은 기본 off 집합을 **대체**하므로
+    # 기본 off 항목(memory_numa·advtcp·process·cpuset)도 적어야 한다. docker_only는 root aggregate까지 0이라는 뜻이 아니다.
     command:
     - --logtostderr
     - --docker_only=true
-    # CPU 우선: 현재 운영30초를 유지한다(10~15초 예시보다 확인 빈도가 낮다).
-    # docker_only는 root aggregate까지0이라는 뜻이 아니다.
-    - --housekeeping_interval=30s
-    # 명시 목록은 기본집합을 대체하므로 기본 off 4항목도 유지한다.
+    - --housekeeping_interval=${CADVISOR_HOUSEKEEPING_INTERVAL:-15s}
     - --disable_metrics=percpu,sched,tcp,udp,disk,diskIO,hugetlb,referenced_memory,cpu_topology,resctrl,memory_numa,advtcp,process,cpuset
     - --port=${CADVISOR_PORT:-12103}
-    - --housekeeping_interval=${CADVISOR_HOUSEKEEPING_INTERVAL:-15s}
-    - --disable_metrics=percpu,sched,tcp,udp,disk,diskIO,hugetlb,referenced_memory,cpu_topology,resctrl
     healthcheck:
       test:
       - CMD-SHELL
