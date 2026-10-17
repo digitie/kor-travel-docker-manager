@@ -2821,5 +2821,9 @@ def test_cadvisor_runs_light_and_keeps_the_basic_metrics() -> None:
     disabled = next(arg for arg in command if arg.startswith("--disable_metrics=")).split("=", 1)[1].split(",")
     assert set(disabled) == {
         "percpu", "sched", "tcp", "udp", "disk", "diskIO", "hugetlb", "referenced_memory", "cpu_topology", "resctrl",
+        # 명시 목록은 기본 off 집합을 대체한다 — 기본 off 항목도 적는다(#515).
+        "memory_numa", "advtcp", "process", "cpuset",
     }
+    options = [argument.split("=", 1)[0] for argument in command]
+    assert len(options) == len(set(options)), "같은 flag가 두 번이면 마지막 값이 이긴다"
     assert not {"cpu", "memory", "network"} & set(disabled)

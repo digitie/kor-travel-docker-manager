@@ -25,7 +25,7 @@ def _command() -> list[str]:
 
 def test_collection_budget_preserves_original_args_and_has_no_conflicting_flags() -> None:
     command = _command()
-    additions = ["--housekeeping_interval=30s", "--disable_metrics=" + _DISABLED]
+    additions = ["--housekeeping_interval=${CADVISOR_HOUSEKEEPING_INTERVAL:-15s}", "--disable_metrics=" + _DISABLED]
     assert all(command.count(argument) == 1 for argument in additions)
     assert [argument for argument in command if argument not in additions] == [
         "--logtostderr",
