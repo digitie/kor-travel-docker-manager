@@ -6,6 +6,8 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
+- [ ] **T-MGR-METRICS-EAGER — 메트릭 관측 기본값 중복 계산 절감**. 호출 기본값/cycle spec 재사용과 inspect 추가조회 생략 구현. 순수39PASS/backend Ruff·6경로 동등/합성측정 완료, 독립2리뷰·CI·실제 CPU/RSS/수집지연 비교 후속. [범위와 한계](metrics-observation-budget.md).
+
 - [ ] **T-MGR-NVME-DB — 명시 SQLite 파일 경로**. KTDM_DATABASE_PATH 절대 경로 선택/기존 default 보존, 프로세스 env 및 WAL/SHM 이전 경계. [설계](nvme-database-path.md). 구현·격리25회귀/backend Ruff·URL P2 3RED→GREEN 완료. 독립 리뷰·CI·운영 이전 대기.
 
 - [ ] **T-MGR-NVME-TMP — 빌드 임시 경로 정합**. frozen descriptor fallback과 Map buildx TMPDIR를 기존 state root 아래로 제한한다. [설계·운영 경계](nvme-build-staging.md). 구현·독립P2 prefix이탈2RED→고정후격리16PASS/backend Ruff 완료. 독립 리뷰·CI·운영 검증 대기.

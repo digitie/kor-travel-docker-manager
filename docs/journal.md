@@ -33,6 +33,19 @@
 
 ---
 
+## 2026-10-17 — 메트릭 관측 cycle snapshot과 이미지 조회 절감(PR525)
+
+- 호출 내 기본값 재사용, cycle의 기존 spec 전달, inspect 이미지 정보가 완전한 경우의 추가 조회 생략을 작은 커밋으로 분리했다.
+- 장기 캐시·Docker 상태 캐시·DTO·주기·저장 변경 없이 실제 함수 AST 회귀39PASS/backend Ruff PASS와 6경로 old/new 출력 동등성을 확인했다.
+- 합성64행×100cycle에서 resolve12900→100/CPU 정지0.119434→0.038725s·실행2.718004→2.526916s. 운영 개선율이 아니며 일부 tracemalloc peak는 증가했다.
+- 앱 초기화·Docker·DB·SDK·운영 접근 없이 검사했다. 전체 pytest/frontend/운영 성능은 미실행이며 독립2리뷰·CI는 별도다. [측정 범위](metrics-observation-budget.md).
+
+## 2026-10-17 — 메트릭 관측 기본값 중복 평가 절감 설계
+
+- 최신 main의 별도 feature worktree에서 기본값 2회 평가를 확인했다.
+- 한 호출의 local template만 재사용하며 cycle·장기 캐시를 추가하지 않는다.
+- 순수 회귀·합성 측정 전 설계 초안이며 운영 CPU 인과·전체 회귀는 미확인이다.
+
 ## 2026-10-17 — PR522 SQLite URL 파일명 보존 수정
 
 - 독립 P2에서 문자열 URL이 '?' 파일명을 query로 해석하는 경계를 확인했다.
