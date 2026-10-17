@@ -85,8 +85,11 @@ NAME="ktdm-release-${SHA}"
 # >>> release-root
 # release root는 설치 root symlink가 정한다(설정 파일·env 없음 — 설치마다 같은 값을 기억할 필요가 없다). 상대 symlink면
 # 설치 root와 같은 디렉터리(`/opt`), 절대 symlink면 그 대상의 상위 디렉터리다. root가 실행할 코드가 놓이므로 그 경로의 모든
-# 디렉터리는 root 소유·group/other 쓰기 없음·symlink 아님이어야 한다(다른 계정이 release를 바꿔치기하지 못하게).
+# 디렉터리는 root 소유·group/other 쓰기 없음·symlink 아님이어야 한다(다른 계정이 release를 바꿔치기하지 못하게). 설치 root가
+# 놓인 디렉터리(`/opt`)도 같은 검사를 받는다 — symlink 자체를 바꿀 수 있으면 release root 검사가 무의미하다.
 CURRENT_TARGET="$(readlink -- "${APP}")"
+# 대상 문자열은 경로 글자만(개행·공백·셸 메타문자 차단).
+[[ "${CURRENT_TARGET}" =~ ^[A-Za-z0-9._/-]+$ ]] || die "install root symlink target has unexpected characters: ${APP}"
 if [[ "${CURRENT_TARGET}" == /* ]]; then
   RELEASE_ROOT="$(dirname -- "${CURRENT_TARGET}")"
 else
@@ -105,8 +108,13 @@ trusted_dir_chain() {
     (( (8#$(stat -c '%a' "${prefix}") & 022) == 0 )) || return 1
   done
 }
+# 정규화된 경로만(`/./`·`/../`·`//`·끝의 `/`를 거부 — 실제 경로와 글자 그대로 같아야 한다), `/` 자체는 release root가 아니다.
+[[ "${RELEASE_ROOT}" != "/" && "$(realpath -e -- "${RELEASE_ROOT}" 2>/dev/null)" == "${RELEASE_ROOT}" ]] \
+  || die "release root must be a canonical directory other than /: ${RELEASE_ROOT}"
 trusted_dir_chain "${RELEASE_ROOT}" \
   || die "release root must be a root-owned directory chain without group/other write or symlinks: ${RELEASE_ROOT}"
+trusted_dir_chain "$(dirname -- "${APP}")" \
+  || die "install root directory must be a root-owned directory chain without group/other write or symlinks: $(dirname -- "${APP}")"
 # <<< release-root
 REL="${RELEASE_ROOT}/${NAME}"
 # basename — 손으로 만든 절대 symlink여도 아래 비교·GC가 같은 이름을 본다.

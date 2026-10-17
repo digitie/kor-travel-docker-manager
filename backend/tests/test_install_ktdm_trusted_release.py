@@ -686,44 +686,111 @@ def _release_root_block() -> str:
     return text[text.index("# >>> release-root") : text.index("# <<< release-root")]
 
 
-def _run_release_root(tmp_path: Path, target: str) -> subprocess.CompletedProcess[str]:
-    app = tmp_path / "opt" / "kor-travel-docker-manager"
-    app.parent.mkdir(parents=True)
+def _run_release_root(tmp_path: Path, target: str, *, app_dir: Path | None = None) -> subprocess.CompletedProcess[str]:
+    """release-root 구획만 돌린다. `stat` shim이 `tmp_path` 밖은 root 소유·0755로, 안은 root 소유·실제 mode로 보여 준다 —
+    테스트는 root가 아니라서 소유자는 흉내 내고, mode(group/other 쓰기)·symlink·정규화 검사는 실제 파일로 본다."""
+    app = (app_dir or (tmp_path / "opt")) / "kor-travel-docker-manager"
+    app.parent.mkdir(parents=True, exist_ok=True)
     app.symlink_to(target)
+    shim = tmp_path / "shim"
+    shim.mkdir(exist_ok=True)
+    real_stat = subprocess.run(["bash", "-c", "command -v stat"], capture_output=True, text=True).stdout.strip()
+    (shim / "stat").write_text(
+        "#!/bin/bash\n"
+        'fmt="$2"; path="$3"\n'
+        'if [[ "$fmt" == "%u" ]]; then echo 0; exit 0; fi\n'
+        f'if [[ "$path" == "{tmp_path}"* ]]; then exec {real_stat} "$@"; fi\n'
+        "echo 755\n",
+        encoding="utf-8",
+    )
+    (shim / "stat").chmod(0o755)
     script = (
         "set -euo pipefail\n"
         'die() { echo "$1" >&2; exit 126; }\n'
+        f'export PATH="{shim}:$PATH"\n'
         f'APP="{app}"\n' + _release_root_block() + 'echo "ROOT=${RELEASE_ROOT}"\n'
     )
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
 
 
+def _trusted(tmp_path: Path, *parts: str) -> Path:
+    path = tmp_path.joinpath(*parts)
+    path.mkdir(parents=True, exist_ok=True)
+    for node in [tmp_path, *path.relative_to(tmp_path).parents, path.relative_to(tmp_path)]:
+        (tmp_path / node).chmod(0o755)
+    return path
+
+
 def test_an_absolute_symlink_puts_releases_under_its_parent(tmp_path: Path) -> None:
-    # 절대 symlink의 상위가 root 소유·쓰기 금지 사슬이면 그곳이 release root다. 어느 호스트에서나 그 조건인 `/`로 본다
-    # (`/usr/share` 같은 하위는 러너마다 mode가 달라 전제가 환경의 우연이 된다).
-    passed = _run_release_root(tmp_path, "/ktdm-release-" + "a" * 40)
+    root = _trusted(tmp_path, "srv", "ktdm-releases")
+    _trusted(tmp_path, "opt")
+    passed = _run_release_root(tmp_path, f"{root}/ktdm-release-" + "a" * 40)
     assert passed.returncode == 0, passed.stderr
-    assert passed.stdout.splitlines()[-1] == "ROOT=/"
+    assert passed.stdout.splitlines()[-1] == f"ROOT={root}"
 
 
-def test_a_release_root_owned_by_another_account_is_refused(tmp_path: Path) -> None:
-    # 테스트 계정 소유의 tmp 디렉터리 — root 소유 사슬이 아니다(데이터 디스크의 0777 상위 같은 경우).
-    elsewhere = tmp_path / "data" / "releases"
-    elsewhere.mkdir(parents=True)
-    refused = _run_release_root(tmp_path, f"{elsewhere}/ktdm-release-" + "a" * 40)
+def test_a_group_writable_release_root_is_refused(tmp_path: Path) -> None:
+    root = _trusted(tmp_path, "srv", "ktdm-releases")
+    _trusted(tmp_path, "opt")
+    root.chmod(0o775)
+    refused = _run_release_root(tmp_path, f"{root}/ktdm-release-" + "a" * 40)
     assert refused.returncode == 126 and "release root must be a root-owned directory chain" in refused.stderr
 
 
+def test_a_symlink_inside_the_release_root_path_is_refused(tmp_path: Path) -> None:
+    real = _trusted(tmp_path, "data", "releases")
+    _trusted(tmp_path, "opt")
+    (tmp_path / "srv").symlink_to(real.parent)
+    refused = _run_release_root(tmp_path, f"{tmp_path}/srv/releases/ktdm-release-" + "a" * 40)
+    assert refused.returncode == 126 and "release root must be a canonical directory" in refused.stderr
+
+
+@pytest.mark.parametrize("shape", ["srv/ktdm-releases/../ktdm-releases", "srv/./ktdm-releases", "srv//ktdm-releases"])
+def test_an_uncanonical_release_root_is_refused(tmp_path: Path, shape: str) -> None:
+    _trusted(tmp_path, "srv", "ktdm-releases")
+    _trusted(tmp_path, "opt")
+    refused = _run_release_root(tmp_path, f"{tmp_path}/{shape}/ktdm-release-" + "a" * 40)
+    assert refused.returncode == 126 and "release root must be a canonical directory" in refused.stderr, refused.stdout
+
+
+def test_the_filesystem_root_is_not_a_release_root(tmp_path: Path) -> None:
+    _trusted(tmp_path, "opt")
+    refused = _run_release_root(tmp_path, "/ktdm-release-" + "a" * 40)
+    assert refused.returncode == 126 and "other than /" in refused.stderr
+
+
+def test_a_symlink_target_with_unexpected_characters_is_refused(tmp_path: Path) -> None:
+    root = _trusted(tmp_path, "srv", "ktdm-releases")
+    _trusted(tmp_path, "opt")
+    refused = _run_release_root(tmp_path, f"{root}/ktdm-release-a b")
+    assert refused.returncode == 126 and "unexpected characters" in refused.stderr
+
+
+def test_the_install_root_directory_is_checked_too(tmp_path: Path) -> None:
+    root = _trusted(tmp_path, "srv", "ktdm-releases")
+    opt = _trusted(tmp_path, "opt")
+    opt.chmod(0o777)
+    refused = _run_release_root(tmp_path, f"{root}/ktdm-release-" + "a" * 40)
+    assert refused.returncode == 126 and "install root directory must be a root-owned directory chain" in refused.stderr
+
+
 def test_a_relative_symlink_keeps_the_release_root_next_to_the_install_root(tmp_path: Path) -> None:
-    # 종전 동작: 상대 symlink면 설치 root와 같은 디렉터리. tmp의 그 디렉터리는 테스트 계정 소유라 사슬 검사가 거부한다 —
-    # 고른 경로가 바로 그 디렉터리임을 문구로 확인한다.
-    result = _run_release_root(tmp_path, "ktdm-release-" + "a" * 40)
-    assert f"release root must be a root-owned directory chain without group/other write or symlinks: {tmp_path / 'opt'}" in result.stderr
+    # 종전 동작: 상대 symlink면 설치 root와 같은 디렉터리.
+    opt = _trusted(tmp_path, "opt")
+    passed = _run_release_root(tmp_path, "ktdm-release-" + "a" * 40)
+    assert passed.returncode == 0, passed.stderr
+    assert passed.stdout.splitlines()[-1] == f"ROOT={opt}"
 
 
 def test_the_flip_keeps_relative_links_for_opt_and_absolute_links_elsewhere() -> None:
     text = _INSTALLER.read_text(encoding="utf-8")
     flip = text[text.index('if [[ "${RELEASE_ROOT}" == "$(dirname -- "${APP}")" ]]; then') :]
     assert flip.index('ln -sfn "${NAME}" "${APP}.new"') < flip.index('ln -sfn "${REL}" "${APP}.new"')
+    # GC는 release root 안에서만 돈다 — 그 밖의 경로를 지우는 줄이 없다.
     assert 'for old in "${RELEASE_ROOT}"/ktdm-release-*; do' in text
+    assert '[[ "${old}" == "${REL}" || "${old}" == "${RELEASE_ROOT}/${PREV}" ]]' in text
     assert "/opt/ktdm-release-*" not in text
+    assert [line for line in text.splitlines() if "rm -rf --" in line] == [
+        '  rm -rf -- "${REL}"',
+        '          || { rm -f -- "${old}/.ktdm-source-revision"; rm -rf -- "${old}"; }',
+    ]
