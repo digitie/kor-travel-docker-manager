@@ -362,6 +362,19 @@ sudo install -o root -g root -m 0600 <prepared-.env> /opt/ktdm-release-bootstrap
 sudo ln -s ktdm-release-bootstrap /opt/kor-travel-docker-manager
 ```
 
+**release를 데이터 디스크에 두는 호스트**(루트 디스크가 작은 경우 — odroid). installer는 release root를 설치 root symlink에서 정한다:
+상대 symlink면 `/opt`, **절대 symlink면 그 대상의 상위 디렉터리**다. 그 디렉터리까지의 모든 경로 성분은 root 소유·group/other 쓰기
+없음·symlink 아님이어야 한다(installer가 검사하고 아니면 멈춘다). 데이터 디스크의 마운트 지점이 그 조건을 못 지키면(예: 0777) root
+소유 디렉터리를 bind mount로 root 경로(`/srv/...`)에 붙인다. bootstrap release를 그 아래에 두고 절대 symlink로 가리킨다:
+
+```bash
+sudo install -d -o root -g root -m 0755 /srv/ktdm-releases/ktdm-release-bootstrap
+sudo install -o root -g root -m 0600 <prepared-.env> /srv/ktdm-releases/ktdm-release-bootstrap/.env
+sudo ln -s /srv/ktdm-releases/ktdm-release-bootstrap /opt/kor-travel-docker-manager
+```
+
+이후 설치는 같은 root(`/srv/ktdm-releases`)에 release를 만들고 절대 symlink로 넘기며, GC도 그 root 안에서만 한다.
+
 ### 3.1 Debian `poetry-core` build dependency를 포함한 wheelhouse 발행
 
 trusted installer는 source의 backend를 오프라인으로 build해 설치하므로, wheelhouse에는 runtime
