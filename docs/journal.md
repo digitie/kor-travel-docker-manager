@@ -17,6 +17,20 @@
 
 ---
 
+## 2026-10-17 — PR531 로그아웃 관측 중단 구현·로컬 검증
+
+- 제품 a300ad4는 DashboardClient의 pending부터 보호 읽기/상태·로그 WS를 끄고,
+  4개 읽기 query의 실제 fetch AbortSignal 취소를 POST보다 먼저 완료한다.
+  auth 재조회 후 정상 세션은 복구하고 재조회 오류에는 읽기를 막고 재시도를 허용한다.
+- 실제 QueryClientProvider·제어 Promise 회귀에서 원본3FAIL→집중4PASS,
+  frontend 전체39PASS·type/lint/build·backend Ruff/diff 검사 PASS.
+  backend 전체 pytest·SDK/DB/Docker/원격/실제 UI 실행은 하지 않았다.
+- 초기 합성 disk 응답의 summary 누락, 토스트의 실제 부가 문구와 test exact 옵션
+  차이는 테스트만 정정했고 원 로그는 보존했다. 제품 판정 기준을 완화하지 않았다.
+- 기존 root r9 46/48과 Strict 실패는 그대로다. 독립2리뷰·CI·root 설치/새 공개 UI는
+  후속이며 525 backend 변경이나 하니스 변경을 이 PR에 섞지 않았다.
+
+
 ## 2026-10-17 — 로그아웃 폴링 재진입 수정 준비
 
 - 최신 main e84f3ce의 별도 feature worktree에서 onSettled의 WS false→auth 재조회

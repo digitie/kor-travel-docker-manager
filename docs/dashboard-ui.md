@@ -253,7 +253,15 @@ WebSocket을 비활성화한다. 기존 containers 요청은 AbortSignal로 취�
 
 기존 source는 onSettled에서 WebSocket 연결 상태를 먼저 false로 바꾸고 auth 재조회를
 기다렸다. 그 사이 기존 authenticated=true가 남아 HTTP 폴링이 다시 켜질 수 있었다.
-이 설계는 그 전환을 별도 pending 상태로 막는다. 아직 구현·집중 회귀·실제 배포는 후속이다.
+구현은 그 전환을 별도 pending 상태로 막는다. containers·targets·disk-usage·metrics-history
+읽기는 query의 AbortSignal을 fetch에 전달하고 POST 전에 취소를 기다린다. 인증 재조회가
+실패하면 이전 캐시로 관측을 재개하지 않고 오류를 표시하며 로그아웃 재시도는 허용한다.
+이 범위는 DashboardClient가 소유한 읽기와 상태·로그 소켓이며 이미 서버에서 시작된
+관측 연산을 강제 종료한다는 보장은 아니다. API·세션 서버 정책은 바꾸지 않는다.
+
+실제 QueryClientProvider와 제어된 fetch/인증 Promise/소켓 회귀 4개, frontend 전체39개,
+타입 검사·lint·build와 backend Ruff를 확인했다. backend 전체 pytest와 실제 배포/UI는
+수행하지 않았다. 패널이나 다른 사용자의 이미 진행 중인 작업 취소 기능을 추가하지 않았다.
 root의 공개 UI r9 결과는 46/48이며 Cookie Strict와 로그아웃 중 containers 401 집계가
 남았다. 이 변경은 쿠키 정책이나 하니스 기준을 완화하지 않으며 실제 UI 재검증은 root가
 수행한다.
