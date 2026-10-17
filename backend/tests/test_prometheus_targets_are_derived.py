@@ -30,7 +30,7 @@ def _file_jobs() -> dict[str, dict[str, Any]]:
 
 def _mismatch(config: dict[str, Any], jobs: dict[str, dict[str, Any]]) -> list[str]:
     derived = {job["job_name"]: job for job in prometheus_targets.derived_scrape_configs(config)}
-    committed = {name: job for name, job in jobs.items() if name not in prometheus_targets.NON_REGISTRY_JOBS}
+    committed = dict(jobs)
     problems = [f"missing job {name}" for name in sorted(set(derived) - set(committed))]
     problems += [f"job {name} is not derived from the registry" for name in sorted(set(committed) - set(derived))]
     problems += [
@@ -60,17 +60,58 @@ def test_the_derivation_sees_remote_and_local_hosts() -> None:
     assert labels == set(config["hosts"])
 
 
-def test_only_the_manager_backend_job_is_outside_the_registry() -> None:
+def test_no_job_in_the_file_is_hand_written() -> None:
+    """NH-6: 파일의 job 집합 == 파생 job 집합(Manager backend job 포함). 손으로 쓴 job이 하나라도 있으면 빨갛다."""
+
+    derived = {job["job_name"] for job in prometheus_targets.derived_scrape_configs(_registry())}
+    assert prometheus_targets.MANAGER_JOB in derived
+    assert set(_file_jobs()) == derived
+
+
+def test_the_manager_job_has_one_static_config_per_declared_host() -> None:
+    """Manager는 선언된 모든 호스트에서 돈다(ADR-58 결정 2) — 호스트마다 R1 주소·`host` label 하나."""
+
     config = _registry()
-    derived = {job["job_name"] for job in prometheus_targets.derived_scrape_configs(config)}
-    jobs = _file_jobs()
-    assert set(jobs) - derived == set(prometheus_targets.NON_REGISTRY_JOBS)
-    # registry 밖 job은 이 Prometheus 호스트의 로컬 프로세스만 — 다른 호스트를 가리키거나 host label이 틀리면 빨갛다.
     home = prometheus_targets.prometheus_host(config)
-    for name in prometheus_targets.NON_REGISTRY_JOBS:
-        for static in jobs[name]["static_configs"]:
-            assert all(target.startswith("127.0.0.1:") for target in static["targets"]), static
-            assert static.get("labels", {}).get("host") == home, static
+    port = prometheus_targets.manager_backend_port()
+    job = _file_jobs()[prometheus_targets.MANAGER_JOB]
+    expected = [
+        {"targets": [f"{'127.0.0.1' if host == home else spec['addr']}:{port}"], "labels": {"host": host}}
+        for host, spec in config["hosts"].items()
+    ]
+    assert job["static_configs"] == expected
+    assert len(expected) >= 2  # 하한은 본 것에: 원격 호스트가 하나도 없으면 R1의 addr 갈래를 안 본 것이다
+    # odroid를 빼면(= 파일에서 그 static_config를 지우면) 빨갛다.
+    shrunk = copy.deepcopy(_file_jobs())
+    shrunk[prometheus_targets.MANAGER_JOB]["static_configs"] = expected[:1]
+    assert _mismatch(config, shrunk)
+
+
+def test_the_manager_port_comes_from_the_backend_unit(tmp_path: Path) -> None:
+    unit = _ROOT / prometheus_targets.MANAGER_BACKEND_UNIT
+    text = unit.read_text(encoding="utf-8")
+    port = prometheus_targets.manager_backend_port()
+    assert f"--port {port}" in text
+    # unit의 포트를 바꾸면 파생이 따라 바뀌고, 파일을 그대로 두면 빨갛다.
+    moved = tmp_path / prometheus_targets.MANAGER_BACKEND_UNIT
+    moved.parent.mkdir(parents=True)
+    moved.write_text(text.replace(f"--port {port}", f"--port {port + 1}"), encoding="utf-8")
+    other = prometheus_targets.manager_backend_port(str(tmp_path))
+    assert other == port + 1
+    config = _registry()
+    derived = prometheus_targets.derived_scrape_configs(config, manager_port=other)
+    committed = _file_jobs()[prometheus_targets.MANAGER_JOB]
+    assert next(job for job in derived if job["job_name"] == prometheus_targets.MANAGER_JOB) != committed
+    # --port가 없거나 둘이면 파생을 거부한다(조용히 기본값을 고르지 않는다).
+    moved.write_text(text.replace(f" --port {port}", ""), encoding="utf-8")
+    with pytest.raises(registry.TargetsConfigError, match="--port"):
+        prometheus_targets.manager_backend_port(str(tmp_path))
+
+
+def test_the_manager_metrics_path_is_a_backend_route() -> None:
+    from kor_travel_docker_manager.main import app
+
+    assert prometheus_targets.MANAGER_METRICS_PATH in {getattr(route, "path", None) for route in app.routes}
 
 
 def test_moving_a_target_is_red_until_the_file_follows() -> None:
@@ -97,8 +138,9 @@ def test_a_third_host_adds_static_configs_without_code_changes() -> None:
         name for name, spec in config["containers"].items()
         if spec.get("metrics_path") and registry.container_hosts(name, grown) == set(grown["hosts"])
     }
-    assert changed == everywhere and everywhere
-    for name in everywhere:
+    # Manager job도 호스트마다 하나라 함께 늘어난다(NH-6) — mars가 Manager job에 없으면 빨갛다.
+    assert changed == everywhere | {prometheus_targets.MANAGER_JOB} and everywhere
+    for name in everywhere | {prometheus_targets.MANAGER_JOB}:
         assert {"targets": ["192.0.2.7:" + after[name]["static_configs"][0]["targets"][0].rsplit(":", 1)[1]],
                 "labels": {"host": "mars"}} in after[name]["static_configs"]
     assert _mismatch(grown, _file_jobs())
@@ -106,7 +148,7 @@ def test_a_third_host_adds_static_configs_without_code_changes() -> None:
 
 def test_a_changed_port_or_path_is_red() -> None:
     jobs = _file_jobs()
-    name = next(iter(job for job in jobs if job not in prometheus_targets.NON_REGISTRY_JOBS))
+    name = next(iter(jobs))
     broken = copy.deepcopy(jobs)
     broken[name]["metrics_path"] = "/elsewhere"
     assert _mismatch(_registry(), broken)
