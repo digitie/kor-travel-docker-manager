@@ -48,3 +48,10 @@ frontend검증은 재실행하지 않았고 frontend tree는 기준main과 같�
 실제 SDK/Docker/DB/provider/SSH/socket/private/운영은 agent가 실행·열람하지 않았다.
 두 독립리뷰·새CI·merge·root 운영지원확인/적용/CPU측정은 후속이며,
 초기 startup이나 source검증만으로 CPU 개선을 확정하지 않는다.
+
+
+## 병합 시 중복 옵션 방지
+
+다른 변경과 합칠 때 housekeeping_interval과 disable_metrics는 각각 한 번만
+선언한다. 뒤쪽에 이전 15초/10개 옵션이 남으면 실행 시 앞의 30초/14개를 덮는다.
+기존 중복 옵션 회귀는 그대로 유지하고, 사용하지 않는 수집 주기 env 예시는 제거했다.

@@ -2810,16 +2810,17 @@ def test_public_restart_of_a_manager_owned_container_passes_its_stop_timeout(
 
 
 def test_cadvisor_runs_light_and_keeps_the_basic_metrics() -> None:
-    """cAdvisor 부하 경감(2026-10-17 소유자 지시) — 수집 주기 기본 15s(env로 덮어쓸 수 있다)와 쓰지 않는 메트릭 끄기.
+    """cAdvisor 부하 경감(2026-10-17 소유자 지시) — 현재 운영의 수집 주기 30초와 기본 제외 메트릭을 보존한다.
 
     기본 cpu·memory·network(rx/tx)는 끄지 않는다 — 끄면 컨테이너 기본 수치가 사라진다.
     """
     compose = load_yaml_rejecting_duplicate_keys((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     command = compose["services"]["cadvisor"]["command"]
     assert "--docker_only=true" in command
-    assert "--housekeeping_interval=${CADVISOR_HOUSEKEEPING_INTERVAL:-15s}" in command
+    assert "--housekeeping_interval=30s" in command
     disabled = next(arg for arg in command if arg.startswith("--disable_metrics=")).split("=", 1)[1].split(",")
     assert set(disabled) == {
         "percpu", "sched", "tcp", "udp", "disk", "diskIO", "hugetlb", "referenced_memory", "cpu_topology", "resctrl",
+        "memory_numa", "advtcp", "process", "cpuset",
     }
     assert not {"cpu", "memory", "network"} & set(disabled)
