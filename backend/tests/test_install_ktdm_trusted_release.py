@@ -703,8 +703,7 @@ def test_an_absolute_symlink_puts_releases_under_its_parent(tmp_path: Path) -> N
     # (`/usr/share` 같은 하위는 러너마다 mode가 달라 전제가 환경의 우연이 된다).
     passed = _run_release_root(tmp_path, "/ktdm-release-" + "a" * 40)
     assert passed.returncode == 0, passed.stderr
-    assert "ROOT=/
-" in passed.stdout
+    assert passed.stdout.splitlines()[-1] == "ROOT=/"
 
 
 def test_a_release_root_owned_by_another_account_is_refused(tmp_path: Path) -> None:
