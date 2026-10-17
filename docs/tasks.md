@@ -6,6 +6,8 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
+- [ ] **T-MGR-NVME-DB — 명시 SQLite 파일 경로**. KTDM_DATABASE_PATH 절대 경로 선택/기존 default 보존, 프로세스 env 및 WAL/SHM 이전 경계. [설계](nvme-database-path.md). 구현·격리17회귀/backend Ruff·원2RED→새2GREEN 완료. 독립 리뷰·CI·운영 이전 대기.
+
 - [ ] **T-MGR-NVME-TMP — 빌드 임시 경로 정합**. frozen descriptor fallback과 Map buildx TMPDIR를 기존 state root 아래로 제한한다. [설계·운영 경계](nvme-build-staging.md). 구현·독립P2 prefix이탈2RED→고정후격리16PASS/backend Ruff 완료. 독립 리뷰·CI·운영 검증 대기.
 
 - [ ] **T-MGR-QUEUE-BUDGET — 공용 dispatch 상한·큐 주기(PR514)**. source 전역12→2/공식dequeue5기본→30, 개별tag·업무·HC 보존, 파생instance digest와130회귀/Ruff·모델 대조 완료. 독립2리뷰·CI·운영 두scalar 적용 및 실제CPU/대기 영향 측정은 후속. [범위와 적용 경계](dagster-queue-budget.md). 최종513/Common92d·73c와 main517 cAdvisor15초/env·14제외를 통합했으며 PR513 merge가 선행한다. 실제 배포·측정 근거와 source 회귀는 구분한다.

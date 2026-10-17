@@ -33,6 +33,25 @@
 
 ---
 
+## 2026-10-17 — 명시 SQLite 파일 경로 구현(PR522)
+
+- KTDM_DATABASE_PATH 프로세스 환경이 없으면 기존 기본 계산을 그대로 유지한다.
+  명시 절대파일경로만 사용하며 empty/relative/NUL·끝directory형식은 값 노출 없이 거절한다.
+- schema/API/권한/기동checker·로그제품 변경0. .env는 초기 DB import 뒤 읽힐 수 있으므로
+  systemd 단일 Environment와 CLI의 동일 프로세스 환경을 문서화했다.
+- 실제 제품 AST/engine 대역 격리17PASS(0.03초), backend Ruff/diff PASS,
+  원 main 경로조건2RED→새함수2GREEN. 전체 suite·실제 DB·설치·운영 실행0이다.
+- [NVMe DB 가이드](nvme-database-path.md)에 경로/symlink/mount 및 WAL/SHM 보존을 별도 구분했다.
+
+
+## 2026-10-17 — NVMe SQLite 경로 설계
+
+- main520(4f708e4) 별도 feature에서 환경변수로 DB 파일 절대 경로를 명시하는 최소안을 설계했다.
+- 미설정 기본 산술·schema·API·권한은 유지하고 empty/relative는 실패하도록 한다.
+- .env 로드 시점과 실제 프로세스 환경을 구분한다. DB/운영 실행0,521소스변경0이다.
+
+
+
 ## 2026-10-17 — PR521 fallback label 경로 이탈 수정
 
 - 독립 리뷰가 b631e5a의 절대/상대 label로 mkstemp가 state 밖 파일을 만들 수 있음을 재현했다.
