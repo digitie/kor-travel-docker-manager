@@ -17,6 +17,21 @@
 
 ---
 
+## 2026-10-17 — PR530 targets validate JSON에 선언 주소만 투영
+
+- 제품은 CLI 성공 JSON에 검증된 registry hosts의 addr만 더하는2줄이다. 기존 status/host/targets·텍스트 OK·실패 출력은 보존하며 registry/target 선언·호스트 검증·API/프런트엔드는 바꾸지 않았다.
+- 원래코드에서 새 회귀4FAIL1PASS를 확인한 뒤5PASS, registry/CLI 관련105PASS155deselect를 확인했다. 접속·주소조회·실제 subprocess를 거절하는 소유 wrapper에서 수행했다.
+- backend Ruff·frontend type-check/build PASS. frontend는 package/lock가 같은 기존 readonly dependencies를 재사용했고 symlink는 검사 뒤 제거했다. 전체 backend suite·Docker·DB·운영 검증은 로컬에서 실행하지 않았다.
+- 새 v2 JSON은 addr만 whitelist하며 옛 v1 hosts는 빈 mapping이다. 문서의 오래된 ok/local/errors 초안을 현재 status/host/targets와 맞췄다. 독립2리뷰·CI·머지/설치와 실제 Transport 검증은 별도다.
+
+
+## 2026-10-17 — targets validate 주소 효과 JSON의 최소 확장 초안
+
+- 최신 main e84f3ce에서 별도 feature worktree를 만들고 기존 feature/WIP를 보존했다.
+- registry hosts 선언을 재구현하지 않고 성공 JSON에 addr만 whitelist 투영하는 범위다. 기존 status/host/targets 및 실패/텍스트 동작은 유지한다.
+- 운영·Docker·DB·SDK·원격 주소 조회는 하지 않는다. 실제 registry 변경 효과·출력 범위/호환 회귀 및 독립 리뷰는 구현 뒤 진행한다.
+
+
 ## 2026-10-17 — T-MGR-02r 실측: n150 plane의 location 상한은 바꾸지 않는다
 
 - 읽기 전용: n150 공용 webserver GraphQL(`127.0.0.1:11002`) `runsOrError`로 14일 19,845 run(SUCCESS 19,158·FAILURE 686·CANCELED 1).
