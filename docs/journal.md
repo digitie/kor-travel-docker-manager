@@ -1,5 +1,14 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-19 — pinned 재구축의 기존 daemon 중지 상태 보존
+
+- pinned 재구축의 공용 plane 수렴은 기존 중지된 daemon을 시작하거나 재생성하지 않는다. webserver 정합성과 필요한 RepositoryLocation 로딩 검사는 유지한다.
+- 실행 중·재시작 중·미설치 daemon은 기존 경로다. 명시적 dagster-plane converge의 시작/복구 동작은 바뀌지 않는다. 의도적 중지와 비정상 종료를 구별하지 않으며 중지된 daemon의 이미지·설정 갱신은 명시적 수렴까지 미룬다.
+- readiness에서 daemon 중지를 재확인한다. 기존 host mutation lock 밖의 직접 Docker 변경을 영구 차단하지 않는다.
+- 수정 전 OFF 회귀 2실패·ON 2통과, 수정 후 plane/pinned rebuild 집중 238통과(26.83초, 미설치·재시작 중 반례 포함), Ruff 통과. 첫 구현의 NameError 실패는 수정 후 재검증했다.
+- 운영 설치·공개 UI는 미실행이다. daemon OFF 동안 자동 스케줄·자동 복구를 보장하지 않는다. 기존 Map/PinVi runtime 재시작·DB 보존 범위는 바뀌지 않는다.
+
+
 ## 2026-10-18 — PR531 최신 main525 통합과 공개 UI 수용
 
 - main3549b14를 병합했고 충돌은 journal/tasks 양쪽 기록을 보존해 해결했다. 배포 후보 e02의 frontend 전체 tree와 최신 코드의 일치를 확인한다.

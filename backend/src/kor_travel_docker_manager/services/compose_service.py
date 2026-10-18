@@ -5221,17 +5221,26 @@ class ComposeService:
                 + ", ".join(missing or sorted(shared_targets))
             )
         self._require_plane_location_owners_fenced(locations, owners)
-        if not self._shared_plane_current(plane, services):
-            self._recreate_shared_plane(plane, transaction=runtime_transaction)
-        self._wait_shared_plane_locations(plane, services, wanted)
+        daemon = self._inspect_plane_container(
+            installed_container_name(plane.daemon), label=plane.daemon
+        )
+        # 배포는 이미 중지된 스케줄러를 켜는 명령이 아니다. 최초 설치/실행 중은 기존 경로다.
+        keep_stopped = daemon is not None and not daemon["running"] and not daemon["restarting"]
+        policy = {"keep_daemon_stopped": True} if keep_stopped else {}
+        if not self._shared_plane_current(plane, services, **policy):
+            self._recreate_shared_plane(plane, transaction=runtime_transaction, **policy)
+        self._wait_shared_plane_locations(plane, services, wanted, **policy)
 
     def _recreate_shared_plane(
-        self, plane: SharedDagsterPlane, *, transaction: ComposeTransactionSnapshot
+        self, plane: SharedDagsterPlane, *, transaction: ComposeTransactionSnapshot,
+        keep_daemon_stopped: bool = False,
     ) -> None:
         """plane 서비스만 frozen render로 다시 만든다 — 재구축과 `dagster-plane converge`가 같은 호출을 쓴다."""
 
         self._run_pinned_runtime_rebuild_compose(
-            ["up", "-d", "--no-deps", *plane.services],
+            ["up", "-d", "--no-deps", *(
+                (plane.webserver,) if keep_daemon_stopped else plane.services
+            )],
             transaction=transaction,
         )
 
@@ -5483,7 +5492,8 @@ class ComposeService:
             )
 
     def _shared_plane_current(
-        self, plane: SharedDagsterPlane, services: Mapping[str, Any]
+        self, plane: SharedDagsterPlane, services: Mapping[str, Any], *,
+        keep_daemon_stopped: bool = False,
     ) -> bool:
         """떠 있는 daemon·webserver가 frozen render가 만들 컨테이너와 같은가 — 그러면 `up`하지 않는다.
 
@@ -5501,10 +5511,13 @@ class ComposeService:
         command·entrypoint·env 값을 같은 규칙으로 푼 뒤 비교한다(재리뷰 HIGH — 안 풀면 매번 달라 M3가 되살아난다).
         """
 
-        return not any(self._shared_plane_drift(plane, services).values())
+        return not any(self._shared_plane_drift(
+            plane, services, keep_daemon_stopped=keep_daemon_stopped
+        ).values())
 
     def _shared_plane_drift(
-        self, plane: SharedDagsterPlane, services: Mapping[str, Any]
+        self, plane: SharedDagsterPlane, services: Mapping[str, Any], *,
+        keep_daemon_stopped: bool = False,
     ) -> dict[str, list[str]]:
         """서비스마다 떠 있는 컨테이너가 render와 어디서 다른가(비면 같다). `_shared_plane_current`의 판정 그대로다.
 
@@ -5515,6 +5528,8 @@ class ComposeService:
 
         drift: dict[str, list[str]] = {}
         for name in plane.services:
+            if keep_daemon_stopped and name == plane.daemon:
+                continue
             drift[name] = reasons = []
             render = services[name]
             observed = self._inspect_plane_container(installed_container_name(name), label=name)
@@ -5675,7 +5690,7 @@ class ComposeService:
         self,
         plane: SharedDagsterPlane,
         services: Mapping[str, Any],
-        wanted: Sequence[str],
+        wanted: Sequence[str], *, keep_daemon_stopped: bool = False,
     ) -> None:
         host, port = listen_address(services[plane.webserver])
         daemon_container = installed_container_name(plane.daemon)
@@ -5690,8 +5705,12 @@ class ComposeService:
             daemon_running = (
                 observed is not None and observed["running"] and not observed["restarting"]
             )
+            daemon_matches_policy = (
+                observed is not None and not observed["running"] and not observed["restarting"]
+                if keep_daemon_stopped else daemon_running
+            )
             if (
-                daemon_running
+                daemon_matches_policy
                 and loaded is not None
                 and all(loaded.get(location) == "RepositoryLocation" for location in wanted)
             ):

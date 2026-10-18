@@ -889,6 +889,13 @@ source restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공
 
 ## 8. pinned runtime 배포 (ADR-51 마이그레이션 전진)
 
+pinned 재구축은 기존 중지된 daemon을 보존하고 webserver와 필요한 code location을 확인한다.
+실행 중·재시작 중·미설치 daemon은 기존 경로다. 명시적 dagster-plane converge는 기존대로
+시작/복구한다. 의도적 중지와 비정상 종료를 구별하지 않으며, 중지된 daemon의 이미지·설정
+갱신은 명시적 수렴까지 미룬다. daemon OFF 동안 자동 스케줄·자동 복구는 제공되지 않는다.
+기존 host mutation lock 밖의 직접 Docker 변경을 영구 차단하지 않는다.
+
+
 > 현재 배포 protocol은 이전 compatible-pair, cache-target, standalone DB backup mutation과 Map UI 회전의
 > **공개 CLI 운영 경로**를 모두 퇴역시켰다. 과거 v1–v4 manifest와 v5–v8 rebuild journal·tombstone은 실행
 > 근거가 아니며, 아래 비운영 `rebuild-pinned`만 generation을 배포하는 정본이다. 파기형 v8 journal·resume
