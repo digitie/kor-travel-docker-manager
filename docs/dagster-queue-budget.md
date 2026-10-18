@@ -66,3 +66,15 @@ cAdvisor는 최신 main #517의 기본15초/env 덮어쓰기·14제외·단일fl
 base는 main이며 PR513이 먼저 merge되어야 한다. 이 문서의 과거 '별도'는 정책 변경의
 책임범위가 별도라는 뜻이다. source branch는 이제513 제품을 포함하며 먼저 merge하지 않는다.
 실제 운영 원본463c 또는 Geo override를 source 정본으로 덮는 작업은 하지 않았다.
+
+## 2026-10-18 최신 main513 정합
+
+앞 절의 Common92d/tag73c·PR513 선행 미완료는 당시 통합 이력이다. 현재는 PR513이
+main0f0b4f1에 머지되어 선행을 충족했다. 최신 Common ff849ea wholewheel·두 공식 CLI·
+host tag930a44266e814ab6·Weather 주소5env 전달을 main과 byte 동일하게 보존한다.
+main 대비 제품 차이는 기존 두 scalar·instance digest7개 소비자와 회귀뿐이다.
+
+별도 소유 mirror/sterile env에서 관련5모듈70PASS·실제 Compose 렌더11건 제외,
+Ruff/diff PASS를 확인했다. 원130/59·과거 CI 수치는 해당 이전 검증의 기록이며 합산하지 않는다.
+새 integration head의 독립2리뷰·CI와 실제 daemon dispatch·CPU/대기 수용은 별도다.
+운영 RC20b 및 e02 후보를 변경하거나 이미 채택된 정책을 다시 적용하지 않았다.

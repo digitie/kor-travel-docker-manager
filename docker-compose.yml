@@ -793,7 +793,7 @@ services:
   # 바꿔야 한다 — `backend/tests/test_dagster_shared_config.py`가 대조한다. 새 tag는 호스트에 없으므로
   # 다음 `run`이 build context에서 만든다. env override는 두지 않는다(정본이 둘이 된다).
   kor-travel-dagster-storage-migrate:
-    image: kor-travel-dagster-host:73c524b1424d4aa6
+    image: kor-travel-dagster-host:930a44266e814ab6
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_STORAGE_MIGRATE_CONTAINER:-kor-travel-dagster-storage-migrate}
@@ -832,7 +832,7 @@ services:
   # 둘 다 code-server에 `depends_on`하지 않는다 — 어느 code-server가 합류했는지는 workspace가
   # 말하고, 합류한 location이 떴는지는 두 probe가 본다(아래).
   kor-travel-dagster-daemon:
-    image: kor-travel-dagster-host:73c524b1424d4aa6
+    image: kor-travel-dagster-host:930a44266e814ab6
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_DAEMON_CONTAINER:-kor-travel-dagster-daemon}
@@ -918,7 +918,7 @@ services:
   # - gRPC를 부르지 않는다 — `locationOrLoadError`·`dagsterLibraryVersions`는 webserver가 이미 들고 있는
   #   location 상태를 읽을 뿐 code-server에 닿지 않는다. 느린 code-server가 probe를 붙잡지 못한다.
   kor-travel-dagster-webserver:
-    image: kor-travel-dagster-host:73c524b1424d4aa6
+    image: kor-travel-dagster-host:930a44266e814ab6
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-dagster-webserver}
@@ -935,7 +935,7 @@ services:
     - -ec
     - *dagster-shared-storage-guard
     - sh
-    - dagster-webserver
+    - kor-travel-dagster-webserver
     - -h
     - 127.0.0.1
     - -p
@@ -2436,7 +2436,7 @@ services:
     privileged: true
     devices:
     - /dev/kmsg:/dev/kmsg
-    # 부하 경감: 현재 운영의 30초 주기와 기본 제외 항목을 보존한다.
+    # 부하 경감: 운영 관측 이력은 30초이며, source 기본은 아래 15초/env 설정이다. 기본 제외 항목을 보존한다.
     # 디스크 순회(disk·diskIO)·상세 네트워크(tcp·udp)·percpu 등을 끄고
     # 기본 cpu·memory·network rx/tx는 남는다. 저장소의 소비자는 중앙 Prometheus scrape뿐이다(rule·대시보드가 이 메트릭을
     # 쓰지 않는다 — Grafana에는 datasource만 있고, Manager 대시보드의 컨테이너 수치는 Docker stats API에서 온다).
@@ -2825,6 +2825,11 @@ services:
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_METRICS_TOKEN: ${KOR_TRAVEL_WEATHER_METRICS_TOKEN:?set KOR_TRAVEL_WEATHER_METRICS_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+      KOR_TRAVEL_WEATHER_VWORLD_API_KEY: ${KOR_TRAVEL_WEATHER_VWORLD_API_KEY:-}
+      KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY: ${KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY:-}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED:-true}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE:-50}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS:-5}
       KOR_TRAVEL_WEATHER_CORS_ORIGINS: '${KOR_TRAVEL_WEATHER_CORS_ORIGINS:-["https://weather.digitie.mywire.org","http://127.0.0.1:${KOR_TRAVEL_WEATHER_WEB_PORT:-12205}"]}'
       KOR_TRAVEL_WEATHER_API_BASE_URL: ${KOR_TRAVEL_WEATHER_API_BASE_URL:-https://weather-api.digitie.mywire.org}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
@@ -2933,6 +2938,11 @@ services:
       PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+      KOR_TRAVEL_WEATHER_VWORLD_API_KEY: ${KOR_TRAVEL_WEATHER_VWORLD_API_KEY:-}
+      KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY: ${KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY:-}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED:-true}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE:-50}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS:-5}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
       KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
       KOR_TRAVEL_WEATHER_KREX_API_KEY: ${KOR_TRAVEL_WEATHER_KREX_API_KEY:-}

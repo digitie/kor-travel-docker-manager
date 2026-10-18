@@ -4,11 +4,18 @@
 
 PR511의 상태 점검/빌드 bytecode를 기준으로 별도 stacked PR을 구성한다.
 초기 Common38 lifecycle 후보 채택 뒤 실제 launch의 임시 Instance 회귀가 발견되어,
-현재는 Common92d5cf1 수정 wheel로 갱신했다. 이전 후보와 실제 실패는 아래 이력으로 보존한다.
+Common92d 수정 이력 뒤 현재는 Common38+41 통합 ff849ea wholewheel과 공식 webserver alias를 채택한다.
+이전 후보와 실제 실패는 아래 이력으로 보존한다.
 PR511 병합 뒤 이 PR의 base를 main으로 정산했다. 구현 검증과 운영 완료는 구분한다.
 
 ## 정식 wheel과 고정 설치
 
+현재 source는 Common ff849ea8447c6d2cca1ffa653cfcbe2b2ffa6b32의 정식 wholewheel63,151B,
+SHA256 1abf0547a7b7fbe76284b69c375e83d953788b83a05fbd6720957a869f865b53이다.
+독립 archive 재빌드가 byte동일하며 package17개(Python16/py.typed1), RECORD nonself22행을 확인했다.
+기존 daemon CLI/plugin과 새 kor-travel-dagster-webserver가 함께 들어간다.
+
+다음은 이전92d wheel의 출처 이력이다.
 Common 92d5cf16ad85c2b6cdd0140226066374ae345917(공식 launch 임시 Instance 수정)의 정식 전체 core wheel을
 vendor에 넣었다. 원 wheel45621B와 독립 Git archive의 offline 재빌드가 동일 SHA256
 4fa65afd0b8ae90002503fb48d4455fb28ba8574c8cbb529c5add4ff04923527였다.
@@ -29,8 +36,9 @@ metadata와 source map 검증을 새 회귀에 연결한다. artifact 생성 실
 공용 daemon만 기존 storageguard 뒤 exec 명령을 kor-travel-dagster-daemon run -w
 원 workspace로 바꾼다. dedicated daemon DSN은 기존 shared DSN과 동일한 보간으로 이 서비스에만
 추가한다. 다른 Env/HC 전체 Test/heartbeat300/User/mount/리소스/업무 queue 정책은 유지한다.
-공용 이미지의 webserver/storage migrate는 Common 설치 뒤에도 기존 명령을 사용하므로
-pool activation0이다. 기존 liveness-check도 원 CLI를 호출한다.
+공용 webserver는 같은 storageguard 뒤 정식 kor-travel-dagster-webserver alias로 기존 인자를
+그대로 전달한다. daemon 전용 DSN은 webserver에 추가하지 않으므로 daemon pool activation0이다.
+storage migrate와 기존 liveness-check는 원 명령을 유지한다.
 
 Common wrapper가 원 console entry를 같은 process에서 호출하고 원 argv/SDK 신호·종료를
 보존한다. unresolved StringSource/ref의 외부 CS 환경 전달, fork·busy/idle dispose 및
@@ -100,3 +108,63 @@ fork/세대/동시성/primary strong registry·정리/pre_ping 보호는 유지�
 새 wholewheel/lazy import/기존 잠금/Compose wrapper와 작은 stdlib fixture11개 회귀는 통과했다.
 실제 SDK/격리 PG의 공식 start_run 성공은 root 실행 evidence로 별도 인계되며,
 새 Manager native 빌드·운영 launch/신선도·CPU 재측정과 두 독립 리뷰는 후속이다.
+
+
+## Common38·41 wholewheel과 webserver alias 후속 준비
+
+최신 main42d884f(PR530 포함)을 PR513에 ordinary merge했고 기존 Common92d wheel과
+daemon CLI·host5입력은 그대로 보존했다. 공식 kor-travel-dagster-webserver를
+guard 추출기가 인식하도록 exact 이름과 유사 prefix/suffix 음성 회귀만 준비했다.
+기존 추출기에서는 새 이름1FAIL/8PASS, 정정 뒤9PASS였다. 실제 Compose 명령은 아직
+dagster-webserver이며 구 wheel에는 새 alias가 없어 명령만 먼저 바꾸지 않는다.
+
+최종 Common38+41 wholewheel은 별도 제공 후 기존71개 runtime의 version/hash를 유지하며
+소비한다. 두 정식 CLI와 SQLAlchemy pool plugin의 보존을 확인하고 webserver 한 곳의
+실행 이름만 바꾼다. instance/queue·daemon HC·다른 서비스 정책 변경이나 운영 실행은
+이 준비 작업에 포함하지 않는다. 운영 RC의 queue/NVMe/DB경로/metrics 변경은 별도
+feature에 있으므로 최신 main 또는 PR513만으로 운영 RC 전체를 덮어쓰지 않는다.
+
+## 최종 wholewheel·공식 webserver alias 채택
+
+앞 절의 준비 이후 최종 ff849ea wholewheel로 교체했다. 기존71개 runtime의 모든
+version/hash는 그대로이고 Common hash1개만 갱신했다. Dockerfile/bytecode helper/
+storage-migrate 입력은 불변이며 wheel·requirements 변경을 반영한5입력 content tag는
+930a44266e814ab6이다. 공용 host3개 image ref를 함께 정렬했다.
+
+공용 webserver 실행 이름만 공식 alias로 바꾸고 원 guard/후속 argv·Env/HC/네트워크/
+mount/리소스를 유지한다. daemon의 기존 pooled CLI와 전용 DSN, storage migrate는 그대로다.
+원 실패 이력·단계별 수치는 보존하며 이 소스 채택을 운영 이미지 빌드·배포·실수집·CPU
+개선으로 해석하지 않는다. 운영 RC의 별도514/521/522/525 기능도 이 PR로 덮어쓰지 않는다.
+
+최종 wholewheel·alias 단계의 관련4모듈47PASS(3.89초), Ruff/diff PASS다.
+기존 loopback검증기가 native 실행파일 이름만 찾던 최초1FAIL/46PASS는 보존했고,
+공식 alias의 정확 이름도 인식하도록 test-only 정정했다. loopback 기준은 바꾸지 않았다.
+전체 Compose 의미차이는 공용3image refs와 webserver command실행파일1개뿐임을 대조했고,
+Common 해시를 이전값으로 역치환하면 requirements.txt 전체bytes가 이전과 일치한다.
+실제 SDK/이미지build/liveUI·backend전체/운영은 이번 작성자 검증에서 NOT_RUN이다.
+
+## Weather 주소 설정 전달의 별도 통합 범위
+
+Weather main10b59dc3의 WeatherSettings와 env prefix를 대조해 활성 API와 code-server에
+KOR_TRAVEL_WEATHER_VWORLD_API_KEY/KAKAO_REST_API_KEY와
+KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED/BATCH_SIZE/TIMEOUT_SECONDS를 전달한다.
+두 key 기본값은 빈 문자열, 나머지는 true/50/5로 Weather와 같다. .env.example에는
+실제 값을 넣지 않는다. legacy webserver/daemon·migrate·다른 서비스에는 추가하지 않는다.
+
+기본값/빈값fallback·명시 override·전달 대상·예시6개 정적 보간 회귀는 원Compose에서
+5FAIL1PASS를 확인한 뒤 관련5모듈53PASS로 통과했다. 이는 기존 테스트의 보간 도우미와
+rawYAML 대조이며 실제 Docker Compose 렌더/운영 provider 호출을 실행한 증거는 아니다.
+전체 모델 차이는 두서비스의5키씩10개 추가뿐이며 Common wheel/host이미지 입력은 불변이다.
+이 연결은 설정 전달이며 daemon 시작·instigator 활성화·실제 provider 검증을 수행하지 않는다.
+
+별도 광범위 source파생3모듈은 conftest/SDK/network를 차단해126PASS/53deselect/
+14setupERROR였다. 기존 own_pinned_pair fixture를 의도적으로 로드하지 않은 준비 한계이며
+전체PASS로 세지 않는다. raw로그를 보존했고 전체표준CI/격리fixture 회귀는 root가 정산한다.
+env편집 준비의 AssertionError/StopIteration은 파일쓰기 전 검증에서 중단한 것으로,
+서비스 줄 시작을 정확히 고쳐 최종 전체모델 차이를 재확인했다.
+
+## 최종 Common38·41 소비 검토 정산
+
+제품bd8과 설명정정c654의 독립2리뷰 및 제품CI2SUCCESS는
+[원문·해시·범위](reviews/2026-10-18-common-union-consumer-closure/README.md)에 보존한다.
+기존 실패·격리·운영 NOT_RUN 한계를 유지하며 source 통과를 실제 이미지/서비스·성능 수용으로 바꾸지 않는다.

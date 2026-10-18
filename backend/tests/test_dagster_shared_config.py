@@ -445,7 +445,9 @@ def test_the_shared_webserver_listens_only_on_loopback() -> None:
 
     for name, service in _host_services().items():
         command = [str(part) for part in service["command"]]
-        if "dagster-webserver" not in command:
+        if not any(program in command for program in (
+            "dagster-webserver", "kor-travel-dagster-webserver",
+        )):
             continue
         assert command[command.index("-h") + 1] == "127.0.0.1", name
         return

@@ -29,8 +29,8 @@ def test_vendor_whole_record_source_and_official_metadata() -> None:
     proof = json.loads((_VENDOR / "common-source.json").read_text())
     assert hashlib.sha256(_WHEEL.read_bytes()).hexdigest() == proof["wheel_sha256"]
     assert _WHEEL.stat().st_size == proof["wheel_bytes"]
-    assert proof["common"] == "92d5cf16ad85c2b6cdd0140226066374ae345917"
-    assert proof["product"] == "92d5cf16ad85c2b6cdd0140226066374ae345917"
+    assert proof["common"] == "ff849ea8447c6d2cca1ffa653cfcbe2b2ffa6b32"
+    assert proof["product"] == "ff849ea8447c6d2cca1ffa653cfcbe2b2ffa6b32"
     with zipfile.ZipFile(_WHEEL) as wheel:
         names = wheel.namelist()
         assert len(names) == len(set(names))
@@ -52,11 +52,14 @@ def test_vendor_whole_record_source_and_official_metadata() -> None:
                 checked += 1
             else:
                 assert name == info + "RECORD" and size == ""
-        assert checked == proof["record_rows_checked"] == 18
+        assert checked == proof["record_rows_checked"] == 22
         parser = configparser.ConfigParser()
         parser.read_string(wheel.read(info + "entry_points.txt").decode())
         assert parser["console_scripts"]["kor-travel-dagster-daemon"] == (
             "kortravelcommon.daemon_pool:main"
+        )
+        assert parser["console_scripts"]["kor-travel-dagster-webserver"] == (
+            "kortravelcommon.dagster_webserver:main"
         )
         assert parser["sqlalchemy.plugins"]["kortravel_daemon_pool"] == (
             "kortravelcommon._daemon_pool_plugin:DaemonPoolPlugin"
@@ -71,9 +74,11 @@ import sys, json, importlib.metadata
 sys.path.insert(0, sys.argv[1])
 import kortravelcommon
 import kortravelcommon.daemon_pool
+import kortravelcommon.dagster_webserver
 distribution = importlib.metadata.distribution("kor-travel-common")
 assert distribution.version == "0.1.0.dev0"
 assert len([e for e in distribution.entry_points if e.name == "kor-travel-dagster-daemon"]) == 1
+assert len([e for e in distribution.entry_points if e.name == "kor-travel-dagster-webserver"]) == 1
 assert not any(n == "dagster" or n.startswith("dagster.") for n in sys.modules)
 assert "sqlalchemy" not in sys.modules and "psycopg2" not in sys.modules
 assert ".whl/" in kortravelcommon.__file__
@@ -145,3 +150,23 @@ def test_only_daemon_uses_same_dsn_wrapper_after_original_guard() -> None:
     )
     assert all("kor-travel-dagster-daemon" not in services[name]["command"]
                for name in ("kor-travel-dagster-webserver", "kor-travel-dagster-storage-migrate"))
+
+
+def test_webserver_uses_official_alias_after_the_unchanged_storage_guard() -> None:
+    services = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())["services"]
+    web = services["kor-travel-dagster-webserver"]
+    daemon = services["kor-travel-dagster-daemon"]
+    assert web["command"][:4] == daemon["command"][:4]
+    assert web["command"][3:] == [
+        "sh", "kor-travel-dagster-webserver", "-h", "127.0.0.1",
+        "-p", "$"+"{KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}",
+        "-w", "/opt/dagster/dagster_home/workspace.yaml",
+    ]
+    assert "KOR_TRAVEL_DAGSTER_DAEMON_POSTGRES_URL" not in web["environment"]
+    assert services["kor-travel-dagster-storage-migrate"]["command"] == [
+        "/usr/local/bin/kor-travel-dagster-storage-migrate"
+    ]
+    assert {services[name]["image"] for name in (
+        "kor-travel-dagster-webserver", "kor-travel-dagster-daemon",
+        "kor-travel-dagster-storage-migrate",
+    )} == {web["image"]}
