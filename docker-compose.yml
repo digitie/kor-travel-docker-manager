@@ -2436,7 +2436,7 @@ services:
     privileged: true
     devices:
     - /dev/kmsg:/dev/kmsg
-    # 부하 경감: 현재 운영의 30초 주기와 기본 제외 항목을 보존한다.
+    # 부하 경감: 운영 관측 이력은 30초이며, source 기본은 아래 15초/env 설정이다. 기본 제외 항목을 보존한다.
     # 디스크 순회(disk·diskIO)·상세 네트워크(tcp·udp)·percpu 등을 끄고
     # 기본 cpu·memory·network rx/tx는 남는다. 저장소의 소비자는 중앙 Prometheus scrape뿐이다(rule·대시보드가 이 메트릭을
     # 쓰지 않는다 — Grafana에는 datasource만 있고, Manager 대시보드의 컨테이너 수치는 Docker stats API에서 온다).

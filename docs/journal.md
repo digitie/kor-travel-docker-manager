@@ -15,6 +15,11 @@
 
 ---
 
+## 2026-10-18 — PR513 cAdvisor 설명 시점 정산
+
+- 독립 검토에서 찾은 주석/가이드의 30초·env 제거 표현을 source 기본15초/env와 과거 운영 관측30초로 구분했다. 기존 #515 이력은 유지한다.
+- Compose 값·환경변수 예시값·Common wheel·host5입력·3image refs는 변경하지 않았다. 문서/diff 및 전체 YAML 의미 동일성만 확인하며 새 운영·이미지·UI 검증으로 합산하지 않는다.
+
 ## 2026-10-18 — Weather 주소 갱신 env 전달 보강
 
 - root가 확인한 운영키값을 복사하지 않고 Weather main10b59dc3 settings/default만 읽어 API/code-server 두활성service에 주소5env를 연결했다. 두key는빈값/자동true/batch50/timeout5 기본값이다.
