@@ -1,0 +1,24 @@
+{
+  "head": "bd8adfe22db557e5713ff4388a9030a98f7f8519",
+  "total_count": 2,
+  "check_runs": [
+    {
+      "name": "프론트엔드 검사",
+      "head_sha": "bd8adfe22db557e5713ff4388a9030a98f7f8519",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-10-18T05:52:58Z",
+      "completed_at": "2026-10-18T05:54:15Z",
+      "html_url": "https://github.com/digitie/kor-travel-docker-manager/actions/runs/39102075392/job/117600221164"
+    },
+    {
+      "name": "백엔드 검사",
+      "head_sha": "bd8adfe22db557e5713ff4388a9030a98f7f8519",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-10-18T05:53:03Z",
+      "completed_at": "2026-10-18T06:02:24Z",
+      "html_url": "https://github.com/digitie/kor-travel-docker-manager/actions/runs/39102075392/job/117600220921"
+    }
+  ]
+}

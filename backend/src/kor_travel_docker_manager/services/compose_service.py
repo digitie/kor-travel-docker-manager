@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import json
 import math
@@ -410,18 +411,33 @@ def get_override_path() -> str:
     )
 
 
-def _create_frozen_compose_descriptor(label: str) -> int:
+@contextmanager
+def _pinned_runtime_temporary_directory(state_root: Path) -> Iterator[str]:
+    """기존 state root 아래에만 owner 전용 임시 디렉터리를 만든다."""
+
+    ensure_pinned_runtime_state_directory(state_root)
+    with tempfile.TemporaryDirectory(prefix="build-tmp-", dir=state_root) as directory:
+        yield directory
+
+
+def _create_frozen_compose_descriptor(label: str, *, state_root: Path) -> int:
     """child process에만 `/proc/self/fd`로 보이는 unlinked Compose descriptor를 연다."""
 
     try:
         return os.memfd_create(label, flags=os.MFD_CLOEXEC)
     except AttributeError:
         pass
-    descriptor, temporary_path = tempfile.mkstemp(prefix=f"{label}-")
+    except OSError as exc:
+        if exc.errno != errno.ENOSYS:
+            raise
+    descriptor = None
     try:
-        os.unlink(temporary_path)
-    except OSError:
-        os.close(descriptor)
+        with _pinned_runtime_temporary_directory(state_root) as directory:
+            descriptor, temporary_path = tempfile.mkstemp(prefix="compose-", dir=directory)
+            os.unlink(temporary_path)
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
         raise
     return descriptor
 
@@ -2190,6 +2206,7 @@ def _build_map_application_300_images(
     sources: PinnedRuntimeSourceMaterialization,
     api_image: str,
     dagster_image: str,
+    state_root: Path,
 ) -> None:
     """api/dagster 두 이미지를 직접 빌드한다 -- sealed 외부 스크립트는 없다."""
 
@@ -2202,41 +2219,43 @@ def _build_map_application_300_images(
     builder_environment["PATH"] = (
         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     )
-    for image, dockerfile in (
-        (api_image, "docker/api.Dockerfile"),
-        (dagster_image, "docker/dagster.Dockerfile"),
-    ):
-        try:
-            completed = subprocess.run(
-                [
-                    "docker",
-                    "buildx",
-                    "build",
-                    "--load",
-                    "--file",
-                    str(map_source.root / dockerfile),
-                    "--tag",
-                    image,
-                    "--build-arg",
-                    f"KOR_TRAVEL_MAP_GIT_COMMIT={map_source.revision}",
-                    str(map_source.root),
-                ],
-                cwd="/",
-                env=builder_environment,
-                capture_output=True,
-                check=False,
-                timeout=3600,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise DeploymentContractError(
-                "application 300 image build could not start"
-            ) from exc
-        if completed.returncode != 0:
-            # buildx는 진행과 오류를 stderr로 낸다 — 끝부분에 실패한 단계가 있다.
-            raise DeploymentContractError(
-                f"application 300 image build failed ({dockerfile}, exit {completed.returncode})"
-                + command_output_tail("stderr", completed.stderr)
-            )
+    with _pinned_runtime_temporary_directory(state_root) as directory:
+        builder_environment["TMPDIR"] = directory
+        for image, dockerfile in (
+            (api_image, "docker/api.Dockerfile"),
+            (dagster_image, "docker/dagster.Dockerfile"),
+        ):
+            try:
+                completed = subprocess.run(
+                    [
+                        "docker",
+                        "buildx",
+                        "build",
+                        "--load",
+                        "--file",
+                        str(map_source.root / dockerfile),
+                        "--tag",
+                        image,
+                        "--build-arg",
+                        f"KOR_TRAVEL_MAP_GIT_COMMIT={map_source.revision}",
+                        str(map_source.root),
+                    ],
+                    cwd="/",
+                    env=builder_environment,
+                    capture_output=True,
+                    check=False,
+                    timeout=3600,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise DeploymentContractError(
+                    "application 300 image build could not start"
+                ) from exc
+            if completed.returncode != 0:
+                # buildx는 진행과 오류를 stderr로 낸다 — 끝부분에 실패한 단계가 있다.
+                raise DeploymentContractError(
+                    f"application 300 image build failed ({dockerfile}, exit {completed.returncode})"
+                    + command_output_tail("stderr", completed.stderr)
+                )
 
 
 def _inspect_local_image_id(image: str) -> str:
@@ -4832,6 +4851,7 @@ class ComposeService:
                         sources=sources,
                         api_image=paired_build_images["map_api"],
                         dagster_image=paired_build_images["map_dagster"],
+                        state_root=state_paths.state_root,
                     )
             with _rebuild_stage("application_candidate"):
                 map_candidate = _load_application_300_candidate(

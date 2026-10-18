@@ -67,3 +67,17 @@ Docker·DB·SDK에 접속하지 않는다.
 event loop 비용도 포함한다. 운영 backend CPU 표본과 UI 지연은 여러 작업의 합이므로
 이 수치를 운영 CPU 개선율이나 전체 문제 해결로 확대하지 않는다. 실서비스 적용,
 설정 규모와 동일 작업량 CPU·RSS·수집 소요 시간 비교는 root의 후속 검증이다.
+
+## 2026-10-18 최신 main 정합과 설치본의 구분
+
+PR513·514·521·522가 머지된 main12d4d81을 일반 병합했다. metrics제품·집중회귀·benchmark
+원문은 기존3554 독립2리뷰본 및 RC20b(20b94596)의 Git 원문과 byte동일하다.
+backend/src·frontend/src·config·docker·scripts·deploy·.env.example·docker-compose.yml
+범위도 RC20b와 파일차이0이므로 같은제품을 다시 설치하지 않는다. 이는 source비교이며
+새 remote 모듈검증·실제CPU/RSS의 인과 개선을 주장하지 않는다. 후속531 설치도 이 union의
+backend와 기존기능을 보존하고 frontend만 승인된제품으로 전진해야 한다.
+
+별도 mirror/sterile 환경에서 기존실제AST 집중39회귀가0.45초에 통과했고 Ruff/diff도
+통과했다. benchmark·새성능측정·운영은 재실행하지 않았다. 기존UI 실패와 Cookie외부예외를
+보존하며 새 integration delta 독립검토·CI는 별도다. Transport/Weather collector CPU/RSS
+개선은 사용자 최신순서대로 Track1·2 전체종료 후에 진행한다.
