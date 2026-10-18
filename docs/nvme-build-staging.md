@@ -59,3 +59,15 @@ DB 본체와 존재하는 -wal/-shm(또는 -journal) 파일의 보존·NVMe 배�
 계약은 위반했다. memfd의 진단 label은 유지하고 디스크 fallback prefix만 고정 문자열로
 바꿨다. 자기 scratch의 절대·상대 경로2회귀는 수정 전2FAIL, 수정 후16PASS에 포함된다.
 원 b631e5a와 초기 리뷰는 보존하며 전체 suite/실제 운영 검증은 여전히 미실시다.
+
+## 2026-10-18 최신 main 정합
+
+PR513·514가 머지된 main3015c31과 일반 병합했다. journal/tasks의 양쪽 이력을 보존하며
+임시경로 제품은 기존79ff 독립리뷰본·56ef·운영RC20b의 Git 원문과 byte동일하다.
+최신 Common wholewheel/두CLI·tag930a·큐2/30·Weather환경은 main 그대로다.
+이미 설치된 동일제품을 재설치하지 않으며 source 채택을 전체 eMMC 쓰기 측정으로 확대하지 않는다.
+
+별도 mirror에서 신규16회귀를 umask022/077 각각 통과했다. 추가 buildx 실패 회귀는
+conftest를 제외한 최초 준비에서 own_pinned_pair fixture 누락1ERROR였고, 원로그를 보존했다.
+저장소의 원 격리 fixture로 재실행한 관련17개는1.93초에 통과했고 Ruff/diff도 통과했다.
+이는 실제 Docker/원격/운영 빌드 검증이 아니며 새 통합head의 독립delta검토·CI는 별도다.

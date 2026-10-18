@@ -666,3 +666,86 @@ def test_host_literal_scan_sees_words_fstrings_and_skips_docstrings(tmp_path, mo
         ("probe.py", "target on odroid"),
         ("probe.py", "http://10.0.0.9:1"),
     }
+
+
+def _install_cli_address_config(config, monkeypatch, tmp_path):
+    import socket
+
+    import yaml
+
+    path = tmp_path / "docker-targets.yml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    monkeypatch.setenv(registry.TARGETS_FILE_ENV, str(path))
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE", str(tmp_path / "absent.yml"))
+    monkeypatch.delenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", raising=False)
+
+    def no_address_probe(*args, **kwargs):
+        raise AssertionError("주소 출력은 네트워크나 인터페이스를 조회하지 않는다")
+
+    monkeypatch.setattr(socket, "getaddrinfo", no_address_probe)
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", no_address_probe)
+    registry.load_targets_config.cache_clear()
+    return path
+
+
+@pytest.mark.parametrize("addr", ["192.0.2.70", "198.51.100.90"])
+def test_validate_json_projects_declared_host_addresses(config, monkeypatch, tmp_path, capsys, addr):
+    config["hosts"]["odroid"]["addr"] = addr
+    _install_cli_address_config(config, monkeypatch, tmp_path)
+
+    code, document, err = _validate_json(capsys)
+
+    assert code == 0 and not err
+    assert document == {
+        "status": "ok",
+        "host": registry.default_host(config),
+        "hosts": {name: {"addr": spec["addr"]} for name, spec in config["hosts"].items()},
+        "targets": {name: {"host": spec["host"]} for name, spec in config["targets"].items()},
+    }
+    assert document["hosts"]["odroid"] == {"addr": addr}
+
+
+def test_validate_json_uses_reloaded_registry_address(config, monkeypatch, tmp_path, capsys):
+    import yaml
+
+    config["hosts"]["odroid"]["addr"] = "192.0.2.70"
+    path = _install_cli_address_config(config, monkeypatch, tmp_path)
+    first_code, first, _ = _validate_json(capsys)
+
+    config["hosts"]["odroid"]["addr"] = "198.51.100.90"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    registry.load_targets_config.cache_clear()
+    second_code, second, _ = _validate_json(capsys)
+
+    assert first_code == second_code == 0
+    assert first["hosts"]["odroid"]["addr"] == "192.0.2.70"
+    assert second["hosts"]["odroid"]["addr"] == "198.51.100.90"
+    assert first["targets"] == second["targets"]
+
+
+def test_validate_json_without_host_declarations_preserves_v1(config, monkeypatch, tmp_path, capsys):
+    config["version"] = 1
+    del config["hosts"]
+    for target in config["targets"].values():
+        target.pop("host", None)
+    _install_cli_address_config(config, monkeypatch, tmp_path)
+
+    code, document, err = _validate_json(capsys)
+
+    assert code == 0 and not err
+    assert document == {
+        "status": "ok",
+        "host": "local",
+        "hosts": {},
+        "targets": {name: {"host": "local"} for name in config["targets"]},
+    }
+
+
+def test_validate_address_projection_keeps_plain_text_output(config, monkeypatch, tmp_path, capsys):
+    from kor_travel_docker_manager.cli import main
+
+    _install_cli_address_config(config, monkeypatch, tmp_path)
+
+    assert main(["targets", "validate"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "OK\n" and not captured.err
