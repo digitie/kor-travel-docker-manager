@@ -15,6 +15,13 @@
 
 ---
 
+## 2026-10-18 — PR513 Common38·41 wholewheel 채택
+
+- 최종 ff849ea 정식 wholewheel63,151B/SHA1abf0547…를 vendor에 넣고 package17/RECORD22행·독립재빌드 byte동일·두CLI/plugin을 확인했다. 기존92d daemon 복구 계약을 보존했다.
+- 기존71개 runtime version/hash를 유지해 Common hash1개만 바꾸고 공용webserver의 실행 이름만 공식 kor-travel-dagster-webserver로 전환한다. 원 guard·인자/Env/HC는 불변이다.
+- pure관련4모듈47PASS3.89초/Ruff/diff PASS. 기존 loopback시험의 실행파일 탐색1FAIL/46PASS는 공식 alias 인식test-only정정 후 통과했고 기준은 유지했다. Compose전체차이는3image refs+실행파일1개, requirements의Commonhash 역치환시전체bytes동일이다.
+- 기존5입력 content tag930a44266e814ab6로 host3개 image ref를 함께 정렬한다. 전체운영RC 통교체·daemon시작·이미지build/배포는 하지 않는다. sourcefocused/CI·독립소비리뷰와 실제root수용을 분리한다.
+
 ## 2026-10-18 — PR513 최신 main의 주소 CLI 정합 보존
 
 - clean PR513 worktree에서 최신 main42d884f(#530 포함)을 ordinary merge했다. 충돌은 journal/tasks 두 문서뿐이며 양쪽 이력을 보존했다.

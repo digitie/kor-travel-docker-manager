@@ -4,11 +4,18 @@
 
 PR511의 상태 점검/빌드 bytecode를 기준으로 별도 stacked PR을 구성한다.
 초기 Common38 lifecycle 후보 채택 뒤 실제 launch의 임시 Instance 회귀가 발견되어,
-현재는 Common92d5cf1 수정 wheel로 갱신했다. 이전 후보와 실제 실패는 아래 이력으로 보존한다.
+Common92d 수정 이력 뒤 현재는 Common38+41 통합 ff849ea wholewheel과 공식 webserver alias를 채택한다.
+이전 후보와 실제 실패는 아래 이력으로 보존한다.
 PR511 병합 뒤 이 PR의 base를 main으로 정산했다. 구현 검증과 운영 완료는 구분한다.
 
 ## 정식 wheel과 고정 설치
 
+현재 source는 Common ff849ea8447c6d2cca1ffa653cfcbe2b2ffa6b32의 정식 wholewheel63,151B,
+SHA256 1abf0547a7b7fbe76284b69c375e83d953788b83a05fbd6720957a869f865b53이다.
+독립 archive 재빌드가 byte동일하며 package17개(Python16/py.typed1), RECORD nonself22행을 확인했다.
+기존 daemon CLI/plugin과 새 kor-travel-dagster-webserver가 함께 들어간다.
+
+다음은 이전92d wheel의 출처 이력이다.
 Common 92d5cf16ad85c2b6cdd0140226066374ae345917(공식 launch 임시 Instance 수정)의 정식 전체 core wheel을
 vendor에 넣었다. 원 wheel45621B와 독립 Git archive의 offline 재빌드가 동일 SHA256
 4fa65afd0b8ae90002503fb48d4455fb28ba8574c8cbb529c5add4ff04923527였다.
@@ -29,8 +36,9 @@ metadata와 source map 검증을 새 회귀에 연결한다. artifact 생성 실
 공용 daemon만 기존 storageguard 뒤 exec 명령을 kor-travel-dagster-daemon run -w
 원 workspace로 바꾼다. dedicated daemon DSN은 기존 shared DSN과 동일한 보간으로 이 서비스에만
 추가한다. 다른 Env/HC 전체 Test/heartbeat300/User/mount/리소스/업무 queue 정책은 유지한다.
-공용 이미지의 webserver/storage migrate는 Common 설치 뒤에도 기존 명령을 사용하므로
-pool activation0이다. 기존 liveness-check도 원 CLI를 호출한다.
+공용 webserver는 같은 storageguard 뒤 정식 kor-travel-dagster-webserver alias로 기존 인자를
+그대로 전달한다. daemon 전용 DSN은 webserver에 추가하지 않으므로 daemon pool activation0이다.
+storage migrate와 기존 liveness-check는 원 명령을 유지한다.
 
 Common wrapper가 원 console entry를 같은 process에서 호출하고 원 argv/SDK 신호·종료를
 보존한다. unresolved StringSource/ref의 외부 CS 환경 전달, fork·busy/idle dispose 및
@@ -115,3 +123,22 @@ dagster-webserver이며 구 wheel에는 새 alias가 없어 명령만 먼저 바
 실행 이름만 바꾼다. instance/queue·daemon HC·다른 서비스 정책 변경이나 운영 실행은
 이 준비 작업에 포함하지 않는다. 운영 RC의 queue/NVMe/DB경로/metrics 변경은 별도
 feature에 있으므로 최신 main 또는 PR513만으로 운영 RC 전체를 덮어쓰지 않는다.
+
+## 최종 wholewheel·공식 webserver alias 채택
+
+앞 절의 준비 이후 최종 ff849ea wholewheel로 교체했다. 기존71개 runtime의 모든
+version/hash는 그대로이고 Common hash1개만 갱신했다. Dockerfile/bytecode helper/
+storage-migrate 입력은 불변이며 wheel·requirements 변경을 반영한5입력 content tag는
+930a44266e814ab6이다. 공용 host3개 image ref를 함께 정렬했다.
+
+공용 webserver 실행 이름만 공식 alias로 바꾸고 원 guard/후속 argv·Env/HC/네트워크/
+mount/리소스를 유지한다. daemon의 기존 pooled CLI와 전용 DSN, storage migrate는 그대로다.
+원 실패 이력·단계별 수치는 보존하며 이 소스 채택을 운영 이미지 빌드·배포·실수집·CPU
+개선으로 해석하지 않는다. 운영 RC의 별도514/521/522/525 기능도 이 PR로 덮어쓰지 않는다.
+
+최종 wholewheel·alias 단계의 관련4모듈47PASS(3.89초), Ruff/diff PASS다.
+기존 loopback검증기가 native 실행파일 이름만 찾던 최초1FAIL/46PASS는 보존했고,
+공식 alias의 정확 이름도 인식하도록 test-only 정정했다. loopback 기준은 바꾸지 않았다.
+전체 Compose 의미차이는 공용3image refs와 webserver command실행파일1개뿐임을 대조했고,
+Common 해시를 이전값으로 역치환하면 requirements.txt 전체bytes가 이전과 일치한다.
+실제 SDK/이미지build/liveUI·backend전체/운영은 이번 작성자 검증에서 NOT_RUN이다.
