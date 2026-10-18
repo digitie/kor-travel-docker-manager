@@ -142,3 +142,23 @@ mount/리소스를 유지한다. daemon의 기존 pooled CLI와 전용 DSN, stor
 전체 Compose 의미차이는 공용3image refs와 webserver command실행파일1개뿐임을 대조했고,
 Common 해시를 이전값으로 역치환하면 requirements.txt 전체bytes가 이전과 일치한다.
 실제 SDK/이미지build/liveUI·backend전체/운영은 이번 작성자 검증에서 NOT_RUN이다.
+
+## Weather 주소 설정 전달의 별도 통합 범위
+
+Weather main10b59dc3의 WeatherSettings와 env prefix를 대조해 활성 API와 code-server에
+KOR_TRAVEL_WEATHER_VWORLD_API_KEY/KAKAO_REST_API_KEY와
+KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED/BATCH_SIZE/TIMEOUT_SECONDS를 전달한다.
+두 key 기본값은 빈 문자열, 나머지는 true/50/5로 Weather와 같다. .env.example에는
+실제 값을 넣지 않는다. legacy webserver/daemon·migrate·다른 서비스에는 추가하지 않는다.
+
+기본값/빈값fallback·명시 override·전달 대상·예시6개 정적 보간 회귀는 원Compose에서
+5FAIL1PASS를 확인한 뒤 관련5모듈53PASS로 통과했다. 이는 기존 테스트의 보간 도우미와
+rawYAML 대조이며 실제 Docker Compose 렌더/운영 provider 호출을 실행한 증거는 아니다.
+전체 모델 차이는 두서비스의5키씩10개 추가뿐이며 Common wheel/host이미지 입력은 불변이다.
+이 연결은 설정 전달이며 daemon 시작·instigator 활성화·실제 provider 검증을 수행하지 않는다.
+
+별도 광범위 source파생3모듈은 conftest/SDK/network를 차단해126PASS/53deselect/
+14setupERROR였다. 기존 own_pinned_pair fixture를 의도적으로 로드하지 않은 준비 한계이며
+전체PASS로 세지 않는다. raw로그를 보존했고 전체표준CI/격리fixture 회귀는 root가 정산한다.
+env편집 준비의 AssertionError/StopIteration은 파일쓰기 전 검증에서 중단한 것으로,
+서비스 줄 시작을 정확히 고쳐 최종 전체모델 차이를 재확인했다.

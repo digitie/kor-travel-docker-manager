@@ -15,6 +15,13 @@
 
 ---
 
+## 2026-10-18 — Weather 주소 갱신 env 전달 보강
+
+- root가 확인한 운영키값을 복사하지 않고 Weather main10b59dc3 settings/default만 읽어 API/code-server 두활성service에 주소5env를 연결했다. 두key는빈값/자동true/batch50/timeout5 기본값이다.
+- .env.example·관련정적보간/전달대상6회귀를 추가했다. 원Compose5FAIL1PASS→관련5모듈53PASS4.47초/Ruff/diff를 확인했다. 실제DockerCompose렌더/운영provider·서비스재기동은 하지 않았다.
+- 광범위순수파생검사는126PASS/53deselect/14setupERROR(차단한conftest의own_pinned_pair미로딩)로전체PASS가아니다. 초기env편집준비assert/StopIteration은쓰기전중단후정정했고모두원문보존한다.
+- legacy webserver/daemon 및 다른service에는전달하지 않으며, hostwheel/5image입력/tag930a44266e814ab6도 변경하지 않았다. 이 추가scope도 PR513 전체통합소비리뷰에서 함께 검토한다.
+
 ## 2026-10-18 — PR513 Common38·41 wholewheel 채택
 
 - 최종 ff849ea 정식 wholewheel63,151B/SHA1abf0547…를 vendor에 넣고 package17/RECORD22행·독립재빌드 byte동일·두CLI/plugin을 확인했다. 기존92d daemon 복구 계약을 보존했다.
