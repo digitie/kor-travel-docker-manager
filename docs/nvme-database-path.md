@@ -70,3 +70,13 @@ database 필드로 만든다. 따라서 '?mode=ro&uri=true'도 URI 모드 옵션
 포함하지 않았음을 명시하며 최초 결과/원문은 보존한다. unset3종 import origin은 기존
 문자열 URL과 같은 SQLite 연결 인자를 만들고, 명시 파일명의 '?'/URI형/'#'/'%'/
 Unicode·공백을 보존한다. 실제 engine/연결/DB 파일 생성은0이다.
+
+## 2026-10-18 최신 main 정합
+
+PR513·514·521이 머지된 main3862623을 일반 병합했다. DB 경로 제품과 focused test는
+기존8bd95 독립리뷰본·7c390·운영RC20b의 Git 원문과 byte동일하다. main의 Common/CLI·
+큐2/30·NVMe임시경로·Weather설정은 그대로 유지하며 이미 채택된 동일제품을 재설치하지 않는다.
+
+별도 mirror/sterile 환경에서 AST 경로·실제SQLAlchemy URL/dialect인자25회귀가0.21초에
+통과했고 Ruff/diff도 통과했다. DB모듈/engine/실DB를 실행하지 않았으며 실제DB/WAL/SHM
+보전은 기존운영증거와 별도다. 새 integration delta 독립검토·CI는 후속으로 정산한다.

@@ -1,7 +1,5 @@
 # JOURNAL — 작업 일지
 
-새 항목은 아래 "과거 기록 아카이브" 블록 **다음, 첫 항목 위**에 더한다(최신이 위).
-
 ## 과거 기록 아카이브
 
 파일이 820,205 B(에이전트 read 한도 256 KB의 3배)가 되어 2026-10-16에 옛 항목을 아래 파일들로 옮겼다(T-MGR-07). 본문은 byte 그대로, 원래 파일 순서 그대로다 — 이 파일 끝 다음이 가장 번호가 큰 아카이브의 첫 항목이고, 번호가 작을수록 오래된 구간이다. 과거 검색은 `rg <패턴> docs/journal*.md`.
@@ -17,22 +15,32 @@
 
 ---
 
+## 2026-10-18 — PR522 최신 main521 정합
+
+- PR513·514·521이 머지된 main3862623과 일반 병합했고 journal/tasks 양쪽 이력을 보존한다.
+- database.py와 집중회귀는 기존8bd95·7c390·RC20b 원문과 byte동일이다. 최신 main Common/CLI/queue/NVMe임시경로·Weather환경은 보존한다. 원worktree/RC20b/e02/helper·운영은 변경하지 않는다.
+- 별도 mirror/sterile env에서 AST경로·실제SQLAlchemy URL/dialect인자25PASS0.21초/Ruff/diff를 확인했다. DB모듈/engine/실DB 실행0이다.
+- 기존 source 채택과 native DB 경로 설정·WAL/SHM 이전 증거를 구분한다. 새 통합delta 독립검토·CI는 별도이며 동일제품을 다시 설치하지 않는다.
+
+## 2026-10-18 — PR521 최신 main514 정합
+
+- PR513·514가 머지된 main3015c31을 일반 병합한다. 충돌은 journal/tasks 두 문서뿐이며 양쪽 기록을 보존한다.
+- NVMe 임시경로 제품은 기존 리뷰본·RC20b와 byte동일하고 최신 Common wholewheel/두CLI/hosttag930a·큐2/30·Weather주소환경은 main 그대로다. 원worktree/RC20b/e02/helper 및 운영은 변경하지 않는다.
+- 별도 mirror에서16회귀를umask022/077 각각 통과했고 원격리fixture의 관련17PASS1.93초/Ruff/diff를 확인했다. 최초 no-conftest 준비의 own_pinned_pair 누락1ERROR 원문은 보존했다.
+- 소스 통합검증과 기존 native 채택을 구분하며 새 delta의 독립2리뷰·CI는 별도 정산한다. 이미 적용된 동일제품을 다시 설치하지 않는다.
+
+## 2026-10-18 — PR514 최신 main513 정합
+
+- 최신 main0f0b4f1을 일반 병합하며 PR 고유 제품과 기존 양쪽 기록을 보존한다. 운영 RC20b/e02 후보와 원 worktree는 수정하지 않는다.
+- Common ff849ea wholewheel·공식 daemon/webserver CLI·host 입력 tag930a44266e814ab6·Weather 주소 환경 전달을 보존한다. queue/NVMe/DB/metrics 다른 PR 기능을 이 브랜치에 새로 합치지 않는다.
+- 별도 mirror/sterile env 관련5모듈70PASS·실제Compose렌더11건제외/Ruff/diff PASS, 전체모델은 큐 두scalar·digest7소비자만 차이다. 최신main host5입력/vendor/공식CLI는 byte동일이다.
+- 새 integration head 독립2리뷰·CI는 별도이며 이 병합을 운영 재설치·daemon 시작·성능 수용으로 바꾸지 않는다.
+
 ## 2026-10-17 — PR522 최신 main 통합 준비
 
 - 최신 main20b의 포트·관측 파생과 완료 원장을 ordinary merge하고 기존 기능 변경은 보존한다.
 - 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
 
-
-## 2026-10-17 — NH-6 Manager Prometheus job을 호스트마다 파생
-
-- 전제 확인(읽기 전용): odroid에 Manager가 설치됐고(codex RC), n150에서 `http://192.168.1.13:12901/metrics`가 200
-  (`text/plain; version=0.0.4`, `ktdm_up 1`)이다. 먼저 머지하면 `up=0`이던 조건이 풀렸다.
-- `services/prometheus_targets.py`: 손으로 쓰던 `kor-travel-docker-manager` job을 파생에 넣었다. Manager는 선언된 모든
-  호스트에서 돈다(ADR-58 결정 2) → `hosts:` 순서로 static_config 하나씩(R1 주소·`host` label). 포트는 backend를 띄우는
-  `deploy/systemd/ktdm-backend.service`의 `ExecStart … --port`에서 읽는다(없거나 둘이면 거부). `NON_REGISTRY_JOBS`는 없앴다.
-- `prometheus.yml`: odroid static_config 1개 추가(`192.168.1.13:12901`). compose 변화 없음.
-- 테스트(n150 per-clone venv): 대상 21 PASS. 빨강 확인 4건 — odroid static_config 삭제, main의 옛 파일, unit `--port`
-  변경, 손 job 추가가 모두 빨갛다.
 
 ## 2026-10-17 — PR522 SQLite URL 파일명 보존 수정
 
@@ -62,6 +70,202 @@
 - .env 로드 시점과 실제 프로세스 환경을 구분한다. DB/운영 실행0,521소스변경0이다.
 
 
+## 2026-10-17 — PR521 최신 main 통합 준비
+
+- 최신 main20b의 포트·관측 파생과 완료 원장을 ordinary merge하고 기존 기능 변경은 보존한다.
+- 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
+
+
+## 2026-10-17 — PR521 fallback label 경로 이탈 수정
+
+- 독립 리뷰가 b631e5a의 절대/상대 label로 mkstemp가 state 밖 파일을 만들 수 있음을 재현했다.
+- 현재 private helper 내부 caller0/실제 env_file memfd-only는 영향 없지만 state 한정 계약을
+  지키도록 디스크 fallback prefix만 고정했다. memfd label과 나머지 제품 동작은 그대로다.
+- 실제 자기 scratch 경로 회귀2FAIL→전체격리16PASS/backend Ruff 확인. 원 실패 및 원문 보존,
+  전체 suite·운영/NVMe 검증 미실시는 유지한다.
+
+
+## 2026-10-17 — NVMe 빌드 임시 경로 구현(PR521)
+
+- 기존 frozen state root 아래0700 임시 디렉터리와0600/unlinked fallback 파일을 사용한다.
+  Map buildx 두 호출에 같은 TMPDIR를 전달하며 기존 Docker/XDG 환경과 argv를 보존한다.
+- 실제 env_file의 memfd-only 경로·source cache·DB 기본값·기동 조건은 변경하지 않는다.
+- 신규 격리14회귀/backend Ruff 통과, parent 실제 함수2RED→새 함수2GREEN을 확인했다.
+  기존 단일test 직접 실행의 registry 경로 오류/fixture 부재와 초기 mock6실패는 별도 이력으로 남겼다.
+- 전체 suite·실제 NVMe 배포·Docker 빌드·eMMC 쓰기 측정은 미실시다.
+  [검증 방법과 운영 경계](nvme-build-staging.md)에 입력/cleanup/설치 주의점을 기록했다.
+
+
+## 2026-10-17 — NVMe 빌드 임시 경로 설계
+
+- 최신 main c1c7674의 별도 feature worktree에서 설계 초안을 작성했다.
+- 기존 state 경로 계약을 재사용하고 memfd fallback 및 Map buildx TMPDIR만 소유한다.
+- source cache/DB 기본값/서비스 기동 조건/다른 작업 트리는 변경하지 않는다.
+- 실제 운영·Docker·DB 접근 없이 로컬 회귀로 검증하며 운영 적용은 별도다.
+
+
+## 2026-10-17 — PR514 최신 main 통합 준비
+
+- 최신 main을 보존한 PR513을 먼저 ordinary merge하여 의존 기능과 queue 두 scalar를 함께 유지한다.
+- 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
+
+
+## 2026-10-17 — PR514에 최종 PR513과 main #517 통합
+
+- clean24e3 위에서 최종513 f72e49를 ordinary merge했다. journal/tasks 충돌만 양쪽 이력을 보존해 해결하며 제품은 별도 whole-model로 확인한다.
+- 514의 source cap2/dequeue30·instance rawSHA/digest7소비자와 513 Common92d wholewheel/73c 빌드5입력·기존512 기능을 함께 보존한다.
+- 최신 main #517의 cAdvisor15초/env 기본·14제외·단일flags를 유지한다. 운영 Odroid tuning/raw463c는 이 source 작업에서 읽거나 수정하지 않는다.
+- PR514 base는 main/draft를 유지하고 PR513 선행을 명시한다. 513보다 먼저 merge하지 않으며 CI/독립 integration delta 리뷰는 별도다.
+
+
+
+## 2026-10-17 — PR514 instance snapshot 회귀 정산
+
+- 최초6f419f7 CI1FAIL/3049PASS/39SKIP의 유일 원인은 NH-4 당시 원문
+  SHA7925… snapshot이었다. 승인 범위 두scalar의 변경 뒤 새 SHA3441…로
+  기대값·검사명/설명을 정정하고 전체bytes 검증은 유지했다.
+- 제품 config·Compose는 불변, 관련59PASS/13.04초와 Ruff·diff검사 PASS.
+  원CI실패는 보존하고 새전체CI는 별도추적한다. 실제 SDK/DB/Docker/운영0.
+
+
+
+## 2026-10-17 — 공용 Dagster dispatch 한도·큐 확인 주기 초안(PR514)
+
+- 최신 기준 main `872c326`에서 별도 worktree를 만들어 설계 초안 후
+  `max_concurrent_runs: 2`·`dequeue_interval_seconds: 30`만 구현했다.
+  location·run group 상한과 업무/monitor/health 설정은 그대로다.
+- 원본 파일 bytes SHA256 앞16자 anchor를 재계산했다. 모델 대조에서
+  instance 두scalar/Compose7소비자 digest만 달라짐을 확인했다.
+- 정책 변경 전 실패 보존 → 관련130PASS(44.71초), Ruff·diff검사 통과.
+  전체 suite는 재실행하지 않았고 실제 SDK/DB/Docker·운영 실행은 없다.
+- PR513의 Common 소비자 변경과 분리했다. 운영 원본은 source와 다를
+  수 있으므로 두 값만 적용한 뒤 실제 digest를 계산해야 한다. 독립2리뷰,
+  CI, 운영 CPU·대기 영향은 후속이며 성능 개선을 확정하지 않았다.
+
+
+
+## 2026-10-18 — PR513 최종 소비 리뷰·제품 CI 보존
+
+- bd8 전체 소비 리뷰와 c654 설명 정정 closure의 B/C 원문4개를 byte/SHA 그대로 보존했다. 두 Manager 독립 판정은 열린 P0–P3=0이며 Common 작성자 역할과 Manager 소비 판정의 경계를 명시한다.
+- exact bd8 backend/frontend CI2SUCCESS를 별도 JSON으로 보존했다. 작성자·독립·CI 수를 합산하지 않으며 기존 준비 실패와 전체검사14setupERROR 이력을 유지한다.
+- [정산 원문](reviews/2026-10-18-common-union-consumer-closure/README.md). 이번 변경은 문서뿐이며 새 CI·이미지·운영/UI·성능 검증은 하지 않는다. daemon OFF/RC 개별 기능 보존 정책은 유지한다.
+
+## 2026-10-18 — PR513 cAdvisor 설명 시점 정산
+
+- 독립 검토에서 찾은 주석/가이드의 30초·env 제거 표현을 source 기본15초/env와 과거 운영 관측30초로 구분했다. 기존 #515 이력은 유지한다.
+- Compose 값·환경변수 예시값·Common wheel·host5입력·3image refs는 변경하지 않았다. 문서/diff 및 전체 YAML 의미 동일성만 확인하며 새 운영·이미지·UI 검증으로 합산하지 않는다.
+
+## 2026-10-18 — Weather 주소 갱신 env 전달 보강
+
+- root가 확인한 운영키값을 복사하지 않고 Weather main10b59dc3 settings/default만 읽어 API/code-server 두활성service에 주소5env를 연결했다. 두key는빈값/자동true/batch50/timeout5 기본값이다.
+- .env.example·관련정적보간/전달대상6회귀를 추가했다. 원Compose5FAIL1PASS→관련5모듈53PASS4.47초/Ruff/diff를 확인했다. 실제DockerCompose렌더/운영provider·서비스재기동은 하지 않았다.
+- 광범위순수파생검사는126PASS/53deselect/14setupERROR(차단한conftest의own_pinned_pair미로딩)로전체PASS가아니다. 초기env편집준비assert/StopIteration은쓰기전중단후정정했고모두원문보존한다.
+- legacy webserver/daemon 및 다른service에는전달하지 않으며, hostwheel/5image입력/tag930a44266e814ab6도 변경하지 않았다. 이 추가scope도 PR513 전체통합소비리뷰에서 함께 검토한다.
+
+## 2026-10-18 — PR513 Common38·41 wholewheel 채택
+
+- 최종 ff849ea 정식 wholewheel63,151B/SHA1abf0547…를 vendor에 넣고 package17/RECORD22행·독립재빌드 byte동일·두CLI/plugin을 확인했다. 기존92d daemon 복구 계약을 보존했다.
+- 기존71개 runtime version/hash를 유지해 Common hash1개만 바꾸고 공용webserver의 실행 이름만 공식 kor-travel-dagster-webserver로 전환한다. 원 guard·인자/Env/HC는 불변이다.
+- pure관련4모듈47PASS3.89초/Ruff/diff PASS. 기존 loopback시험의 실행파일 탐색1FAIL/46PASS는 공식 alias 인식test-only정정 후 통과했고 기준은 유지했다. Compose전체차이는3image refs+실행파일1개, requirements의Commonhash 역치환시전체bytes동일이다.
+- 기존5입력 content tag930a44266e814ab6로 host3개 image ref를 함께 정렬한다. 전체운영RC 통교체·daemon시작·이미지build/배포는 하지 않는다. sourcefocused/CI·독립소비리뷰와 실제root수용을 분리한다.
+
+## 2026-10-18 — PR513 최신 main의 주소 CLI 정합 보존
+
+- clean PR513 worktree에서 최신 main42d884f(#530 포함)을 ordinary merge했다. 충돌은 journal/tasks 두 문서뿐이며 양쪽 이력을 보존했다.
+- 기존 Common92d wholewheel/host5빌드입력/73c image tag와 daemon CLI, main의 targets addr projection을 보존한다. 운영 RC는 수정하지 않는다.
+- guard 추출기는 새 공식 webserver alias만 정확히 인식하도록 준비했다(원1FAIL/8PASS→9PASS). 비슷한 prefix/suffix는 계속 거절한다. 실제 command/이미지 입력은 바꾸지 않았다.
+- 최종 Common38+41 합집합 wheel은 root 제공 후 별도 소비한다. 현 wheel에는 새 webserver alias가 없으므로 command만 먼저 교체하지 않는다. 운영/daemon/build/배포는 이번 작업에서 실행하지 않는다.
+
+## 2026-10-17 — PR513 최신 main 통합 준비
+
+- main20b의 Prometheus 호스트별 파생·포트 정합과 완료 원장을 보존하여 ordinary merge했다. 양쪽 journal 이력을 유지한다.
+- Common92d wholewheel·명시 이미지 입력5개·기존 daemon wrapper는 그대로다. 이번 작업은 source 통합이며 운영 적용·daemon 재시작·PR 머지는 하지 않는다.
+- 최신 main 대비 독립 delta 리뷰와 CI, Manager 공개 UI 수용은 후속이다.
+
+## 2026-10-17 — PR513의 최신 main #517 통합
+
+- Common92d 정식 wheel과 기존 daemon pooled CLI 소비를 보존한 채 main `84e643a`를 merge했다. rebase/reset은 하지 않았다.
+- 실제 충돌은 cAdvisor 회귀의 기본 off 집합 앞 주석 한 곳이었다. 해당 회귀 함수를 최신 main으로 정렬해 `CADVISOR_HOUSEKEEPING_INTERVAL` 기본15초·단일 flag·제외14집합을 유지했다.
+- Compose는 자동 병합됐어도 별도로 전체 모델을 확인한다. host 빌드5입력과 content tag `73c524b1424d4aa6`는 이전 fcc2와 byte exact이며 기존 양쪽 작업 이력은 보존했다.
+- 운영/설정 배포는 이 merge 작업의 범위가 아니다. focused 순수 회귀·Ruff 및 독립 delta 리뷰/CI를 별도로 정산한다.
+
+
+새 항목은 아래 "과거 기록 아카이브" 블록 **다음, 첫 항목 위**에 더한다(최신이 위).
+
+## 2026-10-17 — PR530 targets validate JSON에 선언 주소만 투영
+
+- 제품은 CLI 성공 JSON에 검증된 registry hosts의 addr만 더하는2줄이다. 기존 status/host/targets·텍스트 OK·실패 출력은 보존하며 registry/target 선언·호스트 검증·API/프런트엔드는 바꾸지 않았다.
+- 원래코드에서 새 회귀4FAIL1PASS를 확인한 뒤5PASS, registry/CLI 관련105PASS155deselect를 확인했다. 접속·주소조회·실제 subprocess를 거절하는 소유 wrapper에서 수행했다.
+- backend Ruff·frontend type-check/build PASS. frontend는 package/lock가 같은 기존 readonly dependencies를 재사용했고 symlink는 검사 뒤 제거했다. 전체 backend suite·Docker·DB·운영 검증은 로컬에서 실행하지 않았다.
+- 새 v2 JSON은 addr만 whitelist하며 옛 v1 hosts는 빈 mapping이다. 문서의 오래된 ok/local/errors 초안을 현재 status/host/targets와 맞췄다. 독립2리뷰·CI·머지/설치와 실제 Transport 검증은 별도다.
+
+
+## 2026-10-17 — targets validate 주소 효과 JSON의 최소 확장 초안
+
+- 최신 main e84f3ce에서 별도 feature worktree를 만들고 기존 feature/WIP를 보존했다.
+- registry hosts 선언을 재구현하지 않고 성공 JSON에 addr만 whitelist 투영하는 범위다. 기존 status/host/targets 및 실패/텍스트 동작은 유지한다.
+- 운영·Docker·DB·SDK·원격 주소 조회는 하지 않는다. 실제 registry 변경 효과·출력 범위/호환 회귀 및 독립 리뷰는 구현 뒤 진행한다.
+
+
+## 2026-10-17 — T-MGR-02r 실측: n150 plane의 location 상한은 바꾸지 않는다
+
+- 읽기 전용: n150 공용 webserver GraphQL(`127.0.0.1:11002`) `runsOrError`로 14일 19,845 run(SUCCESS 19,158·FAILURE 686·CANCELED 1).
+  location은 `dagster/code_location` tag, duration = end − start, queue 대기 = start − creation, 동시 실행은 구간 sweep(시간 비율).
+- n150 workspace는 map·pinvi·concierge만 LOADED. geo·weather·transport의 n150 마지막 run은 10-15T02:15Z·10-14T21:05Z·10-14T21:10Z.
+- 남은 세 location: pinvi p95 24 s·최대 동시 4(상한 10), concierge p95 20 s·최대 2(상한 2, 의도된 상한), map 9 run·최대 1(상한 10).
+  합산 최대 동시 4, 대기 p95 26.7 s·p99 81 s → 전역 12도 멀다. 결정 7도 이 셋과 12는 불변 → **변경 없음, T-MGR-02r 닫음**(doc-only).
+- odroid(geo·weather·transport 상한)는 범위 밖(codex). 참고로 n150 시절 weather 매시 job p95 > 5 min(airkorea 1,128 s·초단기예보 1,199 s),
+  external_weather 3이 이미 대기 최대 80 min — 결정 7 규칙(weather 1)을 그대로 적용하기 전에 odroid 실측이 필요하다. `dagster.yaml`은
+  두 plane이 한 벌을 읽어 바꾸면 둘 다 재생성된다.
+
+
+## 2026-10-17 — NH-6 Manager Prometheus job을 호스트마다 파생
+
+- 전제 확인(읽기 전용): odroid에 Manager가 설치됐고(codex RC), n150에서 `http://192.168.1.13:12901/metrics`가 200
+  (`text/plain; version=0.0.4`, `ktdm_up 1`)이다. 먼저 머지하면 `up=0`이던 조건이 풀렸다.
+- `services/prometheus_targets.py`: 손으로 쓰던 `kor-travel-docker-manager` job을 파생에 넣었다. Manager는 선언된 모든
+  호스트에서 돈다(ADR-58 결정 2) → `hosts:` 순서로 static_config 하나씩(R1 주소·`host` label). 포트는 backend를 띄우는
+  `deploy/systemd/ktdm-backend.service`의 `ExecStart … --port`에서 읽는다(없거나 둘이면 거부). `NON_REGISTRY_JOBS`는 없앴다.
+- `prometheus.yml`: odroid static_config 1개 추가(`192.168.1.13:12901`). compose 변화 없음.
+- 테스트(n150 per-clone venv): 대상 21 PASS. 빨강 확인 4건 — odroid static_config 삭제, main의 옛 파일, unit `--port`
+  변경, 손 job 추가가 모두 빨갛다.
+
+## 2026-10-17 — PR513 공식 launch 임시 Instance 수정 wheel 갱신
+
+- 초기17ff candidate는 실제 heartbeat/health 뒤 job launch의 임시 Instance에서 네 번째
+  engine을 거절했다. 원 실패를 보존하고 Common92d의 primary3 QueuePool/임시 NullPool
+  수정 wholewheel로 교체한다. 전체 process12 상한이라는 잘못된 설명도 바로잡는다.
+- wheel13 Git source/RECORD18/공식 metadata와 별도 immutable archive 재빌드 whole SHA를
+  대조했다. 기존71 dependency 잠금 bytes·Dockerfile/기존 build helper/storage migrate·
+  cAdvisor30/14·512 기능·instance YAML·queue 정책은 보존한다.
+- 현재 wheel/lazy import/원 잠금·wrapper/작은 stdlib fixture11개·Ruff·diff 검사는 통과했다.
+- 아직 새 Manager native 빌드/운영 실행·CPU 결과를 주장하지 않는다. root 실제 SDK launch
+  회귀와 최종 Manager 독립2리뷰·소비자 실측은 별도 인계한다.
+
+## 2026-10-17 — PR512·515 병합의 cAdvisor 중복 인자 해소
+
+- 최신 main 병합 뒤 15초/10개 제외 인자가 30초/14개 뒤에 중복되어 뒤의 값이 앞 설정을 덮는 것을 독립 검토에서 발견했다.
+- 기존 회귀로 2FAIL/4PASS를 재현하고, 중복 두 인자와 소비되지 않는 env 예시를 제거했다. 512의 다른 관측 기능과 513의 이미지 입력은 보존한다.
+- 현재 운영은 이미 30초/14개이며 이 source 정정으로 컨테이너를 다시 시작하지 않는다. 수정 뒤 관련 119개 회귀와 Ruff를 통과했다. 독립 재검토·CI는 별도 확인한다.
+
+## 2026-10-17 — PR513 storage guard 추출 회귀 정정
+
+- 공식 Common daemon wrapper가 원 storage guard 뒤에 있어도 기존 test의
+  argv 추출기가 인식하지 못해 CI2FAIL/3049PASS/39SKIP으로 종결됐다.
+- 면제목록을 늘리지 않고 정확한 실행 파일을 추출 대상에 추가했다.
+  원CLI/wrapper3양성·유사이름3음성 회귀를 추가했다.
+- 수정 전 local2FAIL4PASS 보존 → 관련7모듈377PASS/47.26초,
+  Ruff·diff검사 PASS. Docker/Compose·명시5개 이미지입력은290f와
+  byte같고 tagc019 유지라 이 수정으로 native 재빌드하지 않는다.
+- 전체 새 CI는 별도 진행이며 실제 SDK/DB/Docker/운영은 실행하지 않았다.
+
+
+## 2026-10-17 — 공용 daemon 연결 재사용 채택(PR513)
+
+- PR511 위 별도 소비자 범위로 Common38 final17ff(제품e0c)의 정식 whole core wheel을 vendor/source REV/SHA로 고정했다. 원 wheel과 독립 offline 재빌드가 동일하고 RECORD18/package13/공식 metadata를 직접 대조했다.
+- 기존71개 runtime 버전·해시를 유지한 잠금72개와 명시 wheel COPY/find-links를 사용한다. daemon만 원 guard 뒤 공식 wrapper 실행/원 shared와 동일한 전용DSN을 추가하고 다른 업무·URL·HC 의미는 유지했다.
+- focused392PASS/Ruff/wholeCompose모델대조, 빈 core-only 정식설치와 잘못된해시 거절을 확인했다. frontend tree는511 검증본과 동일하다. 최종CI/두 리뷰·운영 native/CLI/PG·CPU/RSS 효과는 별도다. [범위·미검증](daemon-pool-adoption.md).
+
 ## 2026-10-17 — PR515 기본 off metric 범위 보존
 
 - 초기10항목 지속화 뒤 독립검토에서 disable_metrics가기본집합에추가가아닌
@@ -87,7 +291,6 @@
 - 실제runtime은 root가이미같은값임을 확인했으므로 source지속화로
   재시작/새이미지없이 정합을 맞춘다. agent의 SDK/DB/Docker/운영호출0.
   두독립리뷰/CI/머지·root별도CPU측정은 후속이며 개선효과미확정이다.
-
 
 ## 2026-10-17 — 공용 daemon 점검·빌드 cache 후속(PR511)
 
