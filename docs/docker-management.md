@@ -1995,6 +1995,30 @@ Map 원장 `T-VN-H49-{GEO-DAGSTER,CONCIERGE,PINVI}`의 마지막 해제 조건�
 키가 운영자 몫이고, 그 뒤 env 4개와 root crontab 한 줄이다).
 
 
+## code-server의 순수 조회 상태 확인 도입
+
+Weather·Geo의 Manager 선언은 `python -m kortravelcommon.grpc_health <서비스의 -p 포트> --check live`를
+exec 형식으로 호출한다. Common의 `kor-travel-common[grpc-health]` extra가 포함된 소비 이미지가 먼저 필요하다.
+공통 모듈이 없는 구 이미지에 이 선언부터 적용하면 module missing으로 unhealthy가 된다.
+먼저 각 소비 이미지에 `kortravelcommon.grpc_health`와 `grpc_health.v1`이 설치되어 있는지 확인하고,
+이미지의 live CLI 호출을 별도로 검증한 후 Manager 선언을 적용한다. 선언 적용만으로
+운영 이미지·컨테이너가 바뀌었다고 판정하지 않는다. Transport는 외부 프로젝트가 자기
+Compose를 소유하므로 별도 소비 이미지 pin·healthcheck 변경이 필요하며 이 변경에 포함되지 않는다.
+기존 external cutover는 legacy sibling probe 계약을 유지한다. 이후 Transport CLI 전환 시 그
+계약도 함께 맞춰야 한다.
+
+live는 proxy의 DagsterApi SERVING만 조회하며 정의 로딩·DB 준비·worker·sensor의 실행/복구를 보장하지 않는다.
+이 두 서비스의 healthcheck에서는 기존 PID 1 종료와 orphan run의 DB reaper를 분리한다.
+따라서 자식 정의 오류·실행 정지 상태가 live 성공과 동시에 존재할 수 있고, unhealthy만으로
+Docker가 자동 재시작하지도 않는다. 기존 Dagster run monitoring과 실패 재시도 센서는
+별도 실행/복구 경계로 유지되며 모든 장애를 자동 복구한다고 확대 해석하지 않는다.
+새 watchdog·재시작 체계는 추가하지 않는다. 다른 서비스의 기존 probe와 restart 정책,
+healthcheck 주기·timeout·retry·기동 유예, 공유 instance 동시성은 그대로다.
+
+운영 효과는 아직 입증하지 않았다. CPU 포화 관측과 단일 CLI의 12초 timeout만으로
+이 변경의 CPU·지연 개선을 주장할 수 없다. 동일 workload에서 변경 전후 probe CPU·종료시간,
+수집 신선도와 오류를 비교해야 하며, 주기 분산/60초 주기 실험은 별도 후속 판단이다.
+
 ## 상태 점검 간격 정합
 
 서비스별 승인 간격과 적용 경계는 [배포 상태 점검 간격 정합](health-cadence.md)을 따른다. 기존 Test와 readiness 계약은 유지하며, Compose 파일 저장만으로 실행 중인 healthcheck가 바뀌었다고 판단하지 않는다.

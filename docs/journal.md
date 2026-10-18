@@ -1,3 +1,32 @@
+## 2026-10-19 — Common live 점검 PR486 최신 main 정합
+
+Weather·Geo code-server의 순수 조회 점검 후보를 main397a91에 통합했다.
+승인된90초 주기·10초 timeout·기동 유예·개별 수집 튜닝을 보존하고 Weather
+점검 포트를 현재 code-server12206과 맞췄다. 전체 모델 차이는 두 서비스의
+healthcheck.test로 제한한다. 상태 점검에서 PID 종료·orphan DB 변경을 제거하지만,
+live 성공이 정의 로딩이나 자동 복구를 보장하는 것은 아니다. daemon은 중지 상태다.
+소비 이미지의 모듈 확인과 실제 적용, 독립2리뷰·정확 CI는 별도 수용이다.
+
+최신 main 통합본의 관련 회귀는 193 PASS(35.35초), Ruff0.16.4 PASS다.
+로컬 원문은 manager486-track-focused.log와 manager486-track-ruff.log에 보존했다.
+아래 2026-10-16의225건/프런트엔드 검증은 과거 후보의 기록이며 현재193건과 합산하지 않는다.
+
+## 2026-10-16 — Weather·Geo 상태 조회와 복구 부작용 분리(과거 후보)
+
+Manager의 두 code-server healthcheck를 Common grpc live CLI로 전환한다. Transport는
+외부 프로젝트 Compose 소유이므로 새 서비스 선언을 추가하지 않고 후속으로 남긴다.
+기존 legacy anchor를 쓰는 다른 서비스와 external cutover 검증은 보존한다.
+조회에서 PID 종료·DB reaper를 분리하고 기존 run monitoring/실패 재시도 센서의 책임과
+live가 자식 정의·worker·DB 준비를 보장하지 않는 한계를 운영 문서에 명시했다.
+이미지에 CLI가 없는 상태에서 선언을 먼저 적용하면 unhealthy이므로 소비 이미지 확인이 선행한다.
+주기·timeout·동시성 수치는 변경하지 않았고 운영 배포나 성능 개선 실증은 수행하지 않았다.
+관련 Compose/cutover/상태 확인 회귀 225건, 전체 백엔드 Ruff와 프런트엔드 35건·type/lint/build가 통과했다.
+새 선언 회귀는 이전 Compose에서 2건 실패했고 수정본에서 통과했다. YAML 모델 대조로
+두 서비스의 healthcheck.test 외 전체 필드 및 다른 서비스·기존 anchor가 동일함을 확인했다.
+초기 구계약 회귀 41 FAIL/115 PASS와 shell 형식 진단 1 FAIL/161 PASS 원문은 로컬에 보존했다.
+이전 공용-probe 단일성 검사는 Common live CLI의 정확한 argv만 제외하며 잘못된 포트·모드·shell은
+계속 거절한다. CodeGraph init/sync와 diff 점검을 통과했다. 전체 backend suite는 PR CI에서 별도 확인한다.
+
 # JOURNAL — 작업 일지
 
 ## 2026-10-18 — PR531 최신 main525 통합과 공개 UI 수용
