@@ -1,5 +1,14 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-18 — PR531 최신 main525 통합과 공개 UI 수용
+
+- main3549b14를 병합했고 충돌은 journal/tasks 양쪽 기록을 보존해 해결했다. 배포 후보 e02의 frontend 전체 tree와 최신 코드의 일치를 확인한다.
+- Odroid의 정식 설치와 frontend 전환을 완료했다. 배포 보조 도구의 symlink 부모 fsync 실패는 이미 적용된 환경 파일을 확인하고 실제 release 디렉터리를 동기화한 뒤 남은 전환만 수행했다. 설치를 반복하거나 강제 종료하지 않았다.
+- 첫 공개 UI는 43통과·4실패·1제외였다. 컨테이너 목록의 15초 초과가 있었고, 별도 실측 3회는 모두 200/2.24~2.37초였다. 같은 기준의 새 실행은 47통과·사용자 지정 SameSite 1제외로 완료했다. 최초 지연 원인은 확정하지 않았다.
+- 로그인·대시보드·로그아웃과 WS 재연결 억제를 확인했다. 두 번째 실행의 페이지 오류·HTTP5xx·네트워크 실패·미승인 쓰기는 0이다. 실패 이력은 보존하며 48개 모두 통과했다고 하지 않는다.
+- 최신 통합 delta의 독립 리뷰와 CI는 별도다. 수집 CPU/RSS 개선율이나 자동 daemon 실행은 이번 결과가 아니다.
+
+
 ## 과거 기록 아카이브
 
 파일이 820,205 B(에이전트 read 한도 256 KB의 3배)가 되어 2026-10-16에 옛 항목을 아래 파일들로 옮겼다(T-MGR-07). 본문은 byte 그대로, 원래 파일 순서 그대로다 — 이 파일 끝 다음이 가장 번호가 큰 아카이브의 첫 항목이고, 번호가 작을수록 오래된 구간이다. 과거 검색은 `rg <패턴> docs/journal*.md`.
@@ -14,6 +23,13 @@
 | [`journal-archive-01.md`](journal-archive-01.md) | 2026-06-10 ~ 2026-10-04(파일 끝에 늦게 덧붙인 항목 몇 건 때문에 최대가 크다) | 55 | 199,413 B |
 
 ---
+
+## 2026-10-18 — PR531 최신 main513 문서 정합
+
+- main0f0b4f1을 일반 병합했고 충돌은 journal/tasks 두 문서뿐이다. 양쪽 이력을 유지하며 최신 Common/vendor/CLI/주소환경 전달은 main 그대로다.
+- 기존79d7 로그아웃 제품·회귀와 frontend 전체 tree는 byte동일하며 RC e02 frontend 입력과도 같다. RC20b/e02 및 기존 build helper는 수정하지 않는다.
+- 별도 소유 frontend mirror/sterile env에서 실제44PASS/11files(6.44초)와 type-check PASS, diff 검사를 확인했다. 원 config는 바꾸지 않고 mirror alias만 절대경로로 지정했다.
+- 새 merge delta의 독립검토·CI와 정식 frontend 전환/live UI는 별도다. 기존46/48과 Cookie 외부예외는 성공으로 바꾸지 않는다.
 
 ## 2026-10-18 — PR525 최신 main522 정합
 
@@ -201,6 +217,55 @@
 - 기존 Common92d wholewheel/host5빌드입력/73c image tag와 daemon CLI, main의 targets addr projection을 보존한다. 운영 RC는 수정하지 않는다.
 - guard 추출기는 새 공식 webserver alias만 정확히 인식하도록 준비했다(원1FAIL/8PASS→9PASS). 비슷한 prefix/suffix는 계속 거절한다. 실제 command/이미지 입력은 바꾸지 않았다.
 - 최종 Common38+41 합집합 wheel은 root 제공 후 별도 소비한다. 현 wheel에는 새 webserver alias가 없으므로 command만 먼저 교체하지 않는다. 운영/daemon/build/배포는 이번 작업에서 실행하지 않는다.
+
+## 2026-10-17 — PR531 빠른 명령 중복 로그아웃 P2 수정
+
+- 독립 C의 M531-C-P2-01을 수용했다. 원8ff8에서 버튼 뒤 Ctrl+K 빠른 명령으로 두 번째
+  POST가 생기고 첫503/auth-true 정산이 남은 요청 중 관측을 여는 실제 반례를 재현했다.
+  C의 원문과 본인7PASS/1FAIL·읽기1→3/소켓2/POST2 로그는 보존한다.
+- 두 UI 진입점을 같은 동기 useRef guard로 묶었다. React pending 재렌더 전에도 중복을
+  막고 POST 이후 인증 재확인까지의 처리가 끝난 finally에서만 다음 시도를 허용한다.
+  재확인 오류 뒤 읽기 차단·명시 재시도와 새 로그인 회복의 기존 정책은 유지한다.
+- 고정 회귀2개는 원본7PASS/2FAIL→수정9PASS이며 버튼→명령·같은프레임2회·auth대기·
+  실패후의도재시도를 검증했다. frontend전체44PASS/11files,type/lint/build/backendRuff PASS.
+  backend 전체pytest·실제 UI/SDK/DB/서비스 조작은0이다.
+- 기존8ff8 native 후보 빌드만으로 새 source를 적용했다고 하지 않는다. 두 independent
+  closure·exactCI·root 새 frontend 빌드/정식 n150 UI는 후속이며 Cookie/harness 변경0이다.
+
+## 2026-10-17 — PR531 재로그인 관측 차단 잔존 P2 수정
+
+- 독립 리뷰 M531-D-P2-01: logout200→auth 재확인 장애→후속 미인증→새 로그인 뒤
+  차단 표식이 남아 관측이 꺼지는 반례를 수용했다. 원 c228077·최초 검증·리뷰와 실패는 보존한다.
+- 실제 QueryClient/로그인 폼에서 새1FAIL4PASS를 확인한 뒤, onLogin이 auth-me를
+  오류 전파 방식으로 재조회하여 authenticated=true일 때만 표식을 해제하도록 최소 수정했다.
+  재조회503·미인증 응답은 해제하지 않는 음성도 포함했다.
+- 제품529092a, 집중7PASS/frontend전체42PASS·type/lint/build PASS. backend와 쿠키·
+  하니스·운영 변경0이며 독립 closure·새CI·root 정식n150 live UI는 후속이다.
+
+
+## 2026-10-17 — PR531 로그아웃 관측 중단 구현·로컬 검증
+
+- 제품 a300ad4는 DashboardClient의 pending부터 보호 읽기/상태·로그 WS를 끄고,
+  4개 읽기 query의 실제 fetch AbortSignal 취소를 POST보다 먼저 완료한다.
+  auth 재조회 후 정상 세션은 복구하고 재조회 오류에는 읽기를 막고 재시도를 허용한다.
+- 실제 QueryClientProvider·제어 Promise 회귀에서 원본3FAIL→집중4PASS,
+  frontend 전체39PASS·type/lint/build·backend Ruff/diff 검사 PASS.
+  backend 전체 pytest·SDK/DB/Docker/원격/실제 UI 실행은 하지 않았다.
+- 초기 합성 disk 응답의 summary 누락, 토스트의 실제 부가 문구와 test exact 옵션
+  차이는 테스트만 정정했고 원 로그는 보존했다. 제품 판정 기준을 완화하지 않았다.
+- 기존 root r9 46/48과 Strict 실패는 그대로다. 독립2리뷰·CI·root 설치/새 공개 UI는
+  후속이며 525 backend 변경이나 하니스 변경을 이 PR에 섞지 않았다.
+
+
+## 2026-10-17 — 로그아웃 폴링 재진입 수정 준비
+
+- 최신 main e84f3ce의 별도 feature worktree에서 onSettled의 WS false→auth 재조회
+  사이 containers 폴링 재활성화 경로를 확인했다. 실제 callback/options 제어 Promise
+  모형 9조건으로 재현했으며 운영·브라우저·private 접근은 없다.
+- logout pending부터 보호 읽기/WS를 잠시 끄고 요청 취소 완료 뒤 POST를 보내는 최소안을
+  구현한다. 성공/실패 세션 회복 회귀, 독립2리뷰와 root 공개 UI는 후속이다.
+- 기존 r9 46/48 결과와 Cookie Strict 실패를 보존하고 하니스401 예외는 늘리지 않는다.
+
 
 ## 2026-10-17 — PR513 최신 main 통합 준비
 
