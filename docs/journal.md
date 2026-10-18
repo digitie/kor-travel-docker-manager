@@ -15,6 +15,12 @@
 
 ---
 
+## 2026-10-18 — PR513 최신 main의 주소 CLI 정합 보존
+
+- clean PR513 worktree에서 최신 main42d884f(#530 포함)을 ordinary merge했다. 충돌은 journal/tasks 두 문서뿐이며 양쪽 이력을 보존했다.
+- 기존 Common92d wholewheel/host5빌드입력/73c image tag와 daemon CLI, main의 targets addr projection을 보존한다. 운영 RC는 수정하지 않는다.
+- 최종 Common38+41 합집합 wheel은 root 제공 후 별도 소비한다. 현 wheel에는 새 webserver alias가 없으므로 command만 먼저 교체하지 않는다. 운영/daemon/build/배포는 이번 작업에서 실행하지 않는다.
+
 ## 2026-10-17 — PR513 최신 main 통합 준비
 
 - main20b의 Prometheus 호스트별 파생·포트 정합과 완료 원장을 보존하여 ordinary merge했다. 양쪽 journal 이력을 유지한다.
@@ -30,6 +36,32 @@
 
 
 새 항목은 아래 "과거 기록 아카이브" 블록 **다음, 첫 항목 위**에 더한다(최신이 위).
+
+## 2026-10-17 — PR530 targets validate JSON에 선언 주소만 투영
+
+- 제품은 CLI 성공 JSON에 검증된 registry hosts의 addr만 더하는2줄이다. 기존 status/host/targets·텍스트 OK·실패 출력은 보존하며 registry/target 선언·호스트 검증·API/프런트엔드는 바꾸지 않았다.
+- 원래코드에서 새 회귀4FAIL1PASS를 확인한 뒤5PASS, registry/CLI 관련105PASS155deselect를 확인했다. 접속·주소조회·실제 subprocess를 거절하는 소유 wrapper에서 수행했다.
+- backend Ruff·frontend type-check/build PASS. frontend는 package/lock가 같은 기존 readonly dependencies를 재사용했고 symlink는 검사 뒤 제거했다. 전체 backend suite·Docker·DB·운영 검증은 로컬에서 실행하지 않았다.
+- 새 v2 JSON은 addr만 whitelist하며 옛 v1 hosts는 빈 mapping이다. 문서의 오래된 ok/local/errors 초안을 현재 status/host/targets와 맞췄다. 독립2리뷰·CI·머지/설치와 실제 Transport 검증은 별도다.
+
+
+## 2026-10-17 — targets validate 주소 효과 JSON의 최소 확장 초안
+
+- 최신 main e84f3ce에서 별도 feature worktree를 만들고 기존 feature/WIP를 보존했다.
+- registry hosts 선언을 재구현하지 않고 성공 JSON에 addr만 whitelist 투영하는 범위다. 기존 status/host/targets 및 실패/텍스트 동작은 유지한다.
+- 운영·Docker·DB·SDK·원격 주소 조회는 하지 않는다. 실제 registry 변경 효과·출력 범위/호환 회귀 및 독립 리뷰는 구현 뒤 진행한다.
+
+
+## 2026-10-17 — T-MGR-02r 실측: n150 plane의 location 상한은 바꾸지 않는다
+
+- 읽기 전용: n150 공용 webserver GraphQL(`127.0.0.1:11002`) `runsOrError`로 14일 19,845 run(SUCCESS 19,158·FAILURE 686·CANCELED 1).
+  location은 `dagster/code_location` tag, duration = end − start, queue 대기 = start − creation, 동시 실행은 구간 sweep(시간 비율).
+- n150 workspace는 map·pinvi·concierge만 LOADED. geo·weather·transport의 n150 마지막 run은 10-15T02:15Z·10-14T21:05Z·10-14T21:10Z.
+- 남은 세 location: pinvi p95 24 s·최대 동시 4(상한 10), concierge p95 20 s·최대 2(상한 2, 의도된 상한), map 9 run·최대 1(상한 10).
+  합산 최대 동시 4, 대기 p95 26.7 s·p99 81 s → 전역 12도 멀다. 결정 7도 이 셋과 12는 불변 → **변경 없음, T-MGR-02r 닫음**(doc-only).
+- odroid(geo·weather·transport 상한)는 범위 밖(codex). 참고로 n150 시절 weather 매시 job p95 > 5 min(airkorea 1,128 s·초단기예보 1,199 s),
+  external_weather 3이 이미 대기 최대 80 min — 결정 7 규칙(weather 1)을 그대로 적용하기 전에 odroid 실측이 필요하다. `dagster.yaml`은
+  두 plane이 한 벌을 읽어 바꾸면 둘 다 재생성된다.
 
 
 ## 2026-10-17 — NH-6 Manager Prometheus job을 호스트마다 파생
