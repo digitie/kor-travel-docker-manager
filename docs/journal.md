@@ -19,6 +19,7 @@
 
 - clean PR513 worktree에서 최신 main42d884f(#530 포함)을 ordinary merge했다. 충돌은 journal/tasks 두 문서뿐이며 양쪽 이력을 보존했다.
 - 기존 Common92d wholewheel/host5빌드입력/73c image tag와 daemon CLI, main의 targets addr projection을 보존한다. 운영 RC는 수정하지 않는다.
+- guard 추출기는 새 공식 webserver alias만 정확히 인식하도록 준비했다(원1FAIL/8PASS→9PASS). 비슷한 prefix/suffix는 계속 거절한다. 실제 command/이미지 입력은 바꾸지 않았다.
 - 최종 Common38+41 합집합 wheel은 root 제공 후 별도 소비한다. 현 wheel에는 새 webserver alias가 없으므로 command만 먼저 교체하지 않는다. 운영/daemon/build/배포는 이번 작업에서 실행하지 않는다.
 
 ## 2026-10-17 — PR513 최신 main 통합 준비

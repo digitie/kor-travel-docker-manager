@@ -100,3 +100,18 @@ fork/세대/동시성/primary strong registry·정리/pre_ping 보호는 유지�
 새 wholewheel/lazy import/기존 잠금/Compose wrapper와 작은 stdlib fixture11개 회귀는 통과했다.
 실제 SDK/격리 PG의 공식 start_run 성공은 root 실행 evidence로 별도 인계되며,
 새 Manager native 빌드·운영 launch/신선도·CPU 재측정과 두 독립 리뷰는 후속이다.
+
+
+## Common38·41 wholewheel과 webserver alias 후속 준비
+
+최신 main42d884f(PR530 포함)을 PR513에 ordinary merge했고 기존 Common92d wheel과
+daemon CLI·host5입력은 그대로 보존했다. 공식 kor-travel-dagster-webserver를
+guard 추출기가 인식하도록 exact 이름과 유사 prefix/suffix 음성 회귀만 준비했다.
+기존 추출기에서는 새 이름1FAIL/8PASS, 정정 뒤9PASS였다. 실제 Compose 명령은 아직
+dagster-webserver이며 구 wheel에는 새 alias가 없어 명령만 먼저 바꾸지 않는다.
+
+최종 Common38+41 wholewheel은 별도 제공 후 기존71개 runtime의 version/hash를 유지하며
+소비한다. 두 정식 CLI와 SQLAlchemy pool plugin의 보존을 확인하고 webserver 한 곳의
+실행 이름만 바꾼다. instance/queue·daemon HC·다른 서비스 정책 변경이나 운영 실행은
+이 준비 작업에 포함하지 않는다. 운영 RC의 queue/NVMe/DB경로/metrics 변경은 별도
+feature에 있으므로 최신 main 또는 PR513만으로 운영 RC 전체를 덮어쓰지 않는다.

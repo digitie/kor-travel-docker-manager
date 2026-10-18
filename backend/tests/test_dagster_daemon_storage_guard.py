@@ -123,7 +123,10 @@ def _guard_source(command: list[str]) -> str:
 
 #: argv로 넘기는 형태(공용 plane, ADR-54): `sh -ec <가드> sh <argv...>`의 가드가 `exec "$$@"`로 끝난다.
 _ARGV_HANDOFF: Final = 'exec "$$@"'
-_HANDED_OFF_PROGRAMS: Final = ("dagster-daemon", "kor-travel-dagster-daemon", "dagster-webserver")
+_HANDED_OFF_PROGRAMS: Final = (
+    "dagster-daemon", "kor-travel-dagster-daemon",
+    "dagster-webserver", "kor-travel-dagster-webserver",
+)
 
 
 def _hands_off(command: list[str]) -> bool:
@@ -139,6 +142,9 @@ def _hands_off(command: list[str]) -> bool:
         ("dagster-daemon", True),
         ("kor-travel-dagster-daemon", True),
         ("dagster-webserver", True),
+        ("kor-travel-dagster-webserver", True),
+        ("prefix-kor-travel-dagster-webserver", False),
+        ("kor-travel-dagster-webserver-other", False),
         ("unrelated-daemon", False),
         ("prefix-kor-travel-dagster-daemon", False),
         ("kor-travel-dagster-daemon-other", False),

@@ -6,7 +6,7 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
-- [ ] **T-MGR-DAEMON-POOL — 공용 daemon 연결 재사용 채택(PR513)**. Common38 공식 launch 임시 Instance 수정92d 정식 core wheel/source·RECORD·고정 잠금, daemon 한 곳의 공식 wrapper/동일 DSN source 구현. 초기17ff의 focused392와 현재 wheel/정적11회귀는 구분한다. 최종 독립2리뷰·CI·native 이미지/CLI/PG 정리·동일 workload 성능/신선도는 후속이다. [소비 경계](daemon-pool-adoption.md). 최신 main #517 통합은 cAdvisor 기본15초/env 덮어쓰기·제외14집합·단일 flags를 보존하며, host5빌드입력/73c content tag는 변경하지 않는다.
+- [ ] **T-MGR-DAEMON-POOL — 공용 daemon 연결 재사용 채택(PR513)**. Common38 공식 launch 임시 Instance 수정92d 정식 core wheel/source·RECORD·고정 잠금, daemon 한 곳의 공식 wrapper/동일 DSN source 구현. 초기17ff의 focused392와 현재 wheel/정적11회귀는 구분한다. 최종 독립2리뷰·CI·native 이미지/CLI/PG 정리·동일 workload 성능/신선도는 후속이다. [소비 경계](daemon-pool-adoption.md). Common38+41 최종 wholewheel/두CLI 보존과 webserver alias 명령 전환은 별도 제공·검증 후 진행하며, 현재 준비는 guard 추출 회귀만 포함한다. 최신 main #517 통합은 cAdvisor 기본15초/env 덮어쓰기·제외14집합·단일 flags를 보존하며, host5빌드입력/73c content tag는 변경하지 않는다.
 
 - [ ] **T-MGR-TARGET-ADDR — targets validate JSON의 registry 주소 효과 투영**. 기존 성공 JSON/텍스트와 검증 경계를 보존하고 hosts.<key>.addr만 추가한다. Transport의 host 키·선언 주소 대조를 지원하며 DNS/원격 연결·비밀/SSH 옵션 출력은 추가하지 않는다. CLI2줄 projection과 실제 registry 신규5회귀/관련105PASS·Ruff·frontend type/build를 확인했다. 독립2리뷰·CI·merge/설치 및 실제 Transport 효과 확인은 후속이다.
 - [ ] **T-MGR-CADV-BUDGET — cAdvisor 관측 비용 설정(PR515)**. housekeeping30s/기존10+기본off4 합집합14를source에명시, 다른서비스·HC·이미지·resources보존. old1RED→관련26PASS/Ruff/전체모델2arg외동일 확인. 두독립리뷰·CI·merge·root실제binary지원확인/10→14적용·healthURL정합·CPU실측후속. 초기10항목의재시작불필요판정은최종14적용에확대하지않음. [범위·한계](cadvisor-observer-budget.md).
