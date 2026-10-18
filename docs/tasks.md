@@ -6,6 +6,8 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
+- [ ] **T-MGR-QUEUE-BUDGET — 공용 dispatch 상한·큐 주기(PR514)**. source 전역12→2/공식dequeue5기본→30, 개별tag·업무·HC 보존, 파생instance digest와130회귀/Ruff·모델 대조 완료. 독립2리뷰·CI·운영 두scalar 적용 및 실제CPU/대기 영향 측정은 후속. [범위와 적용 경계](dagster-queue-budget.md). PR513 merge 선행은 main0f0b4f1에서 충족했고 Commonff849ea wholewheel·두CLI·tag930a와 main517 cAdvisor15초/env·14제외를 보존한다. 실제 배포·측정 근거와 source 회귀는 구분한다. 최신 main513 통합은 별도 commit으로 정산하며 기존 운영 채택과 소스 머지를 구분한다.
+
 - [ ] **T-MGR-DAEMON-POOL — 공용 daemon 연결 재사용·native webserver 채택(PR513)**. Common38+41 통합ff849ea wholewheel/두CLI/plugin을 소비하고, 기존71runtime version/hash와 daemon pooled CLI를 보존한다. 공용webserver만 공식 alias, host5입력 tag930a44266e814ab6/3image refs를 정렬했다. 이전17ff/92d 실패·검증 이력은 유지한다. 최종 독립2소비리뷰는 P0–P3 OPEN0, 제품bd8 CI2SUCCESS이며 [원문](reviews/2026-10-18-common-union-consumer-closure/README.md)을 보존했다. native 이미지/CLI/PG 정리·운영/UI·성능/신선도는 별도다. [소비 경계](daemon-pool-adoption.md). Weather 활성API/CS의 주소5env(default빈키/true/50/5) 전달을 별도보강했다. main #517 cAdvisor15초/env·제외14·단일flags와 main530을 보존하며(30초 운영 관측 이력과 source 기본값의 설명도 구분) 운영RC의 별도514/521/522/525 기능을 덮어쓰지 않는다.
 
 - [ ] **T-MGR-TARGET-ADDR — targets validate JSON의 registry 주소 효과 투영**. 기존 성공 JSON/텍스트와 검증 경계를 보존하고 hosts.<key>.addr만 추가한다. Transport의 host 키·선언 주소 대조를 지원하며 DNS/원격 연결·비밀/SSH 옵션 출력은 추가하지 않는다. CLI2줄 projection과 실제 registry 신규5회귀/관련105PASS·Ruff·frontend type/build를 확인했다. 독립2리뷰·CI·merge/설치 및 실제 Transport 효과 확인은 후속이다.
