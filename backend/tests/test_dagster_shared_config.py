@@ -410,6 +410,8 @@ def test_the_host_services_run_the_host_image_with_only_the_control_env() -> Non
             "DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS", "DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS",
             "DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD",
         }
+        if name == "kor-travel-dagster-daemon":
+            allowed.add("KOR_TRAVEL_DAGSTER_DAEMON_POSTGRES_URL")
         assert set(service["environment"]) <= allowed, (name, sorted(service["environment"]))
         assert service["environment"]["DAGSTER_HOME"] == migrate["environment"]["DAGSTER_HOME"]
         assert service["depends_on"] == {_MIGRATE: {"condition": "service_completed_successfully"}}
@@ -427,7 +429,9 @@ def test_the_shared_webserver_listens_only_on_loopback() -> None:
 
     for name, service in _host_services().items():
         command = [str(part) for part in service["command"]]
-        if "dagster-webserver" not in command:
+        if not any(program in command for program in (
+            "dagster-webserver", "kor-travel-dagster-webserver",
+        )):
             continue
         assert command[command.index("-h") + 1] == "127.0.0.1", name
         return
@@ -490,7 +494,10 @@ def test_the_host_image_tag_is_the_content_hash_of_what_goes_into_it() -> None:
 
     dockerfile = (_HOST_IMAGE_DIR / "Dockerfile").read_text(encoding="utf-8")
     hashed = sorted({"Dockerfile", *_dockerfile_copy_sources(dockerfile)})
-    assert hashed == ["Dockerfile", "build-bytecode.py", "requirements.txt", "storage-migrate.py"]
+    assert hashed == [
+        "Dockerfile", "build-bytecode.py", "requirements.txt", "storage-migrate.py",
+        "vendor/kor_travel_common-0.1.0.dev0-py3-none-any.whl",
+    ]
     listing = "".join(
         f"{hashlib.sha256((_HOST_IMAGE_DIR / name).read_bytes()).hexdigest()}  {name}\n"
         for name in hashed

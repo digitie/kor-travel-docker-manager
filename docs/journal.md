@@ -1,7 +1,5 @@
 # JOURNAL — 작업 일지
 
-새 항목은 아래 "과거 기록 아카이브" 블록 **다음, 첫 항목 위**에 더한다(최신이 위).
-
 ## 과거 기록 아카이브
 
 파일이 820,205 B(에이전트 read 한도 256 KB의 3배)가 되어 2026-10-16에 옛 항목을 아래 파일들로 옮겼다(T-MGR-07). 본문은 byte 그대로, 원래 파일 순서 그대로다 — 이 파일 끝 다음이 가장 번호가 큰 아카이브의 첫 항목이고, 번호가 작을수록 오래된 구간이다. 과거 검색은 `rg <패턴> docs/journal*.md`.
@@ -16,6 +14,54 @@
 | [`journal-archive-01.md`](journal-archive-01.md) | 2026-06-10 ~ 2026-10-04(파일 끝에 늦게 덧붙인 항목 몇 건 때문에 최대가 크다) | 55 | 199,413 B |
 
 ---
+
+## 2026-10-18 — PR513 최종 소비 리뷰·제품 CI 보존
+
+- bd8 전체 소비 리뷰와 c654 설명 정정 closure의 B/C 원문4개를 byte/SHA 그대로 보존했다. 두 Manager 독립 판정은 열린 P0–P3=0이며 Common 작성자 역할과 Manager 소비 판정의 경계를 명시한다.
+- exact bd8 backend/frontend CI2SUCCESS를 별도 JSON으로 보존했다. 작성자·독립·CI 수를 합산하지 않으며 기존 준비 실패와 전체검사14setupERROR 이력을 유지한다.
+- [정산 원문](reviews/2026-10-18-common-union-consumer-closure/README.md). 이번 변경은 문서뿐이며 새 CI·이미지·운영/UI·성능 검증은 하지 않는다. daemon OFF/RC 개별 기능 보존 정책은 유지한다.
+
+## 2026-10-18 — PR513 cAdvisor 설명 시점 정산
+
+- 독립 검토에서 찾은 주석/가이드의 30초·env 제거 표현을 source 기본15초/env와 과거 운영 관측30초로 구분했다. 기존 #515 이력은 유지한다.
+- Compose 값·환경변수 예시값·Common wheel·host5입력·3image refs는 변경하지 않았다. 문서/diff 및 전체 YAML 의미 동일성만 확인하며 새 운영·이미지·UI 검증으로 합산하지 않는다.
+
+## 2026-10-18 — Weather 주소 갱신 env 전달 보강
+
+- root가 확인한 운영키값을 복사하지 않고 Weather main10b59dc3 settings/default만 읽어 API/code-server 두활성service에 주소5env를 연결했다. 두key는빈값/자동true/batch50/timeout5 기본값이다.
+- .env.example·관련정적보간/전달대상6회귀를 추가했다. 원Compose5FAIL1PASS→관련5모듈53PASS4.47초/Ruff/diff를 확인했다. 실제DockerCompose렌더/운영provider·서비스재기동은 하지 않았다.
+- 광범위순수파생검사는126PASS/53deselect/14setupERROR(차단한conftest의own_pinned_pair미로딩)로전체PASS가아니다. 초기env편집준비assert/StopIteration은쓰기전중단후정정했고모두원문보존한다.
+- legacy webserver/daemon 및 다른service에는전달하지 않으며, hostwheel/5image입력/tag930a44266e814ab6도 변경하지 않았다. 이 추가scope도 PR513 전체통합소비리뷰에서 함께 검토한다.
+
+## 2026-10-18 — PR513 Common38·41 wholewheel 채택
+
+- 최종 ff849ea 정식 wholewheel63,151B/SHA1abf0547…를 vendor에 넣고 package17/RECORD22행·독립재빌드 byte동일·두CLI/plugin을 확인했다. 기존92d daemon 복구 계약을 보존했다.
+- 기존71개 runtime version/hash를 유지해 Common hash1개만 바꾸고 공용webserver의 실행 이름만 공식 kor-travel-dagster-webserver로 전환한다. 원 guard·인자/Env/HC는 불변이다.
+- pure관련4모듈47PASS3.89초/Ruff/diff PASS. 기존 loopback시험의 실행파일 탐색1FAIL/46PASS는 공식 alias 인식test-only정정 후 통과했고 기준은 유지했다. Compose전체차이는3image refs+실행파일1개, requirements의Commonhash 역치환시전체bytes동일이다.
+- 기존5입력 content tag930a44266e814ab6로 host3개 image ref를 함께 정렬한다. 전체운영RC 통교체·daemon시작·이미지build/배포는 하지 않는다. sourcefocused/CI·독립소비리뷰와 실제root수용을 분리한다.
+
+## 2026-10-18 — PR513 최신 main의 주소 CLI 정합 보존
+
+- clean PR513 worktree에서 최신 main42d884f(#530 포함)을 ordinary merge했다. 충돌은 journal/tasks 두 문서뿐이며 양쪽 이력을 보존했다.
+- 기존 Common92d wholewheel/host5빌드입력/73c image tag와 daemon CLI, main의 targets addr projection을 보존한다. 운영 RC는 수정하지 않는다.
+- guard 추출기는 새 공식 webserver alias만 정확히 인식하도록 준비했다(원1FAIL/8PASS→9PASS). 비슷한 prefix/suffix는 계속 거절한다. 실제 command/이미지 입력은 바꾸지 않았다.
+- 최종 Common38+41 합집합 wheel은 root 제공 후 별도 소비한다. 현 wheel에는 새 webserver alias가 없으므로 command만 먼저 교체하지 않는다. 운영/daemon/build/배포는 이번 작업에서 실행하지 않는다.
+
+## 2026-10-17 — PR513 최신 main 통합 준비
+
+- main20b의 Prometheus 호스트별 파생·포트 정합과 완료 원장을 보존하여 ordinary merge했다. 양쪽 journal 이력을 유지한다.
+- Common92d wholewheel·명시 이미지 입력5개·기존 daemon wrapper는 그대로다. 이번 작업은 source 통합이며 운영 적용·daemon 재시작·PR 머지는 하지 않는다.
+- 최신 main 대비 독립 delta 리뷰와 CI, Manager 공개 UI 수용은 후속이다.
+
+## 2026-10-17 — PR513의 최신 main #517 통합
+
+- Common92d 정식 wheel과 기존 daemon pooled CLI 소비를 보존한 채 main `84e643a`를 merge했다. rebase/reset은 하지 않았다.
+- 실제 충돌은 cAdvisor 회귀의 기본 off 집합 앞 주석 한 곳이었다. 해당 회귀 함수를 최신 main으로 정렬해 `CADVISOR_HOUSEKEEPING_INTERVAL` 기본15초·단일 flag·제외14집합을 유지했다.
+- Compose는 자동 병합됐어도 별도로 전체 모델을 확인한다. host 빌드5입력과 content tag `73c524b1424d4aa6`는 이전 fcc2와 byte exact이며 기존 양쪽 작업 이력은 보존했다.
+- 운영/설정 배포는 이 merge 작업의 범위가 아니다. focused 순수 회귀·Ruff 및 독립 delta 리뷰/CI를 별도로 정산한다.
+
+
+새 항목은 아래 "과거 기록 아카이브" 블록 **다음, 첫 항목 위**에 더한다(최신이 위).
 
 ## 2026-10-17 — PR530 targets validate JSON에 선언 주소만 투영
 
@@ -55,6 +101,42 @@
 - 테스트(n150 per-clone venv): 대상 21 PASS. 빨강 확인 4건 — odroid static_config 삭제, main의 옛 파일, unit `--port`
   변경, 손 job 추가가 모두 빨갛다.
 
+## 2026-10-17 — PR513 공식 launch 임시 Instance 수정 wheel 갱신
+
+- 초기17ff candidate는 실제 heartbeat/health 뒤 job launch의 임시 Instance에서 네 번째
+  engine을 거절했다. 원 실패를 보존하고 Common92d의 primary3 QueuePool/임시 NullPool
+  수정 wholewheel로 교체한다. 전체 process12 상한이라는 잘못된 설명도 바로잡는다.
+- wheel13 Git source/RECORD18/공식 metadata와 별도 immutable archive 재빌드 whole SHA를
+  대조했다. 기존71 dependency 잠금 bytes·Dockerfile/기존 build helper/storage migrate·
+  cAdvisor30/14·512 기능·instance YAML·queue 정책은 보존한다.
+- 현재 wheel/lazy import/원 잠금·wrapper/작은 stdlib fixture11개·Ruff·diff 검사는 통과했다.
+- 아직 새 Manager native 빌드/운영 실행·CPU 결과를 주장하지 않는다. root 실제 SDK launch
+  회귀와 최종 Manager 독립2리뷰·소비자 실측은 별도 인계한다.
+
+## 2026-10-17 — PR512·515 병합의 cAdvisor 중복 인자 해소
+
+- 최신 main 병합 뒤 15초/10개 제외 인자가 30초/14개 뒤에 중복되어 뒤의 값이 앞 설정을 덮는 것을 독립 검토에서 발견했다.
+- 기존 회귀로 2FAIL/4PASS를 재현하고, 중복 두 인자와 소비되지 않는 env 예시를 제거했다. 512의 다른 관측 기능과 513의 이미지 입력은 보존한다.
+- 현재 운영은 이미 30초/14개이며 이 source 정정으로 컨테이너를 다시 시작하지 않는다. 수정 뒤 관련 119개 회귀와 Ruff를 통과했다. 독립 재검토·CI는 별도 확인한다.
+
+## 2026-10-17 — PR513 storage guard 추출 회귀 정정
+
+- 공식 Common daemon wrapper가 원 storage guard 뒤에 있어도 기존 test의
+  argv 추출기가 인식하지 못해 CI2FAIL/3049PASS/39SKIP으로 종결됐다.
+- 면제목록을 늘리지 않고 정확한 실행 파일을 추출 대상에 추가했다.
+  원CLI/wrapper3양성·유사이름3음성 회귀를 추가했다.
+- 수정 전 local2FAIL4PASS 보존 → 관련7모듈377PASS/47.26초,
+  Ruff·diff검사 PASS. Docker/Compose·명시5개 이미지입력은290f와
+  byte같고 tagc019 유지라 이 수정으로 native 재빌드하지 않는다.
+- 전체 새 CI는 별도 진행이며 실제 SDK/DB/Docker/운영은 실행하지 않았다.
+
+
+## 2026-10-17 — 공용 daemon 연결 재사용 채택(PR513)
+
+- PR511 위 별도 소비자 범위로 Common38 final17ff(제품e0c)의 정식 whole core wheel을 vendor/source REV/SHA로 고정했다. 원 wheel과 독립 offline 재빌드가 동일하고 RECORD18/package13/공식 metadata를 직접 대조했다.
+- 기존71개 runtime 버전·해시를 유지한 잠금72개와 명시 wheel COPY/find-links를 사용한다. daemon만 원 guard 뒤 공식 wrapper 실행/원 shared와 동일한 전용DSN을 추가하고 다른 업무·URL·HC 의미는 유지했다.
+- focused392PASS/Ruff/wholeCompose모델대조, 빈 core-only 정식설치와 잘못된해시 거절을 확인했다. frontend tree는511 검증본과 동일하다. 최종CI/두 리뷰·운영 native/CLI/PG·CPU/RSS 효과는 별도다. [범위·미검증](daemon-pool-adoption.md).
+
 ## 2026-10-17 — PR515 기본 off metric 범위 보존
 
 - 초기10항목 지속화 뒤 독립검토에서 disable_metrics가기본집합에추가가아닌
@@ -80,7 +162,6 @@
 - 실제runtime은 root가이미같은값임을 확인했으므로 source지속화로
   재시작/새이미지없이 정합을 맞춘다. agent의 SDK/DB/Docker/운영호출0.
   두독립리뷰/CI/머지·root별도CPU측정은 후속이며 개선효과미확정이다.
-
 
 ## 2026-10-17 — 공용 daemon 점검·빌드 cache 후속(PR511)
 
