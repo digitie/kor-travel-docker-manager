@@ -15,12 +15,53 @@
 
 ---
 
+## 2026-10-18 — PR521 최신 main514 정합
+
+- PR513·514가 머지된 main3015c31을 일반 병합한다. 충돌은 journal/tasks 두 문서뿐이며 양쪽 기록을 보존한다.
+- NVMe 임시경로 제품은 기존 리뷰본·RC20b와 byte동일하고 최신 Common wholewheel/두CLI/hosttag930a·큐2/30·Weather주소환경은 main 그대로다. 원worktree/RC20b/e02/helper 및 운영은 변경하지 않는다.
+- 별도 mirror에서16회귀를umask022/077 각각 통과했고 원격리fixture의 관련17PASS1.93초/Ruff/diff를 확인했다. 최초 no-conftest 준비의 own_pinned_pair 누락1ERROR 원문은 보존했다.
+- 소스 통합검증과 기존 native 채택을 구분하며 새 delta의 독립2리뷰·CI는 별도 정산한다. 이미 적용된 동일제품을 다시 설치하지 않는다.
+
 ## 2026-10-18 — PR514 최신 main513 정합
 
 - 최신 main0f0b4f1을 일반 병합하며 PR 고유 제품과 기존 양쪽 기록을 보존한다. 운영 RC20b/e02 후보와 원 worktree는 수정하지 않는다.
 - Common ff849ea wholewheel·공식 daemon/webserver CLI·host 입력 tag930a44266e814ab6·Weather 주소 환경 전달을 보존한다. queue/NVMe/DB/metrics 다른 PR 기능을 이 브랜치에 새로 합치지 않는다.
 - 별도 mirror/sterile env 관련5모듈70PASS·실제Compose렌더11건제외/Ruff/diff PASS, 전체모델은 큐 두scalar·digest7소비자만 차이다. 최신main host5입력/vendor/공식CLI는 byte동일이다.
 - 새 integration head 독립2리뷰·CI는 별도이며 이 병합을 운영 재설치·daemon 시작·성능 수용으로 바꾸지 않는다.
+
+## 2026-10-17 — PR521 최신 main 통합 준비
+
+- 최신 main20b의 포트·관측 파생과 완료 원장을 ordinary merge하고 기존 기능 변경은 보존한다.
+- 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
+
+
+## 2026-10-17 — PR521 fallback label 경로 이탈 수정
+
+- 독립 리뷰가 b631e5a의 절대/상대 label로 mkstemp가 state 밖 파일을 만들 수 있음을 재현했다.
+- 현재 private helper 내부 caller0/실제 env_file memfd-only는 영향 없지만 state 한정 계약을
+  지키도록 디스크 fallback prefix만 고정했다. memfd label과 나머지 제품 동작은 그대로다.
+- 실제 자기 scratch 경로 회귀2FAIL→전체격리16PASS/backend Ruff 확인. 원 실패 및 원문 보존,
+  전체 suite·운영/NVMe 검증 미실시는 유지한다.
+
+
+## 2026-10-17 — NVMe 빌드 임시 경로 구현(PR521)
+
+- 기존 frozen state root 아래0700 임시 디렉터리와0600/unlinked fallback 파일을 사용한다.
+  Map buildx 두 호출에 같은 TMPDIR를 전달하며 기존 Docker/XDG 환경과 argv를 보존한다.
+- 실제 env_file의 memfd-only 경로·source cache·DB 기본값·기동 조건은 변경하지 않는다.
+- 신규 격리14회귀/backend Ruff 통과, parent 실제 함수2RED→새 함수2GREEN을 확인했다.
+  기존 단일test 직접 실행의 registry 경로 오류/fixture 부재와 초기 mock6실패는 별도 이력으로 남겼다.
+- 전체 suite·실제 NVMe 배포·Docker 빌드·eMMC 쓰기 측정은 미실시다.
+  [검증 방법과 운영 경계](nvme-build-staging.md)에 입력/cleanup/설치 주의점을 기록했다.
+
+
+## 2026-10-17 — NVMe 빌드 임시 경로 설계
+
+- 최신 main c1c7674의 별도 feature worktree에서 설계 초안을 작성했다.
+- 기존 state 경로 계약을 재사용하고 memfd fallback 및 Map buildx TMPDIR만 소유한다.
+- source cache/DB 기본값/서비스 기동 조건/다른 작업 트리는 변경하지 않는다.
+- 실제 운영·Docker·DB 접근 없이 로컬 회귀로 검증하며 운영 적용은 별도다.
+
 
 ## 2026-10-17 — PR514 최신 main 통합 준비
 
