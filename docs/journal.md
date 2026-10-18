@@ -15,6 +15,13 @@
 
 ---
 
+## 2026-10-18 — PR522 최신 main521 정합
+
+- PR513·514·521이 머지된 main3862623과 일반 병합했고 journal/tasks 양쪽 이력을 보존한다.
+- database.py와 집중회귀는 기존8bd95·7c390·RC20b 원문과 byte동일이다. 최신 main Common/CLI/queue/NVMe임시경로·Weather환경은 보존한다. 원worktree/RC20b/e02/helper·운영은 변경하지 않는다.
+- 별도 mirror/sterile env에서 AST경로·실제SQLAlchemy URL/dialect인자25PASS0.21초/Ruff/diff를 확인했다. DB모듈/engine/실DB 실행0이다.
+- 기존 source 채택과 native DB 경로 설정·WAL/SHM 이전 증거를 구분한다. 새 통합delta 독립검토·CI는 별도이며 동일제품을 다시 설치하지 않는다.
+
 ## 2026-10-18 — PR521 최신 main514 정합
 
 - PR513·514가 머지된 main3015c31을 일반 병합한다. 충돌은 journal/tasks 두 문서뿐이며 양쪽 기록을 보존한다.
@@ -28,6 +35,40 @@
 - Common ff849ea wholewheel·공식 daemon/webserver CLI·host 입력 tag930a44266e814ab6·Weather 주소 환경 전달을 보존한다. queue/NVMe/DB/metrics 다른 PR 기능을 이 브랜치에 새로 합치지 않는다.
 - 별도 mirror/sterile env 관련5모듈70PASS·실제Compose렌더11건제외/Ruff/diff PASS, 전체모델은 큐 두scalar·digest7소비자만 차이다. 최신main host5입력/vendor/공식CLI는 byte동일이다.
 - 새 integration head 독립2리뷰·CI는 별도이며 이 병합을 운영 재설치·daemon 시작·성능 수용으로 바꾸지 않는다.
+
+## 2026-10-17 — PR522 최신 main 통합 준비
+
+- 최신 main20b의 포트·관측 파생과 완료 원장을 ordinary merge하고 기존 기능 변경은 보존한다.
+- 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
+
+
+## 2026-10-17 — PR522 SQLite URL 파일명 보존 수정
+
+- 독립 P2에서 문자열 URL이 '?' 파일명을 query로 해석하는 경계를 확인했다.
+  자체 dialect 인자 대역은 '%25' decode까지 포함해3FAIL5PASS를 재현했다.
+- 선택함수/default산술을 유지하고 공식 URL.create(database=DB_PATH)만 적용했다.
+  실제 SQLAlchemy dialect 인자 회귀 포함25PASS/backend Ruff/diff PASS다.
+- 기존 engine 설정/timeout/WAL event/schema는 그대로이며 실제 engine/DB연결0이다.
+  원739be4e와17회귀의 검증범위 한계를 보존한다.
+
+
+## 2026-10-17 — 명시 SQLite 파일 경로 구현(PR522)
+
+- KTDM_DATABASE_PATH 프로세스 환경이 없으면 기존 기본 계산을 그대로 유지한다.
+  명시 절대파일경로만 사용하며 empty/relative/NUL·끝directory형식은 값 노출 없이 거절한다.
+- schema/API/권한/기동checker·로그제품 변경0. .env는 초기 DB import 뒤 읽힐 수 있으므로
+  systemd 단일 Environment와 CLI의 동일 프로세스 환경을 문서화했다.
+- 실제 제품 AST/engine 대역 격리17PASS(0.03초), backend Ruff/diff PASS,
+  원 main 경로조건2RED→새함수2GREEN. 전체 suite·실제 DB·설치·운영 실행0이다.
+- [NVMe DB 가이드](nvme-database-path.md)에 경로/symlink/mount 및 WAL/SHM 보존을 별도 구분했다.
+
+
+## 2026-10-17 — NVMe SQLite 경로 설계
+
+- main520(4f708e4) 별도 feature에서 환경변수로 DB 파일 절대 경로를 명시하는 최소안을 설계했다.
+- 미설정 기본 산술·schema·API·권한은 유지하고 empty/relative는 실패하도록 한다.
+- .env 로드 시점과 실제 프로세스 환경을 구분한다. DB/운영 실행0,521소스변경0이다.
+
 
 ## 2026-10-17 — PR521 최신 main 통합 준비
 
