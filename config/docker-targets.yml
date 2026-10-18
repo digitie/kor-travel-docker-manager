@@ -250,7 +250,7 @@ containers:
   kor-travel-node-exporter:
     name: kor-travel-node-exporter
     compose_service: node-exporter
-    external_project: kor-travel-odroid-monitoring
+    external_project: kor-travel-host-monitoring
     role: metrics-exporter
     display_name: node_exporter 호스트 메트릭 Exporter
     connection: http://{host}:12106
@@ -267,9 +267,11 @@ containers:
     compose_service: kor-travel-weather-api
     role: weather-api
     display_name: Kor Travel Weather API
-    connection: "http://{host}:14101"
+    # odroid 실측 포트(2026-10-17, odroid `kor-travel-odroid` stack의 uvicorn `--port 12201` — 2026-10-14 통일 포트). n150 시절
+    # Manager compose 기본값은 `14101`이다(weather가 n150에서 돌 때의 값).
+    connection: "http://{host}:12201"
     expected_ports:
-      - "14101:14101"
+      - "12201:12201"
     prod_url_env: KTDM_PROD_URL_WEATHER_API
   # dagster는 code-server/webserver/daemon 3-분리로 나뉜다 — registry가 실제
   # compose.yaml 토폴로지(weather PR #61, code-server 분리) 뒤로 밀려 있었다.
@@ -278,7 +280,12 @@ containers:
     compose_service: kor-travel-weather-dagster-code-server
     role: weather-dagster-code-server
     display_name: Kor Travel Weather Dagster Code Server
-    connection: "내부 전용(gRPC, {host}:14106) — 인증 없음, loopback만 허용"
+    connection: "내부 전용(gRPC, {host}:12206) — 인증 없음, loopback만 허용"
+    # 중앙 Prometheus 수집(T-MGR-04r): code-server의 `prometheus_client` 서버(`KOR_TRAVEL_WEATHER_METRICS_PORT`). 포트는 지금
+    # weather가 도는 odroid의 통일 포트 `12203`이다(2026-10-17 n150에서 `http://192.168.1.13:12203/metrics` 200 실측). Manager
+    # compose 기본값 `14103`은 n150 시절 값이고 일부러 두었다(compose 주석). 인증 없이 LAN에 열려 있다 — odroid 방화벽 exporter 집합.
+    metrics_path: /metrics
+    metrics_port: 12203
     expected_ports: []
   kor-travel-weather-dagster-webserver:
     name: kor-travel-weather-dagster-webserver-latest
@@ -353,26 +360,27 @@ containers:
     external_project: kor-travel-transport
     role: transport-backend
     display_name: Kor Travel Transport 백엔드
-    connection: "http://{host}:14001"
+    connection: "http://{host}:12302"
     # host network다 — 운영 overlay(`docker-compose.shared.yml`)가 `network_mode: host`와
-    # `ports: !reset []`를 걸어 uvicorn이 호스트 14001에 직접 listen한다(PortBindings 없음,
-    # 2026-09-28 n150 실측). base compose의 `14001:8000` 매핑은 운영에서 쓰이지 않는다.
+    # `ports: !reset []`를 걸어 uvicorn이 호스트 포트에 직접 listen한다(PortBindings 없음). 포트는 odroid 실측 `12302`
+    # (2026-10-17, uvicorn `--port 12302` — 2026-10-14 통일 포트; n150 시절 `14001`). 소비자(Map)는 이것이 아니라 API
+    # gateway `12301`을 부른다(target `consumer_origin`). base compose의 `14001:8000` 매핑은 운영에서 쓰이지 않는다.
     expected_ports:
-      - "14001:14001"
+      - "12302:12302"
   kor-travel-transport-frontend:
     name: kor-travel-transport-frontend-1
     compose_service: frontend
     external_project: kor-travel-transport
     role: transport-frontend
     display_name: Kor Travel Transport 프런트엔드
-    connection: "http://{host}:14002"
-    # backend와 같이 host network다(next가 호스트 14002에 직접 listen한다).
+    connection: "http://{host}:12303"
+    # backend와 같이 host network다(next가 호스트 포트에 직접 listen한다 — odroid 실측 `12303`, n150 시절 `14002`).
     expected_ports:
-      - "14002:14002"
+      - "12303:12303"
 
 targets:
   storage:
-    host: all
+    host: [n150, odroid]
     port_band: "12100-12199"
     depends_on: []
     display_name: 통합 RustFS
@@ -396,6 +404,7 @@ targets:
           - rustfs-init
 
   gra:
+    host: n150
     port_band: "12200-12299"
     depends_on: [storage]
     display_name: 공용 Grafana
@@ -434,6 +443,7 @@ targets:
     init_steps: []
 
   prom:
+    host: n150
     port_band: "12400-12499"
     depends_on: [cadv]
     display_name: Prometheus
@@ -500,7 +510,7 @@ targets:
     # `shared`로 바꾸는 PR은 같은 커밋에서 compose를 그 모양으로 바꾼다 — code-server가 공용 URL 앵커와
     # 공용 `dagster.yaml`을 받고, 아래 `consumers`가 공용 webserver·공개 host를 가리키고, 이 target의
     # webserver·daemon(과 그것에 기대는 gateway)은 `profiles: [legacy-dagster]`로 내려 target의
-    # `services`·`runtime_services`에서 빠진다. 그리고 `config/dagster-shared/workspace.yaml`에 항목
+    # `services`·`runtime_services`에서 빠진다. 그리고 그 호스트의 `config/dagster-shared/workspace.<host>.yaml`에 항목
     # 하나가 생긴다(파생). 어느 하나라도 빠지면 `test_dagster_shared_workspace_is_derived.py`가 무엇이
     # 빠졌는지 말한다. 순서는 platform-topology.md §7 3단계의 전환 runbook이다.
     #
@@ -516,6 +526,7 @@ targets:
           KTG_DAGSTER_PUBLIC_URL: public
 
   conc:
+    host: n150
     port_band: "12600-12699"
     depends_on: [prom]
     display_name: Kor Travel Concierge
@@ -555,6 +566,7 @@ targets:
           KTC_DAGSTER_PUBLIC_URL: public
 
   map:
+    host: n150
     port_band: "12700-12799"
     depends_on: [geo, conc]
     display_name: Kor Travel Map
@@ -613,6 +625,7 @@ targets:
           NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: public
 
   pinvi:
+    host: n150
     port_band: "12800-12899"
     depends_on: [map]
     display_name: PinVi
@@ -717,8 +730,11 @@ targets:
     # stack을 두면 `host:`를 넓힌다(좌표는 호스트 상대, R5).
     host: odroid
     external_project:
-      project: kor-travel-odroid-monitoring
-      working_dir: /opt/kor-travel-odroid
+      # 호스트 이름이 없는 이름(T-MGR-NH NH-5) — 같은 stack을 다른 호스트에 두어도 이름이 그대로다. 모니터링 stack
+      # (`compose-mon.yml` 하나)만 자기 디렉터리로 옮긴다. 옛 `/opt/kor-travel-odroid`는 odroid의 geo·weather·transport
+      # compose·env·thermal-guard 등이 함께 사는 디렉터리라 **옮기지 않는다**(호스트 측 절차는 T-OPS-01b).
+      project: kor-travel-host-monitoring
+      working_dir: /opt/kor-travel-host-monitoring
       config_files:
         - compose-mon.yml
     port_band: "12100-12199"
@@ -761,10 +777,12 @@ targets:
       working_dir: /home/digitie/apps/kor-travel-transport
       config_files:
         - docker-compose.yml
+    # 대역(ports.md 정책)은 n150 시절 배정이다 — odroid의 transport 실제 포트는 통일 대역 `123xx`(gateway 12301·backend 12302·
+    # frontend 12303·admin 12305·code-server 12306)이고, 대역 재배정은 ports.md 결정 몫이다(2026-10-17 F2).
     port_band: "14001-14099"
     depends_on: []
     display_name: Kor Travel Transport
-    description: 통합 교통정보 서비스입니다(공항 주차 현황 등). 백엔드(:14001)와 프런트엔드(:14002)로 구성되며 DB는 공용 instance(:11000)의 kor_travel_transport database에 있습니다.
+    description: 통합 교통정보 서비스입니다(공항 주차 현황 등). 백엔드(:12302)와 프런트엔드(:12303), API gateway(:12301)로 구성되며 DB는 공용 instance(:11000)의 kor_travel_transport database에 있습니다.
     aliases:
       - kor-travel-transport
     services:
@@ -793,7 +811,8 @@ targets:
         daemon: dagster-daemon
         gateways: [dagster-gateway]
         location_name: kor-travel-transport
-        port: 14005
+        # odroid 실측 gRPC 포트(2026-10-17, `code-server start -p 12306` — 옛 n150 `14005`). 공용 workspace가 이 값을 싣는다.
+        port: 12306
 
   weather:
     # 2026-10-14 odroid로 옮겼다(소유자 지시 — n150의 weather 컨테이너는 멈춤, 수집은 odroid Dagster). 잠정: 이 값이
@@ -808,7 +827,7 @@ targets:
     port_band: "14100-14199"
     depends_on: []
     display_name: Kor Travel Weather
-    description: 기상 데이터 서비스. API(:14101)·Dagster 게이트웨이(:14102, Basic Auth)·자체 Prometheus(:14104)·Web(:12205, HAProxy가 가리키는 대역 밖 예외 — ADR-57)으로 구성되며, 공용 control-plane instance(kor-travel-shared-postgres, :11000)에 fresh app/Dagster DB를 새로 만들어 쓴다(옛 전용 db 데이터는 옮기지 않는다 — PinVi ADR-46과 같은 패턴). weather 자신의 compose.yaml/deploy/compose.n150.yaml은 local-dev/e2e 전용으로 남는다 — prod 정본은 이제 이 파일이다(ADR-47).
+    description: 기상 데이터 서비스. odroid에서 API(:12201)·Dagster code-server(gRPC :12206, metrics :12203)·Web(:12205, HAProxy가 가리키는 대역 밖 예외 — ADR-57)으로 돈다(n150 시절 API :14101·게이트웨이 :14102·자체 Prometheus :14104; 공용 plane 합류 뒤 게이트웨이·webserver·daemon은 legacy profile이다). DB는 공용 control-plane instance(kor-travel-shared-postgres, :11000)에 fresh app/Dagster DB를 새로 만들어 쓴다(옛 전용 db 데이터는 옮기지 않는다 — PinVi ADR-46과 같은 패턴). weather 자신의 compose.yaml/deploy/compose.n150.yaml은 local-dev/e2e 전용으로 남는다 — prod 정본은 이제 이 파일이다(ADR-47).
     aliases:
       - kor-travel-weather
     services:
@@ -825,6 +844,10 @@ targets:
     # `kor-travel-shared-db-init-weather`/`kor-travel-weather-migrate`는
     # restart=no인 one-shot이라 runtime에서 빠진다 — 정상 상태가 exited(0)이므로
     # runtime 목록에 두면 상태 판정이 늘 실패로 읽힌다.
+    # TODO(T-MGR-06): weather 자체 Prometheus(`14104`)와 옛 gateway(`14102`)는 odroid에서 돌지 않는다(2026-10-17 실측 — 컨테이너
+    # 없음, 공용 plane·legacy profile). 그래서 그 컨테이너 상태는 원격 관측에서 offline으로 보인다. odroid Manager가 weather를
+    # 넘겨받을 때 Prometheus를 그 호스트에서 다시 둘지(→ 여기 유지) 뺄지(→ `services`·`runtime_services`·`containers`·init step에서
+    # 제거) 정한다.
     runtime_services:
       - kor-travel-weather-api
       - kor-travel-weather-web
@@ -860,7 +883,7 @@ targets:
           NEXT_PUBLIC_DAGSTER_URL: public
 
   dagster:
-    host: all
+    host: [n150, odroid]
     # 공용 Dagster 제어 평면(platform-topology.md §7, dagster-shared-plan §4, ADR-54). 공용 instance
     # 위의 `dagster_shared` DB·role·storage schema(2단계)와 그 위의 daemon(포트 없음)·webserver
     # (`127.0.0.1:11002`)·gateway(11001)(3단계)다. workspace는 `dagster.control_plane: shared`인
@@ -1072,3 +1095,12 @@ compose_binds:
     - container_path: "/opt/kor-travel-docker-manager/ensure-rustfs-buckets.sh"
       read_only: true
       source: "./scripts/ensure-rustfs-buckets.sh"
+
+# 소유 target이 없는 것이 정당한 compose 서비스(이름 목록). `targets validate`의 교차 호스트 간선 검사(T-MGR-NH NH-2,
+# `services/host_edges.py`)는 소유자(`compose_service.compose_service_owners` — target `services`·`init_steps`·pinned
+# 재구축 one-shot·Dagster family) 없는 서비스를 거부한다 — 이 목록만 예외다. compose에서 사라진 이름이 남아 있어도 거부한다.
+#   kor-travel-shared-db-init-transport: 운영자가 설치 루트에서 1회 run한다(prod-deployment §9.2 4a′) — target 밖
+#   kor-travel-concierge-scheduler: profile 서비스(기본 기동 아님), 어느 target의 services에도 없다
+unowned_services:
+  - kor-travel-shared-db-init-transport
+  - kor-travel-concierge-scheduler

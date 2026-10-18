@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 import yaml
+from _compose_test_residue import sweep_dead_runs
 
 from kor_travel_docker_manager.services.c6c_deployment import (
     DeploymentContractError,
@@ -68,7 +69,15 @@ def _required_docker_gate() -> bool:
     return value == "1"
 
 
-def _unavailable_docker_fixture(reason: str) -> None:
+def _unavailable_docker_fixture(reason: str, *, images: tuple[str, ...] = ()) -> None:
+    """Docker fixture를 못 쓸 때 gate 0이면 skip, 1이면 fail.
+
+    `images`(가용성을 본 이미지 참조)에 `${`가 남아 있으면 gate와 무관하게 **fail**이다 — compose 원문을 보간하지 않고
+    inspect한 것이라 이 호스트의 사정이 아니라 테스트의 결함이다(T-MGR-03이 이미지를 env로 바꾸자 24건이 조용히 skip됐다).
+    """
+    unresolved = [image for image in images if "${" in image]
+    if unresolved:
+        pytest.fail(f"보간되지 않은 이미지 참조를 inspect했다(compose 기본값으로 풀 것): {unresolved}")
     if _required_docker_gate():
         pytest.fail(reason)
     pytest.skip(f"{reason}; 필수 gate는 {_REQUIRED_GATE_ENV}=1로 실행")
@@ -144,6 +153,7 @@ def test_canonical_compose_readiness_matches_real_runtime(
 ) -> None:
     fixture_image_id = _fixture_image_id()
     compose_path = tmp_path / "compose.yml"
+    sweep_dead_runs("ktdm-readiness-")  # 죽은 이전 실행의 잔재(`_compose_test_residue` docstring)
     project_name = f"ktdm-readiness-{os.getpid()}-{tmp_path.name[-8:]}".lower()
     compose_path.write_text(
         yaml.safe_dump(

@@ -69,6 +69,17 @@ def _unprobed_remote_http_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _ensure_preflight_is_not_run_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """기존 ensure 시험은 compose subprocess를 대역으로 바꿔 argv만 본다 — 새 `ensure` 프리플라이트(T-MGR-05)의
+    `docker info`·`docker image inspect`·`findmnt`가 그 대역에 섞이면 argv 단언이 깨지거나 실제 Docker에 닿는다.
+    프리플라이트 자체는 `test_ensure_preflight.py`가 자기 대역으로 보고, ensure가 그것을 `up` 전에 부른다는 결박도
+    거기서 이 별칭을 다시 바꿔 확인한다(위 원격 HTTP 관측과 같은 모양)."""
+    from kor_travel_docker_manager.services import compose_service as module
+
+    monkeypatch.setattr(module, "ensure_preflight", lambda *args, **kwargs: None)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
@@ -146,6 +157,7 @@ _SIBLING_TARGETS: dict[str, dict[str, object]] = {
             "working_dir": _SIBLING_WORKING_DIR,
             "config_files": ["docker-compose.db.yml"],
         },
+        "host": "n150",  # v2는 `host:`를 생략할 수 없다(T-MGR-NH NH-1)
         "port_band": "19000-19000",
         "depends_on": [],
         "display_name": "Test Sibling DB",
@@ -161,6 +173,7 @@ _SIBLING_TARGETS: dict[str, dict[str, object]] = {
             "working_dir": _SIBLING_WORKING_DIR,
             "config_files": ["docker-compose.yml"],
         },
+        "host": "n150",
         "port_band": "19001-19099",
         "depends_on": ["test-sibling-db"],
         "display_name": "Test Sibling",

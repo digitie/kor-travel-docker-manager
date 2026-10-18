@@ -7,6 +7,7 @@ plane 밖 서비스를 건드리는가, lock 밖에서 바꾸는가, 재구축�
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -304,7 +305,7 @@ def test_a_current_plane_dry_run_reports_health_without_waiting(
 
 
 def test_the_wait_bound_comes_from_the_rendered_healthchecks(harness: SimpleNamespace) -> None:
-    """고정 300초가 아니다 — daemon은 start_period 90초 뒤 앞 probe가 끝나고 120초를 쉬며, 디스크 대기 중엔 probe 하나가
+    """고정 300초가 아니다 — daemon은 start_period 90초 뒤 앞 probe가 끝나고 360초를 쉬며, 디스크 대기 중엔 probe 하나가
     timeout(60초)까지 걸린다. 그래서 probe 한 주기는 interval + timeout이다."""
 
     services = harness.resolved["services"]
@@ -325,8 +326,8 @@ def test_the_wait_bound_comes_from_the_rendered_healthchecks(harness: SimpleName
     bound = ComposeService._shared_plane_health_wait_seconds(harness.plane, services)
 
     assert bound == expected
-    # 설치본 daemon: 90 + (120 + 60) × 2 + 15 = 465 — 옛 고정 상한(300초)·첫 수정(390초)보다 길다.
-    assert bound == 465.0
+    # 현재 daemon:90 + (360 + 60) × 2 + 15 = 945. 원 render 계산과 일치해야 한다.
+    assert bound == 945.0
 
 
 def test_the_wait_bound_reads_compose_config_durations_and_is_clamped(
@@ -347,7 +348,7 @@ def test_the_wait_bound_reads_compose_config_durations_and_is_clamped(
     )
     huge = services(start_period="10h", interval="1h", timeout="1h", retries=5)
     assert ComposeService._shared_plane_health_wait_seconds(plane, huge) == float(
-        compose_service_module._COMPOSE_WAIT_TIMEOUT_SECONDS
+        compose_service_module._MAX_C6C_WAIT_TIMEOUT_SECONDS
     )
 
 
@@ -448,3 +449,103 @@ def test_cli_failure_is_a_json_verdict(
 
     assert main(["dagster-plane", "converge", "--confirm", "--json"]) == 2
     assert '"status": "failed"' in capsys.readouterr().out
+
+
+# --- 2026-10-17: bind mount drift — 내용 digest가 같은 두 파일 사이의 bind 변경도 재생성 사유다 -------------------
+
+_WORKSPACE_IN_CONTAINER = "/opt/dagster/dagster_home/workspace.yaml"
+
+
+def _with_long_syntax_workspace_bind(harness: SimpleNamespace, rendered_source: str, mounted_source: str) -> None:
+    """render를 `compose config --format json` 모양(long syntax bind)으로, 떠 있는 컨테이너는 `mounted_source`를 붙인 것으로."""
+    for name in harness.plane.services:
+        harness.resolved["services"][name]["volumes"] = [
+            {"type": "bind", "source": rendered_source, "target": _WORKSPACE_IN_CONTAINER, "read_only": True}
+        ]
+    real = harness.service._inspect_plane_container
+
+    def with_mounts(container_name: str, *, label: str) -> Any:
+        observed = dict(real(container_name, label=label))
+        observed["mounts"] = {_WORKSPACE_IN_CONTAINER: (mounted_source, True)}
+        return observed
+
+    harness.service._inspect_plane_container = with_mounts
+    harness.state.stale = {name: False for name in harness.plane.services}  # env·digest는 같다(같은 내용의 두 파일)
+
+
+def test_a_plane_mounting_another_file_with_the_same_content_is_stale(harness: SimpleNamespace) -> None:
+    root = "/opt/kor-travel-docker-manager/config/dagster-shared"
+    _with_long_syntax_workspace_bind(harness, f"{root}/workspace.n150.yaml", f"{root}/workspace.yaml")
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    assert result["outcome"] == "would_recreate"
+    for name in harness.plane.services:
+        assert result["drift"][name] == [
+            f"bind {_WORKSPACE_IN_CONTAINER}: running {root}/workspace.yaml != rendered {root}/workspace.n150.yaml"
+        ]
+
+
+def test_a_plane_mounting_the_rendered_file_is_current(harness: SimpleNamespace) -> None:
+    root = "/opt/kor-travel-docker-manager/config/dagster-shared"
+    _with_long_syntax_workspace_bind(harness, f"{root}/workspace.n150.yaml", f"{root}/workspace.n150.yaml")
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    assert result["outcome"] == "current"
+    assert result["drift"] == {name: [] for name in harness.plane.services}
+
+
+def test_inspect_reads_bind_mounts_with_their_read_only_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    document = {
+        "Image": "sha256:" + "a" * 64,
+        "Config": {"Env": [], "Cmd": [], "Entrypoint": None},
+        "State": {"Running": True, "Restarting": False},
+        "Mounts": [
+            {"Type": "bind", "Source": "/opt/x/workspace.yaml", "Destination": _WORKSPACE_IN_CONTAINER, "RW": False},
+            {"Type": "bind", "Source": "/opt/x/dagster.yaml", "Destination": "/opt/dagster/dagster_home/dagster.yaml", "RW": True},
+            {"Type": "volume", "Name": "v", "Source": "/var/lib/docker/volumes/v", "Destination": "/data", "RW": True},
+        ],
+    }
+    monkeypatch.setattr(
+        compose_service_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(document), stderr=""),
+    )
+    observed = ComposeService._inspect_plane_container("c", label="c")
+    assert observed["mounts"] == {
+        _WORKSPACE_IN_CONTAINER: ("/opt/x/workspace.yaml", True),
+        "/opt/dagster/dagster_home/dagster.yaml": ("/opt/x/dagster.yaml", False),
+    }
+
+
+def test_a_bind_still_mounted_but_no_longer_rendered_is_stale(harness: SimpleNamespace) -> None:
+    root = "/opt/kor-travel-docker-manager/config/dagster-shared"
+    _with_long_syntax_workspace_bind(harness, f"{root}/workspace.n150.yaml", f"{root}/workspace.n150.yaml")
+    real = harness.service._inspect_plane_container
+
+    def with_extra(container_name: str, *, label: str) -> Any:
+        observed = dict(real(container_name, label=label))
+        observed["mounts"] = {**observed["mounts"], "/opt/dagster/old.yaml": (f"{root}/old.yaml", True)}
+        return observed
+
+    harness.service._inspect_plane_container = with_extra
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    assert result["outcome"] == "would_recreate"
+    for name in harness.plane.services:
+        assert result["drift"][name] == ["bind /opt/dagster/old.yaml is mounted but not rendered"]
+
+def test_shared_daemon_six_minute_interval_does_not_clip_health_start_window(
+    harness: SimpleNamespace,
+) -> None:
+    services = {
+        name: {"healthcheck": {
+            "test": ["CMD", "unchanged"], "start_period": "90s",
+            "interval": "360s", "timeout": "60s", "retries": 2,
+        }}
+        for name in harness.plane.services
+    }
+    bound = ComposeService._shared_plane_health_wait_seconds(harness.plane, services)
+    assert bound == 945.0
+    assert compose_service_module._compose_wait_timeout_seconds(services) >= bound

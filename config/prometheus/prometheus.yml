@@ -7,9 +7,10 @@ global:
 # static_config 하나(`labels: {host: …}`)를 `services/prometheus_targets.py`가 계산하고
 # `backend/tests/test_prometheus_targets_are_derived.py`가 이 파일과 대조한다. 주소는 R1: 이 Prometheus가 도는
 # 호스트(registry에서 파생)면 127.0.0.1, 아니면 그 호스트의 `hosts.<이름>.addr`. host 네트워크 모드라 포트는 호스트 정규
-# 포트다.
+# 포트다. 맨 앞 `kor-travel-docker-manager`는 Manager 자신의 backend(systemd)다 — 선언된 모든 호스트에서 돌므로 호스트마다
+# static_config 하나, 포트는 `deploy/systemd/ktdm-backend.service`의 `--port`(T-MGR-NH NH-6). 이 파일에 손으로 쓴 job은 없다.
 scrape_configs:
-  # registry 밖 job — Manager 자신의 backend(systemd, compose 컨테이너가 아니다).
+  # --- 파생(이 아래 전부) ---
   - job_name: kor-travel-docker-manager
     metrics_path: /metrics
     static_configs:
@@ -17,8 +18,11 @@ scrape_configs:
           - 127.0.0.1:12901
         labels:
           host: n150
+      - targets:
+          - 192.168.1.13:12901
+        labels:
+          host: odroid
 
-  # --- registry 파생(이 아래) ---
   - job_name: kor-travel-geo-api
     metrics_path: /metrics
     static_configs:
@@ -60,5 +64,13 @@ scrape_configs:
     static_configs:
       - targets:
           - 192.168.1.13:12106
+        labels:
+          host: odroid
+
+  - job_name: kor-travel-weather-dagster-code-server
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - 192.168.1.13:12203
         labels:
           host: odroid

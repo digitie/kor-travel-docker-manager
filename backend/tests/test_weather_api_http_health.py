@@ -15,7 +15,7 @@ def test_weather_api_uses_quiet_core_http_cli_without_shell_or_framework_import(
     service = _service()
     test = service["healthcheck"]["test"]
     assert test == [
-        "CMD", "python", "-m", "kortravelcommon.http_health",
+        "CMD", "python", "-I", "-m", "kortravelcommon.http_health",
         "--port", "${KOR_TRAVEL_WEATHER_API_PORT:-14101}",
         "--timeout-seconds", "3",
     ]
@@ -32,13 +32,13 @@ def test_weather_api_command_mapping_and_probe_share_the_port_expression() -> No
     assert port == "${KOR_TRAVEL_WEATHER_API_PORT:-14101}"
 
 
-def test_weather_api_health_has_startup_margin_and_same_nominal_failure_window() -> None:
+def test_weather_api_health_has_startup_margin_and_approved_cadence() -> None:
     health = _service()["healthcheck"]
     test = health["test"]
     http_seconds = float(test[test.index("--timeout-seconds") + 1])
     assert http_seconds == 3
     assert health["timeout"] == "12s"  # Python 시작 + HTTP 예산을 Docker가 감싼다.
-    assert health["interval"] == "30s"
+    assert health["interval"] == "90s"
     assert health["retries"] == 4
-    assert int(health["interval"][:-1]) * health["retries"] == 120
+    assert int(health["interval"][:-1]) * health["retries"] == 360
     assert http_seconds < int(health["timeout"][:-1])

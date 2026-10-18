@@ -5,9 +5,9 @@ load_from:
     location_name: kortravelgeo_dagster.definitions
 - grpc_server:
     host: 127.0.0.1
-    port: 14106
+    port: 12206
     location_name: kortravelweather_dagster.definitions
 - grpc_server:
     host: 127.0.0.1
-    port: 14005
+    port: 12306
     location_name: kor-travel-transport

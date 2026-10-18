@@ -8,6 +8,7 @@ import yaml
 
 from kor_travel_docker_manager.services import registry
 from kor_travel_docker_manager.services.errors import DeploymentContractError
+from kor_travel_docker_manager.services.host_edges import host_edge_violations
 
 
 @pytest.fixture
@@ -132,31 +133,16 @@ def test_root_env_host_fallback_preserves_public_mutation_ownership(
         service.ensure_target(foreign_target)
 
 
-def _cross_host_declared_dependencies(compose, config):
-    owners = {}
-    for target, spec in config["targets"].items():
-        if spec.get("external_project"):
-            continue
-        for service in spec.get("services", []):
-            owners.setdefault(service, set()).update(registry.target_hosts(target, config))
-    return {
-        (consumer, provider)
-        for consumer, spec in compose["services"].items()
-        for provider in spec.get("depends_on", {})
-        if consumer in owners and provider in owners
-        and not owners[consumer] <= owners[provider]
-    }
-
-
 def test_declared_compose_dependencies_do_not_start_off_host_tenants(config):
     root = Path(__file__).resolve().parents[2]
     compose = yaml.safe_load((root / "docker-compose.yml").read_text())
-    assert _cross_host_declared_dependencies(compose, config) == set()
+    assert host_edge_violations(compose, config) == []
     # 같은-host 의존과 host-all 기반은 보존한다.
     assert {"kor-travel-shared-postgres", "rustfs", "kor-travel-concierge-api"} <= set(compose["services"]["kor-travel-map-api"]["depends_on"])
     # 원래 위험 간선을 되돌리면 회귀가 실제로 거부한다.
     compose["services"]["kor-travel-map-api"]["depends_on"]["kor-travel-geo-api"] = {"condition": "service_healthy"}
-    assert ("kor-travel-map-api", "kor-travel-geo-api") in _cross_host_declared_dependencies(compose, config)
+    assert any(line.startswith("kor-travel-map-api (n150) depends_on kor-travel-geo-api (odroid)")
+               for line in host_edge_violations(compose, config))
 
 
 @pytest.mark.parametrize("role", ["geo", "transport"])

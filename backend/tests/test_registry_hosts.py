@@ -44,11 +44,67 @@ def test_literal_ipv4_only(config, addr):
         registry._validate_targets_config(config, label="test")
 
 
-@pytest.mark.parametrize("host", ["mars", None, ["odroid"], ""])
+@pytest.mark.parametrize("host", ["mars", None, "", [], ["odroid", "odroid"], ["all"], ["odroid", "mars"], [None]])
 def test_unknown_target_host(config, host):
     config["targets"]["geo"]["host"] = host
     with pytest.raises(registry.TargetsConfigError, match="host"):
         registry._validate_targets_config(config, label="test")
+
+
+@pytest.mark.parametrize("target", ["gra", "map", "dagster"])
+def test_v2_target_cannot_omit_host(config, target):
+    """T-MGR-NH NH-1: 암묵 default 없음 — 호스트를 더할 때 생략된 target이 조용히 default에 묶이지 않게(임계값 없이)."""
+    del config["targets"][target]["host"]
+    with pytest.raises(registry.TargetsConfigError, match=rf"targets\.{target}\.host is required"):
+        registry._validate_targets_config(config, label="test")
+
+
+def test_a_host_list_places_the_target_on_exactly_those_hosts(config, monkeypatch):
+    """T-MGR-NH NH-1: `host:` 목록(infra용). 세 번째 호스트(mars)를 더해도 목록 target은 목록의 호스트에만 있다 —
+    `all` 필터·변경 경계·Prometheus 타깃 모두."""
+    from kor_travel_docker_manager.services import prometheus_targets
+    from kor_travel_docker_manager.services.errors import DeploymentContractError
+
+    config["hosts"]["mars"] = {"addr": "192.0.2.7"}
+    listed = "cadv"
+    assert config["targets"][listed]["host"] == "all"  # 전제: 오늘은 모든 호스트
+    config["targets"][listed]["host"] = ["n150", "odroid"]
+    registry._validate_targets_config(config, label="test")
+    assert registry.target_hosts(listed, config) == frozenset({"n150", "odroid"})
+
+    after = {host: _derived(config, monkeypatch, host) for host in config["hosts"]}
+    assert listed not in after["mars"]["all"]
+    assert all(listed in after[host]["all"] for host in ("n150", "odroid"))
+    with pytest.raises(DeploymentContractError, match="not owned by the current host"):
+        registry.require_local_targets(listed, config=config)  # KTDM_HOST는 _derived의 마지막 호스트(mars)
+
+    exporters = [c for c in config["targets"][listed]["containers"] if config["containers"][c].get("metrics_path")]
+    assert exporters
+    jobs = {job["job_name"]: job for job in prometheus_targets.derived_scrape_configs(config)}
+    for container in exporters:
+        job = jobs[container]  # job 이름 = registry 컨테이너 id
+        assert {entry["labels"]["host"] for entry in job["static_configs"]} == {"n150", "odroid"}
+
+
+def test_shared_infra_runs_only_on_its_listed_hosts(config, monkeypatch):
+    """T-MGR-NH NH-3: 공용 plane(`dagster`)·RustFS(`storage`)는 명시 목록의 호스트에만 있다 — 세 번째 호스트(mars)를
+    더해도 그 호스트의 `all`·변경 경계에 나타나지 않는다. 공용 PG는 소비 target이 직접 소유하므로 소비 target이 mars에
+    오면 함께 온다(구성상 같은 호스트 — `docs/multi-host.md` §3.1)."""
+    infra = ("dagster", "storage")
+    listed = {target: registry.target_hosts(target, config) for target in infra}
+    assert all(hosts == frozenset({"n150", "odroid"}) for hosts in listed.values()), listed
+    config["hosts"]["mars"] = {"addr": "192.0.2.7"}
+    registry._validate_targets_config(config, label="test")
+    assert all(registry.target_hosts(target, config) == listed[target] for target in infra)
+    mars = _derived(config, monkeypatch, "mars")
+    assert not set(infra) & set(mars["all"])
+
+    pg = next(
+        name for name, spec in config["containers"].items() if spec["compose_service"] == "kor-travel-shared-postgres"
+    )
+    assert "mars" not in registry.container_hosts(pg, config)
+    config["targets"]["map"]["host"] = "mars"
+    assert "mars" in registry.container_hosts(pg, config)
 
 
 def test_v2_cannot_omit_hosts(config):
@@ -610,3 +666,86 @@ def test_host_literal_scan_sees_words_fstrings_and_skips_docstrings(tmp_path, mo
         ("probe.py", "target on odroid"),
         ("probe.py", "http://10.0.0.9:1"),
     }
+
+
+def _install_cli_address_config(config, monkeypatch, tmp_path):
+    import socket
+
+    import yaml
+
+    path = tmp_path / "docker-targets.yml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    monkeypatch.setenv(registry.TARGETS_FILE_ENV, str(path))
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE", str(tmp_path / "absent.yml"))
+    monkeypatch.delenv("KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE", raising=False)
+
+    def no_address_probe(*args, **kwargs):
+        raise AssertionError("주소 출력은 네트워크나 인터페이스를 조회하지 않는다")
+
+    monkeypatch.setattr(socket, "getaddrinfo", no_address_probe)
+    monkeypatch.setattr(registry, "_local_ipv4_addresses", no_address_probe)
+    registry.load_targets_config.cache_clear()
+    return path
+
+
+@pytest.mark.parametrize("addr", ["192.0.2.70", "198.51.100.90"])
+def test_validate_json_projects_declared_host_addresses(config, monkeypatch, tmp_path, capsys, addr):
+    config["hosts"]["odroid"]["addr"] = addr
+    _install_cli_address_config(config, monkeypatch, tmp_path)
+
+    code, document, err = _validate_json(capsys)
+
+    assert code == 0 and not err
+    assert document == {
+        "status": "ok",
+        "host": registry.default_host(config),
+        "hosts": {name: {"addr": spec["addr"]} for name, spec in config["hosts"].items()},
+        "targets": {name: {"host": spec["host"]} for name, spec in config["targets"].items()},
+    }
+    assert document["hosts"]["odroid"] == {"addr": addr}
+
+
+def test_validate_json_uses_reloaded_registry_address(config, monkeypatch, tmp_path, capsys):
+    import yaml
+
+    config["hosts"]["odroid"]["addr"] = "192.0.2.70"
+    path = _install_cli_address_config(config, monkeypatch, tmp_path)
+    first_code, first, _ = _validate_json(capsys)
+
+    config["hosts"]["odroid"]["addr"] = "198.51.100.90"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    registry.load_targets_config.cache_clear()
+    second_code, second, _ = _validate_json(capsys)
+
+    assert first_code == second_code == 0
+    assert first["hosts"]["odroid"]["addr"] == "192.0.2.70"
+    assert second["hosts"]["odroid"]["addr"] == "198.51.100.90"
+    assert first["targets"] == second["targets"]
+
+
+def test_validate_json_without_host_declarations_preserves_v1(config, monkeypatch, tmp_path, capsys):
+    config["version"] = 1
+    del config["hosts"]
+    for target in config["targets"].values():
+        target.pop("host", None)
+    _install_cli_address_config(config, monkeypatch, tmp_path)
+
+    code, document, err = _validate_json(capsys)
+
+    assert code == 0 and not err
+    assert document == {
+        "status": "ok",
+        "host": "local",
+        "hosts": {},
+        "targets": {name: {"host": "local"} for name in config["targets"]},
+    }
+
+
+def test_validate_address_projection_keeps_plain_text_output(config, monkeypatch, tmp_path, capsys):
+    from kor_travel_docker_manager.cli import main
+
+    _install_cli_address_config(config, monkeypatch, tmp_path)
+
+    assert main(["targets", "validate"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "OK\n" and not captured.err

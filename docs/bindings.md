@@ -95,9 +95,11 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   (`host: odroid`)가 빠져 4 location(geo·conc·map·pinvi), 2026-10-15 geo도 빠져 3 location(conc·map·pinvi). 결박은 `test_the_workspace_file_is_the_derivation`과 옮긴 target의
   빨간 대조군(`test_bringing_a_moved_target_back_drifts_the_workspace`·`test_a_moved_target_left_in_the_workspace_is_named`).
   당시에는 odroid 파일이 없어 "합집합 == shared 집합"을 단언하지 않았다.
-- **현재 결박**: `test_host_workspaces.py`의 `test_all_committed_hosts_are_derived_and_alias_is_default`,
+- **현재 결박**: `test_host_workspaces.py`의 `test_all_committed_hosts_are_derived`,
   `test_third_host_move_changes_only_affected_workspaces`, `test_host_all_and_own_switch_are_honored`가
-  registry의 모든 host와 기본 alias를 계산·비교한다. instance YAML byte는 변경하지 않는다.
+  registry의 모든 host를 계산·비교한다. instance YAML byte는 변경하지 않는다. 옛 별칭 `workspace.yaml`은 2026-10-17
+  T-MGR-NH NH-4로 없어졌고(파일이 **없음**을 같은 테스트가 단언), compose·registry의 default 호스트 기본값
+  (`${KTDM_HOST:-…}`·`${KTDM_DAGSTER_WORKSPACE_DIGEST:-…}`)은 `test_default_host_values_are_the_default_hosts_derivation`이 결박한다.
 
 ### B-6. 내부 consumer가 부르는 형제 서비스의 origin(2026-10-14 잠정 시행 → 2026-10-16 T-MGR-01c 구현)
 
@@ -139,11 +141,17 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 - **사실**: 중앙 Prometheus(registry에서 파생 — `prometheus.yml`을 마운트하는 compose 서비스의 호스트, 오늘 n150)가 긁는 job·주소·경로
 - **정본**: registry — `metrics_path`가 있는 컨테이너마다 job 하나(`job_name` = 컨테이너 id), 그 컨테이너가 있는 호스트
   (`container_hosts`)마다 static_config 하나: 주소는 R1(Prometheus 호스트면 `127.0.0.1`, 아니면 `hosts.<이름>.addr`), 포트는
-  `connection`(`scheme://{host}:<port>`)의 포트, `labels: {host: <이름>}`(`services/prometheus_targets.py`)
-- **사본**: `config/prometheus/prometheus.yml`. registry 밖 job은 Manager backend(`kor-travel-docker-manager`) 하나뿐이다
+  `connection`(`scheme://{host}:<port>`)의 포트 — metrics가 다른 포트에서 나오면 컨테이너의 `metrics_port`(2026-10-17
+  T-MGR-04r, weather code-server), `labels: {host: <이름>}`(`services/prometheus_targets.py`)
+  Manager backend job(`kor-travel-docker-manager`, systemd)도 같은 파일 안에서 파생한다(2026-10-17 NH-6): 선언된 모든 호스트마다
+  static_config 하나(R1 주소·`host` label), 포트는 `deploy/systemd/ktdm-backend.service`의 `ExecStart … --port`, 경로는 backend `/metrics` route
+- **사본**: `config/prometheus/prometheus.yml` — 손으로 쓴 job은 없다
 - **사본이 필요한 이유**: Prometheus는 정적 파일만 읽는다
 - **결박**: `backend/tests/test_prometheus_targets_are_derived.py` — 파생 == 파일(`test_prometheus_targets_are_the_registry_derivation`),
-  target 이동·포트·경로 변경·세 번째 호스트가 빨갛다
+  target 이동·포트·경로 변경·세 번째 호스트가 빨갛다. 손 job 추가는 `test_no_job_in_the_file_is_hand_written`, 호스트 누락은
+  `test_the_manager_job_has_one_static_config_per_declared_host`, unit 포트 변경은 `test_the_manager_port_comes_from_the_backend_unit`이 빨갛다. 설치기 health 확인과 `main.py` dev 진입점의
+  하드코딩 포트가 unit과 다르면 `test_every_hard_coded_backend_port_is_the_unit_port`, unit에 `--port`가 둘이면
+  `test_a_unit_with_two_ports_is_rejected`가 빨갛다
 
 ### B-9. 교차 호스트 `depends_on` 간선 ∅
 
@@ -166,7 +174,7 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   있어야 `hba_file`·`config_file` 같은 이름을 막는다
 - **결박**: `test_f1d_compose_contract.py::test_the_canonical_shared_postgres_runtime_shape_passes` — raw compose의
   공용 서비스를 C6c 검사기 자체에 통과시키고(목록을 테스트에 다시 적지 않는다), 허용 목록 밖의 GUC 하나를 더한 대조군이
-  거부되는지 함께 본다. compose에만 이름을 더하면 빨강(2026-10-13 `max_locks_per_transaction`으로 확인)
+  거부되는지 함께 본다. compose에만 이름을 더하면 빨강(2026-10-13 `max_locks_per_transaction`으로 확인). 2026-10-16(T-MGR-03) 서버 기본값 6키(`max_parallel_workers`·`_per_gather`·`effective_io_concurrency`·`checkpoint_timeout`·`wal_compression`·`autovacuum_max_workers`)를 더했고, 같은 검사기의 최상위 키 허용 목록(`_POSTGRES_ALLOWED_SERVICE_KEYS`)에 `mem_limit`·`memswap_limit`·`oom_score_adj`를 더했다(CI가 빨강으로 잡았다)
 
 ---
 

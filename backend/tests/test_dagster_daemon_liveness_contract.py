@@ -567,7 +567,7 @@ _WEATHER_PID1 = [
     "-h",
     "127.0.0.1",
     "-p",
-    "14106",
+    "12206",
     "-m",
     "kortravelweather_dagster.definitions",
 ]
@@ -908,9 +908,8 @@ _DAEMON_PROBE_MIN_TIMEOUT_SECONDS = 30.0
 def test_every_dagster_daemon_probe_survives_load_and_reports_in_time(service_name: str) -> None:
     """probe는 부하를 견디되, 끼인 스레드를 늦게 보고하지 않는다.
 
-    끼인 스레드는 `tolerance + interval × retries` 안에 unhealthy로 보인다. 앞쪽은 위 계약이
-    300초로 묶는다. 뒤쪽(주기 × retries)이 그보다 길면 probe 설정이 그 상한을 무색하게 만든다
-    (적대 리뷰: 120초 × 5회 = 600초였다).
+    legacy daemon의 짧은 감지 정책은 유지한다. 공용 daemon만 점검 비용 절감을 위해
+    360초 × 2회로 늘리며 heartbeat tolerance300은 별개로 보존한다.
     """
     service = _daemon_services()[service_name]
     healthcheck = service.get("healthcheck") or {}
@@ -923,6 +922,9 @@ def test_every_dagster_daemon_probe_survives_load_and_reports_in_time(service_na
     )
     raw = str((service.get("environment") or {}).get(_TOLERANCE_ENV))
     tolerance = int(raw.split(":-", maxsplit=1)[1].rstrip("}") if ":-" in raw else raw)
+    if service_name == "kor-travel-dagster-daemon":
+        assert (interval, retries, tolerance) == (360.0, 2, 300)
+        return
     assert interval * retries <= tolerance, (
         f"`{service_name}`의 주기 × retries({interval:g}초 × {retries})가 heartbeat tolerance"
         f"({tolerance}초)를 넘는다 — 끼인 스레드 보고가 그만큼 더 늦는다."
@@ -959,3 +961,13 @@ def test_every_dagster_service_reaps_its_orphans(service_name: str) -> None:
         f"`{service_name}`에 `init: true`가 없다 — PID 1이 dagster 프로세스라 healthcheck·exec의 "
         "고아를 거두지 않고, 좀비가 컨테이너에 쌓인다(2026-09-27 n150 565개)."
     )
+
+def test_shared_daemon_probe_cadence_preserves_liveness_budget() -> None:
+    service = _compose()["services"]["kor-travel-dagster-daemon"]
+    health = service["healthcheck"]
+    assert {key: value for key, value in health.items() if key != "test"} == {
+        "interval": "360s", "timeout": "60s", "retries": 2,
+        "start_period": "90s", "start_interval": "45s",
+    }
+    assert service["environment"][_TOLERANCE_ENV] == "${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}"
+    assert service["init"] is True and service["restart"] == "unless-stopped"

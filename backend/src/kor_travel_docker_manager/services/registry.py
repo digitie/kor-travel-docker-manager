@@ -518,18 +518,32 @@ _ADDRESS_PROBE_CACHE: Final = _local_ipv4_addresses
 
 
 def target_hosts(target: str, config: Mapping[str, Any] | None = None) -> frozenset[str]:
-    """target 직접 소유 호스트. depends_on은 소유권을 다른 호스트로 넓히지 않는다."""
+    """target 직접 소유 호스트. depends_on은 소유권을 다른 호스트로 넓히지 않는다.
+
+    `host:`는 선언된 호스트 이름 하나, 그 목록(`[n150, odroid]`), 또는 `all`이다. 목록은 어느 target에나 허용된다 —
+    소비자 origin(R2)을 가진 target이면, **그 목록 밖 호스트의 소비자**에게 origin이 하나로 풀리지 않아
+    `consumer_origins`가 "several hosts"로 거부한다(목록 안 호스트의 소비자는 loopback). v2에서는 **생략할 수 없다**(T-MGR-NH NH-1) — 암묵 default는 호스트를 더할 때 조용히
+    한 호스트에 묶인다. v1 개발 fixture는 호스트 차원이 없어 단일 `local`이다.
+    """
     config = load_targets_config() if config is None else config
     hosts = _host_specs(config)
     spec = config["targets"][target]
-    name = spec.get("host", default_host(config))
-    if not isinstance(name, str):
-        raise TargetsConfigError(f"targets.{target}.host must be a declared host name")
+    if "host" not in spec:
+        if config.get("version", 1) == 1:
+            return frozenset(hosts)
+        raise TargetsConfigError(f"targets.{target}.host is required (a declared host name, a list of them, or all)")
+    name = spec["host"]
     if name == "all":
         return frozenset(hosts)
-    if name not in hosts:
-        raise TargetsConfigError(f"targets.{target}.host: unknown host")
-    return frozenset({name})
+    names = name if isinstance(name, list) else [name]
+    if not names or any(not isinstance(item, str) for item in names) or len(set(names)) != len(names):
+        raise TargetsConfigError(
+            f"targets.{target}.host must be a declared host name, a non-empty list of distinct names, or all"
+        )
+    unknown = sorted(set(names) - set(hosts))
+    if unknown:
+        raise TargetsConfigError(f"targets.{target}.host: unknown host {', '.join(unknown)}")
+    return frozenset(names)
 
 
 def container_hosts(container_id: str, config: Mapping[str, Any] | None = None) -> frozenset[str]:
@@ -779,15 +793,23 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
                     f"{label} containers.{container_id}: missing required field '{field}'"
                 )
         metrics_path = spec.get("metrics_path")
+        metrics_port = spec.get("metrics_port")
+        if metrics_port is not None and (
+            type(metrics_port) is not int or not 0 < metrics_port < 65536 or metrics_path is None
+        ):
+            raise TargetsConfigError(
+                f"{label} containers.{container_id}.metrics_port: must be a port number next to metrics_path"
+            )
         if metrics_path is not None and (
             not isinstance(metrics_path, str)
             or not metrics_path.startswith("/")
-            or HOST_URL.fullmatch(str(spec.get("connection"))) is None
+            or (metrics_port is None and HOST_URL.fullmatch(str(spec.get("connection"))) is None)
         ):
-            # 수집 대상은 `scheme://{host}:<port>` connection의 그 포트다(Prometheus 타깃 파생, T-MGR-04).
+            # 수집 대상은 `scheme://{host}:<port>` connection의 그 포트다(Prometheus 타깃 파생, T-MGR-04). metrics가
+            # 다른 포트에서 나오면(gRPC code-server의 prometheus_client 서버 등) `metrics_port`로 준다(T-MGR-04r).
             raise TargetsConfigError(
                 f"{label} containers.{container_id}.metrics_path: must start with / on a "
-                "scheme://{host}:<port> connection"
+                "scheme://{host}:<port> connection (or give metrics_port)"
             )
 
     seen_aliases: dict[str, str] = {}
@@ -978,7 +1000,7 @@ def _target_details(
     return {
         "id": name,
         **spec,
-        "host": spec.get("host", default_host(config)),
+        "host": spec.get("host", default_host(config)),  # v1 fixture만 생략한다(호스트 차원 없음)
         "resolved_sequence": sequence,
         "resolved_services": _dedupe([
             service for owner in sequence for service in targets[owner].get("services", [])
@@ -1052,6 +1074,7 @@ _ALLOWED_CONTAINER_FIELDS: Final = frozenset(
         "expected_ports",
         "external_project",
         "metrics_path",
+        "metrics_port",
     }
 )
 

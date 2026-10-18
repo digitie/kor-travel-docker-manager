@@ -548,3 +548,249 @@ def test_the_pre_flip_validate_names_every_consumer_origin_override(tmp_path: Pa
     assert "identify this host" not in completed.stderr
     assert [v for v in variables if v not in completed.stderr] == []
     assert "10.9.9.9" not in completed.stderr  # 재정의된 값은 싣지 않는다
+
+
+# --- 2026-10-17 T-MGR-NH NH-4 리뷰 OS-1: 떠 있는 plane의 workspace bind 파일이 새 release에 있어야 한다 -----------
+
+
+def _plane_binds_block() -> str:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    return text[text.index("# >>> plane-binds") : text.index("# <<< plane-binds")]
+
+
+def test_plane_binds_runs_before_anything_is_flipped() -> None:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    assert text.index("# <<< host-identity") < text.index("# >>> plane-binds") < text.index("install -T -o root -g root")
+    assert text.index("# >>> plane-binds") < text.index('ln -sfn "${NAME}" "${APP}.new"')
+
+
+def _run_plane_binds(
+    tmp_path: Path,
+    mounted: str,
+    shipped: list[str],
+    root: str | None = None,
+    info_exit: int = 0,
+    current_ships: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[str]:
+    """가짜 docker: `info`는 `info_exit`, `ps -aq`는 컨테이너 하나(`-a` 없이 부르면 빈 목록 — 멈춘 plane을 놓친다),
+    `inspect`는 그 workspace bind source 한 줄."""
+    release = tmp_path / "release"
+    (release / "config" / "dagster-shared").mkdir(parents=True, exist_ok=True)
+    for name in shipped:
+        (release / "config" / "dagster-shared" / name).write_text("load_from: []\n", encoding="utf-8")
+    # 지금 설치된 release(APP) — 전환 판정이 본다.
+    current = tmp_path / "current"
+    (current / "config" / "dagster-shared").mkdir(parents=True, exist_ok=True)
+    for name in current_ships:
+        (current / "config" / "dagster-shared" / name).write_text("load_from: []\n", encoding="utf-8")
+    root = str(current) if root is None else root
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        f"  info) exit {info_exit} ;;\n"
+        '  ps) [ "$2" = "-aq" ] && printf "gone\\nabc123\\n" ;;\n'
+        f'  inspect) [ "$4" = gone ] && exit 1; echo {root}/config/dagster-shared/{mounted} ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    script = (
+        "set -euo pipefail\n"
+        'die() { echo "$1" >&2; exit 126; }\n'
+        f'REL="{release}"\nAPP={current}\nplane_rebind=""\n' + _plane_binds_block()
+        + 'echo "PASSED rebind=${plane_rebind}"\n'
+    )
+    environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False, env=environment)
+
+
+def test_plane_binds_refuses_a_workspace_the_new_release_does_not_ship(tmp_path: Path) -> None:
+    refused = _run_plane_binds(tmp_path, "workspace.yaml", ["workspace.n150.yaml", "workspace.odroid.yaml"])
+    assert refused.returncode == 126 and "PASSED" not in refused.stdout
+    assert "binds config/dagster-shared/workspace.yaml," in refused.stderr
+    assert "dagster-plane converge --dry-run" in refused.stderr and "--confirm" in refused.stderr
+
+
+def test_plane_binds_passes_a_host_workspace_the_new_release_ships(tmp_path: Path) -> None:
+    passed = _run_plane_binds(tmp_path, "workspace.n150.yaml", ["workspace.n150.yaml", "workspace.odroid.yaml"])
+    assert passed.returncode == 0 and "PASSED" in passed.stdout, passed.stderr
+
+
+def test_plane_binds_ignores_planes_outside_this_install_root(tmp_path: Path) -> None:
+    # 같은 호스트의 격리 테스트 plane(다른 체크아웃의 bind)은 이 release와 무관하다.
+    ignored = _run_plane_binds(tmp_path, "workspace.yaml", ["workspace.n150.yaml"], root="/home/someone/checkout")
+    assert ignored.returncode == 0 and "PASSED" in ignored.stdout, ignored.stderr
+
+
+def test_plane_binds_compares_the_path_relative_to_the_install_root(tmp_path: Path) -> None:
+    # basename이 아니라 설치 root 기준 상대경로로 대조한다 — 같은 이름이 다른 디렉터리에 있어도 통과하지 않는다.
+    release = tmp_path / "release"
+    (release / "config" / "elsewhere").mkdir(parents=True)
+    (release / "config" / "elsewhere" / "workspace.yaml").write_text("load_from: []\n", encoding="utf-8")
+    refused = _run_plane_binds(tmp_path, "workspace.yaml", [])
+    assert refused.returncode == 126 and "binds config/dagster-shared/workspace.yaml," in refused.stderr
+
+
+def test_plane_binds_refuses_when_docker_does_not_answer(tmp_path: Path) -> None:
+    refused = _run_plane_binds(tmp_path, "workspace.n150.yaml", ["workspace.n150.yaml"], info_exit=1)
+    assert refused.returncode == 126 and "docker daemon did not answer" in refused.stderr
+
+
+def test_plane_binds_lets_the_one_alias_transition_through_and_says_to_converge(tmp_path: Path) -> None:
+    # 지금 설치된 release에는 그 파일이 있다(옛 별칭) — 옛 converge는 bind 차이를 못 봐서 설치 전에 고칠 길이 없다. 거부하지 않고
+    # 기록하며, 새 release의 converge를 바로 돌리라고 말한다.
+    passed = _run_plane_binds(
+        tmp_path, "workspace.yaml", ["workspace.n150.yaml"], current_ships=("workspace.yaml", "workspace.n150.yaml")
+    )
+    assert passed.returncode == 0, passed.stderr
+    assert "PASSED rebind=config/dagster-shared/workspace.yaml" in passed.stdout
+    assert "dagster-plane converge --dry-run" in passed.stderr and "right after this install" in passed.stderr
+
+
+def test_the_install_success_message_names_the_pending_converge() -> None:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    installed = text.index('echo "installed ${SHA} (previous: ${PREV#ktdm-release-})"')
+    reminder = text.index('NEXT: the shared Dagster plane still binds ${plane_rebind}')
+    cleanup = text.index('rm -rf -- "${old}"', installed)
+    # 성공 경로의 stdout 마지막 줄: 옛 release 정리 뒤, `exit 0` 바로 앞, stderr가 아니다.
+    assert installed < cleanup < reminder < text.index("exit 0", installed)
+    line = text[text.rindex("\n", 0, reminder) + 1 : text.index("\n", reminder)]
+    assert ">&2" not in line
+    assert text.index('plane_rebind=""') < text.index("# >>> plane-binds")
+
+
+def test_plane_binds_refuses_a_file_neither_release_ships(tmp_path: Path) -> None:
+    refused = _run_plane_binds(tmp_path, "workspace.yaml", ["workspace.n150.yaml"], current_ships=("workspace.n150.yaml",))
+    assert refused.returncode == 126 and "PASSED" not in refused.stdout
+    assert (
+        "running Dagster plane binds config/dagster-shared/workspace.yaml, which neither the current nor the new release ships"
+        in refused.stderr
+    )
+
+
+def test_plane_binds_refuses_an_empty_directory_left_in_the_current_release(tmp_path: Path) -> None:
+    # docker가 없는 bind source를 디렉터리로 만들어 둔 경우 — 파일이 아니므로 전환 허용 대상이 아니다.
+    (tmp_path / "current" / "config" / "dagster-shared" / "workspace.yaml").mkdir(parents=True)
+    refused = _run_plane_binds(tmp_path, "workspace.yaml", ["workspace.n150.yaml"])
+    assert refused.returncode == 126 and "which neither the current nor the new release ships" in refused.stderr
+
+
+# --- 2026-10-17: release root를 설치 root symlink에서 정한다(데이터 디스크에 release를 두는 호스트) ---------------
+
+
+def _release_root_block() -> str:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    return text[text.index("# >>> release-root") : text.index("# <<< release-root")]
+
+
+def _run_release_root(tmp_path: Path, target: str, *, app_dir: Path | None = None) -> subprocess.CompletedProcess[str]:
+    """release-root 구획만 돌린다. `stat` shim이 `tmp_path` 밖은 root 소유·0755로, 안은 root 소유·실제 mode로 보여 준다 —
+    테스트는 root가 아니라서 소유자는 흉내 내고, mode(group/other 쓰기)·symlink·정규화 검사는 실제 파일로 본다."""
+    app = (app_dir or (tmp_path / "opt")) / "kor-travel-docker-manager"
+    app.parent.mkdir(parents=True, exist_ok=True)
+    app.symlink_to(target)
+    shim = tmp_path / "shim"
+    shim.mkdir(exist_ok=True)
+    real_stat = subprocess.run(["bash", "-c", "command -v stat"], capture_output=True, text=True).stdout.strip()
+    (shim / "stat").write_text(
+        "#!/bin/bash\n"
+        'fmt="$2"; path="$3"\n'
+        'if [[ "$fmt" == "%u" ]]; then echo 0; exit 0; fi\n'
+        f'if [[ "$path" == "{tmp_path}"* ]]; then exec {real_stat} "$@"; fi\n'
+        "echo 755\n",
+        encoding="utf-8",
+    )
+    (shim / "stat").chmod(0o755)
+    script = (
+        "set -euo pipefail\n"
+        'die() { echo "$1" >&2; exit 126; }\n'
+        f'export PATH="{shim}:$PATH"\n'
+        f'APP="{app}"\n' + _release_root_block() + 'echo "ROOT=${RELEASE_ROOT}"\n'
+    )
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+
+
+def _trusted(tmp_path: Path, *parts: str) -> Path:
+    path = tmp_path.joinpath(*parts)
+    path.mkdir(parents=True, exist_ok=True)
+    for node in [tmp_path, *path.relative_to(tmp_path).parents, path.relative_to(tmp_path)]:
+        (tmp_path / node).chmod(0o755)
+    return path
+
+
+def test_an_absolute_symlink_puts_releases_under_its_parent(tmp_path: Path) -> None:
+    root = _trusted(tmp_path, "srv", "ktdm-releases")
+    _trusted(tmp_path, "opt")
+    passed = _run_release_root(tmp_path, f"{root}/ktdm-release-" + "a" * 40)
+    assert passed.returncode == 0, passed.stderr
+    assert passed.stdout.splitlines()[-1] == f"ROOT={root}"
+
+
+def test_a_group_writable_release_root_is_refused(tmp_path: Path) -> None:
+    root = _trusted(tmp_path, "srv", "ktdm-releases")
+    _trusted(tmp_path, "opt")
+    root.chmod(0o775)
+    refused = _run_release_root(tmp_path, f"{root}/ktdm-release-" + "a" * 40)
+    assert refused.returncode == 126 and "release root must be a root-owned directory chain" in refused.stderr
+
+
+def test_a_symlink_inside_the_release_root_path_is_refused(tmp_path: Path) -> None:
+    real = _trusted(tmp_path, "data", "releases")
+    _trusted(tmp_path, "opt")
+    (tmp_path / "srv").symlink_to(real.parent)
+    refused = _run_release_root(tmp_path, f"{tmp_path}/srv/releases/ktdm-release-" + "a" * 40)
+    assert refused.returncode == 126 and "release root must be a canonical directory" in refused.stderr
+
+
+@pytest.mark.parametrize("shape", ["srv/ktdm-releases/../ktdm-releases", "srv/./ktdm-releases", "srv//ktdm-releases"])
+def test_an_uncanonical_release_root_is_refused(tmp_path: Path, shape: str) -> None:
+    _trusted(tmp_path, "srv", "ktdm-releases")
+    _trusted(tmp_path, "opt")
+    refused = _run_release_root(tmp_path, f"{tmp_path}/{shape}/ktdm-release-" + "a" * 40)
+    assert refused.returncode == 126 and "release root must be a canonical directory" in refused.stderr, refused.stdout
+
+
+def test_the_filesystem_root_is_not_a_release_root(tmp_path: Path) -> None:
+    _trusted(tmp_path, "opt")
+    refused = _run_release_root(tmp_path, "/ktdm-release-" + "a" * 40)
+    assert refused.returncode == 126 and "other than /" in refused.stderr
+
+
+def test_a_symlink_target_with_unexpected_characters_is_refused(tmp_path: Path) -> None:
+    root = _trusted(tmp_path, "srv", "ktdm-releases")
+    _trusted(tmp_path, "opt")
+    refused = _run_release_root(tmp_path, f"{root}/ktdm-release-a b")
+    assert refused.returncode == 126 and "unexpected characters" in refused.stderr
+
+
+def test_the_install_root_directory_is_checked_too(tmp_path: Path) -> None:
+    root = _trusted(tmp_path, "srv", "ktdm-releases")
+    opt = _trusted(tmp_path, "opt")
+    opt.chmod(0o777)
+    refused = _run_release_root(tmp_path, f"{root}/ktdm-release-" + "a" * 40)
+    assert refused.returncode == 126 and "install root directory must be a root-owned directory chain" in refused.stderr
+
+
+def test_a_relative_symlink_keeps_the_release_root_next_to_the_install_root(tmp_path: Path) -> None:
+    # 종전 동작: 상대 symlink면 설치 root와 같은 디렉터리.
+    opt = _trusted(tmp_path, "opt")
+    passed = _run_release_root(tmp_path, "ktdm-release-" + "a" * 40)
+    assert passed.returncode == 0, passed.stderr
+    assert passed.stdout.splitlines()[-1] == f"ROOT={opt}"
+
+
+def test_the_flip_keeps_relative_links_for_opt_and_absolute_links_elsewhere() -> None:
+    text = _INSTALLER.read_text(encoding="utf-8")
+    flip = text[text.index('if [[ "${RELEASE_ROOT}" == "$(dirname -- "${APP}")" ]]; then') :]
+    assert flip.index('ln -sfn "${NAME}" "${APP}.new"') < flip.index('ln -sfn "${REL}" "${APP}.new"')
+    # GC는 release root 안에서만 돈다 — 그 밖의 경로를 지우는 줄이 없다.
+    assert 'for old in "${RELEASE_ROOT}"/ktdm-release-*; do' in text
+    assert '[[ "${old}" == "${REL}" || "${old}" == "${RELEASE_ROOT}/${PREV}" ]]' in text
+    assert "/opt/ktdm-release-*" not in text
+    assert [line for line in text.splitlines() if "rm -rf --" in line] == [
+        '  rm -rf -- "${REL}"',
+        '          || { rm -f -- "${old}/.ktdm-source-revision"; rm -rf -- "${old}"; }',
+    ]

@@ -3,7 +3,7 @@
 정본은 둘이다. `config/docker-targets.yml`의 target별 `dagster.control_plane`(`own`|`shared`)이 스위치이고,
 `docker-compose.yml`이 그 스위치가 렌더된 모양이다. 나머지는 파생물이다.
 
-- **workspace** — `config/dagster-shared/workspace.yaml`은 `shared` target의 code-server command(`-p`·`-m`,
+- **workspace** — `config/dagster-shared/workspace.<default 호스트>.yaml`은 `shared` target의 code-server command(`-p`·`-m`,
   `--location-name`)에서 만든다. 파일이 파생과 다르면 빨개지고, 넣어야 할 내용 전체를 보여 준다.
 - **G3-b** — workspace의 `location_name`마다 공용 `dagster.yaml`에 `dagster/code_location` 상한이 있고,
   `shared` target의 location은 전부 workspace에 있다. 이름이 어긋나면 그 location의 상한이 조용히 사라진다.
@@ -868,7 +868,7 @@ def test_the_workspace_file_is_the_derivation() -> None:
     derived = _derived_workspace(compose, targets)
     actual = load_yaml_rejecting_duplicate_keys(_WORKSPACE.read_text(encoding="utf-8"))
     assert actual == derived, (
-        "공용 workspace가 파생과 다르다. `config/dagster-shared/workspace.yaml`의 본문을 이것으로:\n"
+        f"공용 workspace가 파생과 다르다. `{_WORKSPACE_SOURCE}`의 본문을 이것으로:\n"
         + yaml.safe_dump(derived, sort_keys=False)
     )
 
@@ -917,7 +917,7 @@ def test_bringing_a_moved_target_back_drifts_the_workspace(target_id: str) -> No
     """빨간 대조군 — registry에서 `host:`를 지우면(n150으로 되돌리면) 파생이 그 location을 싣고 커밋된 파일과 갈린다."""
 
     compose, targets = _documents()
-    targets["targets"][target_id].pop("host")
+    targets["targets"][target_id]["host"] = default_host(targets)
     derived = _derived_workspace(compose, targets)
     names = {e["grpc_server"]["location_name"] for e in derived["load_from"]}
     assert _location_of(compose, targets, target_id) <= names
@@ -1306,7 +1306,7 @@ def test_flipping_an_external_target_adds_exactly_its_declared_location() -> Non
     compose, targets = _documents()
     for target_id in _external_dagster_targets():
         # 합류 기제를 본다 — plane 호스트에 있는 형제로(odroid로 옮긴 transport는 `host:`를 지워 n150에 둔다).
-        targets["targets"][target_id].pop("host", None)
+        targets["targets"][target_id]["host"] = default_host(targets)
         targets["targets"][target_id]["dagster"]["control_plane"] = "own"
         before = _derived_workspace(compose, targets)["load_from"]
         files = _flip_external(targets, compose, target_id)
@@ -1324,7 +1324,7 @@ def test_an_external_target_on_the_plane_without_its_workspace_entry_or_cap_is_n
 
     compose, targets = _documents()
     for target_id in _external_dagster_targets():
-        targets["targets"][target_id].pop("host", None)  # plane 호스트의 형제로(위 테스트와 같은 이유)
+        targets["targets"][target_id]["host"] = default_host(targets)  # plane 호스트의 형제로(위 테스트와 같은 이유)
         targets["targets"][target_id]["dagster"]["control_plane"] = "shared"
         location, _ = _external_location(targets["targets"][target_id]) or ("", 0)
         workspace = _derived_workspace(compose, targets)

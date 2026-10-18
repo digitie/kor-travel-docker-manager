@@ -285,14 +285,22 @@ compose를 스캔해 이 집합을 찾는다(줄 번호 열거 금지). root `.e
 없이 의존 closure를 올리므로(`compose_service.py:3572-3589,3714-3719`) 간선이 남으면 geo 플립 뒤 n150 `ensure map`이 geo-api를 n150에
 되살린다.
 
-**`ensure` 프리플라이트(T-MGR-05).** 이미지 `.Architecture` == 호스트 arch(amd64 이미지를 arm64 호스트에 올리면 거부);
-`KTDM_DATA_SOURCE_DEVICE`가 설정돼 있으면 bind 경로마다 `findmnt -T <경로> -o SOURCE`가 그 장치인지(미설정이면 생략 — n150 무변경);
-`docker compose config` 렌더 성공(compose 플러그인 부재는 여기서 드러난다 — `backend/tests/test_compose_readiness_integration.py:78`의
-`compose version`보다 효과가 앞선다).
+**`ensure` 프리플라이트(T-MGR-05, 2026-10-16 구현 — `services/ensure_preflight.py`).** `up` 전에, `ensure`의 transaction이 이미
+`docker compose config --format json`으로 해석한 문서에서 올릴 서비스(+`run` init step one-shot)를 보고 셋을 효과로 확인한다.
+(1) **렌더 성공**: 그 해석 자체 — compose 플러그인 부재·렌더 실패면 `compose candidate resolution failed`로 프리플라이트 전에
+멈춘다(새로 만든 검사가 아니라 순서만 테스트로 고정). (2) **이미지 arch**: 로컬에 있는 이미지의 `.Architecture` == `docker info`의
+`Architecture`(x86_64→amd64·aarch64→arm64로 맞춤; 로컬에 없는 이미지는 빌드·pull이 호스트 플랫폼을 고르므로 보지 않는다).
+(3) **쓰기 bind 장치**: root `.env`의 `KTDM_DATA_SOURCE_DEVICE`가 설정됐을 때만, 쓰기 가능 bind 소스마다 `findmnt -n -T <경로>
+-o SOURCE`의 장치(`[…]` 앞)가 그 값(읽기 전용 bind — 설정 파일 — 는 보지 않는다; 없는 경로는 가장 가까운 조상). 미설정이면
+`findmnt`를 부르지 않는다 — n150 무변경(설치본 렌더 43 서비스로 실측 통과).
 
-**`targets validate --json` 출력(초안).** `{"ok": bool, "host": "<KTDM_HOST 또는 default>", "targets": {"<id>": {"host": "<hosts 키|all>",
-"local": bool}}, "errors": [...]}` — transport 저장소의 배포 스크립트가 `targets.transport.host == <addr의 키>`를 효과로 읽는다. 스키마는
-T-MGR-01a에서 확정한다.
+**`targets validate --json` 출력.** 현재 성공 응답의 `status: "ok"`·`host`·`targets.<id>.host`를 보존한다.
+여기에 `hosts.<key>.addr`를 추가해, Transport 배포 검증이 target의 호스트 키와 실제 registry 선언 주소를
+함께 대조할 수 있도록 한다. 주소는 검증된 registry `hosts:`에서 그대로 투영하며 DNS 조회나 원격 연결을 하지 않는다.
+각 호스트는 `{"addr": "<IPv4>"}`만 출력하고 `default`·SSH 옵션·인증 정보나 target의 다른 설정은 복사하지 않는다.
+호스트 선언이 없는 옛 v1 개발 fixture에서는 `hosts: {}`이며 기존 `host: "local"`·target 출력은 유지한다.
+일반 텍스트 성공 출력은 기존 `OK`다. 실패 시 기존 stderr/종료 코드 동작도 바꾸지 않는다. 실제 주소가 이 장비에
+할당되었는지에 대한 운영 자기 식별과 `--check-coordinates` 검사는 기존 경계를 그대로 사용한다.
 
 **호스트 차이는 root `.env`뿐이다(R6).** compose 파일은 하나. odroid `.env`에만 있는 키(예정, 값은 T-MGR-02/03/05에서 추가):
 `KTDM_HOST`, `KTDM_DAGSTER_WORKSPACE_DIGEST`, `KTDM_POSTGRES_IMAGE`/`KTDM_POSTGRES_CLIENT_IMAGE`, `KTDM_PG_*` 튜닝, `KTDM_DATA_SOURCE_DEVICE`,
@@ -1990,7 +1998,7 @@ Map 원장 `T-VN-H49-{GEO-DAGSTER,CONCIERGE,PINVI}`의 마지막 해제 조건�
 
 Weather API 이미지는 먼저 Common의 kortravelcommon.http_health CLI를 포함해야 한다.
 이 선언은 이미지에 모듈을 설치하지 않으며 구 이미지의 module missing은 unhealthy다.
-python -m kortravelcommon.http_health --port <API 포트> --timeout-seconds 3은
+python -I -m kortravelcommon.http_health --port <API 포트> --timeout-seconds 3은
 IPv4 loopback의 /health에 GET 한 번을 보내 완전한 2xx 헤더만 수용한다.
 redirect·401/503·잘못된 헤더·시간 초과는 실패이며 proxy·재시도·본문 검증은 하지 않는다.
 데이터 최신성·DB/provider readiness나 복구 동작을 보장하는 점검은 아니다.
@@ -1998,12 +2006,17 @@ redirect·401/503·잘못된 헤더·시간 초과는 실패이며 proxy·재시
 API command의 listen 포트, 포트 매핑, probe는 모두 KOR_TRAVEL_WEATHER_API_PORT에서
 유도하고 개발 기본값은 그대로다. 별도 운영 override가 있으면 세 값이 같아야 한다.
 Docker timeout은 Python 시작 비용을 포함한 12초, HTTP 내부 예산은 3초다.
-주기는 30초, retries는 4로 바꿔 interval×retries의 명목 실패 창 120초를 유지한다.
+주기는 승인된 3배 점검 주기인 90초를 유지하고 retries는 4다. 명목 실패 창은 360초다.
 실제 탐지 시간은 probe 실행 시간·Docker scheduling·기존 start period에도 의존하므로
-정확히 120초라는 보장이 아니다. start period와 다른 서비스·Geo 튜닝은 바꾸지 않는다.
+정확히 360초라는 보장이 아니다. start period와 다른 서비스·Geo 튜닝은 바꾸지 않는다.
 
 운영 단일 표본은 빈 Python 2.454초/CPU 0.507초, urllib probe 9.693초/CPU 2.910초,
 Common CLI 7.789초/CPU 1.520초였다. urllib import 5.644초와 HTTP200 0.547초가
 관측되어 HTTP만의 문제가 아님을 확인했다. 통제된 전후 실험이나 절감률은 아니며
 12초도 모든 CPU 포화에서 성공을 보장하지 않는다. 이 제품 변경의 운영 적용·native health·
 live API/UI 및 같은 workload의 효과 확인은 별도다. healthy 판정 기준을 완화하지 않는다.
+
+
+## 상태 점검 간격 정합
+
+서비스별 승인 간격과 적용 경계는 [배포 상태 점검 간격 정합](health-cadence.md)을 따른다. 기존 Test와 readiness 계약은 유지하며, Compose 파일 저장만으로 실행 중인 healthcheck가 바뀌었다고 판단하지 않는다.
