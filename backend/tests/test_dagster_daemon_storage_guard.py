@@ -123,7 +123,10 @@ def _guard_source(command: list[str]) -> str:
 
 #: argv로 넘기는 형태(공용 plane, ADR-54): `sh -ec <가드> sh <argv...>`의 가드가 `exec "$$@"`로 끝난다.
 _ARGV_HANDOFF: Final = 'exec "$$@"'
-_HANDED_OFF_PROGRAMS: Final = ("dagster-daemon", "dagster-webserver")
+_HANDED_OFF_PROGRAMS: Final = (
+    "dagster-daemon", "kor-travel-dagster-daemon",
+    "dagster-webserver", "kor-travel-dagster-webserver",
+)
 
 
 def _hands_off(command: list[str]) -> bool:
@@ -131,6 +134,26 @@ def _hands_off(command: list[str]) -> bool:
     if _HANDOFF in script:
         return True
     return _ARGV_HANDOFF in script and any(p in command[3:] for p in _HANDED_OFF_PROGRAMS)
+
+
+@pytest.mark.parametrize(
+    ("program", "expected"),
+    [
+        ("dagster-daemon", True),
+        ("kor-travel-dagster-daemon", True),
+        ("dagster-webserver", True),
+        ("kor-travel-dagster-webserver", True),
+        ("prefix-kor-travel-dagster-webserver", False),
+        ("kor-travel-dagster-webserver-other", False),
+        ("unrelated-daemon", False),
+        ("prefix-kor-travel-dagster-daemon", False),
+        ("kor-travel-dagster-daemon-other", False),
+    ],
+)
+def test_guard_argv_handoff_recognizes_only_official_programs(program: str, expected: bool) -> None:
+    """Common wrapper도 원본 guard를 거치며, 비슷한 문자열은 대신 인정하지 않는다."""
+
+    assert _hands_off(["sh", "-ec", 'python -c \'guard\' && exec "$$@"', "sh", program, "run"]) is expected
 
 
 def _guarded_daemons() -> dict[str, str]:

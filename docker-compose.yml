@@ -15,7 +15,7 @@ name: kor-travel-docker-manager
 #   `backend/tests/test_dagster_shared_config.py`가 둘(과 백업 role)을 대조한다.
 # - 비밀번호가 URL에 그대로 들어가므로 URI unreserved 문자만 쓴다(db-init이 거부한다).
 x-dagster-shared-control-env: &dagster-shared-control-env
-  KOR_TRAVEL_DAGSTER_SHARED_PG_URL: postgresql+psycopg2://kor_travel_dagster_shared_app:${KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/dagster_shared
+  KOR_TRAVEL_DAGSTER_SHARED_PG_URL: &dagster-shared-pg-url postgresql+psycopg2://kor_travel_dagster_shared_app:${KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/dagster_shared
 
 # 공용 Dagster 호스트 서비스(daemon·webserver)의 기동 가드(ADR-54) — **잘못된 instance storage 위에서 뜨지
 # 않는다**(PinVi daemon과 같은 가드). `dagster.yaml` bind가 빠지면 Dagster는 `$DAGSTER_HOME` 아래 SQLite로
@@ -787,13 +787,13 @@ services:
   # (`config/docker-targets.yml`의 `dagster` target).
   #
   # 이미지 tag는 **내용 해시**다 — `latest-main`처럼 움직이는 이름이면 옛 이미지가 새 잠금본 행세를
-  # 하고, 두 호스트가 같은 tag로 다른 내용을 가진다. 값은 build context에서 이미지에 들어가는 네
+  # 하고, 두 호스트가 같은 tag로 다른 내용을 가진다. 값은 build context에서 이미지에 들어가는 다섯
   # 파일의 해시이고(재현: `cd docker/dagster-host && sha256sum Dockerfile build-bytecode.py
-  # requirements.txt storage-migrate.py | sha256sum | cut -c1-16`, Linux coreutils), 넷 중 하나를 고치면 이 tag를
+  # requirements.txt storage-migrate.py vendor/kor_travel_common-0.1.0.dev0-py3-none-any.whl | sha256sum | cut -c1-16`, Linux coreutils), 다섯 중 하나를 고치면 이 tag를
   # 바꿔야 한다 — `backend/tests/test_dagster_shared_config.py`가 대조한다. 새 tag는 호스트에 없으므로
   # 다음 `run`이 build context에서 만든다. env override는 두지 않는다(정본이 둘이 된다).
   kor-travel-dagster-storage-migrate:
-    image: kor-travel-dagster-host:b640a42276a1a39f
+    image: kor-travel-dagster-host:930a44266e814ab6
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_STORAGE_MIGRATE_CONTAINER:-kor-travel-dagster-storage-migrate}
@@ -832,7 +832,7 @@ services:
   # 둘 다 code-server에 `depends_on`하지 않는다 — 어느 code-server가 합류했는지는 workspace가
   # 말하고, 합류한 location이 떴는지는 두 probe가 본다(아래).
   kor-travel-dagster-daemon:
-    image: kor-travel-dagster-host:b640a42276a1a39f
+    image: kor-travel-dagster-host:930a44266e814ab6
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_DAEMON_CONTAINER:-kor-travel-dagster-daemon}
@@ -850,12 +850,14 @@ services:
     - -ec
     - *dagster-shared-storage-guard
     - sh
-    - dagster-daemon
+    - kor-travel-dagster-daemon
     - run
     - -w
     - /opt/dagster/dagster_home/workspace.yaml
     environment:
       <<: *dagster-shared-control-env
+      # 같은 원 URL을 daemon wrapper에만 제공한다. 다른 서비스의 URL은 원형이다.
+      KOR_TRAVEL_DAGSTER_DAEMON_POSTGRES_URL: *dagster-shared-pg-url
       DAGSTER_HOME: /opt/dagster/dagster_home
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
@@ -916,7 +918,7 @@ services:
   # - gRPC를 부르지 않는다 — `locationOrLoadError`·`dagsterLibraryVersions`는 webserver가 이미 들고 있는
   #   location 상태를 읽을 뿐 code-server에 닿지 않는다. 느린 code-server가 probe를 붙잡지 못한다.
   kor-travel-dagster-webserver:
-    image: kor-travel-dagster-host:b640a42276a1a39f
+    image: kor-travel-dagster-host:930a44266e814ab6
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-dagster-webserver}
@@ -933,7 +935,7 @@ services:
     - -ec
     - *dagster-shared-storage-guard
     - sh
-    - dagster-webserver
+    - kor-travel-dagster-webserver
     - -h
     - 127.0.0.1
     - -p
@@ -2434,8 +2436,8 @@ services:
     privileged: true
     devices:
     - /dev/kmsg:/dev/kmsg
-    # 부하 경감(2026-10-17 소유자 지시): 수집 주기 15s(기본 1s — env로 덮어쓸 수 있다)와 쓰지 않는 메트릭 끄기 —
-    # odroid 호스트 측 `compose-mon.yml`과 같은 목록이다. 디스크 순회(disk·diskIO)·상세 네트워크(tcp·udp)·percpu 등이 꺼지고
+    # 부하 경감: 운영 관측 이력은 30초이며, source 기본은 아래 15초/env 설정이다. 기본 제외 항목을 보존한다.
+    # 디스크 순회(disk·diskIO)·상세 네트워크(tcp·udp)·percpu 등을 끄고
     # 기본 cpu·memory·network rx/tx는 남는다. 저장소의 소비자는 중앙 Prometheus scrape뿐이다(rule·대시보드가 이 메트릭을
     # 쓰지 않는다 — Grafana에는 datasource만 있고, Manager 대시보드의 컨테이너 수치는 Docker stats API에서 온다).
     # #515·#516이 겹쳐 같은 flag가 두 번 들어갔다(Go flag는 마지막 값을 쓴다 — 기본 off 4항목이 다시 켜졌다). 한 벌로 합친다:
@@ -2823,6 +2825,11 @@ services:
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_METRICS_TOKEN: ${KOR_TRAVEL_WEATHER_METRICS_TOKEN:?set KOR_TRAVEL_WEATHER_METRICS_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+      KOR_TRAVEL_WEATHER_VWORLD_API_KEY: ${KOR_TRAVEL_WEATHER_VWORLD_API_KEY:-}
+      KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY: ${KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY:-}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED:-true}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE:-50}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS:-5}
       KOR_TRAVEL_WEATHER_CORS_ORIGINS: '${KOR_TRAVEL_WEATHER_CORS_ORIGINS:-["https://weather.digitie.mywire.org","http://127.0.0.1:${KOR_TRAVEL_WEATHER_WEB_PORT:-12205}"]}'
       KOR_TRAVEL_WEATHER_API_BASE_URL: ${KOR_TRAVEL_WEATHER_API_BASE_URL:-https://weather-api.digitie.mywire.org}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
@@ -2931,6 +2938,11 @@ services:
       PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+      KOR_TRAVEL_WEATHER_VWORLD_API_KEY: ${KOR_TRAVEL_WEATHER_VWORLD_API_KEY:-}
+      KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY: ${KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY:-}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED:-true}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE:-50}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS:-5}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
       KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
       KOR_TRAVEL_WEATHER_KREX_API_KEY: ${KOR_TRAVEL_WEATHER_KREX_API_KEY:-}
