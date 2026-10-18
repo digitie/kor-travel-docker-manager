@@ -162,3 +162,9 @@ rawYAML 대조이며 실제 Docker Compose 렌더/운영 provider 호출을 실�
 전체PASS로 세지 않는다. raw로그를 보존했고 전체표준CI/격리fixture 회귀는 root가 정산한다.
 env편집 준비의 AssertionError/StopIteration은 파일쓰기 전 검증에서 중단한 것으로,
 서비스 줄 시작을 정확히 고쳐 최종 전체모델 차이를 재확인했다.
+
+## 최종 Common38·41 소비 검토 정산
+
+제품bd8과 설명정정c654의 독립2리뷰 및 제품CI2SUCCESS는
+[원문·해시·범위](reviews/2026-10-18-common-union-consumer-closure/README.md)에 보존한다.
+기존 실패·격리·운영 NOT_RUN 한계를 유지하며 source 통과를 실제 이미지/서비스·성능 수용으로 바꾸지 않는다.

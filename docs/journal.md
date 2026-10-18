@@ -15,6 +15,12 @@
 
 ---
 
+## 2026-10-18 — PR513 최종 소비 리뷰·제품 CI 보존
+
+- bd8 전체 소비 리뷰와 c654 설명 정정 closure의 B/C 원문4개를 byte/SHA 그대로 보존했다. 두 Manager 독립 판정은 열린 P0–P3=0이며 Common 작성자 역할과 Manager 소비 판정의 경계를 명시한다.
+- exact bd8 backend/frontend CI2SUCCESS를 별도 JSON으로 보존했다. 작성자·독립·CI 수를 합산하지 않으며 기존 준비 실패와 전체검사14setupERROR 이력을 유지한다.
+- [정산 원문](reviews/2026-10-18-common-union-consumer-closure/README.md). 이번 변경은 문서뿐이며 새 CI·이미지·운영/UI·성능 검증은 하지 않는다. daemon OFF/RC 개별 기능 보존 정책은 유지한다.
+
 ## 2026-10-18 — PR513 cAdvisor 설명 시점 정산
 
 - 독립 검토에서 찾은 주석/가이드의 30초·env 제거 표현을 source 기본15초/env와 과거 운영 관측30초로 구분했다. 기존 #515 이력은 유지한다.
