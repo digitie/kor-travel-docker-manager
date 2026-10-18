@@ -8,6 +8,14 @@
 
 - [ ] **T-MGR-LOGOUT-READ — 로그아웃 폴링 재진입 차단**. 별도 PR531에 pending 읽기·WS 경계와 AbortSignal/POST 전 취소·성공 및 실패 세션 회복을 구현했다. 초기3RED·재로그인 P2와 원검증을 보존하고, 중복 진입 신규2RED→집중9PASS/frontend전체44PASS/type·lint·build/Ruff PASS. 버튼·빠른명령의 동기 단일진입과 인증확인 완료 뒤 재시도를 보강했다. 46/48 공개 UI 원문은 보존하며 Cookie 정책·하니스 기준은 바꾸지 않는다. 기존79d7의 독립2리뷰·CI는 완료했으며 최신main 문서 통합delta 검토·CI와 root 실제 새제품 UI는 후속이다. [규약](dashboard-ui.md#9-로그아웃-중-읽기와-소켓의-경계).
 
+- [ ] **T-MGR-METRICS-EAGER — 메트릭 관측 기본값 중복 계산 절감**. 호출 기본값/cycle spec 재사용과 inspect 추가조회 생략 구현. 순수39PASS/backend Ruff·6경로 동등/합성측정 완료, 기존3554 독립2리뷰·CI·운영RC 채택은 별도증거로 보존하고 최신main integration delta 검토·CI를 정산한다. 실제 CPU/RSS/수집지연의 인과 비교는 미완료이며 사용자 순서대로 Track1·2 전체 종료 뒤 다룬다. [범위와 한계](metrics-observation-budget.md).
+
+- [ ] **T-MGR-NVME-DB — 명시 SQLite 파일 경로**. KTDM_DATABASE_PATH 절대 경로 선택/기존 default 보존, 프로세스 env 및 WAL/SHM 이전 경계. [설계](nvme-database-path.md). 구현·격리25회귀/backend Ruff·URL P2 3RED→GREEN 완료. 기존제품 독립2리뷰·CI·운영RC 채택 근거는 별도보존했고 최신main 통합delta 검토·새CI는 후속이다. 실제DB/WAL/SHM 보전은 소스검증과 구분한다.
+
+- [ ] **T-MGR-NVME-TMP — 빌드 임시 경로 정합**. frozen descriptor fallback과 Map buildx TMPDIR를 기존 state root 아래로 제한한다. [설계·운영 경계](nvme-build-staging.md). 구현·독립P2 prefix이탈2RED→고정후격리16PASS/backend Ruff 완료. 기존제품 독립2리뷰·CI 및 운영RC채택 근거는 별도보존했고 최신main 통합delta 독립검토·새CI는 후속이다. 전체 eMMC 쓰기 측정까지 완료했다고 하지 않는다.
+
+- [ ] **T-MGR-QUEUE-BUDGET — 공용 dispatch 상한·큐 주기(PR514)**. source 전역12→2/공식dequeue5기본→30, 개별tag·업무·HC 보존, 파생instance digest와130회귀/Ruff·모델 대조 완료. 독립2리뷰·CI·운영 두scalar 적용 및 실제CPU/대기 영향 측정은 후속. [범위와 적용 경계](dagster-queue-budget.md). PR513 merge 선행은 main0f0b4f1에서 충족했고 Commonff849ea wholewheel·두CLI·tag930a와 main517 cAdvisor15초/env·14제외를 보존한다. 실제 배포·측정 근거와 source 회귀는 구분한다. 최신 main513 통합은 별도 commit으로 정산하며 기존 운영 채택과 소스 머지를 구분한다.
+
 - [ ] **T-MGR-DAEMON-POOL — 공용 daemon 연결 재사용·native webserver 채택(PR513)**. Common38+41 통합ff849ea wholewheel/두CLI/plugin을 소비하고, 기존71runtime version/hash와 daemon pooled CLI를 보존한다. 공용webserver만 공식 alias, host5입력 tag930a44266e814ab6/3image refs를 정렬했다. 이전17ff/92d 실패·검증 이력은 유지한다. 최종 독립2소비리뷰는 P0–P3 OPEN0, 제품bd8 CI2SUCCESS이며 [원문](reviews/2026-10-18-common-union-consumer-closure/README.md)을 보존했다. native 이미지/CLI/PG 정리·운영/UI·성능/신선도는 별도다. [소비 경계](daemon-pool-adoption.md). Weather 활성API/CS의 주소5env(default빈키/true/50/5) 전달을 별도보강했다. main #517 cAdvisor15초/env·제외14·단일flags와 main530을 보존하며(30초 운영 관측 이력과 source 기본값의 설명도 구분) 운영RC의 별도514/521/522/525 기능을 덮어쓰지 않는다.
 
 - [ ] **T-MGR-TARGET-ADDR — targets validate JSON의 registry 주소 효과 투영**. 기존 성공 JSON/텍스트와 검증 경계를 보존하고 hosts.<key>.addr만 추가한다. Transport의 host 키·선언 주소 대조를 지원하며 DNS/원격 연결·비밀/SSH 옵션 출력은 추가하지 않는다. CLI2줄 projection과 실제 registry 신규5회귀/관련105PASS·Ruff·frontend type/build를 확인했다. 독립2리뷰·CI·merge/설치 및 실제 Transport 효과 확인은 후속이다.

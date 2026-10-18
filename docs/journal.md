@@ -1,5 +1,14 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-18 — PR531 최신 main525 통합과 공개 UI 수용
+
+- main3549b14를 병합했고 충돌은 journal/tasks 양쪽 기록을 보존해 해결했다. 배포 후보 e02의 frontend 전체 tree와 최신 코드의 일치를 확인한다.
+- Odroid의 정식 설치와 frontend 전환을 완료했다. 배포 보조 도구의 symlink 부모 fsync 실패는 이미 적용된 환경 파일을 확인하고 실제 release 디렉터리를 동기화한 뒤 남은 전환만 수행했다. 설치를 반복하거나 강제 종료하지 않았다.
+- 첫 공개 UI는 43통과·4실패·1제외였다. 컨테이너 목록의 15초 초과가 있었고, 별도 실측 3회는 모두 200/2.24~2.37초였다. 같은 기준의 새 실행은 47통과·사용자 지정 SameSite 1제외로 완료했다. 최초 지연 원인은 확정하지 않았다.
+- 로그인·대시보드·로그아웃과 WS 재연결 억제를 확인했다. 두 번째 실행의 페이지 오류·HTTP5xx·네트워크 실패·미승인 쓰기는 0이다. 실패 이력은 보존하며 48개 모두 통과했다고 하지 않는다.
+- 최신 통합 delta의 독립 리뷰와 CI는 별도다. 수집 CPU/RSS 개선율이나 자동 daemon 실행은 이번 결과가 아니다.
+
+
 ## 과거 기록 아카이브
 
 파일이 820,205 B(에이전트 read 한도 256 KB의 3배)가 되어 2026-10-16에 옛 항목을 아래 파일들로 옮겼다(T-MGR-07). 본문은 byte 그대로, 원래 파일 순서 그대로다 — 이 파일 끝 다음이 가장 번호가 큰 아카이브의 첫 항목이고, 번호가 작을수록 오래된 구간이다. 과거 검색은 `rg <패턴> docs/journal*.md`.
@@ -21,6 +30,161 @@
 - 기존79d7 로그아웃 제품·회귀와 frontend 전체 tree는 byte동일하며 RC e02 frontend 입력과도 같다. RC20b/e02 및 기존 build helper는 수정하지 않는다.
 - 별도 소유 frontend mirror/sterile env에서 실제44PASS/11files(6.44초)와 type-check PASS, diff 검사를 확인했다. 원 config는 바꾸지 않고 mirror alias만 절대경로로 지정했다.
 - 새 merge delta의 독립검토·CI와 정식 frontend 전환/live UI는 별도다. 기존46/48과 Cookie 외부예외는 성공으로 바꾸지 않는다.
+
+## 2026-10-18 — PR525 최신 main522 정합
+
+- PR513·514·521·522가 머지된 main12d4d81을 일반 병합했고 journal/tasks의 양쪽기록을 보존한다.
+- metrics 제품·focusedtest·합성benchmark 원문은 기존3554 독립리뷰본 및 RC20b와 byte동일하다. 다른PR 기능은 main그대로이며 원worktree/RC20b/e02/helper·운영은 변경하지 않는다.
+- 별도 mirror/sterile env의 실제AST집중39PASS0.45초/Ruff/diff를 확인했고 benchmark는 재실행하지 않았다. RC20b 대비 backend/src·frontend/src·config·docker·scripts·deploy·.env.example·Compose 파일차이0이다.
+- 과거 UI실패·합성성능의 한계를 유지하고 sourcemerge를 운영CPU/RSS·실수집 수용으로 바꾸지 않는다. 이미설치된 같은제품 재설치와 신규collector 최적화는 하지 않는다.
+
+## 2026-10-18 — PR522 최신 main521 정합
+
+- PR513·514·521이 머지된 main3862623과 일반 병합했고 journal/tasks 양쪽 이력을 보존한다.
+- database.py와 집중회귀는 기존8bd95·7c390·RC20b 원문과 byte동일이다. 최신 main Common/CLI/queue/NVMe임시경로·Weather환경은 보존한다. 원worktree/RC20b/e02/helper·운영은 변경하지 않는다.
+- 별도 mirror/sterile env에서 AST경로·실제SQLAlchemy URL/dialect인자25PASS0.21초/Ruff/diff를 확인했다. DB모듈/engine/실DB 실행0이다.
+- 기존 source 채택과 native DB 경로 설정·WAL/SHM 이전 증거를 구분한다. 새 통합delta 독립검토·CI는 별도이며 동일제품을 다시 설치하지 않는다.
+
+## 2026-10-18 — PR521 최신 main514 정합
+
+- PR513·514가 머지된 main3015c31을 일반 병합한다. 충돌은 journal/tasks 두 문서뿐이며 양쪽 기록을 보존한다.
+- NVMe 임시경로 제품은 기존 리뷰본·RC20b와 byte동일하고 최신 Common wholewheel/두CLI/hosttag930a·큐2/30·Weather주소환경은 main 그대로다. 원worktree/RC20b/e02/helper 및 운영은 변경하지 않는다.
+- 별도 mirror에서16회귀를umask022/077 각각 통과했고 원격리fixture의 관련17PASS1.93초/Ruff/diff를 확인했다. 최초 no-conftest 준비의 own_pinned_pair 누락1ERROR 원문은 보존했다.
+- 소스 통합검증과 기존 native 채택을 구분하며 새 delta의 독립2리뷰·CI는 별도 정산한다. 이미 적용된 동일제품을 다시 설치하지 않는다.
+
+## 2026-10-18 — PR514 최신 main513 정합
+
+- 최신 main0f0b4f1을 일반 병합하며 PR 고유 제품과 기존 양쪽 기록을 보존한다. 운영 RC20b/e02 후보와 원 worktree는 수정하지 않는다.
+- Common ff849ea wholewheel·공식 daemon/webserver CLI·host 입력 tag930a44266e814ab6·Weather 주소 환경 전달을 보존한다. queue/NVMe/DB/metrics 다른 PR 기능을 이 브랜치에 새로 합치지 않는다.
+- 별도 mirror/sterile env 관련5모듈70PASS·실제Compose렌더11건제외/Ruff/diff PASS, 전체모델은 큐 두scalar·digest7소비자만 차이다. 최신main host5입력/vendor/공식CLI는 byte동일이다.
+- 새 integration head 독립2리뷰·CI는 별도이며 이 병합을 운영 재설치·daemon 시작·성능 수용으로 바꾸지 않는다.
+
+## 2026-10-17 — PR525 최신 main 통합 준비
+
+- 최신 main20b의 포트·관측 파생과 완료 원장을 ordinary merge하고 기존 기능 변경은 보존한다.
+- 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
+
+
+## 2026-10-17 — 메트릭 관측 cycle snapshot과 이미지 조회 절감(PR525)
+
+- 호출 내 기본값 재사용, cycle의 기존 spec 전달, inspect 이미지 정보가 완전한 경우의 추가 조회 생략을 작은 커밋으로 분리했다.
+- 장기 캐시·Docker 상태 캐시·DTO·주기·저장 변경 없이 실제 함수 AST 회귀39PASS/backend Ruff PASS와 6경로 old/new 출력 동등성을 확인했다.
+- 합성64행×100cycle에서 resolve12900→100/CPU 정지0.119434→0.038725s·실행2.718004→2.526916s. 운영 개선율이 아니며 일부 tracemalloc peak는 증가했다.
+- 앱 초기화·Docker·DB·SDK·운영 접근 없이 검사했다. 전체 pytest/frontend/운영 성능은 미실행이며 독립2리뷰·CI는 별도다. [측정 범위](metrics-observation-budget.md).
+
+## 2026-10-17 — 메트릭 관측 기본값 중복 평가 절감 설계
+
+- 최신 main의 별도 feature worktree에서 기본값 2회 평가를 확인했다.
+- 한 호출의 local template만 재사용하며 cycle·장기 캐시를 추가하지 않는다.
+- 순수 회귀·합성 측정 전 설계 초안이며 운영 CPU 인과·전체 회귀는 미확인이다.
+
+## 2026-10-17 — PR522 최신 main 통합 준비
+
+- 최신 main20b의 포트·관측 파생과 완료 원장을 ordinary merge하고 기존 기능 변경은 보존한다.
+- 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
+
+
+## 2026-10-17 — PR522 SQLite URL 파일명 보존 수정
+
+- 독립 P2에서 문자열 URL이 '?' 파일명을 query로 해석하는 경계를 확인했다.
+  자체 dialect 인자 대역은 '%25' decode까지 포함해3FAIL5PASS를 재현했다.
+- 선택함수/default산술을 유지하고 공식 URL.create(database=DB_PATH)만 적용했다.
+  실제 SQLAlchemy dialect 인자 회귀 포함25PASS/backend Ruff/diff PASS다.
+- 기존 engine 설정/timeout/WAL event/schema는 그대로이며 실제 engine/DB연결0이다.
+  원739be4e와17회귀의 검증범위 한계를 보존한다.
+
+
+## 2026-10-17 — 명시 SQLite 파일 경로 구현(PR522)
+
+- KTDM_DATABASE_PATH 프로세스 환경이 없으면 기존 기본 계산을 그대로 유지한다.
+  명시 절대파일경로만 사용하며 empty/relative/NUL·끝directory형식은 값 노출 없이 거절한다.
+- schema/API/권한/기동checker·로그제품 변경0. .env는 초기 DB import 뒤 읽힐 수 있으므로
+  systemd 단일 Environment와 CLI의 동일 프로세스 환경을 문서화했다.
+- 실제 제품 AST/engine 대역 격리17PASS(0.03초), backend Ruff/diff PASS,
+  원 main 경로조건2RED→새함수2GREEN. 전체 suite·실제 DB·설치·운영 실행0이다.
+- [NVMe DB 가이드](nvme-database-path.md)에 경로/symlink/mount 및 WAL/SHM 보존을 별도 구분했다.
+
+
+## 2026-10-17 — NVMe SQLite 경로 설계
+
+- main520(4f708e4) 별도 feature에서 환경변수로 DB 파일 절대 경로를 명시하는 최소안을 설계했다.
+- 미설정 기본 산술·schema·API·권한은 유지하고 empty/relative는 실패하도록 한다.
+- .env 로드 시점과 실제 프로세스 환경을 구분한다. DB/운영 실행0,521소스변경0이다.
+
+
+## 2026-10-17 — PR521 최신 main 통합 준비
+
+- 최신 main20b의 포트·관측 파생과 완료 원장을 ordinary merge하고 기존 기능 변경은 보존한다.
+- 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
+
+
+## 2026-10-17 — PR521 fallback label 경로 이탈 수정
+
+- 독립 리뷰가 b631e5a의 절대/상대 label로 mkstemp가 state 밖 파일을 만들 수 있음을 재현했다.
+- 현재 private helper 내부 caller0/실제 env_file memfd-only는 영향 없지만 state 한정 계약을
+  지키도록 디스크 fallback prefix만 고정했다. memfd label과 나머지 제품 동작은 그대로다.
+- 실제 자기 scratch 경로 회귀2FAIL→전체격리16PASS/backend Ruff 확인. 원 실패 및 원문 보존,
+  전체 suite·운영/NVMe 검증 미실시는 유지한다.
+
+
+## 2026-10-17 — NVMe 빌드 임시 경로 구현(PR521)
+
+- 기존 frozen state root 아래0700 임시 디렉터리와0600/unlinked fallback 파일을 사용한다.
+  Map buildx 두 호출에 같은 TMPDIR를 전달하며 기존 Docker/XDG 환경과 argv를 보존한다.
+- 실제 env_file의 memfd-only 경로·source cache·DB 기본값·기동 조건은 변경하지 않는다.
+- 신규 격리14회귀/backend Ruff 통과, parent 실제 함수2RED→새 함수2GREEN을 확인했다.
+  기존 단일test 직접 실행의 registry 경로 오류/fixture 부재와 초기 mock6실패는 별도 이력으로 남겼다.
+- 전체 suite·실제 NVMe 배포·Docker 빌드·eMMC 쓰기 측정은 미실시다.
+  [검증 방법과 운영 경계](nvme-build-staging.md)에 입력/cleanup/설치 주의점을 기록했다.
+
+
+## 2026-10-17 — NVMe 빌드 임시 경로 설계
+
+- 최신 main c1c7674의 별도 feature worktree에서 설계 초안을 작성했다.
+- 기존 state 경로 계약을 재사용하고 memfd fallback 및 Map buildx TMPDIR만 소유한다.
+- source cache/DB 기본값/서비스 기동 조건/다른 작업 트리는 변경하지 않는다.
+- 실제 운영·Docker·DB 접근 없이 로컬 회귀로 검증하며 운영 적용은 별도다.
+
+
+## 2026-10-17 — PR514 최신 main 통합 준비
+
+- 최신 main을 보존한 PR513을 먼저 ordinary merge하여 의존 기능과 queue 두 scalar를 함께 유지한다.
+- 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
+
+
+## 2026-10-17 — PR514에 최종 PR513과 main #517 통합
+
+- clean24e3 위에서 최종513 f72e49를 ordinary merge했다. journal/tasks 충돌만 양쪽 이력을 보존해 해결하며 제품은 별도 whole-model로 확인한다.
+- 514의 source cap2/dequeue30·instance rawSHA/digest7소비자와 513 Common92d wholewheel/73c 빌드5입력·기존512 기능을 함께 보존한다.
+- 최신 main #517의 cAdvisor15초/env 기본·14제외·단일flags를 유지한다. 운영 Odroid tuning/raw463c는 이 source 작업에서 읽거나 수정하지 않는다.
+- PR514 base는 main/draft를 유지하고 PR513 선행을 명시한다. 513보다 먼저 merge하지 않으며 CI/독립 integration delta 리뷰는 별도다.
+
+
+
+## 2026-10-17 — PR514 instance snapshot 회귀 정산
+
+- 최초6f419f7 CI1FAIL/3049PASS/39SKIP의 유일 원인은 NH-4 당시 원문
+  SHA7925… snapshot이었다. 승인 범위 두scalar의 변경 뒤 새 SHA3441…로
+  기대값·검사명/설명을 정정하고 전체bytes 검증은 유지했다.
+- 제품 config·Compose는 불변, 관련59PASS/13.04초와 Ruff·diff검사 PASS.
+  원CI실패는 보존하고 새전체CI는 별도추적한다. 실제 SDK/DB/Docker/운영0.
+
+
+
+## 2026-10-17 — 공용 Dagster dispatch 한도·큐 확인 주기 초안(PR514)
+
+- 최신 기준 main `872c326`에서 별도 worktree를 만들어 설계 초안 후
+  `max_concurrent_runs: 2`·`dequeue_interval_seconds: 30`만 구현했다.
+  location·run group 상한과 업무/monitor/health 설정은 그대로다.
+- 원본 파일 bytes SHA256 앞16자 anchor를 재계산했다. 모델 대조에서
+  instance 두scalar/Compose7소비자 digest만 달라짐을 확인했다.
+- 정책 변경 전 실패 보존 → 관련130PASS(44.71초), Ruff·diff검사 통과.
+  전체 suite는 재실행하지 않았고 실제 SDK/DB/Docker·운영 실행은 없다.
+- PR513의 Common 소비자 변경과 분리했다. 운영 원본은 source와 다를
+  수 있으므로 두 값만 적용한 뒤 실제 digest를 계산해야 한다. 독립2리뷰,
+  CI, 운영 CPU·대기 영향은 후속이며 성능 개선을 확정하지 않았다.
+
+
 
 ## 2026-10-18 — PR513 최종 소비 리뷰·제품 CI 보존
 

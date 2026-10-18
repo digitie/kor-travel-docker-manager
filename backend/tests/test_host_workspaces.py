@@ -110,8 +110,10 @@ def test_unknown_host_rejected(documents):
         topology.derive_host_workspace(*documents, "missing")
 
 
-def test_instance_bytes_unchanged():
-    assert hashlib.sha256((ROOT / "config/dagster-shared/dagster.yaml").read_bytes()).hexdigest() == "7925bcdea8472b069b40b7585b6ab8eb8f7cd03d2bfbb5e252755ff60bacef4f"
+def test_instance_bytes_match_reviewed_queue_budget():
+    """PR514의 두 scalar 변경 뒤 고정된 원문 snapshot — host 파생이 instance를 다시 쓰면 실패한다."""
+
+    assert hashlib.sha256((ROOT / "config/dagster-shared/dagster.yaml").read_bytes()).hexdigest() == "344105d5c06a22d32e84595ac19553462b63495efa0b50e085f7fb0e7908c498"
 
 
 @pytest.fixture
