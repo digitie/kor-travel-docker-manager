@@ -27,7 +27,7 @@ def documents():
     )
 
 
-def test_all_committed_hosts_are_derived_and_alias_is_default(documents):
+def test_all_committed_hosts_are_derived(documents):
     compose, targets = documents
     documents_before = copy.deepcopy(documents)
     seen = []
@@ -41,10 +41,41 @@ def test_all_committed_hosts_are_derived_and_alias_is_default(documents):
         seen.append(set(names))
     assert not seen[0] & seen[1]
     assert len(set.union(*seen)) == 6
-    assert (ROOT / "config/dagster-shared/workspace.yaml").read_bytes() == (
-        ROOT / "config/dagster-shared" / f"workspace.{default_host(targets)}.yaml"
-    ).read_bytes()
+    # 옛 별칭 `workspace.yaml`은 없다(NH-4) — 호스트 파일만 정본이다.
+    assert not (ROOT / "config/dagster-shared/workspace.yaml").exists()
     assert documents == documents_before
+
+
+def _default_host_values(compose_text: str, targets_text: str) -> tuple[list[str], list[str]]:
+    hosts = re.findall(r"\$\{KTDM_HOST:-([^}]*)\}", compose_text + targets_text)
+    digests = re.findall(r"\$\{KTDM_DAGSTER_WORKSPACE_DIGEST:-([^}]*)\}", compose_text + targets_text)
+    return hosts, digests
+
+
+def test_default_host_values_are_the_default_hosts_derivation(documents):
+    """T-MGR-NH NH-4: compose·registry의 `${KTDM_HOST:-…}`·`${KTDM_DAGSTER_WORKSPACE_DIGEST:-…}` 기본값은 손으로 쓴 값이
+    아니라 default 호스트의 파생값이다 — 호스트 이름 = registry default, digest = `workspace.<default>.yaml`의 sha256[:16].
+    `.env`에 값이 없는 호스트(default)가 쓰는 값이라, default를 바꾸거나 workspace가 바뀌면 함께 바뀌어야 한다."""
+    _compose, targets = documents
+    compose_text = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    targets_text = (ROOT / "config/docker-targets.yml").read_text(encoding="utf-8")
+    hosts, digests = _default_host_values(compose_text, targets_text)
+    assert len(hosts) >= 4 and len(digests) >= 2  # 전제: compose bind 2·registry bind source 2, digest env 2
+    default = default_host(targets)
+    workspace = ROOT / "config/dagster-shared" / f"workspace.{default}.yaml"
+    assert set(hosts) == {default}
+    assert set(digests) == {hashlib.sha256(workspace.read_bytes()).hexdigest()[:16]}
+
+
+def test_the_default_host_tie_fails_when_the_registry_default_moves(documents):
+    """빨간 대조군 — registry의 default를 다른 호스트로 **실제로** 바꾸면 같은 결박 테스트가 실패한다(기본값은 옛 호스트·
+    옛 digest를 가리킨다)."""
+    _compose, targets = documents
+    other = next(name for name in targets["hosts"] if name != default_host(targets))
+    for name, spec in targets["hosts"].items():
+        spec["default"] = name == other
+    with pytest.raises(AssertionError):
+        test_default_host_values_are_the_default_hosts_derivation(documents)
 
 
 def test_third_host_move_changes_only_affected_workspaces(documents):
@@ -79,8 +110,10 @@ def test_unknown_host_rejected(documents):
         topology.derive_host_workspace(*documents, "missing")
 
 
-def test_instance_bytes_unchanged():
-    assert hashlib.sha256((ROOT / "config/dagster-shared/dagster.yaml").read_bytes()).hexdigest() == "7925bcdea8472b069b40b7585b6ab8eb8f7cd03d2bfbb5e252755ff60bacef4f"
+def test_instance_bytes_match_reviewed_queue_budget():
+    """PR514의 두 scalar 변경 뒤 고정된 원문 snapshot — host 파생이 instance를 다시 쓰면 실패한다."""
+
+    assert hashlib.sha256((ROOT / "config/dagster-shared/dagster.yaml").read_bytes()).hexdigest() == "344105d5c06a22d32e84595ac19553462b63495efa0b50e085f7fb0e7908c498"
 
 
 @pytest.fixture

@@ -249,6 +249,24 @@ sudo "$CLONE/scripts/install-ktdm-trusted-release" --expected-source-revision "$
 거부한다. `--restart-backend`·`--allow-live`는 받되 무시한다(백엔드는 항상 재기동한다).
 `--env-file`은 없어졌다.
 
+**옛 workspace 별칭에서 넘어갈 때(NH-4 포함 release를 처음 설치할 때) 선행 단계** — 떠 있는 공용 plane이 아직 옛
+`config/dagster-shared/workspace.yaml`을 붙이고 있으면, 설치 **전에 현재 release로** plane을 호스트 파일 bind로 다시 만든다:
+
+```bash
+for c in kor-travel-dagster-daemon kor-travel-dagster-webserver; do   # 컨테이너 이름은 이 호스트의 설치본 기준
+  sudo docker inspect --format '{{range .Mounts}}{{if eq .Destination "/opt/dagster/dagster_home/workspace.yaml"}}{{.Source}}{{end}}{{end}}' "$c"
+done                                                         # …/workspace.yaml이면 아래를 먼저
+sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --dry-run   # 차이 확인
+sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane converge --confirm   # → …/workspace.<KTDM_HOST>.yaml
+```
+
+**오래 걸릴 수 있다.** 설치로 plane 이미지 태그가 바뀌면(`kor-travel-dagster-host`) `--confirm`이 그 이미지를 **빌드**한 뒤
+재생성한다 — 출력 없이 15분 남짓 걸릴 수 있다(2026-10-17 n150 실측 약 15분). ssh가 끊기지 않게 tmux/nohup 안에서 돌리고, 감싸는
+timeout을 둔다면 30분 이상으로 둔다. `--dry-run` 이유에 `rendered image is not present locally`가 있으면 빌드가 포함된다는 뜻이다.
+
+설치기도 flip 전에 같은 것을 본다(`plane-binds` — 떠 있는 plane의 workspace bind 파일이 새 release에 없으면 "converge
+먼저"로 거부). 자세한 converge 절차는 §8.2.
+
 설치 뒤 확인과 실행 레지스트리 반영:
 
 ```bash
@@ -344,6 +362,19 @@ sudo install -o root -g root -m 0600 <prepared-.env> /opt/ktdm-release-bootstrap
 sudo ln -s ktdm-release-bootstrap /opt/kor-travel-docker-manager
 ```
 
+**release를 데이터 디스크에 두는 호스트**(루트 디스크가 작은 경우 — odroid). installer는 release root를 설치 root symlink에서 정한다:
+상대 symlink면 `/opt`, **절대 symlink면 그 대상의 상위 디렉터리**다. 그 디렉터리까지의 모든 경로 성분은 root 소유·group/other 쓰기
+없음·symlink 아님이어야 한다(installer가 검사하고 아니면 멈춘다). 데이터 디스크의 마운트 지점이 그 조건을 못 지키면(예: 0777) root
+소유 디렉터리를 bind mount로 root 경로(`/srv/...`)에 붙인다. bootstrap release를 그 아래에 두고 절대 symlink로 가리킨다:
+
+```bash
+sudo install -d -o root -g root -m 0755 /srv/ktdm-releases/ktdm-release-bootstrap
+sudo install -o root -g root -m 0600 <prepared-.env> /srv/ktdm-releases/ktdm-release-bootstrap/.env
+sudo ln -s /srv/ktdm-releases/ktdm-release-bootstrap /opt/kor-travel-docker-manager
+```
+
+이후 설치는 같은 root(`/srv/ktdm-releases`)에 release를 만들고 절대 symlink로 넘기며, GC도 그 root 안에서만 한다.
+
 ### 3.1 Debian `poetry-core` build dependency를 포함한 wheelhouse 발행
 
 trusted installer는 source의 backend를 오프라인으로 build해 설치하므로, wheelhouse에는 runtime
@@ -428,13 +459,56 @@ commit을 포함한 새 root-owned destination을 선택하고, provisioner와 i
 전달한다. 이 경로도 pre-existing이면 새 이름을 정해 다시 root operator attestation을 받아야 한다.
 
 wheel을 인터넷에서 내려받거나, home/user-writable 경로에서 복사하거나, `pip install`로 wheelhouse를
-수정해서는 안 된다. `dpkg --verify` 실패, package metadata 불일치, source/destination 권한 drift도
+수정해서는 안 된다. 예외는 아래 "arm64 호스트" 절차 하나뿐이다(소유자 승인 2026-10-17 — 컴파일 wheel만,
+n150과 같은 버전만). `dpkg --verify` 실패, package metadata 불일치, source/destination 권한 drift도
 모두 installer 재시도보다 먼저 해결해야 할 fail-close 조건이다.
 
 원본 wheelhouse는 poetry-core wheel이 **없는** root 소유 디렉터리여야 한다(도구가 원본에 poetry-core가
 있으면 섞이지 않게 멈춘다). 발행된 wheelhouse에서 다시 만들 때는 `poetry_core-*.whl`을 뺀 사본을 root
 소유 0755 디렉터리로 만들어 원본으로 준다. 새 destination을 발행했으면 installer에
 `--wheelhouse "${WHEELHOUSE_DESTINATION}"`로 넘긴다.
+
+#### arm64 호스트(odroid) — 원본 wheelhouse 만들기
+
+n150 wheelhouse는 amd64라 그대로 쓸 수 없다. 2026-10-17 기준 n150 wheelhouse 25개 중 컴파일 wheel은 5개(`charset_normalizer`·
+`greenlet`·`pydantic_core`·`pyyaml`·`sqlalchemy`, 모두 `cp314-…-x86_64`)이고, 나머지는 `py3-none-any`(그중 하나는 provisioner가
+만든 `poetry_core`)다. 그래서 arm64 호스트의 원본 wheelhouse는 **pure wheel은 n150에서 복사·SHA-256 대조**, **컴파일 wheel만 그
+호스트에서 n150과 같은 버전으로 root가 받는다**. 그 뒤는 위 provisioner·installer 절차와 같다.
+
+전제: 그 호스트의 `python3`가 n150과 **같은 minor**다(`cp314` — odroid 3.14.4). 다르면 컴파일 wheel tag가 맞지 않고, pure wheel의
+의존 조건도 달라질 수 있으므로 멈춘다. Debian `python3-poetry-core`는 apt로 설치한다(provisioner가 `dpkg --verify`로 확인한다).
+`python3 -m pip --version`이 돌아야 한다(`download`만 쓴다 — 시스템 site-packages에 설치하지 않는다).
+
+```bash
+SRC=/var/lib/kor-travel-docker-manager/wheelhouse-src-arm64   # root 0755, poetry_core 없음
+# n150(root): poetry_core를 뺀 목록과 pure wheel의 SHA-256을 만든다.
+sudo -n sh -c 'cd /var/lib/kor-travel-docker-manager/wheelhouse && ls | grep -v "^poetry_core-" | sort' > n150-wheels.txt
+grep -- '-none-any\.whl$' n150-wheels.txt \
+  | sudo -n sh -c 'cd /var/lib/kor-travel-docker-manager/wheelhouse && xargs sha256sum' > n150-pure.sha256
+# 그 호스트(root): 원본 디렉터리를 root 소유로 만든다.
+sudo -n install -d -o root -g root -m 0755 "${SRC}"
+# ① pure wheel: n150 파일을 옮겨 root 0644로 두고, n150에서 만든 SHA-256과 대조한다(하나라도 다르면 멈춘다).
+sudo -n install -o root -g root -m 0644 <n150에서-옮긴-pure-wheel들> "${SRC}/"
+(cd "${SRC}" && sudo -n sha256sum -c --strict "${OLDPWD}/n150-pure.sha256")
+# ② 컴파일 wheel: n150 파일 이름에서 이름==버전을 얻어, 그 호스트에서 바이너리만·의존 없이 받는다.
+grep -v -- '-none-any\.whl$' n150-wheels.txt | while read -r f; do
+  IFS=- read -r name ver _ <<<"${f}"
+  sudo -n env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 \
+    /usr/bin/python3 -m pip download --no-cache-dir --only-binary=:all: --no-deps -d "${SRC}" "${name}==${ver}"
+done
+sudo -n chown root:root "${SRC}"/*.whl && sudo -n chmod 0644 "${SRC}"/*.whl
+# 대조: 배포판 이름·버전 집합이 n150(poetry_core 제외)과 같다(개수 포함). 받은 컴파일 wheel의 SHA-256은 기록해 둔다.
+diff <(cut -d- -f1,2 n150-wheels.txt | tr A-Z a-z) \
+     <(sudo -n ls "${SRC}" | grep '\.whl$' | cut -d- -f1,2 | tr A-Z a-z | sort)
+sudo -n sha256sum "${SRC}"/*.whl | grep -v -- '-none-any\.whl$'
+```
+
+규칙:
+- `--only-binary=:all:`(sdist를 빌드하지 않는다)와 `--no-deps`(n150에 없는 패키지를 들이지 않는다)를 반드시 붙인다. 위 diff가
+  비어 있지 않으면 멈춘다. 받을 수 없는 버전이 있으면(aarch64 wheel 미배포) 다른 버전으로 바꾸지 말고 멈춘다 — 버전은 lock이 정한다.
+- 원본에는 `poetry_core-*`를 넣지 않는다(provisioner가 섞임을 거부한다). 그 뒤 provisioner를 `--source-wheelhouse "${SRC}"`로 돌리고,
+  발행된 destination을 installer `--wheelhouse`로 넘긴다.
+- n150 wheelhouse가 바뀌면(lock 변경) 이 원본도 같은 절차로 **새 디렉터리**에 다시 만든다. 기존 디렉터리를 고치지 않는다.
 
 ### 3.2 백엔드 서비스
 
@@ -908,7 +982,15 @@ Map pinset의 조합으로 되돌릴 일이 없다고 판단한 뒤에만 한다
 
 ### 8.2 공용 Dagster plane만 수렴 (`ktdctl dagster-plane converge`)
 
-**언제 쓰나.** 공용 workspace(`config/dagster-shared/workspace.yaml`)나 그 digest env를 바꾸는 Manager release를
+> **NH-4 포함 release(옛 별칭 `workspace.yaml` 제거, 2026-10-17) 설치 전 선행 단계.** n150 공용 daemon·webserver가 아직
+> 옛 별칭 `config/dagster-shared/workspace.yaml`을 붙이고 있으면, 별칭이 없는 release로 symlink가 넘어간 뒤 다음
+> 재시작에서 마운트가 깨진다. 그래서 **현재 release로 먼저** `ktdctl dagster-plane converge --dry-run`으로 차이를 보고
+> `--confirm`으로 plane을
+> `workspace.<KTDM_HOST>.yaml` bind로 다시 만든 뒤 설치한다(`docker inspect`로 두 컨테이너의
+> `/opt/dagster/dagster_home/workspace.yaml` 마운트 source 이름 확인). 설치기는 flip 전에 같은 것을 본다(`plane-binds`) —
+> 떠 있는 plane이 새 release에 없는 workspace 파일을 붙이고 있으면 "converge 먼저"로 거부한다.
+
+**언제 쓰나.** 공용 workspace(`config/dagster-shared/workspace.<host>.yaml`)나 그 digest env를 바꾸는 Manager release를
 설치한 **직후**, pinned 재구축 전에 preflight가 공용 daemon·webserver를 unhealthy로 보고할 때다. 떠 있는 두 컨테이너는
 옛 release의 workspace bind와 옛 `KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST`로 만들어졌으므로, location이 빠지면(예: #476의
 weather·transport) healthcheck가 사라진 code-server를 기다려 unhealthy로 남는다. 재구축 안의 plane 수렴이 이것을 고치지만
@@ -920,7 +1002,7 @@ preflight는 plane이 unhealthy이면 재구축을 시작하지 않는다 — �
 한다. 그 순간 실패해도 되는 항목은 **plane health 하나뿐**이고(이 명령이 고치는 대상이다), 운영자·소유자가 그것을
 받아들이고 `--confirm`을 돌린다 — 일반 면제가 아니다. 다른 항목이 하나라도 실패하면 돌리지 않는다 → ④ `--confirm` → ⑤ preflight가 **전부** PASS → ⑥ pinned 재구축. `--dry-run` 이유에 `rendered image is not present
 locally`가 있으면 `--confirm`의 `up`이 G 아래에서 `kor-travel-dagster-host` 이미지를 **빌드**한다(재구축의 plane 수렴과
-같다) — 부하가 낮을 때 돌리거나 이미지를 먼저 준비한다.
+같다) — 부하가 낮을 때 돌리거나 이미지를 먼저 준비한다. 빌드가 포함되면 출력 없이 15분 남짓 걸릴 수 있다(2026-10-17 n150 실측 약 15분) — tmux/nohup 안에서, 감싸는 timeout은 30분 이상.
 
 ```bash
 # 보기만 한다(아무것도 바꾸지 않고 종료 코드는 항상 0). 서비스별 차이(이미지·env 이름·파일 digest 떠 있는 값 != render 값)와 health(한 번 관측)를 낸다.
@@ -1001,12 +1083,17 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane co
    아니다 — cgroup v1 deprecation WARNING은 거짓 빨강). cgroup 효과(양방향): `docker run --rm --memory 64m --memory-swap 64m
    python:3.12-slim python -c "b=bytearray(128*2**20)"` → exit 137 ∧ `OOMKilled`; `--memory 64m` 단독 → **통과**(swap 사용 — memswap
    정책이 필요한 이유); `--memory 256m --memory-swap 256m` → exit 0; limit 파일은 v1 `memory.limit_in_bytes`(v2면 `memory.max`) 양쪽
-   수용. 실패 = 중단선.
+   수용. **swap accounting 켜짐**(T-MGR-03 memswap 규칙의 전제): cgroup v1 `/sys/fs/cgroup/memory/memory.memsw.limit_in_bytes`
+   존재(v2면 컨테이너 cgroup의 `memory.swap.max`) ∧ `--memory 64m --memory-swap 64m` 컨테이너의 그 파일 값 == `memory.limit_in_bytes`
+   — 파일이 없으면 `memswap_limit`가 조용히 무시되고 limit 초과가 OOM이 아니라 swap이 된다. 실패 = 중단선.
 6. **폐기(parking-radar·Portainer만)**: ① 전 컨테이너 `docker inspect`(특히 Plex)·`docker volume inspect media`를
    `/mnt/media/kor-travel/preserved/`에 저장 ② Portainer stack export(같은 곳 — `/home/digitie`에 Plex·Portainer compose가 없어 Plex
    정의는 Portainer 볼륨 안일 개연성) ③ 저장한 inspect로 Plex 재생성 dry-run ④ 그 뒤에만 Portainer 컨테이너 stop·rm(**볼륨 유지,
    `volume prune` 금지**) ⑤ parking-radar만 `compose down` + 그 이미지만 `rmi`(`image prune -a` 금지 — Plex 이미지) ⑥ HAProxy `pr2`
    제거. Plex·Samba·webvnc-router·8080·1994·UDP 리스너는 건드리지 않는다.
+   **`media` named volume 주의**: 이 volume은 `/mnt/media` **전체**를 bind한다(2026-10-17 실측 — 지금은 쓰는 컨테이너 없음). 어떤
+   컨테이너에 붙이면 `/mnt/media/kor-travel`(PG·geo·weather 데이터)과 `/mnt/media/ktdm`(Manager release·state)까지 그 컨테이너에
+   보이고 쓰인다. 다시 쓸 때는 필요한 하위 디렉터리만 bind하는 volume으로 바꾼다. `volume rm`·prune으로 지우지도 않는다.
 7. **방화벽(추천 (가) — §14-28 소유자 결정; (나)면 보존 서비스 TCP+UDP 허용 행 필수, `ports.md`)**: root `nft list ruleset`·`iptables-save` 기록 → `table inet ktm`만 적용(`flush ruleset` 금지) →
    `nftables.service` enable(docker.service보다 먼저) → n150·제3 LAN 호스트에서 `nc -z` 매트릭스(열림·닫힘 둘 다) + 보존 효과
    (재부팅 전후 TCP+UDP listen 집합 동일 ∧ Plex 자동 검색 ∧ `nc -zu` 137/1900) + `iptables -t nat -S DOCKER` 존재 — **재부팅 뒤 한 번 더**.
@@ -1018,7 +1105,9 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane co
    `/home/digitie/apps/kor-travel-transport`.
 9. **root `.env`(odroid)**: `KTDM_HOST=odroid`, PG 튜닝·이미지(`KTDM_POSTGRES_IMAGE=imresamu/postgis:16-3.5` 등), workspace digest
    (`sha256sum config/dagster-shared/workspace.odroid.yaml | cut -c1-16`), `KTDM_DATA_SOURCE_DEVICE=<2의 `findmnt -no SOURCE /mnt/media`
-   실측값 — 예: `/dev/nvme0n1p1`; 틀리면 T-MGR-05 프리플라이트가 매 `ensure`를 거부한다>`, 호스트별 `KTDM_PROD_URL_*`(`_DAGSTER`는 odroid
+   실측값 — 예: `/dev/nvme0n1p1`; 틀리면 T-MGR-05 프리플라이트가 매 `ensure`를 거부한다>` — 설정하면 **올릴 서비스의 쓰기 bind
+   전부**가 그 장치여야 하므로 그 서비스의 데이터 경로 env를 NVMe 아래로 둔다: `KOR_TRAVEL_SHARED_PGDATA`·`RUSTFS_DATA_DIR`·`PROMETHEUS_DATA_DIR`·`GRAFANA_DATA_DIR`·`KOR_TRAVEL_WEATHER_PROMETHEUS_DATA_DIR`·`KOR_TRAVEL_GEO_BACKUP_DIR`(compose의 쓰기 bind 소스
+   전부; 읽기 전용 설정 bind는 보지 않는다), 호스트별 `KTDM_PROD_URL_*`(`_DAGSTER`는 odroid
    plane host), `KOR_TRAVEL_DAGSTER_UI_PASSWORD`, geo/weather/transport 비밀 — `scp`로 0600/root(비밀번호 SSH 단계에서는 보내지 않는다)
    → `ktdctl targets validate`.
 10. **arch 실측**: `docker info --format '{{.Architecture}}'`=aarch64, `docker image inspect … .Architecture`=arm64, dagster-host 빌드 +
@@ -1057,10 +1146,13 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane co
 **target당 절차 ①~⑥.** PR은 registry `host:` + 파생물 4종(`workspace.n150.yaml`에서 빠짐·`workspace.odroid.yaml`에 들어감, compose
 consumer env 기본값, `config/prometheus/prometheus.yml`)만 바꾼다(`dagster.yaml` 불변). 적용:
 
-1. n150 Manager 재설치(§3) → n150의 그 code-server **stop**(이중 수집 금지 — 공백 시작) → n150 `ensure dagster`(workspace digest
-   기본값 변경으로 daemon·webserver 재생성, tick 공백 ≈2 min; 코드서버는 재생성되지 않는다) → n150 plane healthy(location 수 −1).
-2. odroid에 **같은 sha** 재설치 → odroid root `.env`의 `KTDM_DAGSTER_WORKSPACE_DIGEST` 갱신 → `ktdctl targets validate`(설치된
-   workspace 파일 sha256[:16] == digest env를 효과로 검사) → odroid `ensure <target>`(transport는 그 저장소의 배포 스크립트 —
+1. n150의 그 code-server **stop**(이중 수집 금지 — 공백 시작) → n150 Manager 재설치(§3) → n150 plane 재생성
+   `ktdctl dagster-plane converge --dry-run` → `--confirm`(workspace digest 기본값 변경으로 daemon·webserver 재생성, tick 공백 ≈2 min;
+   코드서버는 재생성되지 않는다; 운영 호스트에서 `ensure dagster`는 거부되고 공용 PG까지 담긴 target이라 쓰지 않는다) → n150 plane
+   healthy(location 수 −1).
+2. odroid root `.env`의 `KTDM_DAGSTER_WORKSPACE_DIGEST`를 새 `workspace.odroid.yaml`의 sha256[:16]으로 **먼저** 갱신(설치기가 flip
+   전에 대조한다) → odroid에 **같은 sha** 재설치 → `ktdctl targets validate`(설치된 workspace 파일 sha256[:16] == digest env를
+   효과로 검사) → odroid plane 재생성(`ktdctl dagster-plane converge --dry-run` → `--confirm`) → odroid `ensure <target>`(transport는 그 저장소의 배포 스크립트 —
    계획명 `deploy-prod.sh --host 192.168.1.13`, transport ADR-014/T-TRN-01이 오늘의 `deploy-server14.sh`를 대체할 **예정**이며 아직 없다;
    weather/geo는 `ensure weather`/`ensure geo` → migrate → 적재 재개) → odroid plane healthy(location 수 +1), 첫 run
    SUCCESS, **같은 시각 run이 두 호스트에 0건**.
@@ -1139,3 +1231,90 @@ allow-list라 `.14`를 더하면 된다.
 | cron `run-standalone-backup.sh transport` | odroid로 이동 — §14-7 소유자 결정 전 추천값(대안: 아무것도 안 함) |
 | HAProxy n150 backend 8개 | §9.4 |
 | 효과 | `ensure map`·`ensure pinvi` 성공, n150에 geo/weather/transport 컨테이너 0개, 공용 PG에 `kor_travel_geo` 없음 |
+
+## 10. 일반 절차 — 호스트 추가와 target 이전(T-MGR-NH NH-7)
+
+§9의 odroid 단계는 이 두 절차의 **사례**다. 호스트 이름·주소·target 이름은 인자이고, 코드는 바뀌지 않는다 — 바뀌는 것은
+registry(`config/docker-targets.yml`)와 커밋된 파생물(테스트가 계산값과 대조한다)뿐이다. 설계와 남은 가정은 `docs/multi-host.md`.
+
+**공통 수용 기준.** 이동 대상을 소유하지도 소비하지도 않는 호스트의 렌더는 byte 그대로다. 확인은 각 호스트의 설치 `.env`로
+`docker compose config`를 PR 전후로 비교한다.
+
+**0단계(두 절차 공통).** 바뀌는 호스트마다 `~/preflight.sh` PASS일 때만 시작한다. 재설치·적재·dump/restore처럼 긴 단계는 ssh 연결에
+기대지 않게 tmux/nohup 안에서 돌린다(연결이 끊기면 compose 재생성 도중에 멈춘다).
+
+### 10.1 호스트 추가 `<name> <addr>`
+
+1. **registry PR.**
+   - `hosts.<name>: {addr: <addr>}`를 더한다(IPv4 리터럴, `default`는 하나뿐).
+   - 모든 target은 `host:`를 이미 명시한다(생략은 로더가 거부 — NH-1).
+   - 그 호스트에 둘 infra를 정한다: 공용 plane·PG(`dagster`), RustFS(`storage`)의 목록에 `<name>`을 더한다. Dagster 합류 tenant나
+     RustFS를 쓰는 서비스를 그 호스트에 둘 때만 더한다 — 빠지면 `targets validate`(NH-2)가 plane 규칙·`depends_on`으로 거부한다.
+     `cadv`(`all`)는 자동이다.
+   - 파생물은 테스트가 실패하며 내용을 알려 준다: `config/dagster-shared/workspace.<name>.yaml`, Prometheus 타깃
+     (`config/prometheus/prometheus.yml`).
+2. **호스트 준비(저장소 밖).** OS·Docker·compose v2·cgroup swap accounting·NTP·데이터 장치·방화벽. 효과 검사는 §9.1·§9.5가 사례다.
+3. **Manager 설치(그 호스트).** root clone → 현지 wheelhouse → `scripts/install-ktdm-trusted-release`(§3). 설치 전 그 호스트 root
+   `.env`에 다음을 둔다:
+   - `KTDM_HOST=<name>`
+   - `KTDM_DAGSTER_WORKSPACE_DIGEST`(`sha256sum config/dagster-shared/workspace.<name>.yaml | cut -c1-16`)
+   - 호스트별 값: arm64면 `KTDM_POSTGRES_IMAGE`(digest 핀, major 16), `KTDM_PG_*`, `KTDM_*_MEM_LIMIT`, `KTDM_DATA_SOURCE_DEVICE`
+     — `.env.example`의 "호스트별" 절
+
+   이 값들은 **설치 전에** 둔다 — 설치기가 flip 전에 `targets validate`(자기 식별·소비자 origin·workspace digest·PG 이미지·교차
+   호스트 간선)를 돌리고, digest가 새 release의 파일과 다르면 거부한다.
+4. **infra 첫 기동(새 호스트만).** 목록에 넣은 것만: `ensure dagster`(그 호스트의 공용 PG·plane을 처음 세운다 — 이미 운영 중인 호스트의
+   plane 재생성은 `dagster-plane converge`로 한다) → `ensure storage` → `ensure cadv`.
+
+### 10.2 target 이전 `<target> <from> <to>`
+
+**PR.** registry에서 그 target의 `host:` 한 줄(`<from>` → `<to>`)을 바꾼다. 실패하는 파생물 테스트가 고칠 파일을 이름으로 말한다:
+- `workspace.<from>.yaml`·`workspace.<to>.yaml`(Dagster 합류 target)
+- compose의 소비자 origin 기본값(`test_consumer_origin_defaults.py` — 소비자 서비스·env를 이름으로)
+- `config/prometheus/prometheus.yml`
+- `<from>`이 default 호스트면 compose의 `${KTDM_DAGSTER_WORKSPACE_DIGEST:-…}` 기본값(NH-4 결박 테스트)
+
+`targets validate`가 같은 호스트에 있어야 하는 묶음을 강제한다. compose `depends_on` 간선이 그 근거다. 예를 들어 Map·PinVi·concierge는
+함께 옮긴다(PinVi→Map·Map→concierge loopback, `docs/multi-host.md` §3.2).
+
+**적용 순서.** 수동 단계가 섞여 있다. 그중 데이터 이동(④)과 HAProxy(⑥)는 **이 저장소의 범위 밖**이다. 상태가 있는 tenant(다시 만들 수
+없는 DB — Map·PinVi·concierge)를 옮길 때는 ④~⑥ 전체가 **점검 시간 안**이다.
+
+1. **`<from>`: 그 target의 code-server를 먼저 정지(수동)** — 두 plane이 같은 location을 동시에 돌리지 않게(이중 적재 방지).
+   비-default 호스트면 그 호스트 root `.env`의 `KTDM_DAGSTER_WORKSPACE_DIGEST`를 **재설치 전에** 새 `workspace.<from>.yaml`의
+   `sha256[:16]`으로 바꾼다(default 호스트는 compose 기본값이 파생물이라 `.env`에 두지 않는다). 그다음 `<from>`에 Manager를
+   재설치하고(§3 — 설치기가 flip 전에 digest를 대조한다), plane을 다시 만든다:
+   `ktdctl dagster-plane converge --dry-run` → `--confirm`(location 하나 줄어든 workspace). `ensure dagster`는 쓰지 않는다 —
+   공용 PG까지 담긴 target이고 운영 호스트에서 거부된다.
+2. **`<to>`: 같은 sha로 재설치.** 비-default 호스트면 같은 방식으로 `KTDM_DAGSTER_WORKSPACE_DIGEST`를 **재설치 전에** 새
+   `workspace.<to>.yaml` 값으로 바꾼다. 재설치 뒤 `<to>`의 plane을 다시 만든다:
+   `ktdctl dagster-plane converge --dry-run` → `--confirm`(location 하나 늘어난 workspace — code-server가 아직 없으면 plane은
+   그 location을 기다리는 상태다). `targets validate`가 설치된 파일 == digest env를 효과로 검사한다.
+3. **(상태가 없는 tenant는 4를 건너뛴다)** geo·weather·transport처럼 재적재가 정본인 tenant는 `<to>`의 fresh DB에 다시 적재한다
+   (§9.2 ②의 사례) — 5로.
+4. **`<from>`의 데이터 이동(수동, 범위 밖) — 쓰기를 멈춘 뒤에만.**
+   1. 점검 시간을 잡는다.
+   2. `<from>`에서 그 target과 그 소비자를 멈춘다: Manager `stop <target>`, 소비 target의 해당 서비스도 stop.
+      **⑥이 끝날 때까지 정지 상태를 유지한다**(다시 켜면 옛 DB에 쓰기가 생겨 dump 뒤 변경이 사라진다).
+   3. `<from>` 공용 PG에서 그 DB의 연결이 0인지 확인한다:
+      `SELECT count(*) FROM pg_stat_activity WHERE datname = '<db>' AND pid <> pg_backend_pid();` → `0`.
+   4. dump한다(`pg_dump -Fc`). **dump 파일은 정리(⑦)가 끝날 때까지 보존한다.**
+   5. `<to>` 공용 PG에 restore한다(role 리맵 — `shared-postgres-onboarding.md` §7).
+   6. restore를 검증한다: 테이블별 행 수(또는 테이블 체크섬)를 `<from>`과 `<to>`에서 대조해 같아야 한다.
+5. **`<to>`: `ensure <target>`**(db-init → migrate → 적재 재개). 확인: `<to>` plane healthy(location +1), 첫 run SUCCESS, **같은
+   시각 run이 두 호스트에 0건**. 소비자가 있는 호스트에서는 소비자를 재생성한다(`ensure <소비자 target>` — compose 기본값이 바뀐
+   결과이고 `.env` 편집이 아니다).
+6. **HAProxy backend 변경(수동, 범위 밖).** 공개 host의 backend를 `<to>`의 addr로 바꾼다(§9.4 표가 사례). `<from>` 쪽이 멈춘
+   상태에서 소비 경로 1회 성공을 확인한 뒤 바꾼다. 상태 있는 tenant의 점검 시간은 여기서 끝난다.
+7. **`<from>` 정리(수동) — 되돌리기 경로를 정리 직전까지 남긴다(§9.3과 같은 원칙).** 정리 전 조건:
+   - restore 검증(4.6)이 통과했다.
+   - soak 기간 동안 `<to>`가 정상이다(그 target의 정상 run·소비 경로·오류율; 기간은 점검 계획에 적는다 — 하루 이상 권장).
+   - dump 파일이 보존돼 있다.
+   - `<from>` 그 DB의 연결이 0이다.
+
+   그다음 `<from>`의 그 target 컨테이너를 project·디렉터리·서비스를 명시해 지운다:
+   `docker compose -p <project> --project-directory <설치 root 또는 외부 project working_dir> -f <compose 파일> rm -sf <서비스…>`
+   (bare `down` 금지 — 같은 project의 다른 target까지 내린다). 데이터를 옮긴 경우에만 `<from>` 공용 PG의 그 DB·role을 drop한다
+   (§9.6이 사례). Prometheus 타깃은 PR 파생물이 이미 옮겼다.
+
+되돌리기는 같은 절차를 `<to>` → `<from>`으로 다시 밟는 것이다(롤백이 아니라 재배포 — §9.3).

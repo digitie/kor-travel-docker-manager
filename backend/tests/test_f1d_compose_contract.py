@@ -2274,6 +2274,43 @@ def test_every_real_compose_bind_is_declared_in_a_candidate_bind_allowlist() -> 
     )
 
 
+def test_every_real_compose_bind_source_matches_its_allowlist_source() -> None:
+    """키만 맞고 **source**가 어긋나도 배포에서만 죽는다 — 같은 조건을 정적으로 건다.
+
+    #481이 daemon·webserver의 workspace bind를 `workspace.${KTDM_HOST:-n150}.yaml`로 바꾸고
+    allowlist는 옛 별칭 `workspace.yaml`로 두었다(별칭은 2026-10-17 NH-4로 없어졌다). 키 테스트(위)는 통과했고, pinned rebuild는
+    `prebuild_snapshot`에서 "bind source is not canonical"로 죽었다(2026-10-16 t1016a).
+    검증기는 두 원문을 같은 env로 펼쳐 비교하므로 여기서는 원문이 같아야 한다.
+    """
+
+    text = _COMPOSE_PATH.read_text(encoding="utf-8")
+    services = yaml.safe_load(text)["services"]
+    environment = {
+        name: "/placeholder" for name in set(re.findall(r"\$\{([A-Za-z0-9_]+)", text))
+    }
+    allowlist = load_compose_bind_allowlist()
+
+    mismatched: list[tuple[str, str, str | None, str]] = []
+    for service_name, service in services.items():
+        for mount in _candidate_volume_mounts(
+            service.get("volumes"), environment=environment
+        ):
+            if mount.kind != "bind":
+                continue
+            key = (service_name, mount.target, mount.read_only)
+            if key in _CANDIDATE_ALLOWED_SYSTEM_BINDS or key not in allowlist:
+                continue
+            if mount.declared_source != allowlist[key]:
+                mismatched.append(
+                    (service_name, mount.target, mount.declared_source, allowlist[key])
+                )
+
+    assert not mismatched, (
+        "docker-compose.yml bind source가 candidate baseline source와 다르다 — 이 상태로 "
+        f"배포하면 pinned rebuild가 prebuild_snapshot에서 fail-close한다: {mismatched!r}"
+    )
+
+
 # 알려진 예외 — 비어 있다. geo code-server의 `-h 0.0.0.0`은 공용 plane 전환(ADR-54)에서 닫았다(공용
 # daemon·webserver는 host network의 loopback으로 붙는다). 예외를 다시 넣으면 아래 테스트가 그것이 해소됐는지 본다.
 _GRPC_WILDCARD_BIND_KNOWN: frozenset[str] = frozenset()

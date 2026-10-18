@@ -136,8 +136,38 @@ def test_the_whole_start_window_ends_inside_the_rebuild_wait(service_name: str) 
     healthcheck = _healthcheck(service_name)
     cycle = _seconds(healthcheck["interval"]) + _seconds(healthcheck["timeout"])
     window = _seconds(healthcheck.get("start_period", "0s")) + int(healthcheck["retries"]) * cycle
-    assert window < compose_service._COMPOSE_WAIT_TIMEOUT_SECONDS, (
+    wait_timeout = compose_service._compose_wait_timeout_seconds(_services())
+    assert window < wait_timeout, (
         f"`{service_name}`의 기동 창({window:g}초)이 재구축 `--wait-timeout`"
-        f"({compose_service._COMPOSE_WAIT_TIMEOUT_SECONDS}초) 이상이다 — 정말 실패한 기동이 "
+        f"({wait_timeout}초) 이상이다 — 정말 실패한 기동이 "
         "unhealthy 대신 timeout으로 끝난다."
     )
+
+def test_rebuild_wait_follows_frozen_health_and_keeps_legacy_floor() -> None:
+    derive = compose_service._compose_wait_timeout_seconds
+    assert derive({"plain": {}}) == 900
+    assert derive({"cs": {"healthcheck": {
+        "start_period": "600s", "interval": "90s", "timeout": "10s", "retries": 5,
+    }}}) == 1115
+    assert derive({"cs": {"healthcheck": {
+        "start_period": 600_000_000_000, "interval": 90_000_000_000,
+        "timeout": 10_000_000_000, "retries": 5,
+    }}}) == 1115
+    # 현재 정본은 Weather API90초·12회가 가장 길다. source가 아닌 입력 render로 계산한다.
+    assert derive(_services()) == 1155
+
+
+def test_rebuild_wait_ignores_disabled_checks() -> None:
+    derive = compose_service._compose_wait_timeout_seconds
+    for check in ({"disable": True}, {"test": ["NONE"]}):
+        assert derive({"disabled": {"healthcheck": {**check, "start_period": "10h"}}}) == 900
+
+
+@pytest.mark.parametrize("check", [
+    {"interval": "invalid"}, {"timeout": True}, {"start_period": -1},
+    {"interval": float("inf")}, {"retries": True}, {"retries": -1},
+    {"start_period": "10h"},
+])
+def test_rebuild_wait_rejects_invalid_or_unbounded_health(check: dict[str, Any]) -> None:
+    with pytest.raises(compose_service.DeploymentContractError):
+        compose_service._compose_wait_timeout_seconds({"bad": {"healthcheck": check}})

@@ -170,7 +170,7 @@ def shared_workspace(s):
     return bool(workspace_sources(s))
 def workspace_sources(s):
     sources = [str(v.get("source", "")) if isinstance(v, dict) else str(v).split(":", 1)[0] for v in s.get("volumes") or []]
-    return {v for v in sources if re.search(r"(?:^|/)config/dagster-shared/workspace(?:\.[a-z][a-z0-9_-]*)?\.yaml$", v)}
+    return {v for v in sources if re.search(r"(?:^|/)config/dagster-shared/workspace\.[a-z][a-z0-9_-]*\.yaml$", v)}
 def code_server(s):
     argv = words(s)
     return any(w.rsplit("/", 1)[-1] == "dagster" and tuple(argv[i + 1:i + 3]) in (("code-server", "start"), ("api", "grpc"))
@@ -269,11 +269,14 @@ if any(len(s) != 1 for s in sources) or sources[0] != sources[1]:
     sys.exit("shared plane services mount different workspaces")
 workspace = Path(next(iter(sources[0])))
 if not workspace.is_absolute(): workspace = Path(targets_path).parent.parent / workspace
-default = next((n for n, h in targets.get("hosts", {}).items() if h.get("default")), None)
-selected = default if workspace.name == "workspace.yaml" else workspace.name[len("workspace."):-len(".yaml")]
-if selected not in targets.get("hosts", {}) or spec.get("host", default) not in (selected, "all"):
+if not (workspace.name.startswith("workspace.") and workspace.name.endswith(".yaml")) or workspace.name == "workspace.yaml":
+    sys.exit("shared workspace must be config/dagster-shared/workspace.<host>.yaml")
+selected = workspace.name[len("workspace."):-len(".yaml")]
+owner = spec.get("host")
+owners = set(targets.get("hosts", {})) if owner == "all" else set(owner if isinstance(owner, list) else [owner])
+if selected not in targets.get("hosts", {}) or selected not in owners:
     sys.exit("cutover target does not belong to the selected workspace host")
-expected = Path(targets_path).parent / "dagster-shared" / ("workspace.yaml" if workspace.name == "workspace.yaml" and selected == default else "workspace.%s.yaml" % selected)
+expected = Path(targets_path).parent / "dagster-shared" / ("workspace.%s.yaml" % selected)
 if workspace.resolve() != expected.resolve(): sys.exit("workspace is outside the selected release")
 workspace_bytes = workspace.read_bytes()
 workspace_digest = hashlib.sha256(workspace_bytes).hexdigest()[:16]

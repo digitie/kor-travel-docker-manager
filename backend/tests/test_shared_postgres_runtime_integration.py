@@ -36,12 +36,21 @@ from typing import Any
 import docker
 import pytest
 import yaml
+from _compose_test_residue import sweep_dead_runs
 from test_compose_readiness_integration import _unavailable_docker_fixture
-from test_shared_postgres_runtime_contract import _SERVICE, _bytes, _seconds, _service
+from test_shared_postgres_runtime_contract import (
+    _COMPOSE,
+    _SERVICE,
+    _bytes,
+    _seconds,
+    _service,
+    compose_default,
+)
 
 from kor_travel_docker_manager.services import docker_service as docker_service_module
 from kor_travel_docker_manager.services.docker_service import DockerService
 from kor_travel_docker_manager.services.registry import MANAGED_CONTAINERS
+from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 #: 정본에서 그대로 가져오는 실행 형태. 빠진 키는 옮기지 않는다(변경 전 compose에서도 돈다).
 _CARRIED_KEYS = ("image", "init", "command", "healthcheck", "stop_grace_period", "shm_size")
@@ -74,6 +83,8 @@ def _fixture_service() -> dict[str, Any]:
     source = _service()
     environment = source["environment"]
     service = {key: source[key] for key in _CARRIED_KEYS if key in source}
+    # 이미지는 이 호스트가 `.env` 재정의 없이 쓰는 값(기본값)으로 — 가용성 검사가 `${…}` 원문을 보면 늘 skip이다.
+    service["image"] = compose_default(service["image"])
     service.update(
         {
             "pull_policy": "never",
@@ -130,13 +141,14 @@ def isolated_shared_postgres(tmp_path: Path) -> Iterator[str]:
         available = False
     if not available:
         _unavailable_docker_fixture(
-            f"Docker Compose 또는 로컬 이미지 {image}를 쓸 수 없음(pull하지 않는다)"
+            f"Docker Compose 또는 로컬 이미지 {image}를 쓸 수 없음(pull하지 않는다)", images=(str(image),)
         )
 
     compose_path = tmp_path / "compose.yml"
     compose_path.write_text(
         yaml.safe_dump({"services": {"pg": service}}, sort_keys=False), encoding="utf-8"
     )
+    sweep_dead_runs(_PROJECT_PREFIX)  # 죽은 이전 실행의 잔재(`_compose_test_residue` docstring)
     project = f"{_PROJECT_PREFIX}{os.getpid()}-{tmp_path.name[-8:]}".lower()
     env = {**os.environ, "KOR_TRAVEL_SHARED_DB_PORT": _ISOLATED_PORT}
     compose = ("docker", "compose", "--file", str(compose_path), "--project-name", project)
@@ -273,7 +285,8 @@ def test_the_shared_postgres_runs_its_canonical_shape_in_the_pinned_image(
     assert details["HostConfig"]["ShmSize"] == _bytes(source["shm_size"])
 
     # D4 튜닝이 서버에 그대로 들어갔다 — 값마다 `command line`에서 온 것이다.
-    expected = _command_settings(source["command"])
+    # 호스트별 수치(`KTDM_PG_*`, T-MGR-03)는 이 호스트의 기본값으로 — compose가 fixture에서 그렇게 보간한다.
+    expected = _command_settings([compose_default(token) for token in source["command"]])
     assert expected, "전제: 정본 command에 -c 설정이 있다"
     names = ", ".join(f"'{name}'" for name in sorted(expected))
     rows = _psql(
@@ -372,3 +385,118 @@ def test_the_shared_postgres_runs_its_canonical_shape_in_the_pinned_image(
     logs = _run("docker", "logs", container)
     assert "database system is shut down" in logs.stdout + logs.stderr
     assert elapsed < grace, f"정지가 {elapsed:.0f}초 걸렸다 — signal이 postmaster에 닿지 않았다"
+
+
+#: db-init-geo가 `x_extension`에 만드는 확장(ADR-58 결정 3, T-MGR-03) — geo DDL과 같은 배치.
+_GEO_EXTENSIONS = {"postgis", "pg_trgm", "unaccent", "pg_stat_statements"}
+
+
+def _run_db_init_geo(container: str, details: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+    """정본 db-init-geo 스크립트를 격리 instance 안에서 그대로 돌린다(compose가 하듯 `$$` → `$`).
+
+    secret 파일은 격리 컨테이너 안에만 쓴다 — 관리 비밀번호는 fixture가 만든 일회용이다.
+    """
+
+    init = _service_named("kor-travel-shared-db-init-geo")
+    script = str(init["command"][-1]).replace("$$", "$")
+    environment = {
+        key: compose_default(value)
+        for key, value in init["environment"].items()
+        if key not in {"PGHOST", "PGPORT", "PGUSER", "PGDATABASE"}
+    }
+    # 접속은 격리 instance의 관리 계정·bootstrap DB로(fixture가 그 이름을 정본 서비스에서 가져왔다).
+    environment.update(
+        {
+            "PGHOST": "127.0.0.1",
+            "PGPORT": _ISOLATED_PORT,
+            "PGUSER": _container_env(details, "POSTGRES_USER"),
+            "PGDATABASE": _container_env(details, "POSTGRES_DB"),
+        }
+    )
+    secret_paths = [entry["target"] for entry in init["secrets"]]
+    admin_password = _container_env(details, "POSTGRES_PASSWORD")
+    # 관리·앱 비밀번호 둘 다 같은 일회용 값이다(격리 instance에서 의미 없음 — 스크립트가 읽을 파일만 있으면 된다).
+    commands = [
+        "docker",
+        "exec",
+        "--env",
+        f"KTDM_IT_SECRET={admin_password}",
+        container,
+        "sh",
+        "-c",
+        'mkdir -p /run/secrets && for path in "$@"; do printf %s "$KTDM_IT_SECRET" > "$path"; done',
+        "sh",
+        *secret_paths,
+    ]
+    written = _run(*commands)
+    assert written.returncode == 0, written.stderr
+    exec_env = [item for key, value in environment.items() for item in ("--env", f"{key}={value}")]
+    return _run("docker", "exec", *exec_env, container, "sh", "-ec", script)
+
+
+def _service_named(name: str) -> dict[str, Any]:
+    document = load_yaml_rejecting_duplicate_keys(_COMPOSE.read_text(encoding="utf-8"))
+    service = document["services"][name]
+    assert isinstance(service, dict)
+    return service
+
+
+def test_db_init_geo_creates_the_extensions_on_a_fresh_cluster_and_is_a_no_op_after(
+    isolated_shared_postgres: str,
+) -> None:
+    container = isolated_shared_postgres
+    _wait_healthy(container)
+    details = _inspect(container)
+    init = _service_named("kor-travel-shared-db-init-geo")
+    database = compose_default(init["environment"]["KOR_TRAVEL_GEO_SHARED_DB"])
+    app_user = compose_default(init["environment"]["KOR_TRAVEL_GEO_SHARED_APP_USER"])
+
+    def extensions() -> dict[str, str]:
+        rows = _psql_in(
+            container,
+            details,
+            database,
+            "SELECT e.extname, n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace",
+        )
+        return dict(line.split("|") for line in rows.splitlines() if line)
+
+    # fresh 경로(odroid — pg_restore 없음): 확장 4종이 `x_extension`에, app role은 그 스키마를 쓸 수 있다.
+    first = _run_db_init_geo(container, details)
+    assert first.returncode == 0, first.stderr[-2000:]
+    created = extensions()
+    assert {name: created.get(name) for name in _GEO_EXTENSIONS} == dict.fromkeys(_GEO_EXTENSIONS, "x_extension")
+    usage = _psql_in(
+        container, details, database, f"SELECT has_schema_privilege('{app_user}', 'x_extension', 'USAGE')"
+    )
+    assert usage.strip() == "t"
+
+    # 이미 있는 경로(n150 — dump가 재생): 다시 돌려도 성공하고 아무것도 바뀌지 않는다.
+    second = _run_db_init_geo(container, details)
+    assert second.returncode == 0, second.stderr[-2000:]
+    assert extensions() == created
+
+
+def _psql_in(container: str, details: dict[str, Any], database: str, sql: str) -> str:
+    result = _run(
+        "docker",
+        "exec",
+        "--user",
+        "postgres",
+        container,
+        "psql",
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--field-separator",
+        "|",
+        "--port",
+        _ISOLATED_PORT,
+        "--username",
+        _container_env(details, "POSTGRES_USER"),
+        "--dbname",
+        database,
+        "--command",
+        sql,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout

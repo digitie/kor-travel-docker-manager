@@ -215,8 +215,14 @@ live 통과는 별도 gate이며, 소스 구현만으로 운영 이전 완료를
 
 v1은 host 필드가 없는 기존 개발 fixture에만 loopback으로 호환된다. 운영 설치본은 v2와 명시적 `KTDM_HOST`가
 필수이며, trusted wheel의 설치 경로 판정은 환경의 project root와 분리한다. 캐시된 registry를 읽더라도
-설치 경로 변경과 실제 IPv4 소유 여부를 다시 검사한다. Linux `ip -j -4 address show`로 secondary 주소도 확인한다.
-목록 순회는 순회당 한 snapshot만 만들고 host 환경값을 전역 캐시하지 않는다.
+설치 경로 변경과 `KTDM_HOST`(env·`.env`)는 조회마다 다시 본다. 인터페이스 IPv4 집합(Linux `ip -j -4 address show`,
+secondary 주소 포함)은 **프로세스당 한 번** 읽되, 자기 식별이 맞지 않으면 캐시를 비우고 **한 번** 다시 읽는다(부팅 직후
+Wi-Fi 주소가 늦게 붙어 첫 probe에 없던 경우가 프로세스 수명 동안 남지 않게). 오류 문구는 "이 장비에 할당된 선언 호스트 없음"
+(`none`)과 "둘 이상"을 구분한다. 운영 모드 자기 식별은 "주소가 이 장비에 있는 선언 호스트가 **정확히 하나** ∧ 그것 == `KTDM_HOST`"다 — 선언 주소 둘이
+로컬(보조 IPv4·VIP)이면 어느 이름이든 거부한다. 설치기는 flip **전에** 새 release의 `targets validate --json`을 프로세스 env의
+`KTDM_HOST` 없이(`.env`만으로) 돌려 위 거부 조건이면 넘기지 않는다(`scripts/install-ktdm-trusted-release`의 `host-identity` 구간).
+R1 렌더에서 원격 소유 호스트가 둘 이상인 컨테이너는 이름순 첫 호스트로 풀지 않고 그 connection만 `{host}` 그대로(미해석) 둔다.
+목록 순회는 순회당 한 snapshot만 만든다.
 
 **registry.** 최상위 `hosts:`(`<키>: {addr: <IPv4>, default: true|생략}`, default는 정확히 1개)와 target의 `host:`(tenant: `hosts` 키
 하나, 생략 = default; infra `storage`/`dagster`/`cadv`: `all`). 로더는 오늘의 unknown-field 거부(`registry.py:373-376`와 같은
@@ -269,7 +275,9 @@ transport `:1744`, PinVi ETL `:2142`, 그리고 pinvi-api 블록에 추가되는
 compose를 스캔해 이 집합을 찾는다(줄 번호 열거 금지). root `.env`에 다른 값을 적으면 `targets validate`가 거부한다.
 **2026-10-14 잠정 시행으로 대체**: 소비자 포트는 geo `12501`·transport API gateway `12301`·weather `12201`(odroid `192.168.1.13`),
 집합은 8곳(geo 5 — Map 4·pinvi-api `PINVI_KOR_TRAVEL_GEO_BASE_URL` 1, transport 1, weather 2 — PinVi ETL·pinvi-api), 결박은
-`backend/tests/test_consumer_origin_defaults.py`의 렌더 스캔이다. `validate`의 `.env` 재정의 거부는 아직 없다(T-MGR-01c).
+`backend/tests/test_consumer_origin_defaults.py`의 렌더 스캔이다. **2026-10-16 T-MGR-01c**: 포트는 registry 형제 target의
+`consumer_origin`(`http://{host}:<port>`, R1 렌더 — 소비자를 실행하는 target의 호스트 기준)에서 파생하고, `targets validate`가 root
+`.env`의 원천 변수 재정의가 그 기대값과 다르면 거부한다(설치기의 flip 전 검사도 같은 명령이라 함께 막는다).
 
 **compose `depends_on`(R7).** 간선은 양끝 서비스의 host 집합이 같을 때만 둔다. tenant 간 의존(`kor-travel-map-api → kor-travel-geo-api`,
 `docker-compose.yml:1535`)은 삭제하고 런타임 REST 검증(health probe·fail-open 기동·`failure_kind`; Map은 `kor_travel_geo_preflight_required`
@@ -277,14 +285,22 @@ compose를 스캔해 이 집합을 찾는다(줄 번호 열거 금지). root `.e
 없이 의존 closure를 올리므로(`compose_service.py:3572-3589,3714-3719`) 간선이 남으면 geo 플립 뒤 n150 `ensure map`이 geo-api를 n150에
 되살린다.
 
-**`ensure` 프리플라이트(T-MGR-05).** 이미지 `.Architecture` == 호스트 arch(amd64 이미지를 arm64 호스트에 올리면 거부);
-`KTDM_DATA_SOURCE_DEVICE`가 설정돼 있으면 bind 경로마다 `findmnt -T <경로> -o SOURCE`가 그 장치인지(미설정이면 생략 — n150 무변경);
-`docker compose config` 렌더 성공(compose 플러그인 부재는 여기서 드러난다 — `backend/tests/test_compose_readiness_integration.py:78`의
-`compose version`보다 효과가 앞선다).
+**`ensure` 프리플라이트(T-MGR-05, 2026-10-16 구현 — `services/ensure_preflight.py`).** `up` 전에, `ensure`의 transaction이 이미
+`docker compose config --format json`으로 해석한 문서에서 올릴 서비스(+`run` init step one-shot)를 보고 셋을 효과로 확인한다.
+(1) **렌더 성공**: 그 해석 자체 — compose 플러그인 부재·렌더 실패면 `compose candidate resolution failed`로 프리플라이트 전에
+멈춘다(새로 만든 검사가 아니라 순서만 테스트로 고정). (2) **이미지 arch**: 로컬에 있는 이미지의 `.Architecture` == `docker info`의
+`Architecture`(x86_64→amd64·aarch64→arm64로 맞춤; 로컬에 없는 이미지는 빌드·pull이 호스트 플랫폼을 고르므로 보지 않는다).
+(3) **쓰기 bind 장치**: root `.env`의 `KTDM_DATA_SOURCE_DEVICE`가 설정됐을 때만, 쓰기 가능 bind 소스마다 `findmnt -n -T <경로>
+-o SOURCE`의 장치(`[…]` 앞)가 그 값(읽기 전용 bind — 설정 파일 — 는 보지 않는다; 없는 경로는 가장 가까운 조상). 미설정이면
+`findmnt`를 부르지 않는다 — n150 무변경(설치본 렌더 43 서비스로 실측 통과).
 
-**`targets validate --json` 출력(초안).** `{"ok": bool, "host": "<KTDM_HOST 또는 default>", "targets": {"<id>": {"host": "<hosts 키|all>",
-"local": bool}}, "errors": [...]}` — transport 저장소의 배포 스크립트가 `targets.transport.host == <addr의 키>`를 효과로 읽는다. 스키마는
-T-MGR-01a에서 확정한다.
+**`targets validate --json` 출력.** 현재 성공 응답의 `status: "ok"`·`host`·`targets.<id>.host`를 보존한다.
+여기에 `hosts.<key>.addr`를 추가해, Transport 배포 검증이 target의 호스트 키와 실제 registry 선언 주소를
+함께 대조할 수 있도록 한다. 주소는 검증된 registry `hosts:`에서 그대로 투영하며 DNS 조회나 원격 연결을 하지 않는다.
+각 호스트는 `{"addr": "<IPv4>"}`만 출력하고 `default`·SSH 옵션·인증 정보나 target의 다른 설정은 복사하지 않는다.
+호스트 선언이 없는 옛 v1 개발 fixture에서는 `hosts: {}`이며 기존 `host: "local"`·target 출력은 유지한다.
+일반 텍스트 성공 출력은 기존 `OK`다. 실패 시 기존 stderr/종료 코드 동작도 바꾸지 않는다. 실제 주소가 이 장비에
+할당되었는지에 대한 운영 자기 식별과 `--check-coordinates` 검사는 기존 경계를 그대로 사용한다.
 
 **호스트 차이는 root `.env`뿐이다(R6).** compose 파일은 하나. odroid `.env`에만 있는 키(예정, 값은 T-MGR-02/03/05에서 추가):
 `KTDM_HOST`, `KTDM_DAGSTER_WORKSPACE_DIGEST`, `KTDM_POSTGRES_IMAGE`/`KTDM_POSTGRES_CLIENT_IMAGE`, `KTDM_PG_*` 튜닝, `KTDM_DATA_SOURCE_DEVICE`,
@@ -2002,3 +2018,7 @@ healthcheck 주기·timeout·retry·기동 유예, 공유 instance 동시성은 
 운영 효과는 아직 입증하지 않았다. CPU 포화 관측과 단일 CLI의 12초 timeout만으로
 이 변경의 CPU·지연 개선을 주장할 수 없다. 동일 workload에서 변경 전후 probe CPU·종료시간,
 수집 신선도와 오류를 비교해야 하며, 주기 분산/60초 주기 실험은 별도 후속 판단이다.
+
+## 상태 점검 간격 정합
+
+서비스별 승인 간격과 적용 경계는 [배포 상태 점검 간격 정합](health-cadence.md)을 따른다. 기존 Test와 readiness 계약은 유지하며, Compose 파일 저장만으로 실행 중인 healthcheck가 바뀌었다고 판단하지 않는다.

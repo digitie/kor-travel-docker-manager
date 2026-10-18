@@ -58,6 +58,14 @@ def _service() -> dict[str, Any]:
     return service
 
 
+_DEFAULTED = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}")
+
+
+def compose_default(value: object) -> str:
+    """`${VAR:-default}`를 기본값으로 푼다 — root `.env`에 재정의가 없는 호스트(n150)가 실제로 쓰는 값."""
+    return _DEFAULTED.sub(lambda match: match.group(2), str(value))
+
+
 def _seconds(duration: object) -> float:
     """compose duration 문자열(`300s`, `5m`, `1m30s`)을 초로."""
     text = str(duration).strip()
@@ -133,15 +141,23 @@ def test_the_shared_postgres_has_room_for_parallel_query_shared_memory() -> None
 
 
 def test_the_shared_postgres_command_is_the_d4_tuning() -> None:
-    """공용 instance가 Map의 튜닝을 진다(ADR-53, D4) — 순서까지 정확히.
+    """공용 instance가 Map의 튜닝을 진다(ADR-53, D4) — 순서까지 정확히, **기본값으로 푼 값**으로.
 
     값마다 출처 규칙이 있다: `listen_addresses`·`-p`는 공용 그대로, preload·autoprewarm·
     `work_mem`·`effective_cache_size`·`max_wal_size`는 Map, `shared_buffers`는 오너 결정
     (1GB), 둘 다 두던 `maintenance_work_mem`은 큰 쪽(Map 256MB), `pg_stat_statements.*`는
-    공용. 튜닝 값에 `${`가 없어야 compose가 단일 정본이다 — `.env` 한 줄이 조용히 덮지
-    못한다. `ALTER SYSTEM`은 쓰지 않는다.
+    공용. `ALTER SYSTEM`은 쓰지 않는다.
+
+    2026-10-16(ADR-58 R6·결정 8 ⅰ, T-MGR-03): 튜닝 수치는 호스트별 root `.env`(`KTDM_PG_*`)로 바꿀 수 있고 기본값이
+    n150 값이다 — 그래서 여기서는 기본값으로 푼 명령을 대조한다. 끝의 여섯 키는 PG 16 서버 기본값이라 n150 효과가 0이다
+    (`test_postgres_host_tuning.py`). preload·`pg_stat_statements.*`·`max_locks_per_transaction`(#471, 두 호스트 같은
+    리터럴 — 결정 8 ⅰ)은 env로 바꿀 수 없다.
     """
-    command = _service()["command"]
+    raw = _service()["command"]
+    command = [compose_default(token) if token.startswith(("shared_buffers=", "work_mem=", "maintenance_work_mem=",
+               "effective_cache_size=", "random_page_cost=", "max_wal_size=", "max_parallel_workers",
+               "effective_io_concurrency=", "checkpoint_timeout=", "wal_compression=", "autovacuum_max_workers="))
+               else token for token in raw]
     assert command == [
         "postgres",
         "-c",
@@ -165,21 +181,41 @@ def test_the_shared_postgres_command_is_the_d4_tuning() -> None:
         "-c",
         "max_wal_size=2GB",
         "-c",
+        "max_parallel_workers=8",
+        "-c",
+        "max_parallel_workers_per_gather=2",
+        "-c",
+        "effective_io_concurrency=1",
+        "-c",
+        "checkpoint_timeout=5min",
+        "-c",
+        "wal_compression=off",
+        "-c",
+        "autovacuum_max_workers=3",
+        "-c",
         "pg_stat_statements.track=all",
         "-c",
         "pg_stat_statements.max=10000",
         "-c",
         "max_locks_per_transaction=256",
     ]
-    settings = [command[index + 1] for index, token in enumerate(command) if token == "-c"]
-    assert not any("${" in setting for setting in settings), settings
+    settings = [raw[index + 1] for index, token in enumerate(raw) if token == "-c"]
+    fixed = [s for s in settings if s.startswith(("shared_preload_libraries=", "pg_prewarm.", "pg_stat_statements.",
+                                                   "max_locks_per_transaction=", "listen_addresses="))]
+    assert fixed and not any("${" in setting for setting in fixed), fixed
+    # 바꿀 수 있는 것은 `${KTDM_PG_<KEY>:-default}` 꼴 하나뿐이다(다른 변수·기본값 없는 꼴 금지).
+    tunable = [s for s in settings if "${" in s]
+    for setting in tunable:
+        key, _, value = setting.partition("=")
+        assert re.fullmatch(rf"\$\{{KTDM_PG_{key.upper()}:-[^}}]+\}}", value), setting
 
 
 def test_the_shared_postgres_image_is_digest_pinned() -> None:
     """태그만 두면 recreate나 `docker pull` 한 번이 모든 테넌트의 PostgreSQL을 바꾼다."""
     image = _service()["image"]
     assert isinstance(image, str)
-    assert re.search(r"@sha256:[0-9a-f]{64}$", image), image
+    # 호스트별 이미지(`KTDM_POSTGRES_IMAGE`, ADR-58 결정 9)는 바꿀 수 있지만 기본값(n150)은 digest 핀이다.
+    assert re.fullmatch(r"\$\{KTDM_POSTGRES_IMAGE:-[^}]+@sha256:[0-9a-f]{64}\}", image), image
 
 
 def test_the_compose_duration_and_size_parsers_read_what_compose_writes() -> None:

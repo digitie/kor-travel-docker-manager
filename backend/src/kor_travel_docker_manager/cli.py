@@ -15,6 +15,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
 )
 from kor_travel_docker_manager.services.compose_service import (
     compose_service,
+    get_compose_path,
     get_env_path,
     rebuild_failure_stage,
 )
@@ -171,6 +172,85 @@ def _targets_config_error_text(exc: BaseException) -> str:
     return scrub_failure_text(str(exc), get_env_path())
 
 
+def _consumer_origin_env_violations(config: dict[str, Any]) -> list[str]:
+    """설치된(또는 checkout의) compose를 원문으로 읽어 소비자 env를 찾고, root `.env` 재정의를 대조한다.
+
+    compose 파일이 없으면(합성 targets만 있는 개발 fixture) 대조할 소비자가 없다 — 빈 목록.
+    """
+    from kor_travel_docker_manager.services.consumer_origins import env_override_violations
+    from kor_travel_docker_manager.services.registry import root_env_value
+    from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
+
+    compose_path = Path(get_compose_path())
+    if not compose_path.is_file():
+        return []
+    compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
+    return env_override_violations(compose, config, root_env_value)
+
+
+def _rendered_value() -> Any:
+    """compose와 같은 우선순위의 보간 값: 프로세스 env에 **있으면**(빈 값이어도) 그것, 없으면 compose가 읽는 `.env`
+    (`get_env_path()` — `KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE` 존중), 그다음 `${VAR:-default}`의 기본값."""
+    from dotenv import dotenv_values
+
+    env_path = Path(get_env_path())
+    file_values = dotenv_values(env_path, interpolate=False) if env_path.is_file() else {}
+
+    def value(name: str) -> str | None:
+        return os.environ[name] if name in os.environ else file_values.get(name)
+
+    return value
+
+
+def _host_edge_violations(config: dict[str, Any]) -> list[str]:
+    """교차 호스트 compose 간선·무소유 서비스·plane 없는 합류(R7, T-MGR-NH NH-2). compose가 없으면 빈 목록."""
+    from kor_travel_docker_manager.services.host_edges import host_edge_violations
+    from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
+
+    compose_path = Path(get_compose_path())
+    if not compose_path.is_file():
+        return []
+    compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
+    return host_edge_violations(compose, config)
+
+
+def _postgres_image_violations(config: dict[str, Any]) -> list[str]:
+    """렌더된 PG 서버 이미지 == digest 핀 + PGDATA major(T-MGR-03 리뷰). compose가 없으면 빈 목록."""
+    from kor_travel_docker_manager.services.postgres_image import (
+        declared_postgres_services,
+        postgres_image_violations,
+    )
+    from kor_travel_docker_manager.services.workspace_digest import interpolate
+    from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
+
+    compose_path = Path(get_compose_path())
+    if not compose_path.is_file():
+        return []
+    compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
+    services = compose.get("services") or {}
+    value = _rendered_value()
+    declared = declared_postgres_services(config)
+    rendered = {
+        name: {"image": interpolate(str(services[name].get("image") or ""), value)}
+        for name in declared
+        if isinstance(services.get(name), dict)
+    }
+    return postgres_image_violations(rendered, declared)
+
+
+def _workspace_digest_violations(config: dict[str, Any]) -> list[str]:
+    """설치된 공용 Dagster workspace 파일의 sha256[:16] == digest env(T-MGR-02, 효과). compose가 없으면 빈 목록."""
+    from kor_travel_docker_manager.services.registry import get_project_root
+    from kor_travel_docker_manager.services.workspace_digest import workspace_digest_violations
+    from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
+
+    compose_path = Path(get_compose_path())
+    if not compose_path.is_file():
+        return []
+    compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
+    return workspace_digest_violations(compose, config, Path(get_project_root()), _rendered_value())
+
+
 def _cmd_targets_validate(args: argparse.Namespace) -> int:
     """GM-11 후속(docker-targets.yml 스키마 검증 잔여): `docs/docker-management.md`
     3절이 안내하던 별도 python 한 줄 pre-flight 검증(`load_targets_config()`를 직접
@@ -200,19 +280,70 @@ def _cmd_targets_validate(args: argparse.Namespace) -> int:
             print(json.dumps({
                 "status": "ok",
                 "host": current_host(config),
+                "hosts": {name: {"addr": spec["addr"]}
+                          for name, spec in config.get("hosts", {}).items()},
                 "targets": {name: {"host": spec.get("host", default_host(config))}
                             for name, spec in config["targets"].items()},
             }, ensure_ascii=False))
         else:
             print("OK")
 
+    # R2(T-MGR-01c): root `.env`가 소비자 origin을 registry 기대값과 다르게 재정의하면 거부한다. compose는 기본값만
+    # 파생물로 갖고 `.env`는 그것을 조용히 가릴 수 있다 — 그 재정의가 플립을 따라가지 못하면 소비자가 옛 호스트를 부른다.
+    try:
+        override_violations = _consumer_origin_env_violations(config)
+    except (*TARGETS_CONFIG_ERRORS, ValueError) as exc:
+        # compose를 읽지 못하거나(권한·인코딩) 파싱하지 못해도 traceback이 아니라 한 줄로 끝낸다.
+        print(f"consumer origin check: {_targets_config_error_text(exc)}", file=sys.stderr)
+        return 1
+    if override_violations:
+        for line in override_violations:
+            print(line, file=sys.stderr)
+        return 1
+    # T-MGR-02: 공용 plane이 마운트할 workspace 파일과 digest env가 어긋나면 plane이 unhealthy가 된다 — 설치 전에 멈춘다.
+    try:
+        digest_violations = _workspace_digest_violations(config)
+    except (*TARGETS_CONFIG_ERRORS, ValueError) as exc:
+        print(f"workspace digest check: {_targets_config_error_text(exc)}", file=sys.stderr)
+        return 1
+    if digest_violations:
+        for line in digest_violations:
+            print(line, file=sys.stderr)
+        return 1
+    # T-MGR-03: `.env`의 서버 이미지가 다른 major·floating tag면 재생성된 공용 PG가 PGDATA를 거부한다 — 설치 전에 멈춘다.
+    try:
+        image_violations = _postgres_image_violations(config)
+    except (*TARGETS_CONFIG_ERRORS, ValueError) as exc:
+        print(f"postgres image check: {_targets_config_error_text(exc)}", file=sys.stderr)
+        return 1
+    if image_violations:
+        for line in image_violations:
+            print(line, file=sys.stderr)
+        return 1
+    # T-MGR-NH NH-2(R7): 다른 호스트 서비스에 기대는 compose 간선은 그 호스트의 `up`이 남의 tenant를 되살리거나 loopback을
+    # 비운다 — 플립 전에 멈춘다.
+    try:
+        edge_violations = _host_edge_violations(config)
+    except (*TARGETS_CONFIG_ERRORS, ValueError) as exc:
+        print(f"host edge check: {_targets_config_error_text(exc)}", file=sys.stderr)
+        return 1
+    if edge_violations:
+        for line in edge_violations:
+            print(line, file=sys.stderr)
+        return 1
+
     if not getattr(args, "check_coordinates", False):
         emit_validated()
         return 0
+    from kor_travel_docker_manager.services.registry import current_host, target_hosts
+
+    # R5(ADR-58): 좌표는 호스트 상대다 — 이 호스트의 target만 본다. 다른 호스트의 target(odroid의 transport·`node`)
+    # 좌표가 여기 없는 것은 정상이다.
+    here = current_host(config)
     missing: list[str] = []
     for target_id, spec in (config.get("targets") or {}).items():
         external = spec.get("external_project")
-        if not external:
+        if not external or here not in target_hosts(target_id, config):
             continue
         working_dir = Path(str(external["working_dir"]))
         if not working_dir.is_dir():

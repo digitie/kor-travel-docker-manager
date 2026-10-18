@@ -77,7 +77,7 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
 > **B-5~B-9 최초 계획(ADR-58 proposed, 2026-10-13).** 각 항목의
 > "결박"에 적은 T-MGR 번호의 PR이 사본과 테스트를 **같은 PR에서** 만든다(DO NOT 15의 결박 규칙).
 > 테스트 이름은 그 PR에서 확정하며, 여기에는 이미 존재하는 테스트 파일만 코드 폰트로 적는다.
-> **2026-10-14 잠정 시행**(ADR-58 "잠정 시행"): B-6은 렌더 스캔 테스트와 함께 들어왔고, B-5는 한 파일
+> **2026-10-14 잠정 시행**(ADR-58 "잠정 시행"): B-6은 렌더 스캔 테스트와 함께 들어왔고(2026-10-16 T-MGR-01c가 registry 파생으로 마감), B-5는 한 파일
 > (`workspace.yaml` = n150 plane)에 호스트 필터만 들어왔다. 나머지는 계획 그대로다.
 > **2026-10-15 PR #481 소스 구현:** B-5·B-7·B-9를 아래 테스트로 결박한다. 운영 설치·두 독립 리뷰와 live gate는 별도다.
 
@@ -95,28 +95,32 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   (`host: odroid`)가 빠져 4 location(geo·conc·map·pinvi), 2026-10-15 geo도 빠져 3 location(conc·map·pinvi). 결박은 `test_the_workspace_file_is_the_derivation`과 옮긴 target의
   빨간 대조군(`test_bringing_a_moved_target_back_drifts_the_workspace`·`test_a_moved_target_left_in_the_workspace_is_named`).
   당시에는 odroid 파일이 없어 "합집합 == shared 집합"을 단언하지 않았다.
-- **현재 결박**: `test_host_workspaces.py`의 `test_all_committed_hosts_are_derived_and_alias_is_default`,
+- **현재 결박**: `test_host_workspaces.py`의 `test_all_committed_hosts_are_derived`,
   `test_third_host_move_changes_only_affected_workspaces`, `test_host_all_and_own_switch_are_honored`가
-  registry의 모든 host와 기본 alias를 계산·비교한다. instance YAML byte는 변경하지 않는다.
+  registry의 모든 host를 계산·비교한다. instance YAML byte는 변경하지 않는다. 옛 별칭 `workspace.yaml`은 2026-10-17
+  T-MGR-NH NH-4로 없어졌고(파일이 **없음**을 같은 테스트가 단언), compose·registry의 default 호스트 기본값
+  (`${KTDM_HOST:-…}`·`${KTDM_DAGSTER_WORKSPACE_DIGEST:-…}`)은 `test_default_host_values_are_the_default_hosts_derivation`이 결박한다.
 
-### B-6. (잠정 시행 2026-10-14) 내부 consumer가 부르는 형제 서비스의 origin
+### B-6. 내부 consumer가 부르는 형제 서비스의 origin(2026-10-14 잠정 시행 → 2026-10-16 T-MGR-01c 구현)
 
-- **사실**: Map(api·dagster code-server·legacy webserver/daemon)→geo(`12501`)·Map→transport(API gateway `12301`)·PinVi ETL→weather(`12201`)·
-  pinvi-api→weather(`12201`)의 host. 포트는 2026-10-14 소유자가 odroid에서 통일한 값이다(옛 n150 `14001`·`14101`이 아니다)
-- **정본**: registry `hosts:` + 각 target의 `host:`(렌더 호스트와 같으면 `127.0.0.1`, 아니면 그 addr)
-- **사본**: Manager `docker-compose.yml`에서 **형제 서비스 포트(`12501`/`12301`/`12201`, 되돌림 감지용 옛 `14001`/`14101`)를 기본값에 가진 env 전부**(비활성
-  `legacy-dagster` profile 포함) — 오늘 **8곳**: geo 5곳(`KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL` 4곳 — map-api·map code-server·legacy webserver/daemon —
-  와 pinvi-api `PINVI_KOR_TRAVEL_GEO_BASE_URL` 신설), transport `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`(map code-server), weather
-  `PINVI_KOR_TRAVEL_WEATHER_BASE_URL` 2곳(PinVi ETL code-server — 리터럴에서 `${…:-…}`로 — 와 pinvi-api 신설). 빼는 것: 형제 자신의 서비스(geo code-server의 `KTG_DAGSTER_ADMIN_API_URL`, weather-web의
-  `WEATHER_API_INTERNAL_URL` — 같은 호스트 안 자기 호출)와 `NEXT_PUBLIC_*`(브라우저 공개 origin — root `.env`의 `KTDM_PROD_URL_*`, R6)
-- **사본이 필요한 이유**: compose는 registry를 읽지 못한다(compose subprocess는 allowlist env만 받는다,
-  `compose_service.py:3154-3158`). 값을 root `.env`로 내리면 호스트마다 손으로 맞추는 두 번째 사본이 생긴다 —
-  그래서 기본값을 커밋 파생물로 두고 `.env` 재정의는 `targets validate`가 거부한다
-- **결박**: `test_every_consumer_default_is_the_sibling_origin`이 compose를 **스캔**해 그 집합을 찾고(줄 번호 열거 금지 — 지정 줄만
-  보면 하나를 빠뜨려도 초록이다; 하한은 `test_the_scan_sees_every_known_consumer`) 기대 origin == 각 기본값을 단언한다 — 어느 한 곳을
-  옛 n150 loopback으로 되돌리면 그 곳이 이름으로 빨갛다(`test_reverting_any_one_consumer_to_its_n150_loopback_is_named`). **잠정**:
-  형제 → 소비자 포트 표만 테스트에 있고 호스트는 registry `host:`에서 파생한다(default면 `127.0.0.1`; 2026-10-15부터 geo·transport·
-  weather 모두 `host: odroid`라 재정의 없음). 포트 표를 registry로 옮기는 것과 `.env` 재정의 거부(validate)는 T-MGR-01c
+- **사실**: Map(api·dagster code-server·legacy webserver/daemon)→geo·Map→transport(API gateway)·PinVi ETL·pinvi-api→weather의 origin
+- **정본**: registry — 형제 target의 `consumer_origin`(`http://{host}:<port>`; 포트는 2026-10-14 소유자가 odroid에서 통일한 값,
+  geo `12501`·transport `12301`·weather `12201`)을 R1으로 렌더한다(`registry.consumer_origin`): 소비자 서비스가 도는 호스트에서 보아
+  형제와 같은 호스트면 `127.0.0.1`, 아니면 형제 호스트의 `addr`. 소비자 호스트는 그 서비스를 **실행**하는 target의 호스트, 없으면
+  (옛 `legacy-dagster` 서비스) 그 서비스의 Dagster family target의 호스트다 — 둘 다 없거나 하나로 정해지지 않으면 기대값을 짓지
+  않고 "unresolved"로 보고한다. 형제가 여러 호스트에 있으면 주소가 하나가 아니라는 오류다
+- **사본**: Manager `docker-compose.yml`에서 **registry가 명시한 형제 포트(`consumer_origin` 포트와 `retired_consumer_ports` —
+  transport `14001`·weather `14101`)를 가진 URL을 값에 둔 env 전부**(비활성 profile 포함) — 오늘 8곳(geo 5·transport 1·weather 2).
+  형제의 다른 포트(S3·UI·Dagster)는 소비자 origin이 아니다. 빼는 것: 형제 자신의 서비스(같은 호스트 안 자기 호출)와
+  `NEXT_PUBLIC_*`(브라우저 공개 origin — root `.env`의 `KTDM_PROD_URL_*`, R6). 비교는 끝 `/`를 무시한다
+- **사본이 필요한 이유**: compose는 registry를 읽지 못한다(compose subprocess는 allowlist env만 받는다). 값을 root `.env`로 내리면
+  호스트마다 손으로 맞추는 두 번째 사본이 생긴다 — 그래서 기본값을 커밋 파생물로 두고 `.env` 재정의는 `targets validate`가
+  거부한다(기대값과 다를 때만; 빈 값은 compose가 기본값을 쓴다; 문구에는 변수 이름과 기대값만; 설치기 flip 전 검사도 같은 명령)
+- **결박**: `services/consumer_origins.py`의 스캔을 `backend/tests/test_consumer_origin_defaults.py`가 쓴다 —
+  `test_every_consumer_default_is_the_registry_origin`(기본값 == 기대 origin, 하한 `test_the_scan_sees_every_known_consumer`),
+  `test_reverting_any_one_consumer_to_loopback_is_named`·`test_moving_the_registry_port_and_retiring_the_old_one_names_every_consumer`
+  (빨간 대조군), `test_unrelated_sibling_ports_are_not_consumer_origins`, `test_validate_rejects_a_root_env_override_that_differs`
+  (validate 효과). 테스트에 포트 표는 없다
 
 ### B-7. 공용 workspace digest의 기본값
 
@@ -132,13 +136,22 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   `test_either_frozen_plane_digest_drift_rejected`가 기존 frozen render의 두 plane을 같은 파일 bytes에 묶는다.
   `test_wrong_host_or_noncanonical_workspace_path_rejected`가 선택 host와 실제 bind 경로를 함께 검사한다.
 
-### B-8. (계획) Prometheus scrape 타깃의 host
+### B-8. Prometheus scrape 타깃(2026-10-16 T-MGR-04 구현)
 
-- **사실**: n150 Prometheus가 긁는 geo/weather/transport/odroid exporter의 주소
-- **정본**: registry `hosts:` + `host:`
-- **사본**: `config/prometheus/prometheus.yml`의 `static_configs.targets`(오늘 n150 자기 타깃은 `127.0.0.1:…`(`:27-34` 등)이고, 2026-10-14부터 odroid exporter 두 job `cadvisor-odroid`·`node-odroid`가 임시 리터럴 `192.168.1.13:{12103,12106}`이다 — T-MGR-04가 파생물로 대체)
+- **사실**: 중앙 Prometheus(registry에서 파생 — `prometheus.yml`을 마운트하는 compose 서비스의 호스트, 오늘 n150)가 긁는 job·주소·경로
+- **정본**: registry — `metrics_path`가 있는 컨테이너마다 job 하나(`job_name` = 컨테이너 id), 그 컨테이너가 있는 호스트
+  (`container_hosts`)마다 static_config 하나: 주소는 R1(Prometheus 호스트면 `127.0.0.1`, 아니면 `hosts.<이름>.addr`), 포트는
+  `connection`(`scheme://{host}:<port>`)의 포트 — metrics가 다른 포트에서 나오면 컨테이너의 `metrics_port`(2026-10-17
+  T-MGR-04r, weather code-server), `labels: {host: <이름>}`(`services/prometheus_targets.py`)
+  Manager backend job(`kor-travel-docker-manager`, systemd)도 같은 파일 안에서 파생한다(2026-10-17 NH-6): 선언된 모든 호스트마다
+  static_config 하나(R1 주소·`host` label), 포트는 `deploy/systemd/ktdm-backend.service`의 `ExecStart … --port`, 경로는 backend `/metrics` route
+- **사본**: `config/prometheus/prometheus.yml` — 손으로 쓴 job은 없다
 - **사본이 필요한 이유**: Prometheus는 정적 파일만 읽는다
-- **결박**: registry에서 계산한 타깃 집합 == 파일(T-MGR-04의 파생 테스트)
+- **결박**: `backend/tests/test_prometheus_targets_are_derived.py` — 파생 == 파일(`test_prometheus_targets_are_the_registry_derivation`),
+  target 이동·포트·경로 변경·세 번째 호스트가 빨갛다. 손 job 추가는 `test_no_job_in_the_file_is_hand_written`, 호스트 누락은
+  `test_the_manager_job_has_one_static_config_per_declared_host`, unit 포트 변경은 `test_the_manager_port_comes_from_the_backend_unit`이 빨갛다. 설치기 health 확인과 `main.py` dev 진입점의
+  하드코딩 포트가 unit과 다르면 `test_every_hard_coded_backend_port_is_the_unit_port`, unit에 `--port`가 둘이면
+  `test_a_unit_with_two_ports_is_rejected`가 빨갛다
 
 ### B-9. 교차 호스트 `depends_on` 간선 ∅
 
@@ -161,7 +174,7 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   있어야 `hba_file`·`config_file` 같은 이름을 막는다
 - **결박**: `test_f1d_compose_contract.py::test_the_canonical_shared_postgres_runtime_shape_passes` — raw compose의
   공용 서비스를 C6c 검사기 자체에 통과시키고(목록을 테스트에 다시 적지 않는다), 허용 목록 밖의 GUC 하나를 더한 대조군이
-  거부되는지 함께 본다. compose에만 이름을 더하면 빨강(2026-10-13 `max_locks_per_transaction`으로 확인)
+  거부되는지 함께 본다. compose에만 이름을 더하면 빨강(2026-10-13 `max_locks_per_transaction`으로 확인). 2026-10-16(T-MGR-03) 서버 기본값 6키(`max_parallel_workers`·`_per_gather`·`effective_io_concurrency`·`checkpoint_timeout`·`wal_compression`·`autovacuum_max_workers`)를 더했고, 같은 검사기의 최상위 키 허용 목록(`_POSTGRES_ALLOWED_SERVICE_KEYS`)에 `mem_limit`·`memswap_limit`·`oom_score_adj`를 더했다(CI가 빨강으로 잡았다)
 
 ---
 

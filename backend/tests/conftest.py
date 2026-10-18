@@ -20,6 +20,7 @@ from typing import Any
 import pytest
 
 import kor_travel_docker_manager.database as _database_module
+from kor_travel_docker_manager.services import registry as _registry_module
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SEED = _REPO_ROOT / "config" / "runtime-pins.seed.json"
@@ -66,6 +67,17 @@ def _unprobed_remote_http_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
         module, "probe_remote_connections",
         lambda connections: dict.fromkeys(connections, "remote"),
     )
+
+
+@pytest.fixture(autouse=True)
+def _ensure_preflight_is_not_run_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """기존 ensure 시험은 compose subprocess를 대역으로 바꿔 argv만 본다 — 새 `ensure` 프리플라이트(T-MGR-05)의
+    `docker info`·`docker image inspect`·`findmnt`가 그 대역에 섞이면 argv 단언이 깨지거나 실제 Docker에 닿는다.
+    프리플라이트 자체는 `test_ensure_preflight.py`가 자기 대역으로 보고, ensure가 그것을 `up` 전에 부른다는 결박도
+    거기서 이 별칭을 다시 바꿔 확인한다(위 원격 HTTP 관측과 같은 모양)."""
+    from kor_travel_docker_manager.services import compose_service as module
+
+    monkeypatch.setattr(module, "ensure_preflight", lambda *args, **kwargs: None)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -145,6 +157,7 @@ _SIBLING_TARGETS: dict[str, dict[str, object]] = {
             "working_dir": _SIBLING_WORKING_DIR,
             "config_files": ["docker-compose.db.yml"],
         },
+        "host": "n150",  # v2는 `host:`를 생략할 수 없다(T-MGR-NH NH-1)
         "port_band": "19000-19000",
         "depends_on": [],
         "display_name": "Test Sibling DB",
@@ -160,6 +173,7 @@ _SIBLING_TARGETS: dict[str, dict[str, object]] = {
             "working_dir": _SIBLING_WORKING_DIR,
             "config_files": ["docker-compose.yml"],
         },
+        "host": "n150",
         "port_band": "19001-19099",
         "depends_on": ["test-sibling-db"],
         "display_name": "Test Sibling",
@@ -301,3 +315,15 @@ def own_pinned_pair(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     finally:
         for clear in clears:
             clear()
+
+
+#: 진짜 프로세스 캐시(T-MGR-01a-F — 인터페이스 주소는 프로세스당 1회). 테스트가 monkeypatch로 함수를 바꿔도 이
+#: 참조로 비운다. 비우지 않으면 앞 테스트가 채운 주소 집합이 다음 테스트의 자기 식별에 새어 순서에 따라 결과가 바뀐다.
+_ADDRESS_PROBE = _registry_module._local_ipv4_addresses
+
+
+@pytest.fixture(autouse=True)
+def _fresh_local_address_probe() -> Iterator[None]:
+    _ADDRESS_PROBE.cache_clear()
+    yield
+    _ADDRESS_PROBE.cache_clear()

@@ -212,11 +212,20 @@ cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실�
 
 - **odroid: 2026-10-14 기동**(소유자 지시, 임시 최소 반영). Manager 설치 전이라 저장소 밖 호스트 파일
   `/opt/kor-travel-odroid/compose-mon.yml`(project `kor-travel-odroid-monitoring`)로 cAdvisor `12103`과 함께 띄웠다.
+  registry 좌표는 2026-10-17(T-MGR-NH NH-5)부터 호스트 이름 없는 `/opt/kor-travel-host-monitoring`·`kor-travel-host-monitoring`이다
+  — 호스트 측에서는 `compose-mon.yml` **파일 하나만** 새 디렉터리로 옮겨 새 project 이름으로 올린다(T-OPS-01b; `/opt/kor-travel-odroid`는
+  geo·weather·transport compose·env와 thermal-guard가 사는 디렉터리라 그대로 둔다). 그 전까지 odroid의 `targets validate --check-coordinates`는
+  이 좌표를 없다고 보고한다.
   n150 Prometheus가 `cadvisor-odroid`·`node-odroid` job(`labels: host=odroid`)으로 수집한다 —
-  `config/prometheus/prometheus.yml`의 주소 리터럴은 T-MGR-04의 registry 파생물로 대체한다. **odroid 방화벽은 아직 없다**
+  `config/prometheus/prometheus.yml`의 주소는 2026-10-16부터 registry 파생물이다(T-MGR-04 — job 이름은 컨테이너 id
+  `cadvisor`·`kor-travel-node-exporter`, 호스트는 `host` label). **odroid 방화벽은 아직 없다**
   (INPUT ACCEPT — `prod-deployment.md` §9.1 단계 7 미실시): exporter 집합의 "n150 addr만" 경계(아래 표)는 그 단계 전까지
   성립하지 않는다. cAdvisor의 노출 수준은 n150과 같고(`0.0.0.0:12103`, privileged), node_exporter는 새 표면이다(읽기 전용).
-- n150: 아직 없다(T-MGR-04).
+- n150: **두지 않는다(2026-10-16 T-MGR-04 판단)**. 디스크 여유를 보려면 호스트 `/`를 읽기 전용으로 마운트해야 하는데
+  Manager compose에 넣으면 C6c 후보 계약의 bind 경계(금지 source `/etc`·`/proc`·`/sys`… 의 상위)에 새 예외가 필요하다 —
+  단순성 기준으로 넣지 않는다. odroid의 호스트 측 stack은 registry `node` target(외부 프로젝트
+  `kor-travel-host-monitoring`, `host: odroid`)으로 등록했고 중앙 Prometheus 타깃은 그 등록에서 파생한다(B-8). n150에도
+  같은 호스트 측 stack을 두면 `node`의 `host:`만 넓힌다.
 
 ### plane별 공개 host (계획)
 
@@ -229,13 +238,17 @@ HAProxy backend 전환표(geo/weather/transport/pr → `.13`)는 `prod-deploymen
 
 ### odroid 호스트 방화벽 집합 (계획 — 정책 (가): 우리 포트만 제한, 그 외는 accept)
 
+중앙 Prometheus(n150)가 odroid에서 수집하는 주소는 registry 파생물 `config/prometheus/prometheus.yml`이 정본이다(B-8) — 이 표의 n150
+허용은 그 job 집합과 같아야 한다: geo-api `12501`·geo-ui `12505`·cAdvisor `12103`·node_exporter `12106`·weather code-server `12203`
+(2026-10-17 T-MGR-04r). weather 자체 Prometheus(`14104`)는 odroid에 없어 federate job을 두지 않았다.
+
 | 집합 | 포트 | 허용 소스 |
 |---|---|---|
 | consumer/공개 API | `12501`, `12201`(weather — 2026-10-14 통일, 옛 `14101`), `12301`(transport API gateway — n150 소비자는 backend `14001`이 아니라 이것을 부른다) | n150 addr + HAProxy(OPNsense) LAN addr(§14-6) — 그 외 LAN drop |
-| HAProxy 웹 backend | `12505`, `12205`, `14002`, `12301`, `12305`, `11001` | HAProxy addr만 |
-| exporter | `12103`, node_exporter, `14103`, `14104`, `12901` | n150 addr만 |
+| HAProxy 웹 backend | `12505`, `12205`, `14002`, `12301`, `12305`, `11001` | HAProxy addr만 — **예외: `12505`는 n150 addr도**(중앙 Prometheus가 geo-ui `/api/metrics`를 수집한다, T-MGR-04r) |
+| exporter | `12103`, node_exporter(`12106`), `12203`(weather code-server metrics — odroid 통일 포트, 옛 `14103`), `12901` | n150 addr만 |
 | 관리 | `22`(키만), `12905`(§14-29 — (가) backend만이면 odroid에 리스너 없음, **추천**) | 22: LAN(키만은 sshd 설정); 12905: (나)일 때만 n150 addr + 운영자 PC addr(§14-5) — 그때는 `12901`도 같은 소스에 열어야 대시보드가 자기 API에 닿는다 |
-| 로컬 전용 | `11000`, `11002`, `12503`/`14106`/`14005`, `12101`/`12105` | LAN 유입 drop(bind는 서비스별로 다름 — 바꾸지 않는다) |
+| 로컬 전용 | `11000`, `11002`, `12503`/`12206`/`12306`(code-server gRPC — odroid 실측, 옛 `14106`/`14005`), `12101`/`12105` | LAN 유입 drop(bind는 서비스별로 다름 — 바꾸지 않는다) |
 | 보존 서비스(Plex·Samba·webvnc 등 TCP+UDP) | 열거하지 않음 | **정책 accept(변경 0)** — 기본 DROP + 허용 열거(나)는 누락이 곧 Plex 검색·NetBIOS 단절이라 소유자가 원할 때만(§14-28) |
 
 두 안 공통: `flush ruleset` 금지(`table inet ktm`만 flush — 기본 `/etc/nftables.conf`의 `flush ruleset`은 Docker nat/filter를

@@ -2515,6 +2515,9 @@ def test_cli_targets_validate_prints_ok_on_success(
     config_path = tmp_path / "docker-targets.yml"
     config_path.write_text(_VALID_TARGETS_YAML, encoding="utf-8")
     monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+    # 합성 targets는 이 checkout의 compose(공용 Dagster plane·소비자 origin)와 짝이 아니다 — compose 대조는 그 검사들의
+    # 시험이 본다(T-MGR-01c·02). 여기서는 targets 스키마만.
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE", str(tmp_path / "absent-compose.yml"))
 
     assert main(["targets", "validate"]) == 0
     assert capsys.readouterr().out.strip() == "OK"
@@ -2566,6 +2569,9 @@ def test_cmd_targets_validate_directly_handles_success_and_failure(
     config_path = tmp_path / "docker-targets.yml"
     config_path.write_text(_VALID_TARGETS_YAML, encoding="utf-8")
     monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE", str(config_path))
+    # 합성 targets는 이 checkout의 compose(공용 Dagster plane·소비자 origin)와 짝이 아니다 — compose 대조는 그 검사들의
+    # 시험이 본다(T-MGR-01c·02). 여기서는 targets 스키마만.
+    monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE", str(tmp_path / "absent-compose.yml"))
 
     assert _cmd_targets_validate(argparse.Namespace()) == 0
     assert capsys.readouterr().out.strip() == "OK"
@@ -2666,17 +2672,33 @@ def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch):
     from pathlib import Path as _Path
 
     monkeypatch.setattr(_Path, "is_dir", lambda self: False)
+    # R5: 좌표는 호스트 상대라 그 target이 있는 호스트에서 본다 — 외부 target(transport·`node`)은 odroid에 있다.
+    monkeypatch.setenv("KTDM_HOST", "odroid")
+    # odroid는 자기 workspace 파일의 digest를 둔다(T-MGR-02 validate) — 이 테스트는 좌표만 본다.
+    import hashlib
+
+    workspace = _Path(__file__).resolve().parents[2] / "config/dagster-shared/workspace.odroid.yaml"
+    monkeypatch.setenv("KTDM_DAGSTER_WORKSPACE_DIGEST", hashlib.sha256(workspace.read_bytes()).hexdigest()[:16])
     assert main(["targets", "validate", "--check-coordinates"]) == 1
     captured = capsys.readouterr()
-    # weather는 2026-09-20(ADR-47)부터 internal target이라 더 이상 external
-    # coordinate를 선언하지 않는다 — 남은 external target(`transport`) 하나만으로도
-    # 이 메커니즘이 실제로 동작함을 증명하기에 충분하다. 줄 전체를 대조한다 —
-    # 부분 문자열이면 옛 좌표(개명 전 디렉터리)가 남아도 통과한다.
+    # 줄 전체를 대조한다 — 부분 문자열이면 옛 좌표(개명 전 디렉터리)가 남아도 통과한다.
     assert captured.err.splitlines() == [
         "declared external coordinates do not exist here:",
+        "  targets.node.external_project.working_dir: /opt/kor-travel-host-monitoring",
         "  targets.transport.external_project.working_dir: "
         "/home/digitie/apps/kor-travel-transport",
     ]
+
+
+def test_targets_validate_does_not_check_coordinates_of_another_hosts_targets(capsys, monkeypatch):
+    """R5 — 다른 호스트 target의 좌표가 이 호스트에 없는 것은 정상이다(default 호스트에는 외부 target이 없다)."""
+
+    from pathlib import Path as _Path
+
+    monkeypatch.setattr(_Path, "is_dir", lambda self: False)
+    monkeypatch.delenv("KTDM_HOST", raising=False)
+    assert main(["targets", "validate", "--check-coordinates"]) == 0
+    assert capsys.readouterr().out.strip() == "OK"
 
 
 def test_targets_validate_coordinates_pass_when_they_exist(capsys, monkeypatch):

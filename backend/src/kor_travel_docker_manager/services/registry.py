@@ -22,6 +22,8 @@ from kor_travel_docker_manager.services.yaml_strict import (
 TARGETS_FILE_ENV: Final = "KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE"
 PROJECT_ROOT_ENV: Final = "KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT"
 HOST_ENV: Final = "KTDM_HOST"
+#: R1 URL connection의 모양 `scheme://{host}:<port>` — 포트를 잡는다(Prometheus 타깃 파생 등이 같은 것을 쓴다).
+HOST_URL: Final = re.compile(r"https?://\{host\}:([0-9]{1,5})")
 
 #: targets 문서의 상한. 이 파일은 손으로 편집하는 수백 줄짜리 선언이고, 그보다
 #: 크다면 다른 것을 읽고 있다는 뜻이다 — 읽기 전에 멈춘다.
@@ -410,6 +412,19 @@ def _root_env_file_value(name: str, *, root: Path, trusted: bool, operating: boo
     return (value or "").strip()
 
 
+def root_env_value(name: str) -> str:
+    """Manager 루트 `.env`의 `name` 값(없거나 비었으면 ""). `current_host`와 같은 자리·같은 오류 규칙으로 읽는다."""
+    from kor_travel_docker_manager.services.trusted_install import (
+        TRUSTED_INSTALL_ROOT,
+        running_from_trusted_install_root,
+    )
+
+    trusted = running_from_trusted_install_root()
+    root = TRUSTED_INSTALL_ROOT if trusted else Path(get_project_root())
+    operating = trusted or os.path.lexists(root / ".ktdm-source-revision")
+    return _root_env_file_value(name, root=root, trusted=trusted, operating=operating)
+
+
 def current_host(config: Mapping[str, Any] | None = None) -> str:
     """자기 호스트 이름. release(운영 모드)에서는 선언 필수, 캐시하지 않는다.
 
@@ -441,13 +456,42 @@ def current_host(config: Mapping[str, Any] | None = None) -> str:
         selected = default_host(config)
     if selected not in hosts:
         raise TargetsConfigError("KTDM_HOST must be a declared hosts key")
-    if operating and hosts[selected]["addr"] not in _local_ipv4_addresses():
-        raise TargetsConfigError("KTDM_HOST address is not assigned to this host")
+    if operating:
+        # 자기 식별은 "주소가 이 장비에 있는 선언 호스트가 정확히 하나 ∧ 그것 == KTDM_HOST"다(#477 리뷰 7번) — 보조
+        # IPv4·VIP로 선언 주소 둘이 로컬이면 어느 이름이든 통과하던 스푸핑을 막는다. 주소 집합은 프로세스 캐시라,
+        # 맞지 않으면 캐시를 비우고 **한 번만** 다시 본다: 부팅 직후 Wi-Fi 주소가 아직 없던 첫 probe가 프로세스
+        # 수명 동안 남지 않게(#483 리뷰 A — 캐시 전 backend는 매 호출 probe였다).
+        claimed = _claimed_hosts(hosts)
+        if claimed != [selected]:
+            _ADDRESS_PROBE_CACHE.cache_clear()
+            claimed = _claimed_hosts(hosts)
+        if claimed != [selected]:
+            if selected not in claimed:
+                where = ", ".join(claimed) if claimed else "none"
+                raise TargetsConfigError(
+                    f"KTDM_HOST address is not assigned to this host (declared hosts assigned here: {where})"
+                )
+            raise TargetsConfigError(
+                "more than one declared host address is assigned to this host "
+                f"({', '.join(claimed)}); self-identification is ambiguous"
+            )
     return selected
 
 
+def _claimed_hosts(hosts: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    local = _local_ipv4_addresses()
+    return sorted(name for name, spec in hosts.items() if spec["addr"] in local)
+
+
+@lru_cache(maxsize=1)
 def _local_ipv4_addresses() -> frozenset[str]:
-    """Linux 인터페이스의 실제 IPv4를 읽는다. DNS나 외부 HTTP를 자기 식별에 쓰지 않는다."""
+    """Linux 인터페이스의 실제 IPv4를 읽는다. DNS나 외부 HTTP를 자기 식별에 쓰지 않는다.
+
+    **프로세스당 한 번**이다(#477 리뷰 5번) — 단건 조회마다 `current_host`가 돌므로 캐시가 없으면 status 한 번에
+    `ip` subprocess가 수백 번 뜬다. 대가: 실행 중 주소가 바뀌면 다음 프로세스부터 보인다. 호스트 주소는 고정 LAN
+    주소이고 `ktdctl`은 단명 프로세스이며 backend는 설치마다 재기동된다(ADR-51 D). 실패(예외)는 캐시되지 않고,
+    자기 식별이 맞지 않으면 `current_host`가 캐시를 비우고 한 번 다시 본다.
+    """
     import json
     import subprocess
 
@@ -469,19 +513,37 @@ def _local_ipv4_addresses() -> frozenset[str]:
         raise TargetsConfigError("could not verify assigned local IPv4 addresses") from exc
 
 
+#: 진짜 캐시의 손잡이. `current_host`의 재검사가 이것으로 비운다(대역으로 바뀐 함수에는 `cache_clear`가 없다).
+_ADDRESS_PROBE_CACHE: Final = _local_ipv4_addresses
+
+
 def target_hosts(target: str, config: Mapping[str, Any] | None = None) -> frozenset[str]:
-    """target 직접 소유 호스트. depends_on은 소유권을 다른 호스트로 넓히지 않는다."""
+    """target 직접 소유 호스트. depends_on은 소유권을 다른 호스트로 넓히지 않는다.
+
+    `host:`는 선언된 호스트 이름 하나, 그 목록(`[n150, odroid]`), 또는 `all`이다. 목록은 어느 target에나 허용된다 —
+    소비자 origin(R2)을 가진 target이면, **그 목록 밖 호스트의 소비자**에게 origin이 하나로 풀리지 않아
+    `consumer_origins`가 "several hosts"로 거부한다(목록 안 호스트의 소비자는 loopback). v2에서는 **생략할 수 없다**(T-MGR-NH NH-1) — 암묵 default는 호스트를 더할 때 조용히
+    한 호스트에 묶인다. v1 개발 fixture는 호스트 차원이 없어 단일 `local`이다.
+    """
     config = load_targets_config() if config is None else config
     hosts = _host_specs(config)
     spec = config["targets"][target]
-    name = spec.get("host", default_host(config))
-    if not isinstance(name, str):
-        raise TargetsConfigError(f"targets.{target}.host must be a declared host name")
+    if "host" not in spec:
+        if config.get("version", 1) == 1:
+            return frozenset(hosts)
+        raise TargetsConfigError(f"targets.{target}.host is required (a declared host name, a list of them, or all)")
+    name = spec["host"]
     if name == "all":
         return frozenset(hosts)
-    if name not in hosts:
-        raise TargetsConfigError(f"targets.{target}.host: unknown host")
-    return frozenset({name})
+    names = name if isinstance(name, list) else [name]
+    if not names or any(not isinstance(item, str) for item in names) or len(set(names)) != len(names):
+        raise TargetsConfigError(
+            f"targets.{target}.host must be a declared host name, a non-empty list of distinct names, or all"
+        )
+    unknown = sorted(set(names) - set(hosts))
+    if unknown:
+        raise TargetsConfigError(f"targets.{target}.host: unknown host {', '.join(unknown)}")
+    return frozenset(names)
 
 
 def container_hosts(container_id: str, config: Mapping[str, Any] | None = None) -> frozenset[str]:
@@ -550,6 +612,16 @@ def local_mutation_target(
     return _target_details(name, config, selected, sequence=sequence)
 
 
+def r1_address(hosts: frozenset[str], selected: str, config: Mapping[str, Any]) -> str | None:
+    """R1: `selected` 호스트에서 본 `hosts`의 주소 — 그 집합에 있으면(또는 집합이 비면) loopback, 아니면 집합의
+    **단일** addr, 원격 호스트가 둘 이상이면 None(주소가 하나가 아니다)."""
+    if selected in hosts or not hosts:
+        return "127.0.0.1"
+    if len(hosts) == 1:
+        return _host_specs(config)[next(iter(hosts))]["addr"]
+    return None
+
+
 def _managed_containers(
     *, config: Mapping[str, Any] | None = None, selected: str | None = None,
 ) -> dict[str, dict[str, Any]]:
@@ -558,9 +630,11 @@ def _managed_containers(
     result = {}
     for name, spec in config["containers"].items():
         connection = spec["connection"]
-        owners = container_hosts(name, config)
-        host = "127.0.0.1" if selected in owners or not owners else _host_specs(config)[sorted(owners)[0]]["addr"]
-        result[name] = {**spec, "connection": connection.replace("{host}", host) if isinstance(connection, str) else connection}
+        # 원격 소유 호스트가 둘 이상이면 주소가 하나가 아니다 — 이름순 첫 호스트로 조용히 풀지 않는다
+        # (#477 리뷰 6번). 설정 전체를 거부하지도 않는다: 그 connection만 `{host}` 그대로(미해석) 남긴다.
+        host = r1_address(container_hosts(name, config), selected, config)
+        rendered = connection.replace("{host}", host) if isinstance(connection, str) and host is not None else connection
+        result[name] = {**spec, "connection": rendered}
     return result
 
 
@@ -718,6 +792,25 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
                 raise TargetsConfigError(
                     f"{label} containers.{container_id}: missing required field '{field}'"
                 )
+        metrics_path = spec.get("metrics_path")
+        metrics_port = spec.get("metrics_port")
+        if metrics_port is not None and (
+            type(metrics_port) is not int or not 0 < metrics_port < 65536 or metrics_path is None
+        ):
+            raise TargetsConfigError(
+                f"{label} containers.{container_id}.metrics_port: must be a port number next to metrics_path"
+            )
+        if metrics_path is not None and (
+            not isinstance(metrics_path, str)
+            or not metrics_path.startswith("/")
+            or (metrics_port is None and HOST_URL.fullmatch(str(spec.get("connection"))) is None)
+        ):
+            # 수집 대상은 `scheme://{host}:<port>` connection의 그 포트다(Prometheus 타깃 파생, T-MGR-04). metrics가
+            # 다른 포트에서 나오면(gRPC code-server의 prometheus_client 서버 등) `metrics_port`로 준다(T-MGR-04r).
+            raise TargetsConfigError(
+                f"{label} containers.{container_id}.metrics_path: must start with / on a "
+                "scheme://{host}:<port> connection (or give metrics_port)"
+            )
 
     seen_aliases: dict[str, str] = {}
     for target_id, spec in targets.items():
@@ -745,6 +838,7 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
 
         _validate_external_project(spec, target_id=target_id, label=label)
         _validate_dagster_field(spec, target_id=target_id, label=label)
+        _validate_consumer_origin_field(spec, target_id=target_id, label=label)
 
         aliases = _require_list_field(spec, "aliases", target_id=target_id, label=label)
         for alias in [target_id, *aliases]:
@@ -906,7 +1000,7 @@ def _target_details(
     return {
         "id": name,
         **spec,
-        "host": spec.get("host", default_host(config)),
+        "host": spec.get("host", default_host(config)),  # v1 fixture만 생략한다(호스트 차원 없음)
         "resolved_sequence": sequence,
         "resolved_services": _dedupe([
             service for owner in sequence for service in targets[owner].get("services", [])
@@ -951,6 +1045,8 @@ def services_for_target(target: str | None) -> list[str]:
 _ALLOWED_TARGET_FIELDS: Final = frozenset(
     {
         "aliases",
+        "consumer_origin",
+        "retired_consumer_ports",
         "containers",
         "dagster",
         "depends_on",
@@ -977,6 +1073,8 @@ _ALLOWED_CONTAINER_FIELDS: Final = frozenset(
         "prod_url_env",
         "expected_ports",
         "external_project",
+        "metrics_path",
+        "metrics_port",
     }
 )
 
@@ -1160,6 +1258,45 @@ _LOCATION_NAME: Final = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 #: 소비자 env의 종류 — 공용 webserver(`internal`)나 공개 host(`public`), 뒤에 경로를 붙일 수 있다.
 _DAGSTER_CONSUMER_KIND: Final = re.compile(r"(internal|public)(/[A-Za-z0-9._~/-]*)?")
 _ENV_NAME: Final = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+_CONSUMER_ORIGIN = re.compile(r"https?://\{host\}:[0-9]{1,5}")
+
+
+def _validate_consumer_origin_field(spec: dict[str, Any], *, target_id: str, label: str) -> None:
+    value = spec.get("consumer_origin")
+    retired = spec.get("retired_consumer_ports")
+    if value is None:
+        if retired is not None:
+            raise TargetsConfigError(f"{label} targets.{target_id}.retired_consumer_ports: needs consumer_origin")
+        return
+    if not isinstance(value, str) or _CONSUMER_ORIGIN.fullmatch(value) is None:
+        raise TargetsConfigError(
+            f"{label} targets.{target_id}.consumer_origin: must be scheme://{{host}}:<port>"
+        )
+    if retired is not None and (
+        not isinstance(retired, list)
+        or not all(type(port) is int and 0 < port < 65536 for port in retired)
+        or int(value.rsplit(":", 1)[1]) in retired
+    ):
+        raise TargetsConfigError(
+            f"{label} targets.{target_id}.retired_consumer_ports: must be a list of ports other than the consumer_origin port"
+        )
+
+
+def consumer_origin(target: str, consumer_host: str, config: Mapping[str, Any] | None = None) -> str | None:
+    """R2: 다른 target(소비자)이 이 target을 부르는 origin — `consumer_origin`의 `{host}`를 R1으로 렌더한다.
+
+    소비자가 도는 호스트가 이 target의 호스트 집합에 있으면 `127.0.0.1`, 아니면 그 집합의 단일 주소. 주소가 하나로
+    정해지지 않거나 선언이 없으면 None. 포트는 호스트별로 다를 수 있는 사실이라(2026-10-14 odroid 통일 포트) registry가
+    가진다 — 테스트의 포트 표가 아니다(T-MGR-01c).
+    """
+    config = load_targets_config() if config is None else config
+    template = config["targets"][target].get("consumer_origin")
+    if template is None:
+        return None
+    address = r1_address(target_hosts(target, config), consumer_host, config)
+    return None if address is None else template.replace("{host}", address)
 
 
 def _validate_dagster_field(spec: dict[str, Any], *, target_id: str, label: str) -> None:

@@ -177,7 +177,7 @@ def _sibling_render(**changes: Any) -> dict[str, Any]:
     """transport `docker-compose.shared.yml`의 공용 plane 모양(렌더된 JSON) — 그 저장소의 계약 테스트가 정본을 본다."""
 
     code_command = [
-        "dagster", "code-server", "start", "-h", "127.0.0.1", "-p", "14005",
+        "dagster", "code-server", "start", "-h", "127.0.0.1", "-p", "12306",
         "-m", "app.dagster.definitions", "--location-name", "kor-travel-transport",
         "--inject-env-vars-from-instance",
     ]
@@ -199,7 +199,7 @@ def _sibling_render(**changes: Any) -> dict[str, Any]:
                 "DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS": _shared_heartbeat(),
             },
             "init": True,
-            "healthcheck": {"test": ["CMD", "python", "-I", "-c", _shared_probe(), "14005"]},
+            "healthcheck": {"test": ["CMD", "python", "-I", "-c", _shared_probe(), "12306"]},
         },
         "dagster-webserver": {
             "image": "kor-travel-transport-backend:rel-x",
@@ -251,11 +251,11 @@ def test_the_own_sibling_render_is_recognised_for_a_rollback(tmp_path: Path) -> 
 
     own = _sibling_render(**{
         "dagster-code-server.command": [
-            "dagster", "api", "grpc", "-h", "127.0.0.1", "-p", "14005", "-m", "app.dagster.definitions",
+            "dagster", "api", "grpc", "-h", "127.0.0.1", "-p", "12306", "-m", "app.dagster.definitions",
             "--location-name", "kor-travel-transport",
         ],
         "dagster-code-server.environment": {"DAGSTER_POSTGRES_URL": "postgresql://x"},
-        "dagster-code-server.healthcheck": {"test": ["CMD", "python", "-I", "-c", "old probe", "14005"]},
+        "dagster-code-server.healthcheck": {"test": ["CMD", "python", "-I", "-c", "old probe", "12306"]},
         "dagster-code-server.init": None,
     })
     facts = _facts("transport", _rendered(), _write(tmp_path, own))
@@ -266,14 +266,14 @@ def test_the_own_sibling_render_is_recognised_for_a_rollback(tmp_path: Path) -> 
     ("changes", "said"),
     [
         ({"dagster-code-server.command": [
-            "dagster", "code-server", "start", "-h", "127.0.0.1", "-p", "14005", "-m", "app.dagster.definitions",
+            "dagster", "code-server", "start", "-h", "127.0.0.1", "-p", "12306", "-m", "app.dagster.definitions",
         ]}, "differs from targets.transport.dagster.external in ['location_name']"),
         ({"dagster-code-server.command": [
             "dagster", "code-server", "start", "-h", "127.0.0.1", "-p", "14015", "-m", "app.dagster.definitions",
             "--location-name", "kor-travel-transport",
         ]}, "differs from targets.transport.dagster.external in ['port']"),
         ({"dagster-code-server.command": [
-            "dagster", "code-server", "start", "-h", "0.0.0.0", "-p", "14005", "-m", "app.dagster.definitions",
+            "dagster", "code-server", "start", "-h", "0.0.0.0", "-p", "12306", "-m", "app.dagster.definitions",
             "--location-name", "kor-travel-transport",
         ]}, "does not listen on 127.0.0.1 only"),
         ({"dagster-daemon.container_name": "transport-daemon"}, "set container_name"),
@@ -309,7 +309,7 @@ def _code_with(**changes: Any) -> dict[str, Any]:
         elif key == "probe_port":
             code["healthcheck"]["test"][5] = value
         elif key == "shell":
-            code["healthcheck"]["test"] = ["CMD-SHELL", "python -I -c 'x' 14005"]
+            code["healthcheck"]["test"] = ["CMD-SHELL", "python -I -c 'x' 12306"]
         elif key == "ttl":
             code["environment"].pop("DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS")
         elif key == "init":
@@ -320,7 +320,7 @@ def _code_with(**changes: Any) -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("changes", "said"),
     [
-        ({"command": ["dagster", "api", "grpc", "-h", "127.0.0.1", "-p", "14005", "-m", "app.dagster.definitions",
+        ({"command": ["dagster", "api", "grpc", "-h", "127.0.0.1", "-p", "12306", "-m", "app.dagster.definitions",
                       "--location-name", "kor-travel-transport"]}, "does not run `dagster code-server start`"),
         ({"probe": "import sys; sys.exit(0)"}, "is not the shared probe"),
         ({"probe_port": "14015"}, "is not the shared probe"),
@@ -436,7 +436,7 @@ def test_common_live_probe_matches_code_server_port_and_keeps_timing(target: str
     health = service["healthcheck"]
     assert health == {
         "test": ["CMD", "python", "-m", "kortravelcommon.grpc_health", port, "--check", "live"],
-        "interval": "30s", "timeout": "10s", "retries": 5,
+        "interval": "90s", "timeout": "10s", "retries": 5,
         "start_period": "600s", "start_interval": "5s",
     }
 

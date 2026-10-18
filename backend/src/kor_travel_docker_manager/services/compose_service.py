@@ -1,5 +1,7 @@
+import errno
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -95,6 +97,7 @@ from kor_travel_docker_manager.services.deploy_status import (
     read_deploy_status,
     write_deploy_status,
 )
+from kor_travel_docker_manager.services.ensure_preflight import ensure_preflight
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
@@ -160,6 +163,7 @@ from kor_travel_docker_manager.services.runtime_topology import (
     derive_shared_dagster_plane,
     installed_code_location,
     installed_container_name,
+    installed_dagster_families,
     installed_location_owners,
     installed_shared_dagster_plane,
     listen_address,
@@ -407,18 +411,33 @@ def get_override_path() -> str:
     )
 
 
-def _create_frozen_compose_descriptor(label: str) -> int:
+@contextmanager
+def _pinned_runtime_temporary_directory(state_root: Path) -> Iterator[str]:
+    """기존 state root 아래에만 owner 전용 임시 디렉터리를 만든다."""
+
+    ensure_pinned_runtime_state_directory(state_root)
+    with tempfile.TemporaryDirectory(prefix="build-tmp-", dir=state_root) as directory:
+        yield directory
+
+
+def _create_frozen_compose_descriptor(label: str, *, state_root: Path) -> int:
     """child process에만 `/proc/self/fd`로 보이는 unlinked Compose descriptor를 연다."""
 
     try:
         return os.memfd_create(label, flags=os.MFD_CLOEXEC)
     except AttributeError:
         pass
-    descriptor, temporary_path = tempfile.mkstemp(prefix=f"{label}-")
+    except OSError as exc:
+        if exc.errno != errno.ENOSYS:
+            raise
+    descriptor = None
     try:
-        os.unlink(temporary_path)
-    except OSError:
-        os.close(descriptor)
+        with _pinned_runtime_temporary_directory(state_root) as directory:
+            descriptor, temporary_path = tempfile.mkstemp(prefix="compose-", dir=directory)
+            os.unlink(temporary_path)
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
         raise
     return descriptor
 
@@ -2027,17 +2046,17 @@ def _validate_c6c_wait_timeout(wait_timeout: int) -> None:
 # 112초, `ktm-application-schema head`가 74초 걸렸다 — 60초였을 때 t57a가 명령은
 # 정상인데 타임아웃으로 죽었다.
 _PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS = 600
-#: compose `--wait-timeout` 초. **정수**로 둔다 — head는 revision 문자열이라
+#: compose `--wait-timeout`의 기존 하한 초. frozen health 창이 길면 helper에서 파생한다. **정수**로 둔다 — head는 revision 문자열이라
 #: 형이 다르고, 이 파일에 따옴표 두른 숫자가 남지 않아 head 리터럴 게이트가
 #: 파일 단위 면제 없이 이 파일을 전부 볼 수 있다. 면제는 그 자체로 사각지대였다.
 #:
 #: ADR-069 뒤 Map은 code-server → webserver → daemon이 `service_healthy`로 **직렬**
 #: 기동한다. 위 실측대로 컨테이너 하나가 뜨는 데만 1~2분이 걸리므로 300초는 부족하다.
 _COMPOSE_WAIT_TIMEOUT_SECONDS: Final = 900
-#: 공용 plane이 **이 재구축의** location을 싣기까지 기다리는 상한과 간격(ADR-54 개정, 적대 리뷰 H1). 다른 테넌트의
-#: location·code-server 상태는 보지 않는다 — plane의 healthcheck(`--wait`)는 그것까지 봐서 Map 배포를 geo·weather에
-#: 묶었다.
-_SHARED_PLANE_PROBE_TIMEOUT_SECONDS: Final = 300.0
+#: 공용 plane이 **이 재구축의** location을 싣기까지 기다리는 간격(ADR-54 개정, 적대 리뷰 H1). 상한은 고정값이 아니라
+#: `dagster-plane converge`와 같은 render healthcheck 파생(`_shared_plane_health_wait_seconds`, T-MGR-06k)이다. 다른
+#: 테넌트의 location·code-server 상태는 보지 않는다 — plane의 healthcheck(`--wait`)는 그것까지 봐서 Map 배포를
+#: geo·weather에 묶었다.
 _SHARED_PLANE_PROBE_INTERVAL_SECONDS: Final = 5.0
 #: `dagster-plane converge`의 health 기다림 하한 — render healthcheck에서 파생한 값이 이보다 짧아도 이만큼은 본다.
 _SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS: Final = 60.0
@@ -2091,6 +2110,50 @@ def _duration_seconds(value: object, *, default: float) -> float:
     if not parts or "".join(number + unit for number, unit in parts) != value:
         return default
     return sum(float(number) * _DURATION_UNIT_SECONDS[unit] for number, unit in parts)
+
+
+def _compose_wait_timeout_seconds(services: Mapping[str, Any]) -> int:
+    """frozen health 기동 창보다 먼저 outer wait가 끝나지 않도록 파생한다.
+
+    기존900초는 하한이다. 기존 허용 최대3600초를 넘는 선언은 runtime 변경 전에
+    거절하며 Test·health timeout·retries·start_period 자체를 바꾸지 않는다.
+    """
+    if not isinstance(services, Mapping) or not services:
+        raise DeploymentContractError("compose health wait requires frozen services")
+    longest = float(_COMPOSE_WAIT_TIMEOUT_SECONDS)
+    for service in services.values():
+        if not isinstance(service, Mapping):
+            raise DeploymentContractError("compose health wait service is invalid")
+        check = service.get("healthcheck")
+        if check is None:
+            continue
+        if not isinstance(check, Mapping):
+            raise DeploymentContractError("compose health wait declaration is invalid")
+        if check.get("disable") is True or check.get("test") == ["NONE"]:
+            continue
+
+        def seconds(key: str, default: float, check: Mapping[str, Any] = check) -> float:
+            value = _duration_seconds(check.get(key), default=default if key not in check else math.nan)
+            if not math.isfinite(value) or value < 0:
+                raise DeploymentContractError("compose health wait duration is invalid")
+            # Docker의0 interval/timeout은 기본값을 사용한다.
+            return default if key in {"interval", "timeout"} and value == 0 else value
+
+        retries = check.get("retries", 3)
+        if type(retries) is not int or retries < 0:
+            raise DeploymentContractError("compose health wait retries is invalid")
+        retries = retries or 3
+        bound = (
+            seconds("start_period", 0.0)
+            + (seconds("interval", 30.0) + seconds("timeout", 30.0)) * retries
+            + _SHARED_PLANE_HEALTH_WAIT_SLACK_SECONDS
+        )
+        if not math.isfinite(bound) or bound > _MAX_C6C_WAIT_TIMEOUT_SECONDS:
+            raise DeploymentContractError("compose health start window exceeds maximum wait")
+        longest = max(longest, bound)
+    return math.ceil(longest)
+
+
 _SHARED_PLANE_WORKSPACE_QUERY: Final = (
     "{ workspaceOrError { __typename ... on Workspace { locationEntries { name "
     "locationOrLoadError { __typename } } } } }"
@@ -2143,6 +2206,7 @@ def _build_map_application_300_images(
     sources: PinnedRuntimeSourceMaterialization,
     api_image: str,
     dagster_image: str,
+    state_root: Path,
 ) -> None:
     """api/dagster 두 이미지를 직접 빌드한다 -- sealed 외부 스크립트는 없다."""
 
@@ -2155,41 +2219,43 @@ def _build_map_application_300_images(
     builder_environment["PATH"] = (
         "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     )
-    for image, dockerfile in (
-        (api_image, "docker/api.Dockerfile"),
-        (dagster_image, "docker/dagster.Dockerfile"),
-    ):
-        try:
-            completed = subprocess.run(
-                [
-                    "docker",
-                    "buildx",
-                    "build",
-                    "--load",
-                    "--file",
-                    str(map_source.root / dockerfile),
-                    "--tag",
-                    image,
-                    "--build-arg",
-                    f"KOR_TRAVEL_MAP_GIT_COMMIT={map_source.revision}",
-                    str(map_source.root),
-                ],
-                cwd="/",
-                env=builder_environment,
-                capture_output=True,
-                check=False,
-                timeout=3600,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise DeploymentContractError(
-                "application 300 image build could not start"
-            ) from exc
-        if completed.returncode != 0:
-            # buildx는 진행과 오류를 stderr로 낸다 — 끝부분에 실패한 단계가 있다.
-            raise DeploymentContractError(
-                f"application 300 image build failed ({dockerfile}, exit {completed.returncode})"
-                + command_output_tail("stderr", completed.stderr)
-            )
+    with _pinned_runtime_temporary_directory(state_root) as directory:
+        builder_environment["TMPDIR"] = directory
+        for image, dockerfile in (
+            (api_image, "docker/api.Dockerfile"),
+            (dagster_image, "docker/dagster.Dockerfile"),
+        ):
+            try:
+                completed = subprocess.run(
+                    [
+                        "docker",
+                        "buildx",
+                        "build",
+                        "--load",
+                        "--file",
+                        str(map_source.root / dockerfile),
+                        "--tag",
+                        image,
+                        "--build-arg",
+                        f"KOR_TRAVEL_MAP_GIT_COMMIT={map_source.revision}",
+                        str(map_source.root),
+                    ],
+                    cwd="/",
+                    env=builder_environment,
+                    capture_output=True,
+                    check=False,
+                    timeout=3600,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise DeploymentContractError(
+                    "application 300 image build could not start"
+                ) from exc
+            if completed.returncode != 0:
+                # buildx는 진행과 오류를 stderr로 낸다 — 끝부분에 실패한 단계가 있다.
+                raise DeploymentContractError(
+                    f"application 300 image build failed ({dockerfile}, exit {completed.returncode})"
+                    + command_output_tail("stderr", completed.stderr)
+                )
 
 
 def _inspect_local_image_id(image: str) -> str:
@@ -2656,35 +2722,11 @@ class ComposeService:
             return
         config = load_targets_config()
         selected = current_host(config)
-        owners: dict[str, set[str]] = {}
-
-        def own(service: str, target: str) -> None:
-            owners.setdefault(service, set()).update(target_hosts(target, config))
-
-        for target, spec in config["targets"].items():
-            if spec.get("include") or spec.get("external_project"):
-                continue
-            for service in spec.get("services", []):
-                own(service, target)
-            # 별도 ownership 표를 만들지 않고 기존 init 선언의 실제 Compose 범위를 쓴다.
-            for step in spec.get("init_steps", []):
-                initializers, _ = ComposeService._parse_compose_mutation(step["command"])
-                if not initializers:
-                    raise DeploymentContractError("initializer has no bounded host scope")
-                for service in initializers:
-                    own(service, target)
-        for service, target in (
-            (_PINNED_RUNTIME_ONESHOT_WRITERS[0], "map"),
-            (_MAP_APPLICATION_SCHEMA_SERVICE, "map"),
-            (_PINVI_ADMIN_BOOTSTRAP_SERVICE, "pinvi"),
-        ):
-            own(service, target)
-        # 전환 뒤 profile로 남은 Dagster family도 원래 target의 소유권을 따른다.
+        owners = compose_service_owners(config)
+        # 전환 뒤 profile로 남은 Dagster family도 원래 target의 소유권을 따른다 — 설치된 모델은 필요할 때만 읽는다
+        # (read-only·stop 길은 모델이 깨져도 남는다).
         if any(service not in owners for service in scope):
-            for target, family in runtime_topology().families.items():
-                if family.external_project is None:
-                    for service in family.names:
-                        own(service, target)
+            owners = compose_service_owners(config, families=installed_dagster_families())
         services = None if resolved is None else resolved.get("services")
         if resolved is not None and not isinstance(services, Mapping):
             raise DeploymentContractError("resolved compose has no host service graph")
@@ -3415,6 +3457,23 @@ class ComposeService:
         return scope
 
     @staticmethod
+    def _compose_touched_services(args: Sequence[str], resolved: Mapping[str, Any]) -> set[str]:
+        """이 compose argv가 만들거나 시작하는 서비스 — 이름 붙은 것과, `--no-deps`가 없으면 렌더된 `depends_on` closure.
+
+        컨테이너를 만들거나 시작하지 않는 명령(`kill`·`stop`·`exec`·…)은 빈 집합이다.
+        """
+        index = ComposeService._compose_command_index(args)
+        if index is None or args[index] not in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES:
+            return set()
+        scope, flags = ComposeService._parse_compose_mutation(args)
+        if not scope:
+            return set()
+        touched = set(scope)
+        if "--no-deps" not in flags:
+            touched |= _compose_dependency_closure(resolved, touched)
+        return touched
+
+    @staticmethod
     def _compose_command_index(args: Sequence[str]) -> int | None:
         """전역 옵션을 건너뛴 compose 하위 명령의 위치. 전역 옵션을 해석할 수 없으면 ``None``."""
 
@@ -3810,6 +3869,19 @@ class ComposeService:
                 raise ComposeCandidateContractError(
                     "compose baseline changed before ensure mutation"
                 )
+            # ADR-58 결정 9·R5(T-MGR-05): 렌더된 문서(위 transaction이 `compose config`로 해석한 것)에서 올릴 서비스의
+            # 이미지 arch·쓰기 bind 장치를 효과로 본다 — `up` 전에 멈춘다. `run` init step의 one-shot도 같은 서비스다.
+            # 대상은 compose가 실제로 만들거나 시작할 서비스 — `up`과 init step argv를 기존 파서로 읽고 렌더된
+            # `depends_on` closure까지 넓힌다(R3 chokepoint와 같은 규칙).
+            touched: set[str] = set()
+            for argv in (["up", "-d", *services], *(list(step.get("command") or []) for step in plan["resolved_init_steps"])):
+                touched |= self._compose_touched_services(argv, transaction.resolved)
+            ensure_preflight(
+                transaction.resolved,
+                sorted(touched),
+                transaction.environment.effective,
+                build=build,
+            )
             return self._ensure_target_unlocked(
                 target,
                 target_sequence=target_sequence,
@@ -4779,6 +4851,7 @@ class ComposeService:
                         sources=sources,
                         api_image=paired_build_images["map_api"],
                         dagster_image=paired_build_images["map_dagster"],
+                        state_root=state_paths.state_root,
                     )
             with _rebuild_stage("application_candidate"):
                 map_candidate = _load_application_300_candidate(
@@ -4852,6 +4925,8 @@ class ComposeService:
                     environment_override=runtime_environment,
                     environment_snapshot=environment_snapshot,
                 )
+                # 잘못되거나 상한을 넘는 health 창은 in_progress/실패 정리 stop 이전에 거절한다.
+                _compose_wait_timeout_seconds(runtime_transaction.resolved.get("services"))
                 companions = generation_companion_services(
                     runtime_transaction.resolved,
                     candidate.image_ids,
@@ -5080,6 +5155,7 @@ class ComposeService:
         이미 맞으면 멱등이다.
         """
 
+        wait_timeout = _compose_wait_timeout_seconds(runtime_transaction.resolved.get("services"))
         ensure_map_databases_isolated(runtimes[0], login=map_login)
         self._run_pinned_runtime_rebuild_compose(
             [
@@ -5088,7 +5164,7 @@ class ComposeService:
                 "--no-deps",
                 "--wait",
                 "--wait-timeout",
-                str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+                str(wait_timeout),
                 *_with_generation_companions(RUNTIME_SLOTS, companions, topology),
             ],
             transaction=runtime_transaction,
@@ -5120,7 +5196,8 @@ class ComposeService:
           hash가 달라 무조건 `up`은 매 재구축 plane을 다시 만든다(`_shared_plane_current`).
         - **이 target의 location만 기다린다.** `up -d --no-deps`(`--wait` 없음) 뒤 webserver의 `workspaceOrError`에서
           합류한 carrier의 location이 `RepositoryLocation`이고 daemon 컨테이너가 도는지 본다. 다른 테넌트의
-          code-server가 내려가 있어도 이 배포를 막지 않는다. 상한(300초) 안에 안 되면 거부한다(fail-closed).
+          code-server가 내려가 있어도 이 배포를 막지 않는다. 상한(plane render healthcheck 파생 —
+          `_shared_plane_health_wait_seconds`) 안에 안 되면 거부한다(fail-closed).
 
         모두 `own`이면 아무것도 하지 않는다.
         """
@@ -5244,9 +5321,9 @@ class ComposeService:
         """plane 서비스의 render healthcheck에서 기다림 상한을 파생한다(고정 상수가 아니다).
 
         서비스마다 `start_period + (interval + timeout) × retries + 여유` — start_period 뒤 probe는 앞 probe가 **끝난 뒤**
-        `interval`을 쉬고 돌며(daemon은 120초), 디스크 대기가 큰 n150에서는 probe 하나가 timeout까지 걸릴 수 있다.
+        `interval`을 쉬고 돌며(공용 daemon은 360초), 디스크 대기가 큰 n150에서는 probe 하나가 timeout까지 걸릴 수 있다.
         `retries`번 연달아 실패해야 unhealthy다. 그 안에 첫 성공이 오면 healthy다. 가장 긴 서비스를 쓰고
-        `_SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS`~`_COMPOSE_WAIT_TIMEOUT_SECONDS`로 자른다. 값이 없으면 Docker 기본값.
+        `_SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS`~`_MAX_C6C_WAIT_TIMEOUT_SECONDS`로 자른다. 값이 없으면 Docker 기본값.
         """
 
         longest = 0.0
@@ -5266,7 +5343,7 @@ class ComposeService:
             longest = max(longest, bound)
         return min(
             max(longest, _SHARED_PLANE_HEALTH_WAIT_FLOOR_SECONDS),
-            float(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+            float(_MAX_C6C_WAIT_TIMEOUT_SECONDS),
         )
 
     def _wait_shared_plane_healthy(
@@ -5412,7 +5489,10 @@ class ComposeService:
 
         config hash는 쓰지 않는다(frozen·평범한 render가 다르게 낸다). 대신 재생성을 부를 실행 형태를 직접 본다:
         이미지(render의 `image:` 참조가 가리키는 image ID와 컨테이너의 `.Image`), render의 env 전부(공용 URL 앵커,
-        heartbeat tolerance, `*_DIGEST` — 컨테이너 env가 그 값들을 그대로 싣는다), command·entrypoint. 컨테이너가 돌고
+        heartbeat tolerance, `*_DIGEST` — 컨테이너 env가 그 값들을 그대로 싣는다), command·entrypoint, **bind mount**
+        (render의 long-syntax bind마다 같은 컨테이너 경로의 마운트가 같은 source·같은 읽기 전용 여부 — 2026-10-17: 내용
+        digest가 같은 두 파일(옛 별칭 `workspace.yaml`과 `workspace.n150.yaml`) 사이의 bind 변경을 env만으로는 못 봐서,
+        compose는 재생성 대상으로 보는데 converge는 current로 보고했다). 컨테이너가 돌고
         재시작 중이 아니어야 한다. 하나라도 다르면(이미지 참조를 풀 수 없는 것 포함) `up`한다. 컨테이너를 **읽을 수
         없으면** 거부한다(fail-closed, `_inspect_plane_container`).
 
@@ -5482,6 +5562,28 @@ class ComposeService:
                 _unescape_compose(str(word)) for word in entrypoint
             ] != observed["entrypoint"]:
                 reasons.append("entrypoint differs")
+            # bind mount: render(`compose config --format json`의 long syntax)의 bind마다. 경로는 비밀이 아니라 싣는다.
+            mounts = observed.get("mounts") or {}
+            rendered_targets: set[str] = set()
+            for volume in render.get("volumes") or []:
+                if not isinstance(volume, Mapping) or volume.get("type") != "bind":
+                    continue
+                target, source = str(volume.get("target") or ""), str(volume.get("source") or "")
+                rendered_targets.add(target)
+                mounted = mounts.get(target)
+                if mounted is None:
+                    reasons.append(f"bind {target} is not mounted")
+                elif mounted[0] != source:
+                    reasons.append(f"bind {target}: running {mounted[0]} != rendered {source}")
+                elif mounted[1] != bool(volume.get("read_only")):
+                    reasons.append(f"bind {target} read-only differs")
+            # 반대 방향: 떠 있는 컨테이너에는 있는데 render에는 없는 bind(지운 bind가 남아 있다). render가 bind를 long syntax로
+            # 실을 때만 본다 — short syntax(테스트 하네스)에는 target 목록이 없다.
+            if rendered_targets or not any(isinstance(v, str) for v in render.get("volumes") or []):
+                reasons.extend(
+                    f"bind {target} is mounted but not rendered"
+                    for target in sorted(set(mounts) - rendered_targets)
+                )
         return drift
 
     @staticmethod
@@ -5520,11 +5622,18 @@ class ComposeService:
             if separator:
                 env[key] = value
         entrypoint = config.get("Entrypoint")
+        mounts = {
+            str(mount.get("Destination")): (str(mount.get("Source") or ""), mount.get("RW") is False)
+            for mount in document.get("Mounts") or []
+            if isinstance(mount, Mapping) and mount.get("Type") == "bind"
+        }
         return {
             "image_id": str(document.get("Image") or ""),
             "env": env,
             "cmd": [str(word) for word in config.get("Cmd") or []],
             "entrypoint": None if entrypoint is None else [str(word) for word in entrypoint],
+            #: 컨테이너 경로 → (source, 읽기 전용) — bind만.
+            "mounts": mounts,
             "running": state.get("Running") is True,
             "restarting": state.get("Restarting") is True,
             "health": (
@@ -5570,7 +5679,9 @@ class ComposeService:
     ) -> None:
         host, port = listen_address(services[plane.webserver])
         daemon_container = installed_container_name(plane.daemon)
-        deadline = time.monotonic() + _SHARED_PLANE_PROBE_TIMEOUT_SECONDS
+        # 상한은 plane의 render healthcheck에서 파생한다(converge와 같은 규칙) — healthcheck를 늘리면 이 기다림도 따라간다.
+        bound = self._shared_plane_health_wait_seconds(plane, services)
+        deadline = time.monotonic() + bound
         while True:
             loaded = self._query_shared_plane_locations(host, port)
             # 도는가·재시작 중이 아닌가만 본다(L3). daemon의 health는 workspace의 code-server **전부**가 SERVING인지 보므로
@@ -5589,7 +5700,7 @@ class ComposeService:
                 state = {location: (loaded or {}).get(location) for location in wanted}
                 raise DeploymentContractError(
                     "the shared Dagster plane did not load the shared pinned locations within "
-                    f"{int(_SHARED_PLANE_PROBE_TIMEOUT_SECONDS)} s: {state}, daemon running "
+                    f"{int(bound)} s: {state}, daemon running "
                     f"{daemon_running}"
                 )
             time.sleep(_SHARED_PLANE_PROBE_INTERVAL_SECONDS)
@@ -5647,6 +5758,8 @@ class ComposeService:
     ) -> DeployStatus:
         """``in_progress`` 이후의 전체 경로. 모든 단계는 다시 돌려도 안전하다."""
 
+        wait_timeout = _compose_wait_timeout_seconds(runtime_transaction.resolved.get("services"))
+
         def compose_up(*services: str) -> None:
             self._run_pinned_runtime_rebuild_compose(
                 [
@@ -5655,7 +5768,7 @@ class ComposeService:
                     "--no-deps",
                     "--wait",
                     "--wait-timeout",
-                    str(_COMPOSE_WAIT_TIMEOUT_SECONDS),
+                    str(wait_timeout),
                     *services,
                 ],
                 transaction=runtime_transaction,
@@ -6108,3 +6221,44 @@ class ComposeService:
 
 
 compose_service = ComposeService()
+
+
+def compose_service_owners(
+    config: Mapping[str, Any], *, families: Mapping[str, DagsterFamily] | None = None
+) -> dict[str, frozenset[str]]:
+    """compose 서비스 → 그것을 소유한 호스트 집합 — 소유자 판정의 **한 자리**(T-MGR-NH NH-2 리뷰 M1).
+
+    변경 경계(`_assert_host_service_scope`), 교차 호스트 간선 검사(`host_edges`), 소비자 origin의 소비자 호스트
+    (`consumer_origins`)가 모두 이것을 쓴다. 소유자 = Manager target(외부 project·`include` 집계 제외)의 `services`
+    ∪ 그 target의 `init_steps`가 compose로 건드리는 서비스(기존 명령 파서로 읽는다) ∪ pinned 재구축의 profile one-shot
+    ∪ (`families`를 주면) Dagster family의 모든 서비스(전환 뒤 profile로 남은 옛 webserver·daemon·gateway 포함).
+    """
+
+    owners: dict[str, set[str]] = {}
+
+    def own(service: str, target: str) -> None:
+        owners.setdefault(service, set()).update(target_hosts(target, config))
+
+    for target, spec in config["targets"].items():
+        if spec.get("include") or spec.get("external_project"):
+            continue
+        for service in spec.get("services", []):
+            own(service, target)
+        # 별도 ownership 표를 만들지 않고 기존 init 선언의 실제 Compose 범위를 쓴다.
+        for step in spec.get("init_steps", []):
+            initializers, _ = ComposeService._parse_compose_mutation(step["command"])
+            if not initializers:
+                raise DeploymentContractError("initializer has no bounded host scope")
+            for service in initializers:
+                own(service, target)
+    for service, target in (
+        (_PINNED_RUNTIME_ONESHOT_WRITERS[0], "map"),
+        (_MAP_APPLICATION_SCHEMA_SERVICE, "map"),
+        (_PINVI_ADMIN_BOOTSTRAP_SERVICE, "pinvi"),
+    ):
+        own(service, target)
+    for target, family in (families or {}).items():
+        if family.external_project is None:
+            for service in family.names:
+                own(service, target)
+    return {name: frozenset(hosts) for name, hosts in owners.items()}

@@ -165,8 +165,24 @@ def test_location_caps_cover_exactly_the_compose_code_servers() -> None:
     assert not [entry for entry in limits if entry["key"] == _UNCOUNTED_TAG]
     # D3: 전역 상한은 호스트 보호 상한이다 — 테넌트 상한의 합보다 작아야 의미가 있다.
     maximum = runs["max_concurrent_runs"]
-    assert isinstance(maximum, int) and 0 < maximum < sum(entry["limit"] for entry in caps)
-    assert all(0 < entry["limit"] <= maximum for entry in caps)
+    assert type(maximum) is int and 0 < maximum < sum(entry["limit"] for entry in caps)
+    assert all(type(entry["limit"]) is int and entry["limit"] > 0 for entry in caps)
+
+
+def test_global_dispatch_budget_preserves_independent_tag_caps() -> None:
+    """전역 슬롯과 tag 상한은 함께 적용된다 — tag 상한이 더 높아도 유효하다."""
+
+    config = _instance_config()
+    runs = config["concurrency"]["runs"]
+    assert runs["max_concurrent_runs"] == 2
+    assert config["run_queue"] == {
+        "dequeue_interval_seconds": 30,
+        "max_user_code_failure_retries": 3,
+        "user_code_failure_retry_delay": 60,
+    }
+    # location·업무별 기존 상한을 전역 2에 맞춰 낮추면 업무 정책을 바꾸게 된다.
+    assert any(entry["limit"] > runs["max_concurrent_runs"] for entry in runs["tag_concurrency_limits"])
+    assert all(type(entry["limit"]) is int and entry["limit"] > 0 for entry in runs["tag_concurrency_limits"])
 
 
 def test_the_coordinator_is_the_queued_default_and_telemetry_is_off() -> None:
@@ -410,6 +426,8 @@ def test_the_host_services_run_the_host_image_with_only_the_control_env() -> Non
             "DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS", "DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS",
             "DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD",
         }
+        if name == "kor-travel-dagster-daemon":
+            allowed.add("KOR_TRAVEL_DAGSTER_DAEMON_POSTGRES_URL")
         assert set(service["environment"]) <= allowed, (name, sorted(service["environment"]))
         assert service["environment"]["DAGSTER_HOME"] == migrate["environment"]["DAGSTER_HOME"]
         assert service["depends_on"] == {_MIGRATE: {"condition": "service_completed_successfully"}}
@@ -427,7 +445,9 @@ def test_the_shared_webserver_listens_only_on_loopback() -> None:
 
     for name, service in _host_services().items():
         command = [str(part) for part in service["command"]]
-        if "dagster-webserver" not in command:
+        if not any(program in command for program in (
+            "dagster-webserver", "kor-travel-dagster-webserver",
+        )):
             continue
         assert command[command.index("-h") + 1] == "127.0.0.1", name
         return
@@ -490,7 +510,10 @@ def test_the_host_image_tag_is_the_content_hash_of_what_goes_into_it() -> None:
 
     dockerfile = (_HOST_IMAGE_DIR / "Dockerfile").read_text(encoding="utf-8")
     hashed = sorted({"Dockerfile", *_dockerfile_copy_sources(dockerfile)})
-    assert hashed == ["Dockerfile", "requirements.txt", "storage-migrate.py"]
+    assert hashed == [
+        "Dockerfile", "build-bytecode.py", "requirements.txt", "storage-migrate.py",
+        "vendor/kor_travel_common-0.1.0.dev0-py3-none-any.whl",
+    ]
     listing = "".join(
         f"{hashlib.sha256((_HOST_IMAGE_DIR / name).read_bytes()).hexdigest()}  {name}\n"
         for name in hashed

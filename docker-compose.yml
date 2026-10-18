@@ -15,7 +15,7 @@ name: kor-travel-docker-manager
 #   `backend/tests/test_dagster_shared_config.py`가 둘(과 백업 role)을 대조한다.
 # - 비밀번호가 URL에 그대로 들어가므로 URI unreserved 문자만 쓴다(db-init이 거부한다).
 x-dagster-shared-control-env: &dagster-shared-control-env
-  KOR_TRAVEL_DAGSTER_SHARED_PG_URL: postgresql+psycopg2://kor_travel_dagster_shared_app:${KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/dagster_shared
+  KOR_TRAVEL_DAGSTER_SHARED_PG_URL: &dagster-shared-pg-url postgresql+psycopg2://kor_travel_dagster_shared_app:${KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/dagster_shared
 
 # 공용 Dagster 호스트 서비스(daemon·webserver)의 기동 가드(ADR-54) — **잘못된 instance storage 위에서 뜨지
 # 않는다**(PinVi daemon과 같은 가드). `dagster.yaml` bind가 빠지면 Dagster는 `$DAGSTER_HOME` 아래 SQLite로
@@ -210,7 +210,9 @@ services:
   # 모든 테넌트의 PostgreSQL·PostGIS·glibc를 조용히 바꾼다. db-init one-shot은 psql
   # 클라이언트라 태그를 그대로 둔다.
   kor-travel-shared-postgres:
-    image: postgis/postgis:16-3.5@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40
+    # 호스트별 이미지(ADR-58 결정 9·R6, T-MGR-03). 기본값은 n150의 digest 핀 그대로다 — 이 index에는 amd64만 있어(2026-10-16
+    # 레지스트리 조회) arm64 호스트(odroid)는 root `.env`의 `KTDM_POSTGRES_IMAGE`로 arm64 이미지를 준다.
+    image: ${KTDM_POSTGRES_IMAGE:-postgis/postgis:16-3.5@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40}
     container_name: ${KOR_TRAVEL_SHARED_POSTGRES_CONTAINER:-kor-travel-shared-postgres}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -229,6 +231,12 @@ services:
     # 종료 checkpoint를 위해 120초 이상을 요구한다 — 이 값이 그것을 넘는다. Manager의
     # 컨테이너 stop/restart도 이 값(`Config.StopTimeout`)을 그대로 넘긴다(#434).
     stop_grace_period: 300s
+    # 메모리 압박 때 커널 OOM killer가 공용 instance를 마지막에 고르게 한다(ADR-58 결정 8 ⅱ, T-MGR-03) — 이것이 죽으면
+    # 전 테넌트가 끊긴다. 상한은 호스트별이다: 기본 `0`(= 상한 없음, 오늘 n150과 효과 동일), odroid `.env`가 준다.
+    # `memswap_limit`는 같은 값 — 상한을 두는 호스트에서 swap으로 새지 않게(같은 변수라 상한 없음이면 둘 다 0).
+    oom_score_adj: -800
+    mem_limit: ${KTDM_PG_MEM_LIMIT:-0}
+    memswap_limit: ${KTDM_PG_MEM_LIMIT:-0}
     # docker 기본 /dev/shm 64MB는 병렬 질의의 dynamic shared memory가 넘친다(09-22
     # "could not resize shared memory segment" 실측). D4의 64MB `work_mem`에서는 병렬
     # hash 하나가 `work_mem × hash_mem_multiplier(2) × (workers+1)`까지 자라므로 1gb로
@@ -265,18 +273,33 @@ services:
     - shared_preload_libraries=pg_prewarm,pg_stat_statements
     - -c
     - pg_prewarm.autoprewarm=on
+    # 튜닝 수치는 호스트별 root `.env`로 바꿀 수 있다(ADR-58 R6·결정 8 ⅰ, T-MGR-03). 기본값은 오늘 n150 값 그대로다.
     - -c
-    - shared_buffers=1GB
+    - shared_buffers=${KTDM_PG_SHARED_BUFFERS:-1GB}
     - -c
-    - work_mem=64MB
+    - work_mem=${KTDM_PG_WORK_MEM:-64MB}
     - -c
-    - maintenance_work_mem=256MB
+    - maintenance_work_mem=${KTDM_PG_MAINTENANCE_WORK_MEM:-256MB}
     - -c
-    - effective_cache_size=1536MB
+    - effective_cache_size=${KTDM_PG_EFFECTIVE_CACHE_SIZE:-1536MB}
     - -c
-    - random_page_cost=1.1
+    - random_page_cost=${KTDM_PG_RANDOM_PAGE_COST:-1.1}
     - -c
-    - max_wal_size=2GB
+    - max_wal_size=${KTDM_PG_MAX_WAL_SIZE:-2GB}
+    # 아래 여섯은 n150 compose에 없던 키다 — 기본값은 **PG 16 서버 기본값**이라 n150 효과는 0이다(ADR-58 결정 1 ⑦;
+    # `test_postgres_host_tuning.py`가 기본값 == 서버 기본값을 단언). odroid(4코어·eMMC/NVMe)가 `.env`로 바꾼다.
+    - -c
+    - max_parallel_workers=${KTDM_PG_MAX_PARALLEL_WORKERS:-8}
+    - -c
+    - max_parallel_workers_per_gather=${KTDM_PG_MAX_PARALLEL_WORKERS_PER_GATHER:-2}
+    - -c
+    - effective_io_concurrency=${KTDM_PG_EFFECTIVE_IO_CONCURRENCY:-1}
+    - -c
+    - checkpoint_timeout=${KTDM_PG_CHECKPOINT_TIMEOUT:-5min}
+    - -c
+    - wal_compression=${KTDM_PG_WAL_COMPRESSION:-off}
+    - -c
+    - autovacuum_max_workers=${KTDM_PG_AUTOVACUUM_MAX_WORKERS:-3}
     - -c
     - pg_stat_statements.track=all
     - -c
@@ -315,7 +338,7 @@ services:
       - ${KOR_TRAVEL_SHARED_POSTGRES_BOOTSTRAP_DB:-postgres}
       - -t
       - "3"
-      interval: 10s
+      interval: 30s
       timeout: 10s
       retries: 20
 
@@ -323,7 +346,7 @@ services:
   # 다른 -db-init one-shot을 추가한다(위 서비스 주석 참고) — role/ACL은 database가
   # 아니라 cluster 전역이라는 ADR-37의 교훈을 그대로 지킨다.
   kor-travel-shared-db-init-concierge:
-    image: postgis/postgis:16-3.5
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_CONCIERGE_CONTAINER:-kor-travel-shared-db-init-concierge}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -381,21 +404,22 @@ services:
 
   # geo 전용 role+앱 database 하나만 만든다 — concierge와 같은
   # 이유로 role/ACL은 cluster 전역이라는 ADR-37 교훈을 지킨다(ADR-45). concierge
-  # db-init과 달리 여기서는 extension을 만들지 않는다 — geo의 실제 스키마
+  # db-init과 달리 extension을 `public`에 만들지 않는다(아래 command 끝에서 `x_extension`에만 — T-MGR-03) — geo의 실제 스키마
   # (kor-travel-geo의 sql/ddl/001_schema.sql)는 postgis/pg_trgm/unaccent/
   # pg_stat_statements를 전부 `x_extension` 스키마에 설치하는데, 여기서 기본
   # `public` 스키마에 먼저 심어 버리면 cutover pg_restore 때 dump가 가져오는
   # `x_extension` 배치와 충돌한다(공용 instance 자체 주석이 경고하는 "map 커토버
-  # 실측" 함정과 동일 원인). 그래서 db-init은 빈 database + role + CONNECT
-  # grant까지만 하고, extension/스키마/테이블은 cutover의 pg_restore가 dump
-  # 그대로 재생하게 둔다.
+  # 실측" 함정과 동일 원인). 2026-10-16(T-MGR-03)부터는 fresh 호스트(odroid — pg_restore 없음)를 위해
+  # `x_extension`·확장 4종을 **그 배치 그대로** 만든다(`IF NOT EXISTS`, admin 소유 + app role USAGE). dump를
+  # 복원하는 경로는 geo `docs/t046-db-backup-restore.md`의 "확장·`x_extension`을 미리 만든 비-superuser 복원"
+  # 절차(그 TOC 제외)와 같다. 테이블은 여전히 geo DDL·복원이 만든다.
   #
   # 옛 Dagster 메타 DB(`kor_travel_geo_dagster`)는 더 만들지도 CONNECT를 주지도 않는다 — geo는 공용
   # plane(`dagster_shared`)에서 돌고, 그 DB는 platform-topology.md §7 4단계가 막고(ALLOW_CONNECTIONS
   # false) 30일 뒤 DROP한다. 여기 남아 있으면 DROP 뒤 매 `ensure`가 빈 DB를 되살린다
   # (`backend/tests/test_old_dagster_meta_db_retired.py`). weather·pinvi·transport db-init도 같다.
   kor-travel-shared-db-init-geo:
-    image: postgis/postgis:16-3.5
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_GEO_CONTAINER:-kor-travel-shared-db-init-geo}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -443,6 +467,14 @@ services:
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$PGDATABASE\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "REVOKE CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_SHARED_DB\" FROM PUBLIC"
       psql -d "$$PGDATABASE" -c "GRANT CONNECT ON DATABASE \"$$KOR_TRAVEL_GEO_SHARED_DB\" TO \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\""
+      # 확장 4종(ADR-58 결정 3, T-MGR-03) — fresh 호스트(odroid)는 pg_restore가 없어 app role(NOSUPERUSER)이 postgis를 만들
+      # 수 없다. cluster admin이 geo DDL과 같은 배치(`x_extension`, admin 소유 + app role USAGE — geo
+      # `docs/t046-db-backup-restore.md`)로 만든다. 이미 있으면(n150 — dump가 재생) 모두 no-op이다.
+      psql -d "$$KOR_TRAVEL_GEO_SHARED_DB" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS x_extension"
+      for extension in postgis pg_trgm unaccent pg_stat_statements; do
+        psql -d "$$KOR_TRAVEL_GEO_SHARED_DB" -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS $$extension WITH SCHEMA x_extension"
+      done
+      psql -d "$$KOR_TRAVEL_GEO_SHARED_DB" -v ON_ERROR_STOP=1 -c "GRANT USAGE ON SCHEMA x_extension TO \"$$KOR_TRAVEL_GEO_SHARED_APP_USER\""
 
   # ADR-46 — PinVi도 geo/concierge/weather와 같은 모양이다: **app role 하나**가
   # 자기 두 database를 소유한다. 종전에는 PinVi만 자체 다중 role 모델(M05)을 갖고
@@ -452,7 +484,7 @@ services:
   # 그래서 그 모델을 폐기하고 geo 패턴으로 접었다 — role 분리 대신 scoped role
   # 하나(NOSUPERUSER/NOCREATEDB/NOCREATEROLE)와 CONNECT 격리로 경계를 잡는다.
   kor-travel-shared-db-init-pinvi:
-    image: postgis/postgis:16-3.5
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_PINVI_CONTAINER:-kor-travel-shared-db-init-pinvi}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -518,7 +550,7 @@ services:
   # PGHOST 127.0.0.1 + network_mode: host 규약으로 처음부터 새로 짠 것이다
   # (ADR-47 — weather internal-target 전환).
   kor-travel-shared-db-init-weather:
-    image: postgis/postgis:16-3.5
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_WEATHER_CONTAINER:-kor-travel-shared-db-init-weather}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -586,7 +618,7 @@ services:
   # DAGSTER_POSTGRES_URL도 이 통합에 맞춰 함께 바꿔야 한다(Manager 쪽만 바꾸면
   # 소비 컨테이너는 여전히 예전 role로 붙는다).
   kor-travel-shared-db-init-transport:
-    image: postgis/postgis:16-3.5
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_TRANSPORT_CONTAINER:-kor-travel-shared-db-init-transport}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -659,7 +691,7 @@ services:
   # 쪽에 적힌다) — 이 설치가 공용 instance의 재생성을 걸어 두지 않는다. 재실행은
   # onboarding §7.3대로 `--no-deps`로, drift guard가 MATCH일 때만 한다.
   kor-travel-shared-db-init-dagster:
-    image: postgis/postgis:16-3.5
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_DAGSTER_CONTAINER:-kor-travel-shared-db-init-dagster}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -755,13 +787,13 @@ services:
   # (`config/docker-targets.yml`의 `dagster` target).
   #
   # 이미지 tag는 **내용 해시**다 — `latest-main`처럼 움직이는 이름이면 옛 이미지가 새 잠금본 행세를
-  # 하고, 두 호스트가 같은 tag로 다른 내용을 가진다. 값은 build context에서 이미지에 들어가는 세
-  # 파일의 해시이고(재현: `cd docker/dagster-host && sha256sum Dockerfile requirements.txt
-  # storage-migrate.py | sha256sum | cut -c1-16`, Linux coreutils), 셋 중 하나를 고치면 이 tag를
+  # 하고, 두 호스트가 같은 tag로 다른 내용을 가진다. 값은 build context에서 이미지에 들어가는 다섯
+  # 파일의 해시이고(재현: `cd docker/dagster-host && sha256sum Dockerfile build-bytecode.py
+  # requirements.txt storage-migrate.py vendor/kor_travel_common-0.1.0.dev0-py3-none-any.whl | sha256sum | cut -c1-16`, Linux coreutils), 다섯 중 하나를 고치면 이 tag를
   # 바꿔야 한다 — `backend/tests/test_dagster_shared_config.py`가 대조한다. 새 tag는 호스트에 없으므로
   # 다음 `run`이 build context에서 만든다. env override는 두지 않는다(정본이 둘이 된다).
   kor-travel-dagster-storage-migrate:
-    image: kor-travel-dagster-host:54b73e888026b39c
+    image: kor-travel-dagster-host:930a44266e814ab6
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_STORAGE_MIGRATE_CONTAINER:-kor-travel-dagster-storage-migrate}
@@ -786,7 +818,7 @@ services:
   # 앵커와 `DAGSTER_HOME`(과 아래 내용 digest)만 받는다 — 앱 비밀은 없다. run은 여기서 돌지 않는다
   # (DefaultRunLauncher가 code-server의 자식으로 띄운다).
   #
-  # 둘은 공용 `config/dagster-shared/workspace.yaml`을 읽는다. 그 파일은 **파생물**이다 — 손으로
+  # 둘은 이 호스트의 `config/dagster-shared/workspace.<KTDM_HOST>.yaml`을 읽는다. 그 파일은 **파생물**이다 — 손으로
   # 쓰지 않는다. `config/docker-targets.yml`에서 `dagster.control_plane: shared`인 target의
   # code-server command(`-p`·`-m`)에서 만들고, `backend/tests/test_dagster_shared_workspace_is_derived.py`가
   # 어긋나면 빨개진다. 모든 target이 `own`인 동안 workspace는 비어 있고(`load_from: []`) 둘은
@@ -800,13 +832,15 @@ services:
   # 둘 다 code-server에 `depends_on`하지 않는다 — 어느 code-server가 합류했는지는 workspace가
   # 말하고, 합류한 location이 떴는지는 두 probe가 본다(아래).
   kor-travel-dagster-daemon:
-    image: kor-travel-dagster-host:54b73e888026b39c
+    image: kor-travel-dagster-host:930a44266e814ab6
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_DAEMON_CONTAINER:-kor-travel-dagster-daemon}
     restart: unless-stopped
     # healthcheck·exec의 고아를 거둔다(ADR-52와 같은 이유).
     init: true
+    # 공용 plane은 OOM 때 테넌트 code-server보다 나중에 죽게 한다(ADR-58 결정 8 ⅱ, T-MGR-03).
+    oom_score_adj: -600
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-dagster-storage-migrate:
@@ -816,12 +850,14 @@ services:
     - -ec
     - *dagster-shared-storage-guard
     - sh
-    - dagster-daemon
+    - kor-travel-dagster-daemon
     - run
     - -w
     - /opt/dagster/dagster_home/workspace.yaml
     environment:
       <<: *dagster-shared-control-env
+      # 같은 원 URL을 daemon wrapper에만 제공한다. 다른 서비스의 URL은 원형이다.
+      KOR_TRAVEL_DAGSTER_DAEMON_POSTGRES_URL: *dagster-shared-pg-url
       DAGSTER_HOME: /opt/dagster/dagster_home
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
@@ -832,7 +868,12 @@ services:
       DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS: "60"
       DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS: "180"
       DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD: "60"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      # 공용 instance 설정(`config/dagster-shared/dagster.yaml`)의 sha256[:16] — 그 파일을 마운트하는 서비스마다 healthcheck가
+      # 대조한다. 리터럴은 여기 한 자리(anchor)이고 다른 서비스는 `*dagster-instance-digest`로 참조한다(T-MGR-02). 최상위
+      # `x-` 키로 두지 않은 것은 `compose config` 렌더가 그 키를 그대로 내보내 n150 렌더가 한 줄 늘기 때문이다 — 여기 두면
+      # 렌더는 종전과 byte 같다. 파일을 바꾸면 이 값을 함께 바꾼다(`test_workspace_digest_validate.py`가 대조한다).
+      # 이 서비스를 alias 사용처(`*dagster-instance-digest`)보다 아래로 옮기지 말 것 — YAML은 정의 전 alias를 거부한다.
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "344105d5c06a22d3"
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
@@ -843,7 +884,7 @@ services:
       # location의 schedule은 tick하지 않으므로 daemon을 unhealthy로 본다(webserver probe와 같은 의미).
       # dagster를 import하지 않는다(grpc·yaml만). (2) 그 다음 **같은 프로세스를 exec**해 dagster의 정식 판정
       # `dagster-daemon liveness-check`(required daemon 전부의 heartbeat 신선도) — exec라 셸 래퍼도 두 번째
-      # 프로세스도 없다(ADR-52). 주기 × retries(240초)를 tolerance(300초) 아래로 둔다.
+      # 프로세스도 없다(ADR-52). Docker 점검 간격과 내부 heartbeat tolerance300은 독립이다.
       test:
       - CMD
       - python
@@ -859,11 +900,11 @@ services:
         down and sys.exit('code servers not serving: %s' % down);
         sys.stdout.flush(); os.execvp('dagster-daemon', ['dagster-daemon', 'liveness-check'])
       - /opt/dagster/dagster_home/workspace.yaml
-      interval: 120s
+      interval: 360s
       timeout: 60s
       retries: 2
       start_period: 90s
-      start_interval: 15s
+      start_interval: 45s
 
   # 공용 webserver — `127.0.0.1`에서만 듣는다(D2). 인증은 앞의 gateway(11001)가 한다.
   #
@@ -877,12 +918,14 @@ services:
   # - gRPC를 부르지 않는다 — `locationOrLoadError`·`dagsterLibraryVersions`는 webserver가 이미 들고 있는
   #   location 상태를 읽을 뿐 code-server에 닿지 않는다. 느린 code-server가 probe를 붙잡지 못한다.
   kor-travel-dagster-webserver:
-    image: kor-travel-dagster-host:54b73e888026b39c
+    image: kor-travel-dagster-host:930a44266e814ab6
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-dagster-webserver}
     restart: unless-stopped
     init: true
+    # 공용 plane은 OOM 때 테넌트 code-server보다 나중에 죽게 한다(ADR-58 결정 8 ⅱ, T-MGR-03).
+    oom_score_adj: -600
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-dagster-storage-migrate:
@@ -892,7 +935,7 @@ services:
     - -ec
     - *dagster-shared-storage-guard
     - sh
-    - dagster-webserver
+    - kor-travel-dagster-webserver
     - -h
     - 127.0.0.1
     - -p
@@ -902,7 +945,7 @@ services:
     environment:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
@@ -935,7 +978,7 @@ services:
         sys.exit('code-server dagster above the host version ceiling: %s' % over if over else 0)
       - ${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
       - /opt/dagster/dagster_home/workspace.yaml
-      interval: 30s
+      interval: 90s
       timeout: 10s
       retries: 5
       start_period: 120s
@@ -1058,7 +1101,7 @@ services:
       - CMD-SHELL
       - curl -fsS http://localhost:${RUSTFS_API_CONTAINER_PORT:-12101}/health/live
         || exit 1
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 5
   rustfs-init:
@@ -1151,7 +1194,7 @@ services:
       - CMD-SHELL
       - >-
         python -c "import urllib.request; urllib.request.urlopen('http://localhost:${KOR_TRAVEL_GEO_API_CONTAINER_PORT:-12501}/v1/healthz', timeout=5).read()"
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 12
       start_period: 30s
@@ -1191,7 +1234,7 @@ services:
       - -e
       - >-
         const http=require('node:http');const req=http.get('http://127.0.0.1:'+(process.env.PORT||'12505')+'/login',res=>{const ok=res.statusCode>=200&&res.statusCode<300;res.destroy();process.exit(ok?0:1)});req.on('error',()=>process.exit(1));setTimeout(()=>{req.destroy();process.exit(1)},4000).unref();
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 12
       start_period: 30s
@@ -1380,7 +1423,7 @@ services:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
@@ -1649,6 +1692,10 @@ services:
       NEXT_PUBLIC_KOR_TRAVEL_MAP_DAGSTER_URL: ${KTDM_PROD_URL_DAGSTER:-http://127.0.0.1:${KOR_TRAVEL_DAGSTER_GATEWAY_PORT:-11001}}
       NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL: ${KTDM_PROD_URL_GEO_API:-http://127.0.0.1:12501}
       NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
+      # Map UI `/api/geo` BFF(server-side)가 부르는 geo origin — `KOR_TRAVEL_GEO_INTERNAL_URL`을 공개 URL보다 먼저 읽는다
+      # (Map `app/api/geo/[...path]/route.ts`). R2 소비자 origin이고 map-api와 **같은 원천 변수**다(T-MGR-NH NH-8 —
+      # 없으면 BFF가 `NEXT_PUBLIC_KOR_TRAVEL_GEO_BASE_URL` 공개 URL로 돌아 나간다).
+      KOR_TRAVEL_GEO_INTERNAL_URL: ${KOR_TRAVEL_MAP_DOCKER_GEO_BASE_URL:-http://192.168.1.13:12501}
       # Map UI `/api/geo` BFF는 Geo가 Map consumer에 발급한 server-only key만 쓴다.
       # VWorld/public build alias로 대체하거나 브라우저 query에서 덮어쓸 수 없다.
       KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY:?KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY must be explicitly set}
@@ -1718,7 +1765,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       TMPDIR: /tmp
       TEMP: /tmp
       TMP: /tmp
@@ -2146,7 +2193,7 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       DAGSTER_HOME: /opt/pinvi/.dagster
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       # 여기가 code location이 실제로 도는 곳이다 — `DefaultRunLauncher`의 run
@@ -2389,9 +2436,18 @@ services:
     privileged: true
     devices:
     - /dev/kmsg:/dev/kmsg
+    # 부하 경감: 운영 관측 이력은 30초이며, source 기본은 아래 15초/env 설정이다. 기본 제외 항목을 보존한다.
+    # 디스크 순회(disk·diskIO)·상세 네트워크(tcp·udp)·percpu 등을 끄고
+    # 기본 cpu·memory·network rx/tx는 남는다. 저장소의 소비자는 중앙 Prometheus scrape뿐이다(rule·대시보드가 이 메트릭을
+    # 쓰지 않는다 — Grafana에는 datasource만 있고, Manager 대시보드의 컨테이너 수치는 Docker stats API에서 온다).
+    # #515·#516이 겹쳐 같은 flag가 두 번 들어갔다(Go flag는 마지막 값을 쓴다 — 기본 off 4항목이 다시 켜졌다). 한 벌로 합친다:
+    # 수집 주기는 소유자 지시 15s(env로 덮어쓴다), 끄는 목록은 #515의 합집합 — 명시 목록은 기본 off 집합을 **대체**하므로
+    # 기본 off 항목(memory_numa·advtcp·process·cpuset)도 적어야 한다. docker_only는 root aggregate까지 0이라는 뜻이 아니다.
     command:
     - --logtostderr
     - --docker_only=true
+    - --housekeeping_interval=${CADVISOR_HOUSEKEEPING_INTERVAL:-15s}
+    - --disable_metrics=percpu,sched,tcp,udp,disk,diskIO,hugetlb,referenced_memory,cpu_topology,resctrl,memory_numa,advtcp,process,cpuset
     - --port=${CADVISOR_PORT:-12103}
     healthcheck:
       test:
@@ -2429,6 +2485,10 @@ services:
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
+    # 호스트별 상한(ADR-58 결정 8 ⅱ, T-MGR-03): 기본 `0`(= 상한 없음, 오늘과 효과 동일), odroid `.env`가 준다. swap으로 새지
+    # 않게 `memswap_limit`는 같은 값.
+    mem_limit: ${KTDM_GEO_CODE_SERVER_MEM_LIMIT:-0}
+    memswap_limit: ${KTDM_GEO_CODE_SERVER_MEM_LIMIT:-0}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-shared-postgres:
@@ -2468,7 +2528,7 @@ services:
       DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS: "60"
       DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS: "180"
       DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD: "60"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_DISABLE_TELEMETRY: ${DAGSTER_DISABLE_TELEMETRY:-yes}
       KTG_PG_DSN: ${KOR_TRAVEL_GEO_DOCKER_PG_DSN:?KOR_TRAVEL_GEO_DOCKER_PG_DSN must be explicitly set}
@@ -2501,7 +2561,7 @@ services:
       # 읽기 전용 live 확인만 수행한다. PID 종료·DB reaper는 healthcheck 책임이 아니다.
       # consumer 이미지에 Common grpc_health CLI가 포함된 뒤 적용한다(docker-management.md).
       test: ["CMD", "python", "-m", "kortravelcommon.grpc_health", "12503", "--check", "live"]
-      interval: 30s
+      interval: 90s
       timeout: 10s
       retries: 5
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.
@@ -2757,6 +2817,11 @@ services:
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_METRICS_TOKEN: ${KOR_TRAVEL_WEATHER_METRICS_TOKEN:?set KOR_TRAVEL_WEATHER_METRICS_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+      KOR_TRAVEL_WEATHER_VWORLD_API_KEY: ${KOR_TRAVEL_WEATHER_VWORLD_API_KEY:-}
+      KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY: ${KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY:-}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED:-true}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE:-50}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS:-5}
       KOR_TRAVEL_WEATHER_CORS_ORIGINS: '${KOR_TRAVEL_WEATHER_CORS_ORIGINS:-["https://weather.digitie.mywire.org","http://127.0.0.1:${KOR_TRAVEL_WEATHER_WEB_PORT:-12205}"]}'
       KOR_TRAVEL_WEATHER_API_BASE_URL: ${KOR_TRAVEL_WEATHER_API_BASE_URL:-https://weather-api.digitie.mywire.org}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
@@ -2779,7 +2844,7 @@ services:
     - ${KOR_TRAVEL_WEATHER_API_PORT:-14101}:${KOR_TRAVEL_WEATHER_API_PORT:-14101}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:14101/health', timeout=3)"]
-      interval: 10s
+      interval: 90s
       timeout: 5s
       retries: 12
 
@@ -2839,8 +2904,10 @@ services:
     - start
     - -h
     - "127.0.0.1"
+    # gRPC 포트는 weather가 도는 odroid의 통일 포트 `12206`이다(2026-10-17 odroid 실측 — 옛 n150 `14106`). 공용 workspace
+    # (`workspace.odroid.yaml`)가 이 값에서 파생되고 odroid 호스트 측 plane의 workspace와 같아야 한다(F2).
     - -p
-    - "14106"
+    - "12206"
     - -m
     - kortravelweather_dagster.definitions
     - --inject-env-vars-from-instance
@@ -2856,13 +2923,18 @@ services:
       # reload 뒤 `shutdown_server()`가 실패한 옛 자식(code import 하나를 통째로 쥔다, weather 한도 4g)이 남는 시간을
       # 10분으로 묶는다.
       DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS: "600"
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: "7925bcdea8472b06"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       DAGSTER_HOME: /opt/dagster/home
       KOR_TRAVEL_WEATHER_ENV: production
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
       PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY: ${KOR_TRAVEL_WEATHER_CREDENTIAL_ENCRYPTION_KEY:-}
+      KOR_TRAVEL_WEATHER_VWORLD_API_KEY: ${KOR_TRAVEL_WEATHER_VWORLD_API_KEY:-}
+      KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY: ${KOR_TRAVEL_WEATHER_KAKAO_REST_API_KEY:-}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_AUTO_ENABLED:-true}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_BATCH_SIZE:-50}
+      KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS: ${KOR_TRAVEL_WEATHER_ADDRESS_REFRESH_TIMEOUT_SECONDS:-5}
       KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY: ${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}
       KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY: ${KOR_TRAVEL_WEATHER_AIRKOREA_API_KEY:-${KOR_TRAVEL_WEATHER_DATA_GO_KR_SERVICE_KEY:-}}
       KOR_TRAVEL_WEATHER_KREX_API_KEY: ${KOR_TRAVEL_WEATHER_KREX_API_KEY:-}
@@ -2892,6 +2964,10 @@ services:
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
       KOR_TRAVEL_WEATHER_RETENTION_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_DAYS:-2}
       KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS: ${KOR_TRAVEL_WEATHER_RETENTION_AHEAD_DAYS:-7}
+      # 기본값 `14103`은 이 compose(Manager가 weather를 올리는 배치)의 weather 대역 값이다. 지금 weather는 odroid의 호스트 측
+      # stack(통일 포트)에서 돌고 metrics는 `12203`이다 — 중앙 Prometheus는 registry `metrics_port: 12203`으로 그것을 긁는다
+      # (T-MGR-04r). 일부러 맞추지 않았다: 이 기본값을 바꾸면 weather 대역 밖 포트가 되고, 두 값은 odroid Manager가 weather를
+      # 넘겨받을 때(T-MGR-06·T-OPS) odroid root `.env`의 `KOR_TRAVEL_WEATHER_METRICS_PORT`와 registry를 같은 값으로 둔다.
       KOR_TRAVEL_WEATHER_METRICS_PORT: ${KOR_TRAVEL_WEATHER_METRICS_PORT:-14103}
       PROMETHEUS_MULTIPROC_DIR: /var/run/kor-travel-weather-metrics
     volumes:
@@ -2900,15 +2976,18 @@ services:
     - /var/run/kor-travel-weather-metrics
     cpu_shares: 4096
     mem_reservation: 2g
-    mem_limit: 4g
+    # 호스트별 상한(ADR-58 결정 8 ⅱ, T-MGR-03): 기본값은 오늘 값(4g), odroid `.env`가 줄인다. swap으로 새지 않게
+    # `memswap_limit`는 같은 값.
+    mem_limit: ${KTDM_WEATHER_CODE_SERVER_MEM_LIMIT:-4g}
+    memswap_limit: ${KTDM_WEATHER_CODE_SERVER_MEM_LIMIT:-4g}
     mem_swappiness: 10
     oom_score_adj: -500
     pids_limit: 2048
     healthcheck:
       # 읽기 전용 live 확인만 수행한다. PID 종료·DB reaper는 healthcheck 책임이 아니다.
       # consumer 이미지에 Common grpc_health CLI가 포함된 뒤 적용한다(docker-management.md).
-      test: ["CMD", "python", "-m", "kortravelcommon.grpc_health", "14106", "--check", "live"]
-      interval: 30s
+      test: ["CMD", "python", "-m", "kortravelcommon.grpc_health", "12206", "--check", "live"]
+      interval: 90s
       timeout: 10s
       retries: 5
       # 부하 때 code location 로딩이 몇 분 걸린다. start_interval 덕분에 빨리 뜨면 창을 다 쓰지 않는다.

@@ -61,6 +61,7 @@ from kor_travel_docker_manager.services.loopback_readiness import (
 from kor_travel_docker_manager.services.map_service_contract import (
     C6C_CANCEL_PROBE_CAPABILITY_GENERATION,
 )
+from kor_travel_docker_manager.services.postgres_image import declared_postgres_services
 from kor_travel_docker_manager.services.registry import (
     get_targets_config_path,
     load_targets_config,
@@ -1341,7 +1342,8 @@ def _normalize_postgres_setting_name(name: str) -> str:
 #: 정본 compose의 PostgreSQL 서버 넷이 쓰는 **최상위 키 전부**(실측 2026-09-18).
 #: `shm_size`는 하나만 쓰지만 정당하므로 포함한다. `init`·`stop_grace_period`는
 #: ADR-52(2026-09-28)로 공용 instance가 쓴다 — 둘 다 권한을 넓히지 않는다(init은
-#: PID 1에 docker-init을 둘 뿐이고, grace는 종료 대기 시간이다).
+#: PID 1에 docker-init을 둘 뿐이고, grace는 종료 대기 시간이다). `mem_limit`·`memswap_limit`·`oom_score_adj`는
+#: ADR-58 결정 8(T-MGR-03)로 공용 instance가 쓴다 — 셋 다 컨테이너를 **좁히거나** 커널 OOM 순서만 바꾼다.
 #:
 #: **금지 목록이 아니라 허용 목록이다.** 앞선 세 라운드가 같은 병으로 뚫렸다 —
 #: `entrypoint`·`privileged`·`user`·`cap_add`·`pid`를 막았더니 `devices: /dev/sda`가
@@ -1359,7 +1361,10 @@ _POSTGRES_ALLOWED_SERVICE_KEYS: Final = frozenset(
         "healthcheck",
         "image",
         "init",
+        "mem_limit",
+        "memswap_limit",
         "network_mode",
+        "oom_score_adj",
         "ports",
         "restart",
         "secrets",
@@ -1376,11 +1381,16 @@ _POSTGRES_ALLOWED_SERVICE_KEYS: Final = frozenset(
 #: `external_pid_file`을 **따로 열거하지 않아도** 전부 막힌다.
 _POSTGRES_ALLOWED_COMMAND_SETTINGS: Final = frozenset(
     {
+        "autovacuum_max_workers",
         "checkpoint_completion_target",
+        "checkpoint_timeout",
         "effective_cache_size",
+        "effective_io_concurrency",
         "listen_addresses",
         "maintenance_work_mem",
         "max_locks_per_transaction",
+        "max_parallel_workers",
+        "max_parallel_workers_per_gather",
         "max_wal_size",
         "pg_prewarm.autoprewarm",
         "pg_stat_statements.max",
@@ -1388,6 +1398,7 @@ _POSTGRES_ALLOWED_COMMAND_SETTINGS: Final = frozenset(
         "random_page_cost",
         "shared_buffers",
         "shared_preload_libraries",
+        "wal_compression",
         "work_mem",
     }
 )
@@ -1403,8 +1414,7 @@ _POSTGRES_FORBIDDEN_LAYOUT_ENV_NAMES: Final = frozenset({"PGDATA"})
 _POSTGRES_CLUSTER_INIT_ENV_NAMES: Final = frozenset(
     {"POSTGRES_PASSWORD", "POSTGRES_PASSWORD_FILE"}
 )
-#: `role`이 이것으로 끝나는 Manager 컨테이너의 `compose_service`가 declared 집합이다.
-_POSTGRES_DECLARED_ROLE_SUFFIX: Final = "postgresql"
+#: declared 집합(`role`이 `postgresql`로 끝나는 Manager 컨테이너의 `compose_service`)은 `postgres_image.declared_postgres_services`가 정본이다.
 
 
 def _postgres_command_tokens(command: object) -> list[str] | None:
@@ -1515,16 +1525,8 @@ def _declared_postgres_compose_services() -> frozenset[str]:
         config = load_targets_config()
     except Exception:  # noqa: BLE001 - 설정을 못 읽으면 witnessed 축만 쓴다
         return frozenset()
-    declared: set[str] = set()
-    for spec in (config.get("containers") or {}).values():
-        if not isinstance(spec, Mapping) or spec.get("external_project"):
-            continue
-        role = spec.get("role")
-        if isinstance(role, str) and role.endswith(_POSTGRES_DECLARED_ROLE_SUFFIX):
-            service = spec.get("compose_service")
-            if isinstance(service, str) and service:
-                declared.add(service)
-    return frozenset(declared)
+    # 같은 파생을 서버 이미지 가드(`postgres_image`)도 쓴다 — 한 자리.
+    return declared_postgres_services(config)
 
 
 #: 셸로 인식하는 프로그램 이름. 이 뒤의 `-c` 페이로드는 그 자체가 명령줄이다.
@@ -1833,7 +1835,7 @@ def _assert_one_postgres_cluster_runtime(
     """PostgreSQL 서버의 **형태 전체**를 허용 목록으로 묶는다.
 
     금지 목록은 세 라운드 연속으로 뒤처졌다 — 매번 내가 놓친 철자·키가 우회로였다.
-    정본 서버의 형태는 좁고 고정적이므로(최상위 키 13개, 허용 GUC 13개 + `-p`) 방향을
+    정본 서버의 형태는 좁고 고정적이므로(최상위 키 16개, 허용 GUC 19개 + `-p`) 방향을
     뒤집으면 **모르는 것이 하나라도 있으면 거부**가 되고, 다음 compose 스펙이나
     postgres 버전이 무엇을 추가해도 fail-close다.
     """

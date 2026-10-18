@@ -50,8 +50,8 @@ C6c 계약 기계(보호값 스캔·볼륨 그래프·단일파일 경계·핀�
 > 스크립트 bind mount뿐이다.
 
 **호스트 차원(계획 — ADR-58 proposed, 미구현).** 위 표의 두 축에 "어느 호스트에서 도는가"가 더해진다. tenant target
-(`geo`·`weather`·`transport`·`map`·`pinvi`·`conc`)은 registry `host:` 하나(생략 = default 호스트 n150), infra target(`storage`·
-`dagster`·`cadv`)은 `host: all`(모든 호스트에 host-local로 하나씩), `prom`·`gra`는 n150뿐이다. **컨테이너는 host-local**이다 —
+(`geo`·`weather`·`transport`·`map`·`pinvi`·`conc`)은 registry `host:` 하나(2026-10-17 NH-1부터 생략 불가), infra target 중
+`storage`·`dagster`는 `host: [n150, odroid]`(NH-3 — 목록의 호스트에 host-local로 하나씩), `cadv`는 `host: all`, `prom`·`gra`는 n150뿐이다. **컨테이너는 host-local**이다 —
 같은 이름의 컨테이너는 그것을 service로 갖는 target들의 host **합집합**에 존재한다(`kor-travel-shared-postgresql`은 `dagster`(all)
 때문에 두 호스트 모두, `kor-travel-geo-api`는 geo target의 host 하나). 호스트마다 **같은 Manager**가 자기 로컬 소켓으로 돌고
 (`KTDM_HOST`로 자기를 식별), 원격 Docker·Manager 간 SSH는 없다. 내부/외부 구분과 `ensure` 거부 규칙은 그대로다 — 다만 `ensure`는
@@ -96,8 +96,8 @@ target 단위로만 남아 있다.
 
 **호스트 차원(계획 — ADR-58 proposed, 미구현; T-MGR-01a가 만든다).** 이 파일에 최상위 `hosts:` 절과 target의
 `host:` 필드가 더해진다 — 주소의 유일한 자리다. 스키마: `hosts: {<키>: {addr: <IPv4 리터럴>, default: true|생략}}`
-(default는 정확히 1개 — 0·2개는 `TargetsConfigError`), tenant target `host: <hosts 키>`(생략 = default), infra
-target(`storage`·`dagster`·`cadv`) `host: all`; `hosts`에 없는 `host:` 값은 unknown host로 거부; 운영 모드의 `KTDM_HOST` 값은
+(default는 정확히 1개 — 0·2개는 `TargetsConfigError`), tenant target `host: <hosts 키>`(생략 불가 — NH-1), infra
+target `storage`·`dagster`는 `host: [n150, odroid]`(NH-3)·`cadv`는 `host: all`; `hosts`에 없는 `host:` 값은 unknown host로 거부; 운영 모드의 `KTDM_HOST` 값은
 `hosts` 키여야 하고 `all` target의 `include`는 그 값으로 필터된다. 컨테이너의 host 집합은 그것을 service로 갖는 target들의
 host 합집합이다(위 `containers:`에는 host 필드가 없다). 로더 검증·명령 규칙·`KTDM_HOST`의 정의는
 [`docker-management.md`](docker-management.md) §3.2, 배치표는 §10.
@@ -175,7 +175,7 @@ internal target이 되며 `network_mode: host`로도 옮겨왔다 — 지금은 
 | `weather` | `kor-travel-weather-dagster-webserver` 내부 전용 `14107` + 게이트웨이(Basic Auth) `14102` | `kor-travel-weather-dagster-daemon` (포트 없음) | `kor-travel-weather-dagster-code-server` `14106`(loopback 전용, 무인증) | ADR-47 — Manager 소유, webserver/daemon → `-w workspace.yaml`(grpc_server, Manager 소유 오버라이드가 `host: dagster-code-server`를 `127.0.0.1`로 재작성), code-server만 `-m kortravelweather_dagster.definitions` |
 | `transport`(외부) | 공용(옛 `kor-travel-transport-dagster-webserver-1`은 그 저장소의 `legacy-dagster`) | 공용(옛 daemon도 `legacy-dagster`) | `kor-travel-transport-dagster-code-server-1` `127.0.0.1:14005`(`dagster code-server start --location-name kor-travel-transport`) | 그 저장소가 소유한다 — Manager compose에는 없고, 모양은 targets의 `dagster.external`이 선언한다(ADR-54 개정 2026-10-02) |
 | `conc` | 없음 | — | 없음 | — |
-| 공용(`dagster`) | `kor-travel-dagster-webserver` `127.0.0.1:11002` + 게이트웨이 `kor-travel-dagster-gateway` `11001`(Basic Auth) | `kor-travel-dagster-daemon` (포트 없음) | 없음 — 합류한 프로젝트의 code-server를 본다 | ADR-54 — `-w config/dagster-shared/workspace.yaml`(파생물, 지금은 `load_from: []`), 호스트 이미지 `kor-travel-dagster-host`, instance는 공용 `dagster.yaml` |
+| 공용(`dagster`) | `kor-travel-dagster-webserver` `127.0.0.1:11002` + 게이트웨이 `kor-travel-dagster-gateway` `11001`(Basic Auth) | `kor-travel-dagster-daemon` (포트 없음) | 없음 — 합류한 프로젝트의 code-server를 본다 | ADR-54 — 호스트의 `config/dagster-shared/workspace.<host>.yaml`을 컨테이너 `workspace.yaml`로 붙인다(파생물), 호스트 이미지 `kor-travel-dagster-host`, instance는 공용 `dagster.yaml` |
 
 > **접속 방식**: pinvi·geo·weather·map 모두 이 저장소의 compose가 강제하는
 > `network_mode: host`라 `workspace.yaml`이 서비스명이 아니라 `host: 127.0.0.1`을
@@ -385,7 +385,7 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
      `backend/src`·`scripts`에 온전한 토큰으로 되돌아오면 `(pinned)`로 빨갛다(적대 리뷰 M2).
    - **합류 스위치와 파생물(ADR-54).** target마다 `config/docker-targets.yml`의
      `dagster: {control_plane: own|shared, consumers: {...}}`가 스위치다(지금 넷 다 `own`). 공용
-     `config/dagster-shared/workspace.yaml`은 `shared` target의 code-server command(`-p`, `-m`/
+     `config/dagster-shared/workspace.<host>.yaml`(호스트마다)은 `shared` target의 code-server command(`-p`, `-m`/
      `--location-name`)에서 **파생**하고, 테스트가 어긋나면 빨개진다. `shared`로 바꾸는 PR은 같은
      커밋에서 compose를 그 모양으로 바꾼다 — (a) code-server가 `<<: *dagster-shared-control-env`와
      `./config/dagster-shared/dagster.yaml:$DAGSTER_HOME/dagster.yaml:ro`를 받고 gRPC가 `127.0.0.1`에서만
@@ -440,7 +440,8 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
           — smoke(PinVi `/admin/etl/summary`, Map `/v1/ops/pipeline/*`)가 공용 webserver에 자기 location을 묻기
           때문이다. plane이 실을 workspace의 location마다 그 target의 plane 밖 daemon이 돌면 거부하고, 떠 있는
           plane이 frozen render와 같은 이미지·env·command로 돌면 다시 만들지 않으며(`up -d --no-deps`는 그때만), 그 target의
-          location이 `RepositoryLocation`이고 daemon이 도는지만 300초 안에서 본다(다른 테넌트의 상태는 보지 않는다).
+          location이 `RepositoryLocation`이고 daemon이 도는지만 본다(다른 테넌트의 상태는 보지 않는다). 상한은 `dagster-plane converge`와
+          같은 render healthcheck 파생값이다(2026-10-16 T-MGR-06k — 옛 고정 300초).
           `own`인 target의 location을 plane이 아직 싣고 있으면 무엇을 멈추기 전에 거부한다 — 되돌리기는 이 창
           스크립트로 한다. 모두 `own`이면 plane을 건드리지 않는다. 순서: 설치 → 펜스(옛 daemon, 이어 webserver) → 옛 instance의 진행 중
           run 취소 → pinned 재구축(그 안에서 plane 재생성) → 검증(창 스크립트는 plane이 펜스 뒤 새로 만들어졌고
@@ -685,16 +686,19 @@ validate` → odroid `ensure <target>`. consumer 전환(Map/PinVi 코드서버·
 | **odroid `192.168.1.13`** | `geo`(tenant, `host: odroid`) | api `12501`, ui `12505`, code-server gRPC `127.0.0.1:12503`(2026-10-15 odroid plane 합류, schedule·sensor STOPPED), db-init | geo 플립 PR(T-MGR-06, 마지막). **2026-10-15 잠정**: registry `host: odroid`·n150 공용 workspace에서 제외(n150 code-server 멈춤), geo Dagster는 odroid의 plane에서 돈다(odroid 자체 workspace, Manager 밖 — 2026-10-15 02:52Z); n150 geo API는 아직 돈다 |
 | | `weather`(tenant) | api `14101`, web `12205`(ADR-57), code-server gRPC `127.0.0.1:14106` · code-server metrics `14103`(compose `:2874`), weather Prometheus `14104`(관측 1단계 유지), `legacy-dagster` 서비스는 기동 안 함 | |
 | | `transport`(tenant, 외부 project) | backend `14001`, frontend `14002`, code-server `127.0.0.1:14005`; `transport-admin` `12305`/`12301` | app dir `/home/digitie/apps/kor-travel-transport` 동일 |
-| | `dagster`(infra, `host: all`) | **odroid PG** `kor-travel-shared-postgres` `11000` loopback(`kor_travel_geo`·`kor_travel_weather`·`kor_travel_transport`·`dagster_shared`), gateway `11001`, webserver `127.0.0.1:11002`, daemon, storage-migrate | 두 번째 plane; PG는 이 target의 service |
-| | `storage`(infra, `host: all`) | RustFS `12101`/`12105`(bind는 compose상 `0.0.0.0` — 경계는 호스트 방화벽) | `rustfs-init`은 버킷 6개를 registry와 무관하게 다 만든다 — 양쪽에 생기고 사용만 분리 |
+| | `dagster`(infra, `host: [n150, odroid]` — NH-3) | **odroid PG** `kor-travel-shared-postgres` `11000` loopback(`kor_travel_geo`·`kor_travel_weather`·`kor_travel_transport`·`dagster_shared`), gateway `11001`, webserver `127.0.0.1:11002`, daemon, storage-migrate | 두 번째 plane; PG는 이 target의 service |
+| | `storage`(infra, `host: [n150, odroid]` — NH-3) | RustFS `12101`/`12105`(bind는 compose상 `0.0.0.0` — 경계는 호스트 방화벽) | `rustfs-init`은 버킷 6개를 registry와 무관하게 다 만든다 — 양쪽에 생기고 사용만 분리 |
 | | `cadv`(infra, `host: all`) | cAdvisor `12103`, node_exporter `12106`(2026-10-14 odroid 임시 기동 — `ports.md` node_exporter 절) | |
 | | Manager | backend `12901`(systemd, `0.0.0.0`); dashboard `12905`는 **§14-29 조건부**(추천 (가) backend만 — frontend 설치 없음; (나)면 `12901` 허용 소스와 공개 host 2개가 따라온다) | `KTDM_HOST=odroid` |
 | | **보존(우리 범위 밖, 실측)** | Plex `32400`/`32469`(Docker, volume `media` = `/mnt/media`), Samba `139`/`445`, webvnc-router `2121`/`6080`, `8080`, `1994`; UDP 137/138·1900/1901·32410-32414 외 | Track 2가 만지지 않는다; 포트 충돌 0(`ports.md`) |
 | | **폐기(실측으로 한정)** | parking-radar `3000`/`8000`/`18000`, Portainer `9443` | Plex 정의 보관·Portainer 볼륨 유지·`prune` 금지(§14-2) |
-| **n150 `192.168.1.14`** | `map`·`pinvi`·`conc`(tenant, default host), `dagster`·`storage`·`cadv`(infra, all), `prom`·`gra`(n150만) | 공용 plane, 공용 PG `11000`(세 DB drop 뒤 9 DB), rustfs, Prometheus `12102`, Grafana `12104`, cAdvisor `12103`, node_exporter, Manager `12901` | geo/weather/transport 스택 제거, compose `map-api → geo-api` 간선 삭제(R7), Prometheus 타깃 추가 |
+| **n150 `192.168.1.14`** | `map`·`pinvi`·`conc`(tenant, `host: n150`), `dagster`·`storage`(infra, `[n150, odroid]`)·`cadv`(infra, all), `prom`·`gra`(n150만) | 공용 plane, 공용 PG `11000`(세 DB drop 뒤 9 DB), rustfs, Prometheus `12102`, Grafana `12104`, cAdvisor `12103`, node_exporter, Manager `12901` | geo/weather/transport 스택 제거, compose `map-api → geo-api` 간선 삭제(R7), Prometheus 타깃 추가 |
 
 규칙: **`host = hosts[<target.host>].addr`; 포트·경로·서비스명·컨테이너명·project명·app dir 불변; 같은 호스트 안 참조는 `127.0.0.1`.**
 두 호스트가 `11000`·`11001`·`12101`·`12901`을 각각 가져도 충돌이 없다 — 포트 정책은 호스트 로컬이다.
+**loopback 간선은 compose `depends_on`으로 선언한다**(2026-10-17 T-MGR-NH NH-2): `targets validate`가 소비자 서비스의 소유 호스트 ⊆
+제공자 소유 호스트를 검사한다(`services/host_edges.py`). C6c가 loopback을 고정한 PinVi→Map·concierge UI→API가 그렇게 같은 호스트에
+묶이고, `map-api → concierge-api`가 Map과 concierge를 묶는다. depends_on 없이 loopback을 쓰는 간선을 새로 만들면 검사가 보지 못한다.
 
 ### 10.2 odroid envelope 실측(2026-10-13; 비root 읽기 전용 프로브 + 소유자 처리 결과) — 미검증은 그대로 표시
 
