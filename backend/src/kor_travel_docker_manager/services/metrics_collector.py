@@ -171,6 +171,8 @@ def _image_metadata(container: Any, attrs: Mapping[str, Any]) -> tuple[str, str]
     config = _as_mapping(attrs.get("Config"))
     image_id = str(attrs.get("Image") or "")
     configured_image = str(config.get("Image") or "")
+    if configured_image and image_id:
+        return configured_image, image_id
     tags: list[str] = []
     try:
         image = getattr(container, "image", None)
@@ -276,8 +278,11 @@ class MetricsCollector:
         self._docker_client_provider = provider
 
     @staticmethod
-    def _default_observation(container_id: str) -> dict[str, Any]:
-        spec = MANAGED_CONTAINERS.get(container_id, {})
+    def _default_observation(
+        container_id: str, *, spec: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        if spec is None:
+            spec = MANAGED_CONTAINERS.get(container_id, {})
         return {
             "container_id": container_id,
             "container_name": str(spec.get("name") or container_id),
@@ -321,6 +326,7 @@ class MetricsCollector:
         collection_success: bool,
         stats_available: bool,
         network_interfaces: dict[str, dict[str, int]] | None = None,
+        spec: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         attrs = _safe_attrs(container)
         state = _as_mapping(attrs.get("State"))
@@ -328,10 +334,11 @@ class MetricsCollector:
         network_settings = _as_mapping(attrs.get("NetworkSettings"))
         image, image_id = _image_metadata(container, attrs)
         state_name = _container_status(container, attrs)
-        old = self._container_observations.get(container_id, self._default_observation(container_id))
+        default = self._default_observation(container_id, spec=spec)
+        old = self._container_observations.get(container_id, default)
         raw_exit_code = state.get("ExitCode")
         return {
-            **self._default_observation(container_id),
+            **default,
             "state": state_name,
             "health": _health_status(state.get("Health")),
             "running": _as_bool(state.get("Running")) or state_name == "running",
@@ -364,8 +371,11 @@ class MetricsCollector:
             self._container_observations[container_id] = observation
             self._latest_metrics[container_id] = dict(observation["metrics"])
 
-    def _mark_unavailable(self, container_id: str, state: str, *, success: bool) -> None:
-        observation = self._default_observation(container_id)
+    def _mark_unavailable(
+        self, container_id: str, state: str, *, success: bool,
+        spec: Mapping[str, Any] | None = None,
+    ) -> None:
+        observation = self._default_observation(container_id, spec=spec)
         old = self._container_observations.get(container_id, {})
         observation.update(
             {
@@ -447,8 +457,8 @@ class MetricsCollector:
                 with self._lock:
                     self._collection_errors_total += 1
                     self._docker_daemon_up = 0
-                for key in MANAGED_CONTAINERS:
-                    self._mark_unavailable(key, "offline", success=False)
+                for key, spec in MANAGED_CONTAINERS.items():
+                    self._mark_unavailable(key, "offline", success=False, spec=spec)
                 return
 
             with self._lock:
@@ -470,6 +480,7 @@ class MetricsCollector:
                                 metric=_empty_metric(),
                                 collection_success=True,
                                 stats_available=False,
+                                spec=spec,
                             ),
                         )
                         self._prev_io.pop(key, None)
@@ -607,16 +618,17 @@ class MetricsCollector:
                             metric=metric,
                             collection_success=True,
                             stats_available=True,
+                            spec=spec,
                             network_interfaces=network_interfaces,
                         ),
                     )
                 except NotFound:
-                    self._mark_unavailable(key, "not_created", success=True)
+                    self._mark_unavailable(key, "not_created", success=True, spec=spec)
                 except Exception as exc:
                     with self._lock:
                         self._collection_errors_total += 1
                         previous = self._container_observations.get(
-                            key, self._default_observation(key)
+                            key, self._default_observation(key, spec=spec)
                         )
                         error_count = previous.get("collection_errors_total", 0) + 1
                     if container is not None:
@@ -626,9 +638,10 @@ class MetricsCollector:
                             metric=_empty_metric(),
                             collection_success=False,
                             stats_available=False,
+                            spec=spec,
                         )
                     else:
-                        observation = self._default_observation(key)
+                        observation = self._default_observation(key, spec=spec)
                         observation["state"] = "error"
                         observation["last_observation_timestamp"] = time.time()
                     observation["collection_errors_total"] = error_count

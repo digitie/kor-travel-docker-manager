@@ -15,6 +15,13 @@
 
 ---
 
+## 2026-10-18 — PR525 최신 main522 정합
+
+- PR513·514·521·522가 머지된 main12d4d81을 일반 병합했고 journal/tasks의 양쪽기록을 보존한다.
+- metrics 제품·focusedtest·합성benchmark 원문은 기존3554 독립리뷰본 및 RC20b와 byte동일하다. 다른PR 기능은 main그대로이며 원worktree/RC20b/e02/helper·운영은 변경하지 않는다.
+- 별도 mirror/sterile env의 실제AST집중39PASS0.45초/Ruff/diff를 확인했고 benchmark는 재실행하지 않았다. RC20b 대비 backend/src·frontend/src·config·docker·scripts·deploy·.env.example·Compose 파일차이0이다.
+- 과거 UI실패·합성성능의 한계를 유지하고 sourcemerge를 운영CPU/RSS·실수집 수용으로 바꾸지 않는다. 이미설치된 같은제품 재설치와 신규collector 최적화는 하지 않는다.
+
 ## 2026-10-18 — PR522 최신 main521 정합
 
 - PR513·514·521이 머지된 main3862623과 일반 병합했고 journal/tasks 양쪽 이력을 보존한다.
@@ -35,6 +42,25 @@
 - Common ff849ea wholewheel·공식 daemon/webserver CLI·host 입력 tag930a44266e814ab6·Weather 주소 환경 전달을 보존한다. queue/NVMe/DB/metrics 다른 PR 기능을 이 브랜치에 새로 합치지 않는다.
 - 별도 mirror/sterile env 관련5모듈70PASS·실제Compose렌더11건제외/Ruff/diff PASS, 전체모델은 큐 두scalar·digest7소비자만 차이다. 최신main host5입력/vendor/공식CLI는 byte동일이다.
 - 새 integration head 독립2리뷰·CI는 별도이며 이 병합을 운영 재설치·daemon 시작·성능 수용으로 바꾸지 않는다.
+
+## 2026-10-17 — PR525 최신 main 통합 준비
+
+- 최신 main20b의 포트·관측 파생과 완료 원장을 ordinary merge하고 기존 기능 변경은 보존한다.
+- 양쪽 journal 기록을 유지했으며 이번 작업으로 운영 변경·daemon 재시작·PR 머지를 하지 않는다. 통합 delta 독립리뷰와 CI 및 공개 UI 수용은 별도다.
+
+
+## 2026-10-17 — 메트릭 관측 cycle snapshot과 이미지 조회 절감(PR525)
+
+- 호출 내 기본값 재사용, cycle의 기존 spec 전달, inspect 이미지 정보가 완전한 경우의 추가 조회 생략을 작은 커밋으로 분리했다.
+- 장기 캐시·Docker 상태 캐시·DTO·주기·저장 변경 없이 실제 함수 AST 회귀39PASS/backend Ruff PASS와 6경로 old/new 출력 동등성을 확인했다.
+- 합성64행×100cycle에서 resolve12900→100/CPU 정지0.119434→0.038725s·실행2.718004→2.526916s. 운영 개선율이 아니며 일부 tracemalloc peak는 증가했다.
+- 앱 초기화·Docker·DB·SDK·운영 접근 없이 검사했다. 전체 pytest/frontend/운영 성능은 미실행이며 독립2리뷰·CI는 별도다. [측정 범위](metrics-observation-budget.md).
+
+## 2026-10-17 — 메트릭 관측 기본값 중복 평가 절감 설계
+
+- 최신 main의 별도 feature worktree에서 기본값 2회 평가를 확인했다.
+- 한 호출의 local template만 재사용하며 cycle·장기 캐시를 추가하지 않는다.
+- 순수 회귀·합성 측정 전 설계 초안이며 운영 CPU 인과·전체 회귀는 미확인이다.
 
 ## 2026-10-17 — PR522 최신 main 통합 준비
 
