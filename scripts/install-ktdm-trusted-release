@@ -5,7 +5,8 @@
 # `/opt/kor-travel-docker-manager`(symlink)를 그쪽으로 넘긴다. release root는 지금 symlink가 정한다: 상대 symlink면
 # `/opt`(기본), 절대 symlink면 그 대상의 상위 디렉터리(데이터 디스크에 release를 두는 호스트 — prod-deployment §3 "새 호스트"). release는 root 소유 source
 # clone의 `git archive <sha>`, venv는 오프라인 wheelhouse로 만든다. 배포 `.env`는 앞으로
-# 복사하고, 백엔드는 항상 stop → flip → start 한다. 직전 release 하나를 남긴다.
+# 복사하고, 기본 모드는 백엔드를 stop → flip → start 한다. CLI 전용은 서비스를 건드리지 않는다.
+# 직전 release 하나를 남긴다.
 #
 # 복구 상태기계는 없다. revision 표식(`.ktdm-source-revision`)은 마지막에 쓰므로 표식 없는
 # release는 미완이고 처음부터 다시 만든다 — 같은 sha를 다시 돌리는 것이 복구다. flip 전에
@@ -324,7 +325,8 @@ mv -T "${APP}.new" "${APP}"
 if ${CLI_ONLY}; then
   if ! "${APP}/backend/.venv/bin/ktdctl" targets validate --json >/dev/null; then
     echo "installed CLI validation failed; previous release retained" >&2
-    echo "roll back with the previous release installer and --cli-only (revision ${PREV#ktdm-release-})" >&2
+    echo "roll back with this reviewed CLI-capable installer (preserve it before changing the source clone):" >&2
+    echo "  bash <preserved-installer> --expected-source-revision ${PREV#ktdm-release-} --cli-only ${SRC}" >&2
     exit 1
   fi
   finish_install

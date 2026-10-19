@@ -5,6 +5,9 @@
 - 웹·API 이전 호스트의 정식 CLI 갱신에 --cli-only를 추가했다. 기존 중지 상태 확인 후 서비스 파일·enable/start를 건너뛰며 기존 소스/환경 검증과 정본 전환·CLI 검증을 유지한다. 기본 설치 경로는 유지한다.
 - 설치기 집중56통과10.91초, Ruff/bash 문법 통과. inactive/active/transitional/PID 잔존 및 CLI 성공·실패 반례를 포함한다. 이는 격리 shell 검사이며 실제 root 설치·공개 UI는 미실행이다.
 - n150 서비스 종료·설치는 사용자 승인 후 root 실행 담당이며 이 변경에서 원격 mutation은 하지 않았다.
+
+- PR532443405b와 통합 후 설치기/plane/pinned 재구축294통과38.28초. CLI 복구는 새 검토 설치기를 보존해 이전 archive SHA를 지정하며 옛 설치기를 실행하지 않는다.
+
 ## 2026-10-19 — pinned 재구축의 기존 daemon 중지 상태 보존
 
 - pinned 재구축의 공용 plane 수렴은 기존 중지된 daemon을 시작하거나 재생성하지 않는다. webserver 정합성과 필요한 RepositoryLocation 로딩 검사는 유지한다.

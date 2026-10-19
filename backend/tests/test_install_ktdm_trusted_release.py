@@ -823,7 +823,7 @@ def test_cli_only_finishes_by_cli_validation_without_service_start(tmp_path, exi
     executable.parent.mkdir(parents=True)
     executable.write_text(f"#!/bin/bash\n[[ \"$*\" == 'targets validate --json' ]] || exit 99\nexit {exit_code}\n")
     executable.chmod(0o700)
-    script = f"set -euo pipefail\nAPP={tmp_path}\nPREV=ktdm-release-old\nCLI_ONLY=true\n"
+    script = f"set -euo pipefail\nAPP={tmp_path}\nPREV=ktdm-release-old\nSRC=/owned-source\nCLI_ONLY=true\n"
     script += "finish_install() { echo FINISHED; }\nsystemctl() { exit 98; }\n"
     script += _installer_section("cli-finish")
     result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)

@@ -1339,8 +1339,11 @@ trusted-release installer에 --cli-only를 사용한다. 먼저 운영자가 이
 소스·오프라인 패키지·Compose·호스트 식별·plane bind 검사와 정본 symlink 전환은 유지한다.
 --cli-only는 systemd/tmpfiles/logrotate 파일 설치와 daemon-reload/enable/start를 하지 않는다.
 전환 후 정본 ktdctl targets validate --json로 CLI를 확인하며 실패하면 성공·오래된 release
-정리를 하지 않는다. 복구 시 이전 revision의 설치기에도 --cli-only 지원이 있어야 한다.
-이전 설치기가 지원하지 않으면 서비스 시작을 수반할 수 있으므로 자동으로 재실행하지 않는다.
+정리를 하지 않는다. 복구에는 이번 검토한 CLI 지원 설치기를 root 소유로 보존해 사용한다.
+보존한 설치기에 --expected-source-revision <이전 SHA> --cli-only <root 소유 clone>을
+전달한다. 설치기 코드와 archive revision은 별개다. 옛 revision의 설치기를 다시 실행하면
+--cli-only가 없거나 서비스를 시작할 수 있으므로 사용하지 않는다. 현재 n150의 이전
+8bb8f996에는 targets validate --json 계약이 있으며, 복구 후보도 기존 호스트 검증을 통과해야 한다.
 
 이는 CLI 설치만 변경한다. 별도 Dagster converge/rebuild 명령을 자동 실행하지 않으며
 Dagster daemon OFF를 해제하지 않는다. 기본 설치 모드의 backend stop/start는 기존대로다.
