@@ -1,5 +1,27 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-19 — Manager CLI 전용 설치 경로
+
+- 웹·API 이전 호스트의 정식 CLI 갱신에 --cli-only를 추가했다. 기존 중지 상태 확인 후 서비스 파일·enable/start를 건너뛰며 기존 소스/환경 검증과 정본 전환·CLI 검증을 유지한다. 기본 설치 경로는 유지한다.
+- 설치기 집중56통과10.91초, Ruff/bash 문법 통과. inactive/active/transitional/PID 잔존 및 CLI 성공·실패 반례를 포함한다. 이는 격리 shell 검사이며 실제 root 설치·공개 UI는 미실행이다.
+- n150 서비스 종료·설치는 사용자 승인 후 root 실행 담당이며 이 변경에서 원격 mutation은 하지 않았다.
+
+- PR532443405b와 통합 후 설치기/plane/pinned 재구축294통과38.28초. CLI 복구는 새 검토 설치기를 보존해 이전 archive SHA를 지정하며 옛 설치기를 실행하지 않는다.
+
+## 2026-10-19 — pinned 재구축의 기존 daemon 중지 상태 보존
+
+- pinned 재구축의 공용 plane 수렴은 기존 중지된 daemon을 시작하거나 재생성하지 않는다. webserver 정합성과 필요한 RepositoryLocation 로딩 검사는 유지한다.
+- 실행 중·재시작 중·미설치 daemon은 기존 경로다. 명시적 dagster-plane converge의 시작/복구 동작은 바뀌지 않는다. 의도적 중지와 비정상 종료를 구별하지 않으며 중지된 daemon의 이미지·설정 갱신은 명시적 수렴까지 미룬다.
+- readiness에서 daemon 중지를 재확인한다. 기존 host mutation lock 밖의 직접 Docker 변경을 영구 차단하지 않는다.
+- 수정 전 OFF 회귀 2실패·ON 2통과, 수정 후 plane/pinned rebuild 집중 238통과(26.83초, 미설치·재시작 중 반례 포함), Ruff 통과. 첫 구현의 NameError 실패는 수정 후 재검증했다.
+- 운영 설치·공개 UI는 미실행이다. daemon OFF 동안 자동 스케줄·자동 복구를 보장하지 않는다. 기존 Map/PinVi runtime 재시작·DB 보존 범위는 바뀌지 않는다.
+
+## 2026-10-19 — pinned rebuild의 원격 Geo readiness 보강
+
+- n150에 Geo를 복구하지 않고 재구축할 수 있도록 외부 prerequisite를 실제 frozen Compose 배치와 맞춘다. RustFS·Concierge는 기존 로컬 canonical readiness를 유지하고, Geo는 active Map API·Map UI BFF·Dagster code server·PinVi API의 frozen origin을 각 consumer target의 R2 origin과 대조한다. readiness는 Manager host의 R2 origin에서 확인하며 retired `legacy-dagster` webserver·daemon은 검사 대상에서 제외한다.
+- redirect·환경 proxy·압축 응답을 거부하고 전체 HTTP 요청을 4초, raw JSON 본문을 4 KiB로 제한한다. 실패는 source materialization 전에 `external_prerequisites` 단계에서 거부한다. 두 번째 독립 리뷰의 legacy profile 및 압축 본문 지적을 반영했으며, 재검증·n150 CLI 반영 및 Map/PinVi 공식 rebuild/UI E2E는 진행 중이다.
+- 이번 변경은 소스 worktree와 문서만 수정했다. n150/odroid 컨테이너, DB, pins, 배포 원장, Manager 서비스 상태는 건드리지 않았다.
+
 ## 2026-10-18 — PR531 최신 main525 통합과 공개 UI 수용
 
 - main3549b14를 병합했고 충돌은 journal/tasks 양쪽 기록을 보존해 해결했다. 배포 후보 e02의 frontend 전체 tree와 최신 코드의 일치를 확인한다.

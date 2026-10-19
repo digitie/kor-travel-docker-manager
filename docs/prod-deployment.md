@@ -889,6 +889,13 @@ source restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공
 
 ## 8. pinned runtime 배포 (ADR-51 마이그레이션 전진)
 
+pinned 재구축은 기존 중지된 daemon을 보존하고 webserver와 필요한 code location을 확인한다.
+실행 중·재시작 중·미설치 daemon은 기존 경로다. 명시적 dagster-plane converge는 기존대로
+시작/복구한다. 의도적 중지와 비정상 종료를 구별하지 않으며, 중지된 daemon의 이미지·설정
+갱신은 명시적 수렴까지 미룬다. daemon OFF 동안 자동 스케줄·자동 복구는 제공되지 않는다.
+기존 host mutation lock 밖의 직접 Docker 변경을 영구 차단하지 않는다.
+
+
 > 현재 배포 protocol은 이전 compatible-pair, cache-target, standalone DB backup mutation과 Map UI 회전의
 > **공개 CLI 운영 경로**를 모두 퇴역시켰다. 과거 v1–v4 manifest와 v5–v8 rebuild journal·tombstone은 실행
 > 근거가 아니며, 아래 비운영 `rebuild-pinned`만 generation을 배포하는 정본이다. 파기형 v8 journal·resume
@@ -1318,3 +1325,25 @@ registry(`config/docker-targets.yml`)와 커밋된 파생물(테스트가 계산
    (§9.6이 사례). Prometheus 타깃은 PR 파생물이 이미 옮겼다.
 
 되돌리기는 같은 절차를 `<to>` → `<from>`으로 다시 밟는 것이다(롤백이 아니라 재배포 — §9.3).
+
+
+## Manager 웹·API 이전 후 CLI만 남기는 설치
+
+Manager 웹·API를 다른 호스트로 이전한 뒤 원래 호스트에서 정식 관리 CLI만 갱신할 때
+trusted-release installer에 --cli-only를 사용한다. 먼저 운영자가 이전 완료를 확인하고
+옛 ktdm-backend.service 및 ktdm-frontend.service를 stop·disable한다. 설치기는 대신
+중지하지 않으며, lock 획득 직후와 정본 전환 직전에 두 서비스의 inactive/MainPID0을
+요구한다. 전이 상태나 실행 중이면 거절한다.
+
+기존 --expected-source-revision 및 --wheelhouse/SOURCE_CLONE 계약은 같다. root 소유
+소스·오프라인 패키지·Compose·호스트 식별·plane bind 검사와 정본 symlink 전환은 유지한다.
+--cli-only는 systemd/tmpfiles/logrotate 파일 설치와 daemon-reload/enable/start를 하지 않는다.
+전환 후 정본 ktdctl targets validate --json로 CLI를 확인하며 실패하면 성공·오래된 release
+정리를 하지 않는다. 복구에는 이번 검토한 CLI 지원 설치기를 root 소유로 보존해 사용한다.
+보존한 설치기에 --expected-source-revision <이전 SHA> --cli-only <root 소유 clone>을
+전달한다. 설치기 코드와 archive revision은 별개다. 옛 revision의 설치기를 다시 실행하면
+--cli-only가 없거나 서비스를 시작할 수 있으므로 사용하지 않는다. 현재 n150의 이전
+8bb8f996에는 targets validate --json 계약이 있으며, 복구 후보도 기존 호스트 검증을 통과해야 한다.
+
+이는 CLI 설치만 변경한다. 별도 Dagster converge/rebuild 명령을 자동 실행하지 않으며
+Dagster daemon OFF를 해제하지 않는다. 기본 설치 모드의 backend stop/start는 기존대로다.

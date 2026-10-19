@@ -1838,6 +1838,7 @@ def _forward_harness(
         "_retire_pinned_runtime_oneshot_writers": Mock(),
         "_run_pinned_runtime_rebuild_compose": run_compose,
         "_require_services_ready": require_ready,
+        "_require_geo_api_ready": Mock(),
         "_inspect_container_runtime_config": Mock(return_value={}),
         "_inspect_container_image_id": inspect_image,
         "_inspect_container_running": container_running,
@@ -2252,6 +2253,23 @@ def test_external_prerequisites_are_checked_before_sources_are_materialized(
         harness.service.rebuild_pinned_runtime()
 
     assert compose_service_module.rebuild_failure_stage(captured.value) == "external_prerequisites"
+    harness.mocks.materialize.assert_not_called()
+    assert harness.operations == []
+
+
+def test_remote_geo_readiness_is_checked_before_sources_are_materialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.service._require_geo_api_ready.side_effect = DeploymentContractError(
+        "mandatory service health check failed: kor-travel-geo-api"
+    )
+
+    with pytest.raises(DeploymentContractError, match="kor-travel-geo-api") as captured:
+        harness.service.rebuild_pinned_runtime()
+
+    assert compose_service_module.rebuild_failure_stage(captured.value) == "external_prerequisites"
+    harness.service._require_geo_api_ready.assert_called_once_with(harness.transaction)
     harness.mocks.materialize.assert_not_called()
     assert harness.operations == []
 
@@ -3797,8 +3815,12 @@ def _own_fingerprint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[st
 def test_every_own_rebuild_matches_the_pre_adr54_fingerprint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """모두 `own`이면 파생은 파생 이전과 글자까지 같다 — slot 서비스·build·tag·companion·배포 images·보존·C6c
-    표·mutation 분류·generation payload·compose env, 그리고 첫 배포·수렴의 호출 순서 전체."""
+    """모두 own이면 허용된 readiness 변경 외 파생이 기준 fingerprint와 같다.
+
+    Geo는 원격 host 소유이므로 첫 prerequisite 묶음에서 빠지고, 전용 health gate로 검사한다.
+    그 밖의 slot 서비스·build·tag·companion·배포 images·보존·C6c 표·mutation 분류·generation
+    payload·compose env와 첫 배포·수렴 순서는 계속 fingerprint에 결박한다.
+    """
 
     expected = json.loads(_OWN_FINGERPRINT.read_text(encoding="utf-8"))
     expected.pop("_source")

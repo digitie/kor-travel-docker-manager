@@ -549,3 +549,85 @@ def test_shared_daemon_six_minute_interval_does_not_clip_health_start_window(
     bound = ComposeService._shared_plane_health_wait_seconds(harness.plane, services)
     assert bound == 945.0
     assert compose_service_module._compose_wait_timeout_seconds(services) >= bound
+
+
+@pytest.mark.parametrize("daemon_state", ["stopped", "running", "missing", "restarting"])
+@pytest.mark.parametrize("stale_webserver", [False, True])
+def test_pinned_rebuild_preserves_an_existing_stopped_daemon(
+    harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+    daemon_state: str, stale_webserver: bool,
+) -> None:
+    service, plane, state = harness.service, harness.plane, harness.state
+    state.stale = {name: False for name in plane.services}
+    state.stale[plane.webserver] = stale_webserver
+    original_inspect = service._inspect_plane_container
+    running = {"daemon": daemon_state == "running"}
+    rebuilt = {"done": False}
+    calls = []
+
+    def inspect(container_name: str, *, label: str):
+        observed = original_inspect(container_name, label=label)
+        if label == plane.daemon:
+            if daemon_state == "missing" and not rebuilt["done"]:
+                return None
+            observed["running"] = running["daemon"]
+            observed["restarting"] = daemon_state == "restarting" and not rebuilt["done"]
+        return observed
+
+    def compose(args, **kwargs):
+        del kwargs
+        calls.append(tuple(args))
+        for name in args:
+            if name in state.stale:
+                state.stale[name] = False
+            if name == plane.daemon:
+                running["daemon"] = True
+                rebuilt["done"] = True
+        return {"success": True}
+
+    monkeypatch.setattr(service, "_inspect_plane_container", inspect)
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", compose)
+    monkeypatch.setattr(service, "_frozen_shared_plane", lambda _: (
+        plane, harness.resolved["services"], ("fixture.map",)))
+    monkeypatch.setattr(compose_service_module, "installed_location_owners", lambda: {
+        "fixture.map": SimpleNamespace(target="map")})
+    monkeypatch.setattr(service, "_require_plane_location_owners_fenced", lambda *_: None)
+    monkeypatch.setattr(service, "_query_shared_plane_locations", lambda *_: {
+        "fixture.map": "RepositoryLocation"})
+    topology = SimpleNamespace(shared_dagster_slots=("map",), families={
+        "map": SimpleNamespace(target="map", shared=True)})
+    service._converge_shared_dagster_plane(
+        runtime_transaction=SimpleNamespace(), topology=topology)
+    assert running["daemon"] is (daemon_state != "stopped")
+    if stale_webserver or daemon_state in {"missing", "restarting"}:
+        expected = (plane.webserver,) if daemon_state == "stopped" else plane.services
+        assert calls == [("up", "-d", "--no-deps", *expected)]
+    else:
+        assert calls == []
+
+
+@pytest.mark.parametrize("daemon_running,location_state", [
+    (True, "RepositoryLocation"),
+    (False, "PythonError"),
+])
+def test_paused_rebuild_still_rejects_a_started_daemon_or_unready_location(
+    harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+    daemon_running: bool, location_state: str,
+) -> None:
+    service = harness.service
+    original = service._inspect_plane_container
+
+    def inspect(container_name: str, *, label: str):
+        observed = original(container_name, label=label)
+        observed["running"] = daemon_running
+        return observed
+
+    monkeypatch.setattr(service, "_inspect_plane_container", inspect)
+    monkeypatch.setattr(service, "_query_shared_plane_locations", lambda *_: {
+        "fixture.map": location_state})
+    monkeypatch.setattr(service, "_shared_plane_health_wait_seconds", lambda *_: 0)
+    with pytest.raises(DeploymentContractError, match="did not load"):
+        service._wait_shared_plane_locations(
+            harness.plane, harness.resolved["services"], ("fixture.map",),
+            keep_daemon_stopped=True)
+    assert harness.state.compose_calls == []

@@ -1,5 +1,5 @@
 {
- "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized; re-captured 2026-10-04 for platform-topology.md §7 stage 4 (old Map/PinVi Dagster metadata DB dependencies removed)",
+  "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized; re-captured 2026-10-19 for platform-topology.md §7 stage 4 and remote Geo prerequisite (old Map/PinVi Dagster metadata DB dependencies removed; Geo checked by external health endpoint)",
  "build_compose_environment": {
   "KOR_TRAVEL_MAP_API_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
   "KOR_TRAVEL_MAP_DAGSTER_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
@@ -705,7 +705,6 @@
   "readiness": [
    [
     "rustfs",
-    "kor-travel-geo-api",
     "kor-travel-concierge-api"
    ],
    [
@@ -850,7 +849,6 @@
   "readiness": [
    [
     "rustfs",
-    "kor-travel-geo-api",
     "kor-travel-concierge-api"
    ],
    [

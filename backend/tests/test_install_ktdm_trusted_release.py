@@ -794,3 +794,60 @@ def test_the_flip_keeps_relative_links_for_opt_and_absolute_links_elsewhere() ->
         '  rm -rf -- "${REL}"',
         '          || { rm -f -- "${old}/.ktdm-source-revision"; rm -rf -- "${old}"; }',
     ]
+
+
+def _installer_section(name: str) -> str:
+    text = _INSTALLER.read_text()
+    return text[text.index(f"# >>> {name}"):text.index(f"# <<< {name}")]
+
+
+@pytest.mark.parametrize("load,active,pid,accepted", [
+    ("loaded", "inactive", "0", True),
+    ("not-found", "inactive", "0", True),
+    ("loaded", "active", "123", False),
+    ("loaded", "activating", "0", False),
+    ("loaded", "inactive", "123", False),
+    ("loaded", "failed", "0", False),
+])
+def test_cli_only_requires_both_services_already_stopped(load, active, pid, accepted):
+    script = "set -euo pipefail\ndie() { echo \"$1\" >&2; exit 126; }\n"
+    script += f"systemctl() {{ printf '%s\\n' LoadState={load} ActiveState={active} MainPID={pid}; }}\n"
+    script += _installer_section("cli-service-state") + "\nrequire_cli_services_stopped\n"
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert (result.returncode == 0) is accepted
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_cli_only_finishes_by_cli_validation_without_service_start(tmp_path, exit_code):
+    executable = tmp_path / "backend/.venv/bin/ktdctl"
+    executable.parent.mkdir(parents=True)
+    executable.write_text(f"#!/bin/bash\n[[ \"$*\" == 'targets validate --json' ]] || exit 99\nexit {exit_code}\n")
+    executable.chmod(0o700)
+    script = f"set -euo pipefail\nAPP={tmp_path}\nPREV=ktdm-release-old\nSRC=/owned-source\nCLI_ONLY=true\n"
+    script += "finish_install() { echo FINISHED; }\nsystemctl() { exit 98; }\n"
+    script += _installer_section("cli-finish")
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == exit_code
+    assert ("FINISHED" in result.stdout) is (exit_code == 0)
+    if exit_code:
+        assert "--cli-only" in result.stderr
+
+
+def test_cli_only_argument_is_accepted_before_host_access():
+    result = _run("--cli-only", "--expected-source-revision", "x")
+    assert result.returncode == 126
+    assert "must be a full 40-hex revision" in result.stderr
+
+
+def test_cli_only_excludes_host_files_and_unit_mutations():
+    text = _INSTALLER.read_text()
+    start = text.index("if ! ${CLI_ONLY}; then\n# host 파일")
+    end = text.index('systemctl enable "${units[@]}"\nfi', start)
+    block = text[start:end]
+    assert "systemd-tmpfiles --create" in block
+    assert "/etc/systemd/system/ktdm-backend.service" in block
+    assert "/etc/systemd/system/ktdm-frontend.service" in block
+    assert "/etc/logrotate.d/kor-travel-docker-manager" in block
+    assert "systemctl daemon-reload" in block
+    assert text.index("# <<< cli-finish") < text.index("systemctl reset-failed")
+    assert text.count("require_cli_services_stopped") == 3
