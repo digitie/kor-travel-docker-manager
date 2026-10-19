@@ -16,6 +16,11 @@
 - 수정 전 OFF 회귀 2실패·ON 2통과, 수정 후 plane/pinned rebuild 집중 238통과(26.83초, 미설치·재시작 중 반례 포함), Ruff 통과. 첫 구현의 NameError 실패는 수정 후 재검증했다.
 - 운영 설치·공개 UI는 미실행이다. daemon OFF 동안 자동 스케줄·자동 복구를 보장하지 않는다. 기존 Map/PinVi runtime 재시작·DB 보존 범위는 바뀌지 않는다.
 
+## 2026-10-19 — pinned rebuild의 원격 Geo readiness 보강
+
+- n150에 Geo를 복구하지 않고 재구축할 수 있도록 외부 prerequisite를 실제 frozen Compose 배치와 맞춘다. RustFS·Concierge는 기존 로컬 canonical readiness를 유지하고, Geo는 active Map API·Map UI BFF·Dagster code server·PinVi API의 frozen origin을 각 consumer target의 R2 origin과 대조한다. readiness는 Manager host의 R2 origin에서 확인하며 retired `legacy-dagster` webserver·daemon은 검사 대상에서 제외한다.
+- redirect·환경 proxy·압축 응답을 거부하고 전체 HTTP 요청을 4초, raw JSON 본문을 4 KiB로 제한한다. 실패는 source materialization 전에 `external_prerequisites` 단계에서 거부한다. 두 번째 독립 리뷰의 legacy profile 및 압축 본문 지적을 반영했으며, 재검증·n150 CLI 반영 및 Map/PinVi 공식 rebuild/UI E2E는 진행 중이다.
+- 이번 변경은 소스 worktree와 문서만 수정했다. n150/odroid 컨테이너, DB, pins, 배포 원장, Manager 서비스 상태는 건드리지 않았다.
 
 ## 2026-10-18 — PR531 최신 main525 통합과 공개 UI 수용
 

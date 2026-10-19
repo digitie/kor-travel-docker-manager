@@ -1,3 +1,4 @@
+import asyncio
 import errno
 import hashlib
 import json
@@ -20,7 +21,9 @@ from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, cast
+from urllib.parse import urlsplit
 
+import httpx
 import yaml
 from dotenv import dotenv_values
 
@@ -138,6 +141,7 @@ from kor_travel_docker_manager.services.pinvi_bootstrap_credential import (
 from kor_travel_docker_manager.services.registry import (
     MANAGED_CONTAINERS,
     ExternalProject,
+    consumer_origin,
     container_id_to_compose_service,
     current_host,
     external_project_for_container,
@@ -227,9 +231,23 @@ _DAGSTER_TARGET_API_SLOTS: Final[tuple[tuple[str, RuntimeSlot], ...]] = (
 
 _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
     "rustfs",
-    "kor-travel-geo-api",
     "kor-travel-concierge-api",
 )
+_PINNED_RUNTIME_GEO_CONSUMER_ORIGINS: Final[tuple[tuple[str, str], ...]] = (
+    ("kor-travel-map-api", "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL"),
+    ("kor-travel-map-ui", "KOR_TRAVEL_GEO_INTERNAL_URL"),
+    ("kor-travel-map-dagster-code-server", "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL"),
+    ("pinvi-api", "PINVI_KOR_TRAVEL_GEO_BASE_URL"),
+)
+_PINNED_RUNTIME_GEO_CONSUMER_TARGETS: Final[tuple[tuple[str, str], ...]] = (
+    ("kor-travel-map-api", "map"),
+    ("kor-travel-map-ui", "map"),
+    ("kor-travel-map-dagster-code-server", "map"),
+    ("pinvi-api", "pinvi"),
+)
+_GEO_API_READINESS_PATH: Final = "/v1/readyz"
+_GEO_API_READINESS_TIMEOUT_SECONDS: Final = 4.0
+_GEO_API_READINESS_BODY_MAX_BYTES: Final = 4096
 #: 명시 서비스의 `depends_on`까지 만들거나 다시 만들거나 시작할 수 있는 compose 명령. `--no-deps`가
 #: 없으면 R3 chokepoint가 그 의존성 closure를 범위에 넣는다. `--no-deps`를 받는 명령(up·run·
 #: restart·scale)과, 그 플래그 없이 의존성을 끌어오는 명령(create는 n150 Compose v5.2.0에 그
@@ -4828,6 +4846,7 @@ class ComposeService:
                     transaction=prebuild_transaction,
                     frozen_recovery=True,
                 )
+                self._require_geo_api_ready(prebuild_transaction)
             with _rebuild_stage("source_materialization"):
                 sources = materialize_pinned_runtime_sources(
                     release=release,
@@ -6082,6 +6101,170 @@ class ComposeService:
                 "mandatory services do not satisfy canonical readiness: " + ", ".join(not_ready)
             )
         return [by_service[service] for service in expected]
+
+    @staticmethod
+    def _require_geo_api_ready(
+        transaction: ComposeTransactionSnapshot,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        """n150 rebuild에서 원격 Geo를 로컬 Compose가 아닌 실제 소비자 경로로 확인한다.
+
+        active 소비자의 frozen Compose origin이 registry R2가 각 consumer target에 대해
+        계산한 Geo origin과 일치해야 한다. Manager 호스트의 주소가 아니라 consumer host를
+        기준으로 비교해 Odroid 이전에도 같은 endpoint를 검사하고, 응답 크기와 전체 대기 시간을 제한한다.
+        """
+
+        resolved_services = transaction.resolved.get("services")
+        if not isinstance(resolved_services, Mapping):
+            raise DeploymentContractError(
+                "pinned runtime has no resolved Geo consumer configuration"
+            )
+        targets_config = load_targets_config()
+        target_by_service = dict(_PINNED_RUNTIME_GEO_CONSUMER_TARGETS)
+        for service_name, variable_name in _PINNED_RUNTIME_GEO_CONSUMER_ORIGINS:
+            service = resolved_services.get(service_name)
+            environment = service.get("environment") if isinstance(service, Mapping) else None
+            base_url = environment.get(variable_name) if isinstance(environment, Mapping) else None
+            if not isinstance(base_url, str) or not base_url.strip():
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer endpoint is missing: {service_name}"
+                )
+            target_name = target_by_service.get(service_name)
+            if target_name is None:
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer target is missing: {service_name}"
+                )
+            consumer_hosts = target_hosts(target_name, targets_config)
+            if len(consumer_hosts) != 1:
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer target must have one host: {target_name}"
+                )
+            configured_origin = consumer_origin(
+                "geo", next(iter(consumer_hosts)), targets_config
+            )
+            if not isinstance(configured_origin, str) or not configured_origin:
+                raise DeploymentContractError(
+                    f"pinned runtime Geo target has no configured consumer origin: {target_name}"
+                )
+            try:
+                configured = urlsplit(configured_origin)
+                configured_port = configured.port
+                actual = urlsplit(base_url)
+                actual_port = actual.port
+            except ValueError as exc:
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer endpoint is invalid: {service_name}"
+                ) from exc
+            if (
+                configured.scheme not in {"http", "https"}
+                or configured.hostname is None
+                or configured.username is not None
+                or configured.password is not None
+                or configured.path not in {"", "/"}
+                or configured.query
+                or configured.fragment
+                or actual.scheme not in {"http", "https"}
+                or actual.hostname is None
+                or actual.username is not None
+                or actual.password is not None
+                or actual.path not in {"", "/"}
+                or actual.query
+                or actual.fragment
+            ):
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer endpoint is invalid: {service_name}"
+                )
+            normalized_port = (
+                actual_port
+                if actual_port is not None
+                else (443 if actual.scheme == "https" else 80)
+            )
+            configured_normalized_port = (
+                configured_port
+                if configured_port is not None
+                else (443 if configured.scheme == "https" else 80)
+            )
+            if normalized_port < 1 or configured_normalized_port < 1:
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer endpoint is invalid: {service_name}"
+                )
+            origin = (configured.scheme, configured.hostname.casefold(), configured_normalized_port)
+            actual_origin = (actual.scheme, actual.hostname.casefold(), normalized_port)
+            if actual_origin != origin:
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer endpoint does not match configured Geo target: {service_name}"
+                )
+
+        # Consumer endpoints may differ legitimately when Map and PinVi live on
+        # different hosts (R2 resolves loopback for a colocated consumer). Probe
+        # from this Manager process's own target perspective instead of reusing
+        # the first consumer's address.
+        manager_origin = consumer_origin("geo", current_host(), targets_config)
+        if not isinstance(manager_origin, str) or not manager_origin:
+            raise DeploymentContractError(
+                "pinned runtime Manager host has no configured Geo consumer origin"
+            )
+        probe_origin = manager_origin.rstrip("/")
+
+        try:
+            ready = asyncio.run(
+                ComposeService._probe_geo_api_ready(
+                    probe_origin,
+                    timeout_seconds=_GEO_API_READINESS_TIMEOUT_SECONDS,
+                    max_body_bytes=_GEO_API_READINESS_BODY_MAX_BYTES,
+                    transport=transport,
+                )
+            )
+        except (httpx.HTTPError, RuntimeError, TimeoutError, ValueError):
+            ready = False
+        if not ready:
+            raise DeploymentContractError(
+                "mandatory service health check failed: kor-travel-geo-api"
+            )
+
+    @staticmethod
+    async def _probe_geo_api_ready(
+        connection: str,
+        *,
+        timeout_seconds: float,
+        max_body_bytes: int,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> bool:
+        """제한된 시간·본문 크기 안에서 Geo `/readyz` 계약을 확인한다."""
+
+        health_url = connection.rstrip("/") + _GEO_API_READINESS_PATH
+        async with asyncio.timeout(timeout_seconds):
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(timeout_seconds),
+                follow_redirects=False,
+                trust_env=False,
+                headers={"Accept-Encoding": "identity"},
+                transport=transport,
+            ) as client:
+                async with client.stream("GET", health_url) as response:
+                    if response.status_code != 200:
+                        return False
+                    content_encoding = response.headers.get("content-encoding", "identity")
+                    if content_encoding.casefold() not in {"", "identity"}:
+                        return False
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None:
+                        try:
+                            if int(content_length) > max_body_bytes:
+                                return False
+                        except ValueError:
+                            return False
+                    body = bytearray()
+                    async for chunk in response.aiter_raw(chunk_size=1024):
+                        body.extend(chunk)
+                        if len(body) > max_body_bytes:
+                            return False
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return False
+        return isinstance(payload, Mapping) and payload.get("ready") is True
 
     @staticmethod
     def _inspect_container_runtime_config(container_name: str) -> Mapping[str, Any]:

@@ -839,6 +839,18 @@ head를 먼저 attest한다. Map API·Dagster는 Map sealed builder가 같은 co
 쓰고, Manager는 Map UI와 PinVi API·Web·Dagster 네 image만 build한다. candidate가 준비되기 전에는 DB를
 건드리지 않는다.
 
+재구축의 외부 사전검사는 n150 로컬의 RustFS·Concierge readiness와 함께 Geo를 검사한다. Geo는
+Odroid에 있으므로 로컬 Compose service 상태를 요구하지 않는다. frozen Compose에 포함된 active Map API·Map UI
+BFF·Dagster code server·PinVi API origin이 각 consumer target의 host에서 registry R2가 계산한
+Geo `consumer_origin`과 일치해야 한다. 따라서 Manager host가 n150에서 Odroid로 옮겨져도 같은 Geo endpoint를 검사하고,
+소비자 설정이 함께 잘못된 주소로 바뀌는 경우도 차단한다. 호스트가 나뉘면 소비자별 유효 주소가 다를 수 있으므로
+readiness 요청은 Manager 자신의 host를 기준으로 계산한 R2 origin으로 보낸다. retired
+`legacy-dagster` webserver·daemon은 frozen 구성에서 제외된다. 이 주소의
+`/v1/readyz`에 redirect 없이 GET을 보내고, 전체 요청을 4초로 제한해 최대 4 KiB JSON 본문에서
+`ready: true`를 확인한다. 압축 응답은 거부해 본문 한도를 압축 해제 전에도 적용한다. 이 readiness는
+DB와 연결 pool을 포함하며, 생존만 확인하는 `/v1/healthz`와 구분한다. 검사가 실패하면 source
+materialization이나 빌드 전에 중단하며 DB와 실행 중인 컨테이너는 건드리지 않는다.
+
 DB는 배포를 넘어 보존된다. 영속 기록은 state root의 `deploy-status.json`(`in_progress`/`committed`)
 하나다. 같은 pair·image·DB identity·head면 빌드·migration·정지 없이 수렴만 한다(`outcome: converged`).
 새 pair는 `in_progress`를 쓴 뒤 없는 DB만 만들고, Map application schema·Dagster storage·PinVi admin
