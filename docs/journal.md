@@ -1,5 +1,11 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-19 — Manager CLI 전용 설치 경로
+
+- 웹·API 이전 호스트의 정식 CLI 갱신에 --cli-only를 추가했다. 기존 중지 상태 확인 후 서비스 파일·enable/start를 건너뛰며 기존 소스/환경 검증과 정본 전환·CLI 검증을 유지한다. 기본 설치 경로는 유지한다.
+- 설치기 집중56통과10.91초, Ruff/bash 문법 통과. inactive/active/transitional/PID 잔존 및 CLI 성공·실패 반례를 포함한다. 이는 격리 shell 검사이며 실제 root 설치·공개 UI는 미실행이다.
+- n150 서비스 종료·설치는 사용자 승인 후 root 실행 담당이며 이 변경에서 원격 mutation은 하지 않았다.
+
 ## 2026-10-18 — PR531 최신 main525 통합과 공개 UI 수용
 
 - main3549b14를 병합했고 충돌은 journal/tasks 양쪽 기록을 보존해 해결했다. 배포 후보 e02의 frontend 전체 tree와 최신 코드의 일치를 확인한다.

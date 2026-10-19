@@ -13,9 +13,10 @@
 # 롤백은 옛 sha를 다시 설치하는 것이다. 손으로 symlink를 넘기지 않는다 — 옛 release의 `.env`
 # 사본에는 옛 비밀·관리자 해시가 들어 있다.
 #
-# usage: install-ktdm-trusted-release --expected-source-revision SHA [--wheelhouse DIR] [SOURCE_CLONE]
+# usage: install-ktdm-trusted-release --expected-source-revision SHA [--wheelhouse DIR] [--cli-only] [SOURCE_CLONE]
 #   SOURCE_CLONE은 root 소유 clone이다(기본값은 현재 디렉터리). --restart-backend·--allow-live는
-#   받되 무시한다(백엔드는 항상 재기동한다).
+#   받되 무시한다(기본 모드는 백엔드를 재기동한다).
+#   --cli-only는 이미 중지된 Manager의 CLI만 갱신하며 서비스 파일/시작 상태를 바꾸지 않는다.
 set -euo pipefail
 umask 022
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -29,12 +30,14 @@ LOCK="${LOCK_DIR}/global-mutation.lock"
 WHEELHOUSE="${KTDM_TRUSTED_RELEASE_WHEELHOUSE:-/var/lib/kor-travel-docker-manager/wheelhouse}"
 SHA=""
 SRC=""
+CLI_ONLY=false
 die() { echo "$1" >&2; exit 126; }
 
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --expected-source-revision) [[ "$#" -ge 2 ]] || die "$1 requires a value"; SHA="$2"; shift ;;
     --wheelhouse) [[ "$#" -ge 2 ]] || die "$1 requires a value"; WHEELHOUSE="$2"; shift ;;
+    --cli-only) CLI_ONLY=true ;;
     --restart-backend|--allow-live) ;;
     -h|--help) awk 'NR > 1 && /^#/ { print; next } NR > 1 { exit }' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*) die "unknown option: $1" ;;
@@ -67,6 +70,23 @@ umask 022
 [[ "$(stat -c '%u:%a:%h' "${LOCK}")" == "0:600:1" ]] || die "global mutation lock is unsafe: ${LOCK}"
 flock -n 9 || { echo "another manager mutation is already active" >&2; exit 2; }
 # <<< G
+
+# >>> cli-service-state
+require_cli_services_stopped() {
+  local unit observed load active pid
+  for unit in ktdm-backend.service ktdm-frontend.service; do
+    observed="$(systemctl show "${unit}" --property=LoadState,ActiveState,MainPID)" \
+      || die "cannot inspect ${unit}; CLI-only install requires stopped services"
+    load=""; active=""; pid=""
+    while IFS='=' read -r key value; do
+      case "${key}" in LoadState) load="${value}" ;; ActiveState) active="${value}" ;; MainPID) pid="${value}" ;; esac
+    done <<< "${observed}"
+    [[ ( "${load}" == "loaded" || "${load}" == "not-found" ) && "${active}" == "inactive" && "${pid}" == "0" ]] \
+      || die "${unit} is not inactive; stop the old Manager services before --cli-only"
+  done
+}
+# <<< cli-service-state
+if ${CLI_ONLY}; then require_cli_services_stopped; fi
 
 install -d -o root -g root -m 0700 "${STATE_ROOT}"
 # 요청 디렉터리의 소유권은 처음 만들 때만 정한다 — 비-root backend 호스트는 설치 뒤 backend
@@ -221,6 +241,20 @@ for plane_id in ${plane_ids}; do
 done
 # <<< plane-binds
 
+finish_install() {
+    echo "installed ${SHA} (previous: ${PREV#ktdm-release-})"
+    if [[ "${PREV}" != "${NAME}" ]]; then
+      for old in "${RELEASE_ROOT}"/ktdm-release-*; do
+        # 표식부터 지운다 — 삭제가 중간에 끊겨도 반쪽 트리가 완성 release로 재사용되지 않는다.
+        [[ "${old}" == "${REL}" || "${old}" == "${RELEASE_ROOT}/${PREV}" ]] \
+          || { rm -f -- "${old}/.ktdm-source-revision"; rm -rf -- "${old}"; }
+      done
+    fi
+    # 남은 일은 stdout **마지막 줄**로 — 래퍼·운영자가 놓치지 않게.
+    [[ -z "${plane_rebind}" ]] || echo "NEXT: the shared Dagster plane still binds ${plane_rebind} (not in this release) — run \`ktdctl dagster-plane converge --dry-run\` then \`--confirm\` now"
+}
+
+if ! ${CLI_ONLY}; then
 # host 파일은 release에서 설치한다. 여기서 실패하면 설치 root와 도는 backend는 그대로다.
 install -T -o root -g root -m 0644 -- "${REL}/deploy/tmpfiles.d/kor-travel-docker-manager.conf" \
   /usr/lib/tmpfiles.d/kor-travel-docker-manager.conf
@@ -271,9 +305,14 @@ else
 fi
 systemctl daemon-reload
 systemctl enable "${units[@]}"
+fi
 
 # flip. 실행 중인 backend가 새 release의 모듈을 섞어 읽지 않게 멈춘 뒤 넘긴다.
-systemctl stop ktdm-backend.service
+if ${CLI_ONLY}; then
+  require_cli_services_stopped
+else
+  systemctl stop ktdm-backend.service
+fi
 # 기본(`/opt`)이면 종전처럼 상대 symlink, 다른 release root면 절대 symlink(다음 설치가 같은 root를 고르게).
 if [[ "${RELEASE_ROOT}" == "$(dirname -- "${APP}")" ]]; then
   ln -sfn "${NAME}" "${APP}.new"
@@ -281,6 +320,17 @@ else
   ln -sfn "${REL}" "${APP}.new"
 fi
 mv -T "${APP}.new" "${APP}"
+# >>> cli-finish
+if ${CLI_ONLY}; then
+  if ! "${APP}/backend/.venv/bin/ktdctl" targets validate --json >/dev/null; then
+    echo "installed CLI validation failed; previous release retained" >&2
+    echo "roll back with the previous release installer and --cli-only (revision ${PREV#ktdm-release-})" >&2
+    exit 1
+  fi
+  finish_install
+  exit 0
+fi
+# <<< cli-finish
 # 깨진 release가 재기동 한도(StartLimitBurst)를 넘겼으면 그 뒤의 롤백 start도 거절된다 — 먼저 푼다.
 systemctl reset-failed ktdm-backend.service 2>/dev/null || true
 systemctl start ktdm-backend.service || true
@@ -290,16 +340,7 @@ for _ in $(seq 60); do
   pid="$(systemctl show -p MainPID --value ktdm-backend.service)"
   if curl -fsS --max-time 5 -o /dev/null http://127.0.0.1:12901/health \
     && ss -Hltnp 'sport = :12901' | grep -q "pid=${pid},"; then
-    echo "installed ${SHA} (previous: ${PREV#ktdm-release-})"
-    if [[ "${PREV}" != "${NAME}" ]]; then
-      for old in "${RELEASE_ROOT}"/ktdm-release-*; do
-        # 표식부터 지운다 — 삭제가 중간에 끊겨도 반쪽 트리가 완성 release로 재사용되지 않는다.
-        [[ "${old}" == "${REL}" || "${old}" == "${RELEASE_ROOT}/${PREV}" ]] \
-          || { rm -f -- "${old}/.ktdm-source-revision"; rm -rf -- "${old}"; }
-      done
-    fi
-    # 남은 일은 stdout **마지막 줄**로 — 래퍼·운영자가 놓치지 않게.
-    [[ -z "${plane_rebind}" ]] || echo "NEXT: the shared Dagster plane still binds ${plane_rebind} (not in this release) — run \`ktdctl dagster-plane converge --dry-run\` then \`--confirm\` now"
+    finish_install
     exit 0
   fi
   sleep 1

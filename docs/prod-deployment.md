@@ -1318,3 +1318,22 @@ registry(`config/docker-targets.yml`)와 커밋된 파생물(테스트가 계산
    (§9.6이 사례). Prometheus 타깃은 PR 파생물이 이미 옮겼다.
 
 되돌리기는 같은 절차를 `<to>` → `<from>`으로 다시 밟는 것이다(롤백이 아니라 재배포 — §9.3).
+
+
+## Manager 웹·API 이전 후 CLI만 남기는 설치
+
+Manager 웹·API를 다른 호스트로 이전한 뒤 원래 호스트에서 정식 관리 CLI만 갱신할 때
+trusted-release installer에 --cli-only를 사용한다. 먼저 운영자가 이전 완료를 확인하고
+옛 ktdm-backend.service 및 ktdm-frontend.service를 stop·disable한다. 설치기는 대신
+중지하지 않으며, lock 획득 직후와 정본 전환 직전에 두 서비스의 inactive/MainPID0을
+요구한다. 전이 상태나 실행 중이면 거절한다.
+
+기존 --expected-source-revision 및 --wheelhouse/SOURCE_CLONE 계약은 같다. root 소유
+소스·오프라인 패키지·Compose·호스트 식별·plane bind 검사와 정본 symlink 전환은 유지한다.
+--cli-only는 systemd/tmpfiles/logrotate 파일 설치와 daemon-reload/enable/start를 하지 않는다.
+전환 후 정본 ktdctl targets validate --json로 CLI를 확인하며 실패하면 성공·오래된 release
+정리를 하지 않는다. 복구 시 이전 revision의 설치기에도 --cli-only 지원이 있어야 한다.
+이전 설치기가 지원하지 않으면 서비스 시작을 수반할 수 있으므로 자동으로 재실행하지 않는다.
+
+이는 CLI 설치만 변경한다. 별도 Dagster converge/rebuild 명령을 자동 실행하지 않으며
+Dagster daemon OFF를 해제하지 않는다. 기본 설치 모드의 backend stop/start는 기존대로다.
