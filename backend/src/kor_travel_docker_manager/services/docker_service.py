@@ -56,6 +56,7 @@ from kor_travel_docker_manager.services.secret_scrub import (
     is_sensitive_key,
     redact_value_credentials,
 )
+from kor_travel_docker_manager.services.status_snapshot import StatusSnapshot, invalidates_status
 
 logger = logging.getLogger(__name__)
 
@@ -744,6 +745,7 @@ def validate_container_config_update(
 
 class DockerService:
     def __init__(self) -> None:
+        self._status_snapshot = StatusSnapshot()
         self._client: docker.DockerClient | None = None
         self._initialized = False
         self._default_compose_config: dict[str, Any] | None = None
@@ -773,6 +775,9 @@ class DockerService:
         return self._client
 
     def get_containers_status(self) -> list[dict[str, Any]]:
+        return self._status_snapshot.get(self._collect_containers_status)
+
+    def _collect_containers_status(self) -> list[dict[str, Any]]:
         """Fetch the statuses of all managed containers."""
         status_list = []
         compose_cfg = get_compose_config()
@@ -946,6 +951,7 @@ class DockerService:
                 )
         return _observe_remote_containers(status_list, remote_ids)
 
+    @invalidates_status
     def control_container(self, container_id: str, action: str) -> dict[str, Any]:
         """Perform start/stop/restart action on a container."""
         if container_id not in MANAGED_CONTAINERS:
@@ -1204,6 +1210,7 @@ class DockerService:
             logger.error(f"Failed to inspect container {cname}: {e}")
             return {"success": False, "error": str(e)}
 
+    @invalidates_status
     def update_container_config(
         self,
         container_id: str,
@@ -1606,6 +1613,7 @@ class DockerService:
                 "error": str(exc),
             }
 
+    @invalidates_status
     def reset_container_config(self, container_id: str) -> dict[str, Any]:
         """Reset container configuration in docker-compose.yml to default and recreate it."""
         if container_id not in MANAGED_CONTAINERS:

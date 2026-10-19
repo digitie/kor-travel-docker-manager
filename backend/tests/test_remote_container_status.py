@@ -26,7 +26,8 @@ def remote_registry(monkeypatch, tmp_path):
 def test_missing_remote_container_is_observed_not_reported_as_local_absent(remote_registry, monkeypatch, docker_available):
     from kor_travel_docker_manager.services import docker_service as module
 
-    service = module.DockerService.__new__(module.DockerService)
+    monkeypatch.setattr(module.DockerService, "_backup_default_config", lambda self: None)
+    service = module.DockerService()
     def missing(_name):
         raise NotFound("missing")
     def unavailable():
@@ -50,7 +51,8 @@ def test_missing_remote_container_is_observed_not_reported_as_local_absent(remot
 def test_existing_local_orphan_keeps_docker_status_and_stop_path(remote_registry, monkeypatch):
     from kor_travel_docker_manager.services import docker_service as module
 
-    service = module.DockerService.__new__(module.DockerService)
+    monkeypatch.setattr(module.DockerService, "_backup_default_config", lambda self: None)
+    service = module.DockerService()
     local = SimpleNamespace(status="running", attrs={"Id": "owned-test", "State": {"Status": "running"}},
                             image=SimpleNamespace(tags=["test-image"], short_id="test-image"))
     def get(name):
@@ -136,7 +138,8 @@ def test_remote_status_uses_one_registry_snapshot(remote_registry, monkeypatch):
     calls = []
     monkeypatch.setattr(registry, "current_host", lambda config: calls.append(1) or original(config))
     monkeypatch.setattr(module, "get_compose_config", lambda: {})
-    service = module.DockerService.__new__(module.DockerService)
+    monkeypatch.setattr(module.DockerService, "_backup_default_config", lambda self: None)
+    service = module.DockerService()
     def unavailable():
         raise RuntimeError("offline")
     monkeypatch.setattr(service, "_get_client", unavailable)

@@ -530,11 +530,25 @@ def test_the_location_cap_blocks_the_next_run_of_that_location_only(
     caps = _location_caps(concurrency, "dagster/code_location")
     assert len(caps) >= 2, caps
     busy, idle = caps[0], caps[1]
-    # 전역 상한이 막는 것이 아니어야 한다 — 상한만큼 돌아도 전역에는 두 자리가 남는다.
-    assert busy["limit"] + 2 <= concurrency["runs"]["max_concurrent_runs"]
+    # 운영 정본의 전역 상한이 먼저 찬 경우에는 두 location 모두 대기해야 한다.
+    global_limit = concurrency["runs"]["max_concurrent_runs"]
+    saturated = _queue_probe(plane, {
+        "in_progress": global_limit, "busy": busy["value"], "idle": idle["value"],
+    })
+    assert saturated == {
+        "storage": "PostgresRunStorage",
+        "in_progress": global_limit,
+        "busy_dequeued": False,
+        "idle_dequeued": False,
+    }
+
+    # location 제한만 분리 검증할 때에만 격리 instance의 전역 슬롯을 확보한다.
+    # 운영 설정은 변경하지 않는다. 대조군에도 같은 전역 여유를 적용한다.
+    isolated = copy.deepcopy(concurrency)
+    isolated["runs"]["max_concurrent_runs"] = busy["limit"] + 2
     request = {"in_progress": busy["limit"], "busy": busy["value"], "idle": idle["value"]}
 
-    shared = _queue_probe(plane, request)
+    shared = _queue_probe(plane, {**request, "concurrency": isolated})
     assert shared == {
         "storage": "PostgresRunStorage",
         "in_progress": busy["limit"],
@@ -542,7 +556,7 @@ def test_the_location_cap_blocks_the_next_run_of_that_location_only(
         "idle_dequeued": True,
     }
 
-    control = copy.deepcopy(concurrency)
+    control = copy.deepcopy(isolated)
     for entry in _location_caps(control, "dagster/code_location"):
         entry["key"] = ".dagster/repository"
         entry["value"] = f"__repository__@{entry['value']}"
