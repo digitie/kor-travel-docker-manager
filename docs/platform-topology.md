@@ -49,14 +49,15 @@ C6c 계약 기계(보호값 스캔·볼륨 그래프·단일파일 경계·핀�
 > e2e 스택에만 쓰인다. Manager가 프로젝트 저장소를 참조하는 것은 build context와
 > 스크립트 bind mount뿐이다.
 
-**호스트 차원(계획 — ADR-58 proposed, 미구현).** 위 표의 두 축에 "어느 호스트에서 도는가"가 더해진다. tenant target
+**호스트 차원(ADR-58 accepted, 구현됨).** 위 표의 두 축에 "어느 호스트에서 도는가"가 더해진다. tenant target
 (`geo`·`weather`·`transport`·`map`·`pinvi`·`conc`)은 registry `host:` 하나(2026-10-17 NH-1부터 생략 불가), infra target 중
 `storage`·`dagster`는 `host: [n150, odroid]`(NH-3 — 목록의 호스트에 host-local로 하나씩), `cadv`는 `host: all`, `prom`·`gra`는 n150뿐이다. **컨테이너는 host-local**이다 —
 같은 이름의 컨테이너는 그것을 service로 갖는 target들의 host **합집합**에 존재한다(`kor-travel-shared-postgresql`은 `dagster`(all)
 때문에 두 호스트 모두, `kor-travel-geo-api`는 geo target의 host 하나). 호스트마다 **같은 Manager**가 자기 로컬 소켓으로 돌고
 (`KTDM_HOST`로 자기를 식별), 원격 Docker·Manager 간 SSH는 없다. 내부/외부 구분과 `ensure` 거부 규칙은 그대로다 — 다만 `ensure`는
-"자기 호스트의 target"에만 허용된다(`docker-management.md` §3.2). 오늘(2026-10-13) 모든 target은 n150에 있고 `hosts:`·`host:`
-필드는 아직 없다. 배치 목표는 §10.
+"자기 호스트의 target"에만 허용된다(`docker-management.md` §3.2). geo·weather·transport는 2026-10-14~15 odroid로 옮겼다
+(registry `host: odroid`) — map·pinvi·conc는 n150에 그대로다. 호스트 플립을 공식 PR ×3(derived artifact 전부 포함)으로
+마무리하는 것은 T-MGR-06(`docs/tasks.md`)으로 남아 있다. 배치 목표는 §10.
 
 ---
 
@@ -94,7 +95,7 @@ targets:                          # 사람이 다루는 단위 = 한 프로젝�
 코드가 0건임이 확인돼 제거됐다 — 정본은 [`ports.md`](ports.md) 하나다. `port_band`는
 target 단위로만 남아 있다.
 
-**호스트 차원(계획 — ADR-58 proposed, 미구현; T-MGR-01a가 만든다).** 이 파일에 최상위 `hosts:` 절과 target의
+**호스트 차원(ADR-58 accepted; T-MGR-01a가 구현).** 이 파일에 최상위 `hosts:` 절과 target의
 `host:` 필드가 더해진다 — 주소의 유일한 자리다. 스키마: `hosts: {<키>: {addr: <IPv4 리터럴>, default: true|생략}}`
 (default는 정확히 1개 — 0·2개는 `TargetsConfigError`), tenant target `host: <hosts 키>`(생략 불가 — NH-1), infra
 target `storage`·`dagster`는 `host: [n150, odroid]`(NH-3)·`cadv`는 `host: all`; `hosts`에 없는 `host:` 값은 unknown host로 거부; 운영 모드의 `KTDM_HOST` 값은
@@ -118,7 +119,7 @@ concierge `:12600`·PinVi `:12800`)를 Manager compose에서 뺐다 — 그날 n
 `pinvi-postgres` 하나였다. 옛 데이터 디렉터리는 호스트에 그대로 둔다. Map의 두 DB도
 ADR-53으로 공용 인스턴스로 옮겨, 이제 Manager의 PostgreSQL은 공용 하나다.
 
-**계획(ADR-58 proposed, 미구현) — "공용 하나"는 호스트당 하나가 된다.** odroid에도 같은 서비스명·컨테이너명·포트·bind의
+**(ADR-58 accepted, T-MGR-03으로 구조 구현됨) — "공용 하나"는 호스트당 하나가 된다.** odroid에도 같은 서비스명·컨테이너명·포트·bind의
 `kor-travel-shared-postgres`(`11000`, `listen_addresses=127.0.0.1`)가 뜨고 `kor_travel_geo`·`kor_travel_weather`·`kor_travel_transport`·
 `dagster_shared`를 담는다(`kor_travel_transport_dagster`는 만들지 않는다). n150 instance의 그 세 DB(+`kor_travel_transport_dagster`)는
 전환 확인 뒤 drop한다(데이터 이관 없음 — 소스에서 재적재). PG는 registry에서 `dagster` target의 service이므로 odroid에서는
@@ -187,7 +188,7 @@ internal target이 되며 `network_mode: host`로도 옮겨왔다 — 지금은 
 먼저 code-server를 분리해야 한다.** Dagster를 쓰는 다섯 프로젝트가 모두 그 1단계를
 밟았다. 다음 차단 요인은 §7의 "공유의 전제 둘"(같은 인스턴스 스토리지, dagster 버전 호환)이다.
 
-**계획(ADR-58 proposed, 미구현) — plane은 호스트당 하나.** odroid에 같은 compose `dagster` target(daemon·webserver
+**(ADR-58 accepted, T-MGR-02·T-MGR-NH로 구현됨) — plane은 호스트당 하나.** odroid에 같은 compose `dagster` target(daemon·webserver
 `127.0.0.1:11002`·gateway `11001`·odroid PG의 `dagster_shared`)이 **두 번째 plane**으로 뜬다. 두 plane 사이 통신은 없고 workspace는
 호스트별 파생물 `config/dagster-shared/workspace.{n150,odroid}.yaml`(합집합 = 오늘의 6 location, 교집합 ∅)이다 — target의 `host:`를
 바꾸는 PR이 곧 그 location의 "합류"다(bindings.md B-5). (b) "n150 plane에 odroid code-server를 원격 등록"은 gRPC 무인증 LAN 노출·

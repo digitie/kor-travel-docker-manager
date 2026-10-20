@@ -16,6 +16,30 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-10-20 — ADR-58 문서 잔여(T-MGR-07) + `decisions.md` 분리(ADR-41~50)
+
+- [x] **T-MGR-07 — ADR-58 문서 잔여(ADR-58 proposed PR 뒤)**. `.env.example` 주석은 각 T-MGR-01a~05 코드 PR이 이미 키와
+  함께 넣었다(확인: `KTDM_HOST`·`KTDM_DATA_SOURCE_DEVICE`·`KTDM_DAGSTER_WORKSPACE_DIGEST`·`KTDM_PG_*`·`KTDM_*_MEM_LIMIT` 주석
+  전부 존재). 2026-10-16 journal 분리(`journal-archive-01~04.md`)는 그때 이미 완료였다. 이번에 닫은 것: **ADR-58
+  accepted 전환**(T-MGR-01a·01a-F·01b·01c·02·02r·03·03r·04·04r·05 전부 설치·머지 확인 뒤 `docs/decisions.md`의 ADR-58
+  상태를 proposed → accepted로, T-MGR-06(실제 host 플립 PR ×3)만 남은 계획으로 명시) + 각 문서의 "(계획 — ADR-58
+  proposed, 미구현)" 해제(코드로 implement된 부분만 — `docs/architecture.md`(호스트 프로필), `docs/bindings.md`
+  (B-5~B-9 콜아웃), `docs/platform-topology.md`(호스트 차원·공용 PG 호스트당·plane 호스트당, 3곳), `docs/prod-deployment.md`
+  (odroid 설치 절·§9 게이트), `docs/ports.md`(호스트 규칙 헤더 + `hosts:` 절 인라인 마커) — 총 9곳. T-MGR-06에 묶인
+  "(계획)"은 **남겨뒀다**(`docs/platform-topology.md` 호스트 플립 PR·§9 런북 단계 8·§10 헤더, `docs/prod-deployment.md`
+  odroid 전환 뒤 backend 전환표, `docs/ports.md` plane별 공개 host·odroid 방화벽 집합 — 전부 공개 HAProxy backend
+  전환·공개 host 결정이 아직 없어 실제로 미구현). `docs/journal.md`의 과거 날짜 기록(`2026-10-13` 등)은 역사이므로
+  건드리지 않았다(B-4 범위 규칙). **decisions.md 200 KB 초과 분리는 아래 항목으로 동시에 처리**(다음 ADR을 기다리지
+  않고 지금 — 이미 247 KB로 한도 근접). 수용 기준: `docs/decisions.md`에 더해진 ADR 없음(ADR-58 상태 문구만 교체),
+  `test_normative_docs_cite_real_symbols`(해당 시) 대상 — 이 PR은 문서만이라 코드 인용 추가 없음. 남은 것: 사용자 로컬
+  Claude 메모리 `odroid-standing-services`·`n150-standing-services` 갱신(저장소 파일이 아니라 운영자 쪽 — 활성
+  원장에 잔여 한 줄로 분리).
+- [x] **docs — `docs/decisions.md` 분리(다음 ADR 전에)**. 2026-10-16 현재 247,393 B(에이전트 read 한도 256 KB)였다.
+  ADR-41~50(41~48·50 — ADR-49는 결번, 파일 순서상 ADR-50이 ADR-48 앞에 있어 그 순서 그대로)을 `decisions-archive-02.md`로
+  옮겼다(파일 상단 "다음 분리 규칙" 그대로 — byte 그대로, 인덱스 표 9행 추가, 분리 전후 `## ADR-` 제목 집합 대조 일치
+  확인). `decisions.md`는 187,452 B로 줄었다. `decisions-archive-02.md` 머리말에 분리 날짜·범위를 적고, "다음 분리 규칙"을
+  `decisions-archive-03.md`로 갱신했다.
+
 ## 2026-10-17 — T-MGR-02r 닫음(실측 결과 n150 변경 없음)
 
 `docs/tasks.md`에서 **문구 그대로** 옮겼다(첫 줄 `[ ]`→`[x]`, 실측 근거를 덧붙임).
