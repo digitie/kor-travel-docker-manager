@@ -35,7 +35,7 @@ rsync 대상에 포함하지 않는다. 비밀 설정은 운영 호스트에서 
   별도로 안전하게 준비한다. `--delete`와 저장소 루트 전체 동기화는 사용하지 않는다. 신규
   설치는 아래 trusted installer를 우선하고, 이 rsync 절차는 기존 rsync 배포본을 갱신할 때만 쓴다.
 
-**두 번째 호스트 odroid(계획 — ADR-58 proposed, 미구현).** odroid(`192.168.1.13`, aarch64)에도 같은 절차로 root clone + trusted
+**두 번째 호스트 odroid(ADR-58 accepted — 설치 완료, 2026-10-17 NH-6 #524).** odroid(`192.168.1.13`, aarch64)에도 같은 절차로 root clone + trusted
 installer를 쓴다. 다른 점은 셋이다: (1) wheelhouse는 n150 사본을 옮기지 않고 **odroid 현지에서 root 소유로 발행**한다(amd64 wheel은
 쓸 수 없다, §3.1); (2) 앱 이미지는 **odroid 현지 빌드**다(n150에 binfmt가 없어 교차 빌드하지 않고, 레지스트리도 두지 않는다 —
 같은 tag가 호스트마다 다른 arch 내용을 갖는다); (3) 설치 **전제**로 `docker compose` v2 플러그인과 buildx가 있어야 한다 —
@@ -1037,13 +1037,13 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane co
 - **출력**: 결과에는 늘 `health`와 `remaining_drift`(재생성 뒤 남은 차이, 재생성하지 않았으면 `{}`)가 있다. `--json`은 secret-free 결과를 낸다 — env 값은 healthcheck가 이름으로 대조하는 파일 digest
   env(16진 16자)만 싣고 나머지는 이름만 싣는다.
 
-## 9. 두 번째 호스트 odroid (계획 — ADR-58 proposed, 미구현)
+## 9. 두 번째 호스트 odroid (ADR-58 accepted)
 
-이 절은 ADR-58의 운영 절차다. **아직 아무것도 적용되지 않았다**(2026-10-13: 모든 target이 n150, Manager 코드에 호스트 차원 없음).
-**§9.1-0~7은 지금 가능하다**(호스트 준비 — Manager 코드와 무관). **§9.1-8 이후와 §9.2 이후는 T-MGR-01a~05 머지·n150 설치 뒤에만**
-밟는다 — §9.1-9의 `KTDM_HOST`·`KTDM_DAGSTER_WORKSPACE_DIGEST`(`workspace.odroid.yaml`은 T-MGR-02가 만든다)·`KTDM_DATA_SOURCE_DEVICE`
-(T-MGR-05)·`targets validate`의 host 효과(T-MGR-01a)는 그 코드가 있어야 뜻이 있고, head의 Manager를 odroid에 설치하면 `.env`의
-`KTDM_HOST`가 무시된 채 validate가 통과하는 거짓 안심이 된다. 호스트 규칙(포트 동일·호스트만 `.13`)은 `ports.md`, 배치표·실측은
+이 절은 ADR-58의 운영 절차다. **T-MGR-01a~05(01a·01a-F·01b·01c·02·02r·03·03r·04·04r·05)는 전부 머지·n150 설치 완료**다
+(`docs/tasks-done.md`) — §9.1-8 이후·§9.2 이후를 막던 게이트는 풀렸다. odroid Manager 설치(2026-10-17 NH-6 #524)와
+geo·weather·transport의 `host: odroid` 전환(registry, 2026-10-14~15)도 이미 반영됐다. **아직 남은 것은 T-MGR-06**
+(host 플립 PR ×3 — transport → weather → geo의 공개 HAProxy backend 전환과 그 파생물 전체를 정식 PR로 닫는 것, 선행
+조건은 `docs/tasks.md` T-MGR-06)뿐이다. 호스트 규칙(포트 동일·호스트만 `.13`)은 `ports.md`, 배치표·실측은
 `platform-topology.md` §10. 각 단계는 ssh timeout 밖(tmux/nohup)에서 돌린다. n150 변경 전에는 n150 `~/preflight.sh` PASS가 선행한다.
 
 ### 9.1 odroid 초기화 — 상태(2026-10-13)와 남은 순서

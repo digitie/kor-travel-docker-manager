@@ -1,5 +1,24 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-20 — ADR-58 문서 잔여(T-MGR-07) 마감 + `decisions.md` ADR-41~50 분리(doc-only)
+
+- T-MGR-01a~05(01a·01a-F·01b·01c·02·02r·03·03r·04·04r·05)가 전부 머지·설치됐음을 `docs/tasks-done.md`로 확인하고
+  `docs/decisions.md`의 ADR-58 상태를 proposed → accepted로 바꿨다. 남은 계획은 T-MGR-06(transport→weather→geo 공개
+  HAProxy backend 전환 PR ×3)뿐이라고 명시했다.
+- "(계획 — ADR-58 proposed, 미구현)" 마커 9곳을 코드가 실제로 구현한 부분만 해제했다: `docs/architecture.md`(호스트
+  프로필 — `KTDM_HOST` 자기 식별 `registry.py` 확인), `docs/bindings.md`(B-5~B-9 콜아웃 — 각 항목의 "현재 결박" 테스트
+  존재 확인), `docs/platform-topology.md`(호스트 차원·공용 PG 호스트당·plane 호스트당 3곳), `docs/prod-deployment.md`
+  (odroid 설치 절·§9 게이트 — NH-6 #524로 odroid Manager 설치 확인), `docs/ports.md`(호스트 규칙 헤더 + `hosts:` 절
+  인라인 마커 — `config/docker-targets.yml`에 `hosts:`·`host: odroid` 실재 확인). T-MGR-06에 매달린 "(계획)"(공개 backend
+  전환표·plane별 공개 host·odroid 방화벽 집합·§10 호스트 플립 런북)은 아직 미구현이라 그대로 뒀다. `docs/journal.md`의
+  과거 날짜 기록은 역사라 건드리지 않았다(B-4 범위 규칙).
+- `docs/decisions.md`(247,393 B, 에이전트 read 한도 256 KB 근접)에서 ADR-41~50(49는 결번, 파일 순서상 ADR-50이 ADR-48
+  앞에 있는 순서 그대로)을 `docs/decisions-archive-02.md`로 byte 그대로 옮겼다. 분리 전후 `## ADR-` 제목 집합이
+  일치함을 diff로 확인했고, 인덱스 표에 9행을 추가했다. `decisions.md`는 187,452 B로 줄었다.
+- 남은 것: 사용자 로컬 Claude 메모리 `odroid-standing-services`·`n150-standing-services` 갱신(저장소 파일이 아니라
+  운영자 쪽이라 이 PR 범위 밖) — `docs/tasks.md`에 잔여 한 줄로 남겼다.
+- 이 변경은 문서만 수정했다. 코드·compose·registry·n150/odroid 컨테이너는 건드리지 않았다.
+
 ## 2026-10-17 — T-MGR-03r n150 공용 PG 재생성 완료
 
 - global lock 아래 root compose `up -d --no-deps kor-travel-shared-postgres`로 n150 공용 PG를 재생성했다(사전 `--dry-run`으로 대상이 PG 단독임을 확인). 약 30 s 안에 healthy로 복귀했고 `oom_score_adj`는 0→-800으로 바뀌었다.

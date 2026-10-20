@@ -171,17 +171,17 @@ cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실�
 디렉터리는 호스트에 그대로 둔다. weather는 Manager가 관리하는 전용 instance를 가진 적이
 없고, 옛 transport(당시 이름 airport) 전용 DB(`:14000`)도 이미 사라졌다.
 
-## 호스트 규칙 (계획 — ADR-58 proposed; `hosts:`·workspace 필터·소비자 origin만 2026-10-14 잠정 시행)
+## 호스트 규칙 (ADR-58 accepted; `hosts:`·workspace 필터·소비자 origin 구현됨 — 공개 backend 전환은 T-MGR-06)
 
-2026-10-13 현재 모든 서비스는 n150(`192.168.1.14`) 한 호스트에 있다. ADR-58은 geo·weather·transport와
-그들의 PostgreSQL·Dagster plane을 odroid(`192.168.1.13`)로 옮기되 **이 문서의 포트는 하나도 바꾸지
-않는다**는 것을 결정했다. 호스트가 둘이 되면 아래 규칙이 더해진다.
+ADR-58은 geo·weather·transport와 그들의 PostgreSQL·Dagster plane을 odroid(`192.168.1.13`)로 옮기되
+**이 문서의 포트는 하나도 바꾸지 않는다**는 것을 결정했다. geo·weather·transport는 2026-10-14~15 registry
+`host: odroid`로 이미 옮겼다(map·pinvi·conc는 n150에 그대로) — 호스트가 둘이 된 지금 아래 규칙이 적용된다.
 
 - **포트 정책은 호스트 로컬이다.** 두 호스트가 `11000`(PG)·`11001`/`11002`(plane)·`12101`/`12105`
   (RustFS)·`12103`(cAdvisor)·`12901`/`12905`(Manager)를 **각각** 가진다. 충돌이 아니다 — 같은 역할의
   인스턴스가 호스트마다 하나다.
 - **`host = hosts[<target.host>].addr`, 같은 호스트 안 참조는 `127.0.0.1`.** 주소의 정본은
-  registry의 `hosts:` 절(계획)이다 — 이 문서에 적힌 `.13`/`.14`는 그 파생값의 **예시**이지 정본이 아니다.
+  registry의 `hosts:` 절이다 — 이 문서에 적힌 `.13`/`.14`는 그 파생값의 **예시**이지 정본이 아니다.
   n150의 Map/PinVi가 odroid의 geo/transport/weather를 부를 때만 `http://<hosts[odroid].addr>:<소비자 포트>`
   (오늘 값 `192.168.1.13`)이며, 그 값은 Manager compose env 기본값(커밋된 파생물, `bindings.md` B-6)에서 나온다.
   **소비자 포트는 2026-10-14 소유자가 odroid에서 공개 대역으로 통일했다**: geo `12501`(불변), weather **`12201`**
