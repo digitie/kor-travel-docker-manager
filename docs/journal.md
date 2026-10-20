@@ -1,5 +1,11 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-17 — T-MGR-03r n150 공용 PG 재생성 완료
+
+- global lock 아래 root compose `up -d --no-deps kor-travel-shared-postgres`로 n150 공용 PG를 재생성했다(사전 `--dry-run`으로 대상이 PG 단독임을 확인). 약 30 s 안에 healthy로 복귀했고 `oom_score_adj`는 0→-800으로 바뀌었다.
+- 수용 기준 13개 설정(shared_buffers·work_mem·maintenance_work_mem·effective_cache_size·random_page_cost·max_wal_size·max_parallel_workers·max_parallel_workers_per_gather·effective_io_concurrency·checkpoint_timeout·wal_compression·autovacuum_max_workers)은 compose 기본값과 동일했다 — `.env` override가 없고 `postgresql.auto.conf`도 빈 상태라 값 자체는 재생성 전후로 바뀌지 않았다.
+- map/pinvi/concierge `/health` 200, preflight PASS, 재생성 전 활성 Dagster run 0건을 확인했다. T-MGR-03r을 `docs/tasks-done.md`로 옮겼다.
+
 ## 2026-10-19 — Manager CLI 전용 설치 경로
 
 - 웹·API 이전 호스트의 정식 CLI 갱신에 --cli-only를 추가했다. 기존 중지 상태 확인 후 서비스 파일·enable/start를 건너뛰며 기존 소스/환경 검증과 정본 전환·CLI 검증을 유지한다. 기본 설치 경로는 유지한다.
