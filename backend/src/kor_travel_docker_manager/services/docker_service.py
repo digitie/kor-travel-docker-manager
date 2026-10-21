@@ -256,7 +256,11 @@ def _public_url(spec: dict[str, Any]) -> str | None:
     if not env_key:
         return None
     value = os.environ.get(str(env_key), "").strip()
-    return value or None
+    if not value:
+        return None
+    # API 소비자가 사용하는 origin은 유지하고 대시보드 진입 경로만 붙인다.
+    path = spec.get("prod_url_path")
+    return value.rstrip("/") + "/" + path.lstrip("/") if path else value
 
 
 def _observe_remote_containers(entries: list[dict[str, Any]], remote_ids: set[str]) -> list[dict[str, Any]]:
@@ -833,6 +837,11 @@ class DockerService:
             logger.warning("Running Docker inventory is unavailable")
             inventory_complete = False
             observed = {}
+        public_envs = config.get("observed_public_url_envs", {})
+        for spec in observed.values():
+            env_key = public_envs.get(spec["name"])
+            if isinstance(env_key, str) and env_key.startswith("KTDM_PROD_URL_"):
+                spec["prod_url_env"] = env_key
         for key, spec in {**managed, **observed}.items():
             cname = spec["name"]
             svc_name, svc_config = _managed_service_config(key, spec, services)

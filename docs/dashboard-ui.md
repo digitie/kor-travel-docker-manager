@@ -297,3 +297,8 @@ Docker SDK 탐색·상세 조회는 수집 루프의 이벤트 스레드 밖에�
 Docker SDK의 sparse 목록은 단일 Name 대신 Names 배열을 줄 수 있어 Container.name이 None이다.
 발견 코드는 Names의 컨테이너 이름을 해석하며, 이름이 전혀 없으면 불완전 관측 경로로 보낸다.
 이 계약은 실제 SDK Container 모델을 사용하는 회귀로 확인한다.
+
+공개 링크는 호스트의 KTDM_PROD_URL_*에서 도메인을 읽고, 선택적인 prod_url_path로 브라우저 진입 경로를 붙인다.
+API origin을 쓰는 소비자의 설정은 바꾸지 않는다. RustFS 콘솔·cAdvisor·API docs/health처럼 루트가 진입 화면이 아닌 경우에 사용한다.
+observed_public_url_envs는 발견된 읽기 전용 컨테이너 이름에 공개 링크 환경변수를 연결할 뿐, 제어 registry에는 추가하지 않는다.
+내부 전용 백엔드·gRPC code-server·daemon에는 공개 URL을 추측해 붙이지 않는다.
