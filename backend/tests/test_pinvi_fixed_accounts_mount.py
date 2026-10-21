@@ -104,7 +104,20 @@ def test_fixed_accounts_file_rejects_relative_missing_and_symlink(
     real.write_text("{}", encoding="utf-8")
     link = tmp_path / "link.json"
     link.symlink_to(real)
+    loose = tmp_path / "loose.json"
+    loose.write_text("{}", encoding="utf-8")
+    loose.chmod(0o644)
+    empty = tmp_path / "empty.json"
+    empty.write_text("", encoding="utf-8")
+    empty.chmod(0o600)
+    linked = tmp_path / "linked.json"
+    linked.write_text("{}", encoding="utf-8")
+    linked.chmod(0o600)
+    (tmp_path / "second-name.json").hardlink_to(linked)
     for configured in (
+        str(loose),
+        str(empty),
+        str(linked),
         "relative/fixed.json",
         str(tmp_path / "missing.json"),
         str(link),

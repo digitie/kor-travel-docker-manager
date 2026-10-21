@@ -2472,7 +2472,9 @@ def _pinvi_fixed_accounts_mount_args(values: Mapping[str, str]) -> list[str]:
     """선택 PinVi 고정 관리자·테스트 사용자 파일을 bootstrap one-shot에 read-only로 넘긴다.
 
     운영자가 호스트에 둔 owner-only JSON의 절대 경로다. 값(계정·비밀번호)은 Manager가 읽지
-    않는다 — 내용·owner·mode 검사는 PinVi `pinvi-admin-bootstrap`이 컨테이너 안에서 한다.
+    않는다 — JSON 내용 검사는 PinVi `pinvi-admin-bootstrap`이 컨테이너 안에서 한다. 다만 PinVi가
+    같은 파일에 거는 파일 조건(owner=실행 uid, mode 0600, link 1, 1~4096 bytes; PinVi 이미지는
+    root로 돈다)은 여기서도 먼저 봐서, rebuild 초반(`state_initialization`)에 실패하게 한다.
     비어 있으면 아무것도 넘기지 않는다(기존 동작).
     """
 
@@ -2493,6 +2495,16 @@ def _pinvi_fixed_accounts_mount_args(values: Mapping[str, str]) -> list[str]:
     if not stat.S_ISREG(metadata.st_mode):
         raise DeploymentContractError(
             f"{PINVI_FIXED_ACCOUNTS_FILE_ENV} must name a regular file (not a symlink)"
+        )
+    if (
+        metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_nlink != 1
+        or not 0 < metadata.st_size <= 4096
+    ):
+        raise DeploymentContractError(
+            f"{PINVI_FIXED_ACCOUNTS_FILE_ENV} must be owned by the Manager user, mode 0600, "
+            "single-linked and 1..4096 bytes"
         )
     return [
         "-v",
@@ -4869,6 +4881,8 @@ class ComposeService:
             values = environment_snapshot.effective
             with _rebuild_stage("state_initialization"):
                 validate_c6c_operation_tokens(values, require_nonempty=True)
+                # 선택 PinVi 고정 계정 파일의 경로·파일 조건을 DB·컨테이너를 건드리기 전에 본다.
+                _pinvi_fixed_accounts_mount_args(values)
                 state_paths = pinned_runtime_state_paths(
                     values,
                     pinset_sha256=release.pinset_sha256,
