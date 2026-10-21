@@ -293,3 +293,7 @@ Docker 목록 탐색에 실패하면 inventory_complete=false를 전달하고 �
 health의 unhealthy를 포함한다. 실행 중이면서 health가 실패한 항목은 실행 수와 오류 수 양쪽에 포함된다.
 미등록 통계는 Docker ID가 바뀌면 I/O 기준값을 초기화하고, 탐색 실패·데몬 단절 시 이전 값을 정상 통계로 재사용하지 않는다.
 Docker SDK 탐색·상세 조회는 수집 루프의 이벤트 스레드 밖에서 수행한다.
+
+Docker SDK의 sparse 목록은 단일 Name 대신 Names 배열을 줄 수 있어 Container.name이 None이다.
+발견 코드는 Names의 컨테이너 이름을 해석하며, 이름이 전혀 없으면 불완전 관측 경로로 보낸다.
+이 계약은 실제 SDK Container 모델을 사용하는 회귀로 확인한다.
