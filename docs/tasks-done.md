@@ -16,6 +16,12 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-10-21 — T-MGR-HOST-INVENTORY 완료
+
+- PR #537·#538 머지, 독립 적대 리뷰 2인 재검토와 최종 CI backend 3,222 PASS/39 SKIP·frontend 47 PASS.
+- 두 Manager를 같은 runtime 02a513a로 설치하고 공개 UI 로그인/로그아웃·WS·모바일·목록 정리·읽기 전용 버튼을 검증했다. 실제 Docker ID·상태·health와 최신 지표는 Odroid 19개/n150 17개 모두 확인했다.
+- 운영의 transient PostgreSQL pause/unpause 관측 및 계측 비교의 한계는 같은 날짜 작업 일지에 남겼다. 실제 Docker 컨테이너·이미지를 정리하는 작업은 수행하지 않았다.
+
 ## 2026-10-20 — ADR-58 문서 잔여(T-MGR-07) + `decisions.md` 분리(ADR-41~50)
 
 - [x] **T-MGR-07 — ADR-58 문서 잔여(ADR-58 proposed PR 뒤)**. `.env.example` 주석은 각 T-MGR-01a~05 코드 PR이 이미 키와

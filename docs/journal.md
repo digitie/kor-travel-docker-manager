@@ -1,12 +1,20 @@
 # JOURNAL — 작업 일지
 
-## 2026-10-21 — 호스트별 실제 실행 원장과 미사용 정보 정리 (진행 중)
+## 2026-10-21 — 호스트별 실제 실행 원장과 미사용 정보 정리 완료
 
-- 기존 CLI 전용 호스트의 Manager 웹/API 복구와 두 호스트의 실제 Docker 대조를 진행한다. 고정 Codex 작업트리에 기존 대량 staged 변경이 있어 이를 보존하고 별도 `agent/host-inventory` 작업트리를 만들었다.
-- 등록되지 않은 실행 컨테이너도 실제 Docker 목록에서 발견해 읽기 전용으로 표시한다. registry의 제어 대상에는 추가하지 않으며 이름의 안정된 관측 키와 Docker ID로 메트릭을 결박한다. 사라진 관측 전용 캐시는 다음 수집에서 제거한다.
-- 기본 화면은 현재 호스트의 실행/재시작 항목이며 중지 항목은 명시적으로 펼친다. 미생성 선언·다른 호스트 HTTP 결과·과거 정지 릴리스가 기본 화면을 채우지 않는다. 실제 컨테이너나 이미지는 삭제하지 않는다.
-- 실행에 사용된 `Config.Image`, healthcheck, host network를 표시하며 Linux 메모리는 Docker CLI와 같이 inactive file cache를 제외한다.
-- 집중 backend11 PASS. 전체 회귀·프런트 빌드·독립 리뷰·운영 설치와 양쪽 공개 로그인/원장 대조는 진행 중이다.
+- 기존 CLI 전용 n150의 Manager 웹/API를 복구했다. 고정 Codex 작업트리의 기존 대량 staged 변경을 보존하고 별도 작업트리를 사용했다.
+- 등록되지 않은 실행 컨테이너도 실제 Docker 목록에서 발견해 읽기 전용으로 표시한다. 제어 registry에는 추가하지 않고, 이름의 안정된 관측 키와 실제 Docker ID로 메트릭을 연결한다.
+- 기본 화면은 현재 호스트의 실행·재시작·오류 항목이다. 미생성 선언·다른 호스트 HTTP 결과·중지된 옛 릴리스를 숨기며, 중지 항목은 선택해 볼 수 있다.
+- 실제 이미지·health·포트를 표시하고 메모리는 Docker CLI와 같은 Linux working set을 사용한다. 탐색·상세 조회를 이벤트 루프 밖에서 수행하고, 발견 실패·데몬 단절 시 오래된 정상 지표를 무효화하며, Docker ID 변경 시 I/O 기준값을 초기화한다.
+- PR #537: 전체 CI backend 3,221개 통과·39개 제외, frontend 47개 통과. 적대 리뷰 2인 지적 반영 및 재검토 완료. n150 공개 브라우저 로그인→대시보드→로그아웃과 WS 루프 없음 확인.
+- 최초 운영 E2E에서 Docker SDK sparse 목록의 Name/Names 차이를 발견했다. n150은 즉시 직전 정상본으로 복구했고, PR #538에서 실제 SDK Container 모델로 회귀를 추가했다. 양쪽 실제 Docker 발견 집합 17개·19개 일치와 관련 backend 103개 통과, 독립 리뷰 2인의 추가 지적 없음을 확인했다.
+- n150 기본 wheelhouse에 새 의존성이 없어 설치가 전환 전에 중단된 사례를 기록한다. 이미 준비된 완전한 root 소유 버전별 wheelhouse를 명시해 재설치했다. Odroid의 소스·frontend 빌드·release·state는 NVMe를 사용한다.
+- PR #538 최종 CI backend 3,222개 통과·39개 제외, frontend 47개 통과. 두 PR 모두 독립 적대 리뷰 2인의 재검토 후 머지했다.
+- 두 호스트에 runtime 02a513a를 공식 trusted installer로 설치했다. 실제 실행 컨테이너와 API Docker ID·상태·health가 Odroid 19개/n150 17개 모두 일치했고 각 행의 CPU·메모리와 최신 지표를 확인했다.
+- n150 Linux Playwright로 두 공개 UI의 로그인→대시보드→중지 항목 포함/해제→모바일→로그아웃을 확인했다. 미사용 행 숨김·미등록 행 제어 비활성화·로그아웃 뒤 WS 재연결 없음·JavaScript 예외 0건을 검증했다.
+- Docker CLI와 메모리 working set도 대조했다. 샘플 시차가 있는 비교에서 메모리 차이 중앙값은 Odroid 0.95%/n150 0.02%였다. 순간 CPU 값은 서로 다른 표본 시각의 부하 변동을 포함하므로 동시 표본 일치나 CPU 사용량 감소의 근거로 삼지 않는다.
+- 검증 중 Odroid 공용 PostgreSQL의 실제 paused/unhealthy 전환과 이후 unpause·healthy 복귀를 관측했다. 이 작업에서는 pause/unpause를 실행하지 않았고 작업 주체는 확인되지 않았다. 복귀 후 두 호스트 전체 UI E2E를 다시 수행해 통과했다.
+- T-MGR-HOST-INVENTORY를 완료 기록으로 옮겼다.
 
 ## 2026-10-20 — ADR-58 문서 잔여(T-MGR-07) 마감 + `decisions.md` ADR-41~50 분리(doc-only)
 
