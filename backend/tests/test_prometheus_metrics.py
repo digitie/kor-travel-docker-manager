@@ -114,6 +114,9 @@ class _FakeContainers:
         assert name
         return self.container
 
+    def list(self, **kwargs):
+        return []
+
 
 class _FakeDockerClient:
     def __init__(self, container):

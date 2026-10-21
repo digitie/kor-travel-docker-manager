@@ -10,6 +10,8 @@ from typing import Any
 
 import pytest
 
+from kor_travel_docker_manager.services.container_inventory import observed_container_specs
+
 SOURCE = Path(__file__).parents[1] / "src/kor_travel_docker_manager/services/metrics_collector.py"
 
 
@@ -30,7 +32,8 @@ def load_collector(source=None):
             continue
         nodes.append(node)
     ns = {
-        "docker": SimpleNamespace(DockerClient=object),
+        "docker": SimpleNamespace(DockerClient=object, errors=SimpleNamespace(DockerException=type("DockerException", (Exception,), {}))),
+        "observed_container_specs": observed_container_specs,
         "NotFound": type("NotFound", (Exception,), {}),
         "MANAGED_CONTAINERS": {},
         "TARGETS_CONFIG_ERRORS": (ValueError,),
@@ -176,7 +179,7 @@ def test_collect_preserves_success_degraded_and_offline_contracts(mode):
     def provider():
         if mode == "offline":
             raise RuntimeError("fixture")
-        return SimpleNamespace(containers=SimpleNamespace(get=get))
+        return SimpleNamespace(containers=SimpleNamespace(list=lambda **kwargs: [], get=get))
 
     collector.set_docker_client_provider(provider)
     asyncio.run(collector.collect_metrics())
@@ -257,7 +260,7 @@ def test_one_snapshot_derivation_for_entire_cycle(count, mode):
     def provider():
         if mode == "offline":
             raise RuntimeError("fixture")
-        return SimpleNamespace(containers=SimpleNamespace(get=get))
+        return SimpleNamespace(containers=SimpleNamespace(list=lambda **kwargs: [], get=get))
 
     collector.set_docker_client_provider(provider)
     asyncio.run(collector.collect_metrics())
@@ -280,7 +283,7 @@ def test_cycle_snapshot_consistency_and_next_cycle_invalidation():
         return Container("exited")
 
     collector.set_docker_client_provider(
-        lambda: SimpleNamespace(containers=SimpleNamespace(get=get))
+        lambda: SimpleNamespace(containers=SimpleNamespace(list=lambda **kwargs: [], get=get))
     )
     asyncio.run(collector.collect_metrics())
     assert collector.get_container_observation("app")["display_name"] == "앱"
@@ -320,7 +323,7 @@ def test_cycle_uses_actual_registry_lazy_mapping_once():
     collector = ns["MetricsCollector"]()
     calls.clear()
     collector.set_docker_client_provider(
-        lambda: SimpleNamespace(containers=SimpleNamespace(get=lambda name: Container("exited")))
+        lambda: SimpleNamespace(containers=SimpleNamespace(list=lambda **kwargs: [], get=lambda name: Container("exited")))
     )
     asyncio.run(collector.collect_metrics())
     assert len(calls) == 1

@@ -37,6 +37,7 @@ from kor_travel_docker_manager.services.compose_service import (
     get_compose_path,
     get_env_path,
 )
+from kor_travel_docker_manager.services.container_inventory import observed_container_specs
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
@@ -825,7 +826,14 @@ class DockerService:
         # 프로젝트 이름은 문서당 한 번만 유도한다 — 컨테이너마다 부르면 92KB YAML을
         # 다시 파싱한다(적대 리뷰 2026-09-18 라운드4 F-01: 98ms → 1917ms).
         manager_project = _manager_compose_project(compose_cfg)
-        for key, spec in managed.items():
+        inventory_complete = True
+        try:
+            observed = observed_container_specs(client, managed)
+        except DockerException:
+            logger.warning("Running Docker inventory is unavailable")
+            inventory_complete = False
+            observed = {}
+        for key, spec in {**managed, **observed}.items():
             cname = spec["name"]
             svc_name, svc_config = _managed_service_config(key, spec, services)
 
@@ -844,29 +852,29 @@ class DockerService:
                 )
                 # Parse exposed ports
                 ports = []
-                port_bindings = container.attrs.get("HostConfig", {}).get("PortBindings", {})
+                port_bindings = container.attrs.get("HostConfig", {}).get("PortBindings") or {}
                 for container_port, host_ports in port_bindings.items():
                     if host_ports:
                         ports.append(
                             f"{host_ports[0].get('HostPort')}:{container_port.split('/')[0]}"
                         )
 
-                image = container.image
-                image_tags = image.tags if image is not None else []
+                image_reference = container.attrs.get("Config", {}).get("Image") or container.attrs.get("Image") or "unknown"
                 status_list.append(
                     {
                         "id": key,
                         "name": cname,
+                        "docker_id": str(container.attrs.get("Id") or ""),
+                        "observed_only": bool(spec.get("observed_only") or key in remote_ids),
+                        "health": container.attrs.get("State", {}).get("Health", {}).get("Status"),
+                        "observed_host": selected,
+                        "network_mode": container.attrs.get("HostConfig", {}).get("NetworkMode"),
                         "display_name": spec["display_name"],
                         "role": spec["role"],
                         "connection": spec["connection"],
                         "public_url": _public_url(spec),
                         "expected_ports": spec["expected_ports"],
-                        "image": (
-                            image_tags[0]
-                            if image_tags
-                            else image.short_id if image is not None else "unknown"
-                        ),
+                        "image": image_reference,
                         "status": container.status,  # e.g., 'running', 'exited', 'paused'
                         "state": container.attrs.get("State", {}).get("Status", "unknown"),
                         "ports": ports,
@@ -944,6 +952,10 @@ class DockerService:
                         },
                     }
                 )
+        for row in status_list:
+            row.setdefault("observed_only", bool(observed.get(row["id"], {}).get("observed_only") or row["id"] in remote_ids))
+            row.setdefault("observed_host", selected)
+            row["inventory_complete"] = inventory_complete
         return _observe_remote_containers(status_list, remote_ids)
 
     def control_container(self, container_id: str, action: str) -> dict[str, Any]:
