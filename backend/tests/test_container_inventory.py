@@ -139,3 +139,14 @@ def test_failed_inspect_preserves_read_only_and_inventory_failure_is_reported(mo
     listing.side_effect = DockerException('list failed')
     rows = service.get_containers_status()
     assert rows and all(row['inventory_complete'] is False for row in rows)
+
+def test_sparse_docker_sdk_names_are_discovered_without_inspect():
+    from docker.models.containers import Container
+
+    # Docker SDK의 실제 sparse 모델: .name은 None, 목록의 Names만 존재한다.
+    container = Container(attrs={'Id': 'sparse-worker', 'Names': ['/external-worker'], 'State': 'running'})
+    assert container.name is None
+    client = SimpleNamespace(containers=SimpleNamespace(list=lambda **kwargs: [container]))
+    found = observed_container_specs(client, {})
+    assert next(iter(found.values()))['name'] == 'external-worker'
+    assert observed_container_specs(client, {'known': {'name': 'external-worker'}}) == {}
