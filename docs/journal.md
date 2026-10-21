@@ -1,10 +1,16 @@
 # JOURNAL — 작업 일지
 
-## 2026-10-21 — Portainer 제거와 서비스 공개 링크 재점검 (진행 중)
+## 2026-10-21 — Portainer 제거와 서비스 공개 링크 재점검 완료
 
 - 소유자 요청으로 Odroid의 독립 Portainer 컨테이너를 종료·삭제했다. 복구용 데이터 볼륨은 보존했다.
 - Odroid의 관측·스토리지 링크가 다른 호스트 주소를 가리키고 Weather 링크가 비어 있음을 확인했다.
-- 공개 origin과 브라우저 진입 경로를 분리하고, Transport 관측 전용 관리 UI/API gateway의 공개 링크를 추가한다. 미등록 컨테이너에 제어 권한을 부여하지 않는다.
+- 공개 origin과 브라우저 진입 경로를 분리하고, Transport 관측 전용 관리 UI/API gateway의 공개 링크를 추가했다. 미등록 컨테이너에 제어 권한을 부여하지 않는다.
+- Odroid의 cAdvisor·공용 Dagster·RustFS는 해당 호스트의 공개 주소로 보정하고 Weather 누락 링크를 채웠다. MCP는 프로토콜 진입 경로로 연결한다. 실제 도메인은 호스트의 비공개 환경설정에만 저장했다.
+- PR #540을 독립 적대 리뷰 2인과 전체 CI(backend 3,230 PASS/39 SKIP, frontend 47 PASS) 후 머지했다. 관련 집중 회귀 212개와 Ruff도 통과했다.
+- 두 호스트의 Manager backend를 공식 installer로 runtime 5d8db45에 설치했다. frontend 소스가 동일해 재빌드하지 않았다.
+- n150 Linux Playwright에서 Odroid 실행 18개/공개 링크 9개, n150 실행 17개/링크 12개를 API·실제 DOM href·공개 HTTP 응답에 대조했다. Portainer는 기본/중지 포함 목록 모두에서 사라졌고 로그인·로그아웃·모바일·WS 루프 없음·JavaScript 예외 0건을 확인했다.
+- 공개 cAdvisor의 머신 정보는 각 로컬 인스턴스와 일치했다. Odroid 공개 Dagster도 로컬과 같은 Geo·Weather·Transport 위치를 반환했다. RustFS API의 health 응답도 두 호스트별로 확인했다.
+- Odroid Grafana·Prometheus는 실행 중이 아니며 해당 공개 주소가 503을 반환한다. 이 작업에서는 다시 기동하지 않았다. Dagster의 401은 인증 요구, MCP의 406은 브라우저 GET의 프로토콜 응답으로 구분했다.
 
 
 ## 2026-10-21 — 호스트별 실제 실행 원장과 미사용 정보 정리 완료
