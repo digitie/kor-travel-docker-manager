@@ -826,10 +826,12 @@ class DockerService:
         # 프로젝트 이름은 문서당 한 번만 유도한다 — 컨테이너마다 부르면 92KB YAML을
         # 다시 파싱한다(적대 리뷰 2026-09-18 라운드4 F-01: 98ms → 1917ms).
         manager_project = _manager_compose_project(compose_cfg)
+        inventory_complete = True
         try:
             observed = observed_container_specs(client, managed)
         except DockerException:
             logger.warning("Running Docker inventory is unavailable")
+            inventory_complete = False
             observed = {}
         for key, spec in {**managed, **observed}.items():
             cname = spec["name"]
@@ -950,6 +952,10 @@ class DockerService:
                         },
                     }
                 )
+        for row in status_list:
+            row.setdefault("observed_only", bool(observed.get(row["id"], {}).get("observed_only") or row["id"] in remote_ids))
+            row.setdefault("observed_host", selected)
+            row["inventory_complete"] = inventory_complete
         return _observe_remote_containers(status_list, remote_ids)
 
     def control_container(self, container_id: str, action: str) -> dict[str, Any]:

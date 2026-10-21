@@ -24,6 +24,7 @@ export interface ContainerStatus {
   state: string;
   /** 원격 HTTP 응답만 관측한 항목. 로컬 Docker 상태·metrics·제어 권한을 뜻하지 않는다. */
   remote?: boolean;
+  inventory_complete?: boolean;
   observed_only?: boolean;
   observed_host?: string;
   health?: string | null;
@@ -51,7 +52,7 @@ export interface ContainerStatus {
 export function visibleLocalContainers(containers: ContainerStatus[], includeStopped = false): ContainerStatus[] {
   return containers.filter((container) =>
     !container.remote && !['not_created', 'not created', 'offline'].includes(container.status) &&
-    (includeStopped || ['running', 'restarting'].includes(container.status))
+    (includeStopped || ['running', 'restarting', 'error', 'dead'].includes(container.status))
   );
 }
 

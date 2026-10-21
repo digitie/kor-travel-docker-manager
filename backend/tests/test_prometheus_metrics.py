@@ -114,7 +114,7 @@ class _FakeContainers:
         assert name
         return self.container
 
-    def list(self):
+    def list(self, **kwargs):
         return []
 
 

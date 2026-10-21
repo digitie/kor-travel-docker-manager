@@ -31,7 +31,7 @@ def test_missing_remote_container_is_observed_not_reported_as_local_absent(remot
         raise NotFound("missing")
     def unavailable():
         raise RuntimeError("offline")
-    monkeypatch.setattr(service, "_get_client", (lambda: SimpleNamespace(containers=SimpleNamespace(get=missing))) if docker_available else unavailable)
+    monkeypatch.setattr(service, "_get_client", (lambda: SimpleNamespace(containers=SimpleNamespace(get=missing, list=lambda **kwargs: []))) if docker_available else unavailable)
     monkeypatch.setattr(module, "get_compose_config", lambda: {})
     observed = []
     def probe(connections):
@@ -57,7 +57,7 @@ def test_existing_local_orphan_keeps_docker_status_and_stop_path(remote_registry
         if name == remote_registry["containers"]["kor-travel-geo-api"]["name"]:
             return local
         raise NotFound("missing")
-    monkeypatch.setattr(service, "_get_client", lambda: SimpleNamespace(containers=SimpleNamespace(get=get)))
+    monkeypatch.setattr(service, "_get_client", lambda: SimpleNamespace(containers=SimpleNamespace(get=get, list=lambda **kwargs: [])))
     monkeypatch.setattr(module, "get_compose_config", lambda: {})
     monkeypatch.setattr(module.metrics_collector, "get_latest_metric", lambda *_a, **_k: {})
     observed = []

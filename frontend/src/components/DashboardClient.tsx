@@ -267,7 +267,7 @@ export default function DashboardClient() {
   const displayContainers = visibleLocalContainers(allContainers, includeStopped);
   const observedHost = localContainers.find((container) => container.observed_host)?.observed_host;
   const inventoryUnavailable = allContainers.some((container) =>
-    !container.remote && ['offline', 'error'].includes(container.status)
+    !container.remote && (container.inventory_complete === false || ['offline', 'error'].includes(container.status))
   );
 
   // "디스크 참"은 비전문 관리자가 이 시스템을 죽이는 가장 그럴듯한 경로인데 어느
@@ -395,7 +395,7 @@ export default function DashboardClient() {
     for (const c of displayContainers) {
       const s = (c.status || '').toLowerCase();
       if (s === 'running') running += 1;
-      else if (s === 'error') errored += 1;
+      if (s === 'error' || s === 'dead' || c.health === 'unhealthy') errored += 1;
       else if (stoppedStatuses.has(s)) stopped += 1;
     }
     return {
@@ -982,7 +982,7 @@ export default function DashboardClient() {
               { label: '전체', value: kpiCounts.total },
               { label: '실행 중', value: kpiCounts.running, tone: 'ok' },
               { label: '중지', value: kpiCounts.stopped, tone: 'neutral' },
-              { label: '오류', value: kpiCounts.error, tone: 'danger' },
+              { label: '상태·관측 오류', value: kpiCounts.error, tone: 'danger' },
               ...(diskUsage
                 ? [{
                     label: '정리 가능 용량',
