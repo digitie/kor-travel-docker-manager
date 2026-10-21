@@ -16,6 +16,12 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-10-21 — T-MGR-PUBLIC-URLS 완료
+
+- Portainer 컨테이너 제거(데이터 볼륨 보존), 호스트별 공개 URL·브라우저 진입 경로 보정, 관측 전용 Transport 링크 추가.
+- PR #540의 독립 리뷰 2인·전체 CI 후 양쪽 runtime 5d8db45 설치. 실행 컨테이너 18개/17개와 공개 링크 9개/12개, 양쪽 live UI 검증 통과.
+- 미기동 Grafana·Prometheus 주소의 503과 공개 프로토콜 응답 구분은 같은 날짜 작업 일지에 기록했다.
+
 ## 2026-10-21 — T-MGR-HOST-INVENTORY 완료
 
 - PR #537·#538 머지, 독립 적대 리뷰 2인 재검토와 최종 CI backend 3,222 PASS/39 SKIP·frontend 47 PASS.
