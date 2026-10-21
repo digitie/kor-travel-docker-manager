@@ -11,6 +11,7 @@ from typing import Any
 import docker
 from docker.errors import NotFound
 
+from kor_travel_docker_manager.services.container_inventory import observed_container_specs
 from kor_travel_docker_manager.services.metrics_service import metrics_service
 from kor_travel_docker_manager.services.registry import (
     MANAGED_CONTAINERS,
@@ -464,7 +465,18 @@ class MetricsCollector:
             with self._lock:
                 self._docker_daemon_up = 1
 
-            for key, spec in MANAGED_CONTAINERS.items():
+            specs = dict(MANAGED_CONTAINERS.items())
+            try:
+                specs.update(observed_container_specs(client, specs))
+            except docker.errors.DockerException:
+                logger.warning("Running Docker metrics inventory is unavailable")
+            with self._lock:
+                for key in list(self._container_observations):
+                    if key.startswith("observed:") and key not in specs:
+                        self._container_observations.pop(key, None)
+                        self._latest_metrics.pop(key, None)
+                        self._prev_io.pop(key, None)
+            for key, spec in specs.items():
                 cname = spec["name"]
                 container = None
                 try:
@@ -528,6 +540,13 @@ class MetricsCollector:
                         else {}
                     )
                     mem_usage = max(0, _as_int(memory_stats.get("usage")))
+                    memory_details = _as_mapping(memory_stats.get("stats"))
+                    # Docker CLI와 같은 Linux working set: 회수 가능한 파일 캐시 제외.
+                    inactive_file = max(0, _as_int(memory_details.get(
+                        "total_inactive_file", memory_details.get("inactive_file", 0)
+                    )))
+                    if inactive_file < mem_usage:
+                        mem_usage -= inactive_file
                     mem_limit = max(0, _as_int(memory_stats.get("limit")))
                     mem_pct = (mem_usage / mem_limit) * 100.0 if mem_limit > 0 else 0.0
 
@@ -708,9 +727,8 @@ class MetricsCollector:
             )
         )
 
-        ordered_observations = [
-            observations[key] for key in MANAGED_CONTAINERS if key in observations
-        ]
+        observation_keys = [*MANAGED_CONTAINERS, *(key for key in observations if key.startswith("observed:"))]
+        ordered_observations = [observations[key] for key in observation_keys if key in observations]
         base_labels = [self._metric_labels(observation) for observation in ordered_observations]
 
         def per_container(name: str, help_text: str, value_getter) -> None:

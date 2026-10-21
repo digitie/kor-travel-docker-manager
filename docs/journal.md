@@ -1,5 +1,13 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-21 — 호스트별 실제 실행 원장과 미사용 정보 정리 (진행 중)
+
+- 기존 CLI 전용 호스트의 Manager 웹/API 복구와 두 호스트의 실제 Docker 대조를 진행한다. 고정 Codex 작업트리에 기존 대량 staged 변경이 있어 이를 보존하고 별도 `agent/host-inventory` 작업트리를 만들었다.
+- 등록되지 않은 실행 컨테이너도 실제 Docker 목록에서 발견해 읽기 전용으로 표시한다. registry의 제어 대상에는 추가하지 않으며 이름의 안정된 관측 키와 Docker ID로 메트릭을 결박한다. 사라진 관측 전용 캐시는 다음 수집에서 제거한다.
+- 기본 화면은 현재 호스트의 실행/재시작 항목이며 중지 항목은 명시적으로 펼친다. 미생성 선언·다른 호스트 HTTP 결과·과거 정지 릴리스가 기본 화면을 채우지 않는다. 실제 컨테이너나 이미지는 삭제하지 않는다.
+- 실행에 사용된 `Config.Image`, healthcheck, host network를 표시하며 Linux 메모리는 Docker CLI와 같이 inactive file cache를 제외한다.
+- 집중 backend11 PASS. 전체 회귀·프런트 빌드·독립 리뷰·운영 설치와 양쪽 공개 로그인/원장 대조는 진행 중이다.
+
 ## 2026-10-20 — ADR-58 문서 잔여(T-MGR-07) 마감 + `decisions.md` ADR-41~50 분리(doc-only)
 
 - T-MGR-01a~05(01a·01a-F·01b·01c·02·02r·03·03r·04·04r·05)가 전부 머지·설치됐음을 `docs/tasks-done.md`로 확인하고

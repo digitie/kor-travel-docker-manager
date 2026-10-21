@@ -55,6 +55,7 @@ import {
   getStatusConfig,
   roleLabel,
   statusLabel,
+  visibleLocalContainers,
 } from '@/lib/containerPresentation';
 import { formatBytes, formatTimestamp } from '@/lib/format';
 
@@ -260,7 +261,14 @@ export default function DashboardClient() {
   }, [targets, detailContainer]);
 
   // Active containers dataset (WS if available, fallback query otherwise)
-  const displayContainers = wsContainers || fallbackContainers;
+  const allContainers = wsContainers || fallbackContainers;
+  const [includeStopped, setIncludeStopped] = useState(false);
+  const localContainers = visibleLocalContainers(allContainers, true);
+  const displayContainers = visibleLocalContainers(allContainers, includeStopped);
+  const observedHost = localContainers.find((container) => container.observed_host)?.observed_host;
+  const inventoryUnavailable = allContainers.some((container) =>
+    !container.remote && ['offline', 'error'].includes(container.status)
+  );
 
   // "디스크 참"은 비전문 관리자가 이 시스템을 죽이는 가장 그럴듯한 경로인데 어느
   // 화면에도 없었다. 원시 수치가 아니라 "정리 시 약 N GB 확보 가능"으로 보여 준다.
@@ -319,7 +327,8 @@ export default function DashboardClient() {
         label: group.label,
         containers: group.containers,
         runningCount: running.length,
-        healthy: running.length === group.containers.length,
+        healthy: running.length === group.containers.length && !running.some((c) => c.health === 'unhealthy'),
+        mutableCount: running.filter((c) => !c.observed_only).length,
       };
     });
   }, [displayContainers, targets]);
@@ -329,7 +338,7 @@ export default function DashboardClient() {
   const [bulkRestartingGroup, setBulkRestartingGroup] = useState<string | null>(null);
   const restartGroup = useCallback(
     async (group: { id: string; label: string; containers: ContainerStatus[] }) => {
-      const running = group.containers.filter((c) => (c.status || '').toLowerCase() === 'running');
+      const running = group.containers.filter((c) => !c.observed_only && (c.status || '').toLowerCase() === 'running');
       if (running.length === 0) {
         pushToast(successToast(`${group.label}에 실행 중인 컨테이너가 없습니다.`));
         return;
@@ -959,7 +968,7 @@ export default function DashboardClient() {
           <div className="ops-summary__header">
             <div>
               <h2 className="ops-section-title" id="service-summary-title">서비스 상태 요약</h2>
-              <p className="ops-section-copy">현재 수집된 컨테이너 원장을 기준으로 집계합니다.</p>
+              <p className="ops-section-copy">{observedHost ? `${observedHost} · ` : ''}현재 호스트의 Docker 관측값입니다.</p>
             </div>
             <span className="ops-status-badge">
               <span className={`ops-status-dot ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
@@ -972,7 +981,7 @@ export default function DashboardClient() {
             items={[
               { label: '전체', value: kpiCounts.total },
               { label: '실행 중', value: kpiCounts.running, tone: 'ok' },
-              { label: '중지·미생성', value: kpiCounts.stopped, tone: 'neutral' },
+              { label: '중지', value: kpiCounts.stopped, tone: 'neutral' },
               { label: '오류', value: kpiCounts.error, tone: 'danger' },
               ...(diskUsage
                 ? [{
@@ -1061,13 +1070,13 @@ export default function DashboardClient() {
                   <p className="ops-group-label">{group.label}</p>
                   <p className={`ops-group-status ${group.healthy ? 'text-ok' : 'text-warn'}`}>
                     {group.healthy
-                      ? `모두 정상 (${group.containers.length}개)`
-                      : `${group.containers.length - group.runningCount}개 중지됨 / 전체 ${group.containers.length}개`}
+                      ? `실행 중 ${group.runningCount}개`
+                      : `실행 ${group.runningCount}개 / 표시 ${group.containers.length}개 · 점검 필요`}
                   </p>
                 </div>
                 <button
                   className="ops-button"
-                  disabled={bulkRestartingGroup !== null || group.runningCount === 0}
+                  disabled={bulkRestartingGroup !== null || group.mutableCount === 0}
                   onClick={() => void restartGroup(group)}
                   type="button"
                 >
@@ -1084,12 +1093,16 @@ export default function DashboardClient() {
       )}
 
       <section className="ops-ledger" id="service-ledger" aria-labelledby="service-ledger-title">
+        {inventoryUnavailable && <p role="alert" className="ops-inline-note ops-inline-note--danger">일부 Docker 상태를 읽지 못했습니다. 최신 관측값을 확인해 주세요.</p>}
         <div className="ops-ledger__header">
           <div>
             <h2 className="ops-section-title" id="service-ledger-title">서비스 원장</h2>
             <p className="ops-section-copy">수치 버튼은 최근 1시간의 해당 메트릭 차트를 엽니다.</p>
           </div>
-          <span className="ops-status-badge"><Activity className="w-3 h-3 text-brand" /> 현재 상태</span>
+          <label className="ops-status-badge">
+            <input type="checkbox" checked={includeStopped} onChange={(event) => setIncludeStopped(event.target.checked)} />
+            중지 항목 포함
+          </label>
         </div>
 
         {isLoading && displayContainers.length === 0 ? (
@@ -1107,7 +1120,7 @@ export default function DashboardClient() {
               </thead>
               <tbody className="text-xs md:text-sm">
                 {displayContainers.map((container) => {
-                  const statusCfg = getStatusConfig(container.status);
+                  const statusCfg = getStatusConfig(container.health === 'unhealthy' ? 'error' : container.status);
                   const { Icon, displayName } = getContainerPresentation(container);
                   
                   const isActionPending = actionMutation.isPending && actionMutation.variables?.id === container.id;
@@ -1131,7 +1144,7 @@ export default function DashboardClient() {
                             className={`${statusCfg.textClass} text-xs md:text-sm font-bold`}
                             title={container.status}
                           >
-                            {statusLabel(container.status)}
+                            {container.health === 'unhealthy' ? '상태 점검 실패' : statusLabel(container.status)}
                           </span>
                         </div>
                       </td>
@@ -1143,6 +1156,7 @@ export default function DashboardClient() {
                           <div>
                             <div className="font-display font-semibold text-strong text-base">{displayName}</div>
                             <div className="text-secondary text-xs md:text-sm mt-0.5 font-mono tabular-nums">{container.name}</div>
+                            {container.observed_only && <span className="text-xs text-secondary">읽기 전용</span>}
                             {container.public_url && (
                               <a
                                 href={container.public_url}
@@ -1167,7 +1181,7 @@ export default function DashboardClient() {
                       <td data-label="포트" className="font-mono tabular-nums text-strong text-xs md:text-sm break-all">
                         {container.ports.length > 0
                           ? container.ports.join(', ')
-                          : (container.expected_ports || []).join(', ') || '내부 노출'
+                          : container.network_mode === 'host' ? '호스트 네트워크' : '포트 매핑 없음'
                         }
                       </td>
 
@@ -1230,7 +1244,7 @@ export default function DashboardClient() {
                           <button
                             type="button"
                             onClick={() => openLogModal(container.id)}
-                            disabled={container.remote}
+                            disabled={container.remote || container.observed_only}
                             className="ops-icon-button"
                             title="실시간 터미널 로그 스트리밍 모달 열기"
                           >
@@ -1242,7 +1256,7 @@ export default function DashboardClient() {
                           <button
                             type="button"
                             disabled={
-                              container.remote || container.status === 'not_created' ||
+                              container.remote || container.observed_only || container.status === 'not_created' ||
                               container.status === 'offline'
                             }
                             onClick={() => setDetailContainer(container)}
@@ -1261,7 +1275,7 @@ export default function DashboardClient() {
                             type="button"
                             onClick={() => openConfigModal(container)}
                             className="ops-icon-button"
-                            disabled={container.remote || Boolean(container.external_project)}
+                            disabled={container.remote || container.observed_only || Boolean(container.external_project)}
                             title={
                               container.remote
                                 ? '원격 HTTP 관측만 제공하며 로컬 설정을 변경할 수 없습니다'
@@ -1288,7 +1302,7 @@ export default function DashboardClient() {
                               <button
                                 type="button"
                                 onClick={() => handleAction(container.id, 'start')}
-                                disabled={container.remote || actionMutation.isPending || container.status === 'running'}
+                                disabled={container.remote || container.observed_only || actionMutation.isPending || container.status === 'running'}
                                 className="ops-button text-ok border-ok hover:border-ok hover:bg-ok hover:text-card disabled:hover:bg-card disabled:hover:text-ok"
                                 title="컨테이너 가동"
                               >
@@ -1299,7 +1313,7 @@ export default function DashboardClient() {
                               <button
                                 type="button"
                                 onClick={() => handleAction(container.id, 'stop')}
-                                disabled={container.remote || actionMutation.isPending || container.status !== 'running'}
+                                disabled={container.remote || container.observed_only || actionMutation.isPending || container.status !== 'running'}
                                 className="ops-button ops-button--danger text-danger border-danger disabled:hover:bg-card disabled:hover:text-danger"
                                 title="컨테이너 정지"
                               >
@@ -1310,7 +1324,7 @@ export default function DashboardClient() {
                               <button
                                 type="button"
                                 onClick={() => handleAction(container.id, 'restart')}
-                                disabled={container.remote || actionMutation.isPending || container.status !== 'running'}
+                                disabled={container.remote || container.observed_only || actionMutation.isPending || container.status !== 'running'}
                                 className="ops-icon-button"
                                 title="컨테이너 재부팅"
                               >

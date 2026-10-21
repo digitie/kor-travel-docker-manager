@@ -24,6 +24,10 @@ export interface ContainerStatus {
   state: string;
   /** 원격 HTTP 응답만 관측한 항목. 로컬 Docker 상태·metrics·제어 권한을 뜻하지 않는다. */
   remote?: boolean;
+  observed_only?: boolean;
+  observed_host?: string;
+  health?: string | null;
+  network_mode?: string;
   ports: string[];
   metrics?: ContainerMetricSnapshot;
   /** 이 컨테이너를 소유한 **다른** compose 프로젝트. Manager 자신의 것이면 null.
@@ -41,6 +45,14 @@ export interface ContainerStatus {
      * 편집기도 처음부터 잠근다 — 눌러 본 뒤에야 거부를 알게 하지 않는다. */
     locked_env?: string[];
   };
+}
+
+/** 원격 HTTP·미생성 선언은 로컬 Docker 실행 원장에 섞지 않는다. */
+export function visibleLocalContainers(containers: ContainerStatus[], includeStopped = false): ContainerStatus[] {
+  return containers.filter((container) =>
+    !container.remote && !['not_created', 'not created', 'offline'].includes(container.status) &&
+    (includeStopped || ['running', 'restarting'].includes(container.status))
+  );
 }
 
 export interface MetricHistoryPoint {
