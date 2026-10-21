@@ -783,6 +783,14 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
     containers = config["containers"]
     targets = config["targets"]
     _host_specs(config)
+    public_envs = config.get("observed_public_url_envs", {})
+    if not isinstance(public_envs, dict):
+        raise TargetsConfigError(f"{label} observed_public_url_envs: must be a mapping")
+    for name, env_key in public_envs.items():
+        if (not isinstance(name, str) or not name
+                or not isinstance(env_key, str) or not env_key.startswith("KTDM_PROD_URL_")
+                or not _ENV_NAME.fullmatch(env_key)):
+            raise TargetsConfigError(f"{label} observed_public_url_envs: invalid container or public URL env")
 
     for container_id, spec in containers.items():
         if not isinstance(spec, dict):
@@ -792,6 +800,11 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
                 raise TargetsConfigError(
                     f"{label} containers.{container_id}: missing required field '{field}'"
                 )
+        public_path = spec.get("prod_url_path")
+        if public_path is not None and (
+            not isinstance(public_path, str) or not public_path.startswith("/") or public_path.startswith("//")
+        ):
+            raise TargetsConfigError(f"{label} containers.{container_id}.prod_url_path: must be an absolute path")
         metrics_path = spec.get("metrics_path")
         metrics_port = spec.get("metrics_port")
         if metrics_port is not None and (
@@ -1071,6 +1084,7 @@ _ALLOWED_CONTAINER_FIELDS: Final = frozenset(
         "display_name",
         "connection",
         "prod_url_env",
+        "prod_url_path",
         "expected_ports",
         "external_project",
         "metrics_path",

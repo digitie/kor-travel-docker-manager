@@ -150,3 +150,39 @@ def test_sparse_docker_sdk_names_are_discovered_without_inspect():
     found = observed_container_specs(client, {})
     assert next(iter(found.values()))['name'] == 'external-worker'
     assert observed_container_specs(client, {'known': {'name': 'external-worker'}}) == {}
+
+def test_public_browser_path_preserves_api_origin(monkeypatch):
+    from kor_travel_docker_manager.services.docker_service import _public_url
+    monkeypatch.setenv('KTDM_PROD_URL_GEO_API', 'https://geo.example.org/')
+    spec = {'prod_url_env': 'KTDM_PROD_URL_GEO_API', 'prod_url_path': '/v1/healthz'}
+    assert _public_url(spec) == 'https://geo.example.org/v1/healthz'
+    import os
+    assert os.environ['KTDM_PROD_URL_GEO_API'] == 'https://geo.example.org/'
+
+
+def test_observed_public_links_do_not_grant_control(monkeypatch):
+    from docker.errors import NotFound
+
+    from kor_travel_docker_manager.services import docker_service as module
+    from kor_travel_docker_manager.services import registry
+
+    config = dict(registry.load_targets_config())
+    config['observed_public_url_envs'] = {'public-ui': 'KTDM_PROD_URL_TRANSPORT'}
+    monkeypatch.setattr(registry, 'load_targets_config', lambda: config)
+    monkeypatch.setenv('KTDM_HOST', registry.default_host(config))
+    monkeypatch.setenv('KTDM_PROD_URL_TRANSPORT', 'https://transport.example.org')
+    monkeypatch.setattr(module, 'get_compose_config', lambda: {})
+    monkeypatch.setattr(module, 'probe_remote_connections', lambda _: {})
+    container = SimpleNamespace(name='public-ui', status='running',
+        attrs={'Id': 'public-ui-id', 'State': {'Status': 'running'}, 'Config': {'Image': 'example:v1'}})
+    def get(name):
+        if name == container.name:
+            return container
+        raise NotFound('missing')
+    client = SimpleNamespace(containers=SimpleNamespace(list=lambda **kwargs: [container], get=get))
+    service = module.DockerService.__new__(module.DockerService)
+    monkeypatch.setattr(service, '_get_client', lambda: client)
+    row = next(x for x in service.get_containers_status() if x['name'] == 'public-ui')
+    assert row['public_url'] == 'https://transport.example.org'
+    assert row['observed_only'] and row['id'] not in module.MANAGED_CONTAINERS
+    assert not service.control_container(row['id'], 'restart')['success']

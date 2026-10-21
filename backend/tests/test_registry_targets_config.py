@@ -912,3 +912,19 @@ def test_a_target_host_without_hosts_is_rejected() -> None:
     config["targets"]["geo"]["host"] = "odroid"
     with pytest.raises(ValueError, match="require config version 2"):
         _validate_targets_config(config, label="test.yml")
+
+
+@pytest.mark.parametrize("path", [123, "docs", "//example.org"])
+def test_public_browser_path_requires_a_path(path):
+    config = _minimal_valid_config()
+    config["containers"]["geo_db"]["prod_url_path"] = path
+    with pytest.raises(registry_module.TargetsConfigError, match="prod_url_path"):
+        _validate_targets_config(config, label="fixture")
+
+
+@pytest.mark.parametrize("links", [[], {"web": "OTHER_ENV"}, {"web": None}])
+def test_observed_public_url_metadata_is_not_an_arbitrary_env_reader(links):
+    config = _minimal_valid_config()
+    config["observed_public_url_envs"] = links
+    with pytest.raises(registry_module.TargetsConfigError, match="observed_public_url_envs"):
+        _validate_targets_config(config, label="fixture")

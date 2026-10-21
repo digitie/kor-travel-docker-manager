@@ -29,6 +29,11 @@ dependency_order:
   - transport
   - node
 
+# 발견된 읽기 전용 컨테이너의 공개 링크. 제어 대상에는 등록하지 않는다.
+observed_public_url_envs:
+  kor-travel-transport-transport-admin-web-1: KTDM_PROD_URL_TRANSPORT
+  kor-travel-transport-transport-api-gateway-1: KTDM_PROD_URL_TRANSPORT_API
+
 containers:
   kor-travel-shared-postgresql:
     name: kor-travel-shared-postgres
@@ -45,6 +50,7 @@ containers:
     display_name: RustFS 공용 오브젝트 스토리지
     connection: "S3 API http://{host}:12101 / console http://{host}:12105/rustfs/console/"
     prod_url_env: KTDM_PROD_URL_S3
+    prod_url_path: /rustfs/console/
     expected_ports:
       - "12101:12101"
       - "12105:12105"
@@ -58,6 +64,7 @@ containers:
     # (`services/prometheus_targets.py`, `config/prometheus/prometheus.yml`은 커밋된 파생물).
     metrics_path: /metrics
     prod_url_env: KTDM_PROD_URL_GEO_API
+    prod_url_path: /v1/healthz
     expected_ports:
       - "12501:12501"
   kor-travel-geo-ui:
@@ -100,6 +107,7 @@ containers:
     display_name: Kor Travel Concierge API
     connection: http://{host}:12601
     prod_url_env: KTDM_PROD_URL_CONCIERGE_API
+    prod_url_path: /docs
     expected_ports:
       - "12601:12601"
   kor-travel-concierge-mcp:
@@ -141,6 +149,7 @@ containers:
     display_name: Kor Travel Map API
     connection: http://{host}:12701
     prod_url_env: KTDM_PROD_URL_MAP_API
+    prod_url_path: /health
     expected_ports:
       - "12701:12701"
   kor-travel-map-ui:
@@ -182,6 +191,7 @@ containers:
     display_name: PinVi API
     connection: http://{host}:12801
     prod_url_env: KTDM_PROD_URL_PINVI_API
+    prod_url_path: /docs
     expected_ports:
       - "12801:12801"
   pinvi-web:
@@ -244,6 +254,7 @@ containers:
     connection: http://{host}:12103
     metrics_path: /metrics
     prod_url_env: KTDM_PROD_URL_CADVISOR
+    prod_url_path: /containers/
     expected_ports:
       - "12103:12103"
   # 호스트 메트릭(swap·메모리·디스크 여유·시계 — ADR-58 핵심 위험). Manager compose 밖의 호스트 측 stack이다(`node` target).
@@ -273,6 +284,7 @@ containers:
     expected_ports:
       - "12201:12201"
     prod_url_env: KTDM_PROD_URL_WEATHER_API
+    prod_url_path: /docs
   # dagster는 code-server/webserver/daemon 3-분리로 나뉜다 — registry가 실제
   # compose.yaml 토폴로지(weather PR #61, code-server 분리) 뒤로 밀려 있었다.
   kor-travel-weather-dagster-code-server:
@@ -319,6 +331,7 @@ containers:
     expected_ports:
       - "12205:12205"
     prod_url_env: KTDM_PROD_URL_WEATHER
+    prod_url_path: /login
   kor-travel-weather-prometheus:
     name: kor-travel-weather-prometheus
     # compose_service는 더 이상 bare prometheus가 아니다 — Manager 자신의
