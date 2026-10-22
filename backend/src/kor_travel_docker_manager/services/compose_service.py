@@ -2464,6 +2464,56 @@ _EXTERNAL_PROJECT_PASSTHROUGH_ENV: Final = frozenset(
 )
 
 
+PINVI_FIXED_ACCOUNTS_FILE_ENV = "KTDM_PINVI_FIXED_ACCOUNTS_FILE"
+_PINVI_FIXED_ACCOUNTS_CONTAINER_PATH = "/run/pinvi/fixed-accounts.json"
+
+
+def _pinvi_fixed_accounts_mount_args(values: Mapping[str, str]) -> list[str]:
+    """선택 PinVi 고정 관리자·테스트 사용자 파일을 bootstrap one-shot에 read-only로 넘긴다.
+
+    운영자가 호스트에 둔 owner-only JSON의 절대 경로다. 값(계정·비밀번호)은 Manager가 읽지
+    않는다 — JSON 내용 검사는 PinVi `pinvi-admin-bootstrap`이 컨테이너 안에서 한다. 다만 PinVi가
+    같은 파일에 거는 파일 조건(owner=실행 uid, mode 0600, link 1, 1~4096 bytes; PinVi 이미지는
+    root로 돈다)은 여기서도 먼저 봐서, rebuild 초반(`state_initialization`)에 실패하게 한다.
+    비어 있으면 아무것도 넘기지 않는다(기존 동작).
+    """
+
+    raw = values.get(PINVI_FIXED_ACCOUNTS_FILE_ENV, "").strip()
+    if not raw:
+        return []
+    path = Path(raw)
+    if not path.is_absolute() or ":" in raw or "," in raw:
+        raise DeploymentContractError(
+            f"{PINVI_FIXED_ACCOUNTS_FILE_ENV} must be an absolute host path without ':' or ','"
+        )
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise DeploymentContractError(
+            f"{PINVI_FIXED_ACCOUNTS_FILE_ENV} does not name a readable host file"
+        ) from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise DeploymentContractError(
+            f"{PINVI_FIXED_ACCOUNTS_FILE_ENV} must name a regular file (not a symlink)"
+        )
+    if (
+        metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_nlink != 1
+        or not 0 < metadata.st_size <= 4096
+    ):
+        raise DeploymentContractError(
+            f"{PINVI_FIXED_ACCOUNTS_FILE_ENV} must be owned by the Manager user, mode 0600, "
+            "single-linked and 1..4096 bytes"
+        )
+    return [
+        "-v",
+        f"{raw}:{_PINVI_FIXED_ACCOUNTS_CONTAINER_PATH}:ro",
+        "-e",
+        f"PINVI_BOOTSTRAP_FIXED_ACCOUNTS_FILE={_PINVI_FIXED_ACCOUNTS_CONTAINER_PATH}",
+    ]
+
+
 class ComposeService:
     def capture_transaction_unlocked(
         self,
@@ -4463,6 +4513,7 @@ class ComposeService:
         지점이 없으니 PinVi role lifecycle 오류로 감쌀 단계가 남지 않는다.
         """
 
+        fixed_accounts_args = _pinvi_fixed_accounts_mount_args(values)
         with pinvi_bootstrap_credential_file(
             state_paths=state_paths,
             values=values,
@@ -4481,6 +4532,7 @@ class ComposeService:
                     f"{credential.path}:/run/pinvi/bootstrap-admin.json:ro",
                     "-e",
                     "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE=/run/pinvi/bootstrap-admin.json",
+                    *fixed_accounts_args,
                     _PINVI_ADMIN_BOOTSTRAP_SERVICE,
                 ],
                 transaction=transaction,
@@ -4829,6 +4881,8 @@ class ComposeService:
             values = environment_snapshot.effective
             with _rebuild_stage("state_initialization"):
                 validate_c6c_operation_tokens(values, require_nonempty=True)
+                # 선택 PinVi 고정 계정 파일의 경로·파일 조건을 DB·컨테이너를 건드리기 전에 본다.
+                _pinvi_fixed_accounts_mount_args(values)
                 state_paths = pinned_runtime_state_paths(
                     values,
                     pinset_sha256=release.pinset_sha256,
