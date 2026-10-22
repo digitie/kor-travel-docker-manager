@@ -873,7 +873,7 @@ services:
       # `x-` 키로 두지 않은 것은 `compose config` 렌더가 그 키를 그대로 내보내 n150 렌더가 한 줄 늘기 때문이다 — 여기 두면
       # 렌더는 종전과 byte 같다. 파일을 바꾸면 이 값을 함께 바꾼다(`test_workspace_digest_validate.py`가 대조한다).
       # 이 서비스를 alias 사용처(`*dagster-instance-digest`)보다 아래로 옮기지 말 것 — YAML은 정의 전 alias를 거부한다.
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "344105d5c06a22d3"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "7e6d4e6c058fca3f"
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
     - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro

@@ -174,13 +174,13 @@ def test_global_dispatch_budget_preserves_independent_tag_caps() -> None:
 
     config = _instance_config()
     runs = config["concurrency"]["runs"]
-    assert runs["max_concurrent_runs"] == 2
+    assert runs["max_concurrent_runs"] == 6
     assert config["run_queue"] == {
         "dequeue_interval_seconds": 30,
         "max_user_code_failure_retries": 3,
         "user_code_failure_retry_delay": 60,
     }
-    # location·업무별 기존 상한을 전역 2에 맞춰 낮추면 업무 정책을 바꾸게 된다.
+    # location·업무별 기존 상한을 전역 6에 맞춰 낮추면 업무 정책을 바꾸게 된다.
     assert any(entry["limit"] > runs["max_concurrent_runs"] for entry in runs["tag_concurrency_limits"])
     assert all(type(entry["limit"]) is int and entry["limit"] > 0 for entry in runs["tag_concurrency_limits"])
 
