@@ -4323,5 +4323,3 @@ def test_target_owned_infrastructure_comes_up_before_anything_stops(
     assert not any(
         operation[0] == "stop" and set(infrastructure) & set(operation) for operation in operations
     )
-
-
