@@ -1987,8 +1987,11 @@ def test_the_same_committed_pair_only_converges(
         for operation in _mutating_operations(harness)
         if operation[0] == "up"
     ]
-    assert len(runtime_up) == 1
-    assert set(runtime_up[0][6:]) == {*RUNTIME_SERVICES, *_FORWARD_COMPANIONS}
+    # ADR-59: target이 소유한 비-slot 서비스(Map Valkey)가 먼저, 그다음 slot·companion 전부를 한 번에.
+    assert [set(operation[6:]) for operation in runtime_up] == [
+        set(_pinned_infrastructure()),
+        {*RUNTIME_SERVICES, *_FORWARD_COMPANIONS},
+    ]
     assert (*RUNTIME_SERVICES, *_FORWARD_COMPANIONS) in harness.readiness_requests
     assert set(_FORWARD_COMPANIONS) <= set(harness.image_labels)
     harness.mocks.paired_builder.assert_not_called()
@@ -3710,7 +3713,8 @@ def _own_fingerprint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[st
     픽스처는 파생 이전 코드(6f384ba, literal 집합)에서 같은 항목을 떠 seed revision·pinset만 자리표로 바꾼
     것이다. 2026-10-04 platform-topology.md §7 4단계에서 옛 Map·PinVi Dagster metadata DB 의존(옛 Map storage
     migrate one-shot·`map_dagster_head`·`map_dagster` DB role·두 metadata URL 행)을 지운 만큼만 다시 떴다 — 그
-    변경은 의도한 것이고, 나머지 항목은 6f384ba 그대로다. 의도한 변경 셋은 빠져 있다 — M05 이미지 역할 키(`pinvi-app-dagster`), 보존 namespace가 알아보는
+    변경은 의도한 것이고, 나머지 항목은 6f384ba 그대로다. 2026-10-23 ADR-59가 Map Valkey(`kor-travel-map-valkey`)를 더해
+    `c6c_describe`·`mutation_parse_up`에 그 서비스가, 첫 배포·수렴 순서에 그것을 올리는 `up` 하나가 생겼다(의도한 변경). 의도한 변경 셋은 빠져 있다 — M05 이미지 역할 키(`pinvi-app-dagster`), 보존 namespace가 알아보는
     이름(family 전부, 적대 리뷰 MED-3), 그리고 seed에 묶인 generation sha256.
     """
 
@@ -4321,20 +4325,3 @@ def test_target_owned_infrastructure_comes_up_before_anything_stops(
     )
 
 
-def test_a_same_pair_converge_also_brings_up_target_owned_infrastructure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    infrastructure = _pinned_infrastructure()
-    harness = _forward_harness(monkeypatch, tmp_path)
-    harness.status_path.write_text(
-        json.dumps(_committed_status(_candidate_generation()).to_payload()), encoding="utf-8"
-    )
-    os.chmod(harness.status_path, 0o600)
-
-    result = harness.service.rebuild_pinned_runtime()
-
-    assert result["outcome"] == "converged"
-    assert any(
-        operation[0] == "up" and operation[-len(infrastructure):] == infrastructure
-        for operation in harness.operations
-    )

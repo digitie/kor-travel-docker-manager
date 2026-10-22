@@ -1,5 +1,5 @@
 {
-  "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized; re-captured 2026-10-19 for platform-topology.md §7 stage 4 and remote Geo prerequisite (old Map/PinVi Dagster metadata DB dependencies removed; Geo checked by external health endpoint)",
+  "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized; re-captured 2026-10-19 for platform-topology.md §7 stage 4 and remote Geo prerequisite (old Map/PinVi Dagster metadata DB dependencies removed; Geo checked by external health endpoint); 2026-10-23 ADR-59 adds kor-travel-map-valkey (c6c_describe, mutation_parse_up, and one infrastructure `up` before the first stop / converge up)",
  "build_compose_environment": {
   "KOR_TRAVEL_MAP_API_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
   "KOR_TRAVEL_MAP_DAGSTER_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
@@ -460,6 +460,7 @@
   "kor-travel-map-dagster-daemon",
   "kor-travel-map-db-role-bootstrap",
   "kor-travel-map-ui",
+  "<unrecognized service key sha256:d89e984c>",
   "<unrecognized service key sha256:f0321e02>",
   "kor-travel-shared-db-init-dagster",
   "<unrecognized service key sha256:767e4018>",
@@ -678,6 +679,15 @@
  "converge": {
   "operations": [
    [
+    "up",
+    "-d",
+    "--no-deps",
+    "--wait",
+    "--wait-timeout",
+    "945",
+    "kor-travel-map-valkey"
+   ],
+   [
     "ensure-map-databases-isolated",
     "kor_travel_map",
     "ktm_feature_service"
@@ -776,6 +786,15 @@
    ]
   ],
   "operations": [
+   [
+    "up",
+    "-d",
+    "--no-deps",
+    "--wait",
+    "--wait-timeout",
+    "945",
+    "kor-travel-map-valkey"
+   ],
    [
     "stop",
     "kor-travel-map-api",
@@ -989,6 +1008,9 @@
   "kor-travel-map-ui": [
    "kor-travel-map-ui",
    "kor-travel-map-api"
+  ],
+  "kor-travel-map-valkey": [
+   "kor-travel-map-valkey"
   ],
   "kor-travel-shared-db-init-concierge": [
    "kor-travel-shared-db-init-concierge"
