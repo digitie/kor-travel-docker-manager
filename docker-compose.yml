@@ -17,6 +17,12 @@ name: kor-travel-docker-manager
 x-dagster-shared-control-env: &dagster-shared-control-env
   KOR_TRAVEL_DAGSTER_SHARED_PG_URL: &dagster-shared-pg-url postgresql+psycopg2://kor_travel_dagster_shared_app:${KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/dagster_shared
 
+# Map Valkey(`kor-travel-map-valkey`, Map ADR-114 · Manager ADR-59)의 접속 URL — 정의는 여기 하나다. 이것을 받는 것은
+# Valkey를 쓰는 Map API와 Map code-server(run worker가 그 자식)뿐이다. 비밀번호는 URI unreserved 문자만 쓴다(Valkey
+# 서비스가 기동에서 거부한다). 포트 `12704`는 Valkey 서비스의 `--port`·healthcheck와 같아야 한다 —
+# `backend/tests/test_map_valkey_service.py`가 렌더된 모델에서 셋을 대조한다.
+x-map-valkey-url: &map-valkey-url redis://:${KOR_TRAVEL_MAP_VALKEY_PASSWORD:?KOR_TRAVEL_MAP_VALKEY_PASSWORD must be explicitly set}@127.0.0.1:12704/0
+
 # 공용 Dagster 호스트 서비스(daemon·webserver)의 기동 가드(ADR-54) — **잘못된 instance storage 위에서 뜨지
 # 않는다**(PinVi daemon과 같은 가드). `dagster.yaml` bind가 빠지면 Dagster는 `$DAGSTER_HOME` 아래 SQLite로
 # 조용히 떨어지고, daemon은 자기 빈 DB를 dequeue하며 heartbeat도 거기 써서 liveness-check까지 초록이 되고,
@@ -1487,6 +1493,73 @@ services:
       NEXT_PUBLIC_API_BASE_URL: ${KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL:-}
     ports:
     - ${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}
+  # Map의 weather·transport 현재·예보 상태 저장소(Map ADR-114, Manager ADR-59). Map Dagster run worker(code-server의
+  # 자식)가 쓰고 Map API가 읽는다 — 그 둘만 `KOR_TRAVEL_MAP_VALKEY_URL`(위 `x-map-valkey-url`)을 받는다.
+  #
+  # - **포트는 loopback뿐이다.** host network라 `--bind 127.0.0.1`이 곧 호스트 loopback이다(공용 PostgreSQL과 같다).
+  #   `12704`는 Map 대역의 빈 자리다(docs/ports.md). 외부 포트는 열지 않는다.
+  # - **비밀번호는 argv에 두지 않는다.** n150의 `/proc`은 hidepid 없이 붙어 있어 호스트의 어느 프로세스든 argv를
+  #   읽는다(위 Map bootstrap 주석). 그래서 `requirepass`는 stdin 설정(`valkey-server -`)으로 넘긴다 — 셸 argv에는
+  #   `$PW` 글자 그대로만 남는다. healthcheck의 `valkey-cli`는 `VALKEYCLI_AUTH` env로 인증한다.
+  # - 비밀번호는 URI unreserved 문자만 받는다 — Map URL에 그대로 들어가기 때문이다(공용 Dagster app 비밀번호와 같은
+  #   규칙). 어기면 기동을 거부한다. `:?`라 값이 없으면 compose 렌더 자체가 실패한다(설치기가 flip 전에 본다).
+  # - 이미지 entrypoint(`docker-entrypoint.sh`)를 그대로 거친다 — `/data`를 valkey(uid 999)에게 chown하고
+  #   `setpriv`로 권한을 내린다. 이미지의 PID 1이던 tini 대신 `init: true`(docker-init)가 PID 1이다(ADR-52와 같은 이유).
+  # - `maxmemory 1gb` + `noeviction`: 넘치면 조용히 지우지 않고 쓰기를 실패시킨다. `mem_limit`은 그 위에
+  #   AOF rewrite·RDB fork의 copy-on-write 여유를 둔 값이고 swap으로 새지 않게 `memswap_limit`도 같다.
+  # - 지속성은 RDB(`save`)와 AOF(`everysec`)다. **백업 대상이 아니다** — 원천(weather·transport)에서 다시 받는다.
+  # - 이미지는 multi-arch index digest다(amd64·arm64가 같은 digest) — 호스트별 이미지 env가 필요 없다.
+  kor-travel-map-valkey:
+    image: valkey/valkey:9.0-alpine@sha256:187679e3bd4036959631e3f03983ab2ba503ab21e6fd0454d508e909db2ee989
+    container_name: kor-travel-map-valkey
+    restart: unless-stopped
+    init: true
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    # 종료 때 AOF fsync와 마지막 RDB 저장을 기다린다(docker 기본 10초는 디스크 대기 중 SIGKILL로 끊을 수 있다).
+    stop_grace_period: 60s
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    environment:
+      # 서버 설정(아래 stdin)과 healthcheck의 `valkey-cli`가 같이 읽는 한 자리.
+      VALKEYCLI_AUTH: ${KOR_TRAVEL_MAP_VALKEY_PASSWORD:?KOR_TRAVEL_MAP_VALKEY_PASSWORD must be explicitly set}
+    entrypoint:
+    - /bin/sh
+    - -ec
+    command:
+    - |
+      PW="$${VALKEYCLI_AUTH}"
+      case "$$PW" in
+        '' | *[!A-Za-z0-9._~-]*)
+          echo "KOR_TRAVEL_MAP_VALKEY_PASSWORD must be non-empty URI unreserved characters [A-Za-z0-9._~-]" >&2
+          exit 64
+          ;;
+      esac
+      exec docker-entrypoint.sh valkey-server - \
+        --bind 127.0.0.1 --port 12704 --dir /data \
+        --maxmemory 1gb --maxmemory-policy noeviction \
+        --save "3600 1 300 100 60 10000" \
+        --appendonly yes --appendfsync everysec <<CONF
+      requirepass $$PW
+      CONF
+    volumes:
+    - ${KOR_TRAVEL_MAP_VALKEY_DATA_DIR:-/home/digitie/kor-travel-map-data/valkey}:/data
+    healthcheck:
+      # exec 형식(ADR-52). `-e`가 없으면 valkey-cli는 오류 응답(NOAUTH·LOADING)에도 0으로 끝난다(2026-10-23 n150 실측).
+      test:
+      - CMD
+      - valkey-cli
+      - -e
+      - -h
+      - 127.0.0.1
+      - -p
+      - '12704'
+      - ping
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      # AOF 적재(LOADING)가 끝나야 healthy다. 1 GB 상한의 적재도 n150에서 1분 안이다.
+      start_period: 120s
+      start_interval: 2s
   # Map 정본 스크립트를 source staging path에서 read-only로 실행한다. profile 밖의
   # `compose up`에는 포함되지 않으며 Manager는 `run --rm`으로만 호출한다.
   #
@@ -1583,6 +1656,8 @@ services:
     depends_on:
       kor-travel-shared-postgres:
         condition: service_healthy
+      kor-travel-map-valkey:
+        condition: service_healthy
       rustfs:
         condition: service_healthy
       kor-travel-concierge-api:
@@ -1629,6 +1704,8 @@ services:
       KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256: ${KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256:?KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256 must be explicitly set}
       KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED: ${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
+      # Map ADR-114 — weather·transport 현재·예보 상태를 읽는 Valkey(`kor-travel-map-valkey`).
+      KOR_TRAVEL_MAP_VALKEY_URL: *map-valkey-url
       KOR_TRAVEL_MAP_RUNTIME_DB_PREFLIGHT_REQUIRED: 'true'
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
@@ -1748,6 +1825,8 @@ services:
     depends_on:
       kor-travel-shared-postgres:
         condition: service_healthy
+      kor-travel-map-valkey:
+        condition: service_healthy
       rustfs:
         condition: service_healthy
       kor-travel-map-api:
@@ -1779,6 +1858,8 @@ services:
       # 재생성마다 사라졌다.
       KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DIR:-/opt/dagster/state/mois}/mois_source.db
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
+      # Map ADR-114 — run worker(이 컨테이너의 자식)가 weather·transport 상태를 Valkey에 세대 단위로 쓴다.
+      KOR_TRAVEL_MAP_VALKEY_URL: *map-valkey-url
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}

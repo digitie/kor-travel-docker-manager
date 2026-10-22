@@ -142,6 +142,14 @@ containers:
     prod_url_env: KTDM_PROD_URL_CONCIERGE
     expected_ports:
       - "12605:12605"
+  # Map ADR-114 · ADR-59 — Map API·code-server만 쓰는 loopback 전용 Valkey(포트를 열지 않는다).
+  kor-travel-map-valkey:
+    name: kor-travel-map-valkey
+    compose_service: kor-travel-map-valkey
+    role: map-valkey
+    display_name: Kor Travel Map Valkey (weather·transport 현재·예보 상태)
+    connection: "내부 전용(127.0.0.1:12704, requirepass) — Map API·Map Dagster code-server만 접근"
+    expected_ports: []
   kor-travel-map-api:
     name: kor-travel-map-api-latest
     compose_service: kor-travel-map-api
@@ -593,6 +601,7 @@ targets:
     # bootstrap한다.
     services:
       - kor-travel-shared-postgres
+      - kor-travel-map-valkey
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster-code-server
@@ -600,6 +609,7 @@ targets:
     # 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태 화면이
     # 찾는다(되돌리기는 지원하지 않는다 — platform-topology.md §7 4단계).
     runtime_services:
+      - kor-travel-map-valkey
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster-code-server
@@ -612,6 +622,7 @@ targets:
       - kor-travel-concierge-mcp
       - kor-travel-concierge-dagster-code-server
       - kor-travel-concierge-ui
+      - kor-travel-map-valkey
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster
@@ -673,6 +684,7 @@ targets:
       - kor-travel-concierge-mcp
       - kor-travel-concierge-dagster-code-server
       - kor-travel-concierge-ui
+      - kor-travel-map-valkey
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster
@@ -723,6 +735,7 @@ targets:
       - kor-travel-concierge-mcp
       - kor-travel-concierge-dagster-code-server
       - kor-travel-concierge-ui
+      - kor-travel-map-valkey
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster
@@ -1042,6 +1055,10 @@ compose_binds:
     - container_path: "/etc/kor-travel-dagster-gateway/nginx.conf.template"
       read_only: true
       source: "./config/dagster-shared/gateway.conf"
+  kor-travel-map-valkey:
+    - container_path: "/data"
+      read_only: false
+      source: "${KOR_TRAVEL_MAP_VALKEY_DATA_DIR:-/home/digitie/kor-travel-map-data/valkey}"
   kor-travel-map-db-role-bootstrap:
     - container_path: "/usr/local/bin/postgres-role-bootstrap"
       read_only: true
