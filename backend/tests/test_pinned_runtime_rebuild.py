@@ -4300,7 +4300,7 @@ def test_target_owned_infrastructure_comes_up_before_anything_stops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """ADR-59 — slot은 `up --no-deps`라 Map API가 기다리는 Map Valkey를 끌어오지 않는다. 재구축이 그것을 먼저
-    올리고(실패하면 아무것도 멈추지 않은 채 끝난다), 정리의 `stop`에는 넣지 않는다."""
+    올리고, 정리의 `stop`에는 넣지 않는다."""
 
     infrastructure = _pinned_infrastructure()
     assert infrastructure, "파생이 비면 아래 단언이 아무것도 재지 않는다"
@@ -4323,3 +4323,36 @@ def test_target_owned_infrastructure_comes_up_before_anything_stops(
     assert not any(
         operation[0] == "stop" and set(infrastructure) & set(operation) for operation in operations
     )
+
+
+@pytest.mark.parametrize("previous", [None, "committed"], ids=["full-path", "same-pair"])
+def test_a_failing_infrastructure_up_stops_nothing_and_writes_no_deploy_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, previous: str | None
+) -> None:
+    """Valkey가 healthy가 되지 못해도(잘못된 비밀번호 exit 64·포트 충돌·pull 실패) 떠 있던 Map·PinVi는 그대로다 —
+    infra `up`은 수렴·전체 경로 분기와 `in_progress` 기록 **앞**에 있다(적대 리뷰 2026-10-23 H1)."""
+
+    infrastructure = _pinned_infrastructure()
+    prior = _committed_status(_candidate_generation()) if previous else None
+    harness = _forward_harness(monkeypatch, tmp_path, previous=prior)
+    before = harness.status_path.read_bytes() if harness.status_path.exists() else None
+
+    def run_compose(arguments: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        harness.operations.append(tuple(arguments))
+        if arguments[0] == "up" and tuple(arguments[-len(infrastructure):]) == infrastructure:
+            raise DeploymentContractError("pinned runtime rebuild Compose up command failed (exit 1)")
+        return {"success": True, "stdout": ""}
+
+    monkeypatch.setattr(harness.service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    with pytest.raises(DeploymentContractError, match="up command failed"):
+        harness.service.rebuild_pinned_runtime()
+
+    assert not any({"stop", "rm"} & set(operation[:3]) for operation in harness.operations)
+    assert not any(
+        operation[0] == "up" and "kor-travel-map-api" in operation for operation in harness.operations
+    )
+    after = harness.status_path.read_bytes() if harness.status_path.exists() else None
+    assert after == before
+    harness.mocks.reset.assert_not_called()

@@ -512,16 +512,19 @@ def derive_pinned_infrastructure(
     다른 tenant의 것이라 readiness만 보지만, 이 서비스들은 그 target 자신이 소유하므로 재구축이 slot보다 먼저
     `up --no-deps --wait`한다(설정이 같으면 compose가 다시 만들지 않는다). 이름은 targets에서 파생한다 — 이 함수가
     서비스를 외우지 않는다.
+
+    전제: 이 서비스들은 slot에 기대지 않는다(`--no-deps`로 slot·migration보다 먼저 뜬다). slot에 `depends_on`하는
+    비-slot 상시 서비스가 생기면 이 순서가 맞지 않는다 — 그런 서비스는 companion이거나 slot 뒤에 따로 올려야 한다.
     """
 
     target_specs = targets.get("targets")
     if not isinstance(target_specs, Mapping):
-        raise DeploymentContractError("Dagster topology documents are invalid")
+        raise DeploymentContractError("pinned target registry is invalid")
     services: dict[str, None] = {}
     for target_id in (MAP_TARGET, PINVI_TARGET):
         spec = target_specs.get(target_id)
         if not isinstance(spec, Mapping):
-            raise DeploymentContractError(f"Dagster target {target_id} is not declared")
+            raise DeploymentContractError(f"pinned target {target_id} is not declared")
         services.update(
             dict.fromkeys(
                 str(name) for name in spec.get("runtime_services") or [] if str(name) not in excluded

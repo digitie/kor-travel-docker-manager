@@ -1651,11 +1651,15 @@ Map ADR-114(2026-10-23)는 weather·transport의 현재·예보 상태(와 weath
    `KOR_TRAVEL_MAP_VALKEY_URL=redis://:<pw>@127.0.0.1:12704/0`을 만들고 두 소비자가 그 앵커를 참조한다. Valkey에는
    `VALKEYCLI_AUTH` env 하나로 들어가고, 기동 스크립트가 그것을 **stdin 설정**(`valkey-server -`)으로 넘긴다 — argv에는
    남지 않는다(n150 `/proc`은 hidepid가 없어 호스트의 누구나 argv를 읽는다). 값은 URI unreserved 문자만 받는다(URL에
-   그대로 들어가므로 — 공용 Dagster app 비밀번호와 같은 규칙). 어기면 Valkey가 기동을 거부한다(exit 64).
+   그대로 들어가므로 — 공용 Dagster app 비밀번호와 같은 규칙). 어기면 Valkey가 기동을 거부한다(exit 64). 기동
+   스크립트는 `exec` 전에 `VALKEYCLI_AUTH`를 지워 서버 프로세스의 environ에도 남기지 않는다.
 3. **메모리·지속성.** `maxmemory 1gb` + `noeviction`(넘치면 조용히 지우지 않고 쓰기를 실패시킨다), `mem_limit`·
    `memswap_limit` `1536m`(fork copy-on-write 여유, swap 없음). RDB(`save 3600 1 300 100 60 10000`) + AOF
-   `appendfsync everysec`. 데이터는 호스트 데이터 디스크의 bind `${KOR_TRAVEL_MAP_VALKEY_DATA_DIR:-/home/digitie/kor-travel-map-data/valkey}`
-   (`compose_binds` allowlist에 등록). `stop_grace_period: 60s`로 마지막 fsync·RDB 저장을 기다린다.
+   `appendfsync everysec`. 데이터는 project 범위 internal named volume `kor-travel-map-valkey-data`(MOIS 원천과 같은
+   규칙 — `name`·`external` 없음, 격리 스택은 자기 volume을 갖는다)에 둔다. host bind로 두지 않은 이유: C6c 후보 검증은
+   **모든** 서비스의 bind source가 이미 있어야 통과하므로, bind로 두면 운영자가 디렉터리를 만들기 전까지 n150의 모든
+   C6c 경유 변경(재구축 포함)이 실패한다. n150은 디스크가 하나라 Docker data root가 곧 데이터 디스크다(Valkey를
+   eMMC·NVMe가 나뉜 호스트로 옮기면 다시 본다). `stop_grace_period: 60s`로 마지막 fsync·RDB 저장을 기다린다.
 4. **프로세스.** 이미지 entrypoint(`docker-entrypoint.sh` — `/data` chown, `setpriv`로 uid 999)를 그대로 거친다. 이미지
    PID 1이던 tini 대신 `init: true`, healthcheck는 exec 형식 `valkey-cli -e -h 127.0.0.1 -p 12704 ping`(ADR-52). `-e`가
    없으면 `valkey-cli`는 NOAUTH·LOADING 오류 응답에도 0으로 끝난다(2026-10-23 n150 실측).
@@ -1663,10 +1667,15 @@ Map ADR-114(2026-10-23)는 weather·transport의 현재·예보 상태(와 weath
    `ensure map`은 의존 폐포로 Valkey를 먼저 올린다. pinned 재구축·같은 pair 수렴은 slot을 `up --no-deps`로 띄워 의존성을
    끌어오지 않으므로, Map·PinVi target의 `runtime_services` 가운데 slot·companion이 아닌 서비스(오늘은 Valkey 하나 —
    `runtime_topology.derive_pinned_infrastructure`가 targets에서 파생, 이름을 외우지 않는다)를 **무엇이든 멈추기 전에**
-   `up -d --no-deps --wait`로 올린다. 공용 PostgreSQL과 다른 점은 이것이 그 target의 소유라는 것뿐이다 — 재구축은 Valkey를
-   멈추지 않는다(정리 `stop`은 slot·companion만). n150은 `rehearsal/rebuildable`이라 일반 `ensure`가 거부되므로 첫 기동은
-   다음 재구축이 한다.
+   `up -d --no-deps --wait`로 올린다. 자리는 같은 pair 수렴 직전, 그리고 전체 경로의 읽기 전용 거부 판정(DB 교체·
+   `--restart` R2·S1·격리 전제) **뒤**·`deploy-status.json`의 `in_progress` 기록 **앞**이다 — Valkey가 healthy가 되지 못하면 떠 있던 Map·PinVi와 배포 기록을 건드리지 않은 채 재구축이 끝난다(전체 경로의
+   실패 정리 `stop`은 그 뒤 `try` 안에만 있다). 공용 PostgreSQL과 다른 점은 이것이 그 target의 소유라는 것뿐이다 —
+   재구축은 Valkey를 멈추지 않는다. n150은 `rehearsal/rebuildable`이라 일반 `ensure`가 거부되므로 첫 기동은 다음
+   재구축(또는 같은 pair 수렴)이 한다.
 6. **백업 없음.** `ktdctl db-backup`·standalone backup 어디에도 넣지 않는다. 잃으면 Map 적재 job이 다시 채운다.
+   `rebuild-pinned --restart`(세 DB를 새로 만든다)도 Valkey는 비우지 않는다 — 원천에서 받은 현재·예보 상태라 Map DB와
+   맞출 것이 없고, 다음 적재가 세대를 교체한다. 비워야 하면 named volume을 지우고(`docker volume rm
+   kor-travel-docker-manager_kor-travel-map-valkey-data`) 다음 재구축이 빈 Valkey를 올리게 한다.
 7. **이미지.** `valkey/valkey:9.0-alpine@sha256:187679e3…`(multi-arch index — amd64·arm64가 같은 digest라 호스트별 이미지
    env가 필요 없다).
 
@@ -1691,7 +1700,11 @@ Map ADR-114(2026-10-23)는 weather·transport의 현재·예보 상태(와 weath
 - 비밀번호가 Valkey 컨테이너 env(`VALKEYCLI_AUTH`)와 Map 두 컨테이너 env(URL)에 보인다 — `docker inspect` 권한자에게는
   보인다(Map PG DSN과 같은 수준).
 - 운영할 컨테이너가 하나 는다. Valkey가 healthy가 되지 못하면 `ensure map`도, pinned 재구축·수렴도 실패한다(재구축은
-  아무것도 멈추기 전에 실패한다 — 떠 있던 Map·PinVi는 그대로다).
+  아무것도 멈추기 전에 실패한다 — 떠 있던 Map·PinVi는 그대로다). 비밀번호 문자 규칙은 Valkey 기동에서만 보므로 base64
+  비밀번호는 설치는 통과하고 다음 재구축에서 실패한다(값 검사기를 더하지 않았다 — ADR-50; `.env.example`이 hex를 적는다).
+- `maxmemory`가 1 GB라 Map이 새 세대를 다 쓴 뒤 옛 세대를 지우는 동안 순간 사용량이 데이터의 두 배가 된다(예상 0.2~0.5 GB면
+  여유). 그 위에 RDB·AOF rewrite fork의 copy-on-write가 얹혀 `mem_limit` 1536m에 다가갈 수 있다 — Map ADR-114 3단계 키
+  설계가 세대 크기를 이 안에 둔다.
 
 ### 후속
 

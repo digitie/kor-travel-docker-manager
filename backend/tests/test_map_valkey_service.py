@@ -108,7 +108,11 @@ def test_the_server_keeps_state_without_eviction() -> None:
     assert _flag(argv, "--appendonly") == "yes"
     assert _flag(argv, "--appendfsync") == "everysec"
     assert _flag(argv, "--save")
-    assert any(volume.endswith(":" + _flag(argv, "--dir")) for volume in valkey["volumes"])
+    (volume,) = [volume for volume in valkey["volumes"] if volume.endswith(":" + _flag(argv, "--dir"))]
+    # project 범위 internal named volume — host bind면 C6c가 source 부재로 모든 변경을 거부한다(적대 리뷰 H2).
+    document = load_yaml_rejecting_duplicate_keys((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    assert document["volumes"][volume.split(":", 1)[0]] == {}
     # swap으로 새지 않는다(상한을 넘기면 swap이 아니라 OOM).
     assert valkey["memswap_limit"] == valkey["mem_limit"]
 
@@ -131,7 +135,8 @@ def _run_startup(tmp_path: Path, password: str) -> subprocess.CompletedProcess[s
     bin_dir.mkdir()
     fake = bin_dir / "docker-entrypoint.sh"
     fake.write_text(
-        '#!/bin/sh\nprintf "%s\\n" "$@" > "$OUT_DIR/argv"\ncat > "$OUT_DIR/stdin"\n', encoding="utf-8"
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$OUT_DIR/argv"\ncat > "$OUT_DIR/stdin"\nenv > "$OUT_DIR/env"\n',
+        encoding="utf-8",
     )
     fake.chmod(0o755)
     environment = {
@@ -157,6 +162,7 @@ def test_the_startup_script_sends_the_password_on_stdin_only(tmp_path: Path) -> 
     assert argv[:2] == ["valkey-server", "-"], "`-`가 stdin 설정을 읽게 한다"
     assert _SENTINEL not in "\n".join(argv)
     assert (tmp_path / "stdin").read_text(encoding="utf-8").splitlines() == [f"requirepass {_SENTINEL}"]
+    assert _SENTINEL not in (tmp_path / "env").read_text(encoding="utf-8"), "서버 environ에 남기지 않는다"
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh가 필요하다")

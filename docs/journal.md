@@ -1,5 +1,24 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-23 — Map Valkey 서비스 추가(Map ADR-114 2단계, ADR-59)
+
+- `kor-travel-map-valkey`(Valkey 9.0-alpine, multi-arch index digest)를 `map` target 서비스로 더했다. host network의
+  `127.0.0.1:12704`만 듣고 `requirepass`로 잠근다. `maxmemory 1gb`+`noeviction`, RDB+AOF `everysec`, `mem_limit`·
+  `memswap_limit` 1536m, `init: true`, exec 형식 `valkey-cli -e` healthcheck, project 범위 named volume.
+- 비밀번호는 root `.env`의 `KOR_TRAVEL_MAP_VALKEY_PASSWORD` 하나(`:?`). 최상위 앵커 `x-map-valkey-url`이
+  `KOR_TRAVEL_MAP_VALKEY_URL=redis://:<pw>@127.0.0.1:12704/0`을 만들어 Map API·code-server에 넣고, 둘은 Valkey를
+  `service_healthy`로 기다린다. 서버에는 stdin 설정으로 넘겨 argv·서버 environ에 남기지 않는다(n150 실측: 호스트 `ps`
+  0건). URI unreserved 밖의 값은 기동에서 exit 64.
+- n150은 일반 `ensure`가 거부되므로 pinned 재구축·수렴이 Map·PinVi target의 비-slot `runtime_services`(오늘은 Valkey)를
+  읽기 전용 거부 판정 뒤·`in_progress` 기록 앞(수렴은 그 직전)에서 `up --no-deps --wait`로 올린다
+  (`runtime_topology.derive_pinned_infrastructure`).
+- 실측(n150 throwaway compose project): 정본 정의 그대로 2.8초에 healthy, NOAUTH probe는 `-e`로 rc 1, redis-py가 렌더된
+  URL로 set/get, 재생성 뒤 데이터 유지, 나쁜 비밀번호는 exit 64(로그에 값 없음), 키 부재는 compose 렌더 실패.
+- 적대 리뷰 1인(읽기 전용): H1(infra `up`이 전체 경로 `try` 안이라 실패 시 Map·PinVi를 멈춤 → `try`·`in_progress` 앞,
+  읽기 전용 거부 판정 뒤로 이동 — 거부는 여전히 아무것도 바꾸기 전이다),
+  H2(bind source 부재가 모든 C6c 변경을 막음 → named volume), L1(서버 environ의 비밀번호 → `exec` 전 `unset`) 등을 반영했다.
+- 백업 대상이 아니다(원천에서 다시 받는다). `--restart`도 Valkey는 비우지 않는다.
+
 ## 2026-10-21 — Portainer 제거와 서비스 공개 링크 재점검 완료
 
 - 소유자 요청으로 Odroid의 독립 Portainer 컨테이너를 종료·삭제했다. 복구용 데이터 볼륨은 보존했다.

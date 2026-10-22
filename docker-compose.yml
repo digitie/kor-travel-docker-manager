@@ -1507,7 +1507,8 @@ services:
   #   `setpriv`로 권한을 내린다. 이미지의 PID 1이던 tini 대신 `init: true`(docker-init)가 PID 1이다(ADR-52와 같은 이유).
   # - `maxmemory 1gb` + `noeviction`: 넘치면 조용히 지우지 않고 쓰기를 실패시킨다. `mem_limit`은 그 위에
   #   AOF rewrite·RDB fork의 copy-on-write 여유를 둔 값이고 swap으로 새지 않게 `memswap_limit`도 같다.
-  # - 지속성은 RDB(`save`)와 AOF(`everysec`)다. **백업 대상이 아니다** — 원천(weather·transport)에서 다시 받는다.
+  # - 지속성은 RDB(`save`)와 AOF(`everysec`)이고 named volume `kor-travel-map-valkey-data`에 둔다. **백업 대상이
+  #   아니다** — 원천(weather·transport)에서 다시 받는다.
   # - 이미지는 multi-arch index digest다(amd64·arm64가 같은 digest) — 호스트별 이미지 env가 필요 없다.
   kor-travel-map-valkey:
     image: valkey/valkey:9.0-alpine@sha256:187679e3bd4036959631e3f03983ab2ba503ab21e6fd0454d508e909db2ee989
@@ -1534,6 +1535,8 @@ services:
           exit 64
           ;;
       esac
+      # 서버 프로세스의 environ에 남기지 않는다(healthcheck의 `docker exec`는 컨테이너 설정의 env를 다시 받는다).
+      unset VALKEYCLI_AUTH
       exec docker-entrypoint.sh valkey-server - \
         --bind 127.0.0.1 --port 12704 --dir /data \
         --maxmemory 1gb --maxmemory-policy noeviction \
@@ -1541,8 +1544,11 @@ services:
         --appendonly yes --appendfsync everysec <<CONF
       requirepass $$PW
       CONF
+    # project 범위 internal named volume(MOIS 원천과 같은 규칙 — 아래 최상위 `volumes:`). host bind가 아니므로 운영자가
+    # 디렉터리를 미리 만들 필요가 없다(C6c는 없는 bind source를 거부한다). 처음 붙을 때 이미지의 `/data`(valkey 소유)를
+    # 물려받는다. n150은 디스크가 하나라 Docker data root가 곧 데이터 디스크다.
     volumes:
-    - ${KOR_TRAVEL_MAP_VALKEY_DATA_DIR:-/home/digitie/kor-travel-map-data/valkey}:/data
+    - kor-travel-map-valkey-data:/data
     healthcheck:
       # exec 형식(ADR-52). `-e`가 없으면 valkey-cli는 오류 응답(NOAUTH·LOADING)에도 0으로 끝난다(2026-10-23 n150 실측).
       test:
@@ -3410,6 +3416,8 @@ services:
 # 격리 스택(M05 등)은 자기 volume을 따로 갖는다. `name:`/`external`은 두지 않는다(docs/docker-management.md).
 volumes:
   kor-travel-map-mois-source: {}
+  # Map Valkey의 RDB·AOF(ADR-59). 백업 대상이 아니다 — 잃으면 Map 적재 job이 원천에서 다시 채운다.
+  kor-travel-map-valkey-data: {}
 
 secrets:
   kor-travel-shared-postgres-password:

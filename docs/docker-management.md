@@ -752,15 +752,19 @@ Map은 weather·transport의 현재·예보 상태(와 weather 하루 세 구간
 - **설정.** `maxmemory 1gb`, `maxmemory-policy noeviction`, RDB(`save 3600 1 300 100 60 10000`) + AOF
   `appendfsync everysec`, `mem_limit`·`memswap_limit` `1536m`, `init: true`, `stop_grace_period: 60s`. healthcheck는 exec
   형식 `valkey-cli -e … ping`이다(`-e` 없이는 오류 응답에도 0으로 끝난다).
-- **데이터.** `${KOR_TRAVEL_MAP_VALKEY_DATA_DIR:-/home/digitie/kor-travel-map-data/valkey}` → `/data`(`compose_binds`
-  allowlist). 첫 기동에 이미지 entrypoint가 디렉터리를 valkey(uid 999)에게 chown한다.
+- **데이터.** project 범위 internal named volume `kor-travel-map-valkey-data` → `/data`(MOIS 원천과 같은 규칙 — 아래
+  named volume 규칙). 운영자가 디렉터리를 만들 필요가 없다(C6c는 없는 bind source를 거부하므로 bind로 두지 않았다).
+  처음 붙을 때 이미지의 `/data`(valkey 소유)를 물려받고 entrypoint가 다시 chown한다. 기동 스크립트는 `exec` 전에
+  `VALKEYCLI_AUTH`를 지운다(서버 environ에 남기지 않는다).
 - **백업 대상이 아니다.** 원천(weather·transport)에서 다시 받는다 — `ktdctl db-backup`·standalone backup에 넣지 않는다.
-  디렉터리를 잃으면 빈 Valkey로 뜨고 Map 적재 job이 다시 채운다.
+  volume을 잃으면 빈 Valkey로 뜨고 Map 적재 job이 다시 채운다. `rebuild-pinned --restart`도 Valkey는 비우지 않는다 —
+  비워야 하면 `docker volume rm kor-travel-docker-manager_kor-travel-map-valkey-data` 뒤 다음 재구축이 빈 것을 올린다.
 - **순서.** Map API·code-server는 `depends_on: service_healthy`로 기다린다(`ensure map`은 의존 폐포로 Valkey를 먼저
   올린다). pinned 재구축·같은 pair 수렴은 slot을 `up --no-deps`로 띄우므로 의존성을 끌어오지 않는다 — 대신
   Map·PinVi target의 `runtime_services` 가운데 slot·companion이 아닌 것(오늘은 Valkey 하나, targets에서 파생 —
-  `runtime_topology.derive_pinned_infrastructure`)을 **무엇이든 멈추기 전에** `up -d --no-deps --wait`로 올린다.
-  설정이 같으면 compose가 다시 만들지 않고, 재구축의 정리 `stop`은 Valkey를 멈추지 않는다. 그래서 n150(일반 `ensure`가
+  `runtime_topology.derive_pinned_infrastructure`)을 같은 pair 수렴 직전, 그리고 전체 경로의 읽기 전용 거부 판정 뒤·
+  `in_progress` 기록 **앞**에서 `up -d --no-deps --wait`로 올린다 — 실패하면 아무것도 멈추지 않고 배포 기록도 쓰지 않은 채 끝난다. 설정이 같으면
+  compose가 다시 만들지 않고, 재구축의 정리 `stop`은 Valkey를 멈추지 않는다. 그래서 n150(일반 `ensure`가
   거부되는 `rehearsal/rebuildable`)에서도 첫 기동은 다음 재구축(또는 같은 pair 수렴)이 한다.
 
 ### 7.4 Map↔PinVi canonical ops read/cancel principal
