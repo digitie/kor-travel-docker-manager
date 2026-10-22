@@ -2,6 +2,8 @@
 
 ## 목적과 범위
 
+> 2026-10-22: 소유자 지시로 `max_concurrent_runs`를 2에서 **6**으로 올렸다(n150 Map 전체 feature 적재). 아래 2는 그 전 기록이다.
+
 공용 instance의 `concurrency.runs.max_concurrent_runs`를 12에서 2로,
 공식 `run_queue.dequeue_interval_seconds`를 기본 5초에서 명시적 30초로 바꾼다.
 새 dispatch의 동시 부하와 큐 확인 빈도를 줄이는 설정이다. 이미 실행 중인 run을

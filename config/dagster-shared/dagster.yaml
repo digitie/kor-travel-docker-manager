@@ -52,8 +52,9 @@ concurrency:
     granularity: run
   runs:
     # D3: 호스트 보호 상한이다. 테넌트 손잡이가 아니다 — 테넌트 상한은 아래 tag로 준다.
-    # 전역 슬롯은 2개로 제한한다. 개별 tag 상한이 더 높아도 함께 적용된다.
-    max_concurrent_runs: 2
+    # 전역 슬롯은 6개로 제한한다(2026-10-22 소유자 지시 2→6, Map 전체 feature 적재). 개별 tag 상한이
+    # 더 높아도 함께 적용된다.
+    max_concurrent_runs: 6
     tag_concurrency_limits:
       # 테넌트별 상한 — 오늘 각 instance의 상한 그대로다(D3). key는 `dagster/code_location`이다.
       #
