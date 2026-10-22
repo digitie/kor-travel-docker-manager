@@ -169,6 +169,7 @@ from kor_travel_docker_manager.services.runtime_topology import (
     installed_container_name,
     installed_dagster_families,
     installed_location_owners,
+    installed_pinned_infrastructure,
     installed_shared_dagster_plane,
     listen_address,
     read_host_workspace,
@@ -5229,6 +5230,12 @@ class ComposeService:
         """
 
         wait_timeout = _compose_wait_timeout_seconds(runtime_transaction.resolved.get("services"))
+        self._up_pinned_infrastructure(
+            runtime_transaction=runtime_transaction,
+            topology=topology,
+            companions=companions,
+            wait_timeout=wait_timeout,
+        )
         ensure_map_databases_isolated(runtimes[0], login=map_login)
         self._run_pinned_runtime_rebuild_compose(
             [
@@ -5251,6 +5258,38 @@ class ComposeService:
             topology=topology,
             companions=companions,
             expected_images=expected_images,
+        )
+
+    def _up_pinned_infrastructure(
+        self,
+        *,
+        runtime_transaction: ComposeTransactionSnapshot,
+        topology: RuntimeTopology,
+        companions: Mapping[str, RuntimeSlot],
+        wait_timeout: int,
+    ) -> None:
+        """Map·PinVi target이 소유한 비-slot 상시 서비스(오늘은 Map Valkey, ADR-59)를 slot보다 먼저 올린다.
+
+        slot은 `up --no-deps`로 뜨므로 `depends_on`이 그것을 끌어오지 않는다. 설정이 같으면 compose가 다시 만들지
+        않는다(무연산). 재구축은 이것을 멈추지 않는다 — 실패 정리의 `stop`도 slot·companion만 멈춘다.
+        """
+
+        infrastructure = installed_pinned_infrastructure(
+            excluded=(*topology.runtime_services, *companions, *topology.retired_services)
+        )
+        if not infrastructure:
+            return
+        self._run_pinned_runtime_rebuild_compose(
+            [
+                "up",
+                "-d",
+                "--no-deps",
+                "--wait",
+                "--wait-timeout",
+                str(wait_timeout),
+                *infrastructure,
+            ],
+            transaction=runtime_transaction,
         )
 
     def _converge_shared_dagster_plane(
@@ -5874,6 +5913,14 @@ class ComposeService:
             if observed != expected:
                 raise DeploymentContractError(message)
 
+        # target이 소유한 비-slot 서비스(Map Valkey, ADR-59)를 무엇이든 멈추기 **전에** 올린다 — 실패하면 아무것도
+        # 멈추지 않은 채 끝난다.
+        self._up_pinned_infrastructure(
+            runtime_transaction=runtime_transaction,
+            topology=topology,
+            companions=companions,
+            wait_timeout=wait_timeout,
+        )
         # 살아 있는 writer·runtime을 먼저 멈춘다. crash 뒤 남은 `compose run` one-shot이
         # 보존된 DB를 동시에 건드리지 못하게 하는 자리다 — 마이그레이션 전진에서 더
         # 중요해진다.

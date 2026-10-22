@@ -1624,3 +1624,77 @@ n150에서 깨진 둘을 고치는 최소 변경만 먼저 넣는다(계획 모�
   폐포가 어차피 geo를 담는다(그 간선 삭제는 R7, T-MGR-01b; 그 전까지 n150 `ensure map`은 n150 geo 컨테이너를 되살린다 —
   workspace에는 없으므로 이중 적재는 없다). Map/PinVi pinned 수렴(`wanted`)은 map·pinvi location만 보고, fence·소유자 파생
   (`installed_location_owners`)은 workspace에 있는 location만 검사하므로 geo가 빠져도 바뀌지 않는다.
+
+---
+
+## ADR-59: Map의 Valkey(`kor-travel-map-valkey`)를 Manager가 n150에 띄운다 — loopback 전용, `.env` 비밀번호, 백업 없음
+
+- 상태: accepted
+- 날짜: 2026-10-23
+- 결정자: 소유자(방향 — Map ADR-114 이행 2단계), Claude(구현)
+
+### 컨텍스트
+
+Map ADR-114(2026-10-23)는 weather·transport의 현재·예보 상태(와 weather 하루 세 구간 요약 14일)를 Map이 PostgreSQL이
+아니라 메모리 DB(Valkey)에 들게 했다. 쓰는 것은 Map Dagster run worker(code-server의 자식)이고 읽는 것은 Map API다 — 두
+프로세스가 같이 보는 저장소가 필요하다. 이행 순서 2번이 "Manager: Valkey 서비스 추가(n150)"다. 규모는 예상 0.2~0.5 GB,
+원천(weather·transport)에서 다시 받을 수 있는 데이터다.
+
+### 결정
+
+`kor-travel-map-valkey`(Valkey 9.0, BSD)를 Manager compose의 `map` target 서비스로 둔다.
+
+1. **접근.** host network에서 `--bind 127.0.0.1 --port 12704`(Map 대역의 빈 자리, `docs/ports.md`). `ports:`는 두지 않는다.
+   접속은 `requirepass`로 막는다. URL을 받는 것은 Map API와 Map Dagster code-server 둘뿐이다.
+2. **비밀번호.** root `.env`의 `KOR_TRAVEL_MAP_VALKEY_PASSWORD` 하나가 원천이다(`:?` — 없으면 compose 렌더가 실패하고,
+   설치기가 flip 전에 그것을 본다). compose 최상위 `x-map-valkey-url` 앵커가 그 값으로
+   `KOR_TRAVEL_MAP_VALKEY_URL=redis://:<pw>@127.0.0.1:12704/0`을 만들고 두 소비자가 그 앵커를 참조한다. Valkey에는
+   `VALKEYCLI_AUTH` env 하나로 들어가고, 기동 스크립트가 그것을 **stdin 설정**(`valkey-server -`)으로 넘긴다 — argv에는
+   남지 않는다(n150 `/proc`은 hidepid가 없어 호스트의 누구나 argv를 읽는다). 값은 URI unreserved 문자만 받는다(URL에
+   그대로 들어가므로 — 공용 Dagster app 비밀번호와 같은 규칙). 어기면 Valkey가 기동을 거부한다(exit 64).
+3. **메모리·지속성.** `maxmemory 1gb` + `noeviction`(넘치면 조용히 지우지 않고 쓰기를 실패시킨다), `mem_limit`·
+   `memswap_limit` `1536m`(fork copy-on-write 여유, swap 없음). RDB(`save 3600 1 300 100 60 10000`) + AOF
+   `appendfsync everysec`. 데이터는 호스트 데이터 디스크의 bind `${KOR_TRAVEL_MAP_VALKEY_DATA_DIR:-/home/digitie/kor-travel-map-data/valkey}`
+   (`compose_binds` allowlist에 등록). `stop_grace_period: 60s`로 마지막 fsync·RDB 저장을 기다린다.
+4. **프로세스.** 이미지 entrypoint(`docker-entrypoint.sh` — `/data` chown, `setpriv`로 uid 999)를 그대로 거친다. 이미지
+   PID 1이던 tini 대신 `init: true`, healthcheck는 exec 형식 `valkey-cli -e -h 127.0.0.1 -p 12704 ping`(ADR-52). `-e`가
+   없으면 `valkey-cli`는 NOAUTH·LOADING 오류 응답에도 0으로 끝난다(2026-10-23 n150 실측).
+5. **순서.** Map API와 code-server는 공용 PostgreSQL과 같은 모양으로 `depends_on: {kor-travel-map-valkey: service_healthy}`다.
+   `ensure map`은 의존 폐포로 Valkey를 먼저 올린다. pinned 재구축·같은 pair 수렴은 slot을 `up --no-deps`로 띄워 의존성을
+   끌어오지 않으므로, Map·PinVi target의 `runtime_services` 가운데 slot·companion이 아닌 서비스(오늘은 Valkey 하나 —
+   `runtime_topology.derive_pinned_infrastructure`가 targets에서 파생, 이름을 외우지 않는다)를 **무엇이든 멈추기 전에**
+   `up -d --no-deps --wait`로 올린다. 공용 PostgreSQL과 다른 점은 이것이 그 target의 소유라는 것뿐이다 — 재구축은 Valkey를
+   멈추지 않는다(정리 `stop`은 slot·companion만). n150은 `rehearsal/rebuildable`이라 일반 `ensure`가 거부되므로 첫 기동은
+   다음 재구축이 한다.
+6. **백업 없음.** `ktdctl db-backup`·standalone backup 어디에도 넣지 않는다. 잃으면 Map 적재 job이 다시 채운다.
+7. **이미지.** `valkey/valkey:9.0-alpine@sha256:187679e3…`(multi-arch index — amd64·arm64가 같은 digest라 호스트별 이미지
+   env가 필요 없다).
+
+### 근거
+
+- 공용 PostgreSQL과 같은 접근 모양(loopback + 비밀번호)이라 새 네트워크 모델을 들이지 않는다. Valkey 전용 bridge
+  network는 host network인 Map 서비스가 붙을 수 없다.
+- docker `secrets:`(파일)로 넘기면 Valkey 컨테이너의 env에서는 빠지지만, Map 쪽은 어차피 URL env로 받으므로(Map의 PG DSN과
+  같은 노출 수준) 얻는 것이 작고 기동 스크립트·healthcheck가 파일을 읽어야 해 복잡해진다(ADR-50).
+- 새 검사기·게이트는 더하지 않았다. 재구축에 더한 것은 배포 단계 하나(위 5)이고 대상은 targets에서 파생한다. 결박은 렌더된 모델 테스트 하나(`backend/tests/test_map_valkey_service.py` — 소비자는
+  `KOR_TRAVEL_MAP_VALKEY_URL`을 받는 서비스로 파생, URL의 host·port·비밀번호를 Valkey의 `--bind`·`--port`·healthcheck·
+  `VALKEYCLI_AUTH`와 대조, 기동 스크립트를 sh로 실제 실행해 거부·stdin 경로 확인)뿐이다.
+
+### 결과(긍정)
+
+- Map ADR-114 3단계(적재 job·REST)가 기댈 저장소가 생긴다. URL env 이름은 Map이 읽을 이름으로 이 PR에서 정한다.
+
+### 결과(부정)
+
+- 새 필수 `.env` 키가 생긴다 — 없으면 Manager의 **모든** compose 명령이 실패한다(설치기가 flip 전에 거부하므로 설치는
+  일어나지 않는다). 운영자는 설치 전에 키를 넣는다.
+- 비밀번호가 Valkey 컨테이너 env(`VALKEYCLI_AUTH`)와 Map 두 컨테이너 env(URL)에 보인다 — `docker inspect` 권한자에게는
+  보인다(Map PG DSN과 같은 수준).
+- 운영할 컨테이너가 하나 는다. Valkey가 healthy가 되지 못하면 `ensure map`도, pinned 재구축·수렴도 실패한다(재구축은
+  아무것도 멈추기 전에 실패한다 — 떠 있던 Map·PinVi는 그대로다).
+
+### 후속
+
+- (open) Map ADR-114 3단계에서 Map이 `KOR_TRAVEL_MAP_VALKEY_URL`을 읽는다. 이름이 바뀌면 이 앵커를 같이 고친다.
+- (open) M05 격리 스택(bridge network)은 Valkey를 아직 싣지 않는다 — Map이 Valkey 없이 기동 실패하게 되면(ADR-114 §4는
+  해당 엔드포인트만 503) 그때 격리 스택에 더한다.

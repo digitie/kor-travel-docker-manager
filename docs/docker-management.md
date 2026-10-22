@@ -107,6 +107,7 @@
 | `kor-travel-concierge-mcp` | `kor-travel-concierge-mcp-latest` | `kor-travel-concierge` MCP HTTP | `12602` |
 | `kor-travel-concierge-scheduler` | `kor-travel-concierge-scheduler-latest` | `kor-travel-concierge` scheduler | 내부 실행 |
 | `kor-travel-concierge-ui` | `kor-travel-concierge-ui-latest` | `kor-travel-concierge` Web UI | `12605` |
+| `kor-travel-map-valkey` | `kor-travel-map-valkey` | `kor-travel-map` weather·transport 현재·예보 상태 저장소(Valkey, Map ADR-114 · ADR-59) | `127.0.0.1:12704`(loopback 전용) |
 | `kor-travel-map-api` | `kor-travel-map-api-latest` | `kor-travel-map` admin API | `12701` |
 | `kor-travel-map-dagster` | `kor-travel-map-dagster-latest` | `kor-travel-map` Dagster Webserver | `12702` |
 | `kor-travel-map-dagster-daemon` | `kor-travel-map-dagster-daemon-latest` | `kor-travel-map` Dagster daemon | 내부 실행 |
@@ -735,6 +736,32 @@ overlay라 재생성마다 사라지고 root 디스크를 압박했다. 옛 변�
 - **첫 적재.** volume은 비어 있으므로 `mois_localdata_source_sync`를 한 번 돌려 채운다(실측 약 24분).
 - **이름.** `name:`/`external`을 두지 않는다 — resolved 이름이 compose project에서 파생되어 격리 스택은 자기
   volume을 갖는다(아래 named volume 규칙).
+
+### 7.3b Map Valkey (Map ADR-114 · ADR-59)
+
+Map은 weather·transport의 현재·예보 상태(와 weather 하루 세 구간 요약 14일)를 Valkey에 든다. Map Dagster run worker가
+쓰고 Map API가 읽는다. 서비스는 `kor-travel-map-valkey`(`map` target의 `services`·`runtime_services`)다.
+
+- **접근.** `127.0.0.1:12704` loopback 전용(`ports:` 없음) + `requirepass`. 접속 URL은 compose 최상위 앵커
+  `x-map-valkey-url` 한 자리에서 만들어 Map API와 Map Dagster code-server에만 `KOR_TRAVEL_MAP_VALKEY_URL`
+  (`redis://:<pw>@127.0.0.1:12704/0`)로 넣는다. Map UI·공용 plane webserver·daemon에는 넣지 않는다.
+- **비밀번호.** root `.env`의 `KOR_TRAVEL_MAP_VALKEY_PASSWORD` 하나가 원천이다(필수 `:?`). URI unreserved 문자
+  (`[A-Za-z0-9._~-]`)만 쓴다 — URL에 그대로 들어가므로. 다르면 Valkey가 `exit 64`로 기동을 거부한다(값은 출력하지
+  않는다). 서버에는 `VALKEYCLI_AUTH` env로 들어가 stdin 설정(`valkey-server -`)으로 넘어가므로 호스트 `ps`의 argv에
+  보이지 않는다. 생성은 `openssl rand -hex 32`처럼 hex로 한다.
+- **설정.** `maxmemory 1gb`, `maxmemory-policy noeviction`, RDB(`save 3600 1 300 100 60 10000`) + AOF
+  `appendfsync everysec`, `mem_limit`·`memswap_limit` `1536m`, `init: true`, `stop_grace_period: 60s`. healthcheck는 exec
+  형식 `valkey-cli -e … ping`이다(`-e` 없이는 오류 응답에도 0으로 끝난다).
+- **데이터.** `${KOR_TRAVEL_MAP_VALKEY_DATA_DIR:-/home/digitie/kor-travel-map-data/valkey}` → `/data`(`compose_binds`
+  allowlist). 첫 기동에 이미지 entrypoint가 디렉터리를 valkey(uid 999)에게 chown한다.
+- **백업 대상이 아니다.** 원천(weather·transport)에서 다시 받는다 — `ktdctl db-backup`·standalone backup에 넣지 않는다.
+  디렉터리를 잃으면 빈 Valkey로 뜨고 Map 적재 job이 다시 채운다.
+- **순서.** Map API·code-server는 `depends_on: service_healthy`로 기다린다(`ensure map`은 의존 폐포로 Valkey를 먼저
+  올린다). pinned 재구축·같은 pair 수렴은 slot을 `up --no-deps`로 띄우므로 의존성을 끌어오지 않는다 — 대신
+  Map·PinVi target의 `runtime_services` 가운데 slot·companion이 아닌 것(오늘은 Valkey 하나, targets에서 파생 —
+  `runtime_topology.derive_pinned_infrastructure`)을 **무엇이든 멈추기 전에** `up -d --no-deps --wait`로 올린다.
+  설정이 같으면 compose가 다시 만들지 않고, 재구축의 정리 `stop`은 Valkey를 멈추지 않는다. 그래서 n150(일반 `ensure`가
+  거부되는 `rehearsal/rebuildable`)에서도 첫 기동은 다음 재구축(또는 같은 pair 수렴)이 한다.
 
 ### 7.4 Map↔PinVi canonical ops read/cancel principal
 

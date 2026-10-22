@@ -4284,3 +4284,57 @@ def test_invalid_health_wait_is_rejected_before_runtime_stop(
         harness.service.rebuild_pinned_runtime()
     assert harness.operations == []
     harness.mocks.reset.assert_not_called()
+
+
+def _pinned_infrastructure() -> tuple[str, ...]:
+    return runtime_topology_module.installed_pinned_infrastructure(
+        excluded=(*RUNTIME_SERVICES, *_FORWARD_COMPANIONS)
+    )
+
+
+def test_target_owned_infrastructure_comes_up_before_anything_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-59 — slot은 `up --no-deps`라 Map API가 기다리는 Map Valkey를 끌어오지 않는다. 재구축이 그것을 먼저
+    올리고(실패하면 아무것도 멈추지 않은 채 끝난다), 정리의 `stop`에는 넣지 않는다."""
+
+    infrastructure = _pinned_infrastructure()
+    assert infrastructure, "파생이 비면 아래 단언이 아무것도 재지 않는다"
+    harness = _forward_harness(monkeypatch, tmp_path)
+
+    harness.service.rebuild_pinned_runtime()
+
+    operations = harness.operations
+    infra_up = next(
+        index for index, operation in enumerate(operations)
+        if operation[0] == "up" and operation[-len(infrastructure):] == infrastructure
+    )
+    first_stop = next(index for index, operation in enumerate(operations) if operation[0] == "stop")
+    map_api_up = next(
+        index for index, operation in enumerate(operations)
+        if operation[0] == "up" and "kor-travel-map-api" in operation
+    )
+    assert infra_up < first_stop < map_api_up
+    assert operations[infra_up][:4] == ("up", "-d", "--no-deps", "--wait")
+    assert not any(
+        operation[0] == "stop" and set(infrastructure) & set(operation) for operation in operations
+    )
+
+
+def test_a_same_pair_converge_also_brings_up_target_owned_infrastructure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    infrastructure = _pinned_infrastructure()
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.status_path.write_text(
+        json.dumps(_committed_status(_candidate_generation()).to_payload()), encoding="utf-8"
+    )
+    os.chmod(harness.status_path, 0o600)
+
+    result = harness.service.rebuild_pinned_runtime()
+
+    assert result["outcome"] == "converged"
+    assert any(
+        operation[0] == "up" and operation[-len(infrastructure):] == infrastructure
+        for operation in harness.operations
+    )

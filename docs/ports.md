@@ -42,7 +42,7 @@
 | `prom` | `12400-12499` | HTTP `12102`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | Prometheus |
 | `geo` | `12500-12599` | API `12501`, Dagster `12502`, Web UI `12505` (DB는 공용 `11000`) | `kor-travel-geo` |
 | `conc` | `12600-12699` | API `12601`, MCP `12602`, Dagster code-server gRPC `12603`(loopback, ADR-55), Web UI `12605` (DB는 공용 `11000`) | `kor-travel-concierge` |
-| `map` | `12700-12799` | API `12701`, Dagster `12702`, Web UI `12705`(`12700`은 퇴역한 전용 PostgreSQL의 자리, ADR-53) | `kor-travel-map` |
+| `map` | `12700-12799` | API `12701`, Dagster `12702`, Dagster code-server(gRPC) `12703`(loopback), Valkey `12704`(`127.0.0.1` 전용, ADR-59), Web UI `12705`(`12700`은 퇴역한 전용 PostgreSQL의 자리, ADR-53) | `kor-travel-map` |
 | `pinvi` | `12800-12899` | API `12801`, Dagster webserver `12802`, Dagster code-server(gRPC, PinVi ADR-069) `12803`, Web UI `12805` (DB는 공용 `11000`) | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
 | `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Dagster code-server metrics `14103`(`prometheus_client`, `docker-compose.yml:2874` — 2026-10-13 이 표에 등록, 포트 자체는 종전부터 듣고 있었다), Prometheus `14104`, **Web `12205`**(대역 예외 — 아래 참고, ADR-57) | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
@@ -143,6 +143,8 @@ gRPC로 접속하고, 외부에는 열지 않는다. weather의 Dagster code-ser
 (`14107`, ADR-47로 재배치)도 같은 이유로 loopback 전용이다 — gateway(`14102`)만 외부에 연다.
 Map Dagster code-server(`12703`, #397)도 `-h 127.0.0.1` loopback 전용이다. Geo Dagster
 code-server는 `12503`이다.
+Map Valkey(`kor-travel-map-valkey`, `12704`, ADR-59)도 `--bind 127.0.0.1` loopback 전용이고 `requirepass`로
+잠근다 — 접속하는 것은 Map API와 Map Dagster code-server뿐이다. `ports:`를 두지 않는다(외부에 열지 않는다).
 
 ## PostgreSQL instance 경계
 

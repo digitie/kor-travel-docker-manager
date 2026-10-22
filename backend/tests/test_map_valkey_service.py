@@ -17,6 +17,10 @@ from urllib.parse import urlsplit
 import pytest
 from test_dagster_shared_workspace_is_derived import _resolve
 
+from kor_travel_docker_manager.services.runtime_topology import (
+    derive_pinned_infrastructure,
+    runtime_topology,
+)
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -162,3 +166,36 @@ def test_the_startup_script_refuses_passwords_that_break_the_url(tmp_path: Path,
     assert completed.returncode == 64, completed.stderr
     assert not (tmp_path / "argv").exists(), "거부했으면 서버를 띄우지 않는다"
     assert password == "" or password not in completed.stderr, "거부 메시지에 값을 싣지 않는다"
+
+
+def _targets() -> dict[str, Any]:
+    document = load_yaml_rejecting_duplicate_keys(
+        (_ROOT / "config" / "docker-targets.yml").read_text(encoding="utf-8")
+    )
+    assert isinstance(document, dict)
+    return document
+
+
+def _dagster_and_slot_services() -> tuple[str, ...]:
+    topology = runtime_topology()
+    return (
+        *topology.runtime_services,
+        *(name for family in topology.families.values() for name in family.names),
+    )
+
+
+def test_the_pinned_rebuild_brings_up_what_the_slots_wait_for() -> None:
+    """재구축은 `up --no-deps`라 `depends_on`이 Valkey를 끌어오지 않는다 — 대신 target이 소유한 비-slot 상시
+    서비스를 targets에서 파생해 먼저 올린다. 파생된 것은 모두 어떤 소비자가 기다리는 서비스여야 하고, Valkey가
+    거기 있어야 한다."""
+    derived = derive_pinned_infrastructure(_targets(), excluded=_dagster_and_slot_services())
+    assert _SERVICE in derived
+    waited_for = {name for service in _services().values() for name in (service.get("depends_on") or {})}
+    assert set(derived) <= waited_for
+
+
+def test_a_valkey_missing_from_runtime_services_is_not_brought_up() -> None:
+    """빨갛게 만들어 본다 — `runtime_services`에서 빼면 재구축은 그것을 올리지 않는다(그 선언이 스위치다)."""
+    targets = _targets()
+    targets["targets"]["map"]["runtime_services"].remove(_SERVICE)
+    assert _SERVICE not in derive_pinned_infrastructure(targets, excluded=_dagster_and_slot_services())
