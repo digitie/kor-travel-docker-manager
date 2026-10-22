@@ -494,6 +494,8 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_contract_dagster",
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "map-contract-dagster-metadata-password",
         "KOR_TRAVEL_MAP_SERVICE_PASSWORD": "map-contract-service-password",
+        # ADR-59: Map API·code-server가 받는 Valkey URL(`x-map-valkey-url`)의 필수 키.
+        "KOR_TRAVEL_MAP_VALKEY_PASSWORD": "map-contract-valkey-password",
         "KOR_TRAVEL_MAP_PG_DSN": (
             "postgresql+asyncpg://ktm_feature_service:map-contract-service-password@"
             "127.0.0.1:11000/map_contract"

@@ -169,6 +169,7 @@ from kor_travel_docker_manager.services.runtime_topology import (
     installed_container_name,
     installed_dagster_families,
     installed_location_owners,
+    installed_pinned_infrastructure,
     installed_shared_dagster_plane,
     listen_address,
     read_host_workspace,
@@ -5037,6 +5038,12 @@ class ComposeService:
                 and self._observe_deployed_databases(runtimes) == dict(previous.databases)
                 and self._observe_schema_heads(runtimes) == dict(previous.schema_heads)
             ):
+                # target이 소유한 비-slot 서비스(Map Valkey, ADR-59) — 아래 전체 경로의 같은 자리 주석.
+                self._up_pinned_infrastructure(
+                    runtime_transaction=runtime_transaction,
+                    topology=topology,
+                    companions=companions,
+                )
                 self._converge_committed_runtime(
                     runtime_transaction=runtime_transaction,
                     topology=topology,
@@ -5094,6 +5101,15 @@ class ComposeService:
                     resolved=runtime_transaction.resolved,
                     environment=runtime_transaction.environment.effective,
                 )
+
+            # target이 소유한 비-slot 서비스(Map Valkey, ADR-59)는 읽기 전용 거부 판정이 **모두 끝난 뒤**, 무엇도 멈추거나
+            # `in_progress`를 쓰기 **전에** 올린다. 실패하면 떠 있던 Map·PinVi와 deploy-status.json을 건드리지 않은 채
+            # 끝난다 — 전체 경로의 실패 정리(`stop`)는 아래 `_deploy_forward`의 try 안에만 있다.
+            self._up_pinned_infrastructure(
+                runtime_transaction=runtime_transaction,
+                topology=topology,
+                companions=companions,
+            )
 
             from kor_travel_docker_manager.services.runtime_execution_registry import (
                 trusted_manager_source_revision,
@@ -5251,6 +5267,39 @@ class ComposeService:
             topology=topology,
             companions=companions,
             expected_images=expected_images,
+        )
+
+    def _up_pinned_infrastructure(
+        self,
+        *,
+        runtime_transaction: ComposeTransactionSnapshot,
+        topology: RuntimeTopology,
+        companions: Mapping[str, RuntimeSlot],
+    ) -> None:
+        """Map·PinVi target이 소유한 비-slot 상시 서비스(오늘은 Map Valkey, ADR-59)를 slot보다 먼저 올린다.
+
+        slot은 `up --no-deps`로 뜨므로 `depends_on`이 그것을 끌어오지 않는다. 설정이 같으면 compose가 다시 만들지
+        않는다(무연산). 재구축은 이것을 멈추지 않는다 — 실패 정리의 `stop`도 slot·companion만 멈춘다. 호출은 두
+        자리다: 같은 pair 수렴 직전, 그리고 전체 경로의 읽기 전용 거부 판정 뒤·`begin_deploy` 앞(실패가 아무것도
+        멈추지 않고 배포 기록도 쓰지 않게).
+        """
+
+        infrastructure = installed_pinned_infrastructure(
+            excluded=(*topology.runtime_services, *companions, *topology.retired_services)
+        )
+        if not infrastructure:
+            return
+        self._run_pinned_runtime_rebuild_compose(
+            [
+                "up",
+                "-d",
+                "--no-deps",
+                "--wait",
+                "--wait-timeout",
+                str(_compose_wait_timeout_seconds(runtime_transaction.resolved.get("services"))),
+                *infrastructure,
+            ],
+            transaction=runtime_transaction,
         )
 
     def _converge_shared_dagster_plane(

@@ -6,6 +6,8 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
+- [ ] **T-MGR-MAP-VALKEY — Map Valkey 서비스(Map ADR-114 2단계, ADR-59)**. `kor-travel-map-valkey`(loopback `12704`·requirepass·noeviction 1 GB·RDB+AOF·named volume)와 Map API·code-server의 `KOR_TRAVEL_MAP_VALKEY_URL`, 재구축의 target 소유 비-slot 서비스 선기동을 구현했다. 남은 것: PR CI·머지, n150 `.env`에 `KOR_TRAVEL_MAP_VALKEY_PASSWORD`(hex) 추가 → Manager 설치 → 다음 pinned 재구축(같은 pair 수렴)에서 Valkey 기동 확인. Map이 URL을 읽는 것은 Map ADR-114 3단계다.
+
 - [ ] **T-MGR-PINNED-GEO-READINESS**. Map/PinVi pinned rebuild에서 Geo를 로컬 Compose prerequisite로 요구하지 않고, active frozen Map API·Map UI BFF·Dagster code server·PinVi API origin을 각 consumer target의 R2 origin과 대조한다. 서로 다른 consumer host의 정상 origin 차이는 허용하고, `/v1/readyz` probe는 Manager host의 R2 origin으로 보낸다. retired `legacy-dagster` webserver·daemon은 검사 대상에서 제외한다. 전체 요청은 4초, 압축을 거부한 raw JSON 본문은 4 KiB로 제한한다. 독립 리뷰 2인·CI·n150 공식 Manager CLI 반영·공식 pinned rebuild·새 Map/PinVi live UI E2E 및 PR #1340 merge는 미완료다. DB와 기존 runtime은 실패 시 불변이어야 한다.
 
 - [ ] **T-MGR-LOGOUT-READ — 로그아웃 폴링 재진입 차단**. 별도 PR531에 pending 읽기·WS 경계와 AbortSignal/POST 전 취소·성공 및 실패 세션 회복을 구현했다. 초기3RED·재로그인 P2와 원검증을 보존하고, 중복 진입 신규2RED→집중9PASS/frontend전체44PASS/type·lint·build/Ruff PASS. 버튼·빠른명령의 동기 단일진입과 인증확인 완료 뒤 재시도를 보강했다. 46/48 공개 UI 원문은 보존하며 Cookie 정책·하니스 기준은 바꾸지 않는다. 기존79d7의 독립2리뷰·CI는 완료했으며 최신main 문서 통합delta 검토·CI와 root 실제 새제품 UI는 후속이다. [규약](dashboard-ui.md#9-로그아웃-중-읽기와-소켓의-경계).

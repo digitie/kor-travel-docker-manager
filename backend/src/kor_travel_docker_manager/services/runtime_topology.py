@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable, Iterator, Mapping, Sequence, Set
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence, Set
 from dataclasses import dataclass
 from functools import cache, lru_cache
 from pathlib import Path
@@ -501,6 +501,42 @@ def installed_dagster_families() -> Mapping[str, DagsterFamily]:
     """설치된 release의 모든 family(진단·테스트용 — 실행 경로는 target별로 부른다)."""
 
     return derive_dagster_families(*_installed_documents())
+
+
+def derive_pinned_infrastructure(
+    targets: Mapping[str, Any], *, excluded: Collection[str]
+) -> tuple[str, ...]:
+    """Map·PinVi target의 `runtime_services` 가운데 slot·companion(``excluded``)이 아닌 것 — 오늘은 Map Valkey(ADR-59).
+
+    pinned 재구축은 `up --no-deps`라 slot이 `depends_on`으로 기대는 서비스를 끌어오지 않는다. 공용 PostgreSQL은
+    다른 tenant의 것이라 readiness만 보지만, 이 서비스들은 그 target 자신이 소유하므로 재구축이 slot보다 먼저
+    `up --no-deps --wait`한다(설정이 같으면 compose가 다시 만들지 않는다). 이름은 targets에서 파생한다 — 이 함수가
+    서비스를 외우지 않는다.
+
+    전제: 이 서비스들은 slot에 기대지 않는다(`--no-deps`로 slot·migration보다 먼저 뜬다). slot에 `depends_on`하는
+    비-slot 상시 서비스가 생기면 이 순서가 맞지 않는다 — 그런 서비스는 companion이거나 slot 뒤에 따로 올려야 한다.
+    """
+
+    target_specs = targets.get("targets")
+    if not isinstance(target_specs, Mapping):
+        raise DeploymentContractError("pinned target registry is invalid")
+    services: dict[str, None] = {}
+    for target_id in (MAP_TARGET, PINVI_TARGET):
+        spec = target_specs.get(target_id)
+        if not isinstance(spec, Mapping):
+            raise DeploymentContractError(f"pinned target {target_id} is not declared")
+        services.update(
+            dict.fromkeys(
+                str(name) for name in spec.get("runtime_services") or [] if str(name) not in excluded
+            )
+        )
+    return tuple(services)
+
+
+def installed_pinned_infrastructure(*, excluded: Collection[str]) -> tuple[str, ...]:
+    """설치된 release의 targets에서 `derive_pinned_infrastructure`."""
+
+    return derive_pinned_infrastructure(_installed_documents()[1], excluded=excluded)
 
 
 def installed_container_name(service: str) -> str:
