@@ -1,5 +1,16 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-23 — Weather export의 운영 Compose 전달
+
+- 자체 개발 Compose에만 있던 export flag/파일 저장소를 Manager의 Weather API·code-server에도 전달한다.
+  flag 기본 false와 공통 경로·RW named volume을 사용하고, migrate·shared daemon은 바꾸지 않는다.
+- mount parent 아래에서 Weather의0700/0600/0400 권한을 유지한다. 운영 Docker data-root와 volume Mountpoint의
+  NVMe 확인, 전체 source 준비·파일 pin/GC·ARM 비용·Map 소비자 수용은 활성화 전에 별도 확인한다.
+- 기존 작업 checkout은 보존하고 별도 worktree에서 구현한다. 순수 Compose 계약/기존 주소 전달12개는
+  `--noconftest`로 통과했고 실제 Docker Compose 정규화도 기본 false/명시 true 두 경우를 통과했다.
+  이 검증은 DB나 운영 컨테이너를 사용하지 않았다. 전체 CI·두 독립 리뷰·운영 배포는 후속이다.
+  정본: [Weather 승인 export 저장소](docker-management.md#73c-weather-승인-export-파일-저장소).
+
 ## 2026-10-23 — pinvi-api에 Map service token과 transport 플래그(PinVi ADR-076, Map ADR-114)
 
 - pinvi-api env에 `PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?...}`(Map API와 같은 변수,

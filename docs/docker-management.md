@@ -767,6 +767,30 @@ Map은 weather·transport의 현재·예보 상태(와 weather 하루 세 구간
   compose가 다시 만들지 않고, 재구축의 정리 `stop`은 Valkey를 멈추지 않는다. 그래서 n150(일반 `ensure`가
   거부되는 `rehearsal/rebuildable`)에서도 첫 기동은 다음 재구축(또는 같은 pair 수렴)이 한다.
 
+### 7.3c Weather 승인 export 파일 저장소
+
+Weather의 승인 export 파일은 API와 code-server가 함께 읽는다. 자체 개발 Compose와 별개로
+Manager의 두 활성 runtime에 `KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED`를 같은 값으로
+전달하며 기본값은 `false`다. artifact 경로와 mount는 YAML anchor에서 공유한다.
+`backend/tests/test_weather_service_exports_compose.py`가 flag, 경로와 mount의 동등성 및
+다른 서비스로의 전파 부재를 검증한다.
+
+project 범위 named volume `kor-travel-weather-export-artifacts`를 두 runtime의
+`/var/lib/kor-travel-weather`에 RW로 붙이고, 실제 artifact 하위 경로는
+`/var/lib/kor-travel-weather/exports`다. mount 루트 아래에 Weather가 디렉터리0700,
+guard0600, 파일0400을 만든다. API도 파일 guard를 열기 때문에 RW가 필요하다.
+현재 두 이미지는 같은 root UID를 사용하며, UID 변경 시 교차 읽기 권한을 다시 검증한다.
+migrate와 shared daemon에는 파일 mount가 필요하지 않다. sensor 평가는 code-server에서 실행한다.
+
+운영에서는 먼저 Docker data-root와 이 volume의 실제 Mountpoint가 NVMe에 있는지 확인한다.
+eMMC fallback이나 NVMe 부팅 조건을 추가하지 않는다. 컨테이너 교체는 이 volume을 지우지
+않으며, 명시 volume 삭제는 승인 파일 손실이다. 재생성에는 Weather의 정상 수집·승격이 필요하다.
+비어 있는 새 volume을 기존 승인 DB에 붙인 상태에서 flag를 켜지 않는다.
+
+설정 추가가 배포·활성화를 뜻하지 않는다. Weather migration/API·code-server source 일치,
+파일 보존·복구, 전체 provider 준비, snapshot pin/GC, ARM 비용과 Map 소비자 수용을 확인한 뒤
+별도 활성화한다. 자동 publisher의 기본 STOPPED와 shared daemon의 기존 실행 상태를 유지한다.
+
 ### 7.4 Map↔PinVi canonical ops read/cancel principal
 
 PinVi API는 Map의 canonical `/v1/ops/datasets*`와 `/v1/ops/pipeline*` 조회, 그리고

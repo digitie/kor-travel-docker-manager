@@ -6,6 +6,8 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
+- [ ] **T-MGR-WEATHER-EXPORT-RUNTIME — Weather 승인 export 운영 경로**. API·code-server의 동일 false-default flag와 공유 RW named volume을 구현한다. 교차 runtime 경로/권한·NVMe Mountpoint 확인, 두 리뷰·CI·운영 배포/활성화와 Map 수용은 별도 검증한다. [규약](docker-management.md#73c-weather-승인-export-파일-저장소).
+
 - [ ] **T-MGR-MAP-VALKEY — Map Valkey 서비스(Map ADR-114 2단계, ADR-59)**. `kor-travel-map-valkey`(loopback `12704`·requirepass·noeviction 1 GB·RDB+AOF·named volume)와 Map API·code-server의 `KOR_TRAVEL_MAP_VALKEY_URL`, 재구축의 target 소유 비-slot 서비스 선기동을 구현했다. 남은 것: PR CI·머지, n150 `.env`에 `KOR_TRAVEL_MAP_VALKEY_PASSWORD`(hex) 추가 → Manager 설치 → 다음 pinned 재구축(같은 pair 수렴)에서 Valkey 기동 확인. Map이 URL을 읽는 것은 Map ADR-114 3단계다.
 
 - [ ] **T-MGR-PINNED-GEO-READINESS**. Map/PinVi pinned rebuild에서 Geo를 로컬 Compose prerequisite로 요구하지 않고, active frozen Map API·Map UI BFF·Dagster code server·PinVi API origin을 각 consumer target의 R2 origin과 대조한다. 서로 다른 consumer host의 정상 origin 차이는 허용하고, `/v1/readyz` probe는 Manager host의 R2 origin으로 보낸다. retired `legacy-dagster` webserver·daemon은 검사 대상에서 제외한다. 전체 요청은 4초, 압축을 거부한 raw JSON 본문은 4 KiB로 제한한다. 독립 리뷰 2인·CI·n150 공식 Manager CLI 반영·공식 pinned rebuild·새 Map/PinVi live UI E2E 및 PR #1340 merge는 미완료다. DB와 기존 runtime은 실패 시 불변이어야 한다.
