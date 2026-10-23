@@ -2140,6 +2140,14 @@ services:
       # API에 파생하고 다른 PinVi/Map service로의 누출을 fail-close한다.
       PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN: ${PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN:-}
       PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN: ${PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN:-}
+      # 지도 교통 레이어(PinVi ADR-076, Map ADR-114) — PinVi가 Map `/v1/service/transport/*`를 부른다. 운영 Map은
+      # service token 없이는 401이다. 새 비밀을 만들지 않고 Map API가 받는 같은 `KOR_TRAVEL_MAP_API_SERVICE_TOKEN`을
+      # 넘긴다(`:?` — Map API와 같은 필수 조건이라 빈 값으로 기동하지 않는다). 이 토큰이 있으면 PinVi의 다른 Map 호출도
+      # 같은 service token 헤더를 보낸다(PinVi `KorTravelMapClient`). C6c는 이 자리를 Map service token의 허용 경로로 본다.
+      PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}
+      # 기본 켜짐(소유자 결정 2026-10-23). 끄려면 root `.env`에 `PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED=false` —
+      # 꺼지면 PinVi `/transport/status`가 enabled=false를 주고 web/mobile이 레이어 컨트롤을 숨긴다(Map 미호출).
+      PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED: ${PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED:-true}
       # 공용 Dagster webserver(ADR-54, loopback 전용). admin_etl은 `repositoryOrError`·`runsOrError`를
       # `pinvi_dagster_location_name`(= `pinvi.etl.definitions`)으로 좁혀 부른다.
       PINVI_DAGSTER_BASE_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}

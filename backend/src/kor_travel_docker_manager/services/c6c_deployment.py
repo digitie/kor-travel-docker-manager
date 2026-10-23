@@ -184,6 +184,10 @@ _MAP_UI_PASSWORD_HASH_ENV = "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"
 _MAP_UI_SESSION_SECRET_ENV = "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
 _MAP_ADMIN_PROXY_ENV = "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
 _MAP_SERVICE_TOKEN_ENV = "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
+# PinVi ADR-076 / Map ADR-114 — PinVi API가 Map `/v1/service/transport/*`를 부를 때 쓰는 **같은** Map
+# service token의 PinVi 쪽 이름. 별개 비밀이 아니라 Map API 값의 사본이므로 runtime 격리는 이 이름에서
+# 정확히 그 값만 허용한다.
+_PINVI_MAP_SERVICE_TOKEN_ENV = "PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN"
 _MAP_CURSOR_SIGNING_SECRET_ENV = "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
 _MAP_METRICS_TOKEN_ENV = "KOR_TRAVEL_MAP_API_METRICS_TOKEN"
 _MAP_GEO_API_KEY_SOURCE_ENV = "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"
@@ -415,6 +419,7 @@ _MAP_PRODUCTION_SECRET_ENV_NAMES = frozenset(
         _MAP_CURSOR_SIGNING_SECRET_ENV,
         _MAP_GEO_API_KEY_SOURCE_ENV,
         _MAP_UI_GEO_API_KEY_ENV,
+        _PINVI_MAP_SERVICE_TOKEN_ENV,
     }
 )
 _MAP_FEATURE_CREATE_ENV_NAMES = frozenset(
@@ -715,6 +720,10 @@ def _build_candidate_canonical_api_env_values() -> dict[tuple[str, str], str]:
             "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}"
         ),
         (_MAP_API_SERVICE, _MAP_SERVICE_TOKEN_ENV): (
+            "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
+            "KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
+        ),
+        (_PINVI_API_SERVICE, _PINVI_MAP_SERVICE_TOKEN_ENV): (
             "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
             "KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
         ),
@@ -6898,6 +6907,7 @@ def validate_runtime_secret_isolation(
         config.pinvi_container: {
             _PINVI_READ_ENV: config.read_token,
             _PINVI_CANCEL_ENV: config.cancel_token,
+            _PINVI_MAP_SERVICE_TOKEN_ENV: config.map_service_token,
         },
         config.map_ui_container: {
             _MAP_UI_USERNAME_ENV: config.smoke.map_ui_username,

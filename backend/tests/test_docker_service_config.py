@@ -448,6 +448,10 @@ def _compose_with_canonical_c6c_services(
             "environment": {
                 "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _OPS_READ_SOURCE,
                 "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _OPS_CANCEL_SOURCE,
+                "PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN": (
+                    "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
+                    "KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
+                ),
                 "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": (_PINVI_CURATION_SNAPSHOT_SOURCE),
                 "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": (
                     _PINVI_CUTOVER_MAPPING_SOURCE
@@ -1032,6 +1036,38 @@ def test_manual_feature_create_credential_is_split_between_map_api_and_ui() -> N
         or "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN"
         in service.get("environment", {})
     } == {_PINVI_API_SERVICE}
+
+
+def test_pinvi_api_reuses_the_map_service_token_for_transport() -> None:
+    """PinVi ADR-076 / Map ADR-114 — pinvi-api는 Map API와 **같은** service token 변수를 필수로 받는다.
+
+    두 번째 비밀을 만들지 않고, 빈 값으로 기동하지 않는다(`:?`). 이 사본을 받는 서비스는 Map API와
+    pinvi-api 둘뿐이다. transport 플래그는 기본 켜짐이고 빈 값도 켜짐으로 읽힌다(`:-`).
+    """
+
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    map_source = services[_MAP_API_SERVICE]["environment"]["KOR_TRAVEL_MAP_API_SERVICE_TOKEN"]
+    pinvi_environment = services[_PINVI_API_SERVICE]["environment"]
+
+    assert pinvi_environment["PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN"] == map_source
+    assert map_source.startswith("${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?")
+    assert pinvi_environment["PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED"] == (
+        "${PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED:-true}"
+    )
+    assert {
+        service_name
+        for service_name, service in services.items()
+        if any(
+            "KOR_TRAVEL_MAP_API_SERVICE_TOKEN" in str(value)
+            for value in (service.get("environment") or {}).values()
+        )
+    } == {_MAP_API_SERVICE, _PINVI_API_SERVICE}
+    env_example_lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert "PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED=true" in env_example_lines
+    assert not any(
+        line.startswith("PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN=") for line in env_example_lines
+    )
 
 
 def test_c6c_env_example_separates_runtime_and_manager_only_credentials() -> None:
@@ -1646,6 +1682,7 @@ def test_contract_locked_names_cover_the_dsn_bound_services() -> None:
         assert "PINVI_DATABASE_URL" in contract_locked_env_names(service), service
     # 유도된 이름이 명시 추가로 사라지지 않는다.
     assert "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN" in contract_locked_env_names("pinvi-api")
+    assert "PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN" in contract_locked_env_names("pinvi-api")
 
 
 def test_config_update_allows_echoing_a_contract_locked_env_unchanged() -> None:
