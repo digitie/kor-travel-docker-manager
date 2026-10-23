@@ -799,7 +799,7 @@ services:
   # 바꿔야 한다 — `backend/tests/test_dagster_shared_config.py`가 대조한다. 새 tag는 호스트에 없으므로
   # 다음 `run`이 build context에서 만든다. env override는 두지 않는다(정본이 둘이 된다).
   kor-travel-dagster-storage-migrate:
-    image: kor-travel-dagster-host:930a44266e814ab6
+    image: kor-travel-dagster-host:11a71574b8114c5b
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_STORAGE_MIGRATE_CONTAINER:-kor-travel-dagster-storage-migrate}
@@ -838,7 +838,7 @@ services:
   # 둘 다 code-server에 `depends_on`하지 않는다 — 어느 code-server가 합류했는지는 workspace가
   # 말하고, 합류한 location이 떴는지는 두 probe가 본다(아래).
   kor-travel-dagster-daemon:
-    image: kor-travel-dagster-host:930a44266e814ab6
+    image: kor-travel-dagster-host:11a71574b8114c5b
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_DAEMON_CONTAINER:-kor-travel-dagster-daemon}
@@ -864,6 +864,8 @@ services:
       <<: *dagster-shared-control-env
       # 같은 원 URL을 daemon wrapper에만 제공한다. 다른 서비스의 URL은 원형이다.
       KOR_TRAVEL_DAGSTER_DAEMON_POSTGRES_URL: *dagster-shared-pg-url
+      # 기본60은 SDK 원 동작. 180만 명시 최적화, 빈 값은 Common이 거절한다.
+      KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS: ${KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS-60}
       DAGSTER_HOME: /opt/dagster/dagster_home
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
@@ -924,7 +926,7 @@ services:
   # - gRPC를 부르지 않는다 — `locationOrLoadError`·`dagsterLibraryVersions`는 webserver가 이미 들고 있는
   #   location 상태를 읽을 뿐 code-server에 닿지 않는다. 느린 code-server가 probe를 붙잡지 못한다.
   kor-travel-dagster-webserver:
-    image: kor-travel-dagster-host:930a44266e814ab6
+    image: kor-travel-dagster-host:11a71574b8114c5b
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-dagster-webserver}

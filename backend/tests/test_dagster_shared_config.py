@@ -404,7 +404,7 @@ def _host_services() -> dict[str, dict[str, Any]]:
 
 
 def test_the_host_services_run_the_host_image_with_only_the_control_env() -> None:
-    """daemon·webserver는 migrate와 같은 호스트 이미지이고, 공용 URL과 DAGSTER_HOME 말고 받는 것이 없다.
+    """daemon·webserver는 migrate와 같은 호스트 이미지이고 공용 제어 env만 받는다.
 
     run은 code-server의 자식으로 돈다 — 호스트 서비스에 앱 비밀을 넣을 이유가 없다(plan §1.4).
     """
@@ -428,6 +428,7 @@ def test_the_host_services_run_the_host_image_with_only_the_control_env() -> Non
         }
         if name == "kor-travel-dagster-daemon":
             allowed.add("KOR_TRAVEL_DAGSTER_DAEMON_POSTGRES_URL")
+            allowed.add("KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS")
         assert set(service["environment"]) <= allowed, (name, sorted(service["environment"]))
         assert service["environment"]["DAGSTER_HOME"] == migrate["environment"]["DAGSTER_HOME"]
         assert service["depends_on"] == {_MIGRATE: {"condition": "service_completed_successfully"}}
