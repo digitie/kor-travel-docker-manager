@@ -1,5 +1,14 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-24 — Common44 workspace 갱신 주기 소비
+
+- [규약·설치/롤백](daemon-workspace-refresh-adoption.md): 정식 전체 wheel과 hashlock/내용 tag를
+  갱신하고 공용 daemon만 기본60/명시180을 받는다. 원240초 유예·heartbeat·센서·CLI/신호와
+  Weather547의 공유 export 파일 배선은 보존한다.
+- Git19파일/RECORD24행·재빌드 바이트 동일, 기존71runtime 불변, 관련41PASS/11.70초,
+  실제 Compose8조건·고정 SDK 컨텍스트/종료 원복 PASS. 실패한 선행 실행은 정본 규약에 분리했다.
+- 운영 변경0. 두 독립 리뷰·CI·ARM/공식 배포·브라우저 및 자원/신선도 실측은 운영 담당 gate다.
+
 ## 2026-10-23 — Weather export의 운영 Compose 전달
 
 - 자체 개발 Compose에만 있던 export flag/파일 저장소를 Manager의 Weather API·code-server에도 전달한다.
@@ -1679,4 +1688,3 @@ devDependencies로 추가하고(npm이 실제로 해석한 React 18 peer 호환 
 테스트만 실패 → 정확히 원상복구, `git diff --stat` 0으로 확인). 상세 내역은
 `docs/tasks.md`의 GM-12 완료 항목 참고. 전체 frontend type-check/lint/test(8
 files, 31 passed)/build 통과.
-

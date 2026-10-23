@@ -6,6 +6,8 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
+- [ ] **T-MGR-DAEMON-WORKSPACE — Common44 metadata 갱신 주기 선택**. wholewheel/hashlock/내용tag와 daemon 전용 기본60/명시180을 소비하며 원240초 실패 유예·heartbeat·sensor·CLI/신호를 보존한다. 관련41PASS/Compose8조건/실제 고정SDK 컨텍스트·종료원복 확인. 독립2리뷰·CI·ARM 공식 배포·CPU/RSS/신선도·브라우저 검증은 별도다. [규약](daemon-workspace-refresh-adoption.md).
+
 - [ ] **T-MGR-WEATHER-EXPORT-RUNTIME — Weather 승인 export 운영 경로**. API·code-server의 동일 false-default flag와 공유 RW named volume을 구현한다. 교차 runtime 경로/권한·NVMe Mountpoint 확인, 두 리뷰·CI·운영 배포/활성화와 Map 수용은 별도 검증한다. [규약](docker-management.md#73c-weather-승인-export-파일-저장소).
 
 - [ ] **T-MGR-MAP-VALKEY — Map Valkey 서비스(Map ADR-114 2단계, ADR-59)**. `kor-travel-map-valkey`(loopback `12704`·requirepass·noeviction 1 GB·RDB+AOF·named volume)와 Map API·code-server의 `KOR_TRAVEL_MAP_VALKEY_URL`, 재구축의 target 소유 비-slot 서비스 선기동을 구현했다. 남은 것: PR CI·머지, n150 `.env`에 `KOR_TRAVEL_MAP_VALKEY_PASSWORD`(hex) 추가 → Manager 설치 → 다음 pinned 재구축(같은 pair 수렴)에서 Valkey 기동 확인. Map이 URL을 읽는 것은 Map ADR-114 3단계다.

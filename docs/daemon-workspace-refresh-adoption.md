@@ -38,3 +38,19 @@ monitoring·RPC timeout·원 CLI 및 신호 처리·DB pool 정책은 바꾸지 
 CLI/storage/shared-DSN·heartbeat·SIGTERM·sensor·동일 입력의 CPU/RSS/신선도 최소3쌍 실측은
 운영 수용 gate다.420초는 실제 wall deadline이 아니며 code location 자동 반영은 최대 약120초
 늦어질 수 있다. consumer 소스 검증과 운영 CPU 개선을 구분한다.
+
+## 작성자 검증과 미완료
+
+- 고정 Common44 Git archive의 offline uv build를 두 번 실행해 wholewheel 바이트가 같았다.
+  모든 package19파일은 해당 Git blob과 일치하며 RECORD24행/정식 CLI·plugin을 검증한다.
+  원71개 runtime 버전·해시 집합은 보존하고 Common wheel hash만 공식 offline uv compile로
+  갱신했다. 최종 image tag는 `11a71574b8114c5b`다.
+- 순수 소비 계약·전체 shared config·Weather547 보존 **41 PASS /11.70초**, 변경 시험 Ruff PASS.
+  최초 잘못 지정한 시험 파일은0 test였고, 이전 venv 의존 누락/새 env allowlist 미정산2FAIL은
+  수정 후 위 실행에서 다시 검증했다. 실패 실행은 통과로 세지 않는다.
+- 실제 로컬 Compose config는 n150/odroid 각각 미설정/60/180/빈 값 **8조건 PASS**.
+  빈 값이60으로 숨겨지지 않고 daemon에 그대로 전달되며 다른 두 서비스에는 전달되지 않는다.
+- 고정 실제 SDK1.13.24·dagster-postgres0.29.24·SQLAlchemy2.0.54에서 wheel의 공식 CLI load와
+  미설정/60/180 컨텍스트·SystemExit 후60/300 원복을 확인했다. daemon·DB를 시작하지 않았다.
+- 새 두 독립 리뷰·정확 CI·ARM 이미지/운영 교체·로그인/로그아웃 UI·CPU/RSS/센서·신선도
+  수용은 별도다. 이 정적·격리 검사만으로 운영 개선 완료라 하지 않는다.
