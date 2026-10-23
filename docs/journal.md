@@ -6,7 +6,8 @@
 - 제거된 next lint를 ESLint 9/16 flat config로 대체했다. React Compiler 전용 규칙 4개는 기존 Hooks 규칙을 유지하며 별도 도입으로 남겼다. 홈 링크를 next/link로 전환하고, 오류/인증 복구의 전체 문서 이동은 이유를 적어 보존했다. React 18은 지원 중단 예정 경고가 있으나 이번에는 유지했다.
 - WSL Linux Node 22.22.2에서 프론트엔드 기존 테스트 47건과 lint(--max-warnings=0)·type-check·build PASS. 빌드가 생성한 타입 선언과 필요한 JSX 설정을 반영했다.
 - 같은 시점 `npm audit` 전체 보고: 총 12→7건, critical 1→0건. `next` 항목은 제거됐지만 다른 패키지 취약점은 남아 있다. 강제 자동 수정이나 요청 외 major 의존성 갱신은 하지 않았다.
-- 기존 작업 트리는 보존하고 Linux 격리 작업 공간의 `codex/next-16.4.3-security`에서 변경했다. CI·독립 리뷰·운영 배포·실제 서비스 UI 수용은 아직 별도이며, 이 기록을 운영 반영 완료로 세지 않는다.
+- James(프론트/UI)·Popper(빌드/운영) 독립 사전 리뷰에서 이 저장소의 추가 P0/P1은 없었다. 실제 서비스 UI와 CI 이후 머지 게이트를 대체하지 않는다.
+- 기존 작업 트리는 보존하고 Linux 격리 작업 공간의 `codex/next-16.4.3-security`에서 변경했다. CI·운영 배포·실제 서비스 UI 수용은 아직 별도이며, 이 기록을 운영 반영 완료로 세지 않는다.
 
 ## 2026-10-24 — Common44 workspace 갱신 주기 소비
 
