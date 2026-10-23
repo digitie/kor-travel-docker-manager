@@ -529,13 +529,14 @@ def test_isolation_converges_stray_connect_grants_on_the_app_database(cluster: s
 
 
 def test_cap_applies_to_the_login_not_the_admin(cluster: str) -> None:
-    """T-CAP: 상한 2를 login 연결 둘이 채우면 셋째는 거부되고, admin(superuser)은 붙는다."""
+    """T-CAP: 상한만큼 login 연결이 채우면 다음 하나는 거부되고, admin(superuser)은 붙는다."""
 
     _seed_map_pair(cluster)
     app, _ = _runtimes(cluster)
     usable = database_runtime._read_usable_connection_slots(app)
     assert usable == _MAX_CONNECTIONS - _SUPERUSER_RESERVED
-    assert database_runtime.map_application_connection_cap(usable) == 2
+    cap = database_runtime.map_application_connection_cap(usable)
+    assert cap == 3
     ensure_map_databases_isolated(app, login=_LOGIN)
 
     holders = [
@@ -548,7 +549,7 @@ def test_cap_applies_to_the_login_not_the_admin(cluster: str) -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        for _ in range(2)
+        for _ in range(cap)
     ]
     try:
         deadline = time.monotonic() + 60
@@ -558,7 +559,7 @@ def test_cap_applies_to_the_login_not_the_admin(cluster: str) -> None:
                 "SELECT count(*) FROM pg_catalog.pg_stat_activity "
                 f"WHERE datname = 'kor_travel_map' AND usename = '{_LOGIN}'",
             )
-            != "2"
+            != str(cap)
         ):
             assert time.monotonic() < deadline, "login sessions did not start"
             time.sleep(0.5)

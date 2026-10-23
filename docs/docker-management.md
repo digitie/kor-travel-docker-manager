@@ -956,7 +956,7 @@ sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
   의존성을 끌어온다.
 - **R4 격리·연결 상한**: 배포(bootstrap 뒤, Map API 기동 전)와 같은 pair 수렴(`up` 전)마다 두 Map DB에서 PUBLIC
   CONNECT를 걷고, app DB에 `KOR_TRAVEL_MAP_PG_DSN` login의 CONNECT와
-  `CONNECTION LIMIT floor(0.4 × (max_connections − superuser_reserved − reserved))`(live)를 건 뒤 읽어서 확인한다.
+  `CONNECTION LIMIT floor(0.57 × (max_connections − superuser_reserved − reserved))`(live)를 건 뒤 읽어서 확인한다.
   CONNECT 가능한 non-superuser login은 app DB에서 그 login 하나, Dagster DB에서 metadata user 하나여야 한다.
   superuser는 상한을 받지 않는다. PinVi DB는 건드리지 않는다.
   - 전부 **한 transaction**이다. 바꾸기 전에 live 그래프에 결박한다: app DB 소유자가 `ktm_feature_schema_owner`,
@@ -985,7 +985,7 @@ sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
     10)은 38보다 크다. 평시 `ktm_feature_service` 세션은 9~11이다. 다음 무거운 Dagster 창까지 Map PostgreSQL 로그의
     `too many connections for database "kor_travel_map"`과 `pg_stat_database.numbackends`(`kor_travel_map`)를 본다.
     걸리면 아래 되돌리기의 `CONNECTION LIMIT -1`로 풀고 — 다음 수렴·배포가 다시 걸므로 그 전에 — M2 전에 소유자와
-    비율(`map_application_connection_cap`의 0.4, 소유자 결정 D5)을 다시 정한다.
+    비율(`map_application_connection_cap`의 0.57 — 2026-10-23 0.4에서 상향, 소유자 결정 D5)을 다시 정한다.
 
 **R2 거부 — admin 소유 Map DB가 있어 배포가 멈출 때.** 반쯤 만든(instance admin 소유) Map DB는 `--restart`도
 지우지 않는다(fail-closed). `--restart`의 R2 거부는 Map·PinVi를 멈추기 **전에** 난다(읽기 전용 preflight) — 예를

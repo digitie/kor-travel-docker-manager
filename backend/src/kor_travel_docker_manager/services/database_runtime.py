@@ -630,15 +630,17 @@ def create_database_if_absent(runtime: DatabaseRuntime) -> bool:
 def map_application_connection_cap(usable: int) -> int:
     """non-superuser가 쓸 수 있는 슬롯 수 ``usable``에서 Map application DB의 연결 상한을 낸다(D5).
 
-    ``floor(0.4 × usable)``, 최소 1. 공용 instance에서 Map의 최악(API·code-server·run
-    프로세스마다 풀)이 다른 tenant의 슬롯을 다 먹지 않게 묶는다. 0.4가 유일한 정책
+    ``floor(0.57 × usable)``, 최소 1. 공용 instance에서 Map의 최악(API·code-server·run
+    프로세스마다 풀)이 다른 tenant의 슬롯을 다 먹지 않게 묶는다. 0.57이 유일한 정책
     숫자다 — 72 h 관측에서 `too many connections for database`가 보이면 여기만 올린다.
+    2026-10-23: 0.4(n150 38)에서 0.57(n150 55)로 올렸다 — 동시 실행 6·geo pool 2로 Map run이
+    겹치며 03:05Z·03:31Z에 `too many connections for database "kor_travel_map"`(소유자 결정).
     정수 산술이라 부동소수 경계가 없다.
     """
 
     if isinstance(usable, bool) or not isinstance(usable, int) or usable < 1:
         raise DeploymentContractError("PostgreSQL usable connection slots are invalid")
-    return max(1, usable * 2 // 5)
+    return max(1, usable * 57 // 100)
 
 
 def map_application_login(environment: Mapping[str, str]) -> str:
