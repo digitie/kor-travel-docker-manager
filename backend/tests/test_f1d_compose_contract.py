@@ -174,6 +174,9 @@ def _valid_runtime_configs(config: Any) -> dict[str, dict[str, Any]]:
                 {
                     c6c_deployment_module._PINVI_READ_ENV: config.read_token,
                     c6c_deployment_module._PINVI_CANCEL_ENV: config.cancel_token,
+                    c6c_deployment_module._PINVI_MAP_SERVICE_TOKEN_ENV: (
+                        config.map_service_token
+                    ),
                 }
             )
         },
@@ -426,6 +429,46 @@ def test_runtime_isolation_still_finds_secret_values_anywhere(
     broken = _valid_runtime_configs(config)
     broken[pinvi]["Labels"] = {"note": f"token={config.map_service_token}"}
     with pytest.raises(DeploymentContractError, match="leaks outside its exact"):
+        validate_runtime_secret_isolation(broken, config)
+
+
+def test_runtime_isolation_binds_pinvi_map_service_token_to_its_exact_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PinVi transport(ADR-076)는 Map service token을 pinvi-api의 그 이름에서만, 그 값으로만 받는다."""
+
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_validate_map_production_secrets",
+        lambda _config: None,
+    )
+    config = _runtime_secret_config()
+    pinvi = config.pinvi_container
+    name = c6c_deployment_module._PINVI_MAP_SERVICE_TOKEN_ENV
+
+    validate_runtime_secret_isolation(_valid_runtime_configs(config), config)
+
+    def without(env: list[str]) -> list[str]:
+        return [entry for entry in env if not entry.startswith(f"{name}=")]
+
+    broken = _valid_runtime_configs(config)
+    broken[pinvi]["Env"] = without(broken[pinvi]["Env"])
+    with pytest.raises(DeploymentContractError, match="wiring is missing"):
+        validate_runtime_secret_isolation(broken, config)
+
+    broken = _valid_runtime_configs(config)
+    broken[pinvi]["Env"] = [*without(broken[pinvi]["Env"]), f"{name}={'z' * 32}"]
+    with pytest.raises(DeploymentContractError, match="wiring is invalid"):
+        validate_runtime_secret_isolation(broken, config)
+
+    broken = _valid_runtime_configs(config)
+    broken[config.map_ui_container]["Env"].append(f"{name}={config.map_service_token}")
+    with pytest.raises(DeploymentContractError, match="unauthorized container"):
+        validate_runtime_secret_isolation(broken, config)
+
+    broken = _valid_runtime_configs(config)
+    broken[pinvi]["Env"].append(f"PINVI_OTHER_TOKEN={config.map_service_token}")
+    with pytest.raises(DeploymentContractError, match="secret value leaks"):
         validate_runtime_secret_isolation(broken, config)
 
 

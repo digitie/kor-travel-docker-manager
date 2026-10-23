@@ -1,5 +1,16 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-23 — pinvi-api에 Map service token과 transport 플래그(PinVi ADR-076, Map ADR-114)
+
+- pinvi-api env에 `PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?...}`(Map API와 같은 변수,
+  같은 필수 조건 — 새 비밀 없음, 빈 값으로 기동 안 함)와 `PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED:
+  ${PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED:-true}`(기본 켜짐, 빈 값도 켜짐)를 더했다.
+- C6c: 새 이름을 Map 비밀 이름 집합·candidate 정본 env(화면 잠금)·runtime 격리의 pinvi 허용 값(= Map service token)에
+  넣었다. 다른 컨테이너·다른 이름에 같은 값이 있으면 여전히 거부한다. 보호 참조 자리는 compose에서 파생되므로 따로
+  등록하지 않았다.
+- 부수 효과: PinVi `KorTravelMapClient`는 service token이 있으면 모든 Map 호출에 같은 헤더를 보낸다(PinVi 설계).
+- web/mobile은 PinVi API `/transport/status`만 보므로 public env가 필요 없다.
+
 ## 2026-10-23 — Map Valkey 서비스 추가(Map ADR-114 2단계, ADR-59)
 
 - `kor-travel-map-valkey`(Valkey 9.0-alpine, multi-arch index digest)를 `map` target 서비스로 더했다. host network의

@@ -782,8 +782,12 @@ detail URL로 검증하며, refresh operation이 없는 catalog-only 행의 null
 
 Map API의 production fail-closed 설정은 ops pair만으로 완결되지 않는다. ADR-23에 따라 manager
 `.env`는 admin proxy secret, API-only service token, API-only cursor signing secret도 서로 다른
-값으로 보관한다. admin proxy secret은 Map API와 Map UI BFF에만 전달하고 service/cursor 값은 Map
-API 외 service에 전달하지 않는다. profile은 `production`, public API key gate는 `true`, debug route는
+값으로 보관한다. admin proxy secret은 Map API와 Map UI BFF에만 전달하고 cursor 값은 Map
+API 외 service에 전달하지 않는다. service token은 Map API와, 같은 값의 사본으로 PinVi API
+(`PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN` — PinVi ADR-076 지도 교통 레이어가 Map `/v1/service/transport/*`를
+부른다)에만 전달한다. 두 번째 비밀은 없다: compose가 `${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?...}`을 그대로
+넘기고, C6c runtime 격리는 pinvi-api의 그 이름에서 정확히 그 값만 허용한다. 기능 플래그
+`PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED`는 기본 `true`(root `.env`로 끈다). profile은 `production`, public API key gate는 `true`, debug route는
 `false`, feature 관리 REST는 `true`로 candidate에 고정한다. Map metrics는 인증된 Prometheus scrape 경로가 없는 동안 endpoint를
 `false`로 명시해 무인증 fallback과 startup drift를 함께 차단한다. host network admin proxy의
 trusted CIDR는 `127.0.0.1/32`·`::1/128` exact JSON으로 명시한다. 실제 값·길이·digest는 로그에
