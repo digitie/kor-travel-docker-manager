@@ -1,5 +1,5 @@
 {
-  "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized; re-captured 2026-10-19 for platform-topology.md §7 stage 4 and remote Geo prerequisite (old Map/PinVi Dagster metadata DB dependencies removed; Geo checked by external health endpoint); 2026-10-23 ADR-59 adds kor-travel-map-valkey (c6c_describe, mutation_parse_up, and one infrastructure `up` before the first stop / converge up)",
+  "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized; re-captured 2026-10-19 for platform-topology.md §7 stage 4 and remote Geo prerequisite (old Map/PinVi Dagster metadata DB dependencies removed; Geo checked by external health endpoint); 2026-10-23 ADR-59 adds kor-travel-map-valkey (c6c_describe, mutation_parse_up, and one infrastructure `up` before the first stop / converge up); 2026-10-23 PinVi ADR-076 adds the pinvi-api PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN canonical row and lock (c6c_candidate_canonical_api, c6c_contract_locked)",
  "build_compose_environment": {
   "KOR_TRAVEL_MAP_API_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
   "KOR_TRAVEL_MAP_DAGSTER_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
@@ -115,6 +115,13 @@
    [
     "kor-travel-map-api",
     "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
+   ],
+   "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
+  ],
+  [
+   [
+    "pinvi-api",
+    "PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN"
    ],
    "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
   ],
@@ -424,7 +431,8 @@
    "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN",
    "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN",
    "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN",
-   "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN"
+   "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN",
+   "PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN"
   ],
   "pinvi-dagster": [
    "PINVI_DATABASE_URL"
