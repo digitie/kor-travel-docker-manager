@@ -5,6 +5,8 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
+- [ ] **T-MGR-DAGSTER-PROGRESS-RUNTIME — 공용 진행 로그 운영 수용**. 공용 INFO·기존 명시 Python logger·파생 digest와 실제 SDK/PG 회귀를 준비한다. 최종 CI·독립2리뷰·머지는 PR 정본을 확인한다. 사용자 지시로 배포는 대기하며 기존 InstanceRef 재적용과 정상 예약 실행의 실제 진행/저장은 일괄 배포 담당자가 확인한다. [규약](dagster-progress-logging.md).
+
 - [ ] **T-MGR-DAEMON-WORKSPACE — Common44 metadata 갱신 주기 선택**. wholewheel/hashlock/내용tag와 daemon 전용 기본60/명시180을 소비하며 원240초 실패 유예·heartbeat·sensor·CLI/신호를 보존한다. 관련41PASS/Compose8조건/실제 고정SDK 컨텍스트·종료원복 확인. 독립2리뷰·CI·ARM 공식 배포·CPU/RSS/신선도·브라우저 검증은 별도다. [규약](daemon-workspace-refresh-adoption.md).
 
 - [ ] **T-MGR-WEATHER-EXPORT-RUNTIME — Weather 승인 export 운영 경로**. API·code-server의 동일 false-default flag와 공유 RW named volume을 구현한다. 교차 runtime 경로/권한·NVMe Mountpoint 확인, 두 리뷰·CI·운영 배포/활성화와 Map 수용은 별도 검증한다. [규약](docker-management.md#73c-weather-승인-export-파일-저장소).
