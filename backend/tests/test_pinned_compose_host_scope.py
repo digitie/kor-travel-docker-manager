@@ -233,8 +233,9 @@ def test_actual_compose_empty_networks_keeps_default_required_gate(
         _resolve(module.ComposeService(), projected, missing)
 
 @pytest.mark.parametrize("accepted", [True, False])
-def test_cli_only_installer_uses_candidate_isolated_python_and_sanitizes_failure(
-    tmp_path, accepted,
+@pytest.mark.parametrize("cli_only", [True, False])
+def test_installer_modes_use_candidate_isolated_python_and_sanitize_failure(
+    tmp_path, accepted, cli_only,
 ):
     import os
 
@@ -260,7 +261,7 @@ def test_cli_only_installer_uses_candidate_isolated_python_and_sanitizes_failure
     script = (
         "set -euo pipefail\n"
         'die() { echo "$1" >&2; exit 126; }\n'
-        'REL="$EXPECTED_REL"\nCLI_ONLY=true\n' + block + "\necho FLIPPABLE\n"
+        'REL="$EXPECTED_REL"\n' + f"CLI_ONLY={str(cli_only).lower()}\n" + block + "\necho FLIPPABLE\n"
     )
     env = dict(os.environ, EXPECTED_REL=str(release), MARKER=str(marker),
                KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE="/ambient/.env",
@@ -409,3 +410,19 @@ def test_preflip_installed_package_layout_uses_candidate_reference_not_checkout(
                                timeout=30)
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "candidate-only PASS"
+
+@pytest.mark.parametrize("dependency", ["unknown", "other"])
+def test_host_install_preflight_rejects_dependency_before_external_read(
+    authority, tmp_path, monkeypatch, dependency,
+):
+    candidate = document()
+    candidate["services"]["app"]["depends_on"] = [dependency]
+    (tmp_path / "docker-compose.yml").write_text(yaml.safe_dump(candidate))
+    (tmp_path / ".env").write_text("LOCAL_ONLY=synthetic\n")
+    monkeypatch.setattr(module, "get_project_root", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        module, "_capture_compose_external_input_snapshot",
+        lambda *a, **k: pytest.fail("external read before host closure"),
+    )
+    with pytest.raises(ComposeCandidateContractError, match="local owner"):
+        module.ComposeService().validate_host_compose_preflight()

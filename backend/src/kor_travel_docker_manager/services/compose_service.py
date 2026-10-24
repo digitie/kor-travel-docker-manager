@@ -2690,7 +2690,7 @@ def _pinvi_fixed_accounts_mount_args(values: Mapping[str, str]) -> list[str]:
 
 class ComposeService:
     def validate_host_compose_preflight(self) -> None:
-        """CLI-only 설치의 config 사전검사. C6C 쌍의 mutation 검증은 추가하지 않는다."""
+        """신뢰 설치의 config 사전검사. C6C 쌍의 mutation 검증은 추가하지 않는다."""
         root = Path(get_project_root())
         snapshot = _capture_compose_environment_snapshot(
             environment_override=None,
