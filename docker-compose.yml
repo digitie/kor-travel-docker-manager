@@ -1903,8 +1903,10 @@ services:
       # odroid weather API(12201) — PinVi와 같은 registry 파생 기본값이고 `test_consumer_origin_defaults.py`가 대조한다.
       # token은 weather 자신의 `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`을 참조로만 넘긴다(새 비밀을 만들지 않는다). Map은
       # 그것을 기본 header `X-Admin-Token`으로 보낸다(`KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_AUTH_HEADER`는 두지 않는다).
+      # `:?`가 아니라 `:-`다 — Map만 렌더하는 경로(Map bootstrap·pinned fragment)가 weather 비밀 없이도 렌더돼야 한다.
+      # 비면 Map은 미설정으로 보고 `weather_state_*` job만 `weather_not_configured`로 실패한다(나머지 Map은 영향 없음).
       KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}
-      KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:-}
       KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY: ${KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY:-${SEOUL_OPEN_DATA_API_KEY:-}}
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
     # 이미지에 구운 `dagster_home/dagster.yaml`(옛 전용 metadata DB) 대신 공용 instance 정의를 붙인다.

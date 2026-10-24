@@ -115,9 +115,8 @@ _TRANSPORT_SERVICE_TOKEN_ENV = "${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TO
 #: transport 주소·token을 받는 곳 — run worker(적재 fetcher)와 Map API(가격 추이 T4 프록시, Map ADR-114 결정 4).
 _MAP_TRANSPORT_CONSUMER_SERVICES = (*_MAP_RUN_WORKER_SERVICES, _MAP_API_SERVICE)
 _TRANSPORT_PRICE_HISTORY_FLAG = "KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED"
-_WEATHER_SERVICE_TOKEN_ENV = (
-    "${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}"
-)
+#: `:-` — Map만 렌더하는 경로(bootstrap·fragment)가 weather 비밀 없이 렌더돼야 한다. 비면 Map이 미설정으로 본다.
+_WEATHER_SERVICE_TOKEN_ENV = "${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:-}"
 #: Map이 직접 부르던 시절의 수집 provider 설정 접두. 이 접두의 이름은 어느 서비스의 environment
 #: 키로도, 그 값의 `${...}` 보간 원천으로도, `.env.example`에도 없어야 한다(이름을 하나씩 베끼지
 #: 않고 접두로 센다).
@@ -766,9 +765,9 @@ def test_map_weather_export_token_is_the_weather_admin_token_by_reference() -> N
     for service_name in _MAP_RUN_WORKER_SERVICES:
         environment = compose["services"][service_name]["environment"]
         assert environment["KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN"] == _WEATHER_SERVICE_TOKEN_ENV
-    # weather 자신이 받는 원천과 같은 보간식이다 — 이름이 갈라지면 두 값이 어긋난다.
-    assert compose["services"]["kor-travel-weather-api"]["environment"]["KOR_TRAVEL_WEATHER_ADMIN_TOKEN"] == (
-        _WEATHER_SERVICE_TOKEN_ENV
+    # weather 자신이 받는 원천 변수와 같은 이름이다 — 이름이 갈라지면 두 값이 어긋난다.
+    assert "${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:" in (
+        compose["services"]["kor-travel-weather-api"]["environment"]["KOR_TRAVEL_WEATHER_ADMIN_TOKEN"]
     )
     assert not any(
         "KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_AUTH_HEADER" in service.get("environment", {})

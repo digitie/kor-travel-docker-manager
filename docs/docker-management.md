@@ -807,7 +807,9 @@ Map ADR-114의 두 기능을 운영에서 켤 수 있게 배선만 둔다(켜는
     소비자와 같은 registry 파생 기본값이고 `backend/tests/test_consumer_origin_defaults.py`가 대조한다 — root `.env`에
     값을 두지 않는다(ADR-58 R2).
   - `KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN`: weather 자신의 `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`을 **참조로만**
-    넘긴다(`${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?…}`, weather 서비스들과 같은 보간식). 별도 Map 비밀은 만들지 않는다.
+    넘긴다(`${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:-}`). 별도 Map 비밀은 만들지 않는다. weather 서비스들처럼 `:?`로 두지 않는
+    것은 Map만 렌더하는 경로(Map bootstrap·pinned fragment)가 weather 비밀 없이도 렌더돼야 하기 때문이다 — 비면 Map이
+    미설정으로 보고 `weather_state_*` job만 `weather_not_configured`로 실패한다.
     Map은 이것을 기본 header `X-Admin-Token`으로 보내므로 `KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_AUTH_HEADER`는 두지
     않는다(weather가 읽기 전용 export token을 내면 그때 이름과 token만 바꾼다).
   - weather 쪽 짝: odroid weather의 `KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED=true`(7.3c)와, n150 root `.env`의
