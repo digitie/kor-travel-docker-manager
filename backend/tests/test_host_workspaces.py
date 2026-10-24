@@ -111,9 +111,9 @@ def test_unknown_host_rejected(documents):
 
 
 def test_instance_bytes_match_reviewed_queue_budget():
-    """PR514의 두 scalar 변경 뒤 고정된 원문 snapshot — host 파생이 instance를 다시 쓰면 실패한다."""
+    """큐 정책·공용 INFO 진행을 검토한 원문 snapshot — host 파생이 instance를 다시 쓰면 실패한다."""
 
-    assert hashlib.sha256((ROOT / "config/dagster-shared/dagster.yaml").read_bytes()).hexdigest() == "7e6d4e6c058fca3f064b29d52f0940223097e7dfc3cdbdeb859682abbeb9d6d6"
+    assert hashlib.sha256((ROOT / "config/dagster-shared/dagster.yaml").read_bytes()).hexdigest() == "f41a30784f7185f91050c5ce55be5aa26d8623ed55bb72d8187f192b94db6257"
 
 
 @pytest.fixture

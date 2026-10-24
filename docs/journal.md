@@ -13,6 +13,7 @@
 - 공용 instance의 INFO 진행을 보존하고 기존 명시 Python logger 목록을 유지한다. 기존 내용 digest 앵커를 함께 갱신한다.
 - 고정 SDK와 격리 PostgreSQL에서 기존 WARNING의 실제 INFO 소실1FAIL을 재현했다. 정상/실패·재개방·확정 진척·DEBUG/미등록 로그 제외와 WARNING 대조군을 회귀로 둔다.
 - 초기 digest를 17자로 기입한 실수는 기존 배선 회귀8FAIL로 검출해 정본 sha256의 앞16자로 바로잡았다. 실패 부분 실행과 최종 전체 검증을 구분한다.
+- CI2943 후보는3272PASS/40SKIP·기존 원문 snapshot1FAIL이었다. 의도한 공용 로그 변경의 검토 원문 해시를 함께 갱신하고 전체 CI를 다시 확인한다.
 - 기존 작업 트리를 보존하려 별도 Codex worktree를 사용한다. CodeGraph init/sync 후 YAML·SDK 테스트는 직접 확인한다. 최종 검증·두 독립 리뷰·머지 상태는 PR에 정산한다.
 - 운영 변경0이며 사용자가 일괄 배포를 대기했다. 기존 InstanceRef의 설정 잔류와 적용/되돌림은 [규약](dagster-progress-logging.md)을 따른다.
 
