@@ -1,5 +1,9 @@
 # TASKS-DONE — 완료 태스크 기록
 
+## 2026-10-24 — npm 보안·버전 정합 소스 완료
+
+- [x] **T-MGR-NEXT-SECURITY — Next.js 16.4.3**. npm 직접/전이 보안 패치와 공통 버전 정합, 이 저장소 기존 테스트 47개·타입·린트·빌드 검증을 반영했다. 최종 게이트와 머지 상태는 [PR](https://github.com/digitie/kor-travel-docker-manager/pull/549), 잔여 상류 권고와 범위는 [정합 기록](npm-security-alignment-2026-10-24.md)을 따른다.
+
 이 문서는 `kor-travel-docker-manager`에서 완료된 작업을 역순이 아닌 태스크 번호순으로 보관한다.
 진행 중/대기 작업은 [`docs/tasks.md`](tasks.md)를 기준으로 한다.
 
