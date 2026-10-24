@@ -1,5 +1,14 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-24 — Map 가격 추이·weather 상태 적재 env 배선(Map ADR-114)
+
+- Map API에 transport 주소·token(code-server와 같은 원천·기본값)과 `KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED`(기본
+  false)를, Map code-server에 weather 주소(odroid 12201, registry 파생)와 weather `KOR_TRAVEL_WEATHER_ADMIN_TOKEN` 참조
+  token을 넣었다(Map #1365·#1367). 새 비밀·리터럴 없음, auth header는 Map 기본값.
+- 계약 테스트: transport 보유 집합에 Map API 추가, 가격 추이 플래그·weather token 보유 집합/보간식, 소비자 origin 하한,
+  보호 참조 site. 정본: [7.3d](docker-management.md#73d-map-가격-추이-프록시와-weather-상태-적재-map-adr-114).
+- 운영 반영(설치·rebind)은 하지 않았다. 켜는 순서는 7.3d.
+
 ## 2026-10-24 — 여섯 프로젝트 npm 보안·버전 정합
 
 - 이 저장소의 기존 프론트엔드/공용 테스트 47개와 타입·린트·빌드 PASS. [버전·예외·검증 범위](npm-security-alignment-2026-10-24.md).
