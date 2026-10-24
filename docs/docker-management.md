@@ -664,10 +664,10 @@ Map은 휴게소·주유소·유가를 더 이상 OpiNet·KREX에서 직접 받�
 transport export는 concierge read key(7.2)와 같은 모양으로 배선한다.
 
 - `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN`: 루트 `.env`의 이 한 이름이 유일한 원천이다.
-  base compose가 run worker를 낳는 Map code-server(`kor-travel-map-dagster-code-server`)에만 보간한다.
-  공용 plane의 webserver·daemon, `legacy-dagster` profile의 옛 webserver·daemon, Map API·UI에는 넣지
-  않는다(fetcher를 돌리지 않는 곳에 비밀을 두지 않는다). Map은 이 값을 header
-  `X-Kor-Travel-Transport-Service-Token`으로 보낸다.
+  base compose가 run worker를 낳는 Map code-server(`kor-travel-map-dagster-code-server`)와, 주유소 가격 추이를
+  요청 시점에 transport T4에서 읽는 Map API(`kor-travel-map-api`, 7.3d)에 보간한다. 공용 plane의 webserver·daemon,
+  `legacy-dagster` profile의 옛 webserver·daemon, Map UI에는 넣지 않는다(transport를 부르지 않는 곳에 비밀을 두지
+  않는다). Map은 이 값을 header `X-Kor-Travel-Transport-Service-Token`으로 보낸다.
 - `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`: 기본 `http://192.168.1.13:12301`(odroid transport API gateway —
   2026-10-14 잠정 시행으로 대체, 옛 기본 `http://127.0.0.1:14001`은 n150 backend loopback이었다). gateway가
   `/v1/service/exports/*`를 n150 `192.168.1.14`에만 연다(그 저장소 소유). root `.env`에 값을 두지 않는다 — compose
@@ -790,6 +790,32 @@ eMMC fallback이나 NVMe 부팅 조건을 추가하지 않는다. 컨테이너 �
 설정 추가가 배포·활성화를 뜻하지 않는다. Weather migration/API·code-server source 일치,
 파일 보존·복구, 전체 provider 준비, snapshot pin/GC, ARM 비용과 Map 소비자 수용을 확인한 뒤
 별도 활성화한다. 자동 publisher의 기본 STOPPED와 shared daemon의 기존 실행 상태를 유지한다.
+
+### 7.3d Map 가격 추이 프록시와 weather 상태 적재 (Map ADR-114)
+
+Map ADR-114의 두 기능을 운영에서 켤 수 있게 배선만 둔다(켜는 것은 운영자 몫이다).
+
+- **주유소 가격 추이(결정 4, Map #1365).** Map API가 transport T4
+  `/v1/service/exports/fuel-stations/{station_key}/price-history`를 요청 시점에 읽는다. 그래서 Map API도 code-server와
+  **같은 원천·기본값**의 `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`·`..._SERVICE_TOKEN`을 받는다(7.3 — 새 비밀 없음).
+  스위치 `KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED`는 Map API에만 있고 기본 `false`다 — transport에 T4가 배포된
+  뒤 root `.env`에 `true`를 둔다. 꺼져 있으면 추이는 `unavailable`(`disabled`)이고 현재가만 나간다.
+- **weather 상태 적재(2단계, Map #1367).** Map Dagster의 `weather_state_*` job(run worker)이 weather export
+  W1~W5(`/v1/service/exports/*`)를 읽어 Valkey(7.3b)에 쓴다. Map API는 weather를 부르지 않으므로 code-server에만
+  둔다.
+  - `KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL`: 기본 `http://192.168.1.13:12201`(odroid weather API). PinVi의 weather
+    소비자와 같은 registry 파생 기본값이고 `backend/tests/test_consumer_origin_defaults.py`가 대조한다 — root `.env`에
+    값을 두지 않는다(ADR-58 R2).
+  - `KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN`: weather 자신의 `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`을 **참조로만**
+    넘긴다(`${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?…}`, weather 서비스들과 같은 보간식). 별도 Map 비밀은 만들지 않는다.
+    Map은 이것을 기본 header `X-Admin-Token`으로 보내므로 `KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_AUTH_HEADER`는 두지
+    않는다(weather가 읽기 전용 export token을 내면 그때 이름과 token만 바꾼다).
+  - weather 쪽 짝: odroid weather의 `KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED=true`(7.3c)와, n150 root `.env`의
+    `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`이 odroid weather가 실제로 쓰는 값과 같아야 한다. 어긋나면 Map run이 인증 실패로
+    끝나고 Valkey는 이전 세대를 유지한다. 비교는 7.3처럼 값을 출력하지 않고 불리언으로만 한다.
+
+고정 테스트: `backend/tests/test_docker_service_config.py`(보유 서비스 집합·보간식·`.env.example`),
+`backend/tests/test_compose_references.py`(weather token 참조 site와 다른 서비스로의 이동 거부).
 
 ### 7.4 Map↔PinVi canonical ops read/cancel principal
 
