@@ -112,6 +112,12 @@ _TRANSPORT_BASE_URL_ENV = (
     "${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://192.168.1.13:12301}"
 )
 _TRANSPORT_SERVICE_TOKEN_ENV = "${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN:-}"
+#: transport 주소·token을 받는 곳 — run worker(적재 fetcher)와 Map API(가격 추이 T4 프록시, Map ADR-114 결정 4).
+_MAP_TRANSPORT_CONSUMER_SERVICES = (*_MAP_RUN_WORKER_SERVICES, _MAP_API_SERVICE)
+_TRANSPORT_PRICE_HISTORY_FLAG = "KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED"
+_WEATHER_SERVICE_TOKEN_ENV = (
+    "${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}"
+)
 #: Map이 직접 부르던 시절의 수집 provider 설정 접두. 이 접두의 이름은 어느 서비스의 environment
 #: 키로도, 그 값의 `${...}` 보간 원천으로도, `.env.example`에도 없어야 한다(이름을 하나씩 베끼지
 #: 않고 접두로 센다).
@@ -694,7 +700,7 @@ def test_map_services_share_single_concierge_read_key_source() -> None:
 
 def test_map_services_share_single_transport_service_token_source() -> None:
     """transport 내부 export token은 루트 `.env` 한 이름이 원천이고, run worker를 낳는 Map
-    code-server에만 들어간다(webserver·daemon·Map API·UI에는 없다 — 노출 면 최소화)."""
+    code-server와 가격 추이를 프록시하는 Map API에만 들어간다(webserver·daemon·UI에는 없다 — 노출 면 최소화)."""
 
     compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     services_with_token = {
@@ -703,15 +709,15 @@ def test_map_services_share_single_transport_service_token_source() -> None:
         if "KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN"
         in service.get("environment", {})
     }
-    assert services_with_token == set(_MAP_RUN_WORKER_SERVICES)
+    assert services_with_token == set(_MAP_TRANSPORT_CONSUMER_SERVICES)
     services_with_url = {
         service_name
         for service_name, service in compose["services"].items()
         if "KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL" in service.get("environment", {})
     }
-    assert services_with_url == set(_MAP_RUN_WORKER_SERVICES)
+    assert services_with_url == set(_MAP_TRANSPORT_CONSUMER_SERVICES)
 
-    for service_name in _MAP_RUN_WORKER_SERVICES:
+    for service_name in _MAP_TRANSPORT_CONSUMER_SERVICES:
         environment = compose["services"][service_name]["environment"]
         assert environment["KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL"] == (
             _TRANSPORT_BASE_URL_ENV
@@ -727,6 +733,49 @@ def test_map_services_share_single_transport_service_token_source() -> None:
         if line.startswith("KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN=")
     ]
     assert token_lines == ["KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN="]
+
+
+def test_transport_price_history_flag_is_map_api_only_and_off_by_default() -> None:
+    """가격 추이 플래그(Map ADR-114 결정 4)는 Map API만 읽는다. 기본 false — transport T4가 배포된 뒤 켠다."""
+
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    holders = {
+        name
+        for name, service in compose["services"].items()
+        if _TRANSPORT_PRICE_HISTORY_FLAG in service.get("environment", {})
+    }
+    assert holders == {_MAP_API_SERVICE}
+    assert compose["services"][_MAP_API_SERVICE]["environment"][_TRANSPORT_PRICE_HISTORY_FLAG] == (
+        f"${{{_TRANSPORT_PRICE_HISTORY_FLAG}:-false}}"
+    )
+    lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert [line for line in lines if line.startswith(f"{_TRANSPORT_PRICE_HISTORY_FLAG}=")] == [
+        f"{_TRANSPORT_PRICE_HISTORY_FLAG}=false"
+    ]
+
+
+def test_map_weather_export_token_is_the_weather_admin_token_by_reference() -> None:
+    """Map weather 상태 적재(Map ADR-114 2단계)의 token은 weather 자신의 `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`을
+    **참조로만** 받는다(새 비밀·리터럴 없음). run worker를 낳는 code-server에만 있고 Map API·UI·webserver·daemon에는
+    없다. 인증 header는 Map 기본값(`X-Admin-Token`)을 쓰므로 Manager가 두지 않는다."""
+
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    for key in ("KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN", "KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL"):
+        holders = {name for name, service in compose["services"].items() if key in service.get("environment", {})}
+        assert holders == set(_MAP_RUN_WORKER_SERVICES), key
+    for service_name in _MAP_RUN_WORKER_SERVICES:
+        environment = compose["services"][service_name]["environment"]
+        assert environment["KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN"] == _WEATHER_SERVICE_TOKEN_ENV
+    # weather 자신이 받는 원천과 같은 보간식이다 — 이름이 갈라지면 두 값이 어긋난다.
+    assert compose["services"]["kor-travel-weather-api"]["environment"]["KOR_TRAVEL_WEATHER_ADMIN_TOKEN"] == (
+        _WEATHER_SERVICE_TOKEN_ENV
+    )
+    assert not any(
+        "KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_AUTH_HEADER" in service.get("environment", {})
+        for service in compose["services"].values()
+    )
+    example = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert not [line for line in example if line.startswith("KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN=")]
 
 
 def test_concierge_ui_uses_canonical_production_command_and_auth_allowlist() -> None:

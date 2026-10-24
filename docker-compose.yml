@@ -1714,6 +1714,13 @@ services:
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
       # Map ADR-114 — weather·transport 현재·예보 상태를 읽는 Valkey(`kor-travel-map-valkey`).
       KOR_TRAVEL_MAP_VALKEY_URL: *map-valkey-url
+      # Map ADR-114 결정 4 — 주유소 가격 추이는 Map API가 transport T4
+      # (`/v1/service/exports/fuel-stations/{station_key}/price-history`)에서 요청 시점에 읽어 전한다. 그래서 code-server와
+      # 같은 원천·기본값의 transport 주소·token을 받는다(`backend/tests/test_consumer_origin_defaults.py`). 플래그는 기본
+      # false다 — transport에 T4가 배포된 뒤 root `.env`에서 켠다(꺼져 있으면 추이는 `unavailable`이고 현재가만 준다).
+      KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://192.168.1.13:12301}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN:-}
+      KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED: ${KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED:-false}
       KOR_TRAVEL_MAP_RUNTIME_DB_PREFLIGHT_REQUIRED: 'true'
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
@@ -1880,8 +1887,9 @@ services:
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
       # 휴게소·주유소·유가는 kor-travel-transport의 내부 export(`GET /v1/service/exports/*`)에서 읽는다 —
-      # run worker는 이 code-server의 자식이라 token은 여기에만 둔다(공용 plane의 webserver·daemon과
-      # legacy-dagster profile의 옛 webserver·daemon에는 넣지 않는다 — 노출 면을 줄인다).
+      # run worker는 이 code-server의 자식이라 Dagster 쪽에서는 token을 여기에만 둔다(공용 plane의 webserver·daemon과
+      # legacy-dagster profile의 옛 webserver·daemon에는 넣지 않는다 — 노출 면을 줄인다). Map API도 같은 token을 받는다
+      # — 가격 추이 T4를 요청 시점에 읽기 때문이다(Map ADR-114 결정 4, `kor-travel-map-api`의 주석).
       # OpiNet·KREX를 Map이 직접 부르지 않는다. token은 루트 `.env`의 이 한 이름이 원천이고, transport
       # 쪽 `TRANSPORT_SERVICE_EXPORT_TOKEN`(transport 배포 사본의 `.env.server14`)과 같은 값이어야 한다.
       # 비면 빈 문자열로 들어가며 Map은 그것을 미설정으로 본다(docs/docker-management.md 7.3).
@@ -1890,6 +1898,13 @@ services:
       # 커밋된 파생물이고 `backend/tests/test_consumer_origin_defaults.py`가 렌더를 스캔해 대조한다.
       KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://192.168.1.13:12301}
       KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN:-}
+      # Map ADR-114 2단계 — `weather_state_*` job(run worker, 이 컨테이너의 자식)이 weather export(W1~W5,
+      # `/v1/service/exports/*`)를 읽어 Valkey에 쓴다. Map API는 weather를 부르지 않으므로 여기에만 둔다. 주소는
+      # odroid weather API(12201) — PinVi와 같은 registry 파생 기본값이고 `test_consumer_origin_defaults.py`가 대조한다.
+      # token은 weather 자신의 `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`을 참조로만 넘긴다(새 비밀을 만들지 않는다). Map은
+      # 그것을 기본 header `X-Admin-Token`으로 보낸다(`KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_AUTH_HEADER`는 두지 않는다).
+      KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY: ${KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY:-${SEOUL_OPEN_DATA_API_KEY:-}}
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
     # 이미지에 구운 `dagster_home/dagster.yaml`(옛 전용 metadata DB) 대신 공용 instance 정의를 붙인다.
