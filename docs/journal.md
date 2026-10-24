@@ -8,7 +8,8 @@
 - 계약 테스트: transport 보유 집합에 Map API 추가, 가격 추이 플래그·weather token 보유 집합/보간식, 소비자 origin 하한,
   보호 참조 site. 정본: [7.3d](docker-management.md#73d-map-가격-추이-프록시와-weather-상태-적재-map-adr-114).
 - pinvi-api에 지도 날씨 레이어 플래그 `PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED: ${…:-false}`(PinVi #600)를 transport
-  플래그 옆에 더했다 — Map service token은 기존 배선을 그대로 쓴다.
+  플래그 옆에 더했다 — Map service token은 기존 배선을 그대로 쓴다. 선택 timeout 재정의 셋(`..._TIMEOUT_SECONDS:-3`,
+  `..._CONNECT_TIMEOUT_SECONDS:-1`, `..._REQUEST_BUDGET_SECONDS:-5`, PinVi 기본값과 같음)도 함께 넘긴다.
 - 운영 반영(설치·rebind)은 하지 않았다. 켜는 순서는 7.3d.
 
 ## 2026-10-25 — 일반 신뢰 설치의 호스트 검증

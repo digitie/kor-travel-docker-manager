@@ -1112,6 +1112,13 @@ def test_pinvi_api_reuses_the_map_service_token_for_transport() -> None:
         for service_name, service in services.items()
         if "PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED" in (service.get("environment") or {})
     } == {_PINVI_API_SERVICE}
+    # 선택 재정의 timeout 셋 — 기본값은 PinVi 앱 기본값(3·1·5초)과 같고 빈 값이 되지 않는다(`:-`).
+    for name, default in (
+        ("PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS", "3"),
+        ("PINVI_KOR_TRAVEL_MAP_WEATHER_CONNECT_TIMEOUT_SECONDS", "1"),
+        ("PINVI_KOR_TRAVEL_MAP_WEATHER_REQUEST_BUDGET_SECONDS", "5"),
+    ):
+        assert pinvi_environment[name] == f"${{{name}:-{default}}}", name
     assert {
         service_name
         for service_name, service in services.items()
@@ -1125,6 +1132,14 @@ def test_pinvi_api_reuses_the_map_service_token_for_transport() -> None:
     assert [line for line in env_example_lines if line.startswith("PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED=")] == [
         "PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED=false"
     ]
+    # timeout 재정의는 주석으로만 보인다 — 값을 두면 그것을 베낀 `.env`가 compose 기본값을 가린다.
+    for name, default in (
+        ("PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS", "3"),
+        ("PINVI_KOR_TRAVEL_MAP_WEATHER_CONNECT_TIMEOUT_SECONDS", "1"),
+        ("PINVI_KOR_TRAVEL_MAP_WEATHER_REQUEST_BUDGET_SECONDS", "5"),
+    ):
+        assert f"#   {name}={default}" in env_example_lines, name
+        assert not any(line.startswith(f"{name}=") for line in env_example_lines), name
     assert not any(
         line.startswith("PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN=") for line in env_example_lines
     )

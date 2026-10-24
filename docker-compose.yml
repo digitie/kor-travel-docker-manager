@@ -2169,8 +2169,14 @@ services:
       PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED: ${PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED:-true}
       # 지도 날씨 레이어(PinVi #600, Map ADR-114 weather service REST). 기본 꺼짐 — Map weather 상태 적재(Map
       # code-server의 weather export 배선, docs/docker-management.md 7.3d)가 채워진 뒤 root `.env`에서 true로 켠다.
-      # Map service token은 위 `PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN`을 그대로 쓴다(새 비밀 없음).
+      # Map service token은 위 `PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN`을 그대로 쓴다(새 비밀 없음). PinVi는 이 플래그가
+      # true인데 그 token이 비면 기동을 거부한다(PinVi ADR-077) — 그래서 기본은 false로 둔다.
       PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED: ${PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED:-false}
+      # Map weather 호출 한 번의 read·connect 상한과 카드·marker 요청 하나의 전체 예산(초). 기본값은 PinVi 앱 기본값과
+      # 같다(빈 문자열은 float로 읽히지 않으므로 `:-`로 늘 값을 준다). 바꿀 때만 root `.env`에 둔다.
+      PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS: ${PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS:-3}
+      PINVI_KOR_TRAVEL_MAP_WEATHER_CONNECT_TIMEOUT_SECONDS: ${PINVI_KOR_TRAVEL_MAP_WEATHER_CONNECT_TIMEOUT_SECONDS:-1}
+      PINVI_KOR_TRAVEL_MAP_WEATHER_REQUEST_BUDGET_SECONDS: ${PINVI_KOR_TRAVEL_MAP_WEATHER_REQUEST_BUDGET_SECONDS:-5}
       # 공용 Dagster webserver(ADR-54, loopback 전용). admin_etl은 `repositoryOrError`·`runsOrError`를
       # `pinvi_dagster_location_name`(= `pinvi.etl.definitions`)으로 좁혀 부른다.
       PINVI_DAGSTER_BASE_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}

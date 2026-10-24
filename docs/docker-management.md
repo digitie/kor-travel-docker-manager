@@ -840,7 +840,9 @@ API 외 service에 전달하지 않는다. service token은 Map API와, 같은 �
 부른다)에만 전달한다. 두 번째 비밀은 없다: compose가 `${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?...}`을 그대로
 넘기고, C6c runtime 격리는 pinvi-api의 그 이름에서 정확히 그 값만 허용한다. 기능 플래그
 `PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED`는 기본 `true`(root `.env`로 끈다). 지도 날씨 레이어 플래그
-`PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED`(PinVi #600)는 기본 `false`다 — Map weather 상태 적재(7.3d)가 채워진 뒤 켠다(같은 service token). profile은 `production`, public API key gate는 `true`, debug route는
+`PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED`(PinVi #600)는 기본 `false`다 — Map weather 상태 적재(7.3d)가 채워진 뒤 켠다(같은 service token; true인데 token이 비면 PinVi가 기동을 거부한다).
+선택 재정의 `PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS`·`..._CONNECT_TIMEOUT_SECONDS`·`..._REQUEST_BUDGET_SECONDS`는
+compose 기본값 3·1·5초(PinVi 앱 기본값과 같음)로 늘 값이 들어간다. profile은 `production`, public API key gate는 `true`, debug route는
 `false`, feature 관리 REST는 `true`로 candidate에 고정한다. Map metrics는 인증된 Prometheus scrape 경로가 없는 동안 endpoint를
 `false`로 명시해 무인증 fallback과 startup drift를 함께 차단한다. host network admin proxy의
 trusted CIDR는 `127.0.0.1/32`·`::1/128` exact JSON으로 명시한다. 실제 값·길이·digest는 로그에
