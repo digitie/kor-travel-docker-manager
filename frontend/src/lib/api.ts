@@ -555,6 +555,8 @@ function handleUnauthorized() {
   // 핸들러 미등록(SSR/마운트 이전) 시 폴백: 루트로 이동/새로고침해 로그인 화면을 띄운다.
   if (typeof window === 'undefined') return;
   if (window.location.pathname !== '/') {
+    // 인증 핸들러가 없을 때는 전체 문서를 다시 받아 세션 상태를 초기화한다.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.assign('/');
   } else {
     window.location.reload();

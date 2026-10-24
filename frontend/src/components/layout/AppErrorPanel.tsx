@@ -22,6 +22,8 @@ function goBack() {
     window.history.back();
     return;
   }
+  // 런타임 오류 복구는 새 문서를 받아 이전 클라이언트 상태를 비운다.
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
   window.location.assign("/");
 }
 

@@ -13,6 +13,7 @@ import {
   Pin,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import Link from 'next/link';
 import { useEffect, useState, type ReactNode } from 'react';
 
 /** 최신 Map admin rail과 같은 1024px 기준을 유지한다. 기존 export 호환용 이름이다. */
@@ -142,11 +143,11 @@ export default function AppShell({
         id="app-sidebar"
       >
         <div className="brand">
-          <a aria-label="Docker Manager UI 홈" className="brand-wordmark" href="/">
+          <Link aria-label="Docker Manager UI 홈" className="brand-wordmark" href="/">
             <span className="brand-name">Docker Manager UI</span>
             <span className="brand-subtitle">admin</span>
             <span aria-hidden="true" className="brand-short">dmu</span>
-          </a>
+          </Link>
           <div className="brand-actions">
             <button
               aria-label={sidebarCollapsed ? '좌측 메뉴 펼치기' : '좌측 메뉴 접기'}

@@ -1,5 +1,21 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-24 — 여섯 프로젝트 npm 보안·버전 정합
+
+- 이 저장소의 기존 프론트엔드/공용 테스트 47개와 타입·린트·빌드 PASS. [버전·예외·검증 범위](npm-security-alignment-2026-10-24.md).
+- 직접/전이 npm 의존성과 잠금 파일을 갱신하고 여섯 프로젝트의 공통 버전을 맞췄다.
+- 호환성 예외·미수정 상류 권고·검증 범위는 [정합 기록](npm-security-alignment-2026-10-24.md)을 따른다.
+- 소스·잠금 파일 정합과 WSL 검증을 완료했다. 최종 CI·두 독립 확인·N150 후보 UI 게이트와 머지 상태는 [PR](https://github.com/digitie/kor-travel-docker-manager/pull/549)에서 정산하며 통과 확인 전 머지하지 않는다.
+
+## 2026-10-24 — Next.js 16.4.3 보안 의존성 갱신
+
+- Next.js 14에서 `16.4.3`으로 정확히 고정하고 잠금 파일을 재생성했다. 사용하는 `eslint-config-next`도 `16.4.3`으로 맞췄다.
+- 제거된 next lint를 ESLint 9/16 flat config로 대체했다. React Compiler 전용 규칙 4개는 기존 Hooks 규칙을 유지하며 별도 도입으로 남겼다. 홈 링크를 next/link로 전환하고, 오류/인증 복구의 전체 문서 이동은 이유를 적어 보존했다. React 18은 지원 중단 예정 경고가 있으나 이번에는 유지했다.
+- WSL Linux Node 22.22.2에서 프론트엔드 기존 테스트 47건과 lint(--max-warnings=0)·type-check·build PASS. 빌드가 생성한 타입 선언과 필요한 JSX 설정을 반영했다.
+- 같은 시점 `npm audit` 전체 보고: 총 12→7건, critical 1→0건. `next` 항목은 제거됐지만 다른 패키지 취약점은 남아 있다. 강제 자동 수정이나 요청 외 major 의존성 갱신은 하지 않았다.
+- James(프론트/UI)·Popper(빌드/운영) 독립 사전 리뷰에서 이 저장소의 추가 P0/P1은 없었다. 실제 서비스 UI와 CI 이후 머지 게이트를 대체하지 않는다.
+- 기존 작업 트리는 보존하고 Linux 격리 작업 공간의 `codex/next-16.4.3-security`에서 변경했다. CI·운영 배포·실제 서비스 UI 수용은 아직 별도이며, 이 기록을 운영 반영 완료로 세지 않는다.
+
 ## 2026-10-24 — Common44 workspace 갱신 주기 소비
 
 - [규약·설치/롤백](daemon-workspace-refresh-adoption.md): 정식 전체 wheel과 hashlock/내용 tag를
