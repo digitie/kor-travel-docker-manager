@@ -12,6 +12,7 @@ import fcntl
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -281,7 +282,7 @@ def _preflight_block() -> str:
 
 
 def _run_preflight(
-    release: Path, *, path_prefix: Path | None = None
+    release: Path,
 ) -> subprocess.CompletedProcess[str]:
     script = (
         "set -euo pipefail\n"
@@ -289,14 +290,12 @@ def _run_preflight(
         f'REL="{release}"\n' + _preflight_block() + "echo PASSED\n"
     )
     environment = dict(os.environ)
-    if path_prefix is not None:
-        environment["PATH"] = f"{path_prefix}:{environment['PATH']}"
     return subprocess.run(
         ["bash", "-c", script], capture_output=True, text=True, check=False, env=environment
     )
 
 
-def _release_with(tmp_path: Path, env_text: str) -> Path:
+def _release_with(tmp_path: Path, env_text: str, *, host: str = "n150") -> Path:
     release = tmp_path / "release"
     release.mkdir()
     (release / "docker-compose.yml").write_text(
@@ -308,10 +307,35 @@ def _release_with(tmp_path: Path, env_text: str) -> Path:
         "    image: busybox\n"
         "    environment:\n"
         "      <<: *url\n"
-        "      OTHER: ${PREFLIGHT_OTHER:-x}\n",
+        "      OTHER: ${PREFLIGHT_OTHER:-x}\n"
+        "  offhost:\n"
+        "    image: busybox\n"
+        "    environment:\n"
+        "      REQUIRED: ${OFFHOST_REQUIRED:?missing offhost}\n"
+        "    env_file: [/must-not-read/offhost.env]\n",
         encoding="utf-8",
     )
-    (release / ".env").write_text(env_text, encoding="utf-8")
+    (release / ".env").write_text(f"KTDM_HOST={host}\n" + env_text, encoding="utf-8")
+    python = release / "backend/.venv/bin/python"
+    python.parent.mkdir(parents=True)
+    # installer의 실제 -I/-c 인자를 검사하고 정본 public validator를 실행한다.
+    # 작은 synthetic 서비스의 registry 소유권만 격리하며 Compose/필수값/파일 검증은 실제다.
+    python.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        f"sys.path.insert(0, {str(_ROOT / 'backend/src')!r})\n"
+        "from pathlib import Path\n"
+        "from dotenv import dotenv_values\n"
+        "from kor_travel_docker_manager.services import compose_service as m\n"
+        "assert sys.argv[1:3] == ['-I', '-c'] and len(sys.argv) == 4\n"
+        "def authority(root):\n"
+        "    selected = dotenv_values(Path(root)/'.env')['KTDM_HOST']\n"
+        "    return selected, {'one': frozenset({'n150'}), 'offhost': frozenset({'odroid'})}\n"
+        "m._candidate_release_scope_owners = authority\n"
+        "exec(sys.argv[3])\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o700)
     return release
 
 
@@ -337,7 +361,7 @@ def test_the_preflight_refuses_a_release_whose_compose_the_env_cannot_resolve(
 
     assert missing.returncode == 126, missing.stderr
     assert "not flipping" in missing.stderr
-    assert "PREFLIGHT_NEEDED" in missing.stderr
+    assert "host-local compose config failed" in missing.stderr
     assert "PASSED" not in missing.stdout
 
 
@@ -349,25 +373,23 @@ def test_the_preflight_passes_when_the_env_resolves_the_compose(tmp_path: Path) 
     assert present.stdout.strip() == "PASSED"
 
 
-def test_the_preflight_names_only_compose_variables_never_values(tmp_path: Path) -> None:
-    """compose 오류 문구에 값이 섞여도 설치기 stderr에는 compose가 참조하는 변수 이름만 남는다."""
+def test_the_preflight_suppresses_child_errors_and_values(tmp_path: Path) -> None:
+    """child 오류 문구에 값이 섞여도 설치기는 정해진 실패 설명만 출력한다."""
 
     release = _release_with(tmp_path, "PREFLIGHT_NEEDED=s3cr3t-value\n")
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_docker = fake_bin / "docker"
-    fake_docker.write_text(
+    child = release / "backend/.venv/bin/python"
+    child.write_text(
         "#!/bin/sh\n"
         "echo 'error: PREFLIGHT_NEEDED resolved to s3cr3t-value near UNRELATED_WORD' >&2\n"
         "exit 1\n",
         encoding="utf-8",
     )
-    fake_docker.chmod(0o755)
+    child.chmod(0o700)
 
-    refused = _run_preflight(release, path_prefix=fake_bin)
+    refused = _run_preflight(release)
 
     assert refused.returncode == 126
-    assert "PREFLIGHT_NEEDED" in refused.stderr
+    assert "host-local compose config failed" in refused.stderr
     assert "s3cr3t" not in refused.stderr
     assert "UNRELATED_WORD" not in refused.stderr
 
@@ -380,7 +402,25 @@ def test_the_preflight_runs_after_the_env_copy_and_before_anything_is_flipped() 
     flip = text.index('ln -sfn "${NAME}" "${APP}.new"')
 
     assert env_copy < preflight < first_host_write < flip
-    assert "--env-file \"${REL}/.env\" config --quiet" in _preflight_block()
+    assert "compose_service.validate_host_compose_preflight()" in _preflight_block()
+    assert "docker compose" not in _preflight_block()
+
+
+@pytest.mark.skipif(not _compose_available(), reason="docker compose가 없다")
+def test_normal_preflight_keeps_odroid_local_required_fields(tmp_path: Path) -> None:
+    release = _release_with(tmp_path, "", host="odroid")
+    compose = release / "docker-compose.yml"
+    compose.write_text(
+        compose.read_text().replace("    env_file: [/must-not-read/offhost.env]\n", "")
+    )
+    refused = _run_preflight(release)
+    assert refused.returncode == 126
+    assert "not flipping" in refused.stderr
+    assert "PASSED" not in refused.stdout
+    (release / ".env").write_text("KTDM_HOST=odroid\nOFFHOST_REQUIRED=synthetic-local\n")
+    accepted = _run_preflight(release)
+    assert accepted.returncode == 0, accepted.stderr
+    assert accepted.stdout.strip() == "PASSED"
 
 
 # --- 2026-10-16 T-MGR-01a-F (1): flip 전 자기 식별 ---------------------------------------------
