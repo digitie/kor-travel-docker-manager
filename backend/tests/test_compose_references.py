@@ -83,6 +83,22 @@ def test_a_shared_secret_copied_into_another_service_is_rejected() -> None:
     )
 
 
+def test_the_map_weather_export_token_is_a_reference_to_the_weather_admin_token() -> None:
+    """Map code-server는 weather 관리자 token을 **참조**로 받는다(Map ADR-114 2단계) — 그 자리가 보호 참조 site이고,
+    같은 참조를 다른 Map 서비스(API)로 옮기면 거부된다. 리터럴이 아니므로 `.env` 밖으로 값이 새지 않는다."""
+
+    site = "kor-travel-map-dagster-code-server.environment.KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN"
+    references = compose_references(_DOCUMENT)
+    assert "KOR_TRAVEL_WEATHER_ADMIN_TOKEN" in references[site]
+
+    candidate = _candidate()
+    candidate["services"]["kor-travel-map-api"]["environment"]["KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN"] = (
+        "${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}"
+    )
+    with pytest.raises(ComposeCandidateContractError, match="KOR_TRAVEL_WEATHER_ADMIN_TOKEN"):
+        _check(candidate)
+
+
 def test_a_dsn_that_carries_a_secret_is_protected_by_its_value() -> None:
     candidate = _candidate()
     candidate["services"]["kor-travel-map-ui"].setdefault("environment", {})
