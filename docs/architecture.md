@@ -2,6 +2,9 @@
 
 이 문서는 `kor-travel-docker-manager`의 시스템 아키텍처와 컴포넌트 간 데이터 흐름을 다룬다.
 
+공용 Dagster의 진행 로그 정책과 설정 재적용 경계는
+[공용 Dagster 진행 로그](dagster-progress-logging.md)를 따른다.
+
 ---
 
 ## 1. 개요

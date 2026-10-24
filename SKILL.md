@@ -100,6 +100,7 @@ docs/
 | Map·PinVi pin 고정과 재구축 게이트 | [`docs/runtime-pin-registry.md`](docs/runtime-pin-registry.md) | pinset digest 직렬화는 on-disk 바이트 계약이다(저장된 원장·보존 사본·코드 차단 목록·실행 원장·pinset별 상태와 이미지 태그가 모두 그 digest로 묶인다). `deploy-status.json`은 rebuild와 M05가 함께 읽는 exact-key·version 문서다 — 옛 version reader 없이 `_VERSION`을 올리면 둘 다 멈춘다. v6 manifest는 ADR-51 D-2에서, v8 journal은 B3에서 쓰기·모델 코드째 지웠다. 키 추가·직렬화 변경 금지 |
 | UI에서의 pin 회전(2-step 요청) | [`docs/runtime-pin-registry.md` §7-1](docs/runtime-pin-registry.md) | 요청 파일은 제안일 뿐 pin이 아니다. 어떤 로드 경로에서도 `runtime_pin_request`를 import하면 안 되고, 그 사실을 회귀가 결박한다 |
 | 공용 Dagster tick 조회 인덱스 | [`docs/dagster-tick-index.md`](docs/dagster-tick-index.md) | 원본 조회·데이터를 보존하고, 중단된 같은 정의의 인덱스만 재진입 복구한다 |
+| 공용 Dagster 진행 로그 | [`docs/dagster-progress-logging.md`](docs/dagster-progress-logging.md) | 기존 InstanceRef는 설정 파일 교체만으로 바뀌지 않는다. 명시 Python logger 범위를 유지한다 |
 | 대시보드 화면 규약 | [`docs/dashboard-ui.md`](docs/dashboard-ui.md) | 오류는 `humanizeError`를 거치고 `alert()`는 금지다. `targets[].containers`는 `depends_on` 전이 폐포라 "첫 매치"로 그룹을 만들면 안 된다 |
 
 ---
