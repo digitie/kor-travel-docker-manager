@@ -1331,6 +1331,7 @@ IP **DHCP**(NM 프로필 소유 = 보존 서비스 `webvnc-router-network.servic
      `192.168.1.13`으로 **그 집합 전부** 바꾼다(geo 플립이 `:1590`만 바꾸면 map code-server는 loopback에 남아 n150 geo-api stop 뒤 모든
      geocode run이 connection refused — 테스트가 그것을 빨갛게 만들어야 한다). root `.env`의 재정의는 `ktdctl targets validate`가 파생
      기대값과 다르면 거부한다. 외부 저장소 값(concierge env, transport `.env.prod`)은 Manager가 쓰지 않고 기대값만 문서화한다.
+   - **R2 보간 범위 예외(2026-10-25)**: 쌍 재구축은 정본 Map·PinVi 폐포만, CLI 전용 설치 사전검사는 후보 release의 모든 host-local 소유 서비스 폐포만 보간한다. 제외된 off-host 서비스의 필수 env 검사는 이 두 경로에서 생략하지만 선택 종속성/도달 자원/필수 env와 전체 원문·환경 identity는 유지한다. 일반 설치와 일반 전체 검증은 기존대로다. 디스크 계약이나 mutation 권한 확대는 없으며 [상세 규약](host-compose-scope.md)을 따른다.
    - **R3** 자기 식별 `KTDM_HOST`는 **운영 모드에서만 강제**한다. 운영 모드 = trusted installer가 만든 release 아래 실행
      (`/opt/kor-travel-docker-manager/.ktdm-source-revision` 존재 — `services/compose_references.py:33`, `services/registry.py:129-132`,
      `docs/prod-deployment.md` §3). 운영 모드에서 `KTDM_HOST`가 비었거나 `hosts[KTDM_HOST].addr`가 호스트 IPv4 집합에 없으면 거부

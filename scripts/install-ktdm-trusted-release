@@ -181,12 +181,26 @@ mv -f -- "${REL}/.ktdm-release-compose.yml.tmp" "${REL}/.ktdm-release-compose.ym
 # stderr는 원문을 싣지 않는다 — 오류 문구에 값이 섞일 수 있다. compose 파일이 참조하는 변수 이름만
 # 골라 낸다.
 # >>> preflight
+if ${CLI_ONLY:-false}; then
+  # 후보 release 자신의 코드/설정만 사용한다. 전체 설치의 검증 범위는 아래 기존 경로를 유지한다.
+  if ! env -u KTDM_HOST -u KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE \
+    -u KOR_TRAVEL_DOCKER_MANAGER_COMPOSE_FILE -u KOR_TRAVEL_DOCKER_MANAGER_OVERRIDE_FILE \
+    -u KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT="${REL}" \
+    "${REL}/backend/.venv/bin/python" -I -c 'from kor_travel_docker_manager.services.compose_service import compose_service
+try:
+    compose_service.validate_host_compose_preflight()
+except Exception:
+    raise SystemExit(1)' >/dev/null 2>&1 9>&-; then
+    die "host-local compose config failed for ${REL} with its .env; not flipping"
+  fi
+else
 if ! preflight_err="$(docker compose --project-directory "${REL}" --file "${REL}/docker-compose.yml" \
   --env-file "${REL}/.env" config --quiet 2>&1 >/dev/null 9>&-)"; then
   referenced="$(grep -oE '\$\{?[A-Za-z_][A-Za-z0-9_]*' "${REL}/docker-compose.yml" | tr -d '${' | sort -u)"
   named="$(printf '%s\n' "${preflight_err}" | grep -oE '[A-Za-z_][A-Za-z0-9_]*' | sort -u \
     | grep -Fx -f <(printf '%s\n' "${referenced}") | tr '\n' ' ' || true)"
   die "docker compose config failed for ${REL} with its .env; not flipping (variables named in the error: ${named:-none})"
+fi
 fi
 # <<< preflight
 

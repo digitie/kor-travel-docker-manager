@@ -4356,3 +4356,15 @@ def test_a_failing_infrastructure_up_stops_nothing_and_writes_no_deploy_record(
     after = harness.status_path.read_bytes() if harness.status_path.exists() else None
     assert after == before
     harness.mocks.reset.assert_not_called()
+
+def test_rebuild_three_capture_stages_request_same_pinned_scope(tmp_path, monkeypatch):
+    harness = _forward_harness(monkeypatch, tmp_path)
+    captures = []
+    def capture(**kwargs):
+        captures.append(kwargs)
+        return harness.transaction, None
+    monkeypatch.setattr(harness.service, "capture_transaction_unlocked", capture)
+    result = harness.service.rebuild_pinned_runtime()
+    assert result["outcome"] == "deployed"
+    assert len(captures) == 3
+    assert all(kwargs["pinned_runtime_scope"] is True for kwargs in captures)

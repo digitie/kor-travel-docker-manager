@@ -804,3 +804,12 @@ group-writable(`0770` 등)로 만들지 마라 — 무결성 검사가 그 디�
       이 전환이 없애려던 churn을 되살리는 것이다.
 - [ ] 실제 퍼미션·소유권이 걸린 변경은 n150 격리 live E2E로 확인했다(Windows 공유
       마운트에서는 mode 계약을 검증할 수 없다).
+
+
+## 11. 호스트별 Compose 보간
+
+쌍 재구축의 세 transaction capture만 정본 Map·PinVi 서비스 폐포를 메모리 scope로
+전달한다. 전체 source bytes/env identity와 기존 pinset/deploy-status 디스크 계약은 그대로다.
+선택 raw/external/protected/resolved/frozen/mutation은 같은 projection을 사용한다.
+다른 호스트의 필수 env 검사 생략과 일반 full 경로 보존, CLI 전용 설치의 별도 all-local
+roots 및 남은 운영 수용은 [호스트 Compose 규약](host-compose-scope.md)을 따른다.

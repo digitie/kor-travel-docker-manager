@@ -39,6 +39,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     CandidateSystemBindSnapshot,
     PinviCancelProbeState,
     _assert_candidate_single_file_boundary,
+    _candidate_volume_mounts,
     _expand_env_path,
     assert_compose_mutation_allowed,
     assert_manager_mutation_allowed,
@@ -72,6 +73,7 @@ from kor_travel_docker_manager.services.capabilities import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
 )
+from kor_travel_docker_manager.services.compose_references import reference_compose_path
 from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRole,
     DatabaseRuntime,
@@ -147,6 +149,7 @@ from kor_travel_docker_manager.services.registry import (
     external_project_for_container,
     external_project_for_target,
     get_project_root,
+    get_targets_config_path,
     is_known_target,
     load_targets_config,
     local_mutation_target,
@@ -164,10 +167,12 @@ from kor_travel_docker_manager.services.runtime_topology import (
     RuntimeSlot,
     RuntimeTopology,
     SharedDagsterPlane,
+    derive_dagster_family,
     derive_shared_dagster_plane,
     installed_code_location,
     installed_container_name,
     installed_dagster_families,
+    installed_dagster_family,
     installed_location_owners,
     installed_pinned_infrastructure,
     installed_shared_dagster_plane,
@@ -289,6 +294,173 @@ def _compose_dependency_closure(
             raise DeploymentContractError(f"compose service {name} depends_on is unreadable")
         pending.extend(dependencies)
     return reached
+
+
+def _scope_service_owners() -> tuple[str, Mapping[str, frozenset[str]]]:
+    """관찰 containers가 아닌 직접 target/init/family 소유권을 재사용한다."""
+    config = load_targets_config()
+    selected = current_host(config)
+    families = {
+        target: installed_dagster_family(target)
+        for target, spec in config["targets"].items()
+        if spec.get("dagster") and not spec.get("external_project")
+        and selected in target_hosts(target, config)
+    }
+    return selected, compose_service_owners(config, families=families)
+
+
+
+def _candidate_release_scope_owners(root: Path) -> tuple[str, Mapping[str, frozenset[str]]]:
+    """flip 전 wheel 위치 대신 후보 release의 정본 문서에서만 family를 파생한다."""
+    if Path(get_targets_config_path()).resolve() != (root / "config/docker-targets.yml").resolve():
+        raise ComposeCandidateContractError("candidate release target registry path differs")
+    config = load_targets_config()
+    selected = current_host(config)
+    try:
+        reference = load_yaml_rejecting_duplicate_keys(
+            reference_compose_path(root / "docker-compose.yml").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ComposeCandidateContractError("candidate release reference cannot be loaded") from exc
+    if not isinstance(reference, Mapping):
+        raise ComposeCandidateContractError("candidate release reference is invalid")
+    families = {
+        target: derive_dagster_family(reference, config, target)
+        for target, spec in config["targets"].items()
+        if spec.get("dagster") and not spec.get("external_project")
+        and selected in target_hosts(target, config)
+    }
+    return selected, compose_service_owners(config, families=families)
+
+
+def _scope_service_references(
+    service: Mapping[str, Any], environment: Mapping[str, str],
+) -> set[str]:
+    # 이 필드들은 단순 depends_on 외의 서비스를 끌어오므로 미지원 형태를 명시 거부한다.
+    if any(key in service for key in ("links", "external_links", "volumes_from", "extends")):
+        raise ComposeCandidateContractError("scoped compose service reference is unsupported")
+    build = service.get("build")
+    if isinstance(build, Mapping) and "additional_contexts" in build:
+        raise ComposeCandidateContractError("scoped compose build service reference is unsupported")
+    dependencies = service.get("depends_on")
+    if dependencies is None:
+        dependencies = ()
+    if not isinstance(dependencies, (Mapping, list, tuple)) or any(
+        not isinstance(name, str) or not name for name in dependencies
+    ):
+        raise ComposeCandidateContractError("scoped compose dependency is invalid")
+    references = set(dependencies)
+    for key in ("network_mode", "ipc", "pid"):
+        value = service.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ComposeCandidateContractError("scoped compose namespace is invalid")
+        expanded = _expand_env_path(value, environment)
+        if expanded.startswith("container:"):
+            raise ComposeCandidateContractError("scoped compose container namespace is unsupported")
+        if expanded.startswith("service:"):
+            target = expanded.removeprefix("service:")
+            if not target:
+                raise ComposeCandidateContractError("scoped compose namespace target is invalid")
+            references.add(target)
+    return references
+
+
+def _compose_service_scope(
+    document: Mapping[str, Any], roots: Sequence[str], environment: Mapping[str, str],
+    *, authority: tuple[str, Mapping[str, frozenset[str]]] | None = None,
+) -> tuple[str, ...]:
+    services = document.get("services")
+    if not isinstance(services, Mapping) or not roots:
+        raise ComposeCandidateContractError("scoped compose services are invalid")
+    selected, owners = authority if authority is not None else _scope_service_owners()
+    reached: set[str] = set()
+    pending = list(roots)
+    while pending:
+        name = pending.pop()
+        if not isinstance(name, str) or selected not in owners.get(name, frozenset()):
+            raise ComposeCandidateContractError("scoped compose dependency has no local owner")
+        if name in reached:
+            continue
+        spec = services.get(name)
+        if not isinstance(spec, Mapping):
+            raise ComposeCandidateContractError("scoped compose service is absent")
+        reached.add(name)
+        pending.extend(_scope_service_references(spec, environment))
+    return tuple(sorted(reached))
+
+
+def _pinned_runtime_compose_scope(
+    document: Mapping[str, Any], environment: Mapping[str, str],
+) -> tuple[str, ...]:
+    config = load_targets_config()
+    topology = runtime_topology()
+    # registry target depends_on에는 원격 Geo 관찰도 있다. 실제 Compose 참조만 닫는다.
+    roots = {
+        *topology.runtime_services, *_PINNED_RUNTIME_ONESHOT_WRITERS,
+        *_PINNED_RUNTIME_EXTERNAL_PREREQUISITES, *installed_shared_dagster_plane().services,
+        *(name for target in ("map", "pinvi") for name in config["targets"][target]["services"]),
+        *(name for family in topology.families.values() for name in family.names),
+    }
+    return _compose_service_scope(document, tuple(roots), environment)
+
+
+def _project_compose_service_scope(
+    document: Mapping[str, Any], scope: tuple[str, ...], environment: Mapping[str, str],
+    *, authority: tuple[str, Mapping[str, frozenset[str]]] | None = None,
+) -> dict[str, Any]:
+    """external 수집 전 같은 폐포의 서비스와 도달 자원만 남긴다. 원문은 바꾸지 않는다."""
+    if tuple(sorted(set(scope))) != scope or _compose_service_scope(document, scope, environment, authority=authority) != scope:
+        raise ComposeCandidateContractError("scoped compose dependency closure changed")
+    projected = deepcopy(dict(document))
+    services = projected["services"] = {
+        name: projected["services"][name] for name in projected["services"] if name in scope
+    }
+    needed: dict[str, set[str]] = {key: set() for key in ("volumes", "networks", "secrets", "configs")}
+    for spec in services.values():
+        for mount in _candidate_volume_mounts(spec.get("volumes"), environment=environment):
+            if mount.kind == "volume":
+                needed["volumes"].add(mount.source)
+        for key in ("networks", "secrets", "configs"):
+            entries = spec.get(key)
+            if entries is None or (
+                key == "networks" and isinstance(entries, (list, Mapping)) and not entries
+            ):
+                if key == "networks" and not spec.get("network_mode"):
+                    if "default" in (projected.get("networks") or {}):
+                        needed[key].add("default")
+                continue
+            if not isinstance(entries, (list, Mapping)):
+                raise ComposeCandidateContractError("scoped compose resource reference is invalid")
+            for entry in entries:
+                name = entry.get("source") if isinstance(entry, Mapping) else entry
+                if not isinstance(name, str):
+                    raise ComposeCandidateContractError("scoped compose resource source is invalid")
+                needed[key].add(_expand_env_path(name, environment))
+    for key, names in needed.items():
+        collection = projected.get(key) or {}
+        if not isinstance(collection, Mapping) or names - collection.keys():
+            raise ComposeCandidateContractError("scoped compose resource definition is absent")
+        if key in projected:
+            projected[key] = {name: value for name, value in collection.items() if name in names}
+    for key in tuple(projected):
+        if isinstance(key, str) and key.startswith("x-"):
+            del projected[key]  # safe_load가 alias/merge를 이미 실제 필드에 전개했다.
+    _assert_candidate_single_file_boundary(projected, environment=environment)
+    return projected
+
+
+def _validate_resolved_service_scope(
+    resolved: Mapping[str, Any], scope: tuple[str, ...],
+    *, authority: tuple[str, Mapping[str, frozenset[str]]] | None = None,
+) -> None:
+    services = resolved.get("services")
+    if not isinstance(services, Mapping) or set(services) - set(scope):
+        raise ComposeCandidateContractError("resolved compose exceeded the selected scope")
+    # Docker가 환경 보간으로 새 namespace 참조를 도입해도 host/subset 검사를 다시 한다.
+    if set(_compose_service_scope(resolved, tuple(services), {}, authority=authority)) != set(services):
+        raise ComposeCandidateContractError("resolved compose dependency is outside the selected scope")
 
 
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
@@ -1271,6 +1443,7 @@ class ComposeTransactionSnapshot:
     resolved: Mapping[str, Any] = field(default_factory=dict, repr=False)
     resolved_document_hash: str = field(default="", repr=False)
     manifest_path: str | None = field(default=None, repr=False)
+    service_scope: tuple[str, ...] | None = field(default=None, repr=False)
 
     def __repr__(self) -> str:
         return "ComposeTransactionSnapshot(<redacted>)"
@@ -2516,12 +2689,59 @@ def _pinvi_fixed_accounts_mount_args(values: Mapping[str, str]) -> list[str]:
 
 
 class ComposeService:
+    def validate_host_compose_preflight(self) -> None:
+        """CLI-only 설치의 config 사전검사. C6C 쌍의 mutation 검증은 추가하지 않는다."""
+        root = Path(get_project_root())
+        snapshot = _capture_compose_environment_snapshot(
+            environment_override=None,
+            compose_path=root / "docker-compose.yml",
+            env_path=root / ".env",
+            override_path=root / "docker-compose.override.yml",
+            include_process_environment=False,
+            interpolate_env_file=False,
+        )
+        source_path = Path(snapshot.compose_path)
+        try:
+            source_bytes = source_path.read_bytes()
+            document = yaml.safe_load(source_bytes.decode("utf-8"))
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+            raise ComposeCandidateContractError("host compose source cannot be loaded") from exc
+        if not isinstance(document, Mapping):
+            raise ComposeCandidateContractError("host compose source is not a mapping")
+        authority = _candidate_release_scope_owners(root)
+        selected, owners = authority
+        roots = tuple(name for name, hosts in owners.items() if selected in hosts)
+        scope = _compose_service_scope(document, roots, snapshot.effective, authority=authority)
+        candidate = _project_compose_service_scope(
+            document, scope, snapshot.effective, authority=authority,
+        )
+        if Path(snapshot.override_path).exists():
+            raise ComposeCandidateContractError("host compose override file is unsupported")
+        external = _capture_compose_external_input_snapshot(
+            candidate, environment_snapshot=snapshot, environment_override=None,
+        )
+        resolved = self._resolve_compose_candidate_unlocked(
+            candidate, environment=snapshot.effective,
+            expected_system_bind_snapshots=(),
+            environment_snapshot=snapshot, environment_override=None,
+            external_input_snapshot=external,
+        )
+        _validate_resolved_service_scope(resolved, scope, authority=authority)
+        _revalidate_compose_environment_snapshot(snapshot)
+        _revalidate_compose_external_input_snapshot(
+            external, candidate=candidate, environment_snapshot=snapshot,
+            environment_override=None,
+        )
+        if source_path.read_bytes() != source_bytes or Path(snapshot.override_path).exists():
+            raise ComposeCandidateContractError("host compose source changed during preflight")
+
     def capture_transaction_unlocked(
         self,
         *,
         environment_override: Mapping[str, str] | None = None,
         derive_manifest_path: bool = False,
         environment_snapshot: ComposeEnvironmentSnapshot | None = None,
+        pinned_runtime_scope: bool = False,
     ) -> tuple[ComposeTransactionSnapshot, ValidatedComposeCandidate]:
         """GM-20: docker_service.py가 자신이 이미 확보한 host lock 아래에서 직접
         호출하도록 공개 승격했다(이전에는 프라이빗 크로스 모듈 호출이었다).
@@ -2547,9 +2767,21 @@ class ComposeService:
             raise ComposeCandidateContractError(
                 "compose transaction source cannot be snapshotted"
             ) from exc
+        service_scope = None
+        if pinned_runtime_scope:
+            try:
+                source_document = yaml.safe_load(source_bytes.decode("utf-8"))
+            except (UnicodeError, ValueError, yaml.YAMLError) as exc:
+                raise ComposeCandidateContractError("pinned compose source cannot be loaded") from exc
+            if not isinstance(source_document, Mapping):
+                raise ComposeCandidateContractError("pinned compose source is not a mapping")
+            service_scope = _pinned_runtime_compose_scope(
+                source_document, _effective_snapshot_environment(environment_snapshot, environment_override)
+            )
         validation = self._validate_current_compose_candidate_unlocked(
             environment_override=environment_override,
             environment_snapshot=environment_snapshot,
+            **({"service_scope": service_scope} if service_scope is not None else {}),
         )
         external_inputs = validation.external_input_snapshot
         if external_inputs is None:
@@ -2562,6 +2794,11 @@ class ComposeService:
             if not isinstance(source_document, Mapping):
                 raise ComposeCandidateContractError(
                     "compose transaction source is not a mapping"
+                )
+            if service_scope is not None:
+                source_document = _project_compose_service_scope(
+                    source_document, service_scope,
+                    _effective_snapshot_environment(environment_snapshot, environment_override),
                 )
             external_inputs = _capture_compose_external_input_snapshot(
                 source_document,
@@ -2593,6 +2830,7 @@ class ComposeService:
             resolved=resolved,
             resolved_document_hash=_resolved_compose_document_hash(resolved),
             manifest_path=None,
+            service_scope=service_scope,
         )
         return transaction, replace(
             validation,
@@ -2674,6 +2912,11 @@ class ComposeService:
             raise ComposeCandidateContractError(
                 "frozen compose transaction mode is invalid"
             )
+        if transaction.service_scope is not None:
+            source = _project_compose_service_scope(
+                source, transaction.service_scope, transaction.environment.effective
+            )
+            _validate_resolved_service_scope(transaction.resolved, transaction.service_scope)
         source_references: list[tuple[str, int, str, bool, str]] = []
         services = source.get("services")
         if not isinstance(services, Mapping):
@@ -2937,6 +3180,7 @@ class ComposeService:
                         environment_override=environment,
                         environment_snapshot=environment_snapshot,
                         external_input_snapshot=external_input_snapshot,
+                        service_scope=transaction.service_scope if transaction is not None else None,
                     )
                 )
                 snapshots = validation.system_bind_snapshots
@@ -3004,6 +3248,7 @@ class ComposeService:
                     environment_snapshot=environment_snapshot,
                     external_input_snapshot=external_input_snapshot,
                     materialized_compose=validation.resolved,
+                    service_scope=transaction.service_scope if transaction is not None else None,
                 )
         return self._run_unlocked(
             args,
@@ -3070,6 +3315,7 @@ class ComposeService:
             environment_override=environment_override,
             environment_snapshot=baseline_transaction.environment,
             external_input_snapshot=baseline_transaction.external_inputs,
+            service_scope=baseline_transaction.service_scope,
         )
         if candidate_validation.raw_volume_graph_hash != baseline_validation.raw_volume_graph_hash:
             raise ComposeCandidateContractError(
@@ -3108,6 +3354,7 @@ class ComposeService:
             resolved=resolved,
             resolved_document_hash=_resolved_compose_document_hash(resolved),
             manifest_path=baseline_transaction.manifest_path,
+            service_scope=baseline_transaction.service_scope,
         )
         return replace(
             candidate_validation,
@@ -3120,6 +3367,7 @@ class ComposeService:
         environment_override: Mapping[str, str] | None = None,
         environment_snapshot: ComposeEnvironmentSnapshot | None = None,
         external_input_snapshot: ComposeExternalInputSnapshot | None = None,
+        service_scope: tuple[str, ...] | None = None,
     ) -> ValidatedComposeCandidate:
         if environment_snapshot is None:
             environment_snapshot = _capture_compose_environment_snapshot(
@@ -3141,6 +3389,7 @@ class ComposeService:
             environment_override=environment_override,
             environment_snapshot=environment_snapshot,
             external_input_snapshot=external_input_snapshot,
+            service_scope=service_scope,
         )
 
     def _validate_compose_candidate_document_unlocked(
@@ -3150,6 +3399,7 @@ class ComposeService:
         environment_override: Mapping[str, str] | None,
         environment_snapshot: ComposeEnvironmentSnapshot | None = None,
         external_input_snapshot: ComposeExternalInputSnapshot | None = None,
+        service_scope: tuple[str, ...] | None = None,
     ) -> ValidatedComposeCandidate:
         if environment_snapshot is None:
             environment_snapshot = _capture_compose_environment_snapshot(
@@ -3159,6 +3409,8 @@ class ComposeService:
             environment_snapshot,
             environment_override,
         )
+        if service_scope is not None:
+            candidate = _project_compose_service_scope(candidate, service_scope, environment)
         if external_input_snapshot is None:
             external_input_snapshot = _capture_compose_external_input_snapshot(
                 candidate,
@@ -3204,6 +3456,8 @@ class ComposeService:
             environment_override=environment_override,
             external_input_snapshot=external_input_snapshot,
         )
+        if service_scope is not None:
+            _validate_resolved_service_scope(resolved, service_scope)
         resolved_snapshots = validate_resolved_compose_candidate_protected_values(
             resolved,
             environment=environment,
@@ -3330,6 +3584,7 @@ class ComposeService:
         external_input_snapshot: ComposeExternalInputSnapshot | None,
         materialized_compose: Mapping[str, Any] | None,
         external: ExternalProject | None = None,
+        service_scope: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         if external is not None and (
             bool(self._compose_mutation_identifiers(args))
@@ -3392,6 +3647,7 @@ class ComposeService:
                 environment_snapshot=environment_snapshot,
                 environment_override=environment,
                 external_input_snapshot=external_input_snapshot,
+                service_scope=service_scope,
             )
         process_input = None
         if materialized_compose is not None:
@@ -3468,6 +3724,7 @@ class ComposeService:
         environment_snapshot: ComposeEnvironmentSnapshot | None,
         environment_override: Mapping[str, str] | None,
         external_input_snapshot: ComposeExternalInputSnapshot | None,
+        service_scope: tuple[str, ...] | None = None,
     ) -> None:
         if environment_snapshot is None:
             raise ComposeCandidateContractError(
@@ -3494,6 +3751,11 @@ class ComposeService:
         if external_input_snapshot is None:
             raise ComposeCandidateContractError(
                 "compose mutation has no frozen external input snapshot"
+            )
+        if service_scope is not None:
+            loaded = _project_compose_service_scope(
+                loaded, service_scope,
+                _effective_snapshot_environment(environment_snapshot, environment_override),
             )
         _revalidate_compose_external_input_snapshot(
             external_input_snapshot,
@@ -4894,6 +5156,7 @@ class ComposeService:
             with _rebuild_stage("prebuild_snapshot"):
                 prebuild_transaction, _ = self.capture_transaction_unlocked(
                     environment_snapshot=environment_snapshot,
+                    pinned_runtime_scope=True,
                 )
             with _rebuild_stage("external_prerequisites"):
                 self._require_services_ready(
@@ -4947,6 +5210,7 @@ class ComposeService:
                 candidate_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=candidate_environment,
                     environment_snapshot=environment_snapshot,
+                    pinned_runtime_scope=True,
                 )
             with _rebuild_stage("candidate_contract"):
                 self._validate_pinned_runtime_candidate_build_contract(
@@ -4998,6 +5262,7 @@ class ComposeService:
                 runtime_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=runtime_environment,
                     environment_snapshot=environment_snapshot,
+                    pinned_runtime_scope=True,
                 )
                 # 잘못되거나 상한을 넘는 health 창은 in_progress/실패 정리 stop 이전에 거절한다.
                 _compose_wait_timeout_seconds(runtime_transaction.resolved.get("services"))
