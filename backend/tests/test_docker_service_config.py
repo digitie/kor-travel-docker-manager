@@ -1103,6 +1103,15 @@ def test_pinvi_api_reuses_the_map_service_token_for_transport() -> None:
     assert pinvi_environment["PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED"] == (
         "${PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED:-true}"
     )
+    # 지도 날씨 레이어(PinVi #600)는 기본 꺼짐이다 — Map weather 상태 적재가 채워진 뒤 켠다.
+    assert pinvi_environment["PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED"] == (
+        "${PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED:-false}"
+    )
+    assert {
+        service_name
+        for service_name, service in services.items()
+        if "PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED" in (service.get("environment") or {})
+    } == {_PINVI_API_SERVICE}
     assert {
         service_name
         for service_name, service in services.items()
@@ -1113,6 +1122,9 @@ def test_pinvi_api_reuses_the_map_service_token_for_transport() -> None:
     } == {_MAP_API_SERVICE, _PINVI_API_SERVICE}
     env_example_lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
     assert "PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED=true" in env_example_lines
+    assert [line for line in env_example_lines if line.startswith("PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED=")] == [
+        "PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED=false"
+    ]
     assert not any(
         line.startswith("PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN=") for line in env_example_lines
     )
