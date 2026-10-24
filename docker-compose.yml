@@ -2167,6 +2167,10 @@ services:
       # 기본 켜짐(소유자 결정 2026-10-23). 끄려면 root `.env`에 `PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED=false` —
       # 꺼지면 PinVi `/transport/status`가 enabled=false를 주고 web/mobile이 레이어 컨트롤을 숨긴다(Map 미호출).
       PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED: ${PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED:-true}
+      # 지도 날씨 레이어(PinVi #600, Map ADR-114 weather service REST). 기본 꺼짐 — Map weather 상태 적재(Map
+      # code-server의 weather export 배선, docs/docker-management.md 7.3d)가 채워진 뒤 root `.env`에서 true로 켠다.
+      # Map service token은 위 `PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN`을 그대로 쓴다(새 비밀 없음).
+      PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED: ${PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED:-false}
       # 공용 Dagster webserver(ADR-54, loopback 전용). admin_etl은 `repositoryOrError`·`runsOrError`를
       # `pinvi_dagster_location_name`(= `pinvi.etl.definitions`)으로 좁혀 부른다.
       PINVI_DAGSTER_BASE_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
