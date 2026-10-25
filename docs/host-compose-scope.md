@@ -48,8 +48,10 @@ trusted 판정을 전역 완화하지 않는다. 일반 설치에서도 제외�
 집중 회귀는 실제 Docker Compose config와 public capture/frozen 경계, 외부 파일·환경·원문
 drift, 두 설치 모드의 child 실패/후보 경로, 설치 패키지 위치의 pre-flip 반례를 검증한다.
 Docker 서비스 기동·운영 환경 수정은 하지 않는다. 기존 쌍 재구축·atomic restore·source-status
-231건은 별도 통과했다. 이 문서 고정 시점 최종 전체 회귀·두 독립 코드 리뷰·정확 CI·공식 CLI
-설치와 실제 배포 수용은 아직 완료로 세지 않는다. 최종 결과는 PR과 감사 원장에 정산한다.
+231건은 별도 통과했다. 최초 문서 고정 당시의 미완 판정과 후속 수용은 구분한다. PR #552·#553의
+두 독립 리뷰·정확 CI와 n150 공식 일반 설치·frontend 갱신·공개 UI 수용은
+[운영 기록](reports/2026-10-25-manager-normal-update-acceptance.md)에 정산했다.
+Map·PinVi의 실제 pinned 재구축·배포 수용은 별도이며 이 기록으로 완료 처리하지 않는다.
 
 ## 웹·API와 CLI를 함께 유지하는 업데이트
 
