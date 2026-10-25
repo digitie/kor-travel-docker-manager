@@ -1,5 +1,7 @@
 # TASKS — 활성 작업
 
+- [ ] **T-MGR-PINVI-ADMIN-FEATURE-READ — 전용 scope 배선**. raw 한 키→digest 파생·API 두 소비·기존 secret과 분리·마스킹/override·runtime 격리를 검증한다. 두 리뷰/CI 뒤 최종 pair 직전에만 명시 provision·배포한다. [범위](pinvi-admin-feature-read-provision.md).
+
 ## 복원 리허설 timeout 후속
 
 - [x] 컨테이너 deadline·현재 생성 확인 scratch 강제 정리·DB/backend 부재 확인·원오류 보존의 최소 수정과 회귀.
