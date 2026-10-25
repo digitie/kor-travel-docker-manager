@@ -3,7 +3,7 @@
 ## 2026-10-25 PinVi 관리자 Feature read 전용 배선 준비
 
 - 기존 service token의 관리자 권한 승격 없이, 전용 원문 한 키→Map digest/PinVi raw 두 API 소비만 연결한다.
-- 수정 전15실패를 보존하고 전용23회귀가 통과했다. 넓은 회귀·두 리뷰·정확 CI는 미완이다.
+- 수정 전15실패·첫CI13실패를 보존했다. 전용23·관련391·fixture22줄 정렬 뒤 별도120회귀가 통과했다. 제품·기대 단언은 그대로이며 두 리뷰·새 정확 CI는 미완이다.
 - 409→418는 기존 config를 보존하며 신규 운영 provision은 최종 pair 직전까지만 준비한다. 현재 실행0.
 - [계약과 순서](pinvi-admin-feature-read-provision.md).
 

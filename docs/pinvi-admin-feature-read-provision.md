@@ -24,6 +24,6 @@ source pair나 registry schema에 새 secret 필드를 넣지 않는다. Manager
 
 ## 검증
 
-원 소스에서 신규 파생/비활성/digest-only·기존 credential 승격 부정15개가 실패했다. 구현 뒤 전용 회귀23개가 통과했다. 첫 구현의 UI override 부정2개는 더 앞선 리터럴 차단에 걸려 기대 메시지만 달랐으며 원문을 보존했다. 새 시험은 리터럴 차단과 다른 변수로의 보간·추가·삭제 차단을 각각 검증한다. 관련 넓은 회귀·정확 CI·두 리뷰는 진행 중이다.
+원 소스에서 신규 파생/비활성/digest-only·기존 credential 승격 부정15개가 실패했다. 구현 뒤 전용 회귀23개가 통과했다. 첫 구현의 UI override 부정2개는 더 앞선 리터럴 차단에 걸려 기대 메시지만 달랐으며 원문을 보존했다. 새 시험은 리터럴 차단과 다른 변수로의 보간·추가·삭제 차단을 각각 검증한다. 기존 F1D·raw/resolved Compose·모델 참조·secret 마스킹 관련391개는 별도 실행에서183.22초로 통과했다. 첫 정확 CI는3349통과·40skip·13실패였으며 원문을 보존했다. 12개는 기존 Docker config의 수동 canonical fixture에 새 두 env가 없어서 본래 검사보다 앞에서 거부됐고, 1개는 own runtime fingerprint의 새 두 정본 키·보호 키 누락이었다. 제품·기대 단언을 바꾸지 않고 두 fixture만22줄 추가해 해당 전체120개를 별도16.09초에 통과시켰다. 신규 정확 CI·두 리뷰는 진행 중이다.
 
 회귀는 원문→digest, 입력 불변, 부재/잘못된 입력, 기존 credential 재사용 거부, API 두 소비 위치, frozen render, masking/repr, config override와 runtime 누출·활성값 부재를 검증한다. 실제 운영 토큰이나 DB fixture는 사용하지 않는다.
