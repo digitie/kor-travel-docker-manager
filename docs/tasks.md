@@ -5,6 +5,8 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
+- [ ] **T-MGR-PINVI-VWORLD — PinVi 지도 키 빌드 연결**. 정본 공개 키를 Web build/runtime ARG 소비와 맞추고 raw/resolved 검증·회귀를 추가한다. 소스 검증 뒤 두 독립 리뷰·CI·일반 설치·공식 pair rebuild·공개 지도 확인은 별도다. [범위](pinvi-vworld-build.md).
+
 - [ ] **T-MGR-HOST-COMPOSE-SCOPE — 선택 쌍 실제 재구축 수용**. 정본 host-local 구현·두 설치 모드 검증과 n150 웹·API·CLI 정상 갱신은 수용했다. 남은 것은 Map·PinVi 공식 pinned 재구축·배포 수용이며 Manager 공개 UI 결과와 구분한다. [규약](host-compose-scope.md)·[운영 기록](reports/2026-10-25-manager-normal-update-acceptance.md).
 
 - [ ] **T-MGR-DAGSTER-PROGRESS-RUNTIME — 공용 진행 로그 운영 수용**. 공용 INFO·기존 명시 Python logger·파생 digest와 실제 SDK/PG 회귀를 준비한다. 최종 CI·독립2리뷰·머지는 PR 정본을 확인한다. 사용자 지시로 배포는 대기하며 기존 InstanceRef 재적용과 정상 예약 실행의 실제 진행/저장은 일괄 배포 담당자가 확인한다. [규약](dagster-progress-logging.md).

@@ -1,5 +1,9 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-25 — PinVi 지도 공개 키의 빌드 전달
+
+- 공개 UI 기준에서 발견한 missing_key를 source 계약으로 추적했다. pinvi-web build arg 한 개와 엄격한 raw/resolved 계약만 맞췄다. 수정 전4실패·1통과→관련11통과/Ruff, 실제 설치·rebuild·지도 검증과 목록422는 미완이다. [근거와 범위](pinvi-vworld-build.md).
+
 ## 2026-10-25 — n150 Manager 웹·API·CLI 정상 업데이트 수용
 
 - 최신 사용자 정책인 세 경로 모두 유지를 활성 설치·workspace 문서에 명시하고 CLI 전용은 별도 이전 완료 호스트의 선택 경로로 구분했다. 과거 일지는 보존한다.
