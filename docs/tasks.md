@@ -1,5 +1,7 @@
 # TASKS — 활성 작업
 
+- [ ] **T-MGR-STATUS-SNAPSHOT — 상태 조회 공유의 최신 main 후속**. 원533 제품 전체·불완전 inventory 재시도·연속변경 유한 실패 및 취소/복사 격리를 검증한다. 새 exact CI·독립 두 리뷰·실제 UI·CPU/RSS 수용은 후속이며 운영 설치는 별도다. [규약](container-status-snapshot.md).
+
 - [ ] **T-MGR-PINVI-ADMIN-FEATURE-READ — 전용 scope 배선**. raw 한 키→digest 파생·API 두 소비·기존 secret과 분리·마스킹/override·runtime 격리를 검증한다. 두 독립 리뷰·정확9f10 CI·격리 실제 후보 UI12판정은 통과했다. 공식 설치·새 공개 UI 뒤 최종 pair 직전에만 명시 provision·pair 배포한다. [범위](pinvi-admin-feature-read-provision.md).
 
 ## 복원 리허설 timeout 후속

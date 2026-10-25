@@ -182,6 +182,7 @@ from kor_travel_docker_manager.services.runtime_topology import (
     shared_workspace_source,
     slot_project,
 )
+from kor_travel_docker_manager.services.status_snapshot import invalidates_status
 from kor_travel_docker_manager.services.trusted_install import (
     require_pinned_runtime_rebuild_root,
     trusted_pinned_runtime_project_root,
@@ -4141,6 +4142,7 @@ class ComposeService:
         # down/rm --all/unknown command/option parse failure may affect either API.
         return None, frozenset()
 
+    @invalidates_status
     def ensure_target(
         self,
         target: str,
@@ -5088,6 +5090,7 @@ class ComposeService:
         images.update((name, slot_images[owner]) for name, owner in companions.items())
         return images
 
+    @invalidates_status
     def rebuild_pinned_runtime(
         self,
         *,
@@ -5631,6 +5634,7 @@ class ComposeService:
             transaction=transaction,
         )
 
+    @invalidates_status
     def converge_shared_dagster_plane(self, *, dry_run: bool) -> dict[str, Any]:
         """설치된 release의 공용 Dagster plane(daemon·webserver)**만** 그 render로 맞춘다(`ktdctl dagster-plane converge`).
 

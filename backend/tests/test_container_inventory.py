@@ -129,7 +129,8 @@ def test_failed_inspect_preserves_read_only_and_inventory_failure_is_reported(mo
     monkeypatch.setattr(module, 'get_compose_config', lambda: {})
     listing = Mock(return_value=[SimpleNamespace(name='unregistered')])
     client = SimpleNamespace(containers=SimpleNamespace(list=listing, get=Mock(side_effect=DockerException('inspect failed'))))
-    service = module.DockerService.__new__(module.DockerService)
+    monkeypatch.setattr(module.DockerService, "_backup_default_config", lambda self: None)
+    service = module.DockerService()
     monkeypatch.setattr(service, '_get_client', lambda: client)
     monkeypatch.setattr(module, 'probe_remote_connections', lambda values: {name: 'remote' for name in values})
     rows = service.get_containers_status()
@@ -180,9 +181,33 @@ def test_observed_public_links_do_not_grant_control(monkeypatch):
             return container
         raise NotFound('missing')
     client = SimpleNamespace(containers=SimpleNamespace(list=lambda **kwargs: [container], get=get))
-    service = module.DockerService.__new__(module.DockerService)
+    monkeypatch.setattr(module.DockerService, "_backup_default_config", lambda self: None)
+    service = module.DockerService()
     monkeypatch.setattr(service, '_get_client', lambda: client)
     row = next(x for x in service.get_containers_status() if x['name'] == 'public-ui')
     assert row['public_url'] == 'https://transport.example.org'
     assert row['observed_only'] and row['id'] not in module.MANAGED_CONTAINERS
     assert not service.control_container(row['id'], 'restart')['success']
+
+
+def test_partial_docker_inventory_retries_before_reusing_the_recovered_snapshot(monkeypatch):
+    from docker.errors import DockerException, NotFound
+
+    from kor_travel_docker_manager.services import docker_service as module
+
+    monkeypatch.setattr(module.DockerService, "_backup_default_config", lambda self: None)
+    monkeypatch.setattr(module, "get_compose_config", lambda: {})
+    listing = Mock(side_effect=[DockerException("inventory unavailable"), []])
+    client = SimpleNamespace(containers=SimpleNamespace(
+        list=listing, get=Mock(side_effect=NotFound("missing")),
+    ))
+    service = module.DockerService()
+    monkeypatch.setattr(service, "_get_client", lambda: client)
+    first = service.get_containers_status()
+    second = service.get_containers_status()
+    third = service.get_containers_status()
+    assert first and second
+    assert all(row["inventory_complete"] is False for row in first)
+    assert all(row["inventory_complete"] is True for row in second)
+    assert third == second
+    assert listing.call_count == 2

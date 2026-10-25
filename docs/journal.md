@@ -1,5 +1,11 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-26 상태 조회 캐시의 최신 main 후속
+
+- PR533의 미흡수 제품 세 파일과 관련 회귀를 main557에서 별도 Linux 작업트리로 옮겼다. 원본 dirty checkout과 네 untracked 파일은 보존했다.
+- 불완전 inventory 응답을 캐시하지 않으며, 연속 변경에 따른 재관측은 두 번으로 제한한다. 원반례 2 FAIL과 수정 후 집중33 PASS를 구분해 보존했다. 일시 불가는 고정 REST503/WS1013으로 전달한다.
+- 새 main의 inventory·공개 URL·compose 보안 계약, 권한 판정과 기존 호출 timeout은 보존한다. [범위·한계](container-status-snapshot.md)와 [재개 기록](status-snapshot-resume.md)을 따른다. 독립 두 리뷰·전체 CI·실제 UI·운영 효과는 아직 미수용이다.
+
 ## 2026-10-25 PinVi 관리자 Feature read 전용 배선 준비
 
 - 기존 service token의 관리자 권한 승격 없이, 전용 원문 한 키→Map digest/PinVi raw 두 API 소비만 연결한다.

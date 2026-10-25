@@ -65,6 +65,7 @@ from kor_travel_docker_manager.services.standalone_backup import (
     require_local_backup_role,
     ui_backup_owner_conflict,
 )
+from kor_travel_docker_manager.services.status_snapshot import StatusSnapshotUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -755,6 +756,10 @@ def list_containers():
     """Retrieve state and ports for managed PostgreSQL and RustFS services."""
     try:
         return docker_service.get_containers_status()
+    except StatusSnapshotUnavailableError as e:
+        raise HTTPException(
+            status_code=503, detail="Container status is changing; retry the request"
+        ) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
