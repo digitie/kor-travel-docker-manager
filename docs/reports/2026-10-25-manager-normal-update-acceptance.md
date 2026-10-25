@@ -17,7 +17,7 @@ PR #552의 host-local 후보 검증을 일반 설치에도 적용했다. 후속 
 | --- | --- |
 | Backend·CLI | 고정 root 소유 소스·별도 offline wheelhouse의 공식 일반 설치 성공. Backend 활성·health 정상·정본 CLI targets 검증 통과. 기존 환경·인증 설정과 원본 dirty clone 보존 |
 | Frontend | 비밀 환경파일을 보존한 공식 npm ci/build와 서비스 재시작 성공. 적용 소스 58개·정적 산출물 17개·실제 Next.js 16 manifest 4개 확인 |
-| 공개 UI | n150 Linux 고정 runtime에서 실제 12개 검사 통과. 로그인 화면·200/cookie·인증 읽기·원장 렌더·WS frame·reload·로그아웃·보호 읽기 401·종료 후 재연결 루프 없음 |
+| 공개 UI | n150 Linux 고정 runtime에서 실제 12개 검사 통과. 로그인 화면·200/cookie·인증 읽기·원장 렌더·WS frame·reload·로그아웃·보호 읽기 401·로그아웃 뒤 5초 관찰에서 재연결 루프 없음 |
 | 공개 빌드 | 인증 없는 HTTPS 읽기에서 HTML의 script/style 12개가 같은 빌드 집합에 속하며 정적 17개, 총 1,400,413바이트가 적용 빌드와 일치 |
 | 테스트 세션 | 성공 UI 세션의 운영 감사·세션 정확 일치 1개와 폐기 상태를 확인. 이전 실패 세션 1개는 두 독립 소스 리뷰 후 정확한 행만 CAS 폐기·commit/readback 확인. 다른 세션 fingerprint 보존 |
 
