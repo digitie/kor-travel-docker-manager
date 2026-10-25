@@ -123,6 +123,7 @@ def _runtime_secret_config() -> SimpleNamespace:
         map_service_token="s" * 32,
         map_cursor_signing_secret="u" * 32,
         map_geo_api_key="g" * 32,
+        admin_features_read_token="",
         feature_create_token="feature-token",
         feature_create_enabled="true",
         map_ui_password_hash="pbkdf2_sha256$100000$salt$digest",

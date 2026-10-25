@@ -371,6 +371,9 @@ def _compose_with_canonical_c6c_services(
                     "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
                 ),
                 "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": _MAP_GEO_API_KEY_SOURCE,
+                "KOR_TRAVEL_MAP_API_PINVI_ADMIN_FEATURES_READ_TOKEN_SHA256": (
+                    "${KOR_TRAVEL_MAP_API_PINVI_ADMIN_FEATURES_READ_TOKEN_SHA256:-}"
+                ),
                 "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256": (
                     _CURATION_SNAPSHOT_DIGEST_SOURCE
                 ),
@@ -456,6 +459,9 @@ def _compose_with_canonical_c6c_services(
                 "PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN": (
                     "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
                     "KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
+                ),
+                "PINVI_KOR_TRAVEL_MAP_ADMIN_FEATURES_READ_TOKEN": (
+                    "${PINVI_KOR_TRAVEL_MAP_ADMIN_FEATURES_READ_TOKEN:-}"
                 ),
                 "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": (_PINVI_CURATION_SNAPSHOT_SOURCE),
                 "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": (

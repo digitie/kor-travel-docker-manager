@@ -1,5 +1,14 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-25 PinVi 관리자 Feature read 전용 배선 준비
+
+- 기존 service token의 관리자 권한 승격 없이, 전용 원문 한 키→Map digest/PinVi raw 두 API 소비만 연결한다.
+- 수정 전15실패·첫CI13실패를 보존했다. 전용23·관련391·fixture22줄 정렬 뒤 별도120회귀가 통과했다. 제품·기대 단언은 그대로이며 두 독립 리뷰·정확9f10 CI(backend3362/40skip·frontend47)가 통과했다.
+- 정확9f10 새 후보 build58.33초 뒤 격리 API+Next+브라우저의 실제12판정이 최종19.613초에 통과했다. 임시 세션1 revoked/미폐기0·소유 프로세스/DB/log/profile 삭제·운영7/env/PID 보존을 확인했다.
+- 첫 후보 cleanup 단언 FAIL은 보존하고 별도 후관찰/정리와 최종 새 UUID 성공을 구분한다. loopback HTTP이며 공개 TLS·운영 설치·Map/PinVi pair 수용은 별도다.
+- 409→418는 기존 config를 보존하며 신규 운영 provision은 최종 pair 직전까지만 준비한다. 현재 실행0.
+- [계약과 순서](pinvi-admin-feature-read-provision.md).
+
 ## 2026-10-25 복원 timeout 격리 실증
 
 - c24d026 두 독립 리뷰·기존 CI 통과 뒤 실제 inner exit124와 client TimeoutExpired 두 경계를 검증했다.
