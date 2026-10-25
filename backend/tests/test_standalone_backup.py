@@ -1542,7 +1542,7 @@ def _rehearsal_probes(
 
     def fake_subprocess_run(arguments: list[str], **kwargs: object) -> Mock:
         cleanup_calls.append(arguments)
-        return Mock(returncode=0, stderr=b"", stdout=b"")
+        return Mock(returncode=0, stderr=b"", stdout=b"0|0\n" if "psql" in arguments else b"")
 
     monkeypatch.setattr(standalone_backup.subprocess, "run", fake_subprocess_run)
     return cleanup_calls
@@ -1726,11 +1726,12 @@ def test_rehearse_standalone_restore_always_drops_the_scratch_database(
     def run_checked(arguments: list[str], *, label: str, timeout: int) -> bytes:
         if "max_wal_size" in " ".join(arguments):
             return b"1073741824\n"
-        if arguments[:2] == ["docker", "cp"]:
+        if arguments[:2] == ["docker", "cp"] or "chown" in arguments or "createdb" in arguments:
             return b""
-        raise StandaloneBackupError("createdb exploded")
+        raise StandaloneBackupError("restored database inspection exploded")
 
     monkeypatch.setattr(standalone_backup, "_run_checked", run_checked)
+    monkeypatch.setattr(standalone_backup, "_run_pg_restore", lambda *a, **k: (0, b""))
 
     cleanup_calls: list[list[str]] = []
 
@@ -1793,7 +1794,7 @@ def test_rehearse_standalone_restore_surfaces_a_cleanup_failure_without_hiding_i
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """dropdb 정리가 실패해도 예외로 삼키지 않고 findings에 남긴다 — 그래야 잔해가
-    생겼다는 사실이 조용히 사라지지 않는다. 복원 자체는 성공했으므로 verified는 유지한다.
+    생겼다는 사실이 조용히 사라지지 않는다. 복원 exit 0과 정리 완료는 별개이며 잔해가 있으면 verified는 거부한다.
     """
 
     root = tmp_path / "geo"
@@ -1827,7 +1828,7 @@ def test_rehearse_standalone_restore_surfaces_a_cleanup_failure_without_hiding_i
     outcome = rehearse_standalone_restore("geo", backup_root=root)
 
     assert outcome.restore_succeeded is True
-    assert outcome.verified is True
+    assert outcome.verified is False
     assert "REHEARSAL_CLEANUP_INCOMPLETE" in [f.code for f in outcome.findings]
 
 

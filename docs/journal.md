@@ -1,5 +1,12 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-25 복원 timeout 뒤 현재 scratch 정리
+
+- 로컬 docker exec timeout이 안쪽 pg_restore를 중단하지 않던 경계를 컨테이너 deadline으로 보강했다.
+- 생성 성공한 현재 scratch만 force 삭제·DB/backend 부재를 읽고, 원예외와 정리 실패를 함께 보존한다.
+- 새15+기존 백업 회귀113통과, 수정 전8실패 보존. 실제 PG 종료 lab·설치·운영 수용은 미완이다.
+- [상세와 남은 경계](restore-rehearsal-timeout.md). 현재 별도 운영 리허설은 변경하지 않았다.
+
 ## 2026-10-25 — PinVi 지도 공개 키의 빌드 전달
 
 - 공개 UI 기준에서 발견한 missing_key를 source 계약으로 추적했다. pinvi-web build arg 한 개와 엄격한 raw/resolved 계약만 맞췄다. 수정 전4실패·1통과→관련11통과/Ruff, 실제 설치·rebuild·지도 검증과 목록422는 미완이다. [근거와 범위](pinvi-vworld-build.md).
