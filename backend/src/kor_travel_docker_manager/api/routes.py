@@ -758,7 +758,7 @@ def list_containers():
         return docker_service.get_containers_status()
     except StatusSnapshotUnavailableError as e:
         raise HTTPException(
-            status_code=503, detail="Container status is changing; retry the request"
+            status_code=503, detail="Container status is temporarily unavailable; retry the request"
         ) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e

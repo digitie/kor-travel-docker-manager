@@ -40,7 +40,7 @@ def invalidates_status(method: Callable[P, R]) -> Callable[P, R]:
 
 
 class StatusSnapshotUnavailableError(RuntimeError):
-    """연속 변경으로 일관된 관측을 완료하지 못한 일시 불가."""
+    """공유 대기 또는 연속 변경으로 관측을 완료하지 못한 일시 불가."""
 
 
 class StatusSnapshot:
@@ -54,6 +54,7 @@ class StatusSnapshot:
         self._epoch = -1
 
     def get(self, collect: Callable[[], Snapshot]) -> Snapshot:
+        join_deadline = monotonic() + 5.0
         # 변경을 가로지른 조회는 한 번만 다시 읽고, 계속 바뀌면 실패로 돌린다.
         for _attempt in range(2):
             with self._lock:
@@ -87,7 +88,22 @@ class StatusSnapshot:
                     with self._lock:
                         flight.set_exception(exc)
                         self._flight = None
-            observed_epoch, result = flight.result()
+            if leader:
+                # 동기 수집 자체의 기존 I/O 한도는 바꾸지 않는다.
+                observed_epoch, result = flight.result()
+            else:
+                try:
+                    observed_epoch, result = flight.result(
+                        timeout=max(0.0, join_deadline - monotonic())
+                    )
+                except TimeoutError as exc:
+                    # 완료 경합 및 수집자가 던진 실제 TimeoutError는 원결과다.
+                    if flight.done():
+                        observed_epoch, result = flight.result()
+                    else:
+                        raise StatusSnapshotUnavailableError(
+                            "Container status is temporarily unavailable; retry the request"
+                        ) from exc
             if observed_epoch == _version()[0]:
                 return deepcopy(result)
             # 변경 전에 시작한 조회는 변경 후 요청의 정본으로 반환하지 않는다.

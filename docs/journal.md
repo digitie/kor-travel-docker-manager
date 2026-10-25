@@ -1,5 +1,10 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-26 상태 공유 대기의 follower 한도
+
+- 원3a의 무제한 공유 대기 증폭을 별도 반례로 보존하고 get 진입의 고정5초 JOIN deadline을 두 관측에 합산한다. pending timeout만 일시 불가503/1013이며 실제 collector TimeoutError·완료 경합은 원결과를 보존한다.
+- timeout 뒤 flight를 비우거나 새 수집/thread를 만들지 않는다. leader의 동기 수집 전체를5초로 제한했다고 주장하지 않으며 기존 I/O 한계는 유지한다. 원3a CI그린과 새 소스의 CI·후보 UI를 구분한다.
+
 ## 2026-10-26 상태 조회 Future의 수집자 원본 격리
 
 - 독립 리뷰에서 같은 flight의 늦은 대기자가 수집자의 완료 후 원본 수정을 읽는 반례가 확인됐다. 정상/오류/불완전 응답 3 FAIL을 보존하고 완료 private 복사본 하나를 cache와 Future가 함께 보관하도록 수정했다.

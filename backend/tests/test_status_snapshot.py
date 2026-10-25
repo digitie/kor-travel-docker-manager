@@ -265,7 +265,7 @@ def test_rest_temporary_snapshot_failure_is_503_with_fixed_detail(monkeypatch):
     with pytest.raises(HTTPException) as raised:
         routes.list_containers()
     assert raised.value.status_code == 503
-    assert raised.value.detail == "Container status is changing; retry the request"
+    assert raised.value.detail == "Container status is temporarily unavailable; retry the request"
     assert isinstance(raised.value.__cause__, module.StatusSnapshotUnavailableError)
 
 
@@ -382,3 +382,194 @@ def test_successful_completion_keeps_one_private_copy_and_one_return_copy(monkey
     assert len(copy_calls) == 2
     cache.get(lambda: pytest.fail("normal snapshot was not reused"))
     assert len(copy_calls) == 3
+
+
+def test_pending_followers_have_one_fixed_join_budget_without_starting_another_collect(monkeypatch):
+    from itertools import count
+
+    clock = count(0.0, 5.0)
+    last = [0.0]
+
+    def now():
+        last[0] = next(clock)
+        return last[0]
+
+    monkeypatch.setattr(module, "monotonic", now)
+    cache = StatusSnapshot()
+    entered, release = Event(), Event()
+    calls = []
+
+    def collect():
+        calls.append(1)
+        entered.set()
+        assert release.wait(3)
+        return [{"status": "running"}]
+
+    with ThreadPoolExecutor(1) as pool:
+        leader = pool.submit(cache.get, collect)
+        try:
+            assert entered.wait(3)
+            for _ in range(2):
+                with pytest.raises(module.StatusSnapshotUnavailableError):
+                    cache.get(collect)
+                assert cache._flight is not None and not cache._flight.done()
+                assert len(calls) == 1
+        finally:
+            release.set()
+        assert leader.result(timeout=3) == [{"status": "running"}]
+    monkeypatch.setattr(module, "monotonic", lambda: last[0])
+    assert cache.get(lambda: pytest.fail("completed snapshot was not recovered")) == [{"status": "running"}]
+
+
+def test_collector_timeout_error_is_preserved_as_the_original_exception():
+    cache = StatusSnapshot()
+    original = TimeoutError("synthetic collector timeout")
+
+    def collect():
+        raise original
+
+    with pytest.raises(TimeoutError) as raised:
+        cache.get(collect)
+    assert raised.value is original
+    assert cache._flight is None
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_completed_future_timeout_and_completion_race_are_not_classified_as_pending(monkeypatch, fail):
+    from concurrent.futures import Future
+
+    cache = StatusSnapshot()
+    original = TimeoutError("synthetic completed collector timeout")
+
+    class CompletedDuringTimeout(Future):
+        def result(self, timeout=None):
+            if not self.done():
+                if fail:
+                    self.set_exception(original)
+                else:
+                    self.set_result((module._version()[0], [{"status": "running"}]))
+                raise TimeoutError()
+            return super().result(timeout=timeout)
+
+    cache._flight = CompletedDuringTimeout()
+    if fail:
+        with pytest.raises(TimeoutError) as raised:
+            cache.get(lambda: pytest.fail("follower started a collector"))
+        assert raised.value is original
+    else:
+        assert cache.get(lambda: pytest.fail("follower started a collector")) == [{"status": "running"}]
+
+
+def test_two_stale_join_attempts_share_one_entry_deadline(monkeypatch):
+    from concurrent.futures import Future
+
+    times = iter([100.0, 101.0, 104.0])
+    monkeypatch.setattr(module, "monotonic", lambda: next(times))
+    cache = StatusSnapshot()
+    timeouts = []
+
+    @invalidates_status
+    def mutate():
+        pass
+
+    class StaleJoin(Future):
+        def result(self, timeout=None):
+            timeouts.append(timeout)
+            epoch = module._version()[0]
+            mutate()
+            cache._flight = StaleJoin()
+            return epoch, [{"status": "running"}]
+
+    cache._flight = StaleJoin()
+    with pytest.raises(module.StatusSnapshotUnavailableError, match="changed repeatedly"):
+        cache.get(lambda: pytest.fail("follower started a collector"))
+    assert timeouts == [4.0, 1.0]
+
+
+def test_cancelled_async_follower_worker_is_released_while_collection_stays_pending(monkeypatch):
+    asyncio.run(_cancel_pending_follower_worker(monkeypatch))
+
+
+async def _cancel_pending_follower_worker(monkeypatch):
+    from threading import local
+
+    state = local()
+
+    def clock():
+        calls = getattr(state, "calls", 0)
+        state.calls = calls + 1
+        return 0.0 if calls == 0 else 4.95
+
+    monkeypatch.setattr(module, "monotonic", clock)
+    cache = StatusSnapshot()
+    entered, release, joined, drained = Event(), Event(), Event(), Event()
+    original_future = module.Future
+    calls = []
+
+    class JoinedFuture(original_future):
+        def result(self, *args, **kwargs):
+            if kwargs.get("timeout") is not None:
+                joined.set()
+            return super().result(*args, **kwargs)
+
+    def collect():
+        calls.append(1)
+        entered.set()
+        assert release.wait(3)
+        return [{"status": "running"}]
+
+    def wait_as_follower():
+        try:
+            with pytest.raises(module.StatusSnapshotUnavailableError):
+                cache.get(collect)
+        finally:
+            drained.set()
+
+    monkeypatch.setattr(module, "Future", JoinedFuture)
+    with ThreadPoolExecutor(1) as pool:
+        leader = pool.submit(cache.get, collect)
+        try:
+            assert await asyncio.to_thread(entered.wait, 3)
+            waiter = asyncio.create_task(asyncio.to_thread(wait_as_follower))
+            assert await asyncio.to_thread(joined.wait, 3)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+            assert await asyncio.to_thread(drained.wait, 1)
+            assert not leader.done() and len(calls) == 1
+        finally:
+            release.set()
+        assert leader.result(timeout=3) == [{"status": "running"}]
+
+
+def test_actual_collector_timeout_is_shared_without_unavailable_translation(monkeypatch):
+    cache = StatusSnapshot()
+    entered, release, joined = Event(), Event(), Event()
+    original = TimeoutError("synthetic owned collector timeout")
+    original_future = module.Future
+
+    class JoinedFuture(original_future):
+        def result(self, *args, **kwargs):
+            if kwargs.get("timeout") is not None:
+                joined.set()
+            return super().result(*args, **kwargs)
+
+    def collect():
+        entered.set()
+        assert release.wait(3)
+        raise original
+
+    monkeypatch.setattr(module, "Future", JoinedFuture)
+    with ThreadPoolExecutor(2) as pool:
+        leader = pool.submit(cache.get, collect)
+        try:
+            assert entered.wait(3)
+            follower = pool.submit(cache.get, collect)
+            assert joined.wait(3)
+        finally:
+            release.set()
+        for task in (leader, follower):
+            with pytest.raises(TimeoutError) as raised:
+                task.result(timeout=3)
+            assert raised.value is original
+    assert cache._flight is None
