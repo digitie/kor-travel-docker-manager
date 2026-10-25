@@ -4396,7 +4396,9 @@ def validate_resolved_c6c_build_provenance(
             "NEXT_PUBLIC_VWORLD_API_KEY",
         }
     )
-    expected_arg_names[_PINVI_WEB_SERVICE].add("NEXT_PUBLIC_PINVI_API_URL")
+    expected_arg_names[_PINVI_WEB_SERVICE].update(
+        {"NEXT_PUBLIC_PINVI_API_URL", "NEXT_PUBLIC_VWORLD_API_KEY"}
+    )
     expected_dockerfiles = {
         _MAP_UI_SERVICE: "docker/frontend.Dockerfile",
         _PINVI_API_SERVICE: "apps/api/Dockerfile",
@@ -4509,6 +4511,7 @@ def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
                 "NEXT_PUBLIC_PINVI_API_URL": (
                     "${PINVI_PUBLIC_API_URL:-http://127.0.0.1:12801}"
                 ),
+                "NEXT_PUBLIC_VWORLD_API_KEY": "${NEXT_PUBLIC_VWORLD_API_KEY:-}",
             },
         },
         pinvi_dagster_service: {

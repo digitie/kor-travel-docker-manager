@@ -2100,3 +2100,8 @@ Map 원장 `T-VN-H49-{GEO-DAGSTER,CONCIERGE,PINVI}`의 마지막 해제 조건�
 ## 상태 점검 간격 정합
 
 서비스별 승인 간격과 적용 경계는 [배포 상태 점검 간격 정합](health-cadence.md)을 따른다. 기존 Test와 readiness 계약은 유지하며, Compose 파일 저장만으로 실행 중인 healthcheck가 바뀌었다고 판단하지 않는다.
+
+
+### PinVi 지도 공개 키의 빌드 전달
+
+pinvi-web의 NEXT_PUBLIC_VWORLD_API_KEY는 같은 이름의 정본 환경 변수에서 build arg로 전달한다. PinVi Dockerfile의 build/runtime ARG·ENV가 이를 소비한다. raw/resolved provenance 검증은 이 인자를 포함한 정확한 집합을 요구하며, 다른 key 원천으로 대체하지 않는다. 설치·공식 재구축 후 새 image와 실제 공개 지도까지 별도로 확인한다. [범위와 회귀](pinvi-vworld-build.md).
