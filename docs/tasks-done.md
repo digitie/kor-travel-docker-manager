@@ -1,5 +1,9 @@
 # TASKS-DONE — 완료 태스크 기록
 
+## 2026-10-25 — n150 Manager 웹·API·CLI 운영 수용
+
+- [x] **T-MGR-WEB-CLI-N150 — 정상 업데이트 수용**. 공식 Backend·CLI 설치와 frontend 갱신·공개 UI·정적 산출물 대조·실패 테스트 세션 정리를 확인했다. 적용 세대와 한계는 [운영 기록](reports/2026-10-25-manager-normal-update-acceptance.md)을 따른다. Map·PinVi 실제 재구축은 활성 작업으로 남긴다.
+
 ## 2026-10-24 — npm 보안·버전 정합 소스 완료
 
 - [x] **T-MGR-NEXT-SECURITY — Next.js 16.4.3**. npm 직접/전이 보안 패치와 공통 버전 정합, 이 저장소 기존 테스트 47개·타입·린트·빌드 검증을 반영했다. 최종 게이트와 머지 상태는 [PR](https://github.com/digitie/kor-travel-docker-manager/pull/549), 잔여 상류 권고와 범위는 [정합 기록](npm-security-alignment-2026-10-24.md)을 따른다.

@@ -1,5 +1,11 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-25 — n150 Manager 웹·API·CLI 정상 업데이트 수용
+
+- 최신 사용자 정책인 세 경로 모두 유지를 활성 설치·workspace 문서에 명시하고 CLI 전용은 별도 이전 완료 호스트의 선택 경로로 구분했다. 과거 일지는 보존한다.
+- 공식 일반 설치·별도 frontend 갱신·실제 공개 UI 12개·정적 17개 일치·이전 실패 세션 한 행 정리를 [운영 기록](reports/2026-10-25-manager-normal-update-acceptance.md)에 정산했다.
+- 원 실패·fix-forward·민감 원장은 보존한다. 전체 Docker 표시·프록시 PID 결박·Map/PinVi 실제 배포로 확대하지 않는다. 문서 전용이며 사용자 지시대로 CI를 생략한다.
+
 ## 2026-10-25 — Map 가격 추이·weather 상태 적재 env 배선(Map ADR-114)
 
 - Map API에 transport 주소·token(code-server와 같은 원천·기본값)과 `KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED`(기본

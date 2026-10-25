@@ -1329,6 +1329,11 @@ registry(`config/docker-targets.yml`)와 커밋된 파생물(테스트가 계산
 
 ## Manager 웹·API 이전 후 CLI만 남기는 설치
 
+**현재 n150 정책(2026-10-25)은 웹·API·CLI 모두 유지**다. 공식 일반 설치와 별도 frontend
+갱신의 [실제 수용](reports/2026-10-25-manager-normal-update-acceptance.md)을 따른다.
+아래 CLI 전용은 웹·API 이전을 별도 승인하고 완료한 호스트의 선택 경로이며,
+현재 n150을 CLI 전용으로 전환하거나 서비스를 stop·disable하라는 지시가 아니다.
+
 Manager 웹·API를 다른 호스트로 이전한 뒤 원래 호스트에서 정식 관리 CLI만 갱신할 때
 trusted-release installer에 --cli-only를 사용한다. 먼저 운영자가 이전 완료를 확인하고
 옛 ktdm-backend.service 및 ktdm-frontend.service를 stop·disable한다. 설치기는 대신
@@ -1342,8 +1347,8 @@ trusted-release installer에 --cli-only를 사용한다. 먼저 운영자가 이
 정리를 하지 않는다. 복구에는 이번 검토한 CLI 지원 설치기를 root 소유로 보존해 사용한다.
 보존한 설치기에 --expected-source-revision <이전 SHA> --cli-only <root 소유 clone>을
 전달한다. 설치기 코드와 archive revision은 별개다. 옛 revision의 설치기를 다시 실행하면
---cli-only가 없거나 서비스를 시작할 수 있으므로 사용하지 않는다. 현재 n150의 이전
-8bb8f996에는 targets validate --json 계약이 있으며, 복구 후보도 기존 호스트 검증을 통과해야 한다.
+--cli-only가 없거나 서비스를 시작할 수 있으므로 사용하지 않는다. 복구 후보도 기존 호스트
+검증을 통과해야 한다. 과거 n150 CLI 전용 복구 검토는 당시 계획이며 현재 운영 모드가 아니다.
 
 이는 CLI 설치만 변경한다. 별도 Dagster converge/rebuild 명령을 자동 실행하지 않으며
 Dagster daemon OFF를 해제하지 않는다. 기본 설치 모드의 backend stop/start는 기존대로다.
