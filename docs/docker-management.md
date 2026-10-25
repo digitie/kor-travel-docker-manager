@@ -1573,6 +1573,11 @@ ktdctl db-backup restore-plan concierge [--file <name>] [--json]      # 읽기 �
 ktdctl db-backup rehearse-restore concierge [--file <name>] [--timeout <초>] [--json]
 ```
 
+리허설은 컨테이너 안 pg_restore에도 유한 timeout을 적용하고, 이번 호출의 생성 성공이
+확인된 scratch만 강제 정리한 뒤 DB/backend 부재를 재조회한다. 정리 실패는 blocking이며
+원 복원 오류를 보존한다. 세션의 병렬 인덱스 worker만 끈다. 상세한 한계와 격리 검증은
+[복원 리허설 timeout](restore-rehearsal-timeout.md)을 따른다.
+
 #### 디스크 여유 — `create`·`rehearse-restore`는 시작 전에 role마다 확인한다
 
 `create`는 pg_dump를 **시작하기 전에** 백업 root 파일시스템의 여유를 재고, 모자라면 아무것도

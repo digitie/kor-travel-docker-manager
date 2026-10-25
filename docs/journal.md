@@ -1,5 +1,19 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-25 복원 timeout 격리 실증
+
+- c24d026 두 독립 리뷰·기존 CI 통과 뒤 실제 inner exit124와 client TimeoutExpired 두 경계를 검증했다.
+- 현재 scratch DB/backend/pg_restore0·다른 own DB 복원 생존, 소스425/dump SHA 보존·최종 수거1.883초를 확인했다.
+- host 소유권/tmpfs 두 fixture 실패는 보존했다. 큰 운영 복원 시간·I/O 상한이나 운영 설치로 확대하지 않는다.
+- [정확 범위와 원장](restore-rehearsal-timeout.md#실제-격리-timeout-검증). 최종 문서 CI·설치는 후속이다.
+
+## 2026-10-25 복원 timeout 뒤 현재 scratch 정리
+
+- 로컬 docker exec timeout이 안쪽 pg_restore를 중단하지 않던 경계를 컨테이너 deadline으로 보강했다.
+- 생성 성공한 현재 scratch만 force 삭제·DB/backend 부재를 읽고, 원예외와 정리 실패를 함께 보존한다.
+- 새15+기존 백업 회귀113통과, 수정 전8실패 보존. 실제 PG 종료 lab·설치·운영 수용은 미완이다.
+- [상세와 남은 경계](restore-rehearsal-timeout.md). 현재 별도 운영 리허설은 변경하지 않았다.
+
 ## 2026-10-25 — PinVi 지도 공개 키의 빌드 전달
 
 - 공개 UI 기준에서 발견한 missing_key를 source 계약으로 추적했다. pinvi-web build arg 한 개와 엄격한 raw/resolved 계약만 맞췄다. 수정 전4실패·1통과→관련11통과/Ruff, 실제 설치·rebuild·지도 검증과 목록422는 미완이다. [근거와 범위](pinvi-vworld-build.md).

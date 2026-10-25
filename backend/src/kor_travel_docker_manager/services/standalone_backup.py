@@ -1069,6 +1069,72 @@ def _drop_stale_rehearsal_databases(
     return tuple(dropped)
 
 
+def _cleanup_current_rehearsal(
+    container_name: str,
+    port: int,
+    admin_name: str,
+    scratch_database: str,
+    container_dump_path: str,
+    *,
+    scratch_created: bool,
+) -> tuple[RestorePlanFinding, ...]:
+    """이번 실행이 생성한 DB만 강제 정리한다. 단계 실패가 다음 정리를 막지 않는다."""
+
+    if (
+        not re.fullmatch(re.escape(_REHEARSAL_DB_PREFIX) + r"[0-9]+_[0-9a-f]{8}", scratch_database)
+        or container_dump_path
+        != f"{_REHEARSAL_CONTAINER_DIR}/rehearsal-{scratch_database}.dump"
+    ):
+        raise StandaloneBackupError("invalid current rehearsal cleanup scope")
+    failures: list[str] = []
+    base = ["docker", "exec", "--user", _REHEARSAL_EXEC_USER, container_name]
+
+    def run(arguments: list[str], *, label: str, timeout: int) -> bytes | None:
+        try:
+            result = subprocess.run(
+                arguments, capture_output=True, check=False, timeout=timeout
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"{label}: {type(exc).__name__}")
+            return None
+        if result.returncode != 0:
+            failures.append(f"{label}: exit {result.returncode}")
+            return None
+        return result.stdout if isinstance(result.stdout, bytes) else None
+
+    if scratch_created:
+        run(
+            [*base, "timeout", "-s", "TERM", "-k", "5s", "50s",
+             "dropdb", "--username", admin_name, "--port", str(port),
+             "--maintenance-db", "postgres", "--if-exists", "--force", scratch_database],
+            label="scratch dropdb", timeout=60,
+        )
+        output = run(
+            [*base, "psql", "--username", admin_name, "--port", str(port),
+             "--dbname", "postgres", "--no-psqlrc", "--quiet", "--tuples-only", "--no-align",
+             "--set", "ON_ERROR_STOP=1", "--command",
+             "SET statement_timeout = '5s'; SET lock_timeout = '1s'; "
+             "SELECT (SELECT count(*) FROM pg_database WHERE datname = "
+             f"'{scratch_database}') || '|' || "
+             "(SELECT count(*) FROM pg_stat_activity WHERE datname = "
+             f"'{scratch_database}')"],
+            label="scratch absence readback", timeout=15,
+        )
+        # SET의 command tag는 --quiet로 억제한다. 다른 출력은 부재 증명이 아니다.
+        if output is None or output.strip() != b"0|0":
+            failures.append("scratch database/backend absence unconfirmed")
+    else:
+        failures.append("scratch create unconfirmed; database force cleanup skipped")
+    run(
+        ["docker", "exec", container_name, "rm", "-f", container_dump_path],
+        label="scratch dump cleanup", timeout=30,
+    )
+    return tuple(
+        RestorePlanFinding("REHEARSAL_CLEANUP_INCOMPLETE", failure, True)
+        for failure in failures
+    )
+
+
 def rehearse_standalone_restore(
     role: BackupRole,
     *,
@@ -1087,15 +1153,16 @@ def rehearse_standalone_restore(
     시작 전에 여유 공간을 잰다(`_require_rehearsal_space`) — 모자라면 아무것도 만들지 않고
     `StandaloneBackupInsufficientSpaceError`다.
 
-    `create_standalone_backup`과 같은 한계를 공유한다 — **timeout에 걸리면 로컬
-    `docker exec` client만 중단되고 컨테이너 안의 `pg_restore`는 서버 쪽에서 계속
-    실행될 수 있다**(docker exec는 timeout을 안쪽 프로세스로 전파하지 않는다). 이
-    호출이 잡고 있는 `_role_lock`이 같은 role의 재시도를 막고, 다음 호출의
-    `_drop_stale_rehearsal_databases`가 결국 그 scratch DB를 회수한다 — 하지만 그
-    사이 대상 인스턴스에 걸리는 부하는 이 함수가 취소할 수 없다. `geo`처럼 큰 role은
-    트래픽이 적은 시간대에 실행하는 것을 권장한다.
+    복원 프로세스 자체에도 컨테이너 안 timeout을 둔다(TERM 뒤 5초 후 KILL).
+    현재 호출의 createdb 성공이 확인된 scratch만 finally에서 강제 삭제하고, 해당
+    DB와 backend의 부재를 재조회한다. 정리 실패는 성공으로 읽지 않으며 원래 실행
+    오류와 함께 CLI에 전달한다. kill -9/호스트 중단은 finally 실행을 보장하지 못한다.
+    리허설 세션의 병렬 인덱스 worker만 끄며 전역 PG 설정은 바꾸지 않는다. 같은
+    인스턴스의 I/O를 쓰므로 큰 role은 트래픽이 적은 시간대에 실행한다.
     """
 
+    if type(timeout) is not int or timeout < 1:
+        raise StandaloneBackupError("rehearsal timeout must be a positive integer")
     require_local_backup_role(role)
     plan = plan_standalone_restore(role, backup_filename=backup_filename, backup_root=backup_root)
     if not plan.restorable:
@@ -1147,6 +1214,9 @@ def rehearse_standalone_restore(
     restored_alembic_head: str | None = None
     restored_db_size_bytes: int | None = None
     started = time.monotonic()
+    scratch_created = False
+    execution_error: StandaloneBackupError | None = None
+    cleanup_findings: tuple[RestorePlanFinding, ...] = ()
 
     with _role_lock(root, label="rehearsal"):
         # copy-in·createdb **전에** 잰다. scratch DB는 대상과 같은 PGDATA에 원본 database만큼
@@ -1203,13 +1273,24 @@ def rehearse_standalone_restore(
                 label=f"{role} rehearsal scratch database create",
                 timeout=60,
             )
+            scratch_created = True
             returncode, stderr = _run_pg_restore(
                 [
                     "docker",
                     "exec",
                     "--user",
                     _REHEARSAL_EXEC_USER,
+                    "--env",
+                    f"PGAPPNAME={scratch_database}",
+                    "--env",
+                    "PGOPTIONS=-c max_parallel_maintenance_workers=0",
                     container_name,
+                    "timeout",
+                    "-s",
+                    "TERM",
+                    "-k",
+                    "5s",
+                    f"{timeout}s",
                     "pg_restore",
                     "--username",
                     admin_name,
@@ -1228,7 +1309,7 @@ def rehearse_standalone_restore(
                     container_dump_path,
                 ],
                 label=f"{role} rehearsal pg_restore",
-                timeout=timeout,
+                timeout=timeout + 10,
             )
             restore_succeeded = returncode == 0
             if not restore_succeeded:
@@ -1347,49 +1428,22 @@ def rehearse_standalone_restore(
                             True,
                         )
                     )
+        except StandaloneBackupError as exc:
+            execution_error = exc
         finally:
-            # 성공/실패와 무관하게 항상 지운다 — scratch 잔해가 다음 리허설과 이름이
-            # 겹치거나 디스크를 잠식하면 안 된다. 정리 실패까지 예외로 새어 나가면
-            # 원래 실패 사유가 가려지므로 여기서는 절대 raise하지 않지만, 조용히
-            # 넘어가지는 않는다 — 못 지웠으면 findings에 남겨 다음 스윕(또는 운영자
-            # 수동 개입)이 필요함을 알린다.
-            subprocess.run(
-                ["docker", "exec", container_name, "rm", "-f", container_dump_path],
-                capture_output=True,
-                check=False,
-                timeout=30,
+            cleanup_findings = _cleanup_current_rehearsal(
+                container_name, port, admin_name, scratch_database,
+                container_dump_path, scratch_created=scratch_created,
             )
-            dropdb_result = subprocess.run(
-                [
-                    "docker",
-                    "exec",
-                    "--user",
-                    "postgres",
-                    container_name,
-                    "dropdb",
-                    "--username",
-                    admin_name,
-                    "--port",
-                    str(port),
-                    "--if-exists",
-                    scratch_database,
-                ],
-                capture_output=True,
-                check=False,
-                timeout=60,
-            )
-            if dropdb_result.returncode != 0:
-                findings.append(
-                    RestorePlanFinding(
-                        "REHEARSAL_CLEANUP_INCOMPLETE",
-                        f"scratch DB({scratch_database}) 삭제가 실패했을 수 있습니다"
-                        f"(dropdb exit {dropdb_result.returncode}). 다음 리허설이 "
-                        f"{_REHEARSAL_STALE_AFTER_SECONDS // 3600}시간 뒤부터 자동으로 "
-                        "정리를 시도하지만, 급하면 "
-                        f"'DROP DATABASE \"{scratch_database}\"'를 직접 실행하세요.",
-                        False,
-                    )
-                )
+            findings.extend(cleanup_findings)
+
+    if execution_error is not None:
+        # CLI는 str(exc)를 출력하므로 traceback의 note나 반환되지 않는 findings에만
+        # 정리 결과를 남기지 않는다. 원래 예외와 그 timeout 원인은 cause로 보존한다.
+        cleanup_detail = "; ".join(f.text for f in cleanup_findings) or "confirmed"
+        raise StandaloneBackupError(
+            f"{execution_error}; rehearsal cleanup: {cleanup_detail}"
+        ) from execution_error
 
     duration_sec = round(time.monotonic() - started, 3)
     if stale_databases:
@@ -2209,6 +2263,8 @@ def _run_pg_restore(arguments: list[str], *, label: str, timeout: int) -> tuple[
 
     try:
         completed = subprocess.run(arguments, capture_output=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise StandaloneBackupError(f"{label} timed out after {timeout}s") from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise StandaloneBackupError(f"{label} could not run") from exc
     return completed.returncode, completed.stderr
