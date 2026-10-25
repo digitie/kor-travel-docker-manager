@@ -5,7 +5,10 @@
 REST 목록과 WebSocket 최초 화면·주기 방송은 같은 DockerService의 조회를 공유한다.
 동시 요청은 하나의 동기 Future를 기다리고, 정상 응답만 완료 시점부터 monotonic
 기준 2초 동안 재사용한다. 반환값은 매번 깊은 복사하므로 수집자나 화면의 수정이
-다른 응답에 전파되지 않는다. 이 캐시는 권한·변경 대상·배포 성공 판정에 쓰지 않는다.
+다른 응답에 전파되지 않는다. 완료 시점의 private 복사본 하나를 cache와 Future가 함께
+보관하고 호출자마다 다시 복사한다. 오류/불완전 응답도 같은 flight에서는 그 완료본을
+공유하되 다음 요청용 cache에는 넣지 않는다. 정상 완료의 전체 복사는 기존처럼 private
+복사와 반환 복사 두 번이다. 이 캐시는 권한·변경 대상·배포 성공 판정에 쓰지 않는다.
 
 예외 및 error/offline/unreachable/down 행, 명시 inventory_complete=False 행은
 캐시하지 않는다. 로컬 exited/created/not_created 상태는 재사용할 수 있다.
@@ -39,7 +42,7 @@ asyncio 대기 취소는 실행 중인 동기 수집 Future에 전달되지 않�
 원본 PR533 c038a1d의 제품 세 파일을 main557 0889d3b에 옮겼다. 최신 Docker inventory,
 image reference·공개 URL과 compose 보안 경계는 보존했다. 제품 두 기존 파일에서
 추가 wrapper/decorator만 역제거하면 main 전체 bytes와 같다. 새 cache 모듈에서
-불완전 inventory 제외·재관측 상한·고유 일시 불가 예외를 역제거하면 원본533 전체 bytes와 같다.
+불완전 inventory 제외·재관측 상한·고유 일시 불가 예외·Future private 복사를 역제거하면 원본533 전체 bytes와 같다.
 
 원본533의 Dagster 전역/지역 queue fixture 정정은 이 기능과 별개라 이번 범위에서
 제외한다. Weather·Geo healthcheck PR486/488도 포함하지 않는다. 원본 draft는 보존한다.
@@ -49,3 +52,13 @@ image reference·공개 URL과 compose 보안 경계는 보존했다. 제품 두
 REST/WS 함수 공유를 포함한 집중 20개가 통과했다. 정본 Ruff 0.16.4 검사도 통과했다.
 구0.3.7 lint의 기존 184개 오류는 버전 차이의 원결과로 보존했다. 추가 REST503/WS1013·실제 inventory 수집 경계까지 집중33 PASS를 확인했다.
 전체 회귀·새 exact CI·독립 두 리뷰·실제 UI 및 운영 효과 검증은 후속이다.
+
+독립 리뷰에서 cache만 복사하고 Future에는 수집자의 원본 객체를 보관한 반례가 확인됐다.
+같은 flight의 늦은 대기자가 수집자 후속 변경을 읽는 정상/오류/불완전 3가지 반례를
+원3 FAIL로 보존했다. 완료 private 복사본을 Future와 cache가 함께 쓰도록 수정한 뒤
+이 3가지와 정상 복사 횟수를 포함한 집중37 PASS를 확인했다. 그 외 수집·실패·취소·
+epoch·권한 경계는 유지한다.
+
+6864657의 로컬 전체 검사는 이 반례 수정 전에 정확 pytest PID만 중단하여
+1059 PASS/30 SKIP/중단으로 보존했다. 이를 전체 PASS로 수용하지 않는다. 수정 후
+새 exact CI·추가 전체 회귀와 독립 리뷰·실제 UI 수용은 여전히 후속이다.

@@ -319,3 +319,66 @@ def test_other_rest_collection_errors_keep_the_existing_500(monkeypatch):
         routes.list_containers()
     assert raised.value.status_code == 500
     assert raised.value.detail == "synthetic existing failure"
+
+
+@pytest.mark.parametrize("row_fields", [
+    {"status": "running"},
+    {"status": "error"},
+    {"status": "running", "inventory_complete": False},
+])
+def test_same_flight_waiter_cannot_observe_later_collector_mutation(monkeypatch, row_fields):
+    from threading import current_thread
+
+    cache = StatusSnapshot()
+    entered, collected, joined, follower_release = Event(), Event(), Event(), Event()
+    owned = [{**row_fields, "nested": [1]}]
+    calls = []
+    original_future = module.Future
+
+    class HeldFollowerFuture(original_future):
+        def result(self, *args, **kwargs):
+            if current_thread().name.startswith("snapshot-follower"):
+                joined.set()
+                assert follower_release.wait(3)
+            return super().result(*args, **kwargs)
+
+    def collect():
+        calls.append(1)
+        entered.set()
+        assert collected.wait(3)
+        return owned
+
+    monkeypatch.setattr(module, "Future", HeldFollowerFuture)
+    with ThreadPoolExecutor(1, thread_name_prefix="snapshot-leader") as leader_pool:
+        with ThreadPoolExecutor(1, thread_name_prefix="snapshot-follower") as follower_pool:
+            try:
+                leader = leader_pool.submit(cache.get, collect)
+                assert entered.wait(3)
+                follower = follower_pool.submit(cache.get, collect)
+                assert joined.wait(3)
+                collected.set()
+                leader_value = leader.result(timeout=3)
+                owned[0]["nested"].append(2)
+                follower_release.set()
+                follower_value = follower.result(timeout=3)
+            finally:
+                collected.set()
+                follower_release.set()
+    assert len(calls) == 1
+    assert leader_value == follower_value == [{**row_fields, "nested": [1]}]
+
+
+def test_successful_completion_keeps_one_private_copy_and_one_return_copy(monkeypatch):
+    cache = StatusSnapshot()
+    copy_calls = []
+    original_copy = module.deepcopy
+
+    def copy(value):
+        copy_calls.append(1)
+        return original_copy(value)
+
+    monkeypatch.setattr(module, "deepcopy", copy)
+    cache.get(lambda: [{"status": "running"}])
+    assert len(copy_calls) == 2
+    cache.get(lambda: pytest.fail("normal snapshot was not reused"))
+    assert len(copy_calls) == 3

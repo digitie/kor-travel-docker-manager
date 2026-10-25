@@ -68,7 +68,8 @@ class StatusSnapshot:
             assert flight is not None
             if leader:
                 try:
-                    result = collect()
+                    # 수집자 원본은 Future에도 보관하지 않는다. 반환 때 다시 복사한다.
+                    result = deepcopy(collect())
                     with self._lock:
                         current, active = _version()
                         # offline/error도 응답은 유지하되 다음 호출에서 다시 확인한다.
@@ -77,7 +78,7 @@ class StatusSnapshot:
                             and row.get("inventory_complete") is not False
                             for row in result
                         ):
-                            self._cached = deepcopy(result)
+                            self._cached = result
                             self._epoch = epoch
                             self._expires = monotonic() + 2.0
                         flight.set_result((epoch, result))
