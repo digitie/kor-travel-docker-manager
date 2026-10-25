@@ -1,6 +1,6 @@
 # TASKS — 활성 작업
 
-- [ ] **T-MGR-PINVI-ADMIN-FEATURE-READ — 전용 scope 배선**. raw 한 키→digest 파생·API 두 소비·기존 secret과 분리·마스킹/override·runtime 격리를 검증한다. 두 리뷰/CI 뒤 최종 pair 직전에만 명시 provision·배포한다. [범위](pinvi-admin-feature-read-provision.md).
+- [ ] **T-MGR-PINVI-ADMIN-FEATURE-READ — 전용 scope 배선**. raw 한 키→digest 파생·API 두 소비·기존 secret과 분리·마스킹/override·runtime 격리를 검증한다. 두 독립 리뷰·정확9f10 CI·격리 실제 후보 UI12판정은 통과했다. 공식 설치·새 공개 UI 뒤 최종 pair 직전에만 명시 provision·pair 배포한다. [범위](pinvi-admin-feature-read-provision.md).
 
 ## 복원 리허설 timeout 후속
 
