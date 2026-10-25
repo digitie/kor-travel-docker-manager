@@ -43,6 +43,11 @@ pg_restore에만 PGOPTIONS=-c max_parallel_maintenance_workers=0을 주어 인�
 대형 백업은 낮은 부하 시간대에 돌리고 충분한 유한 --timeout을 선택해야 한다.
 현재 운영에서 진행 중인 별도 리허설은 이 소스 변경으로 중단·재설정하지 않았다.
 
+별도로 기존 설치본에서 수행한 운영 관측은 동일 dump의 600초 실행이 부족했고,
+명시1800초 재시도는963.094초에 verified true·head409로 끝났다는 결과다. 이는
+이 패치의 worker0 설정이 복원을 빠르게 한다는 증거가 아니다. 실제 데이터와 부하에
+맞는 유한 timeout 선택의 예이며, 코드의 기존 기본값은 바꾸지 않는다.
+
 ## 검증과 후속
 
 새 회귀의 수정 전 8실패 원문을 보존했다. 로컬 mock 회귀는 새15개와 기존 백업 회귀를
@@ -50,7 +55,28 @@ pg_restore에만 PGOPTIONS=-c max_parallel_maintenance_workers=0을 주어 인�
 부재 확인 실패, 생성 미확인 강제 삭제 금지, session-only 설정을 검증한다.
 원 건강한 복원·소유권 이양·head/크기·ACL 지문·디스크 여유 회귀도 유지했다.
 
-이 checkpoint는 실제 PostgreSQL timeout 종료 실증이 아니다. 후속 격리 WSL lab에서
-짧은 timeout의 실제 복원 프로세스·backend 종료와 scratch 부재, 같은 instance의
-다른 DB/복원 생존을 확인한다. 소스 두 독립 리뷰와 lab 실행 범위 확인 전 PG를 새로
-기동하지 않는다. 운영 설치는 두 리뷰·CI 이후 별도 배포 단계다.
+첫 소스 checkpoint의 실제 PG 미검증 상태와 원실패는 보존했다. 이후 Root/T 두
+독립 소스 리뷰를 통과한 c24d026에서 다음 격리 WSL lab을 실행했다.
+
+## 실제 격리 timeout 검증
+
+고정 cached PostGIS16 이미지 하나를 network none, CPU1, RAM768MiB·추가 swap0,
+PID128로 실행했다. 실제 CHECK 함수의 pg_sleep에 걸린 작은 dump를 사용했다.
+제품의 full rehearse 호출에서 2초 inner deadline은 exit124로 끝났고, 이 호출은
+전체7.740초(내부 리허설5.365초)였다. 별도 docker client 1초 timeout은 실제
+TimeoutExpired cause를 남긴 뒤 같은 정리 함수를 실행했다. 두 경우 모두 해당
+scratch DB/backend/pg_restore 프로세스가 0이었고, 같은 instance의 다른 own DB에서
+돌던 실제 pg_restore는 살아 있었다. 그 별도 복원도 최종 실험 컨테이너 수거로 끝냈다.
+
+소스425파일 전후 내용/OID와 원 dump SHA가 같았다. exact CID·UUID·volume을 모두
+정리했고 최종 수거는1.883초였다. 이 실험은 운영의 대형 복원 소요시간·I/O·RSS 상한,
+실험 외 DB나 ARM 이미지의 timeout 도구, kill -9/데몬 중단 복구의 수용이 아니다.
+
+앞선 두 fixture 실패도 보존했다. 첫 경우는 geo가 현재 host 소유가 아니라는 정본
+guard가 복원 전에 거부했다. 두 번째는 lab만 추가한 /tmp tmpfs의 파일을 Docker cp가
+읽지 못했다. host 검사를 유지한 map_application fixture와 운영과 같은 overlay /tmp로
+맞춘 뒤 위 결과를 얻었으며, 두 실패를 제품 timeout 경로 실행으로 세지 않는다.
+원장 manager556-c24d-owned-timeout-final-facts.json과 그 안의 raw SHA를 별도 보존했다.
+
+제품 c24d026의 백엔드·프론트엔드 CI는 통과했다. 이 문서 정산의 최종 CI와 운영 설치는
+후속 단계이며, 운영에서 별도로 완료한 원 큰 복원 결과와 이 격리 검증은 구분한다.

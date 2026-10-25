@@ -3,7 +3,8 @@
 ## 복원 리허설 timeout 후속
 
 - [x] 컨테이너 deadline·현재 생성 확인 scratch 강제 정리·DB/backend 부재 확인·원오류 보존의 최소 수정과 회귀.
-- [ ] 두 독립 소스 리뷰·CI, 격리 PG에서 실제 timeout/다른 DB 보호 검증 후 별도 운영 설치.
+- [x] Root/T 두 독립 소스 리뷰와 c24d026 CI, 격리 PG의 inner/client timeout·다른 own DB 복원 생존·정확 수거 검증.
+- [ ] 최종 문서 정산 CI 후 별도 운영 설치·실제 Manager UI 확인.
 - 근거와 미확인 경계: [복원 리허설 timeout](restore-rehearsal-timeout.md).
 
 이 문서는 완료되지 않은 작업만 순서대로 한 줄씩 나열한다. lane, 담당자 구분,

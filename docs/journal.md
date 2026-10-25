@@ -1,5 +1,12 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-25 복원 timeout 격리 실증
+
+- c24d026 두 독립 리뷰·기존 CI 통과 뒤 실제 inner exit124와 client TimeoutExpired 두 경계를 검증했다.
+- 현재 scratch DB/backend/pg_restore0·다른 own DB 복원 생존, 소스425/dump SHA 보존·최종 수거1.883초를 확인했다.
+- host 소유권/tmpfs 두 fixture 실패는 보존했다. 큰 운영 복원 시간·I/O 상한이나 운영 설치로 확대하지 않는다.
+- [정확 범위와 원장](restore-rehearsal-timeout.md#실제-격리-timeout-검증). 최종 문서 CI·설치는 후속이다.
+
 ## 2026-10-25 복원 timeout 뒤 현재 scratch 정리
 
 - 로컬 docker exec timeout이 안쪽 pg_restore를 중단하지 않던 경계를 컨테이너 deadline으로 보강했다.
