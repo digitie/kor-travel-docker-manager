@@ -1,6 +1,6 @@
 # JOURNAL — 작업 일지
 
-## 2026-10-24 — Map 가격 추이·weather 상태 적재 env 배선(Map ADR-114)
+## 2026-10-25 — Map 가격 추이·weather 상태 적재 env 배선(Map ADR-114)
 
 - Map API에 transport 주소·token(code-server와 같은 원천·기본값)과 `KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED`(기본
   false)를, Map code-server에 weather 주소(odroid 12201, registry 파생)와 weather `KOR_TRAVEL_WEATHER_ADMIN_TOKEN` 참조
