@@ -2443,7 +2443,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parsed_argv = list(sys.argv[1:] if argv is None else argv)
     try:
-        if parsed_argv and parsed_argv[0] in _direct_ensure_aliases():
+        # 신규 instance 명령의 설정 오류는 자신의 고정 exit2 경계에서 처리한다.
+        if (parsed_argv and parsed_argv[0] != "dagster-instance-config"
+                and parsed_argv[0] in _direct_ensure_aliases()):
             parsed_argv = ["ensure", parsed_argv[0], *parsed_argv[1:]]
         parser = build_parser()
         args = parser.parse_args(parsed_argv)

@@ -311,3 +311,22 @@ def test_readonly_config_uses_prepared_host_environment_without_implicit_write(h
     assert effective[instance.DIGEST_ENV] == prepared.sha256[:16]
     assert {path: path.stat().st_mtime_ns for path in state.rglob("*")} == before
     assert locks == before_locks
+
+
+@pytest.mark.parametrize("action", ["show", "prepare"])
+def test_instance_command_dispatch_preserves_fixed_failure_before_target_aliases(host, monkeypatch, capsys, action):
+    from kor_travel_docker_manager import cli
+
+    calls = []
+    def broken_aliases():
+        calls.append("alias")
+        raise TargetsConfigError("SECRET-REGISTRY-SENTINEL")
+    def broken_registry():
+        raise TargetsConfigError("SECRET-HOST-SENTINEL")
+    monkeypatch.setattr(cli, "list_targets", broken_aliases)
+    monkeypatch.setattr(instance, "load_targets_config", broken_registry)
+    assert cli.main(["dagster-instance-config", action, "--json"]) == 2
+    captured = capsys.readouterr()
+    assert calls == []
+    assert captured.out == ""
+    assert captured.err == "shared Dagster instance configuration is unavailable\n"
