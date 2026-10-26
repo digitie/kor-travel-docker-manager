@@ -1,5 +1,10 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-26 호스트별 공용 Dagster 상한 보존 설계
+
+- 새 Manager 설치 뒤 Odroid의 현5가 tracked6으로 바뀔 수 있는 실제 consumer 경계를 확인했다. n1506/Odroid5를 한 host 정본에서 파생하는 작은 설계를 별도 작업트리에 기록한다.
+- [설계](host-dagster-instance-config.md)와 [재개 기록](host-dagster-config-resume.md)만 추가하며 제품/운영 변경0, 구현·CI·두 리뷰·배포는 아직 미완이다.
+
 ## 2026-10-26 상태 공유 대기의 follower 한도
 
 - 원3a의 무제한 공유 대기 증폭을 별도 반례로 보존하고 get 진입의 고정5초 JOIN deadline을 두 관측에 합산한다. pending timeout만 일시 불가503/1013이며 실제 collector TimeoutError·완료 경합은 원결과를 보존한다.
