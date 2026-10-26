@@ -1722,13 +1722,16 @@ def _effective_snapshot_environment(
     snapshot: ComposeEnvironmentSnapshot,
     environment_override: Mapping[str, str] | None,
 ) -> Mapping[str, str]:
-    if environment_override is None:
-        return MappingProxyType(
-            derive_curation_service_principal_environment(snapshot.effective)
-        )
     merged = dict(snapshot.effective)
-    merged.update(environment_override)
-    return MappingProxyType(derive_curation_service_principal_environment(merged))
+    if environment_override is not None:
+        merged.update(environment_override)
+    derived = derive_curation_service_principal_environment(merged)
+    compose_path = Path(snapshot.compose_path)
+    if compose_path.is_file() and "${KTDM_DAGSTER_INSTANCE_CONFIG:-" in compose_path.read_text(encoding="utf-8"):
+        from kor_travel_docker_manager.services.shared_dagster_instance import instance_environment
+
+        derived = instance_environment(derived)
+    return MappingProxyType(derived)
 
 
 def _external_reference_graph(
@@ -2124,6 +2127,10 @@ def _capture_compose_environment_snapshot(
     if environment_override is not None:
         values.update(environment_override)
     values = derive_curation_service_principal_environment(values)
+    if compose_path.is_file() and "${KTDM_DAGSTER_INSTANCE_CONFIG:-" in compose_path.read_text(encoding="utf-8"):
+        from kor_travel_docker_manager.services.shared_dagster_instance import instance_environment
+
+        values = instance_environment(values)
     return ComposeEnvironmentSnapshot(
         effective=MappingProxyType(values),
         env_path=str(env_path),
@@ -3251,13 +3258,19 @@ class ComposeService:
                     materialized_compose=validation.resolved,
                     service_scope=transaction.service_scope if transaction is not None else None,
                 )
+        read_snapshot = None
+        command_index = self._compose_command_index(args)
+        if (external is None and command_index is not None and args[command_index] == "config"
+                and "${KTDM_DAGSTER_INSTANCE_CONFIG:-" in Path(get_compose_path()).read_text(encoding="utf-8")):
+            # 조회 render도 host 정본을 사용한다. prepare와 G/서비스 변경은 수행하지 않는다.
+            read_snapshot = _capture_compose_environment_snapshot(environment_override=environment)
         return self._run_unlocked(
             args,
             capture_output=capture_output,
             environment=environment,
             expected_system_bind_snapshots=None,
             expected_compose_source_bytes=None,
-            environment_snapshot=None,
+            environment_snapshot=read_snapshot,
             external_input_snapshot=None,
             materialized_compose=None,
             external=external,
@@ -3609,6 +3622,12 @@ class ComposeService:
                 "machinery"
             )
         self._assert_host_mutation_scope(args, resolved=materialized_compose)
+        if materialized_compose is not None:
+            from kor_travel_docker_manager.services.shared_dagster_instance import (
+                validate_instance_consumers,
+            )
+
+            validate_instance_consumers(materialized_compose)
         if materialized_compose is not None:
             scope, flags = self._parse_compose_mutation(args)
             command_index = self._compose_command_index(args)

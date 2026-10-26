@@ -121,7 +121,7 @@ def test_every_service_with_the_url_mounts_the_one_instance_config() -> None:
         if name in (service.get("environment") or {})
     }
     assert _MIGRATE in carriers, sorted(carriers)
-    source = f"./{_INSTANCE_CONFIG.relative_to(_REPO_ROOT).as_posix()}"
+    source = "${KTDM_DAGSTER_INSTANCE_CONFIG:-./" + _INSTANCE_CONFIG.relative_to(_REPO_ROOT).as_posix() + "}"
     for service_name, service in carriers.items():
         home = service["environment"]["DAGSTER_HOME"]
         assert f"{source}:{home}/dagster.yaml:ro" in service.get("volumes", []), service_name

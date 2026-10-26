@@ -175,6 +175,16 @@ mv -f -- "${REL}/.ktdm-release-compose.yml.tmp" "${REL}/.ktdm-release-compose.ym
 # 모든 `.env` 쓰기는 G 아래에 있다(ADR-51 C-2) — 여기서 복사한 것이 곧 live 값이다.
 [[ "${PREV}" == "${NAME}" ]] || cp -p -- "${APP}/.env" "${REL}/.env"
 
+# 비기본 host instance만 명시 준비한다. 기본은 원 bytes/path/digest 그대로이며 plane은 재시작하지 않는다.
+# installer가 보유한 G fd9를 기존 검증으로 재사용한다(별도 lock·boot/mount 조건 없음).
+if ! env -u KTDM_HOST -u KOR_TRAVEL_DOCKER_MANAGER_ENV_FILE \
+  -u KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT="${REL}" \
+  KTDM_PINNED_REBUILD_GLOBAL_LOCK_FD=9 "${REL}/backend/.venv/bin/python" -I -c \
+  'from kor_travel_docker_manager.cli import main
+raise SystemExit(main(["dagster-instance-config", "prepare", "--json"]))' >/dev/null 2>&1; then
+  die "host-local shared Dagster instance configuration could not be prepared; not flipping"
+fi
+
 # 새 release의 정본 host-local 서비스 폐포를 후보 .env로 flip 전에 검증한다.
 # 일반 설치와 CLI 전용 설치는 같은 검증을 사용하며, 선택 서비스의 필수 값은 생략하지 않는다.
 # child stderr/resolved config는 비밀을 포함할 수 있으므로 출력하지 않는다.

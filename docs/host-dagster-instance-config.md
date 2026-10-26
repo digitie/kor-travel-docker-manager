@@ -1,6 +1,6 @@
 # 호스트별 공용 Dagster instance 상한 보존 설계
 
-상태: 초안. 기준 main `6dd65766d083dd6cfd52ffd1f608dcf69502c125`. 제품 구현·운영 적용 전이다.
+상태: 제품·직접 회귀 구현 후 독립 검토 준비. 기준 main `6dd65766d083dd6cfd52ffd1f608dcf69502c125`. 운영 적용 전이다.
 
 ## 문제와 범위
 
@@ -11,30 +11,38 @@
 ## 선택안
 
 1. 기존 `config/docker-targets.yml`의 `hosts` 각 항목에 `dagster_max_concurrent_runs`를 선언한다. n150은 6, Odroid는 5다. 기존 `KTDM_HOST`와 호스트 identity 검사를 재사용하며 별도 환경변수에 정책값을 다시 선언하지 않는다. 미지의 host, bool/문자열/0/음수 등 잘못된 값은 거부한다. 구형 단일 호스트 개발 fixture만 기존 기본 YAML을 사용한다.
-2. 새 작은 `services/shared_dagster_instance.py`에서 tracked 기본 YAML과 선택한 호스트 값으로 effective bytes를 만든다. 같은 값 6이면 원 bytes를 그대로 반환한다. 값 5이면 `concurrency.runs.max_concurrent_runs` 정수 한 자리만 바꾸며 나머지 구조/주석/바이트를 보존한다. 출력 digest는 기존과 같은 `sha256(bytes)[:16]`이다. public Dagster schema가 현 경로에서 `Field(int)`이므로 직접 env 치환은 쓰지 않는다.
+2. 새 작은 `services/shared_dagster_instance.py`에서 tracked 기본 YAML과 선택한 호스트 값으로 effective bytes를 만든다. 같은 값 6이면 원 bytes를 그대로 반환한다. 값 5이면 `concurrency.runs.max_concurrent_runs` 정수 한 자리만 바꾸며 나머지 구조/주석/바이트를 보존한다. 공식 조회의 `sha256`은 파일 전체 SHA256 64자리이며, Compose digest는 그 앞 16자리다. public Dagster schema가 현 경로에서 `Field(int)`이므로 직접 env 치환은 쓰지 않는다.
 3. 기본 6은 원 source 경로와 원 digest를 그대로 사용하여 n150의 불필요한 plane 재생성을 피한다. 기본과 다른 effective 파일만 기존 root 소유 state root 아래에 생성한다. 같은 bytes의 경로가 안정적이도록 digest로 파생하며 별도 manifest/승인 상태를 만들지 않는다. 기존 global mutation lock 아래에서 준비하고 원자 쓰기/파일·디렉터리 fsync를 재사용한다. read/status/환경 해석 단계에서 파일을 암묵적으로 만들지 않는다.
 4. 파일은 비밀이 없는 읽기 전용 instance 구성이다. root 소유·group/other 쓰기 없음·symlink/비정규 파일/상위 경로 이탈 거부를 기존 보안 파일 패턴으로 검증한다. Odroid는 이미 NVMe로 확인된 기존 state/release 배치만 사용하며 쓰기 경로를 다른 장치로 임의 fallback하지 않는다. 동시 준비는 같은 global lock과 같은 bytes 재사용으로 직렬화한다. 현재 파일이 틀리거나 불안전하면 덮어 숨기지 않고 실패한다.
 5. Manager compose의 공용 instance mount와 instance digest는 이 한 effective 결과에서 함께 유도한다. 기존 frozen environment→system bind snapshot→mutation 전 재검증을 통과시키며 workspace/credential/권한 계약은 유지한다. n150 기본 render는 종전과 같아야 한다. 부적합한 외부 path/digest override로 호스트 정책을 바꾸는 것을 허용하지 않는다.
-6. 정상 installer가 새 release를 준비할 때 effective 파일을 기존 lock 아래 명시적으로 준비할 수 있는 작은 CLI 접점을 제공한다. 이후 `ktdctl dagster-instance-config show --json`은 host/max/path/digest 같은 비밀 없는 파생값만 읽는다. 이 파일 준비 자체가 plane 재시작이나 임시 max 변경을 수행하지 않는다.
-7. 외부 Transport는 기존 `KOR_TRAVEL_DAGSTER_SHARED_INSTANCE_CONFIG`를 같은 Manager 결과로 채워야 한다. Manager 소유 공식 배포 helper가 위 CLI를 읽고 그 path만 자식 배포에 전달하는 접점을 우선 사용한다. Transport 자체의 기본 옛 tracked-path fallback을 공식 배포에서 다시 허용하지 않도록 정본 배포 script 호출부 한 곳까지 연결한다. 이는 같은 정본을 전달하는 배선이며 독립 설정값이 아니다. 현재 소유 저장소 밖의 Transport 제품 파일을 바꿔야 한다면 별도 작은 PR/소유 조정을 먼저 확정한다.
+6. 정상 installer가 새 release를 준비할 때 effective 파일을 기존 lock 아래 명시적으로 준비할 수 있는 작은 CLI 접점을 제공한다. 이후 `ktdctl dagster-instance-config show --json`은 정확히 `{host, max_concurrent_runs, path, sha256}` 네 필드만 읽는다. 이 파일 준비 자체가 plane 재시작이나 임시 max 변경을 수행하지 않는다.
+7. 외부 Transport는 기존 `KOR_TRAVEL_DAGSTER_SHARED_INSTANCE_CONFIG`를 같은 Manager 결과로 채워야 한다. 별도 Transport PR139의 공식 배포 helper가 `sudo -n ktdctl dagster-instance-config show --json`을 읽고 그 path만 자식 배포에 전달한다. Transport 자체의 기본 옛 tracked-path fallback을 공식 배포에서 다시 허용하지 않도록 정본 배포 script 호출부 한 곳까지 연결한다. 이는 같은 정본을 전달하는 배선이며 독립 설정값이 아니다. Manager 설치가 먼저이며 Transport caller 배포가 뒤따른다. caller는 prepare를 자동 호출하지 않고 show 실패·정본과 다른 override를 거부한다.
 8. Weather 및 다른 Manager code-server, storage migrate, daemon/webserver 모두 같은 host의 동일 bytes/path/digest를 소비한다. 일부 consumer만 바뀌는 상태를 수용하지 않는다. 새로운 파일이 필요했던 host는 설치 직후 실제 적용 전에 `show`와 dry-run으로 유효 경로/동일 digest를 확인한다.
 
 ## ADR-58의 좁은 정정
 
-ADR-58은 instance YAML 한 벌과 host별 workspace만으로 충분하다고 결정했다. 이번 실제 설치 경계에서는 같은 기본 YAML을 유지하면서 host 보호 정수 하나만 파생하는 예외가 필요하다. 두 YAML을 손으로 유지하거나 installer에 전체 compose 렌더 기능을 넣지 않는다. 정책 정본·pure bytes 파생·공식 consumer 접점만 추가하고 기존 기록은 지우지 않는다. 세부 path/파일 권한/installer 호출 위치는 구현 전에 Root와 확정한다.
+ADR-58은 instance YAML 한 벌과 host별 workspace만으로 충분하다고 결정했다. 이번 실제 설치 경계에서는 같은 기본 YAML을 유지하면서 host 보호 정수 하나만 파생하는 예외가 필요하다. 두 YAML을 손으로 유지하거나 installer에 전체 compose 렌더 기능을 넣지 않는다. 정책 정본·pure bytes 파생·공식 consumer 접점만 추가하고 기존 기록은 지우지 않는다. 아래 파일 권한과 installer 순서는 이 좁은 예외의 구현 계약이다.
 
-## 직접 검증 과제
+## 파일·consumer·동시 실행 경계
 
-- [ ] n1506 기본 bytes/path/digest 및 resolved consumer 입력이 기존과 동일하다.
-- [ ] Odroid5 출력은 정수 한 자리 외 전체 bytes가 같고, 모든 공용 instance consumer가 같은 경로와 digest를 사용한다.
-- [ ] invalid host/value, host 위조, mismatched path/digest, 미준비 파일이 fail-closed한다.
-- [ ] root 소유/정확 mode/불안전 symlink·hardlink·경로 이탈·다른 장치 경계를 검증한다.
-- [ ] 동시 준비·기존 동일 파일 재사용·다른 내용 거부·write/fsync/rename 실패에서 부분 파일을 publish하지 않는다.
-- [ ] prepare는 기존 host lock을 사용하고 show/status는 파일 쓰기·서비스 변경이 없다.
-- [ ] Transport 배포 helper의 실제 argv/environment에서 동일 effective path가 전달되고 raw env/비밀을 출력하지 않는다.
-- [ ] 기존 workspace/태그별 상한/Geo/PG/재구축 권한·frozen bind 회귀가 보존된다.
-- [ ] backend 관련 및 전체 CI, 두 독립 적대 리뷰를 완료한다. 운영 적용/live UI는 Root가 Map 배포 뒤 조율한다.
+- 기본 6은 기존 source 경로와 원 bytes·digest를 보존한다. 운영 `/opt` alias를 외부 caller에서 독립 realpath로 고정하지 않는다.
+- 비기본 파일은 기존 `/var/lib/kor-travel-docker-manager`(root 0700)의 `dagster-instance/<전체 SHA256>.yaml`이다. 하위 디렉터리는 root 0755, 파일은 root 0444·정규 파일·hardlink 1개다. 파일과 부모 장치가 같아야 한다. 현재 Odroid의 기존 NVMe state 배치를 사용하며 새 부팅·마운트 시작 조건을 추가하지 않는다.
+- prepare는 정상 installer의 기존 G 락 FD9를 재사용한다. 완성·fsync한 임시 파일을 no-replace hardlink로 publish한 뒤 임시 이름을 제거하고 디렉터리를 fsync한다. 기존 파일이 같으면 그대로 사용하며, 다른 bytes·불안전 mode·symlink·hardlink는 덮어쓰지 않는다.
+- show, 상태 조회와 읽기 전용 `config`는 prepare·서비스 변경을 하지 않는다. prepare되지 않은 Odroid 파일은 실패한다. 부모 0700이므로 일반 사용자 직접 파일 읽기를 가정하지 않고 기존 `sudo -n ktdctl`을 쓴다.
+- Manager의 8개 instance consumer는 동일 effective path를 readonly bind한다. instance digest가 있는 7개 consumer는 같은 16자리 파생값을 쓴다. storage-migrate의 기존 digest 환경변수 유무는 바꾸지 않는다. frozen render와 변경 직전 검증에서도 독립 path/digest override를 거부한다.
+- 외부 Transport의 show 재확인과 Docker bind 사이에는 Manager 설치 alias 전환이 끼어들 수 있다. 외부 배포 전체가 Manager G를 소유한다고 주장하지 않는다. Odroid의 내용 주소 파일은 같은 path 덮어쓰기를 거부하지만, 기본 6의 기존 source alias 경합을 전 consumer 원자 전환으로 닫았다고 하지 않는다. 공식 배포는 Manager 설치와 외부 배포를 운영 순서로 직렬화한다.
 
-## 현재 미수용
+## 검증과 남은 수용
 
-아직 제품 코드·설치·SSH·Docker·PG·빌드·서비스 변경은 없다. 이전 실제 CPU 창들은 서로 다른 시점의 관측이다. 04:05의 active2/BuildKit idle과 04:15의 active5/queued3·BuildKit 재개를 하나의 원인으로 합치지 않는다. 이번 설계는 5를 유지하는 데 필요한 경계이며 CPU 저감 효과나 값을 2로 줄이는 정책을 주장하지 않는다.
+호스트 구성 직접·관련 순수 60개가 통과했다. 외부 호출 차단 하에서 파일/host/override/consumer/읽기 render와 격리 fixture의 mount 기본값 변환을 확인했으며, Docker·SSH·socket 호출은 0회다. 기존 상한·권한·frozen 회귀의 추가 결과와 최종 CI는 별도 정산한다.
+
+전체 backend 첫 시도는 602 PASS/3 FAIL 뒤 명시적으로 중단했다(560.72초). 이 실행에는 로컬 owned Dagster PostgreSQL fixture와 이미지 빌드가 실제로 있었다. 새 mount `${...:-기본경로}`를 격리 fixture가 tmp Compose 기준 상대 경로로 남겨 storage-migrate가 `dagster.yaml: Is a directory`로 실패했다. 두 fixture의 기본값 해석만 정렬하고 실제 helper의 파일 경로·readonly 변환을 순수 검증했다. 원 실패는 보존하며 실제 통합 재통과로 치환하지 않는다. 정확한 세 project의 컨테이너·네트워크·볼륨 부재를 후속 RO 조회로 확인했다.
+
+추가 관련 순수 선택의 첫 두 실행은 Docker availability/config 호출을 차단해 collection 오류 또는 차단127 실패로 끝났다. 이어진 명시 선택은 기존 own/shared 검사 모델이 새 instance mount/digest 보간을 풀지 않아 6 FAIL/167 PASS에서 멈췄다. 그 모델의 기본값 해석만 정렬했으며 검사기 단언은 유지했다. 이 마지막 정렬의 재검증은 최종 CI에 남긴다. 신규 모듈 mypy는 로컬 `types-PyYAML` stub 부재 1건으로 미수용이다. source Ruff와 Linux 캐시 CodeGraph init/sync·새4symbol 조회는 통과했지만 동적 CLI와 shell 호출의 graph 완전성을 주장하지 않는다.
+
+- [ ] 정렬한 Dagster 통합 fixture의 실제 재실행과 전체 backend CI.
+- [ ] 정확한 최종 제품 소스의 독립 두 적대 리뷰.
+- [ ] 공식 Manager 설치 후 show/targets validate/수렴 dry-run 및 외부 caller의 실제 동일 파일 소비.
+- [ ] Root가 조율하는 양 호스트 역할 보존·공개 UI 검증. 이 작업에서 운영 SSH·설치·서비스 변경은 없다.
+
+이전 실제 CPU 창들은 서로 다른 시점의 관측이다. 더 이전 GraphQL의 active2, 04:05의 BuildKit idle cgroup과 04:15의 active5/queued3·BuildKit 재개를 하나의 원인으로 합치지 않는다. 이번 변경은 5를 유지하는 경계이며 CPU 저감이나 값을 2로 줄이는 정책을 주장하지 않는다.

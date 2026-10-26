@@ -78,6 +78,18 @@ def test_another_host_needs_its_own_digest_in_root_env(project, monkeypatch, cap
     root `.env`에 두면 통과(`.env.example`의 계산식)."""
     other = next(name for name in registry._host_specs(registry.load_targets_config()) if name != "n150")
     monkeypatch.setenv(registry.HOST_ENV, other)
+    # Workspace의 원 거부/정상 검사는 유지하고 새 명시적 instance 준비만 선행한다.
+    import os
+    from contextlib import nullcontext
+
+    from kor_travel_docker_manager.services import c6c_deployment, shared_dagster_instance
+
+    state = project / "state"
+    state.mkdir(mode=0o700)
+    monkeypatch.setattr(shared_dagster_instance, "TRUSTED_STATE_ROOT", state)
+    monkeypatch.setattr(shared_dagster_instance, "_OWNER_UID", os.geteuid())
+    monkeypatch.setattr(c6c_deployment, "manager_mutation_lock", nullcontext)
+    shared_dagster_instance.prepare_shared_dagster_instance()
     code, _out, err = _validate(capsys)
     assert code == 1 and f"workspace.{other}.yaml" in err
     digest = _digest(project / f"config/dagster-shared/workspace.{other}.yaml")
@@ -167,11 +179,11 @@ def test_the_instance_digest_has_one_literal_and_matches_the_file():
     text = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     expected = _digest(ROOT / "config/dagster-shared/dagster.yaml")
     assert text.count(expected) == 1, "instance digest 리터럴은 anchor 한 자리여야 한다"
-    assert re.search(rf'^\s+KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "{expected}"$', text, re.M)
+    assert re.search(rf'^\s+KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "\$\{{KTDM_DAGSTER_INSTANCE_DIGEST:-{expected}\}}"$', text, re.M)
     compose = load_yaml_rejecting_duplicate_keys(text)
     values = {
         name: service["environment"]["KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST"]
         for name, service in compose["services"].items()
         if "KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST" in (service.get("environment") or {})
     }
-    assert len(values) >= 1 and set(values.values()) == {expected}
+    assert len(values) >= 1 and set(values.values()) == {"${KTDM_DAGSTER_INSTANCE_DIGEST:-" + expected + "}"}

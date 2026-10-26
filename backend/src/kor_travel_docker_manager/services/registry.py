@@ -343,7 +343,7 @@ def _host_specs(config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     for name, spec in hosts.items():
         if not isinstance(name, str) or re.fullmatch(r"[a-z][a-z0-9_-]*", name) is None or name == "all":
             raise TargetsConfigError("hosts key must be a host name, not all")
-        if not isinstance(spec, dict) or set(spec) - {"addr", "default"}:
+        if not isinstance(spec, dict) or set(spec) - {"addr", "default", "dagster_max_concurrent_runs"}:
             raise TargetsConfigError(f"hosts.{name}: unknown fields or invalid mapping")
         if not isinstance(spec.get("addr"), str):
             raise TargetsConfigError(f"hosts.{name}.addr must be a literal IPv4 address")
@@ -353,6 +353,10 @@ def _host_specs(config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             raise TargetsConfigError(f"hosts.{name}.addr must be a literal IPv4 address") from exc
         if "default" in spec and not isinstance(spec["default"], bool):
             raise TargetsConfigError(f"hosts.{name}.default must be a boolean")
+        if "dagster_max_concurrent_runs" in spec:
+            maximum = spec["dagster_max_concurrent_runs"]
+            if type(maximum) is not int or maximum <= 0:
+                raise TargetsConfigError(f"hosts.{name}.dagster_max_concurrent_runs must be a positive integer")
         defaults += spec.get("default", False)
     if defaults != 1:
         raise TargetsConfigError("hosts must have exactly one default: true")

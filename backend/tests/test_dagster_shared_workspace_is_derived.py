@@ -208,12 +208,17 @@ def _documents() -> tuple[dict[str, Any], dict[str, Any]]:
     for service in compose["services"].values():
         service["volumes"] = [
             _resolve(volume, {"KTDM_HOST": _DEFAULT_HOST})
-            if isinstance(volume, str) and "config/dagster-shared/workspace.${KTDM_HOST:" in volume else volume
+            if isinstance(volume, str) and (
+                "config/dagster-shared/workspace.${KTDM_HOST:" in volume
+                or "${KTDM_DAGSTER_INSTANCE_CONFIG:-" in volume
+            ) else volume
             for volume in service.get("volumes", [])
         ]
         environment = service.get("environment") or {}
-        if isinstance(environment, dict) and "KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST" in environment:
-            environment["KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST"] = _resolve(str(environment["KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST"]), {})
+        if isinstance(environment, dict):
+            for key in ("KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST", "KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST"):
+                if key in environment:
+                    environment[key] = _resolve(str(environment[key]), {})
     return compose, targets
 
 

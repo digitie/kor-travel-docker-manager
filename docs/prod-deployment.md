@@ -1352,3 +1352,14 @@ trusted-release installer에 --cli-only를 사용한다. 먼저 운영자가 이
 
 이는 CLI 설치만 변경한다. 별도 Dagster converge/rebuild 명령을 자동 실행하지 않으며
 Dagster daemon OFF를 해제하지 않는다. 기본 설치 모드의 backend stop/start는 기존대로다.
+
+
+## 호스트별 공용 instance 상한 보존
+
+공식 값은 `config/docker-targets.yml`의 호스트 정책이다. 현재 n1506/Odroid5를 유지하며 `.env`에 별도 숫자나 독립 YAML path를 두지 않는다. 기존 tracked 기본 YAML은 수정하지 않는다. [구현·한계와 검증 상태](host-dagster-instance-config.md)를 먼저 확인한다.
+
+정상 trusted installer는 새 release의 `.env` 복사 뒤, preflight와 alias 전환 전에 기존 G FD9로 `dagster-instance-config prepare --json`을 명시 호출한다. prepare는 파일 준비만 하고 공용 plane을 재시작하지 않는다. 기본 6은 원 파일을 사용하며 비기본 구성은 기존 root state 배치에 immutable 0444 파일을 생성한다. 잘못된 기존 파일은 덮어쓰지 않으며 원인을 고친 뒤 같은 공식 설치 절차를 다시 수행한다. 새 NVMe 마운트/부팅 의존성을 만들거나 OS 부팅을 막지 않는다.
+
+운영 순서는 **Manager 설치 → `sudo -n ktdctl dagster-instance-config show --json`의 정확 네 필드 확인 → 기존 `targets validate --json` 및 plane 수렴 dry-run → 필요한 plane/code-server 공식 배포 → 실제 역할·UI 확인**이다. 새 Manager가 먼저 있어야 Transport PR139의 공식 caller가 show를 사용할 수 있다. caller의 자동 prepare·옛 tracked 파일 fallback은 금지한다. 반환된 전체 `sha256`으로 파일 정합을 확인하고, Compose의 instance digest는 앞 16자리로 유도한다. root state 부모가 0700이므로 일반 사용자 파일 직접 읽기 권한을 가정하지 않는다.
+
+Manager 변경 기계는 기존 G와 frozen bind 재검증을 사용한다. 외부 deploy의 show 재확인과 Docker bind 전체가 같은 G 안에 있다고 보장하지 않는다. 특히 기본 6은 기존 `/opt` alias를 보존하므로 Manager 설치와 외부 배포를 겹치지 않게 조율한다. Odroid 내용 주소 파일도 host 정책을 임의 변경하는 통로가 아니다. 현재 5를 낮추는 튜닝, PG 변경, 실행 중 run 취소는 이 절차에 포함되지 않는다. 원문 env·자격정보·비밀이 포함된 Compose 출력은 기록하지 않는다.

@@ -1,5 +1,12 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-26 호스트별 공용 instance 정본 구현
+
+- hosts 정책 n1506/Odroid5에서 동일 effective 파일·full SHA를 유도하고, 기본6은 기존 bytes/path/digest를 보존한다. 비기본 파일은 기존 G 아래 명시 준비하며 show·읽기 render는 쓰지 않는다. installer와 모든8 consumer를 같은 결과로 연결했다.
+- 순수 직접60 PASS/외부 호출0. 첫 wholebackend는 로컬 owned PG fixture가 실제 실행된 뒤 mount 기본값 해석 결함으로3 FAIL, 602 PASS에서 중단했다(560.72초). 원 로그를 보존하고 정확3 project의 container/network/volume0을 확인했다. fixture source 정렬의 순수 검증을 실제 통합 재수용으로 기록하지 않는다.
+- 외부 Transport PR139는 별도 정본 show 소비이며 Manager 설치 선행이다. alias 전환 잔여 경합·현재 설치/UI 미완을 [기능 계약](host-dagster-instance-config.md)에 명시한다. 원558/원본 dirty 저장소와 운영 역할은 보존한다.
+
+
 ## 2026-10-26 호스트별 공용 Dagster 상한 보존 설계
 
 - 새 Manager 설치 뒤 Odroid의 현5가 tracked6으로 바뀔 수 있는 실제 consumer 경계를 확인했다. n1506/Odroid5를 한 host 정본에서 파생하는 작은 설계를 별도 작업트리에 기록한다.
