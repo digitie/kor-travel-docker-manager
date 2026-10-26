@@ -1,3 +1,11 @@
+## 2026-10-27 — Manager559 양 호스트 정상 설치와 공개 UI 수용
+
+- 제품 M `aeb2d34c`를 공식 installer로 n150·Odroid의 웹·API·CLI에 적용했다. n150의 기존 동일 frontend는 유지하고 Odroid는 검증된 새 ARM 산출물을 기존 G 안에서 frontend 하나만 승격했다.
+- 양 호스트 공개 TLS 브라우저12개씩, 로그인/로그아웃200·보호401·WS2frame·세션 철회·자원 회수를 확인했다. 공개 API의 현재 running19개씩은 실제 Docker의 이름/CID/상태와 같고 수치 메트릭도 확인했다.
+- 최초 Odroid 공개503 실패는 보존한다. UI 수렴 뒤 같은 strict API 단언을 수행하는 순서만 정렬했으며 원 실패의 단일 원인이나 제품 최적화 효과를 주장하지 않는다.
+- 기존 plane의 실제 bind bytes/CID, Weather 고정9개 run과4개 container를 보존했다. 새 QUEUED2개와 교체 전 retention FAILURE는 별도 관측이다. 이미지/CS/daemon·job/instigator 변경은 없었다.
+- 설치·빌드/진단 실패와 실제 단계별 시간, 원 cache/release 보존 및 남은 외부 consumer 적용은 [운영 기록](reports/2026-10-27-manager559-two-host-normal-install.md)을 따른다. 과거 일지·미완 checkpoint 원문은 아래에 보존한다.
+
 ## 2026-10-26 — 호스트 태그·로그 튜닝 누락 보존
 
 074a CI는 backend3424 PASS/40 SKIP(369.75초)·frontend PASS였다. 뒤이은 RO 대조에서 max5만 파생하면 기존 Odroid의 Geo1·Weather3·외부수집2·느린외부1/WARNING을 잃는 경계를 확인했다. hosts에 그 typed 값만 명시하고 기본 tag 전체와 새 Concierge 안전 한도는 보존한다. n150 원 bytes/path/digest, 기존 G/immutable/RO/installer 순서와 부팅 조건은 바꾸지 않는다.

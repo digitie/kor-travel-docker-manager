@@ -1,3 +1,10 @@
+## 2026-10-27 — 양 호스트 baremetal 설치 완료
+
+- 최종 제품85101과 같은 tree의 main M `aeb2d34c`를 n150·Odroid에 공식 정상 설치했다. 제품 CI backend3445 PASS/40 SKIP·frontend PASS, 두 독립 리뷰·후보 UI14 뒤 실제 양 호스트 공개 TLS12개씩을 수용했다.
+- n150 show는 기존6/raw bytes를 유지하고 Odroid show는 prepared5 파일을 검증한다. 현재 살아 있는 Odroid plane의 c444 bind는 별개이며 재생성하지 않았다. root alias와 container bind inode의 의미를 혼동하지 않는다.
+- 새 ARM frontend의 실제 빌드·승격, current Docker19개씩의 공개 API 정합, 원503과 진단기 실패 보존은 [운영 기록](reports/2026-10-27-manager559-two-host-normal-install.md)에 정산했다.
+- 다음 실제 단계는 외부 Transport139의 정본 show 소비와 별도 명시적 plane/CS 적용이다. Weather 이미지/실행 job을 이 설치에서 바꾸지 않았다. 아래의 운영 전·CI 미완 문장은 해당 과거 checkpoint이며 현재 수용 범위는 이 절을 따른다.
+
 ## 2026-10-26 — 기존 Odroid 튜닝 보존 후속
 
 - 074a의 backend3424 PASS/40 SKIP·frontend PASS는 원소스 결과로 보존한다. 현재 운영과 비교해 tag 네 한도/로그 수준의 추가 보존이 필요하여 typed host 정본으로 반영했다. n150 기본 bytes/path/digest와 기존 파일/G/읽기 권한은 그대로다.
