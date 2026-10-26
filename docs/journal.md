@@ -1,5 +1,21 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-26 상태 공유 대기의 follower 한도
+
+- 원3a의 무제한 공유 대기 증폭을 별도 반례로 보존하고 get 진입의 고정5초 JOIN deadline을 두 관측에 합산한다. pending timeout만 일시 불가503/1013이며 실제 collector TimeoutError·완료 경합은 원결과를 보존한다.
+- timeout 뒤 flight를 비우거나 새 수집/thread를 만들지 않는다. leader의 동기 수집 전체를5초로 제한했다고 주장하지 않으며 기존 I/O 한계는 유지한다. 원3a CI그린과 새 소스의 CI·후보 UI를 구분한다.
+
+## 2026-10-26 상태 조회 Future의 수집자 원본 격리
+
+- 독립 리뷰에서 같은 flight의 늦은 대기자가 수집자의 완료 후 원본 수정을 읽는 반례가 확인됐다. 정상/오류/불완전 응답 3 FAIL을 보존하고 완료 private 복사본 하나를 cache와 Future가 함께 보관하도록 수정했다.
+- 정상 복사 횟수 두 번을 유지하며 집중37 PASS·정본 Ruff PASS를 확인했다. 원6864657 전체검사는 source 혼합을 피하기 위해 1059 PASS/30 SKIP에서 중단했으며 전체 수용으로 기록하지 않는다. 최종 exact CI·두 리뷰·실제 UI는 별도다.
+
+## 2026-10-26 상태 조회 캐시의 최신 main 후속
+
+- PR533의 미흡수 제품 세 파일과 관련 회귀를 main557에서 별도 Linux 작업트리로 옮겼다. 원본 dirty checkout과 네 untracked 파일은 보존했다.
+- 불완전 inventory 응답을 캐시하지 않으며, 연속 변경에 따른 재관측은 두 번으로 제한한다. 원반례 2 FAIL과 수정 후 집중33 PASS를 구분해 보존했다. 일시 불가는 고정 REST503/WS1013으로 전달한다.
+- 새 main의 inventory·공개 URL·compose 보안 계약, 권한 판정과 기존 호출 timeout은 보존한다. [범위·한계](container-status-snapshot.md)와 [재개 기록](status-snapshot-resume.md)을 따른다. 독립 두 리뷰·전체 CI·실제 UI·운영 효과는 아직 미수용이다.
+
 ## 2026-10-25 PinVi 관리자 Feature read 전용 배선 준비
 
 - 기존 service token의 관리자 권한 승격 없이, 전용 원문 한 키→Map digest/PinVi raw 두 API 소비만 연결한다.
