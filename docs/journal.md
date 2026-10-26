@@ -1,4 +1,35 @@
+## 2026-10-26 — 호스트 태그·로그 튜닝 누락 보존
+
+074a CI는 backend3424 PASS/40 SKIP(369.75초)·frontend PASS였다. 뒤이은 RO 대조에서 max5만 파생하면 기존 Odroid의 Geo1·Weather3·외부수집2·느린외부1/WARNING을 잃는 경계를 확인했다. hosts에 그 typed 값만 명시하고 기본 tag 전체와 새 Concierge 안전 한도는 보존한다. n150 원 bytes/path/digest, 기존 G/immutable/RO/installer 순서와 부팅 조건은 바꾸지 않는다.
+
+positive3개의 원 FAIL과 첫 구현의 base key-only 처리3 FAIL/51 PASS를 보존한 뒤 직접54 PASS와 관련61 PASS(7.02초)·외부 호출0을 확인했다. 새 제품 두 리뷰·정확 CI·후보/운영 적용은 별도다. 실제 SSH·설치·서비스 변경은 없다.
+
 # JOURNAL — 작업 일지
+
+## 2026-10-26 instance canonical bind와 관측 fixture 정렬
+
+- Compose의 새 instance path와 canonical allowlist의 옛 source가 달라 실제 변경 전 보안 검사에 막히는 지점을 확인했다. 정본8개 bind source만 같은 호스트 경로 템플릿으로 맞추며 f1d 검사기·G·frozen·다른 bind 인가는 유지한다.
+- 좌표fixture1개와 real_host_render는 관측 전에만 tmp state에 정본 prepare를 수행하고 동일 경로/digest를 전달한다. 기존 workspace 오염/좌표 거부 단언을 유지하며 관측 중 inode/mtime/size 불변도 확인한다.
+- 집중7PASS7.41초·외부 호출0/Ruff·compile 통과다. Docker Compose 실제 config가 필요한 원4개는 로컬에서 실행하지 않았고 새 CI 수용으로 남긴다. 원37919FAIL과 최종 배포·UI 미수용은 그대로 보존한다.
+
+
+## 2026-10-26 direct prepare의 caller umask 보존
+
+- direct caller가 umask077일 때 새 instance 디렉터리까지0700이 되어 준비가 막히는 반례를 보존했다. 이번 호출이 새로 만든 inode만 nofollow 디렉터리 FD·소유자·현재 경로 identity를 확인한 뒤0755로 고정한다. 기존 불안전 디렉터리는 수정하지 않고 거부하며 제품에서 전역 umask를 바꾸지 않는다. 정상 installer는 원래 명시umask022이며 그 경로가 실패했다고 주장하지 않는다.
+- 반례1FAIL/1PASS 뒤 수정 관련64PASS·외부 호출0, Root/T의 전체 소스와 두 P2 독립 closure를 수용했다. 이전379 CI는19FAIL/3403PASS/40SKIP(470.22초)이며 원문을 보존한다. 미준비 host fixture와 옛 mount source 비교 등 남은 원인은 별도로 좁혀 확인한다. 이번 최종 커밋의 새 CI·공식 설치/공개 UI는 아직 미수용이다.
+
+
+## 2026-10-26 호스트별 공용 instance 정본 구현
+
+- hosts 정책 n1506/Odroid5에서 동일 effective 파일·full SHA를 유도하고, 기본6은 기존 bytes/path/digest를 보존한다. 비기본 파일은 기존 G 아래 명시 준비하며 show·읽기 render는 쓰지 않는다. installer와 모든8 consumer를 같은 결과로 연결했다.
+- 순수 직접60 PASS/외부 호출0. 첫 wholebackend는 로컬 owned PG fixture가 실제 실행된 뒤 mount 기본값 해석 결함으로3 FAIL, 602 PASS에서 중단했다(560.72초). 원 로그를 보존하고 정확3 project의 container/network/volume0을 확인했다. fixture source 정렬의 순수 검증을 실제 통합 재수용으로 기록하지 않는다.
+- 외부 Transport PR139는 별도 정본 show 소비이며 Manager 설치 선행이다. alias 전환 잔여 경합·현재 설치/UI 미완을 [기능 계약](host-dagster-instance-config.md)에 명시한다. 원558/원본 dirty 저장소와 운영 역할은 보존한다.
+
+
+## 2026-10-26 호스트별 공용 Dagster 상한 보존 설계
+
+- 새 Manager 설치 뒤 Odroid의 현5가 tracked6으로 바뀔 수 있는 실제 consumer 경계를 확인했다. n1506/Odroid5를 한 host 정본에서 파생하는 작은 설계를 별도 작업트리에 기록한다.
+- [설계](host-dagster-instance-config.md)와 [재개 기록](host-dagster-config-resume.md)만 추가하며 제품/운영 변경0, 구현·CI·두 리뷰·배포는 아직 미완이다.
 
 ## 2026-10-26 상태 공유 대기의 follower 한도
 

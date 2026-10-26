@@ -5,8 +5,25 @@ hosts:
   n150:
     addr: 192.168.1.14
     default: true
+    dagster_max_concurrent_runs: 6
   odroid:
     addr: 192.168.1.13
+    dagster_max_concurrent_runs: 5
+    # test_committed_odroid_tunings_are_explicit_and_n150_inherits가 기존 튜닝과 결박한다.
+    dagster_tag_concurrency_limits:
+      - key: dagster/code_location
+        value: kortravelgeo_dagster.definitions
+        limit: 1
+      - key: dagster/code_location
+        value: kortravelweather_dagster.definitions
+        limit: 3
+      - key: kortravelweather/run_group
+        value: external_weather
+        limit: 2
+      - key: kortravelweather/run_group
+        value: external_weather_slow
+        limit: 1
+    dagster_python_log_level: WARNING
 
 # GM-19: port_policy/port_band 블록을 소비하는 코드가 0건이라 제거했다 — 포트 정책의
 # 유일한 정본은 docs/ports.md다.
@@ -1003,7 +1020,7 @@ compose_binds:
   kor-travel-concierge-dagster-code-server:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   grafana:
     - container_path: "/etc/grafana/provisioning/datasources"
       read_only: true
@@ -1032,22 +1049,22 @@ compose_binds:
       source: "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-dagster-storage-migrate:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-dagster-daemon:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
     - container_path: "/opt/dagster/dagster_home/workspace.yaml"
       read_only: true
       source: "./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml"
   kor-travel-dagster-webserver:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
     - container_path: "/opt/dagster/dagster_home/workspace.yaml"
       read_only: true
       source: "./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml"
@@ -1069,15 +1086,15 @@ compose_binds:
   pinvi-dagster-code-server:
     - container_path: "/opt/pinvi/.dagster/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-map-dagster-code-server:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-weather-dagster-code-server:
     - container_path: "/opt/dagster/home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-weather-dagster-webserver:
     - container_path: "/opt/dagster/home/dagster.yaml"
       read_only: true

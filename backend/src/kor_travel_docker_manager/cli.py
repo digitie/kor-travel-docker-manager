@@ -196,8 +196,16 @@ def _rendered_value() -> Any:
     env_path = Path(get_env_path())
     file_values = dotenv_values(env_path, interpolate=False) if env_path.is_file() else {}
 
+    values = {name: value or "" for name, value in file_values.items()}
+    values.update(os.environ)
+    compose_path = Path(get_compose_path())
+    if compose_path.is_file() and "${KTDM_DAGSTER_INSTANCE_CONFIG:-" in compose_path.read_text(encoding="utf-8"):
+        from kor_travel_docker_manager.services.shared_dagster_instance import instance_environment
+
+        values = instance_environment(values)
+
     def value(name: str) -> str | None:
-        return os.environ[name] if name in os.environ else file_values.get(name)
+        return values.get(name)
 
     return value
 
@@ -248,6 +256,11 @@ def _workspace_digest_violations(config: dict[str, Any]) -> list[str]:
     if not compose_path.is_file():
         return []
     compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
+    from kor_travel_docker_manager.services.shared_dagster_instance import (
+        validate_instance_consumers,
+    )
+
+    validate_instance_consumers(compose)
     return workspace_digest_violations(compose, config, Path(get_project_root()), _rendered_value())
 
 
@@ -544,6 +557,23 @@ def _plane_converge_summary(result: dict[str, Any]) -> str:
         if reasons:
             lines.append(f"  {service} still differs after recreate: {'; '.join(reasons)}")
     return "\n".join(lines) + "\n"
+
+
+def _cmd_dagster_instance_config(args: argparse.Namespace) -> int:
+    """외부 공식 배포에도 동일 호스트 instance 경로와 원문 SHA를 전달한다."""
+    from kor_travel_docker_manager.services.shared_dagster_instance import (
+        prepare_shared_dagster_instance,
+        shared_dagster_instance,
+    )
+
+    try:
+        config = (prepare_shared_dagster_instance() if args.instance_action == "prepare"
+                  else shared_dagster_instance())
+    except Exception:  # noqa: BLE001 - 파일/설정/권한 오류의 원문을 공개하지 않는다.
+        print("shared Dagster instance configuration is unavailable", file=sys.stderr)
+        return 2
+    print(json.dumps(config.as_dict(), ensure_ascii=False))
+    return 0
 
 
 def _cmd_dagster_plane_converge(args: argparse.Namespace) -> int:
@@ -2022,6 +2052,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pair_rebuild.set_defaults(func=_cmd_pinvi_pair)
 
+    instance_config = subparsers.add_parser(
+        "dagster-instance-config", help="호스트 공용 Dagster instance 정본을 조회·준비합니다."
+    )
+    instance_actions = instance_config.add_subparsers(dest="instance_action", required=True)
+    for action_name in ("show", "prepare"):
+        instance_action = instance_actions.add_parser(action_name)
+        instance_action.add_argument("--json", action="store_true", required=True)
+        instance_action.set_defaults(func=_cmd_dagster_instance_config)
+
     dagster_plane = subparsers.add_parser(
         "dagster-plane",
         help="공용 Dagster 제어 평면(daemon·webserver)을 다룹니다.",
@@ -2404,7 +2443,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parsed_argv = list(sys.argv[1:] if argv is None else argv)
     try:
-        if parsed_argv and parsed_argv[0] in _direct_ensure_aliases():
+        # 신규 instance 명령의 설정 오류는 자신의 고정 exit2 경계에서 처리한다.
+        if (parsed_argv and parsed_argv[0] != "dagster-instance-config"
+                and parsed_argv[0] in _direct_ensure_aliases()):
             parsed_argv = ["ensure", parsed_argv[0], *parsed_argv[1:]]
         parser = build_parser()
         args = parser.parse_args(parsed_argv)

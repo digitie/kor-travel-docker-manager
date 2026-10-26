@@ -185,6 +185,13 @@ def real_host_render(tmp_path, monkeypatch, documents):
     (directory / "workspace.third.yaml").write_text("load_from: []\n")
     (tmp_path / "config/docker-targets.yml").write_text(yaml.safe_dump(targets))
     monkeypatch.setenv("KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT", str(tmp_path))
+    from kor_travel_docker_manager.services import registry, shared_dagster_instance
+
+    registry.load_targets_config.cache_clear()
+    state = tmp_path / "instance-state"
+    state.mkdir(mode=0o700)
+    monkeypatch.setattr(shared_dagster_instance, "TRUSTED_STATE_ROOT", state)
+    monkeypatch.setattr(shared_dagster_instance, "_OWNER_UID", os.geteuid())
 
     def render(host):
         path = directory / f"workspace.{host}.yaml"
@@ -194,15 +201,24 @@ def real_host_render(tmp_path, monkeypatch, documents):
         environment.update(PATH=os.defpath, HOME=str(tmp_path), KTDM_HOST=host,
                            KTDM_DAGSTER_WORKSPACE_DIGEST=digest,
                            DOCKER_HOST="unix:///tmp/manager481-host-render-no-daemon.sock")
+        # 실제 config/ensure 관측 전에만 정본 준비. 이후에는 같은 파일을 RO 전달한다.
+        prepared = shared_dagster_instance.prepare_shared_dagster_instance()
+        environment = shared_dagster_instance.instance_environment(environment)
+        before = prepared.path.stat()
         result = subprocess.run(
             ["docker", "compose", "--env-file", "/dev/null", "--project-directory", str(tmp_path),
              "-f", str(tmp_path / "docker-compose.yml"), "config", "--format", "json"],
             env=environment, capture_output=True, text=True, timeout=30, check=False,
         )
         assert result.returncode == 0, "정적 Compose 렌더 실패(원문 환경은 출력하지 않음)"
+        after = prepared.path.stat()
+        assert (after.st_ino, after.st_mtime_ns, after.st_size) == (before.st_ino, before.st_mtime_ns, before.st_size)
         return json.loads(result.stdout), path, digest
 
-    return tmp_path, targets, render
+    try:
+        yield tmp_path, targets, render
+    finally:
+        registry.load_targets_config.cache_clear()
 
 
 @pytest.mark.parametrize("host", ["n150", "odroid", "third"])

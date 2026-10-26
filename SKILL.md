@@ -97,6 +97,7 @@ docs/
 
 | 기능 | 레퍼런스 | 대표 함정 |
 |---|---|---|
+| 호스트별 공용 Dagster instance 구성 | [`docs/host-dagster-instance-config.md`](docs/host-dagster-instance-config.md) | 정책 정수는 hosts 정본 하나, show는 RO, prepare만 기존 G 아래 수행한다. 기본6 alias 잔여 경합과 외부 배포 순서를 원자 전환으로 과장하지 않는다 |
 | Map·PinVi pin 고정과 재구축 게이트 | [`docs/runtime-pin-registry.md`](docs/runtime-pin-registry.md) | pinset digest 직렬화는 on-disk 바이트 계약이다(저장된 원장·보존 사본·코드 차단 목록·실행 원장·pinset별 상태와 이미지 태그가 모두 그 digest로 묶인다). `deploy-status.json`은 rebuild와 M05가 함께 읽는 exact-key·version 문서다 — 옛 version reader 없이 `_VERSION`을 올리면 둘 다 멈춘다. v6 manifest는 ADR-51 D-2에서, v8 journal은 B3에서 쓰기·모델 코드째 지웠다. 키 추가·직렬화 변경 금지 |
 | UI에서의 pin 회전(2-step 요청) | [`docs/runtime-pin-registry.md` §7-1](docs/runtime-pin-registry.md) | 요청 파일은 제안일 뿐 pin이 아니다. 어떤 로드 경로에서도 `runtime_pin_request`를 import하면 안 되고, 그 사실을 회귀가 결박한다 |
 | 컨테이너 상태 조회 공유 | [`docs/container-status-snapshot.md`](docs/container-status-snapshot.md) | 관측 전용 cache이며 불완전 inventory·오류는 재사용하지 않고, 연속 변경은 유한 재관측 뒤 실패한다 |

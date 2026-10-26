@@ -1407,6 +1407,7 @@ cutover는 root 환경을 별도 파싱하지 않고 기존 frozen/resolved moun
    않는다(geo 장기 job은 이미 `dagster/max_runtime` 24 h 태그 — `dagster.yaml:137` 주석의 태그 사용 테넌트 목록(PinVi·weather·transport)에
    geo가 빠져 있으니 T-MGR-02의 1회 수정에서 주석만 함께 고친다; `mv_refresh`만 geo T-GEO-02에서 결정). `legacy-dagster` profile은
    재활용하지 않는다. 두 plane은 같은 체크아웃·같은 `docker/dagster-host/Dockerfile`에서 **호스트별 arch로** 빌드한다(같은 sha).
+   **2026-10-26 좁은 정정(호스트 상한 보존).** 위 단일 기본 YAML과 location 정책은 유지한다. 현재 n1506/Odroid5를 설치·후속 수렴이 보존하도록 `hosts.dagster_max_concurrent_runs`를 정본으로 추가한다. 후속 RO 대조에서 확인한 Odroid의 기존 Geo1·Weather3·external_weather2·slow1과 WARNING도 같은 hosts의 typed 태그/로그 정책으로 보존한다. 동일 identity만 교체하고 새 slow는 더하며 기본 나머지 목록과 새 Concierge 안전 상한은 유지한다. override 없는 n1506은 원 bytes/path/digest 그대로, 다른 effective 구성은 root 소유 내용 주소 파일을 기존 G 아래 명시 준비한다. 별도 수기 YAML·임의 patch·새 상한 튜닝·PG 정책·부팅 마운트 조건은 추가하지 않는다. 모든 Manager consumer와 외부 공식 caller는 이 한 결과를 사용한다. 외부 caller가 Manager G 전체를 소유하는 것은 아니므로 alias 전환의 잔여 경합과 설치 선행 순서를 [기능 계약](host-dagster-instance-config.md)에 명시한다. 구현·순수 회귀와 운영 적용 수용은 구분한다.
 8. **PG·메모리 정책.** (ⅰ) odroid 튜닝(env 파생, 기본값 = n150 `docker-compose.yml:265-291`의 현재 값): `shared_buffers 1GB`,
    `effective_cache_size 2GB`(n150 1536MB), `work_mem 16MB`(n150 64MB), `maintenance_work_mem 256MB`, `max_parallel_workers 2`/`_per_gather 1`,
    `effective_io_concurrency 200`(fio 뒤 확정), `checkpoint_timeout 900`, `wal_compression zstd`, `autovacuum_max_workers 2`;

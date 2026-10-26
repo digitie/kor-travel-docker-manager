@@ -815,7 +815,7 @@ services:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
 
   # ── 공용 Dagster 호스트 서비스(platform-topology.md §7 3단계, ADR-54) ──────────
   #
@@ -881,10 +881,10 @@ services:
       # `x-` 키로 두지 않은 것은 `compose config` 렌더가 그 키를 그대로 내보내 n150 렌더가 한 줄 늘기 때문이다 — 여기 두면
       # 렌더는 종전과 byte 같다. 파일을 바꾸면 이 값을 함께 바꾼다(`test_workspace_digest_validate.py`가 대조한다).
       # 이 서비스를 alias 사용처(`*dagster-instance-digest`)보다 아래로 옮기지 말 것 — YAML은 정의 전 alias를 거부한다.
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "f41a30784f7185f9"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "${KTDM_DAGSTER_INSTANCE_DIGEST:-f41a30784f7185f9}"
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
     healthcheck:
       # 두 겹이다. (1) workspace의 code-server 전부가 gRPC health로 `SERVING`인가 — daemon은 매 반복에
@@ -956,7 +956,7 @@ services:
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
     healthcheck:
       test:
@@ -1448,7 +1448,7 @@ services:
     extra_hosts:
     - host.docker.internal:host-gateway
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
     healthcheck:
       test:
       - CMD
@@ -1912,7 +1912,7 @@ services:
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
     # 이미지에 구운 `dagster_home/dagster.yaml`(옛 전용 metadata DB) 대신 공용 instance 정의를 붙인다.
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
     # run worker는 이 컨테이너의 자식이다 — MOIS 적재·Phase A sync가 여기서 원천 SQLite를 읽고 쓴다.
     - kor-travel-map-mois-source:${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DIR:-/opt/dagster/state/mois}
     healthcheck:
@@ -2338,7 +2338,7 @@ services:
       PINVI_KOR_TRAVEL_WEATHER_BASE_URL: ${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}
     # 이미지에 구운 `apps/etl/dagster.yaml` 대신 공용 instance 정의를 붙인다.
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/pinvi/.dagster/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/pinvi/.dagster/dagster.yaml:ro
     healthcheck:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
@@ -2683,7 +2683,7 @@ services:
     volumes:
     - ${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}:/app/data/backups
     # 이미지에 구운 `dagster_home/dagster.yaml`(옛 전용 metadata DB) 대신 공용 instance 정의를 붙인다.
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
     healthcheck:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
@@ -3112,7 +3112,7 @@ services:
       KOR_TRAVEL_WEATHER_METRICS_PORT: ${KOR_TRAVEL_WEATHER_METRICS_PORT:-14103}
       PROMETHEUS_MULTIPROC_DIR: /var/run/kor-travel-weather-metrics
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/home/dagster.yaml:ro
     - *weather-export-artifact-volume
     tmpfs:
     - /var/run/kor-travel-weather-metrics

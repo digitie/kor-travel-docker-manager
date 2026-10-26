@@ -1,5 +1,8 @@
 # TASKS — 활성 작업
 
+- [ ] **T-MGR-HOST-INSTANCE — 호스트별 공용 instance 정책 보존**. 074a CI3424 PASS/40 SKIP·frontend PASS 뒤 Odroid의 기존 태그 네 한도/WARNING 보존을 추가했다. 직접 관련61 PASS/외부 호출0이며 이 후속 제품의 새 두 리뷰·CI·운영 수용은 미완이다. 기존 단계 기록: n1506/Odroid5 단일 hosts 정본·파일 준비/조회·8 consumer·installer 구현과 순수60 회귀 완료. 첫 wholebackend 602P3F 뒤 중단/owned 자원 부재를 보존한다. 격리 mount fixture source 정렬 후 실제 통합 재수용·최종 CI·독립 두 리뷰·공식 적용은 미완이다. [계약](host-dagster-instance-config.md), [재개](host-dagster-config-resume.md).
+
+
 - [ ] **T-MGR-STATUS-SNAPSHOT — 상태 조회 공유의 최신 main 후속**. 원533 제품 전체·불완전 inventory 재시도·연속변경 유한 실패 및 취소/복사 격리를 검증한다. 새 exact CI·독립 두 리뷰·실제 UI·CPU/RSS 수용은 후속이며 운영 설치는 별도다. [규약](container-status-snapshot.md).
 
 - [ ] **T-MGR-PINVI-ADMIN-FEATURE-READ — 전용 scope 배선**. raw 한 키→digest 파생·API 두 소비·기존 secret과 분리·마스킹/override·runtime 격리를 검증한다. 두 독립 리뷰·정확9f10 CI·격리 실제 후보 UI12판정은 통과했다. 공식 설치·새 공개 UI 뒤 최종 pair 직전에만 명시 provision·pair 배포한다. [범위](pinvi-admin-feature-read-provision.md).
