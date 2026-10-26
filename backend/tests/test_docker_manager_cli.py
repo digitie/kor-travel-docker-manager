@@ -2669,14 +2669,23 @@ def test_targets_validate_does_not_require_sibling_repositories(capsys):
     assert capsys.readouterr().out.strip() == "OK"
 
 
-def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch):
+def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch, tmp_path):
     """확인은 **요청받았을 때만** 한다 — 그리고 그때는 실제로 본다."""
 
     from pathlib import Path as _Path
 
-    monkeypatch.setattr(_Path, "is_dir", lambda self: False)
     # R5: 좌표는 호스트 상대라 그 target이 있는 호스트에서 본다 — 외부 target(transport·`node`)은 odroid에 있다.
     monkeypatch.setenv("KTDM_HOST", "odroid")
+    # 좌표 관측 전에만 비기본 instance를 정본으로 준비한다. 관측은 파일을 쓰지 않는다.
+    from kor_travel_docker_manager.services import shared_dagster_instance
+
+    state = tmp_path / "instance-state"
+    state.mkdir(mode=0o700)
+    monkeypatch.setattr(shared_dagster_instance, "TRUSTED_STATE_ROOT", state)
+    monkeypatch.setattr(shared_dagster_instance, "_OWNER_UID", os.geteuid())
+    prepared = shared_dagster_instance.prepare_shared_dagster_instance()
+    before = prepared.path.stat()
+    monkeypatch.setattr(_Path, "is_dir", lambda self: False)
     # odroid는 자기 workspace 파일의 digest를 둔다(T-MGR-02 validate) — 이 테스트는 좌표만 본다.
     import hashlib
 
@@ -2691,6 +2700,8 @@ def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch):
         "  targets.transport.external_project.working_dir: "
         "/home/digitie/apps/kor-travel-transport",
     ]
+    after = prepared.path.stat()
+    assert (after.st_ino, after.st_mtime_ns, after.st_size) == (before.st_ino, before.st_mtime_ns, before.st_size)
 
 
 def test_targets_validate_does_not_check_coordinates_of_another_hosts_targets(capsys, monkeypatch):

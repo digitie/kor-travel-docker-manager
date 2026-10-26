@@ -1,5 +1,12 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-26 instance canonical bind와 관측 fixture 정렬
+
+- Compose의 새 instance path와 canonical allowlist의 옛 source가 달라 실제 변경 전 보안 검사에 막히는 지점을 확인했다. 정본8개 bind source만 같은 호스트 경로 템플릿으로 맞추며 f1d 검사기·G·frozen·다른 bind 인가는 유지한다.
+- 좌표fixture1개와 real_host_render는 관측 전에만 tmp state에 정본 prepare를 수행하고 동일 경로/digest를 전달한다. 기존 workspace 오염/좌표 거부 단언을 유지하며 관측 중 inode/mtime/size 불변도 확인한다.
+- 집중7PASS7.41초·외부 호출0/Ruff·compile 통과다. Docker Compose 실제 config가 필요한 원4개는 로컬에서 실행하지 않았고 새 CI 수용으로 남긴다. 원37919FAIL과 최종 배포·UI 미수용은 그대로 보존한다.
+
+
 ## 2026-10-26 direct prepare의 caller umask 보존
 
 - direct caller가 umask077일 때 새 instance 디렉터리까지0700이 되어 준비가 막히는 반례를 보존했다. 이번 호출이 새로 만든 inode만 nofollow 디렉터리 FD·소유자·현재 경로 identity를 확인한 뒤0755로 고정한다. 기존 불안전 디렉터리는 수정하지 않고 거부하며 제품에서 전역 umask를 바꾸지 않는다. 정상 installer는 원래 명시umask022이며 그 경로가 실패했다고 주장하지 않는다.

@@ -1005,7 +1005,7 @@ compose_binds:
   kor-travel-concierge-dagster-code-server:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   grafana:
     - container_path: "/etc/grafana/provisioning/datasources"
       read_only: true
@@ -1034,22 +1034,22 @@ compose_binds:
       source: "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-dagster-storage-migrate:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-dagster-daemon:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
     - container_path: "/opt/dagster/dagster_home/workspace.yaml"
       read_only: true
       source: "./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml"
   kor-travel-dagster-webserver:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
     - container_path: "/opt/dagster/dagster_home/workspace.yaml"
       read_only: true
       source: "./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml"
@@ -1071,15 +1071,15 @@ compose_binds:
   pinvi-dagster-code-server:
     - container_path: "/opt/pinvi/.dagster/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-map-dagster-code-server:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-weather-dagster-code-server:
     - container_path: "/opt/dagster/home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-weather-dagster-webserver:
     - container_path: "/opt/dagster/home/dagster.yaml"
       read_only: true
