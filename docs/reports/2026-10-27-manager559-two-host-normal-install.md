@@ -37,7 +37,7 @@ frontend 교체 전후 고정 Weather9개 run의 상태와 Weather4개 container
 
 n150의 최종 새 세션12개 검사는 공개 TLS 로그인200·쿠키·현재 상태 조회200·실제 WS2frame·reload·로그아웃200·보호 조회401·후행 WS loop 부재·정리를 확인했다. Odroid는 공개 정적17개·로그인200·me200 뒤 추가 직접 containers 조회503으로 원12개 중2개에서 중단했다. 같은 세션의 정리 logout200와 보호401, 세션 철회·브라우저/profile 부재는 확인했다. 이 원 실패를 정상 설치나 loopback auth PASS로 치환하지 않는다.
 
-실제 UI 원장과 WS2frame이 먼저 수렴한 뒤 같은 strict API200 검사를 수행하도록 원 블록의 순서만 옮겼다. 추가 sleep·retry·시간 상한 증가·단언 삭제는 없으며 W 독립 소스 검토 뒤 Odroid 공개12가 모두 통과했다. 원503의 발생 분기는 직접 계측하지 않았으므로 이 성공으로 단일 원인을 확정하거나 제품 수정 효과를 주장하지 않는다. 최초 실패에서 관측된 후행 socket1도 별도 원형 보존한다.
+실제 UI 원장과 WS2frame이 먼저 수렴한 뒤 같은 strict API200 검사를 수행하도록 원 블록의 순서만 옮겼다. 추가 sleep·retry·시간 상한 증가·단언 삭제는 없으며 W 독립 소스 검토 뒤 Odroid 공개12가 모두 통과했다. 원503의 발생 분기는 직접 계측하지 않았으므로 이 성공으로 단일 원인을 확정하거나 제품 수정 효과를 주장하지 않는다. 최초 실패에서 관측된 unexpected socket1도 별도 원형 보존한다.
 
 추가 공개 API의 현재 값 대조에서는 n15039행/Odroid43행을 반환했고, 각 host의 실행 중19개 (이름, CID, 상태) 집합이 정본 managed+observed 범위의 실제 Docker와 모두 같았다. 같은19개 모두 finite 수치 메트릭과 stats_available을 확인했고 Docker의 전후 목록도 같았다. 각 검증 자체 세션은 login/logout1회와 보호401로 정리했다. remote HTTP의 up/down은 원격 Docker 상태라고 해석하지 않는다.
 
