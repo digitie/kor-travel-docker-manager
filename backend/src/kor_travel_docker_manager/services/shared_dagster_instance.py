@@ -184,9 +184,26 @@ def prepare_shared_dagster_instance() -> SharedDagsterInstance:
         _safe_directory(TRUSTED_STATE_ROOT, 0o700)
         directory = config.path.parent
         try:
-            directory.mkdir(mode=0o755, exist_ok=True)
+            directory.mkdir(mode=0o755)
+        except FileExistsError:
+            pass  # 기존 디렉터리의 mode는 고치지 않고 아래 정본 검사로 거부한다.
         except OSError as exc:
             raise DeploymentContractError("shared Dagster instance directory cannot be prepared") from exc
+        else:
+            # caller umask만으로 새 디렉터리가 0700이 될 수 있다. 만든 inode만 FD로 맞춘다.
+            created = directory.lstat()
+            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                opened = os.fstat(descriptor)
+                current = directory.lstat()
+                if (not stat.S_ISDIR(opened.st_mode) or opened.st_uid != _OWNER_UID
+                        or (opened.st_dev, opened.st_ino) != (created.st_dev, created.st_ino)
+                        or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)):
+                    raise DeploymentContractError("shared Dagster instance directory is unsafe")
+                os.fchmod(descriptor, 0o755)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
         _safe_directory(directory, 0o755)
         if os.path.lexists(config.path):
             _read_prepared(config, raw)

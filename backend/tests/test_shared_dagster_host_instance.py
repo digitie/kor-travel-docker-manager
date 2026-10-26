@@ -330,3 +330,59 @@ def test_instance_command_dispatch_preserves_fixed_failure_before_target_aliases
     assert calls == []
     assert captured.out == ""
     assert captured.err == "shared Dagster instance configuration is unavailable\n"
+
+
+def test_direct_prepare_preserves_caller_umask_and_sets_only_new_directory_mode(host):
+    # umask는 이 별도 단일 child의 caller 조건이다. pytest 프로세스/제품에서 바꾸지 않는다.
+    import subprocess
+    import sys
+
+    root, state, _, _, _ = host
+    code = """
+import contextlib, json, os, socket, subprocess, sys
+from pathlib import Path
+calls = []
+def deny(*args, **kwargs):
+    calls.append(True)
+    raise AssertionError("external IO forbidden")
+socket.socket.connect = deny
+subprocess.run = deny
+from kor_travel_docker_manager.services import shared_dagster_instance as instance
+from kor_travel_docker_manager.services import c6c_deployment
+root, state = map(Path, sys.argv[1:])
+instance.get_project_root = lambda: str(root)
+instance.load_targets_config = lambda: {"hosts": {"odroid": {"dagster_max_concurrent_runs": 5}}}
+instance.current_host = lambda config: "odroid"
+instance.TRUSTED_STATE_ROOT = state
+instance._OWNER_UID = os.geteuid()
+c6c_deployment.manager_mutation_lock = contextlib.nullcontext
+os.umask(0o077)
+prepared = instance.prepare_shared_dagster_instance()
+assert os.umask(0o077) == 0o077
+assert prepared.path.parent.stat().st_mode & 0o777 == 0o755
+assert prepared.path.stat().st_mode & 0o777 == 0o444
+before = prepared.path.stat()
+assert instance.prepare_shared_dagster_instance() == prepared
+assert prepared.path.stat().st_ino == before.st_ino
+assert instance.shared_dagster_instance() == prepared
+assert calls == []
+print(json.dumps({"directory_mode": "0755", "file_mode": "0444", "caller_umask": "0077", "external_calls": len(calls)}))
+"""
+    result = subprocess.run([sys.executable, "-I", "-c", code, str(root), str(state)],
+                            capture_output=True, text=True, check=False, timeout=15)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "directory_mode": "0755", "file_mode": "0444", "caller_umask": "0077", "external_calls": 0,
+    }
+
+
+def test_prepare_never_repairs_an_existing_unsafe_directory(host):
+    _, state, _, _, _ = host
+    directory = state / "dagster-instance"
+    directory.mkdir(mode=0o700)
+    before = directory.stat()
+    with pytest.raises(DeploymentContractError, match="directory"):
+        instance.prepare_shared_dagster_instance()
+    after = directory.stat()
+    assert (after.st_ino, after.st_mode) == (before.st_ino, before.st_mode)
+    assert list(directory.iterdir()) == []

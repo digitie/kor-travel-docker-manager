@@ -1,5 +1,11 @@
 # JOURNAL — 작업 일지
 
+## 2026-10-26 direct prepare의 caller umask 보존
+
+- direct caller가 umask077일 때 새 instance 디렉터리까지0700이 되어 준비가 막히는 반례를 보존했다. 이번 호출이 새로 만든 inode만 nofollow 디렉터리 FD·소유자·현재 경로 identity를 확인한 뒤0755로 고정한다. 기존 불안전 디렉터리는 수정하지 않고 거부하며 제품에서 전역 umask를 바꾸지 않는다. 정상 installer는 원래 명시umask022이며 그 경로가 실패했다고 주장하지 않는다.
+- 반례1FAIL/1PASS 뒤 수정 관련64PASS·외부 호출0, Root/T의 전체 소스와 두 P2 독립 closure를 수용했다. 이전379 CI는19FAIL/3403PASS/40SKIP(470.22초)이며 원문을 보존한다. 미준비 host fixture와 옛 mount source 비교 등 남은 원인은 별도로 좁혀 확인한다. 이번 최종 커밋의 새 CI·공식 설치/공개 UI는 아직 미수용이다.
+
+
 ## 2026-10-26 호스트별 공용 instance 정본 구현
 
 - hosts 정책 n1506/Odroid5에서 동일 effective 파일·full SHA를 유도하고, 기본6은 기존 bytes/path/digest를 보존한다. 비기본 파일은 기존 G 아래 명시 준비하며 show·읽기 render는 쓰지 않는다. installer와 모든8 consumer를 같은 결과로 연결했다.
