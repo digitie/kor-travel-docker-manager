@@ -1,6 +1,6 @@
 # TASKS — 활성 작업
 
-- [ ] **T-MGR-HOST-INSTANCE — 호스트별 공용 instance 정책 보존**. 074a CI3424 PASS/40 SKIP·frontend PASS 뒤 Odroid의 기존 태그 네 한도/WARNING 보존을 추가했다. 직접 관련61 PASS/외부 호출0이며 이 후속 제품의 새 두 리뷰·CI·운영 수용은 미완이다. 기존 단계 기록: n1506/Odroid5 단일 hosts 정본·파일 준비/조회·8 consumer·installer 구현과 순수60 회귀 완료. 첫 wholebackend 602P3F 뒤 중단/owned 자원 부재를 보존한다. 격리 mount fixture source 정렬 후 실제 통합 재수용·최종 CI·독립 두 리뷰·공식 적용은 미완이다. [계약](host-dagster-instance-config.md), [재개](host-dagster-config-resume.md).
+- [ ] **T-MGR-HOST-INSTANCE — 외부 consumer 실제 적용 후속**. 제품559의 두 독립 리뷰·정확 CI·n150/Odroid 정상 설치·양 호스트 공개 TLS12개씩과 현재 Docker running19개씩의 공개 API 정합은 수용했다. 남은 것은 Transport139의 실제 정본 show 소비와 별도 명시적 plane/code-server 적용이다. 현재 plane·Weather job을 바꾸지 않은 설치와 구분한다. [운영 기록](reports/2026-10-27-manager559-two-host-normal-install.md), [계약](host-dagster-instance-config.md).
 
 
 - [ ] **T-MGR-STATUS-SNAPSHOT — 상태 조회 공유의 최신 main 후속**. 원533 제품 전체·불완전 inventory 재시도·연속변경 유한 실패 및 취소/복사 격리를 검증한다. 새 exact CI·독립 두 리뷰·실제 UI·CPU/RSS 수용은 후속이며 운영 설치는 별도다. [규약](container-status-snapshot.md).

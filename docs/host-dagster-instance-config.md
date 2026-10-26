@@ -1,3 +1,9 @@
+## 2026-10-27 현재 수용 상태
+
+제품85101과 동일 tree의 main M `aeb2d34c`에 대해 정확 CI·두 독립 리뷰·후보 UI14, n150·Odroid 공식 baremetal 설치와 양 호스트 공개 TLS12개씩을 완료했다. n1506/Odroid5 정본 show와 공개 API의 실제 running Docker19개씩을 대조했다. 새 Odroid frontend는 ARM 산출물을 정상 G 아래 승격했다. 현재 실행 중인 공용 plane의 bind bytes와 Weather job/container는 유지했다.
+
+원 실패·단계별 한계·정본 prepared 파일과 실행 중 bind의 구분, 남은 외부 caller 소비/별도 명시 수렴은 [운영 기록](reports/2026-10-27-manager559-two-host-normal-install.md)을 따른다. 아래 문서는 설계 및 구현 당시 checkpoint 원문이며 그 시점의 미완 진술을 이 현재 절보다 우선하지 않는다. CPU 효과·positive cache·외부 전체 G 원자성을 새로 수용하지 않았다.
+
 # 호스트별 공용 Dagster instance 상한 보존 설계
 
 상태: 제품·직접 회귀 구현 후 독립 검토 준비. 기준 main `6dd65766d083dd6cfd52ffd1f608dcf69502c125`. 운영 적용 전이다.
