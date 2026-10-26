@@ -1356,7 +1356,7 @@ Dagster daemon OFF를 해제하지 않는다. 기본 설치 모드의 backend st
 
 ## 호스트별 공용 instance 상한 보존
 
-공식 값은 `config/docker-targets.yml`의 호스트 정책이다. 현재 n1506/Odroid5를 유지하며 `.env`에 별도 숫자나 독립 YAML path를 두지 않는다. 기존 tracked 기본 YAML은 수정하지 않는다. [구현·한계와 검증 상태](host-dagster-instance-config.md)를 먼저 확인한다.
+공식 값은 `config/docker-targets.yml`의 호스트 정책이다. 현재 n1506/Odroid5와 Odroid의 기존 Geo1·Weather3·external_weather2·external_weather_slow1 및 WARNING을 명시 정책으로 유지한다. 기본 tag 목록의 다른 항목과 새 Concierge 안전 한도는 보존하며 `.env`에 별도 숫자·태그·로그 수준이나 독립 YAML path를 두지 않는다. 기존 tracked 기본 YAML은 수정하지 않는다. [구현·한계와 검증 상태](host-dagster-instance-config.md)를 먼저 확인한다.
 
 정상 trusted installer는 새 release의 `.env` 복사 뒤, preflight와 alias 전환 전에 기존 G FD9로 `dagster-instance-config prepare --json`을 명시 호출한다. prepare는 파일 준비만 하고 공용 plane을 재시작하지 않는다. 기본 6은 원 파일을 사용하며 비기본 구성은 기존 root state 배치에 immutable 0444 파일을 생성한다. 잘못된 기존 파일은 덮어쓰지 않으며 원인을 고친 뒤 같은 공식 설치 절차를 다시 수행한다. 새 NVMe 마운트/부팅 의존성을 만들거나 OS 부팅을 막지 않는다.
 

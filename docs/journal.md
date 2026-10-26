@@ -1,3 +1,9 @@
+## 2026-10-26 — 호스트 태그·로그 튜닝 누락 보존
+
+074a CI는 backend3424 PASS/40 SKIP(369.75초)·frontend PASS였다. 뒤이은 RO 대조에서 max5만 파생하면 기존 Odroid의 Geo1·Weather3·외부수집2·느린외부1/WARNING을 잃는 경계를 확인했다. hosts에 그 typed 값만 명시하고 기본 tag 전체와 새 Concierge 안전 한도는 보존한다. n150 원 bytes/path/digest, 기존 G/immutable/RO/installer 순서와 부팅 조건은 바꾸지 않는다.
+
+positive3개의 원 FAIL과 첫 구현의 base key-only 처리3 FAIL/51 PASS를 보존한 뒤 직접54 PASS와 관련61 PASS(7.02초)·외부 호출0을 확인했다. 새 제품 두 리뷰·정확 CI·후보/운영 적용은 별도다. 실제 SSH·설치·서비스 변경은 없다.
+
 # JOURNAL — 작업 일지
 
 ## 2026-10-26 instance canonical bind와 관측 fixture 정렬

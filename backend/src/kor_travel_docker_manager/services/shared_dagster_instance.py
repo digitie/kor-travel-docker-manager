@@ -18,6 +18,7 @@ import yaml
 
 from kor_travel_docker_manager.services.errors import DeploymentContractError
 from kor_travel_docker_manager.services.registry import (
+    _dagster_host_overrides,
     current_host,
     get_project_root,
     load_targets_config,
@@ -74,6 +75,59 @@ def _configuration(raw: bytes, maximum: int) -> bytes:
         raise DeploymentContractError("shared Dagster instance configuration is invalid") from exc
 
 
+def _host_configuration(raw: bytes, maximum: int, spec: Mapping[str, Any]) -> bytes:
+    """기본 태그를 보존하며 명시한 동일 identity 한도와 로그 수준만 파생한다."""
+    tags, level = _dagster_host_overrides(spec)
+    configured = _configuration(raw, maximum)
+    if not tags and level is None:
+        return configured
+    try:
+        document = load_yaml_rejecting_duplicate_keys(configured.decode("utf-8"))
+        current = document["concurrency"]["runs"]["tag_concurrency_limits"]
+        # 기본의 value 없는 key 전체 한도도 그대로 유지한다. override는 명시 value만 받는다.
+        if not isinstance(current, list):
+            raise ValueError("invalid base tag limits")
+        by_identity: dict[tuple[str, str | None], dict[str, Any]] = {}
+        for entry in current:
+            if (not isinstance(entry, dict) or set(entry) not in ({"key", "limit"}, {"key", "value", "limit"})
+                    or not isinstance(entry.get("key"), str) or not entry["key"]
+                    or type(entry.get("limit")) is not int or entry["limit"] <= 0
+                    or ("value" in entry and not isinstance(entry["value"], str))):
+                raise ValueError("invalid base tag limit")
+            identity = entry["key"], entry.get("value")
+            if identity in by_identity:
+                raise ValueError("duplicate base tag identity")
+            by_identity[identity] = entry
+        changed = False
+        for override in tags:
+            identity = override["key"], override["value"]
+            if identity in by_identity:
+                entry = by_identity[identity]
+                if entry["limit"] != override["limit"]:
+                    entry["limit"] = override["limit"]
+                    changed = True
+            else:
+                entry = dict(override)
+                current.append(entry)
+                by_identity[identity] = entry
+                changed = True
+        if level is not None:
+            original = document["python_logs"]["python_log_level"]
+            _dagster_host_overrides({"dagster_python_log_level": original})
+            if original != level:
+                document["python_logs"]["python_log_level"] = level
+                changed = True
+        if not changed:
+            return configured
+        # 비기본 구성만 결정적으로 직렬화한다. 기본 bytes·경로·digest는 그대로다.
+        result = yaml.safe_dump(document, allow_unicode=True, sort_keys=False).encode("utf-8")
+        if len(result) > _MAX_BYTES or load_yaml_rejecting_duplicate_keys(result.decode("utf-8")) != document:
+            raise ValueError("host instance configuration differs")
+        return result
+    except (KeyError, TypeError, ValueError, UnicodeError, yaml.YAMLError) as exc:
+        raise DeploymentContractError("shared Dagster host configuration is invalid") from exc
+
+
 def _base_bytes(root: Path) -> bytes:
     """기본 파일도 안전한 실제 파일을 bounded read한다. 설치 root alias는 보존한다."""
     descriptor = None
@@ -118,7 +172,7 @@ def _desired() -> tuple[SharedDagsterInstance, bytes]:
         # 옛 단일 호스트 개발 fixture는 유지한다. 운영 release는 명시 정책이 필수다.
         if os.path.lexists(root / ".ktdm-source-revision") and _POLICY not in spec:
             raise ValueError("missing host policy")
-        effective = _configuration(raw, maximum)
+        effective = _host_configuration(raw, maximum, spec)
     except (OSError, KeyError, TypeError, ValueError, UnicodeError, yaml.YAMLError) as exc:
         raise DeploymentContractError("shared Dagster host configuration cannot be read") from exc
     digest = hashlib.sha256(effective).hexdigest()

@@ -386,3 +386,117 @@ def test_prepare_never_repairs_an_existing_unsafe_directory(host):
     after = directory.stat()
     assert (after.st_ino, after.st_mode) == (before.st_ino, before.st_mode)
     assert list(directory.iterdir()) == []
+
+
+_PRESERVED_TAG_LIMITS = [
+    {"key": "dagster/code_location", "value": "kortravelgeo_dagster.definitions", "limit": 1},
+    {"key": "dagster/code_location", "value": "kortravelweather_dagster.definitions", "limit": 3},
+    {"key": "kortravelweather/run_group", "value": "external_weather", "limit": 2},
+    {"key": "kortravelweather/run_group", "value": "external_weather_slow", "limit": 1},
+]
+
+
+def test_preserved_odroid_tunings_keep_other_source_limits(host):
+    _, _, targets, _, _ = host
+    targets["hosts"]["odroid"].update(
+        dagster_tag_concurrency_limits=deepcopy(_PRESERVED_TAG_LIMITS),
+        dagster_python_log_level="WARNING",
+    )
+    before = yaml.safe_load(BASE.read_bytes())
+    prepared = instance.prepare_shared_dagster_instance()
+    actual = yaml.safe_load(prepared.path.read_bytes())
+    limits = actual["concurrency"]["runs"]["tag_concurrency_limits"]
+    old_limits = before["concurrency"]["runs"]["tag_concurrency_limits"]
+    required = {(x["key"], x["value"]): x["limit"] for x in _PRESERVED_TAG_LIMITS}
+    assert {(x["key"], x.get("value")): x["limit"] for x in limits}.items() >= required.items()
+    old_identities = [(x["key"], x.get("value")) for x in old_limits]
+    assert [(x["key"], x.get("value")) for x in limits[:-1]] == old_identities
+    assert limits[-1] == _PRESERVED_TAG_LIMITS[-1]
+    for entry in old_limits:
+        identity = entry["key"], entry.get("value")
+        if identity not in required:
+            assert entry in limits
+    assert actual["concurrency"]["runs"]["max_concurrent_runs"] == 5
+    assert actual["python_logs"]["python_log_level"] == "WARNING"
+    # 세 허용 경계 외에는 새 Concierge 상한·retention·storage·logger 목록도 그대로다.
+    for document in [before, actual]:
+        document["concurrency"]["runs"].pop("max_concurrent_runs")
+        document["concurrency"]["runs"].pop("tag_concurrency_limits")
+        document["python_logs"].pop("python_log_level")
+    assert actual == before
+    info = prepared.path.stat()
+    assert instance.shared_dagster_instance() == prepared
+    after = prepared.path.stat()
+    assert (after.st_ino, after.st_mtime_ns, after.st_size) == (info.st_ino, info.st_mtime_ns, info.st_size)
+
+
+def test_committed_odroid_tunings_are_explicit_and_n150_inherits(host):
+    _, _, targets, selected, _ = host
+    committed = yaml.safe_load((ROOT / "config/docker-targets.yml").read_bytes())["hosts"]
+    assert committed["odroid"]["dagster_tag_concurrency_limits"] == _PRESERVED_TAG_LIMITS
+    assert committed["odroid"]["dagster_python_log_level"] == "WARNING"
+    assert "dagster_tag_concurrency_limits" not in committed["n150"]
+    assert "dagster_python_log_level" not in committed["n150"]
+    config = {"version": 2, "hosts": deepcopy(committed)}
+    assert _host_specs(config) == committed
+    targets["hosts"] = config["hosts"]
+    selected[0] = "n150"
+    result, raw = instance._desired()
+    assert result.uses_base and raw == BASE.read_bytes()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("dagster_tag_concurrency_limits", None),
+    ("dagster_tag_concurrency_limits", {}),
+    ("dagster_tag_concurrency_limits", [{"key": "k", "value": "v", "limit": True}]),
+    ("dagster_tag_concurrency_limits", [{"key": "k", "value": "v", "limit": 0}]),
+    ("dagster_tag_concurrency_limits", [{"key": "k", "value": "v", "limit": -1}]),
+    ("dagster_tag_concurrency_limits", [{"key": "k", "value": "v", "limit": "1"}]),
+    ("dagster_tag_concurrency_limits", [{"key": "k", "value": "v", "limit": 1.0}]),
+    ("dagster_tag_concurrency_limits", [{"key": "", "value": "v", "limit": 1}]),
+    ("dagster_tag_concurrency_limits", [{"key": "k", "value": False, "limit": 1}]),
+    ("dagster_tag_concurrency_limits", [{"key": "k", "limit": 1}]),
+    ("dagster_tag_concurrency_limits", [{"key": "k", "value": "v", "limit": 1, "patch": {}}]),
+    ("dagster_tag_concurrency_limits", [{"key": "k", "value": "v", "limit": 1}] * 2),
+    ("dagster_python_log_level", None),
+    ("dagster_python_log_level", False),
+    ("dagster_python_log_level", "warning"),
+    ("dagster_python_log_level", "WARNING\n"),
+    ("dagster_python_log_level", "UNKNOWN"),
+])
+def test_host_tunings_reject_invalid_or_ambiguous_values(host, field, value):
+    _, state, targets, _, _ = host
+    targets["hosts"]["odroid"][field] = value
+    declared = deepcopy(targets)
+    declared["version"] = 2
+    declared["hosts"]["n150"].update(addr="127.0.0.1", default=True)
+    declared["hosts"]["odroid"].update(addr="127.0.0.2")
+    with pytest.raises(TargetsConfigError):
+        _host_specs(declared)
+    with pytest.raises(DeploymentContractError):
+        instance.prepare_shared_dagster_instance()
+    assert list(state.iterdir()) == []
+
+
+def test_changed_tuning_uses_new_immutable_name_without_modifying_previous(host):
+    _, _, targets, _, _ = host
+    targets["hosts"]["odroid"]["dagster_python_log_level"] = "WARNING"
+    previous = instance.prepare_shared_dagster_instance()
+    original = previous.path.read_bytes()
+    targets["hosts"]["odroid"]["dagster_python_log_level"] = "ERROR"
+    current = instance.prepare_shared_dagster_instance()
+    assert current.path != previous.path
+    assert previous.path.read_bytes() == original
+    assert previous.path.stat().st_mode & 0o777 == current.path.stat().st_mode & 0o777 == 0o444
+
+
+def test_equal_explicit_tunings_preserve_default_original_bytes(host):
+    _, _, targets, selected, _ = host
+    selected[0] = "n150"
+    targets["hosts"]["n150"].update(
+        dagster_tag_concurrency_limits=[{"key": "dagster/code_location",
+                                         "value": "kortravelgeo_dagster.definitions", "limit": 10}],
+        dagster_python_log_level="INFO",
+    )
+    config, raw = instance._desired()
+    assert config.uses_base and raw == BASE.read_bytes()

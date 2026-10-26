@@ -4,14 +4,14 @@
 
 ## 문제와 범위
 
-현재 Odroid 공용 instance 상한은 5, n150 정본은 6이다. 새 Manager의 tracked `config/dagster-shared/dagster.yaml`은 6 하나여서 이후 plane 수렴 또는 새 code-server 기동이 Odroid의 5를 조용히 바꿀 수 있다. 이번 변경은 현재 두 값을 공식 호스트 구성으로 보존한다. 수집 정책·태그별 상한·Geo·PG·메모리·실행 중 run·runtime pin/배포 상태 형식은 바꾸지 않는다. 상한 감축이나 새 admission 정책도 도입하지 않는다.
+현재 Odroid 공용 instance 상한은 5, n150 정본은 6이다. 새 Manager의 tracked `config/dagster-shared/dagster.yaml`은 6 하나여서 이후 plane 수렴 또는 새 code-server 기동이 Odroid의 5를 조용히 바꿀 수 있다. 이번 변경은 현재 두 값과 Odroid의 기존 태그 한도·로그 수준을 공식 호스트 구성으로 보존한다. 운영 튜닝을 새로 낮추거나 PG·메모리·실행 중 run·runtime pin/배포 상태 형식을 바꾸지 않는다. 새 admission 정책도 도입하지 않는다.
 
 정상 Manager 설치는 공용 plane을 직접 재생성하지 않는다. 그러나 명시적 `dagster-plane converge`, Map/PinVi pinned 재구축, 새 Weather/Transport code-server 배포가 소비하는 설정까지 같은 정본이어야 한다. 두 consumer에 서로 다른 YAML override를 주는 방식으로 닫지 않는다.
 
 ## 선택안
 
-1. 기존 `config/docker-targets.yml`의 `hosts` 각 항목에 `dagster_max_concurrent_runs`를 선언한다. n150은 6, Odroid는 5다. 기존 `KTDM_HOST`와 호스트 identity 검사를 재사용하며 별도 환경변수에 정책값을 다시 선언하지 않는다. 미지의 host, bool/문자열/0/음수 등 잘못된 값은 거부한다. 구형 단일 호스트 개발 fixture만 기존 기본 YAML을 사용한다.
-2. 새 작은 `services/shared_dagster_instance.py`에서 tracked 기본 YAML과 선택한 호스트 값으로 effective bytes를 만든다. 같은 값 6이면 원 bytes를 그대로 반환한다. 값 5이면 `concurrency.runs.max_concurrent_runs` 정수 한 자리만 바꾸며 나머지 구조/주석/바이트를 보존한다. 공식 조회의 `sha256`은 파일 전체 SHA256 64자리이며, Compose digest는 그 앞 16자리다. public Dagster schema가 현 경로에서 `Field(int)`이므로 직접 env 치환은 쓰지 않는다.
+1. 기존 `config/docker-targets.yml`의 `hosts` 각 항목에 `dagster_max_concurrent_runs`를 선언한다. n150은 6, Odroid는 5다. 같은 항목의 선택적 `dagster_tag_concurrency_limits`는 정확히 `{key, value, limit}`만 받으며 문자열 identity·양의 정수(bool 제외)·중복 없는 목록이어야 한다. `dagster_python_log_level`은 DEBUG/INFO/WARNING/ERROR/CRITICAL 중 하나다. 기존 `KTDM_HOST`와 호스트 identity 검사를 재사용하며 별도 환경변수에 정책값을 다시 선언하지 않는다. 미지의 host, bool/문자열/0/음수 등 잘못된 값은 거부한다. 구형 단일 호스트 개발 fixture만 기존 기본 YAML을 사용한다.
+2. 새 작은 `services/shared_dagster_instance.py`에서 tracked 기본 YAML과 선택한 호스트 값으로 effective bytes를 만든다. 추가 override가 없고 같은 값 6이면 원 bytes를 그대로 반환한다. max만 다른 경우 기존 정수 한 자리 파생을 유지한다. 명시 태그/로그 override가 있으면 기본 목록의 순서를 유지하며 같은 `(key,value)`의 limit만 바꾸고 새로운 identity는 선언 순서대로 뒤에 더한다. value 없는 Map 전체 key 한도와 새 Concierge 기본 상한도 보존한다. 로그 수준 한 필드 외 다른 구조는 바꾸지 않고 비기본 구성만 결정적으로 직렬화한다. 이 경우 기본 주석/포맷을 보존한다고 주장하지 않는다. 공식 조회의 `sha256`은 파일 전체 SHA256 64자리이며, Compose digest는 그 앞 16자리다. public Dagster schema가 현 경로에서 `Field(int)`이므로 직접 env 치환은 쓰지 않는다.
 3. 기본 6은 원 source 경로와 원 digest를 그대로 사용하여 n150의 불필요한 plane 재생성을 피한다. 기본과 다른 effective 파일만 기존 root 소유 state root 아래에 생성한다. 같은 bytes의 경로가 안정적이도록 digest로 파생하며 별도 manifest/승인 상태를 만들지 않는다. 기존 global mutation lock 아래에서 준비하고 원자 쓰기/파일·디렉터리 fsync를 재사용한다. read/status/환경 해석 단계에서 파일을 암묵적으로 만들지 않는다.
 4. 파일은 비밀이 없는 읽기 전용 instance 구성이다. root 소유·group/other 쓰기 없음·symlink/비정규 파일/상위 경로 이탈 거부를 기존 보안 파일 패턴으로 검증한다. Odroid는 이미 NVMe로 확인된 기존 state/release 배치만 사용하며 쓰기 경로를 다른 장치로 임의 fallback하지 않는다. 동시 준비는 같은 global lock과 같은 bytes 재사용으로 직렬화한다. 현재 파일이 틀리거나 불안전하면 덮어 숨기지 않고 실패한다.
 5. Manager compose의 공용 instance mount와 instance digest는 이 한 effective 결과에서 함께 유도한다. 기존 frozen environment→system bind snapshot→mutation 전 재검증을 통과시키며 workspace/credential/권한 계약은 유지한다. n150 기본 render는 종전과 같아야 한다. 부적합한 외부 path/digest override로 호스트 정책을 바꾸는 것을 허용하지 않는다.
@@ -21,7 +21,9 @@
 
 ## ADR-58의 좁은 정정
 
-ADR-58은 instance YAML 한 벌과 host별 workspace만으로 충분하다고 결정했다. 이번 실제 설치 경계에서는 같은 기본 YAML을 유지하면서 host 보호 정수 하나만 파생하는 예외가 필요하다. 두 YAML을 손으로 유지하거나 installer에 전체 compose 렌더 기능을 넣지 않는다. 정책 정본·pure bytes 파생·공식 consumer 접점만 추가하고 기존 기록은 지우지 않는다. 아래 파일 권한과 installer 순서는 이 좁은 예외의 구현 계약이다.
+ADR-58은 instance YAML 한 벌과 host별 workspace만으로 충분하다고 결정했다. 이번 실제 설치 경계에서는 같은 기본 YAML을 유지하면서 호스트의 명시 보호값만 파생하는 예외가 필요하다. 두 YAML을 손으로 유지하거나 installer에 전체 compose 렌더 기능을 넣지 않는다. 정책 정본·pure bytes 파생·공식 consumer 접점만 추가하고 기존 기록은 지우지 않는다. 아래 파일 권한과 installer 순서는 이 좁은 예외의 구현 계약이다.
+
+2026-10-26 후속 RO 대조에서 기존 Odroid는 Geo location1·Weather location3·external_weather2·external_weather_slow1 및 Python WARNING을 쓰고, tracked 기본은 각각10·10·3·항목 없음 및 INFO임을 확인했다. max5만 복사하면 후속 code-server가 이 튜닝을 잃으므로 Odroid registry에 그 네 태그와 WARNING을 명시한다. 나머지 기본 목록은 유지하며 새 `concierge_admin_region_refresh` 안전 한도도 제거하지 않는다. 현재 운영 파일을 매번 읽어 상속하거나 임의 YAML patch를 받지 않는다. normal 설치는 현재 plane을 변경하지 않으며 실제 plane/code-server 적용은 Root가 별도 순서로 수용한다.
 
 ## 파일·consumer·동시 실행 경계
 
@@ -46,3 +48,10 @@ ADR-58은 instance YAML 한 벌과 host별 workspace만으로 충분하다고 �
 - [ ] Root가 조율하는 양 호스트 역할 보존·공개 UI 검증. 이 작업에서 운영 SSH·설치·서비스 변경은 없다.
 
 이전 실제 CPU 창들은 서로 다른 시점의 관측이다. 더 이전 GraphQL의 active2, 04:05의 BuildKit idle cgroup과 04:15의 active5/queued3·BuildKit 재개를 하나의 원인으로 합치지 않는다. 이번 변경은 5를 유지하는 경계이며 CPU 저감이나 값을 2로 줄이는 정책을 주장하지 않는다.
+
+
+## 기존 CI와 튜닝 보존 후속 검증
+
+074a의 정확 CI는 backend3424 PASS/40 SKIP(369.75초), frontend PASS였다. 원 379의19 FAIL과 초기 검증 이력은 그대로다. 이 CI의 `-q` 원문에는 skip node/reason이 없어40개를 특정 Compose4개로 단정하지 않는다. `real_host_render`는 Docker executable 부재 때만 skip하며 전체11 매개 case다.
+
+이후 튜닝 누락을 보여주는 새 positive3개는 기존 제품에서3 FAIL이었다. 첫 수정의3 FAIL/51 PASS는 기본 Map의 value 없는 key 한도를 잘못 거부한 구현을 보존한 결과이며, 그 형태를 그대로 유지해 현재 직접 모듈54 PASS/외부 호출0을 확인했다. n150 raw bytes/path/digest·기존 immutable/권한/G/RO 계약과 새 policy의 strict형식·중복거부·기본 태그 보존을 함께 검증했다. 이 후속 제품의 새 정확 CI·두 독립 리뷰·후보 UI 및 실제 설치/consumer 적용은 별도 미완이다.

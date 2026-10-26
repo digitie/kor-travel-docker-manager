@@ -9,6 +9,21 @@ hosts:
   odroid:
     addr: 192.168.1.13
     dagster_max_concurrent_runs: 5
+    # test_committed_odroid_tunings_are_explicit_and_n150_inherits가 기존 튜닝과 결박한다.
+    dagster_tag_concurrency_limits:
+      - key: dagster/code_location
+        value: kortravelgeo_dagster.definitions
+        limit: 1
+      - key: dagster/code_location
+        value: kortravelweather_dagster.definitions
+        limit: 3
+      - key: kortravelweather/run_group
+        value: external_weather
+        limit: 2
+      - key: kortravelweather/run_group
+        value: external_weather_slow
+        limit: 1
+    dagster_python_log_level: WARNING
 
 # GM-19: port_policy/port_band 블록을 소비하는 코드가 0건이라 제거했다 — 포트 정책의
 # 유일한 정본은 docs/ports.md다.
