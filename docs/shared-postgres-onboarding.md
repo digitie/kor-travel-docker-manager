@@ -670,6 +670,50 @@ concierge 실측: **cutover 직후(2026-09-20 기준)에도 옛 instance는 heal
 
 ---
 
+## 12. PG18 — 16→18 major 업그레이드 (2026-10-27, `pg_upgrade --link`)
+
+계기: PinVi T-382 — 17 클라이언트 `pg_restore`가 16 서버가 모르는 `SET transaction_timeout`을 써서 복원이 실패했다.
+소유자 결정으로 두 호스트(n150·odroid)의 공용 instance를 18로 올렸다. 방식은 `pg_upgrade --link`(데이터를 옮기지 않고
+hard link) — 소유자 결정 "pg_upgrade 적극활용", 롤백 경로는 두지 않는다.
+
+**이미지.** n150 `postgis/postgis:18-3.6@sha256:4a43e3c3…`(PG 18.6 / PostGIS 3.6.4, Debian trixie, glibc 2.41).
+odroid(arm64)는 공식 postgis index에 arm64가 없어 같은 레시피(`postgres:18-trixie` + PGDG `postgresql-18-postgis-3`)로
+로컬 빌드한다. `pg_upgrade` helper는 그 이미지에 PGDG `postgresql-16` + `postgresql-16-postgis-3`을 더한 것이다(두 major의
+`$libdir/postgis-3`이 모두 있어야 한다).
+
+**함정(리허설에서 실측).**
+- PG18 `initdb` 기본은 **data checksums on**이다. 옛 cluster가 off라 새 cluster를 `--no-data-checksums`로 만들지 않으면
+  `pg_upgrade`가 거부한다.
+- PG18 공식 이미지의 PGDATA 기본은 `/var/lib/postgresql/18/docker`다 — compose가 `PGDATA=/var/lib/postgresql/data`를
+  명시해 bind 자리를 지킨다. 새 cluster는 같은 파일시스템의 형제 디렉터리(`pgdata18`)에 만들고(`--link`는 같은 fs 필수),
+  끝나면 `pgdata`→`pgdata16`, `pgdata18`→`pgdata`로 이름을 맞바꾼다(bind 문자열 불변).
+- `pg_upgrade`는 `datallowconn=false`인 DB(n150의 퇴역 `*_dagster` 셋)를 거부한다 — 창 동안 `ALLOW_CONNECTIONS true`, 끝나면
+  다시 false.
+- `pg_hba.conf`·`postgresql.auto.conf`는 `pg_upgrade`가 옮기지 않는다 — 옛 것을 복사한다.
+- geo는 PostGIS가 `x_extension` 스키마에 있어 `postgis_extensions_upgrade()`를 **스키마 한정**으로 불러야 한다.
+- glibc 2.31(n150)/2.36(odroid) → 2.41이라 모든 DB가 collation version mismatch 경고를 낸다. 리허설에서 실데이터의 collatable
+  btree 인덱스 전부를 `amcheck bt_index_check`로 검사해 0건 실패였고(Map 166·PinVi 75·concierge 52·dagster 40·transport 65),
+  geo는 인덱스 키 문자열 6,200만 개의 정렬 순서를 두 glibc에서 비교했다. 그 뒤 `ALTER DATABASE … REFRESH COLLATION VERSION`.
+- PG18 `pg_upgrade`는 planner 통계를 옮긴다 — `vacuumdb --all --analyze-in-stages --missing-stats-only`만 돌린다.
+
+**리허설 실측(스크래치, 격리 네트워크).** n150: `--check` 28 s, `--link` 33 s, 확장 갱신 9 s, analyze 62 s, 행 수 PG16=PG18
+전수 일치, Map API·PinVi·concierge `/health` 200, alembic head 보존. odroid: `--check` 24 s, `--link` 69 s, 확장 갱신 69 s
+(postgis_topology), analyze 14 s, 행 수 일치.
+
+**절차(호스트별, 한 단계씩).** ① Dagster daemon 정지(instigator 상태는 DB에 그대로) + 진행 run drain ② 보존 대상 safety
+dump(n150 concierge, odroid geo) ③ `:11000` client 컨테이너 정지 ④ 퇴역 DB `ALLOW_CONNECTIONS true`, `CHECKPOINT`, PG16 정지
+(`pg_controldata` = shut down) ⑤ helper로 `initdb --no-data-checksums` → `pg_upgrade --check` → `--link` → hba/auto.conf 복사 →
+디렉터리 맞바꿈 ⑥ 이 release 설치(n150: `install-mgr.sh` + `pin rebind-execution`) 후 `up -d --no-deps kor-travel-shared-postgres`
+⑦ 확장 갱신·analyze·collation refresh·퇴역 DB 다시 닫기 ⑧ 테넌트 → daemon 순서로 재기동, 검증.
+
+**클라이언트 major.** 낮은 major의 `pg_dump`는 18 서버를 덤프하지 못한다. 서버 업그레이드와 **함께** client-18 이미지를 배포해야
+하는 것: PinVi api(`postgresql-client` → trixie 17), transport backend(같음), geo api·dagster(`postgresql-client-16`).
+Manager standalone 백업은 서버 컨테이너 안에서 `docker exec pg_dump`라 영향이 없다.
+
+`pgdata16`은 검증이 끝난 뒤 지운다(hard link라 공간은 대부분 공유한다).
+
+---
+
 ## 관련
 
 - **kor-travel-concierge 저장소 `docs/journal.md` 2026-09-20 항목** — "공용 Postgres 인스턴스(`:11000`)로 실제 데이터 마이그레이션 완료(ADR-44)". **유일한 실행 선례.** 7단계 순서, 실제 `pg_restore --no-owner --role=` 플래그, owner-only 경고 4건, row count/sequence 전수 일치, Alembic head, 연결 수 대비까지 들어 있다. §7의 검증 항목은 전부 여기서 파생됐다.

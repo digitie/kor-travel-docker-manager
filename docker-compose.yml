@@ -265,7 +265,7 @@ services:
       # PG18 공식 이미지는 PGDATA 기본값을 `/var/lib/postgresql/18/docker`(볼륨 `/var/lib/postgresql`)로 바꿨다.
       # bind 자리(`docker-targets.yml`의 container_path)를 그대로 두려고 옛 자리를 명시한다. 16→18은
       # `pg_upgrade --link`로 했다(2026-10-27): 같은 파일시스템의 형제 디렉터리에 18 cluster를 만든 뒤 이름을
-      # 맞바꿔 bind 문자열은 바뀌지 않는다. 절차는 docs/shared-postgres-onboarding.md §PG18.
+      # 맞바꿔 bind 문자열은 바뀌지 않는다. 절차는 docs/shared-postgres-onboarding.md §12.
       PGDATA: /var/lib/postgresql/data
     command:
     - postgres
