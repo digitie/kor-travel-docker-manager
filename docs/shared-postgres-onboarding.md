@@ -714,6 +714,19 @@ Manager standalone 백업은 서버 컨테이너 안에서 `docker exec pg_dump`
 
 `pgdata16`은 검증이 끝난 뒤 지운다(hard link라 공간은 대부분 공유한다).
 
+**n150 실행 기록(2026-10-27).** 테넌트 정지 15:06:19Z → 재기동 15:18:00Z(약 12분). `pg_upgrade --check`+`--link` 31 s,
+PG18 기동 2 s, 확장 갱신 10 s(오류 0), analyze 3 s, collation refresh 8 DB(2.31→2.41), 이후 preflight FAIL=0·공개 엔드포인트
+200·Dagster run 정상. 시간을 잡아먹은 함정 둘:
+- **호스트에 uid 999 사용자가 없다.** `install -d -o 999 …`는 `invalid user: '999'`로 실패한다 — `mkdir` 후
+  `chown 999:999`(숫자)로 만든다.
+- **`ktdctl ensure`는 `KTDM_DEPLOYMENT_ENVIRONMENT`를 프로세스 env에서 읽는다.** root `.env`에 `production`이 있어도
+  `sudo env KTDM_HOST=n150 ktdctl ensure dagster`는 "KTDM_DEPLOYMENT_ENVIRONMENT must be explicitly set before manager
+  mutation"으로 거부한다(`PINVI_ENVIRONMENT`·`KOR_TRAVEL_MAP_RUNTIME_DB_PREFLIGHT_REQUIRED`도 같은 검사). 이번에는 Manager 자신의
+  compose 호출 형태(`docker compose --env-file /opt/kor-travel-docker-manager/.env -f …/docker-compose.yml up -d --no-deps
+  kor-travel-shared-postgres`, `KTDM_HOST=n150`)로 공용 instance만 재생성했다.
+- `pg_upgrade` 뒤 `postgresql.auto.conf`가 주석뿐이면 `grep -v '^#'`이 1로 끝나 `set -e` 스크립트가 거기서 멈춘다(업그레이드
+  자체는 끝난 상태) — 디렉터리 맞바꿈은 수동으로 이어 했다.
+
 ---
 
 ## 관련
