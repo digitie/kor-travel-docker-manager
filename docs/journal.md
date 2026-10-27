@@ -8,6 +8,10 @@
   아래 정규화 사본(`.dockerignore`는 moby patternmatcher 규칙, Dockerfile·ignore 파일은 항상 남겨 Docker가 다시
   적용)으로 바꾸고, 나머지 서비스의 `build:`를 지운다(implicit build 금지, Compose config hash는 build를 보지
   않는다). `activate-concierge`는 `--no-build`. 대상은 렌더된 문서의 `build:`에서 파생하고 서비스 이름 결박은 없다.
+- 적대 리뷰 2회 반영: ignore 판정은 BuildKit의 `MatchesUsingParentResults`·suffixMatch와 같게(Docker가 보내는 파일을
+  빼지 않는다), 되살릴 예외가 없는 제외 디렉터리는 열지 않는다(fsutil과 같게). source는 디렉터리 fd 기준
+  `O_NOFOLLOW|O_NONBLOCK`으로 열어 검사 뒤 바꿔치기된 symlink·FIFO를 따라가지 않는다. 비운영에서
+  `COMPOSE_PROJECT_NAME`이 없으면 C6c lock과 같은 기본값을 쓴다.
 - 회귀: `backend/tests/test_build_context_export.py`가 700/600 tree(umask 077)를 만들고 사본의 디렉터리 `0755`·파일
   world-readable·symlink 비추종·ignore 규칙을 효과로 본다.
 
