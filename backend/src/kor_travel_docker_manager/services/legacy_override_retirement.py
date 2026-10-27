@@ -720,6 +720,10 @@ def _activate_canonical_concierge_locked(
             "--detach",
             "--no-deps",
             "--force-recreate",
+            # 재생성은 이미 빌드된 이미지(root `.env`의 Concierge 이미지 변수)만 쓴다. 이미지가 없을 때
+            # Compose가 운영 source 디렉터리를 context로 조용히 빌드하지 않게 한다 — owner-only mode가
+            # 이미지에 들어가 비-root code server가 깨진다(build_context_export.py).
+            "--no-build",
             *_CONCIERGE_RECREATE_SERVICES,
         ]
         if up_runner(command, project_root, environment) != 0:

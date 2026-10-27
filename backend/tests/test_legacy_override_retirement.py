@@ -1127,6 +1127,8 @@ def test_activate_canonical_concierge_recreates_only_exact_service_set(
     ]
     assert "--no-deps" in observed
     assert "--force-recreate" in observed
+    # 이미지가 없을 때 운영 source 디렉터리에서 implicit build하지 않는다.
+    assert "--no-build" in observed
 
 
 def test_retire_legacy_override_leaves_canonical_archive_when_recreate_fails(

@@ -12,7 +12,7 @@ import time
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -27,6 +27,9 @@ import httpx
 import yaml
 from dotenv import dotenv_values
 
+from kor_travel_docker_manager.services.build_context_export import (
+    compose_document_with_exported_build_contexts,
+)
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MAP_APPLICATION_SCHEMA_SERVICE,
     _MAP_RUNTIME_SERVICES,
@@ -118,6 +121,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     ensure_pinned_runtime_state_directory,
     generation_logical_sha256,
     pinned_runtime_state_paths,
+    pinned_runtime_state_root,
 )
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     CandidateRuntimeBuild,
@@ -3669,63 +3673,70 @@ class ComposeService:
                 external_input_snapshot=external_input_snapshot,
                 service_scope=service_scope,
             )
-        process_input = None
-        if materialized_compose is not None:
-            transport_compose = _escape_materialized_compose_environment_values(
-                materialized_compose
-            )
-            process_input = json.dumps(
-                transport_compose,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        working_directory = get_project_root()
-        if external is not None:
-            # **`-f`는 `--project-directory`가 아니라 cwd 기준이다.** Manager 루트에서
-            # 돌리면 `-f docker-compose.yml`이 Manager 자신의 compose를 연다(적대 리뷰
-            # 2026-09-18 실측: `airport` 명령이 Manager의 concierge-ui 보간 오류를 냈다).
-            working_directory = external.working_dir
-            # 그리고 Manager의 프로세스 환경을 물려주지 않는다. Compose에서 셸 환경은
-            # `.env`보다 **우선**하므로, 상속하면 형제 프로젝트의 `.env`를 조용히
-            # 덮어쓴다 — `--env-file`을 뺀 것만으로는 그것을 막지 못했다.
-            #
-            # **좁히는 것은 상속되는 부분뿐이다.** 첫 판은 이 블록이
-            # `if process_environment is None:` 안에 있어서, `environment` 인자가
-            # 주어지면 그 앞의 `{**os.environ, **environment}`가 그대로 나갔다 —
-            # 무조건문으로 적은 문서가 조건부였다(적대 리뷰 2026-09-18 F2). 명시 인자는
-            # 호출자의 의도적 선택이므로 좁힌 것 **위에** 덮는다.
-            inherited = {
-                name: value
-                for name, value in os.environ.items()
-                if name in _EXTERNAL_PROJECT_PASSTHROUGH_ENV
-                or name.startswith("DOCKER_")
-            }
-            process_environment = (
-                inherited if environment is None else {**inherited, **environment}
-            )
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=working_directory,
-                text=True,
-                capture_output=capture_output,
-                check=False,
-                env=process_environment,
-                input=process_input,
-            )
-        except OSError as exc:
-            # 예외 이름조차 받지 않아서, `working_dir`이 없다는 가장 흔할 오설정이
-            # "docker 바이너리 없음"과 **같은 문구**를 냈다(적대 리뷰 2026-09-18).
-            # cwd가 호스트마다 다른 값이 된 지금은 그 구별이 진단의 전부다.
-            return {
-                "success": False,
-                "returncode": 127,
-                "command": command,
-                "stdout": "",
-                "stderr": (
-                    f"docker compose command could not start in {working_directory}: {exc}"
-                ),
-            }
+        # 명시 build의 context 사본은 Compose가 끝날 때까지 산다(build_context_export.py).
+        with ExitStack() as build_contexts:
+            process_input = None
+            if materialized_compose is not None:
+                transport_compose = _escape_materialized_compose_environment_values(
+                    self._compose_document_for_docker(
+                        args,
+                        materialized_compose,
+                        environment_snapshot=environment_snapshot,
+                        stack=build_contexts,
+                    )
+                )
+                process_input = json.dumps(
+                    transport_compose,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            working_directory = get_project_root()
+            if external is not None:
+                # **`-f`는 `--project-directory`가 아니라 cwd 기준이다.** Manager 루트에서
+                # 돌리면 `-f docker-compose.yml`이 Manager 자신의 compose를 연다(적대 리뷰
+                # 2026-09-18 실측: `airport` 명령이 Manager의 concierge-ui 보간 오류를 냈다).
+                working_directory = external.working_dir
+                # 그리고 Manager의 프로세스 환경을 물려주지 않는다. Compose에서 셸 환경은
+                # `.env`보다 **우선**하므로, 상속하면 형제 프로젝트의 `.env`를 조용히
+                # 덮어쓴다 — `--env-file`을 뺀 것만으로는 그것을 막지 못했다.
+                #
+                # **좁히는 것은 상속되는 부분뿐이다.** 첫 판은 이 블록이
+                # `if process_environment is None:` 안에 있어서, `environment` 인자가
+                # 주어지면 그 앞의 `{**os.environ, **environment}`가 그대로 나갔다 —
+                # 무조건문으로 적은 문서가 조건부였다(적대 리뷰 2026-09-18 F2). 명시 인자는
+                # 호출자의 의도적 선택이므로 좁힌 것 **위에** 덮는다.
+                inherited = {
+                    name: value
+                    for name, value in os.environ.items()
+                    if name in _EXTERNAL_PROJECT_PASSTHROUGH_ENV
+                    or name.startswith("DOCKER_")
+                }
+                process_environment = (
+                    inherited if environment is None else {**inherited, **environment}
+                )
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=working_directory,
+                    text=True,
+                    capture_output=capture_output,
+                    check=False,
+                    env=process_environment,
+                    input=process_input,
+                )
+            except OSError as exc:
+                # 예외 이름조차 받지 않아서, `working_dir`이 없다는 가장 흔할 오설정이
+                # "docker 바이너리 없음"과 **같은 문구**를 냈다(적대 리뷰 2026-09-18).
+                # cwd가 호스트마다 다른 값이 된 지금은 그 구별이 진단의 전부다.
+                return {
+                    "success": False,
+                    "returncode": 127,
+                    "command": command,
+                    "stdout": "",
+                    "stderr": (
+                        f"docker compose command could not start in {working_directory}: {exc}"
+                    ),
+                }
 
         stdout = completed.stdout if capture_output else ""
         stderr = completed.stderr if capture_output else ""
@@ -3806,6 +3817,66 @@ class ComposeService:
         if scope is None:
             return [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
         return scope
+
+    def _compose_build_targets(
+        self, args: Sequence[str], resolved: Mapping[str, Any]
+    ) -> frozenset[str]:
+        """이 명령이 **명시적으로** 빌드하는 서비스(``build``, ``up/create/run --build``).
+
+        나머지 서비스는 ``build`` 절 없이 Compose에 나간다 — 운영 source 디렉터리에서의 implicit
+        build는 없다(build_context_export.py). ``--build`` 판정은 argv에 그 토큰이 있느냐로 넓게
+        본다(`run SERVICE` 뒤 컨테이너 argv라도) — 넓게 잡으면 사본을 더 만들 뿐이다. 범위를 해석할
+        수 없으면 build 절이 있는 서비스 전부다.
+        """
+
+        command_index = self._compose_command_index(args)
+        if command_index is None:
+            return frozenset()
+        action = args[command_index]
+        explicit = action == "build" or (
+            action in {"create", "run", "up"} and "--build" in args[command_index + 1 :]
+        )
+        services = resolved.get("services")
+        if not explicit or not isinstance(services, Mapping):
+            return frozenset()
+        built = {
+            name
+            for name, service in services.items()
+            if isinstance(service, Mapping) and "build" in service
+        }
+        scope, flags = self._parse_compose_mutation(args)
+        if not scope:
+            return frozenset(built)
+        touched = set(scope)
+        if action in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES and "--no-deps" not in flags:
+            touched = _compose_dependency_closure(resolved, touched)
+        return frozenset(built & touched)
+
+    def _compose_document_for_docker(
+        self,
+        args: Sequence[str],
+        resolved: Mapping[str, Any],
+        *,
+        environment_snapshot: ComposeEnvironmentSnapshot | None,
+        stack: ExitStack,
+    ) -> dict[str, Any]:
+        """Compose에 건넬 문서: 명시 build 대상은 정규화 사본 context, 나머지는 build 절 없음."""
+
+        targets = self._compose_build_targets(args, resolved)
+        staging: Path | None = None
+        if targets:
+            if environment_snapshot is None:
+                raise DeploymentContractError("build context export has no frozen environment")
+            staging = Path(
+                stack.enter_context(
+                    _pinned_runtime_temporary_directory(
+                        pinned_runtime_state_root(environment_snapshot.effective)
+                    )
+                )
+            )
+        return compose_document_with_exported_build_contexts(
+            resolved, build_services=targets, staging_directory=staging
+        )
 
     @staticmethod
     def _compose_touched_services(args: Sequence[str], resolved: Mapping[str, Any]) -> set[str]:
