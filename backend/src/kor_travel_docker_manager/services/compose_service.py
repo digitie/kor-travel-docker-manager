@@ -3867,11 +3867,17 @@ class ComposeService:
         if targets:
             if environment_snapshot is None:
                 raise DeploymentContractError("build context export has no frozen environment")
+            values = dict(environment_snapshot.effective)
+            # 비운영은 C6c lock과 같은 기본 project 이름을 쓴다(`c6c_state_paths`) — `--build`가
+            # 그 전에 요구하지 않던 `COMPOSE_PROJECT_NAME`을 새로 요구하지 않게 한다.
+            if (
+                not values.get("COMPOSE_PROJECT_NAME", "").strip()
+                and values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower() != "production"
+            ):
+                values["COMPOSE_PROJECT_NAME"] = "kor-travel-local"
             staging = Path(
                 stack.enter_context(
-                    _pinned_runtime_temporary_directory(
-                        pinned_runtime_state_root(environment_snapshot.effective)
-                    )
+                    _pinned_runtime_temporary_directory(pinned_runtime_state_root(values))
                 )
             )
         return compose_document_with_exported_build_contexts(

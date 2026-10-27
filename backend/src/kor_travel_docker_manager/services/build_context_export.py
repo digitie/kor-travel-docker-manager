@@ -14,9 +14,10 @@
   빌드하는 대신 실패한다(implicit build 금지). Compose의 config hash는 ``build``를 보지 않으므로
   재생성 판단은 바뀌지 않는다.
 
-ignore 판정은 Docker(moby/patternmatcher)의 규칙을 옮겼다. 사본에 ignore 파일과 Dockerfile을
-항상 남기므로 Docker가 사본에 같은 규칙을 다시 적용한다 — 이 판정이 Docker보다 덜 거르는 쪽으로
-어긋나도 이미지 내용은 같고, 더 거르는 쪽은 아래 테스트가 막는다.
+ignore 판정은 BuildKit이 context를 보낼 때 쓰는 moby/patternmatcher
+``MatchesUsingParentResults``를 옮겼다. 사본에 ignore 파일과 Dockerfile을 항상 남기므로 Docker가
+사본에 같은 규칙을 다시 적용한다 — 이 판정이 Docker보다 덜 거르는 쪽으로 어긋나도 이미지 내용은
+같다. 더 거르는 쪽(이미지에서 파일이 빠진다)은 테스트가 막는다.
 """
 
 from __future__ import annotations
@@ -39,24 +40,37 @@ _FILE_MODE = 0o644
 _EXECUTABLE_FILE_MODE = 0o755
 _REMOTE_CONTEXT = re.compile(r"^(?:[a-z][a-z0-9+.-]*://|git@)", re.IGNORECASE)
 _REGEX_ESCAPED = frozenset(".+()|{}$")
+_WILDCARDS = "*?[\\"
+_OPEN_DIRECTORY = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+_OPEN_FILE = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+
+#: 한 경로에서 각 규칙이 맞았는가. 자식은 부모의 결과를 물려받는다(``MatchesUsingParentResults``).
+MatchInfo = tuple[bool, ...]
 
 
 @dataclass(frozen=True)
 class _IgnorePattern:
     regex: re.Pattern[str]
-    dirs: int
+    text: str
     exception: bool
 
 
 class DockerIgnore:
-    """``.dockerignore`` 판정(moby ``dockerignore.ReadAll`` + ``patternmatcher``)."""
+    """``.dockerignore`` 판정(moby ``ignorefile.ReadAll`` + ``patternmatcher``).
+
+    경로마다 부모 디렉터리의 규칙별 결과를 물려받고, 부모에서 건너뛴 규칙은 그 경로만으로
+    다시 본다 — BuildKit(fsutil)이 context를 걸을 때와 같다.
+    """
 
     def __init__(self, lines: Iterable[str]) -> None:
         patterns: list[_IgnorePattern] = []
         for index, raw in enumerate(lines):
-            line = raw.lstrip("﻿") if index == 0 else raw
+            line = raw[1:] if index == 0 and raw.startswith("﻿") else raw
+            # Docker는 trim 전에 주석을 가린다(`  #x`는 규칙이다).
+            if line.startswith("#"):
+                continue
             pattern = line.strip()
-            if not pattern or pattern.startswith("#"):
+            if not pattern:
                 continue
             exception = pattern.startswith("!")
             if exception:
@@ -73,11 +87,9 @@ class DockerIgnore:
                 regex = re.compile(_pattern_regex(pattern))
             except re.error as exc:
                 raise DeploymentContractError("build context ignore pattern is invalid") from exc
-            patterns.append(
-                _IgnorePattern(regex=regex, dirs=len(pattern.split("/")), exception=exception)
-            )
+            patterns.append(_IgnorePattern(regex=regex, text=pattern, exception=exception))
         self._patterns = tuple(patterns)
-        self.has_exceptions = any(pattern.exception for pattern in patterns)
+        self._exceptions = tuple(pattern.text for pattern in patterns if pattern.exception)
 
     @classmethod
     def from_file(cls, path: Path | None) -> DockerIgnore:
@@ -91,28 +103,55 @@ class DockerIgnore:
             raise DeploymentContractError("build context ignore file cannot be read") from exc
         return cls(text.splitlines())
 
-    def excludes(self, relative: str) -> bool:
-        """``MatchesOrParentMatches``: 마지막으로 맞은 규칙이 이긴다. 부모 경로가 맞아도 맞는다."""
+    def match(self, relative: str, parent: MatchInfo = ()) -> tuple[bool, MatchInfo]:
+        """``relative``가 제외되는가와, 그 자식에게 물려줄 규칙별 결과."""
 
-        parent = posixpath.dirname(relative)
-        parent_parts = parent.split("/") if parent else []
+        current: list[bool] = []
         matched = False
-        for pattern in self._patterns:
-            if pattern.exception != matched:
-                continue
-            match = pattern.regex.match(relative) is not None
-            if not match and parent_parts:
-                for end in range(1, len(parent_parts) + 1):
-                    if pattern.regex.match("/".join(parent_parts[:end])) is not None:
-                        match = True
-                        break
-            if match:
+        for index, pattern in enumerate(self._patterns):
+            hit = bool(parent) and parent[index]
+            if not hit:
+                if pattern.exception != matched:
+                    current.append(False)
+                    continue
+                hit = pattern.regex.fullmatch(relative) is not None
+            current.append(hit)
+            if hit:
                 matched = not pattern.exception
-        return matched
+        return matched, tuple(current)
+
+    def excludes(self, relative: str) -> bool:
+        """경로 하나의 판정 — 조상 경로를 차례로 거쳐 ``match``와 같은 결과를 낸다."""
+
+        parts = relative.split("/")
+        info: MatchInfo = ()
+        excluded = False
+        for end in range(1, len(parts) + 1):
+            excluded, info = self.match("/".join(parts[:end]), info)
+        return excluded
+
+    def may_reinclude_below(self, directory: str) -> bool:
+        """제외된 ``directory`` 아래를 ``!`` 규칙이 되살릴 수 있는가(fsutil의 건너뛰기 판정).
+
+        와일드카드가 없는 예외는 그 경로가 ``directory/`` 아래일 때만, 와일드카드가 있는 예외는
+        첫 와일드카드 앞의 고정 접두가 ``directory/``와 겹칠 때 되살릴 수 있다고 본다(보수적).
+        """
+
+        prefix = directory + "/"
+        for text in self._exceptions:
+            positions = [position for position in map(text.find, _WILDCARDS) if position >= 0]
+            if not positions:
+                if (text + "/").startswith(prefix):
+                    return True
+                continue
+            literal = text[: min(positions)]
+            if literal.startswith(prefix) or prefix.startswith(literal):
+                return True
+        return False
 
 
 def _pattern_regex(pattern: str) -> str:
-    result = ["^"]
+    result: list[str] = []
     index = 0
     length = len(pattern)
     while index < length:
@@ -138,7 +177,6 @@ def _pattern_regex(pattern: str) -> str:
                 result.append("\\\\")
         else:
             result.append(character)
-    result.append("$")
     return "".join(result)
 
 
@@ -154,6 +192,9 @@ def export_build_context(
     ``keep``(context 상대 경로)은 ignore 규칙과 무관하게 남긴다 — Dockerfile과 ignore 파일이다.
     Docker는 그것들을 제외 목록에 있어도 읽는다. 일반 파일·디렉터리·symlink(가리키는 곳은
     따라가지 않는다) 외의 특수 파일은 build 입력이 아니므로 옮기지 않는다.
+
+    source는 디렉터리 fd 기준 ``O_NOFOLLOW``로 연다 — 검사와 복사 사이에 항목이 symlink로 바뀌어도
+    사본 밖(root로 돌면 임의 파일)을 읽거나 chmod하지 않는다.
     """
 
     keep_paths = frozenset(keep)
@@ -163,36 +204,20 @@ def export_build_context(
         for end in range(1, len(path.split("/")))
     )
     destination.mkdir()
-    pending = [""]
     try:
-        while pending:
-            relative_directory = pending.pop()
-            source_directory = context / relative_directory if relative_directory else context
-            with os.scandir(source_directory) as iterator:
-                entries = sorted(iterator, key=lambda entry: entry.name)
-            for entry in entries:
-                relative = f"{relative_directory}/{entry.name}" if relative_directory else entry.name
-                excluded = relative not in keep_paths and ignore.excludes(relative)
-                metadata = entry.stat(follow_symlinks=False)
-                target = destination / relative
-                if stat.S_ISDIR(metadata.st_mode):
-                    if not excluded:
-                        target.mkdir(parents=True, exist_ok=True)
-                    if not excluded or ignore.has_exceptions or relative in keep_directories:
-                        pending.append(relative)
-                    continue
-                if excluded:
-                    continue
-                if stat.S_ISREG(metadata.st_mode):
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(entry.path, target, follow_symlinks=False)
-                    os.chmod(
-                        target,
-                        _EXECUTABLE_FILE_MODE if metadata.st_mode & stat.S_IXUSR else _FILE_MODE,
-                    )
-                elif stat.S_ISLNK(metadata.st_mode):
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    os.symlink(os.readlink(entry.path), target)
+        root_fd = os.open(context, _OPEN_DIRECTORY)
+        try:
+            _export_directory(
+                root_fd,
+                "",
+                (),
+                destination,
+                ignore=ignore,
+                keep_paths=keep_paths,
+                keep_directories=keep_directories,
+            )
+        finally:
+            os.close(root_fd)
         # mkdir는 호출자의 umask(M05는 077)를 따른다 — 디렉터리 mode를 마지막에 고정한다.
         os.chmod(destination, _DIRECTORY_MODE)
         for current, directories, _files in os.walk(destination):
@@ -206,6 +231,77 @@ def export_build_context(
         raise DeploymentContractError(
             f"build context cannot be exported: {exc.strerror or type(exc).__name__}"
         ) from exc
+
+
+def _export_directory(
+    directory_fd: int,
+    relative_directory: str,
+    parent_info: MatchInfo,
+    destination: Path,
+    *,
+    ignore: DockerIgnore,
+    keep_paths: frozenset[str],
+    keep_directories: frozenset[str],
+) -> None:
+    with os.scandir(directory_fd) as iterator:
+        names = sorted(entry.name for entry in iterator)
+    for name in names:
+        relative = f"{relative_directory}/{name}" if relative_directory else name
+        excluded, info = ignore.match(relative, parent_info)
+        excluded = excluded and relative not in keep_paths
+        metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        target = destination / relative
+        if stat.S_ISDIR(metadata.st_mode):
+            # BuildKit처럼 되살릴 예외가 없는 제외 디렉터리는 열지 않는다(읽을 수 없어도 된다).
+            if excluded and not (
+                relative in keep_directories or ignore.may_reinclude_below(relative)
+            ):
+                continue
+            if not excluded:
+                target.mkdir(parents=True, exist_ok=True)
+            child_fd = os.open(name, _OPEN_DIRECTORY, dir_fd=directory_fd)
+            try:
+                _export_directory(
+                    child_fd,
+                    relative,
+                    info,
+                    destination,
+                    ignore=ignore,
+                    keep_paths=keep_paths,
+                    keep_directories=keep_directories,
+                )
+            finally:
+                os.close(child_fd)
+            continue
+        if excluded:
+            continue
+        if stat.S_ISREG(metadata.st_mode):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _copy_regular_file(name, directory_fd, target)
+        elif stat.S_ISLNK(metadata.st_mode):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(os.readlink(name, dir_fd=directory_fd), target)
+
+
+def _copy_regular_file(name: str, directory_fd: int, target: Path) -> None:
+    source_fd = os.open(name, _OPEN_FILE, dir_fd=directory_fd)
+    try:
+        opened = os.fstat(source_fd)
+        if not stat.S_ISREG(opened.st_mode):
+            return
+        mode = _EXECUTABLE_FILE_MODE if opened.st_mode & stat.S_IXUSR else _FILE_MODE
+        target_fd = os.open(
+            target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), mode
+        )
+        with (
+            os.fdopen(source_fd, "rb", closefd=False) as source_handle,
+            os.fdopen(target_fd, "wb") as target_handle,
+        ):
+            shutil.copyfileobj(source_handle, target_handle, 1024 * 1024)
+            # 생성 mode는 umask를 거친다 — fd에 고정한다.
+            os.fchmod(target_handle.fileno(), mode)
+    finally:
+        os.close(source_fd)
 
 
 def compose_document_with_exported_build_contexts(
@@ -259,7 +355,8 @@ def compose_document_with_exported_build_contexts(
             dockerfile_value = build.get("dockerfile") or "Dockerfile"
             if not isinstance(dockerfile_value, str):
                 raise DeploymentContractError(f"compose service {name} dockerfile is unreadable")
-            dockerfile = Path(os.path.normpath(context / dockerfile_value))
+            # symlink를 거치는 Dockerfile은 실제 경로로 둔다 — 사본에서는 링크가 끊길 수 있다.
+            dockerfile = Path(os.path.realpath(context / dockerfile_value))
         specific_ignore = Path(f"{dockerfile}.dockerignore") if dockerfile is not None else None
         ignore_file = (
             specific_ignore

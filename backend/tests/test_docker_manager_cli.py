@@ -313,8 +313,11 @@ def test_compose_ensure_build_command(
 
         def export_contexts(document, *, build_services, staging_directory):
             # 이 문서는 해석 전 원문이라 context가 `${...}`다 — 사본 생성 대신 대상만 기록한다.
-            exported.append(frozenset(build_services))
-            assert staging_directory is not None
+            targets = frozenset(build_services)
+            # 명시 build가 아닌 명령(init step `run`)은 대상이 없고 사본 디렉터리도 없다.
+            assert (staging_directory is not None) == bool(targets)
+            if targets:
+                exported.append(targets)
             return dict(document)
 
         state_root = tmp_path / "state-root"

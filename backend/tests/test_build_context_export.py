@@ -198,12 +198,57 @@ def test_export_keeps_dockerfile_even_when_ignored(tmp_path: Path) -> None:
         (["dir", "!dir/keep"], "dir/keep", False),
         (["dir", "!dir/keep"], "dir/drop", True),
         (["a.b"], "aXb", False),
+        # BuildKit은 부모에서 건너뛴 규칙을 자식 경로만으로 다시 본다(MatchesUsingParentResults).
+        (["d", "!d/*", "d"], "d/f", False),
+        (["  #x"], "#x", True),
+        (["a"], "a\n", False),
     ],
 )
 def test_docker_ignore_matches_moby_semantics(
     patterns: list[str], path: str, excluded: bool
 ) -> None:
     assert DockerIgnore(patterns).excludes(path) is excluded
+
+
+def test_export_skips_excluded_directories_that_no_exception_reaches(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "repo"
+    (source / ".native-test").mkdir(parents=True)
+    (source / ".native-test/secret").write_text("x", encoding="utf-8")
+    (source / "keep").mkdir()
+    (source / "keep/a.txt").write_text("a", encoding="utf-8")
+    (source / ".env.example").write_text("", encoding="utf-8")
+    # 읽을 수 없는 제외 디렉터리 — Docker는 열지 않으므로 사본도 열지 않아야 한다.
+    os.chmod(source / ".native-test", 0)
+    ignore = DockerIgnore([".native-test/", ".env*", "!.env.example", "keep", "!keep/*.txt"])
+    assert not ignore.may_reinclude_below(".native-test")
+    assert ignore.may_reinclude_below("keep")
+    destination = tmp_path / "export"
+    try:
+        if os.geteuid() == 0:
+            pytest.skip("root reads mode-0 directories")
+        export_build_context(source, destination, ignore=ignore)
+    finally:
+        os.chmod(source / ".native-test", 0o700)
+    assert (destination / ".env.example").is_file()
+    assert (destination / "keep/a.txt").is_file()
+    assert not (destination / ".native-test").exists()
+
+
+def test_export_does_not_follow_a_swapped_symlink(tmp_path: Path) -> None:
+    source = tmp_path / "repo"
+    source.mkdir()
+    victim = tmp_path / "victim"
+    victim.write_text("secret", encoding="utf-8")
+    os.chmod(victim, 0o600)
+    os.symlink(victim, source / "file")
+    destination = tmp_path / "export"
+
+    export_build_context(source, destination, ignore=DockerIgnore(()))
+
+    assert os.readlink(destination / "file") == str(victim)
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o600
 
 
 def _compose_document(source: Path) -> dict[str, Any]:
