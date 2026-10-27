@@ -65,7 +65,7 @@ class DockerIgnore:
     def __init__(self, lines: Iterable[str]) -> None:
         patterns: list[_IgnorePattern] = []
         for index, raw in enumerate(lines):
-            line = raw[1:] if index == 0 and raw.startswith("﻿") else raw
+            line = raw[1:] if index == 0 and raw.startswith("\ufeff") else raw
             # Docker는 trim 전에 주석을 가린다(`  #x`는 규칙이다).
             if line.startswith("#"):
                 continue
