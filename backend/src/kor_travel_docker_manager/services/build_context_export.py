@@ -42,7 +42,8 @@ _REMOTE_CONTEXT = re.compile(r"^(?:[a-z][a-z0-9+.-]*://|git@)", re.IGNORECASE)
 _REGEX_ESCAPED = frozenset(".+()|{}$")
 _WILDCARDS = "*?[\\"
 _OPEN_DIRECTORY = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-_OPEN_FILE = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+# O_NONBLOCK: 검사 뒤 FIFO로 바뀐 항목에서 open이 멈추지 않게 한다(정규 파일이면 영향 없다).
+_OPEN_FILE = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
 
 #: 한 경로에서 각 규칙이 맞았는가. 자식은 부모의 결과를 물려받는다(``MatchesUsingParentResults``).
 MatchInfo = tuple[bool, ...]
@@ -53,6 +54,16 @@ class _IgnorePattern:
     regex: re.Pattern[str]
     text: str
     exception: bool
+
+    def matches(self, path: str) -> bool:
+        # patternmatcher의 suffixMatch: `**` 뒤가 리터럴뿐이면 정규식이 아니라 접미 비교다
+        # (`**.py`는 `a.py`에, `**/foo`는 `foo`에도 맞는다).
+        if self.text.startswith("**") and not any(c in _WILDCARDS for c in self.text[2:]):
+            suffix = self.text[2:]
+            if path.endswith(suffix):
+                return True
+            return suffix.startswith("/") and path == suffix[1:]
+        return self.regex.fullmatch(path) is not None
 
 
 class DockerIgnore:
@@ -114,7 +125,7 @@ class DockerIgnore:
                 if pattern.exception != matched:
                     current.append(False)
                     continue
-                hit = pattern.regex.fullmatch(relative) is not None
+                hit = pattern.matches(relative)
             current.append(hit)
             if hit:
                 matched = not pattern.exception
@@ -351,13 +362,16 @@ def compose_document_with_exported_build_contexts(
         if not context.is_dir():
             raise DeploymentContractError(f"compose service {name} build context is not a directory")
         dockerfile: Path | None = None
+        specific_ignore: Path | None = None
         if not build.get("dockerfile_inline"):
             dockerfile_value = build.get("dockerfile") or "Dockerfile"
             if not isinstance(dockerfile_value, str):
                 raise DeploymentContractError(f"compose service {name} dockerfile is unreadable")
+            given = Path(os.path.normpath(context / dockerfile_value))
+            # Docker는 주어진 이름 옆의 `<Dockerfile>.dockerignore`를 찾는다.
+            specific_ignore = Path(f"{given}.dockerignore")
             # symlink를 거치는 Dockerfile은 실제 경로로 둔다 — 사본에서는 링크가 끊길 수 있다.
-            dockerfile = Path(os.path.realpath(context / dockerfile_value))
-        specific_ignore = Path(f"{dockerfile}.dockerignore") if dockerfile is not None else None
+            dockerfile = Path(os.path.realpath(given))
         ignore_file = (
             specific_ignore
             if specific_ignore is not None and specific_ignore.is_file()

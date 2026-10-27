@@ -202,6 +202,10 @@ def test_export_keeps_dockerfile_even_when_ignored(tmp_path: Path) -> None:
         (["d", "!d/*", "d"], "d/f", False),
         (["  #x"], "#x", True),
         (["a"], "a\n", False),
+        # suffixMatch(`**` 뒤가 리터럴뿐)
+        (["*", "!**.py"], "a.py", False),
+        (["**/foo"], "foo", True),
+        (["**foo"], "xfoo", True),
     ],
 )
 def test_docker_ignore_matches_moby_semantics(
@@ -236,7 +240,7 @@ def test_export_skips_excluded_directories_that_no_exception_reaches(
     assert not (destination / ".native-test").exists()
 
 
-def test_export_does_not_follow_a_swapped_symlink(tmp_path: Path) -> None:
+def test_export_copies_symlinks_as_links(tmp_path: Path) -> None:
     source = tmp_path / "repo"
     source.mkdir()
     victim = tmp_path / "victim"
@@ -249,6 +253,34 @@ def test_export_does_not_follow_a_swapped_symlink(tmp_path: Path) -> None:
 
     assert os.readlink(destination / "file") == str(victim)
     assert stat.S_IMODE(victim.stat().st_mode) == 0o600
+
+
+def test_export_refuses_an_entry_swapped_to_a_symlink_after_inspection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """검사(stat)는 정규 파일을 봤지만 복사 시점에는 symlink다 — 따라가지 않고 실패한다."""
+
+    import kor_travel_docker_manager.services.build_context_export as module
+
+    source = tmp_path / "repo"
+    source.mkdir()
+    victim = tmp_path / "victim"
+    victim.write_text("secret", encoding="utf-8")
+    os.chmod(victim, 0o600)
+    os.symlink(victim, source / "file")
+    real_stat = os.stat
+
+    def stale_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        if path == "file":
+            return real_stat(victim)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "stat", stale_stat)
+    with pytest.raises(DeploymentContractError, match="cannot be exported"):
+        export_build_context(source, tmp_path / "export", ignore=DockerIgnore(()))
+    monkeypatch.undo()
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o600
+    assert not (tmp_path / "export" / "file").exists()
 
 
 def _compose_document(source: Path) -> dict[str, Any]:
