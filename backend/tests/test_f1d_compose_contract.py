@@ -2433,7 +2433,7 @@ def test_every_dagster_code_server_binds_loopback_only() -> None:
 # import 끊김, 로더 우회 어느 쪽이든 빨개진다.
 
 #: ADR-53 뒤 Map DB가 사는 공용 instance의 PGDATA bind.
-_MAP_PGDATA_BIND_KEY = ("kor-travel-shared-postgres", "/var/lib/postgresql/data", False)
+_MAP_PGDATA_BIND_KEY = ("kor-travel-shared-postgres", "/var/lib/postgresql/18/docker", False)
 
 
 def _patched_allowlist(
@@ -2499,7 +2499,7 @@ def test_deployment_validation_rejects_a_forbidden_host_source(
     assert isinstance(services, dict)
     service = services["kor-travel-shared-postgres"]
     assert isinstance(service, dict)
-    service["volumes"] = ["/etc:/var/lib/postgresql/data"]
+    service["volumes"] = ["/etc:/var/lib/postgresql/18/docker"]
 
     patched = dict(load_compose_bind_allowlist())
     patched[_MAP_PGDATA_BIND_KEY] = "/etc"
@@ -2530,7 +2530,7 @@ def test_deployment_validation_rejects_binding_the_allowlist_itself(
     assert isinstance(services, dict)
     service = services["kor-travel-shared-postgres"]
     assert isinstance(service, dict)
-    service["volumes"] = [f"{targets_config}:/var/lib/postgresql/data"]
+    service["volumes"] = [f"{targets_config}:/var/lib/postgresql/18/docker"]
 
     patched = dict(load_compose_bind_allowlist())
     patched[_MAP_PGDATA_BIND_KEY] = targets_config

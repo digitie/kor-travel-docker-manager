@@ -684,9 +684,11 @@ odroid(arm64)는 공식 postgis index에 arm64가 없어 같은 레시피(`postg
 **함정(리허설에서 실측).**
 - PG18 `initdb` 기본은 **data checksums on**이다. 옛 cluster가 off라 새 cluster를 `--no-data-checksums`로 만들지 않으면
   `pg_upgrade`가 거부한다.
-- PG18 공식 이미지의 PGDATA 기본은 `/var/lib/postgresql/18/docker`다 — compose가 `PGDATA=/var/lib/postgresql/data`를
-  명시해 bind 자리를 지킨다. 새 cluster는 같은 파일시스템의 형제 디렉터리(`pgdata18`)에 만들고(`--link`는 같은 fs 필수),
-  끝나면 `pgdata`→`pgdata16`, `pgdata18`→`pgdata`로 이름을 맞바꾼다(bind 문자열 불변).
+- PG18 공식 이미지의 PGDATA 기본은 `/var/lib/postgresql/18/docker`(이미지 VOLUME `/var/lib/postgresql`)다. 옛 자리
+  `/var/lib/postgresql/data`에 bind하면 entrypoint가 "old database"로 기동을 거부하고, `PGDATA` env로 되살리는 것은 C6c
+  계약(데이터 재배치 금지)이 막는다 — 그래서 bind **대상**을 `/var/lib/postgresql/18/docker`로 옮겼다(호스트 경로 불변).
+  새 cluster는 같은 파일시스템의 형제 디렉터리(`pgdata18`)에 만들고(`--link`는 같은 fs 필수), 끝나면
+  `pgdata`→`pgdata16`, `pgdata18`→`pgdata`로 이름을 맞바꾼다.
 - `pg_upgrade`는 `datallowconn=false`인 DB(n150의 퇴역 `*_dagster` 셋)를 거부한다 — 창 동안 `ALLOW_CONNECTIONS true`, 끝나면
   다시 false.
 - `pg_hba.conf`·`postgresql.auto.conf`는 `pg_upgrade`가 옮기지 않는다 — 옛 것을 복사한다.

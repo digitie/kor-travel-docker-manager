@@ -262,11 +262,6 @@ services:
       # 않는다. ⚠️ initdb 때만 쓰이므로 이미 만들어진 PGDATA는 pg_hba.conf를
       # 직접 고쳐야 한다.
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
-      # PG18 공식 이미지는 PGDATA 기본값을 `/var/lib/postgresql/18/docker`(볼륨 `/var/lib/postgresql`)로 바꿨다.
-      # bind 자리(`docker-targets.yml`의 container_path)를 그대로 두려고 옛 자리를 명시한다. 16→18은
-      # `pg_upgrade --link`로 했다(2026-10-27): 같은 파일시스템의 형제 디렉터리에 18 cluster를 만든 뒤 이름을
-      # 맞바꿔 bind 문자열은 바뀌지 않는다. 절차는 docs/shared-postgres-onboarding.md §12.
-      PGDATA: /var/lib/postgresql/data
     command:
     - postgres
     - -c
@@ -326,7 +321,11 @@ services:
     secrets:
     - kor-travel-shared-postgres-password
     volumes:
-    - ${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}:/var/lib/postgresql/data
+    # PG18 공식 이미지는 PGDATA 기본값을 `/var/lib/postgresql/18/docker`(이미지 VOLUME `/var/lib/postgresql`)로 바꿨다.
+    # `PGDATA` env로 옛 자리를 되살리는 것은 C6c 계약이 금지하므로(데이터 재배치 = fresh initdb 경로) bind 대상을 새
+    # 기본 자리로 옮긴다 — 호스트 경로는 그대로다. 옛 자리(`/var/lib/postgresql/data`)에 bind하면 18 entrypoint가
+    # "old database" 오류로 기동을 거부한다. 16→18은 `pg_upgrade --link`(2026-10-27, §12).
+    - ${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}:/var/lib/postgresql/18/docker
     ports:
     - 127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}:${KOR_TRAVEL_SHARED_DB_PORT:-11000}
     # **exec 형식으로 binary를 직접 부른다(ADR-52).** CMD-SHELL은 dash가 명령을 exec하지
