@@ -218,7 +218,7 @@ services:
   kor-travel-shared-postgres:
     # 호스트별 이미지(ADR-58 결정 9·R6, T-MGR-03). 기본값은 n150의 digest 핀 그대로다 — 이 index에는 amd64만 있어(2026-10-16
     # 레지스트리 조회) arm64 호스트(odroid)는 root `.env`의 `KTDM_POSTGRES_IMAGE`로 arm64 이미지를 준다.
-    image: ${KTDM_POSTGRES_IMAGE:-postgis/postgis:16-3.5@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40}
+    image: ${KTDM_POSTGRES_IMAGE:-postgis/postgis:18-3.6@sha256:4a43e3c3e5d55b9208240fc71db543b79c638766280c625a425bd0a2390989c4}
     container_name: ${KOR_TRAVEL_SHARED_POSTGRES_CONTAINER:-kor-travel-shared-postgres}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -262,6 +262,11 @@ services:
       # 않는다. ⚠️ initdb 때만 쓰이므로 이미 만들어진 PGDATA는 pg_hba.conf를
       # 직접 고쳐야 한다.
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+      # PG18 공식 이미지는 PGDATA 기본값을 `/var/lib/postgresql/18/docker`(볼륨 `/var/lib/postgresql`)로 바꿨다.
+      # bind 자리(`docker-targets.yml`의 container_path)를 그대로 두려고 옛 자리를 명시한다. 16→18은
+      # `pg_upgrade --link`로 했다(2026-10-27): 같은 파일시스템의 형제 디렉터리에 18 cluster를 만든 뒤 이름을
+      # 맞바꿔 bind 문자열은 바뀌지 않는다. 절차는 docs/shared-postgres-onboarding.md §PG18.
+      PGDATA: /var/lib/postgresql/data
     command:
     - postgres
     - -c
@@ -333,7 +338,7 @@ services:
     healthcheck:
       test:
       - CMD
-      - /usr/lib/postgresql/16/bin/pg_isready
+      - /usr/lib/postgresql/18/bin/pg_isready
       - -h
       - 127.0.0.1
       - -p
@@ -352,7 +357,7 @@ services:
   # 다른 -db-init one-shot을 추가한다(위 서비스 주석 참고) — role/ACL은 database가
   # 아니라 cluster 전역이라는 ADR-37의 교훈을 그대로 지킨다.
   kor-travel-shared-db-init-concierge:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_CONCIERGE_CONTAINER:-kor-travel-shared-db-init-concierge}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -425,7 +430,7 @@ services:
   # false) 30일 뒤 DROP한다. 여기 남아 있으면 DROP 뒤 매 `ensure`가 빈 DB를 되살린다
   # (`backend/tests/test_old_dagster_meta_db_retired.py`). weather·pinvi·transport db-init도 같다.
   kor-travel-shared-db-init-geo:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_GEO_CONTAINER:-kor-travel-shared-db-init-geo}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -490,7 +495,7 @@ services:
   # 그래서 그 모델을 폐기하고 geo 패턴으로 접었다 — role 분리 대신 scoped role
   # 하나(NOSUPERUSER/NOCREATEDB/NOCREATEROLE)와 CONNECT 격리로 경계를 잡는다.
   kor-travel-shared-db-init-pinvi:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_PINVI_CONTAINER:-kor-travel-shared-db-init-pinvi}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -556,7 +561,7 @@ services:
   # PGHOST 127.0.0.1 + network_mode: host 규약으로 처음부터 새로 짠 것이다
   # (ADR-47 — weather internal-target 전환).
   kor-travel-shared-db-init-weather:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_WEATHER_CONTAINER:-kor-travel-shared-db-init-weather}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -624,7 +629,7 @@ services:
   # DAGSTER_POSTGRES_URL도 이 통합에 맞춰 함께 바꿔야 한다(Manager 쪽만 바꾸면
   # 소비 컨테이너는 여전히 예전 role로 붙는다).
   kor-travel-shared-db-init-transport:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_TRANSPORT_CONTAINER:-kor-travel-shared-db-init-transport}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -697,7 +702,7 @@ services:
   # 쪽에 적힌다) — 이 설치가 공용 instance의 재생성을 걸어 두지 않는다. 재실행은
   # onboarding §7.3대로 `--no-deps`로, drift guard가 MATCH일 때만 한다.
   kor-travel-shared-db-init-dagster:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_DAGSTER_CONTAINER:-kor-travel-shared-db-init-dagster}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"

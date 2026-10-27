@@ -5935,7 +5935,7 @@ def test_an_exec_pg_isready_probe_with_arguments_passes(tmp_path: Path) -> None:
     postgres["healthcheck"] = {
         "test": [
             "CMD",
-            "/usr/lib/postgresql/16/bin/pg_isready",
+            "/usr/lib/postgresql/18/bin/pg_isready",
             "-h",
             "127.0.0.1",
             "-p",
