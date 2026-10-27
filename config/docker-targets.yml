@@ -1080,7 +1080,7 @@ compose_binds:
       read_only: true
       source: "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/scripts/database-credential-preflight.sh"
   kor-travel-shared-postgres:
-    - container_path: "/var/lib/postgresql/data"
+    - container_path: "/var/lib/postgresql/18/docker"
       read_only: false
       source: "${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}"
   pinvi-dagster-code-server:
