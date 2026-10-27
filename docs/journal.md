@@ -1,3 +1,11 @@
+## 2026-10-28 — Odroid Manager PG18 호환 설치·공개 UI 수용
+
+- 공식 전체 설치기로 Odroid Manager를 `aeb2d34c`에서 `f368af3e`로 갱신했다. 설치기 221.815초·exit 0, 실제 소스 436개·새 backend·상태 확인 API 200을 확인했다. n150은 `d1468213`와 제품이 같아 재설치하지 않았다.
+- 설치 후 `targets validate` 25초 timeout으로 원 검사기 전체 결과가 실패한 사실을 보존한다. 공식 설치기의 전환 전 검사와 이후 Transport 정본 stage의 필수 60초 검사 성공은 별도 근거다. 40.166초는 후속 stage 전체 시간이다.
+- 읽기 전용 검사에서 기존 Docker 컨테이너 60개(중지 상태 포함)·실제 plane 두 개·정본 show·소스·wheel을 보존했다. 환경파일·산출물의 설치 전 지문이 RAM에만 있었던 한계와 native 이전 환경파일 동일성·동일 frontend unit/PID 범위를 구분한다.
+- 공개 TLS 자산 17개와 UI 12개가 90.696초에 통과했다. 같은 브라우저의 정본 scope 실행 행 19개가 Docker의 이름/CID/상태와 같고 수치가 유한함을 확인했다. 인증 각 한 번·서버 세션 철회·socket 종료·소유 프로세스와 프로필 정리까지 수용했다.
+- PG 업그레이드·plane 재생성·다른 서비스 이미지 변경이나 수집 성능 측정은 하지 않았다. 자세한 실패 이력·원장·관측 한계는 [운영 기록](reports/2026-10-28-manager-pg18-normal-install.md)을 따른다. 아래 일지 원문은 보존한다.
+
 ## 2026-10-27 — Manager559 양 호스트 정상 설치와 공개 UI 수용
 
 - 제품 M `aeb2d34c`를 공식 installer로 n150·Odroid의 웹·API·CLI에 적용했다. n150의 기존 동일 frontend는 유지하고 Odroid는 검증된 새 ARM 산출물을 기존 G 안에서 frontend 하나만 승격했다.
