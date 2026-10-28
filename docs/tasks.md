@@ -3,6 +3,7 @@
 - [x] D1–D8 설계 결정과 staged/current·혼합 revision·G·DB rollback 경계를 문서화한다(ADR-60).
 - [x] 초기 adopt/show/verify/공유 project Compose 인자와 회귀·두 리뷰·CI를 수용했다. focused68·CI3,514P40S·local CLI10·n150 후보 UI36을 확인했다(운영 적용은 다음 항목).
 - [x] 운영의 현재 image·NVMe·구성을 재관측하고 재시작 없는 adopt 및 resolved image 비교를 수용했다. 세 서비스 adopt·verify healthy와 네 그룹 소유 이미지 13개 일치, 전후 14개 컨테이너·Manager env 보존을 확인했다. 앞선 전체 FAIL은 역사에 보존하며 전체 비이미지 구성 검증·후속 배포기 이관과 구분한다.
+- [ ] 현재 release의 resolve/recreate 첫 제품 경로를 검증한다. root/G·고정 resolved 구성·소유 이미지/healthy 대조와 선택 runtime 재생성의 구현을 진행 중이며 테스트·CI·독립 두 리뷰·운영 적용은 대기한다. Transport R10 백업·복원 중 호스트 설치·실행은 하지 않는다. 외부 배포기 이관 완료와 구분한다.
 - [ ] 앱 배포기·호스트 wrapper를 이관하고 health 후 current 갱신을 수용한다.
 - [ ] 조회/배포 경로 이관 뒤 base 기본값·옛 dagster-host 중복 선언 제거를 검증한다.
 

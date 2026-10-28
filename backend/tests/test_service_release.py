@@ -505,3 +505,17 @@ raise SystemExit("FIFO was accepted")
     )
     assert completed.returncode == 0, completed.stderr
     assert pointer.readlink() == original_target
+
+
+def test_pinned_manifest_verification_does_not_reread_pointer(setup, monkeypatch):
+    manifest = adopt(setup)
+    client = setup[2]
+    client.containers.list = client.list
+    def unexpected(*args, **kwargs):
+        raise AssertionError("pinned wrapper must not reread current")
+    monkeypatch.setattr(release, "read_current_release", unexpected)
+    assert release.verify_release_manifest(manifest, client=client)["result"] == "healthy"
+    client.records["api"][0]["Image"] = C
+    drift = release.verify_release_manifest(manifest, client=client)
+    assert drift["result"] == "drift"
+    assert drift["images"]["api"] == {"expected": A, "actual": C}
