@@ -172,6 +172,56 @@ def test_ensure_runs_the_preflight_before_up(monkeypatch):
     assert seen == [["one-shot", "svc"]]
 
 
+@pytest.mark.parametrize(("present", "expected"), [(False, True), (True, False)])
+def test_ensure_builds_explicitly_when_a_buildable_image_is_missing(monkeypatch, present, expected):
+    """Compose 문서는 명시 build가 아니면 `build:`가 없다 — 로컬 전용 이미지가 없으면 ensure가 `--build`를 붙인다."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from kor_travel_docker_manager.services import compose_service as module
+
+    transaction = SimpleNamespace(
+        resolved={"services": {
+            "built": {"image": "host:abc", "build": {"context": "/ctx"}},
+            "pulled": {"image": "postgres:18"},
+        }},
+        environment=SimpleNamespace(effective={}, compose_path="/nonexistent"),
+        compose_source_bytes=b"", compose_source_mode=0,
+    )
+    monkeypatch.setattr(module, "local_mutation_target", lambda target: {
+        "resolved_sequence": [target], "resolved_services": ["built", "pulled"], "resolved_init_steps": []})
+    monkeypatch.setattr(module, "_capture_compose_environment_snapshot", lambda **_: SimpleNamespace(effective={}))
+    monkeypatch.setattr(module, "assert_manager_mutation_allowed", lambda **_: "rehearsal")
+    monkeypatch.setattr(module, "c6c_deployment_lock_from_environment", lambda: nullcontext(object()))
+    monkeypatch.setattr(module.ComposeService, "capture_transaction_unlocked", lambda self: (transaction, SimpleNamespace()))
+    monkeypatch.setattr(module, "_assert_transaction_matches_c6c_lock", lambda *_: None)
+    monkeypatch.setattr(module.Path, "read_bytes", lambda self: b"")
+    monkeypatch.setattr(module.Path, "stat", lambda self: SimpleNamespace(st_mode=0))
+    monkeypatch.setattr(module.ComposeService, "_compose_touched_services",
+                        staticmethod(lambda argv, resolved: set(argv[2:]) if argv[0] == "up" else set()))
+    inspected = []
+
+    def inspect(reference, *, label):
+        inspected.append(reference)
+        if not present:
+            raise DeploymentContractError(f"{label} image is not present")
+        return "sha256:" + "0" * 64
+
+    monkeypatch.setattr(module.ComposeService, "_inspect_image_reference_id", staticmethod(inspect))
+    monkeypatch.setattr(module, "ensure_preflight", lambda *a, **k: None)
+    seen = {}
+
+    def unlocked(self, target, **kwargs):
+        seen["build"] = kwargs["build"]
+        return {"success": True}
+
+    monkeypatch.setattr(module.ComposeService, "_ensure_target_unlocked", unlocked)
+    module.ComposeService().ensure_target("anything")
+    assert seen == {"build": expected}
+    # pull하는 이미지(build 절 없음)는 보지 않는다.
+    assert inspected == ["host:abc"]
+
+
 def test_a_failing_compose_config_render_stops_ensure_before_the_preflight(monkeypatch):
     """compose 플러그인 부재·렌더 실패 → `ensure`가 멈춘다. 플러그인 부재 자체(`docker compose`가 없는 호스트)는 기존
     시험이 담당한다 — 해석 명령이 실패하면 `compose candidate resolution failed`다. 그 렌더(`docker compose config --format json`)는 이미 ensure의

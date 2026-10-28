@@ -387,7 +387,8 @@ build(`build`, `up/create/run --build`) 대상 서비스의 local context는 Man
 `*_REPO_DIR`이 owner-only(700/600)여도 이미지 안 코드는 비-root `USER`가 읽을 수 있다.
 명시 build가 아닌 명령에서는 `build:` 절을 지워 보내므로 이미지가 없을 때 Compose가 운영
 디렉터리에서 조용히 빌드하지 않는다(처음 띄우는 서비스는 `--build`로 올린다). 공용 Dagster plane
-수렴(재구축·`dagster-plane converge`)은 render 이미지가 로컬에 없을 때 `--build`를 스스로 붙인다. Concierge
+수렴(재구축·`dagster-plane converge`)과 `ktdctl ensure`는 `build:`가 있는 서비스의 render 이미지가 로컬에
+없을 때 `--build`를 스스로 붙인다. Concierge
 `compose-boundary activate-concierge`도 `--no-build`로 재생성한다. 구현은
 `services/build_context_export.py`.
 
