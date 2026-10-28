@@ -1,3 +1,9 @@
+## 2026-10-28 — 이슈 #568 현재 release 표식 설계·초기 등록
+
+- D1–D8을 ADR-60과 기능 레퍼런스로 결정했다. 기존 G와 DB 전진 배포를 보존하고, mixed/unknown source를 표현한다.
+- 현재 runtime ID를 관측하는 adopt/read/verify 및 catalog 기반 CLI·공유 project overlay 인자 생성을 추가한다. runtime 변경 명령은 실행하지 않는다.
+- 코드·리뷰·CI·운영 초기 등록·wrapper 이관은 각각 수용하며, 아직 운영 적용으로 완료 처리하지 않는다.
+
 ## 2026-10-28 — Odroid Manager PG18 호환 설치·공개 UI 수용
 
 - 공식 전체 설치기로 Odroid Manager를 `aeb2d34c`에서 `f368af3e`로 갱신했다. 설치기 221.815초·exit 0, 실제 소스 436개·새 backend·상태 확인 API 200을 확인했다. n150은 `d1468213`와 제품이 같아 재설치하지 않았다.

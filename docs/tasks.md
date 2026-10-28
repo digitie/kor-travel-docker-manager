@@ -1,3 +1,13 @@
+## 2026-10-28 — 이슈 #568 현재 release 정본
+
+- [x] D1–D8 설계 결정과 staged/current·혼합 revision·G·DB rollback 경계를 문서화한다(ADR-60).
+- [ ] 초기 adopt/show/verify/공유 project Compose 인자와 회귀·두 리뷰·CI를 수용한다.
+- [ ] 운영의 현재 image·NVMe·구성을 재관측하고 재시작 없는 adopt 및 resolved image 비교를 수용한다.
+- [ ] 앱 배포기·호스트 wrapper를 이관하고 health 후 current 갱신을 수용한다.
+- [ ] 조회/배포 경로 이관 뒤 base 기본값·옛 dagster-host 중복 선언 제거를 검증한다.
+
+[정본과 적용 단계](service-current-release.md)를 따른다. Transport 운영 배포는 병행 작업의 단일 담당을 존중하며 이 기능을 이유로 중복 배포하지 않는다.
+
 # TASKS — 활성 작업
 
 - [ ] **T-MGR-HOST-INSTANCE — 외부 consumer 실제 적용 후속**. 제품559의 두 독립 리뷰·정확 CI·n150/Odroid 정상 설치·양 호스트 공개 TLS12개씩과 현재 Docker running19개씩의 공개 API 정합은 수용했다. Odroid의 PG18 호환 Manager `f368af3e` 공식 설치·공개 UI12도 수용했으며 n150은 동일 제품 `d1468213`를 유지했다([후속 운영 기록](reports/2026-10-28-manager-pg18-normal-install.md)). 남은 Transport139 등 서비스별 정본 show 소비와 별도 명시적 plane/code-server 적용은 각 운영 수용과 구분한다. 현재 plane·Weather job을 바꾸지 않은 설치와 구분한다. [운영 기록](reports/2026-10-27-manager559-two-host-normal-install.md), [계약](host-dagster-instance-config.md).
