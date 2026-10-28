@@ -39,6 +39,8 @@ DB migration 후 옛 이미지로 자동 rollback하지 않는다(ADR-51). rollb
 
 배포 좌표·소유 image 역할은 config/docker-targets.yml의 service_releases가 소유한다. host는 같은 target의 기존 host 선언에서 유도한다. Transport의 project·working_dir도 external_project: true로 기존 target 좌표에서 유도하며 두 번 선언하지 않는다. 이 목록은 target lifecycle의 services/runtime_services를 재분류하지 않는다. Weather의 옛 Prometheus나 공용 DB를 잘못 포함하지 않기 위함이다.
 
+운영 대조에서 Geo 코드서버는 컨테이너 이름과 달리 Compose 서비스가 geo-dagster-code-server임을 확인했다. service_releases의 역할은 실제 Compose label/정본 파일 이름을 사용하고 Manager lifecycle의 kor-travel-geo-dagster-code-server를 그대로 복사하지 않는다. Transport의 dagster-migrate는 legacy-dagster profile이므로 현재 release에는 포함하지 않으며 활성 migrate만 명시한다.
+
 Transport의 현재 운영 스크립트는 core/admin 모두 project kor-travel-transport를 강제하며 파일 조합이 다르다. catalog의 core/admin 그룹으로 나누되 같은 images.yml을 쓴다. 옛 registry 주석의 별도 admin project를 실제 배포 좌표로 추정하지 않는다. Geo/Weather는 project를 공유하므로 Compose 인자 생성 시 두 current overlay를 모두 붙인다. 하나가 없으면 base image로 fallback하지 않는다.
 
 ## CLI

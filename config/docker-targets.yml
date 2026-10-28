@@ -1159,7 +1159,7 @@ service_releases:
         working_dir: /opt/kor-travel-odroid
         config_files: [compose.yml]
         env_file: null
-        runtime_services: [kor-travel-geo-api, kor-travel-geo-ui, kor-travel-geo-dagster-code-server]
+        runtime_services: [kor-travel-geo-api, kor-travel-geo-ui, geo-dagster-code-server]
         oneshot_services: []
   weather:
     groups:
