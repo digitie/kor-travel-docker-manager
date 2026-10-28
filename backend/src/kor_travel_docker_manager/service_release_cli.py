@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -152,6 +153,36 @@ def compose_arguments(service: str, group_name: str, *, root: Path, config: dict
             'argv': argv, 'runtime_services': selected['runtime_services'], 'overlays': overlays}
 
 
+def _extra_files(paths: list[str]) -> list[str]:
+    """current overlay 뒤에 붙일 후보·되돌림 overlay. 절대 경로의 일반 파일만 받는다."""
+    argv: list[str] = []
+    for raw in paths:
+        path = Path(raw)
+        if not path.is_absolute() or path.is_symlink() or not path.is_file():
+            raise ServiceReleaseError('추가 overlay는 symlink가 아닌 절대 경로의 일반 파일이어야 합니다')
+        argv += ['-f', str(path)]
+    return argv
+
+
+def _compose(args: argparse.Namespace, config: dict[str, Any], root: Path) -> int:
+    """current overlay를 모두 붙인 docker compose를 G 안에서 실행하고 그 종료 코드를 돌려준다.
+
+    표지는 옮기지 않는다. 후보를 띄운 배포기가 health를 확인한 뒤 adopt --replace-current로 갱신한다.
+    """
+    if not args.compose_args:
+        raise ServiceReleaseError('-- 뒤에 실행할 docker compose 인자가 필요합니다')
+    if os.geteuid() != 0:
+        raise ServiceReleaseError('release compose는 root로 실행해야 합니다')
+    extra = _extra_files(args.file)
+    with manager_mutation_lock():
+        # pointer는 G 안에서 읽는다. 다른 등록이 그 사이 current를 바꾸지 못한다.
+        payload = compose_arguments(args.service, args.group, root=root, config=config)
+        try:
+            return subprocess.run([*payload['argv'], *extra, *args.compose_args], check=False).returncode
+        except OSError as exc:
+            raise ServiceReleaseError('docker compose를 실행할 수 없습니다') from exc
+
+
 def _run(args: argparse.Namespace) -> int:
     if args.release_action == 'adopt' and not args.confirm:
         print(json.dumps({'success': False, 'message': '등록하려면 --confirm이 필요합니다'}, ensure_ascii=False))
@@ -160,6 +191,8 @@ def _run(args: argparse.Namespace) -> int:
         config = load_targets_config()
         declaration = _declaration(args.service, config)
         root = Path(args.root)
+        if args.release_action == 'compose':
+            return _compose(args, config, root)
         if args.release_action == 'compose-args':
             payload = compose_arguments(args.service, args.group, root=root, config=config)
         elif args.release_action == 'adopt':
@@ -199,7 +232,7 @@ def _run(args: argparse.Namespace) -> int:
 def add_service_release_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser('service-release', help='현재 서비스 이미지의 등록·조회·차이를 확인합니다.')
     actions = parser.add_subparsers(dest='release_action', required=True)
-    for action in ('show', 'verify', 'adopt', 'compose-args'):
+    for action in ('show', 'verify', 'adopt', 'compose-args', 'compose'):
         child = actions.add_parser(action)
         child.add_argument('service')
         child.add_argument('--root', default=str(DEFAULT_RELEASE_ROOT))
@@ -208,6 +241,11 @@ def add_service_release_parser(subparsers: Any) -> None:
             child.add_argument('--confirm', action='store_true')
             child.add_argument('--replace-current', action='store_true', help='현재 실행 이미지를 명시 재등록합니다.')
             child.add_argument('--oneshot-image', action='append', default=[], metavar='SERVICE=sha256:ID')
-        if action == 'compose-args':
+        if action in ('compose-args', 'compose'):
             child.add_argument('--group', default='main')
+        if action == 'compose':
+            child.add_argument('-f', '--file', action='append', default=[], metavar='ABS_OVERLAY',
+                               help='current overlay 뒤에 붙일 후보·되돌림 images overlay(반복 가능).')
+            child.add_argument('compose_args', nargs='*', metavar='COMPOSE_ARGS',
+                               help='-- 뒤의 docker compose 하위 명령과 인자.')
         child.set_defaults(func=_run)
