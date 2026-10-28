@@ -1147,3 +1147,43 @@ compose_binds:
 unowned_services:
   - kor-travel-shared-db-init-transport
   - kor-travel-concierge-scheduler
+
+# 현재 release 소유 image의 배포 좌표. target의 lifecycle/depends_on/legacy 범위와 별개다.
+# D-568: services/runtime_services에는 공용 DB·구 monitoring이 있으므로 복사하지 않는다.
+# transport의 core/admin은 실제 운영 스크립트가 같은 project를 강제하며 파일 조합만 다르다.
+service_releases:
+  geo:
+    groups:
+      main:
+        project: kor-travel-odroid
+        working_dir: /opt/kor-travel-odroid
+        config_files: [compose.yml]
+        env_file: null
+        runtime_services: [kor-travel-geo-api, kor-travel-geo-ui, geo-dagster-code-server]
+        oneshot_services: []
+  weather:
+    groups:
+      main:
+        project: kor-travel-odroid
+        working_dir: /opt/kor-travel-odroid
+        config_files: [compose.yml]
+        env_file: null
+        runtime_services: [kor-travel-weather-api, kor-travel-weather-web, kor-travel-weather-dagster-code-server]
+        oneshot_services: [kor-travel-weather-migrate]
+  transport:
+    groups:
+      core:
+        external_project: true
+        config_files:
+          - docker-compose.yml
+          - docker-compose.shared.yml
+          - /opt/kor-travel-odroid/transport/transport.override.yml
+        env_file: .env.prod
+        runtime_services: [backend, frontend, dagster-code-server]
+        oneshot_services: [migrate]
+      admin:
+        external_project: true
+        config_files: [docker-compose.transport-admin.yml]
+        env_file: .env.prod
+        runtime_services: [transport-admin-web, transport-api-gateway]
+        oneshot_services: []

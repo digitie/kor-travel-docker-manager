@@ -1713,3 +1713,20 @@ Map ADR-114(2026-10-23)는 weather·transport의 현재·예보 상태(와 weath
 - (open) Map ADR-114 3단계에서 Map이 `KOR_TRAVEL_MAP_VALKEY_URL`을 읽는다. 이름이 바뀌면 이 앵커를 같이 고친다.
 - (open) M05 격리 스택(bridge network)은 Valkey를 아직 싣지 않는다 — Map이 Valkey 없이 기동 실패하게 되면(ADR-114 §4는
   해당 엔드포인트만 503) 그때 격리 스택에 더한다.
+
+
+## ADR-60: 서비스의 현재 이미지는 단일 current 표식과 ID overlay로 기록한다
+
+- 상태: accepted (설계·초기 등록 CLI, 운영 이관은 별도)
+- 날짜: 2026-10-28
+- 결정자: 이슈 #568 해결을 요청한 사용자 범위에서 Codex
+
+서로 다른 배포기가 base Compose·overlay·staged marker를 섞어 재생성 시 옛 이미지로 돌아갈 수 있었다.
+서비스별 절대 current symlink와 완성된 immutable images.yml/manifest.json을 정본으로 정한다.
+기존 host G를 보존하고 current는 health 관측 뒤 마지막에 바꾼다. 새 receipt/permit 체인은 도입하지 않는다.
+source revision은 구성요소별 관측값이며 혼합·미확정의 공통 revision은 null이다.
+DB migration 뒤 자동 이미지 rollback 및 pointer 선행 rollback은 채택하지 않는다(ADR-51).
+
+D1–D8 결정·파일/권한·CLI·실패 모드·단계별 미완 범위는 [서비스 현재 릴리스 표식](service-current-release.md)을 따른다.
+초기 adopt는 runtime을 바꾸지 않는다. 기존 배포기 wrapper 이관과 base 기본값 제거는 별도이며,
+그 전에는 raw Compose 우회를 차단했다고 주장하지 않는다.

@@ -1937,6 +1937,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    from kor_travel_docker_manager.service_release_cli import add_service_release_parser
+
+    add_service_release_parser(subparsers)
+
     targets = subparsers.add_parser(
         "targets", help="관리 target 목록을 조회하거나 config를 검증합니다."
     )

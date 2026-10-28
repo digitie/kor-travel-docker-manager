@@ -1,3 +1,43 @@
+## 2026-10-28 — 현재 release resolve·정상 재생성 제품·로컬 검증
+
+- 기존 compose-args 출력은 유지하고 root·G 아래 현재 manifest·공유 overlay로 실제 구성을 확인하는 resolve와, 같은 현재 이미지로 선택 그룹 runtime만 재생성하는 recreate를 추가한다. Docker 생성자 전에 G를 잡고 drift·불건강은 변경 전에 거절한다.
+- recreate는 --confirm과 1~600초 대기 상한(기본 120초)을 요구한다. 검증한 resolved JSON을 stdin으로 고정해 파일·환경 재해석 차이를 막고 one-shot·DB·공용 plane·다른 그룹·current 갱신·자동 rollback을 실행 범위에 넣지 않는다. 앱 구성에는 기존 최소 환경·DOCKER_*·앱 env 파일만 쓰며 원문 구성·환경 출력 없이 기존 secret_scrub로 오류를 가린다.
+- 제품 `ea53818e`는 독립 리뷰의 G descriptor 수명·실패 원인 소실 두 지적을 수정해 두 리뷰를 통과했고 focused104·전체 Ruff가 통과했다. 실제 프로세스의 SIGINT·SIGTERM·SIGKILL 회귀 세 건을 운영 Docker 강제 종료 실측으로 확대하지 않는다.
+- 실제 WSL Docker CLI14건이 20.489초에 통과했다. 선택 runtime의 CID·시작 시각 변경과 동일 이미지, sibling·one-shot·current/metadata 보존, 환경값 달러 literal·Manager 오염 무효, drift·G 경합 거절을 확인했다. build·pull·원격 접속0이며 소유 자원은 모두 정리하고 정상 G는 유지했다. `manager573-local-cli-summary-r1.json`과 대응 proof는 로컬 감사 참고 파일이며 운영 검증 근거가 아니다.
+- CI `40674834332`는 제품 `ea53818e`에서 backend 3,550통과·40skip(412.88초), frontend 타입·린트·47테스트·build를 모두 통과했다. Transport R10 배포 작업이 G를 보유해 호스트에는 설치·실행하지 않았다. 공개 API의 production ensure 금지와 external SDK 제어 예외를 유지하며 모든 API 직렬화나 외부 배포기·wrapper 이관 완료를 주장하지 않는다. 아래 초기 adopt·이미지 ID 비교와 원 실패 이력은 보존한다.
+
+## 2026-10-28 — 현재 release 운영 초기 등록과 소유 이미지 ID 비교 수용
+
+- 세 서비스 초기 등록 뒤 공식 show·compose-args와 실제 Compose config로 Geo main·Weather main·Transport core/admin 네 그룹을 대조했다. 17:30:48–17:32:14 KST, 85.917초·exit 0/PASS이며 네 config의 exit는 모두 0이고 stderr는 비어 있었다.
+- 소유 역할 13개(runtime 11·one-shot 2)의 resolved 로컬 이미지·manifest·실행 이미지가 해당 역할 기준으로 모두 일치했다. one-shot은 실행을 요구하지 않고 로컬 이미지 존재·ID만 대조했다. 전후 14개 컨테이너와 Manager env hash가 같았다. 검증은 소유 이미지 ID에 한정하며 전체 비이미지 구성 동등성은 확인하지 않았다.
+- `manager568-resolved-config-actual-r1.json`과 앞선 `manager568-initial-adopt-actual-r2.json`은 로컬 감사 참고 파일이며 저장소의 운영 로그나 공개 증거 링크가 아니다. 초기 실행의 G 경합 실패와 마지막 admin compose-args timeout에 따른 전체 FAIL은 아래 역사에 보존한다.
+- Manager 설치본·이미지·DB·schedule은 바꾸지 않았고 source artifact와 감사 참고 파일은 보존했다. OCI 미확정 source_sha null과 Transport 4d 실행을 유지하며 3f 배포 완료를 주장하지 않는다. 운영 초기 등록·소유 이미지 ID 대조만 수용하고 wrapper/배포기 이관·base 정리는 미완으로 남긴다.
+
+## 2026-10-28 — 현재 release 세 서비스 초기 등록과 후속 검증 대기
+
+- Geo·Weather·Transport의 각 current를 발행했고 공식 verify는 세 서비스 모두 healthy였다. root 소유 NVMe source artifact의 CLI 소스 `182cbfd`를 사용했으며 Manager 설치본은 바꾸지 않았다.
+- 두 번째 실행은 마지막 `compose-args:transport:admin`에서 전체 105초 deadline에 도달해 `TimeoutExpired`로 끝났고, 113.438초·전체 FAIL로 기록했다. 세 초기 등록의 성공과 전체 실행의 실패를 구분하며, 첫 G 경합 FAIL도 아래 역사에 보존한다.
+- 전후 14개 컨테이너의 CID·image·시작 시각·running과 Manager env hash가 같았다. 이미지 교체·DB·schedule 변경은 없으며, 세 manifest의 공통 source_sha는 OCI revision을 확정하지 못해 null로 기록했다. Transport의 실행은 4d 그대로이며 3f 배포 완료를 뜻하지 않는다.
+- `manager568-initial-adopt-actual-r2.json`은 로컬 감사 참고 파일이며 저장소의 운영 로그나 공개 증거 링크가 아니다. 실제 resolved image 비교는 아직 수용하지 않았고 wrapper/배포기 이관·base 정리도 미완으로 남긴다.
+
+## 2026-10-28 — 현재 release 코드 수용과 운영 초기 등록 대기
+
+- PR #569와 Geo 운영 Compose 이름 보정 PR #570을 병합했고, 두 독립 리뷰와 각 PR의 CI 성공을 수용했다. CLI 구현·검증 수용과 운영 설치·초기 등록·후속 wrapper 이관은 각각 구분한다.
+- 운영 초기 등록의 첫 실제 시도는 `acquire-existing-G`에서 `ManagerMutationActiveError`로 실패했다. Docker 생성·source/current 파일 쓰기 전에 멈췄다. 경합 중인 Transport DB 백업·복원 작업을 존중하며 잠금을 강제로 풀지 않고 대기한다.
+- `manager568-initial-adopt-actual-r1.json`은 이 시도의 로컬 감사 참고 파일이며 저장소에 포함한 운영 로그나 공개 증거 링크가 아니다. 운영 adopt·resolved image 비교·wrapper/배포기 이관은 계속 미완이다. 아래 후보 검증과 과거 기록은 보존한다.
+
+## 2026-10-28 — 현재 release Geo 운영 Compose 이름 보정
+
+- PR #569 이후 초기 등록 전 읽기 대조에서 Geo 코드서버의 실제 Compose 이름이 geo-dagster-code-server임을 확인했다. release catalog와 역할 완전성 회귀를 운영 경계에 맞췄다. 기존 lifecycle 선언은 바꾸지 않는다.
+- Geo/Weather 실제 label·호스트 base 서비스 이름 및 Transport의 core/admin·활성 migrate/legacy 구분을 재확인했다. 아직 current 파일 발행·runtime 재생성·schedule 변경은 하지 않았다.
+
+## 2026-10-28 — 이슈 #568 현재 release 표식 설계·초기 등록
+
+- D1–D8을 ADR-60과 기능 레퍼런스로 결정했다. 기존 G와 DB 전진 배포를 보존하고, mixed/unknown source를 표현한다.
+- 현재 runtime ID를 관측하는 adopt/read/verify 및 catalog 기반 CLI·공유 project overlay 인자 생성을 추가한다. runtime 변경 명령은 실행하지 않는다.
+- 제품51742949의 독립 리뷰2·focused68·전체CI backend3,514P40S/frontend47 및 build·local Docker CLI10·n150 후보 UI PC18/mobile18을 수용했다. FIFO 지적은 실제 FIFO 회귀로 닫았다.
+- 첫 UI fixture의 NOT_RUN과 동시 편집 중 로컬 전체 pytest 1실패 원장은 보존했다. 운영 초기 등록·wrapper 이관은 미완이며 후보/fixture 결과를 운영 성공으로 바꾸지 않는다.
+
 ## 2026-10-28 — Odroid Manager PG18 호환 설치·공개 UI 수용
 
 - 공식 전체 설치기로 Odroid Manager를 `aeb2d34c`에서 `f368af3e`로 갱신했다. 설치기 221.815초·exit 0, 실제 소스 436개·새 backend·상태 확인 API 200을 확인했다. n150은 `d1468213`와 제품이 같아 재설치하지 않았다.
