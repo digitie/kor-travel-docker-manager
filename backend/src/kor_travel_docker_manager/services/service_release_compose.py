@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
+import threading
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,7 @@ from kor_travel_docker_manager.services.secret_scrub import (
     redact_secret_text,
 )
 from kor_travel_docker_manager.services.service_release import ServiceReleaseError
+from kor_travel_docker_manager.services.trusted_install import GLOBAL_MUTATION_LOCK_PATH
 
 
 def _environment() -> dict[str, str]:
@@ -66,6 +69,42 @@ def _verify(manifests: dict[str, dict[str, Any]], client: Any) -> dict[str, Any]
             for name, manifest in manifests.items()}
 
 
+
+def _mutation_lock_fd() -> int:
+    """호출자가 보유한 기존 canonical G FD만 자식에게 그대로 상속한다."""
+    expected = GLOBAL_MUTATION_LOCK_PATH.stat()
+    matches = []
+    for name in os.listdir('/proc/self/fd'):
+        if not name.isdecimal():
+            continue
+        try:
+            actual = os.fstat(int(name))
+        except OSError:
+            continue
+        if (actual.st_dev, actual.st_ino) == (expected.st_dev, expected.st_ino):
+            matches.append(int(name))
+    if len(matches) != 1:
+        raise ServiceReleaseError('보유한 canonical G descriptor를 하나로 확인할 수 없습니다')
+    return matches[0]
+
+
+def _run_mutation(command: list[str], **kwargs: Any) -> tuple[Any, list[str]]:
+    """자식 종료 전 G 해제를 막고, 부모만 강제 종료돼도 자식이 G를 보유한다."""
+    interrupted: list[str] = []
+    previous = {}
+    def defer(signum: int, frame: Any) -> None:
+        interrupted.append(signal.Signals(signum).name)
+    if threading.current_thread() is threading.main_thread():
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.signal(signum, defer)
+    try:
+        completed = subprocess.run(command, pass_fds=(_mutation_lock_fd(),), **kwargs)
+        return completed, interrupted
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def recreate_current(plan: dict[str, Any], manifests: dict[str, dict[str, Any]], *,
                      client: Any, wait_timeout: int = 120, execute: bool = False) -> dict[str, Any]:
     """root/G를 보유한 호출자 아래 config를 고정하고 선택 runtime만 다룬다.
@@ -105,7 +144,9 @@ def recreate_current(plan: dict[str, Any], manifests: dict[str, dict[str, Any]],
         raise ServiceReleaseError("고정한 Compose 계획 또는 manifest가 올바르지 않습니다") from exc
     before = _verify(manifests, client)
     if any(value.get("result") != "healthy" for value in before.values()):
-        raise ServiceReleaseError("현재 release가 healthy여야 재생성할 수 있습니다")
+        issues = '; '.join(name + ': ' + '; '.join(value.get('issues', []))
+                           for name, value in before.items() if value.get('result') != 'healthy')
+        raise ServiceReleaseError("현재 release가 healthy여야 재생성할 수 있습니다: " + issues)
     try:
         secrets = _secrets(manifests)
     except (OSError, UnicodeError):
@@ -151,12 +192,14 @@ def recreate_current(plan: dict[str, Any], manifests: dict[str, dict[str, Any]],
                "up", "-d", "--no-deps", "--no-build", "--pull", "never", "--force-recreate",
                "--wait", "--wait-timeout", str(wait_timeout), *runtime]
     try:
-        completed = subprocess.run(
+        completed, interrupted = _run_mutation(
             command, cwd=working_dir, env=environment, text=True, capture_output=True, check=False,
             input=json.dumps(_escape_materialized_compose_environment_values(materialized),
                              ensure_ascii=False, separators=(",", ":")),
         )
         result["returncode"] = completed.returncode
+        if interrupted:
+            result['interrupted_signals'] = interrupted
         if completed.returncode:
             result["stderr"] = _detail(completed.stderr, secrets)
     except OSError as exc:
@@ -166,4 +209,6 @@ def recreate_current(plan: dict[str, Any], manifests: dict[str, dict[str, Any]],
     if result.get("returncode") == 0:
         healthy = all(value.get("result") == "healthy" for value in after.values())
         result.update(success=healthy, result="healthy" if healthy else "drift")
+    if result.get('interrupted_signals'):
+        result.update(success=False, result='interrupted')
     return result

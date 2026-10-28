@@ -84,6 +84,8 @@ stdin의 -f -에는 검증한 resolved JSON을 전달하고 기존 달러 escape
 
 resolve/recreate는 현재 제품 검증·CI·독립 두 리뷰와 운영 적용 대기 상태다. Odroid에서는 Transport R10 백업·복원 작업이 G를 보유하고 있어 이번 명령을 호스트에 설치하거나 실행하지 않았다. 앞서 수용한 초기 adopt와 소유 이미지 ID 비교를 이번 명령의 운영 검증으로 대신하지 않는다.
 
+재생성 중 SIGINT·SIGTERM은 Compose 자식 종료까지 유예하고 후속 검증 뒤 실패로 보고한다. 기존 G descriptor를 자식에게 상속하므로 부모만 강제 종료돼도 실행 중인 자식이 잠금을 보유한다. health 대기는 Compose의 상한을 쓰며, host timeout으로 CLI만 끝내고 G를 먼저 놓는 경로는 만들지 않는다.
+
 ## 적용과 남은 이관
 
 1. 코드·회귀·두 적대 리뷰·CI를 수용한다.

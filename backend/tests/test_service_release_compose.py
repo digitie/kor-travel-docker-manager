@@ -39,6 +39,7 @@ def scenario(monkeypatch):
     monkeypatch.setattr(compose.service_release, "verify_release_manifest", verified, raising=False)
     monkeypatch.setattr(compose, "load_secret_environment", lambda path:
                         [("APP_TOKEN", "app-private-token")])
+    monkeypatch.setattr(compose, "_mutation_lock_fd", lambda: 123)
     calls = []
 
     def run(argv, **kwargs):
@@ -241,4 +242,12 @@ def test_any_shared_manifest_drift_prevents_all_compose_calls(scenario):
     scenario.verified.side_effect = [{"result": "healthy"}, {"result": "drift"}]
     with pytest.raises(ServiceReleaseError, match="healthy"):
         recreate(scenario, execute=True)
+    assert scenario.calls == []
+
+
+def test_preflight_keeps_service_and_runtime_failure_reason(scenario, monkeypatch):
+    monkeypatch.setattr(compose.service_release, "verify_release_manifest",
+                        lambda manifest, **kwargs: {"result": "drift", "issues": ["api: running/healthy 조건 실패"]})
+    with pytest.raises(ServiceReleaseError, match="weather: api: running/healthy 조건 실패"):
+        compose.recreate_current(scenario.plan, scenario.manifests, client=scenario.client, execute=True)
     assert scenario.calls == []
