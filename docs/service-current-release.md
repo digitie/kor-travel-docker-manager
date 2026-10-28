@@ -1,6 +1,6 @@
 # 서비스 현재 릴리스 표식
 
-이 문서는 이슈 #568·ADR-60의 정본이다. CLI는 **관측한 이미지의 초기 등록(adopt), 조회, drift 검증, Compose 인자 생성**에 더해 현재 구성을 확인하는 resolve와 정상인 현재 이미지로 선택 그룹 runtime을 재생성하는 recreate를 제공한다. recreate는 명시 --confirm 뒤에만 Docker up을 실행한다. 새 후보 배포·migration·DB rollback은 범위 밖이며 기존 배포 도구를 자동으로 가로채지 않는다. resolve/recreate의 제품 검증·CI·독립 리뷰·운영 적용은 아직 대기 중이다.
+이 문서는 이슈 #568·ADR-60의 정본이다. CLI는 **관측한 이미지의 초기 등록(adopt), 조회, drift 검증, Compose 인자 생성**에 더해 현재 구성을 확인하는 resolve와 정상인 현재 이미지로 선택 그룹 runtime을 재생성하는 recreate를 제공한다. recreate는 명시 --confirm 뒤에만 Docker up을 실행한다. 새 후보 배포·migration·DB rollback은 범위 밖이며 기존 배포 도구를 자동으로 가로채지 않는다. resolve/recreate의 제품 회귀·독립 두 리뷰·전체 CI와 로컬 Docker 검증은 통과했으며 운영 적용은 대기 중이다.
 
 ## 유지해야 할 조건
 
@@ -82,9 +82,16 @@ stdin의 -f -에는 검증한 resolved JSON을 전달하고 기존 달러 escape
 
 이 경로는 현재 release를 재생성하는 첫 제품 명령이며 외부 배포기의 새 후보 적용·health 후 current 갱신까지 이관한 결과가 아니다. 공개 API의 production ensure 금지와 external SDK start/stop/restart 예외는 기존대로다. 이 CLI의 G 사용을 모든 API 변경이 직렬화됐다는 의미로 해석하지 않는다.
 
-resolve/recreate는 현재 제품 검증·CI·독립 두 리뷰와 운영 적용 대기 상태다. Odroid에서는 Transport R10 백업·복원 작업이 G를 보유하고 있어 이번 명령을 호스트에 설치하거나 실행하지 않았다. 앞서 수용한 초기 adopt와 소유 이미지 ID 비교를 이번 명령의 운영 검증으로 대신하지 않는다.
+resolve/recreate의 제품 회귀·독립 두 리뷰와 실제 로컬 Docker 검증은 아래 범위에서 통과했다. 전체 CI도 수용했으며 운영 적용은 대기 중이다. Odroid에서는 Transport R10 배포 작업이 G를 보유하고 있어 이번 명령을 호스트에 설치하거나 실행하지 않았다. 앞서 수용한 초기 adopt와 소유 이미지 ID 비교를 이번 명령의 운영 검증으로 대신하지 않는다.
 
 재생성 중 SIGINT·SIGTERM은 Compose 자식 종료까지 유예하고 후속 검증 뒤 실패로 보고한다. 기존 G descriptor를 자식에게 상속하므로 부모만 강제 종료돼도 실행 중인 자식이 잠금을 보유한다. health 대기는 Compose의 상한을 쓰며, host timeout으로 CLI만 끝내고 G를 먼저 놓는 경로는 만들지 않는다.
+
+### 2026-10-28 resolve/recreate 제품 검증 현황
+
+- 제품 `ea53818e`는 독립 소스 리뷰 두 건의 G descriptor 수명·실패 원인 소실 지적을 수정한 뒤 두 리뷰를 통과했다. focused 104건과 전체 Ruff가 통과했다. SIGINT·SIGTERM·SIGKILL 경계 세 건은 실제 자식 프로세스 회귀이며 운영 Docker 강제 종료 실측은 아니다.
+- WSL 기본 Docker의 실제 CLI 14건이 20.489초에 통과했다. 선택 runtime의 CID·시작 시각만 바뀌고 이미지는 유지됐으며 sibling·one-shot·current/metadata는 보존됐다. 달러가 포함된 환경값의 literal 유지, Manager 환경 오염 무효, 실제 이미지 drift·G 경합 거절을 확인했다. build·pull·원격 호스트 접속은 없었고 소유 fixture·컨테이너·holder는 모두 정리했다. 정상 canonical G 파일은 유지했다.
+- `manager573-local-cli-summary-r1.json`과 `manager573-local-cli-e2e-actual-r1-994f9655366b4404b8e586ea55a9f931.json`은 이 로컬 실측의 감사 참고 파일이며 저장소의 운영 로그나 공개 증거 링크가 아니다. 운영 호스트 설치·재생성·UI 검증 결과로 해석하지 않는다.
+- 제품 `ea53818e`의 CI 실행 `40674834332`는 backend 3,550통과·40skip(412.88초), frontend 타입·린트·47테스트·build 모두 통과했다. Transport R10 작업과 현재 운영 상태를 보존하며, 호스트 설치 및 외부 배포기·wrapper 전체 이관은 계속 미완이다.
 
 ## 적용과 남은 이관
 
