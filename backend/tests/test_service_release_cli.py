@@ -178,3 +178,72 @@ def test_external_coordinates_are_derived_once(config, declaration):
     group['working_dir'] = '/srv/second-source'
     with pytest.raises(ServiceReleaseError, match='중복 선언'):
         entry._declaration('app', config)
+
+
+@pytest.mark.parametrize('action', ['resolve', 'recreate'])
+def test_compose_execution_holds_g_and_pins_one_plan(config, declaration, monkeypatch, capsys, action):
+    from kor_travel_docker_manager.services import service_release_compose as executor
+
+    monkeypatch.setattr(entry.os, 'geteuid', lambda: 0)
+    events = []
+    @contextmanager
+    def lock():
+        events.append('G-enter')
+        yield
+        events.append('G-exit')
+    current = manifest(declaration)
+    reads = []
+    def read(service, **kwargs):
+        reads.append(service)
+        return current
+    def connect(**kwargs):
+        assert events == ['G-enter']
+        events.append('Docker')
+        return SimpleNamespace(close=lambda: events.append('close'))
+    def execute(plan, manifests, **kwargs):
+        assert events == ['G-enter', 'Docker']
+        assert manifests == {'app': current}
+        assert plan['runtime_services'] == ['api', 'web']
+        assert kwargs['execute'] is (action == 'recreate')
+        events.append('execute')
+        return {'success': True, 'result': 'healthy'}
+    monkeypatch.setattr(entry, 'read_current_release', read)
+    monkeypatch.setattr(entry, 'manager_mutation_lock', lock)
+    monkeypatch.setattr(entry.docker, 'from_env', connect)
+    monkeypatch.setattr(executor, 'recreate_current', execute)
+    argv = ['service-release', action, 'app'] + (['--confirm'] if action == 'recreate' else [])
+    args = cli.build_parser().parse_args(argv)
+    assert args.func(args) == 0
+    assert events == ['G-enter', 'Docker', 'execute', 'close', 'G-exit']
+    assert reads == ['app']
+    assert json.loads(capsys.readouterr().out)['success'] is True
+
+
+def test_recreate_without_confirm_cannot_read_or_execute(monkeypatch, capsys):
+    lookup = Mock(side_effect=AssertionError('config read'))
+    monkeypatch.setattr(entry, 'load_targets_config', lookup)
+    args = cli.build_parser().parse_args(['service-release', 'recreate', 'app'])
+    assert args.func(args) == 2
+    lookup.assert_not_called()
+    assert '--confirm' in json.loads(capsys.readouterr().out)['message']
+
+
+@pytest.mark.parametrize('seconds', ['0', '601', '-1', 'bad'])
+def test_recreate_wait_is_bounded_before_execution(seconds):
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(['service-release', 'recreate', 'app', '--wait-timeout', seconds])
+
+
+@pytest.mark.parametrize('action', ['resolve', 'recreate'])
+def test_compose_execution_refuses_g_contention_before_docker(config, monkeypatch, action):
+    monkeypatch.setattr(entry.os, 'geteuid', lambda: 0)
+    @contextmanager
+    def busy():
+        raise ManagerMutationActiveError('another Manager mutation is active')
+        yield
+    monkeypatch.setattr(entry, 'manager_mutation_lock', busy)
+    factory = Mock(side_effect=AssertionError('Docker touched'))
+    monkeypatch.setattr(entry.docker, 'from_env', factory)
+    args = cli.build_parser().parse_args(['service-release', action, 'app', *(['--confirm'] if action == 'recreate' else [])])
+    assert args.func(args) == 2
+    factory.assert_not_called()

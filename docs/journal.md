@@ -1,3 +1,11 @@
+## 2026-10-28 — 현재 release resolve·정상 재생성 제품·로컬 검증
+
+- 기존 compose-args 출력은 유지하고 root·G 아래 현재 manifest·공유 overlay로 실제 구성을 확인하는 resolve와, 같은 현재 이미지로 선택 그룹 runtime만 재생성하는 recreate를 추가한다. Docker 생성자 전에 G를 잡고 drift·불건강은 변경 전에 거절한다.
+- recreate는 --confirm과 1~600초 대기 상한(기본 120초)을 요구한다. 검증한 resolved JSON을 stdin으로 고정해 파일·환경 재해석 차이를 막고 one-shot·DB·공용 plane·다른 그룹·current 갱신·자동 rollback을 실행 범위에 넣지 않는다. 앱 구성에는 기존 최소 환경·DOCKER_*·앱 env 파일만 쓰며 원문 구성·환경 출력 없이 기존 secret_scrub로 오류를 가린다.
+- 제품 `ea53818e`는 독립 리뷰의 G descriptor 수명·실패 원인 소실 두 지적을 수정해 두 리뷰를 통과했고 focused104·전체 Ruff가 통과했다. 실제 프로세스의 SIGINT·SIGTERM·SIGKILL 회귀 세 건을 운영 Docker 강제 종료 실측으로 확대하지 않는다.
+- 실제 WSL Docker CLI14건이 20.489초에 통과했다. 선택 runtime의 CID·시작 시각 변경과 동일 이미지, sibling·one-shot·current/metadata 보존, 환경값 달러 literal·Manager 오염 무효, drift·G 경합 거절을 확인했다. build·pull·원격 접속0이며 소유 자원은 모두 정리하고 정상 G는 유지했다. `manager573-local-cli-summary-r1.json`과 대응 proof는 로컬 감사 참고 파일이며 운영 검증 근거가 아니다.
+- CI `40674834332`는 제품 `ea53818e`에서 backend 3,550통과·40skip(412.88초), frontend 타입·린트·47테스트·build를 모두 통과했다. Transport R10 배포 작업이 G를 보유해 호스트에는 설치·실행하지 않았다. 공개 API의 production ensure 금지와 external SDK 제어 예외를 유지하며 모든 API 직렬화나 외부 배포기·wrapper 이관 완료를 주장하지 않는다. 아래 초기 adopt·이미지 ID 비교와 원 실패 이력은 보존한다.
+
 ## 2026-10-28 — 현재 release 운영 초기 등록과 소유 이미지 ID 비교 수용
 
 - 세 서비스 초기 등록 뒤 공식 show·compose-args와 실제 Compose config로 Geo main·Weather main·Transport core/admin 네 그룹을 대조했다. 17:30:48–17:32:14 KST, 85.917초·exit 0/PASS이며 네 config의 exit는 모두 0이고 stderr는 비어 있었다.

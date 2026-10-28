@@ -302,7 +302,12 @@ def _observe(profile: dict[str, Any], client: Any) -> tuple[dict[str, Any], dict
 
 def verify_release(service: str, *, root: Path, client: Any) -> dict[str, Any]:
     """표지와 실행 이미지의 차이를 보고하며 Docker를 변경하지 않는다."""
-    manifest = read_current_release(service, root=root)
+    return verify_release_manifest(read_current_release(service, root=root), client=client)
+
+
+def verify_release_manifest(manifest: dict[str, Any], *, client: Any) -> dict[str, Any]:
+    """검증된 reader가 고정한 manifest를 다시 pointer 조회 없이 관측한다."""
+    service = manifest['service']
     actual, _, issues = _observe(manifest, client)
     images = {name: {"expected": image["id"], "actual": actual.get(name, {}).get("id")}
               for name, image in manifest["images"].items()}

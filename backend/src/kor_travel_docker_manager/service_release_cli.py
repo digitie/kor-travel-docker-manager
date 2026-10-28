@@ -106,7 +106,7 @@ def _check_roles(manifest: dict[str, Any], declaration: dict[str, Any]) -> None:
             raise ServiceReleaseError('현재 release와 catalog의 Compose 파일이 다릅니다')
 
 
-def compose_arguments(service: str, group_name: str, *, root: Path, config: dict[str, Any]) -> dict[str, Any]:
+def _compose_plan(service: str, group_name: str, *, root: Path, config: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """고정 pointer를 한 번씩 읽어 같은 project의 모든 overlay 인자를 만든다."""
     declaration = _declaration(service, config)
     if group_name not in declaration['groups']:
@@ -148,13 +148,25 @@ def compose_arguments(service: str, group_name: str, *, root: Path, config: dict
         overlay = str(Path(manifest['release_directory']) / 'images.yml')
         overlays.append(overlay)
         argv += ['-f', overlay]
-    return {'service': service, 'group': group_name, 'project': project,
-            'argv': argv, 'runtime_services': selected['runtime_services'], 'overlays': overlays}
+    return ({'service': service, 'group': group_name, 'project': project,
+             'argv': argv, 'runtime_services': selected['runtime_services'], 'overlays': overlays}, manifests)
+
+
+def compose_arguments(service: str, group_name: str, *, root: Path, config: dict[str, Any]) -> dict[str, Any]:
+    """기존 공개 argv 출력은 유지하고 실행 경로는 같은 고정 manifest를 공유한다."""
+    return _compose_plan(service, group_name, root=root, config=config)[0]
+
+
+def _wait_seconds(value: str) -> int:
+    seconds = int(value)
+    if not 1 <= seconds <= 600:
+        raise argparse.ArgumentTypeError('health 대기는 1~600초여야 합니다')
+    return seconds
 
 
 def _run(args: argparse.Namespace) -> int:
-    if args.release_action == 'adopt' and not args.confirm:
-        print(json.dumps({'success': False, 'message': '등록하려면 --confirm이 필요합니다'}, ensure_ascii=False))
+    if args.release_action in {'adopt', 'recreate'} and not args.confirm:
+        print(json.dumps({'success': False, 'message': '변경하려면 --confirm이 필요합니다'}, ensure_ascii=False))
         return 2
     try:
         config = load_targets_config()
@@ -162,6 +174,20 @@ def _run(args: argparse.Namespace) -> int:
         root = Path(args.root)
         if args.release_action == 'compose-args':
             payload = compose_arguments(args.service, args.group, root=root, config=config)
+        elif args.release_action in {'resolve', 'recreate'}:
+            from kor_travel_docker_manager.services.service_release_compose import recreate_current
+
+            if os.geteuid() != 0:
+                raise ServiceReleaseError('release 구성 확인·재생성은 root로 실행해야 합니다')
+            with manager_mutation_lock():
+                plan, manifests = _compose_plan(args.service, args.group, root=root, config=config)
+                client = docker.from_env(timeout=10)
+                try:
+                    payload = recreate_current(plan, manifests, client=client,
+                                               execute=args.release_action == 'recreate',
+                                               wait_timeout=getattr(args, 'wait_timeout', 120))
+                finally:
+                    client.close()
         elif args.release_action == 'adopt':
             if os.geteuid() != 0:
                 raise ServiceReleaseError('release 등록은 root로 실행해야 합니다')
@@ -186,7 +212,7 @@ def _run(args: argparse.Namespace) -> int:
                 finally:
                     client.close()
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 1 if payload.get('result') == 'drift' else 0
+        return 1 if payload.get('result') == 'drift' or payload.get('success') is False else 0
     except (ServiceReleaseError, DeploymentContractError) as exc:
         print(json.dumps({'success': False, 'message': str(exc)}, ensure_ascii=False))
         return 2
@@ -199,7 +225,7 @@ def _run(args: argparse.Namespace) -> int:
 def add_service_release_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser('service-release', help='현재 서비스 이미지의 등록·조회·차이를 확인합니다.')
     actions = parser.add_subparsers(dest='release_action', required=True)
-    for action in ('show', 'verify', 'adopt', 'compose-args'):
+    for action in ('show', 'verify', 'adopt', 'compose-args', 'resolve', 'recreate'):
         child = actions.add_parser(action)
         child.add_argument('service')
         child.add_argument('--root', default=str(DEFAULT_RELEASE_ROOT))
@@ -208,6 +234,9 @@ def add_service_release_parser(subparsers: Any) -> None:
             child.add_argument('--confirm', action='store_true')
             child.add_argument('--replace-current', action='store_true', help='현재 실행 이미지를 명시 재등록합니다.')
             child.add_argument('--oneshot-image', action='append', default=[], metavar='SERVICE=sha256:ID')
-        if action == 'compose-args':
+        if action in {'compose-args', 'resolve', 'recreate'}:
             child.add_argument('--group', default='main')
+        if action == 'recreate':
+            child.add_argument('--confirm', action='store_true')
+            child.add_argument('--wait-timeout', type=_wait_seconds, default=120, metavar='SECONDS')
         child.set_defaults(func=_run)
