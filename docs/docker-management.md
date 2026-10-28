@@ -380,6 +380,19 @@ ktdctl inspect kor-travel-shared-postgresql --json
 ktdctl srv --build
 ```
 
+**build context는 운영 source 디렉터리가 아니다.** Manager가 Compose에 건네는 문서에서 명시
+build(`build`, `up/create/run --build`) 대상 서비스의 local context는 Manager state root 아래
+임시 사본으로 바뀐다. 사본은 그 context의 `.dockerignore`(Dockerfile 전용 ignore가 있으면 그것)를
+적용하고 디렉터리 `0755`, 파일 `0644`(owner 실행 비트가 있으면 `0755`)로 정규화한다 —
+`*_REPO_DIR`이 owner-only(700/600)여도 이미지 안 코드는 비-root `USER`가 읽을 수 있다.
+명시 build가 아닌 명령에서는 `build:` 절을 지워 보내므로 이미지가 없을 때 Compose가 운영
+디렉터리에서 조용히 빌드하지 않는다(처음 띄우는 서비스는 `--build`로 올린다). 공용 Dagster plane
+수렴(재구축·`dagster-plane converge`)은 render 이미지가 로컬에 없을 때 `--build`를 스스로 붙인다.
+`ktdctl ensure`는 그러지 않는다 — 설치로 `kor-travel-dagster-host` 태그가 바뀐 뒤에는
+`ktdctl ensure dagster --build`로 올린다(없으면 pull 오류로 컨테이너 변경 전에 실패한다). Concierge
+`compose-boundary activate-concierge`도 `--no-build`로 재생성한다. 구현은
+`services/build_context_export.py`.
+
 #### `ktdctl pin` — Map·PinVi pinned revision registry
 
 pinned revision은 더 이상 소스코드 상수가 아니라 **root 소유 JSON registry 파일**에

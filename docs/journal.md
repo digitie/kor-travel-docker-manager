@@ -46,6 +46,23 @@
 - 공개 TLS 자산 17개와 UI 12개가 90.696초에 통과했다. 같은 브라우저의 정본 scope 실행 행 19개가 Docker의 이름/CID/상태와 같고 수치가 유한함을 확인했다. 인증 각 한 번·서버 세션 철회·socket 종료·소유 프로세스와 프로필 정리까지 수용했다.
 - PG 업그레이드·plane 재생성·다른 서비스 이미지 변경이나 수집 성능 측정은 하지 않았다. 자세한 실패 이력·원장·관측 한계는 [운영 기록](reports/2026-10-28-manager-pg18-normal-install.md)을 따른다. 아래 일지 원문은 보존한다.
 
+## 2026-10-27 — Compose build context를 운영 source 디렉터리에서 떼어 낸다
+
+- 원인: Concierge T-207 배포(concierge PR #263 기록)에서 owner-only(700/600) `KOR_TRAVEL_CONCIERGE_REPO_DIR`를
+  그대로 context로 빌드한 code server가 비-root `USER`로 `No module named 'ktc.dagster'`에 실패했다. COPY가 mode를
+  보존한다. 운영 `*_REPO_DIR`은 git checkout이 아닌 동기화 사본이라(n150 concierge·map에 `.git` 없음) Manager가
+  archive할 commit을 알 수 없다 — 그래서 revision 결박 대신 context 사본의 mode를 git archive와 같게 정규화한다.
+- 변경: `ComposeService._run_unlocked`가 Compose에 건네는 문서에서 명시 build 대상의 local context를 state root
+  아래 정규화 사본(`.dockerignore`는 moby patternmatcher 규칙, Dockerfile·ignore 파일은 항상 남겨 Docker가 다시
+  적용)으로 바꾸고, 나머지 서비스의 `build:`를 지운다(implicit build 금지, Compose config hash는 build를 보지
+  않는다). `activate-concierge`는 `--no-build`. 대상은 렌더된 문서의 `build:`에서 파생하고 서비스 이름 결박은 없다.
+- 적대 리뷰 2회 반영: ignore 판정은 BuildKit의 `MatchesUsingParentResults`·suffixMatch와 같게(Docker가 보내는 파일을
+  빼지 않는다), 되살릴 예외가 없는 제외 디렉터리는 열지 않는다(fsutil과 같게). source는 디렉터리 fd 기준
+  `O_NOFOLLOW|O_NONBLOCK`으로 열어 검사 뒤 바꿔치기된 symlink·FIFO를 따라가지 않는다. 비운영에서
+  `COMPOSE_PROJECT_NAME`이 없으면 C6c lock과 같은 기본값을 쓴다.
+- 회귀: `backend/tests/test_build_context_export.py`가 700/600 tree(umask 077)를 만들고 사본의 디렉터리 `0755`·파일
+  world-readable·symlink 비추종·ignore 규칙을 효과로 본다.
+
 ## 2026-10-27 — Manager559 양 호스트 정상 설치와 공개 UI 수용
 
 - 제품 M `aeb2d34c`를 공식 installer로 n150·Odroid의 웹·API·CLI에 적용했다. n150의 기존 동일 frontend는 유지하고 Odroid는 검증된 새 ARM 산출물을 기존 G 안에서 frontend 하나만 승격했다.

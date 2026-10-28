@@ -309,9 +309,42 @@ def test_compose_ensure_build_command(
             "HOME": str(lock_home),
         },
     ):
-        result = ComposeService().ensure_target("srv", build=True, recreate=True)
+        exported: list[frozenset[str]] = []
+
+        def export_contexts(document, *, build_services, staging_directory):
+            # 이 문서는 해석 전 원문이라 context가 `${...}`다 — 사본 생성 대신 대상만 기록한다.
+            targets = frozenset(build_services)
+            # 명시 build가 아닌 명령(init step `run`)은 대상이 없고 사본 디렉터리도 없다.
+            assert (staging_directory is not None) == bool(targets)
+            if targets:
+                exported.append(targets)
+            return dict(document)
+
+        state_root = tmp_path / "state-root"
+        with (
+            patch(
+                "kor_travel_docker_manager.services.compose_service."
+                "compose_document_with_exported_build_contexts",
+                side_effect=export_contexts,
+            ),
+            patch(
+                "kor_travel_docker_manager.services.compose_service.pinned_runtime_state_root",
+                return_value=state_root,
+            ),
+        ):
+            result = ComposeService().ensure_target("srv", build=True, recreate=True)
 
     assert result["success"] is True
+    # `--build`는 운영 source 디렉터리가 아니라 정규화 사본에서 빌드한다 — 대상은 올리는 서비스의
+    # build 절 전부다(build_context_export.py).
+    assert exported, "ensure --build must export build contexts"
+    assert {
+        "kor-travel-concierge-api",
+        "kor-travel-concierge-dagster-code-server",
+        "kor-travel-concierge-ui",
+        "pinvi-api",
+    } <= exported[0]
+    assert "kor-travel-geo-api" not in exported[0]
     # 실제 host-local srv 폐포는 이전한 Geo를 시작하지 않는다.
     assert result["services"] == [
         "rustfs",

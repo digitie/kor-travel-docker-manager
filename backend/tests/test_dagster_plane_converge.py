@@ -161,6 +161,22 @@ def test_a_stale_plane_recreates_only_the_plane_services_under_the_lock(
     assert all(held for _name, held in harness.state.inspected)
 
 
+def test_a_missing_plane_image_is_built_explicitly(
+    harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """설치로 plane 이미지 태그가 바뀌면 `up`이 `--build`를 싣는다 — build 절은 명시 build에만 남는다."""
+
+    def absent(_reference: str, *, label: str) -> str:
+        raise DeploymentContractError(f"{label} image is not present")
+
+    monkeypatch.setattr(harness.service, "_inspect_image_reference_id", absent)
+
+    harness.service.converge_shared_dagster_plane(dry_run=False)
+
+    calls = harness.state.compose_calls
+    assert calls == [(("up", "-d", "--no-deps", "--build", *harness.plane.services), True)]
+
+
 def test_the_stale_reason_names_the_digest_without_leaking_secret_env(
     harness: SimpleNamespace,
 ) -> None:
