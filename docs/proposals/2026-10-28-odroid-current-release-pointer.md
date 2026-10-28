@@ -1,9 +1,13 @@
-# odroid 서비스 "현재 release" 표지 통일 제안 — **Codex 합의 필요**
+# odroid 서비스 "현재 release" 표지 통일 제안 — **이슈 #568 설계 결정 완료**
 
-> **상태: 제안(미적용, 코드 없음).** odroid 배포를 맡는 Codex와 합의하기 전에는 odroid의 어떤 파일·
-> 컨테이너·compose도 바꾸지 않는다. 이 문서 작성 중 odroid에서는 읽기 전용 조회만 했다(2026-10-28 03:00Z).
+> **현재 상태: 설계 결정 완료, 초기 등록 CLI 구현·검증 중, 운영 미적용.** 원 제안 작성 시점에는
+> 코드·호스트 변경 없이 odroid 읽기 전용 조회만 했다(2026-10-28 03:00Z). 현재 정본과 적용 단계는 아래 결정 후 상태를 따른다.
 > weather 한정 선행 제안 `digitie/kor-travel-weather` `docs/reports/2026-10-27-odroid-weather-current-release-pointer.md`
 > (#183)를 odroid의 모든 서비스(weather·geo·transport)로 넓힌 것이다. 합의 논의는 이 저장소 이슈에서 한다.
+
+## 이슈 #568 결정 후 상태
+
+D1–D8 결정은 [ADR-60의 기능 정본](../service-current-release.md)에 반영했다. 아래 내용은 03:00Z 당시 관측·원 제안으로 보존한다. 현재 구현·실패 모드·미완 적용 단계는 기능 정본을 따른다. 특히 기존 host G를 project 잠금으로 대체하지 않으며, mixed source를 단일 revision으로 발명하지 않고, DB migration 뒤 pointer 선행 rollback을 하지 않는다. 설계 결정이 운영 적용을 뜻하지 않는다.
 
 ## 1. 문제
 
