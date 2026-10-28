@@ -178,3 +178,97 @@ def test_external_coordinates_are_derived_once(config, declaration):
     group['working_dir'] = '/srv/second-source'
     with pytest.raises(ServiceReleaseError, match='중복 선언'):
         entry._declaration('app', config)
+
+
+def _compose_parse(*argv):
+    return cli.build_parser().parse_args(['service-release', 'compose', *argv])
+
+
+def test_compose_runs_current_overlays_then_extra_files_inside_g(config, declaration, monkeypatch, tmp_path):
+    monkeypatch.setattr(entry.os, 'geteuid', lambda: 0)
+    candidate = tmp_path / 'candidate.yml'
+    candidate.write_text('services: {}\n', encoding='utf-8')
+    state = []
+    @contextmanager
+    def lock():
+        state.append('G')
+        yield
+        state.append('release')
+    def read(service, **kwargs):
+        assert state == ['G']
+        return manifest(declaration)
+    def run(argv, check):
+        state.append('run')
+        state.append(argv)
+        return SimpleNamespace(returncode=3)
+    monkeypatch.setattr(entry, 'manager_mutation_lock', lock)
+    monkeypatch.setattr(entry, 'read_current_release', read)
+    monkeypatch.setattr(entry.subprocess, 'run', run)
+    args = _compose_parse('app', '-f', str(candidate), '--', 'up', '-d', '--no-deps', 'api')
+    assert args.func(args) == 3
+    assert state[0] == 'G' and state[1] == 'run' and state[3] == 'release'
+    argv = state[2]
+    current = argv.index('/srv/releases/app-one/images.yml')
+    assert argv[current + 1:] == ['-f', str(candidate), 'up', '-d', '--no-deps', 'api']
+
+
+@pytest.mark.parametrize('extra', ['relative.yml', '/nonexistent/candidate.yml'])
+def test_compose_rejects_unsafe_extra_overlay_before_g(config, monkeypatch, capsys, extra):
+    monkeypatch.setattr(entry.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(entry, 'manager_mutation_lock', Mock(side_effect=AssertionError('G')))
+    monkeypatch.setattr(entry.subprocess, 'run', Mock(side_effect=AssertionError('run')))
+    args = _compose_parse('app', '-f', extra, '--', 'up', '-d')
+    assert args.func(args) == 2
+    assert json.loads(capsys.readouterr().out)['success'] is False
+
+
+def test_compose_rejects_symlink_overlay(config, monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(entry.os, 'geteuid', lambda: 0)
+    target = tmp_path / 'real.yml'
+    target.write_text('services: {}\n', encoding='utf-8')
+    link = tmp_path / 'link.yml'
+    link.symlink_to(target)
+    monkeypatch.setattr(entry, 'manager_mutation_lock', Mock(side_effect=AssertionError('G')))
+    args = _compose_parse('app', '-f', str(link), '--', 'up', '-d')
+    assert args.func(args) == 2
+
+
+def test_compose_requires_root_and_arguments(config, monkeypatch, capsys):
+    monkeypatch.setattr(entry, 'manager_mutation_lock', Mock(side_effect=AssertionError('G')))
+    monkeypatch.setattr(entry.os, 'geteuid', lambda: 0)
+    args = _compose_parse('app')
+    assert args.func(args) == 2
+    monkeypatch.setattr(entry.os, 'geteuid', lambda: 1000)
+    args = _compose_parse('app', '--', 'ps')
+    assert args.func(args) == 2
+    assert 'root' in capsys.readouterr().out
+
+
+def test_compose_missing_shared_pointer_runs_nothing(config, declaration, monkeypatch, capsys):
+    monkeypatch.setattr(entry.os, 'geteuid', lambda: 0)
+    config['targets']['other'] = {}
+    config['service_releases']['other'] = deepcopy(declaration)
+    @contextmanager
+    def lock():
+        yield
+    def read(service, **kwargs):
+        if service == 'other':
+            raise ServiceReleaseError('표지 없음')
+        return manifest(declaration)
+    monkeypatch.setattr(entry, 'manager_mutation_lock', lock)
+    monkeypatch.setattr(entry, 'read_current_release', read)
+    monkeypatch.setattr(entry.subprocess, 'run', Mock(side_effect=AssertionError('run')))
+    args = _compose_parse('app', '--', 'up', '-d')
+    assert args.func(args) == 2
+
+
+def test_compose_g_contention_runs_nothing(config, monkeypatch, capsys):
+    monkeypatch.setattr(entry.os, 'geteuid', lambda: 0)
+    @contextmanager
+    def busy():
+        raise ManagerMutationActiveError('another Manager mutation is active')
+        yield
+    monkeypatch.setattr(entry, 'manager_mutation_lock', busy)
+    monkeypatch.setattr(entry.subprocess, 'run', Mock(side_effect=AssertionError('run')))
+    args = _compose_parse('app', '--', 'up', '-d')
+    assert args.func(args) == 2
