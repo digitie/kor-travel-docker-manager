@@ -55,6 +55,7 @@ Transport의 현재 운영 스크립트는 core/admin 모두 project kor-travel-
     ktdctl service-release compose-args weather --group main --json
     ktdctl service-release compose-args transport --group core --json
     ktdctl service-release compose-args transport --group admin --json
+    sudo ktdctl service-release compose weather -- up -d --no-deps kor-travel-weather-api
 
 one-shot ID는 운영자가 실제 resolved Compose의 로컬 이미지 ID를 확인해 명시한다. API 이미지와 같다고 추정하거나 자동 실행하지 않는다. 모든 필수 one-shot을 지정해야 한다.
 
@@ -63,6 +64,39 @@ adopt는 runtime의 CID/image/start/health를 두 번 읽고 같을 때만 표�
 show는 Docker나 G 없이 표식을 읽는다. verify는 관측만 하며 healthy=exit0, drift=exit1, 잘못된 표식/입력=exit2다. 파일·overlay가 깨졌으면 정상으로 간주하지 않는다.
 
 compose-args는 Docker를 실행하지 않는다. argv 배열과 해당 그룹 runtime_services를 JSON으로 반환한다. 같은 project의 현재 overlay를 서비스명 순서대로 모두 포함한다. 뒤에 붙일 실행 명령·migration·drain·health와 다음 current의 발행은 해당 앱 배포기가 소유한다. 모든 배포기 이관 전에 기존 명령을 자동 대체했다고 보고하지 않는다.
+
+## 호스트 wrapper: `service-release compose`
+
+proposal의 `ktdm-odroid-compose`/`ktdm-transport-compose` 두 스크립트 대신 **하나의 일반 명령**을 쓴다. project·파일·overlay는 catalog와 current에서 유도하고 서비스 이름을 코드에 박지 않는다.
+
+    sudo ktdctl service-release compose <service> [--group G] [-f /abs/extra.yml ...] -- <docker compose 하위 명령...>
+
+- root로만 실행하며 G를 잡은 채 pointer를 읽고 `compose-args`와 같은 argv에 `-f` 추가 파일, `--` 뒤 인자를 붙여 `docker compose`를 실행한다. 종료 코드는 compose의 것을 그대로 돌려준다. G 경합·표지 누락·잘못된 추가 파일이면 Docker를 부르지 않고 exit 2다.
+- 같은 project의 **모든** current overlay를 서비스명 순서로 붙인다. Geo를 다시 만들 때도 Weather overlay가 붙으므로 한쪽 overlay가 빠져 base 기본값으로 되돌아가는 일이 없다.
+- `-f`는 current overlay **뒤**에 붙는다(뒤 파일이 이긴다). 절대 경로의 일반 파일만 받는다(symlink 거절). 후보 이미지나 되돌릴 이전 release의 `images.yml`을 넘기는 자리다.
+- 이 명령은 current를 옮기지 않는다. 표지 갱신은 health 확인 뒤 `adopt --replace-current`가 한다.
+- 읽기 전용 조회(`config`, `ps`)도 G를 잡는다. 배포 중에 조회하려면 G가 필요 없는 `compose-args`를 쓴다.
+
+### 같은 상태로 재생성(정본 recreate)
+
+    sudo ktdctl service-release compose geo -- up -d --no-deps kor-travel-geo-api
+
+Geo/Weather(`kor-travel-odroid` project)의 정본 재생성 명령이다. 이미지는 current overlay의 image ID다. Transport는 운영 env(`RELEASE_SHA` 등)를 배포 스크립트가 셸 env로 덧붙이므로 이 명령으로 재생성하면 환경이 달라질 수 있다. Transport의 재생성 정본은 계속 `scripts/deploy-prod.sh`·`deploy-transport-admin-prod.sh`다.
+
+### 배포(후보 → health → 표지)
+
+1. `ktdctl service-release verify <service>`가 exit 0이어야 시작한다. drift(exit 1)·잘못된 표지(exit 2)면 멈춘다.
+2. 후보 이미지 ID만 담은 overlay를 만든다(`services.<role>.image: sha256:<64hex>`).
+3. `sudo ktdctl service-release compose <service> -f /abs/candidate.yml -- up -d --no-deps <roles...>`로 후보를 띄운다. migration·drain은 앱 배포기가 이 앞뒤에 둔다.
+4. 앱 배포기의 health가 통과한 뒤에만 `sudo ktdctl service-release adopt <service> --confirm --replace-current [--oneshot-image ROLE=sha256:...]`로 실제 runtime을 새 current로 발행한다. 실패하면 current는 이전 release 그대로다.
+
+### 되돌리기
+
+ADR-51대로 DB 호환성을 먼저 판단한다. 호환이면 이전 release(`show`의 `previous`)의 `images.yml`을 `-f`로 넘겨 같은 compose 명령으로 재생성하고, health 뒤 `adopt --replace-current`로 current를 발행한다. 표지를 먼저 되돌리는 절차는 쓰지 않는다.
+
+### 적용 전제
+
+이 명령과 `service-release`는 해당 host에 그것을 포함한 Manager가 **설치된 뒤에만** 쓸 수 있다. 2026-10-28 기준 Odroid 설치본 `f368af3e`에는 `service-release`가 없다(초기 adopt는 별도 root source artifact로 실행). 다음 Odroid 정식 설치 전에는 앱 배포기가 이 명령에 의존하도록 바꾸지 않는다.
 
 ## 적용과 남은 이관
 
