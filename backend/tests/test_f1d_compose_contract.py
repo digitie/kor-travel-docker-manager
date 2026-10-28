@@ -527,6 +527,9 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "v" * 32,
         # ADR-54: PinVi code-server가 공용 plane에 합류해 `x-dagster-shared-control-env`의 필수 키를 해석한다.
         "KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD": "dagster-shared-contract-password",
+        # RustFS root credential은 compose fallback 없이 필수다(`:?`, 공개 기본값 퇴역).
+        "RUSTFS_ACCESS_KEY": "RUSTFSCONTRACTACCESS",
+        "RUSTFS_SECRET_KEY": "rustfs-contract-secret-key-0123456789abc",
         "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
         "KOR_TRAVEL_MAP_API_IMAGE": _MAP_API_IMAGE_ID,
         "KOR_TRAVEL_MAP_DAGSTER_IMAGE": _MAP_DAGSTER_IMAGE_ID,
