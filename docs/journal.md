@@ -2,7 +2,8 @@
 
 - D1–D8을 ADR-60과 기능 레퍼런스로 결정했다. 기존 G와 DB 전진 배포를 보존하고, mixed/unknown source를 표현한다.
 - 현재 runtime ID를 관측하는 adopt/read/verify 및 catalog 기반 CLI·공유 project overlay 인자 생성을 추가한다. runtime 변경 명령은 실행하지 않는다.
-- 코드·리뷰·CI·운영 초기 등록·wrapper 이관은 각각 수용하며, 아직 운영 적용으로 완료 처리하지 않는다.
+- 제품51742949의 독립 리뷰2·focused68·전체CI backend3,514P40S/frontend47 및 build·local Docker CLI10·n150 후보 UI PC18/mobile18을 수용했다. FIFO 지적은 실제 FIFO 회귀로 닫았다.
+- 첫 UI fixture의 NOT_RUN과 동시 편집 중 로컬 전체 pytest 1실패 원장은 보존했다. 운영 초기 등록·wrapper 이관은 미완이며 후보/fixture 결과를 운영 성공으로 바꾸지 않는다.
 
 ## 2026-10-28 — Odroid Manager PG18 호환 설치·공개 UI 수용
 

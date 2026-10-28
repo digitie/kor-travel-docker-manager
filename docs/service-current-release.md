@@ -75,3 +75,13 @@ compose-args는 Docker를 실행하지 않는다. argv 배열과 해당 그룹 r
 ## 검증
 
 backend/tests/test_service_release.py는 경로·소유권·원자 발행·G 경합·runtime singleton/health/drift·one-shot·혼합 source·두 관측 변경을 검증한다. backend/tests/test_service_release_cli.py는 catalog 역할 완전성·host 유도·one-shot 필수 지정·공유 project overlay 누락·CLI confirm/G/Docker 순서를 검증한다.
+
+### 2026-10-28 후보 검증 수용
+
+- 제품 코드 51742949: 독립 적대 리뷰 두 건 수용. FIFO metadata의 blocking open을 O_NONBLOCK으로 바꾸고 실제 FIFO 회귀 두 건으로 닫았다.
+- focused 68건·전체 Ruff 통과. 같은 코드의 GitHub CI는 백엔드 3,514 통과·40 skip, frontend 타입·린트·47테스트·build 통과다.
+- 실제 local Docker CLI 10개: 등록·조회·healthy·인자 출력·멱등성·image drift exit1·명시 재등록/previous·G 경합 exit2를 확인했다. 자기 container/fixture/holder는 정리했고 local CLI가 처음 만든 정상 G 파일은 삭제하지 않았다. 운영 호스트 검증은 아니다.
+- n150 Chromium156에서 PC18+모바일18 항목을 통과했다. 후보 auth/API/SQLite/session/WS는 실제 실행이고 Docker 상태·디스크 입력만 fixture다. 업무 쓰기를 막고 JS/예상 밖 console/request/HTTP 오류0, 임시 server/tunnel/container/DB 정리까지 확인했다. 운영 공개 UI 검증으로 바꾸어 쓰지 않는다.
+- 초기 UI fixture의 private helper import 실패는 NOT_RUN 기록으로 보존했다. 로컬 전체 pytest의 동시 편집 중 실행도 1실패 기록으로 남기고, 동결한 동일 제품 코드의 전체 CI 성공과 구분한다.
+
+운영 adopt와 wrapper/배포기 이관 항목은 이 결과로 완료 처리하지 않는다.

@@ -1,7 +1,7 @@
 ## 2026-10-28 — 이슈 #568 현재 release 정본
 
 - [x] D1–D8 설계 결정과 staged/current·혼합 revision·G·DB rollback 경계를 문서화한다(ADR-60).
-- [ ] 초기 adopt/show/verify/공유 project Compose 인자와 회귀·두 리뷰·CI를 수용한다.
+- [x] 초기 adopt/show/verify/공유 project Compose 인자와 회귀·두 리뷰·CI를 수용했다. focused68·CI3,514P40S·local CLI10·n150 후보 UI36을 확인했다(운영 적용은 다음 항목).
 - [ ] 운영의 현재 image·NVMe·구성을 재관측하고 재시작 없는 adopt 및 resolved image 비교를 수용한다.
 - [ ] 앱 배포기·호스트 wrapper를 이관하고 health 후 current 갱신을 수용한다.
 - [ ] 조회/배포 경로 이관 뒤 base 기본값·옛 dagster-host 중복 선언 제거를 검증한다.
