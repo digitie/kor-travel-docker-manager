@@ -5714,21 +5714,42 @@ class ComposeService:
         keep_stopped = daemon is not None and not daemon["running"] and not daemon["restarting"]
         policy = {"keep_daemon_stopped": True} if keep_stopped else {}
         if not self._shared_plane_current(plane, services, **policy):
-            self._recreate_shared_plane(plane, transaction=runtime_transaction, **policy)
+            self._recreate_shared_plane(
+                plane, services, transaction=runtime_transaction, **policy
+            )
         self._wait_shared_plane_locations(plane, services, wanted, **policy)
 
     def _recreate_shared_plane(
-        self, plane: SharedDagsterPlane, *, transaction: ComposeTransactionSnapshot,
+        self, plane: SharedDagsterPlane, services: Mapping[str, Any], *,
+        transaction: ComposeTransactionSnapshot,
         keep_daemon_stopped: bool = False,
     ) -> None:
-        """plane 서비스만 frozen render로 다시 만든다 — 재구축과 `dagster-plane converge`가 같은 호출을 쓴다."""
+        """plane 서비스만 frozen render로 다시 만든다 — 재구축과 `dagster-plane converge`가 같은 호출을 쓴다.
 
+        render의 이미지가 로컬에 없으면(설치로 plane 이미지 태그가 바뀐 경우) `--build`를 명시한다.
+        Manager는 명시 build가 아닌 명령에서 `build:` 절을 지워 보내므로(build_context_export.py)
+        implicit build에 기대면 Compose가 로컬 전용 태그를 pull하려다 실패한다. 이미지가 있으면
+        빌드하지 않는다.
+        """
+
+        names = (plane.webserver,) if keep_daemon_stopped else plane.services
+        arguments = ["up", "-d", "--no-deps"]
+        if any(not self._rendered_image_present(services[name], label=name) for name in names):
+            arguments.append("--build")
         self._run_pinned_runtime_rebuild_compose(
-            ["up", "-d", "--no-deps", *(
-                (plane.webserver,) if keep_daemon_stopped else plane.services
-            )],
+            [*arguments, *names],
             transaction=transaction,
         )
+
+    def _rendered_image_present(self, render: Mapping[str, Any], *, label: str) -> bool:
+        image = render.get("image")
+        if not isinstance(image, str) or not image:
+            return False
+        try:
+            self._inspect_image_reference_id(image, label=label)
+        except DeploymentContractError:
+            return False
+        return True
 
     @invalidates_status
     def converge_shared_dagster_plane(self, *, dry_run: bool) -> dict[str, Any]:
@@ -5782,7 +5803,7 @@ class ComposeService:
             }
             recreated = any(drift.values()) and not dry_run
             if recreated:
-                self._recreate_shared_plane(plane, transaction=transaction)
+                self._recreate_shared_plane(plane, services, transaction=transaction)
             # 무연산도 health를 본다 — 앞선 실행이 거짓 실패로 끝났거나 plane이 다른 이유로 unhealthy이면 다시 돌린
             # 이 명령이 OK라고 말하지 않는다. dry-run은 어느 결과든 health를 한 번 보고 기다리지 않는다.
             health = self._wait_shared_plane_healthy(plane, services, wait=not dry_run)
