@@ -45,7 +45,7 @@ def test_catalog_uses_actual_app_roles_not_lifecycle_closure(monkeypatch):
     monkeypatch.setenv('KTDM_HOST', 'odroid')
     config = load_targets_config()
     expected = {
-        'geo': {'kor-travel-geo-api', 'kor-travel-geo-ui', 'kor-travel-geo-dagster-code-server'},
+        'geo': {'kor-travel-geo-api', 'kor-travel-geo-ui', 'geo-dagster-code-server'},
         'weather': {'kor-travel-weather-api', 'kor-travel-weather-web', 'kor-travel-weather-dagster-code-server', 'kor-travel-weather-migrate'},
         'transport': {'backend', 'frontend', 'dagster-code-server', 'migrate', 'transport-admin-web', 'transport-api-gateway'},
     }

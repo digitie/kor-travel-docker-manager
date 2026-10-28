@@ -1,3 +1,8 @@
+## 2026-10-28 — 현재 release Geo 운영 Compose 이름 보정
+
+- PR #569 이후 초기 등록 전 읽기 대조에서 Geo 코드서버의 실제 Compose 이름이 geo-dagster-code-server임을 확인했다. release catalog와 역할 완전성 회귀를 운영 경계에 맞췄다. 기존 lifecycle 선언은 바꾸지 않는다.
+- Geo/Weather 실제 label·호스트 base 서비스 이름 및 Transport의 core/admin·활성 migrate/legacy 구분을 재확인했다. 아직 current 파일 발행·runtime 재생성·schedule 변경은 하지 않았다.
+
 ## 2026-10-28 — 이슈 #568 현재 release 표식 설계·초기 등록
 
 - D1–D8을 ADR-60과 기능 레퍼런스로 결정했다. 기존 G와 DB 전진 배포를 보존하고, mixed/unknown source를 표현한다.
