@@ -95,3 +95,19 @@ PR #569와 Geo 운영 Compose 이름 보정 PR #570은 두 독립 리뷰와 각 
 운영 초기 등록의 첫 실제 시도는 `acquire-existing-G`에서 `ManagerMutationActiveError`로 실패했다. Docker 생성·source/current 파일 쓰기는 없었다. 경합 중인 Transport DB 백업·복원 작업이 끝나기를 기다리며 기존 G를 강제로 해제하지 않는다. `manager568-initial-adopt-actual-r1.json`은 실패를 보존한 로컬 감사 참고 파일이며 저장소의 운영 로그나 공개 증거 링크가 아니다.
 
 운영 adopt와 실제 resolved image 비교는 대기 중이다. 이후 초기 등록이 성공해도 wrapper/배포기 이관, 후속 배포의 health 확인과 current 갱신, base 기본값 정리는 별도 수용한다.
+
+### 2026-10-28 운영 초기 등록 결과와 resolved 비교 대기
+
+CLI 소스 `182cbfd`의 root 소유 NVMe source artifact에서 공식 명령으로 Geo·Weather·Transport의 current를 발행했고, 각 verify는 healthy였다. 전후 14개 컨테이너의 CID·image·시작 시각·running과 Manager env hash가 같았다. Manager 설치본·이미지·DB·schedule은 바꾸지 않았다. 세 manifest의 공통 source_sha는 OCI revision 미확정으로 null이며, Transport의 현재 4d 실행을 3f 배포 완료로 해석하지 않는다.
+
+두 번째 실행은 마지막 `compose-args:transport:admin`에서 전체 105초 deadline에 도달해 `TimeoutExpired`로 끝났다(113.438초, 전체 FAIL). 세 초기 등록 성공과 전체 실행 실패를 함께 보존하며 첫 G 경합 실패도 유지한다. `manager568-initial-adopt-actual-r2.json`은 로컬 감사 참고 파일이며 저장소의 운영 로그나 공개 증거 링크가 아니다.
+
+실제 resolved image 비교는 아직 수용하지 않았다. wrapper/배포기 이관과 base 기본값·옛 공용 plane 중복 선언 정리도 계속 별도 미완이다.
+
+### 2026-10-28 운영 초기 등록·소유 이미지 ID 비교 수용
+
+초기 등록 뒤 읽기 전용 검증을 17:30:48–17:32:14 KST에 수행했다(85.917초, exit 0/PASS). 공식 show 세 건·compose-args 네 건과 실제 Compose config를 사용했고 Geo main·Weather main·Transport core/admin의 config는 모두 exit 0, stderr 없음이었다. 소유 역할 13개(runtime 11·one-shot 2)가 모두 manifest·resolved 로컬 이미지·해당 runtime 이미지 기준으로 일치했다. one-shot은 실행 상태를 주장하지 않고 로컬 이미지 존재와 ID만 확인했다.
+
+전후 14개 컨테이너의 CID·image·시작 시각·running과 Manager env hash를 보존했다. 검증 범위는 소유 이미지 ID이며 `nonimage_configuration_verified=false`다. 전체 비이미지 구성 동등성·후속 배포 안전을 수용한 결과가 아니다. `manager568-resolved-config-actual-r1.json`은 로컬 감사 참고 파일이며 저장소의 운영 로그나 공개 증거 링크가 아니다.
+
+앞선 G 경합 실패와 마지막 admin compose-args timeout에 따른 초기 실행 전체 FAIL은 그대로 보존한다. 등록에 사용한 source artifact도 보존하며 Manager 설치본·이미지·DB·schedule은 바꾸지 않았다. 미확정 source_sha null과 Transport 4d 실행은 유지한다. 운영 초기 등록·소유 이미지 ID 대조는 수용하되 wrapper/배포기 이관과 base 기본값·옛 공용 plane 중복 선언 정리는 계속 미완이다.
