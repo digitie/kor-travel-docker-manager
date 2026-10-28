@@ -1,11 +1,13 @@
 # odroid 서비스 "현재 release" 표지 통일 제안 — **이슈 #568 설계 결정 완료**
 
-> **현재 상태: 설계 결정 완료, 초기 등록 CLI 구현·검증 중, 운영 미적용.** 원 제안 작성 시점에는
+> **현재 상태: 설계·CLI 검증 수용 완료(PR #569·#570 병합), 운영 초기 등록 대기·wrapper 이관 미완.** 원 제안 작성 시점에는
 > 코드·호스트 변경 없이 odroid 읽기 전용 조회만 했다(2026-10-28 03:00Z). 현재 정본과 적용 단계는 아래 결정 후 상태를 따른다.
 > weather 한정 선행 제안 `digitie/kor-travel-weather` `docs/reports/2026-10-27-odroid-weather-current-release-pointer.md`
 > (#183)를 odroid의 모든 서비스(weather·geo·transport)로 넓힌 것이다. 합의 논의는 이 저장소 이슈에서 한다.
 
 ## 이슈 #568 결정 후 상태
+
+두 독립 리뷰와 각 PR의 CI 성공을 수용했다. 운영 초기 등록의 첫 실제 시도는 기존 G 경합으로 Docker 생성·파일 쓰기 전에 실패했으며, 다른 운영 작업이 끝나기를 기다린다. CLI 구현 수용은 Manager 설치·current 초기 등록·후속 wrapper 이관 완료와 구분한다.
 
 D1–D8 결정은 [ADR-60의 기능 정본](../service-current-release.md)에 반영했다. 아래 내용은 03:00Z 당시 관측·원 제안으로 보존한다. 현재 구현·실패 모드·미완 적용 단계는 기능 정본을 따른다. 특히 기존 host G를 project 잠금으로 대체하지 않으며, mixed source를 단일 revision으로 발명하지 않고, DB migration 뒤 pointer 선행 rollback을 하지 않는다. 설계 결정이 운영 적용을 뜻하지 않는다.
 

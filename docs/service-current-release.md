@@ -87,3 +87,11 @@ backend/tests/test_service_release.py는 경로·소유권·원자 발행·G 경
 - 초기 UI fixture의 private helper import 실패는 NOT_RUN 기록으로 보존했다. 로컬 전체 pytest의 동시 편집 중 실행도 1실패 기록으로 남기고, 동결한 동일 제품 코드의 전체 CI 성공과 구분한다.
 
 운영 adopt와 wrapper/배포기 이관 항목은 이 결과로 완료 처리하지 않는다.
+
+### 2026-10-28 병합 후 운영 초기 등록 대기
+
+PR #569와 Geo 운영 Compose 이름 보정 PR #570은 두 독립 리뷰와 각 PR의 CI 성공을 거쳐 병합됐다. 이는 CLI 구현·검증 수용이며 Manager 운영 설치나 current 초기 등록 완료를 뜻하지 않는다.
+
+운영 초기 등록의 첫 실제 시도는 `acquire-existing-G`에서 `ManagerMutationActiveError`로 실패했다. Docker 생성·source/current 파일 쓰기는 없었다. 경합 중인 Transport DB 백업·복원 작업이 끝나기를 기다리며 기존 G를 강제로 해제하지 않는다. `manager568-initial-adopt-actual-r1.json`은 실패를 보존한 로컬 감사 참고 파일이며 저장소의 운영 로그나 공개 증거 링크가 아니다.
+
+운영 adopt와 실제 resolved image 비교는 대기 중이다. 이후 초기 등록이 성공해도 wrapper/배포기 이관, 후속 배포의 health 확인과 current 갱신, base 기본값 정리는 별도 수용한다.
