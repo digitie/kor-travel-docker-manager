@@ -1,3 +1,9 @@
+## 2026-10-28 — 현재 release 코드 수용과 운영 초기 등록 대기
+
+- PR #569와 Geo 운영 Compose 이름 보정 PR #570을 병합했고, 두 독립 리뷰와 각 PR의 CI 성공을 수용했다. CLI 구현·검증 수용과 운영 설치·초기 등록·후속 wrapper 이관은 각각 구분한다.
+- 운영 초기 등록의 첫 실제 시도는 `acquire-existing-G`에서 `ManagerMutationActiveError`로 실패했다. Docker 생성·source/current 파일 쓰기 전에 멈췄다. 경합 중인 Transport DB 백업·복원 작업을 존중하며 잠금을 강제로 풀지 않고 대기한다.
+- `manager568-initial-adopt-actual-r1.json`은 이 시도의 로컬 감사 참고 파일이며 저장소에 포함한 운영 로그나 공개 증거 링크가 아니다. 운영 adopt·resolved image 비교·wrapper/배포기 이관은 계속 미완이다. 아래 후보 검증과 과거 기록은 보존한다.
+
 ## 2026-10-28 — 현재 release Geo 운영 Compose 이름 보정
 
 - PR #569 이후 초기 등록 전 읽기 대조에서 Geo 코드서버의 실제 Compose 이름이 geo-dagster-code-server임을 확인했다. release catalog와 역할 완전성 회귀를 운영 경계에 맞췄다. 기존 lifecycle 선언은 바꾸지 않는다.
