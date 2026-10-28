@@ -1,3 +1,17 @@
+## 2026-10-28 — 현재 release 운영 초기 등록과 소유 이미지 ID 비교 수용
+
+- 세 서비스 초기 등록 뒤 공식 show·compose-args와 실제 Compose config로 Geo main·Weather main·Transport core/admin 네 그룹을 대조했다. 17:30:48–17:32:14 KST, 85.917초·exit 0/PASS이며 네 config의 exit는 모두 0이고 stderr는 비어 있었다.
+- 소유 역할 13개(runtime 11·one-shot 2)의 resolved 로컬 이미지·manifest·실행 이미지가 해당 역할 기준으로 모두 일치했다. one-shot은 실행을 요구하지 않고 로컬 이미지 존재·ID만 대조했다. 전후 14개 컨테이너와 Manager env hash가 같았다. 검증은 소유 이미지 ID에 한정하며 전체 비이미지 구성 동등성은 확인하지 않았다.
+- `manager568-resolved-config-actual-r1.json`과 앞선 `manager568-initial-adopt-actual-r2.json`은 로컬 감사 참고 파일이며 저장소의 운영 로그나 공개 증거 링크가 아니다. 초기 실행의 G 경합 실패와 마지막 admin compose-args timeout에 따른 전체 FAIL은 아래 역사에 보존한다.
+- Manager 설치본·이미지·DB·schedule은 바꾸지 않았고 source artifact와 감사 참고 파일은 보존했다. OCI 미확정 source_sha null과 Transport 4d 실행을 유지하며 3f 배포 완료를 주장하지 않는다. 운영 초기 등록·소유 이미지 ID 대조만 수용하고 wrapper/배포기 이관·base 정리는 미완으로 남긴다.
+
+## 2026-10-28 — 현재 release 세 서비스 초기 등록과 후속 검증 대기
+
+- Geo·Weather·Transport의 각 current를 발행했고 공식 verify는 세 서비스 모두 healthy였다. root 소유 NVMe source artifact의 CLI 소스 `182cbfd`를 사용했으며 Manager 설치본은 바꾸지 않았다.
+- 두 번째 실행은 마지막 `compose-args:transport:admin`에서 전체 105초 deadline에 도달해 `TimeoutExpired`로 끝났고, 113.438초·전체 FAIL로 기록했다. 세 초기 등록의 성공과 전체 실행의 실패를 구분하며, 첫 G 경합 FAIL도 아래 역사에 보존한다.
+- 전후 14개 컨테이너의 CID·image·시작 시각·running과 Manager env hash가 같았다. 이미지 교체·DB·schedule 변경은 없으며, 세 manifest의 공통 source_sha는 OCI revision을 확정하지 못해 null로 기록했다. Transport의 실행은 4d 그대로이며 3f 배포 완료를 뜻하지 않는다.
+- `manager568-initial-adopt-actual-r2.json`은 로컬 감사 참고 파일이며 저장소의 운영 로그나 공개 증거 링크가 아니다. 실제 resolved image 비교는 아직 수용하지 않았고 wrapper/배포기 이관·base 정리도 미완으로 남긴다.
+
 ## 2026-10-28 — 현재 release 코드 수용과 운영 초기 등록 대기
 
 - PR #569와 Geo 운영 Compose 이름 보정 PR #570을 병합했고, 두 독립 리뷰와 각 PR의 CI 성공을 수용했다. CLI 구현·검증 수용과 운영 설치·초기 등록·후속 wrapper 이관은 각각 구분한다.
