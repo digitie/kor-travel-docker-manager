@@ -4305,17 +4305,6 @@ class ComposeService:
             touched: set[str] = set()
             for argv in (["up", "-d", *services], *(list(step.get("command") or []) for step in plan["resolved_init_steps"])):
                 touched |= self._compose_touched_services(argv, transaction.resolved)
-            # Compose에 나가는 문서는 명시 build가 아니면 `build:` 절이 없다(build_context_export.py). 그래서
-            # 내용 해시 태그(`kor-travel-dagster-host`)처럼 로컬에서만 만드는 이미지가 없으면 `--build`를 명시한다 —
-            # 예전 implicit build와 같은 결과를, 정규화한 context 사본으로 낸다. 이미지가 있으면 빌드하지 않는다.
-            if not build:
-                rendered_services = transaction.resolved.get("services") or {}
-                build = any(
-                    isinstance(rendered_services.get(name), Mapping)
-                    and "build" in rendered_services[name]
-                    and not self._rendered_image_present(rendered_services[name], label=name)
-                    for name in sorted(touched)
-                )
             ensure_preflight(
                 transaction.resolved,
                 sorted(touched),
