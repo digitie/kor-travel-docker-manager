@@ -527,6 +527,9 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "v" * 32,
         # ADR-54: PinVi code-server가 공용 plane에 합류해 `x-dagster-shared-control-env`의 필수 키를 해석한다.
         "KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD": "dagster-shared-contract-password",
+        # RustFS root credential은 compose fallback 없이 필수다(`:?`, 공개 기본값 퇴역).
+        "RUSTFS_ACCESS_KEY": "RUSTFSCONTRACTACCESS",
+        "RUSTFS_SECRET_KEY": "rustfs-contract-secret-key-0123456789abc",
         "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
         "KOR_TRAVEL_MAP_API_IMAGE": _MAP_API_IMAGE_ID,
         "KOR_TRAVEL_MAP_DAGSTER_IMAGE": _MAP_DAGSTER_IMAGE_ID,
@@ -2433,7 +2436,7 @@ def test_every_dagster_code_server_binds_loopback_only() -> None:
 # import 끊김, 로더 우회 어느 쪽이든 빨개진다.
 
 #: ADR-53 뒤 Map DB가 사는 공용 instance의 PGDATA bind.
-_MAP_PGDATA_BIND_KEY = ("kor-travel-shared-postgres", "/var/lib/postgresql/data", False)
+_MAP_PGDATA_BIND_KEY = ("kor-travel-shared-postgres", "/var/lib/postgresql/18/docker", False)
 
 
 def _patched_allowlist(
@@ -2499,7 +2502,7 @@ def test_deployment_validation_rejects_a_forbidden_host_source(
     assert isinstance(services, dict)
     service = services["kor-travel-shared-postgres"]
     assert isinstance(service, dict)
-    service["volumes"] = ["/etc:/var/lib/postgresql/data"]
+    service["volumes"] = ["/etc:/var/lib/postgresql/18/docker"]
 
     patched = dict(load_compose_bind_allowlist())
     patched[_MAP_PGDATA_BIND_KEY] = "/etc"
@@ -2530,7 +2533,7 @@ def test_deployment_validation_rejects_binding_the_allowlist_itself(
     assert isinstance(services, dict)
     service = services["kor-travel-shared-postgres"]
     assert isinstance(service, dict)
-    service["volumes"] = [f"{targets_config}:/var/lib/postgresql/data"]
+    service["volumes"] = [f"{targets_config}:/var/lib/postgresql/18/docker"]
 
     patched = dict(load_compose_bind_allowlist())
     patched[_MAP_PGDATA_BIND_KEY] = targets_config
@@ -5935,7 +5938,7 @@ def test_an_exec_pg_isready_probe_with_arguments_passes(tmp_path: Path) -> None:
     postgres["healthcheck"] = {
         "test": [
             "CMD",
-            "/usr/lib/postgresql/16/bin/pg_isready",
+            "/usr/lib/postgresql/18/bin/pg_isready",
             "-h",
             "127.0.0.1",
             "-p",

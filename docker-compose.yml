@@ -218,7 +218,7 @@ services:
   kor-travel-shared-postgres:
     # 호스트별 이미지(ADR-58 결정 9·R6, T-MGR-03). 기본값은 n150의 digest 핀 그대로다 — 이 index에는 amd64만 있어(2026-10-16
     # 레지스트리 조회) arm64 호스트(odroid)는 root `.env`의 `KTDM_POSTGRES_IMAGE`로 arm64 이미지를 준다.
-    image: ${KTDM_POSTGRES_IMAGE:-postgis/postgis:16-3.5@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40}
+    image: ${KTDM_POSTGRES_IMAGE:-postgis/postgis:18-3.6@sha256:4a43e3c3e5d55b9208240fc71db543b79c638766280c625a425bd0a2390989c4}
     container_name: ${KOR_TRAVEL_SHARED_POSTGRES_CONTAINER:-kor-travel-shared-postgres}
     restart: unless-stopped
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -321,7 +321,11 @@ services:
     secrets:
     - kor-travel-shared-postgres-password
     volumes:
-    - ${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}:/var/lib/postgresql/data
+    # PG18 공식 이미지는 PGDATA 기본값을 `/var/lib/postgresql/18/docker`(이미지 VOLUME `/var/lib/postgresql`)로 바꿨다.
+    # `PGDATA` env로 옛 자리를 되살리는 것은 C6c 계약이 금지하므로(데이터 재배치 = fresh initdb 경로) bind 대상을 새
+    # 기본 자리로 옮긴다 — 호스트 경로는 그대로다. 옛 자리(`/var/lib/postgresql/data`)에 bind하면 18 entrypoint가
+    # "old database" 오류로 기동을 거부한다. 16→18은 `pg_upgrade --link`(2026-10-27, §12).
+    - ${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}:/var/lib/postgresql/18/docker
     ports:
     - 127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}:${KOR_TRAVEL_SHARED_DB_PORT:-11000}
     # **exec 형식으로 binary를 직접 부른다(ADR-52).** CMD-SHELL은 dash가 명령을 exec하지
@@ -333,7 +337,7 @@ services:
     healthcheck:
       test:
       - CMD
-      - /usr/lib/postgresql/16/bin/pg_isready
+      - /usr/lib/postgresql/18/bin/pg_isready
       - -h
       - 127.0.0.1
       - -p
@@ -352,7 +356,7 @@ services:
   # 다른 -db-init one-shot을 추가한다(위 서비스 주석 참고) — role/ACL은 database가
   # 아니라 cluster 전역이라는 ADR-37의 교훈을 그대로 지킨다.
   kor-travel-shared-db-init-concierge:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_CONCIERGE_CONTAINER:-kor-travel-shared-db-init-concierge}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -425,7 +429,7 @@ services:
   # false) 30일 뒤 DROP한다. 여기 남아 있으면 DROP 뒤 매 `ensure`가 빈 DB를 되살린다
   # (`backend/tests/test_old_dagster_meta_db_retired.py`). weather·pinvi·transport db-init도 같다.
   kor-travel-shared-db-init-geo:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_GEO_CONTAINER:-kor-travel-shared-db-init-geo}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -490,7 +494,7 @@ services:
   # 그래서 그 모델을 폐기하고 geo 패턴으로 접었다 — role 분리 대신 scoped role
   # 하나(NOSUPERUSER/NOCREATEDB/NOCREATEROLE)와 CONNECT 격리로 경계를 잡는다.
   kor-travel-shared-db-init-pinvi:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_PINVI_CONTAINER:-kor-travel-shared-db-init-pinvi}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -556,7 +560,7 @@ services:
   # PGHOST 127.0.0.1 + network_mode: host 규약으로 처음부터 새로 짠 것이다
   # (ADR-47 — weather internal-target 전환).
   kor-travel-shared-db-init-weather:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_WEATHER_CONTAINER:-kor-travel-shared-db-init-weather}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -624,7 +628,7 @@ services:
   # DAGSTER_POSTGRES_URL도 이 통합에 맞춰 함께 바꿔야 한다(Manager 쪽만 바꾸면
   # 소비 컨테이너는 여전히 예전 role로 붙는다).
   kor-travel-shared-db-init-transport:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_TRANSPORT_CONTAINER:-kor-travel-shared-db-init-transport}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -697,7 +701,7 @@ services:
   # 쪽에 적힌다) — 이 설치가 공용 instance의 재생성을 걸어 두지 않는다. 재실행은
   # onboarding §7.3대로 `--no-deps`로, drift guard가 MATCH일 때만 한다.
   kor-travel-shared-db-init-dagster:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_DAGSTER_CONTAINER:-kor-travel-shared-db-init-dagster}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -1091,8 +1095,8 @@ services:
     command:
     - /data
     environment:
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       RUSTFS_VOLUMES: /data
       RUSTFS_ADDRESS: 0.0.0.0:${RUSTFS_API_CONTAINER_PORT:-12101}
       RUSTFS_CONSOLE_ENABLE: 'true'
@@ -1123,8 +1127,8 @@ services:
     environment:
       RUSTFS_ENDPOINT: http://${KTDM_RUSTFS_INIT_HOST:-127.0.0.1}:${RUSTFS_API_CONTAINER_PORT:-12101}
       RUSTFS_API_CONTAINER_PORT: ${RUSTFS_API_CONTAINER_PORT:-12101}
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       PINVI_RUSTFS_BUCKET: ${PINVI_RUSTFS_BUCKET:-pinvi-media}
       KOR_TRAVEL_GEO_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KRTOUR_MAP_RUSTFS_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
@@ -1160,8 +1164,8 @@ services:
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
-      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       KTG_RUSTFS_LOCAL_IMPORT_ROOTS: /data
       KTG_VWORLD_API_KEY: ${KOR_TRAVEL_GEO_VWORLD_API_KEY:-}
       KTG_PUBLIC_API_KEY_CACHE_TTL_S: ${KOR_TRAVEL_GEO_PUBLIC_API_KEY_CACHE_TTL_S:-30}
@@ -1286,8 +1290,8 @@ services:
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       RUSTFS_PUBLIC_BASE_URL: http://127.0.0.1:${RUSTFS_API_PORT:-12101}/${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}
       RUSTFS_CONSOLE_URL: http://127.0.0.1:${RUSTFS_CONSOLE_PORT:-12105}/rustfs/console/
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       RUSTFS_BUCKET_RAW_VIDEOS: ${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}
       RUSTFS_BUCKET_SUBTITLES: ${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}
       RUSTFS_BUCKET_FRAMES: ${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}
@@ -1338,8 +1342,8 @@ services:
       DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       MCP_TRANSPORT: streamable-http
       MCP_HOST: 0.0.0.0
       MCP_PORT: '${KOR_TRAVEL_CONCIERGE_MCP_PORT:-12602}'
@@ -1383,8 +1387,8 @@ services:
       DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       APP_ENV: ${KOR_TRAVEL_CONCIERGE_APP_ENV:-local}
       API_AUTH_ENABLED: ${KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED:-false}
       API_KEYS: ${KOR_TRAVEL_CONCIERGE_API_KEYS:-}
@@ -1435,8 +1439,8 @@ services:
       DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       APP_ENV: ${KOR_TRAVEL_CONCIERGE_APP_ENV:-local}
       API_AUTH_ENABLED: ${KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED:-false}
       API_KEYS: ${KOR_TRAVEL_CONCIERGE_API_KEYS:-}
@@ -1726,8 +1730,8 @@ services:
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
-      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       KOR_TRAVEL_MAP_OBJECT_STORE_PUBLIC_BASE_URL: ${KTDM_PROD_URL_S3_API:-http://127.0.0.1:${RUSTFS_API_PORT:-12101}}/${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
@@ -1879,8 +1883,8 @@ services:
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
-      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
       KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
@@ -1984,8 +1988,8 @@ services:
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
-      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
       KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
@@ -2091,8 +2095,8 @@ services:
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
-      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
       KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
@@ -2148,8 +2152,8 @@ services:
       PINVI_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       PINVI_RUSTFS_PUBLIC_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_PORT:-12101}
       PINVI_RUSTFS_BUCKET: ${PINVI_RUSTFS_BUCKET:-pinvi-media}
-      PINVI_RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      PINVI_RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      PINVI_RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      PINVI_RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       PINVI_CORS_ALLOWED_ORIGINS: '${PINVI_CORS_ALLOWED_ORIGINS:-["http://127.0.0.1:12805","http://localhost:12805"]}'
       # PinVi production Settings는 import 시 이 Map capability pair를 검증한다.
       PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL: ${PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}
@@ -2663,8 +2667,8 @@ services:
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
-      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       # T-290 on-ramp (kor-travel-geo #444): op execution happens in this container now
       # (T-307), including the scheduled_backup Dagster run that calls the geo admin API
       # (POST /v1/admin/backups/scheduled/run-due) and must present the admin proxy
@@ -2745,8 +2749,8 @@ services:
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
-      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       # T-290 on-ramp (kor-travel-geo #444): the scheduled_backup Dagster run calls the
       # geo admin API (POST /v1/admin/backups/scheduled/run-due) and must present the
       # admin proxy secret the API expects, else the run-due call 403s.
@@ -2862,8 +2866,8 @@ services:
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
-      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       # T-290 on-ramp (kor-travel-geo #444): the daemon shares the code-location image
       # and can execute the scheduled_backup run, which calls the geo admin API
       # (POST /v1/admin/backups/scheduled/run-due). It must present the admin proxy

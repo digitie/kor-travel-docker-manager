@@ -161,7 +161,7 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
    - 목적: 미디어 자원과 `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi 원천·업로드 데이터 보관을 위한 공용 S3 호환 오브젝트 스토리지.
    - host 포트: `12101` (S3 API), `12105` (어드민 콘솔).
    - host 및 host-network 프로세스 listen 포트: `12101` (S3 API), `12105` (어드민 콘솔).
-   - 개발용 Compose fallback credential: `RUSTFS_ACCESS_KEY=rustfsadmin`, `RUSTFS_SECRET_KEY=rustfsadmin`.
+   - Compose fallback credential 없음: `RUSTFS_ACCESS_KEY`·`RUSTFS_SECRET_KEY`는 root `.env`에 반드시 둔다(`:?` — 공개 기본값 `rustfsadmin` 퇴역, 2026-10-28). 로컬 개발도 임의 값을 생성해 넣는다.
      운영에서는 반드시 루트 `.env`의 별도 값으로 덮어쓴다.
    - 기본 bucket: `pinvi-media`, `kor-travel-geo`, `kor-travel-concierge`, `krtour-map`, `krtour-uploads`.
 3. **Grafana**:
