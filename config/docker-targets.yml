@@ -562,6 +562,8 @@ targets:
         kor-travel-geo-api:
           KTG_DAGSTER_URL: internal
           KTG_DAGSTER_PUBLIC_URL: public
+        kor-travel-geo-dagster-code-server:
+          KTG_DAGSTER_URL: internal
 
   conc:
     host: n150

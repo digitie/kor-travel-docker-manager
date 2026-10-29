@@ -1178,7 +1178,7 @@ services:
       # 공용 Dagster webserver(ADR-54, loopback 전용 — `dagster_allowed_hosts`의 127.0.0.1). geo의 summary·
       # run 조회·launch는 `dagster_repository_location_name`(= `kortravelgeo_dagster.definitions`)으로 좁혀
       # 부른다(geo #569) — 공용 plane의 다른 테넌트가 섞이지 않는다.
-      KTG_DAGSTER_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
+      KTG_DAGSTER_URL: &geo-dagster-internal-url http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
       # geo scheduled DB backup (kor-travel-geo T-239, wired 2026-08-18 for issue #177). The API
       # decides run-due (ENABLED/INTERVAL); the Dagster containers execute db_backup and stamp
       # expires_at (TTL) — set the SAME values on geo-api, geo-dagster and geo-dagster-daemon.
@@ -2646,6 +2646,8 @@ services:
       # `kor_travel_geo_dagster`)은 4단계(platform-topology.md §7)에서 지웠다 — geo 이미지의 entrypoint는 빈 값을
       # 허용한다(`ktg-dagster-entrypoint`의 `check_storage_url`).
       <<: *dagster-shared-control-env
+      # 준비 worker의 하위 적재 제출도 API와 같은 공용 주소를 사용한다.
+      KTG_DAGSTER_URL: *geo-dagster-internal-url
       # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
       # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
       # heartbeat를 걷어낸 사고) — 그러면 멀쩡한 자식이 내려가 location이 끊긴다. 600초는 그런 급등을 넘기면서,
