@@ -1634,3 +1634,25 @@ def test_the_shared_map_api_allows_only_the_loopback_dagster_hosts() -> None:
     raw = _environment(compose["services"]["kor-travel-map-api"])["KOR_TRAVEL_MAP_API_DAGSTER_ALLOWED_HOSTS"]
     assert "${" not in str(raw), raw
     assert set(json.loads(str(raw))) == {"127.0.0.1", "localhost", "::1"}
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [{}, {"KOR_TRAVEL_DAGSTER_WEBSERVER_PORT": "13402"}],
+    ids=["default", "custom-shared-port"],
+)
+def test_geo_code_server_nested_launch_uses_shared_endpoint(
+    environment: dict[str, str],
+) -> None:
+    """하위 적재를 제출하는 Geo worker도 공용 Dagster 주소를 명시한다."""
+    compose, targets = _documents()
+    spec = targets["targets"]["geo"]
+    code_servers = _code_servers(compose, spec)
+    assert len(code_servers) == 1
+    service_name = next(iter(code_servers))
+    consumers = spec["dagster"]["consumers"]
+    assert consumers.get(service_name, {}).get("KTG_DAGSTER_URL") == "internal"
+
+    expected = _resolve(_plane(compose, targets)["internal_raw"], environment)
+    declared = code_servers[service_name]["environment"].get("KTG_DAGSTER_URL", "")
+    assert _resolve(declared, environment) == expected
