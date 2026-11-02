@@ -582,14 +582,18 @@ def test_shared_daemon_six_minute_interval_does_not_clip_health_start_window(
 
 
 @pytest.mark.parametrize("daemon_state", ["stopped", "running", "missing", "restarting"])
-@pytest.mark.parametrize("stale_webserver", [False, True])
+@pytest.mark.parametrize("stale_webserver", [False, True, "logs"])
 def test_pinned_rebuild_preserves_an_existing_stopped_daemon(
     harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
-    daemon_state: str, stale_webserver: bool,
+    daemon_state: str, stale_webserver: bool | str,
 ) -> None:
     service, plane, state = harness.service, harness.plane, harness.state
     state.stale = {name: False for name in plane.services}
-    state.stale[plane.webserver] = stale_webserver
+    if stale_webserver == "logs":
+        # ADR-61 뒤 첫 재구축: 둘 다 로그 설정만 옛것이다 — 멈춘 daemon은 그대로 두고 webserver만 다시 만든다.
+        state.log_stale = {name: True for name in plane.services}
+    else:
+        state.stale[plane.webserver] = stale_webserver
     original_inspect = service._inspect_plane_container
     running = {"daemon": daemon_state == "running"}
     rebuilt = {"done": False}
@@ -610,6 +614,7 @@ def test_pinned_rebuild_preserves_an_existing_stopped_daemon(
         for name in args:
             if name in state.stale:
                 state.stale[name] = False
+                state.log_stale[name] = False
             if name == plane.daemon:
                 running["daemon"] = True
                 rebuilt["done"] = True
@@ -728,6 +733,43 @@ def test_a_different_logging_driver_is_stale(harness: SimpleNamespace) -> None:
 
     for name in harness.plane.services:
         assert result["drift"][name] == ["logging driver: running local != rendered json-file"]
+
+
+def _with_running_log_config(harness: SimpleNamespace, change: Any) -> None:
+    real = harness.service._inspect_plane_container
+
+    def changed(container_name: str, *, label: str) -> Any:
+        observed = dict(real(container_name, label=label))
+        observed["log_config"] = change(observed["log_config"])
+        return observed
+
+    harness.service._inspect_plane_container = changed
+
+
+def test_options_docker_merged_from_daemon_defaults_are_not_drift(harness: SimpleNamespace) -> None:
+    """Docker는 `daemon.json` `log-opts`·log cache 기본값을 컨테이너에 합쳐 싣는다 — 그것을 세면 재구축마다 plane을 다시
+    만든다(적대 리뷰 MED). render가 말한 option만 본다."""
+
+    harness.state.stale = {name: False for name in harness.plane.services}
+    _with_running_log_config(
+        harness, lambda log: (log[0], {**log[1], "compress": "true", "cache-disabled": "false"})
+    )
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=False)
+
+    assert result["outcome"] == "current" and harness.state.compose_calls == []
+
+
+@pytest.mark.parametrize("unreadable", [None, ["json-file", {}], ("json-file", None)])
+def test_an_unreadable_log_config_is_refused_not_recreated(
+    harness: SimpleNamespace, unreadable: Any
+) -> None:
+    harness.state.stale = {name: False for name in harness.plane.services}
+    _with_running_log_config(harness, lambda _log: unreadable)
+
+    with pytest.raises(DeploymentContractError, match="log config"):
+        harness.service.converge_shared_dagster_plane(dry_run=False)
+    assert harness.state.compose_calls == []
 
 
 def test_a_render_without_logging_does_not_compare_it(harness: SimpleNamespace) -> None:

@@ -8,6 +8,9 @@
   무시·재구축 경로·inspect 파싱. 컨테이너를 흉내 내는 두 대역(converge·rebuild 하네스)은 render의 `logging`으로 만든 LogConfig를
   싣도록 고쳤다 — 안 고치면 대역이 계약 변경을 가린다.
 - 효과·중단 시간·preflight·odroid 주의는 `docs/prod-deployment.md` §11. gateway는 이 경로 밖이라 그대로다(4 KB).
+- 적대 리뷰(HIGH 없음, MED 1·LOW 3·NIT 2) 반영: option 대조를 render 쪽 한 방향으로 바꿨다(Docker가 daemon `log-opts`·log
+  cache 기본값을 합쳐 넣으면 양방향 대조는 다시 만들어도 drift가 남아 재구축마다 plane을 다시 만든다). 로그 설정을 읽을 수
+  없거나 모양이 틀리면 재생성 대신 거부한다. 멈춘 daemon + 로그만 옛것 사례, 문서의 "함께"(동시 재생성)·converge 기다림 약 7.5분.
 
 ## 2026-11-03 — 상시 서비스 json-file 로그 상한(ADR-61)
 

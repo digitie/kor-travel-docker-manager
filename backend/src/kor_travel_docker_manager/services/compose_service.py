@@ -2344,6 +2344,14 @@ def _plane_log_config_drift(rendered: object, observed: object) -> list[str]:
     보지 않는다. driver를 말하지 않으면 options만 본다(driver는 daemon 기본값). options는 Docker가 문자열 그대로
     싣는다(`docker compose config --format json`의 값도 문자열이다). 이유에는 driver 이름과 다른 option **이름**만
     싣는다 — driver option에는 주소·토큰이 올 수 있다.
+
+    **한 방향으로만 본다**: render가 말한 option이 같은 값으로 있으면 된다. 컨테이너에만 있는 option은 무시한다 —
+    Docker는 만들 때 `daemon.json`의 `log-opts`(driver가 daemon 기본과 같을 때)와 log cache 기본값을 합쳐 싣는다.
+    그것까지 세면 다시 만들어도 drift가 남아 재구축마다 plane을 다시 만든다(적대 리뷰 2026-11-03 MED). render에서 지운
+    option은 compose의 config hash가 다룬다.
+
+    컨테이너의 로그 설정을 읽을 수 없으면 거부한다(fail-closed, `_inspect_plane_container`와 같다) — 재생성 사유로
+    삼으면 다시 만들어도 판정할 수 없어 매번 다시 만든다.
     """
 
     if rendered is None:
@@ -2353,19 +2361,20 @@ def _plane_log_config_drift(rendered: object, observed: object) -> list[str]:
     options = rendered.get("options") or {}
     if not isinstance(options, Mapping):
         return ["render logging is invalid"]
-    if observed is None:
-        return ["logging config is not readable"]
-    running_driver, running_options = cast(tuple[str, Mapping[str, str]], observed)
+    if (
+        not isinstance(observed, tuple)
+        or len(observed) != 2
+        or not isinstance(observed[0], str)
+        or not isinstance(observed[1], Mapping)
+    ):
+        raise DeploymentContractError("cannot read the shared plane container's log config")
+    running_driver, running_options = observed
     reasons: list[str] = []
     driver = rendered.get("driver")
     if driver is not None and str(driver) != running_driver:
         reasons.append(f"logging driver: running {running_driver or '-'} != rendered {driver}")
     wanted = {str(key): str(value) for key, value in options.items()}
-    differing = sorted(
-        key
-        for key in set(wanted) | set(running_options)
-        if wanted.get(key) != running_options.get(key)
-    )
+    differing = sorted(key for key, value in wanted.items() if running_options.get(key) != value)
     if differing:
         reasons.append("logging options differ: " + ", ".join(differing))
     return reasons

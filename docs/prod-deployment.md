@@ -1350,11 +1350,15 @@ Manager 변경 기계는 기존 G와 frozen bind 재검증을 사용한다. 외�
 | UI/API 컨테이너 설정 변경·reset(`update_container_config`·`reset_container_config`) | 그 서비스 하나(`up -d --force-recreate --no-deps`) | 이전부터 늘 다시 만들던 경로다(이 변경과 무관하게). production에서 허용된다. 공용 PostgreSQL에도 닿는다 — `CHECKPOINT`도 창 확인도 없으므로 **공용 PostgreSQL에는 쓰지 않는다** |
 | `compose-boundary activate-concierge` | Concierge 네 서비스 | `--force-recreate`라 원래 다시 만든다 — 상한을 받는다 |
 
-**설치 뒤 첫 재구축(또는 `dagster-plane converge --confirm`)의 plane 단계**: 공용 webserver와 daemon을 차례로 다시 만든다.
-둘 다 `stop_grace_period`가 없어 Docker 기본 10초 안에 멈추고, 새 컨테이너는 이미지·설정이 그대로라 곧바로 뜬다. 예상
-중단은 서비스마다 **1~2분**(webserver: workspace를 다시 실을 때까지 Dagster UI·GraphQL 불가, healthcheck `start_interval`
-5s; daemon: 그동안 스케줄·sensor·run queue dequeue·run monitoring이 멈춤, healthcheck `start_interval` 45s)이고, 기다림의 상한은
-render healthcheck에서 파생한 945초다(넘으면 재구축은 실패로 멈추고 converge는 종료 코드 2). **진행 중 run은 끊기지 않는다** —
+**설치 뒤 첫 재구축(또는 `dagster-plane converge --confirm`)의 plane 단계**: 공용 webserver와 daemon을 한 `up` 호출로
+**함께** 다시 만든다(서로 의존하지 않아 compose가 동시에 다룬다 — UI와 스케줄러가 같은 시각에 내려간다). 둘 다
+`stop_grace_period`가 없어 Docker 기본 10초 안에 멈추고, 새 컨테이너는 이미지·설정이 그대로라 곧바로 뜬다. 예상 중단은
+**1~2분**(webserver: workspace를 다시 실을 때까지 Dagster UI·GraphQL 불가, healthcheck `start_interval` 5s; daemon: 그동안
+스케줄·sensor·run queue dequeue·run monitoring이 멈춤, healthcheck `start_interval` 45s)이다. `converge`는 두 healthcheck가
+healthy가 될 때까지 기다린다 — daemon이 `start_period` 90초 안에 healthy가 못 되면 다음 probe가 360초 뒤라 그 기다림은 약
+7.5분까지 늘 수 있다(중단 자체가 길어지는 것은 아니다). 기다림의 상한은 render healthcheck에서 파생한 945초다(넘으면 재구축은
+실패로 멈추고 converge는 종료 코드 2). 로그 설정 대조는 render가 말한 option만 본다 — Docker가 daemon 기본값에서 합쳐 넣은
+option은 drift가 아니다(그래야 다시 만든 뒤 무연산이 된다). 컨테이너 로그 설정을 읽을 수 없으면 거부한다. **진행 중 run은 끊기지 않는다** —
 run worker는 daemon이 아니라 각 code-server 컨테이너 안에서 돈다(`x-dagster-code-server-probe` 주석). 그 1~2분에 걸린 schedule
 tick·queue는 daemon이 다시 뜬 뒤 처리되거나 밀릴 수 있다. n150 `~/preflight.sh rebuild`는 Map·PinVi location(`kortravelmap|pinvi`)의
 STARTED/STARTING run이 있으면 시작을 막는다 — 같은 재구축이 Map·PinVi code-server를 다시 만들기 때문이다. Concierge run은 막지
