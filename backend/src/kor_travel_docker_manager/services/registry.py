@@ -213,7 +213,7 @@ def _assert_trusted_parents(path: Path) -> None:
 def _read_targets_bytes(path: str) -> bytes:
     """targets 문서를 **검증된 descriptor**로 읽는다.
 
-    `legacy_override_retirement._read_legacy_import_bytes`에서 **열기 방식만** 가져왔다:
+    옛 legacy override 이관의 `_read_legacy_import_bytes`(2026-11-02 제거)에서 **열기 방식만** 가져왔다:
     `O_NOFOLLOW`로 열고 경로가 아니라 **열린 fd를** `fstat`한다. 경로를 두 번
     보면(검사 한 번, 열기 한 번) 그 사이에 바꿔치기할 수 있다.
 

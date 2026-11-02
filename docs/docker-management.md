@@ -597,34 +597,12 @@ prod 전환 순서는 다음과 같다.
    200+`Set-Cookie`, 잘못된 비밀번호가 401인지 확인한다.
 2. Concierge 관리 UI/API에서 소비자·owner·발급일을 식별할 수 있는 label로 DB `read` scope 키를
    발급하고, DB에는 hash만 남았으며 발급 audit가 기록됐는지 확인한다.
-3. manager의 gitignore된 prod `.env`는 mode `0600`으로 유지한다. legacy
-   `docker-compose.override.yml`가 남아 있으면 수동 편집·삭제·`docker compose` 실행을 하지 않는다.
-   trusted `/opt` release는 canonical Compose execution root이고 home checkout은 runtime source가 아니다.
-   먼저 root-owned `0600` final legacy override와 고정 sibling Concierge `.env`를
-   `ktdctl compose-boundary stage-legacy-override --source <absolute-path> --confirm`으로 protected C6c
-   state에 snapshot한 뒤, `ktdctl compose-boundary retire-legacy-override --confirm`으로 그 staged 입력의
-   알려진 Geo backup과 Concierge UI source만 이관한다. stage는 Docker/Compose를 호출하거나 home source를
-   삭제하지 않으며 이후 retire/retry도 home 경로를 다시 읽지 않는다. retire는 candidate `.env`를 원자
-   갱신하기 전에 stage 명령은 legacy `env_file`이 exact sibling source의 구형 상대 문자열 또는 exact sibling `path`와 boolean
-   `required: true`만 든 Compose 장형 mapping 한 항목인지 확인한다. 장형의 `format`은 `raw`일 때만 허용하며 다른
-   path·key·format·optional source는 fail-close한다.
-   staged Concierge source가 `API_KEYS`, `APP_ENV`, `API_AUTH_ENABLED`를 전혀 선언하지 않을 때만 각각 이미 있는
-   canonical root `KOR_TRAVEL_CONCIERGE_*` 값을 사용한다. source에서 이 값을 선언했다면 빈 값도 포함해 source 값이
-   필수이며, `KTC_*` UI 인증·session·proxy·origin 값에는 root fallback이 없다. 최종 API key-set/backend key
-   membership·`production`·authentication-enabled 검증은 동일하게 수행한다.
-   candidate의 raw/resolved C6c 검증과 정확한 네 Concierge service recreate는 trusted canonical Compose에서
-   Concierge API/MCP/Dagster code server/UI와 전이 `depends_on`, 실제 참조한 top-level entity만 추린 root-owned 일시 projection을
-   함께 쓴다. 따라서 아직 materialize하지 않은 Map/PinVi candidate의 explicit guard를 억지로 해석하지 않으며,
-   그 candidate의 값·Compose source·runtime을 Concierge retirement에 유입시키지 않는다.
-   retire는 candidate `.env`를 원자
-   갱신하고 canonical `/opt` Compose를 출력 없이 검증한 뒤에만 같은 protected state 안의 pending snapshot을
-   owner-only archive로 옮긴다. n150의 rebuild 정본은 `rehearsal/rebuildable` mode이므로 stage/retire는 이를
-   PinVi production·Map principal-required contract와 함께 재검증하고 `rebuild-pinned`·pin 회전·M05·installer와
-   같은 host 변경 lock(`/run/lock/kor-travel-docker-manager/global-mutation.lock`, ADR-51 C-2)으로 직렬화한다.
-   lock을 다른 변경이 쥐고 있으면 기다리지 않고 `cannot acquire the Manager mutation lock: ...`으로 종료 코드 2를
-   낸다. mode를 수동으로 production으로 바꾸거나 caller가 project root/state root/lock path를
-   지정할 수 없다. read 키는 `.env`의 단일 변수에만 저장하며 override에 Map API·Dagster·daemon key/base URL
-   literal을 새로 만들지 않는다.
+3. manager의 gitignore된 prod `.env`는 mode `0600`으로 유지한다. trusted `/opt` release는 canonical
+   Compose execution root이고 home checkout은 runtime source가 아니다. `docker-compose.override.yml`는 쓰지 않는다
+   — 옛 legacy override는 2026-08-26 1회성 `stage/retire-legacy-override`로 root `.env`에 이관을 마쳤고 그 두 명령은
+   2026-11-02에 지웠다. Concierge 재생성의 공식 경로는 `ktdctl compose-boundary activate-concierge --confirm` 하나다
+   (아래 6·8, prod-deployment §7). read 키는 `.env`의 단일 변수에만 저장하며 Map API·Dagster·daemon key/base URL
+   literal을 다른 파일에 만들지 않는다.
 4. Dagster·Dagster daemon을 재생성한다. 과거 배포에서 map API에 같은 환경변수가 들어갔다면
    map API도 한 번 재생성해 과거 secret을 제거한다. map API에는 해당 key env가 없음을 확인한다.
    `.env`와 두 수집기 컨테이너의 값을 한 프로세스 안에서 constant-time 비교해
@@ -640,19 +618,18 @@ prod 전환 순서는 다음과 같다.
    가리키는지 확인한다. 데이터가 2페이지보다 적다면 cursor 검증을 합격으로 처리하지 않는다.
 6. 기존 static 키가 BFF와 공유돼 있으면 먼저 BFF/operator key를 회전한다. 새 static admin 키를
    `KOR_TRAVEL_CONCIERGE_API_KEYS=old,new`와 `KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY=new`에 함께
-   반영한다. C6c와 이관 명령은 backend key가 allowlist의 exact member인지 값 비노출으로 검증한다.
+   반영한다. C6c는 backend key가 allowlist의 exact member인지 값 비노출으로 검증한다.
    Concierge API는 `KOR_TRAVEL_CONCIERGE_APP_ENV=production` 및
    `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`를 root authority로 명시해야 하며, 이 둘이 local/false이면
-   이관 명령이 실패한다.
-   이관 명령이 deployment lock 안에서 API/MCP/Dagster code server/UI를 canonical single-file source로 재생성한 뒤 실제 로그인
-   POST와 BFF 호출을 다시 확인한다. canonical rehearsal/rebuildable과 production 모두 고정 host 변경 lock
-   (`global-mutation.lock`)을 사용한다(ADR-51 C-2). 재생성만 재시도해야 하면
-   `ktdctl compose-boundary activate-concierge --confirm`을 사용한다. production의 일반 `ensure`는 이 경로에 사용할 수 없다.
+   C6c 검증이 재생성 전에 실패한다.
+   `ktdctl compose-boundary activate-concierge --confirm`이 deployment lock 안에서 API/MCP/Dagster code server/UI를
+   canonical single-file source로 재생성한 뒤 실제 로그인 POST와 BFF 호출을 다시 확인한다. canonical
+   rehearsal/rebuildable과 production 모두 고정 host 변경 lock(`global-mutation.lock`)을 사용한다(ADR-51 C-2).
+   production의 일반 `ensure`는 이 경로에 사용할 수 없다.
 7. 모든 smoke가 통과한 뒤에만 `KOR_TRAVEL_CONCIERGE_API_KEYS=new`으로 구 static 키를 제거하고
-   API/MCP/scheduler를 재생성한다. 구 키 401, 새 admin 키의 내부 API 200, read 키의 공급 GET 200·
+   API/MCP/Dagster code server를 재생성한다. 구 키 401, 새 admin 키의 내부 API 200, read 키의 공급 GET 200·
    내부/write 403, UI 로그인 200+`Set-Cookie`를 다시 확인한다.
-8. 성공 시 key/cookie 임시 파일을 즉시 삭제한다. 이관 뒤 override는 owner-only archive로 남아 있으므로
-   수동 restore 대상으로 쓰지 않는다. 실패 시 root `.env`에서 구 static 키를 allowlist에 임시 재등록하고
+8. 성공 시 key/cookie 임시 파일을 즉시 삭제한다. 실패 시 root `.env`에서 구 static 키를 allowlist에 임시 재등록하고
    `ktdctl compose-boundary activate-concierge --confirm`으로 API/MCP/Dagster code server/UI를 재생성하며 incident와 조치
    시점만 기록한다.
 

@@ -1,3 +1,19 @@
+## 2026-11-02 — 1회성 legacy override 이관 명령(stage/retire) 제거
+
+- 소유자 지시로 `ktdctl compose-boundary stage-legacy-override`·`retire-legacy-override`와 그 코드(override·Concierge
+  source `.env` snapshot, root `.env` 이관, archive, Geo backup 값 이관, `_GEO_SERVICES`)를 지웠다. 이관은 2026-08-26
+  n150에서 한 번 끝났고(C6c state의 `legacy-compose-override/`에 archive 하나, pending 없음 — 읽기 전용 확인) 그 뒤로
+  쓴 적이 없다.
+- 남은 `compose-boundary activate-concierge`는 배포 뒤 재생성과 Concierge 운영 rollback(`.env` 이미지 변수를 직전
+  이미지로 바꾼 뒤 실행)이 쓰는 경로라 그대로 둔다. 모듈은 `services/concierge_activation.py`(오류
+  `ConciergeActivationError`)로 옮겼고 동작은 같다 — root·고정 project root·G lock·projection·raw/resolved C6c
+  검증·네 서비스 `--no-deps --force-recreate --no-build`. 바뀐 것: (1) 없어진 pending stage 검사를 뺐다, (2) lock 안에서
+  root `.env` 모드를 다시 확인한다, (3) lock 획득 실패만 "cannot acquire the Manager mutation lock"으로 부르고 안쪽
+  계약 위반은 따로 부른다(종전에는 안쪽 `DeploymentContractError`도 lock 경합으로 보고됐다).
+- 테스트는 activation만 남기고(재생성 서비스 집합·projection·C6c drift·API auth 하향·재생성 실패·`.env` 모드·lock
+  경합·root 경계) CLI가 두 명령을 더 이상 받지 않음을 단언한다. ADR-54 `own` 지문에서는 `geo_override_services`
+  항목만 빠졌다(의도한 변경).
+
 ## 2026-11-02 — 옛 Concierge APScheduler(`legacy-scheduler` profile) 제거
 
 - 소유자 지시("concierge 레거시는 모두 삭제")로 compose의 `kor-travel-concierge-scheduler`(profile `legacy-scheduler`, `ktc.cli scheduler`)와 그 registry container 항목·`unowned_services` 예외·`.env.example`의 `KOR_TRAVEL_CONCIERGE_SCHEDULER_{IMAGE,CONTAINER}`를 지웠다. ADR-55 이후 Concierge 스케줄은 공용 Dagster code location(`ktc.dagster.definitions`) 하나가 갖고, 그 서비스는 기본 runtime·어느 target에도 없는 rollback 전용이었다. n150 컨테이너는 2026-10-06부터 멈춰 있었고 root `.env`에는 그 키가 없다.

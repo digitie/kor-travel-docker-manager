@@ -599,7 +599,7 @@ api/`는 빈 결과다 — **CLI/API 표면은 v1 표와 동일**하다(M05 PR�
 | `action <container> start\|stop\|restart` | 컨테이너 제어 | `POST /containers/{id}/action` | Start/Stop/Restart 버튼 |
 | `inspect <container> [--json]` | inspect 요약 | `GET /containers/{id}/inspect` | `ContainerDetailModal` 5개 탭 |
 | `pinvi-pair rebuild-pinned --confirm [--json]` | Map·PinVi 7개 runtime destructive 재구축([v3 명확화] Manager가 **build**하는 image는 Map UI+PinVi 3종의 4개뿐 — Map API·Dagster image는 sealed paired candidate가 공급하며 generation 결박 대상은 7 runtime 전부), `rehearsal/rebuildable` 조합 아니면 거부 | 없음 | 없음 |
-| `compose-boundary stage/retire/activate --confirm` | legacy Compose override 이관(1회성) | 없음 | 없음 |
+| `compose-boundary stage/retire/activate --confirm` | legacy Compose override 이관(1회성). 2026-11-02 갱신: stage/retire는 이관을 마쳐 지웠고 `activate-concierge`(Concierge 네 runtime 재생성 — 배포·rollback)만 남았다 | 없음 | 없음 |
 | `db-backup create/list/gc` | pg_dump 백업 생성/조회/정리 | `list`만 `GET /api/v1/backups?role=` | `BackupHistoryPanel`(읽기 전용) |
 
 그 외 API 전체 표면: `api/admin.py`(login-audit-events, public-api-keys GET/POST/DELETE),

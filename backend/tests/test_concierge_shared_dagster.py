@@ -60,7 +60,7 @@ def test_existing_locations_keep_their_limits_and_concierge_has_bounded_lanes():
 
 
 def test_canonical_activation_matches_default_concierge_runtime():
-    from kor_travel_docker_manager.services.legacy_override_retirement import (
+    from kor_travel_docker_manager.services.concierge_activation import (
         _CONCIERGE_RECREATE_SERVICES,
         _concierge_compose_projection_document,
     )

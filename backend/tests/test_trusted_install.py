@@ -17,7 +17,7 @@ from kor_travel_docker_manager import cli
 from kor_travel_docker_manager.services import (
     c6c_deployment,
     compose_service,
-    legacy_override_retirement,
+    concierge_activation,
     runtime_execution_registry,
     runtime_pair_rotation,
     runtime_pin_registry,
@@ -98,7 +98,7 @@ def test_compose_service_root_check_delegates_to_the_shared_function(
         (c6c_deployment, "_DEFAULT_C6C_PRODUCTION_STATE_ROOT", TRUSTED_STATE_ROOT),
         (c6c_deployment, "_C6C_PRODUCTION_STATE_ROOT", TRUSTED_STATE_ROOT),
         (
-            legacy_override_retirement,
+            concierge_activation,
             "_TRUSTED_PRODUCTION_PROJECT_ROOT",
             TRUSTED_INSTALL_ROOT,
         ),

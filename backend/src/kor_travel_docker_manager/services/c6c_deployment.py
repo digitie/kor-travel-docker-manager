@@ -3672,7 +3672,7 @@ def validate_concierge_ui_canonical_compose_boundary(
     *,
     environment: Mapping[str, str],
 ) -> None:
-    """legacy override 퇴역 전 Concierge UI/API C6c raw·resolved 경계를 함께 검증한다."""
+    """Concierge 재생성(`compose-boundary activate-concierge`) 전 UI/API C6c raw·resolved 경계를 함께 검증한다."""
 
     candidate_services = candidate.get("services")
     resolved_services = resolved.get("services")

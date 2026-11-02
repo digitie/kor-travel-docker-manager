@@ -379,7 +379,7 @@ False라 daemon은 STARTED run의 worker 생사를 묻지 않고 `max_runtime`(�
      비-root 이미지에서 흔히 깨진다, Map 2026-09-11), (2) op pool 이름이 테넌트 접두를 단다. (3) dagster 가족
      버전이 호스트 이하다(버전 상한). (4) instigator 켜짐 상태는 코드에 선언한다(D4). (5) 코드가 옛
      webserver·daemon·gateway 이름을 literal로 들지 않는다. pinned 재구축의 slot·build·candidate tag, C6c
-     필수·런타임·secret isolation 집합, 이미지 보존, M05, 옛 override 이관은 `services/runtime_topology.py`가
+     필수·런타임·secret isolation 집합, 이미지 보존, M05(옛 override 이관은 2026-11-02 제거)는 `services/runtime_topology.py`가
      렌더된 모델(설치된 release의 reference compose + `docker-targets.yml`)과 이 스위치에서 파생한다 —
      `shared`면 옛 서비스는 어떤 실행 집합에도 없고 carrier인 code-server가 그 자리를 잇는다(env 계약은
      profile로 내려간 옛 서비스에도 그대로 걸린다). 계약 테스트는 옮기는 target의 옛 서비스 이름이

@@ -348,7 +348,7 @@ Map이 M1(`51ee65d4c`, ADR-102)을 포함하는 것이다 — M1 이후 storage 
   쓰는 것은 n150에서 실측했다(`--project-directory <link>` → bind source `<link>/cfg`, `sys.prefix` 유지).
 - **resolve하지 않는 자리**(compose 프로젝트 루트가 되는 경로): 재구축 root(`trusted_pinned_runtime_project_root`),
   환경 snapshot의 compose·override 경로(frozen `config`의 `--project-directory`가 된다), canonical `up`의
-  `--project-directory`, legacy override retirement의 project context(Compose cwd·`--file`·projection 임시 파일).
+  `--project-directory`, legacy override retirement(2026-11-02부터 `concierge_activation`)의 project context(Compose cwd·`--file`·projection 임시 파일).
   하나라도 풀리면 상대 bind source가 `/opt/ktdm-release-<sha>`로 굳어 설치마다 컨테이너가 재생성되고 GC 뒤
   재시작에서 깨진다. 비교하는 쪽은 양쪽을 다 푼다 — 재구축 경로 가드, operator bind의 backend 소스 가드
   (한쪽만 풀던 것이라 symlink root에서 조용히 fail-open했다), candidate volume graph(원래 양쪽 다 풀었다).
@@ -966,6 +966,8 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
      **해제(같은 날, 후속 PR):** 그 참조는 전부 `services/runtime_topology.py`가 렌더된 모델(설치된 release의 reference
      compose·targets)과 스위치에서 파생한다 — `shared`면 옛 서비스는 어떤 실행 집합에도 없고 carrier인 code-server가
      slot을 잇는다. 모두 `own`이면 이름·집합·tag·호출 순서가 글자까지 같다. 게이트는 되돌아옴을 막는 문으로 남는다.
+     (2026-11-02 갱신: `legacy_override_retirement`의 1회성 stage/retire와 `_GEO_SERVICES`는 지웠고, 남은 Concierge
+     재생성 경로는 `services/concierge_activation.py`다.)
    - **포트는 literal.** `shared` code-server의 `-p`는 literal이어야 한다 — workspace는 정적 파일이라 `.env`의 포트
      override를 모른다. 계약 테스트가 요구하고 참조 전환이 literal로 바꾼다.
    - **옛 공개 host(b).** 활성 서비스가 옮긴 target의 옛 공개 host env(그 target 옛 서비스 컨테이너의 `prod_url_env`,
