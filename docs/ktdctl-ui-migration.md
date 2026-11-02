@@ -587,7 +587,7 @@ v1 작성 이후 M05 계열 PR(#238–#242)이 merge됐지만 `git log b467c02..
 api/`는 빈 결과다 — **CLI/API 표면은 v1 표와 동일**하다(M05 PR들은 전부 rebuild 내부
 변경: pin 회전, builder 실패 분류, base-image preflight). `ktdctl`은
 `build_parser()`(`backend/src/kor_travel_docker_manager/cli.py:260-418`)가 등록하는
-**13개 leaf 명령**(기본 6 + `pinvi-pair rebuild-pinned` + `compose-boundary` 3 +
+**13개 leaf 명령**(기본 6 + `pinvi-pair rebuild-pinned` + `compose-boundary` 3(2026-11-02부터 1 — stage/retire 제거) +
 `db-backup` 3)으로 구성된다.
 
 | ktdctl 명령 | 하는 일 | API 노출 | UI 노출 |
@@ -918,7 +918,8 @@ human/machine 클래스 구분(machine은 절대 비출력, human은 TTY 1회 �
   이력 0회" 게이트**를 요구한다(KUM-M2 선행). production 모드 호스트에서 필요한 것은
   여전히 버튼이 아니라 전제조건 체크리스트(락 상태·pinned SHA·generation phase —
   전부 P1/P2 데이터) + 붙여넣을 SSH 명령(P7-E)이다.
-- **`compose-boundary` 3종** — mutation의 UI화는 투자 보류 유지. **[v3 보강]** 단 이
+- **`compose-boundary` 3종**(2026-11-02 갱신: 이관을 마친 stage/retire는 지웠고 activate-concierge만 남았다)
+  — mutation의 UI화는 투자 보류 유지. **[v3 보강]** 단 이
   3일 창에 6커밋·~4,000줄이 투입된 활성 작업이었고, 실측 사건에서 legacy override
   존재가 승인된 rebuild 전체를 막은 P1 blocker였다(진단 5-③). 이관 진행 상태
   (staged/retired/activated)는 root-only 증거 디렉터리(`.retired-compose-overrides/`)

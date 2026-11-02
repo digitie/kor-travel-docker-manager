@@ -612,7 +612,7 @@ ADR-51 B3에서 지웠다. 다만 `.env` 파일을 다시 쓰는 것이므로, r
 `/run/lock/kor-travel-docker-manager/global-mutation.lock`(G) 하나를 지난다
 (`manager_mutation_lock_path`, ADR-51 C-2·C-3). 경로는 `.env` 파일 값으로 정하고 프로세스
 환경으로 채우지 않는다 — 단 프로세스 환경의 모드가 명시적으로 local이 아니면 G다(더 엄격하게만). UI의 컨테이너 조작·설정·초기화,
-관리자 비밀번호 변경, `ktdctl compose-boundary` stage/retire/activate, `ktdctl pin`
+관리자 비밀번호 변경, `ktdctl compose-boundary activate-concierge`, `ktdctl pin`
 mutator, 재구축·M05·installer launcher가 전부 같은 lock이다(일부러 뺀 것 — 백업·offbox
 동기화·핀 요청 제안·transport 컨테이너 — 은 `docs/decisions.md` ADR-51 "C 범위"). 경합이면
 기다리지 않고 거절한다 — API는 409 `MANAGER_MUTATION_ACTIVE`, CLI는 종료 코드 2다.

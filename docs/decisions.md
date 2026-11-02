@@ -186,7 +186,7 @@ API는 409 `MANAGER_MUTATION_ACTIVE`. 예외는 비root 개발용 `local`의 `$H
 - launcher: `run-pinned-rebuild-once`(재구축), `run-m05-isolated-e2e-once`(M05), trusted installer.
 - `ktdctl pin` mutator(rotate·rotate-pair·apply-pending·rollback·block·init …), `rebuild-pinned`.
 - `ktdctl compose-boundary` stage·retire·activate-concierge — C-2 전 rehearsal은 pinned lease
-  P만 잡았다.
+  P만 잡았다(2026-11-02 갱신: 1회성 stage·retire는 지웠고 activate-concierge만 남았다).
 - backend API의 Manager 자기 프로젝트 컨테이너 조작·설정·초기화·compose 저장, frozen recovery —
   C-2 전 rehearsal은 실행 사용자 `$HOME` 락을 잡고 있었다(모드 검사에서 거절되긴 했지만 락은
   G와 무관했다).

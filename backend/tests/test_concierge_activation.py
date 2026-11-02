@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import fcntl
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
 
@@ -21,6 +23,7 @@ from kor_travel_docker_manager.services.concierge_activation import (
     ConciergeActivationError,
     activate_canonical_concierge,
 )
+from kor_travel_docker_manager.services.errors import DeploymentContractError
 
 _RECREATED = [
     "kor-travel-concierge-api",
@@ -362,6 +365,52 @@ def test_activation_refuses_a_readable_root_environment(tmp_path: Path, mode: in
         activate_canonical_concierge(
             project_root=root,
             compose_config_runner=_must_not_run,  # type: ignore[arg-type]
+            compose_up_runner=_must_not_run,  # type: ignore[arg-type]
+            require_root=False,
+        )
+
+
+def test_activation_rechecks_the_root_environment_inside_the_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """lock을 기다리는 사이 `.env`가 느슨해지면 lock 안의 재검사가 Compose 전에 멈춘다."""
+
+    root, root_env = _canonical_tree(tmp_path)
+
+    @contextmanager
+    def loosening_lock(_path: str) -> Iterator[None]:
+        root_env.chmod(0o644)
+        yield
+
+    monkeypatch.setattr(activation_module, "c6c_deployment_lock", loosening_lock)
+
+    with pytest.raises(ConciergeActivationError, match="unsafe ownership or mode"):
+        activate_canonical_concierge(
+            project_root=root,
+            compose_config_runner=_must_not_run,  # type: ignore[arg-type]
+            compose_up_runner=_must_not_run,  # type: ignore[arg-type]
+            require_root=False,
+        )
+
+
+def test_activation_does_not_report_an_inner_contract_error_as_lock_contention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, _root_env = _canonical_tree(tmp_path)
+
+    def raising(*_args: object, **_kwargs: object) -> None:
+        raise DeploymentContractError("inner contract")
+
+    monkeypatch.setattr(
+        activation_module, "validate_concierge_ui_canonical_compose_boundary", raising
+    )
+
+    with pytest.raises(
+        ConciergeActivationError, match="^canonical Concierge contract check failed: inner contract$"
+    ):
+        activate_canonical_concierge(
+            project_root=root,
+            compose_config_runner=_valid_config_runner,
             compose_up_runner=_must_not_run,  # type: ignore[arg-type]
             require_root=False,
         )
