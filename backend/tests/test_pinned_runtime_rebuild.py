@@ -1774,6 +1774,18 @@ def _forward_harness(
             "entrypoint": (
                 None if render.get("entrypoint") is None else [docker(w) for w in render["entrypoint"]]
             ),
+            # Docker가 render의 `logging`으로 만든 `HostConfig.LogConfig`(ADR-61). 옛 컨테이너는 daemon 기본값이다.
+            "log_config": (
+                (
+                    str((render.get("logging") or {}).get("driver") or "json-file"),
+                    {
+                        str(k): str(v)
+                        for k, v in ((render.get("logging") or {}).get("options") or {}).items()
+                    },
+                )
+                if live["plane_current"]
+                else ("json-file", {})
+            ),
             "running": True,
             "restarting": bool(live["plane_restarting"]),
         }
