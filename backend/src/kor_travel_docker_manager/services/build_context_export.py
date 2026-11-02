@@ -9,7 +9,9 @@
 * 이 명령이 **명시적으로 빌드하는** 서비스(``build`` 명령, ``--build``): context를 Manager state
   아래 임시 디렉터리의 사본으로 바꾼다. 사본에는 Docker가 보낼 것(그 context의 ignore 파일이
   거르지 않은 것)만 담고, 디렉터리는 ``0755``, 파일은 ``0644``(owner 실행 비트가 있으면
-  ``0755``)로 둔다 — ``git archive``(``tar.umask=0022``)가 만드는 mode와 같다.
+  ``0755``)로 둔다 — ``git archive``(``tar.umask=0022``)가 만드는 mode와 같다. 이미지에는 사본으로
+  바꾸기 전 ``build`` 절의 digest를 label(``COMPOSE_BUILD_INPUT_LABEL``)로 싣는다 — 태그를 재사용하는
+  쪽이 "이 이미지가 지금 입력(보간이 풀린 build arg 포함)으로 빌드됐는가"를 이미지에서 읽게 한다.
 * 그 밖의 서비스: ``build`` 절을 지운다. 이미지가 없으면 Compose는 운영 디렉터리에서 조용히
   빌드하는 대신 실패한다(implicit build 금지). Compose의 config hash는 ``build``를 보지 않으므로
   재생성 판단은 바뀌지 않는다.
@@ -22,6 +24,8 @@ ignore 판정은 BuildKit이 context를 보낼 때 쓰는 moby/patternmatcher
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import posixpath
 import re
@@ -47,6 +51,25 @@ _OPEN_FILE = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOC
 
 #: 한 경로에서 각 규칙이 맞았는가. 자식은 부모의 결과를 물려받는다(``MatchesUsingParentResults``).
 MatchInfo = tuple[bool, ...]
+
+#: Manager가 빌드한 이미지가 싣는 label — 그 이미지를 만든 compose ``build`` 절의 digest.
+COMPOSE_BUILD_INPUT_LABEL = "io.kor-travel-docker-manager.compose-build-sha256"
+
+
+def compose_build_input_sha256(build: Mapping[str, Any]) -> str:
+    """resolved compose ``build`` 절 하나의 digest(context·dockerfile·target·보간이 풀린 args …).
+
+    Compose가 builder에 넘기는 입력 그대로다 — `.env`에서 온 build arg(``NEXT_PUBLIC_*``)가 바뀌면
+    값이 바뀐다. context *내용*은 담지 않는다(그것은 호출자가 소스 revision으로 고정한다).
+    """
+
+    try:
+        canonical = json.dumps(
+            build, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        )
+    except (TypeError, ValueError) as exc:
+        raise DeploymentContractError("compose build section cannot be digested") from exc
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -315,6 +338,20 @@ def _copy_regular_file(name: str, directory_fd: int, target: Path) -> None:
         os.close(source_fd)
 
 
+def _label_build_inputs(name: str, build: dict[str, Any]) -> None:
+    """빌드할 이미지에 이 build 절의 digest를 label로 싣는다 — context를 사본으로 바꾸기 **전** 절이다."""
+
+    digest = compose_build_input_sha256(build)
+    labels = build.get("labels")
+    if labels is None:
+        labels = {}
+    elif isinstance(labels, list):
+        labels = {key: value for key, _, value in (str(item).partition("=") for item in labels)}
+    elif not isinstance(labels, dict):
+        raise DeploymentContractError(f"compose service {name} build labels are unreadable")
+    build["labels"] = {**labels, COMPOSE_BUILD_INPUT_LABEL: digest}
+
+
 def compose_document_with_exported_build_contexts(
     document: Mapping[str, Any],
     *,
@@ -344,6 +381,7 @@ def compose_document_with_exported_build_contexts(
         build = service["build"]
         if not isinstance(build, dict):
             raise DeploymentContractError(f"compose service {name} build is unreadable")
+        _label_build_inputs(name, build)
         context_value = build.get("context")
         if isinstance(context_value, str) and _REMOTE_CONTEXT.match(context_value):
             continue

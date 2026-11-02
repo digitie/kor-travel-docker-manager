@@ -27,6 +27,10 @@ from kor_travel_docker_manager.services import (
     pinned_runtime_rebuild as pinned_runtime_rebuild_module,
 )
 from kor_travel_docker_manager.services import runtime_topology as runtime_topology_module
+from kor_travel_docker_manager.services.build_context_export import (
+    COMPOSE_BUILD_INPUT_LABEL,
+    compose_build_input_sha256,
+)
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
     DeploymentContractError,
@@ -1518,6 +1522,10 @@ def _committed_status(
     return DeployStatus(**fields)
 
 
+def _compose_build_digest(resolved: Mapping[str, Any], service: str) -> str:
+    return compose_build_input_sha256(resolved["services"][service]["build"])
+
+
 def _forward_harness(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1606,6 +1614,20 @@ def _forward_harness(
         }
     )
     resolved_services.update(plane_resolved)
+    # compose가 빌드하는 네 slot은 render에 build 절이 있다(보간이 풀린 args) — 재사용 판정이 그것을 본다.
+    for slot in COMPOSE_BUILT_RUNTIME_SLOTS:
+        built_service = topology.require_service(slot)
+        resolved_services[built_service] = {
+            **cast(dict[str, object], resolved_services[built_service]),
+            "build": {
+                "context": f"/state/{built_service}",
+                "dockerfile": f"docker/{built_service}.Dockerfile",
+                "args": {"NEXT_PUBLIC_VWORLD_API_KEY": "current-key"},
+            },
+        }
+    candidate_names = CandidateRuntimeBuild(
+        _sources(), map_candidate, topology=topology
+    ).image_names
     deployed_images = ComposeService._deployed_images(candidate, companions, topology)
     transaction = SimpleNamespace(
         environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
@@ -1644,6 +1666,17 @@ def _forward_harness(
         # 떠 있는 plane 컨테이너가 frozen render와 같은가(True면 `up`하지 않는다), 그리고 서비스별 덮어쓰기.
         "plane_current": False,
         "plane_overrides": {},
+        # candidate 태그 → 그 이미지가 실은 compose build 입력 digest label(없는 태그·label 없는 이미지는 빠진다).
+        "candidate_build_labels": (
+            {
+                candidate_names[slot]: _compose_build_digest(
+                    transaction.resolved, topology.require_service(slot)
+                )
+                for slot in COMPOSE_BUILT_RUNTIME_SLOTS
+            }
+            if images_present
+            else {}
+        ),
     }
     operations: list[tuple[str, ...]] = []
     readiness_requests: list[tuple[str, ...]] = []
@@ -1670,9 +1703,19 @@ def _forward_harness(
         retention_candidate=Mock(),
     )
 
+    tag_for_service = {
+        topology.require_service(slot): candidate_names[slot] for slot in COMPOSE_BUILT_RUNTIME_SLOTS
+    }
+
     def run_compose(arguments: list[str], *, transaction: object) -> dict[str, object]:
-        del transaction
         operations.append(tuple(arguments))
+        if arguments[0] == "build":
+            # 효과: 빌드된 이미지는 그 render의 build 절 digest를 label로 싣는다(build_context_export).
+            resolved = cast(Any, transaction).resolved
+            for built in arguments[1:]:
+                live["candidate_build_labels"][tag_for_service[built]] = _compose_build_digest(
+                    resolved, built
+                )
         return {"success": True, "stdout": ""}
 
     def require_ready(
@@ -1803,6 +1846,7 @@ def _forward_harness(
         "_build_map_application_300_images": mocks.paired_builder,
         "_load_application_300_candidate": Mock(return_value=map_candidate),
         "_local_image_present": lambda _image: images_present,
+        "_local_image_compose_build_sha256": lambda image: live["candidate_build_labels"].get(image),
         "_run_pinned_runtime_static_command": Mock(return_value="{}"),
         "parse_candidate_static_head": Mock(return_value="head"),
         "build_candidate_generation": lambda **_kwargs: candidate,
@@ -2204,6 +2248,137 @@ def test_existing_candidate_images_are_not_rebuilt(
 
     harness.mocks.paired_builder.assert_not_called()
     assert not any(operation[0] == "build" for operation in harness.operations)
+
+
+def test_a_changed_compose_build_input_rebuilds_only_that_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-11-02 VWorld 키 교체: 같은 pair에서 `.env`의 build arg만 바꾸면 pinset 태그가 그대로라
+    재구축이 다시 빌드하지 않았다(운영자가 UI 후보 태그를 손으로 지웠다). 이제 render의 build 절이
+    이미지가 실은 입력과 다르면 그 서비스만 다시 빌드한다."""
+
+    candidate = _candidate_generation()
+    harness = _forward_harness(
+        monkeypatch, tmp_path, previous=_committed_status(candidate), images_present=True
+    )
+    resolved = harness.transaction.resolved["services"]
+    for changed in ("kor-travel-map-ui", "pinvi-web"):
+        resolved[changed]["build"]["args"]["NEXT_PUBLIC_VWORLD_API_KEY"] = "rotated-key"
+
+    harness.service.rebuild_pinned_runtime()
+
+    builds = [operation for operation in harness.operations if operation[0] == "build"]
+    assert builds == [("build", "kor-travel-map-ui", "pinvi-web")]
+    harness.mocks.paired_builder.assert_not_called()
+
+
+def test_a_candidate_image_without_the_build_input_label_is_rebuilt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """label 이전에 빌드된 태그(입력을 말하지 않는 이미지)는 재사용하지 않는다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path, images_present=True)
+    harness.live["candidate_build_labels"].clear()
+
+    harness.service.rebuild_pinned_runtime()
+
+    builds = [operation for operation in harness.operations if operation[0] == "build"]
+    assert builds == [("build", *COMPOSE_BUILT_RUNTIME_SERVICES)]
+
+
+def test_a_build_that_does_not_stamp_the_current_inputs_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """빌드 뒤에도 이미지가 지금 입력을 싣지 않으면 그 이미지로 배포하지 않는다 — 다음 재실행이 또
+    빌드하는 무한 비수렴 대신 원인을 말하고 멈춘다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path, images_present=False)
+
+    def run_compose(arguments: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        harness.operations.append(tuple(arguments))
+        return {"success": True, "stdout": ""}
+
+    monkeypatch.setattr(harness.service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    with pytest.raises(DeploymentContractError, match="kor-travel-map-ui") as captured:
+        harness.service.rebuild_pinned_runtime()
+
+    assert compose_service_module.rebuild_failure_stage(captured.value) == "candidate_compose_build"
+    assert read_deploy_status(harness.status_path) is None
+    assert not any(operation[0] in {"stop", "up"} for operation in harness.operations)
+
+
+_NO_SUCH_IMAGE = "Error response from daemon: No such image: repo/x:tag"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "expected"),
+    (
+        (0, json.dumps({COMPOSE_BUILD_INPUT_LABEL: "d" * 64, "other": "x"}), "", "d" * 64),
+        (0, json.dumps({"other": "x"}), "", None),
+        (0, "null", "", None),
+        (1, "", _NO_SUCH_IMAGE, None),
+    ),
+)
+def test_the_build_input_label_is_read_from_the_local_image(
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    expected: str | None,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, returncode, stdout.encode(), stderr.encode())
+
+    monkeypatch.setattr(compose_service_module.subprocess, "run", run)
+
+    assert compose_service_module._local_image_compose_build_sha256("repo/x:tag") == expected
+    assert calls and calls[0][:3] == ["docker", "image", "inspect"]
+    assert calls[0][-1] == "repo/x:tag"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr"),
+    (
+        # daemon 오류를 "태그 없음"으로 읽으면 수렴할 재실행이 재빌드·전체 경로가 된다.
+        (1, "", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock."),
+        (0, "{not json", ""),
+    ),
+)
+def test_an_unreadable_candidate_image_is_refused_rather_than_rebuilt(
+    monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str, stderr: str
+) -> None:
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(argv, returncode, stdout.encode(), stderr.encode())
+
+    monkeypatch.setattr(compose_service_module.subprocess, "run", run)
+
+    with pytest.raises(DeploymentContractError, match="repo/x:tag"):
+        compose_service_module._local_image_compose_build_sha256("repo/x:tag")
+
+
+def test_a_partial_candidate_build_still_builds_one_service_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """한 BuildKit 요청에 여러 target을 묶지 않는다 — 일부만 다시 빌드할 때도 같다."""
+
+    service = ComposeService()
+    run = Mock(return_value={"success": True, "returncode": 0, "stdout": "", "stderr": ""})
+    monkeypatch.setattr(service, "_run_frozen_recovery", run)
+
+    service._run_pinned_runtime_rebuild_compose(
+        ["build", "pinvi-web", "kor-travel-map-ui"],
+        transaction=_opaque_transaction(),
+    )
+
+    assert [call.args[0] for call in run.call_args_list] == [
+        ["build", "pinvi-web"],
+        ["build", "kor-travel-map-ui"],
+    ]
 
 
 def test_a_candidate_compose_build_failure_names_its_own_stage(

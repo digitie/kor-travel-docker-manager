@@ -1,3 +1,10 @@
+## 2026-11-02 — 같은 pair 재구축이 build arg 변경을 반영하지 않던 문제
+
+- VWorld 키 교체에서 root `.env`의 `NEXT_PUBLIC_VWORLD_API_KEY`(Map UI·PinVi web의 build arg)를 바꾸고 같은 pair를 다시 돌렸지만 UI 이미지가 바뀌지 않았다. 후보 태그 `pinned-runtime-candidate-v6/<svc>:<pinset>`는 소스 revision(pinset)에만 묶여 있어 태그가 있으면 빌드를 건너뛰었다. 운영자가 UI 후보 태그를 손으로 지운 뒤에야 반영됐다.
+- Manager가 명시 build로 내보내는 Compose 문서에서 빌드 대상 이미지에 그 서비스의 resolved `build` 절(context·dockerfile·target·보간이 풀린 args) digest를 label `io.kor-travel-docker-manager.compose-build-sha256`로 싣는다. 재구축은 후보 태그가 있고 그 이미지의 label이 frozen render의 build 절 digest와 같은 서비스만 재사용하고, 다른 서비스만 하나씩 다시 빌드한다. 빌드 뒤에도 label이 맞지 않으면 그 이미지로 배포하지 않고 멈춘다.
+- 서비스 이름·build arg 이름을 코드에 두지 않는다. render에서 파생하므로 compose에 build arg를 더해도 따로 등록할 것이 없다. Map API·Dagster를 만드는 직접 builder는 소스와 revision build arg만 입력이라 바꾸지 않았다.
+- label 이전에 빌드된 후보 이미지는 입력을 말하지 않으므로, 설치 후 첫 재구축은 compose가 빌드하는 네 slot을 한 번 다시 빌드한다. 이미지 ID가 바뀌므로 같은 pair라도 그 한 번은 수렴이 아니라 전체 경로(마이그레이션 전진)를 탄다.
+
 ## 2026-10-30 — Geo 재구축 worker의 공용 Dagster 접속 누락 복구
 
 - 실제 Geo 원천 재구축에서 파일 준비 뒤 하위 `full_load_batch` 제출이 연결 오류로 실패했다. API에는 공용 제어 평면 주소가 있지만 코드 서버는 환경변수가 없어 퇴역한 개별 기본 주소를 사용했다. 원천 적재는 실행되지 않았으며 실패한 배치의 7개 자식은 모두 취소됐다.
