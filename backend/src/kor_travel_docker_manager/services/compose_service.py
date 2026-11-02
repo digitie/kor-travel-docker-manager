@@ -2243,8 +2243,8 @@ def _atomic_restore_compose_source(
     # `fsync_directory`는 디렉터리 fsync 실패를 무조건 삼킨다(best-effort).
     # 그러면 os.replace의 crash-durability가 실제로는 확인되지 않았는데도
     # 이 함수가 정상 반환해 복구가 "성공"으로 보고된다 — 바로 이 이유로
-    # `legacy_override_retirement.py`/`pinvi_database_role_credentials.py`의
-    # `_write_atomic`도 정본으로 옮기지 않았다(docs/tasks.md). 같은 논리를
+    # `pinvi_database_role_credentials.py`의 `_write_atomic`(옛 legacy override
+    # 이관 모듈의 것은 2026-11-02 함께 지웠다)도 정본으로 옮기지 않았다(docs/tasks.md). 같은 논리를
     # 이 자리에도 적용해 strict 원본을 유지한다.
     temporary_path: Path | None = None
     try:

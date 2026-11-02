@@ -1,4 +1,4 @@
-"""공용 Dagster plane(ADR-54) 전환이 코드 literal에 막히지 않는다 — C6c·보존·M05·옛 override 이관.
+"""공용 Dagster plane(ADR-54) 전환이 코드 literal에 막히지 않는다 — C6c·보존·M05.
 
 Map·PinVi·geo의 옛 webserver·daemon 이름은 이제 `runtime_topology`가 렌더된 모델과 `dagster.control_plane`
 스위치에서 파생한다. 두 가지를 보인다.
@@ -18,7 +18,6 @@ from typing import Any
 import pytest
 
 from kor_travel_docker_manager.services import c6c_deployment as c6c
-from kor_travel_docker_manager.services import legacy_override_retirement as retirement
 from kor_travel_docker_manager.services import m05_isolated_harness as m05
 from kor_travel_docker_manager.services import runtime_topology as topology_module
 from kor_travel_docker_manager.services.c6c_deployment import (
@@ -73,11 +72,6 @@ _PRE_ADR54_SECRET_ISOLATION_CONTAINERS = (
     "kor-travel-map-dagster-latest",
     "kor-travel-map-dagster-daemon-latest",
     "kor-travel-map-dagster-code-server-latest",
-)
-_PRE_ADR54_GEO_OVERRIDE_SERVICES = (
-    "kor-travel-geo-api",
-    "kor-travel-geo-dagster",
-    "kor-travel-geo-dagster-daemon",
 )
 
 #: pinned pair의 기제는 "Map·PinVi 모두 own" 기준선 위에서 본다 — 전환은 `flipped=(…)`/`_flip`으로 얹는다(conftest).
@@ -152,8 +146,7 @@ def test_own_env_contract_tables_keep_their_pre_adr54_rows_in_order() -> None:
         assert c6c.contract_locked_env_names(service), service
 
 
-def test_own_m05_and_override_retirement_names() -> None:
-    assert tuple(retirement._GEO_SERVICES) == _PRE_ADR54_GEO_OVERRIDE_SERVICES
+def test_own_m05_names() -> None:
     # M05 격리 project의 이미지 역할은 Manager 서비스 이름이 아니다 — receipt 필드는 그대로다.
     assert set(m05._RUNTIME_IMAGE_ROLES) == {
         "map-admin",
@@ -200,8 +193,6 @@ def test_a_flip_takes_the_old_services_out_of_every_running_set(
         assert code_server in topology.runtime_services
     # env 계약은 스위치와 무관하다 — profile로 내려간 옛 서비스를 켜도 그 값으로 돈다.
     assert tuple(c6c._PINVI_DSN_SERVICE_CREDENTIALS)[1][0] == "pinvi-dagster"
-    # 옛 override 이관은 과거 파일의 모양이다 — geo가 합류해도 그 이름을 그대로 알아본다.
-    assert tuple(retirement._GEO_SERVICES) == _PRE_ADR54_GEO_OVERRIDE_SERVICES
 
 
 def test_the_frozen_render_never_carries_a_flipped_targets_old_dagster(tmp_path: Path) -> None:

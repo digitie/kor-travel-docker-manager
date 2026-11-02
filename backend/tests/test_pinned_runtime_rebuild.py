@@ -3891,12 +3891,13 @@ def _own_fingerprint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[st
     변경은 의도한 것이고, 나머지 항목은 6f384ba 그대로다. 2026-10-23 ADR-59가 Map Valkey(`kor-travel-map-valkey`)를 더해
     `c6c_describe`·`mutation_parse_up`에 그 서비스가, 첫 배포·수렴 순서에 그것을 올리는 `up` 하나가 생겼다(의도한 변경).
     2026-11-02 옛 Concierge APScheduler(`kor-travel-concierge-scheduler`, `legacy-scheduler` profile)를 compose에서 지워
-    같은 두 항목에서 그 서비스 한 줄씩이 빠졌다(의도한 변경). 의도한 변경 셋은 빠져 있다 — M05 이미지 역할 키(`pinvi-app-dagster`), 보존 namespace가 알아보는
+    같은 두 항목에서 그 서비스 한 줄씩이 빠졌다(의도한 변경). 같은 날 1회성 legacy override 이관(stage/retire)을 지워
+    그것이 알아보던 옛 Geo override 서비스 목록 항목(`geo_override_services`)도 지문에서 빠졌다(의도한 변경).
+    의도한 변경 셋은 빠져 있다 — M05 이미지 역할 키(`pinvi-app-dagster`), 보존 namespace가 알아보는
     이름(family 전부, 적대 리뷰 MED-3), 그리고 seed에 묶인 generation sha256.
     """
 
     import kor_travel_docker_manager.services.c6c_image_retention as retention
-    import kor_travel_docker_manager.services.legacy_override_retirement as retirement
     import kor_travel_docker_manager.services.m05_isolated_harness as m05
 
     generation = _candidate_generation()
@@ -3962,7 +3963,6 @@ def _own_fingerprint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[st
         for name in sorted(document["services"])
     }
     out["mutation_identifiers_down"] = ComposeService._compose_mutation_identifiers(["down"])
-    out["geo_override_services"] = list(retirement._GEO_SERVICES)
     out["m05_roles_values"] = sorted(m05._RUNTIME_IMAGE_ROLES.values())
     out["pinset_seed"] = PINNED_RUNTIME_RELEASE.pinset_sha256
 

@@ -1,5 +1,5 @@
 {
-  "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized; re-captured 2026-10-19 for platform-topology.md §7 stage 4 and remote Geo prerequisite (old Map/PinVi Dagster metadata DB dependencies removed; Geo checked by external health endpoint); 2026-10-23 ADR-59 adds kor-travel-map-valkey (c6c_describe, mutation_parse_up, and one infrastructure `up` before the first stop / converge up); 2026-10-23 PinVi ADR-076 adds the pinvi-api PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN canonical row and lock (c6c_candidate_canonical_api, c6c_contract_locked); 2026-11-02 the legacy Concierge APScheduler service (kor-travel-concierge-scheduler, legacy-scheduler profile) is removed from compose (one c6c_describe row and its mutation_parse_up entry)",
+  "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized; re-captured 2026-10-19 for platform-topology.md §7 stage 4 and remote Geo prerequisite (old Map/PinVi Dagster metadata DB dependencies removed; Geo checked by external health endpoint); 2026-10-23 ADR-59 adds kor-travel-map-valkey (c6c_describe, mutation_parse_up, and one infrastructure `up` before the first stop / converge up); 2026-10-23 PinVi ADR-076 adds the pinvi-api PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN canonical row and lock (c6c_candidate_canonical_api, c6c_contract_locked); 2026-11-02 the legacy Concierge APScheduler service (kor-travel-concierge-scheduler, legacy-scheduler profile) is removed from compose (one c6c_describe row and its mutation_parse_up entry); 2026-11-02 the one-time legacy override migration (stage/retire) is removed, so its geo_override_services entry is gone",
  "build_compose_environment": {
   "KOR_TRAVEL_MAP_API_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
   "KOR_TRAVEL_MAP_DAGSTER_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
@@ -939,11 +939,6 @@
   "pinvi_source_revision": "<PINVI_REVISION>",
   "pinvi_web_image_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006"
  },
- "geo_override_services": [
-  "kor-travel-geo-api",
-  "kor-travel-geo-dagster",
-  "kor-travel-geo-dagster-daemon"
- ],
  "m05_roles_values": [
   "map",
   "map",

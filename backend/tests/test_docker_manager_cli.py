@@ -774,65 +774,24 @@ def test_cli_rebuild_pinned_runtime_redacts_process_environment_secrets(
     assert "<redacted>" in captured.err
 
 
-@patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["compose-boundary", "stage-legacy-override", "--source", "/x/docker-compose.override.yml", "--confirm"],
+        ["compose-boundary", "retire-legacy-override", "--confirm"],
+    ],
+)
+def test_cli_does_not_expose_the_retired_legacy_override_migration(argv: list[str], capsys) -> None:
+    # 2026-08-26의 1회성 legacy override 이관(stage/retire)은 2026-11-02에 지웠다 — 남은 것은 activate-concierge뿐이다.
+    with pytest.raises(SystemExit, match="2"):
+        main(argv)
 
-
-def test_cli_legacy_override_retirement_requires_confirmation(mock_retirement, capsys):
-    assert main(["compose-boundary", "retire-legacy-override"]) == 2
-
-    assert "requires --confirm" in capsys.readouterr().err
-    mock_retirement.assert_not_called()
-
-
-@patch("kor_travel_docker_manager.cli.stage_legacy_compose_override")
-
-
-def test_cli_legacy_override_stage_requires_confirmation(mock_stage, capsys):
-    assert (
-        main(
-            [
-                "compose-boundary",
-                "stage-legacy-override",
-                "--source",
-                "/legacy/kor-travel-docker-manager/docker-compose.override.yml",
-            ]
-        )
-        == 2
-    )
-
-    assert "requires --confirm" in capsys.readouterr().err
-    mock_stage.assert_not_called()
-
-
-@patch("kor_travel_docker_manager.cli.stage_legacy_compose_override")
-
-
-def test_cli_stages_legacy_override_through_official_boundary(mock_stage):
-    source = "/legacy/kor-travel-docker-manager/docker-compose.override.yml"
-
-    assert (
-        main(
-            [
-                "compose-boundary",
-                "stage-legacy-override",
-                "--source",
-                source,
-                "--confirm",
-            ]
-        )
-        == 0
-    )
-
-    mock_stage.assert_called_once_with(source_path=Path(source))
-
-
-@patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
-
-
-def test_cli_retires_legacy_override_through_official_boundary(mock_retirement):
-    assert main(["compose-boundary", "retire-legacy-override", "--confirm"]) == 0
-
-    mock_retirement.assert_called_once_with()
+    with pytest.raises(SystemExit, match="0"):
+        main(["compose-boundary", "--help"])
+    output = capsys.readouterr().out
+    assert "activate-concierge" in output
+    assert "stage-legacy-override" not in output
+    assert "retire-legacy-override" not in output
 
 
 @patch("kor_travel_docker_manager.cli.activate_canonical_concierge")

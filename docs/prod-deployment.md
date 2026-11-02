@@ -612,7 +612,7 @@ ADR-51 B3에서 지웠다. 다만 `.env` 파일을 다시 쓰는 것이므로, r
 `/run/lock/kor-travel-docker-manager/global-mutation.lock`(G) 하나를 지난다
 (`manager_mutation_lock_path`, ADR-51 C-2·C-3). 경로는 `.env` 파일 값으로 정하고 프로세스
 환경으로 채우지 않는다 — 단 프로세스 환경의 모드가 명시적으로 local이 아니면 G다(더 엄격하게만). UI의 컨테이너 조작·설정·초기화,
-관리자 비밀번호 변경, `ktdctl compose-boundary` stage/retire/activate, `ktdctl pin`
+관리자 비밀번호 변경, `ktdctl compose-boundary activate-concierge`, `ktdctl pin`
 mutator, 재구축·M05·installer launcher가 전부 같은 lock이다(일부러 뺀 것 — 백업·offbox
 동기화·핀 요청 제안·transport 컨테이너 — 은 `docs/decisions.md` ADR-51 "C 범위"). 경합이면
 기다리지 않고 거절한다 — API는 409 `MANAGER_MUTATION_ACTIVE`, CLI는 종료 코드 2다.
@@ -819,77 +819,36 @@ Manager의 C6c는 raw Compose와 resolved Compose 양쪽에서 다음을 강제�
   `KOR_TRAVEL_CONCIERGE_API_KEYS` comma-list의 exact member여야 한다. browser에 필요한 지도 키는 전용
   `KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY`로 분리한다.
 - API의 `KOR_TRAVEL_CONCIERGE_APP_ENV=production` 및
-  `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`도 root authority로 이관한다. source `.env`가 이 둘 중 하나를
-  local/false로 주면 이관 명령은 API가 unauthenticated default로 내려가는 것을 막기 위해 중단한다.
+  `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`도 root authority다. 둘 중 하나가 local/false이면 C6c 검증이
+  API가 unauthenticated default로 내려가는 것을 막기 위해 재생성 전에 중단한다.
 
-남아 있는 legacy `docker-compose.override.yml`가 있다면 수동 `docker compose` 명령이나 삭제를 하지 않는다.
-trusted installer가 고정하는 `/opt/kor-travel-docker-manager`는 canonical execution root이며, legacy home
-checkout은 Compose file·cwd·env-file source가 될 수 없다. Manager의 canonical release 배포 뒤에는 legacy
-입력을 먼저 protected C6c state로 한 번 snapshot한다.
+`docker-compose.override.yml`는 쓰지 않는다. trusted installer가 고정하는 `/opt/kor-travel-docker-manager`는
+canonical execution root이며, home checkout은 Compose file·cwd·env-file source가 될 수 없다. 옛 legacy override는
+2026-08-26 1회성 `compose-boundary stage-legacy-override`/`retire-legacy-override`로 root `.env`에 이관을 마쳤고
+두 명령은 2026-11-02에 지웠다. 그때 남은 owner-only archive(C6c state 아래 `legacy-compose-override/`)는 restore
+대상이 아니다.
 
-snapshot source의 final `docker-compose.override.yml`와 그 고정된 sibling Concierge `.env`는 모두 root 소유
-`0600`, regular file, hard-link 없음이어야 한다. user-writable parent는 source artifact를 남길 수는 있어도
-Manager runtime의 입력이 될 수 없으며, stage 전 local 운영 runbook의 owner-only 준비 절차로 이 precondition을
-만족시킨다. source path와 secret 값·hash는 이 문서나 명령 출력에 남기지 않는다.
-
-```bash
-sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
-  compose-boundary stage-legacy-override \
-  --source <legacy-override-absolute-path> --confirm
-```
-
-stage는 Docker/Compose를 실행하지 않고 final file을 `O_NOFOLLOW` descriptor와 `fstat`으로 검증해
-owner-only pending snapshot에 원자적으로 복사한다. 이미 같은 snapshot이면 idempotent이고 내용이 다르면
-fail-close한다. home source는 rename·delete하지 않으며 stage 뒤 Manager가 다시 읽지 않는다.
-legacy Concierge UI의 `env_file`은 구형 상대 문자열 한 항목 또는 Compose 장형 mapping 한 항목만 허용한다.
-장형 mapping은 override 위치에서 계산한 **정확한** sibling Concierge `.env`를 `path`로, boolean `required: true`를
-가져야 한다. `format`은 Compose raw mode를 뜻하는 정확한 `raw` 값일 때만 추가로 허용한다. 임의 absolute path,
-다른 추가 key·format·optional source는 허용하지 않는다.
-
-staged Concierge source에 `API_KEYS`, `APP_ENV`, `API_AUTH_ENABLED`가 **아예 선언되지 않은** 경우에만 각각의
-canonical root `KOR_TRAVEL_CONCIERGE_*` 값을 사용한다. 이는 legacy UI source가 API runtime 값을 소유하지 않았던
-기존 토폴로지의 호환 범위이며, 세 값을 source에서 선언했다면 빈 값도 포함해 source 값 자체가 필수다. 나머지
-`KTC_*` UI 인증·session·proxy·origin 값은 staged source에 모두 있어야 하며 root fallback을 허용하지 않는다.
-최종 유효 API key-set, backend key membership, `production`, authentication-enabled 검증은 source/root의 출처와
-관계없이 동일하게 통과해야 한다.
-
-n150의 pinned rebuild 정본은 `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal`와
-`KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`을 함께 쓰므로, 이 상태에서는 deployment mode를 수동으로
-`production`으로 바꾸지 않는다. stage·retire는 이 exact rehearsal/rebuildable·PinVi production·Map principal
-필수 contract를 다시 확인하고, production mode와 마찬가지로 host 변경 lock(3.z의 G)으로
-`rebuild-pinned`·pin 회전·M05·installer와 직렬화한다(ADR-51 C-2). 다른 변경이 G를 쥐고 있으면 기다리지 않고
-`cannot acquire the Manager mutation lock: ...`으로 종료 코드 2를 낸다. 둘 이외의 mode/lifecycle과
-caller-supplied project root는 mutation 전에 거부한다.
-
-stage 성공 뒤 root에서 아래 retire 공식 경로를 한 번 실행한다.
-
-```bash
-sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
-  compose-boundary retire-legacy-override --confirm
-```
-
-retire는 protected pending snapshot의 root-only로 알려진 Geo backup 값과 Concierge UI source만 raw 파싱하고,
-값 충돌·symlink·비정규 파일·잘못된 API key membership을 fail-close한다. 위 API auth 세 값의 허용된 root fallback도
-candidate에 새 값을 쓰지 않고 existing root authority를 재검증할 뿐이다. candidate root `.env`를 원자적으로
-갱신한 뒤 canonical `/opt` Compose에서 Concierge API/MCP/Dagster code server/UI와 그 전이 `depends_on` 서비스, 실제로 참조한
-top-level secret/network/volume/config만 추린 root-owned 일시 projection을 출력 없이 raw/resolved C6c 경계까지
-검증한다. 같은 projection만 정확한 네 Concierge service의 recreate에도 사용하므로, 이번 retire와 무관한 Map/PinVi
-candidate의 아직 준비되지 않은 explicit credential guard가 Concierge 경로를 막거나 반대로 runtime 입력으로 섞일 수 없다.
-projection은 trusted canonical source에서 매번 만들고 즉시 제거하며, caller/home source가 경로나 내용을 지정할 수 없다.
-성공한 경우에만 **같은
-protected state filesystem 안에서** pending directory를 owner-only archive로 rename한다. canonical
-rehearsal/rebuildable과 production 모두 Manager 변경 락 G(`global-mutation.lock`)를
-계속 보유한 채 API/MCP/Dagster code server/UI 정확한 네 service만 canonical single-file source로 force-recreate한다.
-production의 일반 `ensure`는 허용되지 않으므로 이 단계에 사용하지 않는다. archive 뒤 재생성이 실패하면 root
-`.env`와 archive는 의도적으로 유지된다. 원인을 해소한 뒤 아래 Manager retry만 사용한다.
+Concierge 재생성(배포 뒤·운영 rollback의 이미지 교체 뒤)의 공식 경로는 아래 하나다.
 
 ```bash
 sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
   compose-boundary activate-concierge --confirm
 ```
 
-retry 역시 pending stage가 없는지와 raw/resolved C6c 경계를 먼저 다시 확인하며, 수동 `docker compose`·legacy
-source restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다. 이 재생성은 기본 runtime인 Dagster code server를 사용한다(옛 APScheduler `legacy-scheduler` profile은 2026-11-02에 지웠다). backend 전환은 먼저 기존 실행자를 중지·drain하고 Concierge의 `docs/dagster-adoption.md`에 있는 generation CLI로 수행한다.
+- root 실행만 허용하고 project root·lock 경로는 고정이다(caller가 바꿀 수 없다). mode는 `production` 또는 n150의
+  exact `rehearsal/rebuildable`(PinVi production·Map principal 필수 contract 포함)만 받는다 — deployment mode를
+  수동으로 `production`으로 바꾸지 않는다.
+- host 변경 lock(3.z의 G)으로 `rebuild-pinned`·pin 회전·M05·installer와 직렬화한다(ADR-51 C-2). 다른 변경이 G를
+  쥐고 있으면 기다리지 않고 `cannot acquire the Manager mutation lock: ...`으로 종료 코드 2를 낸다.
+- canonical `/opt` Compose에서 Concierge API/MCP/Dagster code server/UI와 그 전이 `depends_on` 서비스, 실제로 참조한
+  top-level secret/network/volume/config만 추린 root-owned 일시 projection을 만들어 출력 없이 raw/resolved C6c
+  경계까지 검증한다. 같은 projection으로 정확한 네 service만 `--no-deps --force-recreate --no-build`한다 — 무관한
+  Map/PinVi candidate의 미준비 credential guard가 Concierge 경로를 막거나 runtime 입력으로 섞이지 않고, 이미지가
+  없으면 운영 source 디렉터리에서 조용히 빌드하지 않는다. projection은 매번 만들고 즉시 지운다.
+- 이미지는 root `.env`의 `KOR_TRAVEL_CONCIERGE_{API,MCP,DAGSTER,UI}_IMAGE`가 정한다. rollback은 이 넷을 직전
+  이미지로 바꾼 뒤 같은 명령을 실행한다(Concierge `docs/dagster-adoption.md` "장애와 rollback").
+
+수동 `docker compose`·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다. 이 재생성은 기본 runtime인 Dagster code server를 사용한다(옛 APScheduler `legacy-scheduler` profile은 2026-11-02에 지웠다). backend 전환은 먼저 기존 실행자를 중지·drain하고 Concierge의 `docs/dagster-adoption.md`에 있는 generation CLI로 수행한다.
 
 ## 8. pinned runtime 배포 (ADR-51 마이그레이션 전진)
 

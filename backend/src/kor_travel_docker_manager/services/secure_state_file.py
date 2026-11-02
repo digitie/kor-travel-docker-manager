@@ -15,8 +15,8 @@ mkstemp 기반 atomic write와 디렉터리 fsync가 이 저장소에 여러 벌
 범위를 의도적으로 좁혔다. (당시 제외했던 `pinned_runtime_generation.py`의
 `_write_public_json` — dir_fd 상대 O_EXCL|O_NOFOLLOW + directory fd fsync — 은 v6
 manifest 공개 사본과 함께 ADR-51 D-2에서 지웠다.) admin_password_service·
-compose_service·pinvi_database_role_credentials·legacy_override_retirement·
-pinvi_bootstrap_credential의 나머지 mkstemp 자리도 각자 다른
+compose_service·pinvi_database_role_credentials·pinvi_bootstrap_credential의 나머지 mkstemp 자리도
+(옛 legacy_override_retirement의 것은 2026-11-02 모듈째 지웠다) 각자 다른
 O_NOFOLLOW/소유권 정책을 갖고 있어(검증 노트가 4가지 혼재를 확인함) 이번 패스에서는
 옮기지 않는다 — 파일마다 그 정책이 실제로 무엇을 지키는지 개별 확인 없이 일괄
 치환하면 조용한 보안 완화가 될 수 있다.

@@ -3105,76 +3105,6 @@ def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
     return str(legacy_artifact), str(lock)
 
 
-def ensure_c6c_state_directory(path: str | Path) -> None:
-    """C6c state directory를 production/local 모두 owner-only 정책으로 준비한다."""
-
-    target = Path(path)
-    if _is_relative_to(target.resolve(strict=False), _C6C_PRODUCTION_STATE_ROOT):
-        expected_uid = _production_state_owner_uid()
-        _ensure_single_c6c_state_directory(
-            _C6C_PRODUCTION_STATE_ROOT,
-            expected_uid=expected_uid,
-        )
-        current = _C6C_PRODUCTION_STATE_ROOT
-        for part in target.resolve(strict=False).relative_to(_C6C_PRODUCTION_STATE_ROOT).parts:
-            current = current / part
-            _ensure_single_c6c_state_directory(current, expected_uid=expected_uid)
-        return
-    target.mkdir(mode=0o700, parents=True, exist_ok=True)
-    _validate_c6c_state_directory(target, expected_uid=os.geteuid())
-
-
-def _ensure_single_c6c_state_directory(path: Path, *, expected_uid: int) -> None:
-    try:
-        path.mkdir(mode=0o700)
-    except FileExistsError:
-        pass
-    except OSError as exc:
-        raise DeploymentContractError("C6c state directory is unavailable") from exc
-    directory_stat = _c6c_state_directory_stat(path, expected_uid=expected_uid)
-    if stat.S_IMODE(directory_stat.st_mode) != 0o700:
-        try:
-            os.chmod(path, 0o700)
-        except OSError as exc:
-            raise DeploymentContractError("C6c state directory mode cannot be fixed") from exc
-        _validate_c6c_state_directory(path, expected_uid=expected_uid)
-
-
-def _production_state_owner_uid() -> int:
-    if _C6C_PRODUCTION_STATE_ROOT == _DEFAULT_C6C_PRODUCTION_STATE_ROOT:
-        return 0
-    return os.geteuid()
-
-
-def _c6c_state_directory_stat(path: Path, *, expected_uid: int) -> os.stat_result:
-    try:
-        directory_stat = path.lstat()
-    except OSError as exc:
-        raise DeploymentContractError("C6c state directory is unavailable") from exc
-    if (
-        not stat.S_ISDIR(directory_stat.st_mode)
-        or directory_stat.st_uid != expected_uid
-    ):
-        raise DeploymentContractError("C6c state directory is unsafe")
-    return directory_stat
-
-
-def _validate_c6c_state_directory(path: Path, *, expected_uid: int) -> None:
-    directory_stat = _c6c_state_directory_stat(path, expected_uid=expected_uid)
-    if (
-        stat.S_IMODE(directory_stat.st_mode) != 0o700
-    ):
-        raise DeploymentContractError("C6c state directory is unsafe")
-
-
-def _is_relative_to(path: Path, base: Path) -> bool:
-    try:
-        path.relative_to(base)
-    except ValueError:
-        return False
-    return True
-
-
 def manager_mutation_lock_path(values: Mapping[str, str]) -> str:
     """주어진 ``.env`` 값이 가리키는 Manager 변경 lock 경로(ADR-51 C-3).
 
@@ -3672,7 +3602,7 @@ def validate_concierge_ui_canonical_compose_boundary(
     *,
     environment: Mapping[str, str],
 ) -> None:
-    """legacy override 퇴역 전 Concierge UI/API C6c raw·resolved 경계를 함께 검증한다."""
+    """Concierge 재생성(`compose-boundary activate-concierge`) 전 UI/API C6c raw·resolved 경계를 함께 검증한다."""
 
     candidate_services = candidate.get("services")
     resolved_services = resolved.get("services")
