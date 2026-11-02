@@ -1912,6 +1912,10 @@ services:
       # 비면 Map은 미설정으로 보고 `weather_state_*` job만 `weather_not_configured`로 실패한다(나머지 Map은 영향 없음).
       KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}
       KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:-}
+      # weather export 한 페이지의 read timeout(초, Map 설정 0.2~300). 포화된 odroid에서 외부 예보 한 페이지가
+      # 약 100초 걸려(2026-11-02 실측: 고정 약 18초 + 항목당 약 0.2초) Map 기본 60초로는 매번 ReadTimeout이었다.
+      # 기본값은 Map이 정한다 — 비면 Map 설정(`env_ignore_empty`)이 빈 값을 무시하고 자기 기본값을 쓴다.
+      KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_TIMEOUT_SECONDS: ${KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_TIMEOUT_SECONDS:-}
       KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY: ${KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY:-${SEOUL_OPEN_DATA_API_KEY:-}}
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
     # 이미지에 구운 `dagster_home/dagster.yaml`(옛 전용 metadata DB) 대신 공용 instance 정의를 붙인다.

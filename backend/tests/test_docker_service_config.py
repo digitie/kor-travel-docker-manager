@@ -783,6 +783,23 @@ def test_map_weather_export_token_is_the_weather_admin_token_by_reference() -> N
     assert not [line for line in example if line.startswith("KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN=")]
 
 
+def test_map_weather_export_timeout_reaches_only_the_run_worker_and_defaults_in_map() -> None:
+    """weather export read timeout은 run worker를 낳는 code-server에만 있고, 비면 Map이 기본값을 정한다.
+
+    Map 설정은 `env_ignore_empty`라 빈 값을 무시한다 — Manager가 숫자 기본값을 두면 Map 기본값과 두 정본이 된다.
+    `.env.example`에는 주석으로만 둔다(운영값은 root `.env`)."""
+
+    key = "KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_TIMEOUT_SECONDS"
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    holders = {name for name, service in compose["services"].items() if key in service.get("environment", {})}
+    assert holders == set(_MAP_RUN_WORKER_SERVICES)
+    for service_name in _MAP_RUN_WORKER_SERVICES:
+        assert compose["services"][service_name]["environment"][key] == f"${{{key}:-}}"
+    lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert not [line for line in lines if line.startswith(f"{key}=")]
+    assert [line for line in lines if line.strip().startswith(f"#   {key}=")] == [f"#   {key}="]
+
+
 def test_concierge_ui_uses_canonical_production_command_and_auth_allowlist() -> None:
     compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     service = compose["services"][_CONCIERGE_UI_SERVICE]
