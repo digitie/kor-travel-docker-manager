@@ -1,3 +1,11 @@
+## 2026-11-03 — 상시 서비스 로그 상한(ADR-61)
+
+- [x] compose `x-logging`과 렌더 모델 계약 테스트, 공용 PostgreSQL 허용 목록·driver 검사, 운영 절([prod-deployment §11](prod-deployment.md)).
+- [ ] 소유자가 정한 창에서 Manager를 설치한다. 설치 자체는 컨테이너를 바꾸지 않는다.
+- [ ] 공용 PostgreSQL을 계획 창에서 다시 만든다(shared-postgres-onboarding §6.1 C9). 그 전에는 공용 PostgreSQL을 `services`에 둔 ensure를 쓰지 않는다.
+- [ ] 공용 Dagster plane(daemon·webserver·gateway)에 상한을 줄 방법을 정한다 — drift 판정이 logging을 볼지는 소유자 결정.
+- [ ] odroid의 저장소 밖 compose(`/opt/kor-travel-odroid/compose.yml`·`compose-mon.yml`)와 transport 저장소 compose에 같은 정의를 넣는다.
+
 ## 2026-10-30 — Geo 하위 적재의 공용 제어 평면 주소
 
 - [x] 실제 worker의 접속 누락을 재현하고 Compose·registry 소비자 선언과 기본/변경 포트 회귀를 보완했다. 관련 72개와 미러 환경 복구 뒤 기존 실패 32개, 전체 3591개·Ruff가 통과했다(39개 건너뜀).
