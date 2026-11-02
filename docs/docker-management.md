@@ -167,7 +167,7 @@ KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE=/path/to/edited/docker-targets.yml \
 | `cadv` | cAdvisor Exporter | `gra` + cAdvisor Exporter 실행 | `cadvisor`, `exporter`, `metrics-exporter` |
 | `prom` | Prometheus | `cadv` + Prometheus 실행 | `prometheus`, `metrics`, `monitoring` |
 | `geo` | 지오코더/리버스지오코더 | `prom` + `kor-travel-geo` API/Web UI 실행 + 원천 데이터 적재 검증 | `kor-travel-geo`, `geocoder`, `reverse-geocoder` |
-| `conc` | Kor Travel Concierge | `prom` + `kor-travel-concierge` API/MCP/Scheduler/Web UI 실행 (geo 비의존) | `kor-travel-concierge`, `concierge`, `agent` |
+| `conc` | Kor Travel Concierge | `prom` + `kor-travel-concierge` API/MCP/Dagster code server/Web UI 실행 (geo 비의존) | `kor-travel-concierge`, `concierge`, `agent` |
 | `map` | Kor Travel Map | `geo`+`conc` + `kor-travel-map` API/Dagster/Web UI 실행 | `kor-travel-map`, `krtour-map`, `python-krtour-map` |
 | `pinvi` | PinVi | `map` + PinVi API/Dagster/Web UI 실행 | `srv`, `main`, `pinvi` |
 | `all` | 전체 | `storage`부터 `pinvi`·`weather`까지 전체 순서 | `default` |
@@ -592,7 +592,7 @@ prod 전환 순서는 다음과 같다.
 
 1. 최신 Concierge API/UI를 배포하고 실제 Alembic runner로 `upgrade head`를 실행한다. DB head
    `20260713_0017`과 scope migration `20260713_0016`의 `scope` `NOT NULL`·`read|admin` CHECK를
-   각각 확인한 뒤 API/MCP/scheduler/UI를
+   각각 확인한 뒤 API/MCP/Dagster code server/UI를
    서비스별로 재생성한다. UI의 admin hash/session secret이 비어 있지 않고 실제 로그인 POST가
    200+`Set-Cookie`, 잘못된 비밀번호가 401인지 확인한다.
 2. Concierge 관리 UI/API에서 소비자·owner·발급일을 식별할 수 있는 label로 DB `read` scope 키를
@@ -613,7 +613,7 @@ prod 전환 순서는 다음과 같다.
    필수이며, `KTC_*` UI 인증·session·proxy·origin 값에는 root fallback이 없다. 최종 API key-set/backend key
    membership·`production`·authentication-enabled 검증은 동일하게 수행한다.
    candidate의 raw/resolved C6c 검증과 정확한 네 Concierge service recreate는 trusted canonical Compose에서
-   Concierge API/MCP/scheduler/UI와 전이 `depends_on`, 실제 참조한 top-level entity만 추린 root-owned 일시 projection을
+   Concierge API/MCP/Dagster code server/UI와 전이 `depends_on`, 실제 참조한 top-level entity만 추린 root-owned 일시 projection을
    함께 쓴다. 따라서 아직 materialize하지 않은 Map/PinVi candidate의 explicit guard를 억지로 해석하지 않으며,
    그 candidate의 값·Compose source·runtime을 Concierge retirement에 유입시키지 않는다.
    retire는 candidate `.env`를 원자
@@ -644,7 +644,7 @@ prod 전환 순서는 다음과 같다.
    Concierge API는 `KOR_TRAVEL_CONCIERGE_APP_ENV=production` 및
    `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`를 root authority로 명시해야 하며, 이 둘이 local/false이면
    이관 명령이 실패한다.
-   이관 명령이 deployment lock 안에서 API/MCP/scheduler/UI를 canonical single-file source로 재생성한 뒤 실제 로그인
+   이관 명령이 deployment lock 안에서 API/MCP/Dagster code server/UI를 canonical single-file source로 재생성한 뒤 실제 로그인
    POST와 BFF 호출을 다시 확인한다. canonical rehearsal/rebuildable과 production 모두 고정 host 변경 lock
    (`global-mutation.lock`)을 사용한다(ADR-51 C-2). 재생성만 재시도해야 하면
    `ktdctl compose-boundary activate-concierge --confirm`을 사용한다. production의 일반 `ensure`는 이 경로에 사용할 수 없다.
@@ -653,7 +653,7 @@ prod 전환 순서는 다음과 같다.
    내부/write 403, UI 로그인 200+`Set-Cookie`를 다시 확인한다.
 8. 성공 시 key/cookie 임시 파일을 즉시 삭제한다. 이관 뒤 override는 owner-only archive로 남아 있으므로
    수동 restore 대상으로 쓰지 않는다. 실패 시 root `.env`에서 구 static 키를 allowlist에 임시 재등록하고
-   `ktdctl compose-boundary activate-concierge --confirm`으로 API/MCP/scheduler/UI를 재생성하며 incident와 조치
+   `ktdctl compose-boundary activate-concierge --confirm`으로 API/MCP/Dagster code server/UI를 재생성하며 incident와 조치
    시점만 기록한다.
 
 2026-07-13 n150 전환에서는 위 절차를 다음 결과로 완료했다.

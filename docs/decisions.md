@@ -1115,7 +1115,7 @@ kor-travel-concierge-api"로 거부했다. 그 스캔은 Manager `.env`의 **모
 3. 원본이 `NEXT_PUBLIC_*` 컨테이너 env key·build arg에 두는 값 — 브라우저 번들에 실리는 공개 값이다(VWorld key).
 
 가족은 경로가 뿌리를 둔 변수 하나(대개 `*_REPO_DIR`)를 build context나 `env_file` 경로로 쓰는 원본의 서비스다
-(Concierge: API·MCP·공유 Dagster code server·legacy scheduler·UI). 경로의 변수가 하나가 아니거나, 가족이 다른
+(Concierge: API·MCP·공유 Dagster code server·UI — legacy scheduler는 2026-11-02에 지웠다). 경로의 변수가 하나가 아니거나, 가족이 다른
 뿌리를 함께 쓰거나, 가족에 C6c 보호 서비스(topology에서 파생한 Map/PinVi 필수 집합)가 있으면 fail-closed로
 거부한다. 내용 스캔은 값을 percent-decoding해서도 본다. 원본에 없는 `env_file` 자리는 종전대로 전체 집합이다.
 

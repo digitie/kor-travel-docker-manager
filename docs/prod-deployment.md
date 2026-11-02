@@ -889,7 +889,7 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
 ```
 
 retry 역시 pending stage가 없는지와 raw/resolved C6c 경계를 먼저 다시 확인하며, 수동 `docker compose`·legacy
-source restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다. 이 재생성은 기본 runtime인 Dagster code server를 사용하며 legacy profile의 APScheduler를 다시 시작하지 않는다. backend 전환은 먼저 기존 실행자를 중지·drain하고 Concierge의 `docs/dagster-adoption.md`에 있는 generation CLI로 수행한다.
+source restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다. 이 재생성은 기본 runtime인 Dagster code server를 사용한다(옛 APScheduler `legacy-scheduler` profile은 2026-11-02에 지웠다). backend 전환은 먼저 기존 실행자를 중지·drain하고 Concierge의 `docs/dagster-adoption.md`에 있는 generation CLI로 수행한다.
 
 ## 8. pinned runtime 배포 (ADR-51 마이그레이션 전진)
 
