@@ -19,7 +19,9 @@ from typing import Any
 import pytest
 
 from kor_travel_docker_manager.services.build_context_export import (
+    COMPOSE_BUILD_INPUT_LABEL,
     DockerIgnore,
+    compose_build_input_sha256,
     compose_document_with_exported_build_contexts,
     export_build_context,
 )
@@ -347,6 +349,48 @@ def test_compose_document_never_points_a_build_at_the_live_source(
     for parent in definitions.relative_to(context).parents:
         assert stat.S_IMODE((context / parent).stat().st_mode) == 0o755
     assert not (context / ".env").exists()
+
+
+def test_explicit_builds_carry_the_digest_of_their_compose_build_inputs(
+    tmp_path: Path, owner_only_umask: None
+) -> None:
+    """빌드 대상 이미지는 자기 compose build 절(보간이 풀린 args 포함)의 digest를 label로 싣는다.
+
+    2026-11-02 VWorld 키 교체: 같은 pair 재구축은 pinset 태그가 있으면 다시 빌드하지 않아서 `.env`의
+    `NEXT_PUBLIC_*`(build arg) 변경이 UI 이미지에 들어가지 않았다. 재사용 판정이 그 입력을 볼 수
+    있으려면 이미지가 무엇으로 빌드됐는지 말해야 한다.
+    """
+
+    source = _owner_only_repo(tmp_path / "repo")
+    original = _compose_document(source)
+    original["services"]["concierge-api"]["build"]["args"] = {"NEXT_PUBLIC_KEY": "old"}
+    original["services"]["concierge-api"]["build"]["labels"] = {"existing": "kept"}
+    expected = {
+        name: compose_build_input_sha256(original["services"][name]["build"])
+        for name in ("concierge-dagster", "concierge-api")
+    }
+    snapshot = json.dumps(original, sort_keys=True)
+    staging = tmp_path / "staging"
+    staging.mkdir(mode=0o700)
+
+    rewritten = compose_document_with_exported_build_contexts(
+        original,
+        build_services={"concierge-dagster", "concierge-api"},
+        staging_directory=staging,
+    )
+
+    assert json.dumps(original, sort_keys=True) == snapshot
+    services = rewritten["services"]
+    for name, digest in expected.items():
+        # digest는 운영 context 경로 기준(사본 경로는 매번 다르다)이고 label은 그 사본 build에 실린다.
+        assert services[name]["build"]["labels"][COMPOSE_BUILD_INPUT_LABEL] == digest
+    assert services["concierge-api"]["build"]["labels"]["existing"] == "kept"
+    assert "build" not in services["concierge-ui"]
+    changed = json.loads(snapshot)
+    changed["services"]["concierge-api"]["build"]["args"]["NEXT_PUBLIC_KEY"] = "new"
+    assert compose_build_input_sha256(changed["services"]["concierge-api"]["build"]) != (
+        expected["concierge-api"]
+    )
 
 
 def test_compose_document_rejects_unresolved_or_additional_contexts(tmp_path: Path) -> None:

@@ -28,6 +28,8 @@ import yaml
 from dotenv import dotenv_values
 
 from kor_travel_docker_manager.services.build_context_export import (
+    COMPOSE_BUILD_INPUT_LABEL,
+    compose_build_input_sha256,
     compose_document_with_exported_build_contexts,
 )
 from kor_travel_docker_manager.services.c6c_deployment import (
@@ -577,6 +579,55 @@ def _local_image_present(image: str) -> bool:
     except (OSError, subprocess.SubprocessError) as exc:
         raise DeploymentContractError("candidate image store cannot be inspected") from exc
     return completed.returncode == 0
+
+
+def _local_image_compose_build_sha256(image: str) -> str | None:
+    """이 태그의 이미지가 실은 compose build 입력 digest. 이미지가 없거나 label이 없으면 ``None``."""
+
+    try:
+        completed = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", image],
+            cwd="/",
+            capture_output=True,
+            check=False,
+            timeout=_PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeploymentContractError("candidate image store cannot be inspected") from exc
+    if completed.returncode != 0:
+        return None
+    try:
+        labels = json.loads(completed.stdout)
+    except (UnicodeError, ValueError) as exc:
+        raise DeploymentContractError(f"candidate image {image} labels are unreadable") from exc
+    value = labels.get(COMPOSE_BUILD_INPUT_LABEL) if isinstance(labels, Mapping) else None
+    return value if isinstance(value, str) else None
+
+
+def _stale_candidate_build_services(
+    build: CandidateRuntimeBuild,
+    resolved: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """후보 태그가 없거나, 그 이미지가 frozen render의 build 절과 다른 입력으로 빌드된 서비스(slot 순서).
+
+    태그는 pinset(소스 revision)에 묶이지만 build 절의 보간 값(`.env`의 build arg)은 pinset 밖이다.
+    """
+
+    services = resolved.get("services")
+    stale: list[str] = []
+    for slot in COMPOSE_BUILT_RUNTIME_SLOTS:
+        service = build.topology.require_service(slot)
+        definition = services.get(service) if isinstance(services, Mapping) else None
+        section = definition.get("build") if isinstance(definition, Mapping) else None
+        if not isinstance(section, Mapping):
+            raise DeploymentContractError(
+                f"pinned runtime candidate service {service} has no build section"
+            )
+        if _local_image_compose_build_sha256(build.image_names[slot]) != (
+            compose_build_input_sha256(section)
+        ):
+            stale.append(service)
+    return tuple(stale)
 
 
 def get_compose_path() -> str:
@@ -4603,13 +4654,11 @@ class ComposeService:
         # waiting until its context deadline.  Keep the frozen transaction and
         # provenance checks identical, but give each candidate service its own
         # BuildKit request so a target completes before the next one starts.
-        built_services = runtime_topology().services_for(COMPOSE_BUILT_RUNTIME_SLOTS)
-        if tuple(args) == (
-            "build",
-            *built_services,
-        ):
+        # 입력이 바뀐 일부만 다시 빌드할 때(`_stale_candidate_build_services`)도 같다.
+        built_services = set(runtime_topology().services_for(COMPOSE_BUILT_RUNTIME_SLOTS))
+        if len(args) > 2 and args[0] == "build" and set(args[1:]) <= built_services:
             build_result: dict[str, Any] = {}
-            for service in built_services:
+            for service in args[1:]:
                 # 실패 메시지의 명령(`build <service>`)이 어느 서비스인지 말한다.
                 build_result = self._run_pinned_runtime_rebuild_compose(
                     ["build", service],
@@ -5281,7 +5330,8 @@ class ComposeService:
             with _rebuild_stage("application_builder"):
                 # 이미지 태그는 pinset에 묶인다. 이미 있으면 같은 소스에서 나온 것이므로
                 # 다시 빌드하지 않는다 — 다시 빌드하면 재현되지 않는 digest가 나와 같은
-                # pair의 재실행이 "새 이미지"가 된다.
+                # pair의 재실행이 "새 이미지"가 된다. 이 builder의 입력은 소스와 그 revision
+                # build arg뿐이다(환경을 읽지 않는다). compose가 빌드하는 네 slot은 아래에서 따로 본다.
                 if not all(_local_image_present(ref) for ref in paired_build_images.values()):
                     _build_map_application_300_images(
                         sources=sources,
@@ -5318,11 +5368,23 @@ class ComposeService:
                     environment_override=candidate_environment,
                 )
             with _rebuild_stage("candidate_compose_build"):
-                if not all(_local_image_present(ref) for ref in build.image_names.values()):
+                # 태그는 pinset에 묶이지만 compose build 절의 보간 값(`.env`의 `NEXT_PUBLIC_*` 같은
+                # build arg)은 pinset 밖이다. 이미지가 실은 입력 digest(build_context_export)가 이
+                # render와 같은 서비스만 재사용하고, 나머지만 다시 빌드한다.
+                stale = _stale_candidate_build_services(build, candidate_transaction.resolved)
+                if stale:
                     self._run_pinned_runtime_rebuild_compose(
-                        ["build", *build.build_services],
+                        ["build", *stale],
                         transaction=candidate_transaction,
                     )
+                    unstamped = _stale_candidate_build_services(
+                        build, candidate_transaction.resolved
+                    )
+                    if unstamped:
+                        raise DeploymentContractError(
+                            "pinned runtime candidate images do not carry the current compose "
+                            "build inputs after the build: " + ", ".join(unstamped)
+                        )
             with _rebuild_stage("candidate_images"):
                 image_ids = self._attest_pinned_runtime_candidate_images(
                     build=build,
