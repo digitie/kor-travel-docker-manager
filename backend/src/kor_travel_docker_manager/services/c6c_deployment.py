@@ -1364,6 +1364,8 @@ def _normalize_postgres_setting_name(name: str) -> str:
 #: ADR-52(2026-09-28)로 공용 instance가 쓴다 — 둘 다 권한을 넓히지 않는다(init은
 #: PID 1에 docker-init을 둘 뿐이고, grace는 종료 대기 시간이다). `mem_limit`·`memswap_limit`·`oom_score_adj`는
 #: ADR-58 결정 8(T-MGR-03)로 공용 instance가 쓴다 — 셋 다 컨테이너를 **좁히거나** 커널 OOM 순서만 바꾼다.
+#: `logging`은 ADR-61(2026-11-03)의 로그 상한이다 — 디스크 사용을 좁힌다. 다만 driver는 서버 출력이 가는 곳이라
+#: 로컬 `json-file`만 받는다(`_assert_one_postgres_cluster_runtime`).
 #:
 #: **금지 목록이 아니라 허용 목록이다.** 앞선 세 라운드가 같은 병으로 뚫렸다 —
 #: `entrypoint`·`privileged`·`user`·`cap_add`·`pid`를 막았더니 `devices: /dev/sda`가
@@ -1381,6 +1383,7 @@ _POSTGRES_ALLOWED_SERVICE_KEYS: Final = frozenset(
         "healthcheck",
         "image",
         "init",
+        "logging",
         "mem_limit",
         "memswap_limit",
         "network_mode",
@@ -1855,7 +1858,7 @@ def _assert_one_postgres_cluster_runtime(
     """PostgreSQL 서버의 **형태 전체**를 허용 목록으로 묶는다.
 
     금지 목록은 세 라운드 연속으로 뒤처졌다 — 매번 내가 놓친 철자·키가 우회로였다.
-    정본 서버의 형태는 좁고 고정적이므로(최상위 키 16개, 허용 GUC 19개 + `-p`) 방향을
+    정본 서버의 형태는 좁고 고정적이므로(최상위 키 17개, 허용 GUC 19개 + `-p`) 방향을
     뒤집으면 **모르는 것이 하나라도 있으면 거부**가 되고, 다음 compose 스펙이나
     postgres 버전이 무엇을 추가해도 fail-close다.
     """
@@ -1882,6 +1885,16 @@ def _assert_one_postgres_cluster_runtime(
         raise ComposeCandidateContractError(
             f"compose candidate gives a PostgreSQL service non-canonical keys "
             f"{unknown_keys}: " + _describe_candidate_service_key(service_name)
+        )
+    # 허용 목록의 `logging`(로그 상한, ADR-61)은 driver를 로컬 `json-file`로 묶는다 — syslog·gelf·fluentd 같은
+    # 원격 driver는 서버 출력을 호스트 밖으로 보낸다. 다른 driver가 필요해지면 여기를 명시적으로 넓힌다.
+    logging_config = service.get("logging")
+    if logging_config is not None and (
+        not isinstance(logging_config, Mapping) or logging_config.get("driver") != "json-file"
+    ):
+        raise ComposeCandidateContractError(
+            "compose candidate gives a PostgreSQL service a non-canonical logging driver: "
+            + _describe_candidate_service_key(service_name)
         )
 
     _assert_postgres_healthcheck_is_canonical(service_name, service)

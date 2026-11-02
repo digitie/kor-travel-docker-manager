@@ -194,6 +194,21 @@ x-dagster-code-server-probe: &dagster-code-server-probe |-
       log = open('/proc/1/fd/2', 'w')
       subprocess.Popen([sys.executable, '-I', '-c', sys.orig_argv[sys.orig_argv.index('-c') + 1], sys.argv[1], 'reap'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
 
+# 상시 서비스의 Docker 로그 상한(ADR-61) — 정의는 여기 하나다. 운영 컨테이너가 모두 `json-file` driver를 상한 없이
+# 써서(호스트 `daemon.json` 기본값도 없다) 로그가 컨테이너를 지울 때까지 자랐다(2026-11 n150 공용 Dagster daemon 887 MB).
+# `daemon.json`은 Docker 재시작이 필요해 쓰지 않는다. restart 정책이 컨테이너를 살려 두는 서비스(`unless-stopped`,
+# 꺼진 profile 포함)가 모두 이것을 받는다 — 서비스마다 최대 50 MB × 5개. one-shot은 받지 않는다. 빠진 서비스는
+# `backend/tests/test_compose_log_limits.py`가 렌더된 모델에서 찾는다.
+#
+# **다음 재생성 때 적용된다.** 이 정의는 상시 서비스 전부의 compose config hash를 바꾼다. 그래서 `--no-deps` 없는
+# `up`이 이름이나 의존으로 닿는 서비스를 다시 만든다 — 공용 PostgreSQL도 그렇다(그것을 target `services`에 둔
+# ensure가 닿는다, 모든 테넌트 재기동). 공용 PostgreSQL은 계획한 창에서 따로 다시 만든다(prod-deployment.md §11).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   # platform-topology.md §7(2026-09-19 결정)의 공용 제어 평면 instance. concierge·geo·
   # PinVi·weather·transport가 여기 산다 — 프로젝트마다 role+database만 만드는 별도
@@ -221,6 +236,7 @@ services:
     image: ${KTDM_POSTGRES_IMAGE:-postgis/postgis:18-3.6@sha256:4a43e3c3e5d55b9208240fc71db543b79c638766280c625a425bd0a2390989c4}
     container_name: ${KOR_TRAVEL_SHARED_POSTGRES_CONTAINER:-kor-travel-shared-postgres}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     # **postmaster가 PID 1이면 안 된다(ADR-52).** docker exec·healthcheck가 남긴 고아는
     # PID 1로 입양되는데, PG16 postmaster는 거둔 자식이 0·1 외의 코드로 끝나면 그것이
@@ -847,6 +863,7 @@ services:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_DAEMON_CONTAINER:-kor-travel-dagster-daemon}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec의 고아를 거둔다(ADR-52와 같은 이유).
     init: true
     # 공용 plane은 OOM 때 테넌트 code-server보다 나중에 죽게 한다(ADR-58 결정 8 ⅱ, T-MGR-03).
@@ -935,6 +952,7 @@ services:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-dagster-webserver}
     restart: unless-stopped
+    logging: *default-logging
     init: true
     # 공용 plane은 OOM 때 테넌트 code-server보다 나중에 죽게 한다(ADR-58 결정 8 ⅱ, T-MGR-03).
     oom_score_adj: -600
@@ -1015,6 +1033,7 @@ services:
     image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     container_name: ${KOR_TRAVEL_DAGSTER_GATEWAY_CONTAINER:-kor-travel-dagster-gateway}
     restart: unless-stopped
+    logging: *default-logging
     init: true
     user: "101:101"
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -1091,6 +1110,7 @@ services:
     image: rustfs/rustfs:latest
     container_name: kor-travel-rustfs
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     command:
     - /data
@@ -1146,6 +1166,7 @@ services:
       dockerfile: docker/api.Dockerfile
     container_name: ${KOR_TRAVEL_GEO_API_CONTAINER:-kor-travel-geo-api-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-shared-postgres:
@@ -1216,6 +1237,7 @@ services:
       context: ${KOR_TRAVEL_GEO_REPO_DIR:-../kor-travel-geo}/kor-travel-geo-ui
     container_name: ${KOR_TRAVEL_GEO_UI_CONTAINER:-kor-travel-geo-ui-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-geo-api:
@@ -1257,6 +1279,7 @@ services:
       dockerfile: Dockerfile.python
     container_name: ${KOR_TRAVEL_CONCIERGE_API_CONTAINER:-kor-travel-concierge-api-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     command:
     - python
@@ -1325,6 +1348,7 @@ services:
       dockerfile: Dockerfile.python
     container_name: ${KOR_TRAVEL_CONCIERGE_MCP_CONTAINER:-kor-travel-concierge-mcp-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     command:
     - python
@@ -1369,6 +1393,7 @@ services:
     mem_reservation: 512m
     cpus: 2
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     command:
     - dagster
@@ -1428,6 +1453,7 @@ services:
       context: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}/frontend
     container_name: ${KOR_TRAVEL_CONCIERGE_UI_CONTAINER:-kor-travel-concierge-ui-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     # single-file boundary에서는 legacy override의 전체 Concierge .env를 UI에
     # 주입하지 않는다. UI가 필요한 server-only auth 값만 명시적으로 전달한다.
@@ -1476,6 +1502,7 @@ services:
     image: valkey/valkey:9.0-alpine@sha256:187679e3bd4036959631e3f03983ab2ba503ab21e6fd0454d508e909db2ee989
     container_name: kor-travel-map-valkey
     restart: unless-stopped
+    logging: *default-logging
     init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     # 종료 때 AOF fsync와 마지막 RDB 저장을 기다린다(docker 기본 10초는 디스크 대기 중 SIGKILL로 끊을 수 있다).
@@ -1620,6 +1647,7 @@ services:
     image: ${KOR_TRAVEL_MAP_API_IMAGE:-kor-travel-map-api:latest-main}
     container_name: ${KOR_TRAVEL_MAP_API_CONTAINER:-kor-travel-map-api-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-shared-postgres:
@@ -1729,6 +1757,7 @@ services:
         NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
     container_name: ${KOR_TRAVEL_MAP_UI_CONTAINER:-kor-travel-map-ui-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-map-api:
@@ -1794,6 +1823,7 @@ services:
     - kortravelmap.dagster.definitions
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-map-dagster-code-server-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -1919,6 +1949,7 @@ services:
     - ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER:-kor-travel-map-dagster-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -1987,6 +2018,7 @@ services:
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_DAEMON_CONTAINER:-kor-travel-map-dagster-daemon-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2079,6 +2111,7 @@ services:
         PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
     container_name: ${PINVI_API_CONTAINER:-pinvi-api-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       # ADR-46 — 앱 DSN이 실제로 접속하는 곳.
@@ -2210,6 +2243,7 @@ services:
         NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
     container_name: ${PINVI_WEB_CONTAINER:-pinvi-web-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     command:
     - npx
@@ -2242,6 +2276,7 @@ services:
         PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
     container_name: ${PINVI_DAGSTER_CODE_SERVER_CONTAINER:-pinvi-dagster-code-server-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2338,6 +2373,7 @@ services:
         PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
     container_name: ${PINVI_DAGSTER_CONTAINER:-pinvi-dagster-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2405,6 +2441,7 @@ services:
     image: ${PINVI_DAGSTER_IMAGE:-pinvi-dagster:latest-main}
     container_name: ${PINVI_DAGSTER_DAEMON_CONTAINER:-pinvi-dagster-daemon-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2489,6 +2526,7 @@ services:
     image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.1}
     container_name: ${PROMETHEUS_CONTAINER:-kor-travel-prometheus}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     user: ${PROMETHEUS_RUN_AS_USER:-0}
     command:
@@ -2507,6 +2545,7 @@ services:
     image: ${GRAFANA_IMAGE:-grafana/grafana:11.1.4}
     container_name: ${GRAFANA_CONTAINER:-kor-travel-grafana}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     user: ${GRAFANA_RUN_AS_USER:-0}
     environment:
@@ -2523,6 +2562,7 @@ services:
     image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.52.1}
     container_name: ${CADVISOR_CONTAINER:-kor-travel-cadvisor}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     privileged: true
     devices:
@@ -2573,6 +2613,7 @@ services:
       dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
     container_name: ${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-geo-dagster-code-server-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2683,6 +2724,7 @@ services:
       dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
     container_name: ${KOR_TRAVEL_GEO_DAGSTER_CONTAINER:-kor-travel-geo-dagster-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2760,6 +2802,7 @@ services:
       dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
     container_name: ${KOR_TRAVEL_GEO_DAGSTER_DAEMON_CONTAINER:-kor-travel-geo-dagster-daemon-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2891,6 +2934,7 @@ services:
         GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-unknown}
     container_name: ${KOR_TRAVEL_WEATHER_API_CONTAINER:-kor-travel-weather-api-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-shared-postgres:
@@ -2985,6 +3029,7 @@ services:
         GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-unknown}
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-weather-dagster-code-server-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -3127,6 +3172,7 @@ services:
         GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-unknown}
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-weather-dagster-webserver-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -3219,6 +3265,7 @@ services:
     image: ${KOR_TRAVEL_WEATHER_DAGSTER_IMAGE:-kor-travel-weather-dagster:latest-main}
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_DAEMON_CONTAINER:-kor-travel-weather-dagster-daemon-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -3302,6 +3349,7 @@ services:
       dockerfile: deploy/Dockerfile.dagster-gateway
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_GATEWAY_CONTAINER:-kor-travel-weather-dagster-gateway-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-weather-dagster-webserver:
@@ -3327,6 +3375,7 @@ services:
         NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
     container_name: ${KOR_TRAVEL_WEATHER_WEB_CONTAINER:-kor-travel-weather-web-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-weather-api:
@@ -3382,6 +3431,7 @@ services:
     image: prom/prometheus:v3.5.0
     container_name: ${KOR_TRAVEL_WEATHER_PROMETHEUS_CONTAINER:-kor-travel-weather-prometheus}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     user: ${KOR_TRAVEL_WEATHER_PROMETHEUS_RUN_AS_USER:-0}
     depends_on:

@@ -1733,3 +1733,42 @@ DB migration 뒤 자동 이미지 rollback 및 pointer 선행 rollback은 채택
 D1–D8 결정·파일/권한·CLI·실패 모드·단계별 미완 범위는 [서비스 현재 릴리스 표식](service-current-release.md)을 따른다.
 초기 adopt는 runtime을 바꾸지 않는다. 기존 배포기 wrapper 이관과 base 기본값 제거는 별도이며,
 그 전에는 raw Compose 우회를 차단했다고 주장하지 않는다.
+
+## ADR-61: 컨테이너 로그 상한은 Manager compose의 `x-logging` 한 자리에 둔다
+
+- 상태: accepted
+- 날짜: 2026-11-03
+- 결정자: 소유자(위치 선택) · Claude(구현)
+
+### 컨텍스트
+읽기 전용 감사에서 n150·odroid의 운영 컨테이너가 모두 `json-file` driver를 `max-size`·`max-file` 없이 쓰고, 두 호스트
+모두 `daemon.json`에 기본값이 없었다. 로그는 컨테이너가 지워질 때까지 자란다(n150 공용 Dagster daemon 887 MB).
+
+### 결정
+상한은 `daemon.json`이 아니라 `docker-compose.yml`의 `x-logging`(`json-file`, 50m × 5) 한 자리에 두고, restart 정책이
+`unless-stopped`인 서비스 전부가 alias로 받는다. 값은 env로 열지 않는다.
+
+### 근거
+- `daemon.json`은 Docker 재시작(호스트의 모든 컨테이너)이 필요하다. compose는 서비스마다 다음 재생성 때 적용된다.
+- env 재정의는 쓰는 곳이 없다 — 공용 PostgreSQL 튜닝에서 쓰이지 않는 `${…:-}` 우회로를 걷어낸 것과 같은 판단이다
+  (Simplicity First, ADR-50).
+- 서비스 이름을 외우지 않는다: `backend/tests/test_compose_log_limits.py`가 원문 파싱과 실제 `docker compose config`
+  렌더(모든 profile) 두 층에서 restart 정책으로 상시 서비스를 파생해 상한과 단일 정책을 단언한다.
+
+### 결과(긍정)
+- 상시 서비스 하나의 로그가 최대 250 MB로 묶인다. 새 상시 서비스가 상한 없이 들어오면 테스트가 빨갛다.
+
+### 결과(부정)
+- 공용 PostgreSQL 허용 목록(`_POSTGRES_ALLOWED_SERVICE_KEYS`)에 `logging`을 더했다. 원격 driver가 서버 출력을 호스트 밖으로
+  보내지 못하게 PostgreSQL의 driver는 `json-file`만 받는다 — 다른 driver가 필요하면 그 검사를 명시적으로 넓혀야 한다(새 실패
+  모드).
+- 상시 서비스 전부의 config hash가 바뀐다. `--no-deps` 없는 ensure는 공용 PostgreSQL까지 다시 만든다. 같은 pair 수렴도 한 번은
+  Map·PinVi runtime과 Valkey를 다시 만든다. 경로별 효과는 `docs/prod-deployment.md` §11.
+- 공용 Dagster plane의 drift 판정은 logging을 보지 않아 재구축·`dagster-plane converge`가 plane을 다시 만들지 않는다.
+- odroid의 컨테이너는 이 compose가 아니라 저장소 밖 compose(`kor-travel-odroid` project)와 transport 저장소 compose로 돈다 —
+  이 결정만으로는 odroid에 상한이 생기지 않는다.
+
+### 후속
+- (open) 공용 PostgreSQL을 계획 창에서 다시 만든다(shared-postgres-onboarding §6.1 C9).
+- (open) plane drift 판정이 `HostConfig.LogConfig`를 볼지 — 보면 설치 뒤 첫 재구축·converge가 plane을 다시 만든다. 소유자 결정.
+- (open) odroid `/opt/kor-travel-odroid/compose.yml`·`compose-mon.yml`과 transport 저장소 compose에 같은 정의.
