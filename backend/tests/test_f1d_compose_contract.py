@@ -4951,12 +4951,21 @@ def test_an_empty_signal_is_not_a_deployment(signal: str) -> None:
         ),
         pytest.param({"userns_mode": "host"}, "host privilege", id="userns_mode"),
         pytest.param({"volumes_from": ["other"]}, "host privilege", id="volumes_from"),
-        # `logging`은 허용 목록에 있지만(로그 상한, 2026-11-03) 원격 driver는 서버 출력을 호스트 밖으로 보낸다.
+        # `logging`은 허용 목록에 있지만(로그 상한, ADR-61) driver는 `json-file`이어야 한다 — 원격 driver는 서버
+        # 출력을 호스트 밖으로 보내고, driver가 없거나 모양이 다르면 daemon 기본값이 정한다(fail-close).
         pytest.param(
             {"logging": {"driver": "syslog", "options": {"syslog-address": "udp://203.0.113.9:514"}}},
             "non-canonical logging driver",
             id="logging-remote-driver",
         ),
+        pytest.param({"logging": {"driver": "local"}}, "non-canonical logging driver", id="logging-local"),
+        pytest.param({"logging": {}}, "non-canonical logging driver", id="logging-empty"),
+        pytest.param(
+            {"logging": {"options": {"max-size": "50m"}}},
+            "non-canonical logging driver",
+            id="logging-driver-omitted",
+        ),
+        pytest.param({"logging": "json-file"}, "non-canonical logging driver", id="logging-not-a-mapping"),
     ],
 )
 def test_a_cluster_service_cannot_take_privileged_shapes(

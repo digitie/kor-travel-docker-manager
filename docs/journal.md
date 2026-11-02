@@ -11,11 +11,16 @@
 - 공용 PostgreSQL 허용 목록에 `logging`을 더했고(없으면 C6c가 정본 compose를 거부한다), driver는 `json-file`만 받는다 — 원격
   driver가 서버 출력을 호스트 밖으로 보내지 못하게 한다(새 실패 모드: 다른 driver가 필요하면 그 검사를 넓혀야 한다).
 - ADR-54 `own` 지문 픽스처는 바뀌지 않았다. 지문은 서비스 이름·env·명령 argv·C6c 표로 만들고 서비스 본문을 보지 않는다.
-- 효과(설치는 compose `up`을 하지 않는다): 같은 pair 수렴도 한 번은 Valkey·Map/PinVi runtime을 다시 만든다. `--no-deps` 없는
-  ensure(geo·conc·map·pinvi·weather·dagster·all)는 공용 PostgreSQL을 다시 만든다(모든 테넌트 재기동) — 공용 PostgreSQL은 계획
-  창에서 따로. 공용 Dagster plane의 drift 판정은 logging을 보지 않아 재구축·converge가 plane을 다시 만들지 않는다(바꾸지 않고
-  소유자 결정으로 남김). odroid 컨테이너는 이 compose를 쓰지 않는다 — 저장소 밖 `/opt/kor-travel-odroid` compose와 transport
-  저장소에 같은 정의가 필요하다. 자세히는 `docs/prod-deployment.md` §11.
+- 효과(설치는 compose `up`을 하지 않는다): 같은 pair 수렴도 한 번은 Valkey·Map/PinVi runtime을 다시 만든다. production에서
+  `ensure`는 거부되므로 공용 PostgreSQL을 다시 만드는 Manager 경로는 없다 — 계획 창의 손 명령(UI 설정 변경/reset은
+  `--force-recreate`라 닿지만 CHECKPOINT가 없어 쓰지 않는다). 공용 Dagster plane의 drift 판정은 logging을 보지 않아
+  재구축·converge가 plane을 다시 만들지 않는다(바꾸지 않고 소유자 결정으로 남김; cutover 스크립트는 부수 효과로 다시 만든다).
+  rustfs·모니터링 셋·Concierge는 별도 창. odroid 컨테이너는 이 compose를 쓰지 않는다 — 저장소 밖 `/opt/kor-travel-odroid`
+  compose와 transport 저장소에 같은 정의가 필요하다. 자세히는 `docs/prod-deployment.md` §11.
+- 적대 리뷰(HIGH 없음, MED 2·LOW 4·NIT 2)를 반영했다: production `ensure` 거부를 문서에 바로잡고 cutover 스크립트·UI 재생성
+  경로와 경로 없는 컨테이너 목록을 §11에 더했다. 테스트의 상시 판정을 `on-failure`·`deploy.restart_policy`까지 넓히고(빨간
+  대조군 포함), PostgreSQL `logging` 모양(빈 매핑·driver 생략·문자열·`local`) 거부 사례를 더했다. odroid 모니터링 좌표는 실측
+  (`kor-travel-odroid-monitoring`)과 registry(`kor-travel-host-monitoring`, T-OPS-01b 뒤)가 달라 둘 다 적었다.
 
 ## 2026-11-02 — 1회성 legacy override 이관 명령(stage/retire) 제거
 

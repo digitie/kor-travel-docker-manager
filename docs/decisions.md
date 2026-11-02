@@ -1756,14 +1756,19 @@ D1–D8 결정·파일/권한·CLI·실패 모드·단계별 미완 범위는 [�
   렌더(모든 profile) 두 층에서 restart 정책으로 상시 서비스를 파생해 상한과 단일 정책을 단언한다.
 
 ### 결과(긍정)
-- 상시 서비스 하나의 로그가 최대 250 MB로 묶인다. 새 상시 서비스가 상한 없이 들어오면 테스트가 빨갛다.
+- 상시 서비스 하나의 로그가 **다시 만들어진 뒤** 최대 250 MB로 묶인다. 새 상시 서비스(`on-failure`·`deploy.restart_policy`
+  포함)가 상한 없이 들어오면 테스트가 빨갛다.
 
 ### 결과(부정)
 - 공용 PostgreSQL 허용 목록(`_POSTGRES_ALLOWED_SERVICE_KEYS`)에 `logging`을 더했다. 원격 driver가 서버 출력을 호스트 밖으로
-  보내지 못하게 PostgreSQL의 driver는 `json-file`만 받는다 — 다른 driver가 필요하면 그 검사를 명시적으로 넓혀야 한다(새 실패
-  모드).
-- 상시 서비스 전부의 config hash가 바뀐다. `--no-deps` 없는 ensure는 공용 PostgreSQL까지 다시 만든다. 같은 pair 수렴도 한 번은
-  Map·PinVi runtime과 Valkey를 다시 만든다. 경로별 효과는 `docs/prod-deployment.md` §11.
+  보내지 못하게 PostgreSQL의 driver는 `json-file`만 받는다(없거나 모양이 다르면 거부) — 다른 driver가 필요하면 그 검사를
+  명시적으로 넓혀야 한다(새 실패 모드). 이 driver 검사는 PostgreSQL에만 있다 — 다른 서비스의 driver는 종전처럼 C6c가 보지
+  않는다(ADR-50, 넓히지 않는다). `logging: {driver: json-file}`만 있고 options가 없으면 C6c는 통과한다(상한은 보안 경계가
+  아니다 — 그것은 위 테스트가 본다).
+- 상시 서비스 전부의 config hash가 바뀐다. 같은 pair 수렴도 한 번은 Map·PinVi runtime과 Valkey를 다시 만들고, 다음
+  cutover/rollback 창은 공용 plane daemon·webserver를 부수 효과로 다시 만든다. production에서 `ensure`는 거부되므로 공용
+  PostgreSQL을 다시 만드는 Manager 경로는 없다 — 계획 창의 손 명령이다. 경로별 효과와 경로가 없는 컨테이너 목록은
+  `docs/prod-deployment.md` §11.
 - 공용 Dagster plane의 drift 판정은 logging을 보지 않아 재구축·`dagster-plane converge`가 plane을 다시 만들지 않는다.
 - odroid의 컨테이너는 이 compose가 아니라 저장소 밖 compose(`kor-travel-odroid` project)와 transport 저장소 compose로 돈다 —
   이 결정만으로는 odroid에 상한이 생기지 않는다.
@@ -1771,4 +1776,5 @@ D1–D8 결정·파일/권한·CLI·실패 모드·단계별 미완 범위는 [�
 ### 후속
 - (open) 공용 PostgreSQL을 계획 창에서 다시 만든다(shared-postgres-onboarding §6.1 C9).
 - (open) plane drift 판정이 `HostConfig.LogConfig`를 볼지 — 보면 설치 뒤 첫 재구축·converge가 plane을 다시 만든다. 소유자 결정.
-- (open) odroid `/opt/kor-travel-odroid/compose.yml`·`compose-mon.yml`과 transport 저장소 compose에 같은 정의.
+- (open) rustfs·prometheus·grafana·cadvisor·Concierge(activate-concierge 전)의 재생성 창.
+- (open) odroid `/opt/kor-travel-odroid/compose.yml`·`compose-mon.yml`(T-OPS-01b 이관과 함께)과 transport 저장소 compose에 같은 정의.

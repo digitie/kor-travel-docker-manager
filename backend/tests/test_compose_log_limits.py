@@ -5,9 +5,11 @@ n150·odroid의 운영 컨테이너가 모두 `json-file` driver를 상한 없�
 재시작이 필요하다)이 아니라 이 compose에 둔다. `x-logging` 한 자리를 상시 서비스가 alias로 받고, 각 서비스는
 다음 재생성 때 상한을 얻는다.
 
-이름을 외우지 않는다. 상시 서비스는 restart 정책이 컨테이너를 계속 살려 두는 서비스(`always`·
-`unless-stopped`)로 찾는다. one-shot(`restart: "no"` 또는 생략)은 범위 밖이다. 꺼진 profile의 서비스도
-profile을 켜면 상시로 돌므로 센다. 원문 파싱(중복 키 거부, alias 전개)과 실제 `docker compose config`
+이름을 외우지 않는다. 상시 서비스는 restart 정책으로 찾는다 — `restart: "no"`(또는 생략)이고
+`deploy.restart_policy`도 없는 서비스만 one-shot이고, 나머지(`always`·`unless-stopped`·`on-failure[:n]`·
+`deploy.restart_policy`)는 전부 상시다. 로그가 자라는 것은 컨테이너가 오래 사는 것이지 다시 뜨는 것이
+아니므로 `on-failure`도 센다(적대 리뷰 2026-11-03 LOW-4). 꺼진 profile의 서비스도 profile을 켜면 상시로
+돌므로 센다. 원문 파싱(중복 키 거부, alias 전개)과 실제 `docker compose config`
 렌더 두 층에서 같은 판정을 한다. 렌더 층은 compose가 alias·profile을 우리 파서와 같게 읽는다는 것을 본다.
 """
 
@@ -29,8 +31,8 @@ from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_d
 _ROOT = Path(__file__).resolve().parents[2]
 _COMPOSE = _ROOT / "docker-compose.yml"
 
-#: 컨테이너를 계속 살려 두는 Docker restart 정책. `on-failure`는 정상 종료 뒤 다시 띄우지 않는다.
-_LONG_RUNNING_RESTART_POLICIES = frozenset({"always", "unless-stopped"})
+#: one-shot의 restart 정책 — 이것(또는 생략)만 범위 밖이다.
+_ONESHOT_RESTART = "no"
 #: `${NAME:?...}`·`${NAME?...}` — 값이 없으면 config 자체가 실패하는 필수 변수.
 _REQUIRED_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?\?")
 #: 상한이 있다는 뜻의 값 모양. 단위 없는 바이트 수나 0은 상한으로 치지 않는다.
@@ -44,11 +46,20 @@ def _source() -> dict[str, Any]:
     return document
 
 
+def _is_long_running(service: Mapping[str, Any]) -> bool:
+    restart = service.get("restart")
+    if restart is not None and str(restart).strip().lower() != _ONESHOT_RESTART:
+        return True
+    deploy = service.get("deploy")
+    policy = deploy.get("restart_policy") if isinstance(deploy, Mapping) else None
+    return isinstance(policy, Mapping) and policy.get("condition") != "none"
+
+
 def _long_running(services: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
     return {
         name: service
         for name, service in services.items()
-        if isinstance(service, Mapping) and service.get("restart") in _LONG_RUNNING_RESTART_POLICIES
+        if isinstance(service, Mapping) and _is_long_running(service)
     }
 
 
@@ -122,6 +133,29 @@ def test_the_derivation_finds_long_running_services() -> None:
     long_running = _long_running(services)
     assert long_running, "restart 정책으로 상시 서비스를 하나도 찾지 못했다"
     assert set(services) - set(long_running), "one-shot을 하나도 가르지 못했다"
+
+
+@pytest.mark.parametrize(
+    ("service", "long_running"),
+    [
+        pytest.param({"restart": "unless-stopped"}, True, id="unless-stopped"),
+        pytest.param({"restart": "always"}, True, id="always"),
+        pytest.param({"restart": "on-failure"}, True, id="on-failure"),
+        pytest.param({"restart": "on-failure:5"}, True, id="on-failure-count"),
+        pytest.param({"deploy": {"restart_policy": {"condition": "any"}}}, True, id="deploy-policy"),
+        pytest.param({"restart": "no"}, False, id="no"),
+        pytest.param({"restart": False}, False, id="unquoted-no"),
+        pytest.param({}, False, id="absent"),
+        pytest.param({"deploy": {"restart_policy": {"condition": "none"}}}, False, id="deploy-none"),
+    ],
+)
+def test_the_long_running_rule_counts_lifetime_not_restarts(
+    service: dict[str, Any], long_running: bool
+) -> None:
+    """빨간 대조군 — 상한 없는 `on-failure` daemon이나 `deploy.restart_policy` 서비스가 조용히 빠지지 않는다."""
+
+    assert _is_long_running(service) is long_running
+    assert bool(_unbounded({"svc": service})) is long_running
 
 
 def test_every_long_running_service_caps_its_json_file_log() -> None:
