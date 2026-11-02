@@ -825,6 +825,9 @@ Map ADR-114의 두 기능을 운영에서 켤 수 있게 배선만 둔다(켜는
     미설정으로 보고 `weather_state_*` job만 `weather_not_configured`로 실패한다.
     Map은 이것을 기본 header `X-Admin-Token`으로 보내므로 `KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_AUTH_HEADER`는 두지
     않는다(weather가 읽기 전용 export token을 내면 그때 이름과 token만 바꾼다).
+  - `KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_TIMEOUT_SECONDS`: weather export 한 페이지의 read timeout(초, Map 0.2~300).
+    `${…:-}`라 비면 Map 기본값(60)이다. odroid가 포화돼 외부 예보 한 페이지가 약 100초 걸리면(2026-11-02) root
+    `.env`에서 올린다(n150 운영 300).
   - weather 쪽 짝: odroid weather의 `KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED=true`(7.3c)와, n150 root `.env`의
     `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`이 odroid weather가 실제로 쓰는 값과 같아야 한다. 어긋나면 Map run이 인증 실패로
     끝나고 Valkey는 이전 세대를 유지한다. 비교는 7.3처럼 값을 출력하지 않고 불리언으로만 한다.
