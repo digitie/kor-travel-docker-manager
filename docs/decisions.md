@@ -1769,12 +1769,15 @@ D1–D8 결정·파일/권한·CLI·실패 모드·단계별 미완 범위는 [�
   cutover/rollback 창은 공용 plane daemon·webserver를 부수 효과로 다시 만든다. production에서 `ensure`는 거부되므로 공용
   PostgreSQL을 다시 만드는 Manager 경로는 없다 — 계획 창의 손 명령이다. 경로별 효과와 경로가 없는 컨테이너 목록은
   `docs/prod-deployment.md` §11.
-- 공용 Dagster plane의 drift 판정은 logging을 보지 않아 재구축·`dagster-plane converge`가 plane을 다시 만들지 않는다.
+- 공용 Dagster plane의 drift 판정이 render의 `logging`과 컨테이너 `HostConfig.LogConfig`를 대조한다(2026-11-03 소유자
+  결정) — 설치 뒤 첫 재구축·`dagster-plane converge`가 webserver·daemon을 한 번 다시 만든다(서비스마다 1~2분 중단, 진행 중
+  run은 끊기지 않는다). render가 `logging`을 말하지 않으면 보지 않는다. gateway는 그 경로 밖이다.
 - odroid의 컨테이너는 이 compose가 아니라 저장소 밖 compose(`kor-travel-odroid` project)와 transport 저장소 compose로 돈다 —
   이 결정만으로는 odroid에 상한이 생기지 않는다.
 
 ### 후속
 - (open) 공용 PostgreSQL을 계획 창에서 다시 만든다(shared-postgres-onboarding §6.1 C9).
-- (open) plane drift 판정이 `HostConfig.LogConfig`를 볼지 — 보면 설치 뒤 첫 재구축·converge가 plane을 다시 만든다. 소유자 결정.
+- (done 2026-11-03) plane drift 판정이 `HostConfig.LogConfig`를 본다 — 소유자 결정, `_plane_log_config_drift`.
+- (open) 공용 Dagster gateway의 재생성 창(plane drift 경로 밖).
 - (open) rustfs·prometheus·grafana·cadvisor·Concierge(activate-concierge 전)의 재생성 창.
 - (open) odroid `/opt/kor-travel-odroid/compose.yml`·`compose-mon.yml`(T-OPS-01b 이관과 함께)과 transport 저장소 compose에 같은 정의.

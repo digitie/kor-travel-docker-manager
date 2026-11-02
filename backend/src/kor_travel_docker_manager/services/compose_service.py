@@ -2337,6 +2337,40 @@ _DURATION_UNIT_SECONDS: Final = {
 }
 
 
+def _plane_log_config_drift(rendered: object, observed: object) -> list[str]:
+    """render의 `logging`과 떠 있는 컨테이너의 `HostConfig.LogConfig`가 어디서 다른가(ADR-61). 비면 같다.
+
+    render가 `logging`을 말하지 않으면 보지 않는다 — 그때는 daemon 기본값이 정하고 compose도 그것을 재생성 사유로
+    보지 않는다. driver를 말하지 않으면 options만 본다(driver는 daemon 기본값). options는 Docker가 문자열 그대로
+    싣는다(`docker compose config --format json`의 값도 문자열이다). 이유에는 driver 이름과 다른 option **이름**만
+    싣는다 — driver option에는 주소·토큰이 올 수 있다.
+    """
+
+    if rendered is None:
+        return []
+    if not isinstance(rendered, Mapping):
+        return ["render logging is invalid"]
+    options = rendered.get("options") or {}
+    if not isinstance(options, Mapping):
+        return ["render logging is invalid"]
+    if observed is None:
+        return ["logging config is not readable"]
+    running_driver, running_options = cast(tuple[str, Mapping[str, str]], observed)
+    reasons: list[str] = []
+    driver = rendered.get("driver")
+    if driver is not None and str(driver) != running_driver:
+        reasons.append(f"logging driver: running {running_driver or '-'} != rendered {driver}")
+    wanted = {str(key): str(value) for key, value in options.items()}
+    differing = sorted(
+        key
+        for key in set(wanted) | set(running_options)
+        if wanted.get(key) != running_options.get(key)
+    )
+    if differing:
+        reasons.append("logging options differ: " + ", ".join(differing))
+    return reasons
+
+
 def _plane_file_digest_keys(render: Mapping[str, Any]) -> frozenset[str]:
     """plane 서비스가 붙인 파일의 내용 digest env 이름 — render의 healthcheck가 그 이름으로 붙인 파일과 대조한다.
 
@@ -6074,7 +6108,8 @@ class ComposeService:
     ) -> bool:
         """떠 있는 daemon·webserver가 frozen render가 만들 컨테이너와 같은가 — 그러면 `up`하지 않는다.
 
-        config hash는 쓰지 않는다(frozen·평범한 render가 다르게 낸다). 대신 재생성을 부를 실행 형태를 직접 본다:
+        config hash는 쓰지 않는다(frozen·평범한 render가 다르게 낸다). 대신 재생성을 부를 실행 형태를 직접 본다
+        (2026-11-03부터 render가 `logging`을 실으면 컨테이너의 `HostConfig.LogConfig`도 — ADR-61, `_plane_log_config_drift`):
         이미지(render의 `image:` 참조가 가리키는 image ID와 컨테이너의 `.Image`), render의 env 전부(공용 URL 앵커,
         heartbeat tolerance, `*_DIGEST` — 컨테이너 env가 그 값들을 그대로 싣는다), command·entrypoint, **bind mount**
         (render의 long-syntax bind마다 같은 컨테이너 경로의 마운트가 같은 source·같은 읽기 전용 여부 — 2026-10-17: 내용
@@ -6176,6 +6211,7 @@ class ComposeService:
                     f"bind {target} is mounted but not rendered"
                     for target in sorted(set(mounts) - rendered_targets)
                 )
+            reasons.extend(_plane_log_config_drift(render.get("logging"), observed.get("log_config")))
         return drift
 
     @staticmethod
@@ -6214,6 +6250,8 @@ class ComposeService:
             if separator:
                 env[key] = value
         entrypoint = config.get("Entrypoint")
+        host_config = document.get("HostConfig")
+        log_config = host_config.get("LogConfig") if isinstance(host_config, Mapping) else None
         mounts = {
             str(mount.get("Destination")): (str(mount.get("Source") or ""), mount.get("RW") is False)
             for mount in document.get("Mounts") or []
@@ -6226,6 +6264,15 @@ class ComposeService:
             "entrypoint": None if entrypoint is None else [str(word) for word in entrypoint],
             #: 컨테이너 경로 → (source, 읽기 전용) — bind만.
             "mounts": mounts,
+            #: `HostConfig.LogConfig`의 (driver, options). 읽을 수 없으면 ``None``.
+            "log_config": (
+                (
+                    str(log_config.get("Type") or ""),
+                    {str(k): str(v) for k, v in (log_config.get("Config") or {}).items()},
+                )
+                if isinstance(log_config, Mapping)
+                else None
+            ),
             "running": state.get("Running") is True,
             "restarting": state.get("Restarting") is True,
             "health": (

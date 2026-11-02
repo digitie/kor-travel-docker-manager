@@ -1344,21 +1344,37 @@ Manager 변경 기계는 기존 G와 frozen bind 재검증을 사용한다. 외�
 |---|---|---|
 | `rebuild-pinned`(새 pair) | Map·PinVi runtime 전부와 Valkey | runtime은 원래 다시 만드는 경로다. Valkey는 `up -d --no-deps --wait`(force 없음)라 평소엔 무연산인데 이번엔 config hash가 달라 한 번 다시 만든다 |
 | `rebuild-pinned`(같은 pair 수렴) | **Valkey·Map API/UI/code-server·PinVi API/web/code-server를 한 번 다시 만든다** | `up -d --no-deps`라 compose가 config hash 차이로 다시 만든다. 평소의 무중단 수렴이 이번 한 번은 서비스별 짧은 재시작이다. code-server 재생성은 진행 중 run을 끊는다(preflight가 관련 run을 막는다). Valkey는 AOF·RDB로 데이터를 유지한다 |
-| `rebuild-pinned`·`dagster-plane converge`의 공용 Dagster plane | **다시 만들지 않는다** | drift 판정(`_shared_plane_drift`)은 이미지·env·command·entrypoint·bind만 보고 logging은 보지 않는다 — daemon·webserver는 `current`로 남아 상한을 받지 못한다. gateway는 두 경로 밖이다 |
+| `rebuild-pinned`·`dagster-plane converge`의 공용 Dagster plane | **공용 webserver·daemon을 한 번 다시 만든다**(2026-11-03 소유자 결정) | drift 판정(`_shared_plane_drift`)이 render의 `logging`과 컨테이너의 `HostConfig.LogConfig`도 대조한다(`logging options differ: max-file, max-size`). 다시 만드는 호출은 종전과 같은 `up -d --no-deps <webserver> <daemon>` 하나다. 재구축에서 daemon이 **멈춰 있으면** 멈춘 채 두는 종전 규칙대로 webserver만 다시 만든다(daemon은 다음에 그것을 켜는 경로에서). 다음 실행은 무연산이다. gateway는 이 경로 밖이다(아래) |
 | `scripts/dagster-shared-cutover.sh <target> cutover|rollback` | 공용 daemon·webserver | 평범한 render로 `compose up -d --no-deps <daemon> <webserver>`를 부르므로 config hash 차이로 둘을 다시 만든다 — 다음 전환·되돌리기 창에 plane 재시작이 **부수 효과로** 따른다 |
 | `ktdctl <target>` ensure | **production에서는 거부된다**(`ensure_target`: "production ensure is not permitted") | local 모드에서만 `up -d <services>`(`--no-deps` 없음)가 이름 붙은 서비스와 의존 중 config hash가 바뀐 것 전부를 다시 만든다 — 거기서는 `services`에 공용 PostgreSQL을 둔 target(geo·conc·map·pinvi·weather·dagster·`all`)이 공용 PostgreSQL까지 다시 만든다 |
 | UI/API 컨테이너 설정 변경·reset(`update_container_config`·`reset_container_config`) | 그 서비스 하나(`up -d --force-recreate --no-deps`) | 이전부터 늘 다시 만들던 경로다(이 변경과 무관하게). production에서 허용된다. 공용 PostgreSQL에도 닿는다 — `CHECKPOINT`도 창 확인도 없으므로 **공용 PostgreSQL에는 쓰지 않는다** |
 | `compose-boundary activate-concierge` | Concierge 네 서비스 | `--force-recreate`라 원래 다시 만든다 — 상한을 받는다 |
 
+**설치 뒤 첫 재구축(또는 `dagster-plane converge --confirm`)의 plane 단계**: 공용 webserver와 daemon을 차례로 다시 만든다.
+둘 다 `stop_grace_period`가 없어 Docker 기본 10초 안에 멈추고, 새 컨테이너는 이미지·설정이 그대로라 곧바로 뜬다. 예상
+중단은 서비스마다 **1~2분**(webserver: workspace를 다시 실을 때까지 Dagster UI·GraphQL 불가, healthcheck `start_interval`
+5s; daemon: 그동안 스케줄·sensor·run queue dequeue·run monitoring이 멈춤, healthcheck `start_interval` 45s)이고, 기다림의 상한은
+render healthcheck에서 파생한 945초다(넘으면 재구축은 실패로 멈추고 converge는 종료 코드 2). **진행 중 run은 끊기지 않는다** —
+run worker는 daemon이 아니라 각 code-server 컨테이너 안에서 돈다(`x-dagster-code-server-probe` 주석). 그 1~2분에 걸린 schedule
+tick·queue는 daemon이 다시 뜬 뒤 처리되거나 밀릴 수 있다. n150 `~/preflight.sh rebuild`는 Map·PinVi location(`kortravelmap|pinvi`)의
+STARTED/STARTING run이 있으면 시작을 막는다 — 같은 재구축이 Map·PinVi code-server를 다시 만들기 때문이다. Concierge run은 막지
+않지만 plane 재생성은 그 run을 끊지 않는다. `dagster-plane converge`를 따로 돌릴 때도 같은 preflight(`rebuild`)를 먼저 돌린다.
+
+**odroid**: odroid의 plane 컨테이너는 Manager project가 아니라 `kor-travel-odroid` project다. 거기서 `ktdctl dagster-plane
+converge --dry-run`은 이제 daemon·webserver를 `would_recreate`(logging options differ)로 보고한다 — `--confirm`은 하지 않는다
+(Manager project로 같은 container_name을 만들려다 이름 충돌로 실패한다). odroid plane은 그 host compose에 상한을 넣은 뒤 그
+project로 다시 만든다.
+
 **지금 추적된 경로가 없는 컨테이너**(install + 같은 pair 재구축 뒤에도 상한 없이 남는다): 공용 PostgreSQL, 공용 Dagster
-daemon·webserver·gateway, rustfs, prometheus, grafana, cadvisor, 그리고 `activate-concierge`를 돌리기 전의 Concierge
-넷. ADR-61의 "최대 250 MB"는 **다시 만들어진 뒤**의 상한이다. 각각의 경로는 `docs/tasks.md`(2026-11-03)가 추적한다:
+gateway, rustfs, prometheus, grafana, cadvisor, 그리고 `activate-concierge`를 돌리기 전의 Concierge 넷(재구축이 daemon을
+멈춘 채 둔 경우 daemon도). ADR-61의 "최대 250 MB"는 **다시 만들어진 뒤**의 상한이다. 각각의 경로는 `docs/tasks.md`(2026-11-03)가
+추적한다:
 
 - 공용 PostgreSQL: §6.1 C9(shared-postgres-onboarding)의 계획 창에서 따로 — 수동 `CHECKPOINT` 뒤 설치 root에서
   `docker compose -f docker-compose.yml up -d --no-deps kor-travel-shared-postgres`(`stop_grace_period` 300s, G 밖·C6c 밖의
   손 명령이라 창을 공지하고 한 번만). Manager 명령으로 이것을 하는 길은 없다.
-- 공용 Dagster plane(daemon·webserver·gateway): drift 판정이 logging을 보게 하는 변경은 소유자 결정 대기(ADR-61 후속).
-  그 전에는 다음 cutover/rollback 창의 부수 효과(위 표)나 손 명령뿐이다.
+- 공용 Dagster gateway: plane drift 경로(webserver·daemon) 밖이다 — 다음 cutover/rollback 창도 gateway는 부르지 않는다. 손
+  명령(`up -d --no-deps kor-travel-dagster-gateway`, 상태 없는 nginx라 수 초) 또는 UI 재생성. 로그는 지금 4 KB다.
 - rustfs·prometheus·grafana·cadvisor: Manager 경로 없음 — 손 명령(`up -d --no-deps <service>`) 또는 UI 재생성(rustfs는
   데이터 볼륨 유지, Prometheus·Grafana는 데이터 디렉터리 유지).
 
