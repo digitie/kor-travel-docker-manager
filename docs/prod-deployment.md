@@ -1328,3 +1328,45 @@ Dagster daemon OFF를 해제하지 않는다. 기본 설치 모드의 backend st
 운영 순서는 **Manager 설치 → `sudo -n ktdctl dagster-instance-config show --json`의 정확 네 필드 확인 → 기존 `targets validate --json` 및 plane 수렴 dry-run → 필요한 plane/code-server 공식 배포 → 실제 역할·UI 확인**이다. 새 Manager가 먼저 있어야 Transport PR139의 공식 caller가 show를 사용할 수 있다. caller의 자동 prepare·옛 tracked 파일 fallback은 금지한다. 반환된 전체 `sha256`으로 파일 정합을 확인하고, Compose의 instance digest는 앞 16자리로 유도한다. root state 부모가 0700이므로 일반 사용자 파일 직접 읽기 권한을 가정하지 않는다.
 
 Manager 변경 기계는 기존 G와 frozen bind 재검증을 사용한다. 외부 deploy의 show 재확인과 Docker bind 전체가 같은 G 안에 있다고 보장하지 않는다. 특히 기본 6은 기존 `/opt` alias를 보존하므로 Manager 설치와 외부 배포를 겹치지 않게 조율한다. Odroid 내용 주소 파일도 host 정책을 임의 변경하는 통로가 아니다. 현재 5를 낮추는 튜닝, PG 변경, 실행 중 run 취소는 이 절차에 포함되지 않는다. 원문 env·자격정보·비밀이 포함된 Compose 출력은 기록하지 않는다.
+
+
+## 11. 컨테이너 로그 상한 적용(ADR-61)
+
+`docker-compose.yml`의 `x-logging`(`json-file`, 현재 `max-size` 50m × `max-file` 5)을 restart 정책이 `unless-stopped`인
+서비스 전부(35개, 꺼진 profile 포함)가 받는다. one-shot은 받지 않는다. 로그 설정은 컨테이너를 **만들 때** 고정되므로
+떠 있는 컨테이너는 다시 만들어질 때까지 상한이 없다. 다시 만들면 옛 컨테이너의 로그 파일도 함께 지워진다 — 조사에 필요한
+로그는 그 전에 옮긴다.
+
+**설치만으로 바뀌는 컨테이너는 없다.** trusted 설치는 compose `up`을 부르지 않는다. 설치 뒤 경로별로 일어나는 일(n150,
+`KTDM_DEPLOYMENT_ENVIRONMENT=production`):
+
+| 경로 | 다시 만드는 것 | 비고 |
+|---|---|---|
+| `rebuild-pinned`(새 pair) | Map·PinVi runtime 전부와 Valkey | runtime은 원래 다시 만드는 경로다. Valkey는 `up -d --no-deps --wait`(force 없음)라 평소엔 무연산인데 이번엔 config hash가 달라 한 번 다시 만든다 |
+| `rebuild-pinned`(같은 pair 수렴) | **Valkey·Map API/UI/code-server·PinVi API/web/code-server를 한 번 다시 만든다** | `up -d --no-deps`라 compose가 config hash 차이로 다시 만든다. 평소의 무중단 수렴이 이번 한 번은 서비스별 짧은 재시작이다. code-server 재생성은 진행 중 run을 끊는다(preflight가 관련 run을 막는다). Valkey는 AOF·RDB로 데이터를 유지한다 |
+| `rebuild-pinned`·`dagster-plane converge`의 공용 Dagster plane | **다시 만들지 않는다** | drift 판정(`_shared_plane_drift`)은 이미지·env·command·entrypoint·bind만 보고 logging은 보지 않는다 — daemon·webserver는 `current`로 남아 상한을 받지 못한다. gateway는 두 경로 밖이다 |
+| `scripts/dagster-shared-cutover.sh <target> cutover|rollback` | 공용 daemon·webserver | 평범한 render로 `compose up -d --no-deps <daemon> <webserver>`를 부르므로 config hash 차이로 둘을 다시 만든다 — 다음 전환·되돌리기 창에 plane 재시작이 **부수 효과로** 따른다 |
+| `ktdctl <target>` ensure | **production에서는 거부된다**(`ensure_target`: "production ensure is not permitted") | local 모드에서만 `up -d <services>`(`--no-deps` 없음)가 이름 붙은 서비스와 의존 중 config hash가 바뀐 것 전부를 다시 만든다 — 거기서는 `services`에 공용 PostgreSQL을 둔 target(geo·conc·map·pinvi·weather·dagster·`all`)이 공용 PostgreSQL까지 다시 만든다 |
+| UI/API 컨테이너 설정 변경·reset(`update_container_config`·`reset_container_config`) | 그 서비스 하나(`up -d --force-recreate --no-deps`) | 이전부터 늘 다시 만들던 경로다(이 변경과 무관하게). production에서 허용된다. 공용 PostgreSQL에도 닿는다 — `CHECKPOINT`도 창 확인도 없으므로 **공용 PostgreSQL에는 쓰지 않는다** |
+| `compose-boundary activate-concierge` | Concierge 네 서비스 | `--force-recreate`라 원래 다시 만든다 — 상한을 받는다 |
+
+**지금 추적된 경로가 없는 컨테이너**(install + 같은 pair 재구축 뒤에도 상한 없이 남는다): 공용 PostgreSQL, 공용 Dagster
+daemon·webserver·gateway, rustfs, prometheus, grafana, cadvisor, 그리고 `activate-concierge`를 돌리기 전의 Concierge
+넷. ADR-61의 "최대 250 MB"는 **다시 만들어진 뒤**의 상한이다. 각각의 경로는 `docs/tasks.md`(2026-11-03)가 추적한다:
+
+- 공용 PostgreSQL: §6.1 C9(shared-postgres-onboarding)의 계획 창에서 따로 — 수동 `CHECKPOINT` 뒤 설치 root에서
+  `docker compose -f docker-compose.yml up -d --no-deps kor-travel-shared-postgres`(`stop_grace_period` 300s, G 밖·C6c 밖의
+  손 명령이라 창을 공지하고 한 번만). Manager 명령으로 이것을 하는 길은 없다.
+- 공용 Dagster plane(daemon·webserver·gateway): drift 판정이 logging을 보게 하는 변경은 소유자 결정 대기(ADR-61 후속).
+  그 전에는 다음 cutover/rollback 창의 부수 효과(위 표)나 손 명령뿐이다.
+- rustfs·prometheus·grafana·cadvisor: Manager 경로 없음 — 손 명령(`up -d --no-deps <service>`) 또는 UI 재생성(rustfs는
+  데이터 볼륨 유지, Prometheus·Grafana는 데이터 디렉터리 유지).
+
+**odroid는 이 파일을 쓰지 않는다**(2026-11-03 읽기 전용 확인 — `kor-travel-docker-manager` project 컨테이너가 0개).
+geo·weather·공용 PostgreSQL·공용 Dagster plane은 `kor-travel-odroid` project(`/opt/kor-travel-odroid/compose.yml`과
+`/srv/ktdm-releases/*/images.yml` overlay)로 돈다. node-exporter·cadvisor는 실측상 아직 `kor-travel-odroid-monitoring`
+project(`/opt/kor-travel-odroid/compose-mon.yml`)다 — registry `node` target은 T-OPS-01b 뒤의 좌표
+(`kor-travel-host-monitoring`, `/opt/kor-travel-host-monitoring`)를 적고 있으니 그 이관과 함께 한다. transport는 transport
+저장소의 compose(`docker-compose.yml`·`docker-compose.shared.yml`·`transport.override.yml`·admin compose, 실행 중 컨테이너의
+label은 빌드 디렉터리 사본)로 돈다. odroid에 상한을 주려면 그 파일들(저장소 밖)과 transport 저장소에 같은 `logging` 정의를
+넣어야 한다.

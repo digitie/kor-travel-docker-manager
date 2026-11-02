@@ -1,3 +1,27 @@
+## 2026-11-03 — 상시 서비스 json-file 로그 상한(ADR-61)
+
+- 읽기 전용 감사: n150·odroid의 운영 컨테이너가 모두 `json-file` driver를 상한 없이 쓰고 두 호스트 `daemon.json`에 기본값이
+  없다(n150 공용 Dagster daemon 로그 887 MB). 소유자 선택대로 상한은 `daemon.json`(Docker 재시작 필요)이 아니라 compose에 둔다.
+- `docker-compose.yml`에 `x-logging: &default-logging`(`json-file`, `max-size` 50m, `max-file` 5) 한 자리를 두고, restart 정책이
+  `unless-stopped`인 서비스 35개(꺼진 profile 포함)가 `logging: *default-logging`을 받는다. one-shot 12개는 그대로다. 값은 env로
+  열지 않았다(쓰는 곳이 없다 — ADR-50, Simplicity First). 편집 전후 문서를 중복 키 거부 로더로 키 단위 대조해 `logging` 외 변경이
+  없음을 확인했다(추가 50줄, 삭제 0).
+- 테스트를 먼저 빨갛게 두었다: `test_compose_log_limits.py`는 restart 정책으로 상시 서비스를 파생해 원문 파싱과 실제
+  `docker compose config`(모든 profile) 두 층에서 상한과 단일 정책을 단언한다(서비스 이름 없음). 수정 전 n150에서 3건 실패.
+- 공용 PostgreSQL 허용 목록에 `logging`을 더했고(없으면 C6c가 정본 compose를 거부한다), driver는 `json-file`만 받는다 — 원격
+  driver가 서버 출력을 호스트 밖으로 보내지 못하게 한다(새 실패 모드: 다른 driver가 필요하면 그 검사를 넓혀야 한다).
+- ADR-54 `own` 지문 픽스처는 바뀌지 않았다. 지문은 서비스 이름·env·명령 argv·C6c 표로 만들고 서비스 본문을 보지 않는다.
+- 효과(설치는 compose `up`을 하지 않는다): 같은 pair 수렴도 한 번은 Valkey·Map/PinVi runtime을 다시 만든다. production에서
+  `ensure`는 거부되므로 공용 PostgreSQL을 다시 만드는 Manager 경로는 없다 — 계획 창의 손 명령(UI 설정 변경/reset은
+  `--force-recreate`라 닿지만 CHECKPOINT가 없어 쓰지 않는다). 공용 Dagster plane의 drift 판정은 logging을 보지 않아
+  재구축·converge가 plane을 다시 만들지 않는다(바꾸지 않고 소유자 결정으로 남김; cutover 스크립트는 부수 효과로 다시 만든다).
+  rustfs·모니터링 셋·Concierge는 별도 창. odroid 컨테이너는 이 compose를 쓰지 않는다 — 저장소 밖 `/opt/kor-travel-odroid`
+  compose와 transport 저장소에 같은 정의가 필요하다. 자세히는 `docs/prod-deployment.md` §11.
+- 적대 리뷰(HIGH 없음, MED 2·LOW 4·NIT 2)를 반영했다: production `ensure` 거부를 문서에 바로잡고 cutover 스크립트·UI 재생성
+  경로와 경로 없는 컨테이너 목록을 §11에 더했다. 테스트의 상시 판정을 `on-failure`·`deploy.restart_policy`까지 넓히고(빨간
+  대조군 포함), PostgreSQL `logging` 모양(빈 매핑·driver 생략·문자열·`local`) 거부 사례를 더했다. odroid 모니터링 좌표는 실측
+  (`kor-travel-odroid-monitoring`)과 registry(`kor-travel-host-monitoring`, T-OPS-01b 뒤)가 달라 둘 다 적었다.
+
 ## 2026-11-02 — 1회성 legacy override 이관 명령(stage/retire) 제거
 
 - 소유자 지시로 `ktdctl compose-boundary stage-legacy-override`·`retire-legacy-override`와 그 코드(override·Concierge
