@@ -78,7 +78,7 @@ def _host_limited(services: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def test_every_host_limited_service_pins_memswap_to_the_same_value():
     """`mem_limit`가 호스트별 env인 서비스마다 `memswap_limit == mem_limit`(같은 식) — 상한을 두는 호스트에서 swap으로 새지
-    않게. 범위는 PG·geo cs·weather cs다. concierge scheduler·cs(고정 `mem_limit: 2g`, n150 전용)는 이 규칙 **밖**이다 —
+    않게. 범위는 PG·geo cs·weather cs다. concierge cs(고정 `mem_limit: 2g`, n150 전용)는 이 규칙 **밖**이다 —
     거기에 memswap을 걸면 n150에서 swap 0 효과가 새로 생긴다(PR 본문)."""
     services = _compose()["services"]
     limited = _host_limited(services)

@@ -223,7 +223,7 @@ def retire_legacy_compose_override(
     """legacy override를 이관·archive하고 canonical Concierge를 즉시 재생성한다.
 
     C6c host-wide mutation lock 아래에서 raw/resolved Compose contract를 통과한
-    candidate만 archive한다. archive 성공 뒤에는 같은 lock 안에서 API/MCP/scheduler/UI를
+    candidate만 archive한다. archive 성공 뒤에는 같은 lock 안에서 API/MCP/Dagster code server/UI를
     canonical single-file source로 재생성한다. ``project_root``·runner·``require_root``
     인수는 단위 테스트 격리용이다.
     """

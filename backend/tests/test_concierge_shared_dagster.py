@@ -15,18 +15,19 @@ def documents():
     return yaml.safe_load((ROOT / "docker-compose.yml").read_text()), yaml.safe_load((ROOT / "config/docker-targets.yml").read_text())
 
 
-def test_shared_only_family_and_legacy_scheduler_are_separate():
+def test_shared_only_family_has_no_legacy_scheduler():
     compose, targets = documents()
     family = derive_dagster_family(compose, targets, "conc")
     assert family.shared and family.webserver is None and family.daemon is None
     assert family.legacy == () and family.retired == ()
     assert family.names == family.processes == (family.code_server,)
     assert family.carrier == family.code_server and family.active_daemon is None
-    scheduler = "kor-travel-concierge-scheduler"
-    assert compose["services"][scheduler]["profiles"] == ["legacy-scheduler"]
-    for spec in targets["targets"].values():
-        assert scheduler not in spec.get("services", [])
-        assert scheduler not in spec.get("runtime_services", [])
+    # 옛 APScheduler 롤백 서비스(`ktc.cli scheduler`, `legacy-scheduler` profile)는 2026-11-02에 지웠다 —
+    # 스케줄은 공용 Dagster code location 하나가 갖는다. 이름이 아니라 효과(명령·profile)로 본다.
+    for name, service in compose["services"].items():
+        command = service.get("command")
+        assert not (isinstance(command, list) and command[:4] == ["python", "-m", "ktc.cli", "scheduler"]), name
+        assert "legacy-scheduler" not in service.get("profiles", []), name
     code = compose["services"][family.code_server]
     assert code["build"]["target"] == "dagster"
     assert code["mem_limit"] == "2g" and code["init"] is True
@@ -70,5 +71,4 @@ def test_canonical_activation_matches_default_concierge_runtime():
     projection = _concierge_compose_projection_document(compose)
     selected = projection["services"]
     assert runtime <= set(selected)
-    assert "kor-travel-concierge-scheduler" not in selected
     assert selected["kor-travel-concierge-dagster-code-server"]["build"]["target"] == "dagster"
