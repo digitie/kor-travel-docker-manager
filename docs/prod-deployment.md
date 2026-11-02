@@ -296,7 +296,11 @@ sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin verify; echo $?
   중간에 설치했던 sha를 먼저 결박할 필요도, `rollback`·`rotate-pair`도 없다. Manager만 바뀐 설치는 컨테이너를
   바꾸지 않으므로 같은 pair 수렴(`rebuild-pinned --confirm`, 결과 `outcome: converged`)은 반영 단계가 아니라
   **확인** 단계다: 모든 재구축이 지나는 `prebuild_snapshot`의 C6c 후보 검사를 실제 `.env`로 통과하는지와
-  컨테이너 재생성 0을 본다(ADR-56 설치 뒤에는 `KOR_TRAVEL_CONCIERGE_REPO_DIR`를 켠 채로).
+  컨테이너 재생성 0을 본다(ADR-56 설치 뒤에는 `KOR_TRAVEL_CONCIERGE_REPO_DIR`를 켠 채로). 단 compose가 빌드하는
+  후보 이미지의 build 입력 label(`io.kor-travel-docker-manager.compose-build-sha256`)이 지금 render와 다르면 —
+  그 label을 처음 싣는 설치(2026-11-02) 직후, `.env`의 build arg(`NEXT_PUBLIC_*`) 변경, build 절을 바꾸는 설치 —
+  그 서비스를 다시 빌드하고 이미지 ID가 바뀌므로 결과는 `deployed`(정지·migration 전진을 거치는 전체 경로)다.
+  그 실행은 확인 단계가 아니므로 시간을 잡아 돌린다.
 - 옛 sha를 checkout한 clone에서 **그 sha의 installer를 돌리지 않는다.** I-2 이전 installer는 symlink
   레이아웃을 "deployment .env path must be canonical" 검사로 거부한다(해는 없다). I-1보다 낮게
   내려가려면 §3.0의 역전환을 먼저 한다.
@@ -937,7 +941,9 @@ old image, old manifest를 candidate authority로 쓰지 않는다. source는
    execution 결박은 결과의 `warnings`에만 남고, 대기 중인 pair 회전 intent만 거부한다.
 2. **candidate** — exact source를 materialize하고(이번 pair가 쓰지 않는 옛 source는 지운다), Map builder
    image(pinset tag, 이미 있으면
-   재사용)와 Manager가 build하는 Map UI·PinVi image의 ID를 attest한다. 세 schema head(Map application·Map
+   재사용)와 Manager가 build하는 Map UI·PinVi image의 ID를 attest한다. 뒤의 네 image는 후보 태그가 있고 그 image의
+   build 입력 label이 지금 frozen render의 `build` 절 digest와 같을 때만 재사용하고, 다른 서비스만 하나씩 다시
+   빌드한다(빌드 뒤에도 다르면 배포하지 않고 멈춘다). 세 schema head(Map application·Map
    Dagster·PinVi)는 candidate image에서 관측한다. 여기까지는 DB를 건드리지 않는다.
 3. **판정** — 두 PostgreSQL을 frozen Compose에 맞춰 기동한 뒤 state root의 `deploy-status.json`과
    비교한다. `committed`이고 같은 pair·같은 image·같은 DB identity·같은 head면 빌드·migration·정지 없이

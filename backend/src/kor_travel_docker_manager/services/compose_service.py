@@ -595,7 +595,14 @@ def _local_image_compose_build_sha256(image: str) -> str | None:
     except (OSError, subprocess.SubprocessError) as exc:
         raise DeploymentContractError("candidate image store cannot be inspected") from exc
     if completed.returncode != 0:
-        return None
+        # 없는 태그만 "다시 빌드"로 읽는다. daemon 오류를 없음으로 읽으면 수렴할 재실행이 재빌드와
+        # 전체 경로(정지·migration)가 된다.
+        if completed.returncode == 1 and b"No such image" in completed.stderr:
+            return None
+        raise DeploymentContractError(
+            f"candidate image {image} cannot be inspected"
+            + command_output_tail("stderr", completed.stderr)
+        )
     try:
         labels = json.loads(completed.stdout)
     except (UnicodeError, ValueError) as exc:
@@ -5244,7 +5251,7 @@ class ComposeService:
     ) -> dict[str, Any]:
         """핀된 Map·PinVi pair를 **마이그레이션 전진**으로 배포한다(ADR-51).
 
-        DB는 배포를 넘어 보존된다. 같은 pair를 다시 돌리면 빌드 없이 수렴만 하고, 새
+        DB는 배포를 넘어 보존된다. 같은 pair·같은 build 입력이면 빌드 없이 수렴만 하고, 새
         pair는 멱등 one-shot으로 head까지 올린다. DB를 지우는 길은 ``restart_reason``을
         준 명시적 ``--restart`` 하나다. ``adopt_reason``(``--adopt-live-databases``)은
         지금 떠 있는 DB를 지우지 않고 새 identity 기준으로 받아들인다 — 백업 복원처럼

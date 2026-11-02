@@ -2309,29 +2309,56 @@ def test_a_build_that_does_not_stamp_the_current_inputs_is_refused(
     assert not any(operation[0] in {"stop", "up"} for operation in harness.operations)
 
 
+_NO_SUCH_IMAGE = "Error response from daemon: No such image: repo/x:tag"
+
+
 @pytest.mark.parametrize(
-    ("returncode", "stdout", "expected"),
+    ("returncode", "stdout", "stderr", "expected"),
     (
-        (0, json.dumps({COMPOSE_BUILD_INPUT_LABEL: "d" * 64, "other": "x"}), "d" * 64),
-        (0, json.dumps({"other": "x"}), None),
-        (0, "null", None),
-        (1, "", None),
+        (0, json.dumps({COMPOSE_BUILD_INPUT_LABEL: "d" * 64, "other": "x"}), "", "d" * 64),
+        (0, json.dumps({"other": "x"}), "", None),
+        (0, "null", "", None),
+        (1, "", _NO_SUCH_IMAGE, None),
     ),
 )
 def test_the_build_input_label_is_read_from_the_local_image(
-    monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str, expected: str | None
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    expected: str | None,
 ) -> None:
     calls: list[list[str]] = []
 
     def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
         calls.append(argv)
-        return subprocess.CompletedProcess(argv, returncode, stdout.encode(), b"")
+        return subprocess.CompletedProcess(argv, returncode, stdout.encode(), stderr.encode())
 
     monkeypatch.setattr(compose_service_module.subprocess, "run", run)
 
     assert compose_service_module._local_image_compose_build_sha256("repo/x:tag") == expected
     assert calls and calls[0][:3] == ["docker", "image", "inspect"]
     assert calls[0][-1] == "repo/x:tag"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr"),
+    (
+        # daemon 오류를 "태그 없음"으로 읽으면 수렴할 재실행이 재빌드·전체 경로가 된다.
+        (1, "", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock."),
+        (0, "{not json", ""),
+    ),
+)
+def test_an_unreadable_candidate_image_is_refused_rather_than_rebuilt(
+    monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str, stderr: str
+) -> None:
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(argv, returncode, stdout.encode(), stderr.encode())
+
+    monkeypatch.setattr(compose_service_module.subprocess, "run", run)
+
+    with pytest.raises(DeploymentContractError, match="repo/x:tag"):
+        compose_service_module._local_image_compose_build_sha256("repo/x:tag")
 
 
 def test_a_partial_candidate_build_still_builds_one_service_at_a_time(

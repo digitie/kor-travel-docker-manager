@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services.build_context_export import (
     COMPOSE_BUILD_INPUT_LABEL,
     DockerIgnore,
@@ -468,5 +469,13 @@ def test_compose_document_for_docker_exports_under_manager_state(
         assert context != source
         assert (context / "backend/ktc/dagster/definitions.py").stat().st_mode & 0o004
         assert "build" not in document["services"]["concierge-api"]
+        # 재구축의 재사용 판정은 frozen render의 build 절 digest와 이 label을 비교한다 — Compose stdin에
+        # 실리는 마지막 문서(환경값 `$` escape 뒤)에서도 같아야 무한 재빌드가 없다.
+        transported = compose_service_module._escape_materialized_compose_environment_values(
+            document
+        )
+        frozen_build = _compose_document(source)["services"]["concierge-dagster"]["build"]
+        labels = transported["services"]["concierge-dagster"]["build"]["labels"]
+        assert labels[COMPOSE_BUILD_INPUT_LABEL] == compose_build_input_sha256(frozen_build)
     # Compose가 끝나면 사본은 지운다.
     assert not context.exists()
