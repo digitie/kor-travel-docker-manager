@@ -48,7 +48,8 @@ def _source() -> dict[str, Any]:
 
 def _is_long_running(service: Mapping[str, Any]) -> bool:
     restart = service.get("restart")
-    if restart is not None and str(restart).strip().lower() != _ONESHOT_RESTART:
+    # YAML 1.1은 따옴표 없는 `no`를 `False`로 읽는다 — 그것도 one-shot이다.
+    if restart is not None and restart is not False and str(restart).strip().lower() != _ONESHOT_RESTART:
         return True
     deploy = service.get("deploy")
     policy = deploy.get("restart_policy") if isinstance(deploy, Mapping) else None
