@@ -136,13 +136,6 @@ containers:
     prod_url_env: KTDM_PROD_URL_CONCIERGE_MCP
     expected_ports:
       - "12602:12602"
-  kor-travel-concierge-scheduler:
-    name: kor-travel-concierge-scheduler-latest
-    compose_service: kor-travel-concierge-scheduler
-    role: concierge-scheduler
-    display_name: Kor Travel Concierge Scheduler
-    connection: internal scheduler
-    expected_ports: []
   kor-travel-concierge-dagster-code-server:
     name: kor-travel-concierge-dagster-code-server-latest
     compose_service: kor-travel-concierge-dagster-code-server
@@ -1145,10 +1138,8 @@ compose_binds:
 # `services/host_edges.py`)는 소유자(`compose_service.compose_service_owners` — target `services`·`init_steps`·pinned
 # 재구축 one-shot·Dagster family) 없는 서비스를 거부한다 — 이 목록만 예외다. compose에서 사라진 이름이 남아 있어도 거부한다.
 #   kor-travel-shared-db-init-transport: 운영자가 설치 루트에서 1회 run한다(prod-deployment §9.2 4a′) — target 밖
-#   kor-travel-concierge-scheduler: profile 서비스(기본 기동 아님), 어느 target의 services에도 없다
 unowned_services:
   - kor-travel-shared-db-init-transport
-  - kor-travel-concierge-scheduler
 
 # 현재 release 소유 image의 배포 좌표. target의 lifecycle/depends_on/legacy 범위와 별개다.
 # D-568: services/runtime_services에는 공용 DB·구 monitoring이 있으므로 복사하지 않는다.

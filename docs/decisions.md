@@ -1077,7 +1077,8 @@ code-server를 가리켜야 하며, (3) 프로젝트 하나를 옮길 때 code-s
 
 `conc`는 Dagster webserver/daemon을 새로 만들지 않고 shared-only family로 등록한다.
 code location은 `ktc.dagster.definitions`, loopback gRPC는 `12603`이다. 기존 APScheduler는
-`legacy-scheduler` rollback profile로 남고 기본 runtime/target에서 제외한다.
+`legacy-scheduler` rollback profile로 남고 기본 runtime/target에서 제외한다(2026-11-02 갱신: 그 profile
+서비스는 소유자 지시로 compose·registry에서 지웠다 — journal 2026-11-02).
 workspace는 registry/compose에서 유도하고 digest를 갱신한다. canonical child-health/incarnation
 probe와 shared PostgreSQL instance를 그대로 사용한다. location limit 2와 각 Concierge job limit 1을
 추가하며 기존 프로젝트의 cap을 바꾸지 않는다. shared-only의 webserver/daemon None은 허용하지만
@@ -1114,7 +1115,7 @@ kor-travel-concierge-api"로 거부했다. 그 스캔은 Manager `.env`의 **모
 3. 원본이 `NEXT_PUBLIC_*` 컨테이너 env key·build arg에 두는 값 — 브라우저 번들에 실리는 공개 값이다(VWorld key).
 
 가족은 경로가 뿌리를 둔 변수 하나(대개 `*_REPO_DIR`)를 build context나 `env_file` 경로로 쓰는 원본의 서비스다
-(Concierge: API·MCP·공유 Dagster code server·legacy scheduler·UI). 경로의 변수가 하나가 아니거나, 가족이 다른
+(Concierge: API·MCP·공유 Dagster code server·UI — legacy scheduler는 2026-11-02에 지웠다). 경로의 변수가 하나가 아니거나, 가족이 다른
 뿌리를 함께 쓰거나, 가족에 C6c 보호 서비스(topology에서 파생한 Map/PinVi 필수 집합)가 있으면 fail-closed로
 거부한다. 내용 스캔은 값을 percent-decoding해서도 본다. 원본에 없는 `env_file` 자리는 종전대로 전체 집합이다.
 

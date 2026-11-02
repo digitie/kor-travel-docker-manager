@@ -1,3 +1,11 @@
+## 2026-11-02 — 옛 Concierge APScheduler(`legacy-scheduler` profile) 제거
+
+- 소유자 지시("concierge 레거시는 모두 삭제")로 compose의 `kor-travel-concierge-scheduler`(profile `legacy-scheduler`, `ktc.cli scheduler`)와 그 registry container 항목·`unowned_services` 예외·`.env.example`의 `KOR_TRAVEL_CONCIERGE_SCHEDULER_{IMAGE,CONTAINER}`를 지웠다. ADR-55 이후 Concierge 스케줄은 공용 Dagster code location(`ktc.dagster.definitions`) 하나가 갖고, 그 서비스는 기본 runtime·어느 target에도 없는 rollback 전용이었다. n150 컨테이너는 2026-10-06부터 멈춰 있었고 root `.env`에는 그 키가 없다.
+- 테스트는 서비스 이름 대신 효과(`ktc.cli scheduler` 명령·`legacy-scheduler` profile)가 compose 어디에도 없음을 단언한다. ADR-54 `own` 지문 픽스처에서는 그 서비스의 `c6c_describe` 한 줄과 `mutation_parse_up` 항목만 빠졌다(의도한 변경).
+- 남은 Concierge 롤백 경로는 이전 이미지로의 `compose-boundary activate-concierge`(API·MCP·Dagster code server·UI 재생성)다.
+- 적대 리뷰가 찾은 같은 뜻의 낡은 문장(docker-management·dev-environment·prod-deployment·multi-host·ADR-56·`.env.example` 주석·테스트 docstring)도 고쳤다. **남은 것(Concierge 저장소)**: `docs/dagster-adoption.md`의 rollback 절은 `scheduler-backend --activate legacy` 뒤 legacy profile을 띄우라고 한다 — 그 profile이 없으니 따라 하면 스케줄 실행자가 없는 상태가 된다. Concierge PR로 "이전 이미지 재활성화"로 바꿔야 한다.
+- n150 정리(같은 날): 정지 컨테이너 `kor-travel-concierge-scheduler-latest` 삭제, 실행·`.env`·T-207 롤백(`cccommon_rollback.sh`)이 쓰지 않는 Concierge 이미지 16개 태그 삭제, 10월 cutover·rehearsal 증거 디렉터리 삭제.
+
 ## 2026-11-02 — 같은 pair 재구축이 build arg 변경을 반영하지 않던 문제
 
 - VWorld 키 교체에서 root `.env`의 `NEXT_PUBLIC_VWORLD_API_KEY`(Map UI·PinVi web의 build arg)를 바꾸고 같은 pair를 다시 돌렸지만 UI 이미지가 바뀌지 않았다. 후보 태그 `pinned-runtime-candidate-v6/<svc>:<pinset>`는 소스 revision(pinset)에만 묶여 있어 태그가 있으면 빌드를 건너뛰었다. 운영자가 UI 후보 태그를 손으로 지운 뒤에야 반영됐다.

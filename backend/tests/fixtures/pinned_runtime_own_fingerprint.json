@@ -1,5 +1,5 @@
 {
-  "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized; re-captured 2026-10-19 for platform-topology.md §7 stage 4 and remote Geo prerequisite (old Map/PinVi Dagster metadata DB dependencies removed; Geo checked by external health endpoint); 2026-10-23 ADR-59 adds kor-travel-map-valkey (c6c_describe, mutation_parse_up, and one infrastructure `up` before the first stop / converge up); 2026-10-23 PinVi ADR-076 adds the pinvi-api PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN canonical row and lock (c6c_candidate_canonical_api, c6c_contract_locked)",
+  "_source": "fingerprint of kor-travel-docker-manager 6f384ba (pre-ADR-54 derivation), seed-normalized; re-captured 2026-10-19 for platform-topology.md §7 stage 4 and remote Geo prerequisite (old Map/PinVi Dagster metadata DB dependencies removed; Geo checked by external health endpoint); 2026-10-23 ADR-59 adds kor-travel-map-valkey (c6c_describe, mutation_parse_up, and one infrastructure `up` before the first stop / converge up); 2026-10-23 PinVi ADR-076 adds the pinvi-api PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN canonical row and lock (c6c_candidate_canonical_api, c6c_contract_locked); 2026-11-02 the legacy Concierge APScheduler service (kor-travel-concierge-scheduler, legacy-scheduler profile) is removed from compose (one c6c_describe row and its mutation_parse_up entry)",
  "build_compose_environment": {
   "KOR_TRAVEL_MAP_API_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000065",
   "KOR_TRAVEL_MAP_DAGSTER_IMAGE": "sha256:0000000000000000000000000000000000000000000000000000000000000066",
@@ -466,7 +466,6 @@
   "<unrecognized service key sha256:d0b1b3d4>",
   "<unrecognized service key sha256:c1fdb1fe>",
   "<unrecognized service key sha256:330a2af4>",
-  "<unrecognized service key sha256:614f32e0>",
   "<unrecognized service key sha256:064a1a69>",
   "<unrecognized service key sha256:4d92da65>",
   "<unrecognized service key sha256:b75b0605>",
@@ -975,9 +974,6 @@
   ],
   "kor-travel-concierge-mcp": [
    "kor-travel-concierge-mcp"
-  ],
-  "kor-travel-concierge-scheduler": [
-   "kor-travel-concierge-scheduler"
   ],
   "kor-travel-concierge-ui": [
    "kor-travel-concierge-ui"

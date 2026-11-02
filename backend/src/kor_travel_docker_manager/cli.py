@@ -2135,7 +2135,7 @@ def build_parser() -> argparse.ArgumentParser:
     activate_concierge.add_argument(
         "--confirm",
         action="store_true",
-        help="API/MCP/scheduler/UI를 canonical single-file source로 재생성함을 확인합니다.",
+        help="API/MCP/Dagster code server/UI를 canonical single-file source로 재생성함을 확인합니다.",
     )
     activate_concierge.set_defaults(func=_cmd_activate_canonical_concierge)
 

@@ -135,7 +135,7 @@ bare `prometheus` compose 서비스명이 Manager 자신의 `prometheus:` 서비
 `kor-travel-weather-prometheus`로 이름을 바꿔 해소했다(외부 target이었을 때는 "config
 편집 거부" 특례로 무해했지만, internal target에는 그 특례가 적용되지 않는다).
 
-legacy Concierge scheduler와 Map Dagster daemon은 외부 포트를 열지 않는 내부 실행 서비스다.
+Map Dagster daemon은 외부 포트를 열지 않는 내부 실행 서비스다(옛 Concierge scheduler는 2026-11-02에 compose에서 지웠다).
 Geo Dagster webserver는 registry의 일반 runtime 표에는 없는 보조 서비스지만 Compose에서
 `12502`를 사용한다. PinVi의 `srv`와 `main`은 `pinvi` target 별칭이다. PinVi Dagster
 code-server(`12803`, PinVi ADR-069)도 daemon과 같은 내부 전용이다 — webserver/daemon만

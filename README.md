@@ -112,5 +112,5 @@ npm run dev
 
 
 Concierge 공용 Dagster(ADR-55): `conc` 기본 runtime은 `kor-travel-concierge-dagster-code-server`를
-사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용하며 old APScheduler는
-`legacy-scheduler` profile이다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.
+사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용한다. old APScheduler의
+`legacy-scheduler` rollback profile은 2026-11-02에 compose에서 지웠다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.

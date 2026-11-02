@@ -54,7 +54,7 @@ PG DSN loopback(`:589`·`:987`·`:1146`). 이 간선들은 compose `depends_on`�
 | G1 | `host:`는 단일 호스트 또는 `all`뿐이다 | `registry.target_hosts` | NH-1 |
 | G15 | `host:` 생략 = default 호스트(암묵) — `gra`·`prom`·`conc`·`map`·`pinvi` | `registry.target_hosts` | NH-1 |
 | G7 | 교차 호스트 compose `depends_on`(R7) 검사가 테스트에만 있다 | `test_host_mutation_scope.py::_cross_host_declared_dependencies` | NH-2 |
-| G17 | R7이 **소유자 없는 서비스**를 건너뛴다: `kor-travel-shared-db-init-transport`, profile 서비스(`kor-travel-map-db-role-bootstrap`·`kor-travel-map-application-schema`·`pinvi-admin-bootstrap`·`kor-travel-concierge-scheduler`·legacy `*-dagster`/`*-daemon`/weather plane 8개). init step이 돌리는 `kor-travel-shared-db-init-dagster`·`kor-travel-dagster-storage-migrate`·`rustfs-init`는 소유자 계산에서 빠져 있다 | 같은 함수 | NH-2 |
+| G17 | R7이 **소유자 없는 서비스**를 건너뛴다: `kor-travel-shared-db-init-transport`, profile 서비스(`kor-travel-map-db-role-bootstrap`·`kor-travel-map-application-schema`·`pinvi-admin-bootstrap`·legacy `*-dagster`/`*-daemon`/weather plane 8개). init step이 돌리는 `kor-travel-shared-db-init-dagster`·`kor-travel-dagster-storage-migrate`·`rustfs-init`는 소유자 계산에서 빠져 있다 | 같은 함수 | NH-2 |
 | G2 | PG를 뺀 공용 infra(`dagster` plane·`storage` RustFS)가 `all` | `config/docker-targets.yml` | NH-3 |
 | G4 | compose·registry의 default 호스트 기본값에 결박 테스트가 없다 | `docker-compose.yml:875,878,947,950`, `docker-targets.yml:997,1004` | NH-4 |
 | G5 | 옛 `workspace.yaml` 별칭 | 아래 NH-4 범위 | NH-4 |

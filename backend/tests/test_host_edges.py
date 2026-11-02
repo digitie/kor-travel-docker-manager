@@ -79,7 +79,7 @@ def test_an_unowned_service_is_refused_and_a_stale_allowance_is_red() -> None:
     assert any(f"unowned_services lists {gone}, which compose no longer declares" in line for line in host_edge_violations(shrunk, config))
 
 
-@pytest.mark.parametrize("value", [{"kor-travel-concierge-scheduler": "why"}, ["x", "x"], [""], [None], "x"])
+@pytest.mark.parametrize("value", [{"kor-travel-shared-db-init-transport": "why"}, ["x", "x"], [""], [None], "x"])
 def test_unowned_services_is_a_list_of_distinct_names(value: object) -> None:
     compose, config = _documents()
     broken = copy.deepcopy(config)

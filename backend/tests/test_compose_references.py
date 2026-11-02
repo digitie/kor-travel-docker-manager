@@ -362,7 +362,7 @@ def _with_reference(tmp_path: Path, edit: Any) -> Path:
 def test_concierge_env_file_allows_only_what_every_loader_or_the_ui_alone_receives() -> None:
     """기대값은 compose를 읽어 손으로 적은 것이다(ADR-56) — 함수의 계산을 되풀이하지 않는다.
 
-    - 네 loader(API·MCP·code server·scheduler) 모두: `API_KEYS`, RustFS 두 값.
+    - 세 loader(API·MCP·code server) 모두: `API_KEYS`, RustFS 두 값.
     - 파일을 읽지 않는 UI만, 가족 밖 누구도 받지 않음: UI auth 세 값, BFF backend key.
     - `NEXT_PUBLIC_*`로 공개: Concierge UI VWorld key, Map UI VWorld build arg.
     """

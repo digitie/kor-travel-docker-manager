@@ -75,7 +75,7 @@ KOR_TRAVEL_GEO_DAGSTER_PG_URL=postgresql+psycopg2://kor_travel_geo_app:change-me
 | `KOR_TRAVEL_CONCIERGE_SHARED_APP_PASSWORD` · `KOR_TRAVEL_GEO_SHARED_APP_PASSWORD` · `PINVI_APP_DB_PASSWORD` · `KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD` · `KOR_TRAVEL_TRANSPORT_SHARED_APP_PASSWORD` | 공용 instance의 프로젝트별 app role (secret file) |
 | `KOR_TRAVEL_GEO_DOCKER_PG_DSN` | Geo API와 Geo Dagster의 `kor_travel_geo` 접속 DSN (명시적 설정 필수) |
 | `KOR_TRAVEL_GEO_DAGSTER_PG_URL` | Geo Dagster metadata DB 접속 URL (명시적 설정 필수) |
-| `KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL` | Concierge api/mcp/scheduler의 `kor_travel_concierge` 접속 DSN (명시적 설정 필수 — 2026-09-28까지는 비밀번호 없는 기본값으로 떨어져 기동 뒤 인증에서 죽었다) |
+| `KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL` | Concierge api/mcp/Dagster code server의 `kor_travel_concierge` 접속 DSN (명시적 설정 필수 — 2026-09-28까지는 비밀번호 없는 기본값으로 떨어져 기동 뒤 인증에서 죽었다) |
 
 두 번째 차단도 있다. sanctioned 배포(`c6c_deployment.py`)는 secret의 `environment`
 이름이 해결되지 않으면 mutation **전에**
@@ -124,7 +124,7 @@ poetry run ktdctl srv --build
 > [!NOTE]
 > dev 기본 Docker 네트워크는 host 모드(`KTDM_DOCKER_NETWORK_MODE=host`)다. 포트 NAT가 없으므로 각 컨테이너가 호스트 정규 포트에 직접 바인딩하고(컨테이너 내부 포트 = 호스트 포트), 서비스 간 참조는 `127.0.0.1:<포트>`를 사용한다. host networking을 지원하지 않는 Docker 엔진에서는 `KTDM_DOCKER_NETWORK_MODE=bridge`로 바꾼 뒤 서비스 간 hostname을 컨테이너명으로 복원해야 한다.
 
-공식 target은 `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `weather`, `all`이다. `srv`와 `main`은 `pinvi`, `default`는 `all`을 가리키는 별칭이다. `pinvi` target은 PinVi API/Dagster(`pinvi-dagster`, 12802)/Web을 포함한다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 실제 실행 범위는 `depends_on` DAG의 전이 폐포다. 예를 들어 `ktdctl conc --build`는 `geo` 없이 공용 PostgreSQL과 Concierge API/MCP/Scheduler/Web UI를 실행하고, `ktdctl map --build`는 공용 PostgreSQL(Map DB도 거기 산다, ADR-53)과 Geo·Concierge·Map 앱 runtime을 실행한다.
+공식 target은 `storage`, `gra`, `cadv`, `prom`, `geo`, `conc`, `map`, `pinvi`, `weather`, `all`이다. `srv`와 `main`은 `pinvi`, `default`는 `all`을 가리키는 별칭이다. `pinvi` target은 PinVi API/Dagster(`pinvi-dagster`, 12802)/Web을 포함한다. 의존 순서는 `config/docker-targets.yml`에서 읽으며 실제 실행 범위는 `depends_on` DAG의 전이 폐포다. 예를 들어 `ktdctl conc --build`는 `geo` 없이 공용 PostgreSQL과 Concierge API/MCP/Dagster code server/Web UI를 실행하고, `ktdctl map --build`는 공용 PostgreSQL(Map DB도 거기 산다, ADR-53)과 Geo·Concierge·Map 앱 runtime을 실행한다.
 
 추가 target 이름으로 `rustfs`, `grafana`, `cadvisor`, `prometheus`, `kor-travel-geo`, `kor-travel-map`, `python-krtour-map`, `kor-travel-concierge`, `srv`, `pinvi`, `main`도 사용할 수 있다.
 

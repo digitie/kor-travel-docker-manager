@@ -203,10 +203,10 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
    - host 포트: `12505`.
    - 컨테이너 내부 포트: `12505`.
    - 내부 API URL: `http://127.0.0.1:12501`.
-8. **kor-travel-concierge API / MCP / Scheduler / Web UI**:
-   - 컨테이너: `kor-travel-concierge-api-latest`, `kor-travel-concierge-mcp-latest`, `kor-travel-concierge-scheduler-latest`, `kor-travel-concierge-ui-latest`
-   - compose service: `kor-travel-concierge-api`, `kor-travel-concierge-mcp`, `kor-travel-concierge-scheduler`, `kor-travel-concierge-ui`
-   - 목적: 여행 concierge provider, MCP HTTP, scheduler, Web UI 제공.
+8. **kor-travel-concierge API / MCP / Dagster code server / Web UI**:
+   - 컨테이너: `kor-travel-concierge-api-latest`, `kor-travel-concierge-mcp-latest`, `kor-travel-concierge-dagster-code-server-latest`, `kor-travel-concierge-ui-latest`
+   - compose service: `kor-travel-concierge-api`, `kor-travel-concierge-mcp`, `kor-travel-concierge-dagster-code-server`, `kor-travel-concierge-ui`
+   - 목적: 여행 concierge provider, MCP HTTP, 공용 Dagster code location(`ktc.dagster.definitions`, ADR-55), Web UI 제공.
    - host 포트: API `12601`, MCP `12602`, Web UI `12605`.
    - 내부 의존성: `127.0.0.1:11000`(공용 PostgreSQL), `127.0.0.1:12101`(RustFS). Geo에는 의존하지 않는다.
 9. **kor-travel-map API / Dagster / Web UI**:
@@ -289,5 +289,5 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
 
 
 Concierge 공용 Dagster(ADR-55): `conc` 기본 runtime은 `kor-travel-concierge-dagster-code-server`를
-사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용하며 old APScheduler는
-`legacy-scheduler` profile이다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.
+사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용한다. old APScheduler의
+`legacy-scheduler` rollback profile은 2026-11-02에 compose에서 지웠다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.
