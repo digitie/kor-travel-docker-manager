@@ -1,3 +1,17 @@
+## 2026-11-03 — 공용 Dagster plane drift 판정이 로그 설정을 본다(ADR-61 후속)
+
+- 소유자 결정: #580 뒤 공용 webserver·daemon이 재구축·`dagster-plane converge`로는 상한을 받지 못했다(n150 daemon 로그 903 MB,
+  읽기 전용 실측). `_shared_plane_drift`가 render의 `logging`과 컨테이너 `HostConfig.LogConfig`를 대조하게 했다
+  (`_plane_log_config_drift`) — render가 `logging`을 말할 때만, driver를 말하면 driver도, options는 키·값 전부. 이유에는 driver
+  이름과 다른 option 이름만 싣는다(option 값에는 주소·토큰이 올 수 있다). 서비스 이름 없음.
+- 테스트를 먼저 빨갛게 두었다(n150 5건 실패): dry-run 보고·converge 1회 재생성 뒤 무연산·driver 차이·render에 logging이 없을 때
+  무시·재구축 경로·inspect 파싱. 컨테이너를 흉내 내는 두 대역(converge·rebuild 하네스)은 render의 `logging`으로 만든 LogConfig를
+  싣도록 고쳤다 — 안 고치면 대역이 계약 변경을 가린다.
+- 효과·중단 시간·preflight·odroid 주의는 `docs/prod-deployment.md` §11. gateway는 이 경로 밖이라 그대로다(4 KB).
+- 적대 리뷰(HIGH 없음, MED 1·LOW 3·NIT 2) 반영: option 대조를 render 쪽 한 방향으로 바꿨다(Docker가 daemon `log-opts`·log
+  cache 기본값을 합쳐 넣으면 양방향 대조는 다시 만들어도 drift가 남아 재구축마다 plane을 다시 만든다). 로그 설정을 읽을 수
+  없거나 모양이 틀리면 재생성 대신 거부한다. 멈춘 daemon + 로그만 옛것 사례, 문서의 "함께"(동시 재생성)·converge 기다림 약 7.5분.
+
 ## 2026-11-03 — 상시 서비스 json-file 로그 상한(ADR-61)
 
 - 읽기 전용 감사: n150·odroid의 운영 컨테이너가 모두 `json-file` driver를 상한 없이 쓰고 두 호스트 `daemon.json`에 기본값이

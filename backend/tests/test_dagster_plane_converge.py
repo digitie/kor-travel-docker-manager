@@ -59,6 +59,8 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
         lock_error=None,
         # 서비스별 떠 있는 컨테이너: render와 같으면 current. `digest`를 바꾸면 workspace digest만 어긋난다.
         stale={name: True for name in plane.services},
+        # 서비스별 떠 있는 컨테이너의 로그 설정이 ADR-61 전(상한 없음)인가 — `up`이 지운다.
+        log_stale={name: False for name in plane.services},
         health={name: "healthy" for name in plane.services},
         compose_calls=[],
         inspected=[],
@@ -97,11 +99,22 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
         if state.stale[name]:
             env["KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST"] = "0123456789abcdef"
         env.update(state.env_overrides)
+        # Docker가 render의 `logging`으로 만든 컨테이너의 `HostConfig.LogConfig` — 옛 컨테이너는 daemon 기본값(상한 없음).
+        logging = render.get("logging") or {}
+        log_config = (
+            ("json-file", {})
+            if state.log_stale[name]
+            else (
+                str(logging.get("driver") or "json-file"),
+                {str(k): str(v) for k, v in (logging.get("options") or {}).items()},
+            )
+        )
         return {
             "image_id": _IMAGE_ID,
             "env": env,
             "cmd": [compose_service_module._unescape_compose(str(w)) for w in render["command"]],
             "entrypoint": None,
+            "log_config": log_config,
             "running": True,
             "restarting": False,
             "health": state.health[name] if not state.stale[name] else "unhealthy",
@@ -114,6 +127,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
             for name in args:
                 if name in state.stale:
                     state.stale[name] = False
+                    state.log_stale[name] = False
         return {"success": True, "returncode": 0, "stdout": "", "stderr": ""}
 
     for name, replacement in {
@@ -568,14 +582,18 @@ def test_shared_daemon_six_minute_interval_does_not_clip_health_start_window(
 
 
 @pytest.mark.parametrize("daemon_state", ["stopped", "running", "missing", "restarting"])
-@pytest.mark.parametrize("stale_webserver", [False, True])
+@pytest.mark.parametrize("stale_webserver", [False, True, "logs"])
 def test_pinned_rebuild_preserves_an_existing_stopped_daemon(
     harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
-    daemon_state: str, stale_webserver: bool,
+    daemon_state: str, stale_webserver: bool | str,
 ) -> None:
     service, plane, state = harness.service, harness.plane, harness.state
     state.stale = {name: False for name in plane.services}
-    state.stale[plane.webserver] = stale_webserver
+    if stale_webserver == "logs":
+        # ADR-61 뒤 첫 재구축: 둘 다 로그 설정만 옛것이다 — 멈춘 daemon은 그대로 두고 webserver만 다시 만든다.
+        state.log_stale = {name: True for name in plane.services}
+    else:
+        state.stale[plane.webserver] = stale_webserver
     original_inspect = service._inspect_plane_container
     running = {"daemon": daemon_state == "running"}
     rebuilt = {"done": False}
@@ -596,6 +614,7 @@ def test_pinned_rebuild_preserves_an_existing_stopped_daemon(
         for name in args:
             if name in state.stale:
                 state.stale[name] = False
+                state.log_stale[name] = False
             if name == plane.daemon:
                 running["daemon"] = True
                 rebuilt["done"] = True
@@ -647,3 +666,171 @@ def test_paused_rebuild_still_rejects_a_started_daemon_or_unready_location(
             harness.plane, harness.resolved["services"], ("fixture.map",),
             keep_daemon_stopped=True)
     assert harness.state.compose_calls == []
+
+
+# --- 2026-11-03: 로그 설정 drift(ADR-61) — render의 `logging`이 떠 있는 컨테이너의 LogConfig와 다르면 재생성 사유다 ----------
+
+
+def _only_logs_stale(harness: SimpleNamespace) -> None:
+    """env·이미지·bind는 render 그대로이고 로그 설정만 ADR-61 전(daemon 기본값, 상한 없음)인 plane."""
+
+    harness.state.stale = {name: False for name in harness.plane.services}
+    harness.state.log_stale = {name: True for name in harness.plane.services}
+
+
+def test_the_render_declares_log_limits_for_the_plane(harness: SimpleNamespace) -> None:
+    """항진명제 방지 — 아래 대조는 render가 plane에 `logging`을 실을 때만 무엇을 잰다(이름이 아니라 render에서)."""
+
+    for name in harness.plane.services:
+        assert harness.resolved["services"][name].get("logging"), name
+
+
+def test_a_plane_without_the_rendered_log_limits_is_stale(harness: SimpleNamespace) -> None:
+    _only_logs_stale(harness)
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    assert result["outcome"] == "would_recreate"
+    for name in harness.plane.services:
+        options = sorted(harness.resolved["services"][name]["logging"]["options"])
+        assert result["drift"][name] == ["logging options differ: " + ", ".join(options)]
+    assert harness.state.compose_calls == []
+
+
+def test_converge_recreates_a_plane_without_log_limits_once(harness: SimpleNamespace) -> None:
+    _only_logs_stale(harness)
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=False)
+
+    assert result["outcome"] == "recreated" and result["success"] is True
+    assert harness.state.compose_calls == [(("up", "-d", "--no-deps", *harness.plane.services), True)]
+    # 재생성 뒤에는 남은 차이가 없다 — 다음 converge는 무연산이다.
+    assert result["remaining_drift"] == {name: [] for name in harness.plane.services}
+    again = harness.service.converge_shared_dagster_plane(dry_run=False)
+    assert again["outcome"] == "current" and len(harness.state.compose_calls) == 1
+
+
+def test_a_plane_with_the_rendered_log_limits_is_current(harness: SimpleNamespace) -> None:
+    harness.state.stale = {name: False for name in harness.plane.services}
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    assert result["outcome"] == "current"
+    assert result["drift"] == {name: [] for name in harness.plane.services}
+
+
+def test_a_different_logging_driver_is_stale(harness: SimpleNamespace) -> None:
+    harness.state.stale = {name: False for name in harness.plane.services}
+    real = harness.service._inspect_plane_container
+
+    def local_driver(container_name: str, *, label: str) -> Any:
+        observed = dict(real(container_name, label=label))
+        observed["log_config"] = ("local", observed["log_config"][1])
+        return observed
+
+    harness.service._inspect_plane_container = local_driver
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    for name in harness.plane.services:
+        assert result["drift"][name] == ["logging driver: running local != rendered json-file"]
+
+
+def _with_running_log_config(harness: SimpleNamespace, change: Any) -> None:
+    real = harness.service._inspect_plane_container
+
+    def changed(container_name: str, *, label: str) -> Any:
+        observed = dict(real(container_name, label=label))
+        observed["log_config"] = change(observed["log_config"])
+        return observed
+
+    harness.service._inspect_plane_container = changed
+
+
+def test_options_docker_merged_from_daemon_defaults_are_not_drift(harness: SimpleNamespace) -> None:
+    """Docker는 `daemon.json` `log-opts`·log cache 기본값을 컨테이너에 합쳐 싣는다 — 그것을 세면 재구축마다 plane을 다시
+    만든다(적대 리뷰 MED). render가 말한 option만 본다."""
+
+    harness.state.stale = {name: False for name in harness.plane.services}
+    _with_running_log_config(
+        harness, lambda log: (log[0], {**log[1], "compress": "true", "cache-disabled": "false"})
+    )
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=False)
+
+    assert result["outcome"] == "current" and harness.state.compose_calls == []
+
+
+@pytest.mark.parametrize("unreadable", [None, ["json-file", {}], ("json-file", None)])
+def test_an_unreadable_log_config_is_refused_not_recreated(
+    harness: SimpleNamespace, unreadable: Any
+) -> None:
+    harness.state.stale = {name: False for name in harness.plane.services}
+    _with_running_log_config(harness, lambda _log: unreadable)
+
+    with pytest.raises(DeploymentContractError, match="log config"):
+        harness.service.converge_shared_dagster_plane(dry_run=False)
+    assert harness.state.compose_calls == []
+
+
+def test_a_render_without_logging_does_not_compare_it(harness: SimpleNamespace) -> None:
+    """render가 `logging`을 말하지 않으면 daemon 기본값이 정한다 — 그것은 drift가 아니다(일반 규칙, 이름 없음)."""
+
+    _only_logs_stale(harness)
+    for name in harness.plane.services:
+        harness.resolved["services"][name].pop("logging")
+
+    result = harness.service.converge_shared_dagster_plane(dry_run=True)
+
+    assert result["outcome"] == "current"
+
+
+def test_rebuild_plane_convergence_recreates_a_plane_without_log_limits(
+    harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """재구축 안의 plane 수렴도 같은 판정이다 — 로그 설정만 다른 plane을 한 번 다시 만든다."""
+
+    service, plane = harness.service, harness.plane
+    _only_logs_stale(harness)
+    calls = []
+
+    def compose(args, **kwargs):
+        del kwargs
+        calls.append(tuple(args))
+        for name in args:
+            if name in harness.state.log_stale:
+                harness.state.log_stale[name] = False
+        return {"success": True}
+
+    monkeypatch.setattr(service, "_run_pinned_runtime_rebuild_compose", compose)
+    monkeypatch.setattr(service, "_frozen_shared_plane", lambda _: (
+        plane, harness.resolved["services"], ("fixture.map",)))
+    monkeypatch.setattr(compose_service_module, "installed_location_owners", lambda: {
+        "fixture.map": SimpleNamespace(target="map")})
+    monkeypatch.setattr(service, "_require_plane_location_owners_fenced", lambda *_: None)
+    monkeypatch.setattr(service, "_query_shared_plane_locations", lambda *_: {
+        "fixture.map": "RepositoryLocation"})
+    topology = SimpleNamespace(shared_dagster_slots=("map",), families={
+        "map": SimpleNamespace(target="map", shared=True)})
+
+    service._converge_shared_dagster_plane(runtime_transaction=SimpleNamespace(), topology=topology)
+
+    assert calls == [("up", "-d", "--no-deps", *plane.services)]
+    assert not any(service._shared_plane_drift(plane, harness.resolved["services"]).values())
+
+
+def test_inspect_reads_the_log_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    document = {
+        "Image": "sha256:" + "a" * 64,
+        "Config": {"Env": [], "Cmd": [], "Entrypoint": None},
+        "HostConfig": {"LogConfig": {"Type": "json-file", "Config": {"max-size": "50m", "max-file": "5"}}},
+        "State": {"Running": True, "Restarting": False},
+    }
+    monkeypatch.setattr(
+        compose_service_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(document), stderr=""),
+    )
+    observed = ComposeService._inspect_plane_container("c", label="c")
+    assert observed["log_config"] == ("json-file", {"max-size": "50m", "max-file": "5"})
+    del document["HostConfig"]
+    assert ComposeService._inspect_plane_container("c", label="c")["log_config"] is None
