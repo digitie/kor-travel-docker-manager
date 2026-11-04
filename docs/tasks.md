@@ -26,6 +26,8 @@
 
 # TASKS — 활성 작업
 
+- [ ] **T-MGR-PINVI-USER-LIMIT — Pinvi #653 환경 전달**. 실제 Compose 렌더·독립 두 리뷰·CI 뒤 병합한다. 운영 적용은 Claude Code 최종 검증으로 남긴다. [계약](pinvi-user-rate-limit-delivery.md).
+
 - [ ] **T-MGR-HOST-INSTANCE — 외부 consumer 실제 적용 후속**. 제품559의 두 독립 리뷰·정확 CI·n150/Odroid 정상 설치·양 호스트 공개 TLS12개씩과 현재 Docker running19개씩의 공개 API 정합은 수용했다. Odroid의 PG18 호환 Manager `f368af3e` 공식 설치·공개 UI12도 수용했으며 n150은 동일 제품 `d1468213`를 유지했다([후속 운영 기록](reports/2026-10-28-manager-pg18-normal-install.md)). 남은 Transport139 등 서비스별 정본 show 소비와 별도 명시적 plane/code-server 적용은 각 운영 수용과 구분한다. 현재 plane·Weather job을 바꾸지 않은 설치와 구분한다. [운영 기록](reports/2026-10-27-manager559-two-host-normal-install.md), [계약](host-dagster-instance-config.md).
 
 
