@@ -18,6 +18,8 @@
 
 ---
 
+Pinvi 사용자별 요청 상한 환경 전달은 [설정 계약](pinvi-user-rate-limit-delivery.md)을 따른다.
+
 ## 2. 현재 코드 수준
 
 | 영역 | 현재 상태 | 보완 기준 |

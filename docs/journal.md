@@ -1,3 +1,8 @@
+## 2026-11-05 — Pinvi #653 사용자별 요청 상한 설정 전달
+
+- Manager 소유 pinvi-api 환경에 JSON 설정을 전달한다. 미설정·빈 값 기본은 {}이며 인증·상한 검증은 Pinvi 책임이다. 실제 UUID·운영 값은 저장하지 않는다.
+- 회귀 3건이 바인딩 누락으로 실패한 것을 먼저 확인했다. WSL Compose config 렌더와 독립 두 리뷰·CI 뒤 병합하며, 운영 설치·재시작·기존 override 수정은 수행하지 않는다.
+
 ## 2026-11-03 — 공용 Dagster plane drift 판정이 로그 설정을 본다(ADR-61 후속)
 
 - 소유자 결정: #580 뒤 공용 webserver·daemon이 재구축·`dagster-plane converge`로는 상한을 받지 못했다(n150 daemon 로그 903 MB,
