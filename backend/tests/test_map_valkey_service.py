@@ -8,6 +8,7 @@ Valkey 서비스의 `--bind`·`--port`·healthcheck·`VALKEYCLI_AUTH`와 대조�
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -122,8 +123,12 @@ def test_the_server_keeps_state_without_eviction() -> None:
 _MIN_SNAPSHOT_INTERVAL_SECONDS = 900
 
 
-def _save_rules(argv: list[str]) -> list[tuple[int, int]]:
-    words = _flag(argv, "--save").split()
+def _save_rules(service: dict[str, Any]) -> list[tuple[int, int]]:
+    """`--save "<초> <변경> …"` — 셸 인용 안의 값 전체(`_server_argv`는 공백으로 자른다)."""
+    script = service["command"][-1]
+    values = re.findall(r'--save "([^"]*)"', script)
+    assert len(values) == 1, values
+    words = values[0].split()
     assert words and len(words) % 2 == 0, words
     return [(int(words[i]), int(words[i + 1])) for i in range(0, len(words), 2)]
 
@@ -134,7 +139,7 @@ def test_persistence_is_rdb_only_with_infrequent_snapshots() -> None:
     argv = _server_argv(valkey)
     assert _flag(argv, "--appendonly") == "no"
     assert "--appendfsync" not in argv
-    rules = _save_rules(argv)
+    rules = _save_rules(valkey)
     assert rules, "RDB가 꺼지면 재시작 때 상태가 비어 503이다"
     for seconds, changes in rules:
         assert seconds >= _MIN_SNAPSHOT_INTERVAL_SECONDS, rules
