@@ -139,12 +139,31 @@ def test_persistence_is_rdb_only_with_infrequent_snapshots() -> None:
     for seconds, changes in rules:
         assert seconds >= _MIN_SNAPSHOT_INTERVAL_SECONDS, rules
         assert changes >= 1, rules
+    # 정상 종료(SIGTERM)는 마지막 스냅샷을 쓴다 — 그것을 끄는 설정이 끼어들면 위 간격이 곧 손실 범위가 된다.
+    assert "nosave" not in " ".join(argv)
     # 종료 때 마지막 스냅샷을 기다린다(docker 기본 10초는 디스크 대기 중 SIGKILL로 끊을 수 있다).
-    assert int(str(valkey["stop_grace_period"]).rstrip("s")) >= 60
+    assert _seconds(str(valkey["stop_grace_period"])) >= 60
+
+
+def _seconds(duration: str) -> int:
+    """compose duration(`60s`·`1m30s`·`2m`)을 초로."""
+    total, number = 0, ""
+    for char in duration:
+        if char.isdigit():
+            number += char
+            continue
+        assert number and char in "hms", duration
+        total += int(number) * {"h": 3600, "m": 60, "s": 1}[char]
+        number = ""
+    assert not number, duration
+    return total
 
 
 def _api_consumers(services: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """요청 경로에서 Valkey를 읽는 소비자 — Map API 서버 env(``KOR_TRAVEL_MAP_API_HOST``)를 받는 것."""
+    """요청 경로에서 Valkey를 읽는 소비자 — Map API 서버 env(``KOR_TRAVEL_MAP_API_HOST``)를 받는 것.
+
+    그 env가 없는 소비자는 쓰는 쪽으로 분류돼 10초를 요구받는다 — 새 읽기 소비자를 더하면 여기를 본다.
+    """
     return {
         name: service
         for name, service in _consumers(services).items()

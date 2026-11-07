@@ -743,7 +743,7 @@ Map은 weather·transport의 현재·예보 상태(와 weather 하루 세 구간
   (`[A-Za-z0-9._~-]`)만 쓴다 — URL에 그대로 들어가므로. 다르면 Valkey가 `exit 64`로 기동을 거부한다(값은 출력하지
   않는다). 서버에는 `VALKEYCLI_AUTH` env로 들어가 stdin 설정(`valkey-server -`)으로 넘어가므로 호스트 `ps`의 argv에
   보이지 않는다. 생성은 `openssl rand -hex 32`처럼 hex로 한다.
-- **설정.** `maxmemory 1gb`, `maxmemory-policy noeviction`, RDB만(`save 3600 1`, `appendonly no` — ADR-59 3 개정),
+- **설정.** `maxmemory 1gb`, `maxmemory-policy noeviction`, RDB만(`save 900 1`, `appendonly no` — ADR-59 3 개정),
   code-server만 `KOR_TRAVEL_MAP_VALKEY_SOCKET_TIMEOUT_SECONDS=10`, `mem_limit`·`memswap_limit` `1536m`, `init: true`, `stop_grace_period: 60s`. healthcheck는 exec
   형식 `valkey-cli -e … ping`이다(`-e` 없이는 오류 응답에도 0으로 끝난다).
 - **데이터.** project 범위 internal named volume `kor-travel-map-valkey-data` → `/data`(MOIS 원천과 같은 규칙 — 아래
