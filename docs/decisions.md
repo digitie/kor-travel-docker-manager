@@ -1659,12 +1659,18 @@ Map ADR-114(2026-10-23)는 weather·transport의 현재·예보 상태(와 weath
    그대로 들어가므로 — 공용 Dagster app 비밀번호와 같은 규칙). 어기면 Valkey가 기동을 거부한다(exit 64). 기동
    스크립트는 `exec` 전에 `VALKEYCLI_AUTH`를 지워 서버 프로세스의 environ에도 남기지 않는다.
 3. **메모리·지속성.** `maxmemory 1gb` + `noeviction`(넘치면 조용히 지우지 않고 쓰기를 실패시킨다), `mem_limit`·
-   `memswap_limit` `1536m`(fork copy-on-write 여유, swap 없음). RDB(`save 3600 1 300 100 60 10000`) + AOF
-   `appendfsync everysec`. 데이터는 project 범위 internal named volume `kor-travel-map-valkey-data`(MOIS 원천과 같은
+   `memswap_limit` `1536m`(fork copy-on-write 여유, swap 없음). **RDB만**(`save 900 1`, `appendonly no` —
+   2026-11-07 개정. 처음에는 RDB `save 3600 1 300 100 60 10000` + AOF `everysec`였는데 n150에서 사흘에 53 GB를 써
+   같은 SATA SSD의 flush 대기로 Map 적재 쓰기가 timeout났다. Map ADR-114가 "RDB만으로 충분"이라 했고, 정상 종료는
+   마지막 스냅샷을 쓰므로 15분은 비정상 종료 때 잃는 최대 범위이며 그동안은 직전 세대를 그대로 내고 다음 schedule run이
+   다시 채운다. 지난 `appendonlydir`은 적용 확인 뒤 지운다 — 남겨 두면 나중에 AOF를 다시 켜고 재시작할 때 옛 AOF가
+   새 RDB보다 먼저 읽힌다). 같은 개정으로
+   Map Dagster code-server(쓰는 쪽)만 `KOR_TRAVEL_MAP_VALKEY_SOCKET_TIMEOUT_SECONDS=10`을 받는다 — Map API(읽는 쪽)는
+   기본 2초로 곧바로 503을 낸다. 데이터는 project 범위 internal named volume `kor-travel-map-valkey-data`(MOIS 원천과 같은
    규칙 — `name`·`external` 없음, 격리 스택은 자기 volume을 갖는다)에 둔다. host bind로 두지 않은 이유: C6c 후보 검증은
    **모든** 서비스의 bind source가 이미 있어야 통과하므로, bind로 두면 운영자가 디렉터리를 만들기 전까지 n150의 모든
    C6c 경유 변경(재구축 포함)이 실패한다. n150은 디스크가 하나라 Docker data root가 곧 데이터 디스크다(Valkey를
-   eMMC·NVMe가 나뉜 호스트로 옮기면 다시 본다). `stop_grace_period: 60s`로 마지막 fsync·RDB 저장을 기다린다.
+   eMMC·NVMe가 나뉜 호스트로 옮기면 다시 본다). `stop_grace_period: 60s`로 마지막 RDB 저장을 기다린다.
 4. **프로세스.** 이미지 entrypoint(`docker-entrypoint.sh` — `/data` chown, `setpriv`로 uid 999)를 그대로 거친다. 이미지
    PID 1이던 tini 대신 `init: true`, healthcheck는 exec 형식 `valkey-cli -e -h 127.0.0.1 -p 12704 ping`(ADR-52). `-e`가
    없으면 `valkey-cli`는 NOAUTH·LOADING 오류 응답에도 0으로 끝난다(2026-10-23 n150 실측).
@@ -1708,7 +1714,7 @@ Map ADR-114(2026-10-23)는 weather·transport의 현재·예보 상태(와 weath
   아무것도 멈추기 전에 실패한다 — 떠 있던 Map·PinVi는 그대로다). 비밀번호 문자 규칙은 Valkey 기동에서만 보므로 base64
   비밀번호는 설치는 통과하고 다음 재구축에서 실패한다(값 검사기를 더하지 않았다 — ADR-50; `.env.example`이 hex를 적는다).
 - `maxmemory`가 1 GB라 Map이 새 세대를 다 쓴 뒤 옛 세대를 지우는 동안 순간 사용량이 데이터의 두 배가 된다(예상 0.2~0.5 GB면
-  여유). 그 위에 RDB·AOF rewrite fork의 copy-on-write가 얹혀 `mem_limit` 1536m에 다가갈 수 있다 — Map ADR-114 3단계 키
+  여유). 그 위에 RDB fork의 copy-on-write가 얹혀 `mem_limit` 1536m에 다가갈 수 있다 — Map ADR-114 3단계 키
   설계가 세대 크기를 이 안에 둔다.
 
 ### 후속
