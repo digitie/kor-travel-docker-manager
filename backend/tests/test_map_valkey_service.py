@@ -105,8 +105,6 @@ def test_the_server_keeps_state_without_eviction() -> None:
     argv = _server_argv(valkey)
     assert _flag(argv, "--maxmemory") == "1gb"
     assert _flag(argv, "--maxmemory-policy") == "noeviction"
-    assert _flag(argv, "--appendonly") == "yes"
-    assert _flag(argv, "--appendfsync") == "everysec"
     assert _flag(argv, "--save")
     (volume,) = [volume for volume in valkey["volumes"] if volume.endswith(":" + _flag(argv, "--dir"))]
     # project 범위 internal named volume — host bind면 C6c가 source 부재로 모든 변경을 거부한다(적대 리뷰 H2).
@@ -115,6 +113,62 @@ def test_the_server_keeps_state_without_eviction() -> None:
     assert document["volumes"][volume.split(":", 1)[0]] == {}
     # swap으로 새지 않는다(상한을 넘기면 swap이 아니라 OOM).
     assert valkey["memswap_limit"] == valkey["mem_limit"]
+
+
+#: 스냅샷 사이 최소 간격(초). n150은 SATA SSD 한 장에 공용 PG·test gate가 같이 있어 Valkey 쓰기가 디스크
+#: flush를 다툰다 — 2026-11-04~07 AOF everysec + `save 60 10000`이 사흘에 53 GB를 썼다(weather 세대 교체가
+#: 매번 1만 키를 넘겨 1분마다 스냅샷). 데이터는 원천에서 다시 받는다(Map ADR-114), 정상 종료는 마지막
+#: 스냅샷을 쓰므로(`stop_grace_period`) 이 간격은 비정상 종료 때 잃는 최대 시간일 뿐이다.
+_MIN_SNAPSHOT_INTERVAL_SECONDS = 900
+
+
+def _save_rules(argv: list[str]) -> list[tuple[int, int]]:
+    words = _flag(argv, "--save").split()
+    assert words and len(words) % 2 == 0, words
+    return [(int(words[i]), int(words[i + 1])) for i in range(0, len(words), 2)]
+
+
+def test_persistence_is_rdb_only_with_infrequent_snapshots() -> None:
+    """AOF는 끈다(Map ADR-114: RDB만으로 충분). 스냅샷은 15분보다 자주 찍지 않는다."""
+    valkey = _services()[_SERVICE]
+    argv = _server_argv(valkey)
+    assert _flag(argv, "--appendonly") == "no"
+    assert "--appendfsync" not in argv
+    rules = _save_rules(argv)
+    assert rules, "RDB가 꺼지면 재시작 때 상태가 비어 503이다"
+    for seconds, changes in rules:
+        assert seconds >= _MIN_SNAPSHOT_INTERVAL_SECONDS, rules
+        assert changes >= 1, rules
+    # 종료 때 마지막 스냅샷을 기다린다(docker 기본 10초는 디스크 대기 중 SIGKILL로 끊을 수 있다).
+    assert int(str(valkey["stop_grace_period"]).rstrip("s")) >= 60
+
+
+def _api_consumers(services: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """요청 경로에서 Valkey를 읽는 소비자 — Map API 서버 env(``KOR_TRAVEL_MAP_API_HOST``)를 받는 것."""
+    return {
+        name: service
+        for name, service in _consumers(services).items()
+        if "KOR_TRAVEL_MAP_API_HOST" in (service.get("environment") or {})
+    }
+
+
+_TIMEOUT_ENV = "KOR_TRAVEL_MAP_VALKEY_SOCKET_TIMEOUT_SECONDS"
+#: Map 설정의 기본값(`valkey_socket_timeout_seconds`) — API는 이것을 그대로 쓴다.
+_MAP_DEFAULT_SOCKET_TIMEOUT = 2.0
+
+
+def test_writers_wait_out_disk_stalls_and_readers_stay_fast() -> None:
+    """적재(run worker)는 디스크 대기를 기다리고(10초), 요청 경로(API)는 짧은 기본값으로 곧 503을 낸다."""
+    services = _services()
+    consumers = _consumers(services)
+    readers = _api_consumers(services)
+    writers = {name: service for name, service in consumers.items() if name not in readers}
+    assert readers and writers, (sorted(readers), sorted(writers))
+    for name, service in writers.items():
+        assert float(service["environment"][_TIMEOUT_ENV]) >= 10, name
+    for name, service in readers.items():
+        value = float(service["environment"].get(_TIMEOUT_ENV, _MAP_DEFAULT_SOCKET_TIMEOUT))
+        assert value <= _MAP_DEFAULT_SOCKET_TIMEOUT, name
 
 
 def test_the_probe_is_exec_form_that_fails_on_error_replies() -> None:

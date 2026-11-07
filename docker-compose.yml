@@ -1494,9 +1494,12 @@ services:
   # - 이미지 entrypoint(`docker-entrypoint.sh`)를 그대로 거친다 — `/data`를 valkey(uid 999)에게 chown하고
   #   `setpriv`로 권한을 내린다. 이미지의 PID 1이던 tini 대신 `init: true`(docker-init)가 PID 1이다(ADR-52와 같은 이유).
   # - `maxmemory 1gb` + `noeviction`: 넘치면 조용히 지우지 않고 쓰기를 실패시킨다. `mem_limit`은 그 위에
-  #   AOF rewrite·RDB fork의 copy-on-write 여유를 둔 값이고 swap으로 새지 않게 `memswap_limit`도 같다.
-  # - 지속성은 RDB(`save`)와 AOF(`everysec`)이고 named volume `kor-travel-map-valkey-data`에 둔다. **백업 대상이
-  #   아니다** — 원천(weather·transport)에서 다시 받는다.
+  #   RDB fork의 copy-on-write 여유를 둔 값이고 swap으로 새지 않게 `memswap_limit`도 같다.
+  # - 지속성은 **RDB만**(`save 3600 1`)이고 named volume `kor-travel-map-valkey-data`에 둔다. **백업 대상이 아니다** —
+  #   원천(weather·transport)에서 다시 받는다(Map ADR-114 "RDB만으로 충분"). 2026-11-04~07 n150에서 AOF `everysec`와
+  #   `save 60 10000`(weather 세대 교체가 매번 1만 키를 넘겨 1분마다 스냅샷)이 사흘에 53 GB를 썼고, 같은 SATA SSD의
+  #   flush 대기로 Map 적재의 Valkey 쓰기가 timeout났다. 정상 종료는 마지막 스냅샷을 쓰므로(`stop_grace_period`)
+  #   한 시간 간격은 비정상 종료 때 잃는 최대 범위일 뿐이고, 그 범위는 다음 schedule run이 다시 채운다.
   # - 이미지는 multi-arch index digest다(amd64·arm64가 같은 digest) — 호스트별 이미지 env가 필요 없다.
   kor-travel-map-valkey:
     image: valkey/valkey:9.0-alpine@sha256:187679e3bd4036959631e3f03983ab2ba503ab21e6fd0454d508e909db2ee989
@@ -1505,7 +1508,7 @@ services:
     logging: *default-logging
     init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
-    # 종료 때 AOF fsync와 마지막 RDB 저장을 기다린다(docker 기본 10초는 디스크 대기 중 SIGKILL로 끊을 수 있다).
+    # 종료 때 마지막 RDB 저장을 기다린다(docker 기본 10초는 디스크 대기 중 SIGKILL로 끊을 수 있다).
     stop_grace_period: 60s
     mem_limit: 1536m
     memswap_limit: 1536m
@@ -1529,8 +1532,8 @@ services:
       exec docker-entrypoint.sh valkey-server - \
         --bind 127.0.0.1 --port 12704 --dir /data \
         --maxmemory 1gb --maxmemory-policy noeviction \
-        --save "3600 1 300 100 60 10000" \
-        --appendonly yes --appendfsync everysec <<CONF
+        --save "3600 1" \
+        --appendonly no <<CONF
       requirepass $$PW
       CONF
     # project 범위 internal named volume(MOIS 원천과 같은 규칙 — 아래 최상위 `volumes:`). host bind가 아니므로 운영자가
@@ -1552,7 +1555,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
-      # AOF 적재(LOADING)가 끝나야 healthy다. 1 GB 상한의 적재도 n150에서 1분 안이다.
+      # RDB 적재(LOADING)가 끝나야 healthy다. 1 GB 상한의 적재도 n150에서 1분 안이다.
       start_period: 120s
       start_interval: 2s
   # Map 정본 스크립트를 source staging path에서 read-only로 실행한다. profile 밖의
@@ -1866,6 +1869,9 @@ services:
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
       # Map ADR-114 — run worker(이 컨테이너의 자식)가 weather·transport 상태를 Valkey에 세대 단위로 쓴다.
       KOR_TRAVEL_MAP_VALKEY_URL: *map-valkey-url
+      # 적재 쓰기는 디스크 flush 대기를 기다린다(Map 기본 2초는 n150 sda 포화 때 세대 쓰기를 timeout냈다,
+      # 2026-11-07). 요청 경로인 Map API는 기본 2초 그대로 — Valkey가 멈추면 곧바로 503을 낸다.
+      KOR_TRAVEL_MAP_VALKEY_SOCKET_TIMEOUT_SECONDS: "10"
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}

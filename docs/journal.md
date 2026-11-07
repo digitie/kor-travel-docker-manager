@@ -1,3 +1,11 @@
+## 2026-11-07 — Map Valkey RDB만 + 적재 쓰기 timeout 10초(ADR-59 3 개정)
+
+- n150 sda flush 포화(PSI io full avg60 30%대)의 한 원인이 Map Valkey였다: AOF `everysec` + `save 60 10000`(weather 세대
+  교체가 매번 1만 키를 넘겨 1분마다 스냅샷)이 사흘에 53 GB를 썼다(docker stats BlockIO, rdb_saves 788·aof_rewrites 79).
+  Map 적재가 `세대 쓰기 실패: TimeoutError`(2초)로 죽었다.
+- `appendonly no`, `save 3600 1`. Map ADR-114가 RDB만으로 충분하다고 했고 데이터는 원천에서 다시 받는다. code-server에만
+  socket timeout 10초, API는 기본 2초. 테스트를 먼저 빨갛게 두었다(main compose로 2건 실패).
+
 ## 2026-11-05 — Pinvi #653 사용자별 요청 상한 설정 전달
 
 - Manager 소유 pinvi-api 환경에 JSON 설정을 전달한다. 미설정·빈 값 기본은 {}이며 인증·상한 검증은 Pinvi 책임이다. 실제 UUID·운영 값은 저장하지 않는다.
