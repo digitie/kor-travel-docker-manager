@@ -2,6 +2,9 @@
 
 이 문서는 `kor-travel-docker-manager`의 시스템 아키텍처와 컴포넌트 간 데이터 흐름을 다룬다.
 
+공용 Dagster의 진행 로그 정책과 설정 재적용 경계는
+[공용 Dagster 진행 로그](dagster-progress-logging.md)를 따른다.
+
 ---
 
 ## 1. 개요
@@ -76,7 +79,7 @@ graph TD
 - **Linux/WSL**: 유닉스 소켓 (`unix:///var/run/docker.sock`)을 통해 통신한다.
 - **예외 처리**: Docker 데몬이 구동 중이지 않거나 권한이 없을 경우를 대비해, API 응답 시 503 Service Unavailable 및 정형화된 에러 객체를 반환하도록 설계한다.
 - **사용 범위**: 컨테이너 상태, metrics, logs, inspect, 개별 action은 Docker SDK로 수행한다.
-- **호스트 프로필(계획 — ADR-58 proposed, 미구현)**: Docker 호스트가 둘(n150·odroid)이 되어도 Manager는 **원격 데몬을 다루지
+- **호스트 프로필(ADR-58 accepted, 구현됨)**: Docker 호스트가 둘(n150·odroid)이 되어도 Manager는 **원격 데몬을 다루지
   않는다.** 호스트마다 같은 Manager 인스턴스가 자기 로컬 소켓으로 돌고(`DOCKER_HOST=ssh://`·Manager 간 SSH 없음), 같은 registry·
   같은 `docker-compose.yml`을 읽으며, 차이는 root `.env`의 `KTDM_HOST`(자기 식별, `hosts:` 키)와 호스트별 값뿐이다. 의존 방향에
   "registry `hosts:`·`host:` → 런타임 파생(`connection:` 렌더, 명령의 host 일치 검사)"과 "registry → **커밋된 파생물**(compose
@@ -158,7 +161,7 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
    - 목적: 미디어 자원과 `kor-travel-geo`, `kor-travel-concierge`, `kor-travel-map`, PinVi 원천·업로드 데이터 보관을 위한 공용 S3 호환 오브젝트 스토리지.
    - host 포트: `12101` (S3 API), `12105` (어드민 콘솔).
    - host 및 host-network 프로세스 listen 포트: `12101` (S3 API), `12105` (어드민 콘솔).
-   - 개발용 Compose fallback credential: `RUSTFS_ACCESS_KEY=rustfsadmin`, `RUSTFS_SECRET_KEY=rustfsadmin`.
+   - Compose fallback credential 없음: `RUSTFS_ACCESS_KEY`·`RUSTFS_SECRET_KEY`는 root `.env`에 반드시 둔다(`:?` — 공개 기본값 `rustfsadmin` 퇴역, 2026-10-28). 로컬 개발도 임의 값을 생성해 넣는다.
      운영에서는 반드시 루트 `.env`의 별도 값으로 덮어쓴다.
    - 기본 bucket: `pinvi-media`, `kor-travel-geo`, `kor-travel-concierge`, `krtour-map`, `krtour-uploads`.
 3. **Grafana**:
@@ -200,10 +203,10 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
    - host 포트: `12505`.
    - 컨테이너 내부 포트: `12505`.
    - 내부 API URL: `http://127.0.0.1:12501`.
-8. **kor-travel-concierge API / MCP / Scheduler / Web UI**:
-   - 컨테이너: `kor-travel-concierge-api-latest`, `kor-travel-concierge-mcp-latest`, `kor-travel-concierge-scheduler-latest`, `kor-travel-concierge-ui-latest`
-   - compose service: `kor-travel-concierge-api`, `kor-travel-concierge-mcp`, `kor-travel-concierge-scheduler`, `kor-travel-concierge-ui`
-   - 목적: 여행 concierge provider, MCP HTTP, scheduler, Web UI 제공.
+8. **kor-travel-concierge API / MCP / Dagster code server / Web UI**:
+   - 컨테이너: `kor-travel-concierge-api-latest`, `kor-travel-concierge-mcp-latest`, `kor-travel-concierge-dagster-code-server-latest`, `kor-travel-concierge-ui-latest`
+   - compose service: `kor-travel-concierge-api`, `kor-travel-concierge-mcp`, `kor-travel-concierge-dagster-code-server`, `kor-travel-concierge-ui`
+   - 목적: 여행 concierge provider, MCP HTTP, 공용 Dagster code location(`ktc.dagster.definitions`, ADR-55), Web UI 제공.
    - host 포트: API `12601`, MCP `12602`, Web UI `12605`.
    - 내부 의존성: `127.0.0.1:11000`(공용 PostgreSQL), `127.0.0.1:12101`(RustFS). Geo에는 의존하지 않는다.
 9. **kor-travel-map API / Dagster / Web UI**:
@@ -286,5 +289,5 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
 
 
 Concierge 공용 Dagster(ADR-55): `conc` 기본 runtime은 `kor-travel-concierge-dagster-code-server`를
-사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용하며 old APScheduler는
-`legacy-scheduler` profile이다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.
+사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용한다. old APScheduler의
+`legacy-scheduler` rollback profile은 2026-11-02에 compose에서 지웠다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.

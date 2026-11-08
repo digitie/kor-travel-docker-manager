@@ -220,7 +220,7 @@ if external is not None:
         # Common live CLI를 채택한 로컬 서비스는 legacy sibling probe의 정본이 아니다.
         # 다른 argv는 여전히 집합에 남아 잘못된 probe를 숨기지 않는다.
         legacy = [s for s in proxies if (s.get("healthcheck") or {}).get("test") !=
-                  ["CMD", "python", "-m", "kortravelcommon.grpc_health",
+                  ["CMD", "python", "-I", "-m", "kortravelcommon.grpc_health",
                    flag(words(s), "-p", "--port"), "--check", "live"]]
         probes = {str((((s.get("healthcheck") or {}).get("test") or []) + [None] * 5)[4]) for s in legacy}
         ttls = {str((s.get("environment") or {}).get("DAGSTER_GRPC_PROXY_HEARTBEAT_TTL_SECONDS")) for s in proxies}

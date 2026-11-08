@@ -936,7 +936,7 @@ def test_isolation_sql_names_only_map_databases_and_the_dsn_login(
         'REVOKE CONNECT ON DATABASE "map_app" FROM PUBLIC;',
         "DO $r4_converge$",
         'GRANT CONNECT ON DATABASE "map_app" TO "ktm_feature_service";',
-        'ALTER DATABASE "map_app" CONNECTION LIMIT 38;',
+        'ALTER DATABASE "map_app" CONNECTION LIMIT 55;',
         "DO $r4_readback$",
         "SELECT pg_catalog.pg_terminate_backend(activity.pid)",
     ]
@@ -960,7 +960,7 @@ def test_isolation_sql_names_only_map_databases_and_the_dsn_login(
     (app_readback,) = _do_block(script, "r4_readback")
     assert "WHERE datname = 'map_app'" in app_readback
     assert "ARRAY['ktm_feature_service']::text[]" in app_readback
-    assert "datconnlimit <> 38" in app_readback
+    assert "datconnlimit <> 55" in app_readback
     assert "pinvi" not in script
     # 옛 Map Dagster metadata DB는 R4가 다루지 않는다 — 막힌 DB의 ACL을 다시 쓰지 않는다
     # (platform-topology.md §7 4단계).
@@ -971,9 +971,9 @@ def test_isolation_sql_names_only_map_databases_and_the_dsn_login(
 
 @pytest.mark.parametrize(
     ("usable", "cap"),
-    ((97, 38), (100, 40), (7, 2), (5, 2), (2, 1), (1, 1)),
+    ((97, 55), (100, 57), (7, 3), (5, 2), (2, 1), (1, 1)),
 )
-def test_connection_cap_is_forty_percent_of_usable_slots(usable: int, cap: int) -> None:
+def test_connection_cap_is_fifty_seven_percent_of_usable_slots(usable: int, cap: int) -> None:
     assert database_runtime.map_application_connection_cap(usable) == cap
 
 
@@ -988,8 +988,8 @@ def test_isolation_cap_is_derived_from_the_live_slots(monkeypatch: pytest.Monkey
 
     database_runtime.ensure_map_databases_isolated(_isolation_runtime(), login="ktm_feature_service")
 
-    assert b'ALTER DATABASE "map_app" CONNECTION LIMIT 18;\n' in scripts[0]
-    assert b"datconnlimit <> 18" in scripts[0]
+    assert b'ALTER DATABASE "map_app" CONNECTION LIMIT 26;\n' in scripts[0]
+    assert b"datconnlimit <> 26" in scripts[0]
 
 
 @pytest.mark.parametrize(

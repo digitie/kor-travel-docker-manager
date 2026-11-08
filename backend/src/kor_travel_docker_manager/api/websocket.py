@@ -19,6 +19,7 @@ from kor_travel_docker_manager.services.auth_service import (
     websocket_origin_allowed,
 )
 from kor_travel_docker_manager.services.docker_service import MANAGED_CONTAINERS, docker_service
+from kor_travel_docker_manager.services.status_snapshot import StatusSnapshotUnavailableError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -472,6 +473,8 @@ async def ws_status(websocket: WebSocket):
                 context = refreshed
         except WebSocketDisconnect:
             pass
+        except StatusSnapshotUnavailableError:
+            close_code = WS_CLOSE_TRY_AGAIN_LATER
         except Exception:
             logger.exception("WS status handler failed")
             close_code = WS_CLOSE_INTERNAL_ERROR

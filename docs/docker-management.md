@@ -18,6 +18,8 @@
 
 ---
 
+Pinvi 사용자별 요청 상한 환경 전달은 [설정 계약](pinvi-user-rate-limit-delivery.md)을 따른다.
+
 ## 2. 현재 코드 수준
 
 | 영역 | 현재 상태 | 보완 기준 |
@@ -105,8 +107,8 @@
 | `kor-travel-geo-ui` | `kor-travel-geo-ui-latest` | `kor-travel-geo` admin Web UI | `12505` |
 | `kor-travel-concierge-api` | `kor-travel-concierge-api-latest` | `kor-travel-concierge` API | `12601` |
 | `kor-travel-concierge-mcp` | `kor-travel-concierge-mcp-latest` | `kor-travel-concierge` MCP HTTP | `12602` |
-| `kor-travel-concierge-scheduler` | `kor-travel-concierge-scheduler-latest` | `kor-travel-concierge` scheduler | 내부 실행 |
 | `kor-travel-concierge-ui` | `kor-travel-concierge-ui-latest` | `kor-travel-concierge` Web UI | `12605` |
+| `kor-travel-map-valkey` | `kor-travel-map-valkey` | `kor-travel-map` weather·transport 현재·예보 상태 저장소(Valkey, Map ADR-114 · ADR-59) | `127.0.0.1:12704`(loopback 전용) |
 | `kor-travel-map-api` | `kor-travel-map-api-latest` | `kor-travel-map` admin API | `12701` |
 | `kor-travel-map-dagster` | `kor-travel-map-dagster-latest` | `kor-travel-map` Dagster Webserver | `12702` |
 | `kor-travel-map-dagster-daemon` | `kor-travel-map-dagster-daemon-latest` | `kor-travel-map` Dagster daemon | 내부 실행 |
@@ -167,7 +169,7 @@ KOR_TRAVEL_DOCKER_MANAGER_TARGETS_FILE=/path/to/edited/docker-targets.yml \
 | `cadv` | cAdvisor Exporter | `gra` + cAdvisor Exporter 실행 | `cadvisor`, `exporter`, `metrics-exporter` |
 | `prom` | Prometheus | `cadv` + Prometheus 실행 | `prometheus`, `metrics`, `monitoring` |
 | `geo` | 지오코더/리버스지오코더 | `prom` + `kor-travel-geo` API/Web UI 실행 + 원천 데이터 적재 검증 | `kor-travel-geo`, `geocoder`, `reverse-geocoder` |
-| `conc` | Kor Travel Concierge | `prom` + `kor-travel-concierge` API/MCP/Scheduler/Web UI 실행 (geo 비의존) | `kor-travel-concierge`, `concierge`, `agent` |
+| `conc` | Kor Travel Concierge | `prom` + `kor-travel-concierge` API/MCP/Dagster code server/Web UI 실행 (geo 비의존) | `kor-travel-concierge`, `concierge`, `agent` |
 | `map` | Kor Travel Map | `geo`+`conc` + `kor-travel-map` API/Dagster/Web UI 실행 | `kor-travel-map`, `krtour-map`, `python-krtour-map` |
 | `pinvi` | PinVi | `map` + PinVi API/Dagster/Web UI 실행 | `srv`, `main`, `pinvi` |
 | `all` | 전체 | `storage`부터 `pinvi`·`weather`까지 전체 순서 | `default` |
@@ -379,6 +381,22 @@ ktdctl inspect kor-travel-shared-postgresql --json
 ktdctl srv --build
 ```
 
+**build context는 운영 source 디렉터리가 아니다.** Manager가 Compose에 건네는 문서에서 명시
+build(`build`, `up/create/run --build`) 대상 서비스의 local context는 Manager state root 아래
+임시 사본으로 바뀐다. 사본은 그 context의 `.dockerignore`(Dockerfile 전용 ignore가 있으면 그것)를
+적용하고 디렉터리 `0755`, 파일 `0644`(owner 실행 비트가 있으면 `0755`)로 정규화한다 —
+`*_REPO_DIR`이 owner-only(700/600)여도 이미지 안 코드는 비-root `USER`가 읽을 수 있다. 빌드한 이미지에는
+사본으로 바꾸기 전 `build` 절(보간이 풀린 build arg 포함)의 sha256을 label
+`io.kor-travel-docker-manager.compose-build-sha256`로 싣는다 — pinned 재구축은 이 label이 지금 render와 같은
+후보 이미지만 재사용한다.
+명시 build가 아닌 명령에서는 `build:` 절을 지워 보내므로 이미지가 없을 때 Compose가 운영
+디렉터리에서 조용히 빌드하지 않는다(처음 띄우는 서비스는 `--build`로 올린다). 공용 Dagster plane
+수렴(재구축·`dagster-plane converge`)은 render 이미지가 로컬에 없을 때 `--build`를 스스로 붙인다.
+`ktdctl ensure`는 그러지 않는다 — 설치로 `kor-travel-dagster-host` 태그가 바뀐 뒤에는
+`ktdctl ensure dagster --build`로 올린다(없으면 pull 오류로 컨테이너 변경 전에 실패한다). Concierge
+`compose-boundary activate-concierge`도 `--no-build`로 재생성한다. 구현은
+`services/build_context_export.py`.
+
 #### `ktdctl pin` — Map·PinVi pinned revision registry
 
 pinned revision은 더 이상 소스코드 상수가 아니라 **root 소유 JSON registry 파일**에
@@ -576,39 +594,17 @@ prod 전환 순서는 다음과 같다.
 
 1. 최신 Concierge API/UI를 배포하고 실제 Alembic runner로 `upgrade head`를 실행한다. DB head
    `20260713_0017`과 scope migration `20260713_0016`의 `scope` `NOT NULL`·`read|admin` CHECK를
-   각각 확인한 뒤 API/MCP/scheduler/UI를
+   각각 확인한 뒤 API/MCP/Dagster code server/UI를
    서비스별로 재생성한다. UI의 admin hash/session secret이 비어 있지 않고 실제 로그인 POST가
    200+`Set-Cookie`, 잘못된 비밀번호가 401인지 확인한다.
 2. Concierge 관리 UI/API에서 소비자·owner·발급일을 식별할 수 있는 label로 DB `read` scope 키를
    발급하고, DB에는 hash만 남았으며 발급 audit가 기록됐는지 확인한다.
-3. manager의 gitignore된 prod `.env`는 mode `0600`으로 유지한다. legacy
-   `docker-compose.override.yml`가 남아 있으면 수동 편집·삭제·`docker compose` 실행을 하지 않는다.
-   trusted `/opt` release는 canonical Compose execution root이고 home checkout은 runtime source가 아니다.
-   먼저 root-owned `0600` final legacy override와 고정 sibling Concierge `.env`를
-   `ktdctl compose-boundary stage-legacy-override --source <absolute-path> --confirm`으로 protected C6c
-   state에 snapshot한 뒤, `ktdctl compose-boundary retire-legacy-override --confirm`으로 그 staged 입력의
-   알려진 Geo backup과 Concierge UI source만 이관한다. stage는 Docker/Compose를 호출하거나 home source를
-   삭제하지 않으며 이후 retire/retry도 home 경로를 다시 읽지 않는다. retire는 candidate `.env`를 원자
-   갱신하기 전에 stage 명령은 legacy `env_file`이 exact sibling source의 구형 상대 문자열 또는 exact sibling `path`와 boolean
-   `required: true`만 든 Compose 장형 mapping 한 항목인지 확인한다. 장형의 `format`은 `raw`일 때만 허용하며 다른
-   path·key·format·optional source는 fail-close한다.
-   staged Concierge source가 `API_KEYS`, `APP_ENV`, `API_AUTH_ENABLED`를 전혀 선언하지 않을 때만 각각 이미 있는
-   canonical root `KOR_TRAVEL_CONCIERGE_*` 값을 사용한다. source에서 이 값을 선언했다면 빈 값도 포함해 source 값이
-   필수이며, `KTC_*` UI 인증·session·proxy·origin 값에는 root fallback이 없다. 최종 API key-set/backend key
-   membership·`production`·authentication-enabled 검증은 동일하게 수행한다.
-   candidate의 raw/resolved C6c 검증과 정확한 네 Concierge service recreate는 trusted canonical Compose에서
-   Concierge API/MCP/scheduler/UI와 전이 `depends_on`, 실제 참조한 top-level entity만 추린 root-owned 일시 projection을
-   함께 쓴다. 따라서 아직 materialize하지 않은 Map/PinVi candidate의 explicit guard를 억지로 해석하지 않으며,
-   그 candidate의 값·Compose source·runtime을 Concierge retirement에 유입시키지 않는다.
-   retire는 candidate `.env`를 원자
-   갱신하고 canonical `/opt` Compose를 출력 없이 검증한 뒤에만 같은 protected state 안의 pending snapshot을
-   owner-only archive로 옮긴다. n150의 rebuild 정본은 `rehearsal/rebuildable` mode이므로 stage/retire는 이를
-   PinVi production·Map principal-required contract와 함께 재검증하고 `rebuild-pinned`·pin 회전·M05·installer와
-   같은 host 변경 lock(`/run/lock/kor-travel-docker-manager/global-mutation.lock`, ADR-51 C-2)으로 직렬화한다.
-   lock을 다른 변경이 쥐고 있으면 기다리지 않고 `cannot acquire the Manager mutation lock: ...`으로 종료 코드 2를
-   낸다. mode를 수동으로 production으로 바꾸거나 caller가 project root/state root/lock path를
-   지정할 수 없다. read 키는 `.env`의 단일 변수에만 저장하며 override에 Map API·Dagster·daemon key/base URL
-   literal을 새로 만들지 않는다.
+3. manager의 gitignore된 prod `.env`는 mode `0600`으로 유지한다. trusted `/opt` release는 canonical
+   Compose execution root이고 home checkout은 runtime source가 아니다. `docker-compose.override.yml`는 쓰지 않는다
+   — 옛 legacy override는 2026-08-26 1회성 `stage/retire-legacy-override`로 root `.env`에 이관을 마쳤고 그 두 명령은
+   2026-11-02에 지웠다. Concierge 재생성의 공식 경로는 `ktdctl compose-boundary activate-concierge --confirm` 하나다
+   (아래 6·8, prod-deployment §7). read 키는 `.env`의 단일 변수에만 저장하며 Map API·Dagster·daemon key/base URL
+   literal을 다른 파일에 만들지 않는다.
 4. Dagster·Dagster daemon을 재생성한다. 과거 배포에서 map API에 같은 환경변수가 들어갔다면
    map API도 한 번 재생성해 과거 secret을 제거한다. map API에는 해당 key env가 없음을 확인한다.
    `.env`와 두 수집기 컨테이너의 값을 한 프로세스 안에서 constant-time 비교해
@@ -624,20 +620,19 @@ prod 전환 순서는 다음과 같다.
    가리키는지 확인한다. 데이터가 2페이지보다 적다면 cursor 검증을 합격으로 처리하지 않는다.
 6. 기존 static 키가 BFF와 공유돼 있으면 먼저 BFF/operator key를 회전한다. 새 static admin 키를
    `KOR_TRAVEL_CONCIERGE_API_KEYS=old,new`와 `KOR_TRAVEL_CONCIERGE_BACKEND_API_KEY=new`에 함께
-   반영한다. C6c와 이관 명령은 backend key가 allowlist의 exact member인지 값 비노출으로 검증한다.
+   반영한다. C6c는 backend key가 allowlist의 exact member인지 값 비노출으로 검증한다.
    Concierge API는 `KOR_TRAVEL_CONCIERGE_APP_ENV=production` 및
    `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`를 root authority로 명시해야 하며, 이 둘이 local/false이면
-   이관 명령이 실패한다.
-   이관 명령이 deployment lock 안에서 API/MCP/scheduler/UI를 canonical single-file source로 재생성한 뒤 실제 로그인
-   POST와 BFF 호출을 다시 확인한다. canonical rehearsal/rebuildable과 production 모두 고정 host 변경 lock
-   (`global-mutation.lock`)을 사용한다(ADR-51 C-2). 재생성만 재시도해야 하면
-   `ktdctl compose-boundary activate-concierge --confirm`을 사용한다. production의 일반 `ensure`는 이 경로에 사용할 수 없다.
+   C6c 검증이 재생성 전에 실패한다.
+   `ktdctl compose-boundary activate-concierge --confirm`이 deployment lock 안에서 API/MCP/Dagster code server/UI를
+   canonical single-file source로 재생성한 뒤 실제 로그인 POST와 BFF 호출을 다시 확인한다. canonical
+   rehearsal/rebuildable과 production 모두 고정 host 변경 lock(`global-mutation.lock`)을 사용한다(ADR-51 C-2).
+   production의 일반 `ensure`는 이 경로에 사용할 수 없다.
 7. 모든 smoke가 통과한 뒤에만 `KOR_TRAVEL_CONCIERGE_API_KEYS=new`으로 구 static 키를 제거하고
-   API/MCP/scheduler를 재생성한다. 구 키 401, 새 admin 키의 내부 API 200, read 키의 공급 GET 200·
+   API/MCP/Dagster code server를 재생성한다. 구 키 401, 새 admin 키의 내부 API 200, read 키의 공급 GET 200·
    내부/write 403, UI 로그인 200+`Set-Cookie`를 다시 확인한다.
-8. 성공 시 key/cookie 임시 파일을 즉시 삭제한다. 이관 뒤 override는 owner-only archive로 남아 있으므로
-   수동 restore 대상으로 쓰지 않는다. 실패 시 root `.env`에서 구 static 키를 allowlist에 임시 재등록하고
-   `ktdctl compose-boundary activate-concierge --confirm`으로 API/MCP/scheduler/UI를 재생성하며 incident와 조치
+8. 성공 시 key/cookie 임시 파일을 즉시 삭제한다. 실패 시 root `.env`에서 구 static 키를 allowlist에 임시 재등록하고
+   `ktdctl compose-boundary activate-concierge --confirm`으로 API/MCP/Dagster code server/UI를 재생성하며 incident와 조치
    시점만 기록한다.
 
 2026-07-13 n150 전환에서는 위 절차를 다음 결과로 완료했다.
@@ -663,10 +658,10 @@ Map은 휴게소·주유소·유가를 더 이상 OpiNet·KREX에서 직접 받�
 transport export는 concierge read key(7.2)와 같은 모양으로 배선한다.
 
 - `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN`: 루트 `.env`의 이 한 이름이 유일한 원천이다.
-  base compose가 run worker를 낳는 Map code-server(`kor-travel-map-dagster-code-server`)에만 보간한다.
-  공용 plane의 webserver·daemon, `legacy-dagster` profile의 옛 webserver·daemon, Map API·UI에는 넣지
-  않는다(fetcher를 돌리지 않는 곳에 비밀을 두지 않는다). Map은 이 값을 header
-  `X-Kor-Travel-Transport-Service-Token`으로 보낸다.
+  base compose가 run worker를 낳는 Map code-server(`kor-travel-map-dagster-code-server`)와, 주유소 가격 추이를
+  요청 시점에 transport T4에서 읽는 Map API(`kor-travel-map-api`, 7.3d)에 보간한다. 공용 plane의 webserver·daemon,
+  `legacy-dagster` profile의 옛 webserver·daemon, Map UI에는 넣지 않는다(transport를 부르지 않는 곳에 비밀을 두지
+  않는다). Map은 이 값을 header `X-Kor-Travel-Transport-Service-Token`으로 보낸다.
 - `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`: 기본 `http://192.168.1.13:12301`(odroid transport API gateway —
   2026-10-14 잠정 시행으로 대체, 옛 기본 `http://127.0.0.1:14001`은 n150 backend loopback이었다). gateway가
   `/v1/service/exports/*`를 n150 `192.168.1.14`에만 연다(그 저장소 소유). root `.env`에 값을 두지 않는다 — compose
@@ -736,6 +731,91 @@ overlay라 재생성마다 사라지고 root 디스크를 압박했다. 옛 변�
 - **이름.** `name:`/`external`을 두지 않는다 — resolved 이름이 compose project에서 파생되어 격리 스택은 자기
   volume을 갖는다(아래 named volume 규칙).
 
+### 7.3b Map Valkey (Map ADR-114 · ADR-59)
+
+Map은 weather·transport의 현재·예보 상태(와 weather 하루 세 구간 요약 14일)를 Valkey에 든다. Map Dagster run worker가
+쓰고 Map API가 읽는다. 서비스는 `kor-travel-map-valkey`(`map` target의 `services`·`runtime_services`)다.
+
+- **접근.** `127.0.0.1:12704` loopback 전용(`ports:` 없음) + `requirepass`. 접속 URL은 compose 최상위 앵커
+  `x-map-valkey-url` 한 자리에서 만들어 Map API와 Map Dagster code-server에만 `KOR_TRAVEL_MAP_VALKEY_URL`
+  (`redis://:<pw>@127.0.0.1:12704/0`)로 넣는다. Map UI·공용 plane webserver·daemon에는 넣지 않는다.
+- **비밀번호.** root `.env`의 `KOR_TRAVEL_MAP_VALKEY_PASSWORD` 하나가 원천이다(필수 `:?`). URI unreserved 문자
+  (`[A-Za-z0-9._~-]`)만 쓴다 — URL에 그대로 들어가므로. 다르면 Valkey가 `exit 64`로 기동을 거부한다(값은 출력하지
+  않는다). 서버에는 `VALKEYCLI_AUTH` env로 들어가 stdin 설정(`valkey-server -`)으로 넘어가므로 호스트 `ps`의 argv에
+  보이지 않는다. 생성은 `openssl rand -hex 32`처럼 hex로 한다.
+- **설정.** `maxmemory 1gb`, `maxmemory-policy noeviction`, RDB만(`save 900 1`, `appendonly no` — ADR-59 3 개정),
+  code-server만 `KOR_TRAVEL_MAP_VALKEY_SOCKET_TIMEOUT_SECONDS=10`, `mem_limit`·`memswap_limit` `1536m`, `init: true`, `stop_grace_period: 60s`. healthcheck는 exec
+  형식 `valkey-cli -e … ping`이다(`-e` 없이는 오류 응답에도 0으로 끝난다).
+- **데이터.** project 범위 internal named volume `kor-travel-map-valkey-data` → `/data`(MOIS 원천과 같은 규칙 — 아래
+  named volume 규칙). 운영자가 디렉터리를 만들 필요가 없다(C6c는 없는 bind source를 거부하므로 bind로 두지 않았다).
+  처음 붙을 때 이미지의 `/data`(valkey 소유)를 물려받고 entrypoint가 다시 chown한다. 기동 스크립트는 `exec` 전에
+  `VALKEYCLI_AUTH`를 지운다(서버 environ에 남기지 않는다).
+- **백업 대상이 아니다.** 원천(weather·transport)에서 다시 받는다 — `ktdctl db-backup`·standalone backup에 넣지 않는다.
+  volume을 잃으면 빈 Valkey로 뜨고 Map 적재 job이 다시 채운다. `rebuild-pinned --restart`도 Valkey는 비우지 않는다 —
+  비워야 하면 `docker volume rm kor-travel-docker-manager_kor-travel-map-valkey-data` 뒤 다음 재구축이 빈 것을 올린다.
+- **순서.** Map API·code-server는 `depends_on: service_healthy`로 기다린다(`ensure map`은 의존 폐포로 Valkey를 먼저
+  올린다). pinned 재구축·같은 pair 수렴은 slot을 `up --no-deps`로 띄우므로 의존성을 끌어오지 않는다 — 대신
+  Map·PinVi target의 `runtime_services` 가운데 slot·companion이 아닌 것(오늘은 Valkey 하나, targets에서 파생 —
+  `runtime_topology.derive_pinned_infrastructure`)을 같은 pair 수렴 직전, 그리고 전체 경로의 읽기 전용 거부 판정 뒤·
+  `in_progress` 기록 **앞**에서 `up -d --no-deps --wait`로 올린다 — 실패하면 아무것도 멈추지 않고 배포 기록도 쓰지 않은 채 끝난다. 설정이 같으면
+  compose가 다시 만들지 않고, 재구축의 정리 `stop`은 Valkey를 멈추지 않는다. 그래서 n150(일반 `ensure`가
+  거부되는 `rehearsal/rebuildable`)에서도 첫 기동은 다음 재구축(또는 같은 pair 수렴)이 한다.
+
+### 7.3c Weather 승인 export 파일 저장소
+
+Weather의 승인 export 파일은 API와 code-server가 함께 읽는다. 자체 개발 Compose와 별개로
+Manager의 두 활성 runtime에 `KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED`를 같은 값으로
+전달하며 기본값은 `false`다. artifact 경로와 mount는 YAML anchor에서 공유한다.
+`backend/tests/test_weather_service_exports_compose.py`가 flag, 경로와 mount의 동등성 및
+다른 서비스로의 전파 부재를 검증한다.
+
+project 범위 named volume `kor-travel-weather-export-artifacts`를 두 runtime의
+`/var/lib/kor-travel-weather`에 RW로 붙이고, 실제 artifact 하위 경로는
+`/var/lib/kor-travel-weather/exports`다. mount 루트 아래에 Weather가 디렉터리0700,
+guard0600, 파일0400을 만든다. API도 파일 guard를 열기 때문에 RW가 필요하다.
+현재 두 이미지는 같은 root UID를 사용하며, UID 변경 시 교차 읽기 권한을 다시 검증한다.
+migrate와 shared daemon에는 파일 mount가 필요하지 않다. sensor 평가는 code-server에서 실행한다.
+
+운영에서는 먼저 Docker data-root와 이 volume의 실제 Mountpoint가 NVMe에 있는지 확인한다.
+eMMC fallback이나 NVMe 부팅 조건을 추가하지 않는다. 컨테이너 교체는 이 volume을 지우지
+않으며, 명시 volume 삭제는 승인 파일 손실이다. 재생성에는 Weather의 정상 수집·승격이 필요하다.
+비어 있는 새 volume을 기존 승인 DB에 붙인 상태에서 flag를 켜지 않는다.
+
+설정 추가가 배포·활성화를 뜻하지 않는다. Weather migration/API·code-server source 일치,
+파일 보존·복구, 전체 provider 준비, snapshot pin/GC, ARM 비용과 Map 소비자 수용을 확인한 뒤
+별도 활성화한다. 자동 publisher의 기본 STOPPED와 shared daemon의 기존 실행 상태를 유지한다.
+
+### 7.3d Map 가격 추이 프록시와 weather 상태 적재 (Map ADR-114)
+
+Map ADR-114의 두 기능을 운영에서 켤 수 있게 배선만 둔다(켜는 것은 운영자 몫이다).
+
+- **주유소 가격 추이(결정 4, Map #1365).** Map API가 transport T4
+  `/v1/service/exports/fuel-stations/{station_key}/price-history`를 요청 시점에 읽는다. 그래서 Map API도 code-server와
+  **같은 원천·기본값**의 `KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL`·`..._SERVICE_TOKEN`을 받는다(7.3 — 새 비밀 없음).
+  스위치 `KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED`는 Map API에만 있고 기본 `false`다 — transport에 T4가 배포된
+  뒤 root `.env`에 `true`를 둔다. 꺼져 있으면 추이는 `unavailable`(`disabled`)이고 현재가만 나간다.
+- **weather 상태 적재(2단계, Map #1367).** Map Dagster의 `weather_state_*` job(run worker)이 weather export
+  W1~W5(`/v1/service/exports/*`)를 읽어 Valkey(7.3b)에 쓴다. Map API는 weather를 부르지 않으므로 code-server에만
+  둔다.
+  - `KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL`: 기본 `http://192.168.1.13:12201`(odroid weather API). PinVi의 weather
+    소비자와 같은 registry 파생 기본값이고 `backend/tests/test_consumer_origin_defaults.py`가 대조한다 — root `.env`에
+    값을 두지 않는다(ADR-58 R2).
+  - `KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN`: weather 자신의 `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`을 **참조로만**
+    넘긴다(`${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:-}`). 별도 Map 비밀은 만들지 않는다. weather 서비스들처럼 `:?`로 두지 않는
+    것은 Map만 렌더하는 경로(Map bootstrap·pinned fragment)가 weather 비밀 없이도 렌더돼야 하기 때문이다 — 비면 Map이
+    미설정으로 보고 `weather_state_*` job만 `weather_not_configured`로 실패한다.
+    Map은 이것을 기본 header `X-Admin-Token`으로 보내므로 `KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_AUTH_HEADER`는 두지
+    않는다(weather가 읽기 전용 export token을 내면 그때 이름과 token만 바꾼다).
+  - `KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_TIMEOUT_SECONDS`: weather export 한 페이지의 read timeout(초, Map 0.2~300).
+    `${…:-}`라 비면 Map 기본값(60)이다. odroid가 포화돼 외부 예보 한 페이지가 약 100초 걸리면(2026-11-02) root
+    `.env`에서 올린다(n150 운영 300).
+  - weather 쪽 짝: odroid weather의 `KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED=true`(7.3c)와, n150 root `.env`의
+    `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`이 odroid weather가 실제로 쓰는 값과 같아야 한다. 어긋나면 Map run이 인증 실패로
+    끝나고 Valkey는 이전 세대를 유지한다. 비교는 7.3처럼 값을 출력하지 않고 불리언으로만 한다.
+
+고정 테스트: `backend/tests/test_docker_service_config.py`(보유 서비스 집합·보간식·`.env.example`),
+`backend/tests/test_compose_references.py`(weather token 참조 site와 다른 서비스로의 이동 거부).
+
 ### 7.4 Map↔PinVi canonical ops read/cancel principal
 
 PinVi API는 Map의 canonical `/v1/ops/datasets*`와 `/v1/ops/pipeline*` 조회, 그리고
@@ -751,8 +831,15 @@ detail URL로 검증하며, refresh operation이 없는 catalog-only 행의 null
 
 Map API의 production fail-closed 설정은 ops pair만으로 완결되지 않는다. ADR-23에 따라 manager
 `.env`는 admin proxy secret, API-only service token, API-only cursor signing secret도 서로 다른
-값으로 보관한다. admin proxy secret은 Map API와 Map UI BFF에만 전달하고 service/cursor 값은 Map
-API 외 service에 전달하지 않는다. profile은 `production`, public API key gate는 `true`, debug route는
+값으로 보관한다. admin proxy secret은 Map API와 Map UI BFF에만 전달하고 cursor 값은 Map
+API 외 service에 전달하지 않는다. service token은 Map API와, 같은 값의 사본으로 PinVi API
+(`PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN` — PinVi ADR-076 지도 교통 레이어가 Map `/v1/service/transport/*`를
+부른다)에만 전달한다. 두 번째 비밀은 없다: compose가 `${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?...}`을 그대로
+넘기고, C6c runtime 격리는 pinvi-api의 그 이름에서 정확히 그 값만 허용한다. 기능 플래그
+`PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED`는 기본 `true`(root `.env`로 끈다). 지도 날씨 레이어 플래그
+`PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED`(PinVi #600)는 기본 `false`다 — Map weather 상태 적재(7.3d)가 채워진 뒤 켠다(같은 service token; true인데 token이 비면 PinVi가 기동을 거부한다).
+선택 재정의 `PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS`·`..._CONNECT_TIMEOUT_SECONDS`·`..._REQUEST_BUDGET_SECONDS`는
+compose 기본값 3·1·5초(PinVi 앱 기본값과 같음)로 늘 값이 들어간다. profile은 `production`, public API key gate는 `true`, debug route는
 `false`, feature 관리 REST는 `true`로 candidate에 고정한다. Map metrics는 인증된 Prometheus scrape 경로가 없는 동안 endpoint를
 `false`로 명시해 무인증 fallback과 startup drift를 함께 차단한다. host network admin proxy의
 trusted CIDR는 `127.0.0.1/32`·`::1/128` exact JSON으로 명시한다. 실제 값·길이·digest는 로그에
@@ -839,6 +926,18 @@ head를 먼저 attest한다. Map API·Dagster는 Map sealed builder가 같은 co
 쓰고, Manager는 Map UI와 PinVi API·Web·Dagster 네 image만 build한다. candidate가 준비되기 전에는 DB를
 건드리지 않는다.
 
+재구축의 외부 사전검사는 n150 로컬의 RustFS·Concierge readiness와 함께 Geo를 검사한다. Geo는
+Odroid에 있으므로 로컬 Compose service 상태를 요구하지 않는다. frozen Compose에 포함된 active Map API·Map UI
+BFF·Dagster code server·PinVi API origin이 각 consumer target의 host에서 registry R2가 계산한
+Geo `consumer_origin`과 일치해야 한다. 따라서 Manager host가 n150에서 Odroid로 옮겨져도 같은 Geo endpoint를 검사하고,
+소비자 설정이 함께 잘못된 주소로 바뀌는 경우도 차단한다. 호스트가 나뉘면 소비자별 유효 주소가 다를 수 있으므로
+readiness 요청은 Manager 자신의 host를 기준으로 계산한 R2 origin으로 보낸다. retired
+`legacy-dagster` webserver·daemon은 frozen 구성에서 제외된다. 이 주소의
+`/v1/readyz`에 redirect 없이 GET을 보내고, 전체 요청을 4초로 제한해 최대 4 KiB JSON 본문에서
+`ready: true`를 확인한다. 압축 응답은 거부해 본문 한도를 압축 해제 전에도 적용한다. 이 readiness는
+DB와 연결 pool을 포함하며, 생존만 확인하는 `/v1/healthz`와 구분한다. 검사가 실패하면 source
+materialization이나 빌드 전에 중단하며 DB와 실행 중인 컨테이너는 건드리지 않는다.
+
 DB는 배포를 넘어 보존된다. 영속 기록은 state root의 `deploy-status.json`(`in_progress`/`committed`)
 하나다. 같은 pair·image·DB identity·head면 빌드·migration·정지 없이 수렴만 한다(`outcome: converged`).
 새 pair는 `in_progress`를 쓴 뒤 없는 DB만 만들고, Map application schema·Dagster storage·PinVi admin
@@ -913,7 +1012,7 @@ sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
   의존성을 끌어온다.
 - **R4 격리·연결 상한**: 배포(bootstrap 뒤, Map API 기동 전)와 같은 pair 수렴(`up` 전)마다 두 Map DB에서 PUBLIC
   CONNECT를 걷고, app DB에 `KOR_TRAVEL_MAP_PG_DSN` login의 CONNECT와
-  `CONNECTION LIMIT floor(0.4 × (max_connections − superuser_reserved − reserved))`(live)를 건 뒤 읽어서 확인한다.
+  `CONNECTION LIMIT floor(0.57 × (max_connections − superuser_reserved − reserved))`(live)를 건 뒤 읽어서 확인한다.
   CONNECT 가능한 non-superuser login은 app DB에서 그 login 하나, Dagster DB에서 metadata user 하나여야 한다.
   superuser는 상한을 받지 않는다. PinVi DB는 건드리지 않는다.
   - 전부 **한 transaction**이다. 바꾸기 전에 live 그래프에 결박한다: app DB 소유자가 `ktm_feature_schema_owner`,
@@ -942,7 +1041,7 @@ sudo /opt/kor-travel-docker-manager/scripts/run-pinned-rebuild-once SHA OUT \
     10)은 38보다 크다. 평시 `ktm_feature_service` 세션은 9~11이다. 다음 무거운 Dagster 창까지 Map PostgreSQL 로그의
     `too many connections for database "kor_travel_map"`과 `pg_stat_database.numbackends`(`kor_travel_map`)를 본다.
     걸리면 아래 되돌리기의 `CONNECTION LIMIT -1`로 풀고 — 다음 수렴·배포가 다시 걸므로 그 전에 — M2 전에 소유자와
-    비율(`map_application_connection_cap`의 0.4, 소유자 결정 D5)을 다시 정한다.
+    비율(`map_application_connection_cap`의 0.57 — 2026-10-23 0.4에서 상향, 소유자 결정 D5)을 다시 정한다.
 
 **R2 거부 — admin 소유 Map DB가 있어 배포가 멈출 때.** 반쯤 만든(instance admin 소유) Map DB는 `--restart`도
 지우지 않는다(fail-closed). `--restart`의 R2 거부는 Map·PinVi를 멈추기 **전에** 난다(읽기 전용 preflight) — 예를
@@ -1471,6 +1570,11 @@ ktdctl db-backup restore-plan concierge [--file <name>] [--json]      # 읽기 �
 ktdctl db-backup rehearse-restore concierge [--file <name>] [--timeout <초>] [--json]
 ```
 
+리허설은 컨테이너 안 pg_restore에도 유한 timeout을 적용하고, 이번 호출의 생성 성공이
+확인된 scratch만 강제 정리한 뒤 DB/backend 부재를 재조회한다. 정리 실패는 blocking이며
+원 복원 오류를 보존한다. 세션의 병렬 인덱스 worker만 끈다. 상세한 한계와 격리 검증은
+[복원 리허설 timeout](restore-rehearsal-timeout.md)을 따른다.
+
 #### 디스크 여유 — `create`·`rehearse-restore`는 시작 전에 role마다 확인한다
 
 `create`는 pg_dump를 **시작하기 전에** 백업 root 파일시스템의 여유를 재고, 모자라면 아무것도
@@ -1997,8 +2101,8 @@ Map 원장 `T-VN-H49-{GEO-DAGSTER,CONCIERGE,PINVI}`의 마지막 해제 조건�
 
 ## code-server의 순수 조회 상태 확인 도입
 
-Weather·Geo의 Manager 선언은 `python -m kortravelcommon.grpc_health <서비스의 -p 포트> --check live`를
-exec 형식으로 호출한다. Common의 `kor-travel-common[grpc-health]` extra가 포함된 소비 이미지가 먼저 필요하다.
+Weather·Geo의 Manager 선언은 `python -I -m kortravelcommon.grpc_health <서비스의 -p 포트> --check live`를
+exec 형식으로 호출한다. 기존 Python 격리 모드(`-I`)를 유지해 작업 디렉터리와 `PYTHONPATH`를 점검 모듈 검색에 쓰지 않는다. Common의 `kor-travel-common[grpc-health]` extra가 포함된 소비 이미지가 먼저 필요하다.
 공통 모듈이 없는 구 이미지에 이 선언부터 적용하면 module missing으로 unhealthy가 된다.
 먼저 각 소비 이미지에 `kortravelcommon.grpc_health`와 `grpc_health.v1`이 설치되어 있는지 확인하고,
 이미지의 live CLI 호출을 별도로 검증한 후 Manager 선언을 적용한다. 선언 적용만으로
@@ -2022,3 +2126,8 @@ healthcheck 주기·timeout·retry·기동 유예, 공유 instance 동시성은 
 ## 상태 점검 간격 정합
 
 서비스별 승인 간격과 적용 경계는 [배포 상태 점검 간격 정합](health-cadence.md)을 따른다. 기존 Test와 readiness 계약은 유지하며, Compose 파일 저장만으로 실행 중인 healthcheck가 바뀌었다고 판단하지 않는다.
+
+
+### PinVi 지도 공개 키의 빌드 전달
+
+pinvi-web의 NEXT_PUBLIC_VWORLD_API_KEY는 같은 이름의 정본 환경 변수에서 build arg로 전달한다. PinVi Dockerfile의 build/runtime ARG·ENV가 이를 소비한다. raw/resolved provenance 검증은 이 인자를 포함한 정확한 집합을 요구하며, 다른 key 원천으로 대체하지 않는다. 설치·공식 재구축 후 새 image와 실제 공개 지도까지 별도로 확인한다. [범위와 회귀](pinvi-vworld-build.md).

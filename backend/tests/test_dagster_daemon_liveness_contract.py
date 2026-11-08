@@ -297,8 +297,8 @@ def test_every_dagster_code_server_has_a_grpc_health_healthcheck(
     )
     probe = _command_text(healthcheck.get("test"))
     if "kortravelcommon.grpc_health" in probe:
-        assert healthcheck["test"][:4] == ["CMD", "python", "-m", "kortravelcommon.grpc_health"]
-        assert healthcheck["test"][5:] == ["--check", "live"]
+        assert healthcheck["test"][:5] == ["CMD", "python", "-I", "-m", "kortravelcommon.grpc_health"]
+        assert healthcheck["test"][6:] == ["--check", "live"]
         assert healthcheck.get("start_period")
         return
     missing = [fragment for fragment in _GRPC_HEALTH_FRAGMENTS if fragment not in probe]
@@ -342,7 +342,7 @@ def _the_probe() -> str:
     probes = {
         str(((service.get("healthcheck") or {}).get("test") or [None] * 5)[4])
         for service in _proxy_code_server_services().values()
-        if service["healthcheck"]["test"][:4] != ["CMD", "python", "-m", "kortravelcommon.grpc_health"]
+        if service["healthcheck"]["test"][:5] != ["CMD", "python", "-I", "-m", "kortravelcommon.grpc_health"]
     }
     assert len(probes) == 1, f"code-server probe가 서로 다르다({len(probes)}종)"
     return next(iter(probes))
@@ -362,9 +362,9 @@ def test_every_proxy_code_server_probe_uses_its_declared_health_policy(service_n
     """
     service = _proxy_code_server_services()[service_name]
     probe = _command_text((service.get("healthcheck") or {}).get("test"))
-    if service["healthcheck"]["test"][:4] == ["CMD", "python", "-m", "kortravelcommon.grpc_health"]:
+    if service["healthcheck"]["test"][:5] == ["CMD", "python", "-I", "-m", "kortravelcommon.grpc_health"]:
         # opt-in 서비스는 조회만 한다. PID 종료·orphan reaper를 기대하지 않는다.
-        assert service["healthcheck"]["test"][5:] == ["--check", "live"]
+        assert service["healthcheck"]["test"][6:] == ["--check", "live"]
     else:
         missing = [fragment for fragment in _PROXY_EFFECT_FRAGMENTS if fragment not in probe]
         assert not missing, (service_name, missing)

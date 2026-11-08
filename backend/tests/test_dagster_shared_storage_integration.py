@@ -166,9 +166,10 @@ def _carried(service: dict[str, Any]) -> dict[str, Any]:
     # 같은 netns에 붙어 127.0.0.1로 격리 instance에 닿는다(정본은 host network).
     carried["network_mode"] = f"service:{_SHARED_POSTGRES}"
     carried["volumes"] = [
-        # 상대 source는 정본 저장소 기준이다 — 격리 compose 파일은 tmp에 있다.
-        str(_REPO_ROOT / volume[2:]) if str(volume).startswith("./") else volume
+        # 격리 fixture는 정본 기본값을 사용한다. tmp compose 기준 상대 bind를 남기지 않는다.
+        str(_REPO_ROOT / text[2:]) if text.startswith("./") else text
         for volume in carried.get("volumes", [])
+        for text in [compose_default(volume)]
     ]
     if not carried["volumes"]:
         del carried["volumes"]

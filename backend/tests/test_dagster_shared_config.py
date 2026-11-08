@@ -121,7 +121,7 @@ def test_every_service_with_the_url_mounts_the_one_instance_config() -> None:
         if name in (service.get("environment") or {})
     }
     assert _MIGRATE in carriers, sorted(carriers)
-    source = f"./{_INSTANCE_CONFIG.relative_to(_REPO_ROOT).as_posix()}"
+    source = "${KTDM_DAGSTER_INSTANCE_CONFIG:-./" + _INSTANCE_CONFIG.relative_to(_REPO_ROOT).as_posix() + "}"
     for service_name, service in carriers.items():
         home = service["environment"]["DAGSTER_HOME"]
         assert f"{source}:{home}/dagster.yaml:ro" in service.get("volumes", []), service_name
@@ -174,13 +174,13 @@ def test_global_dispatch_budget_preserves_independent_tag_caps() -> None:
 
     config = _instance_config()
     runs = config["concurrency"]["runs"]
-    assert runs["max_concurrent_runs"] == 2
+    assert runs["max_concurrent_runs"] == 6
     assert config["run_queue"] == {
         "dequeue_interval_seconds": 30,
         "max_user_code_failure_retries": 3,
         "user_code_failure_retry_delay": 60,
     }
-    # location·업무별 기존 상한을 전역 2에 맞춰 낮추면 업무 정책을 바꾸게 된다.
+    # location·업무별 기존 상한을 전역 6에 맞춰 낮추면 업무 정책을 바꾸게 된다.
     assert any(entry["limit"] > runs["max_concurrent_runs"] for entry in runs["tag_concurrency_limits"])
     assert all(type(entry["limit"]) is int and entry["limit"] > 0 for entry in runs["tag_concurrency_limits"])
 
@@ -200,14 +200,14 @@ def test_the_coordinator_is_the_queued_default_and_telemetry_is_off() -> None:
 
 
 def test_map_warning_loggers_reach_the_run_event_stream() -> None:
-    """Map이 run 안에서 WARNING을 남기는 logger가 event stream에 결선된다.
+    """모든 location의 INFO 진행과 Map의 명시한 logger가 event stream에 결선된다.
 
     `managed_python_loggers`에 없는 logger의 경고는 컨테이너 stderr로만 가고 운영 run 로그에는 보이지 않는다.
     `kortravelmap.infra.feature_repo`는 place-locator 경고를 남긴다(Map `feature_repo.py`의 `_LOG`).
     """
 
     python_logs = _instance_config()["python_logs"]
-    assert python_logs["python_log_level"] == "WARNING"
+    assert python_logs["python_log_level"] == "INFO"
     assert {
         "kortravelmap.dagster.provider_fetchers",
         "kortravelmap.dagster.resources",
@@ -404,7 +404,7 @@ def _host_services() -> dict[str, dict[str, Any]]:
 
 
 def test_the_host_services_run_the_host_image_with_only_the_control_env() -> None:
-    """daemon·webserver는 migrate와 같은 호스트 이미지이고, 공용 URL과 DAGSTER_HOME 말고 받는 것이 없다.
+    """daemon·webserver는 migrate와 같은 호스트 이미지이고 공용 제어 env만 받는다.
 
     run은 code-server의 자식으로 돈다 — 호스트 서비스에 앱 비밀을 넣을 이유가 없다(plan §1.4).
     """
@@ -428,6 +428,7 @@ def test_the_host_services_run_the_host_image_with_only_the_control_env() -> Non
         }
         if name == "kor-travel-dagster-daemon":
             allowed.add("KOR_TRAVEL_DAGSTER_DAEMON_POSTGRES_URL")
+            allowed.add("KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS")
         assert set(service["environment"]) <= allowed, (name, sorted(service["environment"]))
         assert service["environment"]["DAGSTER_HOME"] == migrate["environment"]["DAGSTER_HOME"]
         assert service["depends_on"] == {_MIGRATE: {"condition": "service_completed_successfully"}}

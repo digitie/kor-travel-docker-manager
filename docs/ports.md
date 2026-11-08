@@ -42,7 +42,7 @@
 | `prom` | `12400-12499` | HTTP `12102`(ADR-48로 `storage` 대역 안으로 재배치, 아래 참고) | Prometheus |
 | `geo` | `12500-12599` | API `12501`, Dagster `12502`, Web UI `12505` (DB는 공용 `11000`) | `kor-travel-geo` |
 | `conc` | `12600-12699` | API `12601`, MCP `12602`, Dagster code-server gRPC `12603`(loopback, ADR-55), Web UI `12605` (DB는 공용 `11000`) | `kor-travel-concierge` |
-| `map` | `12700-12799` | API `12701`, Dagster `12702`, Web UI `12705`(`12700`은 퇴역한 전용 PostgreSQL의 자리, ADR-53) | `kor-travel-map` |
+| `map` | `12700-12799` | API `12701`, Dagster `12702`, Dagster code-server(gRPC) `12703`(loopback), Valkey `12704`(`127.0.0.1` 전용, ADR-59), Web UI `12705`(`12700`은 퇴역한 전용 PostgreSQL의 자리, ADR-53) | `kor-travel-map` |
 | `pinvi` | `12800-12899` | API `12801`, Dagster webserver `12802`, Dagster code-server(gRPC, PinVi ADR-069) `12803`, Web UI `12805` (DB는 공용 `11000`) | PinVi |
 | `kor-travel-docker-manager` | `12900-12999` | Backend `12901`, Dashboard `12905` | Manager |
 | `weather` | `14100-14199` | API `14101`, Dagster 게이트웨이 `14102`(Basic Auth, Dagster webserver 자체는 내부 전용 `14107`), Dagster code-server metrics `14103`(`prometheus_client`, `docker-compose.yml:2874` — 2026-10-13 이 표에 등록, 포트 자체는 종전부터 듣고 있었다), Prometheus `14104`, **Web `12205`**(대역 예외 — 아래 참고, ADR-57) | `kor-travel-weather` (Manager 내부 target, ADR-47 — 2026-09-20까지 외부 프로젝트였다) |
@@ -135,7 +135,7 @@ bare `prometheus` compose 서비스명이 Manager 자신의 `prometheus:` 서비
 `kor-travel-weather-prometheus`로 이름을 바꿔 해소했다(외부 target이었을 때는 "config
 편집 거부" 특례로 무해했지만, internal target에는 그 특례가 적용되지 않는다).
 
-legacy Concierge scheduler와 Map Dagster daemon은 외부 포트를 열지 않는 내부 실행 서비스다.
+Map Dagster daemon은 외부 포트를 열지 않는 내부 실행 서비스다(옛 Concierge scheduler는 2026-11-02에 compose에서 지웠다).
 Geo Dagster webserver는 registry의 일반 runtime 표에는 없는 보조 서비스지만 Compose에서
 `12502`를 사용한다. PinVi의 `srv`와 `main`은 `pinvi` target 별칭이다. PinVi Dagster
 code-server(`12803`, PinVi ADR-069)도 daemon과 같은 내부 전용이다 — webserver/daemon만
@@ -143,6 +143,8 @@ gRPC로 접속하고, 외부에는 열지 않는다. weather의 Dagster code-ser
 (`14107`, ADR-47로 재배치)도 같은 이유로 loopback 전용이다 — gateway(`14102`)만 외부에 연다.
 Map Dagster code-server(`12703`, #397)도 `-h 127.0.0.1` loopback 전용이다. Geo Dagster
 code-server는 `12503`이다.
+Map Valkey(`kor-travel-map-valkey`, `12704`, ADR-59)도 `--bind 127.0.0.1` loopback 전용이고 `requirepass`로
+잠근다 — 접속하는 것은 Map API와 Map Dagster code-server뿐이다. `ports:`를 두지 않는다(외부에 열지 않는다).
 
 ## PostgreSQL instance 경계
 
@@ -171,17 +173,17 @@ cutover 뒤 롤백 안전망으로 compose에 남아 있었다. 그날 n150 실�
 디렉터리는 호스트에 그대로 둔다. weather는 Manager가 관리하는 전용 instance를 가진 적이
 없고, 옛 transport(당시 이름 airport) 전용 DB(`:14000`)도 이미 사라졌다.
 
-## 호스트 규칙 (계획 — ADR-58 proposed; `hosts:`·workspace 필터·소비자 origin만 2026-10-14 잠정 시행)
+## 호스트 규칙 (ADR-58 accepted; `hosts:`·workspace 필터·소비자 origin 구현됨 — 공개 backend 전환은 T-MGR-06)
 
-2026-10-13 현재 모든 서비스는 n150(`192.168.1.14`) 한 호스트에 있다. ADR-58은 geo·weather·transport와
-그들의 PostgreSQL·Dagster plane을 odroid(`192.168.1.13`)로 옮기되 **이 문서의 포트는 하나도 바꾸지
-않는다**는 것을 결정했다. 호스트가 둘이 되면 아래 규칙이 더해진다.
+ADR-58은 geo·weather·transport와 그들의 PostgreSQL·Dagster plane을 odroid(`192.168.1.13`)로 옮기되
+**이 문서의 포트는 하나도 바꾸지 않는다**는 것을 결정했다. geo·weather·transport는 2026-10-14~15 registry
+`host: odroid`로 이미 옮겼다(map·pinvi·conc는 n150에 그대로) — 호스트가 둘이 된 지금 아래 규칙이 적용된다.
 
 - **포트 정책은 호스트 로컬이다.** 두 호스트가 `11000`(PG)·`11001`/`11002`(plane)·`12101`/`12105`
   (RustFS)·`12103`(cAdvisor)·`12901`/`12905`(Manager)를 **각각** 가진다. 충돌이 아니다 — 같은 역할의
   인스턴스가 호스트마다 하나다.
 - **`host = hosts[<target.host>].addr`, 같은 호스트 안 참조는 `127.0.0.1`.** 주소의 정본은
-  registry의 `hosts:` 절(계획)이다 — 이 문서에 적힌 `.13`/`.14`는 그 파생값의 **예시**이지 정본이 아니다.
+  registry의 `hosts:` 절이다 — 이 문서에 적힌 `.13`/`.14`는 그 파생값의 **예시**이지 정본이 아니다.
   n150의 Map/PinVi가 odroid의 geo/transport/weather를 부를 때만 `http://<hosts[odroid].addr>:<소비자 포트>`
   (오늘 값 `192.168.1.13`)이며, 그 값은 Manager compose env 기본값(커밋된 파생물, `bindings.md` B-6)에서 나온다.
   **소비자 포트는 2026-10-14 소유자가 odroid에서 공개 대역으로 통일했다**: geo `12501`(불변), weather **`12201`**

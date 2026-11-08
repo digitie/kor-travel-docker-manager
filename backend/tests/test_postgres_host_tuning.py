@@ -23,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[2]
 _PG = "kor-travel-shared-postgres"
 
 #: PG 16 서버 기본값(문서 `runtime-config-*`) — n150 compose에 없던 키라 기본값이 이것이어야 n150 효과가 0이다(결정 1 ⑦).
+#: PG18 업그레이드(2026-10-27) 뒤에도 같은 값을 명시로 유지한다 — PG18 기본 `effective_io_concurrency`는 16이지만
+#: 업그레이드가 튜닝까지 바꾸지 않게 오늘 값을 그대로 둔다.
 _PG16_SERVER_DEFAULTS = {
     "max_parallel_workers": "8",
     "max_parallel_workers_per_gather": "2",
@@ -57,12 +59,12 @@ def test_max_connections_is_not_set():
 
 def test_postgres_images_are_host_overridable_with_todays_defaults():
     services = _compose()["services"]
-    assert compose_default(services[_PG]["image"]).startswith("postgis/postgis:16-3.5@sha256:")
+    assert compose_default(services[_PG]["image"]).startswith("postgis/postgis:18-3.6@sha256:")
     init = [name for name, service in services.items()
             if name.startswith("kor-travel-shared-db-init-")]
     assert len(init) >= 6
     for name in init:
-        assert services[name]["image"] == "${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}", name
+        assert services[name]["image"] == "${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}", name
 
 
 _ENV_LIMIT = re.compile(r"\$\{(KTDM_[A-Z0-9_]+_MEM_LIMIT):-([^}]+)\}")
@@ -76,7 +78,7 @@ def _host_limited(services: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 def test_every_host_limited_service_pins_memswap_to_the_same_value():
     """`mem_limit`가 호스트별 env인 서비스마다 `memswap_limit == mem_limit`(같은 식) — 상한을 두는 호스트에서 swap으로 새지
-    않게. 범위는 PG·geo cs·weather cs다. concierge scheduler·cs(고정 `mem_limit: 2g`, n150 전용)는 이 규칙 **밖**이다 —
+    않게. 범위는 PG·geo cs·weather cs다. concierge cs(고정 `mem_limit: 2g`, n150 전용)는 이 규칙 **밖**이다 —
     거기에 memswap을 걸면 n150에서 swap 0 효과가 새로 생긴다(PR 본문)."""
     services = _compose()["services"]
     limited = _host_limited(services)
@@ -134,9 +136,10 @@ def test_db_init_geo_creates_the_four_extensions_in_x_extension():
     ("image", "refused"),
     [
         (None, False),  # 기본값(n150 digest 핀)
-        ("imresamu/postgis:16-3.5@sha256:" + "a" * 64, False),  # odroid 형태
-        ("postgis/postgis:17-3.5@sha256:" + "a" * 64, True),  # 다른 major — PGDATA(16)를 거부한다
-        ("imresamu/postgis:16-3.5", True),  # floating tag
+        ("imresamu/postgis:18-3.6@sha256:" + "a" * 64, False),  # odroid 형태
+        ("postgis/postgis:17-3.5@sha256:" + "a" * 64, True),  # 다른 major — PGDATA(18)를 거부한다
+        ("postgis/postgis:16-3.5@sha256:" + "a" * 64, True),  # 옛 major — 업그레이드된 PGDATA(18)를 거부한다
+        ("imresamu/postgis:18-3.6", True),  # floating tag
         ("postgis/postgis:latest@sha256:" + "a" * 64, True),  # major가 태그에 없다
     ],
 )

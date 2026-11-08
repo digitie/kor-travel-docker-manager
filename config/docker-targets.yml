@@ -5,8 +5,25 @@ hosts:
   n150:
     addr: 192.168.1.14
     default: true
+    dagster_max_concurrent_runs: 6
   odroid:
     addr: 192.168.1.13
+    dagster_max_concurrent_runs: 5
+    # test_committed_odroid_tunings_are_explicit_and_n150_inherits가 기존 튜닝과 결박한다.
+    dagster_tag_concurrency_limits:
+      - key: dagster/code_location
+        value: kortravelgeo_dagster.definitions
+        limit: 1
+      - key: dagster/code_location
+        value: kortravelweather_dagster.definitions
+        limit: 3
+      - key: kortravelweather/run_group
+        value: external_weather
+        limit: 2
+      - key: kortravelweather/run_group
+        value: external_weather_slow
+        limit: 1
+    dagster_python_log_level: WARNING
 
 # GM-19: port_policy/port_band 블록을 소비하는 코드가 0건이라 제거했다 — 포트 정책의
 # 유일한 정본은 docs/ports.md다.
@@ -29,6 +46,11 @@ dependency_order:
   - transport
   - node
 
+# 발견된 읽기 전용 컨테이너의 공개 링크. 제어 대상에는 등록하지 않는다.
+observed_public_url_envs:
+  kor-travel-transport-transport-admin-web-1: KTDM_PROD_URL_TRANSPORT
+  kor-travel-transport-transport-api-gateway-1: KTDM_PROD_URL_TRANSPORT_API
+
 containers:
   kor-travel-shared-postgresql:
     name: kor-travel-shared-postgres
@@ -45,6 +67,7 @@ containers:
     display_name: RustFS 공용 오브젝트 스토리지
     connection: "S3 API http://{host}:12101 / console http://{host}:12105/rustfs/console/"
     prod_url_env: KTDM_PROD_URL_S3
+    prod_url_path: /rustfs/console/
     expected_ports:
       - "12101:12101"
       - "12105:12105"
@@ -58,6 +81,7 @@ containers:
     # (`services/prometheus_targets.py`, `config/prometheus/prometheus.yml`은 커밋된 파생물).
     metrics_path: /metrics
     prod_url_env: KTDM_PROD_URL_GEO_API
+    prod_url_path: /v1/healthz
     expected_ports:
       - "12501:12501"
   kor-travel-geo-ui:
@@ -100,6 +124,7 @@ containers:
     display_name: Kor Travel Concierge API
     connection: http://{host}:12601
     prod_url_env: KTDM_PROD_URL_CONCIERGE_API
+    prod_url_path: /docs
     expected_ports:
       - "12601:12601"
   kor-travel-concierge-mcp:
@@ -111,13 +136,6 @@ containers:
     prod_url_env: KTDM_PROD_URL_CONCIERGE_MCP
     expected_ports:
       - "12602:12602"
-  kor-travel-concierge-scheduler:
-    name: kor-travel-concierge-scheduler-latest
-    compose_service: kor-travel-concierge-scheduler
-    role: concierge-scheduler
-    display_name: Kor Travel Concierge Scheduler
-    connection: internal scheduler
-    expected_ports: []
   kor-travel-concierge-dagster-code-server:
     name: kor-travel-concierge-dagster-code-server-latest
     compose_service: kor-travel-concierge-dagster-code-server
@@ -134,6 +152,14 @@ containers:
     prod_url_env: KTDM_PROD_URL_CONCIERGE
     expected_ports:
       - "12605:12605"
+  # Map ADR-114 · ADR-59 — Map API·code-server만 쓰는 loopback 전용 Valkey(포트를 열지 않는다).
+  kor-travel-map-valkey:
+    name: kor-travel-map-valkey
+    compose_service: kor-travel-map-valkey
+    role: map-valkey
+    display_name: Kor Travel Map Valkey (weather·transport 현재·예보 상태)
+    connection: "내부 전용(127.0.0.1:12704, requirepass) — Map API·Map Dagster code-server만 접근"
+    expected_ports: []
   kor-travel-map-api:
     name: kor-travel-map-api-latest
     compose_service: kor-travel-map-api
@@ -141,6 +167,7 @@ containers:
     display_name: Kor Travel Map API
     connection: http://{host}:12701
     prod_url_env: KTDM_PROD_URL_MAP_API
+    prod_url_path: /health
     expected_ports:
       - "12701:12701"
   kor-travel-map-ui:
@@ -182,6 +209,7 @@ containers:
     display_name: PinVi API
     connection: http://{host}:12801
     prod_url_env: KTDM_PROD_URL_PINVI_API
+    prod_url_path: /docs
     expected_ports:
       - "12801:12801"
   pinvi-web:
@@ -244,6 +272,7 @@ containers:
     connection: http://{host}:12103
     metrics_path: /metrics
     prod_url_env: KTDM_PROD_URL_CADVISOR
+    prod_url_path: /containers/
     expected_ports:
       - "12103:12103"
   # 호스트 메트릭(swap·메모리·디스크 여유·시계 — ADR-58 핵심 위험). Manager compose 밖의 호스트 측 stack이다(`node` target).
@@ -273,6 +302,7 @@ containers:
     expected_ports:
       - "12201:12201"
     prod_url_env: KTDM_PROD_URL_WEATHER_API
+    prod_url_path: /docs
   # dagster는 code-server/webserver/daemon 3-분리로 나뉜다 — registry가 실제
   # compose.yaml 토폴로지(weather PR #61, code-server 분리) 뒤로 밀려 있었다.
   kor-travel-weather-dagster-code-server:
@@ -319,6 +349,7 @@ containers:
     expected_ports:
       - "12205:12205"
     prod_url_env: KTDM_PROD_URL_WEATHER
+    prod_url_path: /login
   kor-travel-weather-prometheus:
     name: kor-travel-weather-prometheus
     # compose_service는 더 이상 bare prometheus가 아니다 — Manager 자신의
@@ -524,6 +555,8 @@ targets:
         kor-travel-geo-api:
           KTG_DAGSTER_URL: internal
           KTG_DAGSTER_PUBLIC_URL: public
+        kor-travel-geo-dagster-code-server:
+          KTG_DAGSTER_URL: internal
 
   conc:
     host: n150
@@ -580,6 +613,7 @@ targets:
     # bootstrap한다.
     services:
       - kor-travel-shared-postgres
+      - kor-travel-map-valkey
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster-code-server
@@ -587,6 +621,7 @@ targets:
     # 꺼진 profile도 뜨므로 `services`·`runtime_services`에서 뺐다. `containers`에는 남아 상태 화면이
     # 찾는다(되돌리기는 지원하지 않는다 — platform-topology.md §7 4단계).
     runtime_services:
+      - kor-travel-map-valkey
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster-code-server
@@ -599,6 +634,7 @@ targets:
       - kor-travel-concierge-mcp
       - kor-travel-concierge-dagster-code-server
       - kor-travel-concierge-ui
+      - kor-travel-map-valkey
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster
@@ -660,6 +696,7 @@ targets:
       - kor-travel-concierge-mcp
       - kor-travel-concierge-dagster-code-server
       - kor-travel-concierge-ui
+      - kor-travel-map-valkey
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster
@@ -710,6 +747,7 @@ targets:
       - kor-travel-concierge-mcp
       - kor-travel-concierge-dagster-code-server
       - kor-travel-concierge-ui
+      - kor-travel-map-valkey
       - kor-travel-map-api
       - kor-travel-map-ui
       - kor-travel-map-dagster
@@ -977,7 +1015,7 @@ compose_binds:
   kor-travel-concierge-dagster-code-server:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   grafana:
     - container_path: "/etc/grafana/provisioning/datasources"
       read_only: true
@@ -1006,22 +1044,22 @@ compose_binds:
       source: "${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}"
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-dagster-storage-migrate:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-dagster-daemon:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
     - container_path: "/opt/dagster/dagster_home/workspace.yaml"
       read_only: true
       source: "./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml"
   kor-travel-dagster-webserver:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
     - container_path: "/opt/dagster/dagster_home/workspace.yaml"
       read_only: true
       source: "./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml"
@@ -1037,21 +1075,21 @@ compose_binds:
       read_only: true
       source: "${KOR_TRAVEL_MAP_REPO_DIR:-../kor-travel-map}/scripts/database-credential-preflight.sh"
   kor-travel-shared-postgres:
-    - container_path: "/var/lib/postgresql/data"
+    - container_path: "/var/lib/postgresql/18/docker"
       read_only: false
       source: "${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}"
   pinvi-dagster-code-server:
     - container_path: "/opt/pinvi/.dagster/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-map-dagster-code-server:
     - container_path: "/opt/dagster/dagster_home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-weather-dagster-code-server:
     - container_path: "/opt/dagster/home/dagster.yaml"
       read_only: true
-      source: "./config/dagster-shared/dagster.yaml"
+      source: "${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}"
   kor-travel-weather-dagster-webserver:
     - container_path: "/opt/dagster/home/dagster.yaml"
       read_only: true
@@ -1100,7 +1138,45 @@ compose_binds:
 # `services/host_edges.py`)는 소유자(`compose_service.compose_service_owners` — target `services`·`init_steps`·pinned
 # 재구축 one-shot·Dagster family) 없는 서비스를 거부한다 — 이 목록만 예외다. compose에서 사라진 이름이 남아 있어도 거부한다.
 #   kor-travel-shared-db-init-transport: 운영자가 설치 루트에서 1회 run한다(prod-deployment §9.2 4a′) — target 밖
-#   kor-travel-concierge-scheduler: profile 서비스(기본 기동 아님), 어느 target의 services에도 없다
 unowned_services:
   - kor-travel-shared-db-init-transport
-  - kor-travel-concierge-scheduler
+
+# 현재 release 소유 image의 배포 좌표. target의 lifecycle/depends_on/legacy 범위와 별개다.
+# D-568: services/runtime_services에는 공용 DB·구 monitoring이 있으므로 복사하지 않는다.
+# transport의 core/admin은 실제 운영 스크립트가 같은 project를 강제하며 파일 조합만 다르다.
+service_releases:
+  geo:
+    groups:
+      main:
+        project: kor-travel-odroid
+        working_dir: /opt/kor-travel-odroid
+        config_files: [compose.yml]
+        env_file: null
+        runtime_services: [kor-travel-geo-api, kor-travel-geo-ui, geo-dagster-code-server]
+        oneshot_services: []
+  weather:
+    groups:
+      main:
+        project: kor-travel-odroid
+        working_dir: /opt/kor-travel-odroid
+        config_files: [compose.yml]
+        env_file: null
+        runtime_services: [kor-travel-weather-api, kor-travel-weather-web, kor-travel-weather-dagster-code-server]
+        oneshot_services: [kor-travel-weather-migrate]
+  transport:
+    groups:
+      core:
+        external_project: true
+        config_files:
+          - docker-compose.yml
+          - docker-compose.shared.yml
+          - /opt/kor-travel-odroid/transport/transport.override.yml
+        env_file: .env.prod
+        runtime_services: [backend, frontend, dagster-code-server]
+        oneshot_services: [migrate]
+      admin:
+        external_project: true
+        config_files: [docker-compose.transport-admin.yml]
+        env_file: .env.prod
+        runtime_services: [transport-admin-web, transport-api-gateway]
+        oneshot_services: []

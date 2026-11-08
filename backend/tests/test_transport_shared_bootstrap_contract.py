@@ -21,7 +21,7 @@ def test_transport_bootstrap_separates_application_and_dagster_databases() -> No
     assert isinstance(service, dict)
 
     # 호스트별 client 이미지(ADR-58 결정 9, T-MGR-03) — 기본값은 오늘 값 그대로다.
-    assert service["image"] == "${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}"
+    assert service["image"] == "${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}"
     assert service["restart"] == "no"
     assert service["network_mode"] == "${KTDM_DOCKER_NETWORK_MODE:-host}"
     assert service["depends_on"] == {

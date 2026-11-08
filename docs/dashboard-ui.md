@@ -1,5 +1,7 @@
 # 대시보드 UI — 에이전트 레퍼런스
 
+현재 Docker 원장은 해당 Manager 호스트에서 실행/재시작 중인 항목을 기본 표시한다. 중지 항목은 `중지 항목 포함`으로 펼치며 미생성 선언과 다른 호스트의 HTTP 관측은 로컬 실행 수에 섞지 않는다. 미등록 실행 컨테이너는 `읽기 전용`이며 개별·그룹 제어와 설정 변경 대상이 아니다. 실제 컨테이너/이미지 정리는 이 표시 변경의 일부가 아니다. host network에는 추정 포트 대신 네트워크 방식을 표시하고 Docker healthcheck 실패를 정상 실행과 구분한다.
+
 **대상 독자**: 프론트엔드를 고치는 에이전트와 운영자.
 **정본 관계**: 설계 의도와 우선순위는 [`ktdctl-ui-migration.md`](ktdctl-ui-migration.md)
 P0·P7, 디자인 토큰과 룩앤필은 [`design-system.md`](design-system.md)와
@@ -285,3 +287,18 @@ POST만 끝나고 인증 확인이 진행 중인 틈에도 새 로그아웃은 �
 수정 뒤9PASS이며 같은 프레임의 빠른 명령 두 번도 요청 하나만 생성한다. 기존8ff8 후보
 빌드와 이 추가 source 수정을 구분하며, 배포 전 새 후보 빌드와 두 독립 closure/정식 n150
 UI는 후속이다. WSL의 원46/48 실패를 정식 환경 수용이나 이번 수정의 UI 성공으로 세지 않는다.
+
+Docker 목록 탐색에 실패하면 inventory_complete=false를 전달하고 화면에 관측 실패 안내를 표시한다.
+미등록 컨테이너는 상세 조회 실패 시에도 읽기 전용을 유지한다. 오류 집계는 Docker의 error·dead와
+health의 unhealthy를 포함한다. 실행 중이면서 health가 실패한 항목은 실행 수와 오류 수 양쪽에 포함된다.
+미등록 통계는 Docker ID가 바뀌면 I/O 기준값을 초기화하고, 탐색 실패·데몬 단절 시 이전 값을 정상 통계로 재사용하지 않는다.
+Docker SDK 탐색·상세 조회는 수집 루프의 이벤트 스레드 밖에서 수행한다.
+
+Docker SDK의 sparse 목록은 단일 Name 대신 Names 배열을 줄 수 있어 Container.name이 None이다.
+발견 코드는 Names의 컨테이너 이름을 해석하며, 이름이 전혀 없으면 불완전 관측 경로로 보낸다.
+이 계약은 실제 SDK Container 모델을 사용하는 회귀로 확인한다.
+
+공개 링크는 호스트의 KTDM_PROD_URL_*에서 도메인을 읽고, 선택적인 prod_url_path로 브라우저 진입 경로를 붙인다.
+API origin을 쓰는 소비자의 설정은 바꾸지 않는다. RustFS 콘솔·cAdvisor·API docs/health처럼 루트가 진입 화면이 아닌 경우에 사용한다.
+observed_public_url_envs는 발견된 읽기 전용 컨테이너 이름에 공개 링크 환경변수를 연결할 뿐, 제어 registry에는 추가하지 않는다.
+내부 전용 백엔드·gRPC code-server·daemon에는 공개 URL을 추측해 붙이지 않는다.

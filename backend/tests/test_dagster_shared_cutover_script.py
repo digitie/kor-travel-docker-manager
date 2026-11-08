@@ -161,7 +161,7 @@ def _shared_probe() -> str:
     probes = {
         str(service["healthcheck"]["test"][4])
         for service in _shared_code_servers()
-        if service["healthcheck"]["test"][:4] != ["CMD", "python", "-m", "kortravelcommon.grpc_health"]
+        if service["healthcheck"]["test"][:5] != ["CMD", "python", "-I", "-m", "kortravelcommon.grpc_health"]
     }
     assert len(probes) == 1, len(probes)
     return next(iter(probes))
@@ -435,15 +435,16 @@ def test_common_live_probe_matches_code_server_port_and_keeps_timing(target: str
     port = str(command[command.index("-p") + 1])
     health = service["healthcheck"]
     assert health == {
-        "test": ["CMD", "python", "-m", "kortravelcommon.grpc_health", port, "--check", "live"],
+        "test": ["CMD", "python", "-I", "-m", "kortravelcommon.grpc_health", port, "--check", "live"],
         "interval": "90s", "timeout": "10s", "retries": 5,
         "start_period": "600s", "start_interval": "5s",
     }
 
 
 @pytest.mark.parametrize("replacement", [
-    ["CMD", "python", "-m", "kortravelcommon.grpc_health", "1", "--check", "live"],
-    ["CMD", "python", "-m", "kortravelcommon.grpc_health", "12503", "--check", "ready"],
+    ["CMD", "python", "-m", "kortravelcommon.grpc_health", "12503", "--check", "live"],
+    ["CMD", "python", "-I", "-m", "kortravelcommon.grpc_health", "1", "--check", "live"],
+    ["CMD", "python", "-I", "-m", "kortravelcommon.grpc_health", "12503", "--check", "ready"],
     ["CMD-SHELL", "python -m kortravelcommon.grpc_health 12503 --check live"],
 ])
 def test_cutover_does_not_hide_malformed_common_probe(
