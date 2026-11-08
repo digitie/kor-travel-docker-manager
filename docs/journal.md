@@ -3,9 +3,19 @@
 Weather·Geo code-server의 순수 조회 healthcheck 후보에 최신 main `37bb360`을 병합했다.
 기존 Python 격리 모드(`-I`)를 Common CLI에도 유지하고 cutover의 정확한 argv 허용 계약과 회귀를 맞췄다.
 로그 상한·Geo 공용 제어 평면 주소·기존 점검 주기와 기동 유예·수집 튜닝은 보존한다.
+PR #488의 `07b65475`도 정상 병합해 API HTTP 점검과 code-server live 점검의 통합 후보를 검증한다.
+PR #488 제품 대비 모델 차이는 여전히 두 code-server의 healthcheck.test뿐이다.
+두 PR 통합 뒤 7개 집중 모듈 260개(52.73초)와 전체 백엔드 Ruff를 다시 통과했다.
 live 성공은 proxy 응답만 뜻하며 정의 로딩·DB·worker 복구 성공을 뜻하지 않는다.
 관련 5개 모듈 230개(55.09초)·전체 백엔드 Ruff와 전체 YAML 모델 대조가 통과했다. 모델 차이는 두 healthcheck.test뿐이다.
 비격리 argv 거부 사례 추가 뒤 cutover 모듈 38개(11.21초)를 다시 통과했다. 새 CI·독립 두 리뷰·운영 이미지/CLI/실제 readiness는 아래 과거 검증과 구분하여 정산한다.
+
+## 2026-11-09 — PR #488의 최신 main 통합과 점검 설정 보존
+
+- 최신 main `37bb360`을 정상 merge로 통합했다. 충돌한 journal·tasks는 양쪽 이력을 보존했으며 공용 Dagster 로그 상한·호스트 구성·Valkey 등 상류 변경을 유지했다.
+- 전체 YAML 모델을 대조해 Weather API의 `command`와 `healthcheck` 외 차이가 없음을 확인했다. listen·publish·probe 포트의 공통 유도와 `python -I`, HTTP 3초·Docker 12초·90초 주기·4회 계약을 유지한다. Common CLI를 설치하는 기능은 추가하지 않는다.
+- 최신 통합의 집중 회귀 457개가 234.08초에 통과했고, 전체 Ruff 0.16.4와 PR 범위 민감 파일·일반 비밀 패턴·사설 endpoint 검사에도 통과했다. 실제 후보 source import를 확인했으며 과거 후보 결과를 합산하지 않는다. 최신 CI와 두 독립 리뷰는 해당 HEAD에서 별도로 확인한다.
+- 같은 날 배포 담당자의 읽기 전용 관측에서 Weather API는 이미 Common HTTP·격리 모드·90초·12초·4회 설정으로 실행 중이었다. 이번 소스 통합을 신규 API 배포로 기록하지 않는다. 최종 이미지·native health·공개 UI 검증과 code-server PR #486의 운영 반영은 배포 담당자가 별도로 정산한다.
 
 ## 2026-11-07 — Map Valkey RDB만 + 적재 쓰기 timeout 10초(ADR-59 3 개정)
 
@@ -459,6 +469,26 @@ live가 자식 정의·worker·DB 준비를 보장하지 않는 한계를 운영
 - n150에 Geo를 복구하지 않고 재구축할 수 있도록 외부 prerequisite를 실제 frozen Compose 배치와 맞춘다. RustFS·Concierge는 기존 로컬 canonical readiness를 유지하고, Geo는 active Map API·Map UI BFF·Dagster code server·PinVi API의 frozen origin을 각 consumer target의 R2 origin과 대조한다. readiness는 Manager host의 R2 origin에서 확인하며 retired `legacy-dagster` webserver·daemon은 검사 대상에서 제외한다.
 - redirect·환경 proxy·압축 응답을 거부하고 전체 HTTP 요청을 4초, raw JSON 본문을 4 KiB로 제한한다. 실패는 source materialization 전에 `external_prerequisites` 단계에서 거부한다. 두 번째 독립 리뷰의 legacy profile 및 압축 본문 지적을 반영했으며, 재검증·n150 CLI 반영 및 Map/PinVi 공식 rebuild/UI E2E는 진행 중이다.
 - 이번 변경은 소스 worktree와 문서만 수정했다. n150/odroid 컨테이너, DB, pins, 배포 원장, Manager 서비스 상태는 건드리지 않았다.
+
+## 2026-10-19 — Weather API 점검 PR488 최신 main 정합
+
+main397a91의 기능을 보존하며 기존 PR488을 통합했다. Weather API의 Common HTTP
+점검과 listen/probe 포트 유도를 유지하고, 승인된 점검 간격90초와 운영 Python 격리
+모드(-I)를 반영했다. timeout12초/retries4이며 명목 실패 창은360초다.
+전체 Compose 모델에서 Weather API command·healthcheck 외 차이는 없다.
+code-server의 기존 점검은 이 PR에서 바꾸지 않으며 PR486에서 별도로 다룬다.
+
+기존 테스트 환경이 옛 editable source를 읽어 setup12오류가 났고, 새 전용 환경에서
+실제 후보 소스를 확인했다. 그 뒤 구30초·비격리 argv 단언2실패/10통과를 현재 계약으로
+갱신했다. 현재 통합 집중 회귀419 PASS(164.59초), CI 버전 Ruff0.16.4 PASS를
+확인했다. 과거 환경 오류와 검증 결과는 합산하지 않는다. 현재 운영 API는
+Common HTTP/격리모드/90초/12초/4회이며 이 소스 통합만으로 재배포했다고 주장하지 않는다.
+
+37a9de6 전체 CI는3178통과·39제외·1실패였다. 실패는 Weather API의 옛12회 점검을
+가정한 재구축 대기 예산 단언(1155초)이다. 현재4회 계약에서 가장 긴 code-server
+기동 창에 따른1115초로 단언을 수정했고 해당 모듈26건 통과(4.22초)를 확인했다.
+제품 로직은 바꾸지 않았으며 새 HEAD 전체 CI는 별도로 확인한다.
+
 
 ## 2026-10-18 — PR531 최신 main525 통합과 공개 UI 수용
 
@@ -973,6 +1003,30 @@ CodeGraph init/sync와 diff 점검도 통과했다. 제품 리뷰·현재 CI·�
   그대로이며, 새 운영 환경 SHA 대조 전 재사용·새 source 표식·운영 성공을 주장하지 않는다.
   두 독립 제품 delta 리뷰·새 HEAD의 CI·현재 배포 revision을 기준으로 한 설치 준비와
   실제 배포/live는 별도 후속이다. 기존 운영 설치기는 실행하지 않았다.
+
+## 2026-10-16 — PR488의 최신 main 통합과 API 생존 점검 보존
+
+PR488에 main384cb40의 registry 소비자 origin 파생·root 환경 재정의 거부와 기존
+호스트/workspace·고아 worker 보호를 통합했다. 실제 충돌은 이 일지의 상단 기록뿐이어서
+양쪽 원문을 남겼다. API Common HTTP3초/Docker12초/30초주기/4회와 같은 포트 변수,
+다른 서비스·CS legacy health 계약은 유지한다. PR486은 포함하지 않았다.
+실제 병합 소스에서 API health·registry origin·host/workspace·고아 정산·문서 회귀290건과
+전체 backend Ruff, frontend35/type/lint/build가 통과했다. 설치기 회귀25건도
+전용 환경의 실제 isolated import로 통과했다. 최초 설치기7실패는 빌린 환경의 구제품이
+python -I에서 선택된 원문을 보존했고 타인 환경을 수정하지 않았다. Compose 전체 모델은
+Weather API의 기존5개 의미 차이 외 main과 같다. 운영 변경0이며 새 HEAD의 CI와
+독립 두 리뷰는 후속이다.
+
+## 2026-10-16 — Weather API의 경량 HTTP 생존 점검과 시작 여유
+
+Weather API health만 Common의 strict core HTTP CLI로 바꾼다. HTTP 예산3초는 유지하고
+Docker timeout12초·interval30초·retries4로 Python 시작 여유와 명목 실패 창120초를 함께 둔다.
+현재 API command의 고정 listen 포트도 포트 매핑·health와 같은 환경변수로 유도한다.
+다른 서비스·이미지·설정·start period·Geo 튜닝·486의 CS health 범위는 변경하지 않았다.
+원 native 표본은 빈 Python2.454초, urllib9.693초, Common7.789초였으며 통제된 개선율이 아니다.
+소비 이미지에 CLI가 있어야 하고 redirect·오류·불완전 헤더는 실패한다. 운영 적용은 하지 않았다.
+신규 계약3건은 기존 선언에서 모두 실패했고 새 선언/관련 회귀102건이 통과했다.
+정확 Common ad988 원문의 자기 loopback CLI10조건도 통과했으며 운영 실측으로 합산하지 않는다.
 
 ## 2026-10-15 — 원격 target의 HTTP 관측과 로컬 도구 경계(Codex)
 ## 2026-10-15 — HTTPX 런타임·CI·오프라인 설치 계약 교정(Codex)
