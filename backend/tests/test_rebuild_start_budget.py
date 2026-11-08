@@ -153,8 +153,9 @@ def test_rebuild_wait_follows_frozen_health_and_keeps_legacy_floor() -> None:
         "start_period": 600_000_000_000, "interval": 90_000_000_000,
         "timeout": 10_000_000_000, "retries": 5,
     }}}) == 1115
-    # 현재 정본은 Weather API90초·12회가 가장 길다. source가 아닌 입력 render로 계산한다.
-    assert derive(_services()) == 1155
+    # 현재 정본은 code-server의 600초 + 5 × (90초 + 10초)가 가장 길다.
+    # Weather API는 Common HTTP 점검 4회이며 입력 render로 예산을 계산한다.
+    assert derive(_services()) == 1115
 
 
 def test_rebuild_wait_ignores_disabled_checks() -> None:
