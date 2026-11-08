@@ -184,6 +184,10 @@ _MAP_UI_PASSWORD_HASH_ENV = "KOR_TRAVEL_MAP_UI_ADMIN_PASSWORD_HASH"
 _MAP_UI_SESSION_SECRET_ENV = "KOR_TRAVEL_MAP_UI_SESSION_SECRET"
 _MAP_ADMIN_PROXY_ENV = "KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET"
 _MAP_SERVICE_TOKEN_ENV = "KOR_TRAVEL_MAP_API_SERVICE_TOKEN"
+# PinVi ADR-076 / Map ADR-114 — PinVi API가 Map `/v1/service/transport/*`를 부를 때 쓰는 **같은** Map
+# service token의 PinVi 쪽 이름. 별개 비밀이 아니라 Map API 값의 사본이므로 runtime 격리는 이 이름에서
+# 정확히 그 값만 허용한다.
+_PINVI_MAP_SERVICE_TOKEN_ENV = "PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN"
 _MAP_CURSOR_SIGNING_SECRET_ENV = "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET"
 _MAP_METRICS_TOKEN_ENV = "KOR_TRAVEL_MAP_API_METRICS_TOKEN"
 _MAP_GEO_API_KEY_SOURCE_ENV = "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY"
@@ -209,6 +213,11 @@ _MAP_CACHE_TARGET_PRINCIPALS_ENV = (
 )
 _PINVI_CURATION_SNAPSHOT_ENV = "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN"
 _PINVI_CUTOVER_MAPPING_ENV = "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN"
+_MAP_ADMIN_FEATURES_READ_DIGEST_ENV = "KOR_TRAVEL_MAP_API_PINVI_ADMIN_FEATURES_READ_TOKEN_SHA256"
+_PINVI_ADMIN_FEATURES_READ_ENV = "PINVI_KOR_TRAVEL_MAP_ADMIN_FEATURES_READ_TOKEN"
+_ADMIN_FEATURES_READ_ENV_NAMES = frozenset(
+    {_MAP_ADMIN_FEATURES_READ_DIGEST_ENV, _PINVI_ADMIN_FEATURES_READ_ENV}
+)
 _MAP_PROFILE_ENV = "KOR_TRAVEL_MAP_API_PROFILE"
 _MAP_PUBLIC_API_KEY_REQUIRED_ENV = "KOR_TRAVEL_MAP_API_PUBLIC_API_KEY_REQUIRED"
 _MAP_DEBUG_ROUTES_ENABLED_ENV = "KOR_TRAVEL_MAP_API_DEBUG_ROUTES_ENABLED"
@@ -415,6 +424,7 @@ _MAP_PRODUCTION_SECRET_ENV_NAMES = frozenset(
         _MAP_CURSOR_SIGNING_SECRET_ENV,
         _MAP_GEO_API_KEY_SOURCE_ENV,
         _MAP_UI_GEO_API_KEY_ENV,
+        _PINVI_MAP_SERVICE_TOKEN_ENV,
     }
 )
 _MAP_FEATURE_CREATE_ENV_NAMES = frozenset(
@@ -718,6 +728,10 @@ def _build_candidate_canonical_api_env_values() -> dict[tuple[str, str], str]:
             "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
             "KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
         ),
+        (_PINVI_API_SERVICE, _PINVI_MAP_SERVICE_TOKEN_ENV): (
+            "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
+            "KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
+        ),
         (_MAP_API_SERVICE, _MAP_CURSOR_SIGNING_SECRET_ENV): (
             "${KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET:?"
             "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
@@ -731,6 +745,12 @@ def _build_candidate_canonical_api_env_values() -> dict[tuple[str, str], str]:
             (service, _MAP_GEO_API_KEY_SOURCE_ENV): "${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}"
             for service in _map_dagster().processes
         },
+        (_MAP_API_SERVICE, _MAP_ADMIN_FEATURES_READ_DIGEST_ENV): (
+            "${KOR_TRAVEL_MAP_API_PINVI_ADMIN_FEATURES_READ_TOKEN_SHA256:-}"
+        ),
+        (_PINVI_API_SERVICE, _PINVI_ADMIN_FEATURES_READ_ENV): (
+            "${PINVI_KOR_TRAVEL_MAP_ADMIN_FEATURES_READ_TOKEN:-}"
+        ),
         (_MAP_API_SERVICE, _MAP_CURATION_SNAPSHOT_DIGEST_ENV): (
             "${KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256:-}"
         ),
@@ -1344,6 +1364,8 @@ def _normalize_postgres_setting_name(name: str) -> str:
 #: ADR-52(2026-09-28)로 공용 instance가 쓴다 — 둘 다 권한을 넓히지 않는다(init은
 #: PID 1에 docker-init을 둘 뿐이고, grace는 종료 대기 시간이다). `mem_limit`·`memswap_limit`·`oom_score_adj`는
 #: ADR-58 결정 8(T-MGR-03)로 공용 instance가 쓴다 — 셋 다 컨테이너를 **좁히거나** 커널 OOM 순서만 바꾼다.
+#: `logging`은 ADR-61(2026-11-03)의 로그 상한이다 — 디스크 사용을 좁힌다. 다만 driver는 서버 출력이 가는 곳이라
+#: 로컬 `json-file`만 받는다(`_assert_one_postgres_cluster_runtime`).
 #:
 #: **금지 목록이 아니라 허용 목록이다.** 앞선 세 라운드가 같은 병으로 뚫렸다 —
 #: `entrypoint`·`privileged`·`user`·`cap_add`·`pid`를 막았더니 `devices: /dev/sda`가
@@ -1361,6 +1383,7 @@ _POSTGRES_ALLOWED_SERVICE_KEYS: Final = frozenset(
         "healthcheck",
         "image",
         "init",
+        "logging",
         "mem_limit",
         "memswap_limit",
         "network_mode",
@@ -1835,7 +1858,7 @@ def _assert_one_postgres_cluster_runtime(
     """PostgreSQL 서버의 **형태 전체**를 허용 목록으로 묶는다.
 
     금지 목록은 세 라운드 연속으로 뒤처졌다 — 매번 내가 놓친 철자·키가 우회로였다.
-    정본 서버의 형태는 좁고 고정적이므로(최상위 키 16개, 허용 GUC 19개 + `-p`) 방향을
+    정본 서버의 형태는 좁고 고정적이므로(최상위 키 17개, 허용 GUC 19개 + `-p`) 방향을
     뒤집으면 **모르는 것이 하나라도 있으면 거부**가 되고, 다음 compose 스펙이나
     postgres 버전이 무엇을 추가해도 fail-close다.
     """
@@ -1862,6 +1885,16 @@ def _assert_one_postgres_cluster_runtime(
         raise ComposeCandidateContractError(
             f"compose candidate gives a PostgreSQL service non-canonical keys "
             f"{unknown_keys}: " + _describe_candidate_service_key(service_name)
+        )
+    # 허용 목록의 `logging`(로그 상한, ADR-61)은 driver를 로컬 `json-file`로 묶는다 — syslog·gelf·fluentd 같은
+    # 원격 driver는 서버 출력을 호스트 밖으로 보낸다. 다른 driver가 필요해지면 여기를 명시적으로 넓힌다.
+    logging_config = service.get("logging")
+    if logging_config is not None and (
+        not isinstance(logging_config, Mapping) or logging_config.get("driver") != "json-file"
+    ):
+        raise ComposeCandidateContractError(
+            "compose candidate gives a PostgreSQL service a non-canonical logging driver: "
+            + _describe_candidate_service_key(service_name)
         )
 
     _assert_postgres_healthcheck_is_canonical(service_name, service)
@@ -2697,6 +2730,7 @@ class C6cDeploymentConfig:
     pinvi_container: str
     contract_generation: str = field(repr=False)
     smoke: C6cSmokeConfig
+    admin_features_read_token: str = field(default="", repr=False)
     curation_snapshot_token: str = field(default="", repr=False)
     curation_cutover_mapping_token: str = field(default="", repr=False)
     feature_create_token: str = field(default="", repr=False)
@@ -3084,76 +3118,6 @@ def c6c_state_paths(values: Mapping[str, str]) -> tuple[str, str]:
     return str(legacy_artifact), str(lock)
 
 
-def ensure_c6c_state_directory(path: str | Path) -> None:
-    """C6c state directory를 production/local 모두 owner-only 정책으로 준비한다."""
-
-    target = Path(path)
-    if _is_relative_to(target.resolve(strict=False), _C6C_PRODUCTION_STATE_ROOT):
-        expected_uid = _production_state_owner_uid()
-        _ensure_single_c6c_state_directory(
-            _C6C_PRODUCTION_STATE_ROOT,
-            expected_uid=expected_uid,
-        )
-        current = _C6C_PRODUCTION_STATE_ROOT
-        for part in target.resolve(strict=False).relative_to(_C6C_PRODUCTION_STATE_ROOT).parts:
-            current = current / part
-            _ensure_single_c6c_state_directory(current, expected_uid=expected_uid)
-        return
-    target.mkdir(mode=0o700, parents=True, exist_ok=True)
-    _validate_c6c_state_directory(target, expected_uid=os.geteuid())
-
-
-def _ensure_single_c6c_state_directory(path: Path, *, expected_uid: int) -> None:
-    try:
-        path.mkdir(mode=0o700)
-    except FileExistsError:
-        pass
-    except OSError as exc:
-        raise DeploymentContractError("C6c state directory is unavailable") from exc
-    directory_stat = _c6c_state_directory_stat(path, expected_uid=expected_uid)
-    if stat.S_IMODE(directory_stat.st_mode) != 0o700:
-        try:
-            os.chmod(path, 0o700)
-        except OSError as exc:
-            raise DeploymentContractError("C6c state directory mode cannot be fixed") from exc
-        _validate_c6c_state_directory(path, expected_uid=expected_uid)
-
-
-def _production_state_owner_uid() -> int:
-    if _C6C_PRODUCTION_STATE_ROOT == _DEFAULT_C6C_PRODUCTION_STATE_ROOT:
-        return 0
-    return os.geteuid()
-
-
-def _c6c_state_directory_stat(path: Path, *, expected_uid: int) -> os.stat_result:
-    try:
-        directory_stat = path.lstat()
-    except OSError as exc:
-        raise DeploymentContractError("C6c state directory is unavailable") from exc
-    if (
-        not stat.S_ISDIR(directory_stat.st_mode)
-        or directory_stat.st_uid != expected_uid
-    ):
-        raise DeploymentContractError("C6c state directory is unsafe")
-    return directory_stat
-
-
-def _validate_c6c_state_directory(path: Path, *, expected_uid: int) -> None:
-    directory_stat = _c6c_state_directory_stat(path, expected_uid=expected_uid)
-    if (
-        stat.S_IMODE(directory_stat.st_mode) != 0o700
-    ):
-        raise DeploymentContractError("C6c state directory is unsafe")
-
-
-def _is_relative_to(path: Path, base: Path) -> bool:
-    try:
-        path.relative_to(base)
-    except ValueError:
-        return False
-    return True
-
-
 def manager_mutation_lock_path(values: Mapping[str, str]) -> str:
     """주어진 ``.env`` 값이 가리키는 Manager 변경 lock 경로(ADR-51 C-3).
 
@@ -3284,6 +3248,7 @@ def load_c6c_deployment_config_from_environment(
             pinvi_admin_email=values.get("KTDM_C6C_PINVI_ADMIN_EMAIL", ""),
             pinvi_admin_password=values.get(_PINVI_ADMIN_PASSWORD_ENV, ""),
         ),
+        admin_features_read_token=values.get(_PINVI_ADMIN_FEATURES_READ_ENV, ""),
         curation_snapshot_token=values.get(_PINVI_CURATION_SNAPSHOT_ENV, ""),
         curation_cutover_mapping_token=values.get(
             _PINVI_CUTOVER_MAPPING_ENV,
@@ -3650,7 +3615,7 @@ def validate_concierge_ui_canonical_compose_boundary(
     *,
     environment: Mapping[str, str],
 ) -> None:
-    """legacy override 퇴역 전 Concierge UI/API C6c raw·resolved 경계를 함께 검증한다."""
+    """Concierge 재생성(`compose-boundary activate-concierge`) 전 UI/API C6c raw·resolved 경계를 함께 검증한다."""
 
     candidate_services = candidate.get("services")
     resolved_services = resolved.get("services")
@@ -3740,6 +3705,74 @@ def _validate_raw_token_pair(
         raise DeploymentContractError("C6c read, cancel, and fixture tokens must differ")
 
 
+def derive_pinvi_admin_features_read_environment(
+    environment: Mapping[str, str],
+    *,
+    error_type: type[DeploymentContractError] = DeploymentContractError,
+) -> dict[str, str]:
+    """명시된 전용 원문에서만 digest를 파생한다. 생성·회전·파일 쓰기는 없다."""
+
+    values = dict(environment)
+    raw = values.get(_PINVI_ADMIN_FEATURES_READ_ENV, "")
+    declared = values.get(_MAP_ADMIN_FEATURES_READ_DIGEST_ENV, "")
+    if not isinstance(raw, str) or not isinstance(declared, str):
+        raise error_type("PinVi admin Feature read credential environment is invalid")
+    if not raw:
+        if declared:
+            raise error_type("Map admin Feature read digest requires its PinVi raw token")
+        values[_MAP_ADMIN_FEATURES_READ_DIGEST_ENV] = ""
+        return values
+    if not 32 <= len(raw) <= 4096 or any(not 33 <= ord(char) <= 126 for char in raw):
+        raise error_type(
+            "PinVi admin Feature read token requires 32..4096 printable ASCII characters"
+        )
+    expected = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    if declared and (
+        re.fullmatch(r"[0-9a-f]{64}", declared) is None
+        or not hmac.compare_digest(declared, expected)
+    ):
+        raise error_type("Map admin Feature read digest must be derived from its PinVi raw token")
+    other_raw_names = (
+        *_MAP_PRODUCTION_SECRET_ENV_NAMES,
+        _MAP_READ_ENV,
+        _MAP_CANCEL_ENV,
+        _MAP_FIXTURE_ENV,
+        _PINVI_READ_ENV,
+        _PINVI_CANCEL_ENV,
+        "PINVI_KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET",
+        *_CURATION_PRINCIPAL_RAW_ENV_NAMES,
+        _MAP_FEATURE_CREATE_TOKEN_ENV,
+        _MAP_METRICS_TOKEN_ENV,
+        _MAP_UI_PASSWORD_HASH_ENV,
+        _MAP_UI_SESSION_SECRET_ENV,
+        _MAP_UI_PASSWORD_ENV,
+        _PINVI_ADMIN_PASSWORD_ENV,
+        "KTDM_C6C_CONTRACT_GENERATION",
+    )
+    for name in other_raw_names:
+        other = values.get(name, "")
+        if isinstance(other, str) and other and hmac.compare_digest(
+            raw.encode("utf-8"), other.encode("utf-8")
+        ):
+            raise error_type(f"PinVi admin Feature read token must differ from {name}")
+    other_digests = (
+        *(values.get(name, "") for name in _CURATION_PRINCIPAL_DIGEST_ENV_NAMES),
+        values.get(_MAP_FEATURE_CREATE_TOKEN_DIGEST_ENV, ""),
+        *_cache_target_token_digests(values),
+    )
+    if any(
+        isinstance(other, str) and other and hmac.compare_digest(
+            expected.encode(), other.encode("utf-8")
+        )
+        for other in other_digests
+    ):
+        raise error_type(
+            "PinVi admin Feature read token must differ from existing scoped credentials"
+        )
+    values[_MAP_ADMIN_FEATURES_READ_DIGEST_ENV] = expected
+    return values
+
+
 def derive_curation_service_principal_environment(
     environment: Mapping[str, str],
     *,
@@ -3747,12 +3780,13 @@ def derive_curation_service_principal_environment(
 ) -> dict[str, str]:
     """PinVi 원시 principal pair에서 Map 검증용 digest만 파생한다.
 
+    별도 Feature read 원문도 같은 effective-env 경계에서 먼저 검증한다.
     Map runtime에는 원시 ServiceToken을 전달하지 않는다. 기존 C6c deployment가
     T-VN-40 service cutover 전에도 계속 동작하도록 pair가 모두 비어 있는 경우만
     허용하며, digest만 외부에서 주입하는 우회는 fail-close한다.
     """
 
-    values = dict(environment)
+    values = derive_pinvi_admin_features_read_environment(environment, error_type=error_type)
     snapshot_token = values.get(_PINVI_CURATION_SNAPSHOT_ENV, "")
     mapping_token = values.get(_PINVI_CUTOVER_MAPPING_ENV, "")
     declared_snapshot_digest = values.get(_MAP_CURATION_SNAPSHOT_DIGEST_ENV, "")
@@ -3904,6 +3938,7 @@ def _validate_feature_create_credential_distinctness(
         _MAP_UI_SESSION_SECRET_ENV,
         _MAP_UI_PASSWORD_ENV,
         *_CURATION_PRINCIPAL_RAW_ENV_NAMES,
+        _PINVI_ADMIN_FEATURES_READ_ENV,
     )
     for env_name in raw_credential_names:
         protected = values.get(env_name, "")
@@ -3920,6 +3955,7 @@ def _validate_feature_create_credential_distinctness(
             )
 
     for env_name, protected_digest in (
+        (_MAP_ADMIN_FEATURES_READ_DIGEST_ENV, values.get(_MAP_ADMIN_FEATURES_READ_DIGEST_ENV, "")),
         (_MAP_CURATION_SNAPSHOT_DIGEST_ENV, values.get(_MAP_CURATION_SNAPSHOT_DIGEST_ENV, "")),
         (
             _MAP_CURATION_CUTOVER_MAPPING_DIGEST_ENV,
@@ -3950,6 +3986,7 @@ def _validate_map_production_secrets(config: C6cDeploymentConfig) -> None:
             _MAP_READ_ENV: config.read_token,
             _MAP_CANCEL_ENV: config.cancel_token,
             _MAP_FIXTURE_ENV: config.fixture_token,
+            _PINVI_ADMIN_FEATURES_READ_ENV: config.admin_features_read_token,
             _PINVI_CURATION_SNAPSHOT_ENV: config.curation_snapshot_token,
             _PINVI_CUTOVER_MAPPING_ENV: config.curation_cutover_mapping_token,
             _MAP_FEATURE_CREATE_TOKEN_ENV: config.feature_create_token,
@@ -4045,6 +4082,7 @@ def _validate_map_production_secret_values(
         _MAP_READ_ENV,
         _MAP_CANCEL_ENV,
         _MAP_FIXTURE_ENV,
+        _PINVI_ADMIN_FEATURES_READ_ENV,
         _PINVI_CURATION_SNAPSHOT_ENV,
         _PINVI_CUTOVER_MAPPING_ENV,
         _MAP_UI_PASSWORD_HASH_ENV,
@@ -4387,7 +4425,9 @@ def validate_resolved_c6c_build_provenance(
             "NEXT_PUBLIC_VWORLD_API_KEY",
         }
     )
-    expected_arg_names[_PINVI_WEB_SERVICE].add("NEXT_PUBLIC_PINVI_API_URL")
+    expected_arg_names[_PINVI_WEB_SERVICE].update(
+        {"NEXT_PUBLIC_PINVI_API_URL", "NEXT_PUBLIC_VWORLD_API_KEY"}
+    )
     expected_dockerfiles = {
         _MAP_UI_SERVICE: "docker/frontend.Dockerfile",
         _PINVI_API_SERVICE: "apps/api/Dockerfile",
@@ -4500,6 +4540,7 @@ def validate_c6c_build_source_wiring(candidate: Mapping[str, Any]) -> None:
                 "NEXT_PUBLIC_PINVI_API_URL": (
                     "${PINVI_PUBLIC_API_URL:-http://127.0.0.1:12801}"
                 ),
+                "NEXT_PUBLIC_VWORLD_API_KEY": "${NEXT_PUBLIC_VWORLD_API_KEY:-}",
             },
         },
         pinvi_dagster_service: {
@@ -6860,6 +6901,7 @@ def validate_current_map_ui_auth_runtime(
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
         | _MAP_FEATURE_CREATE_CONTROL_ENV_NAMES
+        | _ADMIN_FEATURES_READ_ENV_NAMES
     )
     for path, scalar in _walk_scalars(runtime_config):
         if path in allowed_paths:
@@ -6879,8 +6921,13 @@ def validate_runtime_secret_isolation(
     config: C6cDeploymentConfig,
 ) -> None:
     _validate_map_production_secrets(config)
+    read_digest = (
+        hashlib.sha256(config.admin_features_read_token.encode("utf-8")).hexdigest()
+        if config.admin_features_read_token else ""
+    )
     expected = {
         config.map_container: {
+            _MAP_ADMIN_FEATURES_READ_DIGEST_ENV: read_digest,
             _MAP_READ_ENV: config.read_token,
             _MAP_CANCEL_ENV: config.cancel_token,
             _MAP_FIXTURE_ENV: config.fixture_token,
@@ -6896,8 +6943,10 @@ def validate_runtime_secret_isolation(
             **_MAP_PRODUCTION_API_LITERAL_VALUES,
         },
         config.pinvi_container: {
+            _PINVI_ADMIN_FEATURES_READ_ENV: config.admin_features_read_token,
             _PINVI_READ_ENV: config.read_token,
             _PINVI_CANCEL_ENV: config.cancel_token,
+            _PINVI_MAP_SERVICE_TOKEN_ENV: config.map_service_token,
         },
         config.map_ui_container: {
             _MAP_UI_USERNAME_ENV: config.smoke.map_ui_username,
@@ -6920,6 +6969,8 @@ def validate_runtime_secret_isolation(
     secret_values = tuple(
         secret
         for secret in (
+            config.admin_features_read_token,
+            read_digest,
             config.read_token,
             config.cancel_token,
             config.fixture_token,
@@ -6945,6 +6996,7 @@ def validate_runtime_secret_isolation(
         | _MAP_PRODUCTION_SECRET_ENV_NAMES
         | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
         | _MAP_FEATURE_CREATE_CONTROL_ENV_NAMES
+        | _ADMIN_FEATURES_READ_ENV_NAMES
     )
     for container_name, runtime_config in container_configs.items():
         if not isinstance(runtime_config, Mapping):
@@ -6969,6 +7021,7 @@ def validate_runtime_secret_isolation(
                 | _MAP_PRODUCTION_SECRET_ENV_NAMES
                 | _MAP_PRODUCTION_API_LITERAL_ENV_NAMES
                 | _MAP_FEATURE_CREATE_CONTROL_ENV_NAMES
+                | _ADMIN_FEATURES_READ_ENV_NAMES
             ):
                 if env_name not in allowed:
                     raise DeploymentContractError(
@@ -6985,6 +7038,8 @@ def validate_runtime_secret_isolation(
                     "a C6c runtime secret value leaks in an unauthorized variable"
                 )
         for env_name in allowed:
+            if env_name in _ADMIN_FEATURES_READ_ENV_NAMES and not config.admin_features_read_token:
+                continue  # 미 provision 상태의 이전 runtime에 빈 신규 키를 강제하지 않는다.
             if env_name not in environment:
                 raise DeploymentContractError(
                     "C6c runtime protected value wiring is missing"

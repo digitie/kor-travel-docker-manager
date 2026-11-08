@@ -14,7 +14,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any, Final
 
 #: 공용 instance PGDATA의 major. 바꾸는 것은 `pg_upgrade`/dump-restore 절차이지 이미지 줄 하나가 아니다 — 그때 함께 올린다.
-POSTGRES_MAJOR: Final = "16"
+POSTGRES_MAJOR: Final = "18"
 _DECLARED_ROLE_SUFFIX: Final = "postgresql"
 
 

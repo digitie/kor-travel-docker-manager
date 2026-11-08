@@ -37,6 +37,7 @@ from kor_travel_docker_manager.services.compose_service import (
     get_compose_path,
     get_env_path,
 )
+from kor_travel_docker_manager.services.container_inventory import observed_container_specs
 from kor_travel_docker_manager.services.errors import (
     ComposeCandidateContractError,
     ComposePostMutationContractError,
@@ -56,6 +57,7 @@ from kor_travel_docker_manager.services.secret_scrub import (
     is_sensitive_key,
     redact_value_credentials,
 )
+from kor_travel_docker_manager.services.status_snapshot import StatusSnapshot, invalidates_status
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +257,11 @@ def _public_url(spec: dict[str, Any]) -> str | None:
     if not env_key:
         return None
     value = os.environ.get(str(env_key), "").strip()
-    return value or None
+    if not value:
+        return None
+    # API 소비자가 사용하는 origin은 유지하고 대시보드 진입 경로만 붙인다.
+    path = spec.get("prod_url_path")
+    return value.rstrip("/") + "/" + path.lstrip("/") if path else value
 
 
 def _observe_remote_containers(entries: list[dict[str, Any]], remote_ids: set[str]) -> list[dict[str, Any]]:
@@ -744,6 +750,7 @@ def validate_container_config_update(
 
 class DockerService:
     def __init__(self) -> None:
+        self._status_snapshot = StatusSnapshot()
         self._client: docker.DockerClient | None = None
         self._initialized = False
         self._default_compose_config: dict[str, Any] | None = None
@@ -773,6 +780,9 @@ class DockerService:
         return self._client
 
     def get_containers_status(self) -> list[dict[str, Any]]:
+        return self._status_snapshot.get(self._collect_containers_status)
+
+    def _collect_containers_status(self) -> list[dict[str, Any]]:
         """Fetch the statuses of all managed containers."""
         status_list = []
         compose_cfg = get_compose_config()
@@ -825,7 +835,19 @@ class DockerService:
         # 프로젝트 이름은 문서당 한 번만 유도한다 — 컨테이너마다 부르면 92KB YAML을
         # 다시 파싱한다(적대 리뷰 2026-09-18 라운드4 F-01: 98ms → 1917ms).
         manager_project = _manager_compose_project(compose_cfg)
-        for key, spec in managed.items():
+        inventory_complete = True
+        try:
+            observed = observed_container_specs(client, managed)
+        except DockerException:
+            logger.warning("Running Docker inventory is unavailable")
+            inventory_complete = False
+            observed = {}
+        public_envs = config.get("observed_public_url_envs", {})
+        for spec in observed.values():
+            env_key = public_envs.get(spec["name"])
+            if isinstance(env_key, str) and env_key.startswith("KTDM_PROD_URL_"):
+                spec["prod_url_env"] = env_key
+        for key, spec in {**managed, **observed}.items():
             cname = spec["name"]
             svc_name, svc_config = _managed_service_config(key, spec, services)
 
@@ -844,29 +866,29 @@ class DockerService:
                 )
                 # Parse exposed ports
                 ports = []
-                port_bindings = container.attrs.get("HostConfig", {}).get("PortBindings", {})
+                port_bindings = container.attrs.get("HostConfig", {}).get("PortBindings") or {}
                 for container_port, host_ports in port_bindings.items():
                     if host_ports:
                         ports.append(
                             f"{host_ports[0].get('HostPort')}:{container_port.split('/')[0]}"
                         )
 
-                image = container.image
-                image_tags = image.tags if image is not None else []
+                image_reference = container.attrs.get("Config", {}).get("Image") or container.attrs.get("Image") or "unknown"
                 status_list.append(
                     {
                         "id": key,
                         "name": cname,
+                        "docker_id": str(container.attrs.get("Id") or ""),
+                        "observed_only": bool(spec.get("observed_only") or key in remote_ids),
+                        "health": container.attrs.get("State", {}).get("Health", {}).get("Status"),
+                        "observed_host": selected,
+                        "network_mode": container.attrs.get("HostConfig", {}).get("NetworkMode"),
                         "display_name": spec["display_name"],
                         "role": spec["role"],
                         "connection": spec["connection"],
                         "public_url": _public_url(spec),
                         "expected_ports": spec["expected_ports"],
-                        "image": (
-                            image_tags[0]
-                            if image_tags
-                            else image.short_id if image is not None else "unknown"
-                        ),
+                        "image": image_reference,
                         "status": container.status,  # e.g., 'running', 'exited', 'paused'
                         "state": container.attrs.get("State", {}).get("Status", "unknown"),
                         "ports": ports,
@@ -944,8 +966,13 @@ class DockerService:
                         },
                     }
                 )
+        for row in status_list:
+            row.setdefault("observed_only", bool(observed.get(row["id"], {}).get("observed_only") or row["id"] in remote_ids))
+            row.setdefault("observed_host", selected)
+            row["inventory_complete"] = inventory_complete
         return _observe_remote_containers(status_list, remote_ids)
 
+    @invalidates_status
     def control_container(self, container_id: str, action: str) -> dict[str, Any]:
         """Perform start/stop/restart action on a container."""
         if container_id not in MANAGED_CONTAINERS:
@@ -1204,6 +1231,7 @@ class DockerService:
             logger.error(f"Failed to inspect container {cname}: {e}")
             return {"success": False, "error": str(e)}
 
+    @invalidates_status
     def update_container_config(
         self,
         container_id: str,
@@ -1606,6 +1634,7 @@ class DockerService:
                 "error": str(exc),
             }
 
+    @invalidates_status
     def reset_container_config(self, container_id: str) -> dict[str, Any]:
         """Reset container configuration in docker-compose.yml to default and recreate it."""
         if container_id not in MANAGED_CONTAINERS:

@@ -123,6 +123,7 @@ def _runtime_secret_config() -> SimpleNamespace:
         map_service_token="s" * 32,
         map_cursor_signing_secret="u" * 32,
         map_geo_api_key="g" * 32,
+        admin_features_read_token="",
         feature_create_token="feature-token",
         feature_create_enabled="true",
         map_ui_password_hash="pbkdf2_sha256$100000$salt$digest",
@@ -174,6 +175,9 @@ def _valid_runtime_configs(config: Any) -> dict[str, dict[str, Any]]:
                 {
                     c6c_deployment_module._PINVI_READ_ENV: config.read_token,
                     c6c_deployment_module._PINVI_CANCEL_ENV: config.cancel_token,
+                    c6c_deployment_module._PINVI_MAP_SERVICE_TOKEN_ENV: (
+                        config.map_service_token
+                    ),
                 }
             )
         },
@@ -429,6 +433,46 @@ def test_runtime_isolation_still_finds_secret_values_anywhere(
         validate_runtime_secret_isolation(broken, config)
 
 
+def test_runtime_isolation_binds_pinvi_map_service_token_to_its_exact_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PinVi transport(ADR-076)는 Map service token을 pinvi-api의 그 이름에서만, 그 값으로만 받는다."""
+
+    monkeypatch.setattr(
+        c6c_deployment_module,
+        "_validate_map_production_secrets",
+        lambda _config: None,
+    )
+    config = _runtime_secret_config()
+    pinvi = config.pinvi_container
+    name = c6c_deployment_module._PINVI_MAP_SERVICE_TOKEN_ENV
+
+    validate_runtime_secret_isolation(_valid_runtime_configs(config), config)
+
+    def without(env: list[str]) -> list[str]:
+        return [entry for entry in env if not entry.startswith(f"{name}=")]
+
+    broken = _valid_runtime_configs(config)
+    broken[pinvi]["Env"] = without(broken[pinvi]["Env"])
+    with pytest.raises(DeploymentContractError, match="wiring is missing"):
+        validate_runtime_secret_isolation(broken, config)
+
+    broken = _valid_runtime_configs(config)
+    broken[pinvi]["Env"] = [*without(broken[pinvi]["Env"]), f"{name}={'z' * 32}"]
+    with pytest.raises(DeploymentContractError, match="wiring is invalid"):
+        validate_runtime_secret_isolation(broken, config)
+
+    broken = _valid_runtime_configs(config)
+    broken[config.map_ui_container]["Env"].append(f"{name}={config.map_service_token}")
+    with pytest.raises(DeploymentContractError, match="unauthorized container"):
+        validate_runtime_secret_isolation(broken, config)
+
+    broken = _valid_runtime_configs(config)
+    broken[pinvi]["Env"].append(f"PINVI_OTHER_TOKEN={config.map_service_token}")
+    with pytest.raises(DeploymentContractError, match="secret value leaks"):
+        validate_runtime_secret_isolation(broken, config)
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
@@ -483,6 +527,9 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": "v" * 32,
         # ADR-54: PinVi code-server가 공용 plane에 합류해 `x-dagster-shared-control-env`의 필수 키를 해석한다.
         "KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD": "dagster-shared-contract-password",
+        # RustFS root credential은 compose fallback 없이 필수다(`:?`, 공개 기본값 퇴역).
+        "RUSTFS_ACCESS_KEY": "RUSTFSCONTRACTACCESS",
+        "RUSTFS_SECRET_KEY": "rustfs-contract-secret-key-0123456789abc",
         "KOR_TRAVEL_MAP_MIGRATION_EXPECTED_HEAD": "300",
         "KOR_TRAVEL_MAP_API_IMAGE": _MAP_API_IMAGE_ID,
         "KOR_TRAVEL_MAP_DAGSTER_IMAGE": _MAP_DAGSTER_IMAGE_ID,
@@ -494,6 +541,8 @@ def _compose_contract_environment() -> dict[str, str]:
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_USER": "map_contract_dagster",
         "KOR_TRAVEL_MAP_DAGSTER_METADATA_PASSWORD": "map-contract-dagster-metadata-password",
         "KOR_TRAVEL_MAP_SERVICE_PASSWORD": "map-contract-service-password",
+        # ADR-59: Map API·code-server가 받는 Valkey URL(`x-map-valkey-url`)의 필수 키.
+        "KOR_TRAVEL_MAP_VALKEY_PASSWORD": "map-contract-valkey-password",
         "KOR_TRAVEL_MAP_PG_DSN": (
             "postgresql+asyncpg://ktm_feature_service:map-contract-service-password@"
             "127.0.0.1:11000/map_contract"
@@ -2387,7 +2436,7 @@ def test_every_dagster_code_server_binds_loopback_only() -> None:
 # import 끊김, 로더 우회 어느 쪽이든 빨개진다.
 
 #: ADR-53 뒤 Map DB가 사는 공용 instance의 PGDATA bind.
-_MAP_PGDATA_BIND_KEY = ("kor-travel-shared-postgres", "/var/lib/postgresql/data", False)
+_MAP_PGDATA_BIND_KEY = ("kor-travel-shared-postgres", "/var/lib/postgresql/18/docker", False)
 
 
 def _patched_allowlist(
@@ -2453,7 +2502,7 @@ def test_deployment_validation_rejects_a_forbidden_host_source(
     assert isinstance(services, dict)
     service = services["kor-travel-shared-postgres"]
     assert isinstance(service, dict)
-    service["volumes"] = ["/etc:/var/lib/postgresql/data"]
+    service["volumes"] = ["/etc:/var/lib/postgresql/18/docker"]
 
     patched = dict(load_compose_bind_allowlist())
     patched[_MAP_PGDATA_BIND_KEY] = "/etc"
@@ -2484,7 +2533,7 @@ def test_deployment_validation_rejects_binding_the_allowlist_itself(
     assert isinstance(services, dict)
     service = services["kor-travel-shared-postgres"]
     assert isinstance(service, dict)
-    service["volumes"] = [f"{targets_config}:/var/lib/postgresql/data"]
+    service["volumes"] = [f"{targets_config}:/var/lib/postgresql/18/docker"]
 
     patched = dict(load_compose_bind_allowlist())
     patched[_MAP_PGDATA_BIND_KEY] = targets_config
@@ -4902,6 +4951,21 @@ def test_an_empty_signal_is_not_a_deployment(signal: str) -> None:
         ),
         pytest.param({"userns_mode": "host"}, "host privilege", id="userns_mode"),
         pytest.param({"volumes_from": ["other"]}, "host privilege", id="volumes_from"),
+        # `logging`은 허용 목록에 있지만(로그 상한, ADR-61) driver는 `json-file`이어야 한다 — 원격 driver는 서버
+        # 출력을 호스트 밖으로 보내고, driver가 없거나 모양이 다르면 daemon 기본값이 정한다(fail-close).
+        pytest.param(
+            {"logging": {"driver": "syslog", "options": {"syslog-address": "udp://203.0.113.9:514"}}},
+            "non-canonical logging driver",
+            id="logging-remote-driver",
+        ),
+        pytest.param({"logging": {"driver": "local"}}, "non-canonical logging driver", id="logging-local"),
+        pytest.param({"logging": {}}, "non-canonical logging driver", id="logging-empty"),
+        pytest.param(
+            {"logging": {"options": {"max-size": "50m"}}},
+            "non-canonical logging driver",
+            id="logging-driver-omitted",
+        ),
+        pytest.param({"logging": "json-file"}, "non-canonical logging driver", id="logging-not-a-mapping"),
     ],
 )
 def test_a_cluster_service_cannot_take_privileged_shapes(
@@ -5889,7 +5953,7 @@ def test_an_exec_pg_isready_probe_with_arguments_passes(tmp_path: Path) -> None:
     postgres["healthcheck"] = {
         "test": [
             "CMD",
-            "/usr/lib/postgresql/16/bin/pg_isready",
+            "/usr/lib/postgresql/18/bin/pg_isready",
             "-h",
             "127.0.0.1",
             "-p",

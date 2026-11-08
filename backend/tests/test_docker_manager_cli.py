@@ -72,6 +72,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "kor-travel-concierge-mcp",
         "kor-travel-concierge-dagster-code-server",
         "kor-travel-concierge-ui",
+        "kor-travel-map-valkey",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster-code-server",
@@ -93,6 +94,7 @@ def test_registry_resolves_application_targets_to_shared_services():
         "kor-travel-concierge-mcp",
         "kor-travel-concierge-dagster-code-server",
         "kor-travel-concierge-ui",
+        "kor-travel-map-valkey",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster-code-server",
@@ -307,9 +309,42 @@ def test_compose_ensure_build_command(
             "HOME": str(lock_home),
         },
     ):
-        result = ComposeService().ensure_target("srv", build=True, recreate=True)
+        exported: list[frozenset[str]] = []
+
+        def export_contexts(document, *, build_services, staging_directory):
+            # 이 문서는 해석 전 원문이라 context가 `${...}`다 — 사본 생성 대신 대상만 기록한다.
+            targets = frozenset(build_services)
+            # 명시 build가 아닌 명령(init step `run`)은 대상이 없고 사본 디렉터리도 없다.
+            assert (staging_directory is not None) == bool(targets)
+            if targets:
+                exported.append(targets)
+            return dict(document)
+
+        state_root = tmp_path / "state-root"
+        with (
+            patch(
+                "kor_travel_docker_manager.services.compose_service."
+                "compose_document_with_exported_build_contexts",
+                side_effect=export_contexts,
+            ),
+            patch(
+                "kor_travel_docker_manager.services.compose_service.pinned_runtime_state_root",
+                return_value=state_root,
+            ),
+        ):
+            result = ComposeService().ensure_target("srv", build=True, recreate=True)
 
     assert result["success"] is True
+    # `--build`는 운영 source 디렉터리가 아니라 정규화 사본에서 빌드한다 — 대상은 올리는 서비스의
+    # build 절 전부다(build_context_export.py).
+    assert exported, "ensure --build must export build contexts"
+    assert {
+        "kor-travel-concierge-api",
+        "kor-travel-concierge-dagster-code-server",
+        "kor-travel-concierge-ui",
+        "pinvi-api",
+    } <= exported[0]
+    assert "kor-travel-geo-api" not in exported[0]
     # 실제 host-local srv 폐포는 이전한 Geo를 시작하지 않는다.
     assert result["services"] == [
         "rustfs",
@@ -322,6 +357,7 @@ def test_compose_ensure_build_command(
         "kor-travel-concierge-mcp",
         "kor-travel-concierge-dagster-code-server",
         "kor-travel-concierge-ui",
+        "kor-travel-map-valkey",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster-code-server",
@@ -738,65 +774,24 @@ def test_cli_rebuild_pinned_runtime_redacts_process_environment_secrets(
     assert "<redacted>" in captured.err
 
 
-@patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["compose-boundary", "stage-legacy-override", "--source", "/x/docker-compose.override.yml", "--confirm"],
+        ["compose-boundary", "retire-legacy-override", "--confirm"],
+    ],
+)
+def test_cli_does_not_expose_the_retired_legacy_override_migration(argv: list[str], capsys) -> None:
+    # 2026-08-26의 1회성 legacy override 이관(stage/retire)은 2026-11-02에 지웠다 — 남은 것은 activate-concierge뿐이다.
+    with pytest.raises(SystemExit, match="2"):
+        main(argv)
 
-
-def test_cli_legacy_override_retirement_requires_confirmation(mock_retirement, capsys):
-    assert main(["compose-boundary", "retire-legacy-override"]) == 2
-
-    assert "requires --confirm" in capsys.readouterr().err
-    mock_retirement.assert_not_called()
-
-
-@patch("kor_travel_docker_manager.cli.stage_legacy_compose_override")
-
-
-def test_cli_legacy_override_stage_requires_confirmation(mock_stage, capsys):
-    assert (
-        main(
-            [
-                "compose-boundary",
-                "stage-legacy-override",
-                "--source",
-                "/legacy/kor-travel-docker-manager/docker-compose.override.yml",
-            ]
-        )
-        == 2
-    )
-
-    assert "requires --confirm" in capsys.readouterr().err
-    mock_stage.assert_not_called()
-
-
-@patch("kor_travel_docker_manager.cli.stage_legacy_compose_override")
-
-
-def test_cli_stages_legacy_override_through_official_boundary(mock_stage):
-    source = "/legacy/kor-travel-docker-manager/docker-compose.override.yml"
-
-    assert (
-        main(
-            [
-                "compose-boundary",
-                "stage-legacy-override",
-                "--source",
-                source,
-                "--confirm",
-            ]
-        )
-        == 0
-    )
-
-    mock_stage.assert_called_once_with(source_path=Path(source))
-
-
-@patch("kor_travel_docker_manager.cli.retire_legacy_compose_override")
-
-
-def test_cli_retires_legacy_override_through_official_boundary(mock_retirement):
-    assert main(["compose-boundary", "retire-legacy-override", "--confirm"]) == 0
-
-    mock_retirement.assert_called_once_with()
+    with pytest.raises(SystemExit, match="0"):
+        main(["compose-boundary", "--help"])
+    output = capsys.readouterr().out
+    assert "activate-concierge" in output
+    assert "stage-legacy-override" not in output
+    assert "retire-legacy-override" not in output
 
 
 @patch("kor_travel_docker_manager.cli.activate_canonical_concierge")
@@ -2666,14 +2661,23 @@ def test_targets_validate_does_not_require_sibling_repositories(capsys):
     assert capsys.readouterr().out.strip() == "OK"
 
 
-def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch):
+def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch, tmp_path):
     """확인은 **요청받았을 때만** 한다 — 그리고 그때는 실제로 본다."""
 
     from pathlib import Path as _Path
 
-    monkeypatch.setattr(_Path, "is_dir", lambda self: False)
     # R5: 좌표는 호스트 상대라 그 target이 있는 호스트에서 본다 — 외부 target(transport·`node`)은 odroid에 있다.
     monkeypatch.setenv("KTDM_HOST", "odroid")
+    # 좌표 관측 전에만 비기본 instance를 정본으로 준비한다. 관측은 파일을 쓰지 않는다.
+    from kor_travel_docker_manager.services import shared_dagster_instance
+
+    state = tmp_path / "instance-state"
+    state.mkdir(mode=0o700)
+    monkeypatch.setattr(shared_dagster_instance, "TRUSTED_STATE_ROOT", state)
+    monkeypatch.setattr(shared_dagster_instance, "_OWNER_UID", os.geteuid())
+    prepared = shared_dagster_instance.prepare_shared_dagster_instance()
+    before = prepared.path.stat()
+    monkeypatch.setattr(_Path, "is_dir", lambda self: False)
     # odroid는 자기 workspace 파일의 digest를 둔다(T-MGR-02 validate) — 이 테스트는 좌표만 본다.
     import hashlib
 
@@ -2688,6 +2692,8 @@ def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch):
         "  targets.transport.external_project.working_dir: "
         "/home/digitie/apps/kor-travel-transport",
     ]
+    after = prepared.path.stat()
+    assert (after.st_ino, after.st_mtime_ns, after.st_size) == (before.st_ino, before.st_mtime_ns, before.st_size)
 
 
 def test_targets_validate_does_not_check_coordinates_of_another_hosts_targets(capsys, monkeypatch):

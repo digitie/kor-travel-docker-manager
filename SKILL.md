@@ -97,9 +97,13 @@ docs/
 
 | 기능 | 레퍼런스 | 대표 함정 |
 |---|---|---|
+| 서비스 현재 release 표식 | [`docs/service-current-release.md`](docs/service-current-release.md) | staged marker와 실제 image ID를 구분하고, G 아래 health 관측 뒤만 pointer를 발행한다. DB migration 후 자동 이미지 rollback 금지 |
+| 호스트별 공용 Dagster instance 구성 | [`docs/host-dagster-instance-config.md`](docs/host-dagster-instance-config.md) | 정책 정수는 hosts 정본 하나, show는 RO, prepare만 기존 G 아래 수행한다. 기본6 alias 잔여 경합과 외부 배포 순서를 원자 전환으로 과장하지 않는다 |
 | Map·PinVi pin 고정과 재구축 게이트 | [`docs/runtime-pin-registry.md`](docs/runtime-pin-registry.md) | pinset digest 직렬화는 on-disk 바이트 계약이다(저장된 원장·보존 사본·코드 차단 목록·실행 원장·pinset별 상태와 이미지 태그가 모두 그 digest로 묶인다). `deploy-status.json`은 rebuild와 M05가 함께 읽는 exact-key·version 문서다 — 옛 version reader 없이 `_VERSION`을 올리면 둘 다 멈춘다. v6 manifest는 ADR-51 D-2에서, v8 journal은 B3에서 쓰기·모델 코드째 지웠다. 키 추가·직렬화 변경 금지 |
 | UI에서의 pin 회전(2-step 요청) | [`docs/runtime-pin-registry.md` §7-1](docs/runtime-pin-registry.md) | 요청 파일은 제안일 뿐 pin이 아니다. 어떤 로드 경로에서도 `runtime_pin_request`를 import하면 안 되고, 그 사실을 회귀가 결박한다 |
+| 컨테이너 상태 조회 공유 | [`docs/container-status-snapshot.md`](docs/container-status-snapshot.md) | 관측 전용 cache이며 불완전 inventory·오류는 재사용하지 않고, 연속 변경은 유한 재관측 뒤 실패한다 |
 | 공용 Dagster tick 조회 인덱스 | [`docs/dagster-tick-index.md`](docs/dagster-tick-index.md) | 원본 조회·데이터를 보존하고, 중단된 같은 정의의 인덱스만 재진입 복구한다 |
+| 공용 Dagster 진행 로그 | [`docs/dagster-progress-logging.md`](docs/dagster-progress-logging.md) | 기존 InstanceRef는 설정 파일 교체만으로 바뀌지 않는다. 명시 Python logger 범위를 유지한다 |
 | 대시보드 화면 규약 | [`docs/dashboard-ui.md`](docs/dashboard-ui.md) | 오류는 `humanizeError`를 거치고 `alert()`는 금지다. `targets[].containers`는 `depends_on` 전이 폐포라 "첫 매치"로 그룹을 만들면 안 된다 |
 
 ---
@@ -148,5 +152,5 @@ docs/
 
 
 Concierge 공용 Dagster(ADR-55): `conc` 기본 runtime은 `kor-travel-concierge-dagster-code-server`를
-사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용하며 old APScheduler는
-`legacy-scheduler` profile이다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.
+사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용한다. old APScheduler의
+`legacy-scheduler` rollback profile은 2026-11-02에 compose에서 지웠다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.

@@ -112,6 +112,11 @@ _TRANSPORT_BASE_URL_ENV = (
     "${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://192.168.1.13:12301}"
 )
 _TRANSPORT_SERVICE_TOKEN_ENV = "${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN:-}"
+#: transport 주소·token을 받는 곳 — run worker(적재 fetcher)와 Map API(가격 추이 T4 프록시, Map ADR-114 결정 4).
+_MAP_TRANSPORT_CONSUMER_SERVICES = (*_MAP_RUN_WORKER_SERVICES, _MAP_API_SERVICE)
+_TRANSPORT_PRICE_HISTORY_FLAG = "KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED"
+#: `:-` — Map만 렌더하는 경로(bootstrap·fragment)가 weather 비밀 없이 렌더돼야 한다. 비면 Map이 미설정으로 본다.
+_WEATHER_SERVICE_TOKEN_ENV = "${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:-}"
 #: Map이 직접 부르던 시절의 수집 provider 설정 접두. 이 접두의 이름은 어느 서비스의 environment
 #: 키로도, 그 값의 `${...}` 보간 원천으로도, `.env.example`에도 없어야 한다(이름을 하나씩 베끼지
 #: 않고 접두로 센다).
@@ -366,6 +371,9 @@ def _compose_with_canonical_c6c_services(
                     "KOR_TRAVEL_MAP_API_CURSOR_SIGNING_SECRET must be explicitly set}"
                 ),
                 "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY": _MAP_GEO_API_KEY_SOURCE,
+                "KOR_TRAVEL_MAP_API_PINVI_ADMIN_FEATURES_READ_TOKEN_SHA256": (
+                    "${KOR_TRAVEL_MAP_API_PINVI_ADMIN_FEATURES_READ_TOKEN_SHA256:-}"
+                ),
                 "KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256": (
                     _CURATION_SNAPSHOT_DIGEST_SOURCE
                 ),
@@ -448,6 +456,13 @@ def _compose_with_canonical_c6c_services(
             "environment": {
                 "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN": _OPS_READ_SOURCE,
                 "PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN": _OPS_CANCEL_SOURCE,
+                "PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN": (
+                    "${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?"
+                    "KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}"
+                ),
+                "PINVI_KOR_TRAVEL_MAP_ADMIN_FEATURES_READ_TOKEN": (
+                    "${PINVI_KOR_TRAVEL_MAP_ADMIN_FEATURES_READ_TOKEN:-}"
+                ),
                 "PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN": (_PINVI_CURATION_SNAPSHOT_SOURCE),
                 "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN": (
                     _PINVI_CUTOVER_MAPPING_SOURCE
@@ -690,7 +705,7 @@ def test_map_services_share_single_concierge_read_key_source() -> None:
 
 def test_map_services_share_single_transport_service_token_source() -> None:
     """transport 내부 export token은 루트 `.env` 한 이름이 원천이고, run worker를 낳는 Map
-    code-server에만 들어간다(webserver·daemon·Map API·UI에는 없다 — 노출 면 최소화)."""
+    code-server와 가격 추이를 프록시하는 Map API에만 들어간다(webserver·daemon·UI에는 없다 — 노출 면 최소화)."""
 
     compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     services_with_token = {
@@ -699,15 +714,15 @@ def test_map_services_share_single_transport_service_token_source() -> None:
         if "KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN"
         in service.get("environment", {})
     }
-    assert services_with_token == set(_MAP_RUN_WORKER_SERVICES)
+    assert services_with_token == set(_MAP_TRANSPORT_CONSUMER_SERVICES)
     services_with_url = {
         service_name
         for service_name, service in compose["services"].items()
         if "KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL" in service.get("environment", {})
     }
-    assert services_with_url == set(_MAP_RUN_WORKER_SERVICES)
+    assert services_with_url == set(_MAP_TRANSPORT_CONSUMER_SERVICES)
 
-    for service_name in _MAP_RUN_WORKER_SERVICES:
+    for service_name in _MAP_TRANSPORT_CONSUMER_SERVICES:
         environment = compose["services"][service_name]["environment"]
         assert environment["KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL"] == (
             _TRANSPORT_BASE_URL_ENV
@@ -723,6 +738,66 @@ def test_map_services_share_single_transport_service_token_source() -> None:
         if line.startswith("KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN=")
     ]
     assert token_lines == ["KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN="]
+
+
+def test_transport_price_history_flag_is_map_api_only_and_off_by_default() -> None:
+    """가격 추이 플래그(Map ADR-114 결정 4)는 Map API만 읽는다. 기본 false — transport T4가 배포된 뒤 켠다."""
+
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    holders = {
+        name
+        for name, service in compose["services"].items()
+        if _TRANSPORT_PRICE_HISTORY_FLAG in service.get("environment", {})
+    }
+    assert holders == {_MAP_API_SERVICE}
+    assert compose["services"][_MAP_API_SERVICE]["environment"][_TRANSPORT_PRICE_HISTORY_FLAG] == (
+        f"${{{_TRANSPORT_PRICE_HISTORY_FLAG}:-false}}"
+    )
+    lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert [line for line in lines if line.startswith(f"{_TRANSPORT_PRICE_HISTORY_FLAG}=")] == [
+        f"{_TRANSPORT_PRICE_HISTORY_FLAG}=false"
+    ]
+
+
+def test_map_weather_export_token_is_the_weather_admin_token_by_reference() -> None:
+    """Map weather 상태 적재(Map ADR-114 2단계)의 token은 weather 자신의 `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`을
+    **참조로만** 받는다(새 비밀·리터럴 없음). run worker를 낳는 code-server에만 있고 Map API·UI·webserver·daemon에는
+    없다. 인증 header는 Map 기본값(`X-Admin-Token`)을 쓰므로 Manager가 두지 않는다."""
+
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    for key in ("KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN", "KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL"):
+        holders = {name for name, service in compose["services"].items() if key in service.get("environment", {})}
+        assert holders == set(_MAP_RUN_WORKER_SERVICES), key
+    for service_name in _MAP_RUN_WORKER_SERVICES:
+        environment = compose["services"][service_name]["environment"]
+        assert environment["KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN"] == _WEATHER_SERVICE_TOKEN_ENV
+    # weather 자신이 받는 원천 변수와 같은 이름이다 — 이름이 갈라지면 두 값이 어긋난다.
+    assert "${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:" in (
+        compose["services"]["kor-travel-weather-api"]["environment"]["KOR_TRAVEL_WEATHER_ADMIN_TOKEN"]
+    )
+    assert not any(
+        "KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_AUTH_HEADER" in service.get("environment", {})
+        for service in compose["services"].values()
+    )
+    example = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert not [line for line in example if line.startswith("KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN=")]
+
+
+def test_map_weather_export_timeout_reaches_only_the_run_worker_and_defaults_in_map() -> None:
+    """weather export read timeout은 run worker를 낳는 code-server에만 있고, 비면 Map이 기본값을 정한다.
+
+    Map 설정은 `env_ignore_empty`라 빈 값을 무시한다 — Manager가 숫자 기본값을 두면 Map 기본값과 두 정본이 된다.
+    `.env.example`에는 주석으로만 둔다(운영값은 root `.env`)."""
+
+    key = "KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_TIMEOUT_SECONDS"
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    holders = {name for name, service in compose["services"].items() if key in service.get("environment", {})}
+    assert holders == set(_MAP_RUN_WORKER_SERVICES)
+    for service_name in _MAP_RUN_WORKER_SERVICES:
+        assert compose["services"][service_name]["environment"][key] == f"${{{key}:-}}"
+    lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert not [line for line in lines if line.startswith(f"{key}=")]
+    assert [line for line in lines if line.strip().startswith(f"#   {key}=")] == [f"#   {key}="]
 
 
 def test_concierge_ui_uses_canonical_production_command_and_auth_allowlist() -> None:
@@ -1032,6 +1107,65 @@ def test_manual_feature_create_credential_is_split_between_map_api_and_ui() -> N
         or "PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN"
         in service.get("environment", {})
     } == {_PINVI_API_SERVICE}
+
+
+def test_pinvi_api_reuses_the_map_service_token_for_transport() -> None:
+    """PinVi ADR-076 / Map ADR-114 — pinvi-api는 Map API와 **같은** service token 변수를 필수로 받는다.
+
+    두 번째 비밀을 만들지 않고, 빈 값으로 기동하지 않는다(`:?`). 이 사본을 받는 서비스는 Map API와
+    pinvi-api 둘뿐이다. transport 플래그는 기본 켜짐이고 빈 값도 켜짐으로 읽힌다(`:-`).
+    """
+
+    compose = yaml.safe_load((_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    map_source = services[_MAP_API_SERVICE]["environment"]["KOR_TRAVEL_MAP_API_SERVICE_TOKEN"]
+    pinvi_environment = services[_PINVI_API_SERVICE]["environment"]
+
+    assert pinvi_environment["PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN"] == map_source
+    assert map_source.startswith("${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?")
+    assert pinvi_environment["PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED"] == (
+        "${PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED:-true}"
+    )
+    # 지도 날씨 레이어(PinVi #600)는 기본 꺼짐이다 — Map weather 상태 적재가 채워진 뒤 켠다.
+    assert pinvi_environment["PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED"] == (
+        "${PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED:-false}"
+    )
+    assert {
+        service_name
+        for service_name, service in services.items()
+        if "PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED" in (service.get("environment") or {})
+    } == {_PINVI_API_SERVICE}
+    # 선택 재정의 timeout 셋 — 기본값은 PinVi 앱 기본값(3·1·5초)과 같고 빈 값이 되지 않는다(`:-`).
+    for name, default in (
+        ("PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS", "3"),
+        ("PINVI_KOR_TRAVEL_MAP_WEATHER_CONNECT_TIMEOUT_SECONDS", "1"),
+        ("PINVI_KOR_TRAVEL_MAP_WEATHER_REQUEST_BUDGET_SECONDS", "5"),
+    ):
+        assert pinvi_environment[name] == f"${{{name}:-{default}}}", name
+    assert {
+        service_name
+        for service_name, service in services.items()
+        if any(
+            "KOR_TRAVEL_MAP_API_SERVICE_TOKEN" in str(value)
+            for value in (service.get("environment") or {}).values()
+        )
+    } == {_MAP_API_SERVICE, _PINVI_API_SERVICE}
+    env_example_lines = (_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    assert "PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED=true" in env_example_lines
+    assert [line for line in env_example_lines if line.startswith("PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED=")] == [
+        "PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED=false"
+    ]
+    # timeout 재정의는 주석으로만 보인다 — 값을 두면 그것을 베낀 `.env`가 compose 기본값을 가린다.
+    for name, default in (
+        ("PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS", "3"),
+        ("PINVI_KOR_TRAVEL_MAP_WEATHER_CONNECT_TIMEOUT_SECONDS", "1"),
+        ("PINVI_KOR_TRAVEL_MAP_WEATHER_REQUEST_BUDGET_SECONDS", "5"),
+    ):
+        assert f"#   {name}={default}" in env_example_lines, name
+        assert not any(line.startswith(f"{name}=") for line in env_example_lines), name
+    assert not any(
+        line.startswith("PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN=") for line in env_example_lines
+    )
 
 
 def test_c6c_env_example_separates_runtime_and_manager_only_credentials() -> None:
@@ -1646,6 +1780,7 @@ def test_contract_locked_names_cover_the_dsn_bound_services() -> None:
         assert "PINVI_DATABASE_URL" in contract_locked_env_names(service), service
     # 유도된 이름이 명시 추가로 사라지지 않는다.
     assert "PINVI_KOR_TRAVEL_MAP_OPS_READ_TOKEN" in contract_locked_env_names("pinvi-api")
+    assert "PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN" in contract_locked_env_names("pinvi-api")
 
 
 def test_config_update_allows_echoing_a_contract_locked_env_unchanged() -> None:

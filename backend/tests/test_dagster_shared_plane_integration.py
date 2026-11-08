@@ -199,6 +199,10 @@ def _carry(service: dict[str, Any], postgres: str, empty_workspace: Path | None 
         # 공용 workspace bind는 렌더 모양(`workspace.${KTDM_HOST:-…}.yaml`)으로 알아본다 — 옛 별칭 경로 리터럴로 찾으면
         # 일치하지 않아 정본 workspace(합류 code-server 포함)가 그대로 붙고 빈 plane이 healthy가 되지 않는다.
         source = runtime_topology._volume_source(text)
+        # instance 기본값만 먼저 푼다. host workspace의 빈 plane 치환은 아래에서 유지한다.
+        if source.startswith("${KTDM_DAGSTER_INSTANCE_CONFIG:-"):
+            text = compose_default(source) + text[len(source):]
+            source = runtime_topology._volume_source(text)
         if empty_workspace is not None and runtime_topology._is_shared_workspace_source(source):
             text = str(empty_workspace) + text[len(source):]
         elif text.startswith("./"):

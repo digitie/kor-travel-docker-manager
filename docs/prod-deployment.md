@@ -35,7 +35,7 @@ rsync 대상에 포함하지 않는다. 비밀 설정은 운영 호스트에서 
   별도로 안전하게 준비한다. `--delete`와 저장소 루트 전체 동기화는 사용하지 않는다. 신규
   설치는 아래 trusted installer를 우선하고, 이 rsync 절차는 기존 rsync 배포본을 갱신할 때만 쓴다.
 
-**두 번째 호스트 odroid(계획 — ADR-58 proposed, 미구현).** odroid(`192.168.1.13`, aarch64)에도 같은 절차로 root clone + trusted
+**두 번째 호스트 odroid(ADR-58 accepted — 설치 완료, 2026-10-17 NH-6 #524).** odroid(`192.168.1.13`, aarch64)에도 같은 절차로 root clone + trusted
 installer를 쓴다. 다른 점은 셋이다: (1) wheelhouse는 n150 사본을 옮기지 않고 **odroid 현지에서 root 소유로 발행**한다(amd64 wheel은
 쓸 수 없다, §3.1); (2) 앱 이미지는 **odroid 현지 빌드**다(n150에 binfmt가 없어 교차 빌드하지 않고, 레지스트리도 두지 않는다 —
 같은 tag가 호스트마다 다른 arch 내용을 갖는다); (3) 설치 **전제**로 `docker compose` v2 플러그인과 buildx가 있어야 한다 —
@@ -296,7 +296,11 @@ sudo /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl pin verify; echo $?
   중간에 설치했던 sha를 먼저 결박할 필요도, `rollback`·`rotate-pair`도 없다. Manager만 바뀐 설치는 컨테이너를
   바꾸지 않으므로 같은 pair 수렴(`rebuild-pinned --confirm`, 결과 `outcome: converged`)은 반영 단계가 아니라
   **확인** 단계다: 모든 재구축이 지나는 `prebuild_snapshot`의 C6c 후보 검사를 실제 `.env`로 통과하는지와
-  컨테이너 재생성 0을 본다(ADR-56 설치 뒤에는 `KOR_TRAVEL_CONCIERGE_REPO_DIR`를 켠 채로).
+  컨테이너 재생성 0을 본다(ADR-56 설치 뒤에는 `KOR_TRAVEL_CONCIERGE_REPO_DIR`를 켠 채로). 단 compose가 빌드하는
+  후보 이미지의 build 입력 label(`io.kor-travel-docker-manager.compose-build-sha256`)이 지금 render와 다르면 —
+  그 label을 처음 싣는 설치(2026-11-02) 직후, `.env`의 build arg(`NEXT_PUBLIC_*`) 변경, build 절을 바꾸는 설치 —
+  그 서비스를 다시 빌드하고 이미지 ID가 바뀌므로 결과는 `deployed`(정지·migration 전진을 거치는 전체 경로)다.
+  그 실행은 확인 단계가 아니므로 시간을 잡아 돌린다.
 - 옛 sha를 checkout한 clone에서 **그 sha의 installer를 돌리지 않는다.** I-2 이전 installer는 symlink
   레이아웃을 "deployment .env path must be canonical" 검사로 거부한다(해는 없다). I-1보다 낮게
   내려가려면 §3.0의 역전환을 먼저 한다.
@@ -608,7 +612,7 @@ ADR-51 B3에서 지웠다. 다만 `.env` 파일을 다시 쓰는 것이므로, r
 `/run/lock/kor-travel-docker-manager/global-mutation.lock`(G) 하나를 지난다
 (`manager_mutation_lock_path`, ADR-51 C-2·C-3). 경로는 `.env` 파일 값으로 정하고 프로세스
 환경으로 채우지 않는다 — 단 프로세스 환경의 모드가 명시적으로 local이 아니면 G다(더 엄격하게만). UI의 컨테이너 조작·설정·초기화,
-관리자 비밀번호 변경, `ktdctl compose-boundary` stage/retire/activate, `ktdctl pin`
+관리자 비밀번호 변경, `ktdctl compose-boundary activate-concierge`, `ktdctl pin`
 mutator, 재구축·M05·installer launcher가 전부 같은 lock이다(일부러 뺀 것 — 백업·offbox
 동기화·핀 요청 제안·transport 컨테이너 — 은 `docs/decisions.md` ADR-51 "C 범위"). 경합이면
 기다리지 않고 거절한다 — API는 409 `MANAGER_MUTATION_ACTIVE`, CLI는 종료 코드 2다.
@@ -815,79 +819,45 @@ Manager의 C6c는 raw Compose와 resolved Compose 양쪽에서 다음을 강제�
   `KOR_TRAVEL_CONCIERGE_API_KEYS` comma-list의 exact member여야 한다. browser에 필요한 지도 키는 전용
   `KOR_TRAVEL_CONCIERGE_UI_VWORLD_SERVICE_KEY`로 분리한다.
 - API의 `KOR_TRAVEL_CONCIERGE_APP_ENV=production` 및
-  `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`도 root authority로 이관한다. source `.env`가 이 둘 중 하나를
-  local/false로 주면 이관 명령은 API가 unauthenticated default로 내려가는 것을 막기 위해 중단한다.
+  `KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED=true`도 root authority다. 둘 중 하나가 local/false이면 C6c 검증이
+  API가 unauthenticated default로 내려가는 것을 막기 위해 재생성 전에 중단한다.
 
-남아 있는 legacy `docker-compose.override.yml`가 있다면 수동 `docker compose` 명령이나 삭제를 하지 않는다.
-trusted installer가 고정하는 `/opt/kor-travel-docker-manager`는 canonical execution root이며, legacy home
-checkout은 Compose file·cwd·env-file source가 될 수 없다. Manager의 canonical release 배포 뒤에는 legacy
-입력을 먼저 protected C6c state로 한 번 snapshot한다.
+`docker-compose.override.yml`는 쓰지 않는다. trusted installer가 고정하는 `/opt/kor-travel-docker-manager`는
+canonical execution root이며, home checkout은 Compose file·cwd·env-file source가 될 수 없다. 옛 legacy override는
+2026-08-26 1회성 `compose-boundary stage-legacy-override`/`retire-legacy-override`로 root `.env`에 이관을 마쳤고
+두 명령은 2026-11-02에 지웠다. 그때 남은 owner-only archive(C6c state 아래 `legacy-compose-override/`)는 restore
+대상이 아니다.
 
-snapshot source의 final `docker-compose.override.yml`와 그 고정된 sibling Concierge `.env`는 모두 root 소유
-`0600`, regular file, hard-link 없음이어야 한다. user-writable parent는 source artifact를 남길 수는 있어도
-Manager runtime의 입력이 될 수 없으며, stage 전 local 운영 runbook의 owner-only 준비 절차로 이 precondition을
-만족시킨다. source path와 secret 값·hash는 이 문서나 명령 출력에 남기지 않는다.
-
-```bash
-sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
-  compose-boundary stage-legacy-override \
-  --source <legacy-override-absolute-path> --confirm
-```
-
-stage는 Docker/Compose를 실행하지 않고 final file을 `O_NOFOLLOW` descriptor와 `fstat`으로 검증해
-owner-only pending snapshot에 원자적으로 복사한다. 이미 같은 snapshot이면 idempotent이고 내용이 다르면
-fail-close한다. home source는 rename·delete하지 않으며 stage 뒤 Manager가 다시 읽지 않는다.
-legacy Concierge UI의 `env_file`은 구형 상대 문자열 한 항목 또는 Compose 장형 mapping 한 항목만 허용한다.
-장형 mapping은 override 위치에서 계산한 **정확한** sibling Concierge `.env`를 `path`로, boolean `required: true`를
-가져야 한다. `format`은 Compose raw mode를 뜻하는 정확한 `raw` 값일 때만 추가로 허용한다. 임의 absolute path,
-다른 추가 key·format·optional source는 허용하지 않는다.
-
-staged Concierge source에 `API_KEYS`, `APP_ENV`, `API_AUTH_ENABLED`가 **아예 선언되지 않은** 경우에만 각각의
-canonical root `KOR_TRAVEL_CONCIERGE_*` 값을 사용한다. 이는 legacy UI source가 API runtime 값을 소유하지 않았던
-기존 토폴로지의 호환 범위이며, 세 값을 source에서 선언했다면 빈 값도 포함해 source 값 자체가 필수다. 나머지
-`KTC_*` UI 인증·session·proxy·origin 값은 staged source에 모두 있어야 하며 root fallback을 허용하지 않는다.
-최종 유효 API key-set, backend key membership, `production`, authentication-enabled 검증은 source/root의 출처와
-관계없이 동일하게 통과해야 한다.
-
-n150의 pinned rebuild 정본은 `KTDM_DEPLOYMENT_ENVIRONMENT=rehearsal`와
-`KTDM_DEPLOYMENT_LIFECYCLE=rebuildable`을 함께 쓰므로, 이 상태에서는 deployment mode를 수동으로
-`production`으로 바꾸지 않는다. stage·retire는 이 exact rehearsal/rebuildable·PinVi production·Map principal
-필수 contract를 다시 확인하고, production mode와 마찬가지로 host 변경 lock(3.z의 G)으로
-`rebuild-pinned`·pin 회전·M05·installer와 직렬화한다(ADR-51 C-2). 다른 변경이 G를 쥐고 있으면 기다리지 않고
-`cannot acquire the Manager mutation lock: ...`으로 종료 코드 2를 낸다. 둘 이외의 mode/lifecycle과
-caller-supplied project root는 mutation 전에 거부한다.
-
-stage 성공 뒤 root에서 아래 retire 공식 경로를 한 번 실행한다.
-
-```bash
-sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
-  compose-boundary retire-legacy-override --confirm
-```
-
-retire는 protected pending snapshot의 root-only로 알려진 Geo backup 값과 Concierge UI source만 raw 파싱하고,
-값 충돌·symlink·비정규 파일·잘못된 API key membership을 fail-close한다. 위 API auth 세 값의 허용된 root fallback도
-candidate에 새 값을 쓰지 않고 existing root authority를 재검증할 뿐이다. candidate root `.env`를 원자적으로
-갱신한 뒤 canonical `/opt` Compose에서 Concierge API/MCP/Dagster code server/UI와 그 전이 `depends_on` 서비스, 실제로 참조한
-top-level secret/network/volume/config만 추린 root-owned 일시 projection을 출력 없이 raw/resolved C6c 경계까지
-검증한다. 같은 projection만 정확한 네 Concierge service의 recreate에도 사용하므로, 이번 retire와 무관한 Map/PinVi
-candidate의 아직 준비되지 않은 explicit credential guard가 Concierge 경로를 막거나 반대로 runtime 입력으로 섞일 수 없다.
-projection은 trusted canonical source에서 매번 만들고 즉시 제거하며, caller/home source가 경로나 내용을 지정할 수 없다.
-성공한 경우에만 **같은
-protected state filesystem 안에서** pending directory를 owner-only archive로 rename한다. canonical
-rehearsal/rebuildable과 production 모두 Manager 변경 락 G(`global-mutation.lock`)를
-계속 보유한 채 API/MCP/Dagster code server/UI 정확한 네 service만 canonical single-file source로 force-recreate한다.
-production의 일반 `ensure`는 허용되지 않으므로 이 단계에 사용하지 않는다. archive 뒤 재생성이 실패하면 root
-`.env`와 archive는 의도적으로 유지된다. 원인을 해소한 뒤 아래 Manager retry만 사용한다.
+Concierge 재생성(배포 뒤·운영 rollback의 이미지 교체 뒤)의 공식 경로는 아래 하나다.
 
 ```bash
 sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
   compose-boundary activate-concierge --confirm
 ```
 
-retry 역시 pending stage가 없는지와 raw/resolved C6c 경계를 먼저 다시 확인하며, 수동 `docker compose`·legacy
-source restore·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다. 이 재생성은 기본 runtime인 Dagster code server를 사용하며 legacy profile의 APScheduler를 다시 시작하지 않는다. backend 전환은 먼저 기존 실행자를 중지·drain하고 Concierge의 `docs/dagster-adoption.md`에 있는 generation CLI로 수행한다.
+- root 실행만 허용하고 project root·lock 경로는 고정이다(caller가 바꿀 수 없다). mode는 `production` 또는 n150의
+  exact `rehearsal/rebuildable`(PinVi production·Map principal 필수 contract 포함)만 받는다 — deployment mode를
+  수동으로 `production`으로 바꾸지 않는다.
+- host 변경 lock(3.z의 G)으로 `rebuild-pinned`·pin 회전·M05·installer와 직렬화한다(ADR-51 C-2). 다른 변경이 G를
+  쥐고 있으면 기다리지 않고 `cannot acquire the Manager mutation lock: ...`으로 종료 코드 2를 낸다.
+- canonical `/opt` Compose에서 Concierge API/MCP/Dagster code server/UI와 그 전이 `depends_on` 서비스, 실제로 참조한
+  top-level secret/network/volume/config만 추린 root-owned 일시 projection을 만들어 출력 없이 raw/resolved C6c
+  경계까지 검증한다. 같은 projection으로 정확한 네 service만 `--no-deps --force-recreate --no-build`한다 — 무관한
+  Map/PinVi candidate의 미준비 credential guard가 Concierge 경로를 막거나 runtime 입력으로 섞이지 않고, 이미지가
+  없으면 운영 source 디렉터리에서 조용히 빌드하지 않는다. projection은 매번 만들고 즉시 지운다.
+- 이미지는 root `.env`의 `KOR_TRAVEL_CONCIERGE_{API,MCP,DAGSTER,UI}_IMAGE`가 정한다. rollback은 이 넷을 직전
+  이미지로 바꾼 뒤 같은 명령을 실행한다(Concierge `docs/dagster-adoption.md` "장애와 rollback").
+
+수동 `docker compose`·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다. 이 재생성은 기본 runtime인 Dagster code server를 사용한다(옛 APScheduler `legacy-scheduler` profile은 2026-11-02에 지웠다). backend 전환은 먼저 기존 실행자를 중지·drain하고 Concierge의 `docs/dagster-adoption.md`에 있는 generation CLI로 수행한다.
 
 ## 8. pinned runtime 배포 (ADR-51 마이그레이션 전진)
+
+pinned 재구축은 기존 중지된 daemon을 보존하고 webserver와 필요한 code location을 확인한다.
+실행 중·재시작 중·미설치 daemon은 기존 경로다. 명시적 dagster-plane converge는 기존대로
+시작/복구한다. 의도적 중지와 비정상 종료를 구별하지 않으며, 중지된 daemon의 이미지·설정
+갱신은 명시적 수렴까지 미룬다. daemon OFF 동안 자동 스케줄·자동 복구는 제공되지 않는다.
+기존 host mutation lock 밖의 직접 Docker 변경을 영구 차단하지 않는다.
+
 
 > 현재 배포 protocol은 이전 compatible-pair, cache-target, standalone DB backup mutation과 Map UI 회전의
 > **공개 CLI 운영 경로**를 모두 퇴역시켰다. 과거 v1–v4 manifest와 v5–v8 rebuild journal·tombstone은 실행
@@ -930,7 +900,9 @@ old image, old manifest를 candidate authority로 쓰지 않는다. source는
    execution 결박은 결과의 `warnings`에만 남고, 대기 중인 pair 회전 intent만 거부한다.
 2. **candidate** — exact source를 materialize하고(이번 pair가 쓰지 않는 옛 source는 지운다), Map builder
    image(pinset tag, 이미 있으면
-   재사용)와 Manager가 build하는 Map UI·PinVi image의 ID를 attest한다. 세 schema head(Map application·Map
+   재사용)와 Manager가 build하는 Map UI·PinVi image의 ID를 attest한다. 뒤의 네 image는 후보 태그가 있고 그 image의
+   build 입력 label이 지금 frozen render의 `build` 절 digest와 같을 때만 재사용하고, 다른 서비스만 하나씩 다시
+   빌드한다(빌드 뒤에도 다르면 배포하지 않고 멈춘다). 세 schema head(Map application·Map
    Dagster·PinVi)는 candidate image에서 관측한다. 여기까지는 DB를 건드리지 않는다.
 3. **판정** — 두 PostgreSQL을 frozen Compose에 맞춰 기동한 뒤 state root의 `deploy-status.json`과
    비교한다. `committed`이고 같은 pair·같은 image·같은 DB identity·같은 head면 빌드·migration·정지 없이
@@ -1030,13 +1002,13 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl dagster-plane co
 - **출력**: 결과에는 늘 `health`와 `remaining_drift`(재생성 뒤 남은 차이, 재생성하지 않았으면 `{}`)가 있다. `--json`은 secret-free 결과를 낸다 — env 값은 healthcheck가 이름으로 대조하는 파일 digest
   env(16진 16자)만 싣고 나머지는 이름만 싣는다.
 
-## 9. 두 번째 호스트 odroid (계획 — ADR-58 proposed, 미구현)
+## 9. 두 번째 호스트 odroid (ADR-58 accepted)
 
-이 절은 ADR-58의 운영 절차다. **아직 아무것도 적용되지 않았다**(2026-10-13: 모든 target이 n150, Manager 코드에 호스트 차원 없음).
-**§9.1-0~7은 지금 가능하다**(호스트 준비 — Manager 코드와 무관). **§9.1-8 이후와 §9.2 이후는 T-MGR-01a~05 머지·n150 설치 뒤에만**
-밟는다 — §9.1-9의 `KTDM_HOST`·`KTDM_DAGSTER_WORKSPACE_DIGEST`(`workspace.odroid.yaml`은 T-MGR-02가 만든다)·`KTDM_DATA_SOURCE_DEVICE`
-(T-MGR-05)·`targets validate`의 host 효과(T-MGR-01a)는 그 코드가 있어야 뜻이 있고, head의 Manager를 odroid에 설치하면 `.env`의
-`KTDM_HOST`가 무시된 채 validate가 통과하는 거짓 안심이 된다. 호스트 규칙(포트 동일·호스트만 `.13`)은 `ports.md`, 배치표·실측은
+이 절은 ADR-58의 운영 절차다. **T-MGR-01a~05(01a·01a-F·01b·01c·02·02r·03·03r·04·04r·05)는 전부 머지·n150 설치 완료**다
+(`docs/tasks-done.md`) — §9.1-8 이후·§9.2 이후를 막던 게이트는 풀렸다. odroid Manager 설치(2026-10-17 NH-6 #524)와
+geo·weather·transport의 `host: odroid` 전환(registry, 2026-10-14~15)도 이미 반영됐다. **아직 남은 것은 T-MGR-06**
+(host 플립 PR ×3 — transport → weather → geo의 공개 HAProxy backend 전환과 그 파생물 전체를 정식 PR로 닫는 것, 선행
+조건은 `docs/tasks.md` T-MGR-06)뿐이다. 호스트 규칙(포트 동일·호스트만 `.13`)은 `ports.md`, 배치표·실측은
 `platform-topology.md` §10. 각 단계는 ssh timeout 밖(tmux/nohup)에서 돌린다. n150 변경 전에는 n150 `~/preflight.sh` PASS가 선행한다.
 
 ### 9.1 odroid 초기화 — 상태(2026-10-13)와 남은 순서
@@ -1318,3 +1290,103 @@ registry(`config/docker-targets.yml`)와 커밋된 파생물(테스트가 계산
    (§9.6이 사례). Prometheus 타깃은 PR 파생물이 이미 옮겼다.
 
 되돌리기는 같은 절차를 `<to>` → `<from>`으로 다시 밟는 것이다(롤백이 아니라 재배포 — §9.3).
+
+
+## Manager 웹·API 이전 후 CLI만 남기는 설치
+
+**현재 n150 정책(2026-10-25)은 웹·API·CLI 모두 유지**다. 공식 일반 설치와 별도 frontend
+갱신의 [실제 수용](reports/2026-10-25-manager-normal-update-acceptance.md)을 따른다.
+아래 CLI 전용은 웹·API 이전을 별도 승인하고 완료한 호스트의 선택 경로이며,
+현재 n150을 CLI 전용으로 전환하거나 서비스를 stop·disable하라는 지시가 아니다.
+
+Manager 웹·API를 다른 호스트로 이전한 뒤 원래 호스트에서 정식 관리 CLI만 갱신할 때
+trusted-release installer에 --cli-only를 사용한다. 먼저 운영자가 이전 완료를 확인하고
+옛 ktdm-backend.service 및 ktdm-frontend.service를 stop·disable한다. 설치기는 대신
+중지하지 않으며, lock 획득 직후와 정본 전환 직전에 두 서비스의 inactive/MainPID0을
+요구한다. 전이 상태나 실행 중이면 거절한다.
+
+기존 --expected-source-revision 및 --wheelhouse/SOURCE_CLONE 계약은 같다. root 소유
+소스·오프라인 패키지·Compose·호스트 식별·plane bind 검사와 정본 symlink 전환은 유지한다.
+--cli-only는 systemd/tmpfiles/logrotate 파일 설치와 daemon-reload/enable/start를 하지 않는다.
+전환 후 정본 ktdctl targets validate --json로 CLI를 확인하며 실패하면 성공·오래된 release
+정리를 하지 않는다. 복구에는 이번 검토한 CLI 지원 설치기를 root 소유로 보존해 사용한다.
+보존한 설치기에 --expected-source-revision <이전 SHA> --cli-only <root 소유 clone>을
+전달한다. 설치기 코드와 archive revision은 별개다. 옛 revision의 설치기를 다시 실행하면
+--cli-only가 없거나 서비스를 시작할 수 있으므로 사용하지 않는다. 복구 후보도 기존 호스트
+검증을 통과해야 한다. 과거 n150 CLI 전용 복구 검토는 당시 계획이며 현재 운영 모드가 아니다.
+
+이는 CLI 설치만 변경한다. 별도 Dagster converge/rebuild 명령을 자동 실행하지 않으며
+Dagster daemon OFF를 해제하지 않는다. 기본 설치 모드의 backend stop/start는 기존대로다.
+
+
+## 호스트별 공용 instance 상한 보존
+
+공식 값은 `config/docker-targets.yml`의 호스트 정책이다. 현재 n1506/Odroid5와 Odroid의 기존 Geo1·Weather3·external_weather2·external_weather_slow1 및 WARNING을 명시 정책으로 유지한다. 기본 tag 목록의 다른 항목과 새 Concierge 안전 한도는 보존하며 `.env`에 별도 숫자·태그·로그 수준이나 독립 YAML path를 두지 않는다. 기존 tracked 기본 YAML은 수정하지 않는다. [구현·한계와 검증 상태](host-dagster-instance-config.md)를 먼저 확인한다.
+
+정상 trusted installer는 새 release의 `.env` 복사 뒤, preflight와 alias 전환 전에 기존 G FD9로 `dagster-instance-config prepare --json`을 명시 호출한다. prepare는 파일 준비만 하고 공용 plane을 재시작하지 않는다. 기본 6은 원 파일을 사용하며 비기본 구성은 기존 root state 배치에 immutable 0444 파일을 생성한다. 잘못된 기존 파일은 덮어쓰지 않으며 원인을 고친 뒤 같은 공식 설치 절차를 다시 수행한다. 새 NVMe 마운트/부팅 의존성을 만들거나 OS 부팅을 막지 않는다.
+
+운영 순서는 **Manager 설치 → `sudo -n ktdctl dagster-instance-config show --json`의 정확 네 필드 확인 → 기존 `targets validate --json` 및 plane 수렴 dry-run → 필요한 plane/code-server 공식 배포 → 실제 역할·UI 확인**이다. 새 Manager가 먼저 있어야 Transport PR139의 공식 caller가 show를 사용할 수 있다. caller의 자동 prepare·옛 tracked 파일 fallback은 금지한다. 반환된 전체 `sha256`으로 파일 정합을 확인하고, Compose의 instance digest는 앞 16자리로 유도한다. root state 부모가 0700이므로 일반 사용자 파일 직접 읽기 권한을 가정하지 않는다.
+
+Manager 변경 기계는 기존 G와 frozen bind 재검증을 사용한다. 외부 deploy의 show 재확인과 Docker bind 전체가 같은 G 안에 있다고 보장하지 않는다. 특히 기본 6은 기존 `/opt` alias를 보존하므로 Manager 설치와 외부 배포를 겹치지 않게 조율한다. Odroid 내용 주소 파일도 host 정책을 임의 변경하는 통로가 아니다. 현재 5를 낮추는 튜닝, PG 변경, 실행 중 run 취소는 이 절차에 포함되지 않는다. 원문 env·자격정보·비밀이 포함된 Compose 출력은 기록하지 않는다.
+
+
+## 11. 컨테이너 로그 상한 적용(ADR-61)
+
+`docker-compose.yml`의 `x-logging`(`json-file`, 현재 `max-size` 50m × `max-file` 5)을 restart 정책이 `unless-stopped`인
+서비스 전부(35개, 꺼진 profile 포함)가 받는다. one-shot은 받지 않는다. 로그 설정은 컨테이너를 **만들 때** 고정되므로
+떠 있는 컨테이너는 다시 만들어질 때까지 상한이 없다. 다시 만들면 옛 컨테이너의 로그 파일도 함께 지워진다 — 조사에 필요한
+로그는 그 전에 옮긴다.
+
+**설치만으로 바뀌는 컨테이너는 없다.** trusted 설치는 compose `up`을 부르지 않는다. 설치 뒤 경로별로 일어나는 일(n150,
+`KTDM_DEPLOYMENT_ENVIRONMENT=production`):
+
+| 경로 | 다시 만드는 것 | 비고 |
+|---|---|---|
+| `rebuild-pinned`(새 pair) | Map·PinVi runtime 전부와 Valkey | runtime은 원래 다시 만드는 경로다. Valkey는 `up -d --no-deps --wait`(force 없음)라 평소엔 무연산인데 이번엔 config hash가 달라 한 번 다시 만든다 |
+| `rebuild-pinned`(같은 pair 수렴) | **Valkey·Map API/UI/code-server·PinVi API/web/code-server를 한 번 다시 만든다** | `up -d --no-deps`라 compose가 config hash 차이로 다시 만든다. 평소의 무중단 수렴이 이번 한 번은 서비스별 짧은 재시작이다. code-server 재생성은 진행 중 run을 끊는다(preflight가 관련 run을 막는다). Valkey는 정상 종료 때 쓰는 RDB로 데이터를 유지한다 |
+| `rebuild-pinned`·`dagster-plane converge`의 공용 Dagster plane | **공용 webserver·daemon을 한 번 다시 만든다**(2026-11-03 소유자 결정) | drift 판정(`_shared_plane_drift`)이 render의 `logging`과 컨테이너의 `HostConfig.LogConfig`도 대조한다(`logging options differ: max-file, max-size`). 다시 만드는 호출은 종전과 같은 `up -d --no-deps <webserver> <daemon>` 하나다. 재구축에서 daemon이 **멈춰 있으면** 멈춘 채 두는 종전 규칙대로 webserver만 다시 만든다(daemon은 다음에 그것을 켜는 경로에서). 다음 실행은 무연산이다. gateway는 이 경로 밖이다(아래) |
+| `scripts/dagster-shared-cutover.sh <target> cutover|rollback` | 공용 daemon·webserver | 평범한 render로 `compose up -d --no-deps <daemon> <webserver>`를 부르므로 config hash 차이로 둘을 다시 만든다 — 다음 전환·되돌리기 창에 plane 재시작이 **부수 효과로** 따른다 |
+| `ktdctl <target>` ensure | **production에서는 거부된다**(`ensure_target`: "production ensure is not permitted") | local 모드에서만 `up -d <services>`(`--no-deps` 없음)가 이름 붙은 서비스와 의존 중 config hash가 바뀐 것 전부를 다시 만든다 — 거기서는 `services`에 공용 PostgreSQL을 둔 target(geo·conc·map·pinvi·weather·dagster·`all`)이 공용 PostgreSQL까지 다시 만든다 |
+| UI/API 컨테이너 설정 변경·reset(`update_container_config`·`reset_container_config`) | 그 서비스 하나(`up -d --force-recreate --no-deps`) | 이전부터 늘 다시 만들던 경로다(이 변경과 무관하게). production에서 허용된다. 공용 PostgreSQL에도 닿는다 — `CHECKPOINT`도 창 확인도 없으므로 **공용 PostgreSQL에는 쓰지 않는다** |
+| `compose-boundary activate-concierge` | Concierge 네 서비스 | `--force-recreate`라 원래 다시 만든다 — 상한을 받는다 |
+
+**설치 뒤 첫 재구축(또는 `dagster-plane converge --confirm`)의 plane 단계**: 공용 webserver와 daemon을 한 `up` 호출로
+**함께** 다시 만든다(서로 의존하지 않아 compose가 동시에 다룬다 — UI와 스케줄러가 같은 시각에 내려간다). 둘 다
+`stop_grace_period`가 없어 Docker 기본 10초 안에 멈추고, 새 컨테이너는 이미지·설정이 그대로라 곧바로 뜬다. 예상 중단은
+**1~2분**(webserver: workspace를 다시 실을 때까지 Dagster UI·GraphQL 불가, healthcheck `start_interval` 5s; daemon: 그동안
+스케줄·sensor·run queue dequeue·run monitoring이 멈춤, healthcheck `start_interval` 45s)이다. `converge`는 두 healthcheck가
+healthy가 될 때까지 기다린다 — daemon이 `start_period` 90초 안에 healthy가 못 되면 다음 probe가 360초 뒤라 그 기다림은 약
+7.5분까지 늘 수 있다(중단 자체가 길어지는 것은 아니다). 기다림의 상한은 render healthcheck에서 파생한 945초다(넘으면 재구축은
+실패로 멈추고 converge는 종료 코드 2). 로그 설정 대조는 render가 말한 option만 본다 — Docker가 daemon 기본값에서 합쳐 넣은
+option은 drift가 아니다(그래야 다시 만든 뒤 무연산이 된다). 컨테이너 로그 설정을 읽을 수 없으면 거부한다. **진행 중 run은 끊기지 않는다** —
+run worker는 daemon이 아니라 각 code-server 컨테이너 안에서 돈다(`x-dagster-code-server-probe` 주석). 그 1~2분에 걸린 schedule
+tick·queue는 daemon이 다시 뜬 뒤 처리되거나 밀릴 수 있다. n150 `~/preflight.sh rebuild`는 Map·PinVi location(`kortravelmap|pinvi`)의
+STARTED/STARTING run이 있으면 시작을 막는다 — 같은 재구축이 Map·PinVi code-server를 다시 만들기 때문이다. Concierge run은 막지
+않지만 plane 재생성은 그 run을 끊지 않는다. `dagster-plane converge`를 따로 돌릴 때도 같은 preflight(`rebuild`)를 먼저 돌린다.
+
+**odroid**: odroid의 plane 컨테이너는 Manager project가 아니라 `kor-travel-odroid` project다. 거기서 `ktdctl dagster-plane
+converge --dry-run`은 이제 daemon·webserver를 `would_recreate`(logging options differ)로 보고한다 — `--confirm`은 하지 않는다
+(Manager project로 같은 container_name을 만들려다 이름 충돌로 실패한다). odroid plane은 그 host compose에 상한을 넣은 뒤 그
+project로 다시 만든다.
+
+**지금 추적된 경로가 없는 컨테이너**(install + 같은 pair 재구축 뒤에도 상한 없이 남는다): 공용 PostgreSQL, 공용 Dagster
+gateway, rustfs, prometheus, grafana, cadvisor, 그리고 `activate-concierge`를 돌리기 전의 Concierge 넷(재구축이 daemon을
+멈춘 채 둔 경우 daemon도). ADR-61의 "최대 250 MB"는 **다시 만들어진 뒤**의 상한이다. 각각의 경로는 `docs/tasks.md`(2026-11-03)가
+추적한다:
+
+- 공용 PostgreSQL: §6.1 C9(shared-postgres-onboarding)의 계획 창에서 따로 — 수동 `CHECKPOINT` 뒤 설치 root에서
+  `docker compose -f docker-compose.yml up -d --no-deps kor-travel-shared-postgres`(`stop_grace_period` 300s, G 밖·C6c 밖의
+  손 명령이라 창을 공지하고 한 번만). Manager 명령으로 이것을 하는 길은 없다.
+- 공용 Dagster gateway: plane drift 경로(webserver·daemon) 밖이다 — 다음 cutover/rollback 창도 gateway는 부르지 않는다. 손
+  명령(`up -d --no-deps kor-travel-dagster-gateway`, 상태 없는 nginx라 수 초) 또는 UI 재생성. 로그는 지금 4 KB다.
+- rustfs·prometheus·grafana·cadvisor: Manager 경로 없음 — 손 명령(`up -d --no-deps <service>`) 또는 UI 재생성(rustfs는
+  데이터 볼륨 유지, Prometheus·Grafana는 데이터 디렉터리 유지).
+
+**odroid는 이 파일을 쓰지 않는다**(2026-11-03 읽기 전용 확인 — `kor-travel-docker-manager` project 컨테이너가 0개).
+geo·weather·공용 PostgreSQL·공용 Dagster plane은 `kor-travel-odroid` project(`/opt/kor-travel-odroid/compose.yml`과
+`/srv/ktdm-releases/*/images.yml` overlay)로 돈다. node-exporter·cadvisor는 실측상 아직 `kor-travel-odroid-monitoring`
+project(`/opt/kor-travel-odroid/compose-mon.yml`)다 — registry `node` target은 T-OPS-01b 뒤의 좌표
+(`kor-travel-host-monitoring`, `/opt/kor-travel-host-monitoring`)를 적고 있으니 그 이관과 함께 한다. transport는 transport
+저장소의 compose(`docker-compose.yml`·`docker-compose.shared.yml`·`transport.override.yml`·admin compose, 실행 중 컨테이너의
+label은 빌드 디렉터리 사본)로 돈다. odroid에 상한을 주려면 그 파일들(저장소 밖)과 transport 저장소에 같은 `logging` 정의를
+넣어야 한다.

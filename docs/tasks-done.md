@@ -1,5 +1,13 @@
 # TASKS-DONE — 완료 태스크 기록
 
+## 2026-10-25 — n150 Manager 웹·API·CLI 운영 수용
+
+- [x] **T-MGR-WEB-CLI-N150 — 정상 업데이트 수용**. 공식 Backend·CLI 설치와 frontend 갱신·공개 UI·정적 산출물 대조·실패 테스트 세션 정리를 확인했다. 적용 세대와 한계는 [운영 기록](reports/2026-10-25-manager-normal-update-acceptance.md)을 따른다. Map·PinVi 실제 재구축은 활성 작업으로 남긴다.
+
+## 2026-10-24 — npm 보안·버전 정합 소스 완료
+
+- [x] **T-MGR-NEXT-SECURITY — Next.js 16.4.3**. npm 직접/전이 보안 패치와 공통 버전 정합, 이 저장소 기존 테스트 47개·타입·린트·빌드 검증을 반영했다. 최종 게이트와 머지 상태는 [PR](https://github.com/digitie/kor-travel-docker-manager/pull/549), 잔여 상류 권고와 범위는 [정합 기록](npm-security-alignment-2026-10-24.md)을 따른다.
+
 이 문서는 `kor-travel-docker-manager`에서 완료된 작업을 역순이 아닌 태스크 번호순으로 보관한다.
 진행 중/대기 작업은 [`docs/tasks.md`](tasks.md)를 기준으로 한다.
 
@@ -16,6 +24,42 @@
 > 계약은 [`docs/tasks.md`](tasks.md), [`docs/ports.md`](ports.md),
 > [`docs/architecture.md`](architecture.md)와 현재 코드·Compose를 기준으로 확인한다.
 
+## 2026-10-21 — T-MGR-PUBLIC-URLS 완료
+
+- Portainer 컨테이너 제거(데이터 볼륨 보존), 호스트별 공개 URL·브라우저 진입 경로 보정, 관측 전용 Transport 링크 추가.
+- PR #540의 독립 리뷰 2인·전체 CI 후 양쪽 runtime 5d8db45 설치. 실행 컨테이너 18개/17개와 공개 링크 9개/12개, 양쪽 live UI 검증 통과.
+- 미기동 Grafana·Prometheus 주소의 503과 공개 프로토콜 응답 구분은 같은 날짜 작업 일지에 기록했다.
+
+## 2026-10-21 — T-MGR-HOST-INVENTORY 완료
+
+- PR #537·#538 머지, 독립 적대 리뷰 2인 재검토와 최종 CI backend 3,222 PASS/39 SKIP·frontend 47 PASS.
+- 두 Manager를 같은 runtime 02a513a로 설치하고 공개 UI 로그인/로그아웃·WS·모바일·목록 정리·읽기 전용 버튼을 검증했다. 실제 Docker ID·상태·health와 최신 지표는 Odroid 19개/n150 17개 모두 확인했다.
+- 운영의 transient PostgreSQL pause/unpause 관측 및 계측 비교의 한계는 같은 날짜 작업 일지에 남겼다. 실제 Docker 컨테이너·이미지를 정리하는 작업은 수행하지 않았다.
+
+## 2026-10-20 — ADR-58 문서 잔여(T-MGR-07) + `decisions.md` 분리(ADR-41~50)
+
+- [x] **T-MGR-07 — ADR-58 문서 잔여(ADR-58 proposed PR 뒤)**. `.env.example` 주석은 각 T-MGR-01a~05 코드 PR이 이미 키와
+  함께 넣었다(확인: `KTDM_HOST`·`KTDM_DATA_SOURCE_DEVICE`·`KTDM_DAGSTER_WORKSPACE_DIGEST`·`KTDM_PG_*`·`KTDM_*_MEM_LIMIT` 주석
+  전부 존재). 2026-10-16 journal 분리(`journal-archive-01~04.md`)는 그때 이미 완료였다. 이번에 닫은 것: **ADR-58
+  accepted 전환**(T-MGR-01a·01a-F·01b·01c·02·02r·03·03r·04·04r·05 전부 설치·머지 확인 뒤 `docs/decisions.md`의 ADR-58
+  상태를 proposed → accepted로, T-MGR-06(실제 host 플립 PR ×3)만 남은 계획으로 명시) + 각 문서의 "(계획 — ADR-58
+  proposed, 미구현)" 해제(코드로 implement된 부분만 — `docs/architecture.md`(호스트 프로필), `docs/bindings.md`
+  (B-5~B-9 콜아웃), `docs/platform-topology.md`(호스트 차원·공용 PG 호스트당·plane 호스트당, 3곳), `docs/prod-deployment.md`
+  (odroid 설치 절·§9 게이트), `docs/ports.md`(호스트 규칙 헤더 + `hosts:` 절 인라인 마커) — 총 9곳. T-MGR-06에 묶인
+  "(계획)"은 **남겨뒀다**(`docs/platform-topology.md` 호스트 플립 PR·§9 런북 단계 8·§10 헤더, `docs/prod-deployment.md`
+  odroid 전환 뒤 backend 전환표, `docs/ports.md` plane별 공개 host·odroid 방화벽 집합 — 전부 공개 HAProxy backend
+  전환·공개 host 결정이 아직 없어 실제로 미구현). `docs/journal.md`의 과거 날짜 기록(`2026-10-13` 등)은 역사이므로
+  건드리지 않았다(B-4 범위 규칙). **decisions.md 200 KB 초과 분리는 아래 항목으로 동시에 처리**(다음 ADR을 기다리지
+  않고 지금 — 이미 247 KB로 한도 근접). 수용 기준: `docs/decisions.md`에 더해진 ADR 없음(ADR-58 상태 문구만 교체),
+  `test_normative_docs_cite_real_symbols`(해당 시) 대상 — 이 PR은 문서만이라 코드 인용 추가 없음. 남은 것: 사용자 로컬
+  Claude 메모리 `odroid-standing-services`·`n150-standing-services` 갱신(저장소 파일이 아니라 운영자 쪽 — 활성
+  원장에 잔여 한 줄로 분리).
+- [x] **docs — `docs/decisions.md` 분리(다음 ADR 전에)**. 2026-10-16 현재 247,393 B(에이전트 read 한도 256 KB)였다.
+  ADR-41~50(41~48·50 — ADR-49는 결번, 파일 순서상 ADR-50이 ADR-48 앞에 있어 그 순서 그대로)을 `decisions-archive-02.md`로
+  옮겼다(파일 상단 "다음 분리 규칙" 그대로 — byte 그대로, 인덱스 표 9행 추가, 분리 전후 `## ADR-` 제목 집합 대조 일치
+  확인). `decisions.md`는 187,452 B로 줄었다. `decisions-archive-02.md` 머리말에 분리 날짜·범위를 적고, "다음 분리 규칙"을
+  `decisions-archive-03.md`로 갱신했다.
+
 ## 2026-10-17 — T-MGR-02r 닫음(실측 결과 n150 변경 없음)
 
 `docs/tasks.md`에서 **문구 그대로** 옮겼다(첫 줄 `[ ]`→`[x]`, 실측 근거를 덧붙임).
@@ -27,6 +71,12 @@
 `docs/tasks.md`에서 **문구 그대로** 옮겼다(첫 줄 `[ ]`→`[x]`, 머지·적용 결과를 덧붙임).
 
 - [x] **T-MGR-04r — Prometheus 잔여(T-MGR-04 #492 뒤)**. `weather-code-server`(14103)·`weather-federate` job, transport code-server registry 등록, geo-ui `12505` scrape 여부(odroid 방화벽 뒤). Manager 자신의 호스트별 job은 T-MGR-NH NH-6, alert rule(`count(up{host})`·디스크·시계)은 `docs/multi-host.md` §5 deferred. 규모 S. **2026-10-17 구현(PR, 리뷰·머지 대기)**: weather code-server를 `metrics_port`(odroid `12203`, n150에서 200 실측)로 registry 파생 job에 넣었다; weather 자체 Prometheus가 odroid에 없어(14104 리스너 없음) **weather-federate는 두지 않는다**(weather 메트릭 접두사도 `weather_*`가 아니라 `ktw_*`); transport code-server 등록은 **뺐다**(#512 리뷰 F1 — `config_files`의 `docker-compose.yml`에 그 서비스가 없어 `status transport`가 실패한다; transport shared overlay 작업 때 다시); geo-ui `12505`는 계속 수집하고 odroid 방화벽 표에 n150 허용을 적었다(`ports.md`). **완료**: #512 머지, n150 Prometheus 적용·reload 뒤 target 9개 모두 up. 남은 alert rule은 활성 원장 `T-MGR-04r 잔여` 한 줄(`multi-host.md` §5 deferred).
+
+## 2026-10-17 — T-MGR-03r(n150 공용 PG 재생성) 완료
+
+`docs/tasks.md`에서 **문구 그대로** 옮겼다(첫 줄 `[ ]`→`[x]`, 실행 근거를 덧붙임).
+
+- [x] **T-MGR-03r — n150 공용 PG 재생성으로 #496 값 적용(점검 창, 소유자 일정)**. #496의 PG 수치·이미지 env(`docker-compose.yml` `kor-travel-shared-postgres`의 `${KTDM_PG_*:-…}`)는 컨테이너 재생성 때만 반영된다. 절차: ① `~/preflight.sh` PASS ② Map 큐 정지(`DISABLED_FEATURE_LOAD_SCHEDULES` — active operation 0 확인) ③ `pg_settings` 확인 — `source`가 `command line`이 아닌 외부 설정(`ALTER SYSTEM`·`postgresql.auto.conf`)이 덮어쓰지 않을 것(2026-10-17 코디네이터 확인: 없음) ④ **허용 경로로 PG만 recreate** — n150은 rehearsal이라 `ensure`가 거부하므로 cAdvisor 때와 같이 global lock 아래 root compose: `sudo -n flock -n /run/lock/kor-travel-docker-manager/global-mutation.lock docker compose -p kor-travel-docker-manager --project-directory /opt/kor-travel-docker-manager --env-file /opt/kor-travel-docker-manager/.env -f /opt/kor-travel-docker-manager/docker-compose.yml up -d --no-deps kor-travel-shared-postgres`(먼저 같은 명령에 `--dry-run`으로 대상이 PG 하나인지 확인) ⑤ PG healthy 뒤 tenant health(Map·PinVi·concierge·weather·transport `/health`, 공용 Dagster plane) 확인 → Map 큐 재개. 수용 기준: 재생성 뒤 `SHOW shared_buffers`·`work_mem`·`maintenance_work_mem`·`effective_cache_size`·`random_page_cost`·`max_wal_size`·`max_parallel_workers`·`max_parallel_workers_per_gather`·`effective_io_concurrency`·`checkpoint_timeout`·`wal_compression`·`autovacuum_max_workers` 값이 compose 기본값과 같다. 규모 S(운영). **완료(2026-10-17 08:09:43Z)**: global lock 아래 root compose `up -d --no-deps kor-travel-shared-postgres`로 n150 공용 PG를 재생성했다(사전 `--dry-run`으로 대상이 PG 단독임을 확인). 약 30 s 안에 healthy로 복귀했고 `oom_score_adj`는 0→-800으로 바뀌었다. 수용 기준 13개 설정(`shared_buffers`·`work_mem`·`maintenance_work_mem`·`effective_cache_size`·`random_page_cost`·`max_wal_size`·`max_parallel_workers`·`max_parallel_workers_per_gather`·`effective_io_concurrency`·`checkpoint_timeout`·`wal_compression`·`autovacuum_max_workers`)은 compose 기본값과 동일했다 — `.env` override 없고 `postgresql.auto.conf`도 빈 상태라 값 자체는 재생성 전후로 바뀌지 않았다(재생성이 반영하는 것은 컨테이너 env/image뿐임을 확인). map/pinvi/concierge `/health` 200, preflight PASS, 재생성 전 활성 Dagster run 0건을 확인했다.
 
 ## 2026-10-17 — T-MGR-NH 잔여(NH-6) 완료
 

@@ -88,6 +88,9 @@ class _FakeClient:
         self._overrides = project_overrides or {}
         self.containers = self
 
+    def list(self, **kwargs):
+        return []
+
     def get(self, name: str) -> Any:
         from kor_travel_docker_manager.services.registry import (
             MANAGED_CONTAINERS,

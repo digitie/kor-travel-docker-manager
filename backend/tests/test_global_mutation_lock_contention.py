@@ -54,7 +54,7 @@ from fastapi.testclient import TestClient
 from kor_travel_docker_manager import cli as cli_module
 from kor_travel_docker_manager.api import admin as admin_api
 from kor_travel_docker_manager.main import app
-from kor_travel_docker_manager.services import c6c_deployment, legacy_override_retirement
+from kor_travel_docker_manager.services import c6c_deployment, concierge_activation
 from kor_travel_docker_manager.services import compose_service as compose_service_module
 from kor_travel_docker_manager.services import docker_service as docker_service_module
 from kor_travel_docker_manager.services.admin_password_service import ADMIN_PASSWORD_HASH_ENV
@@ -63,12 +63,12 @@ from kor_travel_docker_manager.services.auth_service import (
     hash_password_for_env,
     require_admin_session,
 )
+from kor_travel_docker_manager.services.concierge_activation import (
+    ConciergeActivationError,
+)
 from kor_travel_docker_manager.services.errors import (
     DeploymentContractError,
     ManagerMutationActiveError,
-)
-from kor_travel_docker_manager.services.legacy_override_retirement import (
-    LegacyOverrideRetirementError,
 )
 from kor_travel_docker_manager.services.registry import (
     MANAGED_CONTAINERS,
@@ -493,7 +493,7 @@ def api_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-def test_e_rehearsal_compose_mutators_and_legacy_retirement_are_refused_while_g_is_held(
+def test_e_rehearsal_compose_mutators_and_concierge_activation_are_refused_while_g_is_held(
     rehearsal_env: Path,
     tmp_path: Path,
 ) -> None:
@@ -511,26 +511,25 @@ def test_e_rehearsal_compose_mutators_and_legacy_retirement_are_refused_while_g_
                 pytest.fail("보유 중인 G 안으로 들어가면 안 된다")
         assert refused.value.code == "MANAGER_MUTATION_ACTIVE"
 
-        selected = legacy_override_retirement._select_lock_path(
+        selected = concierge_activation._select_lock_path(
             _REHEARSAL_VALUES,
             project_root=Path("/irrelevant"),
             lock_path=None,
             require_root=True,
         )
         assert selected == str(_global_lock_path())
-        # 같은 선택으로 stage에 들어가면 source를 읽기도 전에 lock에서 거절된다.
-        source = tmp_path / "legacy" / "kor-travel-docker-manager" / "docker-compose.override.yml"
+        # 같은 선택으로 Concierge 재생성에 들어가면 Compose를 부르기도 전에 lock에서 거절된다.
         with pytest.raises(
-            LegacyOverrideRetirementError,
+            ConciergeActivationError,
             match=f"^cannot acquire the Manager mutation lock: {re.escape(_BUSY)}$",
         ):
-            legacy_override_retirement.stage_legacy_compose_override(
-                source_path=source,
+            concierge_activation.activate_canonical_concierge(
                 project_root=project,
+                compose_config_runner=lambda *_args: pytest.fail("config must not run"),
+                compose_up_runner=lambda *_args: pytest.fail("up must not run"),
                 lock_path=selected,
                 require_root=False,
             )
-        assert not (project / ".legacy-compose-override-state").exists()
 
     assert not (tmp_path / "home").exists()
 

@@ -213,7 +213,7 @@ def _assert_trusted_parents(path: Path) -> None:
 def _read_targets_bytes(path: str) -> bytes:
     """targets 문서를 **검증된 descriptor**로 읽는다.
 
-    `legacy_override_retirement._read_legacy_import_bytes`에서 **열기 방식만** 가져왔다:
+    옛 legacy override 이관의 `_read_legacy_import_bytes`(2026-11-02 제거)에서 **열기 방식만** 가져왔다:
     `O_NOFOLLOW`로 열고 경로가 아니라 **열린 fd를** `fstat`한다. 경로를 두 번
     보면(검사 한 번, 열기 한 번) 그 사이에 바꿔치기할 수 있다.
 
@@ -324,6 +324,32 @@ def load_targets_config() -> dict[str, Any]:
 load_targets_config.cache_clear = _load_targets_config_cached.cache_clear
 
 
+def _dagster_host_overrides(spec: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    """호스트 정본의 태그 한도·로그 수준만 허용한다. 임의 YAML patch는 받지 않는다."""
+    tags = spec.get("dagster_tag_concurrency_limits", [])
+    if not isinstance(tags, list):
+        raise TargetsConfigError("host Dagster tag limits must be a list")
+    seen: set[tuple[str, str]] = set()
+    for entry in tags:
+        if not isinstance(entry, dict) or set(entry) != {"key", "value", "limit"}:
+            raise TargetsConfigError("host Dagster tag limits require key, value and limit only")
+        key, value, limit = entry["key"], entry["value"], entry["limit"]
+        if (not isinstance(key, str) or not key or key != key.strip()
+                or not isinstance(value, str) or not value or value != value.strip()
+                or type(limit) is not int or limit <= 0):
+            raise TargetsConfigError("host Dagster tag identity and positive integer limit are invalid")
+        identity = key, value
+        if identity in seen:
+            raise TargetsConfigError("host Dagster tag limits contain duplicate identities")
+        seen.add(identity)
+    level = spec.get("dagster_python_log_level")
+    if "dagster_python_log_level" in spec and (
+        not isinstance(level, str) or level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+    ):
+        raise TargetsConfigError("host Dagster Python log level is invalid")
+    return tags, level
+
+
 def _host_specs(config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """옛 단일 호스트 개발 fixture만 loopback으로 읽는다. v2에는 hosts가 필수다."""
     version = config.get("version", 1)
@@ -343,7 +369,10 @@ def _host_specs(config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     for name, spec in hosts.items():
         if not isinstance(name, str) or re.fullmatch(r"[a-z][a-z0-9_-]*", name) is None or name == "all":
             raise TargetsConfigError("hosts key must be a host name, not all")
-        if not isinstance(spec, dict) or set(spec) - {"addr", "default"}:
+        if not isinstance(spec, dict) or set(spec) - {
+            "addr", "default", "dagster_max_concurrent_runs",
+            "dagster_tag_concurrency_limits", "dagster_python_log_level",
+        }:
             raise TargetsConfigError(f"hosts.{name}: unknown fields or invalid mapping")
         if not isinstance(spec.get("addr"), str):
             raise TargetsConfigError(f"hosts.{name}.addr must be a literal IPv4 address")
@@ -353,6 +382,11 @@ def _host_specs(config: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             raise TargetsConfigError(f"hosts.{name}.addr must be a literal IPv4 address") from exc
         if "default" in spec and not isinstance(spec["default"], bool):
             raise TargetsConfigError(f"hosts.{name}.default must be a boolean")
+        if "dagster_max_concurrent_runs" in spec:
+            maximum = spec["dagster_max_concurrent_runs"]
+            if type(maximum) is not int or maximum <= 0:
+                raise TargetsConfigError(f"hosts.{name}.dagster_max_concurrent_runs must be a positive integer")
+        _dagster_host_overrides(spec)
         defaults += spec.get("default", False)
     if defaults != 1:
         raise TargetsConfigError("hosts must have exactly one default: true")
@@ -783,6 +817,14 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
     containers = config["containers"]
     targets = config["targets"]
     _host_specs(config)
+    public_envs = config.get("observed_public_url_envs", {})
+    if not isinstance(public_envs, dict):
+        raise TargetsConfigError(f"{label} observed_public_url_envs: must be a mapping")
+    for name, env_key in public_envs.items():
+        if (not isinstance(name, str) or not name
+                or not isinstance(env_key, str) or not env_key.startswith("KTDM_PROD_URL_")
+                or not _ENV_NAME.fullmatch(env_key)):
+            raise TargetsConfigError(f"{label} observed_public_url_envs: invalid container or public URL env")
 
     for container_id, spec in containers.items():
         if not isinstance(spec, dict):
@@ -792,6 +834,11 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
                 raise TargetsConfigError(
                     f"{label} containers.{container_id}: missing required field '{field}'"
                 )
+        public_path = spec.get("prod_url_path")
+        if public_path is not None and (
+            not isinstance(public_path, str) or not public_path.startswith("/") or public_path.startswith("//")
+        ):
+            raise TargetsConfigError(f"{label} containers.{container_id}.prod_url_path: must be an absolute path")
         metrics_path = spec.get("metrics_path")
         metrics_port = spec.get("metrics_port")
         if metrics_port is not None and (
@@ -1071,6 +1118,7 @@ _ALLOWED_CONTAINER_FIELDS: Final = frozenset(
         "display_name",
         "connection",
         "prod_url_env",
+        "prod_url_path",
         "expected_ports",
         "external_project",
         "metrics_path",

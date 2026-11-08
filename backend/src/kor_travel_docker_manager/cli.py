@@ -19,13 +19,11 @@ from kor_travel_docker_manager.services.compose_service import (
     get_env_path,
     rebuild_failure_stage,
 )
-from kor_travel_docker_manager.services.docker_service import docker_service
-from kor_travel_docker_manager.services.legacy_override_retirement import (
-    LegacyOverrideRetirementError,
+from kor_travel_docker_manager.services.concierge_activation import (
+    ConciergeActivationError,
     activate_canonical_concierge,
-    retire_legacy_compose_override,
-    stage_legacy_compose_override,
 )
+from kor_travel_docker_manager.services.docker_service import docker_service
 from kor_travel_docker_manager.services.offbox_backup_sync import (
     OffboxSyncError,
     OffboxSyncNotConfiguredError,
@@ -196,8 +194,16 @@ def _rendered_value() -> Any:
     env_path = Path(get_env_path())
     file_values = dotenv_values(env_path, interpolate=False) if env_path.is_file() else {}
 
+    values = {name: value or "" for name, value in file_values.items()}
+    values.update(os.environ)
+    compose_path = Path(get_compose_path())
+    if compose_path.is_file() and "${KTDM_DAGSTER_INSTANCE_CONFIG:-" in compose_path.read_text(encoding="utf-8"):
+        from kor_travel_docker_manager.services.shared_dagster_instance import instance_environment
+
+        values = instance_environment(values)
+
     def value(name: str) -> str | None:
-        return os.environ[name] if name in os.environ else file_values.get(name)
+        return values.get(name)
 
     return value
 
@@ -248,6 +254,11 @@ def _workspace_digest_violations(config: dict[str, Any]) -> list[str]:
     if not compose_path.is_file():
         return []
     compose = load_yaml_rejecting_duplicate_keys(compose_path.read_text(encoding="utf-8")) or {}
+    from kor_travel_docker_manager.services.shared_dagster_instance import (
+        validate_instance_consumers,
+    )
+
+    validate_instance_consumers(compose)
     return workspace_digest_violations(compose, config, Path(get_project_root()), _rendered_value())
 
 
@@ -546,6 +557,23 @@ def _plane_converge_summary(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _cmd_dagster_instance_config(args: argparse.Namespace) -> int:
+    """외부 공식 배포에도 동일 호스트 instance 경로와 원문 SHA를 전달한다."""
+    from kor_travel_docker_manager.services.shared_dagster_instance import (
+        prepare_shared_dagster_instance,
+        shared_dagster_instance,
+    )
+
+    try:
+        config = (prepare_shared_dagster_instance() if args.instance_action == "prepare"
+                  else shared_dagster_instance())
+    except Exception:  # noqa: BLE001 - 파일/설정/권한 오류의 원문을 공개하지 않는다.
+        print("shared Dagster instance configuration is unavailable", file=sys.stderr)
+        return 2
+    print(json.dumps(config.as_dict(), ensure_ascii=False))
+    return 0
+
+
 def _cmd_dagster_plane_converge(args: argparse.Namespace) -> int:
     """공용 Dagster plane만 설치된 release의 render로 맞춘다(재구축과 같은 lock·환경 계약)."""
 
@@ -576,40 +604,6 @@ def _cmd_dagster_plane_converge(args: argparse.Namespace) -> int:
     return _emit_process_result(result, json_output=args.json)
 
 
-def _cmd_retire_legacy_override(args: argparse.Namespace) -> int:
-    if not args.confirm:
-        print(
-            "compose-boundary retire-legacy-override requires --confirm "
-            "(no mutation was attempted)",
-            file=sys.stderr,
-        )
-        return 2
-    try:
-        retire_legacy_compose_override()
-    except LegacyOverrideRetirementError as exc:
-        _print_scrubbed_error(exc)
-        return 2
-    print("legacy Compose override retired and canonical Concierge recreated")
-    return 0
-
-
-def _cmd_stage_legacy_override(args: argparse.Namespace) -> int:
-    if not args.confirm:
-        print(
-            "compose-boundary stage-legacy-override requires --confirm "
-            "(no mutation was attempted)",
-            file=sys.stderr,
-        )
-        return 2
-    try:
-        stage_legacy_compose_override(source_path=Path(args.source))
-    except LegacyOverrideRetirementError as exc:
-        _print_scrubbed_error(exc)
-        return 2
-    print("legacy Compose override snapshot staged in the protected runtime boundary")
-    return 0
-
-
 def _cmd_activate_canonical_concierge(args: argparse.Namespace) -> int:
     if not args.confirm:
         print(
@@ -620,7 +614,7 @@ def _cmd_activate_canonical_concierge(args: argparse.Namespace) -> int:
         return 2
     try:
         activate_canonical_concierge()
-    except LegacyOverrideRetirementError as exc:
+    except ConciergeActivationError as exc:
         _print_scrubbed_error(exc)
         return 2
     print("canonical Concierge recreated from the single-file boundary")
@@ -1907,6 +1901,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    from kor_travel_docker_manager.service_release_cli import add_service_release_parser
+
+    add_service_release_parser(subparsers)
+
     targets = subparsers.add_parser(
         "targets", help="관리 target 목록을 조회하거나 config를 검증합니다."
     )
@@ -2022,6 +2020,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pair_rebuild.set_defaults(func=_cmd_pinvi_pair)
 
+    instance_config = subparsers.add_parser(
+        "dagster-instance-config", help="호스트 공용 Dagster instance 정본을 조회·준비합니다."
+    )
+    instance_actions = instance_config.add_subparsers(dest="instance_action", required=True)
+    for action_name in ("show", "prepare"):
+        instance_action = instance_actions.add_parser(action_name)
+        instance_action.add_argument("--json", action="store_true", required=True)
+        instance_action.set_defaults(func=_cmd_dagster_instance_config)
+
     dagster_plane = subparsers.add_parser(
         "dagster-plane",
         help="공용 Dagster 제어 평면(daemon·webserver)을 다룹니다.",
@@ -2053,46 +2060,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     compose_boundary = subparsers.add_parser(
         "compose-boundary",
-        help="single-file Compose 경계의 제한된 운영 이관을 실행합니다.",
+        help="single-file Compose 경계에서 Concierge runtime을 검증·재생성합니다.",
     )
     compose_boundary_subparsers = compose_boundary.add_subparsers(
         dest="compose_boundary_action", required=True
     )
-    stage_legacy_override = compose_boundary_subparsers.add_parser(
-        "stage-legacy-override",
-        help="legacy override와 고정된 Concierge source를 보호된 state로 snapshot합니다.",
-    )
-    stage_legacy_override.add_argument(
-        "--source",
-        required=True,
-        help="legacy docker-compose.override.yml의 절대 경로입니다.",
-    )
-    stage_legacy_override.add_argument(
-        "--confirm",
-        action="store_true",
-        help="owner-only protected stage로의 단방향 snapshot을 확인합니다.",
-    )
-    stage_legacy_override.set_defaults(func=_cmd_stage_legacy_override)
-
-    retire_legacy_override = compose_boundary_subparsers.add_parser(
-        "retire-legacy-override",
-        help="보호된 staged override를 canonical root .env로 이관하고 보관합니다.",
-    )
-    retire_legacy_override.add_argument(
-        "--confirm",
-        action="store_true",
-        help="root .env 갱신과 staged override의 owner-only archive 이동을 확인합니다.",
-    )
-    retire_legacy_override.set_defaults(func=_cmd_retire_legacy_override)
-
     activate_concierge = compose_boundary_subparsers.add_parser(
         "activate-concierge",
-        help="archive 완료 뒤 canonical Concierge만 검증·재생성합니다.",
+        help="root .env의 Concierge 이미지로 canonical Concierge만 검증·재생성합니다(배포·rollback).",
     )
     activate_concierge.add_argument(
         "--confirm",
         action="store_true",
-        help="API/MCP/scheduler/UI를 canonical single-file source로 재생성함을 확인합니다.",
+        help="API/MCP/Dagster code server/UI를 canonical single-file source로 재생성함을 확인합니다.",
     )
     activate_concierge.set_defaults(func=_cmd_activate_canonical_concierge)
 
@@ -2404,7 +2384,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parsed_argv = list(sys.argv[1:] if argv is None else argv)
     try:
-        if parsed_argv and parsed_argv[0] in _direct_ensure_aliases():
+        # 신규 instance 명령의 설정 오류는 자신의 고정 exit2 경계에서 처리한다.
+        if (parsed_argv and parsed_argv[0] != "dagster-instance-config"
+                and parsed_argv[0] in _direct_ensure_aliases()):
             parsed_argv = ["ensure", parsed_argv[0], *parsed_argv[1:]]
         parser = build_parser()
         args = parser.parse_args(parsed_argv)

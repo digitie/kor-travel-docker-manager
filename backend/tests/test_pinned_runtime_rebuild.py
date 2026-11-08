@@ -27,6 +27,10 @@ from kor_travel_docker_manager.services import (
     pinned_runtime_rebuild as pinned_runtime_rebuild_module,
 )
 from kor_travel_docker_manager.services import runtime_topology as runtime_topology_module
+from kor_travel_docker_manager.services.build_context_export import (
+    COMPOSE_BUILD_INPUT_LABEL,
+    compose_build_input_sha256,
+)
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
     DeploymentContractError,
@@ -1518,6 +1522,10 @@ def _committed_status(
     return DeployStatus(**fields)
 
 
+def _compose_build_digest(resolved: Mapping[str, Any], service: str) -> str:
+    return compose_build_input_sha256(resolved["services"][service]["build"])
+
+
 def _forward_harness(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1606,6 +1614,20 @@ def _forward_harness(
         }
     )
     resolved_services.update(plane_resolved)
+    # compose가 빌드하는 네 slot은 render에 build 절이 있다(보간이 풀린 args) — 재사용 판정이 그것을 본다.
+    for slot in COMPOSE_BUILT_RUNTIME_SLOTS:
+        built_service = topology.require_service(slot)
+        resolved_services[built_service] = {
+            **cast(dict[str, object], resolved_services[built_service]),
+            "build": {
+                "context": f"/state/{built_service}",
+                "dockerfile": f"docker/{built_service}.Dockerfile",
+                "args": {"NEXT_PUBLIC_VWORLD_API_KEY": "current-key"},
+            },
+        }
+    candidate_names = CandidateRuntimeBuild(
+        _sources(), map_candidate, topology=topology
+    ).image_names
     deployed_images = ComposeService._deployed_images(candidate, companions, topology)
     transaction = SimpleNamespace(
         environment=SimpleNamespace(effective=values, env_file_bytes=b"frozen-env\n"),
@@ -1644,6 +1666,17 @@ def _forward_harness(
         # 떠 있는 plane 컨테이너가 frozen render와 같은가(True면 `up`하지 않는다), 그리고 서비스별 덮어쓰기.
         "plane_current": False,
         "plane_overrides": {},
+        # candidate 태그 → 그 이미지가 실은 compose build 입력 digest label(없는 태그·label 없는 이미지는 빠진다).
+        "candidate_build_labels": (
+            {
+                candidate_names[slot]: _compose_build_digest(
+                    transaction.resolved, topology.require_service(slot)
+                )
+                for slot in COMPOSE_BUILT_RUNTIME_SLOTS
+            }
+            if images_present
+            else {}
+        ),
     }
     operations: list[tuple[str, ...]] = []
     readiness_requests: list[tuple[str, ...]] = []
@@ -1670,9 +1703,19 @@ def _forward_harness(
         retention_candidate=Mock(),
     )
 
+    tag_for_service = {
+        topology.require_service(slot): candidate_names[slot] for slot in COMPOSE_BUILT_RUNTIME_SLOTS
+    }
+
     def run_compose(arguments: list[str], *, transaction: object) -> dict[str, object]:
-        del transaction
         operations.append(tuple(arguments))
+        if arguments[0] == "build":
+            # 효과: 빌드된 이미지는 그 render의 build 절 digest를 label로 싣는다(build_context_export).
+            resolved = cast(Any, transaction).resolved
+            for built in arguments[1:]:
+                live["candidate_build_labels"][tag_for_service[built]] = _compose_build_digest(
+                    resolved, built
+                )
         return {"success": True, "stdout": ""}
 
     def require_ready(
@@ -1730,6 +1773,18 @@ def _forward_harness(
             "cmd": [docker(word) for word in render.get("command") or []],
             "entrypoint": (
                 None if render.get("entrypoint") is None else [docker(w) for w in render["entrypoint"]]
+            ),
+            # Docker가 render의 `logging`으로 만든 `HostConfig.LogConfig`(ADR-61). 옛 컨테이너는 daemon 기본값이다.
+            "log_config": (
+                (
+                    str((render.get("logging") or {}).get("driver") or "json-file"),
+                    {
+                        str(k): str(v)
+                        for k, v in ((render.get("logging") or {}).get("options") or {}).items()
+                    },
+                )
+                if live["plane_current"]
+                else ("json-file", {})
             ),
             "running": True,
             "restarting": bool(live["plane_restarting"]),
@@ -1803,6 +1858,7 @@ def _forward_harness(
         "_build_map_application_300_images": mocks.paired_builder,
         "_load_application_300_candidate": Mock(return_value=map_candidate),
         "_local_image_present": lambda _image: images_present,
+        "_local_image_compose_build_sha256": lambda image: live["candidate_build_labels"].get(image),
         "_run_pinned_runtime_static_command": Mock(return_value="{}"),
         "parse_candidate_static_head": Mock(return_value="head"),
         "build_candidate_generation": lambda **_kwargs: candidate,
@@ -1838,6 +1894,7 @@ def _forward_harness(
         "_retire_pinned_runtime_oneshot_writers": Mock(),
         "_run_pinned_runtime_rebuild_compose": run_compose,
         "_require_services_ready": require_ready,
+        "_require_geo_api_ready": Mock(),
         "_inspect_container_runtime_config": Mock(return_value={}),
         "_inspect_container_image_id": inspect_image,
         "_inspect_container_running": container_running,
@@ -1986,8 +2043,11 @@ def test_the_same_committed_pair_only_converges(
         for operation in _mutating_operations(harness)
         if operation[0] == "up"
     ]
-    assert len(runtime_up) == 1
-    assert set(runtime_up[0][6:]) == {*RUNTIME_SERVICES, *_FORWARD_COMPANIONS}
+    # ADR-59: target이 소유한 비-slot 서비스(Map Valkey)가 먼저, 그다음 slot·companion 전부를 한 번에.
+    assert [set(operation[6:]) for operation in runtime_up] == [
+        set(_pinned_infrastructure()),
+        {*RUNTIME_SERVICES, *_FORWARD_COMPANIONS},
+    ]
     assert (*RUNTIME_SERVICES, *_FORWARD_COMPANIONS) in harness.readiness_requests
     assert set(_FORWARD_COMPANIONS) <= set(harness.image_labels)
     harness.mocks.paired_builder.assert_not_called()
@@ -2202,6 +2262,137 @@ def test_existing_candidate_images_are_not_rebuilt(
     assert not any(operation[0] == "build" for operation in harness.operations)
 
 
+def test_a_changed_compose_build_input_rebuilds_only_that_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """2026-11-02 VWorld 키 교체: 같은 pair에서 `.env`의 build arg만 바꾸면 pinset 태그가 그대로라
+    재구축이 다시 빌드하지 않았다(운영자가 UI 후보 태그를 손으로 지웠다). 이제 render의 build 절이
+    이미지가 실은 입력과 다르면 그 서비스만 다시 빌드한다."""
+
+    candidate = _candidate_generation()
+    harness = _forward_harness(
+        monkeypatch, tmp_path, previous=_committed_status(candidate), images_present=True
+    )
+    resolved = harness.transaction.resolved["services"]
+    for changed in ("kor-travel-map-ui", "pinvi-web"):
+        resolved[changed]["build"]["args"]["NEXT_PUBLIC_VWORLD_API_KEY"] = "rotated-key"
+
+    harness.service.rebuild_pinned_runtime()
+
+    builds = [operation for operation in harness.operations if operation[0] == "build"]
+    assert builds == [("build", "kor-travel-map-ui", "pinvi-web")]
+    harness.mocks.paired_builder.assert_not_called()
+
+
+def test_a_candidate_image_without_the_build_input_label_is_rebuilt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """label 이전에 빌드된 태그(입력을 말하지 않는 이미지)는 재사용하지 않는다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path, images_present=True)
+    harness.live["candidate_build_labels"].clear()
+
+    harness.service.rebuild_pinned_runtime()
+
+    builds = [operation for operation in harness.operations if operation[0] == "build"]
+    assert builds == [("build", *COMPOSE_BUILT_RUNTIME_SERVICES)]
+
+
+def test_a_build_that_does_not_stamp_the_current_inputs_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """빌드 뒤에도 이미지가 지금 입력을 싣지 않으면 그 이미지로 배포하지 않는다 — 다음 재실행이 또
+    빌드하는 무한 비수렴 대신 원인을 말하고 멈춘다."""
+
+    harness = _forward_harness(monkeypatch, tmp_path, images_present=False)
+
+    def run_compose(arguments: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        harness.operations.append(tuple(arguments))
+        return {"success": True, "stdout": ""}
+
+    monkeypatch.setattr(harness.service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    with pytest.raises(DeploymentContractError, match="kor-travel-map-ui") as captured:
+        harness.service.rebuild_pinned_runtime()
+
+    assert compose_service_module.rebuild_failure_stage(captured.value) == "candidate_compose_build"
+    assert read_deploy_status(harness.status_path) is None
+    assert not any(operation[0] in {"stop", "up"} for operation in harness.operations)
+
+
+_NO_SUCH_IMAGE = "Error response from daemon: No such image: repo/x:tag"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr", "expected"),
+    (
+        (0, json.dumps({COMPOSE_BUILD_INPUT_LABEL: "d" * 64, "other": "x"}), "", "d" * 64),
+        (0, json.dumps({"other": "x"}), "", None),
+        (0, "null", "", None),
+        (1, "", _NO_SUCH_IMAGE, None),
+    ),
+)
+def test_the_build_input_label_is_read_from_the_local_image(
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    expected: str | None,
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, returncode, stdout.encode(), stderr.encode())
+
+    monkeypatch.setattr(compose_service_module.subprocess, "run", run)
+
+    assert compose_service_module._local_image_compose_build_sha256("repo/x:tag") == expected
+    assert calls and calls[0][:3] == ["docker", "image", "inspect"]
+    assert calls[0][-1] == "repo/x:tag"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "stderr"),
+    (
+        # daemon 오류를 "태그 없음"으로 읽으면 수렴할 재실행이 재빌드·전체 경로가 된다.
+        (1, "", "Cannot connect to the Docker daemon at unix:///var/run/docker.sock."),
+        (0, "{not json", ""),
+    ),
+)
+def test_an_unreadable_candidate_image_is_refused_rather_than_rebuilt(
+    monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str, stderr: str
+) -> None:
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(argv, returncode, stdout.encode(), stderr.encode())
+
+    monkeypatch.setattr(compose_service_module.subprocess, "run", run)
+
+    with pytest.raises(DeploymentContractError, match="repo/x:tag"):
+        compose_service_module._local_image_compose_build_sha256("repo/x:tag")
+
+
+def test_a_partial_candidate_build_still_builds_one_service_at_a_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """한 BuildKit 요청에 여러 target을 묶지 않는다 — 일부만 다시 빌드할 때도 같다."""
+
+    service = ComposeService()
+    run = Mock(return_value={"success": True, "returncode": 0, "stdout": "", "stderr": ""})
+    monkeypatch.setattr(service, "_run_frozen_recovery", run)
+
+    service._run_pinned_runtime_rebuild_compose(
+        ["build", "pinvi-web", "kor-travel-map-ui"],
+        transaction=_opaque_transaction(),
+    )
+
+    assert [call.args[0] for call in run.call_args_list] == [
+        ["build", "pinvi-web"],
+        ["build", "kor-travel-map-ui"],
+    ]
+
+
 def test_a_candidate_compose_build_failure_names_its_own_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2252,6 +2443,23 @@ def test_external_prerequisites_are_checked_before_sources_are_materialized(
         harness.service.rebuild_pinned_runtime()
 
     assert compose_service_module.rebuild_failure_stage(captured.value) == "external_prerequisites"
+    harness.mocks.materialize.assert_not_called()
+    assert harness.operations == []
+
+
+def test_remote_geo_readiness_is_checked_before_sources_are_materialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = _forward_harness(monkeypatch, tmp_path)
+    harness.service._require_geo_api_ready.side_effect = DeploymentContractError(
+        "mandatory service health check failed: kor-travel-geo-api"
+    )
+
+    with pytest.raises(DeploymentContractError, match="kor-travel-geo-api") as captured:
+        harness.service.rebuild_pinned_runtime()
+
+    assert compose_service_module.rebuild_failure_stage(captured.value) == "external_prerequisites"
+    harness.service._require_geo_api_ready.assert_called_once_with(harness.transaction)
     harness.mocks.materialize.assert_not_called()
     assert harness.operations == []
 
@@ -3692,12 +3900,16 @@ def _own_fingerprint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[st
     픽스처는 파생 이전 코드(6f384ba, literal 집합)에서 같은 항목을 떠 seed revision·pinset만 자리표로 바꾼
     것이다. 2026-10-04 platform-topology.md §7 4단계에서 옛 Map·PinVi Dagster metadata DB 의존(옛 Map storage
     migrate one-shot·`map_dagster_head`·`map_dagster` DB role·두 metadata URL 행)을 지운 만큼만 다시 떴다 — 그
-    변경은 의도한 것이고, 나머지 항목은 6f384ba 그대로다. 의도한 변경 셋은 빠져 있다 — M05 이미지 역할 키(`pinvi-app-dagster`), 보존 namespace가 알아보는
+    변경은 의도한 것이고, 나머지 항목은 6f384ba 그대로다. 2026-10-23 ADR-59가 Map Valkey(`kor-travel-map-valkey`)를 더해
+    `c6c_describe`·`mutation_parse_up`에 그 서비스가, 첫 배포·수렴 순서에 그것을 올리는 `up` 하나가 생겼다(의도한 변경).
+    2026-11-02 옛 Concierge APScheduler(`kor-travel-concierge-scheduler`, `legacy-scheduler` profile)를 compose에서 지워
+    같은 두 항목에서 그 서비스 한 줄씩이 빠졌다(의도한 변경). 같은 날 1회성 legacy override 이관(stage/retire)을 지워
+    그것이 알아보던 옛 Geo override 서비스 목록 항목(`geo_override_services`)도 지문에서 빠졌다(의도한 변경).
+    의도한 변경 셋은 빠져 있다 — M05 이미지 역할 키(`pinvi-app-dagster`), 보존 namespace가 알아보는
     이름(family 전부, 적대 리뷰 MED-3), 그리고 seed에 묶인 generation sha256.
     """
 
     import kor_travel_docker_manager.services.c6c_image_retention as retention
-    import kor_travel_docker_manager.services.legacy_override_retirement as retirement
     import kor_travel_docker_manager.services.m05_isolated_harness as m05
 
     generation = _candidate_generation()
@@ -3763,7 +3975,6 @@ def _own_fingerprint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[st
         for name in sorted(document["services"])
     }
     out["mutation_identifiers_down"] = ComposeService._compose_mutation_identifiers(["down"])
-    out["geo_override_services"] = list(retirement._GEO_SERVICES)
     out["m05_roles_values"] = sorted(m05._RUNTIME_IMAGE_ROLES.values())
     out["pinset_seed"] = PINNED_RUNTIME_RELEASE.pinset_sha256
 
@@ -3797,8 +4008,12 @@ def _own_fingerprint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[st
 def test_every_own_rebuild_matches_the_pre_adr54_fingerprint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """모두 `own`이면 파생은 파생 이전과 글자까지 같다 — slot 서비스·build·tag·companion·배포 images·보존·C6c
-    표·mutation 분류·generation payload·compose env, 그리고 첫 배포·수렴의 호출 순서 전체."""
+    """모두 own이면 허용된 readiness 변경 외 파생이 기준 fingerprint와 같다.
+
+    Geo는 원격 host 소유이므로 첫 prerequisite 묶음에서 빠지고, 전용 health gate로 검사한다.
+    그 밖의 slot 서비스·build·tag·companion·배포 images·보존·C6c 표·mutation 분류·generation
+    payload·compose env와 첫 배포·수렴 순서는 계속 fingerprint에 결박한다.
+    """
 
     expected = json.loads(_OWN_FINGERPRINT.read_text(encoding="utf-8"))
     expected.pop("_source")
@@ -4262,3 +4477,83 @@ def test_invalid_health_wait_is_rejected_before_runtime_stop(
         harness.service.rebuild_pinned_runtime()
     assert harness.operations == []
     harness.mocks.reset.assert_not_called()
+
+
+def _pinned_infrastructure() -> tuple[str, ...]:
+    return runtime_topology_module.installed_pinned_infrastructure(
+        excluded=(*RUNTIME_SERVICES, *_FORWARD_COMPANIONS)
+    )
+
+
+def test_target_owned_infrastructure_comes_up_before_anything_stops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-59 — slot은 `up --no-deps`라 Map API가 기다리는 Map Valkey를 끌어오지 않는다. 재구축이 그것을 먼저
+    올리고, 정리의 `stop`에는 넣지 않는다."""
+
+    infrastructure = _pinned_infrastructure()
+    assert infrastructure, "파생이 비면 아래 단언이 아무것도 재지 않는다"
+    harness = _forward_harness(monkeypatch, tmp_path)
+
+    harness.service.rebuild_pinned_runtime()
+
+    operations = harness.operations
+    infra_up = next(
+        index for index, operation in enumerate(operations)
+        if operation[0] == "up" and operation[-len(infrastructure):] == infrastructure
+    )
+    first_stop = next(index for index, operation in enumerate(operations) if operation[0] == "stop")
+    map_api_up = next(
+        index for index, operation in enumerate(operations)
+        if operation[0] == "up" and "kor-travel-map-api" in operation
+    )
+    assert infra_up < first_stop < map_api_up
+    assert operations[infra_up][:4] == ("up", "-d", "--no-deps", "--wait")
+    assert not any(
+        operation[0] == "stop" and set(infrastructure) & set(operation) for operation in operations
+    )
+
+
+@pytest.mark.parametrize("previous", [None, "committed"], ids=["full-path", "same-pair"])
+def test_a_failing_infrastructure_up_stops_nothing_and_writes_no_deploy_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, previous: str | None
+) -> None:
+    """Valkey가 healthy가 되지 못해도(잘못된 비밀번호 exit 64·포트 충돌·pull 실패) 떠 있던 Map·PinVi는 그대로다 —
+    infra `up`은 수렴·전체 경로 분기와 `in_progress` 기록 **앞**에 있다(적대 리뷰 2026-10-23 H1)."""
+
+    infrastructure = _pinned_infrastructure()
+    prior = _committed_status(_candidate_generation()) if previous else None
+    harness = _forward_harness(monkeypatch, tmp_path, previous=prior)
+    before = harness.status_path.read_bytes() if harness.status_path.exists() else None
+
+    def run_compose(arguments: list[str], *, transaction: object) -> dict[str, object]:
+        del transaction
+        harness.operations.append(tuple(arguments))
+        if arguments[0] == "up" and tuple(arguments[-len(infrastructure):]) == infrastructure:
+            raise DeploymentContractError("pinned runtime rebuild Compose up command failed (exit 1)")
+        return {"success": True, "stdout": ""}
+
+    monkeypatch.setattr(harness.service, "_run_pinned_runtime_rebuild_compose", run_compose)
+
+    with pytest.raises(DeploymentContractError, match="up command failed"):
+        harness.service.rebuild_pinned_runtime()
+
+    assert not any({"stop", "rm"} & set(operation[:3]) for operation in harness.operations)
+    assert not any(
+        operation[0] == "up" and "kor-travel-map-api" in operation for operation in harness.operations
+    )
+    after = harness.status_path.read_bytes() if harness.status_path.exists() else None
+    assert after == before
+    harness.mocks.reset.assert_not_called()
+
+def test_rebuild_three_capture_stages_request_same_pinned_scope(tmp_path, monkeypatch):
+    harness = _forward_harness(monkeypatch, tmp_path)
+    captures = []
+    def capture(**kwargs):
+        captures.append(kwargs)
+        return harness.transaction, None
+    monkeypatch.setattr(harness.service, "capture_transaction_unlocked", capture)
+    result = harness.service.rebuild_pinned_runtime()
+    assert result["outcome"] == "deployed"
+    assert len(captures) == 3
+    assert all(kwargs["pinned_runtime_scope"] is True for kwargs in captures)

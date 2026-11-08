@@ -6,7 +6,7 @@ pinset별 journal·phase·receipt 대신 전역 파일 하나에 세 상태만 �
   돈다 — v6 manifest·v8 journal은 읽지도 넘겨받지도 않는다.
 - ``in_progress``: 배포가 시작돼 무언가를 바꿨다. 다음 실행은 처음부터 다시 돈다 — 모든
   단계가 멱등이라 재개가 필요 없다.
-- ``committed``: 마지막 배포가 끝났다. 같은 pair를 다시 돌리면 빌드 없이 수렴만 한다.
+- ``committed``: 마지막 배포가 끝났다. 같은 pair·같은 build 입력이면 빌드 없이 수렴만 한다.
 
 ``databases``는 직전 committed 배포가 관측한 DB identity다(Map application·PinVi). 배포 시작 전에 라이브 DB가 이것과
 다르면(누가 지우고 다시 만들었다) 아무것도 바꾸기 전에 거부한다. 명시적 ``--restart``만 이

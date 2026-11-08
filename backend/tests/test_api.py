@@ -1024,6 +1024,7 @@ def test_get_targets():
         "kor-travel-concierge-mcp",
         "kor-travel-concierge-dagster-code-server",
         "kor-travel-concierge-ui",
+        "kor-travel-map-valkey",
         "kor-travel-map-api",
         "kor-travel-map-ui",
         "kor-travel-map-dagster-code-server",

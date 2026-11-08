@@ -32,6 +32,8 @@ _KNOWN_CONSUMERS: frozenset[tuple[str, str]] = frozenset(
         ("kor-travel-map-dagster", "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL"),
         ("kor-travel-map-dagster-daemon", "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL"),
         ("kor-travel-map-dagster-code-server", "KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL"),
+        ("kor-travel-map-api", "KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL"),  # 가격 추이 T4(Map ADR-114 결정 4)
+        ("kor-travel-map-dagster-code-server", "KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL"),  # Map ADR-114 2단계
         ("pinvi-dagster-code-server", "PINVI_KOR_TRAVEL_WEATHER_BASE_URL"),
         ("pinvi-api", "PINVI_KOR_TRAVEL_WEATHER_BASE_URL"),
         ("pinvi-api", "PINVI_KOR_TRAVEL_GEO_BASE_URL"),

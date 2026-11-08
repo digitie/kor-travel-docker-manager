@@ -15,6 +15,7 @@ import sys
 import zipfile
 from pathlib import Path
 
+import pytest
 import yaml
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -29,8 +30,8 @@ def test_vendor_whole_record_source_and_official_metadata() -> None:
     proof = json.loads((_VENDOR / "common-source.json").read_text())
     assert hashlib.sha256(_WHEEL.read_bytes()).hexdigest() == proof["wheel_sha256"]
     assert _WHEEL.stat().st_size == proof["wheel_bytes"]
-    assert proof["common"] == "ff849ea8447c6d2cca1ffa653cfcbe2b2ffa6b32"
-    assert proof["product"] == "ff849ea8447c6d2cca1ffa653cfcbe2b2ffa6b32"
+    assert proof["common"] == "b4f7f3dcb5f95c682b027e3886a603d5d02625d3"
+    assert proof["product"] == proof["common"]
     with zipfile.ZipFile(_WHEEL) as wheel:
         names = wheel.namelist()
         assert len(names) == len(set(names))
@@ -52,7 +53,7 @@ def test_vendor_whole_record_source_and_official_metadata() -> None:
                 checked += 1
             else:
                 assert name == info + "RECORD" and size == ""
-        assert checked == proof["record_rows_checked"] == 22
+        assert checked == proof["record_rows_checked"] == 24
         parser = configparser.ConfigParser()
         parser.read_string(wheel.read(info + "entry_points.txt").decode())
         assert parser["console_scripts"]["kor-travel-dagster-daemon"] == (
@@ -170,3 +171,62 @@ def test_webserver_uses_official_alias_after_the_unchanged_storage_guard() -> No
         "kor-travel-dagster-webserver", "kor-travel-dagster-daemon",
         "kor-travel-dagster-storage-migrate",
     )} == {web["image"]}
+
+
+def test_workspace_refresh_option_is_daemon_only_and_default_is_unoptimized() -> None:
+    services = yaml.safe_load((_ROOT / "docker-compose.yml").read_text())["services"]
+    key = "KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS"
+    assert [name for name, service in services.items()
+            if key in (service.get("environment") or {})] == ["kor-travel-dagster-daemon"]
+    # `-`는 미설정만 기본60으로 처리한다. 명시 빈 문자열을 `:-`로 숨기지 않는다.
+    assert services["kor-travel-dagster-daemon"]["environment"][key] == "${"+key+"-60}"
+
+
+@pytest.mark.parametrize("raw,expected", [(None, [60, 300]), ("60", [60, 300]),
+                                          ("180", [180, 420]), ("", None), ("240", None)])
+@pytest.mark.parametrize("exit_during_profile", [False, True])
+def test_vendored_workspace_profile_preserves_grace_and_restores_on_exit(
+    raw, expected, exit_during_profile,
+) -> None:
+    # CI는 Dagster를 설치하지 않는다. SDK 두 상수만 대역으로 주고 실제 wheel 원문을 실행한다.
+    # 실제 SDK/CLI/신호 통합은 Common44 검증과 소비자 격리 gate에서 별도로 확인한다.
+    script = """
+import json, os, sys, types
+sys.path.insert(0, sys.argv[1])
+from kortravelcommon.daemon_pool import _workspace_refresh_profile, DaemonPoolConfigurationError
+raw = json.loads(sys.argv[2])
+key = 'KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS'
+if raw is None:
+    os.environ.pop(key, None)
+else:
+    os.environ[key] = raw
+controller = types.SimpleNamespace(RELOAD_WORKSPACE_INTERVAL=60,
+                                  DEFAULT_WORKSPACE_FRESHNESS_TOLERANCE=300)
+package = types.ModuleType('dagster._daemon')
+package.controller = controller
+sys.modules['dagster'] = types.ModuleType('dagster')
+sys.modules['dagster._daemon'] = package
+seen = None
+try:
+    with _workspace_refresh_profile():
+        seen = [controller.RELOAD_WORKSPACE_INTERVAL,
+                controller.DEFAULT_WORKSPACE_FRESHNESS_TOLERANCE]
+        if sys.argv[3] == 'True':
+            raise SystemExit(7)
+except DaemonPoolConfigurationError:
+    assert seen is None
+except SystemExit as exc:
+    assert exc.code == 7
+assert controller.RELOAD_WORKSPACE_INTERVAL == 60
+assert controller.DEFAULT_WORKSPACE_FRESHNESS_TOLERANCE == 300
+print(json.dumps(seen))
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", script, str(_WHEEL), json.dumps(raw),
+         str(exit_during_profile)],
+        env={"PATH": os.defpath, "PYTHONDONTWRITEBYTECODE": "1"},
+        check=True, capture_output=True, text=True, timeout=15,
+    )
+    assert json.loads(result.stdout) == expected
+    if expected:
+        assert expected[1] - expected[0] == 240

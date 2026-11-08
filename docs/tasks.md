@@ -1,12 +1,67 @@
+## 2026-11-03 — 상시 서비스 로그 상한(ADR-61)
+
+- [x] compose `x-logging`과 렌더 모델 계약 테스트, 공용 PostgreSQL 허용 목록·driver 검사, 운영 절([prod-deployment §11](prod-deployment.md)).
+- [ ] 소유자가 정한 창에서 Manager를 설치한다. 설치 자체는 컨테이너를 바꾸지 않는다.
+- [ ] 공용 PostgreSQL을 계획 창에서 다시 만든다(shared-postgres-onboarding §6.1 C9, 손 명령 — production `ensure`는 거부된다). 그 전에는 UI 설정 변경/reset을 공용 PostgreSQL에 쓰지 않는다.
+- [x] 공용 plane drift 판정이 로그 설정을 본다(소유자 결정) — 설치 뒤 첫 재구축·`dagster-plane converge`가 webserver·daemon을 한 번 다시 만든다.
+- [ ] 공용 Dagster gateway를 다시 만든다(plane drift 경로 밖, 손 명령 또는 UI 재생성).
+- [ ] rustfs·prometheus·grafana·cadvisor·Concierge 넷(`activate-concierge`)의 재생성 창을 잡는다 — Manager 경로가 없는 넷은 손 명령.
+- [ ] odroid의 저장소 밖 compose(`/opt/kor-travel-odroid/compose.yml`·`compose-mon.yml` — T-OPS-01b 이관과 함께)와 transport 저장소 compose에 같은 정의를 넣는다.
+
+## 2026-10-30 — Geo 하위 적재의 공용 제어 평면 주소
+
+- [x] 실제 worker의 접속 누락을 재현하고 Compose·registry 소비자 선언과 기본/변경 포트 회귀를 보완했다. 관련 72개와 미러 환경 복구 뒤 기존 실패 32개, 전체 3591개·Ruff가 통과했다(39개 건너뜀).
+- [ ] CI·리뷰 뒤 병합한다. 병행 운영 작업 중 Manager 호스트 설치는 수행하지 않는다. 현재 Geo의 설정 보정과 향후 재생성용 정본 반영을 구분한다.
+
+## 2026-10-28 — 이슈 #568 현재 release 정본
+
+- [x] D1–D8 설계 결정과 staged/current·혼합 revision·G·DB rollback 경계를 문서화한다(ADR-60).
+- [x] 초기 adopt/show/verify/공유 project Compose 인자와 회귀·두 리뷰·CI를 수용했다. focused68·CI3,514P40S·local CLI10·n150 후보 UI36을 확인했다(운영 적용은 다음 항목).
+- [x] 운영의 현재 image·NVMe·구성을 재관측하고 재시작 없는 adopt 및 resolved image 비교를 수용했다. 세 서비스 adopt·verify healthy와 네 그룹 소유 이미지 13개 일치, 전후 14개 컨테이너·Manager env 보존을 확인했다. 앞선 전체 FAIL은 역사에 보존하며 전체 비이미지 구성 검증·후속 배포기 이관과 구분한다.
+- [x] 현재 release의 resolve/recreate 첫 제품 경로를 수용했다. 제품 `ea53818e`의 독립 두 리뷰·focused104·전체 Ruff·CI backend3,550P40S/frontend47·build와 실제 WSL Docker CLI14건(20.489초·소유 자원 정리)을 통과했다. 운영 적용은 대기하며 Transport R10 배포 중 호스트 설치·실행은 하지 않는다. 외부 배포기 이관 완료와 구분한다.
+- [ ] 앱 배포기·호스트 wrapper를 이관하고 health 후 current 갱신을 수용한다.
+- [ ] 조회/배포 경로 이관 뒤 base 기본값·옛 dagster-host 중복 선언 제거를 검증한다.
+
+[정본과 적용 단계](service-current-release.md)를 따른다. Transport 운영 배포는 병행 작업의 단일 담당을 존중하며 이 기능을 이유로 중복 배포하지 않는다.
+
 # TASKS — 활성 작업
 
+- [ ] **T-MGR-PINVI-USER-LIMIT — Pinvi #653 환경 전달**. 실제 Compose 렌더·독립 두 리뷰·CI 뒤 병합한다. 운영 적용은 Claude Code 최종 검증으로 남긴다. [계약](pinvi-user-rate-limit-delivery.md).
+
+- [ ] **T-MGR-HOST-INSTANCE — 외부 consumer 실제 적용 후속**. 제품559의 두 독립 리뷰·정확 CI·n150/Odroid 정상 설치·양 호스트 공개 TLS12개씩과 현재 Docker running19개씩의 공개 API 정합은 수용했다. Odroid의 PG18 호환 Manager `f368af3e` 공식 설치·공개 UI12도 수용했으며 n150은 동일 제품 `d1468213`를 유지했다([후속 운영 기록](reports/2026-10-28-manager-pg18-normal-install.md)). 남은 Transport139 등 서비스별 정본 show 소비와 별도 명시적 plane/code-server 적용은 각 운영 수용과 구분한다. 현재 plane·Weather job을 바꾸지 않은 설치와 구분한다. [운영 기록](reports/2026-10-27-manager559-two-host-normal-install.md), [계약](host-dagster-instance-config.md).
+
+
+- [ ] **T-MGR-STATUS-SNAPSHOT — 상태 조회 공유의 최신 main 후속**. 원533 제품 전체·불완전 inventory 재시도·연속변경 유한 실패 및 취소/복사 격리를 검증한다. 새 exact CI·독립 두 리뷰·실제 UI·CPU/RSS 수용은 후속이며 운영 설치는 별도다. [규약](container-status-snapshot.md).
+
+- [ ] **T-MGR-PINVI-ADMIN-FEATURE-READ — 전용 scope 배선**. raw 한 키→digest 파생·API 두 소비·기존 secret과 분리·마스킹/override·runtime 격리를 검증한다. 두 독립 리뷰·정확9f10 CI·격리 실제 후보 UI12판정은 통과했다. 공식 설치·새 공개 UI 뒤 최종 pair 직전에만 명시 provision·pair 배포한다. [범위](pinvi-admin-feature-read-provision.md).
+
+## 복원 리허설 timeout 후속
+
+- [x] 컨테이너 deadline·현재 생성 확인 scratch 강제 정리·DB/backend 부재 확인·원오류 보존의 최소 수정과 회귀.
+- [x] Root/T 두 독립 소스 리뷰와 c24d026 CI, 격리 PG의 inner/client timeout·다른 own DB 복원 생존·정확 수거 검증.
+- [ ] 최종 문서 정산 CI 후 별도 운영 설치·실제 Manager UI 확인.
+- 근거와 미확인 경계: [복원 리허설 timeout](restore-rehearsal-timeout.md).
 
 이 문서는 완료되지 않은 작업만 순서대로 한 줄씩 나열한다. lane, 담당자 구분,
 계층형 하위 작업과 완료 이력은 두지 않는다. 완료 이력은
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
-- [ ] **T-WEATHER-API-HEALTH — Weather API의 Common 순수 HTTP 생존 점검 채택**. 포트 정본·승인된90초 주기를 유지하며 Common HTTP/격리모드/12초/4회 소스를 최신main에 통합했다. 명목 실패 창은360초다. 소비 이미지의 CLI 확인 뒤 운영 적용·native health·live 및 동일 workload 실측을 마쳐야 완료다.
+- [ ] **T-MGR-PINVI-VWORLD — PinVi 지도 키 빌드 연결**. 정본 공개 키를 Web build/runtime ARG 소비와 맞추고 raw/resolved 검증·회귀를 추가한다. 소스 검증 뒤 두 독립 리뷰·CI·일반 설치·공식 pair rebuild·공개 지도 확인은 별도다. [범위](pinvi-vworld-build.md).
+
+- [ ] **T-MGR-HOST-COMPOSE-SCOPE — 선택 쌍 실제 재구축 수용**. 정본 host-local 구현·두 설치 모드 검증과 n150 웹·API·CLI 정상 갱신은 수용했다. 남은 것은 Map·PinVi 공식 pinned 재구축·배포 수용이며 Manager 공개 UI 결과와 구분한다. [규약](host-compose-scope.md)·[운영 기록](reports/2026-10-25-manager-normal-update-acceptance.md).
+
+- [ ] **T-MGR-DAGSTER-PROGRESS-RUNTIME — 공용 진행 로그 운영 수용**. 공용 INFO·기존 명시 Python logger·파생 digest와 실제 SDK/PG 회귀를 준비한다. 최종 CI·독립2리뷰·머지는 PR 정본을 확인한다. 사용자 지시로 배포는 대기하며 기존 InstanceRef 재적용과 정상 예약 실행의 실제 진행/저장은 일괄 배포 담당자가 확인한다. [규약](dagster-progress-logging.md).
+
+- [ ] **T-MGR-DAEMON-WORKSPACE — Common44 metadata 갱신 주기 선택**. wholewheel/hashlock/내용tag와 daemon 전용 기본60/명시180을 소비하며 원240초 실패 유예·heartbeat·sensor·CLI/신호를 보존한다. 관련41PASS/Compose8조건/실제 고정SDK 컨텍스트·종료원복 확인. 독립2리뷰·CI·ARM 공식 배포·CPU/RSS/신선도·브라우저 검증은 별도다. [규약](daemon-workspace-refresh-adoption.md).
+
+- [ ] **T-MGR-WEATHER-EXPORT-RUNTIME — Weather 승인 export 운영 경로**. API·code-server의 동일 false-default flag와 공유 RW named volume을 구현한다. 교차 runtime 경로/권한·NVMe Mountpoint 확인, 두 리뷰·CI·운영 배포/활성화와 Map 수용은 별도 검증한다. [규약](docker-management.md#73c-weather-승인-export-파일-저장소).
+
+- [ ] **T-MGR-MAP-VALKEY — Map Valkey 서비스(Map ADR-114 2단계, ADR-59)**. `kor-travel-map-valkey`(loopback `12704`·requirepass·noeviction 1 GB·RDB만·named volume)와 Map API·code-server의 `KOR_TRAVEL_MAP_VALKEY_URL`, 재구축의 target 소유 비-slot 서비스 선기동을 구현했다. 남은 것: PR CI·머지, n150 `.env`에 `KOR_TRAVEL_MAP_VALKEY_PASSWORD`(hex) 추가 → Manager 설치 → 다음 pinned 재구축(같은 pair 수렴)에서 Valkey 기동 확인. Map이 URL을 읽는 것은 Map ADR-114 3단계다.
+
+- [ ] **T-MGR-PINNED-GEO-READINESS**. Map/PinVi pinned rebuild에서 Geo를 로컬 Compose prerequisite로 요구하지 않고, active frozen Map API·Map UI BFF·Dagster code server·PinVi API origin을 각 consumer target의 R2 origin과 대조한다. 서로 다른 consumer host의 정상 origin 차이는 허용하고, `/v1/readyz` probe는 Manager host의 R2 origin으로 보낸다. retired `legacy-dagster` webserver·daemon은 검사 대상에서 제외한다. 전체 요청은 4초, 압축을 거부한 raw JSON 본문은 4 KiB로 제한한다. 독립 리뷰 2인·CI·n150 공식 Manager CLI 반영·공식 pinned rebuild·새 Map/PinVi live UI E2E 및 PR #1340 merge는 미완료다. DB와 기존 runtime은 실패 시 불변이어야 한다.
+- [ ] **T-WEATHER-API-HEALTH — Weather API의 Common 순수 HTTP 생존 점검 채택**. 포트 정본·승인된90초 주기를 유지하며 Common HTTP/격리모드/12초/4회 소스를 main `37bb360`에 통합했다. 집중457개와 Ruff 통과, 명목 실패 창은360초다. 운영 API의 동일 Common 설정은 읽기 관측으로 확인했으며 신규 배포로 세지 않는다. 최신 두 리뷰·CI·native health·공개 UI 정산은 배포 담당자의 최종 기록을 따른다.
+
 
 - [ ] **T-MGR-LOGOUT-READ — 로그아웃 폴링 재진입 차단**. 별도 PR531에 pending 읽기·WS 경계와 AbortSignal/POST 전 취소·성공 및 실패 세션 회복을 구현했다. 초기3RED·재로그인 P2와 원검증을 보존하고, 중복 진입 신규2RED→집중9PASS/frontend전체44PASS/type·lint·build/Ruff PASS. 버튼·빠른명령의 동기 단일진입과 인증확인 완료 뒤 재시도를 보강했다. 46/48 공개 UI 원문은 보존하며 Cookie 정책·하니스 기준은 바꾸지 않는다. 기존79d7의 독립2리뷰·CI는 완료했으며 최신main 문서 통합delta 검토·CI와 root 실제 새제품 UI는 후속이다. [규약](dashboard-ui.md#9-로그아웃-중-읽기와-소켓의-경계).
 
@@ -27,10 +82,10 @@
 - [ ] **T-GEO-DASHBOARD — Geo UI의 Dagster 공개 URL과 가벼운 HTTP 상태 점검 정합화**. API와 같은 공개 URL 변수를 UI runtime에 전달한다. UI 상태 점검은 core HTTP로 /login의 2xx만 확인하며 단일 4초 예산을 둔다. 기존 주기·포트·이미지·backend·수집 튜닝은 유지한다. 실제 운영 UI 설정 반영과 외부 Dagster dashboard E2E는 후속이며, 성공 전 완료로 표시하지 않는다.
 - [ ] **T-MGR-01d — geo 소스 bind 상시 추가(ADR-58)**. geo api/code-server volumes에 `${KOR_TRAVEL_GEO_SOURCE_DIR:-/home/digitie/kor-travel-geo-data/source}:/source:ro`(compose는 "변수가 비면 bind 없음"을 표현할 수 없다 — geo 런북의 별도 overlay는 R6 "compose 하나"와 충돌). 수용 기준: n150 `compose config` 차이 == ADR-58 결정 1 허용 diff ②(volume 1줄씩); 적재 프리플라이트는 소스 파일 수 > 0을 효과로 요구(geo T-GEO-02). 수정 파일: `docker-compose.yml`(geo api/cs volumes), `.env.example` 주석. 규모 S. 의존: 없음(01a와 병렬 가능).
 - [ ] **T-MGR-04r 잔여 — Prometheus alert rule**. `count(up{host})`·디스크·시계 rule은 [`docs/multi-host.md`](multi-host.md) §5 deferred(그 절이 정본). 규모 S.
-- [ ] **T-MGR-03r — n150 공용 PG 재생성으로 #496 값 적용(점검 창, 소유자 일정)**. #496의 PG 수치·이미지 env(`docker-compose.yml` `kor-travel-shared-postgres`의 `${KTDM_PG_*:-…}`)는 컨테이너 재생성 때만 반영된다. 절차: ① `~/preflight.sh` PASS ② Map 큐 정지(`DISABLED_FEATURE_LOAD_SCHEDULES` — active operation 0 확인) ③ `pg_settings` 확인 — `source`가 `command line`이 아닌 외부 설정(`ALTER SYSTEM`·`postgresql.auto.conf`)이 덮어쓰지 않을 것(2026-10-17 코디네이터 확인: 없음) ④ **허용 경로로 PG만 recreate** — n150은 rehearsal이라 `ensure`가 거부하므로 cAdvisor 때와 같이 global lock 아래 root compose: `sudo -n flock -n /run/lock/kor-travel-docker-manager/global-mutation.lock docker compose -p kor-travel-docker-manager --project-directory /opt/kor-travel-docker-manager --env-file /opt/kor-travel-docker-manager/.env -f /opt/kor-travel-docker-manager/docker-compose.yml up -d --no-deps kor-travel-shared-postgres`(먼저 같은 명령에 `--dry-run`으로 대상이 PG 하나인지 확인) ⑤ PG healthy 뒤 tenant health(Map·PinVi·concierge·weather·transport `/health`, 공용 Dagster plane) 확인 → Map 큐 재개. 수용 기준: 재생성 뒤 `SHOW shared_buffers`·`work_mem`·`maintenance_work_mem`·`effective_cache_size`·`random_page_cost`·`max_wal_size`·`max_parallel_workers`·`max_parallel_workers_per_gather`·`effective_io_concurrency`·`checkpoint_timeout`·`wal_compression`·`autovacuum_max_workers` 값이 compose 기본값과 같다. 규모 S(운영).
 - [ ] **T-MGR-06 — host 플립 PR ×3(transport → weather → geo; ADR-58 결정 13)**. 각 PR = `host: odroid` + 파생물 4종(`workspace.n150.yaml`에서 빠짐·`workspace.odroid.yaml`에 들어감, R2 기본값 `.13` — 그 target의 포트를 기본값에 가진 env **전부**(geo면 `:1590`·`:1735`·`:1827`·`:1934` 4곳; 하나만 바꾸면 01c 테스트가 빨강), Prometheus 타깃); `dagster.yaml` 불변. 적용은 `docs/prod-deployment.md` §9.2(전체 순서 4a/6a/8a — n150 재설치 → 옛 cs stop → `ensure dagster` → odroid 같은 sha 재설치 → `.env` digest 갱신 → validate → `ensure <target>`). 수용 기준: 파생물 테스트 전부 초록("n150에서 빠짐 ∧ odroid에 들어감"); 교차 호스트 간선 ∅; 같은 시각 run 두 호스트 0건. geo PR은 ADR-58 결정 13의 geo 플립 조건(anon 산식 ≤ 0.95 GiB 추천·swapfile·cgroup 효과·백업/drill off·weather 정상 상태; 절차 §9.2 전체 순서 8a) 통과 뒤에만. 수정 파일: `config/docker-targets.yml`, `config/dagster-shared/workspace.*.yaml`, `docker-compose.yml`(기본값), `config/prometheus/prometheus.yml`. 규모 S×3. 의존: 01a~05 머지·n150 설치 + odroid 초기화(§9.1) + 소유자 결정 §14-3·4·12·13. **선행 조건(2026-10-16, T-MGR-05)**: geo 플립 전에 odroid root `.env`의 `KTDM_DATA_SOURCE_DEVICE`와 geo가 쓰는 쓰기 bind env(`KOR_TRAVEL_GEO_BACKUP_DIR`, 공용 PG `KOR_TRAVEL_SHARED_PGDATA` 등)를 NVMe 아래로 맞춘다 — 아니면 `ensure geo`가 프리플라이트에서 거부된다. **선행 조건(2026-10-16, T-MGR-03 리뷰)**: geo 플립 전에 ① geo cs `pids_limit`(ADR-58 결정 8 ⅱ의 1024 — n150 렌더에 새 줄이 생겨 T-MGR-03에서 뺐다; 넣을지·형태를 정한다) ② odroid cgroup v1 **swap accounting 켜짐** 실측(T-OPS-01 단계 5 — 꺼져 있으면 `KTDM_GEO_CODE_SERVER_MEM_LIMIT`·`KTDM_PG_MEM_LIMIT`의 `memswap_limit`가 효과 없이 swap으로 샌다).
-- [ ] **T-MGR-07 — ADR-58 문서 잔여(ADR-58 proposed PR 뒤)**. `.env.example` 주석(코드 T에서 키와 함께); ADR-58 accepted 전환(01a~05 설치 뒤)과 각 문서의 "(계획)" 해제; `docs/journal.md`(774 KB — `decisions.md`와 같은 256 KB 근거)를 `decisions.md`와 같은 방식(기간 단위로 `docs/journal-archive-01.md`에 byte 그대로, 상단 "과거 기록 아카이브" 인덱스)으로 분리; `decisions.md`가 200 KB를 넘는 상태에서 다음 ADR을 더할 때 ADR-41~50 → `decisions-archive-02.md`(상단 규칙); 메모리 `odroid-standing-services`(보존 목록·Plex 정의 보관 위치)·`n150-standing-services` 갱신(해체 뒤). 수용 기준: 문서 lint 초록 + `test_normative_docs_cite_real_symbols` 초록 + 인용 file:line이 head에 존재 + 분리 전후 제목(항목) 집합 동일. 규모 S. **2026-10-16 journal 분리 완료**(`journal-archive-01~04.md`, 각 ≤ 200 KB, byte 재조립·제목 multiset 대조) — 남은 것: accepted 전환·"(계획)" 해제, decisions 분리(다음 ADR 때), 메모리 갱신. 의존: 01a~05 머지(accepted 전환 부분); journal 분리는 즉시 가능.
-- [ ] **docs — `docs/decisions.md` 분리(다음 ADR 전에)**. 2026-10-16 현재 247,393 B(에이전트 read 한도 256 KB). 다음 ADR을 더하는 PR은 먼저 ADR-41~50(파일 순서상 ADR-51 직전까지)을 `decisions-archive-02.md`로 옮긴다(파일 상단 "다음 분리 규칙" 그대로 — byte 그대로, 인덱스 표 행 추가, 분리 전후 `## ADR-` 제목 집합 대조). 규모 S.
+- [ ] **T-MGR-07 잔여 — 메모리 갱신**. 사용자 로컬 Claude 메모리 `odroid-standing-services`(보존 목록·Plex 정의 보관 위치)·
+  `n150-standing-services`를 geo·weather·transport의 odroid 이전 해체 상태에 맞춰 갱신한다(저장소 파일이 아니라
+  운영자 쪽 메모리라 이 저장소 PR 범위 밖 — 별도로 처리). 규모 S. 의존: 없음.
 - [ ] **T-OPS-01 — odroid 초기화 잔여(`docs/prod-deployment.md` §9.1, 저장소 밖)**. 상태는 §9.1 머리(완료/미완). 남은 순서(§9.1 0~11): n150 선행 실측(0) → 비밀번호 SSH off(3 — 시계 무관, 0 다음 바로 권장) → NTP 사이클 해소·동기 재검증(1: drop-in → 재부팅 2회 PASS) → 잔여 envelope(2: fio·sysbench·nvme·volume inspect·usershare·nmcli·`findmnt -no SOURCE /mnt/media`) → 디스크 B안(4: NVMe 트리·fstab bind·daemon.json 로그 회전·swapfile 4 GB) → compose v2·buildx 설치 + cgroup/memswap 효과·swap accounting 켜짐(5; swap 켠 뒤 — `memory.memsw.limit_in_bytes` 존재 ∧ 64m+swap64m 컨테이너에서 == `memory.limit_in_bytes`) → 폐기 parking-radar·Portainer만(6; Plex 정의 보관 선행, 볼륨 유지) → 방화벽 (가)(7) → Manager 설치·래퍼 스크립트 사본(§14-30)·`.env`·arch 실측(8~10) → **NTP ⑤ `After=time-sync.target` drop-in(11 — Manager 설치 뒤, 재부팅 2회 PASS 뒤)**. 체크리스트 §9.5. 중단선 §14-16. 규모 M. 의존: 0~7은 없음(지금 가능); **8~11은 T-MGR-01a~05 머지·n150 설치 뒤**(§9.2 전체 순서 1 뒤 — head Manager를 설치하면 `KTDM_HOST`가 무시된 채 validate가 통과한다). 소유자 결정 §14-2·5·20·22·23·25·26·27·28·29·30.
 - [ ] **T-OPS-01b — odroid 임시 모니터링 스택의 cAdvisor 회수(odroid Manager 설치 전 선행)**. 2026-10-14 소유자 지시로 저장소 밖 `/opt/kor-travel-odroid/compose-mon.yml`(project `kor-travel-odroid-monitoring`: cAdvisor `12103`·node_exporter `12106`, host network)을 띄웠다. 2026-10-16(T-MGR-04) node_exporter는 Manager compose에 들어가지 않고 registry `node` target(이 stack)으로 등록됐다 — 그래서 **회수 대상은 cAdvisor만**이다(Manager `cadv`가 `host: all`이라 odroid Manager 설치 때 같은 이름·포트를 쓴다). 절차: odroid Manager 설치(T-OPS-01 단계 8) **전에** `docker compose -p kor-travel-odroid-monitoring -f /opt/kor-travel-odroid/compose-mon.yml rm -sf cadvisor` 후 compose-mon.yml에서 cadvisor 블록만 지운다(**파일은 유지** — node-exporter의 정의다; project 전체 `down`·파일 삭제는 등록된 `node` target을 죽인다). 수용 기준: 단계 8 직전 `ss -ltnp`에 12103 리스너 0이고 12106은 여전히 node-exporter, 설치 뒤 12103 리스너가 Manager cAdvisor 컨테이너. 규모 S. **2026-10-17 추가(T-MGR-NH NH-5)**: registry 좌표가 호스트 이름 없는 `kor-travel-host-monitoring`·`/opt/kor-travel-host-monitoring`으로 바뀌었다 — 같은 창에서 cadvisor 회수 뒤 **모니터링 stack 파일만** 자기 디렉터리로 옮겨 새 project 이름으로 올린다. **`/opt/kor-travel-odroid` 디렉터리 자체는 옮기지도 지우지도 않는다** — `kor-travel-odroid` project(geo·weather)의 `compose.yml`·`.env`, transport override 2개(transport 컨테이너 6개의 config_files), `transport.env`·`geo-ui.env`·`config/`·`scripts/`·`dagster-host/`, `ktm-thermal-guard.service`의 `thermal-guard.sh`, `geo-restore.sh`·`bringup.sh`·`build-*.sh`가 거기 산다(2026-10-17 리뷰어 읽기 전용 실측). 절차: `docker compose -p kor-travel-odroid-monitoring -f /opt/kor-travel-odroid/compose-mon.yml down`(이 project만) → `sudo mkdir /opt/kor-travel-host-monitoring && sudo mv /opt/kor-travel-odroid/compose-mon.yml /opt/kor-travel-host-monitoring/` → `docker compose -p kor-travel-host-monitoring -f /opt/kor-travel-host-monitoring/compose-mon.yml up -d`(node_exporter 수 초 중단 — 중앙 Prometheus `up` 한 번 0). `compose-mon.yml`은 상대경로·`env_file`·`${…}` 보간이 없다(bind는 전부 절대경로 `/`·`/sys`·`/var/run/docker.sock`·`/var/lib/docker/`·`/dev/disk/` — 2026-10-17 읽기 전용 확인) — 그래서 project 디렉터리가 바뀌어도(옛 디렉터리의 `.env`를 더는 읽지 않아도) 렌더가 같다. 수용 기준에 더한다: 12106 리스너 컨테이너의 `com.docker.compose.project` 라벨이 `kor-travel-host-monitoring`; odroid `targets validate --check-coordinates`가 `node` 좌표를 통과; **`kor-travel-odroid`·`kor-travel-transport` project 컨테이너(ID·StartedAt)와 `ktm-thermal-guard.service`는 변하지 않는다**; `/opt/kor-travel-odroid`의 나머지 파일은 그대로.
 - [ ] **T-OPS-02 — 배포 순서 실행(`docs/prod-deployment.md` §9.2 전체 순서 1~10)**. 규모 L. 의존: T-MGR-06, T-OPS-01, 소유자 결정 §14-3·4·6·7·8·10·19·21.

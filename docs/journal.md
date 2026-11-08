@@ -1,5 +1,434 @@
+## 2026-11-09 — PR #488의 최신 main 통합과 점검 설정 보존
+
+- 최신 main `37bb360`을 정상 merge로 통합했다. 충돌한 journal·tasks는 양쪽 이력을 보존했으며 공용 Dagster 로그 상한·호스트 구성·Valkey 등 상류 변경을 유지했다.
+- 전체 YAML 모델을 대조해 Weather API의 `command`와 `healthcheck` 외 차이가 없음을 확인했다. listen·publish·probe 포트의 공통 유도와 `python -I`, HTTP 3초·Docker 12초·90초 주기·4회 계약을 유지한다. Common CLI를 설치하는 기능은 추가하지 않는다.
+- 최신 통합의 집중 회귀 457개가 234.08초에 통과했고, 전체 Ruff 0.16.4와 PR 범위 민감 파일·일반 비밀 패턴·사설 endpoint 검사에도 통과했다. 실제 후보 source import를 확인했으며 과거 후보 결과를 합산하지 않는다. 최신 CI와 두 독립 리뷰는 해당 HEAD에서 별도로 확인한다.
+- 같은 날 배포 담당자의 읽기 전용 관측에서 Weather API는 이미 Common HTTP·격리 모드·90초·12초·4회 설정으로 실행 중이었다. 이번 소스 통합을 신규 API 배포로 기록하지 않는다. 최종 이미지·native health·공개 UI 검증과 code-server PR #486의 운영 반영은 배포 담당자가 별도로 정산한다.
+
+## 2026-11-07 — Map Valkey RDB만 + 적재 쓰기 timeout 10초(ADR-59 3 개정)
+
+- n150 sda flush 포화(PSI io full avg60 30%대)의 한 원인이 Map Valkey였다: AOF `everysec` + `save 60 10000`(weather 세대
+  교체가 매번 1만 키를 넘겨 1분마다 스냅샷)이 사흘에 53 GB를 썼다(docker stats BlockIO, rdb_saves 788·aof_rewrites 79).
+  Map 적재가 `세대 쓰기 실패: TimeoutError`(2초)로 죽었다.
+- `appendonly no`, `save 900 1`(하루 최대 96회). Map ADR-114가 RDB만으로 충분하다고 했고 데이터는 원천에서 다시 받는다. code-server에만
+  socket timeout 10초, API는 기본 2초. 테스트를 먼저 빨갛게 두었다(main compose로 2건 실패).
+
+## 2026-11-05 — Pinvi #653 사용자별 요청 상한 설정 전달
+
+- Manager 소유 pinvi-api 환경에 JSON 설정을 전달한다. 미설정·빈 값 기본은 {}이며 인증·상한 검증은 Pinvi 책임이다. 실제 UUID·운영 값은 저장하지 않는다.
+- 회귀 3건이 바인딩 누락으로 실패한 것을 먼저 확인했다. WSL Compose config 렌더와 독립 두 리뷰·CI 뒤 병합하며, 운영 설치·재시작·기존 override 수정은 수행하지 않는다.
+
+## 2026-11-03 — 공용 Dagster plane drift 판정이 로그 설정을 본다(ADR-61 후속)
+
+- 소유자 결정: #580 뒤 공용 webserver·daemon이 재구축·`dagster-plane converge`로는 상한을 받지 못했다(n150 daemon 로그 903 MB,
+  읽기 전용 실측). `_shared_plane_drift`가 render의 `logging`과 컨테이너 `HostConfig.LogConfig`를 대조하게 했다
+  (`_plane_log_config_drift`) — render가 `logging`을 말할 때만, driver를 말하면 driver도, options는 키·값 전부. 이유에는 driver
+  이름과 다른 option 이름만 싣는다(option 값에는 주소·토큰이 올 수 있다). 서비스 이름 없음.
+- 테스트를 먼저 빨갛게 두었다(n150 5건 실패): dry-run 보고·converge 1회 재생성 뒤 무연산·driver 차이·render에 logging이 없을 때
+  무시·재구축 경로·inspect 파싱. 컨테이너를 흉내 내는 두 대역(converge·rebuild 하네스)은 render의 `logging`으로 만든 LogConfig를
+  싣도록 고쳤다 — 안 고치면 대역이 계약 변경을 가린다.
+- 효과·중단 시간·preflight·odroid 주의는 `docs/prod-deployment.md` §11. gateway는 이 경로 밖이라 그대로다(4 KB).
+- 적대 리뷰(HIGH 없음, MED 1·LOW 3·NIT 2) 반영: option 대조를 render 쪽 한 방향으로 바꿨다(Docker가 daemon `log-opts`·log
+  cache 기본값을 합쳐 넣으면 양방향 대조는 다시 만들어도 drift가 남아 재구축마다 plane을 다시 만든다). 로그 설정을 읽을 수
+  없거나 모양이 틀리면 재생성 대신 거부한다. 멈춘 daemon + 로그만 옛것 사례, 문서의 "함께"(동시 재생성)·converge 기다림 약 7.5분.
+
+## 2026-11-03 — 상시 서비스 json-file 로그 상한(ADR-61)
+
+- 읽기 전용 감사: n150·odroid의 운영 컨테이너가 모두 `json-file` driver를 상한 없이 쓰고 두 호스트 `daemon.json`에 기본값이
+  없다(n150 공용 Dagster daemon 로그 887 MB). 소유자 선택대로 상한은 `daemon.json`(Docker 재시작 필요)이 아니라 compose에 둔다.
+- `docker-compose.yml`에 `x-logging: &default-logging`(`json-file`, `max-size` 50m, `max-file` 5) 한 자리를 두고, restart 정책이
+  `unless-stopped`인 서비스 35개(꺼진 profile 포함)가 `logging: *default-logging`을 받는다. one-shot 12개는 그대로다. 값은 env로
+  열지 않았다(쓰는 곳이 없다 — ADR-50, Simplicity First). 편집 전후 문서를 중복 키 거부 로더로 키 단위 대조해 `logging` 외 변경이
+  없음을 확인했다(추가 50줄, 삭제 0).
+- 테스트를 먼저 빨갛게 두었다: `test_compose_log_limits.py`는 restart 정책으로 상시 서비스를 파생해 원문 파싱과 실제
+  `docker compose config`(모든 profile) 두 층에서 상한과 단일 정책을 단언한다(서비스 이름 없음). 수정 전 n150에서 3건 실패.
+- 공용 PostgreSQL 허용 목록에 `logging`을 더했고(없으면 C6c가 정본 compose를 거부한다), driver는 `json-file`만 받는다 — 원격
+  driver가 서버 출력을 호스트 밖으로 보내지 못하게 한다(새 실패 모드: 다른 driver가 필요하면 그 검사를 넓혀야 한다).
+- ADR-54 `own` 지문 픽스처는 바뀌지 않았다. 지문은 서비스 이름·env·명령 argv·C6c 표로 만들고 서비스 본문을 보지 않는다.
+- 효과(설치는 compose `up`을 하지 않는다): 같은 pair 수렴도 한 번은 Valkey·Map/PinVi runtime을 다시 만든다. production에서
+  `ensure`는 거부되므로 공용 PostgreSQL을 다시 만드는 Manager 경로는 없다 — 계획 창의 손 명령(UI 설정 변경/reset은
+  `--force-recreate`라 닿지만 CHECKPOINT가 없어 쓰지 않는다). 공용 Dagster plane의 drift 판정은 logging을 보지 않아
+  재구축·converge가 plane을 다시 만들지 않는다(바꾸지 않고 소유자 결정으로 남김; cutover 스크립트는 부수 효과로 다시 만든다).
+  rustfs·모니터링 셋·Concierge는 별도 창. odroid 컨테이너는 이 compose를 쓰지 않는다 — 저장소 밖 `/opt/kor-travel-odroid`
+  compose와 transport 저장소에 같은 정의가 필요하다. 자세히는 `docs/prod-deployment.md` §11.
+- 적대 리뷰(HIGH 없음, MED 2·LOW 4·NIT 2)를 반영했다: production `ensure` 거부를 문서에 바로잡고 cutover 스크립트·UI 재생성
+  경로와 경로 없는 컨테이너 목록을 §11에 더했다. 테스트의 상시 판정을 `on-failure`·`deploy.restart_policy`까지 넓히고(빨간
+  대조군 포함), PostgreSQL `logging` 모양(빈 매핑·driver 생략·문자열·`local`) 거부 사례를 더했다. odroid 모니터링 좌표는 실측
+  (`kor-travel-odroid-monitoring`)과 registry(`kor-travel-host-monitoring`, T-OPS-01b 뒤)가 달라 둘 다 적었다.
+
+## 2026-11-02 — 1회성 legacy override 이관 명령(stage/retire) 제거
+
+- 소유자 지시로 `ktdctl compose-boundary stage-legacy-override`·`retire-legacy-override`와 그 코드(override·Concierge
+  source `.env` snapshot, root `.env` 이관, archive, Geo backup 값 이관, `_GEO_SERVICES`, 호출자가 없어진
+  `c6c_deployment.ensure_c6c_state_directory`와 그 private helper)를 지웠다. 이관은 2026-08-26
+  n150에서 한 번 끝났고(C6c state의 `legacy-compose-override/`에 archive 하나, pending 없음 — 읽기 전용 확인) 그 뒤로
+  쓴 적이 없다.
+- 남은 `compose-boundary activate-concierge`는 배포 뒤 재생성과 Concierge 운영 rollback(`.env` 이미지 변수를 직전
+  이미지로 바꾼 뒤 실행)이 쓰는 경로라 그대로 둔다. 모듈은 `services/concierge_activation.py`(오류
+  `ConciergeActivationError`)로 옮겼고 동작은 같다 — root·고정 project root·G lock·projection·raw/resolved C6c
+  검증·네 서비스 `--no-deps --force-recreate --no-build`. 바뀐 것: (1) 없어진 pending stage 검사를 뺐다, (2) lock 안에서
+  root `.env` 모드를 다시 확인한다, (3) lock 획득 실패만 "cannot acquire the Manager mutation lock"으로 부르고 안쪽
+  계약 위반은 따로 부른다(종전에는 안쪽 `DeploymentContractError`도 lock 경합으로 보고됐다).
+- 테스트는 activation만 남기고(재생성 서비스 집합·projection·C6c drift·API auth 하향·재생성 실패·`.env` 모드와 lock 안
+  재검사·안쪽 계약 오류의 별도 보고·lock 경합·root 경계) CLI가 두 명령을 더 이상 받지 않음을 단언한다. 적대 리뷰(HIGH/MED 없음)의
+  LOW 다섯(죽은 helper, 변경 (2)·(3) 테스트 공백, 낡은 문서 네 곳, docstring 목록)을 반영했다. ADR-54 `own` 지문에서는 `geo_override_services`
+  항목만 빠졌다(의도한 변경).
+
+## 2026-11-02 — 옛 Concierge APScheduler(`legacy-scheduler` profile) 제거
+
+- 소유자 지시("concierge 레거시는 모두 삭제")로 compose의 `kor-travel-concierge-scheduler`(profile `legacy-scheduler`, `ktc.cli scheduler`)와 그 registry container 항목·`unowned_services` 예외·`.env.example`의 `KOR_TRAVEL_CONCIERGE_SCHEDULER_{IMAGE,CONTAINER}`를 지웠다. ADR-55 이후 Concierge 스케줄은 공용 Dagster code location(`ktc.dagster.definitions`) 하나가 갖고, 그 서비스는 기본 runtime·어느 target에도 없는 rollback 전용이었다. n150 컨테이너는 2026-10-06부터 멈춰 있었고 root `.env`에는 그 키가 없다.
+- 테스트는 서비스 이름 대신 효과(`ktc.cli scheduler` 명령·`legacy-scheduler` profile)가 compose 어디에도 없음을 단언한다. ADR-54 `own` 지문 픽스처에서는 그 서비스의 `c6c_describe` 한 줄과 `mutation_parse_up` 항목만 빠졌다(의도한 변경).
+- 남은 Concierge 롤백 경로는 이전 이미지로의 `compose-boundary activate-concierge`(API·MCP·Dagster code server·UI 재생성)다.
+- 적대 리뷰가 찾은 같은 뜻의 낡은 문장(docker-management·dev-environment·prod-deployment·multi-host·ADR-56·`.env.example` 주석·테스트 docstring)도 고쳤다. **남은 것(Concierge 저장소)**: `docs/dagster-adoption.md`의 rollback 절은 `scheduler-backend --activate legacy` 뒤 legacy profile을 띄우라고 한다 — 그 profile이 없으니 따라 하면 스케줄 실행자가 없는 상태가 된다. Concierge PR로 "이전 이미지 재활성화"로 바꿔야 한다.
+- n150 정리(같은 날): 정지 컨테이너 `kor-travel-concierge-scheduler-latest` 삭제, 실행·`.env`·T-207 롤백(`cccommon_rollback.sh`)이 쓰지 않는 Concierge 이미지 16개 태그 삭제, 10월 cutover·rehearsal 증거 디렉터리 삭제.
+
+## 2026-11-02 — 같은 pair 재구축이 build arg 변경을 반영하지 않던 문제
+
+- VWorld 키 교체에서 root `.env`의 `NEXT_PUBLIC_VWORLD_API_KEY`(Map UI·PinVi web의 build arg)를 바꾸고 같은 pair를 다시 돌렸지만 UI 이미지가 바뀌지 않았다. 후보 태그 `pinned-runtime-candidate-v6/<svc>:<pinset>`는 소스 revision(pinset)에만 묶여 있어 태그가 있으면 빌드를 건너뛰었다. 운영자가 UI 후보 태그를 손으로 지운 뒤에야 반영됐다.
+- Manager가 명시 build로 내보내는 Compose 문서에서 빌드 대상 이미지에 그 서비스의 resolved `build` 절(context·dockerfile·target·보간이 풀린 args) digest를 label `io.kor-travel-docker-manager.compose-build-sha256`로 싣는다. 재구축은 후보 태그가 있고 그 이미지의 label이 frozen render의 build 절 digest와 같은 서비스만 재사용하고, 다른 서비스만 하나씩 다시 빌드한다. 빌드 뒤에도 label이 맞지 않으면 그 이미지로 배포하지 않고 멈춘다.
+- 서비스 이름·build arg 이름을 코드에 두지 않는다. render에서 파생하므로 compose에 build arg를 더해도 따로 등록할 것이 없다. Map API·Dagster를 만드는 직접 builder는 소스와 revision build arg만 입력이라 바꾸지 않았다.
+- label 이전에 빌드된 후보 이미지는 입력을 말하지 않으므로, 설치 후 첫 재구축은 compose가 빌드하는 네 slot을 한 번 다시 빌드한다. 이미지 ID가 바뀌므로 같은 pair라도 그 한 번은 수렴이 아니라 전체 경로(마이그레이션 전진)를 탄다.
+
+## 2026-10-30 — Geo 재구축 worker의 공용 Dagster 접속 누락 복구
+
+- 실제 Geo 원천 재구축에서 파일 준비 뒤 하위 `full_load_batch` 제출이 연결 오류로 실패했다. API에는 공용 제어 평면 주소가 있지만 코드 서버는 환경변수가 없어 퇴역한 개별 기본 주소를 사용했다. 원천 적재는 실행되지 않았으며 실패한 배치의 7개 자식은 모두 취소됐다.
+- Compose의 기존 API 접속 주소를 YAML 앵커로 재사용해 코드 서버에도 명시하고, registry의 Geo 소비자 선언에도 코드 서버의 `KTG_DAGSTER_URL: internal`을 추가했다. 기본 포트와 사용자 지정 공용 포트 두 경우를 기존 파생 계약 테스트에 추가해 수정 전 실패·수정 후 통과를 확인했다. 관련 모듈 72개가 통과했다.
+- 운영은 이미지·컨테이너를 유지한 채 worker가 읽는 보호된 로컬 설정에 API의 유효 주소만 보정했다. 같은 worker 사용자와 설정 경로에서 연결 실패를 재현한 뒤 공용 Dagster 버전과 하위 작업 정의 조회 성공을 확인했다. 공유 제어 평면·DB·객체 저장소와 Manager 호스트는 재시작하지 않았다. 정식 구성 적용은 다음 Manager 배포와 구분한다.
+- 기존 고정 worktree에 다른 작업의 변경이 있어 전용 Linux worktree를 만들었다. 최초 테스트 미러의 NTFS 권한과 Git 메타데이터 누락으로 발생한 32개 검증 실패는 제품 코드를 바꾸지 않고 미러를 바로잡아 모두 통과했다. 전체 재검증은 3591개 통과·39개 건너뜀으로 끝났고 Ruff도 통과했다. Linux ext4의 Python 3.14에서 수행했으며 CI의 Python 3.11 검증은 별도로 확인한다.
+
+## 2026-10-28 — 현재 release resolve·정상 재생성 제품·로컬 검증
+
+- 기존 compose-args 출력은 유지하고 root·G 아래 현재 manifest·공유 overlay로 실제 구성을 확인하는 resolve와, 같은 현재 이미지로 선택 그룹 runtime만 재생성하는 recreate를 추가한다. Docker 생성자 전에 G를 잡고 drift·불건강은 변경 전에 거절한다.
+- recreate는 --confirm과 1~600초 대기 상한(기본 120초)을 요구한다. 검증한 resolved JSON을 stdin으로 고정해 파일·환경 재해석 차이를 막고 one-shot·DB·공용 plane·다른 그룹·current 갱신·자동 rollback을 실행 범위에 넣지 않는다. 앱 구성에는 기존 최소 환경·DOCKER_*·앱 env 파일만 쓰며 원문 구성·환경 출력 없이 기존 secret_scrub로 오류를 가린다.
+- 제품 `ea53818e`는 독립 리뷰의 G descriptor 수명·실패 원인 소실 두 지적을 수정해 두 리뷰를 통과했고 focused104·전체 Ruff가 통과했다. 실제 프로세스의 SIGINT·SIGTERM·SIGKILL 회귀 세 건을 운영 Docker 강제 종료 실측으로 확대하지 않는다.
+- 실제 WSL Docker CLI14건이 20.489초에 통과했다. 선택 runtime의 CID·시작 시각 변경과 동일 이미지, sibling·one-shot·current/metadata 보존, 환경값 달러 literal·Manager 오염 무효, drift·G 경합 거절을 확인했다. build·pull·원격 접속0이며 소유 자원은 모두 정리하고 정상 G는 유지했다. `manager573-local-cli-summary-r1.json`과 대응 proof는 로컬 감사 참고 파일이며 운영 검증 근거가 아니다.
+- CI `40674834332`는 제품 `ea53818e`에서 backend 3,550통과·40skip(412.88초), frontend 타입·린트·47테스트·build를 모두 통과했다. Transport R10 배포 작업이 G를 보유해 호스트에는 설치·실행하지 않았다. 공개 API의 production ensure 금지와 external SDK 제어 예외를 유지하며 모든 API 직렬화나 외부 배포기·wrapper 이관 완료를 주장하지 않는다. 아래 초기 adopt·이미지 ID 비교와 원 실패 이력은 보존한다.
+
+## 2026-10-28 — 현재 release 운영 초기 등록과 소유 이미지 ID 비교 수용
+
+- 세 서비스 초기 등록 뒤 공식 show·compose-args와 실제 Compose config로 Geo main·Weather main·Transport core/admin 네 그룹을 대조했다. 17:30:48–17:32:14 KST, 85.917초·exit 0/PASS이며 네 config의 exit는 모두 0이고 stderr는 비어 있었다.
+- 소유 역할 13개(runtime 11·one-shot 2)의 resolved 로컬 이미지·manifest·실행 이미지가 해당 역할 기준으로 모두 일치했다. one-shot은 실행을 요구하지 않고 로컬 이미지 존재·ID만 대조했다. 전후 14개 컨테이너와 Manager env hash가 같았다. 검증은 소유 이미지 ID에 한정하며 전체 비이미지 구성 동등성은 확인하지 않았다.
+- `manager568-resolved-config-actual-r1.json`과 앞선 `manager568-initial-adopt-actual-r2.json`은 로컬 감사 참고 파일이며 저장소의 운영 로그나 공개 증거 링크가 아니다. 초기 실행의 G 경합 실패와 마지막 admin compose-args timeout에 따른 전체 FAIL은 아래 역사에 보존한다.
+- Manager 설치본·이미지·DB·schedule은 바꾸지 않았고 source artifact와 감사 참고 파일은 보존했다. OCI 미확정 source_sha null과 Transport 4d 실행을 유지하며 3f 배포 완료를 주장하지 않는다. 운영 초기 등록·소유 이미지 ID 대조만 수용하고 wrapper/배포기 이관·base 정리는 미완으로 남긴다.
+
+## 2026-10-28 — 현재 release 세 서비스 초기 등록과 후속 검증 대기
+
+- Geo·Weather·Transport의 각 current를 발행했고 공식 verify는 세 서비스 모두 healthy였다. root 소유 NVMe source artifact의 CLI 소스 `182cbfd`를 사용했으며 Manager 설치본은 바꾸지 않았다.
+- 두 번째 실행은 마지막 `compose-args:transport:admin`에서 전체 105초 deadline에 도달해 `TimeoutExpired`로 끝났고, 113.438초·전체 FAIL로 기록했다. 세 초기 등록의 성공과 전체 실행의 실패를 구분하며, 첫 G 경합 FAIL도 아래 역사에 보존한다.
+- 전후 14개 컨테이너의 CID·image·시작 시각·running과 Manager env hash가 같았다. 이미지 교체·DB·schedule 변경은 없으며, 세 manifest의 공통 source_sha는 OCI revision을 확정하지 못해 null로 기록했다. Transport의 실행은 4d 그대로이며 3f 배포 완료를 뜻하지 않는다.
+- `manager568-initial-adopt-actual-r2.json`은 로컬 감사 참고 파일이며 저장소의 운영 로그나 공개 증거 링크가 아니다. 실제 resolved image 비교는 아직 수용하지 않았고 wrapper/배포기 이관·base 정리도 미완으로 남긴다.
+
+## 2026-10-28 — 현재 release 코드 수용과 운영 초기 등록 대기
+
+- PR #569와 Geo 운영 Compose 이름 보정 PR #570을 병합했고, 두 독립 리뷰와 각 PR의 CI 성공을 수용했다. CLI 구현·검증 수용과 운영 설치·초기 등록·후속 wrapper 이관은 각각 구분한다.
+- 운영 초기 등록의 첫 실제 시도는 `acquire-existing-G`에서 `ManagerMutationActiveError`로 실패했다. Docker 생성·source/current 파일 쓰기 전에 멈췄다. 경합 중인 Transport DB 백업·복원 작업을 존중하며 잠금을 강제로 풀지 않고 대기한다.
+- `manager568-initial-adopt-actual-r1.json`은 이 시도의 로컬 감사 참고 파일이며 저장소에 포함한 운영 로그나 공개 증거 링크가 아니다. 운영 adopt·resolved image 비교·wrapper/배포기 이관은 계속 미완이다. 아래 후보 검증과 과거 기록은 보존한다.
+
+## 2026-10-28 — 현재 release Geo 운영 Compose 이름 보정
+
+- PR #569 이후 초기 등록 전 읽기 대조에서 Geo 코드서버의 실제 Compose 이름이 geo-dagster-code-server임을 확인했다. release catalog와 역할 완전성 회귀를 운영 경계에 맞췄다. 기존 lifecycle 선언은 바꾸지 않는다.
+- Geo/Weather 실제 label·호스트 base 서비스 이름 및 Transport의 core/admin·활성 migrate/legacy 구분을 재확인했다. 아직 current 파일 발행·runtime 재생성·schedule 변경은 하지 않았다.
+
+## 2026-10-28 — 이슈 #568 현재 release 표식 설계·초기 등록
+
+- D1–D8을 ADR-60과 기능 레퍼런스로 결정했다. 기존 G와 DB 전진 배포를 보존하고, mixed/unknown source를 표현한다.
+- 현재 runtime ID를 관측하는 adopt/read/verify 및 catalog 기반 CLI·공유 project overlay 인자 생성을 추가한다. runtime 변경 명령은 실행하지 않는다.
+- 제품51742949의 독립 리뷰2·focused68·전체CI backend3,514P40S/frontend47 및 build·local Docker CLI10·n150 후보 UI PC18/mobile18을 수용했다. FIFO 지적은 실제 FIFO 회귀로 닫았다.
+- 첫 UI fixture의 NOT_RUN과 동시 편집 중 로컬 전체 pytest 1실패 원장은 보존했다. 운영 초기 등록·wrapper 이관은 미완이며 후보/fixture 결과를 운영 성공으로 바꾸지 않는다.
+
+## 2026-10-28 — Odroid Manager PG18 호환 설치·공개 UI 수용
+
+- 공식 전체 설치기로 Odroid Manager를 `aeb2d34c`에서 `f368af3e`로 갱신했다. 설치기 221.815초·exit 0, 실제 소스 436개·새 backend·상태 확인 API 200을 확인했다. n150은 `d1468213`와 제품이 같아 재설치하지 않았다.
+- 설치 후 `targets validate` 25초 timeout으로 원 검사기 전체 결과가 실패한 사실을 보존한다. 공식 설치기의 전환 전 검사와 이후 Transport 정본 stage의 필수 60초 검사 성공은 별도 근거다. 40.166초는 후속 stage 전체 시간이다.
+- 읽기 전용 검사에서 기존 Docker 컨테이너 60개(중지 상태 포함)·실제 plane 두 개·정본 show·소스·wheel을 보존했다. 환경파일·산출물의 설치 전 지문이 RAM에만 있었던 한계와 native 이전 환경파일 동일성·동일 frontend unit/PID 범위를 구분한다.
+- 공개 TLS 자산 17개와 UI 12개가 90.696초에 통과했다. 같은 브라우저의 정본 scope 실행 행 19개가 Docker의 이름/CID/상태와 같고 수치가 유한함을 확인했다. 인증 각 한 번·서버 세션 철회·socket 종료·소유 프로세스와 프로필 정리까지 수용했다.
+- PG 업그레이드·plane 재생성·다른 서비스 이미지 변경이나 수집 성능 측정은 하지 않았다. 자세한 실패 이력·원장·관측 한계는 [운영 기록](reports/2026-10-28-manager-pg18-normal-install.md)을 따른다. 아래 일지 원문은 보존한다.
+
+## 2026-10-27 — Compose build context를 운영 source 디렉터리에서 떼어 낸다
+
+- 원인: Concierge T-207 배포(concierge PR #263 기록)에서 owner-only(700/600) `KOR_TRAVEL_CONCIERGE_REPO_DIR`를
+  그대로 context로 빌드한 code server가 비-root `USER`로 `No module named 'ktc.dagster'`에 실패했다. COPY가 mode를
+  보존한다. 운영 `*_REPO_DIR`은 git checkout이 아닌 동기화 사본이라(n150 concierge·map에 `.git` 없음) Manager가
+  archive할 commit을 알 수 없다 — 그래서 revision 결박 대신 context 사본의 mode를 git archive와 같게 정규화한다.
+- 변경: `ComposeService._run_unlocked`가 Compose에 건네는 문서에서 명시 build 대상의 local context를 state root
+  아래 정규화 사본(`.dockerignore`는 moby patternmatcher 규칙, Dockerfile·ignore 파일은 항상 남겨 Docker가 다시
+  적용)으로 바꾸고, 나머지 서비스의 `build:`를 지운다(implicit build 금지, Compose config hash는 build를 보지
+  않는다). `activate-concierge`는 `--no-build`. 대상은 렌더된 문서의 `build:`에서 파생하고 서비스 이름 결박은 없다.
+- 적대 리뷰 2회 반영: ignore 판정은 BuildKit의 `MatchesUsingParentResults`·suffixMatch와 같게(Docker가 보내는 파일을
+  빼지 않는다), 되살릴 예외가 없는 제외 디렉터리는 열지 않는다(fsutil과 같게). source는 디렉터리 fd 기준
+  `O_NOFOLLOW|O_NONBLOCK`으로 열어 검사 뒤 바꿔치기된 symlink·FIFO를 따라가지 않는다. 비운영에서
+  `COMPOSE_PROJECT_NAME`이 없으면 C6c lock과 같은 기본값을 쓴다.
+- 회귀: `backend/tests/test_build_context_export.py`가 700/600 tree(umask 077)를 만들고 사본의 디렉터리 `0755`·파일
+  world-readable·symlink 비추종·ignore 규칙을 효과로 본다.
+
+## 2026-10-27 — Manager559 양 호스트 정상 설치와 공개 UI 수용
+
+- 제품 M `aeb2d34c`를 공식 installer로 n150·Odroid의 웹·API·CLI에 적용했다. n150의 기존 동일 frontend는 유지하고 Odroid는 검증된 새 ARM 산출물을 기존 G 안에서 frontend 하나만 승격했다.
+- 양 호스트 공개 TLS 브라우저12개씩, 로그인/로그아웃200·보호401·WS2frame·세션 철회·자원 회수를 확인했다. 공개 API의 현재 running19개씩은 실제 Docker의 이름/CID/상태와 같고 수치 메트릭도 확인했다.
+- 최초 Odroid 공개503 실패는 보존한다. UI 수렴 뒤 같은 strict API 단언을 수행하는 순서만 정렬했으며 원 실패의 단일 원인이나 제품 최적화 효과를 주장하지 않는다.
+- 기존 plane의 실제 bind bytes/CID, Weather 고정9개 run과4개 container를 보존했다. 새 QUEUED2개와 교체 전 retention FAILURE는 별도 관측이다. 이미지/CS/daemon·job/instigator 변경은 없었다.
+- 설치·빌드/진단 실패와 실제 단계별 시간, 원 cache/release 보존 및 남은 외부 consumer 적용은 [운영 기록](reports/2026-10-27-manager559-two-host-normal-install.md)을 따른다. 과거 일지·미완 checkpoint 원문은 아래에 보존한다.
+
+## 2026-10-26 — 호스트 태그·로그 튜닝 누락 보존
+
+074a CI는 backend3424 PASS/40 SKIP(369.75초)·frontend PASS였다. 뒤이은 RO 대조에서 max5만 파생하면 기존 Odroid의 Geo1·Weather3·외부수집2·느린외부1/WARNING을 잃는 경계를 확인했다. hosts에 그 typed 값만 명시하고 기본 tag 전체와 새 Concierge 안전 한도는 보존한다. n150 원 bytes/path/digest, 기존 G/immutable/RO/installer 순서와 부팅 조건은 바꾸지 않는다.
+
+positive3개의 원 FAIL과 첫 구현의 base key-only 처리3 FAIL/51 PASS를 보존한 뒤 직접54 PASS와 관련61 PASS(7.02초)·외부 호출0을 확인했다. 새 제품 두 리뷰·정확 CI·후보/운영 적용은 별도다. 실제 SSH·설치·서비스 변경은 없다.
+
 # JOURNAL — 작업 일지
 
+## 2026-10-26 instance canonical bind와 관측 fixture 정렬
+
+- Compose의 새 instance path와 canonical allowlist의 옛 source가 달라 실제 변경 전 보안 검사에 막히는 지점을 확인했다. 정본8개 bind source만 같은 호스트 경로 템플릿으로 맞추며 f1d 검사기·G·frozen·다른 bind 인가는 유지한다.
+- 좌표fixture1개와 real_host_render는 관측 전에만 tmp state에 정본 prepare를 수행하고 동일 경로/digest를 전달한다. 기존 workspace 오염/좌표 거부 단언을 유지하며 관측 중 inode/mtime/size 불변도 확인한다.
+- 집중7PASS7.41초·외부 호출0/Ruff·compile 통과다. Docker Compose 실제 config가 필요한 원4개는 로컬에서 실행하지 않았고 새 CI 수용으로 남긴다. 원37919FAIL과 최종 배포·UI 미수용은 그대로 보존한다.
+
+
+## 2026-10-26 direct prepare의 caller umask 보존
+
+- direct caller가 umask077일 때 새 instance 디렉터리까지0700이 되어 준비가 막히는 반례를 보존했다. 이번 호출이 새로 만든 inode만 nofollow 디렉터리 FD·소유자·현재 경로 identity를 확인한 뒤0755로 고정한다. 기존 불안전 디렉터리는 수정하지 않고 거부하며 제품에서 전역 umask를 바꾸지 않는다. 정상 installer는 원래 명시umask022이며 그 경로가 실패했다고 주장하지 않는다.
+- 반례1FAIL/1PASS 뒤 수정 관련64PASS·외부 호출0, Root/T의 전체 소스와 두 P2 독립 closure를 수용했다. 이전379 CI는19FAIL/3403PASS/40SKIP(470.22초)이며 원문을 보존한다. 미준비 host fixture와 옛 mount source 비교 등 남은 원인은 별도로 좁혀 확인한다. 이번 최종 커밋의 새 CI·공식 설치/공개 UI는 아직 미수용이다.
+
+
+## 2026-10-26 호스트별 공용 instance 정본 구현
+
+- hosts 정책 n1506/Odroid5에서 동일 effective 파일·full SHA를 유도하고, 기본6은 기존 bytes/path/digest를 보존한다. 비기본 파일은 기존 G 아래 명시 준비하며 show·읽기 render는 쓰지 않는다. installer와 모든8 consumer를 같은 결과로 연결했다.
+- 순수 직접60 PASS/외부 호출0. 첫 wholebackend는 로컬 owned PG fixture가 실제 실행된 뒤 mount 기본값 해석 결함으로3 FAIL, 602 PASS에서 중단했다(560.72초). 원 로그를 보존하고 정확3 project의 container/network/volume0을 확인했다. fixture source 정렬의 순수 검증을 실제 통합 재수용으로 기록하지 않는다.
+- 외부 Transport PR139는 별도 정본 show 소비이며 Manager 설치 선행이다. alias 전환 잔여 경합·현재 설치/UI 미완을 [기능 계약](host-dagster-instance-config.md)에 명시한다. 원558/원본 dirty 저장소와 운영 역할은 보존한다.
+
+
+## 2026-10-26 호스트별 공용 Dagster 상한 보존 설계
+
+- 새 Manager 설치 뒤 Odroid의 현5가 tracked6으로 바뀔 수 있는 실제 consumer 경계를 확인했다. n1506/Odroid5를 한 host 정본에서 파생하는 작은 설계를 별도 작업트리에 기록한다.
+- [설계](host-dagster-instance-config.md)와 [재개 기록](host-dagster-config-resume.md)만 추가하며 제품/운영 변경0, 구현·CI·두 리뷰·배포는 아직 미완이다.
+
+## 2026-10-26 상태 공유 대기의 follower 한도
+
+- 원3a의 무제한 공유 대기 증폭을 별도 반례로 보존하고 get 진입의 고정5초 JOIN deadline을 두 관측에 합산한다. pending timeout만 일시 불가503/1013이며 실제 collector TimeoutError·완료 경합은 원결과를 보존한다.
+- timeout 뒤 flight를 비우거나 새 수집/thread를 만들지 않는다. leader의 동기 수집 전체를5초로 제한했다고 주장하지 않으며 기존 I/O 한계는 유지한다. 원3a CI그린과 새 소스의 CI·후보 UI를 구분한다.
+
+## 2026-10-26 상태 조회 Future의 수집자 원본 격리
+
+- 독립 리뷰에서 같은 flight의 늦은 대기자가 수집자의 완료 후 원본 수정을 읽는 반례가 확인됐다. 정상/오류/불완전 응답 3 FAIL을 보존하고 완료 private 복사본 하나를 cache와 Future가 함께 보관하도록 수정했다.
+- 정상 복사 횟수 두 번을 유지하며 집중37 PASS·정본 Ruff PASS를 확인했다. 원6864657 전체검사는 source 혼합을 피하기 위해 1059 PASS/30 SKIP에서 중단했으며 전체 수용으로 기록하지 않는다. 최종 exact CI·두 리뷰·실제 UI는 별도다.
+
+## 2026-10-26 상태 조회 캐시의 최신 main 후속
+
+- PR533의 미흡수 제품 세 파일과 관련 회귀를 main557에서 별도 Linux 작업트리로 옮겼다. 원본 dirty checkout과 네 untracked 파일은 보존했다.
+- 불완전 inventory 응답을 캐시하지 않으며, 연속 변경에 따른 재관측은 두 번으로 제한한다. 원반례 2 FAIL과 수정 후 집중33 PASS를 구분해 보존했다. 일시 불가는 고정 REST503/WS1013으로 전달한다.
+- 새 main의 inventory·공개 URL·compose 보안 계약, 권한 판정과 기존 호출 timeout은 보존한다. [범위·한계](container-status-snapshot.md)와 [재개 기록](status-snapshot-resume.md)을 따른다. 독립 두 리뷰·전체 CI·실제 UI·운영 효과는 아직 미수용이다.
+
+## 2026-10-25 PinVi 관리자 Feature read 전용 배선 준비
+
+- 기존 service token의 관리자 권한 승격 없이, 전용 원문 한 키→Map digest/PinVi raw 두 API 소비만 연결한다.
+- 수정 전15실패·첫CI13실패를 보존했다. 전용23·관련391·fixture22줄 정렬 뒤 별도120회귀가 통과했다. 제품·기대 단언은 그대로이며 두 독립 리뷰·정확9f10 CI(backend3362/40skip·frontend47)가 통과했다.
+- 정확9f10 새 후보 build58.33초 뒤 격리 API+Next+브라우저의 실제12판정이 최종19.613초에 통과했다. 임시 세션1 revoked/미폐기0·소유 프로세스/DB/log/profile 삭제·운영7/env/PID 보존을 확인했다.
+- 첫 후보 cleanup 단언 FAIL은 보존하고 별도 후관찰/정리와 최종 새 UUID 성공을 구분한다. loopback HTTP이며 공개 TLS·운영 설치·Map/PinVi pair 수용은 별도다.
+- 409→418는 기존 config를 보존하며 신규 운영 provision은 최종 pair 직전까지만 준비한다. 현재 실행0.
+- [계약과 순서](pinvi-admin-feature-read-provision.md).
+
+## 2026-10-25 복원 timeout 격리 실증
+
+- c24d026 두 독립 리뷰·기존 CI 통과 뒤 실제 inner exit124와 client TimeoutExpired 두 경계를 검증했다.
+- 현재 scratch DB/backend/pg_restore0·다른 own DB 복원 생존, 소스425/dump SHA 보존·최종 수거1.883초를 확인했다.
+- host 소유권/tmpfs 두 fixture 실패는 보존했다. 큰 운영 복원 시간·I/O 상한이나 운영 설치로 확대하지 않는다.
+- [정확 범위와 원장](restore-rehearsal-timeout.md#실제-격리-timeout-검증). 최종 문서 CI·설치는 후속이다.
+
+## 2026-10-25 복원 timeout 뒤 현재 scratch 정리
+
+- 로컬 docker exec timeout이 안쪽 pg_restore를 중단하지 않던 경계를 컨테이너 deadline으로 보강했다.
+- 생성 성공한 현재 scratch만 force 삭제·DB/backend 부재를 읽고, 원예외와 정리 실패를 함께 보존한다.
+- 새15+기존 백업 회귀113통과, 수정 전8실패 보존. 실제 PG 종료 lab·설치·운영 수용은 미완이다.
+- [상세와 남은 경계](restore-rehearsal-timeout.md). 현재 별도 운영 리허설은 변경하지 않았다.
+
+## 2026-10-25 — PinVi 지도 공개 키의 빌드 전달
+
+- 공개 UI 기준에서 발견한 missing_key를 source 계약으로 추적했다. pinvi-web build arg 한 개와 엄격한 raw/resolved 계약만 맞췄다. 수정 전4실패·1통과→관련11통과/Ruff, 실제 설치·rebuild·지도 검증과 목록422는 미완이다. [근거와 범위](pinvi-vworld-build.md).
+
+## 2026-10-25 — n150 Manager 웹·API·CLI 정상 업데이트 수용
+
+- 최신 사용자 정책인 세 경로 모두 유지를 활성 설치·workspace 문서에 명시하고 CLI 전용은 별도 이전 완료 호스트의 선택 경로로 구분했다. 과거 일지는 보존한다.
+- 공식 일반 설치·별도 frontend 갱신·실제 공개 UI 12개·정적 17개 일치·이전 실패 세션 한 행 정리를 [운영 기록](reports/2026-10-25-manager-normal-update-acceptance.md)에 정산했다.
+- 원 실패·fix-forward·민감 원장은 보존한다. 전체 Docker 표시·프록시 PID 결박·Map/PinVi 실제 배포로 확대하지 않는다. 문서 전용이며 사용자 지시대로 CI를 생략한다.
+
+## 2026-10-25 — Map 가격 추이·weather 상태 적재 env 배선(Map ADR-114)
+
+- Map API에 transport 주소·token(code-server와 같은 원천·기본값)과 `KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED`(기본
+  false)를, Map code-server에 weather 주소(odroid 12201, registry 파생)와 weather `KOR_TRAVEL_WEATHER_ADMIN_TOKEN` 참조
+  token을 넣었다(Map #1365·#1367). 새 비밀·리터럴 없음, auth header는 Map 기본값.
+- 계약 테스트: transport 보유 집합에 Map API 추가, 가격 추이 플래그·weather token 보유 집합/보간식, 소비자 origin 하한,
+  보호 참조 site. 정본: [7.3d](docker-management.md#73d-map-가격-추이-프록시와-weather-상태-적재-map-adr-114).
+- pinvi-api에 지도 날씨 레이어 플래그 `PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED: ${…:-false}`(PinVi #600)를 transport
+  플래그 옆에 더했다 — Map service token은 기존 배선을 그대로 쓴다. 선택 timeout 재정의 셋(`..._TIMEOUT_SECONDS:-3`,
+  `..._CONNECT_TIMEOUT_SECONDS:-1`, `..._REQUEST_BUDGET_SECONDS:-5`, PinVi 기본값과 같음)도 함께 넘긴다.
+- 운영 반영(설치·rebind)은 하지 않았다. 켜는 순서는 7.3d.
+
+## 2026-10-25 — 일반 신뢰 설치의 호스트 검증
+
+- 일반 설치도 후보 release의 모든 정본 host-local 서비스 폐포를 검증한다. 로컬 필수값·원문/환경·선택 외부 파일 재검증은 유지하며 off-host required 검사만 제외한다.
+- CLI 전용 inactive guard와 일반 모드 서비스 재시작·health·복구는 보존했다. 두 독립 리뷰·정확 CI·공식 설치/운영 수용은 아직 미완이다. [규약](host-compose-scope.md).
+
+## 2026-10-25 — 호스트별 Compose 보간 범위
+
+- 쌍 재구축과 CLI 전용 설치에 정본 호스트 소유 서비스 폐포를 사용한다. 일반 설치/전체 검증은 유지하며 제외된 다른 호스트 필수 환경 검사는 해당 경로에서 생략한다.
+- 전체 원문·환경 identity와 선택 외부 입력/보호/frozen 재검증을 보존한다. 디스크 version·비밀·운영 설정은 변경하지 않는다. [규약·한계](host-compose-scope.md).
+- 실제 Compose·설치 후보 경로 집중36건과 기존231건을 검증했다. 최종 두 리뷰·정확 CI·공식 설치/배포 수용은 PR에서 정산하며 아직 운영 완료가 아니다.
+
+## 2026-10-24 — 여섯 프로젝트 npm 보안·버전 정합
+
+- 이 저장소의 기존 프론트엔드/공용 테스트 47개와 타입·린트·빌드 PASS. [버전·예외·검증 범위](npm-security-alignment-2026-10-24.md).
+- 직접/전이 npm 의존성과 잠금 파일을 갱신하고 여섯 프로젝트의 공통 버전을 맞췄다.
+- 호환성 예외·미수정 상류 권고·검증 범위는 [정합 기록](npm-security-alignment-2026-10-24.md)을 따른다.
+- 소스·잠금 파일 정합과 WSL 검증을 완료했다. 최종 CI·두 독립 확인·N150 후보 UI 게이트와 머지 상태는 [PR](https://github.com/digitie/kor-travel-docker-manager/pull/549)에서 정산하며 통과 확인 전 머지하지 않는다.
+
+## 2026-10-24 — 공용 Dagster의 진행 로그 보존
+
+- Transport PR123을 전체 CI1165PASS/2SKIP·James/Popper 공식 독립 최종 지적0으로 먼저 머지한 뒤 후속 개선한다.
+- 공용 instance의 INFO 진행을 보존하고 기존 명시 Python logger 목록을 유지한다. 기존 내용 digest 앵커를 함께 갱신한다.
+- 고정 SDK와 격리 PostgreSQL에서 기존 WARNING의 실제 INFO 소실1FAIL을 재현했다. 정상/실패·재개방·확정 진척·DEBUG/미등록 로그 제외와 WARNING 대조군을 회귀로 둔다.
+- 초기 digest를 17자로 기입한 실수는 기존 배선 회귀8FAIL로 검출해 정본 sha256의 앞16자로 바로잡았다. 실패 부분 실행과 최종 전체 검증을 구분한다.
+- CI2943 후보는3272PASS/40SKIP·기존 원문 snapshot1FAIL이었다. 의도한 공용 로그 변경의 검토 원문 해시를 함께 갱신하고 전체 CI를 다시 확인한다.
+- 기존 작업 트리를 보존하려 별도 Codex worktree를 사용한다. CodeGraph init/sync 후 YAML·SDK 테스트는 직접 확인한다. 최종 검증·두 독립 리뷰·머지 상태는 PR에 정산한다.
+- 운영 변경0이며 사용자가 일괄 배포를 대기했다. 기존 InstanceRef의 설정 잔류와 적용/되돌림은 [규약](dagster-progress-logging.md)을 따른다.
+
+## 2026-10-24 — Next.js 16.4.3 보안 의존성 갱신
+
+- Next.js 14에서 `16.4.3`으로 정확히 고정하고 잠금 파일을 재생성했다. 사용하는 `eslint-config-next`도 `16.4.3`으로 맞췄다.
+- 제거된 next lint를 ESLint 9/16 flat config로 대체했다. React Compiler 전용 규칙 4개는 기존 Hooks 규칙을 유지하며 별도 도입으로 남겼다. 홈 링크를 next/link로 전환하고, 오류/인증 복구의 전체 문서 이동은 이유를 적어 보존했다. React 18은 지원 중단 예정 경고가 있으나 이번에는 유지했다.
+- WSL Linux Node 22.22.2에서 프론트엔드 기존 테스트 47건과 lint(--max-warnings=0)·type-check·build PASS. 빌드가 생성한 타입 선언과 필요한 JSX 설정을 반영했다.
+- 같은 시점 `npm audit` 전체 보고: 총 12→7건, critical 1→0건. `next` 항목은 제거됐지만 다른 패키지 취약점은 남아 있다. 강제 자동 수정이나 요청 외 major 의존성 갱신은 하지 않았다.
+- James(프론트/UI)·Popper(빌드/운영) 독립 사전 리뷰에서 이 저장소의 추가 P0/P1은 없었다. 실제 서비스 UI와 CI 이후 머지 게이트를 대체하지 않는다.
+- 기존 작업 트리는 보존하고 Linux 격리 작업 공간의 `codex/next-16.4.3-security`에서 변경했다. CI·운영 배포·실제 서비스 UI 수용은 아직 별도이며, 이 기록을 운영 반영 완료로 세지 않는다.
+
+## 2026-10-24 — Common44 workspace 갱신 주기 소비
+
+- [규약·설치/롤백](daemon-workspace-refresh-adoption.md): 정식 전체 wheel과 hashlock/내용 tag를
+  갱신하고 공용 daemon만 기본60/명시180을 받는다. 원240초 유예·heartbeat·센서·CLI/신호와
+  Weather547의 공유 export 파일 배선은 보존한다.
+- Git19파일/RECORD24행·재빌드 바이트 동일, 기존71runtime 불변, 관련41PASS/11.70초,
+  실제 Compose8조건·고정 SDK 컨텍스트/종료 원복 PASS. 실패한 선행 실행은 정본 규약에 분리했다.
+- 운영 변경0. 두 독립 리뷰·CI·ARM/공식 배포·브라우저 및 자원/신선도 실측은 운영 담당 gate다.
+
+## 2026-10-23 — Weather export의 운영 Compose 전달
+
+- 자체 개발 Compose에만 있던 export flag/파일 저장소를 Manager의 Weather API·code-server에도 전달한다.
+  flag 기본 false와 공통 경로·RW named volume을 사용하고, migrate·shared daemon은 바꾸지 않는다.
+- mount parent 아래에서 Weather의0700/0600/0400 권한을 유지한다. 운영 Docker data-root와 volume Mountpoint의
+  NVMe 확인, 전체 source 준비·파일 pin/GC·ARM 비용·Map 소비자 수용은 활성화 전에 별도 확인한다.
+- 기존 작업 checkout은 보존하고 별도 worktree에서 구현한다. 순수 Compose 계약/기존 주소 전달12개는
+  `--noconftest`로 통과했고 실제 Docker Compose 정규화도 기본 false/명시 true 두 경우를 통과했다.
+  이 검증은 DB나 운영 컨테이너를 사용하지 않았다. 전체 CI·두 독립 리뷰·운영 배포는 후속이다.
+  정본: [Weather 승인 export 저장소](docker-management.md#73c-weather-승인-export-파일-저장소).
+
+## 2026-10-23 — pinvi-api에 Map service token과 transport 플래그(PinVi ADR-076, Map ADR-114)
+
+- pinvi-api env에 `PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?...}`(Map API와 같은 변수,
+  같은 필수 조건 — 새 비밀 없음, 빈 값으로 기동 안 함)와 `PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED:
+  ${PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED:-true}`(기본 켜짐, 빈 값도 켜짐)를 더했다.
+- C6c: 새 이름을 Map 비밀 이름 집합·candidate 정본 env(화면 잠금)·runtime 격리의 pinvi 허용 값(= Map service token)에
+  넣었다. 다른 컨테이너·다른 이름에 같은 값이 있으면 여전히 거부한다. 보호 참조 자리는 compose에서 파생되므로 따로
+  등록하지 않았다.
+- 부수 효과(적대 리뷰 M1·M2): PinVi `KorTravelMapClient`는 service token이 있으면 public API key 대신 그 헤더만 보내고,
+  admin client도 `admin_service_token`이 비면 이 값으로 폴백한다(PinVi 설계). 그래서 이번 배포부터 PinVi의 모든 Map
+  호출이 service principal로 간다 — 그동안 service 라우트(`/v1/features/batch`·`/v1/features/weather/batch`)가
+  401이었다면 이제 성공하고, public key 단위 계수에서는 PinVi 트래픽이 빠진다.
+- `backend/tests/fixtures/pinned_runtime_own_fingerprint.json`에 새 정본 행·잠금 하나를 더했다(의도한 변경).
+- web/mobile은 PinVi API `/transport/status`만 보므로 public env가 필요 없다.
+
+## 2026-10-23 — Map Valkey 서비스 추가(Map ADR-114 2단계, ADR-59)
+
+- `kor-travel-map-valkey`(Valkey 9.0-alpine, multi-arch index digest)를 `map` target 서비스로 더했다. host network의
+  `127.0.0.1:12704`만 듣고 `requirepass`로 잠근다. `maxmemory 1gb`+`noeviction`, RDB+AOF `everysec`, `mem_limit`·
+  `memswap_limit` 1536m, `init: true`, exec 형식 `valkey-cli -e` healthcheck, project 범위 named volume.
+- 비밀번호는 root `.env`의 `KOR_TRAVEL_MAP_VALKEY_PASSWORD` 하나(`:?`). 최상위 앵커 `x-map-valkey-url`이
+  `KOR_TRAVEL_MAP_VALKEY_URL=redis://:<pw>@127.0.0.1:12704/0`을 만들어 Map API·code-server에 넣고, 둘은 Valkey를
+  `service_healthy`로 기다린다. 서버에는 stdin 설정으로 넘겨 argv·서버 environ에 남기지 않는다(n150 실측: 호스트 `ps`
+  0건). URI unreserved 밖의 값은 기동에서 exit 64.
+- n150은 일반 `ensure`가 거부되므로 pinned 재구축·수렴이 Map·PinVi target의 비-slot `runtime_services`(오늘은 Valkey)를
+  읽기 전용 거부 판정 뒤·`in_progress` 기록 앞(수렴은 그 직전)에서 `up --no-deps --wait`로 올린다
+  (`runtime_topology.derive_pinned_infrastructure`).
+- 실측(n150 throwaway compose project): 정본 정의 그대로 2.8초에 healthy, NOAUTH probe는 `-e`로 rc 1, redis-py가 렌더된
+  URL로 set/get, 재생성 뒤 데이터 유지, 나쁜 비밀번호는 exit 64(로그에 값 없음), 키 부재는 compose 렌더 실패.
+- 적대 리뷰 1인(읽기 전용): H1(infra `up`이 전체 경로 `try` 안이라 실패 시 Map·PinVi를 멈춤 → `try`·`in_progress` 앞,
+  읽기 전용 거부 판정 뒤로 이동 — 거부는 여전히 아무것도 바꾸기 전이다),
+  H2(bind source 부재가 모든 C6c 변경을 막음 → named volume), L1(서버 environ의 비밀번호 → `exec` 전 `unset`) 등을 반영했다.
+- 백업 대상이 아니다(원천에서 다시 받는다). `--restart`도 Valkey는 비우지 않는다.
+
+## 2026-10-21 — Portainer 제거와 서비스 공개 링크 재점검 완료
+
+- 소유자 요청으로 Odroid의 독립 Portainer 컨테이너를 종료·삭제했다. 복구용 데이터 볼륨은 보존했다.
+- Odroid의 관측·스토리지 링크가 다른 호스트 주소를 가리키고 Weather 링크가 비어 있음을 확인했다.
+- 공개 origin과 브라우저 진입 경로를 분리하고, Transport 관측 전용 관리 UI/API gateway의 공개 링크를 추가했다. 미등록 컨테이너에 제어 권한을 부여하지 않는다.
+- Odroid의 cAdvisor·공용 Dagster·RustFS는 해당 호스트의 공개 주소로 보정하고 Weather 누락 링크를 채웠다. MCP는 프로토콜 진입 경로로 연결한다. 실제 도메인은 호스트의 비공개 환경설정에만 저장했다.
+- PR #540을 독립 적대 리뷰 2인과 전체 CI(backend 3,230 PASS/39 SKIP, frontend 47 PASS) 후 머지했다. 관련 집중 회귀 212개와 Ruff도 통과했다.
+- 두 호스트의 Manager backend를 공식 installer로 runtime 5d8db45에 설치했다. frontend 소스가 동일해 재빌드하지 않았다.
+- n150 Linux Playwright에서 Odroid 실행 18개/공개 링크 9개, n150 실행 17개/링크 12개를 API·실제 DOM href·공개 HTTP 응답에 대조했다. Portainer는 기본/중지 포함 목록 모두에서 사라졌고 로그인·로그아웃·모바일·WS 루프 없음·JavaScript 예외 0건을 확인했다.
+- 공개 cAdvisor의 머신 정보는 각 로컬 인스턴스와 일치했다. Odroid 공개 Dagster도 로컬과 같은 Geo·Weather·Transport 위치를 반환했다. RustFS API의 health 응답도 두 호스트별로 확인했다.
+- Odroid Grafana·Prometheus는 실행 중이 아니며 해당 공개 주소가 503을 반환한다. 이 작업에서는 다시 기동하지 않았다. Dagster의 401은 인증 요구, MCP의 406은 브라우저 GET의 프로토콜 응답으로 구분했다.
+
+
+## 2026-10-21 — 호스트별 실제 실행 원장과 미사용 정보 정리 완료
+
+- 기존 CLI 전용 n150의 Manager 웹/API를 복구했다. 고정 Codex 작업트리의 기존 대량 staged 변경을 보존하고 별도 작업트리를 사용했다.
+- 등록되지 않은 실행 컨테이너도 실제 Docker 목록에서 발견해 읽기 전용으로 표시한다. 제어 registry에는 추가하지 않고, 이름의 안정된 관측 키와 실제 Docker ID로 메트릭을 연결한다.
+- 기본 화면은 현재 호스트의 실행·재시작·오류 항목이다. 미생성 선언·다른 호스트 HTTP 결과·중지된 옛 릴리스를 숨기며, 중지 항목은 선택해 볼 수 있다.
+- 실제 이미지·health·포트를 표시하고 메모리는 Docker CLI와 같은 Linux working set을 사용한다. 탐색·상세 조회를 이벤트 루프 밖에서 수행하고, 발견 실패·데몬 단절 시 오래된 정상 지표를 무효화하며, Docker ID 변경 시 I/O 기준값을 초기화한다.
+- PR #537: 전체 CI backend 3,221개 통과·39개 제외, frontend 47개 통과. 적대 리뷰 2인 지적 반영 및 재검토 완료. n150 공개 브라우저 로그인→대시보드→로그아웃과 WS 루프 없음 확인.
+- 최초 운영 E2E에서 Docker SDK sparse 목록의 Name/Names 차이를 발견했다. n150은 즉시 직전 정상본으로 복구했고, PR #538에서 실제 SDK Container 모델로 회귀를 추가했다. 양쪽 실제 Docker 발견 집합 17개·19개 일치와 관련 backend 103개 통과, 독립 리뷰 2인의 추가 지적 없음을 확인했다.
+- n150 기본 wheelhouse에 새 의존성이 없어 설치가 전환 전에 중단된 사례를 기록한다. 이미 준비된 완전한 root 소유 버전별 wheelhouse를 명시해 재설치했다. Odroid의 소스·frontend 빌드·release·state는 NVMe를 사용한다.
+- PR #538 최종 CI backend 3,222개 통과·39개 제외, frontend 47개 통과. 두 PR 모두 독립 적대 리뷰 2인의 재검토 후 머지했다.
+- 두 호스트에 runtime 02a513a를 공식 trusted installer로 설치했다. 실제 실행 컨테이너와 API Docker ID·상태·health가 Odroid 19개/n150 17개 모두 일치했고 각 행의 CPU·메모리와 최신 지표를 확인했다.
+- n150 Linux Playwright로 두 공개 UI의 로그인→대시보드→중지 항목 포함/해제→모바일→로그아웃을 확인했다. 미사용 행 숨김·미등록 행 제어 비활성화·로그아웃 뒤 WS 재연결 없음·JavaScript 예외 0건을 검증했다.
+- Docker CLI와 메모리 working set도 대조했다. 샘플 시차가 있는 비교에서 메모리 차이 중앙값은 Odroid 0.95%/n150 0.02%였다. 순간 CPU 값은 서로 다른 표본 시각의 부하 변동을 포함하므로 동시 표본 일치나 CPU 사용량 감소의 근거로 삼지 않는다.
+- 검증 중 Odroid 공용 PostgreSQL의 실제 paused/unhealthy 전환과 이후 unpause·healthy 복귀를 관측했다. 이 작업에서는 pause/unpause를 실행하지 않았고 작업 주체는 확인되지 않았다. 복귀 후 두 호스트 전체 UI E2E를 다시 수행해 통과했다.
+- T-MGR-HOST-INVENTORY를 완료 기록으로 옮겼다.
+
+## 2026-10-20 — ADR-58 문서 잔여(T-MGR-07) 마감 + `decisions.md` ADR-41~50 분리(doc-only)
+
+- T-MGR-01a~05(01a·01a-F·01b·01c·02·02r·03·03r·04·04r·05)가 전부 머지·설치됐음을 `docs/tasks-done.md`로 확인하고
+  `docs/decisions.md`의 ADR-58 상태를 proposed → accepted로 바꿨다. 남은 계획은 T-MGR-06(transport→weather→geo 공개
+  HAProxy backend 전환 PR ×3)뿐이라고 명시했다.
+- "(계획 — ADR-58 proposed, 미구현)" 마커 9곳을 코드가 실제로 구현한 부분만 해제했다: `docs/architecture.md`(호스트
+  프로필 — `KTDM_HOST` 자기 식별 `registry.py` 확인), `docs/bindings.md`(B-5~B-9 콜아웃 — 각 항목의 "현재 결박" 테스트
+  존재 확인), `docs/platform-topology.md`(호스트 차원·공용 PG 호스트당·plane 호스트당 3곳), `docs/prod-deployment.md`
+  (odroid 설치 절·§9 게이트 — NH-6 #524로 odroid Manager 설치 확인), `docs/ports.md`(호스트 규칙 헤더 + `hosts:` 절
+  인라인 마커 — `config/docker-targets.yml`에 `hosts:`·`host: odroid` 실재 확인). T-MGR-06에 매달린 "(계획)"(공개 backend
+  전환표·plane별 공개 host·odroid 방화벽 집합·§10 호스트 플립 런북)은 아직 미구현이라 그대로 뒀다. `docs/journal.md`의
+  과거 날짜 기록은 역사라 건드리지 않았다(B-4 범위 규칙).
+- `docs/decisions.md`(247,393 B, 에이전트 read 한도 256 KB 근접)에서 ADR-41~50(49는 결번, 파일 순서상 ADR-50이 ADR-48
+  앞에 있는 순서 그대로)을 `docs/decisions-archive-02.md`로 byte 그대로 옮겼다. 분리 전후 `## ADR-` 제목 집합이
+  일치함을 diff로 확인했고, 인덱스 표에 9행을 추가했다. `decisions.md`는 187,452 B로 줄었다.
+- 남은 것: 사용자 로컬 Claude 메모리 `odroid-standing-services`·`n150-standing-services` 갱신(저장소 파일이 아니라
+  운영자 쪽이라 이 PR 범위 밖) — `docs/tasks.md`에 잔여 한 줄로 남겼다.
+- 이 변경은 문서만 수정했다. 코드·compose·registry·n150/odroid 컨테이너는 건드리지 않았다.
+
+## 2026-10-17 — T-MGR-03r n150 공용 PG 재생성 완료
+
+- global lock 아래 root compose `up -d --no-deps kor-travel-shared-postgres`로 n150 공용 PG를 재생성했다(사전 `--dry-run`으로 대상이 PG 단독임을 확인). 약 30 s 안에 healthy로 복귀했고 `oom_score_adj`는 0→-800으로 바뀌었다.
+- 수용 기준 13개 설정(shared_buffers·work_mem·maintenance_work_mem·effective_cache_size·random_page_cost·max_wal_size·max_parallel_workers·max_parallel_workers_per_gather·effective_io_concurrency·checkpoint_timeout·wal_compression·autovacuum_max_workers)은 compose 기본값과 동일했다 — `.env` override가 없고 `postgresql.auto.conf`도 빈 상태라 값 자체는 재생성 전후로 바뀌지 않았다.
+- map/pinvi/concierge `/health` 200, preflight PASS, 재생성 전 활성 Dagster run 0건을 확인했다. T-MGR-03r을 `docs/tasks-done.md`로 옮겼다.
+
+## 2026-10-19 — Manager CLI 전용 설치 경로
+
+- 웹·API 이전 호스트의 정식 CLI 갱신에 --cli-only를 추가했다. 기존 중지 상태 확인 후 서비스 파일·enable/start를 건너뛰며 기존 소스/환경 검증과 정본 전환·CLI 검증을 유지한다. 기본 설치 경로는 유지한다.
+- 설치기 집중56통과10.91초, Ruff/bash 문법 통과. inactive/active/transitional/PID 잔존 및 CLI 성공·실패 반례를 포함한다. 이는 격리 shell 검사이며 실제 root 설치·공개 UI는 미실행이다.
+- n150 서비스 종료·설치는 사용자 승인 후 root 실행 담당이며 이 변경에서 원격 mutation은 하지 않았다.
+
+- PR532443405b와 통합 후 설치기/plane/pinned 재구축294통과38.28초. CLI 복구는 새 검토 설치기를 보존해 이전 archive SHA를 지정하며 옛 설치기를 실행하지 않는다.
+
+## 2026-10-19 — pinned 재구축의 기존 daemon 중지 상태 보존
+
+- pinned 재구축의 공용 plane 수렴은 기존 중지된 daemon을 시작하거나 재생성하지 않는다. webserver 정합성과 필요한 RepositoryLocation 로딩 검사는 유지한다.
+- 실행 중·재시작 중·미설치 daemon은 기존 경로다. 명시적 dagster-plane converge의 시작/복구 동작은 바뀌지 않는다. 의도적 중지와 비정상 종료를 구별하지 않으며 중지된 daemon의 이미지·설정 갱신은 명시적 수렴까지 미룬다.
+- readiness에서 daemon 중지를 재확인한다. 기존 host mutation lock 밖의 직접 Docker 변경을 영구 차단하지 않는다.
+- 수정 전 OFF 회귀 2실패·ON 2통과, 수정 후 plane/pinned rebuild 집중 238통과(26.83초, 미설치·재시작 중 반례 포함), Ruff 통과. 첫 구현의 NameError 실패는 수정 후 재검증했다.
+- 운영 설치·공개 UI는 미실행이다. daemon OFF 동안 자동 스케줄·자동 복구를 보장하지 않는다. 기존 Map/PinVi runtime 재시작·DB 보존 범위는 바뀌지 않는다.
+
+## 2026-10-19 — pinned rebuild의 원격 Geo readiness 보강
+
+- n150에 Geo를 복구하지 않고 재구축할 수 있도록 외부 prerequisite를 실제 frozen Compose 배치와 맞춘다. RustFS·Concierge는 기존 로컬 canonical readiness를 유지하고, Geo는 active Map API·Map UI BFF·Dagster code server·PinVi API의 frozen origin을 각 consumer target의 R2 origin과 대조한다. readiness는 Manager host의 R2 origin에서 확인하며 retired `legacy-dagster` webserver·daemon은 검사 대상에서 제외한다.
+- redirect·환경 proxy·압축 응답을 거부하고 전체 HTTP 요청을 4초, raw JSON 본문을 4 KiB로 제한한다. 실패는 source materialization 전에 `external_prerequisites` 단계에서 거부한다. 두 번째 독립 리뷰의 legacy profile 및 압축 본문 지적을 반영했으며, 재검증·n150 CLI 반영 및 Map/PinVi 공식 rebuild/UI E2E는 진행 중이다.
+- 이번 변경은 소스 worktree와 문서만 수정했다. n150/odroid 컨테이너, DB, pins, 배포 원장, Manager 서비스 상태는 건드리지 않았다.
 
 ## 2026-10-19 — Weather API 점검 PR488 최신 main 정합
 
@@ -19,6 +448,7 @@ Common HTTP/격리모드/90초/12초/4회이며 이 소스 통합만으로 재�
 가정한 재구축 대기 예산 단언(1155초)이다. 현재4회 계약에서 가장 긴 code-server
 기동 창에 따른1115초로 단언을 수정했고 해당 모듈26건 통과(4.22초)를 확인했다.
 제품 로직은 바꾸지 않았으며 새 HEAD 전체 CI는 별도로 확인한다.
+
 
 ## 2026-10-18 — PR531 최신 main525 통합과 공개 UI 수용
 
@@ -1602,4 +2032,3 @@ devDependencies로 추가하고(npm이 실제로 해석한 React 18 peer 호환 
 테스트만 실패 → 정확히 원상복구, `git diff --stat` 0으로 확인). 상세 내역은
 `docs/tasks.md`의 GM-12 완료 항목 참고. 전체 frontend type-check/lint/test(8
 files, 31 passed)/build 통과.
-

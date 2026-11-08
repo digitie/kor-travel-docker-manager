@@ -17,6 +17,12 @@ name: kor-travel-docker-manager
 x-dagster-shared-control-env: &dagster-shared-control-env
   KOR_TRAVEL_DAGSTER_SHARED_PG_URL: &dagster-shared-pg-url postgresql+psycopg2://kor_travel_dagster_shared_app:${KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_DAGSTER_SHARED_APP_PASSWORD in .env}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/dagster_shared
 
+# Map Valkey(`kor-travel-map-valkey`, Map ADR-114 · Manager ADR-59)의 접속 URL — 정의는 여기 하나다. 이것을 받는 것은
+# Valkey를 쓰는 Map API와 Map code-server(run worker가 그 자식)뿐이다. 비밀번호는 URI unreserved 문자만 쓴다(Valkey
+# 서비스가 기동에서 거부한다). 포트 `12704`는 Valkey 서비스의 `--port`·healthcheck와 같아야 한다 —
+# `backend/tests/test_map_valkey_service.py`가 렌더된 모델에서 셋을 대조한다.
+x-map-valkey-url: &map-valkey-url redis://:${KOR_TRAVEL_MAP_VALKEY_PASSWORD:?KOR_TRAVEL_MAP_VALKEY_PASSWORD must be explicitly set}@127.0.0.1:12704/0
+
 # 공용 Dagster 호스트 서비스(daemon·webserver)의 기동 가드(ADR-54) — **잘못된 instance storage 위에서 뜨지
 # 않는다**(PinVi daemon과 같은 가드). `dagster.yaml` bind가 빠지면 Dagster는 `$DAGSTER_HOME` 아래 SQLite로
 # 조용히 떨어지고, daemon은 자기 빈 DB를 dequeue하며 heartbeat도 거기 써서 liveness-check까지 초록이 되고,
@@ -188,6 +194,21 @@ x-dagster-code-server-probe: &dagster-code-server-probe |-
       log = open('/proc/1/fd/2', 'w')
       subprocess.Popen([sys.executable, '-I', '-c', sys.orig_argv[sys.orig_argv.index('-c') + 1], sys.argv[1], 'reap'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
 
+# 상시 서비스의 Docker 로그 상한(ADR-61) — 정의는 여기 하나다. 운영 컨테이너가 모두 `json-file` driver를 상한 없이
+# 써서(호스트 `daemon.json` 기본값도 없다) 로그가 컨테이너를 지울 때까지 자랐다(2026-11 n150 공용 Dagster daemon 887 MB).
+# `daemon.json`은 Docker 재시작이 필요해 쓰지 않는다. restart 정책이 컨테이너를 살려 두는 서비스(`unless-stopped`,
+# 꺼진 profile 포함)가 모두 이것을 받는다 — 서비스마다 최대 50 MB × 5개. one-shot은 받지 않는다. 빠진 서비스는
+# `backend/tests/test_compose_log_limits.py`가 렌더된 모델에서 찾는다.
+#
+# **다음 재생성 때 적용된다.** 이 정의는 상시 서비스 전부의 compose config hash를 바꾼다. 그래서 `up`이 이름(또는
+# `--no-deps` 없이 의존)으로 닿는 서비스를 다시 만든다 — 공용 PostgreSQL이 닿으면 모든 테넌트가 재기동한다. 공용
+# PostgreSQL은 계획한 창에서 따로 다시 만든다. 경로별 효과는 prod-deployment.md §11.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   # platform-topology.md §7(2026-09-19 결정)의 공용 제어 평면 instance. concierge·geo·
   # PinVi·weather·transport가 여기 산다 — 프로젝트마다 role+database만 만드는 별도
@@ -212,9 +233,10 @@ services:
   kor-travel-shared-postgres:
     # 호스트별 이미지(ADR-58 결정 9·R6, T-MGR-03). 기본값은 n150의 digest 핀 그대로다 — 이 index에는 amd64만 있어(2026-10-16
     # 레지스트리 조회) arm64 호스트(odroid)는 root `.env`의 `KTDM_POSTGRES_IMAGE`로 arm64 이미지를 준다.
-    image: ${KTDM_POSTGRES_IMAGE:-postgis/postgis:16-3.5@sha256:8b33190b6486ab9905dea999171817c1ac461733a7078dd4c836091c6e6b5d40}
+    image: ${KTDM_POSTGRES_IMAGE:-postgis/postgis:18-3.6@sha256:4a43e3c3e5d55b9208240fc71db543b79c638766280c625a425bd0a2390989c4}
     container_name: ${KOR_TRAVEL_SHARED_POSTGRES_CONTAINER:-kor-travel-shared-postgres}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     # **postmaster가 PID 1이면 안 된다(ADR-52).** docker exec·healthcheck가 남긴 고아는
     # PID 1로 입양되는데, PG16 postmaster는 거둔 자식이 0·1 외의 코드로 끝나면 그것이
@@ -315,7 +337,11 @@ services:
     secrets:
     - kor-travel-shared-postgres-password
     volumes:
-    - ${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}:/var/lib/postgresql/data
+    # PG18 공식 이미지는 PGDATA 기본값을 `/var/lib/postgresql/18/docker`(이미지 VOLUME `/var/lib/postgresql`)로 바꿨다.
+    # `PGDATA` env로 옛 자리를 되살리는 것은 C6c 계약이 금지하므로(데이터 재배치 = fresh initdb 경로) bind 대상을 새
+    # 기본 자리로 옮긴다 — 호스트 경로는 그대로다. 옛 자리(`/var/lib/postgresql/data`)에 bind하면 18 entrypoint가
+    # "old database" 오류로 기동을 거부한다. 16→18은 `pg_upgrade --link`(2026-10-27, §12).
+    - ${KOR_TRAVEL_SHARED_PGDATA:-/home/digitie/kor-travel-shared-data/pgdata}:/var/lib/postgresql/18/docker
     ports:
     - 127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}:${KOR_TRAVEL_SHARED_DB_PORT:-11000}
     # **exec 형식으로 binary를 직접 부른다(ADR-52).** CMD-SHELL은 dash가 명령을 exec하지
@@ -327,7 +353,7 @@ services:
     healthcheck:
       test:
       - CMD
-      - /usr/lib/postgresql/16/bin/pg_isready
+      - /usr/lib/postgresql/18/bin/pg_isready
       - -h
       - 127.0.0.1
       - -p
@@ -346,7 +372,7 @@ services:
   # 다른 -db-init one-shot을 추가한다(위 서비스 주석 참고) — role/ACL은 database가
   # 아니라 cluster 전역이라는 ADR-37의 교훈을 그대로 지킨다.
   kor-travel-shared-db-init-concierge:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_CONCIERGE_CONTAINER:-kor-travel-shared-db-init-concierge}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -419,7 +445,7 @@ services:
   # false) 30일 뒤 DROP한다. 여기 남아 있으면 DROP 뒤 매 `ensure`가 빈 DB를 되살린다
   # (`backend/tests/test_old_dagster_meta_db_retired.py`). weather·pinvi·transport db-init도 같다.
   kor-travel-shared-db-init-geo:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_GEO_CONTAINER:-kor-travel-shared-db-init-geo}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -484,7 +510,7 @@ services:
   # 그래서 그 모델을 폐기하고 geo 패턴으로 접었다 — role 분리 대신 scoped role
   # 하나(NOSUPERUSER/NOCREATEDB/NOCREATEROLE)와 CONNECT 격리로 경계를 잡는다.
   kor-travel-shared-db-init-pinvi:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_PINVI_CONTAINER:-kor-travel-shared-db-init-pinvi}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -550,7 +576,7 @@ services:
   # PGHOST 127.0.0.1 + network_mode: host 규약으로 처음부터 새로 짠 것이다
   # (ADR-47 — weather internal-target 전환).
   kor-travel-shared-db-init-weather:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_WEATHER_CONTAINER:-kor-travel-shared-db-init-weather}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -618,7 +644,7 @@ services:
   # DAGSTER_POSTGRES_URL도 이 통합에 맞춰 함께 바꿔야 한다(Manager 쪽만 바꾸면
   # 소비 컨테이너는 여전히 예전 role로 붙는다).
   kor-travel-shared-db-init-transport:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_TRANSPORT_CONTAINER:-kor-travel-shared-db-init-transport}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -691,7 +717,7 @@ services:
   # 쪽에 적힌다) — 이 설치가 공용 instance의 재생성을 걸어 두지 않는다. 재실행은
   # onboarding §7.3대로 `--no-deps`로, drift guard가 MATCH일 때만 한다.
   kor-travel-shared-db-init-dagster:
-    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:16-3.5}
+    image: ${KTDM_POSTGRES_CLIENT_IMAGE:-postgis/postgis:18-3.6}
     container_name: ${KOR_TRAVEL_SHARED_DB_INIT_DAGSTER_CONTAINER:-kor-travel-shared-db-init-dagster}
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     restart: "no"
@@ -793,7 +819,7 @@ services:
   # 바꿔야 한다 — `backend/tests/test_dagster_shared_config.py`가 대조한다. 새 tag는 호스트에 없으므로
   # 다음 `run`이 build context에서 만든다. env override는 두지 않는다(정본이 둘이 된다).
   kor-travel-dagster-storage-migrate:
-    image: kor-travel-dagster-host:930a44266e814ab6
+    image: kor-travel-dagster-host:11a71574b8114c5b
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_STORAGE_MIGRATE_CONTAINER:-kor-travel-dagster-storage-migrate}
@@ -809,7 +835,7 @@ services:
       <<: *dagster-shared-control-env
       DAGSTER_HOME: /opt/dagster/dagster_home
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
 
   # ── 공용 Dagster 호스트 서비스(platform-topology.md §7 3단계, ADR-54) ──────────
   #
@@ -832,11 +858,12 @@ services:
   # 둘 다 code-server에 `depends_on`하지 않는다 — 어느 code-server가 합류했는지는 workspace가
   # 말하고, 합류한 location이 떴는지는 두 probe가 본다(아래).
   kor-travel-dagster-daemon:
-    image: kor-travel-dagster-host:930a44266e814ab6
+    image: kor-travel-dagster-host:11a71574b8114c5b
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_DAEMON_CONTAINER:-kor-travel-dagster-daemon}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec의 고아를 거둔다(ADR-52와 같은 이유).
     init: true
     # 공용 plane은 OOM 때 테넌트 code-server보다 나중에 죽게 한다(ADR-58 결정 8 ⅱ, T-MGR-03).
@@ -858,6 +885,8 @@ services:
       <<: *dagster-shared-control-env
       # 같은 원 URL을 daemon wrapper에만 제공한다. 다른 서비스의 URL은 원형이다.
       KOR_TRAVEL_DAGSTER_DAEMON_POSTGRES_URL: *dagster-shared-pg-url
+      # 기본60은 SDK 원 동작. 180만 명시 최적화, 빈 값은 Common이 거절한다.
+      KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS: ${KOR_TRAVEL_DAGSTER_WORKSPACE_RELOAD_SECONDS-60}
       DAGSTER_HOME: /opt/dagster/dagster_home
       # 유예를 dagster 기본값(1800초)에 맡기지 않는다 — 다른 daemon과 같은 300초.
       DAGSTER_DAEMON_HEARTBEAT_TOLERANCE: ${DAGSTER_DAEMON_HEARTBEAT_TOLERANCE:-300}
@@ -873,10 +902,10 @@ services:
       # `x-` 키로 두지 않은 것은 `compose config` 렌더가 그 키를 그대로 내보내 n150 렌더가 한 줄 늘기 때문이다 — 여기 두면
       # 렌더는 종전과 byte 같다. 파일을 바꾸면 이 값을 함께 바꾼다(`test_workspace_digest_validate.py`가 대조한다).
       # 이 서비스를 alias 사용처(`*dagster-instance-digest`)보다 아래로 옮기지 말 것 — YAML은 정의 전 alias를 거부한다.
-      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "344105d5c06a22d3"
+      KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: &dagster-instance-digest "${KTDM_DAGSTER_INSTANCE_DIGEST:-f41a30784f7185f9}"
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
     healthcheck:
       # 두 겹이다. (1) workspace의 code-server 전부가 gRPC health로 `SERVING`인가 — daemon은 매 반복에
@@ -918,11 +947,12 @@ services:
   # - gRPC를 부르지 않는다 — `locationOrLoadError`·`dagsterLibraryVersions`는 webserver가 이미 들고 있는
   #   location 상태를 읽을 뿐 code-server에 닿지 않는다. 느린 code-server가 probe를 붙잡지 못한다.
   kor-travel-dagster-webserver:
-    image: kor-travel-dagster-host:930a44266e814ab6
+    image: kor-travel-dagster-host:11a71574b8114c5b
     build:
       context: ./docker/dagster-host
     container_name: ${KOR_TRAVEL_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-dagster-webserver}
     restart: unless-stopped
+    logging: *default-logging
     init: true
     # 공용 plane은 OOM 때 테넌트 code-server보다 나중에 죽게 한다(ADR-58 결정 8 ⅱ, T-MGR-03).
     oom_score_adj: -600
@@ -948,7 +978,7 @@ services:
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       KOR_TRAVEL_DAGSTER_WORKSPACE_DIGEST: ${KTDM_DAGSTER_WORKSPACE_DIGEST:-4461abc13cce9c4f}
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
     - ./config/dagster-shared/workspace.${KTDM_HOST:-n150}.yaml:/opt/dagster/dagster_home/workspace.yaml:ro
     healthcheck:
       test:
@@ -1003,6 +1033,7 @@ services:
     image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     container_name: ${KOR_TRAVEL_DAGSTER_GATEWAY_CONTAINER:-kor-travel-dagster-gateway}
     restart: unless-stopped
+    logging: *default-logging
     init: true
     user: "101:101"
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
@@ -1079,12 +1110,13 @@ services:
     image: rustfs/rustfs:latest
     container_name: kor-travel-rustfs
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     command:
     - /data
     environment:
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       RUSTFS_VOLUMES: /data
       RUSTFS_ADDRESS: 0.0.0.0:${RUSTFS_API_CONTAINER_PORT:-12101}
       RUSTFS_CONSOLE_ENABLE: 'true'
@@ -1115,8 +1147,8 @@ services:
     environment:
       RUSTFS_ENDPOINT: http://${KTDM_RUSTFS_INIT_HOST:-127.0.0.1}:${RUSTFS_API_CONTAINER_PORT:-12101}
       RUSTFS_API_CONTAINER_PORT: ${RUSTFS_API_CONTAINER_PORT:-12101}
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       PINVI_RUSTFS_BUCKET: ${PINVI_RUSTFS_BUCKET:-pinvi-media}
       KOR_TRAVEL_GEO_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KRTOUR_MAP_RUSTFS_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
@@ -1134,6 +1166,7 @@ services:
       dockerfile: docker/api.Dockerfile
     container_name: ${KOR_TRAVEL_GEO_API_CONTAINER:-kor-travel-geo-api-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-shared-postgres:
@@ -1152,8 +1185,8 @@ services:
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
-      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       KTG_RUSTFS_LOCAL_IMPORT_ROOTS: /data
       KTG_VWORLD_API_KEY: ${KOR_TRAVEL_GEO_VWORLD_API_KEY:-}
       KTG_PUBLIC_API_KEY_CACHE_TTL_S: ${KOR_TRAVEL_GEO_PUBLIC_API_KEY_CACHE_TTL_S:-30}
@@ -1166,7 +1199,7 @@ services:
       # 공용 Dagster webserver(ADR-54, loopback 전용 — `dagster_allowed_hosts`의 127.0.0.1). geo의 summary·
       # run 조회·launch는 `dagster_repository_location_name`(= `kortravelgeo_dagster.definitions`)으로 좁혀
       # 부른다(geo #569) — 공용 plane의 다른 테넌트가 섞이지 않는다.
-      KTG_DAGSTER_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
+      KTG_DAGSTER_URL: &geo-dagster-internal-url http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
       # geo scheduled DB backup (kor-travel-geo T-239, wired 2026-08-18 for issue #177). The API
       # decides run-due (ENABLED/INTERVAL); the Dagster containers execute db_backup and stamp
       # expires_at (TTL) — set the SAME values on geo-api, geo-dagster and geo-dagster-daemon.
@@ -1204,6 +1237,7 @@ services:
       context: ${KOR_TRAVEL_GEO_REPO_DIR:-../kor-travel-geo}/kor-travel-geo-ui
     container_name: ${KOR_TRAVEL_GEO_UI_CONTAINER:-kor-travel-geo-ui-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-geo-api:
@@ -1245,6 +1279,7 @@ services:
       dockerfile: Dockerfile.python
     container_name: ${KOR_TRAVEL_CONCIERGE_API_CONTAINER:-kor-travel-concierge-api-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     command:
     - python
@@ -1278,8 +1313,8 @@ services:
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       RUSTFS_PUBLIC_BASE_URL: http://127.0.0.1:${RUSTFS_API_PORT:-12101}/${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}
       RUSTFS_CONSOLE_URL: http://127.0.0.1:${RUSTFS_CONSOLE_PORT:-12105}/rustfs/console/
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       RUSTFS_BUCKET_RAW_VIDEOS: ${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}
       RUSTFS_BUCKET_SUBTITLES: ${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}
       RUSTFS_BUCKET_FRAMES: ${KOR_TRAVEL_CONCIERGE_RUSTFS_BUCKET:-kor-travel-concierge}
@@ -1313,6 +1348,7 @@ services:
       dockerfile: Dockerfile.python
     container_name: ${KOR_TRAVEL_CONCIERGE_MCP_CONTAINER:-kor-travel-concierge-mcp-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     command:
     - python
@@ -1330,8 +1366,8 @@ services:
       DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       MCP_TRANSPORT: streamable-http
       MCP_HOST: 0.0.0.0
       MCP_PORT: '${KOR_TRAVEL_CONCIERGE_MCP_PORT:-12602}'
@@ -1341,50 +1377,6 @@ services:
       API_KEYS: ${KOR_TRAVEL_CONCIERGE_API_KEYS:-}
     ports:
     - ${KOR_TRAVEL_CONCIERGE_MCP_PORT:-12602}:${KOR_TRAVEL_CONCIERGE_MCP_PORT:-12602}
-    extra_hosts:
-    - host.docker.internal:host-gateway
-  # 명시적 DB backend 전환 후에만 쓰는 롤백용 APScheduler. 기본 ensure는 실행하지 않는다.
-  kor-travel-concierge-scheduler:
-    profiles: [legacy-scheduler]
-    image: ${KOR_TRAVEL_CONCIERGE_SCHEDULER_IMAGE:-kor-travel-concierge-scheduler:latest-main}
-    build:
-      context: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}
-      dockerfile: Dockerfile.python
-    container_name: ${KOR_TRAVEL_CONCIERGE_SCHEDULER_CONTAINER:-kor-travel-concierge-scheduler-latest}
-    init: true
-    # 앱의 종료 대기·LLM HTTP 정리보다 길게 확보한다.
-    stop_grace_period: 180s
-    mem_limit: 2g
-    mem_reservation: 512m
-    cpus: 2
-    restart: unless-stopped
-    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
-    command:
-    - python
-    - -m
-    - ktc.cli
-    - scheduler
-    env_file:
-    - path: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}/.env
-      required: false
-      format: raw
-    depends_on:
-      kor-travel-concierge-api:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
-      RUSTFS_ENABLED: 'true'
-      RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
-      APP_ENV: ${KOR_TRAVEL_CONCIERGE_APP_ENV:-local}
-      API_AUTH_ENABLED: ${KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED:-false}
-      API_KEYS: ${KOR_TRAVEL_CONCIERGE_API_KEYS:-}
-      # 자막 비활성/숏폼 영상은 transcript_api·yt-dlp로 자막을 못 받으므로,
-      # faster-whisper 오디오 전사 폴백을 켠다(무거움; env로 제어).
-      TRANSCRIPT_WHISPER_ENABLED: ${KOR_TRAVEL_CONCIERGE_WHISPER_ENABLED:-true}
-      WHISPER_MODEL_SIZE: ${KOR_TRAVEL_CONCIERGE_WHISPER_MODEL_SIZE:-base}
-      FFMPEG_PATH: /usr/bin/ffmpeg
     extra_hosts:
     - host.docker.internal:host-gateway
   kor-travel-concierge-dagster-code-server:
@@ -1401,6 +1393,7 @@ services:
     mem_reservation: 512m
     cpus: 2
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     command:
     - dagster
@@ -1427,8 +1420,8 @@ services:
       DATABASE_URL: ${KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL:?KOR_TRAVEL_CONCIERGE_DOCKER_DATABASE_URL must be explicitly set}
       RUSTFS_ENABLED: 'true'
       RUSTFS_ENDPOINT: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
-      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       APP_ENV: ${KOR_TRAVEL_CONCIERGE_APP_ENV:-local}
       API_AUTH_ENABLED: ${KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED:-false}
       API_KEYS: ${KOR_TRAVEL_CONCIERGE_API_KEYS:-}
@@ -1440,7 +1433,7 @@ services:
     extra_hosts:
     - host.docker.internal:host-gateway
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
     healthcheck:
       test:
       - CMD
@@ -1460,6 +1453,7 @@ services:
       context: ${KOR_TRAVEL_CONCIERGE_REPO_DIR:-../kor-travel-concierge}/frontend
     container_name: ${KOR_TRAVEL_CONCIERGE_UI_CONTAINER:-kor-travel-concierge-ui-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     # single-file boundary에서는 legacy override의 전체 Concierge .env를 UI에
     # 주입하지 않는다. UI가 필요한 server-only auth 값만 명시적으로 전달한다.
@@ -1487,6 +1481,84 @@ services:
       NEXT_PUBLIC_API_BASE_URL: ${KOR_TRAVEL_CONCIERGE_UI_PUBLIC_API_BASE_URL:-}
     ports:
     - ${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}:${KOR_TRAVEL_CONCIERGE_UI_PORT:-12605}
+  # Map의 weather·transport 현재·예보 상태 저장소(Map ADR-114, Manager ADR-59). Map Dagster run worker(code-server의
+  # 자식)가 쓰고 Map API가 읽는다 — 그 둘만 `KOR_TRAVEL_MAP_VALKEY_URL`(위 `x-map-valkey-url`)을 받는다.
+  #
+  # - **포트는 loopback뿐이다.** host network라 `--bind 127.0.0.1`이 곧 호스트 loopback이다(공용 PostgreSQL과 같다).
+  #   `12704`는 Map 대역의 빈 자리다(docs/ports.md). 외부 포트는 열지 않는다.
+  # - **비밀번호는 argv에 두지 않는다.** n150의 `/proc`은 hidepid 없이 붙어 있어 호스트의 어느 프로세스든 argv를
+  #   읽는다(위 Map bootstrap 주석). 그래서 `requirepass`는 stdin 설정(`valkey-server -`)으로 넘긴다 — 셸 argv에는
+  #   `$PW` 글자 그대로만 남는다. healthcheck의 `valkey-cli`는 `VALKEYCLI_AUTH` env로 인증한다.
+  # - 비밀번호는 URI unreserved 문자만 받는다 — Map URL에 그대로 들어가기 때문이다(공용 Dagster app 비밀번호와 같은
+  #   규칙). 어기면 기동을 거부한다. `:?`라 값이 없으면 compose 렌더 자체가 실패한다(설치기가 flip 전에 본다).
+  # - 이미지 entrypoint(`docker-entrypoint.sh`)를 그대로 거친다 — `/data`를 valkey(uid 999)에게 chown하고
+  #   `setpriv`로 권한을 내린다. 이미지의 PID 1이던 tini 대신 `init: true`(docker-init)가 PID 1이다(ADR-52와 같은 이유).
+  # - `maxmemory 1gb` + `noeviction`: 넘치면 조용히 지우지 않고 쓰기를 실패시킨다. `mem_limit`은 그 위에
+  #   RDB fork의 copy-on-write 여유를 둔 값이고 swap으로 새지 않게 `memswap_limit`도 같다.
+  # - 지속성은 **RDB만**(`save 900 1`)이고 named volume `kor-travel-map-valkey-data`에 둔다. **백업 대상이 아니다** —
+  #   원천(weather·transport)에서 다시 받는다(Map ADR-114 "RDB만으로 충분"). 2026-11-04~07 n150에서 AOF `everysec`와
+  #   `save 60 10000`(weather 세대 교체가 매번 1만 키를 넘겨 1분마다 스냅샷)이 사흘에 53 GB를 썼고, 같은 SATA SSD의
+  #   flush 대기로 Map 적재의 Valkey 쓰기가 timeout났다. 정상 종료는 마지막 스냅샷을 쓰므로(`stop_grace_period`)
+  #   15분 간격은 비정상 종료 때 잃는 최대 범위일 뿐이고(그동안은 직전 세대를 그대로 낸다), 다음 schedule run이 다시
+  #   채운다. 하루 최대 96회 × 세대 크기(2026-11 약 50 MB)라 종전(1분마다 + AOF)의 몇 분의 일이다.
+  # - 이미지는 multi-arch index digest다(amd64·arm64가 같은 digest) — 호스트별 이미지 env가 필요 없다.
+  kor-travel-map-valkey:
+    image: valkey/valkey:9.0-alpine@sha256:187679e3bd4036959631e3f03983ab2ba503ab21e6fd0454d508e909db2ee989
+    container_name: kor-travel-map-valkey
+    restart: unless-stopped
+    logging: *default-logging
+    init: true
+    network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    # 종료 때 마지막 RDB 저장을 기다린다(docker 기본 10초는 디스크 대기 중 SIGKILL로 끊을 수 있다).
+    stop_grace_period: 60s
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    environment:
+      # 서버 설정(아래 stdin)과 healthcheck의 `valkey-cli`가 같이 읽는 한 자리.
+      VALKEYCLI_AUTH: ${KOR_TRAVEL_MAP_VALKEY_PASSWORD:?KOR_TRAVEL_MAP_VALKEY_PASSWORD must be explicitly set}
+    entrypoint:
+    - /bin/sh
+    - -ec
+    command:
+    - |
+      PW="$${VALKEYCLI_AUTH}"
+      case "$$PW" in
+        '' | *[!A-Za-z0-9._~-]*)
+          echo "KOR_TRAVEL_MAP_VALKEY_PASSWORD must be non-empty URI unreserved characters [A-Za-z0-9._~-]" >&2
+          exit 64
+          ;;
+      esac
+      # 서버 프로세스의 environ에 남기지 않는다(healthcheck의 `docker exec`는 컨테이너 설정의 env를 다시 받는다).
+      unset VALKEYCLI_AUTH
+      exec docker-entrypoint.sh valkey-server - \
+        --bind 127.0.0.1 --port 12704 --dir /data \
+        --maxmemory 1gb --maxmemory-policy noeviction \
+        --save "900 1" \
+        --appendonly no <<CONF
+      requirepass $$PW
+      CONF
+    # project 범위 internal named volume(MOIS 원천과 같은 규칙 — 아래 최상위 `volumes:`). host bind가 아니므로 운영자가
+    # 디렉터리를 미리 만들 필요가 없다(C6c는 없는 bind source를 거부한다). 처음 붙을 때 이미지의 `/data`(valkey 소유)를
+    # 물려받는다. n150은 디스크가 하나라 Docker data root가 곧 데이터 디스크다.
+    volumes:
+    - kor-travel-map-valkey-data:/data
+    healthcheck:
+      # exec 형식(ADR-52). `-e`가 없으면 valkey-cli는 오류 응답(NOAUTH·LOADING)에도 0으로 끝난다(2026-10-23 n150 실측).
+      test:
+      - CMD
+      - valkey-cli
+      - -e
+      - -h
+      - 127.0.0.1
+      - -p
+      - '12704'
+      - ping
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      # RDB 적재(LOADING)가 끝나야 healthy다. 1 GB 상한의 적재도 n150에서 1분 안이다.
+      start_period: 120s
+      start_interval: 2s
   # Map 정본 스크립트를 source staging path에서 read-only로 실행한다. profile 밖의
   # `compose up`에는 포함되지 않으며 Manager는 `run --rm`으로만 호출한다.
   #
@@ -1579,9 +1651,12 @@ services:
     image: ${KOR_TRAVEL_MAP_API_IMAGE:-kor-travel-map-api:latest-main}
     container_name: ${KOR_TRAVEL_MAP_API_CONTAINER:-kor-travel-map-api-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-map-valkey:
         condition: service_healthy
       rustfs:
         condition: service_healthy
@@ -1622,6 +1697,7 @@ services:
       KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED: ${KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED:?KOR_TRAVEL_MAP_API_OPS_PRINCIPAL_REQUIRED must be explicitly set}
       # T-VN-40 canonical snapshot 검증은 digest만 소비한다. 원시 PinVi token은
       # Map API·UI·Dagster·bootstrap 어디에도 전달하지 않는다.
+      KOR_TRAVEL_MAP_API_PINVI_ADMIN_FEATURES_READ_TOKEN_SHA256: ${KOR_TRAVEL_MAP_API_PINVI_ADMIN_FEATURES_READ_TOKEN_SHA256:-}
       KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256: ${KOR_TRAVEL_MAP_API_PINVI_CURATION_SNAPSHOT_TOKEN_SHA256:-}
       KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256: ${KOR_TRAVEL_MAP_API_PINVI_CURATION_CUTOVER_MAPPING_TOKEN_SHA256:-}
       # T-VN-M01: 원문 manual Feature 생성 token은 Map UI server runtime에만,
@@ -1629,12 +1705,21 @@ services:
       KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256: ${KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256:?KOR_TRAVEL_MAP_API_ADMIN_FEATURE_CREATE_TOKEN_SHA256 must be explicitly set}
       KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED: ${KOR_TRAVEL_MAP_API_ADMIN_MANUAL_FEATURE_CREATE_ENABLED:-false}
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
+      # Map ADR-114 — weather·transport 현재·예보 상태를 읽는 Valkey(`kor-travel-map-valkey`).
+      KOR_TRAVEL_MAP_VALKEY_URL: *map-valkey-url
+      # Map ADR-114 결정 4 — 주유소 가격 추이는 Map API가 transport T4
+      # (`/v1/service/exports/fuel-stations/{station_key}/price-history`)에서 요청 시점에 읽어 전한다. 그래서 code-server와
+      # 같은 원천·기본값의 transport 주소·token을 받는다(`backend/tests/test_consumer_origin_defaults.py`). 플래그는 기본
+      # false다 — transport에 T4가 배포된 뒤 root `.env`에서 켠다(꺼져 있으면 추이는 `unavailable`이고 현재가만 준다).
+      KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://192.168.1.13:12301}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN:-}
+      KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED: ${KOR_TRAVEL_MAP_TRANSPORT_PRICE_HISTORY_ENABLED:-false}
       KOR_TRAVEL_MAP_RUNTIME_DB_PREFLIGHT_REQUIRED: 'true'
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
-      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       KOR_TRAVEL_MAP_OBJECT_STORE_PUBLIC_BASE_URL: ${KTDM_PROD_URL_S3_API:-http://127.0.0.1:${RUSTFS_API_PORT:-12101}}/${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
@@ -1676,6 +1761,7 @@ services:
         NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
     container_name: ${KOR_TRAVEL_MAP_UI_CONTAINER:-kor-travel-map-ui-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-map-api:
@@ -1741,12 +1827,15 @@ services:
     - kortravelmap.dagster.definitions
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-map-dagster-code-server-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-shared-postgres:
+        condition: service_healthy
+      kor-travel-map-valkey:
         condition: service_healthy
       rustfs:
         condition: service_healthy
@@ -1779,11 +1868,16 @@ services:
       # 재생성마다 사라졌다.
       KOR_TRAVEL_MAP_MOIS_SOURCE_DB_PATH: ${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DIR:-/opt/dagster/state/mois}/mois_source.db
       KOR_TRAVEL_MAP_PG_DSN: ${KOR_TRAVEL_MAP_PG_DSN:?KOR_TRAVEL_MAP_PG_DSN must be explicitly set}
+      # Map ADR-114 — run worker(이 컨테이너의 자식)가 weather·transport 상태를 Valkey에 세대 단위로 쓴다.
+      KOR_TRAVEL_MAP_VALKEY_URL: *map-valkey-url
+      # 적재 쓰기는 디스크 flush 대기를 기다린다(Map 기본 2초는 n150 sda 포화 때 세대 쓰기를 timeout냈다,
+      # 2026-11-07). 요청 경로인 Map API는 기본 2초 그대로 — Valkey가 멈추면 곧바로 503을 낸다.
+      KOR_TRAVEL_MAP_VALKEY_SOCKET_TIMEOUT_SECONDS: "10"
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
-      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
       KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
@@ -1791,8 +1885,9 @@ services:
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_BASE_URL:-http://127.0.0.1:12601}
       KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_CONCIERGE_API_KEY:-}
       # 휴게소·주유소·유가는 kor-travel-transport의 내부 export(`GET /v1/service/exports/*`)에서 읽는다 —
-      # run worker는 이 code-server의 자식이라 token은 여기에만 둔다(공용 plane의 webserver·daemon과
-      # legacy-dagster profile의 옛 webserver·daemon에는 넣지 않는다 — 노출 면을 줄인다).
+      # run worker는 이 code-server의 자식이라 Dagster 쪽에서는 token을 여기에만 둔다(공용 plane의 webserver·daemon과
+      # legacy-dagster profile의 옛 webserver·daemon에는 넣지 않는다 — 노출 면을 줄인다). Map API도 같은 token을 받는다
+      # — 가격 추이 T4를 요청 시점에 읽기 때문이다(Map ADR-114 결정 4, `kor-travel-map-api`의 주석).
       # OpiNet·KREX를 Map이 직접 부르지 않는다. token은 루트 `.env`의 이 한 이름이 원천이고, transport
       # 쪽 `TRANSPORT_SERVICE_EXPORT_TOKEN`(transport 배포 사본의 `.env.server14`)과 같은 값이어야 한다.
       # 비면 빈 문자열로 들어가며 Map은 그것을 미설정으로 본다(docs/docker-management.md 7.3).
@@ -1801,11 +1896,24 @@ services:
       # 커밋된 파생물이고 `backend/tests/test_consumer_origin_defaults.py`가 렌더를 스캔해 대조한다.
       KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_BASE_URL:-http://192.168.1.13:12301}
       KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_KOR_TRAVEL_TRANSPORT_SERVICE_TOKEN:-}
+      # Map ADR-114 2단계 — `weather_state_*` job(run worker, 이 컨테이너의 자식)이 weather export(W1~W5,
+      # `/v1/service/exports/*`)를 읽어 Valkey에 쓴다. Map API는 weather를 부르지 않으므로 여기에만 둔다. 주소는
+      # odroid weather API(12201) — PinVi와 같은 registry 파생 기본값이고 `test_consumer_origin_defaults.py`가 대조한다.
+      # token은 weather 자신의 `KOR_TRAVEL_WEATHER_ADMIN_TOKEN`을 참조로만 넘긴다(새 비밀을 만들지 않는다). Map은
+      # 그것을 기본 header `X-Admin-Token`으로 보낸다(`KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_AUTH_HEADER`는 두지 않는다).
+      # `:?`가 아니라 `:-`다 — Map만 렌더하는 경로(Map bootstrap·pinned fragment)가 weather 비밀 없이도 렌더돼야 한다.
+      # 비면 Map은 미설정으로 보고 `weather_state_*` job만 `weather_not_configured`로 실패한다(나머지 Map은 영향 없음).
+      KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL: ${KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}
+      KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_SERVICE_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:-}
+      # weather export 한 페이지의 read timeout(초, Map 설정 0.2~300). 포화된 odroid에서 외부 예보 한 페이지가
+      # 약 100초 걸려(2026-11-02 실측: 고정 약 18초 + 항목당 약 0.2초) Map 기본 60초로는 매번 ReadTimeout이었다.
+      # 기본값은 Map이 정한다 — 비면 Map 설정(`env_ignore_empty`)이 빈 값을 무시하고 자기 기본값을 쓴다.
+      KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_TIMEOUT_SECONDS: ${KOR_TRAVEL_MAP_KOR_TRAVEL_WEATHER_TIMEOUT_SECONDS:-}
       KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY: ${KOR_TRAVEL_MAP_SEOUL_OPEN_DATA_API_KEY:-${SEOUL_OPEN_DATA_API_KEY:-}}
       KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY: ${KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_API_KEY}
     # 이미지에 구운 `dagster_home/dagster.yaml`(옛 전용 metadata DB) 대신 공용 instance 정의를 붙인다.
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
     # run worker는 이 컨테이너의 자식이다 — MOIS 적재·Phase A sync가 여기서 원천 SQLite를 읽고 쓴다.
     - kor-travel-map-mois-source:${KOR_TRAVEL_MAP_DOCKER_MOIS_SOURCE_DIR:-/opt/dagster/state/mois}
     healthcheck:
@@ -1848,6 +1956,7 @@ services:
     - ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER_PORT:-12702}
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_CONTAINER:-kor-travel-map-dagster-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -1877,8 +1986,8 @@ services:
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
-      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
       KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
@@ -1916,6 +2025,7 @@ services:
     image: ${KOR_TRAVEL_MAP_DAGSTER_IMAGE:-kor-travel-map-dagster:latest-main}
     container_name: ${KOR_TRAVEL_MAP_DAGSTER_DAEMON_CONTAINER:-kor-travel-map-dagster-daemon-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -1984,8 +2094,8 @@ services:
       KOR_TRAVEL_MAP_OBJECT_STORE_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KOR_TRAVEL_MAP_OBJECT_STORE_BUCKET: ${KRTOUR_MAP_RUSTFS_BUCKET:-krtour-map}
       KOR_TRAVEL_MAP_OBJECT_STORE_REGION: ${KRTOUR_MAP_OBJECT_STORE_REGION:-us-east-1}
-      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KOR_TRAVEL_MAP_OBJECT_STORE_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KOR_TRAVEL_MAP_OBJECT_STORE_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_BUCKET: ${KRTOUR_MAP_OFFLINE_UPLOAD_BUCKET:-krtour-uploads}
       KOR_TRAVEL_MAP_OFFLINE_UPLOAD_MAX_BYTES: ${KRTOUR_MAP_OFFLINE_UPLOAD_MAX_BYTES:-104857600}
       KOR_TRAVEL_MAP_DATA_GO_KR_SERVICE_KEY: ${KRTOUR_MAP_DATA_GO_KR_SERVICE_KEY:-}
@@ -2008,6 +2118,7 @@ services:
         PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
     container_name: ${PINVI_API_CONTAINER:-pinvi-api-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       # ADR-46 — 앱 DSN이 실제로 접속하는 곳.
@@ -2035,14 +2146,15 @@ services:
     environment:
       PINVI_ENVIRONMENT: ${PINVI_ENVIRONMENT:?PINVI_ENVIRONMENT must be explicitly set}
       PINVI_API_WORKERS: ${PINVI_API_WORKERS:-1}
+      PINVI_RATE_LIMIT_USER_LIMIT_OVERRIDES: '${PINVI_RATE_LIMIT_USER_LIMIT_OVERRIDES:-{}}'
       PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}
       PINVI_JWT_SECRET_KEY: ${PINVI_JWT_SECRET_KEY:-pinvi-local-jwt-secret-32-bytes-minimum}
       PINVI_RESEND_API_KEY: ${PINVI_RESEND_API_KEY:-}
       PINVI_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       PINVI_RUSTFS_PUBLIC_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_PORT:-12101}
       PINVI_RUSTFS_BUCKET: ${PINVI_RUSTFS_BUCKET:-pinvi-media}
-      PINVI_RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      PINVI_RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      PINVI_RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      PINVI_RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       PINVI_CORS_ALLOWED_ORIGINS: '${PINVI_CORS_ALLOWED_ORIGINS:-["http://127.0.0.1:12805","http://localhost:12805"]}'
       # PinVi production Settings는 import 시 이 Map capability pair를 검증한다.
       PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL: ${PINVI_KOR_TRAVEL_MAP_ADMIN_BASE_URL:-http://127.0.0.1:${KOR_TRAVEL_MAP_API_CONTAINER_PORT:-12701}}
@@ -2051,8 +2163,27 @@ services:
       PINVI_KOR_TRAVEL_MAP_OPS_CANCEL_TOKEN: ${KOR_TRAVEL_MAP_API_OPS_CANCEL_TOKEN:-}
       # 이 두 원시 token은 ordinary PinVi API만 소비한다. Manager가 digest를 Map
       # API에 파생하고 다른 PinVi/Map service로의 누출을 fail-close한다.
+      PINVI_KOR_TRAVEL_MAP_ADMIN_FEATURES_READ_TOKEN: ${PINVI_KOR_TRAVEL_MAP_ADMIN_FEATURES_READ_TOKEN:-}
       PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN: ${PINVI_KOR_TRAVEL_MAP_CURATION_SNAPSHOT_TOKEN:-}
       PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN: ${PINVI_KOR_TRAVEL_MAP_CURATION_CUTOVER_MAPPING_TOKEN:-}
+      # 지도 교통 레이어(PinVi ADR-076, Map ADR-114) — PinVi가 Map `/v1/service/transport/*`를 부른다. 운영 Map은
+      # service token 없이는 401이다. 새 비밀을 만들지 않고 Map API가 받는 같은 `KOR_TRAVEL_MAP_API_SERVICE_TOKEN`을
+      # 넘긴다(`:?` — Map API와 같은 필수 조건이라 빈 값으로 기동하지 않는다). 이 토큰이 있으면 PinVi의 다른 Map 호출도
+      # 같은 service token 헤더를 보낸다(PinVi `KorTravelMapClient`). C6c는 이 자리를 Map service token의 허용 경로로 본다.
+      PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}
+      # 기본 켜짐(소유자 결정 2026-10-23). 끄려면 root `.env`에 `PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED=false` —
+      # 꺼지면 PinVi `/transport/status`가 enabled=false를 주고 web/mobile이 레이어 컨트롤을 숨긴다(Map 미호출).
+      PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED: ${PINVI_KOR_TRAVEL_MAP_TRANSPORT_ENABLED:-true}
+      # 지도 날씨 레이어(PinVi #600, Map ADR-114 weather service REST). 기본 꺼짐 — Map weather 상태 적재(Map
+      # code-server의 weather export 배선, docs/docker-management.md 7.3d)가 채워진 뒤 root `.env`에서 true로 켠다.
+      # Map service token은 위 `PINVI_KOR_TRAVEL_MAP_SERVICE_TOKEN`을 그대로 쓴다(새 비밀 없음). PinVi는 이 플래그가
+      # true인데 그 token이 비면 기동을 거부한다(PinVi ADR-077) — 그래서 기본은 false로 둔다.
+      PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED: ${PINVI_KOR_TRAVEL_MAP_WEATHER_ENABLED:-false}
+      # Map weather 호출 한 번의 read·connect 상한과 카드·marker 요청 하나의 전체 예산(초). 기본값은 PinVi 앱 기본값과
+      # 같다(빈 문자열은 float로 읽히지 않으므로 `:-`로 늘 값을 준다). 바꿀 때만 root `.env`에 둔다.
+      PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS: ${PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS:-3}
+      PINVI_KOR_TRAVEL_MAP_WEATHER_CONNECT_TIMEOUT_SECONDS: ${PINVI_KOR_TRAVEL_MAP_WEATHER_CONNECT_TIMEOUT_SECONDS:-1}
+      PINVI_KOR_TRAVEL_MAP_WEATHER_REQUEST_BUDGET_SECONDS: ${PINVI_KOR_TRAVEL_MAP_WEATHER_REQUEST_BUDGET_SECONDS:-5}
       # 공용 Dagster webserver(ADR-54, loopback 전용). admin_etl은 `repositoryOrError`·`runsOrError`를
       # `pinvi_dagster_location_name`(= `pinvi.etl.definitions`)으로 좁혀 부른다.
       PINVI_DAGSTER_BASE_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}
@@ -2117,8 +2248,10 @@ services:
         PINVI_SOURCE_REVISION: ${PINVI_SOURCE_REVISION:-development}
         PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
         NEXT_PUBLIC_PINVI_API_URL: ${PINVI_PUBLIC_API_URL:-http://127.0.0.1:12801}
+        NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
     container_name: ${PINVI_WEB_CONTAINER:-pinvi-web-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     command:
     - npx
@@ -2151,6 +2284,7 @@ services:
         PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
     container_name: ${PINVI_DAGSTER_CODE_SERVER_CONTAINER:-pinvi-dagster-code-server-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2211,7 +2345,7 @@ services:
       PINVI_KOR_TRAVEL_WEATHER_BASE_URL: ${PINVI_KOR_TRAVEL_WEATHER_BASE_URL:-http://192.168.1.13:12201}
     # 이미지에 구운 `apps/etl/dagster.yaml` 대신 공용 instance 정의를 붙인다.
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/pinvi/.dagster/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/pinvi/.dagster/dagster.yaml:ro
     healthcheck:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
@@ -2247,6 +2381,7 @@ services:
         PINVI_BUILD_ENVIRONMENT: ${PINVI_BUILD_ENVIRONMENT:-development}
     container_name: ${PINVI_DAGSTER_CONTAINER:-pinvi-dagster-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2314,6 +2449,7 @@ services:
     image: ${PINVI_DAGSTER_IMAGE:-pinvi-dagster:latest-main}
     container_name: ${PINVI_DAGSTER_DAEMON_CONTAINER:-pinvi-dagster-daemon-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2398,6 +2534,7 @@ services:
     image: ${PROMETHEUS_IMAGE:-prom/prometheus:v2.53.1}
     container_name: ${PROMETHEUS_CONTAINER:-kor-travel-prometheus}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     user: ${PROMETHEUS_RUN_AS_USER:-0}
     command:
@@ -2416,6 +2553,7 @@ services:
     image: ${GRAFANA_IMAGE:-grafana/grafana:11.1.4}
     container_name: ${GRAFANA_CONTAINER:-kor-travel-grafana}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     user: ${GRAFANA_RUN_AS_USER:-0}
     environment:
@@ -2432,6 +2570,7 @@ services:
     image: ${CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.52.1}
     container_name: ${CADVISOR_CONTAINER:-kor-travel-cadvisor}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     privileged: true
     devices:
@@ -2482,6 +2621,7 @@ services:
       dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
     container_name: ${KOR_TRAVEL_GEO_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-geo-dagster-code-server-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2515,6 +2655,8 @@ services:
       # `kor_travel_geo_dagster`)은 4단계(platform-topology.md §7)에서 지웠다 — geo 이미지의 entrypoint는 빈 값을
       # 허용한다(`ktg-dagster-entrypoint`의 `check_storage_url`).
       <<: *dagster-shared-control-env
+      # 준비 worker의 하위 적재 제출도 API와 같은 공용 주소를 사용한다.
+      KTG_DAGSTER_URL: *geo-dagster-internal-url
       # `code-server start`의 proxy→자식 heartbeat. proxy가 이 시간 동안 heartbeat를 못 보내면 자식은 진행 중인 run이
       # 끝나기를 기다린 뒤 내려간다(run을 죽이지 않는다). 기본 30초는 n150 디스크 대기 급등에 짧다(weather가
       # heartbeat를 걷어낸 사고) — 그러면 멀쩡한 자식이 내려가 location이 끊긴다. 600초는 그런 급등을 넘기면서,
@@ -2536,8 +2678,8 @@ services:
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
-      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       # T-290 on-ramp (kor-travel-geo #444): op execution happens in this container now
       # (T-307), including the scheduled_backup Dagster run that calls the geo admin API
       # (POST /v1/admin/backups/scheduled/run-due) and must present the admin proxy
@@ -2556,7 +2698,7 @@ services:
     volumes:
     - ${KOR_TRAVEL_GEO_BACKUP_DIR:-../kor-travel-geo/data/backups}:/app/data/backups
     # 이미지에 구운 `dagster_home/dagster.yaml`(옛 전용 metadata DB) 대신 공용 instance 정의를 붙인다.
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/dagster_home/dagster.yaml:ro
     healthcheck:
       # dagster 자신의 gRPC health protocol(`DagsterApi` → SERVING)을 **dagster를 import하지 않고** 부른다.
       # `dagster api grpc-health-check`는 같은 호출에 매번 dagster import를 치른다(유휴 2초, 부하 때 수십 초).
@@ -2590,6 +2732,7 @@ services:
       dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
     container_name: ${KOR_TRAVEL_GEO_DAGSTER_CONTAINER:-kor-travel-geo-dagster-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2618,8 +2761,8 @@ services:
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
-      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       # T-290 on-ramp (kor-travel-geo #444): the scheduled_backup Dagster run calls the
       # geo admin API (POST /v1/admin/backups/scheduled/run-due) and must present the
       # admin proxy secret the API expects, else the run-due call 403s.
@@ -2667,6 +2810,7 @@ services:
       dockerfile: kor-travel-geo-dagster/docker/dagster.Dockerfile
     container_name: ${KOR_TRAVEL_GEO_DAGSTER_DAEMON_CONTAINER:-kor-travel-geo-dagster-daemon-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2735,8 +2879,8 @@ services:
       KTG_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       KTG_RUSTFS_BUCKET: ${KOR_TRAVEL_GEO_RUSTFS_BUCKET:-kor-travel-geo}
       KTG_RUSTFS_PREFIX: ${KOR_TRAVEL_GEO_RUSTFS_PREFIX:-kor-travel-geo}
-      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      KTG_RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:?RUSTFS_ACCESS_KEY must be explicitly set}
+      KTG_RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:?RUSTFS_SECRET_KEY must be explicitly set}
       # T-290 on-ramp (kor-travel-geo #444): the daemon shares the code-location image
       # and can execute the scheduled_backup run, which calls the geo admin API
       # (POST /v1/admin/backups/scheduled/run-due). It must present the admin proxy
@@ -2798,6 +2942,7 @@ services:
         GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-unknown}
     container_name: ${KOR_TRAVEL_WEATHER_API_CONTAINER:-kor-travel-weather-api-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-shared-postgres:
@@ -2821,6 +2966,8 @@ services:
       # 비밀번호는 URL에 넣지 않고 libpq PGPASSWORD로 전달한다 — weather 자신의
       # 기존 관례(compose.yaml 주석) 그대로다.
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
+      KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED: ${KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED:-false}
+      KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_ROOT: &weather-export-artifact-root /var/lib/kor-travel-weather/exports
       PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
       KOR_TRAVEL_WEATHER_METRICS_TOKEN: ${KOR_TRAVEL_WEATHER_METRICS_TOKEN:?set KOR_TRAVEL_WEATHER_METRICS_TOKEN in .env}
@@ -2848,6 +2995,8 @@ services:
       KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL: ${KOR_TRAVEL_WEATHER_WTTR_IN_BASE_URL:-https://wttr.in}
       KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL: ${KOR_TRAVEL_WEATHER_VISUAL_CROSSING_BASE_URL:-https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services}
       KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN: ${KOR_TRAVEL_WEATHER_MAX_PAYLOAD_BYTES_PER_RUN:-16777216}
+    volumes:
+    - &weather-export-artifact-volume kor-travel-weather-export-artifacts:/var/lib/kor-travel-weather
     ports:
     - ${KOR_TRAVEL_WEATHER_API_PORT:-14101}:${KOR_TRAVEL_WEATHER_API_PORT:-14101}
     # Common HTTP CLI가 설치된 API 이미지를 먼저 확인한다.
@@ -2899,6 +3048,7 @@ services:
         GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-unknown}
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_CODE_SERVER_CONTAINER:-kor-travel-weather-dagster-code-server-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -2945,6 +3095,8 @@ services:
       KOR_TRAVEL_DAGSTER_INSTANCE_DIGEST: *dagster-instance-digest
       DAGSTER_HOME: /opt/dagster/home
       KOR_TRAVEL_WEATHER_ENV: production
+      KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED: ${KOR_TRAVEL_WEATHER_SERVICE_EXPORTS_ENABLED:-false}
+      KOR_TRAVEL_WEATHER_SERVICE_EXPORT_ARTIFACT_ROOT: *weather-export-artifact-root
       KOR_TRAVEL_WEATHER_DATABASE_URL: postgresql+psycopg://${KOR_TRAVEL_WEATHER_SHARED_APP_USER:-kor_travel_weather_app}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${KOR_TRAVEL_WEATHER_SHARED_APP_DB:-kor_travel_weather}
       PGPASSWORD: ${KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD:?set KOR_TRAVEL_WEATHER_SHARED_APP_PASSWORD in .env}
       KOR_TRAVEL_WEATHER_ADMIN_TOKEN: ${KOR_TRAVEL_WEATHER_ADMIN_TOKEN:?set KOR_TRAVEL_WEATHER_ADMIN_TOKEN in .env}
@@ -2990,7 +3142,8 @@ services:
       KOR_TRAVEL_WEATHER_METRICS_PORT: ${KOR_TRAVEL_WEATHER_METRICS_PORT:-14103}
       PROMETHEUS_MULTIPROC_DIR: /var/run/kor-travel-weather-metrics
     volumes:
-    - ./config/dagster-shared/dagster.yaml:/opt/dagster/home/dagster.yaml:ro
+    - ${KTDM_DAGSTER_INSTANCE_CONFIG:-./config/dagster-shared/dagster.yaml}:/opt/dagster/home/dagster.yaml:ro
+    - *weather-export-artifact-volume
     tmpfs:
     - /var/run/kor-travel-weather-metrics
     cpu_shares: 4096
@@ -3038,6 +3191,7 @@ services:
         GIT_COMMIT: ${KOR_TRAVEL_WEATHER_GIT_COMMIT:-unknown}
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_WEBSERVER_CONTAINER:-kor-travel-weather-dagster-webserver-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -3130,6 +3284,7 @@ services:
     image: ${KOR_TRAVEL_WEATHER_DAGSTER_IMAGE:-kor-travel-weather-dagster:latest-main}
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_DAEMON_CONTAINER:-kor-travel-weather-dagster-daemon-latest}
     restart: unless-stopped
+    logging: *default-logging
     # healthcheck·exec가 남긴 고아를 거둔다 — PID 1(dagster)은 거두지 않아 2026-09-27 n150의 Dagster
     # 컨테이너들에 좀비 565개가 쌓여 있었다.
     init: true
@@ -3213,6 +3368,7 @@ services:
       dockerfile: deploy/Dockerfile.dagster-gateway
     container_name: ${KOR_TRAVEL_WEATHER_DAGSTER_GATEWAY_CONTAINER:-kor-travel-weather-dagster-gateway-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-weather-dagster-webserver:
@@ -3238,6 +3394,7 @@ services:
         NEXT_PUBLIC_VWORLD_API_KEY: ${NEXT_PUBLIC_VWORLD_API_KEY:-}
     container_name: ${KOR_TRAVEL_WEATHER_WEB_CONTAINER:-kor-travel-weather-web-latest}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     depends_on:
       kor-travel-weather-api:
@@ -3293,6 +3450,7 @@ services:
     image: prom/prometheus:v3.5.0
     container_name: ${KOR_TRAVEL_WEATHER_PROMETHEUS_CONTAINER:-kor-travel-weather-prometheus}
     restart: unless-stopped
+    logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     user: ${KOR_TRAVEL_WEATHER_PROMETHEUS_RUN_AS_USER:-0}
     depends_on:
@@ -3339,7 +3497,11 @@ services:
 # internal named volume — 이름은 compose project에서 파생된다(`<project>_kor-travel-map-mois-source`). 그래서
 # 격리 스택(M05 등)은 자기 volume을 따로 갖는다. `name:`/`external`은 두지 않는다(docs/docker-management.md).
 volumes:
+  # Weather 승인 artifact: API·worker 교체 후에도 같은 파일을 읽는다. 운영 Docker data-root는 NVMe여야 한다.
+  kor-travel-weather-export-artifacts: {}
   kor-travel-map-mois-source: {}
+  # Map Valkey의 RDB(ADR-59). 백업 대상이 아니다 — 잃으면 Map 적재 job이 원천에서 다시 채운다.
+  kor-travel-map-valkey-data: {}
 
 secrets:
   kor-travel-shared-postgres-password:

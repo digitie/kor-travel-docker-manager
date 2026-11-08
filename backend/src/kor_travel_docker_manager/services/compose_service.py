@@ -1,3 +1,4 @@
+import asyncio
 import errno
 import hashlib
 import json
@@ -11,7 +12,7 @@ import time
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -20,10 +21,17 @@ from io import StringIO
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final, cast
+from urllib.parse import urlsplit
 
+import httpx
 import yaml
 from dotenv import dotenv_values
 
+from kor_travel_docker_manager.services.build_context_export import (
+    COMPOSE_BUILD_INPUT_LABEL,
+    compose_build_input_sha256,
+    compose_document_with_exported_build_contexts,
+)
 from kor_travel_docker_manager.services.c6c_deployment import (
     _MAP_APPLICATION_SCHEMA_SERVICE,
     _MAP_RUNTIME_SERVICES,
@@ -36,6 +44,7 @@ from kor_travel_docker_manager.services.c6c_deployment import (
     CandidateSystemBindSnapshot,
     PinviCancelProbeState,
     _assert_candidate_single_file_boundary,
+    _candidate_volume_mounts,
     _expand_env_path,
     assert_compose_mutation_allowed,
     assert_manager_mutation_allowed,
@@ -69,6 +78,7 @@ from kor_travel_docker_manager.services.capabilities import (
     _MANAGED_COMPOSE_MUTATION_CAPABILITY,
     _PINNED_RUNTIME_REBUILD_MUTATION_CAPABILITY,
 )
+from kor_travel_docker_manager.services.compose_references import reference_compose_path
 from kor_travel_docker_manager.services.database_runtime import (
     DatabaseRole,
     DatabaseRuntime,
@@ -113,6 +123,7 @@ from kor_travel_docker_manager.services.pinned_runtime_generation import (
     ensure_pinned_runtime_state_directory,
     generation_logical_sha256,
     pinned_runtime_state_paths,
+    pinned_runtime_state_root,
 )
 from kor_travel_docker_manager.services.pinned_runtime_rebuild import (
     CandidateRuntimeBuild,
@@ -138,11 +149,13 @@ from kor_travel_docker_manager.services.pinvi_bootstrap_credential import (
 from kor_travel_docker_manager.services.registry import (
     MANAGED_CONTAINERS,
     ExternalProject,
+    consumer_origin,
     container_id_to_compose_service,
     current_host,
     external_project_for_container,
     external_project_for_target,
     get_project_root,
+    get_targets_config_path,
     is_known_target,
     load_targets_config,
     local_mutation_target,
@@ -160,11 +173,14 @@ from kor_travel_docker_manager.services.runtime_topology import (
     RuntimeSlot,
     RuntimeTopology,
     SharedDagsterPlane,
+    derive_dagster_family,
     derive_shared_dagster_plane,
     installed_code_location,
     installed_container_name,
     installed_dagster_families,
+    installed_dagster_family,
     installed_location_owners,
+    installed_pinned_infrastructure,
     installed_shared_dagster_plane,
     listen_address,
     read_host_workspace,
@@ -172,6 +188,7 @@ from kor_travel_docker_manager.services.runtime_topology import (
     shared_workspace_source,
     slot_project,
 )
+from kor_travel_docker_manager.services.status_snapshot import invalidates_status
 from kor_travel_docker_manager.services.trusted_install import (
     require_pinned_runtime_rebuild_root,
     trusted_pinned_runtime_project_root,
@@ -227,9 +244,23 @@ _DAGSTER_TARGET_API_SLOTS: Final[tuple[tuple[str, RuntimeSlot], ...]] = (
 
 _PINNED_RUNTIME_EXTERNAL_PREREQUISITES = (
     "rustfs",
-    "kor-travel-geo-api",
     "kor-travel-concierge-api",
 )
+_PINNED_RUNTIME_GEO_CONSUMER_ORIGINS: Final[tuple[tuple[str, str], ...]] = (
+    ("kor-travel-map-api", "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL"),
+    ("kor-travel-map-ui", "KOR_TRAVEL_GEO_INTERNAL_URL"),
+    ("kor-travel-map-dagster-code-server", "KOR_TRAVEL_MAP_KOR_TRAVEL_GEO_BASE_URL"),
+    ("pinvi-api", "PINVI_KOR_TRAVEL_GEO_BASE_URL"),
+)
+_PINNED_RUNTIME_GEO_CONSUMER_TARGETS: Final[tuple[tuple[str, str], ...]] = (
+    ("kor-travel-map-api", "map"),
+    ("kor-travel-map-ui", "map"),
+    ("kor-travel-map-dagster-code-server", "map"),
+    ("pinvi-api", "pinvi"),
+)
+_GEO_API_READINESS_PATH: Final = "/v1/readyz"
+_GEO_API_READINESS_TIMEOUT_SECONDS: Final = 4.0
+_GEO_API_READINESS_BODY_MAX_BYTES: Final = 4096
 #: 명시 서비스의 `depends_on`까지 만들거나 다시 만들거나 시작할 수 있는 compose 명령. `--no-deps`가
 #: 없으면 R3 chokepoint가 그 의존성 closure를 범위에 넣는다. `--no-deps`를 받는 명령(up·run·
 #: restart·scale)과, 그 플래그 없이 의존성을 끌어오는 명령(create는 n150 Compose v5.2.0에 그
@@ -270,6 +301,173 @@ def _compose_dependency_closure(
             raise DeploymentContractError(f"compose service {name} depends_on is unreadable")
         pending.extend(dependencies)
     return reached
+
+
+def _scope_service_owners() -> tuple[str, Mapping[str, frozenset[str]]]:
+    """관찰 containers가 아닌 직접 target/init/family 소유권을 재사용한다."""
+    config = load_targets_config()
+    selected = current_host(config)
+    families = {
+        target: installed_dagster_family(target)
+        for target, spec in config["targets"].items()
+        if spec.get("dagster") and not spec.get("external_project")
+        and selected in target_hosts(target, config)
+    }
+    return selected, compose_service_owners(config, families=families)
+
+
+
+def _candidate_release_scope_owners(root: Path) -> tuple[str, Mapping[str, frozenset[str]]]:
+    """flip 전 wheel 위치 대신 후보 release의 정본 문서에서만 family를 파생한다."""
+    if Path(get_targets_config_path()).resolve() != (root / "config/docker-targets.yml").resolve():
+        raise ComposeCandidateContractError("candidate release target registry path differs")
+    config = load_targets_config()
+    selected = current_host(config)
+    try:
+        reference = load_yaml_rejecting_duplicate_keys(
+            reference_compose_path(root / "docker-compose.yml").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ComposeCandidateContractError("candidate release reference cannot be loaded") from exc
+    if not isinstance(reference, Mapping):
+        raise ComposeCandidateContractError("candidate release reference is invalid")
+    families = {
+        target: derive_dagster_family(reference, config, target)
+        for target, spec in config["targets"].items()
+        if spec.get("dagster") and not spec.get("external_project")
+        and selected in target_hosts(target, config)
+    }
+    return selected, compose_service_owners(config, families=families)
+
+
+def _scope_service_references(
+    service: Mapping[str, Any], environment: Mapping[str, str],
+) -> set[str]:
+    # 이 필드들은 단순 depends_on 외의 서비스를 끌어오므로 미지원 형태를 명시 거부한다.
+    if any(key in service for key in ("links", "external_links", "volumes_from", "extends")):
+        raise ComposeCandidateContractError("scoped compose service reference is unsupported")
+    build = service.get("build")
+    if isinstance(build, Mapping) and "additional_contexts" in build:
+        raise ComposeCandidateContractError("scoped compose build service reference is unsupported")
+    dependencies = service.get("depends_on")
+    if dependencies is None:
+        dependencies = ()
+    if not isinstance(dependencies, (Mapping, list, tuple)) or any(
+        not isinstance(name, str) or not name for name in dependencies
+    ):
+        raise ComposeCandidateContractError("scoped compose dependency is invalid")
+    references = set(dependencies)
+    for key in ("network_mode", "ipc", "pid"):
+        value = service.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ComposeCandidateContractError("scoped compose namespace is invalid")
+        expanded = _expand_env_path(value, environment)
+        if expanded.startswith("container:"):
+            raise ComposeCandidateContractError("scoped compose container namespace is unsupported")
+        if expanded.startswith("service:"):
+            target = expanded.removeprefix("service:")
+            if not target:
+                raise ComposeCandidateContractError("scoped compose namespace target is invalid")
+            references.add(target)
+    return references
+
+
+def _compose_service_scope(
+    document: Mapping[str, Any], roots: Sequence[str], environment: Mapping[str, str],
+    *, authority: tuple[str, Mapping[str, frozenset[str]]] | None = None,
+) -> tuple[str, ...]:
+    services = document.get("services")
+    if not isinstance(services, Mapping) or not roots:
+        raise ComposeCandidateContractError("scoped compose services are invalid")
+    selected, owners = authority if authority is not None else _scope_service_owners()
+    reached: set[str] = set()
+    pending = list(roots)
+    while pending:
+        name = pending.pop()
+        if not isinstance(name, str) or selected not in owners.get(name, frozenset()):
+            raise ComposeCandidateContractError("scoped compose dependency has no local owner")
+        if name in reached:
+            continue
+        spec = services.get(name)
+        if not isinstance(spec, Mapping):
+            raise ComposeCandidateContractError("scoped compose service is absent")
+        reached.add(name)
+        pending.extend(_scope_service_references(spec, environment))
+    return tuple(sorted(reached))
+
+
+def _pinned_runtime_compose_scope(
+    document: Mapping[str, Any], environment: Mapping[str, str],
+) -> tuple[str, ...]:
+    config = load_targets_config()
+    topology = runtime_topology()
+    # registry target depends_on에는 원격 Geo 관찰도 있다. 실제 Compose 참조만 닫는다.
+    roots = {
+        *topology.runtime_services, *_PINNED_RUNTIME_ONESHOT_WRITERS,
+        *_PINNED_RUNTIME_EXTERNAL_PREREQUISITES, *installed_shared_dagster_plane().services,
+        *(name for target in ("map", "pinvi") for name in config["targets"][target]["services"]),
+        *(name for family in topology.families.values() for name in family.names),
+    }
+    return _compose_service_scope(document, tuple(roots), environment)
+
+
+def _project_compose_service_scope(
+    document: Mapping[str, Any], scope: tuple[str, ...], environment: Mapping[str, str],
+    *, authority: tuple[str, Mapping[str, frozenset[str]]] | None = None,
+) -> dict[str, Any]:
+    """external 수집 전 같은 폐포의 서비스와 도달 자원만 남긴다. 원문은 바꾸지 않는다."""
+    if tuple(sorted(set(scope))) != scope or _compose_service_scope(document, scope, environment, authority=authority) != scope:
+        raise ComposeCandidateContractError("scoped compose dependency closure changed")
+    projected = deepcopy(dict(document))
+    services = projected["services"] = {
+        name: projected["services"][name] for name in projected["services"] if name in scope
+    }
+    needed: dict[str, set[str]] = {key: set() for key in ("volumes", "networks", "secrets", "configs")}
+    for spec in services.values():
+        for mount in _candidate_volume_mounts(spec.get("volumes"), environment=environment):
+            if mount.kind == "volume":
+                needed["volumes"].add(mount.source)
+        for key in ("networks", "secrets", "configs"):
+            entries = spec.get(key)
+            if entries is None or (
+                key == "networks" and isinstance(entries, (list, Mapping)) and not entries
+            ):
+                if key == "networks" and not spec.get("network_mode"):
+                    if "default" in (projected.get("networks") or {}):
+                        needed[key].add("default")
+                continue
+            if not isinstance(entries, (list, Mapping)):
+                raise ComposeCandidateContractError("scoped compose resource reference is invalid")
+            for entry in entries:
+                name = entry.get("source") if isinstance(entry, Mapping) else entry
+                if not isinstance(name, str):
+                    raise ComposeCandidateContractError("scoped compose resource source is invalid")
+                needed[key].add(_expand_env_path(name, environment))
+    for key, names in needed.items():
+        collection = projected.get(key) or {}
+        if not isinstance(collection, Mapping) or names - collection.keys():
+            raise ComposeCandidateContractError("scoped compose resource definition is absent")
+        if key in projected:
+            projected[key] = {name: value for name, value in collection.items() if name in names}
+    for key in tuple(projected):
+        if isinstance(key, str) and key.startswith("x-"):
+            del projected[key]  # safe_load가 alias/merge를 이미 실제 필드에 전개했다.
+    _assert_candidate_single_file_boundary(projected, environment=environment)
+    return projected
+
+
+def _validate_resolved_service_scope(
+    resolved: Mapping[str, Any], scope: tuple[str, ...],
+    *, authority: tuple[str, Mapping[str, frozenset[str]]] | None = None,
+) -> None:
+    services = resolved.get("services")
+    if not isinstance(services, Mapping) or set(services) - set(scope):
+        raise ComposeCandidateContractError("resolved compose exceeded the selected scope")
+    # Docker가 환경 보간으로 새 namespace 참조를 도입해도 host/subset 검사를 다시 한다.
+    if set(_compose_service_scope(resolved, tuple(services), {}, authority=authority)) != set(services):
+        raise ComposeCandidateContractError("resolved compose dependency is outside the selected scope")
 
 
 # frozen transaction은 실행 전에 one-shot service까지 exact resolved document에 결박한다.
@@ -381,6 +579,62 @@ def _local_image_present(image: str) -> bool:
     except (OSError, subprocess.SubprocessError) as exc:
         raise DeploymentContractError("candidate image store cannot be inspected") from exc
     return completed.returncode == 0
+
+
+def _local_image_compose_build_sha256(image: str) -> str | None:
+    """이 태그의 이미지가 실은 compose build 입력 digest. 이미지가 없거나 label이 없으면 ``None``."""
+
+    try:
+        completed = subprocess.run(
+            ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", image],
+            cwd="/",
+            capture_output=True,
+            check=False,
+            timeout=_PINNED_RUNTIME_STATIC_INSPECTION_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise DeploymentContractError("candidate image store cannot be inspected") from exc
+    if completed.returncode != 0:
+        # 없는 태그만 "다시 빌드"로 읽는다. daemon 오류를 없음으로 읽으면 수렴할 재실행이 재빌드와
+        # 전체 경로(정지·migration)가 된다.
+        if completed.returncode == 1 and b"No such image" in completed.stderr:
+            return None
+        raise DeploymentContractError(
+            f"candidate image {image} cannot be inspected"
+            + command_output_tail("stderr", completed.stderr)
+        )
+    try:
+        labels = json.loads(completed.stdout)
+    except (UnicodeError, ValueError) as exc:
+        raise DeploymentContractError(f"candidate image {image} labels are unreadable") from exc
+    value = labels.get(COMPOSE_BUILD_INPUT_LABEL) if isinstance(labels, Mapping) else None
+    return value if isinstance(value, str) else None
+
+
+def _stale_candidate_build_services(
+    build: CandidateRuntimeBuild,
+    resolved: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """후보 태그가 없거나, 그 이미지가 frozen render의 build 절과 다른 입력으로 빌드된 서비스(slot 순서).
+
+    태그는 pinset(소스 revision)에 묶이지만 build 절의 보간 값(`.env`의 build arg)은 pinset 밖이다.
+    """
+
+    services = resolved.get("services")
+    stale: list[str] = []
+    for slot in COMPOSE_BUILT_RUNTIME_SLOTS:
+        service = build.topology.require_service(slot)
+        definition = services.get(service) if isinstance(services, Mapping) else None
+        section = definition.get("build") if isinstance(definition, Mapping) else None
+        if not isinstance(section, Mapping):
+            raise DeploymentContractError(
+                f"pinned runtime candidate service {service} has no build section"
+            )
+        if _local_image_compose_build_sha256(build.image_names[slot]) != (
+            compose_build_input_sha256(section)
+        ):
+            stale.append(service)
+    return tuple(stale)
 
 
 def get_compose_path() -> str:
@@ -1252,6 +1506,7 @@ class ComposeTransactionSnapshot:
     resolved: Mapping[str, Any] = field(default_factory=dict, repr=False)
     resolved_document_hash: str = field(default="", repr=False)
     manifest_path: str | None = field(default=None, repr=False)
+    service_scope: tuple[str, ...] | None = field(default=None, repr=False)
 
     def __repr__(self) -> str:
         return "ComposeTransactionSnapshot(<redacted>)"
@@ -1529,13 +1784,16 @@ def _effective_snapshot_environment(
     snapshot: ComposeEnvironmentSnapshot,
     environment_override: Mapping[str, str] | None,
 ) -> Mapping[str, str]:
-    if environment_override is None:
-        return MappingProxyType(
-            derive_curation_service_principal_environment(snapshot.effective)
-        )
     merged = dict(snapshot.effective)
-    merged.update(environment_override)
-    return MappingProxyType(derive_curation_service_principal_environment(merged))
+    if environment_override is not None:
+        merged.update(environment_override)
+    derived = derive_curation_service_principal_environment(merged)
+    compose_path = Path(snapshot.compose_path)
+    if compose_path.is_file() and "${KTDM_DAGSTER_INSTANCE_CONFIG:-" in compose_path.read_text(encoding="utf-8"):
+        from kor_travel_docker_manager.services.shared_dagster_instance import instance_environment
+
+        derived = instance_environment(derived)
+    return MappingProxyType(derived)
 
 
 def _external_reference_graph(
@@ -1931,6 +2189,10 @@ def _capture_compose_environment_snapshot(
     if environment_override is not None:
         values.update(environment_override)
     values = derive_curation_service_principal_environment(values)
+    if compose_path.is_file() and "${KTDM_DAGSTER_INSTANCE_CONFIG:-" in compose_path.read_text(encoding="utf-8"):
+        from kor_travel_docker_manager.services.shared_dagster_instance import instance_environment
+
+        values = instance_environment(values)
     return ComposeEnvironmentSnapshot(
         effective=MappingProxyType(values),
         env_path=str(env_path),
@@ -1981,8 +2243,8 @@ def _atomic_restore_compose_source(
     # `fsync_directory`는 디렉터리 fsync 실패를 무조건 삼킨다(best-effort).
     # 그러면 os.replace의 crash-durability가 실제로는 확인되지 않았는데도
     # 이 함수가 정상 반환해 복구가 "성공"으로 보고된다 — 바로 이 이유로
-    # `legacy_override_retirement.py`/`pinvi_database_role_credentials.py`의
-    # `_write_atomic`도 정본으로 옮기지 않았다(docs/tasks.md). 같은 논리를
+    # `pinvi_database_role_credentials.py`의 `_write_atomic`(옛 legacy override
+    # 이관 모듈의 것은 2026-11-02 함께 지웠다)도 정본으로 옮기지 않았다(docs/tasks.md). 같은 논리를
     # 이 자리에도 적용해 strict 원본을 유지한다.
     temporary_path: Path | None = None
     try:
@@ -2073,6 +2335,49 @@ _DURATION_UNIT_SECONDS: Final = {
     "m": 60.0,
     "h": 3600.0,
 }
+
+
+def _plane_log_config_drift(rendered: object, observed: object) -> list[str]:
+    """render의 `logging`과 떠 있는 컨테이너의 `HostConfig.LogConfig`가 어디서 다른가(ADR-61). 비면 같다.
+
+    render가 `logging`을 말하지 않으면 보지 않는다 — 그때는 daemon 기본값이 정하고 compose도 그것을 재생성 사유로
+    보지 않는다. driver를 말하지 않으면 options만 본다(driver는 daemon 기본값). options는 Docker가 문자열 그대로
+    싣는다(`docker compose config --format json`의 값도 문자열이다). 이유에는 driver 이름과 다른 option **이름**만
+    싣는다 — driver option에는 주소·토큰이 올 수 있다.
+
+    **한 방향으로만 본다**: render가 말한 option이 같은 값으로 있으면 된다. 컨테이너에만 있는 option은 무시한다 —
+    Docker는 만들 때 `daemon.json`의 `log-opts`(driver가 daemon 기본과 같을 때)와 log cache 기본값을 합쳐 싣는다.
+    그것까지 세면 다시 만들어도 drift가 남아 재구축마다 plane을 다시 만든다(적대 리뷰 2026-11-03 MED). render에서 지운
+    option은 compose의 config hash가 다룬다.
+
+    컨테이너의 로그 설정을 읽을 수 없으면 거부한다(fail-closed, `_inspect_plane_container`와 같다) — 재생성 사유로
+    삼으면 다시 만들어도 판정할 수 없어 매번 다시 만든다.
+    """
+
+    if rendered is None:
+        return []
+    if not isinstance(rendered, Mapping):
+        return ["render logging is invalid"]
+    options = rendered.get("options") or {}
+    if not isinstance(options, Mapping):
+        return ["render logging is invalid"]
+    if (
+        not isinstance(observed, tuple)
+        or len(observed) != 2
+        or not isinstance(observed[0], str)
+        or not isinstance(observed[1], Mapping)
+    ):
+        raise DeploymentContractError("cannot read the shared plane container's log config")
+    running_driver, running_options = observed
+    reasons: list[str] = []
+    driver = rendered.get("driver")
+    if driver is not None and str(driver) != running_driver:
+        reasons.append(f"logging driver: running {running_driver or '-'} != rendered {driver}")
+    wanted = {str(key): str(value) for key, value in options.items()}
+    differing = sorted(key for key, value in wanted.items() if running_options.get(key) != value)
+    if differing:
+        reasons.append("logging options differ: " + ", ".join(differing))
+    return reasons
 
 
 def _plane_file_digest_keys(render: Mapping[str, Any]) -> frozenset[str]:
@@ -2446,13 +2751,110 @@ _EXTERNAL_PROJECT_PASSTHROUGH_ENV: Final = frozenset(
 )
 
 
+PINVI_FIXED_ACCOUNTS_FILE_ENV = "KTDM_PINVI_FIXED_ACCOUNTS_FILE"
+_PINVI_FIXED_ACCOUNTS_CONTAINER_PATH = "/run/pinvi/fixed-accounts.json"
+
+
+def _pinvi_fixed_accounts_mount_args(values: Mapping[str, str]) -> list[str]:
+    """선택 PinVi 고정 관리자·테스트 사용자 파일을 bootstrap one-shot에 read-only로 넘긴다.
+
+    운영자가 호스트에 둔 owner-only JSON의 절대 경로다. 값(계정·비밀번호)은 Manager가 읽지
+    않는다 — JSON 내용 검사는 PinVi `pinvi-admin-bootstrap`이 컨테이너 안에서 한다. 다만 PinVi가
+    같은 파일에 거는 파일 조건(owner=실행 uid, mode 0600, link 1, 1~4096 bytes; PinVi 이미지는
+    root로 돈다)은 여기서도 먼저 봐서, rebuild 초반(`state_initialization`)에 실패하게 한다.
+    비어 있으면 아무것도 넘기지 않는다(기존 동작).
+    """
+
+    raw = values.get(PINVI_FIXED_ACCOUNTS_FILE_ENV, "").strip()
+    if not raw:
+        return []
+    path = Path(raw)
+    if not path.is_absolute() or ":" in raw or "," in raw:
+        raise DeploymentContractError(
+            f"{PINVI_FIXED_ACCOUNTS_FILE_ENV} must be an absolute host path without ':' or ','"
+        )
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise DeploymentContractError(
+            f"{PINVI_FIXED_ACCOUNTS_FILE_ENV} does not name a readable host file"
+        ) from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise DeploymentContractError(
+            f"{PINVI_FIXED_ACCOUNTS_FILE_ENV} must name a regular file (not a symlink)"
+        )
+    if (
+        metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or metadata.st_nlink != 1
+        or not 0 < metadata.st_size <= 4096
+    ):
+        raise DeploymentContractError(
+            f"{PINVI_FIXED_ACCOUNTS_FILE_ENV} must be owned by the Manager user, mode 0600, "
+            "single-linked and 1..4096 bytes"
+        )
+    return [
+        "-v",
+        f"{raw}:{_PINVI_FIXED_ACCOUNTS_CONTAINER_PATH}:ro",
+        "-e",
+        f"PINVI_BOOTSTRAP_FIXED_ACCOUNTS_FILE={_PINVI_FIXED_ACCOUNTS_CONTAINER_PATH}",
+    ]
+
+
 class ComposeService:
+    def validate_host_compose_preflight(self) -> None:
+        """신뢰 설치의 config 사전검사. C6C 쌍의 mutation 검증은 추가하지 않는다."""
+        root = Path(get_project_root())
+        snapshot = _capture_compose_environment_snapshot(
+            environment_override=None,
+            compose_path=root / "docker-compose.yml",
+            env_path=root / ".env",
+            override_path=root / "docker-compose.override.yml",
+            include_process_environment=False,
+            interpolate_env_file=False,
+        )
+        source_path = Path(snapshot.compose_path)
+        try:
+            source_bytes = source_path.read_bytes()
+            document = yaml.safe_load(source_bytes.decode("utf-8"))
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+            raise ComposeCandidateContractError("host compose source cannot be loaded") from exc
+        if not isinstance(document, Mapping):
+            raise ComposeCandidateContractError("host compose source is not a mapping")
+        authority = _candidate_release_scope_owners(root)
+        selected, owners = authority
+        roots = tuple(name for name, hosts in owners.items() if selected in hosts)
+        scope = _compose_service_scope(document, roots, snapshot.effective, authority=authority)
+        candidate = _project_compose_service_scope(
+            document, scope, snapshot.effective, authority=authority,
+        )
+        if Path(snapshot.override_path).exists():
+            raise ComposeCandidateContractError("host compose override file is unsupported")
+        external = _capture_compose_external_input_snapshot(
+            candidate, environment_snapshot=snapshot, environment_override=None,
+        )
+        resolved = self._resolve_compose_candidate_unlocked(
+            candidate, environment=snapshot.effective,
+            expected_system_bind_snapshots=(),
+            environment_snapshot=snapshot, environment_override=None,
+            external_input_snapshot=external,
+        )
+        _validate_resolved_service_scope(resolved, scope, authority=authority)
+        _revalidate_compose_environment_snapshot(snapshot)
+        _revalidate_compose_external_input_snapshot(
+            external, candidate=candidate, environment_snapshot=snapshot,
+            environment_override=None,
+        )
+        if source_path.read_bytes() != source_bytes or Path(snapshot.override_path).exists():
+            raise ComposeCandidateContractError("host compose source changed during preflight")
+
     def capture_transaction_unlocked(
         self,
         *,
         environment_override: Mapping[str, str] | None = None,
         derive_manifest_path: bool = False,
         environment_snapshot: ComposeEnvironmentSnapshot | None = None,
+        pinned_runtime_scope: bool = False,
     ) -> tuple[ComposeTransactionSnapshot, ValidatedComposeCandidate]:
         """GM-20: docker_service.py가 자신이 이미 확보한 host lock 아래에서 직접
         호출하도록 공개 승격했다(이전에는 프라이빗 크로스 모듈 호출이었다).
@@ -2478,9 +2880,21 @@ class ComposeService:
             raise ComposeCandidateContractError(
                 "compose transaction source cannot be snapshotted"
             ) from exc
+        service_scope = None
+        if pinned_runtime_scope:
+            try:
+                source_document = yaml.safe_load(source_bytes.decode("utf-8"))
+            except (UnicodeError, ValueError, yaml.YAMLError) as exc:
+                raise ComposeCandidateContractError("pinned compose source cannot be loaded") from exc
+            if not isinstance(source_document, Mapping):
+                raise ComposeCandidateContractError("pinned compose source is not a mapping")
+            service_scope = _pinned_runtime_compose_scope(
+                source_document, _effective_snapshot_environment(environment_snapshot, environment_override)
+            )
         validation = self._validate_current_compose_candidate_unlocked(
             environment_override=environment_override,
             environment_snapshot=environment_snapshot,
+            **({"service_scope": service_scope} if service_scope is not None else {}),
         )
         external_inputs = validation.external_input_snapshot
         if external_inputs is None:
@@ -2493,6 +2907,11 @@ class ComposeService:
             if not isinstance(source_document, Mapping):
                 raise ComposeCandidateContractError(
                     "compose transaction source is not a mapping"
+                )
+            if service_scope is not None:
+                source_document = _project_compose_service_scope(
+                    source_document, service_scope,
+                    _effective_snapshot_environment(environment_snapshot, environment_override),
                 )
             external_inputs = _capture_compose_external_input_snapshot(
                 source_document,
@@ -2524,6 +2943,7 @@ class ComposeService:
             resolved=resolved,
             resolved_document_hash=_resolved_compose_document_hash(resolved),
             manifest_path=None,
+            service_scope=service_scope,
         )
         return transaction, replace(
             validation,
@@ -2605,6 +3025,11 @@ class ComposeService:
             raise ComposeCandidateContractError(
                 "frozen compose transaction mode is invalid"
             )
+        if transaction.service_scope is not None:
+            source = _project_compose_service_scope(
+                source, transaction.service_scope, transaction.environment.effective
+            )
+            _validate_resolved_service_scope(transaction.resolved, transaction.service_scope)
         source_references: list[tuple[str, int, str, bool, str]] = []
         services = source.get("services")
         if not isinstance(services, Mapping):
@@ -2868,6 +3293,7 @@ class ComposeService:
                         environment_override=environment,
                         environment_snapshot=environment_snapshot,
                         external_input_snapshot=external_input_snapshot,
+                        service_scope=transaction.service_scope if transaction is not None else None,
                     )
                 )
                 snapshots = validation.system_bind_snapshots
@@ -2935,14 +3361,21 @@ class ComposeService:
                     environment_snapshot=environment_snapshot,
                     external_input_snapshot=external_input_snapshot,
                     materialized_compose=validation.resolved,
+                    service_scope=transaction.service_scope if transaction is not None else None,
                 )
+        read_snapshot = None
+        command_index = self._compose_command_index(args)
+        if (external is None and command_index is not None and args[command_index] == "config"
+                and "${KTDM_DAGSTER_INSTANCE_CONFIG:-" in Path(get_compose_path()).read_text(encoding="utf-8")):
+            # 조회 render도 host 정본을 사용한다. prepare와 G/서비스 변경은 수행하지 않는다.
+            read_snapshot = _capture_compose_environment_snapshot(environment_override=environment)
         return self._run_unlocked(
             args,
             capture_output=capture_output,
             environment=environment,
             expected_system_bind_snapshots=None,
             expected_compose_source_bytes=None,
-            environment_snapshot=None,
+            environment_snapshot=read_snapshot,
             external_input_snapshot=None,
             materialized_compose=None,
             external=external,
@@ -3001,6 +3434,7 @@ class ComposeService:
             environment_override=environment_override,
             environment_snapshot=baseline_transaction.environment,
             external_input_snapshot=baseline_transaction.external_inputs,
+            service_scope=baseline_transaction.service_scope,
         )
         if candidate_validation.raw_volume_graph_hash != baseline_validation.raw_volume_graph_hash:
             raise ComposeCandidateContractError(
@@ -3039,6 +3473,7 @@ class ComposeService:
             resolved=resolved,
             resolved_document_hash=_resolved_compose_document_hash(resolved),
             manifest_path=baseline_transaction.manifest_path,
+            service_scope=baseline_transaction.service_scope,
         )
         return replace(
             candidate_validation,
@@ -3051,6 +3486,7 @@ class ComposeService:
         environment_override: Mapping[str, str] | None = None,
         environment_snapshot: ComposeEnvironmentSnapshot | None = None,
         external_input_snapshot: ComposeExternalInputSnapshot | None = None,
+        service_scope: tuple[str, ...] | None = None,
     ) -> ValidatedComposeCandidate:
         if environment_snapshot is None:
             environment_snapshot = _capture_compose_environment_snapshot(
@@ -3072,6 +3508,7 @@ class ComposeService:
             environment_override=environment_override,
             environment_snapshot=environment_snapshot,
             external_input_snapshot=external_input_snapshot,
+            service_scope=service_scope,
         )
 
     def _validate_compose_candidate_document_unlocked(
@@ -3081,6 +3518,7 @@ class ComposeService:
         environment_override: Mapping[str, str] | None,
         environment_snapshot: ComposeEnvironmentSnapshot | None = None,
         external_input_snapshot: ComposeExternalInputSnapshot | None = None,
+        service_scope: tuple[str, ...] | None = None,
     ) -> ValidatedComposeCandidate:
         if environment_snapshot is None:
             environment_snapshot = _capture_compose_environment_snapshot(
@@ -3090,6 +3528,8 @@ class ComposeService:
             environment_snapshot,
             environment_override,
         )
+        if service_scope is not None:
+            candidate = _project_compose_service_scope(candidate, service_scope, environment)
         if external_input_snapshot is None:
             external_input_snapshot = _capture_compose_external_input_snapshot(
                 candidate,
@@ -3135,6 +3575,8 @@ class ComposeService:
             environment_override=environment_override,
             external_input_snapshot=external_input_snapshot,
         )
+        if service_scope is not None:
+            _validate_resolved_service_scope(resolved, service_scope)
         resolved_snapshots = validate_resolved_compose_candidate_protected_values(
             resolved,
             environment=environment,
@@ -3261,6 +3703,7 @@ class ComposeService:
         external_input_snapshot: ComposeExternalInputSnapshot | None,
         materialized_compose: Mapping[str, Any] | None,
         external: ExternalProject | None = None,
+        service_scope: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         if external is not None and (
             bool(self._compose_mutation_identifiers(args))
@@ -3284,6 +3727,12 @@ class ComposeService:
                 "machinery"
             )
         self._assert_host_mutation_scope(args, resolved=materialized_compose)
+        if materialized_compose is not None:
+            from kor_travel_docker_manager.services.shared_dagster_instance import (
+                validate_instance_consumers,
+            )
+
+            validate_instance_consumers(materialized_compose)
         if materialized_compose is not None:
             scope, flags = self._parse_compose_mutation(args)
             command_index = self._compose_command_index(args)
@@ -3323,64 +3772,72 @@ class ComposeService:
                 environment_snapshot=environment_snapshot,
                 environment_override=environment,
                 external_input_snapshot=external_input_snapshot,
+                service_scope=service_scope,
             )
-        process_input = None
-        if materialized_compose is not None:
-            transport_compose = _escape_materialized_compose_environment_values(
-                materialized_compose
-            )
-            process_input = json.dumps(
-                transport_compose,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        working_directory = get_project_root()
-        if external is not None:
-            # **`-f`는 `--project-directory`가 아니라 cwd 기준이다.** Manager 루트에서
-            # 돌리면 `-f docker-compose.yml`이 Manager 자신의 compose를 연다(적대 리뷰
-            # 2026-09-18 실측: `airport` 명령이 Manager의 concierge-ui 보간 오류를 냈다).
-            working_directory = external.working_dir
-            # 그리고 Manager의 프로세스 환경을 물려주지 않는다. Compose에서 셸 환경은
-            # `.env`보다 **우선**하므로, 상속하면 형제 프로젝트의 `.env`를 조용히
-            # 덮어쓴다 — `--env-file`을 뺀 것만으로는 그것을 막지 못했다.
-            #
-            # **좁히는 것은 상속되는 부분뿐이다.** 첫 판은 이 블록이
-            # `if process_environment is None:` 안에 있어서, `environment` 인자가
-            # 주어지면 그 앞의 `{**os.environ, **environment}`가 그대로 나갔다 —
-            # 무조건문으로 적은 문서가 조건부였다(적대 리뷰 2026-09-18 F2). 명시 인자는
-            # 호출자의 의도적 선택이므로 좁힌 것 **위에** 덮는다.
-            inherited = {
-                name: value
-                for name, value in os.environ.items()
-                if name in _EXTERNAL_PROJECT_PASSTHROUGH_ENV
-                or name.startswith("DOCKER_")
-            }
-            process_environment = (
-                inherited if environment is None else {**inherited, **environment}
-            )
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=working_directory,
-                text=True,
-                capture_output=capture_output,
-                check=False,
-                env=process_environment,
-                input=process_input,
-            )
-        except OSError as exc:
-            # 예외 이름조차 받지 않아서, `working_dir`이 없다는 가장 흔할 오설정이
-            # "docker 바이너리 없음"과 **같은 문구**를 냈다(적대 리뷰 2026-09-18).
-            # cwd가 호스트마다 다른 값이 된 지금은 그 구별이 진단의 전부다.
-            return {
-                "success": False,
-                "returncode": 127,
-                "command": command,
-                "stdout": "",
-                "stderr": (
-                    f"docker compose command could not start in {working_directory}: {exc}"
-                ),
-            }
+        # 명시 build의 context 사본은 Compose가 끝날 때까지 산다(build_context_export.py).
+        with ExitStack() as build_contexts:
+            process_input = None
+            if materialized_compose is not None:
+                transport_compose = _escape_materialized_compose_environment_values(
+                    self._compose_document_for_docker(
+                        args,
+                        materialized_compose,
+                        environment_snapshot=environment_snapshot,
+                        stack=build_contexts,
+                    )
+                )
+                process_input = json.dumps(
+                    transport_compose,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            working_directory = get_project_root()
+            if external is not None:
+                # **`-f`는 `--project-directory`가 아니라 cwd 기준이다.** Manager 루트에서
+                # 돌리면 `-f docker-compose.yml`이 Manager 자신의 compose를 연다(적대 리뷰
+                # 2026-09-18 실측: `airport` 명령이 Manager의 concierge-ui 보간 오류를 냈다).
+                working_directory = external.working_dir
+                # 그리고 Manager의 프로세스 환경을 물려주지 않는다. Compose에서 셸 환경은
+                # `.env`보다 **우선**하므로, 상속하면 형제 프로젝트의 `.env`를 조용히
+                # 덮어쓴다 — `--env-file`을 뺀 것만으로는 그것을 막지 못했다.
+                #
+                # **좁히는 것은 상속되는 부분뿐이다.** 첫 판은 이 블록이
+                # `if process_environment is None:` 안에 있어서, `environment` 인자가
+                # 주어지면 그 앞의 `{**os.environ, **environment}`가 그대로 나갔다 —
+                # 무조건문으로 적은 문서가 조건부였다(적대 리뷰 2026-09-18 F2). 명시 인자는
+                # 호출자의 의도적 선택이므로 좁힌 것 **위에** 덮는다.
+                inherited = {
+                    name: value
+                    for name, value in os.environ.items()
+                    if name in _EXTERNAL_PROJECT_PASSTHROUGH_ENV
+                    or name.startswith("DOCKER_")
+                }
+                process_environment = (
+                    inherited if environment is None else {**inherited, **environment}
+                )
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=working_directory,
+                    text=True,
+                    capture_output=capture_output,
+                    check=False,
+                    env=process_environment,
+                    input=process_input,
+                )
+            except OSError as exc:
+                # 예외 이름조차 받지 않아서, `working_dir`이 없다는 가장 흔할 오설정이
+                # "docker 바이너리 없음"과 **같은 문구**를 냈다(적대 리뷰 2026-09-18).
+                # cwd가 호스트마다 다른 값이 된 지금은 그 구별이 진단의 전부다.
+                return {
+                    "success": False,
+                    "returncode": 127,
+                    "command": command,
+                    "stdout": "",
+                    "stderr": (
+                        f"docker compose command could not start in {working_directory}: {exc}"
+                    ),
+                }
 
         stdout = completed.stdout if capture_output else ""
         stderr = completed.stderr if capture_output else ""
@@ -3399,6 +3856,7 @@ class ComposeService:
         environment_snapshot: ComposeEnvironmentSnapshot | None,
         environment_override: Mapping[str, str] | None,
         external_input_snapshot: ComposeExternalInputSnapshot | None,
+        service_scope: tuple[str, ...] | None = None,
     ) -> None:
         if environment_snapshot is None:
             raise ComposeCandidateContractError(
@@ -3425,6 +3883,11 @@ class ComposeService:
         if external_input_snapshot is None:
             raise ComposeCandidateContractError(
                 "compose mutation has no frozen external input snapshot"
+            )
+        if service_scope is not None:
+            loaded = _project_compose_service_scope(
+                loaded, service_scope,
+                _effective_snapshot_environment(environment_snapshot, environment_override),
             )
         _revalidate_compose_external_input_snapshot(
             external_input_snapshot,
@@ -3455,6 +3918,72 @@ class ComposeService:
         if scope is None:
             return [*_MAP_RUNTIME_SERVICES, _PINVI_API_SERVICE]
         return scope
+
+    def _compose_build_targets(
+        self, args: Sequence[str], resolved: Mapping[str, Any]
+    ) -> frozenset[str]:
+        """이 명령이 **명시적으로** 빌드하는 서비스(``build``, ``up/create/run --build``).
+
+        나머지 서비스는 ``build`` 절 없이 Compose에 나간다 — 운영 source 디렉터리에서의 implicit
+        build는 없다(build_context_export.py). ``--build`` 판정은 argv에 그 토큰이 있느냐로 넓게
+        본다(`run SERVICE` 뒤 컨테이너 argv라도) — 넓게 잡으면 사본을 더 만들 뿐이다. 범위를 해석할
+        수 없으면 build 절이 있는 서비스 전부다.
+        """
+
+        command_index = self._compose_command_index(args)
+        if command_index is None:
+            return frozenset()
+        action = args[command_index]
+        explicit = action == "build" or (
+            action in {"create", "run", "up"} and "--build" in args[command_index + 1 :]
+        )
+        services = resolved.get("services")
+        if not explicit or not isinstance(services, Mapping):
+            return frozenset()
+        built = {
+            name
+            for name, service in services.items()
+            if isinstance(service, Mapping) and "build" in service
+        }
+        scope, flags = self._parse_compose_mutation(args)
+        if not scope:
+            return frozenset(built)
+        touched = set(scope)
+        if action in _COMPOSE_COMMANDS_THAT_REACH_DEPENDENCIES and "--no-deps" not in flags:
+            touched = _compose_dependency_closure(resolved, touched)
+        return frozenset(built & touched)
+
+    def _compose_document_for_docker(
+        self,
+        args: Sequence[str],
+        resolved: Mapping[str, Any],
+        *,
+        environment_snapshot: ComposeEnvironmentSnapshot | None,
+        stack: ExitStack,
+    ) -> dict[str, Any]:
+        """Compose에 건넬 문서: 명시 build 대상은 정규화 사본 context, 나머지는 build 절 없음."""
+
+        targets = self._compose_build_targets(args, resolved)
+        staging: Path | None = None
+        if targets:
+            if environment_snapshot is None:
+                raise DeploymentContractError("build context export has no frozen environment")
+            values = dict(environment_snapshot.effective)
+            # 비운영은 C6c lock과 같은 기본 project 이름을 쓴다(`c6c_state_paths`) — `--build`가
+            # 그 전에 요구하지 않던 `COMPOSE_PROJECT_NAME`을 새로 요구하지 않게 한다.
+            if (
+                not values.get("COMPOSE_PROJECT_NAME", "").strip()
+                and values.get("KTDM_DEPLOYMENT_ENVIRONMENT", "").strip().lower() != "production"
+            ):
+                values["COMPOSE_PROJECT_NAME"] = "kor-travel-local"
+            staging = Path(
+                stack.enter_context(
+                    _pinned_runtime_temporary_directory(pinned_runtime_state_root(values))
+                )
+            )
+        return compose_document_with_exported_build_contexts(
+            resolved, build_services=targets, staging_directory=staging
+        )
 
     @staticmethod
     def _compose_touched_services(args: Sequence[str], resolved: Mapping[str, Any]) -> set[str]:
@@ -3810,6 +4339,7 @@ class ComposeService:
         # down/rm --all/unknown command/option parse failure may affect either API.
         return None, frozenset()
 
+    @invalidates_status
     def ensure_target(
         self,
         target: str,
@@ -4174,13 +4704,11 @@ class ComposeService:
         # waiting until its context deadline.  Keep the frozen transaction and
         # provenance checks identical, but give each candidate service its own
         # BuildKit request so a target completes before the next one starts.
-        built_services = runtime_topology().services_for(COMPOSE_BUILT_RUNTIME_SLOTS)
-        if tuple(args) == (
-            "build",
-            *built_services,
-        ):
+        # 입력이 바뀐 일부만 다시 빌드할 때(`_stale_candidate_build_services`)도 같다.
+        built_services = set(runtime_topology().services_for(COMPOSE_BUILT_RUNTIME_SLOTS))
+        if len(args) > 2 and args[0] == "build" and set(args[1:]) <= built_services:
             build_result: dict[str, Any] = {}
-            for service in built_services:
+            for service in args[1:]:
                 # 실패 메시지의 명령(`build <service>`)이 어느 서비스인지 말한다.
                 build_result = self._run_pinned_runtime_rebuild_compose(
                     ["build", service],
@@ -4445,6 +4973,7 @@ class ComposeService:
         지점이 없으니 PinVi role lifecycle 오류로 감쌀 단계가 남지 않는다.
         """
 
+        fixed_accounts_args = _pinvi_fixed_accounts_mount_args(values)
         with pinvi_bootstrap_credential_file(
             state_paths=state_paths,
             values=values,
@@ -4463,6 +4992,7 @@ class ComposeService:
                     f"{credential.path}:/run/pinvi/bootstrap-admin.json:ro",
                     "-e",
                     "PINVI_BOOTSTRAP_ADMIN_CREDENTIAL_FILE=/run/pinvi/bootstrap-admin.json",
+                    *fixed_accounts_args,
                     _PINVI_ADMIN_BOOTSTRAP_SERVICE,
                 ],
                 transaction=transaction,
@@ -4755,6 +5285,7 @@ class ComposeService:
         images.update((name, slot_images[owner]) for name, owner in companions.items())
         return images
 
+    @invalidates_status
     def rebuild_pinned_runtime(
         self,
         *,
@@ -4763,7 +5294,7 @@ class ComposeService:
     ) -> dict[str, Any]:
         """핀된 Map·PinVi pair를 **마이그레이션 전진**으로 배포한다(ADR-51).
 
-        DB는 배포를 넘어 보존된다. 같은 pair를 다시 돌리면 빌드 없이 수렴만 하고, 새
+        DB는 배포를 넘어 보존된다. 같은 pair·같은 build 입력이면 빌드 없이 수렴만 하고, 새
         pair는 멱등 one-shot으로 head까지 올린다. DB를 지우는 길은 ``restart_reason``을
         준 명시적 ``--restart`` 하나다. ``adopt_reason``(``--adopt-live-databases``)은
         지금 떠 있는 DB를 지우지 않고 새 identity 기준으로 받아들인다 — 백업 복원처럼
@@ -4811,6 +5342,8 @@ class ComposeService:
             values = environment_snapshot.effective
             with _rebuild_stage("state_initialization"):
                 validate_c6c_operation_tokens(values, require_nonempty=True)
+                # 선택 PinVi 고정 계정 파일의 경로·파일 조건을 DB·컨테이너를 건드리기 전에 본다.
+                _pinvi_fixed_accounts_mount_args(values)
                 state_paths = pinned_runtime_state_paths(
                     values,
                     pinset_sha256=release.pinset_sha256,
@@ -4821,6 +5354,7 @@ class ComposeService:
             with _rebuild_stage("prebuild_snapshot"):
                 prebuild_transaction, _ = self.capture_transaction_unlocked(
                     environment_snapshot=environment_snapshot,
+                    pinned_runtime_scope=True,
                 )
             with _rebuild_stage("external_prerequisites"):
                 self._require_services_ready(
@@ -4828,6 +5362,7 @@ class ComposeService:
                     transaction=prebuild_transaction,
                     frozen_recovery=True,
                 )
+                self._require_geo_api_ready(prebuild_transaction)
             with _rebuild_stage("source_materialization"):
                 sources = materialize_pinned_runtime_sources(
                     release=release,
@@ -4845,7 +5380,8 @@ class ComposeService:
             with _rebuild_stage("application_builder"):
                 # 이미지 태그는 pinset에 묶인다. 이미 있으면 같은 소스에서 나온 것이므로
                 # 다시 빌드하지 않는다 — 다시 빌드하면 재현되지 않는 digest가 나와 같은
-                # pair의 재실행이 "새 이미지"가 된다.
+                # pair의 재실행이 "새 이미지"가 된다. 이 builder의 입력은 소스와 그 revision
+                # build arg뿐이다(환경을 읽지 않는다). compose가 빌드하는 네 slot은 아래에서 따로 본다.
                 if not all(_local_image_present(ref) for ref in paired_build_images.values()):
                     _build_map_application_300_images(
                         sources=sources,
@@ -4873,6 +5409,7 @@ class ComposeService:
                 candidate_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=candidate_environment,
                     environment_snapshot=environment_snapshot,
+                    pinned_runtime_scope=True,
                 )
             with _rebuild_stage("candidate_contract"):
                 self._validate_pinned_runtime_candidate_build_contract(
@@ -4881,11 +5418,23 @@ class ComposeService:
                     environment_override=candidate_environment,
                 )
             with _rebuild_stage("candidate_compose_build"):
-                if not all(_local_image_present(ref) for ref in build.image_names.values()):
+                # 태그는 pinset에 묶이지만 compose build 절의 보간 값(`.env`의 `NEXT_PUBLIC_*` 같은
+                # build arg)은 pinset 밖이다. 이미지가 실은 입력 digest(build_context_export)가 이
+                # render와 같은 서비스만 재사용하고, 나머지만 다시 빌드한다.
+                stale = _stale_candidate_build_services(build, candidate_transaction.resolved)
+                if stale:
                     self._run_pinned_runtime_rebuild_compose(
-                        ["build", *build.build_services],
+                        ["build", *stale],
                         transaction=candidate_transaction,
                     )
+                    unstamped = _stale_candidate_build_services(
+                        build, candidate_transaction.resolved
+                    )
+                    if unstamped:
+                        raise DeploymentContractError(
+                            "pinned runtime candidate images do not carry the current compose "
+                            "build inputs after the build: " + ", ".join(unstamped)
+                        )
             with _rebuild_stage("candidate_images"):
                 image_ids = self._attest_pinned_runtime_candidate_images(
                     build=build,
@@ -4924,6 +5473,7 @@ class ComposeService:
                 runtime_transaction, _ = self.capture_transaction_unlocked(
                     environment_override=runtime_environment,
                     environment_snapshot=environment_snapshot,
+                    pinned_runtime_scope=True,
                 )
                 # 잘못되거나 상한을 넘는 health 창은 in_progress/실패 정리 stop 이전에 거절한다.
                 _compose_wait_timeout_seconds(runtime_transaction.resolved.get("services"))
@@ -4964,6 +5514,12 @@ class ComposeService:
                 and self._observe_deployed_databases(runtimes) == dict(previous.databases)
                 and self._observe_schema_heads(runtimes) == dict(previous.schema_heads)
             ):
+                # target이 소유한 비-slot 서비스(Map Valkey, ADR-59) — 아래 전체 경로의 같은 자리 주석.
+                self._up_pinned_infrastructure(
+                    runtime_transaction=runtime_transaction,
+                    topology=topology,
+                    companions=companions,
+                )
                 self._converge_committed_runtime(
                     runtime_transaction=runtime_transaction,
                     topology=topology,
@@ -5021,6 +5577,15 @@ class ComposeService:
                     resolved=runtime_transaction.resolved,
                     environment=runtime_transaction.environment.effective,
                 )
+
+            # target이 소유한 비-slot 서비스(Map Valkey, ADR-59)는 읽기 전용 거부 판정이 **모두 끝난 뒤**, 무엇도 멈추거나
+            # `in_progress`를 쓰기 **전에** 올린다. 실패하면 떠 있던 Map·PinVi와 deploy-status.json을 건드리지 않은 채
+            # 끝난다 — 전체 경로의 실패 정리(`stop`)는 아래 `_deploy_forward`의 try 안에만 있다.
+            self._up_pinned_infrastructure(
+                runtime_transaction=runtime_transaction,
+                topology=topology,
+                companions=companions,
+            )
 
             from kor_travel_docker_manager.services.runtime_execution_registry import (
                 trusted_manager_source_revision,
@@ -5180,6 +5745,39 @@ class ComposeService:
             expected_images=expected_images,
         )
 
+    def _up_pinned_infrastructure(
+        self,
+        *,
+        runtime_transaction: ComposeTransactionSnapshot,
+        topology: RuntimeTopology,
+        companions: Mapping[str, RuntimeSlot],
+    ) -> None:
+        """Map·PinVi target이 소유한 비-slot 상시 서비스(오늘은 Map Valkey, ADR-59)를 slot보다 먼저 올린다.
+
+        slot은 `up --no-deps`로 뜨므로 `depends_on`이 그것을 끌어오지 않는다. 설정이 같으면 compose가 다시 만들지
+        않는다(무연산). 재구축은 이것을 멈추지 않는다 — 실패 정리의 `stop`도 slot·companion만 멈춘다. 호출은 두
+        자리다: 같은 pair 수렴 직전, 그리고 전체 경로의 읽기 전용 거부 판정 뒤·`begin_deploy` 앞(실패가 아무것도
+        멈추지 않고 배포 기록도 쓰지 않게).
+        """
+
+        infrastructure = installed_pinned_infrastructure(
+            excluded=(*topology.runtime_services, *companions, *topology.retired_services)
+        )
+        if not infrastructure:
+            return
+        self._run_pinned_runtime_rebuild_compose(
+            [
+                "up",
+                "-d",
+                "--no-deps",
+                "--wait",
+                "--wait-timeout",
+                str(_compose_wait_timeout_seconds(runtime_transaction.resolved.get("services"))),
+                *infrastructure,
+            ],
+            transaction=runtime_transaction,
+        )
+
     def _converge_shared_dagster_plane(
         self,
         *,
@@ -5221,20 +5819,51 @@ class ComposeService:
                 + ", ".join(missing or sorted(shared_targets))
             )
         self._require_plane_location_owners_fenced(locations, owners)
-        if not self._shared_plane_current(plane, services):
-            self._recreate_shared_plane(plane, transaction=runtime_transaction)
-        self._wait_shared_plane_locations(plane, services, wanted)
+        daemon = self._inspect_plane_container(
+            installed_container_name(plane.daemon), label=plane.daemon
+        )
+        # 배포는 이미 중지된 스케줄러를 켜는 명령이 아니다. 최초 설치/실행 중은 기존 경로다.
+        keep_stopped = daemon is not None and not daemon["running"] and not daemon["restarting"]
+        policy = {"keep_daemon_stopped": True} if keep_stopped else {}
+        if not self._shared_plane_current(plane, services, **policy):
+            self._recreate_shared_plane(
+                plane, services, transaction=runtime_transaction, **policy
+            )
+        self._wait_shared_plane_locations(plane, services, wanted, **policy)
 
     def _recreate_shared_plane(
-        self, plane: SharedDagsterPlane, *, transaction: ComposeTransactionSnapshot
+        self, plane: SharedDagsterPlane, services: Mapping[str, Any], *,
+        transaction: ComposeTransactionSnapshot,
+        keep_daemon_stopped: bool = False,
     ) -> None:
-        """plane 서비스만 frozen render로 다시 만든다 — 재구축과 `dagster-plane converge`가 같은 호출을 쓴다."""
+        """plane 서비스만 frozen render로 다시 만든다 — 재구축과 `dagster-plane converge`가 같은 호출을 쓴다.
 
+        render의 이미지가 로컬에 없으면(설치로 plane 이미지 태그가 바뀐 경우) `--build`를 명시한다.
+        Manager는 명시 build가 아닌 명령에서 `build:` 절을 지워 보내므로(build_context_export.py)
+        implicit build에 기대면 Compose가 로컬 전용 태그를 pull하려다 실패한다. 이미지가 있으면
+        빌드하지 않는다.
+        """
+
+        names = (plane.webserver,) if keep_daemon_stopped else plane.services
+        arguments = ["up", "-d", "--no-deps"]
+        if any(not self._rendered_image_present(services[name], label=name) for name in names):
+            arguments.append("--build")
         self._run_pinned_runtime_rebuild_compose(
-            ["up", "-d", "--no-deps", *plane.services],
+            [*arguments, *names],
             transaction=transaction,
         )
 
+    def _rendered_image_present(self, render: Mapping[str, Any], *, label: str) -> bool:
+        image = render.get("image")
+        if not isinstance(image, str) or not image:
+            return False
+        try:
+            self._inspect_image_reference_id(image, label=label)
+        except DeploymentContractError:
+            return False
+        return True
+
+    @invalidates_status
     def converge_shared_dagster_plane(self, *, dry_run: bool) -> dict[str, Any]:
         """설치된 release의 공용 Dagster plane(daemon·webserver)**만** 그 render로 맞춘다(`ktdctl dagster-plane converge`).
 
@@ -5286,7 +5915,7 @@ class ComposeService:
             }
             recreated = any(drift.values()) and not dry_run
             if recreated:
-                self._recreate_shared_plane(plane, transaction=transaction)
+                self._recreate_shared_plane(plane, services, transaction=transaction)
             # 무연산도 health를 본다 — 앞선 실행이 거짓 실패로 끝났거나 plane이 다른 이유로 unhealthy이면 다시 돌린
             # 이 명령이 OK라고 말하지 않는다. dry-run은 어느 결과든 health를 한 번 보고 기다리지 않는다.
             health = self._wait_shared_plane_healthy(plane, services, wait=not dry_run)
@@ -5483,11 +6112,13 @@ class ComposeService:
             )
 
     def _shared_plane_current(
-        self, plane: SharedDagsterPlane, services: Mapping[str, Any]
+        self, plane: SharedDagsterPlane, services: Mapping[str, Any], *,
+        keep_daemon_stopped: bool = False,
     ) -> bool:
         """떠 있는 daemon·webserver가 frozen render가 만들 컨테이너와 같은가 — 그러면 `up`하지 않는다.
 
-        config hash는 쓰지 않는다(frozen·평범한 render가 다르게 낸다). 대신 재생성을 부를 실행 형태를 직접 본다:
+        config hash는 쓰지 않는다(frozen·평범한 render가 다르게 낸다). 대신 재생성을 부를 실행 형태를 직접 본다
+        (2026-11-03부터 render가 `logging`을 실으면 컨테이너의 `HostConfig.LogConfig`도 — ADR-61, `_plane_log_config_drift`):
         이미지(render의 `image:` 참조가 가리키는 image ID와 컨테이너의 `.Image`), render의 env 전부(공용 URL 앵커,
         heartbeat tolerance, `*_DIGEST` — 컨테이너 env가 그 값들을 그대로 싣는다), command·entrypoint, **bind mount**
         (render의 long-syntax bind마다 같은 컨테이너 경로의 마운트가 같은 source·같은 읽기 전용 여부 — 2026-10-17: 내용
@@ -5501,10 +6132,13 @@ class ComposeService:
         command·entrypoint·env 값을 같은 규칙으로 푼 뒤 비교한다(재리뷰 HIGH — 안 풀면 매번 달라 M3가 되살아난다).
         """
 
-        return not any(self._shared_plane_drift(plane, services).values())
+        return not any(self._shared_plane_drift(
+            plane, services, keep_daemon_stopped=keep_daemon_stopped
+        ).values())
 
     def _shared_plane_drift(
-        self, plane: SharedDagsterPlane, services: Mapping[str, Any]
+        self, plane: SharedDagsterPlane, services: Mapping[str, Any], *,
+        keep_daemon_stopped: bool = False,
     ) -> dict[str, list[str]]:
         """서비스마다 떠 있는 컨테이너가 render와 어디서 다른가(비면 같다). `_shared_plane_current`의 판정 그대로다.
 
@@ -5515,6 +6149,8 @@ class ComposeService:
 
         drift: dict[str, list[str]] = {}
         for name in plane.services:
+            if keep_daemon_stopped and name == plane.daemon:
+                continue
             drift[name] = reasons = []
             render = services[name]
             observed = self._inspect_plane_container(installed_container_name(name), label=name)
@@ -5584,6 +6220,7 @@ class ComposeService:
                     f"bind {target} is mounted but not rendered"
                     for target in sorted(set(mounts) - rendered_targets)
                 )
+            reasons.extend(_plane_log_config_drift(render.get("logging"), observed.get("log_config")))
         return drift
 
     @staticmethod
@@ -5622,6 +6259,8 @@ class ComposeService:
             if separator:
                 env[key] = value
         entrypoint = config.get("Entrypoint")
+        host_config = document.get("HostConfig")
+        log_config = host_config.get("LogConfig") if isinstance(host_config, Mapping) else None
         mounts = {
             str(mount.get("Destination")): (str(mount.get("Source") or ""), mount.get("RW") is False)
             for mount in document.get("Mounts") or []
@@ -5634,6 +6273,15 @@ class ComposeService:
             "entrypoint": None if entrypoint is None else [str(word) for word in entrypoint],
             #: 컨테이너 경로 → (source, 읽기 전용) — bind만.
             "mounts": mounts,
+            #: `HostConfig.LogConfig`의 (driver, options). 읽을 수 없으면 ``None``.
+            "log_config": (
+                (
+                    str(log_config.get("Type") or ""),
+                    {str(k): str(v) for k, v in (log_config.get("Config") or {}).items()},
+                )
+                if isinstance(log_config, Mapping)
+                else None
+            ),
             "running": state.get("Running") is True,
             "restarting": state.get("Restarting") is True,
             "health": (
@@ -5675,7 +6323,7 @@ class ComposeService:
         self,
         plane: SharedDagsterPlane,
         services: Mapping[str, Any],
-        wanted: Sequence[str],
+        wanted: Sequence[str], *, keep_daemon_stopped: bool = False,
     ) -> None:
         host, port = listen_address(services[plane.webserver])
         daemon_container = installed_container_name(plane.daemon)
@@ -5690,8 +6338,12 @@ class ComposeService:
             daemon_running = (
                 observed is not None and observed["running"] and not observed["restarting"]
             )
+            daemon_matches_policy = (
+                observed is not None and not observed["running"] and not observed["restarting"]
+                if keep_daemon_stopped else daemon_running
+            )
             if (
-                daemon_running
+                daemon_matches_policy
                 and loaded is not None
                 and all(loaded.get(location) == "RepositoryLocation" for location in wanted)
             ):
@@ -6063,6 +6715,170 @@ class ComposeService:
                 "mandatory services do not satisfy canonical readiness: " + ", ".join(not_ready)
             )
         return [by_service[service] for service in expected]
+
+    @staticmethod
+    def _require_geo_api_ready(
+        transaction: ComposeTransactionSnapshot,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        """n150 rebuild에서 원격 Geo를 로컬 Compose가 아닌 실제 소비자 경로로 확인한다.
+
+        active 소비자의 frozen Compose origin이 registry R2가 각 consumer target에 대해
+        계산한 Geo origin과 일치해야 한다. Manager 호스트의 주소가 아니라 consumer host를
+        기준으로 비교해 Odroid 이전에도 같은 endpoint를 검사하고, 응답 크기와 전체 대기 시간을 제한한다.
+        """
+
+        resolved_services = transaction.resolved.get("services")
+        if not isinstance(resolved_services, Mapping):
+            raise DeploymentContractError(
+                "pinned runtime has no resolved Geo consumer configuration"
+            )
+        targets_config = load_targets_config()
+        target_by_service = dict(_PINNED_RUNTIME_GEO_CONSUMER_TARGETS)
+        for service_name, variable_name in _PINNED_RUNTIME_GEO_CONSUMER_ORIGINS:
+            service = resolved_services.get(service_name)
+            environment = service.get("environment") if isinstance(service, Mapping) else None
+            base_url = environment.get(variable_name) if isinstance(environment, Mapping) else None
+            if not isinstance(base_url, str) or not base_url.strip():
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer endpoint is missing: {service_name}"
+                )
+            target_name = target_by_service.get(service_name)
+            if target_name is None:
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer target is missing: {service_name}"
+                )
+            consumer_hosts = target_hosts(target_name, targets_config)
+            if len(consumer_hosts) != 1:
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer target must have one host: {target_name}"
+                )
+            configured_origin = consumer_origin(
+                "geo", next(iter(consumer_hosts)), targets_config
+            )
+            if not isinstance(configured_origin, str) or not configured_origin:
+                raise DeploymentContractError(
+                    f"pinned runtime Geo target has no configured consumer origin: {target_name}"
+                )
+            try:
+                configured = urlsplit(configured_origin)
+                configured_port = configured.port
+                actual = urlsplit(base_url)
+                actual_port = actual.port
+            except ValueError as exc:
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer endpoint is invalid: {service_name}"
+                ) from exc
+            if (
+                configured.scheme not in {"http", "https"}
+                or configured.hostname is None
+                or configured.username is not None
+                or configured.password is not None
+                or configured.path not in {"", "/"}
+                or configured.query
+                or configured.fragment
+                or actual.scheme not in {"http", "https"}
+                or actual.hostname is None
+                or actual.username is not None
+                or actual.password is not None
+                or actual.path not in {"", "/"}
+                or actual.query
+                or actual.fragment
+            ):
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer endpoint is invalid: {service_name}"
+                )
+            normalized_port = (
+                actual_port
+                if actual_port is not None
+                else (443 if actual.scheme == "https" else 80)
+            )
+            configured_normalized_port = (
+                configured_port
+                if configured_port is not None
+                else (443 if configured.scheme == "https" else 80)
+            )
+            if normalized_port < 1 or configured_normalized_port < 1:
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer endpoint is invalid: {service_name}"
+                )
+            origin = (configured.scheme, configured.hostname.casefold(), configured_normalized_port)
+            actual_origin = (actual.scheme, actual.hostname.casefold(), normalized_port)
+            if actual_origin != origin:
+                raise DeploymentContractError(
+                    f"pinned runtime Geo consumer endpoint does not match configured Geo target: {service_name}"
+                )
+
+        # Consumer endpoints may differ legitimately when Map and PinVi live on
+        # different hosts (R2 resolves loopback for a colocated consumer). Probe
+        # from this Manager process's own target perspective instead of reusing
+        # the first consumer's address.
+        manager_origin = consumer_origin("geo", current_host(), targets_config)
+        if not isinstance(manager_origin, str) or not manager_origin:
+            raise DeploymentContractError(
+                "pinned runtime Manager host has no configured Geo consumer origin"
+            )
+        probe_origin = manager_origin.rstrip("/")
+
+        try:
+            ready = asyncio.run(
+                ComposeService._probe_geo_api_ready(
+                    probe_origin,
+                    timeout_seconds=_GEO_API_READINESS_TIMEOUT_SECONDS,
+                    max_body_bytes=_GEO_API_READINESS_BODY_MAX_BYTES,
+                    transport=transport,
+                )
+            )
+        except (httpx.HTTPError, RuntimeError, TimeoutError, ValueError):
+            ready = False
+        if not ready:
+            raise DeploymentContractError(
+                "mandatory service health check failed: kor-travel-geo-api"
+            )
+
+    @staticmethod
+    async def _probe_geo_api_ready(
+        connection: str,
+        *,
+        timeout_seconds: float,
+        max_body_bytes: int,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> bool:
+        """제한된 시간·본문 크기 안에서 Geo `/readyz` 계약을 확인한다."""
+
+        health_url = connection.rstrip("/") + _GEO_API_READINESS_PATH
+        async with asyncio.timeout(timeout_seconds):
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(timeout_seconds),
+                follow_redirects=False,
+                trust_env=False,
+                headers={"Accept-Encoding": "identity"},
+                transport=transport,
+            ) as client:
+                async with client.stream("GET", health_url) as response:
+                    if response.status_code != 200:
+                        return False
+                    content_encoding = response.headers.get("content-encoding", "identity")
+                    if content_encoding.casefold() not in {"", "identity"}:
+                        return False
+                    content_length = response.headers.get("content-length")
+                    if content_length is not None:
+                        try:
+                            if int(content_length) > max_body_bytes:
+                                return False
+                        except ValueError:
+                            return False
+                    body = bytearray()
+                    async for chunk in response.aiter_raw(chunk_size=1024):
+                        body.extend(chunk)
+                        if len(body) > max_body_bytes:
+                            return False
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return False
+        return isinstance(payload, Mapping) and payload.get("ready") is True
 
     @staticmethod
     def _inspect_container_runtime_config(container_name: str) -> Mapping[str, Any]:
