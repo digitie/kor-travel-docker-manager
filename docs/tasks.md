@@ -1,18 +1,3 @@
-## 2026-11-09 — 첫 상태 조회의 엄격한 YAML 파싱
-
-- [x] PR #584 이후에도 남은 첫 UI 503을 보존하고, 잠금 필드 파생의 reference 중복 키 파싱 비용을 실측하여 같은 생성자의 안전한 C 파서 우선과 알려진 TAB/비문자열의 기존 Python 경로 선택을 구현한다.
-- [ ] 기존 보안 회귀·최신 두 리뷰·CI 뒤 공식 설치와 첫 공개 UI를 수용한다. 따뜻한 재조회 성공·평상시 단일 표본으로 503 해결을 대신하지 않는다. [규약](container-status-snapshot.md).
-
-## 2026-11-09 — 상태 조회 Compose 파싱 비용
-
-- [x] 실제 수집의 단계별 단일 표본과 안전한 Python/C 파서의 같은 원문·같은 모델을 대조하고, 현재 파일을 매번 읽는 C 안전 파서 우선을 구현한다.
-- [ ] 새 후보의 회귀·독립 두 리뷰·CI 뒤 공식 설치와 실제 수집·공개 UI 503 해소 여부를 별도 정산한다. JOIN 시간·음성 캐시·원격 관측 기준은 완화하지 않는다. [규약](container-status-snapshot.md).
-
-## 2026-11-09 — PR486 순수 조회 code-server 점검
-
-- [x] 최신 main `37bb360`을 병합하고 Common CLI의 Python 격리 모드와 정확한 cutover argv 계약을 보존한다.
-- [ ] 최신 후보의 회귀·독립 두 리뷰·CI 및 소비 이미지 CLI·운영 readiness 검증 후 적용을 정산한다.
-
 ## 2026-11-03 — 상시 서비스 로그 상한(ADR-61)
 
 - [x] compose `x-logging`과 렌더 모델 계약 테스트, 공용 PostgreSQL 허용 목록·driver 검사, 운영 절([prod-deployment §11](prod-deployment.md)).
@@ -46,7 +31,7 @@
 - [ ] **T-MGR-HOST-INSTANCE — 외부 consumer 실제 적용 후속**. 제품559의 두 독립 리뷰·정확 CI·n150/Odroid 정상 설치·양 호스트 공개 TLS12개씩과 현재 Docker running19개씩의 공개 API 정합은 수용했다. Odroid의 PG18 호환 Manager `f368af3e` 공식 설치·공개 UI12도 수용했으며 n150은 동일 제품 `d1468213`를 유지했다([후속 운영 기록](reports/2026-10-28-manager-pg18-normal-install.md)). 남은 Transport139 등 서비스별 정본 show 소비와 별도 명시적 plane/code-server 적용은 각 운영 수용과 구분한다. 현재 plane·Weather job을 바꾸지 않은 설치와 구분한다. [운영 기록](reports/2026-10-27-manager559-two-host-normal-install.md), [계약](host-dagster-instance-config.md).
 
 
-- [ ] **T-MGR-STATUS-SNAPSHOT — 상태 조회 공유의 최신 main 후속**. 원533 제품 전체·불완전 inventory 재시도·연속변경 유한 실패 및 취소/복사 격리를 검증한다. 새 exact CI·독립 두 리뷰·실제 UI·CPU/RSS 수용은 후속이며 운영 설치는 별도다. [규약](container-status-snapshot.md).
+- [ ] **T-MGR-STATUS-SNAPSHOT — 같은 부하의 CPU/RSS·장기 수용**. 최신 상태 조회·안전한 파서의 회귀·독립 두 리뷰·정확 CI·양 호스트 설치·새 backend 첫 UI 16/16은 확인했다. 남은 것은 같은 부하의 CPU/RSS·장기 경합·수집 신선도 수용이며 단일 파싱 표본으로 대신하지 않는다. n150 최종 래퍼의 정확한 전체 Docker 변화는 UNKNOWN으로 보존한다. [규약](container-status-snapshot.md)·[운영 기록](reports/2026-11-09-manager-healthcheck-rollout.md).
 
 - [ ] **T-MGR-PINVI-ADMIN-FEATURE-READ — 전용 scope 배선**. raw 한 키→digest 파생·API 두 소비·기존 secret과 분리·마스킹/override·runtime 격리를 검증한다. 두 독립 리뷰·정확9f10 CI·격리 실제 후보 UI12판정은 통과했다. 공식 설치·새 공개 UI 뒤 최종 pair 직전에만 명시 provision·pair 배포한다. [범위](pinvi-admin-feature-read-provision.md).
 
@@ -62,7 +47,6 @@
 [`docs/tasks-done.md`](tasks-done.md), 실행 근거와 현재 상태는
 [`docs/journal.md`](journal.md)가 정본이다.
 
-- [ ] **T-CS-LIVE — Weather·Geo code-server 순수 조회 healthcheck 도입**. Common grpc live CLI로 PID 종료·DB reaper를 상태 조회에서 분리한다. 소비 이미지의 Common gRPC extra/CLI 존재 검증 후 선언을 적용한다. Transport는 외부 Compose 후속이며, 운영 적용·성능 비교는 미실행이다. 기존 복구 센서·run monitoring·타 서비스 probe·주기·동시성은 유지한다.
 - [ ] **T-MGR-PINVI-VWORLD — PinVi 지도 키 빌드 연결**. 정본 공개 키를 Web build/runtime ARG 소비와 맞추고 raw/resolved 검증·회귀를 추가한다. 소스 검증 뒤 두 독립 리뷰·CI·일반 설치·공식 pair rebuild·공개 지도 확인은 별도다. [범위](pinvi-vworld-build.md).
 
 - [ ] **T-MGR-HOST-COMPOSE-SCOPE — 선택 쌍 실제 재구축 수용**. 정본 host-local 구현·두 설치 모드 검증과 n150 웹·API·CLI 정상 갱신은 수용했다. 남은 것은 Map·PinVi 공식 pinned 재구축·배포 수용이며 Manager 공개 UI 결과와 구분한다. [규약](host-compose-scope.md)·[운영 기록](reports/2026-10-25-manager-normal-update-acceptance.md).
@@ -76,7 +60,6 @@
 - [ ] **T-MGR-MAP-VALKEY — Map Valkey 서비스(Map ADR-114 2단계, ADR-59)**. `kor-travel-map-valkey`(loopback `12704`·requirepass·noeviction 1 GB·RDB만·named volume)와 Map API·code-server의 `KOR_TRAVEL_MAP_VALKEY_URL`, 재구축의 target 소유 비-slot 서비스 선기동을 구현했다. 남은 것: PR CI·머지, n150 `.env`에 `KOR_TRAVEL_MAP_VALKEY_PASSWORD`(hex) 추가 → Manager 설치 → 다음 pinned 재구축(같은 pair 수렴)에서 Valkey 기동 확인. Map이 URL을 읽는 것은 Map ADR-114 3단계다.
 
 - [ ] **T-MGR-PINNED-GEO-READINESS**. Map/PinVi pinned rebuild에서 Geo를 로컬 Compose prerequisite로 요구하지 않고, active frozen Map API·Map UI BFF·Dagster code server·PinVi API origin을 각 consumer target의 R2 origin과 대조한다. 서로 다른 consumer host의 정상 origin 차이는 허용하고, `/v1/readyz` probe는 Manager host의 R2 origin으로 보낸다. retired `legacy-dagster` webserver·daemon은 검사 대상에서 제외한다. 전체 요청은 4초, 압축을 거부한 raw JSON 본문은 4 KiB로 제한한다. 독립 리뷰 2인·CI·n150 공식 Manager CLI 반영·공식 pinned rebuild·새 Map/PinVi live UI E2E 및 PR #1340 merge는 미완료다. DB와 기존 runtime은 실패 시 불변이어야 한다.
-- [ ] **T-WEATHER-API-HEALTH — Weather API의 Common 순수 HTTP 생존 점검 채택**. 포트 정본·승인된90초 주기를 유지하며 Common HTTP/격리모드/12초/4회 소스를 main `37bb360`에 통합했다. 집중457개와 Ruff 통과, 명목 실패 창은360초다. 운영 API의 동일 Common 설정은 읽기 관측으로 확인했으며 신규 배포로 세지 않는다. 최신 두 리뷰·CI·native health·공개 UI 정산은 배포 담당자의 최종 기록을 따른다.
 
 
 - [ ] **T-MGR-LOGOUT-READ — 로그아웃 폴링 재진입 차단**. 별도 PR531에 pending 읽기·WS 경계와 AbortSignal/POST 전 취소·성공 및 실패 세션 회복을 구현했다. 초기3RED·재로그인 P2와 원검증을 보존하고, 중복 진입 신규2RED→집중9PASS/frontend전체44PASS/type·lint·build/Ruff PASS. 버튼·빠른명령의 동기 단일진입과 인증확인 완료 뒤 재시도를 보강했다. 46/48 공개 UI 원문은 보존하며 Cookie 정책·하니스 기준은 바꾸지 않는다. 기존79d7의 독립2리뷰·CI는 완료했으며 최신main 문서 통합delta 검토·CI와 root 실제 새제품 UI는 후속이다. [규약](dashboard-ui.md#9-로그아웃-중-읽기와-소켓의-경계).
