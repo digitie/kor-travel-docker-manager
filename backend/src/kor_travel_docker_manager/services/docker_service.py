@@ -289,7 +289,8 @@ def get_compose_config(path: str | None = None) -> dict[str, Any]:
         return {}
     try:
         with open(path, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+            # 파일은 매번 새로 읽고 안전한 C 파서가 있으면 파싱 비용만 줄인다.
+            return yaml.load(f, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)) or {}
     except Exception as e:
         logger.error(f"Error reading docker-compose.yml: {e}")
         return {}
