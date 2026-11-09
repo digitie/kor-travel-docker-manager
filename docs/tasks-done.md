@@ -1,5 +1,11 @@
 # TASKS-DONE — 완료 태스크 기록
 
+## 2026-11-09 — 상태 점검 배포와 첫 조회 UI 수용
+
+- [x] **T-CS-LIVE — Weather·Geo code-server 순수 조회 점검**. #486의 두 리뷰·CI·병합, 소비 이미지 CLI·격리 모드·원래 점검 시간·Geo 튜닝 보존, healthy·현재 workspace server ID를 확인했다. 수집 run 취소·SQL 수정 없이 자연 종료를 기다리고 원래 예약을 복원했다. Transport 외부 Compose·동일 부하 성능 비교는 범위 밖이다. [운영 기록](reports/2026-11-09-manager-healthcheck-rollout.md).
+- [x] **T-WEATHER-API-HEALTH — 기존 API Common HTTP 점검 정합**. #488의 두 리뷰·CI·병합과 운영 API의 기존 Common 격리 점검·포트·healthy를 확인했다. 새 API 이미지 배포로 세지 않으며 최종 Manager 첫 공개 UI 수용과 함께 정산했다.
+- [x] **상태 조회 일반/엄격 파서와 첫 UI**. #584·#585의 중복 키 계약·TAB/비문자열 사전 선택·회귀·두 리뷰·정확 CI·병합, `49cd6c` 양 호스트 실제 설치와 새 backend 첫 UI 16/16을 수용했다. 앞선 UI 503과 n150 최종 래퍼의 정확한 전체 Docker 변화 UNKNOWN은 보존한다. 같은 부하 CPU/RSS·장기 수용은 `T-MGR-STATUS-SNAPSHOT`에 남긴다.
+
 ## 2026-10-25 — n150 Manager 웹·API·CLI 운영 수용
 
 - [x] **T-MGR-WEB-CLI-N150 — 정상 업데이트 수용**. 공식 Backend·CLI 설치와 frontend 갱신·공개 UI·정적 산출물 대조·실패 테스트 세션 정리를 확인했다. 적용 세대와 한계는 [운영 기록](reports/2026-10-25-manager-normal-update-acceptance.md)을 따른다. Map·PinVi 실제 재구축은 활성 작업으로 남긴다.

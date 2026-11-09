@@ -1,3 +1,11 @@
+## 2026-11-09 — 상태 점검 배포와 첫 조회 개선의 최종 정산
+
+- PR #486·#488의 두 리뷰·정확 CI·병합과 기존 API Common 점검·동일 소비 이미지의 Geo/Weather 격리 live 적용을 수용했다. code-server 점검 창에서 두 대상만 재생성했고 다른 53개와 전체 55개 이미지 ID를 보존했다. 수집 두 실행은 자연 SUCCESS였으며 run 취소·SQL 수정 없이 예약만 공식 SDK로 일시 중지·복원했다. 실측 snapshot의 publisher는 RUNNING, native incarnation recovery는 STOPPED였다.
+- 원래 Odroid pin 미설정 후속 판정 실패와 Geo 배열 순서·진단 label 판정 실패를 보존하고 별도 읽기 전용 증거로 실제 설치·semantic 설정·healthy·workspace를 확인했다. 후속 #585 n150 래퍼의 Docker 불변성 실패도 보존한다. 현재 소유 19개가 설치 전부터 실행된 것은 확인했으나 원 전체 snapshot 부재로 정확한 변화는 UNKNOWN이다.
+- #584 설치와 별도 프로세스의 파싱 비용 감소 뒤에도 첫 UI 503 두 건은 남았다. 보호 lookup의 첫 strict reference 파싱을 #585에서 보강했으며 공개 Python loader·같은 중복 키 생성자·TAB/비문자열의 파싱 전 선택·오류 재시도 금지를 유지했다. 정확 CI 3,661 PASS·40 SKIP와 frontend 47/type/lint/build, 두 독립 리뷰 뒤 정상 병합했다.
+- `49cd6c` 두 호스트 실제 설치와 10:27:03의 새 backend 첫 공개 UI 각각 8 PASS(16/16)를 확인했다. 목록 사전 조회·해당 smoke 재시도 없이 검사했고 양쪽 JS 오류·HTTP 5xx·잔여 쿠키·로그아웃 후 WS 재연결 0, 브라우저 종료를 확인했다. n150 pin 검증 0, Odroid 기존 미설정의 실제 exit 2와 `NOT_CONFIGURED_UNCHANGED`를 보존했다.
+- 최종 독립 읽기 전용 확인에서도 양쪽 `49cd6c`·활성·health 200·strict C 선택과 정확한 Weather API/Weather·Geo code-server·예약 상태를 확인했다. 같은 부하의 CPU/RSS·장기 성능·모든 YAML 문법 동등성은 수용하지 않았다. 설치별 불변성·과거 FAIL·단일 실측·P3 Unicode 경계와 최종 첫 UI는 [운영 기록](reports/2026-11-09-manager-healthcheck-rollout.md)을 따른다. 이번 변경은 문서 정산이다.
+
 ## 2026-11-09 — 첫 상태 조회의 엄격한 YAML 파싱 비용 보강
 
 - PR #584의 실제 파싱 비용 감소는 수용하지만 새 backend 첫 공개 UI의 Odroid 목록 503 두 건은 미해결로 보존한다. CPU quota·상위 throttling은 없었으며 lookup 필드의 첫 파생에서 reference Compose를 엄격한 Python YAML 로더로 다시 파싱하는 비용을 확인했다.
