@@ -1,3 +1,15 @@
+## 2026-11-09 — PR486 최신 main 통합과 점검 격리 모드 보존
+
+Weather·Geo code-server의 순수 조회 healthcheck 후보에 최신 main `37bb360`을 병합했다.
+기존 Python 격리 모드(`-I`)를 Common CLI에도 유지하고 cutover의 정확한 argv 허용 계약과 회귀를 맞췄다.
+로그 상한·Geo 공용 제어 평면 주소·기존 점검 주기와 기동 유예·수집 튜닝은 보존한다.
+PR #488의 `07b65475`도 정상 병합해 API HTTP 점검과 code-server live 점검의 통합 후보를 검증한다.
+PR #488 제품 대비 모델 차이는 여전히 두 code-server의 healthcheck.test뿐이다.
+두 PR 통합 뒤 7개 집중 모듈 260개(52.73초)와 전체 백엔드 Ruff를 다시 통과했다.
+live 성공은 proxy 응답만 뜻하며 정의 로딩·DB·worker 복구 성공을 뜻하지 않는다.
+관련 5개 모듈 230개(55.09초)·전체 백엔드 Ruff와 전체 YAML 모델 대조가 통과했다. 모델 차이는 두 healthcheck.test뿐이다.
+비격리 argv 거부 사례 추가 뒤 cutover 모듈 38개(11.21초)를 다시 통과했다. 새 CI·독립 두 리뷰·운영 이미지/CLI/실제 readiness는 아래 과거 검증과 구분하여 정산한다.
+
 ## 2026-11-09 — PR #488의 최신 main 통합과 점검 설정 보존
 
 - 최신 main `37bb360`을 정상 merge로 통합했다. 충돌한 journal·tasks는 양쪽 이력을 보존했으며 공용 Dagster 로그 상한·호스트 구성·Valkey 등 상류 변경을 유지했다.
@@ -174,6 +186,34 @@
 074a CI는 backend3424 PASS/40 SKIP(369.75초)·frontend PASS였다. 뒤이은 RO 대조에서 max5만 파생하면 기존 Odroid의 Geo1·Weather3·외부수집2·느린외부1/WARNING을 잃는 경계를 확인했다. hosts에 그 typed 값만 명시하고 기본 tag 전체와 새 Concierge 안전 한도는 보존한다. n150 원 bytes/path/digest, 기존 G/immutable/RO/installer 순서와 부팅 조건은 바꾸지 않는다.
 
 positive3개의 원 FAIL과 첫 구현의 base key-only 처리3 FAIL/51 PASS를 보존한 뒤 직접54 PASS와 관련61 PASS(7.02초)·외부 호출0을 확인했다. 새 제품 두 리뷰·정확 CI·후보/운영 적용은 별도다. 실제 SSH·설치·서비스 변경은 없다.
+## 2026-10-19 — Common live 점검 PR486 최신 main 정합
+
+Weather·Geo code-server의 순수 조회 점검 후보를 main397a91에 통합했다.
+승인된90초 주기·10초 timeout·기동 유예·개별 수집 튜닝을 보존하고 Weather
+점검 포트를 현재 code-server12206과 맞췄다. 전체 모델 차이는 두 서비스의
+healthcheck.test로 제한한다. 상태 점검에서 PID 종료·orphan DB 변경을 제거하지만,
+live 성공이 정의 로딩이나 자동 복구를 보장하는 것은 아니다. daemon은 중지 상태다.
+소비 이미지의 모듈 확인과 실제 적용, 독립2리뷰·정확 CI는 별도 수용이다.
+
+최신 main 통합본의 관련 회귀는 193 PASS(35.35초), Ruff0.16.4 PASS다.
+로컬 원문은 manager486-track-focused.log와 manager486-track-ruff.log에 보존했다.
+아래 2026-10-16의225건/프런트엔드 검증은 과거 후보의 기록이며 현재193건과 합산하지 않는다.
+
+## 2026-10-16 — Weather·Geo 상태 조회와 복구 부작용 분리(과거 후보)
+
+Manager의 두 code-server healthcheck를 Common grpc live CLI로 전환한다. Transport는
+외부 프로젝트 Compose 소유이므로 새 서비스 선언을 추가하지 않고 후속으로 남긴다.
+기존 legacy anchor를 쓰는 다른 서비스와 external cutover 검증은 보존한다.
+조회에서 PID 종료·DB reaper를 분리하고 기존 run monitoring/실패 재시도 센서의 책임과
+live가 자식 정의·worker·DB 준비를 보장하지 않는 한계를 운영 문서에 명시했다.
+이미지에 CLI가 없는 상태에서 선언을 먼저 적용하면 unhealthy이므로 소비 이미지 확인이 선행한다.
+주기·timeout·동시성 수치는 변경하지 않았고 운영 배포나 성능 개선 실증은 수행하지 않았다.
+관련 Compose/cutover/상태 확인 회귀 225건, 전체 백엔드 Ruff와 프런트엔드 35건·type/lint/build가 통과했다.
+새 선언 회귀는 이전 Compose에서 2건 실패했고 수정본에서 통과했다. YAML 모델 대조로
+두 서비스의 healthcheck.test 외 전체 필드 및 다른 서비스·기존 anchor가 동일함을 확인했다.
+초기 구계약 회귀 41 FAIL/115 PASS와 shell 형식 진단 1 FAIL/161 PASS 원문은 로컬에 보존했다.
+이전 공용-probe 단일성 검사는 Common live CLI의 정확한 argv만 제외하며 잘못된 포트·모드·shell은
+계속 거절한다. CodeGraph init/sync와 diff 점검을 통과했다. 전체 backend suite는 PR CI에서 별도 확인한다.
 
 # JOURNAL — 작업 일지
 
