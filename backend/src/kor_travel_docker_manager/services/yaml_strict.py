@@ -21,6 +21,10 @@ class UniqueKeySafeLoader(yaml.SafeLoader):
     pass
 
 
+class _UniqueKeyFastSafeLoader(getattr(yaml, "CSafeLoader", yaml.SafeLoader)):
+    pass
+
+
 def _construct_unique_yaml_mapping(
     loader: UniqueKeySafeLoader,
     node: yaml.MappingNode,
@@ -56,10 +60,22 @@ UniqueKeySafeLoader.add_constructor(
 )
 
 
+_UniqueKeyFastSafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_yaml_mapping,
+)
+
+
 def load_yaml_rejecting_duplicate_keys(source: str) -> Any:
     """`source`(YAML 텍스트)를 파싱하되 중복 매핑 키를 fail-close로 거부한다."""
 
-    loader = UniqueKeySafeLoader(source)
+    # C/Python 파서는 literal TAB의 문법 허용 범위가 달라 기존 Python 경로를 유지한다.
+    # 파싱 오류를 다른 로더로 재시도하지 않는다.
+    loader_class = (
+        _UniqueKeyFastSafeLoader
+        if isinstance(source, str) and "\t" not in source else UniqueKeySafeLoader
+    )
+    loader = loader_class(source)
     try:
         return loader.get_single_data()
     finally:

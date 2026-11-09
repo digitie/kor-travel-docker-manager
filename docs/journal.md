@@ -1,3 +1,9 @@
+## 2026-11-09 — 첫 상태 조회의 엄격한 YAML 파싱 비용 보강
+
+- PR #584의 실제 파싱 비용 감소는 수용하지만 새 backend 첫 공개 UI의 Odroid 목록 503 두 건은 미해결로 보존한다. CPU quota·상위 throttling은 없었으며 lookup 필드의 첫 파생에서 reference Compose를 엄격한 Python YAML 로더로 다시 파싱하는 비용을 확인했다.
+- 같은 실제 reference 233,819바이트에서 Python 중복 키 로더 1.4154초·동일 생성자의 C 안전 로더 0.1223초와 모델 동등·거부 사례를 확인했다. 공개 Python loader는 유지하고 같은 중복 키 생성자를 쓰는 private C 안전 loader를 wrapper에서 선택한다. 중복 키·merge·해시 검사·dispose는 바꾸지 않는다.
+- 기존 엄격한 파서 회귀를 유지하며 C 우선·Python fallback·값/alias 동등·중복과 의미상 같은 키·객체 태그·문법 오류·성공/실패 dispose를 검증한다. 최초 후보 검사는 1개 실패·24개 통과로 원래 Python 기반 선택을 확인했다. C 단독 전환의 1개 실패·525개 통과에서 literal TAB 문법 차이를 발견해 숨기지 않고 원래 경로를 파싱 전에 선택하도록 보강했다. 유효한 따옴표/block TAB과 비문자열 입력도 기존 Python 의미를 유지한다. 실제 reference TAB은 0개다. 최종 관련 집중 229개가 6.96초에 통과했고 전체 Ruff 0.16.4도 통과했다. 두 독립 리뷰·최신 CI·첫 운영 UI 수용은 별도로 정산한다.
+
 ## 2026-11-09 — 상태 조회의 안전한 Compose 파싱 비용 저감
 
 - 최신 병합 main `b199264`에서 별도 작업을 시작했다. Odroid 공개 UI의 컨테이너 목록 503과 공유 수집 JOIN 5초 timeout을 재현했으며, 단순 설치로 해소되지 않은 원 실패를 보존한다.
