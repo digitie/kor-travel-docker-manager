@@ -2150,6 +2150,8 @@ services:
       PINVI_DATABASE_URL: postgresql+asyncpg://${PINVI_APP_DB_USER:?PINVI_APP_DB_USER must be explicitly set}:${PINVI_APP_DB_PASSWORD:?PINVI_APP_DB_PASSWORD must be explicitly set}@127.0.0.1:${KOR_TRAVEL_SHARED_DB_PORT:-11000}/${PINVI_POSTGRES_DB:-pinvi}
       PINVI_JWT_SECRET_KEY: ${PINVI_JWT_SECRET_KEY:-pinvi-local-jwt-secret-32-bytes-minimum}
       PINVI_RESEND_API_KEY: ${PINVI_RESEND_API_KEY:-}
+      # PinVi 시스템 Telegram 봇 token(apps/api telegram_notify). 비우면 시스템 봇 알림은 skip.
+      PINVI_TELEGRAM_BOT_TOKEN_DEFAULT: ${PINVI_TELEGRAM_BOT_TOKEN_DEFAULT:-}
       PINVI_RUSTFS_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_CONTAINER_PORT:-12101}
       PINVI_RUSTFS_PUBLIC_ENDPOINT_URL: http://127.0.0.1:${RUSTFS_API_PORT:-12101}
       PINVI_RUSTFS_BUCKET: ${PINVI_RUSTFS_BUCKET:-pinvi-media}
