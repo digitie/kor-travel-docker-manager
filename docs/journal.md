@@ -1,3 +1,9 @@
+# 2026-11-12 — UI 후보 delta 독립 리뷰 보완
+
+- e2dd510의 독립 A/B가 HostConfig 전체 비교·paired 역할 완전성·실패 후 관측, canonical env 선택과 Git commondir 경계 누락을 재현했다. B 반례4개와 A 실패/중단/launch3개가 수정 전 FAIL인 로그를 보존했다.
+- 새 admission만 보완해 catalog env/process 환경 분리·project 일치, 기존 topology/companion 파생 재사용, Git commondir 거부, HostConfig 전체 보존과 실패 후 사후 관측을 추가했다. recreate/adopt/pair pin은 계속 변경하지 않는다.
+- 보완 후 기존 자식 process/G 회귀를 포함한152건과 전체 backend Ruff가 통과했다. 이전 편집 중 전체 pytest는 최종 gate로 사용하지 않고 본인 PID만 SIGINT로 정리했다. 코드 동결 후 전체 회귀와 독립 재검토를 수행한다. C10은 offline npm 캐시 단계에서 종료돼 n150 build/E2E는 미실행이며 fix.2/C11 전까지 보류한다.
+
 # 2026-11-12 — Map UI 후보의 별도 Manager 적용 경로
 
 - immutable 기준4f1876b 뒤 별도 backend delta로 Map UI-only catalog와 apply-candidate CLI/SDK를 추가했다. 기존 recreate/adopt/pair pin 의미는 바꾸지 않았다.

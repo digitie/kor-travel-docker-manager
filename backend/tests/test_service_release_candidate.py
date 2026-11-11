@@ -20,6 +20,7 @@ from kor_travel_docker_manager.services.registry import load_targets_config
 OLD = "sha256:" + "a" * 64
 NEW = "sha256:" + "b" * 64
 OTHER = "sha256:" + "c" * 64
+DATABASE = "sha256:" + "e" * 64
 SOURCE_URL = "https://github.com/digitie/kor-travel-map.git"
 UI = "kor-travel-map-ui"
 
@@ -73,6 +74,7 @@ def scenario(tmp_path, monkeypatch):
                 "State": {"Running": True, "StartedAt": "2026-11-12T00:00:00Z",
                           "Health": {"Status": "healthy"}}}
     records = {name: container(name) for name in ["api", "db", "dagster"]}
+    records["db"] = container("db", DATABASE)
     records[UI] = container(UI, OLD)
     metadata = {value: {"Id": value, "Created": "2026-11-12T00:00:00Z",
                        "Config": {"Labels": {"org.opencontainers.image.revision": sha,
@@ -130,11 +132,16 @@ def prepare(s):
         s.calls.append("factory")
         return s.client
     s.factory = factory
-    status = SimpleNamespace(images={UI: OLD})
+    status = SimpleNamespace(images={UI: OLD, "api": OTHER, "dagster": OTHER})
+    s.monkeypatch.setattr(m, "runtime_topology", lambda: SimpleNamespace(
+        runtime_services=[UI, "api", "dagster"], retired_services=(),
+        service=lambda slot: UI if slot == "map_ui" else "dagster" if "dagster" in slot else "api",
+        families={"map": SimpleNamespace(carrier="dagster"), "pinvi": SimpleNamespace(carrier="dagster")},
+    ))
     baseline_path = s.root / "baseline"
     if not baseline_path.exists():
         baseline_path.write_bytes(b"committed")
-    s.monkeypatch.setattr(m, "_baseline", lambda: (baseline_path, baseline_path.read_bytes(), {"pin": "unchanged"}, status))
+    s.monkeypatch.setattr(m, "_baseline", lambda *args: (baseline_path, baseline_path.read_bytes(), {"pin": "unchanged"}, status))
     def run(argv, **kwargs):
         s.calls.append((argv, kwargs))
         if "config" in argv:
@@ -348,9 +355,9 @@ def test_initial_component_cannot_hide_receipt_ui_mismatch(scenario):
     s = scenario
     m = prepare(s)
     original = m._baseline
-    def mismatch():
-        path, raw, pin, status = original()
-        return path, raw, pin, SimpleNamespace(images={UI: OTHER})
+    def mismatch(*args):
+        path, raw, pin, status = original(*args)
+        return path, raw, pin, SimpleNamespace(images={UI: OTHER, "api": OTHER, "dagster": OTHER})
     s.monkeypatch.setattr(m, "_baseline", mismatch)
     with pytest.raises(release.ServiceReleaseError, match="최초 component"):
         invoke_prepared(s, m)
@@ -361,9 +368,9 @@ def test_nonselected_receipt_image_must_match(scenario):
     s = scenario
     m = prepare(s)
     original = m._baseline
-    def mismatch():
-        path, raw, pin, status = original()
-        return path, raw, pin, SimpleNamespace(images={UI: OLD, "api": NEW})
+    def mismatch(*args):
+        path, raw, pin, status = original(*args)
+        return path, raw, pin, SimpleNamespace(images={UI: OLD, "api": NEW, "dagster": OTHER})
     s.monkeypatch.setattr(m, "_baseline", mismatch)
     with pytest.raises(release.ServiceReleaseError, match="비선택 이미지"):
         invoke_prepared(s, m)
@@ -446,7 +453,7 @@ def test_real_baseline_parser_requires_committed_matching_pair(scenario):
                                  map_revision="a" * 40, pinvi_revision="b" * 40, pinset_sha256="c" * 64)
     databases = {role: deploy.DeployedDatabase("fixture", 1, "123") for role in ["map_application", "pinvi"]}
     committed = deploy.commit_deploy(status, committed_at="2026-11-12T00:01:00Z",
-                                    images={UI: OLD}, schema_heads={"map_application": "300", "pinvi": "1"},
+                                    images={UI: OLD, "api": OTHER, "dagster": OTHER}, schema_heads={"map_application": "300", "pinvi": "1"},
                                     databases=databases)
     path = s.root / "deploy-status.json"
     path.write_text(json.dumps(committed.to_payload()))
@@ -457,16 +464,22 @@ def test_real_baseline_parser_requires_committed_matching_pair(scenario):
     s.monkeypatch.setattr(m, "_capture_compose_environment_snapshot", lambda **kw: SimpleNamespace(effective={}))
     s.monkeypatch.setattr(m, "pinned_runtime_state_root", lambda values: s.root)
     s.monkeypatch.setattr(m, "current_pinned_runtime_release", lambda: pin)
-    assert m._baseline()[3] == committed
+    s.monkeypatch.setattr(m, "runtime_topology", lambda: SimpleNamespace(
+        runtime_services=[UI, "api", "dagster"], retired_services=(),
+        service=lambda slot: UI if slot == "map_ui" else "dagster" if "dagster" in slot else "api",
+        families={"map": SimpleNamespace(carrier="dagster"), "pinvi": SimpleNamespace(carrier="dagster")},
+    ))
+    selected = s.profile["groups"]["ui"]
+    assert m._baseline(selected)[3] == committed
     before = path.read_bytes()
     pin.pinset_sha256 = "d" * 64
     with pytest.raises(release.ServiceReleaseError, match="pair pin"):
-        m._baseline()
+        m._baseline(s.profile["groups"]["ui"])
     assert path.read_bytes() == before
     pin.pinset_sha256 = "c" * 64
     path.write_text(json.dumps(status.to_payload()))
     with pytest.raises(release.ServiceReleaseError, match="committed"):
-        m._baseline()
+        m._baseline(s.profile["groups"]["ui"])
 
 
 @pytest.mark.parametrize("kind", ["api-role", "multiple", "oneshot"])
@@ -527,3 +540,103 @@ def test_missing_source_clone_cannot_construct_docker(scenario):
     with pytest.raises(release.ServiceReleaseError, match="source clone"):
         apply(scenario, source_clone=scenario.root / "missing")
     assert "factory" not in scenario.calls
+
+
+def test_review_b_rejects_external_common_directory(scenario):
+    import shutil
+    s = scenario
+    external = s.root / "external.git"
+    shutil.copytree(s.source / ".git", external)
+    (external / "config").chmod(0o666)
+    (s.source / ".git/commondir").write_text(str(external))
+    with pytest.raises(release.ServiceReleaseError):
+        candidate_module()._merged_source(s.source, s.sha, "map")
+
+
+def test_review_b_rejects_nonselected_hostconfig_update(scenario):
+    s = scenario
+    s.records["db"]["HostConfig"] = {"Binds": [], "Memory": 1024, "RestartPolicy": {"Name": "always"}}
+    s.on_mutation = lambda: s.records["db"]["HostConfig"].update(Memory=64)
+    with pytest.raises(release.ServiceReleaseError, match="비선택"):
+        apply(s)
+    assert release.read_current_release("map", root=s.root) == s.current
+
+
+def test_review_b_rejects_incomplete_paired_images(scenario):
+    s = scenario
+    m = prepare(s)
+    s.monkeypatch.setattr(m, "_baseline", lambda *args: (s.root / "baseline", b"committed", {}, SimpleNamespace(images={UI: OLD})))
+    with pytest.raises(release.ServiceReleaseError, match="필수 paired"):
+        invoke_prepared(s, m)
+    assert not any("up" in c[0] for c in s.calls if isinstance(c, tuple))
+
+
+def test_review_b_process_environment_cannot_select_shadow_receipt(scenario):
+    from pathlib import Path
+
+    from kor_travel_docker_manager.services import compose_service as compose
+    from kor_travel_docker_manager.services import deploy_status as deploy
+    s = scenario
+    m = candidate_module()
+    canonical_root, shadow_root = s.root / "canonical", s.root / "shadow"
+    canonical = canonical_root / "manager"
+    shadow = shadow_root / "shadow"
+    canonical.mkdir(parents=True)
+    shadow.mkdir(parents=True)
+    status = deploy.begin_deploy(None, run_id="00000000-0000-0000-0000-000000000001",
+                                 started_at="2026-11-12T00:00:00Z", manager_revision="e" * 40,
+                                 map_revision="a" * 40, pinvi_revision="b" * 40, pinset_sha256="c" * 64)
+    dbs = {role: deploy.DeployedDatabase("fixture", 1, "123") for role in ["map_application", "pinvi"]}
+    committed = deploy.commit_deploy(status, committed_at="2026-11-12T00:01:00Z",
+                                    images={UI: OLD, "api": OTHER, "dagster": OTHER},
+                                    schema_heads={"map_application": "300", "pinvi": "1"}, databases=dbs)
+    for directory, value in [(canonical, status), (shadow, committed)]:
+        path = directory / "deploy-status.json"
+        path.write_text(json.dumps(value.to_payload()))
+        path.chmod(0o600)
+    env = Path(s.profile["groups"]["ui"]["env_file"])
+    env.write_text("COMPOSE_PROJECT_NAME=manager\nKTDM_PINNED_RUNTIME_STATE_ROOT=" + str(canonical_root) + "\n")
+    s.monkeypatch.setattr(compose, "get_env_path", lambda: str(env))
+    s.monkeypatch.setattr(compose, "get_compose_path", lambda: str(s.root / "missing"))
+    s.monkeypatch.setenv("COMPOSE_PROJECT_NAME", "shadow")
+    s.monkeypatch.setenv("KTDM_PINNED_RUNTIME_STATE_ROOT", str(shadow_root))
+    pin = SimpleNamespace(pinset_sha256="c" * 64,
+                          source_for=lambda role: SimpleNamespace(revision={"map": "a" * 40, "pinvi": "b" * 40}[role]),
+                          to_payload=lambda: {"pinset_sha256": "c" * 64})
+    s.monkeypatch.setattr(m, "current_pinned_runtime_release", lambda: pin)
+    with pytest.raises(release.ServiceReleaseError, match="committed"):
+        m._baseline(s.profile["groups"]["ui"])
+
+
+@pytest.mark.parametrize("kind", ["exit", "interrupted", "launch"])
+def test_review_a_failed_child_always_reports_post_observation(scenario, kind):
+    s = scenario
+    m = prepare(s)
+    if kind == "exit":
+        s.mutation_exit = 1
+        s.on_mutation = lambda: s.records["db"].update(Id="external-change")
+    elif kind == "interrupted":
+        run = m.frozen._run_mutation
+        s.monkeypatch.setattr(m.frozen, "_run_mutation", lambda *a, **kw: (run(*a, **kw)[0], ["SIGTERM"]))
+    else:
+        s.monkeypatch.setattr(m.frozen, "_run_mutation", Mock(side_effect=OSError("fixture$secret")))
+    result = invoke_prepared(s, m)
+    assert result["success"] is False
+    assert "post_verification" in result
+    assert result["nonselected_unchanged"] is (kind != "exit")
+    assert result["current_unchanged"] is True
+    assert result["baseline_unchanged"] is True
+    assert release.read_current_release("map", root=s.root) == s.current
+    assert "fixture$secret" not in json.dumps(result)
+
+
+def test_missing_companion_image_cannot_reach_ui_mutation(scenario):
+    s = scenario
+    record = copy.deepcopy(s.records["api"])
+    record["Id"] = "cid-companion"
+    record["Config"]["Labels"]["com.docker.compose.service"] = "companion"
+    s.records["companion"] = record
+    s.resolved["services"]["companion"] = {"image": OTHER}
+    with pytest.raises(release.ServiceReleaseError, match="companion"):
+        apply(s)
+    assert not any("up" in c[0] for c in s.calls if isinstance(c, tuple))

@@ -170,8 +170,8 @@ source clone의 부모·Git 파일은 root 소유이며 group/other 쓰기·syml
 이미지 ID를 준비해야 한다. 이미지 ID와 OCI revision/source label을 대조하되 label만으로 빌드한
 전체 소스 bytes를 재증명했다고 주장하지 않는다.
 
-canonical `pinned_runtime_state_root`의 committed 배포 기록과 현재 pair pin이 일치해야 한다.
-비선택 paired 이미지도 실제 runtime과 같아야 한다. 이 기록과 pin은 **읽기만** 하며 UI SHA로
+catalog의 고정 env 파일만 사용하고 process 환경·dotenv 외부 보간을 배제해 canonical `pinned_runtime_state_root`의 committed 배포 기록을 읽는다. env의 project도 선택 plan과 같아야 하며 현재 pair pin과 일치해야 한다.
+현재 topology의 필수 paired runtime과 companion 역할을 빠짐없이 요구하고 비선택 paired 이미지도 실제 runtime과 같아야 한다. 이 기록과 pin은 **읽기만** 하며 UI SHA로
 `map_revision`을 바꾸지 않는다. 새 UI provenance는 기존 service-release manifest/images.yml/current에
 기록한다. 따라서 paired 기록의 과거 UI ID를 최신 component current로 오인하지 않는다. 이후 paired
 rebuild가 UI를 바꾸면 component verify는 drift를 정직하게 보고하며 자동으로 표식을 맞추지 않는다.
@@ -183,7 +183,7 @@ rebuild가 UI를 바꾸면 component verify는 drift를 정직하게 보고하�
 
 실행 직전 UI identity·전체 비선택 컨테이너의 ID/image/시작 시각/재시작 수/설정·mount/network,
 paired 기준선/pin·current를 재검증한다. health와 비선택 불변 검증을 통과한 뒤 metadata 두 파일을
-완성하고 발행 직전에 다시 확인해 current symlink를 바꾼다. 실패하면 current는 이전 값을 유지한다.
+완성하고 발행 직전에 다시 확인해 current symlink를 바꾼다. 실패하면 current는 이전 값을 유지한다. 자식 실패·중단·launch 오류 뒤에도 UI 검증, 비선택 HostConfig 전체와 기준선/current를 재관측해 종료 원인과 함께 반환한다.
 이미 UI mutation이 적용됐을 수 있으므로 실패 응답을 무변경 성공이나 자동 rollback으로 보고하지
 않는다. 기존 `recreate`도 고장 복구 명령으로 바꾸지 않는다. 비밀 값·원문 inspect/config는 결과나
 새 manifest에 저장하지 않는다.

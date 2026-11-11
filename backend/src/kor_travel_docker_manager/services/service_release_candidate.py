@@ -25,16 +25,23 @@ from kor_travel_docker_manager.services import service_release as release
 from kor_travel_docker_manager.services import service_release_compose as frozen
 from kor_travel_docker_manager.services.c6c_deployment import manager_mutation_lock
 from kor_travel_docker_manager.services.compose_service import (
+    _PINNED_RUNTIME_ONESHOT_WRITERS,
     _capture_compose_environment_snapshot,
     _escape_materialized_compose_environment_values,
 )
 from kor_travel_docker_manager.services.pinned_runtime_generation import pinned_runtime_state_root
+from kor_travel_docker_manager.services.pinned_runtime_rebuild import generation_companion_services
 from kor_travel_docker_manager.services.pinned_runtime_release import (
     CANONICAL_RUNTIME_SOURCE_URLS,
     current_pinned_runtime_release,
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import _root_git_environment
 from kor_travel_docker_manager.services.registry import load_targets_config
+from kor_travel_docker_manager.services.runtime_topology import (
+    RUNTIME_SLOTS,
+    runtime_topology,
+    slot_project,
+)
 from kor_travel_docker_manager.services.secure_state_file import (
     atomic_write_bytes,
     atomic_write_json,
@@ -57,6 +64,8 @@ def _merged_source(source: Path, sha: str, service: str) -> None:
             if (info.st_uid != release._OWNER_UID or info.st_mode & 0o022
                     or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))):
                 raise ServiceReleaseError("승인 Git clone 내부 소유권·권한이 안전하지 않습니다")
+    if (source / ".git/commondir").exists():
+        raise ServiceReleaseError("승인 Git clone은 외부 common directory를 참조할 수 없습니다")
     if (source / ".git/objects/info/alternates").exists():
         raise ServiceReleaseError("승인 Git clone은 외부 object 저장소를 참조할 수 없습니다")
     def git(*args: str) -> str:
@@ -77,8 +86,17 @@ def _merged_source(source: Path, sha: str, service: str) -> None:
     git("merge-base", "--is-ancestor", sha, "refs/remotes/origin/main")
 
 
-def _baseline() -> tuple[Path, bytes, dict[str, Any], Any]:
-    values = _capture_compose_environment_snapshot(environment_override=None).effective
+def _baseline(selected: dict[str, Any]) -> tuple[Path, bytes, dict[str, Any], Any]:
+    base = Path(selected["working_dir"])
+    snapshot = _capture_compose_environment_snapshot(
+        environment_override=None, env_path=Path(selected["env_file"] or base / ".env"),
+        compose_path=Path(selected["config_files"][0]), override_path=base / "docker-compose.override.yml",
+        include_process_environment=False, interpolate_env_file=False,
+    )
+    values = dict(snapshot.effective)
+    values.setdefault("COMPOSE_PROJECT_NAME", selected["project"])
+    if values["COMPOSE_PROJECT_NAME"] != selected["project"]:
+        raise ServiceReleaseError("기준선 project와 UI catalog project가 다릅니다")
     path = deploy_status.deploy_status_path(pinned_runtime_state_root(values))
     raw = release._read_file(path)
     status = deploy_status._status_from_payload(json.loads(raw))
@@ -87,11 +105,13 @@ def _baseline() -> tuple[Path, bytes, dict[str, Any], Any]:
             or status.map_revision != pin.source_for("map").revision
             or status.pinvi_revision != pin.source_for("pinvi").revision):
         raise ServiceReleaseError("현재 committed 배포 기준선과 pair pin이 다릅니다")
-    return path, raw, pin.to_payload(), status
+    if set(runtime_topology().runtime_services) - status.images.keys():
+        raise ServiceReleaseError("committed 기록의 필수 paired runtime 이미지가 누락되었습니다")
+    return path, raw, {"pin": pin.to_payload(), "environment": values}, status
 
 
-def _unchanged_baseline(baseline: tuple[Any, ...]) -> None:
-    if _baseline()[:3] != baseline[:3]:
+def _unchanged_baseline(baseline: tuple[Any, ...], selected: dict[str, Any]) -> None:
+    if _baseline(selected)[:3] != baseline[:3]:
         raise ServiceReleaseError("관측 중 committed 배포 기준선 또는 pin이 변경되었습니다")
 
 
@@ -125,7 +145,7 @@ def _nonselected(records: list[dict[str, Any]], project: str, runtime: str) -> d
             raise ServiceReleaseError("비선택 컨테이너 identity 관측이 불완전합니다")
         result[record["Id"]] = [record["Image"], state.get("StartedAt"), state.get("Running"),
                                 record.get("RestartCount"), record.get("Config"), record.get("Mounts"),
-                                (record.get("HostConfig") or {}).get("Binds"),
+                                record.get("HostConfig"),
                                 (record.get("NetworkSettings") or {}).get("Networks")]
     return result
 
@@ -137,8 +157,8 @@ def _unchanged_others(client: Any, expected: dict[str, Any], project: str, runti
 
 def _receipt_images(status: Any, records: list[dict[str, Any]], project: str,
                     runtime: str, own: dict[str, Any]) -> None:
-    if runtime not in status.images:
-        raise ServiceReleaseError("committed 기준선에 UI 이미지가 없습니다")
+    if set(runtime_topology().runtime_services) - status.images.keys():
+        raise ServiceReleaseError("committed 기준선의 필수 paired runtime 이미지가 누락되었습니다")
     for name, image_id in status.images.items():
         if name == runtime:
             # 첫 component 등록은 정상 paired 기준선의 현재 UI에서 시작한다.
@@ -148,6 +168,26 @@ def _receipt_images(status: Any, records: list[dict[str, Any]], project: str,
         matches = [record for record in records if _selected(record, project, name)]
         if len(matches) != 1 or matches[0].get("Image") != image_id:
             raise ServiceReleaseError("committed 비선택 이미지와 실행 이미지가 다릅니다")
+
+
+
+def _paired_companions(status: Any, resolved: dict[str, Any], records: list[dict[str, Any]], project: str) -> None:
+    topology = runtime_topology()
+    identities = {((record.get("Config") or {}).get("Labels") or {}).get("com.docker.compose.service"): record["Image"]
+                  for record in records
+                  if ((record.get("Config") or {}).get("Labels") or {}).get("com.docker.compose.project") == project}
+    services = {name: deepcopy(value) for name, value in resolved["services"].items()
+                if name not in topology.retired_services}
+    for name, definition in services.items():
+        if name in identities:
+            definition["image"] = identities[name]
+    image_ids = {slot: status.images[topology.service(slot) or topology.families[slot_project(slot)].carrier]
+                 for slot in RUNTIME_SLOTS}
+    companions = generation_companion_services({"services": services}, image_ids,
+                                               excluded_services=_PINNED_RUNTIME_ONESHOT_WRITERS,
+                                               topology=topology)
+    if set(companions) - status.images.keys():
+        raise ServiceReleaseError("committed 기준선에 필수 paired companion 이미지가 누락되었습니다")
 
 
 def _render(argv: list[str], **kwargs: Any) -> Any:
@@ -211,8 +251,8 @@ def apply_ui_candidate(service: str, *, group: str, image_id: str, source_sha: s
     _merged_source(source_clone, source_sha, service)
     with manager_mutation_lock():
         _merged_source(source_clone, source_sha, service)
-        baseline = _baseline()
         plan, manifests = entry._compose_plan(service, group, root=root, config=config)
+        baseline = _baseline(manifests[service]["groups"][group])
         factory = client_factory or (lambda: docker.from_env(timeout=10))
         client = factory()
         try:
@@ -266,6 +306,7 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
                 if client.images.get(reference).attrs["Id"] != image["id"]:
                     raise ServiceReleaseError("resolved 이미지와 현재 component release가 다릅니다")
                 materialized["services"][name]["image"] = image["id"]
+        _paired_companions(baseline[3], materialized, records, project)
         materialized["services"][runtime]["image"] = image_id
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
         if isinstance(exc, ServiceReleaseError):
@@ -274,7 +315,7 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
     candidate = deepcopy(manifests[service])
     candidate["images"][runtime] = metadata
     def admission():
-        _unchanged_baseline(baseline)
+        _unchanged_baseline(baseline, manifests[service]["groups"][group])
         _unchanged_pointers(manifests, root)
         _unchanged_others(client, others, project, runtime)
     admission()
@@ -286,6 +327,22 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
     command = ["docker", "compose", "--project-name", project, "--project-directory", working_dir,
                "--env-file", "/dev/null", "-f", "-", "up", "-d", "--no-deps", "--no-build",
                "--pull", "never", "--force-recreate", "--wait", "--wait-timeout", str(wait), runtime]
+    def observe_after():
+        try:
+            result["post_verification"] = frozen._verify({**manifests, service: candidate}, client)
+        except Exception as exc:
+            result["post_verification"] = {"observed": False, "error_type": type(exc).__name__}
+        for key, check in [
+            ("baseline_unchanged", lambda: _unchanged_baseline(baseline, manifests[service]["groups"][group])),
+            ("current_unchanged", lambda: _unchanged_pointers(manifests, root)),
+            ("nonselected_unchanged", lambda: _unchanged_others(client, others, project, runtime)),
+        ]:
+            try:
+                check()
+                result[key] = True
+            except Exception as exc:
+                result[key] = False
+                result.setdefault("postcondition_errors", {})[key] = type(exc).__name__
     try:
         completed, interrupted = frozen._run_mutation(
             command, cwd=working_dir, env=environment, text=True, capture_output=True, check=False,
@@ -293,7 +350,9 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
         )
     except OSError as exc:
         result.update(error_type=type(exc).__name__, stderr=frozen._detail(str(exc), secrets))
+        observe_after()
         return result
+    observe_after()
     result["returncode"] = completed.returncode
     if completed.returncode or interrupted:
         result.update(stderr=frozen._detail(completed.stderr, secrets), interrupted_signals=interrupted)
@@ -301,7 +360,10 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
     def healthy():
         admission()
         expected = {**manifests, service: candidate}
-        if any(value.get("result") != "healthy" for value in frozen._verify(expected, client).values()):
+        verified = frozen._verify(expected, client)
+        result["post_verification"] = verified
+        result.update(baseline_unchanged=True, current_unchanged=True, nonselected_unchanged=True)
+        if any(value.get("result") != "healthy" for value in verified.values()):
             raise ServiceReleaseError("UI 후보가 healthy 또는 immutable ID 조건을 만족하지 않습니다")
     try:
         healthy()
@@ -311,5 +373,5 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
         result.update(stderr=str(exc))
         return result
     current = _publish(candidate, manifests, root, healthy)
-    result.update(success=True, result="healthy", current=current, nonselected_unchanged=True)
+    result.update(success=True, result="healthy", current=current, current_unchanged=False, nonselected_unchanged=True)
     return result
