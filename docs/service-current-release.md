@@ -1,6 +1,6 @@
 # 서비스 현재 릴리스 표식
 
-이 문서는 이슈 #568·ADR-60의 정본이다. CLI는 **관측한 이미지의 초기 등록(adopt), 조회, drift 검증, Compose 인자 생성**에 더해 현재 구성을 확인하는 resolve와 정상인 현재 이미지로 선택 그룹 runtime을 재생성하는 recreate를 제공한다. recreate는 명시 --confirm 뒤에만 Docker up을 실행한다. 새 후보 배포·migration·DB rollback은 범위 밖이며 기존 배포 도구를 자동으로 가로채지 않는다. resolve/recreate의 제품 회귀·독립 두 리뷰·전체 CI와 로컬 Docker 검증은 통과했으며 운영 적용은 대기 중이다.
+이 문서는 이슈 #568·ADR-60의 정본이다. CLI는 **관측한 이미지의 초기 등록(adopt), 조회, drift 검증, Compose 인자 생성**에 더해 현재 구성을 확인하는 resolve와 정상인 현재 이미지로 선택 그룹 runtime을 재생성하는 recreate를 제공한다. recreate는 명시 --confirm 뒤에만 Docker up을 실행한다. resolve/recreate의 새 후보 배포·migration·DB rollback은 범위 밖이며 기존 배포 도구를 자동으로 가로채지 않는다. UI 새 후보는 아래 별도 apply-candidate 경로로만 다룬다. resolve/recreate의 제품 회귀·독립 두 리뷰·전체 CI와 로컬 Docker 검증은 통과했으며 운영 적용은 대기 중이다.
 
 ## 유지해야 할 조건
 
@@ -140,3 +140,55 @@ CLI 소스 `182cbfd`의 root 소유 NVMe source artifact에서 공식 명령으�
 전후 14개 컨테이너의 CID·image·시작 시각·running과 Manager env hash를 보존했다. 검증 범위는 소유 이미지 ID이며 `nonimage_configuration_verified=false`다. 전체 비이미지 구성 동등성·후속 배포 안전을 수용한 결과가 아니다. `manager568-resolved-config-actual-r1.json`은 로컬 감사 참고 파일이며 저장소의 운영 로그나 공개 증거 링크가 아니다.
 
 앞선 G 경합 실패와 마지막 admin compose-args timeout에 따른 초기 실행 전체 FAIL은 그대로 보존한다. 등록에 사용한 source artifact도 보존하며 Manager 설치본·이미지·DB·schedule은 바꾸지 않았다. 미확정 source_sha null과 Transport 4d 실행은 유지한다. 운영 초기 등록·소유 이미지 ID 대조는 수용하되 wrapper/배포기 이관과 base 기본값·옛 공용 plane 중복 선언 정리는 계속 미완이다.
+
+
+## UI 후보만 적용하는 별도 경로
+
+`apply-candidate`는 기존 `adopt`·`resolve`·`recreate`·pair pin의 의미를 바꾸지 않는다.
+Map catalog의 `ui` 그룹은 `kor-travel-map-ui` 하나만 소유한다. Manager의 실제 project와
+`/opt/kor-travel-docker-manager` 아래 immutable `.ktdm-release-compose.yml`·`.env`를 사용한다.
+컨테이너 label의 config_files가 `-`인 것은 이전 frozen stdin 실행의 표식이며 파일명이 아니다.
+
+초기 current가 없으면 기존 `service-release adopt map --confirm`으로 정상 실행 UI를 먼저
+관측·등록한다. 후보 적용은 그 초기 UI image ID가 canonical committed paired 기록과 일치할 때만
+시작한다. 정상인 기존 paired receipt를 복구한다며 새로 만들지 않는다.
+
+```bash
+ktdctl service-release apply-candidate map --group ui \
+  --image-id sha256:<승인한64자리이미지ID> --source-sha <승인한merged40자리SHA> \
+  --source-clone <root소유canonicalMapGitclone> --dry-run
+# 같은 승인 tuple을 실제 적용할 때만 --dry-run 대신 --confirm을 사용한다.
+```
+
+SDK는 `service_release_candidate.apply_ui_candidate`다. `execute=False`는 읽기 전용 계획이며
+`execute=True`만 UI를 바꾼다. 두 경우 모두 root와 기존 host-wide G를 요구하고 Docker client는
+G 획득 뒤 생성한다. 새 잠금·서명·receipt 체계는 만들지 않는다.
+
+source clone의 부모·Git 파일은 root 소유이며 group/other 쓰기·symlink·외부 object alternates를
+허용하지 않는다. origin은 canonical Map URL이고 승인 SHA는 commit이며 로컬 origin/main에
+포함되어야 한다. CLI는 fetch/build/pull을 수행하지 않는다. 운영자는 부모가 승인한 실제 merged SHA와
+이미지 ID를 준비해야 한다. 이미지 ID와 OCI revision/source label을 대조하되 label만으로 빌드한
+전체 소스 bytes를 재증명했다고 주장하지 않는다.
+
+canonical `pinned_runtime_state_root`의 committed 배포 기록과 현재 pair pin이 일치해야 한다.
+비선택 paired 이미지도 실제 runtime과 같아야 한다. 이 기록과 pin은 **읽기만** 하며 UI SHA로
+`map_revision`을 바꾸지 않는다. 새 UI provenance는 기존 service-release manifest/images.yml/current에
+기록한다. 따라서 paired 기록의 과거 UI ID를 최신 component current로 오인하지 않는다. 이후 paired
+rebuild가 UI를 바꾸면 component verify는 drift를 정직하게 보고하며 자동으로 표식을 맞추지 않는다.
+
+검증한 Compose config를 메모리에서 고정하고 UI image를 승인한 immutable ID로 바꾼다.
+실행은 `-f - up -d --no-deps --no-build --pull never --force-recreate --wait`와 UI 서비스
+하나뿐이다. API·DB·Dagster·one-shot을 명령에 넣지 않는다. 달러 escape·최소 실행 환경·비밀 가림·
+자식 종료까지 G descriptor를 보유하는 기존 코드를 재사용한다.
+
+실행 직전 UI identity·전체 비선택 컨테이너의 ID/image/시작 시각/재시작 수/설정·mount/network,
+paired 기준선/pin·current를 재검증한다. health와 비선택 불변 검증을 통과한 뒤 metadata 두 파일을
+완성하고 발행 직전에 다시 확인해 current symlink를 바꾼다. 실패하면 current는 이전 값을 유지한다.
+이미 UI mutation이 적용됐을 수 있으므로 실패 응답을 무변경 성공이나 자동 rollback으로 보고하지
+않는다. 기존 `recreate`도 고장 복구 명령으로 바꾸지 않는다. 비밀 값·원문 inspect/config는 결과나
+새 manifest에 저장하지 않는다.
+
+실제 운영 적용은 후보 코드 CI·독립 delta 리뷰2건·Manager 머지와 부모의 정확 merged SHA/go 이후다.
+현재 active Manager에서는 공식 `--cli-only` 설치 조건을 충족하지 않으므로 기존 trusted normal
+업그레이드가 선행한다. 임의 venv/PYTHONPATH나 설치 venv 덮어쓰기로 우회하지 않는다. Manager 설치가
+필요해도 Map API·DB·Dagster 수명주기는 호출하지 않는다.

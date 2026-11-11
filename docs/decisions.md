@@ -1740,6 +1740,18 @@ D1–D8 결정·파일/권한·CLI·실패 모드·단계별 미완 범위는 [�
 초기 adopt는 runtime을 바꾸지 않는다. 기존 배포기 wrapper 이관과 base 기본값 제거는 별도이며,
 그 전에는 raw Compose 우회를 차단했다고 주장하지 않는다.
 
+### 2026-11-12 후속: UI 후보의 명시 적용
+
+기존 recreate/adopt는 그대로 두고 별도 apply-candidate CLI/SDK를 추가한다. catalog의 UI 단일
+그룹에 한해 승인된 merged source SHA와 immutable image ID/OCI source를 검증하고 기존 G와
+frozen stdin 실행을 재사용한다. health·비선택 identity/config·pointer race 검사 뒤 D1~D5의
+동일 manifest/overlay/current를 발행한다. 새로운 receipt·잠금·서명 계층을 만들지 않는다.
+
+paired 배포 기록과 pair pin은 읽기 전용 기준선으로 유지한다. 새 UI SHA로 API/Dagster의
+map_revision을 바꾸지 않으며 최신 UI의 authority는 component current다. 실패 시 current는
+이전 값을 유지하지만 UI runtime mutation은 이미 적용됐을 수 있고 자동 rollback을 보장하지 않는다.
+운영 수용은 별도 delta 리뷰2건·CI·머지·정식 trusted upgrade 뒤에 진행한다.
+
 ## ADR-61: 컨테이너 로그 상한은 Manager compose의 `x-logging` 한 자리에 둔다
 
 - 상태: accepted

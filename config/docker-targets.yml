@@ -1145,6 +1145,15 @@ unowned_services:
 # D-568: services/runtime_services에는 공용 DB·구 monitoring이 있으므로 복사하지 않는다.
 # transport의 core/admin은 실제 운영 스크립트가 같은 project를 강제하며 파일 조합만 다르다.
 service_releases:
+  map:
+    groups:
+      ui:
+        project: kor-travel-docker-manager
+        working_dir: /opt/kor-travel-docker-manager
+        config_files: [.ktdm-release-compose.yml]
+        env_file: .env
+        runtime_services: [kor-travel-map-ui]
+        oneshot_services: []
   geo:
     groups:
       main:

@@ -145,3 +145,10 @@
 
 - [x] 공통 Radix·VirtualTable·LoginForm·상태/폼/폰트 실사용 및 산출물 guard·ESLint10·Doctor 통합. 후보9의 guard/타입/린트/Doctor0·n150 브라우저2 통과. 제품·실행 bytes가 같은 후보8의 단위54와 production build 성공 근거를 유지한다. [최종 검증 기록](common-ui-c9-validation.md)에 재사용 범위와 앞선 실패를 기록했다.
 - [ ] 부모 최종 산출물 freeze와 두 독립 적대 리뷰·원격 CI·PR 머지·부모 go 후 운영 수용. 배포 계획의 systemd 설치 형태를 따른다.
+
+
+## Map UI 후보 적용 선행 기능 (2026-11-12)
+
+- [x] 별도 apply-candidate CLI/SDK·Map UI-only catalog와 승인 source/image 검증, frozen stdin·비선택 보존·health 후 current 발행 구현.
+- [x] 기존 recreate/adopt/pair pin 의미 보존 및 focused 회귀·Ruff 검증. 상세 결과는 journal을 따른다.
+- [ ] source CI·두 독립 delta 리뷰·Manager 머지·공식 trusted upgrade·부모 exact merged SHA/go 후 실제 Map UI 수용.

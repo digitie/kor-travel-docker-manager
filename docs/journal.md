@@ -1,3 +1,11 @@
+# 2026-11-12 — Map UI 후보의 별도 Manager 적용 경로
+
+- immutable 기준4f1876b 뒤 별도 backend delta로 Map UI-only catalog와 apply-candidate CLI/SDK를 추가했다. 기존 recreate/adopt/pair pin 의미는 바꾸지 않았다.
+- Mendel의 실제 호스트 감사로 canonical paired receipt가 존재함을 확인했다. 이전 legacy 경로의 receipt 부재 판정은 정정했으며, 기존 기록을 복구하거나 UI source로 pair pin을 거짓 회전하지 않는다.
+- 승인 merged source의 root 소유 canonical clone·main 포함 관계·OCI image ID/revision/source를 검증한다. 기존 G/frozen stdin/자식 lock 수명을 재사용하고 비선택 API·DB·Dagster identity/config를 보존한다. health와 발행 직전 race 검사 뒤 기존 component current만 발행한다.
+- 새 기능 전20FAIL을 기록했고 이후 기존 release 회귀를 포함한141PASS·전체 backend Ruff PASS를 확인했다. 전체 backend 회귀는 최종 검증 후 결과를 추가한다. 운영 설치·배포는 실행하지 않았으며 코드 CI·독립 delta 리뷰2건·머지·부모 go가 남는다.
+- 계약·명령·실패 경계와 실제 trusted CLI 업그레이드 선행 조건은 [기능 정본](service-current-release.md)에 기록했다.
+
 # 2026-11-12 — 공통 후보9 최종 브라우저 검증
 
 - UI/tokens 후보9·원장·lock과 중앙 workflow pin을 동기화했다. 실행·CSS·제품 소스 동일성을 확인해 n150의 C8 production build를 재사용했다. C9 build를 새로 수행했다고 보고하지 않는다.
