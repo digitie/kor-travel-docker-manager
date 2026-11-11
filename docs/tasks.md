@@ -1,7 +1,7 @@
-## 2026-11-12 — Transport public UI 단독 승격
+## 2026-11-12 — Transport 두 UI의 단독 승격
 
-- [x] 기존 external project/core/admin current를 유지하는 metadata 등록과 schema/source 보존 회귀를 검증한다.
-- [ ] 정확 CI·독립 두 리뷰·병합 후 trusted SDK를 설치하고, 새 ARM UI 이미지로 실제 API·로그인·지도·health를 수용한다.
+- [x] 기존 external project/core/admin current를 유지하는 public/admin 선택과 source/schema·환경 보존 회귀를 검증한다.
+- [ ] 정확 CI·원 A/B 두 리뷰·병합 후 trusted SDK를 설치하고, 새 ARM 두 UI 이미지로 실제 로그인·표·지도·모바일·health를 수용한다.
 
 ## 2026-11-12 — 비선택 Mounts 열거 순서
 

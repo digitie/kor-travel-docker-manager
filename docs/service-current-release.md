@@ -237,7 +237,23 @@ revision 검사에만 쓰고 실제 구성은 현재 운영 Compose에서 고정
 backend revision과 더 오래된 후보 migration source를 함께 구성해 frontend 한 개만
 --no-deps로 실행되는지 확인한다. 다른 runtime의 변경은 current 발행을 거부한다. fixture의
 schema 표식 보존은 실제 DB 운영 측정이 아니며 운영 DB는 적용 전후 읽기 전용으로 따로 확인한다.
-이 등록은 public frontend 하나를 선택한다. 관리자 UI는 이 명령에 임의 역할을 넣어 교체하지 않는다.
+관리자는 같은 명령에 --component admin을 추가한다. components.admin.runtime은 기존
+service_releases.transport.groups.admin의 transport-admin-web 하나를 참조한다. 추가 target,
+container lifecycle 역할, current 그룹을 만들지 않고 gateway와 core를 그대로 유지한다.
+임의 --role·--env·runtime 인자는 받지 않는다. 모르는 component, API/one-shot/다른 release의
+runtime, 중복 선택 또는 선언되지 않은 필드는 Docker 조회 전에 거부한다.
+
+~~~bash
+sudo -n ktdctl service-release apply-component-ui transport --component admin \
+  --source-clone "$TRANSPORT_APPROVED_SOURCE_CLONE" --source-sha "$TRANSPORT_MERGED_SHA" \
+  --image-id "$TRANSPORT_ADMIN_IMAGE_ID" --dry-run --json
+~~~
+
+source_clone은 G의 source 검사에 맞는 root 소유 canonical Git clone이어야 한다.
+git archive staging만 전달하거나 외부 alternates/worktree Git 저장소를 승인 clone으로 쓰지 않는다.
+현재 Compose와 shared images overlay만 읽으며 기존 관리자 배포기의 전체 checkout rsync는 호출하지 않는다.
+공개 UI와 관리자는 순차로 적용하고 각 실행은 방금 관측·발행한 current를 다시 읽는다.
+혼합 source인 backend와 두 UI를 공통936 revision이라고 발행하지 않는다.
 
 기존 G를 획득한 뒤 source를 재확인하고, 정상인 기존 component current와 공유 project의
 모든 overlay를 읽어 Compose JSON을 한 번 고정한다. 적용은 선택 UI 하나와
@@ -254,8 +270,15 @@ schema 표식 보존은 실제 DB 운영 측정이 아니며 운영 DB는 적용
 회귀는 test_service_release_candidate_mounts.py에서 Map paired와 Geo/Weather SDK 경로로 검증한다.
 
 선택 UI의 현재 effective 환경은 G 안에서 읽고 기존 값을 보존한다. 후보 이미지에만 새로
-추가된 기본 환경은 합치되 같은 키는 현재 값이 우선한다. 저장된 Compose의 옛 키를 현재 UI에
-다시 주입하지 않는다. 해석한 환경을 stdin에 고정하고 선택 UI의 env_file을 다시 읽지 않는다.
+추가된 기본 환경은 합치되 같은 키는 현재 값이 우선한다. 유일한 선택적 예외는 등록된
+component의 release_env다. 이 키는 RELEASE_SHA 형식의 source 표시 전용이며, 후보 이미지
+기본 Env의 값이 승인 source와 다르거나 없으면 변경 전에 거부한다. 같은 source의 canonical
+origin/main 승인·OCI revision/source 검사도 모두 통과해야 해당 키만 새 SHA에 묶을 수 있다.
+Transport 관리자의 TRANSPORT_ADMIN_RELEASE_SHA는 인증 후 GET /api/release의 표시 값으로만
+소비되며 인증·세션·지도 키와 분리된다. public frontend에는 현재 revision 환경 키가 없어
+일괄 환경 재작성이나 backend499의 revision 주입을 하지 않는다.
+selected_environment_unchanged는 이렇게 승인한 source 표식과 그 외 기존 환경의 보존 조건이다.
+저장된 Compose의 옛 키를 현재 UI에 다시 주입하지 않는다. 해석한 환경을 stdin에 고정하고 선택 UI의 env_file을 다시 읽지 않는다.
 실행 전·사후·current 발행 직전에 승인한 환경/이미지 관계를 재검사한다. 읽을 수 없는 환경,
 중복/불완전 항목·관찰 중 변경은 거부하고 actual 값은 오류·새 manifest에 저장하지 않는다.
 Docker inspect의 raw 달러는 component에서 Compose 표현으로 한 번 인코딩하고 승인·비교는 raw 값을 사용한다.

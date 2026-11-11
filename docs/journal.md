@@ -1,9 +1,10 @@
-## 2026-11-12 — Transport public UI만 공식 승격하는 등록
+## 2026-11-12 — Transport 두 UI의 공식 단독 승격
 
-- Transport의 transport-frontend 역할과 canonical 저장소를 기존 component SDK에 등록했다. runtime Python·CLI·그룹 layout·환경 보존·기존 guard는 변경하지 않았다.
-- 기존 외부 core/admin current와 여섯 이미지에서 frontend 하나만 교체한다. 운영 backend/source/schema와 코드 서버·one-shot·관리자·공용 DB는 유지하며, 후보 전체 source를 운영 checkout에 복사하지 않는다.
-- 미등록 catalog 회귀의 수정 전1 FAIL을 보존했다. 등록 후 신규8개와 기존 관련 회귀를 합한437개가 통과했다. 더 오래된 후보 migration source와 기존 schema 표식을 함께 둔 회귀는 실제 DB 변경 실측이 아니며 운영 API 호환 수용도 대신하지 않는다.
-- 정확 CI·독립 두 리뷰·병합·trusted SDK 설치와 새 ARM 이미지·운영 UI 수용은 후속이다. Weather→Geo 공식 작업창 동안 Docker build/import/recreate는 실행하지 않았다.
+- 기본 public 선택과 등록된 --component admin을 기존 component SDK에 연결했다. 추가 UI는 기존 release 소유 runtime에서 유도하며 target lifecycle·core/admin 그룹·기존 current layout은 보존한다.
+- 후보 source를 운영 checkout에 동기화하지 않는다. frontend 또는 admin-web 하나만 기존 G·frozen stdin·nonselected·health·current 발행 본문으로 교체하고 backend499·DB0042·code-server·migrate·gateway는 유지한다.
+- 관리자 release_env는 승인 source·OCI revision/source·이미지 기본 Env가 같을 때만 재결박한다. TRANSPORT_ADMIN_RELEASE_SHA의 실제 소비가 인증된 버전 조회뿐임을 확인했으며, public runtime에는 revision 환경 키가 없다. 인증·세션·지도 키와 다른 설정은 보존한다.
+- 관련 기존 회귀455개와 신규 public8·admin40개, 합계503개 및 CI 버전 Ruff0.16.4 전체 검사가 통과했다. 기존 public478 checkpoint의 metadata-only 증거와 구분한다. 추가 전 parser가 관리자 선택을 거절하고 옛 표시값을 유지하던 대조와 추가 후 올바른 후보 표시값·인증 값 보존의 원문도 따로 보존했다.
+- 한 로컬 실행의 /tmp 용량 부족은 성공으로 세지 않고 보존했다. 종료된 본인 fixture만 정리한 뒤 같은 최종 소스를 재검증했다. 실제 ARM 빌드·정확 CI·원 A/B 두 리뷰·병합·trusted 설치·운영 수용은 별도다.
 
 ## 2026-11-12 — 비선택 Mounts 열거 순서 오탐 수정
 
