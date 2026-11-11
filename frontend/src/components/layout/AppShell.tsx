@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@kor-travel/ui/button';
+
 import {
   Activity,
   Command,
@@ -14,7 +16,10 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import Link from 'next/link';
-import { useEffect, useState, type ReactNode } from 'react';
+import { AppMenu } from '@kor-travel/ui/app-menu';
+import { createStore } from 'zustand/vanilla';
+import { useStore } from 'zustand';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 
 /** 최신 Map admin rail과 같은 1024px 기준을 유지한다. 기존 export 호환용 이름이다. */
 export const DRAWER_MEDIA_QUERY = '(max-width: 63.999rem)';
@@ -69,7 +74,10 @@ export default function AppShell({
   onOpenRuntimePins,
   onOpenSourceStatus,
 }: AppShellProps) {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [uiStore] = useState(() => createStore<{ collapsed: boolean }>(() => ({ collapsed: false })));
+  const sidebarCollapsed = useStore(uiStore, (state) => state.collapsed);
+  const setSidebarCollapsed = useCallback((value: boolean | ((current: boolean) => boolean)) =>
+    uiStore.setState((state) => ({ collapsed: typeof value === 'function' ? value(state.collapsed) : value })), [uiStore]);
   const [activeHref, setActiveHref] = useState('/');
 
   useEffect(() => {
@@ -78,7 +86,7 @@ export default function AppShell({
     } catch {
       // 저장소 접근이 막힌 브라우저에서는 펼친 rail을 기본값으로 사용한다.
     }
-  }, []);
+  }, [setSidebarCollapsed]);
 
   useEffect(() => {
     try {
@@ -149,7 +157,7 @@ export default function AppShell({
             <span aria-hidden="true" className="brand-short">dmu</span>
           </Link>
           <div className="brand-actions">
-            <button
+            <Button variant="ghost"
               aria-label={sidebarCollapsed ? '좌측 메뉴 펼치기' : '좌측 메뉴 접기'}
               className="sidebar-collapse-toggle"
               onClick={() => setSidebarCollapsed((current) => !current)}
@@ -157,8 +165,8 @@ export default function AppShell({
               type="button"
             >
               {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
-            </button>
-            <button
+            </Button>
+            <Button variant="ghost"
               aria-label="로그아웃"
               className="mobile-logout-button"
               disabled={isLoggingOut}
@@ -167,57 +175,21 @@ export default function AppShell({
               type="button"
             >
               <LogOut size={16} />
-            </button>
+            </Button>
           </div>
         </div>
 
-        <nav aria-label="관리" className="rail-nav">
-          {navGroups.map((group) => (
-            <div className="nav-group" key={group.label ?? 'dashboard'}>
-              {group.label ? <div className="nav-title">{group.label}</div> : null}
-              {group.items.map((item) => {
-                const Icon = item.icon;
-                const commonClassName = `${railRowClass}${item.disabled ? ' nav-link--disabled' : ''}`;
-
-                if (item.onClick) {
-                  return (
-                    <button
-                      aria-label={sidebarCollapsed ? item.label : undefined}
-                      className={`${commonClassName} nav-button`}
-                      disabled={item.disabled}
-                      key={item.label}
-                      onClick={item.onClick}
-                      title={sidebarCollapsed ? item.label : undefined}
-                      type="button"
-                    >
-                      <Icon aria-hidden="true" size={16} />
-                      <span className="nav-label">{item.label}</span>
-                      {item.hint ? <kbd className="nav-link__hint">{item.hint}</kbd> : null}
-                    </button>
-                  );
-                }
-
-                return (
-                  <a
-                    aria-current={item.href === activeHref ? 'page' : undefined}
-                    aria-label={sidebarCollapsed ? item.label : undefined}
-                    className={commonClassName}
-                    href={item.href}
-                    key={item.label}
-                    title={sidebarCollapsed ? item.label : undefined}
-                    onClick={() => setActiveHref(item.href ?? '/')}
-                  >
-                    <Icon aria-hidden="true" size={16} />
-                    <span className="nav-label">{item.label}</span>
-                  </a>
-                );
-              })}
-            </div>
-          ))}
-        </nav>
+        <AppMenu label="관리" activeItemId={activeHref} groups={navGroups.map((group, index) => ({
+          id: String(index), label: group.label,
+          items: group.items.map((item) => ({
+            id: item.href ?? item.label, label: item.label, icon: <item.icon size={16} />,
+            hint: item.hint, disabled: item.disabled,
+            ...(item.onClick ? { onSelect: item.onClick } : { href: item.href ?? '/' }),
+          })),
+        }))} />
 
         <div className="sidebar-footer">
-          <button
+          <Button variant="ghost"
             aria-label={sidebarCollapsed ? '로그아웃' : undefined}
             className={`${railRowClass} nav-button`}
             disabled={isLoggingOut}
@@ -227,7 +199,7 @@ export default function AppShell({
           >
             <LogOut aria-hidden="true" size={16} />
             <span className="nav-label">로그아웃</span>
-          </button>
+          </Button>
         </div>
       </aside>
 

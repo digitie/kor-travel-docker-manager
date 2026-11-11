@@ -1,0 +1,48 @@
+{
+  "status": "CANDIDATE_NOT_RELEASED",
+  "candidate": "integration-11-review",
+  "sources": {
+    "common": "a35481349d6747b4f13b958ae64d9c0bbd0b5413",
+    "maplibre-vworld-react": "9a7a348b02d61969b394c681b024d5851eef836b",
+    "lightningcss": "748651cbd845971e65c411166ddee101745dab21",
+    "serde-content": "18e53fcf6f8ace093a292891b34fa3411192617d",
+    "radix-ui-primitives": "1752a539c8d5ae57961a0fa2702d2573d48fefe7"
+  },
+  "packages": {
+    "@kor-travel/tokens": {
+      "version": "0.1.1",
+      "filename": "kor-travel-tokens-0.1.1.tgz",
+      "integrity": "sha512-85mqNJXqhTlA4RbtKUhmzx6rH6mOOeNmsXTJtCetQ5y8njLy+5XLZbdT6j1tf3ME9XQA6X63Ah4kmuLdqEZHbA=="
+    },
+    "@kor-travel/ui": {
+      "version": "0.2.0",
+      "filename": "kor-travel-ui-0.2.0.tgz",
+      "integrity": "sha512-BsRRdnJUp6FQ2KWkXtINb7IkrxxwnWFlLP/oVlNN4UXBKren7uTlnYT4iJsdaO98iA4Tn2EMPX06eT2uB5jEDA=="
+    },
+    "lightningcss": {
+      "version": "1.33.0+nativecss.fix.4",
+      "filename": "lightningcss-1.33.0+nativecss.fix.4.tgz",
+      "integrity": "sha512-zDQ03VJE37OlyBrLsRcsEdIVu0T4BXJKDH5y9//To6GlGN2UrKQGERFVAFblkPQ5ZEbhuOp5wpXxGARZNdbQLA=="
+    },
+    "vworld-map-core": {
+      "version": "1.0.1",
+      "filename": "vworld-map-core-1.0.1.tgz",
+      "integrity": "sha512-Djm14Arr7U0r7Sabj6P0V57CdzWIGaJmecklmY1hwrq1QUZJjMUFgkZfGRFalUo6AFzHEwwzOEzbJPMifGhINw=="
+    },
+    "vworld-map-rn": {
+      "version": "1.0.1",
+      "filename": "vworld-map-rn-1.0.1.tgz",
+      "integrity": "sha512-lgDBasKIEG2ElQ9jnHDB9pA+x04Xge9yzBb1NPPw1auyvlkQvxsq4NfRPIrw1VWiutcGiIefySLiVaZDUkO69Q=="
+    },
+    "vworld-map-web": {
+      "version": "1.0.3",
+      "filename": "vworld-map-web-1.0.3.tgz",
+      "integrity": "sha512-HPXZcz/wP6tFsCZqlAbansWNICcZPubC+/V7rDWXYTQVlOBLl9cZQ1HSMJd25c2CZoMNreVFTQA0vzkVglkS1w=="
+    },
+    "@radix-ui/react-focus-scope": {
+      "version": "1.3.1+kortravel.fix.2",
+      "filename": "radix-ui-react-focus-scope-1.3.1+kortravel.fix.2.tgz",
+      "integrity": "sha512-v3XweXrUSZ/QfrMVvYmsAkVNDnvcN21QKbSrViXYf0OQf5Ue9xSgqQIukgGjsYMEBQ5qxQW8fnOC9t1Y0ENPXw=="
+    }
+  }
+}

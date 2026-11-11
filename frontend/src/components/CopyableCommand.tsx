@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@kor-travel/ui/button';
+
 import { useState } from 'react';
 import { Copy, Terminal } from 'lucide-react';
 
@@ -32,7 +34,7 @@ export default function CopyableCommand({
       {hint ? <p className="text-xs text-secondary mt-1">{hint}</p> : null}
       <div className="flex items-start gap-2 mt-2">
         <code className="flex-1 text-xs bg-subtle rounded-card px-3 py-2 break-all">{command}</code>
-        <button
+        <Button variant="ghost"
           className="ops-button shrink-0"
           onClick={() => {
             // clipboard는 비보안 컨텍스트에서 없을 수 있다. 실패해도 화면은 명령을
@@ -49,7 +51,7 @@ export default function CopyableCommand({
         >
           <Copy className="w-4 h-4" />
           {copied ? '복사됨' : '복사'}
-        </button>
+        </Button>
       </div>
     </div>
   );

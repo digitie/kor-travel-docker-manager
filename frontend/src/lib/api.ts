@@ -556,7 +556,6 @@ function handleUnauthorized() {
   if (typeof window === 'undefined') return;
   if (window.location.pathname !== '/') {
     // 인증 핸들러가 없을 때는 전체 문서를 다시 받아 세션 상태를 초기화한다.
-    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.assign('/');
   } else {
     window.location.reload();

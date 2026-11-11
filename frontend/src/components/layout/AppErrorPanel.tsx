@@ -23,7 +23,6 @@ function goBack() {
     return;
   }
   // 런타임 오류 복구는 새 문서를 받아 이전 클라이언트 상태를 비운다.
-  // eslint-disable-next-line @next/next/no-location-assign-relative-destination
   window.location.assign("/");
 }
 
@@ -76,22 +75,22 @@ export function AppErrorPanel({ error, reset, standalone = false }: AppErrorPane
             : "현재 탭의 UI 상태가 서버와 맞지 않거나, 화면 렌더링 중 오류가 발생했습니다."}
         </p>
         <div className="flex flex-wrap items-center gap-2.5 mt-1">
-          <button
+          <Button variant="ghost"
             type="button"
             onClick={retry}
             className={`${buttonBase} ops-button--primary`}
           >
             <RefreshCw className="w-4 h-4" />
             다시 시도
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             type="button"
             onClick={goBack}
             className={buttonBase}
           >
             <ArrowLeft className="w-4 h-4" />
             이전 화면
-          </button>
+          </Button>
         </div>
         <details className="border-t border-line pt-3 mt-1">
           <summary className="text-secondary text-xs cursor-pointer">오류 정보</summary>
@@ -103,3 +102,5 @@ export function AppErrorPanel({ error, reset, standalone = false }: AppErrorPane
     </section>
   );
 }
+
+import { Button } from '@kor-travel/ui/button';

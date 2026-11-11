@@ -1,3 +1,66 @@
+# 2026-11-12 — 발행 직전 실패의 진단 보존
+
+## 2026-11-12: 공통 C11과 FocusScope2 최종 후보 고정
+
+- C11 UI/tokens/7종 원장과 FocusScope `1.3.1+kortravel.fix.2`를 채택했다. 엔진은 직접 file 의존성과 루트 override로 고정하고 앱은 공통 UI만 import한다. 미사용 Scope1 vendor는 제거했다. 공통 workflow 코드는 55a921b를 유지한다.
+- frontend node_modules symlink를 보존하고 물리 임시 스테이지에서 세 패키지만 설치했다. 설치153파일 원본 일치, Radix 소비6곳 동일 Scope2 해석, 앱 guard와 exact55 중앙 guard/최종 원장 검증을 통과했다.
+- 외부 Scope 런타임이 바뀌므로 n150 fresh build와 브라우저2검증은 별도 gate다. 공유 두 슬롯 점유로 대기하며 과거 .next를 최종 증거로 재사용하지 않는다.
+
+- 1e32524의 최종 A/B 재검토에서 이전 수용/발행 안전성 P2는 모두 닫혔으나, 늦은 guard 예외가 CLI의 일반 오류 응답으로 축약되는 항목이 남았다. baseline/current/nonselected 세 guard의3·4·5번째 경계9개가 수정 전 FAIL임을 보존했다.
+- mutation 이후 healthy·metadata 발행 전체를 같은 구조화 실패 경계로 묶었다. 늦은 guard/발행 I/O 예외도 child 종료값·UI 검증·각 불변식 플래그와 오류형을 보존하고 비밀을 가린다. 재관측은 실패를 성공으로 승격하지 않으며 current 변경 여부를 정직하게 반환한다.
+
+# 2026-11-12 — 후보 경로 재검토의 companion·terminal 실패 보완
+
+- b86e6aa 재검토에서 canonical companion 관계를 live 값으로 덮는 누락과 사후 실패를 다음 성공으로 승격하는 문제를 재현했다. 두 항목과 늦은 guard 진단 플래그의 수정 전 FAIL을 보존했다.
+- companion 기대 집합은 frozen reference/immutable image와 기존 paired owner 관계로만 유도하고 기록/owner ID 일치를 요구한다. 단일 UI만 실행하되 stdin의 paired 이미지는 기존 기록의 ID로 고정한다. 비선택 live 값은 기대 역할을 줄이는 데 쓰지 않는다.
+- 보완 후 기존 release/CLI/compose/process 회귀를 포함한160건과 전체 backend Ruff가 통과했다. 사후 관측 실패는 terminal이며 current를 발행하지 않는다. 이후 guard에서도 실패 플래그를 되돌리지 않고 오류를 보존한다. 이전 recreate/adopt/pair pin 구현은 계속 변경하지 않는다.
+
+# 2026-11-12 — UI 후보 delta 독립 리뷰 보완
+
+- e2dd510의 독립 A/B가 HostConfig 전체 비교·paired 역할 완전성·실패 후 관측, canonical env 선택과 Git commondir 경계 누락을 재현했다. B 반례4개와 A 실패/중단/launch3개가 수정 전 FAIL인 로그를 보존했다.
+- 새 admission만 보완해 catalog env/process 환경 분리·project 일치, 기존 topology/companion 파생 재사용, Git commondir 거부, HostConfig 전체 보존과 실패 후 사후 관측을 추가했다. recreate/adopt/pair pin은 계속 변경하지 않는다.
+- 보완 후 기존 자식 process/G 회귀를 포함한152건과 전체 backend Ruff가 통과했다. 이전 편집 중 전체 pytest는 최종 gate로 사용하지 않고 본인 PID만 SIGINT로 정리했다. 코드 동결 후 전체 회귀와 독립 재검토를 수행한다. C10은 offline npm 캐시 단계에서 종료돼 n150 build/E2E는 미실행이며 fix.2/C11 전까지 보류한다.
+
+# 2026-11-12 — Map UI 후보의 별도 Manager 적용 경로
+
+- immutable 기준4f1876b 뒤 별도 backend delta로 Map UI-only catalog와 apply-candidate CLI/SDK를 추가했다. 기존 recreate/adopt/pair pin 의미는 바꾸지 않았다.
+- Mendel의 실제 호스트 감사로 canonical paired receipt가 존재함을 확인했다. 이전 legacy 경로의 receipt 부재 판정은 정정했으며, 기존 기록을 복구하거나 UI source로 pair pin을 거짓 회전하지 않는다.
+- 승인 merged source의 root 소유 canonical clone·main 포함 관계·OCI image ID/revision/source를 검증한다. 기존 G/frozen stdin/자식 lock 수명을 재사용하고 비선택 API·DB·Dagster identity/config를 보존한다. health와 발행 직전 race 검사 뒤 기존 component current만 발행한다.
+- 새 기능 전20FAIL을 기록했고 이후 기존 release 회귀를 포함한141PASS·전체 backend Ruff PASS를 확인했다. 전체 backend 회귀는 최종 검증 후 결과를 추가한다. 운영 설치·배포는 실행하지 않았으며 코드 CI·독립 delta 리뷰2건·머지·부모 go가 남는다.
+- 계약·명령·실패 경계와 실제 trusted CLI 업그레이드 선행 조건은 [기능 정본](service-current-release.md)에 기록했다.
+
+# 2026-11-12 — 공통 후보9 최종 브라우저 검증
+
+- UI/tokens 후보9·원장·lock과 중앙 workflow pin을 동기화했다. 실행·CSS·제품 소스 동일성을 확인해 n150의 C8 production build를 재사용했다. C9 build를 새로 수행했다고 보고하지 않는다.
+- n150의 별도 소스·임시 포트에서 guard·타입·ESLint와 데스크톱/모바일 E2E2개가 통과했다. 로컬 Doctor 전체 스캔도 오류0·경고0이다. C8 단위54개 근거는 실행 bytes 동일성으로 유지한다.
+- stdout 준비 대기를 HTTP 준비 검사로 바꾸고 CORS를 실제 baseURL에 맞췄다. 느린 첫 원장 로딩의5초 단언 실패를 보존한 뒤90초/15초 예산으로 두 화면 통과를 확인했다. 단언을 줄이거나 제품 코드를 변경하지 않았다. 브라우저 외부 HTTP 차단과 서버 재사용 금지로 운영 서버 연결을 막았다.
+- 배포 런북과 실제 frontend systemd/trusted-release 컨텍스트는 읽기 전용으로 확인했다. 운영 서비스는 변경하지 않았다. 부모의 두 독립 리뷰·CI·머지·go 및 운영 수용이 남는다. [최종 검증 기록](common-ui-c9-validation.md)에 범위와 실패 이력을 남겼다.
+
+# 2026-11-12 — 공통 후보8 단일 산출물 채택
+
+integration-8-review의 UI0.2.0/tokens0.1.1·Lightning CSS1.33.0+nativecss.fix.4를 같은 정본 파일로 설치했다. 지도 사용 앱은 기존 core1.0.1/web1.0.3의 같은 bytes를 유지한다. 설치된 모든 pack 파일의 원문 일치, 로컬·최신 외부 정책 검사, 단위·lint·타입·Doctor0을 확인했다. 중앙 CI 실행 코드는 common670a753으로 고정했다. 최종 브라우저·원격 CI·독립2리뷰·PR머지·운영 배포는 별도 gate다.
+
+## 2026-11-11 — Doctor 전체 경고 차단과 운영 패널 분리
+
+- 사용자 추가 기준에 따라 Doctor를 `--scope full --blocking warning`으로 바꾸고 source guard도 `--source src`를 명시했다. 앞 기록의16경고를 후속 부채로 두지 않고 해결했다. suppression·baseline이나 스캔 범위 축소는 사용하지 않았다.
+- 인증·버전·배포 상태·백업·대시보드의 조회/상태와 화면 구역, 상세6탭과 설정 입력/변경 미리보기를 분리했다. 상태 authority와 기존 query/mutation API는 유지한다. 불필요한 view별 상태 사본은 만들지 않는다.
+- 백업 생성은 서버의202 작업을 작업 전용 캐시에 연결하며 실제 manifest는 기존 완료 관측 뒤 갱신한다. 진행 응답을 완료로 표시하지 않는 회귀를 추가했다. 순차 재시작은 동일 순서의 Promise 체인을 사용해 병렬 실행으로 바꾸지 않았다. 세션 확인 취소는 활성 세션 cleanup으로 옮겼고 Toast 순수 생성 함수는 UI 모듈과 분리했다.
+- hook에서 반환된 준비도 ref를 view에서 쓰던 부분은 lint의 immutability 진단에 따라 소유 hook의 refreshAll 콜백으로 이동했다. 두 재조회가 완료된 뒤 강제 관측 표식을 내리는 순서는 그대로다.
+- 부모 integration candidate4 UI/tokens 두 tgz·원장·lock을 같은 bytes로 동기화하고 common font.css/radix.css를 로컬 테마 앞에 적용했다. 이전 vendor 파일은 없으며 필요한 두 tgz만 보유한다. Linux source guard·타입·ESLint0경고·Doctor 전체 검사56파일(생략 없음)0오류/0경고·단위54개(16파일)·production build·데스크톱/모바일 E2E2개가 모두 PASS다. 브라우저는 원장·마운트·백업·고정 버전 네 표를 모두 확인한다. 부모 최종pack freeze/독립2리뷰/CI/운영 수용은 별도다.
+
+## 2026-11-11 — 공통 관리자 UI 소비와 후보3 검증
+
+- 원본 dirty checkout을 보존한 ext4 shared clone의 `agent/codex-common-unification-20261111`에서 소비자만 변경했다. Transport는 사용자 지시에 따라 새 전담에 인계하고 이후 수정하지 않았다.
+- LoginForm·AppMenu·Radix Button/Checkbox/Dialog/AlertDialog/Tabs·VirtualTable을 common에서 사용한다. 원장·마운트·백업·고정 버전의 모든 표를 이전했으며 지도 의존성은 추가하지 않았다. 인증·세션·운영 API·Docker 수명주기 정책은 유지한다.
+- 비밀번호 변경은 RHF/Zod, 설정 배열 편집은 RHF의 안정 행 식별자, 메뉴 접힘은 인스턴스별 Zustand, 폰트는 로컬 Pretendard를 사용한다. 확인 창은 승인 전 실행 차단·취소/세션 소실 시 해제·호출 버튼 초점 복귀를 유지한다.
+- 첫 브라우저 회귀의 확인 취소 후 초점 소실을 재현했다. 표 인라인 cell renderer가 호출 버튼 DOM을 교체한 원인이어서 열 정의를 상수로 옮겼다. 모바일 공통 메뉴의 가로 탐색과 모달 여백도 화면을 확인해 보완했다.
+- 부모의 동일 UI/tokens 후보3 tgz·원장을 복사하고 명시적 file 재설치 및 clean `npm ci`를 확인했다. 첫 동기화 중 원장/파일 불일치는 guard가 실제로 거부했으며 부모의 원장 갱신 뒤 다시 일치시켰다. 이 파일은 정식 릴리스나 운영 배포의 증거가 아니다.
+- ESLint10.14.0과 이를 지원하는 Next/React/TypeScript/접근성 플러그인으로 교체했고 legacy-peer/force는 사용하지 않았다. Doctor0.9.22 CLI 옵션을 직접 확인해 전체 스캔과 CI 실행을 연결했다. 소켓의 생성/해제를 명시적 자원으로 묶고 시각·행 식별자·탐색 비용 진단을 수정했다.
+- Linux 검증: `npm ci`, guard, type-check, ESLint `--max-warnings=0`, 단위53개(15파일), production build, 데스크톱·모바일 Chromium 회귀2개 PASS. 기존 로그아웃9개가 포함된다. Playwright는 미실행 포트의 HTTP 준비 확인이 대기해 최신 CLI의 서버 stdout Ready 대기 방식으로 전환했으며 자기 서버만 자동 종료했다.
+- Doctor는 오류0·경고16개이며 오류 차단 모드 PASS다. 복잡도6·대형 컴포넌트5·컴포넌트 외 export2·순차 await1·작업 완료 시 갱신하는 백업 mutation1·세션 중단 시 확인 취소 effect1을 숨기지 않았다. warning 차단 통과나 0경고로 보고하지 않는다. 설명은 [채택 기록](common-ui-adoption.md)을 따른다.
+- backend 무변경이므로 backend pytest/Ruff와 Docker 검증은 실행하지 않았다. WSL 브라우저는 mock API 계약이며 n150 실세션/운영 수용을 대신하지 않는다. 두 독립 적대 리뷰·원격 CI·PR/머지·운영 배포는 부모 최종 통합 단계로 남긴다.
+- 배포 정본 확인 결과 Manager 자체는 systemd Next.js 산출물이며 UI 전용 Docker 이미지 태그는 없다. 운영 설정을 보존한 exact merged SHA의 UI 빌드/`ktdm-frontend` 재시작과 로그인→대표화면→로그아웃/health 검증을 [배포 계획](common-ui-deployment.md)에 적었다. 부모 go 전 배포와 DB/RustFS 조작은 하지 않았다.
+
 ## 2026-11-09 — 상태 점검 배포와 첫 조회 개선의 최종 정산
 
 - PR #486·#488의 두 리뷰·정확 CI·병합과 기존 API Common 점검·동일 소비 이미지의 Geo/Weather 격리 live 적용을 수용했다. code-server 점검 창에서 두 대상만 재생성했고 다른 53개와 전체 55개 이미지 ID를 보존했다. 수집 두 실행은 자연 SUCCESS였으며 run 취소·SQL 수정 없이 예약만 공식 SDK로 일시 중지·복원했다. 실측 snapshot의 publisher는 RUNNING, native incarnation recovery는 STOPPED였다.

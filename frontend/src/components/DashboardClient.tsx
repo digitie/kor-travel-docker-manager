@@ -1,5 +1,15 @@
 'use client';
 
+import { Button } from '@kor-travel/ui/button';
+
+import { useFieldArray, useForm, useWatch } from 'react-hook-form';
+import { Checkbox } from '@kor-travel/ui/checkbox';
+import { createManagedWebSocket } from '@/lib/managedWebSocket';
+import OpsDialog from './OpsDialog';
+import { useConfirm } from './useConfirm';
+
+import { VirtualTable, type ColumnDef } from '@kor-travel/ui/virtual-table';
+
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -24,7 +34,8 @@ import RuntimePinPanel from './RuntimePinPanel';
 import SourceStatusPanel from './SourceStatusPanel';
 import ContainerDetailModal from './ContainerDetailModal';
 import LoginScreen from './LoginScreen';
-import ToastStack, { ToastItem, errorToast, successToast } from './Toast';
+import ToastStack from './Toast';
+import { type ToastItem, errorToast, successToast } from '@/lib/toasts';
 import StatStrip from './StatStrip';
 import AppShell from './layout/AppShell';
 import { humanizeError } from '@/lib/errors';
@@ -69,7 +80,21 @@ const CartesianGrid = dynamic(() => import('recharts').then(mod => mod.Cartesian
 const RechartsTooltip = dynamic(() => import('recharts').then(mod => mod.Tooltip), { ssr: false });
 const Legend = dynamic(() => import('recharts').then(mod => mod.Legend), { ssr: false });
 
-export default function DashboardClient() {
+type FleetRow = { id: string; cells: React.ReactNode[] };
+// 셀 renderer의 identity를 보존해야 부모 확인 창을 열 때 호출 버튼 DOM이 유지된다.
+const FLEET_COLUMNS: ColumnDef<FleetRow>[] = [
+                { id: 'column0', header: '상태', cell: ({ row }) => row.original.cells[0] },
+                { id: 'column1', header: '컨테이너', cell: ({ row }) => row.original.cells[1] },
+                { id: 'column2', header: '역할', cell: ({ row }) => row.original.cells[2] },
+                { id: 'column3', header: '포트', cell: ({ row }) => row.original.cells[3] },
+                { id: 'column4', header: 'CPU', cell: ({ row }) => row.original.cells[4] },
+                { id: 'column5', header: '메모리', cell: ({ row }) => row.original.cells[5] },
+                { id: 'column6', header: 'I/O', cell: ({ row }) => row.original.cells[6] },
+                { id: 'column7', header: '도구', cell: ({ row }) => row.original.cells[7] },
+                { id: 'column8', header: '제어', cell: ({ row }) => row.original.cells[8] }
+              ];
+
+function useDashboardModel() {
   const queryClient = useQueryClient();
   const [isAdminSettingsOpen, setIsAdminSettingsOpen] = useState<boolean>(false);
   const [isBackupHistoryOpen, setIsBackupHistoryOpen] = useState<boolean>(false);
@@ -114,6 +139,7 @@ export default function DashboardClient() {
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const logoutInFlight = useRef(false);
   const canReadSession = isAuthenticated && !isLoggingOut;
+  const { confirm, confirmation } = useConfirm(canReadSession);
 
   // 백그라운드 요청이 401을 받으면 하드 리로드 대신 auth-me 쿼리를 무효화해 SPA 내에서
   // LoginScreen 으로 전환한다(logout 경로와 동작 일치, in-flight UI 상태 보존).
@@ -137,10 +163,14 @@ export default function DashboardClient() {
   // Modal States
   const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
   const [configTargetContainer, setConfigTargetContainer] = useState<ContainerStatus | null>(null);
-  const [inputPortsList, setInputPortsList] = useState<string[]>([]);
+  const configForm = useForm<{ ports: { value: string }[]; networks: { value: string }[] }>({ defaultValues: { ports: [], networks: [] } });
+  const portFields = useFieldArray({ control: configForm.control, name: 'ports' });
+  const networkFields = useFieldArray({ control: configForm.control, name: 'networks' });
+  const configValues = useWatch({ control: configForm.control });
+  const inputPortsList = (configValues.ports ?? []).map((field) => field?.value ?? '');
+  const inputNetworksList = (configValues.networks ?? []).map((field) => field?.value ?? '');
   const [inputEnvDict, setInputEnvDict] = useState<Record<string, string>>({});
   const [inputVolumesList, setInputVolumesList] = useState<string[]>([]);
-  const [inputNetworksList, setInputNetworksList] = useState<string[]>([]);
 
   // Real-time Log Modal States
   const [isLogModalOpen, setIsLogModalOpen] = useState<boolean>(false);
@@ -171,26 +201,6 @@ export default function DashboardClient() {
   useEffect(() => {
     chartContainerIdRef.current = chartContainerId;
   }, [chartContainerId]);
-
-  // 모달 접근성: 열린 모달을 Escape 키로 닫는다(AdminSettings 모달은 자체 처리).
-  useEffect(() => {
-    if (!isLogModalOpen && !isChartModalOpen && !isConfigModalOpen && !isCommandPaletteOpen) return;
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      if (isCommandPaletteOpen) {
-        setIsCommandPaletteOpen(false);
-      } else if (isConfigModalOpen) {
-        setIsConfigModalOpen(false);
-      } else if (isChartModalOpen) {
-        setIsChartModalOpen(false);
-        setWsMetricsPoints([]);
-      } else if (isLogModalOpen) {
-        setIsLogModalOpen(false);
-      }
-    }
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [isLogModalOpen, isChartModalOpen, isConfigModalOpen, isCommandPaletteOpen]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -239,6 +249,17 @@ export default function DashboardClient() {
     refetchInterval: false,
   });
 
+  const targetsByContainer = useMemo(() => {
+    const index = new Map<string, TargetSummary[]>();
+    for (const target of targets) {
+      for (const id of Array.from(new Set(target.containers ?? []))) {
+        const matches = index.get(id) ?? [];
+        matches.push(target); index.set(id, matches);
+      }
+    }
+    return index;
+  }, [targets]);
+
   // `containers`는 depends_on 전이 폐포에서 기계적으로 유도된 목록이 아니다 —
   // config/docker-targets.yml에 target마다 손으로 직접 채운 고정 목록이고,
   // registry.py의 `_validate_targets_config`는 그 목록이 서로 참조 무결성을
@@ -251,17 +272,19 @@ export default function DashboardClient() {
   // 순서와 무관하게 **가장 좁은** target을 고른다.
   const detailTarget = useMemo(() => {
     if (!detailContainer) return null;
-    const matches = targets.filter((t) => (t.containers ?? []).includes(detailContainer.id));
+    const matches = (targetsByContainer.get(detailContainer.id) ?? []);
     if (matches.length === 0) return null;
     return matches.reduce((narrowest, t) =>
       (t.containers?.length ?? Infinity) < (narrowest.containers?.length ?? Infinity)
         ? t
         : narrowest
     );
-  }, [targets, detailContainer]);
+  }, [targetsByContainer, detailContainer]);
 
   // Active containers dataset (WS if available, fallback query otherwise)
   const allContainers = wsContainers || fallbackContainers;
+
+
   const [includeStopped, setIncludeStopped] = useState(false);
   const localContainers = visibleLocalContainers(allContainers, true);
   const displayContainers = visibleLocalContainers(allContainers, includeStopped);
@@ -304,7 +327,7 @@ export default function DashboardClient() {
   const containerGroups = useMemo(() => {
     const groups = new Map<string, { label: string; containers: ContainerStatus[] }>();
     for (const container of displayContainers) {
-      const matches = targets.filter((target) => (target.containers ?? []).includes(container.id));
+      const matches = (targetsByContainer.get(container.id) ?? []);
       const narrowest = matches.length
         ? matches.reduce((current, candidate) =>
             (candidate.containers?.length ?? Infinity) < (current.containers?.length ?? Infinity)
@@ -331,7 +354,7 @@ export default function DashboardClient() {
         mutableCount: running.filter((c) => !c.observed_only).length,
       };
     });
-  }, [displayContainers, targets]);
+  }, [displayContainers, targetsByContainer]);
 
   // 컨테이너 단위 제어만 있어서 "geo 전체 재시작"이 수동 N회 클릭이었다. 신규
   // 엔드포인트 없이 순차 호출로 처리한다 — 각 호출이 기존 C6c 락을 그대로 통과한다.
@@ -345,16 +368,16 @@ export default function DashboardClient() {
       }
       const names = running.map((c) => c.display_name || c.name).join(', ');
       if (
-        !window.confirm(
+        !(await confirm(
           `${group.label}의 실행 중인 컨테이너 ${running.length}개를 순서대로 재시작합니다.\n\n` +
             `대상: ${names}\n\n계속할까요?`
-        )
+        ))
       ) {
         return;
       }
       setBulkRestartingGroup(group.id);
       let failed = 0;
-      for (const container of running) {
+      await running.reduce((previous, container) => previous.then(async () => {
         try {
           await apiJson(`/api/v1/containers/${container.id}/action`, {
             method: 'POST',
@@ -366,7 +389,7 @@ export default function DashboardClient() {
             errorToast(humanizeError(error, `${container.display_name || container.name} 재시작`))
           );
         }
-      }
+      }), Promise.resolve());
       setBulkRestartingGroup(null);
       queryClient.invalidateQueries({ queryKey: ['containers'] });
       if (failed === 0) {
@@ -375,7 +398,7 @@ export default function DashboardClient() {
         );
       }
     },
-    [pushToast, queryClient]
+    [confirm, pushToast, queryClient]
   );
 
   // KPI summary counts derived from the active container list
@@ -410,6 +433,7 @@ export default function DashboardClient() {
   useEffect(() => {
     if (!canReadSession) return;
 
+    let connection: ReturnType<typeof createManagedWebSocket> | undefined;
     let ws: WebSocket | undefined;
     let reconnectTimeout: ReturnType<typeof setTimeout> | undefined;
     let cancelled = false;
@@ -422,19 +446,14 @@ export default function DashboardClient() {
     const FIRST_FRAME_GRACE_MS = 30000;
     const IDLE_LIMIT_MS = 8000;
 
-    const detach = (socket: WebSocket) => {
-      socket.onopen = null;
-      socket.onmessage = null;
-      socket.onerror = null;
-      socket.onclose = null;
-    };
-
     const connectWS = () => {
       if (cancelled) return;
       const wsUrl = apiWsUrl('/api/v1/ws/status');
       let socket: WebSocket;
       try {
-        socket = new WebSocket(wsUrl);
+        connection?.dispose();
+        connection = createManagedWebSocket(wsUrl);
+        socket = connection.socket;
       } catch (err) {
         // SecurityError/SyntaxError는 설정 오류이지 일시적 장애가 아니다. 재시도하지 않고
         // HTTP 폴백 폴링(isWsConnected=false)에 맡긴다.
@@ -536,11 +555,7 @@ export default function DashboardClient() {
       cancelled = true;
       clearInterval(watchdog);
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (ws) {
-        // 정리 후 stale onclose가 4401 종단 분기를 오발동하지 않게 핸들러를 먼저 뗀다.
-        detach(ws);
-        ws.close();
-      }
+      connection?.dispose();
     };
   }, [canReadSession]);
 
@@ -573,11 +588,11 @@ export default function DashboardClient() {
   // "영향 범위를 세어 보여 주고 확인받는" 패턴을 stop/restart에도 적용한다.
   const impactedTargetsFor = useCallback(
     (containerId: string) =>
-      targets.filter((target) => (target.containers ?? []).includes(containerId)),
-    [targets]
+      (targetsByContainer.get(containerId) ?? []),
+    [targetsByContainer]
   );
 
-  const handleAction = (id: string, action: string) => {
+  const handleAction = async (id: string, action: string) => {
     if (action === 'stop' || action === 'restart') {
       const container = displayContainers.find((item) => item.id === id);
       const label = container?.display_name || container?.name || id;
@@ -588,7 +603,7 @@ export default function DashboardClient() {
           `${impacted.map((target) => target.id).join(', ')}\n` +
           '해당 target을 쓰는 앱이 함께 영향을 받습니다.'
         : '';
-      if (!window.confirm(`${label}을(를) ${verb}합니다.${scope}\n\n계속할까요?`)) {
+      if (!(await confirm(`${label}을(를) ${verb}합니다.${scope}\n\n계속할까요?`))) {
         return;
       }
     }
@@ -665,15 +680,16 @@ export default function DashboardClient() {
     if (!canReadSession || !logContainerId || !isLogModalOpen) return;
 
     const wsUrl = apiWsUrl(`/api/v1/ws/logs/${logContainerId}`);
-    let ws: WebSocket;
+    let connection: ReturnType<typeof createManagedWebSocket>;
     try {
-      ws = new WebSocket(wsUrl);
+      connection = createManagedWebSocket(wsUrl);
     } catch (err) {
       console.error('Log WebSocket construction failed for', wsUrl, err);
       setLiveLogs('\n[Error] 로그 스트림 주소가 올바르지 않습니다.\n');
       return;
     }
 
+    const ws = connection.socket;
     setLiveLogs('--- 실시간 로그 스트리밍을 시작합니다 ---\n');
     setIsLogWsOpen(false);
 
@@ -727,11 +743,7 @@ export default function DashboardClient() {
 
     return () => {
       // 이전 컨테이너의 종료 배너가 새 컨테이너 버퍼에 섞이지 않게 핸들러를 먼저 뗀다.
-      ws.onopen = null;
-      ws.onmessage = null;
-      ws.onerror = null;
-      ws.onclose = null;
-      ws.close();
+      connection.dispose();
     };
   }, [canReadSession, logContainerId, isLogModalOpen]);
 
@@ -744,10 +756,10 @@ export default function DashboardClient() {
 
   const openConfigModal = (container: ContainerStatus) => {
     setConfigTargetContainer(container);
-    setInputPortsList(container.config?.ports || []);
+    configForm.reset({ ports: (container.config?.ports ?? []).map((value) => ({ value })),
+      networks: (container.config?.networks ?? []).map((value) => ({ value })) });
     setInputEnvDict(container.config?.env || {});
     setInputVolumesList(container.config?.volumes || []);
-    setInputNetworksList(container.config?.networks || []);
     setIsConfigModalOpen(true);
   };
 
@@ -905,7 +917,122 @@ export default function DashboardClient() {
     run();
   };
 
-  if (isAuthLoading) {
+    return {
+    queryClient,
+    isAdminSettingsOpen,
+    setIsAdminSettingsOpen,
+    isBackupHistoryOpen,
+    setIsBackupHistoryOpen,
+    isRuntimePinsOpen,
+    setIsRuntimePinsOpen,
+    isSourceStatusOpen,
+    setIsSourceStatusOpen,
+    toasts,
+    dismissToast,
+    isCommandPaletteOpen,
+    setIsCommandPaletteOpen,
+    commandQuery,
+    setCommandQuery,
+    commandInputRef,
+    isAuthLoading,
+    refetchAuth,
+    isAuthenticated,
+    setIsLoggingOut,
+    confirm,
+    confirmation,
+    isWsConnected,
+    detailContainer,
+    setDetailContainer,
+    closeDetailModal,
+    isConfigModalOpen,
+    setIsConfigModalOpen,
+    configTargetContainer,
+    configForm,
+    portFields,
+    networkFields,
+    inputPortsList,
+    inputNetworksList,
+    inputEnvDict,
+    setInputEnvDict,
+    inputVolumesList,
+    isLogModalOpen,
+    setIsLogModalOpen,
+    logContainerId,
+    liveLogs,
+    isLogWsOpen,
+    logEndRef,
+    isChartModalOpen,
+    setIsChartModalOpen,
+    chartContainerId,
+    chartMetricType,
+    setChartMetricType,
+    chartHours,
+    setChartHours,
+    setWsMetricsPoints,
+    isLoading,
+    error,
+    detailTarget,
+    includeStopped,
+    setIncludeStopped,
+    displayContainers,
+    observedHost,
+    inventoryUnavailable,
+    diskUsage,
+    managerHealth,
+    containerGroups,
+    bulkRestartingGroup,
+    restartGroup,
+    kpiCounts,
+    actionMutation,
+    handleAction,
+    configMutation,
+    resetMutation,
+    isLoadingChart,
+    combinedChartData,
+    openConfigModal,
+    handleConfigSubmit,
+    configValidation,
+    openLogModal,
+    openChartModal,
+    logoutMutation,
+    requestLogout,
+    commandItems,
+    runCommand,
+  };
+}
+
+type DashboardModel = ReturnType<typeof useDashboardModel>;
+
+export default function DashboardClient() {
+  const model = useDashboardModel();
+  const {
+    queryClient,
+    isAdminSettingsOpen,
+    setIsAdminSettingsOpen,
+    isBackupHistoryOpen,
+    setIsBackupHistoryOpen,
+    isRuntimePinsOpen,
+    setIsRuntimePinsOpen,
+    isSourceStatusOpen,
+    setIsSourceStatusOpen,
+    toasts,
+    dismissToast,
+    setIsCommandPaletteOpen,
+    isAuthLoading,
+    refetchAuth,
+    isAuthenticated,
+    setIsLoggingOut,
+    confirmation,
+    isWsConnected,
+    detailContainer,
+    closeDetailModal,
+    isLoading,
+    error,
+    detailTarget,
+    logoutMutation,
+    requestLogout,
+  } = model;
+if (isAuthLoading) {
     return (
       <div className="min-h-screen bg-page text-ink flex items-center justify-center">
         <div className="flex items-center gap-2 text-sm text-secondary">
@@ -932,7 +1059,7 @@ export default function DashboardClient() {
     <AppShell
       actions={
         <>
-          <button
+          <Button variant="ghost"
             className="ops-button"
             disabled={isLoading}
             onClick={() => void queryClient.invalidateQueries({ queryKey: ['containers'] })}
@@ -940,15 +1067,15 @@ export default function DashboardClient() {
           >
             <RefreshCw className={isLoading ? 'animate-spin' : ''} size={14} />
             새로고침
-          </button>
-          <button
+          </Button>
+          <Button variant="ghost"
             className="ops-button ops-button--primary"
             onClick={() => setIsCommandPaletteOpen(true)}
             type="button"
           >
             <Command size={14} />
             빠른 명령
-          </button>
+          </Button>
         </>
       }
       description="Docker 컨테이너 상태와 조작을 한 화면에서 확인합니다."
@@ -963,85 +1090,7 @@ export default function DashboardClient() {
       title="인프라 서비스 컨트롤"
     >
       <div className="dashboard-stack">
-      <section className="ops-overview" aria-labelledby="service-summary-title">
-        <div className="ops-summary">
-          <div className="ops-summary__header">
-            <div>
-              <h2 className="ops-section-title" id="service-summary-title">서비스 상태 요약</h2>
-              <p className="ops-section-copy">{observedHost ? `${observedHost} · ` : ''}현재 호스트의 Docker 관측값입니다.</p>
-            </div>
-            <span className="ops-status-badge">
-              <span className={`ops-status-dot ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
-              {isWsConnected ? '실시간 동기화' : 'HTTP 폴백'}
-            </span>
-          </div>
-          <StatStrip
-            ariaLabel="서비스 상태 요약"
-            isLoading={isLoading && displayContainers.length === 0}
-            items={[
-              { label: '전체', value: kpiCounts.total },
-              { label: '실행 중', value: kpiCounts.running, tone: 'ok' },
-              { label: '중지', value: kpiCounts.stopped, tone: 'neutral' },
-              { label: '상태·관측 오류', value: kpiCounts.error, tone: 'danger' },
-              ...(diskUsage
-                ? [{
-                    label: '정리 가능 용량',
-                    value: diskUsage.state === 'unknown'
-                      ? '확인 불가'
-                      : diskUsage.summary.text.replace('정리 시 약 ', '').replace(' 확보 가능', ''),
-                    tone: diskUsage.state === 'warn' ? 'danger' as const : 'neutral' as const,
-                    title: diskUsage.summary.detail,
-                  }]
-                : []),
-            ]}
-            size="lg"
-          />
-          {diskUsage?.state === 'warn' ? (
-            <p className="ops-inline-note ops-inline-note--danger">
-              {diskUsage.summary.detail} 정리는 SSH에서{' '}
-              <code className="font-mono">{diskUsage.summary.next_action}</code>
-            </p>
-          ) : null}
-        </div>
-        <aside className="ops-signal" aria-label="연결 상태">
-          <div className="ops-signal__item">
-            <p className="ops-signal__label">연결 상태</p>
-            <p className="ops-signal__value">
-              <span className={`ops-status-dot ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
-              {isWsConnected ? 'WebSocket 연결됨' : '폴백 폴링 중'}
-            </p>
-            <p className="ops-signal__detail">{isWsConnected ? '상태와 차트가 수신 프레임에 맞춰 갱신됩니다.' : 'WebSocket 복구 전에는 HTTP 조회 결과를 표시합니다.'}</p>
-          </div>
-          {/* "관리도구 자신이 정상인가"는 비전문 운영자의 첫 질문인데 답할 화면이
-              없었다. /health는 이미 있었지만 어느 UI에도 표시되지 않았다. */}
-          <div className="ops-signal__item ops-signal__divider">
-            <p className="ops-signal__label">관리도구 상태</p>
-            <p className="ops-signal__value">
-              <span
-                className={`ops-status-dot ${
-                  managerHealth === 'healthy'
-                    ? 'bg-ok'
-                    : managerHealth === 'checking'
-                      ? 'bg-warn animate-pulse'
-                      : 'bg-danger'
-                }`}
-              />
-              {managerHealth === 'healthy'
-                ? '관리도구 정상'
-                : managerHealth === 'checking'
-                  ? '관리도구 확인 중'
-                  : '관리도구 응답 없음'}
-            </p>
-            <p className="ops-signal__detail">
-              {managerHealth === 'healthy'
-                ? '백엔드 API가 응답하고 있습니다.'
-                : managerHealth === 'checking'
-                  ? '백엔드 상태를 확인하는 중입니다.'
-                  : '백엔드가 응답하지 않습니다. 아래 컨테이너 상태도 최신이 아닐 수 있습니다.'}
-            </p>
-          </div>
-        </aside>
-      </section>
+<DashboardOverview model={model} />
 
       {error && !isWsConnected && (
         <section className="ops-alert ops-alert--danger" role="alert">
@@ -1053,419 +1102,198 @@ export default function DashboardClient() {
         </section>
       )}
 
-      {containerGroups.length > 0 && (
-        <section className="ops-ledger" id="service-groups" aria-labelledby="service-groups-title">
-          <div className="ops-ledger__header">
-            <div>
-              <h2 className="ops-section-title" id="service-groups-title">앱별 상태</h2>
-              <p className="ops-section-copy">
-                컨테이너를 앱 단위로 묶어 보여 줍니다. 재시작은 실행 중인 것만 순서대로 진행합니다.
-              </p>
-            </div>
-          </div>
-          <div className="ops-group-list">
-            {containerGroups.map((group) => (
-              <div className="ops-group-row" key={group.id}>
-                <div className="ops-group-copy">
-                  <p className="ops-group-label">{group.label}</p>
-                  <p className={`ops-group-status ${group.healthy ? 'text-ok' : 'text-warn'}`}>
-                    {group.healthy
-                      ? `실행 중 ${group.runningCount}개`
-                      : `실행 ${group.runningCount}개 / 표시 ${group.containers.length}개 · 점검 필요`}
-                  </p>
-                </div>
-                <button
-                  className="ops-button"
-                  disabled={bulkRestartingGroup !== null || group.mutableCount === 0}
-                  onClick={() => void restartGroup(group)}
-                  type="button"
-                >
-                  <RotateCw
-                    className={bulkRestartingGroup === group.id ? 'animate-spin' : ''}
-                    size={14}
-                  />
-                  재시작
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
+<ServiceGroups model={model} />
 
-      <section className="ops-ledger" id="service-ledger" aria-labelledby="service-ledger-title">
-        {inventoryUnavailable && <p role="alert" className="ops-inline-note ops-inline-note--danger">일부 Docker 상태를 읽지 못했습니다. 최신 관측값을 확인해 주세요.</p>}
-        <div className="ops-ledger__header">
-          <div>
-            <h2 className="ops-section-title" id="service-ledger-title">서비스 원장</h2>
-            <p className="ops-section-copy">수치 버튼은 최근 1시간의 해당 메트릭 차트를 엽니다.</p>
-          </div>
-          <label className="ops-status-badge">
-            <input type="checkbox" checked={includeStopped} onChange={(event) => setIncludeStopped(event.target.checked)} />
-            중지 항목 포함
-          </label>
-        </div>
-
-        {isLoading && displayContainers.length === 0 ? (
-          <div className="flex flex-col items-center justify-center p-16">
-            <RefreshCw className="mb-3 h-7 w-7 animate-spin text-brand" />
-            <p className="text-sm text-secondary">컨테이너 상태를 분석하는 중입니다.</p>
-          </div>
-        ) : (
-          <div className="ops-table-wrap">
-            <table className="ops-fleet-table text-left">
-              <thead className="sticky top-0 z-10">
-                <tr>
-                  <th>상태</th><th>컨테이너</th><th>역할</th><th>포트</th><th className="text-center">CPU</th><th className="text-center">메모리</th><th className="text-center">I/O</th><th className="text-center">도구</th><th className="text-right">제어</th>
-                </tr>
-              </thead>
-              <tbody className="text-xs md:text-sm">
-                {displayContainers.map((container) => {
-                  const statusCfg = getStatusConfig(container.health === 'unhealthy' ? 'error' : container.status);
-                  const { Icon, displayName } = getContainerPresentation(container);
-                  
-                  const isActionPending = actionMutation.isPending && actionMutation.variables?.id === container.id;
-                  const isConfigPending = configMutation.isPending && configMutation.variables?.id === container.id;
-                  const isResetPending = resetMutation.isPending && resetMutation.variables === container.id;
-                  const isContainerLoading = isActionPending || isConfigPending || isResetPending;
-
-                  const metrics = container.metrics;
-                  const liveMetrics =
-                    container.status === 'running' && metrics?.stats_available === true
-                      ? metrics
-                      : null;
-
-                  return (
-                    <tr key={container.id}>
-                      {/* Status Indicator */}
-                      <td data-label="상태">
-                        <div className="flex items-center gap-2.5">
-                          <span className={`w-2 h-2 rounded-full ${statusCfg.dotClass}`} />
-                          <span
-                            className={`${statusCfg.textClass} text-xs md:text-sm font-bold`}
-                            title={container.status}
-                          >
-                            {container.health === 'unhealthy' ? '상태 점검 실패' : statusLabel(container.status)}
-                          </span>
-                        </div>
-                      </td>
-
-                      {/* Display & Container Name */}
-                      <td data-label="컨테이너">
-                        <div className="flex items-center gap-3">
-                          <Icon className="shrink-0 text-brand" size={18} />
-                          <div>
-                            <div className="font-display font-semibold text-strong text-base">{displayName}</div>
-                            <div className="text-secondary text-xs md:text-sm mt-0.5 font-mono tabular-nums">{container.name}</div>
-                            {container.observed_only && <span className="text-xs text-secondary">읽기 전용</span>}
-                            {container.public_url && (
-                              <a
-                                href={container.public_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                title="운영(prod) 공개 주소"
-                                className="block text-brand text-xs md:text-sm mt-0.5 font-mono underline hover:text-brand-ink break-all"
-                              >
-                                {container.public_url.replace(/^https?:\/\//, '')}
-                              </a>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-
-                      {/* Role */}
-                      <td data-label="역할" className="text-ink text-xs md:text-sm">
-                        <span title={container.role ?? undefined}>{roleLabel(container.role)}</span>
-                      </td>
-
-                      {/* Port Bindings */}
-                      <td data-label="포트" className="font-mono tabular-nums text-strong text-xs md:text-sm break-all">
-                        {container.ports.length > 0
-                          ? container.ports.join(', ')
-                          : container.network_mode === 'host' ? '호스트 네트워크' : '포트 매핑 없음'
-                        }
-                      </td>
-
-                      {/* CPU Metric (Interactive) */}
-                      <td data-label="CPU" className="text-center">
-                        <button 
-                          type="button"
-                          disabled={container.remote || container.status !== 'running'}
-                          onClick={() => container.status === 'running' && openChartModal(container.id, 'cpu')}
-                          className="ops-metric"
-                          title={container.status === 'running' ? '지난 1시간 CPU 사용 이력 보기' : ''}
-                        >
-                          <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
-                            <Cpu className="text-brand" size={14} />
-                            {liveMetrics ? `${liveMetrics.cpu_pct.toFixed(1)}%` : '—'}
-                          </span>
-                          <span className="text-xs text-secondary mt-0.5 font-semibold">차트</span>
-                        </button>
-                      </td>
-
-                      {/* Memory Metric (Interactive) */}
-                      <td data-label="메모리" className="text-center">
-                        <button 
-                          type="button"
-                          disabled={container.remote || container.status !== 'running'}
-                          onClick={() => container.status === 'running' && openChartModal(container.id, 'memory')}
-                          className="ops-metric"
-                          title={container.status === 'running' ? '지난 1시간 메모리 사용 이력 보기' : ''}
-                        >
-                          <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
-                            <HardDrive className="text-brand" size={14} />
-                            {liveMetrics ? `${liveMetrics.mem_pct.toFixed(1)}%` : '—'}
-                          </span>
-                          <span className="text-xs text-secondary mt-0.5 font-bold font-mono tabular-nums">
-                            {liveMetrics ? formatBytes(liveMetrics.mem_usage) : '—'}
-                          </span>
-                        </button>
-                      </td>
-
-                      {/* I/O Metrics (Interactive) */}
-                      <td data-label="I/O" className="text-center">
-                        <button 
-                          type="button"
-                          disabled={container.remote || container.status !== 'running'}
-                          onClick={() => container.status === 'running' && openChartModal(container.id, 'io')}
-                          className="ops-metric"
-                          title={container.status === 'running' ? '지난 1시간 I/O 이력 보기' : ''}
-                        >
-                          <span className="font-mono tabular-nums text-xs md:text-sm font-semibold space-y-0.5 block">
-                            <span className="block text-warn">R: {liveMetrics ? formatBytes(liveMetrics.io_read) : '—'}</span>
-                            <span className="block text-danger">W: {liveMetrics ? formatBytes(liveMetrics.io_write) : '—'}</span>
-                          </span>
-                          <span className="text-xs text-secondary mt-0.5 font-semibold">차트</span>
-                        </button>
-                      </td>
-
-                      {/* Terminal Log & Configuration */}
-                      <td data-label="도구" className="text-center">
-                        <div className="flex items-center justify-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => openLogModal(container.id)}
-                            disabled={container.remote || container.observed_only}
-                            className="ops-icon-button"
-                            title="실시간 터미널 로그 스트리밍 모달 열기"
-                          >
-                            <Terminal className="w-4 h-4" />
-                          </button>
-
-                          {/* 컨테이너가 없거나 docker가 죽어 있으면 inspect가 500이다.
-                              다른 지표 버튼과 같은 방식으로 미리 막는다. */}
-                          <button
-                            type="button"
-                            disabled={
-                              container.remote || container.observed_only || container.status === 'not_created' ||
-                              container.status === 'offline'
-                            }
-                            onClick={() => setDetailContainer(container)}
-                            className="ops-icon-button"
-                            title={
-                              container.remote || container.status === 'not_created' ||
-                              container.status === 'offline'
-                                ? '로컬 컨테이너를 관측하지 않아 상세 정보를 볼 수 없습니다'
-                                : 'inspect 상세(상태·리소스·mounts·networks·healthcheck·env) 보기'
-                            }
-                          >
-                            <Boxes className="w-4 h-4" />
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => openConfigModal(container)}
-                            className="ops-icon-button"
-                            disabled={container.remote || container.observed_only || Boolean(container.external_project)}
-                            title={
-                              container.remote
-                                ? '원격 HTTP 관측만 제공하며 로컬 설정을 변경할 수 없습니다'
-                                : container.external_project
-                                ? `${container.external_project} 프로젝트가 소유한 컨테이너입니다 — 설정 정본이 이 저장소 밖에 있어 변경할 수 없습니다`
-                                : '컨테이너 세부 설정 변경'
-                            }
-                          >
-                            <Settings className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
-
-                      {/* Controller Actions */}
-                      <td data-label="제어" className="text-right">
-                        <div className="inline-flex gap-1.5 items-center">
-                          {isContainerLoading ? (
-                            <div className="flex items-center gap-1.5 text-xs text-secondary font-semibold py-2 px-3">
-                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-brand" />
-                              <span>처리 중</span>
-                            </div>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => handleAction(container.id, 'start')}
-                                disabled={container.remote || container.observed_only || actionMutation.isPending || container.status === 'running'}
-                                className="ops-button text-ok border-ok hover:border-ok hover:bg-ok hover:text-card disabled:hover:bg-card disabled:hover:text-ok"
-                                title="컨테이너 가동"
-                              >
-                                <Play className="w-3 h-3" />
-                                시작
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => handleAction(container.id, 'stop')}
-                                disabled={container.remote || container.observed_only || actionMutation.isPending || container.status !== 'running'}
-                                className="ops-button ops-button--danger text-danger border-danger disabled:hover:bg-card disabled:hover:text-danger"
-                                title="컨테이너 정지"
-                              >
-                                <Square className="w-3 h-3" />
-                                중지
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => handleAction(container.id, 'restart')}
-                                disabled={container.remote || container.observed_only || actionMutation.isPending || container.status !== 'running'}
-                                className="ops-icon-button"
-                                title="컨테이너 재부팅"
-                              >
-                                <RotateCw className="w-3.5 h-3.5" />
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+<FleetLedger model={model} />
 
       </div>
 
-      {isCommandPaletteOpen && (
-        <div
-          className="ops-modal-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setIsCommandPaletteOpen(false);
-          }}
-        >
-          <div aria-label="빠른 명령" aria-modal="true" className="ops-command-dialog" role="dialog">
-            <input
-              aria-label="명령 검색"
-              className="ops-command-dialog__input"
-              onChange={(event) => setCommandQuery(event.target.value)}
-              placeholder="명령 검색"
-              ref={commandInputRef}
-              value={commandQuery}
-            />
-            <div className="ops-command-dialog__list" role="list">
-              {commandItems.length ? commandItems.map((item) => (
-                <button
-                  className="ops-command-dialog__option"
-                  key={item.id}
-                  onClick={() => runCommand(item.run)}
-                  type="button"
-                >
-                  <span>{item.label}</span>
-                  <span className="font-mono text-xs text-secondary">{item.hint}</span>
-                </button>
-              )) : <p className="px-3 py-5 text-sm text-secondary">일치하는 명령이 없습니다.</p>}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {isAdminSettingsOpen && (
-        <div className="ops-modal-backdrop select-text">
+<CommandPalette model={model} />      {isAdminSettingsOpen && (
+        <>
           <AdminSettingsPanel onClose={() => setIsAdminSettingsOpen(false)} />
-        </div>
+        </>
       )}
 
       {isBackupHistoryOpen && (
-        <div className="ops-modal-backdrop select-text">
+        <>
           <BackupHistoryPanel onClose={() => setIsBackupHistoryOpen(false)} />
-        </div>
+        </>
       )}
 
       {isRuntimePinsOpen && (
-        <div className="ops-modal-backdrop select-text">
+        <>
           <RuntimePinPanel onClose={() => setIsRuntimePinsOpen(false)} />
-        </div>
+        </>
       )}
 
       {isSourceStatusOpen && (
-        <div className="ops-modal-backdrop select-text">
+        <>
           <SourceStatusPanel onClose={() => setIsSourceStatusOpen(false)} />
-        </div>
+        </>
       )}
 
-      {/* Live Log Terminal Modal */}
-      {isLogModalOpen && logContainerId && (
-        <div className="ops-modal-backdrop select-text">
-          <div
-            aria-label="실시간 콘솔 로그"
-            aria-modal="true"
-            role="dialog"
-            className="ops-modal max-w-4xl p-6 flex flex-col h-[75vh] relative"
-          >
+<LiveLogDialog model={model} /><PerformanceChartDialog model={model} /><ContainerConfigDialog model={model} />      {detailContainer && (
+        <ContainerDetailModal
+          containerId={detailContainer.id}
+          containerLabel={detailContainer.display_name || detailContainer.name}
+          targetId={detailTarget?.id ?? null}
+          targetServices={detailTarget?.resolved_services ?? null}
+          onClose={closeDetailModal}
+        />
+      )}
+
+      <ToastStack items={toasts} onDismiss={dismissToast} />
+    {confirmation}
+    </AppShell>
+  );
+
+}
+
+function ContainerConfigDialog({ model }: { model: DashboardModel }) {
+  const {
+    confirm,
+    isConfigModalOpen,
+    setIsConfigModalOpen,
+    configTargetContainer,
+    inputEnvDict,
+    configMutation,
+    resetMutation,
+    handleConfigSubmit,
+    configValidation,
+  } = model;
+  return (<>       {/* Config Edit Modal */}
+      {isConfigModalOpen && configTargetContainer && (
+        <>
+          <OpsDialog
+            aria-label="컨테이너 설정 변경"
+
+
+            className="ops-modal max-w-lg p-6 relative flex flex-col"
+           onClose={() => setIsConfigModalOpen(false)}>
 
             {/* Modal Header */}
-            <div className="flex justify-between items-center pb-4 border-b border-line z-10 shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-subtle border border-line rounded-card">
-                  <Terminal className="w-5 h-5 text-brand" />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-strong text-base">실시간 콘솔 로그</h3>
-                  <p className="text-xs text-secondary mt-0.5 font-light">컨테이너 ID: {logContainerId}</p>
-                </div>
-              </div>
-
-              <button
+            <div className="flex justify-between items-center pb-4 border-b border-line z-10">
+              <h3 className="text-sm font-semibold flex items-center gap-2 text-strong">
+                <Settings className="w-4 h-4 text-brand" />
+                <span>컨테이너 설정 변경</span>
+              </h3>
+              <Button variant="ghost"
                 type="button"
                 aria-label="닫기"
                 autoFocus
-                onClick={() => setIsLogModalOpen(false)}
+                onClick={() => setIsConfigModalOpen(false)}
                 className="ops-icon-button"
               >
                 <X className="w-5 h-5" />
-              </button>
+              </Button>
             </div>
 
-            {/* Terminal View */}
-            <div className="flex-grow bg-subtle border border-line rounded-card p-4 mt-4 font-mono text-xs overflow-y-auto leading-relaxed text-strong scrollbar-thin select-text">
-              <pre className="whitespace-pre-wrap select-text pr-2 text-left">
-                {liveLogs}
-              </pre>
-              <div ref={logEndRef} />
-            </div>
+            {/* Modal Body / Form */}
+            <form onSubmit={handleConfigSubmit} className="flex-grow overflow-y-auto pr-2 mt-4 space-y-5 z-10 select-text scrollbar-thin">
+              <div className="p-4 bg-subtle border border-line rounded-card text-xs text-ink leading-relaxed">
+                <p className="font-semibold text-strong mb-1">{configTargetContainer.display_name} 설정</p>
+                <p className="font-light">docker-compose.yml 파일 내 설정을 변경합니다. 변경 후 컨테이너가 중지/삭제된 뒤 재생성됩니다.</p>
+              </div>
 
-            {/* Tip Footer */}
-            <div className="pt-4 text-xs text-secondary shrink-0 z-10 flex justify-between items-center">
-              <span className="font-light">* 최신 3,000줄의 로그가 메모리에 버퍼링되며 자동으로 아래로 스크롤됩니다.</span>
-              <span className="flex items-center gap-1 font-bold">
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ${isLogWsOpen ? 'bg-ok animate-ping' : 'bg-warn'}`}
-                />
-                {isLogWsOpen ? 'WS 스트리밍 활성화됨' : 'WS 스트리밍 종료됨'}
-              </span>
-            </div>
-          </div>
-        </div>
+              {/* Ports section */}
+              <PortSettings model={model} />
+
+              {/* Volumes section — 서버가 불변 계약으로 거부하므로 처음부터 읽기 전용이다.
+                  편집을 허용한 뒤 저장 시점에 경고하면 사용자는 이미 값을 잃은 뒤다. */}
+              <VolumeSettings model={model} />
+
+              {/* Networks section */}
+              <NetworkSettings model={model} />
+
+              {/* Env Variables section */}
+              {Object.keys(inputEnvDict).length > 0 && (
+                <EnvironmentSettings model={model} />
+              )}
+
+              {/* 잠금이 뚫린 경우의 최종 안내. 정상 경로에서는 나타나지 않는다. */}
+              {configValidation.lockedEnvChanged.length > 0 && (
+                <p aria-live="polite" className="text-danger text-xs">
+                  배포 계약이 고정한 환경변수가 바뀌었습니다:{' '}
+                  {configValidation.lockedEnvChanged.join(', ')}. 저장할 수 없습니다.
+                </p>
+              )}
+
+              {/* 변경 사항 미리보기: 제출 전 무엇이 바뀌는지 요약한다. */}
+              {(configValidation.portsDiff.changed ||
+                configValidation.networksDiff.changed ||
+                configValidation.envDiff.length > 0) && (
+                <ConfigChangePreview model={model} />
+              )}
+
+              {/* Submit / Reset Actions */}
+              <div className="flex gap-3 mt-6">
+                <Button variant="ghost"
+                  type="button"
+                  onClick={async () => {
+                    if (await confirm('정말로 설정을 기본값으로 원복하시겠습니까?')) {
+                      resetMutation.mutate(configTargetContainer.id);
+                    }
+                  }}
+                  disabled={resetMutation.isPending || configMutation.isPending}
+                  className="ops-button ops-button--danger flex-1 text-danger border-danger disabled:bg-subtle disabled:text-secondary"
+                >
+                  {resetMutation.isPending ? '원복 중...' : '기본값 원복'}
+                </Button>
+
+                <Button variant="ghost"
+                  type="submit"
+                  disabled={
+                    configMutation.isPending ||
+                    resetMutation.isPending ||
+                    configValidation.hasBlockingIssue
+                  }
+                  title={
+                    configValidation.hasBlockingIssue
+                      ? '위에 표시된 오류를 먼저 해결하세요'
+                      : undefined
+                  }
+                  className="ops-button ops-button--primary flex-1"
+                >
+                  {configMutation.isPending ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>적용 중...</span>
+                    </>
+                  ) : (
+                    <span>적용 및 재생성</span>
+                  )}
+                </Button>
+              </div>
+            </form>
+          </OpsDialog>
+        </>
       )}
 
-      {/* Performance History Chart Modal */}
+ </>);
+}
+
+function PerformanceChartDialog({ model }: { model: DashboardModel }) {
+  const {
+    isChartModalOpen,
+    setIsChartModalOpen,
+    chartContainerId,
+    chartMetricType,
+    setChartMetricType,
+    chartHours,
+    setChartHours,
+    setWsMetricsPoints,
+    isLoadingChart,
+    combinedChartData,
+  } = model;
+  return (<>       {/* Performance History Chart Modal */}
       {isChartModalOpen && chartContainerId && (
-        <div className="ops-modal-backdrop">
-          <div
+        <>
+          <OpsDialog
             aria-label="실시간 성능 차트"
-            aria-modal="true"
-            role="dialog"
+
+
             className="ops-modal max-w-3xl p-6 flex flex-col relative"
-          >
+           onClose={() => { setIsChartModalOpen(false); setWsMetricsPoints([]); }}>
 
             {/* Modal Header */}
             <div className="flex justify-between items-center pb-4 border-b border-line z-10 shrink-0">
@@ -1498,7 +1326,7 @@ export default function DashboardClient() {
                 </select>
               </div>
 
-              <button
+              <Button variant="ghost"
                 type="button"
                 aria-label="닫기"
                 autoFocus
@@ -1509,12 +1337,12 @@ export default function DashboardClient() {
                 className="ops-icon-button"
               >
                 <X className="w-5 h-5" />
-              </button>
+              </Button>
             </div>
 
             {/* Metric Tab Selector */}
             <div className="flex border-b border-line mt-5 shrink-0 z-10">
-              <button
+              <Button variant="ghost"
                 type="button"
                 onClick={() => setChartMetricType('cpu')}
                 className={`py-2 px-4 text-xs font-bold transition-[color,background-color,border-color] border-b-2 ${
@@ -1524,8 +1352,8 @@ export default function DashboardClient() {
                 }`}
               >
                 CPU 점유율 (%)
-              </button>
-              <button
+              </Button>
+              <Button variant="ghost"
                 type="button"
                 onClick={() => setChartMetricType('memory')}
                 className={`py-2 px-4 text-xs font-bold transition-[color,background-color,border-color] border-b-2 ${
@@ -1535,8 +1363,8 @@ export default function DashboardClient() {
                 }`}
               >
                 메모리 점유율 (%)
-              </button>
-              <button
+              </Button>
+              <Button variant="ghost"
                 type="button"
                 onClick={() => setChartMetricType('io')}
                 className={`py-2 px-4 text-xs font-bold transition-[color,background-color,border-color] border-b-2 ${
@@ -1546,7 +1374,7 @@ export default function DashboardClient() {
                 }`}
               >
                 I/O Read / Write (Bytes)
-              </button>
+              </Button>
             </div>
 
             {/* Chart Container */}
@@ -1606,7 +1434,7 @@ export default function DashboardClient() {
                       }}
                     />
                     <Legend wrapperStyle={{ fontSize: 14, marginTop: 10 }} />
-                    
+
                     {chartMetricType === 'cpu' && (
                       <Line
                         type="monotone"
@@ -1618,7 +1446,7 @@ export default function DashboardClient() {
                         name="cpu_pct"
                       />
                     )}
-                    
+
                     {chartMetricType === 'memory' && (
                       <Line
                         type="monotone"
@@ -1630,7 +1458,7 @@ export default function DashboardClient() {
                         name="mem_pct"
                       />
                     )}
-                    
+
                     {chartMetricType === 'io' && (
                       <>
                         <Line
@@ -1660,197 +1488,470 @@ export default function DashboardClient() {
             <p className="text-xs text-secondary mt-4 z-10 shrink-0 font-light">
               * 웹소켓 연결 상태에서 매 10초마다 새로운 메트릭 데이터가 이 차트에 실시간으로 추가되어 업데이트(롤링)됩니다.
             </p>
-          </div>
-        </div>
+          </OpsDialog>
+        </>
       )}
 
-      {/* Config Edit Modal */}
-      {isConfigModalOpen && configTargetContainer && (
-        <div className="ops-modal-backdrop">
-          <div
-            aria-label="컨테이너 설정 변경"
-            aria-modal="true"
-            role="dialog"
-            className="ops-modal max-w-lg p-6 relative flex flex-col"
-          >
+ </>);
+}
+
+function LiveLogDialog({ model }: { model: DashboardModel }) {
+  const {
+    isLogModalOpen,
+    setIsLogModalOpen,
+    logContainerId,
+    liveLogs,
+    isLogWsOpen,
+    logEndRef,
+  } = model;
+  return (<>       {/* Live Log Terminal Modal */}
+      {isLogModalOpen && logContainerId && (
+        <>
+          <OpsDialog
+            aria-label="실시간 콘솔 로그"
+
+
+            className="ops-modal max-w-4xl p-6 flex flex-col h-[75vh] relative"
+           onClose={() => setIsLogModalOpen(false)}>
 
             {/* Modal Header */}
-            <div className="flex justify-between items-center pb-4 border-b border-line z-10">
-              <h3 className="text-sm font-semibold flex items-center gap-2 text-strong">
-                <Settings className="w-4 h-4 text-brand" />
-                <span>컨테이너 설정 변경</span>
-              </h3>
-              <button
+            <div className="flex justify-between items-center pb-4 border-b border-line z-10 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-subtle border border-line rounded-card">
+                  <Terminal className="w-5 h-5 text-brand" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-strong text-base">실시간 콘솔 로그</h3>
+                  <p className="text-xs text-secondary mt-0.5 font-light">컨테이너 ID: {logContainerId}</p>
+                </div>
+              </div>
+
+              <Button variant="ghost"
                 type="button"
                 aria-label="닫기"
                 autoFocus
-                onClick={() => setIsConfigModalOpen(false)}
+                onClick={() => setIsLogModalOpen(false)}
                 className="ops-icon-button"
               >
                 <X className="w-5 h-5" />
-              </button>
+              </Button>
             </div>
 
-            {/* Modal Body / Form */}
-            <form onSubmit={handleConfigSubmit} className="flex-grow overflow-y-auto pr-2 mt-4 space-y-5 z-10 select-text scrollbar-thin">
-              <div className="p-4 bg-subtle border border-line rounded-card text-xs text-ink leading-relaxed">
-                <p className="font-semibold text-strong mb-1">{configTargetContainer.display_name} 설정</p>
-                <p className="font-light">docker-compose.yml 파일 내 설정을 변경합니다. 변경 후 컨테이너가 중지/삭제된 뒤 재생성됩니다.</p>
-              </div>
+            {/* Terminal View */}
+            <div className="flex-grow bg-subtle border border-line rounded-card p-4 mt-4 font-mono text-xs overflow-y-auto leading-relaxed text-strong scrollbar-thin select-text">
+              <pre className="whitespace-pre-wrap select-text pr-2 text-left">
+                {liveLogs}
+              </pre>
+              <div ref={logEndRef} />
+            </div>
 
-              {/* Ports section */}
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <h4 className="text-xs font-semibold text-secondary">포트 매핑 (host:container)</h4>
-                  <button
-                    type="button"
-                    onClick={() => setInputPortsList(prev => [...prev, ''])}
-                    className="text-xs text-brand hover:underline font-semibold"
-                  >
-                    + 추가
-                  </button>
-                </div>
-                <div className="space-y-2">
-                  {/* key에 값(port)을 넣으면 매 keystroke마다 key가 바뀌어 React가 input
-                      DOM 노드를 파괴·재생성한다 — 실시간 검증 기능 자체가 타이핑할 때마다
-                      포커스를 잃어 쓸 수 없게 된다(적대적 리뷰에서 발견). 행은 추가/삭제만
-                      되고 재정렬되지 않으므로 index만으로 충분히 안정적인 key다. */}
-                  {inputPortsList.map((port, idx) => (
-                    <div key={`port-${idx}`}>
-                      <div className="flex gap-2 items-center">
-                        <input
-                          type="text"
-                          value={port}
-                          onChange={(e) => {
-                            const next = [...inputPortsList];
-                            next[idx] = e.target.value;
-                            setInputPortsList(next);
-                          }}
-                          placeholder="e.g. 5432:5432"
-                          aria-invalid={!!configValidation.portErrors[idx]}
-                          aria-describedby={
-                            configValidation.portErrors[idx] ? `port-error-${idx}` : undefined
-                          }
-                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong focus-visible:outline-2 flex-grow font-mono ${
-                            configValidation.portErrors[idx]
-                              ? 'border-danger focus:border-danger focus-visible:outline-danger'
-                              : 'border-line focus:border-brand focus-visible:outline-brand'
-                          } focus:ring-0`}
-                          aria-label={`포트 매핑 ${idx + 1}`} // Added aria-label for accessibility
-                          required
-                        />
-                        <button
+            {/* Tip Footer */}
+            <div className="pt-4 text-xs text-secondary shrink-0 z-10 flex justify-between items-center">
+              <span className="font-light">* 최신 3,000줄의 로그가 메모리에 버퍼링되며 자동으로 아래로 스크롤됩니다.</span>
+              <span className="flex items-center gap-1 font-bold">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${isLogWsOpen ? 'bg-ok animate-ping' : 'bg-warn'}`}
+                />
+                {isLogWsOpen ? 'WS 스트리밍 활성화됨' : 'WS 스트리밍 종료됨'}
+              </span>
+            </div>
+          </OpsDialog>
+        </>
+      )}
+
+ </>);
+}
+
+function CommandPalette({ model }: { model: DashboardModel }) {
+  const {
+    isCommandPaletteOpen,
+    setIsCommandPaletteOpen,
+    commandQuery,
+    setCommandQuery,
+    commandInputRef,
+    commandItems,
+    runCommand,
+  } = model;
+  return (<>       {isCommandPaletteOpen && (
+        <>
+          <OpsDialog aria-label="빠른 명령"  className="ops-command-dialog"  onClose={() => setIsCommandPaletteOpen(false)}>
+            <input
+              aria-label="명령 검색"
+              className="ops-command-dialog__input"
+              onChange={(event) => setCommandQuery(event.target.value)}
+              placeholder="명령 검색"
+              ref={commandInputRef}
+              value={commandQuery}
+            />
+            <ul className="ops-command-dialog__list">
+              {commandItems.length ? commandItems.map((item) => (
+                <li key={item.id}><Button variant="ghost"
+                  className="ops-command-dialog__option"
+                  onClick={() => runCommand(item.run)}
+                  type="button"
+                >
+                  <span>{item.label}</span>
+                  <span className="font-mono text-xs text-secondary">{item.hint}</span>
+                </Button></li>
+              )) : <li className="px-3 py-5 text-sm text-secondary">일치하는 명령이 없습니다.</li>}
+            </ul>
+          </OpsDialog>
+        </>
+      )}
+
+ </>);
+}
+
+function FleetLedger({ model }: { model: DashboardModel }) {
+  const {
+    setDetailContainer,
+    isLoading,
+    includeStopped,
+    setIncludeStopped,
+    displayContainers,
+    inventoryUnavailable,
+    actionMutation,
+    handleAction,
+    configMutation,
+    resetMutation,
+    openConfigModal,
+    openLogModal,
+    openChartModal,
+  } = model;
+  return (      <section className="ops-ledger" id="service-ledger" aria-labelledby="service-ledger-title">
+        {inventoryUnavailable && <p role="alert" className="ops-inline-note ops-inline-note--danger">일부 Docker 상태를 읽지 못했습니다. 최신 관측값을 확인해 주세요.</p>}
+        <div className="ops-ledger__header">
+          <div>
+            <h2 className="ops-section-title" id="service-ledger-title">서비스 원장</h2>
+            <p className="ops-section-copy">수치 버튼은 최근 1시간의 해당 메트릭 차트를 엽니다.</p>
+          </div>
+          <label className="ops-status-badge">
+            <Checkbox checked={includeStopped} onCheckedChange={(checked) => setIncludeStopped(checked === true)} />
+            중지 항목 포함
+          </label>
+        </div>
+
+        {isLoading && displayContainers.length === 0 ? (
+          <div className="flex flex-col items-center justify-center p-16">
+            <RefreshCw className="mb-3 h-7 w-7 animate-spin text-brand" />
+            <p className="text-sm text-secondary">컨테이너 상태를 분석하는 중입니다.</p>
+          </div>
+        ) : (
+          <div className="ops-table-wrap">
+            <VirtualTable ariaLabel="서비스 원장" containerClassName="ops-fleet-table text-left" virtualized={false}
+              data={displayContainers.map((container) => {
+                  const statusCfg = getStatusConfig(container.health === 'unhealthy' ? 'error' : container.status);
+                  const { Icon, displayName } = getContainerPresentation(container);
+
+                  const isActionPending = actionMutation.isPending && actionMutation.variables?.id === container.id;
+                  const isConfigPending = configMutation.isPending && configMutation.variables?.id === container.id;
+                  const isResetPending = resetMutation.isPending && resetMutation.variables === container.id;
+                  const isContainerLoading = isActionPending || isConfigPending || isResetPending;
+
+                  const metrics = container.metrics;
+                  const liveMetrics =
+                    container.status === 'running' && metrics?.stats_available === true
+                      ? metrics
+                      : null;
+
+                return { id: container.id, cells: [
+<div key="상태" data-label="상태">
+                        <div className="flex items-center gap-2.5">
+                          <span className={`w-2 h-2 rounded-full ${statusCfg.dotClass}`} />
+                          <span
+                            className={`${statusCfg.textClass} text-xs md:text-sm font-bold`}
+                            title={container.status}
+                          >
+                            {container.health === 'unhealthy' ? '상태 점검 실패' : statusLabel(container.status)}
+                          </span>
+                        </div>
+                      </div>,
+<div key="컨테이너" data-label="컨테이너">
+                        <div className="flex items-center gap-3">
+                          {React.createElement(Icon, { className: 'shrink-0 text-brand', size: 18 })}
+                          <div>
+                            <div className="font-display font-semibold text-strong text-base">{displayName}</div>
+                            <div className="text-secondary text-xs md:text-sm mt-0.5 font-mono tabular-nums">{container.name}</div>
+                            {container.observed_only && <span className="text-xs text-secondary">읽기 전용</span>}
+                            {container.public_url && (
+                              <a
+                                href={container.public_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="운영(prod) 공개 주소"
+                                className="block text-brand text-xs md:text-sm mt-0.5 font-mono underline hover:text-brand-ink break-all"
+                              >
+                                {container.public_url.replace(/^https?:\/\//, '')}
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      </div>,
+<div key="역할" data-label="역할" className="text-ink text-xs md:text-sm">
+                        <span title={container.role ?? undefined}>{roleLabel(container.role)}</span>
+                      </div>,
+<div key="포트" data-label="포트" className="font-mono tabular-nums text-strong text-xs md:text-sm break-all">
+                        {container.ports.length > 0
+                          ? container.ports.join(', ')
+                          : container.network_mode === 'host' ? '호스트 네트워크' : '포트 매핑 없음'
+                        }
+                      </div>,
+<div key="CPU" data-label="CPU" className="text-center">
+                        <Button variant="ghost"
                           type="button"
-                          onClick={() => setInputPortsList(prev => prev.filter((_, i) => i !== idx))}
-                          className="text-danger hover:text-danger/80 p-1.5"
-                          aria-label={`포트 매핑 ${idx + 1} 삭제`} // Added aria-label for accessibility
+                          disabled={container.remote || container.status !== 'running'}
+                          onClick={() => container.status === 'running' && openChartModal(container.id, 'cpu')}
+                          className="ops-metric"
+                          title={container.status === 'running' ? '지난 1시간 CPU 사용 이력 보기' : ''}
                         >
-                          <X className="w-4.5 h-4.5" />
-                        </button>
-                      </div>
-                      {configValidation.portErrors[idx] && (
-                        <p id={`port-error-${idx}`} className="text-danger text-[11px] mt-1 pl-1">
-                          {configValidation.portErrors[idx]}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                  {inputPortsList.length === 0 && (
-                    <p className="text-xs text-secondary font-light italic">포트 바인딩 설정이 없습니다.</p>
-                  )}
-                </div>
-              </div>
+                          <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
+                            <Cpu className="text-brand" size={14} />
+                            {liveMetrics ? `${liveMetrics.cpu_pct.toFixed(1)}%` : '—'}
+                          </span>
+                          <span className="text-xs text-secondary mt-0.5 font-semibold">차트</span>
+                        </Button>
+                      </div>,
+<div key="메모리" data-label="메모리" className="text-center">
+                        <Button variant="ghost"
+                          type="button"
+                          disabled={container.remote || container.status !== 'running'}
+                          onClick={() => container.status === 'running' && openChartModal(container.id, 'memory')}
+                          className="ops-metric"
+                          title={container.status === 'running' ? '지난 1시간 메모리 사용 이력 보기' : ''}
+                        >
+                          <span className="flex items-center gap-1 font-mono tabular-nums font-bold text-xs md:text-sm">
+                            <HardDrive className="text-brand" size={14} />
+                            {liveMetrics ? `${liveMetrics.mem_pct.toFixed(1)}%` : '—'}
+                          </span>
+                          <span className="text-xs text-secondary mt-0.5 font-bold font-mono tabular-nums">
+                            {liveMetrics ? formatBytes(liveMetrics.mem_usage) : '—'}
+                          </span>
+                        </Button>
+                      </div>,
+<div key="I/O" data-label="I/O" className="text-center">
+                        <Button variant="ghost"
+                          type="button"
+                          disabled={container.remote || container.status !== 'running'}
+                          onClick={() => container.status === 'running' && openChartModal(container.id, 'io')}
+                          className="ops-metric"
+                          title={container.status === 'running' ? '지난 1시간 I/O 이력 보기' : ''}
+                        >
+                          <span className="font-mono tabular-nums text-xs md:text-sm font-semibold space-y-0.5 block">
+                            <span className="block text-warn">R: {liveMetrics ? formatBytes(liveMetrics.io_read) : '—'}</span>
+                            <span className="block text-danger">W: {liveMetrics ? formatBytes(liveMetrics.io_write) : '—'}</span>
+                          </span>
+                          <span className="text-xs text-secondary mt-0.5 font-semibold">차트</span>
+                        </Button>
+                      </div>,
+<div key="도구" data-label="도구" className="text-center">
+                        <div className="flex items-center justify-center gap-1.5">
+                          <Button variant="ghost"
+                            type="button"
+                            onClick={() => openLogModal(container.id)}
+                            disabled={container.remote || container.observed_only}
+                            className="ops-icon-button"
+                            title="실시간 터미널 로그 스트리밍 모달 열기"
+                          >
+                            <Terminal className="w-4 h-4" />
+                          </Button>
 
-              {/* Volumes section — 서버가 불변 계약으로 거부하므로 처음부터 읽기 전용이다.
-                  편집을 허용한 뒤 저장 시점에 경고하면 사용자는 이미 값을 잃은 뒤다. */}
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <h4 className="text-xs font-semibold text-secondary">
-                    볼륨 마운트 (읽기 전용)
-                  </h4>
-                </div>
-                <div className="space-y-2">
-                  <p className="text-xs text-secondary">
-                    볼륨은 이 화면에서 바꿀 수 없습니다. 데이터 위치가 바뀌면 기존 데이터를
-                    잃을 수 있어 서버가 변경을 거부합니다.
+                          {/* 컨테이너가 없거나 docker가 죽어 있으면 inspect가 500이다.
+                              다른 지표 버튼과 같은 방식으로 미리 막는다. */}
+                          <Button variant="ghost"
+                            type="button"
+                            disabled={
+                              container.remote || container.observed_only || container.status === 'not_created' ||
+                              container.status === 'offline'
+                            }
+                            onClick={() => setDetailContainer(container)}
+                            className="ops-icon-button"
+                            title={
+                              container.remote || container.status === 'not_created' ||
+                              container.status === 'offline'
+                                ? '로컬 컨테이너를 관측하지 않아 상세 정보를 볼 수 없습니다'
+                                : 'inspect 상세(상태·리소스·mounts·networks·healthcheck·env) 보기'
+                            }
+                          >
+                            <Boxes className="w-4 h-4" />
+                          </Button>
+
+                          <Button variant="ghost"
+                            type="button"
+                            onClick={() => openConfigModal(container)}
+                            className="ops-icon-button"
+                            disabled={container.remote || container.observed_only || Boolean(container.external_project)}
+                            title={
+                              container.remote
+                                ? '원격 HTTP 관측만 제공하며 로컬 설정을 변경할 수 없습니다'
+                                : container.external_project
+                                ? `${container.external_project} 프로젝트가 소유한 컨테이너입니다 — 설정 정본이 이 저장소 밖에 있어 변경할 수 없습니다`
+                                : '컨테이너 세부 설정 변경'
+                            }
+                          >
+                            <Settings className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>,
+<div key="제어" data-label="제어" className="text-right">
+                        <div className="inline-flex gap-1.5 items-center">
+                          {isContainerLoading ? (
+                            <div className="flex items-center gap-1.5 text-xs text-secondary font-semibold py-2 px-3">
+                              <RefreshCw className="w-3.5 h-3.5 animate-spin text-brand" />
+                              <span>처리 중</span>
+                            </div>
+                          ) : (
+                            <>
+                              <Button variant="ghost"
+                                type="button"
+                                onClick={() => handleAction(container.id, 'start')}
+                                disabled={container.remote || container.observed_only || actionMutation.isPending || container.status === 'running'}
+                                className="ops-button text-ok border-ok hover:border-ok hover:bg-ok hover:text-card disabled:hover:bg-card disabled:hover:text-ok"
+                                title="컨테이너 가동"
+                              >
+                                <Play className="w-3 h-3" />
+                                시작
+                              </Button>
+
+                              <Button variant="ghost"
+                                type="button"
+                                onClick={() => handleAction(container.id, 'stop')}
+                                disabled={container.remote || container.observed_only || actionMutation.isPending || container.status !== 'running'}
+                                className="ops-button ops-button--danger text-danger border-danger disabled:hover:bg-card disabled:hover:text-danger"
+                                title="컨테이너 정지"
+                              >
+                                <Square className="w-3 h-3" />
+                                중지
+                              </Button>
+
+                              <Button variant="ghost"
+                                type="button"
+                                onClick={() => handleAction(container.id, 'restart')}
+                                disabled={container.remote || container.observed_only || actionMutation.isPending || container.status !== 'running'}
+                                className="ops-icon-button"
+                                title="컨테이너 재부팅"
+                              >
+                                <RotateCw className="w-3.5 h-3.5" />
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                ] };
+              })}
+              getRowId={(row) => row.id}
+              columns={FLEET_COLUMNS} emptyMessage="표시할 컨테이너가 없습니다." />
+          </div>
+        )}
+      </section>);
+}
+
+function ServiceGroups({ model }: { model: DashboardModel }) {
+  const {
+    containerGroups,
+    bulkRestartingGroup,
+    restartGroup,
+  } = model;
+  return (<>       {containerGroups.length > 0 && (
+        <section className="ops-ledger" id="service-groups" aria-labelledby="service-groups-title">
+          <div className="ops-ledger__header">
+            <div>
+              <h2 className="ops-section-title" id="service-groups-title">앱별 상태</h2>
+              <p className="ops-section-copy">
+                컨테이너를 앱 단위로 묶어 보여 줍니다. 재시작은 실행 중인 것만 순서대로 진행합니다.
+              </p>
+            </div>
+          </div>
+          <div className="ops-group-list">
+            {containerGroups.map((group) => (
+              <div className="ops-group-row" key={group.id}>
+                <div className="ops-group-copy">
+                  <p className="ops-group-label">{group.label}</p>
+                  <p className={`ops-group-status ${group.healthy ? 'text-ok' : 'text-warn'}`}>
+                    {group.healthy
+                      ? `실행 중 ${group.runningCount}개`
+                      : `실행 ${group.runningCount}개 / 표시 ${group.containers.length}개 · 점검 필요`}
                   </p>
-                  {inputVolumesList.map((vol, idx) => (
-                    <p
-                      className="bg-subtle border border-line rounded-card px-4 py-2 text-xs text-secondary font-mono break-all"
-                      key={`vol-${idx}`}
-                    >
-                      {vol}
-                    </p>
-                  ))}
-                  {inputVolumesList.length === 0 && (
-                    <p className="text-xs text-secondary font-light italic">볼륨 바인딩 설정이 없습니다.</p>
-                  )}
                 </div>
+                <Button variant="ghost"
+                  className="ops-button"
+                  disabled={bulkRestartingGroup !== null || group.mutableCount === 0}
+                  onClick={() => void restartGroup(group)}
+                  type="button"
+                >
+                  <RotateCw
+                    className={bulkRestartingGroup === group.id ? 'animate-spin' : ''}
+                    size={14}
+                  />
+                  재시작
+                </Button>
               </div>
+            ))}
+          </div>
+        </section>
+      )} </>);
+}
 
-              {/* Networks section */}
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <h4 className="text-xs font-semibold text-secondary">네트워크 (default, etc.)</h4>
-                  <button
-                    type="button"
-                    onClick={() => setInputNetworksList(prev => [...prev, ''])}
-                    className="text-xs text-brand hover:underline font-semibold"
-                  >
-                    + 추가
-                  </button>
-                </div>
-                <div className="space-y-2">
-                  {/* index-only key — 값을 key에 넣으면 keystroke마다 재마운트돼 포커스를 잃는다. */}
-                  {inputNetworksList.map((net, idx) => (
-                    <div key={`net-${idx}`}>
-                      <div className="flex gap-2 items-center">
-                        <input
-                          type="text"
-                          value={net}
-                          onChange={(e) => {
-                            const next = [...inputNetworksList];
-                            next[idx] = e.target.value;
-                            setInputNetworksList(next);
-                          }}
-                          placeholder="e.g. default"
-                          aria-invalid={!!configValidation.networkErrors[idx]}
-                          aria-describedby={
-                            configValidation.networkErrors[idx] ? `network-error-${idx}` : undefined
-                          }
-                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong focus-visible:outline-2 flex-grow font-mono ${
-                            configValidation.networkErrors[idx]
-                              ? 'border-danger focus:border-danger focus-visible:outline-danger'
-                              : 'border-line focus:border-brand focus-visible:outline-brand'
-                          } focus:ring-0`}
-                          aria-label={`네트워크 ${idx + 1}`} // Added aria-label for accessibility
-                          required
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setInputNetworksList(prev => prev.filter((_, i) => i !== idx))}
-                          className="text-danger hover:text-danger/80 p-1.5"
-                          aria-label={`네트워크 ${idx + 1} 삭제`} // Added aria-label for accessibility
-                        >
-                          <X className="w-4.5 h-4.5" />
-                        </button>
-                      </div>
-                      {configValidation.networkErrors[idx] && (
-                        <p id={`network-error-${idx}`} className="text-danger text-[11px] mt-1 pl-1">
-                          {configValidation.networkErrors[idx]}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                  {inputNetworksList.length === 0 && (
-                    <p className="text-xs text-secondary font-light italic">네트워크 설정이 없습니다.</p>
-                  )}
-                </div>
-              </div>
+function DashboardOverview({ model }: { model: DashboardModel }) {
+  const {
+    isWsConnected,
+    isLoading,
+    displayContainers,
+    observedHost,
+    diskUsage,
+    kpiCounts,
+  } = model;
+  return (      <section className="ops-overview" aria-labelledby="service-summary-title">
+        <div className="ops-summary">
+          <div className="ops-summary__header">
+            <div>
+              <h2 className="ops-section-title" id="service-summary-title">서비스 상태 요약</h2>
+              <p className="ops-section-copy">{observedHost ? `${observedHost} · ` : ''}현재 호스트의 Docker 관측값입니다.</p>
+            </div>
+            <span className="ops-status-badge">
+              <span className={`ops-status-dot ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
+              {isWsConnected ? '실시간 동기화' : 'HTTP 폴백'}
+            </span>
+          </div>
+          <StatStrip
+            ariaLabel="서비스 상태 요약"
+            isLoading={isLoading && displayContainers.length === 0}
+            items={[
+              { label: '전체', value: kpiCounts.total },
+              { label: '실행 중', value: kpiCounts.running, tone: 'ok' },
+              { label: '중지', value: kpiCounts.stopped, tone: 'neutral' },
+              { label: '상태·관측 오류', value: kpiCounts.error, tone: 'danger' },
+              ...(diskUsage
+                ? [{
+                    label: '정리 가능 용량',
+                    value: diskUsage.state === 'unknown'
+                      ? '확인 불가'
+                      : diskUsage.summary.text.replace('정리 시 약 ', '').replace(' 확보 가능', ''),
+                    tone: diskUsage.state === 'warn' ? 'danger' as const : 'neutral' as const,
+                    title: diskUsage.summary.detail,
+                  }]
+                : []),
+            ]}
+            size="lg"
+          />
+          {diskUsage?.state === 'warn' ? (
+            <p className="ops-inline-note ops-inline-note--danger">
+              {diskUsage.summary.detail} 정리는 SSH에서{' '}
+              <code className="font-mono">{diskUsage.summary.next_action}</code>
+            </p>
+          ) : null}
+        </div>
+        <ConnectionStatus model={model} />
+      </section>);
+}
 
-              {/* Env Variables section */}
-              {Object.keys(inputEnvDict).length > 0 && (
-                <div className="space-y-3">
+
+function EnvironmentSettings({ model }: { model: DashboardModel }) {
+  const {
+    inputEnvDict,
+    setInputEnvDict,
+    configValidation,
+  } = model;
+  return (<div className="space-y-3">
                   <h4 className="text-xs font-semibold text-secondary">환경 변수</h4>
                   <div className="grid grid-cols-1 gap-4">
                     {Object.entries(inputEnvDict).map(([key, val]) => {
@@ -1901,22 +2002,213 @@ export default function DashboardClient() {
                       );
                     })}
                   </div>
+                </div>);
+}
+
+function NetworkSettings({ model }: { model: DashboardModel }) {
+  const {
+    configForm,
+    networkFields,
+    inputNetworksList,
+    configValidation,
+  } = model;
+  return (<div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <h4 className="text-xs font-semibold text-secondary">네트워크 (default, etc.)</h4>
+                  <Button variant="ghost"
+                    type="button"
+                    onClick={() => networkFields.append({ value: '' })}
+                    className="text-xs text-brand hover:underline font-semibold"
+                  >
+                    + 추가
+                  </Button>
                 </div>
-              )}
+                <div className="space-y-2">
+                  {/* RHF 행 식별자로 편집값과 DOM의 대응을 유지한다. */}
+                  {networkFields.fields.map((field, idx) => (
+                    <div key={field.id}>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          type="text"
+                          {...configForm.register(`networks.${idx}.value`)}
+                          placeholder="e.g. default"
+                          aria-invalid={!!configValidation.networkErrors[idx]}
+                          aria-describedby={
+                            configValidation.networkErrors[idx] ? `network-error-${idx}` : undefined
+                          }
+                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong focus-visible:outline-2 flex-grow font-mono ${
+                            configValidation.networkErrors[idx]
+                              ? 'border-danger focus:border-danger focus-visible:outline-danger'
+                              : 'border-line focus:border-brand focus-visible:outline-brand'
+                          } focus:ring-0`}
+                          aria-label={`네트워크 ${idx + 1}`} // Added aria-label for accessibility
+                          required
+                        />
+                        <Button variant="ghost"
+                          type="button"
+                          onClick={() => networkFields.remove(idx)}
+                          className="text-danger hover:text-danger/80 p-1.5"
+                          aria-label={`네트워크 ${idx + 1} 삭제`} // Added aria-label for accessibility
+                        >
+                          <X className="w-4.5 h-4.5" />
+                        </Button>
+                      </div>
+                      {configValidation.networkErrors[idx] && (
+                        <p id={`network-error-${idx}`} className="text-danger text-[11px] mt-1 pl-1">
+                          {configValidation.networkErrors[idx]}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                  {inputNetworksList.length === 0 && (
+                    <p className="text-xs text-secondary font-light italic">네트워크 설정이 없습니다.</p>
+                  )}
+                </div>
+              </div>);
+}
 
-              {/* 잠금이 뚫린 경우의 최종 안내. 정상 경로에서는 나타나지 않는다. */}
-              {configValidation.lockedEnvChanged.length > 0 && (
-                <p aria-live="polite" className="text-danger text-xs">
-                  배포 계약이 고정한 환경변수가 바뀌었습니다:{' '}
-                  {configValidation.lockedEnvChanged.join(', ')}. 저장할 수 없습니다.
-                </p>
-              )}
+function VolumeSettings({ model }: { model: DashboardModel }) {
+  const {
+    inputVolumesList,
+  } = model;
+  return (<div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <h4 className="text-xs font-semibold text-secondary">
+                    볼륨 마운트 (읽기 전용)
+                  </h4>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-xs text-secondary">
+                    볼륨은 이 화면에서 바꿀 수 없습니다. 데이터 위치가 바뀌면 기존 데이터를
+                    잃을 수 있어 서버가 변경을 거부합니다.
+                  </p>
+                  {inputVolumesList.map((vol) => (
+                    <p
+                      className="bg-subtle border border-line rounded-card px-4 py-2 text-xs text-secondary font-mono break-all"
+                      key={vol}
+                    >
+                      {vol}
+                    </p>
+                  ))}
+                  {inputVolumesList.length === 0 && (
+                    <p className="text-xs text-secondary font-light italic">볼륨 바인딩 설정이 없습니다.</p>
+                  )}
+                </div>
+              </div>);
+}
 
-              {/* 변경 사항 미리보기: 제출 전 무엇이 바뀌는지 요약한다. */}
-              {(configValidation.portsDiff.changed ||
-                configValidation.networksDiff.changed ||
-                configValidation.envDiff.length > 0) && (
-                <div
+function PortSettings({ model }: { model: DashboardModel }) {
+  const {
+    configForm,
+    portFields,
+    inputPortsList,
+    configValidation,
+  } = model;
+  return (<div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <h4 className="text-xs font-semibold text-secondary">포트 매핑 (host:container)</h4>
+                  <Button variant="ghost"
+                    type="button"
+                    onClick={() => portFields.append({ value: '' })}
+                    className="text-xs text-brand hover:underline font-semibold"
+                  >
+                    + 추가
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {/* RHF 행 식별자는 입력·삭제 후에도 남은 DOM의 초점을 보존한다. */}
+                  {portFields.fields.map((field, idx) => (
+                    <div key={field.id}>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          type="text"
+                          {...configForm.register(`ports.${idx}.value`)}
+                          placeholder="e.g. 5432:5432"
+                          aria-invalid={!!configValidation.portErrors[idx]}
+                          aria-describedby={
+                            configValidation.portErrors[idx] ? `port-error-${idx}` : undefined
+                          }
+                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong focus-visible:outline-2 flex-grow font-mono ${
+                            configValidation.portErrors[idx]
+                              ? 'border-danger focus:border-danger focus-visible:outline-danger'
+                              : 'border-line focus:border-brand focus-visible:outline-brand'
+                          } focus:ring-0`}
+                          aria-label={`포트 매핑 ${idx + 1}`} // Added aria-label for accessibility
+                          required
+                        />
+                        <Button variant="ghost"
+                          type="button"
+                          onClick={() => portFields.remove(idx)}
+                          className="text-danger hover:text-danger/80 p-1.5"
+                          aria-label={`포트 매핑 ${idx + 1} 삭제`} // Added aria-label for accessibility
+                        >
+                          <X className="w-4.5 h-4.5" />
+                        </Button>
+                      </div>
+                      {configValidation.portErrors[idx] && (
+                        <p id={`port-error-${idx}`} className="text-danger text-[11px] mt-1 pl-1">
+                          {configValidation.portErrors[idx]}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                  {inputPortsList.length === 0 && (
+                    <p className="text-xs text-secondary font-light italic">포트 바인딩 설정이 없습니다.</p>
+                  )}
+                </div>
+              </div>);
+}
+
+function ConnectionStatus({ model }: { model: DashboardModel }) {
+  const {
+    isWsConnected,
+    managerHealth,
+  } = model;
+  return (<aside className="ops-signal" aria-label="연결 상태">
+          <div className="ops-signal__item">
+            <p className="ops-signal__label">연결 상태</p>
+            <p className="ops-signal__value">
+              <span className={`ops-status-dot ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
+              {isWsConnected ? 'WebSocket 연결됨' : '폴백 폴링 중'}
+            </p>
+            <p className="ops-signal__detail">{isWsConnected ? '상태와 차트가 수신 프레임에 맞춰 갱신됩니다.' : 'WebSocket 복구 전에는 HTTP 조회 결과를 표시합니다.'}</p>
+          </div>
+          {/* "관리도구 자신이 정상인가"는 비전문 운영자의 첫 질문인데 답할 화면이
+              없었다. /health는 이미 있었지만 어느 UI에도 표시되지 않았다. */}
+          <div className="ops-signal__item ops-signal__divider">
+            <p className="ops-signal__label">관리도구 상태</p>
+            <p className="ops-signal__value">
+              <span
+                className={`ops-status-dot ${
+                  managerHealth === 'healthy'
+                    ? 'bg-ok'
+                    : managerHealth === 'checking'
+                      ? 'bg-warn animate-pulse'
+                      : 'bg-danger'
+                }`}
+              />
+              {managerHealth === 'healthy'
+                ? '관리도구 정상'
+                : managerHealth === 'checking'
+                  ? '관리도구 확인 중'
+                  : '관리도구 응답 없음'}
+            </p>
+            <p className="ops-signal__detail">
+              {managerHealth === 'healthy'
+                ? '백엔드 API가 응답하고 있습니다.'
+                : managerHealth === 'checking'
+                  ? '백엔드 상태를 확인하는 중입니다.'
+                  : '백엔드가 응답하지 않습니다. 아래 컨테이너 상태도 최신이 아닐 수 있습니다.'}
+            </p>
+          </div>
+        </aside>);
+}
+
+function ConfigChangePreview({ model }: { model: DashboardModel }) {
+  const {
+    configValidation,
+  } = model;
+ return (<div
                   aria-live="polite"
                   className="space-y-2 p-4 bg-subtle border border-line rounded-card text-xs"
                 >
@@ -1955,64 +2247,5 @@ export default function DashboardClient() {
                       ))}
                     </div>
                   )}
-                </div>
-              )}
-
-              {/* Submit / Reset Actions */}
-              <div className="flex gap-3 mt-6">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (confirm('정말로 설정을 기본값으로 원복하시겠습니까?')) {
-                      resetMutation.mutate(configTargetContainer.id);
-                    }
-                  }}
-                  disabled={resetMutation.isPending || configMutation.isPending}
-                  className="ops-button ops-button--danger flex-1 text-danger border-danger disabled:bg-subtle disabled:text-secondary"
-                >
-                  {resetMutation.isPending ? '원복 중...' : '기본값 원복'}
-                </button>
-
-                <button
-                  type="submit"
-                  disabled={
-                    configMutation.isPending ||
-                    resetMutation.isPending ||
-                    configValidation.hasBlockingIssue
-                  }
-                  title={
-                    configValidation.hasBlockingIssue
-                      ? '위에 표시된 오류를 먼저 해결하세요'
-                      : undefined
-                  }
-                  className="ops-button ops-button--primary flex-1"
-                >
-                  {configMutation.isPending ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>적용 중...</span>
-                    </>
-                  ) : (
-                    <span>적용 및 재생성</span>
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {detailContainer && (
-        <ContainerDetailModal
-          containerId={detailContainer.id}
-          containerLabel={detailContainer.display_name || detailContainer.name}
-          targetId={detailTarget?.id ?? null}
-          targetServices={detailTarget?.resolved_services ?? null}
-          onClose={closeDetailModal}
-        />
-      )}
-
-      <ToastStack items={toasts} onDismiss={dismissToast} />
-    </AppShell>
-  );
+                </div>);
 }

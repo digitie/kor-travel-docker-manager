@@ -1,22 +1,19 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
-import { LoaderCircle, LogIn } from 'lucide-react';
+import { useState } from 'react';
+import { LoginForm, type LoginSubmission } from '@kor-travel/ui/login-form';
 import { ApiError, postJson } from '@/lib/api';
 
 export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> }) {
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
+  async function submit({ credentials }: LoginSubmission) {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      await postJson('/api/v1/auth/login', { username, password, next: '/' });
+      await postJson('/api/v1/auth/login', { ...credentials, next: '/' });
       await onLogin();
     } catch (err) {
       if (err instanceof ApiError && err.status === 503) {
@@ -33,61 +30,11 @@ export default function LoginScreen({ onLogin }: { onLogin: () => Promise<void> 
     }
   }
 
-  return (
-    <section className="ops-auth-shell" aria-labelledby="login-title">
-      <div className="ops-auth-content">
-        <div className="ops-auth-brand">
-          <p className="ops-auth-product">Docker Manager UI</p>
-          <h1 id="login-title">관리자 로그인</h1>
-          <p className="ops-auth-description">Docker 인프라 운영 콘솔에 로그인하세요.</p>
-        </div>
-        <form aria-busy={busy} className="ops-auth-form" onSubmit={submit}>
-          <div className="ops-field">
-            <label className="ops-form-label" htmlFor="admin-username">
-              아이디
-            </label>
-            <input
-              autoComplete="username"
-              className="ops-input"
-              disabled={busy}
-              id="admin-username"
-              value={username}
-              aria-describedby="login-error"
-              aria-invalid={error ? true : undefined}
-              onChange={(event) => setUsername(event.target.value)}
-            />
-          </div>
-          <div className="ops-field">
-            <label className="ops-form-label" htmlFor="admin-password">
-              비밀번호
-            </label>
-            <input
-              autoComplete="current-password"
-              className="ops-input"
-              disabled={busy}
-              id="admin-password"
-              type="password"
-              value={password}
-              aria-describedby="login-error"
-              aria-invalid={error ? true : undefined}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-          </div>
-          <button
-            className="ops-button ops-button--primary ops-auth-submit"
-            disabled={busy}
-            type="submit"
-          >
-            {busy ? <LoaderCircle className="animate-spin" size={17} /> : <LogIn size={17} />}
-            {busy ? '로그인 중…' : '로그인'}
-          </button>
-          {/* 실패 메시지를 AT에 확실히 알리기 위해 live region을 항상 마운트해 둔다. */}
-          <p aria-live="assertive" className="ops-auth-error" id="login-error" role="alert">
-            {error}
-          </p>
-        </form>
-        <p className="ops-auth-footer">Docker Manager UI · 운영 관리자 전용</p>
-      </div>
-    </section>
-  );
+  return <section className="ops-auth-shell" aria-label="관리자 로그인">
+    <div className="ops-auth-content">
+      <LoginForm brand="Docker Manager UI" description="Docker 인프라 운영 콘솔에 로그인하세요."
+        defaultUsername="admin" pending={busy} error={error} onClearError={() => setError(null)}
+        onSubmit={submit} footer="Docker Manager UI · 운영 관리자 전용" />
+    </div>
+  </section>;
 }

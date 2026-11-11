@@ -60,7 +60,6 @@ describe('ContainerDetailModal — 오류 표시 분기', () => {
     const user = userEvent.setup();
     mockedApiJson.mockResolvedValue(INSPECT_OK);
     mockedPostJson.mockRejectedValue(new Error('target 서비스가 응답하지 않습니다.'));
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
 
     renderWithQueryClient(
       <ContainerDetailModal
@@ -77,7 +76,8 @@ describe('ContainerDetailModal — 오류 표시 분기', () => {
     });
     await user.click(ensureButton);
 
-    expect(window.confirm).toHaveBeenCalled();
+    expect(mockedPostJson).not.toHaveBeenCalled();
+    await user.click(await screen.findByRole('button', { name: '계속' }));
     await waitFor(() => {
       expect(mockedPostJson).toHaveBeenCalledWith('/api/v1/targets/geo/ensure', {
         build: true,

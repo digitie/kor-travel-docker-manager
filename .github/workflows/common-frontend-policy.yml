@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# SPDX-FileCopyrightText: 2026 Youn-sok Choi (digitie)
+name: 공통 프론트엔드 정책
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  common-policy:
+    uses: digitie/kor-travel-common/.github/workflows/frontend-consumer-guard.yml@55a921b55d248106cbe320e7f5305f3d3cdb60fe
+    with:
+      common-ref: 55a921b55d248106cbe320e7f5305f3d3cdb60fe
+      frontends: >-
+        [{"package":"frontend/package.json","lock":"frontend/package-lock.json","workspace":"","profile":"web"}]

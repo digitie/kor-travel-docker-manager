@@ -1,5 +1,11 @@
 'use client';
 
+import { Button } from '@kor-travel/ui/button';
+
+import { useForm, useWatch } from 'react-hook-form';
+import { z } from 'zod';
+import OpsDialog from './OpsDialog';
+
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { Copy, EyeOff, KeyRound, RefreshCw, Trash2, X } from 'lucide-react';
 import {
@@ -14,6 +20,10 @@ import { HumanError, humanizeError } from '@/lib/errors';
 import InlineError from './InlineError';
 
 const MIN_PASSWORD_LENGTH = 12;
+const passwordSchema = z.object({
+  current: z.string().min(1), next: z.string().min(MIN_PASSWORD_LENGTH), confirm: z.string(),
+}).refine((value) => value.next === value.confirm && value.next !== value.current);
+type PasswordValues = z.infer<typeof passwordSchema>;
 
 
 type PublicKeyState = {
@@ -33,14 +43,11 @@ type AuditState = {
 
 type PasswordState = {
   busy: boolean;
-  current: string;
-  next: string;
-  confirm: string;
   message: string | null;
   error: string | null;
 };
 
-export default function AdminSettingsPanel({ onClose }: { onClose: () => void }) {
+function useAdminSettingsPanelModel({ onClose }: { onClose: () => void }) {
   const [keyState, setKeyState] = useState<PublicKeyState>({
     busy: false,
     generatedKey: null,
@@ -52,9 +59,6 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
   const [auditState, setAuditState] = useState<AuditState>({ events: null, error: null });
   const [passwordState, setPasswordState] = useState<PasswordState>({
     busy: false,
-    current: '',
-    next: '',
-    confirm: '',
     message: null,
     error: null,
   });
@@ -99,33 +103,28 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
     void loadAuditEvents();
   }, [loadAuditEvents, loadPublicKeys]);
 
-  const passwordReady =
-    passwordState.next.length >= MIN_PASSWORD_LENGTH &&
-    passwordState.next === passwordState.confirm &&
-    passwordState.next !== passwordState.current &&
-    passwordState.current.length > 0;
+  const passwordForm = useForm<PasswordValues>({ defaultValues: { current: '', next: '', confirm: '' } });
+  const passwordValues = useWatch({ control: passwordForm.control });
+  const passwordReady = passwordSchema.safeParse(passwordValues).success;
 
   const changePassword = useCallback(
-    async (event: FormEvent) => {
-      event.preventDefault();
+    async () => {
       if (!passwordReady || passwordState.busy) return;
       patchPasswordState({ busy: true, message: null, error: null });
       try {
         await postJson<{ ok: true }>('/api/v1/admin/password', {
-          current_password: passwordState.current,
-          new_password: passwordState.next,
+          current_password: passwordValues.current,
+          new_password: passwordValues.next,
         });
         patchPasswordState({
           busy: false,
-          current: '',
-          next: '',
-          confirm: '',
           message:
             '비밀번호를 변경했습니다. 다음 로그인부터 새 비밀번호를 사용합니다. ' +
             '세션 검증은 비밀번호 해시를 보지 않으므로 이미 열려 있던 세션은 ' +
             '내 것도 남의 것도 그대로 유지됩니다 — 유출이 의심되어 바꾸는 경우라면 ' +
             '기존 세션을 따로 끊어야 합니다.',
         });
+        passwordForm.reset();
         // 감사 행이 변경의 눈에 보이는 증거다.
         await loadAuditEvents();
       } catch (error) {
@@ -133,18 +132,9 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
         patchPasswordState({ busy: false, error: `${humanized.title} ${humanized.hint}` });
       }
     },
-    [loadAuditEvents, passwordReady, passwordState, patchPasswordState]
+    [loadAuditEvents, passwordReady, passwordState.busy, passwordValues, passwordForm, patchPasswordState]
   );
 
-  // 모달 접근성: 열릴 때 초기 포커스를 패널로 옮기고, Escape 키로 닫는다.
-  useEffect(() => {
-    dialogRef.current?.focus();
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose();
-    }
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
 
   async function createKey(event: FormEvent) {
     event.preventDefault();
@@ -214,15 +204,41 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
     }
   }
 
+    return {
+    onClose,
+    keyState,
+    auditState,
+    passwordState,
+    dialogRef,
+    patchKeyState,
+    loadPublicKeys,
+    loadAuditEvents,
+    passwordForm,
+    passwordValues,
+    passwordReady,
+    changePassword,
+    createKey,
+    revokeKey,
+    copyGeneratedKey,
+  };
+}
+
+type AdminSettingsPanelModel = ReturnType<typeof useAdminSettingsPanelModel>;
+
+export default function AdminSettingsPanel(props: Parameters<typeof useAdminSettingsPanelModel>[0]) {
+  const model = useAdminSettingsPanelModel(props);
+  const {
+    onClose,
+    dialogRef,
+  } = model;
   return (
-    <div
+    <OpsDialog
       aria-labelledby="admin-settings-title"
-      aria-modal="true"
       className="ops-modal max-w-5xl flex flex-col focus-visible:outline-0"
       ref={dialogRef}
-      role="dialog"
+
       tabIndex={-1}
-    >
+     onClose={onClose}>
       <div className="ops-modal__header">
         <div>
           <p className="text-xs text-secondary font-semibold">
@@ -232,17 +248,36 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
             인증 및 공개 API 키
           </h2>
         </div>
-        <button
+        <Button variant="ghost"
           className="ops-icon-button"
           onClick={onClose}
           type="button"
         >
           <X className="w-5 h-5" />
-        </button>
+        </Button>
       </div>
 
       <div className="overflow-y-auto p-6 grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <section className="border-t border-line pt-4 lg:border-t-0 lg:border-r lg:pr-5 lg:pt-0">
+        <PublicKeySettings model={model} />
+
+        <LoginAuditHistory model={model} />
+
+        <PasswordSettings model={model} />
+      </div>
+    </OpsDialog>
+  );
+}
+
+function PublicKeySettings({ model }: { model: AdminSettingsPanelModel }) {
+  const {
+    keyState,
+    patchKeyState,
+    loadPublicKeys,
+    createKey,
+    revokeKey,
+    copyGeneratedKey,
+  } = model;
+  return (<section className="border-t border-line pt-4 lg:border-t-0 lg:border-r lg:pr-5 lg:pt-0">
           <div className="flex items-center justify-between gap-3 mb-4">
             <div>
               <h3 className="ops-section-title">공개 API 키</h3>
@@ -267,15 +302,15 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
               />
             </div>
             <div className="flex flex-wrap gap-2">
-              <button
+              <Button variant="ghost"
                 className="ops-button ops-button--primary"
                 disabled={keyState.busy}
                 type="submit"
               >
                 <KeyRound className="w-4 h-4" />
                 랜덤 키 생성
-              </button>
-              <button
+              </Button>
+              <Button variant="ghost"
                 className="ops-button"
                 disabled={keyState.busy}
                 onClick={() => void loadPublicKeys()}
@@ -283,7 +318,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
               >
                 <RefreshCw className="w-4 h-4" />
                 새로고침
-              </button>
+              </Button>
             </div>
           </form>
 
@@ -303,22 +338,22 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                   value={keyState.generatedKey}
                   onFocus={(event) => event.currentTarget.select()}
                 />
-                <button
+                <Button variant="ghost"
                   aria-label="생성된 키 복사"
                   className="ops-icon-button"
                   onClick={() => void copyGeneratedKey()}
                   type="button"
                 >
                   <Copy className="w-4 h-4" />
-                </button>
-                <button
+                </Button>
+                <Button variant="ghost"
                   aria-label="생성된 키 화면에서 지우기"
                   className="ops-icon-button"
                   onClick={() => patchKeyState({ generatedKey: null })}
                   type="button"
                 >
                   <EyeOff className="w-4 h-4" />
-                </button>
+                </Button>
               </div>
               <p className="text-xs text-secondary">
                 이 키는 지금 한 번만 표시됩니다. 복사한 뒤 “지우기”로 화면에서 제거할 수 있습니다.
@@ -346,14 +381,14 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                     </span>
                   </div>
                   {item.state === 'active' ? (
-                    <button
+                    <Button variant="ghost"
                       className="ops-icon-button text-danger border-danger/40"
                       disabled={keyState.busy}
                       onClick={() => void revokeKey(item.public_api_key_id)}
                       type="button"
                     >
                       <Trash2 className="w-4 h-4" />
-                    </button>
+                    </Button>
                   ) : null}
                 </div>
               ))
@@ -366,9 +401,15 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
           ) : keyState.message ? (
             <p className="mt-3 text-sm text-secondary">{keyState.message}</p>
           ) : null}
-        </section>
+        </section>);
+}
 
-        <section className="border-t border-line pt-4 lg:border-t-0 lg:pl-1 lg:pt-0">
+function LoginAuditHistory({ model }: { model: AdminSettingsPanelModel }) {
+  const {
+    auditState,
+    loadAuditEvents,
+  } = model;
+  return (<section className="border-t border-line pt-4 lg:border-t-0 lg:pl-1 lg:pt-0">
           <div className="flex items-center justify-between gap-3 mb-4">
             <div>
               <h3 className="ops-section-title">로그인 기록</h3>
@@ -376,14 +417,14 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                 로그인 시도, 성공, 실패, 로그아웃과 key 관리 이벤트를 최신순으로 표시합니다.
               </p>
             </div>
-            <button
+            <Button variant="ghost"
               className="ops-button"
               onClick={() => void loadAuditEvents()}
               type="button"
             >
               <RefreshCw className="w-4 h-4" />
               새로고침
-            </button>
+            </Button>
           </div>
           <div className="space-y-2">
             {auditState.events === null ? (
@@ -422,9 +463,18 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
               <InlineError error={auditState.error} />
             </div>
           ) : null}
-        </section>
+        </section>);
+}
 
-        <section className="border-t border-line pt-4 lg:col-span-2">
+function PasswordSettings({ model }: { model: AdminSettingsPanelModel }) {
+  const {
+    passwordState,
+    passwordForm,
+    passwordValues,
+    passwordReady,
+    changePassword,
+  } = model;
+  return (<section className="border-t border-line pt-4 lg:col-span-2">
           <div className="flex items-center justify-between gap-3 mb-4">
             <div>
               <h3 className="ops-section-title">관리자 비밀번호 변경</h3>
@@ -435,7 +485,7 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
             </div>
           </div>
 
-          <form className="space-y-3 max-w-md" onSubmit={changePassword}>
+          <form className="space-y-3 max-w-md" onSubmit={passwordForm.handleSubmit(changePassword)}>
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-secondary" htmlFor="current-password">
                 현재 비밀번호
@@ -444,9 +494,8 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                 autoComplete="current-password"
                 className="ops-input"
                 id="current-password"
-                onChange={(event) => patchPasswordState({ current: event.target.value })}
                 type="password"
-                value={passwordState.current}
+                {...passwordForm.register('current')}
               />
             </div>
             <div className="space-y-1.5">
@@ -457,9 +506,8 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                 autoComplete="new-password"
                 className="ops-input"
                 id="new-password"
-                onChange={(event) => patchPasswordState({ next: event.target.value })}
                 type="password"
-                value={passwordState.next}
+                {...passwordForm.register('next')}
               />
             </div>
             <div className="space-y-1.5">
@@ -470,21 +518,20 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
                 autoComplete="new-password"
                 className="ops-input"
                 id="confirm-password"
-                onChange={(event) => patchPasswordState({ confirm: event.target.value })}
                 type="password"
-                value={passwordState.confirm}
+                {...passwordForm.register('confirm')}
               />
             </div>
-            {passwordState.next && passwordState.next !== passwordState.confirm ? (
+            {passwordValues.next && passwordValues.next !== passwordValues.confirm ? (
               <p className="text-xs text-danger">새 비밀번호가 서로 다릅니다.</p>
             ) : null}
-            <button
+            <Button variant="ghost"
               className="ops-button ops-button--primary"
               disabled={!passwordReady || passwordState.busy}
               type="submit"
             >
               {passwordState.busy ? '변경 중...' : '비밀번호 변경'}
-            </button>
+            </Button>
           </form>
 
           {passwordState.message ? (
@@ -493,11 +540,9 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
           {passwordState.error ? (
             <p className="mt-3 text-sm text-danger">{passwordState.error}</p>
           ) : null}
-        </section>
-      </div>
-    </div>
-  );
+        </section>);
 }
+
 
 function eventTitle(event: LoginAuditEvent): string {
   if (event.event_type === 'logout') return `로그아웃 · ${event.attempted_username ?? '-'}`;

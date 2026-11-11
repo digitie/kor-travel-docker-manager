@@ -1,5 +1,11 @@
 /* Hallmark · Ember · macrostructure: Rail-Workbench · design-system: DESIGN.md */
 @import "tailwindcss";
+@import "@kor-travel/tokens/font.css";
+@import "@kor-travel/tokens/theme.css";
+@import "@kor-travel/tokens/shadcn.css";
+@import "@kor-travel/tokens/radix.css";
+@source "../../node_modules/@kor-travel/ui/dist";
+@source inline("sm:max-w-lg sm:max-w-3xl sm:max-w-4xl sm:max-w-5xl");
 @import "../../tokens.css";
 
 @layer base {
@@ -1381,3 +1387,21 @@
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-tertiary);
 }
+
+/* 공통 메뉴 슬롯을 기존 rail 크기 및 접힘 정책에 연결한다. */
+[data-slot="app-menu"] { display:flex; flex-direction:column; overflow:visible; gap:1rem; padding:.75rem; }
+[data-slot="app-menu"] ul { display:flex; flex-direction:column; }
+[data-slot="app-menu"] a, [data-slot="app-menu"] button { width:100%; text-align:left; }
+@media (min-width: 64rem) {
+  [data-sidebar-collapsed="true"] [data-slot="app-menu-group-label"],
+  [data-sidebar-collapsed="true"] [data-slot="app-menu-item"] > :is(a,button) > span:not([aria-hidden]),
+  [data-sidebar-collapsed="true"] [data-slot="app-menu"] kbd { display:none; }
+}
+@media (max-width: 63.999rem) {
+  [data-slot="app-menu"] { flex-direction:row; align-items:center; gap:.25rem; padding:.5rem .75rem; overflow-x:auto; scrollbar-width:none; }
+  [data-slot="app-menu-group"] { display:flex; flex:0 0 auto; }
+  [data-slot="app-menu-group-label"], [data-slot="app-menu"] kbd { display:none; }
+  [data-slot="app-menu"] ul { flex-direction:row; }
+}
+
+body { font-family:"Pretendard Variable", Pretendard, sans-serif; }

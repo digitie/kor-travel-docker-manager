@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@kor-travel/ui/button';
+
 import { useState } from 'react';
 import { HumanError } from '@/lib/errors';
 
@@ -24,13 +26,13 @@ export default function InlineError({ error }: { error: HumanError }) {
       ) : null}
       {error.raw ? (
         <>
-          <button
+          <Button variant="ghost"
             className="text-xs text-secondary underline mt-2"
             onClick={() => setShowRaw((value) => !value)}
             type="button"
           >
             자세히
-          </button>
+          </Button>
           {showRaw ? (
             <pre className="text-[11px] bg-subtle rounded-card p-2 mt-2 overflow-x-auto whitespace-pre-wrap break-all">
               {error.raw}

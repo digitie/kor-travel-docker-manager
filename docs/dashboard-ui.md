@@ -198,9 +198,10 @@ pin 회전처럼 **backend가 물리적으로 실행할 수 없는** 조작은 C
 
 새 패널을 만들 때 `RuntimePinPanel.tsx`를 원형으로 삼는다. 지켜야 할 것:
 
-- `'use client'`, `ops-modal` 클래스, `role="dialog"` + `aria-modal` + `aria-labelledby`.
-- ESC로 닫기(자체 `useEffect` keydown 핸들러). **`DashboardClient`의 ESC 스택은 기존
-  4개 모달만 관리한다** — 새 패널은 자기 ESC를 스스로 처리한다.
+- `'use client'`, `OpsDialog`와 `ops-modal` 클래스, 의미 있는 `aria-label` 또는 `aria-labelledby`.
+- 포털·Escape·포커스 가두기는 공통 Radix Dialog가 담당한다. 별도 전역 키 리스너를 만들지 않는다.
+  조건부 패널의 호출 버튼 복귀는 `OpsDialog`가 보존한다. 파괴적 확인은 `useConfirm`의 공통
+  AlertDialog로 범위를 표시하고 승인한 경우에만 기존 mutation을 호출한다.
 - `useQuery({ retry: false })`. 400/409류 영구 오류를 재시도하면 `isLoading`이 수 초
   유지돼 "로딩 중"으로 오해하게 만든다.
 - 진입점은 두 곳에 등록한다: `AppShell`의 내비게이션과 커맨드 팔레트(⌘K).
