@@ -1,6 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Button } from '@kor-travel/ui/button';
+
+import OpsDialog from './OpsDialog';
+
+import { VirtualTable } from '@kor-travel/ui/virtual-table';
+
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, HelpCircle, RefreshCw, X } from 'lucide-react';
 import {
@@ -124,14 +130,14 @@ function PendingRequestCard({
             : applyCommand(request.revision)
         }
       />
-      <button
+      <Button variant="ghost"
         className="ops-button mt-3"
         disabled={cancelPending}
         onClick={onCancel}
         type="button"
       >
         요청 취소
-      </button>
+      </Button>
     </section>
   );
 }
@@ -172,14 +178,6 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['runtime-pins'] }),
   });
 
-  useEffect(() => {
-    dialogRef.current?.focus();
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose();
-    }
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
 
   const summary = data?.summary;
   const lifecycle = data?.lifecycle;
@@ -202,14 +200,14 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
       : null;
 
   return (
-    <div
+    <OpsDialog
       aria-labelledby="runtime-pin-title"
-      aria-modal="true"
+
       className="ops-modal max-w-4xl flex flex-col focus-visible:outline-0"
       ref={dialogRef}
-      role="dialog"
+
       tabIndex={-1}
-    >
+     onClose={onClose}>
       <div className="ops-modal__header">
         <div>
           <p className="text-xs text-secondary font-semibold">
@@ -224,14 +222,14 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
             뒤에 이뤄집니다.
           </p>
         </div>
-        <button className="ops-icon-button" onClick={onClose} type="button">
+        <Button variant="ghost" className="ops-icon-button" onClick={onClose} type="button">
           <X className="w-5 h-5" />
-        </button>
+        </Button>
       </div>
 
       <div className="overflow-y-auto p-6 space-y-6">
         <div className="flex justify-end">
-          <button
+          <Button variant="ghost"
             className="ops-button"
             disabled={isFetching}
             onClick={() => void refetch()}
@@ -239,7 +237,7 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
           >
             <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
             새로고침
-          </button>
+          </Button>
         </div>
 
         {isLoading ? (
@@ -315,31 +313,13 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
             {pins ? (
               <section>
                 <h3 className="text-sm font-semibold text-strong mb-2">현재 고정 버전</h3>
-                <table className="ops-archive-table w-full table-fixed text-sm">
-                  <thead className="bg-subtle text-xs text-secondary">
-                    <tr>
-                      <th className="text-left py-2 px-3 font-semibold">대상</th>
-                      <th className="text-left py-2 px-3 font-semibold">고정된 커밋</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pins.sources.map((source) => (
-                      <tr key={source.role}>
-                        <td className="py-2 px-3">{ROLE_LABELS[source.role] ?? source.role}</td>
-                        <td className="py-2 px-3 break-all">
-                          <a
-                            className="underline"
-                            href={`${source.url.replace(/\.git$/, '')}/commit/${source.revision}`}
-                            rel="noreferrer noopener"
-                            target="_blank"
-                          >
-                            {short(source.revision)}
-                          </a>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <VirtualTable ariaLabel="현재 고정 버전" data={pins.sources} getRowId={(source) => source.role} virtualized={false}
+                  columns={[
+                    { id: 'role', header: '대상', cell: ({ row }) => ROLE_LABELS[row.original.role] ?? row.original.role },
+                    { id: 'revision', header: '고정된 커밋', cell: ({ row: { original: source } }) =>
+                      <a className="underline break-all" href={`${source.url.replace(/\.git$/, '')}/commit/${source.revision}`}
+                        rel="noreferrer noopener" target="_blank">{short(source.revision)}</a> },
+                  ]} />
                 <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-secondary mt-3">
                   <dt>세트 식별자</dt>
                   <dd className="break-all">{short(pins.pinset_sha256)}</dd>
@@ -430,13 +410,13 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                     기록되므로 비밀번호나 토큰을 적지 마세요.
                   </p>
 
-                  <button
+                  <Button variant="ghost"
                     className="ops-button"
                     disabled={!revisionValid || !reasonValid || createRequest.isPending}
                     type="submit"
                   >
                     변경 요청 기록
-                  </button>
+                  </Button>
                 </form>
               </section>
             ) : null}
@@ -481,6 +461,6 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
           </>
         )}
       </div>
-    </div>
+    </OpsDialog>
   );
 }

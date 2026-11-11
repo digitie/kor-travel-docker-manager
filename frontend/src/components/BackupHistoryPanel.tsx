@@ -1,5 +1,12 @@
 'use client';
 
+import { Button } from '@kor-travel/ui/button';
+
+import OpsDialog from './OpsDialog';
+import { useConfirm } from './useConfirm';
+
+import { VirtualTable } from '@kor-travel/ui/virtual-table';
+
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, X } from 'lucide-react';
@@ -78,10 +85,11 @@ function formatBytes(byteSize: number): string {
 }
 
 function formatTimestamp(createdAtUnix: number): string {
-  return new Date(createdAtUnix * 1000).toLocaleString('ko-KR');
+  return new Date(createdAtUnix * 1000).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
 }
 
 export default function BackupHistoryPanel({ onClose }: { onClose: () => void }) {
+  const { confirm, confirmation } = useConfirm();
   const [role, setRole] = useState<string>('all');
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobError, setJobError] = useState<HumanError | null>(null);
@@ -182,14 +190,6 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
     onError: (error) => setJobError(humanizeError(error, '백업 생성')),
   });
 
-  useEffect(() => {
-    dialogRef.current?.focus();
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose();
-    }
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
 
   const backups = data?.backups ?? [];
   // 신선도 판정은 손상된 manifest를 "없다"로 잘못 세지 않도록 읽을 수 있는 항목만 본다
@@ -223,14 +223,14 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
     .filter((row): row is { role: string; hours: number | null; stale: boolean } => row !== null);
 
   return (
-    <div
+    <OpsDialog
       aria-labelledby="backup-history-title"
-      aria-modal="true"
+
       className="ops-modal max-w-5xl flex flex-col focus-visible:outline-0"
       ref={dialogRef}
-      role="dialog"
+
       tabIndex={-1}
-    >
+     onClose={onClose}>
       <div className="ops-modal__header">
         <div>
           <p className="text-xs text-secondary font-semibold">
@@ -245,20 +245,20 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
             복원할 수 있다는 것은 다릅니다. 아래 명령으로 그 차이를 미리 확인하세요.
           </p>
         </div>
-        <button
+        <Button variant="ghost"
           className="ops-icon-button"
           onClick={onClose}
           type="button"
         >
           <X className="w-5 h-5" />
-        </button>
+        </Button>
       </div>
 
       <div className="overflow-y-auto p-6">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <div className="flex flex-wrap gap-2">
             {roleOptions.map((option) => (
-              <button
+              <Button variant="ghost"
                 className={`inline-flex items-center gap-2 min-h-[36px] rounded-card px-3 text-xs font-semibold border ${
                   role === option.value
                     ? 'ops-button ops-button--primary'
@@ -269,24 +269,24 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
                 type="button"
               >
                 {option.label}
-              </button>
+              </Button>
             ))}
           </div>
           <div className="flex gap-2">
-            <button
+            <Button variant="ghost"
               className="ops-button"
               disabled={role === 'all' || running || createBackup.isPending}
-              onClick={() => {
+              onClick={async () => {
                 if (role === 'all') return;
-                if (!confirm(durationWarning(role))) return;
+                if (!(await confirm(durationWarning(role)))) return;
                 createBackup.mutate();
               }}
               title={role === 'all' ? '백업할 role을 하나 선택하세요' : undefined}
               type="button"
             >
               백업 생성
-            </button>
-            <button
+            </Button>
+            <Button variant="ghost"
               className="ops-button"
               disabled={isFetching}
               onClick={() => void refetch()}
@@ -294,7 +294,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
             >
               <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
               새로고침
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -431,62 +431,25 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
           <p className="text-sm text-secondary text-center py-12">저장된 백업이 없습니다.</p>
         ) : (
           <div className="border-t border-line pt-2">
-            <table className="ops-archive-table w-full table-fixed text-sm">
-              <thead className="bg-subtle text-xs text-secondary">
-                <tr>
-                  <th className="text-left py-2 px-3 font-semibold break-all">생성 시각</th>
-                  <th className="text-left py-2 px-3 font-semibold break-all">역할</th>
-                  <th className="text-left py-2 px-3 font-semibold break-all">크기</th>
-                  <th className="text-left py-2 px-3 font-semibold break-all">alembic</th>
-                  <th className="text-left py-2 px-3 font-semibold break-all">SHA-256</th>
-                  <th className="text-left py-2 px-3 font-semibold break-all">파일명</th>
-                </tr>
-              </thead>
-              <tbody>
-                {backups.map((backup) =>
-                  isUnreadableBackupEntry(backup) ? (
-                    <tr className="border-t border-line" key={`unreadable-${backup.filename}`}>
-                      <td className="py-2 px-3 text-danger break-all" colSpan={6}>
-                        읽을 수 없는 백업 기록: {backup.filename} — {backup.reason}
-                      </td>
-                    </tr>
-                  ) : (
-                    <tr
-                      className="border-t border-line"
-                      key={`${backup.role}-${backup.backup_filename}`}
-                    >
-                      <td data-label="생성 시각" className="py-2 px-3 text-ink break-all">
-                        {formatTimestamp(backup.created_at_unix)}
-                      </td>
-                      <td data-label="역할" className="py-2 px-3 text-ink font-mono">{backup.role}</td>
-                      <td data-label="크기" className="py-2 px-3 text-ink break-all">
-                        {formatBytes(backup.byte_size)}
-                      </td>
-                      <td data-label="alembic" className="py-2 px-3 text-ink font-mono break-all">
-                        {backup.alembic_head ?? '—'}
-                      </td>
-                      <td
-                        className="py-2 px-3 text-secondary font-mono text-xs break-all"
-                        data-label="SHA-256"
-                        title={backup.sha256}
-                      >
-                        {backup.sha256.slice(0, 12)}…
-                      </td>
-                      <td
-                        className="py-2 px-3 text-secondary font-mono text-xs break-all"
-                        data-label="파일명"
-                        title={backup.backup_filename}
-                      >
-                        {backup.backup_filename}
-                      </td>
-                    </tr>
-                  )
-                )}
-              </tbody>
-            </table>
+            <VirtualTable ariaLabel="백업 이력" virtualized={false}
+              data={backups.map((backup) => isUnreadableBackupEntry(backup)
+                ? { id: `unreadable-${backup.filename}`, created: <span role="alert" className="text-danger">읽을 수 없는 백업 기록: {backup.filename} — {backup.reason}</span>, role: '', size: '', head: '', sha: <></>, filename: backup.filename }
+                : { id: `${backup.role}-${backup.backup_filename}`, created: <>{formatTimestamp(backup.created_at_unix)}</>, role: backup.role,
+                    size: formatBytes(backup.byte_size), head: backup.alembic_head ?? '—',
+                    sha: <span title={backup.sha256}>{backup.sha256.slice(0, 12)}…</span>, filename: backup.backup_filename })}
+              getRowId={(row) => row.id}
+              columns={[
+                { accessorKey: 'created', header: '생성 시각' },
+                { accessorKey: 'role', header: '역할' },
+                { accessorKey: 'size', header: '크기' },
+                { accessorKey: 'head', header: 'alembic' },
+                { accessorKey: 'sha', header: 'SHA-256' },
+                { accessorKey: 'filename', header: '파일명' },
+              ]} />
           </div>
         )}
       </div>
-    </div>
+    {confirmation}
+    </OpsDialog>
   );
 }

@@ -3,8 +3,10 @@
 export type ListDiff = { added: string[]; removed: string[]; changed: boolean };
 
 export function diffList(before: string[], after: string[]): ListDiff {
-  const added = after.filter((item) => !before.includes(item));
-  const removed = before.filter((item) => !after.includes(item));
+  const beforeSet = new Set(before);
+  const afterSet = new Set(after);
+  const added = after.filter((item) => !beforeSet.has(item));
+  const removed = before.filter((item) => !afterSet.has(item));
   return { added, removed, changed: added.length > 0 || removed.length > 0 };
 }
 

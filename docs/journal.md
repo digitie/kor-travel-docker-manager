@@ -1,3 +1,16 @@
+## 2026-11-11 — 공통 관리자 UI 소비와 후보3 검증
+
+- 원본 dirty checkout을 보존한 ext4 shared clone의 `agent/codex-common-unification-20261111`에서 소비자만 변경했다. Transport는 사용자 지시에 따라 새 전담에 인계하고 이후 수정하지 않았다.
+- LoginForm·AppMenu·Radix Button/Checkbox/Dialog/AlertDialog/Tabs·VirtualTable을 common에서 사용한다. 원장·마운트·백업·고정 버전의 모든 표를 이전했으며 지도 의존성은 추가하지 않았다. 인증·세션·운영 API·Docker 수명주기 정책은 유지한다.
+- 비밀번호 변경은 RHF/Zod, 설정 배열 편집은 RHF의 안정 행 식별자, 메뉴 접힘은 인스턴스별 Zustand, 폰트는 로컬 Pretendard를 사용한다. 확인 창은 승인 전 실행 차단·취소/세션 소실 시 해제·호출 버튼 초점 복귀를 유지한다.
+- 첫 브라우저 회귀의 확인 취소 후 초점 소실을 재현했다. 표 인라인 cell renderer가 호출 버튼 DOM을 교체한 원인이어서 열 정의를 상수로 옮겼다. 모바일 공통 메뉴의 가로 탐색과 모달 여백도 화면을 확인해 보완했다.
+- 부모의 동일 UI/tokens 후보3 tgz·원장을 복사하고 명시적 file 재설치 및 clean `npm ci`를 확인했다. 첫 동기화 중 원장/파일 불일치는 guard가 실제로 거부했으며 부모의 원장 갱신 뒤 다시 일치시켰다. 이 파일은 정식 릴리스나 운영 배포의 증거가 아니다.
+- ESLint10.14.0과 이를 지원하는 Next/React/TypeScript/접근성 플러그인으로 교체했고 legacy-peer/force는 사용하지 않았다. Doctor0.9.22 CLI 옵션을 직접 확인해 전체 스캔과 CI 실행을 연결했다. 소켓의 생성/해제를 명시적 자원으로 묶고 시각·행 식별자·탐색 비용 진단을 수정했다.
+- Linux 검증: `npm ci`, guard, type-check, ESLint `--max-warnings=0`, 단위53개(15파일), production build, 데스크톱·모바일 Chromium 회귀2개 PASS. 기존 로그아웃9개가 포함된다. Playwright는 미실행 포트의 HTTP 준비 확인이 대기해 최신 CLI의 서버 stdout Ready 대기 방식으로 전환했으며 자기 서버만 자동 종료했다.
+- Doctor는 오류0·경고16개이며 오류 차단 모드 PASS다. 복잡도6·대형 컴포넌트5·컴포넌트 외 export2·순차 await1·작업 완료 시 갱신하는 백업 mutation1·세션 중단 시 확인 취소 effect1을 숨기지 않았다. warning 차단 통과나 0경고로 보고하지 않는다. 설명은 [채택 기록](common-ui-adoption.md)을 따른다.
+- backend 무변경이므로 backend pytest/Ruff와 Docker 검증은 실행하지 않았다. WSL 브라우저는 mock API 계약이며 n150 실세션/운영 수용을 대신하지 않는다. 두 독립 적대 리뷰·원격 CI·PR/머지·운영 배포는 부모 최종 통합 단계로 남긴다.
+- 배포 정본 확인 결과 Manager 자체는 systemd Next.js 산출물이며 UI 전용 Docker 이미지 태그는 없다. 운영 설정을 보존한 exact merged SHA의 UI 빌드/`ktdm-frontend` 재시작과 로그인→대표화면→로그아웃/health 검증을 [배포 계획](common-ui-deployment.md)에 적었다. 부모 go 전 배포와 DB/RustFS 조작은 하지 않았다.
+
 ## 2026-11-09 — 상태 점검 배포와 첫 조회 개선의 최종 정산
 
 - PR #486·#488의 두 리뷰·정확 CI·병합과 기존 API Common 점검·동일 소비 이미지의 Geo/Weather 격리 live 적용을 수용했다. code-server 점검 창에서 두 대상만 재생성했고 다른 53개와 전체 55개 이미지 ID를 보존했다. 수집 두 실행은 자연 SUCCESS였으며 run 취소·SQL 수정 없이 예약만 공식 SDK로 일시 중지·복원했다. 실측 snapshot의 publisher는 RUNNING, native incarnation recovery는 STOPPED였다.

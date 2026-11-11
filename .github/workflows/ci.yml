@@ -45,11 +45,19 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: 의존성 설치
         run: npx --yes npm@12.0.1 ci
+      - name: 공통 의존성 검증
+        run: npm run check:dependencies
       - name: 타입 검사
         run: npm run type-check
       - name: 린트
         run: npm run lint -- --max-warnings=0
+      - name: React Doctor
+        run: npm run doctor
       - name: 단위 테스트
         run: npm run test
       - name: 빌드
         run: npm run build
+      - name: Chromium 설치
+        run: npx playwright install --with-deps chromium
+      - name: 공통 UI 브라우저 회귀
+        run: npm run test:e2e

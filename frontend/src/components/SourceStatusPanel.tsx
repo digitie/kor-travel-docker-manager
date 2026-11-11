@@ -1,6 +1,10 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { Button } from '@kor-travel/ui/button';
+
+import OpsDialog from './OpsDialog';
+
+import { useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, HelpCircle, RefreshCw, X } from 'lucide-react';
 import {
@@ -131,27 +135,19 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
     retry: false,
   });
 
-  useEffect(() => {
-    dialogRef.current?.focus();
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose();
-    }
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
 
   const remoteFor = (role: string | undefined): string | null =>
     pins?.pins?.sources.find((source) => source.role === role)?.url ?? null;
 
   return (
-    <div
+    <OpsDialog
       aria-labelledby="source-status-title"
-      aria-modal="true"
+
       className="ops-modal max-w-4xl flex flex-col focus-visible:outline-0"
       ref={dialogRef}
-      role="dialog"
+
       tabIndex={-1}
-    >
+     onClose={onClose}>
       <div className="ops-modal__header">
         <div>
           <p className="text-xs text-secondary font-semibold">
@@ -165,9 +161,9 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
             관측만 합니다. 아무것도 바꾸지 않습니다.
           </p>
         </div>
-        <button className="ops-icon-button" onClick={onClose} type="button">
+        <Button variant="ghost" className="ops-icon-button" onClick={onClose} type="button">
           <X className="w-5 h-5" />
-        </button>
+        </Button>
       </div>
 
       <div className="overflow-y-auto p-6 space-y-5">
@@ -175,7 +171,7 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
           <p className="text-xs text-secondary">
             {data?.cached ? '캐시된 결과입니다.' : '방금 관측한 결과입니다.'}
           </p>
-          <button
+          <Button variant="ghost"
             className="ops-button"
             disabled={isFetching || readinessFetching}
             onClick={() => {
@@ -192,7 +188,7 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
               className={`w-4 h-4 ${isFetching || readinessFetching ? 'animate-spin' : ''}`}
             />
             새로고침
-          </button>
+          </Button>
         </div>
 
         <section>
@@ -363,7 +359,7 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
                 }
               />
               <p className="text-xs text-secondary mt-2">
-                판정 시각 {new Date(rebuild.collected_at).toLocaleString('ko-KR')} · 새로고침하면
+                판정 시각 {new Date(rebuild.collected_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} · 새로고침하면
                 다시 확인합니다.
               </p>
             </div>
@@ -532,6 +528,6 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
           </>
         ) : null}
       </div>
-    </div>
+    </OpsDialog>
   );
 }

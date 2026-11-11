@@ -1,0 +1,25 @@
+{
+  "status": "CANDIDATE_NOT_RELEASED",
+  "packages": {
+    "@kor-travel/ui": {
+      "version": "0.2.0",
+      "filename": "kor-travel-ui-0.2.0.tgz",
+      "integrity": "sha512-ZugCh1iLt2GjU2TcoqWondPHMNb2PA0dA4/CAK23/yTZhMfPyI4kKmHnrt3xbkNiydEKUATPSF20pH10OeHCHw=="
+    },
+    "vworld-map-core": {
+      "version": "1.0.0",
+      "filename": "vworld-map-core-1.0.0.tgz",
+      "integrity": "sha512-tP++7XNg9UYXeeUc+aX8q+RD6/dkVzZuBSXPHUKEqHIRobLjUo1HcPEJruOU0bUzHGxnJL/8reIM7xI+vXYaUw=="
+    },
+    "@kor-travel/tokens": {
+      "version": "0.1.1",
+      "filename": "kor-travel-tokens-0.1.1.tgz",
+      "integrity": "sha512-LJpKb3co9PGl997zBG98u8aZF3jwPHuunDbg5hVu+inMZHbmG1rMoS9Alpxce/ErAUZyTbaZmh6eS6LVT9jfHw=="
+    },
+    "vworld-map-web": {
+      "version": "1.0.3",
+      "filename": "vworld-map-web-1.0.3.tgz",
+      "integrity": "sha512-9S0TUlgu4ky9ztjkanf0lhoijydhcX5ehHtyQB1jla+rGnuPLK4POiH4wIb2v5ATKuO5hOnHEG534gfyuEH+5g=="
+    }
+  }
+}

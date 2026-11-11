@@ -291,3 +291,12 @@ Origin을 요구한다. 따라서 Origin이 없으면 먼저 `403`, 허용된 Or
 Concierge 공용 Dagster(ADR-55): `conc` 기본 runtime은 `kor-travel-concierge-dagster-code-server`를
 사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용한다. old APScheduler의
 `legacy-scheduler` rollback profile은 2026-11-02에 compose에서 지웠다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.
+
+
+### 공통 관리자 UI 소비
+
+프론트엔드는 `@kor-travel/ui`0.2.0과 `@kor-travel/tokens`0.1.1의 동일 vendor 산출물을 사용한다.
+로그인·메뉴·Radix primitives·TanStack 기반 VirtualTable을 공통에서 가져오며,
+인증/세션과 운영 API의 authority는 기존 Manager 구현에 남긴다.
+RHF/Zod·Zustand·Pretendard 적용 위치와 상태/초점 계약은 [공통 UI 채택](common-ui-adoption.md),
+운영 반영 순서는 [배포 계획](common-ui-deployment.md)을 따른다.

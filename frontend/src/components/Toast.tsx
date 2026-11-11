@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@kor-travel/ui/button';
+
 import { useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronDown, X } from 'lucide-react';
 import { HumanError } from '@/lib/errors';
@@ -57,14 +59,14 @@ function ToastCard({ item, onDismiss }: { item: ToastItem; onDismiss: () => void
           {item.hint ? <p className="text-xs text-secondary mt-1">{item.hint}</p> : null}
           {item.raw ? (
             <>
-              <button
+              <Button variant="ghost"
                 className="text-xs text-secondary underline mt-2 inline-flex items-center gap-1"
                 onClick={() => setShowRaw((value) => !value)}
                 type="button"
               >
                 <ChevronDown className={`w-3 h-3 ${showRaw ? 'rotate-180' : ''}`} />
                 자세히
-              </button>
+              </Button>
               {showRaw ? (
                 <pre className="text-[11px] bg-subtle rounded-card p-2 mt-2 overflow-x-auto whitespace-pre-wrap break-all">
                   {item.raw}
@@ -73,9 +75,9 @@ function ToastCard({ item, onDismiss }: { item: ToastItem; onDismiss: () => void
             </>
           ) : null}
         </div>
-        <button aria-label="닫기" className="ops-icon-button shrink-0" onClick={onDismiss} type="button">
+        <Button variant="ghost" aria-label="닫기" className="ops-icon-button shrink-0" onClick={onDismiss} type="button">
           <X className="w-4 h-4" />
-        </button>
+        </Button>
       </div>
     </div>
   );
