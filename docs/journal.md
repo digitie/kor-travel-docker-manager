@@ -1,3 +1,10 @@
+## 2026-11-12 — raw UI 환경의 Compose 달러 표현 경계
+
+- 독립 재검토에서 raw Docker 환경의 연속 달러가 이미 정규화된 Compose 환경용 공통 escaper를 지나며 줄어드는 반례를 확인했다. 715 CI 성공과 별개인 소스 결함으로 보존하고 운영 적용·설치는 하지 않았다.
+- component bind에서 raw 달러를 정확히 한 번 Compose 표현으로 인코딩한다. 승인·사후 비교값은 raw 그대로 유지하고 기존 Map 공통 escaper·paired callback·테스트는 바꾸지 않는다.
+- 수정 전 live/후보 기본값32개 control 중12 FAIL/20 PASS와 실제 Compose가 자기 fake Engine에 보낸 Env의4개 불일치를 재현했다. 수정 후 기존400+32=432 PASS·Ruff PASS, 실제 Compose create Env11개도 모두 승인 raw와 같았다. fake Engine은 create body 기록 뒤 의도적으로 거절하므로 CLI exit1을 배포 실패나 실제 컨테이너 생성으로 세지 않는다.
+- 이전 원문·실패·source2 입력은 불변 보존한다. 새 불변 입력의 원 A/B 자기 지적 재확인·정확 CI·머지·trusted 설치·실제 앱 배포는 후속이며 완료로 표시하지 않는다.
+
 ## 2026-11-12 — component UI의 현재 환경 보존
 
 - 소비자 배포 전 읽기에서 현재 UI 지도 키와 frozen Compose 선언이 다른 사례를 확인했다. df376의 코드 리뷰 PASS는 보존하되 이 운영 전제를 포함한 후속 delta를 다시 검토한다. 실제 key·운영 설정은 변경하지 않았다.

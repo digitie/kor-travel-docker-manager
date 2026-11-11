@@ -67,7 +67,9 @@ def _preserve_environment(client: Any, project: str, runtime: str, image_id: str
     expected = {**defaults, **before}
     def bind(materialized):
         definition = materialized["services"][runtime]
-        definition["environment"] = dict(expected)
+        # Docker inspect는 raw 값이다. 이미 정규화된 Compose 값의 짝수 달러를
+        # 보존하는 공유 escaper에 넘기기 전에 raw 달러를 정확히 한 번 인코딩한다.
+        definition["environment"] = {key: value.replace("$", "$$") for key, value in expected.items()}
         # config로 해석한 effective 값을 고정했으므로 env_file을 다시 읽지 않는다.
         definition.pop("env_file", None)
     def unchanged():

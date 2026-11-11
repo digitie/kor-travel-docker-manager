@@ -1815,3 +1815,5 @@ component UI의 승인 환경은 G 안에서 읽은 현재 effective 값이다. 
 한 번의 stdin을 사용하며 선택 env_file을 다시 읽지 않는다. 실행 전후와 발행 직전에도 같은
 환경/이미지 관계를 대조하고 비밀은 render 전부터 가린다. 영구 env 해시나 새 상태 schema는
 추가하지 않고 기존 terminal 진단을 사용한다. 기존 Map paired 경로의 환경 의미는 유지한다.
+
+raw Docker 환경값은 component bind 경계에서 Compose literal 표현으로 한 번 변환한다. 승인·사후 비교는 raw 값을 유지하고 이미 정규화된 Compose용 Map 공통 escaper는 변경하지 않는다.

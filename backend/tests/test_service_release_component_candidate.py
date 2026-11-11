@@ -352,3 +352,24 @@ def test_render_error_redacts_live_environment_before_binding(component_scenario
     for value in ["live$secret", "live-map-secret", "image$secret"]:
         assert value not in json.dumps(result)
     assert not any("up" in item[0] for item in s.calls if isinstance(item, tuple))
+
+
+@pytest.mark.parametrize("value", ["literal$secret", "literal$$secret", "literal$$$secret",
+                                    "literal$$$$secret", "$VAR", "$" + "{VAR}", "", "a=b"])
+@pytest.mark.parametrize("location", ["live", "candidate-default"])
+def test_raw_dollar_values_survive_component_recreate(component_scenario, value, location):
+    s = component_scenario
+    key = "PASSWORD" if location == "live" else "NEW_SECRET"
+    if location == "live":
+        s.records[s.runtime]["Config"]["Env"] = [key + "=" + value]
+    else:
+        s.metadata[paired.NEW]["Config"]["Env"] = [key + "=" + value]
+    def recreate():
+        effective = materialized_environment(s)
+        s.records[s.runtime]["Config"]["Env"] = [
+            name + "=" + item for name, item in effective.items()]
+    s.on_mutation = recreate
+    result = apply(s)
+    assert result["success"] is True
+    assert materialized_environment(s)[key] == value
+    assert dict(item.split("=", 1) for item in s.records[s.runtime]["Config"]["Env"])[key] == value

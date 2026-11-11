@@ -232,6 +232,7 @@ root 소유 canonical origin/main의 승인 commit을 포함해야 하고 image 
 다시 주입하지 않는다. 해석한 환경을 stdin에 고정하고 선택 UI의 env_file을 다시 읽지 않는다.
 실행 전·사후·current 발행 직전에 승인한 환경/이미지 관계를 재검사한다. 읽을 수 없는 환경,
 중복/불완전 항목·관찰 중 변경은 거부하고 actual 값은 오류·새 manifest에 저장하지 않는다.
+Docker inspect의 raw 달러는 component에서 Compose 표현으로 한 번 인코딩하고 승인·비교는 raw 값을 사용한다.
 render 실패부터 현재 값과 이미지 기본값의 비밀을 가린다. 이 보존은 component 경로에 한하며
 기존 Map paired 경로의 환경 의미를 바꾸지 않는다.
 
