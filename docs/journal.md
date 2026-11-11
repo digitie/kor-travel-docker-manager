@@ -1,3 +1,10 @@
+# 2026-11-12 — 공통 후보9 최종 브라우저 검증
+
+- UI/tokens 후보9·원장·lock과 중앙 workflow pin을 동기화했다. 실행·CSS·제품 소스 동일성을 확인해 n150의 C8 production build를 재사용했다. C9 build를 새로 수행했다고 보고하지 않는다.
+- n150의 별도 소스·임시 포트에서 guard·타입·ESLint와 데스크톱/모바일 E2E2개가 통과했다. 로컬 Doctor 전체 스캔도 오류0·경고0이다. C8 단위54개 근거는 실행 bytes 동일성으로 유지한다.
+- stdout 준비 대기를 HTTP 준비 검사로 바꾸고 CORS를 실제 baseURL에 맞췄다. 느린 첫 원장 로딩의5초 단언 실패를 보존한 뒤90초/15초 예산으로 두 화면 통과를 확인했다. 단언을 줄이거나 제품 코드를 변경하지 않았다. 브라우저 외부 HTTP 차단과 서버 재사용 금지로 운영 서버 연결을 막았다.
+- 배포 런북과 실제 frontend systemd/trusted-release 컨텍스트는 읽기 전용으로 확인했다. 운영 서비스는 변경하지 않았다. 부모의 두 독립 리뷰·CI·머지·go 및 운영 수용이 남는다. [최종 검증 기록](common-ui-c9-validation.md)에 범위와 실패 이력을 남겼다.
+
 # 2026-11-12 — 공통 후보8 단일 산출물 채택
 
 integration-8-review의 UI0.2.0/tokens0.1.1·Lightning CSS1.33.0+nativecss.fix.4를 같은 정본 파일로 설치했다. 지도 사용 앱은 기존 core1.0.1/web1.0.3의 같은 bytes를 유지한다. 설치된 모든 pack 파일의 원문 일치, 로컬·최신 외부 정책 검사, 단위·lint·타입·Doctor0을 확인했다. 중앙 CI 실행 코드는 common670a753으로 고정했다. 최종 브라우저·원격 CI·독립2리뷰·PR머지·운영 배포는 별도 gate다.

@@ -12,7 +12,9 @@
 Manager 자체 UI는 Docker 이미지가 아니라 systemd `ktdm-frontend`의 Next.js 산출물이다.
 API는 `ktdm-backend`로 운영하며, 이 소비자 변경에는 backend 코드 변경이 없다.
 Manager UI 전용 Dockerfile·이미지 태그는 현재 저장소에 없다. 임의로 Docker 배포 경로를 만들지 않는다.
-부모가 실제 운영 컨텍스트를 확인한 뒤 기존 배포 디렉터리의 UI만 재빌드·재시작한다.
+2026-11-12 실제 frontend 유닛이 loaded/active이며 trusted-release 링크가 존재함을 읽기 전용으로 확인했다.
+실행 계정·경로·환경 파일의 실제 값은 저장소 밖 권한0600 로컬 기록에만 보존했다.
+부모가 머지 SHA와 당시 운영 컨텍스트를 다시 확인한 뒤 기존 UI만 재빌드·재시작한다.
 DB·RustFS·다른 target의 시작/정지/재구축·마이그레이션은 실행하지 않는다.
 
 ## 승인 후 실행 순서
@@ -38,6 +40,6 @@ DB·RustFS·다른 target의 시작/정지/재구축·마이그레이션은 실�
 
 ## 현재 검증과 운영 수용의 구분
 
-WSL Playwright는 mock API를 사용해 공통 UI·키보드·반응형·승인 전 실행 차단을 확인한다.
+최종 n150의 격리 Playwright는 mock API를 사용해 공통 UI·키보드·반응형·승인 전 실행 차단을 확인한다.
 이 결과를 n150 공개 도메인·실제 세션·실제 Docker 운영 수용으로 보고하지 않는다.
 운영 수용은 부모의 go와 실제 배포 후 위 절차에서 따로 기록한다.

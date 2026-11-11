@@ -8,6 +8,11 @@ test('공통 로그인·표·확인·모달·설정 행과 로그아웃', async 
     status: 'running', state: 'running', ports: ['12990:9000'],
     config: { ports: ['12990:9000', '12991:9001'], volumes: [], networks: ['default'], env: {} } };
   const errors: string[] = []; page.on('pageerror', (error) => errors.push(error.message));
+  // 격리 서버의 정적 파일만 실제로 읽고, 운영 UI/API 등 다른 주소는 접속하지 않는다.
+  await page.route('**/*', async (route) => {
+    if (new URL(route.request().url()).origin === String(testInfo.project.use.baseURL)) await route.continue();
+    else await route.abort();
+  });
   await page.routeWebSocket('**/api/v1/ws/**', () => {});
   await page.route('http://localhost:12901/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -30,7 +35,7 @@ test('공통 로그인·표·확인·모달·설정 행과 로그아웃', async 
     else if (path.endsWith('/disk-usage')) body = { state: 'unknown', summary: { text: '미확인', detail: '검증용 상태', next_action: '' } };
     else if (path === '/health') body = { status: 'healthy' };
     await route.fulfill({ status: 200, json: body, headers: {
-      'Access-Control-Allow-Origin': 'http://127.0.0.1:12905', 'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Origin': String(testInfo.project.use.baseURL), 'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
     } });
   });
