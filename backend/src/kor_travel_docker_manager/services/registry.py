@@ -1130,15 +1130,19 @@ _ALLOWED_CONTAINER_FIELDS: Final = frozenset(
 
 
 
-def component_ui_candidate_for_target(target: str, config: Mapping[str, Any]) -> tuple[str, str]:
-    """정본 target의 UI 역할을 단일 Compose 서비스와 canonical source URL로 해석한다."""
+def _component_ui_choice(target: str, config: Mapping[str, Any],
+                         component: str | None = None) -> dict[str, str | None]:
+    """기본 UI는 target 역할에서, 추가 UI는 기존 release 소유 runtime에서 유도한다."""
     spec = config.get("targets", {}).get(target, {})
     choice = spec.get("ui_candidate")
     where = f"targets.{target}.ui_candidate"
-    if not isinstance(choice, Mapping) or set(choice) != {"role", "source_url"}:
+    required = {"role", "source_url"}
+    if (not isinstance(choice, Mapping) or not required <= set(choice)
+            or set(choice) - required - {"components"}):
         raise TargetsConfigError(f"{where}: role/source_url 선언이 필요합니다")
     role, source_url = choice["role"], choice["source_url"]
-    if not isinstance(role, str) or not re.search(r"(?:^|-)(?:ui|web|frontend)$", role):
+    ui_name = r"(?:^|-)(?:ui|web|frontend)$"
+    if not isinstance(role, str) or not re.search(ui_name, role):
         raise TargetsConfigError(f"{where}: UI 역할만 선택할 수 있습니다")
     if not isinstance(source_url, str):
         raise TargetsConfigError(f"{where}: canonical source URL이 필요합니다")
@@ -1156,7 +1160,58 @@ def component_ui_candidate_for_target(target: str, config: Mapping[str, Any]) ->
     matches = [item.get("compose_service") for item in matches if item.get("role") == role]
     if len(matches) != 1 or not isinstance(matches[0], str) or not matches[0]:
         raise TargetsConfigError(f"{where}: 소유 target의 단일 UI Compose 서비스가 필요합니다")
-    return matches[0], source_url
+    selections = {"": {"runtime": matches[0], "source_url": source_url, "release_env": None}}
+    if "components" in choice:
+        extras = choice["components"]
+        groups = config.get("service_releases", {}).get(target, {}).get("groups", {})
+        if not isinstance(extras, Mapping) or not extras or not isinstance(groups, Mapping):
+            raise TargetsConfigError(f"{where}: 추가 UI component 선언이 올바르지 않습니다")
+        if any(not isinstance(group, Mapping)
+               or not isinstance(group.get("runtime_services"), list)
+               or not isinstance(group.get("oneshot_services"), list) for group in groups.values()):
+            raise TargetsConfigError(f"{where}: release runtime/one-shot 선언이 올바르지 않습니다")
+        selected = {matches[0]}
+        for name, extra in extras.items():
+            if (not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9-]*", name)
+                    or not isinstance(extra, Mapping) or "runtime" not in extra
+                    or set(extra) - {"runtime", "release_env"}):
+                raise TargetsConfigError(f"{where}: 추가 UI component 이름/필드가 올바르지 않습니다")
+            runtime = extra["runtime"]
+            if (not isinstance(runtime, str) or not re.search(ui_name, runtime)
+                    or runtime in selected):
+                raise TargetsConfigError(f"{where}: 중복 없는 UI runtime만 선택할 수 있습니다")
+            owners = [group for group in groups.values()
+                      if isinstance(group, Mapping)
+                      and isinstance(group.get("runtime_services"), list)
+                      and runtime in group["runtime_services"]]
+            if (len(owners) != 1 or any(runtime in group.get("oneshot_services", [])
+                                      for group in groups.values() if isinstance(group, Mapping))):
+                raise TargetsConfigError(f"{where}: 추가 UI는 이 release의 단일 runtime이어야 합니다")
+            release_env = extra.get("release_env")
+            if release_env is not None and (
+                    not isinstance(release_env, str)
+                    or not re.fullmatch(r"(?:[A-Z][A-Z0-9_]*_)?RELEASE_SHA", release_env)):
+                raise TargetsConfigError(f"{where}: release_env는 source revision 표식만 허용합니다")
+            selections[name] = {"runtime": runtime, "source_url": source_url,
+                                "release_env": release_env}
+            selected.add(runtime)
+    if component is not None and (not isinstance(component, str) or component not in selections
+                                  or not component):
+        raise TargetsConfigError(f"{where}: 등록되지 않은 UI component입니다")
+    return selections["" if component is None else component]
+
+
+def component_ui_candidate_for_target(target: str, config: Mapping[str, Any], *,
+                                      component: str | None = None) -> tuple[str, str]:
+    """등록 UI와 canonical source를 반환한다. CLI가 임의 runtime을 지정하지 못한다."""
+    selected = _component_ui_choice(target, config, component)
+    return selected["runtime"], selected["source_url"]
+
+
+def component_ui_release_environment_for_target(target: str, config: Mapping[str, Any], *,
+                                                component: str | None = None) -> str | None:
+    """명시한 source revision 환경 키만 반환하며 실제 환경값은 저장하지 않는다."""
+    return _component_ui_choice(target, config, component)["release_env"]
 
 
 def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:

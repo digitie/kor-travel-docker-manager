@@ -190,7 +190,7 @@ def _run(args: argparse.Namespace) -> int:
             payload = apply_component_ui_candidate(
                 args.service, root=root, config=config, image_id=args.image_id,
                 source_sha=args.source_sha, source_clone=Path(args.source_clone),
-                wait_timeout=args.wait_timeout, execute=args.confirm,
+                wait_timeout=args.wait_timeout, execute=args.confirm, component=args.component,
             )
         elif args.release_action == 'compose-args':
             payload = compose_arguments(args.service, args.group, root=root, config=config)
@@ -266,6 +266,7 @@ def add_service_release_parser(subparsers: Any) -> None:
             approval.add_argument('--dry-run', action='store_true')
             child.add_argument('--wait-timeout', type=_wait_seconds, default=120, metavar='SECONDS')
         if action == 'apply-component-ui':
+            child.add_argument('--component', help='target에 등록된 추가 UI 선택 이름')
             child.add_argument('--image-id', required=True)
             child.add_argument('--source-sha', required=True)
             child.add_argument('--source-clone', required=True)

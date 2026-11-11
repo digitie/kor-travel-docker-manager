@@ -1,3 +1,11 @@
+## 2026-11-12 — Transport 두 UI의 공식 단독 승격
+
+- 기본 public 선택과 등록된 --component admin을 기존 component SDK에 연결했다. 추가 UI는 기존 release 소유 runtime에서 유도하며 target lifecycle·core/admin 그룹·기존 current layout은 보존한다.
+- 후보 source를 운영 checkout에 동기화하지 않는다. frontend 또는 admin-web 하나만 기존 G·frozen stdin·nonselected·health·current 발행 본문으로 교체하고 backend499·DB0042·code-server·migrate·gateway는 유지한다.
+- 관리자 release_env는 승인 source·OCI revision/source·이미지 기본 Env가 같을 때만 재결박한다. TRANSPORT_ADMIN_RELEASE_SHA의 실제 소비가 인증된 버전 조회뿐임을 확인했으며, public runtime에는 revision 환경 키가 없다. 인증·세션·지도 키와 다른 설정은 보존한다.
+- 관련 기존 회귀455개와 신규 public8·admin40개, 합계503개 및 CI 버전 Ruff0.16.4 전체 검사가 통과했다. 기존 public478 checkpoint의 metadata-only 증거와 구분한다. 추가 전 parser가 관리자 선택을 거절하고 옛 표시값을 유지하던 대조와 추가 후 올바른 후보 표시값·인증 값 보존의 원문도 따로 보존했다.
+- 한 로컬 실행의 /tmp 용량 부족은 성공으로 세지 않고 보존했다. 종료된 본인 fixture만 정리한 뒤 같은 최종 소스를 재검증했다. 실제 ARM 빌드·정확 CI·원 A/B 두 리뷰·병합·trusted 설치·운영 수용은 별도다.
+
 ## 2026-11-12 — 비선택 Mounts 열거 순서 오탐 수정
 
 - 공식 Weather dry-run이 비선택 불변 검사로 거부됐다. 보존된 외부 즉시 전후 inspect55개 중 비선택54개의5개는 Mounts 항목 순서만 달랐다. 이 자료는 SDK 내부 snapshot이라고 주장하지 않으며 원시값을 제품·fixture·커밋에 넣지 않았다.

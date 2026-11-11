@@ -1,3 +1,16 @@
+## Transport 두 UI의 기존 current 보존
+
+public UI는 service-release apply-component-ui transport, 관리자는 같은 명령의
+--component admin으로 선택한다. 기본 transport-frontend 역할과 추가 components.admin은
+기존 core/admin current에서 각각 UI 한 개만 가리킨다. target lifecycle·그룹 layout을
+늘리지 않고 backend·code-server·migrate·gateway를 실행하거나 운영 checkout을 후보로
+동기화하지 않는다. --dry-run 또는 --confirm, merged source와 immutable image ID가 필요하다.
+
+source 표시용으로 등록한 TRANSPORT_ADMIN_RELEASE_SHA만 승인 source·OCI·후보 이미지 기본
+Env가 모두 일치할 때 새 SHA로 바꾼다. 인증·세션·지도·DB 키와 그 외 환경은 보존한다.
+공식 G·현재 이미지·비선택 보존·health 뒤 current 발행은
+[현재 release 규약](service-current-release.md#기존-혼합-그룹의-등록-ui만-교체)을 따른다.
+
 # Docker 관리 설계
 
 이 문서는 `kor-travel-docker-manager`가 Portainer와 유사한 Docker 관리 경험을 제공하되, Kor Travel/PinVi 개발 및 로컬 운영에 필요한 범위로 제한하는 기준을 정리한다.
