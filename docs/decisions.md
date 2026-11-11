@@ -1799,3 +1799,21 @@ map_revision을 바꾸지 않으며 최신 UI의 authority는 component current�
 - (open) 공용 Dagster gateway의 재생성 창(plane drift 경로 밖).
 - (open) rustfs·prometheus·grafana·cadvisor·Concierge(activate-concierge 전)의 재생성 창.
 - (open) odroid `/opt/kor-travel-odroid/compose.yml`·`compose-mon.yml`(T-OPS-01b 이관과 함께)과 transport 저장소 compose에 같은 정의.
+
+
+### ADR-60 후속 — 기존 component 그룹의 UI 선택
+
+Geo/Weather의 UI 단독 후보는 targets의 등록된 UI 역할을 기존 main current 안에서 선택한다.
+새 group을 중복 등록하거나 paired pin을 다른 앱에 확장하지 않는다. Map의 기존 paired 후보
+조건은 보존하고 Docker 단일 UI 실행·관측·current 발행 코드를 공유한다. 별도 봉인·digest·phase
+gate는 만들지 않는다. 적용 절차와 실패 후 실제 상태 구분은 [현재 release](service-current-release.md)의
+기존 혼합 그룹 UI 절을 따른다. 이 문서는 구현 결정이며 운영 수용 완료를 주장하지 않는다.
+
+
+component UI의 승인 환경은 G 안에서 읽은 현재 effective 값이다. 저장된 Compose 선언이 옛
+설정일 때 이를 새 UI에 되돌리지 않는다. 현재 값을 우선하고 후보 이미지의 추가 기본값만 합친
+한 번의 stdin을 사용하며 선택 env_file을 다시 읽지 않는다. 실행 전후와 발행 직전에도 같은
+환경/이미지 관계를 대조하고 비밀은 render 전부터 가린다. 영구 env 해시나 새 상태 schema는
+추가하지 않고 기존 terminal 진단을 사용한다. 기존 Map paired 경로의 환경 의미는 유지한다.
+
+raw Docker 환경값은 component bind 경계에서 Compose literal 표현으로 한 번 변환한다. 승인·사후 비교는 raw 값을 유지하고 이미 정규화된 Compose용 Map 공통 escaper는 변경하지 않는다.

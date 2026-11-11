@@ -50,7 +50,7 @@ from kor_travel_docker_manager.services.secure_state_file import (
 from kor_travel_docker_manager.services.service_release import ServiceReleaseError
 
 
-def _merged_source(source: Path, sha: str, service: str) -> None:
+def _merged_source(source: Path, sha: str, service: str, *, canonical_url: str | None = None) -> None:
     source = Path(source)
     try:
         release._trusted_ancestors(source)
@@ -79,7 +79,8 @@ def _merged_source(source: Path, sha: str, service: str) -> None:
         if result.returncode:
             raise ServiceReleaseError("승인 SHA가 canonical main에 병합된 소스가 아닙니다")
         return result.stdout.strip()
-    if git("remote", "get-url", "origin") != CANONICAL_RUNTIME_SOURCE_URLS.get(service):
+    expected_url = CANONICAL_RUNTIME_SOURCE_URLS.get(service) if canonical_url is None else canonical_url
+    if git("remote", "get-url", "origin") != expected_url:
         raise ServiceReleaseError("승인 소스 저장소가 canonical URL과 다릅니다")
     if git("rev-parse", "--verify", sha + "^{commit}") != sha:
         raise ServiceReleaseError("승인 소스 SHA가 commit과 다릅니다")
@@ -281,6 +282,28 @@ def apply_ui_candidate(service: str, *, group: str, image_id: str, source_sha: s
 
 def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, source_sha: str,
            root: Path, wait: int, execute: bool, client: Any, baseline: tuple[Any, ...]) -> dict[str, Any]:
+    # 기존 Map 경로의 paired 기준선·companion 검사는 변경하지 않는다.
+    service, group = plan["service"], plan["group"]
+    runtime = plan["runtime_services"][0]
+    return _apply_current(
+        plan, manifests, image_id, source_sha, root, wait, execute, client,
+        canonical_url=CANONICAL_RUNTIME_SOURCE_URLS.get(service),
+        extra_conditions=[("baseline_unchanged", lambda: _unchanged_baseline(
+            baseline, manifests[service]["groups"][group]))],
+        inventory_check=lambda records: _receipt_images(
+            baseline[3], records, plan["project"], runtime, manifests[service]),
+        bind_images=lambda materialized: _paired_companions(baseline[3], materialized, client),
+    )
+
+
+def _apply_current(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, source_sha: str,
+                   root: Path, wait: int, execute: bool, client: Any, *,
+                   canonical_url: str | None,
+                   extra_conditions: list[tuple[str, Callable[[], None]]],
+                   inventory_check: Callable[[list[dict[str, Any]]], None] | None = None,
+                   bind_images: Callable[[dict[str, Any]], None] | None = None,
+                   extra_secrets: list[tuple[str, str | None]] | None = None) -> dict[str, Any]:
+    """기존 current를 기준으로 단일 UI만 적용한다. 승인·선택은 각 공개 진입점이 제한한다."""
     service, group = plan["service"], plan["group"]
     runtime = plan["runtime_services"][0]
     project, working_dir = plan["project"], manifests[service]["groups"][group]["working_dir"]
@@ -289,7 +312,7 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
         raise ServiceReleaseError("UI 후보 OCI revision과 승인 source SHA가 다릅니다")
     labels = (client.images.get(image_id).attrs.get("Config") or {}).get("Labels") or {}
     source_url = labels.get("org.opencontainers.image.source")
-    if source_url != CANONICAL_RUNTIME_SOURCE_URLS.get(service):
+    if source_url != canonical_url:
         raise ServiceReleaseError("UI 후보 OCI source가 canonical 저장소와 다릅니다")
     if any(result.get("result") != "healthy" for result in frozen._verify(manifests, client).values()):
         raise ServiceReleaseError("현재 component release가 healthy여야 합니다")
@@ -301,9 +324,10 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
     initial_ui = ui_identity(records)
     if len(initial_ui) != 1:
         raise ServiceReleaseError("현재 UI 컨테이너는 정확히 하나여야 합니다")
-    _receipt_images(baseline[3], records, project, runtime, manifests[service])
+    if inventory_check is not None:
+        inventory_check(records)
     try:
-        secrets = frozen._secrets(manifests)
+        secrets = [*frozen._secrets(manifests), *(extra_secrets or [])]
     except (OSError, UnicodeError) as exc:
         raise ServiceReleaseError("UI 환경의 비밀 가림 입력을 읽을 수 없습니다") from exc
     result: dict[str, Any] = {"success": False, "result": "failed", "service": service,
@@ -323,7 +347,8 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
                 if client.images.get(reference).attrs["Id"] != image["id"]:
                     raise ServiceReleaseError("resolved 이미지와 현재 component release가 다릅니다")
                 materialized["services"][name]["image"] = image["id"]
-        _paired_companions(baseline[3], materialized, client)
+        if bind_images is not None:
+            bind_images(materialized)
         materialized["services"][runtime]["image"] = image_id
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
         if isinstance(exc, ServiceReleaseError):
@@ -332,7 +357,7 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
     candidate = deepcopy(manifests[service])
     candidate["images"][runtime] = metadata
     conditions = [
-        ("baseline_unchanged", lambda: _unchanged_baseline(baseline, manifests[service]["groups"][group])),
+        *extra_conditions,
         ("current_unchanged", lambda: _unchanged_pointers(manifests, root)),
         ("nonselected_unchanged", lambda: _unchanged_others(client, others, project, runtime)),
     ]
@@ -380,8 +405,7 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
     if completed.returncode or interrupted:
         result.update(stderr=frozen._detail(completed.stderr, secrets), interrupted_signals=interrupted)
         return result
-    checks = [result.get(key) is True for key in
-              ["baseline_unchanged", "current_unchanged", "nonselected_unchanged"]]
+    checks = [result.get(key) is True for key, _ in conditions]
     observed = result.get("post_verification", {})
     healthy_observation = bool(observed) and all(
         isinstance(value, dict) and value.get("result") == "healthy" for value in observed.values())

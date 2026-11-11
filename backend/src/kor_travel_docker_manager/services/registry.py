@@ -9,6 +9,7 @@ from ipaddress import IPv4Address
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Final
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -1107,6 +1108,7 @@ _ALLOWED_TARGET_FIELDS: Final = frozenset(
         "port_band",
         "runtime_services",
         "services",
+        "ui_candidate",
     }
 )
 
@@ -1125,6 +1127,36 @@ _ALLOWED_CONTAINER_FIELDS: Final = frozenset(
         "metrics_port",
     }
 )
+
+
+
+def component_ui_candidate_for_target(target: str, config: Mapping[str, Any]) -> tuple[str, str]:
+    """정본 target의 UI 역할을 단일 Compose 서비스와 canonical source URL로 해석한다."""
+    spec = config.get("targets", {}).get(target, {})
+    choice = spec.get("ui_candidate")
+    where = f"targets.{target}.ui_candidate"
+    if not isinstance(choice, Mapping) or set(choice) != {"role", "source_url"}:
+        raise TargetsConfigError(f"{where}: role/source_url 선언이 필요합니다")
+    role, source_url = choice["role"], choice["source_url"]
+    if not isinstance(role, str) or not re.search(r"(?:^|-)(?:ui|web|frontend)$", role):
+        raise TargetsConfigError(f"{where}: UI 역할만 선택할 수 있습니다")
+    if not isinstance(source_url, str):
+        raise TargetsConfigError(f"{where}: canonical source URL이 필요합니다")
+    try:
+        parsed = urlsplit(source_url)
+    except ValueError as exc:
+        raise TargetsConfigError(f"{where}: canonical source URL이 올바르지 않습니다") from exc
+    if (parsed.scheme != "https" or parsed.netloc != "github.com" or parsed.query or parsed.fragment
+            or not re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+[.]git", parsed.path)):
+        raise TargetsConfigError(f"{where}: canonical source URL이 올바르지 않습니다")
+    registered = spec.get("containers", [])
+    if not isinstance(registered, list):
+        raise TargetsConfigError(f"{where}: target 컨테이너 등록이 올바르지 않습니다")
+    matches = [config.get("containers", {}).get(name, {}) for name in registered]
+    matches = [item.get("compose_service") for item in matches if item.get("role") == role]
+    if len(matches) != 1 or not isinstance(matches[0], str) or not matches[0]:
+        raise TargetsConfigError(f"{where}: 소유 target의 단일 UI Compose 서비스가 필요합니다")
+    return matches[0], source_url
 
 
 def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
@@ -1203,6 +1235,8 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
             raise TargetsConfigError(
                 f"{label} targets.{target_id}: unknown fields {unknown}"
             )
+        if "ui_candidate" in spec:
+            component_ui_candidate_for_target(target_id, config)
         excluded = spec.get("excluded_from_all")
         if excluded is not None and not isinstance(excluded, bool):
             # `"no"`처럼 **의미가 정반대인** YAML 값이 진리값으로는 참이다. 이 탈출구의

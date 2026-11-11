@@ -492,6 +492,9 @@ targets:
     init_steps: []
 
   geo:
+    ui_candidate:
+      role: geocoder-ui
+      source_url: https://github.com/digitie/kor-travel-geo.git
     # 2026-10-15 소유자 결정 — n150 공용 workspace에서 geo를 뺀다. geo Dagster는 2026-10-15부터 odroid의 plane에서 돈다
     # (n150 geo code-server `12503`은 02:42Z 멈춤, odroid `127.0.0.1:12503`이 odroid 자체 workspace에 02:52Z 합류 — Manager
     # 밖, 호스트 측 구성; Manager의 `workspace.odroid.yaml`은 T-MGR-02). 소비자(Map·PinVi)는 이미 odroid geo `http://192.168.1.13:12501`을
@@ -853,6 +856,9 @@ targets:
         port: 12306
 
   weather:
+    ui_candidate:
+      role: weather-web
+      source_url: https://github.com/digitie/kor-travel-weather.git
     # 2026-10-14 odroid로 옮겼다(소유자 지시 — n150의 weather 컨테이너는 멈춤, 수집은 odroid Dagster). 잠정: 이 값이
     # 지금 바꾸는 것은 n150 공용 workspace에서 이 location이 빠지는 것뿐이다(`hosts:` 주석). 소비자(PinVi)는 odroid의
     # weather API `http://192.168.1.13:12201`을 부른다(`docker-compose.yml`의 R2 기본값).

@@ -1,6 +1,6 @@
 # 서비스 현재 릴리스 표식
 
-이 문서는 이슈 #568·ADR-60의 정본이다. CLI는 **관측한 이미지의 초기 등록(adopt), 조회, drift 검증, Compose 인자 생성**에 더해 현재 구성을 확인하는 resolve와 정상인 현재 이미지로 선택 그룹 runtime을 재생성하는 recreate를 제공한다. recreate는 명시 --confirm 뒤에만 Docker up을 실행한다. resolve/recreate의 새 후보 배포·migration·DB rollback은 범위 밖이며 기존 배포 도구를 자동으로 가로채지 않는다. UI 새 후보는 아래 별도 apply-candidate 경로로만 다룬다. resolve/recreate의 제품 회귀·독립 두 리뷰·전체 CI와 로컬 Docker 검증은 통과했으며 운영 적용은 대기 중이다.
+이 문서는 이슈 #568·ADR-60의 정본이다. CLI는 **관측한 이미지의 초기 등록(adopt), 조회, drift 검증, Compose 인자 생성**에 더해 현재 구성을 확인하는 resolve와 정상인 현재 이미지로 선택 그룹 runtime을 재생성하는 recreate를 제공한다. recreate는 명시 --confirm 뒤에만 Docker up을 실행한다. resolve/recreate의 새 후보 배포·migration·DB rollback은 범위 밖이며 기존 배포 도구를 자동으로 가로채지 않는다. UI 새 후보는 아래 별도 apply-candidate 또는 등록된 component UI의 apply-component-ui 경로로 다룬다. resolve/recreate의 제품 회귀·독립 두 리뷰·전체 CI와 로컬 Docker 검증은 통과했으며 운영 적용은 대기 중이다.
 
 ## 유지해야 할 조건
 
@@ -194,3 +194,55 @@ paired 기준선/pin·current를 재검증한다. health와 비선택 불변 검
 현재 active Manager에서는 공식 `--cli-only` 설치 조건을 충족하지 않으므로 기존 trusted normal
 업그레이드가 선행한다. 임의 venv/PYTHONPATH나 설치 venv 덮어쓰기로 우회하지 않는다. Manager 설치가
 필요해도 Map API·DB·Dagster 수명주기는 호출하지 않는다.
+
+
+## 기존 혼합 그룹의 등록 UI만 교체
+
+Geo·Weather의 기존 main current에는 API·UI·코드 서버가 함께 있다. 이 배포를 위해 새 ui 그룹을
+겹쳐 등록하거나 기존 manifest layout을 바꾸지 않는다. targets.<target>.ui_candidate는 기존
+target에 등록된 UI 역할과 canonical 저장소 URL만 선언한다. 실제 Compose 서비스는 같은 target의
+컨테이너 등록에서, group은 기존 service_releases에서 유도한다. 잘못된 역할·중복·다른 target의
+컨테이너·유효하지 않은 URL은 거부한다. 회귀 정본은
+test_catalog_derives_ui_from_existing_registered_target_without_new_group이다.
+
+~~~bash
+sudo -n ktdctl service-release apply-component-ui geo \
+  --source-clone "$GEO_APPROVED_SOURCE_CLONE" --source-sha "$GEO_MERGED_SHA" \
+  --image-id "$GEO_APPROVED_IMAGE_ID" --dry-run --json
+sudo -n ktdctl service-release apply-component-ui geo \
+  --source-clone "$GEO_APPROVED_SOURCE_CLONE" --source-sha "$GEO_MERGED_SHA" \
+  --image-id "$GEO_APPROVED_IMAGE_ID" --confirm --json
+~~~
+
+Weather는 같은 명령의 target을 weather로 선택한다. source와 image는 운영자가 검증한
+merged40자리 SHA 및 현재 Docker engine에 존재하는 immutable sha256 ID다. source clone은
+root 소유 canonical origin/main의 승인 commit을 포함해야 하고 image OCI revision/source도
+승인 tuple과 같아야 한다. label 검사가 빌드 내용 전체의 증명을 대신하는 것은 아니다.
+새 target metadata는 대응 SDK와 함께 설치하며 이전 SDK에 설정만 먼저 적용하지 않는다.
+
+기존 G를 획득한 뒤 source를 재확인하고, 정상인 기존 component current와 공유 project의
+모든 overlay를 읽어 Compose JSON을 한 번 고정한다. 적용은 선택 UI 하나와
+--no-deps --no-build --pull never만 사용한다. Weather migrate 정의·이미지는 기존 overlay에
+남지만 실행하지 않는다. 다른 runtime·DB·공용 Dagster를 실행 대상으로 넣지 않는다.
+전체 비선택 컨테이너의 ID/image/start/restart/config/mount/network 보존과 모든 current·health를
+검증한 뒤 기존 manifest의 UI 이미지 metadata만 바꿔 current를 발행한다.
+
+선택 UI의 현재 effective 환경은 G 안에서 읽고 기존 값을 보존한다. 후보 이미지에만 새로
+추가된 기본 환경은 합치되 같은 키는 현재 값이 우선한다. 저장된 Compose의 옛 키를 현재 UI에
+다시 주입하지 않는다. 해석한 환경을 stdin에 고정하고 선택 UI의 env_file을 다시 읽지 않는다.
+실행 전·사후·current 발행 직전에 승인한 환경/이미지 관계를 재검사한다. 읽을 수 없는 환경,
+중복/불완전 항목·관찰 중 변경은 거부하고 actual 값은 오류·새 manifest에 저장하지 않는다.
+Docker inspect의 raw 달러는 component에서 Compose 표현으로 한 번 인코딩하고 승인·비교는 raw 값을 사용한다.
+render 실패부터 현재 값과 이미지 기본값의 비밀을 가린다. 이 보존은 component 경로에 한하며
+기존 Map paired 경로의 환경 의미를 바꾸지 않는다.
+
+Map/Pinvi의 paired 기준선을 Geo/Weather의 기준선으로 사용하지 않는다. 반대로 이 경로에
+Map/Pinvi를 넣어 기존 paired 검사를 우회할 수도 없다. Map의 기존 apply-candidate는 기존
+receipt/companion 검사를 그대로 유지하고 동일한 단일 UI 실행·관측·발행 본문을 재사용한다.
+추가 pinset·journal phase·digest·봉인 파일이나 영구 env 해시 gate를 만들지 않는다.
+
+dry-run 성공은 계획 수용이고 배포 완료가 아니다. mutation 이후 실패는 실제 실행·진단과
+current 발행 상태를 구분하며 자동 rollback하지 않는다. current가 옛 상태라고 실제 UI가
+바뀌지 않았다고 추정하지 않는다. 실제 이미지·health를 확인하고 기존 명시 복구 절차를 따른다.
+새 경로의 local fake Docker/실제 G 자식 회귀와 CLI·registry 검사는 통과했으며 운영 적용은
+정확 CI·두 독립 리뷰·PR 병합·설치 후 별도로 수용한다.
