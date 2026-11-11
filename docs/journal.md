@@ -1,3 +1,7 @@
+# 2026-11-12 — 공통 후보8 단일 산출물 채택
+
+integration-8-review의 UI0.2.0/tokens0.1.1·Lightning CSS1.33.0+nativecss.fix.4를 같은 정본 파일로 설치했다. 지도 사용 앱은 기존 core1.0.1/web1.0.3의 같은 bytes를 유지한다. 설치된 모든 pack 파일의 원문 일치, 로컬·최신 외부 정책 검사, 단위·lint·타입·Doctor0을 확인했다. 중앙 CI 실행 코드는 common670a753으로 고정했다. 최종 브라우저·원격 CI·독립2리뷰·PR머지·운영 배포는 별도 gate다.
+
 ## 2026-11-11 — Doctor 전체 경고 차단과 운영 패널 분리
 
 - 사용자 추가 기준에 따라 Doctor를 `--scope full --blocking warning`으로 바꾸고 source guard도 `--source src`를 명시했다. 앞 기록의16경고를 후속 부채로 두지 않고 해결했다. suppression·baseline이나 스캔 범위 축소는 사용하지 않았다.
