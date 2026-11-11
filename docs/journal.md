@@ -1,3 +1,12 @@
+## 2026-11-12 — 비선택 Mounts 열거 순서 오탐 수정
+
+- 공식 Weather dry-run이 비선택 불변 검사로 거부됐다. 보존된 외부 즉시 전후 inspect55개 중 비선택54개의5개는 Mounts 항목 순서만 달랐다. 이 자료는 SDK 내부 snapshot이라고 주장하지 않으며 원시값을 제품·fixture·커밋에 넣지 않았다.
+- `_nonselected`에서 Mounts 목록의 전체 항목만 정렬한다. JSON 객체 키 순서에 영향받지 않고 전체 중첩 필드·중복·키 부재/null/빈 목록을 보존한다. Config.Env·HostConfig.Binds·mount 내부 배열과 나머지 보호 필드는 그대로 비교한다. 새 pinset·schema·env hash·guard 예외는 없다.
+- 별도 SDK 회귀85개를 수정 전18 FAIL/67 PASS에서 수정 후85 PASS로 확인했다. 순서만 바뀐 Map/Geo/Weather의 dry-run·render·적용 후·발행 경계12건과 부재/null 구분6건을 복구했다. 실제 mount 필드/추가 필드/중복 및 다른 ordered 배열 변경은 계속 거부된다. 첫 순서 fixture가 회문이라 차이가 없던 실행과 잘못 지정한 수집 경로의 로그도 별도 보존했다.
+- 기존 paired5모듈169개 bytes를 바꾸지 않았고, 기존432+신규85=517 focused PASS·전체 backend Ruff PASS다. 기존 QA venv를 읽기 전용 재사용했으며 새 설치·WSL 전체 backend 실행은 하지 않았다. CodeGraph270파일/영향4개 symbol을 확인했다.
+- 동일 실제 자료에 두 원본 함수를 오프라인 AST로 실행해 이전 projection 차이5→새 projection 차이0과 실제 필드·중복 추가8개 반례 거부를 확인했다. 원시 파일 digest/bytes는 그대로이며 라이브 모듈·guard·Docker runtime은 수정하지 않았다.
+- 정확 CI·원 A/B 두 독립 검토·새 PR 병합·trusted SDK 설치와 공식 dry-run/실제 UI 수용은 후속이다. 기존 설치 receipt와 실패 로그는 덮어쓰지 않는다.
+
 ## 2026-11-12 — raw UI 환경의 Compose 달러 표현 경계
 
 - 독립 재검토에서 raw Docker 환경의 연속 달러가 이미 정규화된 Compose 환경용 공통 escaper를 지나며 줄어드는 반례를 확인했다. 715 CI 성공과 별개인 소스 결함으로 보존하고 운영 적용·설치는 하지 않았다.

@@ -227,6 +227,13 @@ root 소유 canonical origin/main의 승인 commit을 포함해야 하고 image 
 전체 비선택 컨테이너의 ID/image/start/restart/config/mount/network 보존과 모든 current·health를
 검증한 뒤 기존 manifest의 UI 이미지 metadata만 바꿔 current를 발행한다.
 
+비선택 비교에서 Docker inspect의 Mounts가 목록이면 전체 항목을 JSON 키 정렬 직렬화 기준으로
+정렬해 열거 순서 차이만 제거한다. mount 항목의 모든 중첩 필드와 중복 수는 보존하며,
+키 부재·null·빈 목록도 서로 구분한다. mount 내부 배열, Config.Env, HostConfig.Binds 등
+다른 배열은 정렬하거나 무시하지 않는다. Source/Destination/RW/Mode/Propagation/Type,
+추가 필드·중복 수가 바뀌면 실행 전·사후·발행 직전의 기존 비선택 guard가 계속 거부한다.
+회귀는 test_service_release_candidate_mounts.py에서 Map paired와 Geo/Weather SDK 경로로 검증한다.
+
 선택 UI의 현재 effective 환경은 G 안에서 읽고 기존 값을 보존한다. 후보 이미지에만 새로
 추가된 기본 환경은 합치되 같은 키는 현재 값이 우선한다. 저장된 Compose의 옛 키를 현재 UI에
 다시 주입하지 않는다. 해석한 환경을 stdin에 고정하고 선택 UI의 env_file을 다시 읽지 않는다.

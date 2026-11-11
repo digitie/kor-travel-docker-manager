@@ -4,6 +4,9 @@
 
 ---
 
+UI 후보의 비선택 보호 비교는 [현재 release 규약](service-current-release.md)의 Mounts 열거 순서
+처리를 따른다. Mounts 내부 값·중복과 다른 ordered 배열의 변경 거부는 유지한다.
+
 ## 1. 목표
 
 `kor-travel-docker-manager`는 불특정 다수에게 노출되는 범용 Docker 콘솔이 아니다. 목적은 `pinvi`, `kor-travel-concierge`, `kor-travel-map`, `kor-travel-geo`가 의존하는 공용 Docker 인프라와 앱 컨테이너를 한 곳에서 확인하고 실행하는 것이다.

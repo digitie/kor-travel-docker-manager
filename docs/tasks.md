@@ -1,3 +1,10 @@
+## 2026-11-12 — 비선택 Mounts 열거 순서
+
+- [x] af413 원본의 SDK 순서 오탐 및 부재/null 반례18건을 재현하고 별도85개 회귀·기존432개·전체 Ruff·CodeGraph를 확인했다.
+- [x] Mounts 최상위 목록만 정렬하고 모든 필드·중복·다른 ordered 배열 검사를 보존한다. 실제 private inspect의 외부 전후 projection 차이5→0을 오프라인 검증했다.
+- [ ] 정확 CI와 동일 불변 입력의 원 A/B 검토 뒤 새 PR을 병합한다.
+- [ ] Pinvi 작업과 호스트 순서를 조정해 정확 merged SDK를 공식 설치하고 Weather/Geo 공식 경로 수용을 재개한다.
+
 ## 2026-11-12 — 공통 UI 배포의 기존 component 선택
 
 - [x] 기존 current와 그룹 layout을 유지하는 등록 UI selector·공유 실행 본문·paired 우회 거부·focused372/Ruff를 구현했다.
