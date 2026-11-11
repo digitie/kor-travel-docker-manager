@@ -143,5 +143,5 @@
 
 ## 공통 UI 통합 (2026-11-11)
 
-- [x] 공통 Radix·VirtualTable·LoginForm·상태/폼/폰트 실사용 및 산출물 guard·ESLint10·Doctor 통합. 후보3의 Linux 타입/린트/단위53/build/브라우저2/guard 통과. Doctor 잔여16경고는 journal·채택 기록에 공개한다.
+- [x] 공통 Radix·VirtualTable·LoginForm·상태/폼/폰트 실사용 및 산출물 guard·ESLint10·Doctor 통합. 후보4의 Linux 타입/린트/단위54/build/브라우저2/guard 통과. Doctor는 전체 소스·warning 차단으로 오류0·경고0을 확인했으며 이전16경고 이력은 journal에 보존한다.
 - [ ] 부모 최종 산출물 freeze와 두 독립 적대 리뷰·원격 CI·PR 머지·부모 go 후 운영 수용. 배포 계획의 systemd 설치 형태를 따른다.

@@ -142,7 +142,7 @@ function PendingRequestCard({
   );
 }
 
-export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
+function useRuntimePinPanelModel({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const [role, setRole] = useState<'map' | 'pinvi'>('map');
@@ -199,6 +199,48 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
       ? `${pendingRepository.replace(/\.git$/, '')}/commit/${pending.revision}`
       : null;
 
+    return {
+    onClose,
+    dialogRef,
+    role,
+    setRole,
+    revision,
+    setRevision,
+    reason,
+    setReason,
+    formError,
+    data,
+    isLoading,
+    isFetching,
+    error,
+    refetch,
+    createRequest,
+    cancelRequest,
+    summary,
+    lifecycle,
+    pins,
+    unknown,
+    unverified,
+    pending,
+    revisionValid,
+    reasonValid,
+    canRequest,
+    pendingCommitUrl,
+  };
+}
+
+type RuntimePinPanelModel = ReturnType<typeof useRuntimePinPanelModel>;
+
+export default function RuntimePinPanel(props: Parameters<typeof useRuntimePinPanelModel>[0]) {
+  const model = useRuntimePinPanelModel(props);
+  const {
+    onClose,
+    dialogRef,
+    isLoading,
+    isFetching,
+    error,
+    refetch,
+  } = model;
   return (
     <OpsDialog
       aria-labelledby="runtime-pin-title"
@@ -248,8 +290,21 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
             {error instanceof Error ? error.message : String(error)}
           </p>
         ) : (
-          <>
-            <section
+          <PinPanelContents model={model} />
+        )}
+      </div>
+    </OpsDialog>
+  );
+}
+
+function PinWarnings({ model }: { model: RuntimePinPanelModel }) {
+  const {
+    data,
+    summary,
+    unknown,
+    unverified,
+  } = model;
+  return (<section
               className={`rounded-card border p-4 ${
                 summary?.state === 'action_required' ? 'border-danger' : 'border-line'
               }`}
@@ -276,42 +331,18 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                       {data?.detail ? ` (${data.detail})` : ''}
                     </p>
                   ) : null}
-                  {unknown ? (
-                    <CopyableCommand command="sudo -n backend/.venv/bin/ktdctl pin init --confirm" />
-                  ) : unverified ? (
-                    <CopyableCommand command="sudo -n backend/.venv/bin/ktdctl pin verify" />
-                  ) : summary?.next_action ? (
-                    <>
-                      <p className="text-xs text-secondary mt-1">
-                        SSH에서 아래 명령으로 확인하세요. 이 기록은 재구축을 막지 않고 경고로만
-                        남깁니다.
-                      </p>
-                      <CopyableCommand command={summary.next_action} />
-                      <p className="text-xs text-secondary mt-1">
-                        이 세트에서 옮기려면(M05 게이트가 이 기록을 요구할 때 등){' '}
-                        <strong>Map과 PinVi를 한 번에</strong> 회전해야 합니다 — 한쪽만
-                        바꾸는 명령은 거부됩니다.
-                      </p>
-                      <CopyableCommand command={ROTATE_PAIR_COMMAND} />
-                    </>
-                  ) : null}
+                  <PinWarningActions model={model} />
                 </div>
               </div>
-            </section>
+            </section>);
+}
 
-            {formError ? <InlineError error={formError} /> : null}
-
-            {pending ? (
-              <PendingRequestCard
-                cancelPending={cancelRequest.isPending}
-                commitUrl={pendingCommitUrl}
-                onCancel={() => cancelRequest.mutate(pending.request_id ?? '')}
-                request={pending}
-              />
-            ) : null}
-
-            {pins ? (
-              <section>
+function CurrentPinVersions({ model }: { model: RuntimePinPanelModel }) {
+  const {
+    pins,
+  } = model;
+  if (!pins) return null;
+  return (<section>
                 <h3 className="text-sm font-semibold text-strong mb-2">현재 고정 버전</h3>
                 <VirtualTable ariaLabel="현재 고정 버전" data={pins.sources} getRowId={(source) => source.role} virtualized={false}
                   columns={[
@@ -330,12 +361,11 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                   <dt>변경 사유</dt>
                   <dd className="break-all">{pins.reason}</dd>
                 </dl>
-              </section>
-            ) : null}
+              </section>);
+}
 
-            {!canRequest && !pending ? (
-              // 폼이 그냥 사라지면 "왜 못 바꾸지"만 남는다. 무엇이 막고 있는지 말한다.
-              <section className="rounded-card border border-line p-4">
+function UnavailablePinRequest({ model }: { model: RuntimePinPanelModel }) {
+  return (<section className="rounded-card border border-line p-4">
                 <h3 className="text-sm font-semibold text-strong">버전 변경 요청</h3>
                 <p className="text-xs text-secondary mt-1">
                   지금은 변경 요청을 받을 수 없습니다. 현재 고정 값이 권위 있는 값으로
@@ -343,11 +373,22 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                   명령으로 공개 사본을 갱신한 뒤 다시 시도하세요.
                 </p>
                 <CopyableCommand command="sudo -n backend/.venv/bin/ktdctl pin verify" />
-              </section>
-            ) : null}
+              </section>);
+}
 
-            {canRequest ? (
-              <section className="rounded-card border border-line p-4">
+function PinChangeForm({ model }: { model: RuntimePinPanelModel }) {
+  const {
+    role,
+    setRole,
+    revision,
+    setRevision,
+    reason,
+    setReason,
+    createRequest,
+    revisionValid,
+    reasonValid,
+  } = model;
+  return (<section className="rounded-card border border-line p-4">
                 <h3 className="text-sm font-semibold text-strong">버전 변경 요청</h3>
                 <p className="text-xs text-secondary mt-1">
                   요청을 기록해도 아직 아무것도 바뀌지 않습니다. 적용은 운영자가 SSH에서
@@ -418,11 +459,16 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                     변경 요청 기록
                   </Button>
                 </form>
-              </section>
-            ) : null}
+              </section>);
+}
 
-            {lifecycle && lifecycle.blocked_pinsets.length > 0 ? (
-              <section>
+function PendingPinStatus({ model }: { model: RuntimePinPanelModel }) {
+  const {
+    lifecycle,
+    pins,
+  } = model;
+  if (!lifecycle) return null;
+  return (<section>
                 <h3 className="text-sm font-semibold text-strong mb-1">
                   재시도가 금지된 버전 세트
                 </h3>
@@ -442,11 +488,15 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                     </li>
                   ))}
                 </ul>
-              </section>
-            ) : null}
+              </section>);
+}
 
-            {lifecycle && lifecycle.history.length > 0 ? (
-              <section>
+function PinHistory({ model }: { model: RuntimePinPanelModel }) {
+  const {
+    lifecycle,
+  } = model;
+  if (!lifecycle) return null;
+  return (<section>
                 <h3 className="text-sm font-semibold text-strong mb-2">변경 이력</h3>
                 <ul className="space-y-1 text-xs text-secondary">
                   {[...lifecycle.history].reverse().map((entry) => (
@@ -456,11 +506,80 @@ export default function RuntimePinPanel({ onClose }: { onClose: () => void }) {
                     </li>
                   ))}
                 </ul>
-              </section>
+              </section>);
+}
+
+
+function PinPanelContents({ model }: { model: RuntimePinPanelModel }) {
+  const {
+    formError,
+    cancelRequest,
+    lifecycle,
+    pins,
+    pending,
+    canRequest,
+    pendingCommitUrl,
+  } = model;
+  return (<>
+            <PinWarnings model={model} />
+
+            {formError ? <InlineError error={formError} /> : null}
+
+            {pending ? (
+              <PendingRequestCard
+                cancelPending={cancelRequest.isPending}
+                commitUrl={pendingCommitUrl}
+                onCancel={() => cancelRequest.mutate(pending.request_id ?? '')}
+                request={pending}
+              />
             ) : null}
-          </>
-        )}
-      </div>
-    </OpsDialog>
-  );
+
+            {pins ? (
+              <CurrentPinVersions model={model} />
+            ) : null}
+
+            {!canRequest && !pending ? (
+              // 폼이 그냥 사라지면 "왜 못 바꾸지"만 남는다. 무엇이 막고 있는지 말한다.
+              <UnavailablePinRequest model={model} />
+            ) : null}
+
+            {canRequest ? (
+              <PinChangeForm model={model} />
+            ) : null}
+
+            {lifecycle && lifecycle.blocked_pinsets.length > 0 ? (
+              <PendingPinStatus model={model} />
+            ) : null}
+
+            {lifecycle && lifecycle.history.length > 0 ? (
+              <PinHistory model={model} />
+            ) : null}
+          </>);
+}
+
+function PinWarningActions({ model }: { model: RuntimePinPanelModel }) {
+  const {
+    summary,
+    unknown,
+    unverified,
+  } = model;
+  return (<> {unknown ? (
+                    <CopyableCommand command="sudo -n backend/.venv/bin/ktdctl pin init --confirm" />
+                  ) : unverified ? (
+                    <CopyableCommand command="sudo -n backend/.venv/bin/ktdctl pin verify" />
+                  ) : summary?.next_action ? (
+                    <>
+                      <p className="text-xs text-secondary mt-1">
+                        SSH에서 아래 명령으로 확인하세요. 이 기록은 재구축을 막지 않고 경고로만
+                        남깁니다.
+                      </p>
+                      <CopyableCommand command={summary.next_action} />
+                      <p className="text-xs text-secondary mt-1">
+                        이 세트에서 옮기려면(M05 게이트가 이 기록을 요구할 때 등){' '}
+                        <strong>Map과 PinVi를 한 번에</strong> 회전해야 합니다 — 한쪽만
+                        바꾸는 명령은 거부됩니다.
+                      </p>
+                      <CopyableCommand command={ROTATE_PAIR_COMMAND} />
+                    </>
+                  ) : null} </>);
 }

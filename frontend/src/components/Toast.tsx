@@ -4,32 +4,7 @@ import { Button } from '@kor-travel/ui/button';
 
 import { useEffect, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronDown, X } from 'lucide-react';
-import { HumanError } from '@/lib/errors';
-
-export type ToastItem = {
-  id: number;
-  tone: 'success' | 'error';
-  title: string;
-  hint?: string;
-  /** 실패 원문. 접어 두고 필요할 때만 편다. */
-  raw?: string;
-};
-
-let nextToastId = 1;
-
-export function successToast(title: string, hint?: string): ToastItem {
-  return { id: nextToastId++, tone: 'success', title, hint };
-}
-
-export function errorToast(error: HumanError): ToastItem {
-  return {
-    id: nextToastId++,
-    tone: 'error',
-    title: error.title,
-    hint: error.hint,
-    raw: error.raw,
-  };
-}
+import type { ToastItem } from '@/lib/toasts';
 
 function ToastCard({ item, onDismiss }: { item: ToastItem; onDismiss: () => void }) {
   const [showRaw, setShowRaw] = useState(false);

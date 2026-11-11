@@ -79,7 +79,7 @@ function Row({
   );
 }
 
-export default function SourceStatusPanel({ onClose }: { onClose: () => void }) {
+function useSourceStatusPanelModel({ onClose }: { onClose: () => void }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const forceReadiness = useRef(false);
 
@@ -139,6 +139,54 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
   const remoteFor = (role: string | undefined): string | null =>
     pins?.pins?.sources.find((source) => source.role === role)?.url ?? null;
 
+    const refreshAll = () => {
+              // 두 쿼리가 모두 소비한 뒤에 내린다 — 먼저 내리면 둘 중 하나만 강제된다.
+              forceReadiness.current = true;
+              void refetch();
+              void Promise.all([refetchReadiness(), refetchRebuild()]).finally(() => {
+                forceReadiness.current = false;
+              });
+            };
+
+  return {
+    refreshAll,
+    onClose,
+    dialogRef,
+    forceReadiness,
+    data,
+    isLoading,
+    isFetching,
+    error,
+    refetch,
+    rebuild,
+    rebuildError,
+    refetchRebuild,
+    readiness,
+    readinessFetching,
+    readinessError,
+    refetchReadiness,
+    remoteFor,
+  };
+}
+
+type SourceStatusPanelModel = ReturnType<typeof useSourceStatusPanelModel>;
+
+export default function SourceStatusPanel(props: Parameters<typeof useSourceStatusPanelModel>[0]) {
+  const model = useSourceStatusPanelModel(props);
+  const {
+    refreshAll,
+    onClose,
+    dialogRef,
+    forceReadiness,
+    data,
+    isLoading,
+    isFetching,
+    error,
+    refetch,
+    refetchRebuild,
+    readinessFetching,
+    refetchReadiness,
+  } = model;
   return (
     <OpsDialog
       aria-labelledby="source-status-title"
@@ -174,14 +222,7 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
           <Button variant="ghost"
             className="ops-button"
             disabled={isFetching || readinessFetching}
-            onClick={() => {
-              // 두 쿼리가 모두 소비한 뒤에 내린다 — 먼저 내리면 둘 중 하나만 강제된다.
-              forceReadiness.current = true;
-              void refetch();
-              void Promise.all([refetchReadiness(), refetchRebuild()]).finally(() => {
-                forceReadiness.current = false;
-              });
-            }}
+            onClick={refreshAll}
             type="button"
           >
             <RefreshCw
@@ -191,7 +232,42 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
           </Button>
         </div>
 
-        <section>
+        <DeploymentReadiness model={model} />
+
+        <RebuildPreflight model={model} />
+
+        {isLoading ? (
+          <p className="text-sm text-secondary">배포 상태를 확인하는 중입니다.</p>
+        ) : error ? (
+          <InlineError error={humanizeError(error, '배포 상태 조회')} />
+        ) : data ? (
+          <>
+            <SourceOverview model={model} />
+
+            <CurrentSourceRevision model={model} />
+
+            {data.running_images.length > 0 && (
+              <SourceComparison model={model} />
+            )}
+
+            {data.checkouts.length > 0 && (
+              <PinGeneration model={model} />
+            )}
+
+            <SourceRecovery model={model} />
+          </>
+        ) : null}
+      </div>
+    </OpsDialog>
+  );
+}
+
+function DeploymentReadiness({ model }: { model: SourceStatusPanelModel }) {
+  const {
+    readiness,
+    readinessError,
+  } = model;
+  return (<section>
           <h3 className="text-sm font-semibold text-strong mb-1">재구축 사전 점검</h3>
           <p className="text-xs text-secondary mb-2">
             지금 재구축을 실행하면 실패할 만한 결손이 있는지만 봅니다. 통과해도 성공을
@@ -212,7 +288,229 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
           {readinessError ? (
             <InlineError error={humanizeError(readinessError, '사전 점검 결과 조회')} />
           ) : readiness ? (
-            <>
+            <ReadinessResults model={model} />
+          ) : (
+            <p className="text-sm text-secondary">사전 점검을 수행하는 중입니다.</p>
+          )}
+        </section>);
+}
+
+function RebuildPreflight({ model }: { model: SourceStatusPanelModel }) {
+  const {
+    rebuild,
+    rebuildError,
+  } = model;
+  return (<section>
+          <h3 className="text-sm font-semibold text-strong mb-1">재구축 실행</h3>
+          {rebuildError ? (
+            // 섹션이 통째로 사라지면 "보고할 것이 없다"로 읽힌다 — 정직성 규약 위반이다.
+            <InlineError error={humanizeError(rebuildError, '재구축 실행 가능 여부 조회')} />
+          ) : !rebuild ? (
+            <p className="text-sm text-secondary">재구축 실행 조건을 확인하는 중입니다.</p>
+          ) : (
+          <>
+            {/* 버튼을 두지 않는 것은 누락이 아니라 설계다. 재구축은 root를 요구하고
+                고정 pair 전체를 다시 배포하므로(`--restart`면 세 개 DB까지 지운다), HTTP
+                요청 하나가 그것을 시작할 수 있게 만들면 경계가 사라진다. 화면은 판정하고,
+                실행은 사람이 SSH에서 한다. */}
+            <p className="text-xs text-secondary mb-2">
+              재구축은 고정된 버전 세트 전체를 다시 배포합니다(데이터베이스는 보존하며,
+              `--restart`를 붙일 때만 세 개의 데이터베이스를 새로 만듭니다). 이 화면은
+              지금 실행해도 되는지만 판정하고, 실행은 SSH에서 직접 합니다.
+            </p>
+            <RebuildVerdict model={model} />
+          </>
+          )}
+        </section>);
+}
+
+function SourceOverview({ model }: { model: SourceStatusPanelModel }) {
+  const {
+    data,
+  } = model;
+  if (!data) return null;
+  return (<section
+              className={`rounded-card border p-4 ${
+                data.summary.level === 'action_required' ? 'border-danger' : 'border-line'
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                <VerdictIcon level={data.summary.level} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-strong">{data.summary.text}</p>
+                  {data.summary.next_action ? (
+                    <CopyableCommand
+                      command={data.summary.next_action}
+                      hint="SSH에서 실행해 자세히 확인할 수 있습니다."
+                    />
+                  ) : null}
+                </div>
+              </div>
+            </section>);
+}
+
+function CurrentSourceRevision({ model }: { model: SourceStatusPanelModel }) {
+  const {
+    data,
+  } = model;
+  if (!data) return null;
+  return (<section>
+              <h3 className="text-sm font-semibold text-strong mb-2">관리도구 설치 기록</h3>
+              <ul className="space-y-2">
+                <Row
+                  label="설치된 Manager 버전"
+                  row={data.manager}
+                  extra={
+                    data.manager.revision ? (
+                      <p className="text-xs text-secondary mt-1 font-mono break-all">
+                        {shortRevision(data.manager.revision)}
+                      </p>
+                    ) : null
+                  }
+                />
+              </ul>
+            </section>);
+}
+
+function SourceComparison({ model }: { model: SourceStatusPanelModel }) {
+  const {
+    data,
+    remoteFor,
+  } = model;
+  if (!data) return null;
+  return (<section>
+                <h3 className="text-sm font-semibold text-strong mb-2">실행 중인 이미지</h3>
+                <ul className="space-y-2">
+                  {data.running_images.map((row) => {
+                    const remote = remoteFor(row.role);
+                    const compare =
+                      remote && row.revision && row.pinned_revision
+                        ? buildGithubCompareUrl(remote, row.revision, row.pinned_revision)
+                        : null;
+                    const commit =
+                      remote && row.revision ? buildGithubCommitUrl(remote, row.revision) : null;
+                    return (
+                      <Row
+                        key={row.role}
+                        label={row.label ?? row.role ?? ''}
+                        row={row}
+                        extra={
+                          row.revision ? (
+                            <p className="text-xs text-secondary mt-1 break-all">
+                              <span className="font-mono">{shortRevision(row.revision)}</span>
+                              {compare ? (
+                                <>
+                                  {' · '}
+                                  <a
+                                    className="underline"
+                                    href={compare}
+                                    rel="noreferrer noopener"
+                                    target="_blank"
+                                  >
+                                    고정 버전과 무엇이 다른지 보기
+                                  </a>
+                                </>
+                              ) : commit ? (
+                                <>
+                                  {' · '}
+                                  <a
+                                    className="underline"
+                                    href={commit}
+                                    rel="noreferrer noopener"
+                                    target="_blank"
+                                  >
+                                    커밋 보기
+                                  </a>
+                                </>
+                              ) : null}
+                            </p>
+                          ) : null
+                        }
+                      />
+                    );
+                  })}
+                </ul>
+              </section>);
+}
+
+function PinGeneration({ model }: { model: SourceStatusPanelModel }) {
+  const {
+    data,
+  } = model;
+  if (!data) return null;
+  return (<section>
+                <h3 className="text-sm font-semibold text-strong mb-2">작업 사본</h3>
+                <ul className="space-y-2">
+                  {data.checkouts.map((row) => (
+                    <Row
+                      key={row.role}
+                      label={row.label ?? row.role ?? ''}
+                      row={row}
+                      extra={
+                        row.revision ? (
+                          <p className="text-xs text-secondary mt-1 font-mono break-all">
+                            {shortRevision(row.revision)}
+                          </p>
+                        ) : null
+                      }
+                    />
+                  ))}
+                </ul>
+              </section>);
+}
+
+function SourceRecovery({ model }: { model: SourceStatusPanelModel }) {
+  const {
+    data,
+  } = model;
+  if (!data) return null;
+  return (<section>
+              <h3 className="text-sm font-semibold text-strong mb-2">계약 일치</h3>
+              <ul className="space-y-2">
+                {data.contracts.map((row) => (
+                  <Row
+                    key={row.id}
+                    label={row.title ?? row.id ?? ''}
+                    row={row}
+                    extra={
+                      row.scope === 'sibling_checkout' ? (
+                        <p className="text-xs text-secondary mt-1">
+                          작업 사본 기준입니다 — 고정된 소스 자체를 검증한 것이 아닙니다.
+                        </p>
+                      ) : null
+                    }
+                  />
+                ))}
+                <Row
+                  label={data.environment.title ?? '환경 변수 완결성'}
+                  row={data.environment}
+                  extra={
+                    <>
+                      {data.environment.missing.length > 0 ? (
+                        <p className="text-xs text-danger mt-1 break-all">
+                          누락: {data.environment.missing.join(', ')}
+                        </p>
+                      ) : null}
+                      {data.environment.injected_at_rebuild.length > 0 ? (
+                        <p className="text-xs text-secondary mt-1">
+                          재구축이 주입하는 값 {data.environment.injected_at_rebuild.length}개는
+                          정상적으로 비어 있습니다.
+                        </p>
+                      ) : null}
+                    </>
+                  }
+                />
+              </ul>
+            </section>);
+}
+
+
+function ReadinessResults({ model }: { model: SourceStatusPanelModel }) {
+  const {
+    readiness,
+  } = model;
+  if (!readiness) return null;
+  return (<>
               <div
                 className={`rounded-card border p-3 ${
                   readiness.summary.state === 'blocked' ? 'border-danger' : 'border-line'
@@ -269,31 +567,15 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
                   ))}
                 </ul>
               ) : null}
-            </>
-          ) : (
-            <p className="text-sm text-secondary">사전 점검을 수행하는 중입니다.</p>
-          )}
-        </section>
+            </>);
+}
 
-        <section>
-          <h3 className="text-sm font-semibold text-strong mb-1">재구축 실행</h3>
-          {rebuildError ? (
-            // 섹션이 통째로 사라지면 "보고할 것이 없다"로 읽힌다 — 정직성 규약 위반이다.
-            <InlineError error={humanizeError(rebuildError, '재구축 실행 가능 여부 조회')} />
-          ) : !rebuild ? (
-            <p className="text-sm text-secondary">재구축 실행 조건을 확인하는 중입니다.</p>
-          ) : (
-          <>
-            {/* 버튼을 두지 않는 것은 누락이 아니라 설계다. 재구축은 root를 요구하고
-                고정 pair 전체를 다시 배포하므로(`--restart`면 세 개 DB까지 지운다), HTTP
-                요청 하나가 그것을 시작할 수 있게 만들면 경계가 사라진다. 화면은 판정하고,
-                실행은 사람이 SSH에서 한다. */}
-            <p className="text-xs text-secondary mb-2">
-              재구축은 고정된 버전 세트 전체를 다시 배포합니다(데이터베이스는 보존하며,
-              `--restart`를 붙일 때만 세 개의 데이터베이스를 새로 만듭니다). 이 화면은
-              지금 실행해도 되는지만 판정하고, 실행은 SSH에서 직접 합니다.
-            </p>
-            <div
+function RebuildVerdict({ model }: { model: SourceStatusPanelModel }) {
+  const {
+    rebuild,
+  } = model;
+  if (!rebuild) return null;
+  return (<div
               className={`rounded-card border p-3 ${
                 rebuild.summary.state === 'blocked' ? 'border-danger' : 'border-line'
               }`}
@@ -362,172 +644,5 @@ export default function SourceStatusPanel({ onClose }: { onClose: () => void }) 
                 판정 시각 {new Date(rebuild.collected_at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} · 새로고침하면
                 다시 확인합니다.
               </p>
-            </div>
-          </>
-          )}
-        </section>
-
-        {isLoading ? (
-          <p className="text-sm text-secondary">배포 상태를 확인하는 중입니다.</p>
-        ) : error ? (
-          <InlineError error={humanizeError(error, '배포 상태 조회')} />
-        ) : data ? (
-          <>
-            <section
-              className={`rounded-card border p-4 ${
-                data.summary.level === 'action_required' ? 'border-danger' : 'border-line'
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                <VerdictIcon level={data.summary.level} />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-strong">{data.summary.text}</p>
-                  {data.summary.next_action ? (
-                    <CopyableCommand
-                      command={data.summary.next_action}
-                      hint="SSH에서 실행해 자세히 확인할 수 있습니다."
-                    />
-                  ) : null}
-                </div>
-              </div>
-            </section>
-
-            <section>
-              <h3 className="text-sm font-semibold text-strong mb-2">관리도구 설치 기록</h3>
-              <ul className="space-y-2">
-                <Row
-                  label="설치된 Manager 버전"
-                  row={data.manager}
-                  extra={
-                    data.manager.revision ? (
-                      <p className="text-xs text-secondary mt-1 font-mono break-all">
-                        {shortRevision(data.manager.revision)}
-                      </p>
-                    ) : null
-                  }
-                />
-              </ul>
-            </section>
-
-            {data.running_images.length > 0 && (
-              <section>
-                <h3 className="text-sm font-semibold text-strong mb-2">실행 중인 이미지</h3>
-                <ul className="space-y-2">
-                  {data.running_images.map((row) => {
-                    const remote = remoteFor(row.role);
-                    const compare =
-                      remote && row.revision && row.pinned_revision
-                        ? buildGithubCompareUrl(remote, row.revision, row.pinned_revision)
-                        : null;
-                    const commit =
-                      remote && row.revision ? buildGithubCommitUrl(remote, row.revision) : null;
-                    return (
-                      <Row
-                        key={row.role}
-                        label={row.label ?? row.role ?? ''}
-                        row={row}
-                        extra={
-                          row.revision ? (
-                            <p className="text-xs text-secondary mt-1 break-all">
-                              <span className="font-mono">{shortRevision(row.revision)}</span>
-                              {compare ? (
-                                <>
-                                  {' · '}
-                                  <a
-                                    className="underline"
-                                    href={compare}
-                                    rel="noreferrer noopener"
-                                    target="_blank"
-                                  >
-                                    고정 버전과 무엇이 다른지 보기
-                                  </a>
-                                </>
-                              ) : commit ? (
-                                <>
-                                  {' · '}
-                                  <a
-                                    className="underline"
-                                    href={commit}
-                                    rel="noreferrer noopener"
-                                    target="_blank"
-                                  >
-                                    커밋 보기
-                                  </a>
-                                </>
-                              ) : null}
-                            </p>
-                          ) : null
-                        }
-                      />
-                    );
-                  })}
-                </ul>
-              </section>
-            )}
-
-            {data.checkouts.length > 0 && (
-              <section>
-                <h3 className="text-sm font-semibold text-strong mb-2">작업 사본</h3>
-                <ul className="space-y-2">
-                  {data.checkouts.map((row) => (
-                    <Row
-                      key={row.role}
-                      label={row.label ?? row.role ?? ''}
-                      row={row}
-                      extra={
-                        row.revision ? (
-                          <p className="text-xs text-secondary mt-1 font-mono break-all">
-                            {shortRevision(row.revision)}
-                          </p>
-                        ) : null
-                      }
-                    />
-                  ))}
-                </ul>
-              </section>
-            )}
-
-            <section>
-              <h3 className="text-sm font-semibold text-strong mb-2">계약 일치</h3>
-              <ul className="space-y-2">
-                {data.contracts.map((row) => (
-                  <Row
-                    key={row.id}
-                    label={row.title ?? row.id ?? ''}
-                    row={row}
-                    extra={
-                      row.scope === 'sibling_checkout' ? (
-                        <p className="text-xs text-secondary mt-1">
-                          작업 사본 기준입니다 — 고정된 소스 자체를 검증한 것이 아닙니다.
-                        </p>
-                      ) : null
-                    }
-                  />
-                ))}
-                <Row
-                  label={data.environment.title ?? '환경 변수 완결성'}
-                  row={data.environment}
-                  extra={
-                    <>
-                      {data.environment.missing.length > 0 ? (
-                        <p className="text-xs text-danger mt-1 break-all">
-                          누락: {data.environment.missing.join(', ')}
-                        </p>
-                      ) : null}
-                      {data.environment.injected_at_rebuild.length > 0 ? (
-                        <p className="text-xs text-secondary mt-1">
-                          재구축이 주입하는 값 {data.environment.injected_at_rebuild.length}개는
-                          정상적으로 비어 있습니다.
-                        </p>
-                      ) : null}
-                    </>
-                  }
-                />
-              </ul>
-            </section>
-          </>
-        ) : null}
-      </div>
-    </OpsDialog>
-  );
+            </div>);
 }

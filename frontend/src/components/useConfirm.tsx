@@ -16,7 +16,9 @@ export function useConfirm(enabled = true) {
     resolve?.(accepted);
   }, []);
   useEffect(() => () => { pending.current?.(false); pending.current = null; }, []);
-  useEffect(() => { if (!enabled) finish(false); }, [enabled, finish]);
+  useEffect(() => {
+    if (enabled) return () => finish(false);
+  }, [enabled, finish]);
   const confirm = useCallback((text: string) => {
     if (!enabled || pending.current) return Promise.resolve(false);
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;

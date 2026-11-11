@@ -137,7 +137,7 @@ function ResourceMetrics({ metrics }: { metrics: ContainerMetricSnapshot | null 
   );
 }
 
-export default function ContainerDetailModal({
+function useContainerDetailModel({
   containerId,
   containerLabel,
   targetId,
@@ -200,7 +200,48 @@ export default function ContainerDetailModal({
     }
   };
 
-  return (
+   return {
+    containerLabel,
+    targetId,
+    targetServices,
+    onClose,
+    confirmation,
+    tab,
+    setTab,
+    ensureState,
+    ensureMessage,
+    closeRef,
+    data,
+    isLoading,
+    error,
+    mounts,
+    networks,
+    env,
+    health,
+    runEnsure,
+  };
+}
+
+type ContainerDetailModel = ReturnType<typeof useContainerDetailModel>;
+
+export default function ContainerDetailModal(props: Parameters<typeof useContainerDetailModel>[0]) {
+ const model = useContainerDetailModel(props);
+  const {
+    containerLabel,
+    targetId,
+    targetServices,
+    onClose,
+    confirmation,
+    tab,
+    setTab,
+    ensureState,
+    ensureMessage,
+    closeRef,
+    isLoading,
+    error,
+    runEnsure,
+  } = model;
+return (
     <>
       <OpsDialog
         aria-label={`${containerLabel} 상세 정보`}
@@ -247,134 +288,17 @@ export default function ContainerDetailModal({
             </div>
           )}
 
-          {data && tab === 'overview' && (
-            <dl>
-              <Row label="이미지" value={data.image} />
-              <Row label="이미지 ID" value={data.image_id} />
-              <Row label="이미지 태그" value={data.image_tags?.length ? data.image_tags.join(', ') : undefined} />
-              <Row label="컨테이너" value={data.name} />
-              <Row label="Docker ID" value={data.docker_id?.slice(0, 20)} />
-              <Row label="상태" value={statusLabel(data.state?.status ?? data.status ?? '') || undefined} />
-              <Row label="생성" value={detailTimestamp(data.created)} />
-              <Row label="시작" value={detailTimestamp(data.state?.started_at)} />
-              <Row label="재시작 횟수" value={data.restart_count ?? undefined} />
-              {/* Docker는 running 중에도 ExitCode 0을 보고한다. 그대로 찍으면 '정상 종료'로 읽힌다. */}
-              <Row
-                label="종료 코드"
-                value={data.state?.running === false ? data.state?.exit_code : undefined}
-              />
-              <Row label="종료" value={data.state?.running === false ? detailTimestamp(data.state.finished_at) : undefined} />
-              <Row label="실행 중" value={data.state?.running == null ? undefined : data.state.running ? '예' : '아니오'} />
-              <Row label="일시정지" value={data.state?.paused == null ? undefined : data.state.paused ? '예' : '아니오'} />
-              <Row label="OOM 종료" value={data.state?.oom_killed == null ? undefined : data.state.oom_killed ? '예' : '아니오'} />
-              <Row label="오류" value={data.state?.error || undefined} />
-              <Row label="restart" value={data.host_config?.restart_policy?.Name} />
-              <Row label="network mode" value={data.host_config?.network_mode} />
-              <Row label="workdir" value={data.config?.working_dir} />
-              <Row
-                label="command"
-                value={data.config?.cmd?.length ? data.config.cmd.join(' ') : undefined}
-              />
-            </dl>
-          )}
+          <ContainerOverviewTab model={model} />
 
-          {data && tab === 'resources' && <ResourceMetrics metrics={data.metrics} />}
+          <ContainerResourcesTab model={model} />
 
-          {data && tab === 'mounts' && (
-            mounts.length === 0 ? (
-              <EmptyState>마운트가 없습니다.</EmptyState>
-            ) : (
-              <div>
-                <VirtualTable ariaLabel="마운트" data={mounts} getRowId={(m, index) => `${m.destination ?? 'mount'}-${index}`} virtualized={false}
-                  columns={[
-                    { id: 'type', header: '유형', cell: ({ row }) => row.original.type ?? '—' },
-                    { id: 'source', header: '원본', cell: ({ row }) => row.original.name || row.original.source || '—' },
-                    { id: 'destination', header: '대상', cell: ({ row }) => row.original.destination ?? '—' },
-                    { id: 'mode', header: '모드', cell: ({ row }) => row.original.rw === false ? 'ro' : row.original.mode || 'rw' },
-                  ]} />
-              </div>
-            )
-          )}
+          <ContainerMountsTab model={model} />
 
-          {data && tab === 'networks' && (
-            networks.length === 0 ? (
-              <EmptyState>네트워크 정보가 없습니다(host 모드일 수 있습니다).</EmptyState>
-            ) : (
-              <div className="space-y-4">
-                {networks.map(([name, n]) => (
-                  <div key={name} className="border border-line rounded-card p-3">
-                    <p className="text-strong font-semibold mb-2 break-all">{name}</p>
-                    <dl>
-                      <Row label="IP" value={n?.ip_address} />
-                      <Row label="gateway" value={n?.gateway} />
-                      <Row label="MAC" value={n?.mac_address} />
-                      <Row
-                        label="aliases"
-                        value={n?.aliases?.length ? n.aliases.join(', ') : undefined}
-                      />
-                    </dl>
-                  </div>
-                ))}
-              </div>
-            )
-          )}
+          <ContainerNetworksTab model={model} />
 
-          {data && tab === 'health' && (
-            !health || !health.Status ? (
-              <EmptyState>이 컨테이너에는 healthcheck가 정의되어 있지 않습니다.</EmptyState>
-            ) : (
-              <div className="space-y-3">
-                <dl>
-                  <Row label="상태" value={healthLabel(health.Status)} />
-                  <Row label="연속 실패" value={health.FailingStreak ?? 0} />
-                </dl>
-                {health.Log?.length ? (
-                  <div className="space-y-2">
-                    <p className="text-secondary text-xs font-medium">최근 검사</p>
-                    {health.Log.slice(-5).reverse().map((entry) => (
-                      <div key={`${entry.Start}-${entry.End}-${entry.ExitCode}-${entry.Output}`} className="border border-line rounded-card p-2">
-                        <p className="text-secondary">
-                          {entry.End ?? entry.Start ?? '—'} · exit {entry.ExitCode ?? '—'}
-                        </p>
-                        {entry.Output ? (
-                          <pre className="mt-1 whitespace-pre-wrap break-all text-ink">
-                            {entry.Output.trim().slice(0, 600)}
-                          </pre>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            )
-          )}
+          <ContainerHealthTab model={model} />
 
-          {data && tab === 'env' && (
-            env.length === 0 ? (
-              <EmptyState>환경변수가 없습니다.</EmptyState>
-            ) : (
-              <div className="space-y-2">
-                <p className="text-secondary leading-relaxed">
-                  비밀 성격의 key와 접속 문자열의 비밀번호 구간은 서버에서 가려서 전달합니다
-                  (<code>&lt;redacted&gt;</code>). 다만 이는 이름·패턴 기반이라 완전하지 않을 수
-                  있으니, 화면 공유나 스크린샷 전에 값을 확인하세요.
-                </p>
-                <ul className="space-y-1">
-                  {env.map((pair) => {
-                    const idx = pair.indexOf('=');
-                    const key = idx === -1 ? pair : pair.slice(0, idx);
-                    const value = idx === -1 ? '' : pair.slice(idx + 1);
-                    return (
-                      <li key={key} className="grid grid-cols-[minmax(5.5rem,auto)_minmax(0,1fr)] gap-3 border-b border-line/50 py-1">
-                        <span className="text-secondary break-all">{key}</span>
-                        <span className="text-ink break-all">{value || '—'}</span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )
-          )}
+          <ContainerEnvTab model={model} />
         </div>
         </Tabs>
 
@@ -406,4 +330,178 @@ export default function ContainerDetailModal({
     </OpsDialog>
     </>
   );
+}
+
+function ContainerEnvTab({ model }: { model: ContainerDetailModel }) {
+  const {
+    tab,
+    data,
+    env,
+  } = model;
+  return (<> {data && tab === 'env' && (
+            env.length === 0 ? (
+              <EmptyState>환경변수가 없습니다.</EmptyState>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-secondary leading-relaxed">
+                  비밀 성격의 key와 접속 문자열의 비밀번호 구간은 서버에서 가려서 전달합니다
+                  (<code>&lt;redacted&gt;</code>). 다만 이는 이름·패턴 기반이라 완전하지 않을 수
+                  있으니, 화면 공유나 스크린샷 전에 값을 확인하세요.
+                </p>
+                <ul className="space-y-1">
+                  {env.map((pair) => {
+                    const idx = pair.indexOf('=');
+                    const key = idx === -1 ? pair : pair.slice(0, idx);
+                    const value = idx === -1 ? '' : pair.slice(idx + 1);
+                    return (
+                      <li key={key} className="grid grid-cols-[minmax(5.5rem,auto)_minmax(0,1fr)] gap-3 border-b border-line/50 py-1">
+                        <span className="text-secondary break-all">{key}</span>
+                        <span className="text-ink break-all">{value || '—'}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )
+          )} </>);
+}
+
+function ContainerHealthTab({ model }: { model: ContainerDetailModel }) {
+  const {
+    tab,
+    data,
+    health,
+  } = model;
+  return (<> {data && tab === 'health' && (
+            !health || !health.Status ? (
+              <EmptyState>이 컨테이너에는 healthcheck가 정의되어 있지 않습니다.</EmptyState>
+            ) : (
+              <div className="space-y-3">
+                <dl>
+                  <Row label="상태" value={healthLabel(health.Status)} />
+                  <Row label="연속 실패" value={health.FailingStreak ?? 0} />
+                </dl>
+                {health.Log?.length ? (
+                  <div className="space-y-2">
+                    <p className="text-secondary text-xs font-medium">최근 검사</p>
+                    {health.Log.slice(-5).reverse().map((entry) => (
+                      <div key={`${entry.Start}-${entry.End}-${entry.ExitCode}-${entry.Output}`} className="border border-line rounded-card p-2">
+                        <p className="text-secondary">
+                          {entry.End ?? entry.Start ?? '—'} · exit {entry.ExitCode ?? '—'}
+                        </p>
+                        {entry.Output ? (
+                          <pre className="mt-1 whitespace-pre-wrap break-all text-ink">
+                            {entry.Output.trim().slice(0, 600)}
+                          </pre>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            )
+          )} </>);
+}
+
+function ContainerNetworksTab({ model }: { model: ContainerDetailModel }) {
+  const {
+    tab,
+    data,
+    networks,
+  } = model;
+  return (<> {data && tab === 'networks' && (
+            networks.length === 0 ? (
+              <EmptyState>네트워크 정보가 없습니다(host 모드일 수 있습니다).</EmptyState>
+            ) : (
+              <div className="space-y-4">
+                {networks.map(([name, n]) => (
+                  <div key={name} className="border border-line rounded-card p-3">
+                    <p className="text-strong font-semibold mb-2 break-all">{name}</p>
+                    <dl>
+                      <Row label="IP" value={n?.ip_address} />
+                      <Row label="gateway" value={n?.gateway} />
+                      <Row label="MAC" value={n?.mac_address} />
+                      <Row
+                        label="aliases"
+                        value={n?.aliases?.length ? n.aliases.join(', ') : undefined}
+                      />
+                    </dl>
+                  </div>
+                ))}
+              </div>
+            )
+          )} </>);
+}
+
+function ContainerMountsTab({ model }: { model: ContainerDetailModel }) {
+  const {
+    tab,
+    data,
+    mounts,
+  } = model;
+  return (<> {data && tab === 'mounts' && (
+            mounts.length === 0 ? (
+              <EmptyState>마운트가 없습니다.</EmptyState>
+            ) : (
+              <div>
+                <VirtualTable ariaLabel="마운트" data={mounts} getRowId={(m, index) => `${m.destination ?? 'mount'}-${index}`} virtualized={false}
+                  columns={[
+                    { id: 'type', header: '유형', cell: ({ row }) => row.original.type ?? '—' },
+                    { id: 'source', header: '원본', cell: ({ row }) => row.original.name || row.original.source || '—' },
+                    { id: 'destination', header: '대상', cell: ({ row }) => row.original.destination ?? '—' },
+                    { id: 'mode', header: '모드', cell: ({ row }) => row.original.rw === false ? 'ro' : row.original.mode || 'rw' },
+                  ]} />
+              </div>
+            )
+          )} </>);
+}
+
+function ContainerResourcesTab({ model }: { model: ContainerDetailModel }) {
+  const {
+    tab,
+    data,
+  } = model;
+  return (<> {data && tab === 'resources' && <ResourceMetrics metrics={data.metrics} />} </>);
+}
+
+function optionalBooleanLabel(value: boolean | null | undefined) {
+  if (value == null) return undefined;
+  return value ? '예' : '아니오';
+}
+
+function ContainerOverviewTab({ model }: { model: ContainerDetailModel }) {
+  const {
+    tab,
+    data,
+  } = model;
+  return (<> {data && tab === 'overview' && (
+            <dl>
+              <Row label="이미지" value={data.image} />
+              <Row label="이미지 ID" value={data.image_id} />
+              <Row label="이미지 태그" value={data.image_tags?.length ? data.image_tags.join(', ') : undefined} />
+              <Row label="컨테이너" value={data.name} />
+              <Row label="Docker ID" value={data.docker_id?.slice(0, 20)} />
+              <Row label="상태" value={statusLabel(data.state?.status ?? data.status ?? '') || undefined} />
+              <Row label="생성" value={detailTimestamp(data.created)} />
+              <Row label="시작" value={detailTimestamp(data.state?.started_at)} />
+              <Row label="재시작 횟수" value={data.restart_count ?? undefined} />
+              {/* Docker는 running 중에도 ExitCode 0을 보고한다. 그대로 찍으면 '정상 종료'로 읽힌다. */}
+              <Row
+                label="종료 코드"
+                value={data.state?.running === false ? data.state?.exit_code : undefined}
+              />
+              <Row label="종료" value={data.state?.running === false ? detailTimestamp(data.state.finished_at) : undefined} />
+              <Row label="실행 중" value={optionalBooleanLabel(data.state?.running)} />
+              <Row label="일시정지" value={optionalBooleanLabel(data.state?.paused)} />
+              <Row label="OOM 종료" value={optionalBooleanLabel(data.state?.oom_killed)} />
+              <Row label="오류" value={data.state?.error || undefined} />
+              <Row label="restart" value={data.host_config?.restart_policy?.Name} />
+              <Row label="network mode" value={data.host_config?.network_mode} />
+              <Row label="workdir" value={data.config?.working_dir} />
+              <Row
+                label="command"
+                value={data.config?.cmd?.length ? data.config.cmd.join(' ') : undefined}
+              />
+            </dl>
+          )} </>);
 }

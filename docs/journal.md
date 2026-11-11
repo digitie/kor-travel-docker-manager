@@ -1,3 +1,11 @@
+## 2026-11-11 — Doctor 전체 경고 차단과 운영 패널 분리
+
+- 사용자 추가 기준에 따라 Doctor를 `--scope full --blocking warning`으로 바꾸고 source guard도 `--source src`를 명시했다. 앞 기록의16경고를 후속 부채로 두지 않고 해결했다. suppression·baseline이나 스캔 범위 축소는 사용하지 않았다.
+- 인증·버전·배포 상태·백업·대시보드의 조회/상태와 화면 구역, 상세6탭과 설정 입력/변경 미리보기를 분리했다. 상태 authority와 기존 query/mutation API는 유지한다. 불필요한 view별 상태 사본은 만들지 않는다.
+- 백업 생성은 서버의202 작업을 작업 전용 캐시에 연결하며 실제 manifest는 기존 완료 관측 뒤 갱신한다. 진행 응답을 완료로 표시하지 않는 회귀를 추가했다. 순차 재시작은 동일 순서의 Promise 체인을 사용해 병렬 실행으로 바꾸지 않았다. 세션 확인 취소는 활성 세션 cleanup으로 옮겼고 Toast 순수 생성 함수는 UI 모듈과 분리했다.
+- hook에서 반환된 준비도 ref를 view에서 쓰던 부분은 lint의 immutability 진단에 따라 소유 hook의 refreshAll 콜백으로 이동했다. 두 재조회가 완료된 뒤 강제 관측 표식을 내리는 순서는 그대로다.
+- 부모 integration candidate4 UI/tokens 두 tgz·원장·lock을 같은 bytes로 동기화하고 common font.css/radix.css를 로컬 테마 앞에 적용했다. 이전 vendor 파일은 없으며 필요한 두 tgz만 보유한다. Linux source guard·타입·ESLint0경고·Doctor 전체 검사56파일(생략 없음)0오류/0경고·단위54개(16파일)·production build·데스크톱/모바일 E2E2개가 모두 PASS다. 브라우저는 원장·마운트·백업·고정 버전 네 표를 모두 확인한다. 부모 최종pack freeze/독립2리뷰/CI/운영 수용은 별도다.
+
 ## 2026-11-11 — 공통 관리자 UI 소비와 후보3 검증
 
 - 원본 dirty checkout을 보존한 ext4 shared clone의 `agent/codex-common-unification-20261111`에서 소비자만 변경했다. Transport는 사용자 지시에 따라 새 전담에 인계하고 이후 수정하지 않았다.

@@ -47,7 +47,7 @@ type PasswordState = {
   error: string | null;
 };
 
-export default function AdminSettingsPanel({ onClose }: { onClose: () => void }) {
+function useAdminSettingsPanelModel({ onClose }: { onClose: () => void }) {
   const [keyState, setKeyState] = useState<PublicKeyState>({
     busy: false,
     generatedKey: null,
@@ -204,6 +204,33 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
     }
   }
 
+    return {
+    onClose,
+    keyState,
+    auditState,
+    passwordState,
+    dialogRef,
+    patchKeyState,
+    loadPublicKeys,
+    loadAuditEvents,
+    passwordForm,
+    passwordValues,
+    passwordReady,
+    changePassword,
+    createKey,
+    revokeKey,
+    copyGeneratedKey,
+  };
+}
+
+type AdminSettingsPanelModel = ReturnType<typeof useAdminSettingsPanelModel>;
+
+export default function AdminSettingsPanel(props: Parameters<typeof useAdminSettingsPanelModel>[0]) {
+  const model = useAdminSettingsPanelModel(props);
+  const {
+    onClose,
+    dialogRef,
+  } = model;
   return (
     <OpsDialog
       aria-labelledby="admin-settings-title"
@@ -231,7 +258,26 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
       </div>
 
       <div className="overflow-y-auto p-6 grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <section className="border-t border-line pt-4 lg:border-t-0 lg:border-r lg:pr-5 lg:pt-0">
+        <PublicKeySettings model={model} />
+
+        <LoginAuditHistory model={model} />
+
+        <PasswordSettings model={model} />
+      </div>
+    </OpsDialog>
+  );
+}
+
+function PublicKeySettings({ model }: { model: AdminSettingsPanelModel }) {
+  const {
+    keyState,
+    patchKeyState,
+    loadPublicKeys,
+    createKey,
+    revokeKey,
+    copyGeneratedKey,
+  } = model;
+  return (<section className="border-t border-line pt-4 lg:border-t-0 lg:border-r lg:pr-5 lg:pt-0">
           <div className="flex items-center justify-between gap-3 mb-4">
             <div>
               <h3 className="ops-section-title">공개 API 키</h3>
@@ -355,9 +401,15 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
           ) : keyState.message ? (
             <p className="mt-3 text-sm text-secondary">{keyState.message}</p>
           ) : null}
-        </section>
+        </section>);
+}
 
-        <section className="border-t border-line pt-4 lg:border-t-0 lg:pl-1 lg:pt-0">
+function LoginAuditHistory({ model }: { model: AdminSettingsPanelModel }) {
+  const {
+    auditState,
+    loadAuditEvents,
+  } = model;
+  return (<section className="border-t border-line pt-4 lg:border-t-0 lg:pl-1 lg:pt-0">
           <div className="flex items-center justify-between gap-3 mb-4">
             <div>
               <h3 className="ops-section-title">로그인 기록</h3>
@@ -411,9 +463,18 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
               <InlineError error={auditState.error} />
             </div>
           ) : null}
-        </section>
+        </section>);
+}
 
-        <section className="border-t border-line pt-4 lg:col-span-2">
+function PasswordSettings({ model }: { model: AdminSettingsPanelModel }) {
+  const {
+    passwordState,
+    passwordForm,
+    passwordValues,
+    passwordReady,
+    changePassword,
+  } = model;
+  return (<section className="border-t border-line pt-4 lg:col-span-2">
           <div className="flex items-center justify-between gap-3 mb-4">
             <div>
               <h3 className="ops-section-title">관리자 비밀번호 변경</h3>
@@ -479,11 +540,9 @@ export default function AdminSettingsPanel({ onClose }: { onClose: () => void })
           {passwordState.error ? (
             <p className="mt-3 text-sm text-danger">{passwordState.error}</p>
           ) : null}
-        </section>
-      </div>
-    </OpsDialog>
-  );
+        </section>);
 }
+
 
 function eventTitle(event: LoginAuditEvent): string {
   if (event.event_type === 'logout') return `로그아웃 · ${event.attempted_username ?? '-'}`;

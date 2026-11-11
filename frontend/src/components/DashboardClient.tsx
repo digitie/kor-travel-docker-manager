@@ -34,7 +34,8 @@ import RuntimePinPanel from './RuntimePinPanel';
 import SourceStatusPanel from './SourceStatusPanel';
 import ContainerDetailModal from './ContainerDetailModal';
 import LoginScreen from './LoginScreen';
-import ToastStack, { ToastItem, errorToast, successToast } from './Toast';
+import ToastStack from './Toast';
+import { type ToastItem, errorToast, successToast } from '@/lib/toasts';
 import StatStrip from './StatStrip';
 import AppShell from './layout/AppShell';
 import { humanizeError } from '@/lib/errors';
@@ -93,7 +94,7 @@ const FLEET_COLUMNS: ColumnDef<FleetRow>[] = [
                 { id: 'column8', header: '제어', cell: ({ row }) => row.original.cells[8] }
               ];
 
-export default function DashboardClient() {
+function useDashboardModel() {
   const queryClient = useQueryClient();
   const [isAdminSettingsOpen, setIsAdminSettingsOpen] = useState<boolean>(false);
   const [isBackupHistoryOpen, setIsBackupHistoryOpen] = useState<boolean>(false);
@@ -376,7 +377,7 @@ export default function DashboardClient() {
       }
       setBulkRestartingGroup(group.id);
       let failed = 0;
-      for (const container of running) {
+      await running.reduce((previous, container) => previous.then(async () => {
         try {
           await apiJson(`/api/v1/containers/${container.id}/action`, {
             method: 'POST',
@@ -388,7 +389,7 @@ export default function DashboardClient() {
             errorToast(humanizeError(error, `${container.display_name || container.name} 재시작`))
           );
         }
-      }
+      }), Promise.resolve());
       setBulkRestartingGroup(null);
       queryClient.invalidateQueries({ queryKey: ['containers'] });
       if (failed === 0) {
@@ -916,7 +917,122 @@ export default function DashboardClient() {
     run();
   };
 
-  if (isAuthLoading) {
+    return {
+    queryClient,
+    isAdminSettingsOpen,
+    setIsAdminSettingsOpen,
+    isBackupHistoryOpen,
+    setIsBackupHistoryOpen,
+    isRuntimePinsOpen,
+    setIsRuntimePinsOpen,
+    isSourceStatusOpen,
+    setIsSourceStatusOpen,
+    toasts,
+    dismissToast,
+    isCommandPaletteOpen,
+    setIsCommandPaletteOpen,
+    commandQuery,
+    setCommandQuery,
+    commandInputRef,
+    isAuthLoading,
+    refetchAuth,
+    isAuthenticated,
+    setIsLoggingOut,
+    confirm,
+    confirmation,
+    isWsConnected,
+    detailContainer,
+    setDetailContainer,
+    closeDetailModal,
+    isConfigModalOpen,
+    setIsConfigModalOpen,
+    configTargetContainer,
+    configForm,
+    portFields,
+    networkFields,
+    inputPortsList,
+    inputNetworksList,
+    inputEnvDict,
+    setInputEnvDict,
+    inputVolumesList,
+    isLogModalOpen,
+    setIsLogModalOpen,
+    logContainerId,
+    liveLogs,
+    isLogWsOpen,
+    logEndRef,
+    isChartModalOpen,
+    setIsChartModalOpen,
+    chartContainerId,
+    chartMetricType,
+    setChartMetricType,
+    chartHours,
+    setChartHours,
+    setWsMetricsPoints,
+    isLoading,
+    error,
+    detailTarget,
+    includeStopped,
+    setIncludeStopped,
+    displayContainers,
+    observedHost,
+    inventoryUnavailable,
+    diskUsage,
+    managerHealth,
+    containerGroups,
+    bulkRestartingGroup,
+    restartGroup,
+    kpiCounts,
+    actionMutation,
+    handleAction,
+    configMutation,
+    resetMutation,
+    isLoadingChart,
+    combinedChartData,
+    openConfigModal,
+    handleConfigSubmit,
+    configValidation,
+    openLogModal,
+    openChartModal,
+    logoutMutation,
+    requestLogout,
+    commandItems,
+    runCommand,
+  };
+}
+
+type DashboardModel = ReturnType<typeof useDashboardModel>;
+
+export default function DashboardClient() {
+  const model = useDashboardModel();
+  const {
+    queryClient,
+    isAdminSettingsOpen,
+    setIsAdminSettingsOpen,
+    isBackupHistoryOpen,
+    setIsBackupHistoryOpen,
+    isRuntimePinsOpen,
+    setIsRuntimePinsOpen,
+    isSourceStatusOpen,
+    setIsSourceStatusOpen,
+    toasts,
+    dismissToast,
+    setIsCommandPaletteOpen,
+    isAuthLoading,
+    refetchAuth,
+    isAuthenticated,
+    setIsLoggingOut,
+    confirmation,
+    isWsConnected,
+    detailContainer,
+    closeDetailModal,
+    isLoading,
+    error,
+    detailTarget,
+    logoutMutation,
+    requestLogout,
+  } = model;
+if (isAuthLoading) {
     return (
       <div className="min-h-screen bg-page text-ink flex items-center justify-center">
         <div className="flex items-center gap-2 text-sm text-secondary">
@@ -974,85 +1090,7 @@ export default function DashboardClient() {
       title="인프라 서비스 컨트롤"
     >
       <div className="dashboard-stack">
-      <section className="ops-overview" aria-labelledby="service-summary-title">
-        <div className="ops-summary">
-          <div className="ops-summary__header">
-            <div>
-              <h2 className="ops-section-title" id="service-summary-title">서비스 상태 요약</h2>
-              <p className="ops-section-copy">{observedHost ? `${observedHost} · ` : ''}현재 호스트의 Docker 관측값입니다.</p>
-            </div>
-            <span className="ops-status-badge">
-              <span className={`ops-status-dot ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
-              {isWsConnected ? '실시간 동기화' : 'HTTP 폴백'}
-            </span>
-          </div>
-          <StatStrip
-            ariaLabel="서비스 상태 요약"
-            isLoading={isLoading && displayContainers.length === 0}
-            items={[
-              { label: '전체', value: kpiCounts.total },
-              { label: '실행 중', value: kpiCounts.running, tone: 'ok' },
-              { label: '중지', value: kpiCounts.stopped, tone: 'neutral' },
-              { label: '상태·관측 오류', value: kpiCounts.error, tone: 'danger' },
-              ...(diskUsage
-                ? [{
-                    label: '정리 가능 용량',
-                    value: diskUsage.state === 'unknown'
-                      ? '확인 불가'
-                      : diskUsage.summary.text.replace('정리 시 약 ', '').replace(' 확보 가능', ''),
-                    tone: diskUsage.state === 'warn' ? 'danger' as const : 'neutral' as const,
-                    title: diskUsage.summary.detail,
-                  }]
-                : []),
-            ]}
-            size="lg"
-          />
-          {diskUsage?.state === 'warn' ? (
-            <p className="ops-inline-note ops-inline-note--danger">
-              {diskUsage.summary.detail} 정리는 SSH에서{' '}
-              <code className="font-mono">{diskUsage.summary.next_action}</code>
-            </p>
-          ) : null}
-        </div>
-        <aside className="ops-signal" aria-label="연결 상태">
-          <div className="ops-signal__item">
-            <p className="ops-signal__label">연결 상태</p>
-            <p className="ops-signal__value">
-              <span className={`ops-status-dot ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
-              {isWsConnected ? 'WebSocket 연결됨' : '폴백 폴링 중'}
-            </p>
-            <p className="ops-signal__detail">{isWsConnected ? '상태와 차트가 수신 프레임에 맞춰 갱신됩니다.' : 'WebSocket 복구 전에는 HTTP 조회 결과를 표시합니다.'}</p>
-          </div>
-          {/* "관리도구 자신이 정상인가"는 비전문 운영자의 첫 질문인데 답할 화면이
-              없었다. /health는 이미 있었지만 어느 UI에도 표시되지 않았다. */}
-          <div className="ops-signal__item ops-signal__divider">
-            <p className="ops-signal__label">관리도구 상태</p>
-            <p className="ops-signal__value">
-              <span
-                className={`ops-status-dot ${
-                  managerHealth === 'healthy'
-                    ? 'bg-ok'
-                    : managerHealth === 'checking'
-                      ? 'bg-warn animate-pulse'
-                      : 'bg-danger'
-                }`}
-              />
-              {managerHealth === 'healthy'
-                ? '관리도구 정상'
-                : managerHealth === 'checking'
-                  ? '관리도구 확인 중'
-                  : '관리도구 응답 없음'}
-            </p>
-            <p className="ops-signal__detail">
-              {managerHealth === 'healthy'
-                ? '백엔드 API가 응답하고 있습니다.'
-                : managerHealth === 'checking'
-                  ? '백엔드 상태를 확인하는 중입니다.'
-                  : '백엔드가 응답하지 않습니다. 아래 컨테이너 상태도 최신이 아닐 수 있습니다.'}
-            </p>
-          </div>
-        </aside>
-      </section>
+<DashboardOverview model={model} />
 
       {error && !isWsConnected && (
         <section className="ops-alert ops-alert--danger" role="alert">
@@ -1064,46 +1102,523 @@ export default function DashboardClient() {
         </section>
       )}
 
-      {containerGroups.length > 0 && (
-        <section className="ops-ledger" id="service-groups" aria-labelledby="service-groups-title">
-          <div className="ops-ledger__header">
-            <div>
-              <h2 className="ops-section-title" id="service-groups-title">앱별 상태</h2>
-              <p className="ops-section-copy">
-                컨테이너를 앱 단위로 묶어 보여 줍니다. 재시작은 실행 중인 것만 순서대로 진행합니다.
-              </p>
-            </div>
-          </div>
-          <div className="ops-group-list">
-            {containerGroups.map((group) => (
-              <div className="ops-group-row" key={group.id}>
-                <div className="ops-group-copy">
-                  <p className="ops-group-label">{group.label}</p>
-                  <p className={`ops-group-status ${group.healthy ? 'text-ok' : 'text-warn'}`}>
-                    {group.healthy
-                      ? `실행 중 ${group.runningCount}개`
-                      : `실행 ${group.runningCount}개 / 표시 ${group.containers.length}개 · 점검 필요`}
-                  </p>
-                </div>
-                <Button variant="ghost"
-                  className="ops-button"
-                  disabled={bulkRestartingGroup !== null || group.mutableCount === 0}
-                  onClick={() => void restartGroup(group)}
-                  type="button"
-                >
-                  <RotateCw
-                    className={bulkRestartingGroup === group.id ? 'animate-spin' : ''}
-                    size={14}
-                  />
-                  재시작
-                </Button>
-              </div>
-            ))}
-          </div>
-        </section>
+<ServiceGroups model={model} />
+
+<FleetLedger model={model} />
+
+      </div>
+
+<CommandPalette model={model} />      {isAdminSettingsOpen && (
+        <>
+          <AdminSettingsPanel onClose={() => setIsAdminSettingsOpen(false)} />
+        </>
       )}
 
-      <section className="ops-ledger" id="service-ledger" aria-labelledby="service-ledger-title">
+      {isBackupHistoryOpen && (
+        <>
+          <BackupHistoryPanel onClose={() => setIsBackupHistoryOpen(false)} />
+        </>
+      )}
+
+      {isRuntimePinsOpen && (
+        <>
+          <RuntimePinPanel onClose={() => setIsRuntimePinsOpen(false)} />
+        </>
+      )}
+
+      {isSourceStatusOpen && (
+        <>
+          <SourceStatusPanel onClose={() => setIsSourceStatusOpen(false)} />
+        </>
+      )}
+
+<LiveLogDialog model={model} /><PerformanceChartDialog model={model} /><ContainerConfigDialog model={model} />      {detailContainer && (
+        <ContainerDetailModal
+          containerId={detailContainer.id}
+          containerLabel={detailContainer.display_name || detailContainer.name}
+          targetId={detailTarget?.id ?? null}
+          targetServices={detailTarget?.resolved_services ?? null}
+          onClose={closeDetailModal}
+        />
+      )}
+
+      <ToastStack items={toasts} onDismiss={dismissToast} />
+    {confirmation}
+    </AppShell>
+  );
+
+}
+
+function ContainerConfigDialog({ model }: { model: DashboardModel }) {
+  const {
+    confirm,
+    isConfigModalOpen,
+    setIsConfigModalOpen,
+    configTargetContainer,
+    inputEnvDict,
+    configMutation,
+    resetMutation,
+    handleConfigSubmit,
+    configValidation,
+  } = model;
+  return (<>       {/* Config Edit Modal */}
+      {isConfigModalOpen && configTargetContainer && (
+        <>
+          <OpsDialog
+            aria-label="컨테이너 설정 변경"
+
+
+            className="ops-modal max-w-lg p-6 relative flex flex-col"
+           onClose={() => setIsConfigModalOpen(false)}>
+
+            {/* Modal Header */}
+            <div className="flex justify-between items-center pb-4 border-b border-line z-10">
+              <h3 className="text-sm font-semibold flex items-center gap-2 text-strong">
+                <Settings className="w-4 h-4 text-brand" />
+                <span>컨테이너 설정 변경</span>
+              </h3>
+              <Button variant="ghost"
+                type="button"
+                aria-label="닫기"
+                autoFocus
+                onClick={() => setIsConfigModalOpen(false)}
+                className="ops-icon-button"
+              >
+                <X className="w-5 h-5" />
+              </Button>
+            </div>
+
+            {/* Modal Body / Form */}
+            <form onSubmit={handleConfigSubmit} className="flex-grow overflow-y-auto pr-2 mt-4 space-y-5 z-10 select-text scrollbar-thin">
+              <div className="p-4 bg-subtle border border-line rounded-card text-xs text-ink leading-relaxed">
+                <p className="font-semibold text-strong mb-1">{configTargetContainer.display_name} 설정</p>
+                <p className="font-light">docker-compose.yml 파일 내 설정을 변경합니다. 변경 후 컨테이너가 중지/삭제된 뒤 재생성됩니다.</p>
+              </div>
+
+              {/* Ports section */}
+              <PortSettings model={model} />
+
+              {/* Volumes section — 서버가 불변 계약으로 거부하므로 처음부터 읽기 전용이다.
+                  편집을 허용한 뒤 저장 시점에 경고하면 사용자는 이미 값을 잃은 뒤다. */}
+              <VolumeSettings model={model} />
+
+              {/* Networks section */}
+              <NetworkSettings model={model} />
+
+              {/* Env Variables section */}
+              {Object.keys(inputEnvDict).length > 0 && (
+                <EnvironmentSettings model={model} />
+              )}
+
+              {/* 잠금이 뚫린 경우의 최종 안내. 정상 경로에서는 나타나지 않는다. */}
+              {configValidation.lockedEnvChanged.length > 0 && (
+                <p aria-live="polite" className="text-danger text-xs">
+                  배포 계약이 고정한 환경변수가 바뀌었습니다:{' '}
+                  {configValidation.lockedEnvChanged.join(', ')}. 저장할 수 없습니다.
+                </p>
+              )}
+
+              {/* 변경 사항 미리보기: 제출 전 무엇이 바뀌는지 요약한다. */}
+              {(configValidation.portsDiff.changed ||
+                configValidation.networksDiff.changed ||
+                configValidation.envDiff.length > 0) && (
+                <ConfigChangePreview model={model} />
+              )}
+
+              {/* Submit / Reset Actions */}
+              <div className="flex gap-3 mt-6">
+                <Button variant="ghost"
+                  type="button"
+                  onClick={async () => {
+                    if (await confirm('정말로 설정을 기본값으로 원복하시겠습니까?')) {
+                      resetMutation.mutate(configTargetContainer.id);
+                    }
+                  }}
+                  disabled={resetMutation.isPending || configMutation.isPending}
+                  className="ops-button ops-button--danger flex-1 text-danger border-danger disabled:bg-subtle disabled:text-secondary"
+                >
+                  {resetMutation.isPending ? '원복 중...' : '기본값 원복'}
+                </Button>
+
+                <Button variant="ghost"
+                  type="submit"
+                  disabled={
+                    configMutation.isPending ||
+                    resetMutation.isPending ||
+                    configValidation.hasBlockingIssue
+                  }
+                  title={
+                    configValidation.hasBlockingIssue
+                      ? '위에 표시된 오류를 먼저 해결하세요'
+                      : undefined
+                  }
+                  className="ops-button ops-button--primary flex-1"
+                >
+                  {configMutation.isPending ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>적용 중...</span>
+                    </>
+                  ) : (
+                    <span>적용 및 재생성</span>
+                  )}
+                </Button>
+              </div>
+            </form>
+          </OpsDialog>
+        </>
+      )}
+
+ </>);
+}
+
+function PerformanceChartDialog({ model }: { model: DashboardModel }) {
+  const {
+    isChartModalOpen,
+    setIsChartModalOpen,
+    chartContainerId,
+    chartMetricType,
+    setChartMetricType,
+    chartHours,
+    setChartHours,
+    setWsMetricsPoints,
+    isLoadingChart,
+    combinedChartData,
+  } = model;
+  return (<>       {/* Performance History Chart Modal */}
+      {isChartModalOpen && chartContainerId && (
+        <>
+          <OpsDialog
+            aria-label="실시간 성능 차트"
+
+
+            className="ops-modal max-w-3xl p-6 flex flex-col relative"
+           onClose={() => { setIsChartModalOpen(false); setWsMetricsPoints([]); }}>
+
+            {/* Modal Header */}
+            <div className="flex justify-between items-center pb-4 border-b border-line z-10 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-subtle border border-line rounded-card">
+                  <Activity className="w-5 h-5 text-brand" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-strong text-base">
+                    성능 이력 ({chartHours === 1 ? '최근 1시간' : `최근 ${chartHours}시간`})
+                  </h3>
+                  <p className="text-xs text-secondary mt-0.5 font-light font-mono">대상 컨테이너: {chartContainerId}</p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-secondary" htmlFor="chart-hours">
+                  기간
+                </label>
+                <select
+                  className="ops-input min-h-[36px] py-1 text-xs"
+                  id="chart-hours"
+                  onChange={(event) => setChartHours(Number(event.target.value))}
+                  value={chartHours}
+                >
+                  <option value={1}>1시간</option>
+                  <option value={6}>6시간</option>
+                  <option value={24}>24시간</option>
+                  <option value={72}>3일</option>
+                </select>
+              </div>
+
+              <Button variant="ghost"
+                type="button"
+                aria-label="닫기"
+                autoFocus
+                onClick={() => {
+                  setIsChartModalOpen(false);
+                  setWsMetricsPoints([]); // 이벤트 핸들러에서 직접 초기화하여 derived-state 경고 방지
+                }}
+                className="ops-icon-button"
+              >
+                <X className="w-5 h-5" />
+              </Button>
+            </div>
+
+            {/* Metric Tab Selector */}
+            <div className="flex border-b border-line mt-5 shrink-0 z-10">
+              <Button variant="ghost"
+                type="button"
+                onClick={() => setChartMetricType('cpu')}
+                className={`py-2 px-4 text-xs font-bold transition-[color,background-color,border-color] border-b-2 ${
+                  chartMetricType === 'cpu'
+                    ? 'border-brand text-brand'
+                    : 'border-transparent text-secondary hover:text-strong'
+                }`}
+              >
+                CPU 점유율 (%)
+              </Button>
+              <Button variant="ghost"
+                type="button"
+                onClick={() => setChartMetricType('memory')}
+                className={`py-2 px-4 text-xs font-bold transition-[color,background-color,border-color] border-b-2 ${
+                  chartMetricType === 'memory'
+                    ? 'border-brand text-brand'
+                    : 'border-transparent text-secondary hover:text-strong'
+                }`}
+              >
+                메모리 점유율 (%)
+              </Button>
+              <Button variant="ghost"
+                type="button"
+                onClick={() => setChartMetricType('io')}
+                className={`py-2 px-4 text-xs font-bold transition-[color,background-color,border-color] border-b-2 ${
+                  chartMetricType === 'io'
+                    ? 'border-brand text-brand'
+                    : 'border-transparent text-secondary hover:text-strong'
+                }`}
+              >
+                I/O Read / Write (Bytes)
+              </Button>
+            </div>
+
+            {/* Chart Container */}
+            <div className="h-[300px] mt-6 w-full z-10 bg-subtle border border-line rounded-card p-4 flex items-center justify-center">
+              {isLoadingChart && combinedChartData.length === 0 ? (
+                <div className="flex items-center gap-2 text-ink text-xs">
+                  <RefreshCw className="w-4 h-4 animate-spin text-brand" />
+                  <span>차트 기록을 조회하고 있습니다...</span>
+                </div>
+              ) : combinedChartData.length === 0 ? (
+                <div className="text-secondary text-xs py-20 font-light">
+                  최근 수집된 메트릭 이력이 없습니다. (수집기는 10초 주기로 수집하며 한달 저장됩니다.)
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart
+                    data={combinedChartData}
+                    margin={{ top: 5, right: 10, left: 10, bottom: 5 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-line)" />
+                    <XAxis
+                      dataKey="timestamp"
+                      tickFormatter={(value) =>
+                        formatTimestamp(value as string, { includeDate: chartHours > 1 })
+                      }
+                      stroke="var(--color-secondary)"
+                      style={{ fontSize: 14, fontFamily: 'var(--font-mono)' }}
+                      dy={5}
+                    />
+                    <YAxis
+                      stroke="var(--color-secondary)"
+                      style={{ fontSize: 14, fontFamily: 'var(--font-mono)' }}
+                      dx={-5}
+                      tickFormatter={(value) => {
+                        if (chartMetricType === 'io') {
+                          return formatBytes(value, 0);
+                        }
+                        return `${value}%`;
+                      }}
+                    />
+                    <RechartsTooltip
+                      contentStyle={{
+                        backgroundColor: 'var(--color-card)',
+                        border: '1px solid var(--color-line)',
+                        borderRadius: 'var(--radius-card)',
+                        fontSize: 14, // Increased fontSize to 14
+                        fontFamily: 'var(--font-mono)',
+                        color: 'var(--color-strong)'
+                      }}
+                      labelFormatter={(label) =>
+                        `수집 시각: ${formatTimestamp(label as string, { includeDate: true })}`
+                      }
+                      formatter={(value: any, name: any) => {
+                        const formattedVal = chartMetricType === 'io' ? formatBytes(value as number) : `${Number(value).toFixed(1)}%`;
+                        const labelName = name === 'cpu_pct' ? 'CPU 사용량' : name === 'mem_pct' ? '메모리 사용량' : name === 'io_read' ? 'Disk Read' : 'Disk Write';
+                        return [formattedVal, labelName];
+                      }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 14, marginTop: 10 }} />
+
+                    {chartMetricType === 'cpu' && (
+                      <Line
+                        type="monotone"
+                        dataKey="cpu_pct"
+                        stroke="var(--color-ok)"
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={{ r: 4 }}
+                        name="cpu_pct"
+                      />
+                    )}
+
+                    {chartMetricType === 'memory' && (
+                      <Line
+                        type="monotone"
+                        dataKey="mem_pct"
+                        stroke="var(--color-brand)"
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={{ r: 4 }}
+                        name="mem_pct"
+                      />
+                    )}
+
+                    {chartMetricType === 'io' && (
+                      <>
+                        <Line
+                          type="monotone"
+                          dataKey="io_read"
+                          stroke="var(--color-warn)"
+                          strokeWidth={1.5}
+                          dot={false}
+                          name="io_read"
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="io_write"
+                          stroke="var(--color-danger)"
+                          strokeWidth={1.5}
+                          dot={false}
+                          name="io_write"
+                        />
+                      </>
+                    )}
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+
+            {/* Note */}
+            <p className="text-xs text-secondary mt-4 z-10 shrink-0 font-light">
+              * 웹소켓 연결 상태에서 매 10초마다 새로운 메트릭 데이터가 이 차트에 실시간으로 추가되어 업데이트(롤링)됩니다.
+            </p>
+          </OpsDialog>
+        </>
+      )}
+
+ </>);
+}
+
+function LiveLogDialog({ model }: { model: DashboardModel }) {
+  const {
+    isLogModalOpen,
+    setIsLogModalOpen,
+    logContainerId,
+    liveLogs,
+    isLogWsOpen,
+    logEndRef,
+  } = model;
+  return (<>       {/* Live Log Terminal Modal */}
+      {isLogModalOpen && logContainerId && (
+        <>
+          <OpsDialog
+            aria-label="실시간 콘솔 로그"
+
+
+            className="ops-modal max-w-4xl p-6 flex flex-col h-[75vh] relative"
+           onClose={() => setIsLogModalOpen(false)}>
+
+            {/* Modal Header */}
+            <div className="flex justify-between items-center pb-4 border-b border-line z-10 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-subtle border border-line rounded-card">
+                  <Terminal className="w-5 h-5 text-brand" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-strong text-base">실시간 콘솔 로그</h3>
+                  <p className="text-xs text-secondary mt-0.5 font-light">컨테이너 ID: {logContainerId}</p>
+                </div>
+              </div>
+
+              <Button variant="ghost"
+                type="button"
+                aria-label="닫기"
+                autoFocus
+                onClick={() => setIsLogModalOpen(false)}
+                className="ops-icon-button"
+              >
+                <X className="w-5 h-5" />
+              </Button>
+            </div>
+
+            {/* Terminal View */}
+            <div className="flex-grow bg-subtle border border-line rounded-card p-4 mt-4 font-mono text-xs overflow-y-auto leading-relaxed text-strong scrollbar-thin select-text">
+              <pre className="whitespace-pre-wrap select-text pr-2 text-left">
+                {liveLogs}
+              </pre>
+              <div ref={logEndRef} />
+            </div>
+
+            {/* Tip Footer */}
+            <div className="pt-4 text-xs text-secondary shrink-0 z-10 flex justify-between items-center">
+              <span className="font-light">* 최신 3,000줄의 로그가 메모리에 버퍼링되며 자동으로 아래로 스크롤됩니다.</span>
+              <span className="flex items-center gap-1 font-bold">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${isLogWsOpen ? 'bg-ok animate-ping' : 'bg-warn'}`}
+                />
+                {isLogWsOpen ? 'WS 스트리밍 활성화됨' : 'WS 스트리밍 종료됨'}
+              </span>
+            </div>
+          </OpsDialog>
+        </>
+      )}
+
+ </>);
+}
+
+function CommandPalette({ model }: { model: DashboardModel }) {
+  const {
+    isCommandPaletteOpen,
+    setIsCommandPaletteOpen,
+    commandQuery,
+    setCommandQuery,
+    commandInputRef,
+    commandItems,
+    runCommand,
+  } = model;
+  return (<>       {isCommandPaletteOpen && (
+        <>
+          <OpsDialog aria-label="빠른 명령"  className="ops-command-dialog"  onClose={() => setIsCommandPaletteOpen(false)}>
+            <input
+              aria-label="명령 검색"
+              className="ops-command-dialog__input"
+              onChange={(event) => setCommandQuery(event.target.value)}
+              placeholder="명령 검색"
+              ref={commandInputRef}
+              value={commandQuery}
+            />
+            <ul className="ops-command-dialog__list">
+              {commandItems.length ? commandItems.map((item) => (
+                <li key={item.id}><Button variant="ghost"
+                  className="ops-command-dialog__option"
+                  onClick={() => runCommand(item.run)}
+                  type="button"
+                >
+                  <span>{item.label}</span>
+                  <span className="font-mono text-xs text-secondary">{item.hint}</span>
+                </Button></li>
+              )) : <li className="px-3 py-5 text-sm text-secondary">일치하는 명령이 없습니다.</li>}
+            </ul>
+          </OpsDialog>
+        </>
+      )}
+
+ </>);
+}
+
+function FleetLedger({ model }: { model: DashboardModel }) {
+  const {
+    setDetailContainer,
+    isLoading,
+    includeStopped,
+    setIncludeStopped,
+    displayContainers,
+    inventoryUnavailable,
+    actionMutation,
+    handleAction,
+    configMutation,
+    resetMutation,
+    openConfigModal,
+    openLogModal,
+    openChartModal,
+  } = model;
+  return (      <section className="ops-ledger" id="service-ledger" aria-labelledby="service-ledger-title">
         {inventoryUnavailable && <p role="alert" className="ops-inline-note ops-inline-note--danger">일부 Docker 상태를 읽지 못했습니다. 최신 관측값을 확인해 주세요.</p>}
         <div className="ops-ledger__header">
           <div>
@@ -1327,441 +1842,177 @@ export default function DashboardClient() {
               columns={FLEET_COLUMNS} emptyMessage="표시할 컨테이너가 없습니다." />
           </div>
         )}
-      </section>
+      </section>);
+}
 
-      </div>
-
-      {isCommandPaletteOpen && (
-        <>
-          <OpsDialog aria-label="빠른 명령"  className="ops-command-dialog"  onClose={() => setIsCommandPaletteOpen(false)}>
-            <input
-              aria-label="명령 검색"
-              className="ops-command-dialog__input"
-              onChange={(event) => setCommandQuery(event.target.value)}
-              placeholder="명령 검색"
-              ref={commandInputRef}
-              value={commandQuery}
-            />
-            <ul className="ops-command-dialog__list">
-              {commandItems.length ? commandItems.map((item) => (
-                <li key={item.id}><Button variant="ghost"
-                  className="ops-command-dialog__option"
-                  onClick={() => runCommand(item.run)}
+function ServiceGroups({ model }: { model: DashboardModel }) {
+  const {
+    containerGroups,
+    bulkRestartingGroup,
+    restartGroup,
+  } = model;
+  return (<>       {containerGroups.length > 0 && (
+        <section className="ops-ledger" id="service-groups" aria-labelledby="service-groups-title">
+          <div className="ops-ledger__header">
+            <div>
+              <h2 className="ops-section-title" id="service-groups-title">앱별 상태</h2>
+              <p className="ops-section-copy">
+                컨테이너를 앱 단위로 묶어 보여 줍니다. 재시작은 실행 중인 것만 순서대로 진행합니다.
+              </p>
+            </div>
+          </div>
+          <div className="ops-group-list">
+            {containerGroups.map((group) => (
+              <div className="ops-group-row" key={group.id}>
+                <div className="ops-group-copy">
+                  <p className="ops-group-label">{group.label}</p>
+                  <p className={`ops-group-status ${group.healthy ? 'text-ok' : 'text-warn'}`}>
+                    {group.healthy
+                      ? `실행 중 ${group.runningCount}개`
+                      : `실행 ${group.runningCount}개 / 표시 ${group.containers.length}개 · 점검 필요`}
+                  </p>
+                </div>
+                <Button variant="ghost"
+                  className="ops-button"
+                  disabled={bulkRestartingGroup !== null || group.mutableCount === 0}
+                  onClick={() => void restartGroup(group)}
                   type="button"
                 >
-                  <span>{item.label}</span>
-                  <span className="font-mono text-xs text-secondary">{item.hint}</span>
-                </Button></li>
-              )) : <li className="px-3 py-5 text-sm text-secondary">일치하는 명령이 없습니다.</li>}
-            </ul>
-          </OpsDialog>
-        </>
-      )}
-
-      {isAdminSettingsOpen && (
-        <>
-          <AdminSettingsPanel onClose={() => setIsAdminSettingsOpen(false)} />
-        </>
-      )}
-
-      {isBackupHistoryOpen && (
-        <>
-          <BackupHistoryPanel onClose={() => setIsBackupHistoryOpen(false)} />
-        </>
-      )}
-
-      {isRuntimePinsOpen && (
-        <>
-          <RuntimePinPanel onClose={() => setIsRuntimePinsOpen(false)} />
-        </>
-      )}
-
-      {isSourceStatusOpen && (
-        <>
-          <SourceStatusPanel onClose={() => setIsSourceStatusOpen(false)} />
-        </>
-      )}
-
-      {/* Live Log Terminal Modal */}
-      {isLogModalOpen && logContainerId && (
-        <>
-          <OpsDialog
-            aria-label="실시간 콘솔 로그"
-
-
-            className="ops-modal max-w-4xl p-6 flex flex-col h-[75vh] relative"
-           onClose={() => setIsLogModalOpen(false)}>
-
-            {/* Modal Header */}
-            <div className="flex justify-between items-center pb-4 border-b border-line z-10 shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-subtle border border-line rounded-card">
-                  <Terminal className="w-5 h-5 text-brand" />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-strong text-base">실시간 콘솔 로그</h3>
-                  <p className="text-xs text-secondary mt-0.5 font-light">컨테이너 ID: {logContainerId}</p>
-                </div>
+                  <RotateCw
+                    className={bulkRestartingGroup === group.id ? 'animate-spin' : ''}
+                    size={14}
+                  />
+                  재시작
+                </Button>
               </div>
+            ))}
+          </div>
+        </section>
+      )} </>);
+}
 
-              <Button variant="ghost"
-                type="button"
-                aria-label="닫기"
-                autoFocus
-                onClick={() => setIsLogModalOpen(false)}
-                className="ops-icon-button"
-              >
-                <X className="w-5 h-5" />
-              </Button>
+function DashboardOverview({ model }: { model: DashboardModel }) {
+  const {
+    isWsConnected,
+    isLoading,
+    displayContainers,
+    observedHost,
+    diskUsage,
+    kpiCounts,
+  } = model;
+  return (      <section className="ops-overview" aria-labelledby="service-summary-title">
+        <div className="ops-summary">
+          <div className="ops-summary__header">
+            <div>
+              <h2 className="ops-section-title" id="service-summary-title">서비스 상태 요약</h2>
+              <p className="ops-section-copy">{observedHost ? `${observedHost} · ` : ''}현재 호스트의 Docker 관측값입니다.</p>
             </div>
-
-            {/* Terminal View */}
-            <div className="flex-grow bg-subtle border border-line rounded-card p-4 mt-4 font-mono text-xs overflow-y-auto leading-relaxed text-strong scrollbar-thin select-text">
-              <pre className="whitespace-pre-wrap select-text pr-2 text-left">
-                {liveLogs}
-              </pre>
-              <div ref={logEndRef} />
-            </div>
-
-            {/* Tip Footer */}
-            <div className="pt-4 text-xs text-secondary shrink-0 z-10 flex justify-between items-center">
-              <span className="font-light">* 최신 3,000줄의 로그가 메모리에 버퍼링되며 자동으로 아래로 스크롤됩니다.</span>
-              <span className="flex items-center gap-1 font-bold">
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ${isLogWsOpen ? 'bg-ok animate-ping' : 'bg-warn'}`}
-                />
-                {isLogWsOpen ? 'WS 스트리밍 활성화됨' : 'WS 스트리밍 종료됨'}
-              </span>
-            </div>
-          </OpsDialog>
-        </>
-      )}
-
-      {/* Performance History Chart Modal */}
-      {isChartModalOpen && chartContainerId && (
-        <>
-          <OpsDialog
-            aria-label="실시간 성능 차트"
-
-
-            className="ops-modal max-w-3xl p-6 flex flex-col relative"
-           onClose={() => { setIsChartModalOpen(false); setWsMetricsPoints([]); }}>
-
-            {/* Modal Header */}
-            <div className="flex justify-between items-center pb-4 border-b border-line z-10 shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-subtle border border-line rounded-card">
-                  <Activity className="w-5 h-5 text-brand" />
-                </div>
-                <div>
-                  <h3 className="font-semibold text-strong text-base">
-                    성능 이력 ({chartHours === 1 ? '최근 1시간' : `최근 ${chartHours}시간`})
-                  </h3>
-                  <p className="text-xs text-secondary mt-0.5 font-light font-mono">대상 컨테이너: {chartContainerId}</p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-secondary" htmlFor="chart-hours">
-                  기간
-                </label>
-                <select
-                  className="ops-input min-h-[36px] py-1 text-xs"
-                  id="chart-hours"
-                  onChange={(event) => setChartHours(Number(event.target.value))}
-                  value={chartHours}
-                >
-                  <option value={1}>1시간</option>
-                  <option value={6}>6시간</option>
-                  <option value={24}>24시간</option>
-                  <option value={72}>3일</option>
-                </select>
-              </div>
-
-              <Button variant="ghost"
-                type="button"
-                aria-label="닫기"
-                autoFocus
-                onClick={() => {
-                  setIsChartModalOpen(false);
-                  setWsMetricsPoints([]); // 이벤트 핸들러에서 직접 초기화하여 derived-state 경고 방지
-                }}
-                className="ops-icon-button"
-              >
-                <X className="w-5 h-5" />
-              </Button>
-            </div>
-
-            {/* Metric Tab Selector */}
-            <div className="flex border-b border-line mt-5 shrink-0 z-10">
-              <Button variant="ghost"
-                type="button"
-                onClick={() => setChartMetricType('cpu')}
-                className={`py-2 px-4 text-xs font-bold transition-[color,background-color,border-color] border-b-2 ${
-                  chartMetricType === 'cpu'
-                    ? 'border-brand text-brand'
-                    : 'border-transparent text-secondary hover:text-strong'
-                }`}
-              >
-                CPU 점유율 (%)
-              </Button>
-              <Button variant="ghost"
-                type="button"
-                onClick={() => setChartMetricType('memory')}
-                className={`py-2 px-4 text-xs font-bold transition-[color,background-color,border-color] border-b-2 ${
-                  chartMetricType === 'memory'
-                    ? 'border-brand text-brand'
-                    : 'border-transparent text-secondary hover:text-strong'
-                }`}
-              >
-                메모리 점유율 (%)
-              </Button>
-              <Button variant="ghost"
-                type="button"
-                onClick={() => setChartMetricType('io')}
-                className={`py-2 px-4 text-xs font-bold transition-[color,background-color,border-color] border-b-2 ${
-                  chartMetricType === 'io'
-                    ? 'border-brand text-brand'
-                    : 'border-transparent text-secondary hover:text-strong'
-                }`}
-              >
-                I/O Read / Write (Bytes)
-              </Button>
-            </div>
-
-            {/* Chart Container */}
-            <div className="h-[300px] mt-6 w-full z-10 bg-subtle border border-line rounded-card p-4 flex items-center justify-center">
-              {isLoadingChart && combinedChartData.length === 0 ? (
-                <div className="flex items-center gap-2 text-ink text-xs">
-                  <RefreshCw className="w-4 h-4 animate-spin text-brand" />
-                  <span>차트 기록을 조회하고 있습니다...</span>
-                </div>
-              ) : combinedChartData.length === 0 ? (
-                <div className="text-secondary text-xs py-20 font-light">
-                  최근 수집된 메트릭 이력이 없습니다. (수집기는 10초 주기로 수집하며 한달 저장됩니다.)
-                </div>
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart
-                    data={combinedChartData}
-                    margin={{ top: 5, right: 10, left: 10, bottom: 5 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--color-line)" />
-                    <XAxis
-                      dataKey="timestamp"
-                      tickFormatter={(value) =>
-                        formatTimestamp(value as string, { includeDate: chartHours > 1 })
-                      }
-                      stroke="var(--color-secondary)"
-                      style={{ fontSize: 14, fontFamily: 'var(--font-mono)' }}
-                      dy={5}
-                    />
-                    <YAxis
-                      stroke="var(--color-secondary)"
-                      style={{ fontSize: 14, fontFamily: 'var(--font-mono)' }}
-                      dx={-5}
-                      tickFormatter={(value) => {
-                        if (chartMetricType === 'io') {
-                          return formatBytes(value, 0);
-                        }
-                        return `${value}%`;
-                      }}
-                    />
-                    <RechartsTooltip
-                      contentStyle={{
-                        backgroundColor: 'var(--color-card)',
-                        border: '1px solid var(--color-line)',
-                        borderRadius: 'var(--radius-card)',
-                        fontSize: 14, // Increased fontSize to 14
-                        fontFamily: 'var(--font-mono)',
-                        color: 'var(--color-strong)'
-                      }}
-                      labelFormatter={(label) =>
-                        `수집 시각: ${formatTimestamp(label as string, { includeDate: true })}`
-                      }
-                      formatter={(value: any, name: any) => {
-                        const formattedVal = chartMetricType === 'io' ? formatBytes(value as number) : `${Number(value).toFixed(1)}%`;
-                        const labelName = name === 'cpu_pct' ? 'CPU 사용량' : name === 'mem_pct' ? '메모리 사용량' : name === 'io_read' ? 'Disk Read' : 'Disk Write';
-                        return [formattedVal, labelName];
-                      }}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 14, marginTop: 10 }} />
-
-                    {chartMetricType === 'cpu' && (
-                      <Line
-                        type="monotone"
-                        dataKey="cpu_pct"
-                        stroke="var(--color-ok)"
-                        strokeWidth={2}
-                        dot={false}
-                        activeDot={{ r: 4 }}
-                        name="cpu_pct"
-                      />
-                    )}
-
-                    {chartMetricType === 'memory' && (
-                      <Line
-                        type="monotone"
-                        dataKey="mem_pct"
-                        stroke="var(--color-brand)"
-                        strokeWidth={2}
-                        dot={false}
-                        activeDot={{ r: 4 }}
-                        name="mem_pct"
-                      />
-                    )}
-
-                    {chartMetricType === 'io' && (
-                      <>
-                        <Line
-                          type="monotone"
-                          dataKey="io_read"
-                          stroke="var(--color-warn)"
-                          strokeWidth={1.5}
-                          dot={false}
-                          name="io_read"
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="io_write"
-                          stroke="var(--color-danger)"
-                          strokeWidth={1.5}
-                          dot={false}
-                          name="io_write"
-                        />
-                      </>
-                    )}
-                  </LineChart>
-                </ResponsiveContainer>
-              )}
-            </div>
-
-            {/* Note */}
-            <p className="text-xs text-secondary mt-4 z-10 shrink-0 font-light">
-              * 웹소켓 연결 상태에서 매 10초마다 새로운 메트릭 데이터가 이 차트에 실시간으로 추가되어 업데이트(롤링)됩니다.
+            <span className="ops-status-badge">
+              <span className={`ops-status-dot ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
+              {isWsConnected ? '실시간 동기화' : 'HTTP 폴백'}
+            </span>
+          </div>
+          <StatStrip
+            ariaLabel="서비스 상태 요약"
+            isLoading={isLoading && displayContainers.length === 0}
+            items={[
+              { label: '전체', value: kpiCounts.total },
+              { label: '실행 중', value: kpiCounts.running, tone: 'ok' },
+              { label: '중지', value: kpiCounts.stopped, tone: 'neutral' },
+              { label: '상태·관측 오류', value: kpiCounts.error, tone: 'danger' },
+              ...(diskUsage
+                ? [{
+                    label: '정리 가능 용량',
+                    value: diskUsage.state === 'unknown'
+                      ? '확인 불가'
+                      : diskUsage.summary.text.replace('정리 시 약 ', '').replace(' 확보 가능', ''),
+                    tone: diskUsage.state === 'warn' ? 'danger' as const : 'neutral' as const,
+                    title: diskUsage.summary.detail,
+                  }]
+                : []),
+            ]}
+            size="lg"
+          />
+          {diskUsage?.state === 'warn' ? (
+            <p className="ops-inline-note ops-inline-note--danger">
+              {diskUsage.summary.detail} 정리는 SSH에서{' '}
+              <code className="font-mono">{diskUsage.summary.next_action}</code>
             </p>
-          </OpsDialog>
-        </>
-      )}
-
-      {/* Config Edit Modal */}
-      {isConfigModalOpen && configTargetContainer && (
-        <>
-          <OpsDialog
-            aria-label="컨테이너 설정 변경"
+          ) : null}
+        </div>
+        <ConnectionStatus model={model} />
+      </section>);
+}
 
 
-            className="ops-modal max-w-lg p-6 relative flex flex-col"
-           onClose={() => setIsConfigModalOpen(false)}>
+function EnvironmentSettings({ model }: { model: DashboardModel }) {
+  const {
+    inputEnvDict,
+    setInputEnvDict,
+    configValidation,
+  } = model;
+  return (<div className="space-y-3">
+                  <h4 className="text-xs font-semibold text-secondary">환경 변수</h4>
+                  <div className="grid grid-cols-1 gap-4">
+                    {Object.entries(inputEnvDict).map(([key, val]) => {
+                      const envError = configValidation.envErrors[key];
+                      // 계약이 고정한 값은 서버가 저장 시점에 거부한다. 편집 가능하게
+                      // 두면 "저장했는데 다음 재구축이 실패"하는 경로가 열린다.
+                      const locked = configValidation.lockedEnv.has(key);
+                      return (
+                        <div key={key} className="flex flex-col gap-1.5">
+                          <label className="text-xs text-secondary font-mono font-light" htmlFor={`env-input-${key}`}>
+                            {key}
+                            {locked ? <span className="ml-2 font-sans">· 읽기 전용</span> : null}
+                          </label>
+                          <input
+                            id={`env-input-${key}`}
+                            type="text"
+                            value={val}
+                            readOnly={locked}
+                            onChange={(e) => setInputEnvDict(prev => ({ ...prev, [key]: e.target.value }))}
+                            aria-invalid={!!envError}
+                            aria-describedby={
+                              envError
+                                ? `env-error-${key}`
+                                : locked
+                                  ? `env-locked-${key}`
+                                  : undefined
+                            }
+                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs focus-visible:outline-2 w-full transition-[color,background-color,border-color] font-mono ${
+                              locked ? 'text-secondary bg-subtle' : 'text-strong'
+                            } ${
+                              envError
+                                ? 'border-danger focus:border-danger focus-visible:outline-danger'
+                                : 'border-line focus:border-brand focus-visible:outline-brand'
+                            } focus:ring-0`}
+                            aria-label={`환경 변수 ${key}`} // Added aria-label for accessibility
+                            required
+                          />
+                          {locked && (
+                            <p id={`env-locked-${key}`} className="text-secondary text-[11px]">
+                              배포 계약이 고정한 값입니다. 바꾸려면 계약 자체를 수정해야 하며,
+                              여기서 바꾸면 다음 재구축이 거부됩니다.
+                            </p>
+                          )}
+                          {envError && (
+                            <p id={`env-error-${key}`} className="text-danger text-[11px]">{envError}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>);
+}
 
-            {/* Modal Header */}
-            <div className="flex justify-between items-center pb-4 border-b border-line z-10">
-              <h3 className="text-sm font-semibold flex items-center gap-2 text-strong">
-                <Settings className="w-4 h-4 text-brand" />
-                <span>컨테이너 설정 변경</span>
-              </h3>
-              <Button variant="ghost"
-                type="button"
-                aria-label="닫기"
-                autoFocus
-                onClick={() => setIsConfigModalOpen(false)}
-                className="ops-icon-button"
-              >
-                <X className="w-5 h-5" />
-              </Button>
-            </div>
-
-            {/* Modal Body / Form */}
-            <form onSubmit={handleConfigSubmit} className="flex-grow overflow-y-auto pr-2 mt-4 space-y-5 z-10 select-text scrollbar-thin">
-              <div className="p-4 bg-subtle border border-line rounded-card text-xs text-ink leading-relaxed">
-                <p className="font-semibold text-strong mb-1">{configTargetContainer.display_name} 설정</p>
-                <p className="font-light">docker-compose.yml 파일 내 설정을 변경합니다. 변경 후 컨테이너가 중지/삭제된 뒤 재생성됩니다.</p>
-              </div>
-
-              {/* Ports section */}
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <h4 className="text-xs font-semibold text-secondary">포트 매핑 (host:container)</h4>
-                  <Button variant="ghost"
-                    type="button"
-                    onClick={() => portFields.append({ value: '' })}
-                    className="text-xs text-brand hover:underline font-semibold"
-                  >
-                    + 추가
-                  </Button>
-                </div>
-                <div className="space-y-2">
-                  {/* RHF 행 식별자는 입력·삭제 후에도 남은 DOM의 초점을 보존한다. */}
-                  {portFields.fields.map((field, idx) => (
-                    <div key={field.id}>
-                      <div className="flex gap-2 items-center">
-                        <input
-                          type="text"
-                          {...configForm.register(`ports.${idx}.value`)}
-                          placeholder="e.g. 5432:5432"
-                          aria-invalid={!!configValidation.portErrors[idx]}
-                          aria-describedby={
-                            configValidation.portErrors[idx] ? `port-error-${idx}` : undefined
-                          }
-                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong focus-visible:outline-2 flex-grow font-mono ${
-                            configValidation.portErrors[idx]
-                              ? 'border-danger focus:border-danger focus-visible:outline-danger'
-                              : 'border-line focus:border-brand focus-visible:outline-brand'
-                          } focus:ring-0`}
-                          aria-label={`포트 매핑 ${idx + 1}`} // Added aria-label for accessibility
-                          required
-                        />
-                        <Button variant="ghost"
-                          type="button"
-                          onClick={() => portFields.remove(idx)}
-                          className="text-danger hover:text-danger/80 p-1.5"
-                          aria-label={`포트 매핑 ${idx + 1} 삭제`} // Added aria-label for accessibility
-                        >
-                          <X className="w-4.5 h-4.5" />
-                        </Button>
-                      </div>
-                      {configValidation.portErrors[idx] && (
-                        <p id={`port-error-${idx}`} className="text-danger text-[11px] mt-1 pl-1">
-                          {configValidation.portErrors[idx]}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                  {inputPortsList.length === 0 && (
-                    <p className="text-xs text-secondary font-light italic">포트 바인딩 설정이 없습니다.</p>
-                  )}
-                </div>
-              </div>
-
-              {/* Volumes section — 서버가 불변 계약으로 거부하므로 처음부터 읽기 전용이다.
-                  편집을 허용한 뒤 저장 시점에 경고하면 사용자는 이미 값을 잃은 뒤다. */}
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <h4 className="text-xs font-semibold text-secondary">
-                    볼륨 마운트 (읽기 전용)
-                  </h4>
-                </div>
-                <div className="space-y-2">
-                  <p className="text-xs text-secondary">
-                    볼륨은 이 화면에서 바꿀 수 없습니다. 데이터 위치가 바뀌면 기존 데이터를
-                    잃을 수 있어 서버가 변경을 거부합니다.
-                  </p>
-                  {inputVolumesList.map((vol) => (
-                    <p
-                      className="bg-subtle border border-line rounded-card px-4 py-2 text-xs text-secondary font-mono break-all"
-                      key={vol}
-                    >
-                      {vol}
-                    </p>
-                  ))}
-                  {inputVolumesList.length === 0 && (
-                    <p className="text-xs text-secondary font-light italic">볼륨 바인딩 설정이 없습니다.</p>
-                  )}
-                </div>
-              </div>
-
-              {/* Networks section */}
-              <div className="space-y-3">
+function NetworkSettings({ model }: { model: DashboardModel }) {
+  const {
+    configForm,
+    networkFields,
+    inputNetworksList,
+    configValidation,
+  } = model;
+  return (<div className="space-y-3">
                 <div className="flex justify-between items-center">
                   <h4 className="text-xs font-semibold text-secondary">네트워크 (default, etc.)</h4>
                   <Button variant="ghost"
@@ -1813,77 +2064,151 @@ export default function DashboardClient() {
                     <p className="text-xs text-secondary font-light italic">네트워크 설정이 없습니다.</p>
                   )}
                 </div>
-              </div>
+              </div>);
+}
 
-              {/* Env Variables section */}
-              {Object.keys(inputEnvDict).length > 0 && (
-                <div className="space-y-3">
-                  <h4 className="text-xs font-semibold text-secondary">환경 변수</h4>
-                  <div className="grid grid-cols-1 gap-4">
-                    {Object.entries(inputEnvDict).map(([key, val]) => {
-                      const envError = configValidation.envErrors[key];
-                      // 계약이 고정한 값은 서버가 저장 시점에 거부한다. 편집 가능하게
-                      // 두면 "저장했는데 다음 재구축이 실패"하는 경로가 열린다.
-                      const locked = configValidation.lockedEnv.has(key);
-                      return (
-                        <div key={key} className="flex flex-col gap-1.5">
-                          <label className="text-xs text-secondary font-mono font-light" htmlFor={`env-input-${key}`}>
-                            {key}
-                            {locked ? <span className="ml-2 font-sans">· 읽기 전용</span> : null}
-                          </label>
-                          <input
-                            id={`env-input-${key}`}
-                            type="text"
-                            value={val}
-                            readOnly={locked}
-                            onChange={(e) => setInputEnvDict(prev => ({ ...prev, [key]: e.target.value }))}
-                            aria-invalid={!!envError}
-                            aria-describedby={
-                              envError
-                                ? `env-error-${key}`
-                                : locked
-                                  ? `env-locked-${key}`
-                                  : undefined
-                            }
-                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs focus-visible:outline-2 w-full transition-[color,background-color,border-color] font-mono ${
-                              locked ? 'text-secondary bg-subtle' : 'text-strong'
-                            } ${
-                              envError
-                                ? 'border-danger focus:border-danger focus-visible:outline-danger'
-                                : 'border-line focus:border-brand focus-visible:outline-brand'
-                            } focus:ring-0`}
-                            aria-label={`환경 변수 ${key}`} // Added aria-label for accessibility
-                            required
-                          />
-                          {locked && (
-                            <p id={`env-locked-${key}`} className="text-secondary text-[11px]">
-                              배포 계약이 고정한 값입니다. 바꾸려면 계약 자체를 수정해야 하며,
-                              여기서 바꾸면 다음 재구축이 거부됩니다.
-                            </p>
-                          )}
-                          {envError && (
-                            <p id={`env-error-${key}`} className="text-danger text-[11px]">{envError}</p>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
+function VolumeSettings({ model }: { model: DashboardModel }) {
+  const {
+    inputVolumesList,
+  } = model;
+  return (<div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <h4 className="text-xs font-semibold text-secondary">
+                    볼륨 마운트 (읽기 전용)
+                  </h4>
                 </div>
-              )}
+                <div className="space-y-2">
+                  <p className="text-xs text-secondary">
+                    볼륨은 이 화면에서 바꿀 수 없습니다. 데이터 위치가 바뀌면 기존 데이터를
+                    잃을 수 있어 서버가 변경을 거부합니다.
+                  </p>
+                  {inputVolumesList.map((vol) => (
+                    <p
+                      className="bg-subtle border border-line rounded-card px-4 py-2 text-xs text-secondary font-mono break-all"
+                      key={vol}
+                    >
+                      {vol}
+                    </p>
+                  ))}
+                  {inputVolumesList.length === 0 && (
+                    <p className="text-xs text-secondary font-light italic">볼륨 바인딩 설정이 없습니다.</p>
+                  )}
+                </div>
+              </div>);
+}
 
-              {/* 잠금이 뚫린 경우의 최종 안내. 정상 경로에서는 나타나지 않는다. */}
-              {configValidation.lockedEnvChanged.length > 0 && (
-                <p aria-live="polite" className="text-danger text-xs">
-                  배포 계약이 고정한 환경변수가 바뀌었습니다:{' '}
-                  {configValidation.lockedEnvChanged.join(', ')}. 저장할 수 없습니다.
-                </p>
-              )}
+function PortSettings({ model }: { model: DashboardModel }) {
+  const {
+    configForm,
+    portFields,
+    inputPortsList,
+    configValidation,
+  } = model;
+  return (<div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <h4 className="text-xs font-semibold text-secondary">포트 매핑 (host:container)</h4>
+                  <Button variant="ghost"
+                    type="button"
+                    onClick={() => portFields.append({ value: '' })}
+                    className="text-xs text-brand hover:underline font-semibold"
+                  >
+                    + 추가
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  {/* RHF 행 식별자는 입력·삭제 후에도 남은 DOM의 초점을 보존한다. */}
+                  {portFields.fields.map((field, idx) => (
+                    <div key={field.id}>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          type="text"
+                          {...configForm.register(`ports.${idx}.value`)}
+                          placeholder="e.g. 5432:5432"
+                          aria-invalid={!!configValidation.portErrors[idx]}
+                          aria-describedby={
+                            configValidation.portErrors[idx] ? `port-error-${idx}` : undefined
+                          }
+                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong focus-visible:outline-2 flex-grow font-mono ${
+                            configValidation.portErrors[idx]
+                              ? 'border-danger focus:border-danger focus-visible:outline-danger'
+                              : 'border-line focus:border-brand focus-visible:outline-brand'
+                          } focus:ring-0`}
+                          aria-label={`포트 매핑 ${idx + 1}`} // Added aria-label for accessibility
+                          required
+                        />
+                        <Button variant="ghost"
+                          type="button"
+                          onClick={() => portFields.remove(idx)}
+                          className="text-danger hover:text-danger/80 p-1.5"
+                          aria-label={`포트 매핑 ${idx + 1} 삭제`} // Added aria-label for accessibility
+                        >
+                          <X className="w-4.5 h-4.5" />
+                        </Button>
+                      </div>
+                      {configValidation.portErrors[idx] && (
+                        <p id={`port-error-${idx}`} className="text-danger text-[11px] mt-1 pl-1">
+                          {configValidation.portErrors[idx]}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                  {inputPortsList.length === 0 && (
+                    <p className="text-xs text-secondary font-light italic">포트 바인딩 설정이 없습니다.</p>
+                  )}
+                </div>
+              </div>);
+}
 
-              {/* 변경 사항 미리보기: 제출 전 무엇이 바뀌는지 요약한다. */}
-              {(configValidation.portsDiff.changed ||
-                configValidation.networksDiff.changed ||
-                configValidation.envDiff.length > 0) && (
-                <div
+function ConnectionStatus({ model }: { model: DashboardModel }) {
+  const {
+    isWsConnected,
+    managerHealth,
+  } = model;
+  return (<aside className="ops-signal" aria-label="연결 상태">
+          <div className="ops-signal__item">
+            <p className="ops-signal__label">연결 상태</p>
+            <p className="ops-signal__value">
+              <span className={`ops-status-dot ${isWsConnected ? 'bg-ok animate-pulse' : 'bg-warn'}`} />
+              {isWsConnected ? 'WebSocket 연결됨' : '폴백 폴링 중'}
+            </p>
+            <p className="ops-signal__detail">{isWsConnected ? '상태와 차트가 수신 프레임에 맞춰 갱신됩니다.' : 'WebSocket 복구 전에는 HTTP 조회 결과를 표시합니다.'}</p>
+          </div>
+          {/* "관리도구 자신이 정상인가"는 비전문 운영자의 첫 질문인데 답할 화면이
+              없었다. /health는 이미 있었지만 어느 UI에도 표시되지 않았다. */}
+          <div className="ops-signal__item ops-signal__divider">
+            <p className="ops-signal__label">관리도구 상태</p>
+            <p className="ops-signal__value">
+              <span
+                className={`ops-status-dot ${
+                  managerHealth === 'healthy'
+                    ? 'bg-ok'
+                    : managerHealth === 'checking'
+                      ? 'bg-warn animate-pulse'
+                      : 'bg-danger'
+                }`}
+              />
+              {managerHealth === 'healthy'
+                ? '관리도구 정상'
+                : managerHealth === 'checking'
+                  ? '관리도구 확인 중'
+                  : '관리도구 응답 없음'}
+            </p>
+            <p className="ops-signal__detail">
+              {managerHealth === 'healthy'
+                ? '백엔드 API가 응답하고 있습니다.'
+                : managerHealth === 'checking'
+                  ? '백엔드 상태를 확인하는 중입니다.'
+                  : '백엔드가 응답하지 않습니다. 아래 컨테이너 상태도 최신이 아닐 수 있습니다.'}
+            </p>
+          </div>
+        </aside>);
+}
+
+function ConfigChangePreview({ model }: { model: DashboardModel }) {
+  const {
+    configValidation,
+  } = model;
+ return (<div
                   aria-live="polite"
                   className="space-y-2 p-4 bg-subtle border border-line rounded-card text-xs"
                 >
@@ -1922,65 +2247,5 @@ export default function DashboardClient() {
                       ))}
                     </div>
                   )}
-                </div>
-              )}
-
-              {/* Submit / Reset Actions */}
-              <div className="flex gap-3 mt-6">
-                <Button variant="ghost"
-                  type="button"
-                  onClick={async () => {
-                    if (await confirm('정말로 설정을 기본값으로 원복하시겠습니까?')) {
-                      resetMutation.mutate(configTargetContainer.id);
-                    }
-                  }}
-                  disabled={resetMutation.isPending || configMutation.isPending}
-                  className="ops-button ops-button--danger flex-1 text-danger border-danger disabled:bg-subtle disabled:text-secondary"
-                >
-                  {resetMutation.isPending ? '원복 중...' : '기본값 원복'}
-                </Button>
-
-                <Button variant="ghost"
-                  type="submit"
-                  disabled={
-                    configMutation.isPending ||
-                    resetMutation.isPending ||
-                    configValidation.hasBlockingIssue
-                  }
-                  title={
-                    configValidation.hasBlockingIssue
-                      ? '위에 표시된 오류를 먼저 해결하세요'
-                      : undefined
-                  }
-                  className="ops-button ops-button--primary flex-1"
-                >
-                  {configMutation.isPending ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>적용 중...</span>
-                    </>
-                  ) : (
-                    <span>적용 및 재생성</span>
-                  )}
-                </Button>
-              </div>
-            </form>
-          </OpsDialog>
-        </>
-      )}
-
-      {detailContainer && (
-        <ContainerDetailModal
-          containerId={detailContainer.id}
-          containerLabel={detailContainer.display_name || detailContainer.name}
-          targetId={detailTarget?.id ?? null}
-          targetServices={detailTarget?.resolved_services ?? null}
-          onClose={closeDetailModal}
-        />
-      )}
-
-      <ToastStack items={toasts} onDismiss={dismissToast} />
-    {confirmation}
-    </AppShell>
-  );
+                </div>);
 }

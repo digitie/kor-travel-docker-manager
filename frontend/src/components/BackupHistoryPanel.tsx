@@ -88,7 +88,7 @@ function formatTimestamp(createdAtUnix: number): string {
   return new Date(createdAtUnix * 1000).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
 }
 
-export default function BackupHistoryPanel({ onClose }: { onClose: () => void }) {
+function useBackupHistoryPanelModel({ onClose }: { onClose: () => void }) {
   const { confirm, confirmation } = useConfirm();
   const [role, setRole] = useState<string>('all');
   const [jobId, setJobId] = useState<string | null>(null);
@@ -183,6 +183,7 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
         timeout_seconds: BACKUP_TIMEOUT_SECONDS,
       }),
     onSuccess: (started) => {
+      queryClient.setQueryData(['backup-job', role, started.job_id], started);
       setJobError(null);
       setAuditWarning(started.audit_warning ?? null);
       setJobId(started.job_id);
@@ -222,7 +223,41 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
     })
     .filter((row): row is { role: string; hours: number | null; stale: boolean } => row !== null);
 
-  return (
+    return {
+    onClose,
+    confirm,
+    confirmation,
+    role,
+    setRole,
+    jobError,
+    auditWarning,
+    nowUnix,
+    dialogRef,
+    isLoading,
+    isFetching,
+    error,
+    refetch,
+    offboxSync,
+    job,
+    jobQueryError,
+    createBackup,
+    backups,
+    running,
+    roleOptions,
+    freshness,
+  };
+}
+
+type BackupHistoryPanelModel = ReturnType<typeof useBackupHistoryPanelModel>;
+
+export default function BackupHistoryPanel(props: Parameters<typeof useBackupHistoryPanelModel>[0]) {
+  const model = useBackupHistoryPanelModel(props);
+  const {
+    onClose,
+    confirmation,
+    dialogRef,
+  } = model;
+return (
     <OpsDialog
       aria-labelledby="backup-history-title"
 
@@ -255,50 +290,127 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
       </div>
 
       <div className="overflow-y-auto p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <div className="flex flex-wrap gap-2">
-            {roleOptions.map((option) => (
-              <Button variant="ghost"
-                className={`inline-flex items-center gap-2 min-h-[36px] rounded-card px-3 text-xs font-semibold border ${
-                  role === option.value
-                    ? 'ops-button ops-button--primary'
-                    : 'ops-button'
-                }`}
-                key={option.value}
-                onClick={() => setRole(option.value)}
-                type="button"
-              >
-                {option.label}
-              </Button>
-            ))}
-          </div>
-          <div className="flex gap-2">
-            <Button variant="ghost"
-              className="ops-button"
-              disabled={role === 'all' || running || createBackup.isPending}
-              onClick={async () => {
-                if (role === 'all') return;
-                if (!(await confirm(durationWarning(role)))) return;
-                createBackup.mutate();
-              }}
-              title={role === 'all' ? '백업할 role을 하나 선택하세요' : undefined}
-              type="button"
-            >
-              백업 생성
-            </Button>
-            <Button variant="ghost"
-              className="ops-button"
-              disabled={isFetching}
-              onClick={() => void refetch()}
-              type="button"
-            >
-              <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
-              새로고침
-            </Button>
-          </div>
-        </div>
+<BackupControls model={model} /><BackupRetentionStatus model={model} /><BackupJobStatus model={model} /><BackupManifestTable model={model} />
+      </div>
+    {confirmation}
+    </OpsDialog>
+  );
 
-        {role !== 'all' ? (
+}
+
+function BackupManifestTable({ model }: { model: BackupHistoryPanelModel }) {
+  const {
+    isLoading,
+    error,
+    backups,
+  } = model;
+  return (<>         {isLoading ? (
+          <p className="text-sm text-secondary">백업 이력을 불러오는 중입니다.</p>
+        ) : error ? (
+          <p className="text-sm text-danger">
+            {error instanceof Error ? error.message : String(error)}
+          </p>
+        ) : backups.length === 0 ? (
+          <p className="text-sm text-secondary text-center py-12">저장된 백업이 없습니다.</p>
+        ) : (
+          <div className="border-t border-line pt-2">
+            <VirtualTable ariaLabel="백업 이력" virtualized={false}
+              data={backups.map((backup) => isUnreadableBackupEntry(backup)
+                ? { id: `unreadable-${backup.filename}`, created: <span role="alert" className="text-danger">읽을 수 없는 백업 기록: {backup.filename} — {backup.reason}</span>, role: '', size: '', head: '', sha: <></>, filename: backup.filename }
+                : { id: `${backup.role}-${backup.backup_filename}`, created: <>{formatTimestamp(backup.created_at_unix)}</>, role: backup.role,
+                    size: formatBytes(backup.byte_size), head: backup.alembic_head ?? '—',
+                    sha: <span title={backup.sha256}>{backup.sha256.slice(0, 12)}…</span>, filename: backup.backup_filename })}
+              getRowId={(row) => row.id}
+              columns={[
+                { accessorKey: 'created', enableSorting: false, header: '생성 시각' },
+                { accessorKey: 'role', enableSorting: false, header: '역할' },
+                { accessorKey: 'size', enableSorting: false, header: '크기' },
+                { accessorKey: 'head', enableSorting: false, header: 'alembic' },
+                { accessorKey: 'sha', enableSorting: false, header: 'SHA-256' },
+                { accessorKey: 'filename', enableSorting: false, header: '파일명' },
+              ]} />
+          </div>
+        )} </>);
+}
+
+function BackupJobStatus({ model }: { model: BackupHistoryPanelModel }) {
+  const {
+    jobError,
+    auditWarning,
+    nowUnix,
+    job,
+    jobQueryError,
+  } = model;
+  return (<>         {job ? (
+          <div
+            aria-live="polite"
+            className={`rounded-card border p-3 mb-4 text-xs ${
+              job.state === 'failed' ? 'border-danger' : 'border-line'
+            }`}
+          >
+            {job.state === 'running' ? (
+              <p className="text-strong">
+                {job.key} 백업이 진행 중입니다 ·{' '}
+                {formatElapsed(job.started_at_unix, nowUnix)} 경과. 이 화면을 닫아도
+                계속됩니다.
+              </p>
+            ) : job.state === 'succeeded' ? (
+              <p className="text-strong">
+                {job.key} 백업이 끝났습니다
+                {job.result ? ` — ${job.result.backup_filename}` : ''}.
+              </p>
+            ) : (
+              <>
+                <p className="text-danger font-semibold">
+                  {job.key} 백업이 실패했습니다. 이 백업은 만들어지지 않았습니다.
+                </p>
+                {/* 원문은 영어 예외 문자열이라 그대로가 답은 아니지만, 운영자가 이슈에
+                    붙여넣을 값이므로 버리지 않고 그대로 남긴다. */}
+                <p className="text-secondary mt-1 break-all font-mono">{job.error}</p>
+              </>
+            )}
+          </div>
+        ) : null}
+
+        {jobQueryError ? (
+          <div className="mb-4">
+            {/* 관리도구가 재기동되면 job 기록은 사라진다(프로세스 로컬). 그때 계속
+                "진행 중"이라고 우기면 안 된다 — 기록을 잃었다고 말하고, 실제로 남은
+                것은 아래 목록이 정본이라고 알려 준다. */}
+            <InlineError error={humanizeError(jobQueryError, '백업 진행 상태 확인')} />
+          </div>
+        ) : null}
+
+        {jobError ? (
+          <div className="mb-4">
+            <InlineError error={jobError} />
+          </div>
+        ) : null}
+
+        {auditWarning ? (
+          <div className="mb-4">
+            {/* 백업 자체는 이미 시작됐다 — jobError처럼 실패를 알리는 게 아니라
+                "시작은 됐지만 기록이 하나 빠졌다"는 덜 급한 경고다. */}
+            <InlineError
+              error={{
+                title: '백업은 시작됐지만 감사 기록에 실패했습니다.',
+                hint: '백업 진행에는 영향이 없습니다. 아래 원문을 운영자에게 전달하세요.',
+                raw: auditWarning,
+              }}
+            />
+          </div>
+        ) : null}
+
+ </>);
+}
+
+function BackupRetentionStatus({ model }: { model: BackupHistoryPanelModel }) {
+  const {
+    role,
+    offboxSync,
+    freshness,
+  } = model;
+  return (<>         {role !== 'all' ? (
           // 목록에 보인다고 복원할 수 있는 것이 아니다 — dump가 잘렸거나 digest가
           // 어긋났거나 live schema가 백업 시점과 달라도 이 표는 똑같이 보인다.
           <div className="mb-4">
@@ -361,95 +473,62 @@ export default function BackupHistoryPanel({ onClose }: { onClose: () => void })
           <div className="mb-4" />
         )}
 
-        {job ? (
-          <div
-            aria-live="polite"
-            className={`rounded-card border p-3 mb-4 text-xs ${
-              job.state === 'failed' ? 'border-danger' : 'border-line'
-            }`}
-          >
-            {job.state === 'running' ? (
-              <p className="text-strong">
-                {job.key} 백업이 진행 중입니다 ·{' '}
-                {formatElapsed(job.started_at_unix, nowUnix)} 경과. 이 화면을 닫아도
-                계속됩니다.
-              </p>
-            ) : job.state === 'succeeded' ? (
-              <p className="text-strong">
-                {job.key} 백업이 끝났습니다
-                {job.result ? ` — ${job.result.backup_filename}` : ''}.
-              </p>
-            ) : (
-              <>
-                <p className="text-danger font-semibold">
-                  {job.key} 백업이 실패했습니다. 이 백업은 만들어지지 않았습니다.
-                </p>
-                {/* 원문은 영어 예외 문자열이라 그대로가 답은 아니지만, 운영자가 이슈에
-                    붙여넣을 값이므로 버리지 않고 그대로 남긴다. */}
-                <p className="text-secondary mt-1 break-all font-mono">{job.error}</p>
-              </>
-            )}
-          </div>
-        ) : null}
+ </>);
+}
 
-        {jobQueryError ? (
-          <div className="mb-4">
-            {/* 관리도구가 재기동되면 job 기록은 사라진다(프로세스 로컬). 그때 계속
-                "진행 중"이라고 우기면 안 된다 — 기록을 잃었다고 말하고, 실제로 남은
-                것은 아래 목록이 정본이라고 알려 준다. */}
-            <InlineError error={humanizeError(jobQueryError, '백업 진행 상태 확인')} />
+function BackupControls({ model }: { model: BackupHistoryPanelModel }) {
+  const {
+    confirm,
+    role,
+    setRole,
+    isFetching,
+    refetch,
+    createBackup,
+    running,
+    roleOptions,
+  } = model;
+  return (        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <div className="flex flex-wrap gap-2">
+            {roleOptions.map((option) => (
+              <Button variant="ghost"
+                className={`inline-flex items-center gap-2 min-h-[36px] rounded-card px-3 text-xs font-semibold border ${
+                  role === option.value
+                    ? 'ops-button ops-button--primary'
+                    : 'ops-button'
+                }`}
+                key={option.value}
+                onClick={() => setRole(option.value)}
+                type="button"
+              >
+                {option.label}
+              </Button>
+            ))}
           </div>
-        ) : null}
-
-        {jobError ? (
-          <div className="mb-4">
-            <InlineError error={jobError} />
-          </div>
-        ) : null}
-
-        {auditWarning ? (
-          <div className="mb-4">
-            {/* 백업 자체는 이미 시작됐다 — jobError처럼 실패를 알리는 게 아니라
-                "시작은 됐지만 기록이 하나 빠졌다"는 덜 급한 경고다. */}
-            <InlineError
-              error={{
-                title: '백업은 시작됐지만 감사 기록에 실패했습니다.',
-                hint: '백업 진행에는 영향이 없습니다. 아래 원문을 운영자에게 전달하세요.',
-                raw: auditWarning,
+          <div className="flex gap-2">
+            <Button variant="ghost"
+              className="ops-button"
+              disabled={role === 'all' || running || createBackup.isPending}
+              onClick={async () => {
+                if (role === 'all') return;
+                if (!(await confirm(durationWarning(role)))) return;
+                createBackup.mutate();
               }}
-            />
+              title={role === 'all' ? '백업할 role을 하나 선택하세요' : undefined}
+              type="button"
+            >
+              백업 생성
+            </Button>
+            <Button variant="ghost"
+              className="ops-button"
+              disabled={isFetching}
+              onClick={() => void refetch()}
+              type="button"
+            >
+              <RefreshCw className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} />
+              새로고침
+            </Button>
           </div>
-        ) : null}
+        </div>
 
-        {isLoading ? (
-          <p className="text-sm text-secondary">백업 이력을 불러오는 중입니다.</p>
-        ) : error ? (
-          <p className="text-sm text-danger">
-            {error instanceof Error ? error.message : String(error)}
-          </p>
-        ) : backups.length === 0 ? (
-          <p className="text-sm text-secondary text-center py-12">저장된 백업이 없습니다.</p>
-        ) : (
-          <div className="border-t border-line pt-2">
-            <VirtualTable ariaLabel="백업 이력" virtualized={false}
-              data={backups.map((backup) => isUnreadableBackupEntry(backup)
-                ? { id: `unreadable-${backup.filename}`, created: <span role="alert" className="text-danger">읽을 수 없는 백업 기록: {backup.filename} — {backup.reason}</span>, role: '', size: '', head: '', sha: <></>, filename: backup.filename }
-                : { id: `${backup.role}-${backup.backup_filename}`, created: <>{formatTimestamp(backup.created_at_unix)}</>, role: backup.role,
-                    size: formatBytes(backup.byte_size), head: backup.alembic_head ?? '—',
-                    sha: <span title={backup.sha256}>{backup.sha256.slice(0, 12)}…</span>, filename: backup.backup_filename })}
-              getRowId={(row) => row.id}
-              columns={[
-                { accessorKey: 'created', header: '생성 시각' },
-                { accessorKey: 'role', header: '역할' },
-                { accessorKey: 'size', header: '크기' },
-                { accessorKey: 'head', header: 'alembic' },
-                { accessorKey: 'sha', header: 'SHA-256' },
-                { accessorKey: 'filename', header: '파일명' },
-              ]} />
-          </div>
-        )}
-      </div>
-    {confirmation}
-    </OpsDialog>
-  );
+);
 }

@@ -9,8 +9,8 @@
     "lint": "eslint .",
     "type-check": "tsc --noEmit",
     "test": "TZ=Asia/Seoul vitest run",
-    "check:dependencies": "node node_modules/@kor-travel/ui/check-dependencies.mjs --lock package-lock.json --workspace \"\" --artifacts common-artifacts.json",
-    "doctor": "react-doctor . --yes --no-telemetry --blocking error",
+    "check:dependencies": "node node_modules/@kor-travel/ui/check-dependencies.mjs --lock package-lock.json --workspace \"\" --artifacts common-artifacts.json --source src",
+    "doctor": "react-doctor . --yes --no-telemetry --scope full --blocking warning",
     "test:e2e": "playwright test"
   },
   "dependencies": {

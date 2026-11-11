@@ -1,8 +1,9 @@
 /* Hallmark · Ember · macrostructure: Rail-Workbench · design-system: DESIGN.md */
 @import "tailwindcss";
-@import "pretendard/dist/web/variable/pretendardvariable.css";
+@import "@kor-travel/tokens/font.css";
 @import "@kor-travel/tokens/theme.css";
 @import "@kor-travel/tokens/shadcn.css";
+@import "@kor-travel/tokens/radix.css";
 @source "../../node_modules/@kor-travel/ui/dist";
 @source inline("sm:max-w-lg sm:max-w-3xl sm:max-w-4xl sm:max-w-5xl");
 @import "../../tokens.css";
