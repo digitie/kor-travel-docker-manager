@@ -1799,3 +1799,12 @@ map_revision을 바꾸지 않으며 최신 UI의 authority는 component current�
 - (open) 공용 Dagster gateway의 재생성 창(plane drift 경로 밖).
 - (open) rustfs·prometheus·grafana·cadvisor·Concierge(activate-concierge 전)의 재생성 창.
 - (open) odroid `/opt/kor-travel-odroid/compose.yml`·`compose-mon.yml`(T-OPS-01b 이관과 함께)과 transport 저장소 compose에 같은 정의.
+
+
+### ADR-60 후속 — 기존 component 그룹의 UI 선택
+
+Geo/Weather의 UI 단독 후보는 targets의 등록된 UI 역할을 기존 main current 안에서 선택한다.
+새 group을 중복 등록하거나 paired pin을 다른 앱에 확장하지 않는다. Map의 기존 paired 후보
+조건은 보존하고 Docker 단일 UI 실행·관측·current 발행 코드를 공유한다. 별도 봉인·digest·phase
+gate는 만들지 않는다. 적용 절차와 실패 후 실제 상태 구분은 [현재 release](service-current-release.md)의
+기존 혼합 그룹 UI 절을 따른다. 이 문서는 구현 결정이며 운영 수용 완료를 주장하지 않는다.

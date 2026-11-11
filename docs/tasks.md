@@ -1,3 +1,9 @@
+## 2026-11-12 — 공통 UI 배포의 기존 component 선택
+
+- [x] 기존 current와 그룹 layout을 유지하는 등록 UI selector·공유 실행 본문·paired 우회 거부·focused372/Ruff를 구현했다.
+- [ ] 정확 CI·원 A/B 독립 검토 후 PR을 병합하고 SDK를 설치한다.
+- [ ] 승인 merged SHA 이미지로 실제 UI-only 적용·비선택 보존·current/로그인/health를 수용한다.
+
 ## 2026-11-03 — 상시 서비스 로그 상한(ADR-61)
 
 - [x] compose `x-logging`과 렌더 모델 계약 테스트, 공용 PostgreSQL 허용 목록·driver 검사, 운영 절([prod-deployment §11](prod-deployment.md)).

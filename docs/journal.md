@@ -1,3 +1,10 @@
+## 2026-11-12 — 기존 component main의 UI 단독 후보 적용
+
+- Geo/Weather 기존 main과 current layout을 유지하며 등록 UI 하나만 선택하는 apply-component-ui를 추가한다. UI 역할과 canonical URL은 targets 정본 한 곳, runtime/group은 기존 등록에서 유도한다.
+- Map의 기존 source/G/paired receipt·companion 조건을 보존하고 단일 UI 실행·관측·발행 본문을 공유했다. Geo/Weather는 기존 component current를 기준선으로 쓰며 paired 경로 우회는 거부한다.
+- 수정 전 기존5모듈169 PASS, 본문 추출 후 같은169 PASS. 신규60·registry 등을 포함한 focused372 PASS, 전체 backend Ruff PASS다. API/DB/manifest schema·새 그룹·영구 gate·공용 인프라 수명주기를 추가하지 않았다.
+- 정확 CI·원 A/B 독립 리뷰·PR·SDK 설치와 실제 Geo/Weather 적용은 후속이다. 기존 실패·당시 조건부 판정·운영 기록을 덮어쓰지 않는다.
+
 # 2026-11-12 — 발행 직전 실패의 진단 보존
 
 ## 2026-11-12: 공통 C11과 FocusScope2 최종 후보 고정
