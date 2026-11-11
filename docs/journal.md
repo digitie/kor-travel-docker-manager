@@ -1,5 +1,11 @@
 # 2026-11-12 — 발행 직전 실패의 진단 보존
 
+## 2026-11-12: 공통 C11과 FocusScope2 최종 후보 고정
+
+- C11 UI/tokens/7종 원장과 FocusScope `1.3.1+kortravel.fix.2`를 채택했다. 엔진은 직접 file 의존성과 루트 override로 고정하고 앱은 공통 UI만 import한다. 미사용 Scope1 vendor는 제거했다. 공통 workflow 코드는 55a921b를 유지한다.
+- frontend node_modules symlink를 보존하고 물리 임시 스테이지에서 세 패키지만 설치했다. 설치153파일 원본 일치, Radix 소비6곳 동일 Scope2 해석, 앱 guard와 exact55 중앙 guard/최종 원장 검증을 통과했다.
+- 외부 Scope 런타임이 바뀌므로 n150 fresh build와 브라우저2검증은 별도 gate다. 공유 두 슬롯 점유로 대기하며 과거 .next를 최종 증거로 재사용하지 않는다.
+
 - 1e32524의 최종 A/B 재검토에서 이전 수용/발행 안전성 P2는 모두 닫혔으나, 늦은 guard 예외가 CLI의 일반 오류 응답으로 축약되는 항목이 남았다. baseline/current/nonselected 세 guard의3·4·5번째 경계9개가 수정 전 FAIL임을 보존했다.
 - mutation 이후 healthy·metadata 발행 전체를 같은 구조화 실패 경계로 묶었다. 늦은 guard/발행 I/O 예외도 child 종료값·UI 검증·각 불변식 플래그와 오류형을 보존하고 비밀을 가린다. 재관측은 실패를 성공으로 승격하지 않으며 current 변경 여부를 정직하게 반환한다.
 
