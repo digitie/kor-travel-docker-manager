@@ -1,26 +1,35 @@
 {
   "status": "CANDIDATE_NOT_RELEASED",
+  "candidate": "integration-6-review",
+  "sources": {
+    "common": "a14301c01a87d7d56e8da5bcf24c0a7f145d05a1",
+    "maplibre-vworld-react": "9a7a348b02d61969b394c681b024d5851eef836b"
+  },
   "packages": {
     "@kor-travel/ui": {
       "version": "0.2.0",
       "filename": "kor-travel-ui-0.2.0.tgz",
-      "integrity": "sha512-B51TvwcAsIYou9DnEiRvdBki8qgqc1Ja6FizpM7ygsv/bLBhVJOP5nOtjybYpK0V4uNwS3bC7P/38t7A+PKVJg=="
-    },
-    "vworld-map-core": {
-      "version": "1.0.0",
-      "filename": "vworld-map-core-1.0.0.tgz",
-      "integrity": "sha512-tP++7XNg9UYXeeUc+aX8q+RD6/dkVzZuBSXPHUKEqHIRobLjUo1HcPEJruOU0bUzHGxnJL/8reIM7xI+vXYaUw=="
+      "integrity": "sha512-VznXMJCxgixE5Ym3Ipnf8i3KCM+65rXcUoEwvigHavMeJv1TPmZocuL1as74x+ZP0d/5dR12gvN0jhV9fvktcQ=="
     },
     "@kor-travel/tokens": {
       "version": "0.1.1",
       "filename": "kor-travel-tokens-0.1.1.tgz",
-      "integrity": "sha512-gnlABsBfUovJe2mqw+XJwahABKSPN0Nan4BGU7fP6SXqgNpZ5Jg1rrGrxmJxwYTkizl2XtjZUMwzgppzrC4+oA=="
+      "integrity": "sha512-GqHyu2fwh6OKhZARTMI5aJSOom71jQhoe2Bb895sX4cG7YZ7CFzqAL1xYDv8AXlM+pBYr2A+Xy9kJAzOnnWofw=="
+    },
+    "vworld-map-core": {
+      "version": "1.0.1",
+      "filename": "vworld-map-core-1.0.1.tgz",
+      "integrity": "sha512-Djm14Arr7U0r7Sabj6P0V57CdzWIGaJmecklmY1hwrq1QUZJjMUFgkZfGRFalUo6AFzHEwwzOEzbJPMifGhINw=="
     },
     "vworld-map-web": {
       "version": "1.0.3",
       "filename": "vworld-map-web-1.0.3.tgz",
-      "integrity": "sha512-9S0TUlgu4ky9ztjkanf0lhoijydhcX5ehHtyQB1jla+rGnuPLK4POiH4wIb2v5ATKuO5hOnHEG534gfyuEH+5g=="
+      "integrity": "sha512-HPXZcz/wP6tFsCZqlAbansWNICcZPubC+/V7rDWXYTQVlOBLl9cZQ1HSMJd25c2CZoMNreVFTQA0vzkVglkS1w=="
+    },
+    "vworld-map-rn": {
+      "version": "1.0.1",
+      "filename": "vworld-map-rn-1.0.1.tgz",
+      "integrity": "sha512-lgDBasKIEG2ElQ9jnHDB9pA+x04Xge9yzBb1NPPw1auyvlkQvxsq4NfRPIrw1VWiutcGiIefySLiVaZDUkO69Q=="
     }
-  },
-  "candidate": "integration-4"
+  }
 }
