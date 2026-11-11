@@ -36,6 +36,54 @@ def _selection(service: str, config: dict[str, Any]) -> tuple[str, str, str]:
     return groups[0], runtime, source_url
 
 
+
+def _environment_values(entries: Any) -> dict[str, str]:
+    if not isinstance(entries, list):
+        raise ServiceReleaseError("선택 UI 환경을 완전하게 읽을 수 없습니다")
+    values: dict[str, str] = {}
+    for item in entries:
+        if not isinstance(item, str) or "\x00" in item:
+            raise ServiceReleaseError("선택 UI 환경 항목이 올바르지 않습니다")
+        key, separator, value = item.partition("=")
+        if not separator or not key or key in values:
+            raise ServiceReleaseError("선택 UI 환경 항목이 누락되거나 중복되었습니다")
+        values[key] = value
+    return values
+
+
+def _preserve_environment(client: Any, project: str, runtime: str, image_id: str):
+    """G 안에서 현재 UI 환경을 승인하고 같은 값과 후보 이미지의 새 기본값만 사용한다."""
+    def selected():
+        matches = [item for item in candidate._inventory(client)
+                   if candidate._selected(item, project, runtime)]
+        if len(matches) != 1:
+            raise ServiceReleaseError("선택 UI 환경의 컨테이너는 정확히 하나여야 합니다")
+        return matches[0]
+    initial = selected()
+    before = _environment_values((initial.get("Config") or {}).get("Env"))
+    image_config = client.images.get(image_id).attrs.get("Config") or {}
+    image_environment = image_config.get("Env")
+    defaults = _environment_values([] if image_environment is None else image_environment)
+    expected = {**defaults, **before}
+    def bind(materialized):
+        definition = materialized["services"][runtime]
+        definition["environment"] = dict(expected)
+        # config로 해석한 effective 값을 고정했으므로 env_file을 다시 읽지 않는다.
+        definition.pop("env_file", None)
+    def unchanged():
+        current = selected()
+        actual = _environment_values((current.get("Config") or {}).get("Env"))
+        if current.get("Image") == image_id:
+            approved = expected
+        elif current.get("Image") == initial.get("Image"):
+            approved = before
+        else:
+            raise ServiceReleaseError("선택 UI 환경의 이미지가 승인 범위와 다릅니다")
+        if actual != approved:
+            raise ServiceReleaseError("선택 UI 환경이 승인한 effective 값과 다릅니다")
+    return bind, unchanged, list(expected.items())
+
+
 def apply_component_ui_candidate(service: str, *, image_id: str, source_sha: str,
                                  source_clone: Path, root: Path,
                                  config: dict[str, Any] | None = None,
@@ -63,9 +111,12 @@ def apply_component_ui_candidate(service: str, *, image_id: str, source_sha: str
         factory = client_factory or (lambda: docker.from_env(timeout=10))
         client = factory()
         try:
+            bind, unchanged, secrets = _preserve_environment(client, plan["project"], runtime, image_id)
             return candidate._apply_current(
                 plan, manifests, image_id, source_sha, root, wait_timeout, execute, client,
-                canonical_url=source_url, extra_conditions=[],
+                canonical_url=source_url,
+                extra_conditions=[("selected_environment_unchanged", unchanged)],
+                bind_images=bind, extra_secrets=secrets,
             )
         finally:
             client.close()

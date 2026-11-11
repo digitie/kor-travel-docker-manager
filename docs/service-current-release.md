@@ -227,6 +227,14 @@ root 소유 canonical origin/main의 승인 commit을 포함해야 하고 image 
 전체 비선택 컨테이너의 ID/image/start/restart/config/mount/network 보존과 모든 current·health를
 검증한 뒤 기존 manifest의 UI 이미지 metadata만 바꿔 current를 발행한다.
 
+선택 UI의 현재 effective 환경은 G 안에서 읽고 기존 값을 보존한다. 후보 이미지에만 새로
+추가된 기본 환경은 합치되 같은 키는 현재 값이 우선한다. 저장된 Compose의 옛 키를 현재 UI에
+다시 주입하지 않는다. 해석한 환경을 stdin에 고정하고 선택 UI의 env_file을 다시 읽지 않는다.
+실행 전·사후·current 발행 직전에 승인한 환경/이미지 관계를 재검사한다. 읽을 수 없는 환경,
+중복/불완전 항목·관찰 중 변경은 거부하고 actual 값은 오류·새 manifest에 저장하지 않는다.
+render 실패부터 현재 값과 이미지 기본값의 비밀을 가린다. 이 보존은 component 경로에 한하며
+기존 Map paired 경로의 환경 의미를 바꾸지 않는다.
+
 Map/Pinvi의 paired 기준선을 Geo/Weather의 기준선으로 사용하지 않는다. 반대로 이 경로에
 Map/Pinvi를 넣어 기존 paired 검사를 우회할 수도 없다. Map의 기존 apply-candidate는 기존
 receipt/companion 검사를 그대로 유지하고 동일한 단일 UI 실행·관측·발행 본문을 재사용한다.

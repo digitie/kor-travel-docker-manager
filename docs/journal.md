@@ -1,3 +1,10 @@
+## 2026-11-12 — component UI의 현재 환경 보존
+
+- 소비자 배포 전 읽기에서 현재 UI 지도 키와 frozen Compose 선언이 다른 사례를 확인했다. df376의 코드 리뷰 PASS는 보존하되 이 운영 전제를 포함한 후속 delta를 다시 검토한다. 실제 key·운영 설정은 변경하지 않았다.
+- 기존 G 안에서 선택 UI의 effective 환경을 읽어 현재 값을 우선하고 새 후보 이미지의 추가 기본값만 합친다. 한 번 해석한 Compose에 이 값을 고정하고 선택 UI env_file 재읽기를 제거한다. render 이전부터 값 가림을 적용한다. 환경과 승인 이미지의 관계를 실행 전·사후·current 발행 직전에 재확인하며 실패는 terminal이다.
+- 최종 환경 반례28개를 exact df376 원본에 적용해28 FAIL을 확인했다. 보완 후 기존372+28=400 PASS·전체 backend Ruff PASS다. 기존 paired5모듈169의 파일 bytes와 Map callback·조건은 그대로다. 공유 본문에는 추가 가림값 전달만 넣었다. 가상의 세 번째 publish callback을 가정한 최초 driver2FAIL은 보존하고 실제 두 callback 및 사후 경계를 검사하도록 바로잡았다.
+- 새 env 해시·설정 파일·영구 gate를 만들지 않는다. 새 입력의 원 A/B 후속 독립 검토·정확 CI·머지·trusted 설치와 실제 UI 수용은 아직 별도 단계다.
+
 ## 2026-11-12 — 기존 component main의 UI 단독 후보 적용
 
 - Geo/Weather 기존 main과 current layout을 유지하며 등록 UI 하나만 선택하는 apply-component-ui를 추가한다. UI 역할과 canonical URL은 targets 정본 한 곳, runtime/group은 기존 등록에서 유도한다.

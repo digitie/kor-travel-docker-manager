@@ -1,6 +1,7 @@
 ## 2026-11-12 — 공통 UI 배포의 기존 component 선택
 
 - [x] 기존 current와 그룹 layout을 유지하는 등록 UI selector·공유 실행 본문·paired 우회 거부·focused372/Ruff를 구현했다.
+- [x] 현재 UI effective 환경 보존·후보 기본값 병합·render 전 가림·사후/발행 직전 변경 검사를 추가했다. exact df376 반례28FAIL 뒤 focused400/Ruff PASS. 후속 원 A/B·정확 CI·머지·설치·실제 수용은 미완이다.
 - [ ] 정확 CI·원 A/B 독립 검토 후 PR을 병합하고 SDK를 설치한다.
 - [ ] 승인 merged SHA 이미지로 실제 UI-only 적용·비선택 보존·current/로그인/health를 수용한다.
 

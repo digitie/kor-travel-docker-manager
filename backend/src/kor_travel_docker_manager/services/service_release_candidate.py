@@ -301,7 +301,8 @@ def _apply_current(plan: dict[str, Any], manifests: dict[str, Any], image_id: st
                    canonical_url: str | None,
                    extra_conditions: list[tuple[str, Callable[[], None]]],
                    inventory_check: Callable[[list[dict[str, Any]]], None] | None = None,
-                   bind_images: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
+                   bind_images: Callable[[dict[str, Any]], None] | None = None,
+                   extra_secrets: list[tuple[str, str | None]] | None = None) -> dict[str, Any]:
     """기존 current를 기준으로 단일 UI만 적용한다. 승인·선택은 각 공개 진입점이 제한한다."""
     service, group = plan["service"], plan["group"]
     runtime = plan["runtime_services"][0]
@@ -326,7 +327,7 @@ def _apply_current(plan: dict[str, Any], manifests: dict[str, Any], image_id: st
     if inventory_check is not None:
         inventory_check(records)
     try:
-        secrets = frozen._secrets(manifests)
+        secrets = [*frozen._secrets(manifests), *(extra_secrets or [])]
     except (OSError, UnicodeError) as exc:
         raise ServiceReleaseError("UI 환경의 비밀 가림 입력을 읽을 수 없습니다") from exc
     result: dict[str, Any] = {"success": False, "result": "failed", "service": service,

@@ -1808,3 +1808,10 @@ Geo/Weather의 UI 단독 후보는 targets의 등록된 UI 역할을 기존 main
 조건은 보존하고 Docker 단일 UI 실행·관측·current 발행 코드를 공유한다. 별도 봉인·digest·phase
 gate는 만들지 않는다. 적용 절차와 실패 후 실제 상태 구분은 [현재 release](service-current-release.md)의
 기존 혼합 그룹 UI 절을 따른다. 이 문서는 구현 결정이며 운영 수용 완료를 주장하지 않는다.
+
+
+component UI의 승인 환경은 G 안에서 읽은 현재 effective 값이다. 저장된 Compose 선언이 옛
+설정일 때 이를 새 UI에 되돌리지 않는다. 현재 값을 우선하고 후보 이미지의 추가 기본값만 합친
+한 번의 stdin을 사용하며 선택 env_file을 다시 읽지 않는다. 실행 전후와 발행 직전에도 같은
+환경/이미지 관계를 대조하고 비밀은 render 전부터 가린다. 영구 env 해시나 새 상태 schema는
+추가하지 않고 기존 terminal 진단을 사용한다. 기존 Map paired 경로의 환경 의미는 유지한다.

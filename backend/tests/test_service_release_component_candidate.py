@@ -31,6 +31,7 @@ def component_scenario(scenario, request, monkeypatch):
     record = s.records.pop(paired.UI)
     record["Config"]["Labels"]["com.docker.compose.service"] = runtime
     s.records[runtime] = record
+    record["Config"]["Env"] = ["PASSWORD=fixture$secret"]
     s.resolved["services"][runtime] = s.resolved["services"].pop(paired.UI)
     for metadata in s.metadata.values():
         metadata["Config"]["Labels"]["org.opencontainers.image.source"] = s.url
@@ -231,3 +232,123 @@ def test_component_route_cannot_bypass_existing_paired_authority(component_scena
     with pytest.raises(release.ServiceReleaseError, match="paired"):
         apply(s, service=service)
     assert "factory" not in s.calls
+
+
+def materialized_environment(s):
+    _, kwargs = next(item for item in reversed(s.calls)
+                     if isinstance(item, tuple) and "up" in item[0])
+    values = json.loads(kwargs["input"])["services"][s.runtime]["environment"]
+    return {key: value.replace("$$", "$") for key, value in values.items()}
+
+
+def test_live_ui_environment_overrides_stale_declaration_and_preserves_image_defaults(component_scenario):
+    s = component_scenario
+    live = {"NEXT_PUBLIC_VWORLD_API_KEY": "live$map-key", "PASSWORD": "live$password",
+            "EMPTY": "", "PATH": "/current/bin"}
+    s.records[s.runtime]["Config"]["Env"] = [f"{key}={value}" for key, value in live.items()]
+    s.resolved["services"][s.runtime]["environment"] = {
+        "NEXT_PUBLIC_VWORLD_API_KEY": "stale-map-key", "PASSWORD": "stale-password"}
+    s.resolved["services"][s.runtime]["env_file"] = ["/stale.env"]
+    s.metadata[paired.NEW]["Config"]["Env"] = ["NODE_ENV=production", "PATH=/image/bin", "NEW_DEFAULT=ok"]
+    def recreate_environment():
+        values = materialized_environment(s)
+        s.records[s.runtime]["Config"]["Env"] = [f"{key}={value}" for key, value in values.items()]
+    s.on_mutation = recreate_environment
+    result = apply(s)
+    expected = {"NODE_ENV": "production", "NEW_DEFAULT": "ok", **live}
+    assert materialized_environment(s) == expected
+    assert result["success"] is True and result["selected_environment_unchanged"] is True
+    assert dict(value.split("=", 1) for value in s.records[s.runtime]["Config"]["Env"]) == expected
+    _, kwargs = next(item for item in s.calls if isinstance(item, tuple) and "up" in item[0])
+    assert "env_file" not in json.loads(kwargs["input"])["services"][s.runtime]
+    for value in ["live$map-key", "live$password", "stale-map-key", "stale-password"]:
+        assert value not in json.dumps(result)
+
+
+@pytest.mark.parametrize("values", [None, "PASSWORD=x", ["missing-equals"], [1],
+                                    ["=bad"], ["A=x", "A=y"], ["A=bad\x00value"]])
+def test_invalid_live_environment_rejects_before_mutation(component_scenario, values):
+    s = component_scenario
+    s.records[s.runtime]["Config"]["Env"] = values
+    with pytest.raises(release.ServiceReleaseError, match="환경"):
+        apply(s)
+    assert not any("up" in item[0] for item in s.calls if isinstance(item, tuple))
+    assert release.read_current_release(s.service, root=s.root) == s.current
+
+
+def test_live_environment_race_during_render_rejects_before_mutation(component_scenario, monkeypatch):
+    s = component_scenario
+    m = paired.candidate_module()
+    original = m._render
+    def raced(*args, **kwargs):
+        value = original(*args, **kwargs)
+        s.records[s.runtime]["Config"]["Env"] = ["PASSWORD=changed-during-render"]
+        return value
+    monkeypatch.setattr(m, "_render", raced)
+    with pytest.raises(release.ServiceReleaseError, match="환경"):
+        apply(s)
+    assert not any("up" in item[0] for item in s.calls if isinstance(item, tuple))
+
+
+def test_environment_drift_after_recreate_never_publishes(component_scenario):
+    s = component_scenario
+    s.on_mutation = lambda: s.records[s.runtime]["Config"].update(Env=["PASSWORD=unapproved-after"])
+    result = apply(s)
+    assert result["success"] is False and result["selected_environment_unchanged"] is False
+    assert release.read_current_release(s.service, root=s.root) == s.current
+    assert "unapproved-after" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("boundary", [1, 2])
+def test_late_environment_drift_cannot_publish(component_scenario, monkeypatch, boundary):
+    s = component_scenario
+    m = paired.candidate_module()
+    original = m._publish
+    def publish(candidate, manifests, root, guard):
+        calls = 0
+        def raced():
+            nonlocal calls
+            calls += 1
+            if calls == boundary:
+                s.records[s.runtime]["Config"]["Env"] = ["PASSWORD=late-unapproved"]
+            guard()
+        return original(candidate, manifests, root, raced)
+    monkeypatch.setattr(m, "_publish", publish)
+    result = apply(s)
+    assert result["success"] is False and result["selected_environment_unchanged"] is False
+    assert release.read_current_release(s.service, root=s.root) == s.current
+    assert "late-unapproved" not in json.dumps(result)
+
+
+def test_live_and_candidate_environment_secrets_are_redacted(component_scenario, monkeypatch):
+    import subprocess
+    s = component_scenario
+    m = paired.candidate_module()
+    s.records[s.runtime]["Config"]["Env"] = ["PASSWORD=live$secret", "NEXT_PUBLIC_VWORLD_API_KEY=live-map-secret"]
+    s.metadata[paired.NEW]["Config"]["Env"] = ["IMAGE_SECRET=image$secret"]
+    original = m.frozen._run_mutation
+    def failed(*args, **kwargs):
+        completed, signals = original(*args, **kwargs)
+        return subprocess.CompletedProcess(completed.args, 1, "",
+            "live$secret live-map-secret image$secret"), signals
+    monkeypatch.setattr(m.frozen, "_run_mutation", failed)
+    result = apply(s)
+    assert result["success"] is False
+    for value in ["live$secret", "live-map-secret", "image$secret"]:
+        assert value not in json.dumps(result)
+    assert release.read_current_release(s.service, root=s.root) == s.current
+
+
+def test_render_error_redacts_live_environment_before_binding(component_scenario, monkeypatch):
+    import subprocess
+    s = component_scenario
+    m = paired.candidate_module()
+    s.records[s.runtime]["Config"]["Env"] = ["PASSWORD=live$secret", "NEXT_PUBLIC_VWORLD_API_KEY=live-map-secret"]
+    s.metadata[paired.NEW]["Config"]["Env"] = ["IMAGE_SECRET=image$secret"]
+    monkeypatch.setattr(m, "_render", lambda args, **kwargs:
+        subprocess.CompletedProcess(args, 1, "", "live$secret live-map-secret image$secret"))
+    result = apply(s)
+    assert result["success"] is False
+    for value in ["live$secret", "live-map-secret", "image$secret"]:
+        assert value not in json.dumps(result)
+    assert not any("up" in item[0] for item in s.calls if isinstance(item, tuple))
