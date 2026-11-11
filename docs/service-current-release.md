@@ -185,6 +185,7 @@ rebuild가 UI를 바꾸면 component verify는 drift를 정직하게 보고하�
 실행 직전 UI identity·전체 비선택 컨테이너의 ID/image/시작 시각/재시작 수/설정·mount/network,
 paired 기준선/pin·current를 재검증한다. health와 비선택 불변 검증을 통과한 뒤 metadata 두 파일을
 완성하고 발행 직전에 다시 확인해 current symlink를 바꾼다. 실패하면 current는 이전 값을 유지한다. 관측한 사후 불변식/health 실패는 해당 실행의 terminal 실패이며 다음 재검사 성공으로 승격하지 않는다. 자식 실패·중단·launch 오류 뒤에도 UI 검증, 비선택 HostConfig 전체와 기준선/current를 재관측해 종료 원인과 함께 반환한다.
+발행 직전 guard·metadata I/O 실패도 child 종료값과 사후 진단을 보존한 구조화 실패로 반환한다. pointer 교체 뒤 durability 오류가 나면 재관측해 current 변경 여부를 정직하게 표시한다.
 이미 UI mutation이 적용됐을 수 있으므로 실패 응답을 무변경 성공이나 자동 rollback으로 보고하지
 않는다. 기존 `recreate`도 고장 복구 명령으로 바꾸지 않는다. 비밀 값·원문 inspect/config는 결과나
 새 manifest에 저장하지 않는다.

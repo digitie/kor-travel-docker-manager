@@ -397,11 +397,13 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
             raise ServiceReleaseError("UI 후보가 healthy 또는 immutable ID 조건을 만족하지 않습니다")
     try:
         healthy()
-    except ServiceReleaseError as exc:
-        if "비선택" in str(exc):
-            raise
-        result.update(stderr=str(exc))
+        current = _publish(candidate, manifests, root, healthy)
+    except Exception as exc:
+        # mutation 이후에는 늦은 guard/발행 오류도 이미 모은 진단과 함께 실패로 반환한다.
+        result["error_type"] = type(exc).__name__
+        result["stderr"] = (frozen._detail(str(exc), secrets) if isinstance(exc, ServiceReleaseError)
+                            else "UI 후보 사후 검증 또는 발행을 마치지 못했습니다")
+        observe_after()
         return result
-    current = _publish(candidate, manifests, root, healthy)
     result.update(success=True, result="healthy", current=current, current_unchanged=False, nonselected_unchanged=True)
     return result

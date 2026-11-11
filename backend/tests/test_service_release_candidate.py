@@ -424,8 +424,9 @@ def test_ui_current_cannot_publish_when_pointer_changes_after_health(scenario):
             raise release.ServiceReleaseError("current raced before publication")
         return original(*args)
     s.monkeypatch.setattr(m, "_unchanged_pointers", check)
-    with pytest.raises(release.ServiceReleaseError, match="raced"):
-        invoke_prepared(s, m)
+    result = invoke_prepared(s, m)
+    assert result["success"] is False and result["current_unchanged"] is False
+    assert result["returncode"] == 0
     assert release.read_current_release("map", root=s.root) == s.current
 
 
@@ -731,3 +732,27 @@ def test_companion_receipt_owner_relation_is_checked(scenario, image):
         with pytest.raises(release.ServiceReleaseError, match="companion"):
             invoke_prepared(s, m)
         assert not any("up" in c[0] for c in s.calls if isinstance(c, tuple))
+
+
+@pytest.mark.parametrize("name,flag", [("_unchanged_baseline", "baseline_unchanged"),
+                                      ("_unchanged_pointers", "current_unchanged"),
+                                      ("_unchanged_others", "nonselected_unchanged")])
+@pytest.mark.parametrize("boundary", [3, 4, 5])
+def test_late_publication_guards_return_full_failure_context(scenario, name, flag, boundary):
+    s = scenario
+    m = prepare(s)
+    original = getattr(m, name)
+    calls = []
+    def fail_late(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == boundary:
+            raise release.ServiceReleaseError("late guard fixture$secret")
+        return original(*args, **kwargs)
+    s.monkeypatch.setattr(m, name, fail_late)
+    result = invoke_prepared(s, m)
+    assert result["success"] is False
+    assert result["returncode"] == 0
+    assert "post_verification" in result and result[flag] is False
+    assert flag in result["postcondition_errors"]
+    assert "fixture$secret" not in json.dumps(result)
+    assert release.read_current_release("map", root=s.root) == s.current
