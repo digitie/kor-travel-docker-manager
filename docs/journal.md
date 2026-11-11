@@ -1,3 +1,9 @@
+# 2026-11-12 — 후보 경로 재검토의 companion·terminal 실패 보완
+
+- b86e6aa 재검토에서 canonical companion 관계를 live 값으로 덮는 누락과 사후 실패를 다음 성공으로 승격하는 문제를 재현했다. 두 항목과 늦은 guard 진단 플래그의 수정 전 FAIL을 보존했다.
+- companion 기대 집합은 frozen reference/immutable image와 기존 paired owner 관계로만 유도하고 기록/owner ID 일치를 요구한다. 단일 UI만 실행하되 stdin의 paired 이미지는 기존 기록의 ID로 고정한다. 비선택 live 값은 기대 역할을 줄이는 데 쓰지 않는다.
+- 보완 후 기존 release/CLI/compose/process 회귀를 포함한160건과 전체 backend Ruff가 통과했다. 사후 관측 실패는 terminal이며 current를 발행하지 않는다. 이후 guard에서도 실패 플래그를 되돌리지 않고 오류를 보존한다. 이전 recreate/adopt/pair pin 구현은 계속 변경하지 않는다.
+
 # 2026-11-12 — UI 후보 delta 독립 리뷰 보완
 
 - e2dd510의 독립 A/B가 HostConfig 전체 비교·paired 역할 완전성·실패 후 관측, canonical env 선택과 Git commondir 경계 누락을 재현했다. B 반례4개와 A 실패/중단/launch3개가 수정 전 FAIL인 로그를 보존했다.

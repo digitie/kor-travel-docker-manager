@@ -282,8 +282,8 @@ def test_g_contention_cannot_construct_docker_or_publish(scenario):
 def test_nonselected_identity_change_never_publishes(scenario, kind):
     s = scenario
     s.on_mutation = lambda: s.records[kind].update(Id="changed")
-    with pytest.raises(release.ServiceReleaseError, match="비선택"):
-        apply(s)
+    result = apply(s)
+    assert result["success"] is False and result["nonselected_unchanged"] is False
     assert release.read_current_release("map", root=s.root) == s.current
 
 
@@ -557,8 +557,8 @@ def test_review_b_rejects_nonselected_hostconfig_update(scenario):
     s = scenario
     s.records["db"]["HostConfig"] = {"Binds": [], "Memory": 1024, "RestartPolicy": {"Name": "always"}}
     s.on_mutation = lambda: s.records["db"]["HostConfig"].update(Memory=64)
-    with pytest.raises(release.ServiceReleaseError, match="비선택"):
-        apply(s)
+    result = apply(s)
+    assert result["success"] is False and result["nonselected_unchanged"] is False
     assert release.read_current_release("map", root=s.root) == s.current
 
 
@@ -640,3 +640,94 @@ def test_missing_companion_image_cannot_reach_ui_mutation(scenario):
     with pytest.raises(release.ServiceReleaseError, match="companion"):
         apply(s)
     assert not any("up" in c[0] for c in s.calls if isinstance(c, tuple))
+
+
+def test_recheck_rejects_drifted_missing_companion(scenario):
+    s = scenario
+    record = copy.deepcopy(s.records["api"])
+    record["Id"] = "cid-companion"
+    record["Image"] = NEW
+    record["Config"]["Labels"]["com.docker.compose.service"] = "companion"
+    s.records["companion"] = record
+    s.resolved["services"]["companion"] = {"image": OTHER}
+    with pytest.raises(release.ServiceReleaseError, match="companion"):
+        apply(s)
+    assert not any("up" in c[0] for c in s.calls if isinstance(c, tuple))
+
+
+def test_recheck_observed_post_guard_failure_is_terminal(scenario):
+    s = scenario
+    m = prepare(s)
+    s.records["db"]["HostConfig"] = {"Memory": 1024}
+    s.on_mutation = lambda: s.records["db"]["HostConfig"].update(Memory=2048)
+    original = m._unchanged_others
+    observed = []
+    def detect_then_restore(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except release.ServiceReleaseError:
+            observed.append(True)
+            s.records["db"]["HostConfig"]["Memory"] = 1024
+            raise
+    s.monkeypatch.setattr(m, "_unchanged_others", detect_then_restore)
+    result = invoke_prepared(s, m)
+    assert observed
+    assert result["success"] is False
+    assert result["nonselected_unchanged"] is False
+    assert release.read_current_release("map", root=s.root) == s.current
+
+
+@pytest.mark.parametrize("state", ["normal", "drift", "absent"])
+def test_canonical_companion_reference_requires_receipt_in_all_live_states(scenario, state):
+    s = scenario
+    s.resolved["services"]["companion"] = {"image": "fixture:paired"}
+    get = s.client.images.get
+    s.client.images.get = lambda ref: get(OTHER if ref == "fixture:paired" else ref)
+    if state != "absent":
+        record = copy.deepcopy(s.records["api"])
+        record["Id"] = "cid-companion"
+        record["Config"]["Labels"]["com.docker.compose.service"] = "companion"
+        record["Image"] = OTHER if state == "normal" else NEW
+        s.records["companion"] = record
+    with pytest.raises(release.ServiceReleaseError, match="companion"):
+        apply(s)
+    assert not any("up" in c[0] for c in s.calls if isinstance(c, tuple))
+
+
+def test_late_guard_failure_keeps_failed_diagnostic_flag(scenario):
+    s = scenario
+    m = prepare(s)
+    original = m._unchanged_pointers
+    calls = []
+    def fail_late(*args):
+        calls.append(True)
+        if len(calls) == 3:
+            raise release.ServiceReleaseError("late current failure")
+        return original(*args)
+    s.monkeypatch.setattr(m, "_unchanged_pointers", fail_late)
+    result = invoke_prepared(s, m)
+    assert result["success"] is False
+    assert result["current_unchanged"] is False
+    assert release.read_current_release("map", root=s.root) == s.current
+
+
+@pytest.mark.parametrize("image", [OTHER, NEW])
+def test_companion_receipt_owner_relation_is_checked(scenario, image):
+    s = scenario
+    m = prepare(s)
+    record = copy.deepcopy(s.records["api"])
+    record["Id"] = "cid-companion"
+    record["Image"] = image
+    record["Config"]["Labels"]["com.docker.compose.service"] = "companion"
+    s.records["companion"] = record
+    s.resolved["services"]["companion"] = {"image": OTHER}
+    baseline = m._baseline(s.profile["groups"]["ui"])
+    baseline[3].images["companion"] = image
+    if image == OTHER:
+        result = invoke_prepared(s, m)
+        assert result["success"] is True
+        assert set(result["current"]["images"]) == {UI}
+    else:
+        with pytest.raises(release.ServiceReleaseError, match="companion"):
+            invoke_prepared(s, m)
+        assert not any("up" in c[0] for c in s.calls if isinstance(c, tuple))

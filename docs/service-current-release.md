@@ -181,9 +181,10 @@ rebuild가 UI를 바꾸면 component verify는 drift를 정직하게 보고하�
 하나뿐이다. API·DB·Dagster·one-shot을 명령에 넣지 않는다. 달러 escape·최소 실행 환경·비밀 가림·
 자식 종료까지 G descriptor를 보유하는 기존 코드를 재사용한다.
 
+필수 companion은 frozen reference와 immutable image 관계로 유도하며 live drift로 기대 역할을 줄이지 않는다.
 실행 직전 UI identity·전체 비선택 컨테이너의 ID/image/시작 시각/재시작 수/설정·mount/network,
 paired 기준선/pin·current를 재검증한다. health와 비선택 불변 검증을 통과한 뒤 metadata 두 파일을
-완성하고 발행 직전에 다시 확인해 current symlink를 바꾼다. 실패하면 current는 이전 값을 유지한다. 자식 실패·중단·launch 오류 뒤에도 UI 검증, 비선택 HostConfig 전체와 기준선/current를 재관측해 종료 원인과 함께 반환한다.
+완성하고 발행 직전에 다시 확인해 current symlink를 바꾼다. 실패하면 current는 이전 값을 유지한다. 관측한 사후 불변식/health 실패는 해당 실행의 terminal 실패이며 다음 재검사 성공으로 승격하지 않는다. 자식 실패·중단·launch 오류 뒤에도 UI 검증, 비선택 HostConfig 전체와 기준선/current를 재관측해 종료 원인과 함께 반환한다.
 이미 UI mutation이 적용됐을 수 있으므로 실패 응답을 무변경 성공이나 자동 rollback으로 보고하지
 않는다. 기존 `recreate`도 고장 복구 명령으로 바꾸지 않는다. 비밀 값·원문 inspect/config는 결과나
 새 manifest에 저장하지 않는다.

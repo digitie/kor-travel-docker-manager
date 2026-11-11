@@ -171,23 +171,40 @@ def _receipt_images(status: Any, records: list[dict[str, Any]], project: str,
 
 
 
-def _paired_companions(status: Any, resolved: dict[str, Any], records: list[dict[str, Any]], project: str) -> None:
+def _paired_companions(status: Any, resolved: dict[str, Any], client: Any) -> None:
     topology = runtime_topology()
-    identities = {((record.get("Config") or {}).get("Labels") or {}).get("com.docker.compose.service"): record["Image"]
-                  for record in records
-                  if ((record.get("Config") or {}).get("Labels") or {}).get("com.docker.compose.project") == project}
-    services = {name: deepcopy(value) for name, value in resolved["services"].items()
-                if name not in topology.retired_services}
-    for name, definition in services.items():
-        if name in identities:
-            definition["image"] = identities[name]
     image_ids = {slot: status.images[topology.service(slot) or topology.families[slot_project(slot)].carrier]
                  for slot in RUNTIME_SLOTS}
+    services = {name: deepcopy(value) for name, value in resolved["services"].items()
+                if name not in topology.retired_services}
+    # paired slot의 frozen reference 관계를 보존한다. live drift로 기대 역할을 지우지 않는다.
+    references = {}
+    for slot in RUNTIME_SLOTS:
+        name = topology.service(slot)
+        if name is not None:
+            reference = services[name]["image"]
+            if reference in references and references[reference] != image_ids[slot]:
+                raise ServiceReleaseError("paired frozen image reference가 모호합니다")
+            references[reference] = image_ids[slot]
+    for definition in services.values():
+        reference = definition.get("image")
+        if not isinstance(reference, str):
+            continue
+        if reference in references:
+            definition["image"] = references[reference]
+        elif not re.fullmatch(r"sha256:[0-9a-f]{64}", reference):
+            try:
+                definition["image"] = release._image_id(client.images.get(reference).attrs["Id"])
+            except docker.errors.ImageNotFound:
+                # 현지에 없는 다른 앱 reference를 pull하거나 live 값으로 추정하지 않는다.
+                continue
     companions = generation_companion_services({"services": services}, image_ids,
                                                excluded_services=_PINNED_RUNTIME_ONESHOT_WRITERS,
                                                topology=topology)
-    if set(companions) - status.images.keys():
-        raise ServiceReleaseError("committed 기준선에 필수 paired companion 이미지가 누락되었습니다")
+    if any(status.images.get(name) != image_ids[owner] for name, owner in companions.items()):
+        raise ServiceReleaseError("committed 기준선의 paired companion 이미지가 누락되거나 owner와 다릅니다")
+    for name in set(topology.runtime_services) | companions.keys():
+        resolved["services"][name]["image"] = status.images[name]
 
 
 def _render(argv: list[str], **kwargs: Any) -> Any:
@@ -306,7 +323,7 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
                 if client.images.get(reference).attrs["Id"] != image["id"]:
                     raise ServiceReleaseError("resolved 이미지와 현재 component release가 다릅니다")
                 materialized["services"][name]["image"] = image["id"]
-        _paired_companions(baseline[3], materialized, records, project)
+        _paired_companions(baseline[3], materialized, client)
         materialized["services"][runtime]["image"] = image_id
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
         if isinstance(exc, ServiceReleaseError):
@@ -314,10 +331,20 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
         raise ServiceReleaseError("UI 후보 Compose 구성을 고정할 수 없습니다") from exc
     candidate = deepcopy(manifests[service])
     candidate["images"][runtime] = metadata
+    conditions = [
+        ("baseline_unchanged", lambda: _unchanged_baseline(baseline, manifests[service]["groups"][group])),
+        ("current_unchanged", lambda: _unchanged_pointers(manifests, root)),
+        ("nonselected_unchanged", lambda: _unchanged_others(client, others, project, runtime)),
+    ]
     def admission():
-        _unchanged_baseline(baseline, manifests[service]["groups"][group])
-        _unchanged_pointers(manifests, root)
-        _unchanged_others(client, others, project, runtime)
+        for key, check in conditions:
+            try:
+                check()
+                result.setdefault(key, True)
+            except Exception as exc:
+                result[key] = False
+                result.setdefault("postcondition_errors", {})[key] = type(exc).__name__
+                raise
     admission()
     if ui_identity(_inventory(client)) != initial_ui:
         raise ServiceReleaseError("실행 전에 현재 UI identity가 변경되었습니다")
@@ -332,14 +359,10 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
             result["post_verification"] = frozen._verify({**manifests, service: candidate}, client)
         except Exception as exc:
             result["post_verification"] = {"observed": False, "error_type": type(exc).__name__}
-        for key, check in [
-            ("baseline_unchanged", lambda: _unchanged_baseline(baseline, manifests[service]["groups"][group])),
-            ("current_unchanged", lambda: _unchanged_pointers(manifests, root)),
-            ("nonselected_unchanged", lambda: _unchanged_others(client, others, project, runtime)),
-        ]:
+        for key, check in conditions:
             try:
                 check()
-                result[key] = True
+                result.setdefault(key, True)
             except Exception as exc:
                 result[key] = False
                 result.setdefault("postcondition_errors", {})[key] = type(exc).__name__
@@ -357,12 +380,19 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
     if completed.returncode or interrupted:
         result.update(stderr=frozen._detail(completed.stderr, secrets), interrupted_signals=interrupted)
         return result
+    checks = [result.get(key) is True for key in
+              ["baseline_unchanged", "current_unchanged", "nonselected_unchanged"]]
+    observed = result.get("post_verification", {})
+    healthy_observation = bool(observed) and all(
+        isinstance(value, dict) and value.get("result") == "healthy" for value in observed.values())
+    if not all(checks) or not healthy_observation:
+        result["stderr"] = "UI 후보 사후 불변식 또는 health 관측이 실패했습니다"
+        return result
     def healthy():
         admission()
         expected = {**manifests, service: candidate}
         verified = frozen._verify(expected, client)
         result["post_verification"] = verified
-        result.update(baseline_unchanged=True, current_unchanged=True, nonselected_unchanged=True)
         if any(value.get("result") != "healthy" for value in verified.values()):
             raise ServiceReleaseError("UI 후보가 healthy 또는 immutable ID 조건을 만족하지 않습니다")
     try:
