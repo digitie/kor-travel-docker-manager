@@ -144,8 +144,12 @@ def _nonselected(records: list[dict[str, Any]], project: str, runtime: str) -> d
         state = record.get("State") or {}
         if not isinstance(record.get("Image"), str) or not isinstance(state.get("StartedAt"), str):
             raise ServiceReleaseError("비선택 컨테이너 identity 관측이 불완전합니다")
+        mounts = record.get("Mounts")
+        if isinstance(mounts, list):
+            # Docker의 Mounts 열거 순서만 제외한다. 전체 객체·중복·내부 배열은 보존한다.
+            mounts = sorted(mounts, key=lambda item: json.dumps(item, sort_keys=True))
         result[record["Id"]] = [record["Image"], state.get("StartedAt"), state.get("Running"),
-                                record.get("RestartCount"), record.get("Config"), record.get("Mounts"),
+                                record.get("RestartCount"), record.get("Config"), ("Mounts" in record, mounts),
                                 record.get("HostConfig"),
                                 (record.get("NetworkSettings") or {}).get("Networks")]
     return result
