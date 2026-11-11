@@ -1,3 +1,8 @@
+## 2026-11-12 — Transport public UI 단독 승격
+
+- [x] 기존 external project/core/admin current를 유지하는 metadata 등록과 schema/source 보존 회귀를 검증한다.
+- [ ] 정확 CI·독립 두 리뷰·병합 후 trusted SDK를 설치하고, 새 ARM UI 이미지로 실제 API·로그인·지도·health를 수용한다.
+
 ## 2026-11-12 — 비선택 Mounts 열거 순서
 
 - [x] af413 원본의 SDK 순서 오탐 및 부재/null 반례18건을 재현하고 별도85개 회귀·기존432개·전체 Ruff·CodeGraph를 확인했다.

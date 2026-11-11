@@ -1,3 +1,10 @@
+## 2026-11-12 — Transport public UI만 공식 승격하는 등록
+
+- Transport의 transport-frontend 역할과 canonical 저장소를 기존 component SDK에 등록했다. runtime Python·CLI·그룹 layout·환경 보존·기존 guard는 변경하지 않았다.
+- 기존 외부 core/admin current와 여섯 이미지에서 frontend 하나만 교체한다. 운영 backend/source/schema와 코드 서버·one-shot·관리자·공용 DB는 유지하며, 후보 전체 source를 운영 checkout에 복사하지 않는다.
+- 미등록 catalog 회귀의 수정 전1 FAIL을 보존했다. 등록 후 신규8개와 기존 관련 회귀를 합한437개가 통과했다. 더 오래된 후보 migration source와 기존 schema 표식을 함께 둔 회귀는 실제 DB 변경 실측이 아니며 운영 API 호환 수용도 대신하지 않는다.
+- 정확 CI·독립 두 리뷰·병합·trusted SDK 설치와 새 ARM 이미지·운영 UI 수용은 후속이다. Weather→Geo 공식 작업창 동안 Docker build/import/recreate는 실행하지 않았다.
+
 ## 2026-11-12 — 비선택 Mounts 열거 순서 오탐 수정
 
 - 공식 Weather dry-run이 비선택 불변 검사로 거부됐다. 보존된 외부 즉시 전후 inspect55개 중 비선택54개의5개는 Mounts 항목 순서만 달랐다. 이 자료는 SDK 내부 snapshot이라고 주장하지 않으며 원시값을 제품·fixture·커밋에 넣지 않았다.

@@ -793,6 +793,9 @@ targets:
     init_steps: []
 
   transport:
+    ui_candidate:
+      role: transport-frontend
+      source_url: https://github.com/digitie/kor-travel-transport.git
     # 형제 프로젝트다 — compose 정본이 이 저장소 밖(kor-travel-transport 저장소)에
     # 있고, 배포는 그 저장소가 계속 소유한다. Manager는 상태를 보고 컨테이너
     # 수명주기(start/stop/restart)만 다룬다. DB는 공용 instance

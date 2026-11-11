@@ -198,7 +198,8 @@ paired 기준선/pin·current를 재검증한다. health와 비선택 불변 검
 
 ## 기존 혼합 그룹의 등록 UI만 교체
 
-Geo·Weather의 기존 main current에는 API·UI·코드 서버가 함께 있다. 이 배포를 위해 새 ui 그룹을
+Geo·Weather의 기존 main current에는 API·UI·코드 서버가 함께 있다. Transport는 기존 core/admin
+그룹을 유지하며 public frontend만 선택한다. 이 배포를 위해 새 ui 그룹을
 겹쳐 등록하거나 기존 manifest layout을 바꾸지 않는다. targets.<target>.ui_candidate는 기존
 target에 등록된 UI 역할과 canonical 저장소 URL만 선언한다. 실제 Compose 서비스는 같은 target의
 컨테이너 등록에서, group은 기존 service_releases에서 유도한다. 잘못된 역할·중복·다른 target의
@@ -219,6 +220,24 @@ merged40자리 SHA 및 현재 Docker engine에 존재하는 immutable sha256 ID�
 root 소유 canonical origin/main의 승인 commit을 포함해야 하고 image OCI revision/source도
 승인 tuple과 같아야 한다. label 검사가 빌드 내용 전체의 증명을 대신하는 것은 아니다.
 새 target metadata는 대응 SDK와 함께 설치하며 이전 SDK에 설정만 먼저 적용하지 않는다.
+
+Transport public UI는 같은 명령의 target을 transport로 선택한다. 등록된
+transport-frontend 역할에서 Compose frontend를, 기존 current에서 core 그룹을 유도한다.
+core의 backend·dagster-code-server·migrate와 admin의 두 역할은 기존 이미지와 metadata를
+보존한다. 그룹을 ui로 분할하거나 current를 재등록하지 않는다. 외부 working_dir와 Compose
+파일은 기존 current·catalog에서 읽으며 승인 UI source를 운영 checkout에 rsync하지 않는다.
+
+UI 후보 저장소에 backend Alembic head가 운영 DB보다 오래됐어도 이 경로는 backend 파일·이미지,
+DB 또는 code-server를 교체하거나 migration을 실행하지 않는다. 후보 source는 UI 이미지의 승인
+revision 검사에만 쓰고 실제 구성은 현재 운영 Compose에서 고정한다. 이는 UI의 API 응답 호환성을
+보장한다는 뜻은 아니다. 실제 UI·API·health 수용은 배포 후 별도로 수행한다. 기존 전체 bundle
+배포의 schema gate를 완화하거나 이 UI 경로로 전체 bundle을 우회하지 않는다.
+
+회귀 test_service_release_transport_ui_candidate.py는 외부 core/admin 여섯 이미지, 기존
+backend revision과 더 오래된 후보 migration source를 함께 구성해 frontend 한 개만
+--no-deps로 실행되는지 확인한다. 다른 runtime의 변경은 current 발행을 거부한다. fixture의
+schema 표식 보존은 실제 DB 운영 측정이 아니며 운영 DB는 적용 전후 읽기 전용으로 따로 확인한다.
+이 등록은 public frontend 하나를 선택한다. 관리자 UI는 이 명령에 임의 역할을 넣어 교체하지 않는다.
 
 기존 G를 획득한 뒤 source를 재확인하고, 정상인 기존 component current와 공유 project의
 모든 overlay를 읽어 Compose JSON을 한 번 고정한다. 적용은 선택 UI 하나와

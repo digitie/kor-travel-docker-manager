@@ -1,3 +1,13 @@
+## Transport public UI의 기존 current 보존
+
+Transport의 public UI 이미지만 승격할 때는 service-release apply-component-ui transport를
+사용한다. target에 등록한 transport-frontend에서 Compose frontend를 찾고 기존 core
+그룹을 유지한다. backend·code-server·migrate·관리자 두 역할은 실행 대상이 아니며
+전체 bundle의 DB schema 검사를 우회하거나 운영 checkout을 후보로 동기화하지 않는다.
+--dry-run 또는 --confirm, 정확한 merged source와 immutable image ID가 필요하다.
+공식 G·현재 이미지·환경·비선택 보존·health 뒤 current 발행은
+[현재 release 규약](service-current-release.md#기존-혼합-그룹의-등록-ui만-교체)을 따른다.
+
 # Docker 관리 설계
 
 이 문서는 `kor-travel-docker-manager`가 Portainer와 유사한 Docker 관리 경험을 제공하되, Kor Travel/PinVi 개발 및 로컬 운영에 필요한 범위로 제한하는 기준을 정리한다.
