@@ -295,3 +295,66 @@ current 발행 상태를 구분하며 자동 rollback하지 않는다. current�
 바뀌지 않았다고 추정하지 않는다. 실제 이미지·health를 확인하고 기존 명시 복구 절차를 따른다.
 새 경로의 local fake Docker/실제 G 자식 회귀와 CLI·registry 검사는 통과했으며 운영 적용은
 정확 CI·두 독립 리뷰·PR 병합·설치 후 별도로 수용한다.
+
+
+## Transport core 정상 이미지 후보와 state 인계
+
+`apply-core-candidate`는 Transport의 기존 `core` 그룹만 다루는 별도 CLI/SDK 경로다.
+기존 adopt/recreate/UI 후보 경로의 의미를 바꾸지 않는다. HTTP API·current manifest
+schema·package 의존성·producer 정상 build wrapper는 변경하지 않는다.
+
+    ktdctl service-release apply-core-candidate transport \
+      --source-clone <root 소유 canonical merged M clone> --source-sha <M> \
+      --build-receipt <정상 build receipt> --build-sha256 <승인 SHA256> \
+      --receipt <별도 runtime prebuilt-v1 receipt> --sha256 <승인 SHA256> \
+      --dry-run
+
+실제 변경은 같은 입력에서 `--confirm`으로 선택한다. build receipt의
+`mode=NORMAL_BUILD_ONLY`, `actualApplyAllowed=false`, `deployReady=false`는 그대로다.
+이 파일은 immutable image의 출처 증거이며 운영 적용 허가나 live state 증거로
+승격하지 않는다. 별도 runtime-v1의 release/images/schema/state/instigators를
+정상 receipt에 projection하여 비교하고, 현재 CS·state freshness·schema·drain을
+실행 시점에 다시 읽는다. 잘못된 tuple/경합은 Docker 변경 전에 거부한다.
+
+역할은 기존 core catalog의 backend/frontend/dagster-code-server 세 runtime이며
+migrate는 backend image의 **metadata alias만** 갱신한다. migrate 컨테이너를 생성·시작하거나
+Alembic upgrade/stamp/downgrade를 실행하지 않는다. Git blob에서 코드 실행 없이
+구한 candidate Alembic head와 runtime receipt 및 live read-only schema 결과가
+같아야 한다. backend/CS의 기존 `RUN_DB_MIGRATIONS`는 명시적 `false`여야 하며
+값이 없거나 다르면 자동 수정하지 않는다. 기존 normal producer의 `RELEASE_SHA`만
+등록한 source M으로 바꾸고, 나머지 effective ENV·인증·키·session은 보존한다.
+
+현재 Transport의 `/opt/dagster/state`는 collector checkpoint volume과 별개인
+CS writable layer다. 따라서 기존 mount 보존만으로 local artifact/compute log가
+새 CS에 전달되었다고 판단하지 않는다. 한 G와 같은 기존 project flock 아래에서:
+
+1. 이전 CS state를 고정 경로로만 snapshot한다. root 아래 전용 0700 디렉터리와
+   0600 archive를 사용하고 기존 fingerprint/semantic manifest와 대조한다.
+2. 검증된 frozen stdin에는 runtime 세 개만 남기고 의존 one-shot 참조를 제거한다.
+   `up --no-start --no-deps --no-build --pull never --force-recreate`로 새 컨테이너를
+   시작하지 않고 만든다. 이미지에 state를 덧붙이거나 commit/retag하지 않는다.
+3. 승인된 새 CS의 created 상태·ImageID·mount를 확인한 뒤 기존 Docker SDK
+   get_archive/put_archive로 writable layer에만 복원한다. 경로 이탈·중복·링크·특수
+   파일·위험한 mode를 거부하고 UID/GID/mode/content를 보존한다. 고정 `/opt/dagster`
+   부모가 없으면 그 부모 header만 안전하게 준비한다. host에는 tar를 풀지 않는다.
+4. 새 CS를 시작하기 전에 state readback을 비교한다. ctime/inode의 일치를
+   조작하지 않으며 원본 freshness와 목적지 semantic copy를 구분한다.
+5. `start --wait`로 이미 만든 세 runtime만 시작한다. cold-start 대기는 기존
+   frozen health 선언에서 파생한다. health/current 후보 이미지·ENV·mount·schema·state·
+   instigator/worker·비선택 보존을 확인한 뒤 기존 publisher로 current를 한 번 교체한다.
+
+G 다음에 잡는 project lease는 `targets.transport.core_candidate.project_lease`에
+선언하며 승인 M의 기존 deploy-prod-remote.sh literal과 같아야 한다. 새 lock 경로나
+대체 lease를 만들지 않는다. state 전송 자식과 Compose 자식 모두 G와 lease FD를
+상속하고, 정상 signal은 기존 runner가 자식 종료까지 유예한다. 부모만 SIGKILL된
+경우에도 살아 있는 자식이 두 descriptor를 보유한다. 임의 root의 별도 Docker/GraphQL
+변경까지 막는 분산 fence라고 주장하지 않는다.
+
+실패 시 이전 current와 private state snapshot을 보존하고 자동 재시도·rollback·adopt·
+전체 plane pause를 하지 않는다. 실패 뒤 실제 runtime은 일부 교체되었을 수 있으므로
+원인 확인과 별도 forward-fix 판단이 필요하다. archive에는 운영 데이터가 있으므로
+public metadata나 Git에 넣지 않는다.
+
+이 구현의 Linux 단위 검증은 fake Docker/GraphQL 경계 및 실제 파일/tar/FD/signal을
+사용한다. 실제 Docker daemon의 새 이미지/no-start/state 인계와 운영 적용은 별도
+두 소스 리뷰·정확 CI·병합·trusted SDK 설치 및 최종 이미지 tuple gate 이후다.

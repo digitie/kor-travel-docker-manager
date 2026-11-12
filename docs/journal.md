@@ -1,3 +1,13 @@
+## 2026-11-13 — Transport core 후보의 state 인계 구현
+
+기존 UI-only 후보와 recreate/adopt를 유지하면서 별도 Transport core 후보 CLI/SDK를
+추가했다. 정상 producer는 수정하지 않고 build-only receipt와 runtime-v1을 별도로
+검산한다. backend/frontend/CS만 no-start로 만들고, 이전 CS의 고정 local state를
+0600으로 보관·복원·readback한 다음 시작/health/보호 조건을 확인해 current를 마지막에
+발행한다. migrate는 image metadata만 갱신한다. 원문 실패 로그를 보존하며 실제
+Docker/DB/운영 배포는 실행하지 않았다. 검증 결과와 소스 동결의 정본은 별도 불변
+검증 packet이며, 두 원본 리뷰와 정확 CI/병합/실제 인계는 후속 gate다.
+
 ## 2026-11-12 — Transport 두 UI의 공식 단독 승격
 
 - 기본 public 선택과 등록된 --component admin을 기존 component SDK에 연결했다. 추가 UI는 기존 release 소유 runtime에서 유도하며 target lifecycle·core/admin 그룹·기존 current layout은 보존한다.
