@@ -1,6 +1,8 @@
 'use client';
 
 import { Button } from '@kor-travel/ui/button';
+import { Input } from '@kor-travel/ui/input';
+import { Field, FieldLabel } from '@kor-travel/ui/field';
 
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
@@ -288,19 +290,19 @@ function PublicKeySettings({ model }: { model: AdminSettingsPanelModel }) {
             <KeyRound className="w-5 h-5 text-brand shrink-0" />
           </div>
           <form className="space-y-3" onSubmit={createKey}>
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-secondary" htmlFor="public-key-label">
+            <Field className="gap-0 space-y-1.5">
+              <FieldLabel className="text-xs font-semibold text-secondary" htmlFor="public-key-label">
                 키 이름
-              </label>
-              <input
-                className="ops-input"
+              </FieldLabel>
+              <Input
+                className="ops-input min-h-9 rounded-card border-line bg-card px-3 text-sm text-strong"
                 id="public-key-label"
                 maxLength={80}
                 placeholder="운영 콘솔, 테스트 클라이언트"
                 value={keyState.label}
                 onChange={(event) => patchKeyState({ label: event.target.value })}
               />
-            </div>
+            </Field>
             <div className="flex flex-wrap gap-2">
               <Button variant="ghost"
                 className="ops-button ops-button--primary"
@@ -324,15 +326,15 @@ function PublicKeySettings({ model }: { model: AdminSettingsPanelModel }) {
 
           {keyState.generatedKey ? (
             <div className="mt-4 bg-subtle border border-line rounded-card p-3 space-y-2">
-              <label
+              <FieldLabel
                 className="text-xs font-semibold text-secondary"
                 htmlFor="generated-public-key"
               >
                 생성된 키
-              </label>
+              </FieldLabel>
               <div className="flex gap-2">
-                <input
-                  className="ops-input flex-1 font-mono"
+                <Input
+                  className="ops-input min-h-9 rounded-card border-line bg-card px-3 text-sm text-strong flex-1 font-mono"
                   id="generated-public-key"
                   readOnly
                   value={keyState.generatedKey}
@@ -486,42 +488,42 @@ function PasswordSettings({ model }: { model: AdminSettingsPanelModel }) {
           </div>
 
           <form className="space-y-3 max-w-md" onSubmit={passwordForm.handleSubmit(changePassword)}>
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-secondary" htmlFor="current-password">
+            <Field className="gap-0 space-y-1.5">
+              <FieldLabel className="text-xs font-semibold text-secondary" htmlFor="current-password">
                 현재 비밀번호
-              </label>
-              <input
+              </FieldLabel>
+              <Input
                 autoComplete="current-password"
-                className="ops-input"
+                className="ops-input min-h-9 rounded-card border-line bg-card px-3 text-sm text-strong"
                 id="current-password"
                 type="password"
                 {...passwordForm.register('current')}
               />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-secondary" htmlFor="new-password">
+            </Field>
+            <Field className="gap-0 space-y-1.5">
+              <FieldLabel className="text-xs font-semibold text-secondary" htmlFor="new-password">
                 새 비밀번호 ({MIN_PASSWORD_LENGTH}자 이상)
-              </label>
-              <input
+              </FieldLabel>
+              <Input
                 autoComplete="new-password"
-                className="ops-input"
+                className="ops-input min-h-9 rounded-card border-line bg-card px-3 text-sm text-strong"
                 id="new-password"
                 type="password"
                 {...passwordForm.register('next')}
               />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-secondary" htmlFor="confirm-password">
+            </Field>
+            <Field className="gap-0 space-y-1.5">
+              <FieldLabel className="text-xs font-semibold text-secondary" htmlFor="confirm-password">
                 새 비밀번호 확인
-              </label>
-              <input
+              </FieldLabel>
+              <Input
                 autoComplete="new-password"
-                className="ops-input"
+                className="ops-input min-h-9 rounded-card border-line bg-card px-3 text-sm text-strong"
                 id="confirm-password"
                 type="password"
                 {...passwordForm.register('confirm')}
               />
-            </div>
+            </Field>
             {passwordValues.next && passwordValues.next !== passwordValues.confirm ? (
               <p className="text-xs text-danger">새 비밀번호가 서로 다릅니다.</p>
             ) : null}

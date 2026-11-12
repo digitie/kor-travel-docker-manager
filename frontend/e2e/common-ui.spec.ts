@@ -62,9 +62,12 @@ test('공통 로그인·표·확인·모달·설정 행과 로그아웃', async 
   await table.getByTitle('컨테이너 세부 설정 변경').click();
   const config = page.getByRole('dialog', { name: '컨테이너 설정 변경' });
   const port = config.getByLabel('포트 매핑 2', { exact: true });
+  const retainedPort = await port.elementHandle();
   await port.fill('12992:9002'); await expect(port).toBeFocused();
+  expect(await retainedPort?.evaluate((element) => element.isConnected)).toBe(true);
   await config.getByLabel('포트 매핑 1 삭제', { exact: true }).click();
   await expect(config.getByLabel('포트 매핑 1', { exact: true })).toHaveValue('12992:9002');
+  expect(await retainedPort?.evaluate((element) => element.isConnected)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('common-ui.png'), fullPage: false });
   await page.keyboard.press('Escape'); await expect(config).toHaveCount(0);
   await page.getByRole('button', { name: '백업 이력', exact: true }).click();
@@ -75,7 +78,10 @@ test('공통 로그인·표·확인·모달·설정 행과 로그아웃', async 
   await page.keyboard.press('Escape');
   await expect(page.locator('body')).toHaveCSS('font-family', /Pretendard/);
   await page.getByRole('button', { name: '빠른 명령', exact: true }).first().click();
-  await page.getByRole('dialog', { name: '빠른 명령' }).getByRole('button', { name: /로그아웃/ }).click();
+  const command = page.getByRole('dialog', { name: '빠른 명령' });
+  const search = command.getByLabel('명령 검색');
+  await search.fill('로그아웃'); await expect(search).toBeFocused();
+  await command.getByRole('button', { name: /로그아웃/ }).click();
   await expect(page.getByRole('button', { name: '로그인', exact: true })).toBeVisible();
   expect(errors).toEqual([]);
 });

@@ -8,6 +8,12 @@
 Docker/DB/운영 배포는 실행하지 않았다. 검증 결과와 소스 동결의 정본은 별도 불변
 검증 packet이며, 두 원본 리뷰와 정확 CI/병합/실제 인계는 후속 gate다.
 
+## 2026-11-13 — 프론트엔드 선택 도구와 공통 입력 부품 정리(검증·운영 대기)
+
+- SDK508 main에서 새 build-rules branch를 만들고 Node22.23.1/npm12.0.1 private metadata·selector·engine-strict를 연결했다. lock은 root engines만 바꾸고 graph/vendor/C11 원장은 보존한다.
+- CI 기존 step 상대순서를 유지하며 선택 npm 설치와 strict ci, 로컬 lint warning0을 맞췄다. 세 모듈은 기존 shared Input/NativeSelect/Textarea/Field를 사용하고 RHF·도메인 검증·payload/상태를 보존한다.
+- [도구·검증 계약](frontend-toolchain.md)에 현재 C11 수용 포인터와 새 runtime 배포 경계를 기록했다. 새 Common guard ref 연결·정확 runtime의 lint/type/unit/Doctor/build/browser 및 운영 적용은 아직 대기다. 새 설치·전체 빌드·global Node 변경·운영 API/DB 작업은 하지 않았다.
+
 ## 2026-11-12 — Transport 두 UI의 공식 단독 승격
 
 - 기본 public 선택과 등록된 --component admin을 기존 component SDK에 연결했다. 추가 UI는 기존 release 소유 runtime에서 유도하며 target lifecycle·core/admin 그룹·기존 current layout은 보존한다.

@@ -100,7 +100,9 @@ poetry run uvicorn kor_travel_docker_manager.main:app --host 0.0.0.0 --port 1290
 ### 3. 프론트엔드 실행
 ```bash
 cd frontend
-npm install
+# 저장소 .nvmrc의 Node 22.23.1을 선택한 개발 shell에서 실행
+npm install --global "$(node -p 'require("./package.json").packageManager')"
+npm ci --engine-strict
 npm run dev
 ```
 
@@ -114,3 +116,5 @@ npm run dev
 Concierge 공용 Dagster(ADR-55): `conc` 기본 runtime은 `kor-travel-concierge-dagster-code-server`를
 사용한다. 공유 제어 평면·기존 child-health/reaper를 재사용한다. old APScheduler의
 `legacy-scheduler` rollback profile은 2026-11-02에 compose에서 지웠다. 앱 migration/backend 전환은 Concierge 적용 가이드를 따른다.
+
+프론트엔드의 선택 도구와 C11 실제 수용 경계는 [도구·검증 계약](docs/frontend-toolchain.md)을 따른다.

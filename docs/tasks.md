@@ -5,6 +5,11 @@
 - [ ] 전체 backend/Ruff·현재 main 통합 후 불변 source 입력을 동결하고 동일 원 A/B 소스 검토와 정확 CI를 완료한다.
 - [ ] 병합·trusted SDK 설치·정상 merged image tuple 검증 후 실제 core 인계/수용을 진행한다. 지금 운영 적용은 하지 않았다.
 
+## 2026-11-13 — 선택 Node/npm과 공통 입력 부품
+
+- [ ] Node22.23.1/npm12.0.1 metadata·CI 선택·입력 부품 후보의 실제 lint/type/unit/Doctor/build/browser와 원2검토/정확CI를 완료한다. 새 Common guard는 부모 확정 ref 뒤 연결한다.
+- [ ] 새 frontend 적용 시 private pinned runtime을 맞추고 기존 공식 경로로 별도 수용한다. global Node·공용 DB/RustFS/Dagster lifecycle은 바꾸지 않는다. [계약](frontend-toolchain.md).
+
 ## 2026-11-12 — Transport 두 UI의 단독 승격
 
 - [x] 기존 external project/core/admin current를 유지하는 public/admin 선택과 source/schema·환경 보존 회귀를 검증한다.

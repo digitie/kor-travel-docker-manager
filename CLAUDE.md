@@ -124,7 +124,9 @@ poetry run ktdctl srv --build
 # 의존성 설치 (npm)
 cd /mnt/f/dev/kor-travel-docker-manager
 cd frontend
-npm install
+# 저장소 .nvmrc의 Node 22.23.1을 선택한 개발 shell에서 실행
+npm install --global "$(node -p 'require("./package.json").packageManager')"
+npm ci --engine-strict
 
 # 타입 체크
 npm run type-check
