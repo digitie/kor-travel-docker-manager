@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 import { renderWithQueryClient } from '@/test-utils';
 import { RuntimePinsResponse } from '@/lib/api';
@@ -10,7 +11,7 @@ vi.mock('@/lib/api', async (importOriginal) => {
   return { ...actual, apiJson: vi.fn(), postJson: vi.fn(), deleteJson: vi.fn() };
 });
 
-import { apiJson } from '@/lib/api';
+import { apiJson, postJson } from '@/lib/api';
 
 const mockedApiJson = vi.mocked(apiJson);
 const PIN_VERIFY = 'sudo -n backend/.venv/bin/ktdctl pin verify';
@@ -55,5 +56,24 @@ describe('RuntimePinPanel — 재시도 금지 기록이 있는 현재 세트', 
 
     expect(await screen.findByText(PIN_VERIFY)).toBeTruthy();
     expect(screen.queryByText(/새 버전으로 회전해야 합니다/)).toBeNull();
+
+    const user = userEvent.setup();
+    const role = screen.getByLabelText('대상');
+    expect(role).toHaveValue('map');
+    await user.selectOptions(role, 'pinvi');
+    expect(screen.getByLabelText('대상')).toBe(role);
+    expect(role).toHaveValue('pinvi');
+
+    const revision = screen.getByLabelText('고정할 커밋 SHA');
+    await user.type(revision, 'a'.repeat(40));
+    expect(screen.getByLabelText('고정할 커밋 SHA')).toBe(revision);
+    expect(revision).toHaveFocus();
+    const reason = screen.getByLabelText('변경 사유');
+    await user.type(reason, '검증 사유');
+    expect(screen.getByLabelText('변경 사유')).toBe(reason);
+    expect(reason).toHaveFocus();
+    await user.clear(reason);
+    expect(reason).toHaveValue('');
+    expect(postJson).not.toHaveBeenCalled();
   });
 });

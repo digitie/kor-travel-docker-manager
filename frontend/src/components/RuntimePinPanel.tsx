@@ -1,6 +1,10 @@
 'use client';
 
 import { Button } from '@kor-travel/ui/button';
+import { Input } from '@kor-travel/ui/input';
+import { NativeSelect, NativeSelectOption } from '@kor-travel/ui/native-select';
+import { Textarea } from '@kor-travel/ui/textarea';
+import { Field, FieldLabel } from '@kor-travel/ui/field';
 
 import OpsDialog from './OpsDialog';
 
@@ -406,46 +410,49 @@ function PinChangeForm({ model }: { model: RuntimePinPanelModel }) {
                     createRequest.mutate();
                   }}
                 >
-                  <label className="block text-xs text-secondary">
-                    대상
-                    <select
-                      className="ops-input mt-1 w-full"
+                  <Field className="gap-0">
+                    <FieldLabel className="text-xs text-secondary" htmlFor="runtime-pin-role">대상</FieldLabel>
+                    <NativeSelect
+                      className="mt-1 w-full [&>select]:min-h-9 [&>select]:rounded-card [&>select]:border-line [&>select]:bg-card [&>select]:text-strong"
+                      id="runtime-pin-role"
                       onChange={(event) => setRole(event.target.value as 'map' | 'pinvi')}
                       value={role}
                     >
                       {(['map', 'pinvi'] as const).map((value) => (
-                        <option key={value} value={value}>
+                        <NativeSelectOption key={value} value={value}>
                           {ROLE_LABELS[value]}
-                        </option>
+                        </NativeSelectOption>
                       ))}
-                    </select>
-                  </label>
+                    </NativeSelect>
+                  </Field>
 
-                  <label className="block text-xs text-secondary">
-                    고정할 커밋 SHA
-                    <input
-                      className="ops-input mt-1 w-full font-mono"
+                  <Field className="gap-0">
+                    <FieldLabel className="text-xs text-secondary" htmlFor="runtime-pin-revision">고정할 커밋 SHA</FieldLabel>
+                    <Input
+                      id="runtime-pin-revision"
+                      className="ops-input min-h-9 rounded-card border-line bg-card px-3 text-sm text-strong mt-1 w-full font-mono"
                       onChange={(event) => setRevision(event.target.value.trim())}
                       placeholder="40자리 소문자 16진수"
                       value={revision}
                     />
-                  </label>
+                  </Field>
                   {revision && !revisionValid ? (
                     <p className="text-xs text-danger">
                       40자리 소문자 16진수 커밋 SHA여야 합니다.
                     </p>
                   ) : null}
 
-                  <label className="block text-xs text-secondary">
-                    변경 사유
-                    <textarea
-                      className="ops-input mt-1 w-full"
+                  <Field className="gap-0">
+                    <FieldLabel className="text-xs text-secondary" htmlFor="runtime-pin-reason">변경 사유</FieldLabel>
+                    <Textarea
+                      id="runtime-pin-reason"
+                      className="ops-input min-h-9 rounded-card border-line bg-card px-3 text-sm text-strong mt-1 w-full field-sizing-fixed"
                       maxLength={MAX_REASON_LENGTH}
                       onChange={(event) => setReason(event.target.value)}
                       rows={2}
                       value={reason}
                     />
-                  </label>
+                  </Field>
                   <p className="text-xs text-secondary">
                     {reason.length}/{MAX_REASON_LENGTH}자 · 사유는 공개 사본과 API 응답에 그대로
                     기록되므로 비밀번호나 토큰을 적지 마세요.

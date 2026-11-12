@@ -77,6 +77,33 @@ run_checks() {
 }
 
 echo "== frontend 툴체인 검사: $FRONTEND_DIR =="
+# --fix도 선택 런타임 불일치를 고치지 않는다. node_modules 삭제 전에 먼저 거부한다.
+if ! node <<'NODE'
+const { readFileSync } = require('node:fs');
+const { execFileSync } = require('node:child_process');
+const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
+const selectedNode = readFileSync('../.nvmrc', 'utf8').trim();
+const selectedNpm = manifest.engines?.npm;
+if (!/^\d+\.\d+\.\d+$/.test(selectedNode)
+    || !/^\d+\.\d+\.\d+$/.test(selectedNpm ?? '')
+    || manifest.engines?.node !== selectedNode
+    || manifest.packageManager !== 'npm@' + selectedNpm) {
+  console.error('선택 Node/npm 메타데이터가 일치하지 않습니다.');
+  process.exit(1);
+}
+const actualNode = process.versions.node;
+const actualNpm = execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim();
+if (actualNode !== selectedNode || actualNpm !== selectedNpm) {
+  console.error('선택 런타임 불일치: Node ' + actualNode + ' / npm ' + actualNpm
+    + ' (필요: Node ' + selectedNode + ' / npm ' + selectedNpm + ')');
+  process.exit(1);
+}
+console.log('✅ 선택 Node/npm 버전 일치');
+NODE
+then
+  fail "선택 Node/npm을 먼저 준비할 것 — node_modules는 변경하지 않았다."
+  exit 1
+fi
 run_checks
 
 if [ "$problems" -eq 0 ]; then
