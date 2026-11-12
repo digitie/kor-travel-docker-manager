@@ -2,6 +2,7 @@
 
 - [x] 현재 CS의 state가 persistent mount 밖의 비어 있지 않은 writable layer임을 제한된 읽기로 확인했다.
 - [x] 기존 G/current/frozen/FD helper를 재사용하는 Transport-only CLI/factory와 고정 state 경로 인계 회귀를 구현했다.
+- [x] A-SDK-CORE-P2-01 반례15FAIL/7PASS를 보존하고 baked API 기본값·producer 두 hash·image label 검사를 추가했다. live override 보존과 발행 전 재검사를 포함한 focused123개가 통과했다.
 - [ ] 전체 backend/Ruff·현재 main 통합 후 불변 source 입력을 동결하고 동일 원 A/B 소스 검토와 정확 CI를 완료한다.
 - [ ] 병합·trusted SDK 설치·정상 merged image tuple 검증 후 실제 core 인계/수용을 진행한다. 지금 운영 적용은 하지 않았다.
 

@@ -1839,6 +1839,15 @@ volume 유지나 기존 prebuilt-v1 receipt 자기 일관성만으로 새 CS의 
 private snapshot하고 새 CS를 no-start로 만들어 고정 경로에 복원·readback한 후 시작한다.
 같은 정상 ImageID를 유지하며 image commit/retag·mount migration·DB migration을 하지 않는다.
 
+### 공개 client 입력의 보존 경계
+
+기존 public frontend 이미지의 API base URL/port 기본값이 baked client의 승인 기준이다.
+후보 기본값·normal build receipt의 완전한 두 public hash·기존 image label을 함께 대조한다.
+live ENV override는 client 번들을 다시 쓰지 않으므로 승인 기준을 바꾸지 않으며, 기존
+nonrevision ENV는 그대로 보존한다. snapshot 이전과 사후/발행 경계에서 재검사한다.
+새 서명·필드·설정 재작성 없이 기존 producer의 두 명시 입력을 사용한다. 누락 증거를
+거부하므로 기존 producer를 호출할 때 빈 base URL도 생략하지 않는 것이 필요하다.
+
 ### 결과와 한계
 
 기존 current schema와 publisher를 재사용하고 health/보호 조건 성공 뒤에만 current를

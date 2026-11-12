@@ -1,3 +1,13 @@
+## 2026-11-13 — Transport core의 baked public API 보존 보완
+
+원 A의 A-SDK-CORE-P2-01을 별도 반례22개로 재현했다(수정 전15FAIL/7PASS).
+기존 frontend image 기본값과 live ENV가 다른 경우를 구분하며, 기존 baked API base
+URL/port·후보 기본값·producer 두 hash·image label의 일치를 snapshot 이전부터 발행
+직전까지 확인한다. live override를 승인으로 사용하지 않고 nonrevision ENV는 보존한다.
+producer·runtime schema·설정 파일·Engine helper는 바꾸지 않았다. 기존101개와 신규22개,
+focused123개가 통과했다. 전체 검사·동일 원 A/B 후속·정확 CI·운영 인계는 별도 gate다.
+최초 fixture 연결 오류도 실패 원문으로 보존한다. Engine fixture는 계획 단계로 유지한다.
+
 ## 2026-11-13 — Transport core 후보의 state 인계 구현
 
 기존 UI-only 후보와 recreate/adopt를 유지하면서 별도 Transport core 후보 CLI/SDK를

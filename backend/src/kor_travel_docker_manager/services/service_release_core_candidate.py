@@ -283,6 +283,43 @@ def _images(client: Any, normal: dict, runtime: dict, sha: str, tree: str, url: 
     return metadata
 
 
+def _preserve_baked_public_inputs(client: Any, old_image: str, new_image: str, normal: dict):
+    """기존 이미지의 client 기본값을 승인 기준으로 삼는다. live ENV는 별도 보존한다."""
+    keys = {"NEXT_PUBLIC_API_BASE_URL", "NEXT_PUBLIC_API_PORT"}
+
+    def defaults(image_id):
+        image = client.images.get(image_id).attrs
+        values = component._environment_values((image.get("Config") or {}).get("Env") or [])
+        if image.get("Id") != image_id or not keys <= values.keys():
+            raise ServiceReleaseError("public client 기본값 증명이 불완전합니다")
+        return {key: values[key] for key in keys}
+
+    approved = defaults(old_image)
+    approved_hashes = {
+        key: hashlib.sha256(value.encode()).hexdigest() for key, value in approved.items()
+    }
+
+    def unchanged():
+        artifact = normal.get("artifacts", {}).get("frontend", {})
+        hashes = artifact.get("publicInputHashes")
+        labels = (client.images.get(new_image).attrs.get("Config") or {}).get("Labels") or {}
+        # runtime override는 Next.js 빌드 때 고정된 client 입력의 승인이 아니다.
+        if (
+            defaults(old_image) != approved
+            or defaults(new_image) != approved
+            or not isinstance(hashes, dict)
+            or hashes != approved_hashes
+            or labels.get("io.kor-travel-transport.public-input-sha256")
+            != hashlib.sha256(
+                json.dumps(approved_hashes, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+        ):
+            raise ServiceReleaseError("기존 baked public client와 후보 build 입력 증명이 다릅니다")
+
+    unchanged()
+    return unchanged
+
+
 def _instigators(rows: list[dict]) -> dict:
     if not isinstance(rows, list):
         raise ServiceReleaseError("instigator catalog가 필요합니다")
@@ -694,6 +731,9 @@ def _apply(
     selected = _selected(records, project, RUNTIME)
     if selected["dagster-code-server"]["Id"] != runtime["state"]["source_container"]:
         raise ServiceReleaseError("receipt source CS identity가 현재와 다릅니다")
+    public_inputs_unchanged = _preserve_baked_public_inputs(
+        client, selected["frontend"]["Image"], runtime["images"]["frontend"], normal
+    )
     old_ids = {
         k: (v["Id"], v["Image"], v["State"]["StartedAt"], v.get("RestartCount"))
         for k, v in selected.items()
@@ -814,6 +854,7 @@ def _apply(
     }
 
     def common():
+        public_inputs_unchanged()
         state.check_lease(lease_fd, lease_path)
         candidate._unchanged_pointers(manifests, root)
         if (

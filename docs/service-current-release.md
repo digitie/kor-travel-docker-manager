@@ -324,6 +324,16 @@ Alembic upgrade/stamp/downgrade를 실행하지 않는다. Git blob에서 코드
 값이 없거나 다르면 자동 수정하지 않는다. 기존 normal producer의 `RELEASE_SHA`만
 등록한 source M으로 바꾸고, 나머지 effective ENV·인증·키·session은 보존한다.
 
+public frontend의 `NEXT_PUBLIC_API_BASE_URL`·`NEXT_PUBLIC_API_PORT`는 Next.js 빌드 때
+client에 고정되므로 runtime ENV 보존만으로 동등성을 승인하지 않는다. 기존 frontend
+ImageID의 두 기본값을 baked 기준으로 고정하고, 후보 이미지 기본값과 normal producer의
+`artifacts.frontend.publicInputHashes` 두 항목 및 기존 public-input image label을 함께
+비교한다. producer에는 두 입력을 명시하며 빈 base URL도 실제 입력으로 해시한다.
+누락·추가 hash·불일치는 state snapshot/컨테이너 생성 전에 거부하고, 공통 사후 검사와
+current 발행 직전에도 같은 기준을 재확인한다. 기존 image 기본값과 live ENV가 달라도
+live 값을 client 승인으로 쓰지 않는다. 기존 nonrevision live ENV는 그대로 보존하며
+runtime override로 후보 baked 변경을 숨길 수 없다. producer·receipt schema는 바꾸지 않는다.
+
 현재 Transport의 `/opt/dagster/state`는 collector checkpoint volume과 별개인
 CS writable layer다. 따라서 기존 mount 보존만으로 local artifact/compute log가
 새 CS에 전달되었다고 판단하지 않는다. 한 G와 같은 기존 project flock 아래에서:

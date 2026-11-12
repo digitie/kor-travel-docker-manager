@@ -221,6 +221,24 @@ def core_case(scenario, monkeypatch):
             "io.kor-travel-transport.build-role": role,
             "io.kor-travel-transport.copy-sha256": digest,
         }
+    # 실제 normal producer처럼 public 두 입력의 명시 hash와 runner 기본값을 둔다.
+    public = {"NEXT_PUBLIC_API_BASE_URL": "https://old-api.invalid", "NEXT_PUBLIC_API_PORT": "8000"}
+    hashes = {key: hashlib.sha256(value.encode()).hexdigest() for key, value in public.items()}
+    public_label = hashlib.sha256(
+        json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    old_frontend = s.records["frontend"]["Image"]
+    s.metadata[old_frontend]["Config"]["Env"] = [key + "=" + value for key, value in public.items()]
+    s.metadata[NEW_FRONTEND]["Config"]["Env"].extend(
+        key + "=" + value for key, value in public.items()
+    )
+    s.records["frontend"]["Config"]["Env"].extend(
+        key + "=" + value for key, value in public.items()
+    )
+    s.normal["artifacts"]["frontend"]["publicInputHashes"] = hashes
+    s.metadata[NEW_FRONTEND]["Config"]["Labels"]["io.kor-travel-transport.public-input-sha256"] = (
+        public_label
+    )
     profile = entry._profile(
         "transport", entry._declaration("transport", s.config), ["migrate=" + paired.OTHER]
     )
