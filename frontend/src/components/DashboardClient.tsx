@@ -1,6 +1,8 @@
 'use client';
 
 import { Button } from '@kor-travel/ui/button';
+import { Input } from '@kor-travel/ui/input';
+import { NativeSelect, NativeSelectOption } from '@kor-travel/ui/native-select';
 
 import { useFieldArray, useForm, useWatch } from 'react-hook-form';
 import { Checkbox } from '@kor-travel/ui/checkbox';
@@ -1313,17 +1315,17 @@ function PerformanceChartDialog({ model }: { model: DashboardModel }) {
                 <label className="text-xs text-secondary" htmlFor="chart-hours">
                   기간
                 </label>
-                <select
-                  className="ops-input min-h-[36px] py-1 text-xs"
+                <NativeSelect
+                  className="w-full [&>select]:min-h-9 [&>select]:rounded-card [&>select]:border-line [&>select]:bg-card [&>select]:py-1 [&>select]:text-xs [&>select]:text-strong"
                   id="chart-hours"
                   onChange={(event) => setChartHours(Number(event.target.value))}
                   value={chartHours}
                 >
-                  <option value={1}>1시간</option>
-                  <option value={6}>6시간</option>
-                  <option value={24}>24시간</option>
-                  <option value={72}>3일</option>
-                </select>
+                  <NativeSelectOption value={1}>1시간</NativeSelectOption>
+                  <NativeSelectOption value={6}>6시간</NativeSelectOption>
+                  <NativeSelectOption value={24}>24시간</NativeSelectOption>
+                  <NativeSelectOption value={72}>3일</NativeSelectOption>
+                </NativeSelect>
               </div>
 
               <Button variant="ghost"
@@ -1575,9 +1577,9 @@ function CommandPalette({ model }: { model: DashboardModel }) {
   return (<>       {isCommandPaletteOpen && (
         <>
           <OpsDialog aria-label="빠른 명령"  className="ops-command-dialog"  onClose={() => setIsCommandPaletteOpen(false)}>
-            <input
+            <Input
               aria-label="명령 검색"
-              className="ops-command-dialog__input"
+              className="ops-command-dialog__input min-h-14 rounded-none border-0 border-b border-line bg-card px-6 py-0 text-sm text-strong"
               onChange={(event) => setCommandQuery(event.target.value)}
               placeholder="명령 검색"
               ref={commandInputRef}
@@ -1965,7 +1967,7 @@ function EnvironmentSettings({ model }: { model: DashboardModel }) {
                             {key}
                             {locked ? <span className="ml-2 font-sans">· 읽기 전용</span> : null}
                           </label>
-                          <input
+                          <Input
                             id={`env-input-${key}`}
                             type="text"
                             value={val}
@@ -2028,7 +2030,7 @@ function NetworkSettings({ model }: { model: DashboardModel }) {
                   {networkFields.fields.map((field, idx) => (
                     <div key={field.id}>
                       <div className="flex gap-2 items-center">
-                        <input
+                        <Input
                           type="text"
                           {...configForm.register(`networks.${idx}.value`)}
                           placeholder="e.g. default"
@@ -2120,7 +2122,7 @@ function PortSettings({ model }: { model: DashboardModel }) {
                   {portFields.fields.map((field, idx) => (
                     <div key={field.id}>
                       <div className="flex gap-2 items-center">
-                        <input
+                        <Input
                           type="text"
                           {...configForm.register(`ports.${idx}.value`)}
                           placeholder="e.g. 5432:5432"

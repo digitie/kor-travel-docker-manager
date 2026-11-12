@@ -143,9 +143,16 @@ describe('AdminSettingsPanel — 오류 표시 분기', () => {
     renderWithQueryClient(<AdminSettingsPanel onClose={() => {}} />);
     await screen.findByText('등록된 공개 API 키가 없습니다.');
 
-    await user.type(screen.getByLabelText('현재 비밀번호'), 'old-password-1');
+    const currentPassword = screen.getByLabelText('현재 비밀번호');
+    await user.type(currentPassword, 'old-password-1');
+    expect(screen.getByLabelText('현재 비밀번호')).toBe(currentPassword);
+    expect(currentPassword).toHaveFocus();
     await user.type(screen.getByLabelText(/새 비밀번호 \(\d+자 이상\)/), 'new-password-123');
-    await user.type(screen.getByLabelText('새 비밀번호 확인'), 'new-password-123');
+    const confirmation = screen.getByLabelText('새 비밀번호 확인');
+    await user.type(confirmation, 'new-password-123');
+    expect(screen.getByLabelText('새 비밀번호 확인')).toBe(confirmation);
+    expect(confirmation).toHaveFocus();
+    expect(confirmation).toHaveValue('new-password-123');
     await user.click(screen.getByRole('button', { name: '비밀번호 변경' }));
 
     await screen.findByText(/비밀번호를 변경했습니다/);
