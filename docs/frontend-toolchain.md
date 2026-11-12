@@ -25,9 +25,9 @@ npm run test:e2e
 
 C11 최초 릴리스 UI0.2.0/tokens0.1.1 및 patched engine bytes는 불변이다. 소비 원장의 integration-11-review/CANDIDATE 표기는 당시 동결 입력의 역사이며 새 후보 pack을 뜻하지 않는다. 최종 공통 정본과 6개 앱의 실제 수용은 [Common 최종 병합 영수증](https://github.com/digitie/kor-travel-common/blob/678a5bcf0150ac0386bfa86106e7e0f4f77e8639/docs/reviews/adversarial/evidence/2026-11-12-frontend-deployment-receipt.json), [Common PR50](https://github.com/digitie/kor-travel-common/pull/50)에 연결한다. 이 문서에서 원장·pack을 다시 쓰거나 재발행하지 않는다.
 
-당시 Manager frontend 수용은 9910b9 계열 소스의 실제 설치/새 UI와 로그인·공통 표·Pretendard·모바일·로그아웃 증거다. 후속 SDK508 설치는 별도 단계이며 frontend 새 도구 변경의 운영 수용으로 소급하지 않는다. 새 도구/입력 부품 변경의 원격 실제 gate와 운영 적용은 아직 별도 대기다. native device/EAS/store 및 제외된 Map 후속 작업을 완료로 표시하지 않는다.
+당시 Manager frontend 수용은 9910b9 계열 소스의 실제 설치/새 UI와 로그인·공통 표·Pretendard·모바일·로그아웃 증거다. 후속 SDK508 설치는 별도 단계이며 frontend 새 도구 변경의 운영 수용으로 소급하지 않는다. d289619 source의 원격 기본 unit54·브라우저2·Doctor0/type/lint/build와 backend3979PASS/40SKIP/1warning은 최초 PR CI에서 확인했다. 최종 guard 연결 source의 정확 CI와 새 운영 적용은 별도 gate다. native device/EAS/store 및 제외된 Map 후속 작업을 완료로 표시하지 않는다.
 
-새 Common toolchain 검사 코드 ref와 지원 옵션은 부모 확정 뒤 중앙 workflow에 연결한다. 현재의 고정55 검사 코드와 최신 main 데이터 비교는 그 전까지 보존한다. 지원되지 않는 input이나 임시 ref는 넣지 않는다.
+Common PR51의 실제 병합 36e4d285ea926b9d8c20da4221ade86ebf74c04d를 중앙 workflow의 uses/common-ref에 함께 고정한다. frontend가 유일한 private anchor라 추가 manifest 입력은 없고, 이 UI는 systemd 기반이므로 production Node Dockerfile 입력도 없다. 공개 C11 7packs/버전은 바꾸지 않는다. 중앙 정책 데이터는 최신 main을 별도 비교하며, 최종 source의 원2 검토·정확 CI·전용 runtime 운영 적용은 구분한다.
 
 ## 입력 부품과 회귀
 
