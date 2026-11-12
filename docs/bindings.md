@@ -212,3 +212,13 @@ ADR-51 잃는 보장 G-3에서 닫힌 어휘가 없어졌다. preflight는 어�
   폴백 유지(§14-21 추천)면 Map 쪽 값이 VWorld 키 하나로 고정된다
 - **weather metrics bearer는 해당 없음**: 관측 1단계(federate)에서 n150이 weather-api `/metrics`를 직접 긁지 않으므로 토큰이 한
   호스트에만 있다
+
+
+## Transport 기존 project lease와 새 core 후보
+
+Transport 소유 deploy-prod-remote.sh의 기존 `release_lock_path`와 Manager의
+`targets.transport.core_candidate.project_lease`는 서로 다른 저장소의 선언이다.
+source를 임의 실행하지 않고 승인 merged M의 해당 Git blob을 읽어 literal을
+대조하는 `_lease_contract`가 Docker 생성 이전 및 변경 직전의 동등성을 강제한다.
+같지 않거나 선언이 모호하면 새 경로를 만들지 않고 거부한다. 회귀:
+`test_source_project_lease_mismatch_is_rejected_before_client`.

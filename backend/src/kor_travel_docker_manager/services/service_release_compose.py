@@ -88,7 +88,7 @@ def _mutation_lock_fd() -> int:
     return matches[0]
 
 
-def _run_mutation(command: list[str], **kwargs: Any) -> tuple[Any, list[str]]:
+def _run_mutation(command: list[str], *, additional_fds: tuple[int, ...] = (), **kwargs: Any) -> tuple[Any, list[str]]:
     """자식 종료 전 G 해제를 막고, 부모만 강제 종료돼도 자식이 G를 보유한다."""
     interrupted: list[str] = []
     previous = {}
@@ -98,7 +98,7 @@ def _run_mutation(command: list[str], **kwargs: Any) -> tuple[Any, list[str]]:
         for signum in (signal.SIGINT, signal.SIGTERM):
             previous[signum] = signal.signal(signum, defer)
     try:
-        completed = subprocess.run(command, pass_fds=(_mutation_lock_fd(),), **kwargs)
+        completed = subprocess.run(command, pass_fds=(_mutation_lock_fd(), *additional_fds), **kwargs)
         return completed, interrupted
     finally:
         for signum, handler in previous.items():

@@ -1109,6 +1109,7 @@ _ALLOWED_TARGET_FIELDS: Final = frozenset(
         "runtime_services",
         "services",
         "ui_candidate",
+        "core_candidate",
     }
 )
 
@@ -1128,6 +1129,21 @@ _ALLOWED_CONTAINER_FIELDS: Final = frozenset(
     }
 )
 
+
+
+def transport_core_candidate_for_target(target: str, config: Mapping[str, Any]) -> tuple[str, Path]:
+    """Transport의 기존 core와 기존 project flock만 허용한다."""
+    spec = config.get("targets", {}).get(target, {})
+    choice = spec.get("core_candidate")
+    if (target != "transport" or not isinstance(choice, Mapping)
+            or set(choice) != {"group", "project_lease", "release_env"} or choice["group"] != "core"
+            or choice["release_env"] != "RELEASE_SHA"):
+        raise TargetsConfigError("Transport의 명시한 core 후보만 지원합니다")
+    path = choice["project_lease"]
+    if (not isinstance(path, str) or not path.startswith("/")
+            or posixpath.normpath(path) != path or path.endswith("/")):
+        raise TargetsConfigError("기존 Transport project lease 절대 경로가 필요합니다")
+    return choice["group"], Path(path)
 
 
 def _component_ui_choice(target: str, config: Mapping[str, Any],
@@ -1290,6 +1306,8 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
             raise TargetsConfigError(
                 f"{label} targets.{target_id}: unknown fields {unknown}"
             )
+        if "core_candidate" in spec:
+            transport_core_candidate_for_target(target_id, config)
         if "ui_candidate" in spec:
             component_ui_candidate_for_target(target_id, config)
         excluded = spec.get("excluded_from_all")

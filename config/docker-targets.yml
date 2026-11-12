@@ -793,6 +793,11 @@ targets:
     init_steps: []
 
   transport:
+    # 기존 Transport deploy-prod-remote.sh의 동일 flock을 G 다음에 보유한다.
+    core_candidate:
+      group: core
+      release_env: RELEASE_SHA
+      project_lease: /mnt/media/kor-travel/build/transport/.kor-travel-transport-deploy.lock
     ui_candidate:
       role: transport-frontend
       source_url: https://github.com/digitie/kor-travel-transport.git

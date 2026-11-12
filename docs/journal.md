@@ -1,3 +1,23 @@
+## 2026-11-13 — Transport core의 baked public API 보존 보완
+
+원 A의 A-SDK-CORE-P2-01을 별도 반례22개로 재현했다(수정 전15FAIL/7PASS).
+기존 frontend image 기본값과 live ENV가 다른 경우를 구분하며, 기존 baked API base
+URL/port·후보 기본값·producer 두 hash·image label의 일치를 snapshot 이전부터 발행
+직전까지 확인한다. live override를 승인으로 사용하지 않고 nonrevision ENV는 보존한다.
+producer·runtime schema·설정 파일·Engine helper는 바꾸지 않았다. 기존101개와 신규22개,
+focused123개가 통과했다. 전체 검사·동일 원 A/B 후속·정확 CI·운영 인계는 별도 gate다.
+최초 fixture 연결 오류도 실패 원문으로 보존한다. Engine fixture는 계획 단계로 유지한다.
+
+## 2026-11-13 — Transport core 후보의 state 인계 구현
+
+기존 UI-only 후보와 recreate/adopt를 유지하면서 별도 Transport core 후보 CLI/SDK를
+추가했다. 정상 producer는 수정하지 않고 build-only receipt와 runtime-v1을 별도로
+검산한다. backend/frontend/CS만 no-start로 만들고, 이전 CS의 고정 local state를
+0600으로 보관·복원·readback한 다음 시작/health/보호 조건을 확인해 current를 마지막에
+발행한다. migrate는 image metadata만 갱신한다. 원문 실패 로그를 보존하며 실제
+Docker/DB/운영 배포는 실행하지 않았다. 검증 결과와 소스 동결의 정본은 별도 불변
+검증 packet이며, 두 원본 리뷰와 정확 CI/병합/실제 인계는 후속 gate다.
+
 ## 2026-11-13 — 프론트엔드 선택 도구와 공통 입력 부품 정리(검증·운영 대기)
 
 - SDK508 main에서 새 build-rules branch를 만들고 Node22.23.1/npm12.0.1 private metadata·selector·engine-strict를 연결했다. lock은 root engines만 바꾸고 graph/vendor/C11 원장은 보존한다.

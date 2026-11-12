@@ -172,7 +172,18 @@ def _run(args: argparse.Namespace) -> int:
         config = load_targets_config()
         declaration = _declaration(args.service, config)
         root = Path(args.root)
-        if args.release_action == 'apply-candidate':
+        if args.release_action == 'apply-core-candidate':
+            from kor_travel_docker_manager.services.service_release_core_candidate import (
+                apply_transport_core_candidate,
+            )
+
+            payload = apply_transport_core_candidate(
+                args.service, root=root, config=config, source_sha=args.source_sha,
+                source_clone=Path(args.source_clone), receipt_path=Path(args.receipt),
+                receipt_sha256=args.sha256, build_receipt_path=Path(args.build_receipt),
+                build_receipt_sha256=args.build_sha256, execute=args.confirm,
+            )
+        elif args.release_action == 'apply-candidate':
             from kor_travel_docker_manager.services.service_release_candidate import (
                 apply_ui_candidate,
             )
@@ -245,7 +256,7 @@ def _run(args: argparse.Namespace) -> int:
 def add_service_release_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser('service-release', help='현재 서비스 이미지의 등록·조회·차이를 확인합니다.')
     actions = parser.add_subparsers(dest='release_action', required=True)
-    for action in ('show', 'verify', 'adopt', 'compose-args', 'resolve', 'recreate', 'apply-candidate', 'apply-component-ui'):
+    for action in ('show', 'verify', 'adopt', 'compose-args', 'resolve', 'recreate', 'apply-candidate', 'apply-component-ui', 'apply-core-candidate'):
         child = actions.add_parser(action)
         child.add_argument('service')
         child.add_argument('--root', default=str(DEFAULT_RELEASE_ROOT))
@@ -256,6 +267,16 @@ def add_service_release_parser(subparsers: Any) -> None:
             child.add_argument('--oneshot-image', action='append', default=[], metavar='SERVICE=sha256:ID')
         if action in {'compose-args', 'resolve', 'recreate'}:
             child.add_argument('--group', default='main')
+        if action == 'apply-core-candidate':
+            child.add_argument('--source-sha', required=True)
+            child.add_argument('--source-clone', required=True)
+            child.add_argument('--build-receipt', required=True)
+            child.add_argument('--build-sha256', required=True)
+            child.add_argument('--receipt', required=True)
+            child.add_argument('--sha256', required=True)
+            approval = child.add_mutually_exclusive_group(required=True)
+            approval.add_argument('--confirm', action='store_true')
+            approval.add_argument('--dry-run', action='store_true')
         if action == 'apply-candidate':
             child.add_argument('--group', default='ui')
             child.add_argument('--image-id', required=True)

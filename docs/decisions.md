@@ -1817,3 +1817,42 @@ component UI의 승인 환경은 G 안에서 읽은 현재 effective 값이다. 
 추가하지 않고 기존 terminal 진단을 사용한다. 기존 Map paired 경로의 환경 의미는 유지한다.
 
 raw Docker 환경값은 component bind 경계에서 Compose literal 표현으로 한 번 변환한다. 승인·사후 비교는 raw 값을 유지하고 이미 정규화된 Compose용 Map 공통 escaper는 변경하지 않는다.
+
+
+## ADR-62: Transport core는 정상 이미지와 local state를 별도 증명해 인계한다
+
+- 상태: implemented — 소스 검증·독립 검토 단계, 운영 적용 전
+- 날짜: 2026-11-13
+- 결정자: 사용자 승인 범위의 Codex 구현
+
+### 컨텍스트
+
+Transport의 정상 Git/COPY build는 mutable state를 이미지에 넣지 않는다. 현재 CS의
+local artifact/compute log는 `/opt/dagster/state` writable layer에 있어 checkpoint
+volume 유지나 기존 prebuilt-v1 receipt 자기 일관성만으로 새 CS의 보존을 증명할 수 없다.
+
+### 결정
+
+기존 UI-only 경로를 넓히지 않고 Transport/core 전용 CLI/factory를 둔다. 기존 G와
+같은 project lease를 전 구간 보유하고, 승인된 normal build receipt의 false 플래그는
+유지한다. 별도 runtime-v1의 schema/drain/source state를 읽어 검산한 뒤, 이전 state를
+private snapshot하고 새 CS를 no-start로 만들어 고정 경로에 복원·readback한 후 시작한다.
+같은 정상 ImageID를 유지하며 image commit/retag·mount migration·DB migration을 하지 않는다.
+
+### 공개 client 입력의 보존 경계
+
+기존 public frontend 이미지의 API base URL/port 기본값이 baked client의 승인 기준이다.
+후보 기본값·normal build receipt의 완전한 두 public hash·기존 image label을 함께 대조한다.
+live ENV override는 client 번들을 다시 쓰지 않으므로 승인 기준을 바꾸지 않으며, 기존
+nonrevision ENV는 그대로 보존한다. snapshot 이전과 사후/발행 경계에서 재검사한다.
+새 서명·필드·설정 재작성 없이 기존 producer의 두 명시 입력을 사용한다. 누락 증거를
+거부하므로 기존 producer를 호출할 때 빈 base URL도 생략하지 않는 것이 필요하다.
+
+### 결과와 한계
+
+기존 current schema와 publisher를 재사용하고 health/보호 조건 성공 뒤에만 current를
+교체한다. 실패하면 snapshot/이전 current를 보존하되 실제 runtime 일부는 이미 바뀌었을
+수 있다. 자동 복원·재시도는 하지 않는다. generic archive API·별도 서명·permit 체인은
+추가하지 않는다. 비협력 root의 별도 writer를 막는 분산 fence는 아니다. 실제 Engine의
+no-start/state 인계와 최종 운영 수용은 두 소스 리뷰·정확 CI·병합 및 승인 tuple 후속 gate다.
+기능 계약과 실패 처리는 [서비스 현재 릴리스 표식](service-current-release.md)을 따른다.
