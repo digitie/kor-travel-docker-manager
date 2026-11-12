@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import signal
 import stat
 import sys
 import tarfile
@@ -348,6 +349,22 @@ def project_lease(path: Path):
         os.close(fd)  # LOCK_UN은 상속한 자식의 open-description 잠금도 풀므로 쓰지 않는다.
 
 
+@contextmanager
+def _transfer_signals():
+    """state RPC가 끝나기 전에 자식만 종료되어 G/lease를 놓지 않게 한다."""
+    interrupted = []
+
+    def defer(signum, frame):
+        interrupted.append(signal.Signals(signum).name)
+
+    previous = {sig: signal.signal(sig, defer) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        yield interrupted
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
 def _worker() -> None:
     """공식 설치 package만 -I -m으로 실행한다. 임의 source/helper를 실행하지 않는다."""
     from kor_travel_docker_manager.services import service_release_compose as frozen
@@ -364,23 +381,29 @@ def _worker() -> None:
     snapshot = stage / "state.tar"
     validate_fingerprint(request["fingerprint"])
     expected = semantic(request["fingerprint"])
-    client = docker.from_env(timeout=60)
-    try:
-        if request["operation"] == "snapshot":
-            record = client.api.inspect_container(request["cid"])
-            if record.get("Id") != request["cid"] or not record.get("State", {}).get("Running"):
-                raise ServiceReleaseError("이전 CS가 변경되었습니다")
-            save_archive(client, request["cid"], snapshot)
-            if archive_semantic(snapshot) != expected:
-                raise ServiceReleaseError("이전 CS archive와 승인 state가 다릅니다")
-        elif request["operation"] == "restore":
-            restore_state(client, request["cid"], request["image_id"], snapshot, expected)
-        else:
-            raise ServiceReleaseError("알 수 없는 state 인계 단계입니다")
-        check_lease(request["lease_fd"], lease)
-        print(json.dumps({"success": True}))
-    finally:
-        client.close()
+    # mutation RPC의 host timeout으로 daemon만 쓰는 상태를 남기지 않는다.
+    with _transfer_signals() as interrupted:
+        client = docker.from_env(timeout=None)
+        try:
+            if request["operation"] == "snapshot":
+                record = client.api.inspect_container(request["cid"])
+                if record.get("Id") != request["cid"] or not record.get("State", {}).get("Running"):
+                    raise ServiceReleaseError("이전 CS가 변경되었습니다")
+                save_archive(client, request["cid"], snapshot)
+                if archive_semantic(snapshot) != expected:
+                    raise ServiceReleaseError("이전 CS archive와 승인 state가 다릅니다")
+            elif request["operation"] == "restore":
+                restore_state(client, request["cid"], request["image_id"], snapshot, expected)
+            else:
+                raise ServiceReleaseError("알 수 없는 state 인계 단계입니다")
+            check_lease(request["lease_fd"], lease)
+            if interrupted:
+                raise ServiceReleaseError(
+                    "state 인계가 완료되었지만 중단 요청으로 발행하지 않습니다"
+                )
+            print(json.dumps({"success": True}))
+        finally:
+            client.close()
 
 
 if __name__ == "__main__":

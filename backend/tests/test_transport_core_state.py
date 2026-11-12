@@ -303,3 +303,114 @@ def test_state_parent_must_not_be_symlink(mode, link):
     )
     with pytest.raises(ServiceReleaseError):
         state._directory_stat(client, "created-cid", "/opt")
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_state_worker_has_no_rpc_deadline_and_finishes_before_interrupt(
+    tmp_path, monkeypatch, capsys, interrupted
+):
+    from kor_travel_docker_manager.services import registry
+    from kor_travel_docker_manager.services import service_release_compose as frozen
+
+    stage = tmp_path / "private-state"
+    stage.mkdir(mode=0o700)
+    original = tar_fixture(tmp_path / "expected.tar")
+    expected = state.archive_semantic(original)
+    fingerprint = {
+        "root": {**expected["root"], "mtime_ns": 1, "ctime_ns": 1},
+        "entries": {k: {**v, "mtime_ns": 1, "ctime_ns": 1} for k, v in expected["entries"].items()},
+    }
+    calls = []
+    monkeypatch.setattr(frozen, "_mutation_lock_fd", lambda: 90)
+    monkeypatch.setattr(state, "check_lease", lambda fd, path: calls.append((fd, path)))
+    monkeypatch.setattr(
+        registry,
+        "load_targets_config",
+        lambda: {
+            "targets": {"transport": {"core_candidate": {"project_lease": str(tmp_path / "lease")}}}
+        },
+    )
+    monkeypatch.setattr(state.release, "_trusted_ancestors", lambda path: None)
+    monkeypatch.setattr(state.os, "geteuid", lambda: 0)
+    request = {
+        "operation": "snapshot",
+        "cid": "a" * 64,
+        "image_id": "sha256:" + "b" * 64,
+        "stage": str(stage),
+        "fingerprint": fingerprint,
+        "lease_fd": 91,
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(request)))
+
+    def chunks():
+        content = original.read_bytes()
+        yield content[:512]
+        if interrupted:
+            handler = signal.getsignal(signal.SIGTERM)
+            assert callable(handler)
+            handler(signal.SIGTERM, None)
+        yield content[512:]
+        calls.append("transfer_completed")
+
+    client = SimpleNamespace(
+        api=SimpleNamespace(
+            inspect_container=lambda cid: {"Id": cid, "State": {"Running": True}},
+            get_archive=lambda *a: (chunks(), {}),
+        ),
+        close=Mock(),
+    )
+
+    def factory(**kwargs):
+        assert kwargs == {"timeout": None}
+        return client
+
+    monkeypatch.setattr(state.docker, "from_env", factory)
+    if interrupted:
+        with pytest.raises(ServiceReleaseError, match="중단 요청"):
+            state._worker()
+        assert '"success": true' not in capsys.readouterr().out
+    else:
+        state._worker()
+        assert json.loads(capsys.readouterr().out) == {"success": True}
+    assert "transfer_completed" in calls
+    assert state.archive_semantic(stage / "state.tar") == expected
+    client.close.assert_called_once()
+
+
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
+def test_direct_state_child_signal_waits_for_transfer_completion(tmp_path, sig):
+    ready, done = tmp_path / "ready", tmp_path / "done"
+    code = r"""
+import sys,time,json
+from pathlib import Path
+from kor_travel_docker_manager.services.transport_core_state import _transfer_signals
+ready,done=map(Path,sys.argv[1:])
+with _transfer_signals() as interrupted:
+ ready.touch();end=time.monotonic()+8
+ while not done.exists() and time.monotonic()<end:time.sleep(.02)
+ print(json.dumps({'completed':done.exists(),'signals':interrupted}))
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", code, str(ready), str(done)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), child.communicate(timeout=1)
+        os.kill(child.pid, sig)
+        time.sleep(0.1)
+        assert child.poll() is None
+        done.touch()
+        stdout, stderr = child.communicate(timeout=4)
+        assert child.returncode == 0, stderr
+        result = json.loads(stdout)
+        assert result["completed"] and result["signals"] == [signal.Signals(sig).name]
+    finally:
+        done.touch()
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=3)
