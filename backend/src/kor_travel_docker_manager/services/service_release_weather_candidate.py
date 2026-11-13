@@ -463,12 +463,15 @@ def _apply(plan, manifests, normal, runtime, sha, tree, source, lineage,
             raise ServiceReleaseError("Weather 기존 세 runtime 정지를 확인할 수 없습니다")
         result["phase"] = "snapshot_and_backup"
         _child("snapshot", stage=stage, lease_fd=fd, cid=cs["Id"], image_id=cs["Image"], fingerprint=runtime["state"]["fingerprint"])
-        backed = _child("backup", stage=stage, lease_fd=fd)["manifest"]
-        if (backed.get("role") != "weather" or backed.get("alembic_head") != runtime["schema_before"][0]
-                or backed.get("byte_size", 0) <= 0 or backed.get("toc_entry_count", 0) <= 0
-                or not re.fullmatch(r"[0-9a-f]{64}", backed.get("sha256", ""))):
-            raise ServiceReleaseError("Weather 검증 backup과 이전 schema가 다릅니다")
-        result["backup"] = backed
+        migration_required = runtime["schema_before"] != runtime["schema_target"]
+        result.update(migration_required=migration_required, backup_skipped=not migration_required)
+        if migration_required:
+            backed = _child("backup", stage=stage, lease_fd=fd)["manifest"]
+            if (backed.get("role") != "weather" or backed.get("alembic_head") != runtime["schema_before"][0]
+                    or backed.get("byte_size", 0) <= 0 or backed.get("toc_entry_count", 0) <= 0
+                    or not re.fullmatch(r"[0-9a-f]{64}", backed.get("sha256", ""))):
+                raise ServiceReleaseError("Weather 검증 backup과 이전 schema가 다릅니다")
+            result["backup"] = backed
         common()
         if _schema(fd) != runtime["schema_before"]:
             raise ServiceReleaseError("Weather backup 뒤 schema가 바뀌었습니다")
