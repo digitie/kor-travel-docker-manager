@@ -708,3 +708,35 @@ def test_weather_same_head_preserves_completed_historical_migrations(weather_cas
             apply_weather(s)
         assert not s.calls
         assert {name: s.records[name] for name in historical} == historical
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_weather_legacy_compose_start_then_bounded_health_poll(weather_case, monkeypatch, timeout):
+    s = weather_case
+    original_mutation = weather.frozen._run_mutation
+    original_verify = weather.frozen._verify
+    pending = []
+    sleeps = []
+    def old_compose(argv, **kwargs):
+        if "start" in argv and "--wait" in argv:
+            return subprocess.CompletedProcess(argv, 1, "", "unknown flag: --wait"), []
+        return original_mutation(argv, **kwargs)
+    def delayed_health(manifests, client):
+        if "start" in s.steps and (timeout or len(pending) < 2):
+            pending.append(True)
+            return {"weather": {"result": "starting"}}
+        return original_verify(manifests, client)
+    ticks = iter([0, 1000000])
+    clock = SimpleNamespace(monotonic=(lambda: next(ticks)) if timeout else (lambda: 0), sleep=sleeps.append)
+    monkeypatch.setattr(weather.frozen, "_run_mutation", old_compose)
+    monkeypatch.setattr(weather.frozen, "_verify", delayed_health)
+    monkeypatch.setattr(weather, "time", clock, raising=False)
+    result = apply_weather(s)
+    if timeout:
+        assert not result["success"] and result["phase"] == "start"
+        assert release.read_current_release("weather", root=s.root) == s.current
+        assert pending
+    else:
+        assert result["success"], result
+        assert len(pending) == 2 and sleeps == [1, 1]
+    assert all("--wait" not in argv for argv, _ in s.calls if "start" in argv)

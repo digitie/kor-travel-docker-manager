@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -513,7 +514,13 @@ def _apply(plan, manifests, normal, runtime, sha, tree, source, lineage,
         _child("restore", stage=stage, lease_fd=fd, cid=new_cs, image_id=runtime["images"]["code-server"], fingerprint=runtime["state"]["fingerprint"])
         common()
         result["phase"] = "start"
-        compose(["start", "--wait", "--wait-timeout", str(wait), *sorted(RUNTIME)])
+        compose(["start", *sorted(RUNTIME)])
+        deadline = time.monotonic() + wait
+        while any(v.get("result") != "healthy" for v in frozen._verify({**manifests, "weather": new_manifest}, client).values()):
+            common()
+            if time.monotonic() >= deadline:
+                raise ServiceReleaseError("Weather 시작 뒤 health 대기 시간이 초과되었습니다")
+            time.sleep(1)
 
         def healthy():
             common()
