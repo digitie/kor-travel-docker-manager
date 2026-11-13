@@ -18,10 +18,11 @@ import tarfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 from uuid import uuid4
 
 import docker
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 from kor_travel_docker_manager import service_release_cli as entry
 from kor_travel_docker_manager.services import service_release as release
@@ -223,9 +224,19 @@ def _schema(lease_fd: int) -> list[str]:
 
 def _database_scope(environment: dict) -> None:
     container, database = backup._role_config("weather")
-    parsed = urlsplit(environment.get("KOR_TRAVEL_WEATHER_DATABASE_URL", "").replace("postgresql+psycopg://", "postgresql://"))
-    if (parsed.scheme != "postgresql" or parsed.hostname not in {"127.0.0.1", "localhost"}
-            or parsed.path != "/" + database or parsed.port != backup._discover_port(container)):
+    try:
+        parsed = make_url(environment.get("KOR_TRAVEL_WEATHER_DATABASE_URL", ""))
+        # SQLAlchemy forwards these query selectors to libpq after URL authority/path.
+        # Reject routing/credential overrides; harmless timeout/SSL options keep working.
+        selectors = {"host", "hostaddr", "port", "dbname", "database", "service", "servicefile",
+                     "user", "password", "passfile", "dsn", "conninfo"}
+        valid = (parsed.drivername in {"postgresql", "postgresql+psycopg"}
+                 and parsed.host in {"127.0.0.1", "localhost"}
+                 and parsed.database == database and parsed.port == backup._discover_port(container)
+                 and not selectors.intersection(key.lower() for key in parsed.query))
+    except (ArgumentError, TypeError, ValueError):
+        valid = False
+    if not valid:
         raise ServiceReleaseError("Weather migrate와 backup의 등록 tenant DB가 다릅니다")
 
 
@@ -313,6 +324,7 @@ def _apply(plan, manifests, normal, runtime, sha, tree, source, lineage,
     existing_migration = [r for r in records if candidate._selected(r, project, MIGRATE)]
     if len(existing_migration) > 1 or any(r.get("State", {}).get("Running") is not False for r in existing_migration):
         raise ServiceReleaseError("Weather 기존 migration은 미실행 단일 oneshot이어야 합니다")
+    expected_migration = candidate._nonselected(existing_migration, project, "")
     selected = core._selected(records, project, RUNTIME)
     cs = selected[ROLES["code-server"]]
     if cs["Id"] != runtime["state"]["source_container"]:
@@ -359,13 +371,16 @@ def _apply(plan, manifests, normal, runtime, sha, tree, source, lineage,
     migration["image"] = runtime["images"]["api"]
     api_env = component._environment_values(selected[ROLES["api"]]["Config"].get("Env"))
     migration_env = migration.get("environment")
-    if not isinstance(migration_env, dict) or any(migration_env.get(k) != api_env.get(k) for k in (
+    if not isinstance(migration_env, dict) or any(not isinstance(value, str) for value in migration_env.values()):
+        raise ServiceReleaseError("Weather migration 환경은 완전한 문자열이어야 합니다")
+    # Canonical config JSON retains Compose's escaped dollars. Decode once before
+    # comparing actual Config.Env values, then encode actual values exactly once.
+    migration_env = {key: value.replace("$$", "$") for key, value in migration_env.items()}
+    if any(migration_env.get(k) != api_env.get(k) for k in (
             "KOR_TRAVEL_WEATHER_DATABASE_URL", "PGPASSWORD")):
         raise ServiceReleaseError("migration과 live Weather DB 입력이 다릅니다")
     _database_scope(api_env)
     # config JSON의 raw dollar도 runtime 보존과 똑같이 정확히 한 번 인코딩한다.
-    if any(not isinstance(value, str) for value in migration_env.values()):
-        raise ServiceReleaseError("Weather migration 환경은 완전한 문자열이어야 합니다")
     migration["environment"] = {key: value.replace("$", "$$") for key, value in migration_env.items()}
     migration.pop("env_file", None)
     for bind in bindings:
@@ -394,6 +409,10 @@ def _apply(plan, manifests, normal, runtime, sha, tree, source, lineage,
 
     def common():
         state.check_lease(fd, lease)
+        migration_rows = [r for r in candidate._inventory(client) if candidate._selected(r, project, MIGRATE)]
+        if (any(r.get("State", {}).get("Running") is not False for r in migration_rows)
+                or candidate._nonselected(migration_rows, project, "") != expected_migration):
+            raise ServiceReleaseError("Weather migration singleton의 identity 또는 설정이 변경되었습니다")
         if _source(source, sha) != (tree, lineage):
             raise ServiceReleaseError("Weather 승인 source가 변경되었습니다")
         if core._protected(protected) != files or candidate.current_pinned_runtime_release().to_payload() != pins:
@@ -459,8 +478,10 @@ def _apply(plan, manifests, normal, runtime, sha, tree, source, lineage,
                      "--abort-on-container-exit", "--exit-code-from", MIGRATE, MIGRATE], migration_document)
             migrated = core._selected(candidate._inventory(client), project, {MIGRATE})[MIGRATE]
             if (migrated["Image"] != runtime["images"]["api"] or migrated["State"].get("Running") is not False
-                    or migrated["State"].get("ExitCode") != 0):
+                    or migrated["State"].get("ExitCode") != 0
+                    or migrated.get("Config", {}).get("Cmd") != ["alembic", "upgrade", "head"]):
                 raise ServiceReleaseError("Weather exact API-image migration이 정상 종료하지 않았습니다")
+            expected_migration = candidate._nonselected([migrated], project, "")
         if _schema(fd) != runtime["schema_target"]:
             raise ServiceReleaseError("Weather migration 뒤 실제 merged Git head와 다릅니다")
         common()

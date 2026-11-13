@@ -135,7 +135,7 @@ def weather_case(core_case, monkeypatch):
     s.schema = s.runtime["schema_before"].copy()
     s.resolved = {"services": {name: {"image": v["Image"], "environment": {}, "volumes": []} for name, v in s.records.items()}}
     migration_env = {
-        k: v for k, v in (x.split("=", 1) for x in s.records[weather.ROLES["api"]]["Config"]["Env"])
+        k: v.replace("$", "$$") for k, v in (x.split("=", 1) for x in s.records[weather.ROLES["api"]]["Config"]["Env"])
         if k in {"KOR_TRAVEL_WEATHER_DATABASE_URL", "PGPASSWORD"}
     }
     s.resolved["services"][weather.MIGRATE] = {
@@ -208,6 +208,7 @@ def _engine(s, monkeypatch):
             record = copy.deepcopy(s.records[weather.ROLES["api"]])
             record.update(Id="b" * 64, Image=s.runtime["images"]["api"])
             record["Config"]["Labels"]["com.docker.compose.service"] = weather.MIGRATE
+            record["Config"]["Cmd"] = list(doc["services"][weather.MIGRATE]["command"])
             record["State"].update(Status="exited", Running=False, ExitCode=0)
             s.records[weather.MIGRATE] = record
             s.schema = list(s.runtime["schema_target"])
@@ -375,16 +376,55 @@ def test_weather_already_exact_head_never_executes_migration(weather_case):
     assert all(weather.MIGRATE not in argv for argv, _ in s.calls)
 
 
-def test_weather_migration_preserves_literal_double_dollar_password(weather_case):
+@pytest.mark.parametrize("value", ["fixture$secret", "fixture$$secret"])
+def test_weather_migration_preserves_canonical_config_dollars(weather_case, value):
     s = weather_case
     for name in weather.RUNTIME:
         s.records[name]["Config"]["Env"] = [
-            "PGPASSWORD=fixture$$secret" if v.startswith("PGPASSWORD=") else v
+            "PGPASSWORD=" + value if v.startswith("PGPASSWORD=") else v
             for v in s.records[name]["Config"]["Env"]
         ]
-    s.resolved["services"][weather.MIGRATE]["environment"]["PGPASSWORD"] = "fixture$$secret"
+    s.resolved["services"][weather.MIGRATE]["environment"]["PGPASSWORD"] = value.replace("$", "$$")
     result = apply_weather(s)
     assert result["success"], result
+
+
+@pytest.mark.parametrize("query", [
+    "host=other.invalid", "port=5433", "dbname=other_database", "host=%2Ffake_socket",
+    "service=other", "hostaddr=192.0.2.55", "database=other", "conninfo=host%3Dother.invalid",
+    "%68ost=other.invalid", "HOST=other.invalid", "host=127.0.0.1&host=other.invalid",
+])
+def test_weather_dsn_routing_query_is_refused_before_mutation(weather_case, query):
+    s = weather_case
+    dsn = "postgresql+psycopg://weather@127.0.0.1:11000/kor_travel_weather?" + query
+    # Neutralize dollar handling here so it cannot mask a routing failure.
+    for name in weather.RUNTIME:
+        s.records[name]["Config"]["Env"] = [
+            "KOR_TRAVEL_WEATHER_DATABASE_URL=" + dsn if v.startswith("KOR_TRAVEL_WEATHER_DATABASE_URL=")
+            else "PGPASSWORD=fixture-plain" if v.startswith("PGPASSWORD=") else v
+            for v in s.records[name]["Config"]["Env"]
+        ]
+    env = s.resolved["services"][weather.MIGRATE]["environment"]
+    env["KOR_TRAVEL_WEATHER_DATABASE_URL"] = dsn
+    env["PGPASSWORD"] = "fixture-plain"
+    with pytest.raises(ServiceReleaseError):
+        apply_weather(s, execute=False)
+    assert not s.calls
+
+
+@pytest.mark.parametrize("query", ["", "?connect_timeout=5"])
+def test_weather_standard_dsn_and_harmless_timeout_remain_supported(weather_case, query):
+    s = weather_case
+    dsn = "postgresql+psycopg://weather@127.0.0.1:11000/kor_travel_weather" + query
+    for name in weather.RUNTIME:
+        s.records[name]["Config"]["Env"] = [
+            "KOR_TRAVEL_WEATHER_DATABASE_URL=" + dsn if v.startswith("KOR_TRAVEL_WEATHER_DATABASE_URL=") else v
+            for v in s.records[name]["Config"]["Env"]
+        ]
+    s.resolved["services"][weather.MIGRATE]["environment"]["KOR_TRAVEL_WEATHER_DATABASE_URL"] = dsn
+    result = apply_weather(s, execute=False)
+    assert result["success"], result
+    assert not s.calls
 
 
 def test_weather_new_reviewed_main_and_new_source_head_are_not_a_static_sha_or_0040_allowlist(weather_case):
@@ -457,6 +497,41 @@ def test_weather_preexisting_running_or_duplicate_migration_is_never_replaced(we
     with pytest.raises(ServiceReleaseError):
         apply_weather(s)
     assert not s.calls
+
+
+@pytest.mark.parametrize("change", ["id", "image", "started", "running", "command", "environment", "hostconfig", "mount", "duplicate", "removed"])
+def test_weather_late_migration_drift_never_publishes_current(weather_case, change):
+    s = weather_case
+
+    def drift():
+        row = s.records[weather.MIGRATE]
+        if change == "id":
+            row["Id"] = "9" * 64
+        elif change == "image":
+            row["Image"] = "sha256:" + "8" * 64
+        elif change == "started":
+            row["State"]["StartedAt"] = "2026-11-13T22:00:00Z"
+        elif change == "running":
+            row["State"]["Running"] = True
+        elif change == "command":
+            row["Config"]["Cmd"] = ["alembic", "stamp", "head"]
+        elif change == "environment":
+            row["Config"]["Env"].append("ADDED=must-refuse")
+        elif change == "hostconfig":
+            row["HostConfig"]["Binds"].reverse()
+        elif change == "mount":
+            row["Mounts"].append({"Type": "bind", "Source": "/fixture", "Destination": "/other", "RW": True})
+        elif change == "duplicate":
+            extra = copy.deepcopy(row)
+            extra["Id"] = "9" * 64
+            s.records["foreign-migration"] = extra
+        else:
+            del s.records[weather.MIGRATE]
+
+    s.hooks["start"] = drift
+    result = apply_weather(s)
+    assert not result["success"], result
+    assert release.read_current_release("weather", root=s.root) == s.current
 
 
 def test_weather_cli_dispatches_separate_normal_and_runtime_receipts(monkeypatch, capsys):

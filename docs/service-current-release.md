@@ -414,3 +414,12 @@ ktdctl service-release apply-core-candidate weather \
 성공 결과도 `scheduler_resume_required=true`다. factory가 승인을 받지 않은 shared Dagster 상태를 자동 재개하지 않는다. 운영자는 원래 Weather instigator 상태만 공식 경로로 복구하고 타 location 불변·새 region API/readmodel/정상 UI를 별도 수용해야 한다. 따라서 healthy/current와 전체 운영 기능 완료를 구분한다. 초기0040 파생 테이블0행/`ready:false`는 예상 상태이며 기존 publication 후 갱신과 catalog fallback을 확인한다. 별도 DB 쓰기로 가짜 warm 상태를 만들지 않는다.
 
 현재 소스는 fake Engine/로컬 회귀 대상이다. 실제 운영 snapshot/backup/DDL/이미지 배포·정상 로그인 PASS를 주장하지 않는다. 동일 원2인·정확 CI·실제 merged SDK 설치와 최종 실제 merged Weather 정상 이미지 증명 뒤에만 별도 운영 tuple을 승인한다. 기존 C11 bytes/버전과 CI순서는 변경하지 않는다.
+
+
+### Weather source2의 DSN·canonical ENV·oneshot 사후 경계
+
+DB 대상은 SQLAlchemy의 표준 URL parser로 해석한다. URL authority/path를 덮어쓰는 `host`/`hostaddr`/`port`/`dbname`/`service` 등 routing·credential query selector는 migration 전에 거부하고, 정상 DSN과 `connect_timeout`은 허용한다. 실제 driver의 query 우선순위를 무시한 별도 문자열 parser로 backup 대상 일치를 주장하지 않는다.
+
+등록 Compose의 config JSON에 남은 달러 escaping은 한 번 decode한 actual 값으로 live API ENV와 비교한다. 그 actual 값을 stdin Compose 표현으로 한 번 encode하며, 실제 한 달러와 두 달러 및 불일치 대조군을 따로 보존한다. fake fixture도 실제 canonical config 표현을 사용한다.
+
+migration 역할은 실행하는 그 단계에만 변경을 허용한다. 초기 단일·정지 상태를 보존하고 정상 실행 뒤에는 exact CID/image/command·환경/HostConfig/mount/lifecycle을 다시 고정해 사후·current 발행 직전까지 비교한다. 실행 완료 뒤 migration 역할이 바뀌거나 새 duplicate가 생기면 current를 발행하지 않는다. schema가 이미 head라서 실행을 생략한 경우도 기존 oneshot의 부재/정지 상태를 그대로 보존한다.

@@ -1,3 +1,7 @@
+## 2026-11-13 — Weather source2 사전 DB 대상·canonical ENV·oneshot 사후 회귀
+
+원 B의 P1 DSN query override, 부모의 P2 config dollar 및 저자가 재현한 migration 사후 identity 경합을 source1 원문과 구분해 수정한다. 표준 parser·명시 selector 거부, config decode1/actual 비교/encode1, migration 단계 밖 singleton fingerprint 보존을 적용했다. 저자 회귀 성공은 원 리뷰어의 finding closure를 대신하지 않으며 source2 exact 원2인/CI/실제 운영은 별도다.
+
 ## 2026-11-13 — Weather 전용 공식 core 후보 소스
 
 Transport 기존 경로를 보존하고 Weather의 기존 shared main에 한정한 API/CS/UI·migrate 경로를 추가한다. 미시작 CS state 인계와 Weather tenant backup은 기존 primitive를 재사용한다. Weather 사전 pause/drain을 요구하며 임의 global ensure/GraphQL mutation·자동 rollback/retry는 없다. 생산 build receipt와 live runtime 승인 입력을 분리하고, public ENV 기본값 부재에는 승인한 기존 compiled byte 구간을 독립 비교한다. 동일 원2인/정확 CI/실제 병합 및 운영 수용은 미완이다.
