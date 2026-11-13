@@ -64,6 +64,8 @@ Transport의 현재 운영 스크립트는 core/admin 모두 project kor-travel-
 
 one-shot ID는 운영자가 실제 resolved Compose의 로컬 이미지 ID를 확인해 명시한다. API 이미지와 같다고 추정하거나 자동 실행하지 않는다. 모든 필수 one-shot을 지정해야 한다.
 
+Pinvi 최초 ui-only 등록은 기본 root가 정확히 absent이고 parent가 trusted인 경우에만 own runtime 관측 뒤 기본 root를 준비할 수 있다. 사용자 지정 absent root나 다른 서비스에는 생성 예외를 적용하지 않고 기존 unsafe/symlink root의 권한을 바꾸지 않는다. Map current/디렉터리는 생성하지 않는다. [Pinvi legacy Map 부재 조건](pinvi-web-candidate.md#map-current가-없던-기존-호스트의-초기-등록)을 함께 따른다.
+
 adopt는 runtime의 CID/image/start/health를 두 번 읽고 같을 때만 표식을 발행한다. 같은 상태의 반복 등록은 기존 표식을 반환한다. 현재 표식과 runtime이 다르면 기본 거절한다. 운영 담당자가 검증한 새 runtime을 metadata로 승계할 때만 --replace-current를 명시한다. 이 옵션도 role/Compose 좌표 변경을 조용히 허용하지 않으며 Docker를 변경하지 않는다.
 
 show는 Docker나 G 없이 표식을 읽는다. verify는 관측만 하며 healthy=exit0, drift=exit1, 잘못된 표식/입력=exit2다. 파일·overlay가 깨졌으면 정상으로 간주하지 않는다.

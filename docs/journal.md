@@ -1,3 +1,18 @@
+## 2026-11-13 — 초기 Map의 source 라벨 부재와 기존 provenance
+
+- frozen798의 실제 읽기 전용 관측은22조건 중21통과였고 Map source OCI 라벨 부재만 거절됐다. revision/image/PID/health·원 pair 및 Pinvi/API/CS/후보 공개 입력은 일치했다. 최초 caller의 project-root selector 누락과 수정 문맥의 관측을 따로 보존하며 운영 변경/로그인0이다.
+- 원 committed 기록의 생성 Manager 소스와 canonical source fetch/build context·OCI revision/실제 ID 검증→commit 경로를 확인했다. source 라벨 자체는 그 writer가 요구하지 않았다는 한계를 명시했다.
+- source 키가 정확히 absent인 legacy Map에만 기존 root 소유 committed record와 canonical pin을 다시 대조한다. present null/empty/wrong URL·잘못되거나 바뀐 기록/핀은 거절하고 선택 새 Pinvi의 source OCI 필수 조건을 유지한다. Map metadata/pointer·runtime·RootENV·pair/pin은 쓰지 않는다.
+- 동일 실제 부재 모양의 public dry-run은 frozen798에서RED, source2에서GREEN이다. 새28개와 기존498개 합동526개 및 Ruff가 통과했다. 독립 원 A/B·새 CI·병합·정식 설치 전에는 실제 후보 실행을 하지 않는다.
+
+## 2026-11-13 — 실제 초기 root와 legacy Map CURRENT 부재
+
+- 기존 SDK 기본 root가 없고 before/after current 관측이 빈 상태라 운영 preflight를 쓰기 전에 중단했다. custom root도 제한된 metadata/과거 route 증거에서 찾지 못했으며 전 파일시스템 부재라고 주장하지 않는다.
+- M746 제품 bytes에서 pair 일치 Map 부재 public dry-run과 기본 root의 old Pinvi adopt→web 적용 두 case가 RED다. 최초 수집 파일명 오류와 별도 adopt control의 외부 fake G 누락도 원문으로 보존했고, G를 맞춘 control 하나는 통과했다.
+- 기존 후보/current/FD/G 본문을 유지하고 정확히 absent인 Map의 pair/OCI/PID/설정된 health·비선택 ENV 보존 조건을 연결한다. Pinvi ui-only 최초 등록만 trusted 기본 root를 준비하며 Map current·receipt는 만들지 않는다. 다른 서비스/custom absent root/invalid current는 기존처럼 거절한다.
+- 최종 focused498개와 Ruff가 통과했다. 첫492PASS/5FAIL은 child Python이 옛 editable source를 선택한 import 실패였고, 설치 없는 stdlib venv의 현재 source/dependency 경로 결박 후 해당5개와 최종 전체 focused를 확인했다. 첫 실패를 한 번에 통과한 결과로 지우지 않는다. CodeGraph init90초 timeout 뒤 sync를 완료했다. 전체 backend는 정확 CI에서 별도 수용한다.
+- 최초 root 준비 전 own runtime 관측을 발행 직전 관측과 비교해 root 생성 중의 이미지 교체도 current로 채택하지 않는다. SDK 설치·공식 운영 적용은 별도 원2검토/CI/병합 이후이며 새 이미지 빌드·Map runtime 작업·계정 변경은 수행하지 않는다.
+
 ## 2026-11-13 — Pinvi/Map 후보 current 양방향 보존
 
 - 원 B의 정상 Map dry-run → Pinvi web 적용 → 동일 Map dry-run 거절 반례를 수정한다. 원 A source1 PASS와 원 B BLOCK, source791 CI4130P/40S는 원문으로 남기고 source2 검증으로 대체하지 않는다.

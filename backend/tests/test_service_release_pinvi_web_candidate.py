@@ -418,3 +418,194 @@ def test_map_still_rejects_stale_resolved_pinvi_overlay_after_forward_update(map
     with pytest.raises(release.ServiceReleaseError, match="resolved"):
         map_dry()
     assert len(mutations(s)) == 1
+
+
+@pytest.fixture
+def legacy_map(pinvi):
+    """원 pair와 동일한 Map singleton만 남고 component pointer는 정확히 부재다."""
+    s = pinvi
+    (s.root / "current/map").unlink()
+    s.records[MAP_UI]["Image"] = paired.OLD
+    s.records[MAP_UI]["State"]["Pid"] = 12345
+    s.records[MAP_UI]["Config"]["Env"] = ["MAP_OBSERVED=fixture"]
+    s.resolved["services"][MAP_UI]["image"] = paired.OLD
+    s.status.map_revision = s.metadata[paired.OLD]["Config"]["Labels"]["org.opencontainers.image.revision"]
+    return s
+
+
+def test_legacy_map_exact_pair_public_dryrun(legacy_map):
+    s = legacy_map
+    before = copy.deepcopy(s.records)
+    pair = copy.deepcopy(s.status.images)
+    leaves = sorted(p.name for p in s.root.glob("map-*"))
+    result = apply(s, execute=False)
+    assert result["result"] == "planned" and result["success"]
+    assert result["legacy_map_unchanged"] is True
+    assert not mutations(s) and s.records == before and s.status.images == pair
+    assert not (s.root / "current/map").exists()
+    assert not (s.root / "current/map").is_symlink()
+    assert sorted(p.name for p in s.root.glob("map-*")) == leaves
+
+
+def test_legacy_map_exact_pair_web_apply_keeps_map_metadata_absent(legacy_map):
+    s = legacy_map
+    before = copy.deepcopy(s.records)
+    pair = copy.deepcopy(s.status.images)
+    leaves = sorted(p.name for p in s.root.glob("map-*"))
+    result = apply(s)
+    assert result["success"] and result["result"] == "healthy"
+    command = mutations(s)[0][0]
+    assert len(mutations(s)) == 1 and command[-1] == WEB
+    assert "--no-deps" in command and "--no-build" in command
+    assert command[command.index("--pull") + 1] == "never"
+    assert {k: v for k, v in s.records.items() if k != WEB} == {
+        k: v for k, v in before.items() if k != WEB}
+    assert s.status.images == pair
+    assert not (s.root / "current/map").exists()
+    assert not (s.root / "current/map").is_symlink()
+    assert sorted(p.name for p in s.root.glob("map-*")) == leaves
+    assert release.read_current_release("pinvi", root=s.root)["images"][WEB]["id"] == paired.NEW
+
+
+@pytest.mark.parametrize("kind", ["advanced", "source", "revision", "pin-revision", "pid-zero",
+                                 "pid-bool", "stopped", "unhealthy", "no-health", "duplicate",
+                                 "dangling", "invalid", "catalog-role", "catalog-working-dir",
+                                 "catalog-unregistered"])
+def test_legacy_map_rejects_unproven_pair_health_metadata_or_registration(legacy_map, kind):
+    s = legacy_map
+    record = s.records[MAP_UI]
+    labels = s.metadata[paired.OLD]["Config"]["Labels"]
+    if kind == "advanced":
+        record["Image"] = MAP_CURRENT
+    elif kind == "source":
+        labels["org.opencontainers.image.source"] = URL
+    elif kind == "revision":
+        labels["org.opencontainers.image.revision"] = "9" * 40
+    elif kind == "pin-revision":
+        s.status.map_revision = None
+    elif kind in {"pid-zero", "pid-bool"}:
+        record["State"]["Pid"] = 0 if kind == "pid-zero" else True
+    elif kind == "stopped":
+        record["State"]["Running"] = False
+    elif kind == "unhealthy":
+        record["State"]["Health"]["Status"] = "unhealthy"
+    elif kind == "no-health":
+        del record["Config"]["Healthcheck"]
+    elif kind == "duplicate":
+        other = copy.deepcopy(record)
+        other["Id"] = "duplicate-map"
+        s.records["duplicate-map"] = other
+    elif kind == "dangling":
+        (s.root / "current/map").symlink_to(s.root / "missing")
+    elif kind == "invalid":
+        (s.root / "current/map").write_text("{}")
+    elif kind == "catalog-role":
+        s.config["containers"][MAP_UI]["role"] = "other"
+    elif kind == "catalog-working-dir":
+        s.config["service_releases"]["map"]["groups"]["ui"]["working_dir"] = "/other"
+    else:
+        del s.config["service_releases"]["map"]
+    before = copy.deepcopy(s.records)
+    with pytest.raises(release.ServiceReleaseError):
+        apply(s)
+    assert not mutations(s) and s.records == before
+    assert release.read_current_release("pinvi", root=s.root) == s.current
+
+
+@pytest.mark.parametrize("kind", ["pointer", "pid", "environment", "source", "pair"])
+def test_legacy_map_late_changes_block_pinvi_publication(legacy_map, kind):
+    s = legacy_map
+    def change():
+        if kind == "pointer":
+            (s.root / "current/map").symlink_to(s.root / "missing")
+        elif kind == "pid":
+            s.records[MAP_UI]["State"]["Pid"] += 1
+        elif kind == "environment":
+            s.records[MAP_UI]["Config"]["Env"].append("NEW=changed")
+        elif kind == "source":
+            s.metadata[paired.OLD]["Config"]["Labels"]["org.opencontainers.image.source"] = URL
+        else:
+            (s.root / "baseline").write_bytes(b"changed")
+    s.on_mutation = change
+    result = apply(s)
+    assert not result["success"] and len(mutations(s)) == 1
+    assert release.read_current_release("pinvi", root=s.root) == s.current
+
+
+def test_default_root_initial_pinvi_adopt_then_web_only(legacy_map, monkeypatch):
+    from kor_travel_docker_manager import service_release_cli as entry
+    s = legacy_map
+    default = s.root.parent / "default-releases"
+    monkeypatch.setattr(entry, "DEFAULT_RELEASE_ROOT", default)
+    s.root = default
+    before = copy.deepcopy(s.records)
+    pair = copy.deepcopy(s.status.images)
+    with s.module.manager_mutation_lock():
+        current = release.adopt_release(s.profile, root=default, client=s.client, replace_current=False)
+    assert current["images"][WEB]["id"] == PINVI_OLD
+    assert current["previous"] is None and s.records == before
+    assert not (default / "current/map").exists()
+    assert not (default / "current/map").is_symlink()
+    assert not list(default.glob("map-*"))
+    assert sorted(p.name for p in (default / "current").iterdir()) == ["pinvi"]
+    assert s.status.images == pair
+    result = apply(s)
+    assert result["success"] and result["legacy_map_unchanged"]
+    assert len(mutations(s)) == 1 and mutations(s)[0][0][-1] == WEB
+    assert not (default / "current/map").exists()
+    assert not list(default.glob("map-*"))
+
+
+@pytest.mark.parametrize("kind", ["custom-root", "wrong-role", "other-service", "unhealthy",
+                                 "unsafe-parent", "dangling", "existing-unsafe"])
+def test_initial_pinvi_root_creation_is_narrow_and_fail_closed(legacy_map, monkeypatch, kind):
+    from kor_travel_docker_manager import service_release_cli as entry
+    s = legacy_map
+    root = s.root.parent / "new-root"
+    monkeypatch.setattr(entry, "DEFAULT_RELEASE_ROOT", root)
+    profile = copy.deepcopy(s.profile)
+    if kind == "custom-root":
+        root = s.root.parent / "other-root"
+    elif kind == "wrong-role":
+        profile["groups"]["ui"]["runtime_services"] = [API]
+    elif kind == "other-service":
+        profile["service"] = "map"
+    elif kind == "unhealthy":
+        s.records[WEB]["State"]["Health"]["Status"] = "unhealthy"
+    elif kind == "unsafe-parent":
+        parent = s.root.parent / "unsafe"
+        parent.mkdir(mode=0o777)
+        parent.chmod(0o777)
+        root = parent / "new-root"
+        monkeypatch.setattr(entry, "DEFAULT_RELEASE_ROOT", root)
+    elif kind == "dangling":
+        root.symlink_to(s.root.parent / "missing")
+    elif kind == "existing-unsafe":
+        root.mkdir(mode=0o777)
+        root.chmod(0o777)
+    before = copy.deepcopy(s.records)
+    with s.module.manager_mutation_lock(), pytest.raises(release.ServiceReleaseError):
+        release.adopt_release(profile, root=root, client=s.client, replace_current=False)
+    assert not (root / "current/pinvi").exists()
+    assert not (root / "current/map").exists()
+    assert s.records == before and not mutations(s)
+    if kind not in {"dangling", "existing-unsafe"}:
+        assert not root.exists()
+
+
+def test_initial_pinvi_root_keeps_first_runtime_observation_until_publication(legacy_map, monkeypatch):
+    from kor_travel_docker_manager import service_release_cli as entry
+    s = legacy_map
+    root = s.root.parent / "default-root-race"
+    monkeypatch.setattr(entry, "DEFAULT_RELEASE_ROOT", root)
+    chmod = release.os.chmod
+    def change_after_root_creation(path, mode):
+        chmod(path, mode)
+        if Path(path) == root:
+            s.records[WEB]["Image"] = paired.NEW
+    monkeypatch.setattr(release.os, "chmod", change_after_root_creation)
+    with s.module.manager_mutation_lock(), pytest.raises(release.ServiceReleaseError, match="runtime"):
+        release.adopt_release(s.profile, root=root, client=s.client, replace_current=False)
+    assert not (root / "current/pinvi").exists()
+    assert not (root / "current/map").exists()
+    assert not list(root.glob("map-*")) and not mutations(s)

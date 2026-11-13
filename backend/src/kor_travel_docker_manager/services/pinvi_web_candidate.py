@@ -36,8 +36,12 @@ def apply_current(plan: dict[str, Any], manifests: dict[str, Any], image_id: str
     runtime = topology.service("pinvi_web")
     if plan["runtime_services"] != [runtime]:
         raise release.ServiceReleaseError("Pinvi web 하나만 적용할 수 있습니다")
+    legacy_conditions = []
     if "map" not in manifests:
-        raise release.ServiceReleaseError("검증된 비선택 Map UI current가 필요합니다")
+        def legacy_map():
+            candidate._legacy_map_guard(plan, root, client, baseline)
+        legacy_map()
+        legacy_conditions.append(("legacy_map_unchanged", legacy_map))
     inventory, bind_pair = candidate._paired_current_hooks(plan, manifests, client, baseline)
 
     _public_inputs(client, plan["project"], runtime, image_id)
@@ -52,6 +56,7 @@ def apply_current(plan: dict[str, Any], manifests: dict[str, Any], image_id: str
         plan, manifests, image_id, source_sha, root, wait, execute, client,
         canonical_url=candidate.CANONICAL_RUNTIME_SOURCE_URLS["pinvi"],
         extra_conditions=[
+            *legacy_conditions,
             ("baseline_unchanged", lambda: candidate._unchanged_baseline(
                 baseline, manifests["pinvi"]["groups"][plan["group"]])),
             ("selected_environment_unchanged", unchanged_env),
