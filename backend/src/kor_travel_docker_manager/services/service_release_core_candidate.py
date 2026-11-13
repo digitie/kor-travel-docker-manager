@@ -24,6 +24,7 @@ from uuid import uuid4
 import docker
 
 from kor_travel_docker_manager import service_release_cli as entry
+from kor_travel_docker_manager.services import runtime_pin_registry as pin_registry
 from kor_travel_docker_manager.services import service_release as release
 from kor_travel_docker_manager.services import service_release_candidate as candidate
 from kor_travel_docker_manager.services import service_release_component_candidate as component
@@ -39,7 +40,9 @@ from kor_travel_docker_manager.services.compose_service import (
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import _root_git_environment
 from kor_travel_docker_manager.services.registry import (
+    current_host,
     load_targets_config,
+    target_hosts,
     transport_core_candidate_for_target,
 )
 from kor_travel_docker_manager.services.runtime_topology import listen_address
@@ -96,6 +99,42 @@ def _git(source: Path, *args: str) -> str:
     if result.returncode:
         raise ServiceReleaseError("승인 core Git 소스를 읽을 수 없습니다")
     return result.stdout
+
+
+def _paired_pin_baseline(config: dict, records: list[dict]) -> dict:
+    """비paired 호스트의 원래 부재만 보존하며 기존 registry 검사는 유지한다."""
+    paths = (pin_registry.runtime_pin_registry_path(), pin_registry.runtime_pin_registry_public_path())
+    try:
+        payload = candidate.current_pinned_runtime_release().to_payload()
+    except pin_registry.RuntimePinRegistryError as exc:
+        if any(os.path.lexists(p) for p in paths) or any(os.environ.get(k, "").strip() for k in (
+                pin_registry.RUNTIME_PINS_FILE_ENV, pin_registry.RUNTIME_PINS_PUBLIC_FILE_ENV)):
+            raise
+        host = current_host(config)
+        if any(host in target_hosts(t, config) for t in ("map", "pinvi") if t in config.get("targets", {})):
+            raise
+        paired = [v for v in config.get("containers", {}).values()
+                  if (v.get("role") or "").startswith(("map-", "pinvi-"))]
+        names = {v["name"] for v in paired if v.get("name")}
+        services = {v["compose_service"] for v in paired if v.get("compose_service")}
+        urls = {candidate.CANONICAL_RUNTIME_SOURCE_URLS[t] for t in ("map", "pinvi")}
+        urls |= {u.removesuffix(".git") for u in urls}
+        for record in records:
+            labels = record.get("Config", {}).get("Labels") or {}
+            if (record.get("Name", "").lstrip("/") in names
+                    or labels.get("com.docker.compose.service") in services
+                    or labels.get("org.opencontainers.image.source") in urls):
+                raise ServiceReleaseError("실제 paired runtime에는 유효한 pin registry가 필요합니다") from exc
+        return {"unpaired_host": host, "absent_pin_registry_paths": list(map(str, paths))}
+    present = {p for p in paths if os.path.lexists(p)}
+    if any(p.is_symlink() for p in present):
+        raise ServiceReleaseError("pin registry symlink는 허용하지 않습니다")
+    if os.path.lexists(paths[1]):
+        document = pin_registry._read_registry_document(paths[1])
+        document.pop("published_at", None)
+        if pin_registry.RuntimePinRegistry.from_payload(document).release().to_payload() != payload:
+            raise ServiceReleaseError("공개 pin registry가 현재 authority와 다릅니다")
+    return {"release": payload, "registry_files": _protected(present)}
 
 
 def _source(source: Path, sha: str, url: str) -> tuple[str, list[str]]:
@@ -740,7 +779,7 @@ def _apply(
         for k, v in selected.items()
     }
     others = _others(records, project)
-    pins = candidate.current_pinned_runtime_release().to_payload()
+    pins = _paired_pin_baseline(config, records)
     secrets = frozen._secrets(manifests)
     environments, bindings = {}, []
     for role in sorted(RUNTIME):
@@ -860,7 +899,7 @@ def _apply(
         candidate._unchanged_pointers(manifests, root)
         if (
             _protected(protected) != files
-            or candidate.current_pinned_runtime_release().to_payload() != pins
+            or _paired_pin_baseline(config, candidate._inventory(client)) != pins
         ):
             raise ServiceReleaseError("보호 파일 또는 pin이 변경되었습니다")
         _revalidate_compose_environment_snapshot(env_snapshot)
