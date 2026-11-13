@@ -82,19 +82,29 @@ def _source(source: Path, sha: str) -> tuple[str, tuple[str, ...]]:
         rev, parent = values["revision"], values["down_revision"]
         if not isinstance(rev, str) or not re.fullmatch(r"[a-z0-9_]+", rev) or rev in graph:
             raise ServiceReleaseError("Weather Alembic revision이 잘못되었습니다")
-        if parent is not None and not isinstance(parent, str):
-            raise ServiceReleaseError("Weather 단일 migration lineage만 허용합니다")
-        graph[rev] = parent
-    parents = {v for v in graph.values() if v is not None}
+        refs = () if parent is None else (parent,) if isinstance(parent, str) else parent
+        if (not isinstance(refs, tuple) or any(not isinstance(v, str) for v in refs)
+                or len(refs) != len(set(refs))):
+            raise ServiceReleaseError("Weather migration parent 선언이 잘못되었습니다")
+        graph[rev] = refs
+    parents = {v for refs in graph.values() for v in refs}
     heads = set(graph) - parents
     if len(heads) != 1 or parents - set(graph) or HEAD not in graph:
         raise ServiceReleaseError("Weather0040을 포함한 실제 merged Git의 단일 head가 필요합니다")
-    lineage, current = [], next(iter(heads))
-    while current is not None:
-        if current in lineage:
+    lineage, visiting = [], set()
+
+    def visit(revision):
+        if revision in visiting:
             raise ServiceReleaseError("Weather migration cycle입니다")
-        lineage.append(current)
-        current = graph[current]
+        if revision in lineage:
+            return
+        visiting.add(revision)
+        lineage.append(revision)
+        for parent in graph[revision]:
+            visit(parent)
+        visiting.remove(revision)
+
+    visit(next(iter(heads)))
     if set(lineage) != set(graph):
         raise ServiceReleaseError("Weather 연결되지 않은 migration입니다")
     return core._git(source, "rev-parse", sha + "^{tree}").strip(), tuple(lineage)
