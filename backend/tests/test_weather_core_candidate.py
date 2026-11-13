@@ -638,3 +638,44 @@ def test_weather_cli_dispatches_separate_normal_and_runtime_receipts(monkeypatch
     assert entry._run(args) == 0
     assert seen[0][0] == ("weather",) and seen[0][1]["execute"] is False
     assert json.loads(capsys.readouterr().out)["success"] is True
+
+
+@pytest.mark.parametrize("fault", [None, "missing", "cycle", "disconnected", "multiple_heads"])
+def test_weather_actual_merge_revision_graph(monkeypatch, tmp_path, fault):
+    graph = {
+        "0035_base": None,
+        "0036_snapshot_kind_projection": "0035_base",
+        "0036_regional_alert_events": "0035_base",
+        "0037_release_merge": ("0036_snapshot_kind_projection", "0036_regional_alert_events"),
+        "0039_page_liveness": "0037_release_merge",
+        "0040_region_locations": "0039_page_liveness",
+    }
+    if fault == "missing":
+        graph.pop("0036_regional_alert_events")
+    elif fault == "cycle":
+        graph["0035_base"] = "0037_release_merge"
+    elif fault == "disconnected":
+        graph.update({"cycle_a": "cycle_b", "cycle_b": "cycle_a"})
+    elif fault == "multiple_heads":
+        graph["unmerged_branch"] = "0035_base"
+    sha = "a" * 40
+    tree = "b" * 40
+    files = {"alembic/versions/" + k + ".py": "revision=" + repr(k) + "\ndown_revision=" + repr(v) + "\n" for k, v in graph.items()}
+    def git(source, *args):
+        if args[0] == "status":
+            return ""
+        if args[0] == "ls-tree":
+            return "\n".join(files)
+        if args[0] == "show":
+            return files[args[1].split(":", 1)[1]]
+        return tree if args[-1].endswith("^{tree}") else sha
+    monkeypatch.setattr(core, "_git", git)
+    monkeypatch.setattr(weather.candidate, "_merged_source", lambda *a, **kw: None)
+    if fault:
+        with pytest.raises(ServiceReleaseError):
+            weather._source(tmp_path, sha)
+    else:
+        actual_tree, lineage = weather._source(tmp_path, sha)
+        assert actual_tree == tree
+        assert lineage[0] == "0040_region_locations"
+        assert set(lineage) == set(graph)
