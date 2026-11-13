@@ -377,3 +377,49 @@ public metadata나 Git에 넣지 않는다.
 실제 pinvi-web 역할만 선택하는 [Pinvi web 후보 계약](pinvi-web-candidate.md)을 따른다. 기존 pair 재구축을 호출하지 않으며 검증된 Map component current와 pair의 다른 runtime/companion을 보존한다. 소스 회귀 통과와 운영 설치·적용·실제 브라우저 수용은 별도 단계다.
 
 Pinvi web 적용 뒤의 Map 후보도 검증된 Pinvi current를 같은 방식으로 관측한다. 초기 Pinvi current가 없으면 후보 전용 경로에서 원 pair image 일치를 요구하며, 일반 compose-plan 준비는 공식 bootstrap으로 마친다. 상세 실패 경계는 위 Pinvi 계약의 양방향 절을 따른다.
+
+
+## Weather 최신 정상 이미지와0040 후보
+
+`service-release apply-core-candidate weather`는 기존 `weather.main`의 세 runtime(API·CS·UI)과 등록된 `kor-travel-weather-migrate`만 다룬다. Transport 후보 경로, paired pin/adopt/recreate, 공용 plane과 current manifest schema는 바꾸지 않는다.
+
+```bash
+ktdctl service-release apply-core-candidate weather \
+  --source-clone <root 소유 canonical 실제 merged M clone> --source-sha <M> \
+  --build-receipt <정상 3역할 build receipt> --build-sha256 <승인 SHA256> \
+  --receipt <현재 schema/state/instigator/compiled baseline 승인 입력> --sha256 <승인 SHA256> \
+  --dry-run
+```
+
+같은 승인 입력에서 `--confirm`이 실제 변경이다. normal producer의 `version=1`, `kind=weather-normal-build`, `mode=NORMAL_BUILD_ONLY`, `actualApplyAllowed=false`, `deployReady=false`는 그대로 둔다. build receipt를 운영 적용 허가나 live state로 승격하지 않는다. 역할은 `api`/`code-server`/`frontend`이며 `migrate`는 API ID alias다. `INSTALL_DAGSTER=0/1`의 API·CS는 별도 정상 이미지다. `deploy/Dockerfile.python`의 baked `KOR_TRAVEL_WEATHER_GIT_COMMIT`와 OCI/COPY/role/tree가 실제 M이어야 한다. frontend는 USERnode와 두 public input hash를 요구하며, Dockerfile에 없는 release 기본 ENV를 만들지 않는다.
+
+공개 입력은 기존 runtime ENV만으로 승인하지 않는다. 기존 UI의 imageID와 승인한 `/app/.next/static/chunks/*.js` 파일 SHA·두 입력의 byte 구간을 private runtime receipt의 `public_baseline.byte_ranges`로 고정한다. 실제 기존 CID의 Docker archive 일반 파일에서 해당 구간을 다시 해시하고, baseline hash·normal receipt·후보 image label을 비교한다. 원문 키·URL을 새 manifest/오류/argv에 기록하지 않는다. 기존 기본 ENV 부재를 빈 문자열로 간주하거나 runtime override로 baked 변경을 숨기지 않는다.
+
+### 실제 쓰기 전제와 실행 순서
+
+- root, 기존 canonical current와 healthy runtime, 공식 merged Git/normal receipt, 같은 shared project의 다른 current, 비선택 lifecycle/mount, 승인 ENV/auth/session/key, source/python revision 외 환경 전체를 확인한다.
+- Weather용 root 소유 project lease는 catalog에 선언한 고정 위치에 미리 준비돼 있어야 한다. CLI는 누락 lock을 만들지 않는다. 기존 G 다음 이 lease를 잡고 모든 mutation 자식에 두 FD를 유지한다.
+- **기존 Transport와 같이 Weather schedule/sensor 사전 pause와 active run/worker drain을 요구한다.** 다른 location의 instigator 상태는 그대로여야 한다. 이 factory는 새 GraphQL 쓰기 인터페이스나 전역 pause를 추가하지 않는다. 전제 미충족은 stop/backup/snapshot/migration 전에 거부한다.
+- root Git의 단일 migration lineage에0040이 포함돼야 하며 target은 승인 actual main에서 읽은 최신 head다. 특정 앱 SHA/0040을 영구 target으로 고정하지 않으며, 현재 DB revision은 runtime receipt와 같고 같은 lineage의 조상이어야 한다. 등록된 Weather tenant DSN/backup tenant와 migrate DSN/password가 같아야 한다. 알 수 없는 schema는 자동 보정하지 않는다.
+- 선택 세 runtime만 정지한 후 고정 `/opt/dagster/state`를 private0600 archive로 보존한다. 기존 Weather export named volume과 공용 Dagster config bind는 이동·변경하지 않는다.
+- 기존 `standalone_backup`의 Weather role로 새 tenant dump/TOC/hash/schema 증명을 만들고 이전 schema 일치를 요구한다. 이 role은 공용 PostgreSQL의 Weather DB만 지정하며 Dagster/shared/다른 DB 복원이나 재시작을 하지 않는다.
+- 이미 정확0040이면 migrate를 실행하지 않는다. 아니라면 승인한 API image의 등록 command `alembic upgrade head`를 `--no-deps --no-build --pull never`의 선택 oneshot으로 한번 실행한다. DB-init·PG·Prometheus·legacy Dagster profile·다른 앱은 실행 문서에서 제외한다. source Git과 다른 schema·stamp/downgrade·자동 retry는 허용하지 않는다.
+- 실제 merged Git head 확인 후 runtime3을 미시작 상태로 생성하고 CS state를 기존 archive helper로 복원한다. 고정 prefix·UID/GID/mode·semantic readback과 새 CS imageID/label/mount를 시작 전에 검사한다. Docker commit/copy/retag로 정상 이미지에 운영 state를 구워 넣지 않는다.
+- 세 runtime health·schema·state·ENV/mount·다른 current/pin/컨테이너 불변과 Weather pause 상태를 재확인한 뒤 현재 표식만 한번 발행한다. 해석한 Compose는 stdin으로 고정하고 등록 파일은 수정하지 않는다.
+
+### 실패·후속 수용 경계
+
+실패하면 실제 phase, snapshot/backup을 보존하고 current를 발행하지 않는다. DDL 후에도 이미지/DB 자동 rollback, 반복 migration, ensure/adopt 우회는 없다. current가 옛 상태여도 선택 runtime이 정지됐거나 새 schema/이미지가 일부 적용됐을 수 있으므로 실제 상태를 확인하고 명시적으로 복구한다.
+
+성공 결과도 `scheduler_resume_required=true`다. factory가 승인을 받지 않은 shared Dagster 상태를 자동 재개하지 않는다. 운영자는 원래 Weather instigator 상태만 공식 경로로 복구하고 타 location 불변·새 region API/readmodel/정상 UI를 별도 수용해야 한다. 따라서 healthy/current와 전체 운영 기능 완료를 구분한다. 초기0040 파생 테이블0행/`ready:false`는 예상 상태이며 기존 publication 후 갱신과 catalog fallback을 확인한다. 별도 DB 쓰기로 가짜 warm 상태를 만들지 않는다.
+
+현재 소스는 fake Engine/로컬 회귀 대상이다. 실제 운영 snapshot/backup/DDL/이미지 배포·정상 로그인 PASS를 주장하지 않는다. 동일 원2인·정확 CI·실제 merged SDK 설치와 최종 실제 merged Weather 정상 이미지 증명 뒤에만 별도 운영 tuple을 승인한다. 기존 C11 bytes/버전과 CI순서는 변경하지 않는다.
+
+
+### Weather source2의 DSN·canonical ENV·oneshot 사후 경계
+
+DB 대상은 SQLAlchemy의 표준 URL parser로 해석한다. URL authority/path를 덮어쓰는 `host`/`hostaddr`/`port`/`dbname`/`service` 등 routing·credential query selector는 migration 전에 거부하고, 정상 DSN과 `connect_timeout`은 허용한다. 실제 driver의 query 우선순위를 무시한 별도 문자열 parser로 backup 대상 일치를 주장하지 않는다.
+
+등록 Compose의 config JSON에 남은 달러 escaping은 한 번 decode한 actual 값으로 live API ENV와 비교한다. 그 actual 값을 stdin Compose 표현으로 한 번 encode하며, 실제 한 달러와 두 달러 및 불일치 대조군을 따로 보존한다. fake fixture도 실제 canonical config 표현을 사용한다.
+
+migration 역할은 실행하는 그 단계에만 변경을 허용한다. 초기 단일·정지 상태를 보존하고 정상 실행 뒤에는 exact CID/image/command·환경/HostConfig/mount/lifecycle을 다시 고정해 사후·current 발행 직전까지 비교한다. 실행 완료 뒤 migration 역할이 바뀌거나 새 duplicate가 생기면 current를 발행하지 않는다. schema가 이미 head라서 실행을 생략한 경우도 기존 oneshot의 부재/정지 상태를 그대로 보존한다.

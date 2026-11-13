@@ -53,6 +53,7 @@ BackupRole = Literal[
     "map_application",
     "pinvi",
     "transport",
+    "weather",
     "dagster_shared",
 ]
 
@@ -62,6 +63,7 @@ BACKUP_ROLES: tuple[BackupRole, ...] = (
     "map_application",
     "pinvi",
     "transport",
+    "weather",
     "dagster_shared",
 )
 
@@ -86,6 +88,7 @@ BACKUP_SHARED_GROUP_ENV = "KTDM_BACKUP_SHARED_GROUP"
 # 사본이었다 — 주기 백업이 실패하거나 낡은 데이터를 떴다. Map 둘도 이전 창(M2)에서 같은
 # 자리로 옮겼다 — 옛 전용 instance는 멈춘 채 롤백용으로 남는다.
 _ROLE_CONFIG: dict[BackupRole, tuple[str | None, str, str]] = {
+    "weather": ("KOR_TRAVEL_SHARED_POSTGRES_CONTAINER", "kor-travel-shared-postgres", "kor_travel_weather"),
     "geo": (
         "KOR_TRAVEL_SHARED_POSTGRES_CONTAINER",
         "kor-travel-shared-postgres",

@@ -320,7 +320,7 @@ def _preserve_baked_public_inputs(client: Any, old_image: str, new_image: str, n
     return unchanged
 
 
-def _instigators(rows: list[dict]) -> dict:
+def _instigators(rows: list[dict], *, location: str = LOCATION) -> dict:
     if not isinstance(rows, list):
         raise ServiceReleaseError("instigator catalog가 필요합니다")
     result = {}
@@ -334,7 +334,7 @@ def _instigators(rows: list[dict]) -> dict:
         ):
             raise ServiceReleaseError("instigator catalog가 올바르지 않습니다")
         result[key] = row["status"]
-    if len({k[1] for k in result if k[0] == LOCATION}) != 1:
+    if len({k[1] for k in result if k[0] == location}) != 1:
         raise ServiceReleaseError("Transport repository가 없거나 모호합니다")
     return result
 
@@ -386,7 +386,8 @@ def _probe(cid: str, script: str, lease_fd: int) -> Any:
     return json.loads(completed.stdout)
 
 
-def _quiet(runtime: dict, cid: str, records: list[dict], config: dict, lease_fd: int) -> None:
+def _quiet(runtime: dict, cid: str, records: list[dict], config: dict, lease_fd: int, *,
+           location: str = LOCATION) -> None:
     repos = _graphql(
         "{repositoriesOrError{__typename ... on RepositoryConnection{nodes{name location{name} schedules{name scheduleState{status}} sensors{name sensorState{status}}}}}}",
         records,
@@ -394,7 +395,7 @@ def _quiet(runtime: dict, cid: str, records: list[dict], config: dict, lease_fd:
     )["repositoriesOrError"]
     if repos["__typename"] != "RepositoryConnection":
         raise ServiceReleaseError("instigator catalog 조회가 실패했습니다")
-    if len([r for r in repos["nodes"] if r["location"]["name"] == LOCATION]) != 1:
+    if len([r for r in repos["nodes"] if r["location"]["name"] == location]) != 1:
         raise ServiceReleaseError("Transport repository가 없거나 모호합니다")
     rows = []
     for repo in repos["nodes"]:
@@ -410,10 +411,10 @@ def _quiet(runtime: dict, cid: str, records: list[dict], config: dict, lease_fd:
                 for item in repo[kind + "s"]
             )
     expected = {
-        k: "STOPPED" if k[0] == LOCATION else v
-        for k, v in _instigators(runtime["instigators"]).items()
+        k: "STOPPED" if k[0] == location else v
+        for k, v in _instigators(runtime["instigators"], location=location).items()
     }
-    if _instigators(rows) != expected:
+    if _instigators(rows, location=location) != expected:
         raise ServiceReleaseError("Transport가 pause되지 않았거나 다른 instigator가 변경되었습니다")
     runs = _graphql(
         "{runsOrError(filter:{statuses:["
@@ -431,7 +432,7 @@ def _quiet(runtime: dict, cid: str, records: list[dict], config: dict, lease_fd:
             len(tags) > 1
             or not (origin or tags)
             or (origin and tags and origin != tags[0])
-            or (origin or tags[0]) == LOCATION
+            or (origin or tags[0]) == location
         ):
             raise ServiceReleaseError("Transport active run 또는 불명확한 run이 있습니다")
     if _probe(cid, _WORKER_PROBE, lease_fd) != []:
