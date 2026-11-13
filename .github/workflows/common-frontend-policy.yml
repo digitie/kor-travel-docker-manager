@@ -10,8 +10,8 @@ permissions:
   contents: read
 jobs:
   common-policy:
-    uses: digitie/kor-travel-common/.github/workflows/frontend-consumer-guard.yml@36e4d285ea926b9d8c20da4221ade86ebf74c04d
+    uses: digitie/kor-travel-common/.github/workflows/frontend-consumer-guard.yml@557c19eee187e512be21cccbb34d82dff9ca7be4
     with:
-      common-ref: 36e4d285ea926b9d8c20da4221ade86ebf74c04d
+      common-ref: 557c19eee187e512be21cccbb34d82dff9ca7be4
       frontends: >-
         [{"package":"frontend/package.json","lock":"frontend/package-lock.json","workspace":"","profile":"web"}]
