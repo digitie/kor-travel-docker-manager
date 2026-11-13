@@ -177,7 +177,13 @@ def _run(args: argparse.Namespace) -> int:
                 apply_transport_core_candidate,
             )
 
-            payload = apply_transport_core_candidate(
+            apply_core = apply_transport_core_candidate
+            if args.service == 'weather':
+                from kor_travel_docker_manager.services.service_release_weather_candidate import (
+                    apply_weather_core_candidate,
+                )
+                apply_core = apply_weather_core_candidate
+            payload = apply_core(
                 args.service, root=root, config=config, source_sha=args.source_sha,
                 source_clone=Path(args.source_clone), receipt_path=Path(args.receipt),
                 receipt_sha256=args.sha256, build_receipt_path=Path(args.build_receipt),

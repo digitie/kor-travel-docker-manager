@@ -582,6 +582,7 @@ def test_backup_roles_cover_four_instances() -> None:
         "map_application",
         "pinvi",
         "transport",
+        "weather",
         "dagster_shared",
     }
 

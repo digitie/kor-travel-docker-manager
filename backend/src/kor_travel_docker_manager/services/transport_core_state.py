@@ -239,7 +239,15 @@ def save_archive(client: Any, cid: str, path: Path) -> None:
             close()
 
 
-def _created_cs(client: Any, cid: str, image_id: str) -> dict:
+def _created_cs(client: Any, cid: str, image_id: str, *,
+                project: str = "kor-travel-transport", service: str = "dagster-code-server") -> dict:
+    if (project, service) != ("kor-travel-transport", "dagster-code-server"):
+        from kor_travel_docker_manager.services.registry import load_targets_config
+
+        group = load_targets_config().get("service_releases", {}).get("weather", {}).get("groups", {}).get("main", {})
+        if (service != "kor-travel-weather-dagster-code-server" or project != group.get("project")
+                or service not in group.get("runtime_services", [])):
+            raise ServiceReleaseError("등록된 Transport/Weather CS 목적지만 허용합니다")
     record = client.api.inspect_container(cid)
     labels = record.get("Config", {}).get("Labels", {})
     if (
@@ -247,8 +255,8 @@ def _created_cs(client: Any, cid: str, image_id: str) -> dict:
         or record.get("Image") != image_id
         or record.get("State", {}).get("Status") != "created"
         or record["State"].get("Running") is not False
-        or labels.get("com.docker.compose.project") != "kor-travel-transport"
-        or labels.get("com.docker.compose.service") != "dagster-code-server"
+        or labels.get("com.docker.compose.project") != project
+        or labels.get("com.docker.compose.service") != service
     ):
         raise ServiceReleaseError("state 목적지가 승인된 미시작 Transport CS가 아닙니다")
     if not isinstance(record.get("Mounts"), list):
@@ -280,8 +288,9 @@ def _directory_stat(client: Any, cid: str, path: str, *, missing_ok: bool = Fals
         return False
 
 
-def restore_state(client: Any, cid: str, image_id: str, snapshot: Path, expected: dict) -> None:
-    _created_cs(client, cid, image_id)
+def restore_state(client: Any, cid: str, image_id: str, snapshot: Path, expected: dict, *,
+                  project: str = "kor-travel-transport", service: str = "dagster-code-server") -> None:
+    _created_cs(client, cid, image_id, project=project, service=service)
     if archive_semantic(snapshot) != expected:
         raise ServiceReleaseError("보관 state와 승인 manifest가 다릅니다")
     # 부모가 없을 때만 고정 /opt/dagster header를 만든다. 이미지·host 파일은 바꾸지 않는다.
@@ -304,7 +313,7 @@ def restore_state(client: Any, cid: str, image_id: str, snapshot: Path, expected
                 member.uname = member.gname = ""
 
                 target.addfile(member, source.extractfile(member) if member.isfile() else None)
-    _created_cs(client, cid, image_id)
+    _created_cs(client, cid, image_id, project=project, service=service)
     with payload.open("rb") as stream:
         if client.api.put_archive(cid, "/opt", stream) is not True:
             raise ServiceReleaseError("새 CS state 복원이 실패했습니다")
@@ -312,7 +321,7 @@ def restore_state(client: Any, cid: str, image_id: str, snapshot: Path, expected
     save_archive(client, cid, readback)
     if archive_semantic(readback) != expected:
         raise ServiceReleaseError("새 미시작 CS state readback이 다릅니다")
-    _created_cs(client, cid, image_id)
+    _created_cs(client, cid, image_id, project=project, service=service)
 
 
 def check_lease(fd: int, path: Path) -> None:

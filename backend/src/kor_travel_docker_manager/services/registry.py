@@ -1146,6 +1146,23 @@ def transport_core_candidate_for_target(target: str, config: Mapping[str, Any]) 
     return choice["group"], Path(path)
 
 
+def weather_core_candidate_for_target(target: str, config: Mapping[str, Any]) -> tuple[str, Path]:
+    """Weather 기존 main의 API/CS/UI/migrate와 단일 lease만 허용한다."""
+    choice = config.get("targets", {}).get(target, {}).get("core_candidate")
+    if (target != "weather" or not isinstance(choice, Mapping)
+            or set(choice) != {"group", "project_lease", "release_env"}
+            or choice["group"] != "main"
+            or choice["release_env"] != "KOR_TRAVEL_WEATHER_GIT_COMMIT"
+            or choice["project_lease"] != "/var/lib/kor-travel-docker-manager/weather-core-deploy.lock"):
+        raise TargetsConfigError("Weather main의 명시한 core 후보만 지원합니다")
+    group = config.get("service_releases", {}).get("weather", {}).get("groups", {}).get("main", {})
+    if (set(group.get("runtime_services", [])) != {
+            "kor-travel-weather-api", "kor-travel-weather-dagster-code-server", "kor-travel-weather-web"}
+            or group.get("oneshot_services") != ["kor-travel-weather-migrate"]):
+        raise TargetsConfigError("Weather API/CS/UI와 migrate 역할이 다릅니다")
+    return "main", Path(choice["project_lease"])
+
+
 def _component_ui_choice(target: str, config: Mapping[str, Any],
                          component: str | None = None) -> dict[str, str | None]:
     """기본 UI는 target 역할에서, 추가 UI는 기존 release 소유 runtime에서 유도한다."""
@@ -1307,7 +1324,10 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
                 f"{label} targets.{target_id}: unknown fields {unknown}"
             )
         if "core_candidate" in spec:
-            transport_core_candidate_for_target(target_id, config)
+            if target_id == "weather":
+                weather_core_candidate_for_target(target_id, config)
+            else:
+                transport_core_candidate_for_target(target_id, config)
         if "ui_candidate" in spec:
             component_ui_candidate_for_target(target_id, config)
         excluded = spec.get("excluded_from_all")

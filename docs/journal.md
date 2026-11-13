@@ -1,3 +1,7 @@
+## 2026-11-13 — Weather 전용 공식 core 후보 소스
+
+Transport 기존 경로를 보존하고 Weather의 기존 shared main에 한정한 API/CS/UI·migrate 경로를 추가한다. 미시작 CS state 인계와 Weather tenant backup은 기존 primitive를 재사용한다. Weather 사전 pause/drain을 요구하며 임의 global ensure/GraphQL mutation·자동 rollback/retry는 없다. 생산 build receipt와 live runtime 승인 입력을 분리하고, public ENV 기본값 부재에는 승인한 기존 compiled byte 구간을 독립 비교한다. 동일 원2인/정확 CI/실제 병합 및 운영 수용은 미완이다.
+
 ## 2026-11-13 — 초기 Map의 source 라벨 부재와 기존 provenance
 
 - frozen798의 실제 읽기 전용 관측은22조건 중21통과였고 Map source OCI 라벨 부재만 거절됐다. revision/image/PID/health·원 pair 및 Pinvi/API/CS/후보 공개 입력은 일치했다. 최초 caller의 project-root selector 누락과 수정 문맥의 관측을 따로 보존하며 운영 변경/로그인0이다.

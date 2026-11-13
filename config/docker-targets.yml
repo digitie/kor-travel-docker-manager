@@ -871,6 +871,10 @@ targets:
         port: 12306
 
   weather:
+    core_candidate:
+      group: main
+      release_env: KOR_TRAVEL_WEATHER_GIT_COMMIT
+      project_lease: /var/lib/kor-travel-docker-manager/weather-core-deploy.lock
     ui_candidate:
       role: weather-web
       source_url: https://github.com/digitie/kor-travel-weather.git

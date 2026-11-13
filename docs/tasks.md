@@ -1,3 +1,10 @@
+## 2026-11-13 — Weather 최신 main 전체 스택 후보
+
+- [x] Transport-only 후보/UI-only current/Weather backup role 누락과 실제 state 경로를 확인한다.
+- [x] Weather 명시 dispatch·role/normal receipt·0040 migration·고정 state/backup transaction과 fake Engine 회귀를 구현한다.
+- [ ] 전체 backend/Ruff·독립 원2인·정확 CI와 실제 병합/설치를 완료한다.
+- [ ] 최종 실제 merged Weather 정상3역할 이미지와 schema/backup/quiescence/runtime tuple을 승인하고 실제 배포·scheduler 원상 수용·정상 UI를 별도 검증한다. 운영 변경0이다.
+
 ## 2026-11-13 — legacy Map source 부재의 기존 authority
 
 - [x] frozen798의 실제21/22 관측과 source-key 부재 public dry-run RED를 보존하고 기존 committed 생성/검증 보장과 한계를 확인한다.
