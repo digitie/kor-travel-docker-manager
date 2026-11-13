@@ -368,3 +368,8 @@ public metadata나 Git에 넣지 않는다.
 이 구현의 Linux 단위 검증은 fake Docker/GraphQL 경계 및 실제 파일/tar/FD/signal을
 사용한다. 실제 Docker daemon의 새 이미지/no-start/state 인계와 운영 적용은 별도
 두 소스 리뷰·정확 CI·병합·trusted SDK 설치 및 최종 이미지 tuple gate 이후다.
+
+
+## Pinvi web 단독 후보
+
+실제 pinvi-web 역할만 선택하는 [Pinvi web 후보 계약](pinvi-web-candidate.md)을 따른다. 기존 pair 재구축을 호출하지 않으며 검증된 Map component current와 pair의 다른 runtime/companion을 보존한다. 소스 회귀 통과와 운영 설치·적용·실제 브라우저 수용은 별도 단계다.

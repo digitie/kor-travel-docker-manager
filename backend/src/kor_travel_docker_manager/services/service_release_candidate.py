@@ -36,7 +36,11 @@ from kor_travel_docker_manager.services.pinned_runtime_release import (
     current_pinned_runtime_release,
 )
 from kor_travel_docker_manager.services.pinned_runtime_sources import _root_git_environment
-from kor_travel_docker_manager.services.registry import load_targets_config
+from kor_travel_docker_manager.services.registry import (
+    TargetsConfigError,
+    component_ui_candidate_for_target,
+    load_targets_config,
+)
 from kor_travel_docker_manager.services.runtime_topology import (
     RUNTIME_SLOTS,
     runtime_topology,
@@ -266,6 +270,15 @@ def apply_ui_candidate(service: str, *, group: str, image_id: str, source_sha: s
     runtime = selected.get("runtime_services", [])
     ui_roles = {item.get("compose_service") for item in config.get("containers", {}).values()
                 if item.get("role") == service + "-ui"}
+    if service == "pinvi":
+        try:
+            registered, source_url = component_ui_candidate_for_target(service, config)
+        except TargetsConfigError as exc:
+            raise ServiceReleaseError(str(exc)) from exc
+        if (registered != runtime_topology().service("pinvi_web")
+                or source_url != CANONICAL_RUNTIME_SOURCE_URLS["pinvi"]):
+            raise ServiceReleaseError("Pinvi 후보는 등록된 실제 web 역할과 canonical source만 허용합니다")
+        ui_roles = {registered}
     if (group != "ui" or len(runtime) != 1 or runtime[0] not in ui_roles
             or selected.get("oneshot_services")):
         raise ServiceReleaseError("명시한 UI-only catalog 그룹만 후보 적용할 수 있습니다")
@@ -286,6 +299,10 @@ def apply_ui_candidate(service: str, *, group: str, image_id: str, source_sha: s
 
 def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, source_sha: str,
            root: Path, wait: int, execute: bool, client: Any, baseline: tuple[Any, ...]) -> dict[str, Any]:
+    if plan["service"] == "pinvi":
+        from kor_travel_docker_manager.services.pinvi_web_candidate import apply_current
+
+        return apply_current(plan, manifests, image_id, source_sha, root, wait, execute, client, baseline)
     # 기존 Map 경로의 paired 기준선·companion 검사는 변경하지 않는다.
     service, group = plan["service"], plan["group"]
     runtime = plan["runtime_services"][0]

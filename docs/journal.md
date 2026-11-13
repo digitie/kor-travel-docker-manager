@@ -1,3 +1,10 @@
+## 2026-11-13 — Pinvi web 단독 후보 경로
+
+- 기존 pair 재구축이 Map lifecycle까지 선택하고 component UI 경로가 paired Pinvi를 거절하는 공백을 별도 fake Engine 회귀로 재현했다. 최초 fixture metadata ID 오류 1건과 수정한 before 2FAIL 원문은 비공개 검증 기록에 보존했다.
+- catalog의 실제 web 역할과 기존 apply-candidate를 연결하고 기존 G/frozen/FD/health/current 본문을 재사용한다. Map UI는 검증된 component current ID를 유지하고 다른 pair runtime·companion·pin/receipt 및 비선택 identity를 보존한다.
+- 후보 baked 공개 입력과 현재 baked/effective 값의 동등성을 검증하고 등록된 source 표식만 전진시킨다. producer flag/normal-build receipt를 새로 만들지 않는다.
+- 새28개와 기존341개(앞선 합동 실행364개)·정본 Ruff를 통과했다. 전체 기본 실행은689통과/6실패 뒤 중단했다. 로컬 Docker 통합 fixture의 네트워크 주소 풀 실패와 /dev/shm fixture 경로 거절이 섞여 실제 Engine에 연결할 수 없는 별도 전체 검증을 진행한다. 원 실패·중단은 보존한다. SDK 설치·운영 적용·이미지 재빌드0이며 실제 Engine 통합 수용으로 주장하지 않는다. [계약](pinvi-web-candidate.md).
+
 ## 2026-11-13 — Transport core의 baked public API 보존 보완
 
 원 A의 A-SDK-CORE-P2-01을 별도 반례22개로 재현했다(수정 전15FAIL/7PASS).

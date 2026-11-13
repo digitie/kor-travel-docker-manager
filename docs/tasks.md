@@ -1,3 +1,11 @@
+## 2026-11-13 — Pinvi web 단독 후보
+
+- [x] 실제 web 역할 catalog와 기존 G/current 후보 본문 연결, Map current/pair 비선택 보존·공개 입력 대조 및 before 실패 회귀를 구현한다.
+- [ ] 기존 경로 회귀·전체 backend/Ruff·독립 원 A/B·정확 CI를 수용한다.
+- [ ] 병합·공식 설치 뒤 승인한 기존 merged web 이미지만 적용하고 실제 정상 계정·지도 bitmap·반응형을 수용한다. 이 소스 변경은 운영 lifecycle을 실행하지 않는다.
+
+[Pinvi web 후보 계약](pinvi-web-candidate.md)을 따른다.
+
 ## 2026-11-13 — Transport core 정상 이미지와 local state 인계
 
 - [x] 현재 CS의 state가 persistent mount 밖의 비어 있지 않은 writable layer임을 제한된 읽기로 확인했다.
