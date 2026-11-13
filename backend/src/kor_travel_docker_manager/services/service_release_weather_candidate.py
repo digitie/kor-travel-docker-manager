@@ -332,7 +332,8 @@ def _apply(plan, manifests, normal, runtime, sha, tree, source, lineage,
         raise ServiceReleaseError("기존 current runtime이 healthy여야 합니다")
     records = candidate._inventory(client)
     existing_migration = [r for r in records if candidate._selected(r, project, MIGRATE)]
-    if len(existing_migration) > 1 or any(r.get("State", {}).get("Running") is not False for r in existing_migration):
+    if ((runtime["schema_before"] != runtime["schema_target"] and len(existing_migration) > 1)
+            or any(r.get("State", {}).get("Running") is not False for r in existing_migration)):
         raise ServiceReleaseError("Weather 기존 migration은 미실행 단일 oneshot이어야 합니다")
     expected_migration = candidate._nonselected(existing_migration, project, "")
     selected = core._selected(records, project, RUNTIME)

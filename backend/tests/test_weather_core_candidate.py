@@ -679,3 +679,32 @@ def test_weather_actual_merge_revision_graph(monkeypatch, tmp_path, fault):
         assert actual_tree == tree
         assert lineage[0] == "0040_region_locations"
         assert set(lineage) == set(graph)
+
+
+@pytest.mark.parametrize("same_head,running", [(True, False), (True, True), (False, False), (False, True)])
+def test_weather_same_head_preserves_completed_historical_migrations(weather_case, same_head, running):
+    s = weather_case
+    if same_head:
+        s.runtime["schema_before"] = [weather.HEAD]
+        s.schema = [weather.HEAD]
+    historical = {}
+    for i in range(2):
+        row = copy.deepcopy(s.records[weather.ROLES["api"]])
+        row["Id"] = f"{7000 + i:064x}"
+        row["Config"]["Labels"]["com.docker.compose.service"] = weather.MIGRATE
+        row["State"].update(Running=running and i == 0, Status="running" if running and i == 0 else "exited", ExitCode=0)
+        name = "historical-migration-" + str(i)
+        s.records[name] = row
+        historical[name] = copy.deepcopy(row)
+    if same_head and not running:
+        result = apply_weather(s)
+        assert result["success"], result
+        assert result["backup_skipped"] is True and result["migration_required"] is False
+        assert "migrate" not in s.steps and "backup" not in s.steps
+        assert all(weather.MIGRATE not in argv for argv, _ in s.calls)
+        assert {name: s.records[name] for name in historical} == historical
+    else:
+        with pytest.raises(ServiceReleaseError):
+            apply_weather(s)
+        assert not s.calls
+        assert {name: s.records[name] for name in historical} == historical
