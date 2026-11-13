@@ -341,10 +341,19 @@ def check_lease(fd: int, path: Path) -> None:
 def _lease_ancestors(path: Path) -> None:
     if not path.is_absolute() or path.resolve() != path:
         raise ServiceReleaseError("Transport project lease 경로가 안전하지 않습니다")
+    child = path
     for parent in path.parents:
         s = parent.lstat()
-        if not stat.S_ISDIR(s.st_mode) or s.st_mode & 0o022:
+        sticky_mount = False
+        if s.st_mode & 0o022:
+            c = child.lstat()
+            sticky_mount = bool(
+                s.st_uid == 0 and s.st_mode & stat.S_ISVTX and parent.is_mount()
+                and stat.S_ISDIR(c.st_mode) and c.st_uid == 0 and not c.st_mode & 0o022
+            )
+        if not stat.S_ISDIR(s.st_mode) or (s.st_mode & 0o022 and not sticky_mount):
             raise ServiceReleaseError("Transport project lease 상위 경로가 안전하지 않습니다")
+        child = parent
 
 
 @contextmanager

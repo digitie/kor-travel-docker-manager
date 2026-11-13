@@ -414,3 +414,50 @@ with _transfer_signals() as interrupted:
         if child.poll() is None:
             child.kill()
             child.communicate(timeout=3)
+
+
+class LeaseAncestorNode:
+    def __init__(self, mode=0o755, uid=0, mount=False, directory=True):
+        self.mode = (stat.S_IFDIR if directory else stat.S_IFLNK) | mode
+        self.uid = uid
+        self.mount = mount
+
+    def lstat(self):
+        return SimpleNamespace(st_mode=self.mode, st_uid=self.uid)
+
+    def is_mount(self):
+        return self.mount
+
+
+class LeaseAncestorPath(LeaseAncestorNode):
+    def __init__(self, child, mount):
+        super().__init__(0o600, directory=False)
+        self.parents = [LeaseAncestorNode(), child, mount, LeaseAncestorNode()]
+
+    def is_absolute(self):
+        return True
+
+    def resolve(self):
+        return self
+
+
+def test_root_sticky_mount_preserves_root_owned_subtree():
+    state._lease_ancestors(LeaseAncestorPath(LeaseAncestorNode(), LeaseAncestorNode(0o1777, mount=True)))
+
+
+@pytest.mark.parametrize("child,mount", [
+    (LeaseAncestorNode(), LeaseAncestorNode(0o777, mount=True)),
+    (LeaseAncestorNode(), LeaseAncestorNode(0o1777, uid=1000, mount=True)),
+    (LeaseAncestorNode(uid=1000), LeaseAncestorNode(0o1777, mount=True)),
+    (LeaseAncestorNode(mode=0o777), LeaseAncestorNode(0o1777, mount=True)),
+    (LeaseAncestorNode(directory=False), LeaseAncestorNode(0o1777, mount=True)),
+    (LeaseAncestorNode(), LeaseAncestorNode(0o1777, mount=False)),
+    (LeaseAncestorNode(), LeaseAncestorNode(0o1777, mount=True, directory=False)),
+])
+def test_unsafe_sticky_or_writable_ancestors_still_rejected(child, mount):
+    with pytest.raises(ServiceReleaseError):
+        state._lease_ancestors(LeaseAncestorPath(child, mount))
+
+
+def test_existing_nonwritable_ancestry_still_supported():
+    state._lease_ancestors(LeaseAncestorPath(LeaseAncestorNode(), LeaseAncestorNode()))
