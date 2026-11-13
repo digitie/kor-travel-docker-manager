@@ -1,7 +1,13 @@
+## 2026-11-13 — Pinvi 초기 root와 legacy Map 부재
+
+- [x] M746 public dry-run 및 초기 default-root adopt→apply 두 반례 RED를 fake Engine에서 보존한다.
+- [x] pair/live Map source·ID·PID·health 및 정확한 CURRENT 부재 보존과 기존 양방향 경로의 focused498개와 Ruff를 수용한다.
+- [ ] 동일 원 A/B·정확 CI·실제 병합·trusted SDK 설치 뒤 기존 web 이미지의 공식 적용과 정상 수용을 진행한다. 현재 Map 표식/런타임·pair/pins·RootENV 변경0이다.
+
 ## 2026-11-13 — UI current 양방향 호환
 
 - [x] 원 B reciprocal 반례·초기 Map/pair 호환·비선택 PID 대조3RED와 수정 후386개 합동 회귀를 보존한다.
-- [ ] source2 동일 원 A/B·정확 CI·병합·trusted SDK 설치를 수용한다.
+- [x] source2 동일 원 A/B·정확 CI·PR594 병합 및 N150 trusted SDK 설치를 수용한다. 실제 web 적용은 아래 후속의 별도 gate다.
 - [ ] 실제 기존 web/pair/Map current 검증 뒤 공식 Pinvi 최초 adopt와 승인 web-only 적용·정상 수용을 진행한다. 지금 current 발행/운영 실행0이다.
 
 ## 2026-11-13 — Pinvi web 단독 후보

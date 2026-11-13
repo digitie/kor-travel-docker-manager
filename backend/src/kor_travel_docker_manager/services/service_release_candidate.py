@@ -274,7 +274,65 @@ def _candidate_plan(service: str, group: str, *, root: Path,
             # 실제 Pinvi 이미지가 receipt에서 전진했다면 아래 inventory 검사가 그대로 거절한다.
             planning = deepcopy(config)
             del planning["service_releases"]["pinvi"]
+    elif service == "pinvi" and "map" in config.get("service_releases", {}):
+        current = release._root(root) / "current"
+        release._directory(current)
+        try:
+            (current / "map").lstat()
+        except FileNotFoundError as missing:
+            declaration = entry._declaration("map", config)
+            ui = declaration["groups"].get("ui", {})
+            own = entry._declaration("pinvi", config)["groups"].get(group, {})
+            map_runtime = runtime_topology().service("map_ui")
+            roles = {item.get("compose_service") for item in config.get("containers", {}).values()
+                     if item.get("role") == "map-ui"}
+            if (set(declaration["groups"]) != {"ui"}
+                    or ui.get("runtime_services") != [map_runtime]
+                    or map_runtime not in roles or ui.get("oneshot_services")
+                    or ui.get("project") != own.get("project")
+                    or ui.get("working_dir") != own.get("working_dir")):
+                raise ServiceReleaseError("초기 Map 부재는 등록된 같은 project의 UI만 허용합니다") from missing
+            planning = deepcopy(config)
+            del planning["service_releases"]["map"]
+            plan, manifests = entry._compose_plan(service, group, root=root, config=planning)
+            plan["legacy_map_absent"] = True
+            return plan, manifests
     return entry._compose_plan(service, group, root=root, config=planning)
+
+
+def _legacy_map_guard(plan: dict[str, Any], root: Path, client: Any,
+                      baseline: tuple[Any, ...]) -> None:
+    """CURRENT를 만들지 않고 정확히 부재인 Map의 원래 pair/live만 관측한다."""
+    if plan.get("legacy_map_absent") is not True:
+        raise ServiceReleaseError("검증된 초기 Map 부재 계획이 필요합니다")
+    current = release._root(root) / "current"
+    release._directory(current)
+    try:
+        (current / "map").lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        raise ServiceReleaseError("초기 Map CURRENT 부재가 관측 중 변경되었습니다")
+    runtime = runtime_topology().service("map_ui")
+    expected = baseline[3].images[runtime]
+    records = [r for r in _inventory(client) if _selected(r, plan["project"], runtime)]
+    if len(records) != 1 or records[0].get("Image") != expected:
+        raise ServiceReleaseError("초기 Map 실제 이미지는 committed pair와 같아야 합니다")
+    record = records[0]
+    state = record.get("State") or {}
+    check = (record.get("Config") or {}).get("Healthcheck") or {}
+    enabled = bool(check) and check.get("Test") != ["NONE"]
+    if (state.get("Running") is not True or type(state.get("Pid")) is not int
+            or state["Pid"] <= 0 or not enabled
+            or (state.get("Health") or {}).get("Status") != "healthy"):
+        raise ServiceReleaseError("초기 Map은 실제 singleton PID/running/health가 필요합니다")
+    metadata = release._metadata(client, expected)
+    labels = (client.images.get(expected).attrs.get("Config") or {}).get("Labels") or {}
+    revision = getattr(baseline[3], "map_revision", None)
+    if (not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision)
+            or metadata["source_sha"] != revision
+            or labels.get("org.opencontainers.image.source") != CANONICAL_RUNTIME_SOURCE_URLS["map"]):
+        raise ServiceReleaseError("초기 Map OCI source/revision이 canonical pair와 다릅니다")
 
 
 def _paired_current_hooks(plan: dict[str, Any], manifests: dict[str, Any], client: Any,

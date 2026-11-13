@@ -326,13 +326,36 @@ def _same_layout(current: dict[str, Any], profile: dict[str, Any]) -> bool:
     return layout(current["groups"]) == layout(profile["groups"])
 
 
+def _pinvi_adopt_root(profile: dict[str, Any], root: Path, client: Any) -> tuple[
+    Path, tuple[dict[str, Any], dict[str, Any], list[str]] | None,
+]:
+    """Pinvi 최초 등록만 기본 root를 준비한다. Map 표식은 생성하지 않는다."""
+    from kor_travel_docker_manager.service_release_cli import DEFAULT_RELEASE_ROOT
+    from kor_travel_docker_manager.services.runtime_topology import runtime_topology
+
+    root = Path(root)
+    observed = None
+    ui = profile["groups"].get("ui", {})
+    if (root == DEFAULT_RELEASE_ROOT and not os.path.lexists(root)
+            and profile["service"] == "pinvi" and set(profile["groups"]) == {"ui"}
+            and ui.get("runtime_services") == [runtime_topology().service("pinvi_web")]
+            and not ui.get("oneshot_images")):
+        _trusted_ancestors(root.parent)
+        observed = _observe(profile, client)
+        if observed[2]:
+            raise ServiceReleaseError("; ".join(observed[2]))
+        root.mkdir(mode=0o755)
+        os.chmod(root, 0o755)
+    return _root(root), observed
+
+
 def adopt_release(profile: dict[str, Any], *, root: Path, client: Any,
                   replace_current: bool = False) -> dict[str, Any]:
     """G 아래 현재 실행 이미지만 등록하고, 완성 뒤 표지를 원자 교체한다."""
     profile = _profile(profile)
     with manager_mutation_lock():
         try:
-            root = _root(root)
+            root, initial_observation = _pinvi_adopt_root(profile, root, client)
             current_dir = root / "current"
             if not os.path.lexists(current_dir):
                 current_dir.mkdir(mode=0o755)
@@ -342,7 +365,8 @@ def adopt_release(profile: dict[str, Any], *, root: Path, client: Any,
             previous, current = _read_current(profile["service"], root) if os.path.lexists(pointer) else (None, None)
             if current is not None and not _same_layout(current, profile):
                 raise ServiceReleaseError("기존 release와 Compose 좌표 또는 서비스 역할이 다릅니다")
-            images, snapshot, issues = _observe(profile, client)
+            images, snapshot, issues = (initial_observation if initial_observation is not None
+                                        else _observe(profile, client))
             if issues:
                 raise ServiceReleaseError("; ".join(issues))
             if current is not None and current["images"] == images and current["groups"] == profile["groups"]:
