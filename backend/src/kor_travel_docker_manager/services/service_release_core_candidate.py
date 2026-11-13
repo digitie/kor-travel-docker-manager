@@ -15,6 +15,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 import urllib.request
 from copy import deepcopy
 from pathlib import Path
@@ -1028,7 +1029,13 @@ def _apply(
         common()
         result["phase"] = "start"
         # start는 이미 만든 컨테이너만 시작한다. up 재호출로 state를 다시 지우지 않는다.
-        compose(["start", "--wait", "--wait-timeout", str(wait), *sorted(RUNTIME)])
+        compose(["start", *sorted(RUNTIME)])
+        deadline = time.monotonic() + wait
+        while any(v.get("result") != "healthy" for v in frozen._verify({**manifests, "transport": candidate_manifest}, client).values()):
+            common()
+            if time.monotonic() >= deadline:
+                raise ServiceReleaseError("선택 core 시작 뒤 health 대기 시간이 초과되었습니다")
+            time.sleep(1)
 
         def healthy():
             common()
