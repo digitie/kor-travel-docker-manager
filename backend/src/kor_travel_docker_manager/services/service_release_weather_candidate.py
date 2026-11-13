@@ -340,7 +340,7 @@ def _apply(plan, manifests, normal, runtime, sha, tree, source, lineage,
         return candidate._nonselected([r for r in rows if not any(candidate._selected(r, project, n) for n in excluded)], project, "")
 
     untouched = others(records)
-    pins = candidate.current_pinned_runtime_release().to_payload()
+    pins = core._paired_pin_baseline(config, records)
     secrets = frozen._secrets(manifests)
     bindings, environments = [], []
     for role, name in ROLES.items():
@@ -415,7 +415,7 @@ def _apply(plan, manifests, normal, runtime, sha, tree, source, lineage,
             raise ServiceReleaseError("Weather migration singleton의 identity 또는 설정이 변경되었습니다")
         if _source(source, sha) != (tree, lineage):
             raise ServiceReleaseError("Weather 승인 source가 변경되었습니다")
-        if core._protected(protected) != files or candidate.current_pinned_runtime_release().to_payload() != pins:
+        if core._protected(protected) != files or core._paired_pin_baseline(config, candidate._inventory(client)) != pins:
             raise ServiceReleaseError("Weather 보호 파일/pin이 변경되었습니다")
         if others(candidate._inventory(client)) != untouched:
             raise ServiceReleaseError("Weather 비선택 runtime이 변경되었습니다")

@@ -8,6 +8,7 @@ import json
 import subprocess
 import tarfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from test_transport_core_candidate import core_case as core_case
@@ -377,6 +378,78 @@ def test_weather_already_exact_head_never_executes_migration(weather_case):
     assert result["backup_skipped"] is True
     assert result["migration_required"] is False
     assert all(weather.MIGRATE not in argv for argv, _ in s.calls)
+
+
+@pytest.fixture
+def unpaired_pin_case(tmp_path, monkeypatch):
+    private, public = tmp_path / "private.json", tmp_path / "public.json"
+    monkeypatch.setattr(core.pin_registry, "runtime_pin_registry_path", lambda: private)
+    monkeypatch.setattr(core.pin_registry, "runtime_pin_registry_public_path", lambda: public)
+    monkeypatch.setattr(core, "current_host", lambda config: "odroid")
+    monkeypatch.setattr(core, "target_hosts", lambda target, config: frozenset({"n150"}))
+    for key in (core.pin_registry.RUNTIME_PINS_FILE_ENV, core.pin_registry.RUNTIME_PINS_PUBLIC_FILE_ENV):
+        monkeypatch.delenv(key, raising=False)
+
+    def missing():
+        raise core.pin_registry.RuntimePinRegistryError("missing") from FileNotFoundError()
+
+    monkeypatch.setattr(core.candidate, "current_pinned_runtime_release", missing)
+    config = {"targets": {"map": {}, "pinvi": {}}, "containers": {
+        "map-api": {"role": "map-api", "name": "map-api-live", "compose_service": "map-api"},
+        "pinvi-api": {"role": "pinvi-api", "name": "pinvi-api-live", "compose_service": "pinvi-api"},
+    }}
+    return config, private, public
+
+
+def test_unpaired_host_preserves_original_both_pin_files_absent(unpaired_pin_case):
+    config, private, public = unpaired_pin_case
+    before = core._paired_pin_baseline(config, [])
+    assert before == core._paired_pin_baseline(config, [])
+    assert before["unpaired_host"] == "odroid"
+    assert not private.exists() and not public.exists()
+
+
+@pytest.mark.parametrize("kind", ["map-api", "pinvi-api"])
+def test_missing_pins_refused_for_even_stopped_paired_runtime(unpaired_pin_case, kind):
+    config, _, _ = unpaired_pin_case
+    records = [{"Name": "/unrelated-name", "State": {"Running": False},
+                "Config": {"Labels": {"com.docker.compose.service": kind}}}]
+    with pytest.raises(ServiceReleaseError):
+        core._paired_pin_baseline(config, records)
+
+
+def test_paired_owner_host_still_refuses_missing_registry(unpaired_pin_case, monkeypatch):
+    config, _, _ = unpaired_pin_case
+    monkeypatch.setattr(core, "current_host", lambda config: "n150")
+    with pytest.raises(core.pin_registry.RuntimePinRegistryError):
+        core._paired_pin_baseline(config, [])
+
+
+@pytest.mark.parametrize("kind", ["malformed-private", "public-only", "dangling-private", "dangling-public", "explicit-missing"])
+def test_present_or_configured_pin_failure_never_becomes_absence(unpaired_pin_case, monkeypatch, kind):
+    config, private, public = unpaired_pin_case
+    if kind == "malformed-private":
+        private.write_text("not-json")
+    elif kind == "public-only":
+        public.write_text("{}")
+    elif kind == "dangling-private":
+        private.symlink_to(private.with_name("missing-target"))
+    elif kind == "dangling-public":
+        public.symlink_to(public.with_name("missing-target"))
+    else:
+        monkeypatch.setenv(core.pin_registry.RUNTIME_PINS_FILE_ENV, str(private))
+    with pytest.raises(core.pin_registry.RuntimePinRegistryError):
+        core._paired_pin_baseline(config, [])
+
+
+def test_present_valid_pin_payload_and_bytes_remain_protected(unpaired_pin_case, monkeypatch):
+    config, private, _ = unpaired_pin_case
+    private.write_text("valid-authority-fixture")
+    monkeypatch.setattr(core.candidate, "current_pinned_runtime_release", lambda: SimpleNamespace(to_payload=lambda: {"fixture": "strict-reader-success"}))
+    before = core._paired_pin_baseline(config, [])
+    assert before["release"] == {"fixture": "strict-reader-success"}
+    private.write_text("changed-authority-fixture")
+    assert before != core._paired_pin_baseline(config, [])
 
 
 def test_weather_claimed_target_head_still_requires_actual_live_head(weather_case):
