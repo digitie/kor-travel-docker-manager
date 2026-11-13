@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 from kor_travel_docker_manager.services import service_release as release
@@ -35,29 +34,18 @@ def apply_current(plan: dict[str, Any], manifests: dict[str, Any], image_id: str
     """기존 G/frozen/health/publication 본문에서 web 하나만 선택한다."""
     topology = candidate.runtime_topology()
     runtime = topology.service("pinvi_web")
-    map_ui = topology.service("map_ui")
     if plan["runtime_services"] != [runtime]:
         raise release.ServiceReleaseError("Pinvi web 하나만 적용할 수 있습니다")
-    map_current = manifests.get("map")
-    if (not map_current or set(map_current["images"]) != {map_ui}
-            or release.verify_release_manifest(map_current, client=client)["result"] != "healthy"):
+    if "map" not in manifests:
         raise release.ServiceReleaseError("검증된 비선택 Map UI current가 필요합니다")
-    map_image = map_current["images"][map_ui]
-    if release._metadata(client, map_image["id"]) != map_image:
-        raise release.ServiceReleaseError("Map current source metadata와 immutable 이미지가 다릅니다")
+    inventory, bind_pair = candidate._paired_current_hooks(plan, manifests, client, baseline)
 
     _public_inputs(client, plan["project"], runtime, image_id)
     bind_env, unchanged_env, secrets = _preserve_environment(
         client, plan["project"], runtime, image_id,
         release_env="PINVI_SOURCE_REVISION", source_sha=source_sha)
-    # 과거 pair receipt는 그대로 둔다. 검증된 component current UI만 관측 기준에서 전진한다.
-    effective = SimpleNamespace(images={**baseline[3].images, map_ui: map_image["id"]})
-
     def bind(materialized):
-        # 기존 paired companion의 owner/reference 검사는 원래 receipt로 유지한다.
-        candidate._paired_companions(baseline[3], materialized, client)
-        # 그 검사 때문에 frozen Map UI가 과거 ID로 돌아가지 않게 검증된 current를 복원한다.
-        materialized["services"][map_ui]["image"] = map_image["id"]
+        bind_pair(materialized)
         bind_env(materialized)
 
     return candidate._apply_current(
@@ -68,7 +56,6 @@ def apply_current(plan: dict[str, Any], manifests: dict[str, Any], image_id: str
                 baseline, manifests["pinvi"]["groups"][plan["group"]])),
             ("selected_environment_unchanged", unchanged_env),
         ],
-        inventory_check=lambda records: candidate._receipt_images(
-            effective, records, plan["project"], runtime, manifests["pinvi"]),
+        inventory_check=inventory,
         bind_images=bind, extra_secrets=secrets,
     )

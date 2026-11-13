@@ -13,6 +13,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
@@ -155,7 +156,7 @@ def _nonselected(records: list[dict[str, Any]], project: str, runtime: str) -> d
         result[record["Id"]] = [record["Image"], state.get("StartedAt"), state.get("Running"),
                                 record.get("RestartCount"), record.get("Config"), ("Mounts" in record, mounts),
                                 record.get("HostConfig"),
-                                (record.get("NetworkSettings") or {}).get("Networks")]
+                                (record.get("NetworkSettings") or {}).get("Networks"), state.get("Pid")]
     return result
 
 
@@ -248,6 +249,68 @@ def _publish(candidate: dict[str, Any], manifests: dict[str, Any], root: Path,
     return {**manifest, "release_directory": str(leaf)}
 
 
+
+def _candidate_plan(service: str, group: str, *, root: Path,
+                    config: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Pinvi 최초 등록 전 Map 후보는 원래 pair 검사를 유지한 채 관측한다."""
+    planning = config
+    if service == "map" and "pinvi" in config.get("service_releases", {}):
+        current = release._root(root) / "current"
+        release._directory(current)
+        try:
+            (current / "pinvi").lstat()
+        except FileNotFoundError as missing:
+            declaration = entry._declaration("pinvi", config)
+            try:
+                runtime, url = component_ui_candidate_for_target("pinvi", config)
+            except TargetsConfigError as exc:
+                raise ServiceReleaseError(str(exc)) from exc
+            ui = declaration["groups"].get("ui", {})
+            if (set(declaration["groups"]) != {"ui"}
+                    or ui.get("runtime_services") != [runtime] or ui.get("oneshot_services")
+                    or runtime != runtime_topology().service("pinvi_web")
+                    or url != CANONICAL_RUNTIME_SOURCE_URLS["pinvi"]):
+                raise ServiceReleaseError("초기 Pinvi web catalog만 기존 Map pair 관측과 호환됩니다") from missing
+            # 실제 Pinvi 이미지가 receipt에서 전진했다면 아래 inventory 검사가 그대로 거절한다.
+            planning = deepcopy(config)
+            del planning["service_releases"]["pinvi"]
+    return entry._compose_plan(service, group, root=root, config=planning)
+
+
+def _paired_current_hooks(plan: dict[str, Any], manifests: dict[str, Any], client: Any,
+                          baseline: tuple[Any, ...]):
+    """양 방향에서 검증된 비선택 UI current만 pair 관측 기준에 반영한다."""
+    topology = runtime_topology()
+    current_images = {}
+    for service, slot in [("map", "map_ui"), ("pinvi", "pinvi_web")]:
+        manifest = manifests.get(service)
+        if manifest is None:
+            continue
+        runtime = topology.service(slot)
+        if (set(manifest["images"]) != {runtime}
+                or release.verify_release_manifest(manifest, client=client)["result"] != "healthy"):
+            raise ServiceReleaseError("검증된 단일 UI component current가 필요합니다")
+        image = manifest["images"][runtime]
+        if release._metadata(client, image["id"]) != image:
+            raise ServiceReleaseError("component current source metadata와 immutable 이미지가 다릅니다")
+        current_images[runtime] = image["id"]
+    runtime = plan["runtime_services"][0]
+    # 선택 UI의 최초 receipt 일치 검사는 덮어쓰지 않는다.
+    effective = SimpleNamespace(images={**baseline[3].images,
+                                       **{name: image for name, image in current_images.items()
+                                          if name != runtime}})
+
+    def inventory(records):
+        _receipt_images(effective, records, plan["project"], runtime, manifests[plan["service"]])
+
+    def bind(materialized):
+        _paired_companions(baseline[3], materialized, client)
+        for name, image in current_images.items():
+            materialized["services"][name]["image"] = image
+
+    return inventory, bind
+
+
 def apply_ui_candidate(service: str, *, group: str, image_id: str, source_sha: str,
                        source_clone: Path, root: Path, config: dict[str, Any] | None = None,
                        wait_timeout: int = 120, execute: bool = False,
@@ -286,7 +349,7 @@ def apply_ui_candidate(service: str, *, group: str, image_id: str, source_sha: s
     _merged_source(source_clone, source_sha, service)
     with manager_mutation_lock():
         _merged_source(source_clone, source_sha, service)
-        plan, manifests = entry._compose_plan(service, group, root=root, config=config)
+        plan, manifests = _candidate_plan(service, group, root=root, config=config)
         baseline = _baseline(manifests[service]["groups"][group])
         factory = client_factory or (lambda: docker.from_env(timeout=10))
         client = factory()
@@ -303,17 +366,15 @@ def _apply(plan: dict[str, Any], manifests: dict[str, Any], image_id: str, sourc
         from kor_travel_docker_manager.services.pinvi_web_candidate import apply_current
 
         return apply_current(plan, manifests, image_id, source_sha, root, wait, execute, client, baseline)
-    # 기존 Map 경로의 paired 기준선·companion 검사는 변경하지 않는다.
+    # pair pin/receipt와 companion 검사는 보존하고 검증된 UI current만 양방향으로 반영한다.
     service, group = plan["service"], plan["group"]
-    runtime = plan["runtime_services"][0]
+    inventory, bind = _paired_current_hooks(plan, manifests, client, baseline)
     return _apply_current(
         plan, manifests, image_id, source_sha, root, wait, execute, client,
         canonical_url=CANONICAL_RUNTIME_SOURCE_URLS.get(service),
         extra_conditions=[("baseline_unchanged", lambda: _unchanged_baseline(
             baseline, manifests[service]["groups"][group]))],
-        inventory_check=lambda records: _receipt_images(
-            baseline[3], records, plan["project"], runtime, manifests[service]),
-        bind_images=lambda materialized: _paired_companions(baseline[3], materialized, client),
+        inventory_check=inventory, bind_images=bind,
     )
 
 

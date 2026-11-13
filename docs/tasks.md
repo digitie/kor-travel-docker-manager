@@ -1,3 +1,9 @@
+## 2026-11-13 — UI current 양방향 호환
+
+- [x] 원 B reciprocal 반례·초기 Map/pair 호환·비선택 PID 대조3RED와 수정 후386개 합동 회귀를 보존한다.
+- [ ] source2 동일 원 A/B·정확 CI·병합·trusted SDK 설치를 수용한다.
+- [ ] 실제 기존 web/pair/Map current 검증 뒤 공식 Pinvi 최초 adopt와 승인 web-only 적용·정상 수용을 진행한다. 지금 current 발행/운영 실행0이다.
+
 ## 2026-11-13 — Pinvi web 단독 후보
 
 - [x] 실제 web 역할 catalog와 기존 G/current 후보 본문 연결, Map current/pair 비선택 보존·공개 입력 대조 및 before 실패 회귀를 구현한다.

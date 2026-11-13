@@ -1,3 +1,11 @@
+## 2026-11-13 — Pinvi/Map 후보 current 양방향 보존
+
+- 원 B의 정상 Map dry-run → Pinvi web 적용 → 동일 Map dry-run 거절 반례를 수정한다. 원 A source1 PASS와 원 B BLOCK, source791 CI4130P/40S는 원문으로 남기고 source2 검증으로 대체하지 않는다.
+- 실제 current overlay를 읽는 fixture와791 제품 bytes에서 상호운용·초기 bootstrap·PID 대조3RED를 보존했다. 수정한 공유 경로의 새45개와 기존341개, 합동386개가 통과했다. stale/missing/dangling/unregistered current·late 변경·원 companion 관계를 거절하며 선택 UI의 최초 receipt 검사를 유지한다.
+- 초기 Pinvi current 부재 시 Map 후보만 원 pair 기준선과 호환시키고 일반 compose-plan의 준비 조건은 숨기지 않는다. 공식 G 안의 기존 adopt로 현 web을 등록하는 별도 운영 계획을 준비한다. 실제 current 생성은 하지 않았다.
+- source1의 로컬 offline37FAIL은 동일791 ext4 bytes/mode의29PASS와 별도 -I binding 교정8PASS로 정산했다. 원37FAIL·첫 Engine fixture 실행/중단·정리 이력은 보존하며 로컬 전체 단일 PASS를 주장하지 않는다. 첫 실행의 격리 fixture 이미지 생성1과 실제 Pinvi 이미지 재빌드0도 구분한다.
+- source2 정확CI·동일 원 A/B 재검토·병합·trusted SDK 설치·공식 적용은 다음 gate다. 새 Engine/SDK 설치/운영 실행·Pinvi/API/Map 이미지 재빌드0이다.
+
 ## 2026-11-13 — Pinvi web 단독 후보 경로
 
 - 기존 pair 재구축이 Map lifecycle까지 선택하고 component UI 경로가 paired Pinvi를 거절하는 공백을 별도 fake Engine 회귀로 재현했다. 최초 fixture metadata ID 오류 1건과 수정한 before 2FAIL 원문은 비공개 검증 기록에 보존했다.

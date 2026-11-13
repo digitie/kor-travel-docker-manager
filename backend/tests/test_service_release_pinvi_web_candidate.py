@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import test_service_release_candidate as paired
+import yaml
 
 from kor_travel_docker_manager import cli
 from kor_travel_docker_manager.services import service_release as release
@@ -262,3 +264,157 @@ def test_extra_baked_public_input_is_not_silently_adopted(pinvi):
     with pytest.raises(release.ServiceReleaseError, match="공개 입력"):
         apply(s)
     assert not mutations(s)
+
+
+MAP_NEXT = "sha256:" + "5" * 64
+
+
+@pytest.fixture
+def map_candidate(pinvi):
+    s = pinvi
+    source = s.source.parent / "approved-map"
+    source.mkdir()
+    for argv in [("init", "-q"), ("config", "user.name", "Fixture"),
+                 ("config", "user.email", "fixture@example.invalid")]:
+        paired.git(source, *argv)
+    (source / "file").write_text("approved Map UI only")
+    paired.git(source, "add", "file")
+    paired.git(source, "commit", "-qm", "approved Map")
+    sha = paired.git(source, "rev-parse", "HEAD")
+    paired.git(source, "remote", "add", "origin", paired.SOURCE_URL)
+    paired.git(source, "update-ref", "refs/remotes/origin/main", sha)
+    s.metadata[MAP_NEXT] = copy.deepcopy(s.metadata[MAP_CURRENT])
+    s.metadata[MAP_NEXT]["Id"] = MAP_NEXT
+    s.metadata[MAP_NEXT]["Config"]["Labels"]["org.opencontainers.image.revision"] = sha
+
+    render = s.module._render
+
+    def resolved_current_overlays(argv, **kwargs):
+        result = render(argv, **kwargs)
+        if "config" not in argv:
+            return result
+        document = json.loads(result.stdout)
+        # 실제 Compose는 _compose_plan이 전달한 최신 images.yml overlay를 반영한다.
+        for index, arg in enumerate(argv[:-1]):
+            path = Path(argv[index + 1]) if arg == "-f" else None
+            if path is not None and path.name == "images.yml" and path.is_file():
+                overlay = yaml.safe_load(path.read_text())
+                for name, value in overlay["services"].items():
+                    document["services"][name]["image"] = value["image"]
+        return type(result)(result.args, result.returncode, json.dumps(document), result.stderr)
+    s.monkeypatch.setattr(s.module, "_render", resolved_current_overlays)
+
+    def dry_run():
+        return s.module.apply_ui_candidate(
+            "map", group="ui", image_id=MAP_NEXT, source_sha=sha,
+            source_clone=source, root=s.root, config=s.config,
+            client_factory=s.factory, execute=False)
+    return s, dry_run
+
+
+def test_map_dry_run_survives_successful_pinvi_current_forward_update(map_candidate):
+    s, map_dry = map_candidate
+    pair = copy.deepcopy(s.status.images)
+    assert map_dry()["result"] == "planned"
+    assert apply(s)["result"] == "healthy"
+    after_pinvi = copy.deepcopy(s.records)
+    pinvi_current = release.read_current_release("pinvi", root=s.root)
+    assert map_dry()["result"] == "planned"
+    assert s.records == after_pinvi and s.status.images == pair
+    assert release.read_current_release("map", root=s.root) == s.map_current
+    assert release.read_current_release("pinvi", root=s.root) == pinvi_current
+    assert len(mutations(s)) == 1 and mutations(s)[0][0][-1] == WEB
+
+
+def test_map_bootstrap_without_pinvi_current_keeps_original_pair_guard(map_candidate):
+    s, map_dry = map_candidate
+    (s.root / "current/pinvi").unlink()
+    before = copy.deepcopy(s.records)
+    assert map_dry()["result"] == "planned"
+    assert s.records == before and not mutations(s)
+
+
+@pytest.mark.parametrize("kind", ["missing-advanced", "dangling", "stale", "source-metadata",
+                                 "unregistered-advanced"])
+def test_map_rejects_missing_invalid_or_unregistered_advanced_pinvi_current(map_candidate, kind):
+    s, map_dry = map_candidate
+    if kind in {"missing-advanced", "unregistered-advanced"}:
+        assert apply(s)["success"]
+        if kind == "missing-advanced":
+            (s.root / "current/pinvi").unlink()
+        else:
+            del s.config["service_releases"]["pinvi"]
+    elif kind == "dangling":
+        (s.root / "current/pinvi").unlink()
+        (s.root / "current/pinvi").symlink_to(s.root / "missing")
+    elif kind == "stale":
+        s.records[WEB]["Image"] = paired.NEW
+    else:
+        s.metadata[PINVI_OLD]["Config"]["Labels"]["org.opencontainers.image.revision"] = "9" * 40
+    count = len(mutations(s))
+    with pytest.raises(release.ServiceReleaseError):
+        map_dry()
+    assert len(mutations(s)) == count
+
+
+@pytest.mark.parametrize("kind", ["pinvi-env", "pinvi-pid", "pinvi-pointer", "map-api", "map-cs", "pair"])
+def test_map_dry_run_rechecks_late_pinvi_and_other_current_identity(map_candidate, kind, monkeypatch):
+    s, map_dry = map_candidate
+    s.records[WEB]["State"]["Pid"] = 111
+    render = s.module._render
+
+    def changed(*args, **kwargs):
+        result = render(*args, **kwargs)
+        if kind == "pinvi-env":
+            s.records[WEB]["Config"]["Env"].append("UNAPPROVED=value")
+        elif kind == "pinvi-pid":
+            s.records[WEB]["State"]["Pid"] = 112
+        elif kind == "pinvi-pointer":
+            (s.root / "current/pinvi").unlink()
+        elif kind == "pair":
+            (s.root / "baseline").write_bytes(b"changed")
+        else:
+            s.records[MAP_API if kind == "map-api" else MAP_CS]["RestartCount"] += 1
+        return result
+    monkeypatch.setattr(s.module, "_render", changed)
+    with pytest.raises(release.ServiceReleaseError):
+        map_dry()
+    assert not mutations(s)
+
+
+@pytest.mark.parametrize("kind", ["valid-old-owner", "missing-receipt", "uncommitted-live"])
+def test_map_after_pinvi_update_preserves_original_companion_owner(map_candidate, kind):
+    s, map_dry = map_candidate
+    assert apply(s)["success"]
+    record = copy.deepcopy(s.records[WEB])
+    record["Id"] = "cid-pinvi-companion"
+    record["Config"]["Labels"]["com.docker.compose.service"] = "pinvi-web-companion"
+    record["Image"] = paired.NEW if kind == "uncommitted-live" else PINVI_OLD
+    s.records["pinvi-web-companion"] = record
+    s.resolved["services"]["pinvi-web-companion"] = {"image": paired.NEW}
+    if kind != "missing-receipt":
+        s.status.images["pinvi-web-companion"] = PINVI_OLD
+    before = copy.deepcopy(s.records)
+    if kind == "valid-old-owner":
+        assert map_dry()["result"] == "planned"
+        assert s.records == before
+    else:
+        with pytest.raises(release.ServiceReleaseError):
+            map_dry()
+    assert len(mutations(s)) == 1
+
+
+def test_map_still_rejects_stale_resolved_pinvi_overlay_after_forward_update(map_candidate, monkeypatch):
+    s, map_dry = map_candidate
+    assert apply(s)["success"]
+    render = s.module._render
+
+    def stale(*args, **kwargs):
+        result = render(*args, **kwargs)
+        value = json.loads(result.stdout)
+        value["services"][WEB]["image"] = PINVI_OLD
+        return type(result)(result.args, result.returncode, json.dumps(value), result.stderr)
+    monkeypatch.setattr(s.module, "_render", stale)
+    with pytest.raises(release.ServiceReleaseError, match="resolved"):
+        map_dry()
+    assert len(mutations(s)) == 1
