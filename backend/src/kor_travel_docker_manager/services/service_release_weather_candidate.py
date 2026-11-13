@@ -231,7 +231,7 @@ def _database_scope(environment: dict) -> None:
         selectors = {"host", "hostaddr", "port", "dbname", "database", "service", "servicefile",
                      "user", "password", "passfile", "dsn", "conninfo"}
         valid = (parsed.drivername in {"postgresql", "postgresql+psycopg"}
-                 and parsed.host in {"127.0.0.1", "localhost"}
+                 and (parsed.host or "").lower() in {"127.0.0.1", "localhost"}
                  and parsed.database == database and parsed.port == backup._discover_port(container)
                  and not selectors.intersection(key.lower() for key in parsed.query))
     except (ArgumentError, TypeError, ValueError):

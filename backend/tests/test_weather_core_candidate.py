@@ -412,10 +412,12 @@ def test_weather_dsn_routing_query_is_refused_before_mutation(weather_case, quer
     assert not s.calls
 
 
-@pytest.mark.parametrize("query", ["", "?connect_timeout=5"])
-def test_weather_standard_dsn_and_harmless_timeout_remain_supported(weather_case, query):
+@pytest.mark.parametrize("host,query", [
+    ("127.0.0.1", ""), ("127.0.0.1", "?connect_timeout=5"), ("LOCALHOST", ""), ("LocalHost", ""),
+])
+def test_weather_standard_dsn_and_harmless_timeout_remain_supported(weather_case, host, query):
     s = weather_case
-    dsn = "postgresql+psycopg://weather@127.0.0.1:11000/kor_travel_weather" + query
+    dsn = "postgresql+psycopg://weather@" + host + ":11000/kor_travel_weather" + query
     for name in weather.RUNTIME:
         s.records[name]["Config"]["Env"] = [
             "KOR_TRAVEL_WEATHER_DATABASE_URL=" + dsn if v.startswith("KOR_TRAVEL_WEATHER_DATABASE_URL=") else v
