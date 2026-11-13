@@ -373,7 +373,19 @@ def test_weather_already_exact_head_never_executes_migration(weather_case):
     result = apply_weather(s)
     assert result["success"], result
     assert "migrate" not in s.steps
+    assert "backup" not in s.steps
+    assert result["backup_skipped"] is True
+    assert result["migration_required"] is False
     assert all(weather.MIGRATE not in argv for argv, _ in s.calls)
+
+
+def test_weather_claimed_target_head_still_requires_actual_live_head(weather_case):
+    s = weather_case
+    s.runtime["schema_before"] = [weather.HEAD]
+    with pytest.raises(ServiceReleaseError):
+        apply_weather(s)
+    assert s.steps == ["factory"]
+    assert release.read_current_release("weather", root=s.root) == s.current
 
 
 @pytest.mark.parametrize("value", ["fixture$secret", "fixture$$secret"])
