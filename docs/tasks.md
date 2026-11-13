@@ -1,3 +1,9 @@
+## 2026-11-13 — legacy Map source 부재의 기존 authority
+
+- [x] frozen798의 실제21/22 관측과 source-key 부재 public dry-run RED를 보존하고 기존 committed 생성/검증 보장과 한계를 확인한다.
+- [x] source 부재만 허용하는 기존 record/pin 결박·present empty/null/wrong 거절·선택 새 Pinvi source 필수 및 기존 합동526개와 Ruff를 검증한다.
+- [ ] 새 source2 동일 원 A/B·정확 CI·실제 병합/설치와 critical slot 반환 뒤 fresh 기준으로 공식 적용·정상 수용을 진행한다. frozen798와 기존660 이미지는 보존한다.
+
 ## 2026-11-13 — Pinvi 초기 root와 legacy Map 부재
 
 - [x] M746 public dry-run 및 초기 default-root adopt→apply 두 반례 RED를 fake Engine에서 보존한다.

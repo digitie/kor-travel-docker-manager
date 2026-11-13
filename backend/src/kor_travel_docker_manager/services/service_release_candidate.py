@@ -330,9 +330,31 @@ def _legacy_map_guard(plan: dict[str, Any], root: Path, client: Any,
     labels = (client.images.get(expected).attrs.get("Config") or {}).get("Labels") or {}
     revision = getattr(baseline[3], "map_revision", None)
     if (not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision)
-            or metadata["source_sha"] != revision
-            or labels.get("org.opencontainers.image.source") != CANONICAL_RUNTIME_SOURCE_URLS["map"]):
-        raise ServiceReleaseError("초기 Map OCI source/revision이 canonical pair와 다릅니다")
+            or metadata["source_sha"] != revision):
+        raise ServiceReleaseError("초기 Map OCI revision이 canonical pair와 다릅니다")
+    source_label = "org.opencontainers.image.source"
+    if source_label in labels:
+        if labels[source_label] != CANONICAL_RUNTIME_SOURCE_URLS["map"]:
+            raise ServiceReleaseError("초기 Map OCI source가 canonical 저장소와 다릅니다")
+    else:
+        # 옛 공식 paired build는 revision/immutable ID를 기록했지만 source 라벨은 요구하지 않았다.
+        # 라벨을 복원했다고 주장하지 않고 기존 root 소유 committed 기록과 canonical pin을 재검증한다.
+        try:
+            raw = release._read_file(baseline[0])
+            recorded = deploy_status._status_from_payload(json.loads(raw))
+            pin = current_pinned_runtime_release()
+        except (OSError, ValueError) as exc:
+            raise ServiceReleaseError("초기 Map source 부재를 증명할 trusted pair 기록이 없습니다") from exc
+        source = pin.source_for("map")
+        if (raw != baseline[1] or recorded != baseline[3] or recorded.state != "committed"
+                or pin.to_payload() != baseline[2].get("pin")
+                or recorded.pinset_sha256 != pin.pinset_sha256
+                or recorded.map_revision != source.revision
+                or recorded.pinvi_revision != pin.source_for("pinvi").revision
+                or source.canonical_url != CANONICAL_RUNTIME_SOURCE_URLS["map"]
+                or recorded.images.get(runtime) != expected
+                or set(runtime_topology().runtime_services) - recorded.images.keys()):
+            raise ServiceReleaseError("초기 Map source 부재와 authoritative pair/pin 결박이 다릅니다")
 
 
 def _paired_current_hooks(plan: dict[str, Any], manifests: dict[str, Any], client: Any,

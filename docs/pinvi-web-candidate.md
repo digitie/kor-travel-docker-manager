@@ -51,8 +51,20 @@ Pinvi 단독 적용 뒤에도 같은 Map dry-run이 정상 동작하고, Map cur
 
 Map pointer가 정확히 없는 경우만 후보 전용 planning view에서 sibling Map overlay를 생략한다. 등록된 Map catalog는 ui-only이고 같은 project/working_dir와 실제 Map UI 역할을 가리켜야 한다. Map catalog를 지우거나 역할을 바꿔 우회할 수 없다. 일반 compose-args/resolve/recreate는 여전히 원 current 조건을 사용한다.
 
-이때 실제 Map singleton은 committed pair의 immutable ID 그대로여야 한다. canonical OCI source와 pair revision, 양의 정수 PID, running과 설정된 healthy 상태를 확인한다. Map current가 전진한 경우처럼 live ID로 기대값을 덮어쓰지 않는다. PID·ENV/config·mount/network는 기존 전체 nonselected 대조로 고정하며 Map CURRENT의 정확한 부재와 pair/health/source를 실행 전·후·발행 직전에 다시 검사한다. dangling/invalid/stale current와 도중 나타난 pointer는 실패다. Map 표식·manifest·receipt를 꾸미거나 Map runtime을 재생성하지 않는다.
+이때 실제 Map singleton은 committed pair의 immutable ID 그대로여야 한다. OCI revision과 pair revision, 양의 정수 PID, running과 설정된 healthy 상태를 확인한다. source 라벨이 있으면 canonical URI와 정확히 같아야 하며, 실제 라벨 부재는 아래의 기존 paired provenance 조건에서만 허용한다. Map current가 전진한 경우처럼 live ID로 기대값을 덮어쓰지 않는다. PID·ENV/config·mount/network는 기존 전체 nonselected 대조로 고정하며 Map CURRENT의 정확한 부재와 pair/health/source를 실행 전·후·발행 직전에 다시 검사한다. dangling/invalid/stale current와 도중 나타난 pointer는 실패다. Map 표식·manifest·receipt를 꾸미거나 Map runtime을 재생성하지 않는다.
 
 기본 release root가 아예 없는 호스트에서 기존 adopt API는 **Pinvi ui-only 실제 web 역할**에 한해서만 trusted parent와 정상 own runtime을 관측한 뒤 기본 root를 준비한다. 사용자 지정 absent root·다른 서비스·unsafe/dangling 기존 root에는 이 생성 예외를 적용하지 않는다. Map 디렉터리나 current를 만들지 않고 관측한 old Pinvi metadata만 replace-current 없이 발행한다. root 생성 전 own runtime 관측도 발행 직전 비교까지 유지한다. 초기 등록 실패 후 남을 수 있는 빈 root/불완전 leaf를 정상 current라고 보고하거나 자동 삭제하지 않는다.
 
 운영자는 같은 기존 G 구간에서 pair/live Map 강한 관측과 old web 관측을 먼저 하고 공식 Pinvi adopt와 사후 검증을 수행한다. 이후 같은 승인 tuple의 dry-run/confirm으로 web 하나만 적용한다. 이 소스 회귀는 fake Engine이며 실제 SDK 설치·root 등록·배포·정상 계정 수용 완료를 뜻하지 않는다.
+
+### source 라벨이 없던 공식 paired 이미지의 provenance
+
+초기 Map이 원 pair ID 그대로인데 `org.opencontainers.image.source` **키가 실제로 없는 경우만** 기존 root 소유 committed 기록으로 provenance를 확인한다. 키가 존재하는 빈 문자열·null·잘못된 URL은 같은 예외로 다루지 않는다. 선택하는 새 Pinvi 후보의 source OCI 라벨은 계속 필수다.
+
+`_baseline`이 정본 환경에서 유도한 deploy-status 경로를 기존 `_read_file`로 다시 읽는다. regular file·root 소유·single link·비쓰기 권한·no-follow·읽기 중 불변을 검사하고, 원 bytes/파싱한 상태가 앞 관측과 같아야 한다. 기존 exact-key `DeployStatus` validator, 현재 canonical URL/revision/digest를 검증하는 `PinnedRuntimeRelease` validator를 그대로 재사용한다. committed 상태·현재 pinset·Map/Pinvi revision·Map 역할의 immutable ID 및 필수 역할이 모두 일치해야 한다. 실행 전·후·current 발행 직전에도 이를 확인하며 Map pointer는 계속 정확히 없어야 한다.
+
+이 근거는 [기존 paired 생성 코드](../backend/src/kor_travel_docker_manager/services/compose_service.py)의 `_validate_pinned_runtime_candidate_build_contract`, `_attest_pinned_runtime_candidate_images`, `_assert_pinned_runtime_container_images`, `_deploy_forward`다. canonical source를 materialize해 frozen build context/revision을 검증하고, built immutable ID·OCI revision 및 실제 runtime ID를 확인한 뒤 그 ID를 committed 기록에 쓴다. 기존 writer는 source 라벨 자체를 요구하지 않았다.
+
+따라서 이 예외는 root 관리자·Docker Engine·기존 공식 committed 기록을 신뢰하는 모델이다. 없는 source 라벨을 검증/복원했다거나 서명·재현 빌드·모든 image/Git bytes 동등성을 증명했다고 주장하지 않는다. leaf 파일 검사를 모든 조상 디렉터리의 root 소유 증명으로 확대하지 않는다. Map 이미지 relabel/rebuild/adopt나 별도 legacy receipt는 만들지 않는다.
+
+설치 wheel의 직접 API caller는 기존 `KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT` selector를 동일한 trusted 설치 root로 지정해야 한다. registry는 그 pinned root 밖으로의 redirect를 거절한다. 이는 caller process 문맥이며 RootENV 파일·systemd·컨테이너 환경을 바꾸는 절차가 아니다. 임시 source `PYTHONPATH`를 운영에 주입하지 않는다.

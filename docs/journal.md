@@ -1,3 +1,10 @@
+## 2026-11-13 — 초기 Map의 source 라벨 부재와 기존 provenance
+
+- frozen798의 실제 읽기 전용 관측은22조건 중21통과였고 Map source OCI 라벨 부재만 거절됐다. revision/image/PID/health·원 pair 및 Pinvi/API/CS/후보 공개 입력은 일치했다. 최초 caller의 project-root selector 누락과 수정 문맥의 관측을 따로 보존하며 운영 변경/로그인0이다.
+- 원 committed 기록의 생성 Manager 소스와 canonical source fetch/build context·OCI revision/실제 ID 검증→commit 경로를 확인했다. source 라벨 자체는 그 writer가 요구하지 않았다는 한계를 명시했다.
+- source 키가 정확히 absent인 legacy Map에만 기존 root 소유 committed record와 canonical pin을 다시 대조한다. present null/empty/wrong URL·잘못되거나 바뀐 기록/핀은 거절하고 선택 새 Pinvi의 source OCI 필수 조건을 유지한다. Map metadata/pointer·runtime·RootENV·pair/pin은 쓰지 않는다.
+- 동일 실제 부재 모양의 public dry-run은 frozen798에서RED, source2에서GREEN이다. 새28개와 기존498개 합동526개 및 Ruff가 통과했다. 독립 원 A/B·새 CI·병합·정식 설치 전에는 실제 후보 실행을 하지 않는다.
+
 ## 2026-11-13 — 실제 초기 root와 legacy Map CURRENT 부재
 
 - 기존 SDK 기본 root가 없고 before/after current 관측이 빈 상태라 운영 preflight를 쓰기 전에 중단했다. custom root도 제한된 metadata/과거 route 증거에서 찾지 못했으며 전 파일시스템 부재라고 주장하지 않는다.
