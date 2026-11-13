@@ -49,12 +49,12 @@ jobs:
           npm ci --engine-strict
       - name: 공통 의존성 검증
         run: npm run check:dependencies
-      - name: 타입 검사
-        run: npm run type-check
-      - name: 린트
-        run: npm run lint
       - name: React Doctor
         run: npm run doctor
+      - name: 린트
+        run: npm run lint
+      - name: 타입 검사
+        run: npm run type-check
       - name: 단위 테스트
         run: npm run test
       - name: 빌드
