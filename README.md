@@ -100,7 +100,7 @@ poetry run uvicorn kor_travel_docker_manager.main:app --host 0.0.0.0 --port 1290
 ### 3. 프론트엔드 실행
 ```bash
 cd frontend
-# 저장소 .nvmrc의 Node 22.23.1을 선택한 개발 shell에서 실행
+# 저장소 .nvmrc의 Node 26.13.1을 선택한 개발 shell에서 실행
 npm install --global "$(node -p 'require("./package.json").packageManager')"
 npm ci --engine-strict
 npm run dev
