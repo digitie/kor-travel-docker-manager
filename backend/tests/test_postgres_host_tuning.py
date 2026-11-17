@@ -52,6 +52,29 @@ def test_new_server_keys_default_to_the_pg16_server_defaults():
         assert settings[key].startswith(f"${{KTDM_PG_{key.upper()}:-"), key
 
 
+#: 질의 관측을 켜는 값(Map 읽기 성능 계획 T-READ-MGR-01, 2026-11-18) — 서버 기본값(-1/-1/off/off/-1)이 **아니다**.
+#: 값은 `pg_settings`의 `current_setting`이 돌려주는 모양으로 적는다(`1000`이 아니라 `1s`) — 격리 실행 테스트
+#: (`test_shared_postgres_runtime_integration.py`)가 기본값으로 푼 명령과 그 문자열을 그대로 대조한다.
+_QUERY_OBSERVATION_DEFAULTS = {
+    "log_min_duration_statement": "1s",
+    "log_parameter_max_length": "0",
+    "track_io_timing": "on",
+    "log_lock_waits": "on",
+    "log_temp_files": "0",
+}
+
+
+def test_query_observation_is_on_by_default_and_host_overridable():
+    """재생성만으로 관측이 켜지고(n150 `.env`에는 값이 없다), 호스트가 `KTDM_PG_<KEY>`로 끄거나 문턱을 올린다."""
+    settings = _settings(_compose()["services"][_PG])
+    for key, default in _QUERY_OBSERVATION_DEFAULTS.items():
+        assert settings[key] == f"${{KTDM_PG_{key.upper()}:-{default}}}", key
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    for key in _QUERY_OBSERVATION_DEFAULTS:
+        # 빈 줄로만 둔다 — 값을 적은 `.env.example`을 베낀 `.env`가 compose 기본값을 가리지 않게.
+        assert f"KTDM_PG_{key.upper()}=" in env_example, key
+
+
 def test_max_connections_is_not_set():
     # compose에 없다(서버 기본 100) — 결정 8 ⅰ은 추가하지 않는다.
     assert "max_connections" not in _settings(_compose()["services"][_PG])

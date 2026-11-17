@@ -322,6 +322,26 @@ services:
     - wal_compression=${KTDM_PG_WAL_COMPRESSION:-off}
     - -c
     - autovacuum_max_workers=${KTDM_PG_AUTOVACUUM_MAX_WORKERS:-3}
+    # 질의 관측(Map 읽기 성능 계획 T-READ-MGR-01, 2026-11-18). 이 다섯은 서버 기본값이 아니라 **켜는 값**이다 —
+    # 재생성 뒤 n150에서도 효과가 생긴다(의도). `ALTER SYSTEM`·reload로 넣지 않는다(`postgresql.auto.conf`는 빈 채로).
+    # - log_min_duration_statement 1s: 1초 넘는 문장을 PG 로그(docker json-file, 위 logging 상한)에 남긴다. 클러스터
+    #   전체라 모든 tenant의 배치 문장도 잡힌다 — 켠 뒤 하루 200 MB·5만 줄을 넘으면 `.env`로 3s로 올린다.
+    # - log_parameter_max_length 0: 그 줄에 bind 값을 싣지 않는다(좌표·이메일 같은 값이 로그로 새지 않게). 문장 틀과
+    #   시간만 남는다.
+    # - track_io_timing on: `pg_stat_statements`·`pg_stat_io`·EXPLAIN에 I/O 시간이 생긴다. 시계 비용은 재생성 전
+    #   `pg_test_timing`으로 확인하고, 비싸면 `.env`로 off(`shared-postgres-onboarding.md` §13).
+    # - log_lock_waits on: `deadlock_timeout`(1s)보다 오래 lock을 기다린 문장을 남긴다.
+    # - log_temp_files 0: `work_mem`을 넘쳐 쓴 임시 파일(spill)을 크기와 함께 남긴다 — spill만 남으므로 양이 작다.
+    - -c
+    - log_min_duration_statement=${KTDM_PG_LOG_MIN_DURATION_STATEMENT:-1s}
+    - -c
+    - log_parameter_max_length=${KTDM_PG_LOG_PARAMETER_MAX_LENGTH:-0}
+    - -c
+    - track_io_timing=${KTDM_PG_TRACK_IO_TIMING:-on}
+    - -c
+    - log_lock_waits=${KTDM_PG_LOG_LOCK_WAITS:-on}
+    - -c
+    - log_temp_files=${KTDM_PG_LOG_TEMP_FILES:-0}
     - -c
     - pg_stat_statements.track=all
     - -c
@@ -2186,6 +2206,12 @@ services:
       PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS: ${PINVI_KOR_TRAVEL_MAP_WEATHER_TIMEOUT_SECONDS:-3}
       PINVI_KOR_TRAVEL_MAP_WEATHER_CONNECT_TIMEOUT_SECONDS: ${PINVI_KOR_TRAVEL_MAP_WEATHER_CONNECT_TIMEOUT_SECONDS:-1}
       PINVI_KOR_TRAVEL_MAP_WEATHER_REQUEST_BUDGET_SECONDS: ${PINVI_KOR_TRAVEL_MAP_WEATHER_REQUEST_BUDGET_SECONDS:-5}
+      # Map transport·weather 표면의 동시 호출 상한(PinVi #621 bulkhead, 범위 1~64). 앱 기본값 2는 한 요청의 팬아웃(교통
+      # 6×2 = 12, 날씨 해석 4 + 묶음 4 = 8)보다 작아 여행 지도 교통 레이어·날씨 카드가 `unavailable`이 됐다(Map 읽기 성능
+      # 계획 T-READ-PIN-01 ②(가)·T-READ-MGR-07). 두 표면은 Map에서 Valkey 읽기라 느린 표면이 자리를 차지하는 원래 위험이
+      # 작다 — 16으로 둔다. PinVi 앱 기본값이 바뀌어도 배포값이 결정적이도록 compose가 늘 값을 준다(`:-`).
+      PINVI_KOR_TRAVEL_MAP_TRANSPORT_MAX_CONCURRENCY: ${PINVI_KOR_TRAVEL_MAP_TRANSPORT_MAX_CONCURRENCY:-16}
+      PINVI_KOR_TRAVEL_MAP_WEATHER_MAX_CONCURRENCY: ${PINVI_KOR_TRAVEL_MAP_WEATHER_MAX_CONCURRENCY:-16}
       # 공용 Dagster webserver(ADR-54, loopback 전용). admin_etl은 `repositoryOrError`·`runsOrError`를
       # `pinvi_dagster_location_name`(= `pinvi.etl.definitions`)으로 좁혀 부른다.
       PINVI_DAGSTER_BASE_URL: http://127.0.0.1:${KOR_TRAVEL_DAGSTER_WEBSERVER_PORT:-11002}

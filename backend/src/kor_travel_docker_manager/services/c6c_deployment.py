@@ -1410,6 +1410,10 @@ _POSTGRES_ALLOWED_COMMAND_SETTINGS: Final = frozenset(
         "effective_cache_size",
         "effective_io_concurrency",
         "listen_addresses",
+        "log_lock_waits",
+        "log_min_duration_statement",
+        "log_parameter_max_length",
+        "log_temp_files",
         "maintenance_work_mem",
         "max_locks_per_transaction",
         "max_parallel_workers",
@@ -1421,6 +1425,7 @@ _POSTGRES_ALLOWED_COMMAND_SETTINGS: Final = frozenset(
         "random_page_cost",
         "shared_buffers",
         "shared_preload_libraries",
+        "track_io_timing",
         "wal_compression",
         "work_mem",
     }
