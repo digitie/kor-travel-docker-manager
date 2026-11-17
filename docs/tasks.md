@@ -3,7 +3,7 @@
 kor-travel-common의 공통화 재조사 계획(`docs/plan/commonization-plan-2026-11-17.md`) 가운데 Manager가 실행하는 task다. 범위·수용 기준·되돌리기는 Common `docs/tasks/`의 상세 파일이 정본이며 여기 복제하지 않는다.
 
 - [ ] Common `T-486a` — map-api·pinvi-api의 `CMD-SHELL` healthcheck를 weather-api와 같은 `kortravelcommon.http_health` exec 형식으로 바꾼다. 고정 이미지에 모듈이 있는지 먼저 확인한다(없으면 재구축이 compose up에서만 죽는다). map-api의 `--port`에는 게시 포트가 아니라 컨테이너 포트 식(`KOR_TRAVEL_MAP_API_CONTAINER_PORT`)을 쓰고, `interval`·`retries`·`start_period`는 그대로 둔다. 시험은 서비스 이름을 쓰지 않는 일반 규칙으로 쓴다.
-- [ ] Common `T-486b` — 공용 `dagster.yaml`의 `kortravelcommon/job` 값별 한도와 `run_retries`. tenant별 영향 확인 자료를 만들고 소유자 결정 뒤에 구현한다. 채택하면 concierge 리터럴 다섯을 일반 규칙으로 바꾼다.
+- [ ] Common `T-486b` — 공용 `dagster.yaml`의 `kortravelcommon/job` 값별 한도와 `run_retries`. tenant별 영향 확인 자료를 만들고 소유자 결정 뒤에 구현한다. 채택하면 concierge 리터럴 다섯을 일반 규칙으로 바꾼다. 2026-11-17 영향 자료: map worker가 같은 job tag 값으로 동시 run을 내므로(설계 4) 일반 규칙은 차단 조건에 걸려 구현하지 않았다. 소유자 재결정 대기(Common task 파일의 안 (가)~(라)).
 - [ ] Common `T-474` — guard workflow 호출 SHA를 Common이 지정한 채택 커밋으로 올린다(Common `T-024` 뒤). 벤더 패키지는 바꾸지 않는다. Common `T-025`(ui·tokens patch 릴리스) 전에 이 갱신이 병합되지 않으면 그날 ui·tokens를 재vendor해야 한다(Common은 `T-474` 병합을 그 릴리스의 외부 선행으로 뒀다). 관리자 부품 묶음은 선택형 패키지로 나오므로 그 묶음 때문에 재vendor할 것은 없다.
 
 ## 2026-11-17 — 읽기 성능 계획(Map 정본) 포인터
