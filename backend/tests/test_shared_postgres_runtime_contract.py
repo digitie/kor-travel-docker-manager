@@ -150,13 +150,16 @@ def test_the_shared_postgres_command_is_the_d4_tuning() -> None:
 
     2026-10-16(ADR-58 R6·결정 8 ⅰ, T-MGR-03): 튜닝 수치는 호스트별 root `.env`(`KTDM_PG_*`)로 바꿀 수 있고 기본값이
     n150 값이다 — 그래서 여기서는 기본값으로 푼 명령을 대조한다. 끝의 여섯 키는 PG 16 서버 기본값이라 n150 효과가 0이다
-    (`test_postgres_host_tuning.py`). preload·`pg_stat_statements.*`·`max_locks_per_transaction`(#471, 두 호스트 같은
+    (`test_postgres_host_tuning.py`). 그 뒤 다섯 키(2026-11-18, T-READ-MGR-01)는 질의 관측을 **켜는**
+    값이다. preload·`pg_stat_statements.*`·`max_locks_per_transaction`(#471, 두 호스트 같은
     리터럴 — 결정 8 ⅰ)은 env로 바꿀 수 없다.
     """
     raw = _service()["command"]
     command = [compose_default(token) if token.startswith(("shared_buffers=", "work_mem=", "maintenance_work_mem=",
                "effective_cache_size=", "random_page_cost=", "max_wal_size=", "max_parallel_workers",
-               "effective_io_concurrency=", "checkpoint_timeout=", "wal_compression=", "autovacuum_max_workers="))
+               "effective_io_concurrency=", "checkpoint_timeout=", "wal_compression=", "autovacuum_max_workers=",
+               "log_min_duration_statement=", "log_parameter_max_length=", "track_io_timing=", "log_lock_waits=",
+               "log_temp_files="))
                else token for token in raw]
     assert command == [
         "postgres",
@@ -192,6 +195,16 @@ def test_the_shared_postgres_command_is_the_d4_tuning() -> None:
         "wal_compression=off",
         "-c",
         "autovacuum_max_workers=3",
+        "-c",
+        "log_min_duration_statement=1s",
+        "-c",
+        "log_parameter_max_length=0",
+        "-c",
+        "track_io_timing=on",
+        "-c",
+        "log_lock_waits=on",
+        "-c",
+        "log_temp_files=0",
         "-c",
         "pg_stat_statements.track=all",
         "-c",

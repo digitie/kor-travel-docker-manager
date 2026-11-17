@@ -1,3 +1,11 @@
+## 2026-11-18 — 읽기 성능 계획 Manager 몫 중 01·07 소스 반영
+
+소유자 결정(2026-11-18): 코드·설정만 보고도 이득이 분명한 것만 지금 하고, 새 측정에 값이 달린 것은 따로 잡는 조용한 창 뒤로 미룬다. 공용 PG 재생성(전 tenant 약 30초 순단)은 승인됐다 — 실행은 이 PR이 아니라 운영 창이다. PinVi·Map 저장소는 다른 작업자가 병행 중이라 건드리지 않았다.
+
+- `T-READ-MGR-01`: 공용 PG `command:`에 질의 관측 다섯 키를 `${KTDM_PG_<KEY>:-…}`로 더했다 — `log_min_duration_statement 1s`(계획의 시험 문장 `pg_sleep(1.1)`과 "넘치면 3초로"에서 나온 값), `track_io_timing on`, `log_lock_waits on`, `log_temp_files 0`, 그리고 계획에 없던 `log_parameter_max_length 0`. 마지막은 느린 질의 줄에 bind 값(좌표·이메일 등)이 실리지 않게 하려는 것이다 — 시간과 문장 틀이면 계획의 목적에 충분하다. 기본값은 `pg_settings.current_setting` 모양(`1s`)으로 적었다 — 격리 실행 테스트가 그 문자열로 대조한다. `pg_stat_statements`는 이미 preload돼 있었다(계획 실측도 같다) — 남은 것은 보는 창(확장)이고, tenant DB 대신 관리 역할만 들어가는 bootstrap DB에 한 번 만든다(새 one-shot을 두지 않는다). C6c 허용 목록(B-10)에 다섯 이름을 더했다.
+- `T-READ-MGR-07`: pinvi-api에 Map transport·weather 동시 호출 상한을 compose 기본값 16으로 늘 준다. PinVi 쪽이 앱 기본값을 바꾸더라도 배포값이 결정적이게 하려는 것이다.
+- 보류: `02`·`03`(03의 한도는 한 시점 RSS 표본이고 계획이 OOM 위험을 "중간"으로 적었다. Map 지표를 켜려면 n150 token secret이 먼저다), `04`·`06`(측정 뒤), `05`(운영).
+
 ## 2026-11-17 — 공용 Dagster instance에 `run_retries`만 더함(T-486b 안 (가), ADR-63)
 
 소유자가 Common T-486b의 안 (가)를 골랐다. `config/dagster-shared/dagster.yaml`에 `run_retries: {enabled: true, max_retries: 0, retry_on_asset_or_op_failure: false}`만 더했다(pinvi·weather·transport standalone 사본과 같은 값). concierge `kortravelcommon/job` 리터럴 다섯은 그대로이고 값별 한도 일반 규칙은 더하지 않았다 — 30일 실측에서 map worker가 같은 job tag 값으로 의도적으로 동시 4까지 돌아 일반 규칙이 그것을 1로 줄이기 때문이다. 효과는 `dagster/max_retries≥1` tag를 단 run(오늘은 pinvi 멱등 job 다섯)만 재시도되는 것이다. 렌더러는 바꾸지 않았고, 호스트 파생(정수 한 자리·override 재직렬화) 모두 블록과 override 밖 tag 한도를 보존하는지 시험을 더했다. instance digest가 바뀌어 compose 기본 digest(`efadc7be23984107`)와 원문 snapshot 시험을 함께 갱신했다. 운영 적용은 하지 않았다(Manager 설치 뒤 `dagster-plane converge`, 소유자 일정). 결정과 공통 가이드와의 차이는 ADR-63.
