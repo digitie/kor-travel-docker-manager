@@ -411,14 +411,14 @@ def _graphql(query: str, records: list[dict], config: dict) -> dict:
     return payload["data"]
 
 
-def _probe(cid: str, script: str, lease_fd: int) -> Any:
+def _probe(cid: str, script: str, lease_fd: int, *, timeout: int = 60) -> Any:
     completed, interrupted = frozen._run_mutation(
         ["docker", "exec", cid, "python", "-I", "-c", script],
         additional_fds=(lease_fd,),
         capture_output=True,
         text=True,
         check=False,
-        timeout=60,
+        timeout=timeout,
         env=frozen._environment(),
     )
     if completed.returncode or interrupted or len(completed.stdout) > 32 * 1024 * 1024:
@@ -485,7 +485,8 @@ def _fingerprint(cid: str, lease_fd: int) -> dict:
         + inspect.getsource(state.scan_state)
         + "\nprint(json.dumps(scan_state(Path('/opt/dagster/state'))))"
     )
-    return _probe(cid, script, lease_fd)
+    # 파일 내용과 metadata 전체 순회는 일반 probe와 별도 예산을 쓴다.
+    return _probe(cid, script, lease_fd, timeout=180)
 
 
 def _selected(records: list[dict], project: str, runtime: set[str]) -> dict:
