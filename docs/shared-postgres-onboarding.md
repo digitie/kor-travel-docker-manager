@@ -741,7 +741,7 @@ PG18 기동 2 s, 확장 갱신 10 s(오류 0), analyze 3 s, collation refresh 8 
 | 키 | 기본값 | 뜻 |
 | --- | --- | --- |
 | `log_min_duration_statement` | `1s` | 1초 넘는 문장을 PG 로그(docker json-file, 50 MB×5 회전)에 남긴다. 클러스터 전체라 모든 tenant의 배치 문장도 잡힌다 |
-| `log_parameter_max_length` | `0` | 그 줄에 bind 값을 싣지 않는다 — 좌표·이메일 같은 값이 로그로 새지 않는다(문장 틀과 시간만) |
+| `log_parameter_max_length` | `0` | 그 줄에 extended protocol의 bind 값(asyncpg 등)을 싣지 않는다. **클라이언트가 값을 SQL 텍스트에 끼워 보내면(psycopg2 — Dagster storage) 값은 문장째 남는다** — `log_lock_waits`·`log_temp_files` 줄도 문장 전체를 싣는다 |
 | `track_io_timing` | `on` | `pg_stat_statements`의 `shared_blk_read_time` 등, `pg_stat_io`·EXPLAIN의 I/O 시간 |
 | `log_lock_waits` | `on` | `deadlock_timeout`(1s)보다 오래 lock을 기다린 문장 |
 | `log_temp_files` | `0` | `work_mem`을 넘친 임시 파일(spill)을 크기와 함께 — spill만 남으므로 양이 작다 |
@@ -759,8 +759,9 @@ sudo docker exec --user postgres kor-travel-shared-postgres psql -X -p 11000 -U 
 `docker exec --user postgres`는 컨테이너 안 unix socket(`trust`, §4.1)으로 들어간다 — 비밀번호를 다루지 않는다(`init: true`라 남은 고아를 docker-init이 거둔다 — ADR-52).
 
 **읽는 역할과 절차.** 읽는 것은 관리 역할(`shared_admin`, superuser)뿐이다 — 다른 역할의 문장 텍스트는 `pg_read_all_stats` 없이는
-`<insufficient privilege>`로 가려지고, tenant 역할에 그 권한을 주지 않는다(tenant 사이 격리). 출력에 bind 값은 없지만 문장 텍스트에
-literal이 남을 수 있으므로 결과를 저장소·이슈에 붙일 때는 집계(DB·시간·호출 수)만 옮긴다.
+`<insufficient privilege>`로 가려지고, tenant 역할에 그 권한을 주지 않는다(tenant 사이 격리). `pg_stat_statements`는 상수를 `$n`으로
+정규화하지만, **PG 로그(`docker logs`)에는 SQL 텍스트에 끼워 보낸 값이 그대로 남을 수 있다** — 로그는 호스트 root만 읽는 자료로 다루고,
+저장소·이슈에는 집계(DB·시간·호출 수)만 옮긴다.
 
 ```bash
 sudo docker exec --user postgres kor-travel-shared-postgres psql -X -p 11000 -U shared_admin -d postgres -c "
@@ -778,7 +779,7 @@ sudo docker exec --user postgres kor-travel-shared-postgres psql -X -p 11000 -U 
 2. 이 변경을 담은 Manager release를 설치한다(`~/install-mgr.sh <sha>` → `pin rebind-execution` → verify).
 3. `track_io_timing`의 시계 비용 확인: `sudo docker exec --user postgres kor-travel-shared-postgres pg_test_timing`(PG18 기본 3초) — 대부분이
    1 µs 미만(TSC)이면 그대로, 아니면 root `.env`에 `KTDM_PG_TRACK_IO_TIMING=off`.
-4. `postgresql.auto.conf`에 override가 없는지(`pg_settings.source`가 `configuration file`인 행이 이 키들에 없는지) 확인한다.
+4. `postgresql.auto.conf`가 비어 있는지 확인한다(T-MGR-03r 항목 — `-c`가 그것보다 우선하지만 정본이 둘이 되지 않게).
 5. `sudo docker exec --user postgres kor-travel-shared-postgres psql -X -p 11000 -U shared_admin -d postgres -c CHECKPOINT` 뒤, global lock 아래
    root compose로 PG만: `sudo -n flock -n /run/lock/kor-travel-docker-manager/global-mutation.lock docker compose -p
    kor-travel-docker-manager --project-directory /opt/kor-travel-docker-manager --env-file /opt/kor-travel-docker-manager/.env
@@ -786,11 +787,12 @@ sudo docker exec --user postgres kor-travel-shared-postgres psql -X -p 11000 -U 
    대상이 PG 하나인지 본다; 환경 변수는 `KTDM_HOST=n150`).
 6. healthy 뒤 위 `CREATE EXTENSION`(처음 한 번), tenant `/health`(Map·PinVi·concierge)와 공용 Dagster plane 확인 → Map 큐 재개.
 
-**확인.** ① `SELECT name, setting, source FROM pg_settings WHERE name IN ('log_min_duration_statement','log_parameter_max_length',
+**확인.** ① `SELECT name, current_setting(name), source FROM pg_settings WHERE name IN ('log_min_duration_statement','log_parameter_max_length',
 'track_io_timing','log_lock_waits','log_temp_files','shared_preload_libraries')` — 값이 위 표와 같고 source가 `command line`.
 ② `SELECT count(*) FROM pg_stat_statements`(bootstrap DB, 관리 역할)가 0보다 크다. ③ `SELECT pg_sleep(1.1)` 한 번 뒤
-`sudo docker logs --since 1m kor-travel-shared-postgres`에 `duration: 11xx ms`가 한 줄. ④ 24시간 뒤 로그 줄 수·크기를 적는다 —
-하루 200 MB 또는 5만 줄을 넘으면 `KTDM_PG_LOG_MIN_DURATION_STATEMENT=3s` + 재생성.
+`sudo docker logs --since 1m kor-travel-shared-postgres`에 `duration: 11xx ms`가 한 줄. ④ 24시간 동안의 로그 줄 수·크기를 적는다 —
+docker json-file 회전(50 MB×5 = 250 MB)이 오래된 줄을 지울 수 있으므로 하루 한 번이 아니라 몇 시간 간격으로
+`docker logs --since`를 세어 더한다. 하루 200 MB 또는 5만 줄을 넘으면 `KTDM_PG_LOG_MIN_DURATION_STATEMENT=3s` + 재생성.
 
 **되돌림.** root `.env`에 `KTDM_PG_LOG_MIN_DURATION_STATEMENT=-1`(등) + 재생성. 확장은 남겨 둬도 비용이 없다(수집은 preload가 한다).
 

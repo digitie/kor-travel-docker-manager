@@ -52,7 +52,8 @@ def test_new_server_keys_default_to_the_pg16_server_defaults():
         assert settings[key].startswith(f"${{KTDM_PG_{key.upper()}:-"), key
 
 
-#: 질의 관측을 켜는 값(Map 읽기 성능 계획 T-READ-MGR-01, 2026-11-18) — 서버 기본값(-1/-1/off/off/-1)이 **아니다**.
+#: 질의 관측을 켜는 값(Map 읽기 성능 계획 T-READ-MGR-01, 2026-11-18) — n150 실측(2026-11-16: duration -1, io timing·lock
+#: waits off)을 **바꾸는** 값이다. 서버 기본값과의 같음을 단언하는 위 여섯 키와 다르다.
 #: 값은 `pg_settings`의 `current_setting`이 돌려주는 모양으로 적는다(`1000`이 아니라 `1s`) — 격리 실행 테스트
 #: (`test_shared_postgres_runtime_integration.py`)가 기본값으로 푼 명령과 그 문자열을 그대로 대조한다.
 _QUERY_OBSERVATION_DEFAULTS = {

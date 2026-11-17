@@ -326,8 +326,8 @@ services:
     # 재생성 뒤 n150에서도 효과가 생긴다(의도). `ALTER SYSTEM`·reload로 넣지 않는다(`postgresql.auto.conf`는 빈 채로).
     # - log_min_duration_statement 1s: 1초 넘는 문장을 PG 로그(docker json-file, 위 logging 상한)에 남긴다. 클러스터
     #   전체라 모든 tenant의 배치 문장도 잡힌다 — 켠 뒤 하루 200 MB·5만 줄을 넘으면 `.env`로 3s로 올린다.
-    # - log_parameter_max_length 0: 그 줄에 bind 값을 싣지 않는다(좌표·이메일 같은 값이 로그로 새지 않게). 문장 틀과
-    #   시간만 남는다.
+    # - log_parameter_max_length 0: 그 줄에 extended protocol의 bind 값을 싣지 않는다(asyncpg 등). 클라이언트가 값을 SQL
+    #   텍스트에 끼워 보내면(psycopg2 — Dagster storage) 그 값은 문장째 남는다 — PG 로그는 호스트 root만 읽는 자료로 다룬다.
     # - track_io_timing on: `pg_stat_statements`·`pg_stat_io`·EXPLAIN에 I/O 시간이 생긴다. 시계 비용은 재생성 전
     #   `pg_test_timing`으로 확인하고, 비싸면 `.env`로 off(`shared-postgres-onboarding.md` §13).
     # - log_lock_waits on: `deadlock_timeout`(1s)보다 오래 lock을 기다린 문장을 남긴다.
