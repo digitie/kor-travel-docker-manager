@@ -1,3 +1,7 @@
+## 2026-11-18 — Node 26.13.1 이전(Common T-029 채택)
+
+소유자 결정(2026-11-17): 모든 저장소가 Node 26.13.1(최신 LTS)로 옮기고 npm은 12.0.1을 유지한다. kor-travel-common #65(채택 커밋 `0dec9543`)가 공통 Node 축을 26.13.1로 올렸고, guard는 정책과 Node/npm 축을 호출자의 `common-ref`에서 읽는다. 그래서 `.nvmrc`, `frontend/package.json` `engines.node`, lock(npm 12.0.1·Node 26.13.1 lock-only 재생성 — 루트 `engines` 블록만 바뀜), guard 호출 SHA·`common-ref`(`0dec9543`)를 같은 PR에서 함께 올렸다. CI는 `node-version-file: .nvmrc`라 따로 고칠 것이 없다. Manager UI는 systemd로 돌아 Node Dockerfile이 없고(`docker/dagster-host`는 Python 이미지), 다른 서비스 이미지를 만드는 렌더러·템플릿은 바꾸지 않았다. 현재 툴체인을 적은 문서(`CLAUDE.md`·`README.md`·`SKILL.md`·`docs/frontend-toolchain.md`)만 고쳤고 과거 기록은 그대로 뒀다. 운영 UI runtime 교체는 하지 않았다(배포 없음).
+
 ## 2026-11-18 — 읽기 성능 계획 Manager 몫 중 01·07 소스 반영
 
 소유자 결정(2026-11-18): 코드·설정만 보고도 이득이 분명한 것만 지금 하고, 새 측정에 값이 달린 것은 따로 잡는 조용한 창 뒤로 미룬다. 공용 PG 재생성(전 tenant 약 30초 순단)은 승인됐다 — 실행은 이 PR이 아니라 운영 창이다. PinVi·Map 저장소는 다른 작업자가 병행 중이라 건드리지 않았다.

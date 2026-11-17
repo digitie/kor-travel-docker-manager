@@ -1,6 +1,6 @@
 # 프론트엔드 도구·검증 계약
 
-Manager frontend는 private package anchor `frontend/package.json`을 사용한다. 저장소 `.nvmrc`와 anchor `engines.node`는 Node22.23.1, `packageManager`와 `engines.npm`은 npm12.0.1이다. `frontend/.npmrc`의 engine-strict를 유지한다. 공개 라이브러리 manifest·C11 vendor·원장은 변경하지 않는다.
+Manager frontend는 private package anchor `frontend/package.json`을 사용한다. 저장소 `.nvmrc`와 anchor `engines.node`는 Node26.13.1, `packageManager`와 `engines.npm`은 npm12.0.1이다. `frontend/.npmrc`의 engine-strict를 유지한다. 공개 라이브러리 manifest·C11 vendor·원장은 변경하지 않는다.
 
 개발 shell 또는 격리된 빌드 runtime에서 저장소 selector의 Node를 선택하고 다음을 실행한다.
 
@@ -19,7 +19,7 @@ npm run test:e2e
 
 이 명령 목록은 현재 검사 계약이다. CI의 step 상대순서를 바꾸지 않았다. 설치는 peer/lifecycle 우회 옵션을 추가하지 않는다. lint는 로컬/CI 모두 warning0, Doctor는 full scope/blocking warning이다. 실행 Node/npm이 다르면 `scripts/verify-frontend-toolchain.sh`는 `--fix`라도 node_modules 삭제 전에 실패한다. 이 스크립트의 정상 판정이 실제 app gate·중앙 canonical 검사를 대신하지 않는다.
 
-운영 호스트의 global Node/npm은 이 변경으로 갱신하지 않는다. 위 global 설치 명령은 선택된 개발·CI/격리 runtime 안의 npm을 위한 것이다. 운영 UI를 새로 배포할 때는 별도 준비된 private pinned Node22.23.1/npm12.0.1 runtime으로 새 소스·의존성·빌드 및 공식 UI 기동 명령을 모두 맞춰야 한다. 현재 서비스 runtime을 이미 맞췄다고 주장하지 않는다. 설치·빌드·Service UI 적용은 부모의 슬롯/단계 GO 뒤에만 수행한다.
+운영 호스트의 global Node/npm은 이 변경으로 갱신하지 않는다. 위 global 설치 명령은 선택된 개발·CI/격리 runtime 안의 npm을 위한 것이다. 운영 UI를 새로 배포할 때는 별도 준비된 private pinned Node26.13.1/npm12.0.1 runtime으로 새 소스·의존성·빌드 및 공식 UI 기동 명령을 모두 맞춰야 한다. 현재 서비스 runtime을 이미 맞췄다고 주장하지 않는다. 설치·빌드·Service UI 적용은 부모의 슬롯/단계 GO 뒤에만 수행한다.
 
 ## C11 현재 수용과 과거 후보 표기
 
