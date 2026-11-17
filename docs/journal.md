@@ -1,6 +1,6 @@
 ## 2026-11-17 — 공통화 재조사 계획 포인터(문서 전용)
 
-kor-travel-common이 다섯 저장소를 다시 조사해 계획 초안을 냈다(Common `docs/plan/commonization-plan-2026-11-17.md`, Manager 조사 기준 `31d56e4e`). Manager 몫은 Common `T-486a`(map-api·pinvi-api healthcheck의 exec 형식 공통 probe 전환)와 `T-486b`(공용 Dagster instance의 job별 한도·`run_retries` 결정)다. `docs/tasks.md`에 포인터 두 항목만 뒀다. 계획은 compose 오케스트레이션·pin registry·백업·배포 스크립트를 공유 대상에서 제외했고 Manager 코드에 서비스별 로직을 더하는 제안은 없다. 소스·운영 변경은 0이다. Common 계획은 독립 리뷰 전 초안이다.
+kor-travel-common이 다섯 저장소를 다시 조사해 계획 초안을 냈다(Common `docs/plan/commonization-plan-2026-11-17.md`, Manager 조사 기준 `31d56e4e`). Manager 몫은 Common `T-486a`(map-api·pinvi-api healthcheck의 exec 형식 공통 probe 전환), `T-486b`(공용 Dagster instance의 job별 한도·`run_retries` 결정), `T-474`(`@kor-travel/ui` 0.3.0 재vendor와 guard 호출 SHA 갱신)다. `docs/tasks.md`에 포인터 세 항목만 뒀다. 계획은 compose 오케스트레이션·pin registry·백업·배포 스크립트를 공유 대상에서 제외했고 Manager 코드에 서비스별 로직을 더하는 제안은 없다. 소스·운영 변경은 0이다. Common 계획은 독립 리뷰 전 초안이다.
 
 ## 2026-11-17 — 프런트 공통 후보12 채택(ui 0.2.1·tokens 0.1.2)
 

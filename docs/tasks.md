@@ -2,8 +2,9 @@
 
 kor-travel-common의 공통화 재조사 계획(`docs/plan/commonization-plan-2026-11-17.md`, 초안) 가운데 Manager가 실행하는 task다. 범위·수용 기준·되돌리기는 Common `docs/tasks/`의 상세 파일이 정본이며 여기 복제하지 않는다.
 
-- [ ] Common `T-486a` — map-api·pinvi-api의 `CMD-SHELL` healthcheck를 weather-api와 같은 `kortravelcommon.http_health` exec 형식으로 바꾼다. 고정 이미지에 모듈이 있는지 먼저 확인한다(없으면 재구축이 compose up에서만 죽는다).
+- [ ] Common `T-486a` — map-api·pinvi-api의 `CMD-SHELL` healthcheck를 weather-api와 같은 `kortravelcommon.http_health` exec 형식으로 바꾼다. 고정 이미지에 모듈이 있는지 먼저 확인한다(없으면 재구축이 compose up에서만 죽는다). exec 형식의 `${…}`는 호스트 env로 치환되므로 map-api의 `--port`에는 게시 포트가 아니라 컨테이너 포트 식(`KOR_TRAVEL_MAP_API_CONTAINER_PORT`)을 쓴다.
 - [ ] Common `T-486b` — 공용 `dagster.yaml`의 `kortravelcommon/job` 값별 한도와 `run_retries`를 결정한다. tenant별 영향 확인이 먼저이며, 채택하면 concierge 리터럴 다섯을 일반 규칙으로 바꾼다.
+- [ ] Common `T-474` — Common이 `@kor-travel/ui` 0.3.0을 예고하면(Common `T-221` 뒤) 프론트를 재vendor하고 guard 호출 SHA를 함께 올린다. 로컬 부품의 공통 부품 전환은 필수가 아니다(기존 Common `T-473`).
 
 ## 2026-11-13 — Weather 최신 main 전체 스택 후보
 
