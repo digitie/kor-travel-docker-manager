@@ -1,3 +1,7 @@
+## 2026-11-17 — 읽기 성능 계획(Map 정본) 포인터
+
+- [ ] Map 저장소의 [읽기 성능 계획](https://github.com/digitie/kor-travel-map/blob/main/docs/reports/2026-11-17-read-performance-plan.md) §8.4가 Manager 쪽 작업 `T-READ-MGR-01`~`05`의 정본이다 — 공용 PostgreSQL의 질의 관측(`pg_stat_statements` 확장·느린 질의 로그·`track_io_timing`), Map·PinVi·weather 지표 scrape와 Map API 지표 켜기, Map·PinVi API 컨테이너를 swap에서 지키기(`memswap_limit`), n150 공용 PG 메모리·I/O 설정 재산정, odroid NVMe 남은 공간 확보(1.9 GB, 소유자에게 전달됨). `T-READ-MGR-02`와 `03`은 같은 compose 블록이라 한 PR로 묶는다. 착수할 때 항목마다 이 원장에 개별 절로 옮긴다. Map PR이 머지되기 전에는 Map 브랜치 `docs/read-performance-plan-20261117`에서 읽는다.
+
 ## 2026-11-13 — Weather 최신 main 전체 스택 후보
 
 - [x] Transport-only 후보/UI-only current/Weather backup role 누락과 실제 state 경로를 확인한다.
