@@ -1,3 +1,7 @@
+## 2026-11-17 — 읽기 성능 계획(Map 정본) 포인터
+
+- [ ] Map 저장소의 [읽기 성능 계획](https://github.com/digitie/kor-travel-map/blob/main/docs/reports/2026-11-17-read-performance-plan.md) §8(단계 순)이 Manager 쪽 작업 `T-READ-MGR-01`~`07`의 정본이다. `01` 공용 PostgreSQL 질의 관측 — 설정은 compose `command:`의 `-c` 값으로 넣고(`ALTER SYSTEM`·reload 아님) 소유자 승인 창에서 재생성, `pg_stat_statements` 확장은 관리 권한 init 단계로. `02` Map·PinVi(·weather) 지표 scrape — `config/docker-targets.yml`과 생성기(`prometheus_targets.py`)에 일반 `metrics_auth` 필드를 더하고 파생 `prometheus.yml`은 손대지 않는다. `03` Map·PinVi API의 `mem_limit`·`memswap_limit`(기존 `${KTDM_…_MEM_LIMIT}` 규칙)과 Map 지표 flag·token. `04` n150 공용 PG 메모리·I/O 값 재산정(root `.env`의 `KTDM_PG_*`, 재생성 한 번에 값 하나, 소유자 승인). `05` odroid NVMe 남은 공간 확보(1.9 GB, 소유자에게 전달됨). `06` 디스크에 쓰는 쪽 가려내기 — checkpoint·WAL·Valkey 저장 주기. `07` pinvi-api 동시 호출 상한 env 배선. Map의 OpenAPI를 바꾸는 작업(`T-READ-04`)은 PinVi 재vendor 머지 뒤 한 pair 회전으로만 나간다. 착수할 때 항목마다 이 원장에 개별 절로 옮긴다. Map PR이 머지되기 전에는 Map 브랜치 `docs/read-performance-plan-20261117`에서 읽는다.
+
 ## 2026-11-13 — Weather 최신 main 전체 스택 후보
 
 - [x] Transport-only 후보/UI-only current/Weather backup role 누락과 실제 state 경로를 확인한다.
