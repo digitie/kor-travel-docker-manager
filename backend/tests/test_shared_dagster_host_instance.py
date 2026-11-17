@@ -430,6 +430,29 @@ def test_preserved_odroid_tunings_keep_other_source_limits(host):
     assert (after.st_ino, after.st_mtime_ns, after.st_size) == (info.st_ino, info.st_mtime_ns, info.st_size)
 
 
+
+@pytest.mark.parametrize("tunings", [
+    {},
+    {"dagster_python_log_level": "WARNING"},
+    {"dagster_tag_concurrency_limits": _PRESERVED_TAG_LIMITS, "dagster_python_log_level": "WARNING"},
+])
+def test_host_rendering_keeps_run_retries_and_untouched_tag_limits(host, tunings):
+    """정수 한 자리 파생과 재직렬화 모두 run_retries와 override 밖 tag 한도를 기본 그대로 둔다(ADR-63)."""
+    _, _, targets, _, _ = host
+    targets["hosts"]["odroid"].update(deepcopy(tunings))
+    before = yaml.safe_load(BASE.read_bytes())
+    actual = yaml.safe_load(instance.prepare_shared_dagster_instance().path.read_bytes())
+    assert "run_retries" in before
+    assert actual["run_retries"] == before["run_retries"]
+    overridden = {(x["key"], x["value"]) for x in tunings.get("dagster_tag_concurrency_limits", [])}
+
+    def untouched(document):
+        return [entry for entry in document["concurrency"]["runs"]["tag_concurrency_limits"]
+                if (entry["key"], entry.get("value")) not in overridden]
+
+    assert untouched(before) and untouched(actual) == untouched(before)
+
+
 def test_committed_odroid_tunings_are_explicit_and_n150_inherits(host):
     _, _, targets, selected, _ = host
     committed = yaml.safe_load((ROOT / "config/docker-targets.yml").read_bytes())["hosts"]

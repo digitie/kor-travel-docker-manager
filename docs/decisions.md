@@ -1856,3 +1856,69 @@ nonrevision ENV는 그대로 보존한다. snapshot 이전과 사후/발행 경�
 추가하지 않는다. 비협력 root의 별도 writer를 막는 분산 fence는 아니다. 실제 Engine의
 no-start/state 인계와 최종 운영 수용은 두 소스 리뷰·정확 CI·병합 및 승인 tuple 후속 gate다.
 기능 계약과 실패 처리는 [서비스 현재 릴리스 표식](service-current-release.md)을 따른다.
+
+## ADR-63: 공용 Dagster instance는 `run_retries`만 더하고 job tag 값별 한도는 두지 않는다(T-486b 안 (가))
+
+- 상태: accepted — 소스 구현, 운영 적용 전(적용 일정은 소유자)
+- 날짜: 2026-11-17
+- 결정자: 소유자(안 (가) 선택), 구현은 Claude
+
+### 컨텍스트
+
+Common [T-486b](https://github.com/digitie/kor-travel-common/blob/main/docs/tasks/T-486b-ktdm-shared-dagster-per-job-limit.md)는
+공용 `config/dagster-shared/dagster.yaml`의 concierge `kortravelcommon/job` 리터럴 한도 다섯을 값별 한도 1
+(`applyLimitPerUniqueValue`) 일반 규칙 하나로 바꾸고 `run_retries` 블록을 더하자고 권고했다. 공통 가이드
+([dagster-adoption](https://github.com/digitie/kor-travel-common/blob/main/docs/runbooks/dagster-adoption.md) §3)는
+"`kortravelcommon/job` 값별 동시성 1"을 daemon 소유 저장소에 두라고 한다.
+
+2026-11-17 운영 공용 webserver의 읽기 전용 GraphQL 실측(최근 30일 41,116 run, 정본은 위 task 파일의 "영향 자료와 결정"):
+
+- map: 같은 job tag 값이 동시에 여럿 도는 경로가 있다. queue sensor가 15초 tick마다 run_key가 다른 worker run을
+  내며 모두 같은 값 `map/feature_update_request_worker`이고, instance가 `kor_travel_map.feature_update_request_id`
+  key로 의도적으로 동시 4를 허용한다(실측 동시 실행 2, 동시 존재 11). 관리자 수동 실행·schedule·geo 릴리스 sensor도
+  적재 job을 겹치게 할 수 있다(`mois_licenses`·`visitkorea_festivals` 2).
+- pinvi: 같은 값 동시 실행 1. concierge: 리터럴 다섯으로 이미 1. weather·transport·geo: 공용 n150에 run 없음.
+- 재시도: `dagster/retry_number` tag가 붙은 run은 없었다. `dagster/max_retries`는 map·concierge 0,
+  pinvi 0 또는 1(멱등 job 다섯).
+
+값별 한도 1을 일반 규칙으로 두면 map worker의 동시 실행이 설계값 4에서 1로 줄고 적재 job이 직렬화된다. 이는
+task의 차단 조건("map의 동시 run이 한도에 걸려 줄어드는 것이 확인되면 일반 규칙을 채택하지 않는다")에 걸린다.
+Dagster의 tag 한도는 code location 범위를 받지 않으므로 "map만 빼고"(안 (나))는 그대로 표현할 수 없다.
+
+### 결정
+
+소유자가 안 (가)를 골랐다. concierge 리터럴 다섯은 그대로 두고, job tag 값별 한도 규칙은 더하지 않으며,
+`run_retries: {enabled: true, max_retries: 0, retry_on_asset_or_op_failure: false}`만 더한다. 값은
+pinvi·weather·transport standalone instance 사본과 같다(Dagster 1.13.24).
+
+### 근거
+
+- 기본 횟수 0이므로 run에 `dagster/max_retries`(1 이상) tag를 단 job만 자동 재실행된다. 오늘은 pinvi의 멱등 job
+  다섯뿐이다. map·concierge는 0을 달아 동작이 바뀌지 않는다. op·asset 실패는 재시도하지 않아 provider 재시도와 다음
+  정상 schedule이 그 몫을 계속 갖는다.
+- 일반 규칙을 피해 map의 의도된 동시성(4)을 지킨다. Manager는 서비스별 분기를 새로 더하지 않는다 — 기존
+  리터럴만 남고 새 블록은 instance 전역 값이다.
+
+### 공통 가이드와의 차이
+
+- 공용 instance에는 `kortravelcommon/job` 값별 동시성 1 일반 규칙이 없다. concierge만 다섯 값을 리터럴로 1로
+  묶는다. pinvi는 자기 schedule만으로 같은 값이 겹치지 않고(실측 1), map은 의도적으로 같은 값을 4까지 겹친다.
+- 그 밖의 tenant가 같은 값의 동시 1을 원하면 리터럴 항목을 더하거나, 자기 run에 요청마다 다른 job tag 값을 단 뒤
+  (안 (다)) 일반 규칙을 다시 검토한다.
+
+### 결과(긍정)
+
+- pinvi 멱등 job 다섯이 standalone 때처럼 worker·launcher 장애에서 1회 복구된다.
+- 렌더러(`shared_dagster_instance.py`)는 바꾸지 않았다. 정수 한 자리 파생과 호스트 override 재직렬화 모두 문서
+  전체를 보존한다. 시험이 그 두 경로에서 `run_retries`와 override 밖 tag 한도가 기본 그대로인지 본다.
+
+### 결과(부정)
+
+- instance 파일 digest가 바뀐다(compose 기본 digest 함께 갱신). 효과는 daemon이 새 파일로 다시 만들어질 때부터다.
+  설치만으로는 떠 있는 plane이 바뀌지 않는다.
+- pinvi의 운영 동작이 바뀐다(위 다섯 job의 재실행). 되돌리려면 이 블록을 지우거나 pinvi tag를 0으로 바꾼다.
+
+### 후속
+
+- (open) 운영 적용: Manager 설치 뒤 `ktdctl dagster-plane converge --dry-run`/`--confirm`(소유자 일정).
+- (open) 적용 뒤 관찰: `dagster/retry_number` tag가 붙은 run이 pinvi 다섯 job 밖에서 생기지 않는지.

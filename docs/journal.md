@@ -1,3 +1,7 @@
+## 2026-11-17 — 공용 Dagster instance에 `run_retries`만 더함(T-486b 안 (가), ADR-63)
+
+소유자가 Common T-486b의 안 (가)를 골랐다. `config/dagster-shared/dagster.yaml`에 `run_retries: {enabled: true, max_retries: 0, retry_on_asset_or_op_failure: false}`만 더했다(pinvi·weather·transport standalone 사본과 같은 값). concierge `kortravelcommon/job` 리터럴 다섯은 그대로이고 값별 한도 일반 규칙은 더하지 않았다 — 30일 실측에서 map worker가 같은 job tag 값으로 의도적으로 동시 4까지 돌아 일반 규칙이 그것을 1로 줄이기 때문이다. 효과는 `dagster/max_retries≥1` tag를 단 run(오늘은 pinvi 멱등 job 다섯)만 재시도되는 것이다. 렌더러는 바꾸지 않았고, 호스트 파생(정수 한 자리·override 재직렬화) 모두 블록과 override 밖 tag 한도를 보존하는지 시험을 더했다. instance digest가 바뀌어 compose 기본 digest(`efadc7be23984107`)와 원문 snapshot 시험을 함께 갱신했다. 운영 적용은 하지 않았다(Manager 설치 뒤 `dagster-plane converge`, 소유자 일정). 결정과 공통 가이드와의 차이는 ADR-63.
+
 ## 2026-11-17 — 공통화 재조사 계획 포인터(문서 전용)
 
 kor-travel-common이 다섯 저장소를 다시 조사해 계획을 냈다(Common `docs/plan/commonization-plan-2026-11-17.md`, 적대 리뷰 2회 반영, Manager 조사 기준 `31d56e4e`). Manager 몫은 Common `T-486a`(map-api·pinvi-api healthcheck의 exec 형식 공통 probe 전환), `T-486b`(공용 Dagster instance의 job별 한도·`run_retries`, 소유자 결정 뒤 구현), `T-474`(guard 호출 SHA 갱신)다. `docs/tasks.md`에 포인터 세 항목만 뒀다. 계획은 compose 오케스트레이션·pin registry·백업·배포 스크립트를 공유 대상에서 제외했고 Manager 코드에 서비스별 로직을 더하는 제안은 없다. 소스·운영 변경은 0이다.
