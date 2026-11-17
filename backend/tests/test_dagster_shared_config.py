@@ -199,6 +199,26 @@ def test_the_coordinator_is_the_queued_default_and_telemetry_is_off() -> None:
         assert config[section]["config"]["base_dir"].startswith("/opt/dagster/state/")
 
 
+
+def test_run_retries_follow_explicit_run_tags_and_job_limits_stay_literal() -> None:
+    """T-486b 안 (가)(ADR-63): 자동 재실행은 켜고 기본 횟수는 0이다.
+
+    `dagster/max_retries` tag(1 이상)를 단 run만 재시도한다. 값은 standalone instance 사본
+    (pinvi·weather·transport)과 같고 op·asset 실패는 재시도하지 않는다. 같은 결정으로 job tag의
+    값별 한도(`applyLimitPerUniqueValue`)는 두지 않는다 — Map worker가 한 job tag 값으로 동시 4개를
+    의도적으로 내므로 값별 한도 1은 그것을 1로 줄인다. 그래서 한도의 value는 전부 명시 문자열이다.
+    """
+
+    config = _instance_config()
+    assert config["run_retries"] == {
+        "enabled": True,
+        "max_retries": 0,
+        "retry_on_asset_or_op_failure": False,
+    }
+    limits = config["concurrency"]["runs"]["tag_concurrency_limits"]
+    assert all(isinstance(entry.get("value", ""), str) for entry in limits), limits
+
+
 def test_map_warning_loggers_reach_the_run_event_stream() -> None:
     """모든 location의 INFO 진행과 Map의 명시한 logger가 event stream에 결선된다.
 
