@@ -1,3 +1,7 @@
+## 2026-11-17 — 프런트 공통 후보12 채택(ui 0.2.1·tokens 0.1.2)
+
+kor-travel-common #57·#58(동결 `97f8ed98`)이 정책 정본을 올렸다(vworld-map-web 1.0.4·rn 1.0.2와 ui/tokens 내장 정책). 공통 guard는 고정 ref와 무관하게 common main의 정책·정본을 읽으므로 옛 ui 0.2.0·tokens 0.1.1로는 실패한다. `frontend/vendor` 두 tgz, `common-artifacts.json`(중앙 원장 값), `frontend/package.json`, lock(npm 12.0.1 lock-only, 해당 9줄)과 guard·common-ref(`97f8ed98`)만 바꿨다. ui·tokens는 내장 정책만 달라 화면·CSS·Python·배포 변화가 없다. Manager는 vworld를 쓰지 않는다. 원장의 vworld 항목은 중앙 값과 맞춘 정보용이다.
+
 ## 2026-11-13 — Weather source2 사전 DB 대상·canonical ENV·oneshot 사후 회귀
 
 원 B의 P1 DSN query override, 부모의 P2 config dollar 및 저자가 재현한 migration 사후 identity 경합을 source1 원문과 구분해 수정한다. 표준 parser·명시 selector 거부, config decode1/actual 비교/encode1, migration 단계 밖 singleton fingerprint 보존을 적용했다. 저자 회귀 성공은 원 리뷰어의 finding closure를 대신하지 않으며 source2 exact 원2인/CI/실제 운영은 별도다.
