@@ -1,3 +1,8 @@
+## 2026-11-19 — 호환 전이 의존성 정렬
+
+- PostCSS override를 8.5.32로 고정해 Next 중첩 8.5.23을 제거했다. 직접 라이브러리 버전·Common 산출물·RN exact style-spec은 유지한다.
+- Node26.13.1/npm12.0.1 lock-only와 고정 Common canonical/toolchain guard를 확인했다. 전체 설치·빌드·운영 적용은 하지 않았고 정확 PR CI는 별도다.
+
 ## 2026-11-18 — 공통 표 수정 산출물과 고정 catalog C 채택 준비
 
 - 실제 main pack R(`706aaa7821588dfca72f660c9161f56be2d0445f`)의 UI0.2.2·tokens0.1.3를 소비한다. VirtualTable의 좁은 grid 가로 접근 수정은 공통 라이브러리에서 받는다.
