@@ -1,3 +1,9 @@
+## 2026-11-18 — 공통 표 수정 산출물과 고정 catalog C 채택 준비
+
+- 실제 main pack R(`706aaa7821588dfca72f660c9161f56be2d0445f`)의 UI0.2.2·tokens0.1.3를 소비한다. VirtualTable의 좁은 grid 가로 접근 수정은 공통 라이브러리에서 받는다.
+- 원장·vendor·lock·출처와 정책 `uses/common-ref`를 실제 고정 catalog C(`5c1b3857e9af060d30ec776157760fb9e9c13ded`)에 맞춘다. C의 main 포함 관계와 실제 R/P pack bytes 동일성이 확인됐다. 이 변경은 소스·CI 준비이며 운영 적용은 별도다.
+- 현재 미사용 toast는 도입하지 않는다. Node26.13.1/npm12.0.1 lock-only·정본 dependency/artifact guard 결과와 미실행 build/runtime 범위는 이 PR에 기록한다.
+
 ## 2026-11-18 — Node 26.13.1 이전(Common T-029 채택)
 
 소유자 결정(2026-11-17): 모든 저장소가 Node 26.13.1(최신 LTS)로 옮기고 npm은 12.0.1을 유지한다. kor-travel-common #65(채택 커밋 `0dec9543`)가 공통 Node 축을 26.13.1로 올렸고, guard는 정책과 Node/npm 축을 호출자의 `common-ref`에서 읽는다. 그래서 `.nvmrc`, `frontend/package.json` `engines.node`, lock(npm 12.0.1·Node 26.13.1 lock-only 재생성 — 루트 `engines` 블록만 바뀜), guard 호출 SHA·`common-ref`(`0dec9543`)를 같은 PR에서 함께 올렸다. CI는 `node-version-file: .nvmrc`라 따로 고칠 것이 없다. Manager UI는 systemd로 돌아 Node Dockerfile이 없고(`docker/dagster-host`는 Python 이미지), 다른 서비스 이미지를 만드는 렌더러·템플릿은 바꾸지 않았다. 현재 툴체인을 적은 문서(`CLAUDE.md`·`README.md`·`SKILL.md`·`docs/frontend-toolchain.md`)만 고쳤고 과거 기록은 그대로 뒀다. 운영 UI runtime 교체는 하지 않았다(배포 없음).
