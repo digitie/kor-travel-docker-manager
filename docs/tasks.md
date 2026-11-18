@@ -1,5 +1,10 @@
 ## 2026-11-17 — 공통화 재조사 계획 포인터
 
+## 2026-11-19 — Concierge 정상 UI 빌드 재사용
+
+- [x] 기존 시작 기본값을 보존하는 typed 선택과 projection/C6c·이미지 metadata 회귀를 추가한다.
+- [ ] 정확 CI·검토·병합 뒤 다른 SDK 작업이 조용한 시점에 trusted 설치와 공식 재생성을 별도로 수행한다.
+
 kor-travel-common의 공통화 재조사 계획(`docs/plan/commonization-plan-2026-11-17.md`) 가운데 Manager가 실행하는 task다. 범위·수용 기준·되돌리기는 Common `docs/tasks/`의 상세 파일이 정본이며 여기 복제하지 않는다.
 
 - [ ] Common `T-486a` — map-api·pinvi-api의 `CMD-SHELL` healthcheck를 weather-api와 같은 `kortravelcommon.http_health` exec 형식으로 바꾼다. 고정 이미지에 모듈이 있는지 먼저 확인한다(없으면 재구축이 compose up에서만 죽는다). map-api의 `--port`에는 게시 포트가 아니라 컨테이너 포트 식(`KOR_TRAVEL_MAP_API_CONTAINER_PORT`)을 쓰고, `interval`·`retries`·`start_period`는 그대로 둔다. 시험은 서비스 이름을 쓰지 않는 일반 규칙으로 쓴다.

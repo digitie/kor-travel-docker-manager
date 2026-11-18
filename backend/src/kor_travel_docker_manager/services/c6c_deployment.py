@@ -3544,6 +3544,13 @@ def _validate_concierge_ui_canonical_contract(
         expected_ui_command = _concierge_ui_expected_command(
             environment, resolved=resolved
         )
+        if concierge_ui_start_mode(environment) == "prebuilt":
+            image_id = environment.get("KOR_TRAVEL_CONCIERGE_UI_IMAGE", "")
+            _validate_image_id(image_id, "Concierge prebuilt UI")
+            if resolved and ui_service.get("image") != image_id:
+                raise ComposeCandidateContractError("Concierge prebuilt UI image must match the root selector")
+            if ui_service.get("entrypoint") is not None or ui_service.get("working_dir") not in (None, "/app"):
+                raise ComposeCandidateContractError("Concierge prebuilt UI must preserve the normal image entrypoint and workdir")
         ui_command = ui_service.get("command")
         if not isinstance(ui_command, list) or tuple(ui_command) != expected_ui_command:
             raise ComposeCandidateContractError(
@@ -3601,9 +3608,21 @@ def _validate_concierge_ui_canonical_contract(
             )
 
 
+ConciergeUIStartMode = Literal["build", "prebuilt"]
+
+
+def concierge_ui_start_mode(environment: Mapping[str, str]) -> ConciergeUIStartMode:
+    mode = environment.get("KOR_TRAVEL_CONCIERGE_UI_START_MODE", "build")
+    if mode not in ("build", "prebuilt"):
+        raise ComposeCandidateContractError("Concierge UI start mode must be build or prebuilt")
+    return cast(ConciergeUIStartMode, mode)
+
+
 def _concierge_ui_expected_command(
     environment: Mapping[str, str], *, resolved: bool
 ) -> tuple[str, ...]:
+    if concierge_ui_start_mode(environment) == "prebuilt":
+        return ("npm", "run", "start", "--", "-H", "0.0.0.0", "-p", "12605")
     if not resolved:
         return _CONCIERGE_UI_CANONICAL_RAW_COMMAND
     return (
@@ -7109,6 +7128,37 @@ def _run_docker_query(
         capture_output=True,
         check=False,
     )
+
+
+def validate_concierge_prebuilt_ui_image(
+    image_id: str, *, cwd: str | None = None, env: Mapping[str, str] | None = None,
+) -> None:
+    """선택한 정상 Concierge 이미지의 시작 계약만 읽기 전용으로 확인한다."""
+    _validate_image_id(image_id, "Concierge prebuilt UI")
+    try:
+        completed = _run_docker_query(
+            ["docker", "image", "inspect", "--format={{json .}}", "--", image_id],
+            runner=None, cwd=cwd, env=env,
+        )
+    except OSError as exc:
+        raise DeploymentContractError("cannot inspect Concierge prebuilt UI image") from exc
+    if completed.returncode != 0:
+        raise DeploymentContractError("cannot inspect Concierge prebuilt UI image")
+    try:
+        metadata = json.loads(completed.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise DeploymentContractError("Concierge prebuilt UI image metadata is invalid") from exc
+    config = metadata.get("Config") if isinstance(metadata, Mapping) else None
+    labels = config.get("Labels") if isinstance(config, Mapping) else None
+    if (
+        not isinstance(labels, Mapping)
+        or metadata.get("Id") != image_id
+        or labels.get("org.opencontainers.image.source") != "https://github.com/digitie/kor-travel-concierge.git"
+        or config.get("Cmd") != ["npm", "run", "start"]
+        or config.get("WorkingDir") != "/app"
+    ):
+        raise DeploymentContractError("Concierge prebuilt UI requires the normal Concierge image source, command and workdir")
+    _validate_source_revision(labels.get("org.opencontainers.image.revision"), "Concierge prebuilt UI")
 
 
 def inspect_c6c_image_source_revision(
