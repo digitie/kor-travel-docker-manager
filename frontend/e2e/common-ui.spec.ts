@@ -44,6 +44,28 @@ test('공통 로그인·표·확인·모달·설정 행과 로그아웃', async 
   await page.getByRole('button', { name: '로그인', exact: true }).click();
   const table = page.getByRole('table', { name: '서비스 원장' });
   await expect(table).toContainText('demo-service');
+  // 펼친 256px rail 옆 1024px 화면에서 표의 최소폭이 스크롤 영역을 늘리지 않는다.
+  const originalViewport = page.viewportSize()!;
+  await page.setViewportSize({ width: 1024, height: 1000 });
+  await expect.poll(() => table.evaluate((element) => {
+    const scrollport = element.closest<HTMLElement>('[data-slot="table-container"]')!;
+    const wrapper = element.closest<HTMLElement>('.ops-table-wrap')!;
+    const bounds = scrollport.getBoundingClientRect();
+    const outer = wrapper.getBoundingClientRect();
+    return bounds.left >= outer.left - 1 && bounds.right <= outer.right + 1
+      && wrapper.scrollWidth <= wrapper.clientWidth + 1;
+  })).toBe(true);
+  const lastColumnReachable = await table.evaluate((element) => {
+    const scrollport = element.closest<HTMLElement>('[data-slot="table-container"]')!;
+    scrollport.scrollLeft = scrollport.scrollWidth;
+    const bounds = scrollport.getBoundingClientRect();
+    const last = element.querySelector('thead th:last-child')!.getBoundingClientRect();
+    const reachable = last.left >= bounds.left - 1 && last.right <= bounds.right + 1;
+    scrollport.scrollLeft = 0;
+    return reachable;
+  });
+  expect(lastColumnReachable).toBe(true);
+  await page.setViewportSize(originalViewport);
   if (testInfo.project.name === 'mobile') {
     const rail = await page.getByRole('complementary', { name: '주요 메뉴' }).boundingBox();
     expect(rail?.height).toBeLessThan(160);

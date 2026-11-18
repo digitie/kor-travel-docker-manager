@@ -798,6 +798,11 @@
 
   .ops-fleet-table {
     width: 100%;
+    min-width: 0;
+  }
+
+  /* containerClassName은 스크롤 영역이다. 최소 열 폭은 실제 표에만 둔다. */
+  .ops-fleet-table table {
     min-width: 62rem;
   }
 
@@ -1309,7 +1314,7 @@
       display: none;
     }
 
-    .ops-fleet-table {
+    .ops-fleet-table table {
       min-width: 0;
     }
 
