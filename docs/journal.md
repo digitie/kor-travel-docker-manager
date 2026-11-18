@@ -1,5 +1,9 @@
 ## 2026-11-19 — 호환 전이 의존성 정렬
 
+## 2026-11-19 — Concierge 정상 UI 빌드 재사용 선택
+
+- `KOR_TRAVEL_CONCIERGE_UI_START_MODE=prebuilt`를 공식 네 runtime 재생성 projection과 C6c에 연결했다. 기본 시작 동작은 보존하고 잘못된 모드와 정상 이미지 metadata 불일치는 재생성 전에 거부한다. backend 회귀와 [운영 문서](prod-deployment.md)를 추가했다. 프론트엔드 입력과 운영 설치·설정·서비스는 변경하지 않았다.
+
 - PostCSS override를 8.5.32로 고정해 Next 중첩 8.5.23을 제거했다. 직접 라이브러리 버전·Common 산출물·RN exact style-spec은 유지한다.
 - Node26.13.1/npm12.0.1 lock-only와 고정 Common canonical/toolchain guard를 확인했다. 전체 설치·빌드·운영 적용은 하지 않았고 정확 PR CI는 별도다.
 

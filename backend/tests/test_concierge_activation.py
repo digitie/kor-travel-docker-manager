@@ -537,3 +537,144 @@ def test_project_context_follows_the_release_symlink_without_resolving_it(
     assert context.root == link
     assert context.compose_path == link / "docker-compose.yml"
     assert context.env_path == link / ".env"
+
+
+# prebuilt는 같은 네 runtime 재생성 경로에서 UI 시작 명령만 바꾼다.
+_PREBUILT_IMAGE = "sha256:" + "a" * 64
+_PREBUILT_COMMAND = ["npm", "run", "start", "--", "-H", "0.0.0.0", "-p", "12605"]
+
+
+def _prebuilt_tree(tmp_path: Path) -> Path:
+    root, env_path = _canonical_tree(tmp_path)
+    with env_path.open("a") as stream:
+        stream.write("KOR_TRAVEL_CONCIERGE_UI_START_MODE=prebuilt\n")
+        stream.write(f"KOR_TRAVEL_CONCIERGE_UI_IMAGE={_PREBUILT_IMAGE}\n")
+    return root
+
+
+def _prebuilt_config(command, root, values):
+    projected = yaml.safe_load(Path(command[command.index("--file") + 1]).read_text())
+    assert projected["services"]["kor-travel-concierge-ui"]["command"] == _PREBUILT_COMMAND
+    resolved = json.loads(_canonical_config_result(values).stdout)
+    resolved["services"]["kor-travel-concierge-ui"]["image"] = values["KOR_TRAVEL_CONCIERGE_UI_IMAGE"]
+    return ComposeConfigResult(0, json.dumps(resolved))
+
+
+def _normal_ui_metadata():
+    return {
+        "Id": _PREBUILT_IMAGE,
+        "Config": {
+            "Cmd": ["npm", "run", "start"],
+            "WorkingDir": "/app",
+            "Labels": {
+                "org.opencontainers.image.source": "https://github.com/digitie/kor-travel-concierge.git",
+                "org.opencontainers.image.revision": "b" * 40,
+            },
+        },
+    }
+
+
+def test_prebuilt_start_recreates_same_four_roles_without_compile(tmp_path, monkeypatch):
+    root = _prebuilt_tree(tmp_path)
+    observed = []
+    metadata = _normal_ui_metadata()
+    inspections = []
+    def inspect(command, **kwargs):
+        inspections.append(command)
+        assert kwargs["cwd"] == str(root)
+        assert kwargs["env"]["KOR_TRAVEL_CONCIERGE_UI_IMAGE"] == _PREBUILT_IMAGE
+        assert command[:3] == ["docker", "image", "inspect"]
+        assert command[-1] == _PREBUILT_IMAGE
+        return activation_module.subprocess.CompletedProcess(command, 0, json.dumps(metadata))
+    monkeypatch.setattr(c6c_module, "_run_docker_query", inspect)
+    def up(command, root, values):
+        observed.append(command)
+        return 0
+    activate_canonical_concierge(project_root=root, compose_config_runner=_prebuilt_config,
+                                 compose_up_runner=up, require_root=False)
+    assert len(observed) == len(inspections) == 1
+    assert observed[0][-4:] == _RECREATED
+    assert "--no-build" in observed[0] and "--no-deps" in observed[0]
+
+
+@pytest.mark.parametrize("mode", ["", "PREBUILT", "build-and-start", "anything"])
+def test_unknown_ui_start_mode_fails_before_compose(tmp_path, mode):
+    root, env_path = _canonical_tree(tmp_path)
+    with env_path.open("a") as stream:
+        stream.write(f"KOR_TRAVEL_CONCIERGE_UI_START_MODE={mode}\n")
+    with pytest.raises((ConciergeActivationError, DeploymentContractError), match="start mode"):
+        activate_canonical_concierge(project_root=root, compose_config_runner=_must_not_run,
+                                     compose_up_runner=_must_not_run, require_root=False)
+
+
+@pytest.mark.parametrize("field", ["source", "revision", "Cmd", "WorkingDir", "Id"])
+def test_prebuilt_refuses_non_normal_image_before_recreate(tmp_path, monkeypatch, field):
+    root = _prebuilt_tree(tmp_path)
+    metadata = _normal_ui_metadata()
+    if field in ("source", "revision"):
+        metadata["Config"]["Labels"][f"org.opencontainers.image.{field}"] = "wrong"
+    elif field == "Id":
+        metadata[field] = "sha256:" + "c" * 64
+    else:
+        metadata["Config"][field] = ["node"] if field == "Cmd" else "/"
+    monkeypatch.setattr(c6c_module, "_run_docker_query", lambda command, **kwargs:
+                        activation_module.subprocess.CompletedProcess(command, 0, json.dumps(metadata)))
+    with pytest.raises((ConciergeActivationError, DeploymentContractError), match="prebuilt"):
+        activate_canonical_concierge(project_root=root, compose_config_runner=_prebuilt_config,
+                                     compose_up_runner=_must_not_run, require_root=False)
+
+
+def test_prebuilt_cannot_mask_source_command_drift(tmp_path):
+    root = _prebuilt_tree(tmp_path)
+    path = root / "docker-compose.yml"
+    path.write_text(path.read_text().replace("npm run build && exec npm run start", "npm run dev"))
+    with pytest.raises((ConciergeActivationError, DeploymentContractError), match="command"):
+        activate_canonical_concierge(project_root=root, compose_config_runner=_must_not_run,
+                                     compose_up_runner=_must_not_run, require_root=False)
+
+
+@pytest.mark.parametrize("mode", [None, "build"])
+def test_legacy_start_command_is_unchanged(mode):
+    values = {} if mode is None else {"KOR_TRAVEL_CONCIERGE_UI_START_MODE": mode}
+    assert c6c_module._concierge_ui_expected_command(values, resolved=False) == c6c_module._CONCIERGE_UI_CANONICAL_RAW_COMMAND
+    assert "npm run build && exec npm run start" in c6c_module._concierge_ui_expected_command(values, resolved=True)[2]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("image", "node:26"),
+    ("image", "sha256:" + "c" * 64),
+    ("command", ["npm", "run", "build"]),
+    ("entrypoint", ["sh", "-c"]),
+    ("working_dir", "/tmp"),
+])
+def test_prebuilt_boundary_refuses_resolved_drift(tmp_path, monkeypatch, field, value):
+    root = _prebuilt_tree(tmp_path)
+    monkeypatch.setattr(c6c_module, "_run_docker_query", _must_not_run)
+    def config(command, root, values):
+        resolved = json.loads(_prebuilt_config(command, root, values).stdout)
+        resolved["services"]["kor-travel-concierge-ui"][field] = value
+        return ComposeConfigResult(0, json.dumps(resolved))
+    with pytest.raises(ConciergeActivationError, match="C6c contract"):
+        activate_canonical_concierge(project_root=root, compose_config_runner=config,
+                                     compose_up_runner=_must_not_run, require_root=False)
+
+
+def test_prebuilt_preserves_root_auth_validation(tmp_path, monkeypatch):
+    root = _prebuilt_tree(tmp_path)
+    path = root / ".env"
+    path.write_text(path.read_text().replace("KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED='true'",
+                                           "KOR_TRAVEL_CONCIERGE_API_AUTH_ENABLED='false'"))
+    monkeypatch.setattr(c6c_module, "_run_docker_query", _must_not_run)
+    with pytest.raises(ConciergeActivationError, match="C6c contract"):
+        activate_canonical_concierge(project_root=root, compose_config_runner=_prebuilt_config,
+                                     compose_up_runner=_must_not_run, require_root=False)
+
+
+def test_prebuilt_requires_immutable_root_selector(tmp_path, monkeypatch):
+    root = _prebuilt_tree(tmp_path)
+    path = root / ".env"
+    path.write_text(path.read_text().replace(_PREBUILT_IMAGE, "node:26"))
+    monkeypatch.setattr(c6c_module, "_run_docker_query", _must_not_run)
+    with pytest.raises(ConciergeActivationError, match="immutable sha256"):
+        activate_canonical_concierge(project_root=root, compose_config_runner=_prebuilt_config,
+                                     compose_up_runner=_must_not_run, require_root=False)

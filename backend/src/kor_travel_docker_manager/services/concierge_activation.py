@@ -28,8 +28,11 @@ from dotenv import dotenv_values
 from kor_travel_docker_manager.services.c6c_deployment import (
     ComposeCandidateContractError,
     DeploymentContractError,
+    _concierge_ui_expected_command,
     c6c_deployment_lock,
+    concierge_ui_start_mode,
     manager_mutation_lock_path,
+    validate_concierge_prebuilt_ui_image,
     validate_concierge_ui_canonical_compose_boundary,
 )
 from kor_travel_docker_manager.services.compose_service import get_project_root
@@ -255,7 +258,7 @@ def _activate_canonical_concierge_locked(
     config_runner: ComposeConfigRunner,
     up_runner: ComposeUpRunner,
 ) -> None:
-    with _canonical_concierge_compose_projection(compose_path) as (
+    with _canonical_concierge_compose_projection(compose_path, environment=environment) as (
         projection_path,
         raw_document,
     ):
@@ -267,6 +270,11 @@ def _activate_canonical_concierge_locked(
             environment,
             config_runner,
         )
+        if concierge_ui_start_mode(environment) == "prebuilt":
+            validate_concierge_prebuilt_ui_image(
+                environment["KOR_TRAVEL_CONCIERGE_UI_IMAGE"],
+                cwd=str(project_root), env=_canonical_compose_environment(environment),
+            )
         command = [
             "docker",
             "compose",
@@ -290,7 +298,7 @@ def _activate_canonical_concierge_locked(
 
 @contextmanager
 def _canonical_concierge_compose_projection(
-    compose_path: Path,
+    compose_path: Path, *, environment: Mapping[str, str] | None = None,
 ) -> Iterator[tuple[Path, Mapping[str, Any]]]:
     """Concierge 재생성에 필요한 trusted Compose 부분만 일시적으로 고정한다.
 
@@ -308,6 +316,13 @@ def _canonical_concierge_compose_projection(
     if not isinstance(raw_document, Mapping):
         raise ConciergeActivationError("canonical Compose is invalid")
     projection = _concierge_compose_projection_document(raw_document)
+    values = environment if environment is not None else {}
+    if concierge_ui_start_mode(values) == "prebuilt":
+        ui = projection["services"]["kor-travel-concierge-ui"]
+        # 정본 명령의 변조를 모드 선택으로 덮어 숨기지 않는다.
+        if ui.get("command") != list(_concierge_ui_expected_command({}, resolved=False)):
+            raise ConciergeActivationError("canonical Concierge UI source command is invalid")
+        ui["command"] = list(_concierge_ui_expected_command(values, resolved=False))
     try:
         payload = yaml.safe_dump(projection, sort_keys=False).encode("utf-8")
     except yaml.YAMLError as exc:

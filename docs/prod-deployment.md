@@ -802,7 +802,8 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:12905/   # 200
 `kor-travel-concierge-ui`는 canonical Compose에서 프로덕션 빌드(`next build` + `next start`)로만 구동한다.
 dev 모드는 원격/리버스 프록시 접속에서 HMR WebSocket 실패와 hydration 정지를 만들 수 있어 운영 경계에서
 허용하지 않는다. 컨테이너 시작은 password hash·session secret·proxy secret이 비었거나 secret 길이가 짧으면
-fail-close하고, 통과할 때만 build 뒤 `next start`로 전환한다.
+fail-close하고, 기본 `build` 모드는 통과할 때만 build 뒤 `next start`로 전환한다.
+공식 재생성 경로에서만 아래의 `prebuilt` 모드를 명시해 이미지에 들어 있는 정상 빌드를 재사용할 수 있다.
 
 Manager의 C6c는 raw Compose와 resolved Compose 양쪽에서 다음을 강제한다.
 
@@ -811,7 +812,8 @@ Manager의 C6c는 raw Compose와 resolved Compose 양쪽에서 다음을 강제�
 - BFF `BACKEND_ORIGIN`은 canonical loopback API 주소에 고정하며 public API base는 빈 same-origin BFF다.
 - API와 UI는 raw Compose의 `${KTDM_DOCKER_NETWORK_MODE:-host}` 및 resolved `host` network를 같이 유지한다.
   API는 loopback BFF가 요구하는 `ktc.cli api --host 0.0.0.0 --port 12601`, UI는 auth guard 뒤
-  `npm run build && exec npm run start` production command와 `12605` port를 정확히 유지해야 한다.
+   기본 `build`의 `npm run build && exec npm run start` 또는 명시한 `prebuilt`의 고정
+   `npm run start -- -H 0.0.0.0 -p 12605` 명령을 유지한다. 두 모드 모두 `12605` port다.
 - API와 UI의 `KTC_ADMIN_PROXY_SECRET`은 단 하나의 Manager root source
   `KOR_TRAVEL_CONCIERGE_UI_ADMIN_PROXY_SECRET`를 같이 사용한다.
 - UI credential source는 Manager root `.env`의 `KOR_TRAVEL_CONCIERGE_UI_*`와
@@ -847,6 +849,22 @@ sudo -n /opt/kor-travel-docker-manager/backend/.venv/bin/ktdctl \
   없으면 운영 source 디렉터리에서 조용히 빌드하지 않는다. projection은 매번 만들고 즉시 지운다.
 - 이미지는 root `.env`의 `KOR_TRAVEL_CONCIERGE_{API,MCP,DAGSTER,UI}_IMAGE`가 정한다. rollback은 이 넷을 직전
   이미지로 바꾼 뒤 같은 명령을 실행한다(Concierge `docs/dagster-adoption.md` "장애와 rollback").
+
+이미 Dockerfile 정상 빌드가 끝난 UI는 root `.env`에
+`KOR_TRAVEL_CONCIERGE_UI_START_MODE=prebuilt`를 명시하고
+`KOR_TRAVEL_CONCIERGE_UI_IMAGE=sha256:<64자리 이미지 ID>`로 선택한다. 기본값은 `build`이며 빈 값·오타·그 외 값은 거부한다.
+공식 projection이 정본의 기존 명령을 확인한 뒤 shell 없이 고정 npm 시작 argv를 렌더링한다.
+C6c는 raw/resolved 양쪽의 모드별 명령·기존 root 인증/allowlist·loopback/host 경계를 그대로 검사한다.
+재생성 전 같은 G 아래에서 선택한 실제 이미지 ID와 OCI source
+`https://github.com/digitie/kor-travel-concierge.git`, 40자리 소문자 revision,
+정상 이미지 기본 `Cmd=["npm","run","start"]`, `WorkingDir=/app`를 확인한다.
+태그·일반 Node 이미지·다른 명령/workdir/entrypoint override는 거부한다.
+이 metadata 검사는 `.next` 빌드 성공이나 browser용 공개 입력의 일치를 증명하지 않으므로,
+운영자는 선택 revision의 정상 빌드·BUILD_ID·공개 입력·native 부품 검증을 먼저 마쳐야 한다.
+시작 시 재컴파일하지 않아 공개 입력을 바꾸려면 정상 이미지를 새로 빌드해야 한다.
+API/MCP/Dagster 이미지 선택은 그대로 유지할 수 있지만 재생성 범위는 여전히 네 runtime 전체다.
+별도 override·UI 단독 적용·자동 이미지 생성/retag는 없고, `build`로 되돌리면 기존 시작 동작을 쓴다.
+이 옵션을 사용하려면 해당 SDK 소스가 포함된 trusted Manager를 먼저 설치한다.
 
 수동 `docker compose`·일반 `ensure`로 대체하지 않는다. 성공 뒤 실제 공개 브라우저에서 Concierge 로그인→BFF 동작→로그아웃을 검증한다. 이 재생성은 기본 runtime인 Dagster code server를 사용한다(옛 APScheduler `legacy-scheduler` profile은 2026-11-02에 지웠다). backend 전환은 먼저 기존 실행자를 중지·drain하고 Concierge의 `docs/dagster-adoption.md`에 있는 generation CLI로 수행한다.
 
