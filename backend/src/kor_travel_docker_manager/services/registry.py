@@ -1163,6 +1163,21 @@ def weather_core_candidate_for_target(target: str, config: Mapping[str, Any]) ->
     return "main", Path(choice["project_lease"])
 
 
+def geo_core_candidate_for_target(target: str, config: Mapping[str, Any]) -> tuple[str, Path]:
+    """Geo의 기존 main 중 API/CS만 선택하며 UI는 보존한다."""
+    choice = config.get("targets", {}).get(target, {}).get("core_candidate")
+    if (target != "geo" or choice != {
+            "group": "main",
+            "project_lease": "/var/lib/kor-travel-docker-manager/geo-core-deploy.lock"}):
+        raise TargetsConfigError("Geo API/CS의 명시한 core 후보만 지원합니다")
+    group = config.get("service_releases", {}).get("geo", {}).get("groups", {}).get("main", {})
+    if (set(group.get("runtime_services", [])) != {
+            "kor-travel-geo-api", "geo-dagster-code-server", "kor-travel-geo-ui"}
+            or group.get("oneshot_services")):
+        raise TargetsConfigError("Geo main의 기존 API/CS/UI 역할이 다릅니다")
+    return "main", Path(choice["project_lease"])
+
+
 def _component_ui_choice(target: str, config: Mapping[str, Any],
                          component: str | None = None) -> dict[str, str | None]:
     """기본 UI는 target 역할에서, 추가 UI는 기존 release 소유 runtime에서 유도한다."""
@@ -1326,6 +1341,8 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
         if "core_candidate" in spec:
             if target_id == "weather":
                 weather_core_candidate_for_target(target_id, config)
+            elif target_id == "geo":
+                geo_core_candidate_for_target(target_id, config)
             else:
                 transport_core_candidate_for_target(target_id, config)
         if "ui_candidate" in spec:

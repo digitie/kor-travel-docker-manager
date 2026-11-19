@@ -138,8 +138,9 @@ def _paired_pin_baseline(config: dict, records: list[dict]) -> dict:
     return {"release": payload, "registry_files": _protected(present)}
 
 
-def _source(source: Path, sha: str, url: str) -> tuple[str, list[str]]:
-    candidate._merged_source(source, sha, "transport", canonical_url=url)
+def _source(source: Path, sha: str, url: str, *, service: str = "transport",
+            migration_path: str = "backend/alembic/versions") -> tuple[str, list[str]]:
+    candidate._merged_source(source, sha, service, canonical_url=url)
     if (
         _git(source, "rev-parse", "HEAD").strip() != sha
         or _git(source, "status", "--porcelain", "--untracked-files=normal").strip()
@@ -147,7 +148,7 @@ def _source(source: Path, sha: str, url: str) -> tuple[str, list[str]]:
         raise ServiceReleaseError("core 소스는 승인 M의 clean HEAD여야 합니다")
     tree = _git(source, "rev-parse", sha + "^{tree}").strip()
     paths = _git(
-        source, "ls-tree", "-r", "--name-only", sha, "backend/alembic/versions"
+        source, "ls-tree", "-r", "--name-only", sha, migration_path
     ).splitlines()
     revisions, parents = set(), set()
     for path in paths:
@@ -515,7 +516,8 @@ def _mounts(record: dict) -> list:
 
 
 def _mount_admission(
-    definition: dict, resolved: dict, record: dict, image: dict, project: str
+    definition: dict, resolved: dict, record: dict, image: dict, project: str,
+    *, state_path: str | None = state.STATE_PATH,
 ) -> None:
     actual = _mounts(record)
     expected = []
@@ -555,9 +557,9 @@ def _mount_admission(
     for mount in actual:
         dest = mount["Destination"]
         if (
-            dest == state.STATE_PATH
-            or state.STATE_PATH.startswith(dest.rstrip("/") + "/")
-            or dest.startswith(state.STATE_PATH + "/")
+            state_path is not None and (dest == state_path
+            or state_path.startswith(dest.rstrip("/") + "/")
+            or dest.startswith(state_path + "/"))
         ):
             raise ServiceReleaseError("고정 state 경로는 writable layer여야 합니다")
 
