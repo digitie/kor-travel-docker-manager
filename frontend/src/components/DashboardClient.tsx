@@ -1809,7 +1809,7 @@ function FleetLedger({ model }: { model: DashboardModel }) {
                                 type="button"
                                 onClick={() => handleAction(container.id, 'start')}
                                 disabled={container.remote || container.observed_only || actionMutation.isPending || container.status === 'running'}
-                                className="ops-button text-ok border-ok hover:border-ok hover:bg-ok hover:text-card disabled:hover:bg-card disabled:hover:text-ok"
+                                className="ops-button text-ok border-ok hover:border-ok hover:bg-ok hover:text-card"
                                 title="컨테이너 가동"
                               >
                                 <Play className="w-3 h-3" />
@@ -1820,7 +1820,7 @@ function FleetLedger({ model }: { model: DashboardModel }) {
                                 type="button"
                                 onClick={() => handleAction(container.id, 'stop')}
                                 disabled={container.remote || container.observed_only || actionMutation.isPending || container.status !== 'running'}
-                                className="ops-button ops-button--danger text-danger border-danger disabled:hover:bg-card disabled:hover:text-danger"
+                                className="ops-button ops-button--danger text-danger border-danger"
                                 title="컨테이너 정지"
                               >
                                 <Square className="w-3 h-3" />

@@ -16,7 +16,10 @@ export default function OpsDialog({ onClose, children, className, onCloseAutoFoc
       className={panelClass}
       onCloseAutoFocus={(event) => {
         onCloseAutoFocus?.(event);
-        if (!event.defaultPrevented && returnFocus?.isConnected) { event.preventDefault(); returnFocus.focus(); }
+        if (event.defaultPrevented) return;
+        // 호출 요소가 사라졌으면(닫힌 모바일 drawer의 메뉴 항목 등) 셸의 본문 랜드마크로 돌려보낸다.
+        const target = returnFocus?.isConnected ? returnFocus : document.querySelector<HTMLElement>('main[tabindex]');
+        if (target) { event.preventDefault(); target.focus(); }
       }}>
       <DialogTitle className="sr-only">{props['aria-label'] ?? '운영 도구'}</DialogTitle>
       {children}

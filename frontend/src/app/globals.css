@@ -118,17 +118,11 @@
     font-weight: 500;
   }
 
-  /* 버튼 클래스는 크기·글꼴만 정한다. 색·테두리·hover·active·disabled·focus 상태는 공통
-     Button 변형(outline·default·destructive·ghost)이 한 곳에서 그린다(FS-7.8). 여기서 상태를
-     덧대면 같은 버튼에 두 상태 규칙이 겹쳐 테두리 이중화·2px 이동이 생긴다. */
+  /* 버튼 클래스는 공통 Button 크기 위에 최소 높이만 더한다. 색·테두리·hover·active·disabled·
+     focus 상태는 공통 Button 변형(outline·default·destructive·ghost)이 한 곳에서 그린다(FS-7.8).
+     여기서 상태를 덧대면 같은 버튼에 두 상태 규칙이 겹쳐 테두리 이중화·2px 이동이 생긴다. */
   .ops-button {
     min-height: 2.25rem;
-    gap: 0.5rem;
-    border-radius: var(--radius-card);
-    padding: 0 0.875rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-    line-height: 1;
   }
 
   /* Dashboard surfaces */
@@ -583,8 +577,6 @@
     width: 2.25rem;
     min-height: 2.25rem;
     flex: 0 0 auto;
-    border-radius: var(--radius-card);
-    padding: 0;
     color: var(--color-secondary);
   }
 
@@ -761,7 +753,18 @@
     .ops-button--topbar {
       width: 2.75rem;
       min-height: 2.75rem;
-      padding-inline: 0;
+    }
+
+    /* 좁은 폭 상단 바는 제목 한 줄 아래에 페이지 설명을 작게 둔다(제목 옆에는 들어갈 폭이 없다). */
+    [data-slot="admin-shell-heading"] {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0;
+    }
+
+    [data-slot="admin-shell-description"] {
+      flex: none;
+      width: 100%;
     }
 
     .ops-button--topbar .ops-button__label {

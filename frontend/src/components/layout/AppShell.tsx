@@ -150,7 +150,9 @@ export default function AppShell({
   const pageTitle = title ?? homeLabel ?? '';
 
   useEffect(() => {
+    const previous = document.title;
     document.title = formatAdminTitle(APP_AREA, pageTitle);
+    return () => { document.title = previous; };
   }, [pageTitle]);
 
   return (

@@ -23,6 +23,9 @@ test('관리자 셸: 한 줄 "영역 - 페이지" 상단 바와 좌측 rail·dra
   await expect(description).toHaveText('Docker 컨테이너 상태와 조작을 한 화면에서 확인합니다.');
   expect(Number.parseFloat(await description.evaluate((node) => getComputedStyle(node).fontSize)))
     .toBeLessThan(Number.parseFloat(await heading.evaluate((node) => getComputedStyle(node).fontSize)));
+  // 설명은 말줄임 한 글자가 아니라 읽을 수 있는 폭으로 보인다(PC는 제목 옆, 좁은 폭은 제목 아래).
+  await expect(description).toBeVisible();
+  expect((await description.boundingBox())!.width).toBeGreaterThan(160);
   await expect(page.getByRole('heading', { level: 1 })).toHaveCount(1);
   const headerBox = (await header.boundingBox())!;
   expect(headerBox.height).toBeLessThanOrEqual(56);
@@ -48,9 +51,9 @@ test('관리자 셸: 한 줄 "영역 - 페이지" 상단 바와 좌측 rail·dra
     await page.screenshot({ path: testInfo.outputPath('shell-mobile-closed.png') });
 
     const drawer = await openMenu(page);
-    const box = (await drawer.boundingBox())!;
-    expect(box.x).toBeLessThanOrEqual(1);
-    expect(box.width).toBeLessThanOrEqual(280);
+    // 좌측에서 들어와 화면 왼쪽 끝에 붙는다(애니메이션 종료까지 기다린다).
+    await expect.poll(async () => Math.round((await drawer.boundingBox())!.x)).toBe(0);
+    expect((await drawer.boundingBox())!.width).toBeLessThanOrEqual(280);
     await expect(drawer.getByRole('link', { name: '대시보드' })).toHaveAttribute('aria-current', 'page');
     await expect(drawer.getByRole('button', { name: '로그아웃' })).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('shell-mobile-drawer.png') });
@@ -69,6 +72,8 @@ test('관리자 셸: 한 줄 "영역 - 페이지" 상단 바와 좌측 rail·dra
     await expect.poll(() => backups.evaluate((node) => node.contains(document.activeElement))).toBe(true);
     await page.keyboard.press('Escape');
     await expect(backups).toHaveCount(0);
+    // 호출한 drawer 항목은 사라졌으므로 포커스는 body가 아니라 본문 랜드마크로 돌아온다.
+    await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe('MAIN');
   } else {
     await expect(menuButton).toBeHidden();
     await expect(rail).toBeVisible();
