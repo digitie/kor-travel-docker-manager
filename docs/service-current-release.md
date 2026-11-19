@@ -463,3 +463,47 @@ ktdctl service-release apply-core-candidate geo \
 같은 입력의 `--confirm`만 실제 교체다. 외부 controller는 SDK CLI 호출 전에 자신의 G/lease를
 놓아야 한다. 기존 SDK621 진행 스코프는 그대로 두며 새 merged SDK 설치와 실제 normal/native
 이미지 검증 전에는 이 소스의 로컬 대역 테스트를 운영 배포 성공으로 해석하지 않는다.
+
+
+## Pinvi API·code-server 정상 후보
+
+`ktdctl service-release apply-core-candidate pinvi`는 등록된 core의 `pinvi-api`와
+`pinvi-dagster-code-server`만 선택한다. 기존 ui 그룹과 Compose 좌표를 공유하며 Map,
+Pinvi web, 공유 Dagster webserver/daemon, PostgreSQL은 재생성하지 않는다. 새로운
+일반 재구축 기계가 아니라 기존 core의 source·receipt·G·lease·quiet·환경 보존·frozen
+Compose·health·rollback primitive를 사용하는 고정 adapter다.
+
+호출은 기존 `--source-clone`, `--source-sha`, `--build-receipt`, `--build-sha256`,
+`--receipt`, `--sha256`, `--dry-run` 또는 `--confirm`을 사용한다. Source는 canonical
+Pinvi main의 merged commit인 clean HEAD여야 한다. Normal receipt는
+`kind=pinvi-normal-build`, `output=docker`, `architecture=amd64`의 실제 API/CS 두
+이미지와 source/tree/COPY 출처를 담는다. Native는 각 실제 uv.lock의 사용 축과 Common
+Git 선언에 맞는 설치 버전·출처, 이미지 ID와 미사용 psycopg3 부재를 증명한다. Pydantic core나
+psycopg3를 새 직접 의존성으로 강제하지 않는다. PINVI_SOURCE_REVISION만 승인한 M으로
+전진하고 나머지 실제 환경은 보존한다.
+
+프로젝트 lease는 고정한 `/var/lib/kor-travel-docker-manager/pinvi-core-deploy.lock`이다.
+최초 operator staging에서 기존 lease 규약대로 root 소유 0600 파일을 G 아래 준비한다.
+SDK는 없는 lease를 임의로 만들지 않으며 경합·교체된 inode·불안전한 경로를 거부한다.
+Pinvi instigator의 원래 상태 capture·선택 pause·자연 drain·정확 복원은 외부 operator가
+소유한다. SDK는 실제 quiet와 source CS identity를 매번 확인하고,
+`app.alembic_version`이 승인한 단일 head와 같을 때만 진행한다. DB migration은 없다.
+
+기존 ui-only CURRENT는 첫 core 후보 준비와 dry-run에서 그대로 읽으며 새 CURRENT를
+미리 만들지 않는다. 두 실제 이미지의 health가 확인된 뒤에만 기존 `_publish`가
+ui+core의 관측한 이미지를 발행한다. Web 이미지의 a049 같은 원래 source는 이미지별
+metadata에 남는다. 역할별 source가 다르면 공통 `source_sha`는 기존 v1 규칙대로 null이다.
+이를 새 M 하나로 relabel하거나 과거 committed pair·pin·deploy-status를 고쳐 쓰지 않는다.
+기존 paired-current observer는 건강하고 metadata가 맞는 ui-only 또는 ui+core Pinvi를
+관측하므로 이후 Map/Pinvi UI 후보도 새 core의 실제 소유 이미지를 보존한다.
+
+실패 시 교체한 Pinvi 역할만 captured 이미지·환경으로 복원한다. CURRENT 발행 전 실패는
+원래 ui-only pointer를 보존한다. 발행 직후 실패라면 실제 복원과 health/schema 확인 뒤
+기존 `_publish`로 원래 소유 범위를 다시 기록한다. 새 run/worker가 생긴 CS는 강제 교체하지
+않고 외부 자연 drain으로 인계한다. 비선택 runtime이나 Map CURRENT 부재가 바뀌면 거부하며
+그 변경을 대신 복원하거나 pair 기록을 덮어쓰지 않는다. 전체 `pinvi-pair rebuild-pinned`는
+별도 운영 경로로 그대로 남고 이 두 역할 후보와 같다고 보지 않는다.
+
+이 source 변경은 기존 동결 SDK622 작업을 바꾸지 않는다. 새 merged pure wheel을 정상
+trusted installer로 설치하고 표준 pip check·source/module 읽기를 확인한 뒤 사용한다.
+진행 중 Weather/Geo622 outer 작업을 덮는 root 갱신이나 일부 모듈 overlay는 사용하지 않는다.

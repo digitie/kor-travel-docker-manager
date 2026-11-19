@@ -89,6 +89,16 @@ def _profile(service: str, declaration: dict[str, Any], entries: list[str]) -> d
 
 
 def _check_roles(manifest: dict[str, Any], declaration: dict[str, Any]) -> None:
+    # 최초 core 배포 전의 실제 ui-only CURRENT는 그대로 읽는다. 새 역할을 발행하지 않는다.
+    if (manifest.get('service') == 'pinvi' and set(manifest['groups']) == {'ui'}
+            and set(declaration['groups']) == {'ui', 'core'}):
+        core_group, ui_group = declaration['groups']['core'], declaration['groups']['ui']
+        if (set(core_group['runtime_services']) != {'pinvi-api', 'pinvi-dagster-code-server'}
+                or core_group['oneshot_services'] or ui_group['runtime_services'] != ['pinvi-web']
+                or any(core_group[k] != ui_group[k] for k in
+                       ('project', 'working_dir', 'config_files', 'env_file'))):
+            raise ServiceReleaseError('Pinvi 최초 core catalog의 역할·좌표가 다릅니다')
+        declaration = {**declaration, 'groups': {'ui': ui_group}}
     if set(manifest['groups']) != set(declaration['groups']):
         raise ServiceReleaseError('현재 release와 catalog의 Compose 그룹이 다릅니다')
     for key, group in declaration['groups'].items():
@@ -188,6 +198,11 @@ def _run(args: argparse.Namespace) -> int:
                     apply_geo_core_candidate,
                 )
                 apply_core = apply_geo_core_candidate
+            elif args.service == 'pinvi':
+                from kor_travel_docker_manager.services.service_release_pinvi_candidate import (
+                    apply_pinvi_core_candidate,
+                )
+                apply_core = apply_pinvi_core_candidate
             payload = apply_core(
                 args.service, root=root, config=config, source_sha=args.source_sha,
                 source_clone=Path(args.source_clone), receipt_path=Path(args.receipt),

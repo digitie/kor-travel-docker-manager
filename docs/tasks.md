@@ -1,3 +1,9 @@
+## 2026-11-20 — Pinvi API·CS core 후보 adapter
+
+- 기존 apply-core-candidate에 Pinvi 두 역할을 추가하고, ui-only CURRENT를 dry-run에서 보존한 뒤 실제 health 뒤만 ui+core를 발행한다. Map·UI·공유 daemon과 과거 pair/pin 기록은 유지한다.
+- 새 집중50건, 기존 Geo/UI/CLI 회귀와 Transport/Weather/registry/state 회귀를 검증했다. 실제 root/SDK 적용은 새 merged wheel의 정상 설치와 기존622 작업 종료 뒤다.
+- 계약·최초 lease 준비·실패 복구는 docs/service-current-release.md의 Pinvi 절을 따른다. Backend 의존성·frontend 산출물·워크플로 순서는 바꾸지 않는다.
+
 ## 2026-11-20 — Manager backend 선택 애플리케이션 스택
 
 - [x] 직접 사용 app 축과 Pydantic core 짝 exact 선언, 정상 설치의 pip check/source 버전 readback, 기존 offline wheelhouse 소비 계획.

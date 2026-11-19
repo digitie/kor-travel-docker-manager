@@ -266,7 +266,14 @@ def _candidate_plan(service: str, group: str, *, root: Path,
             except TargetsConfigError as exc:
                 raise ServiceReleaseError(str(exc)) from exc
             ui = declaration["groups"].get("ui", {})
-            if (set(declaration["groups"]) != {"ui"}
+            allowed_groups = {"ui"}
+            if set(declaration["groups"]) == {"ui", "core"}:
+                from kor_travel_docker_manager.services.registry import (
+                    pinvi_core_candidate_for_target,
+                )
+                pinvi_core_candidate_for_target("pinvi", config)
+                allowed_groups.add("core")
+            if (set(declaration["groups"]) != allowed_groups
                     or ui.get("runtime_services") != [runtime] or ui.get("oneshot_services")
                     or runtime != runtime_topology().service("pinvi_web")
                     or url != CANONICAL_RUNTIME_SOURCE_URLS["pinvi"]):
@@ -362,18 +369,20 @@ def _paired_current_hooks(plan: dict[str, Any], manifests: dict[str, Any], clien
     """양 방향에서 검증된 비선택 UI current만 pair 관측 기준에 반영한다."""
     topology = runtime_topology()
     current_images = {}
-    for service, slot in [("map", "map_ui"), ("pinvi", "pinvi_web")]:
+    for service, slots in [("map", ("map_ui",)),
+                           ("pinvi", ("pinvi_web", "pinvi_api", "pinvi_dagster"))]:
         manifest = manifests.get(service)
         if manifest is None:
             continue
-        runtime = topology.service(slot)
-        if (set(manifest["images"]) != {runtime}
+        roles = {topology.service(slot) for slot in slots}
+        allowed = [roles] if service == "map" else [{topology.service("pinvi_web")}, roles]
+        if (set(manifest["images"]) not in allowed
                 or release.verify_release_manifest(manifest, client=client)["result"] != "healthy"):
-            raise ServiceReleaseError("검증된 단일 UI component current가 필요합니다")
-        image = manifest["images"][runtime]
-        if release._metadata(client, image["id"]) != image:
-            raise ServiceReleaseError("component current source metadata와 immutable 이미지가 다릅니다")
-        current_images[runtime] = image["id"]
+            raise ServiceReleaseError("검증된 UI 또는 Pinvi UI/core current가 필요합니다")
+        for runtime, image in manifest["images"].items():
+            if release._metadata(client, image["id"]) != image:
+                raise ServiceReleaseError("component current source metadata와 immutable 이미지가 다릅니다")
+            current_images[runtime] = image["id"]
     runtime = plan["runtime_services"][0]
     # 선택 UI의 최초 receipt 일치 검사는 덮어쓰지 않는다.
     effective = SimpleNamespace(images={**baseline[3].images,
