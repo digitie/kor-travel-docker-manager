@@ -1,5 +1,12 @@
 # CLAUDE.md — 프로젝트 컨텍스트
 
+## 2026-11-20 — Pinvi API·CS core 후보 adapter
+
+- 기존 apply-core-candidate에 Pinvi 두 역할을 추가하고, ui-only CURRENT를 dry-run에서 보존한 뒤 실제 health 뒤만 ui+core를 발행한다. Map·UI·공유 daemon과 과거 pair/pin 기록은 유지한다.
+- 새 집중50건, 기존 Geo/UI/CLI 회귀와 Transport/Weather/registry/state 회귀를 검증했다. 실제 root/SDK 적용은 새 merged wheel의 정상 설치와 기존622 작업 종료 뒤다.
+- 계약·최초 lease 준비·실패 복구는 docs/service-current-release.md의 Pinvi 절을 따른다. Backend 의존성·frontend 산출물·워크플로 순서는 바꾸지 않는다.
+
+
 ## 2026-11-20 backend app 스택 source 후속
 
 - backend/pyproject.toml exact 선언과 기존 trusted installer의 표준 pip check·설치 버전 읽기를 추가한다. fresh/cached 모두 검사하며 미사용 driver/Common·새 lock은 추가하지 않는다.

@@ -1178,6 +1178,25 @@ def geo_core_candidate_for_target(target: str, config: Mapping[str, Any]) -> tup
     return "main", Path(choice["project_lease"])
 
 
+def pinvi_core_candidate_for_target(target: str, config: Mapping[str, Any]) -> tuple[str, Path]:
+    """Pinvi API/CS만 선택하고 기존 ui와 같은 Compose 좌표를 사용한다."""
+    choice = config.get("targets", {}).get(target, {}).get("core_candidate")
+    if (target != "pinvi" or choice != {
+            "group": "core",
+            "project_lease": "/var/lib/kor-travel-docker-manager/pinvi-core-deploy.lock"}):
+        raise TargetsConfigError("Pinvi API/CS의 명시한 core 후보만 지원합니다")
+    groups = config.get("service_releases", {}).get("pinvi", {}).get("groups", {})
+    ui, group = groups.get("ui", {}), groups.get("core", {})
+    if (set(groups) != {"ui", "core"}
+            or set(group.get("runtime_services", [])) != {"pinvi-api", "pinvi-dagster-code-server"}
+            or group.get("oneshot_services") or ui.get("runtime_services") != ["pinvi-web"]
+            or ui.get("oneshot_services")
+            or any(group.get(k) != ui.get(k) for k in
+                   ("project", "working_dir", "config_files", "env_file"))):
+        raise TargetsConfigError("Pinvi core와 ui의 역할·Compose 좌표가 다릅니다")
+    return "core", Path(choice["project_lease"])
+
+
 def _component_ui_choice(target: str, config: Mapping[str, Any],
                          component: str | None = None) -> dict[str, str | None]:
     """기본 UI는 target 역할에서, 추가 UI는 기존 release 소유 runtime에서 유도한다."""
@@ -1343,6 +1362,8 @@ def _validate_external_wiring(config: dict[str, Any], *, label: str) -> None:
                 weather_core_candidate_for_target(target_id, config)
             elif target_id == "geo":
                 geo_core_candidate_for_target(target_id, config)
+            elif target_id == "pinvi":
+                pinvi_core_candidate_for_target(target_id, config)
             else:
                 transport_core_candidate_for_target(target_id, config)
         if "ui_candidate" in spec:
