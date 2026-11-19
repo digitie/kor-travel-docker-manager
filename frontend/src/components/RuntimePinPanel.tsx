@@ -134,7 +134,7 @@ function PendingRequestCard({
             : applyCommand(request.revision)
         }
       />
-      <Button variant="ghost"
+      <Button variant="outline"
         className="ops-button mt-3"
         disabled={cancelPending}
         onClick={onCancel}
@@ -275,7 +275,7 @@ export default function RuntimePinPanel(props: Parameters<typeof useRuntimePinPa
 
       <div className="overflow-y-auto p-6 space-y-6">
         <div className="flex justify-end">
-          <Button variant="ghost"
+          <Button variant="outline"
             className="ops-button"
             disabled={isFetching}
             onClick={() => void refetch()}
@@ -458,7 +458,7 @@ function PinChangeForm({ model }: { model: RuntimePinPanelModel }) {
                     기록되므로 비밀번호나 토큰을 적지 마세요.
                   </p>
 
-                  <Button variant="ghost"
+                  <Button variant="outline"
                     className="ops-button"
                     disabled={!revisionValid || !reasonValid || createRequest.isPending}
                     type="submit"

@@ -3,6 +3,14 @@
 - 기존 SDK618 환경 callback을 사용해 Transport `common()`의 paired pin·비선택·세 ENV 비교에 같은 새 전체 관측을 공유한다. public 입력·lease·pointer·Compose 환경 검사와 다음 경계의 새 관측은 보존한다.
 - 대역 Engine과 실제 Docker SDK collection으로 54개 경계의 수정 전5 list/270 inspect를 재현하고 한 번의 전체 관측 예산·다음 경계 변경 거부 회귀를 추가했다. 실제 운영 지연 단축은 미측정이며 기존 SDK618 스코프·root·진행 중 앱 적용을 변경하지 않는다.
 
+
+## 2026-11-19 — @kor-travel/ui 0.2.3 관리자 셸 채택과 버튼 상태 정리(FS-7.8)
+
+- common PR #71(`d644632ea9eaf2f6b6baa49305d65fae5bbc0bd4`) catalog의 ui 0.2.3·tokens 0.1.4 pack(artifact 14500111373, SRI 일치)을 vendor·원장·lock·정책 `uses/common-ref`에 반영했다. toast는 계속 쓰지 않는다. lock은 Node 26.13.1/npm 12.0.1 컨테이너에서 재생성했다.
+- `components/layout/AppShell.tsx`를 공통 `AdminShell`+`AppMenu`로 교체했다. 1024px 이상은 좌측 rail(접힘 4rem), 미만은 상단 바 메뉴 버튼 → 좌측 drawer다. 상단 바는 한 줄 "Docker Manager - 대시보드"(문서 제목 동일)이고 앱 부제·eyebrow는 없앴다. 페이지 설명은 PC에선 제목 옆, 좁은 폭에선 제목 아래에 작게 둔다. 모바일 상단 동작은 아이콘 버튼 두 개다. 접힘 키의 기존 "1"/"0" 형식을 이어 쓴다. 옛 `.app-shell[data-sidebar-collapsed]`·rail·page-head CSS와 전역 `[data-slot="app-menu"]` 재배치 규칙을 지웠다.
+- 버튼 테두리 문제 원인: 모든 `.ops-button`이 공통 `Button variant="ghost"` 위에 테두리·hover·active 규칙을 덧대 두 상태 규칙이 겹쳤다. 누름 때 `.ops-button:active`의 `transform: translateY(1px)`와 Button의 `translate-y-px`가 합쳐 2px 이동했고, ghost의 `border-transparent`·`hover:bg-muted`가 `.ops-button` 테두리·primary 배경을 덮어 hover 때 primary가 회색이 됐다. 변형을 outline·default·destructive로 옮기고 `.ops-*` CSS는 최소 높이만 남겼다. base 층은 `font: inherit`·`touch-action`과 키보드 포커스 outline 하나(`--kt-focus`, 2px/offset 2px)만 둔다. 입력 포커스 규칙은 유지했다.
+- drawer 메뉴 항목에서 연 대화상자를 닫으면 호출 요소가 사라져 포커스가 body로 떨어지던 것을 본문 랜드마크로 돌린다(`OpsDialog`).
+- e2e `admin-shell.spec.ts`(셸 제목·설명·rail 접힘 저장·drawer 이동/동작·포커스 복귀, 변형별 rest/hover/active/Tab 포커스/disabled 계산값 단언과 1280·390px 스크린샷)를 추가하고 공통 합성 백엔드를 `e2e/mock-backend.ts`로 뺐다. 상세 모달 Tabs의 포커스 링(ring 3px+outline 1px)은 공통 `TabsTrigger` 소관이라 common에 보고한다. 설치·rebind는 하지 않았다.
 ## 2026-11-19 — Weather 후보 공통 경계의 반복 관측 제거
 
 - `common()` 한 번 안의 migration·pin·비선택·세 환경 검사를 같은 새 전체 관측으로 수행한다. 경계 사이 재사용 없이 환경 callback의 인자 없는 새 관측과 identity·source·보호 비교를 유지한다.

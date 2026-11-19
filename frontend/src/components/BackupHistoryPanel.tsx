@@ -490,7 +490,7 @@ function BackupControls({ model }: { model: BackupHistoryPanelModel }) {
   return (        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <div className="flex flex-wrap gap-2">
             {roleOptions.map((option) => (
-              <Button variant="ghost"
+              <Button variant={role === option.value ? 'default' : 'outline'}
                 className={`inline-flex items-center gap-2 min-h-[36px] rounded-card px-3 text-xs font-semibold border ${
                   role === option.value
                     ? 'ops-button ops-button--primary'
@@ -505,7 +505,7 @@ function BackupControls({ model }: { model: BackupHistoryPanelModel }) {
             ))}
           </div>
           <div className="flex gap-2">
-            <Button variant="ghost"
+            <Button variant="outline"
               className="ops-button"
               disabled={role === 'all' || running || createBackup.isPending}
               onClick={async () => {
@@ -518,7 +518,7 @@ function BackupControls({ model }: { model: BackupHistoryPanelModel }) {
             >
               백업 생성
             </Button>
-            <Button variant="ghost"
+            <Button variant="outline"
               className="ops-button"
               disabled={isFetching}
               onClick={() => void refetch()}

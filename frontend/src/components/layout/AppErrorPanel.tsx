@@ -75,7 +75,7 @@ export function AppErrorPanel({ error, reset, standalone = false }: AppErrorPane
             : "현재 탭의 UI 상태가 서버와 맞지 않거나, 화면 렌더링 중 오류가 발생했습니다."}
         </p>
         <div className="flex flex-wrap items-center gap-2.5 mt-1">
-          <Button variant="ghost"
+          <Button variant="default"
             type="button"
             onClick={retry}
             className={`${buttonBase} ops-button--primary`}
@@ -83,7 +83,7 @@ export function AppErrorPanel({ error, reset, standalone = false }: AppErrorPane
             <RefreshCw className="w-4 h-4" />
             다시 시도
           </Button>
-          <Button variant="ghost"
+          <Button variant="outline"
             type="button"
             onClick={goBack}
             className={buttonBase}

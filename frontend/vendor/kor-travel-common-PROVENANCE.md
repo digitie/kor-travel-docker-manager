@@ -1,15 +1,15 @@
 # 공통 산출물 채택 출처
 
-고정 catalog/policy C는 main 병합 P(2b0c02a2018c2c8c791bc6d6c7b5a2290579e09e)의 선행 commit이다. 실제 R/P pack bytes 동일성이 확인됐다. 운영 적용은 별도다.
+고정 catalog/policy C는 kor-travel-common main 병합 PR #71(d644632ea9eaf2f6b6baa49305d65fae5bbc0bd4)이다. pack은 PR #70 병합 P(0e2a3f5aa16323df0d009360802661c9bc496dc6)의 main docs run artifact에서 받았고, SRI가 catalog와 같음을 확인했다. 운영 적용은 별도다.
 
-pack 생성 SOURCE_SHA: 706aaa7821588dfca72f660c9161f56be2d0445f
-고정 catalog commit: 5c1b3857e9af060d30ec776157760fb9e9c13ded
-정책 commit: 5c1b3857e9af060d30ec776157760fb9e9c13ded
-main 발행 근거: https://github.com/digitie/kor-travel-common/actions/runs/44313659808/artifacts/14430019630
-producer: 706aaa7821588dfca72f660c9161f56be2d0445f
+pack 생성 SOURCE_SHA: 0e2a3f5aa16323df0d009360802661c9bc496dc6
+고정 catalog commit: d644632ea9eaf2f6b6baa49305d65fae5bbc0bd4
+정책 commit: d644632ea9eaf2f6b6baa49305d65fae5bbc0bd4
+main 발행 근거: kor-travel-common Actions artifact 14500111373 (common-release-packs-0e2a3f5…)
+producer: 0e2a3f5aa16323df0d009360802661c9bc496dc6
 
-- @kor-travel/tokens 0.1.3 sha512-m1WsuJw1DHYxAkPsJpAIrFN5P/Udb+Ln/sZHbrmPJpItQDHx+wuf8QEFgSrBsk5yW+NAX5CQnIQZRkPIFwO97A==
-- @kor-travel/ui 0.2.2 sha512-/odxLZlFlMj0IB8oPMyjE77kj1MtZO46m/lyHiCTW/gYFq7o6XUSrSPOC7rm7cyEpbjD8dAnCqcz7zmE2GWF+Q==
+- @kor-travel/tokens 0.1.4 sha512-k6StI02tH/iRxKimczN0btU+MS9AvDZLlR/6Bn6xQHhZ5Mb79pkyIALd4RkoLT2GP3qlwR89YEgOaBiBxACDpA==
+- @kor-travel/ui 0.2.3 sha512-upv+JtiVcF+zg3C/KcZy9UQckx0n3vc0n4ANr3/elWM8PQ4srljxgTQmaBK4IxulEj8pd8gc7mnG3M67oFIQUQ==
 
-기존 직접 의존성만 갱신한다. Pinvi 모바일은 tokens-only를 유지한다.
+기존 직접 의존성만 갱신한다(toast는 Manager가 쓰지 않는다).
 lock은 Node26/npm12 재생성과 정본 guard 대조 후 수용한다.
