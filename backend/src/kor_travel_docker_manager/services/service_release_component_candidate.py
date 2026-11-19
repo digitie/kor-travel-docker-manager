@@ -56,8 +56,13 @@ def _environment_values(entries: Any) -> dict[str, str]:
 def _preserve_environment(client: Any, project: str, runtime: str, image_id: str, *,
                           release_env: str | None = None, source_sha: str | None = None):
     """현재 UI 설정을 보존하고 등록한 source 표식만 검증된 후보 revision에 묶는다."""
-    def selected():
-        matches = [item for item in candidate._inventory(client)
+    def selected(records: list[dict[str, Any]] | None = None):
+        records = candidate._inventory(client) if records is None else records
+        # 전달받은 전체 관측도 _inventory와 같은 identity/중복 거부를 유지한다.
+        ids = [record.get("Id") for record in records]
+        if any(not isinstance(value, str) or not value for value in ids) or len(set(ids)) != len(ids):
+            raise ServiceReleaseError("전체 컨테이너 identity를 완전하게 관측할 수 없습니다")
+        matches = [item for item in records
                    if candidate._selected(item, project, runtime)]
         if len(matches) != 1:
             raise ServiceReleaseError("선택 UI 환경의 컨테이너는 정확히 하나여야 합니다")
@@ -80,8 +85,8 @@ def _preserve_environment(client: Any, project: str, runtime: str, image_id: str
         definition["environment"] = {key: value.replace("$", "$$") for key, value in expected.items()}
         # config로 해석한 effective 값을 고정했으므로 env_file을 다시 읽지 않는다.
         definition.pop("env_file", None)
-    def unchanged():
-        current = selected()
+    def unchanged(records: list[dict[str, Any]] | None = None):
+        current = selected(records)
         actual = _environment_values((current.get("Config") or {}).get("Env"))
         if current.get("Image") == image_id:
             approved = expected

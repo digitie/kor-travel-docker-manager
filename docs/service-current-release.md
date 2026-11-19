@@ -407,6 +407,8 @@ ktdctl service-release apply-core-candidate weather \
 - 실제 merged Git head 확인 후 runtime3을 미시작 상태로 생성하고 CS state를 기존 archive helper로 복원한다. 고정 prefix·UID/GID/mode·semantic readback과 새 CS imageID/label/mount를 시작 전에 검사한다. Docker commit/copy/retag로 정상 이미지에 운영 state를 구워 넣지 않는다.
 - 세 runtime health·schema·state·ENV/mount·다른 current/pin/컨테이너 불변과 Weather pause 상태를 재확인한 뒤 현재 표식만 한번 발행한다. 해석한 Compose는 stdin으로 고정하고 등록 파일은 수정하지 않는다.
 
+전체 컨테이너 관측은 각 `common()` 경계에서 한 번 새로 읽고, 같은 경계의 migration singleton·paired pin·비선택 runtime·세 환경 비교에만 공유한다. 경계가 바뀌면 다시 전체를 읽으며 컨테이너 필터나 경계 사이 cache는 사용하지 않는다. 환경 callback의 관측 생략 호출도 기존처럼 전체를 새로 읽는다. 전달 관측의 identity 누락·중복과 선택 역할/이미지/환경 불일치는 계속 거부한다. 이는 반복 Docker inspect 제거이며 health 시작·DB·전체 배포 시간 단축의 운영 증명은 아니다.
+
 ### 실패·후속 수용 경계
 
 실패하면 실제 phase, snapshot/backup을 보존하고 current를 발행하지 않는다. DDL 후에도 이미지/DB 자동 rollback, 반복 migration, ensure/adopt 우회는 없다. current가 옛 상태여도 선택 runtime이 정지됐거나 새 schema/이미지가 일부 적용됐을 수 있으므로 실제 상태를 확인하고 명시적으로 복구한다.
