@@ -183,6 +183,11 @@ def _run(args: argparse.Namespace) -> int:
                     apply_weather_core_candidate,
                 )
                 apply_core = apply_weather_core_candidate
+            elif args.service == 'geo':
+                from kor_travel_docker_manager.services.service_release_geo_candidate import (
+                    apply_geo_core_candidate,
+                )
+                apply_core = apply_geo_core_candidate
             payload = apply_core(
                 args.service, root=root, config=config, source_sha=args.source_sha,
                 source_clone=Path(args.source_clone), receipt_path=Path(args.receipt),

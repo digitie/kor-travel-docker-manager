@@ -492,6 +492,9 @@ targets:
     init_steps: []
 
   geo:
+    core_candidate:
+      group: main
+      project_lease: /var/lib/kor-travel-docker-manager/geo-core-deploy.lock
     ui_candidate:
       role: geocoder-ui
       source_url: https://github.com/digitie/kor-travel-geo.git

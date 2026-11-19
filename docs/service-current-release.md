@@ -435,3 +435,31 @@ migration 역할은 실행하는 그 단계에만 변경을 허용한다. 초기
 ### Transport 공통 검증 경계의 관측 범위
 
 Transport `common()`도 매 호출에서 전체 inventory를 새로 한 번 읽고 paired pin·모든 비선택 runtime·세 환경 callback에만 공유한다. 경계 사이 cache·선택 컨테이너만의 관측은 사용하지 않는다. public 입력, state lease, current pointer, 보호 파일, Compose 환경 snapshot과 admission/health의 독립 관측은 기존대로 수행한다. 누락·중복 identity, 비선택 삭제/변경, 승인 ENV/pin 불일치는 계속 거부하며 인자 없는 환경 callback은 기존 SDK618의 새 관측 동작을 유지한다. 이 변경의 호출 예산 증명은 대역 Engine의 local 결과이며 운영 속도 개선 증명과 구분한다.
+
+
+## Geo API/CS 정상 후보
+
+`service-release apply-core-candidate geo`는 기존 `geo.main` 중 API와 CS 두 역할만 교체한다.
+UI는 기존 이미지·CID·환경을 유지하는 비선택 역할이다. Map·공용 PostgreSQL·다른 앱과
+현재 표식 형식은 바꾸지 않는다. Geo DB schema는 실제 단일 head와 같아야 하며
+migration·backup·stamp·DB 쓰기를 실행하지 않는다.
+
+- 외부 운영자가 기존 Geo schedule/sensor 전체를 캡처하고 **Geo만 pause → 실행/worker 자연 종료 → 정확 원상 복원**한다. SDK는 GraphQL 쓰기나 cancel을 추가하지 않는다.
+- SDK는 기존 G 다음 catalog의 Geo project lease를 보유한다. 실제 quiet를 이미지 선택 전에 확인하고 각 교체 직전에도 다시 확인한다. child Compose에 두 descriptor를 상속한다.
+- canonical merged source의 clean HEAD·tree·단일 Alembic head·정확한 psycopg binary 선언을 읽는다. root 소유의 normal build와 runtime receipt를 기존 SHA256 reader로 검증한다. 임의 target/역할 입력은 받지 않는다.
+- normal receipt는 `kind=geo-normal-build`, `version=1`, `mode=NORMAL_BUILD_ONLY`, `normalDockerBuild=true`, `actualApplyAllowed=false`, `deployReady=false`이며 역할은 정확히 `api`와 `code-server`다. 두 이미지의 실제 arm64/Linux ID, OCI source/revision, Geo tree/role/COPY hash label과 loaded artifact를 대조한다.
+- runtime receipt는 같은 release SHA·이미지와 기존 CS CID·schema revision·원래 전체 instigator catalog를 담는다. 같은 문서의 `native`는 `status=PASS`, 같은 SHA/tree/이미지와 역할별 psycopg/psycopg-binary 버전·binary 또는 c 구현을 증명한다. 별도 permit이나 registry는 만들지 않는다.
+- 기존 실제 환경을 바이트 의미 그대로 frozen stdin Compose에 반영한다. mount graph·보호 파일·다른 current·모든 비선택 컨테이너를 반복 검증하고 `--no-deps --no-build --pull never`로 API 다음 CS만 교체한다. health·schema·quiet 확인 뒤 기존 public adopter로 현재 표식을 발행한다.
+- 실패·취소 시 실제 변경된 역할만 캡처한 이전 이미지/환경으로 복구한다. 이미 새 CS에 실행이 생겼으면 그 CS를 죽이지 않고 API만 복구하며 `rollbackDeferredForQuiet=true`와 실패를 반환한다. 외부 운영자가 자연 종료 후 상태를 판단한다. 복구 오류를 성공으로 바꾸지 않으며 취소는 복구 시도 뒤 다시 전달한다.
+- 성공도 `geoInstigatorsMustRemainPaused=true`다. 외부 운영자의 원상 복원과 기능 수용은 별도이며 SDK가 완료를 꾸며내지 않는다.
+
+```bash
+ktdctl service-release apply-core-candidate geo \
+  --source-clone <root 소유 canonical merged Geo clone> --source-sha <M> \
+  --build-receipt <정상 API+CS receipt> --build-sha256 <SHA256> \
+  --receipt <fresh runtime+native receipt> --sha256 <SHA256> --dry-run
+```
+
+같은 입력의 `--confirm`만 실제 교체다. 외부 controller는 SDK CLI 호출 전에 자신의 G/lease를
+놓아야 한다. 기존 SDK621 진행 스코프는 그대로 두며 새 merged SDK 설치와 실제 normal/native
+이미지 검증 전에는 이 소스의 로컬 대역 테스트를 운영 배포 성공으로 해석하지 않는다.

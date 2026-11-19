@@ -1,3 +1,9 @@
+## 2026-11-20 — Geo API/CS 정상 후보
+
+- [x] 기존 core CLI의 명시 Geo dispatch, API/CS만 허용·UI 비선택, G/lease/quiet·source/native·schema 불변·실패/취소 복구 계약.
+- [x] 새 Geo31건과 기존 영향 Transport/Weather/CLI 합계213 PASS. 로컬 timeout 대기만 가상 시계로 실행하고 원 assertion을 보존했다.
+- [ ] 정확 CI·부모1/독립1검토·병합. 기존 SDK621 terminal 뒤 정상 SDK 설치와 Geo 최종 cache source의 normal API/CS 기능 수용은 별도다.
+
 ## 2026-11-19 — Transport 공통 경계 전체 관측 재사용
 
 ## Weather core G 경합 분류 (2026-11-19)

@@ -1,5 +1,12 @@
 # CLAUDE.md — 프로젝트 컨텍스트
 
+## 2026-11-20 Geo API/CS 후속
+
+- source: 기존 core CLI의 Geo typed adapter. 역할은 API/CS 둘뿐이며 UI·Map·schema 불변, 외부 Geo instigator lifecycle은 SDK에 복제하지 않는다.
+- 새31건+기존 영향 Transport/Weather/CLI 합계213 PASS(로컬 timeout sleep 가상 시계), 운영 적용/설치는 미실행이다. 계약·실패 복구 경계는 docs/service-current-release.md의 Geo 절을 따른다.
+- 정확 CI·부모1/독립1검토 뒤 병합하고, 기존 SDK621 작업 종료 후 normal 설치한다. Geo GDAL cache 변경과 함께 최종 normal API/CS를 한 번 빌드한다.
+
+
 이 파일은 에이전트(Claude Code, Antigravity, Codex 등)가 세션 시작 시 가장 먼저 읽는 컨텍스트 문서다.
 
 ## 프로젝트 현황 (2026-08-25)

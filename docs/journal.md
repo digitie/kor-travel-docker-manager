@@ -1,3 +1,9 @@
+## 2026-11-20 — Geo API/CS 정상 후보 진입점
+
+- 기존 public core CLI에 Geo만 명시 dispatch하고 기존 G·project lease·source/receipt·frozen Compose·health·public adopter를 재사용한다. API/CS 두 역할만 선택하고 UI·Map·schema·타 앱·원래 환경을 보존한다.
+- Geo instigator capture/pause/자연 배수/정확 복원은 외부 operator가 계속 소유한다. SDK는 quiet를 먼저 검증하며 역할 교체 실패/취소 시 캡처한 이미지로 복구한다. 새 CS에 실행이 생기면 종료시키지 않고 실패와 복구 대기를 명시한다.
+- 새 Geo31건과 영향받는 기존 Transport·Weather core/CLI 계약을 합쳐213건 통과했다. 기존 Transport unhealthy timeout 사례의 실제 sleep만 로컬 가상 시계로 진행했으며 기존 assertions는 변경하지 않았다. 운영 Docker/DB·SDK621·이미지 빌드는 실행하지 않았다. 정확 CI·부모/독립 각1검토·병합·설치는 후속이다.
+
 ## 2026-11-19 — Weather core G 경합 예외 분류 보존
 
 - Weather public wrapper가 ValueError 하위인 ManagerMutationActiveError를 generic 입력 오류로 바꾸던 경로를 좁은 passthrough로 고쳤다. 기존 G·project lease·source/receipt·generic privacy·CLI exit2 handler는 유지한다.
