@@ -1062,21 +1062,25 @@ if (isAuthLoading) {
       actions={
         <>
           <Button variant="ghost"
-            className="ops-button"
+            aria-label="새로고침"
+            className="ops-button ops-button--topbar"
             disabled={isLoading}
             onClick={() => void queryClient.invalidateQueries({ queryKey: ['containers'] })}
+            title="새로고침"
             type="button"
           >
-            <RefreshCw className={isLoading ? 'animate-spin' : ''} size={14} />
-            새로고침
+            <RefreshCw aria-hidden="true" className={isLoading ? 'animate-spin' : ''} size={14} />
+            <span className="ops-button__label">새로고침</span>
           </Button>
           <Button variant="ghost"
-            className="ops-button ops-button--primary"
+            aria-label="빠른 명령"
+            className="ops-button ops-button--primary ops-button--topbar"
             onClick={() => setIsCommandPaletteOpen(true)}
+            title="빠른 명령"
             type="button"
           >
-            <Command size={14} />
-            빠른 명령
+            <Command aria-hidden="true" size={14} />
+            <span className="ops-button__label">빠른 명령</span>
           </Button>
         </>
       }
@@ -1088,8 +1092,6 @@ if (isAuthLoading) {
       onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
       onOpenRuntimePins={() => setIsRuntimePinsOpen(true)}
       onOpenSourceStatus={() => setIsSourceStatusOpen(true)}
-      section="개요"
-      title="인프라 서비스 컨트롤"
     >
       <div className="dashboard-stack">
 <DashboardOverview model={model} />
