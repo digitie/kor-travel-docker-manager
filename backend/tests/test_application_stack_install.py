@@ -29,6 +29,7 @@ def fixture_release(tmp_path, *, stale=False, require_exact=True, missing_core=F
     backend = release / "backend"
     backend.mkdir(parents=True)
     (backend / "pyproject.toml").write_bytes((ROOT / "backend/pyproject.toml").read_bytes())
+    (backend / "constraints.txt").write_bytes((ROOT / "backend/constraints.txt").read_bytes())
     venv = backend / ".venv"
     subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
     python = venv / "bin/python"
@@ -36,7 +37,7 @@ def fixture_release(tmp_path, *, stale=False, require_exact=True, missing_core=F
         [str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True).strip())
     # pip 코드만 공유한다. site-packages/distribution은 이 시험의 작은 독립 venv다.
     (site / "pip").symlink_to(Path(pip.__file__).parent, target_is_directory=True)
-    pins = source_pins()
+    pins = {**source_pins(), "pip": "26.3"}
     for name, version in pins.items():
         if missing_core and name == "pydantic-core":
             continue
@@ -64,7 +65,7 @@ def test_real_pip_and_exact_runtime_positive(tmp_path):
     result = run_check(release)
     assert result.returncode == 0, result.stderr
     records = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
-    assert records[-1]["versions"] == source_pins()
+    assert records[-1]["versions"] == {**source_pins(), "pip": "26.3"}
     assert (release / "FLIPPED").exists()
 
 
@@ -127,3 +128,31 @@ def test_installed_environment_matches_every_exact_backend_declaration():
     assert {name: version(name) for name in pins} == pins
     deps = tomllib.loads((ROOT / "backend/pyproject.toml").read_text())["tool"]["poetry"]["dependencies"]
     assert not {"asyncpg", "psycopg", "psycopg-binary", "kor-travel-common"} & set(deps)
+
+
+def test_valid_graph_old_transitive_is_rejected_before_activation(tmp_path):
+    release = fixture_release(tmp_path)
+    python = release / "backend/.venv/bin/python"
+    site = Path(subprocess.check_output(
+        [str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        text=True).strip())
+    dist = site / "anyio-4.15.1.dist-info"
+    dist.mkdir()
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: anyio\nVersion: 4.15.1\n")
+    result = run_check(release)
+    assert result.returncode != 0
+    assert "No broken requirements found" in result.stdout
+    assert "backend exact dependency mismatch: anyio" in result.stderr
+    assert not (release / "FLIPPED").exists()
+
+
+def test_constraint_cannot_override_exact_source_before_activation(tmp_path):
+    release = fixture_release(tmp_path)
+    path = release / "backend/constraints.txt"
+    text = path.read_text()
+    assert "fastapi==0.165.0" in text
+    path.write_text(text.replace("fastapi==0.165.0", "fastapi==0.164.0"))
+    result = run_check(release)
+    assert result.returncode != 0
+    assert "backend source and constraint differ: fastapi" in result.stderr
+    assert not (release / "FLIPPED").exists()
