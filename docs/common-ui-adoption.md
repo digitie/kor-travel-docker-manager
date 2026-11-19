@@ -15,7 +15,7 @@ sorting/onSortingChange, virtualized, empty/loading/error, selection과 2인수 
 `@kor-travel/ui/primitives`: Button, Checkbox, Dialog 계열, AlertDialog 계열, Tabs 계열.
 LoginForm은 기존 LoginSubmission과 onSubmit 계약을 유지하면 충분하다.
 로그인 RHF/Zod는 부모 공통 구현을 사용하며, 소비자 비밀번호 변경 폼도 RHF/Zod를 사용한다.
-Zustand는 AppShell마다 독립 store를 만들어 메뉴 접힘을 보관한다. 인증 상태를 옮기지 않는다.
+메뉴 접힘은 ui 0.2.3 `AdminShell`이 `collapsedStorageKey`로 보관한다(같은 키의 셸끼리 공유). 인증 상태를 옮기지 않는다.
 Pretendard는 로컬 패키지 CSS를 사용해 외부 폰트 요청 없이 적용한다.
 
 ## 버전 정책
@@ -29,7 +29,7 @@ Node 타입은 실행 환경 22에 맞춘 22.20.5를 사용한다. Base UI는 �
 
 `OpsDialog`가 Radix 포털·Escape·포커스 가두기를 사용하며 호출 버튼 복귀를 연결한다.
 `useConfirm`은 AlertDialog 승인 전 실행 차단, 취소·unmount 해제, 호출 버튼 복귀를 담당한다.
-기존 인증/로그아웃 회귀와 함께 확인 창 승인·취소, AppShell store 격리 회귀를 검증한다.
+기존 인증/로그아웃 회귀와 함께 확인 창 승인·취소, AdminShell 제목·접힘 저장 형식 회귀와 셸·버튼 상태 브라우저 회귀(`e2e/admin-shell.spec.ts`)를 검증한다.
 의존성 및 산출물 검사는 `npm run check:dependencies`로 CI 설치 직후 실행한다.
 최종 설치·검증 결과는 journal에 남긴다.
 

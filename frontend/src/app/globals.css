@@ -118,65 +118,17 @@
     font-weight: 500;
   }
 
+  /* 버튼 클래스는 크기·글꼴만 정한다. 색·테두리·hover·active·disabled·focus 상태는 공통
+     Button 변형(outline·default·destructive·ghost)이 한 곳에서 그린다(FS-7.8). 여기서 상태를
+     덧대면 같은 버튼에 두 상태 규칙이 겹쳐 테두리 이중화·2px 이동이 생긴다. */
   .ops-button {
-    display: inline-flex;
     min-height: 2.25rem;
-    align-items: center;
-    justify-content: center;
     gap: 0.5rem;
-    border: 1px solid var(--color-line);
     border-radius: var(--radius-card);
     padding: 0 0.875rem;
-    background: var(--color-card);
-    color: var(--color-ink);
     font-size: 0.75rem;
     font-weight: 600;
     line-height: 1;
-    transition:
-      color var(--duration-fast) var(--ease-default),
-      background-color var(--duration-fast) var(--ease-default),
-      border-color var(--duration-fast) var(--ease-default),
-      transform var(--duration-fast) var(--ease-default);
-  }
-
-  .ops-button:hover:not(:disabled) {
-    border-color: var(--color-brand);
-    background: var(--color-brand-tint);
-    color: var(--color-brand-ink);
-  }
-
-  .ops-button:active:not(:disabled) {
-    transform: translateY(1px);
-  }
-
-  .ops-button:disabled {
-    cursor: not-allowed;
-    border-color: var(--color-line);
-    background: var(--color-subtle);
-    color: var(--color-tertiary);
-  }
-
-  .ops-button--primary {
-    border-color: var(--color-brand);
-    background: var(--color-brand);
-    color: var(--color-card);
-  }
-
-  .ops-button--primary:hover:not(:disabled) {
-    border-color: var(--color-brand-ink);
-    background: var(--color-brand-ink);
-    color: var(--color-card);
-  }
-
-  .ops-button--danger {
-    border-color: var(--color-danger);
-    color: var(--color-danger);
-  }
-
-  .ops-button--danger:hover:not(:disabled) {
-    border-color: var(--color-danger);
-    background: var(--color-danger);
-    color: var(--color-card);
   }
 
   /* Dashboard surfaces */
@@ -540,24 +492,9 @@
     min-width: 5rem;
     min-height: 2.25rem;
     place-items: center;
-    border: 1px solid transparent;
     border-radius: var(--radius-card);
     padding: 0.25rem 0.5rem;
     color: var(--color-ink);
-    transition:
-      color var(--duration-fast) var(--ease-default),
-      background-color var(--duration-fast) var(--ease-default),
-      border-color var(--duration-fast) var(--ease-default);
-  }
-
-  .ops-metric:hover:not(:disabled) {
-    border-color: var(--color-line);
-    background: var(--color-subtle);
-  }
-
-  .ops-metric:disabled {
-    cursor: not-allowed;
-    color: var(--color-tertiary);
   }
 
   /* Dialogs and command palette */
@@ -643,21 +580,12 @@
   }
 
   .ops-icon-button {
-    display: inline-grid;
     width: 2.25rem;
     min-height: 2.25rem;
     flex: 0 0 auto;
-    place-items: center;
-    border: 1px solid transparent;
     border-radius: var(--radius-card);
-    background: transparent;
+    padding: 0;
     color: var(--color-secondary);
-  }
-
-  .ops-icon-button:hover:not(:disabled) {
-    border-color: var(--color-line);
-    background: var(--color-subtle);
-    color: var(--color-strong);
   }
 
   .ops-command-dialog {

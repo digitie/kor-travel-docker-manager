@@ -304,7 +304,7 @@ function PublicKeySettings({ model }: { model: AdminSettingsPanelModel }) {
               />
             </Field>
             <div className="flex flex-wrap gap-2">
-              <Button variant="ghost"
+              <Button variant="default"
                 className="ops-button ops-button--primary"
                 disabled={keyState.busy}
                 type="submit"
@@ -312,7 +312,7 @@ function PublicKeySettings({ model }: { model: AdminSettingsPanelModel }) {
                 <KeyRound className="w-4 h-4" />
                 랜덤 키 생성
               </Button>
-              <Button variant="ghost"
+              <Button variant="outline"
                 className="ops-button"
                 disabled={keyState.busy}
                 onClick={() => void loadPublicKeys()}
@@ -419,7 +419,7 @@ function LoginAuditHistory({ model }: { model: AdminSettingsPanelModel }) {
                 로그인 시도, 성공, 실패, 로그아웃과 key 관리 이벤트를 최신순으로 표시합니다.
               </p>
             </div>
-            <Button variant="ghost"
+            <Button variant="outline"
               className="ops-button"
               onClick={() => void loadAuditEvents()}
               type="button"
@@ -527,7 +527,7 @@ function PasswordSettings({ model }: { model: AdminSettingsPanelModel }) {
             {passwordValues.next && passwordValues.next !== passwordValues.confirm ? (
               <p className="text-xs text-danger">새 비밀번호가 서로 다릅니다.</p>
             ) : null}
-            <Button variant="ghost"
+            <Button variant="default"
               className="ops-button ops-button--primary"
               disabled={!passwordReady || passwordState.busy}
               type="submit"

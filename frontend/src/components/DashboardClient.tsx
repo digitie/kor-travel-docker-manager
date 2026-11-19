@@ -1061,7 +1061,7 @@ if (isAuthLoading) {
     <AppShell
       actions={
         <>
-          <Button variant="ghost"
+          <Button variant="outline"
             aria-label="새로고침"
             className="ops-button ops-button--topbar"
             disabled={isLoading}
@@ -1072,7 +1072,7 @@ if (isAuthLoading) {
             <RefreshCw aria-hidden="true" className={isLoading ? 'animate-spin' : ''} size={14} />
             <span className="ops-button__label">새로고침</span>
           </Button>
-          <Button variant="ghost"
+          <Button variant="default"
             aria-label="빠른 명령"
             className="ops-button ops-button--primary ops-button--topbar"
             onClick={() => setIsCommandPaletteOpen(true)}
@@ -1231,7 +1231,7 @@ function ContainerConfigDialog({ model }: { model: DashboardModel }) {
 
               {/* Submit / Reset Actions */}
               <div className="flex gap-3 mt-6">
-                <Button variant="ghost"
+                <Button variant="destructive"
                   type="button"
                   onClick={async () => {
                     if (await confirm('정말로 설정을 기본값으로 원복하시겠습니까?')) {
@@ -1244,7 +1244,7 @@ function ContainerConfigDialog({ model }: { model: DashboardModel }) {
                   {resetMutation.isPending ? '원복 중...' : '기본값 원복'}
                 </Button>
 
-                <Button variant="ghost"
+                <Button variant="default"
                   type="submit"
                   disabled={
                     configMutation.isPending ||
@@ -1805,7 +1805,7 @@ function FleetLedger({ model }: { model: DashboardModel }) {
                             </div>
                           ) : (
                             <>
-                              <Button variant="ghost"
+                              <Button variant="outline"
                                 type="button"
                                 onClick={() => handleAction(container.id, 'start')}
                                 disabled={container.remote || container.observed_only || actionMutation.isPending || container.status === 'running'}
@@ -1816,7 +1816,7 @@ function FleetLedger({ model }: { model: DashboardModel }) {
                                 시작
                               </Button>
 
-                              <Button variant="ghost"
+                              <Button variant="destructive"
                                 type="button"
                                 onClick={() => handleAction(container.id, 'stop')}
                                 disabled={container.remote || container.observed_only || actionMutation.isPending || container.status !== 'running'}
@@ -1876,7 +1876,7 @@ function ServiceGroups({ model }: { model: DashboardModel }) {
                       : `실행 ${group.runningCount}개 / 표시 ${group.containers.length}개 · 점검 필요`}
                   </p>
                 </div>
-                <Button variant="ghost"
+                <Button variant="outline"
                   className="ops-button"
                   disabled={bulkRestartingGroup !== null || group.mutableCount === 0}
                   onClick={() => void restartGroup(group)}
