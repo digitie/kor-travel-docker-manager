@@ -755,17 +755,6 @@
       min-height: 2.75rem;
     }
 
-    /* 좁은 폭 상단 바는 제목 한 줄 아래에 페이지 설명을 작게 둔다(제목 옆에는 들어갈 폭이 없다). */
-    [data-slot="admin-shell-heading"] {
-      flex-direction: column;
-      align-items: stretch;
-      gap: 0;
-    }
-
-    [data-slot="admin-shell-description"] {
-      flex: none;
-      width: 100%;
-    }
 
     .ops-button--topbar .ops-button__label {
       display: none;
@@ -887,3 +876,21 @@
 }
 
 body { font-family:"Pretendard Variable", Pretendard, sans-serif; }
+
+/* 좁은 폭 상단 바는 제목 한 줄 아래에 페이지 설명을 작게 둔다(제목 옆에는 들어갈 폭이 없다).
+   공통 AdminTopBar의 배치 유틸리티(flex-1 basis-0·items-baseline·gap-2)를 바꾸므로 utilities 층에서
+   data-slot 두 단계 선택자로 덮는다. 상태 스타일은 두지 않는다. */
+@layer utilities {
+  @media (max-width: 63.999rem) {
+    [data-slot="admin-shell-header"] [data-slot="admin-shell-heading"] {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0;
+    }
+
+    [data-slot="admin-shell-heading"] > [data-slot="admin-shell-description"] {
+      flex: none;
+      width: 100%;
+    }
+  }
+}
