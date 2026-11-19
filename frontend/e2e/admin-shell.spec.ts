@@ -67,7 +67,7 @@ test('관리자 셸: 한 줄 "영역 - 페이지" 상단 바와 좌측 rail·dra
     const again = await openMenu(page);
     await again.getByRole('button', { name: '백업 이력', exact: true }).click();
     await expect(again).toBeHidden();
-    const backups = page.getByRole('dialog', { name: /백업 이력/ });
+    const backups = page.getByRole('dialog').filter({ has: page.getByRole('table', { name: '백업 이력' }) });
     await expect(backups).toBeVisible();
     await expect.poll(() => backups.evaluate((node) => node.contains(document.activeElement))).toBe(true);
     await page.keyboard.press('Escape');
