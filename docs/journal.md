@@ -1,3 +1,8 @@
+## 2026-11-20 — Pinvi core의 기존 이미지 바인딩 순서 수정
+
+- ui-only CURRENT의 API/CS Compose tag가 로컬에 없어 dry-run에서 ImageNotFound가 난 실제 경로를 재현했다. 기존 pair/current 검증으로 확정한 ID를 baseline 조회 전에 바인딩한다.
+- 태그 부재 dry-run/confirm 2건 RED 후 Pinvi 전체53건 PASS와 pair/live drift 거절을 검증했다. 원래 source/native/quiet/schema/Map·UI·pin 보존 및 rollback 검사는 유지한다. 설치·운영 결과는 source 수정과 구분한다.
+
 ## 2026-11-20 — Pinvi API·CS core 후보 adapter
 
 - 기존 apply-core-candidate에 Pinvi 두 역할을 추가하고, ui-only CURRENT를 dry-run에서 보존한 뒤 실제 health 뒤만 ui+core를 발행한다. Map·UI·공유 daemon과 과거 pair/pin 기록은 유지한다.
