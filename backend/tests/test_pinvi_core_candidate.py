@@ -7,6 +7,7 @@ import json
 import subprocess
 from types import SimpleNamespace
 
+import docker
 import pytest
 import test_service_release_candidate as paired
 from test_transport_core_candidate import core_case, scenario  # noqa: F401
@@ -574,4 +575,48 @@ def test_publication_reobserves_selected_runtime_after_health_before_pointer(pin
     assert not result["success"] and result["rollbackImagesRestored"]
     assert release.read_current_release("pinvi", root=s.root) == s.current
     assert not list(s.root.glob("pinvi-candidate-*"))
+    assert s.pair_path.read_bytes() == s.pair_before
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_missing_rendered_core_tags_use_verified_pair_ids(pinvi_case, monkeypatch, execute):
+    s = pinvi_case
+    unavailable = {name: f"fixture-unavailable/{name}:latest-main" for name in pinvi.RUNTIME}
+    for name, tag in unavailable.items():
+        s.resolved["services"][name]["image"] = tag
+    lookups = []
+    get = s.client.images.get
+
+    def lookup(ref):
+        lookups.append(ref)
+        if ref in unavailable.values():
+            raise docker.errors.ImageNotFound("fixture image tag absent")
+        return get(ref)
+
+    monkeypatch.setattr(s.client.images, "get", lookup)
+    result = apply_pinvi(s, execute=execute)
+    assert result["success"]
+    assert not set(lookups).intersection(unavailable.values())
+    assert s.pair_path.read_bytes() == s.pair_before
+    for name in s.before.keys() - pinvi.RUNTIME:
+        assert s.records[name] == s.before[name]
+    current = release.read_current_release("pinvi", root=s.root)
+    assert current["images"][pinvi.UI] == s.current["images"][pinvi.UI]
+    if execute:
+        assert s.mutations == [[pinvi.ROLES["api"]], [pinvi.ROLES["code-server"]]]
+        for role, name in pinvi.ROLES.items():
+            assert current["images"][name]["id"] == s.normal["images"][role]
+    else:
+        assert not s.mutations and s.records == s.before and current == s.current
+
+
+def test_missing_core_tag_does_not_hide_pair_live_drift(pinvi_case):
+    s = pinvi_case
+    for name in pinvi.RUNTIME:
+        s.resolved["services"][name]["image"] = f"fixture-unavailable/{name}:latest-main"
+    s.records[pinvi.ROLES["api"]]["Image"] = s.records["kor-travel-map-api"]["Image"]
+    with pytest.raises(ServiceReleaseError):
+        apply_pinvi(s, execute=True)
+    assert not s.mutations
+    assert release.read_current_release("pinvi", root=s.root) == s.current
     assert s.pair_path.read_bytes() == s.pair_before

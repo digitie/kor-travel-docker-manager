@@ -230,6 +230,8 @@ def _apply(plan, manifests, normal, runtime, sha, tree, heads, source, receipt_p
         raise ServiceReleaseError("Pinvi 등록 Compose를 해석할 수 없습니다")
     baseline = json.loads(rendered.stdout)
     secrets.extend(frozen._resolved_secrets(baseline))
+    # CURRENT가 UI-only여도 기존 API/CS의 검증된 pair ID로 먼저 해석한다.
+    bind_pair(baseline)
     for manifest in manifests.values():
         for name, image in manifest["images"].items():
             if client.images.get(baseline["services"][name]["image"]).attrs["Id"] != image["id"]:
@@ -240,7 +242,6 @@ def _apply(plan, manifests, normal, runtime, sha, tree, heads, source, receipt_p
             raise ServiceReleaseError("Pinvi 실제 core와 등록 Compose 이미지가 다릅니다")
         baseline["services"][name]["image"] = record["Image"]
     materialized = deepcopy(baseline)
-    bind_pair(materialized)
     for role, name in ROLES.items():
         core._mount_admission(materialized["services"][name], materialized, selected[name],
                               client.images.get(normal["images"][role]).attrs, project, state_path=None)
