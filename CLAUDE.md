@@ -1,5 +1,11 @@
 # CLAUDE.md — 프로젝트 컨텍스트
 
+## 2026-11-20 — 실제 사용 전체 Python 의존성과 오프라인 설치 버전 고정
+
+- backend의 실제 runtime/dev 교집합40종을 `backend/constraints.txt`로 고정한다. 직접/개발 선언16종과 CI pytest9.2.0·Ruff0.17.6도 맞춘다. 사용하지 않는 패키지는 설치 대상으로 추가하지 않는다. 기존 frontend/Common 정본·SDK 동작과 Map 구동부는 유지한다.
+- 정상 installer는 같은 constraints로 오프라인 pip26.3 bootstrap과 backend를 설치한다. 기존 `pip check` 뒤 실제 설치 교집합과 직접 source exact 버전을 검사하여 fresh/cached 모두 activation 전에 오래된 전이 버전이나 source/constraint 모순을 거절한다. websockets12는17.4로 정렬한다. installer의 기존 root/G/설치·복구 계약과 offline wheelhouse 절차는 유지한다.
+- 이전625 runtime block은 유효하지만 오래된 anyio와 source/constraint 모순2건을 통과시켜 신규 회귀에서 RED였다. 수정 후 실제 pip/metadata를 쓰는 installer·wheelhouse·Pinvi core163건(28.56초), 기존 API/WebSocket154건(10.26초), Ruff·설치41종 pip check와 중앙 source/설치 교집합 검사76판정0실패가 통과했다. 실제 양 호스트 정상 설치·public 로그인/조회/로그아웃 검증과 일반 CI는 별도 수용 항목이며 로컬 테스트만으로 운영 반영을 주장하지 않는다.
+
 ## 2026-11-20 — Pinvi core의 기존 이미지 바인딩 순서 수정
 
 - ui-only CURRENT의 API/CS Compose tag가 로컬에 없어 dry-run에서 ImageNotFound가 난 실제 경로를 재현했다. 기존 pair/current 검증으로 확정한 ID를 baseline 조회 전에 바인딩한다.

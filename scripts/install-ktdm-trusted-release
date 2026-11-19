@@ -144,16 +144,37 @@ PREV="$(basename -- "${CURRENT_TARGET}")"
 # 새 venv와 같은 SHA 재사용 모두 실제 dependency graph와 소스 exact 선언을 검사한다.
 verify_backend_runtime() {
   "${REL}/backend/.venv/bin/python" -I -m pip check
-  "${REL}/backend/.venv/bin/python" -I - "${REL}/backend/pyproject.toml" <<'PY'
+  "${REL}/backend/.venv/bin/python" -I - "${REL}/backend/pyproject.toml" "${REL}/backend/constraints.txt" <<'PY'
 import json
+import re
 import sys
 import tomllib
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError, distributions, version
 from pathlib import Path
 
 declared = tomllib.loads(Path(sys.argv[1]).read_text())["tool"]["poetry"]["dependencies"]
 expected = {name: spec[2:] for name, spec in declared.items()
             if isinstance(spec, str) and spec.startswith("==")}
+# 실제 설치된 공유 교집합만 검사한다. dev/미사용 constraint는 설치 대상으로 만들지 않는다.
+observed = {re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower(): d.version
+            for d in distributions()}
+constraints = {}
+for line in Path(sys.argv[2]).read_text().splitlines():
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s]+)", line)
+    if match is None:
+        raise SystemExit("backend constraints must be exact distribution versions")
+    name = re.sub(r"[-_.]+", "-", match[1]).lower()
+    if name in constraints:
+        raise SystemExit("backend constraint identity is duplicated: " + name)
+    constraints[name] = match[2]
+for name, wanted in constraints.items():
+    if name in expected and expected[name] != wanted:
+        raise SystemExit("backend source and constraint differ: " + name)
+    if name == "pip" or name in observed:
+        expected[name] = wanted
 installed = {}
 for name, wanted in expected.items():
     try:
@@ -177,8 +198,11 @@ if [[ "$(cat "${REL}/.ktdm-source-revision" 2>/dev/null)" != "${SHA}" ]]; then
   chmod -R go-w "${REL}"
   # <<< extract
   python3 -I -m venv "${REL}/backend/.venv"
+  # 오프라인 wheelhouse의 같은 constraints로 bootstrap pip도 고정한다.
   "${REL}/backend/.venv/bin/python" -I -m pip install -q --no-index \
-    --find-links "${WHEELHOUSE}" "${REL}/backend"
+    --find-links "${WHEELHOUSE}" --constraint "${REL}/backend/constraints.txt" --upgrade pip
+  "${REL}/backend/.venv/bin/python" -I -m pip install -q --no-index \
+    --find-links "${WHEELHOUSE}" --constraint "${REL}/backend/constraints.txt" "${REL}/backend"
   # ktdctl은 설치 root 경로로 돈다 — sys.prefix와 project root가 release 경로로 풀리면
   # 레지스트리·요청 파일이 트리 안으로 떨어진다.
   cat > "${REL}/backend/.venv/bin/ktdctl" <<EOF
