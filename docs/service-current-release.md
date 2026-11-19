@@ -425,3 +425,7 @@ DB 대상은 SQLAlchemy의 표준 URL parser로 해석한다. URL authority/path
 등록 Compose의 config JSON에 남은 달러 escaping은 한 번 decode한 actual 값으로 live API ENV와 비교한다. 그 actual 값을 stdin Compose 표현으로 한 번 encode하며, 실제 한 달러와 두 달러 및 불일치 대조군을 따로 보존한다. fake fixture도 실제 canonical config 표현을 사용한다.
 
 migration 역할은 실행하는 그 단계에만 변경을 허용한다. 초기 단일·정지 상태를 보존하고 정상 실행 뒤에는 exact CID/image/command·환경/HostConfig/mount/lifecycle을 다시 고정해 사후·current 발행 직전까지 비교한다. 실행 완료 뒤 migration 역할이 바뀌거나 새 duplicate가 생기면 current를 발행하지 않는다. schema가 이미 head라서 실행을 생략한 경우도 기존 oneshot의 부재/정지 상태를 그대로 보존한다.
+
+### Transport 공통 검증 경계의 관측 범위
+
+Transport `common()`도 매 호출에서 전체 inventory를 새로 한 번 읽고 paired pin·모든 비선택 runtime·세 환경 callback에만 공유한다. 경계 사이 cache·선택 컨테이너만의 관측은 사용하지 않는다. public 입력, state lease, current pointer, 보호 파일, Compose 환경 snapshot과 admission/health의 독립 관측은 기존대로 수행한다. 누락·중복 identity, 비선택 삭제/변경, 승인 ENV/pin 불일치는 계속 거부하며 인자 없는 환경 callback은 기존 SDK618의 새 관측 동작을 유지한다. 이 변경의 호출 예산 증명은 대역 Engine의 local 결과이며 운영 속도 개선 증명과 구분한다.

@@ -1,3 +1,8 @@
+## 2026-11-19 — Transport 공통 경계의 반복 전체 관측 제거
+
+- 기존 SDK618 환경 callback을 사용해 Transport `common()`의 paired pin·비선택·세 ENV 비교에 같은 새 전체 관측을 공유한다. public 입력·lease·pointer·Compose 환경 검사와 다음 경계의 새 관측은 보존한다.
+- 대역 Engine과 실제 Docker SDK collection으로 54개 경계의 수정 전5 list/270 inspect를 재현하고 한 번의 전체 관측 예산·다음 경계 변경 거부 회귀를 추가했다. 실제 운영 지연 단축은 미측정이며 기존 SDK618 스코프·root·진행 중 앱 적용을 변경하지 않는다.
+
 ## 2026-11-19 — Weather 후보 공통 경계의 반복 관측 제거
 
 - `common()` 한 번 안의 migration·pin·비선택·세 환경 검사를 같은 새 전체 관측으로 수행한다. 경계 사이 재사용 없이 환경 callback의 인자 없는 새 관측과 identity·source·보호 비교를 유지한다.
