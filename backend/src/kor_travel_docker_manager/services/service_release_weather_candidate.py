@@ -39,6 +39,7 @@ from kor_travel_docker_manager.services.compose_service import (
     _escape_materialized_compose_environment_values,
     get_env_path,
 )
+from kor_travel_docker_manager.services.errors import ManagerMutationActiveError
 from kor_travel_docker_manager.services.registry import (
     load_targets_config,
     weather_core_candidate_for_target,
@@ -291,7 +292,7 @@ def apply_weather_core_candidate(service: str, *, source_clone: Path, source_sha
                               root, config, fd, lease, client, execute)
             finally:
                 client.close()
-    except ServiceReleaseError:
+    except (ServiceReleaseError, ManagerMutationActiveError):
         raise
     except (OSError, ValueError, KeyError, TypeError, SyntaxError, subprocess.TimeoutExpired,
             tarfile.TarError, docker.errors.DockerException) as exc:

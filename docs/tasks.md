@@ -1,5 +1,11 @@
 ## 2026-11-19 — Transport 공통 경계 전체 관측 재사용
 
+## Weather core G 경합 분류 (2026-11-19)
+
+- [x] canonical ManagerMutationActiveError 전달을 보존하고 다른 generic 입력 오류의 privacy를 유지한다. 공개 wrapper/CLI7건 포함 기존 Weather98건 통과. 잠금/receipt/배포 동작 변경 없음.
+- [ ] 좁은 검토1건·정확 CI·부모 merge. SDK620 설치본과 진행 중 운영 적용은 이번 source PR에서 변경하지 않는다.
+
+
 - [x] SDK618 callback 계약으로 한 경계의 관측만 공유하고 다음 경계 새 관측·기존 guard 회귀를 추가한다.
 - [ ] 정확 CI·독립 검토·병합과 앱 SDK 스코프 종료 뒤 별도 정상 설치를 수용한다. 현재 SDK/앱 작업을 기다리게 하지 않는다.
 
