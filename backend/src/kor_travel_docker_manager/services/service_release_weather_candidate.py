@@ -421,19 +421,21 @@ def _apply(plan, manifests, normal, runtime, sha, tree, source, lineage,
 
     def common():
         state.check_lease(fd, lease)
-        migration_rows = [r for r in candidate._inventory(client) if candidate._selected(r, project, MIGRATE)]
+        # 이 경계 안에서만 전체 관측을 공유한다. 다음 호출은 다시 Docker를 읽는다.
+        records = candidate._inventory(client)
+        migration_rows = [r for r in records if candidate._selected(r, project, MIGRATE)]
         if (any(r.get("State", {}).get("Running") is not False for r in migration_rows)
                 or candidate._nonselected(migration_rows, project, "") != expected_migration):
             raise ServiceReleaseError("Weather migration singleton의 identity 또는 설정이 변경되었습니다")
         if _source(source, sha) != (tree, lineage):
             raise ServiceReleaseError("Weather 승인 source가 변경되었습니다")
-        if core._protected(protected) != files or core._paired_pin_baseline(config, candidate._inventory(client)) != pins:
+        if core._protected(protected) != files or core._paired_pin_baseline(config, records) != pins:
             raise ServiceReleaseError("Weather 보호 파일/pin이 변경되었습니다")
-        if others(candidate._inventory(client)) != untouched:
+        if others(records) != untouched:
             raise ServiceReleaseError("Weather 비선택 runtime이 변경되었습니다")
         _images(client, normal, runtime, sha, tree)
         for check in environments:
-            check()
+            check(records)
 
     def admission():
         common()
