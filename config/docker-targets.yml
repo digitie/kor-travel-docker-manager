@@ -44,6 +44,7 @@ dependency_order:
   # 형제 프로젝트(외부 compose). Manager 자신의 프로젝트보다 뒤에 둔다 — 기동
   # 순서상 앞의 것들에 의존하지 않고, `all`에서 마지막에 오는 것이 읽기 쉽다.
   - transport
+  - fuel
   - node
 
 # 발견된 읽기 전용 컨테이너의 공개 링크. 제어 대상에는 등록하지 않는다.
@@ -408,6 +409,26 @@ containers:
     # backend와 같이 host network다(next가 호스트 포트에 직접 listen한다 — odroid 실측 `12303`, n150 시절 `14002`).
     expected_ports:
       - "12303:12303"
+
+  kor-travel-transport-fuel-api-gateway:
+    name: kor-travel-transport-fuel-fuel-api-gateway-1
+    compose_service: fuel-api-gateway
+    external_project: kor-travel-transport-fuel
+    role: transport-fuel-api-gateway
+    display_name: 공개 유가 API 게이트웨이
+    connection: "http://{host}:12307"
+    prod_url_env: KTDM_PROD_URL_FUEL_API
+    prod_url_path: /health
+    expected_ports: ["12307:12307"]
+  kor-travel-transport-fuel-web:
+    name: kor-travel-transport-fuel-fuel-web-1
+    compose_service: fuel-web
+    external_project: kor-travel-transport-fuel
+    role: transport-fuel-web
+    display_name: 공개 유가 지도
+    connection: "http://{host}:12308"
+    prod_url_env: KTDM_PROD_URL_FUEL
+    expected_ports: ["12308:12308"]
 
 targets:
   storage:
@@ -799,6 +820,25 @@ targets:
       - node-exporter
     containers:
       - kor-travel-node-exporter
+    init_steps: []
+
+  fuel:
+    # 공개 전용 두 역할만 별도 프로젝트로 관리한다. 기존 transport CURRENT는 바꾸지 않는다.
+    # 최초 생성은 Transport 정상 배포 경로가 맡고, 관측 후 service-release adopt로 등록한다.
+    host: odroid
+    excluded_from_all: true
+    external_project:
+      project: kor-travel-transport-fuel
+      working_dir: /opt/kor-travel-odroid/transport-fuel
+      config_files: [docker-compose.fuel.yml]
+    port_band: "12300-12399"
+    depends_on: []
+    display_name: 공개 유가 지도
+    description: 기존 Transport 연료 조회만 공개하는 API 게이트웨이(:12307)와 전용 지도(:12308)입니다.
+    aliases: [transport-fuel]
+    services: [fuel-api-gateway, fuel-web]
+    runtime_services: [fuel-api-gateway, fuel-web]
+    containers: [kor-travel-transport-fuel-api-gateway, kor-travel-transport-fuel-web]
     init_steps: []
 
   transport:
@@ -1235,4 +1275,12 @@ service_releases:
         config_files: [docker-compose.transport-admin.yml]
         env_file: .env.prod
         runtime_services: [transport-admin-web, transport-api-gateway]
+        oneshot_services: []
+  fuel:
+    groups:
+      public:
+        external_project: true
+        config_files: [docker-compose.fuel.yml]
+        env_file: .env
+        runtime_services: [fuel-api-gateway, fuel-web]
         oneshot_services: []
