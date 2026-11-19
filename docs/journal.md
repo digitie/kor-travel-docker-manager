@@ -1,3 +1,9 @@
+## 2026-11-19 — Transport 공통 경계의 반복 전체 관측 제거
+
+- 기존 SDK618 환경 callback을 사용해 Transport `common()`의 paired pin·비선택·세 ENV 비교에 같은 새 전체 관측을 공유한다. public 입력·lease·pointer·Compose 환경 검사와 다음 경계의 새 관측은 보존한다.
+- 대역 Engine과 실제 Docker SDK collection으로 54개 경계의 수정 전5 list/270 inspect를 재현하고 한 번의 전체 관측 예산·다음 경계 변경 거부 회귀를 추가했다. 실제 운영 지연 단축은 미측정이며 기존 SDK618 스코프·root·진행 중 앱 적용을 변경하지 않는다.
+
+
 ## 2026-11-19 — @kor-travel/ui 0.2.3 관리자 셸 채택과 버튼 상태 정리(FS-7.8)
 
 - common PR #71(`d644632ea9eaf2f6b6baa49305d65fae5bbc0bd4`) catalog의 ui 0.2.3·tokens 0.1.4 pack(artifact 14500111373, SRI 일치)을 vendor·원장·lock·정책 `uses/common-ref`에 반영했다. toast는 계속 쓰지 않는다. lock은 Node 26.13.1/npm 12.0.1 컨테이너에서 재생성했다.

@@ -899,16 +899,18 @@ def _apply(
         public_inputs_unchanged()
         state.check_lease(lease_fd, lease_path)
         candidate._unchanged_pointers(manifests, root)
+        # 이 경계 안에서만 공유한다. 다음 호출은 전체 Docker 관측을 다시 읽는다.
+        records = candidate._inventory(client)
         if (
             _protected(protected) != files
-            or _paired_pin_baseline(config, candidate._inventory(client)) != pins
+            or _paired_pin_baseline(config, records) != pins
         ):
             raise ServiceReleaseError("보호 파일 또는 pin이 변경되었습니다")
         _revalidate_compose_environment_snapshot(env_snapshot)
-        if _others(candidate._inventory(client), project) != others:
+        if _others(records, project) != others:
             raise ServiceReleaseError("비선택 runtime identity 또는 설정이 변경되었습니다")
         for check in environments.values():
-            check()
+            check(records)
 
     def admission():
         common()
