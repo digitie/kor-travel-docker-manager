@@ -34,7 +34,7 @@ export default function CopyableCommand({
       {hint ? <p className="text-xs text-secondary mt-1">{hint}</p> : null}
       <div className="flex items-start gap-2 mt-2">
         <code className="flex-1 text-xs bg-subtle rounded-card px-3 py-2 break-all">{command}</code>
-        <Button variant="ghost"
+        <Button variant="outline"
           className="ops-button shrink-0"
           onClick={() => {
             // clipboard는 비보안 컨텍스트에서 없을 수 있다. 실패해도 화면은 명령을

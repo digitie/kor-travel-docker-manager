@@ -1061,22 +1061,26 @@ if (isAuthLoading) {
     <AppShell
       actions={
         <>
-          <Button variant="ghost"
-            className="ops-button"
+          <Button variant="outline"
+            aria-label="새로고침"
+            className="ops-button ops-button--topbar"
             disabled={isLoading}
             onClick={() => void queryClient.invalidateQueries({ queryKey: ['containers'] })}
+            title="새로고침"
             type="button"
           >
-            <RefreshCw className={isLoading ? 'animate-spin' : ''} size={14} />
-            새로고침
+            <RefreshCw aria-hidden="true" className={isLoading ? 'animate-spin' : ''} size={14} />
+            <span className="ops-button__label">새로고침</span>
           </Button>
-          <Button variant="ghost"
-            className="ops-button ops-button--primary"
+          <Button variant="default"
+            aria-label="빠른 명령"
+            className="ops-button ops-button--primary ops-button--topbar"
             onClick={() => setIsCommandPaletteOpen(true)}
+            title="빠른 명령"
             type="button"
           >
-            <Command size={14} />
-            빠른 명령
+            <Command aria-hidden="true" size={14} />
+            <span className="ops-button__label">빠른 명령</span>
           </Button>
         </>
       }
@@ -1088,8 +1092,6 @@ if (isAuthLoading) {
       onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
       onOpenRuntimePins={() => setIsRuntimePinsOpen(true)}
       onOpenSourceStatus={() => setIsSourceStatusOpen(true)}
-      section="개요"
-      title="인프라 서비스 컨트롤"
     >
       <div className="dashboard-stack">
 <DashboardOverview model={model} />
@@ -1229,7 +1231,7 @@ function ContainerConfigDialog({ model }: { model: DashboardModel }) {
 
               {/* Submit / Reset Actions */}
               <div className="flex gap-3 mt-6">
-                <Button variant="ghost"
+                <Button variant="destructive"
                   type="button"
                   onClick={async () => {
                     if (await confirm('정말로 설정을 기본값으로 원복하시겠습니까?')) {
@@ -1242,7 +1244,7 @@ function ContainerConfigDialog({ model }: { model: DashboardModel }) {
                   {resetMutation.isPending ? '원복 중...' : '기본값 원복'}
                 </Button>
 
-                <Button variant="ghost"
+                <Button variant="default"
                   type="submit"
                   disabled={
                     configMutation.isPending ||
@@ -1803,22 +1805,22 @@ function FleetLedger({ model }: { model: DashboardModel }) {
                             </div>
                           ) : (
                             <>
-                              <Button variant="ghost"
+                              <Button variant="outline"
                                 type="button"
                                 onClick={() => handleAction(container.id, 'start')}
                                 disabled={container.remote || container.observed_only || actionMutation.isPending || container.status === 'running'}
-                                className="ops-button text-ok border-ok hover:border-ok hover:bg-ok hover:text-card disabled:hover:bg-card disabled:hover:text-ok"
+                                className="ops-button text-ok border-ok hover:border-ok hover:bg-ok hover:text-card"
                                 title="컨테이너 가동"
                               >
                                 <Play className="w-3 h-3" />
                                 시작
                               </Button>
 
-                              <Button variant="ghost"
+                              <Button variant="destructive"
                                 type="button"
                                 onClick={() => handleAction(container.id, 'stop')}
                                 disabled={container.remote || container.observed_only || actionMutation.isPending || container.status !== 'running'}
-                                className="ops-button ops-button--danger text-danger border-danger disabled:hover:bg-card disabled:hover:text-danger"
+                                className="ops-button ops-button--danger text-danger border-danger"
                                 title="컨테이너 정지"
                               >
                                 <Square className="w-3 h-3" />
@@ -1874,7 +1876,7 @@ function ServiceGroups({ model }: { model: DashboardModel }) {
                       : `실행 ${group.runningCount}개 / 표시 ${group.containers.length}개 · 점검 필요`}
                   </p>
                 </div>
-                <Button variant="ghost"
+                <Button variant="outline"
                   className="ops-button"
                   disabled={bulkRestartingGroup !== null || group.mutableCount === 0}
                   onClick={() => void restartGroup(group)}

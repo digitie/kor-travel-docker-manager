@@ -219,7 +219,7 @@ export default function SourceStatusPanel(props: Parameters<typeof useSourceStat
           <p className="text-xs text-secondary">
             {data?.cached ? '캐시된 결과입니다.' : '방금 관측한 결과입니다.'}
           </p>
-          <Button variant="ghost"
+          <Button variant="outline"
             className="ops-button"
             disabled={isFetching || readinessFetching}
             onClick={refreshAll}

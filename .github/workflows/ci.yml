@@ -63,3 +63,13 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: 공통 UI 브라우저 회귀
         run: npm run test:e2e
+      # 셸·버튼 상태 스크린샷(PC 1280·모바일 390)을 리뷰에서 볼 수 있게 남긴다.
+      - name: 브라우저 회귀 스크린샷
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ui-e2e-screenshots
+          path: .git/ui-e2e/**/*.png
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
