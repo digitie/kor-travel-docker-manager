@@ -140,6 +140,33 @@ trusted_dir_chain "$(dirname -- "${APP}")" \
 REL="${RELEASE_ROOT}/${NAME}"
 # basename — 손으로 만든 절대 symlink여도 아래 비교·GC가 같은 이름을 본다.
 PREV="$(basename -- "${CURRENT_TARGET}")"
+# >>> backend-runtime
+# 새 venv와 같은 SHA 재사용 모두 실제 dependency graph와 소스 exact 선언을 검사한다.
+verify_backend_runtime() {
+  "${REL}/backend/.venv/bin/python" -I -m pip check
+  "${REL}/backend/.venv/bin/python" -I - "${REL}/backend/pyproject.toml" <<'PY'
+import json
+import sys
+import tomllib
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+
+declared = tomllib.loads(Path(sys.argv[1]).read_text())["tool"]["poetry"]["dependencies"]
+expected = {name: spec[2:] for name, spec in declared.items()
+            if isinstance(spec, str) and spec.startswith("==")}
+installed = {}
+for name, wanted in expected.items():
+    try:
+        installed[name] = version(name)
+    except PackageNotFoundError:
+        raise SystemExit("backend exact dependency is missing: " + name) from None
+    if installed[name] != wanted:
+        raise SystemExit("backend exact dependency mismatch: " + name)
+print(json.dumps({"stage": "backend-installed-exact-versions", "versions": installed}, sort_keys=True))
+PY
+}
+# <<< backend-runtime
+
 if [[ "$(cat "${REL}/.ktdm-source-revision" 2>/dev/null)" != "${SHA}" ]]; then
   [[ "${PREV}" != "${NAME}" ]] || die "the active release has no revision marker: ${REL}"
   rm -rf -- "${REL}"
@@ -165,7 +192,10 @@ EOF
   # 헛된 'not found'를 남긴다.
   KOR_TRAVEL_DOCKER_MANAGER_PROJECT_ROOT="${REL}" "${REL}/backend/.venv/bin/python" -I \
     -c 'import kor_travel_docker_manager.cli'
+  verify_backend_runtime
   printf '%s\n' "${SHA}" > "${REL}/.ktdm-source-revision"
+else
+  verify_backend_runtime
 fi
 # UI는 docker-compose.yml을 제자리에서 고친다. C6c 보호 참조의 원본(ADR-51 결정 5)은 git에서 매번 다시
 # 쓰는 이 사본이다 — 같은 revision을 다시 설치해도(추출을 건너뛰어도) 빠진 사본이 복구된다.

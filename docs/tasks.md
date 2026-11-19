@@ -1,3 +1,10 @@
+## 2026-11-20 — Manager backend 선택 애플리케이션 스택
+
+- [x] 직접 사용 app 축과 Pydantic core 짝 exact 선언, 정상 설치의 pip check/source 버전 readback, 기존 offline wheelhouse 소비 계획.
+- [x] 새 독립 resolver 및 집중346건 통과. graph 불일치·graph 정상/버전 구식·paired core 누락은 전환 전에 거부한다.
+- [x] required 공통 app profile job에 공개 frozen 후보를 결박했다. 실제 sibling checkout CLI 양성0·옛 FastAPI/SQLAlchemy 음성1/1이다.
+- [ ] 생산자 main 편입·정확 CI·집중 검토·병합. 현재622 root/활성 Weather SDK/기존 UI는 변경하지 않는다.
+
 ## 2026-11-20 — Geo API/CS 정상 후보
 
 - [x] 기존 core CLI의 명시 Geo dispatch, API/CS만 허용·UI 비선택, G/lease/quiet·source/native·schema 불변·실패/취소 복구 계약.

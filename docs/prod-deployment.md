@@ -1408,3 +1408,31 @@ project(`/opt/kor-travel-odroid/compose-mon.yml`)다 — registry `node` target�
 저장소의 compose(`docker-compose.yml`·`docker-compose.shared.yml`·`transport.override.yml`·admin compose, 실행 중 컨테이너의
 label은 빌드 디렉터리 사본)로 돈다. odroid에 상한을 주려면 그 파일들(저장소 밖)과 transport 저장소에 같은 `logging` 정의를
 넣어야 한다.
+
+
+## 애플리케이션 의존성 exact 선언과 정상 설치 확인
+
+Backend의 선택 애플리케이션 버전 정본은 `backend/pyproject.toml`이다. Poetry lock이
+없는 현재 경로는 직접 사용 축과 Pydantic의 알려진 core 짝을 정확하게 선언하고,
+공통 `--strict-python-application` 정책으로 검사한다. Manager에 없는 asyncpg·
+psycopg·Alembic·Common Python을 검사 통과 목적으로 추가하지 않는다. 호스트 Dagster의
+별도 daemon-pool 제약은 이 backend profile로 덮어쓰지 않는다.
+
+정상 trusted installer는 기존처럼 새 release의 venv에서 offline wheelhouse로
+의존성을 해석한다. 새 release와 같은 SHA 재사용 모두 표준 `pip check` 다음
+`importlib.metadata`로 소스의 exact 선언과 실제 설치 버전을 대조한다. 새 release의
+완료 표식과 root 전환은 검사 뒤다. graph가 정상이어도 버전이 오래됐으면 거부한다.
+새 SDK 소스를 옛 venv에 `--no-deps`로 얹은 것을 새 애플리케이션 설치로 간주하지 않는다.
+
+기존 wheelhouse를 덮어쓰지 않고 실제 대상 Python/ABI/아키텍처에 맞는 새 wheelhouse를
+준비한다. 실제 merged Manager wheel의 metadata가 의존성 목록의 정본이다. 표준
+`pip download --only-binary=:all:`과 기존
+`scripts/provision-ktdm-offline-wheelhouse.py`를 사용하며, trusted Debian Poetry
+build backend와 atomic publish 계약을 유지한다. x64 native wheel을 ARM으로 옮기거나
+전역 pip upgrade·임의 overlay로 resolver 실패를 숨기지 않는다. normal installer는
+새 경로를 `--wheelhouse`로 소비하고 누락·불일치는 root 전환 전에 실패한다.
+
+실제 적용은 정확 CI·검토·병합 및 해당 호스트의 기존 SDK 작업 terminal/원상 복원
+뒤 별도다. 기존 실행 root나 진행 중 SDK 스코프를 이 소스 변경에서 갱신하지 않는다.
+설치 후 실제 source·PID·health·모듈 바이트와 선택 버전을 읽고 최소 인증 계약을
+확인한다. frontend bytes가 같으면 기존 source/build/PID를 사실대로 재사용한다.

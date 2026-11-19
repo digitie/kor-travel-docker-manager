@@ -1,3 +1,9 @@
+## 2026-11-20 — Manager backend 선택 애플리케이션 스택 정렬
+
+- 기존 backend 직접 사용 축과 Pydantic core 짝을 정확 선언으로 맞춘다. 별도 lock·미사용 driver/Common 패키지나 호스트 daemon-pool 변경은 추가하지 않는다. 독립 source branch만 변경하며 실행622 root/SDK 스코프와 frontend7f07은 보존한다.
+- 기존 trusted installer의 fresh/cached venv 모두 표준 pip check와 source TOML exact 선언의 설치 버전 읽기를 수행한다. dependency graph가 정상인 옛 환경도 완료 표식/root 전환 전에 거부한다. 새 target wheelhouse는 기존 trusted atomic provision 경로를 재사용한다.
+- 새 독립 CPython3.13 환경의 실제 resolver/pip check, installer64·인증24·WS45·Geo/Weather/Transport/CLI213 합계346건을 검증했다. Transport unhealthy polling의 실제 sleep만 로컬 가상 시계이며 원 assertion은 보존했다. 운영 root 업데이트·Geo 빌드·CI 순서 감사는 실행하지 않는다. 새 required 공통 app profile job은 frozen 후보와 consumer/backend만 사용한다. 생산자 main 편입·정확 CI·검토·병합은 후속이다.
+
 ## 2026-11-20 — Geo API/CS 정상 후보 진입점
 
 - 기존 public core CLI에 Geo만 명시 dispatch하고 기존 G·project lease·source/receipt·frozen Compose·health·public adopter를 재사용한다. API/CS 두 역할만 선택하고 UI·Map·schema·타 앱·원래 환경을 보존한다.
@@ -259,7 +265,7 @@ integration-8-review의 UI0.2.0/tokens0.1.1·Lightning CSS1.33.0+nativecss.fix.4
 
 - 최신 병합 main `b199264`에서 별도 작업을 시작했다. Odroid 공개 UI의 컨테이너 목록 503과 공유 수집 JOIN 5초 timeout을 재현했으며, 단순 설치로 해소되지 않은 원 실패를 보존한다.
 - 설치본의 별도 읽기 전용 수집 1회는 전체 4.1061초·42행, Compose 파싱 1.3280초·실행 목록 0.0737초·원격 HTTP 0.6813초였다. 메트릭 캐시가 빈 별도 프로세스 표본이며 개별 Docker 비용과 실제 backend 경합은 계측하지 않았다.
-- 실제 Compose 원문을 두 안전한 파서로 각각 한 번 읽어 Python 1.4345초·C 0.1318초와 모델 동등성을 확인했다. `get_compose_config`만 `CSafeLoader` 우선·미설치 시 `SafeLoader`로 바꾸고 매 호출 파일 읽기를 유지한다. 새 캐시·스레드·재시도·대기 예산 변경·음성 결과 완화는 없다.
+- 실제 Compose 원문을 두 안전한 파서로 각각 한 번 읽어 Python 1.4346초·C 0.1318초와 모델 동등성을 확인했다. `get_compose_config`만 `CSafeLoader` 우선·미설치 시 `SafeLoader`로 바꾸고 매 호출 파일 읽기를 유지한다. 새 캐시·스레드·재시도·대기 예산 변경·음성 결과 완화는 없다.
 - 최초 선택 회귀는 기존 소스에서 2개 실패·9개 통과였다. 수정 후 파서·snapshot·inventory·원격 상태·설정 집중 175개가 14.56초에 통과했고 전체 Ruff 0.16.4도 통과했다. 관련 규약에 단일 표본과 운영 효과의 경계를 기록했다. 독립 두 리뷰·최신 CI·설치 후 수집 및 공개 UI 수용은 후보 검증과 구분하여 정산한다.
 
 ## 2026-11-09 — PR486 최신 main 통합과 점검 격리 모드 보존
