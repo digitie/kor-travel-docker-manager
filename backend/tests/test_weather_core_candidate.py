@@ -7,8 +7,10 @@ import io
 import json
 import subprocess
 import tarfile
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from test_transport_core_candidate import core_case as core_case
@@ -21,6 +23,7 @@ from kor_travel_docker_manager.services import service_release_core_candidate as
 from kor_travel_docker_manager.services import service_release_weather_candidate as weather
 from kor_travel_docker_manager.services import standalone_backup as backup
 from kor_travel_docker_manager.services import transport_core_state as state
+from kor_travel_docker_manager.services.errors import ManagerMutationActiveError
 from kor_travel_docker_manager.services.registry import (
     TargetsConfigError,
     load_targets_config,
@@ -740,3 +743,99 @@ def test_weather_legacy_compose_start_then_bounded_health_poll(weather_case, mon
         assert result["success"], result
         assert len(pending) == 2 and sleeps == [1, 1]
     assert all("--wait" not in argv for argv, _ in s.calls if "start" in argv)
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_weather_global_contention_preserves_type_before_client_or_lease(
+    weather_case, monkeypatch, execute,
+):
+    s = weather_case
+    original = ManagerMutationActiveError("another Manager mutation is already active")
+    before = copy.deepcopy(s.records)
+    current = release.read_current_release("weather", root=s.root)
+
+    @contextmanager
+    def busy():
+        raise original
+        yield
+
+    factory = Mock(side_effect=AssertionError("경합 뒤 client를 만들면 안 됩니다"))
+    lease = Mock(side_effect=AssertionError("경합 뒤 project lease를 열면 안 됩니다"))
+    source = Mock(side_effect=AssertionError("경합 뒤 source를 읽으면 안 됩니다"))
+    monkeypatch.setattr(weather, "manager_mutation_lock", busy)
+    monkeypatch.setattr(state, "project_lease", lease)
+    monkeypatch.setattr(weather, "_source", source)
+    monkeypatch.setattr(s, "factory", factory)
+    with pytest.raises(ManagerMutationActiveError) as caught:
+        apply_weather(s, execute)
+    assert caught.value is original
+    assert caught.value.code == "MANAGER_MUTATION_ACTIVE"
+    factory.assert_not_called()
+    lease.assert_not_called()
+    source.assert_not_called()
+    assert s.records == before and not s.calls and not s.steps
+    assert not s.new_state.exists()
+    assert release.read_current_release("weather", root=s.root) == current
+
+
+@pytest.mark.parametrize("execute", [False, True])
+@pytest.mark.parametrize("kind", ["input", "release"])
+def test_weather_noncontention_errors_keep_safe_wrapper_without_mutation(
+    weather_case, monkeypatch, execute, kind,
+):
+    s = weather_case
+    original = ValueError("PRIVATE_INPUT_DO_NOT_EXPOSE") if kind == "input" else (
+        ServiceReleaseError("기존의 안전한 계약 거절")
+    )
+    before = copy.deepcopy(s.records)
+    current = release.read_current_release("weather", root=s.root)
+
+    @contextmanager
+    def rejected():
+        raise original
+        yield
+
+    factory = Mock(side_effect=AssertionError("거절 뒤 client를 만들면 안 됩니다"))
+    monkeypatch.setattr(weather, "manager_mutation_lock", rejected)
+    monkeypatch.setattr(s, "factory", factory)
+    with pytest.raises(ServiceReleaseError) as caught:
+        apply_weather(s, execute)
+    if kind == "input":
+        assert type(caught.value) is ServiceReleaseError
+        assert caught.value.__cause__ is original
+        assert str(caught.value) == "Weather source/receipt/lease 입력을 안전하게 검증할 수 없습니다"
+        assert "PRIVATE_INPUT_DO_NOT_EXPOSE" not in str(caught.value)
+    else:
+        assert caught.value is original
+    factory.assert_not_called()
+    assert s.records == before and not s.calls and not s.steps
+    assert not s.new_state.exists()
+    assert release.read_current_release("weather", root=s.root) == current
+
+
+def test_weather_cli_base_handler_reports_global_contention(weather_case, monkeypatch, capsys):
+    s = weather_case
+    original = ManagerMutationActiveError("another Manager mutation is already active")
+
+    @contextmanager
+    def busy():
+        raise original
+        yield
+
+    monkeypatch.setattr(weather, "manager_mutation_lock", busy)
+    monkeypatch.setattr(entry, "load_targets_config", lambda: s.config)
+    monkeypatch.setattr(entry, "current_host", lambda config: "odroid")
+    monkeypatch.setattr(entry, "target_hosts", lambda service, config: frozenset({"odroid"}))
+    factory = Mock(side_effect=AssertionError("경합 뒤 Docker를 열면 안 됩니다"))
+    monkeypatch.setattr(weather.docker, "from_env", factory)
+    parser = argparse.ArgumentParser()
+    entry.add_service_release_parser(parser.add_subparsers())
+    args = parser.parse_args([
+        "service-release", "apply-core-candidate", "weather", "--root", str(s.root),
+        "--source-clone", str(s.source), "--source-sha", s.sha,
+        "--build-receipt", str(s.build_path), "--build-sha256", "b" * 64,
+        "--receipt", str(s.receipt_path), "--sha256", "c" * 64, "--dry-run",
+    ])
+    assert entry._run(args) == 2
+    assert json.loads(capsys.readouterr().out) == {"success": False, "message": str(original)}
+    factory.assert_not_called()
+    assert not s.calls and not s.steps and not s.new_state.exists()

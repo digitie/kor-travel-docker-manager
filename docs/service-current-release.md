@@ -383,6 +383,12 @@ Pinvi web 적용 뒤의 Map 후보도 검증된 Pinvi current를 같은 방식�
 
 `service-release apply-core-candidate weather`는 기존 `weather.main`의 세 runtime(API·CS·UI)과 등록된 `kor-travel-weather-migrate`만 다룬다. Transport 후보 경로, paired pin/adopt/recreate, 공용 plane과 current manifest schema는 바꾸지 않는다.
 
+Weather의 G 경합은 기존 ManagerMutationActiveError(code=MANAGER_MUTATION_ACTIVE)를
+그대로 전달하고 CLI의 기존 계약 거절 handler가 exit2로 처리한다. 다른 ValueError의
+source/receipt/lease 입력 오류는 기존 generic 메시지로 가려 원문을 노출하지 않는다.
+잠금·검증 순서나 재시도 정책은 바꾸지 않으며, 시간 중첩만으로 과거 실패 원인을 단정하지 않는다.
+
+
 ```bash
 ktdctl service-release apply-core-candidate weather \
   --source-clone <root 소유 canonical 실제 merged M clone> --source-sha <M> \

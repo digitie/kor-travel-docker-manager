@@ -1,3 +1,9 @@
+## 2026-11-19 — Weather core G 경합 예외 분류 보존
+
+- Weather public wrapper가 ValueError 하위인 ManagerMutationActiveError를 generic 입력 오류로 바꾸던 경로를 좁은 passthrough로 고쳤다. 기존 G·project lease·source/receipt·generic privacy·CLI exit2 handler는 유지한다.
+- 기존 fake Engine의 공개 wrapper/CLI 시험7건으로 dry/confirm 경합의 같은 예외 객체·code, client/lease/source 호출 없음·현재 표식/비선택 불변, 일반 입력 오류의 비밀 비노출과 기존 ServiceReleaseError 전달을 확인했다. 수정 전3FAIL/4PASS, 수정 뒤 기존 Weather suite 전체98PASS다.
+- 실제 SDK620·설치본·운영 적용은 변경하지 않았다. 과거 incident의 실제 cause는 미확정이다. 좁은 검토1건·정확 CI·부모 merge 뒤 설치/운영은 별도 후속이다.
+
 ## 2026-11-19 — Transport 공통 경계의 반복 전체 관측 제거
 
 - 기존 SDK618 환경 callback을 사용해 Transport `common()`의 paired pin·비선택·세 ENV 비교에 같은 새 전체 관측을 공유한다. public 입력·lease·pointer·Compose 환경 검사와 다음 경계의 새 관측은 보존한다.
