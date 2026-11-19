@@ -2,7 +2,7 @@
 
 - 기존 backend 직접 사용 축과 Pydantic core 짝을 정확 선언으로 맞춘다. 별도 lock·미사용 driver/Common 패키지나 호스트 daemon-pool 변경은 추가하지 않는다. 독립 source branch만 변경하며 실행622 root/SDK 스코프와 frontend7f07은 보존한다.
 - 기존 trusted installer의 fresh/cached venv 모두 표준 pip check와 source TOML exact 선언의 설치 버전 읽기를 수행한다. dependency graph가 정상인 옛 환경도 완료 표식/root 전환 전에 거부한다. 새 target wheelhouse는 기존 trusted atomic provision 경로를 재사용한다.
-- 새 독립 CPython3.13 환경의 실제 resolver/pip check, installer64·인증24·WS45·Geo/Weather/Transport/CLI213 합계346건을 검증했다. Transport unhealthy polling의 실제 sleep만 로컬 가상 시계이며 원 assertion은 보존했다. 운영 root 업데이트·Geo 빌드·CI 순서 감사는 실행하지 않는다. 공통 guard의 실제 immutable ref 결박·정확 CI·검토·병합은 후속이다.
+- 새 독립 CPython3.13 환경의 실제 resolver/pip check, installer64·인증24·WS45·Geo/Weather/Transport/CLI213 합계346건을 검증했다. Transport unhealthy polling의 실제 sleep만 로컬 가상 시계이며 원 assertion은 보존했다. 운영 root 업데이트·Geo 빌드·CI 순서 감사는 실행하지 않는다. 새 required 공통 app profile job은 frozen 후보와 consumer/backend만 사용한다. 생산자 main 편입·정확 CI·검토·병합은 후속이다.
 
 ## 2026-11-20 — Geo API/CS 정상 후보 진입점
 

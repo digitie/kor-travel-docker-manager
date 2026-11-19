@@ -2,7 +2,8 @@
 
 - [x] 직접 사용 app 축과 Pydantic core 짝 exact 선언, 정상 설치의 pip check/source 버전 readback, 기존 offline wheelhouse 소비 계획.
 - [x] 새 독립 resolver 및 집중346건 통과. graph 불일치·graph 정상/버전 구식·paired core 누락은 전환 전에 거부한다.
-- [ ] 공통 실제 frozen guard 결박과 양/음 CLI 검증, 정확 CI·집중 검토·병합. 현재622 root/활성 Weather SDK/기존 UI는 변경하지 않는다.
+- [x] required 공통 app profile job에 공개 frozen 후보를 결박했다. 실제 sibling checkout CLI 양성0·옛 FastAPI/SQLAlchemy 음성1/1이다.
+- [ ] 생산자 main 편입·정확 CI·집중 검토·병합. 현재622 root/활성 Weather SDK/기존 UI는 변경하지 않는다.
 
 ## 2026-11-20 — Geo API/CS 정상 후보
 

@@ -3,7 +3,7 @@
 ## 2026-11-20 backend app 스택 source 후속
 
 - backend/pyproject.toml exact 선언과 기존 trusted installer의 표준 pip check·설치 버전 읽기를 추가한다. fresh/cached 모두 검사하며 미사용 driver/Common·새 lock은 추가하지 않는다.
-- 새 독립 resolver와 집중346건 PASS. 공통 immutable guard ref·정확 CI·검토·병합은 후속이다. 운영622 root/진행 중 SDK·frontend7f07은 이 source 작업에서 변경하지 않는다.
+- 새 독립 resolver와 집중346건 PASS. required 공통 app profile job은 공개된 frozen 후보에 결박했다. 생산자 main 편입·정확 CI·검토·병합은 후속이다. 운영622 root/진행 중 SDK·frontend7f07은 이 source 작업에서 변경하지 않는다.
 - 소비/새 wheelhouse/실패 경계는 docs/prod-deployment.md의 애플리케이션 의존성 절이 정본이다.
 
 

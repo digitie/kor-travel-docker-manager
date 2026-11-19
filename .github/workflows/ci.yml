@@ -73,3 +73,24 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
+
+
+  python-application-policy:
+    name: 공통 backend 애플리케이션 정책
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: consumer
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: digitie/kor-travel-common
+          ref: b566840cb111fa8b1184498aa892b0fd5ce7e5c6
+          path: common-policy
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: 실제 backend exact 선언 검증
+        run: python common-policy/tools/check_versions.py consumer/backend --repo kor-travel-docker-manager --strict-python-application --json backend-application-policy.json
