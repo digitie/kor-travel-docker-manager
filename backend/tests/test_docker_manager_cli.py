@@ -2689,6 +2689,7 @@ def test_targets_validate_can_check_coordinates_on_request(capsys, monkeypatch, 
     assert captured.err.splitlines() == [
         "declared external coordinates do not exist here:",
         "  targets.node.external_project.working_dir: /opt/kor-travel-host-monitoring",
+        "  targets.fuel.external_project.working_dir: /opt/kor-travel-odroid/transport-fuel",
         "  targets.transport.external_project.working_dir: "
         "/home/digitie/apps/kor-travel-transport",
     ]
