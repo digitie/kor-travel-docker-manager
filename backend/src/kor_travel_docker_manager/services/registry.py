@@ -1134,6 +1134,7 @@ _ALLOWED_CONTAINER_FIELDS: Final = frozenset(
         "external_project",
         "metrics_path",
         "metrics_port",
+        "metrics_bearer_env",
     }
 )
 
