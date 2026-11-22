@@ -1673,6 +1673,12 @@ services:
     restart: unless-stopped
     logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    # API 프로세스를 swap에서 지킨다(Map 읽기 성능 계획 T-READ-MGR-03, F-02: 한가한 사이 VmSwap 154 MB·RSS 14 MB로
+    # 밀려나 다음 요청이 같은 디스크에서 페이지를 다시 읽었다). `memswap_limit == mem_limit`라 컨테이너의 anon 페이지는
+    # swap으로 나가지 않는다. 상한은 OOM 경계일 뿐이라 실측 최고치(2026-11-23 n150, docs/journal.md)의 몇 배로 넉넉히
+    # 둔다 — 호스트별 값은 root `.env`(`KTDM_MAP_API_MEM_LIMIT`, `0`이면 상한·swap 차단 모두 없음).
+    mem_limit: ${KTDM_MAP_API_MEM_LIMIT:-1g}
+    memswap_limit: ${KTDM_MAP_API_MEM_LIMIT:-1g}
     depends_on:
       kor-travel-shared-postgres:
         condition: service_healthy
@@ -1706,7 +1712,11 @@ services:
       # ADR-24/T-038 — standalone Map은 destructive default false다. Manager가
       # 관리하는 production runtime만 review된 source에서 명시적으로 승인한다.
       KOR_TRAVEL_MAP_API_DESTRUCTIVE_ENABLED: 'true'
-      KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED: 'false'
+      # `/metrics`(T-READ-MGR-03 ②·02). 운영 profile은 켜면 32자 이상 token이 필수라(Map `api/settings.py`) 둘 다 root
+      # `.env`에서 함께 준다 — 기본은 꺼짐(token 없는 격리 실행·시험 렌더가 그대로 뜬다). 중앙 Prometheus는 같은 token을
+      # registry `metrics_bearer_env`로 받아 Bearer로 긁는다(`prometheus` 서비스).
+      KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED: ${KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED:-false}
+      KOR_TRAVEL_MAP_API_METRICS_TOKEN: ${KOR_TRAVEL_MAP_API_METRICS_TOKEN:-}
       KOR_TRAVEL_MAP_API_ADMIN_TRUSTED_PROXY_CIDRS: '["127.0.0.1/32","::1/128"]'
       KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET: ${KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET:?KOR_TRAVEL_MAP_ADMIN_PROXY_SECRET must be explicitly set}
       KOR_TRAVEL_MAP_API_SERVICE_TOKEN: ${KOR_TRAVEL_MAP_API_SERVICE_TOKEN:?KOR_TRAVEL_MAP_API_SERVICE_TOKEN must be explicitly set}
@@ -2140,6 +2150,9 @@ services:
     restart: unless-stopped
     logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    # Map API와 같은 규칙(T-READ-MGR-03) — swap 차단, 상한은 실측 최고치의 몇 배(`KTDM_PINVI_API_MEM_LIMIT`).
+    mem_limit: ${KTDM_PINVI_API_MEM_LIMIT:-1g}
+    memswap_limit: ${KTDM_PINVI_API_MEM_LIMIT:-1g}
     depends_on:
       # ADR-46 — 앱 DSN이 실제로 접속하는 곳.
       kor-travel-shared-postgres:
@@ -2565,6 +2578,25 @@ services:
     logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
     user: ${PROMETHEUS_RUN_AS_USER:-0}
+    # scrape Bearer token(T-READ-MGR-02). 파생 `prometheus.yml`의 job은 `credentials_file: /tmp/scrape-auth/<env 이름>`을
+    # 읽는다(registry `metrics_bearer_env`). entrypoint는 **그 파일에 적힌 이름**을 읽어 같은 이름의 env 값을 0600 파일로
+    # 옮긴다 — 이름을 여기에 다시 적지 않는다. token은 아래 `environment`로만 들어오고(새 비밀이 아니라 그 서비스가 받는
+    # 같은 값), `backend/tests/test_prometheus_targets_are_derived.py`가 registry의 이름 집합 == 이 `environment`를 대조한다.
+    environment:
+      KOR_TRAVEL_MAP_API_METRICS_TOKEN: ${KOR_TRAVEL_MAP_API_METRICS_TOKEN:-}
+    entrypoint:
+    - /bin/sh
+    - -ec
+    - |
+      umask 077
+      mkdir -p /tmp/scrape-auth
+      for name in $$(sed -n 's#.*credentials_file: /tmp/scrape-auth/\([A-Za-z0-9_]*\).*#\1#p' /etc/prometheus/prometheus.yml); do
+        eval "value=\$${$$name:-}"
+        printf '%s' "$$value" > "/tmp/scrape-auth/$$name"
+        unset "$$name"
+      done
+      exec /bin/prometheus "$$@"
+    - prometheus
     command:
     - --config.file=/etc/prometheus/prometheus.yml
     - --storage.tsdb.path=/prometheus

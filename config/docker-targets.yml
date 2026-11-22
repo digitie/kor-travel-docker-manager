@@ -167,6 +167,10 @@ containers:
     role: map-api
     display_name: Kor Travel Map API
     connection: http://{host}:12701
+    # 요청·DB 시간 histogram(T-READ-MGR-02). 운영 `/metrics`는 Bearer token이 필요하다 — Prometheus는 이 env 이름의 값을
+    # 파일로 받아 쓴다(`services/prometheus_targets.py`). Map API가 지표를 켜는 것은 root `.env`(compose 주석).
+    metrics_path: /metrics
+    metrics_bearer_env: KOR_TRAVEL_MAP_API_METRICS_TOKEN
     prod_url_env: KTDM_PROD_URL_MAP_API
     prod_url_path: /health
     expected_ports:
@@ -209,6 +213,8 @@ containers:
     role: pinvi-api
     display_name: PinVi API
     connection: http://{host}:12801
+    # PinVi `/metrics`(prometheus_client, 인증 없음) — route별 요청 시간(T-READ-MGR-02).
+    metrics_path: /metrics
     prod_url_env: KTDM_PROD_URL_PINVI_API
     prod_url_path: /docs
     expected_ports:

@@ -135,6 +135,14 @@ def test_weather_code_server_keeps_todays_limit_by_default():
     assert service["oom_score_adj"] == -500
 
 
+@pytest.mark.parametrize("name", ["kor-travel-map-api", "pinvi-api"])
+def test_api_processes_are_kept_out_of_swap_by_default(name):
+    # T-READ-MGR-03(F-02): 기본 호스트(n150)에서도 실효 상한이 있어야 memswap 규칙이 swap을 막는다 — `0`이면 둘 다 빠진다.
+    service = _compose()["services"][name]
+    assert name in _host_limited(_compose()["services"])
+    assert compose_default(service["mem_limit"]) not in {"0", ""}
+
+
 def test_oom_priorities():
     compose = _compose()
     services = compose["services"]

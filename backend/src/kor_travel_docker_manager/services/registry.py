@@ -859,6 +859,14 @@ def _validate_targets_config(config: dict[str, Any], *, label: str) -> None:
                 f"{label} containers.{container_id}.metrics_path: must start with / on a "
                 "scheme://{host}:<port> connection (or give metrics_port)"
             )
+        bearer_env = spec.get("metrics_bearer_env")
+        if bearer_env is not None and (
+            metrics_path is None or not isinstance(bearer_env, str) or _ENV_NAME.fullmatch(bearer_env) is None
+        ):
+            # scrape Bearer token의 env 이름(T-READ-MGR-02) — Prometheus job의 credentials_file 이름이 된다.
+            raise TargetsConfigError(
+                f"{label} containers.{container_id}.metrics_bearer_env: must be an env name next to metrics_path"
+            )
 
     seen_aliases: dict[str, str] = {}
     for target_id, spec in targets.items():
