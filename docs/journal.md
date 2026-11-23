@@ -1,3 +1,16 @@
+## 2026-11-23 — 후속 ① 운영 적용: job_ticks 정리 인덱스(n150)
+
+- Manager `1ec54139`(#631) 설치(unit `mgr-tickidx-t1123e`: preflight PASS·io-guard 0·전역 lock 비어 있음·회전 unit 없음 확인 뒤) →
+  `pin rebind-execution` → `pin verify` 0. 이어 부른 `dagster-plane converge --dry-run`은 Concierge prebuilt 설정 때문에 거부됐다(→ #632).
+- 인덱스는 같은 설치본으로 돈 다음 pinned 재구축(다른 세션의 회전 rot29 `t1123e`, committed)의 plane 수렴이 만들었다 —
+  host 이미지 `0a02ea5b1d52d1f9` 빌드 → `run --rm --no-deps --build kor-travel-dagster-storage-migrate` → plane 재생성. 공용 PG 재생성 없음.
+  `ktdm_job_ticks_selector_status_timestamp` valid·ready 39 MB, webserver·daemon healthy, `pin verify` 0.
+- 운영 계획(가장 tick이 많은 sensor, 7일 SKIPPED): Bitmap Index Scan이 새 인덱스로 바뀌어 3,905 블록·9.5 ms → 19 블록·0.105 ms.
+- `pg_stat_statements` 15분 창(05:55~06:10Z) 차분: status 하나인 DELETE 986회 평균 **0.398 ms·29.5 블록**(전 11-15~23 누적 28.0 ms·약 2,840),
+  status 여럿 511회 **0.103 ms·8.3 블록**(전 24.7 ms·약 386). 하루로 환산하면 약 3,600초 → 약 45초.
+- 같은 창에서 새 freeze 헬퍼(`kor-travel-ops/dagster-freeze.py`)가 rot28·rot29의 stop/start를 `FREEZE_*_OK`로 끝냈다.
+- 남은 것: #632(plane converge pinned scope)는 머지만 됐고 설치는 다음 정상 설치 때. MGR-04 재판단.
+
 ## 2026-11-23 — `dagster-plane converge`가 Concierge prebuilt 설정에 막힌다 → 재구축과 같은 pinned scope
 
 - #631 설치(`1ec54139`, rebind·`pin verify` 0) 뒤 `ktdctl dagster-plane converge --dry-run`이 `capture_transaction_unlocked`에서
