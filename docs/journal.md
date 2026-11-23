@@ -9,7 +9,7 @@
 - **plane 수렴이 storage one-shot을 건너뛰던 틈**: plane 재생성은 `up -d --no-deps`라 render가 plane 앞에 둔
   `service_completed_successfully` 의존(storage migrate)이 돌지 않았다 — host 이미지(Dagster 버전·storage 준비)가 바뀌어도
   `dagster-plane converge`만으로는 새 이미지의 migrate가 돌지 않는다. 그 의존을 render에서 파생해 `up` 전에
-  `run --rm --no-deps`하고 실패하면 plane을 다시 만들지 않는다. host 이미지 tag `11a71574b8114c5b` → `a14262c59d38d1df`.
+  `run --rm --no-deps`하고 실패하면 plane을 다시 만들지 않는다. host 이미지 tag `11a71574b8114c5b` → `0a02ea5b1d52d1f9`.
 - **④ unfreeze `startSchedule` HTTP 500(11-23 01:04:47Z, readperf-t1123a)**: 공용 PG 재생성(01:02:00) 뒤 webserver가 들고 있던
   storage 연결(`optimize_for_webserver`: pool_size 1, pre-ping 없음)이 죽어 있었고, 그 뒤 첫 schedule storage 호출이 실패했다.
   Dagster는 resolver 예외를 `PythonError`로 돌려주면서 HTTP 500을 낸다(`ErrorCapture`) — webserver 로그에는 남지 않는다.

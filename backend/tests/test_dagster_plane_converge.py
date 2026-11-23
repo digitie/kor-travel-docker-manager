@@ -229,6 +229,19 @@ def test_a_failed_storage_one_shot_leaves_the_plane_untouched(
     assert [args[0] for args, _held in calls] == ["run"]
 
 
+def test_the_real_plane_runs_exactly_the_storage_migrate_one_shot_first(harness: SimpleNamespace) -> None:
+    """항진명제 방지 — 위 시험들의 기대값은 함수 자신으로 파생하므로, 실제 render에서 무엇이 나오는지 한 번 literal로 결박한다.
+
+    공용 instance(PostgreSQL 서버)·db-init은 들지 않는다 — 그것들은 `ensure dagster`의 몫이다.
+    """
+
+    services = harness.resolved["services"]
+    oneshots = compose_service_module._completed_oneshot_dependencies(services, harness.plane.services)
+    assert oneshots == ("kor-travel-dagster-storage-migrate",)
+    assert services[oneshots[0]]["command"] == ["/usr/local/bin/kor-travel-dagster-storage-migrate"]
+    assert not set(oneshots) & compose_service_module.postgres_server_services(harness.resolved)
+
+
 def test_only_completed_successfully_dependencies_are_run_first() -> None:
     services = {
         "web": {"depends_on": {

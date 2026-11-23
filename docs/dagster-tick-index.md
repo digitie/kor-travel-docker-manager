@@ -4,7 +4,7 @@ Dagster 최신 tick SQL은 `selector_id = … OR (selector_id IS NULL AND job_or
 
 `docker/dagster-host/storage-migrate.py`는 PostgreSQL storage를 bootstrap한 뒤 `public.job_ticks("timestamp" DESC)`의 `ktdm_job_ticks_latest_timestamp` 인덱스를 준비한다. 이후 기존 Dagster migration을 exec한다. 데이터·기존 인덱스·조회 상태와 개수는 보존한다.
 
-인덱스는 autocommit 연결에서 CONCURRENTLY로 만들며 연결·lock 대기는 각각 5초, SQL 작업은 120초로 제한한다. 같은 이름·같은 정의가 valid/ready면 재진입은 무연산이다. 같은 정의의 invalid/unfinished index만 drop concurrently 후 재생성한다. 다른 정의의 이름 충돌은 수동 확인이 필요한 오류다. 실패를 완료로 삼지 않는다.
+인덱스는 autocommit 연결에서 CONCURRENTLY로 만들며 연결 대기는 5초, lock 대기는 60초(2026-11-23 전 5초), SQL 작업은 600초(전 120초)로 제한한다. 같은 이름·같은 정의가 valid/ready면 재진입은 무연산이다. 같은 정의의 invalid/unfinished index만 drop concurrently 후 재생성한다. 다른 정의의 이름 충돌은 수동 확인이 필요한 오류다. 실패를 완료로 삼지 않는다.
 
 운영 적용은 Manager의 storage 준비 단계가 소유하며 기존 배포 절차·호스트 lock을 따른다. 접속 URL은 선언된 PostgreSQL storage 설정에서 읽고 출력하지 않는다. 독립 운영 SQL을 각 consumer 저장소에 복제하지 않는다.
 
@@ -39,6 +39,6 @@ tick 보존 정리를 위한 것이다. daemon은 instigator의 tick이 끝날 �
 
 적용 경로: 인덱스는 storage migrate one-shot이 만든다. `dagster-plane converge`(와 재구축 안의 plane 수렴)는 plane을
 다시 만들기 전에 render에서 파생한 `service_completed_successfully` 의존 one-shot을 `run --rm --no-deps`로 먼저 돌리므로,
-host 이미지 tag가 바뀐 설치 뒤 plane converge 한 번이 인덱스를 만든다. CONCURRENTLY라 쓰기를 막지 않으며 lock 대기 5초,
-SQL 상한 600초(디스크 대기가 큰 호스트의 첫 빌드)다. 실패하면 plane은 그대로 두고 converge가 실패한다 — 다음 실행이
+host 이미지 tag가 바뀐 설치 뒤 plane converge 한 번이 인덱스를 만든다. CONCURRENTLY라 쓰기를 막지 않는다. 다만 빌드는 진행 중인 쓰기 transaction(daemon의 정리 DELETE 포함)을 기다리고
+그 대기가 `lock_timeout`에 걸려 60초로 늘렸다. SQL 상한은 600초(디스크 대기가 큰 호스트의 첫 빌드)다. 실패하면 plane은 그대로 두고 converge가 실패한다 — 다음 실행이
 invalid 인덱스를 지우고 다시 만든다.

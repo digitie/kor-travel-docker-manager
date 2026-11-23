@@ -83,11 +83,13 @@ def _ensure_tick_index(connection, name: str, columns: str) -> None:
         raise TickIndexError(f"tick 인덱스 준비 미완료({name}): storage bootstrap을 재시도하세요")
 
 
-def ensure_tick_lookup_index(postgres_url: str) -> None:
+def ensure_tick_indexes(postgres_url: str) -> None:
     """`TICK_INDEXES`를 차례로 준비한다.
 
-    CONCURRENTLY는 운영 쓰기를 막지 않으며, autocommit 연결에서만 실행한다. lock 대기는 5초다.
-    SQL 작업은 600초로 제한한다 — 디스크 대기가 큰 호스트에서 수십만 행 표의 첫 빌드가 120초를 넘을 수 있다.
+    CONCURRENTLY는 운영 쓰기를 막지 않으며, autocommit 연결에서만 실행한다. CONCURRENTLY 빌드는 진행 중인
+    쓰기 transaction(daemon의 tick 정리 DELETE 포함)이 끝나기를 기다리고 그 대기가 `lock_timeout`에 걸린다 — 디스크
+    대기가 큰 호스트에서 DELETE 하나가 수 초 걸릴 수 있어 60초로 둔다(이 lock은 DML을 막지 않는다). SQL 작업은
+    600초로 제한한다 — 수십만 행 표의 첫 빌드가 120초를 넘을 수 있다.
     중단된 같은 정의의 invalid 인덱스는 재시도 때 복구한다. 이름만 같은 다른
     정의는 교체하지 않고 거부한다. Dagster 데이터와 기존 인덱스는 지우지 않는다.
     """
@@ -98,7 +100,7 @@ def ensure_tick_lookup_index(postgres_url: str) -> None:
     )
     try:
         with engine.connect() as connection:
-            connection.exec_driver_sql("SET lock_timeout = '5s'")
+            connection.exec_driver_sql("SET lock_timeout = '60s'")
             connection.exec_driver_sql("SET statement_timeout = '600s'")
             for name, columns in TICK_INDEXES:
                 _ensure_tick_index(connection, name, columns)
@@ -137,7 +139,7 @@ def main() -> int:
         if not all(name.startswith("Postgres") for name in names):
             return _fail(f"storage is not PostgreSQL: {names}")
         try:
-            ensure_tick_lookup_index(_postgres_url(storage["postgres"]))
+            ensure_tick_indexes(_postgres_url(storage["postgres"]))
         except TickIndexError as exc:
             return _fail(str(exc))
         except Exception as exc:  # noqa: BLE001 - 실패는 비밀값 없이 종료 코드 2로 전파

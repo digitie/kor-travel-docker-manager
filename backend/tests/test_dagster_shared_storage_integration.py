@@ -586,7 +586,7 @@ def fixture():
 thread = threading.Thread(target=fixture); thread.start()
 start = time.monotonic(); failure = None
 try:
-    module['ensure_tick_lookup_index'](
+    module['ensure_tick_indexes'](
         f'postgresql://fixture@127.0.0.1:{port}/fixture?connect_timeout=0')
 except Exception as error:
     failure = type(error).__name__
