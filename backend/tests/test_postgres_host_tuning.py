@@ -76,6 +76,20 @@ def test_query_observation_is_on_by_default_and_host_overridable():
         assert f"KTDM_PG_{key.upper()}=" in env_example, key
 
 
+def test_idle_in_transaction_sessions_are_cut_after_ten_minutes_by_default():
+    """트랜잭션을 연 채 비어 있는 세션을 끊는다(2026-11-23 수집 실패 감사 §2.6 9) — 서버 기본값(0, 끄기)을 **바꾸는** 값이다.
+
+    너무 짧으면 문장 사이에 외부 호출을 끼우는 정상 배치가 끊기고, 없으면 lock을 쥔 유령 세션이 남는다. 10분은 감사가 본 긴
+    트랜잭션(odroid highway 4분 남짓)보다 넉넉하다. 호스트가 `.env`로 끄거나(0) 바꾼다.
+    """
+    settings = _settings(_compose()["services"][_PG])
+    assert settings["idle_in_transaction_session_timeout"] == "${KTDM_PG_IDLE_IN_TRANSACTION_SESSION_TIMEOUT:-10min}"
+    assert "KTDM_PG_IDLE_IN_TRANSACTION_SESSION_TIMEOUT=" in (ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
+    # 세션 단위 다른 끊기(문장·lock 대기·유휴 세션)는 두지 않는다 — 긴 적재 문장과 연결 풀의 유휴 연결은 정상이다.
+    for key in ("statement_timeout", "lock_timeout", "idle_session_timeout", "transaction_timeout"):
+        assert key not in settings, key
+
+
 def test_max_connections_is_not_set():
     # compose에 없다(서버 기본 100) — 결정 8 ⅰ은 추가하지 않는다.
     assert "max_connections" not in _settings(_compose()["services"][_PG])

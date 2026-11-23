@@ -799,6 +799,28 @@ docker json-file 회전(50 MB×5 = 250 MB)이 오래된 줄을 지울 수 있으
 **odroid.** odroid의 공용 instance는 이 compose가 아니라 `kor-travel-odroid` project(저장소 밖)로 돈다(`prod-deployment.md`) —
 같은 다섯 `-c`를 그 compose에 넣는 것은 odroid 담당의 몫이다. 이 저장소 기본값을 쓰는 호스트(n150)만 이 변경으로 바뀐다.
 
+## 14. 트랜잭션 유휴 세션 끊기 — `idle_in_transaction_session_timeout` (2026-11-24)
+
+**왜.** 트랜잭션을 연 채 문장을 보내지 않는 세션은 행·advisory lock을 쥔 채 남는다. 공용 instance에서는 그 세션이 다른 테넌트의
+lock 대기와 autovacuum 정체를 만든다(2026-11-23 수집 실패 감사 §2.6 9 — 서버 설정 없음, odroid highway에서 4분 넘는 트랜잭션 관측,
+odroid `transport_collection_states` 5초 lock timeout의 보유자는 못 찾음). 2026-11-24 n150 표본에서 `idle in transaction` 세션은 0개였다.
+
+**설정(compose `command:`, 정본).** `idle_in_transaction_session_timeout=${KTDM_PG_IDLE_IN_TRANSACTION_SESSION_TIMEOUT:-10min}`,
+C6c 허용 목록(`docs/bindings.md` B-10)에 있다. 문장이 **실행 중인** 긴 트랜잭션(적재·VACUUM·긴 SELECT)은 끊지 않는다 — 문장과
+문장 사이가 10분 넘게 비었을 때만 그 세션을 `FATAL: terminating connection due to idle-in-transaction timeout`으로 닫는다.
+`statement_timeout`·`lock_timeout`·`idle_session_timeout`은 두지 않는다(긴 적재 문장과 풀의 유휴 연결은 정상이다).
+
+**적용.** §13과 같다 — 공용 PG **재생성** 때만 반영된다(전 tenant 약 30초 순단, 소유자 승인 창). Manager 설치만으로는 바뀌지 않는다.
+확인: `SELECT current_setting('idle_in_transaction_session_timeout'), source FROM pg_settings WHERE name='idle_in_transaction_session_timeout'`
+→ `10min`·`command line`. 그 뒤 며칠 PG 로그에서 `idle-in-transaction timeout`을 세어 끊긴 세션의 앱(`application_name`·DB)을 본다 —
+끊긴 것이 있으면 그 앱의 결함(트랜잭션 안의 외부 호출 등)이다.
+
+**되돌림.** root `.env`에 `KTDM_PG_IDLE_IN_TRANSACTION_SESSION_TIMEOUT=0` + 재생성. 역할 단위(`ALTER ROLE … SET`)로 좁히는 길도 있지만
+db-init 일곱 곳에 사본이 생기고 Map은 db-init이 없어 택하지 않았다.
+
+**odroid.** odroid 공용 instance는 저장소 밖 compose(`kor-travel-odroid` project)라 같은 `-c` 한 줄을 그 compose에 넣는 것은 odroid
+담당의 몫이다.
+
 ---
 
 ## 관련

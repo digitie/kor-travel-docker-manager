@@ -1409,6 +1409,7 @@ _POSTGRES_ALLOWED_COMMAND_SETTINGS: Final = frozenset(
         "checkpoint_timeout",
         "effective_cache_size",
         "effective_io_concurrency",
+        "idle_in_transaction_session_timeout",
         "listen_addresses",
         "log_lock_waits",
         "log_min_duration_statement",
