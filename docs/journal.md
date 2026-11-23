@@ -1,3 +1,9 @@
+## 2026-11-23 — @kor-travel/ui 0.2.5·tokens 0.1.6 채택(입력 포커스 outline 하나·모바일 체크박스 44px)
+
+- common #81(fe14114: 입력·선택·여러 줄 포커스를 Button과 같은 2px outline 하나로, 모바일 체크박스 after 터치 영역 44px)과 #82(ade7b3e: catalog 파일명·integrity) release pack(artifact 14784066261, SHA256SUMS·SRI 일치)을 vendor·원장·lock·정책 `uses/common-ref`에 반영했다. toast 0.1.5는 쓰지 않는다. 의존 그래프가 같아 lock은 두 항목만 바뀐다.
+- FS-7.8: 입력 포커스 base 규칙(`--color-brand`)을 버튼 규칙과 합쳐 `@layer base`의 `:focus-visible` 하나(`--kt-focus`)로 두고, `.ops-input:focus-visible`(테두리 색+3px 그림자)와 설정 대화상자 입력 세 곳의 `focus:border-*`·`focus-visible:outline-*`·`focus:ring-0` 덧대기를 지웠다.
+- e2e `field-focus.spec.ts`(1440·390): 배포 버전 고정 select·input·textarea와 포트 input의 Tab 포커스가 outline 하나(solid 2px/offset 2px, 버튼과 같은 색)이고 테두리·그림자가 변하지 않음, 390에서 "중지 항목 포함" 체크박스 after 영역 44px 이상과 네 모서리 hit-test.
+
 ## 2026-11-23 — T-READ-MGR-02~06 운영 적용과 결정(n150)
 
 - **실측 창**: 2026-11-22 22:59Z~11-23 02:37Z, 2분 간격(cgroup v2 메모리·swap, PSI, `pg_stat_*`, `pg_stat_statements`, Valkey INFO). 다른 세션의 test gate·e2e가 돌던 창이라 PSI io `some` avg60 중앙값이 적용 전 57%였다. 적용 뒤 창은 약 1.2시간이라 WAL·checkpoint 수치는 경향으로만 본다.

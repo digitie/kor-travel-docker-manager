@@ -1983,13 +1983,13 @@ function EnvironmentSettings({ model }: { model: DashboardModel }) {
                                   ? `env-locked-${key}`
                                   : undefined
                             }
-                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs focus-visible:outline-2 w-full transition-[color,background-color,border-color] font-mono ${
+                            className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs w-full transition-[color,background-color,border-color] font-mono ${
                               locked ? 'text-secondary bg-subtle' : 'text-strong'
                             } ${
                               envError
-                                ? 'border-danger focus:border-danger focus-visible:outline-danger'
-                                : 'border-line focus:border-brand focus-visible:outline-brand'
-                            } focus:ring-0`}
+                                ? 'border-danger'
+                                : 'border-line'
+                            }`}
                             aria-label={`환경 변수 ${key}`} // Added aria-label for accessibility
                             required
                           />
@@ -2040,11 +2040,11 @@ function NetworkSettings({ model }: { model: DashboardModel }) {
                           aria-describedby={
                             configValidation.networkErrors[idx] ? `network-error-${idx}` : undefined
                           }
-                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong focus-visible:outline-2 flex-grow font-mono ${
+                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong flex-grow font-mono ${
                             configValidation.networkErrors[idx]
-                              ? 'border-danger focus:border-danger focus-visible:outline-danger'
-                              : 'border-line focus:border-brand focus-visible:outline-brand'
-                          } focus:ring-0`}
+                              ? 'border-danger'
+                              : 'border-line'
+                          }`}
                           aria-label={`네트워크 ${idx + 1}`} // Added aria-label for accessibility
                           required
                         />
@@ -2132,11 +2132,11 @@ function PortSettings({ model }: { model: DashboardModel }) {
                           aria-describedby={
                             configValidation.portErrors[idx] ? `port-error-${idx}` : undefined
                           }
-                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong focus-visible:outline-2 flex-grow font-mono ${
+                          className={`bg-card border rounded-card min-h-[44px] px-4 py-2 text-xs text-strong flex-grow font-mono ${
                             configValidation.portErrors[idx]
-                              ? 'border-danger focus:border-danger focus-visible:outline-danger'
-                              : 'border-line focus:border-brand focus-visible:outline-brand'
-                          } focus:ring-0`}
+                              ? 'border-danger'
+                              : 'border-line'
+                          }`}
                           aria-label={`포트 매핑 ${idx + 1}`} // Added aria-label for accessibility
                           required
                         />

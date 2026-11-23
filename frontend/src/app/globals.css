@@ -60,16 +60,11 @@
     touch-action: manipulation;
   }
 
-  /* 전역 키보드 포커스는 base 층에서 outline 하나(2px, offset 2px)만 준다.
-     컴포넌트 클래스는 이 위에 테두리·그림자를 덧대지 않는다. */
-  :where(button, a, [role="button"], [role="tab"]):focus-visible {
+  /* 전역 키보드 포커스는 base 층에서 outline 하나(2px, offset 2px, --kt-focus)만 준다.
+     입력·선택·여러 줄도 같다 — ui 0.2.5의 Input·NativeSelect·Textarea가 같은 outline을 그리므로
+     컴포넌트 클래스·utility는 이 위에 테두리 색·그림자(ring)를 덧대지 않는다(FS-7.8). */
+  :where(button, a, [role="button"], [role="tab"], input, select, textarea):focus-visible {
     outline: 2px solid var(--kt-focus);
-    outline-offset: 2px;
-  }
-
-  /* 입력 요소 포커스는 기존 앱 규칙을 유지한다(ui 0.2.3에서 미변경). */
-  :where(input, select, textarea):focus-visible {
-    outline: 2px solid var(--color-brand);
     outline-offset: 2px;
   }
 
@@ -736,11 +731,6 @@
 
   .ops-input:hover {
     border-color: var(--color-tertiary);
-  }
-
-  .ops-input:focus-visible {
-    border-color: var(--color-brand);
-    box-shadow: 0 0 0 3px color-mix(in oklch, var(--color-brand) 18%, transparent);
   }
 
   /* Responsive shell content and data table */
