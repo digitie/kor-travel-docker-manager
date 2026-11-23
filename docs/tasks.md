@@ -1,3 +1,9 @@
+## 2026-11-24 — 공용 PG 트랜잭션 유휴 세션 끊기
+
+- [x] `idle_in_transaction_session_timeout` 10분(compose·C6c 허용 목록·테스트·onboarding §14).
+- [ ] n150 적용: 다음 공용 PG 재생성 창(소유자 승인, onboarding §13 절차). 뒤 며칠 PG 로그의 `idle-in-transaction timeout` 집계.
+- [ ] odroid: host compose(`/opt/kor-travel-odroid/compose.yml`)의 공용 PG `command`에 같은 `-c` 한 줄(Codex) + 재생성 창.
+
 ## 2026-11-20 — 실제 사용 전체 Python 의존성과 오프라인 설치 버전 고정
 
 - backend의 실제 runtime/dev 교집합40종을 `backend/constraints.txt`로 고정한다. 직접/개발 선언16종과 CI pytest9.2.0·Ruff0.17.6도 맞춘다. 사용하지 않는 패키지는 설치 대상으로 추가하지 않는다. 기존 frontend/Common 정본·SDK 동작과 Map 구동부는 유지한다.

@@ -1,3 +1,11 @@
+## 2026-11-24 — 공용 PG `idle_in_transaction_session_timeout` 10분(수집 실패 감사 §4 16)
+
+- 감사 §2.6 9: 공용 PG(n150·odroid)에 `idle_in_transaction_session_timeout`이 없다(n150 `SHOW` → `0`, 역할·DB 단위 설정도 없음).
+  compose `command:`에 `${KTDM_PG_IDLE_IN_TRANSACTION_SESSION_TIMEOUT:-10min}`을 더하고 C6c PG GUC 허용 목록·`.env.example`·
+  contract/host-tuning 테스트·onboarding §14를 고쳤다. 실행 중인 문장은 끊지 않는다 — 문장 사이가 10분 넘게 빈 트랜잭션만.
+- 2026-11-24 n150 `pg_stat_activity` 표본: `idle in transaction` 0개, 1분 넘게 열린 트랜잭션 0개.
+- 적용은 공용 PG 재생성 창(§13과 같은 절차)에서만. 이 PR은 소스뿐이다. odroid는 host compose에 같은 줄(odroid 담당).
+
 ## 2026-11-23 — 후속 ① 운영 적용: job_ticks 정리 인덱스(n150)
 
 - Manager `1ec54139`(#631) 설치(unit `mgr-tickidx-t1123e`: preflight PASS·io-guard 0·전역 lock 비어 있음·회전 unit 없음 확인 뒤) →

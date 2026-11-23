@@ -159,7 +159,7 @@ def test_the_shared_postgres_command_is_the_d4_tuning() -> None:
                "effective_cache_size=", "random_page_cost=", "max_wal_size=", "max_parallel_workers",
                "effective_io_concurrency=", "checkpoint_timeout=", "wal_compression=", "autovacuum_max_workers=",
                "log_min_duration_statement=", "log_parameter_max_length=", "track_io_timing=", "log_lock_waits=",
-               "log_temp_files="))
+               "log_temp_files=", "idle_in_transaction_session_timeout="))
                else token for token in raw]
     assert command == [
         "postgres",
@@ -205,6 +205,8 @@ def test_the_shared_postgres_command_is_the_d4_tuning() -> None:
         "log_lock_waits=on",
         "-c",
         "log_temp_files=0",
+        "-c",
+        "idle_in_transaction_session_timeout=10min",
         "-c",
         "pg_stat_statements.track=all",
         "-c",
