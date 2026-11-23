@@ -1,0 +1,21 @@
+{
+ "_source": "odroid dagster_shared instigators·job_ticks, kortravelweather_dagster.definitions — 2026-11-19 19:00Z 이전 마지막 tick과 17:40Z 이후 첫 tick (2026-11-24 읽기 전용 추출). 감사 §2.4: 11-19 17:25~20:20 weather location의 schedule·sensor 전부 정지.",
+ "location": "kortravelweather_dagster.definitions",
+ "instigators": [
+  {"type": "SCHEDULE", "status": "RUNNING", "name": "daily_weather_retention", "cron": "45 1 * * *", "last_before": "2026-11-19T16:45:00Z", "first_after": "2026-11-20T16:45:00Z"},
+  {"type": "SCHEDULE", "status": "RUNNING", "name": "hourly_airkorea_weather", "cron": "35 * * * *", "last_before": "2026-11-19T16:35:00Z", "first_after": "2026-11-19T20:35:00Z"},
+  {"type": "SCHEDULE", "status": "RUNNING", "name": "hourly_kma_ultra_short_forecast", "cron": "0 * * * *", "last_before": "2026-11-19T17:00:00Z", "first_after": "2026-11-19T21:00:00Z"},
+  {"type": "SCHEDULE", "status": "RUNNING", "name": "hourly_kma_ultra_short_nowcast", "cron": "20 * * * *", "last_before": "2026-11-19T16:20:00Z", "first_after": "2026-11-19T21:20:00Z"},
+  {"type": "SCHEDULE", "status": "RUNNING", "name": "hourly_kma_weather_alerts", "cron": "5 * * * *", "last_before": "2026-11-19T17:05:00Z", "first_after": "2026-11-19T21:05:00Z"},
+  {"type": "SCHEDULE", "status": "RUNNING", "name": "kma_mid_forecast_publish_hours", "cron": "30 6,18 * * *", "last_before": "2026-11-19T09:30:00Z", "first_after": "2026-11-19T21:30:00Z"},
+  {"type": "SCHEDULE", "status": "RUNNING", "name": "kma_short_forecast_publish_hours", "cron": "15 2,5,8,11,14,17,20,23 * * *", "last_before": "2026-11-19T17:15:00Z", "first_after": "2026-11-19T23:15:00Z"},
+  {"type": "SCHEDULE", "status": "RUNNING", "name": "regional_alert_events_every_five_minutes", "cron": "*/5 * * * *", "last_before": "2026-11-19T17:15:00Z", "first_after": "2026-11-19T20:25:00Z"},
+  {"type": "SCHEDULE", "status": "RUNNING", "name": "short_forecast_retention_every_ten_minutes", "cron": "*/10 * * * *", "last_before": "2026-11-19T17:10:00Z", "first_after": "2026-11-19T20:30:00Z"},
+  {"type": "SCHEDULE", "status": "STOPPED", "name": "three_hourly_open_meteo_current_weather", "cron": "47 0,3,6,9,12,15,18,21 * * *", "last_before": "2026-11-10T21:47:00Z", "first_after": null},
+  {"type": "SCHEDULE", "status": "RUNNING", "name": "twice_daily_regional_weather", "cron": "30 5,17 * * *", "last_before": "2026-11-19T08:30:00Z", "first_after": "2026-11-19T20:30:00Z"},
+  {"type": "SENSOR", "status": "RUNNING", "name": "weather_address_refresh", "min_interval": 600, "last_before": "2026-11-19T17:09:16Z", "first_after": "2026-11-19T20:20:48Z"},
+  {"type": "SENSOR", "status": "RUNNING", "name": "weather_export_publisher", "min_interval": 60, "last_before": "2026-11-19T17:15:07Z", "first_after": "2026-11-19T20:20:48Z"},
+  {"type": "SENSOR", "status": "RUNNING", "name": "weather_infrastructure_retry", "min_interval": 60, "last_before": "2026-11-19T17:15:32Z", "first_after": "2026-11-19T20:20:48Z"},
+  {"type": "SENSOR", "status": "RUNNING", "name": "weather_sync_recovery", "min_interval": 60, "last_before": "2026-11-19T17:15:07Z", "first_after": "2026-11-19T20:20:48Z"}
+ ]
+}

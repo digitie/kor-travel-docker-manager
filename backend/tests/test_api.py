@@ -2733,6 +2733,30 @@ def test_get_disk_usage_requires_authentication():
     assert response.status_code == 401
 
 
+@patch("kor_travel_docker_manager.api.routes.plane_watchdog")
+def test_get_plane_alerts_returns_last_evaluation(mock_watchdog):
+    login_client()
+    mock_watchdog.status_payload.return_value = {
+        "schema": "kor-travel-docker-manager.plane-alerts.v1",
+        "summary": {"state": "firing", "text": "경보 1건(심각 1, 주의 0)", "critical": 1, "warning": 0},
+        "alerts": [{"rule": "location_tick_stall", "severity": "critical"}],
+    }
+
+    response = client.get("/api/v1/plane-alerts")
+
+    assert response.status_code == 200
+    assert response.json()["alerts"][0]["rule"] == "location_tick_stall"
+    mock_watchdog.status_payload.assert_called_once_with()
+
+
+def test_get_plane_alerts_requires_authentication():
+    client.cookies.clear()
+
+    response = client.get("/api/v1/plane-alerts")
+
+    assert response.status_code == 401
+
+
 @patch("kor_travel_docker_manager.api.routes.compose_service")
 def test_api_error_bodies_are_scrubbed(mock_compose_service, tmp_path, monkeypatch):
     """오류 본문은 브라우저까지 간다 — 원인은 보이고 심은 비밀은 없다(ADR-51 잃는 보장 G)."""

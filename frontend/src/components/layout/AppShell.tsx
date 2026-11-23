@@ -5,6 +5,7 @@ import { AppMenu, type AppMenuGroup, type AppMenuItem } from '@kor-travel/ui/app
 import { Button } from '@kor-travel/ui/button';
 import {
   Activity,
+  BellRing,
   Command,
   Database,
   GitCompare,
@@ -128,6 +129,7 @@ export default function AppShell({
       items: [
         { label: '서비스 원장', icon: Database, href: '#service-ledger' },
         { label: '앱별 상태', icon: Activity, href: '#service-groups' },
+        { label: '수집 경보', icon: BellRing, href: '#plane-alerts' },
       ],
     },
     {

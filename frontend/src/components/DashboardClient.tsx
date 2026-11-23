@@ -33,6 +33,7 @@ import dynamic from 'next/dynamic';
 import AdminSettingsPanel from './AdminSettingsPanel';
 import BackupHistoryPanel from './BackupHistoryPanel';
 import RuntimePinPanel from './RuntimePinPanel';
+import PlaneAlertsPanel from './PlaneAlertsPanel';
 import SourceStatusPanel from './SourceStatusPanel';
 import ContainerDetailModal from './ContainerDetailModal';
 import LoginScreen from './LoginScreen';
@@ -1095,6 +1096,8 @@ if (isAuthLoading) {
     >
       <div className="dashboard-stack">
 <DashboardOverview model={model} />
+
+      <PlaneAlertsPanel />
 
       {error && !isWsConnected && (
         <section className="ops-alert ops-alert--danger" role="alert">

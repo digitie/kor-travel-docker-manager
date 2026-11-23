@@ -1,0 +1,430 @@
+{
+ "_source": "odroid dagster_shared runs, kma_regional_alert_events_job, create 2026-11-18 05:30~09:30Z (2026-11-24 읽기 전용 추출)",
+ "schedule": {
+  "location": "kortravelweather_dagster.definitions",
+  "name": "regional_alert_events_every_five_minutes",
+  "cron": "*/5 * * * *"
+ },
+ "runs": [
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "9430062a-8922-4607-bd4b-3fd02a04582e",
+   "status": "SUCCESS",
+   "created": 1794979801.497017,
+   "updated": 1794980201.387071,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "fbade1b5-71d1-44a4-b3b2-8beb2e3b77d9",
+   "status": "SUCCESS",
+   "created": 1794980102.298143,
+   "updated": 1794980478.887392,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "4291cd18-b5be-42d2-b7f6-d0c328dd4ca6",
+   "status": "SUCCESS",
+   "created": 1794980401.660495,
+   "updated": 1794980594.531058,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "0b335b54-9a24-4d83-aad2-cc093e939d6b",
+   "status": "SUCCESS",
+   "created": 1794980700.874765,
+   "updated": 1794980744.618428,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "2410adef-2fce-43f2-809e-a93d545c9475",
+   "status": "SUCCESS",
+   "created": 1794981001.885325,
+   "updated": 1794981044.574741,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "fc60a344-201d-41d8-b4ff-b5cbac553d94",
+   "status": "SUCCESS",
+   "created": 1794981300.888831,
+   "updated": 1794981363.748753,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "09804068-1d85-4178-8bcc-31facbd20d1d",
+   "status": "SUCCESS",
+   "created": 1794981600.887142,
+   "updated": 1794981677.354113,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "70a0e567-c0b2-432b-ae1c-b8be9bc10171",
+   "status": "SUCCESS",
+   "created": 1794981900.947893,
+   "updated": 1794981948.21656,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "5e077579-86dc-424b-a41c-d5031f2c6304",
+   "status": "CANCELED",
+   "created": 1794982201.517543,
+   "updated": 1794982516.594149,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": true
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "5ef62be3-309a-4868-bce4-97069af3140e",
+   "status": "SUCCESS",
+   "created": 1794983400.72706,
+   "updated": 1794983442.616674,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "6e3b6bad-f451-43e4-a0c8-5f2e8c842ca0",
+   "status": "SUCCESS",
+   "created": 1794983701.189114,
+   "updated": 1794983753.4319,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "0d6dac69-d886-4dd3-a8e1-d698147c6b13",
+   "status": "SUCCESS",
+   "created": 1794984000.555283,
+   "updated": 1794984056.35986,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "c29fd01d-b2ef-4ba6-a9e6-0f2ee6114790",
+   "status": "SUCCESS",
+   "created": 1794984301.26258,
+   "updated": 1794984362.058607,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "1ef8a0c1-1398-4dc5-b1b0-dc2293735591",
+   "status": "SUCCESS",
+   "created": 1794984600.462785,
+   "updated": 1794984629.898846,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "3aab3c73-c7f7-4823-bf4a-a0952082716a",
+   "status": "SUCCESS",
+   "created": 1794984900.772452,
+   "updated": 1794984934.651998,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "ccf7df5c-6bcf-4a4b-901a-41651e37cd3b",
+   "status": "SUCCESS",
+   "created": 1794985203.324494,
+   "updated": 1794985327.71734,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "ae697dcc-8e12-4812-9773-f96db9ccef9b",
+   "status": "FAILURE",
+   "created": 1794985501.094174,
+   "updated": 1794985546.421727,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "a512b4d0-b707-42ee-bc39-5a858742baf1",
+   "status": "FAILURE",
+   "created": 1794985802.249911,
+   "updated": 1794986154.602574,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "7f69b522-edb3-4eac-afdd-131f5df47762",
+   "status": "FAILURE",
+   "created": 1794986101.779418,
+   "updated": 1794986221.912392,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "85924463-75ae-4c64-a2d1-4d31b3302ca2",
+   "status": "FAILURE",
+   "created": 1794986400.527327,
+   "updated": 1794986449.537537,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "bd3bc7d1-8222-4745-8622-93599fa8c606",
+   "status": "FAILURE",
+   "created": 1794986700.334626,
+   "updated": 1794986731.11661,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "47c98458-a2b8-4c2a-be96-46d76955d537",
+   "status": "FAILURE",
+   "created": 1794987003.855028,
+   "updated": 1794987035.674911,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "768a1646-beb4-43cd-aa1d-cd1ba85b530d",
+   "status": "FAILURE",
+   "created": 1794987300.583803,
+   "updated": 1794987328.279795,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "51b248de-46a4-4fc9-86a3-a54796c8808e",
+   "status": "FAILURE",
+   "created": 1794987600.503793,
+   "updated": 1794987640.259887,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "10706735-0969-4919-9019-680c5ab9b8bb",
+   "status": "FAILURE",
+   "created": 1794987901.108163,
+   "updated": 1794987949.213194,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "7be6eafc-4201-4c30-a0a7-2bb105535124",
+   "status": "FAILURE",
+   "created": 1794988200.346925,
+   "updated": 1794988226.305635,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "d3d3ce82-ddff-487d-a574-8d7b22ce1388",
+   "status": "FAILURE",
+   "created": 1794988500.334388,
+   "updated": 1794988528.593229,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "98c44f50-e2c0-4791-9023-aad5244bfb7d",
+   "status": "FAILURE",
+   "created": 1794988800.911561,
+   "updated": 1794988837.654467,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "d92ff494-68b5-4760-a1a1-25b31dca3a3f",
+   "status": "FAILURE",
+   "created": 1794989101.36493,
+   "updated": 1794989157.658505,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "d0a5d9d1-5dd1-4b71-a55b-274a72b9344e",
+   "status": "FAILURE",
+   "created": 1794989401.549028,
+   "updated": 1794989895.159786,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "a45daecd-8489-4532-a857-ae8374c1127c",
+   "status": "FAILURE",
+   "created": 1794989705.683549,
+   "updated": 1794989911.83789,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "09595961-3792-4584-9d18-1cbbd7ccdf3a",
+   "status": "FAILURE",
+   "created": 1794990001.131192,
+   "updated": 1794990040.803846,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "c513d0ab-3424-4c61-96bb-fd8f627a9012",
+   "status": "FAILURE",
+   "created": 1794991200.547811,
+   "updated": 1794991256.138137,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "9af177ca-8cc7-4717-9170-3c9f44bc3384",
+   "status": "FAILURE",
+   "created": 1794991500.638854,
+   "updated": 1794991529.222254,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "e95eef9d-0879-47cf-a28c-bb0423e6df88",
+   "status": "FAILURE",
+   "created": 1794991801.309724,
+   "updated": 1794991834.153576,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "c76a6806-0628-4e3c-8909-9937f24efc8b",
+   "status": "FAILURE",
+   "created": 1794992100.462823,
+   "updated": 1794992133.74518,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "f8aed922-0bee-4043-81f6-f8be7e77c5b2",
+   "status": "FAILURE",
+   "created": 1794992400.493423,
+   "updated": 1794992433.578792,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "52286b21-a078-447a-9fd5-be87bb0acfb9",
+   "status": "FAILURE",
+   "created": 1794992700.709448,
+   "updated": 1794992747.405348,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "94814574-f444-4ff2-99eb-cdf11b74de86",
+   "status": "FAILURE",
+   "created": 1794993001.518374,
+   "updated": 1794993163.354832,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "bd452a4f-fe77-4e5e-b7a0-a20c1b63a890",
+   "status": "FAILURE",
+   "created": 1794993300.830302,
+   "updated": 1794993344.45611,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "91a700c4-d757-47e2-9ad5-02eac922ddf4",
+   "status": "FAILURE",
+   "created": 1794993600.955764,
+   "updated": 1794993637.590703,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  },
+  {
+   "job": "kma_regional_alert_events_job",
+   "run_id": "e0f953f7-2725-4844-9af5-74b6eb6256a6",
+   "status": "FAILURE",
+   "created": 1794993900.967568,
+   "updated": 1794993950.737507,
+   "location": "kortravelweather_dagster.definitions",
+   "schedule": "regional_alert_events_every_five_minutes",
+   "never_started": false
+  }
+ ]
+}
