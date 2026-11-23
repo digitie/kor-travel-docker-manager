@@ -8,10 +8,6 @@
   호스트면 `127.0.0.1`, 아니면 그 호스트의 `addr`; 포트는 `connection`(`scheme://{host}:<port>`)의 포트;
   `labels: {host: <호스트 이름>}`. 호스트를 하나 더하면 코드 수정 없이 static_config만 늘어난다.
 - Prometheus가 도는 호스트는 이 파일을 마운트하는 compose 서비스(registry `compose_binds`)의 컨테이너 호스트다.
-- `/metrics`가 Bearer token을 요구하는 컨테이너는 registry `metrics_bearer_env`에 그 token의 env 이름을 적는다
-  (T-READ-MGR-02). job은 `authorization.credentials_file`로 `SCRAPE_AUTH_DIR/<env 이름>`을 읽는다 — token은 파일에도
-  repo에도 적지 않는다. 그 파일은 Prometheus 컨테이너의 entrypoint가 이 파일에 적힌 경로에서 env 이름을 읽어 같은 이름의
-  env 값으로 만든다(`docker-compose.yml` `prometheus`). 그래서 compose `prometheus.environment`에는 그 이름들이 있어야 한다.
 
 Manager 자신의 backend(`kor-travel-docker-manager` — compose 컨테이너가 아니라 systemd)도 같은 규칙으로 파생한다
 (T-MGR-NH NH-6): Manager는 **선언된 모든 호스트**에서 돈다(ADR-58 결정 2) → `hosts:` 선언 순서로 호스트마다 static_config
@@ -29,8 +25,6 @@ from typing import Any, Final
 from kor_travel_docker_manager.services import registry
 
 PROMETHEUS_CONFIG: Final = "./config/prometheus/prometheus.yml"
-#: Prometheus 컨테이너 안에서 entrypoint가 scrape Bearer token 파일을 두는 곳(`docker-compose.yml` `prometheus`).
-SCRAPE_AUTH_DIR: Final = "/tmp/scrape-auth"
 #: Manager backend job(NH-6). 경로는 backend의 `/metrics` route, 포트는 backend unit의 `--port`(아래 `manager_backend_port`).
 MANAGER_JOB: Final = "kor-travel-docker-manager"
 MANAGER_METRICS_PATH: Final = "/metrics"
@@ -110,15 +104,5 @@ def derived_scrape_configs(config: Mapping[str, Any], *, manager_port: int | Non
             if host in present
         ]
         if static_configs:
-            job: dict[str, Any] = {"job_name": name, "metrics_path": path}
-            bearer_env = spec.get("metrics_bearer_env")
-            if bearer_env is not None:
-                job["authorization"] = {"type": "Bearer", "credentials_file": f"{SCRAPE_AUTH_DIR}/{bearer_env}"}
-            job["static_configs"] = static_configs
-            jobs.append(job)
+            jobs.append({"job_name": name, "metrics_path": path, "static_configs": static_configs})
     return jobs
-
-
-def scrape_bearer_envs(config: Mapping[str, Any]) -> list[str]:
-    """scrape Bearer token의 env 이름들(registry `metrics_bearer_env`) — compose `prometheus.environment`가 받아야 하는 이름."""
-    return sorted({str(spec["metrics_bearer_env"]) for spec in config["containers"].values() if spec.get("metrics_bearer_env")})
