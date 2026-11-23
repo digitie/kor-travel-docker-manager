@@ -2380,6 +2380,28 @@ def _plane_log_config_drift(rendered: object, observed: object) -> list[str]:
     return reasons
 
 
+def _completed_oneshot_dependencies(
+    services: Mapping[str, Any], names: Sequence[str]
+) -> tuple[str, ...]:
+    """`names`가 `service_completed_successfully`로 기다리는 직접 의존 one-shot(처음 나온 순서, 중복 없음).
+
+    render(`compose config`)는 short-syntax `depends_on`도 조건 mapping으로 정규화한다. 모양이 그와 다르면
+    거부한다 — 무엇을 먼저 돌려야 하는지 모르는 채 plane을 다시 만들지 않는다.
+    """
+
+    found: list[str] = []
+    for name in names:
+        depends = services[name].get("depends_on") or {}
+        if not isinstance(depends, Mapping):
+            raise DeploymentContractError(f"{name} depends_on is not a rendered mapping")
+        for dependency, spec in depends.items():
+            if not isinstance(spec, Mapping) or str(dependency) not in services:
+                raise DeploymentContractError(f"{name} depends_on {dependency} is invalid")
+            if spec.get("condition") == "service_completed_successfully" and dependency not in found:
+                found.append(str(dependency))
+    return tuple(found)
+
+
 def _plane_file_digest_keys(render: Mapping[str, Any]) -> frozenset[str]:
     """plane 서비스가 붙인 파일의 내용 digest env 이름 — render의 healthcheck가 그 이름으로 붙인 파일과 대조한다.
 
@@ -5842,9 +5864,24 @@ class ComposeService:
         Manager는 명시 build가 아닌 명령에서 `build:` 절을 지워 보내므로(build_context_export.py)
         implicit build에 기대면 Compose가 로컬 전용 태그를 pull하려다 실패한다. 이미지가 있으면
         빌드하지 않는다.
+
+        `--no-deps`는 compose가 plane 앞에 돌릴 one-shot(render의 `depends_on`에서 조건이
+        `service_completed_successfully`인 직접 의존 — 오늘은 storage migrate)도 건너뛴다. 그러면 plane 이미지가
+        바뀌어도(Dagster 버전, storage 준비 스크립트) 새 이미지의 storage 준비가 돌지 않은 채 plane이 뜬다
+        (2026-11-23 tick purge 인덱스). 그래서 `up` 전에 그 one-shot을 이름 목록 없이 render에서 파생해 하나씩
+        `run --rm --no-deps`한다 — 종료 코드가 0이 아니면 plane을 다시 만들지 않는다(fail-closed, `up`이 의존으로
+        돌릴 때와 같은 판정). 의존의 의존(공용 instance·db-init)은 따라가지 않는다 — 그것은 `ensure dagster`의 몫이다.
         """
 
         names = (plane.webserver,) if keep_daemon_stopped else plane.services
+        for oneshot in _completed_oneshot_dependencies(services, names):
+            run = ["run", "--rm", "--no-deps"]
+            if not self._rendered_image_present(services[oneshot], label=oneshot):
+                run.append("--build")
+            self._run_pinned_runtime_rebuild_compose(
+                [*run, oneshot],
+                transaction=transaction,
+            )
         arguments = ["up", "-d", "--no-deps"]
         if any(not self._rendered_image_present(services[name], label=name) for name in names):
             arguments.append("--build")

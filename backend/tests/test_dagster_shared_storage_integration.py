@@ -57,6 +57,22 @@ from kor_travel_docker_manager.services.postgres_connect_posture import PUBLIC_C
 from kor_travel_docker_manager.services.yaml_strict import load_yaml_rejecting_duplicate_keys
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _tick_indexes() -> tuple[tuple[str, str], ...]:
+    """storage migrate가 소유하는 `job_ticks` 인덱스(이름, 열) — 정본은 `storage-migrate.py`의 `TICK_INDEXES`다."""
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "storage_migrate_tick_indexes", _REPO_ROOT / "docker/dagster-host/storage-migrate.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return tuple(module.TICK_INDEXES)
+
+
 _COMPOSE = _REPO_ROOT / "docker-compose.yml"
 _SHARED_POSTGRES = "kor-travel-shared-postgres"
 _DB_INIT = "kor-travel-shared-db-init-dagster"
@@ -364,17 +380,17 @@ def test_db_init_and_migrate_prepare_the_shared_storage_idempotently(
     assert version == [instance["head"]]
     assert {"runs", "event_logs", "jobs", "instigators", "daemon_heartbeats"} <= set(tables)
     assert owners == [role]
-    tick_index = _sql_in(
-        plane, plane.database,
-        "SELECT i.indisvalid, i.indisready, pg_get_indexdef(i.indexrelid), "
-        "pg_get_userbyid(c.relowner) FROM pg_index AS i "
-        "JOIN pg_class AS c ON c.oid = i.indexrelid "
-        "WHERE i.indexrelid = to_regclass('public.ktdm_job_ticks_latest_timestamp')",
-    )
-    assert tick_index == [
-        't|t|CREATE INDEX ktdm_job_ticks_latest_timestamp ON public.job_ticks '
-        f'USING btree ("timestamp" DESC)|{role}'
-    ]
+    for name, columns in _tick_indexes():
+        tick_index = _sql_in(
+            plane, plane.database,
+            "SELECT i.indisvalid, i.indisready, pg_get_indexdef(i.indexrelid), "
+            "pg_get_userbyid(c.relowner) FROM pg_index AS i "
+            "JOIN pg_class AS c ON c.oid = i.indexrelid "
+            f"WHERE i.indexrelid = to_regclass('public.{name}')",
+        )
+        assert tick_index == [
+            f"t|t|CREATE INDEX {name} ON public.job_ticks USING btree ({columns})|{role}"
+        ]
 
     # Dagster가 공용 설정을 받아들였고, 결과가 파일에 적은 것과 같다.
     config = load_yaml_rejecting_duplicate_keys(
@@ -396,11 +412,12 @@ def test_db_init_and_migrate_prepare_the_shared_storage_idempotently(
         again = _one_shot(plane, service)
         assert again.returncode == 0, service + again.stdout[-2000:] + again.stderr[-2000:]
     assert _storage_state(plane) == (version, tables, owners)
-    assert _sql_in(
-        plane, plane.database,
-        "SELECT indisvalid AND indisready FROM pg_index "
-        "WHERE indexrelid = to_regclass('public.ktdm_job_ticks_latest_timestamp')",
-    ) == ["t"]
+    for name, _columns in _tick_indexes():
+        assert _sql_in(
+            plane, plane.database,
+            "SELECT indisvalid AND indisready FROM pg_index "
+            f"WHERE indexrelid = to_regclass('public.{name}')",
+        ) == ["t"]
 
 
 def test_db_init_refuses_a_password_that_would_break_the_url(isolated_plane: _Plane) -> None:
@@ -569,7 +586,7 @@ def fixture():
 thread = threading.Thread(target=fixture); thread.start()
 start = time.monotonic(); failure = None
 try:
-    module['ensure_tick_lookup_index'](
+    module['ensure_tick_indexes'](
         f'postgresql://fixture@127.0.0.1:{port}/fixture?connect_timeout=0')
 except Exception as error:
     failure = type(error).__name__

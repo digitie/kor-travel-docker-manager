@@ -38,6 +38,14 @@ _REBUILD_ENVIRONMENT = {
 _IMAGE_ID = "sha256:" + "e" * 64
 
 
+def _migrate_runs(resolved: dict[str, Any], names: tuple[str, ...], *build: str) -> list[tuple[str, ...]]:
+    """`up` 앞에 도는 one-shot `run`들 — render의 `service_completed_successfully` 의존에서 파생(이름 목록 없음)."""
+
+    oneshots = compose_service_module._completed_oneshot_dependencies(resolved["services"], names)
+    assert oneshots, "the plane must wait for at least one one-shot (storage migrate)"
+    return [("run", "--rm", "--no-deps", *build, name) for name in oneshots]
+
+
 def _installed_render() -> dict[str, Any]:
     """체크아웃 compose의 서비스 전부를 기본값으로 보간한 render(`compose config`처럼) — plane 밖 서비스도 있다."""
 
@@ -168,10 +176,15 @@ def test_a_stale_plane_recreates_only_the_plane_services_under_the_lock(
     assert result["health"] == {name: "healthy" for name in harness.plane.services}
     calls = harness.state.compose_calls
     # 바꾸는 compose 호출은 하나, 재구축과 같은 모양(`up -d --no-deps <plane>`)이고 G 안이다.
-    assert calls == [(("up", "-d", "--no-deps", *harness.plane.services), True)]
-    # plane 밖 서비스(Map·PinVi slot, gateway, code-server)는 render에 있어도 호출에 들지 않는다.
+    # 바꾸는 compose 호출은 render가 plane 앞에 두는 one-shot `run`과 `up -d --no-deps <plane>` 하나다.
+    migrate = _migrate_runs(harness.resolved, harness.plane.services)
+    assert calls == [
+        *((args, True) for args in migrate),
+        (("up", "-d", "--no-deps", *harness.plane.services), True),
+    ]
+    # plane 밖 서비스(Map·PinVi slot, gateway, code-server)는 render에 있어도 `up`에 들지 않는다.
     others = set(harness.resolved["services"]) - set(harness.plane.services)
-    assert others and not others & set(calls[0][0])
+    assert others and not others & set(calls[-1][0])
     assert all(held for _name, held in harness.state.inspected)
 
 
@@ -188,7 +201,69 @@ def test_a_missing_plane_image_is_built_explicitly(
     harness.service.converge_shared_dagster_plane(dry_run=False)
 
     calls = harness.state.compose_calls
-    assert calls == [(("up", "-d", "--no-deps", "--build", *harness.plane.services), True)]
+    migrate = _migrate_runs(harness.resolved, harness.plane.services, "--build")
+    assert calls == [
+        *((args, True) for args in migrate),
+        (("up", "-d", "--no-deps", "--build", *harness.plane.services), True),
+    ]
+
+
+def test_a_failed_storage_one_shot_leaves_the_plane_untouched(
+    harness: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """one-shot이 실패하면 `up`하지 않는다 — compose가 의존으로 돌릴 때와 같은 판정(fail-closed)."""
+
+    calls = harness.state.compose_calls
+
+    def failing(args: Any, *, transaction: Any, **kwargs: Any) -> dict[str, Any]:
+        del transaction, kwargs
+        calls.append((tuple(args), harness.state.lock_held))
+        failed = tuple(args[:1]) == ("run",)
+        return {"success": not failed, "returncode": 2 if failed else 0, "stdout": "", "stderr": "x"}
+
+    monkeypatch.setattr(harness.service, "_run_frozen_recovery", failing)
+
+    with pytest.raises(compose_service_module.PinnedRuntimeComposeFailure):
+        harness.service.converge_shared_dagster_plane(dry_run=False)
+
+    assert [args[0] for args, _held in calls] == ["run"]
+
+
+def test_the_real_plane_runs_exactly_the_storage_migrate_one_shot_first(harness: SimpleNamespace) -> None:
+    """항진명제 방지 — 위 시험들의 기대값은 함수 자신으로 파생하므로, 실제 render에서 무엇이 나오는지 한 번 literal로 결박한다.
+
+    공용 instance(PostgreSQL 서버)·db-init은 들지 않는다 — 그것들은 `ensure dagster`의 몫이다.
+    """
+
+    services = harness.resolved["services"]
+    oneshots = compose_service_module._completed_oneshot_dependencies(services, harness.plane.services)
+    assert oneshots == ("kor-travel-dagster-storage-migrate",)
+    assert services[oneshots[0]]["command"] == ["/usr/local/bin/kor-travel-dagster-storage-migrate"]
+    assert not set(oneshots) & compose_service_module.postgres_server_services(harness.resolved)
+
+
+def test_only_completed_successfully_dependencies_are_run_first() -> None:
+    services = {
+        "web": {"depends_on": {
+            "migrate": {"condition": "service_completed_successfully", "required": True},
+            "db": {"condition": "service_healthy"},
+            "init": {"condition": "service_completed_successfully"},
+        }},
+        "daemon": {"depends_on": {"migrate": {"condition": "service_completed_successfully"}}},
+        "migrate": {}, "db": {}, "init": {},
+    }
+    assert compose_service_module._completed_oneshot_dependencies(
+        services, ("web", "daemon")
+    ) == ("migrate", "init")
+    assert compose_service_module._completed_oneshot_dependencies(services, ("migrate",)) == ()
+
+
+@pytest.mark.parametrize("depends_on", [["migrate"], {"migrate": "service_completed_successfully"},
+                                        {"absent": {"condition": "service_completed_successfully"}}])
+def test_an_unrendered_dependency_shape_is_refused(depends_on: Any) -> None:
+    services = {"web": {"depends_on": depends_on}, "migrate": {}}
+    with pytest.raises(DeploymentContractError):
+        compose_service_module._completed_oneshot_dependencies(services, ("web",))
 
 
 def test_the_stale_reason_names_the_digest_without_leaking_secret_env(
@@ -636,7 +711,9 @@ def test_pinned_rebuild_preserves_an_existing_stopped_daemon(
     assert running["daemon"] is (daemon_state != "stopped")
     if stale_webserver or daemon_state in {"missing", "restarting"}:
         expected = (plane.webserver,) if daemon_state == "stopped" else plane.services
-        assert calls == [("up", "-d", "--no-deps", *expected)]
+        assert calls == [
+            *_migrate_runs(harness.resolved, expected), ("up", "-d", "--no-deps", *expected)
+        ]
     else:
         assert calls == []
 
@@ -703,11 +780,17 @@ def test_converge_recreates_a_plane_without_log_limits_once(harness: SimpleNames
     result = harness.service.converge_shared_dagster_plane(dry_run=False)
 
     assert result["outcome"] == "recreated" and result["success"] is True
-    assert harness.state.compose_calls == [(("up", "-d", "--no-deps", *harness.plane.services), True)]
+    assert harness.state.compose_calls == [
+        *((args, True) for args in _migrate_runs(harness.resolved, harness.plane.services)),
+        (("up", "-d", "--no-deps", *harness.plane.services), True),
+    ]
     # 재생성 뒤에는 남은 차이가 없다 — 다음 converge는 무연산이다.
     assert result["remaining_drift"] == {name: [] for name in harness.plane.services}
     again = harness.service.converge_shared_dagster_plane(dry_run=False)
-    assert again["outcome"] == "current" and len(harness.state.compose_calls) == 1
+    assert again["outcome"] == "current" and harness.state.compose_calls[-1][0][0] == "up"
+    assert len(harness.state.compose_calls) == 1 + len(
+        _migrate_runs(harness.resolved, harness.plane.services)
+    )
 
 
 def test_a_plane_with_the_rendered_log_limits_is_current(harness: SimpleNamespace) -> None:
@@ -814,7 +897,9 @@ def test_rebuild_plane_convergence_recreates_a_plane_without_log_limits(
 
     service._converge_shared_dagster_plane(runtime_transaction=SimpleNamespace(), topology=topology)
 
-    assert calls == [("up", "-d", "--no-deps", *plane.services)]
+    assert calls == [
+        *_migrate_runs(harness.resolved, plane.services), ("up", "-d", "--no-deps", *plane.services)
+    ]
     assert not any(service._shared_plane_drift(plane, harness.resolved["services"]).values())
 
 

@@ -1570,7 +1570,14 @@ def _forward_harness(
                 yaml.safe_dump(compose_document["services"][name]),
             )
         )
-        for name in plane_model.services
+        # 실제 render처럼 plane이 `service_completed_successfully`로 기다리는 one-shot(storage migrate)도 싣는다 —
+        # plane 재생성은 그것을 `up` 전에 돌리고, render에 없으면 거부한다.
+        for name in (
+            *plane_model.services,
+            *compose_service_module._completed_oneshot_dependencies(
+                compose_document["services"], plane_model.services
+            ),
+        )
     }
     workspace_locations = tuple(
         entry["grpc_server"]["location_name"]
