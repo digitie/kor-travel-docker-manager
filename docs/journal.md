@@ -10,6 +10,8 @@
   tick). schedule tag run만 보면 수동 성공을 놓쳐 오탐(Map MCST·등산로 월간) — job의 모든 run으로 성공을 센다. 실측 첫 평가에서 n150
   `pinvi_weather_retention_horizon_job` "3주기(3일) 성공 없음"(감사 P1과 일치)만 울렸다.
 - py-spy는 두 호스트에 없다. 대상 Dagster 이미지에는 faulthandler·SIGUSR 처리기가 없어 signal 방식은 쓰지 않는다.
+- fd 경보(주의·위험 각각 한 번) 때 `dagster api grpc` 프로세스의 fd 내역(종류·소켓 원격 주소/상태·파일), 스레드 수, grpcio 등 패키지
+  버전을 파일로 남긴다 — PinVi·concierge fd 고갈 원인(미확정)을 다음 발생 때 가르기 위해서다.
 - 감사 당시 실물(fixture): odroid weather location 11-19 17:15 정지 → 17:50 발화·20:22 해소, 특보 이벤트 11-18 07:52 발화,
   n150 PinVi launch 11-13 19:57 발화(첫 시간 plane 전체 launch 실패율은 19%로 묽어 location 연속 규칙이 따로 필요), PinVi sensor tick
   11-14 연속 실패(오류는 EMFILE 문구 없이 code-server 단절만 남음 → 재시작 제안 대상에 포함).

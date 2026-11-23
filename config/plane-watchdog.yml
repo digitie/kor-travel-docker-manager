@@ -103,8 +103,11 @@ rules:
     critical_ratio: 0.8
 
 # location 정지를 감지하면 daemon과 그 location code-server의 스레드 상태를 파일로 남긴다.
-# 프로세스를 죽이거나 재시작하거나 signal을 보내지 않는다. py-spy가 있으면 Python 스택을,
-# 없으면 /proc의 스레드 상태·커널 대기 지점과 docker 로그 꼬리만 남긴다.
+# py-spy가 있으면 Python 스택을, 없으면 /proc의 스레드 상태·커널 대기 지점과 docker 로그 꼬리만 남긴다.
+# fd 경보(주의·위험 각각 한 번)면 그 컨테이너의 `dagster api grpc` 프로세스 fd 내역(종류별 개수, 소켓은
+# /proc/<pid>/net 대조로 원격 주소·상태, 파일 경로), 스레드 수, grpcio 등 패키지 버전을 남긴다 — PinVi·concierge
+# fd 고갈 원인이 미확정이라 다음 발생 때 가르기 위한 증거다. 어느 경우도 프로세스를 죽이거나 재시작하거나
+# signal을 보내지 않는다.
 diagnostics:
   enabled: true
   # 비우면 Manager 상태 root 아래 `plane-watchdog/diagnostics`.

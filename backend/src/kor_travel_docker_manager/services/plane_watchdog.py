@@ -756,6 +756,7 @@ class Probes(Protocol):
     def io_pressure(self) -> dict[str, dict[str, float]] | None: ...
     def dagster_fds(self) -> tuple[list[ContainerFds], list[str]]: ...
     def capture(self, location: str, context: dict[str, Any]) -> dict[str, Any] | None: ...
+    def capture_fds(self, container: str, context: dict[str, Any]) -> dict[str, Any] | None: ...
     def host(self) -> str: ...
 
 
@@ -814,6 +815,11 @@ class HostProbes:
             log_tail_minutes=int(settings["log_tail_minutes"]), context=context,
         )
         return result.as_dict()
+
+    def capture_fds(self, container: str, context: dict[str, Any]) -> dict[str, Any] | None:
+        from kor_travel_docker_manager.services.plane_watchdog_diagnostics import capture_fd_usage
+
+        return capture_fd_usage(container, diagnostics_directory(self._config.diagnostics), context=context).as_dict()
 
 
 def diagnostics_directory(settings: Mapping[str, Any]) -> Path:
@@ -1104,28 +1110,40 @@ class PlaneWatchdog:
         return transitions
 
     def _maybe_capture(self, transitions: Sequence[Transition], now: float) -> None:
+        """진단 수집 시점: location 정지가 처음 울릴 때, fd 경보가 (컨테이너, 심각도)마다 처음 울릴 때.
+
+        fd 경보는 주의(50%)에서 위험(80%)으로 올라가도 같은 경보 key라 firing 전이가 다시 없다 — 그래서 활성
+        경보를 보고 (컨테이너, 심각도)로 한 번씩 뜬다. 두 시점의 fd 내역을 비교해야 누수 경로가 보인다.
+        """
+
         assert self.config is not None
         settings = self.config.diagnostics
         if not settings["enabled"]:
             return
+        jobs: list[tuple[str, str, dict[str, Any]]] = []
         for item in transitions:
             finding = item.alert.finding
-            if item.event != "firing" or finding.rule != "location_tick_stall":
-                continue
-            location = finding.subject
-            previous = self._last_capture.get(location)
+            if item.event == "firing" and finding.rule == "location_tick_stall":
+                jobs.append(("stall", finding.subject, item.alert.as_dict()))
+        with self._lock:
+            fd_alerts = [alert for alert in self._book.active.values() if alert.finding.rule == "dagster_fd_usage"]
+        for alert in fd_alerts:
+            jobs.append((f"fd-{alert.finding.severity}", alert.finding.subject, alert.as_dict()))
+        for kind, subject, alert_dict in jobs:
+            key = f"{kind}:{subject}"
+            previous = self._last_capture.get(key)
             if previous is not None and now - previous < float(settings["min_interval_minutes"]) * 60:
                 continue
-            if len(self._captures) >= int(settings["max_captures"]) or self._capture_directory_full(settings):
-                logger.warning("plane watchdog diagnostics skipped for %s: capture limit reached", location)
+            if self._capture_directory_full(settings):
+                logger.warning("plane watchdog diagnostics skipped for %s: capture limit reached", subject)
                 continue
-            self._last_capture[location] = now
-            context = {"alert": item.alert.as_dict(), "host": self._host}
+            self._last_capture[key] = now
+            context = {"alert": alert_dict, "host": self._host}
             if self._inline_diagnostics:
-                self._run_capture(location, context)
+                self._run_capture(kind, subject, context)
             else:
-                threading.Thread(target=self._run_capture, args=(location, context),
-                                 name=f"plane-watchdog-capture-{location}", daemon=True).start()
+                threading.Thread(target=self._run_capture, args=(kind, subject, context),
+                                 name=f"plane-watchdog-capture-{subject}", daemon=True).start()
 
     def _capture_directory_full(self, settings: Mapping[str, Any]) -> bool:
         if not isinstance(self._probes, HostProbes):
@@ -1134,14 +1152,18 @@ class PlaneWatchdog:
 
         return count_captures(diagnostics_directory(settings)) >= int(settings["max_captures"])
 
-    def _run_capture(self, location: str, context: dict[str, Any]) -> None:
+    def _run_capture(self, kind: str, subject: str, context: dict[str, Any]) -> None:
+        assert self._probes is not None
         try:
-            result = self._probes.capture(location, context)  # type: ignore[union-attr]
+            if kind == "stall":
+                result = self._probes.capture(subject, context)
+            else:
+                result = self._probes.capture_fds(subject, context)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("plane watchdog diagnostics failed for %s", location)
-            result = {"location": location, "captured_at": _iso(self._clock()), "error": str(exc)}
+            logger.exception("plane watchdog diagnostics failed for %s", subject)
+            result = {"location": subject, "captured_at": _iso(self._clock()), "error": str(exc)}
         if result is not None:
-            logger.warning("plane watchdog diagnostics captured for %s: %s", location, result.get("directory"))
+            logger.warning("plane watchdog diagnostics captured for %s: %s", subject, result.get("directory"))
             with self._lock:
                 self._captures.insert(0, result)
                 del self._captures[20:]

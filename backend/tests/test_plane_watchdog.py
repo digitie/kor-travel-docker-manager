@@ -457,6 +457,10 @@ class FakeProbes:
         self.captures.append(location)
         return {"location": location, "directory": "/x", "captured_at": "t", "py_spy": "missing"}
 
+    def capture_fds(self, container, context):
+        self.captures.append(f"fd:{container}:{context['alert']['severity']}")
+        return {"location": container, "directory": "/y", "captured_at": "t", "py_spy": "n/a"}
+
 
 def _watchdog(config, probes: FakeProbes, sent: list[dict[str, Any]] | None = None) -> wd.PlaneWatchdog:
     watchdog = wd.PlaneWatchdog(config, probes=probes, clock=lambda: probes.now, run_diagnostics_inline=True)
@@ -630,3 +634,94 @@ def test_location_names_and_process_kind():
     assert pr.location_names("dagster code-server start -h 127.0.0.1 -p 1 -m a.b --location-name x-y") == ["a.b", "x-y"]
     assert pr.process_kind("python -m dagster api grpc --lazy-load-user-code") == "grpc"
     assert pr.process_kind("python /usr/local/bin/kor-travel-dagster-daemon run") == "daemon"
+
+
+
+# ---------------------------------------------------------------------------
+# fd 누수 진단(경보 때 grpc 프로세스의 fd 내역·스레드 수·패키지 버전)
+# ---------------------------------------------------------------------------
+
+
+def test_fd_alert_captures_inventory_once_per_severity(config):
+    probes = FakeProbes()
+    watchdog = _watchdog(config, probes)
+    container = "pinvi-dagster-code-server-latest"
+    for now, fds in ((1000.0, 600), (1120.0, 610), (1240.0, 900), (1360.0, 905)):
+        probes.now = now
+        probes.fds = [pr.ContainerFds(container, fds, 1024, fds + 40, 4, "grpc", 12, ("pinvi.etl.definitions",))]
+        watchdog.evaluate_once()
+    # 주의(50%)에서 한 번, 위험(80%)으로 올라갈 때 한 번 — 같은 경보 key라도 두 시점을 남긴다.
+    assert probes.captures == [f"fd:{container}:warning", f"fd:{container}:critical"]
+    assert [item["directory"] for item in watchdog.status_payload()["diagnostics"]] == ["/y", "/y"]
+
+
+TCP_TABLE = (
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+    "   0: 0100007F:2EE3 0100007F:2AF8 08 00000000:00000000 00:00000000 00000000 0 0 1001 1\n"
+    "   1: 0100007F:2EE4 0100007F:2AF8 01 00000000:00000000 00:00000000 00000000 0 0 1002 1\n"
+)
+UNIX_TABLE = (
+    "Num RefCount Protocol Flags Type St Inode Path\n"
+    "0000: 00000002 00000000 00010000 0001 03 2001 /tmp/tmpabc\n"
+)
+
+
+def test_fd_inventory_groups_sockets_by_remote_and_state(tmp_path):
+    proc = tmp_path / "proc"
+    fd_dir = proc / "77" / "fd"
+    fd_dir.mkdir(parents=True)
+    targets = ["socket:[1001]", "socket:[1001]", "socket:[1002]", "socket:[2001]", "socket:[9999]",
+               "pipe:[5]", "anon_inode:[eventpoll]", "/opt/dagster/state/compute_logs/x.out", "/dev/null"]
+    for index, target in enumerate(targets):
+        (fd_dir / str(index)).symlink_to(target)
+    net = proc / "77" / "net"
+    net.mkdir()
+    (net / "tcp").write_text(TCP_TABLE)
+    (net / "unix").write_text(UNIX_TABLE)
+    (proc / "77" / "status").write_text("Name:\tpython\nThreads:\t23\n")
+    (proc / "77" / "limits").write_text("Max open files            1024                 524288               files\n")
+    inventory = diag.fd_inventory(77, proc)
+    assert inventory["threads"] == "23"
+    assert inventory["open_fds"] == 9
+    assert inventory["kinds"]["socket"] == 5
+    assert inventory["sockets"]["tcp CLOSE_WAIT 127.0.0.1:12003 -> 127.0.0.1:11000"] == 2
+    assert inventory["sockets"]["unix CONNECTED /tmp/tmpabc -> -"] == 1
+    assert inventory["unresolved_sockets"] == 1
+    assert inventory["files"]["/opt/dagster/state/compute_logs/x.out"] == 1
+    assert inventory["limits"].startswith("Max open files")
+
+
+TOP_OUTPUT = (
+    "PID ARGS\n"
+    "11 /usr/local/bin/python /usr/local/bin/dagster code-server start -m pinvi.etl.definitions\n"
+    "12 /usr/local/bin/python -m dagster api grpc --location-name pinvi.etl.definitions\n"
+)
+
+
+def test_fd_capture_targets_grpc_process_and_records_packages(tmp_path):
+    proc = tmp_path / "proc"
+    for pid in (11, 12):
+        (proc / str(pid) / "fd").mkdir(parents=True)
+        (proc / str(pid) / "fd" / "0").symlink_to("pipe:[1]")
+        (proc / str(pid) / "status").write_text("Threads:\t5\n")
+    calls: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        if argv[:2] == ["docker", "top"]:
+            return subprocess.CompletedProcess(argv, 0, TOP_OUTPUT, "")
+        if argv[:2] == ["docker", "exec"]:
+            return subprocess.CompletedProcess(
+                argv, 0, '{"python": "3.12.14", "grpcio": "1.84.0", "dagster": "1.13.24"}\n', "")
+        raise AssertionError(argv)
+
+    result = diag.capture_fd_usage("pinvi-code-server", tmp_path / "out", runner=runner, proc_root=proc,
+                                   now=dt.datetime(2026, 11, 14, 0, 0, tzinfo=dt.UTC))
+    target = Path(result.directory)
+    assert target.name == "20261114T000000Z-fd-pinvi-code-server"
+    assert [path.name for path in sorted(target.glob("fd-*.txt"))] == ["fd-pinvi-code-server-12.txt"]
+    report = (target / "fd-pinvi-code-server-12.txt").read_text(encoding="utf-8")
+    assert "threads 5, open fds 1" in report and "grpcio 1.84.0" in report
+    # 대상 프로세스와 같은 인터프리터로 새 프로세스 하나를 띄워 버전만 읽는다 — signal·restart 없음.
+    assert calls[1][:4] == ["docker", "exec", "pinvi-code-server", "/usr/local/bin/python"]
+    assert all(argv[1] in {"top", "exec"} for argv in calls)

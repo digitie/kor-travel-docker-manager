@@ -87,6 +87,19 @@ odroid는 CPU 포화로 가벼운 질의도 수 초가 걸린다. `statement_tim
 - `docker-logs-<컨테이너>.txt`: 최근 `log_tail_minutes`분 로그.
 - `summary.json`: 경보 내용·수집 결과.
 
+### 5.1 fd 누수 진단
+
+PinVi·concierge fd 고갈은 재현되지 않아 원인이 미확정이다(가설: 당시 grpcio 1.84.0, IO 지연 조건, concierge와 공통 요소).
+다음 발생 때 가르기 위해 `dagster_fd_usage` 경보가 **주의(50%)일 때 한 번, 위험(80%)으로 오를 때 한 번**(같은 경보 key라도
+심각도마다) 그 컨테이너의 `dagster api grpc` 프로세스(없으면 Python 프로세스 전부)를 `<UTC>-fd-<컨테이너>/`에 남긴다.
+
+- `fd-<컨테이너>-<pid>.txt`·`summary.json`: 열린 fd 종류별 개수(socket·pipe·anon_inode·file·device), 소켓은 그 프로세스의
+  network namespace(`/proc/<pid>/net/{tcp,tcp6,udp,udp6,unix}`)와 inode로 대조한 `proto 상태 local -> remote`별 개수(대조 못 한
+  소켓 수 포함), 파일은 경로별 개수, nofile 한도, **스레드 수**(`/proc/<pid>/status`).
+- **패키지 버전**: 그 프로세스와 같은 인터프리터로 `docker exec <컨테이너> <python> -c …`(새 프로세스 하나)를 띄워
+  grpcio·dagster·dagster-postgres·protobuf·psycopg2·sqlalchemy·kortravelcommon 버전을 읽는다.
+- 읽기만 한다. 대상 프로세스에 signal·재시작이 없다.
+
 **py-spy는 두 호스트 모두 아직 없다**(2026-11-24 확인, n150 x86_64·odroid aarch64 모두 PyPI wheel이 있다). 설치 전에는 `/proc`
 스레드 상태와 로그만 남는다. 디렉터리는 지우지 않는다 — 정리는 사람이 한다.
 
