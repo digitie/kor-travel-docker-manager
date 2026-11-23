@@ -5,7 +5,9 @@
   code-server)는 `x-dagster-nofile` 한 정의를 받는다. 누수를 오래 숨기지 않게 상한은 보수적이다(soft 8192·hard 65536). 이름을 외우지
   않는다 — 공용 instance URL을 받는 상시 서비스(꺼진 legacy profile 제외)를 모양으로 찾는다.
 - **launch 예산**: daemon의 StartRun은 code-server proxy를 거쳐 자식에 닿는다. proxy 예산이 daemon보다 크거나 같으면
-  daemon 예산을 올려도 proxy가 먼저 끊는다. 그래서 모든 code-server proxy < daemon < run 시작 감시 상한이다.
+  daemon 예산을 올려도 proxy가 먼저 끊는다. 그래서 모든 code-server proxy < daemon < run 시작 감시 상한이다. 예산이
+  run 프로세스 spawn·import 시간보다 짧으면 queue 재제출이 같은 run을 둘로 띄우고 중복의 exit 0이 원래 run을 FAILURE로
+  만든다(odroid run `30c6e83e`) — 그래서 proxy도 부하 때 import(분 단위)를 덮는 값이어야 한다.
 - **queue 재시도**: launch 전 재시도 창(횟수 × 간격)이 code-server 냉기동 창(healthcheck `start_period`)을 덮어야
   code-server 재시작 동안 꺼낸 run이 FAILURE가 되지 않는다.
 - **호스트 파생**: odroid의 instance 파일은 기본 파일에서 파생한다 — 기본의 재시도·보존·로그 수준이 odroid 파생본에도
@@ -115,10 +117,11 @@ def test_every_code_server_proxy_budget_is_below_the_daemon_budget() -> None:
             environment = service["environment"]
             assert "DAGSTER_GRPC_TIMEOUT_SECONDS" in environment, name
             inner = int(_resolve(str(environment["DAGSTER_GRPC_TIMEOUT_SECONDS"]), overrides))
-            assert 60 < inner < outer < start_timeout, (name, overrides, inner, outer)
+            # 부하 때 spawn·import(n150 냉기동 4분 55초)를 덮는다 — 짧으면 재제출이 run을 중복 기동한다.
+            assert 300 <= inner < outer < start_timeout, (name, overrides, inner, outer)
             # 일반 예산을 올려도 schedule·sensor·repository·shutdown 유예의 기본값이 따라 오르지 않는다.
             assert {key: environment.get(key) for key in _PINNED_RPC} == _PINNED_RPC, name
-    assert int(_resolve(daemon, {})) == 180
+    assert int(_resolve(daemon, {})) == 360
 
 
 def test_queue_retry_window_covers_a_code_server_cold_start() -> None:

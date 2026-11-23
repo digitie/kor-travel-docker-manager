@@ -9,12 +9,21 @@ dagster-postgres 0.29.24·dagster-webserver 1.13.24 원문으로 다시 확인�
   공용 plane code-server 다섯(concierge·map·pinvi·geo·weather)에 붙였다. gateway(nginx)와 storage migrate one-shot은 뺐다. 누수
   원인은 PinVi·Concierge 쪽이, 프로세스별 fd 비율 경보는 경보 작업이 맡는다.
 - **launch 재시도**: `run_queue.max_user_code_failure_retries` 3 → 10(간격 60초 그대로, 창 약 10분 ≥ code-server `start_period`
-  600초). Dagster는 `DagsterUserCodeUnreachableError`·`DagsterCodeLocationLoadError`만 이 경로로 되넣고, 그새 run이 STARTED로
+  600초). 재제출은 code-server가 정말 닿지 않을 때만 안전하다(아래 중복 기동) — 횟수는 그 위험을 늘리지 않는다(첫 재제출에서 갈린다). Dagster는 `DagsterUserCodeUnreachableError`·`DagsterCodeLocationLoadError`만 이 경로로 되넣고, 그새 run이 STARTED로
   넘어갔으면 되넣지 않는다(`queued_run_coordinator_daemon._dequeue_run`). 재시도 대기 동안 그 location의 dequeue 전체가 쉰다.
-- **StartRun 예산**: daemon `DAGSTER_GRPC_TIMEOUT_SECONDS` 60 → 180. 함정 — `code-server start`의 proxy는 StartRun을 자식에
-  **자기** `DAGSTER_GRPC_TIMEOUT_SECONDS`(없으면 60)로 넘긴다(`proxy_server.StartRun`). daemon만 올리면 proxy가 60초에 먼저 끊는다.
-  그래서 code-server 다섯에 150을 주고(geo는 자기 변수 기본값 60 → 150, 나머지는 `x-dagster-code-server-rpc-env`), 일반 예산을
-  따라 오르는 schedule·sensor(60)·repository(180)·shutdown 유예(60)를 오늘 값으로 못박았다. proxy 150 < daemon 180 < 시작 감시 600.
+- **StartRun 예산**: daemon `DAGSTER_GRPC_TIMEOUT_SECONDS` 60 → 360, code-server proxy 300. 함정 — `code-server start`의 proxy는
+  StartRun을 자식에 **자기** `DAGSTER_GRPC_TIMEOUT_SECONDS`(없으면 60)로 넘긴다(`proxy_server.StartRun`). daemon만 올리면 proxy가
+  60초에 먼저 끊고 daemon은 gRPC `UNKNOWN`을 받는다 — odroid가 정확히 그 모양이다(daemon 360·geo 300인데 weather·transport proxy는
+  기본 60). 자식의 StartRun은 run 프로세스 spawn·definitions 재import 뒤에야 답한다(`_grpc/impl._run_in_subprocess`).
+- **중복 기동(부모 검증, odroid 14일 "밖에서 실패" 52건 + transport `CollectionLeaseLost` 38건)**: run `30c6e83e` — StartRun이 끊기자
+  queue가 재제출(남은 3→2→1)했는데 자식은 이미 run 프로세스를 띄웠다. 재제출마다 프로세스가 더 뜨고, 중복이 "Ignoring a duplicate
+  run"으로 exit 0 하자 code server의 `_check_for_orphaned_runs`(run_id당 **마지막** 프로세스만 추적)가 "unexpectedly exited with
+  code 0"으로 run을 FAILURE 처리했다. 원래 프로세스는 step을 성공한 뒤 lease를 잃었다. Dagster 1.13.24 `run_queue` 설정
+  (`dequeue_interval_seconds`·`dequeue_use_threads`·`dequeue_num_workers`·`max_user_code_failure_retries`·
+  `user_code_failure_retry_delay`·`block_op_concurrency_limited_runs`)에는 재제출 전 떠 있는 프로세스를 확인하는 것이 없다. 그래서
+  방어는 예산이다 — proxy 300 < daemon 360 < 시작 감시 600(odroid host compose가 이미 쓰던 daemon 360·geo 300과 같다). 일반 예산을
+  따라 오르는 schedule·sensor(60)·repository(180)·shutdown 유예(60)는 오늘 값으로 못박았다. 대가: 느린 StartRun 하나가 dequeue 루프
+  (`dequeue_use_threads` 기본 false)를 최대 360초 붙잡는다.
 - **tick 보존**: `retention`은 이미 있었다(14/7/14/14/30일). n150 `job_ticks` 46.9만 행 중 35.6만이 **보존 기간 안의** sensor
   SKIPPED(하루 약 5만)라 1.09 GB는 보존 누락이 아니라 SKIPPED 양이다 — SKIPPED 7 → 2일. 기간을 넘긴 약 7.4만 행은 Dagster가
   안 지운다: purge는 RUNNING instigator가 **자기** tick만 다음 tick에서 지운다(`_scheduler/scheduler.py`·`_daemon/sensor.py`) —
@@ -30,8 +39,8 @@ dagster-postgres 0.29.24·dagster-webserver 1.13.24 원문으로 다시 확인�
   host 이미지 tag가 필요하다.
 - **docker 로그 회전**: Manager compose는 이미 상시 서비스 전부에 50 MB×5다(ADR-61). n150 gateway(10-27 생성)와 odroid 전부가 상한이
   없는 것은 재생성·host compose 문제다 — 배포 메모.
-- 렌더 차이(n150·odroid 같은 모양): Dagster 7개 서비스에 `ulimits`, daemon gRPC 60 → 180, code-server 다섯에 gRPC 5개 env, instance
-  digest `efadc7be23984107` → `32ff9820ee648364`. 나머지 서비스 무변화. odroid 파생 instance는 `eea24b35…` → `3cecfb0d…`(queue 10·
+- 렌더 차이(n150·odroid 같은 모양): Dagster 7개 서비스에 `ulimits`, daemon gRPC 60 → 360, code-server 다섯에 gRPC 5개 env(proxy 300),
+  instance digest `efadc7be23984107` → `fc5252cf72557356`. 나머지 서비스 무변화. odroid 파생 instance는 `eea24b35…` → `3cecfb0d…`(queue 10·
   SKIPPED 2·INFO 세 줄).
 ## 2026-11-24 — @kor-travel/ui 0.2.6·tokens 0.1.7 채택(선택 칸 터치·아코디언 outline·Dialog 긴 제목)
 

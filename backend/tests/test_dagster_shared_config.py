@@ -561,9 +561,10 @@ def test_cold_start_rpc_budget_preserves_specialized_deadlines() -> None:
     services = _compose()["services"]
     proxy = services["kor-travel-geo-dagster-code-server"]["environment"]
     daemon = services["kor-travel-dagster-daemon"]["environment"]
-    # 기본값: proxy 150 < daemon 180(2026-11-23 감사 §1.3 — 60초 StartRun이 살아 있는 run을 실패로 기록했다).
-    assert int(_resolve(proxy["DAGSTER_GRPC_TIMEOUT_SECONDS"], {})) == 150
-    assert int(_resolve(daemon["DAGSTER_GRPC_TIMEOUT_SECONDS"], {})) == 180
+    # 기본값: proxy 300 < daemon 360(2026-11-23 감사 §1.3 — 60초 StartRun이 살아 있는 run을 실패로 기록하고, 재제출이
+    # run을 중복 기동했다). odroid host compose가 이미 쓰던 값과 같다.
+    assert int(_resolve(proxy["DAGSTER_GRPC_TIMEOUT_SECONDS"], {})) == 300
+    assert int(_resolve(daemon["DAGSTER_GRPC_TIMEOUT_SECONDS"], {})) == 360
     for environment in (proxy, daemon):
         assert {key: environment[key] for key in (
             "DAGSTER_SCHEDULE_GRPC_TIMEOUT_SECONDS", "DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS",

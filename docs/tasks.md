@@ -1,13 +1,15 @@
 ## 2026-11-24 — 공용 Dagster 런타임 보강(수집 실패 감사 §4 3·4·7·8·16)
 
-- [x] nofile soft 8192·hard 65536(daemon·webserver·code-server 다섯 — 누수 완화, 원인은 PinVi·Concierge, fd 경보는 경보 작업), run queue launch 재시도 10회×60초, StartRun 예산 proxy 150 < daemon 180,
+- [x] nofile soft 8192·hard 65536(daemon·webserver·code-server 다섯 — 누수 완화, 원인은 PinVi·Concierge, fd 경보는 경보 작업), run queue launch 재시도 10회×60초, StartRun 예산 proxy 300 < daemon 360(짧으면 재제출이 run을 중복 기동),
   sensor SKIPPED 보존 2일, odroid 로그 수준 INFO(#550 수렴). 테스트 `test_dagster_runtime_limits.py`.
 - [ ] **n150 적용**: 설치 → `pin rebind-execution` → `pin verify` 0 → 다음 pinned 재구축 또는 `dagster-plane converge`(+ concierge·
   geo·weather는 각 경로). instance digest가 바뀌어 daemon·webserver·Map·PinVi·Concierge code-server가 다시 만들어진다.
 - [ ] **odroid 적용(Codex)**: Manager main 설치 → `dagster-instance-config prepare/show`(새 파생 `3cecfb0d…`) → host compose
   (`/opt/kor-travel-odroid/compose.yml`)의 daemon·webserver·storage migrate·geo·weather code-server가 **show의 path 하나**를 붙이게
   고치고(지금 geo·weather는 옛 사본 `./config/dagster-shared/dagster.yaml`, daemon·webserver·transport는 10-26 파생 `a7d907c4…` —
-  셋 다 `run_retries` 없음) `logging`·`ulimits`도 같은 값으로, storage migrate 실행(#631 `job_ticks` 인덱스), transport는 자기 배포
+  셋 다 `run_retries` 없음) `logging`·`ulimits`도 같은 값으로, **weather code-server와 transport code-server(transport 저장소
+  compose)에 `DAGSTER_GRPC_TIMEOUT_SECONDS=300` + schedule·sensor 60·repository 180·shutdown 유예 60**(지금 proxy 기본 60이라 daemon 360이
+  무효 — 중복 기동의 원인), storage migrate 실행(#631 `job_ticks` 인덱스), transport는 자기 배포
   helper로 같은 path.
 - [ ] **storage 연결 풀(Common)**: daemon pool 상수(2+2·대기 1초)를 키우고 대기 ≥10초, webserver에 pre-ping — dagster-postgres
   설정 키가 없어 Common `_daemon_pool_plugin.py`·`dagster_webserver.py` 변경 → wheel vendor → host 이미지 tag.

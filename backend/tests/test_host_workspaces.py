@@ -113,7 +113,7 @@ def test_unknown_host_rejected(documents):
 def test_instance_bytes_match_reviewed_queue_budget():
     """큐 정책·공용 INFO 진행을 검토한 원문 snapshot — host 파생이 instance를 다시 쓰면 실패한다."""
 
-    assert hashlib.sha256((ROOT / "config/dagster-shared/dagster.yaml").read_bytes()).hexdigest() == "32ff9820ee64836405dce02692e7d90dc93db15036cb8e99a62bb2efbfba2221"
+    assert hashlib.sha256((ROOT / "config/dagster-shared/dagster.yaml").read_bytes()).hexdigest() == "fc5252cf7255735660659ff4cf4097c980e6e1de6f439bef0bdb99e0ea65f4c2"
 
 
 @pytest.fixture
