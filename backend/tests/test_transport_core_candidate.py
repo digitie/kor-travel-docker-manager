@@ -37,6 +37,7 @@ import fcntl
 import hashlib
 import io
 import json
+import shutil
 import stat
 import subprocess
 import tarfile
@@ -48,6 +49,7 @@ import docker
 import pytest
 import test_service_release_candidate as paired
 
+from kor_travel_docker_manager.services import persistent_dagster_state as persistent
 from kor_travel_docker_manager.services import service_release as release
 from kor_travel_docker_manager.services import service_release_candidate as candidate
 from kor_travel_docker_manager.services import service_release_core_candidate as core
@@ -63,6 +65,7 @@ scenario = paired.scenario
 URL = "https://github.com/digitie/kor-travel-transport.git"
 BACKEND = "sha256:" + "e" * 64
 NEW_FRONTEND = "sha256:" + "f" * 64
+VOLUME_POLICY = persistent.policy_for("transport", "dagster-code-server")
 
 
 def archive_bytes(path):
@@ -274,6 +277,7 @@ def core_case(scenario, monkeypatch):
         lambda manifests: [("PASSWORD", "fixture$secret"), ("ROOT_KEY", "private-root-fixture")],
     )
     s.steps, s.hooks = [], {}
+    s.fingerprint_reads, s.fs_probes = [], []
     s.schema = list(s.runtime["schema_revisions"])
     s.live_instigators = copy.deepcopy(s.runtime["instigators"])
     s.live_instigators[0]["status"] = "STOPPED"
@@ -302,15 +306,22 @@ def core_case(scenario, monkeypatch):
 
     monkeypatch.setattr(core, "_graphql", graphql)
 
-    def fingerprint(cid, lease_fd):
+    def fingerprint(cid, lease_fd, *, docker_host=None):
+        assert docker_host == (persistent.LOCAL_DOCKER_HOST if s.runtime["version"] == 2 else None)
+        s.fingerprint_reads.append(cid)
         if cid == s.runtime["state"]["source_container"]:
             return state.scan_state(s.old_state)
         return state.scan_state(s.new_state)
 
     monkeypatch.setattr(core, "_fingerprint", fingerprint)
 
-    def probe(cid, script, lease_fd):
+    def probe(cid, script, lease_fd, *, docker_host=None):
+        assert docker_host == (persistent.LOCAL_DOCKER_HOST if s.runtime["version"] == 2 else None)
         state.check_lease(lease_fd, lease)
+        if script == VOLUME_POLICY.filesystem_probe():
+            s.fs_probes.append(cid)
+            info = s.volume_root.stat()
+            return [info.st_dev, info.st_ino + getattr(s, "probe_inode_delta", 0)]
         return list(s.schema) if script == core._SCHEMA_PROBE else list(s.workers)
 
     monkeypatch.setattr(core, "_probe", probe)
@@ -366,6 +377,8 @@ def core_case(scenario, monkeypatch):
         assert s.locked and len(additional_fds) == 1
         state.check_lease(additional_fds[0], lease)
         s.calls.append((argv, kwargs))
+        if s.runtime["version"] == 2:
+            assert argv[:4] == ["docker", "--host", persistent.LOCAL_DOCKER_HOST, "compose"]
         phase = "create" if "--no-start" in argv else "start"
         s.steps.append(phase)
         frozen = json.loads(kwargs["input"])
@@ -377,14 +390,17 @@ def core_case(scenario, monkeypatch):
             assert "--no-deps" in argv and "--no-build" in argv and "never" in argv
             for i, role in enumerate(sorted(core.RUNTIME), 100):
                 record = s.records[role]
-                record["Id"], record["Image"] = f"{i:064x}", frozen["services"][role]["image"]
+                record["Id"], record["Image"] = f"{i + len(s.calls):064x}", frozen["services"][role]["image"]
                 record["State"].update(Status="created", Running=False)
                 record["Config"]["Env"] = [
                     k + "=" + v.replace("$$", "$")
                     for k, v in frozen["services"][role]["environment"].items()
                 ]
+            if hasattr(s, "mount_state_volume"):
+                s.mount_state_volume()
         else:
-            assert state.semantic(state.scan_state(s.new_state)) == state.semantic(s.fingerprint)
+            if not hasattr(s, "mount_state_volume"):
+                assert state.semantic(state.scan_state(s.new_state)) == state.semantic(s.fingerprint)
             for role in core.RUNTIME:
                 s.records[role]["State"].update(Status="running", Running=True)
         if hook := s.hooks.get(phase):
@@ -422,6 +438,278 @@ def apply_core(s, *, execute=True, service="transport"):
         execute=execute,
         client_factory=s.factory,
     )
+
+
+@pytest.fixture
+def volume_case(core_case, monkeypatch):
+    s = core_case
+    s.original_state_proof = copy.deepcopy(s.runtime["state"])
+    s.volume_root = s.source.parent / "volumes" / VOLUME_POLICY.name / "_data"
+    shutil.copytree(s.old_state, s.volume_root)
+    marker = s.volume_root / persistent.GENERATION_FILE
+    generation = "a1" * 16
+    marker.write_text(generation + "\n")
+    marker.chmod(0o444)
+    s.volume_info = {
+        "Name": VOLUME_POLICY.name,
+        "Driver": "local",
+        "Scope": "local",
+        "Mountpoint": str(s.volume_root),
+        "CreatedAt": "2026-11-24T08:00:00+09:00",
+        "Options": None,
+    }
+    s.client.api.base_url = "http+docker://localhost"
+    s.client.api.inspect_volume = lambda name: copy.deepcopy(s.volume_info)
+    mount = {
+        "type": "volume",
+        "source": "dagster-state",
+        "target": state.STATE_PATH,
+        "volume": {"nocopy": True},
+    }
+    config = s.source.parent / "dagster.yaml"
+    config.write_text("storage: {}\n")
+    config_target = "/opt/dagster/dagster_home/dagster.yaml"
+    collector_target = "/app/collector-state"
+    collector_name = "fixture-opinet-collector"
+    existing_mounts = [
+        {"Type": "bind", "Source": str(config), "Destination": config_target,
+         "RW": False, "Propagation": "rprivate"},
+        {"Type": "volume", "Name": collector_name, "Source": str(s.source.parent / collector_name),
+         "Destination": collector_target, "RW": True, "Propagation": ""},
+    ]
+    s.records["dagster-code-server"]["Mounts"] = copy.deepcopy(existing_mounts)
+    s.resolved["volumes"] = {
+        "dagster-state": {"name": VOLUME_POLICY.name, "external": True},
+        "collectors": {"name": collector_name},
+    }
+    s.resolved["services"]["dagster-code-server"]["volumes"] = [
+        {"type": "bind", "source": str(config), "target": config_target, "read_only": True},
+        {"type": "volume", "source": "collectors", "target": collector_target},
+        mount,
+    ]
+    s.runtime["version"] = 2
+    s.runtime["state"] = {
+        "source_container": s.original_state_proof["source_container"],
+        "volume": {
+            "name": VOLUME_POLICY.name,
+            "driver": "local",
+            "scope": "local",
+            "mountpoint": str(s.volume_root),
+            "createdAt": s.volume_info["CreatedAt"],
+            "generation": generation,
+        },
+    }
+
+    def mount_state_volume():
+        cs = s.records["dagster-code-server"]
+        cs["Mounts"] = [*copy.deepcopy(existing_mounts), {
+            "Type": "volume",
+            "Name": VOLUME_POLICY.name,
+            "Source": str(s.volume_root),
+            "Destination": state.STATE_PATH,
+            "Driver": "local",
+            "RW": True,
+            "Mode": "z",
+            "Propagation": "",
+        }]
+        cs["HostConfig"]["Mounts"] = [{
+            "Type": "volume",
+            "Source": VOLUME_POLICY.name,
+            "Target": state.STATE_PATH,
+            "VolumeOptions": {"NoCopy": True, "DriverConfig": {}},
+        }]
+
+    def unexpected_archive(*args, **kwargs):
+        pytest.fail("persistent state attempted the legacy archive path")
+
+    s.mount_state_volume = mount_state_volume
+    monkeypatch.setattr(core, "_state_child", unexpected_archive)
+    return s
+
+
+@pytest.mark.parametrize("target, role", [
+    ("transport", "backend"),
+    ("weather", "kor-travel-weather-dagster-code-server"),
+    ("geo", "dagster-code-server"),
+])
+def test_persistent_volume_requires_explicit_target_and_role(target, role):
+    with pytest.raises(ServiceReleaseError, match="target/role"):
+        persistent.policy_for(target, role)
+
+
+def seed_volume(s):
+    s.runtime["state"]["seed"] = {
+        key: s.original_state_proof[key] for key in ("fingerprint", "manifest")
+    }
+
+
+def test_first_volume_cutover_and_repeated_replacement_preserve_current_writes(volume_case):
+    s = volume_case
+    seed_volume(s)
+    original = copy.deepcopy(s.records)
+    planned = apply_core(s, execute=False)
+    assert planned["result"] == "planned" and planned["state_handoff"] == "verified_seed"
+    assert not s.calls and s.records == original
+    assert release.read_current_release("transport", root=s.root) == s.current
+    s.steps.clear()
+    s.fingerprint_reads.clear()
+    result = apply_core(s)
+    assert result["success"] and result["state_handoff"] == "verified_seed", result
+    assert s.fingerprint_reads == [s.original_state_proof["source_container"]]
+    assert s.steps == ["factory", "create", "start"]
+    assert not list(s.root.glob("transport-core-state-*"))
+    del s.runtime["state"]["seed"]
+    s.fingerprint_reads.clear()
+
+    def unexpected_scan(*args, **kwargs):
+        pytest.fail("steady-state replacement scanned the state tree")
+
+    s.monkeypatch.setattr(state, "scan_state", unexpected_scan)
+    current = release.read_current_release("transport", root=s.root)
+    assert current["previous"] == s.current["release_directory"]
+    for repeat in range(2):
+        cs = s.records["dagster-code-server"]
+        s.runtime["state"]["source_container"] = cs["Id"]
+        for role, image in current["images"].items():
+            s.resolved["services"][role]["image"] = image["id"]
+        # Dagster may add or modify data after the full seed. The current volume wins.
+        (s.volume_root / "compute_logs/run.out").write_text(f"run {repeat}")
+        (s.volume_root / f"artifacts/foreign-key-{repeat}").write_bytes(bytes([repeat]))
+        s.fs_probes.clear()
+        result = apply_core(s)
+        assert result["success"] and result["state_handoff"] == "persistent_volume", result
+        next_current = release.read_current_release("transport", root=s.root)
+        assert next_current["previous"] == current["release_directory"]
+        assert s.fs_probes[0] == s.runtime["state"]["source_container"]
+        assert all(cid == s.records["dagster-code-server"]["Id"] for cid in s.fs_probes[1:])
+        assert s.fs_probes[0] != s.fs_probes[-1]
+        assert not s.fingerprint_reads
+        assert (s.volume_root / "compute_logs/run.out").read_text() == f"run {repeat}"
+        assert (s.volume_root / f"artifacts/foreign-key-{repeat}").read_bytes() == bytes([repeat])
+        current = next_current
+    assert (s.volume_root / "artifacts/foreign-key-0").is_file()
+    assert s.records["dagster-code-server"]["Mounts"][:-1] == original["dagster-code-server"]["Mounts"]
+    assert not list(s.root.glob("transport-core-state-*"))
+    assert [row["status"] for row in s.live_instigators] == ["STOPPED", "RUNNING"]
+    assert {k: v for k, v in s.records.items() if k not in core.RUNTIME} == {
+        k: v for k, v in original.items() if k not in core.RUNTIME
+    }
+
+
+@pytest.mark.parametrize("problem", [
+    "no_seed", "legacy_transition", "legacy_mounted", "reseed_mounted", "bad_seed", "stale_source", "missing_volume", "unknown_name",
+    "old_generation", "changed_createdAt", "local_driver_options", "no_marker",
+    "marker_only", "named_alias", "bind_alias", "compose_alias", "no_nocopy",
+    "subpath", "ancestor", "descendant", "tmpfs", "non_external",
+])
+def test_volume_admission_fails_before_replacement(volume_case, problem):
+    s = volume_case
+    seed_volume(s)
+    cs = s.resolved["services"]["dagster-code-server"]
+    mount = cs["volumes"][-1]
+    if problem == "no_seed":
+        del s.runtime["state"]["seed"]
+    elif problem in {"legacy_transition", "legacy_mounted"}:
+        s.runtime.update(version=1, state=s.original_state_proof)
+        if problem == "legacy_mounted":
+            s.mount_state_volume()
+    elif problem == "reseed_mounted":
+        s.mount_state_volume()
+    elif problem == "bad_seed":
+        (s.volume_root / "artifacts/value.bin").unlink()
+    elif problem == "stale_source":
+        (s.old_state / "artifacts/value.bin").write_text("changed after seed")
+    elif problem == "missing_volume":
+        def absent(_):
+            raise docker.errors.NotFound("fixture volume absent")
+
+        s.client.api.inspect_volume = absent
+    elif problem == "unknown_name":
+        s.runtime["state"]["volume"]["name"] = "unknown-dagster-state"
+    elif problem == "old_generation":
+        s.runtime["state"]["volume"]["generation"] = "b2" * 16
+    elif problem == "changed_createdAt":
+        s.volume_info["CreatedAt"] = "2026-11-24T08:01:00+09:00"
+    elif problem == "local_driver_options":
+        s.volume_info["Options"] = {"device": "/different/path", "type": "none", "o": "bind"}
+    elif problem == "no_marker":
+        (s.volume_root / persistent.GENERATION_FILE).unlink()
+    elif problem == "marker_only":
+        (s.volume_root / "artifacts/value.bin").unlink()
+        (s.volume_root / "compute_logs/run.out").unlink()
+    elif problem in {"named_alias", "bind_alias"}:
+        s.mount_state_volume()
+        aliased = s.records["dagster-code-server"]["Mounts"].pop()
+        if problem == "bind_alias":
+            aliased.pop("Name")
+            aliased.update(Type="bind", Source=str(s.volume_root.parent))
+        s.records["migrate"]["Mounts"] = [aliased]
+    elif problem == "compose_alias":
+        s.resolved["services"]["migrate"]["volumes"].append({**mount, "target": "/alias"})
+    elif problem == "no_nocopy":
+        mount["volume"] = {}
+    elif problem == "subpath":
+        mount["volume"]["subpath"] = "artifacts"
+    elif problem in {"ancestor", "descendant"}:
+        target = "/opt/dagster" if problem == "ancestor" else state.STATE_PATH + "/compute_logs"
+        cs["volumes"].append({"type": "bind", "source": "/fixture", "target": target})
+    elif problem == "tmpfs":
+        cs["tmpfs"] = [state.STATE_PATH + "/artifacts"]
+    elif problem == "non_external":
+        s.resolved["volumes"]["dagster-state"]["external"] = False
+    with pytest.raises(ServiceReleaseError):
+        apply_core(s)
+    assert not s.calls
+    assert release.read_current_release("transport", root=s.root) == s.current
+
+
+def test_first_volume_cutover_rechecks_exclusive_attachment_after_full_seed_proof(volume_case):
+    s = volume_case
+    seed_volume(s)
+    verify_seed = persistent.verify_seed
+
+    def attach_after_seed(proof, seed):
+        verify_seed(proof, seed)
+        s.records["migrate"]["Mounts"] = [{"Name": VOLUME_POLICY.name}]
+
+    s.monkeypatch.setattr(persistent, "verify_seed", attach_after_seed)
+    with pytest.raises(ServiceReleaseError, match="다른 컨테이너"):
+        apply_core(s)
+    assert not s.calls
+    assert release.read_current_release("transport", root=s.root) == s.current
+
+
+@pytest.mark.parametrize("phase", ["prior", "created", "running", "publication"])
+def test_volume_boundary_failure_keeps_current_and_seeded_data(volume_case, phase):
+    s = volume_case
+    s.mount_state_volume()
+    if phase == "prior":
+        s.records["dagster-code-server"]["HostConfig"]["Mounts"][0]["VolumeOptions"] = {}
+        with pytest.raises(ServiceReleaseError):
+            apply_core(s)
+        assert not s.calls
+    else:
+        if phase == "created":
+            def swap_mount():
+                s.records["dagster-code-server"]["HostConfig"]["Mounts"][0]["VolumeOptions"] = {}
+
+            s.hooks["create"] = swap_mount
+        elif phase == "running":
+            s.hooks["start"] = lambda: setattr(s, "probe_inode_delta", 1)
+        elif phase == "publication":
+            publish = core.candidate._publish
+
+            def change_before_publish(manifest, manifests, root, verify):
+                info = s.volume_info
+                info["CreatedAt"] = "2026-11-24T08:02:00+09:00"
+                return publish(manifest, manifests, root, verify)
+
+            s.monkeypatch.setattr(core.candidate, "_publish", change_before_publish)
+        result = apply_core(s)
+        assert not result["success"], result
+        assert s.steps == (["factory", "create"] if phase == "created" else ["factory", "create", "start"])
+    assert (s.volume_root / "artifacts/value.bin").read_bytes() == b"actual-fixture-state\x00\xff"
+    assert release.read_current_release("transport", root=s.root) == s.current
 
 
 @pytest.mark.parametrize("execute", [False, True])
@@ -608,6 +896,10 @@ def test_phase_failure_keeps_old_current_and_private_snapshot(core_case, phase):
 )
 def test_postconditions_refuse_current_publication(core_case, change):
     s = core_case
+    if change == "health":
+        # Drive the production readiness deadline without a 900-second real wait.
+        clock = iter((0, 3600))
+        s.monkeypatch.setattr(core, "time", SimpleNamespace(monotonic=clock.__next__))
 
     def mutate():
         if change == "foreign_restart":

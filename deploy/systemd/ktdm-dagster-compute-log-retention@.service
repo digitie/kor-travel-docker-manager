@@ -1,0 +1,10 @@
+[Unit]
+Description=Kor Travel Dagster compute-log retention (%i)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/kor-travel-docker-manager/backend/.venv/bin/python -I -m kor_travel_docker_manager.dagster_compute_log_retention --target %i --apply
+TimeoutStartSec=4min
+Nice=10
+IOSchedulingClass=idle
