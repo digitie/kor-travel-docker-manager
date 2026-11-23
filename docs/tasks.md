@@ -1,6 +1,6 @@
 ## 2026-11-24 — 공용 Dagster 런타임 보강(수집 실패 감사 §4 3·4·7·8·16)
 
-- [x] nofile soft 65536(daemon·webserver·code-server 다섯), run queue launch 재시도 10회×60초, StartRun 예산 proxy 150 < daemon 180,
+- [x] nofile soft 8192·hard 65536(daemon·webserver·code-server 다섯 — 누수 완화, 원인은 PinVi·Concierge, fd 경보는 경보 작업), run queue launch 재시도 10회×60초, StartRun 예산 proxy 150 < daemon 180,
   sensor SKIPPED 보존 2일, odroid 로그 수준 INFO(#550 수렴). 테스트 `test_dagster_runtime_limits.py`.
 - [ ] **n150 적용**: 설치 → `pin rebind-execution` → `pin verify` 0 → 다음 pinned 재구축 또는 `dagster-plane converge`(+ concierge·
   geo·weather는 각 경로). instance digest가 바뀌어 daemon·webserver·Map·PinVi·Concierge code-server가 다시 만들어진다.

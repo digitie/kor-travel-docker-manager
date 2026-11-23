@@ -3,9 +3,11 @@
 근거는 Map 저장소 `docs/reports/2026-11-23-collection-failure-audit.md`. 사실은 n150·odroid 읽기 전용 조회와 Dagster 1.13.24·
 dagster-postgres 0.29.24·dagster-webserver 1.13.24 원문으로 다시 확인했다.
 
-- **nofile**: 두 호스트의 Dagster 컨테이너가 전부 soft 1024/hard 524288이었다(`ulimit -Sn/-Hn`, `HostConfig.Ulimits` 비어 있음).
-  `x-dagster-nofile`(soft 65536·hard 524288)을 daemon·webserver·공용 plane code-server 다섯(concierge·map·pinvi·geo·weather)에
-  붙였다. gateway(nginx)와 storage migrate one-shot은 뺐다. 누수 지점은 여전히 모른다(감사 §5) — fd 지표는 따로.
+- **nofile(완화, 근본 해결 아님)**: 두 호스트의 Dagster 컨테이너가 전부 soft 1024/hard 524288이었다(`ulimit -Sn/-Hn`,
+  `HostConfig.Ulimits` 비어 있음). n150 fd 고갈은 평소 부족이 아니라 PinVi·Concierge code-server의 일회성 누수 두 건(각 55·100시간
+  지속, 평소 fd 13~21개)이다. `x-dagster-nofile`(soft 8192·hard 65536 — 누수를 오래 숨기지 않게 보수적으로)을 daemon·webserver·
+  공용 plane code-server 다섯(concierge·map·pinvi·geo·weather)에 붙였다. gateway(nginx)와 storage migrate one-shot은 뺐다. 누수
+  원인은 PinVi·Concierge 쪽이, 프로세스별 fd 비율 경보는 경보 작업이 맡는다.
 - **launch 재시도**: `run_queue.max_user_code_failure_retries` 3 → 10(간격 60초 그대로, 창 약 10분 ≥ code-server `start_period`
   600초). Dagster는 `DagsterUserCodeUnreachableError`·`DagsterCodeLocationLoadError`만 이 경로로 되넣고, 그새 run이 STARTED로
   넘어갔으면 되넣지 않는다(`queued_run_coordinator_daemon._dequeue_run`). 재시도 대기 동안 그 location의 dequeue 전체가 쉰다.

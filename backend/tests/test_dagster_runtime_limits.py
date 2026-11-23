@@ -1,7 +1,8 @@
 """공용 Dagster runtime의 열린 파일 상한·launch 예산·tick 보존을 렌더 원문에서 결박한다(2026-11-23 수집 실패 감사).
 
-- **nofile**: n150 code-server가 soft 1024에 닿아 launch가 `[Errno 24] Too many open files`로 실패했다(14일 1,888건).
-  상시 Dagster 서비스(daemon·webserver·공용 plane code-server)는 `x-dagster-nofile` 한 정의를 받는다. 이름을 외우지
+- **nofile**: n150 code-server가 soft 1024에 닿아 launch가 `[Errno 24] Too many open files`로 실패했다(14일 1,888건,
+  원인은 PinVi·Concierge의 일회성 fd 누수 두 건 — 상향은 완화다). 상시 Dagster 서비스(daemon·webserver·공용 plane
+  code-server)는 `x-dagster-nofile` 한 정의를 받는다. 누수를 오래 숨기지 않게 상한은 보수적이다(soft 8192·hard 65536). 이름을 외우지
   않는다 — 공용 instance URL을 받는 상시 서비스(꺼진 legacy profile 제외)를 모양으로 찾는다.
 - **launch 예산**: daemon의 StartRun은 code-server proxy를 거쳐 자식에 닿는다. proxy 예산이 daemon보다 크거나 같으면
   daemon 예산을 올려도 proxy가 먼저 끊는다. 그래서 모든 code-server proxy < daemon < run 시작 감시 상한이다.
@@ -97,7 +98,8 @@ def test_every_dagster_runtime_service_raises_the_open_file_soft_limit() -> None
     anchor = _compose()["x-dagster-nofile"]
     nofile = anchor["nofile"]
     assert type(nofile["soft"]) is int and type(nofile["hard"]) is int
-    assert 65536 <= nofile["soft"] <= nofile["hard"]
+    # 평소 fd 13~21개의 수백 배 여유, 그러나 누수를 며칠씩 숨기지 않을 만큼만(soft 8192·hard 65536).
+    assert (nofile["soft"], nofile["hard"]) == (8192, 65536)
     missing = {name: service.get("ulimits") for name, service in _long_running_dagster_services().items()
                if service.get("ulimits") != anchor}
     assert not missing, missing

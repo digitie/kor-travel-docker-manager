@@ -210,14 +210,16 @@ x-logging: &default-logging
     max-file: "5"
 
 # 공용 Dagster runtime(daemon·webserver·code-server)의 열린 파일 상한 — 정의는 여기 하나다. Docker 기본은 soft 1024·
-# hard 524288이고 Dagster 프로세스는 soft를 올리지 않는다. n150 code-server가 soft 1024에 닿아 launch가
-# `[Errno 24] Too many open files`로 실패했다(2026-11-23 수집 실패 감사 §1.2 — 14일 1,888건). hard는 오늘 값 그대로
-# 두고 soft만 올린다 — 누수를 가리는 것이 아니라 여유를 주는 것이고, 누수 추적(fd 지표)은 따로 한다. 빠진 서비스는
+# hard 524288이고 Dagster 프로세스는 soft를 올리지 않는다. n150에서 launch가 `[Errno 24] Too many open files`로
+# 실패했다(2026-11-23 수집 실패 감사 §1.2 — 14일 1,888건). 원인은 평소 부족이 아니라 PinVi·Concierge code-server의
+# 일회성 fd 누수 두 건(각 55·100시간 지속, 평소 fd 13~21개)이다. 그래서 이것은 **근본 해결이 아니라 완화**다 — 누수가
+# 실패로 번질 때까지의 시간을 늘리고 정상 운영 여유를 준다. 누수를 오래 숨기지 않게 보수적으로 soft 8192·hard 65536이다.
+# 누수 원인은 각 테넌트가, 프로세스별 fd 비율 경보는 경보 작업이 맡는다. 빠진 서비스는
 # `backend/tests/test_dagster_runtime_limits.py`가 렌더된 모델에서 찾는다. 다음 재생성 때 적용된다.
 x-dagster-nofile: &dagster-nofile
   nofile:
-    soft: 65536
-    hard: 524288
+    soft: 8192
+    hard: 65536
 
 # 공용 plane code-server(`dagster code-server start`)의 proxy RPC 예산 — map·pinvi·concierge·weather가 병합한다(geo는
 # 자기 변수로 같은 값을 준다). proxy는 daemon의 StartRun을 자식에 `DAGSTER_GRPC_TIMEOUT_SECONDS`로 넘긴다 — 기본 60초면
