@@ -1,3 +1,26 @@
+## 2026-11-23 — 후속 ①·④·⑤: job_ticks 정리 인덱스, unfreeze HTTP 500, Valkey 로그
+
+- **① Dagster `job_ticks` 정리 비용**: daemon은 tick마다 보존 일수별 DELETE를 부르고(sensor 7·14·30일 셋), Dagster의
+  `(selector_id, timestamp)` 인덱스로는 더 긴 보존이 남긴 다른 status 행까지 매번 읽는다. `storage-migrate.py`의 Manager 소유
+  인덱스를 `TICK_INDEXES` 표로 일반화하고 `(selector_id, status, "timestamp")`를 더했다. 재현(운영 행 47.4만의 열 복사본,
+  비내구 PG18) 정상 상태 DELETE 평균 5.34 ms·199 블록 → 0.019 ms·6 블록. 보존 일수 하나로 줄이는 대안도 같은 효과지만
+  보존 의미가 바뀌고 `dagster.yaml` digest가 모든 테넌트 code-server에 실려 테넌트별 재생성을 부른다 — 인덱스로 했다.
+  [자세히](dagster-tick-index.md#보존-정리-인덱스2026-11-23).
+- **plane 수렴이 storage one-shot을 건너뛰던 틈**: plane 재생성은 `up -d --no-deps`라 render가 plane 앞에 둔
+  `service_completed_successfully` 의존(storage migrate)이 돌지 않았다 — host 이미지(Dagster 버전·storage 준비)가 바뀌어도
+  `dagster-plane converge`만으로는 새 이미지의 migrate가 돌지 않는다. 그 의존을 render에서 파생해 `up` 전에
+  `run --rm --no-deps`하고 실패하면 plane을 다시 만들지 않는다. host 이미지 tag `11a71574b8114c5b` → `a14262c59d38d1df`.
+- **④ unfreeze `startSchedule` HTTP 500(11-23 01:04:47Z, readperf-t1123a)**: 공용 PG 재생성(01:02:00) 뒤 webserver가 들고 있던
+  storage 연결(`optimize_for_webserver`: pool_size 1, pre-ping 없음)이 죽어 있었고, 그 뒤 첫 schedule storage 호출이 실패했다.
+  Dagster는 resolver 예외를 `PythonError`로 돌려주면서 HTTP 500을 낸다(`ErrorCapture`) — webserver 로그에는 남지 않는다.
+  01:03 수렴은 code-server를 다시 만들지 않았고(location 이벤트 0), 1.13.24의 `start_schedule`은 이미 RUNNING이면 무연산이라
+  "이미 실행 중"도 원인이 아니다. 수동 재실행은 풀이 다시 연결된 뒤라 통과했다. freeze 스크립트(n150 home 헬퍼, 정본
+  `kor-travel-ops/dagster-freeze.py`)를 상태 확인 뒤 건너뛰기·5xx/연결 오류 backoff 재시도·최종 상태 검증(불일치 exit 1)으로 바꿨다.
+- **⑤ Valkey docker 로그 "멈춤"**: 로그는 계속 쓰인다(`--tail`은 오늘 줄을 보인다). 11-15 디스크 가득참 때 json-file 기록 2줄이
+  잘려(7238·7601행, 다음 레코드가 같은 줄에 붙음) Docker의 앞에서부터 읽기(`docker logs`, `--since`)가 첫 깨진 줄에서 멈춘다.
+  Valkey 자체는 정상(`rdb_last_bgsave_status:ok`, 약 900초 주기, 깨진 줄은 Valkey 컨테이너에만). 컨테이너가 다음에 다시
+  만들어지면(또는 50 MB 회전) 사라진다 — 그때까지 `docker logs --tail N`으로 본다. 재생성은 하지 않았다.
+
 ## 2026-11-23 — @kor-travel/ui 0.2.5·tokens 0.1.6 채택(입력 포커스 outline 하나·모바일 체크박스 44px)
 
 - common #81(fe14114: 입력·선택·여러 줄 포커스를 Button과 같은 2px outline 하나로, 모바일 체크박스 after 터치 영역 44px)과 #82(ade7b3e: catalog 파일명·integrity) release pack(artifact 14784066261, SHA256SUMS·SRI 일치)을 vendor·원장·lock·정책 `uses/common-ref`에 반영했다. toast 0.1.5는 쓰지 않는다. 의존 그래프가 같아 lock은 두 항목만 바뀐다.
