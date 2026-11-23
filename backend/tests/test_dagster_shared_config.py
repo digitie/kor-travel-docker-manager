@@ -177,7 +177,7 @@ def test_global_dispatch_budget_preserves_independent_tag_caps() -> None:
     assert runs["max_concurrent_runs"] == 6
     assert config["run_queue"] == {
         "dequeue_interval_seconds": 30,
-        "max_user_code_failure_retries": 3,
+        "max_user_code_failure_retries": 10,
         "user_code_failure_retry_delay": 60,
     }
     # location·업무별 기존 상한을 전역 6에 맞춰 낮추면 업무 정책을 바꾸게 된다.
@@ -561,8 +561,10 @@ def test_cold_start_rpc_budget_preserves_specialized_deadlines() -> None:
     services = _compose()["services"]
     proxy = services["kor-travel-geo-dagster-code-server"]["environment"]
     daemon = services["kor-travel-dagster-daemon"]["environment"]
+    # 기본값: proxy 150 < daemon 180(2026-11-23 감사 §1.3 — 60초 StartRun이 살아 있는 run을 실패로 기록했다).
+    assert int(_resolve(proxy["DAGSTER_GRPC_TIMEOUT_SECONDS"], {})) == 150
+    assert int(_resolve(daemon["DAGSTER_GRPC_TIMEOUT_SECONDS"], {})) == 180
     for environment in (proxy, daemon):
-        assert int(_resolve(environment["DAGSTER_GRPC_TIMEOUT_SECONDS"], {})) == 60
         assert {key: environment[key] for key in (
             "DAGSTER_SCHEDULE_GRPC_TIMEOUT_SECONDS", "DAGSTER_SENSOR_GRPC_TIMEOUT_SECONDS",
             "DAGSTER_REPOSITORY_GRPC_TIMEOUT_SECONDS", "DAGSTER_GRPC_SHUTDOWN_GRACE_PERIOD",

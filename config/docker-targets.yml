@@ -23,7 +23,8 @@ hosts:
       - key: kortravelweather/run_group
         value: external_weather_slow
         limit: 1
-    dagster_python_log_level: WARNING
+    # 로그 수준은 기본(INFO, #550)을 따른다 — 옛 WARNING 보존(2026-10-26)은 odroid location의 `context.log.info` 진행을
+    # 버려 실패 원인을 run 로그에서 못 보게 했다(2026-11-23 수집 실패 감사 §2.6 7). 필드는 남아 있다(호스트별 손잡이).
 
 # GM-19: port_policy/port_band 블록을 소비하는 코드가 0건이라 제거했다 — 포트 정책의
 # 유일한 정본은 docs/ports.md다.
