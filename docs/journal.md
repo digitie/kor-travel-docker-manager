@@ -1,3 +1,12 @@
+## 2026-11-23 — T-READ-MGR-03 ①: API swap 차단, T-READ-MGR-02 일부: PinVi 지표 수집
+
+- 소유자 결정(2026-11-23 "속도개선건은 제안한 대로 진행")으로 보류했던 `03`·`02`를 재개했다. 정본은 Map 읽기 성능 계획 §8.
+- 실측(n150 읽기 전용, 2026-11-22 22:59Z부터 2분 간격 cgroup v2 `memory.{current,peak,swap.current}`): 22:08Z 회전으로 뜬 뒤 D1/D2 e2e를 거친 Map API의 `memory.peak` 223 MB, PinVi API 254 MB, 평시 각 163~190·146~170 MB. **기동 90분 만에 둘 다 swap에 21·20 MB가 나가 있었다**(F-02 재확인 — 호스트 swap 2.1 GB 사용, `swappiness` 10). 두 UI는 peak 227·149 MB에 swap 7·14 MB.
+- `03` ①: Map API·PinVi API에 `mem_limit`·`memswap_limit`를 같은 변수 `${KTDM_{MAP,PINVI}_API_MEM_LIMIT:-1g}`로 둔다 — 목적은 상한이 아니라 swap 차단(같은 값이면 cgroup `memory.swap.max` 0)이라 OOM 경계를 실측 최고치의 4배 이상으로 넉넉히 잡았다(계획의 제안 512 MB보다 크다). `0`이면 둘 다 빠진다. 두 UI는 넣지 않았다 — Node가 cgroup 상한으로 heap 한도를 줄이므로 같은 규칙이 다른 실패(JS heap OOM)를 만들 수 있어 따로 정한다.
+- `02`: PinVi `/metrics`(인증 없음)는 registry `metrics_path`만으로 파생 job이 생긴다 — 더했다.
+- **Map 지표(`03` ②·`02`의 Map 몫)는 미뤘다.** C6c가 `KOR_TRAVEL_MAP_API_PROMETHEUS_METRICS_ENABLED=false`를 운영 Map API의 **고정 literal**로 잠그고(`c6c_deployment._MAP_PRODUCTION_API_LITERAL_VALUES`) 실행 중 컨테이너의 env도 그 값과 대조한다(`validate_runtime_secret_isolation`). 켜려면 metrics token을 C6c 보호 비밀로 새로 들이고(config·runtime 대조·격리 실행 harness의 env) Prometheus에 넘기는 경로를 정해야 한다 — compose 한 줄이 아니라 보안 계약 변경이라 별도 PR·소유자 확인으로 둔다. 그동안 Map은 `T-READ-02`의 느린 요청 로그로 본다.
+- n150 cAdvisor는 컨테이너 시계열을 내지 않는다(`id="/"`만, odroid는 정상) — 이번 실측을 Prometheus 기록 대신 cgroup 표본으로 한 이유다. 따로 본다.
+
 ## 2026-11-20 — 실제 사용 전체 Python 의존성과 오프라인 설치 버전 고정
 
 - backend의 실제 runtime/dev 교집합40종을 `backend/constraints.txt`로 고정한다. 직접/개발 선언16종과 CI pytest9.2.0·Ruff0.17.6도 맞춘다. 사용하지 않는 패키지는 설치 대상으로 추가하지 않는다. 기존 frontend/Common 정본·SDK 동작과 Map 구동부는 유지한다.

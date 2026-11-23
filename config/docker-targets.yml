@@ -209,6 +209,8 @@ containers:
     role: pinvi-api
     display_name: PinVi API
     connection: http://{host}:12801
+    # PinVi `/metrics`(prometheus_client, 인증 없음) — route별 요청 시간(T-READ-MGR-02).
+    metrics_path: /metrics
     prod_url_env: KTDM_PROD_URL_PINVI_API
     prod_url_path: /docs
     expected_ports:

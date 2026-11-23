@@ -1673,6 +1673,12 @@ services:
     restart: unless-stopped
     logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    # API 프로세스를 swap에서 지킨다(Map 읽기 성능 계획 T-READ-MGR-03, F-02: 한가한 사이 VmSwap 154 MB·RSS 14 MB로
+    # 밀려나 다음 요청이 같은 디스크에서 페이지를 다시 읽었다). `memswap_limit == mem_limit`라 컨테이너의 anon 페이지는
+    # swap으로 나가지 않는다. 상한은 OOM 경계일 뿐이라 실측 최고치(2026-11-23 n150, docs/journal.md)의 몇 배로 넉넉히
+    # 둔다 — 호스트별 값은 root `.env`(`KTDM_MAP_API_MEM_LIMIT`, `0`이면 상한·swap 차단 모두 없음).
+    mem_limit: ${KTDM_MAP_API_MEM_LIMIT:-1g}
+    memswap_limit: ${KTDM_MAP_API_MEM_LIMIT:-1g}
     depends_on:
       kor-travel-shared-postgres:
         condition: service_healthy
@@ -2140,6 +2146,9 @@ services:
     restart: unless-stopped
     logging: *default-logging
     network_mode: ${KTDM_DOCKER_NETWORK_MODE:-host}
+    # Map API와 같은 규칙(T-READ-MGR-03) — swap 차단, 상한은 실측 최고치의 몇 배(`KTDM_PINVI_API_MEM_LIMIT`).
+    mem_limit: ${KTDM_PINVI_API_MEM_LIMIT:-1g}
+    memswap_limit: ${KTDM_PINVI_API_MEM_LIMIT:-1g}
     depends_on:
       # ADR-46 — 앱 DSN이 실제로 접속하는 곳.
       kor-travel-shared-postgres:
